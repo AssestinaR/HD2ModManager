@@ -20,6 +20,10 @@ namespace HD2ModManager.Services
         private readonly StoragePaths _paths;
         private readonly HD2ModCore.Application.IModInformationCenter _informationCenter;
 
+        // The most recent import's complete content-impact set (new and overwritten nodes).
+        // Batch orchestration uses this to schedule derived data once after all file commits.
+        public IReadOnlyList<ModNodeId> LastAffectedNodeIds { get; private set; } = Array.Empty<ModNodeId>();
+
         public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null, IModInformationCenter? informationCenter = null)
         {
             _library = library;
@@ -43,7 +47,11 @@ namespace HD2ModManager.Services
             }
         }
 
-        public async Task<List<string>> ImportPathAsync(string path, CancellationToken ct, bool notifyLibraryChanged = true)
+        public async Task<List<string>> ImportPathAsync(
+            string path,
+            CancellationToken ct,
+            bool notifyLibraryChanged = true,
+            bool refreshDerivedData = true)
         {
             try
             {
@@ -85,15 +93,19 @@ namespace HD2ModManager.Services
                     .Select(id => id!.Value)
                     .Distinct()
                     .ToArray();
+                LastAffectedNodeIds = affectedNodeIds;
                 foreach (var nodeId in affectedNodeIds)
                 {
                     await _library.InvalidateContentNodeAsync(nodeId, ct).ConfigureAwait(false);
                 }
-                await _library.RefreshCommittedContentAsync(
-                    affectedNodeIds,
-                    ModContentChangeKind.Changed,
-                    alreadyInvalidated: true,
-                    cancellationToken: ct).ConfigureAwait(false);
+                if (refreshDerivedData)
+                {
+                    await _library.RefreshCommittedContentAsync(
+                        affectedNodeIds,
+                        ModContentChangeKind.Changed,
+                        alreadyInvalidated: true,
+                        cancellationToken: ct).ConfigureAwait(false);
+                }
                 if (notifyLibraryChanged) _library.NotifyImportCompleted();
                 _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
                 return importedGuids.Where(g => _library.Get(g) != null).ToList();

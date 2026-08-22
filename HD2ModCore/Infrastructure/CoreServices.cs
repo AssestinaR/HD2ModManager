@@ -341,6 +341,8 @@ public static class CoreServices
 			CreateModLibraryStore(paths),
 			informationCenter: informationCenter,
 			informationReader: informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
+	public static IModImportPlanner CreateModImportPlanner()
+		=> new ModImportPlanner(CreateObjectTreeImporter(), CreateArchiveObjectTreeImporter());
    public static IModLibraryManager CreateModLibraryManager(StoragePaths paths)
 		=> new ModLibraryManager(paths, CreateModLibraryStore(paths));
 	public static IModLibrarySynchronizer CreateModLibrarySynchronizer()

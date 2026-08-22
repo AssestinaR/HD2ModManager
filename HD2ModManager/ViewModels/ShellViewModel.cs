@@ -674,6 +674,7 @@ namespace HD2ModManager.ViewModels
             {
                 var libraryChanged = false;
                 var importedModIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var affectedNodeIds = new HashSet<ModNodeId>();
                 var importedSources = new List<string>();
                 ImportTaskItem? item;
                 while ((item = _importQueue.DequeueNextQueued()) != null)
@@ -683,7 +684,15 @@ namespace HD2ModManager.ViewModels
                     try
                     {
                         task.MarkRunning("正在解压缩");
-                        var created = await import.ImportPathAsync(item.Path, task.CancellationToken, notifyLibraryChanged: false);
+                        // Commit each source immediately, but defer expensive derived-data
+                        // production until the whole queue has been committed.
+                        var created = await import.ImportPathAsync(
+                            item.Path,
+                            task.CancellationToken,
+                            notifyLibraryChanged: false,
+                            refreshDerivedData: false);
+                        foreach (var nodeId in import.LastAffectedNodeIds)
+                            affectedNodeIds.Add(nodeId);
                         libraryChanged = true;
                         task.UpdateStage("模组库已更新");
                         LogService.Info($"快速导入完成：来源={item.Path}，新增 Mod 数={created.Count}。导入仅写入模组库；除非后续显式加入活动配置，否则不会部署。");
@@ -714,6 +723,14 @@ namespace HD2ModManager.ViewModels
                 if (libraryChanged)
                 {
                     await _libraryService.SynchronizeAsync().ConfigureAwait(false);
+                    if (affectedNodeIds.Count > 0)
+                    {
+                        await _libraryService.RefreshCommittedContentAsync(
+                            affectedNodeIds,
+                            ModContentChangeKind.Changed,
+                            alreadyInvalidated: true,
+                            cancellationToken: _lifetimeCancellation.Token).ConfigureAwait(false);
+                    }
                     _libraryService.NotifyImportCompleted();
                     if (SettingsService.GetAutoImportToActiveProfile() && importedModIds.Count > 0 && _profileService.ActiveProfile is not null)
                     {
