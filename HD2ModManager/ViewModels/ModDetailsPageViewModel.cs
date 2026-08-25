@@ -1200,14 +1200,17 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
 
-                SameKeyReconstructionSummary = $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}";
+                var warningCount = result.Issues.Count(issue => issue.Severity == CoreIssueSeverity.Warning);
+                SameKeyReconstructionSummary = warningCount == 0
+                    ? $"重建完成：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。输出：{result.OutputDirectory}"
+                    : $"重建完成，但有 {warningCount} 项 Unit 保留/兼容提醒：Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。请查看报告：{result.ReportMarkdownPath ?? result.OutputDirectory}";
                 if (importToLibrary && !string.IsNullOrWhiteSpace(result.OutputDirectory))
                 {
                     await _library.ReplaceStoredFilesAsync(source.Id, result.OutputDirectory, CancellationToken.None);
                 }
                 task?.SetOutputArtifacts(result.OutputDirectory, result.ReportMarkdownPath);
                 task?.MarkCompleted();
-                LogService.Info($"修复 patch 完成：Mod={source.Metadata.Name}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，输出={result.OutputDirectory}。");
+                LogService.Info($"修复 patch 完成：Mod={source.Metadata.Name}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，警告={warningCount}，输出={result.OutputDirectory}。");
                 if (bridge is null) _notifications?.Show(importToLibrary ? "Same-key 重建结果已替换当前 Mod，并开始重建缓存。" : "Same-key 重建结果已写入 Output 文件夹。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)

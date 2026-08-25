@@ -129,6 +129,16 @@ public sealed class CanonicalCrossArmorOrchestrator
 		this.archiveHashes = archiveHashes ?? new FileSystemArchiveHashesProvider(storagePaths);
 	}
 
+	// Cross-armor production is intentionally routed through direct source Unit
+	// reuse.  Keep the old Canonical cross-armor branch available as an internal
+	// compatibility fallback for callers that still construct a legacy request,
+	// but make that route explicit and auditable instead of presenting it as a
+	// supported production option.  Same-key reconstruction continues to use
+	// Canonical independently of this compatibility marker.
+	[Obsolete("跨护甲生产已统一使用 DirectSourceUnitReuse；Canonical 全量跨护甲重建仅保留内部兼容，不应从生产入口调用。")]
+	private static bool ShouldUseObsoleteCanonicalCrossArmorRoute(CrossArmorTransferCandidateRequest request)
+		=> !request.DirectSourceUnitReuse;
+
 	public async ValueTask<CrossArmorTransferCandidateResult> ExecuteAsync(
 		CrossArmorTransferCandidateRequest request,
 		CancellationToken cancellationToken = default)
@@ -206,8 +216,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 			var sourceUnits = new Dictionary<AdaptationAssetKey, PatchUnitMesh>();
 			var directSourcePayloads = new Dictionary<AdaptationAssetKey, AdaptationPatchEntryPayload>();
 			var sourceReadJobs = sourceKeys.Select((key, index) => (Sequence: index, UnitKey: $"0x{key.FileId:x16}")).ToArray();
-			if (request.DirectSourceUnitReuse && indexStatus.IsCurrent)
+			if (request.DirectSourceUnitReuse)
 			{
+				if (!indexStatus.IsCurrent)
+					Log("[DIRECT-PREFLIGHT] GameDataIndex=stale Action=PreserveSource");
 				var directPayloads = await UnitJobExecutor.ExecuteAsync(
 					sourceReadJobs,
 					async (index, token) =>
@@ -223,12 +235,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 					directSourcePayloads.Add(sourceKeys[index], directPayloads[index].Payload);
 				}
 			}
-			else if (request.DirectSourceUnitReuse)
+			#pragma warning disable CS0618 // The compatibility branch is intentionally kept behind an obsolete marker.
+			else if (ShouldUseObsoleteCanonicalCrossArmorRoute(request))
 			{
-				Log("[DIRECT-PREFLIGHT] GameDataIndex=stale Action=PreserveSource");
-			}
-			else
-			{
+				Log("[OBSOLETE-ROUTE] CrossArmor=CanonicalFullRebuild Action=CompatibilityOnly");
 				var sourceReadResults = await UnitJobExecutor.ExecuteAsync(
 					sourceReadJobs,
 					async (index, token) =>
@@ -244,6 +254,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 					sourceUnits.Add(key, sourceReadResults[index].Unit);
 				}
 			}
+			#pragma warning restore CS0618
 
 			var targetReader = targetReaderFactory(request.GameDataDirectory);
 			var canonicalAvatarTransforms = request.DirectSourceUnitReuse
@@ -256,7 +267,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 			var directSourceEntries = sourceKeys.ToDictionary(
 				key => key,
 				key => CreateDirectSourceReuseEntry(key, sourceByKey[key]));
-			if (request.DirectSourceUnitReuse)
+			if (request.DirectSourceUnitReuse && indexStatus.IsCurrent)
 			{
 				var coreSourceKeys = sourceKeys.Select(key => new CoreAssetKey(key.TypeId, key.FileId)).ToHashSet();
 				var sourceArchives = await assetIndex.FindAssetArchivesAsync(coreSourceKeys, cancellationToken).ConfigureAwait(false);
@@ -284,7 +295,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 					var sourceUnit = await ReadSourceUnitAsync(sourceByKey[sourceKey], sourceEntries, sourceReadRequest, cancellationToken).ConfigureAwait(false);
 					var mappings = BuildSameKeyMappings(sourceKey, sourceUnit.Model, currentTarget.Model);
 					if (mappings.Count == 0)
-						return Failure(issues, "DirectReuseSourceRepairMappingMissing", $"来源 Unit 0x{sourceKey.FileId:x16} 已过时，但无法建立同 ID Canonical 重构映射。请关闭快速复用并使用全量 Canonical 重建。");
+						return Failure(issues, "DirectReuseSourceRepairMappingMissing", $"来源 Unit 0x{sourceKey.FileId:x16} 已过时，但无法建立同 ID Canonical 重构映射。请先对来源 Mod 执行通用 Same-key 重构后再生成替换护甲。");
 					sourceRepairAvatar ??= await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(request.GameDataDirectory)).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 					var repaired = new SameKeyCanonicalUnitRebuilder().Rebuild(new SameKeyCanonicalUnitRebuildRequest(sourceUnit, currentTarget, mappings)
 					{
@@ -300,6 +311,13 @@ public sealed class CanonicalCrossArmorOrchestrator
 					directSourceEntries[sourceKey] = operationWorkspace.Stage(repairedEntry);
 					Log($"[DIRECT-PREFLIGHT] Source=0x{sourceKey.FileId:x16} Version={sourceVersion}->{currentTarget.Model.Version} Action=SameKeyRebuilt");
 				}
+			}
+			else if (request.DirectSourceUnitReuse)
+			{
+				// A stale asset index cannot provide a trustworthy same-key target
+				// version. Keep the source payload intact and skip the preflight rather
+				// than comparing it against stale GameData metadata.
+				Log("[DIRECT-PREFLIGHT] GameDataIndex=stale Action=PreserveSourceWithoutVersionCheck");
 			}
 			var rebuiltTargets = new Dictionary<AdaptationAssetKey, CanonicalRebuildSummary>();
 			var outputUnitCount = 0;
@@ -429,7 +447,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 						.Distinct()
 						.ToArray();
 					if (directSourceKeys.Length != 1)
-						return Failure(issues, "DirectReuseMultipleSourceUnits", $"快速复用要求目标 Unit 0x{targetUnit.Key.FileId:x16} 的所有命中 Mesh 来自同一个来源 Unit；当前为 {directSourceKeys.Length} 个来源。请关闭快速复用并使用 Canonical 重建。");
+						return Failure(issues, "DirectReuseMultipleSourceUnits", $"快速复用要求目标 Unit 0x{targetUnit.Key.FileId:x16} 的所有命中 Mesh 来自同一个来源 Unit；当前为 {directSourceKeys.Length} 个来源。请调整来源/目标映射后重试；通用 Canonical 重构不再作为替换护甲生产入口。");
 
 					var directSourceKey = directSourceKeys[0];
 					var directSourceEntry = sourceByKey[directSourceKey];

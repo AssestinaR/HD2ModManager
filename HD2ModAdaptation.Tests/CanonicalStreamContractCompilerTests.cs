@@ -110,6 +110,46 @@ public sealed class CanonicalStreamContractCompilerTests
 	}
 
 	[Fact]
+	public void Compile_FallbackKeepsTargetColorWhenSourceAddsUvChannel()
+	{
+		var target = Target() with
+		{
+			Streams = [Target().Streams[0] with
+			{
+				VertexStride = 48,
+				Components = [
+					new UnitStreamComponentInfo(5, "color", 4, "rgba_r8g8b8a8", 0, 0, 4),
+					new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+					new UnitStreamComponentInfo(1, "normal", 30, "unk_normal", 0, 0, 4),
+					new UnitStreamComponentInfo(4, "uv", 1, "vec2_float", 0, 0, 8),
+					new UnitStreamComponentInfo(4, "uv", 1, "vec2_float", 1, 0, 8),
+					new UnitStreamComponentInfo(7, "bone_weight", 35, "vec4_half", 0, 0, 8),
+					new UnitStreamComponentInfo(6, "bone_index", 28, "vec4_uint8", 0, 0, 4)]
+			}]
+		};
+		var raw = Raw(0, 3) with
+		{
+			Vertices = Raw(0, 3).Vertices.Select(vertex => vertex with
+			{
+				Components = [
+					new UnitVertexComponentValue(0, "position", 2, "vec3_float", 0, [0, 0, 0], [], []),
+					new UnitVertexComponentValue(1, "normal", 30, "unk_normal", 0, [0, 0, 1], [], []),
+					new UnitVertexComponentValue(4, "uv", 29, "vec4_1010102", 0, [0, 0, 0, 0], [], []),
+					new UnitVertexComponentValue(4, "uv", 29, "vec4_1010102", 1, [0, 0, 0, 0], [], []),
+					new UnitVertexComponentValue(4, "uv", 29, "vec4_1010102", 2, [0, 0, 0, 0], [], [])]
+			}).ToArray()
+		};
+
+		var result = new CanonicalStreamContractCompiler().TryCompile(target, [raw]);
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
+		var stream = Assert.Single(result.Streams);
+		Assert.Contains(stream.Components, component => component.Type == 5 && component.Index == 0);
+		Assert.Equal(3, stream.Components.Count(component => component.Type == 4));
+		Assert.Equal(44u, stream.VertexStride);
+	}
+
+	[Fact]
 	public void Compile_PromotesLegacyScalarWeightStreamWhenFinalVerticesNeedVec4Weights()
 	{
 		var target = Target() with

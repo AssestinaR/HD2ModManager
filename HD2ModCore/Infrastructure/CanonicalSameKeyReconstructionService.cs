@@ -130,7 +130,7 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 		}
         using var operationWorkspace = operationWorkspaceFactory.Create(output, "same-key-reconstruction");
         var jobsBySequence = new PatchWorkspaceJobResult?[plan.Units.Count];
-        var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
+        var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
         var sourceEntries = index.Entries;
         var sourcePayloadFingerprints = new UnitPayloadFingerprintCache();
         var parsedSources = new ConcurrentDictionary<string, Lazy<Task<PatchUnitMesh>>>(StringComparer.Ordinal);
@@ -388,10 +388,64 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             var representative = recipe.Representative;
             var sourceEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(representative.UnitAssetKey.TypeId, representative.UnitAssetKey.FileId));
             var archiveId = representative.TargetArchive!.ArchiveId;
-            var sourceTemplate = await parsedSources.GetOrAdd(recipe.Key, _ => new Lazy<Task<PatchUnitMesh>>(
-                () => ReadCanonicalSourceUnitAsync(sourceEntry, sourceEntries, sourceReadRequest, cancellationToken).AsTask(),
-                LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
-            var sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
+            PatchUnitMesh sourceUnit;
+            try
+            {
+                var sourceTemplate = await parsedSources.GetOrAdd(recipe.Key, _ => new Lazy<Task<PatchUnitMesh>>(
+                    () => ReadCanonicalSourceUnitAsync(sourceEntry, sourceEntries, sourceReadRequest, cancellationToken).AsTask(),
+                    LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
+                sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or OverflowException or KeyNotFoundException)
+            {
+                var message = $"来源 Unit 0x{representative.UnitAssetKey.FileId:x16} 无法解析，已按不透明 Unit 保留：{exception.Message}";
+                issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "CanonicalSourceUnitOpaqueRetained", message, sourceEntry.SourceFilePath, source.Id, exception.ToString()));
+                foreach (var member in recipe.Members)
+                {
+                    var memberEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(member.UnitAssetKey.TypeId, member.UnitAssetKey.FileId));
+                    jobs.Add(PatchWorkspaceJobResult.Unit(CreateSourcePassthroughEntry(memberEntry), $"0x{member.UnitAssetKey.FileId:x16}"));
+                }
+                artifacts.Log($"[OPAQUE-RETAIN] Unit=0x{representative.UnitAssetKey.FileId:x16}; Route=SourceParseFailed; Reason={exception.Message}");
+                recipeIndex++;
+                Report(progress, operationId, "ExecuteRecipes", $"已保留不透明配方 {recipeIndex}/{recipes.Count}，覆盖 Unit {jobs.Count}/{plan.Units.Count}", recipeIndex, recipes.Count);
+                continue;
+            }
+            GameDataUnitMesh targetUnit;
+            try
+            {
+                targetUnit = await targetReader.ReadAsync(archiveId, sourceEntry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or OverflowException or KeyNotFoundException)
+            {
+                var message = $"同 ID 目标 Unit 0x{representative.UnitAssetKey.FileId:x16} 无法解析，已保留来源 Unit：{exception.Message}";
+                issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "CanonicalTargetUnitOpaqueRetained", message, archiveId, source.Id, exception.ToString()));
+                foreach (var member in recipe.Members)
+                {
+                    var memberEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(member.UnitAssetKey.TypeId, member.UnitAssetKey.FileId));
+                    jobs.Add(PatchWorkspaceJobResult.Unit(CreateSourcePassthroughEntry(memberEntry), $"0x{member.UnitAssetKey.FileId:x16}"));
+                }
+                artifacts.Log($"[OPAQUE-RETAIN] Unit=0x{representative.UnitAssetKey.FileId:x16}; Route=TargetParseFailed; Reason={exception.Message}");
+                recipeIndex++;
+                Report(progress, operationId, "ExecuteRecipes", $"已保留不透明配方 {recipeIndex}/{recipes.Count}，覆盖 Unit {jobs.Count}/{plan.Units.Count}", recipeIndex, recipes.Count);
+                continue;
+            }
+            var sourceCapability = CanonicalUnitCapabilityDetector.Analyze(sourceUnit.Model);
+            var targetCapability = CanonicalUnitCapabilityDetector.Analyze(targetUnit.Model);
+            artifacts.Log($"[UNIT-CAPABILITY] Unit=0x{representative.UnitAssetKey.FileId:x16}; SourceLayout={sourceCapability.Layout}; TargetLayout={targetCapability.Layout}; SourceRoute={sourceCapability.PreferredRoute}; TargetRoute={targetCapability.PreferredRoute}; SourceSkinning={sourceCapability.HasSkinning}; TargetSkinning={targetCapability.HasSkinning}; PlayerEquipment={targetCapability.IsLikelyPlayerEquipment}; Reason={targetCapability.Reason}");
+            if (!sourceCapability.CanCanonicalRebuild || !targetCapability.CanCanonicalRebuild)
+            {
+                var message = $"Unit 0x{representative.UnitAssetKey.FileId:x16} 未进入 Canonical：来源={sourceCapability.PreferredRoute}/{sourceCapability.Reason}，目标={targetCapability.PreferredRoute}/{targetCapability.Reason}。当前按不透明来源 Unit 保留。";
+                issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "CanonicalUnitOpaqueRetained", message, sourceEntry.SourceFilePath, source.Id));
+                foreach (var member in recipe.Members)
+                {
+                    var memberEntry = sourceEntries.Single(entry => entry.AssetKey == new AdaptationAssetKey(member.UnitAssetKey.TypeId, member.UnitAssetKey.FileId));
+                    jobs.Add(PatchWorkspaceJobResult.Unit(CreateSourcePassthroughEntry(memberEntry), $"0x{member.UnitAssetKey.FileId:x16}"));
+                }
+                artifacts.Log($"[OPAQUE-RETAIN] Unit=0x{representative.UnitAssetKey.FileId:x16}; SourceRoute={sourceCapability.PreferredRoute}; TargetRoute={targetCapability.PreferredRoute}");
+                recipeIndex++;
+                Report(progress, operationId, "ExecuteRecipes", $"已保留不透明配方 {recipeIndex}/{recipes.Count}，覆盖 Unit {jobs.Count}/{plan.Units.Count}", recipeIndex, recipes.Count);
+                continue;
+            }
             var hiddenSource = UnitSourceVisibilityClassifier.Classify(sourceUnit);
             if (useSharedHiddenUnitTemplate && hiddenSource.IsHidden && sharedHiddenTemplate is not null)
             {
@@ -410,7 +464,6 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 continue;
             }
 
-            var targetUnit = await targetReader.ReadAsync(archiveId, sourceEntry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
             var mappings = hiddenSource.IsHidden
                 ? []
                 : BuildMappings(sourceEntry.AssetKey, sourceUnit.Model, targetUnit.Model, representative.IsSourceGeometryEligible).ToArray();
@@ -468,7 +521,11 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 
         if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)) return Failure(issues);
         Report(progress, operationId, "WriteCandidate", "正在打包 Canonical Patch", 0, 1);
-        var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId || entry.AssetKey.TypeId == PatchUnitMeshReader.CompositeUnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
+        // Unit entries are replaced by jobs. Composite/Bone/other dependencies
+        // remain available as opaque source entries until the generic dependency
+        // closure can prove that they are safe to remove. This is essential for
+        // non-player and Composite-backed Units, which are currently retained.
+        var removed = index.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).Select(entry => entry.AssetKey).ToHashSet();
         var write = await workspaceWriter.WriteAsync(index, jobs, removed, output, Path.GetFileName(patch),
             headerTemplateTocData: (await resolver.GetPackageTocAsync(plan.Units.First().TargetArchive!.ArchiveId, cancellationToken).ConfigureAwait(false))?.Data,
             cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -486,6 +543,29 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         public string Key { get; } = key;
         public SameKeyUnitReconstructionPlan Representative { get; } = representative;
         public List<SameKeyUnitReconstructionPlan> Members { get; } = [];
+    }
+
+    private static CanonicalPatchSessionEntry CreateSourcePassthroughEntry(
+        HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry)
+    {
+        var tocPath = entry.SourceFilePath;
+        var gpuPath = tocPath + ".gpu_resources";
+        var streamPath = tocPath + ".stream";
+        return new CanonicalPatchSessionEntry(
+            entry.AssetKey,
+            CanonicalPatchEntryOwnership.TargetOutput,
+            entry.TocDataSize == 0 ? Array.Empty<byte>() : null,
+            entry.GpuResourceSize == 0 ? Array.Empty<byte>() : null,
+            entry.StreamSize == 0 ? Array.Empty<byte>() : null,
+            entry.Unknown1,
+            entry.Unknown2,
+            entry.Unknown3,
+            entry.Unknown4)
+        {
+            TocDataSource = entry.TocDataSize == 0 ? null : new CanonicalPayloadSourceRange(tocPath, entry.TocDataOffset, entry.TocDataSize),
+            GpuDataSource = entry.GpuResourceSize == 0 ? null : new CanonicalPayloadSourceRange(gpuPath, entry.GpuResourceOffset, entry.GpuResourceSize),
+            StreamDataSource = entry.StreamSize == 0 ? null : new CanonicalPayloadSourceRange(streamPath, entry.StreamOffset, entry.StreamSize)
+        };
     }
 
     private async ValueTask<SameKeyReconstructionPlan> PlanAsync(

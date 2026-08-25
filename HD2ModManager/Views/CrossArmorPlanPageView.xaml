@@ -93,7 +93,7 @@
                         <TextBlock Text="目标预测" FontWeight="SemiBold" VerticalAlignment="Center"/>
                         <CheckBox Style="{StaticResource AppToggleSwitch}" Content="手动模式" IsChecked="{Binding AllowManualMappings}" Margin="12,0,0,0" ToolTip="启用后仅保留显式手动结果，不再进行自动预测。"/>
                         <CheckBox Style="{StaticResource AppToggleSwitch}" Content="自动隐藏其余部件" IsChecked="{Binding AutoHideUnmappedTargetUnits}" Margin="12,0,0,0" ToolTip="关闭后仅输出真实替换的 Unit，其余未命中部件保持 Game Data 原样且不写入 Patch。"/>
-						<CheckBox Style="{StaticResource AppToggleSwitch}" Content="快速复用来源 Unit" IsChecked="{Binding DirectSourceUnitReuse}" Margin="12,0,0,0" ToolTip="实验性：替换目标直接使用来源 Unit 的完整 TOC、GPU 与 Stream，不进行目标骨骼、材质或 LOD 重构。未命中目标仍按当前隐藏策略处理。"/>
+						<TextBlock Text="生产路线：快速复用来源 Unit" Foreground="{StaticResource StatusSuccess}" VerticalAlignment="Center" Margin="12,0,0,0" ToolTip="替换护甲生产直接复用来源 Unit 的完整 TOC、GPU、Stream 及其依赖。Canonical 全量重建保留给 Same-key 修复等通用 Patch 流程。"/>
                     </DockPanel>
                 </Border>
                 <DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding FilteredTargetMappings}" SelectedItem="{Binding SelectedTargetMapping, Mode=TwoWay}" ContextMenuOpening="OnTargetMappingContextMenuOpening">

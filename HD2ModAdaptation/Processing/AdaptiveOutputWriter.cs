@@ -19,6 +19,7 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 // 但没有在这里重新扫描并严格过滤所有 Material、Texture 或其他依赖条目。
 namespace HD2ModAdaptation.Processing;
 
+[Obsolete("已过时：替换护甲生产统一使用 DirectSourceUnitReuse；保留用于兼容旧调用。")]
 public sealed class AdaptiveOutputWriter
 {
 	// UnitMeshWriter：负责把内存中的 UnitMeshModel 转换为可写入文件的二进制数据。

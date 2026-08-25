@@ -60,7 +60,13 @@ public sealed class SameKeyCanonicalUnitRebuilder
         var phaseStopwatch = System.Diagnostics.Stopwatch.StartNew();
         var mappings = request.MeshMappings.ToDictionary(mapping => mapping.TargetMeshInfoIndex);
         var targetModel = request.Target.Model;
-        if (request.AvatarTransformInfo is not null)
+        var sourceCapability = CanonicalUnitCapabilityDetector.Analyze(request.Source.Model);
+        var targetCapability = CanonicalUnitCapabilityDetector.Analyze(request.Target.Model);
+        if (targetCapability.Layout == CanonicalUnitLayoutKind.CompositeBacked)
+            return Failure("CompositeCanonicalRebuildPending", "当前 Canonical 已识别到 Composite-backed Unit；该 Unit 会保留或走直接复用，暂不进入 inline Mesh 重建。", 0, 0);
+        if (targetCapability.Layout != CanonicalUnitLayoutKind.Inline || !targetCapability.HasSupportedStreamAbi)
+            return Failure("UnsupportedCanonicalUnitLayout", targetCapability.Reason, 0, 0);
+        if (request.AvatarTransformInfo is not null && targetCapability.RequiresAvatarRigExpansion && sourceCapability.RequiresAvatarRigExpansion)
         {
             var transformSources = request.MeshMappings
                 .Select(mapping =>

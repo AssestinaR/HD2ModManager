@@ -1,6 +1,7 @@
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
 // Purpose: Writes a target-shell output while removing obsolete source Units and unreferenced source Composites.
+[Obsolete("已过时：替换护甲生产统一使用 DirectSourceUnitReuse；仅保留兼容调用和测试。")]
 public sealed class TargetShellPatchReconstructor
 {
 	private const int CompositeReferenceOffset = 16;

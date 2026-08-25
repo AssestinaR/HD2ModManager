@@ -23,7 +23,6 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private CrossArmorLayerPreference layerPreference = CrossArmorLayerPreference.Armor;
 	private bool allowManualMappings;
 	private bool autoHideUnmappedTargetUnits = true;
-	private bool directSourceUnitReuse = true;
 	private CrossArmorTransferPlan? plan;
 	private readonly Dictionary<CrossArmorPhysicalTargetKey, CrossArmorManualMapping> manualMappings = new();
 	private readonly HashSet<CrossArmorPhysicalTargetKey> suppressedTargets = new();
@@ -125,16 +124,10 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			OnPropertyChanged();
 		}
 	}
-	public bool DirectSourceUnitReuse
-	{
-		get => directSourceUnitReuse;
-		set
-		{
-			if (directSourceUnitReuse == value) return;
-			directSourceUnitReuse = value;
-			OnPropertyChanged();
-		}
-	}
+	// Cross-armor production is intentionally locked to direct source Unit
+	// reuse.  Canonical remains available to Same-key repair and other generic
+	// Patch workflows, but is no longer a production route from this page.
+	public bool DirectSourceUnitReuse => true;
 	public EquipmentUnitCatalogEntry? SelectedSourceArmor
 	{
 		get => selectedSourceArmor;
@@ -367,7 +360,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			exportedAtUtc = DateTimeOffset.UtcNow,
 			isReadOnlyPlan = true,
 			selectedSourceArchiveId = SelectedSource?.ArchiveId,
-			replacementRoute = "Canonical",
+			replacementRoute = "DirectSourceUnitReuse",
 			selectedSourceBodyVariant = SelectedSourceBodyVariant?.ToString() ?? "Any",
 			bodyVariantPreference = BodyVariantPreference.ToString(),
 			layerPreference = LayerPreference.ToString(),

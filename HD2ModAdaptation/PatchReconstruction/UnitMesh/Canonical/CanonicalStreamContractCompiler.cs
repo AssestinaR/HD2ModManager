@@ -66,17 +66,28 @@ public sealed class CanonicalStreamContractCompiler
 			? new SdkFormatProfile(4, 2, 26, 1, 24, 31)
 			: new SdkFormatProfile(4, 2, 30, 1, 28, 35);
 		var uvIndices = allComponents.Where(component => component.Type == 4).Select(component => component.Index).ToArray();
-		var uvCount = uvIndices.Length == 0 ? 0u : uvIndices.Max() + 1;
+		var sourceUvCount = uvIndices.Length == 0 ? 0u : uvIndices.Max() + 1;
+		var targetUvIndices = template.Components.Where(component => component.Type == 4).Select(component => component.Index).ToArray();
+		var targetUvCount = targetUvIndices.Length == 0 ? 0u : targetUvIndices.Max() + 1;
+		// A fallback stream is an expansion of the target ABI, not a fresh schema
+		// derived only from source vertices. Keep target-declared UV channels even
+		// when the source has fewer of them, then add any channels required by the
+		// source geometry.
+		var uvCount = Math.Max(sourceUvCount, targetUvCount);
 		var indexGroups = allComponents.Where(component => component.Type == 6).Select(component => component.Index).ToArray();
 		var isSkinned = indexGroups.Length != 0;
 		var boneIndexGroups = isSkinned ? indexGroups.Max() + 1 : 0u;
 		var components = new List<UnitStreamComponentInfo>();
-		if (allComponents.Any(component => component.Type == 5))
+		// Target-only attributes still carry shader semantics. In particular, the
+		// current game Unit may declare vertex color while an older source Unit does
+		// not. Dropping it changes the material input contract before preparation can
+		// apply its SDK-compatible default value.
+		if (allComponents.Any(component => component.Type == 5) || template.Components.Any(component => component.Type == 5))
 			components.Add(Component(5, "color", formats.Color, "rgba_r8g8b8a8", 0, 4));
 		if (!allComponents.Any(component => component.Type == 0 && component.Index == 0))
 			throw new InvalidDataException($"Canonical stream {template.Index} has no final position semantic.");
 		components.Add(Component(0, "position", formats.Position, "vec3_float", 0, 12));
-		if (allComponents.Any(component => component.Type == 1))
+		if (allComponents.Any(component => component.Type == 1) || template.Components.Any(component => component.Type == 1))
 			components.Add(Component(1, "normal", formats.Normal, "unk_normal", 0, 4));
 		for (var index = 0u; index < uvCount; index++) components.Add(Component(4, "uv", formats.Uv, "vec2_float", index, 8));
 		if (isSkinned)

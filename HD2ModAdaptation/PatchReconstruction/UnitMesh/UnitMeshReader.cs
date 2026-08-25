@@ -1079,7 +1079,21 @@ public sealed class UnitMeshReader
 		_ => "unknown"
 	};
 
-	private static string GetComponentFormatName(uint format, uint unitVersion) => unitVersion == 10800437
+	private static string GetComponentFormatName(uint format, uint unitVersion) => unitVersion == 10800433
+		? format switch
+		{
+			24 => "vec4_uint8",
+			// Preserve the existing legacy compatibility mapping for format 25.
+			25 => "vec4_1010102",
+			26 => "unk_normal",
+			// Unit version 10800433 uses the legacy component numbering where
+			// format 29 is vec2_half. It is not the current format-29 packed
+			// vec4_1010102 used by the standard table.
+			29 => "vec2_half",
+			31 => "vec4_half",
+			_ => GetComponentFormatNameStandard(format)
+		}
+		: unitVersion == 10800437
 		? format switch
 		{
 			0 => "float",
@@ -1093,9 +1107,25 @@ public sealed class UnitMeshReader
 			26 => "unk_normal",
 			29 => "vec2_half",
 			31 => "vec4_half",
-			_ => "unknown"
+			_ => GetComponentFormatNameStandard(format)
 		}
 		: format switch
+	{
+		0 => "float",
+		1 => "vec2_float",
+		2 => "vec3_float",
+		3 => "vec4_float",
+		4 => "rgba_r8g8b8a8",
+		24 => "vec4_uint32",
+		28 => "vec4_uint8",
+		29 => "vec4_1010102",
+		30 => "unk_normal",
+		33 => "vec2_half",
+		35 => "vec4_half",
+		_ => GetComponentFormatNameStandard(format)
+	};
+
+	private static string GetComponentFormatNameStandard(uint format) => format switch
 	{
 		0 => "float",
 		1 => "vec2_float",
@@ -1111,7 +1141,17 @@ public sealed class UnitMeshReader
 		_ => "unknown"
 	};
 
-	private static uint GetComponentFormatSize(uint format, uint unitVersion) => unitVersion == 10800437
+	private static uint GetComponentFormatSize(uint format, uint unitVersion) => unitVersion == 10800433
+		? format switch
+		{
+			24 => 4u,
+			25 => 4u,
+			26 => 4u,
+			29 => 4u,
+			31 => 8u,
+			_ => GetComponentFormatSizeStandard(format)
+		}
+		: unitVersion == 10800437
 		? format switch
 		{
 			0 => 4u,
@@ -1125,9 +1165,25 @@ public sealed class UnitMeshReader
 			26 => 4u,
 			29 => 4u,
 			31 => 8u,
-			_ => 0u
+			_ => GetComponentFormatSizeStandard(format)
 		}
 		: format switch
+	{
+		0 => 4u,
+		1 => 8u,
+		2 => 12u,
+		3 => 16u,
+		4 => 4u,
+		24 => 16u,
+		28 => 4u,
+		29 => 4u,
+		30 => 4u,
+		33 => 4u,
+		35 => 8u,
+		_ => GetComponentFormatSizeStandard(format)
+	};
+
+	private static uint GetComponentFormatSizeStandard(uint format) => format switch
 	{
 		0 => 4u,
 		1 => 8u,

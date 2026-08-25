@@ -3,6 +3,7 @@ using HD2ModAdaptation.Processing;
 namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
 // Purpose: Builds a current target Unit shell as new patch entries from explicit source-to-target mesh mappings.
+[Obsolete("已过时：替换护甲生产统一使用 DirectSourceUnitReuse；Canonical 仅由通用 Patch 重构流程调用。")]
 public sealed class TargetShellUnitOutputBuilder
 {
 	private readonly MeshTransfer transfer;

@@ -19,7 +19,9 @@ public sealed class CanonicalMeshPreparation
 	private static readonly float[] DefaultZero = [0f, 0f, 0f, 0f];
 	private static readonly float[] DefaultNormal = [0f, 0f, 1f, 0f];
 	private static readonly float[] DefaultTangent = [0f, 1f, 0f, 0f];
-	private static readonly float[] DefaultColor = [1f, 1f, 1f, 1f];
+	// SDK GetMeshData initializes absent vertex-color data to transparent black
+	// and only fills it when the source mesh actually has a color layer.
+	private static readonly float[] DefaultColor = [0f, 0f, 0f, 0f];
 	private static readonly float[] DefaultWeight = [1f, 0f, 0f, 0f];
 	private static readonly uint[] DefaultBoneIndices = [0, 0, 0, 0];
 
@@ -92,8 +94,11 @@ public sealed class CanonicalMeshPreparation
 		{
 			var target = targets[targetIndex];
 			var source = FindComponent(vertex.Components, target.Type, target.Index);
-			var floats = source?.FloatValues ?? DefaultFloats(target.Type);
-			var uints = source?.UIntValues ?? DefaultUInts(target.Type);
+			if (!TryResolveComponentValues(target, source, vertex.Index, diagnostics, out var floats, out var uints))
+			{
+				encodedVertex = null;
+				return false;
+			}
 			if (target.Type == 7 && target.Index == 0 && normalizedWeights is not null)
 			{
 				floats = normalizedWeights;
@@ -107,7 +112,11 @@ public sealed class CanonicalMeshPreparation
 
 			var size = checked((int)target.Size);
 			var destination = data.AsSpan(offset, size);
-			Encode(target, floats, uints, destination);
+			if (!TryEncode(target, floats, uints, destination, vertex.Index, diagnostics))
+			{
+				encodedVertex = null;
+				return false;
+			}
 			components[targetIndex] = new UnitVertexComponentValue(
 				target.Type, target.TypeName, target.Format, target.FormatName, target.Index,
 				floats, uints, destination.ToArray());
@@ -122,6 +131,66 @@ public sealed class CanonicalMeshPreparation
 		}
 		encodedVertex = new UnitRawVertexRecord(vertex.Index, data, components);
 		return true;
+	}
+
+	private static bool TryResolveComponentValues(
+		UnitStreamComponentInfo target,
+		UnitVertexComponentValue? source,
+		uint vertexIndex,
+		List<CanonicalPlanDiagnostic> diagnostics,
+		out float[] floats,
+		out uint[] uints)
+	{
+		if (source is null)
+		{
+			floats = DefaultFloats(target.Type);
+			uints = DefaultUInts(target.Type);
+			return true;
+		}
+
+		floats = source.FloatValues;
+		uints = source.UIntValues;
+		if (target.FormatName != "unk_normal" || floats.Length >= 3)
+			return true;
+
+		// UnitMeshReader normally exposes both the packed uint and its decoded
+		// vector. Some non-standard Unit layouts only expose the packed value,
+		// so normalize that representation before Canonical re-encoding.
+		if (source.FormatName == "unk_normal" && uints.Length > 0)
+		{
+			floats = DecodePackedOctNormal(uints[0]);
+			return true;
+		}
+
+		diagnostics.Add(new(
+			"PackedNormalSourceInvalid",
+			$"Vertex {vertexIndex}, source component type {source.Type} index {source.Index}, " +
+			$"format {source.FormatName} cannot provide three normal values for target " +
+			$"component type {target.Type} index {target.Index}, format {target.FormatName}."));
+		return false;
+	}
+
+	private static bool TryEncode(
+		UnitStreamComponentInfo target,
+		float[] floats,
+		uint[] uints,
+		Span<byte> destination,
+		uint vertexIndex,
+		List<CanonicalPlanDiagnostic> diagnostics)
+	{
+		try
+		{
+			Encode(target, floats, uints, destination);
+			return true;
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IndexOutOfRangeException or ArgumentOutOfRangeException or OverflowException)
+		{
+			diagnostics.Add(new(
+				"ComponentEncodingFailed",
+				$"Vertex {vertexIndex}, target component type {target.Type} index {target.Index}, " +
+				$"format {target.FormatName} ({target.Format}) failed to encode: {exception.Message}"));
+			return false;
+		}
 	}
 
 	private static bool TryNormalizeSkinning(
@@ -145,7 +214,11 @@ public sealed class CanonicalMeshPreparation
 			}
 			else
 			{
-			diagnostics.Add(new("BoneWeightIndexArityMismatch", $"Vertex {vertexIndex} has {indices.UIntValues.Length} bone indices but {count} bone weights."));
+				diagnostics.Add(new(
+				"BoneWeightIndexArityMismatch",
+				$"Vertex {vertexIndex} has {indices.UIntValues.Length} bone indices but {count} bone weights; " +
+				$"weight component type {weights.Type} index {weights.Index} format {weights.FormatName}, " +
+				$"index component type {indices.Type} index {indices.Index} format {indices.FormatName}."));
 			normalizedWeights = Array.Empty<float>();
 			normalizedIndices = null;
 			return false;
@@ -272,5 +345,21 @@ public sealed class CanonicalMeshPreparation
 		var packedX = (uint)Math.Clamp((int)MathF.Round((x + 1) * 511.5f), 0, 1023);
 		var packedY = (uint)Math.Clamp((int)MathF.Round((y + 1) * 511.5f), 0, 1023);
 		return packedX | (packedY << 10);
+	}
+
+	private static float[] DecodePackedOctNormal(uint value)
+	{
+		var x = (value & 0x3ff) * (2f / 1023f) - 1f;
+		var y = ((value >> 10) & 0x3ff) * (2f / 1023f) - 1f;
+		var z = 1f - MathF.Abs(x) - MathF.Abs(y);
+		if (z < 0)
+		{
+			var oldX = x;
+			x = (1f - MathF.Abs(y)) * MathF.Sign(oldX == 0 ? 1f : oldX);
+			y = (1f - MathF.Abs(oldX)) * MathF.Sign(y == 0 ? 1f : y);
+		}
+
+		var length = MathF.Sqrt(x * x + y * y + z * z);
+		return length <= 0 ? [0f, 0f, 0f] : [x / length, y / length, z / length];
 	}
 }

@@ -108,7 +108,10 @@ public sealed record CrossArmorTransferCandidateRequest(
 	IProgress<CrossArmorTransferProgress>? Progress = null,
 	bool ExpandLodFamilyMappings = true,
 	bool AutoHideUnmappedTargetUnits = true,
-	bool DirectSourceUnitReuse = false,
+	// Cross-armor production now defaults to direct source Unit reuse.  The
+	// legacy full Canonical cross-armor route remains an internal compatibility
+	// fallback only; callers should not opt into it for production output.
+	bool DirectSourceUnitReuse = true,
 	bool UseSharedHiddenUnitTemplate = true);
 
 // Purpose: Provides stage timing and bounded-work progress during cross-armor candidate generation.

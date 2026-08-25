@@ -118,6 +118,86 @@ public sealed class CanonicalMeshPreparationTests
 	}
 
 	[Fact]
+	public void Prepare_DecodesPackedNormalWhenSourceOnlyContainsUIntValue()
+	{
+		const uint packedNormal = 512u | (512u << 10);
+		var source = Mesh([
+			new UnitVertexComponentValue(1, "normal", 30, "unk_normal", 0, [], [packedNormal], [])
+		]);
+
+		var result = new CanonicalMeshPreparation().TryPrepare(
+			source,
+			Stream(4, [StreamComponent(1, 30, "unk_normal", 0, 4)]));
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(item => item.Message)));
+		var normal = Assert.Single(result.Mesh!.Vertices).Components.Single();
+		Assert.Equal(3, normal.FloatValues.Length);
+		Assert.Equal(packedNormal, Assert.Single(normal.UIntValues));
+		Assert.Equal(4, normal.RawData.Length);
+	}
+
+	[Fact]
+	public void Prepare_ReportsPackedNormalSourceContextWhenValuesAreIncomplete()
+	{
+		var source = Mesh([
+			Component(1, "normal", 30, "unk_normal", [1f])
+		]);
+
+		var result = new CanonicalMeshPreparation().TryPrepare(
+			source,
+			Stream(4, [StreamComponent(1, 30, "unk_normal", 0, 4)]));
+
+		Assert.False(result.IsValid);
+		var diagnostic = Assert.Single(result.Diagnostics);
+		Assert.Equal("PackedNormalSourceInvalid", diagnostic.Code);
+		Assert.Contains("Vertex 0", diagnostic.Message);
+		Assert.Contains("component type 1 index 0", diagnostic.Message);
+		Assert.Contains("unk_normal", diagnostic.Message);
+	}
+
+	[Fact]
+	public void Prepare_ReportsComponentContextWhenPackedNormalEncodingFails()
+	{
+		var source = Mesh([
+			Component(1, "normal", 30, "unk_normal", [float.NaN, 0f, 0f])
+		]);
+
+		var result = new CanonicalMeshPreparation().TryPrepare(
+			source,
+			Stream(4, [StreamComponent(1, 30, "unk_normal", 0, 4)]));
+
+		Assert.False(result.IsValid);
+		var diagnostic = Assert.Single(result.Diagnostics);
+		Assert.Equal("ComponentEncodingFailed", diagnostic.Code);
+		Assert.Contains("Vertex 0", diagnostic.Message);
+		Assert.Contains("target component type 1 index 0", diagnostic.Message);
+		Assert.Contains("unk_normal", diagnostic.Message);
+	}
+
+	[Fact]
+	public void Prepare_ReportsWeightAndIndexComponentContextForArityMismatch()
+	{
+		var source = Mesh([
+			new UnitVertexComponentValue(6, "bone_index", 28, "vec4_uint8", 0, [], [1, 2, 3, 4], []),
+			Component(7, "bone_weight", 31, "vec4_half", [1, 0])
+		]);
+
+		var result = new CanonicalMeshPreparation().TryPrepare(
+			source,
+			Stream(12, [
+				StreamComponent(6, 28, "vec4_uint8", 0, 4),
+				StreamComponent(7, 31, "vec4_half", 0, 8)
+			]));
+
+		Assert.False(result.IsValid);
+		var diagnostic = Assert.Single(result.Diagnostics);
+		Assert.Equal("BoneWeightIndexArityMismatch", diagnostic.Code);
+		Assert.Contains("Vertex 0", diagnostic.Message);
+		Assert.Contains("weight component type 7 index 0 format vec4_half", diagnostic.Message);
+		Assert.Contains("index component type 6 index 0 format vec4_uint8", diagnostic.Message);
+	}
+
+	[Fact]
 	public void Prepare_ReindexesOutputVerticesSequentially()
 	{
 		var components = new[] { Component(0, "position", 2, "vec3_float", [1, 2, 3]) };
@@ -130,6 +210,21 @@ public sealed class CanonicalMeshPreparationTests
 
 		Assert.True(result.IsValid);
 		Assert.Equal(new uint[] { 0, 1 }, result.Mesh!.Vertices.Select(vertex => vertex.Index));
+	}
+
+	[Fact]
+	public void Prepare_UsesSdkDefaultForMissingVertexColor()
+	{
+		var result = new CanonicalMeshPreparation().TryPrepare(
+			Mesh([Component(0, "position", 2, "vec3_float", [0, 0, 0])]),
+			Stream(16, [
+				StreamComponent(0, 2, "vec3_float", 0, 12),
+				StreamComponent(5, 4, "rgba_r8g8b8a8", 0, 4)
+			]));
+
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(diagnostic => diagnostic.Message)));
+		var color = Assert.Single(result.Mesh!.Vertices).Components.Single(component => component.Type == 5);
+		Assert.Equal(new[] { 0f, 0f, 0f, 0f }, color.FloatValues);
 	}
 
 	private static UnitRawMeshData Mesh(IReadOnlyList<UnitVertexComponentValue> components, UnitTriangleIndices? triangle = null)

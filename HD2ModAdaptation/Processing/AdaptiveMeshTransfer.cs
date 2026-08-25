@@ -17,6 +17,7 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 // - AdaptiveOutputWriter：将转换结果写成输出文件（不在本文件中调用）。
 namespace HD2ModAdaptation.Processing;
 
+[Obsolete("已过时：替换护甲生产统一使用 DirectSourceUnitReuse；保留用于兼容旧调用。")]
 public sealed class AdaptiveMeshTransfer
 {
 	// 材质模式检测器：负责判断源 patch 是内嵌材质还是分离材质。
