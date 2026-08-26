@@ -152,12 +152,13 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
 
     private async Task GenerateAsync()
     {
-        var root = ImportToLibrary
+        var importResultToLibrary = ImportToLibrary;
+        var root = importResultToLibrary
             ? Path.Combine(Path.GetTempPath(), "HD2ModManager", "MaterialPackaging", Guid.NewGuid().ToString("N"))
             : BuildDestinationDirectory();
         IsRunning = true;
         State = "正在验证 Payload 与资源图并生成材质候选…";
-        LogService.Info($"{OperationTitle}开始：Mod={SourceName}，节点={source.Id.Value:N}，输出={root}，导入库={ImportToLibrary}。");
+        LogService.Info($"{OperationTitle}开始：Mod={SourceName}，节点={source.Id.Value:N}，输出={root}，导入库={importResultToLibrary}。");
         notifications?.Show(
             RequiresCandidate
                 ? "集成材质：正在进行最终 Payload 验证并写出材质候选…"
@@ -185,13 +186,13 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
                 notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
                 return;
             }
-            if (ImportToLibrary)
+            if (importResultToLibrary)
             {
                 var importer = new ImportService(library, informationCenter: library.InformationCenter);
                 foreach (var directory in result.OutputDirectories) await importer.ImportPathAsync(directory, default);
             }
-            State = $"完成：{result.AssetCount} 个资源，{result.GraphEdgeCount} 条引用。{(ImportToLibrary ? "已导入 Mod 库。" : $"输出：{root}")}";
-            LogService.Info($"{OperationTitle}完成：Mod={SourceName}，资源={result.AssetCount}，引用={result.GraphEdgeCount}，输出={root}，导入库={ImportToLibrary}。");
+            State = $"完成：{result.AssetCount} 个资源，{result.GraphEdgeCount} 条引用。{(importResultToLibrary ? "已导入 Mod 库。" : $"输出：{root}")}";
+            LogService.Info($"{OperationTitle}完成：Mod={SourceName}，资源={result.AssetCount}，引用={result.GraphEdgeCount}，输出={root}，导入库={importResultToLibrary}。");
             notifications?.Show("材质候选生成完成。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or KeyNotFoundException)
@@ -200,7 +201,12 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
             LogService.Error($"{OperationTitle}异常：Mod={SourceName}，输出={root}，错误={exception}");
             notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
         }
-        finally { IsRunning = false; }
+        finally
+        {
+            if (importResultToLibrary)
+                TryDeleteTemporaryDirectory(root);
+            IsRunning = false;
+        }
     }
 
     private string BuildDestinationDirectory()
@@ -210,6 +216,25 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
     }
 
     private static string Sanitize(string value) => string.Concat(value.Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
+
+    private static void TryDeleteTemporaryDirectory(string directory)
+    {
+        try
+        {
+            var temporaryRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "HD2ModManager", "MaterialPackaging"));
+            var fullDirectory = Path.GetFullPath(directory);
+            var relative = Path.GetRelativePath(temporaryRoot, fullDirectory);
+            if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative)) return;
+            if (Directory.Exists(fullDirectory)) Directory.Delete(fullDirectory, recursive: true);
+            if (Directory.Exists(temporaryRoot) && !Directory.EnumerateFileSystemEntries(temporaryRoot).Any())
+                Directory.Delete(temporaryRoot, recursive: false);
+            var managerRoot = Directory.GetParent(temporaryRoot)?.FullName;
+            if (managerRoot is not null && Directory.Exists(managerRoot) && !Directory.EnumerateFileSystemEntries(managerRoot).Any())
+                Directory.Delete(managerRoot, recursive: false);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 }
 
 public sealed class MaterialPackageCandidateViewModel

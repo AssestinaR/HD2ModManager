@@ -23,15 +23,17 @@ public sealed class ImportTemporaryDirectoryManager
 		if (!IsManagedDirectory(directory)) return;
 		ClearReadOnlyAttributes(directory);
 		Directory.Delete(directory, recursive: true);
+		TryDeleteEmptyRoot();
 	}
 
 	public void CleanupStaleDirectories()
 	{
 		if (!Directory.Exists(_paths.ImportTempDirectory)) return;
-		foreach (var directory in Directory.EnumerateDirectories(_paths.ImportTempDirectory, DirectoryPrefix + "*", SearchOption.TopDirectoryOnly))
+		foreach (var directory in Directory.EnumerateDirectories(_paths.ImportTempDirectory, DirectoryPrefix + "*", SearchOption.TopDirectoryOnly).ToArray())
 		{
 			try { Delete(directory); } catch { }
 		}
+		TryDeleteEmptyRoot();
 	}
 
 	private static bool IsManagedDirectory(string directory)
@@ -46,5 +48,17 @@ public sealed class ImportTemporaryDirectoryManager
 			var attributes = File.GetAttributes(path);
 			if ((attributes & FileAttributes.ReadOnly) != 0) File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
 		}
+	}
+
+	private void TryDeleteEmptyRoot()
+	{
+		try
+		{
+			if (Directory.Exists(_paths.ImportTempDirectory)
+				&& !Directory.EnumerateFileSystemEntries(_paths.ImportTempDirectory).Any())
+				Directory.Delete(_paths.ImportTempDirectory, recursive: false);
+		}
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
 	}
 }

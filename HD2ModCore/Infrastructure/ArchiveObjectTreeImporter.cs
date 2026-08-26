@@ -38,8 +38,32 @@ public sealed class ArchiveObjectTreeImporter : IArchiveObjectTreeImporter
 		}
 		finally
 		{
-			try { Directory.Delete(extractRoot, recursive: true); } catch { }
+			TryDeleteTemporaryDirectory(extractRoot);
 		}
+	}
+
+	private static void TryDeleteTemporaryDirectory(string directory)
+	{
+		try
+		{
+			if (Directory.Exists(directory))
+				Directory.Delete(directory, recursive: true);
+
+			// The extraction root is nested below Temp/HD2ModManager/import. Remove
+			// only empty parents so concurrent imports remain unaffected.
+			var importRoot = Directory.GetParent(directory)?.FullName;
+			if (importRoot is not null
+				&& Directory.Exists(importRoot)
+				&& !Directory.EnumerateFileSystemEntries(importRoot).Any())
+				Directory.Delete(importRoot, recursive: false);
+			var managerRoot = importRoot is null ? null : Directory.GetParent(importRoot)?.FullName;
+			if (managerRoot is not null
+				&& Directory.Exists(managerRoot)
+				&& !Directory.EnumerateFileSystemEntries(managerRoot).Any())
+				Directory.Delete(managerRoot, recursive: false);
+		}
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
 	}
 
 }

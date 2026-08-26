@@ -197,6 +197,9 @@ public sealed class ModRepairBatchService : IModRepairBatchService
                 batchFailed = true;
                 Report(batchOperationId, null, OperationKind.RepairBatch, OperationStage.Finalizing, OperationState.Progress, completedModCount, sources.Length, $"批次清单写入失败：{exception.Message}", "ManifestWriteFailed", "ManifestWriteFailed");
             }
+			// Candidate directories are retained when they contain audit artifacts, but
+			// a batch that never produced a candidate must not leave empty staging roots.
+			TryDeleteEmptyStagingRoot(stagingRoot);
             var finalState = canceled ? OperationState.Canceled : batchFailed ? OperationState.Failed : OperationState.Completed;
             var finalStage = canceled ? OperationStage.Canceled : batchFailed ? OperationStage.Failed : OperationStage.Completed;
             Report(batchOperationId, null, OperationKind.RepairBatch, finalStage, finalState, completedModCount, sources.Length, canceled ? "批次已取消" : batchFailed ? "批次失败" : "批次已完成", "Finalize", batchFailed ? "BatchFailed" : null);
@@ -277,6 +280,26 @@ public sealed class ModRepairBatchService : IModRepairBatchService
     private IEnumerable<string> EnumeratePatchFiles(string directory)
         => Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
             .Where(path => fileNameParser.TryParse(Path.GetFileName(path), out _));
+
+	private static void TryDeleteEmptyStagingRoot(string stagingRoot)
+	{
+		try
+		{
+			if (!Directory.Exists(stagingRoot)
+				|| Directory.EnumerateFileSystemEntries(stagingRoot).Any())
+				return;
+			Directory.Delete(stagingRoot, recursive: false);
+
+			var batchRoot = Directory.GetParent(stagingRoot);
+			if (batchRoot is not null
+				&& string.Equals(batchRoot.Name, ".hd2mod-repair-staging", StringComparison.OrdinalIgnoreCase)
+				&& Directory.Exists(batchRoot.FullName)
+				&& !Directory.EnumerateFileSystemEntries(batchRoot.FullName).Any())
+				Directory.Delete(batchRoot.FullName, recursive: false);
+		}
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
+	}
 
     private static string DescribeIssues(IReadOnlyList<CoreIssue> issues)
         => issues.Count == 0 ? "不满足安全重构条件。" : string.Join("；", issues.Take(3).Select(issue => issue.Message));

@@ -69,6 +69,7 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 			toc.Position = payloadOffset;
 			var gpuOffsetsByPayload = new Dictionary<string, ulong>(StringComparer.Ordinal);
 			var gpuIdentitiesByReference = new Dictionary<byte[], string>(ByteArrayReferenceComparer.Instance);
+			var gpuIdentitiesByPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 			foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -84,10 +85,16 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 				var gpuOffset = 0UL;
 				if (gpuLengthForEntry != 0)
 				{
+					var pathIdentityKey = entry.GpuDataPath is null
+						? null
+						: $"{Path.GetFullPath(entry.GpuDataPath)}:{gpuLengthForEntry}";
 					var gpuIdentity = gpuData is not null && gpuIdentitiesByReference.TryGetValue(gpuData, out var cachedIdentity)
 						? cachedIdentity
-						: await GetGpuPayloadIdentityAsync(gpuData, entry.GpuDataPath, entry.GpuDataSource, gpuLengthForEntry, cancellationToken).ConfigureAwait(false);
+						: pathIdentityKey is not null && gpuIdentitiesByPath.TryGetValue(pathIdentityKey, out var cachedPathIdentity)
+							? cachedPathIdentity
+							: await GetGpuPayloadIdentityAsync(gpuData, entry.GpuDataPath, entry.GpuDataSource, gpuLengthForEntry, cancellationToken).ConfigureAwait(false);
 					if (gpuData is not null) gpuIdentitiesByReference.TryAdd(gpuData, gpuIdentity);
+					if (pathIdentityKey is not null) gpuIdentitiesByPath.TryAdd(pathIdentityKey, gpuIdentity);
 					if (!gpuOffsetsByPayload.TryGetValue(gpuIdentity, out gpuOffset))
 					{
 						gpuOffset = await WriteAlignedAsync(gpu, gpuData, entry.GpuDataPath, entry.GpuDataSource, cancellationToken).ConfigureAwait(false);

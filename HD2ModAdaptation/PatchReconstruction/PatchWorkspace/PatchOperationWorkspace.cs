@@ -15,6 +15,7 @@ public interface IPatchOperationWorkspace : IDisposable
 	string DirectoryPath { get; }
 	string ManifestPath { get; }
 	CanonicalPatchSessionEntry Stage(CanonicalPatchSessionEntry entry);
+	CanonicalPatchSessionEntry Reference(CanonicalPatchSessionEntry stagedEntry, AssetKey key);
 	PatchWorkspaceJobResult Stage(PatchWorkspaceJobResult job);
 }
 
@@ -76,15 +77,7 @@ public sealed class PatchOperationWorkspace : IPatchOperationWorkspace
 		WriteAtomically(tocPath, entry.EffectiveTocData);
 		WriteAtomically(gpuPath, entry.EffectiveGpuData);
 		WriteAtomically(streamPath, entry.EffectiveStreamData);
-		manifestEntries.RemoveAll(existing => existing.Key == entry.Key);
-		manifestEntries.Add(new PatchOperationManifestEntry(entry.Key, entry.Ownership.ToString(), Path.GetFileName(tocPath), Path.GetFileName(gpuPath), Path.GetFileName(streamPath)));
-		manifestDirty = true;
-		stagedEntriesSinceManifest++;
-		// Keep a recoverable manifest after the first output, then avoid rewriting an
-		// ever-growing JSON document for every Unit in large operations.
-		if (manifestEntries.Count == 1 || stagedEntriesSinceManifest >= ManifestFlushBatchSize)
-			FlushManifest();
-		return entry with
+		var staged = entry with
 		{
 			TocData = null,
 			GpuData = null,
@@ -93,6 +86,28 @@ public sealed class PatchOperationWorkspace : IPatchOperationWorkspace
 			GpuDataPath = gpuPath,
 			StreamDataPath = streamPath
 		};
+		RegisterManifestEntry(staged);
+		return staged;
+	}
+
+	public CanonicalPatchSessionEntry Reference(CanonicalPatchSessionEntry stagedEntry, AssetKey key)
+	{
+		ObjectDisposedException.ThrowIf(disposed, this);
+		ArgumentNullException.ThrowIfNull(stagedEntry);
+		if (key == default)
+			throw new ArgumentException("A staged payload reference requires an explicit AssetKey.", nameof(key));
+		if (stagedEntry.TocDataPath is null || stagedEntry.GpuDataPath is null || stagedEntry.StreamDataPath is null)
+			throw new InvalidOperationException("Only a fully staged payload can be referenced without copying its bytes.");
+
+		var referenced = stagedEntry with
+		{
+			Key = key,
+			TocData = null,
+			GpuData = null,
+			StreamData = null
+		};
+		RegisterManifestEntry(referenced);
+		return referenced;
 	}
 
 	public PatchWorkspaceJobResult Stage(PatchWorkspaceJobResult job)
@@ -102,13 +117,45 @@ public sealed class PatchOperationWorkspace : IPatchOperationWorkspace
 		return job with { Outputs = job.Outputs.Select(Stage).ToArray() };
 	}
 
+	private void RegisterManifestEntry(CanonicalPatchSessionEntry entry)
+	{
+		if (entry.TocDataPath is null || entry.GpuDataPath is null || entry.StreamDataPath is null)
+			throw new InvalidOperationException("A staged workspace entry must have TOC, GPU, and Stream paths.");
+
+		manifestEntries.RemoveAll(existing => existing.Key == entry.Key);
+		manifestEntries.Add(new PatchOperationManifestEntry(
+			entry.Key,
+			entry.Ownership.ToString(),
+			Path.GetFileName(entry.TocDataPath),
+			Path.GetFileName(entry.GpuDataPath),
+			Path.GetFileName(entry.StreamDataPath)));
+		manifestDirty = true;
+		stagedEntriesSinceManifest++;
+		// Keep a recoverable manifest after the first output, then avoid rewriting an
+		// ever-growing JSON document for every Unit in large operations.
+		if (manifestEntries.Count == 1 || stagedEntriesSinceManifest >= ManifestFlushBatchSize)
+			FlushManifest();
+	}
+
 	public void Dispose()
 	{
 		if (disposed) return;
 		disposed = true;
 		if (manifestDirty)
 			FlushManifest();
-		try { if (Directory.Exists(DirectoryPath)) Directory.Delete(DirectoryPath, recursive: true); }
+		try
+		{
+			if (Directory.Exists(DirectoryPath))
+				Directory.Delete(DirectoryPath, recursive: true);
+
+			// The operation directory is nested below a shared workspace root. Remove
+			// that root only when it is empty, so concurrent operations remain safe.
+			var workspaceRoot = Directory.GetParent(DirectoryPath)?.FullName;
+			if (workspaceRoot is not null
+				&& Directory.Exists(workspaceRoot)
+				&& !Directory.EnumerateFileSystemEntries(workspaceRoot).Any())
+				Directory.Delete(workspaceRoot, recursive: false);
+		}
 		catch (IOException) { }
 		catch (UnauthorizedAccessException) { }
 	}

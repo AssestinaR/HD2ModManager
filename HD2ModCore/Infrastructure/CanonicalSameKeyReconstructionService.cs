@@ -340,7 +340,6 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         var issues = plan.Issues.ToList();
         var sourceEntries = index.Entries;
         var sourcePayloadFingerprints = new UnitPayloadFingerprintCache();
-        var parsedSources = new ConcurrentDictionary<string, Lazy<Task<PatchUnitMesh>>>(StringComparer.Ordinal);
         var recipes = new Dictionary<string, SameKeyExecutionRecipe>(StringComparer.Ordinal);
         Report(progress, operationId, "BuildRecipePlan", "正在分析 Unit 复用配方", 0, plan.Units.Count);
 
@@ -371,6 +370,10 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         artifacts.Log($"[RECIPE-PLAN] Units={plan.Units.Count}; Recipes={recipes.Count}; Reused={plan.Units.Count - recipes.Count}; Singletons={recipes.Values.Count(recipe => recipe.Members.Count == 1)}");
         Report(progress, operationId, "ExecuteRecipes", "正在生成 Canonical Unit 输出", 0, recipes.Count);
 
+        // Keep completed recipe payloads on disk. The final Patch writer already
+        // supports path-backed entries, so retaining large GPU byte arrays here only
+        // increases GC pressure and keeps every previous recipe alive until the end.
+        using var operationWorkspace = operationWorkspaceFactory.Create(output, "same-key-reconstruction");
         var jobs = new List<PatchWorkspaceJobResult>(plan.Units.Count);
         var replacementUnitCount = 0;
         var minifyOnlyUnitCount = 0;
@@ -391,9 +394,12 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             PatchUnitMesh sourceUnit;
             try
             {
-                var sourceTemplate = await parsedSources.GetOrAdd(recipe.Key, _ => new Lazy<Task<PatchUnitMesh>>(
-                    () => ReadCanonicalSourceUnitAsync(sourceEntry, sourceEntries, sourceReadRequest, cancellationToken).AsTask(),
-                    LazyThreadSafetyMode.ExecutionAndPublication)).Value.ConfigureAwait(false);
+                // Each recipe is executed once, so retaining decoded source Units in
+                // a dictionary provides no reuse benefit. Read the representative
+                // directly and let its large object graph become collectible after
+                // the recipe has been staged.
+                var sourceTemplate = await ReadCanonicalSourceUnitAsync(
+                    sourceEntry, sourceEntries, sourceReadRequest, cancellationToken).ConfigureAwait(false);
                 sourceUnit = RebindSourceUnit(sourceTemplate, sourceEntry);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or OverflowException or KeyNotFoundException)
@@ -452,7 +458,10 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 foreach (var member in recipe.Members)
                 {
                     var memberKey = new AdaptationAssetKey(member.UnitAssetKey.TypeId, member.UnitAssetKey.FileId);
-                    jobs.Add(PatchWorkspaceJobResult.Unit(sharedHiddenTemplate with { Key = memberKey }, $"0x{member.UnitAssetKey.FileId:x16}"));
+                    var memberEntry = memberKey == sharedHiddenTemplate.Key
+                        ? sharedHiddenTemplate
+                        : operationWorkspace.Reference(sharedHiddenTemplate, memberKey);
+                    jobs.Add(PatchWorkspaceJobResult.Unit(memberEntry, $"0x{member.UnitAssetKey.FileId:x16}"));
                 }
                 detectedHiddenSourceRecipeCount++;
                 minifiedMeshCount += sharedHiddenMeshCount * recipe.Members.Count;
@@ -483,12 +492,6 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                     hidden = hiddenUnitBuilder.Build(targetUnit, avatarTransforms);
                 }
                 result = new SameKeyCanonicalUnitRebuildResult(PatchWorkspaceJobResult.Unit(hidden.Entry), 0, hidden.HiddenMeshCount, []);
-                if (useSharedHiddenUnitTemplate && hiddenSource.IsHidden)
-                {
-                    sharedHiddenTemplate = hidden.Entry;
-                    sharedHiddenMeshCount = hidden.HiddenMeshCount;
-					artifacts.Log($"[HIDDEN-TEMPLATE] Unit=0x{sourceEntry.AssetKey.FileId:x16}; HiddenMeshes={hidden.HiddenMeshCount}; Culling=Preserved");
-                }
             }
             else
             {
@@ -502,11 +505,23 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
                 issues.AddRange(result.Diagnostics.Select(diagnostic => Error(diagnostic.Code, $"Unit=0x{representative.UnitAssetKey.FileId:x16}; {diagnostic.Message}", source.Id)));
                 continue;
             }
-            var template = result.Job.Outputs[0];
+            // Cross the recipe boundary as file-backed payloads. This releases the
+            // generated GPU/TOC/Stream arrays from the long-lived jobs list while
+            // preserving one physical payload set for every reused member.
+            var template = operationWorkspace.Stage(result.Job).Outputs[0];
+            if (useSharedHiddenUnitTemplate && hiddenSource.IsHidden && sharedHiddenTemplate is null)
+            {
+                sharedHiddenTemplate = template;
+                sharedHiddenMeshCount = result.HiddenMeshCount;
+				artifacts.Log($"[HIDDEN-TEMPLATE] Unit=0x{sourceEntry.AssetKey.FileId:x16}; HiddenMeshes={result.HiddenMeshCount}; Culling=Preserved; Staged=True");
+            }
             foreach (var member in recipe.Members)
             {
                 var memberKey = new AdaptationAssetKey(member.UnitAssetKey.TypeId, member.UnitAssetKey.FileId);
-                jobs.Add(PatchWorkspaceJobResult.Unit(template with { Key = memberKey }, $"0x{member.UnitAssetKey.FileId:x16}"));
+                var memberEntry = memberKey == template.Key
+                    ? template
+                    : operationWorkspace.Reference(template, memberKey);
+                jobs.Add(PatchWorkspaceJobResult.Unit(memberEntry, $"0x{member.UnitAssetKey.FileId:x16}"));
             }
             replacementMeshCount += result.ReplacedMeshCount * recipe.Members.Count;
             minifiedMeshCount += result.HiddenMeshCount * recipe.Members.Count;
@@ -865,11 +880,18 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         ModInformationReadRequest request,
         CancellationToken cancellationToken)
     {
+        // The grouped executor owns the decoded source Unit only for the current
+        // recipe. Do not place this large vertex graph in the operation cache; the
+        // cache would keep every previous recipe alive until the whole rebuild ends.
+        var unitRequest = request with
+        {
+            Context = request.EffectiveContext with { CacheScope = ModInformationCacheScope.None }
+        };
         var result = await informationReader.ReadUnitAsync(
             entry,
             entries,
             PatchUnitDependencyPolicy.RequirePatchLocalComposite,
-            request,
+            unitRequest,
             canonicalSource: true,
             cancellationToken).ConfigureAwait(false);
         if (result.Data is not null) return result.Data;
