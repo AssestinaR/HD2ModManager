@@ -1204,9 +1204,21 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        public string DefaultExportPath
+        {
+            get => SettingsService.GetDefaultExportPath();
+            set
+            {
+                SettingsService.SetDefaultExportPath(value);
+                OnPropertyChanged(nameof(DefaultExportPath));
+            }
+        }
+
         public RelayCommand OpenModFolderCommand { get; }
         public RelayCommand ResetModFolderCommand { get; }
         public RelayCommand OpenGameDataFolderCommand { get; }
+        public RelayCommand OpenDefaultExportFolderCommand { get; }
+        public RelayCommand ResetDefaultExportPathCommand { get; }
         public RelayCommand DetectGameDataFolderCommand { get; }
         public RelayCommand ViewGameDataIndexCommand { get; }
         public RelayCommand RebuildAllUnitPartFactsCommand { get; }
@@ -1229,6 +1241,8 @@ namespace HD2ModManager.ViewModels
             OpenModFolderCommand = new RelayCommand(() => OpenFolder(ModLibraryFolder));
             ResetModFolderCommand = new RelayCommand(() => ModLibraryFolder = SettingsService.GetDefaultModLibraryFolder());
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
+            OpenDefaultExportFolderCommand = new RelayCommand(OpenDefaultExportFolder);
+            ResetDefaultExportPathCommand = new RelayCommand(() => DefaultExportPath = SettingsService.DefaultExportPath);
             DetectGameDataFolderCommand = new RelayCommand(DetectGameDataFolder);
             ViewGameDataIndexCommand = new RelayCommand(_ => ViewGameDataIndex(), _ => !IsLoadingGameDataIndex);
             RebuildAllUnitPartFactsCommand = new RelayCommand(_ => _ = BuildUnitPartFactsAsync(rebuildAll: true), _ => !IsBuildingAssetIndex);
@@ -1252,6 +1266,7 @@ namespace HD2ModManager.ViewModels
             AssetMetadataStatus = BuildInitialAssetMetadataStatus();
             OnPropertyChanged(nameof(ModLibraryFolder));
             OnPropertyChanged(nameof(GameDataFolder));
+            OnPropertyChanged(nameof(DefaultExportPath));
             _ = RefreshAssetIndexStatusAsync();
         }
 
@@ -1571,6 +1586,11 @@ namespace HD2ModManager.ViewModels
                 OnPropertyChanged(nameof(GameDataFolder));
             }
             OpenFolder(folder);
+        }
+
+        private void OpenDefaultExportFolder()
+        {
+            OpenFolder(SettingsService.GetResolvedDefaultExportPath());
         }
 
         private void DetectGameDataFolder()

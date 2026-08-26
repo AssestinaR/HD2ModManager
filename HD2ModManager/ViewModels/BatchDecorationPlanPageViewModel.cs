@@ -37,7 +37,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
         _backgroundTasks = backgroundTasks;
         HostModId = hostModId;
         HostName = library.Get(hostModId)?.Name ?? hostModId;
-        _outputDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Output");
+        _outputDirectory = SettingsService.GetResolvedDefaultExportPath();
         GenerateCommand = new RelayCommand(async _ => await GenerateAsync(), _ => CanGenerate);
         BrowseOutputCommand = new RelayCommand(BrowseOutput);
         Title = "批量生成装饰";

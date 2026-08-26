@@ -17,7 +17,7 @@ namespace HD2ModManager.ViewModels
         private readonly CrossArmorTransferPlanWindowViewModel _plan;
         private readonly NotificationService _notifications;
         private readonly BackgroundTaskService _backgroundTasks;
-        private string _outputDirectory = Path.Combine(AppContext.BaseDirectory, "Output");
+        private string _outputDirectory = SettingsService.GetResolvedDefaultExportPath();
         private bool _isGenerating;
         private string _state = "先在左侧确认计划；候选将写入输出目录下自动命名的子文件夹。";
 

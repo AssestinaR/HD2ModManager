@@ -45,7 +45,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
         _editingDecorationId = editingDecorationId;
         SourceModId = sourceModId;
         SourceName = library.Get(sourceModId)?.Name ?? sourceModId;
-        _outputDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Output");
+        _outputDirectory = SettingsService.GetResolvedDefaultExportPath();
         BodyVariants = ["双身形", "仅健壮", "仅纤细"];
         DualVariantModes = ["自动从来源分配", "来源全部附加到每一个身形"];
         TargetParts = ["Head", "Torso", "Hips", "LeftArm", "RightArm", "LeftLeg", "RightLeg"];

@@ -7,7 +7,7 @@ namespace HD2ModManager.ViewModels;
 public sealed class SameKeyRebuildBottomBarViewModel : BaseViewModel
 {
     private readonly Func<string, bool, Task> generate;
-    private string outputDirectory = Path.Combine(AppContext.BaseDirectory, "Output");
+    private string outputDirectory = SettingsService.GetResolvedDefaultExportPath();
     private bool importToLibrary;
     private bool isRunning;
 

@@ -15,6 +15,21 @@
                 <StackPanel>
                     <TextBlock Text="通用" Style="{StaticResource AppCardTitle}"/>
                     <CheckBox Style="{StaticResource AppToggleSwitch}" Content="导入 Mod 后自动加入活动配置并部署" IsChecked="{Binding AutoImportToActiveProfile, Mode=TwoWay}" Margin="0,12,0,0"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="默认导出路径" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}" Text="{Binding DefaultExportPath, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" ToolTip="支持相对路径和绝对路径；相对路径相对于管理器程序目录。"/>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Click="BrowseDefaultExportFolder_Click"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="打开" Command="{Binding OpenDefaultExportFolderCommand}" Margin="8,0,0,0"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="重置" Command="{Binding ResetDefaultExportPathCommand}" Margin="8,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+                    <TextBlock Text="支持相对路径和绝对路径；相对路径将按管理器程序目录解析。" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
                         <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
                         <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">

@@ -38,6 +38,16 @@ namespace HD2ModManager.Views
             }
         }
 
+        private void BrowseDefaultExportFolder_Click(object sender, System.Windows.RoutedEventArgs e)
+        {
+            if (DataContext is not SettingsPageViewModel vm) return;
+            var selected = BrowseFolder("选择默认导出目录", HD2ModManager.Services.SettingsService.GetResolvedDefaultExportPath());
+            if (!string.IsNullOrWhiteSpace(selected))
+            {
+                vm.DefaultExportPath = selected;
+            }
+        }
+
         private static string? BrowseFolder(string title, string currentPath)
         {
             var dialog = new Microsoft.Win32.OpenFolderDialog

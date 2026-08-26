@@ -1164,7 +1164,7 @@ namespace HD2ModManager.ViewModels
                 return;
             }
             var outputRoot = string.IsNullOrWhiteSpace(outputRootDirectory)
-                ? Path.Combine(AppContext.BaseDirectory, "Output")
+                ? SettingsService.GetResolvedDefaultExportPath()
                 : outputRootDirectory;
             var destination = Path.Combine(outputRoot, $"{SanitizeFileName(source.Metadata.Name)}+{DateTime.Now:yyyyMMdd-HHmmssfff}+SameKey重建");
             _sameKeyReconstructionRunning = true;

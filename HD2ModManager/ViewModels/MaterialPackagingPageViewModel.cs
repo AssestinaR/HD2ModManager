@@ -17,7 +17,7 @@ public sealed class MaterialPackagingPageViewModel : PageViewModel
     private readonly bool requireAllExternalMaterials;
     private readonly ModMaterialPackagingState? initialPackagingState;
     private readonly MaterialDeliveryFacts? initialDeliveryFacts;
-    private string outputDirectory = Path.Combine(AppContext.BaseDirectory, "Output");
+    private string outputDirectory = SettingsService.GetResolvedDefaultExportPath();
     private MaterialPackageCandidateViewModel? selectedCandidate;
     private bool importToLibrary;
     private bool onlyReferencedAssets = true;

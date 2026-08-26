@@ -30,9 +30,46 @@ namespace HD2ModManager.Services
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
+            public string? DefaultExportPath { get; set; }
         }
 
         public const string DefaultAssetMetadataRepository = "https://raw.githubusercontent.com/Boxofbiscuits97/HD2SDK-CommunityEdition/main";
+        public const string DefaultExportPath = "Output";
+
+        public static string GetDefaultExportPath()
+        {
+            try
+            {
+                var configured = LoadAll()?.DefaultExportPath;
+                return string.IsNullOrWhiteSpace(configured) ? DefaultExportPath : configured.Trim();
+            }
+            catch { return DefaultExportPath; }
+        }
+
+        public static bool SetDefaultExportPath(string? path)
+        {
+            try
+            {
+                Update(model => model.DefaultExportPath = string.IsNullOrWhiteSpace(path) ? DefaultExportPath : path.Trim());
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static string GetResolvedDefaultExportPath()
+        {
+            var configured = GetDefaultExportPath();
+            try
+            {
+                return Path.GetFullPath(Path.IsPathRooted(configured)
+                    ? configured
+                    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, configured));
+            }
+            catch
+            {
+                return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, DefaultExportPath);
+            }
+        }
 
         public static string? GetLanguage()
         {
