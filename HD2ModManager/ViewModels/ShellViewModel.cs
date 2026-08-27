@@ -583,6 +583,16 @@ namespace HD2ModManager.ViewModels
             OpenSinglePage(WorkspacePageType.BatchDecorationPlan);
         }
 
+        public void OpenPatchResourceRepackaging(string sourceModId)
+        {
+            if (string.IsNullOrWhiteSpace(sourceModId)) return;
+            DismissToolBottomBars();
+            _editingDecorationId = null;
+            ClearTransientSelection();
+            SelectedModId = sourceModId;
+            OpenSinglePage(WorkspacePageType.PatchResourceRepackaging);
+        }
+
         public void DismissMaterialPackagingBottomBar() => ClearMaterialPackagingBottomBar();
 
         public void OpenSameKeyRebuild(SameKeyRebuildBottomBarViewModel operation)
@@ -1605,6 +1615,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
+                WorkspacePageType.PatchResourceRepackaging => new PatchResourceRepackagingPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
                 WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
@@ -1678,6 +1689,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.GameDataArchiveDetails => "Archive 详情",
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
             WorkspacePageType.MaterialPackaging => "材质候选与输出",
+            WorkspacePageType.PatchResourceRepackaging => "Patch 资源重打包",
             WorkspacePageType.DecorationPlan => "生成装饰 Mod",
             WorkspacePageType.BatchDecorationPlan => "批量生成装饰",
             _ => "页面",

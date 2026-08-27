@@ -96,6 +96,7 @@ namespace HD2ModManager.ViewModels
         // Option Mods are still real patch-bearing packages. Only decorations
         // and empty logical hosts are excluded from patch tools.
         public bool CanUsePatchTools => !IsDecoration && HasPatchContent;
+        public bool CanPatchResourceRepackaging => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public bool CanRepairPatch => HasPatchContent;
         public bool CanShowDecorationPlan => !IsDecoration && HasPatchContent;
         public bool CanSplitEmbeddedMaterials => !_disposed && CanUsePatchTools
@@ -132,6 +133,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SplitEmbeddedMaterialsCommand { get; }
         public RelayCommand ReplaceEmbeddedMaterialsCommand { get; }
         public RelayCommand EmbedExternalMaterialsCommand { get; }
+        public RelayCommand PatchResourceRepackagingCommand { get; }
         public RelayCommand RebuildSameKeyCommand { get; }
 		public RelayCommand PlanCrossArmorTransferCommand { get; }
         public RelayCommand PlanDecorationCommand { get; }
@@ -169,6 +171,7 @@ namespace HD2ModManager.ViewModels
             SplitEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: true), _ => CanSplitEmbeddedMaterials);
             ReplaceEmbeddedMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: false), _ => CanReplaceEmbeddedMaterials);
             EmbedExternalMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
+            PatchResourceRepackagingCommand = new RelayCommand(_ => OpenPatchResourceRepackaging(), _ => CanPatchResourceRepackaging);
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             PlanDecorationCommand = new RelayCommand(_ => OpenDecorationPlan(), _ => CanPlanDecoration);
@@ -759,6 +762,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(HasPatchContent));
             OnPropertyChanged(nameof(CanHostAttachments));
             OnPropertyChanged(nameof(CanUsePatchTools));
+            OnPropertyChanged(nameof(CanPatchResourceRepackaging));
             OnPropertyChanged(nameof(CanShowDecorationPlan));
             OnPropertyChanged(nameof(HasHostDecorations));
             RaiseMaterialCommandStates();
@@ -1367,6 +1371,13 @@ namespace HD2ModManager.ViewModels
                 _cachedMaterialDeliveryFactsNodeId == source.Id ? _cachedMaterialDeliveryFacts : null));
         }
 
+        private void OpenPatchResourceRepackaging()
+        {
+            if (Mod is null || !CanPatchResourceRepackaging) return;
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                shell.OpenPatchResourceRepackaging(Mod.Guid);
+        }
+
         private bool TryGetCurrentNode(out ModNode node)
         {
             node = default!;
@@ -1383,6 +1394,8 @@ namespace HD2ModManager.ViewModels
         {
             OnPropertyChanged(nameof(CanSplitEmbeddedMaterials)); OnPropertyChanged(nameof(CanReplaceEmbeddedMaterials)); OnPropertyChanged(nameof(CanEmbedExternalMaterials));
             SplitEmbeddedMaterialsCommand.RaiseCanExecuteChanged(); ReplaceEmbeddedMaterialsCommand.RaiseCanExecuteChanged(); EmbedExternalMaterialsCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(CanPatchResourceRepackaging));
+            PatchResourceRepackagingCommand.RaiseCanExecuteChanged();
         }
 
         private void RaiseSameKeyReconstructionCommandState()

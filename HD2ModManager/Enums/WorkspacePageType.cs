@@ -13,6 +13,7 @@ namespace HD2ModManager.Enums
         GameDataArchiveDetails,
         CrossArmorPlan,
         MaterialPackaging,
+        PatchResourceRepackaging,
         DecorationPlan,
         BatchDecorationPlan,
     }

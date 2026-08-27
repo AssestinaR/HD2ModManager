@@ -69,6 +69,9 @@
         <DataTemplate DataType="{x:Type localVM:MaterialPackagingPageViewModel}">
             <views:MaterialPackagingPageView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:PatchResourceRepackagingPageViewModel}">
+            <views:PatchResourceRepackagingPageView/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type localVM:DecorationPlanPageViewModel}">
             <views:DecorationPlanPageView/>
         </DataTemplate>

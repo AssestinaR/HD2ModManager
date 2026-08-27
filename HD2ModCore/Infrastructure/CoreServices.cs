@@ -249,6 +249,8 @@ public static class CoreServices
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService(IModInformationCenter informationCenter)
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser(), informationCenter: informationCenter);
+	public static IPatchResourceRepackagingService CreatePatchResourceRepackagingService()
+		=> new PatchResourceRepackagingService(CreatePatchFileNameParser());
 	public static IMaterialDependencyValidator CreateMaterialDependencyValidator()
 		=> new MaterialDependencyValidator(CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
