@@ -219,7 +219,7 @@ namespace HD2ModManager.ViewModels
                 return;
             }
             IsRepairingOutdatedMods = true;
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RepairMods, "检测并修复过时 Mod", "正在更新 GameData 索引", origin: "首页维护", userVisibleReason: "先使用最新 GameData 索引检测过时 Unit；仅为确认过时的 Mod 生成候选并安全替换原始 Patch。", suggestedAction: "完成后将重新分析并重新部署活动配置。");
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.RepairMods, "检测并修复过时 Mod", "正在更新 GameData 索引", origin: "首页维护", userVisibleReason: "先使用最新 GameData 索引检测过时 Unit；仅为确认过时的 Mod 生成候选并安全替换原始 Patch。", suggestedAction: "完成后将重新分析并重新部署活动配置。", presentation: BackgroundTaskPresentation.Foreground);
             var operationId = Guid.NewGuid();
             var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, SynchronizationContext.Current ?? new SynchronizationContext());
             try
@@ -1442,7 +1442,8 @@ namespace HD2ModManager.ViewModels
                 origin: "设置与资产",
                 userVisibleReason: "用户手动请求建立或重建 Game Data 资产索引。",
                 suggestedAction: "完成后可在此页面确认索引状态，或打开资产浏览器。",
-                retry: BuildAssetIndexAsync);
+                retry: BuildAssetIndexAsync,
+                presentation: BackgroundTaskPresentation.Foreground);
             try
             {
                 task?.MarkRunning("正在准备资产索引");
@@ -1510,7 +1511,8 @@ namespace HD2ModManager.ViewModels
                 origin: "设置与资产",
                 userVisibleReason: rebuildAll ? "强制重建所有 Armor / Helmet Unit 部位事实。" : "仅补齐数据库中尚无部位事实的 Armor / Helmet Unit。",
                 suggestedAction: "完成后可重新打开替换护甲规划器。",
-                retry: () => BuildUnitPartFactsAsync(rebuildAll));
+                retry: () => BuildUnitPartFactsAsync(rebuildAll),
+                presentation: BackgroundTaskPresentation.Foreground);
             try
             {
                 task?.MarkRunning(rebuildAll ? "正在完全重算 Armor / Helmet Unit 部位" : "正在补齐缺失的 Armor / Helmet Unit 部位");
@@ -1607,7 +1609,8 @@ namespace HD2ModManager.ViewModels
                 "由设置页手动启动",
                 origin: "设置与资产",
                 userVisibleReason: "用户手动检查在线资产索引源。",
-                suggestedAction: "失败时请检查仓库地址、网络连接与访问权限。");
+                suggestedAction: "失败时请检查仓库地址、网络连接与访问权限。",
+                presentation: BackgroundTaskPresentation.Foreground);
             try
             {
                 task?.MarkRunning("正在同步资产元数据");

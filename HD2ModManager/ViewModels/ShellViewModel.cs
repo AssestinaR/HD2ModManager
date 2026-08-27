@@ -96,9 +96,14 @@ namespace HD2ModManager.ViewModels
         public ReadOnlyObservableCollection<MessageCenterItem> ActiveMessageTasks => _messageCenter.ActiveTasks;
         public ReadOnlyObservableCollection<MessageCenterItem> AttentionMessageItems => _messageCenter.AttentionItems;
         public ReadOnlyObservableCollection<MessageCenterItem> RecentMessageItems => _messageCenter.RecentNotifications;
-        public ReadOnlyObservableCollection<MessageCenterItem> PopupMessageItems => _messageCenter.PopupItems;
+        public MessageCenterItem? ActivityToastItem => _messageCenter.ActivityToastItem;
+        public MessageCenterItem? AttentionToastItem => _messageCenter.AttentionToastItem;
+        public bool HasActivityToast => _messageCenter.HasActivityToast;
+        public bool HasAttentionToast => _messageCenter.HasAttentionToast;
         public int ActiveTaskCount => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning;
-        public bool HasUnreadTaskHubEvents => false;
+        public int MessageUnreadCount => _messageCenter.SuppressedUnreadCount;
+        public bool HasUnreadTaskHubEvents => MessageUnreadCount > 0;
+        public string MessageBadgeText => MessageUnreadCount > 9 ? "9+" : MessageUnreadCount.ToString();
         public bool IsMessagePreviewOpen { get => _isMessagePreviewOpen; private set => SetField(ref _isMessagePreviewOpen, value); }
 
         public RelayCommand ShowHomeCommand { get; }
@@ -228,7 +233,13 @@ namespace HD2ModManager.ViewModels
             _notificationService.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
             _messageCenter.Changed += (_, _) => RefreshOnUiThread(() =>
             {
-                OnPropertyChanged(nameof(PopupMessageItems));
+                OnPropertyChanged(nameof(ActivityToastItem));
+                OnPropertyChanged(nameof(AttentionToastItem));
+                OnPropertyChanged(nameof(HasActivityToast));
+                OnPropertyChanged(nameof(HasAttentionToast));
+                OnPropertyChanged(nameof(MessageUnreadCount));
+                OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
+                OnPropertyChanged(nameof(MessageBadgeText));
                 ShowMessagePreview();
             });
 			_ = Task.Run(() => new ImportTemporaryDirectoryManager(SettingsService.CreateStoragePaths()).CleanupStaleDirectories());
@@ -429,7 +440,7 @@ namespace HD2ModManager.ViewModels
         {
             IsMessagePanelOpen = true;
             IsMessagePreviewOpen = false;
-            _notificationService.MarkAllRead();
+            _messageCenter.MarkAllRead();
             RefreshTaskHubState();
         }
 
@@ -443,7 +454,7 @@ namespace HD2ModManager.ViewModels
         private void ShowMessagePreview()
         {
             if (IsMessagePanelOpen) return;
-            IsMessagePreviewOpen = PopupMessageItems.Count > 0;
+            IsMessagePreviewOpen = HasActivityToast || HasAttentionToast;
         }
 
         public void OpenSinglePage(WorkspacePageType pageType)
@@ -689,7 +700,11 @@ namespace HD2ModManager.ViewModels
                 ImportTaskItem? item;
                 while ((item = _importQueue.DequeueNextQueued()) != null)
                 {
-                    var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Import, $"导入 {System.IO.Path.GetFileName(item.Path)}", item.Path);
+                    var task = _backgroundTasks.Enqueue(
+                        BackgroundTaskKind.Import,
+                        $"导入 {System.IO.Path.GetFileName(item.Path)}",
+                        item.Path,
+                        presentation: BackgroundTaskPresentation.Foreground);
                     var import = new ImportService(_libraryService, onInfo: null, onError: err => _importQueue.MarkFailed(item, err), informationCenter: _derivedState.InformationCenter);
                     try
                     {
@@ -708,7 +723,6 @@ namespace HD2ModManager.ViewModels
                         LogService.Info($"快速导入完成：来源={item.Path}，新增 Mod 数={created.Count}。导入仅写入模组库；除非后续显式加入活动配置，否则不会部署。");
                         _importQueue.MarkDone(item);
                         task.MarkCompleted();
-                        _notificationService.Show(string.Format(HD2ModManager.Resources.Strings.Notification_ImportComplete, item.Path));
                         if (created.Count > 0)
                         {
                             importedModIds.UnionWith(created);
@@ -719,14 +733,12 @@ namespace HD2ModManager.ViewModels
                     {
                         _importQueue.MarkFailed(item, "任务已取消");
                         task.MarkCanceled();
-                        _notificationService.Show($"导入已取消：{item.Path}", NotificationLevel.Info);
                     }
                     catch (Exception ex)
                     {
                         _importQueue.MarkFailed(item, ex.Message);
                         task.MarkFailed(ex.Message);
                         System.Windows.MessageBox.Show($"导入失败: {item.Path}\n{ex.Message}", "Import", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
-                        _notificationService.Show(string.Format(HD2ModManager.Resources.Strings.Notification_ImportFailed, item.Path), NotificationLevel.Error);
                     }
                 }
 
@@ -944,7 +956,12 @@ namespace HD2ModManager.ViewModels
             {
 				case ProfileDeploymentStage.WaitingForStableState:
 					if (_deploymentTask?.IsActive != true)
-						_deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.Deployment, "部署活动配置", status.Message, canCancel: false);
+						_deploymentTask = _backgroundTasks.Enqueue(
+							BackgroundTaskKind.Deployment,
+							"部署活动配置",
+							status.Message,
+							canCancel: false,
+							presentation: BackgroundTaskPresentation.Foreground);
 					_deploymentTask.MarkRunning("等待配置变更稳定");
 					UpdateDeploymentBufferProgress(status);
 					StartDeploymentBufferTimer();
@@ -952,14 +969,22 @@ namespace HD2ModManager.ViewModels
                 case ProfileDeploymentStage.Deploying:
 					StopDeploymentBufferTimer();
                     if (_deploymentTask?.IsActive != true)
-                        _deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.Deployment, "部署活动配置", status.Message);
+                        _deploymentTask = _backgroundTasks.Enqueue(
+                            BackgroundTaskKind.Deployment,
+                            "部署活动配置",
+                            status.Message,
+                            presentation: BackgroundTaskPresentation.Foreground);
                     _deploymentTask.MarkRunning(status.Message ?? "正在部署");
 					_deploymentTask.UpdateProgress(null);
                     break;
                 case ProfileDeploymentStage.Deactivating:
 					StopDeploymentBufferTimer();
                     if (_deploymentTask?.IsActive == true) _deploymentTask.Cancel();
-                    _deploymentTask = _backgroundTasks.Enqueue(BackgroundTaskKind.DeactivateProfile, "停用活动配置", status.Message);
+                    _deploymentTask = _backgroundTasks.Enqueue(
+                        BackgroundTaskKind.DeactivateProfile,
+                        "停用活动配置",
+                        status.Message,
+                        presentation: BackgroundTaskPresentation.Foreground);
                     _deploymentTask.MarkRunning(status.Message ?? "正在清理 Patch");
                     break;
                 case ProfileDeploymentStage.Completed:
@@ -979,7 +1004,10 @@ namespace HD2ModManager.ViewModels
                         var details = failedResult.Issues.Take(3).Select(issue => $"{issue.Code}: {issue.Message}");
                         failureMessage = $"{failureMessage}\n{string.Join("\n", details)}";
                     }
-                    _notificationService.Show(failureMessage, NotificationLevel.Error, TimeSpan.FromSeconds(12));
+                    // A foreground deployment task already owns the persistent error toast.
+                    // Keep this fallback only for failures reported before a task could be created.
+                    if (_deploymentTask is null)
+                        _notificationService.Show(failureMessage, NotificationLevel.Error, TimeSpan.FromSeconds(12));
                     RefreshCurrentPage();
                     break;
                 case ProfileDeploymentStage.Canceled:
@@ -1257,9 +1285,14 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveMessageTasks));
             OnPropertyChanged(nameof(AttentionMessageItems));
             OnPropertyChanged(nameof(RecentMessageItems));
-            OnPropertyChanged(nameof(PopupMessageItems));
+            OnPropertyChanged(nameof(ActivityToastItem));
+            OnPropertyChanged(nameof(AttentionToastItem));
+            OnPropertyChanged(nameof(HasActivityToast));
+            OnPropertyChanged(nameof(HasAttentionToast));
             OnPropertyChanged(nameof(ActiveTaskCount));
+            OnPropertyChanged(nameof(MessageUnreadCount));
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
+            OnPropertyChanged(nameof(MessageBadgeText));
             CancelTaskCommand.RaiseCanExecuteChanged();
             RetryTaskCommand.RaiseCanExecuteChanged();
             AcknowledgeMessageCommand.RaiseCanExecuteChanged();

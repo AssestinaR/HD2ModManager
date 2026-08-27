@@ -32,14 +32,16 @@ namespace HD2ModManager.Services
         public string Title => _task?.Name ?? _notification?.Message ?? string.Empty;
         public string Detail => _task is null
             ? BuildNotificationDetail(_notification!)
-            : string.IsNullOrWhiteSpace(_task.Stage) ? _task.StatusText : $"{_task.StatusText} · {_task.Stage}";
+            : string.IsNullOrWhiteSpace(_task.Stage) || string.Equals(_task.Stage, _task.StatusText, StringComparison.Ordinal)
+                ? _task.StatusText
+                : $"{_task.StatusText} · {_task.Stage}";
         public NotificationLevel Level => _notification?.Level ?? _task?.Status switch
         {
             BackgroundTaskStatus.Failed => NotificationLevel.Error,
             _ => NotificationLevel.Info,
         };
         public bool IsTask => _task is not null;
-        public bool IsUnread => _notification?.IsUnread == true;
+        public bool IsUnread => _notification?.IsUnread == true || _task?.IsUnread == true;
         public bool CanCancel => _task?.CanCancel == true;
         public bool CanRetry => _task?.CanRetry == true;
         public bool HasProgress => _task?.HasProgress == true;
@@ -88,17 +90,27 @@ namespace HD2ModManager.Services
         private readonly ObservableCollection<MessageCenterItem> _activeTasks = new();
         private readonly ObservableCollection<MessageCenterItem> _attentionItems = new();
         private readonly ObservableCollection<MessageCenterItem> _recentNotifications = new();
-        private readonly ObservableCollection<MessageCenterItem> _popupItems = new();
         private readonly Dispatcher? _dispatcher;
+        private readonly DispatcherTimer? _transientToastTimer;
+        private MessageCenterItem? _activityToastItem;
+        private MessageCenterItem? _attentionToastItem;
         private int _refreshQueued;
 
         public ReadOnlyObservableCollection<MessageCenterItem> ActiveTasks { get; }
         public ReadOnlyObservableCollection<MessageCenterItem> AttentionItems { get; }
         public ReadOnlyObservableCollection<MessageCenterItem> RecentNotifications { get; }
-        public ReadOnlyObservableCollection<MessageCenterItem> PopupItems { get; }
+        public MessageCenterItem? ActivityToastItem => _activityToastItem;
+        public MessageCenterItem? AttentionToastItem => _attentionToastItem;
+        public bool HasActivityToast => _activityToastItem is not null;
+        public bool HasAttentionToast => _attentionToastItem is not null;
         public int RunningTaskCount => _activeTasks.Count;
-        public int AttentionCount => _attentionItems.Count(item => item.IsUnread || item.IsTask);
-        public int RecentUnreadCount => _recentNotifications.Count(item => item.IsUnread);
+        public int AttentionCount => _tasks.Tasks.Count(task => task.Status == BackgroundTaskStatus.Failed && !task.IsAcknowledged && !task.IsInformationCenter)
+            + _notifications.History.Count(item => item.Level is NotificationLevel.Warning or NotificationLevel.Error && !item.IsAcknowledged);
+        public int RecentUnreadCount => _tasks.Tasks.Count(task => !task.IsActive && task.IsUnread && !task.IsInformationCenter)
+            + _notifications.History.Count(item => item.IsUnread);
+        public int UnreadCount => _tasks.Tasks.Count(task => !task.IsActive && task.IsUnread && !task.IsInformationCenter)
+            + _notifications.History.Count(item => item.IsUnread);
+        public int SuppressedUnreadCount => Math.Max(0, UnreadCount - (_attentionToastItem?.IsUnread == true ? 1 : 0));
         public event EventHandler? Changed;
 
         public MessageCenterService(NotificationService notifications, BackgroundTaskService tasks)
@@ -109,9 +121,17 @@ namespace HD2ModManager.Services
             ActiveTasks = new ReadOnlyObservableCollection<MessageCenterItem>(_activeTasks);
             AttentionItems = new ReadOnlyObservableCollection<MessageCenterItem>(_attentionItems);
             RecentNotifications = new ReadOnlyObservableCollection<MessageCenterItem>(_recentNotifications);
-            PopupItems = new ReadOnlyObservableCollection<MessageCenterItem>(_popupItems);
             _notifications.Changed += (_, _) => Refresh();
             _tasks.Changed += (_, args) => { if (args.RequiresProjectionRefresh) Refresh(); };
+            if (_dispatcher is not null)
+            {
+                _transientToastTimer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher);
+                _transientToastTimer.Tick += (_, _) =>
+                {
+                    _transientToastTimer.Stop();
+                    Refresh();
+                };
+            }
             Refresh();
         }
 
@@ -153,27 +173,24 @@ namespace HD2ModManager.Services
                 .Take(80)
                 );
 
-            // The popup is intentionally independent from the history preview. Important
-            // messages stay visible together until acknowledgement; transient info follows
-            // NotificationService.Items and therefore keeps its own expiry.
-            Replace(_popupItems, _tasks.Tasks
-                .Where(task => task.Status == BackgroundTaskStatus.Failed && !task.IsAcknowledged && !task.IsInformationCenter)
-                .Select(task => new MessageCenterItem(task))
-                .Concat(_notifications.History
-                    .Where(item => item.Level is NotificationLevel.Warning or NotificationLevel.Error && !item.IsAcknowledged)
-                    .Select(item => new MessageCenterItem(item)))
-                .OrderByDescending(item => item.OccurredAt)
-                .Concat(_tasks.Tasks
-                    .Where(task => task.IsActive && !task.IsFocusDismissed && !task.IsInformationCenter)
-                    .OrderByDescending(task => task.StartedAt ?? task.CreatedAt)
-                    .Select(task => new MessageCenterItem(task)))
-                .Concat(_notifications.Items
-                    .Where(item => item.Level == NotificationLevel.Info && !item.IsAcknowledged)
-                    .OrderByDescending(item => item.UpdatedAt)
-                    .Select(item => new MessageCenterItem(item)))
-                .GroupBy(item => item.Task?.Id ?? item.Notification?.Id ?? string.Empty)
-                .Select(group => group.First()));
+            var now = DateTime.UtcNow;
+            var activityTask = _tasks.Tasks
+                .Where(task => task.IsActive && task.IsForeground && !task.IsInformationCenter && !task.IsFocusDismissed)
+                .OrderByDescending(task => task.StartedAt ?? task.CreatedAt)
+                .FirstOrDefault();
+            SetToastTask(ref _activityToastItem, activityTask);
+
+            var attention = SelectAttentionToast(now);
+            SetToast(ref _attentionToastItem, attention);
+            ScheduleTransientToastRefresh(now);
             Changed?.Invoke(this, EventArgs.Empty);
+        }
+
+        public void MarkAllRead()
+        {
+            _notifications.MarkAllRead();
+            foreach (var task in _tasks.Tasks.Where(task => !task.IsActive && !task.IsInformationCenter)) task.MarkRead();
+            Refresh();
         }
 
         public void MarkAttentionViewed()
@@ -191,6 +208,91 @@ namespace HD2ModManager.Services
             if (item.Notification is { } notification) _notifications.Acknowledge(notification);
             else if (item.Task is { IsActive: true } task) task.DismissFromFocus();
             else item.Task?.Acknowledge();
+        }
+
+        private MessageCenterItem? SelectAttentionToast(DateTime now)
+        {
+            var persistent = _tasks.Tasks
+                .Where(task => task.Status == BackgroundTaskStatus.Failed && !task.IsAcknowledged && !task.IsInformationCenter)
+                .Select(task => ToastSource.ForTask(task, priority: 3))
+                .Concat(_notifications.History
+                    .Where(item => item.Level is NotificationLevel.Warning or NotificationLevel.Error && !item.IsAcknowledged)
+                    .Select(item => ToastSource.ForNotification(item, item.Level == NotificationLevel.Error ? 3 : 2)))
+                .OrderByDescending(source => source.Priority)
+                .ThenByDescending(source => source.OccurredAt)
+                .FirstOrDefault();
+            if (persistent is not null) return persistent.ToItem();
+
+            var terminal = _tasks.Tasks
+                .Where(task => task.IsForeground && task.Status == BackgroundTaskStatus.Completed && task.IsUnread && !task.IsInformationCenter)
+                .Where(task => task.FinishedAt is { } finished && now - finished <= TimeSpan.FromSeconds(4))
+                .OrderByDescending(task => task.FinishedAt)
+                .FirstOrDefault();
+            if (terminal is not null) return new MessageCenterItem(terminal);
+
+            var info = _notifications.Items
+                .Where(item => item.Level == NotificationLevel.Info && item.IsUnread && !item.IsAcknowledged && now - item.UpdatedAt <= TimeSpan.FromSeconds(4))
+                .OrderByDescending(item => item.UpdatedAt)
+                .FirstOrDefault();
+            return info is null ? null : new MessageCenterItem(info);
+        }
+
+        private void ScheduleTransientToastRefresh(DateTime now)
+        {
+            if (_transientToastTimer is null) return;
+            var expires = _tasks.Tasks
+                .Where(task => task.IsForeground && task.Status == BackgroundTaskStatus.Completed && task.IsUnread && task.FinishedAt is not null)
+                .Select(task => task.FinishedAt!.Value + TimeSpan.FromSeconds(4))
+                .Concat(_notifications.Items
+                    .Where(item => item.Level == NotificationLevel.Info && item.IsUnread && !item.IsAcknowledged)
+                    .Select(item => item.UpdatedAt + TimeSpan.FromSeconds(4)))
+                .Where(expiry => expiry > now)
+                .OrderBy(expiry => expiry)
+                .FirstOrDefault();
+            if (expires == default)
+            {
+                _transientToastTimer.Stop();
+                return;
+            }
+
+            _transientToastTimer.Stop();
+            _transientToastTimer.Interval = expires - now < TimeSpan.FromMilliseconds(100)
+                ? TimeSpan.FromMilliseconds(100)
+                : expires - now;
+            _transientToastTimer.Start();
+        }
+
+        private static void SetToastTask(ref MessageCenterItem? destination, BackgroundTaskItem? task)
+        {
+            if (ReferenceEquals(destination?.Task, task)) return;
+            destination?.Dispose();
+            destination = task is null ? null : new MessageCenterItem(task);
+        }
+
+        private static void SetToast(ref MessageCenterItem? destination, MessageCenterItem? next)
+        {
+            var isSameTask = ReferenceEquals(destination?.Task, next?.Task);
+            var isSameNotification = ReferenceEquals(destination?.Notification, next?.Notification);
+            if (isSameTask || isSameNotification)
+            {
+                next?.Dispose();
+                return;
+            }
+
+            destination?.Dispose();
+            destination = next;
+        }
+
+        private sealed record ToastSource(BackgroundTaskItem? Task, NotificationItem? Notification, int Priority, DateTime OccurredAt)
+        {
+            public static ToastSource ForTask(BackgroundTaskItem task, int priority)
+                => new(task, null, priority, task.FinishedAt ?? task.StartedAt ?? task.CreatedAt);
+
+            public static ToastSource ForNotification(NotificationItem notification, int priority)
+                => new(null, notification, priority, notification.UpdatedAt);
+
+            public MessageCenterItem ToItem()
+                => Task is not null ? new MessageCenterItem(Task) : new MessageCenterItem(Notification!);
         }
 
         private static void Replace(ObservableCollection<MessageCenterItem> destination, IEnumerable<MessageCenterItem> source)

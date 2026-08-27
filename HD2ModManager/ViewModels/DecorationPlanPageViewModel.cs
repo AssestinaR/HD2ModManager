@@ -260,7 +260,12 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
             }
         };
         var displayName = IsEditing ? SourceName : $"{SourceName} - 装饰";
-        var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "生成装饰 Mod", displayName, "装饰生成");
+        var task = _backgroundTasks?.Enqueue(
+            BackgroundTaskKind.Other,
+            "生成装饰 Mod",
+            displayName,
+            "装饰生成",
+            presentation: BackgroundTaskPresentation.Foreground);
         task?.MarkRunning("正在准备来源模型");
         var progress = task is null ? null : new Progress<DecorationOperationProgress>(item =>
         {
@@ -276,7 +281,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 plan.SourceUnits = sourceUnits;
                 await _library.UpdateDecorationPlanAsync(_editingDecorationId!, plan);
                 State = "装饰 Mod 已保存；已重建启用它的主体。";
-                _notifications.Show("装饰 Mod 已保存。");
+                if (task is null) _notifications.Show("装饰 Mod 已保存。");
                 task?.MarkCompleted();
                 return;
             }
@@ -287,7 +292,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 var outputDirectory = Path.Combine(OutputDirectory, SanitizeFileName(displayName));
                 if (!string.IsNullOrWhiteSpace(libraryDirectory)) CopyDecorationFiles(libraryDirectory, outputDirectory);
                 State = "装饰计划已导入模组库。";
-                _notifications.Show($"已生成装饰 Mod：{created.Name}");
+                if (task is null) _notifications.Show($"已生成装饰 Mod：{created.Name}");
                 task?.MarkCompleted();
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenModDetails(created.Guid);
                 return;
@@ -304,14 +309,14 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
                 .CaptureAsync(source, _library.ModsRootDirectory, sourceUnits, path, _preparedSourceEntries, default, progress);
             await File.WriteAllTextAsync(Path.Combine(path, "decoration.json"), JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
             State = $"计划已写出：{path}";
-            _notifications.Show("装饰计划已写入输出目录。");
+            if (task is null) _notifications.Show("装饰计划已写入输出目录。");
             task?.MarkCompleted();
         }
         catch (Exception exception)
         {
             State = $"生成失败：{exception.Message}";
             LogService.Error($"装饰 Mod 生成失败：来源={SourceModId}，错误={exception}");
-            _notifications.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+            if (task is null) _notifications.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(10));
             task?.MarkFailed(exception.Message);
         }
     }

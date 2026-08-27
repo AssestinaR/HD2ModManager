@@ -1180,7 +1180,14 @@ namespace HD2ModManager.ViewModels
             var operationId = Guid.NewGuid();
             try
             {
-                task = _backgroundTasks?.Enqueue(BackgroundTaskKind.RepairMods, "重建 Same-key Mod", "单项修复", "Mod 详情", "重建并验证当前版本 Unit。", canCancel: false);
+                task = _backgroundTasks?.Enqueue(
+                    BackgroundTaskKind.RepairMods,
+                    "重建 Same-key Mod",
+                    "单项修复",
+                    "Mod 详情",
+                    "重建并验证当前版本 Unit。",
+                    canCancel: false,
+                    presentation: BackgroundTaskPresentation.Foreground);
                 task?.MarkRunning("正在生成同 ID Canonical 重建计划");
                 await using var resourceMonitor = ResourceUsageMonitor.Start(operationId, "Same-key重建");
                 var uiContext = SynchronizationContext.Current

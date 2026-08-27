@@ -237,10 +237,15 @@
 
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button x:Name="MessageNavigationButton" Style="{StaticResource TopNavButton}" Command="{Binding ToggleMessagePanelCommand}" Margin="0,8,6,8" Padding="12,0">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <Path Width="15" Height="15" Margin="0,0,6,0" Data="M3,4 L13,4 L13,14 L3,14 Z M5,7 L11,7 M5,10 L9,10" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-                        <TextBlock Text="消息" VerticalAlignment="Center"/>
-                    </StackPanel>
+                    <Grid>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Width="15" Height="15" Margin="0,0,6,0" Data="M3,4 L13,4 L13,14 L3,14 Z M5,7 L11,7 M5,10 L9,10" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                            <TextBlock Text="消息" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-5,-8,0" MinWidth="14" Height="14" Padding="3,0" CornerRadius="7" Background="#D94B56" Visibility="{Binding HasUnreadTaskHubEvents, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding MessageBadgeText}" Foreground="White" FontWeight="SemiBold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
                     <Button.ToolTip>
                         <TextBlock Text="查看任务状态与最近消息"/>
                     </Button.ToolTip>
@@ -320,15 +325,19 @@
                 </Grid>
             </Border>
 
-                <Border x:Name="MessagePreviewPanel" Style="{StaticResource AppElevatedPanel}" HorizontalAlignment="Right" VerticalAlignment="Top" Width="440" MaxHeight="540" Margin="10,8,18,18"
-                    Padding="8" Panel.ZIndex="19" Cursor="Hand"
-                    Visibility="Collapsed" RenderTransformOrigin="0.5,0"
-                    MouseLeftButtonUp="OnMessagePreviewClick">
-                <Border.RenderTransform><TranslateTransform Y="0"/></Border.RenderTransform>
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <ItemsControl ItemsSource="{Binding PopupMessageItems}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
-                </ScrollViewer>
-            </Border>
+            <!-- This panel is already hosted below the 48px title bar (Grid.Row=1).
+                 Keep only a small local gap instead of applying a second title-bar offset. -->
+            <StackPanel x:Name="MessagePreviewPanel" HorizontalAlignment="Right" VerticalAlignment="Top" Width="420" Margin="0,4,18,0"
+                        Panel.ZIndex="19" Cursor="Hand" Visibility="Collapsed" RenderTransformOrigin="0.5,0"
+                        MouseLeftButtonUp="OnMessagePreviewClick">
+                <StackPanel.RenderTransform><TranslateTransform Y="0"/></StackPanel.RenderTransform>
+                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Margin="0,0,0,6" Visibility="{Binding HasActivityToast, Converter={StaticResource BoolToVis}}">
+                    <ContentControl Content="{Binding ActivityToastItem}" ContentTemplate="{StaticResource MessageItemTemplate}"/>
+                </Border>
+                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Visibility="{Binding HasAttentionToast, Converter={StaticResource BoolToVis}}">
+                    <ContentControl Content="{Binding AttentionToastItem}" ContentTemplate="{StaticResource MessageItemTemplate}"/>
+                </Border>
+            </StackPanel>
         </Grid>
     </Grid>
 </Window>

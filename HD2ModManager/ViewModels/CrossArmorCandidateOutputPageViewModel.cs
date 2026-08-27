@@ -70,7 +70,8 @@ namespace HD2ModManager.ViewModels
                 origin: "跨护甲工作区",
                 userVisibleReason: "重建目标 Unit 并写出隔离验证候选。",
                 suggestedAction: "完成后按输出目录中的报告验收。",
-                canCancel: true);
+                canCancel: true,
+                presentation: BackgroundTaskPresentation.Foreground);
             var uiContext = SynchronizationContext.Current
                 ?? (Application.Current?.Dispatcher is { } dispatcher
                     ? new DispatcherSynchronizationContext(dispatcher)

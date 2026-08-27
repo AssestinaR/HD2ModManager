@@ -173,7 +173,12 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
         if (plans.Length == 0) return;
         _isGenerating = true;
         OnPlanChanged();
-        var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "批量生成装饰", $"{plans.Length} 个来源 Mod", "装饰生成");
+        var task = _backgroundTasks?.Enqueue(
+            BackgroundTaskKind.Other,
+            "批量生成装饰",
+            $"{plans.Length} 个来源 Mod",
+            "装饰生成",
+            presentation: BackgroundTaskPresentation.Foreground);
         task?.MarkRunning("正在准备生成计划");
         try
         {
@@ -222,14 +227,14 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
                 State = $"已生成 {generated}/{plans.Length}：{item.Name}";
             }
             State = $"已完成：为“{HostName}”生成 {generated} 个装饰 Mod。";
-            _notifications.Show(State);
+            if (task is null) _notifications.Show(State);
             task?.MarkCompleted();
         }
         catch (Exception exception)
         {
             State = $"批量生成失败：{exception.Message}";
             LogService.Error($"批量生成装饰失败：主体={HostModId}，异常={exception}");
-            _notifications.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(10));
+            if (task is null) _notifications.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(10));
             task?.MarkFailed(exception.Message);
         }
         finally

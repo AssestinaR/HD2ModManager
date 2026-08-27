@@ -355,7 +355,12 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
             : Path.Combine(OutputDirectory, $"Patch资源重打包+{DateTime.Now:yyyyMMdd-HHmmssfff}");
         IsGenerating = true;
         State = "正在写出选中的 Patch 资源…";
-        var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "Patch 资源重打包", "多 Mod AssetKey 资源选择", "Patch 工具");
+        var task = _backgroundTasks?.Enqueue(
+            BackgroundTaskKind.Other,
+            "Patch 资源重打包",
+            "多 Mod AssetKey 资源选择",
+            "Patch 工具",
+            presentation: BackgroundTaskPresentation.Foreground);
         task?.MarkRunning("正在复制资源并重建 Patch 索引");
         try
         {
@@ -372,7 +377,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
                 State = $"Patch 资源重打包完成：{output}";
             }
             task?.MarkCompleted();
-            _notifications?.Show(State, NotificationLevel.Info, TimeSpan.FromSeconds(10));
+            if (task is null) _notifications?.Show(State, NotificationLevel.Info, TimeSpan.FromSeconds(10));
         }
         catch (OperationCanceledException)
         {
@@ -384,7 +389,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
             task?.MarkFailed(exception.Message);
             State = $"Patch 资源重打包失败：{exception.Message}";
             LogService.Error($"Patch 资源重打包失败：{exception}");
-            _notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
+            if (task is null) _notifications?.Show(State, NotificationLevel.Error, TimeSpan.FromSeconds(12));
         }
         finally
         {

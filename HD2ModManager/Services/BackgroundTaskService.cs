@@ -28,6 +28,14 @@ namespace HD2ModManager.Services
         Canceled,
     }
 
+    // Purpose: Separates background bookkeeping from work the user explicitly
+    // started and is likely waiting for at the top status bar.
+    public enum BackgroundTaskPresentation
+    {
+        Background,
+        Foreground,
+    }
+
     public enum BackgroundTaskKind
     {
         Import,
@@ -52,6 +60,7 @@ namespace HD2ModManager.Services
         private string? _outputDirectory;
         private string? _reportPath;
         private bool _isAcknowledged;
+        private bool _isUnread;
         private bool _isFocusDismissed;
         private int _attentionViewCount;
         private readonly CancellationTokenSource _cancellation = new();
@@ -90,6 +99,7 @@ namespace HD2ModManager.Services
         public bool HasOutputDirectory => !string.IsNullOrWhiteSpace(OutputDirectory);
         public bool HasReport => !string.IsNullOrWhiteSpace(ReportPath);
         public bool IsAcknowledged { get => _isAcknowledged; private set => SetField(ref _isAcknowledged, value); }
+        public bool IsUnread { get => _isUnread; private set => SetField(ref _isUnread, value); }
         public bool IsFocusDismissed { get => _isFocusDismissed; private set => SetField(ref _isFocusDismissed, value); }
         public int AttentionViewCount { get => _attentionViewCount; private set => SetField(ref _attentionViewCount, value); }
         public bool IsActive => Status is BackgroundTaskStatus.Queued or BackgroundTaskStatus.Running;
@@ -97,6 +107,8 @@ namespace HD2ModManager.Services
         public bool CanCancel => _canCancel && !IsInformationCenter && IsActive;
         public bool CanRetry => !IsInformationCenter && Retry is not null && !IsActive;
         public bool IsInformationCenter { get; }
+        public BackgroundTaskPresentation Presentation { get; }
+        public bool IsForeground => Presentation == BackgroundTaskPresentation.Foreground;
         public Func<Task>? Retry { get; }
         public string StatusText => Status switch
         {
@@ -130,7 +142,8 @@ namespace HD2ModManager.Services
             string? userVisibleReason = null,
             string? suggestedAction = null,
             Func<Task>? retry = null,
-            bool canCancel = true)
+            bool canCancel = true,
+            BackgroundTaskPresentation presentation = BackgroundTaskPresentation.Background)
         {
             Kind = kind;
             Name = name;
@@ -140,6 +153,7 @@ namespace HD2ModManager.Services
             SuggestedAction = suggestedAction;
             Retry = retry;
             IsInformationCenter = kind == BackgroundTaskKind.InformationCenter;
+            Presentation = presentation;
             _canCancel = canCancel;
             _status = BackgroundTaskStatus.Queued;
         }
@@ -148,6 +162,7 @@ namespace HD2ModManager.Services
         {
             if (!IsActive) return;
             IsAcknowledged = false;
+            IsUnread = false;
             IsFocusDismissed = false;
             AttentionViewCount = 0;
             Status = BackgroundTaskStatus.Running;
@@ -196,6 +211,7 @@ namespace HD2ModManager.Services
             FinishedAt = DateTime.UtcNow;
             Progress = 1d;
             Stage = "已完成";
+            IsUnread = IsForeground;
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
@@ -206,6 +222,7 @@ namespace HD2ModManager.Services
         {
             if (!IsActive) return;
             IsAcknowledged = false;
+            IsUnread = true;
             IsFocusDismissed = false;
             AttentionViewCount = 0;
             Status = BackgroundTaskStatus.Failed;
@@ -224,6 +241,7 @@ namespace HD2ModManager.Services
             Status = BackgroundTaskStatus.Canceled;
             FinishedAt = DateTime.UtcNow;
             Stage = "已取消";
+            IsUnread = IsForeground;
             OnPropertyChanged(nameof(IsActive));
             OnPropertyChanged(nameof(StatusText));
             OnPropertyChanged(nameof(CanCancel));
@@ -248,6 +266,13 @@ namespace HD2ModManager.Services
         {
             if (Status != BackgroundTaskStatus.Failed || IsAcknowledged) return;
             IsAcknowledged = true;
+            IsUnread = false;
+        }
+
+        public void MarkRead()
+        {
+            if (IsActive || !IsUnread) return;
+            IsUnread = false;
         }
 
         public void DismissFromFocus()
@@ -298,9 +323,10 @@ namespace HD2ModManager.Services
             string? userVisibleReason = null,
             string? suggestedAction = null,
             Func<Task>? retry = null,
-            bool canCancel = true)
+            bool canCancel = true,
+            BackgroundTaskPresentation presentation = BackgroundTaskPresentation.Background)
         {
-            var task = new BackgroundTaskItem(kind, name, detail, origin, userVisibleReason, suggestedAction, retry, canCancel);
+            var task = new BackgroundTaskItem(kind, name, detail, origin, userVisibleReason, suggestedAction, retry, canCancel, presentation);
             RunOnUi(() => _tasks.Add(task));
             task.PropertyChanged += OnTaskPropertyChanged;
             return task;
@@ -360,6 +386,7 @@ namespace HD2ModManager.Services
                 or nameof(BackgroundTaskItem.CanCancel)
                 or nameof(BackgroundTaskItem.CanRetry)
                 or nameof(BackgroundTaskItem.IsAcknowledged)
+                or nameof(BackgroundTaskItem.IsUnread)
                 or nameof(BackgroundTaskItem.IsFocusDismissed)
                 or nameof(BackgroundTaskItem.HasReport)
                 or nameof(BackgroundTaskItem.HasOutputDirectory);
