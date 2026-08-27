@@ -36,6 +36,30 @@ public sealed class UnitVertexFormatTests
 		Assert.Equal(new[] { 0f, 0f, 960f / 1023f, 0f }, vertexUv.FloatValues);
 	}
 
+	[Fact]
+	public void Read_10800436Format29_UsesLegacyFamilyProfile()
+	{
+		var model = ReadFixture(10800436u, [0x00, 0x00, 0x00, 0x3c]);
+		var uv = Assert.Single(Assert.Single(model.Streams).Components, component => component.Type == 4);
+
+		Assert.Equal("vec2_half", uv.FormatName);
+		Assert.Equal(4u, uv.Size);
+		Assert.Equal(UnitStreamAbiResolutionPath.ExactVersionProfile, model.StreamAbiResolution.Path);
+		Assert.Equal(UnitStreamAbiProfileKind.LegacyPre10800438, model.StreamAbiResolution.Profile);
+	}
+
+	[Fact]
+	public void Read_UnknownVersionWithLegacyFingerprint_UsesFallbackProfile()
+	{
+		var model = ReadFixture(10990001u, [0x00, 0x00, 0x00, 0x3c]);
+		var uv = Assert.Single(Assert.Single(model.Streams).Components, component => component.Type == 4);
+
+		Assert.Equal("vec2_half", uv.FormatName);
+		Assert.True(model.StreamAbiResolution.UsedFallback);
+		Assert.Equal(UnitStreamAbiProfileKind.LegacyPre10800438, model.StreamAbiResolution.Profile);
+		Assert.Contains(model.StreamAbiResolution.Evidence, value => value.Contains("结构指纹唯一命中", StringComparison.Ordinal));
+	}
+
 	private static UnitMeshModel ReadFixture(uint version, byte[] uvBytes)
 	{
 		const int streamInfoOffset = 0x80;

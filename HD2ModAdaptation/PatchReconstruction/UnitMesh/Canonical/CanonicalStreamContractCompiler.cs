@@ -42,14 +42,14 @@ public sealed class CanonicalStreamContractCompiler
 			}
 			var needs32Bit = rawMeshes.Any(raw => raw.Vertices.Count > ushort.MaxValue
 				|| raw.Sections.SelectMany(section => section.Triangles).Any(triangle => triangle.A > ushort.MaxValue || triangle.B > ushort.MaxValue || triangle.C > ushort.MaxValue));
-			streams.Add(BuildContract(target.Version, stream, rawMeshes, needs32Bit));
+			streams.Add(BuildContract(target, stream, rawMeshes, needs32Bit));
 		}
 		return diagnostics.Count == 0
 			? new(streams, Array.Empty<CanonicalPlanDiagnostic>())
 			: new([], Array.AsReadOnly(diagnostics.ToArray()));
 	}
 
-	private static UnitStreamInfo BuildContract(uint unitVersion, UnitStreamInfo template, IReadOnlyList<UnitRawMeshData> meshes, bool needs32Bit)
+	private static UnitStreamInfo BuildContract(UnitMeshModel target, UnitStreamInfo template, IReadOnlyList<UnitRawMeshData> meshes, bool needs32Bit)
 	{
 		var allComponents = meshes.SelectMany(mesh => mesh.Vertices).SelectMany(vertex => vertex.Components).ToArray();
 		// Appending geometry must not silently reinterpret an existing Unit's vertex bytes.
@@ -62,7 +62,7 @@ public sealed class CanonicalStreamContractCompiler
 
 		// The fallback mirrors the SDK writer's new-stream profile. In particular its
 		// SetupRawMeshComponents writes UVs as vec2_float (Format 1), not vec2_half.
-		var formats = unitVersion == 10800437
+		var formats = UnitStreamAbiProfiles.GetCanonicalWriterProfile(target) == UnitStreamAbiProfileKind.LegacyPre10800438
 			? new SdkFormatProfile(4, 2, 26, 1, 24, 31)
 			: new SdkFormatProfile(4, 2, 30, 1, 28, 35);
 		var uvIndices = allComponents.Where(component => component.Type == 4).Select(component => component.Index).ToArray();

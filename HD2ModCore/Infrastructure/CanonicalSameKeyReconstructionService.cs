@@ -437,6 +437,8 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
             }
             var sourceCapability = CanonicalUnitCapabilityDetector.Analyze(sourceUnit.Model);
             var targetCapability = CanonicalUnitCapabilityDetector.Analyze(targetUnit.Model);
+			LogUnitAbiResolution(artifacts, "Source", representative.UnitAssetKey.FileId, sourceUnit.Model);
+			LogUnitAbiResolution(artifacts, "Target", representative.UnitAssetKey.FileId, targetUnit.Model);
             artifacts.Log($"[UNIT-CAPABILITY] Unit=0x{representative.UnitAssetKey.FileId:x16}; SourceLayout={sourceCapability.Layout}; TargetLayout={targetCapability.Layout}; SourceRoute={sourceCapability.PreferredRoute}; TargetRoute={targetCapability.PreferredRoute}; SourceSkinning={sourceCapability.HasSkinning}; TargetSkinning={targetCapability.HasSkinning}; PlayerEquipment={targetCapability.IsLikelyPlayerEquipment}; Reason={targetCapability.Reason}");
             if (!sourceCapability.CanCanonicalRebuild || !targetCapability.CanCanonicalRebuild)
             {
@@ -911,6 +913,20 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     private static HD2ModCore.Domain.PatchTocEntry ToCoreEntry(HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry) => new(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.SourceFilePath, entry.SourceFileName, entry.TocDataOffset, entry.StreamOffset, entry.GpuResourceOffset, entry.Unknown1, entry.Unknown2, entry.TocDataSize, entry.StreamSize, entry.GpuResourceSize, entry.Unknown3, entry.Unknown4, entry.EntryIndex);
     private static CoreIssue Error(string code, string message, ModNodeId nodeId) => new(CoreIssueSeverity.Error, code, message, NodeId: nodeId);
     private static SameKeyReconstructionOperationResult Failure(IReadOnlyList<CoreIssue> issues) => new(false, null, null, null, 0, 0, 0, 0, 0, issues);
+
+	private static void LogUnitAbiResolution(CanonicalDiagnosticArtifacts artifacts, string side, ulong unitAssetKey, UnitMeshModel model)
+	{
+		var resolution = model.StreamAbiResolution;
+		var tag = resolution.UsedFallback
+			? "ABI-FALLBACK"
+			: resolution.IsResolved
+				? "ABI-PROFILE"
+				: "ABI-UNRESOLVED";
+		var evidence = resolution.Evidence.Count == 0
+			? "(无额外证据)"
+			: string.Join(" | ", resolution.Evidence);
+		artifacts.Log($"[{tag}] Side={side}; Unit=0x{unitAssetKey:x16}; Version={model.Version}; Route={resolution.Describe()}; Evidence={evidence}");
+	}
 
     private static void Report(IProgress<OperationProgressEvent>? progress, Guid? operationId, string stageId, string message, long completed, long total)
     {

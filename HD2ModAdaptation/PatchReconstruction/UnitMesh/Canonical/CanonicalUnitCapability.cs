@@ -59,7 +59,9 @@ public static class CanonicalUnitCapabilityDetector
 		var unsupported = model.Streams
 			.SelectMany(stream => stream.Components)
 			.Any(component => !IsSupportedComponent(component));
-		var hasSupportedAbi = !unsupported
+		var abiResolved = model.StreamAbiResolution.IsResolved;
+		var hasSupportedAbi = abiResolved
+			&& !unsupported
 			&& model.Streams.All(stream => stream.VertexStride != 0 && stream.IndexBufferType is 0 or 1);
 		var likelyPlayerEquipment = IsLikelyPlayerEquipment(model);
 		var requiresAvatar = likelyPlayerEquipment && hasSkinning;
@@ -68,6 +70,9 @@ public static class CanonicalUnitCapabilityDetector
 			return Build(layout, CanonicalUnitRoute.OpaquePassThrough, model, hasRenderable, hasSkinning, hasSupportedAbi, likelyPlayerEquipment, false, renderableCount, "Unit 没有可写 MeshInfo，保留为不透明资源。");
 		if (layout == CanonicalUnitLayoutKind.CompositeBacked)
 			return Build(layout, CanonicalUnitRoute.DirectReuse, model, hasRenderable, hasSkinning, hasSupportedAbi, likelyPlayerEquipment, requiresAvatar, renderableCount, "Composite-backed Unit 暂使用依赖闭包复用，等待 Composite Canonical 编译器。");
+		if (!abiResolved)
+			return Build(layout, CanonicalUnitRoute.OpaquePassThrough, model, hasRenderable, hasSkinning, false, likelyPlayerEquipment, requiresAvatar, renderableCount,
+				$"Unit Stream ABI 无法由已知版本或结构指纹唯一解析：{string.Join("; ", model.StreamAbiResolution.Evidence)}");
 		if (!hasSupportedAbi)
 			return Build(layout, CanonicalUnitRoute.OpaquePassThrough, model, hasRenderable, hasSkinning, false, likelyPlayerEquipment, requiresAvatar, renderableCount, "Unit Stream ABI 含当前 Canonical 尚未覆盖的组件格式。");
 		if (model.Meshes.Count == 0 || model.RawMeshData.Count != model.Meshes.Count || model.Streams.Count == 0)

@@ -71,9 +71,11 @@ public sealed class UnitMeshReader
 		}
 
 		var isCompositeBacked = streamInfoOffset == UnsupportedOffset;
-		var streams = streamInfoOffset == UnsupportedOffset
-			? Array.Empty<UnitStreamInfo>()
+		var streamRead = streamInfoOffset == UnsupportedOffset
+			? UnitStreamReadResult.Empty(version)
 			: ReadStreams(tocData, streamInfoOffset, version);
+		var streams = streamRead.Streams;
+		var streamAbiResolution = streamRead.Resolution;
 		var customizationInfo = customizationInfoOffset == UnsupportedOffset
 			? UnitCustomizationInfo.Empty
 			: ReadCustomizationInfo(tocData, customizationInfoOffset);
@@ -86,6 +88,7 @@ public sealed class UnitMeshReader
 		{
 			var composite = ReadComposite(compositeTocData, nameHash);
 			streams = composite.Streams;
+			streamAbiResolution = composite.StreamAbiResolution;
 			meshes = ApplyCompositeMeshInfo(meshes, composite.Meshes);
 			effectiveGpuData = compositeGpuData.IsEmpty ? gpuData : compositeGpuData;
 		}
@@ -119,6 +122,7 @@ public sealed class UnitMeshReader
 			rawMeshes,
 			rawMeshData)
 		{
+			StreamAbiResolution = streamAbiResolution,
 			UnreversedLodGroupListDataOffset = unreversedLodGroupListDataOffset,
 			UnreversedLodGroupListData = unreversedLodGroupListData,
 			TransformInfoOffset = transformInfoOffset,
@@ -301,6 +305,7 @@ public sealed class UnitMeshReader
 
 	private sealed record CompositeUnitMeshInfo(
 		IReadOnlyList<UnitStreamInfo> Streams,
+		UnitStreamAbiResolution StreamAbiResolution,
 		IReadOnlyDictionary<uint, CompositeMeshInfoItem> Meshes);
 
 	private static CompositeUnitMeshInfo ReadComposite(ReadOnlySpan<byte> data, ulong unitNameHash)
@@ -331,11 +336,11 @@ public sealed class UnitMeshReader
 			throw new InvalidDataException("Composite Unit payload does not contain the requested Unit name hash.");
 		}
 
-		var streams = streamInfoOffset == UnsupportedOffset
-			? Array.Empty<UnitStreamInfo>()
-			: ReadStreams(data, streamInfoOffset);
+		var streamRead = streamInfoOffset == UnsupportedOffset
+			? UnitStreamReadResult.Empty(0)
+			: ReadStreams(data, streamInfoOffset, 0);
 		var meshes = ReadCompositeUnitMeshes(data, meshInfoOffsets[unitIndex]);
-		return new CompositeUnitMeshInfo(streams, meshes);
+		return new CompositeUnitMeshInfo(streamRead.Streams, streamRead.Resolution, meshes);
 	}
 
 	private static IReadOnlyDictionary<uint, CompositeMeshInfoItem> ReadCompositeUnitMeshes(ReadOnlySpan<byte> data, uint offset)
@@ -446,7 +451,72 @@ public sealed class UnitMeshReader
 		return result;
 	}
 
-	private static IReadOnlyList<UnitStreamInfo> ReadStreams(ReadOnlySpan<byte> data, uint streamInfoOffset, uint unitVersion = 0)
+	private sealed record UnitStreamReadResult(
+		IReadOnlyList<UnitStreamInfo> Streams,
+		UnitStreamAbiResolution Resolution)
+	{
+		public static UnitStreamReadResult Empty(uint unitVersion)
+			=> new(Array.Empty<UnitStreamInfo>(), new UnitStreamAbiResolution(
+				UnitStreamAbiResolutionPath.ExactVersionProfile,
+				UnitStreamAbiProfileKind.Current10800438,
+				unitVersion,
+				["Unit 不包含可解析的 StreamInfo。"]));
+	}
+
+	private sealed record RawUnitStreamInfo(
+		int Index,
+		uint Offset,
+		ulong ComponentInfoId,
+		ulong NumComponents,
+		ulong VertexBufferId,
+		uint NumVertices,
+		uint VertexStride,
+		ulong IndexBufferId,
+		uint NumIndices,
+		uint IndexBufferType,
+		uint VertexBufferOffset,
+		uint VertexBufferSize,
+		uint IndexBufferOffset,
+		uint IndexBufferSize,
+		IReadOnlyList<UnitStreamAbiRawComponent> Components)
+	{
+		public UnitStreamInfo Resolve(UnitStreamAbiResolution resolution)
+		{
+			var components = Components.Select(component =>
+			{
+				var format = UnitStreamAbiProfiles.GetFormat(resolution, component.Format);
+				return new UnitStreamComponentInfo(
+					component.Type,
+					GetComponentTypeName(component.Type),
+					component.Format,
+					format.Name,
+					component.Index,
+					component.Unknown,
+					format.Size);
+			}).ToArray();
+			return new UnitStreamInfo(
+				Index,
+				Offset,
+				ComponentInfoId,
+				NumComponents,
+				VertexBufferId,
+				NumVertices,
+				VertexStride,
+				IndexBufferId,
+				NumIndices,
+				IndexBufferType,
+				VertexBufferOffset,
+				VertexBufferSize,
+				IndexBufferOffset,
+				IndexBufferSize,
+				components);
+		}
+
+		public UnitStreamAbiRawStream ToAbiStream()
+			=> new(Index, VertexStride, Components);
+	}
+
+	private static UnitStreamReadResult ReadStreams(ReadOnlySpan<byte> data, uint streamInfoOffset, uint unitVersion)
 	{
 		EnsureRange(data, streamInfoOffset, 4, "stream info count");
 		var count = checked((int)ReadUInt32(data, streamInfoOffset));
@@ -459,17 +529,17 @@ public sealed class UnitMeshReader
 			offsets[i] = ReadUInt32(data, tableOffset + i * 4);
 		}
 
-		var result = new List<UnitStreamInfo>(count);
+		var rawStreams = new List<RawUnitStreamInfo>(count);
 		for (var i = 0; i < count; i++)
 		{
 			var absoluteOffset = checked(streamInfoOffset + offsets[i]);
-			result.Add(ReadStream(data, i, absoluteOffset, unitVersion));
+			rawStreams.Add(ReadStream(data, i, absoluteOffset));
 		}
-
-		return result;
+		var resolution = UnitStreamAbiProfiles.Resolve(unitVersion, rawStreams.Select(stream => stream.ToAbiStream()).ToArray());
+		return new UnitStreamReadResult(rawStreams.Select(stream => stream.Resolve(resolution)).ToArray(), resolution);
 	}
 
-	private static UnitStreamInfo ReadStream(ReadOnlySpan<byte> data, int index, uint absoluteOffset, uint unitVersion)
+	private static RawUnitStreamInfo ReadStream(ReadOnlySpan<byte> data, int index, uint absoluteOffset)
 	{
 		EnsureRange(data, absoluteOffset, 8 + StreamInfoComponentBlockSize + 88 + 16, $"stream info {index}");
 		var componentInfoId = ReadUInt64(data, absoluteOffset);
@@ -494,7 +564,7 @@ public sealed class UnitMeshReader
 
 		var componentCount = checked((int)numComponents);
 		EnsureRange(data, componentOffset, checked(componentCount * 20), $"stream info {index} components");
-		var components = new List<UnitStreamComponentInfo>(componentCount);
+		var components = new List<UnitStreamAbiRawComponent>(componentCount);
 		for (var i = 0; i < componentCount; i++)
 		{
 			var c = componentOffset + i * 20;
@@ -502,17 +572,10 @@ public sealed class UnitMeshReader
 			var format = ReadUInt32(data, c + 4);
 			var componentIndex = ReadUInt32(data, c + 8);
 			var unknown = ReadUInt64(data, c + 12);
-			components.Add(new UnitStreamComponentInfo(
-				type,
-				GetComponentTypeName(type),
-				format,
-				GetComponentFormatName(format, unitVersion),
-				componentIndex,
-				unknown,
-				GetComponentFormatSize(format, unitVersion)));
+			components.Add(new UnitStreamAbiRawComponent(type, format, componentIndex, unknown));
 		}
 
-		return new UnitStreamInfo(
+		return new RawUnitStreamInfo(
 			index,
 			absoluteOffset,
 			componentInfoId,
@@ -1077,126 +1140,6 @@ public sealed class UnitMeshReader
 		6 => "bone_index",
 		7 => "bone_weight",
 		_ => "unknown"
-	};
-
-	private static string GetComponentFormatName(uint format, uint unitVersion) => unitVersion == 10800433
-		? format switch
-		{
-			24 => "vec4_uint8",
-			// Preserve the existing legacy compatibility mapping for format 25.
-			25 => "vec4_1010102",
-			26 => "unk_normal",
-			// Unit version 10800433 uses the legacy component numbering where
-			// format 29 is vec2_half. It is not the current format-29 packed
-			// vec4_1010102 used by the standard table.
-			29 => "vec2_half",
-			31 => "vec4_half",
-			_ => GetComponentFormatNameStandard(format)
-		}
-		: unitVersion == 10800437
-		? format switch
-		{
-			0 => "float",
-			1 => "vec2_float",
-			2 => "vec3_float",
-			3 => "vec4_float",
-			4 => "rgba_r8g8b8a8",
-			20 => "vec4_uint32",
-			24 => "vec4_uint8",
-			25 => "vec4_1010102",
-			26 => "unk_normal",
-			29 => "vec2_half",
-			31 => "vec4_half",
-			_ => GetComponentFormatNameStandard(format)
-		}
-		: format switch
-	{
-		0 => "float",
-		1 => "vec2_float",
-		2 => "vec3_float",
-		3 => "vec4_float",
-		4 => "rgba_r8g8b8a8",
-		24 => "vec4_uint32",
-		28 => "vec4_uint8",
-		29 => "vec4_1010102",
-		30 => "unk_normal",
-		33 => "vec2_half",
-		35 => "vec4_half",
-		_ => GetComponentFormatNameStandard(format)
-	};
-
-	private static string GetComponentFormatNameStandard(uint format) => format switch
-	{
-		0 => "float",
-		1 => "vec2_float",
-		2 => "vec3_float",
-		3 => "vec4_float",
-		4 => "rgba_r8g8b8a8",
-		24 => "vec4_uint32",
-		28 => "vec4_uint8",
-		29 => "vec4_1010102",
-		30 => "unk_normal",
-		33 => "vec2_half",
-		35 => "vec4_half",
-		_ => "unknown"
-	};
-
-	private static uint GetComponentFormatSize(uint format, uint unitVersion) => unitVersion == 10800433
-		? format switch
-		{
-			24 => 4u,
-			25 => 4u,
-			26 => 4u,
-			29 => 4u,
-			31 => 8u,
-			_ => GetComponentFormatSizeStandard(format)
-		}
-		: unitVersion == 10800437
-		? format switch
-		{
-			0 => 4u,
-			1 => 8u,
-			2 => 12u,
-			3 => 16u,
-			4 => 4u,
-			20 => 16u,
-			24 => 4u,
-			25 => 4u,
-			26 => 4u,
-			29 => 4u,
-			31 => 8u,
-			_ => GetComponentFormatSizeStandard(format)
-		}
-		: format switch
-	{
-		0 => 4u,
-		1 => 8u,
-		2 => 12u,
-		3 => 16u,
-		4 => 4u,
-		24 => 16u,
-		28 => 4u,
-		29 => 4u,
-		30 => 4u,
-		33 => 4u,
-		35 => 8u,
-		_ => GetComponentFormatSizeStandard(format)
-	};
-
-	private static uint GetComponentFormatSizeStandard(uint format) => format switch
-	{
-		0 => 4u,
-		1 => 8u,
-		2 => 12u,
-		3 => 16u,
-		4 => 4u,
-		24 => 16u,
-		28 => 4u,
-		29 => 4u,
-		30 => 4u,
-		33 => 4u,
-		35 => 8u,
-		_ => 0u
 	};
 
 	private static float[] DecodeTenBitUnsigned(uint value)

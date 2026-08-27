@@ -48,6 +48,25 @@ public sealed class CanonicalUnitCapabilityTests
 		Assert.True(capability.CanBeRetained);
 	}
 
+	[Fact]
+	public void Analyze_RoutesStructurallyAmbiguousAbiToOpaqueRetention()
+	{
+		var model = Model(compositeRef: 0, streamInfoOffset: 128, semanticName: "npc_body") with
+		{
+			StreamAbiResolution = new UnitStreamAbiResolution(
+				UnitStreamAbiResolutionPath.Unresolved,
+				UnitStreamAbiProfileKind.Unknown,
+				10990002,
+				["结构指纹存在歧义。"])
+		};
+
+		var capability = CanonicalUnitCapabilityDetector.Analyze(model);
+
+		Assert.Equal(CanonicalUnitRoute.OpaquePassThrough, capability.PreferredRoute);
+		Assert.False(capability.HasSupportedStreamAbi);
+		Assert.Contains("结构指纹", capability.Reason, StringComparison.Ordinal);
+	}
+
 	private static UnitMeshModel Model(ulong compositeRef, uint streamInfoOffset, string semanticName)
 	{
 		var mesh = new UnitMeshInfo(

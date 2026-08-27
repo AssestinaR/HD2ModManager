@@ -21,6 +21,9 @@ public sealed record UnitMeshModel(
 	IReadOnlyList<UnitRawMeshSummary> RawMeshes,
 	IReadOnlyList<UnitRawMeshData> RawMeshData)
 {
+	// Parsed Units carry the ABI route used to decode their stream component
+	// table. Hand-built test models can leave this at the synthetic default.
+	public UnitStreamAbiResolution StreamAbiResolution { get; init; } = UnitStreamAbiResolution.Synthetic;
 	public uint UnreversedLodGroupListDataOffset { get; init; }
 	public byte[] UnreversedLodGroupListData { get; init; } = Array.Empty<byte>();
 	public uint TransformInfoOffset { get; init; }
