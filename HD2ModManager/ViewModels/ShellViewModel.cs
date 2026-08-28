@@ -594,6 +594,15 @@ namespace HD2ModManager.ViewModels
             OpenSinglePage(WorkspacePageType.BatchDecorationPlan);
         }
 
+        public void OpenHelmetToArmorMergePlan(string sourceModId)
+        {
+            if (string.IsNullOrWhiteSpace(sourceModId)) return;
+            DismissToolBottomBars();
+            ClearTransientSelection();
+            SelectedModId = sourceModId;
+            OpenSinglePage(WorkspacePageType.HelmetToArmorMergePlan);
+        }
+
         public void OpenPatchResourceRepackaging(string sourceModId)
         {
             if (string.IsNullOrWhiteSpace(sourceModId)) return;
@@ -1651,6 +1660,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.PatchResourceRepackaging => new PatchResourceRepackagingPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
                 WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
+                WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
@@ -1725,6 +1735,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.PatchResourceRepackaging => "Patch 资源重打包",
             WorkspacePageType.DecorationPlan => "生成装饰 Mod",
             WorkspacePageType.BatchDecorationPlan => "批量生成装饰",
+            WorkspacePageType.HelmetToArmorMergePlan => "头盔合并到盔甲并输出",
             _ => "页面",
         };
 

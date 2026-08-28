@@ -21,6 +21,7 @@ namespace HD2ModManager.Services;
 public sealed class DecorationAttachmentService
 {
     private const string MarkerName = ".hd2-decoration-overwrite";
+    private const string HelmetMergeMarkerName = ".hd2-helmet-to-armor-overwrite";
     private readonly IEquipmentUnitCatalogService _catalog;
     private readonly IModInformationReader _informationReader;
 
@@ -584,7 +585,11 @@ public sealed class DecorationAttachmentService
         string? backup = null;
         if (Directory.Exists(directory))
         {
-            if (!File.Exists(Path.Combine(directory, MarkerName)))
+            // Helmet merge and decoration are two managed layers over the same
+            // Overwrite directory. The library coordinator composes them, so a
+            // helmet-generated directory is also safe for decoration replacement.
+            if (!File.Exists(Path.Combine(directory, MarkerName))
+                && !File.Exists(Path.Combine(directory, HelmetMergeMarkerName)))
                 throw new InvalidOperationException("主体 Mod 的 Overwrite 目录不是管理器生成，已拒绝覆盖。");
             backup = directory + ".backup-" + Guid.NewGuid().ToString("N");
             Directory.Move(directory, backup);

@@ -53,6 +53,9 @@ namespace HD2ModManager.Services
         private readonly DecorationActivationStore _decorationActivations;
         private readonly OptionActivationStore _optionActivations;
         private readonly DecorationAttachmentService _decorationAttachments;
+        private readonly IHelmetToArmorMergeService _helmetToArmorMerge;
+        private const string HelmetOverwriteMarkerName = ".hd2-helmet-to-armor-overwrite";
+        private const string DecorationOverwriteMarkerName = ".hd2-decoration-overwrite";
         private BackgroundTaskService? _backgroundTasks;
         private readonly object _decorationScheduleSync = new();
         private readonly Dictionary<string, HashSet<string>> _pendingDecorationActivations = new(StringComparer.OrdinalIgnoreCase);
@@ -66,7 +69,9 @@ namespace HD2ModManager.Services
         public string ModsRootDirectory => _paths.ModsDirectory;
         public HD2ModCore.Application.IModInformationCenter InformationCenter => _informationCenter;
 		public HD2ModCore.Application.IModInformationReader InformationReader => _informationReader;
-		public HD2ModCore.Application.IModEquipmentSourceFactsReader EquipmentSourceFactsReader => _equipmentSourceFactsReader;
+        public HD2ModCore.Application.IModEquipmentSourceFactsReader EquipmentSourceFactsReader => _equipmentSourceFactsReader;
+        public IHelmetToArmorMergeService HelmetToArmorMergeService => _helmetToArmorMerge;
+        public bool IsHelmetToArmorMerged(string guid) => Get(guid)?.IsHelmetToArmorMerged == true;
         public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
         public event EventHandler? OptionActivationChanged;
@@ -262,7 +267,8 @@ namespace HD2ModManager.Services
             _manager = CoreServices.CreateModLibraryManager(_paths);
             _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 			_informationReader = informationReader ?? CoreServices.CreateModInformationReader();
-			_equipmentSourceFactsReader = CoreServices.CreateModEquipmentSourceFactsReader(_paths, _informationCenter, _informationReader);
+            _equipmentSourceFactsReader = CoreServices.CreateModEquipmentSourceFactsReader(_paths, _informationCenter, _informationReader);
+            _helmetToArmorMerge = CoreServices.CreateHelmetToArmorMergeService(_paths, _informationCenter, _informationReader);
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
@@ -887,8 +893,8 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
-        // Generated decoration Overwrite files are derived artifacts. After a source Patch
-        // repair they must be recreated from the repaired host and repaired snapshots.
+        // Generated Overwrite files are derived artifacts. After a source Patch repair they
+        // must be recreated from the repaired host, active decorations, and helmet-merge state.
         public async Task<int> RebuildAllActiveDecorationOverwritesAsync(CancellationToken cancellationToken = default)
         {
             await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
@@ -897,6 +903,9 @@ namespace HD2ModManager.Services
             {
                 var hosts = All().Where(mod => mod.IsDecoration)
                     .SelectMany(decoration => _decorationActivations.GetEnabledHosts(decoration.Guid))
+                    .Concat(All()
+                        .Where(mod => mod.IsHelmetToArmorMerged)
+                        .Select(mod => mod.Guid))
                     .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
                 if (hosts.Length == 0) return 0;
                 var rebuilt = await RebuildDecorationOverwritesAsync(hosts, null, cancellationToken).ConfigureAwait(false);
@@ -1137,24 +1146,348 @@ namespace HD2ModManager.Services
                 var hostId = hosts[hostIndex];
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!TryParseNodeId(hostId, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var host)) continue;
-                var enabled = new List<(ModEntity Mod, DecorationPlanDocument Plan)>();
-                foreach (var decoration in All().Where(mod => mod.IsDecoration && IsDecorationEnabledForHost(mod.Guid, hostId, activationOverrides)))
-                {
-                    var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
-                    if (!File.Exists(path)) continue;
-                    var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), new JsonSerializerOptions(JsonSerializerDefaults.Web));
-                    if (plan is not null) enabled.Add((decoration, plan));
-                }
                 var hostProgress = new Progress<DecorationOperationProgress>(item =>
                 {
                     LogService.Info($"装饰合并进度：主体={host.Id.Value:N}，阶段={item.Stage}，进度={item.Completed}/{item.Total}");
                     progress?.Report(item);
                 });
-                await _decorationAttachments.RebuildHostAsync(host, enabled, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken, hostProgress).ConfigureAwait(false);
+                var enabled = await ReadEnabledDecorationsAsync(hostId, activationOverrides, cancellationToken).ConfigureAwait(false);
+                var rebuildResult = await RebuildHostOverwriteAsync(host, enabled, host.Metadata.HelmetToArmorMerged, cancellationToken, hostProgress).ConfigureAwait(false);
+
+				// A helmet merge result is nullable only when the host did not request that
+				// derived layer. If it was requested, a failed result must abort the activation
+				// transaction instead of silently saving a decoration-only state.
+				if (rebuildResult is not null) EnsureHelmetMergeResult(rebuildResult);
 				await InvalidateContentNodeAsync(host.Id, cancellationToken).ConfigureAwait(false);
                 changedHosts.Add(host.Id);
             }
             return changedHosts;
+        }
+
+        // The decoration and helmet features share one managed Overwrite directory. This
+        // coordinator always rebuilds the complete effective result from the original source
+        // plus the currently enabled decorations, then applies helmet merging as a second
+        // deterministic layer when the Mod flag is enabled.
+        private async Task<HelmetToArmorMergeResult?> RebuildHostOverwriteAsync(
+            ModNode host,
+            IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)> enabledDecorations,
+            bool helmetMerged,
+            CancellationToken cancellationToken,
+            IProgress<DecorationOperationProgress>? decorationProgress = null,
+            HelmetToArmorMergeInspection? preparedHelmetInspection = null)
+        {
+            var gameData = SettingsService.GetGameDataFolder();
+            var overwrite = Path.Combine(_paths.ModsDirectory, host.RelativePath, "Overwrite");
+            if (!helmetMerged)
+            {
+                if (enabledDecorations.Count != 0)
+                {
+                    await _decorationAttachments.RebuildHostAsync(
+                        host,
+                        enabledDecorations,
+                        _paths.ModsDirectory,
+                        gameData,
+                        cancellationToken,
+                        decorationProgress).ConfigureAwait(false);
+                }
+                else
+                {
+                    RemoveManagedOverwrite(overwrite);
+                }
+                return null;
+            }
+
+            var inspection = preparedHelmetInspection ?? await _helmetToArmorMerge.InspectAsync(
+                host,
+                _paths.ModsDirectory,
+                gameData,
+                cancellationToken).ConfigureAwait(false);
+            if (inspection.Candidates.Count == 0)
+            {
+                return new HelmetToArmorMergeResult(
+                    false,
+                    overwrite,
+                    0,
+                    0,
+                    0,
+                    inspection.Issues.Count == 0
+                        ? [new CoreIssue(CoreIssueSeverity.Error, "HelmetArmorPairMissing", "当前 Mod 没有可合并的 Armor/Helmet 模型集合。", host.RelativePath, host.Id)]
+                        : inspection.Issues);
+            }
+
+            if (enabledDecorations.Count != 0)
+            {
+                await _decorationAttachments.RebuildHostAsync(
+                    host,
+                    enabledDecorations,
+                    _paths.ModsDirectory,
+                    gameData,
+                    cancellationToken,
+                    decorationProgress).ConfigureAwait(false);
+                return await ApplyHelmetMergeToGeneratedOverwriteAsync(
+                    host,
+                    overwrite,
+                    inspection.Candidates,
+                    gameData,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            return await BuildHelmetOverwriteFromSourceAsync(
+                host,
+                overwrite,
+                inspection.Candidates,
+                gameData,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<HelmetToArmorMergeResult> BuildHelmetOverwriteFromSourceAsync(
+            ModNode host,
+            string overwrite,
+            IReadOnlyCollection<HelmetToArmorMergeCandidate> candidates,
+            string gameData,
+            CancellationToken cancellationToken)
+        {
+            var source = Path.Combine(_paths.ModsDirectory, host.RelativePath);
+            var backup = PrepareManagedOverwrite(overwrite);
+            try
+            {
+                var result = await _helmetToArmorMerge.ExecuteAsync(
+                    host,
+                    source,
+                    overwrite,
+                    gameData,
+                    candidates,
+                    cancellationToken).ConfigureAwait(false);
+                EnsureHelmetMergeResult(result);
+                await File.WriteAllTextAsync(Path.Combine(overwrite, HelmetOverwriteMarkerName), "generated", cancellationToken).ConfigureAwait(false);
+                if (backup is not null) DeleteDirectoryIfExists(backup);
+                return result;
+            }
+            catch
+            {
+                RestoreManagedOverwrite(overwrite, backup);
+                throw;
+            }
+        }
+
+        private async Task<HelmetToArmorMergeResult> ApplyHelmetMergeToGeneratedOverwriteAsync(
+            ModNode host,
+            string overwrite,
+            IReadOnlyCollection<HelmetToArmorMergeCandidate> candidates,
+            string gameData,
+            CancellationToken cancellationToken)
+        {
+            var temporary = overwrite + ".helmet-merge-" + Guid.NewGuid().ToString("N");
+            var effectiveSource = CreateEffectiveHelmetMergeSource(host, overwrite, cancellationToken);
+            DeleteDirectoryIfExists(temporary);
+            try
+            {
+                var result = await _helmetToArmorMerge.ExecuteAsync(
+                    host,
+                    effectiveSource,
+                    temporary,
+                    gameData,
+                    candidates,
+                    cancellationToken).ConfigureAwait(false);
+                EnsureHelmetMergeResult(result);
+                await File.WriteAllTextAsync(Path.Combine(temporary, HelmetOverwriteMarkerName), "generated", cancellationToken).ConfigureAwait(false);
+                await File.WriteAllTextAsync(Path.Combine(temporary, DecorationOverwriteMarkerName), "generated", cancellationToken).ConfigureAwait(false);
+
+                var backup = PrepareManagedOverwrite(overwrite);
+                try
+                {
+                    Directory.Move(temporary, overwrite);
+                    if (backup is not null) DeleteDirectoryIfExists(backup);
+                }
+                catch
+                {
+                    RestoreManagedOverwrite(overwrite, backup);
+                    throw;
+                }
+                return result;
+            }
+            finally
+            {
+                DeleteDirectoryIfExists(temporary);
+                DeleteDirectoryIfExists(effectiveSource);
+            }
+        }
+
+        // DecorationAttachmentService intentionally writes only Patch groups that it changed.
+        // Helmet merging, however, must be able to see every original Patch group because an
+        // untouched group may still contain a matched Armor/Helmet pair. Build a short-lived
+        // effective source by copying the original Patch families first and then overlaying the
+        // generated decoration Patch families. Only this staging directory is complete; the
+        // final Overwrite still contains only actually changed Patch groups.
+        private string CreateEffectiveHelmetMergeSource(
+            ModNode host,
+            string decorationOverwrite,
+            CancellationToken cancellationToken)
+        {
+            var sourceDirectory = Path.Combine(_paths.ModsDirectory, host.RelativePath);
+            var staging = Path.Combine(
+                Path.GetTempPath(),
+                "HD2ModManager-HelmetMerge-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(staging);
+            try
+            {
+                CopyPatchFamilies(sourceDirectory, staging, cancellationToken);
+                CopyPatchFamilies(decorationOverwrite, staging, cancellationToken);
+                return staging;
+            }
+            catch
+            {
+                DeleteDirectoryIfExists(staging);
+                throw;
+            }
+        }
+
+        private static void CopyPatchFamilies(
+            string sourceDirectory,
+            string destinationDirectory,
+            CancellationToken cancellationToken)
+        {
+            if (!Directory.Exists(sourceDirectory)) return;
+            var parser = CoreServices.CreatePatchFileNameParser();
+            foreach (var path in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!parser.TryParse(Path.GetFileName(path), out var info)
+                    || info?.SidecarKind != PatchSidecarKind.Base)
+                    continue;
+
+                CopyFile(path, destinationDirectory);
+                CopyOptionalSidecar(path + ".stream", destinationDirectory);
+                CopyOptionalSidecar(path + ".gpu_resources", destinationDirectory);
+            }
+        }
+
+        private static void CopyOptionalSidecar(string path, string destinationDirectory)
+        {
+            if (File.Exists(path)) CopyFile(path, destinationDirectory);
+        }
+
+        private static void CopyFile(string sourcePath, string destinationDirectory)
+        {
+            Directory.CreateDirectory(destinationDirectory);
+            File.Copy(sourcePath, Path.Combine(destinationDirectory, Path.GetFileName(sourcePath)), overwrite: true);
+        }
+
+        private async Task<IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)>> ReadEnabledDecorationsAsync(
+            string hostId,
+            IReadOnlyDictionary<string, HashSet<string>>? activationOverrides,
+            CancellationToken cancellationToken)
+        {
+            var enabled = new List<(ModEntity Mod, DecorationPlanDocument Plan)>();
+            foreach (var decoration in All().Where(mod => mod.IsDecoration && IsDecorationEnabledForHost(mod.Guid, hostId, activationOverrides)))
+            {
+                var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
+                if (!File.Exists(path)) continue;
+                var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(
+                    await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false),
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                if (plan is not null) enabled.Add((decoration, plan));
+            }
+            return enabled;
+        }
+
+        private async Task<HelmetToArmorMergeResult> RebuildHelmetOverwriteStateAsync(
+            ModNode host,
+            bool enabled,
+            CancellationToken cancellationToken)
+        {
+            var decorations = await ReadEnabledDecorationsAsync(host.Id.Value.ToString("N"), null, cancellationToken).ConfigureAwait(false);
+            var inspection = enabled
+                ? await _helmetToArmorMerge.InspectAsync(host, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).ConfigureAwait(false)
+                : null;
+            var result = await RebuildHostOverwriteAsync(
+                host,
+                decorations,
+                enabled,
+                cancellationToken,
+                preparedHelmetInspection: inspection).ConfigureAwait(false);
+            return result ?? new HelmetToArmorMergeResult(true, Path.Combine(_paths.ModsDirectory, host.RelativePath, "Overwrite"), 0, 0, 0, Array.Empty<CoreIssue>());
+        }
+
+        public async Task<HelmetToArmorMergeResult> SetHelmetToArmorMergedAsync(
+            string guid,
+            bool enabled,
+            CancellationToken cancellationToken = default)
+        {
+            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (!TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var host))
+                    throw new InvalidOperationException("当前 Mod 不存在。");
+                if (host.Metadata.Kind == ModNodeKind.Decoration)
+                    throw new InvalidOperationException("装饰 Mod 不能临时合并头盔。");
+                if (host.Metadata.HelmetToArmorMerged == enabled)
+                    return new HelmetToArmorMergeResult(true, Path.Combine(_paths.ModsDirectory, host.RelativePath, "Overwrite"), 0, 0, 0, Array.Empty<CoreIssue>());
+
+                var result = await RebuildHelmetOverwriteStateAsync(host, enabled, cancellationToken).ConfigureAwait(false);
+                EnsureHelmetMergeResult(result);
+                var metadata = host.Metadata with
+                {
+                    HelmetToArmorMerged = enabled,
+                    ModifiedUtc = DateTimeOffset.UtcNow
+                };
+                _snapshot = await _manager.UpdateNodeMetadataAsync(nodeId, metadata, cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex(buildDerivedData: false);
+                await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs([nodeId], ModContentChangeKind.Changed));
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return result;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        private static void EnsureHelmetMergeResult(HelmetToArmorMergeResult result)
+        {
+            if (result.IsSuccessful) return;
+            var detail = result.Issues.Count == 0
+                ? "头盔合并没有生成有效输出。"
+                : string.Join("；", result.Issues.Take(4).Select(issue => issue.Message));
+            throw new InvalidDataException(detail);
+        }
+
+        private static string? PrepareManagedOverwrite(string directory)
+        {
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+                return null;
+            }
+            if (!IsManagedOverwrite(directory))
+                throw new InvalidOperationException("主体 Mod 的 Overwrite 目录不是管理器生成，已拒绝覆盖。");
+            var backup = directory + ".backup-" + Guid.NewGuid().ToString("N");
+            Directory.Move(directory, backup);
+            Directory.CreateDirectory(directory);
+            return backup;
+        }
+
+        private static bool IsManagedOverwrite(string directory)
+            => File.Exists(Path.Combine(directory, HelmetOverwriteMarkerName))
+                || File.Exists(Path.Combine(directory, DecorationOverwriteMarkerName));
+
+        private static void RestoreManagedOverwrite(string directory, string? backup)
+        {
+            DeleteDirectoryIfExists(directory);
+            if (backup is not null && Directory.Exists(backup)) Directory.Move(backup, directory);
+        }
+
+        private static void RemoveManagedOverwrite(string directory)
+        {
+            if (!Directory.Exists(directory)) return;
+            if (!IsManagedOverwrite(directory))
+                throw new InvalidOperationException("主体 Mod 的 Overwrite 目录不是管理器生成，已拒绝删除。");
+            Directory.Delete(directory, recursive: true);
+        }
+
+        private static void DeleteDirectoryIfExists(string directory)
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
 
         private bool IsDecorationEnabledForHost(
@@ -1261,6 +1594,7 @@ namespace HD2ModManager.Services
                 SourcePath = node.RelativePath,
                 IsDecoration = node.Metadata.Kind == ModNodeKind.Decoration,
                 IsOption = node.Metadata.Kind == ModNodeKind.Option,
+                IsHelmetToArmorMerged = node.Metadata.HelmetToArmorMerged,
                 HostModGuids = node.Metadata.HostModGuids?.ToArray() ?? Array.Empty<string>(),
                 HasPatchContent = node.PatchGroups.Count > 0,
                 CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,

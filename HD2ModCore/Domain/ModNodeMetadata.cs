@@ -11,4 +11,5 @@ public sealed record ModNodeMetadata(
 	IReadOnlyList<string>? HostModGuids = null,
 	string? SourcePackageGuid = null,
 	string? SourcePackagePath = null,
-	int? OptionOrder = null);
+	int? OptionOrder = null,
+	bool HelmetToArmorMerged = false);

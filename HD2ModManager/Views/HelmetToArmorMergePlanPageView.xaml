@@ -1,0 +1,171 @@
+<UserControl x:Class="HD2ModManager.Views.HelmetToArmorMergePlanPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views">
+    <UserControl.Resources>
+        <Style x:Key="HelmetMergeModelSetRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="0.82*" MinWidth="250"/>
+            <ColumnDefinition Width="12"/>
+            <ColumnDefinition Width="1.05*" MinWidth="300"/>
+            <ColumnDefinition Width="12"/>
+            <ColumnDefinition Width="1.55*" MinWidth="430"/>
+        </Grid.ColumnDefinitions>
+
+        <ScrollViewer Grid.Column="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      local:SmoothScrollBehavior.IsEnabled="True">
+            <StackPanel>
+                <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                    <StackPanel>
+                        <TextBlock Text="头盔合并到盔甲并输出" Style="{StaticResource AppCardTitle}"/>
+                        <TextBlock Text="选择完整的 Armor + Helmet 模型集合，将头盔模型追加到胸部并隐藏原头盔 Unit。"
+                                   Style="{StaticResource AppSupportingText}"
+                                   Margin="0,5,0,0"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding State}"
+                                   Style="{StaticResource AppSupportingText}"
+                                   Margin="0,8,0,0"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                    <StackPanel>
+                        <TextBlock Text="输出设置" Style="{StaticResource AppCardTitle}"/>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Style="{StaticResource AppTextBox}"
+                                     Text="{Binding OutputDirectory, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="支持相对目录和绝对目录"/>
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource AppSecondaryButton}"
+                                    Content="浏览..."
+                                    Command="{Binding BrowseOutputCommand}"
+                                    Margin="8,0,0,0"/>
+                        </Grid>
+                        <Button Style="{StaticResource AppPrimaryButton}"
+                                Content="生成"
+                                Command="{Binding GenerateCommand}"
+                                MinWidth="84"
+                                HorizontalAlignment="Left"
+                                Margin="0,12,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                    <StackPanel>
+                        <TextBlock Text="来源 Mod 快捷操作" Style="{StaticResource AppCardTitle}"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Style="{StaticResource AppSecondaryButton}"
+                                    Content="全选 Mod"
+                                    Command="{Binding SelectAllSourceModsCommand}"/>
+                            <Button Style="{StaticResource AppSecondaryButton}"
+                                    Content="清空"
+                                    Command="{Binding ClearSourceSelectionCommand}"
+                                    Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding SelectedSourceCount, StringFormat=已选择 {0} 个 Mod}"
+                                   Style="{StaticResource AppSupportingText}"
+                                   Margin="0,8,0,0"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                    <StackPanel>
+                        <TextBlock Text="模型集合快捷操作" Style="{StaticResource AppCardTitle}"/>
+                        <WrapPanel Margin="0,10,0,0">
+                            <Button Style="{StaticResource AppSecondaryButton}"
+                                    Content="全选"
+                                    Command="{Binding SelectAllModelSetsCommand}"
+                                    Margin="0,0,8,8"/>
+                            <Button Style="{StaticResource AppSecondaryButton}"
+                                    Content="清空"
+                                    Command="{Binding ClearModelSetsCommand}"
+                                    Margin="0,0,8,8"/>
+                            <Button Style="{StaticResource AppSecondaryButton}"
+                                    Content="反选"
+                                    Command="{Binding InvertModelSetsCommand}"
+                                    Margin="0,0,8,8"/>
+                        </WrapPanel>
+                        <TextBlock Text="{Binding SelectedModelSetCount, StringFormat=已选择 {0} 个模型集合}"
+                                   Style="{StaticResource AppSupportingText}"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <local:ModListPanel Grid.Column="2"
+                            HeaderTitle="选择来源 Mod"
+                            HeaderSummary="可多选；普通 Mod 和包含 Patch 的选项 Mod 均可作为来源。"
+                            EmptyMessage="没有可作为来源的 Mod。"
+                            ItemsSource="{Binding SourceMods}"
+                            SearchText="{Binding SourceQuery, UpdateSourceTrigger=PropertyChanged}"
+                            SelectionPolicy="Multiple"
+                            ShowSelectionCheckbox="True"
+                            SelectionRequested="OnSourceSelectionRequested"
+                            VerticalScrollBarVisibility="Auto"/>
+
+        <Border Grid.Column="4" Style="{StaticResource DataTableCard}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <Border Style="{StaticResource DataTableToolbar}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Armor + Helmet 模型集合" FontWeight="SemiBold"/>
+                            <TextBlock Text="{Binding SelectedModelSetCount, StringFormat=已选 {0} 项}"
+                                       Style="{StaticResource AppSupportingText}"
+                                       Margin="0,3,0,0"/>
+                        </StackPanel>
+                        <TextBlock Grid.Column="1"
+                                   Text="选择模型集合后生成"
+                                   Style="{StaticResource AppSupportingText}"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                </Border>
+                <DataGrid Grid.Row="1"
+                          Style="{StaticResource DataTableGrid}"
+                          ItemsSource="{Binding ModelSets}"
+                          RowStyle="{StaticResource HelmetMergeModelSetRowStyle}"
+                          CanUserAddRows="False"
+                          CanUserDeleteRows="False"
+                          AutoGenerateColumns="False">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="选择" Width="58">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox Style="{StaticResource AppCheckBox}"
+                                              IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="来源 Mod" Binding="{Binding SourceModName}" Width="1.2*"/>
+                        <DataGridTextColumn Header="模型集合" Binding="{Binding Name}" Width="1.1*"/>
+                        <DataGridTextColumn Header="来源 Patch" Binding="{Binding Candidate.SourcePatchFileName}" Width="1.1*"/>
+                        <DataGridTextColumn Header="Armor 身形" Binding="{Binding ArmorVariants}" Width="0.9*"/>
+                        <DataGridTextColumn Header="Armor Unit" Binding="{Binding ArmorUnitIds}" Width="1.4*"/>
+                        <DataGridTextColumn Header="Helmet Unit" Binding="{Binding HelmetUnitId}" Width="1.25*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

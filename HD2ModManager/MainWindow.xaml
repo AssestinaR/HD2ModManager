@@ -78,6 +78,9 @@
         <DataTemplate DataType="{x:Type localVM:BatchDecorationPlanPageViewModel}">
             <views:BatchDecorationPlanPageView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:HelmetToArmorMergePlanPageViewModel}">
+            <views:HelmetToArmorMergePlanPageView/>
+        </DataTemplate>
         <Style x:Key="TopNavButton" TargetType="Button">
             <Setter Property="Height" Value="32"/>
             <Setter Property="Padding" Value="16,0"/>

@@ -43,8 +43,9 @@ namespace HD2ModManager.ViewModels
         private ModNodeId? _cachedAdvancedAnalysesNodeId;
         private MaterialDeliveryFacts? _cachedMaterialDeliveryFacts;
         private ModNodeId? _cachedMaterialDeliveryFactsNodeId;
-		private bool _dependencyGraphTestRunning;
+        private bool _dependencyGraphTestRunning;
         private bool _dependencyGraphComparisonRunning;
+        private bool _helmetMergeRunning;
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
 		private readonly StoragePaths _paths;
         private readonly EventHandler<DerivedStateSnapshot> _snapshotChangedHandler;
@@ -106,6 +107,10 @@ namespace HD2ModManager.ViewModels
         public bool CanEmbedExternalMaterials => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
         public bool CanRebuildSameKey => !_disposed && CanRepairPatch && !_sameKeyReconstructionRunning && TryGetCurrentNode(out _);
         public bool CanPlanCrossArmorTransfer => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
+        public bool IsHelmetToArmorMerged => Mod?.IsHelmetToArmorMerged == true;
+        public string HelmetMergeToggleText => IsHelmetToArmorMerged ? "取消将头盔合并到盔甲" : "临时将头盔合并到盔甲";
+        public bool CanPlanHelmetToArmorMerge => !_disposed && CanUsePatchTools && TryGetCurrentNode(out _);
+        public bool CanToggleHelmetToArmorMerge => !_disposed && CanUsePatchTools && !_helmetMergeRunning && TryGetCurrentNode(out _);
         public bool IsDecoration => Mod?.IsDecoration == true;
         public bool CanPlanDecoration => !_disposed && CanShowDecorationPlan && TryGetCurrentNode(out _);
         public bool CanEditDecoration => !_disposed && IsDecoration && TryGetCurrentNode(out _);
@@ -135,7 +140,9 @@ namespace HD2ModManager.ViewModels
         public RelayCommand EmbedExternalMaterialsCommand { get; }
         public RelayCommand PatchResourceRepackagingCommand { get; }
         public RelayCommand RebuildSameKeyCommand { get; }
-		public RelayCommand PlanCrossArmorTransferCommand { get; }
+        public RelayCommand PlanCrossArmorTransferCommand { get; }
+        public RelayCommand PlanHelmetToArmorMergeCommand { get; }
+        public RelayCommand ToggleHelmetToArmorMergeCommand { get; }
         public RelayCommand PlanDecorationCommand { get; }
         public RelayCommand PlanBatchDecorationCommand { get; }
         public RelayCommand EditDecorationCommand { get; }
@@ -174,6 +181,8 @@ namespace HD2ModManager.ViewModels
             PatchResourceRepackagingCommand = new RelayCommand(_ => OpenPatchResourceRepackaging(), _ => CanPatchResourceRepackaging);
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
+            PlanHelmetToArmorMergeCommand = new RelayCommand(_ => OpenHelmetToArmorMergePlan(), _ => CanPlanHelmetToArmorMerge);
+            ToggleHelmetToArmorMergeCommand = new RelayCommand(async _ => await ToggleHelmetToArmorMergeAsync(), _ => CanToggleHelmetToArmorMerge);
             PlanDecorationCommand = new RelayCommand(_ => OpenDecorationPlan(), _ => CanPlanDecoration);
             PlanBatchDecorationCommand = new RelayCommand(_ => OpenBatchDecorationPlan(), _ => CanPlanDecoration);
             EditDecorationCommand = new RelayCommand(_ => OpenDecorationEditor(), _ => CanEditDecoration);
@@ -755,6 +764,10 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(CanRunAdvancedAnalysis));
 			OnPropertyChanged(nameof(DependencyGraphTestSummary));
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
+			OnPropertyChanged(nameof(IsHelmetToArmorMerged));
+			OnPropertyChanged(nameof(HelmetMergeToggleText));
+			OnPropertyChanged(nameof(CanPlanHelmetToArmorMerge));
+			OnPropertyChanged(nameof(CanToggleHelmetToArmorMerge));
 			OnPropertyChanged(nameof(CanPlanDecoration));
 			OnPropertyChanged(nameof(IsDecoration));
             OnPropertyChanged(nameof(IsOption));
@@ -1411,6 +1424,8 @@ namespace HD2ModManager.ViewModels
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
             RebuildSameKeyCommand.RaiseCanExecuteChanged();
 			PlanCrossArmorTransferCommand.RaiseCanExecuteChanged();
+			PlanHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
+			ToggleHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
 			PlanDecorationCommand.RaiseCanExecuteChanged();
 			PlanBatchDecorationCommand.RaiseCanExecuteChanged();
         }
@@ -1436,6 +1451,56 @@ namespace HD2ModManager.ViewModels
             if (Mod is null || !CanShowDecorationPlan) return;
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.OpenDecorationPlan(Mod.Guid);
+        }
+
+        private void OpenHelmetToArmorMergePlan()
+        {
+            if (Mod is null || !CanPlanHelmetToArmorMerge) return;
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                shell.OpenHelmetToArmorMergePlan(Mod.Guid);
+        }
+
+        private async Task ToggleHelmetToArmorMergeAsync()
+        {
+            if (Mod is null || !CanToggleHelmetToArmorMerge) return;
+            var enable = !IsHelmetToArmorMerged;
+            _helmetMergeRunning = true;
+            OnPropertyChanged(nameof(CanToggleHelmetToArmorMerge));
+            ToggleHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
+            var task = _backgroundTasks?.Enqueue(
+                BackgroundTaskKind.Other,
+                enable ? "临时将头盔合并到盔甲" : "取消头盔合并",
+                Mod.Name,
+                origin: "Mod 详情",
+                userVisibleReason: enable ? "生成并启用当前 Mod 的头盔合并 Overwrite。" : "移除头盔合并状态并恢复当前 Mod 的原始/装饰 Overwrite。",
+                canCancel: true,
+                presentation: BackgroundTaskPresentation.Foreground);
+            try
+            {
+                task?.MarkRunning(enable ? "正在合并" : "正在恢复");
+                var result = await _library.SetHelmetToArmorMergedAsync(Mod.Guid, enable, task?.CancellationToken ?? CancellationToken.None).ConfigureAwait(true);
+                task?.MarkCompleted();
+                Refresh();
+                _notifications?.Show(enable
+                    ? $"已临时将头盔合并到盔甲：胸部 Unit {result.MergedArmorUnitCount}，隐藏头盔 {result.HiddenHelmetUnitCount}。"
+                    : "已取消将头盔合并到盔甲。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+            }
+            catch (OperationCanceledException)
+            {
+                task?.MarkCanceled();
+                _notifications?.Show("头盔合并操作已取消。", NotificationLevel.Info);
+            }
+            catch (Exception exception)
+            {
+                task?.MarkFailed(exception.Message);
+                _notifications?.Show($"头盔合并操作失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12));
+            }
+            finally
+            {
+                _helmetMergeRunning = false;
+                OnPropertyChanged(nameof(CanToggleHelmetToArmorMerge));
+                ToggleHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
+            }
         }
 
         private void OpenBatchDecorationPlan()

@@ -41,6 +41,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -67,6 +68,10 @@
                     <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanShowDecorationPlan, Converter={StaticResource BoolToVis}}">
                         <Button Style="{StaticResource AppSecondaryButton}" Content="批量生成装饰（以主体 Mod）" Command="{Binding PlanBatchDecorationCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="生成装饰 Mod（以来源 Mod）" Command="{Binding PlanDecorationCommand}"/>
+                    </WrapPanel>
+                    <WrapPanel Grid.Row="3" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}">
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="头盔合并到盔甲并输出" Command="{Binding PlanHelmetToArmorMergeCommand}" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="{Binding HelmetMergeToggleText}" Command="{Binding ToggleHelmetToArmorMergeCommand}"/>
                     </WrapPanel>
                 </Grid>
             </Border>

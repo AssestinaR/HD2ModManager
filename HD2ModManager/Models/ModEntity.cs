@@ -23,6 +23,10 @@ namespace HD2ModManager.Models
         // It must not depend on FileGroups, which may intentionally be omitted
         // during the fast library load.
         public bool HasPatchContent { get; set; }
+        // Persistent user-controlled derived overwrite state. The actual payload remains
+        // under the Mod's Overwrite directory; this flag only records whether it should be
+        // regenerated when decorations or source content change.
+        public bool IsHelmetToArmorMerged { get; set; }
         public ModCapabilities Capabilities => ModCapabilities.For(IsDecoration, IsOption, HasPatchContent);
     }
 }

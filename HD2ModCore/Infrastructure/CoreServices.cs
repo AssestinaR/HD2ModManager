@@ -65,6 +65,18 @@ public static class CoreServices
 			informationCenter,
 			reader ?? throw new ArgumentNullException(nameof(reader)),
 			equipmentCatalog ?? CreateEquipmentUnitCatalogService(paths));
+	public static IHelmetToArmorMergeService CreateHelmetToArmorMergeService(
+		StoragePaths paths,
+		IModInformationCenter informationCenter,
+		IModInformationReader reader)
+	{
+		ArgumentNullException.ThrowIfNull(paths);
+		ArgumentNullException.ThrowIfNull(informationCenter);
+		ArgumentNullException.ThrowIfNull(reader);
+		return new HelmetToArmorMergeService(
+			CreateModEquipmentSourceFactsReader(paths, informationCenter, reader),
+			reader);
+	}
 	[Obsolete("迁移状态：请使用接收共享 IModInformationReader 或 IPatchGroupAnalysisProvider 的重载。")]
 	public static IAdvancedUnitAnalysisProducer CreateAdvancedUnitAnalysisProducer(StoragePaths paths)
 		=> new AdvancedUnitAnalysisProducer(new AdaptationPatchGroupAnalysisProvider(CreatePatchFileNameParser(), new PatchGroupAnalyzer(), HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full));
