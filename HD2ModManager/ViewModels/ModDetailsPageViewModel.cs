@@ -817,11 +817,11 @@ namespace HD2ModManager.ViewModels
             var summary = derived?.AssetSummary;
             if (summary == null)
             {
-                var facts = _detailContentFacts ?? derived?.ContentFacts ?? _derivedState.Snapshot.ContentFacts.GetValueOrDefault(nodeId);
-                if (facts is not null)
-                {
-                    var assets = facts.PatchGroups.SelectMany(group => group.AssetKeys).ToArray();
-                    AssetTagsString = "稳定 Patch 事实";
+				var facts = _detailContentFacts ?? derived?.ContentFacts ?? _derivedState.Snapshot.ContentFacts.GetValueOrDefault(nodeId);
+				if (facts is not null)
+				{
+					var assets = facts.Structure.Assets.Select(asset => asset.AssetKey).ToArray();
+					AssetTagsString = "稳定 Patch 事实";
                     AssetListSummary = assets.Length == 0
                         ? "未发现可解析资产"
                         : $"共 {assets.Length} 个 AssetKey：Unit {assets.Count(asset => asset.TypeId == 0xe0a48d0be9a7453f)}，Material {assets.Count(asset => asset.TypeId == 0xeac0b497876adedf)}，Texture {assets.Count(asset => asset.TypeId == 0xcd4238c6a0c69e32)}。高级详情可查看完整稳定资产表。";
@@ -845,12 +845,12 @@ namespace HD2ModManager.ViewModels
             _ = RefreshDataIndexSummaryAsync(nodeId, _detailContentFacts ?? derived?.ContentFacts ?? _derivedState.Snapshot.ContentFacts.GetValueOrDefault(nodeId));
         }
 
-        private async Task RefreshDataIndexSummaryAsync(ModNodeId nodeId, ModContentFacts? facts)
-        {
-            if (facts is null) return;
-            try
-            {
-                var assets = facts.PatchGroups.SelectMany(group => group.AssetKeys).Distinct().ToArray();
+		private async Task RefreshDataIndexSummaryAsync(ModNodeId nodeId, ModContentFacts? facts)
+		{
+			if (facts is null) return;
+			try
+			{
+				var assets = facts.Structure.Assets.Select(asset => asset.AssetKey).Distinct().ToArray();
                 var summary = await _derivedState.InformationCenter.GetAssetRelationSummaryAsync(assets, nodeId);
                 RunOnUiThread(() =>
                 {

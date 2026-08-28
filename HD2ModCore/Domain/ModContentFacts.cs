@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace HD2ModCore.Domain;
 
 // Purpose: Authoritative immutable content snapshot for one flat internal mod.
@@ -7,8 +9,16 @@ public sealed record ModContentFacts(
 	string ContentGeneration,
 	DateTimeOffset BuiltUtc,
 	IReadOnlyList<ModPatchGroupFact> PatchGroups,
-	IReadOnlyList<CoreIssue> Issues)
+	IReadOnlyList<CoreIssue> Issues,
+	ModAssetStructureFacts? AssetStructure = null)
 {
+	// The structure snapshot is the canonical reusable asset view. The fallback
+	// keeps caches written by older manager versions useful until this Mod is
+	// analyzed again by the current lightweight producer.
+	[JsonIgnore]
+	public ModAssetStructureFacts Structure
+		=> AssetStructure ?? ModAssetStructureFacts.FromLegacy(this);
+
 	public IReadOnlyList<IndexedPatchFile> ToPatchFileIndex()
 		=> PatchGroups
 			.SelectMany(group => group.Files.Select(file => new IndexedPatchFile(

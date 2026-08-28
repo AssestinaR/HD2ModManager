@@ -47,6 +47,7 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 			var patchFiles = nodeContentFacts.ToPatchFileIndex();
 
 			summaries.TryGetValue(node.Id, out var assetSummary);
+			var assetStructure = summaryProjection.Structures?.GetValueOrDefault(node.Id);
 			var unitCompatibility = ModUnitCompatibilityReport.FromEvidence(nodeContentFacts.PatchGroups.SelectMany(group => group.UnitVersions ?? Array.Empty<UnitVersionEvidence>()));
 
 			var nodeIssues = issues.Where(i => i.NodeId == node.Id).ToList();
@@ -60,7 +61,8 @@ public sealed class LibraryDerivedDataService : ILibraryDerivedDataService
 				ContentFacts: nodeContentFacts,
 				AssetSummary: assetSummary,
 				UnitCompatibility: unitCompatibility,
-				Issues: nodeIssues);
+				Issues: nodeIssues,
+				AssetStructure: assetStructure);
 		}
 
 		return new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, issues, summaryProjection.MappingGeneration);

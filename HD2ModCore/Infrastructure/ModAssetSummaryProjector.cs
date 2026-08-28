@@ -24,6 +24,14 @@ public sealed class ModAssetSummaryProjector
 		return Project(node, sourceByKey, mapping, await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false));
 	}
 
+	public async ValueTask<ModAssetStructureFacts> ProjectStructureAsync(ModNode node, ModContentFacts facts, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(node);
+		ArgumentNullException.ThrowIfNull(facts);
+		var mapping = await mappingFactsService.MapAsync(facts.Structure.Assets.Select(asset => asset.AssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		return ProjectStructure(facts.Structure, mapping);
+	}
+
 	public async ValueTask<IReadOnlyDictionary<ModNodeId, ModAssetSummary>> ProjectManyAsync(IReadOnlyDictionary<ModNode, ModContentFacts> factsByNode, CancellationToken cancellationToken = default)
 		=> (await ProjectManyWithGenerationAsync(factsByNode, cancellationToken).ConfigureAwait(false)).Summaries;
 
@@ -32,7 +40,9 @@ public sealed class ModAssetSummaryProjector
 		var sourceByNode = factsByNode.ToDictionary(pair => pair.Key, pair => BuildSourceByKey(pair.Value));
 		var mapping = await mappingFactsService.MapAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
 		var catalog = await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false);
-		return new ModAssetSummaryProjection(mapping.MappingGeneration, sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog)));
+		var summaries = sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog));
+		var structures = factsByNode.ToDictionary(pair => pair.Key.Id, pair => ProjectStructure(pair.Value.Structure, mapping));
+		return new ModAssetSummaryProjection(mapping.MappingGeneration, summaries, structures);
 	}
 
 	public async ValueTask<string> GetMappingGenerationAsync(CancellationToken cancellationToken = default)
@@ -45,10 +55,40 @@ public sealed class ModAssetSummaryProjector
 				: await fallbackCatalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false));
 
 	private static Dictionary<AssetKey, SourceInfo> BuildSourceByKey(ModContentFacts facts)
-		=> facts.PatchGroups
-			.SelectMany(group => group.AssetKeys.Select(key => (key, group.Id.SourceArchiveHex, FileName: group.Files.FirstOrDefault(file => file.SidecarKind == PatchSidecarKind.Base)?.FileName ?? group.Id.ToString())))
-			.GroupBy(item => item.key)
-			.ToDictionary(group => group.Key, group => new SourceInfo(group.Select(item => item.SourceArchiveHex).First(), group.Select(item => item.FileName).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray()));
+		=> facts.Structure.Assets.ToDictionary(
+			asset => asset.AssetKey,
+			asset => new SourceInfo(
+				asset.Occurrences.Select(occurrence => occurrence.PatchGroupId.SourceArchiveHex).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray(),
+				asset.Occurrences.Select(occurrence => occurrence.SourceFileName).Where(name => !string.IsNullOrWhiteSpace(name)).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray()));
+
+	private static ModAssetStructureFacts ProjectStructure(ModAssetStructureFacts source, GameDataMappingFacts mapping)
+	{
+		var assets = source.Assets
+			.Select(asset => asset with
+			{
+				TargetArchives = mapping.Assets.TryGetValue(asset.AssetKey, out var mapped)
+					? mapped.TargetArchives
+					: Array.Empty<ArchiveMetadata>(),
+			})
+			.ToArray();
+		var targetArchives = assets
+			.SelectMany(asset => asset.MappedTargetArchives.Select(archive => (archive, asset.AssetKey)))
+			.GroupBy(item => item.archive.ArchiveId, StringComparer.OrdinalIgnoreCase)
+			.Select(group => new ModAssetStructureTargetArchiveFact(
+				group.First().archive,
+				group.Select(item => item.AssetKey).Distinct().OrderBy(key => key.TypeId).ThenBy(key => key.FileId).ToArray()))
+			.OrderBy(item => item.Archive.CategoryOrder)
+			.ThenBy(item => item.Archive.ArchiveOrder)
+			.ThenBy(item => item.Archive.ArchiveId, StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		return source with
+		{
+			Assets = assets,
+			TargetArchives = targetArchives,
+			MappingGeneration = mapping.MappingGeneration,
+			Issues = source.Issues.Concat(mapping.Issues).Distinct().ToArray(),
+		};
+	}
 
 	private static ModAssetSummary Project(ModNode node, IReadOnlyDictionary<AssetKey, SourceInfo> sourceByKey, GameDataMappingFacts mapping, AssetMetadataCatalog catalog)
 	{
@@ -65,7 +105,9 @@ public sealed class ModAssetSummaryProjector
 	{
 		var archives = mapped?.TargetArchives ?? Array.Empty<ArchiveMetadata>();
 		var archive = archives.FirstOrDefault();
-		var fallbackArchive = catalog.FindArchive(source.SourceArchiveHex);
+		var fallbackArchive = source.SourceArchiveHexes
+			.Select(catalog.FindArchive)
+			.FirstOrDefault(archive => archive is not null);
 		var category = archive?.Category ?? fallbackArchive?.Category ?? "Unknown";
 		var displayName = archive?.DisplayName ?? fallbackArchive?.DisplayName ?? "Mod 私有资源";
 		var type = mapped?.TypeDisplayName ?? catalog.FindType(key.TypeId)?.Name ?? TypeName(key.TypeId);
@@ -102,10 +144,11 @@ public sealed class ModAssetSummaryProjector
 		_ => $"0x{typeId:x16}",
 	};
 
-	private sealed record SourceInfo(string SourceArchiveHex, IReadOnlyList<string> FileNames);
+	private sealed record SourceInfo(IReadOnlyList<string> SourceArchiveHexes, IReadOnlyList<string> FileNames);
 }
 
 // Purpose: Separates stable Mod content facts from the versioned Game Data label projection.
 public sealed record ModAssetSummaryProjection(
 	string MappingGeneration,
-	IReadOnlyDictionary<ModNodeId, ModAssetSummary> Summaries);
+	IReadOnlyDictionary<ModNodeId, ModAssetSummary> Summaries,
+	IReadOnlyDictionary<ModNodeId, ModAssetStructureFacts>? Structures = null);

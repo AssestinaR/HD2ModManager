@@ -11,4 +11,5 @@ public sealed record DerivedModNodeData(
 	ModContentFacts ContentFacts,
 	ModAssetSummary? AssetSummary,
 	ModUnitCompatibilityReport UnitCompatibility,
-	IReadOnlyList<CoreIssue> Issues);
+	IReadOnlyList<CoreIssue> Issues,
+	ModAssetStructureFacts? AssetStructure = null);

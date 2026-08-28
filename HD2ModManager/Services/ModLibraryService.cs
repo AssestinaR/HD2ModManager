@@ -446,7 +446,7 @@ namespace HD2ModManager.Services
 			{
 				var generation = await _assetSummaryProjector.GetMappingGenerationAsync(cancellationToken).ConfigureAwait(false);
 				if (string.Equals(_derivedData.AssetSummaryGeneration, generation, StringComparison.Ordinal)
-					&& _derivedData.Nodes.Values.All(node => node.AssetSummary is not null))
+					&& _derivedData.Nodes.Values.All(node => node.AssetSummary is not null && node.AssetStructure is not null))
 					return false;
 
 				var factsByNode = new Dictionary<ModNode, ModContentFacts>();
@@ -455,7 +455,11 @@ namespace HD2ModManager.Services
 					if (snapshot.Nodes.TryGetValue(pair.Key, out var node)) factsByNode[node] = pair.Value.ContentFacts;
 				}
 				var projection = await _assetSummaryProjector.ProjectManyWithGenerationAsync(factsByNode, cancellationToken).ConfigureAwait(false);
-				var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value with { AssetSummary = projection.Summaries.GetValueOrDefault(pair.Key) });
+				var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value with
+				{
+					AssetSummary = projection.Summaries.GetValueOrDefault(pair.Key),
+					AssetStructure = projection.Structures?.GetValueOrDefault(pair.Key) ?? pair.Value.AssetStructure,
+				});
 				_derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, _derivedData.Issues, projection.MappingGeneration);
 				var changed = nodes.Keys.ToArray();
 				if (changed.Length != 0)
@@ -1164,6 +1168,15 @@ namespace HD2ModManager.Services
         public DerivedModNodeData? GetDerivedData(string guid)
         {
             return TryParseNodeId(guid, out var nodeId) ? _derivedData.Find(nodeId) : null;
+        }
+
+        // Shared read boundary for future asset-oriented tools. Prefer the
+        // GameData-enriched projection, while keeping legacy/early-load callers
+        // able to use the source-only structure facts immediately.
+        public ModAssetStructureFacts? GetAssetStructure(string guid)
+        {
+            var derived = GetDerivedData(guid);
+            return derived?.AssetStructure ?? derived?.ContentFacts.Structure;
         }
 
         public string ResolveAbsolutePath(string? maybeRelative)

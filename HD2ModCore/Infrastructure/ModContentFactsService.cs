@@ -27,7 +27,9 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 		if (!Directory.Exists(directory))
 		{
 			issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ModDirectoryMissing", $"Mod directory does not exist: {directory}", directory, node.Id));
-			return new ModContentFacts(node.Id, node.RelativePath, ComputeGeneration(Array.Empty<ModPatchGroupFileFact>()), DateTimeOffset.UtcNow, Array.Empty<ModPatchGroupFact>(), issues);
+			var missingBuiltUtc = DateTimeOffset.UtcNow;
+			var missingGeneration = ComputeGeneration(Array.Empty<ModPatchGroupFileFact>());
+			return new ModContentFacts(node.Id, node.RelativePath, missingGeneration, missingBuiltUtc, Array.Empty<ModPatchGroupFact>(), issues, ModAssetStructureFacts.Empty(missingGeneration, missingBuiltUtc) with { Issues = issues.ToArray() });
 		}
 
 		var discovered = DiscoverGroups(node, directory, issues, cancellationToken);
@@ -46,6 +48,7 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 			.GroupBy(analysis => Path.GetFullPath(analysis.Input.PatchTocFilePath), StringComparer.OrdinalIgnoreCase)
 			.ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
 		var groups = new List<ModPatchGroupFact>();
+		var analysesByGroup = new Dictionary<ModPatchGroupId, HD2ModAdaptation.Analysis.PatchGroupAnalysis>();
 		foreach (var discoveredGroup in discovered)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
@@ -56,6 +59,7 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 			if (baseFile is not null && analysisByBasePath.TryGetValue(Path.GetFullPath(baseFile.FilePath), out var resolvedAnalysis))
 			{
 				analysis = resolvedAnalysis;
+				analysesByGroup[discoveredGroup.Id] = analysis;
 				foreach (var asset in analysis.Assets)
 				{
 					assetKeys.Add(new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId));
@@ -80,7 +84,116 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 		}
 
 		var allFiles = groups.SelectMany(group => group.Files).ToList();
-		return new ModContentFacts(node.Id, node.RelativePath, ComputeGeneration(allFiles), DateTimeOffset.UtcNow, groups, issues);
+		var contentGeneration = ComputeGeneration(allFiles);
+		var builtUtc = DateTimeOffset.UtcNow;
+		return new ModContentFacts(
+			node.Id,
+			node.RelativePath,
+			contentGeneration,
+			builtUtc,
+			groups,
+			issues,
+			BuildAssetStructure(contentGeneration, builtUtc, groups, analysesByGroup, issues));
+	}
+
+	// Projects the analyzer's compact TOC facts into a stable, de-duplicated
+	// structure. The logical AssetKey is stored once; every Patch-group occurrence
+	// remains addressable so reused assets and multi-patch Mods are lossless.
+	private static ModAssetStructureFacts BuildAssetStructure(
+		string contentGeneration,
+		DateTimeOffset builtUtc,
+		IReadOnlyList<ModPatchGroupFact> groups,
+		IReadOnlyDictionary<ModPatchGroupId, HD2ModAdaptation.Analysis.PatchGroupAnalysis> analysesByGroup,
+		IReadOnlyList<CoreIssue> issues)
+	{
+		var occurrencesByKey = new Dictionary<AssetKey, List<ModAssetOccurrenceFact>>();
+		var flagsByKey = new Dictionary<AssetKey, (bool Unit, bool Composite, bool Material, bool Texture)>();
+		var references = new List<ModAssetStructureReferenceFact>();
+
+		foreach (var group in groups)
+		{
+			if (!analysesByGroup.TryGetValue(group.Id, out var analysis)) continue;
+
+			var entriesByKey = analysis.Entries
+				.GroupBy(entry => entry.AssetKey)
+				.ToDictionary(entry => entry.Key, entry => entry.First());
+			foreach (var asset in analysis.Assets)
+			{
+				var key = new AssetKey(asset.AssetKey.TypeId, asset.AssetKey.FileId);
+				entriesByKey.TryGetValue(asset.AssetKey, out var entry);
+				var sourcePath = string.IsNullOrWhiteSpace(asset.SourceFilePath)
+					? entry?.SourceFilePath ?? string.Empty
+					: asset.SourceFilePath;
+				var sourceName = entry?.SourceFileName
+					?? (string.IsNullOrWhiteSpace(sourcePath) ? group.Id.ToString() : Path.GetFileName(sourcePath));
+				var occurrence = new ModAssetOccurrenceFact(
+					group.Id,
+					sourcePath,
+					sourceName,
+					entry?.EntryIndex ?? 0,
+					entry?.TocDataOffset ?? 0,
+					entry?.StreamOffset ?? 0,
+					entry?.GpuResourceOffset ?? 0,
+					entry?.Unknown1 ?? 0,
+					entry?.Unknown2 ?? 0,
+					asset.TocDataSize,
+					asset.StreamSize,
+					asset.GpuResourceSize,
+					entry?.Unknown3 ?? 0,
+					entry?.Unknown4 ?? 0);
+
+				if (!occurrencesByKey.TryGetValue(key, out var occurrences))
+					occurrencesByKey[key] = occurrences = [];
+				occurrences.Add(occurrence);
+				var previous = flagsByKey.GetValueOrDefault(key);
+				flagsByKey[key] = (
+					previous.Unit || asset.IsUnit,
+					previous.Composite || asset.IsCompositeUnit,
+					previous.Material || asset.IsMaterial,
+					previous.Texture || asset.IsTexture);
+			}
+
+			foreach (var reference in analysis.References)
+			{
+				references.Add(new ModAssetStructureReferenceFact(
+					group.Id,
+					new AssetKey(reference.SourceAssetKey.TypeId, reference.SourceAssetKey.FileId),
+					new AssetKey(reference.TargetAssetKey.TypeId, reference.TargetAssetKey.FileId),
+					reference.Kind,
+					reference.PayloadRelativeOffset,
+					reference.SlotId,
+					reference.ReferenceIndex,
+					reference.MeshInfoIndex,
+					reference.IsPlaceholderMesh));
+			}
+		}
+
+		var assets = occurrencesByKey
+			.OrderBy(pair => pair.Key.TypeId)
+			.ThenBy(pair => pair.Key.FileId)
+			.Select(pair =>
+			{
+				var flags = flagsByKey[pair.Key];
+				return new ModAssetStructureAssetFact(pair.Key, flags.Unit, flags.Composite, flags.Material, flags.Texture, pair.Value);
+			})
+			.ToArray();
+		var sourceArchives = groups
+			.GroupBy(group => group.Id.SourceArchiveHex, StringComparer.OrdinalIgnoreCase)
+			.Select(group => new ModAssetStructureSourceArchiveFact(
+				group.Key,
+				group.Select(item => item.Id).OrderBy(item => item.SourcePatchIndex).ToArray(),
+				group.SelectMany(item => item.AssetKeys).Distinct().OrderBy(key => key.TypeId).ThenBy(key => key.FileId).ToArray()))
+			.OrderBy(archive => archive.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+
+		return new ModAssetStructureFacts(
+			contentGeneration,
+			builtUtc,
+			assets,
+			sourceArchives,
+			[],
+			references,
+			issues.Distinct().ToArray());
 	}
 
 	private IReadOnlyList<DiscoveredPatchGroup> DiscoverGroups(ModNode node, string directory, ICollection<CoreIssue> issues, CancellationToken cancellationToken)

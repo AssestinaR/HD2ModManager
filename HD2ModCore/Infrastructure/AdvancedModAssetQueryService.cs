@@ -31,20 +31,30 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 		if (inventory is null) return Array.Empty<AdvancedModAssetRow>();
 		var graphResult = await informationCenter.RequestReferenceGraphAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.ReferenceGraph, "AdvancedAssetTable"), cancellationToken).ConfigureAwait(false);
 		var graph = graphResult.Data;
-		var assets = inventory.PatchGroups
-			.SelectMany(group => group.AssetKeys.Select(key => (group, key)))
-			.GroupBy(item => item.key)
+		var groupsById = inventory.PatchGroups.ToDictionary(group => group.Id);
+		var assets = inventory.Structure.Assets
+			.Select(asset => new
+			{
+				Key = asset.AssetKey,
+				Asset = asset,
+				Groups = asset.Occurrences
+					.Select(occurrence => groupsById.GetValueOrDefault(occurrence.PatchGroupId))
+					.Where(group => group is not null)
+					.Select(group => group!)
+					.DistinctBy(group => group.Id)
+					.ToArray(),
+			})
 			.ToArray();
 		var graphAssets = graph?.Analyses.SelectMany(analysis => analysis.Assets.Select(asset => (analysis, asset))).GroupBy(item => item.asset.AssetKey).ToDictionary(group => group.Key, group => group.ToArray())
 			?? new Dictionary<HD2ModAdaptation.PatchReconstruction.AssetKey, (PatchGroupAnalysis analysis, PatchAssetFact asset)[]>();
-		var domainKeys = assets.Select(group => new AssetKey(group.Key.TypeId, group.Key.FileId)).ToHashSet();
+		var domainKeys = assets.Select(group => group.Key).ToHashSet();
 		var mapping = await mappingService.MapAsync(domainKeys, cancellationToken).ConfigureAwait(false);
 		var unitKeys = domainKeys.Where(key => key.TypeId == 0xe0a48d0be9a7453f).ToHashSet();
 		var partsByUnit = await indexService.GetUnitPartFactsAsync(unitKeys, cancellationToken).ConfigureAwait(false);
 		var rows = new List<AdvancedModAssetRow>(assets.Length);
 		foreach (var group in assets)
 		{
-			var key = new AssetKey(group.Key.TypeId, group.Key.FileId);
+			var key = group.Key;
 			var analysisKey = new HD2ModAdaptation.PatchReconstruction.AssetKey(key.TypeId, key.FileId);
 			var partSummary = partsByUnit.TryGetValue(key, out var parts) ? DescribeParts(parts) : "—";
 			mapping.Assets.TryGetValue(key, out var mapped);
@@ -66,13 +76,31 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 				chain is null ? "无 Profile provider 链" : string.Join(" → ", chain.Entries.Select(entry => entry.ModName)),
 				profileStatus,
 				nodeDiagnostics.Length == 0 ? string.Empty : string.Join("；", nodeDiagnostics.Select(item => item.Summary).Distinct()),
-				string.Join("，", graphFacts?.Select(item => Path.GetFileName(item.analysis.Input.PatchTocFilePath)).Concat(group.Select(item => item.group.Id.SourceArchiveHex)).Distinct(StringComparer.OrdinalIgnoreCase) ?? group.Select(item => item.group.Id.SourceArchiveHex).Distinct(StringComparer.OrdinalIgnoreCase)),
-				graphFacts?.Sum(item => (long)item.asset.TocDataSize) ?? 0,
-				graphFacts?.Sum(item => (long)item.asset.StreamSize) ?? 0,
-				graphFacts?.Sum(item => (long)item.asset.GpuResourceSize) ?? 0));
+				string.Join("，", graphFacts?.Select(item => Path.GetFileName(item.analysis.Input.PatchTocFilePath)).Concat(group.Groups.Select(item => item.Id.SourceArchiveHex)).Distinct(StringComparer.OrdinalIgnoreCase) ?? group.Groups.Select(item => item.Id.SourceArchiveHex).Distinct(StringComparer.OrdinalIgnoreCase)),
+				GetTocBytes(group.Asset, graphFacts),
+				GetStreamBytes(group.Asset, graphFacts),
+				GetGpuBytes(group.Asset, graphFacts)));
 		}
 		return rows.OrderBy(row => row.TypeName).ThenBy(row => row.AssetKey.FileId).ToArray();
 	}
+
+	private static long GetTocBytes(ModAssetStructureAssetFact asset, IReadOnlyList<(PatchGroupAnalysis analysis, PatchAssetFact asset)>? graphFacts)
+		=> HasDeclaredSizes(asset)
+			? asset.Occurrences.Sum(occurrence => (long)occurrence.TocDataSize)
+			: graphFacts?.Sum(item => (long)item.asset.TocDataSize) ?? 0;
+
+	private static long GetStreamBytes(ModAssetStructureAssetFact asset, IReadOnlyList<(PatchGroupAnalysis analysis, PatchAssetFact asset)>? graphFacts)
+		=> HasDeclaredSizes(asset)
+			? asset.Occurrences.Sum(occurrence => (long)occurrence.StreamSize)
+			: graphFacts?.Sum(item => (long)item.asset.StreamSize) ?? 0;
+
+	private static long GetGpuBytes(ModAssetStructureAssetFact asset, IReadOnlyList<(PatchGroupAnalysis analysis, PatchAssetFact asset)>? graphFacts)
+		=> HasDeclaredSizes(asset)
+			? asset.Occurrences.Sum(occurrence => (long)occurrence.GpuResourceSize)
+			: graphFacts?.Sum(item => (long)item.asset.GpuResourceSize) ?? 0;
+
+	private static bool HasDeclaredSizes(ModAssetStructureAssetFact asset)
+		=> asset.Occurrences.Any(occurrence => occurrence.TocDataSize != 0 || occurrence.StreamSize != 0 || occurrence.GpuResourceSize != 0);
 
 	private async ValueTask<string> BuildTargetSummaryAsync(
 		AssetKey key,
