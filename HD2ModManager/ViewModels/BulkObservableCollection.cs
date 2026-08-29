@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using HD2ModManager.Services;
 
 // 作用：以单次 Reset 通知替换列表内容，避免大量逐项 CollectionChanged 消息阻塞 UI 线程。
 namespace HD2ModManager.ViewModels
@@ -45,11 +46,20 @@ namespace HD2ModManager.ViewModels
         {
             ArgumentNullException.ThrowIfNull(items);
             var replacement = items as IReadOnlyList<T> ?? items.ToList();
+            var oldCount = Count;
             var resolvedKind = ResolveTransitionKind(replacement, kind);
+            UiPerformanceDiagnostics.RecordBurst(
+                "List.ReplaceWith",
+                $"itemType={typeof(T).Name}; kind={resolvedKind}; old={oldCount}; new={replacement.Count}",
+                threshold: 12);
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "List.ReplaceWith",
+                thresholdMilliseconds: 25,
+                details: () => $"itemType={typeof(T).Name}; kind={resolvedKind}; old={oldCount}; new={replacement.Count}");
             var batch = new ListTransitionBatch(
                 Interlocked.Increment(ref _transitionVersion),
                 resolvedKind,
-                Count,
+                oldCount,
                 replacement.Count,
                 Animate: resolvedKind != ListTransitionKind.Refresh);
             TransitionStarting?.Invoke(this, batch);

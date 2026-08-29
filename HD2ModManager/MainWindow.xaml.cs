@@ -146,6 +146,10 @@ namespace HD2ModManager
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "MainWindow.Loaded",
+                thresholdMilliseconds: 40,
+                details: () => $"mode={(DataContext as ShellViewModel)?.CurrentMode}; split={(DataContext as ShellViewModel)?.ShowRightSlot}");
             SubscribeToShell(DataContext as ShellViewModel);
             BottomBarSurface.ContentSizeReady += BottomBarSurface_ContentSizeReady;
             InitializeBottomBarLayers();
@@ -530,6 +534,10 @@ namespace HD2ModManager
 
         private static void ShowInitialPage(ContentControl host, object? page)
         {
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "Page.InitialCreate",
+                thresholdMilliseconds: 30,
+                details: () => $"page={page?.GetType().Name ?? "null"}");
             host.Content = CreatePageContent(page);
             host.Opacity = 1;
         }
@@ -603,6 +611,10 @@ namespace HD2ModManager
         {
             if (IsCurrentPageContent(currentHost, nextPage)) return;
 
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "Page.TransitionPrepare",
+                thresholdMilliseconds: 30,
+                details: () => $"page={nextPage?.GetType().Name ?? "null"}; host={currentHost.Name}");
             var nextContent = CreatePageContent(nextPage);
 
             currentHost.BeginAnimation(OpacityProperty, null);
@@ -614,6 +626,10 @@ namespace HD2ModManager
 
             _ = currentHost.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
             {
+                using var renderPerf = UiPerformanceDiagnostics.Measure(
+                    "Page.TransitionRenderSetup",
+                    thresholdMilliseconds: 20,
+                    details: () => $"page={nextPage?.GetType().Name ?? "null"}; host={currentHost.Name}");
                 var duration = TimeSpan.FromMilliseconds(200);
                 var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
                 currentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(1, duration) { EasingFunction = easing });

@@ -55,56 +55,83 @@ namespace HD2ModManager.Services
         {
             try
             {
+				UiPerformanceDiagnostics.RecordBurst(
+					"Import.Path",
+					$"source={Path.GetFileName(path)}; kind={(Directory.Exists(path) ? "folder" : "file")}",
+					threshold: 8);
+				using var totalPerf = UiPerformanceDiagnostics.Measure(
+					"Import.Path",
+					thresholdMilliseconds: 100,
+					details: () => $"source={Path.GetFileName(path)}; notify={notifyLibraryChanged}; refreshDerived={refreshDerivedData}");
 				var importer = CoreServices.CreateModLibraryImporter(_paths, _informationCenter, _library.InformationReader);
                 var before = _library.Snapshot.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 ImportResult result;
-                if (Directory.Exists(path))
+                using (UiPerformanceDiagnostics.Measure(
+					"Import.ScanAndStore",
+					thresholdMilliseconds: 100,
+					details: () => $"source={Path.GetFileName(path)}; archive={File.Exists(path) && ArchiveExtensions.Contains(Path.GetExtension(path))}"))
                 {
-                    result = await importer.ImportFolderAsync(path, ct).ConfigureAwait(false);
-                }
-                else if (File.Exists(path) && ArchiveExtensions.Contains(Path.GetExtension(path)))
-                {
-                    result = await importer.ImportArchiveAsync(path, ct).ConfigureAwait(false);
-                }
-                else if (File.Exists(path))
-                {
-                    var dir = Path.GetDirectoryName(path) ?? throw new DirectoryNotFoundException(path);
-                    result = await importer.ImportFolderAsync(dir, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    throw new FileNotFoundException("Import source not found.", path);
+                    if (Directory.Exists(path))
+					{
+						result = await importer.ImportFolderAsync(path, ct).ConfigureAwait(false);
+					}
+					else if (File.Exists(path) && ArchiveExtensions.Contains(Path.GetExtension(path)))
+					{
+						result = await importer.ImportArchiveAsync(path, ct).ConfigureAwait(false);
+					}
+					else if (File.Exists(path))
+					{
+						var dir = Path.GetDirectoryName(path) ?? throw new DirectoryNotFoundException(path);
+						result = await importer.ImportFolderAsync(dir, ct).ConfigureAwait(false);
+					}
+					else
+					{
+						throw new FileNotFoundException("Import source not found.", path);
+					}
                 }
 
-                _library.ReplaceSnapshot(result.Snapshot, buildDerivedData: false);
-                var importedGuids = _library.Snapshot.Nodes.Values
-                    .Where(node => !before.ContainsKey(node.Id))
-                    .Select(node => node.Id.Value.ToString("N"))
-                    .ToList();
-                var changedExistingNodeIds = _library.Snapshot.Nodes.Values
-                    .Where(node => before.TryGetValue(node.Id, out var previous) && !Equals(previous, node))
-                    .Select(node => node.Id)
-                    .ToArray();
-                await _library.EnableDefaultOptionsForEmptyHostsAsync(importedGuids, ct).ConfigureAwait(false);
-                var affectedNodeIds = importedGuids
-                    .Select(guid => Guid.TryParse(guid, out var value) ? new ModNodeId(value) : (ModNodeId?)null)
-                    .Concat(changedExistingNodeIds.Select(id => (ModNodeId?)id))
-                    .Where(id => id.HasValue)
-                    .Select(id => id!.Value)
-                    .Distinct()
-                    .ToArray();
-                LastAffectedNodeIds = affectedNodeIds;
-                foreach (var nodeId in affectedNodeIds)
-                {
-                    await _library.InvalidateContentNodeAsync(nodeId, ct).ConfigureAwait(false);
-                }
+				List<string> importedGuids;
+				ModNodeId[] affectedNodeIds;
+				using (UiPerformanceDiagnostics.Measure(
+					"Import.CommitSnapshot",
+					thresholdMilliseconds: 50,
+					details: () => $"source={Path.GetFileName(path)}; nodes={result.Snapshot.Nodes.Count}"))
+				{
+					_library.ReplaceSnapshot(result.Snapshot, buildDerivedData: false);
+					importedGuids = _library.Snapshot.Nodes.Values
+						.Where(node => !before.ContainsKey(node.Id))
+						.Select(node => node.Id.Value.ToString("N"))
+						.ToList();
+					var changedExistingNodeIds = _library.Snapshot.Nodes.Values
+						.Where(node => before.TryGetValue(node.Id, out var previous)
+							&& !ModNodeSemanticComparer.AreEqual(previous, node))
+						.Select(node => node.Id)
+						.ToArray();
+					await _library.EnableDefaultOptionsForEmptyHostsAsync(importedGuids, ct).ConfigureAwait(false);
+					affectedNodeIds = importedGuids
+						.Select(guid => Guid.TryParse(guid, out var value) ? new ModNodeId(value) : (ModNodeId?)null)
+						.Concat(changedExistingNodeIds.Select(id => (ModNodeId?)id))
+						.Where(id => id.HasValue)
+						.Select(id => id!.Value)
+						.Distinct()
+						.ToArray();
+					LastAffectedNodeIds = affectedNodeIds;
+					foreach (var nodeId in affectedNodeIds)
+					{
+						await _library.InvalidateContentNodeAsync(nodeId, ct).ConfigureAwait(false);
+					}
+				}
                 if (refreshDerivedData)
                 {
-                    await _library.RefreshCommittedContentAsync(
-                        affectedNodeIds,
-                        ModContentChangeKind.Changed,
-                        alreadyInvalidated: true,
-                        cancellationToken: ct).ConfigureAwait(false);
+					using var derivedPerf = UiPerformanceDiagnostics.Measure(
+						"Import.RefreshDerived",
+						thresholdMilliseconds: 100,
+						details: () => $"source={Path.GetFileName(path)}; affected={affectedNodeIds.Length}");
+					await _library.RefreshCommittedContentAsync(
+						affectedNodeIds,
+						ModContentChangeKind.Changed,
+						alreadyInvalidated: true,
+						cancellationToken: ct).ConfigureAwait(false);
                 }
                 if (notifyLibraryChanged) _library.NotifyImportCompleted();
                 _onInfo?.Invoke($"Imported {result.SourceDisplayName}");

@@ -696,9 +696,17 @@ namespace HD2ModManager.ViewModels
 
         public async System.Threading.Tasks.Task ProcessImportQueueAsync(string[] paths)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "Import.QueueRequest",
+                $"paths={paths.Length}",
+                threshold: 6);
             _importQueue.Enqueue(paths);
             ShowQueueSummary();
 
+            using var queuePerf = UiPerformanceDiagnostics.Measure(
+                "Import.ProcessQueue",
+                thresholdMilliseconds: 150,
+                details: () => $"paths={paths.Length}");
             await _importProcessGate.WaitAsync();
             try
             {
@@ -715,6 +723,10 @@ namespace HD2ModManager.ViewModels
                         item.Path,
                         presentation: BackgroundTaskPresentation.Foreground);
                     var import = new ImportService(_libraryService, onInfo: null, onError: err => _importQueue.MarkFailed(item, err), informationCenter: _derivedState.InformationCenter);
+                    using var itemPerf = UiPerformanceDiagnostics.Measure(
+                        "Import.ProcessItem",
+                        thresholdMilliseconds: 100,
+                        details: () => $"source={System.IO.Path.GetFileName(item.Path)}; created={import.LastAffectedNodeIds.Count}");
                     try
                     {
                         task.MarkRunning("正在解压缩");
@@ -753,30 +765,48 @@ namespace HD2ModManager.ViewModels
 
                 if (libraryChanged)
                 {
-                    await _libraryService.SynchronizeAsync().ConfigureAwait(false);
+                    using (UiPerformanceDiagnostics.Measure(
+                        "Import.QueueSynchronize",
+                        thresholdMilliseconds: 100,
+                        details: () => $"affected={affectedNodeIds.Count}"))
+                    {
+                        await _libraryService.SynchronizeAsync().ConfigureAwait(false);
+                    }
                     if (affectedNodeIds.Count > 0)
                     {
-                        await _libraryService.RefreshCommittedContentAsync(
-                            affectedNodeIds,
-                            ModContentChangeKind.Changed,
-                            alreadyInvalidated: true,
-                            cancellationToken: _lifetimeCancellation.Token).ConfigureAwait(false);
+                        using (UiPerformanceDiagnostics.Measure(
+                            "Import.QueueRefreshDerived",
+                            thresholdMilliseconds: 100,
+                            details: () => $"affected={affectedNodeIds.Count}"))
+                        {
+                            await _libraryService.RefreshCommittedContentAsync(
+                                affectedNodeIds,
+                                ModContentChangeKind.Changed,
+                                alreadyInvalidated: true,
+                                cancellationToken: _lifetimeCancellation.Token).ConfigureAwait(false);
+                        }
                     }
                     _libraryService.NotifyImportCompleted();
                     if (SettingsService.GetAutoImportToActiveProfile() && importedModIds.Count > 0 && _profileService.ActiveProfile is not null)
                     {
-                        await _profileService.ReloadFromLibraryAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
-                        var deployable = importedModIds
-                            .Where(id => _libraryService.Get(id)?.Capabilities.CanJoinProfile == true)
-                            .ToArray();
-                        if (deployable.Length > 0)
+                        using (UiPerformanceDiagnostics.Measure(
+                            "Import.AutoProfileAndDeploy",
+                            thresholdMilliseconds: 100,
+                            details: () => $"imported={importedModIds.Count}"))
                         {
-                            var added = await _profileService.AddModsToActiveAsync(deployable, _lifetimeCancellation.Token).ConfigureAwait(false);
-                            if (added > 0)
+                            await _profileService.ReloadFromLibraryAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+                            var deployable = importedModIds
+                                .Where(id => _libraryService.Get(id)?.Capabilities.CanJoinProfile == true)
+                                .ToArray();
+                            if (deployable.Length > 0)
                             {
-                                LogService.Info($"导入后自动加入活动配置：新增={added}，选项/装饰未加入配置。即将统一部署一次。");
-                                await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
-                                await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+                                var added = await _profileService.AddModsToActiveAsync(deployable, _lifetimeCancellation.Token).ConfigureAwait(false);
+                                if (added > 0)
+                                {
+                                    LogService.Info($"导入后自动加入活动配置：新增={added}，选项/装饰未加入配置。即将统一部署一次。");
+                                    await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+                                    await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
+                                }
                             }
                         }
                     }
@@ -1223,6 +1253,10 @@ namespace HD2ModManager.ViewModels
 
         private void OnInformationProductionStarted(object? sender, ModInformationProductionStarted value)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "InformationCenter.Production",
+                $"kind={value.Kind}; source={value.Source}",
+                threshold: 8);
             LogService.Info($"信息中心开始生产：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，来源={value.Source}，operation={value.OperationKey}。缓存未命中或要求刷新。");
             RefreshOnUiThread(() =>
             {
@@ -1237,6 +1271,10 @@ namespace HD2ModManager.ViewModels
 
         private void OnInformationDiagnosticRecorded(object? sender, ModInformationDiagnostic value)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "InformationCenter.Diagnostic",
+                $"kind={value.Kind}; status={value.Status}",
+                threshold: 8);
             var issues = value.Issues.Count == 0
                 ? string.Empty
                 : $"，问题={string.Join(" | ", value.Issues.Take(5).Select(issue => $"{issue.Code}:{issue.Message}"))}";

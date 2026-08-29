@@ -53,9 +53,15 @@ namespace HD2ModManager.Services
 
         public static string? GetExistingThumbnailPath(string? originalPath, int decode)
         {
-            if (string.IsNullOrWhiteSpace(originalPath) || !File.Exists(originalPath)) return null;
-            var thumbnail = GetThumbPath(originalPath, decode);
-            return File.Exists(thumbnail) ? thumbnail : null;
+            var started = UiPerformanceDiagnostics.IsEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            string? result = null;
+            if (!string.IsNullOrWhiteSpace(originalPath) && File.Exists(originalPath))
+            {
+                var thumbnail = GetThumbPath(originalPath, decode);
+                result = File.Exists(thumbnail) ? thumbnail : null;
+            }
+            UiPerformanceDiagnostics.RecordElapsed("Thumbnail.ExistingPath", started, thresholdMilliseconds: 8);
+            return result;
         }
 
         public static string? GetExistingThumbnailPath(ModThumbnailFacts? facts, int decode)

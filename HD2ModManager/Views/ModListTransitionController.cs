@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using HD2ModManager.Services;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
@@ -86,6 +87,10 @@ internal sealed class ModListTransitionController : IDisposable
         if (_disposed) return;
         var desired = _observedSource?.Cast<object>().ToArray() ?? Array.Empty<object>();
         _desired = desired;
+        UiPerformanceDiagnostics.RecordBurst(
+            "ModList.SourceChanged",
+            $"action={args.Action}; phase={_phase}; desired={desired.Length}",
+            threshold: 12);
 
         if (_phase == TransitionPhase.Playing)
         {
@@ -132,6 +137,10 @@ internal sealed class ModListTransitionController : IDisposable
     private void PlayPending()
     {
         if (_disposed || !_transitionPending || !_owner.IsLoaded) return;
+        using var perf = UiPerformanceDiagnostics.Measure(
+            "ModList.PlayTransition",
+            thresholdMilliseconds: 20,
+            details: () => $"before={_before.Count}; after={_itemsList.Items.Count}; phase={_phase}");
         _transitionPending = false;
         _pendingDesired = null;
 
@@ -214,6 +223,10 @@ internal sealed class ModListTransitionController : IDisposable
     private Dictionary<string, RowSnapshot> CaptureRows()
     {
         var result = new Dictionary<string, RowSnapshot>(StringComparer.OrdinalIgnoreCase);
+        using var perf = UiPerformanceDiagnostics.Measure(
+            "ModList.CaptureRows",
+            thresholdMilliseconds: 15,
+            details: () => $"items={_itemsList.Items.Count}; captured={result.Count}; phase={_phase}");
         if (!_owner.IsLoaded) return result;
         foreach (var item in _itemsList.Items)
         {

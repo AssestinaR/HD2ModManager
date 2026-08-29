@@ -654,6 +654,14 @@ namespace HD2ModManager.ViewModels
 
         public void Refresh(ListTransitionKind transitionKind = ListTransitionKind.Automatic)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "Profile.Refresh",
+                $"kind={transitionKind}; current={Items.Count}",
+                threshold: 10);
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "Profile.Refresh",
+                thresholdMilliseconds: 25,
+                details: () => $"kind={transitionKind}; result={Items.Count}; query={(string.IsNullOrWhiteSpace(Query) ? "empty" : "set")}; outdated={ShowOnlyOutdated}");
             Profiles.Clear();
             foreach (var profileItem in _profiles.All()) Profiles.Add(profileItem.Name);
             _selectedProfileKey = _profiles.SelectedKey;
@@ -705,6 +713,10 @@ namespace HD2ModManager.ViewModels
             var cancellationToken = cancellationSource.Token;
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var processed = 0;
+            using var thumbnailPerf = UiPerformanceDiagnostics.Measure(
+                "Profile.ThumbnailRefresh",
+                thresholdMilliseconds: 100,
+                details: () => $"processed={processed}; canceled={cancellationToken.IsCancellationRequested}");
             try
             {
                 var generated = false;
@@ -828,6 +840,14 @@ namespace HD2ModManager.ViewModels
                 _refreshAllPresentations = false;
             }
             Interlocked.Exchange(ref _projectionRefreshQueued, 0);
+            UiPerformanceDiagnostics.RecordBurst(
+                "Profile.ApplyProjection",
+                $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}",
+                threshold: 8);
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "Profile.ApplyProjection",
+                thresholdMilliseconds: 25,
+                details: () => $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}; items={Items.Count}");
             RefreshUserStatuses();
             var contentCanAffectFilter = guids.Count != 0 && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
             var didReconcile = reconcile || contentCanAffectFilter || HasProfileMembershipOrOrderChanged();

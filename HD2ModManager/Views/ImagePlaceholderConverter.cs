@@ -11,20 +11,34 @@ namespace HD2ModManager.Views
     {
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            var s = value as string;
-            if (!string.IsNullOrWhiteSpace(s))
-            {
-                try { return LoadImageWithoutLock(s, ParseDecodePixelWidth(parameter)); } catch { }
-            }
-            // fallback to embedded resource
+            var decodePixelWidth = ParseDecodePixelWidth(parameter);
+            var started = HD2ModManager.Services.UiPerformanceDiagnostics.IsEnabled
+                ? System.Diagnostics.Stopwatch.GetTimestamp()
+                : 0;
             try
             {
-                var uri = new Uri("pack://application:,,,/HD2ModManager;component/Resources/helldivers2.png", UriKind.Absolute);
-                return new BitmapImage(uri);
+                var s = value as string;
+                if (!string.IsNullOrWhiteSpace(s))
+                {
+                    try { return LoadImageWithoutLock(s, decodePixelWidth); } catch { }
+                }
+                // fallback to embedded resource
+                try
+                {
+                    var uri = new Uri("pack://application:,,,/HD2ModManager;component/Resources/helldivers2.png", UriKind.Absolute);
+                    return new BitmapImage(uri);
+                }
+                catch
+                {
+                    return null;
+                }
             }
-            catch
+            finally
             {
-                return null;
+                HD2ModManager.Services.UiPerformanceDiagnostics.RecordElapsed(
+                    "Thumbnail.Decode",
+                    started,
+                    thresholdMilliseconds: 15);
             }
         }
 

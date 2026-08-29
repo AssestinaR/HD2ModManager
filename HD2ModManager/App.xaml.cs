@@ -18,11 +18,16 @@ namespace HD2ModManager
                 MessageBox.Show($"管理器遇到未处理错误，详情已写入 logs：{args.Exception.Message}", "HD2 Mod Manager", MessageBoxButton.OK, MessageBoxImage.Error);
                 args.Handled = true;
             };
+            UiPerformanceDiagnostics.Start();
+            // App.xaml uses StartupUri, so the base implementation creates the
+            // first window. Start diagnostics before it so the initial page load
+            // and startup synchronization are included in the trace.
             base.OnStartup(e);
         }
 
         protected override void OnExit(ExitEventArgs e)
         {
+            UiPerformanceDiagnostics.Stop();
             SettingsService.FlushAsync().GetAwaiter().GetResult();
             base.OnExit(e);
         }

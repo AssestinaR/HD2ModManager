@@ -94,6 +94,10 @@ namespace HD2ModManager.Services
 
         public void Show(string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null, string? source = null)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "Notification.Request",
+                $"level={level}; source={(string.IsNullOrWhiteSpace(source) ? "none" : "set")}",
+                threshold: 12);
             RunOnUi(() =>
             {
                 var now = DateTime.UtcNow;
@@ -101,7 +105,7 @@ namespace HD2ModManager.Services
                 if (item is not null)
                 {
                     item.RecordRepeat(now);
-                    Changed?.Invoke(this, EventArgs.Empty);
+                    RaiseChanged();
                     return;
                 }
 
@@ -110,12 +114,13 @@ namespace HD2ModManager.Services
                 _history.Add(item);
                 TrimHistory();
                 if (item.Duration.HasValue) _ = AutoDismissAsync(item);
-                Changed?.Invoke(this, EventArgs.Empty);
+                RaiseChanged();
             });
         }
 
         public void ShowOrUpdate(string key, string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null)
         {
+            UiPerformanceDiagnostics.RecordBurst("Notification.ShowOrUpdate", $"level={level}", threshold: 12);
             RunOnUi(() =>
             {
                 var item = _items.FirstOrDefault(candidate => string.Equals(candidate.Tag, key, StringComparison.Ordinal));
@@ -125,19 +130,19 @@ namespace HD2ModManager.Services
                     _items.Add(item);
                     _history.Add(item);
                     TrimHistory();
-                    Changed?.Invoke(this, EventArgs.Empty);
+                    RaiseChanged();
                     return;
                 }
 
                 item.Update(message, level, duration, DateTime.UtcNow);
-                Changed?.Invoke(this, EventArgs.Empty);
+                RaiseChanged();
             });
         }
 
         public void MarkAllRead()
         {
             foreach (var item in _history) item.IsUnread = false;
-            Changed?.Invoke(this, EventArgs.Empty);
+            RaiseChanged();
         }
 
         public void MarkAttentionViewed()
@@ -146,7 +151,7 @@ namespace HD2ModManager.Services
             {
                 item.RecordAttentionView();
             }
-            Changed?.Invoke(this, EventArgs.Empty);
+            RaiseChanged();
         }
 
         public void Acknowledge(NotificationItem item)
@@ -155,7 +160,7 @@ namespace HD2ModManager.Services
             RunOnUi(() =>
             {
                 item.Acknowledge();
-                Changed?.Invoke(this, EventArgs.Empty);
+                RaiseChanged();
             });
         }
 
@@ -166,7 +171,7 @@ namespace HD2ModManager.Services
                 await Task.Delay(item.Duration!.Value);
                 RunOnUi(() =>
                 {
-                    if (_items.Remove(item)) Changed?.Invoke(this, EventArgs.Empty);
+                    if (_items.Remove(item)) RaiseChanged();
                 });
             }
             catch { }
@@ -176,8 +181,17 @@ namespace HD2ModManager.Services
         {
             if (_items.Count == 0) return;
             _items.Clear();
-            Changed?.Invoke(this, EventArgs.Empty);
+            RaiseChanged();
         });
+
+        private void RaiseChanged()
+        {
+            UiPerformanceDiagnostics.RecordBurst(
+                "Notification.Changed",
+                $"visible={_items.Count}; history={_history.Count}",
+                threshold: 12);
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
 
         private NotificationItem? FindRecentDuplicate(string message, NotificationLevel level, string? source, DateTime now)
             => _history.LastOrDefault(item => item.Level == level

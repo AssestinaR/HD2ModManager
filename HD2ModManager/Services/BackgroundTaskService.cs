@@ -326,6 +326,10 @@ namespace HD2ModManager.Services
             bool canCancel = true,
             BackgroundTaskPresentation presentation = BackgroundTaskPresentation.Background)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "BackgroundTask.Enqueue",
+                $"kind={kind}; presentation={presentation}",
+                threshold: 12);
             var task = new BackgroundTaskItem(kind, name, detail, origin, userVisibleReason, suggestedAction, retry, canCancel, presentation);
             RunOnUi(() => _tasks.Add(task));
             task.PropertyChanged += OnTaskPropertyChanged;
@@ -363,6 +367,10 @@ namespace HD2ModManager.Services
 
         private void QueueChanged(bool requiresProjectionRefresh)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "BackgroundTask.Changed",
+                $"projection={requiresProjectionRefresh}; ui={_dispatcher?.CheckAccess() == true}",
+                threshold: 16);
             if (requiresProjectionRefresh) Interlocked.Exchange(ref _projectionRefreshPending, 1);
             if (_dispatcher is null)
             {

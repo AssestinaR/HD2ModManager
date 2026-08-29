@@ -225,6 +225,14 @@ namespace HD2ModManager.ViewModels
 
         public void Refresh(ListTransitionKind transitionKind = ListTransitionKind.Automatic)
         {
+            UiPerformanceDiagnostics.RecordBurst(
+                "Library.Refresh",
+                $"kind={transitionKind}; current={Items.Count}",
+                threshold: 10);
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "Library.Refresh",
+                thresholdMilliseconds: 25,
+                details: () => $"kind={transitionKind}; result={Items.Count}; query={(string.IsNullOrWhiteSpace(Query) ? "empty" : "set")}; decorations={ShowDecorations}; options={ShowOptions}; outdated={ShowOnlyOutdated}");
             var all = _library.All().ToList();
             if (!ShowDecorations) all = all.Where(mod => !mod.IsDecoration).ToList();
             if (!ShowOptions) all = all.Where(mod => !mod.IsOption).ToList();
@@ -300,6 +308,10 @@ namespace HD2ModManager.ViewModels
             var cancellationToken = cancellation.Token;
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var processed = 0;
+            using var thumbnailPerf = UiPerformanceDiagnostics.Measure(
+                "Library.ThumbnailRefresh",
+                thresholdMilliseconds: 100,
+                details: () => $"processed={processed}; version={version}; canceled={cancellationToken.IsCancellationRequested}");
             try
             {
                 // 先固定本次刷新快照，避免异步请求期间库同步修改底层字典。
@@ -373,6 +385,14 @@ namespace HD2ModManager.ViewModels
                 _refreshAllPresentations = false;
             }
             Interlocked.Exchange(ref _projectionRefreshQueued, 0);
+            UiPerformanceDiagnostics.RecordBurst(
+                "Library.ApplyProjection",
+                $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}",
+                threshold: 8);
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "Library.ApplyProjection",
+                thresholdMilliseconds: 25,
+                details: () => $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}; items={Items.Count}");
             RefreshUserStatuses();
             // A status-only update cannot affect the current filter or order. Keep the
             // existing containers so virtualized rows retain their visual state.
