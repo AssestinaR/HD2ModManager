@@ -295,6 +295,19 @@ namespace HD2ModManager.ViewModels
             }), System.Windows.Threading.DispatcherPriority.ContextIdle);
         }
 
+        // MainWindow owns FrameworkElement lifetime, while the Shell owns the
+        // reusable page VMs. This explicit bridge lets the window warm actual
+        // Profile/Library views without performing a visible navigation.
+        internal (ProfilePageViewModel Profile, LibraryPageViewModel Library) GetOrCreateWorkspaceVisualPrewarmPages()
+        {
+            var profile = CreateProfilePage();
+            var library = CreateLibraryPage();
+            // The hidden hosts mirror the split workspace so the library warms
+            // its profile-companion projection as well as its visual tree.
+            library.SetProfileCompanionVisible(true);
+            return (profile, library);
+        }
+
         private async Task InitializeLibraryAndRunStartupChecksAsync(string configDir, CancellationToken cancellationToken)
         {
 			var startupClock = Stopwatch.StartNew();

@@ -260,6 +260,26 @@
         </Grid>
 
         <Grid Grid.Row="1">
+            <!--
+                Real but invisible workspace hosts used only for startup warmup.
+                Opacity=0 deliberately keeps measure/arrange and virtualization
+                active; Collapsed would leave the first navigation cold.
+            -->
+            <Grid x:Name="WorkspaceVisualPrewarmHost"
+                  Opacity="0"
+                  IsHitTestVisible="False"
+                  ClipToBounds="True"
+                  Panel.ZIndex="-100">
+                <Grid Margin="{StaticResource LayoutGapThickness}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="12"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <ContentControl x:Name="PrewarmProfilePageHost" Grid.Column="0" Style="{StaticResource WorkspacePageHost}"/>
+                    <ContentControl x:Name="PrewarmLibraryPageHost" Grid.Column="2" Style="{StaticResource WorkspacePageHost}"/>
+                </Grid>
+            </Grid>
             <Grid Margin="{StaticResource LayoutGapThickness}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>

@@ -33,6 +33,15 @@ namespace HD2ModManager
         // and Library/Profile.
         private readonly Dictionary<object, FrameworkElement> _leftCorePageViewCache = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<object, FrameworkElement> _rightCorePageViewCache = new(ReferenceEqualityComparer.Instance);
+        // A short-lived startup cache owns the first real Profile/Library views
+        // before either has been navigated to. The views remain attached to an
+        // invisible host so templates, bindings and virtualized ListBoxes can
+        // complete their first layout without delaying Home navigation.
+        private readonly Dictionary<object, FrameworkElement> _prewarmedCorePageViewCache = new(ReferenceEqualityComparer.Instance);
+        private bool _workspaceVisualPrewarmQueued;
+        private bool _workspaceVisualPrewarmStarted;
+        private EventHandler? _workspaceVisualPrewarmRenderHandler;
+        private int _workspaceVisualPrewarmFramesRemaining;
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
         {
@@ -163,17 +172,21 @@ namespace HD2ModManager
             ShowInitialPage(RightCurrentPageHost, (DataContext as ShellViewModel)?.RightPage);
             _pageLayoutWasSplit = (DataContext as ShellViewModel)?.ShowRightSlot == true;
             Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
+            QueueWorkspaceVisualPrewarm();
         }
 
         private void MainWindow_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
+            ClearWorkspaceVisualPrewarm();
             _leftCorePageViewCache.Clear();
             _rightCorePageViewCache.Clear();
             SubscribeToShell(e.NewValue as ShellViewModel);
+            if (IsLoaded) QueueWorkspaceVisualPrewarm();
         }
 
         private async void MainWindow_Closed(object? sender, EventArgs e)
         {
+            ClearWorkspaceVisualPrewarm();
             _leftCorePageViewCache.Clear();
             _rightCorePageViewCache.Clear();
             if (DataContext is ShellViewModel shell)
@@ -552,6 +565,112 @@ namespace HD2ModManager
             host.Opacity = 1;
         }
 
+        private void QueueWorkspaceVisualPrewarm()
+        {
+            if (_workspaceVisualPrewarmQueued || _workspaceVisualPrewarmStarted || !IsLoaded) return;
+            _workspaceVisualPrewarmQueued = true;
+            _ = Dispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+                new Action(BeginWorkspaceVisualPrewarm));
+        }
+
+        private void BeginWorkspaceVisualPrewarm()
+        {
+            _workspaceVisualPrewarmQueued = false;
+            if (_workspaceVisualPrewarmStarted || !IsLoaded || DataContext is not ShellViewModel shell) return;
+
+            _workspaceVisualPrewarmStarted = true;
+            var pages = shell.GetOrCreateWorkspaceVisualPrewarmPages();
+            using (UiPerformanceDiagnostics.Measure(
+                       "WorkspaceVisualPrewarm.Profile",
+                       thresholdMilliseconds: 30,
+                       details: () => "host=prewarm-profile"))
+            {
+                PrewarmCorePageView(pages.Profile, PrewarmProfilePageHost);
+            }
+
+            // Build one real page per idle turn. This keeps Home responsive even
+            // on cold WPF/JIT startup, while input still outranks the warmup.
+            _ = Dispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+                new Action(ContinueWorkspaceVisualPrewarm));
+        }
+
+        private void ContinueWorkspaceVisualPrewarm()
+        {
+            if (!IsLoaded || !_workspaceVisualPrewarmStarted || DataContext is not ShellViewModel shell) return;
+
+            var pages = shell.GetOrCreateWorkspaceVisualPrewarmPages();
+            using (UiPerformanceDiagnostics.Measure(
+                       "WorkspaceVisualPrewarm.Library",
+                       thresholdMilliseconds: 30,
+                       details: () => "host=prewarm-library"))
+            {
+                PrewarmCorePageView(pages.Library, PrewarmLibraryPageHost);
+            }
+
+            AwaitWorkspaceVisualPrewarmFrames();
+        }
+
+        private void PrewarmCorePageView(object page, ContentControl host)
+        {
+            if (_prewarmedCorePageViewCache.ContainsKey(page)
+                || _leftCorePageViewCache.ContainsKey(page)
+                || _rightCorePageViewCache.ContainsKey(page))
+                return;
+
+            var view = CreateTemplatedPageView(page);
+            if (view is null) return;
+            _prewarmedCorePageViewCache.Add(page, view);
+            host.Content = view;
+        }
+
+        private void AwaitWorkspaceVisualPrewarmFrames()
+        {
+            if (_workspaceVisualPrewarmRenderHandler is not null)
+            {
+                CompositionTarget.Rendering -= _workspaceVisualPrewarmRenderHandler;
+                _workspaceVisualPrewarmRenderHandler = null;
+            }
+
+            _workspaceVisualPrewarmFramesRemaining = 2;
+            EventHandler? handler = null;
+            handler = (_, _) =>
+            {
+                if (--_workspaceVisualPrewarmFramesRemaining > 0) return;
+                if (handler is not null) CompositionTarget.Rendering -= handler;
+                if (ReferenceEquals(_workspaceVisualPrewarmRenderHandler, handler))
+                    _workspaceVisualPrewarmRenderHandler = null;
+
+                if (!IsLoaded || _prewarmedCorePageViewCache.Count == 0) return;
+                LogService.Info($"工作区视觉预热完成：已布局真实配置页 / 模组库页，缓存视图={_prewarmedCorePageViewCache.Count}。");
+            };
+            _workspaceVisualPrewarmRenderHandler = handler;
+            CompositionTarget.Rendering += handler;
+        }
+
+        private void ClearWorkspaceVisualPrewarm()
+        {
+            if (_workspaceVisualPrewarmRenderHandler is not null)
+            {
+                CompositionTarget.Rendering -= _workspaceVisualPrewarmRenderHandler;
+                _workspaceVisualPrewarmRenderHandler = null;
+            }
+
+            _workspaceVisualPrewarmQueued = false;
+            _workspaceVisualPrewarmStarted = false;
+            _workspaceVisualPrewarmFramesRemaining = 0;
+            if (PrewarmProfilePageHost is not null) PrewarmProfilePageHost.Content = null;
+            if (PrewarmLibraryPageHost is not null) PrewarmLibraryPageHost.Content = null;
+            _prewarmedCorePageViewCache.Clear();
+        }
+
+        private void DetachPrewarmedCorePage(FrameworkElement view)
+        {
+            if (ReferenceEquals(PrewarmProfilePageHost.Content, view)) PrewarmProfilePageHost.Content = null;
+            if (ReferenceEquals(PrewarmLibraryPageHost.Content, view)) PrewarmLibraryPageHost.Content = null;
+        }
+
         // Decoration planning is a full-workspace tool page. Host its concrete view
         // explicitly so it is not affected by implicit-template resolution during a
         // page transition. Core navigation pages use the same explicit creation
@@ -567,6 +686,14 @@ namespace HD2ModManager
             {
                 DetachCachedPageFromWorkspace(cached, targetHost);
                 return cached;
+            }
+
+            if (ShouldCacheCorePage(page)
+                && _prewarmedCorePageViewCache.Remove(page, out var prewarmed))
+            {
+                DetachPrewarmedCorePage(prewarmed);
+                cache[page] = prewarmed;
+                return prewarmed;
             }
 
             object? content = page switch
