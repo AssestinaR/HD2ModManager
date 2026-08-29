@@ -37,9 +37,12 @@ public sealed class ModLibraryImporterTests
 
 			Assert.True(Directory.Exists(paths.ModsDirectory));
 			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, "library.json")));
-			Assert.Equal(2, result.Snapshot.Nodes.Count);
+            Assert.Equal(3, result.Snapshot.Nodes.Count);
+            var patchNodes = result.Snapshot.Nodes.Values.Where(node => node.PatchGroups.Count != 0).ToArray();
+            Assert.Equal(2, patchNodes.Length);
+            Assert.Single(result.Snapshot.Nodes.Values, node => node.PatchGroups.Count == 0);
 
-			foreach (var node in result.Snapshot.Nodes.Values)
+            foreach (var node in patchNodes)
 			{
 				var storedDir = Path.Combine(appRoot, "mods", node.RelativePath);
 				Assert.True(Directory.Exists(storedDir));

@@ -10,20 +10,7 @@ public interface IEquipmentUnitCatalogService
 		IReadOnlySet<AssetKey>? unitAssetKeys = null,
 		CancellationToken cancellationToken = default);
 
-	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
-	ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
-		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
-		IReadOnlyList<string> patchTocPaths,
-		CancellationToken cancellationToken = default);
-
-	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
-	ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
-		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
-		IReadOnlyList<string> patchTocPaths,
-		CancellationToken cancellationToken,
-		IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>> preparedEntries);
-
-	ValueTask<CrossArmorTransferPlan> CreatePlanAsync(
+    ValueTask<CrossArmorTransferPlan> CreatePlanAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates,
 		IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates,
 		string? selectedSourceArchiveId,

@@ -320,13 +320,12 @@ public sealed class ModRepairBatchServiceTests
         private readonly string root = Path.Combine(Path.GetTempPath(), "hd2-repair-tests", Guid.NewGuid().ToString("N"));
         public readonly string ModsRoot; public readonly string GameData; public readonly CancellationTokenSource Cancellation = new();
         public readonly FakeReconstruction Reconstruction = new();
-        public readonly FakeAnalysis Analysis = new();
         public readonly FakeParser Parser = new();
         public readonly FakeInformationCenter InformationCenter = new(new Dictionary<ModNodeId, ModContentFacts>());
         public Action? InitializationSeam { get; set; }
         public Action<string>? CommitSeam { get; set; }
         public Func<string, string, Task>? ManifestWriter { get; set; }
-        public IModRepairBatchService Service => new ModRepairBatchService(new StoragePaths(root), Reconstruction, Analysis, Parser, InitializationSeam, CommitSeam, ManifestWriter, InformationCenter);
+		public IModRepairBatchService Service => new ModRepairBatchService(new StoragePaths(root), Reconstruction, Parser, InitializationSeam, CommitSeam, ManifestWriter, InformationCenter);
         public Fixture()
         {
             ModsRoot = Path.Combine(root, "mods"); GameData = Path.Combine(root, "game"); Directory.CreateDirectory(ModsRoot); Directory.CreateDirectory(GameData);
@@ -371,14 +370,6 @@ public sealed class ModRepairBatchServiceTests
                 throw new InvalidOperationException("injected progress failure");
             }
         }
-    }
-
-    private sealed class FakeAnalysis : IAdvancedModAnalysisService
-    {
-        public ValueTask<AdvancedModAnalysisState> GetStateAsync(ModNode node, string _, CancellationToken __ = default) => ValueTask.FromResult(new AdvancedModAnalysisState(node.Id, true, true, DateTimeOffset.UtcNow, Array.Empty<CoreIssue>()));
-        public ValueTask<AdvancedModAnalysisState> GetCachedStateAsync(ModNode node, string _, CancellationToken __ = default) => GetStateAsync(node, _ , __);
-        public ValueTask<AdvancedModAnalysisState> AnalyzeAsync(ModNode node, string _, CancellationToken __ = default) => GetStateAsync(node, _, __);
-        public ValueTask<IReadOnlyList<PatchGroupAnalysis>> GetRequiredAnalysesAsync(ModNode node, string _, CancellationToken __ = default) => ValueTask.FromResult<IReadOnlyList<PatchGroupAnalysis>>(Array.Empty<PatchGroupAnalysis>());
     }
 
     private sealed class FakeReconstruction : IModSameKeyReconstructionService

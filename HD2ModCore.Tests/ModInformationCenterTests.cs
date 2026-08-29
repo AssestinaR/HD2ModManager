@@ -97,7 +97,7 @@ public sealed class ModInformationCenterTests
 			var replacement = await center.RequestAssetInventoryAsync(node, root, new ModInformationRequest(ModInformationKind.AssetInventory, "Test", "generation-2", true));
 			Assert.Equal(ModInformationStatus.Fresh, replacement.Status);
 			Assert.Equal(2, producer.Count);
-			Assert.Equal("new-generation", Assert.Single(cache.SavedGenerations));
+            Assert.Equal("generation-2", Assert.Single(cache.SavedGenerations));
 			Assert.Equal(node.Id, Assert.Single(index.UpdatedNodeIds));
 			await center.DisposeAsync();
 		}

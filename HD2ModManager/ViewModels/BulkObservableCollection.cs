@@ -17,30 +17,15 @@ namespace HD2ModManager.ViewModels
         Replace,
     }
 
-    public sealed record ListTransitionBatch(
-        long Version,
-        ListTransitionKind Kind,
-        int OldCount,
-        int NewCount,
-        bool Animate = true);
-
-    public interface IListTransitionNotifier
-    {
-        event EventHandler<ListTransitionBatch>? TransitionStarting;
-    }
-
-    public sealed class BulkObservableCollection<T> : ObservableCollection<T>, IListTransitionNotifier
+    public sealed class BulkObservableCollection<T> : ObservableCollection<T>
     {
         private bool _suppressNotifications;
         private readonly Func<T, string?>? _transitionKey;
-        private long _transitionVersion;
 
         public BulkObservableCollection(Func<T, string?>? transitionKey = null)
         {
             _transitionKey = transitionKey;
         }
-
-        public event EventHandler<ListTransitionBatch>? TransitionStarting;
 
         public void ReplaceWith(IEnumerable<T> items, ListTransitionKind kind = ListTransitionKind.Automatic)
         {
@@ -56,13 +41,6 @@ namespace HD2ModManager.ViewModels
                 "List.ReplaceWith",
                 thresholdMilliseconds: 25,
                 details: () => $"itemType={typeof(T).Name}; kind={resolvedKind}; old={oldCount}; new={replacement.Count}");
-            var batch = new ListTransitionBatch(
-                Interlocked.Increment(ref _transitionVersion),
-                resolvedKind,
-                oldCount,
-                replacement.Count,
-                Animate: resolvedKind != ListTransitionKind.Refresh);
-            TransitionStarting?.Invoke(this, batch);
             _suppressNotifications = true;
             try
             {

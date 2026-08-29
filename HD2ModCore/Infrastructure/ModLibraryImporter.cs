@@ -275,8 +275,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				? sourceRoot
 				: Path.Combine(sourceRoot, node.RelativePath);
 
-			var displayName = BuildDisplayName(sourceDisplayName, node.RelativePath);
-			var flatDirName = CreateUniqueDirectoryName(_paths.ModsDirectory, displayName, usedNames);
+			var directoryDisplayName = BuildDisplayName(sourceDisplayName, node.RelativePath);
+			var flatDirName = CreateUniqueDirectoryName(_paths.ModsDirectory, directoryDisplayName, usedNames);
 			var destDir = Path.Combine(_paths.ModsDirectory, flatDirName);
 			CopyTopLevelFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
 			CopyExternalInstallFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
@@ -287,7 +287,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			nodes[kvp.Key] = node with
 			{
 				RelativePath = flatDirName,
-				Metadata = node.Metadata with { Name = displayName },
+				Metadata = node.Metadata with { Name = ResolveStoredNodeDisplayName(node, directoryDisplayName, manifest) },
 				Children = Array.Empty<ModNodeId>(),
 			};
 		}
@@ -297,6 +297,13 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			Nodes = nodes,
 			SourceDisplayName = sourceDisplayName,
 		};
+	}
+
+	private static string ResolveStoredNodeDisplayName(ModNode node, string fallback, StandardModManifest? manifest)
+	{
+		if (manifest is null) return fallback;
+		var entry = FindManifestEntry(BuildManifestEntries(manifest), NormalizeRelativePath(node.RelativePath));
+		return string.IsNullOrWhiteSpace(entry?.Name) ? fallback : entry.Name!;
 	}
 
 	private async ValueTask<LibrarySnapshot> MergeIntoSnapshotAsync(ImportedObjectTree imported, CancellationToken cancellationToken)

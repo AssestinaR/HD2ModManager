@@ -21,13 +21,15 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 		var material = new AdaptationAssetKey(MaterialType, 2);
 		var analysis = Analysis([new AdaptationAssetKey(UnitType, 1)], [Reference(new AdaptationAssetKey(UnitType, 1), material, PatchReferenceKind.UnitMaterial)]);
 		var profile = ProfileFor(model);
-		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [model.Id] = [analysis] }), new EmptyMappingService());
+		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [model.Id] = [analysis] }), new EmptyMappingService(), null, new EmptyReferenceGraphQueryIndex());
 
 		var result = await service.BuildAsync(profile, Snapshot(profile, model), "unused");
 
-		var issue = Assert.Single(result.Items);
-		Assert.Equal(ProfileMaterialDiagnosticKind.MissingMaterial, issue.Kind);
-		Assert.Equal(material.FileId, issue.AssetKey.FileId);
+        Assert.Equal(2, result.Items.Count);
+        var issue = Assert.Single(result.Items, item => item.AssetKey.FileId == material.FileId);
+        Assert.Equal(ProfileMaterialDiagnosticKind.MissingMaterial, issue.Kind);
+        var aggregate = Assert.Single(result.Items, item => item.AssetKey.FileId == 1 && item.Summary == "无可用材质");
+        Assert.Equal(ProfileMaterialDiagnosticKind.MissingMaterial, aggregate.Kind);
 	}
 
 	[Fact]
@@ -47,7 +49,7 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 			[red.Id] = [Analysis([material, redTexture], [Reference(material, redTexture, PatchReferenceKind.MaterialTexture)])],
 			[blue.Id] = [Analysis([material, blueTexture], [Reference(material, blueTexture, PatchReferenceKind.MaterialTexture)])],
 		};
-		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(data), new EmptyMappingService());
+		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(data), new EmptyMappingService(), null, new EmptyReferenceGraphQueryIndex());
 
 		var result = await service.BuildAsync(profile, Snapshot(profile, model, red, blue), "unused");
 

@@ -4,8 +4,6 @@ using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using Microsoft.Data.Sqlite;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
-using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
-using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using AdaptationPatchUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader;
 
 namespace HD2ModCore.Infrastructure;
@@ -86,119 +84,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 			.ToArray();
 	}
 
-	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
-	public ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
-		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
-		IReadOnlyList<string> patchTocPaths,
-		CancellationToken cancellationToken = default)
-		=> FilterTransferableSourcePartsAsync(candidates, patchTocPaths, cancellationToken, null);
-
-	[Obsolete("Use IModEquipmentSourceFactsReader so source geometry is read through the unified Mod information reader.")]
-	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(
-		IReadOnlyList<EquipmentUnitCatalogEntry> candidates,
-		IReadOnlyList<string> patchTocPaths,
-		CancellationToken cancellationToken,
-		IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>? preparedEntries)
-	{
-		ArgumentNullException.ThrowIfNull(candidates);
-		ArgumentNullException.ThrowIfNull(patchTocPaths);
-		var candidateKeys = candidates.SelectMany(entry => entry.Parts).Select(part => part.UnitAssetKey).ToHashSet();
-		var transferableMeshes = new HashSet<(AssetKey unit, int mesh)>();
-		var currentMeshIds = new Dictionary<(AssetKey unit, int mesh), uint>();
-		var currentVisualLod0Meshes = new Dictionary<AssetKey, List<(int MeshInfoIndex, uint MeshId)>>();
-		var cullingMeshes = new Dictionary<(AssetKey unit, int mesh), (uint MeshId, string Slot, string PieceType, string Name)>();
-		var ambiguousMeshIds = new HashSet<(AssetKey unit, int mesh)>();
-		var tocScanner = new AdaptationPatchTocScanner();
-		var unitReader = new AdaptationPatchUnitMeshReader();
-		foreach (var patchPath in patchTocPaths.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
-		{
-			var fullPatchPath = Path.GetFullPath(patchPath);
-			var entries = preparedEntries is not null && preparedEntries.TryGetValue(fullPatchPath, out var cachedEntries)
-				? cachedEntries
-				: await tocScanner.ScanEntriesAsync(fullPatchPath, cancellationToken).ConfigureAwait(false);
-			foreach (var entry in entries.Where(entry => candidateKeys.Contains(ToCoreKey(entry.AssetKey))))
-			{
-				try
-				{
-					var unit = await unitReader.ReadAsync(entry, entries, cancellationToken: cancellationToken).ConfigureAwait(false);
-					// A hidden source can retain a full-size LOD=-1 culling mesh. It must not
-					// become an ordinary replacement candidate merely because that culling mesh is large.
-					if (UnitSourceVisibilityClassifier.Classify(unit).IsHidden)
-						continue;
-					foreach (var mesh in unit.Model.RawMeshData.Where(HasTransferableGeometry))
-					{
-						var unitKey = ToCoreKey(entry.AssetKey);
-						var meshInfo = unit.Model.Meshes.SingleOrDefault(candidate => candidate.Index == mesh.MeshInfoIndex);
-						if (meshInfo is null || meshInfo.MeshId == 0)
-							continue;
-						if (meshInfo.SemanticInfo.IsCullingBody && mesh.LodIndex == -1)
-						{
-							cullingMeshes[(unitKey, mesh.MeshInfoIndex)] = (meshInfo.MeshId, meshInfo.SemanticInfo.Slot, meshInfo.SemanticInfo.PieceType, meshInfo.SemanticInfo.Name);
-							continue;
-						}
-						if (mesh.LodIndex == 0 && meshInfo.SemanticInfo.IsVisualMesh)
-						{
-							if (!currentVisualLod0Meshes.TryGetValue(unitKey, out var currentVisualMeshes))
-							{
-								currentVisualMeshes = [];
-								currentVisualLod0Meshes.Add(unitKey, currentVisualMeshes);
-							}
-							if (!currentVisualMeshes.Contains((mesh.MeshInfoIndex, meshInfo.MeshId)))
-								currentVisualMeshes.Add((mesh.MeshInfoIndex, meshInfo.MeshId));
-						}
-
-						var key = (unitKey, mesh.MeshInfoIndex);
-						if (currentMeshIds.TryGetValue(key, out var existingMeshId) && existingMeshId != meshInfo.MeshId)
-						{
-							ambiguousMeshIds.Add(key);
-							transferableMeshes.Remove(key);
-							continue;
-						}
-
-						if (!ambiguousMeshIds.Contains(key))
-						{
-							currentMeshIds[key] = meshInfo.MeshId;
-							transferableMeshes.Add(key);
-						}
-					}
-				}
-				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
-				{
-					// A malformed source Unit must not be presented as a transferable model.
-				}
-			}
-		}
-		return candidates
-			.Select(entry => entry with
-			{
-				Parts = entry.Parts
-					.Where(part => transferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex)))
-					.Select(part => part with { MeshId = currentMeshIds[(part.UnitAssetKey, part.MeshInfoIndex)] })
-					.Concat(RebindSingleReindexedVisualLod0(entry, transferableMeshes, currentVisualLod0Meshes))
-					.Concat(cullingMeshes
-						.Where(item => item.Key.unit == entry.Parts.FirstOrDefault()?.UnitAssetKey
-							&& entry.Parts.Any(part => CullingMatchesPart(item.Value, part)))
-						.Select(item =>
-						{
-							var template = entry.Parts.First(part => CullingMatchesPart(item.Value, part));
-							return template with
-							{
-								MeshInfoIndex = item.Key.mesh,
-								MeshId = item.Value.MeshId,
-								SemanticName = item.Value.Name,
-								PieceType = item.Value.PieceType,
-								IsCullingMesh = true
-							};
-						}))
-					.GroupBy(part => (part.UnitAssetKey, part.MeshInfoIndex))
-					.Select(group => group.First())
-					.ToArray()
-			})
-			.Where(entry => entry.Parts.Count != 0)
-			.ToArray();
-	}
-
-	public ValueTask<CrossArmorTransferPlan> CreatePlanAsync(
+    public ValueTask<CrossArmorTransferPlan> CreatePlanAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates,
 		IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates,
 		string? selectedSourceArchiveId,
@@ -1070,37 +956,8 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 	private static UnitMeshBodyVariant PreferredBodyVariant(CrossArmorBodyVariantPreference preference)
 		=> preference == CrossArmorBodyVariantPreference.Slim ? UnitMeshBodyVariant.Slim : UnitMeshBodyVariant.Stocky;
 
-	private static bool HasTransferableGeometry(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitRawMeshData mesh)
-		=> UnitGeometryFactsBuilder.HasRenderableGeometry(mesh);
-
-	private static int GeometryRank(EquipmentUnitPart part)
-		=> UnitGeometryRanker.GetRank(part.GeometryQuality);
-
-	private static bool CullingMatchesPart((uint MeshId, string Slot, string PieceType, string Name) culling, EquipmentUnitPart part)
-		=> string.Equals(culling.Slot, part.PartKind.ToString(), StringComparison.OrdinalIgnoreCase)
-			&& (string.IsNullOrWhiteSpace(culling.PieceType)
-				|| string.IsNullOrWhiteSpace(part.PieceType)
-				|| string.Equals(culling.PieceType, part.PieceType, StringComparison.OrdinalIgnoreCase));
-
-	private static IEnumerable<EquipmentUnitPart> RebindSingleReindexedVisualLod0(
-		EquipmentUnitCatalogEntry entry,
-		IReadOnlySet<(AssetKey unit, int mesh)> transferableMeshes,
-		IReadOnlyDictionary<AssetKey, List<(int MeshInfoIndex, uint MeshId)>> currentVisualLod0Meshes)
-	{
-		return entry.Parts
-			.GroupBy(part => part.UnitAssetKey)
-			.Where(group => !group.Any(part => transferableMeshes.Contains((part.UnitAssetKey, part.MeshInfoIndex))))
-			.Where(group => group.Count() == 1)
-			.Where(group => currentVisualLod0Meshes.TryGetValue(group.Key, out var sourceMeshes) && sourceMeshes.Count == 1)
-			.Select(group =>
-			{
-				var source = currentVisualLod0Meshes[group.Key][0];
-				return group.First() with { MeshInfoIndex = source.MeshInfoIndex, MeshId = source.MeshId };
-			});
-	}
-
-	private static AssetKey ToCoreKey(AdaptationAssetKey assetKey) => new(assetKey.TypeId, assetKey.FileId);
-
+    private static int GeometryRank(EquipmentUnitPart part)
+        => UnitGeometryRanker.GetRank(part.GeometryQuality);
 	private sealed record TargetUse(EquipmentUnitCatalogEntry Entry, EquipmentUnitPart Part);
 	private sealed record TargetUnitGroup(AssetKey UnitAssetKey, TargetUse Representative, IReadOnlyList<TargetUse> Uses);
 	private sealed record SourceTargetCandidate(TargetUnitGroup Target, EquipmentUnitPart Source);

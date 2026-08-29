@@ -130,13 +130,9 @@ public sealed class CanonicalCrossArmorOrchestrator
 	}
 
 	// Cross-armor production is intentionally routed through direct source Unit
-	// reuse.  Keep the old Canonical cross-armor branch available as an internal
-	// compatibility fallback for callers that still construct a legacy request,
-	// but make that route explicit and auditable instead of presenting it as a
-	// supported production option.  Same-key reconstruction continues to use
-	// Canonical independently of this compatibility marker.
-	[Obsolete("跨护甲生产已统一使用 DirectSourceUnitReuse；Canonical 全量跨护甲重建仅保留内部兼容，不应从生产入口调用。")]
-	private static bool ShouldUseObsoleteCanonicalCrossArmorRoute(CrossArmorTransferCandidateRequest request)
+	// reuse. The Canonical branch remains an explicit diagnostic fallback for
+	// callers that request it; Same-key reconstruction uses Canonical separately.
+	private static bool UsesCanonicalCrossArmorFallback(CrossArmorTransferCandidateRequest request)
 		=> !request.DirectSourceUnitReuse;
 
 	public async ValueTask<CrossArmorTransferCandidateResult> ExecuteAsync(
@@ -236,7 +232,7 @@ public sealed class CanonicalCrossArmorOrchestrator
 				}
 			}
 			#pragma warning disable CS0618 // The compatibility branch is intentionally kept behind an obsolete marker.
-			else if (ShouldUseObsoleteCanonicalCrossArmorRoute(request))
+			else if (UsesCanonicalCrossArmorFallback(request))
 			{
 				Log("[OBSOLETE-ROUTE] CrossArmor=CanonicalFullRebuild Action=CompatibilityOnly");
 				var sourceReadResults = await UnitJobExecutor.ExecuteAsync(

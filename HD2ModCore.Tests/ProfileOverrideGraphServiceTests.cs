@@ -30,7 +30,7 @@ public sealed class ProfileOverrideGraphServiceTests
 		[
 			new ArchiveMetadata("target-a", "Armor", "Armor A"),
 		]));
-		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping);
+		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping, new EmptyReferenceGraphQueryIndex());
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -67,7 +67,7 @@ public sealed class ProfileOverrideGraphServiceTests
 		var mapping = new FakeMappingFactsService(
 			new GameDataMappedAssetFact(firstKey, "body", "unit", AssetTypeCategory.Model, [target]),
 			new GameDataMappedAssetFact(secondKey, "helmet", "unit", AssetTypeCategory.Model, [target]));
-		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping);
+		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping, new EmptyReferenceGraphQueryIndex());
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -93,7 +93,7 @@ public sealed class ProfileOverrideGraphServiceTests
 			[firstId] = CreateFacts(first, "aaaaaaaaaaaaaaaa", material, "red"),
 			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", material, "blue"),
 		};
-		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), new FakeMappingFactsService());
+		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), new FakeMappingFactsService(), new EmptyReferenceGraphQueryIndex());
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -116,13 +116,13 @@ public sealed class ProfileOverrideGraphServiceTests
 		var firstService = new ProfileOverrideGraphService(new FakeInformationCenter(new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[nodeId] = CreateFacts(node, "aaaaaaaaaaaaaaaa", assetKey, "gen-a"),
-		}), mapping);
+		}), mapping, new EmptyReferenceGraphQueryIndex());
 		var first = await firstService.BuildAsync(profile, snapshot, "unused");
 		var revised = await firstService.BuildAsync(profile with { Revision = 2 }, snapshot, "unused");
 		var changedContentService = new ProfileOverrideGraphService(new FakeInformationCenter(new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[nodeId] = CreateFacts(node, "aaaaaaaaaaaaaaaa", assetKey, "gen-b"),
-		}), mapping);
+		}), mapping, new EmptyReferenceGraphQueryIndex());
 		var changedContent = await changedContentService.BuildAsync(profile, snapshot, "unused");
 		mapping.Generation = "mapping-2";
 		var changedMapping = await firstService.BuildAsync(profile, snapshot, "unused");

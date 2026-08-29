@@ -27,13 +27,6 @@ public sealed class ModRepairBatchService : IModRepairBatchService
 		this.informationCenter = informationCenter;
 		this.informationReader = informationReader;
 	}
-
-    [Obsolete("Batch repair no longer requires advanced Unit analysis. Use the overload without IAdvancedModAnalysisService.")]
-	public ModRepairBatchService(StoragePaths paths, IModSameKeyReconstructionService reconstruction, IAdvancedModAnalysisService _, IPatchFileNameParser fileNameParser, Action? initializationSeam = null, Action<string>? commitSeam = null, Func<string, string, Task>? manifestWriter = null, IModInformationCenter? informationCenter = null, IModInformationReader? informationReader = null)
-		: this(paths, reconstruction, fileNameParser, initializationSeam, commitSeam, manifestWriter, informationCenter, informationReader)
-    {
-    }
-
     public async ValueTask<ModRepairBatchResult> RepairAsync(IReadOnlyList<ModNode> sourceNodes, string modsRootDirectory, string gameDataDirectory, CancellationToken cancellationToken = default, IProgress<OperationProgressEvent>? progress = null, Guid? operationId = null)
     {
         ArgumentNullException.ThrowIfNull(sourceNodes);

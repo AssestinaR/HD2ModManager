@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
@@ -31,12 +32,17 @@ public sealed class StandardManifestImportTests
             await File.WriteAllTextAsync(Path.Combine(package, "manifest.json"), JsonSerializer.Serialize(manifest));
 
             var paths = new StoragePaths(appRoot);
-            var importer = CoreServices.CreateModLibraryImporter(paths);
+			await using var informationReader = CoreServices.CreateModInformationReader();
+			await using var informationCenter = CoreServices.CreateModInformationCenter(paths, informationReader);
+			var importer = CoreServices.CreateModLibraryImporter(paths, informationCenter, informationReader);
             var result = await importer.ImportFolderAsync(package);
-            var node = Assert.Single(result.Snapshot.Nodes.Values);
+            Assert.Equal(2, result.Snapshot.Nodes.Count);
+            var rootNode = Assert.Single(result.Snapshot.Nodes.Values, candidate => candidate.Metadata.Kind == ModNodeKind.Standard);
+            var node = Assert.Single(result.Snapshot.Nodes.Values, candidate => candidate.Metadata.Kind == ModNodeKind.Option);
             Assert.Equal(optionGuid, node.Id.Value);
             Assert.Equal("Option", node.Metadata.Name);
             Assert.Equal("Option note", node.Metadata.Notes);
+            Assert.Empty(rootNode.PatchGroups);
             Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, node.RelativePath, "icon.png")));
         }
         finally { try { Directory.Delete(root, recursive: true); } catch { } }

@@ -445,24 +445,13 @@ internal sealed class ModListTransitionController : IDisposable
         scrollViewer.ScrollToVerticalOffset(Math.Clamp(sourceOffset, 0, scrollViewer.ScrollableHeight));
     }
 
-    private List<KeyedItem> CreateDesiredEntries(IReadOnlyList<object> desired, bool reportDuplicateKeys = true)
-    {
-        var result = new List<KeyedItem>(desired.Count);
-        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in desired)
-        {
-            var key = GetItemKey(item);
-            if (string.IsNullOrWhiteSpace(key)) continue;
-            if (!keys.Add(key))
-            {
-                if (reportDuplicateKeys)
-                    LogService.Warn($"Mod 列表投影出现重复稳定键，已忽略后续行：{key}");
-                continue;
-            }
-            result.Add(new KeyedItem(key, item));
-        }
-        return result;
-    }
+    private List<ModListProjectionPlanner.Entry> CreateDesiredEntries(IReadOnlyList<object> desired, bool reportDuplicateKeys = true)
+        => ModListProjectionPlanner.CreateEntries(
+            desired,
+            GetItemKey,
+            reportDuplicateKeys
+                ? key => LogService.Warn($"Mod 列表投影出现重复稳定键，已忽略后续行：{key}")
+                : null);
 
     // Keep surviving row objects in the actual ItemsControl collection. WPF can
     // then retain their containers, virtualize normally, and let the FLIP step
@@ -524,14 +513,12 @@ internal sealed class ModListTransitionController : IDisposable
 
         if (!currentKeys.SequenceEqual(survivingDesiredKeys, StringComparer.OrdinalIgnoreCase))
         {
-            var forward = BuildDirectionalMovePlan(currentKeys, survivingDesiredKeys, fromEnd: false);
-            var backward = BuildDirectionalMovePlan(currentKeys, survivingDesiredKeys, fromEnd: true);
-            forwardMoveCount = forward.Count;
-            backwardMoveCount = backward.Count;
-            var plan = backward.Count < forward.Count ? backward : forward;
-            strategy = ReferenceEquals(plan, backward) ? "backward" : "forward";
+            var plan = ModListProjectionPlanner.PlanDirectionalMoves(currentKeys, survivingDesiredKeys);
+            forwardMoveCount = plan.ForwardMoveCount;
+            backwardMoveCount = plan.BackwardMoveCount;
+            strategy = plan.Strategy;
 
-            foreach (var operation in plan)
+            foreach (var operation in plan.Operations)
             {
                 PresentedItems.Move(operation.FromIndex, operation.ToIndex);
                 movedCount++;
@@ -596,53 +583,6 @@ internal sealed class ModListTransitionController : IDisposable
             LogService.Info(
                 $"[UIPerf] mod-list-reconcile; before={oldCount}; desired={desiredEntries.Count}; remove={removedCount}; insert={insertedCount}; move={movedCount}; strategy={strategy}; forward={forwardMoveCount}; backward={backwardMoveCount}.");
         }
-    }
-
-    private static IReadOnlyList<MoveOperation> BuildDirectionalMovePlan(
-        IReadOnlyList<string> current,
-        IReadOnlyList<string> desired,
-        bool fromEnd)
-    {
-        var working = current.ToList();
-        var result = new List<MoveOperation>();
-        if (!fromEnd)
-        {
-            for (var targetIndex = 0; targetIndex < desired.Count; targetIndex++)
-            {
-                if (string.Equals(working[targetIndex], desired[targetIndex], StringComparison.OrdinalIgnoreCase)) continue;
-                var existingIndex = FindKeyIndex(working, desired[targetIndex], targetIndex + 1, working.Count - 1);
-                if (existingIndex < 0) return Array.Empty<MoveOperation>();
-                Move(working, existingIndex, targetIndex);
-                result.Add(new MoveOperation(existingIndex, targetIndex));
-            }
-            return result;
-        }
-
-        for (var targetIndex = desired.Count - 1; targetIndex >= 0; targetIndex--)
-        {
-            if (string.Equals(working[targetIndex], desired[targetIndex], StringComparison.OrdinalIgnoreCase)) continue;
-            var existingIndex = FindKeyIndex(working, desired[targetIndex], 0, targetIndex - 1);
-            if (existingIndex < 0) return Array.Empty<MoveOperation>();
-            Move(working, existingIndex, targetIndex);
-            result.Add(new MoveOperation(existingIndex, targetIndex));
-        }
-        return result;
-    }
-
-    private static void Move(List<string> items, int fromIndex, int toIndex)
-    {
-        var value = items[fromIndex];
-        items.RemoveAt(fromIndex);
-        items.Insert(toIndex, value);
-    }
-
-    private static int FindKeyIndex(IReadOnlyList<string> items, string key, int minimumIndex, int maximumIndex)
-    {
-        for (var index = Math.Max(0, minimumIndex); index <= Math.Min(maximumIndex, items.Count - 1); index++)
-        {
-            if (string.Equals(items[index], key, StringComparison.OrdinalIgnoreCase)) return index;
-        }
-        return -1;
     }
 
     private int FindPresentedIndexByKey(string key, int minimumIndex)
@@ -839,8 +779,6 @@ internal sealed class ModListTransitionController : IDisposable
         return mod?.GetType().GetProperty("Guid")?.GetValue(mod)?.ToString();
     }
 
-    private sealed record KeyedItem(string Key, object Item);
-    private sealed record MoveOperation(int FromIndex, int ToIndex);
     private sealed record RowSnapshot(string Key, object Item, FrameworkElement Container, Point Position, Size Size);
     private sealed record BulkVisualTransition(int OldCount, int NewCount, double OutgoingVerticalOffset);
 

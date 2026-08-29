@@ -64,6 +64,7 @@ public sealed class ExternalInstallFileFactsServiceTests
 			await File.WriteAllTextAsync(dll, "not-a-plugin", Encoding.UTF8);
 
 			var result = await new ExternalInstallFileFactsService().DetectAsync(root);
+			var rootHash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(rootAddon))).ToLowerInvariant();
 
 			Assert.Equal(2, result.Files.Count);
 			Assert.Contains(result.Files, fact => fact.SourceRelativePath == "Root.addon64"
@@ -71,10 +72,10 @@ public sealed class ExternalInstallFileFactsServiceTests
 				&& fact.TargetRelativePath == "Root.addon64"
 				&& fact.Kind == ExternalInstallFileKind.ReShadePlugin
 				&& fact.Length == new FileInfo(rootAddon).Length
-				&& fact.Sha256 == Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("root-addon"))).ToLowerInvariant());
+				&& fact.Sha256 == rootHash);
 			Assert.Contains(result.Files, fact => fact.SourceRelativePath == "bin/Nested/Bin.addon"
 				&& fact.TargetRelativePath == "Nested/Bin.addon");
-			Assert.Contains("bin/Ignored.dll", result.UnrecognizedExternalPaths);
+            Assert.Contains("bin/Ignored.dll", result.UnrecognizedExternalPaths);
 			Assert.DoesNotContain(result.Files, fact => fact.SourceRelativePath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
 		}
 		finally

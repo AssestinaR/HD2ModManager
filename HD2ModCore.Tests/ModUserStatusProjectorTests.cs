@@ -12,13 +12,13 @@ public sealed class ModUserStatusProjectorTests
         var node = CreateNode(ModNodeId.New());
         var profile = new Profile(ProfileId.New(), "Profile", DateTimeOffset.UtcNow, null, [new ProfileEntry(node.Id, 0)], Revision: 3);
         var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [node.Id] = node }, [profile], profile.Id);
-        var diagnostic = new ProfileMaterialDiagnostic(node.Id, new AssetKey(0xeac0b497876adedf, 1), ProfileMaterialDiagnosticKind.MissingMaterial, "缺失材质", "测试");
+        var diagnostic = new ProfileMaterialDiagnostic(node.Id, new AssetKey(0xeac0b497876adedf, 1), ProfileMaterialDiagnosticKind.MissingMaterial, "无可用材质", "测试");
         var diagnostics = new ProfileMaterialDiagnostics(profile.Id, profile.Revision, DateTimeOffset.UtcNow, [diagnostic], []);
 
         var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), null, diagnostics, null);
 
-        Assert.Equal(ModUserStatusKind.MissingDependency, statuses[node.Id].Kind);
-        Assert.Equal("材质依赖缺失", statuses[node.Id].Title);
+        Assert.Equal(ModUserStatusKind.MissingMaterial, statuses[node.Id].Kind);
+        Assert.Equal("缺材质", statuses[node.Id].Title);
     }
 
     [Fact]
@@ -34,7 +34,7 @@ public sealed class ModUserStatusProjectorTests
         var statuses = ModUserStatusProjector.Project(snapshot, selected.Id, new Dictionary<ModNodeId, ModContentFacts>(), null, null, null);
 
         var status = Assert.Single(statuses).Value;
-        Assert.Equal(ModUserStatusKind.CurrentProfile, status.Kind);
+        Assert.Equal(ModUserStatusKind.Stored, status.Kind);
         Assert.True(status.IsInSelectedProfile);
         Assert.False(status.IsInActiveProfile);
     }
@@ -53,7 +53,7 @@ public sealed class ModUserStatusProjectorTests
 
         var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), graph, null, null);
 
-        Assert.Equal(ModUserStatusKind.FullyOverridden, Assert.Single(statuses).Value.Kind);
+        Assert.Equal(ModUserStatusKind.Overridden, Assert.Single(statuses).Value.Kind);
     }
 
     [Fact]

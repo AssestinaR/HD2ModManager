@@ -119,10 +119,55 @@ public sealed class MaterialPackagingService
 			if (replaceExistingMaterials || !winners.ContainsKey(candidateEntry.AssetKey))
 				winners[candidateEntry.AssetKey] = candidateEntry;
 		}
+		if (replaceExistingMaterials)
+			RemoveSupersededSourceTextureClosures(
+				winners,
+				compatibility.Source,
+				compatibility.Candidate,
+				candidateMaterials);
 		var winnerEntries = winners.Values.ToArray();
 		var write = await subsetWriter.WriteAsync(sourcePatchTocPath, outputDirectory, winnerEntries.Select(entry => new PatchSubsetSelection(entry.SourceFilePath, entry.AssetKey)).ToArray(), cancellationToken: cancellationToken).ConfigureAwait(false);
 		var verification = await VerifyEquivalentAsync(winnerEntries, new[] { write.TocFilePath }, cancellationToken).ConfigureAwait(false);
 		return new MaterialPackagingWriteResult(new[] { write }, verification);
+	}
+
+	private static void RemoveSupersededSourceTextureClosures(
+		IDictionary<AssetKey, PatchTocEntry> winners,
+		MaterialPackagingInspection source,
+		MaterialPackagingInspection candidate,
+		IReadOnlySet<AssetKey> selectedCandidateMaterials)
+	{
+		// The Patch analyzer is the authority for deciding whether a texture is
+		// still reachable. If either side was only partially understood, preserve
+		// every source payload rather than guessing about a dependency closure.
+		if (source.Issues.Count != 0 || candidate.Issues.Count != 0) return;
+
+		var replacedSourceMaterials = selectedCandidateMaterials
+			.Where(source.MaterialAssetKeys.Contains)
+			.ToHashSet();
+		if (replacedSourceMaterials.Count == 0) return;
+
+		var supersededTextures = source.References
+			.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture
+				&& replacedSourceMaterials.Contains(reference.SourceAssetKey)
+				&& source.TextureAssetKeys.Contains(reference.TargetAssetKey))
+			.Select(reference => reference.TargetAssetKey)
+			.ToHashSet();
+		if (supersededTextures.Count == 0) return;
+
+		var stillReferencedTextures = source.References
+			.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture
+				&& source.MaterialAssetKeys.Contains(reference.SourceAssetKey)
+				&& !replacedSourceMaterials.Contains(reference.SourceAssetKey))
+			.Select(reference => reference.TargetAssetKey)
+			.Concat(candidate.References
+				.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture
+					&& selectedCandidateMaterials.Contains(reference.SourceAssetKey))
+				.Select(reference => reference.TargetAssetKey))
+			.ToHashSet();
+
+		foreach (var textureKey in supersededTextures.Except(stillReferencedTextures))
+			winners.Remove(textureKey);
 	}
 
 	private async ValueTask<MaterialPackagingVerification> VerifyEquivalentAsync(string sourcePatchTocPath, IReadOnlyList<string> outputPatchTocPaths, CancellationToken cancellationToken)

@@ -116,13 +116,6 @@ public sealed class ModEquipmentSourceFactsReaderTests
 	{
 		public ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> GetEntriesAsync(IReadOnlySet<CoreAssetKey>? unitAssetKeys = null, CancellationToken cancellationToken = default)
 			=> ValueTask.FromResult(entries);
-
-		public ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(IReadOnlyList<EquipmentUnitCatalogEntry> candidates, IReadOnlyList<string> patchTocPaths, CancellationToken cancellationToken = default)
-			=> throw new NotSupportedException();
-
-		public ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> FilterTransferableSourcePartsAsync(IReadOnlyList<EquipmentUnitCatalogEntry> candidates, IReadOnlyList<string> patchTocPaths, CancellationToken cancellationToken, IReadOnlyDictionary<string, IReadOnlyList<AdaptationPatchTocEntry>> preparedEntries)
-			=> throw new NotSupportedException();
-
 		public ValueTask<CrossArmorTransferPlan> CreatePlanAsync(IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates, IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates, string? selectedSourceArchiveId, UnitMeshBodyVariant? selectedSourceBodyVariant, CrossArmorBodyVariantPreference bodyVariantPreference, CrossArmorLayerPreference layerPreference, IReadOnlyCollection<string> selectedTargetArchiveIds, IReadOnlyList<CrossArmorManualMapping>? manualMappings = null, IReadOnlyList<CrossArmorManualSuppression>? manualSuppressions = null, bool manualMode = false, IReadOnlyCollection<string>? additionalSourceArchiveIds = null, CancellationToken cancellationToken = default)
 			=> throw new NotSupportedException();
 	}

@@ -25,23 +25,7 @@ namespace HD2ModManager
         private bool _bottomBarLayoutUpdateQueued;
         private SelectionActionBarPresentation? _selectionActionPresentation;
         private TemporaryEditorBarPresentation? _temporaryEditorPresentation;
-        private bool _pageTransitionQueued;
-        private bool _pageLayoutWasSplit;
-        // Core navigation pages are revisited constantly. Keeping their actual
-        // FrameworkElement instances avoids recreating an entire virtualized
-        // Mod-list visual tree whenever the user switches between Home/Settings
-        // and Library/Profile.
-        private readonly Dictionary<object, FrameworkElement> _leftCorePageViewCache = new(ReferenceEqualityComparer.Instance);
-        private readonly Dictionary<object, FrameworkElement> _rightCorePageViewCache = new(ReferenceEqualityComparer.Instance);
-        // A short-lived startup cache owns the first real Profile/Library views
-        // before either has been navigated to. The views remain attached to an
-        // invisible host so templates, bindings and virtualized ListBoxes can
-        // complete their first layout without delaying Home navigation.
-        private readonly Dictionary<object, FrameworkElement> _prewarmedCorePageViewCache = new(ReferenceEqualityComparer.Instance);
-        private bool _workspaceVisualPrewarmQueued;
-        private bool _workspaceVisualPrewarmStarted;
-        private EventHandler? _workspaceVisualPrewarmRenderHandler;
-        private int _workspaceVisualPrewarmFramesRemaining;
+        private readonly WorkspacePagePresentationController _workspacePages;
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
         {
@@ -111,6 +95,17 @@ namespace HD2ModManager
         {
             DataContext = new ShellViewModel();
             InitializeComponent();
+            _workspacePages = new WorkspacePagePresentationController(
+                this,
+                new WorkspacePageHosts(
+                    LeftCurrentPageHost,
+                    LeftPreviousPageHost,
+                    RightCurrentPageHost,
+                    RightPreviousPageHost,
+                    OverlayLeftPageHost,
+                    OverlayRightPageHost,
+                    PrewarmProfilePageHost,
+                    PrewarmLibraryPageHost));
             Loaded += MainWindow_Loaded;
             DataContextChanged += MainWindow_DataContextChanged;
             Closed += MainWindow_Closed;
@@ -165,30 +160,25 @@ namespace HD2ModManager
                 "MainWindow.Loaded",
                 thresholdMilliseconds: 40,
                 details: () => $"mode={(DataContext as ShellViewModel)?.CurrentMode}; split={(DataContext as ShellViewModel)?.ShowRightSlot}");
-            SubscribeToShell(DataContext as ShellViewModel);
+            var shell = DataContext as ShellViewModel;
+            SubscribeToShell(shell);
             BottomBarSurface.ContentSizeReady += BottomBarSurface_ContentSizeReady;
             InitializeBottomBarLayers();
-            ShowInitialPage(LeftCurrentPageHost, (DataContext as ShellViewModel)?.LeftPage);
-            ShowInitialPage(RightCurrentPageHost, (DataContext as ShellViewModel)?.RightPage);
-            _pageLayoutWasSplit = (DataContext as ShellViewModel)?.ShowRightSlot == true;
+            _workspacePages.ShowInitialPages(shell);
             Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
-            QueueWorkspaceVisualPrewarm();
+            _workspacePages.QueueVisualPrewarm();
         }
 
         private void MainWindow_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
-            ClearWorkspaceVisualPrewarm();
-            _leftCorePageViewCache.Clear();
-            _rightCorePageViewCache.Clear();
+            _workspacePages.Reset();
             SubscribeToShell(e.NewValue as ShellViewModel);
-            if (IsLoaded) QueueWorkspaceVisualPrewarm();
+            if (IsLoaded) _workspacePages.QueueVisualPrewarm();
         }
 
         private async void MainWindow_Closed(object? sender, EventArgs e)
         {
-            ClearWorkspaceVisualPrewarm();
-            _leftCorePageViewCache.Clear();
-            _rightCorePageViewCache.Clear();
+            _workspacePages.Dispose();
             if (DataContext is ShellViewModel shell)
             {
                 shell.PropertyChanged -= Shell_PropertyChanged;
@@ -400,19 +390,16 @@ namespace HD2ModManager
             }
             if (e.PropertyName == nameof(ShellViewModel.ShowRightSlot))
             {
-                var targetIsSplit = shell.ShowRightSlot;
-                if (!_pageLayoutWasSplit && targetIsSplit)
-                    CaptureSinglePageForSplitTransition();
-                _pageLayoutWasSplit = targetIsSplit;
+                _workspacePages.OnWorkspaceLayoutChanged(shell.ShowRightSlot);
                 return;
             }
             if (e.PropertyName == nameof(ShellViewModel.LeftPage))
             {
-                QueuePageTransitions();
+                _workspacePages.QueuePageTransitions();
             }
             else if (e.PropertyName == nameof(ShellViewModel.RightPage))
             {
-                QueuePageTransitions();
+                _workspacePages.QueuePageTransitions();
             }
             else if (e.PropertyName is nameof(ShellViewModel.CurrentMode)
                 or nameof(ShellViewModel.IsHomeActive)
@@ -553,301 +540,6 @@ namespace HD2ModManager
             WorkspaceNavigationIndicator.BeginAnimation(HeightProperty, new DoubleAnimation(targetHeight, duration) { EasingFunction = easing });
             WorkspaceNavigationIndicator.CornerRadius = new CornerRadius(targetRadius);
             WorkspaceNavigationIndicator.Opacity = 1;
-        }
-
-        private void ShowInitialPage(ContentControl host, object? page)
-        {
-            using var perf = UiPerformanceDiagnostics.Measure(
-                "Page.InitialCreate",
-                thresholdMilliseconds: 30,
-                details: () => $"page={page?.GetType().Name ?? "null"}");
-            host.Content = CreatePageContent(page, host);
-            host.Opacity = 1;
-        }
-
-        private void QueueWorkspaceVisualPrewarm()
-        {
-            if (_workspaceVisualPrewarmQueued || _workspaceVisualPrewarmStarted || !IsLoaded) return;
-            _workspaceVisualPrewarmQueued = true;
-            _ = Dispatcher.BeginInvoke(
-                System.Windows.Threading.DispatcherPriority.ApplicationIdle,
-                new Action(BeginWorkspaceVisualPrewarm));
-        }
-
-        private void BeginWorkspaceVisualPrewarm()
-        {
-            _workspaceVisualPrewarmQueued = false;
-            if (_workspaceVisualPrewarmStarted || !IsLoaded || DataContext is not ShellViewModel shell) return;
-
-            _workspaceVisualPrewarmStarted = true;
-            var pages = shell.GetOrCreateWorkspaceVisualPrewarmPages();
-            using (UiPerformanceDiagnostics.Measure(
-                       "WorkspaceVisualPrewarm.Profile",
-                       thresholdMilliseconds: 30,
-                       details: () => "host=prewarm-profile"))
-            {
-                PrewarmCorePageView(pages.Profile, PrewarmProfilePageHost);
-            }
-
-            // Build one real page per idle turn. This keeps Home responsive even
-            // on cold WPF/JIT startup, while input still outranks the warmup.
-            _ = Dispatcher.BeginInvoke(
-                System.Windows.Threading.DispatcherPriority.ApplicationIdle,
-                new Action(ContinueWorkspaceVisualPrewarm));
-        }
-
-        private void ContinueWorkspaceVisualPrewarm()
-        {
-            if (!IsLoaded || !_workspaceVisualPrewarmStarted || DataContext is not ShellViewModel shell) return;
-
-            var pages = shell.GetOrCreateWorkspaceVisualPrewarmPages();
-            using (UiPerformanceDiagnostics.Measure(
-                       "WorkspaceVisualPrewarm.Library",
-                       thresholdMilliseconds: 30,
-                       details: () => "host=prewarm-library"))
-            {
-                PrewarmCorePageView(pages.Library, PrewarmLibraryPageHost);
-            }
-
-            AwaitWorkspaceVisualPrewarmFrames();
-        }
-
-        private void PrewarmCorePageView(object page, ContentControl host)
-        {
-            if (_prewarmedCorePageViewCache.ContainsKey(page)
-                || _leftCorePageViewCache.ContainsKey(page)
-                || _rightCorePageViewCache.ContainsKey(page))
-                return;
-
-            var view = CreateTemplatedPageView(page);
-            if (view is null) return;
-            _prewarmedCorePageViewCache.Add(page, view);
-            host.Content = view;
-        }
-
-        private void AwaitWorkspaceVisualPrewarmFrames()
-        {
-            if (_workspaceVisualPrewarmRenderHandler is not null)
-            {
-                CompositionTarget.Rendering -= _workspaceVisualPrewarmRenderHandler;
-                _workspaceVisualPrewarmRenderHandler = null;
-            }
-
-            _workspaceVisualPrewarmFramesRemaining = 2;
-            EventHandler? handler = null;
-            handler = (_, _) =>
-            {
-                if (--_workspaceVisualPrewarmFramesRemaining > 0) return;
-                if (handler is not null) CompositionTarget.Rendering -= handler;
-                if (ReferenceEquals(_workspaceVisualPrewarmRenderHandler, handler))
-                    _workspaceVisualPrewarmRenderHandler = null;
-
-                if (!IsLoaded || _prewarmedCorePageViewCache.Count == 0) return;
-                LogService.Info($"工作区视觉预热完成：已布局真实配置页 / 模组库页，缓存视图={_prewarmedCorePageViewCache.Count}。");
-            };
-            _workspaceVisualPrewarmRenderHandler = handler;
-            CompositionTarget.Rendering += handler;
-        }
-
-        private void ClearWorkspaceVisualPrewarm()
-        {
-            if (_workspaceVisualPrewarmRenderHandler is not null)
-            {
-                CompositionTarget.Rendering -= _workspaceVisualPrewarmRenderHandler;
-                _workspaceVisualPrewarmRenderHandler = null;
-            }
-
-            _workspaceVisualPrewarmQueued = false;
-            _workspaceVisualPrewarmStarted = false;
-            _workspaceVisualPrewarmFramesRemaining = 0;
-            if (PrewarmProfilePageHost is not null) PrewarmProfilePageHost.Content = null;
-            if (PrewarmLibraryPageHost is not null) PrewarmLibraryPageHost.Content = null;
-            _prewarmedCorePageViewCache.Clear();
-        }
-
-        private void DetachPrewarmedCorePage(FrameworkElement view)
-        {
-            if (ReferenceEquals(PrewarmProfilePageHost.Content, view)) PrewarmProfilePageHost.Content = null;
-            if (ReferenceEquals(PrewarmLibraryPageHost.Content, view)) PrewarmLibraryPageHost.Content = null;
-        }
-
-        // Decoration planning is a full-workspace tool page. Host its concrete view
-        // explicitly so it is not affected by implicit-template resolution during a
-        // page transition. Core navigation pages use the same explicit creation
-        // route, but are retained as real views so their ListBox containers and
-        // scroll position survive ordinary workspace navigation.
-        private object? CreatePageContent(object? page, ContentControl targetHost)
-        {
-            if (page is null) return null;
-
-            var cache = GetCorePageViewCache(targetHost);
-            if (ShouldCacheCorePage(page)
-                && cache.TryGetValue(page, out var cached))
-            {
-                DetachCachedPageFromWorkspace(cached, targetHost);
-                return cached;
-            }
-
-            if (ShouldCacheCorePage(page)
-                && _prewarmedCorePageViewCache.Remove(page, out var prewarmed))
-            {
-                DetachPrewarmedCorePage(prewarmed);
-                cache[page] = prewarmed;
-                return prewarmed;
-            }
-
-            object? content = page switch
-            {
-                DecorationPlanPageViewModel plan => new DecorationPlanPageView { DataContext = plan },
-                _ when ShouldCacheCorePage(page) => CreateTemplatedPageView(page) ?? page,
-                _ => page,
-            };
-
-            if (ShouldCacheCorePage(page) && content is FrameworkElement view)
-                cache[page] = view;
-
-            return content;
-        }
-
-        private static bool ShouldCacheCorePage(object page)
-            => page is HomePageViewModel
-                or ProfilePageViewModel
-                or LibraryPageViewModel
-                or SettingsPageViewModel;
-
-        private FrameworkElement? CreateTemplatedPageView(object page)
-        {
-            var templateKey = new DataTemplateKey(page.GetType());
-            var template = TryFindResource(templateKey) as DataTemplate
-                ?? Application.Current?.TryFindResource(templateKey) as DataTemplate;
-            if (template?.LoadContent() is not FrameworkElement view) return null;
-            view.DataContext = page;
-            return view;
-        }
-
-        private Dictionary<object, FrameworkElement> GetCorePageViewCache(ContentControl host)
-            => IsRightWorkspaceHost(host) ? _rightCorePageViewCache : _leftCorePageViewCache;
-
-        private bool IsRightWorkspaceHost(ContentControl host)
-            => ReferenceEquals(host, RightCurrentPageHost)
-                || ReferenceEquals(host, RightPreviousPageHost)
-                || ReferenceEquals(host, FindName("OverlayRightPageHost"));
-
-        private void DetachCachedPageFromWorkspace(FrameworkElement view, ContentControl targetHost)
-        {
-            foreach (var host in EnumerateWorkspacePageHosts(IsRightWorkspaceHost(targetHost)))
-            {
-                if (!ReferenceEquals(host.Content, view)) continue;
-                host.BeginAnimation(OpacityProperty, null);
-                host.Content = null;
-            }
-        }
-
-        private IEnumerable<ContentControl> EnumerateWorkspacePageHosts(bool rightSlot)
-        {
-            if (rightSlot)
-            {
-                yield return RightCurrentPageHost;
-                yield return RightPreviousPageHost;
-                if (FindName("OverlayRightPageHost") is ContentControl overlayRight) yield return overlayRight;
-                yield break;
-            }
-
-            yield return LeftCurrentPageHost;
-            yield return LeftPreviousPageHost;
-            if (FindName("OverlayLeftPageHost") is ContentControl overlayLeft) yield return overlayLeft;
-        }
-
-        private static bool IsCurrentPageContent(ContentControl host, object? page)
-            => ReferenceEquals(host.Content, page)
-                || host.Content is FrameworkElement { DataContext: var dataContext }
-                    && ReferenceEquals(dataContext, page);
-
-        private void CaptureSinglePageForSplitTransition()
-        {
-            if (FindName("OverlayLeftPageHost") is not ContentControl overlayLeftPageHost) return;
-            if (overlayLeftPageHost.Content is not null) return;
-            var page = LeftCurrentPageHost.Content;
-            if (page is null) return;
-
-            var width = LeftCurrentPageHost.ActualWidth;
-            var height = LeftCurrentPageHost.ActualHeight;
-            if (width <= 0 || height <= 0) return;
-
-            overlayLeftPageHost.BeginAnimation(OpacityProperty, null);
-            overlayLeftPageHost.Content = page;
-            overlayLeftPageHost.Width = width;
-            overlayLeftPageHost.Height = height;
-            Canvas.SetLeft(overlayLeftPageHost, 0);
-            Canvas.SetTop(overlayLeftPageHost, 0);
-            overlayLeftPageHost.Opacity = 1;
-            LeftCurrentPageHost.Content = null;
-
-            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
-            {
-                if (overlayLeftPageHost.Content is null) return;
-                var fadeOut = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(200))
-                {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                };
-                fadeOut.Completed += (_, _) =>
-                {
-                    overlayLeftPageHost.BeginAnimation(OpacityProperty, null);
-                    overlayLeftPageHost.Content = null;
-                    overlayLeftPageHost.Width = double.NaN;
-                    overlayLeftPageHost.Height = double.NaN;
-                };
-                overlayLeftPageHost.BeginAnimation(OpacityProperty, fadeOut);
-            }));
-        }
-
-        private void QueuePageTransitions()
-        {
-            if (_pageTransitionQueued) return;
-            _pageTransitionQueued = true;
-            _ = Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, new Action(() =>
-            {
-                _pageTransitionQueued = false;
-                if (DataContext is not ShellViewModel shell) return;
-                TransitionPage(LeftCurrentPageHost, LeftPreviousPageHost, shell.LeftPage);
-                TransitionPage(RightCurrentPageHost, RightPreviousPageHost, shell.RightPage);
-            }));
-        }
-
-        private void TransitionPage(ContentControl currentHost, ContentControl previousHost, object? nextPage)
-        {
-            if (IsCurrentPageContent(currentHost, nextPage)) return;
-
-            using var perf = UiPerformanceDiagnostics.Measure(
-                "Page.TransitionPrepare",
-                thresholdMilliseconds: 30,
-                details: () => $"page={nextPage?.GetType().Name ?? "null"}; host={currentHost.Name}");
-            var nextContent = CreatePageContent(nextPage, currentHost);
-
-            currentHost.BeginAnimation(OpacityProperty, null);
-            previousHost.BeginAnimation(OpacityProperty, null);
-            previousHost.Content = currentHost.Content;
-            previousHost.Opacity = previousHost.Content is null ? 0 : 1;
-            currentHost.Content = nextContent;
-            currentHost.Opacity = 0;
-
-            _ = currentHost.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Render, new Action(() =>
-            {
-                using var renderPerf = UiPerformanceDiagnostics.Measure(
-                    "Page.TransitionRenderSetup",
-                    thresholdMilliseconds: 20,
-                    details: () => $"page={nextPage?.GetType().Name ?? "null"}; host={currentHost.Name}");
-                var duration = TimeSpan.FromMilliseconds(200);
-                var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
-                currentHost.BeginAnimation(OpacityProperty, new DoubleAnimation(1, duration) { EasingFunction = easing });
-                if (previousHost.Content is null) return;
-                var fadeOut = new DoubleAnimation(0, duration) { EasingFunction = easing };
-                fadeOut.Completed += (_, _) =>
-                {
-                    if (ReferenceEquals(currentHost.Content, nextContent)) previousHost.Content = null;
-                };
-                previousHost.BeginAnimation(OpacityProperty, fadeOut);
-            }));
         }
 
         private static VisualMetrics CaptureVisualMetrics(DependencyObject root)
