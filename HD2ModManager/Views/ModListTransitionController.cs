@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Controls;
@@ -18,7 +17,11 @@ internal sealed class ModListTransitionController : IDisposable
 {
     private readonly FrameworkElement _owner;
     private readonly ItemsControl _itemsList;
+    private readonly ItemsControl _outgoingItemsList;
     private readonly Canvas _overlay;
+    private readonly FrameworkElement _activePresentationLayer;
+    private readonly FrameworkElement _outgoingPresentationLayer;
+    private readonly bool _supportsDualPresentation;
     private readonly DispatcherTimer _animationTimer = new();
     private IEnumerable? _observedSource;
     private IModListProjectionSource? _projectionSource;
@@ -27,11 +30,14 @@ internal sealed class ModListTransitionController : IDisposable
     private IReadOnlyList<object>? _queuedDesired;
     private Dictionary<string, RowSnapshot> _before = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<object>? _pendingDesired;
+    private bool _pendingDesiredDirty;
     private bool _transitionPending;
     private bool _layoutDirty;
     private IEnumerable? _suspendedSource;
     private bool _isSuspended;
     private EventHandler? _pendingAnimationStartHandler;
+    private BulkVisualTransition? _bulkVisualTransition;
+    private bool _bulkVisualActive;
     private long _layoutWaitStartedTimestamp;
     private TransitionPhase _phase;
     private bool _disposed;
@@ -39,16 +45,52 @@ internal sealed class ModListTransitionController : IDisposable
     private static TimeSpan Duration(double milliseconds)
         => TimeSpan.FromMilliseconds(milliseconds);
 
-    public ModListTransitionController(FrameworkElement owner, ItemsControl itemsList, Canvas overlay, ObservableCollection<object> presentedItems)
+    public ModListTransitionController(
+        FrameworkElement owner,
+        ItemsControl itemsList,
+        ItemsControl outgoingItemsList,
+        Canvas overlay,
+        FrameworkElement activePresentationLayer,
+        FrameworkElement outgoingPresentationLayer,
+        BulkObservableCollection<object> presentedItems,
+        BulkObservableCollection<object> outgoingPresentedItems,
+        bool supportsDualPresentation = true)
     {
         _owner = owner;
         _itemsList = itemsList;
+        _outgoingItemsList = outgoingItemsList;
         _overlay = overlay;
+        _activePresentationLayer = activePresentationLayer;
+        _outgoingPresentationLayer = outgoingPresentationLayer;
+        _supportsDualPresentation = supportsDualPresentation;
         PresentedItems = presentedItems;
+        OutgoingPresentedItems = outgoingPresentedItems;
         _animationTimer.Tick += OnAnimationTimerTick;
     }
 
-    public ObservableCollection<object> PresentedItems { get; }
+    // Rich plan pages reuse the controller's row-level FLIP path but do not
+    // provide a second visual host. Keep that compatibility path explicit
+    // instead of making those pages pay for the Mod-list viewport transition.
+    public ModListTransitionController(
+        FrameworkElement owner,
+        ItemsControl itemsList,
+        Canvas overlay,
+        BulkObservableCollection<object> presentedItems)
+        : this(
+            owner,
+            itemsList,
+            itemsList,
+            overlay,
+            itemsList,
+            itemsList,
+            presentedItems,
+            new BulkObservableCollection<object>(),
+            supportsDualPresentation: false)
+    {
+    }
+
+    public BulkObservableCollection<object> PresentedItems { get; }
+    public BulkObservableCollection<object> OutgoingPresentedItems { get; }
     public bool IsPlaying => _phase == TransitionPhase.Playing;
     public event Action<bool>? TransitionStateChanged;
 
@@ -141,6 +183,22 @@ internal sealed class ModListTransitionController : IDisposable
             return;
         }
 
+        if (_phase == TransitionPhase.AwaitingLayout)
+        {
+            if (!HasStructuralDifference(PresentedItems, desired))
+            {
+                SynchronizePresentedItems(desired);
+                return;
+            }
+
+            // The next frame has not been committed visually yet. Keep only the
+            // newest target and apply it at the next layout boundary instead of
+            // repeatedly Resetting the active ListBox while it is materializing.
+            _pendingDesired = desired;
+            _pendingDesiredDirty = true;
+            return;
+        }
+
         if (!HasStructuralDifference(PresentedItems, desired))
         {
             SynchronizePresentedItems(desired);
@@ -154,7 +212,13 @@ internal sealed class ModListTransitionController : IDisposable
     {
         if (!_transitionPending)
         {
-            _before = CaptureRows();
+            var useBulkVisualTransition = ShouldUseBulkVisualTransition(desired);
+            _before = useBulkVisualTransition
+                ? new Dictionary<string, RowSnapshot>(StringComparer.OrdinalIgnoreCase)
+                : CaptureRows();
+            _bulkVisualTransition = useBulkVisualTransition
+                ? PrepareBulkVisualTransition(desired)
+                : null;
             _transitionPending = true;
             _layoutWaitStartedTimestamp = UiPerformanceDiagnostics.IsEnabled
                 ? System.Diagnostics.Stopwatch.GetTimestamp()
@@ -162,8 +226,9 @@ internal sealed class ModListTransitionController : IDisposable
         }
 
         _pendingDesired = desired;
+        _pendingDesiredDirty = false;
         SetPhase(TransitionPhase.AwaitingLayout);
-        SynchronizePresentedItems(desired);
+        ApplyPendingDesired(desired);
         _layoutDirty = true;
         _itemsList.LayoutUpdated -= OnLayoutUpdated;
         _itemsList.LayoutUpdated += OnLayoutUpdated;
@@ -172,12 +237,31 @@ internal sealed class ModListTransitionController : IDisposable
     private void OnLayoutUpdated(object? sender, EventArgs e)
     {
         if (!_layoutDirty || _disposed || _phase != TransitionPhase.AwaitingLayout) return;
-        if (_itemsList.ItemContainerGenerator.Status != System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated)
+        if (_pendingDesiredDirty && _pendingDesired is { } pendingDesired)
+        {
+            _pendingDesiredDirty = false;
+            ApplyPendingDesired(pendingDesired);
+            _layoutDirty = true;
             return;
+        }
+        if (!AreContainersReady(_itemsList)) return;
+        if (_bulkVisualTransition is not null && !AreContainersReady(_outgoingItemsList)) return;
 
         _layoutDirty = false;
         _itemsList.LayoutUpdated -= OnLayoutUpdated;
         PlayPending();
+    }
+
+    private static bool AreContainersReady(ItemsControl items)
+        => items.Items.Count == 0
+            || items.ItemContainerGenerator.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated;
+
+    private void ApplyPendingDesired(IReadOnlyList<object> desired)
+    {
+        if (_bulkVisualTransition is not null)
+            ReplacePresentedForBulkVisualTransition(desired);
+        else
+            SynchronizePresentedItems(desired);
     }
 
     private void PlayPending()
@@ -194,6 +278,15 @@ internal sealed class ModListTransitionController : IDisposable
             details: () => $"before={_before.Count}; after={_itemsList.Items.Count}; phase={_phase}");
         _transitionPending = false;
         _pendingDesired = null;
+        _pendingDesiredDirty = false;
+
+        if (_bulkVisualTransition is { } bulkVisualTransition)
+        {
+            _bulkVisualTransition = null;
+            _before.Clear();
+            PlayBulkVisualTransition(bulkVisualTransition);
+            return;
+        }
 
         var before = _before;
         _before = new Dictionary<string, RowSnapshot>(StringComparer.OrdinalIgnoreCase);
@@ -229,6 +322,7 @@ internal sealed class ModListTransitionController : IDisposable
 
     private void FinishRound()
     {
+        CompleteBulkVisualTransition();
         if (_queuedDesired is { } next)
         {
             _queuedDesired = null;
@@ -246,16 +340,128 @@ internal sealed class ModListTransitionController : IDisposable
     private void SetPhase(TransitionPhase value)
     {
         if (_phase == value) return;
-        var wasPlaying = _phase == TransitionPhase.Playing;
+        var wasTransitionActive = _phase != TransitionPhase.Idle;
         _phase = value;
-        var isPlaying = _phase == TransitionPhase.Playing;
-        if (wasPlaying != isPlaying) TransitionStateChanged?.Invoke(isPlaying);
+        var isTransitionActive = _phase != TransitionPhase.Idle;
+        if (wasTransitionActive != isTransitionActive) TransitionStateChanged?.Invoke(isTransitionActive);
     }
 
     private void ReplacePresentedInitial(IEnumerable<object> items)
     {
-        PresentedItems.Clear();
-        foreach (var item in items) PresentedItems.Add(item);
+        PresentedItems.ReplaceWith(items);
+    }
+
+    // Large filters are projection replacements rather than row rearrangements.
+    // Keep row-level FLIP for small changes. For a large change we prepare a
+    // second, virtualized ListBox with the old stable row objects and crossfade
+    // it against the active ListBox after the latter has laid out the new target.
+    private bool ShouldUseBulkVisualTransition(IReadOnlyList<object> desired)
+    {
+        if (!_supportsDualPresentation) return false;
+        const int bulkChangeThreshold = 16;
+        var desiredEntries = CreateDesiredEntries(desired, reportDuplicateKeys: false);
+        var desiredKeys = desiredEntries
+            .Select(entry => entry.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var currentKeys = PresentedItems
+            .Select(GetItemKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var removed = PresentedItems.Count(item =>
+        {
+            var key = GetItemKey(item);
+            return string.IsNullOrWhiteSpace(key) || !desiredKeys.Contains(key);
+        });
+        var inserted = desiredEntries.Count(entry => !currentKeys.Contains(entry.Key));
+        return removed + inserted >= bulkChangeThreshold;
+    }
+
+    private BulkVisualTransition PrepareBulkVisualTransition(IReadOnlyList<object> desired)
+    {
+        var desiredEntries = CreateDesiredEntries(desired, reportDuplicateKeys: false);
+        var originalCount = PresentedItems.Count;
+        var outgoingOffset = ReadVerticalOffset(_itemsList);
+
+        // The old and new states intentionally use the same cached row objects,
+        // but distinct visual hosts. WPF only realizes each host's viewport, so
+        // this preserves virtualization while allowing a genuine crossfade.
+        _outgoingPresentationLayer.Visibility = Visibility.Visible;
+        _outgoingPresentationLayer.BeginAnimation(UIElement.OpacityProperty, null);
+        _outgoingPresentationLayer.Opacity = 1;
+        OutgoingPresentedItems.ReplaceWith(PresentedItems.ToArray());
+
+        _activePresentationLayer.BeginAnimation(UIElement.OpacityProperty, null);
+        _activePresentationLayer.Opacity = 0;
+        _bulkVisualActive = true;
+        return new BulkVisualTransition(originalCount, desiredEntries.Count, outgoingOffset);
+    }
+
+    private void ReplacePresentedForBulkVisualTransition(IReadOnlyList<object> desired)
+    {
+        var desiredEntries = CreateDesiredEntries(desired);
+        PresentedItems.ReplaceWith(desiredEntries.Select(entry => entry.Item));
+        if (UiPerformanceDiagnostics.IsEnabled)
+        {
+            LogService.Info(
+                $"[UIPerf] mod-list-bulk-projection; before={_bulkVisualTransition?.OldCount ?? PresentedItems.Count}; desired={desiredEntries.Count}; mode=dual-host-crossfade.");
+        }
+    }
+
+    private void PlayBulkVisualTransition(BulkVisualTransition transition)
+    {
+        RestoreOutgoingVerticalOffset(transition.OutgoingVerticalOffset);
+        var animationStarts = new List<Action>
+        {
+            () =>
+            {
+                _activePresentationLayer.BeginAnimation(
+                    UIElement.OpacityProperty,
+                    new DoubleAnimation(1, Duration(180))
+                    {
+                        EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+                    });
+                _outgoingPresentationLayer.BeginAnimation(
+                    UIElement.OpacityProperty,
+                    new DoubleAnimation(0, Duration(180))
+                    {
+                        EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+                    });
+            },
+        };
+
+        SetPhase(TransitionPhase.Playing);
+        QueueAnimationStart(animationStarts);
+    }
+
+    private static double ReadVerticalOffset(DependencyObject root)
+        => FindDescendant<ScrollViewer>(root)?.VerticalOffset ?? 0;
+
+    private void RestoreOutgoingVerticalOffset(double sourceOffset)
+    {
+        var scrollViewer = FindDescendant<ScrollViewer>(_outgoingItemsList);
+        if (scrollViewer is null) return;
+        scrollViewer.ScrollToVerticalOffset(Math.Clamp(sourceOffset, 0, scrollViewer.ScrollableHeight));
+    }
+
+    private List<KeyedItem> CreateDesiredEntries(IReadOnlyList<object> desired, bool reportDuplicateKeys = true)
+    {
+        var result = new List<KeyedItem>(desired.Count);
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in desired)
+        {
+            var key = GetItemKey(item);
+            if (string.IsNullOrWhiteSpace(key)) continue;
+            if (!keys.Add(key))
+            {
+                if (reportDuplicateKeys)
+                    LogService.Warn($"Mod 列表投影出现重复稳定键，已忽略后续行：{key}");
+                continue;
+            }
+            result.Add(new KeyedItem(key, item));
+        }
+        return result;
     }
 
     // Keep surviving row objects in the actual ItemsControl collection. WPF can
@@ -287,19 +493,10 @@ internal sealed class ModListTransitionController : IDisposable
             thresholdMilliseconds: 8,
             details: () => $"before={oldCount}; desired={desired.Count}; remove={removedCount}; insert={insertedCount}; move={movedCount}; replace={replacedCount}; strategy={strategy}; forward={forwardMoveCount}; backward={backwardMoveCount}");
 
-        var desiredEntries = new List<KeyedItem>(desired.Count);
-        var desiredKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in desired)
-        {
-            var key = GetItemKey(item);
-            if (string.IsNullOrWhiteSpace(key)) continue;
-            if (!desiredKeys.Add(key))
-            {
-                LogService.Warn($"Mod 列表投影出现重复稳定键，已忽略后续行：{key}");
-                continue;
-            }
-            desiredEntries.Add(new KeyedItem(key, item));
-        }
+        var desiredEntries = CreateDesiredEntries(desired);
+        var desiredKeys = desiredEntries
+            .Select(entry => entry.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         for (var index = PresentedItems.Count - 1; index >= 0; index--)
         {
@@ -466,15 +663,32 @@ internal sealed class ModListTransitionController : IDisposable
         }
         _animationTimer.Stop();
         _itemsList.LayoutUpdated -= OnLayoutUpdated;
+        CompleteBulkVisualTransition();
         _overlay.Children.Clear();
         _before.Clear();
+        _bulkVisualTransition = null;
         _queuedDesired = null;
         _pendingDesired = null;
+        _pendingDesiredDirty = false;
         _transitionPending = false;
         _layoutDirty = false;
         _layoutWaitStartedTimestamp = 0;
         SetPhase(TransitionPhase.Idle);
         ResetVisibleContainers();
+    }
+
+    private void CompleteBulkVisualTransition()
+    {
+        if (!_bulkVisualActive) return;
+        _bulkVisualActive = false;
+
+        _activePresentationLayer.BeginAnimation(UIElement.OpacityProperty, null);
+        _activePresentationLayer.Opacity = 1;
+        _outgoingPresentationLayer.BeginAnimation(UIElement.OpacityProperty, null);
+        _outgoingPresentationLayer.Opacity = 1;
+        _outgoingPresentationLayer.Visibility = Visibility.Collapsed;
+        if (OutgoingPresentedItems.Count != 0)
+            OutgoingPresentedItems.ReplaceWith(Array.Empty<object>());
     }
 
     private Dictionary<string, RowSnapshot> CaptureRows()
@@ -495,6 +709,18 @@ internal sealed class ModListTransitionController : IDisposable
             result[key] = new RowSnapshot(key, item, container, position, new Size(container.ActualWidth, container.ActualHeight));
         }
         return result;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject? current) where T : DependencyObject
+    {
+        if (current is null) return null;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(current); index++)
+        {
+            var child = VisualTreeHelper.GetChild(current, index);
+            if (child is T match) return match;
+            if (FindDescendant<T>(child) is { } nested) return nested;
+        }
+        return null;
     }
 
     private void QueueAnimationStart(IReadOnlyList<Action> starts)
@@ -616,6 +842,7 @@ internal sealed class ModListTransitionController : IDisposable
     private sealed record KeyedItem(string Key, object Item);
     private sealed record MoveOperation(int FromIndex, int ToIndex);
     private sealed record RowSnapshot(string Key, object Item, FrameworkElement Container, Point Position, Size Size);
+    private sealed record BulkVisualTransition(int OldCount, int NewCount, double OutgoingVerticalOffset);
 
     private enum TransitionPhase
     {

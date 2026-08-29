@@ -61,6 +61,7 @@
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
             <Grid ClipToBounds="True">
+            <Grid x:Name="ActivePresentationLayer">
             <ListBox x:Name="ItemsList" ItemsSource="{Binding PresentedItems, ElementName=Root}"
                      PreviewMouseLeftButtonDown="OnListBackgroundMouseDown"
                      PreviewMouseLeftButtonUp="OnItemsListPreviewMouseLeftButtonUp"
@@ -256,12 +257,47 @@
                     </Style>
                 </TextBlock.Style>
             </TextBlock>
-            <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="10"/>
-            <Canvas x:Name="DropOverlay" IsHitTestVisible="False" Panel.ZIndex="20">
+            </Grid>
+            <!--
+                Bulk filters keep the old viewport as a real, virtualized ListBox
+                while the active ListBox prepares the next projection underneath.
+                This avoids bitmap snapshots and lets both sides genuinely fade.
+            -->
+            <Grid x:Name="OutgoingPresentationLayer"
+                  Visibility="Collapsed"
+                  IsHitTestVisible="False"
+                  Panel.ZIndex="10">
+                <ListBox x:Name="OutgoingItemsList"
+                         ItemsSource="{Binding OutgoingPresentedItems, ElementName=Root}"
+                         ItemTemplate="{Binding ItemTemplate, ElementName=ItemsList}"
+                         Style="{StaticResource ModListBox}"
+                         SelectionMode="Multiple"
+                         Focusable="False"
+                         IsTabStop="False"
+                         ScrollViewer.VerticalScrollBarVisibility="{Binding VerticalScrollBarVisibility, ElementName=Root}"/>
+                <TextBlock Text="{Binding EmptyMessage, ElementName=Root}"
+                           Foreground="#888"
+                           Margin="16"
+                           Panel.ZIndex="5"
+                           IsHitTestVisible="False">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding HasOutgoingPresentedItems, ElementName=Root}" Value="False">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+            <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="20"/>
+            <Canvas x:Name="DropOverlay" IsHitTestVisible="False" Panel.ZIndex="30">
                 <Border x:Name="DropInsertionIndicator" Height="2" Background="{StaticResource Accent}"
                         Visibility="Collapsed" IsHitTestVisible="False"/>
             </Canvas>
-            <Border x:Name="ExternalProfileDropOverlay" Panel.ZIndex="30" Visibility="Collapsed"
+            <Border x:Name="ExternalProfileDropOverlay" Panel.ZIndex="40" Visibility="Collapsed"
                     Background="#D9FFFFFF" BorderBrush="{StaticResource Accent}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}"
                     IsHitTestVisible="False" Opacity="0">
                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">

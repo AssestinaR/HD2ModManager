@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
@@ -15,7 +14,8 @@ namespace HD2ModManager.Views;
 public partial class ModListPanel : UserControl
 {
     private readonly Dictionary<Border, SelectionIndicatorSubscription> _selectionIndicatorSubscriptions = new();
-    private readonly ObservableCollection<object> _presentedItems = new();
+    private readonly BulkObservableCollection<object> _presentedItems = new();
+    private readonly BulkObservableCollection<object> _outgoingPresentedItems = new();
     private readonly ModListTransitionController _transitionController;
     private string? _selectionAnchorKey;
     // Edge scrolling is deliberately sampled below the display refresh rate.
@@ -39,8 +39,17 @@ public partial class ModListPanel : UserControl
     public ModListPanel()
     {
         InitializeComponent();
-        _transitionController = new ModListTransitionController(this, ItemsList, TransitionOverlay, _presentedItems);
+        _transitionController = new ModListTransitionController(
+            this,
+            ItemsList,
+            OutgoingItemsList,
+            TransitionOverlay,
+            ActivePresentationLayer,
+            OutgoingPresentationLayer,
+            _presentedItems,
+            _outgoingPresentedItems);
         _transitionController.PresentedItems.CollectionChanged += OnPresentedItemsChanged;
+        _transitionController.OutgoingPresentedItems.CollectionChanged += OnOutgoingPresentedItemsChanged;
         _transitionController.TransitionStateChanged += OnTransitionStateChanged;
         ItemsList.Loaded += (_, _) => ConfigureInternalSmoothScroll(UseInternalScroll);
         _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
@@ -84,6 +93,8 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasPresentedItemsProperty = HasPresentedItemsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey HasOutgoingPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasOutgoingPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty HasOutgoingPresentedItemsProperty = HasOutgoingPresentedItemsPropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey HasRowActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasRowActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasRowActionsProperty = HasRowActionsPropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey HasSearchActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasSearchActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
@@ -91,6 +102,7 @@ public partial class ModListPanel : UserControl
 
     public IEnumerable? ItemsSource { get => (IEnumerable?)GetValue(ItemsSourceProperty); set => SetValue(ItemsSourceProperty, value); }
     public IEnumerable PresentedItems => _presentedItems;
+    public IEnumerable OutgoingPresentedItems => _outgoingPresentedItems;
     public string HeaderTitle { get => (string)GetValue(HeaderTitleProperty); set => SetValue(HeaderTitleProperty, value); }
     public string HeaderSummary { get => (string)GetValue(HeaderSummaryProperty); set => SetValue(HeaderSummaryProperty, value); }
     public string EmptyMessage { get => (string)GetValue(EmptyMessageProperty); set => SetValue(EmptyMessageProperty, value); }
@@ -112,6 +124,7 @@ public partial class ModListPanel : UserControl
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
     public bool HasSearchActions => (bool)GetValue(HasSearchActionsProperty);
     public bool HasPresentedItems => (bool)GetValue(HasPresentedItemsProperty);
+    public bool HasOutgoingPresentedItems => (bool)GetValue(HasOutgoingPresentedItemsProperty);
 
     public event EventHandler<ModListRowEventArgs>? RowClicked;
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
@@ -125,8 +138,11 @@ public partial class ModListPanel : UserControl
     private void OnPresentedItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
         => SetValue(HasPresentedItemsPropertyKey, _transitionController.PresentedItems.Count != 0);
 
-    private void OnTransitionStateChanged(bool isPlaying)
-        => ItemsList.IsHitTestVisible = !isPlaying;
+    private void OnOutgoingPresentedItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+        => SetValue(HasOutgoingPresentedItemsPropertyKey, _transitionController.OutgoingPresentedItems.Count != 0);
+
+    private void OnTransitionStateChanged(bool isTransitionActive)
+        => ItemsList.IsHitTestVisible = !isTransitionActive;
 
     private void OnToggleSearchClick(object sender, RoutedEventArgs e)
     {
