@@ -29,7 +29,13 @@ public sealed class ExternalInstallFileFactsService : IExternalInstallFileFactsS
 					unrecognized.Add(NormalizeForResult(relativePath));
 				continue;
 			}
-			if (!ExternalInstallPathMapper.TryMap(relativePath, out var targetRoot, out var normalizedSource, out var targetRelativePath))
+			if (!TryMapRecognizedFile(
+				fullPath,
+				relativePath,
+				out var targetRoot,
+				out var normalizedSource,
+				out var targetRelativePath,
+				out var kind))
 			{
 				if (IsExternalCandidate(relativePath))
 					unrecognized.Add(NormalizeForResult(relativePath));
@@ -38,7 +44,7 @@ public sealed class ExternalInstallFileFactsService : IExternalInstallFileFactsS
 
 			var info = new FileInfo(fullPath);
 			var hash = await ComputeSha256Async(fullPath, cancellationToken).ConfigureAwait(false);
-			files.Add(new ExternalInstallFileFact(normalizedSource, targetRoot, targetRelativePath, info.Length, hash, ExternalInstallFileKind.ReShadePlugin, info.LastWriteTimeUtc));
+			files.Add(new ExternalInstallFileFact(normalizedSource, targetRoot, targetRelativePath, info.Length, hash, kind, info.LastWriteTimeUtc));
 		}
 
 		files.Sort(static (left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.SourceRelativePath, right.SourceRelativePath));
@@ -66,10 +72,50 @@ public sealed class ExternalInstallFileFactsService : IExternalInstallFileFactsS
 		foreach (var path in EnumerateCandidateFiles(sourceRootDirectory))
 		{
 			if (!IsReparsePoint(path)
-				&& ExternalInstallPathMapper.TryMap(Path.GetRelativePath(sourceRootDirectory, path), out _, out _, out _))
+				&& TryMapRecognizedFile(path, Path.GetRelativePath(sourceRootDirectory, path), out _, out _, out _, out _))
 				return true;
 		}
 		return false;
+	}
+
+	// Shared by full fact production, generation calculation and library copying
+	// so INI classification cannot disagree between import and later deployment.
+	internal static bool TryMapRecognizedFile(
+		string fullPath,
+		string relativePath,
+		out ExternalInstallTargetRoot targetRoot,
+		out string normalizedSourceRelativePath,
+		out string targetRelativePath,
+		out ExternalInstallFileKind kind)
+	{
+		targetRoot = default;
+		normalizedSourceRelativePath = string.Empty;
+		targetRelativePath = string.Empty;
+		kind = default;
+
+		if (ExternalInstallPathMapper.TryMap(
+			relativePath,
+			out targetRoot,
+			out normalizedSourceRelativePath,
+			out targetRelativePath))
+		{
+			kind = ExternalInstallFileKind.ReShadePlugin;
+			return true;
+		}
+
+		if (!ReShadeIniClassifier.IsReShadePreset(fullPath)) return false;
+		if (!ExternalInstallPathMapper.TryMap(
+			relativePath,
+			ExternalInstallFileKind.ReShadePreset,
+			out targetRoot,
+			out normalizedSourceRelativePath,
+			out targetRelativePath))
+		{
+			return false;
+		}
+
+		kind = ExternalInstallFileKind.ReShadePreset;
+		return true;
 	}
 
 	private static bool IsExternalCandidate(string relativePath)

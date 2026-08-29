@@ -11,6 +11,19 @@ public static class ExternalInstallPathMapper
 		out ExternalInstallTargetRoot targetRoot,
 		out string normalizedSourceRelativePath,
 		out string targetRelativePath)
+		=> TryMap(
+			sourceRelativePath,
+			ExternalInstallFileKind.ReShadePlugin,
+			out targetRoot,
+			out normalizedSourceRelativePath,
+			out targetRelativePath);
+
+	public static bool TryMap(
+		string sourceRelativePath,
+		ExternalInstallFileKind kind,
+		out ExternalInstallTargetRoot targetRoot,
+		out string normalizedSourceRelativePath,
+		out string targetRelativePath)
 	{
 		targetRoot = default;
 		normalizedSourceRelativePath = string.Empty;
@@ -20,16 +33,40 @@ public static class ExternalInstallPathMapper
 			return false;
 
 		var segments = normalizedSourceRelativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-		if (segments.Length == 1 && IsAddonFile(segments[0]))
+		if (kind == ExternalInstallFileKind.ReShadePlugin
+			&& segments.Length == 1
+			&& IsAddonFile(segments[0]))
 		{
 			targetRoot = ExternalInstallTargetRoot.GameBin;
 			targetRelativePath = segments[0];
 			return true;
 		}
 
-		if (segments.Length >= 2
+		if (kind == ExternalInstallFileKind.ReShadePlugin
+			&& segments.Length >= 2
 			&& PathComparer.Equals(segments[0], "bin")
 			&& IsAddonFile(segments[^1]))
+		{
+			targetRoot = ExternalInstallTargetRoot.GameBin;
+			targetRelativePath = string.Join('/', segments.Skip(1));
+			return true;
+		}
+
+		if (kind == ExternalInstallFileKind.ReShadePreset
+			&& !IsGlobalReShadeConfigurationFile(segments[^1])
+			&& segments.Length == 1
+			&& IsIniFile(segments[0]))
+		{
+			targetRoot = ExternalInstallTargetRoot.GameBin;
+			targetRelativePath = segments[0];
+			return true;
+		}
+
+		if (kind == ExternalInstallFileKind.ReShadePreset
+			&& !IsGlobalReShadeConfigurationFile(segments[^1])
+			&& segments.Length >= 2
+			&& PathComparer.Equals(segments[0], "bin")
+			&& IsIniFile(segments[^1]))
 		{
 			targetRoot = ExternalInstallTargetRoot.GameBin;
 			targetRelativePath = string.Join('/', segments.Skip(1));
@@ -75,4 +112,10 @@ public static class ExternalInstallPathMapper
 	private static bool IsAddonFile(string path)
 		=> path.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase)
 			|| path.EndsWith(".addon", StringComparison.OrdinalIgnoreCase);
+
+	private static bool IsIniFile(string path)
+		=> path.EndsWith(".ini", StringComparison.OrdinalIgnoreCase);
+
+	private static bool IsGlobalReShadeConfigurationFile(string path)
+		=> string.Equals(path, "ReShade.ini", StringComparison.OrdinalIgnoreCase);
 }

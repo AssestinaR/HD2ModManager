@@ -269,21 +269,31 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 			.Where(item => item.Item1)
 			.Select(item => new ModPatchGroupFileFact(item.parsed!.SidecarKind, item.info.FullName, item.info.Name, item.info.Length, item.info.LastWriteTimeUtc))
 			.ToList();
-		var external = ExternalInstallFileFactsService.EnumerateCandidateFiles(directory)
-			.Select(path => (Path: path, Relative: Path.GetRelativePath(directory, path)))
-			.Where(item => ExternalInstallPathMapper.TryMap(item.Relative, out _, out _, out _))
-			.Select(item =>
+		var external = new List<ExternalInstallFileFact>();
+		foreach (var path in ExternalInstallFileFactsService.EnumerateCandidateFiles(directory))
+		{
+			var relative = Path.GetRelativePath(directory, path);
+			if (!ExternalInstallFileFactsService.TryMapRecognizedFile(
+				path,
+				relative,
+				out var targetRoot,
+				out var normalizedSource,
+				out var targetRelativePath,
+				out var kind))
 			{
-				var info = new FileInfo(item.Path);
-				return new ExternalInstallFileFact(
-					item.Relative.Replace('\\', '/'),
-					ExternalInstallTargetRoot.GameBin,
-					ExternalInstallPathMapper.TryMap(item.Relative, out _, out _, out var target) ? target : item.Relative.Replace('\\', '/'),
-					info.Length,
-					string.Empty,
-					LastWriteTimeUtc: info.LastWriteTimeUtc);
-			})
-			.ToList();
+				continue;
+			}
+
+			var info = new FileInfo(path);
+			external.Add(new ExternalInstallFileFact(
+				normalizedSource,
+				targetRoot,
+				targetRelativePath,
+				info.Length,
+				string.Empty,
+				kind,
+				info.LastWriteTimeUtc));
+		}
 		return ComputeGeneration(files, external);
 	}
 
@@ -296,7 +306,7 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 		}
 		foreach (var file in externalFiles ?? Array.Empty<ExternalInstallFileFact>())
 		{
-			builder.Append("external:").Append(file.SourceRelativePath.ToLowerInvariant()).Append(':').Append(file.Length).Append(':').Append(file.LastWriteTimeUtc.UtcTicks).AppendLine();
+			builder.Append("external:").Append(file.Kind).Append(':').Append(file.SourceRelativePath.ToLowerInvariant()).Append(':').Append(file.Length).Append(':').Append(file.LastWriteTimeUtc.UtcTicks).AppendLine();
 		}
 		builder.Append("asset-facts-v3").AppendLine();
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();

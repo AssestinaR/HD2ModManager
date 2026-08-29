@@ -33,7 +33,8 @@ public sealed record ModContentFacts(
 	public IReadOnlyList<ExternalInstallFileFact> ExternalFiles => ExternalInstallFiles ?? Array.Empty<ExternalInstallFileFact>();
 
 	[JsonIgnore]
-	public bool ContainsReShade => ExternalFiles.Any(file => file.Kind == ExternalInstallFileKind.ReShadePlugin);
+	public bool ContainsReShade => ExternalFiles.Any(file => file.Kind is
+		ExternalInstallFileKind.ReShadePlugin or ExternalInstallFileKind.ReShadePreset);
 
 	public IReadOnlyList<IndexedPatchFile> ToPatchFileIndex()
 		=> PatchGroups

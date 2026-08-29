@@ -750,7 +750,13 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var relative = Path.GetRelativePath(sourceDir, sourcePath);
-			if (!ExternalInstallPathMapper.TryMap(relative, out _, out var normalizedSource, out _)) continue;
+			if (!ExternalInstallFileFactsService.TryMapRecognizedFile(
+				sourcePath,
+				relative,
+				out _,
+				out var normalizedSource,
+				out _,
+				out _)) continue;
 			var destination = Path.Combine(destDir, normalizedSource.Replace('/', Path.DirectorySeparatorChar));
 			var destinationDirectory = Path.GetDirectoryName(destination);
 			if (!string.IsNullOrWhiteSpace(destinationDirectory)) Directory.CreateDirectory(destinationDirectory);

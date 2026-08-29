@@ -105,6 +105,74 @@ public sealed class ExternalInstallFileFactsServiceTests
 		}
 	}
 
+	[Fact]
+	public async Task DetectAsync_RecognizesReShadePresetByRootTechniquesKey()
+	{
+		var root = CreateTempDirectory();
+		try
+		{
+			var preset = Path.Combine(root, "Cinematic.ini");
+			await File.WriteAllTextAsync(preset, """
+				Techniques=Curves@Curves.fx
+				TechniqueSorting=Curves@Curves.fx
+				[Curves.fx]
+				Key=1
+				""");
+
+			var result = await new ExternalInstallFileFactsService().DetectAsync(root);
+
+			var fact = Assert.Single(result.Files);
+			Assert.Equal(ExternalInstallFileKind.ReShadePreset, fact.Kind);
+			Assert.Equal(ExternalInstallTargetRoot.GameBin, fact.TargetRoot);
+			Assert.Equal("Cinematic.ini", fact.TargetRelativePath);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task DetectAsync_RejectsGlobalReShadeIniAndOrdinaryIni()
+	{
+		var root = CreateTempDirectory();
+		try
+		{
+			await File.WriteAllTextAsync(Path.Combine(root, "ReShade.ini"), "Techniques=ShouldNotBeDeployed");
+			await File.WriteAllTextAsync(Path.Combine(root, "d3dx.ini"), "[System]\nload_library=somewhere.dll\n");
+			await File.WriteAllTextAsync(Path.Combine(root, "NotAPreset.ini"), "TechniqueSorting=OnlySorting\n");
+
+			var result = await new ExternalInstallFileFactsService().DetectAsync(root);
+
+			Assert.Empty(result.Files);
+			Assert.Contains("ReShade.ini", result.UnrecognizedExternalPaths);
+			Assert.Contains("d3dx.ini", result.UnrecognizedExternalPaths);
+			Assert.Contains("NotAPreset.ini", result.UnrecognizedExternalPaths);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task DetectAsync_DoesNotTreatTechniquesInsideSectionAsPreset()
+	{
+		var root = CreateTempDirectory();
+		try
+		{
+			await File.WriteAllTextAsync(Path.Combine(root, "Nested.ini"), "[GENERAL]\nTechniques=NotRoot\n");
+
+			var result = await new ExternalInstallFileFactsService().DetectAsync(root);
+
+			Assert.Empty(result.Files);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
 	private static string CreateTempDirectory()
 	{
 		var path = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
