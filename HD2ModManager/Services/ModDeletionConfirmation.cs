@@ -28,7 +28,7 @@ public static class ModDeletionConfirmation
         var selected = targets.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var attachedOptions = targets
             .Select(library.Get)
-            .Where(mod => mod is { IsDecoration: false, IsOption: false })
+            .Where(mod => mod is { IsDecoration: false, IsOption: false, IsReShade: false })
             .SelectMany(host => library.GetOptionsForHost(host!.Guid))
             .Where(option => !selected.Contains(option.Guid))
             .DistinctBy(option => option.Guid, StringComparer.OrdinalIgnoreCase)

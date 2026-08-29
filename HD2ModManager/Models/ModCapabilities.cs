@@ -10,8 +10,10 @@ public sealed record ModCapabilities(
     bool SupportsDecorationPlan,
     bool SupportsDecorationAttachments)
 {
-    public static ModCapabilities For(bool isDecoration, bool isOption = false, bool hasPatch = true)
-        => isDecoration
+    public static ModCapabilities For(bool isDecoration, bool isOption = false, bool hasPatch = true, bool isReShade = false)
+        => isReShade
+            ? new(true, true, false, false, false, false, false)
+            : isDecoration
             ? new(false, false, false, false, false, true, false)
             : isOption
                 ? new(false, false, hasPatch, hasPatch, hasPatch, hasPatch, false)

@@ -10,11 +10,17 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 {
 	private readonly IPatchFileNameParser _fileNameParser;
 	private readonly IPatchGroupAnalysisProvider _analysisProvider;
+	private readonly IExternalInstallFileFactsService _externalInstallFactsService;
 
-	public ModContentFactsService(IPatchFileNameParser fileNameParser, IPatchGroupAnalysisProvider analysisProvider, IUnitVersionProbe? unitVersionProbe = null)
+	public ModContentFactsService(
+		IPatchFileNameParser fileNameParser,
+		IPatchGroupAnalysisProvider analysisProvider,
+		IUnitVersionProbe? unitVersionProbe = null,
+		IExternalInstallFileFactsService? externalInstallFactsService = null)
 	{
 		_fileNameParser = fileNameParser ?? throw new ArgumentNullException(nameof(fileNameParser));
 		_analysisProvider = analysisProvider ?? throw new ArgumentNullException(nameof(analysisProvider));
+		_externalInstallFactsService = externalInstallFactsService ?? new ExternalInstallFileFactsService();
 	}
 
 	public async ValueTask<ModContentFacts> GetNodeFactsAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -83,9 +89,19 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 			groups.Add(new ModPatchGroupFact(discoveredGroup.Id, discoveredGroup.NormalizedOrder, discoveredGroup.Files, assetKeys, groupIssues));
 		}
 
+		var externalFacts = await _externalInstallFactsService.DetectAsync(directory, cancellationToken).ConfigureAwait(false);
 		var allFiles = groups.SelectMany(group => group.Files).ToList();
-		var contentGeneration = ComputeGeneration(allFiles);
+		var contentGeneration = ComputeGeneration(allFiles, externalFacts.Files);
 		var builtUtc = DateTimeOffset.UtcNow;
+		foreach (var conflict in externalFacts.Conflicts)
+		{
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Error,
+				"ExternalInstallTargetConflict",
+				$"Multiple external files target the same game path: {conflict.ConflictKey}",
+				directory,
+				node.Id));
+		}
 		return new ModContentFacts(
 			node.Id,
 			node.RelativePath,
@@ -93,7 +109,8 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 			builtUtc,
 			groups,
 			issues,
-			BuildAssetStructure(contentGeneration, builtUtc, groups, analysesByGroup, issues));
+			BuildAssetStructure(contentGeneration, builtUtc, groups, analysesByGroup, issues),
+			externalFacts.Files);
 	}
 
 	// Projects the analyzer's compact TOC facts into a stable, de-duplicated
@@ -107,7 +124,7 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 		IReadOnlyList<CoreIssue> issues)
 	{
 		var occurrencesByKey = new Dictionary<AssetKey, List<ModAssetOccurrenceFact>>();
-		var flagsByKey = new Dictionary<AssetKey, (bool Unit, bool Composite, bool Material, bool Texture)>();
+		var flagsByKey = new Dictionary<AssetKey, (bool Unit, bool Composite, bool Material, bool Texture, HD2ModAdaptation.Analysis.PatchLuaAssetFact? Lua)>();
 		var references = new List<ModAssetStructureReferenceFact>();
 
 		foreach (var group in groups)
@@ -150,7 +167,8 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 					previous.Unit || asset.IsUnit,
 					previous.Composite || asset.IsCompositeUnit,
 					previous.Material || asset.IsMaterial,
-					previous.Texture || asset.IsTexture);
+					previous.Texture || asset.IsTexture,
+					previous.Lua ?? asset.Lua);
 			}
 
 			foreach (var reference in analysis.References)
@@ -174,7 +192,7 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 			.Select(pair =>
 			{
 				var flags = flagsByKey[pair.Key];
-				return new ModAssetStructureAssetFact(pair.Key, flags.Unit, flags.Composite, flags.Material, flags.Texture, pair.Value);
+				return new ModAssetStructureAssetFact(pair.Key, flags.Unit, flags.Composite, flags.Material, flags.Texture, pair.Value, Lua: flags.Lua);
 			})
 			.ToArray();
 		var sourceArchives = groups
@@ -249,17 +267,38 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 			.Select(path => new FileInfo(path))
 			.Select(info => (_fileNameParser.TryParse(info.Name, out var parsed), info, parsed))
 			.Where(item => item.Item1)
-			.Select(item => new ModPatchGroupFileFact(item.parsed!.SidecarKind, item.info.FullName, item.info.Name, item.info.Length, item.info.LastWriteTimeUtc));
-		return ComputeGeneration(files);
+			.Select(item => new ModPatchGroupFileFact(item.parsed!.SidecarKind, item.info.FullName, item.info.Name, item.info.Length, item.info.LastWriteTimeUtc))
+			.ToList();
+		var external = ExternalInstallFileFactsService.EnumerateCandidateFiles(directory)
+			.Select(path => (Path: path, Relative: Path.GetRelativePath(directory, path)))
+			.Where(item => ExternalInstallPathMapper.TryMap(item.Relative, out _, out _, out _))
+			.Select(item =>
+			{
+				var info = new FileInfo(item.Path);
+				return new ExternalInstallFileFact(
+					item.Relative.Replace('\\', '/'),
+					ExternalInstallTargetRoot.GameBin,
+					ExternalInstallPathMapper.TryMap(item.Relative, out _, out _, out var target) ? target : item.Relative.Replace('\\', '/'),
+					info.Length,
+					string.Empty,
+					LastWriteTimeUtc: info.LastWriteTimeUtc);
+			})
+			.ToList();
+		return ComputeGeneration(files, external);
 	}
 
-	private static string ComputeGeneration(IEnumerable<ModPatchGroupFileFact> files)
+	private static string ComputeGeneration(IEnumerable<ModPatchGroupFileFact> files, IEnumerable<ExternalInstallFileFact>? externalFiles = null)
 	{
 		var builder = new StringBuilder();
 		foreach (var file in files.OrderBy(file => file.FileName, StringComparer.OrdinalIgnoreCase))
 		{
 			builder.Append(file.FileName.ToLowerInvariant()).Append(':').Append(file.Length).Append(':').Append(file.LastWriteTimeUtc.UtcTicks).AppendLine();
 		}
+		foreach (var file in externalFiles ?? Array.Empty<ExternalInstallFileFact>())
+		{
+			builder.Append("external:").Append(file.SourceRelativePath.ToLowerInvariant()).Append(':').Append(file.Length).Append(':').Append(file.LastWriteTimeUtc.UtcTicks).AppendLine();
+		}
+		builder.Append("asset-facts-v3").AppendLine();
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
 	}
 

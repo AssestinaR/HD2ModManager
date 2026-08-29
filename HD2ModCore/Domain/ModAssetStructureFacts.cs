@@ -15,6 +15,17 @@ public sealed record ModAssetStructureFacts(
 	IReadOnlyList<CoreIssue> Issues,
 	string? MappingGeneration = null)
 {
+	[JsonIgnore]
+	public bool ContainsLua => Assets.Any(asset => asset.IsLua);
+
+	[JsonIgnore]
+	public int LuaEntryCount => Assets
+		.Where(asset => asset.IsLua)
+		.Sum(asset => asset.Occurrences.Count == 0 ? 1 : asset.Occurrences.Count);
+
+	[JsonIgnore]
+	public LuaMergeState LuaMergeState => ContainsLua ? LuaMergeState.Detected : LuaMergeState.None;
+
 	public static ModAssetStructureFacts Empty(string contentGeneration, DateTimeOffset builtUtc)
 		=> new(contentGeneration, builtUtc, [], [], [], [], []);
 
@@ -32,7 +43,8 @@ public sealed record ModAssetStructureFacts(
 				key.TypeId == 0xcd4238c6a0c69e32,
 				[new ModAssetOccurrenceFact(group.Id, group.Files.FirstOrDefault(file => file.SidecarKind == PatchSidecarKind.Base)?.FilePath ?? string.Empty,
 					group.Files.FirstOrDefault(file => file.SidecarKind == PatchSidecarKind.Base)?.FileName ?? group.Id.ToString(),
-					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)])))
+					0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)],
+				Lua: LuaAssetFacts.TryIdentify(new HD2ModAdaptation.PatchReconstruction.AssetKey(key.TypeId, key.FileId)))))
 			.GroupBy(asset => asset.AssetKey)
 			.Select(group => MergeAssets(group.Key, group))
 			.OrderBy(asset => asset.AssetKey.TypeId)
@@ -63,8 +75,15 @@ public sealed record ModAssetStructureFacts(
 			values.Any(value => value.IsMaterial),
 			values.Any(value => value.IsTexture),
 			values.SelectMany(value => value.Occurrences).ToArray(),
-			values.SelectMany(value => value.TargetArchives ?? []).DistinctBy(archive => archive.ArchiveId, StringComparer.OrdinalIgnoreCase).ToArray());
+			values.SelectMany(value => value.TargetArchives ?? []).DistinctBy(archive => archive.ArchiveId, StringComparer.OrdinalIgnoreCase).ToArray(),
+			values.FirstOrDefault(value => value.Lua is not null)?.Lua);
 	}
+}
+
+public enum LuaMergeState
+{
+	None,
+	Detected,
 }
 
 // One logical AssetKey may occur in several Patch groups. Keep every occurrence so
@@ -76,10 +95,15 @@ public sealed record ModAssetStructureAssetFact(
 	bool IsMaterial,
 	bool IsTexture,
 	IReadOnlyList<ModAssetOccurrenceFact> Occurrences,
-	IReadOnlyList<ArchiveMetadata>? TargetArchives = null)
+	IReadOnlyList<ArchiveMetadata>? TargetArchives = null,
+	PatchLuaAssetFact? Lua = null)
 {
 	[JsonIgnore]
 	public IReadOnlyList<ArchiveMetadata> MappedTargetArchives => TargetArchives ?? [];
+
+	[JsonIgnore]
+	public bool IsLua => Lua is not null
+		|| LuaAssetFacts.IsBootEntry(new HD2ModAdaptation.PatchReconstruction.AssetKey(AssetKey.TypeId, AssetKey.FileId));
 }
 
 public sealed record ModAssetOccurrenceFact(

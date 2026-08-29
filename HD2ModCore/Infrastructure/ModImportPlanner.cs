@@ -62,7 +62,7 @@ public sealed class ModImportPlanner : IModImportPlanner
             var path = Normalize(node.RelativePath);
             if (string.IsNullOrEmpty(path))
             {
-                items.Add(ToItem(node, source, ImportPlanItemRole.Host, "manifest root"));
+                items.Add(ToItem(node, source, node.Metadata.Kind == ModNodeKind.ReShade ? ImportPlanItemRole.ReShade : ImportPlanItemRole.Host, "manifest root"));
                 continue;
             }
             var match = entries.FirstOrDefault(k => path.Equals(k, StringComparison.OrdinalIgnoreCase)
@@ -84,7 +84,7 @@ public sealed class ModImportPlanner : IModImportPlanner
 
     private static ImportPlan BuildHeuristicPlan(string source, ImportedObjectTree tree, ImportPlanMode mode)
     {
-        var payload = tree.Nodes.Values.Where(n => n.PatchGroups.Count > 0 || n.Metadata.Kind == ModNodeKind.Decoration)
+        var payload = tree.Nodes.Values.Where(n => n.PatchGroups.Count > 0 || n.Metadata.Kind is ModNodeKind.Decoration or ModNodeKind.ReShade)
             .OrderBy(n => Normalize(n.RelativePath).Length).ThenBy(n => n.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray();
         var diagnostics = new List<ImportPlanDiagnostic>();
         if (payload.Length == 0)
@@ -106,6 +106,8 @@ public sealed class ModImportPlanner : IModImportPlanner
             var isHost = node.Id.Equals(host.Id);
             var role = node.Metadata.Kind == ModNodeKind.Decoration
                 ? ImportPlanItemRole.Decoration
+                : node.Metadata.Kind == ModNodeKind.ReShade
+                    ? ImportPlanItemRole.ReShade
                 : isHost ? ImportPlanItemRole.Host : ImportPlanItemRole.Option;
             items.Add(ToItem(node, source, role, Normalize(node.RelativePath)));
         }

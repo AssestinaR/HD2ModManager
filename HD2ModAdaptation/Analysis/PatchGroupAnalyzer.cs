@@ -62,7 +62,8 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 					typeId == PatchUnitMeshReader.UnitTypeId,
 					typeId == PatchUnitMeshReader.CompositeUnitTypeId,
 					typeId == MaterialDependencyResolver.MaterialTypeId,
-					typeId == MaterialDependencyResolver.TextureTypeId));
+					typeId == MaterialDependencyResolver.TextureTypeId,
+					LuaAssetFacts.TryIdentify(entry.AssetKey)));
 				if ((depth is PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full) && entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
 				{
 					await ReadReferencesAsync(entry, references, issues, cancellationToken).ConfigureAwait(false);

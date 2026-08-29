@@ -12,8 +12,17 @@ public sealed record ApplyPlan(
 	DeploymentMethod DeploymentMethod = DeploymentMethod.HardLink)
 {
 	public IReadOnlyList<DeploymentPatchMapping> PatchMappings { get; init; } = Array.Empty<DeploymentPatchMapping>();
+	public IReadOnlyList<ExternalFileMapping> ExternalFileMappings { get; init; } = Array.Empty<ExternalFileMapping>();
 	public ApplyPlan(string gameDataDirectory, IReadOnlyList<ApplyOperation> operations)
 		: this(gameDataDirectory, null, 0, DateTimeOffset.UtcNow, operations, Array.Empty<CoreIssue>())
 	{
 	}
+}
+
+// Purpose: Adds generated patch groups to an ordinary profile plan without
+// pretending they are persisted ModNodes.
+public sealed record ApplyPlanAugmentation(
+	IReadOnlyList<GeneratedPatchGroup> GeneratedPatchGroups)
+{
+	public static ApplyPlanAugmentation Empty { get; } = new(Array.Empty<GeneratedPatchGroup>());
 }

@@ -110,6 +110,34 @@ public sealed class PatchGroupAnalyzerTests
 	}
 
 	[Fact]
+	public async Task AnalyzeAsync_RecognizesOnlyTheExactLuaBootAssetKey()
+	{
+		var directory = CreateTemporaryDirectory();
+		try
+		{
+			var tocPath = Path.Combine(directory, "lua.patch_0");
+			await File.WriteAllBytesAsync(tocPath, CreateToc(
+				new AssetKey(LuaAssetFacts.BootTypeId, LuaAssetFacts.BootFileId),
+				new AssetKey(LuaAssetFacts.BootTypeId, 0x1111),
+				new AssetKey(0x1111222233334444, LuaAssetFacts.BootFileId)));
+
+			var result = await new PatchGroupAnalyzer().AnalyzeInventoryAsync(new PatchGroupInput(tocPath));
+
+			Assert.Equal(3, result.Assets.Count);
+			var lua = Assert.Single(result.Assets, asset => asset.IsLua);
+			Assert.Equal(LuaAssetFacts.BootTypeId, lua.AssetKey.TypeId);
+			Assert.Equal(LuaAssetFacts.BootFileId, lua.AssetKey.FileId);
+			Assert.Equal("Boot", lua.Lua!.Kind);
+			Assert.Null(result.Assets.Single(asset => asset.AssetKey.FileId == 0x1111).Lua);
+			Assert.Null(result.Assets.Single(asset => asset.AssetKey.TypeId == 0x1111222233334444).Lua);
+		}
+		finally
+		{
+			Directory.Delete(directory, recursive: true);
+		}
+	}
+
+	[Fact]
 	public async Task AnalyzeAsync_MissingTocReturnsStructuredIssue()
 	{
 		var result = await new PatchGroupAnalyzer().AnalyzeAsync(new PatchGroupInput(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".patch_0")));

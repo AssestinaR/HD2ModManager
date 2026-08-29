@@ -284,6 +284,8 @@ public static class CoreServices
 		=> new ModFileResolver(CreatePatchFileNameParser());
 	public static IApplyPlanner CreateApplyPlanner()
 		=> new ApplyPlanner(CreatePatchFileNameParser());
+	public static ILuaDeploymentService CreateLuaDeploymentService()
+		=> new LuaDeploymentService();
 	public static IActivationStateStore CreateActivationStateStore()
 		=> new JsonActivationStateStore();
 	public static IDeployedOverrideGraphService CreateDeployedOverrideGraphService()
@@ -308,7 +310,7 @@ public static class CoreServices
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths)
 		=> CreateProfileApplyService(paths, CreateModInformationCenter(paths));
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
-		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations);
+		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations, CreateLuaDeploymentService());
 	[Obsolete("迁移状态：生产组合根应传入共享 IModInformationCenter；此无中心便捷工厂仅保留给测试和隔离场景。")]
 	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null)
 		=> CreateProfileDeploymentCoordinator(paths, gameDataDirectoryProvider, CreateModInformationCenter(paths), delay, bufferDuration);

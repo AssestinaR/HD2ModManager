@@ -6,5 +6,7 @@ public enum ApplyOperationKind
 {
 	DeletePatch,
 	DeployPatch,
+	DeleteExternalFile,
+	DeployExternalFile,
 	WriteState,
 }

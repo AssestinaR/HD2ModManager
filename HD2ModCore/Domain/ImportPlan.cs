@@ -15,6 +15,7 @@ public enum ImportPlanItemRole
     Decoration,
     PlaceholderHost,
     Ignored,
+    ReShade,
 }
 
 public sealed record ImportPlanDiagnostic(

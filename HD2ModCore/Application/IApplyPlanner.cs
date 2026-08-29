@@ -12,4 +12,12 @@ public interface IApplyPlanner
 		PatchFileIndex patchIndex,
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default);
+
+	ValueTask<ApplyPlan> BuildPlanAsync(
+		Profile profile,
+		LibrarySnapshot snapshot,
+		PatchFileIndex patchIndex,
+		string gameDataDirectory,
+		ApplyPlanAugmentation augmentation,
+		CancellationToken cancellationToken = default);
 }

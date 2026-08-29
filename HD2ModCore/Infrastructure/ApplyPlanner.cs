@@ -20,6 +20,15 @@ public sealed class ApplyPlanner : IApplyPlanner
 		PatchFileIndex patchIndex,
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default)
+		=> BuildPlanAsync(profile, snapshot, patchIndex, gameDataDirectory, ApplyPlanAugmentation.Empty, cancellationToken);
+
+	public ValueTask<ApplyPlan> BuildPlanAsync(
+		Profile profile,
+		LibrarySnapshot snapshot,
+		PatchFileIndex patchIndex,
+		string gameDataDirectory,
+		ApplyPlanAugmentation augmentation,
+		CancellationToken cancellationToken = default)
 	{
 		if (profile is null)
 		{
@@ -33,6 +42,7 @@ public sealed class ApplyPlanner : IApplyPlanner
 		{
 			throw new ArgumentNullException(nameof(patchIndex));
 		}
+		ArgumentNullException.ThrowIfNull(augmentation);
 		if (string.IsNullOrWhiteSpace(gameDataDirectory))
 		{
 			throw new ArgumentException("Value cannot be null or whitespace.", nameof(gameDataDirectory));
@@ -58,6 +68,7 @@ public sealed class ApplyPlanner : IApplyPlanner
 		}
 
 		var nextIndexByHex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		var plannedGroups = new List<PlannedPatchGroup>();
 		var orderedEntries = profile.Entries
 			.OrderBy(e => e.LoadOrder)
 			.ThenBy(e => e.AddedUtc)
@@ -75,13 +86,19 @@ public sealed class ApplyPlanner : IApplyPlanner
 
 			if (!patchIndex.FilesByNode.TryGetValue(entry.NodeId, out var files) || files.Count == 0)
 			{
+				if (snapshot.Nodes.TryGetValue(entry.NodeId, out var noPatchNode)
+					&& noPatchNode.Metadata.Kind == ModNodeKind.ReShade)
+				{
+					// ReShade components are deployed through ExternalFileMappings and
+					// intentionally have no GameData patch files.
+					continue;
+				}
 				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ProfileModHasNoPatchFiles", $"Profile mod has no patch files: {entry.NodeId}", NodeId: entry.NodeId));
 				continue;
 			}
 
-			foreach (var hexGroup in files.GroupBy(f => f.ArchiveHex16, StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+			foreach (var hexGroup in files.GroupBy(f => f.ArchiveHex16, StringComparer.OrdinalIgnoreCase))
 			{
-				var targetBaseIndex = nextIndexByHex.TryGetValue(hexGroup.Key, out var next) ? next : 0;
 				var sourceBaseIndexes = hexGroup
 					.Where(f => f.SidecarKind == PatchSidecarKind.Base)
 					.Select(f => f.NormalizedOrder)
@@ -91,33 +108,81 @@ public sealed class ApplyPlanner : IApplyPlanner
 
 				foreach (var sourceBaseIndex in sourceBaseIndexes)
 				{
-					foreach (var file in hexGroup.Where(f => f.NormalizedOrder == sourceBaseIndex).OrderBy(f => f.SidecarKind))
-					{
-						var targetPatchIndex = targetBaseIndex + sourceBaseIndex;
-						var targetName = BuildFileName(file.ArchiveHex16, targetPatchIndex, file.SidecarKind);
-					var mapping = new DeploymentPatchMapping(
-						file.NodeId,
-						file.FilePath,
-						Path.Combine(gameData, targetName),
-						file.ArchiveHex16,
-						file.SourcePatchIndex,
-						targetPatchIndex,
-						file.SidecarKind);
-					mappings.Add(mapping);
-					ops.Add(new ApplyOperation(
-						ApplyOperationKind.DeployPatch,
-						TargetPath: mapping.TargetPath,
-						SourcePath: mapping.SourcePath,
-						ArchiveHex16: mapping.ArchiveHex16,
-						SourcePatchIndex: mapping.SourcePatchIndex,
-						TargetPatchIndex: mapping.TargetPatchIndex,
-						SidecarKind: mapping.SidecarKind,
-						NodeId: mapping.NodeId));
-					}
+					var groupFiles = hexGroup.Where(f => f.NormalizedOrder == sourceBaseIndex).OrderBy(f => f.SidecarKind).ToArray();
+					if (groupFiles.Any(file => file.SidecarKind == PatchSidecarKind.Base))
+						plannedGroups.Add(new PlannedPatchGroup(
+							entry.LoadOrder,
+							sourceBaseIndex,
+							groupFiles[0].ArchiveHex16,
+							groupFiles[0].NodeId,
+							groupFiles,
+							null));
 				}
-
-				nextIndexByHex[hexGroup.Key] = targetBaseIndex + sourceBaseIndexes.Count;
 			}
+		}
+
+		foreach (var generatedGroup in augmentation.GeneratedPatchGroups)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (string.IsNullOrWhiteSpace(generatedGroup.ArchiveHex16)
+				|| generatedGroup.Files is null
+				|| generatedGroup.Files.Count == 0)
+			{
+				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "GeneratedPatchGroupInvalid", "A generated patch group has no archive identity or files.", NodeId: generatedGroup.OwnerNodeId));
+				continue;
+			}
+
+			var archive = generatedGroup.ArchiveHex16.ToLowerInvariant();
+			plannedGroups.Add(new PlannedPatchGroup(
+				generatedGroup.PlacementOrder ?? int.MaxValue,
+				generatedGroup.SourcePatchIndex,
+				archive,
+				generatedGroup.OwnerNodeId,
+				generatedGroup.Files
+					.Select(file => new IndexedPatchFile(
+						generatedGroup.OwnerNodeId ?? default,
+						file.FilePath,
+						file.FileName,
+						archive,
+						generatedGroup.SourcePatchIndex,
+						generatedGroup.SourcePatchIndex,
+						file.SidecarKind,
+						file.Length,
+						file.LastWriteTimeUtc))
+					.ToArray(),
+				generatedGroup));
+		}
+
+		foreach (var group in plannedGroups
+			.OrderBy(group => group.PlacementOrder)
+			.ThenBy(group => group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
+			.ThenBy(group => group.SourceOrder))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var archive = group.ArchiveHex16.ToLowerInvariant();
+			var targetPatchIndex = nextIndexByHex.GetValueOrDefault(archive);
+			foreach (var file in group.Files.OrderBy(file => file.SidecarKind))
+			{
+				var mapping = new DeploymentPatchMapping(
+					group.NodeId,
+					file.FilePath,
+					Path.Combine(gameData, BuildFileName(archive, targetPatchIndex, file.SidecarKind)),
+					archive,
+					file.SourcePatchIndex,
+					targetPatchIndex,
+					file.SidecarKind);
+				mappings.Add(mapping);
+				ops.Add(new ApplyOperation(
+					ApplyOperationKind.DeployPatch,
+					mapping.TargetPath,
+					mapping.SourcePath,
+					mapping.ArchiveHex16,
+					mapping.SourcePatchIndex,
+					mapping.TargetPatchIndex,
+					mapping.SidecarKind,
+					mapping.NodeId));
+			}
+			nextIndexByHex[archive] = targetPatchIndex + 1;
 		}
 
 		return ValueTask.FromResult(new ApplyPlan(gameData, profile.Id, profile.Revision, DateTimeOffset.UtcNow, ops, issues)
@@ -154,4 +219,12 @@ public sealed class ApplyPlanner : IApplyPlanner
 
 		return $"{hex}.patch_{index}{suffix}";
 	}
+
+	private sealed record PlannedPatchGroup(
+		int PlacementOrder,
+		int SourceOrder,
+		string ArchiveHex16,
+		ModNodeId? NodeId,
+		IReadOnlyList<IndexedPatchFile> Files,
+		GeneratedPatchGroup? GeneratedGroup);
 }

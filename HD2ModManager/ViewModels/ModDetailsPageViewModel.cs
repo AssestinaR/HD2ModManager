@@ -92,7 +92,8 @@ namespace HD2ModManager.ViewModels
         public bool CanCompareDependencyGraph => !_disposed && !_dependencyGraphComparisonRunning && TryGetCurrentNode(out _);
         // 内嵌材质是否存在属于轻量 ReferenceGraph 事实；包装检查只负责写出前的最终安全复核。
         public bool IsOption => Mod?.IsOption == true;
-        public bool IsStandardMod => !IsDecoration && !IsOption;
+        public bool IsReShade => Mod?.IsReShade == true;
+        public bool IsStandardMod => !IsDecoration && !IsOption && !IsReShade;
         public bool HasPatchContent => Mod?.HasPatchContent == true;
         // Option Mods are still real patch-bearing packages. Only decorations
         // and empty logical hosts are excluded from patch tools.
@@ -118,7 +119,7 @@ namespace HD2ModManager.ViewModels
         public BulkObservableCollection<ModCardViewModel> HostDecorations { get; } = new();
         // Empty standard hosts still own their option list; an option becomes a
         // decoration host only when it owns patch content that can be rebuilt.
-        public bool CanHostAttachments => !IsDecoration && (IsStandardMod || (IsOption && HasPatchContent));
+        public bool CanHostAttachments => !IsDecoration && !IsReShade && (IsStandardMod || (IsOption && HasPatchContent));
         public bool HasHostDecorations => CanHostAttachments && HostDecorations.Count > 0;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
@@ -771,6 +772,7 @@ namespace HD2ModManager.ViewModels
 			OnPropertyChanged(nameof(CanPlanDecoration));
 			OnPropertyChanged(nameof(IsDecoration));
             OnPropertyChanged(nameof(IsOption));
+            OnPropertyChanged(nameof(IsReShade));
             OnPropertyChanged(nameof(IsStandardMod));
             OnPropertyChanged(nameof(HasPatchContent));
             OnPropertyChanged(nameof(CanHostAttachments));
@@ -1435,7 +1437,7 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile()
         {
             if (Mod == null) return;
-            if (!IsStandardMod)
+            if (Mod.IsDecoration || Mod.IsOption)
             {
                 _notifications?.Show(Mod.IsDecoration ? "装饰 Mod 不能加入配置；请在目标主 Mod 中启用它。" : "选项 Mod 不能加入配置；请在目标主 Mod 中启用它。", NotificationLevel.Info);
                 return;

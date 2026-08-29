@@ -18,6 +18,7 @@ namespace HD2ModManager.Models
         public string? SourcePath { get; set; }
         public bool IsDecoration { get; set; }
         public bool IsOption { get; set; }
+        public bool IsReShade { get; set; }
         public string[] HostModGuids { get; set; } = Array.Empty<string>();
         // This is a lightweight structural fact projected from ModNode.PatchGroups.
         // It must not depend on FileGroups, which may intentionally be omitted
@@ -27,6 +28,6 @@ namespace HD2ModManager.Models
         // under the Mod's Overwrite directory; this flag only records whether it should be
         // regenerated when decorations or source content change.
         public bool IsHelmetToArmorMerged { get; set; }
-        public ModCapabilities Capabilities => ModCapabilities.For(IsDecoration, IsOption, HasPatchContent);
+        public ModCapabilities Capabilities => ModCapabilities.For(IsDecoration, IsOption, HasPatchContent, IsReShade);
     }
 }

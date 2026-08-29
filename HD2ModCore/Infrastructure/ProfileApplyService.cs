@@ -12,14 +12,23 @@ public sealed class ProfileApplyService : IProfileApplyService
 	private readonly IApplyExecutor _executor;
 	private readonly DeploymentCapabilityService _capabilityService;
 	private readonly OptionActivationStore _optionActivations;
+	private readonly ILuaDeploymentService _luaDeploymentService;
 
-	public ProfileApplyService(IModInformationCenter informationCenter, IApplyPlanner planner, IApplyExecutor executor, DeploymentCapabilityService? capabilityService = null, StoragePaths? paths = null, OptionActivationStore? optionActivations = null)
+	public ProfileApplyService(
+		IModInformationCenter informationCenter,
+		IApplyPlanner planner,
+		IApplyExecutor executor,
+		DeploymentCapabilityService? capabilityService = null,
+		StoragePaths? paths = null,
+		OptionActivationStore? optionActivations = null,
+		ILuaDeploymentService? luaDeploymentService = null)
 	{
 		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		_planner = planner ?? throw new ArgumentNullException(nameof(planner));
 		_executor = executor ?? throw new ArgumentNullException(nameof(executor));
 		_capabilityService = capabilityService ?? new DeploymentCapabilityService();
 		_optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine((paths ?? new StoragePaths(AppContext.BaseDirectory)).ModsDirectory, "option-activations.json"));
+		_luaDeploymentService = luaDeploymentService ?? new LuaDeploymentService();
 	}
 
 	public async ValueTask<ApplyResult> ApplyAsync(
@@ -48,9 +57,53 @@ public sealed class ProfileApplyService : IProfileApplyService
 			allFacts.BuiltUtc,
 			allFacts.FilesByNode.Where(pair => activeNodeIds.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value),
 			allFacts.Issues.Where(issue => issue.NodeId is null || activeNodeIds.Contains(issue.NodeId.Value)).ToList());
-		var plan = await _planner.BuildPlanAsync(effectiveProfile, snapshot, index, gameDataDirectory, cancellationToken).ConfigureAwait(false);
+		var contentFacts = await RequestActiveContentFactsAsync(effectiveProfile, snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+		var preparation = await _luaDeploymentService.PrepareAsync(
+			effectiveProfile,
+			snapshot,
+			index,
+			modsRootDirectory,
+			gameDataDirectory,
+			contentFacts,
+			cancellationToken).ConfigureAwait(false);
+		if (preparation.HasErrors)
+			return new ApplyResult(false, Array.Empty<ApplyOperationResult>(), null, preparation.Issues);
+
+		var plan = await _planner.BuildPlanAsync(
+			effectiveProfile,
+			snapshot,
+			preparation.PatchIndex,
+			gameDataDirectory,
+			new ApplyPlanAugmentation(preparation.GeneratedPatchGroups),
+			cancellationToken).ConfigureAwait(false);
+		plan = plan with
+		{
+			Issues = plan.Issues.Concat(preparation.Issues).ToArray(),
+			ExternalFileMappings = preparation.ExternalFiles,
+		};
 		plan = plan with { DeploymentMethod = capability.Method.Value };
 		return await _executor.ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
+	}
+
+	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> RequestActiveContentFactsAsync(
+		Profile profile,
+		LibrarySnapshot snapshot,
+		string modsRootDirectory,
+		CancellationToken cancellationToken)
+	{
+		var result = new Dictionary<ModNodeId, ModContentFacts>();
+		foreach (var nodeId in profile.Entries.Select(entry => entry.NodeId).Distinct())
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (!snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+			var inventory = await _informationCenter.RequestAssetInventoryAsync(
+				node,
+				modsRootDirectory,
+				new ModInformationRequest(ModInformationKind.AssetInventory, "DeploymentLua"),
+				cancellationToken).ConfigureAwait(false);
+			if (inventory.Data is not null) result[nodeId] = inventory.Data;
+		}
+		return result;
 	}
 
 	private static Profile ResolveEffectiveProfile(Profile profile, LibrarySnapshot snapshot, OptionActivationSnapshot optionStates)

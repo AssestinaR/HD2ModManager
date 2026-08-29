@@ -12,6 +12,7 @@ namespace HD2ModCore.Infrastructure;
 public sealed class ModLibraryImporter : IModLibraryImporter
 {
 	private const int SnapshotVersion = 1;
+	private const string ImportTemporaryMarkerFileName = ".hd2modmanager-import-temp";
 	private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
 
 	private readonly StoragePaths _paths;
@@ -73,13 +74,14 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		try
 		{
 			await _archiveExtractor.ExtractAsync(full, extractRoot, cancellationToken).ConfigureAwait(false);
-			var root = ResolvePackageRoot(extractRoot);
-			var unit = new ImportSourceUnit(
-				SourceRoot: root.Directory,
-				SourceDisplayName: Path.GetFileNameWithoutExtension(full),
-				PreferHardLinks: true,
-				Manifest: root.Manifest);
-			return await ImportUnitsAsync([unit], cancellationToken).ConfigureAwait(false);
+			// Use the same package discovery path as a dropped folder. This matters for
+			// compound distributions such as a root .addon64 next to an inner Lua-patch
+			// archive: both components must survive one user import.
+			var units = await DiscoverFolderUnitsAsync(
+				extractRoot,
+				cancellationToken,
+				Path.GetFileNameWithoutExtension(full)).ConfigureAwait(false);
+			return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
 		}
 		finally
 		{
@@ -98,7 +100,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				cancellationToken.ThrowIfCancellationRequested();
 				var rawTree = await _folderImporter.ImportFolderAsync(unit.SourceRoot, cancellationToken).ConfigureAwait(false);
 				var plannedTree = unit.Manifest is null
-					? PlanHeuristicImport(rawTree)
+					? PlanHeuristicImport(rawTree, unit.SourceRoot)
 					: PlanManifestImport(rawTree, unit.Manifest);
 				if (plannedTree.Nodes.Count == 0) continue;
 
@@ -128,8 +130,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return new ImportResult(latestSnapshot, firstStoredTree.RootId, firstStoredTree.SourceDisplayName);
 	}
 
-	private static bool ContainsImportablePayload(ImportedObjectTree tree)
-		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0 || node.Metadata.Kind == ModNodeKind.Decoration);
+	private static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
+		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0 || node.Metadata.Kind == ModNodeKind.Decoration)
+			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory);
 
 	private static PackageRoot ResolvePackageRoot(string directory)
 	{
@@ -153,21 +156,24 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return new PackageRoot(directory, null);
 	}
 
-	private async ValueTask<IReadOnlyList<ImportSourceUnit>> DiscoverFolderUnitsAsync(string root, CancellationToken cancellationToken)
+	private async ValueTask<IReadOnlyList<ImportSourceUnit>> DiscoverFolderUnitsAsync(
+		string root,
+		CancellationToken cancellationToken,
+		string? rootDisplayName = null)
 	{
 		var packageRoot = ResolvePackageRoot(root);
 		// A manifest owns its complete package tree. Nested archives are then just
 		// package files, not separate user-selected imports.
 		if (packageRoot.Manifest is not null)
 		{
-			return [new ImportSourceUnit(packageRoot.Directory, new DirectoryInfo(root).Name, false, packageRoot.Manifest)];
+			return [new ImportSourceUnit(packageRoot.Directory, rootDisplayName ?? new DirectoryInfo(root).Name, false, packageRoot.Manifest)];
 		}
 
 		var units = new List<ImportSourceUnit>();
 		var directTree = await _folderImporter.ImportFolderAsync(root, cancellationToken).ConfigureAwait(false);
-		if (ContainsImportablePayload(directTree))
+		if (ContainsImportablePayload(directTree, root))
 		{
-			units.Add(new ImportSourceUnit(root, new DirectoryInfo(root).Name, false, null));
+			units.Add(new ImportSourceUnit(root, rootDisplayName ?? new DirectoryInfo(root).Name, false, null));
 		}
 
 		foreach (var archive in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
@@ -180,7 +186,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				await _archiveExtractor.ExtractAsync(archive, extracted, cancellationToken).ConfigureAwait(false);
 				var archiveRoot = ResolvePackageRoot(extracted);
 				var archiveTree = await _folderImporter.ImportFolderAsync(archiveRoot.Directory, cancellationToken).ConfigureAwait(false);
-				if (!ContainsImportablePayload(archiveTree))
+				if (!ContainsImportablePayload(archiveTree, archiveRoot.Directory))
 				{
 					_temporaryDirectories.Delete(extracted);
 					continue;
@@ -273,6 +279,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			var flatDirName = CreateUniqueDirectoryName(_paths.ModsDirectory, displayName, usedNames);
 			var destDir = Path.Combine(_paths.ModsDirectory, flatDirName);
 			CopyTopLevelFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
+			CopyExternalInstallFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
 			CopyResolvedIcon(sourceRoot, destDir, node.RelativePath, manifest, cancellationToken);
 			WriteRelationMetadata(destDir, node.Metadata, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
@@ -401,6 +408,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		if (rootCandidate is not null)
 		{
 			var rootEntry = entries.FirstOrDefault(entry => string.IsNullOrEmpty(entry.Path));
+			var rootKind = rootCandidate.Metadata.Kind == ModNodeKind.ReShade && rootCandidate.PatchGroups.Count == 0
+				? ModNodeKind.ReShade
+				: ModNodeKind.Standard;
 			var rootGuid = rootEntry?.Guid is not null && Guid.TryParse(rootEntry.Guid, out var explicitRoot)
 				? new ModNodeId(explicitRoot)
 				: rootId;
@@ -411,7 +421,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				{
 					Name = string.IsNullOrWhiteSpace(rootEntry?.Name) ? rootCandidate.Metadata.Name : rootEntry.Name!,
 					Notes = rootEntry?.Notes ?? manifest.Description,
-					Kind = ModNodeKind.Standard,
+					Kind = rootKind,
 					HostModGuids = null,
 					SourcePackageGuid = manifest.Guid,
 					SourcePackagePath = null,
@@ -506,17 +516,21 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			.FirstOrDefault();
 	}
 
-	private static ImportedObjectTree PlanHeuristicImport(ImportedObjectTree tree)
+	private static ImportedObjectTree PlanHeuristicImport(ImportedObjectTree tree, string sourceRootDirectory)
 	{
 		var payloadNodes = tree.Nodes.Values
-			.Where(node => node.PatchGroups.Count > 0 || node.Metadata.Kind == ModNodeKind.Decoration)
+			.Where(node => node.PatchGroups.Count > 0
+				|| node.Metadata.Kind == ModNodeKind.Decoration
+				|| (string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
+					&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)))
 			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 		if (payloadNodes.Length == 0) return tree with { Nodes = new Dictionary<ModNodeId, ModNode>() };
 		if (payloadNodes.Length == 1)
 		{
 			var only = payloadNodes[0];
-			return tree with { RootId = only.Id, Nodes = new Dictionary<ModNodeId, ModNode> { [only.Id] = only with { Metadata = only.Metadata with { Kind = only.Metadata.Kind == ModNodeKind.Decoration ? ModNodeKind.Decoration : ModNodeKind.Standard } } } };
+			var kind = GetHeuristicStandaloneKind(only, sourceRootDirectory);
+			return tree with { RootId = only.Id, Nodes = new Dictionary<ModNodeId, ModNode> { [only.Id] = only with { Metadata = only.Metadata with { Kind = kind } } } };
 		}
 
 		var existingRoot = payloadNodes.FirstOrDefault(node => string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath)));
@@ -525,11 +539,12 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		var nodes = new Dictionary<ModNodeId, ModNode>();
 		if (existingRoot is not null)
 		{
+			var rootKind = GetHeuristicStandaloneKind(existingRoot, sourceRootDirectory);
 			nodes[rootId] = existingRoot with
 			{
 				Metadata = existingRoot.Metadata with
 				{
-					Kind = existingRoot.Metadata.Kind == ModNodeKind.Decoration ? ModNodeKind.Decoration : ModNodeKind.Standard,
+					Kind = rootKind,
 					HostModGuids = null,
 					SourcePackagePath = null,
 				},
@@ -566,6 +581,15 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 		return tree with { RootId = rootId, Nodes = nodes };
 	}
+
+	private static ModNodeKind GetHeuristicStandaloneKind(ModNode node, string sourceRootDirectory)
+		=> node.Metadata.Kind == ModNodeKind.Decoration
+			? ModNodeKind.Decoration
+			: string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
+				&& node.PatchGroups.Count == 0
+				&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)
+				? ModNodeKind.ReShade
+				: ModNodeKind.Standard;
 
 	private static List<ManifestEntry> BuildManifestEntries(StandardModManifest manifest)
 	{
@@ -703,6 +727,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		foreach (var file in Directory.EnumerateFiles(sourceDir))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			if (string.Equals(Path.GetFileName(file), ImportTemporaryMarkerFileName, StringComparison.OrdinalIgnoreCase))
+				continue;
 			var destination = Path.Combine(destDir, Path.GetFileName(file));
 			if (preferHardLinks)
 			{
@@ -716,6 +742,67 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			}
 			File.Copy(file, destination, overwrite: true);
 		}
+	}
+
+	private static void CopyExternalInstallFiles(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)
+	{
+		foreach (var sourcePath in EnumerateExternalFiles(sourceDir))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var relative = Path.GetRelativePath(sourceDir, sourcePath);
+			if (!ExternalInstallPathMapper.TryMap(relative, out _, out var normalizedSource, out _)) continue;
+			var destination = Path.Combine(destDir, normalizedSource.Replace('/', Path.DirectorySeparatorChar));
+			var destinationDirectory = Path.GetDirectoryName(destination);
+			if (!string.IsNullOrWhiteSpace(destinationDirectory)) Directory.CreateDirectory(destinationDirectory);
+			if (File.Exists(destination)) continue;
+			if (preferHardLinks)
+			{
+				try
+				{
+					if (CreateHardLink(destination, sourcePath, IntPtr.Zero)) continue;
+				}
+				catch (IOException) { }
+				catch (UnauthorizedAccessException) { }
+			}
+			File.Copy(sourcePath, destination, overwrite: false);
+		}
+	}
+
+	private static IEnumerable<string> EnumerateExternalFiles(string sourceDir)
+	{
+		IEnumerable<string> rootFiles;
+		try { rootFiles = Directory.EnumerateFiles(sourceDir, "*", SearchOption.TopDirectoryOnly); }
+		catch (IOException) { rootFiles = Array.Empty<string>(); }
+		catch (UnauthorizedAccessException) { rootFiles = Array.Empty<string>(); }
+		foreach (var file in rootFiles) yield return file;
+
+		var bin = Path.Combine(sourceDir, "bin");
+		if (!Directory.Exists(bin) || IsReparsePoint(bin)) yield break;
+		var pending = new Stack<string>();
+		pending.Push(bin);
+		while (pending.Count > 0)
+		{
+			var directory = pending.Pop();
+			IEnumerable<string> files;
+			try { files = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly); }
+			catch (IOException) { continue; }
+			catch (UnauthorizedAccessException) { continue; }
+			foreach (var file in files) yield return file;
+
+			IEnumerable<string> children;
+			try { children = Directory.EnumerateDirectories(directory, "*", SearchOption.TopDirectoryOnly); }
+			catch (IOException) { continue; }
+			catch (UnauthorizedAccessException) { continue; }
+			foreach (var child in children)
+				if (!IsReparsePoint(child)) pending.Push(child);
+		}
+	}
+
+	private static bool IsReparsePoint(string path)
+	{
+		try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+		catch (IOException) { return true; }
+		catch (UnauthorizedAccessException) { return true; }
 	}
 
 	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

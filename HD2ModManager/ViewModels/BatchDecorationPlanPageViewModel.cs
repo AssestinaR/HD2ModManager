@@ -84,7 +84,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     private async Task LoadAsync()
     {
         _allSources = _library.All()
-            .Where(mod => !mod.IsDecoration && !string.Equals(mod.Guid, HostModId, StringComparison.OrdinalIgnoreCase) && mod.HasPatchContent)
+            .Where(mod => !mod.IsDecoration && !mod.IsReShade && !string.Equals(mod.Guid, HostModId, StringComparison.OrdinalIgnoreCase) && mod.HasPatchContent)
             .OrderBy(mod => mod.Name)
             .Select(mod => new DecorationBatchSourceModItem(mod, OnSourceSelectionChanged))
             .ToArray();

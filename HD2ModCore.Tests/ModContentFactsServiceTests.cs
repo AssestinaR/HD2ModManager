@@ -3,6 +3,7 @@ using HD2ModAdaptation.PatchReconstruction;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using System.Text.Json;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 
 namespace HD2ModCore.Tests;
@@ -109,6 +110,51 @@ public sealed class ModContentFactsServiceTests
 		}
 	}
 
+	[Fact]
+	public async Task GetNodeFactsAsync_ProjectsLuaFactsAndExposesModSummary()
+	{
+		var root = CreateTempRoot();
+		try
+		{
+			var node = CreateNode("lua-mod", "Lua Mod");
+			var directory = Path.Combine(root, node.RelativePath);
+			Directory.CreateDirectory(directory);
+			var basePath = Path.Combine(directory, "9ba626afa44a3aa3.patch_0");
+			await File.WriteAllBytesAsync(basePath, [1]);
+			var luaKey = new AdaptationAssetKey(LuaAssetFacts.BootTypeId, LuaAssetFacts.BootFileId);
+			var provider = new FixedAnalysisProvider(basePath, new PatchAssetFact(
+				luaKey, basePath, 326, 0, 0, false, false, false, false, new PatchLuaAssetFact()));
+			var service = new ModContentFactsService(new PatchFileNameParser(), provider);
+
+			var facts = await service.GetNodeFactsAsync(node, root);
+
+			Assert.True(facts.ContainsLua);
+			Assert.Equal(1, facts.LuaEntryCount);
+			Assert.Equal(LuaMergeState.Detected, facts.LuaMergeState);
+			var asset = Assert.Single(facts.Structure.Assets);
+			Assert.True(asset.IsLua);
+			Assert.Equal("Boot", asset.Lua!.Kind);
+		}
+		finally
+		{
+			DeleteQuietly(root);
+		}
+	}
+
+	[Fact]
+	public void ModAssetStructureAssetFact_ReadsOlderJsonWithoutLuaProperty()
+	{
+		const string json = """
+			{"assetKey":{"typeId":10,"fileId":20},"isUnit":false,"isCompositeUnit":false,"isMaterial":false,"isTexture":false,"occurrences":[]}
+			""";
+
+		var asset = JsonSerializer.Deserialize<ModAssetStructureAssetFact>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+		Assert.NotNull(asset);
+		Assert.Null(asset!.Lua);
+		Assert.False(asset.IsLua);
+	}
+
 	private static async Task<string> CreatePatchGroupAsync(string root, ModNode node, string fileName)
 	{
 		var directory = Path.Combine(root, node.RelativePath);
@@ -157,6 +203,30 @@ public sealed class ModContentFactsServiceTests
 					"test"))
 				.ToList();
 			return ValueTask.FromResult<IReadOnlyList<PatchGroupAnalysis>>(analyses);
+		}
+	}
+
+	private sealed class FixedAnalysisProvider : IPatchGroupAnalysisProvider
+	{
+		private readonly string basePath;
+		private readonly PatchAssetFact asset;
+
+		public FixedAnalysisProvider(string basePath, PatchAssetFact asset)
+		{
+			this.basePath = basePath;
+			this.asset = asset;
+		}
+
+		public ValueTask<IReadOnlyList<PatchGroupAnalysis>> AnalyzeNodeAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
+		{
+			var analysis = new PatchGroupAnalysis(
+				new PatchGroupInput(basePath),
+				[asset],
+				Array.Empty<PatchAssetReference>(),
+				Array.Empty<PatchAnalysisIssue>(),
+				DateTimeOffset.UtcNow,
+				"test");
+			return ValueTask.FromResult<IReadOnlyList<PatchGroupAnalysis>>([analysis]);
 		}
 	}
 }

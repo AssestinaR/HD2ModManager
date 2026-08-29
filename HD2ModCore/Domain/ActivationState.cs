@@ -8,4 +8,9 @@ public sealed record ActivationState(
 	DateTimeOffset AppliedUtc,
 	bool Completed,
 	IReadOnlyList<ActivationStateFileEntry> Files,
-	IReadOnlyList<CoreIssue> Issues);
+	IReadOnlyList<CoreIssue> Issues)
+{
+	// External files (for example ReShade addons) live outside GameData and are
+	// tracked separately so patch graph readers never mistake them for patches.
+	public IReadOnlyList<ExternalFileMapping> ExternalFiles { get; init; } = Array.Empty<ExternalFileMapping>();
+}

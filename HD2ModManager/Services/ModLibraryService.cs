@@ -207,6 +207,9 @@ namespace HD2ModManager.Services
             catch (UnauthorizedAccessException) { return 0; }
         }
 
+        private static bool IsOptionHost(ModEntity mod)
+            => !mod.IsDecoration && !mod.IsOption && !mod.IsReShade;
+
         public string GetOptionActivationStatus(string optionId)
         {
             var option = Get(optionId);
@@ -234,7 +237,7 @@ namespace HD2ModManager.Services
             var option = Get(optionId);
             if (option?.IsOption != true) return "当前不是选项 Mod。";
             var available = option.HostModGuids
-                .Where(host => All().Any(mod => mod.Capabilities.CanJoinProfile && SameModGuid(mod.Guid, host)))
+                .Where(host => All().Any(mod => IsOptionHost(mod) && SameModGuid(mod.Guid, host)))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (available.Count == 0) return "无可用主体。";
             var enabled = _optionActivations.GetEnabledHosts(optionId);
@@ -249,7 +252,7 @@ namespace HD2ModManager.Services
         {
             var option = Get(optionId);
             if (option?.IsOption != true) return "当前不是选项 Mod。";
-            var available = option.HostModGuids.Where(host => All().Any(mod => mod.Capabilities.CanJoinProfile && SameModGuid(mod.Guid, host))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var available = option.HostModGuids.Where(host => All().Any(mod => IsOptionHost(mod) && SameModGuid(mod.Guid, host))).ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (available.Count == 0) return "无可用主体。";
             await _optionActivations.SetEnabledHostsAsync(optionId, enabled ? available : Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
@@ -1594,6 +1597,7 @@ namespace HD2ModManager.Services
                 SourcePath = node.RelativePath,
                 IsDecoration = node.Metadata.Kind == ModNodeKind.Decoration,
                 IsOption = node.Metadata.Kind == ModNodeKind.Option,
+                IsReShade = node.Metadata.Kind == ModNodeKind.ReShade,
                 IsHelmetToArmorMerged = node.Metadata.HelmetToArmorMerged,
                 HostModGuids = node.Metadata.HostModGuids?.ToArray() ?? Array.Empty<string>(),
                 HasPatchContent = node.PatchGroups.Count > 0,

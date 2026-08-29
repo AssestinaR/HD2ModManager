@@ -10,7 +10,8 @@ public sealed record ModContentFacts(
 	DateTimeOffset BuiltUtc,
 	IReadOnlyList<ModPatchGroupFact> PatchGroups,
 	IReadOnlyList<CoreIssue> Issues,
-	ModAssetStructureFacts? AssetStructure = null)
+	ModAssetStructureFacts? AssetStructure = null,
+	IReadOnlyList<ExternalInstallFileFact>? ExternalInstallFiles = null)
 {
 	// The structure snapshot is the canonical reusable asset view. The fallback
 	// keeps caches written by older manager versions useful until this Mod is
@@ -18,6 +19,21 @@ public sealed record ModContentFacts(
 	[JsonIgnore]
 	public ModAssetStructureFacts Structure
 		=> AssetStructure ?? ModAssetStructureFacts.FromLegacy(this);
+
+	[JsonIgnore]
+	public bool ContainsLua => Structure.ContainsLua;
+
+	[JsonIgnore]
+	public int LuaEntryCount => Structure.LuaEntryCount;
+
+	[JsonIgnore]
+	public LuaMergeState LuaMergeState => Structure.LuaMergeState;
+
+	[JsonIgnore]
+	public IReadOnlyList<ExternalInstallFileFact> ExternalFiles => ExternalInstallFiles ?? Array.Empty<ExternalInstallFileFact>();
+
+	[JsonIgnore]
+	public bool ContainsReShade => ExternalFiles.Any(file => file.Kind == ExternalInstallFileKind.ReShadePlugin);
 
 	public IReadOnlyList<IndexedPatchFile> ToPatchFileIndex()
 		=> PatchGroups

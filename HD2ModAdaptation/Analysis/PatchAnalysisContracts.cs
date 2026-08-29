@@ -11,6 +11,23 @@ public sealed record PatchGroupInput(
 	string? GpuResourcesFilePath = null,
 	IReadOnlyList<string>? RelatedMaterialTocFilePaths = null);
 
+// Purpose: Identifies the currently supported Lua patch entry without treating
+// every asset in the shared Lua archive as Lua. The exact TypeId/FileId pair is
+// deliberately kept here so the detector has one authoritative definition.
+public sealed record PatchLuaAssetFact(string Kind = "Boot");
+
+public static class LuaAssetFacts
+{
+	public const ulong BootTypeId = 0xA14E8DFA2CD117E2;
+	public const ulong BootFileId = 0xF476DF93691895FA;
+
+	public static bool IsBootEntry(AssetKey assetKey)
+		=> assetKey.TypeId == BootTypeId && assetKey.FileId == BootFileId;
+
+	public static PatchLuaAssetFact? TryIdentify(AssetKey assetKey)
+		=> IsBootEntry(assetKey) ? new PatchLuaAssetFact() : null;
+}
+
 public sealed record PatchAssetFact(
 	AssetKey AssetKey,
 	string SourceFilePath,
@@ -20,7 +37,11 @@ public sealed record PatchAssetFact(
 	bool IsUnit,
 	bool IsCompositeUnit,
 	bool IsMaterial,
-	bool IsTexture);
+	bool IsTexture,
+	PatchLuaAssetFact? Lua = null)
+{
+	public bool IsLua => Lua is not null;
+}
 
 public sealed record PatchAnalysisIssue(
 	string Code,

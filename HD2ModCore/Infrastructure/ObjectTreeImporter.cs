@@ -35,7 +35,9 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 			var patchGroups = CollectPatchGroups(dir);
 			var isDecoration = IsDecorationPackageDirectory(dir);
 			var option = !isDecoration ? TryReadOptionRelation(dir) : null;
-			if (patchGroups.Count == 0 && !isDecoration && option is null)
+			var hasExternalInstallFiles = dir.FullName.Equals(rootDir.FullName, StringComparison.OrdinalIgnoreCase)
+				&& ExternalInstallFileFactsService.HasRecognizedFiles(dir.FullName);
+			if (patchGroups.Count == 0 && !isDecoration && option is null && !hasExternalInstallFiles)
 			{
 				continue;
 			}
@@ -47,12 +49,19 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 			}
 
 			var id = ModNodeId.New();
+			var kind = isDecoration
+				? ModNodeKind.Decoration
+				: option is not null
+					? ModNodeKind.Option
+					: hasExternalInstallFiles && patchGroups.Count == 0
+						? ModNodeKind.ReShade
+						: ModNodeKind.Standard;
 			var metadata = new ModNodeMetadata(
 				Name: BuildFlatName(rootDir.Name, rel),
 				Notes: null,
 				CreatedUtc: DateTimeOffset.UtcNow,
 				ModifiedUtc: null,
-				Kind: isDecoration ? ModNodeKind.Decoration : option is not null ? ModNodeKind.Option : ModNodeKind.Standard,
+				Kind: kind,
 				HostModGuids: option?.HostModGuids,
 				SourcePackageGuid: option?.SourcePackageGuid,
 				SourcePackagePath: option?.SourcePath,
@@ -117,6 +126,7 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		yield return root;
 		foreach (var child in SafeEnumerateDirectories(root))
 		{
+			if (IsReparsePoint(child)) continue;
 			foreach (var nested in EnumerateDirectoriesDepthFirst(child))
 			{
 				yield return nested;
@@ -157,5 +167,12 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		{
 			return Array.Empty<DirectoryInfo>();
 		}
+	}
+
+	private static bool IsReparsePoint(FileSystemInfo entry)
+	{
+		try { return (entry.Attributes & FileAttributes.ReparsePoint) != 0; }
+		catch (IOException) { return true; }
+		catch (UnauthorizedAccessException) { return true; }
 	}
 }

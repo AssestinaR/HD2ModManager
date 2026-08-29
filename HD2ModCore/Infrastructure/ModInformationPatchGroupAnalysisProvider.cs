@@ -2,6 +2,7 @@ using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.PatchWorkspace;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModAdaptation.PatchReconstruction.Lua;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using System.Collections.Concurrent;
@@ -204,7 +205,8 @@ public sealed class ModInformationPatchGroupAnalysisProvider : IPatchGroupAnalys
 					typeId == PatchUnitMeshReader.UnitTypeId,
 					typeId == PatchUnitMeshReader.CompositeUnitTypeId,
 					typeId == MaterialDependencyResolver.MaterialTypeId,
-					typeId == MaterialDependencyResolver.TextureTypeId));
+					typeId == MaterialDependencyResolver.TextureTypeId,
+					LuaAssetFacts.TryIdentify(entry.AssetKey)));
 
 				if (_depth is PatchAnalysisDepth.DependencyGraph or PatchAnalysisDepth.Full)
 				{
