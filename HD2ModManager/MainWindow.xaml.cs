@@ -27,6 +27,12 @@ namespace HD2ModManager
         private TemporaryEditorBarPresentation? _temporaryEditorPresentation;
         private bool _pageTransitionQueued;
         private bool _pageLayoutWasSplit;
+        // Core navigation pages are revisited constantly. Keeping their actual
+        // FrameworkElement instances avoids recreating an entire virtualized
+        // Mod-list visual tree whenever the user switches between Home/Settings
+        // and Library/Profile.
+        private readonly Dictionary<object, FrameworkElement> _leftCorePageViewCache = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<object, FrameworkElement> _rightCorePageViewCache = new(ReferenceEqualityComparer.Instance);
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
         {
@@ -161,11 +167,15 @@ namespace HD2ModManager
 
         private void MainWindow_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
+            _leftCorePageViewCache.Clear();
+            _rightCorePageViewCache.Clear();
             SubscribeToShell(e.NewValue as ShellViewModel);
         }
 
         private async void MainWindow_Closed(object? sender, EventArgs e)
         {
+            _leftCorePageViewCache.Clear();
+            _rightCorePageViewCache.Clear();
             if (DataContext is ShellViewModel shell)
             {
                 shell.PropertyChanged -= Shell_PropertyChanged;
@@ -532,24 +542,94 @@ namespace HD2ModManager
             WorkspaceNavigationIndicator.Opacity = 1;
         }
 
-        private static void ShowInitialPage(ContentControl host, object? page)
+        private void ShowInitialPage(ContentControl host, object? page)
         {
             using var perf = UiPerformanceDiagnostics.Measure(
                 "Page.InitialCreate",
                 thresholdMilliseconds: 30,
                 details: () => $"page={page?.GetType().Name ?? "null"}");
-            host.Content = CreatePageContent(page);
+            host.Content = CreatePageContent(page, host);
             host.Opacity = 1;
         }
 
         // Decoration planning is a full-workspace tool page. Host its concrete view
         // explicitly so it is not affected by implicit-template resolution during a
-        // page transition.
-        private static object? CreatePageContent(object? page) => page switch
+        // page transition. Core navigation pages use the same explicit creation
+        // route, but are retained as real views so their ListBox containers and
+        // scroll position survive ordinary workspace navigation.
+        private object? CreatePageContent(object? page, ContentControl targetHost)
         {
-            DecorationPlanPageViewModel plan => new DecorationPlanPageView { DataContext = plan },
-            _ => page,
-        };
+            if (page is null) return null;
+
+            var cache = GetCorePageViewCache(targetHost);
+            if (ShouldCacheCorePage(page)
+                && cache.TryGetValue(page, out var cached))
+            {
+                DetachCachedPageFromWorkspace(cached, targetHost);
+                return cached;
+            }
+
+            object? content = page switch
+            {
+                DecorationPlanPageViewModel plan => new DecorationPlanPageView { DataContext = plan },
+                _ when ShouldCacheCorePage(page) => CreateTemplatedPageView(page) ?? page,
+                _ => page,
+            };
+
+            if (ShouldCacheCorePage(page) && content is FrameworkElement view)
+                cache[page] = view;
+
+            return content;
+        }
+
+        private static bool ShouldCacheCorePage(object page)
+            => page is HomePageViewModel
+                or ProfilePageViewModel
+                or LibraryPageViewModel
+                or SettingsPageViewModel;
+
+        private FrameworkElement? CreateTemplatedPageView(object page)
+        {
+            var templateKey = new DataTemplateKey(page.GetType());
+            var template = TryFindResource(templateKey) as DataTemplate
+                ?? Application.Current?.TryFindResource(templateKey) as DataTemplate;
+            if (template?.LoadContent() is not FrameworkElement view) return null;
+            view.DataContext = page;
+            return view;
+        }
+
+        private Dictionary<object, FrameworkElement> GetCorePageViewCache(ContentControl host)
+            => IsRightWorkspaceHost(host) ? _rightCorePageViewCache : _leftCorePageViewCache;
+
+        private bool IsRightWorkspaceHost(ContentControl host)
+            => ReferenceEquals(host, RightCurrentPageHost)
+                || ReferenceEquals(host, RightPreviousPageHost)
+                || ReferenceEquals(host, FindName("OverlayRightPageHost"));
+
+        private void DetachCachedPageFromWorkspace(FrameworkElement view, ContentControl targetHost)
+        {
+            foreach (var host in EnumerateWorkspacePageHosts(IsRightWorkspaceHost(targetHost)))
+            {
+                if (!ReferenceEquals(host.Content, view)) continue;
+                host.BeginAnimation(OpacityProperty, null);
+                host.Content = null;
+            }
+        }
+
+        private IEnumerable<ContentControl> EnumerateWorkspacePageHosts(bool rightSlot)
+        {
+            if (rightSlot)
+            {
+                yield return RightCurrentPageHost;
+                yield return RightPreviousPageHost;
+                if (FindName("OverlayRightPageHost") is ContentControl overlayRight) yield return overlayRight;
+                yield break;
+            }
+
+            yield return LeftCurrentPageHost;
+            yield return LeftPreviousPageHost;
+            if (FindName("OverlayLeftPageHost") is ContentControl overlayLeft) yield return overlayLeft;
+        }
 
         private static bool IsCurrentPageContent(ContentControl host, object? page)
             => ReferenceEquals(host.Content, page)
@@ -615,7 +695,7 @@ namespace HD2ModManager
                 "Page.TransitionPrepare",
                 thresholdMilliseconds: 30,
                 details: () => $"page={nextPage?.GetType().Name ?? "null"}; host={currentHost.Name}");
-            var nextContent = CreatePageContent(nextPage);
+            var nextContent = CreatePageContent(nextPage, currentHost);
 
             currentHost.BeginAnimation(OpacityProperty, null);
             previousHost.BeginAnimation(OpacityProperty, null);

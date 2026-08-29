@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using System.Windows.Data;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace HD2ModManager.Views
@@ -9,6 +11,9 @@ namespace HD2ModManager.Views
     // 作用：按显示目标尺寸加载图片，避免列表图标解码完整原图。
     public class ImagePlaceholderConverter : IValueConverter
     {
+        private static readonly ConcurrentDictionary<string, BitmapSource> ImageCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Lazy<BitmapSource?> PlaceholderImage = new(LoadPlaceholderImage);
+
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
             var decodePixelWidth = ParseDecodePixelWidth(parameter);
@@ -20,18 +25,14 @@ namespace HD2ModManager.Views
                 var s = value as string;
                 if (!string.IsNullOrWhiteSpace(s))
                 {
-                    try { return LoadImageWithoutLock(s, decodePixelWidth); } catch { }
+                    try
+                    {
+                        var cacheKey = BuildCacheKey(s, decodePixelWidth);
+                        return ImageCache.GetOrAdd(cacheKey, _ => LoadImageWithoutLock(s, decodePixelWidth));
+                    }
+                    catch { }
                 }
-                // fallback to embedded resource
-                try
-                {
-                    var uri = new Uri("pack://application:,,,/HD2ModManager;component/Resources/helldivers2.png", UriKind.Absolute);
-                    return new BitmapImage(uri);
-                }
-                catch
-                {
-                    return null;
-                }
+                return PlaceholderImage.Value;
             }
             finally
             {
@@ -49,6 +50,31 @@ namespace HD2ModManager.Views
 
         private static int ParseDecodePixelWidth(object parameter)
             => parameter is not null && int.TryParse(parameter.ToString(), out var width) ? width : 0;
+
+        private static string BuildCacheKey(string path, int decodePixelWidth)
+        {
+            long writeTicks = 0;
+            try
+            {
+                if (File.Exists(path)) writeTicks = File.GetLastWriteTimeUtc(path).Ticks;
+            }
+            catch { }
+            return $"{path}\u001f{decodePixelWidth}\u001f{writeTicks}";
+        }
+
+        private static BitmapSource? LoadPlaceholderImage()
+        {
+            try
+            {
+                var image = new BitmapImage(new Uri("pack://application:,,,/HD2ModManager;component/Resources/helldivers2.png", UriKind.Absolute));
+                image.Freeze();
+                return image;
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         private static BitmapImage LoadImageWithoutLock(string path, int decodePixelWidth)
         {

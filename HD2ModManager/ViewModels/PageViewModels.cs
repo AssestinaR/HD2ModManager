@@ -408,20 +408,25 @@ namespace HD2ModManager.ViewModels
         private readonly DerivedStateCoordinator _derivedState;
         private readonly SelectionCoordinator? _selection;
         private readonly BottomBarCoordinator? _bottomBar;
+        private readonly ModListStateController<ProfileModListState, ProfileListItemViewModel> _list;
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string?> _thumbnailSources = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _thumbnailRevisions = new(StringComparer.OrdinalIgnoreCase);
         private string _query = string.Empty;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
         private readonly HashSet<string> _pendingProjectionGuids = new(StringComparer.OrdinalIgnoreCase);
         private int _projectionRefreshQueued;
-        private bool _forceProjectionReconcile;
-        private bool _refreshAllPresentations;
+        private bool _projectionRequiresRebuild;
+        private bool _projectionRefreshVisibleContent;
+        private bool _refreshThumbnails;
         private bool _thumbnailWarmupQueued;
+        private bool _hasSubmittedInitialProjection;
         private bool _disposed;
 
-        public BulkObservableCollection<ProfileListItemViewModel> Items { get; } = new(item => item.Guid);
-        public bool HasItems => Items.Count != 0;
+        public ModListProjectionSource<ProfileListItemViewModel> Items => _list.Items;
+        public bool HasItems => _list.VisibleCount != 0;
         public ObservableCollection<string> Profiles { get; } = new();
         public string Query
         {
@@ -434,7 +439,7 @@ namespace HD2ModManager.ViewModels
             }
         }
         public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
-        public string ItemCountText => $"显示 {Items.Count} / {_profiles.SelectedProfile?.Entries.Count ?? 0} 个 Mod";
+        public string ItemCountText => $"显示 {_list.VisibleCount} / {_profiles.SelectedProfile?.Entries.Count ?? 0} 个 Mod";
         public string HeaderSummary => $"{ItemCountText} · {ActiveProfileText} · {SelectedProfileState}";
         public string EmptyMessage => "当前配置中没有 Mod。可以从模组库添加；若右侧为空，则所有 Mod 都已加入此配置。";
         private bool _showOnlyOutdated;
@@ -501,6 +506,13 @@ namespace HD2ModManager.ViewModels
             _derivedState = derivedState;
             _selection = selection;
             _bottomBar = bottomBar;
+            _list = new ModListStateController<ProfileModListState, ProfileListItemViewModel>(
+                state => state.Guid,
+                state => state.PresentationVersion,
+                state => new ProfileListItemViewModel(state),
+                (item, state) => item.ApplyListState(state),
+                item => item.SelectionKey);
+            _list.Committed += OnListProjectionCommitted;
             if (_selection != null) _selection.SelectionChanged += OnSelectionChanged;
             _profiles.Changed += OnProfileChanged;
             _library.ModContentFactsChanged += OnLibraryContentFactsChanged;
@@ -540,10 +552,14 @@ namespace HD2ModManager.ViewModels
 
         public void ApplySelection(IReadOnlyList<string> selectedKeys)
         {
-            _selectedGuids.Clear();
-            foreach (var key in selectedKeys) _selectedGuids.Add(key);
-            _selection?.Replace(SelectionScope, selectedKeys);
-            RefreshSelectionFlags();
+            ArgumentNullException.ThrowIfNull(selectedKeys);
+            if (_selection is not null)
+            {
+                _selection.Replace(SelectionScope, selectedKeys);
+                return;
+            }
+
+            ApplyLocalSelection(selectedKeys);
         }
 
         public async Task ReorderAsync(IReadOnlyList<string> draggedKeys, int insertionIndex)
@@ -680,23 +696,31 @@ namespace HD2ModManager.ViewModels
             var profile = _profiles.SelectedProfile;
             if (profile == null)
             {
-                Items.ReplaceWith(Array.Empty<ProfileListItemViewModel>(), transitionKind);
+                _list.Submit(
+                    Array.Empty<ProfileModListState>(),
+                    Array.Empty<string>(),
+                    commitImmediately: !_hasSubmittedInitialProjection);
+                _hasSubmittedInitialProjection = true;
                 OnPropertyChanged(nameof(HasItems));
                 return;
             }
-            var items = new List<ProfileListItemViewModel>();
+            var states = new List<ProfileModListState>();
             foreach (var entry in _profiles.GetSortedEntries(profile))
             {
                 var guid = entry.NodeId.Value.ToString("N");
                 var mod = _library.Get(guid);
-				var derived = _library.GetDerivedData(guid);
-				var assetSummary = derived?.AssetSummary;
+                var derived = _library.GetDerivedData(guid);
+                var assetSummary = derived?.AssetSummary;
                 if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) continue;
-				if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) continue;
+                if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) continue;
                 _userStatuses.TryGetValue(guid, out var status);
-                items.Add(new ProfileListItemViewModel(guid, mod?.Name ?? guid, mod?.Description, mod?.Image, ModAssetSummaryFormatter.Format(assetSummary), entry.LoadOrder, entry.AddedUtc, IsSelected(guid), derived?.UnitCompatibility, status));
+                states.Add(CreateListState(guid, mod, derived, entry.LoadOrder, entry.AddedUtc, status));
             }
-            Items.ReplaceWith(items, transitionKind);
+            _list.Submit(
+                states,
+                _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N")),
+                commitImmediately: !_hasSubmittedInitialProjection);
+            _hasSubmittedInitialProjection = true;
             OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(ItemCountText));
             OnPropertyChanged(nameof(HeaderSummary));
@@ -704,7 +728,7 @@ namespace HD2ModManager.ViewModels
 
         public void RefreshFromShell() => QueueStatusRefresh();
 
-        private async void QueueThumbnailRefresh()
+        private async void QueueThumbnailRefresh(IEnumerable<string>? requestedGuids = null)
         {
             _thumbnailCancellation?.Cancel();
             _thumbnailCancellation?.Dispose();
@@ -713,16 +737,21 @@ namespace HD2ModManager.ViewModels
             var cancellationToken = cancellationSource.Token;
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var processed = 0;
+            var completedSources = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            var refreshedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using var thumbnailPerf = UiPerformanceDiagnostics.Measure(
                 "Profile.ThumbnailRefresh",
                 thresholdMilliseconds: 100,
                 details: () => $"processed={processed}; canceled={cancellationToken.IsCancellationRequested}");
             try
             {
-                var generated = false;
-                var entries = await Task.Run(() => _profiles.SelectedProfile is { } profile
-                    ? _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N")).ToList()
-                    : new List<string>()).ConfigureAwait(false);
+                var requested = requestedGuids?
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var entries = await Task.Run(() => requested ?? (_profiles.SelectedProfile is { } profile
+                    ? _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N")).ToArray()
+                    : Array.Empty<string>())).ConfigureAwait(false);
                 foreach (var guid in entries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -730,16 +759,17 @@ namespace HD2ModManager.ViewModels
                     var result = await Task.Run(() => _library.RequestThumbnailAsync(guid, "Profile", cancellationToken: CancellationToken.None).AsTask())
                         .WaitAsync(cancellationToken).ConfigureAwait(false);
                     if (result.Data is { } facts)
-                        generated |= await Task.Run(() => ThumbnailService.EnsureThumbnailAsync(facts, 72, CancellationToken.None))
+                    {
+                        await Task.Run(() => ThumbnailService.EnsureThumbnailAsync(facts, 72, CancellationToken.None))
                             .WaitAsync(cancellationToken).ConfigureAwait(false);
+                        completedSources[guid] = facts.SourcePath;
+                        refreshedIds.Add(guid);
+                    }
                 }
-                if (generated && !cancellationToken.IsCancellationRequested && ReferenceEquals(_thumbnailCancellation, cancellationSource))
+                if (refreshedIds.Count != 0 && !cancellationToken.IsCancellationRequested && ReferenceEquals(_thumbnailCancellation, cancellationSource))
                 {
                     // 中心生产不随页面取消；页面令牌只取消本页的等待和显示。
-                    RunOnUiThread(() =>
-                    {
-                        if (!_disposed && ReferenceEquals(_thumbnailCancellation, cancellationSource)) RefreshVisibleThumbnails();
-                    });
+                    await RunOnUiThreadAsync(() => ApplyThumbnailResults(cancellationSource, completedSources, refreshedIds));
                 }
                 LogService.Info($"列表缩略图刷新完成：页面=配置，条目={processed}，耗时={clock.ElapsedMilliseconds}ms。");
             }
@@ -787,36 +817,51 @@ namespace HD2ModManager.ViewModels
             Refresh(ListTransitionKind.Refresh);
         }
 
-        private static void RunOnUiThread(Action action)
+        private static Task RunOnUiThreadAsync(Action action)
         {
             var dispatcher = System.Windows.Application.Current?.Dispatcher;
-            if (dispatcher is null || dispatcher.CheckAccess()) action();
-            else _ = dispatcher.InvokeAsync(action);
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                action();
+                return Task.CompletedTask;
+            }
+            return dispatcher.InvokeAsync(action).Task;
         }
 
-        private void OnSelectionChanged(object? sender, EventArgs e) => SyncSelectionFromCoordinator();
+        private void OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            var changedIds = e.GetChangedIds(SelectionScope);
+            ApplyLocalSelection(e.GetCurrentIds(SelectionScope), changedIds);
+        }
 
         private void OnProfileChanged(object? sender, EventArgs e)
-            => QueueProjectionRefresh(null, forceReconcile: false, refreshAllPresentations: true);
+            => QueueProjectionRefresh(requiresRebuild: true, refreshThumbnails: true);
 
         private void OnLibraryContentFactsChanged(object? sender, ModContentFactsChangedEventArgs e)
-            => QueueProjectionRefresh(e.NodeIds, e.Kind is ModContentChangeKind.Added or ModContentChangeKind.Removed);
+            => QueueProjectionRefresh(
+                e.NodeIds,
+                requiresRebuild: e.Kind is ModContentChangeKind.Added or ModContentChangeKind.Removed);
 
         private void OnLibrarySnapshotChanged(object? sender, EventArgs e)
-            => QueueProjectionRefresh(null, forceReconcile: true);
+            => QueueProjectionRefresh(requiresRebuild: true, refreshThumbnails: true);
 
         private void OnDerivedStateSnapshotChanged(object? sender, DerivedStateSnapshot e)
-            => QueueProjectionRefresh(null, forceReconcile: false, refreshAllPresentations: true);
+            => QueueProjectionRefresh(refreshVisibleContent: true);
 
-        private void QueueProjectionRefresh(IEnumerable<ModNodeId>? nodeIds, bool forceReconcile, bool refreshAllPresentations = false)
+        private void QueueProjectionRefresh(
+            IEnumerable<ModNodeId>? nodeIds = null,
+            bool requiresRebuild = false,
+            bool refreshVisibleContent = false,
+            bool refreshThumbnails = false)
         {
             if (_disposed) return;
             lock (_pendingProjectionGuids)
             {
                 if (nodeIds is not null)
                     foreach (var nodeId in nodeIds) _pendingProjectionGuids.Add(nodeId.Value.ToString("N"));
-                _forceProjectionReconcile |= forceReconcile;
-                _refreshAllPresentations |= refreshAllPresentations;
+                _projectionRequiresRebuild |= requiresRebuild;
+                _projectionRefreshVisibleContent |= refreshVisibleContent;
+                _refreshThumbnails |= refreshThumbnails;
             }
             if (Interlocked.Exchange(ref _projectionRefreshQueued, 1) != 0) return;
             var dispatcher = System.Windows.Application.Current?.Dispatcher;
@@ -828,68 +873,41 @@ namespace HD2ModManager.ViewModels
         {
             if (_disposed) return;
             HashSet<string> guids;
-            bool reconcile;
-            bool refreshAllPresentations;
+            bool requiresRebuild;
+            bool refreshVisibleContent;
+            bool refreshThumbnails;
             lock (_pendingProjectionGuids)
             {
                 guids = new HashSet<string>(_pendingProjectionGuids, StringComparer.OrdinalIgnoreCase);
                 _pendingProjectionGuids.Clear();
-                reconcile = _forceProjectionReconcile;
-                _forceProjectionReconcile = false;
-                refreshAllPresentations = _refreshAllPresentations;
-                _refreshAllPresentations = false;
+                requiresRebuild = _projectionRequiresRebuild;
+                _projectionRequiresRebuild = false;
+                refreshVisibleContent = _projectionRefreshVisibleContent;
+                _projectionRefreshVisibleContent = false;
+                refreshThumbnails = _refreshThumbnails;
+                _refreshThumbnails = false;
             }
             Interlocked.Exchange(ref _projectionRefreshQueued, 0);
             UiPerformanceDiagnostics.RecordBurst(
                 "Profile.ApplyProjection",
-                $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}",
+                $"guids={guids.Count}; rebuild={requiresRebuild}; visibleContent={refreshVisibleContent}; refreshThumbnails={refreshThumbnails}",
                 threshold: 8);
             using var perf = UiPerformanceDiagnostics.Measure(
                 "Profile.ApplyProjection",
                 thresholdMilliseconds: 25,
-                details: () => $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}; items={Items.Count}");
+                details: () => $"guids={guids.Count}; rebuild={requiresRebuild}; visibleContent={refreshVisibleContent}; refreshThumbnails={refreshThumbnails}; items={Items.Count}");
             RefreshUserStatuses();
-            var contentCanAffectFilter = guids.Count != 0 && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
-            var didReconcile = reconcile || contentCanAffectFilter || HasProfileMembershipOrOrderChanged();
-            if (didReconcile)
-            {
-                // 这里已经合并了同一轮状态投影，不会再产生第二次 Reset。
-                // 使用 Automatic 让集合根据成员和顺序的真实差异选择插入、移除或重排动画。
+            var contentCanAffectMembership = guids.Count != 0
+                && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
+            if (requiresRebuild || contentCanAffectMembership)
                 Refresh();
-            }
-            else
-            {
-                RefreshProfileChrome();
-                var items = refreshAllPresentations
-                    ? Items
-                    : Items.Where(item => guids.Contains(item.Guid));
-                foreach (var item in items)
-                    item.UpdatePresentation(_library.Get(item.Guid), _library.GetDerivedData(item.Guid), _userStatuses.GetValueOrDefault(item.Guid));
-                OnPropertyChanged(nameof(ItemCountText));
-                OnPropertyChanged(nameof(HeaderSummary));
-            }
-            if (didReconcile || guids.Count != 0) QueueThumbnailRefresh();
+            else if (guids.Count != 0)
+                PublishContent(guids);
+            else if (refreshVisibleContent)
+                PublishVisibleContent();
+            if (guids.Count != 0) QueueThumbnailRefresh(guids);
+            else if (refreshThumbnails) QueueThumbnailRefresh();
             else QueueThumbnailWarmup();
-        }
-
-        private bool HasProfileMembershipOrOrderChanged()
-        {
-            var profile = _profiles.SelectedProfile;
-            var current = Items.Select(item => item.Guid);
-            var expected = profile is null
-                ? Enumerable.Empty<string>()
-                : _profiles.GetSortedEntries(profile)
-                    .Select(entry => entry.NodeId.Value.ToString("N"))
-                    .Where(guid => IsVisibleInCurrentProfileFilter(guid));
-            return !current.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase);
-        }
-
-        private bool IsVisibleInCurrentProfileFilter(string guid)
-        {
-            var mod = _library.Get(guid);
-            var derived = _library.GetDerivedData(guid);
-            if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, derived?.AssetSummary, Query)) return false;
-            return !ShowOnlyOutdated || derived?.UnitCompatibility.IsOutdated == true;
         }
 
         private void RefreshProfileChrome()
@@ -912,11 +930,74 @@ namespace HD2ModManager.ViewModels
             _renameAction?.SyncFromPage();
         }
 
-        private void RefreshVisibleThumbnails()
+        private void RefreshVisibleThumbnails(IReadOnlyCollection<string> refreshedIds)
         {
             if (_disposed) return;
-            foreach (var item in Items)
-                item.RefreshThumbnail();
+            PublishContent(refreshedIds);
+        }
+
+        private void ApplyThumbnailResults(
+            CancellationTokenSource cancellationSource,
+            IReadOnlyDictionary<string, string?> completedSources,
+            IReadOnlyCollection<string> refreshedIds)
+        {
+            if (_disposed || !ReferenceEquals(_thumbnailCancellation, cancellationSource)) return;
+            foreach (var pair in completedSources)
+                _thumbnailSources[pair.Key] = pair.Value;
+            foreach (var guid in refreshedIds)
+                _thumbnailRevisions[guid] = _thumbnailRevisions.GetValueOrDefault(guid) + 1;
+            RefreshVisibleThumbnails(refreshedIds);
+        }
+
+        private void PublishVisibleContent()
+        {
+            if (_disposed) return;
+            var profile = _profiles.SelectedProfile;
+            if (profile is null)
+            {
+                _list.SubmitContent(Array.Empty<ProfileModListState>());
+                return;
+            }
+
+            var entriesByGuid = _profiles.GetSortedEntries(profile)
+                .ToDictionary(entry => entry.NodeId.Value.ToString("N"), StringComparer.OrdinalIgnoreCase);
+            var states = Items
+                .Select(item => item.Guid)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(entriesByGuid.ContainsKey)
+                .Select(guid => CreateCurrentListState(guid, entriesByGuid[guid]))
+                .Where(state => state is not null)
+                .Cast<ProfileModListState>()
+                .ToArray();
+            _list.SubmitContent(states);
+        }
+
+        private void PublishContent(IEnumerable<string> guids, bool commitImmediately = false)
+        {
+            if (_disposed) return;
+            var profile = _profiles.SelectedProfile;
+            if (profile is null) return;
+            var entriesByGuid = _profiles.GetSortedEntries(profile)
+                .ToDictionary(entry => entry.NodeId.Value.ToString("N"), StringComparer.OrdinalIgnoreCase);
+            var states = guids
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(entriesByGuid.ContainsKey)
+                .Select(guid => CreateCurrentListState(guid, entriesByGuid[guid]))
+                .Where(state => state is not null)
+                .Cast<ProfileModListState>()
+                .ToArray();
+            _list.SubmitContent(states, commitImmediately);
+        }
+
+        private ProfileModListState? CreateCurrentListState(string guid, ProfileEntry entry)
+        {
+            var mod = _library.Get(guid);
+            var derived = _library.GetDerivedData(guid);
+            var assetSummary = derived?.AssetSummary;
+            if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) return null;
+            if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) return null;
+            _userStatuses.TryGetValue(guid, out var status);
+            return CreateListState(guid, mod, derived, entry.LoadOrder, entry.AddedUtc, status);
         }
 
         private void QueueThumbnailWarmup()
@@ -930,27 +1011,26 @@ namespace HD2ModManager.ViewModels
         {
             var guid = parameter as string;
             if (string.IsNullOrWhiteSpace(guid)) return;
-            if (!_selectedGuids.Remove(guid)) _selectedGuids.Add(guid);
-            _selection?.Replace(SelectionScope, _selectedGuids);
-            RefreshSelectionFlags();
+            var next = _selectedGuids.ToList();
+            if (!next.Remove(guid)) next.Add(guid);
+            if (_selection is null) ApplyLocalSelection(next);
+            else _selection.Replace(SelectionScope, next);
         }
 
         private bool IsSelected(string guid) => _selectedGuids.Any(id => string.Equals(id, guid, StringComparison.OrdinalIgnoreCase));
 
-        private void SyncSelectionFromCoordinator()
+        private void ApplyLocalSelection(IEnumerable<string> selectedKeys, IReadOnlyList<string>? knownChangedIds = null)
         {
-            if (_selection == null) return;
+            ArgumentNullException.ThrowIfNull(selectedKeys);
+            var previous = _selectedGuids.ToArray();
+            var next = selectedKeys
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             _selectedGuids.Clear();
-            if (string.Equals(_selection.Scope, SelectionScope, StringComparison.OrdinalIgnoreCase))
-            {
-                foreach (var id in _selection.SelectedIds) _selectedGuids.Add(id);
-            }
-            RefreshSelectionFlags();
-        }
-
-        private void RefreshSelectionFlags()
-        {
-            foreach (var item in Items) item.IsSelected = IsSelected(item.Guid);
+            foreach (var id in next) _selectedGuids.Add(id);
+            var changedIds = knownChangedIds ?? SelectionSetOperations.SymmetricDifference(previous, next);
+            if (changedIds.Count != 0) PublishContent(changedIds, commitImmediately: true);
         }
 
         internal void SwitchProfile(string? profileName)
@@ -963,6 +1043,58 @@ namespace HD2ModManager.ViewModels
         {
             RenameText = newName ?? string.Empty;
             await RenameProfileAsync();
+        }
+
+        private ProfileModListState CreateListState(
+            string guid,
+            HD2ModManager.Models.ModEntity? mod,
+            DerivedModNodeData? derived,
+            int loadOrder,
+            DateTimeOffset addedUtc,
+            ModUserStatus? userStatus)
+        {
+            var name = mod?.Name ?? guid;
+            var description = mod?.Description;
+            _thumbnailSources.TryGetValue(guid, out var thumbnailSource);
+            var imagePath = thumbnailSource ?? mod?.Image;
+            var assetSummary = ModAssetSummaryFormatter.Format(derived?.AssetSummary);
+            var selected = IsSelected(guid);
+            var contentVersion = ProfileModListState.BuildContentVersion(
+                guid,
+                name,
+                description,
+                imagePath,
+                assetSummary,
+                loadOrder,
+                addedUtc,
+                derived?.UnitCompatibility,
+                userStatus,
+                _thumbnailRevisions.GetValueOrDefault(guid));
+            return new ProfileModListState(
+                guid,
+                name,
+                description,
+                imagePath,
+                assetSummary,
+                loadOrder,
+                addedUtc,
+                selected,
+                derived?.UnitCompatibility,
+                userStatus,
+                _thumbnailRevisions.GetValueOrDefault(guid),
+                contentVersion,
+                ProfileModListState.BuildPresentationVersion(
+                    contentVersion,
+                    selected));
+        }
+
+        private void OnListProjectionCommitted(object? sender, ModListStateCommittedEventArgs e)
+        {
+            if (_disposed) return;
+            OnPropertyChanged(nameof(HasItems));
+            OnPropertyChanged(nameof(ItemCountText));
+            OnPropertyChanged(nameof(HeaderSummary));
+            OnPropertyChanged(nameof(EmptyMessage));
         }
 
         public override void Dispose()
@@ -980,7 +1112,58 @@ namespace HD2ModManager.ViewModels
             _thumbnailCancellation?.Cancel();
             _thumbnailCancellation?.Dispose();
             _thumbnailCancellation = null;
+            _list.Committed -= OnListProjectionCommitted;
+            _list.Dispose();
         }
+    }
+
+    internal sealed record ProfileModListState(
+        string Guid,
+        string Name,
+        string? Description,
+        string? ImagePath,
+        string AssetSummary,
+        int LoadOrder,
+        DateTimeOffset AddedUtc,
+        bool IsSelected,
+        ModUnitCompatibilityReport? UnitCompatibility,
+        ModUserStatus? UserStatus,
+        int ThumbnailRevision,
+        string ContentVersion,
+        string PresentationVersion)
+    {
+        public static string BuildContentVersion(
+            string guid,
+            string name,
+            string? description,
+            string? imagePath,
+            string assetSummary,
+            int loadOrder,
+            DateTimeOffset addedUtc,
+            ModUnitCompatibilityReport? unitCompatibility,
+            ModUserStatus? userStatus,
+            int thumbnailRevision)
+            => string.Join('\u001f',
+                guid,
+                name,
+                description,
+                imagePath,
+                assetSummary,
+                addedUtc.UtcTicks,
+                unitCompatibility?.Status,
+                unitCompatibility?.UnitCount,
+                unitCompatibility?.ReadableUnitCount,
+                unitCompatibility?.OutdatedUnitCount,
+                unitCompatibility?.Summary,
+                userStatus?.Kind,
+                userStatus?.Title,
+                userStatus?.Summary,
+                userStatus?.IsInSelectedProfile,
+                userStatus?.IsInActiveProfile,
+                thumbnailRevision);
+
+        public static string BuildPresentationVersion(string contentVersion, bool isSelected)
+            => string.Join('\u001f', contentVersion, isSelected);
     }
 
     // 作用：提供配置浮动操作簇中按需展开的配置切换输入状态。
@@ -1037,22 +1220,30 @@ namespace HD2ModManager.ViewModels
         public bool IsDecoration => false;
         private string _name;
         private string? _description;
+        private string? _thumbnailSourcePath;
         private string? _imagePath;
+        private int _thumbnailRevision;
+        private string _contentVersion = string.Empty;
         private string _assetSummary;
         private ModUnitCompatibilityReport? _unitCompatibility;
         private ModUserStatus? _userStatus;
+        private int _loadOrder;
+        private DateTimeOffset _addedUtc;
         public string Name => _name;
         public string? Description => _description;
         public string? ImagePath => _imagePath;
         public string AssetSummary => _assetSummary;
         public string AssetSummaryText => SecondaryDetailText;
-        public int LoadOrder { get; }
-        public DateTimeOffset AddedUtc { get; }
+        public int LoadOrder => _loadOrder;
+        public DateTimeOffset AddedUtc => _addedUtc;
         public ModUserStatus? UserStatus => _userStatus;
         public ModUnitCompatibilityReport? UnitCompatibility => _unitCompatibility;
         public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
         public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
-        public string StatusText => UserStatus is null ? $"配置成员 · 顺序 {LoadOrder}" : $"{UserStatus.Title} · 顺序 {LoadOrder}";
+        // The list position already communicates deployment order. Keeping a
+        // changing ordinal in every row's status forces every row to rebind on
+        // one reorder and starves the actual move animation of render time.
+        public string StatusText => UserStatus?.Title ?? "配置成员";
         public string UserStatusTitle => StatusText;
         public bool IsVisible => true;
         public string SecondaryDetailText => string.Join(" · ", new[] { Description, AssetSummary }.Where(value => !string.IsNullOrWhiteSpace(value)));
@@ -1064,33 +1255,84 @@ namespace HD2ModManager.ViewModels
             Guid = guid;
             _name = name;
             _description = description;
-            _imagePath = ThumbnailService.GetExistingThumbnailPath(imagePath, 72);
+            _thumbnailSourcePath = imagePath;
+            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
             _assetSummary = assetSummary;
-            LoadOrder = loadOrder;
-            AddedUtc = addedUtc;
+            _loadOrder = loadOrder;
+            _addedUtc = addedUtc;
             _isSelected = isSelected;
 			_unitCompatibility = unitCompatibility;
             _userStatus = userStatus;
         }
 
-        public void UpdatePresentation(HD2ModManager.Models.ModEntity? mod, DerivedModNodeData? derived, ModUserStatus? userStatus)
+        internal ProfileListItemViewModel(ProfileModListState state)
+            : this(
+                state.Guid,
+                state.Name,
+                state.Description,
+                state.ImagePath,
+                state.AssetSummary,
+                state.LoadOrder,
+                state.AddedUtc,
+                state.IsSelected,
+                state.UnitCompatibility,
+                state.UserStatus)
         {
-            if (mod is not null)
-            {
-                _name = mod.Name;
-                _description = mod.Description;
-                _imagePath = ThumbnailService.GetExistingThumbnailPath(mod.Image, 72);
-            }
-            _assetSummary = ModAssetSummaryFormatter.Format(derived?.AssetSummary);
-            _unitCompatibility = derived?.UnitCompatibility;
-            _userStatus = userStatus;
-            OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(Description)); OnPropertyChanged(nameof(ImagePath));
-            OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(SecondaryDetailText));
-            OnPropertyChanged(nameof(UnitCompatibility)); OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(UserStatus));
-            OnPropertyChanged(nameof(StatusText)); OnPropertyChanged(nameof(UserStatusTitle));
+            _thumbnailRevision = state.ThumbnailRevision;
+            _contentVersion = state.ContentVersion;
+            _thumbnailSourcePath = state.ImagePath;
+            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
         }
 
-        public void RefreshThumbnail() => OnPropertyChanged(nameof(ImagePath));
+        internal void ApplyListState(ProfileModListState state)
+        {
+            var contentChanged = !string.Equals(_contentVersion, state.ContentVersion, StringComparison.Ordinal);
+            IsSelected = state.IsSelected;
+            if (!contentChanged) return;
+
+            var imageChanged = !string.Equals(_thumbnailSourcePath, state.ImagePath, StringComparison.OrdinalIgnoreCase)
+                || _thumbnailRevision != state.ThumbnailRevision;
+            var nameChanged = !string.Equals(_name, state.Name, StringComparison.Ordinal);
+            var descriptionChanged = !string.Equals(_description, state.Description, StringComparison.Ordinal);
+            var assetSummaryChanged = !string.Equals(_assetSummary, state.AssetSummary, StringComparison.Ordinal);
+            var loadOrderChanged = _loadOrder != state.LoadOrder;
+            var addedUtcChanged = _addedUtc != state.AddedUtc;
+            var unitCompatibilityChanged = !Equals(_unitCompatibility, state.UnitCompatibility);
+            var userStatusChanged = !Equals(_userStatus, state.UserStatus);
+            _name = state.Name;
+            _description = state.Description;
+            _thumbnailSourcePath = state.ImagePath;
+            _thumbnailRevision = state.ThumbnailRevision;
+            _contentVersion = state.ContentVersion;
+            if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            _assetSummary = state.AssetSummary;
+            _loadOrder = state.LoadOrder;
+            _addedUtc = state.AddedUtc;
+            _unitCompatibility = state.UnitCompatibility;
+            _userStatus = state.UserStatus;
+            if (nameChanged) OnPropertyChanged(nameof(Name));
+            if (descriptionChanged) OnPropertyChanged(nameof(Description));
+            if (imageChanged) OnPropertyChanged(nameof(ImagePath));
+            if (assetSummaryChanged) OnPropertyChanged(nameof(AssetSummary));
+            if (descriptionChanged || assetSummaryChanged)
+            {
+                OnPropertyChanged(nameof(AssetSummaryText));
+                OnPropertyChanged(nameof(SecondaryDetailText));
+            }
+            if (unitCompatibilityChanged)
+            {
+                OnPropertyChanged(nameof(UnitCompatibility));
+                OnPropertyChanged(nameof(IsModelOutdated));
+            }
+            if (userStatusChanged)
+            {
+                OnPropertyChanged(nameof(UserStatus));
+                OnPropertyChanged(nameof(StatusText));
+                OnPropertyChanged(nameof(UserStatusTitle));
+            }
+            if (loadOrderChanged) OnPropertyChanged(nameof(LoadOrder));
+            if (addedUtcChanged) OnPropertyChanged(nameof(AddedUtc));
+        }
     }
 
     public class SettingsPageViewModel : PageViewModel

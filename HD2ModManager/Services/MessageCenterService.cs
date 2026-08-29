@@ -149,6 +149,10 @@ namespace HD2ModManager.Services
 
         private void RefreshCore()
         {
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "MessageCenter.Refresh",
+                thresholdMilliseconds: 8,
+                details: () => $"tasks={_tasks.Tasks.Count}; notifications={_notifications.History.Count}; active={_activeTasks.Count}; attention={_attentionItems.Count}; recent={_recentNotifications.Count}");
             Replace(_activeTasks, _tasks.Tasks
                 .Where(task => task.IsActive && !task.IsInformationCenter)
                 .OrderByDescending(task => task.StartedAt ?? task.CreatedAt)

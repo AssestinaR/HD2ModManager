@@ -20,23 +20,26 @@ namespace HD2ModManager.ViewModels
         private readonly ProfileService? _profiles;
         private readonly NotificationService? _notifications;
         private readonly SelectionCoordinator? _selection;
+        private readonly ModListStateController<LibraryModListState, ModCardViewModel> _list;
         private bool _hideSelectedProfileMembers;
         private bool _canDragToProfile;
         private readonly ObservableCollection<string> _selectedGuids = new();
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _thumbnailSources = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _thumbnailRevisions = new(StringComparer.OrdinalIgnoreCase);
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
         private readonly HashSet<string> _pendingProjectionGuids = new(StringComparer.OrdinalIgnoreCase);
         private int _projectionRefreshQueued;
-        private bool _forceProjectionReconcile;
-        private bool _refreshAllPresentations;
+        private bool _projectionRequiresRebuild;
+        private bool _projectionRefreshVisibleContent;
         private bool _thumbnailWarmupQueued;
         private int _lifecycleVersion;
+        private bool _hasSubmittedInitialProjection;
         private bool _disposed;
 
-        public BulkObservableCollection<ModCardViewModel> Items { get; } = new(item => item.Mod.Guid);
-        public bool HasItems => Items.Count != 0;
+        public ModListProjectionSource<ModCardViewModel> Items => _list.Items;
+        public bool HasItems => _list.VisibleCount != 0;
 
         private string _query = string.Empty;
         public string Query
@@ -50,7 +53,7 @@ namespace HD2ModManager.ViewModels
                 QueueSearchRefresh();
             }
         }
-        public string ItemCountText => $"显示 {Items.Count} / {_library.All().Count()} 个 Mod";
+        public string ItemCountText => $"显示 {_list.VisibleCount} / {_library.All().Count()} 个 Mod";
         public string EmptyMessage => _hideSelectedProfileMembers && _profiles?.SelectedProfile is not null ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
         private bool _showOnlyOutdated;
         private bool _showDecorations;
@@ -110,6 +113,13 @@ namespace HD2ModManager.ViewModels
             _notifications = notifications;
             _selection = selection;
             _hideSelectedProfileMembers = hideSelectedProfileMembers;
+            _list = new ModListStateController<LibraryModListState, ModCardViewModel>(
+                state => state.Guid,
+                state => state.PresentationVersion,
+                state => new ModCardViewModel(state),
+                (card, state) => card.ApplyListState(state),
+                card => card.SelectionKey);
+            _list.Committed += OnListProjectionCommitted;
             if (_selection != null) _selection.SelectionChanged += OnSelectionChanged;
             if (_profiles != null) _profiles.Changed += OnProfileChanged;
             _library.ModContentFactsChanged += OnLibraryContentFactsChanged;
@@ -143,10 +153,14 @@ namespace HD2ModManager.ViewModels
 
         public void ApplySelection(IReadOnlyList<string> selectedKeys)
         {
-            _selectedGuids.Clear();
-            foreach (var key in selectedKeys) _selectedGuids.Add(key);
-            _selection?.Replace(SelectionScope, selectedKeys);
-            RefreshSelectionFlags();
+            ArgumentNullException.ThrowIfNull(selectedKeys);
+            if (_selection is not null)
+            {
+                _selection.Replace(SelectionScope, selectedKeys);
+                return;
+            }
+
+            ApplyLocalSelection(selectedKeys);
         }
 
         public bool CanDragToProfile => _canDragToProfile;
@@ -214,7 +228,7 @@ namespace HD2ModManager.ViewModels
                     if (_disposed) return;
                     _notifications?.Show($"已更新图标：{card.Mod.Name}");
                     Refresh();
-                    QueueThumbnailRefresh();
+                    QueueThumbnailRefresh([card.Mod.Guid]);
                 });
             }
             catch (System.Exception ex)
@@ -233,7 +247,8 @@ namespace HD2ModManager.ViewModels
                 "Library.Refresh",
                 thresholdMilliseconds: 25,
                 details: () => $"kind={transitionKind}; result={Items.Count}; query={(string.IsNullOrWhiteSpace(Query) ? "empty" : "set")}; decorations={ShowDecorations}; options={ShowOptions}; outdated={ShowOnlyOutdated}");
-            var all = _library.All().ToList();
+            var libraryMods = _library.All().ToList();
+            var all = libraryMods;
             if (!ShowDecorations) all = all.Where(mod => !mod.IsDecoration).ToList();
             if (!ShowOptions) all = all.Where(mod => !mod.IsOption).ToList();
             if (_hideSelectedProfileMembers && _profiles?.SelectedProfile is not null)
@@ -250,18 +265,15 @@ namespace HD2ModManager.ViewModels
 			{
 				all = all.Where(mod => _library.GetDerivedData(mod.Guid)?.UnitCompatibility.IsOutdated == true).ToList();
 			}
-            var cards = all
+            var states = all
                 .OrderBy(mod => mod.Name, System.StringComparer.CurrentCultureIgnoreCase)
-                .Select(mod =>
-                {
-                    var derived = _library.GetDerivedData(mod.Guid);
-                    _userStatuses.TryGetValue(mod.Guid, out var status);
-                    _thumbnailSources.TryGetValue(mod.Guid, out var thumbnailSource);
-                    var decorationStatus = mod.IsDecoration ? _library.GetDecorationActivationSummary(mod.Guid).StatusText : mod.IsOption ? _library.GetOptionActivationStatus(mod.Guid) : null;
-                    return new ModCardViewModel(mod, IsSelected(mod.Guid), mod.IsDecoration || mod.IsOption || mod.IsReShade ? null : derived?.AssetSummary, mod.IsDecoration || mod.IsOption || mod.IsReShade ? null : derived?.UnitCompatibility, status, thumbnailSource, decorationStatus);
-                })
+                .Select(CreateListState)
                 .ToList();
-            Items.ReplaceWith(cards, transitionKind);
+            _list.Submit(
+                states,
+                libraryMods.Select(mod => mod.Guid),
+                commitImmediately: !_hasSubmittedInitialProjection);
+            _hasSubmittedInitialProjection = true;
             OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(EmptyMessage));
             OnPropertyChanged(nameof(ItemCountText));
@@ -298,7 +310,7 @@ namespace HD2ModManager.ViewModels
             Refresh();
         }
 
-        private async void QueueThumbnailRefresh()
+        private async void QueueThumbnailRefresh(IEnumerable<string>? requestedGuids = null)
         {
             var version = _lifecycleVersion;
             _thumbnailCancellation?.Cancel();
@@ -308,6 +320,8 @@ namespace HD2ModManager.ViewModels
             var cancellationToken = cancellation.Token;
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var processed = 0;
+            var completedSources = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            var refreshedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using var thumbnailPerf = UiPerformanceDiagnostics.Measure(
                 "Library.ThumbnailRefresh",
                 thresholdMilliseconds: 100,
@@ -315,7 +329,15 @@ namespace HD2ModManager.ViewModels
             try
             {
                 // 先固定本次刷新快照，避免异步请求期间库同步修改底层字典。
-                var mods = await Task.Run(() => _library.All().ToList(), cancellationToken).ConfigureAwait(false);
+                // Normal content changes ask only for their affected Mod IDs. A
+                // full library pass is reserved for the one-time warmup.
+                var requested = requestedGuids?
+                    .Where(guid => !string.IsNullOrWhiteSpace(guid))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                var mods = await Task.Run(() => requested is null
+                    ? _library.All().ToList()
+                    : requested.Select(_library.Get).Where(mod => mod is not null).Cast<HD2ModManager.Models.ModEntity>().ToList(), cancellationToken).ConfigureAwait(false);
                 foreach (var mod in mods)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -326,42 +348,64 @@ namespace HD2ModManager.ViewModels
                     if (result.Data is { } facts)
                     {
                         await ThumbnailService.EnsureThumbnailAsync(facts, 72, cancellationToken);
-                        _thumbnailSources[mod.Guid] = facts.SourcePath;
+                        completedSources[mod.Guid] = facts.SourcePath;
+                        refreshedIds.Add(mod.Guid);
                     }
                 }
                 if (IsCurrentThumbnailRefresh(version, cancellation))
-                    RunOnUiThread(RefreshVisibleThumbnailSources);
+                {
+                    await RunOnUiThreadAsync(() => ApplyThumbnailResults(version, cancellation, completedSources, refreshedIds));
+                }
                 LogService.Info($"列表缩略图刷新完成：页面=模组库，条目={processed}，耗时={clock.ElapsedMilliseconds}ms，版本={version}。");
             }
             catch (OperationCanceledException)
             {
                 LogService.Info($"列表缩略图刷新取消：页面=模组库，已处理={processed}，耗时={clock.ElapsedMilliseconds}ms，版本={version}。");
             }
+            finally
+            {
+                if (ReferenceEquals(_thumbnailCancellation, cancellation))
+                {
+                    _thumbnailCancellation = null;
+                    cancellation.Dispose();
+                }
+            }
         }
 
-        private void OnSelectionChanged(object? sender, EventArgs e) => SyncSelectionFromCoordinator();
+        private void OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            var changedIds = e.GetChangedIds(SelectionScope);
+            ApplyLocalSelection(e.GetCurrentIds(SelectionScope), changedIds);
+        }
 
         private void OnProfileChanged(object? sender, EventArgs e)
-            => QueueProjectionRefresh(null, forceReconcile: _hideSelectedProfileMembers, refreshAllPresentations: true);
+            => QueueProjectionRefresh(
+                requiresRebuild: _hideSelectedProfileMembers,
+                refreshVisibleContent: true);
 
         private void OnLibraryContentFactsChanged(object? sender, ModContentFactsChangedEventArgs e)
-            => QueueProjectionRefresh(e.NodeIds, e.Kind is ModContentChangeKind.Added or ModContentChangeKind.Removed);
+            => QueueProjectionRefresh(
+                e.NodeIds,
+                requiresRebuild: e.Kind is ModContentChangeKind.Added or ModContentChangeKind.Removed);
 
         private void OnLibrarySnapshotChanged(object? sender, EventArgs e)
-            => QueueProjectionRefresh(null, forceReconcile: true);
+            => QueueProjectionRefresh(requiresRebuild: true);
 
         private void OnDerivedStateSnapshotChanged(object? sender, DerivedStateSnapshot e)
-            => QueueProjectionRefresh(null, forceReconcile: false, refreshAllPresentations: true);
+            => QueueProjectionRefresh(refreshVisibleContent: true);
 
-        private void QueueProjectionRefresh(IEnumerable<ModNodeId>? nodeIds, bool forceReconcile, bool refreshAllPresentations = false)
+        private void QueueProjectionRefresh(
+            IEnumerable<ModNodeId>? nodeIds = null,
+            bool requiresRebuild = false,
+            bool refreshVisibleContent = false)
         {
             if (_disposed) return;
             lock (_pendingProjectionGuids)
             {
                 if (nodeIds is not null)
                     foreach (var nodeId in nodeIds) _pendingProjectionGuids.Add(nodeId.Value.ToString("N"));
-                _forceProjectionReconcile |= forceReconcile;
-                _refreshAllPresentations |= refreshAllPresentations;
+                _projectionRequiresRebuild |= requiresRebuild;
+                _projectionRefreshVisibleContent |= refreshVisibleContent;
             }
             if (Interlocked.Exchange(ref _projectionRefreshQueued, 1) != 0) return;
             var dispatcher = System.Windows.Application.Current?.Dispatcher;
@@ -373,56 +417,93 @@ namespace HD2ModManager.ViewModels
         {
             if (_disposed) return;
             HashSet<string> guids;
-            bool reconcile;
-            bool refreshAllPresentations;
+            bool requiresRebuild;
+            bool refreshVisibleContent;
             lock (_pendingProjectionGuids)
             {
                 guids = new HashSet<string>(_pendingProjectionGuids, StringComparer.OrdinalIgnoreCase);
                 _pendingProjectionGuids.Clear();
-                reconcile = _forceProjectionReconcile;
-                _forceProjectionReconcile = false;
-                refreshAllPresentations = _refreshAllPresentations;
-                _refreshAllPresentations = false;
+                requiresRebuild = _projectionRequiresRebuild;
+                _projectionRequiresRebuild = false;
+                refreshVisibleContent = _projectionRefreshVisibleContent;
+                _projectionRefreshVisibleContent = false;
             }
             Interlocked.Exchange(ref _projectionRefreshQueued, 0);
             UiPerformanceDiagnostics.RecordBurst(
                 "Library.ApplyProjection",
-                $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}",
+                $"guids={guids.Count}; rebuild={requiresRebuild}; visibleContent={refreshVisibleContent}",
                 threshold: 8);
             using var perf = UiPerformanceDiagnostics.Measure(
                 "Library.ApplyProjection",
                 thresholdMilliseconds: 25,
-                details: () => $"guids={guids.Count}; reconcile={reconcile}; allPresentations={refreshAllPresentations}; items={Items.Count}");
+                details: () => $"guids={guids.Count}; rebuild={requiresRebuild}; visibleContent={refreshVisibleContent}; items={Items.Count}");
             RefreshUserStatuses();
-            // A status-only update cannot affect the current filter or order. Keep the
-            // existing containers so virtualized rows retain their visual state.
-            var contentCanAffectFilter = guids.Count != 0 && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
-            var didReconcile = reconcile || contentCanAffectFilter;
-            if (didReconcile)
-            {
-                // 此处只在成员或筛选结果可能变化时重建集合；让集合按真实
-                // Key 差异解析插入、移除和重排，状态投影分支仍不触碰集合。
+            var contentCanAffectMembership = guids.Count != 0
+                && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
+            if (requiresRebuild || contentCanAffectMembership)
                 Refresh();
-            }
-            else
-            {
-                var cards = refreshAllPresentations
-                    ? Items
-                    : Items.Where(item => guids.Contains(item.Mod.Guid));
-                foreach (var card in cards)
-                    card.UpdatePresentation(_library.Get(card.Mod.Guid), card.Mod.IsDecoration || card.Mod.IsOption || card.Mod.IsReShade ? null : _library.GetDerivedData(card.Mod.Guid), _userStatuses.GetValueOrDefault(card.Mod.Guid), _thumbnailSources.GetValueOrDefault(card.Mod.Guid), card.Mod.IsDecoration ? _library.GetDecorationActivationSummary(card.Mod.Guid).StatusText : card.Mod.IsOption ? _library.GetOptionActivationStatus(card.Mod.Guid) : null);
-                OnPropertyChanged(nameof(ItemCountText));
-                OnPropertyChanged(nameof(EmptyMessage));
-            }
-            if (didReconcile || guids.Count != 0) QueueThumbnailRefresh();
+            else if (guids.Count != 0)
+                PublishContent(guids);
+            else if (refreshVisibleContent)
+                PublishVisibleContent();
+            if (guids.Count != 0) QueueThumbnailRefresh(guids);
             else QueueThumbnailWarmup();
         }
 
-        private void RefreshVisibleThumbnailSources()
+        private void RefreshVisibleThumbnailSources(IReadOnlyCollection<string> refreshedIds)
         {
             if (_disposed) return;
-            foreach (var card in Items)
-                card.SetThumbnailSource(_thumbnailSources.GetValueOrDefault(card.Mod.Guid));
+            PublishContent(refreshedIds);
+        }
+
+        private void ApplyThumbnailResults(
+            int version,
+            CancellationTokenSource cancellation,
+            IReadOnlyDictionary<string, string?> completedSources,
+            IReadOnlyCollection<string> refreshedIds)
+        {
+            if (!IsCurrentThumbnailRefresh(version, cancellation)) return;
+            var changed = false;
+            foreach (var pair in completedSources)
+            {
+                if (_thumbnailSources.TryGetValue(pair.Key, out var existing)
+                    && string.Equals(existing, pair.Value, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                _thumbnailSources[pair.Key] = pair.Value;
+                changed = true;
+            }
+            foreach (var guid in refreshedIds)
+            {
+                _thumbnailRevisions[guid] = _thumbnailRevisions.GetValueOrDefault(guid) + 1;
+                changed = true;
+            }
+
+            if (changed) RefreshVisibleThumbnailSources(refreshedIds);
+        }
+
+        private void PublishVisibleContent()
+        {
+            if (_disposed) return;
+            var states = Items
+                .Select(card => _library.Get(card.Mod.Guid))
+                .Where(mod => mod is not null)
+                .Cast<HD2ModManager.Models.ModEntity>()
+                .Select(CreateListState)
+                .ToArray();
+            _list.SubmitContent(states);
+        }
+
+        private void PublishContent(IEnumerable<string> guids, bool commitImmediately = false)
+        {
+            if (_disposed) return;
+            var states = guids
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(_library.Get)
+                .Where(mod => mod is not null)
+                .Cast<HD2ModManager.Models.ModEntity>()
+                .Select(CreateListState)
+                .ToArray();
+            _list.SubmitContent(states, commitImmediately);
         }
 
         private void QueueThumbnailWarmup()
@@ -440,6 +521,17 @@ namespace HD2ModManager.ViewModels
             var dispatcher = System.Windows.Application.Current?.Dispatcher;
             if (dispatcher is null || dispatcher.CheckAccess()) action();
             else _ = dispatcher.InvokeAsync(action);
+        }
+
+        private static Task RunOnUiThreadAsync(Action action)
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                action();
+                return Task.CompletedTask;
+            }
+            return dispatcher.InvokeAsync(action).Task;
         }
 
         private async void RemoveMod(ModCardViewModel? card)
@@ -510,30 +602,73 @@ namespace HD2ModManager.ViewModels
         private void ToggleSelection(object? parameter)
         {
             if (parameter is not ModCardViewModel card) return;
-            if (!_selectedGuids.Remove(card.Mod.Guid)) _selectedGuids.Add(card.Mod.Guid);
-            _selection?.Replace(SelectionScope, _selectedGuids);
-            RefreshSelectionFlags();
+            var next = _selectedGuids.ToList();
+            if (!next.Remove(card.Mod.Guid)) next.Add(card.Mod.Guid);
+            if (_selection is null) ApplyLocalSelection(next);
+            else _selection.Replace(SelectionScope, next);
         }
 
         private bool IsSelected(string guid) => _selectedGuids.Any(id => string.Equals(id, guid, System.StringComparison.OrdinalIgnoreCase));
 
-        private void SyncSelectionFromCoordinator()
+        private void ApplyLocalSelection(IEnumerable<string> selectedKeys, IReadOnlyList<string>? knownChangedIds = null)
         {
-            if (_selection == null) return;
+            ArgumentNullException.ThrowIfNull(selectedKeys);
+            var previous = _selectedGuids.ToArray();
+            var next = selectedKeys
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             _selectedGuids.Clear();
-            if (string.Equals(_selection.Scope, SelectionScope, System.StringComparison.OrdinalIgnoreCase))
-            {
-                foreach (var id in _selection.SelectedIds) _selectedGuids.Add(id);
-            }
-            RefreshSelectionFlags();
+            foreach (var id in next) _selectedGuids.Add(id);
+            var changedIds = knownChangedIds ?? SelectionSetOperations.SymmetricDifference(previous, next);
+            if (changedIds.Count != 0) PublishContent(changedIds, commitImmediately: true);
         }
 
-        private void RefreshSelectionFlags()
+        private LibraryModListState CreateListState(HD2ModManager.Models.ModEntity mod)
         {
-            foreach (var card in Items)
-            {
-                card.IsSelected = IsSelected(card.Mod.Guid);
-            }
+            var derived = mod.IsDecoration || mod.IsOption || mod.IsReShade
+                ? null
+                : _library.GetDerivedData(mod.Guid);
+            _userStatuses.TryGetValue(mod.Guid, out var status);
+            _thumbnailSources.TryGetValue(mod.Guid, out var thumbnailSource);
+            var decorationStatus = mod.IsDecoration
+                ? _library.GetDecorationActivationSummary(mod.Guid).StatusText
+                : mod.IsOption
+                    ? _library.GetOptionActivationStatus(mod.Guid)
+                    : null;
+            var selected = IsSelected(mod.Guid);
+            var assetSummaryText = ModCardViewModel.BuildAssetSummaryText(mod, derived?.AssetSummary, decorationStatus);
+            var contentVersion = LibraryModListState.BuildContentVersion(
+                mod,
+                assetSummaryText,
+                derived?.UnitCompatibility,
+                status,
+                thumbnailSource,
+                decorationStatus,
+                _thumbnailRevisions.GetValueOrDefault(mod.Guid));
+            return new LibraryModListState(
+                mod.Guid,
+                mod,
+                selected,
+                derived?.AssetSummary,
+                derived?.UnitCompatibility,
+                status,
+                thumbnailSource,
+                decorationStatus,
+                _thumbnailRevisions.GetValueOrDefault(mod.Guid),
+                assetSummaryText,
+                contentVersion,
+                LibraryModListState.BuildPresentationVersion(
+                    contentVersion,
+                    selected));
+        }
+
+        private void OnListProjectionCommitted(object? sender, ModListStateCommittedEventArgs e)
+        {
+            if (_disposed) return;
+            OnPropertyChanged(nameof(HasItems));
+            OnPropertyChanged(nameof(EmptyMessage));
+            OnPropertyChanged(nameof(ItemCountText));
         }
 
         public override void Dispose()
@@ -552,7 +687,61 @@ namespace HD2ModManager.ViewModels
             _thumbnailCancellation?.Cancel();
             _thumbnailCancellation?.Dispose();
             _thumbnailCancellation = null;
+            _list.Committed -= OnListProjectionCommitted;
+            _list.Dispose();
         }
+    }
+
+    internal sealed record LibraryModListState(
+        string Guid,
+        HD2ModManager.Models.ModEntity Mod,
+        bool IsSelected,
+        ModAssetSummary? AssetSummary,
+        ModUnitCompatibilityReport? UnitCompatibility,
+        ModUserStatus? UserStatus,
+        string? ThumbnailSourcePath,
+        string? DecorationStatus,
+        int ThumbnailRevision,
+        string AssetSummaryText,
+        string ContentVersion,
+        string PresentationVersion)
+    {
+        public static string BuildContentVersion(
+            HD2ModManager.Models.ModEntity mod,
+            string assetSummaryText,
+            ModUnitCompatibilityReport? unitCompatibility,
+            ModUserStatus? userStatus,
+            string? thumbnailSourcePath,
+            string? decorationStatus,
+            int thumbnailRevision)
+            => string.Join('\u001f',
+                mod.Guid,
+                mod.Name,
+                mod.Description,
+                mod.Image,
+                mod.SourcePath,
+                mod.IsDecoration,
+                mod.IsOption,
+                mod.IsReShade,
+                mod.HasPatchContent,
+                mod.IsHelmetToArmorMerged,
+                assetSummaryText,
+                unitCompatibility?.Status,
+                unitCompatibility?.UnitCount,
+                unitCompatibility?.ReadableUnitCount,
+                unitCompatibility?.OutdatedUnitCount,
+                unitCompatibility?.Summary,
+                userStatus?.Kind,
+                userStatus?.Title,
+                userStatus?.Summary,
+                userStatus?.IsInSelectedProfile,
+                userStatus?.IsInActiveProfile,
+                thumbnailSourcePath,
+                decorationStatus,
+                thumbnailRevision);
+
+        public static string BuildPresentationVersion(string contentVersion, bool isSelected)
+            => string.Join('\u001f', contentVersion, isSelected);
     }
 
     public class ModCardViewModel : BaseViewModel, IModListSelectable
@@ -562,6 +751,8 @@ namespace HD2ModManager.ViewModels
         private ModUnitCompatibilityReport? _unitCompatibility;
         private ModUserStatus? _userStatus;
         private string? _decorationStatus;
+        private string _assetSummaryText = string.Empty;
+        private string _contentVersion = string.Empty;
         public HD2ModManager.Models.ModEntity Mod => _mod;
         public string SelectionKey => Mod.Guid;
         public bool IsDecoration => Mod.IsDecoration;
@@ -570,17 +761,13 @@ namespace HD2ModManager.ViewModels
         public bool IsAttachable => Mod.IsDecoration || Mod.IsOption;
         public bool CanJoinProfile => Mod.Capabilities.CanJoinProfile;
         private string? _thumbnailSourcePath;
+        private string? _imagePath;
+        private int _thumbnailRevision;
         public ModAssetSummary? AssetSummary => _assetSummary;
         public string Name => Mod.Name;
-        public string AssetSummaryText => Mod.IsReShade
-            ? "ReShade 插件 · 部署到游戏 bin"
-            : !Mod.HasPatchContent && !Mod.IsDecoration && !Mod.IsOption
-            ? Mod.Description ?? string.Empty
-            : Mod.IsDecoration || Mod.IsOption
-            ? DecorationStatus ?? "尚未启用。"
-            : ModAssetSummaryFormatter.Format(AssetSummary);
+        public string AssetSummaryText => _assetSummaryText;
         public bool ShowsPatchMetadata => Mod.Capabilities.ShowsPatchAssets;
-        public string? ImagePath => ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+        public string? ImagePath => _imagePath;
         public bool IsVisible => true;
         public bool ShowImage => true;
         public string? Description => Mod.Description;
@@ -595,42 +782,69 @@ namespace HD2ModManager.ViewModels
         public bool HasUserStatus => UserStatus is not null;
         public string? DecorationStatus => _decorationStatus;
 
-        public void SetThumbnailSource(string? sourcePath)
-        {
-            if (string.Equals(_thumbnailSourcePath, sourcePath, StringComparison.OrdinalIgnoreCase))
-            {
-                OnPropertyChanged(nameof(ImagePath));
-                return;
-            }
-
-            _thumbnailSourcePath = sourcePath;
-            OnPropertyChanged(nameof(ImagePath));
-        }
-
         public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null, string? thumbnailSourcePath = null, string? decorationStatus = null)
         {
             _mod = mod;
             _thumbnailSourcePath = thumbnailSourcePath ?? mod.Image;
+            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
             _assetSummary = assetSummary;
 			_unitCompatibility = unitCompatibility;
             _userStatus = userStatus;
             _decorationStatus = decorationStatus;
             _isSelected = isSelected;
+            _assetSummaryText = BuildAssetSummaryText(mod, assetSummary, decorationStatus);
         }
 
-        public void UpdatePresentation(HD2ModManager.Models.ModEntity? mod, DerivedModNodeData? derived, ModUserStatus? userStatus, string? thumbnailSourcePath, string? decorationStatus)
+        internal ModCardViewModel(LibraryModListState state)
+            : this(
+                state.Mod,
+                state.IsSelected,
+                state.AssetSummary,
+                state.UnitCompatibility,
+                state.UserStatus,
+                state.ThumbnailSourcePath,
+                state.DecorationStatus)
         {
-            if (mod is not null) _mod = mod;
-            _assetSummary = derived?.AssetSummary;
-            _unitCompatibility = derived?.UnitCompatibility;
-            _userStatus = userStatus;
-            _decorationStatus = decorationStatus;
-            if (!string.IsNullOrWhiteSpace(thumbnailSourcePath)) _thumbnailSourcePath = thumbnailSourcePath;
+            _assetSummaryText = state.AssetSummaryText;
+            _contentVersion = state.ContentVersion;
+            _thumbnailRevision = state.ThumbnailRevision;
+            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+        }
+
+        internal void ApplyListState(LibraryModListState state)
+        {
+            var contentChanged = !string.Equals(_contentVersion, state.ContentVersion, StringComparison.Ordinal);
+            IsSelected = state.IsSelected;
+            if (!contentChanged) return;
+
+            var nextThumbnailSource = state.ThumbnailSourcePath ?? state.Mod.Image;
+            var imageChanged = !string.Equals(_thumbnailSourcePath, nextThumbnailSource, StringComparison.OrdinalIgnoreCase)
+                || _thumbnailRevision != state.ThumbnailRevision;
+            _mod = state.Mod;
+            _assetSummary = state.AssetSummary;
+            _unitCompatibility = state.UnitCompatibility;
+            _userStatus = state.UserStatus;
+            _decorationStatus = state.DecorationStatus;
+            _thumbnailSourcePath = nextThumbnailSource;
+            _thumbnailRevision = state.ThumbnailRevision;
+            if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            _assetSummaryText = state.AssetSummaryText;
+            _contentVersion = state.ContentVersion;
             OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsReShade)); OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanJoinProfile));
             OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(UnitCompatibility));
             OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(UserStatus)); OnPropertyChanged(nameof(UserStatusTitle));
-            OnPropertyChanged(nameof(UserStatusSummary)); OnPropertyChanged(nameof(DecorationStatus)); OnPropertyChanged(nameof(ImagePath));
+            OnPropertyChanged(nameof(UserStatusSummary)); OnPropertyChanged(nameof(DecorationStatus));
+            if (imageChanged) OnPropertyChanged(nameof(ImagePath));
         }
+
+        internal static string BuildAssetSummaryText(HD2ModManager.Models.ModEntity mod, ModAssetSummary? assetSummary, string? decorationStatus)
+            => mod.IsReShade
+                ? "ReShade 插件 · 部署到游戏 bin"
+                : !mod.HasPatchContent && !mod.IsDecoration && !mod.IsOption
+                    ? mod.Description ?? string.Empty
+                    : mod.IsDecoration || mod.IsOption
+                        ? decorationStatus ?? "尚未启用。"
+                        : ModAssetSummaryFormatter.Format(assetSummary);
 
     }
 

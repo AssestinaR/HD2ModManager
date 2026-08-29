@@ -18,6 +18,28 @@ public static class SmoothScrollBehavior
 	public static bool GetIsEnabled(DependencyObject element) => (bool)element.GetValue(IsEnabledProperty);
 	public static void SetIsEnabled(DependencyObject element, bool value) => element.SetValue(IsEnabledProperty, value);
 
+	// All programmatic scrolling that belongs to an interaction should come
+	// through the same state machine as wheel scrolling.  Calling
+	// ScrollToVerticalOffset directly from a drag timer fights the render-loop
+	// interpolation below and produces the characteristic "one frame, then
+	// jump" behavior on a busy virtualized list.
+	public static bool ScrollBy(ScrollViewer? viewer, double offsetDelta)
+	{
+		if (viewer is null || Math.Abs(offsetDelta) < 0.01 || viewer.ScrollableHeight <= 0)
+			return false;
+		if (viewer.GetValue(StateProperty) is not SmoothScrollState state)
+			return false;
+
+		state.Queue(offsetDelta);
+		return true;
+	}
+
+	public static void Stop(ScrollViewer? viewer)
+	{
+		if (viewer?.GetValue(StateProperty) is SmoothScrollState state)
+			state.StopAtCurrentOffset();
+	}
+
 	private static void OnIsEnabledChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
 	{
 		if (target is not ScrollViewer viewer) return;
@@ -82,6 +104,7 @@ public static class SmoothScrollBehavior
 
 		public void Queue(double offsetDelta)
 		{
+			if (Math.Abs(offsetDelta) < 0.01) return;
 			if (_lastFrameUtc == default) _target = _viewer.VerticalOffset;
 			_target = Math.Clamp(_target + offsetDelta, 0, _viewer.ScrollableHeight);
 			if (_lastFrameUtc != default) return;
@@ -135,6 +158,8 @@ public static class SmoothScrollBehavior
 			_lastFrameUtc = default;
 			_expectedOffset = null;
 		}
+
+		public void StopAtCurrentOffset() => Stop();
 
 		public void Dispose()
 		{

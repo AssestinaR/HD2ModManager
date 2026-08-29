@@ -1329,6 +1329,10 @@ namespace HD2ModManager.ViewModels
 
         private void RefreshTaskHubState()
         {
+            using var perf = UiPerformanceDiagnostics.Measure(
+                "Shell.RefreshTaskHub",
+                thresholdMilliseconds: 6,
+                details: () => $"tasks={_backgroundTasks.Tasks.Count}; unread={MessageUnreadCount}; messagePanel={IsMessagePanelOpen}; preview={IsMessagePreviewOpen}");
             OnPropertyChanged(nameof(ActiveMessageTasks));
             OnPropertyChanged(nameof(AttentionMessageItems));
             OnPropertyChanged(nameof(RecentMessageItems));

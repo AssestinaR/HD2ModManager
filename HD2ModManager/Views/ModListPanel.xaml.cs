@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
@@ -14,10 +15,13 @@ namespace HD2ModManager.Views;
 public partial class ModListPanel : UserControl
 {
     private readonly Dictionary<Border, SelectionIndicatorSubscription> _selectionIndicatorSubscriptions = new();
-    private readonly BulkObservableCollection<object> _presentedItems = new();
+    private readonly ObservableCollection<object> _presentedItems = new();
     private readonly ModListTransitionController _transitionController;
     private string? _selectionAnchorKey;
-    private readonly DispatcherTimer _dragAutoScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    // Edge scrolling is deliberately sampled below the display refresh rate.
+    // SmoothScrollBehavior owns the per-frame interpolation; this timer only
+    // updates its target velocity and must not compete with rendering.
+    private readonly DispatcherTimer _dragAutoScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(32) };
     private DragCandidate? _dragCandidate;
     private Point _dragStartPoint;
     private Point? _dragPointerOnScreen;
@@ -30,6 +34,7 @@ public partial class ModListPanel : UserControl
     private InternalDragPayload? _activeInternalDragPayload;
     private Cursor? _previousOverrideCursor;
     private DateTime _dragWheelCooldownUntilUtc;
+    private bool _dropIndicatorRefreshQueued;
 
     public ModListPanel()
     {
@@ -46,7 +51,11 @@ public partial class ModListPanel : UserControl
         };
         Unloaded += (_, _) =>
         {
-            _transitionController.Detach();
+            // Normal workspace navigation unloads a cached page view only long
+            // enough to move it between hosts. Preserve the real presentation
+            // collection so returning to a Mod-list page does not rebuild every
+            // realized row from scratch.
+            _transitionController.Suspend();
             EndInternalDrag();
             EndExternalProfileDrag(commit: false);
             StopDragAutoScroll();
@@ -486,24 +495,34 @@ public partial class ModListPanel : UserControl
             return;
         }
 
-        var position = ItemsList.PointFromScreen(pointerOnScreen);
         UpdateDragAutoScroll();
         if (_dragAutoScrollViewer is null) return;
-        _dragAutoScrollViewer.ScrollToVerticalOffset(Math.Clamp(
-            _dragAutoScrollViewer.VerticalOffset + (_dragAutoScrollDirection * _dragAutoScrollStep),
-            0,
-            _dragAutoScrollViewer.ScrollableHeight));
-        UpdateDropInsertionIndicator(position);
+        var offsetDelta = _dragAutoScrollDirection
+            * _dragAutoScrollStep
+            * _dragAutoScrollTimer.Interval.TotalSeconds;
+        if (!SmoothScrollBehavior.ScrollBy(_dragAutoScrollViewer, offsetDelta))
+        {
+            // Compatibility fallback for a parent ScrollViewer that is outside
+            // the panel's own smooth-scroll scope. The normal Mod-list path
+            // always takes the branch above.
+            _dragAutoScrollViewer.ScrollToVerticalOffset(Math.Clamp(
+                _dragAutoScrollViewer.VerticalOffset + offsetDelta,
+                0,
+                _dragAutoScrollViewer.ScrollableHeight));
+        }
+        QueueDropInsertionIndicatorRefresh();
     }
 
     private void StopDragAutoScroll()
     {
+        var viewer = _dragAutoScrollViewer;
         _dragAutoScrollDirection = 0;
         _dragAutoScrollStep = 0;
         _dragAutoScrollViewer = null;
         _dragPointerOnScreen = null;
         _dragWheelCooldownUntilUtc = default;
         _dragAutoScrollTimer.Stop();
+        SmoothScrollBehavior.Stop(viewer);
     }
 
     private bool TryResolveDragAutoScroll(out ScrollViewer? scrollViewer, out int direction, out double step)
@@ -532,7 +551,10 @@ public partial class ModListPanel : UserControl
             var distance = direction < 0 ? topDistance : bottomDistance;
             var pressure = Math.Clamp((edgeSize - distance) / edgeSize, 0, 1);
             scrollViewer = candidate;
-            step = 1.5 + (10.5 * pressure * pressure);
+            // pixels per second; SmoothScrollBehavior turns this velocity into
+            // frame-synchronous motion. Keeping the value in physical units
+            // makes behavior independent from the timer cadence.
+            step = 46 + (620 * pressure * pressure);
             return true;
         }
 
@@ -557,8 +579,34 @@ public partial class ModListPanel : UserControl
 
     private void OnItemsListPreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (_isInternalDragActive)
-            _dragWheelCooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(260);
+        if (!_isInternalDragActive || e.Delta == 0) return;
+
+        // Mouse capture during an internal drag can keep wheel input from
+        // reaching the nested ScrollViewer consistently. Route it explicitly
+        // through the same smooth state used by normal wheel scrolling.
+        var viewer = FindDescendant<ScrollViewer>(ItemsList);
+        if (SmoothScrollBehavior.ScrollBy(viewer, -(e.Delta / 120d) * 84d))
+        {
+            _dragWheelCooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(140);
+            QueueDropInsertionIndicatorRefresh();
+            e.Handled = true;
+            return;
+        }
+
+        _dragWheelCooldownUntilUtc = DateTime.UtcNow.AddMilliseconds(140);
+    }
+
+    private void QueueDropInsertionIndicatorRefresh()
+    {
+        if (_dropIndicatorRefreshQueued || !_isInternalDragActive) return;
+        _dropIndicatorRefreshQueued = true;
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            _dropIndicatorRefreshQueued = false;
+            if (!_isInternalDragActive || _dragPointerOnScreen is not { } pointerOnScreen) return;
+            var position = ItemsList.PointFromScreen(pointerOnScreen);
+            if (IsPointInsideItemsList(position)) UpdateDropInsertionIndicator(position);
+        }, DispatcherPriority.Render);
     }
 
 	private static void OnUseInternalScrollChanged(DependencyObject target, DependencyPropertyChangedEventArgs args)
@@ -577,17 +625,6 @@ public partial class ModListPanel : UserControl
     {
         if (target is ModListPanel panel && panel.IsLoaded)
             panel._transitionController.Attach(args.NewValue as IEnumerable);
-    }
-
-    private static string? GetItemKey(object? item)
-    {
-        if (item is null) return null;
-        foreach (var propertyName in new[] { "Guid", "ModId", "Id" })
-        {
-            if (item.GetType().GetProperty(propertyName)?.GetValue(item)?.ToString() is { Length: > 0 } value) return value;
-        }
-        var mod = item.GetType().GetProperty("Mod")?.GetValue(item);
-        return mod?.GetType().GetProperty("Guid")?.GetValue(mod)?.ToString();
     }
 
     private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
@@ -648,7 +685,10 @@ public partial class ModListPanel : UserControl
             var selected = ReadIsSelected(sourceObject);
             if (selected == subscription.IsSelected) return;
             subscription.IsSelected = selected;
-            _ = Dispatcher.InvokeAsync(() => SetSelectionIndicator(indicator, selected, animate: true));
+            if (Dispatcher.CheckAccess())
+                SetSelectionIndicator(indicator, selected, animate: true);
+            else
+                _ = Dispatcher.BeginInvoke(() => SetSelectionIndicator(indicator, selected, animate: true), DispatcherPriority.Input);
         };
         subscription.Source.PropertyChanged += subscription.Handler;
     }
@@ -661,7 +701,7 @@ public partial class ModListPanel : UserControl
     }
 
     private static bool ReadIsSelected(object? source)
-        => source?.GetType().GetProperty("IsSelected")?.GetValue(source) is true;
+        => source is IModListSelectable selectable && selectable.IsSelected;
 
     private static void SetSelectionIndicator(Border indicator, bool selected, bool animate)
     {
