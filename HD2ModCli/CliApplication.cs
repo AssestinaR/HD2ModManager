@@ -43,6 +43,16 @@ public static class CliApplication
 				"CommandOptionNotSupported",
 				"--add-to-profile 仅可用于 import plan；它会被固定在计划中，并在 validate/apply 时重新校验。");
 		}
+		if ((invocation.Options.Limit is not null
+			|| !string.IsNullOrWhiteSpace(invocation.Options.Cursor)
+			|| invocation.Options.WithEffective
+			|| invocation.Options.OnlyCompetition)
+			&& (command.Length == 0 || command[0] != "gamedata"))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"--limit、--cursor、--with-effective 与 --only-competition 仅适用于 gamedata 只读查询。 ");
+		}
 		if (Matches(command, "help"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -68,6 +78,93 @@ public static class CliApplication
 			var workspace = CliWorkspace.Open(invocation.Options);
 			Emit(invocation.Options, CliProjections.CreateStatus(workspace), () => FormatStatus(workspace));
 			return 0;
+		}
+		if (Matches(command, "gamedata", "status"))
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata status");
+			var inspection = await CliGameDataInspection.BuildIndexAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReady, inspection = CreateGameDataIndexProjection(inspection) },
+				() => FormatGameDataIndex(inspection));
+			return inspection.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "gamedata", "archive", "list"))
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata archive list", allowPaging: true);
+			var inspection = await CliGameDataInspection.ListArchivesAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReady, archives = CreateGameDataArchiveListProjection(inspection, invocation.Options) },
+				() => FormatGameDataArchiveList(inspection));
+			return inspection.IsReady ? 0 : 2;
+		}
+		if (command.Length == 4 && command[0] == "gamedata" && command[1] == "archive" && command[2] == "show")
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata archive show", allowPaging: true, allowWithEffective: true);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var inspection = await CliGameDataInspection.ShowArchiveAsync(workspace, invocation.Command[3]).ConfigureAwait(false);
+			var overrides = invocation.Options.WithEffective
+				? await CliGameDataInspection.InspectOverridesAsync(workspace).ConfigureAwait(false)
+				: null;
+			var ready = inspection.IsReady && (overrides?.IsReadable ?? true);
+			Emit(invocation.Options,
+				new { ok = ready, archive = CreateGameDataArchiveDetailsProjection(inspection, invocation.Options, overrides) },
+				() => FormatGameDataArchiveDetails(inspection));
+			return ready ? 0 : 2;
+		}
+		if (command.Length >= 3 && command[0] == "gamedata" && command[1] == "asset" && command[2] == "find")
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata asset find");
+			var inspection = await CliGameDataInspection.FindAssetsAsync(CliWorkspace.Open(invocation.Options), invocation.Command.Skip(3).ToArray()).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReady, assets = CreateGameDataAssetLookupProjection(inspection) },
+				() => FormatGameDataAssetLookup(inspection));
+			return inspection.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "gamedata", "deployment", "inspect"))
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata deployment inspect");
+			var inspection = await CliGameDataInspection.InspectDeploymentAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReadable, overrides = CreateGameDataOverrideStatusProjection(inspection) },
+				() => FormatGameDataOverrideStatus(inspection));
+			return inspection.IsReadable ? 0 : 2;
+		}
+		if (Matches(command, "gamedata", "override", "status"))
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata override status");
+			var inspection = await CliGameDataInspection.InspectOverridesAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReadable, overrides = CreateGameDataOverrideStatusProjection(inspection) },
+				() => FormatGameDataOverrideStatus(inspection));
+			return inspection.IsReadable ? 0 : 2;
+		}
+		if (Matches(command, "gamedata", "override", "list"))
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata override list", allowPaging: true, allowOnlyCompetition: true);
+			var inspection = await CliGameDataInspection.InspectOverridesAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReadable, overrides = CreateGameDataOverrideListProjection(inspection, invocation.Options) },
+				() => FormatGameDataOverrideList(inspection, invocation.Options.OnlyCompetition));
+			return inspection.IsReadable ? 0 : 2;
+		}
+		if (command.Length == 5 && command[0] == "gamedata" && command[1] == "override" && command[2] == "show")
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata override show");
+			var key = CliGameDataInspection.ParseAssetKeyPair(invocation.Command[3], invocation.Command[4]);
+			var inspection = await CliGameDataInspection.InspectOverridesAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReadable, overrides = CreateGameDataOverrideShowProjection(inspection, key) },
+				() => FormatGameDataOverrideShow(inspection, key));
+			return inspection.IsReadable ? 0 : 2;
+		}
+		if (Matches(command, "gamedata", "browser"))
+		{
+			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata browser", allowPaging: true);
+			var inspection = await CliGameDataInspection.BuildBrowserAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReady, browser = CreateGameDataBrowserProjection(inspection, invocation.Options) },
+				() => FormatGameDataBrowser(inspection));
+			return inspection.IsReady ? 0 : 2;
 		}
 		if (Matches(command, "library", "sync", "inspect"))
 		{
@@ -1264,6 +1361,28 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureGameDataReadOnlyOptions(
+		CliGlobalOptions options,
+		string command,
+		bool allowPaging = false,
+		bool allowWithEffective = false,
+		bool allowOnlyCompetition = false)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{command} 仅接受位置参数、--manager-root、可选 --library、--game-data 与 --json。 ");
+		}
+		if (!allowPaging && (options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor)))
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --limit 或 --cursor。 ");
+		if (!allowWithEffective && options.WithEffective)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --with-effective。 ");
+		if (!allowOnlyCompetition && options.OnlyCompetition)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --only-competition。 ");
+	}
+
 	private static void EnsureSameKeyInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -2139,6 +2258,341 @@ public static class CliApplication
 			gameData = "read-only",
 		};
 
+	private static object CreateGameDataIndexProjection(CliGameDataIndexInspection inspection)
+		=> new
+		{
+			target = new
+			{
+				directory = inspection.GameDataDirectory,
+				readability = inspection.TargetIsValid ? "readable" : "invalid",
+				installationSignature = "unverified",
+			},
+			index = new
+			{
+				state = inspection.IndexState,
+				mappingTrusted = inspection.IsCurrent,
+				stored = CreateGameDataIndexFingerprintNullableProjection(inspection.StoredFingerprint),
+				observedSourceFingerprint = inspection.CurrentSourceFingerprint,
+				archiveHashesAvailable = inspection.ArchiveHashesAvailable,
+			},
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+
+	private static object CreateGameDataArchiveListProjection(CliGameDataArchiveListInspection inspection, CliGlobalOptions options)
+	{
+		var page = CliGameDataPaging.Slice(
+			inspection.Archives.OrderBy(archive => archive.PackageName, StringComparer.OrdinalIgnoreCase).ToArray(),
+			"archive-list",
+			GetGameDataIndexGeneration(inspection.Index),
+			options.Limit,
+			options.Cursor);
+		return new
+		{
+			index = CreateGameDataIndexProjection(inspection.Index),
+			totalCount = page.TotalCount,
+			offset = page.Offset,
+			limit = page.Limit,
+			items = page.Items.Select(CreateGameDataArchiveSummaryProjection).ToArray(),
+			page.NextCursor,
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+	}
+
+	private static object CreateGameDataArchiveDetailsProjection(
+		CliGameDataArchiveDetailsInspection inspection,
+		CliGlobalOptions options,
+		CliGameDataOverrideInspection? overrides)
+	{
+		var assets = inspection.Archive?.Assets
+			.OrderBy(asset => asset.AssetKey.TypeId)
+			.ThenBy(asset => asset.AssetKey.FileId)
+			.ToArray()
+			?? Array.Empty<GameDataArchiveAssetEntry>();
+		var page = CliGameDataPaging.Slice(
+			assets,
+			$"archive-show:{inspection.RequestedArchiveId.Trim().ToLowerInvariant()}",
+			GetGameDataIndexGeneration(inspection.Index),
+			options.Limit,
+			options.Cursor);
+		return new
+		{
+			index = CreateGameDataIndexProjection(inspection.Index),
+			requestedArchiveId = inspection.RequestedArchiveId,
+			archive = inspection.Archive is null ? null : CreateGameDataArchiveSummaryProjection(inspection.Archive.Summary),
+			totalAssetCount = assets.Length,
+			offset = page.Offset,
+			limit = page.Limit,
+			assets = page.Items.Select(asset => CreateGameDataArchiveAssetProjection(asset, overrides)).ToArray(),
+			page.NextCursor,
+			effectiveOverride = overrides is null ? null : new
+			{
+				available = overrides.IsReadable,
+				trusted = overrides.IsTrusted,
+				scope = "data-patch-only",
+				generation = overrides.OverrideGraph?.DeploymentGeneration,
+			},
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics.Concat(overrides?.Diagnostics ?? Array.Empty<CliGameDataDiagnostic>())),
+		};
+	}
+
+	private static object CreateGameDataAssetLookupProjection(CliGameDataAssetLookupInspection inspection)
+		=> new
+		{
+			index = CreateGameDataIndexProjection(inspection.Index),
+			matchCount = inspection.Matches.Count,
+			matches = inspection.Matches.Select(match => new
+			{
+				assetKey = CreateGameDataAssetKeyProjection(match.AssetKey),
+				match.Found,
+				archives = match.Archives.Select(CreateGameDataArchiveReferenceProjection).ToArray(),
+			}).ToArray(),
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+
+	private static object CreateGameDataOverrideStatusProjection(CliGameDataOverrideInspection inspection)
+	{
+		var graph = inspection.OverrideGraph;
+		return new
+		{
+			target = new
+			{
+				directory = inspection.GameDataDirectory,
+				readability = inspection.TargetIsValid ? "readable" : "invalid",
+				installationSignature = inspection.InstallationSignature,
+			},
+			trusted = inspection.IsTrusted,
+			scope = "data-patch-only",
+			status = graph is null ? null : new
+			{
+				generation = graph.DeploymentGeneration,
+				graph.BuiltUtc,
+				recordedProfileId = graph.RecordedProfileId is { } profileId ? CliProjections.FormatId(profileId) : null,
+				graph.RecordedProfileRevision,
+				patchGroupCount = graph.PatchGroups.Count,
+				assetChainCount = graph.AssetChains.Count,
+				competitionCount = graph.AssetChains.Count(chain => chain.IsCompetition),
+				invalidPatchGroupCount = graph.PatchGroups.Count(group => !group.IsValid),
+			},
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+	}
+
+	private static object CreateGameDataOverrideListProjection(CliGameDataOverrideInspection inspection, CliGlobalOptions options)
+	{
+		var graph = inspection.OverrideGraph;
+		var chains = graph?.AssetChains
+			.Where(chain => !options.OnlyCompetition || chain.IsCompetition)
+			.OrderBy(chain => chain.AssetKey.TypeId)
+			.ThenBy(chain => chain.AssetKey.FileId)
+			.ToArray()
+			?? Array.Empty<DeployedAssetOverrideChain>();
+		var page = CliGameDataPaging.Slice(
+			chains,
+			options.OnlyCompetition ? "override-list:competition" : "override-list:all",
+			graph?.DeploymentGeneration ?? "unavailable",
+			options.Limit,
+			options.Cursor);
+		return new
+		{
+			status = CreateGameDataOverrideStatusProjection(inspection),
+			totalCount = page.TotalCount,
+			offset = page.Offset,
+			limit = page.Limit,
+			onlyCompetition = options.OnlyCompetition,
+			items = page.Items.Select(CreateGameDataOverrideChainSummaryProjection).ToArray(),
+			page.NextCursor,
+		};
+	}
+
+	private static object CreateGameDataOverrideShowProjection(CliGameDataOverrideInspection inspection, AssetKey key)
+	{
+		var chain = inspection.OverrideGraph?.AssetChains.FirstOrDefault(candidate => candidate.AssetKey == key);
+		return new
+		{
+			status = CreateGameDataOverrideStatusProjection(inspection),
+			assetKey = CreateGameDataAssetKeyProjection(key),
+			found = chain is not null,
+			isCompetition = chain?.IsCompetition ?? false,
+			entries = chain?.Entries.Select(entry => CreateGameDataOverrideEntryProjection(entry, inspection.OverrideGraph!)).ToArray() ?? Array.Empty<object>(),
+		};
+	}
+
+	private static object CreateGameDataBrowserProjection(CliGameDataBrowserInspection inspection, CliGlobalOptions options)
+	{
+		var browser = inspection.Browser;
+		var items = browser?.Archives
+			.OrderBy(item => item.Archive.PackageName, StringComparer.OrdinalIgnoreCase)
+			.ToArray()
+			?? Array.Empty<GameDataArchiveBrowserItem>();
+		var page = CliGameDataPaging.Slice(
+			items,
+			"browser-archives",
+			browser?.Fingerprint.SourceFingerprint ?? GetGameDataIndexGeneration(inspection.Index),
+			options.Limit,
+			options.Cursor);
+		return new
+		{
+			index = CreateGameDataIndexProjection(inspection.Index),
+			browser = browser is null ? null : new
+			{
+				fingerprint = CreateGameDataIndexFingerprintProjection(browser.Fingerprint),
+				activeProfileId = browser.ActiveProfileId is { } activeProfileId ? CliProjections.FormatId(activeProfileId) : null,
+				totalArchiveCount = page.TotalCount,
+				offset = page.Offset,
+				limit = page.Limit,
+				archives = page.Items.Select(item => CreateGameDataBrowserArchiveProjection(item, browser.ModNames)).ToArray(),
+				page.NextCursor,
+				issues = CreateCoreDiagnosticsProjection(browser.Issues),
+			},
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+	}
+
+	private static object CreateGameDataArchiveSummaryProjection(GameDataArchiveSummary archive)
+		=> new
+		{
+			archive.PackageName,
+			archive.DisplayName,
+			archive.Category,
+			assetKeyCount = archive.EntryCount,
+			indexStatus = archive.Status,
+		};
+
+	private static object CreateGameDataArchiveAssetProjection(GameDataArchiveAssetEntry asset, CliGameDataOverrideInspection? overrides)
+	{
+		var chain = overrides?.OverrideGraph?.AssetChains.FirstOrDefault(candidate => candidate.AssetKey == asset.AssetKey);
+		return new
+		{
+			assetKey = CreateGameDataAssetKeyProjection(asset.AssetKey),
+			asset.TypeName,
+			asset.FriendlyName,
+			asset.PartSummary,
+			sharedArchives = asset.SharedPackages.Zip(asset.SharedDisplayNames, (packageName, displayName) => new { packageName, displayName }).ToArray(),
+			effectiveOverride = chain is null ? null : new
+			{
+				trusted = overrides!.IsTrusted,
+				winner = CreateGameDataOverrideWinnerProjection(chain.Winner),
+				chain.IsCompetition,
+			},
+		};
+	}
+
+	private static object CreateGameDataArchiveReferenceProjection(ArchiveMetadata archive)
+		=> new { archiveId = archive.ArchiveId, archive.DisplayName, archive.Category };
+
+	private static object CreateGameDataAssetKeyProjection(AssetKey key)
+		=> new { typeId = $"0x{key.TypeId:x16}", fileId = $"0x{key.FileId:x16}" };
+
+	private static object? CreateGameDataIndexFingerprintNullableProjection(GameDataIndexFingerprint? fingerprint)
+		=> fingerprint is null ? null : CreateGameDataIndexFingerprintProjection(fingerprint);
+
+	private static object CreateGameDataIndexFingerprintProjection(GameDataIndexFingerprint fingerprint)
+		=> new
+		{
+			fingerprint.GameDataDirectory,
+			fingerprint.BuiltUtc,
+			fingerprint.ArchivesTotal,
+			fingerprint.ArchivesIndexed,
+			fingerprint.AssetKeysTotal,
+			fingerprint.SourceFingerprint,
+		};
+
+	private static object CreateGameDataOverrideChainSummaryProjection(DeployedAssetOverrideChain chain)
+		=> new
+		{
+			assetKey = CreateGameDataAssetKeyProjection(chain.AssetKey),
+			entryCount = chain.Entries.Count,
+			chain.IsCompetition,
+			winner = CreateGameDataOverrideWinnerProjection(chain.Winner),
+		};
+
+	private static object CreateGameDataOverrideWinnerProjection(DeployedAssetOverrideEntry entry)
+		=> new
+		{
+			entry.ArchiveHex16,
+			entry.TargetPatchIndex,
+			source = entry.SourcePatchGroupId is { } source ? new
+			{
+				nodeId = CliProjections.FormatId(source.NodeId),
+				source.SourceArchiveHex,
+				source.SourcePatchIndex,
+			} : null,
+			nodeId = entry.NodeId is { } nodeId ? CliProjections.FormatId(nodeId) : null,
+		};
+
+	private static object CreateGameDataOverrideEntryProjection(DeployedAssetOverrideEntry entry, DeployedOverrideGraph graph)
+	{
+		var group = graph.PatchGroups.FirstOrDefault(candidate => string.Equals(candidate.ArchiveHex16, entry.ArchiveHex16, StringComparison.OrdinalIgnoreCase) && candidate.TargetPatchIndex == entry.TargetPatchIndex);
+		return new
+		{
+			entry.ArchiveHex16,
+			entry.TargetPatchIndex,
+			entry.IsWinner,
+			source = entry.SourcePatchGroupId is { } source ? new
+			{
+				nodeId = CliProjections.FormatId(source.NodeId),
+				source.SourceArchiveHex,
+				source.SourcePatchIndex,
+			} : null,
+			nodeId = entry.NodeId is { } nodeId ? CliProjections.FormatId(nodeId) : null,
+			sourceGroupValid = group?.IsValid ?? false,
+			files = group?.Files.Select(file => new
+			{
+				fileName = Path.GetFileName(file.TargetPath),
+				sidecarKind = file.SidecarKind.ToString().ToLowerInvariant(),
+				file.Length,
+			}).ToArray() ?? Array.Empty<object>(),
+		};
+	}
+
+	private static object CreateGameDataBrowserArchiveProjection(GameDataArchiveBrowserItem item, IReadOnlyDictionary<ModNodeId, string> modNames)
+		=> new
+		{
+			archive = CreateGameDataArchiveSummaryProjection(item.Archive),
+			overlay = new
+			{
+				libraryMods = item.Overlay.LibraryModIds.Select(id => CreateGameDataModReferenceProjection(id, modNames)).ToArray(),
+				activeMods = item.Overlay.ActiveModIds.Select(id => CreateGameDataModReferenceProjection(id, modNames)).ToArray(),
+				effectiveMods = item.Overlay.EffectiveModIds.Select(id => CreateGameDataModReferenceProjection(id, modNames)).ToArray(),
+				item.Overlay.EffectiveTargetPatchIndexes,
+				effectiveAssets = item.Overlay.EffectiveAssets.Select(asset => new
+				{
+					assetKey = CreateGameDataAssetKeyProjection(asset.AssetKey),
+					winner = asset.WinnerNodeId is { } nodeId ? CreateGameDataModReferenceProjection(nodeId, modNames) : null,
+					asset.TargetPatchIndex,
+					asset.HasCompetition,
+				}).ToArray(),
+				item.Overlay.HasCompetition,
+				issues = CreateCoreDiagnosticsProjection(item.Overlay.Issues),
+			},
+		};
+
+	private static object CreateGameDataModReferenceProjection(ModNodeId id, IReadOnlyDictionary<ModNodeId, string> modNames)
+		=> new { nodeId = CliProjections.FormatId(id), name = modNames.GetValueOrDefault(id) ?? "未知 Mod" };
+
+	private static object[] CreateGameDataDiagnosticsProjection(IEnumerable<CliGameDataDiagnostic> diagnostics)
+		=> diagnostics.Select(diagnostic => (object)new
+		{
+			diagnostic.Code,
+			diagnostic.Severity,
+			diagnostic.Blocking,
+			diagnostic.Message,
+		}).ToArray();
+
+	private static object[] CreateCoreDiagnosticsProjection(IEnumerable<CoreIssue> diagnostics)
+		=> diagnostics.Select(issue => (object)new
+		{
+			issue.Code,
+			severity = issue.Severity == CoreIssueSeverity.Error ? "error" : "warning",
+			blocking = issue.Severity == CoreIssueSeverity.Error,
+			issue.Message,
+		}).ToArray();
+
+	private static string GetGameDataIndexGeneration(CliGameDataIndexInspection inspection)
+		=> inspection.CurrentSourceFingerprint
+			?? inspection.StoredFingerprint?.SourceFingerprint
+			?? $"{inspection.IndexState}:{inspection.GameDataDirectory}";
+
 	private static object CreateSameKeyInspectionProjection(CliSameKeyReconstructionInspection inspection)
 		=> new
 		{
@@ -2658,6 +3112,64 @@ public static class CliApplication
 			: $"主体派生 Overwrite 被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
+	private static string FormatGameDataIndex(CliGameDataIndexInspection inspection)
+	{
+		if (inspection.IsReady && inspection.StoredFingerprint is { } fingerprint)
+			return $"GameData 资产索引可用：Archive {fingerprint.ArchivesIndexed}/{fingerprint.ArchivesTotal}；AssetKey {fingerprint.AssetKeysTotal}。";
+		var blocking = inspection.Diagnostics.FirstOrDefault(diagnostic => diagnostic.Blocking);
+		return blocking is null
+			? "GameData 资产索引不可用。"
+			: $"GameData 资产索引不可用：[{blocking.Code}] {blocking.Message}";
+	}
+
+	private static string FormatGameDataArchiveList(CliGameDataArchiveListInspection inspection)
+		=> inspection.IsReady
+			? $"GameData archive 列表：{inspection.Archives.Count} 个。"
+			: $"GameData archive 列表未完全可用：{inspection.Archives.Count} 个已读取条目；请查看诊断。";
+
+	private static string FormatGameDataArchiveDetails(CliGameDataArchiveDetailsInspection inspection)
+		=> inspection.Archive is { } archive
+			? $"GameData archive：{archive.Summary.DisplayName} / {archive.Summary.PackageName}；AssetKey {archive.Assets.Count}。"
+			: $"未能读取指定的 GameData archive；请查看诊断。";
+
+	private static string FormatGameDataAssetLookup(CliGameDataAssetLookupInspection inspection)
+	{
+		var found = inspection.Matches.Count(match => match.Found);
+		return inspection.IsReady
+			? $"GameData AssetKey 查询：{inspection.Matches.Count} 个键；命中 archive {found} 个。"
+			: $"GameData AssetKey 查询未完全可用；请查看诊断。";
+	}
+
+	private static string FormatGameDataOverrideStatus(CliGameDataOverrideInspection inspection)
+	{
+		if (inspection.OverrideGraph is not { } graph) return "无法读取当前 GameData Data-Patch 覆盖图；请查看诊断。";
+		var competition = graph.AssetChains.Count(chain => chain.IsCompetition);
+		return $"GameData Data-Patch 覆盖图：Patch 组 {graph.PatchGroups.Count}；AssetKey 链 {graph.AssetChains.Count}；竞争 {competition}；可信={inspection.IsTrusted}。";
+	}
+
+	private static string FormatGameDataOverrideList(CliGameDataOverrideInspection inspection, bool onlyCompetition)
+	{
+		if (inspection.OverrideGraph is not { } graph) return "无法读取当前 GameData Data-Patch 覆盖图；请查看诊断。";
+		var count = onlyCompetition ? graph.AssetChains.Count(chain => chain.IsCompetition) : graph.AssetChains.Count;
+		return $"GameData Data-Patch 覆盖链：{count} 条{(onlyCompetition ? "（仅竞争）" : string.Empty)}；可信={inspection.IsTrusted}。";
+	}
+
+	private static string FormatGameDataOverrideShow(CliGameDataOverrideInspection inspection, AssetKey key)
+	{
+		var chain = inspection.OverrideGraph?.AssetChains.FirstOrDefault(candidate => candidate.AssetKey == key);
+		return chain is null
+			? $"当前 Data-Patch 覆盖图中未找到 AssetKey 0x{key.TypeId:x16}:0x{key.FileId:x16}。"
+			: $"Data-Patch 覆盖链：AssetKey 0x{key.TypeId:x16}:0x{key.FileId:x16}；条目 {chain.Entries.Count}；竞争={chain.IsCompetition}；可信={inspection.IsTrusted}。";
+	}
+
+	private static string FormatGameDataBrowser(CliGameDataBrowserInspection inspection)
+	{
+		if (inspection.Browser is not { } browser) return "无法构建 GameData 浏览器；请查看诊断。";
+		var effective = browser.Archives.Count(item => item.Overlay.HasEffectiveReplacement);
+		var competitions = browser.Archives.Count(item => item.Overlay.HasCompetition);
+		return $"GameData 浏览器：archive {browser.Archives.Count}；已生效替换 {effective}；竞争 archive {competitions}。";
+	}
+
 	private static string FormatSameKeyInspection(CliSameKeyReconstructionInspection inspection)
 	{
 		if (inspection.SelectedSourcePatchFileName is null)
@@ -2789,8 +3301,17 @@ public static class CliApplication
 HD2 Mod Manager 命令行
 
 用法：
-  hd2mod capabilities --json
+	  hd2mod capabilities --json
 	  hd2mod status --manager-root <管理器目录> --json
+	  hd2mod gamedata status --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod gamedata archive list --manager-root <管理器目录> --game-data <游戏data或副本目录> [--limit <1-500>] [--cursor <cursor>] --json
+	  hd2mod gamedata archive show <archive ID> --manager-root <管理器目录> --game-data <游戏data或副本目录> [--with-effective] [--limit <1-500>] [--cursor <cursor>] --json
+	  hd2mod gamedata asset find <TypeID十六进制> <FileID十六进制> [...] --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod gamedata override status --game-data <游戏data或副本目录> --json
+	  hd2mod gamedata override list --game-data <游戏data或副本目录> [--only-competition] [--limit <1-500>] [--cursor <cursor>] --json
+	  hd2mod gamedata override show <TypeID十六进制> <FileID十六进制> --game-data <游戏data或副本目录> --json
+	  hd2mod gamedata deployment inspect --game-data <游戏data或副本目录> --json  （兼容别名：同 override status）
+	  hd2mod gamedata browser --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data或副本目录> [--limit <1-500>] [--cursor <cursor>] --json
 	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
@@ -2875,6 +3396,10 @@ HD2 Mod Manager 命令行
 	  --host <GUID或前缀>      Option 操作的明确主体，或 decoration package plan 的明确目标主体。
 	  --add-to-profile <目标>   import plan 专用；将目标配置身份与版本固定到导入计划，apply 只加入可部署条目，不自动部署。
 	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
+	  --limit <1-500>          gamedata 分页查询的单页条目数。
+	  --cursor <cursor>        gamedata 返回的下一页游标；索引或覆盖图变化后会拒绝混用。
+	  --with-effective         archive show 额外读取当前 Data-Patch 实际赢家。
+	  --only-competition       override list 仅返回有竞争的 AssetKey 覆盖链。
 	  --set-active              创建配置时同时将它设为活动配置。
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。

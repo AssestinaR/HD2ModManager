@@ -9,8 +9,12 @@ public sealed record CliGlobalOptions(
 	string? Host,
 	string? AddToProfile,
 	int? Position,
+	int? Limit,
+	string? Cursor,
 	bool SetActive,
 	bool WithUnsharedOptions,
+	bool WithEffective,
+	bool OnlyCompetition,
 	bool Overwrite,
 	bool Confirm,
 	bool Json);
@@ -30,8 +34,12 @@ public static class CliArgumentParser
 		string? host = null;
 		string? addToProfile = null;
 		int? position = null;
+		int? limit = null;
+		string? cursor = null;
 		var setActive = false;
 		var withUnsharedOptions = false;
+		var withEffective = false;
+		var onlyCompetition = false;
 		var overwrite = false;
 		var confirm = false;
 		var json = false;
@@ -69,11 +77,26 @@ public static class CliArgumentParser
 						throw new CliUserException("PositionInvalid", "参数 --position 必须是从 1 开始的正整数。");
 					position = parsedPosition;
 					break;
+				case "--limit":
+					var rawLimit = ReadValue(args, ref index, argument);
+					if (!int.TryParse(rawLimit, out var parsedLimit) || parsedLimit < 1 || parsedLimit > 500)
+						throw new CliUserException("LimitInvalid", "参数 --limit 必须是 1 到 500 之间的整数。 ");
+					limit = parsedLimit;
+					break;
+				case "--cursor":
+					cursor = ReadValue(args, ref index, argument);
+					break;
 				case "--set-active":
 					setActive = true;
 					break;
 				case "--with-unshared-options":
 					withUnsharedOptions = true;
+					break;
+				case "--with-effective":
+					withEffective = true;
+					break;
+				case "--only-competition":
+					onlyCompetition = true;
 					break;
 				case "--overwrite":
 					overwrite = true;
@@ -100,7 +123,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, addToProfile, position, setActive, withUnsharedOptions, overwrite, confirm, json));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, addToProfile, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

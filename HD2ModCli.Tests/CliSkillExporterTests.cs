@@ -16,6 +16,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "decoration-package", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-resource-repackaging", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "host-derived-overwrite", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-inspection", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
 	}
 
@@ -64,6 +65,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("host-derived plan decoration", content, StringComparison.Ordinal);
 		Assert.Contains("host-derived apply", content, StringComparison.Ordinal);
 		Assert.Contains("Overwrite", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void GameDataInspectionSkill_SeparatesIndexAndOverrideFacts()
+	{
+		var content = CliSkillCatalog.GetContent("gamedata-inspection");
+
+		Assert.Contains("gamedata archive list", content, StringComparison.Ordinal);
+		Assert.Contains("gamedata override status", content, StringComparison.Ordinal);
+		Assert.Contains("mappingTrusted", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

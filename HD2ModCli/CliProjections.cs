@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.15";
+	public const string ProtocolVersion = "1.16";
 
 	public static object CreateCapabilities()
 		=> new
@@ -18,6 +18,14 @@ public static class CliProjections
 				new { name = "version", safety = "read-only", description = "读取 CLI 与协议版本" },
 				new { name = "capabilities", safety = "read-only", description = "读取当前可用命令与安全边界" },
 				new { name = "status", safety = "read-only", description = "读取管理器、Mod 库与 GameData 路径状态" },
+				new { name = "gamedata status", safety = "read-only", description = "读取指定 GameData 目录的可读性与原版 Archive 索引状态；不会重建索引" },
+				new { name = "gamedata archive list", safety = "read-only", description = "分页读取持久化原版 Archive 索引；AssetKey 映射仅在 index.mappingTrusted=true 时可信" },
+				new { name = "gamedata archive show", safety = "read-only", description = "分页读取一个 Archive 的安全十六进制 AssetKey；可用 --with-effective 附加当前 Data-Patch 胜者" },
+				new { name = "gamedata asset find", safety = "read-only", description = "用明确的十六进制 TypeID/FileID 查询原版 Archive 映射；不会扫描 Mod 库或部署" },
+				new { name = "gamedata override status", safety = "read-only", description = "只读取当前 Data 顶层 Patch 与 activation-state 的实际覆盖图；独立于资产索引" },
+				new { name = "gamedata override list", safety = "read-only", description = "分页读取实际 Data-Patch AssetKey 覆盖链，可仅查看竞争链" },
+				new { name = "gamedata override show", safety = "read-only", description = "读取一个明确 AssetKey 的实际 Data-Patch 覆盖链与赢家，不输出 64 位 JSON 数字" },
+				new { name = "gamedata browser", safety = "read-only-expensive", description = "显式构建 UI 对照的 Archive + 库 + 活动配置 + 实际赢家全景；直读 Patch，不写派生缓存" },
 				new { name = "library sync inspect", safety = "read-only", description = "检查已登记 Mod 与库目录实际 Patch 的差异，不写入任何文件" },
 				new { name = "library sync plan", safety = "explicit-export", description = "导出固定新增 Mod ID 与输入指纹的库对账计划" },
 				new { name = "library sync validate", safety = "read-only", description = "重扫库目录并拒绝计划、Patch 或待删除状态漂移" },
@@ -93,7 +101,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"批量/原地 Patch 修复、替换护甲、装饰包编辑、基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
+				"资产索引重建、批量/原地 Patch 修复、替换护甲、装饰包编辑、基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
@@ -111,6 +119,7 @@ public static class CliProjections
 				"patch repackage 只允许在计划中选择已有完整 AssetKey Payload；apply 只写入新的 Mod 库外目录，绝不修改来源、自动导入或部署。",
 				"equipment helmet-merge 只允许从已检查的完整 Armor/Any Helmet 集合中选择；apply 会重新验证来源、GameData 索引、共享影响和 Unit 冲突，并且只发布新的库外、游戏根外目录。",
 				"host-derived apply 只写入已验证主体库目录下的管理器 Overwrite 与对应的一个状态文件；它不触碰 GameData，且绝不覆盖或删除没有管理器标记的 Overwrite。",
+				"gamedata 命令全部只读：绝不调用索引重建、绝不写 Mod facts 或 GameData；Archive 映射的可信度与 Data-Patch 覆盖图的可信度分别报告，不能互相替代。",
 				"patch repair 只允许 Core 的固定 Same-key Canonical 重构配方；CLI 必须固定一个来源 Patch 并重验来源/当前 GameData 指纹，绝不替换库内文件。",
 				"删除计划会冻结关系、Profile/激活状态和待删目录内容；validate/apply 重新确认这些输入，遇到活跃装饰、临时头盔合并或任何漂移都会拒绝猜测性删除。",
 			},

@@ -7,7 +7,8 @@ namespace HD2ModCore.Infrastructure;
 public sealed class GameDataArchiveBrowserService : IGameDataArchiveBrowserService
 {
 	private readonly IAssetArchiveIndexService _indexService;
-	private readonly IModInformationCenter _informationCenter;
+	private readonly IModInformationCenter? _informationCenter;
+	private readonly IAssetInventoryProducer? _directInventory;
 	private readonly IGameDataMappingFactsService _mappingFactsService;
 	private readonly IDeployedOverrideGraphService _deployedGraphService;
 
@@ -15,6 +16,18 @@ public sealed class GameDataArchiveBrowserService : IGameDataArchiveBrowserServi
 	{
 		_indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
 		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
+		_mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+		_deployedGraphService = deployedGraphService ?? throw new ArgumentNullException(nameof(deployedGraphService));
+	}
+
+	// The CLI uses this overload because its inspection commands must not create
+	// or refresh Manager caches merely to render a GameData browser projection.
+	// The producer reads Patch facts directly and keeps the browser's overlay
+	// semantics identical to the cached desktop path.
+	public GameDataArchiveBrowserService(IAssetArchiveIndexService indexService, IAssetInventoryProducer directInventory, IGameDataMappingFactsService mappingFactsService, IDeployedOverrideGraphService deployedGraphService)
+	{
+		_indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
+		_directInventory = directInventory ?? throw new ArgumentNullException(nameof(directInventory));
 		_mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
 		_deployedGraphService = deployedGraphService ?? throw new ArgumentNullException(nameof(deployedGraphService));
 	}
@@ -72,7 +85,8 @@ public sealed class GameDataArchiveBrowserService : IGameDataArchiveBrowserServi
 			competitionArchives.Contains(archive.PackageName),
 			deployed.Issues.Where(issue => issue.NodeId is { } nodeId && GetValues(modsByArchive, archive.PackageName).Contains(nodeId)).ToList()))).ToList();
 		var names = snapshot.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value.Metadata.Name);
-		return new GameDataArchiveBrowserSnapshot(fingerprint, snapshot.ActiveProfileId, items, names, mapping.Issues.Concat(deployed.Issues).ToList());
+		var contentIssues = content.Values.SelectMany(facts => facts.Issues).ToList();
+		return new GameDataArchiveBrowserSnapshot(fingerprint, snapshot.ActiveProfileId, items, names, contentIssues.Concat(mapping.Issues).Concat(deployed.Issues).ToList());
 	}
 
 	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> GetAssetInventoryAsync(LibrarySnapshot snapshot, string modsRootDirectory, CancellationToken cancellationToken)
@@ -80,7 +94,12 @@ public sealed class GameDataArchiveBrowserService : IGameDataArchiveBrowserServi
 		var result = new Dictionary<ModNodeId, ModContentFacts>();
 		foreach (var node in snapshot.Nodes.Values)
 		{
-			var inventory = await _informationCenter.RequestAssetInventoryAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "GameDataArchiveBrowser"), cancellationToken).ConfigureAwait(false);
+			if (_directInventory is not null)
+			{
+				result[node.Id] = await _directInventory.GetNodeFactsAsync(node, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+				continue;
+			}
+			var inventory = await _informationCenter!.RequestAssetInventoryAsync(node, modsRootDirectory, new ModInformationRequest(ModInformationKind.AssetInventory, "GameDataArchiveBrowser"), cancellationToken).ConfigureAwait(false);
 			if (inventory.Data is not null) result[node.Id] = inventory.Data;
 		}
 		return result;

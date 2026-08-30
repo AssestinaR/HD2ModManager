@@ -236,6 +236,15 @@ public static class CoreServices
 		=> new DeployedOverrideGraphService(CreateActivationStateStore(), CreatePatchFileNameParser());
 	public static IGameDataArchiveBrowserService CreateGameDataArchiveBrowserService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new GameDataArchiveBrowserService(CreateAssetArchiveIndexService(paths), informationCenter, CreateGameDataMappingFactsService(paths), CreateDeployedOverrideGraphService());
+	// A cache-free variant for headless inspections.  It deliberately avoids the
+	// Manager information center so `gamedata browser` remains a true read-only
+	// command and never writes derived Mod facts just to answer a query.
+	public static IGameDataArchiveBrowserService CreateDirectGameDataArchiveBrowserService(StoragePaths paths, IModInformationReader informationReader)
+		=> new GameDataArchiveBrowserService(
+			CreateAssetArchiveIndexService(paths),
+			CreateAssetInventoryProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader))),
+			CreateGameDataMappingFactsService(paths),
+			CreateDeployedOverrideGraphService());
 	public static IApplyExecutor CreateApplyExecutor()
 		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
 	public static OptionActivationStore CreateOptionActivationStore(StoragePaths paths)

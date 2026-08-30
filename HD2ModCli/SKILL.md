@@ -21,6 +21,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Rename, Options, deletion, or Profiles: `mod-metadata`, `option-management`, `safe-library-deletion`, `profile-management`.
 - Create a decoration package: `decoration-package`.
 - Deploy or deactivate GameData: `safe-deployment`.
+- Inspect original GameData mappings or actual Data-Patch winners: `gamedata-inspection`.
 - Manage a host Mod's generated Overwrite: `host-derived-overwrite`.
 - Produce a standalone Patch: `patch-resource-repackaging`, `helmet-to-armor-merge`, or `same-key-reconstruction`.
 
