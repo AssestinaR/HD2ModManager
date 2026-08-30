@@ -15,6 +15,7 @@ hd2mod agent skills export <skill-name> --output .\.agents\skills
 
 - `library-inspection` — read-only library, Option and Profile inspection.
 - `library-synchronization` — reviewed reconciliation of library directories and `library.json` Patch facts.
+- `decoration-package` — audited source-unit selection and external importable decoration-package output.
 - `safe-import` — reviewed source import.
 - `mod-metadata` — Mod name and notes.
 - `option-management` — direct Option state and order for one host, or all strictly validated direct hosts.

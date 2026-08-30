@@ -7,14 +7,24 @@ namespace HD2ModCli.Tests;
 public sealed class CliSkillExporterTests
 {
 	[Fact]
-	public void CapabilitySkills_IncludeLibrarySynchronizationDeploymentAndPatchResourceRepackaging()
+	public void CapabilitySkills_IncludeLibrarySynchronizationDecorationDeploymentAndPatchResourceRepackaging()
 	{
 		var skills = CliSkillCatalog.ListCapabilitySkills();
 
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "safe-deployment", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "library-synchronization", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "decoration-package", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-resource-repackaging", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void DecorationPackageSkill_DescribesThePlanGatedWorkflow()
+	{
+		var content = CliSkillCatalog.GetContent("decoration-package");
+
+		Assert.Contains("decoration package plan", content, StringComparison.Ordinal);
+		Assert.Contains("decoration package apply", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

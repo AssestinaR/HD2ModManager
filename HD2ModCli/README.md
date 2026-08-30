@@ -1,6 +1,6 @@
 # HD2 Mod Manager CLI
 
-`hd2mod.exe` 会随管理器输出放在 `HD2ModManager.exe` 旁边。它面向脚本与 Agent：检查、导入、Mod/Option/Profile 管理、安全部署或停用、Patch 资源重打包、头盔合并到盔甲输出、装饰来源检查，以及 Same-key Patch 重构；不提供原地修复、护甲替换或任意自定义 Patch 字节编辑。
+`hd2mod.exe` 会随管理器输出放在 `HD2ModManager.exe` 旁边。它面向脚本与 Agent：检查、导入、Mod/Option/Profile 管理、安全部署或停用、Patch 资源重打包、头盔合并到盔甲输出、装饰来源检查与外部装饰包生成，以及 Same-key Patch 重构；不提供原地修复、护甲替换或任意自定义 Patch 字节编辑。
 
 ```powershell
 .\hd2mod.exe --help
@@ -9,6 +9,7 @@
 .\hd2mod.exe agent skills export library-inspection --output .\.agents\skills
 .\hd2mod.exe agent skills export library-synchronization --output .\.agents\skills
 .\hd2mod.exe agent skills export option-management --output .\.agents\skills
+.\hd2mod.exe agent skills export decoration-package --output .\.agents\skills
 .\hd2mod.exe agent skills export safe-import --output .\.agents\skills
 .\hd2mod.exe agent skills export safe-deployment --output .\.agents\skills
 .\hd2mod.exe agent skills export patch-resource-repackaging --output .\.agents\skills

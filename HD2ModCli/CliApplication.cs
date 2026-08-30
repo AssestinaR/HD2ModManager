@@ -122,6 +122,46 @@ public static class CliApplication
 				() => FormatDecorationSourceInspection(inspection));
 			return inspection.IsReady ? 0 : 2;
 		}
+		if (command.Length == 4 && command[0] == "decoration" && command[1] == "package" && command[2] == "plan")
+		{
+			EnsureDecorationPackagePlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "decoration package plan");
+			var build = await CliDecorationPackagePlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3], RequireHost(invocation.Options))
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), package = build.Document },
+				() => FormatDecorationPackagePlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "decoration", "package", "validate"))
+		{
+			EnsureDecorationPackageValidateOptions(invocation.Options);
+			var document = await CliDecorationPackagePlanArtifacts.ReadDocumentAsync(RequireDecorationPackagePlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliDecorationPackagePlanArtifacts
+				.ValidateAsync(document, CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation },
+				() => FormatDecorationPackageValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "decoration", "package", "apply"))
+		{
+			EnsureDecorationPackageApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("DecorationPackageApplyConfirmationRequired", "decoration package apply 会写出新的外部装饰包；请在人工确认后显式传入 --confirm。 ");
+			var output = RequireOutput(invocation.Options, "decoration package apply");
+			var document = await CliDecorationPackagePlanArtifacts.ReadDocumentAsync(RequireDecorationPackagePlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliDecorationPackageExecutor
+				.ApplyAsync(document, CliWorkspace.Open(invocation.Options), output)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution },
+				() => FormatDecorationPackageExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (Matches(command, "mod", "list"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -842,6 +882,38 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureDecorationPackagePlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration package plan 仅接受来源 Mod 标识、--host、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
+		}
+		_ = RequireHost(options);
+	}
+
+	private static void EnsureDecorationPackageValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration package validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureDecorationPackageApplyOptions(CliGlobalOptions options)
+	{
+		if (options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration package apply 仅接受 --plan、--manager-root、--library、--game-data、--output、--confirm 与 --json。输出必须是新的库外且游戏目录外目录。 ");
+		}
+	}
+
 	private static void EnsurePatchRepackagingInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -1118,6 +1190,13 @@ public static class CliApplication
 		return options.Plan;
 	}
 
+	private static string RequireDecorationPackagePlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("DecorationPackagePlanRequired", "请通过 --plan <装饰外部包计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
 	private static string RequirePatchResourcePlan(CliGlobalOptions options)
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
@@ -1290,6 +1369,34 @@ public static class CliApplication
 		return blocking.Length == 0
 			? $"装饰来源检查未找到可用 Unit：{inspection.SourceModName}。"
 			: $"装饰来源检查未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatDecorationPackagePlan(CliDecorationPackagePlanDocument document, string outputPath)
+	{
+		var message = document.IsReady
+			? $"装饰外部包计划已写出：来源 {document.Source.ModName}；默认 Unit {document.Selections.Count} 个；目标主体 {document.Attachment.TargetHostNodeIds.Count} 个。"
+			: $"装饰外部包计划已写出，但当前不可执行：{document.Diagnostics.Count(diagnostic => diagnostic.Blocking)} 个阻断项。";
+		return $"{message}{Environment.NewLine}计划：{outputPath}{Environment.NewLine}请审阅 selections 与 attachment，随后执行 decoration package validate。";
+	}
+
+	private static string FormatDecorationPackageValidation(CliDecorationPackageValidationResult validation)
+	{
+		if (validation.IsValid)
+			return $"装饰外部包验证通过：已选择 {validation.ResolvedSelections.Count} 个来源 Unit。";
+		var blocking = validation.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "装饰外部包验证未通过；请查看 JSON 结果。"
+			: $"装饰外部包验证未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatDecorationPackageExecution(CliDecorationPackageExecutionResult execution)
+	{
+		if (execution.Success)
+			return $"装饰外部包已输出：{execution.SelectedUnitCount} 个来源 Unit；目录：{execution.OutputDirectory}。结果尚未导入、启用或部署。";
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "装饰外部包未完成；请查看 JSON 结果或计划。"
+			: $"装饰外部包未完成：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
 	private static object CreateDeploymentPlanProjection(CliDeploymentPlanDocument document)
@@ -2009,6 +2116,9 @@ HD2 Mod Manager 命令行
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync apply --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod decoration inspect source <Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod decoration package plan <来源 Mod GUID或前缀> --host <目标主体 GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output decoration-package-plan.json --json
+	  hd2mod decoration package validate --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod decoration package apply --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
 	  hd2mod mod list --library <Mod库目录> --json
   hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
@@ -2071,12 +2181,12 @@ HD2 Mod Manager 命令行
 	  --output <文件或目录>   import/deploy/patch plan、Patch 输出、context export、Agent Skill 导出使用。
 	  --plan <文件>           import/deploy/patch validate 与 apply 所需的计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
-	  --host <GUID或前缀>      Option 操作的明确主体；不支持隐式或全主体修改。
+	  --host <GUID或前缀>      Option 操作的明确主体，或 decoration package plan 的明确目标主体。
 	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
 	  --set-active              创建配置时同时将它设为活动配置。
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并和 Same-key 修复都只写入新的库外目录；不会替换、导入或部署结果。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并、装饰外部包和 Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
 """;
 }
