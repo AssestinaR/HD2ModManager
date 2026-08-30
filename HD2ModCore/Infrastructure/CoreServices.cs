@@ -208,8 +208,11 @@ public static class CoreServices
 		=> new ObjectTreeImporter(CreatePatchFileNameParser());
    public static IArchiveObjectTreeImporter CreateArchiveObjectTreeImporter()
 		=> new ArchiveObjectTreeImporter(CreateObjectTreeImporter());
-   public static IModFileResolver CreateModFileResolver()
+	public static IModFileResolver CreateModFileResolver()
 		=> new ModFileResolver(CreatePatchFileNameParser());
+	public static DecorationPackageSnapshotService CreateDecorationPackageSnapshotService(
+		IModInformationReader informationReader)
+		=> new(CreateModFileResolver(), informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static IApplyPlanner CreateApplyPlanner()
 		=> new ApplyPlanner(CreatePatchFileNameParser());
 	public static ILuaDeploymentService CreateLuaDeploymentService()

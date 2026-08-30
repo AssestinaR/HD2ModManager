@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Windows.Input;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
+using HD2ModCore.Decoration;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Models;

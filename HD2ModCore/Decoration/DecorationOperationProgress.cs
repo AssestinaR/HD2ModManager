@@ -1,6 +1,6 @@
-namespace HD2ModManager.Services;
+namespace HD2ModCore.Decoration;
 
-// Shared, UI-neutral progress contract for decoration payload generation and host rebuilding.
+// Progress contract shared by UI, CLI and Core decoration operations.
 public sealed record DecorationOperationProgress(string Stage, int Completed, int Total)
 {
     public double? Fraction => Total <= 0 ? null : (double)Completed / Total;

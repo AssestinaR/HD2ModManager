@@ -1,6 +1,7 @@
+using System.Collections.Generic;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
-namespace HD2ModManager.Models;
+namespace HD2ModCore.Decoration;
 
 // Neutral, non-deployable mesh data. No source Unit AssetKey is retained here.
 public sealed class DecorationPayloadDocument

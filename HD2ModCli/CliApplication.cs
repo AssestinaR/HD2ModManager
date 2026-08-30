@@ -111,6 +111,17 @@ public static class CliApplication
 				() => FormatLibrarySyncExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length == 4 && command[0] == "decoration" && command[1] == "inspect" && command[2] == "source")
+		{
+			EnsureDecorationSourceInspectOptions(invocation.Options);
+			var inspection = await CliDecorationSourceInspectionArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3])
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReady, inspection },
+				() => FormatDecorationSourceInspection(inspection));
+			return inspection.IsReady ? 0 : 2;
+		}
 		if (Matches(command, "mod", "list"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -820,6 +831,17 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureDecorationSourceInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration inspect source 仅接受来源 Mod 标识、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
 	private static void EnsurePatchRepackagingInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -1255,6 +1277,19 @@ public static class CliApplication
 		return blocking.Length == 0
 			? "库对账未完成；未写入任何文件，请查看 JSON 结果或日志。"
 			: $"库对账被拒绝：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatDecorationSourceInspection(CliDecorationSourceInspection inspection)
+	{
+		if (inspection.IsReady)
+		{
+			var defaults = inspection.UnitCandidates.Count(candidate => candidate.IsDefaultSelected);
+			return $"装饰来源检查完成：{inspection.SourceModName}；可选 Unit {inspection.UnitCandidates.Count} 个；默认选择 {defaults} 个；建议目标 {inspection.SuggestedAttachment.TargetPart}/{inspection.SuggestedAttachment.TargetBodyVariant}。";
+		}
+		var blocking = inspection.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? $"装饰来源检查未找到可用 Unit：{inspection.SourceModName}。"
+			: $"装饰来源检查未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
 	private static object CreateDeploymentPlanProjection(CliDeploymentPlanDocument document)
@@ -1973,6 +2008,7 @@ HD2 Mod Manager 命令行
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync apply --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --confirm --json
+	  hd2mod decoration inspect source <Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod mod list --library <Mod库目录> --json
   hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json

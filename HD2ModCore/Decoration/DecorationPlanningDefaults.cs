@@ -1,9 +1,9 @@
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
 
-namespace HD2ModManager.Services;
+namespace HD2ModCore.Decoration;
 
-// Purpose: Keeps single-source and batch-decoration defaults consistent without hiding manual controls.
+// Keeps single-source and batch-decoration defaults consistent without hiding manual controls.
 public static class DecorationPlanningDefaults
 {
     public static string SelectPreferredArchiveId(IEnumerable<EquipmentUnitCatalogEntry> entries)

@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 
-namespace HD2ModManager.Models;
+namespace HD2ModCore.Decoration;
 
-// Purpose: Stable, editable contract for a decoration package before the mesh append engine is connected.
+// Stable, editable contract for a decoration package before the mesh append engine is connected.
 public sealed class DecorationPlanDocument
 {
     public string Format { get; set; } = "HD2ModManager.Decoration";

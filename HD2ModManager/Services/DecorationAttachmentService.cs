@@ -8,6 +8,7 @@ using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Application;
+using HD2ModCore.Decoration;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Models;

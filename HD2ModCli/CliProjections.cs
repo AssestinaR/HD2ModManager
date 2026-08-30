@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.10";
+	public const string ProtocolVersion = "1.11";
 
 	public static object CreateCapabilities()
 		=> new
@@ -22,6 +22,7 @@ public static class CliProjections
 				new { name = "library sync plan", safety = "explicit-export", description = "导出固定新增 Mod ID 与输入指纹的库对账计划" },
 				new { name = "library sync validate", safety = "read-only", description = "重扫库目录并拒绝计划、Patch 或待删除状态漂移" },
 				new { name = "library sync apply", safety = "explicit-confirm", description = "仅按验证通过的计划更新 library.json 的节点 Patch 记录；不导入、删除或部署" },
+				new { name = "decoration inspect source", safety = "read-only", description = "读取一个普通/选项 Mod 的可选装饰 Unit、默认选择和建议附着策略；不写缓存或包" },
 				new { name = "mod list", safety = "read-only", description = "列出已登记 Mod" },
 				new { name = "mod show", safety = "read-only", description = "读取指定 Mod、选项关系和激活状态" },
 				new { name = "mod rename", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时重命名一个 Mod" },
@@ -79,7 +80,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"批量/原地 Patch 修复、替换护甲、装饰包生成和任何自定义 Patch 字节编辑工作流。",
+				"批量/原地 Patch 修复、替换护甲、装饰包生成/编辑/启停与 Overwrite 重建，以及任何自定义 Patch 字节编辑工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]

@@ -4,9 +4,9 @@ using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Application;
+using HD2ModCore.Decoration;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
-using HD2ModManager.Models;
 using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels;
