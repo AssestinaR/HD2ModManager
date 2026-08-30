@@ -217,6 +217,13 @@ public static class CoreServices
 		StoragePaths paths,
 		IModInformationReader informationReader)
 		=> new(paths ?? throw new ArgumentNullException(nameof(paths)), informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
+	public static HostDerivedOverwriteService CreateHostDerivedOverwriteService(
+		IDecorationHostRebuildService decorationHostRebuild,
+		IHelmetToArmorMergeService helmetToArmorMerge)
+		=> new(
+			decorationHostRebuild ?? throw new ArgumentNullException(nameof(decorationHostRebuild)),
+			helmetToArmorMerge ?? throw new ArgumentNullException(nameof(helmetToArmorMerge)),
+			CreatePatchFileNameParser());
 	public static IApplyPlanner CreateApplyPlanner()
 		=> new ApplyPlanner(CreatePatchFileNameParser());
 	public static ILuaDeploymentService CreateLuaDeploymentService()

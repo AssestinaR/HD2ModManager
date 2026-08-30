@@ -16,7 +16,7 @@ namespace HD2ModCore.Infrastructure;
 
 // Rebuilds a host's generated Overlay only from its source patches. The marker prevents this
 // service from ever deleting a user-created directory that merely happens to be named Overwrite.
-public sealed class DecorationHostRebuildService
+public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
 {
     public const string DecorationOverwriteMarkerName = ".hd2-decoration-overwrite";
     public const string HelmetMergeOverwriteMarkerName = ".hd2-helmet-to-armor-overwrite";
