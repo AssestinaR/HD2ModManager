@@ -2,12 +2,14 @@
              x:Name="Root"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:HD2ModManager.Views">
+             xmlns:local="clr-namespace:HD2ModManager.Views"
+             PreviewKeyDown="OnPreviewKeyDown">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
         <local:RowActionVisibilityConverter x:Key="RowActionVisibility"/>
         <local:DecorationRowActionVisibilityConverter x:Key="DecorationRowActionVisibility"/>
+        <local:ModListRowToneBrushConverter x:Key="RowToneBrush"/>
         <DropShadowEffect x:Key="RowActionPillShadow" BlurRadius="8" ShadowDepth="2" Opacity="0.16" Color="#243042"/>
     </UserControl.Resources>
     <DockPanel Background="Transparent">
@@ -81,7 +83,7 @@
                                 <StackPanel>
                                     <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
                                     <TextBlock Text="{Binding Description}" TextWrapping="Wrap"/>
-                                    <TextBlock Text="{Binding AssetSummaryText}" Foreground="{StaticResource TextSecondary}"/>
+                                    <TextBlock Text="{Binding RowPresentation.Summary}" Foreground="{StaticResource TextSecondary}"/>
                                 </StackPanel>
                             </Border.ToolTip>
                             <Grid ClipToBounds="True" Background="Transparent">
@@ -116,14 +118,32 @@
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="模型过时" Foreground="{StaticResource StatusDanger}" FontSize="12"
-                                                   Visibility="{Binding IsModelOutdated, Converter={StaticResource BoolToVis}}"/>
-                                        <TextBlock Grid.Column="1" Text=" · " Foreground="{StaticResource TextSecondary}" FontSize="12"
-                                                   Visibility="{Binding IsModelOutdated, Converter={StaticResource BoolToVis}}"/>
-                                        <TextBlock Grid.Column="2" Text="{Binding UserStatusTitle}" Foreground="{StaticResource Accent}" FontSize="12" Margin="0,0,5,0"/>
-                                        <TextBlock Grid.Column="3" Text="·" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,0,5,0"/>
-                                        <TextBlock Grid.Column="4" Text="{Binding AssetSummaryText}" Foreground="{StaticResource TextSecondary}" FontSize="12"
-                                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Grid.Column="0"
+                                                   Text="{Binding RowPresentation.TypeLabel}"
+                                                   Foreground="{Binding RowPresentation.TypeTone, Converter={StaticResource RowToneBrush}}"
+                                                   FontSize="12"
+                                                   Margin="0,0,7,0"
+                                                   Visibility="{Binding RowPresentation.HasType, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding RowPresentation.ActivationLabel}"
+                                                   Foreground="{Binding RowPresentation.ActivationTone, Converter={StaticResource RowToneBrush}}"
+                                                   FontSize="12"
+                                                   Margin="0,0,7,0"
+                                                   Visibility="{Binding RowPresentation.HasActivation, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding RowPresentation.WarningLabel}"
+                                                   Foreground="{Binding RowPresentation.WarningTone, Converter={StaticResource RowToneBrush}}"
+                                                   FontSize="12"
+                                                   Margin="0,0,7,0"
+                                                   Visibility="{Binding RowPresentation.HasWarning, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBlock Grid.Column="3"
+                                                   Text="{Binding RowPresentation.Summary}"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   FontSize="12"
+                                                   MinWidth="0"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding RowPresentation.HasSummary, Converter={StaticResource BoolToVis}}"/>
                                     </Grid>
                                 </StackPanel>
                                 <Border x:Name="ActionPanel" Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center"

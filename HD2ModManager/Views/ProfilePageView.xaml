@@ -33,9 +33,10 @@
                         SelectionPolicy="Multiple"
                         AllowExternalProfileDrop="{Binding CanAcceptLibraryDrop}"
                         AllowExternalProfileRemovalDrag="{Binding CanAcceptLibraryDrop}"
-                        ExternalProfileDropRequested="OnExternalProfileDropRequested"
-                        SelectionRequested="OnSelectionRequested"
-                        AllowInternalReorder="{Binding CanReorder}"
+                         ExternalProfileDropRequested="OnExternalProfileDropRequested"
+                         SelectionRequested="OnSelectionRequested"
+                         KeyboardCommandRequested="OnKeyboardCommandRequested"
+                         AllowInternalReorder="{Binding CanReorder}"
                         InternalReorderRequested="OnInternalReorderRequested"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>

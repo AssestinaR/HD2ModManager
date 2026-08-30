@@ -110,6 +110,27 @@ namespace HD2ModManager.Views
             VM?.ApplySelection(e.SelectedKeys);
         }
 
+        private async void OnKeyboardCommandRequested(object? sender, ModListKeyboardCommandEventArgs e)
+        {
+            EnsureVM();
+            if (VM is null) return;
+            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
+            switch (e.Command)
+            {
+                case ModListKeyboardCommand.Rename when e.Item is ModCardViewModel card:
+                    ClearTransientSelection();
+                    shell?.BeginBottomBarNameEdit(card.Mod.Guid, card.Mod.Name);
+                    break;
+                case ModListKeyboardCommand.OpenDetails when e.Item is ModCardViewModel card:
+                    shell?.OpenModDetailsFromPage(VM, card.Mod.Guid);
+                    break;
+                case ModListKeyboardCommand.Delete:
+                case ModListKeyboardCommand.DeleteFromLibrary:
+                    if (shell is not null) await shell.DeleteModsFromLibraryAsync(e.SelectedKeys);
+                    break;
+            }
+        }
+
         private async void OnExternalProfileRemovalRequested(object? sender, ModListExternalProfileDropEventArgs e)
         {
             if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)

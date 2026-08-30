@@ -39,8 +39,9 @@
                         AllowExternalProfileRemovalDrop="{Binding CanDragToProfile}"
                         ExternalDropTitle="拖到这里释放以从配置移除"
                         ExternalDropDetail="仅从当前配置移除，不会删除模组文件"
-                        ExternalProfileRemovalRequested="OnExternalProfileRemovalRequested"
-                        SelectionRequested="OnSelectionRequested"
-                        RowRightClicked="OnOpenDetailsOnRightClick"
+                         ExternalProfileRemovalRequested="OnExternalProfileRemovalRequested"
+                         SelectionRequested="OnSelectionRequested"
+                         KeyboardCommandRequested="OnKeyboardCommandRequested"
+                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>
 </UserControl>

@@ -372,6 +372,7 @@ public sealed class DecorationSourceUnitItem : BaseViewModel
 public sealed class DecorationTargetModItem : BaseViewModel, IModListSelectable
 {
     private readonly Action _changed;
+    private readonly ModListRowPresentation _rowPresentation;
     private bool _isSelected;
     private bool _isVisible = true;
     public DecorationTargetModItem(string modId, string name, string? description, string? image, bool isOption, Action changed)
@@ -382,6 +383,10 @@ public sealed class DecorationTargetModItem : BaseViewModel, IModListSelectable
         Image = image;
         IsOption = isOption;
         _changed = changed;
+        _rowPresentation = new ModListRowPresentation(
+            isOption ? "选项" : null,
+            ModListRowTone.Muted,
+            Summary: "可作为装饰主体");
     }
     public string ModId { get; }
     public string SelectionKey => ModId;
@@ -392,6 +397,7 @@ public sealed class DecorationTargetModItem : BaseViewModel, IModListSelectable
     public string? Image { get; }
     public string? ImagePath => Image;
     public string AssetSummaryText => "";
+    public ModListRowPresentation RowPresentation => _rowPresentation;
     public bool IsModelOutdated => false;
     public string UserStatusTitle => "候选 Mod";
     public bool IsVisible { get => _isVisible; set => SetField(ref _isVisible, value); }

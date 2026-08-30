@@ -176,7 +176,7 @@ namespace HD2ModManager.ViewModels
                 state => state.Guid,
                 state => state.PresentationVersion,
                 CreateHostAttachmentCard,
-                (card, state) => card.ApplyAttachmentState(state.Mod, state.IsSelected, state.DecorationStatus, state.ContentVersion),
+                (card, state) => card.ApplyAttachmentState(state.Mod, state.IsSelected, state.DecorationStatus, state.RowPresentation, state.ContentVersion),
                 card => card.SelectionKey);
             _hostAttachments.Committed += OnHostAttachmentProjectionCommitted;
             ModId = modId;
@@ -1135,8 +1135,8 @@ namespace HD2ModManager.ViewModels
                     attachment,
                     IsHostDecorationSelected(attachment.Guid),
                     attachment.IsDecoration
-                        ? (_library.IsDecorationEnabledForHost(attachment.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")
-                        : (_library.IsOptionEnabledForHost(attachment.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")))
+                        ? _library.IsDecorationEnabledForHost(attachment.Guid, Mod.Guid)
+                        : _library.IsOptionEnabledForHost(attachment.Guid, Mod.Guid)))
                 .ToArray();
             _hostAttachments.Submit(_hostAttachmentStates, _hostAttachmentStates.Select(state => state.Guid));
             OnPropertyChanged(nameof(HasHostDecorations));
@@ -1147,8 +1147,9 @@ namespace HD2ModManager.ViewModels
             var card = new ModCardViewModel(
                 state.Mod,
                 state.IsSelected,
-                decorationStatus: state.DecorationStatus);
-            card.ApplyAttachmentState(state.Mod, state.IsSelected, state.DecorationStatus, state.ContentVersion);
+                decorationStatus: state.DecorationStatus,
+                rowPresentation: state.RowPresentation);
+            card.ApplyAttachmentState(state.Mod, state.IsSelected, state.DecorationStatus, state.RowPresentation, state.ContentVersion);
             return card;
         }
 
@@ -1681,11 +1682,20 @@ namespace HD2ModManager.ViewModels
         ModEntity Mod,
         bool IsSelected,
         string? DecorationStatus,
+        ModListRowPresentation RowPresentation,
         string ContentVersion,
         string PresentationVersion)
     {
-        public static HostAttachmentListState Create(ModEntity mod, bool isSelected, string? decorationStatus)
+        public static HostAttachmentListState Create(ModEntity mod, bool isSelected, bool isEnabled)
         {
+            var decorationStatus = isEnabled ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。";
+            var rowPresentation = ModCardViewModel.BuildRowPresentation(
+                mod,
+                ModCardViewModel.BuildAssetSummaryText(mod, null),
+                null,
+                null,
+                isEnabled ? "已为当前主体启用" : "未为当前主体启用",
+                isEnabled ? ModListRowTone.Success : ModListRowTone.Warning);
             var contentVersion = string.Join('\u001f',
                 mod.Guid,
                 mod.Name,
@@ -1697,12 +1707,20 @@ namespace HD2ModManager.ViewModels
                 mod.IsReShade,
                 mod.HasPatchContent,
                 mod.IsHelmetToArmorMerged,
-                decorationStatus);
+                decorationStatus,
+                rowPresentation.TypeLabel,
+                rowPresentation.TypeTone,
+                rowPresentation.ActivationLabel,
+                rowPresentation.ActivationTone,
+                rowPresentation.WarningLabel,
+                rowPresentation.WarningTone,
+                rowPresentation.Summary);
             return new HostAttachmentListState(
                 mod.Guid,
                 mod,
                 isSelected,
                 decorationStatus,
+                rowPresentation,
                 contentVersion,
                 BuildPresentationVersion(contentVersion, isSelected));
         }

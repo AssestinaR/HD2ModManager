@@ -269,8 +269,17 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
 public sealed class DecorationBatchSourceModItem : BaseViewModel, IModListSelectable
 {
     private readonly Action _changed;
+    private readonly ModListRowPresentation _rowPresentation;
     private bool _isSelected;
-    public DecorationBatchSourceModItem(ModEntity mod, Action changed) { Mod = mod; _changed = changed; }
+    public DecorationBatchSourceModItem(ModEntity mod, Action changed)
+    {
+        Mod = mod;
+        _changed = changed;
+        _rowPresentation = new ModListRowPresentation(
+            mod.IsOption ? "选项" : null,
+            ModListRowTone.Muted,
+            Summary: "作为装饰来源");
+    }
     public ModEntity Mod { get; }
     public string ModId => Mod.Guid;
     public string SelectionKey => ModId;
@@ -280,6 +289,7 @@ public sealed class DecorationBatchSourceModItem : BaseViewModel, IModListSelect
     public string? Description => Mod.Description;
     public string? ImagePath => Mod.Image;
     public string AssetSummaryText => "作为装饰来源";
+    public ModListRowPresentation RowPresentation => _rowPresentation;
     public bool IsModelOutdated => false;
     public string UserStatusTitle => IsOption ? "选项 Mod" : "标准 Mod";
     public bool IsVisible => true;

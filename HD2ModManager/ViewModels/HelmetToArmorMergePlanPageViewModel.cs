@@ -304,12 +304,17 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
 public sealed class HelmetMergeSourceModItem : BaseViewModel, IModListSelectable
 {
     private readonly Action _changed;
+    private readonly ModListRowPresentation _rowPresentation;
     private bool _isSelected;
 
     public HelmetMergeSourceModItem(ModEntity mod, Action changed)
     {
         Mod = mod ?? throw new ArgumentNullException(nameof(mod));
         _changed = changed;
+        _rowPresentation = new ModListRowPresentation(
+            Mod.IsReShade ? "ReShade" : Mod.IsDecoration ? "装饰" : Mod.IsOption ? "选项" : null,
+            ModListRowTone.Muted,
+            Summary: "可作为来源");
     }
 
     public ModEntity Mod { get; }
@@ -322,6 +327,7 @@ public sealed class HelmetMergeSourceModItem : BaseViewModel, IModListSelectable
     public string? Description => Mod.Description;
     public string? ImagePath => Mod.Image;
     public string AssetSummaryText => Mod.IsOption ? "选项 Mod · 可作为来源" : "标准 Mod · 可作为来源";
+    public ModListRowPresentation RowPresentation => _rowPresentation;
     public string UserStatusTitle => Mod.IsOption ? "选项 Mod" : "标准 Mod";
     public bool IsModelOutdated => false;
     public bool IsSelected { get => _isSelected; set { if (SetField(ref _isSelected, value)) _changed(); } }
@@ -330,6 +336,7 @@ public sealed class HelmetMergeSourceModItem : BaseViewModel, IModListSelectable
 public sealed class HelmetMergeModelSetItem : BaseViewModel, IModListSelectable
 {
     private readonly Action _changed;
+    private readonly ModListRowPresentation _rowPresentation;
     private bool _isSelected;
 
     public HelmetMergeModelSetItem(string sourceModId, string sourceModName, string? sourceImage, HelmetToArmorMergeCandidate candidate, Action changed)
@@ -339,6 +346,10 @@ public sealed class HelmetMergeModelSetItem : BaseViewModel, IModListSelectable
         SourceImage = sourceImage;
         Candidate = candidate;
         _changed = changed;
+        _rowPresentation = new ModListRowPresentation(
+            "完整模型集合",
+            ModListRowTone.Accent,
+            Summary: $"Armor {candidate.ArmorParts.Count} 个胸部 Unit；Helmet Any；{candidate.ArmorArchiveId} + {candidate.HelmetArchiveId}");
     }
 
     public string SourceModId { get; }
@@ -352,6 +363,7 @@ public sealed class HelmetMergeModelSetItem : BaseViewModel, IModListSelectable
     public string Description => $"来源：{SourceModName}；Patch：{Candidate.SourcePatchFileName}";
     public string? ImagePath => SourceImage;
     public string AssetSummaryText => $"Armor {Candidate.ArmorParts.Count} 个胸部 Unit；Helmet Any；{Candidate.ArmorArchiveId} + {Candidate.HelmetArchiveId}";
+    public ModListRowPresentation RowPresentation => _rowPresentation;
     public string UserStatusTitle => "完整模型集合";
     public bool IsModelOutdated => false;
     public string ArmorVariants => string.Join("、", Candidate.ArmorParts.Select(part => part.BodyVariant.ToString()).Distinct());

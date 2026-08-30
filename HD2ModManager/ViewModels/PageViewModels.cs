@@ -1234,6 +1234,7 @@ namespace HD2ModManager.ViewModels
         private string _assetSummary;
         private ModUnitCompatibilityReport? _unitCompatibility;
         private ModUserStatus? _userStatus;
+        private ModListRowPresentation _rowPresentation = ModListRowPresentation.Empty;
         private int _loadOrder;
         private DateTimeOffset _addedUtc;
         public string Name => _name;
@@ -1241,6 +1242,7 @@ namespace HD2ModManager.ViewModels
         public string? ImagePath => _imagePath;
         public string AssetSummary => _assetSummary;
         public string AssetSummaryText => SecondaryDetailText;
+        public ModListRowPresentation RowPresentation => _rowPresentation;
         public int LoadOrder => _loadOrder;
         public DateTimeOffset AddedUtc => _addedUtc;
         public ModUserStatus? UserStatus => _userStatus;
@@ -1270,6 +1272,7 @@ namespace HD2ModManager.ViewModels
             _isSelected = isSelected;
 			_unitCompatibility = unitCompatibility;
             _userStatus = userStatus;
+            _rowPresentation = BuildRowPresentation(_description, _assetSummary, _unitCompatibility, _userStatus);
         }
 
         internal ProfileListItemViewModel(ProfileModListState state)
@@ -1317,6 +1320,7 @@ namespace HD2ModManager.ViewModels
             _addedUtc = state.AddedUtc;
             _unitCompatibility = state.UnitCompatibility;
             _userStatus = state.UserStatus;
+            _rowPresentation = BuildRowPresentation(_description, _assetSummary, _unitCompatibility, _userStatus);
             if (nameChanged) OnPropertyChanged(nameof(Name));
             if (descriptionChanged) OnPropertyChanged(nameof(Description));
             if (imageChanged) OnPropertyChanged(nameof(ImagePath));
@@ -1337,8 +1341,43 @@ namespace HD2ModManager.ViewModels
                 OnPropertyChanged(nameof(StatusText));
                 OnPropertyChanged(nameof(UserStatusTitle));
             }
+            OnPropertyChanged(nameof(RowPresentation));
             if (loadOrderChanged) OnPropertyChanged(nameof(LoadOrder));
             if (addedUtcChanged) OnPropertyChanged(nameof(AddedUtc));
+        }
+
+        private static ModListRowPresentation BuildRowPresentation(
+            string? description,
+            string? assetSummary,
+            ModUnitCompatibilityReport? unitCompatibility,
+            ModUserStatus? userStatus)
+        {
+            var summary = string.Join(" · ", new[] { description, assetSummary }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            var activationLabel = userStatus?.IsInActiveProfile == true ? "已启用" : "当前配置成员";
+            var activationTone = userStatus?.IsInActiveProfile == true ? ModListRowTone.Success : ModListRowTone.Accent;
+            var warnings = new List<string>();
+            var warningTone = ModListRowTone.Warning;
+            if (unitCompatibility?.IsOutdated == true)
+            {
+                warnings.Add("模型过时");
+                warningTone = ModListRowTone.Danger;
+            }
+            if (userStatus?.Kind == ModUserStatusKind.MissingMaterial)
+            {
+                warnings.Add("缺材质");
+                warningTone = ModListRowTone.Danger;
+            }
+            else if (userStatus?.Kind == ModUserStatusKind.Overridden)
+            {
+                warnings.Add("被覆盖");
+            }
+
+            return new ModListRowPresentation(
+                ActivationLabel: activationLabel,
+                ActivationTone: activationTone,
+                WarningLabel: warnings.Count == 0 ? null : string.Join(" · ", warnings),
+                WarningTone: warningTone,
+                Summary: summary);
         }
     }
 

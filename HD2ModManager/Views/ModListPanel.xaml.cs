@@ -2,6 +2,7 @@ using System.Collections;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -130,6 +131,7 @@ public partial class ModListPanel : UserControl
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
     public event EventHandler<ModListSelectionRequestEventArgs>? SelectionRequested;
     public event EventHandler<ModListRowActionEventArgs>? RowActionInvoked;
+    public event EventHandler<ModListKeyboardCommandEventArgs>? KeyboardCommandRequested;
     public event EventHandler<ModListInternalReorderEventArgs>? InternalReorderRequested;
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileDropRequested;
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileRemovalRequested;
@@ -148,19 +150,19 @@ public partial class ModListPanel : UserControl
     {
         if (HeaderSearchBox.Visibility == Visibility.Visible)
         {
-            var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
-            fadeOut.Completed += (_, _) =>
-            {
-                HeaderSearchBox.Visibility = Visibility.Collapsed;
-                HeaderTitleElement.Visibility = Visibility.Visible;
-                HeaderSummaryElement.Visibility = Visibility.Visible;
-                HeaderTitleElement.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
-                HeaderSummaryElement.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
-            };
-            HeaderSearchBox.BeginAnimation(OpacityProperty, fadeOut);
-            var actionFadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
-            actionFadeOut.Completed += (_, _) => HeaderSearchActions.Visibility = Visibility.Collapsed;
-            HeaderSearchActions.BeginAnimation(OpacityProperty, actionFadeOut);
+            HideSearch();
+            return;
+        }
+
+        ShowSearchAndFocus();
+    }
+
+    private void ShowSearchAndFocus()
+    {
+        if (HeaderSearchBox.Visibility == Visibility.Visible)
+        {
+            HeaderSearchBox.Focus();
+            HeaderSearchBox.SelectAll();
             return;
         }
 
@@ -180,9 +182,116 @@ public partial class ModListPanel : UserControl
         HeaderSearchBox.Focus();
     }
 
+    private void HideSearch()
+    {
+        var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
+        fadeOut.Completed += (_, _) =>
+        {
+            HeaderSearchBox.Visibility = Visibility.Collapsed;
+            HeaderTitleElement.Visibility = Visibility.Visible;
+            HeaderSummaryElement.Visibility = Visibility.Visible;
+            HeaderTitleElement.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
+            HeaderSummaryElement.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
+        };
+        HeaderSearchBox.BeginAnimation(OpacityProperty, fadeOut);
+        var actionFadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
+        actionFadeOut.Completed += (_, _) => HeaderSearchActions.Visibility = Visibility.Collapsed;
+        HeaderSearchActions.BeginAnimation(OpacityProperty, actionFadeOut);
+    }
+
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!ItemsList.IsHitTestVisible || !ItemsList.IsKeyboardFocusWithin || IsTextInputFocused(e.OriginalSource as DependencyObject)) return;
+        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null
+            || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
+
+        var modifiers = Keyboard.Modifiers;
+        if (e.Key == Key.F && modifiers == ModifierKeys.Control)
+        {
+            ShowSearchAndFocus();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.A && modifiers == ModifierKeys.Control)
+        {
+            SelectAllVisibleRows();
+            e.Handled = true;
+            return;
+        }
+
+        var selectedItems = GetSelectedItems();
+        if (selectedItems.Count == 0) return;
+
+        if (e.Key == Key.F2 && modifiers == ModifierKeys.None && RowActions.HasFlag(ModListRowAction.Rename) && selectedItems.Count == 1)
+        {
+            RaiseKeyboardCommand(ModListKeyboardCommand.Rename, selectedItems);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Enter && modifiers == ModifierKeys.None && RowActions.HasFlag(ModListRowAction.Details) && selectedItems.Count == 1)
+        {
+            RaiseKeyboardCommand(ModListKeyboardCommand.OpenDetails, selectedItems);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key != Key.Delete || (modifiers != ModifierKeys.None && modifiers != ModifierKeys.Shift)) return;
+        if (modifiers == ModifierKeys.Shift)
+        {
+            if (!RowActions.HasFlag(ModListRowAction.DeleteFromLibrary)) return;
+            RaiseKeyboardCommand(ModListKeyboardCommand.DeleteFromLibrary, selectedItems);
+            e.Handled = true;
+            return;
+        }
+
+        if (!RowActions.HasFlag(ModListRowAction.RemoveFromProfile)
+            && !RowActions.HasFlag(ModListRowAction.DeleteFromLibrary)) return;
+        RaiseKeyboardCommand(ModListKeyboardCommand.Delete, selectedItems);
+        e.Handled = true;
+    }
+
+    private void SelectAllVisibleRows()
+    {
+        if (SelectionPolicy != ModListSelectionPolicy.Multiple) return;
+        var visibleItems = ItemsList.Items
+            .OfType<IModListSelectable>()
+            .Where(item => !string.IsNullOrWhiteSpace(item.SelectionKey))
+            .ToArray();
+        var selectedKeys = visibleItems.Select(item => item.SelectionKey).ToArray();
+        if (selectedKeys.Length == 0) return;
+        _selectionAnchorKey = selectedKeys[0];
+        SelectionRequested?.Invoke(this, new ModListSelectionRequestEventArgs(visibleItems[0], selectedKeys, ModifierKeys.Control));
+    }
+
+    private IReadOnlyList<object> GetSelectedItems()
+        => ItemsList.Items
+            .Cast<object>()
+            .Where(item => item is IModListSelectable { IsSelected: true })
+            .ToArray();
+
+    private void RaiseKeyboardCommand(ModListKeyboardCommand command, IReadOnlyList<object> selectedItems)
+    {
+        var selectedKeys = selectedItems
+            .OfType<IModListSelectable>()
+            .Select(item => item.SelectionKey)
+            .ToArray();
+        KeyboardCommandRequested?.Invoke(this, new ModListKeyboardCommandEventArgs(command, selectedItems, selectedKeys));
+    }
+
+    private static bool IsTextInputFocused(DependencyObject? source)
+    {
+        var focused = Keyboard.FocusedElement as DependencyObject ?? source;
+        return FindAncestor<TextBoxBase>(focused) is not null
+            || FindAncestor<PasswordBox>(focused) is not null
+            || FindAncestor<ComboBox>(focused) is not null;
+    }
+
     private void OnRowClick(object sender, MouseButtonEventArgs e)
     {
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
+        ItemsList.Focus();
         var item = (sender as FrameworkElement)?.DataContext;
         if (item is IModListSelectable selectable && SelectionPolicy is not ModListSelectionPolicy.None and not ModListSelectionPolicy.ReadOnly)
         {
@@ -236,6 +345,7 @@ public partial class ModListPanel : UserControl
     private void OnRowRightClick(object sender, MouseButtonEventArgs e)
     {
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null) return;
+        ItemsList.Focus();
         RowRightClicked?.Invoke(this, new ModListRowEventArgs((sender as FrameworkElement)?.DataContext, Keyboard.Modifiers));
         e.Handled = true;
     }
@@ -798,6 +908,28 @@ public sealed class ModListRowActionEventArgs(object item, ModListRowAction acti
     public ModListRowAction Action { get; } = action;
 }
 
+public enum ModListKeyboardCommand
+{
+    Rename,
+    OpenDetails,
+    Delete,
+    DeleteFromLibrary,
+}
+
+// The shared panel recognizes physical keys only.  The host page decides what
+// an intent means for its own domain (for example Delete is profile removal in
+// the configuration page, but library deletion in the library page).
+public sealed class ModListKeyboardCommandEventArgs(
+    ModListKeyboardCommand command,
+    IReadOnlyList<object> items,
+    IReadOnlyList<string> selectedKeys) : EventArgs
+{
+    public ModListKeyboardCommand Command { get; } = command;
+    public IReadOnlyList<object> Items { get; } = items;
+    public IReadOnlyList<string> SelectedKeys { get; } = selectedKeys;
+    public object? Item => Items.Count == 1 ? Items[0] : null;
+}
+
 public sealed class ModListInternalReorderEventArgs(IReadOnlyList<string> draggedKeys, int insertionIndex) : EventArgs
 {
     public IReadOnlyList<string> DraggedKeys { get; } = draggedKeys;
@@ -836,5 +968,26 @@ public sealed class DecorationRowActionVisibilityConverter : System.Windows.Data
     }
 
     public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+public sealed class ModListRowToneBrushConverter : System.Windows.Data.IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+    {
+        var resourceKey = value is ModListRowTone tone
+            ? tone switch
+            {
+                ModListRowTone.Accent => "Accent",
+                ModListRowTone.Success => "StatusSuccess",
+                ModListRowTone.Warning => "StatusWarning",
+                ModListRowTone.Danger => "StatusDanger",
+                _ => "TextSecondary",
+            }
+            : "TextSecondary";
+        return Application.Current?.TryFindResource(resourceKey) as Brush ?? Brushes.DimGray;
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
         => throw new NotSupportedException();
 }

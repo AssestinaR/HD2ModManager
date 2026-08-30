@@ -1508,50 +1508,60 @@ namespace HD2ModManager.ViewModels
             var ids = _selection.SelectedIds.ToList();
             if (string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase))
             {
-                var targets = ModDeletionConfirmation.ConfirmTargets(_libraryService, ids, $"确定删除选中的 {ids.Count} 个 Mod？\n这会同时删除库中的已存储文件。", "批量删除 Mod");
-                if (targets is null) return;
-                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{targets.Count} 个 Mod");
-                task.MarkRunning("正在删除");
-                try
-                {
-                    var deletion = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
-                    if (deletion.RemovedNodeIds.Count == 0 && deletion.HasFailures)
-                    {
-                        task.MarkFailed("无法删除所选 Mod");
-                        _notificationService.Show(ModLibraryService.DescribeDeletionResult(deletion), NotificationLevel.Error);
-                        return;
-                    }
-                    task.MarkCompleted();
-                    _notificationService.Show(
-                        ModLibraryService.DescribeDeletionResult(deletion),
-                        deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
-                }
-                catch (OperationCanceledException) { task.MarkCanceled(); return; }
-                catch (Exception exception) { task.MarkFailed(exception.Message); return; }
+                await DeleteModsFromLibraryAsync(ids);
+                return;
             }
-            else if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase))
             {
-                var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "从配置移除", $"{ids.Count} 个 Mod");
-                task.MarkRunning("正在写入配置");
-                try
-                {
-                    var removed = await _profileService.RemoveModsFromSelectedAsync(ids, task.CancellationToken);
-                    task.MarkCompleted();
-                    _notificationService.Show($"已从配置移除：{removed} 个 Mod");
-                }
-                catch (OperationCanceledException)
-                {
-                    task.MarkCanceled();
-                    return;
-                }
-                catch (Exception exception)
-                {
-                    task.MarkFailed(exception.Message);
-                    return;
-                }
+                await RemoveModsFromSelectedProfileAsync(ids);
+                return;
             }
 
-            _selection.Clear();
+            if (_selection.Scope?.StartsWith("DecorationHost:", StringComparison.OrdinalIgnoreCase) == true)
+                await DeleteModsFromLibraryAsync(ids);
+        }
+
+        public async Task DeleteModsFromLibraryAsync(IReadOnlyList<string> modIds)
+        {
+            var ids = modIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (ids.Count == 0) return;
+
+            var targetText = ids.Count == 1
+                ? $"确定彻底删除 Mod“{_libraryService.Get(ids[0])?.Name ?? ids[0]}”？\n这会从所有配置移除它，并删除模组库中的已存储文件。"
+                : $"确定彻底删除选中的 {ids.Count} 个 Mod？\n这会从所有配置移除它们，并删除模组库中的已存储文件。";
+            var targets = ModDeletionConfirmation.ConfirmTargets(_libraryService, ids, targetText, "批量删除 Mod");
+            if (targets is null) return;
+
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{targets.Count} 个 Mod");
+            task.MarkRunning("正在删除");
+            try
+            {
+                ThumbnailService.CancelPendingGeneration();
+                var deletion = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
+                if (deletion.RemovedNodeIds.Count == 0 && deletion.HasFailures)
+                {
+                    task.MarkFailed("无法删除所选 Mod");
+                    _notificationService.Show(ModLibraryService.DescribeDeletionResult(deletion), NotificationLevel.Error);
+                    return;
+                }
+                task.MarkCompleted();
+                _notificationService.Show(
+                    ModLibraryService.DescribeDeletionResult(deletion),
+                    deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
+                _selection.Clear();
+                RefreshCurrentPage();
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+            }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+            }
         }
 
         public async Task AddModsToSelectedProfileAsync(IReadOnlyList<string> modIds)
@@ -1658,41 +1668,7 @@ namespace HD2ModManager.ViewModels
         {
             if (!_selection.HasSelection
                 || !string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase)) return;
-
-            var ids = _selection.SelectedIds.ToList();
-            var targets = ModDeletionConfirmation.ConfirmTargets(
-                _libraryService,
-                ids,
-                $"确定彻底删除选中的 {ids.Count} 个 Mod？\n这会从所有配置移除它们，并删除模组库中的已存储文件。",
-                "批量删除 Mod");
-            if (targets is null) return;
-
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "批量删除 Mod", $"{targets.Count} 个 Mod");
-            task.MarkRunning("正在删除");
-            try
-            {
-                var deletion = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
-                if (deletion.RemovedNodeIds.Count == 0 && deletion.HasFailures)
-                {
-                    task.MarkFailed("无法删除所选 Mod");
-                    _notificationService.Show(ModLibraryService.DescribeDeletionResult(deletion), NotificationLevel.Error);
-                    return;
-                }
-                task.MarkCompleted();
-                _notificationService.Show(
-                    ModLibraryService.DescribeDeletionResult(deletion),
-                    deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
-                _selection.Clear();
-                RefreshCurrentPage();
-            }
-            catch (OperationCanceledException)
-            {
-                task.MarkCanceled();
-            }
-            catch (Exception exception)
-            {
-                task.MarkFailed(exception.Message);
-            }
+            await DeleteModsFromLibraryAsync(_selection.SelectedIds.ToList());
         }
 
         private void RaiseSelectionFlags()

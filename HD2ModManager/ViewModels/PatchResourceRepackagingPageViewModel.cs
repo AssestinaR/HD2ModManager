@@ -420,7 +420,15 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
 public sealed class PatchResourceRepackagingModItem : BaseViewModel, IModListSelectable
 {
     private bool _isSelected;
-    public PatchResourceRepackagingModItem(ModEntity mod) => Mod = mod;
+    private readonly ModListRowPresentation _rowPresentation;
+    public PatchResourceRepackagingModItem(ModEntity mod)
+    {
+        Mod = mod;
+        _rowPresentation = new ModListRowPresentation(
+            mod.IsReShade ? "ReShade" : mod.IsDecoration ? "装饰" : mod.IsOption ? "选项" : null,
+            ModListRowTone.Muted,
+            Summary: "Patch 资源来源");
+    }
     public ModEntity Mod { get; }
     public string SelectionKey => Mod.Guid;
     public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
@@ -432,6 +440,7 @@ public sealed class PatchResourceRepackagingModItem : BaseViewModel, IModListSel
     public string? Description => Mod.Description;
     public string? ImagePath => Mod.Image;
     public string AssetSummaryText => Mod.IsDecoration ? "装饰 Mod" : Mod.IsOption ? "选项 Mod" : "Patch 资源来源";
+    public ModListRowPresentation RowPresentation => _rowPresentation;
     public bool IsModelOutdated => false;
     public string UserStatusTitle => Mod.IsDecoration ? "装饰 Mod" : Mod.IsOption ? "选项 Mod" : "普通 Mod";
 }

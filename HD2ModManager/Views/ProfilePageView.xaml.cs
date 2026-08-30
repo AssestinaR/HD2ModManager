@@ -31,6 +31,24 @@ public partial class ProfilePageView : UserControl
             await shell.AddModsToSelectedProfileAsync(e.SelectedKeys);
     }
 
+    private async void OnKeyboardCommandRequested(object? sender, ModListKeyboardCommandEventArgs e)
+    {
+        if (DataContext is not ProfilePageViewModel vm) return;
+        var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
+        switch (e.Command)
+        {
+            case ModListKeyboardCommand.OpenDetails when e.Item is ProfileListItemViewModel item:
+                shell?.OpenModDetailsFromPage(vm, item.Guid);
+                break;
+            case ModListKeyboardCommand.Delete:
+                if (shell is not null) await shell.RemoveModsFromSelectedProfileAsync(e.SelectedKeys);
+                break;
+            case ModListKeyboardCommand.DeleteFromLibrary:
+                if (shell is not null) await shell.DeleteModsFromLibraryAsync(e.SelectedKeys);
+                break;
+        }
+    }
+
     private void OnRowActionInvoked(object? sender, ModListRowActionEventArgs e)
     {
         if (DataContext is not ProfilePageViewModel vm || e.Item is not ProfileListItemViewModel item) return;

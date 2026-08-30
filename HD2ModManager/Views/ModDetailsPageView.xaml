@@ -123,10 +123,11 @@
 								UseInternalScroll="False"
                                 RowActions="Rename, Details, ToggleDecoration, OpenFolder, DeleteFromLibrary"
                                 RowActionInvoked="OnHostDecorationRowActionInvoked"
-                                RowRightClicked="OnHostDecorationOpenDetailsOnRightClick"
-                                SelectionPolicy="Multiple"
-                                SelectionRequested="OnHostDecorationSelectionRequested"
-                                Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
+                                 RowRightClicked="OnHostDecorationOpenDetailsOnRightClick"
+                                 SelectionPolicy="Multiple"
+                                 SelectionRequested="OnHostDecorationSelectionRequested"
+                                 KeyboardCommandRequested="OnHostDecorationKeyboardCommandRequested"
+                                 Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

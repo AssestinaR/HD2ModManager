@@ -79,5 +79,25 @@ namespace HD2ModManager.Views
             if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.Selection.Replace($"DecorationHost:{details.ModId}", e.SelectedKeys);
         }
+
+        private async void OnHostDecorationKeyboardCommandRequested(object? sender, ModListKeyboardCommandEventArgs e)
+        {
+            if (DataContext is not ModDetailsPageViewModel details) return;
+            var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
+            switch (e.Command)
+            {
+                case ModListKeyboardCommand.Rename when e.Item is ModCardViewModel card:
+                    shell?.ClearTransientSelection();
+                    shell?.BeginBottomBarNameEdit(card.Mod.Guid, card.Mod.Name);
+                    break;
+                case ModListKeyboardCommand.OpenDetails when e.Item is ModCardViewModel card:
+                    shell?.OpenModDetailsFromPage(details, card.Mod.Guid);
+                    break;
+                case ModListKeyboardCommand.Delete:
+                case ModListKeyboardCommand.DeleteFromLibrary:
+                    if (shell is not null) await shell.DeleteModsFromLibraryAsync(e.SelectedKeys);
+                    break;
+            }
+        }
     }
 }

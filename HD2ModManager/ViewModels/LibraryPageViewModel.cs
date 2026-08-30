@@ -633,16 +633,39 @@ namespace HD2ModManager.ViewModels
                 : _library.GetDerivedData(mod.Guid);
             _userStatuses.TryGetValue(mod.Guid, out var status);
             _thumbnailSources.TryGetValue(mod.Guid, out var thumbnailSource);
-            var decorationStatus = mod.IsDecoration
-                ? _library.GetDecorationActivationSummary(mod.Guid).StatusText
-                : mod.IsOption
-                    ? _library.GetOptionActivationStatus(mod.Guid)
-                    : null;
+            var decorationStatus = default(string);
+            var enabledHostCount = 0;
+            var availableHostCount = 0;
+            if (mod.IsDecoration)
+            {
+                var activation = _library.GetDecorationActivationSummary(mod.Guid);
+                decorationStatus = activation.StatusText;
+                enabledHostCount = activation.EnabledHostCount;
+                availableHostCount = activation.AvailableHostCount;
+            }
+            else if (mod.IsOption)
+            {
+                var activation = _library.GetOptionActivationSummary(mod.Guid);
+                decorationStatus = activation.StatusText;
+                enabledHostCount = activation.EnabledHostCount;
+                availableHostCount = activation.AvailableHostCount;
+            }
             var selected = IsSelected(mod.Guid);
-            var assetSummaryText = ModCardViewModel.BuildAssetSummaryText(mod, derived?.AssetSummary, decorationStatus);
+            var assetSummaryText = ModCardViewModel.BuildAssetSummaryText(mod, derived?.AssetSummary);
+            var (activationLabel, activationTone) = mod.IsDecoration || mod.IsOption
+                ? BuildAttachmentActivationPresentation(enabledHostCount, availableHostCount)
+                : (null, ModListRowTone.Muted);
+            var rowPresentation = ModCardViewModel.BuildRowPresentation(
+                mod,
+                assetSummaryText,
+                derived?.UnitCompatibility,
+                status,
+                activationLabel,
+                activationTone);
             var contentVersion = LibraryModListState.BuildContentVersion(
                 mod,
                 assetSummaryText,
+                rowPresentation,
                 derived?.UnitCompatibility,
                 status,
                 thumbnailSource,
@@ -659,10 +682,19 @@ namespace HD2ModManager.ViewModels
                 decorationStatus,
                 _thumbnailRevisions.GetValueOrDefault(mod.Guid),
                 assetSummaryText,
+                rowPresentation,
                 contentVersion,
                 LibraryModListState.BuildPresentationVersion(
                     contentVersion,
                     selected));
+        }
+
+        private static (string? Label, ModListRowTone Tone) BuildAttachmentActivationPresentation(int enabledHostCount, int availableHostCount)
+        {
+            if (availableHostCount == 0) return ("无可用主体", ModListRowTone.Warning);
+            if (enabledHostCount == 0) return ("尚未启用", ModListRowTone.Muted);
+            if (enabledHostCount == availableHostCount) return ($"已为 {enabledHostCount} 个主体启用", ModListRowTone.Success);
+            return ($"已为 {enabledHostCount}/{availableHostCount} 个主体启用", ModListRowTone.Accent);
         }
 
         private void OnListProjectionCommitted(object? sender, ModListStateCommittedEventArgs e)
@@ -705,12 +737,14 @@ namespace HD2ModManager.ViewModels
         string? DecorationStatus,
         int ThumbnailRevision,
         string AssetSummaryText,
+        ModListRowPresentation RowPresentation,
         string ContentVersion,
         string PresentationVersion)
     {
         public static string BuildContentVersion(
             HD2ModManager.Models.ModEntity mod,
             string assetSummaryText,
+            ModListRowPresentation rowPresentation,
             ModUnitCompatibilityReport? unitCompatibility,
             ModUserStatus? userStatus,
             string? thumbnailSourcePath,
@@ -728,6 +762,13 @@ namespace HD2ModManager.ViewModels
                 mod.HasPatchContent,
                 mod.IsHelmetToArmorMerged,
                 assetSummaryText,
+                rowPresentation.TypeLabel,
+                rowPresentation.TypeTone,
+                rowPresentation.ActivationLabel,
+                rowPresentation.ActivationTone,
+                rowPresentation.WarningLabel,
+                rowPresentation.WarningTone,
+                rowPresentation.Summary,
                 unitCompatibility?.Status,
                 unitCompatibility?.UnitCount,
                 unitCompatibility?.ReadableUnitCount,
@@ -754,6 +795,7 @@ namespace HD2ModManager.ViewModels
         private ModUserStatus? _userStatus;
         private string? _decorationStatus;
         private string _assetSummaryText = string.Empty;
+        private ModListRowPresentation _rowPresentation = ModListRowPresentation.Empty;
         private string _contentVersion = string.Empty;
         public HD2ModManager.Models.ModEntity Mod => _mod;
         public string SelectionKey => Mod.Guid;
@@ -768,6 +810,7 @@ namespace HD2ModManager.ViewModels
         public ModAssetSummary? AssetSummary => _assetSummary;
         public string Name => Mod.Name;
         public string AssetSummaryText => _assetSummaryText;
+        public ModListRowPresentation RowPresentation => _rowPresentation;
         public bool ShowsPatchMetadata => Mod.Capabilities.ShowsPatchAssets;
         public string? ImagePath => _imagePath;
         public bool IsVisible => true;
@@ -784,7 +827,15 @@ namespace HD2ModManager.ViewModels
         public bool HasUserStatus => UserStatus is not null;
         public string? DecorationStatus => _decorationStatus;
 
-        public ModCardViewModel(HD2ModManager.Models.ModEntity mod, bool isSelected = false, ModAssetSummary? assetSummary = null, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null, string? thumbnailSourcePath = null, string? decorationStatus = null)
+        public ModCardViewModel(
+            HD2ModManager.Models.ModEntity mod,
+            bool isSelected = false,
+            ModAssetSummary? assetSummary = null,
+            ModUnitCompatibilityReport? unitCompatibility = null,
+            ModUserStatus? userStatus = null,
+            string? thumbnailSourcePath = null,
+            string? decorationStatus = null,
+            ModListRowPresentation? rowPresentation = null)
         {
             _mod = mod;
             _thumbnailSourcePath = thumbnailSourcePath ?? mod.Image;
@@ -794,7 +845,8 @@ namespace HD2ModManager.ViewModels
             _userStatus = userStatus;
             _decorationStatus = decorationStatus;
             _isSelected = isSelected;
-            _assetSummaryText = BuildAssetSummaryText(mod, assetSummary, decorationStatus);
+            _assetSummaryText = BuildAssetSummaryText(mod, assetSummary);
+            _rowPresentation = rowPresentation ?? BuildRowPresentation(mod, _assetSummaryText, unitCompatibility, userStatus);
         }
 
         internal ModCardViewModel(LibraryModListState state)
@@ -805,9 +857,11 @@ namespace HD2ModManager.ViewModels
                 state.UnitCompatibility,
                 state.UserStatus,
                 state.ThumbnailSourcePath,
-                state.DecorationStatus)
+                state.DecorationStatus,
+                state.RowPresentation)
         {
             _assetSummaryText = state.AssetSummaryText;
+            _rowPresentation = state.RowPresentation;
             _contentVersion = state.ContentVersion;
             _thumbnailRevision = state.ThumbnailRevision;
             _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
@@ -831,9 +885,10 @@ namespace HD2ModManager.ViewModels
             _thumbnailRevision = state.ThumbnailRevision;
             if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
             _assetSummaryText = state.AssetSummaryText;
+            _rowPresentation = state.RowPresentation;
             _contentVersion = state.ContentVersion;
             OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsReShade)); OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanJoinProfile));
-            OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(UnitCompatibility));
+            OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(RowPresentation)); OnPropertyChanged(nameof(UnitCompatibility));
             OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(UserStatus)); OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary)); OnPropertyChanged(nameof(DecorationStatus));
             if (imageChanged) OnPropertyChanged(nameof(ImagePath));
@@ -843,6 +898,7 @@ namespace HD2ModManager.ViewModels
             HD2ModManager.Models.ModEntity mod,
             bool isSelected,
             string? decorationStatus,
+            ModListRowPresentation rowPresentation,
             string contentVersion)
         {
             var contentChanged = !string.Equals(_contentVersion, contentVersion, StringComparison.Ordinal);
@@ -858,27 +914,74 @@ namespace HD2ModManager.ViewModels
             _decorationStatus = decorationStatus;
             _thumbnailSourcePath = nextThumbnailSource;
             if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
-            _assetSummaryText = BuildAssetSummaryText(mod, null, decorationStatus);
+            _assetSummaryText = BuildAssetSummaryText(mod, null);
+            _rowPresentation = rowPresentation;
             _contentVersion = contentVersion;
 
             OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(Description));
             OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsReShade));
             OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanJoinProfile)); OnPropertyChanged(nameof(ShowsPatchMetadata));
-            OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(UnitCompatibility));
+            OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(RowPresentation)); OnPropertyChanged(nameof(UnitCompatibility));
             OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(ModelCompatibilitySummary));
             OnPropertyChanged(nameof(UserStatus)); OnPropertyChanged(nameof(UserStatusTitle)); OnPropertyChanged(nameof(UserStatusSummary));
             OnPropertyChanged(nameof(HasUserStatus)); OnPropertyChanged(nameof(DecorationStatus));
             if (imageChanged) OnPropertyChanged(nameof(ImagePath));
         }
 
-        internal static string BuildAssetSummaryText(HD2ModManager.Models.ModEntity mod, ModAssetSummary? assetSummary, string? decorationStatus)
+        internal static string BuildAssetSummaryText(HD2ModManager.Models.ModEntity mod, ModAssetSummary? assetSummary)
             => mod.IsReShade
-                ? "ReShade 插件 · 部署到游戏 bin"
+                ? "部署到游戏 bin"
                 : !mod.HasPatchContent && !mod.IsDecoration && !mod.IsOption
                     ? mod.Description ?? string.Empty
                     : mod.IsDecoration || mod.IsOption
-                        ? decorationStatus ?? "尚未启用。"
+                        ? mod.HasPatchContent ? "包含 Patch 内容" : "逻辑附加项"
                         : ModAssetSummaryFormatter.Format(assetSummary);
+
+        internal static ModListRowPresentation BuildRowPresentation(
+            HD2ModManager.Models.ModEntity mod,
+            string? summary,
+            ModUnitCompatibilityReport? unitCompatibility,
+            ModUserStatus? userStatus,
+            string? activationLabel = null,
+            ModListRowTone activationTone = ModListRowTone.Muted)
+        {
+            var typeLabel = mod.IsReShade ? "ReShade" : mod.IsDecoration ? "装饰" : mod.IsOption ? "选项" : null;
+            var typeTone = mod.IsReShade ? ModListRowTone.Accent : ModListRowTone.Muted;
+            if (string.IsNullOrWhiteSpace(activationLabel) && userStatus is not null)
+            {
+                (activationLabel, activationTone) = userStatus.Kind switch
+                {
+                    ModUserStatusKind.Stored => ("仅存储", ModListRowTone.Muted),
+                    _ => ("已启用", ModListRowTone.Success),
+                };
+            }
+
+            var warnings = new List<string>();
+            var warningTone = ModListRowTone.Warning;
+            if (unitCompatibility?.IsOutdated == true)
+            {
+                warnings.Add("模型过时");
+                warningTone = ModListRowTone.Danger;
+            }
+            if (userStatus?.Kind == ModUserStatusKind.MissingMaterial)
+            {
+                warnings.Add("缺材质");
+                warningTone = ModListRowTone.Danger;
+            }
+            else if (userStatus?.Kind == ModUserStatusKind.Overridden)
+            {
+                warnings.Add("被覆盖");
+            }
+
+            return new ModListRowPresentation(
+                typeLabel,
+                typeTone,
+                activationLabel,
+                activationTone,
+                warnings.Count == 0 ? null : string.Join(" · ", warnings),
+                warningTone,
+                summary);
+        }
 
     }
 

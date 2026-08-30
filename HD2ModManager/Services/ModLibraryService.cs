@@ -222,10 +222,35 @@ namespace HD2ModManager.Services
 
         public string GetOptionActivationStatus(string optionId)
         {
+            return GetOptionActivationSummary(optionId).StatusText;
+        }
+
+        public OptionActivationSummary GetOptionActivationSummary(string optionId)
+        {
             var option = Get(optionId);
-            if (option?.IsOption != true) return "尚未启用。";
-            var count = _optionActivations.GetEnabledHosts(optionId).Count;
-            return count == 0 ? "尚未启用。" : $"为 {count} 个 Mod 启用了。";
+            if (option?.IsOption != true) return new OptionActivationSummary(0, 0, false, "尚未启用。");
+
+            var eligibleHosts = All()
+                .Where(IsOptionHost)
+                .Select(mod => mod.Guid)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var available = option.HostModGuids
+                .Where(eligibleHosts.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var enabled = _optionActivations.GetEnabledHosts(optionId)
+                .Count(hostId => available.Contains(hostId, StringComparer.OrdinalIgnoreCase));
+            return new OptionActivationSummary(
+                enabled,
+                available.Length,
+                available.Length != 0 && enabled == available.Length,
+                available.Length == 0
+                    ? "无可用主体。"
+                    : enabled == 0
+                        ? "尚未启用。"
+                        : enabled == available.Length
+                            ? $"为 {enabled} 个主体启用了。"
+                            : $"为 {enabled}/{available.Length} 个主体启用了。");
         }
 
         public async Task<string> ToggleOptionForHostAsync(string optionId, string hostId, CancellationToken cancellationToken = default)
