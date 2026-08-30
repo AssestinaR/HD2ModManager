@@ -78,6 +78,25 @@ internal sealed class CliLibraryWriteSession : IAsyncDisposable
 			"保存后未能重新读取 library.json；CLI 未继续执行后续写入。");
 	}
 
+	/// <summary>
+	/// Persists only library.json under the same lease and target checks as a
+	/// normal mutation. It exists for reviewed filesystem reconciliation, where
+	/// rewriting profiles.json would be an unrelated side effect.
+	/// </summary>
+	public async ValueTask<LibrarySnapshot> SaveNodesOnlyAsync(
+		LibrarySnapshot snapshot,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		await VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+		ThrowIfDisposed();
+		await _store.SaveNodesOnlyAsync(snapshot, cancellationToken).ConfigureAwait(false);
+		var persisted = await ReloadSnapshotAsync(cancellationToken).ConfigureAwait(false);
+		return persisted ?? throw new CliUserException(
+			"LibrarySnapshotUnreadable",
+			"保存后未能重新读取 library.json；CLI 未继续执行后续写入。");
+	}
+
 	public async ValueTask DisposeAsync()
 	{
 		var lease = Interlocked.Exchange(ref _lease, null);

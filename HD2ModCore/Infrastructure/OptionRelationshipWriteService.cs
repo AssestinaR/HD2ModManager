@@ -18,8 +18,123 @@ public sealed class OptionRelationshipWriteService : IOptionRelationshipWriteSer
 		ArgumentNullException.ThrowIfNull(snapshot);
 		ArgumentNullException.ThrowIfNull(optionActivations);
 
-		var host = ResolveHost(snapshot, hostId);
-		return BuildHostSnapshot(host, optionActivations.CreateSnapshot());
+		return GetHostSnapshot(snapshot, optionActivations.CreateSnapshot(), hostId);
+	}
+
+	public OptionAllHostsRelationshipSnapshot GetOptionAllHostsSnapshot(
+		LibrarySnapshot snapshot,
+		OptionActivationStore optionActivations,
+		ModNodeId optionId)
+	{
+		ArgumentNullException.ThrowIfNull(optionActivations);
+		return GetOptionAllHostsSnapshot(snapshot, optionActivations.CreateSnapshot(), optionId);
+	}
+
+	public OptionAllHostsRelationshipSnapshot GetOptionAllHostsSnapshot(
+		LibrarySnapshot snapshot,
+		OptionActivationSnapshot activationStates,
+		ModNodeId optionId)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		ArgumentNullException.ThrowIfNull(activationStates);
+		_ = ResolveOption(snapshot, optionId);
+
+		var graph = OptionRelationshipGraph.Create(snapshot);
+		var issues = new List<OptionAllHostsIssue>();
+		var declaredHostIds = new HashSet<ModNodeId>();
+		var option = snapshot.Nodes[optionId];
+		foreach (var rawHostId in option.Metadata.HostModGuids ?? Array.Empty<string>())
+		{
+			if (!Guid.TryParse(rawHostId, out var rawGuid))
+			{
+				issues.Add(new OptionAllHostsIssue(
+					"OptionHostDeclarationInvalid",
+					$"Option '{ToKey(optionId)}' contains an invalid host GUID declaration: '{rawHostId}'."));
+				continue;
+			}
+			var hostId = new ModNodeId(rawGuid);
+			if (!snapshot.Nodes.TryGetValue(hostId, out var declaredHost))
+			{
+				issues.Add(new OptionAllHostsIssue(
+					"OptionHostDeclarationMissing",
+					$"Option '{ToKey(optionId)}' declares a host that no longer exists: '{rawHostId}'.",
+					hostId));
+				continue;
+			}
+			if (declaredHost.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.Option))
+			{
+				issues.Add(new OptionAllHostsIssue(
+					"OptionHostKindUnsupported",
+					$"Option '{ToKey(optionId)}' declares unsupported host '{ToKey(hostId)}' of kind '{declaredHost.Metadata.Kind}'.",
+					hostId));
+				continue;
+			}
+			declaredHostIds.Add(hostId);
+		}
+
+		var directHostIds = graph.GetParents(optionId).ToHashSet();
+		foreach (var declaredHostId in declaredHostIds)
+		{
+			if (directHostIds.Contains(declaredHostId)) continue;
+			issues.Add(new OptionAllHostsIssue(
+				"OptionDirectRelationMissing",
+				$"Option '{ToKey(optionId)}' has no valid direct relation from declared host '{ToKey(declaredHostId)}'.",
+				declaredHostId));
+		}
+
+		var eligible = new List<OptionAllHostsHostState>();
+		foreach (var hostId in directHostIds.OrderBy(id => id.Value))
+		{
+			if (!snapshot.Nodes.TryGetValue(hostId, out var host))
+			{
+				issues.Add(new OptionAllHostsIssue(
+					"OptionHostDeclarationMissing",
+					$"Option '{ToKey(optionId)}' has a direct relation to missing host '{ToKey(hostId)}'.",
+					hostId));
+				continue;
+			}
+			try
+			{
+				var hostSnapshot = GetHostSnapshot(snapshot, activationStates, hostId);
+				var optionState = hostSnapshot.DirectOptions.SingleOrDefault(state => state.OptionId == optionId);
+				if (optionState is null)
+				{
+					issues.Add(new OptionAllHostsIssue(
+						"OptionDirectRelationMissing",
+						$"Host '{ToKey(hostId)}' did not expose Option '{ToKey(optionId)}' as a direct relation during validation.",
+						hostId));
+					continue;
+				}
+				eligible.Add(new OptionAllHostsHostState(
+					hostId,
+					host.Metadata.Name,
+					host.Metadata.Kind,
+					optionState.Enabled,
+					optionState.HasExplicitActivationState,
+					optionState.EffectiveOrder));
+			}
+			catch (OptionRelationshipMutationException exception)
+			{
+				issues.Add(new OptionAllHostsIssue(
+					exception.Failure.ToString(),
+					exception.Message,
+					exception.HostId ?? hostId,
+					exception.CyclePath));
+			}
+		}
+
+		var orphans = FindOrphanActivationStates(optionId, directHostIds, activationStates);
+		return new OptionAllHostsRelationshipSnapshot(
+			optionId,
+			eligible
+				.OrderBy(host => host.HostName, StringComparer.OrdinalIgnoreCase)
+				.ThenBy(host => host.HostId.Value)
+				.ToArray(),
+			issues
+				.GroupBy(issue => new { issue.Code, issue.Message, issue.HostId })
+				.Select(group => group.First())
+				.ToArray(),
+			orphans);
 	}
 
 	public async ValueTask<OptionRelationshipMutationSnapshot> SetHostScopedOptionEnabledAsync(
@@ -51,6 +166,47 @@ public sealed class OptionRelationshipWriteService : IOptionRelationshipWriteSer
 		return new OptionRelationshipMutationSnapshot(
 			BuildHostSnapshot(host, optionActivations.CreateSnapshot()),
 			Changed: true);
+	}
+
+	public async ValueTask<OptionAllHostsMutationSnapshot> SetOptionEnabledForAllDirectHostsAsync(
+		LibrarySnapshot snapshot,
+		OptionActivationStore optionActivations,
+		ModNodeId optionId,
+		bool enabled,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		ArgumentNullException.ThrowIfNull(optionActivations);
+		cancellationToken.ThrowIfCancellationRequested();
+		_ = ResolveOption(snapshot, optionId);
+
+		var before = GetOptionAllHostsSnapshot(snapshot, optionActivations, optionId);
+		if (before.Issues.Count != 0)
+		{
+			var summary = string.Join("; ", before.Issues.Take(3).Select(issue => $"[{issue.Code}] {issue.Message}"));
+			throw Failure(
+				OptionRelationshipMutationFailure.EligibleHostSetInvalid,
+				$"Cannot change all hosts for Option '{ToKey(optionId)}' because its direct host scope is invalid: {summary}",
+				optionId: optionId);
+		}
+		if (before.EligibleHosts.Count == 0)
+		{
+			throw Failure(
+				OptionRelationshipMutationFailure.EligibleHostsMissing,
+				$"Option '{ToKey(optionId)}' has no valid direct hosts to change.",
+				optionId: optionId);
+		}
+
+		var changed = before.EligibleHosts.Any(host => !host.HasExplicitActivationState || host.Enabled != enabled);
+		if (!changed) return new OptionAllHostsMutationSnapshot(before, before, Changed: false);
+
+		await optionActivations.SetEnabledForHostsAsync(
+			ToKey(optionId),
+			before.EligibleHosts.Select(host => ToKey(host.HostId)),
+			enabled,
+			cancellationToken).ConfigureAwait(false);
+		var after = GetOptionAllHostsSnapshot(snapshot, optionActivations, optionId);
+		return new OptionAllHostsMutationSnapshot(before, after, Changed: true);
 	}
 
 	public async ValueTask<OptionRelationshipMutationSnapshot> MoveDirectOptionsAsync(
@@ -155,6 +311,34 @@ public sealed class OptionRelationshipWriteService : IOptionRelationshipWriteSer
 				: Array.Empty<ModNode>());
 	}
 
+	private static OptionHostRelationshipSnapshot GetHostSnapshot(
+		LibrarySnapshot snapshot,
+		OptionActivationSnapshot activationStates,
+		ModNodeId hostId)
+	{
+		var host = ResolveHost(snapshot, hostId);
+		return BuildHostSnapshot(host, activationStates);
+	}
+
+	private static ModNode ResolveOption(LibrarySnapshot snapshot, ModNodeId optionId)
+	{
+		if (!snapshot.Nodes.TryGetValue(optionId, out var option))
+		{
+			throw Failure(
+				OptionRelationshipMutationFailure.OptionNotFound,
+				$"Option '{ToKey(optionId)}' does not exist in the supplied library snapshot.",
+				optionId: optionId);
+		}
+		if (option.Metadata.Kind != ModNodeKind.Option)
+		{
+			throw Failure(
+				OptionRelationshipMutationFailure.OptionKindInvalid,
+				$"Node '{ToKey(optionId)}' is '{option.Metadata.Kind}', not an Option Mod.",
+				optionId: optionId);
+		}
+		return option;
+	}
+
 	private static void RequireDirectOption(LibrarySnapshot snapshot, HostContext host, ModNodeId optionId)
 	{
 		if (!snapshot.Nodes.TryGetValue(optionId, out var option))
@@ -234,6 +418,34 @@ public sealed class OptionRelationshipWriteService : IOptionRelationshipWriteSer
 		return directByHost.ToDictionary(
 			pair => pair.Key,
 			pair => (IReadOnlyList<ModNode>)pair.Value.ToArray());
+	}
+
+	private static IReadOnlyList<OptionAllHostsOrphanState> FindOrphanActivationStates(
+		ModNodeId optionId,
+		IReadOnlySet<ModNodeId> directHostIds,
+		OptionActivationSnapshot activationStates)
+	{
+		var result = new List<OptionAllHostsOrphanState>();
+		foreach (var (storedOptionId, hosts) in activationStates.Options)
+		{
+			if (!Guid.TryParse(storedOptionId, out var parsedOptionId)
+				|| parsedOptionId != optionId.Value)
+				continue;
+			foreach (var (storedHostId, state) in hosts)
+			{
+				if (!Guid.TryParse(storedHostId, out var parsedHostId))
+				{
+					result.Add(new OptionAllHostsOrphanState(storedOptionId, storedHostId, state.Enabled, state.EffectiveOrder, "stored-host-id-invalid"));
+					continue;
+				}
+				if (!directHostIds.Contains(new ModNodeId(parsedHostId)))
+					result.Add(new OptionAllHostsOrphanState(storedOptionId, storedHostId, state.Enabled, state.EffectiveOrder, "no-current-direct-relation"));
+			}
+		}
+		return result
+			.OrderBy(state => state.StoredHostId, StringComparer.OrdinalIgnoreCase)
+			.ThenBy(state => state.StoredOptionId, StringComparer.OrdinalIgnoreCase)
+			.ToArray();
 	}
 
 	private static void EnsureNoReachableCycle(

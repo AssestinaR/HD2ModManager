@@ -316,6 +316,46 @@ internal static class CliLibraryMutationOperations
 		}
 	}
 
+	public static OptionAllHostsRelationshipSnapshot InspectOptionAllHosts(
+		CliLibraryState state,
+		string optionSelector)
+	{
+		ArgumentNullException.ThrowIfNull(state);
+		var option = CliProjections.ResolveMod(state.Snapshot.Nodes, optionSelector);
+		if (option.Metadata.Kind != ModNodeKind.Option)
+		{
+			throw new CliUserException(
+				"OptionKindInvalid",
+				$"Mod “{option.Metadata.Name}”不是选项 Mod，不能查看主体启用范围。 ");
+		}
+		return CoreServices.CreateOptionRelationshipWriteService()
+			.GetOptionAllHostsSnapshot(state.Snapshot, state.OptionActivations, option.Id);
+	}
+
+	public static async ValueTask<CliOptionAllHostsMutationResult> SetOptionEnabledForAllHostsAsync(
+		CliLibraryWriteSession session,
+		string optionSelector,
+		bool enabled,
+		CancellationToken cancellationToken = default)
+	{
+		var snapshot = await RequireSnapshotAsync(session, cancellationToken).ConfigureAwait(false);
+		var option = CliProjections.ResolveMod(snapshot.Nodes, optionSelector);
+		var store = await CreateValidatedOptionActivationStoreAsync(session, cancellationToken).ConfigureAwait(false);
+		var service = CoreServices.CreateOptionRelationshipWriteService();
+		try
+		{
+			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+			var mutation = await service
+				.SetOptionEnabledForAllDirectHostsAsync(snapshot, store, option.Id, enabled, cancellationToken)
+				.ConfigureAwait(false);
+			return new CliOptionAllHostsMutationResult(option, enabled, mutation);
+		}
+		catch (OptionRelationshipMutationException exception)
+		{
+			throw ToCliUserException(exception);
+		}
+	}
+
 	public static async ValueTask<CliOptionRelationshipMutationResult> MoveOptionsAsync(
 		CliLibraryWriteSession session,
 		IReadOnlyList<string> optionSelectors,
@@ -662,6 +702,11 @@ internal sealed record CliNodeMetadataMutationResult(ModNode Before, ModNode Aft
 internal sealed record CliOptionRelationshipMutationResult(
 	OptionRelationshipMutationSnapshot Mutation,
 	int InitializedStateCount);
+
+internal sealed record CliOptionAllHostsMutationResult(
+	ModNode Option,
+	bool RequestedEnabled,
+	OptionAllHostsMutationSnapshot Mutation);
 
 internal sealed record CliProfileMutationExecutionResult(
 	ProfileMutationResult Mutation,

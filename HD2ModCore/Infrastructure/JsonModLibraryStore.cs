@@ -143,6 +143,30 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 		}
 	}
 
+	/// <summary>
+	/// Atomically persists only the node snapshot file. Profile state is kept in
+	/// its separate library-local JSON file and is intentionally left byte-for-
+	/// byte untouched. This is for narrowly-scoped filesystem reconciliation,
+	/// not general library mutations.
+	/// </summary>
+	public async ValueTask SaveNodesOnlyAsync(LibrarySnapshot snapshot, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		if (!Directory.Exists(_paths.ModsDirectory))
+			throw new DirectoryNotFoundException($"Mod library directory does not exist: {_paths.ModsDirectory}");
+
+		var gate = GetFileGate();
+		await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			await SaveNodesOnlyCoreAsync(snapshot, cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
 	private async ValueTask SaveCoreAsync(LibrarySnapshot snapshot, CancellationToken cancellationToken)
 	{
 		if (snapshot is null)
@@ -152,14 +176,18 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 
 		Directory.CreateDirectory(_paths.ModsDirectory);
 
+		await _profileStore.SaveAsync(snapshot.Profiles, snapshot.ActiveProfileId, cancellationToken).ConfigureAwait(false);
+		await SaveNodesOnlyCoreAsync(snapshot, cancellationToken).ConfigureAwait(false);
+	}
+
+	private async ValueTask SaveNodesOnlyCoreAsync(LibrarySnapshot snapshot, CancellationToken cancellationToken)
+	{
 		var normalized = snapshot with
 		{
 			Version = CurrentVersion,
 			SavedUtc = snapshot.SavedUtc == default ? DateTimeOffset.UtcNow : snapshot.SavedUtc,
 			Profiles = Array.Empty<Profile>(),
 		};
-
-		await _profileStore.SaveAsync(snapshot.Profiles, snapshot.ActiveProfileId, cancellationToken).ConfigureAwait(false);
 
 		var fileSnapshot = new LibraryFileSnapshot(normalized.Version, normalized.SavedUtc, normalized.Nodes);
 		var json = JsonSerializer.Serialize(fileSnapshot, SerializerOptions);

@@ -6,6 +6,9 @@
 .\hd2mod.exe --help
 .\hd2mod.exe capabilities --json
 .\hd2mod.exe agent skills list --json
+.\hd2mod.exe agent skills export library-inspection --output .\.agents\skills
+.\hd2mod.exe agent skills export library-synchronization --output .\.agents\skills
+.\hd2mod.exe agent skills export option-management --output .\.agents\skills
 .\hd2mod.exe agent skills export safe-import --output .\.agents\skills
 .\hd2mod.exe agent skills export safe-deployment --output .\.agents\skills
 .\hd2mod.exe agent skills export patch-resource-repackaging --output .\.agents\skills

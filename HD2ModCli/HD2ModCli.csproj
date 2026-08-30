@@ -24,6 +24,7 @@
     <None Remove="skills\**\SKILL.md" />
     <EmbeddedResource Include="SKILL.md" LogicalName="HD2ModCli.Skill.cli-router" />
     <EmbeddedResource Include="skills\library-inspection\SKILL.md" LogicalName="HD2ModCli.Skill.library-inspection" />
+	<EmbeddedResource Include="skills\library-synchronization\SKILL.md" LogicalName="HD2ModCli.Skill.library-synchronization" />
     <EmbeddedResource Include="skills\safe-import\SKILL.md" LogicalName="HD2ModCli.Skill.safe-import" />
     <EmbeddedResource Include="skills\mod-management\SKILL.md" LogicalName="HD2ModCli.Skill.mod-management" />
     <EmbeddedResource Include="skills\mod-metadata\SKILL.md" LogicalName="HD2ModCli.Skill.mod-metadata" />

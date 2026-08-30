@@ -38,6 +38,61 @@ public sealed class OptionRelationshipWriteServiceTests
 	}
 
 	[Fact]
+	public async Task SetOptionEnabledForAllDirectHostsAsync_UpdatesOnlyValidatedHosts_AndPreservesOrders()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var hostA = fixture.Node(ModNodeKind.Standard, "Host A");
+		var hostB = fixture.Node(ModNodeKind.Standard, "Host B");
+		var shared = fixture.Option("Shared", [hostA.Id, hostB.Id]);
+		var unrelated = fixture.Option("Unrelated", [hostA.Id]);
+		var snapshot = fixture.Snapshot(hostA, hostB, shared, unrelated);
+		await fixture.Store.InitializeMissingStatesAsync(
+		[
+			new OptionActivationInitialization(Key(shared.Id), Key(hostA.Id), false, 8),
+			new OptionActivationInitialization(Key(shared.Id), Key(hostB.Id), true, 27),
+			new OptionActivationInitialization(Key(unrelated.Id), Key(hostA.Id), true, 3),
+		]);
+
+		var result = await fixture.Service.SetOptionEnabledForAllDirectHostsAsync(snapshot, fixture.Store, shared.Id, true);
+
+		Assert.True(result.Changed);
+		Assert.Equal(
+			new[] { hostA.Id, hostB.Id }.OrderBy(id => id.Value).ToArray(),
+			result.After.EligibleHosts.Select(host => host.HostId).OrderBy(id => id.Value).ToArray());
+		Assert.All(result.After.EligibleHosts, host => Assert.True(host.Enabled));
+		var persisted = fixture.Store.CreateSnapshot();
+		Assert.Equal(8, persisted.GetEffectiveOrder(Key(shared.Id), Key(hostA.Id)));
+		Assert.Equal(27, persisted.GetEffectiveOrder(Key(shared.Id), Key(hostB.Id)));
+		Assert.True(persisted.IsEnabled(Key(unrelated.Id), Key(hostA.Id)));
+		Assert.Equal(3, persisted.GetEffectiveOrder(Key(unrelated.Id), Key(hostA.Id)));
+
+		var idempotent = await fixture.Service.SetOptionEnabledForAllDirectHostsAsync(snapshot, fixture.Store, shared.Id, true);
+		Assert.False(idempotent.Changed);
+	}
+
+	[Fact]
+	public async Task SetOptionEnabledForAllDirectHostsAsync_RejectsInvalidHostDeclarationsWithoutWriting()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var host = fixture.Node(ModNodeKind.Standard, "Host");
+		var option = fixture.Option("Broken", [host.Id]);
+		option = option with { Metadata = option.Metadata with { HostModGuids = [Key(host.Id), "not-a-guid"] } };
+		var snapshot = fixture.Snapshot(host, option);
+		await fixture.Store.InitializeMissingStatesAsync([new OptionActivationInitialization(Key(option.Id), Key(host.Id), false, 11)]);
+
+		var inspection = fixture.Service.GetOptionAllHostsSnapshot(snapshot, fixture.Store.CreateSnapshot(), option.Id);
+		Assert.False(inspection.CanMutate);
+		Assert.Contains(inspection.Issues, issue => issue.Code == "OptionHostDeclarationInvalid");
+
+		var exception = await Assert.ThrowsAsync<OptionRelationshipMutationException>(
+			async () => await fixture.Service.SetOptionEnabledForAllDirectHostsAsync(snapshot, fixture.Store, option.Id, true).AsTask());
+		Assert.Equal(OptionRelationshipMutationFailure.EligibleHostSetInvalid, exception.Failure);
+		var persisted = fixture.Store.CreateSnapshot();
+		Assert.False(persisted.IsEnabled(Key(option.Id), Key(host.Id)));
+		Assert.Equal(11, persisted.GetEffectiveOrder(Key(option.Id), Key(host.Id)));
+	}
+
+	[Fact]
 	public async Task MoveDirectOptionsAsync_ReordersEveryDirectOption_PreservesDisabledState_AndDoesNotCrossHost()
 	{
 		await using var fixture = await Fixture.CreateAsync();

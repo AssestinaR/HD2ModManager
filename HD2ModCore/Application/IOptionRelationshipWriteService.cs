@@ -22,6 +22,25 @@ public interface IOptionRelationshipWriteService
 		ModNodeId hostId);
 
 	/// <summary>
+	/// Returns every structurally valid direct host of one Option together with
+	/// malformed declarations, cycle blocks and orphan activation records. This
+	/// is a read-only inspection surface for safe "all hosts" operations.
+	/// </summary>
+	OptionAllHostsRelationshipSnapshot GetOptionAllHostsSnapshot(
+		LibrarySnapshot snapshot,
+		OptionActivationStore optionActivations,
+		ModNodeId optionId);
+
+	/// <summary>
+	/// Read-only counterpart for callers that already loaded activation data using
+	/// the strict snapshot loader and must not instantiate a live store.
+	/// </summary>
+	OptionAllHostsRelationshipSnapshot GetOptionAllHostsSnapshot(
+		LibrarySnapshot snapshot,
+		OptionActivationSnapshot activationStates,
+		ModNodeId optionId);
+
+	/// <summary>
 	/// Explicitly enables or disables one direct Option for one host.  An Option
 	/// shared by several hosts is changed only for <paramref name="hostId"/>.
 	/// </summary>
@@ -29,6 +48,18 @@ public interface IOptionRelationshipWriteService
 		LibrarySnapshot snapshot,
 		OptionActivationStore optionActivations,
 		ModNodeId hostId,
+		ModNodeId optionId,
+		bool enabled,
+		CancellationToken cancellationToken = default);
+
+	/// <summary>
+	/// Changes one Option for all of its currently valid direct hosts as one
+	/// atomic activation-state write. Any malformed declaration or reachable
+	/// cycle blocks the whole request; no partial host update is allowed.
+	/// </summary>
+	ValueTask<OptionAllHostsMutationSnapshot> SetOptionEnabledForAllDirectHostsAsync(
+		LibrarySnapshot snapshot,
+		OptionActivationStore optionActivations,
 		ModNodeId optionId,
 		bool enabled,
 		CancellationToken cancellationToken = default);
@@ -67,6 +98,46 @@ public sealed record OptionRelationshipMutationSnapshot(
 	bool Changed);
 
 /// <summary>
+/// The precise all-host scope of one Option. Only a Standard or Option node
+/// connected by a valid direct H -> O relation is eligible. Orphan persisted
+/// state is reported for audit but never changed by the bulk operation.
+/// </summary>
+public sealed record OptionAllHostsRelationshipSnapshot(
+	ModNodeId OptionId,
+	IReadOnlyList<OptionAllHostsHostState> EligibleHosts,
+	IReadOnlyList<OptionAllHostsIssue> Issues,
+	IReadOnlyList<OptionAllHostsOrphanState> OrphanActivationStates)
+{
+	public bool CanMutate => EligibleHosts.Count != 0 && Issues.Count == 0;
+}
+
+public sealed record OptionAllHostsHostState(
+	ModNodeId HostId,
+	string HostName,
+	ModNodeKind HostKind,
+	bool Enabled,
+	bool HasExplicitActivationState,
+	int? EffectiveOrder);
+
+public sealed record OptionAllHostsIssue(
+	string Code,
+	string Message,
+	ModNodeId? HostId = null,
+	IReadOnlyList<ModNodeId>? CyclePath = null);
+
+public sealed record OptionAllHostsOrphanState(
+	string StoredOptionId,
+	string StoredHostId,
+	bool Enabled,
+	int? EffectiveOrder,
+	string Reason);
+
+public sealed record OptionAllHostsMutationSnapshot(
+	OptionAllHostsRelationshipSnapshot Before,
+	OptionAllHostsRelationshipSnapshot After,
+	bool Changed);
+
+/// <summary>
 /// The persisted activation state of one Option under one specific host.
 /// <see cref="HasExplicitActivationState"/> distinguishes an absent historical
 /// state from an explicitly disabled state; callers can therefore avoid
@@ -95,6 +166,8 @@ public enum OptionRelationshipMutationFailure
 	EmptyOptionSelection,
 	DuplicateOptionSelection,
 	InvalidTargetPosition,
+	EligibleHostSetInvalid,
+	EligibleHostsMissing,
 }
 
 /// <summary>

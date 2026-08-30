@@ -5,7 +5,7 @@ description: Inspect an HD2 Mod Manager library, Mod relationships, activation s
 
 # HD2 Mod Library Inspection
 
-Use this Skill only for read-only questions.
+Use this Skill only for read-only library questions. It never imports, deletes, moves, deploys, or analyzes packages.
 
 ```powershell
 hd2mod capabilities --json

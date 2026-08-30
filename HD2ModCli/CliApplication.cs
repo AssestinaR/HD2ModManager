@@ -61,6 +61,56 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateStatus(workspace), () => FormatStatus(workspace));
 			return 0;
 		}
+		if (Matches(command, "library", "sync", "inspect"))
+		{
+			EnsureLibrarySyncInspectOptions(invocation.Options);
+			var build = await CliLibrarySynchronizationPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = CreateLibrarySyncPlanProjection(build.Document) },
+				() => FormatLibrarySyncInspection(build.Document));
+			return 0;
+		}
+		if (Matches(command, "library", "sync", "plan"))
+		{
+			EnsureLibrarySyncPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "library sync plan");
+			var build = await CliLibrarySynchronizationPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), synchronization = CreateLibrarySyncPlanProjection(build.Document) },
+				() => FormatLibrarySyncPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "library", "sync", "validate"))
+		{
+			EnsureLibrarySyncValidateOptions(invocation.Options);
+			var document = await CliLibrarySynchronizationPlanArtifacts.ReadDocumentAsync(RequireLibrarySyncPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliLibrarySynchronizationPlanArtifacts
+				.ValidateAsync(document, CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateLibrarySyncValidationProjection(validation) },
+				() => FormatLibrarySyncValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "library", "sync", "apply"))
+		{
+			EnsureLibrarySyncApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("LibrarySyncApplyConfirmationRequired", "library sync apply 会更新 library.json；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliLibrarySynchronizationPlanArtifacts.ReadDocumentAsync(RequireLibrarySyncPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliLibrarySynchronizationExecutor
+				.ApplyAsync(document, CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateLibrarySyncExecutionProjection(execution) },
+				() => FormatLibrarySyncExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (Matches(command, "mod", "list"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -145,6 +195,29 @@ public static class CliApplication
 				new { ok = result.Status == CliModDeletionStatus.Completed, deletion = CreateDeletionExecutionProjection(result) },
 				() => FormatDeletionExecution(result));
 			return result.Status == CliModDeletionStatus.Completed ? 0 : 2;
+		}
+		if (command.Length == 3 && command[0] == "option" && command[1] == "show")
+		{
+			EnsureOptionShowOptions(invocation.Options);
+			var (_, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var option = CliProjections.ResolveMod(state.Snapshot.Nodes, invocation.Command[2]);
+			var scope = CliLibraryMutationOperations.InspectOptionAllHosts(state, invocation.Command[2]);
+			Emit(invocation.Options,
+				new { option = CreateOptionAllHostsInspectionProjection(option, scope), issues = state.ReadIssues },
+				() => FormatOptionAllHostsInspection(option, scope));
+			return scope.CanMutate ? 0 : 2;
+		}
+		if (command.Length == 3 && command[0] == "option" && command[1] is "enable-all" or "disable-all")
+		{
+			EnsureOptionAllHostsMutationOptions(invocation.Options, $"option {command[1]}");
+			var enabled = command[1] == "enable-all";
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.SetOptionEnabledForAllHostsAsync(session, invocation.Command[2], enabled)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateOptionAllHostsMutationProjection(result) },
+				() => FormatOptionAllHostsMutation(result));
+			return 0;
 		}
 		if (command.Length == 3 && command[0] == "option" && command[1] is "enable" or "disable")
 		{
@@ -703,6 +776,50 @@ public static class CliApplication
 	private static void EnsureDeactivationApplyOptions(CliGlobalOptions options)
 		=> EnsureDeploymentApplyOptions(options);
 
+	private static void EnsureLibrarySyncInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library sync inspect 仅接受 --manager-root、--library 与 --json。 ");
+		}
+	}
+
+	private static void EnsureLibrarySyncPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library sync plan 仅接受 --manager-root、--library、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureLibrarySyncValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library sync validate 仅接受 --plan、--manager-root、--library 与 --json。 ");
+		}
+	}
+
+	private static void EnsureLibrarySyncApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library sync apply 仅接受 --plan、--manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
 	private static void EnsurePatchRepackagingInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -851,6 +968,28 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --set-active 或 --with-unshared-options。");
 	}
 
+	private static void EnsureOptionShowOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"option show 仅接受选项标识、--library/--manager-root 与 --json。 ");
+		}
+	}
+
+	private static void EnsureOptionAllHostsMutationOptions(CliGlobalOptions options, string command)
+	{
+		EnsureMutationBoundary(options, command);
+		if (!string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{command} 只作用于该选项的全部已验证直属主体；不接受 --host、--position、--set-active 或 --with-unshared-options。 ");
+		}
+	}
+
 	private static void EnsureProfileMutationOptions(
 		CliGlobalOptions options,
 		string command,
@@ -950,6 +1089,13 @@ public static class CliApplication
 		return options.Plan;
 	}
 
+	private static string RequireLibrarySyncPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("LibrarySyncPlanRequired", "请通过 --plan <库对账计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
 	private static string RequirePatchResourcePlan(CliGlobalOptions options)
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
@@ -1022,6 +1168,21 @@ public static class CliApplication
 		]);
 	}
 
+	private static string FormatOptionAllHostsInspection(ModNode option, OptionAllHostsRelationshipSnapshot scope)
+	{
+		var state = scope.CanMutate ? "可批量修改" : "不可批量修改";
+		var enabled = scope.EligibleHosts.Count(host => host.Enabled);
+		return $"选项主体范围：{option.Metadata.Name}；{state}；已验证直属主体 {scope.EligibleHosts.Count}；已启用 {enabled}；问题 {scope.Issues.Count}；孤儿状态 {scope.OrphanActivationStates.Count}。";
+	}
+
+	private static string FormatOptionAllHostsMutation(CliOptionAllHostsMutationResult result)
+	{
+		var hosts = result.Mutation.After.EligibleHosts.Count;
+		if (!result.Mutation.Changed)
+			return $"选项“{result.Option.Metadata.Name}”的 {hosts} 个已验证直属主体已处于目标状态。未自动部署。";
+		return $"已为 {hosts} 个已验证直属主体{(result.RequestedEnabled ? "启用" : "禁用")}选项“{result.Option.Metadata.Name}”。未自动部署。";
+	}
+
 	private static string FormatProfileList(LibrarySnapshot snapshot)
 	{
 		var lines = snapshot.Profiles
@@ -1053,6 +1214,47 @@ public static class CliApplication
 			$"计划条目：{plan.Items.Count}",
 			$"阻断诊断：{blocking}",
 		]);
+	}
+
+	private static string FormatLibrarySyncInspection(CliLibrarySynchronizationPlanDocument document)
+	{
+		var inspection = document.Inspection;
+		return $"库对账检查：新增 {inspection.Added.Count}；更新 {inspection.Changed.Count}；缺失 {inspection.Missing.Count}；可写快照变更：{(inspection.HasSnapshotChanges ? "是" : "否")}。";
+	}
+
+	private static string FormatLibrarySyncPlan(CliLibrarySynchronizationPlanDocument document, string outputPath)
+	{
+		var inspection = document.Inspection;
+		var blocking = inspection.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出库对账计划：{outputPath}",
+			$"新增 {inspection.Added.Count}；更新 {inspection.Changed.Count}；缺失 {inspection.Missing.Count}；已冻结新增 ID：{inspection.Added.Count}",
+			$"阻断诊断：{blocking}。该流程只会更新 library.json 的节点记录，不会修改物理 Mod、Profile、激活状态或部署。",
+		]);
+	}
+
+	private static string FormatLibrarySyncValidation(CliLibrarySynchronizationValidationResult validation)
+	{
+		var status = validation.IsValid ? "库对账验证通过。" : "库对账验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatLibrarySyncExecution(CliLibrarySynchronizationExecutionResult execution)
+	{
+		if (execution.Success)
+		{
+			return execution.Changed
+				? $"库对账完成：新增 {execution.AddedNodeIds.Count}；更新 {execution.ChangedNodeIds.Count}。只更新了 library.json 节点记录。"
+				: "库对账完成：当前库无需更新，未写入任何文件。";
+		}
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "库对账未完成；未写入任何文件，请查看 JSON 结果或日志。"
+			: $"库对账被拒绝：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
 	private static object CreateDeploymentPlanProjection(CliDeploymentPlanDocument document)
@@ -1124,6 +1326,44 @@ public static class CliApplication
 			recomputedPlanId = validation.Current?.Document.PlanId,
 			current = validation.Current is null ? null : CreateDeactivationPlanProjection(validation.Current.Document),
 			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateLibrarySyncPlanProjection(CliLibrarySynchronizationPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			request = document.Request,
+			inspection = document.Inspection,
+		};
+
+	private static object CreateLibrarySyncValidationProjection(CliLibrarySynchronizationValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateLibrarySyncPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateLibrarySyncExecutionProjection(CliLibrarySynchronizationExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.Changed,
+			execution.AddedNodeIds,
+			execution.ChangedNodeIds,
+			execution.MissingNodeIds,
+			diagnostics = execution.Diagnostics,
+			physicalFiles = "not-modified",
+			profiles = "not-modified",
+			activationState = "not-modified",
+			derivedData = "not-refreshed",
+			deployment = "not-performed",
 		};
 
 	private static object CreatePatchResourceRepackagingPlanProjection(CliPatchResourceRepackagingPlanDocument document)
@@ -1324,6 +1564,77 @@ public static class CliApplication
 				position = state.Position + 1,
 			}).ToArray(),
 			deployment = "not-performed",
+		};
+
+	private static object CreateOptionAllHostsInspectionProjection(
+		ModNode option,
+		OptionAllHostsRelationshipSnapshot scope)
+		=> new
+		{
+			optionId = CliProjections.FormatId(option.Id),
+			optionName = option.Metadata.Name,
+			canMutate = scope.CanMutate,
+			summary = new
+			{
+				eligibleHostCount = scope.EligibleHosts.Count,
+				enabledHostCount = scope.EligibleHosts.Count(host => host.Enabled),
+				disabledHostCount = scope.EligibleHosts.Count(host => !host.Enabled),
+				missingExplicitStateCount = scope.EligibleHosts.Count(host => !host.HasExplicitActivationState),
+				issueCount = scope.Issues.Count,
+				orphanActivationStateCount = scope.OrphanActivationStates.Count,
+			},
+			eligibleDirectHosts = scope.EligibleHosts.Select(host => new
+			{
+				hostId = CliProjections.FormatId(host.HostId),
+				host.HostName,
+				hostKind = host.HostKind.ToString().ToLowerInvariant(),
+				host.Enabled,
+				host.HasExplicitActivationState,
+				host.EffectiveOrder,
+			}).ToArray(),
+			issues = scope.Issues.Select(issue => new
+			{
+				issue.Code,
+				issue.Message,
+				hostId = issue.HostId is { } hostId ? CliProjections.FormatId(hostId) : null,
+				cyclePath = issue.CyclePath?.Select(CliProjections.FormatId).ToArray() ?? Array.Empty<string>(),
+			}).ToArray(),
+			orphanActivationStates = scope.OrphanActivationStates,
+		};
+
+	private static object CreateOptionAllHostsMutationProjection(CliOptionAllHostsMutationResult result)
+		=> new
+		{
+			optionId = CliProjections.FormatId(result.Option.Id),
+			optionName = result.Option.Metadata.Name,
+			requestedEnabled = result.RequestedEnabled,
+			changed = result.Mutation.Changed,
+			before = CreateOptionAllHostsScopeProjection(result.Mutation.Before),
+			after = CreateOptionAllHostsScopeProjection(result.Mutation.After),
+			deployment = "not-performed",
+		};
+
+	private static object CreateOptionAllHostsScopeProjection(OptionAllHostsRelationshipSnapshot scope)
+		=> new
+		{
+			canMutate = scope.CanMutate,
+			eligibleDirectHosts = scope.EligibleHosts.Select(host => new
+			{
+				hostId = CliProjections.FormatId(host.HostId),
+				host.HostName,
+				hostKind = host.HostKind.ToString().ToLowerInvariant(),
+				host.Enabled,
+				host.HasExplicitActivationState,
+				host.EffectiveOrder,
+			}).ToArray(),
+			issues = scope.Issues.Select(issue => new
+			{
+				issue.Code,
+				issue.Message,
+				hostId = issue.HostId is { } hostId ? CliProjections.FormatId(hostId) : null,
+				cyclePath = issue.CyclePath?.Select(CliProjections.FormatId).ToArray() ?? Array.Empty<string>(),
+			}).ToArray(),
+			orphanActivationStates = scope.OrphanActivationStates,
 		};
 
 	private static object CreateProfileMutationProjection(CliProfileMutationExecutionResult result)
@@ -1657,17 +1968,24 @@ HD2 Mod Manager 命令行
 
 用法：
   hd2mod capabilities --json
-  hd2mod status --manager-root <管理器目录> --json
-  hd2mod mod list --library <Mod库目录> --json
+	  hd2mod status --manager-root <管理器目录> --json
+	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
+	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
+	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
+	  hd2mod library sync apply --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --confirm --json
+	  hd2mod mod list --library <Mod库目录> --json
   hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod delete preview <Mod GUID或唯一前缀> [...] [--with-unshared-options] --library <Mod库目录> --json
 	  hd2mod mod delete <Mod GUID或唯一前缀> [...] [--with-unshared-options] --manager-root <管理器目录> --confirm --json
+	  hd2mod option show <Option GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod option enable <Option GUID或唯一前缀> --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod option disable <Option GUID或唯一前缀> --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
-  hd2mod option move <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
+	  hd2mod option enable-all <Option GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod option disable-all <Option GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod option move <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
 	  hd2mod option insert <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
   hd2mod profile list --library <Mod库目录> --json
 	  hd2mod profile show [名称或GUID前缀] --library <Mod库目录> --json
@@ -1723,6 +2041,6 @@ HD2 Mod Manager 命令行
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并和 Same-key 修复都只写入新的库外目录；不会替换、导入或部署结果。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并和 Same-key 修复都只写入新的库外目录；不会替换、导入或部署结果。
 """;
 }

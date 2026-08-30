@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.9";
+	public const string ProtocolVersion = "1.10";
 
 	public static object CreateCapabilities()
 		=> new
@@ -18,6 +18,10 @@ public static class CliProjections
 				new { name = "version", safety = "read-only", description = "读取 CLI 与协议版本" },
 				new { name = "capabilities", safety = "read-only", description = "读取当前可用命令与安全边界" },
 				new { name = "status", safety = "read-only", description = "读取管理器、Mod 库与 GameData 路径状态" },
+				new { name = "library sync inspect", safety = "read-only", description = "检查已登记 Mod 与库目录实际 Patch 的差异，不写入任何文件" },
+				new { name = "library sync plan", safety = "explicit-export", description = "导出固定新增 Mod ID 与输入指纹的库对账计划" },
+				new { name = "library sync validate", safety = "read-only", description = "重扫库目录并拒绝计划、Patch 或待删除状态漂移" },
+				new { name = "library sync apply", safety = "explicit-confirm", description = "仅按验证通过的计划更新 library.json 的节点 Patch 记录；不导入、删除或部署" },
 				new { name = "mod list", safety = "read-only", description = "列出已登记 Mod" },
 				new { name = "mod show", safety = "read-only", description = "读取指定 Mod、选项关系和激活状态" },
 				new { name = "mod rename", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时重命名一个 Mod" },
@@ -27,6 +31,9 @@ public static class CliProjections
 				new { name = "mod delete", safety = "explicit-confirm", description = "删除已审核 Mod；可显式带走无共享的递归 Option，永不自动部署" },
 				new { name = "option enable", safety = "explicit-confirm", description = "为明确指定的主体启用一个直属 Option" },
 				new { name = "option disable", safety = "explicit-confirm", description = "为明确指定的主体禁用一个直属 Option" },
+				new { name = "option show", safety = "read-only", description = "检查一个 Option 的所有声明主体、激活状态与阻断原因" },
+				new { name = "option enable-all", safety = "explicit-confirm", description = "仅在全部声明主体均为有效直属关系时，为一个 Option 启用所有主体范围" },
+				new { name = "option disable-all", safety = "explicit-confirm", description = "仅在全部声明主体均为有效直属关系时，为一个 Option 禁用所有主体范围" },
 				new { name = "option move", safety = "explicit-confirm", description = "在明确主体的直属 Option 范围内重排一个或多个 Option" },
 				new { name = "option insert", safety = "explicit-confirm", description = "option move 的语法别名；不会把 Option 挂到新主体" },
 				new { name = "profile list", safety = "read-only", description = "列出配置文件" },
@@ -80,7 +87,8 @@ public static class CliProjections
 				"import apply 只会在计划复核成功、目标库可信、管理器未运行且显式 --confirm 时写入 Mod 库。",
 				"import apply 不自动部署、不修改 Profile、不写 Patch 字节，也不会启动昂贵的派生信息分析。",
 				"Mod 元数据与 Option 写入同样要求 --confirm、已有 library.json、所有桌面端实例关闭，以及库根目录的跨进程写租约。",
-				"Option 启停和排序必须显式指定 --host；CLI 不提供“所有主体”或隐式主体猜测。",
+				"Option 单主体启停和排序必须显式指定 --host；option enable-all/disable-all 只会在所有声明主体均存在、类型正确且为直属关系时整批执行，绝不猜测或部分写入。",
+				"library sync 只对账已存在的库目录与 library.json：它不会解析导入包树、不移动或删除文件、不改 Profile/激活状态，也会在已登记物理目录缺失时阻断。",
 				"Profile 写入要求 --confirm，且只更新 Mod 库中的配置状态；永不隐式部署或触碰 GameData。",
 				"deploy plan / validate 完全只读；deploy apply 要求 --confirm、桌面端和游戏均已退出、库与 GameData 双租约，以及 activation-state.json 对现有 Patch 的完整归属证明。",
 				"CLI 不会接管、清空或覆盖未登记 Patch；部署失败时仅恢复本次事务移动的已证明管理器 Patch。",

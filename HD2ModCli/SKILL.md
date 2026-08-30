@@ -14,9 +14,10 @@ hd2mod agent skills export <skill-name> --output .\.agents\skills
 ```
 
 - `library-inspection` — read-only library, Option and Profile inspection.
+- `library-synchronization` — reviewed reconciliation of library directories and `library.json` Patch facts.
 - `safe-import` — reviewed source import.
 - `mod-metadata` — Mod name and notes.
-- `option-management` — direct Option state and order for one host.
+- `option-management` — direct Option state and order for one host, or all strictly validated direct hosts.
 - `safe-library-deletion` — previewed relationship-aware deletion.
 - `profile-management` — Profile lifecycle and logical order.
 - `safe-deployment` — audited GameData deployment or tracked deactivation.
