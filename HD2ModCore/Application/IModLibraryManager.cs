@@ -10,6 +10,9 @@ public interface IModLibraryManager
 	ValueTask<LibrarySnapshot> UpsertNodeAsync(ModNode node, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> DeleteNodeAsync(ModNodeId nodeId, bool deleteStoredFiles, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> DeleteNodesAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default);
+	ValueTask<ModLibraryDeletionResult> DeleteNodesWithResultAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default);
+	ValueTask<ModStoragePendingCleanupResult> RecoverPendingStoredDeletionsAsync(CancellationToken cancellationToken = default);
+	ValueTask<IReadOnlySet<string>> GetPendingStoredDeletionSynchronizationExclusionsAsync(CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> UpsertProfileAsync(Profile profile, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> DeleteProfileAsync(ProfileId profileId, CancellationToken cancellationToken = default);
 	ValueTask<LibrarySnapshot> RenameProfileAsync(ProfileId profileId, string newName, CancellationToken cancellationToken = default);

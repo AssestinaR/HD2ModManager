@@ -1102,8 +1102,11 @@ namespace HD2ModManager.ViewModels
         {
             var decoration = _library.Get(decorationId);
             if (decoration?.IsDecoration != true) return;
-            if (!await _library.RemoveAsync(decorationId).ConfigureAwait(true)) return;
-            _notifications?.Show($"已删除：{decoration.Name}");
+            var deletion = await _library.RemoveAsync(decorationId).ConfigureAwait(true);
+            _notifications?.Show(
+                ModLibraryService.DescribeDeletionResult(deletion),
+                deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
+            if (!deletion.RemovedNodeIds.Any(id => string.Equals(id.Value.ToString("N"), decorationId, StringComparison.OrdinalIgnoreCase))) return;
             Refresh();
         }
 
@@ -1541,9 +1544,12 @@ namespace HD2ModManager.ViewModels
                 $"确定删除 Mod“{name}”？\n这会同时删除库中的已存储文件。");
             if (targets is null) return;
             ThumbnailService.CancelPendingGeneration();
-            if (await _library.RemoveManyAsync(targets).ConfigureAwait(true) == 0) return;
+            var deletion = await _library.RemoveManyAsync(targets).ConfigureAwait(true);
+            _notifications?.Show(
+                ModLibraryService.DescribeDeletionResult(deletion),
+                deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
+            if (!deletion.RemovedNodeIds.Any(id => string.Equals(id.Value.ToString("N"), ModId, StringComparison.OrdinalIgnoreCase))) return;
             Mod = null;
-            _notifications?.Show($"已删除：{name}");
             var shell = System.Windows.Application.Current?.MainWindow as HD2ModManager.MainWindow;
             var vm = shell?.DataContext as ShellViewModel;
             vm?.Navigate(HD2ModManager.Enums.WorkspaceMode.LibraryOnly);

@@ -1514,9 +1514,17 @@ namespace HD2ModManager.ViewModels
                 task.MarkRunning("正在删除");
                 try
                 {
-                    var removed = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
+                    var deletion = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
+                    if (deletion.RemovedNodeIds.Count == 0 && deletion.HasFailures)
+                    {
+                        task.MarkFailed("无法删除所选 Mod");
+                        _notificationService.Show(ModLibraryService.DescribeDeletionResult(deletion), NotificationLevel.Error);
+                        return;
+                    }
                     task.MarkCompleted();
-                    _notificationService.Show($"已删除：{removed} 个 Mod");
+                    _notificationService.Show(
+                        ModLibraryService.DescribeDeletionResult(deletion),
+                        deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
                 }
                 catch (OperationCanceledException) { task.MarkCanceled(); return; }
                 catch (Exception exception) { task.MarkFailed(exception.Message); return; }
@@ -1663,9 +1671,17 @@ namespace HD2ModManager.ViewModels
             task.MarkRunning("正在删除");
             try
             {
-                var removed = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
+                var deletion = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
+                if (deletion.RemovedNodeIds.Count == 0 && deletion.HasFailures)
+                {
+                    task.MarkFailed("无法删除所选 Mod");
+                    _notificationService.Show(ModLibraryService.DescribeDeletionResult(deletion), NotificationLevel.Error);
+                    return;
+                }
                 task.MarkCompleted();
-                _notificationService.Show($"已删除：{removed} 个 Mod");
+                _notificationService.Show(
+                    ModLibraryService.DescribeDeletionResult(deletion),
+                    deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
                 _selection.Clear();
                 RefreshCurrentPage();
             }

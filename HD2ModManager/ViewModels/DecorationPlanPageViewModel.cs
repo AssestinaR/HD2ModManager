@@ -21,6 +21,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     private readonly BackgroundTaskService? _backgroundTasks;
     private readonly string? _editingDecorationId;
     private readonly Guid _sourceFactsSessionId = Guid.NewGuid();
+    private readonly ModListItemProjectionController<DecorationTargetModItem> _targetMods;
     private string _targetBodyVariant = "双身形";
     private string _dualVariantMode = "自动从来源分配";
     private string _targetPart = "Torso";
@@ -49,6 +50,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
         BodyVariants = ["双身形", "仅健壮", "仅纤细"];
         DualVariantModes = ["自动从来源分配", "来源全部附加到每一个身形"];
         TargetParts = ["Head", "Torso", "Hips", "LeftArm", "RightArm", "LeftLeg", "RightLeg"];
+        _targetMods = new ModListItemProjectionController<DecorationTargetModItem>(item => item.SelectionKey);
         GenerateCommand = new RelayCommand(async _ => await GenerateAsync());
         BrowseOutputCommand = new RelayCommand(BrowseOutput);
         ToggleTargetSearchCommand = new RelayCommand(() =>
@@ -66,7 +68,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
     public string SubmitText => IsEditing ? "保存" : "生成";
     public bool ShowOutputSettings => !IsEditing;
     public ObservableCollection<DecorationSourceUnitItem> SourceUnits { get; } = new();
-    public BulkObservableCollection<DecorationTargetModItem> TargetMods { get; } = new(item => item.SelectionKey);
+    public ModListProjectionSource<DecorationTargetModItem> TargetMods => _targetMods.Items;
     public IReadOnlyList<string> BodyVariants { get; }
     public IReadOnlyList<string> DualVariantModes { get; }
     public IReadOnlyList<string> TargetParts { get; }
@@ -117,6 +119,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
         // Source facts are intentionally retained while this editor is open so
         // toggling selections does not re-read the same Patch Units.
         _library.InformationReader.ClearSession(_sourceFactsSessionId);
+        _targetMods.Dispose();
         base.Dispose();
     }
 
@@ -201,7 +204,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
             && (query.Length == 0
                 || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
                 || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true)));
-        TargetMods.ReplaceWith(visible, ListTransitionKind.Filter);
+        _targetMods.Submit(visible, _allTargetMods);
     }
 
     public void ApplyTargetSelection(IReadOnlyList<string> selectedKeys)

@@ -375,3 +375,59 @@ public sealed record ModListStateCommittedEventArgs(
     int ChangedRows,
     int PresentedCount,
     int CachedRowCount);
+
+// Pages that already own stable row view-model instances still need the same
+// snapshot, debounce, and presentation boundary as the main library/profile
+// lists. This adapter keeps those pages out of direct mutable collection
+// binding without forcing each one to duplicate a state DTO.
+public sealed class ModListItemProjectionController<TItem> : IDisposable
+    where TItem : class
+{
+    private readonly Func<TItem, string> _keySelector;
+    private readonly ModListStateController<TItem, TItem> _controller;
+
+    public ModListItemProjectionController(
+        Func<TItem, string> keySelector,
+        Func<TItem, string>? versionSelector = null,
+        Action<TItem, TItem>? applyState = null,
+        TimeSpan? debounceInterval = null,
+        Dispatcher? dispatcher = null)
+    {
+        _keySelector = keySelector ?? throw new ArgumentNullException(nameof(keySelector));
+        _controller = new ModListStateController<TItem, TItem>(
+            _keySelector,
+            versionSelector ?? _keySelector,
+            item => item,
+            applyState ?? static (_, _) => { },
+            _keySelector,
+            debounceInterval,
+            dispatcher);
+    }
+
+    public ModListProjectionSource<TItem> Items => _controller.Items;
+    public int VisibleCount => _controller.VisibleCount;
+
+    public void Submit(
+        IEnumerable<TItem> visibleItems,
+        IEnumerable<TItem>? retainedItems = null,
+        bool commitImmediately = false)
+    {
+        ArgumentNullException.ThrowIfNull(visibleItems);
+        var visible = visibleItems as IReadOnlyList<TItem> ?? visibleItems.ToArray();
+        var retainedKeys = retainedItems?
+            .Select(_keySelector)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToArray();
+        _controller.Submit(visible, retainedKeys, commitImmediately);
+    }
+
+    public void SubmitContent(IEnumerable<TItem> items, bool commitImmediately = false)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        _controller.SubmitContent(items, commitImmediately);
+    }
+
+    public void Flush() => _controller.Flush();
+
+    public void Dispose() => _controller.Dispose();
+}

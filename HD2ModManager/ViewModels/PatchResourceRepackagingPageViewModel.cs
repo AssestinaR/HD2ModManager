@@ -17,6 +17,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
     private readonly string _sourceModId;
     private readonly List<PatchResourceRepackagingModItem> _allModItems = [];
     private readonly List<PatchResourceAssetRowViewModel> _allAssetRows = [];
+    private readonly ModListItemProjectionController<PatchResourceRepackagingModItem> _sourceMods;
     private readonly Dictionary<AssetKey, int> _conflictCursors = new();
     private CancellationTokenSource? _inspectionCancellation;
     private PatchResourceRepackagingInspection? _inspection;
@@ -44,7 +45,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
         _repackaging = CoreServices.CreatePatchResourceRepackagingService();
         Title = "Patch 资源重打包";
 
-        SourceMods = new BulkObservableCollection<PatchResourceRepackagingModItem>(item => item.SelectionKey);
+        _sourceMods = new ModListItemProjectionController<PatchResourceRepackagingModItem>(item => item.SelectionKey);
         AssetRows = new BulkObservableCollection<PatchResourceAssetRowViewModel>(item => item.SelectionKey);
         BrowseOutputCommand = new RelayCommand(BrowseOutput);
         GenerateCommand = new RelayCommand(async _ => await GenerateAsync(), _ => CanGenerate);
@@ -60,7 +61,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
         _ = LoadAsync();
     }
 
-    public BulkObservableCollection<PatchResourceRepackagingModItem> SourceMods { get; }
+    public ModListProjectionSource<PatchResourceRepackagingModItem> SourceMods => _sourceMods.Items;
     public BulkObservableCollection<PatchResourceAssetRowViewModel> AssetRows { get; }
     public IReadOnlyList<PatchResourcePatchGroup> PatchGroups => _inspection?.PatchGroups ?? Array.Empty<PatchResourcePatchGroup>();
 
@@ -70,7 +71,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
         set
         {
             if (!SetField(ref _modQuery, value)) return;
-            ApplyModFilter(ListTransitionKind.Filter);
+            ApplyModFilter();
         }
     }
 
@@ -139,7 +140,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
                 .ToArray();
             _allModItems.Clear();
             _allModItems.AddRange(items);
-            ApplyModFilter(ListTransitionKind.Refresh);
+            ApplyModFilter();
 
             var source = items.FirstOrDefault(item => string.Equals(item.Mod.Guid, _sourceModId, StringComparison.OrdinalIgnoreCase));
             if (source is null && items.Length != 0) source = items[0];
@@ -163,7 +164,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
         _ = RefreshInspectionAsync();
     }
 
-    private void ApplyModFilter(ListTransitionKind kind)
+    private void ApplyModFilter()
     {
         var query = ModQuery.Trim();
         var visible = _allModItems.Where(item =>
@@ -171,7 +172,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
             || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
             || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true)
             || item.AssetSummaryText.Contains(query, StringComparison.OrdinalIgnoreCase));
-        SourceMods.ReplaceWith(visible, kind);
+        _sourceMods.Submit(visible, _allModItems);
     }
 
     private async Task RefreshInspectionAsync()
@@ -411,6 +412,7 @@ public sealed class PatchResourceRepackagingPageViewModel : PageViewModel
     {
         _inspectionCancellation?.Cancel();
         _inspectionCancellation?.Dispose();
+        _sourceMods.Dispose();
         base.Dispose();
     }
 }

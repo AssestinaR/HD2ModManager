@@ -16,6 +16,7 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
     private readonly BackgroundTaskService? _backgroundTasks;
     private readonly string _initialSourceModId;
     private readonly List<HelmetMergeSourceModItem> _allSourceMods = [];
+    private readonly ModListItemProjectionController<HelmetMergeSourceModItem> _sourceMods;
     private CancellationTokenSource? _inspectionCancellation;
     private int _inspectionGeneration;
     private string _sourceQuery = string.Empty;
@@ -36,7 +37,7 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
         _initialSourceModId = initialSourceModId ?? string.Empty;
         Title = "头盔合并到盔甲并输出";
 
-        SourceMods = new BulkObservableCollection<HelmetMergeSourceModItem>(item => item.SelectionKey);
+        _sourceMods = new ModListItemProjectionController<HelmetMergeSourceModItem>(item => item.SelectionKey);
         ModelSets = new BulkObservableCollection<HelmetMergeModelSetItem>(item => item.SelectionKey);
         BrowseOutputCommand = new RelayCommand(BrowseOutput);
         GenerateCommand = new RelayCommand(async _ => await GenerateAsync(), _ => CanGenerate);
@@ -59,7 +60,7 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
         _ = ReloadModelSetsAsync();
     }
 
-    public BulkObservableCollection<HelmetMergeSourceModItem> SourceMods { get; }
+    public ModListProjectionSource<HelmetMergeSourceModItem> SourceMods => _sourceMods.Items;
     public BulkObservableCollection<HelmetMergeModelSetItem> ModelSets { get; }
     public RelayCommand BrowseOutputCommand { get; }
     public RelayCommand GenerateCommand { get; }
@@ -110,6 +111,7 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
         _inspectionCancellation?.Cancel();
         _inspectionCancellation?.Dispose();
         _inspectionCancellation = null;
+        _sourceMods.Dispose();
         base.Dispose();
     }
 
@@ -119,7 +121,7 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
         var visible = _allSourceMods.Where(item => query.Length == 0
             || item.Name.Contains(query, StringComparison.OrdinalIgnoreCase)
             || (item.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true));
-        SourceMods.ReplaceWith(visible, ListTransitionKind.Filter);
+        _sourceMods.Submit(visible, _allSourceMods);
     }
 
     private void OnSourceSelectionChanged()

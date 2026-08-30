@@ -9,6 +9,9 @@ public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirec
 	public string ImportTempDirectory => Path.Combine(Directory.GetParent(ModsDirectory)?.FullName ?? AppRootDirectory, "tmp");
 	public string ModsDirectory => string.IsNullOrWhiteSpace(ModsRootDirectory) ? Path.Combine(AppRootDirectory, "mods") : Path.GetFullPath(ModsRootDirectory);
 	public string LibraryPath => Path.Combine(ModsDirectory, "library.json");
+	// Pending deletion metadata belongs to the library because it describes physical roots under this library.
+	public string PendingDeletionPath => Path.Combine(ModsDirectory, "pending-deletions.json");
+	public string DeletionTrashDirectory => Path.Combine(ModsDirectory, ".hd2modmanager-trash");
 	// Profiles belong to a Mod library because their entries reference that library's node IDs.
 	public string ProfilesPath => Path.Combine(ModsDirectory, "profiles.json");
 	public string LegacyProfilesPath => Path.Combine(DataDirectory, "profiles.json");

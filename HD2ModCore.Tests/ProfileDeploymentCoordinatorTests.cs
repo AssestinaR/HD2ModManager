@@ -191,6 +191,12 @@ public sealed class ProfileDeploymentCoordinatorTests
 		public ValueTask<LibrarySnapshot> UpsertNodeAsync(ModNode node, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
 		public ValueTask<LibrarySnapshot> DeleteNodeAsync(ModNodeId nodeId, bool deleteStoredFiles, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
 		public ValueTask<LibrarySnapshot> DeleteNodesAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
+		public ValueTask<ModLibraryDeletionResult> DeleteNodesWithResultAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult(new ModLibraryDeletionResult(Snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>()));
+		public ValueTask<ModStoragePendingCleanupResult> RecoverPendingStoredDeletionsAsync(CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult(new ModStoragePendingCleanupResult(0, 0, Array.Empty<string>()));
+		public ValueTask<IReadOnlySet<string>> GetPendingStoredDeletionSynchronizationExclusionsAsync(CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult<IReadOnlySet<string>>(new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 		public ValueTask<LibrarySnapshot> UpsertProfileAsync(Profile profile, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
 		public ValueTask<LibrarySnapshot> DeleteProfileAsync(ProfileId profileId, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);
 		public ValueTask<LibrarySnapshot> RenameProfileAsync(ProfileId profileId, string newName, CancellationToken cancellationToken = default) => ValueTask.FromResult(Snapshot);

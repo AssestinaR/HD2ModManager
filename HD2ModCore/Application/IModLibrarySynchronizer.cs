@@ -9,5 +9,6 @@ public interface IModLibrarySynchronizer
 	ValueTask<ModLibrarySynchronizationResult> SynchronizeAsync(
 		LibrarySnapshot snapshot,
 		string modsRootDirectory,
+		IReadOnlySet<string>? ignoredRelativePaths = null,
 		CancellationToken cancellationToken = default);
 }

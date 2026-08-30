@@ -83,6 +83,83 @@ public sealed class ModLibraryManagerTests
 	}
 
 	[Fact]
+	public async Task DeleteNodesWithResultAsync_ClearsReadOnlyStoredFiles_ThenRemovesNode()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+
+		try
+		{
+			var paths = new StoragePaths(root);
+			var store = new JsonModLibraryStore(paths);
+			var mgr = new ModLibraryManager(paths, store);
+			var nodeId = ModNodeId.New();
+			var relativePath = Path.Combine("import1", "readonly-mod");
+			var storedDirectory = Path.Combine(paths.ModsDirectory, relativePath);
+			Directory.CreateDirectory(storedDirectory);
+			var patchPath = Path.Combine(storedDirectory, "9ba626afa44a3aa3.patch_0");
+			await File.WriteAllTextAsync(patchPath, "test");
+			File.SetAttributes(patchPath, File.GetAttributes(patchPath) | FileAttributes.ReadOnly);
+
+			var node = new ModNode(
+				Id: nodeId,
+				RelativePath: relativePath,
+				Metadata: new ModNodeMetadata("readonly-mod", null, DateTimeOffset.UtcNow, null),
+				PatchGroups: Array.Empty<PatchGroupKey>(),
+				Children: Array.Empty<ModNodeId>());
+			await store.SaveAsync(new LibrarySnapshot(2, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, Array.Empty<Profile>()));
+
+			var result = await mgr.DeleteNodesWithResultAsync([nodeId], deleteStoredFiles: true);
+
+			Assert.Contains(nodeId, result.RemovedNodeIds);
+			Assert.Empty(result.FailedNodeIds);
+			Assert.Equal(ModStorageDeletionState.DeletedImmediately, Assert.Single(result.StorageResults).State);
+			Assert.False(Directory.Exists(storedDirectory));
+			Assert.False((await store.TryLoadAsync())!.Nodes.ContainsKey(nodeId));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task DeleteNodesWithResultAsync_UnsafeStoredPath_PreservesSnapshotAndReportsFailure()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+
+		try
+		{
+			var paths = new StoragePaths(root);
+			var store = new JsonModLibraryStore(paths);
+			var mgr = new ModLibraryManager(paths, store);
+			var nodeId = ModNodeId.New();
+			var unsafeDirectory = Path.Combine(root, "outside-library");
+			Directory.CreateDirectory(unsafeDirectory);
+			var node = new ModNode(
+				Id: nodeId,
+				RelativePath: Path.Combine("..", "outside-library"),
+				Metadata: new ModNodeMetadata("outside-library", null, DateTimeOffset.UtcNow, null),
+				PatchGroups: Array.Empty<PatchGroupKey>(),
+				Children: Array.Empty<ModNodeId>());
+			await store.SaveAsync(new LibrarySnapshot(2, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, Array.Empty<Profile>()));
+
+			var result = await mgr.DeleteNodesWithResultAsync([nodeId], deleteStoredFiles: true);
+
+			Assert.Empty(result.RemovedNodeIds);
+			Assert.Contains(nodeId, result.FailedNodeIds);
+			Assert.Equal(ModStorageDeletionState.Failed, Assert.Single(result.StorageResults).State);
+			Assert.True(Directory.Exists(unsafeDirectory));
+			Assert.True((await store.TryLoadAsync())!.Nodes.ContainsKey(nodeId));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task ActiveProfile_IsUniquePersisted_AndClearedWhenDeleted()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

@@ -92,7 +92,7 @@ namespace HD2ModManager.Services
 
             if (removeModGuids.Count > 0)
             {
-                try { updated |= await _library.RemoveManyAsync(removeModGuids).ConfigureAwait(false) > 0; } catch { }
+                try { updated |= (await _library.RemoveManyAsync(removeModGuids).ConfigureAwait(false)).RemovedNodeIds.Count > 0; } catch { }
             }
 
             if (updated)

@@ -19,6 +19,7 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 	public ValueTask<ModLibrarySynchronizationResult> SynchronizeAsync(
 		LibrarySnapshot snapshot,
 		string modsRootDirectory,
+		IReadOnlySet<string>? ignoredRelativePaths = null,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
@@ -29,6 +30,9 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 		var nodes = new Dictionary<ModNodeId, ModNode>(snapshot.Nodes);
 		var existingByPath = nodes.Values.ToDictionary(node => NormalizePath(node.RelativePath), StringComparer.OrdinalIgnoreCase);
 		var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var ignoredPaths = ignoredRelativePaths is null
+			? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+			: new HashSet<string>(ignoredRelativePaths.Select(NormalizePath), StringComparer.OrdinalIgnoreCase);
 		var added = new HashSet<ModNodeId>();
 		var changed = new HashSet<ModNodeId>();
 		var missing = new HashSet<ModNodeId>();
@@ -37,6 +41,14 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var relativePath = NormalizePath(Path.GetRelativePath(root, directory));
+			if (string.Equals(relativePath, ".hd2modmanager-trash", StringComparison.OrdinalIgnoreCase)
+				|| ignoredPaths.Contains(relativePath))
+			{
+				// A crash between durable tombstone registration and snapshot commit must not
+				// make an existing node look externally missing on the next startup.
+				if (existingByPath.ContainsKey(relativePath)) seenPaths.Add(relativePath);
+				continue;
+			}
 			seenPaths.Add(relativePath);
 			var patchGroups = DiscoverPatchGroups(directory, cancellationToken);
 			if (patchGroups.Count == 0) continue;

@@ -545,8 +545,10 @@ namespace HD2ModManager.ViewModels
             try
             {
                 ThumbnailService.CancelPendingGeneration();
-                await _library.RemoveManyAsync(targets);
-                _notifications?.Show($"已删除：{card.Mod.Name}");
+                var deletion = await _library.RemoveManyAsync(targets);
+                _notifications?.Show(
+                    ModLibraryService.DescribeDeletionResult(deletion),
+                    deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
             }
             catch (System.Exception ex)
             {

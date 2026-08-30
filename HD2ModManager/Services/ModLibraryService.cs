@@ -349,9 +349,19 @@ namespace HD2ModManager.Services
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+            var pendingCleanup = await _manager.RecoverPendingStoredDeletionsAsync(cancellationToken).ConfigureAwait(false);
+            if (pendingCleanup.RemovedCount > 0 || pendingCleanup.PendingCount > 0)
+                LogService.Info($"待删除 Mod 存储清理：已清理={pendingCleanup.RemovedCount}，仍待处理={pendingCleanup.PendingCount}。");
+            foreach (var failure in pendingCleanup.Failures)
+                LogService.Error($"待删除 Mod 存储清理失败：{failure}");
             var synchronizeVersion = Volatile.Read(ref _stateVersion);
             var synchronizeSnapshot = _snapshot;
-            var result = await _synchronizer.SynchronizeAsync(synchronizeSnapshot, _paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
+            var synchronizationExclusions = await _manager.GetPendingStoredDeletionSynchronizationExclusionsAsync(cancellationToken).ConfigureAwait(false);
+            var result = await _synchronizer.SynchronizeAsync(
+                synchronizeSnapshot,
+                _paths.ModsDirectory,
+                synchronizationExclusions,
+                cancellationToken).ConfigureAwait(false);
             if (!result.FilesystemChanged) return false;
 
             if (synchronizeVersion != Volatile.Read(ref _stateVersion))
@@ -581,66 +591,28 @@ namespace HD2ModManager.Services
         }
 
         public bool Remove(string guid)
-        {
-            FlushPendingDecorationRebuildsAsync().GetAwaiter().GetResult();
-            _libraryMutationGate.Wait();
-            try
-            {
-            if (!TryParseNodeId(guid, out var nodeId)) return false;
-            var removedIsDecoration = _byGuid.TryGetValue(guid, out var entity) && entity.IsDecoration;
-            var removedIsOption = entity?.IsOption == true;
-            if (removedIsDecoration)
-                ApplyDecorationActivationBatchCoreAsync([new DecorationActivationMutation(guid, false)], CancellationToken.None).GetAwaiter().GetResult();
-            _snapshot = _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true).AsTask().GetAwaiter().GetResult();
-            if (removedIsDecoration)
-            {
-                _decorationActivations.RemoveDecorationAsync(guid).GetAwaiter().GetResult();
-            }
-            else _decorationActivations.RemoveHostAsync(guid).GetAwaiter().GetResult();
-            if (removedIsOption) _optionActivations.RemoveAsync(guid).GetAwaiter().GetResult();
-            else _optionActivations.RemoveHostAsync(guid).GetAwaiter().GetResult();
-            Interlocked.Increment(ref _stateVersion);
-			InvalidateContentNodeAsync(nodeId, CancellationToken.None).AsTask().GetAwaiter().GetResult();
-			ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
-            var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
-            nodes.Remove(nodeId);
-            _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray(), _derivedData.AssetSummaryGeneration);
-            RebuildIndex(buildDerivedData: false);
-            ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
-            SnapshotChanged?.Invoke(this, EventArgs.Empty);
-            return true;
-            }
-            finally { _libraryMutationGate.Release(); }
-        }
+            => RemoveAsync(guid).GetAwaiter().GetResult().RemovedNodeIds.Count != 0;
 
-        public async Task<bool> RemoveAsync(string guid, CancellationToken cancellationToken = default)
+        public Task<ModLibraryDeletionResult> RemoveAsync(string guid, CancellationToken cancellationToken = default)
+            => string.IsNullOrWhiteSpace(guid)
+                ? Task.FromResult(new ModLibraryDeletionResult(_snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>()))
+                : RemoveManyAsync([guid], cancellationToken);
+
+        public static string DescribeDeletionResult(ModLibraryDeletionResult result)
         {
-            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            ArgumentNullException.ThrowIfNull(result);
+            var messages = new List<string>();
+            if (result.RemovedNodeIds.Count > 0) messages.Add($"已从模组库移除 {result.RemovedNodeIds.Count} 个 Mod。");
+            if (result.PendingRestartCount > 0) messages.Add($"其中 {result.PendingRestartCount} 个目录已登记为系统重启后清理。");
+            if (result.PendingCleanupCount > 0) messages.Add($"其中 {result.PendingCleanupCount} 个目录已移入受管理回收区，将在后续启动继续清理。");
+            if (result.HasFailures)
             {
-                if (!TryParseNodeId(guid, out var nodeId)) return false;
-                var removedIsDecoration = _byGuid.TryGetValue(guid, out var entity) && entity.IsDecoration;
-                var removedIsOption = entity?.IsOption == true;
-                if (removedIsDecoration)
-                    await ApplyDecorationActivationBatchCoreAsync([new DecorationActivationMutation(guid, false)], cancellationToken).ConfigureAwait(false);
-                _snapshot = await _manager.DeleteNodeAsync(nodeId, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
-                if (removedIsDecoration) await _decorationActivations.RemoveDecorationAsync(guid, cancellationToken).ConfigureAwait(false);
-                else await _decorationActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
-                if (removedIsOption) await _optionActivations.RemoveAsync(guid, cancellationToken).ConfigureAwait(false);
-                else await _optionActivations.RemoveHostAsync(guid, cancellationToken).ConfigureAwait(false);
-                Interlocked.Increment(ref _stateVersion);
-				await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
-                ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(guid)?.IconPath);
-                var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
-                nodes.Remove(nodeId);
-                _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray(), _derivedData.AssetSummaryGeneration);
-                RebuildIndex(buildDerivedData: false);
-                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(new[] { nodeId }, ModContentChangeKind.Removed));
-                SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                return true;
+                var details = result.Failures
+                    .Take(2)
+                    .Select(item => $"{Path.GetFileName(item.RelativePath)}：{item.Detail ?? "无法删除"}");
+                messages.Add($"{result.FailedNodeIds.Count} 个 Mod 未删除：{string.Join("；", details)}");
             }
-            finally { _libraryMutationGate.Release(); }
+            return messages.Count == 0 ? "没有找到可删除的 Mod。" : string.Join(" ", messages);
         }
 
         public bool Rename(string guid, string newName)
@@ -755,7 +727,7 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
-        public async Task<int> RemoveManyAsync(IReadOnlyList<string> guids, CancellationToken cancellationToken = default)
+        public async Task<ModLibraryDeletionResult> RemoveManyAsync(IReadOnlyList<string> guids, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(guids);
             // Deletion must observe the latest requested decoration state before it starts
@@ -771,32 +743,81 @@ namespace HD2ModManager.Services
                     .Distinct()
                     .Where(_snapshot.Nodes.ContainsKey)
                     .ToArray();
-                if (nodeIds.Length == 0) return 0;
+                if (nodeIds.Length == 0)
+                    return new ModLibraryDeletionResult(_snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>());
 
-                var deletedDecorations = nodeIds
-                    .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Decoration)
-                    .Select(nodeId => nodeId.Value.ToString("N"))
+                // Cancel our own information/thumbnail work before asking Windows to move or
+                // remove the directory. Cancellation is intentionally best-effort: a failed
+                // cache invalidation must not hide the actual filesystem error from the user.
+                ThumbnailService.CancelPendingGeneration();
+                foreach (var nodeId in nodeIds)
+                {
+                    try { await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false); }
+                    catch (Exception exception) { LogService.Error($"删除 Mod 前取消信息读取失败：节点={nodeId.Value:N}，错误={exception}"); }
+                }
+
+                var requestedNodes = nodeIds.ToDictionary(nodeId => nodeId, nodeId => _snapshot.Nodes[nodeId]);
+                var requestedDecorationIds = requestedNodes
+                    .Where(pair => pair.Value.Metadata.Kind == ModNodeKind.Decoration)
+                    .Select(pair => pair.Key.Value.ToString("N"))
                     .ToArray();
-                var deletedOptions = nodeIds
-                    .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Option)
-                    .Select(nodeId => nodeId.Value.ToString("N"))
-                    .ToArray();
-                var deletedDecorationHosts = nodeIds
-                    .Where(nodeId => _snapshot.Nodes.TryGetValue(nodeId, out var node)
-                        && (node.Metadata.Kind == ModNodeKind.Standard || node.Metadata.Kind == ModNodeKind.Option))
-                    .Select(nodeId => nodeId.Value.ToString("N"))
-                    .ToArray();
-                if (deletedDecorations.Length > 0)
+                var originalDecorationHosts = requestedDecorationIds.ToDictionary(
+                    decorationId => decorationId,
+                    decorationId => _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                    StringComparer.OrdinalIgnoreCase);
+                if (requestedDecorationIds.Length > 0)
                 {
                     await ApplyDecorationActivationBatchCoreAsync(
-                        deletedDecorations.Select(id => new DecorationActivationMutation(id, false)).ToArray(),
+                        requestedDecorationIds.Select(id => new DecorationActivationMutation(id, false)).ToArray(),
                         cancellationToken).ConfigureAwait(false);
                 }
 
-                var thumbnailPaths = nodeIds
-                    .Select(nodeId => GetDerivedData(nodeId.Value.ToString("N"))?.IconPath)
+                var thumbnailPaths = requestedNodes
+                    .ToDictionary(pair => pair.Key, pair => GetDerivedData(pair.Key.Value.ToString("N"))?.IconPath);
+                var deletion = await _manager.DeleteNodesWithResultAsync(nodeIds, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
+                var removedIds = deletion.RemovedNodeIds.ToHashSet();
+                _snapshot = deletion.Snapshot;
+
+                // A failed physical removal keeps its library node. Restore any decoration
+                // state we temporarily disabled before probing the filesystem.
+                var failedDecorationIds = requestedDecorationIds
+                    .Where(id => TryParseNodeId(id, out var nodeId) && !removedIds.Contains(nodeId))
                     .ToArray();
-                _snapshot = await _manager.DeleteNodesAsync(nodeIds, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
+                if (failedDecorationIds.Length > 0)
+                {
+                    var restoreMutations = failedDecorationIds
+                        .SelectMany(decorationId => originalDecorationHosts[decorationId]
+                            .Select(hostId => new DecorationActivationMutation(decorationId, true, hostId)))
+                        .ToArray();
+                    if (restoreMutations.Length > 0)
+                    {
+                        try { await ApplyDecorationActivationBatchCoreAsync(restoreMutations, cancellationToken).ConfigureAwait(false); }
+                        catch (Exception exception) { LogService.Error($"删除失败后恢复装饰启用状态失败：{exception}"); }
+                    }
+                }
+
+                if (removedIds.Count == 0)
+                {
+                    foreach (var failure in deletion.Failures)
+                        LogService.Error($"Mod 删除失败：路径={failure.RelativePath}，原因={failure.Detail}");
+                    return deletion;
+                }
+
+                // The manager already returned the post-delete snapshot, so retain the
+                // requested-node metadata captured above for activation cleanup.
+                var deletedDecorations = removedIds
+                    .Where(nodeId => requestedNodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Decoration)
+                    .Select(nodeId => nodeId.Value.ToString("N"))
+                    .ToArray();
+                var deletedOptions = removedIds
+                    .Where(nodeId => requestedNodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Option)
+                    .Select(nodeId => nodeId.Value.ToString("N"))
+                    .ToArray();
+                var deletedDecorationHosts = removedIds
+                    .Where(nodeId => requestedNodes.TryGetValue(nodeId, out var node)
+                        && (node.Metadata.Kind == ModNodeKind.Standard || node.Metadata.Kind == ModNodeKind.Option))
+                    .Select(nodeId => nodeId.Value.ToString("N"))
+                    .ToArray();
                 if (deletedDecorations.Length > 0)
                     await _decorationActivations.RemoveDecorationsAsync(deletedDecorations, cancellationToken).ConfigureAwait(false);
                 foreach (var hostId in deletedDecorationHosts)
@@ -810,18 +831,18 @@ namespace HD2ModManager.Services
                 foreach (var optionId in deletedOptions)
                     await _optionActivations.RemoveAsync(optionId, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
-                foreach (var nodeId in nodeIds)
-					await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
-                foreach (var thumbnailPath in thumbnailPaths)
+                foreach (var thumbnailPath in removedIds.Select(nodeId => thumbnailPaths.GetValueOrDefault(nodeId)))
                     ThumbnailService.DeleteCachedThumbnailsForSource(thumbnailPath);
 
                 var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
-                foreach (var nodeId in nodeIds) nodes.Remove(nodeId);
+                foreach (var nodeId in removedIds) nodes.Remove(nodeId);
                 _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray(), _derivedData.AssetSummaryGeneration);
                 RebuildIndex(buildDerivedData: false);
-                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(nodeIds, ModContentChangeKind.Removed));
+                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(removedIds, ModContentChangeKind.Removed));
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                return nodeIds.Length;
+                foreach (var failure in deletion.Failures)
+                    LogService.Error($"Mod 删除失败：路径={failure.RelativePath}，原因={failure.Detail}");
+                return deletion;
             }
             finally { _libraryMutationGate.Release(); }
         }

@@ -651,7 +651,14 @@ namespace HD2ModManager.ViewModels
 
             try
             {
-                if (await _library.RemoveManyAsync(targets) == 0) return;
+                var deletion = await _library.RemoveManyAsync(targets);
+                if (deletion.RemovedNodeIds.Count == 0)
+                {
+                    System.Windows.MessageBox.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                    return;
+                }
+                if (deletion.HasFailures)
+                    System.Windows.MessageBox.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                 _selection?.Clear();
                 Refresh();
             }

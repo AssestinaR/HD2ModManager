@@ -9,11 +9,13 @@ public sealed class ModLibraryManager : IModLibraryManager
 {
 	private readonly StoragePaths _paths;
 	private readonly IModLibraryStore _store;
+	private readonly IModStorageDeletionService _storageDeletion;
 
-	public ModLibraryManager(StoragePaths paths, IModLibraryStore store)
+	public ModLibraryManager(StoragePaths paths, IModLibraryStore store, IModStorageDeletionService? storageDeletion = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_store = store ?? throw new ArgumentNullException(nameof(store));
+		_storageDeletion = storageDeletion ?? new ModStorageDeletionService(_paths);
 	}
 
 	public async ValueTask<LibrarySnapshot> LoadOrCreateAsync(CancellationToken cancellationToken = default)
@@ -53,19 +55,47 @@ public sealed class ModLibraryManager : IModLibraryManager
 
 	public async ValueTask<LibrarySnapshot> DeleteNodesAsync(IReadOnlyList<ModNodeId> nodeIds, bool deleteStoredFiles, CancellationToken cancellationToken = default)
 	{
+		var result = await DeleteNodesWithResultAsync(nodeIds, deleteStoredFiles, cancellationToken).ConfigureAwait(false);
+		if (result.HasFailures) throw new IOException(BuildDeletionFailureMessage(result));
+		return result.Snapshot;
+	}
+
+	public async ValueTask<ModLibraryDeletionResult> DeleteNodesWithResultAsync(
+		IReadOnlyList<ModNodeId> nodeIds,
+		bool deleteStoredFiles,
+		CancellationToken cancellationToken = default)
+	{
 		ArgumentNullException.ThrowIfNull(nodeIds);
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
-		var nodes = new Dictionary<ModNodeId, ModNode>(snapshot.Nodes);
-		var removedIds = nodeIds.Where(nodes.ContainsKey).ToHashSet();
-		if (removedIds.Count == 0) return snapshot;
-		var removedNodes = removedIds.Select(nodeId => nodes[nodeId]).ToArray();
+		var requestedIds = nodeIds.Where(snapshot.Nodes.ContainsKey).Distinct().ToArray();
+		if (requestedIds.Length == 0)
+			return new ModLibraryDeletionResult(snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>());
 
-		foreach (var removedId in removedIds) nodes.Remove(removedId);
+		var storageResults = new List<ModStorageDeletionResult>(requestedIds.Length);
+		var removableIds = new HashSet<ModNodeId>();
+		var failedIds = new List<ModNodeId>();
+		foreach (var nodeId in requestedIds)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var node = snapshot.Nodes[nodeId];
+			var storageResult = deleteStoredFiles
+				? await _storageDeletion.DeleteAsync(node.RelativePath, cancellationToken).ConfigureAwait(false)
+				: new ModStorageDeletionResult(node.RelativePath, ModStorageDeletionState.NotRequested);
+			storageResults.Add(storageResult);
+			if (storageResult.CanRemoveLibraryNode) removableIds.Add(nodeId);
+			else failedIds.Add(nodeId);
+		}
+
+		if (removableIds.Count == 0)
+			return new ModLibraryDeletionResult(snapshot, Array.Empty<ModNodeId>(), failedIds, storageResults);
+
+		var nodes = new Dictionary<ModNodeId, ModNode>(snapshot.Nodes);
+		foreach (var removedId in removableIds) nodes.Remove(removedId);
 
 		// Remove references from other nodes' children.
 		foreach (var kv in nodes.ToList())
 		{
-			var updatedChildren = kv.Value.Children.Where(childId => !removedIds.Contains(childId)).ToList();
+			var updatedChildren = kv.Value.Children.Where(childId => !removableIds.Contains(childId)).ToList();
 			if (updatedChildren.Count != kv.Value.Children.Count)
 			{
 				nodes[kv.Key] = kv.Value with { Children = updatedChildren };
@@ -76,21 +106,23 @@ public sealed class ModLibraryManager : IModLibraryManager
 		var profiles = snapshot.Profiles
 			.Select(p =>
 			{
-				var entries = NormalizeEntryOrder(p.Entries.Where(entry => !removedIds.Contains(entry.NodeId)).ToList());
+				var entries = NormalizeEntryOrder(p.Entries.Where(entry => !removableIds.Contains(entry.NodeId)).ToList());
 				return entries.SequenceEqual(p.Entries)
 					? p
 					: p with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(p.Revision + 1) };
 			})
 			.ToList();
 
-		if (deleteStoredFiles)
-		{
-			foreach (var removedNode in removedNodes) TryDeleteStoredRoot(removedNode.RelativePath);
-		}
 		var updated = snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
 		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
-		return updated;
+		return new ModLibraryDeletionResult(updated, removableIds.ToArray(), failedIds, storageResults);
 	}
+
+	public ValueTask<ModStoragePendingCleanupResult> RecoverPendingStoredDeletionsAsync(CancellationToken cancellationToken = default)
+		=> _storageDeletion.RecoverPendingAsync(cancellationToken);
+
+	public ValueTask<IReadOnlySet<string>> GetPendingStoredDeletionSynchronizationExclusionsAsync(CancellationToken cancellationToken = default)
+		=> _storageDeletion.GetSynchronizationExclusionsAsync(cancellationToken);
 
 	public async ValueTask<LibrarySnapshot> UpsertProfileAsync(Profile profile, CancellationToken cancellationToken = default)
 	{
@@ -350,41 +382,14 @@ public sealed class ModLibraryManager : IModLibraryManager
 			throw new InvalidOperationException($"{node.Metadata.Kind} Mod cannot be added to a profile: {node.Metadata.Name}");
 	}
 
-	private void TryDeleteStoredRoot(string nodeRelativePath)
+	private static string BuildDeletionFailureMessage(ModLibraryDeletionResult result)
 	{
-		try
-		{
-			var parts = nodeRelativePath.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
-			if (parts.Length == 0)
-			{
-				return;
-			}
-
-			var storedRoot = Path.GetFullPath(Path.Combine(_paths.ModsDirectory, nodeRelativePath));
-			var modsRoot = Path.GetFullPath(_paths.ModsDirectory);
-			if (!storedRoot.StartsWith(modsRoot, StringComparison.OrdinalIgnoreCase))
-			{
-				return;
-			}
-
-			if (Directory.Exists(storedRoot))
-			{
-				SetReadOnlyRecursive(storedRoot, readOnly: false);
-				Directory.Delete(storedRoot, recursive: true);
-			}
-		}
-		catch
-		{
-			// ignore
-		}
-	}
-
-	private static void SetReadOnlyRecursive(string directory, bool readOnly)
-	{
-		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
-		{
-			var attributes = File.GetAttributes(path);
-			File.SetAttributes(path, readOnly ? attributes | FileAttributes.ReadOnly : attributes & ~FileAttributes.ReadOnly);
-		}
+		var details = result.Failures
+			.Select(failure => $"{failure.RelativePath}: {failure.Detail ?? "物理目录无法删除。"}")
+			.Take(3)
+			.ToArray();
+		return details.Length == 0
+			? "Mod 存储目录无法删除，库快照未提交。"
+			: "部分 Mod 存储目录无法删除，未移除对应库记录：" + string.Join("；", details);
 	}
 }

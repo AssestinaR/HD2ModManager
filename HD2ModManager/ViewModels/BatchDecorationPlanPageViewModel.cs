@@ -19,6 +19,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     private readonly BackgroundTaskService? _backgroundTasks;
     private readonly Guid _sourceFactsSessionId = Guid.NewGuid();
     private readonly Dictionary<string, DecorationBatchSourcePlanItem> _plansBySource = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ModListItemProjectionController<DecorationBatchSourceModItem> _sourceMods;
     private IReadOnlyList<DecorationBatchSourceModItem> _allSources = Array.Empty<DecorationBatchSourceModItem>();
     private string _outputDirectory;
     private bool _autoImport = true;
@@ -35,6 +36,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
         _equipmentSourceFacts = _library.EquipmentSourceFactsReader;
         _fileResolver = CoreServices.CreateModFileResolver();
         _backgroundTasks = backgroundTasks;
+        _sourceMods = new ModListItemProjectionController<DecorationBatchSourceModItem>(item => item.SelectionKey);
         HostModId = hostModId;
         HostName = library.Get(hostModId)?.Name ?? hostModId;
         _outputDirectory = SettingsService.GetResolvedDefaultExportPath();
@@ -46,7 +48,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
 
     public string HostModId { get; }
     public string HostName { get; }
-    public BulkObservableCollection<DecorationBatchSourceModItem> SourceMods { get; } = new(item => item.SelectionKey);
+    public ModListProjectionSource<DecorationBatchSourceModItem> SourceMods => _sourceMods.Items;
     public BulkObservableCollection<DecorationBatchSourcePlanItem> Plans { get; } = new(item => item.SourceModId);
     public RelayCommand GenerateCommand { get; }
     public RelayCommand BrowseOutputCommand { get; }
@@ -78,6 +80,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
         // The batch planner shares lightweight source facts only for this page's
         // lifetime; release them once its animated list is no longer active.
         _library.InformationReader.ClearSession(_sourceFactsSessionId);
+        _sourceMods.Dispose();
         base.Dispose();
     }
 
@@ -157,8 +160,10 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     private void RefreshSourceVisibility()
     {
         var query = SourceQuery.Trim();
-        SourceMods.ReplaceWith(_allSources.Where(source => (ShowOptions || !source.IsOption)
-            && (query.Length == 0 || source.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || (source.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true))), ListTransitionKind.Filter);
+        _sourceMods.Submit(
+            _allSources.Where(source => (ShowOptions || !source.IsOption)
+                && (query.Length == 0 || source.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || (source.Description?.Contains(query, StringComparison.OrdinalIgnoreCase) == true))),
+            _allSources);
     }
 
     private void BrowseOutput()
