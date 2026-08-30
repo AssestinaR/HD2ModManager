@@ -709,6 +709,60 @@ public static class CliApplication
 				() => FormatHelmetMergeExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 4 && command[0] == "equipment" && command[1] == "cross-armor" && command[2] == "inspect")
+		{
+			EnsureCrossArmorInspectOptions(invocation.Options);
+			if (command.Length != 4)
+				throw new CliUserException("CrossArmorSourceRequired", "equipment cross-armor inspect 只接受一个来源 Mod GUID 或唯一前缀。 ");
+			var build = await CliCrossArmorTransferPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), command[3])
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = CreateCrossArmorPlanProjection(build.Document) },
+				() => FormatCrossArmorInspection(build.Document));
+			return 0;
+		}
+		if (command.Length >= 4 && command[0] == "equipment" && command[1] == "cross-armor" && command[2] == "plan")
+		{
+			EnsureCrossArmorPlanOptions(invocation.Options);
+			if (command.Length != 4)
+				throw new CliUserException("CrossArmorSourceRequired", "equipment cross-armor plan 只接受一个来源 Mod GUID 或唯一前缀。 ");
+			var output = RequireOutput(invocation.Options, "equipment cross-armor plan");
+			var build = await CliCrossArmorTransferPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), command[3])
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), crossArmor = CreateCrossArmorPlanProjection(build.Document) },
+				() => FormatCrossArmorPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "equipment", "cross-armor", "validate"))
+		{
+			EnsureCrossArmorValidateOptions(invocation.Options);
+			var document = await CliCrossArmorTransferPlanArtifacts.ReadDocumentAsync(RequireCrossArmorPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliCrossArmorTransferPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateCrossArmorValidationProjection(validation) },
+				() => FormatCrossArmorValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "equipment", "cross-armor", "apply"))
+		{
+			EnsureCrossArmorApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("CrossArmorApplyConfirmationRequired", "equipment cross-armor apply 会写出新的独立 Patch；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliCrossArmorTransferPlanArtifacts.ReadDocumentAsync(RequireCrossArmorPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliCrossArmorTransferExecutor.ApplyAsync(
+				document,
+				CliWorkspace.Open(invocation.Options),
+				RequireOutput(invocation.Options, "equipment cross-armor apply"))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateCrossArmorExecutionProjection(execution) },
+				() => FormatCrossArmorExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length >= 3 && command[0] == "host-derived" && command[1] == "inspect")
 		{
 			EnsureHostDerivedInspectOptions(invocation.Options);
@@ -1288,6 +1342,49 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureCrossArmorInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment cross-armor inspect 仅接受 Mod 标识、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureCrossArmorPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment cross-armor plan 仅接受 Mod 标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。来源/目标/手工映射在导出的 request 中审阅与编辑。 ");
+		}
+	}
+
+	private static void EnsureCrossArmorValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment cross-armor validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureCrossArmorApplyOptions(CliGlobalOptions options)
+	{
+		if (options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment cross-armor apply 仅接受 --plan、--manager-root、--library、--game-data、--output、--confirm 与 --json。输出必须是一个新的库外且游戏目录外的目录。 ");
+		}
+	}
+
 	private static void EnsureHostDerivedInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -1805,6 +1902,13 @@ public static class CliApplication
 		return options.Plan;
 	}
 
+	private static string RequireCrossArmorPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("CrossArmorPlanRequired", "请通过 --plan <跨护甲计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
 	private static string RequireSameKeyPlan(CliGlobalOptions options)
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
@@ -2195,6 +2299,45 @@ public static class CliApplication
 			execution.Success,
 			execution.OutputDirectory,
 			sources = execution.Sources,
+			diagnostics = execution.Diagnostics,
+			libraryMutation = "not-performed",
+			deployment = "not-performed",
+		};
+
+	private static object CreateCrossArmorPlanProjection(CliCrossArmorTransferPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			request = document.Request,
+			source = document.Source,
+			targetCandidates = document.TargetCandidates,
+			plan = document.Plan,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateCrossArmorValidationProjection(CliCrossArmorTransferValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateCrossArmorPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateCrossArmorExecutionProjection(CliCrossArmorTransferExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.OutputDirectory,
+			execution.ReportPath,
+			execution.OutputUnitCount,
+			execution.ReplacementMeshCount,
+			execution.MinifiedMeshCount,
 			diagnostics = execution.Diagnostics,
 			libraryMutation = "not-performed",
 			deployment = "not-performed",
@@ -3068,6 +3211,40 @@ public static class CliApplication
 			: $"头盔合并被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
+	private static string FormatCrossArmorInspection(CliCrossArmorTransferPlanDocument document)
+		=> $"跨护甲检查：来源 {document.Source.ModName}；来源装备 {document.Source.SourceCandidates.Count}；目标装备 {document.TargetCandidates.Count}；当前已选目标 {document.Request.SelectedTargetArchiveIds.Count}；映射 {document.Plan.Mappings.Count}。";
+
+	private static string FormatCrossArmorPlan(CliCrossArmorTransferPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出跨护甲计划：{outputPath}",
+			$"来源：{document.Source.ModName}；来源装备：{document.Source.SourceCandidates.Count}；目标装备：{document.TargetCandidates.Count}；当前目标：{document.Request.SelectedTargetArchiveIds.Count}",
+			$"映射：{document.Plan.Mappings.Count}；预计替换：{document.Plan.Mappings.Count(mapping => mapping.WillReplace)}；预计隐藏：{document.Plan.Mappings.Count(mapping => !mapping.WillReplace)}；阻断诊断：{blocking}。",
+			"请仅编辑 request 中已列出的 ArchiveId/AssetKey 选择，再执行 validate。",
+		]);
+	}
+
+	private static string FormatCrossArmorValidation(CliCrossArmorTransferValidationResult validation)
+	{
+		var status = validation.IsValid ? "跨护甲验证通过。" : "跨护甲验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}当前映射：{validation.Current?.Document.Plan.Mappings.Count ?? 0}；预计替换：{validation.Current?.Document.Plan.Mappings.Count(mapping => mapping.WillReplace) ?? 0}；预计隐藏：{validation.Current?.Document.Plan.Mappings.Count(mapping => !mapping.WillReplace) ?? 0}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatCrossArmorExecution(CliCrossArmorTransferExecutionResult execution)
+	{
+		if (execution.Success)
+			return $"跨护甲候选已生成：Unit {execution.OutputUnitCount}；替换 mesh {execution.ReplacementMeshCount}；极小化 mesh {execution.MinifiedMeshCount}；输出：{execution.OutputDirectory}";
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "跨护甲候选未完成；未发布任何输出，请查看 JSON 结果或日志。"
+			: $"跨护甲候选被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatHostDerivedInspection(CliHostDerivedPlanDocument document)
 	{
 		var unmanaged = document.Hosts.Count(host => host.Overwrite.Exists && !host.Overwrite.IsManaged);
@@ -3364,6 +3541,10 @@ HD2 Mod Manager 命令行
 	  hd2mod equipment helmet-merge plan <Mod GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output helmet-merge-plan.json --json
 	  hd2mod equipment helmet-merge validate --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod equipment helmet-merge apply --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
+	  hd2mod equipment cross-armor inspect <来源 Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod equipment cross-armor plan <来源 Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output cross-armor-plan.json --json
+	  hd2mod equipment cross-armor validate --plan cross-armor-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod equipment cross-armor apply --plan cross-armor-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
 	  hd2mod host-derived inspect <主体 GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod host-derived plan decoration enable|disable <装饰 GUID或前缀> [...] --host <主体 GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output host-derived-plan.json --json
 	  hd2mod host-derived plan decoration enable-all|disable-all <装饰 GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output host-derived-plan.json --json

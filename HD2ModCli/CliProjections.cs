@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.16";
+	public const string ProtocolVersion = "1.17";
 
 	public static object CreateCapabilities()
 		=> new
@@ -78,6 +78,10 @@ public static class CliProjections
 				new { name = "equipment helmet-merge plan", safety = "explicit-export", description = "导出固定来源 Patch、Unit/Mesh、共享影响与 GameData 索引指纹的头盔合并计划" },
 				new { name = "equipment helmet-merge validate", safety = "read-only", description = "重建来源与候选，拒绝漂移、冲突或胸部/待隐藏头盔 Unit 重叠；不写入文件" },
 				new { name = "equipment helmet-merge apply", safety = "explicit-confirm", description = "仅将验证通过的头盔追加到胸部并生成隐藏头盔 Unit，发布到新的库外且游戏目录外输出；不修改来源或部署" },
+				new { name = "equipment cross-armor inspect", safety = "read-only", description = "读取一个来源 Mod 的装备 Unit 事实、唯一 Patch 资格与全部目标装备目录；不写入缓存或 GameData" },
+				new { name = "equipment cross-armor plan", safety = "explicit-export", description = "导出可审阅的跨护甲意图、来源/目标 Unit 事实、映射、隐藏项与 GameData 索引指纹" },
+				new { name = "equipment cross-armor validate", safety = "read-only", description = "从 request 重建 Core 跨护甲计划，拒绝来源、目标、映射或 GameData 漂移；不写入文件" },
+				new { name = "equipment cross-armor apply", safety = "explicit-confirm", description = "仅将验证通过的 Direct-source Unit 跨护甲候选写入新的库外且游戏目录外目录；不修改来源、配置或部署" },
 				new { name = "host-derived inspect", safety = "read-only", description = "检查一个或多个主体当前装饰、临时头盔合并和 Overwrite 所有权；不写入任何文件" },
 				new { name = "host-derived plan decoration", safety = "explicit-export", description = "导出冻结装饰启停、主体、Patch、Overwrite 与 GameData 索引输入的主体派生计划" },
 				new { name = "host-derived plan helmet", safety = "explicit-export", description = "导出冻结临时头盔合并状态、主体、Patch、Overwrite 与 GameData 索引输入的主体派生计划" },
@@ -101,7 +105,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"资产索引重建、批量/原地 Patch 修复、替换护甲、装饰包编辑、基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
+				"资产索引重建、批量/原地 Patch 修复、装饰包编辑、基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
@@ -118,6 +122,7 @@ public static class CliProjections
 				"CLI 物化 Lua 时仅做编译验证，不在本地 Lua 运行时执行 Mod Lua。",
 				"patch repackage 只允许在计划中选择已有完整 AssetKey Payload；apply 只写入新的 Mod 库外目录，绝不修改来源、自动导入或部署。",
 				"equipment helmet-merge 只允许从已检查的完整 Armor/Any Helmet 集合中选择；apply 会重新验证来源、GameData 索引、共享影响和 Unit 冲突，并且只发布新的库外、游戏根外目录。",
+				"equipment cross-armor 固定使用桌面版的 Direct-source Unit 生产路径；一个来源 Mod 必须恰有一个 base Patch，Agent 只能在计划 request 中选择已列出的 ArchiveId/AssetKey，apply 会双重验证并发布到新的外部目录。",
 				"host-derived apply 只写入已验证主体库目录下的管理器 Overwrite 与对应的一个状态文件；它不触碰 GameData，且绝不覆盖或删除没有管理器标记的 Overwrite。",
 				"gamedata 命令全部只读：绝不调用索引重建、绝不写 Mod facts 或 GameData；Archive 映射的可信度与 Data-Patch 覆盖图的可信度分别报告，不能互相替代。",
 				"patch repair 只允许 Core 的固定 Same-key Canonical 重构配方；CLI 必须固定一个来源 Patch 并重验来源/当前 GameData 指纹，绝不替换库内文件。",

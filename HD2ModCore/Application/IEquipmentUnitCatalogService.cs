@@ -31,5 +31,6 @@ public interface IEquipmentUnitCatalogService
 		IReadOnlyList<CrossArmorManualSuppression>? manualSuppressions = null,
 		bool manualMode = false,
 		IReadOnlyCollection<string>? additionalSourceArchiveIds = null,
+		bool writePlannerDebugLog = true,
 		CancellationToken cancellationToken = default);
 }

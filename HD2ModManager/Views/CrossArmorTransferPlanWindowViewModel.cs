@@ -520,7 +520,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		try
 		{
 			var additionalSources = new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null && !ReferenceEquals(source, SelectedSource)).Select(source => source!.ArchiveId).ToArray();
-			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, cancellationToken).AsTask(), cancellationToken);
+			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, cancellationToken: cancellationToken).AsTask(), cancellationToken);
 			if (!ReferenceEquals(planCancellation, currentCancellation) || cancellationToken.IsCancellationRequested || generation != planGeneration) return;
 			plan = nextPlan;
 			PlanState = "计划已更新。";

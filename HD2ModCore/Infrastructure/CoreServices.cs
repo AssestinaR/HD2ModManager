@@ -186,6 +186,24 @@ public static class CoreServices
 		=> new EquipmentUnitCatalogService(paths);
 	public static CanonicalCrossArmorOrchestrator CreateCanonicalCrossArmorOrchestrator(IModInformationReader informationReader)
 		=> new(informationReader: informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
+	/// <summary>
+	/// Creates the cross-armor executor against the caller's Manager storage
+	/// roots. Headless callers must use this overload so GameData-index and
+	/// hidden-unit cache facts never fall back to <see cref="AppContext.BaseDirectory"/>.
+	/// </summary>
+	public static CanonicalCrossArmorOrchestrator CreateCanonicalCrossArmorOrchestrator(
+		StoragePaths paths,
+		IModInformationReader informationReader,
+		HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical.ICanonicalHiddenUnitOutputCache? hiddenUnitCache = null)
+	{
+		ArgumentNullException.ThrowIfNull(paths);
+		ArgumentNullException.ThrowIfNull(informationReader);
+		return new CanonicalCrossArmorOrchestrator(
+			assetIndex: CreateAssetArchiveIndexService(paths),
+			archiveHashes: CreateFileSystemArchiveHashesProvider(paths),
+			hiddenUnitCache: hiddenUnitCache ?? new HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical.CanonicalHiddenUnitOutputCache(Path.Combine(paths.DataDirectory, "hidden-unit-cache")),
+			informationReader: informationReader);
+	}
 	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new AdvancedModAssetQueryService(informationCenter, paths, CreateReferenceGraphQueryIndex(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()

@@ -121,6 +121,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		IReadOnlyList<CrossArmorManualSuppression>? manualSuppressions = null,
 		bool manualMode = false,
 		IReadOnlyCollection<string>? additionalSourceArchiveIds = null,
+		bool writePlannerDebugLog = true,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(sourceCandidates);
@@ -376,7 +377,8 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 		}
 		if (mappings.Count == 0) issues.Add(new CoreIssue(CoreIssueSeverity.Error, "NoTargetParts", "所选目标没有可识别的可见非 LOD 部件。"));
 		plannerDebug.Add($"[RESULT] Mappings={mappings.Count} Hits={mappings.Count(mapping => mapping.WillReplace)} Hidden={mappings.Count(mapping => !mapping.WillReplace)}");
-		WritePlannerDebugLog(plannerDebug);
+		if (writePlannerDebugLog)
+			WritePlannerDebugLog(plannerDebug);
 		return ValueTask.FromResult(new CrossArmorTransferPlan(sourceCandidates, source, targets, mappings, impacts.Distinct().ToArray(), issues));
 	}
 

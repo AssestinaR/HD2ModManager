@@ -16,6 +16,7 @@ namespace HD2ModCore.Infrastructure;
 public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexService
 {
 	private const string Version = "equipment-v5-geometry-facts";
+	private const string SourceFingerprintMetaKey = "advanced_equipment_index_source_fingerprint";
 	private readonly StoragePaths paths;
 	private readonly IGameDataArchiveIndexer archiveIndexer;
 	private readonly UnitMeshPartClassifier classifier = new();
@@ -30,7 +31,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 	{
 		this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		this.archiveIndexer = archiveIndexer ?? new GameDataArchiveIndexer();
-		this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache();
+		this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache(Path.Combine(paths.DataDirectory, "hidden-unit-cache"));
 		this.hiddenUnitBuilder = hiddenUnitBuilder ?? new CanonicalHiddenUnitBuilder();
 	}
 
@@ -39,7 +40,11 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		if (!File.Exists(paths.DbPath)) return false;
 		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-		return string.Equals(await SqliteSchema.GetMetaAsync(connection, "advanced_equipment_index_version", cancellationToken).ConfigureAwait(false), Version, StringComparison.Ordinal)
+		var currentBaseFingerprint = await SqliteSchema.GetMetaAsync(connection, "source_fingerprint", cancellationToken).ConfigureAwait(false);
+		var advancedSourceFingerprint = await SqliteSchema.GetMetaAsync(connection, SourceFingerprintMetaKey, cancellationToken).ConfigureAwait(false);
+		return !string.IsNullOrWhiteSpace(currentBaseFingerprint)
+			&& string.Equals(advancedSourceFingerprint, currentBaseFingerprint, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(await SqliteSchema.GetMetaAsync(connection, "advanced_equipment_index_version", cancellationToken).ConfigureAwait(false), Version, StringComparison.Ordinal)
 			&& await HasRowsAsync(connection, "game_data_unit_parts", cancellationToken).ConfigureAwait(false)
 			&& await HasRowsAsync(connection, "game_data_stream_layouts", cancellationToken).ConfigureAwait(false);
 	}
@@ -56,6 +61,8 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		var equipmentArchiveIds = archives.Where(item => IsEquipmentCategory(item.Category)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		if (equipmentArchiveIds.Count == 0) throw new InvalidDataException("基础索引中没有可用的 armor 或 helmet Archive。");
 		var metadata = archives.ToDictionary(item => item.Id, item => new GameDataArchiveMetadata(item.Hex, item.Name, item.Category), StringComparer.OrdinalIgnoreCase);
+		var baseFingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
+			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
 		var rebuildEquipmentFacts = !await IsCurrentAsync(cancellationToken).ConfigureAwait(false);
 		var adapterProgress = new Progress<GameDataArchiveIndexProgress>(item => progress?.Report(new IndexBuildProgress(item.Current, Math.Max(item.Total, 1), $"{item.Stage}：{item.Item}")));
 		var index = await archiveIndexer.BuildAsync(new GameDataArchiveInput(directory, archives.Select(item => item.Id).ToArray(), metadata, IncludeStreamLayouts: true), adapterProgress, cancellationToken).ConfigureAwait(false);
@@ -83,7 +90,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException) { }
 		}
 
-		await SaveAsync(parts, index.StreamLayouts, cancellationToken).ConfigureAwait(false);
+		await SaveAsync(parts, index.StreamLayouts, baseFingerprint.SourceFingerprint, cancellationToken).ConfigureAwait(false);
 	}
 
 	public ValueTask RebuildAllUnitPartFactsAsync(string gameDataDirectory, IProgress<IndexBuildProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -101,15 +108,16 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 
 		var archives = await ReadArchivesAsync(cancellationToken).ConfigureAwait(false);
 		var equipmentArchiveIds = archives.Where(item => IsEquipmentCategory(item.Category)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var fingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
+			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
+		var effectiveRebuildAll = rebuildAll || !await IsCurrentAsync(cancellationToken).ConfigureAwait(false);
 		var allUnits = await ReadEquipmentUnitsAsync(equipmentArchiveIds, cancellationToken).ConfigureAwait(false);
-		var units = rebuildAll
+		var units = effectiveRebuildAll
 			? allUnits
 			: allUnits.Where(unit => !unit.HasPartFacts).ToArray();
 		var boneNames = LoadBoneNames(paths.BoneHashesPath);
 		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(Path.GetFullPath(gameDataDirectory));
 		var reader = new GameDataUnitMeshReader(resolver);
-		var fingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
-			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
 		await hiddenUnitCache.InitializeAsync(fingerprint.SourceFingerprint, gameDataIndexIsCurrent: true, cancellationToken).ConfigureAwait(false);
 		var avatarTransforms = await new CanonicalAvatarRigReader(resolver).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 		var parts = new List<GameDataUnitPartFact>();
@@ -118,7 +126,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var unit = units[index];
-			progress?.Report(new IndexBuildProgress(index + 1, total, $"分析{(rebuildAll ? "全部" : "缺失")} Unit 部位：{unit.ArchiveId}"));
+			progress?.Report(new IndexBuildProgress(index + 1, total, $"分析{(effectiveRebuildAll ? "全部" : "缺失")} Unit 部位：{unit.ArchiveId}"));
 			try
 			{
 				var adaptationKey = new HD2ModAdaptation.PatchReconstruction.AssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId);
@@ -142,8 +150,8 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 				// Keep one malformed Unit from aborting the remaining independent facts.
 			}
 		}
-		await SaveUnitPartFactsAsync(parts, units.Select(unit => (unit.ArchiveId, unit.AssetKey)).ToArray(), rebuildAll, cancellationToken).ConfigureAwait(false);
-		progress?.Report(new IndexBuildProgress(total, total, rebuildAll ? "全部 Armor / Helmet Unit 部位事实已完成。" : "缺失 Armor / Helmet Unit 部位事实已完成。"));
+		await SaveUnitPartFactsAsync(parts, units.Select(unit => (unit.ArchiveId, unit.AssetKey)).ToArray(), effectiveRebuildAll, fingerprint.SourceFingerprint, cancellationToken).ConfigureAwait(false);
+		progress?.Report(new IndexBuildProgress(total, total, effectiveRebuildAll ? "全部 Armor / Helmet Unit 部位事实已完成。" : "缺失 Armor / Helmet Unit 部位事实已完成。"));
 	}
 
 	private async ValueTask EnsureSchemaAsync(CancellationToken cancellationToken)
@@ -222,6 +230,7 @@ ORDER BY a.archive_id,e.file_id;";
 		IReadOnlyList<GameDataUnitPartFact> parts,
 		IReadOnlyList<(string ArchiveId, CoreAssetKey UnitAssetKey)> units,
 		bool rebuildAll,
+		string sourceFingerprint,
 		CancellationToken cancellationToken)
 	{
 		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
@@ -252,10 +261,12 @@ ORDER BY a.archive_id,e.file_id;";
 		}
 		await using var insert = CreatePartCommand(connection, transaction);
 		foreach (var part in parts) await InsertPartAsync(insert, part, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private async ValueTask SaveAsync(IReadOnlyList<GameDataUnitPartFact> parts, IReadOnlyList<AdaptationStreamLayoutFact> layouts, CancellationToken cancellationToken)
+	private async ValueTask SaveAsync(IReadOnlyList<GameDataUnitPartFact> parts, IReadOnlyList<AdaptationStreamLayoutFact> layouts, string sourceFingerprint, CancellationToken cancellationToken)
 	{
 		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -268,6 +279,7 @@ ORDER BY a.archive_id,e.file_id;";
 		await using var layoutsCommand = CreateLayoutCommand(connection, transaction);
 		foreach (var layout in layouts) await InsertLayoutAsync(layoutsCommand, layout, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 

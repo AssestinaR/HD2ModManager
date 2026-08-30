@@ -18,6 +18,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "host-derived-overwrite", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-inspection", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "cross-armor-transfer", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -55,6 +56,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("patch repair inspect", content, StringComparison.Ordinal);
 		Assert.Contains("availableSourcePatchFileNames", content, StringComparison.Ordinal);
 		Assert.Contains("patch repair apply", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void CrossArmorTransferSkill_DescribesPlanGatedUnitTransfer()
+	{
+		var content = CliSkillCatalog.GetContent("cross-armor-transfer");
+
+		Assert.Contains("equipment cross-armor plan", content, StringComparison.Ordinal);
+		Assert.Contains("manualMappings", content, StringComparison.Ordinal);
+		Assert.Contains("equipment cross-armor apply", content, StringComparison.Ordinal);
 	}
 
 	[Fact]
