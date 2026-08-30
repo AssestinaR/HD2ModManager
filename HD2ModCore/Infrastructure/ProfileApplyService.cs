@@ -107,48 +107,5 @@ public sealed class ProfileApplyService : IProfileApplyService
 	}
 
 	private static Profile ResolveEffectiveProfile(Profile profile, LibrarySnapshot snapshot, OptionActivationSnapshot optionStates)
-	{
-		var sourceEntries = profile.Entries
-			.OrderBy(entry => entry.LoadOrder)
-			.ThenBy(entry => entry.AddedUtc)
-			.ThenBy(entry => entry.NodeId.Value)
-			.ToArray();
-		var resolved = new List<ProfileEntry>();
-		var includedOptions = new HashSet<ModNodeId>();
-		var optionGraph = OptionRelationshipGraph.Create(snapshot);
-		var nextLoadOrder = 0;
-		foreach (var hostEntry in sourceEntries)
-		{
-			resolved.Add(hostEntry with { LoadOrder = nextLoadOrder++ });
-			if (!snapshot.Nodes.TryGetValue(hostEntry.NodeId, out var host)
-				|| host.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.Option))
-				continue;
-
-			AppendEnabledOptions(host.Id, new HashSet<ModNodeId> { host.Id });
-		}
-		return profile with { Entries = resolved };
-
-		void AppendEnabledOptions(ModNodeId parentId, HashSet<ModNodeId> ancestors)
-		{
-			var parentKey = parentId.Value.ToString("N");
-			var enabledOptions = optionGraph.GetDirectOptions(parentId)
-				.Where(option => optionStates.IsEnabled(option.Id.Value.ToString("N"), parentKey))
-				.OrderBy(option => optionStates.GetEffectiveOrder(option.Id.Value.ToString("N"), parentKey) ?? int.MaxValue)
-				.ThenBy(option => option.Metadata.OptionOrder ?? int.MaxValue)
-				.ThenBy(option => option.Id.Value)
-				.ToArray();
-			foreach (var option in enabledOptions)
-			{
-				// Malformed legacy option.json files cannot turn deployment into an
-				// infinite loop. New imports are trees by construction.
-				if (!ancestors.Add(option.Id)) continue;
-				// A logical placeholder carries only the relationship. It is still
-				// traversed, but never becomes a fake deployable patch entry.
-				if (option.PatchGroups.Count > 0 && includedOptions.Add(option.Id))
-					resolved.Add(new ProfileEntry(option.Id, nextLoadOrder++));
-				AppendEnabledOptions(option.Id, ancestors);
-				ancestors.Remove(option.Id);
-			}
-		}
-	}
+		=> ProfileEffectiveProfileResolver.Resolve(profile, snapshot, optionStates);
 }

@@ -17,6 +17,57 @@ public sealed class OptionActivationStore
 		Load();
 	}
 
+	// Strict read-only loader for headless callers. Unlike the live store's
+	// constructor it never treats malformed state as an empty state, because a
+	// CLI/agent must not silently infer that every option is disabled.
+	public static async ValueTask<OptionActivationSnapshot> TryLoadReadOnlySnapshotAsync(
+		string path,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(path);
+		if (!File.Exists(path))
+			return new OptionActivationSnapshot(new Dictionary<string, IReadOnlyDictionary<string, OptionHostState>>(StringComparer.OrdinalIgnoreCase));
+
+		var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+		try
+		{
+			using var document = JsonDocument.Parse(json);
+			if (document.RootElement.TryGetProperty("version", out _))
+			{
+				var persisted = JsonSerializer.Deserialize<PersistedState>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+				if (persisted?.Options is null)
+					throw new InvalidDataException("Option activation data is missing options.");
+				return new OptionActivationSnapshot(persisted.Options.ToDictionary(
+					option => option.Key,
+					option => (IReadOnlyDictionary<string, OptionHostState>)(option.Value ?? new Dictionary<string, PersistedHostState>())
+						.ToDictionary(
+							host => host.Key,
+							host => new OptionHostState(host.Value?.Enabled ?? false, host.Value?.EffectiveOrder),
+							StringComparer.OrdinalIgnoreCase),
+					StringComparer.OrdinalIgnoreCase));
+			}
+
+			// v1 compatibility: { optionId: [ hostId, ... ] }
+			var legacy = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+			if (legacy is null)
+				throw new InvalidDataException("Option activation data is invalid.");
+			return new OptionActivationSnapshot(legacy.ToDictionary(
+				option => option.Key,
+				option => (IReadOnlyDictionary<string, OptionHostState>)(option.Value ?? [])
+					.Where(host => !string.IsNullOrWhiteSpace(host))
+					.ToDictionary(host => host, _ => new OptionHostState(true, null), StringComparer.OrdinalIgnoreCase),
+				StringComparer.OrdinalIgnoreCase));
+		}
+		catch (JsonException exception)
+		{
+			throw new InvalidDataException("Option activation data is invalid JSON.", exception);
+		}
+		catch (ArgumentException exception)
+		{
+			throw new InvalidDataException("Option activation data contains conflicting keys.", exception);
+		}
+	}
+
 	public IReadOnlySet<string> GetEnabledHosts(string optionId)
 	{
 		lock (_gate)

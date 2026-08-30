@@ -96,7 +96,7 @@
                     <TextBlock Style="{StaticResource HelpParagraph}">
                         <Run Text="• 可以查看作者的 B 站主页，搜索 Assestina-R，或直接前往 "/>
                         <Hyperlink NavigateUri="https://space.bilibili.com/392788182" RequestNavigate="OnHelpLinkRequestNavigate">https://space.bilibili.com/392788182</Hyperlink>
-                        <Run Text=" 看看有没有视频。"/>
+                        <Run Text=" 看看有没有视频，或加qq群1107274013寻求帮助"/>
                     </TextBlock>
 
                     <TextBlock Text="高级功能" Style="{StaticResource HelpSectionTitle}"/>

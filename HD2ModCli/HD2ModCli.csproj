@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>hd2mod</AssemblyName>
+    <RootNamespace>HD2ModCli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\HD2ModManager\ThirdParty\7zip\**\*"
+             Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="SKILL.md" />
+    <EmbeddedResource Include="SKILL.md" LogicalName="HD2ModCli.SKILL.md" />
+  </ItemGroup>
+
+  <!-- Lets the Manager copy the exact artifacts from this build, including
+       isolated output roots used by verification builds. -->
+  <Target Name="GetHd2ModCliArtifactFiles" Returns="@(Hd2ModCliArtifact)">
+    <ItemGroup>
+      <Hd2ModCliArtifact Include="$(TargetPath)" Condition="Exists('$(TargetPath)')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).exe" Condition="Exists('$(TargetDir)$(AssemblyName).exe')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).deps.json" Condition="Exists('$(TargetDir)$(AssemblyName).deps.json')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).runtimeconfig.json" Condition="Exists('$(TargetDir)$(AssemblyName).runtimeconfig.json')" />
+      <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).pdb" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -12,6 +12,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
+    <!-- Build the headless companion with the desktop application, without
+         making the WPF application depend on the CLI assembly at runtime. -->
+    <ProjectReference Include="..\HD2ModCli\HD2ModCli.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <ItemGroup>
     <Resource Include="Resources\helldivers2.ico" />
@@ -25,5 +28,24 @@
   <!-- Rely on implicit WPF XAML items; do not explicitly include Page/ApplicationDefinition to avoid duplicates -->
 
   <!-- Use implicit EmbeddedResource items for .resx files; remove explicit includes to avoid duplicates -->
+
+  <!-- Place the CLI entry artifacts beside HD2ModManager.exe. The CLI project
+       reports the artifacts for the exact active output root, so isolated
+       builds cannot accidentally copy a stale normal-build executable. -->
+  <Target Name="CopyHd2ModCliArtifacts" AfterTargets="Build">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\..\HD2ModCli\HD2ModCli.csproj"
+             Targets="GetHd2ModCliArtifactFiles"
+             Properties="Configuration=$(Configuration);Platform=$(Platform);BaseOutputPath=$(BaseOutputPath)">
+      <Output TaskParameter="TargetOutputs" ItemName="Hd2ModCliArtifact" />
+    </MSBuild>
+    <Copy SourceFiles="@(Hd2ModCliArtifact)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <Hd2ModCliDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\README.md" />
+      <Hd2ModCliDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\SKILL.md" />
+    </ItemGroup>
+    <Copy SourceFiles="@(Hd2ModCliDocumentation)"
+          DestinationFiles="@(Hd2ModCliDocumentation->'$(TargetDir)hd2mod-docs\%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

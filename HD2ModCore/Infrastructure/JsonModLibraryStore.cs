@@ -55,6 +55,35 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 		}
 	}
 
+	// Strict read-only counterpart for command-line/agent inspection. It does not
+	// create the library directory, migrate legacy files, or write recovery data.
+	public async ValueTask<LibrarySnapshot?> TryLoadReadOnlyAsync(CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(SnapshotPath)) return null;
+
+		var gate = GetFileGate();
+		await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			var json = await File.ReadAllTextAsync(SnapshotPath, cancellationToken).ConfigureAwait(false);
+			var fileSnapshot = JsonSerializer.Deserialize<LibraryFileSnapshot>(json, SerializerOptions);
+			if (fileSnapshot is null) return null;
+			if (fileSnapshot.Version != CurrentVersion)
+				throw new InvalidDataException($"Unsupported library data version. Expected {CurrentVersion}.");
+
+			var profileState = await _profileStore.TryLoadReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+			return new LibrarySnapshot(fileSnapshot.Version, fileSnapshot.SavedUtc, fileSnapshot.Nodes, profileState.Profiles, profileState.ActiveProfileId);
+		}
+		catch (JsonException exception)
+		{
+			throw new InvalidDataException("Library data is invalid JSON.", exception);
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
 	private async ValueTask<LibrarySnapshot?> TryLoadCoreAsync(CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(_paths.ModsDirectory);

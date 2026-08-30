@@ -78,6 +78,21 @@ public sealed class JsonProfileStore
 		File.Delete(tmp);
 	}
 
+	// Strict read-only counterpart for headless inspection. Unlike TryLoadAsync it
+	// never migrates, repairs, backs up, or creates profile files.
+	public async ValueTask<(IReadOnlyList<Profile> Profiles, ProfileId? ActiveProfileId)> TryLoadReadOnlyAsync(CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(_paths.ProfilesPath)) return (Array.Empty<Profile>(), null);
+
+		var json = await File.ReadAllTextAsync(_paths.ProfilesPath, cancellationToken).ConfigureAwait(false);
+		if (TryDeserializeCurrent(json, out var snapshot))
+			return (snapshot.Profiles ?? Array.Empty<Profile>(), snapshot.ActiveProfileId);
+		if (TryDeserializeLegacyList(json, out var legacyProfiles))
+			return (legacyProfiles, null);
+
+		throw new InvalidDataException("Profile data is invalid JSON.");
+	}
+
 	private async ValueTask TryMigrateLegacyProfilesOnceAsync(CancellationToken cancellationToken)
 	{
 		if (File.Exists(_paths.LegacyProfileMigrationMarkerPath)

@@ -114,6 +114,43 @@ public sealed class ProfileOptionTreeTests
     }
 
     [Fact]
+    public async Task OptionActivationStore_ReadOnlySnapshot_PreservesStateWithoutRewritingFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var path = Path.Combine(root, "option-activations.json");
+            var optionId = Guid.NewGuid().ToString("N");
+            var hostId = Guid.NewGuid().ToString("N");
+            var store = new OptionActivationStore(path);
+            await store.InitializeMissingStatesAsync([new OptionActivationInitialization(optionId, hostId, true, 3)]);
+            var before = await File.ReadAllTextAsync(path);
+
+            var snapshot = await OptionActivationStore.TryLoadReadOnlySnapshotAsync(path);
+
+            Assert.True(snapshot.IsEnabled(optionId, hostId));
+            Assert.Equal(3, snapshot.GetEffectiveOrder(optionId, hostId));
+            Assert.Equal(before, await File.ReadAllTextAsync(path));
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
+    [Fact]
+    public async Task OptionActivationStore_ReadOnlySnapshot_RejectsMalformedData()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var path = Path.Combine(root, "option-activations.json");
+            Directory.CreateDirectory(root);
+            await File.WriteAllTextAsync(path, "{ invalid");
+
+            await Assert.ThrowsAsync<InvalidDataException>(async () => await OptionActivationStore.TryLoadReadOnlySnapshotAsync(path).AsTask());
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
+    [Fact]
     public void ResolveEffectiveProfile_UsesHostScopedEffectiveOptionOrder()
     {
         var rootId = ModNodeId.New();

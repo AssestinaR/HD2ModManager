@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HD2ModAdaptation", "HD2ModA
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HD2ModAdaptation.Tests", "HD2ModAdaptation.Tests\HD2ModAdaptation.Tests.csproj", "{CBC449B7-DCA8-4F89-BC5D-2494F2D092DF}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HD2ModCli", "HD2ModCli\HD2ModCli.csproj", "{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -97,6 +99,18 @@ Global
 		{CBC449B7-DCA8-4F89-BC5D-2494F2D092DF}.Release|x64.Build.0 = Release|Any CPU
 		{CBC449B7-DCA8-4F89-BC5D-2494F2D092DF}.Release|x86.ActiveCfg = Release|Any CPU
 		{CBC449B7-DCA8-4F89-BC5D-2494F2D092DF}.Release|x86.Build.0 = Release|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Debug|x64.Build.0 = Debug|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Debug|x86.Build.0 = Debug|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Release|x64.ActiveCfg = Release|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Release|x64.Build.0 = Release|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Release|x86.ActiveCfg = Release|Any CPU
+		{C91A4C04-1A3E-4D8C-8B1E-8A3099BA6A61}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

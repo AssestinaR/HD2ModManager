@@ -32,7 +32,11 @@ public sealed record ImportPlanItem(
     IReadOnlyList<PatchGroupKey> PatchGroups,
     bool IsTemporarySource = false,
     IReadOnlyList<string>? PlannedFiles = null,
-    IReadOnlyList<ImportPlanDiagnostic>? Diagnostics = null);
+    IReadOnlyList<ImportPlanDiagnostic>? Diagnostics = null,
+    string? PlanNodeKey = null,
+    IReadOnlyList<string>? ParentPlanNodeKeys = null,
+    int? OptionOrder = null,
+    bool IsLogicalNode = false);
 
 public sealed record ImportPlan(
     string SourcePath,

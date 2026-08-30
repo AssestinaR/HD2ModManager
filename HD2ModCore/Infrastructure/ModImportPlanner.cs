@@ -4,131 +4,283 @@ using HD2ModCore.Domain;
 namespace HD2ModCore.Infrastructure;
 
 /// <summary>
-/// Import planning only. It deliberately does not copy files, mutate the library,
-/// or calculate derived Mod properties.
+/// Produces the same logical import tree that <see cref="ModLibraryImporter"/>
+/// will persist, without copying a file or mutating a library snapshot.
 /// </summary>
 public sealed class ModImportPlanner : IModImportPlanner
 {
-    private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
-    private readonly IObjectTreeImporter _treeImporter;
-    private readonly IArchiveObjectTreeImporter _archiveImporter;
+	private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
+	private readonly IObjectTreeImporter _treeImporter;
+	private readonly SevenZipArchiveExtractor _archiveExtractor = new();
 
-    public ModImportPlanner(IObjectTreeImporter treeImporter, IArchiveObjectTreeImporter archiveImporter)
-    {
-        _treeImporter = treeImporter ?? throw new ArgumentNullException(nameof(treeImporter));
-        _archiveImporter = archiveImporter ?? throw new ArgumentNullException(nameof(archiveImporter));
-    }
+	public ModImportPlanner(IObjectTreeImporter treeImporter, IArchiveObjectTreeImporter archiveImporter)
+	{
+		_treeImporter = treeImporter ?? throw new ArgumentNullException(nameof(treeImporter));
+		// Keep the public constructor contract intact. The current archive-tree
+		// adapter intentionally hides its temporary extraction root, while planning
+		// must inspect that root for manifest/wrapper semantics before projecting it.
+		ArgumentNullException.ThrowIfNull(archiveImporter);
+	}
 
-    public async ValueTask<ImportPlan> PlanFolderAsync(string folderPath, CancellationToken cancellationToken = default)
-    {
-        var full = Path.GetFullPath(folderPath);
-        if (!Directory.Exists(full)) throw new DirectoryNotFoundException(full);
-        var manifest = StandardModManifest.TryLoad(full);
-        var tree = await _treeImporter.ImportFolderAsync(full, cancellationToken).ConfigureAwait(false);
-        return manifest is not null
-            ? BuildManifestPlan(full, tree, manifest)
-            : BuildHeuristicPlan(full, tree, ImportPlanMode.HeuristicFolder);
-    }
+	public async ValueTask<ImportPlan> PlanFolderAsync(string folderPath, CancellationToken cancellationToken = default)
+	{
+		var fullPath = Path.GetFullPath(folderPath);
+		if (!Directory.Exists(fullPath)) throw new DirectoryNotFoundException(fullPath);
+		return await PlanFolderContainerAsync(
+			fullPath,
+			fullPath,
+			new DirectoryInfo(fullPath).Name,
+			isTemporarySource: false,
+			cancellationToken).ConfigureAwait(false);
+	}
 
-    public async ValueTask<ImportPlan> PlanArchiveAsync(string archivePath, CancellationToken cancellationToken = default)
-    {
-        var full = Path.GetFullPath(archivePath);
-        if (!File.Exists(full)) throw new FileNotFoundException("Archive file not found.", full);
-        var display = Path.GetFileNameWithoutExtension(full);
-        var diagnostics = new List<ImportPlanDiagnostic>();
-        if (!ArchiveExtensions.Contains(Path.GetExtension(full)))
-            diagnostics.Add(new("UnexpectedExtension", "文件扩展名不是常见压缩格式，仍尝试按压缩包规划。", full));
+	public async ValueTask<ImportPlan> PlanArchiveAsync(string archivePath, CancellationToken cancellationToken = default)
+	{
+		var fullPath = Path.GetFullPath(archivePath);
+		if (!File.Exists(fullPath)) throw new FileNotFoundException("Archive file not found.", fullPath);
+		return await PlanArchiveCoreAsync(
+			fullPath,
+			fullPath,
+			Path.GetFileNameWithoutExtension(fullPath),
+			cancellationToken).ConfigureAwait(false);
+	}
 
-        // Archive extraction ownership remains with the caller/executor. The archive
-        // object-tree adapter provides a temporary view for planning.
-        var tree = await _archiveImporter.ImportArchiveAsync(full, cancellationToken).ConfigureAwait(false);
-        var plan = BuildHeuristicPlan(full, tree, ImportPlanMode.ArchiveNormalized);
-        return plan with { DisplayName = display, Diagnostics = plan.Diagnostics.Concat(diagnostics).ToArray() };
-    }
+	private async ValueTask<ImportPlan> PlanFolderContainerAsync(
+		string actualRoot,
+		string presentationSourcePath,
+		string displayName,
+		bool isTemporarySource,
+		CancellationToken cancellationToken)
+	{
+		var packageRoot = ModLibraryImporter.ResolvePackageRoot(actualRoot);
+		var directPlan = await PlanSinglePackageAsync(
+			packageRoot,
+			presentationSourcePath,
+			displayName,
+			isTemporarySource,
+			cancellationToken).ConfigureAwait(false);
 
-    private static ImportPlan BuildManifestPlan(string source, ImportedObjectTree tree, StandardModManifest manifest)
-    {
-        var entries = EnumerateOptions(manifest.Options)
-            .SelectMany(option => option.Include ?? [])
-            .Select(Normalize)
-            .Where(path => !string.IsNullOrEmpty(path))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+		// A manifest owns the entire package. This is the same boundary used by
+		// ModLibraryImporter: nested archives remain ordinary package files.
+		if (packageRoot.Manifest is not null) return directPlan;
 
-        var items = new List<ImportPlanItem>();
-        foreach (var node in tree.Nodes.Values.OrderBy(n => Normalize(n.RelativePath).Length).ThenBy(n => n.RelativePath, StringComparer.OrdinalIgnoreCase))
-        {
-            var path = Normalize(node.RelativePath);
-            if (string.IsNullOrEmpty(path))
-            {
-                items.Add(ToItem(node, source, node.Metadata.Kind == ModNodeKind.ReShade ? ImportPlanItemRole.ReShade : ImportPlanItemRole.Host, "manifest root"));
-                continue;
-            }
-            var match = entries.FirstOrDefault(k => path.Equals(k, StringComparison.OrdinalIgnoreCase)
-                || path.StartsWith(k + "/", StringComparison.OrdinalIgnoreCase));
-            if (match is null)
-            {
-                items.Add(ToItem(node, source, ImportPlanItemRole.Ignored, "manifest does not include this path"));
-                continue;
-            }
-            items.Add(ToItem(node, source, ImportPlanItemRole.Option, match));
-        }
+		var componentPlans = new List<ImportPlan>();
+		if (directPlan.Items.Count > 0) componentPlans.Add(directPlan);
+		var nestedArchiveCount = 0;
+		foreach (var archivePath in EnumerateArchives(actualRoot))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			nestedArchiveCount++;
+			var relativeArchivePath = Normalize(Path.GetRelativePath(actualRoot, archivePath));
+			var nestedPresentationPath = presentationSourcePath + "!/" + relativeArchivePath;
+			var nested = await PlanArchiveCoreAsync(
+				archivePath,
+				nestedPresentationPath,
+				Path.GetFileNameWithoutExtension(archivePath),
+				cancellationToken).ConfigureAwait(false);
+			if (nested.Items.Count > 0) componentPlans.Add(nested);
+			else if (nested.Diagnostics.Any(diagnostic => diagnostic.IsBlocking)) componentPlans.Add(nested);
+		}
 
-        if (items.All(i => i.Role != ImportPlanItemRole.Host))
-            items.Insert(0, new ImportPlanItem(source, manifest.Name ?? Path.GetFileName(source), ImportPlanItemRole.PlaceholderHost, null, [], false, null,
-                [new("ManifestPlaceholder", "manifest 未发现主体 patch，创建空主体承载选项。", source)]));
-        return new(source, manifest.Name ?? Path.GetFileName(source), ImportPlanMode.ManifestStrict, items,
-            [new("ManifestStrict", "发现 manifest，按严格模式规划；未声明的子目录不会独立导入。", source)]);
-    }
+		if (nestedArchiveCount == 0) return directPlan;
+		if (componentPlans.Count == 0) return directPlan;
 
-    private static ImportPlan BuildHeuristicPlan(string source, ImportedObjectTree tree, ImportPlanMode mode)
-    {
-        var payload = tree.Nodes.Values.Where(n => n.PatchGroups.Count > 0 || n.Metadata.Kind is ModNodeKind.Decoration or ModNodeKind.ReShade)
-            .OrderBy(n => Normalize(n.RelativePath).Length).ThenBy(n => n.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray();
-        var diagnostics = new List<ImportPlanDiagnostic>();
-        if (payload.Length == 0)
-        {
-            diagnostics.Add(new("NoImportablePayload", "未发现 patch 或装饰包。", source, true));
-            return new(source, Path.GetFileName(source), mode, [], diagnostics);
-        }
+		var diagnostics = componentPlans
+			.SelectMany(plan => plan.Diagnostics)
+			.Where(diagnostic => !string.Equals(diagnostic.Code, "NoImportablePayload", StringComparison.OrdinalIgnoreCase))
+			.ToList();
+		diagnostics.Insert(0, new ImportPlanDiagnostic(
+			"NestedContainer",
+			$"发现 {nestedArchiveCount} 个嵌套压缩包；规划已按与导入器相同的包发现规则展开。",
+			presentationSourcePath));
+		return new ImportPlan(
+			presentationSourcePath,
+			displayName,
+			ImportPlanMode.NestedContainer,
+			componentPlans.SelectMany(plan => plan.Items).ToArray(),
+			diagnostics,
+			RequiresDerivedInformation: true);
+	}
 
-        var root = payload.FirstOrDefault(n => string.IsNullOrEmpty(Normalize(n.RelativePath)));
-        var host = root ?? payload[0];
-        var items = new List<ImportPlanItem>();
-        if (root is null)
-        {
-            items.Add(new ImportPlanItem(source, Path.GetFileName(source), ImportPlanItemRole.PlaceholderHost, null, [], false, null,
-                [new("HeuristicPlaceholder", "根目录没有 patch，创建空主体并将首个 patch 目录作为主体候选。", source)]));
-        }
-        foreach (var node in payload)
-        {
-            var isHost = node.Id.Equals(host.Id);
-            var role = node.Metadata.Kind == ModNodeKind.Decoration
-                ? ImportPlanItemRole.Decoration
-                : node.Metadata.Kind == ModNodeKind.ReShade
-                    ? ImportPlanItemRole.ReShade
-                : isHost ? ImportPlanItemRole.Host : ImportPlanItemRole.Option;
-            items.Add(ToItem(node, source, role, Normalize(node.RelativePath)));
-        }
-        if (payload.Length > 1)
-            diagnostics.Add(new("HeuristicSplit", "未发现 manifest，已按最浅 patch 层级划分主体和选项。", source));
-        return new(source, Path.GetFileName(source), mode, items, diagnostics);
-    }
+	private async ValueTask<ImportPlan> PlanArchiveCoreAsync(
+		string actualArchivePath,
+		string presentationSourcePath,
+		string displayName,
+		CancellationToken cancellationToken)
+	{
+		var extractRoot = Path.Combine(Path.GetTempPath(), "HD2ModManager", "import-plan", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(extractRoot);
+		try
+		{
+			await _archiveExtractor.ExtractAsync(actualArchivePath, extractRoot, cancellationToken).ConfigureAwait(false);
+			var plan = await PlanFolderContainerAsync(
+				extractRoot,
+				presentationSourcePath,
+				displayName,
+				isTemporarySource: true,
+				cancellationToken).ConfigureAwait(false);
+			var diagnostics = plan.Diagnostics.ToList();
+			diagnostics.Insert(0, new ImportPlanDiagnostic(
+				"ArchiveExtracted",
+				"已在临时工作区展开压缩包以识别 manifest、选项和嵌套包；不会写入 Mod 库。",
+				presentationSourcePath));
+			return plan with { Diagnostics = diagnostics };
+		}
+		finally
+		{
+			TryDeleteTemporaryDirectory(extractRoot);
+		}
+	}
 
-    private static ImportPlanItem ToItem(ModNode node, string source, ImportPlanItemRole role, string? relative)
-        => new(source, node.Metadata.Name, role, string.IsNullOrEmpty(relative) ? null : relative,
-            node.PatchGroups, false, null, null);
+	private async ValueTask<ImportPlan> PlanSinglePackageAsync(
+		ModLibraryImporter.PackageRoot packageRoot,
+		string presentationSourcePath,
+		string displayName,
+		bool isTemporarySource,
+		CancellationToken cancellationToken)
+	{
+		var tree = await _treeImporter.ImportFolderAsync(packageRoot.Directory, cancellationToken).ConfigureAwait(false);
+		var planned = ModLibraryImporter.PlanTreeForImport(tree, packageRoot.Directory, packageRoot.Manifest);
+		var mode = packageRoot.Manifest is null ? ImportPlanMode.HeuristicFolder : ImportPlanMode.ManifestStrict;
+		var diagnostics = new List<ImportPlanDiagnostic>();
+		if (!PathsEqual(packageRoot.Directory, presentationSourcePath) && packageRoot.Manifest is not null)
+		{
+			diagnostics.Add(new ImportPlanDiagnostic(
+				"ManifestWrapper",
+				"发现单层包装目录中的 manifest，已按包装目录内的真实包根规划。",
+				presentationSourcePath));
+		}
+		diagnostics.Add(packageRoot.Manifest is null
+			? new ImportPlanDiagnostic("HeuristicTree", "未发现 manifest，已复用导入器的启发式树规划。", presentationSourcePath)
+			: new ImportPlanDiagnostic("ManifestStrict", "发现 manifest，已复用导入器的严格选项树规划。", presentationSourcePath));
+		return ProjectPlannedTree(
+			presentationSourcePath,
+			displayName,
+			mode,
+			planned,
+			isTemporarySource,
+			diagnostics);
+	}
 
-    private static string Normalize(string? path)
-        => string.IsNullOrWhiteSpace(path) || path == "." ? string.Empty : path.Replace('\\', '/').Trim('/');
+	private static ImportPlan ProjectPlannedTree(
+		string sourcePath,
+		string displayName,
+		ImportPlanMode mode,
+		ModLibraryImporter.PlannedImportTree planned,
+		bool isTemporarySource,
+		IReadOnlyList<ImportPlanDiagnostic> diagnostics)
+	{
+		if (planned.Tree.Nodes.Count == 0)
+		{
+			return new ImportPlan(
+				sourcePath,
+				displayName,
+				mode,
+				Array.Empty<ImportPlanItem>(),
+				diagnostics.Concat([new ImportPlanDiagnostic("NoImportablePayload", "未发现 patch、装饰包、ReShade 文件或其他可导入内容。", sourcePath, true)]).ToArray(),
+				RequiresDerivedInformation: false);
+		}
 
-    private static IEnumerable<StandardModManifestOption> EnumerateOptions(IEnumerable<StandardModManifestOption> options)
-    {
-        foreach (var option in options)
-        {
-            yield return option;
-            foreach (var descendant in EnumerateOptions(option.SubOptions ?? []))
-                yield return descendant;
-        }
-    }
+		var orderedNodes = planned.Tree.Nodes.Values
+			.OrderBy(node => node.Id == planned.Tree.RootId ? 0 : 1)
+			.ThenBy(node => PathDepth(node.RelativePath))
+			.ThenBy(node => Normalize(node.RelativePath), StringComparer.OrdinalIgnoreCase)
+			.ThenBy(node => node.Id.Value)
+			.ToArray();
+		var keyByNodeId = BuildPlanKeys(orderedNodes, planned.Tree.RootId);
+		var items = new List<ImportPlanItem>(orderedNodes.Length);
+		foreach (var node in orderedNodes)
+		{
+			var sourcePaths = planned.SourceRelativePaths.TryGetValue(node.Id, out var rawPaths)
+				? rawPaths.Select(Normalize).Where(path => !string.IsNullOrEmpty(path)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+				: Array.Empty<string>();
+			var parentKeys = (node.Metadata.HostModGuids ?? Array.Empty<string>())
+				.Select(value => Guid.TryParse(value, out var guid) ? new ModNodeId(guid) : (ModNodeId?)null)
+				.Where(id => id.HasValue && keyByNodeId.ContainsKey(id.Value))
+				.Select(id => keyByNodeId[id!.Value])
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+			var isLogicalNode = node.Metadata.Kind == ModNodeKind.Option
+				&& node.PatchGroups.Count == 0
+				&& sourcePaths.Length == 0;
+			var itemDiagnostics = isLogicalNode
+				? new[] { new ImportPlanDiagnostic("LogicalOption", "该条目只承载选项关系，不直接包含 patch。", sourcePath) }
+				: Array.Empty<ImportPlanDiagnostic>();
+			items.Add(new ImportPlanItem(
+				sourcePath,
+				node.Metadata.Name,
+				ToRole(node, planned.Tree.RootId),
+				Normalize(node.RelativePath) is { Length: > 0 } relative ? relative : null,
+				node.PatchGroups,
+				isTemporarySource,
+				sourcePaths,
+				itemDiagnostics,
+				keyByNodeId[node.Id],
+				parentKeys,
+				node.Metadata.OptionOrder,
+				isLogicalNode));
+		}
+		return new ImportPlan(sourcePath, displayName, mode, items, diagnostics, RequiresDerivedInformation: true);
+	}
 
+	private static Dictionary<ModNodeId, string> BuildPlanKeys(IReadOnlyList<ModNode> nodes, ModNodeId rootId)
+	{
+		var result = new Dictionary<ModNodeId, string>();
+		var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var node in nodes)
+		{
+			var baseKey = node.Id == rootId
+				? "root"
+				: !string.IsNullOrWhiteSpace(node.Metadata.SourcePackagePath)
+					? node.Metadata.SourcePackagePath!
+					: Normalize(node.RelativePath);
+			if (string.IsNullOrWhiteSpace(baseKey)) baseKey = "node";
+			var key = baseKey;
+			var suffix = 2;
+			while (!used.Add(key)) key = baseKey + "#" + suffix++;
+			result[node.Id] = key;
+		}
+		return result;
+	}
+
+	private static ImportPlanItemRole ToRole(ModNode node, ModNodeId rootId)
+		=> node.Metadata.Kind switch
+		{
+			ModNodeKind.Option => ImportPlanItemRole.Option,
+			ModNodeKind.Decoration => ImportPlanItemRole.Decoration,
+			ModNodeKind.ReShade => ImportPlanItemRole.ReShade,
+			_ when node.Id == rootId && node.PatchGroups.Count == 0 => ImportPlanItemRole.PlaceholderHost,
+			_ => ImportPlanItemRole.Host,
+		};
+
+	private static IEnumerable<string> EnumerateArchives(string root)
+	{
+		IEnumerable<string> files;
+		try { files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories); }
+		catch (IOException) { files = Array.Empty<string>(); }
+		catch (UnauthorizedAccessException) { files = Array.Empty<string>(); }
+		return files.Where(path => ArchiveExtensions.Contains(Path.GetExtension(path))).OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray();
+	}
+
+	private static void TryDeleteTemporaryDirectory(string directory)
+	{
+		try
+		{
+			if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+			var parent = Directory.GetParent(directory)?.FullName;
+			if (parent is not null && Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+				Directory.Delete(parent, recursive: false);
+		}
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
+	}
+
+	private static bool PathsEqual(string left, string right)
+		=> string.Equals(Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+
+	private static string Normalize(string? value)
+		=> string.IsNullOrWhiteSpace(value) || value == "." ? string.Empty : value.Replace('\\', '/').Trim('/');
+
+	private static int PathDepth(string path)
+		=> string.IsNullOrEmpty(Normalize(path)) ? 0 : Normalize(path).Count(character => character == '/') + 1;
 }

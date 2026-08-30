@@ -130,11 +130,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return new ImportResult(latestSnapshot, firstStoredTree.RootId, firstStoredTree.SourceDisplayName);
 	}
 
-	private static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
+	internal static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
 		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0 || node.Metadata.Kind == ModNodeKind.Decoration)
 			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory);
 
-	private static PackageRoot ResolvePackageRoot(string directory)
+	internal static PackageRoot ResolvePackageRoot(string directory)
 	{
 		var manifest = StandardModManifest.TryLoad(directory);
 		if (manifest is not null) return new PackageRoot(directory, manifest);
@@ -423,7 +423,12 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 	}
 
-	private static PlannedImportTree PlanManifestImport(ImportedObjectTree tree, StandardModManifest manifest)
+	internal static PlannedImportTree PlanTreeForImport(ImportedObjectTree tree, string sourceRootDirectory, StandardModManifest? manifest)
+		=> manifest is null
+			? PlanHeuristicImport(tree, sourceRootDirectory)
+			: PlanManifestImport(tree, manifest);
+
+	internal static PlannedImportTree PlanManifestImport(ImportedObjectTree tree, StandardModManifest manifest)
 	{
 		var entries = BuildManifestEntries(manifest);
 		ValidateManifestEntries(entries);
@@ -569,7 +574,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private static ManifestEntry? FindManifestEntryByKey(IReadOnlyList<ManifestEntry> entries, string key)
 		=> entries.FirstOrDefault(entry => string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase));
 
-	private static PlannedImportTree PlanHeuristicImport(ImportedObjectTree tree, string sourceRootDirectory)
+	internal static PlannedImportTree PlanHeuristicImport(ImportedObjectTree tree, string sourceRootDirectory)
 	{
 		var payloadNodes = tree.Nodes.Values
 			.Where(node => node.PatchGroups.Count > 0
@@ -763,11 +768,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		ModNodeKind Kind,
 		int? OptionOrder);
 
-	private sealed record PlannedImportTree(
+	internal sealed record PlannedImportTree(
 		ImportedObjectTree Tree,
 		IReadOnlyDictionary<ModNodeId, IReadOnlyList<string>> SourceRelativePaths);
 
-	private sealed record PackageRoot(string Directory, StandardModManifest? Manifest);
+	internal sealed record PackageRoot(string Directory, StandardModManifest? Manifest);
 
 	private sealed record ImportSourceUnit(
 		string SourceRoot,
