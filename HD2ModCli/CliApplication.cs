@@ -381,6 +381,56 @@ public static class CliApplication
 				() => FormatPatchResourceRepackagingExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 4 && command[0] == "equipment" && command[1] == "helmet-merge" && command[2] == "inspect")
+		{
+			EnsureHelmetMergeInspectOptions(invocation.Options);
+			var build = await CliHelmetToArmorMergePlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command.Skip(3).ToArray())
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = CreateHelmetMergePlanProjection(build.Document) },
+				() => FormatHelmetMergeInspection(build.Document));
+			return 0;
+		}
+		if (command.Length >= 4 && command[0] == "equipment" && command[1] == "helmet-merge" && command[2] == "plan")
+		{
+			EnsureHelmetMergePlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "equipment helmet-merge plan");
+			var build = await CliHelmetToArmorMergePlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command.Skip(3).ToArray())
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), helmetMerge = CreateHelmetMergePlanProjection(build.Document) },
+				() => FormatHelmetMergePlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "equipment", "helmet-merge", "validate"))
+		{
+			EnsureHelmetMergeValidateOptions(invocation.Options);
+			var document = await CliHelmetToArmorMergePlanArtifacts.ReadDocumentAsync(RequireHelmetMergePlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliHelmetToArmorMergePlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateHelmetMergeValidationProjection(validation) },
+				() => FormatHelmetMergeValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "equipment", "helmet-merge", "apply"))
+		{
+			EnsureHelmetMergeApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("HelmetMergeApplyConfirmationRequired", "equipment helmet-merge apply 会写出新的独立 Patch；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliHelmetToArmorMergePlanArtifacts.ReadDocumentAsync(RequireHelmetMergePlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliHelmetToArmorMergeExecutor.ApplyAsync(
+				document,
+				CliWorkspace.Open(invocation.Options),
+				RequireOutput(invocation.Options, "equipment helmet-merge apply"))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateHelmetMergeExecutionProjection(execution) },
+				() => FormatHelmetMergeExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length is 4 or 5 && command[0] == "patch" && command[1] == "repair" && command[2] == "inspect")
 		{
 			EnsureSameKeyInspectOptions(invocation.Options);
@@ -696,6 +746,49 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureHelmetMergeInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment helmet-merge inspect 仅接受 Mod 标识、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureHelmetMergePlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment helmet-merge plan 仅接受 Mod 标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureHelmetMergeValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment helmet-merge validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureHelmetMergeApplyOptions(CliGlobalOptions options)
+	{
+		if (options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"equipment helmet-merge apply 仅接受 --plan、--manager-root、--library、--game-data、--output、--confirm 与 --json。输出必须是一个新的库外且游戏目录外的目录。 ");
+		}
+	}
+
 	private static void EnsureSameKeyInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -861,6 +954,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("PatchResourcePlanRequired", "请通过 --plan <Patch资源重打包计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
+	private static string RequireHelmetMergePlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("HelmetMergePlanRequired", "请通过 --plan <头盔合并计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -1060,6 +1160,44 @@ public static class CliApplication
 			execution.OutputDirectory,
 			execution.PatchTocPath,
 			execution.SelectedAssetCount,
+			diagnostics = execution.Diagnostics,
+			libraryMutation = "not-performed",
+			deployment = "not-performed",
+		};
+
+	private static object CreateHelmetMergePlanProjection(CliHelmetToArmorMergePlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			request = document.Request,
+			sources = document.Sources,
+			candidates = document.Candidates,
+			selections = document.Selections,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateHelmetMergeValidationProjection(CliHelmetToArmorMergeValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			resolvedSourceCount = validation.ResolvedSelections.Count,
+			resolvedCandidateCount = validation.ResolvedSelections.Sum(pair => pair.Value.Count),
+			current = validation.Current is null ? null : CreateHelmetMergePlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateHelmetMergeExecutionProjection(CliHelmetToArmorMergeExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.OutputDirectory,
+			sources = execution.Sources,
 			diagnostics = execution.Diagnostics,
 			libraryMutation = "not-performed",
 			deployment = "not-performed",
@@ -1383,6 +1521,47 @@ public static class CliApplication
 			: $"Patch 资源重打包被拒绝：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
+	private static string FormatHelmetMergeInspection(CliHelmetToArmorMergePlanDocument document)
+	{
+		var sharedArmor = document.Candidates.Count(candidate => candidate.IsSharedArmorTarget);
+		var sharedHelmet = document.Candidates.Count(candidate => candidate.IsSharedHelmetTarget);
+		return $"头盔合并检查：来源 Mod {document.Sources.Count}；候选模型集合 {document.Candidates.Count}；默认选择 {document.Selections.Count}；共享胸部 {sharedArmor}；共享头盔 {sharedHelmet}。";
+	}
+
+	private static string FormatHelmetMergePlan(CliHelmetToArmorMergePlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出头盔合并计划：{outputPath}",
+			$"来源 Mod：{document.Sources.Count}；模型集合：{document.Candidates.Count}；默认选择：{document.Selections.Count}",
+			$"阻断诊断：{blocking}。请审阅共享影响与 selections 后执行 validate。",
+		]);
+	}
+
+	private static string FormatHelmetMergeValidation(CliHelmetToArmorMergeValidationResult validation)
+	{
+		var status = validation.IsValid ? "头盔合并验证通过。" : "头盔合并验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}已解析来源：{validation.ResolvedSelections.Count}；模型集合：{validation.ResolvedSelections.Sum(pair => pair.Value.Count)}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatHelmetMergeExecution(CliHelmetToArmorMergeExecutionResult execution)
+	{
+		if (execution.Success)
+		{
+			var merged = execution.Sources.Sum(source => source.MergedArmorUnitCount);
+			var hidden = execution.Sources.Sum(source => source.HiddenHelmetUnitCount);
+			return $"头盔合并完成：来源 {execution.Sources.Count}；胸部 Unit {merged}；隐藏头盔 Unit {hidden}；输出：{execution.OutputDirectory}";
+		}
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "头盔合并未完成；未发布任何输出，请查看 JSON 结果或日志。"
+			: $"头盔合并被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatSameKeyInspection(CliSameKeyReconstructionInspection inspection)
 	{
 		if (inspection.SelectedSourcePatchFileName is null)
@@ -1512,6 +1691,10 @@ HD2 Mod Manager 命令行
 	  hd2mod patch repackage plan <Mod GUID或前缀> [...] --library <Mod库目录> --output repackage-plan.json --json
 	  hd2mod patch repackage validate --plan repackage-plan.json --library <Mod库目录> --json
 	  hd2mod patch repackage apply --plan repackage-plan.json --library <Mod库目录> --output <新的库外目录> --confirm --json
+	  hd2mod equipment helmet-merge inspect <Mod GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod equipment helmet-merge plan <Mod GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output helmet-merge-plan.json --json
+	  hd2mod equipment helmet-merge validate --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod equipment helmet-merge apply --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
 	  hd2mod patch repair inspect <Mod GUID或前缀> [base.patch_N] --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod patch repair plan <Mod GUID或前缀> <base.patch_N> --manager-root <管理器目录> --game-data <游戏data目录> --output same-key-plan.json --json
 	  hd2mod patch repair validate --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
@@ -1540,6 +1723,6 @@ HD2 Mod Manager 命令行
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包与 Same-key 修复都只写入新的库外目录；不会替换、导入或部署结果。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并和 Same-key 修复都只写入新的库外目录；不会替换、导入或部署结果。
 """;
 }

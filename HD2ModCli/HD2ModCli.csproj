@@ -32,6 +32,7 @@
     <EmbeddedResource Include="skills\profile-management\SKILL.md" LogicalName="HD2ModCli.Skill.profile-management" />
     <EmbeddedResource Include="skills\safe-deployment\SKILL.md" LogicalName="HD2ModCli.Skill.safe-deployment" />
     <EmbeddedResource Include="skills\patch-resource-repackaging\SKILL.md" LogicalName="HD2ModCli.Skill.patch-resource-repackaging" />
+	<EmbeddedResource Include="skills\helmet-to-armor-merge\SKILL.md" LogicalName="HD2ModCli.Skill.helmet-to-armor-merge" />
     <EmbeddedResource Include="skills\same-key-reconstruction\SKILL.md" LogicalName="HD2ModCli.Skill.same-key-reconstruction" />
   </ItemGroup>
 

@@ -10,6 +10,15 @@ public interface IEquipmentUnitCatalogService
 		IReadOnlySet<AssetKey>? unitAssetKeys = null,
 		CancellationToken cancellationToken = default);
 
+	/// <summary>
+	/// Reads an already-built equipment catalog without schema migration, WAL
+	/// setup, or any persistent write. Callers receive an empty result when the
+	/// indexed tables are unavailable.
+	/// </summary>
+	ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> GetEntriesReadOnlyAsync(
+		IReadOnlySet<AssetKey>? unitAssetKeys = null,
+		CancellationToken cancellationToken = default);
+
     ValueTask<CrossArmorTransferPlan> CreatePlanAsync(
 		IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates,
 		IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates,

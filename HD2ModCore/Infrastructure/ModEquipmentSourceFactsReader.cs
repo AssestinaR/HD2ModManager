@@ -8,9 +8,11 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Composes unified Mod information with real Unit geometry for cross-armor and decoration source selection.
 public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsReader
 {
-	private readonly IModInformationCenter informationCenter;
+	private readonly IModInformationCenter? informationCenter;
+	private readonly IAssetInventoryProducer? directInventoryProducer;
 	private readonly IModInformationReader reader;
 	private readonly IEquipmentUnitCatalogService equipmentCatalog;
+	private readonly bool readEquipmentCatalogOnly;
 
 	public ModEquipmentSourceFactsReader(
 		IModInformationCenter informationCenter,
@@ -20,6 +22,25 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		this.reader = reader ?? throw new ArgumentNullException(nameof(reader));
 		this.equipmentCatalog = equipmentCatalog ?? throw new ArgumentNullException(nameof(equipmentCatalog));
+		readEquipmentCatalogOnly = false;
+	}
+
+	/// <summary>
+	/// Creates an operation-only reader for command-line planning. It produces
+	/// the shallow inventory directly instead of asking ModInformationCenter,
+	/// so no persistent manager cache or relation index is updated merely by an
+	/// inspect/plan request.
+	/// </summary>
+	public ModEquipmentSourceFactsReader(
+		IAssetInventoryProducer directInventoryProducer,
+		IModInformationReader reader,
+		IEquipmentUnitCatalogService equipmentCatalog,
+		bool readEquipmentCatalogOnly = true)
+	{
+		this.directInventoryProducer = directInventoryProducer ?? throw new ArgumentNullException(nameof(directInventoryProducer));
+		this.reader = reader ?? throw new ArgumentNullException(nameof(reader));
+		this.equipmentCatalog = equipmentCatalog ?? throw new ArgumentNullException(nameof(equipmentCatalog));
+		this.readEquipmentCatalogOnly = readEquipmentCatalogOnly;
 	}
 
 	public async ValueTask<ModEquipmentSourceFacts> ReadAsync(
@@ -38,13 +59,40 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 			Kind = ModInformationKind.AssetInventory,
 			Property = ModInformationPropertyKind.AssetInventory
 		};
-		var inventory = await informationCenter.RequestAssetInventoryAsync(
-			source,
-			modsRootDirectory,
-			inventoryRequest,
-			cancellationToken).ConfigureAwait(false);
-		issues.AddRange(inventory.Issues);
-		if (inventory.Data is null)
+		ModContentFacts? inventoryData;
+		string? inventoryGeneration;
+		if (informationCenter is not null)
+		{
+			var inventory = await informationCenter.RequestAssetInventoryAsync(
+				source,
+				modsRootDirectory,
+				inventoryRequest,
+				cancellationToken).ConfigureAwait(false);
+			issues.AddRange(inventory.Issues);
+			inventoryData = inventory.Data;
+			inventoryGeneration = inventory.Generation;
+		}
+		else
+		{
+			try
+			{
+				inventoryData = await directInventoryProducer!.GetNodeFactsAsync(source, modsRootDirectory, cancellationToken).ConfigureAwait(false);
+				inventoryGeneration = inventoryData.ContentGeneration;
+				issues.AddRange(inventoryData.Issues);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or DirectoryNotFoundException or FileNotFoundException)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Error,
+					"SourceAssetInventoryUnavailable",
+					$"来源 Mod 的 Patch 目录尚不可用，无法读取装备来源事实：{exception.Message}",
+					source.RelativePath,
+					source.Id,
+					exception.ToString()));
+				return Empty(source.Id, null, issues);
+			}
+		}
+		if (inventoryData is null)
 		{
 			issues.Add(new CoreIssue(
 				CoreIssueSeverity.Error,
@@ -52,10 +100,10 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 				"来源 Mod 的 Patch 目录尚不可用，无法读取装备来源事实。",
 				source.RelativePath,
 				source.Id));
-			return Empty(source.Id, inventory.Generation, issues);
+			return Empty(source.Id, inventoryGeneration, issues);
 		}
 
-		var sourcePatchPaths = inventory.Data.PatchGroups
+		var sourcePatchPaths = inventoryData.PatchGroups
 			.SelectMany(group => group.Files)
 			.Where(file => file.SidecarKind == PatchSidecarKind.Base)
 			.Select(file => Path.GetFullPath(file.FilePath))
@@ -70,12 +118,14 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 				"来源 Mod 没有可读取的 Patch 主文件。",
 				source.RelativePath,
 				source.Id));
-			return Empty(source.Id, inventory.Generation ?? inventory.Data.ContentGeneration, issues);
+			return Empty(source.Id, inventoryGeneration ?? inventoryData.ContentGeneration, issues);
 		}
 
 		// GameData mapping is an indexed fact.  It labels Unit parts but never decides
 		// whether the source's current Mesh is real or transferable.
-		var targetCandidates = await equipmentCatalog.GetEntriesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+		var targetCandidates = readEquipmentCatalogOnly
+			? await equipmentCatalog.GetEntriesReadOnlyAsync(cancellationToken: cancellationToken).ConfigureAwait(false)
+			: await equipmentCatalog.GetEntriesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 		if (targetCandidates.Count == 0)
 		{
 			issues.Add(new CoreIssue(
@@ -93,7 +143,7 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 		var preparedEntries = new Dictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>(StringComparer.OrdinalIgnoreCase);
 		var unitFacts = new List<ModSourceUnitFacts>();
 		var readerContext = ToReaderContext(request.EffectiveContext);
-		var revision = ModContentRevision.FromLegacyGeneration(inventory.Generation ?? inventory.Data.ContentGeneration);
+		var revision = ModContentRevision.FromLegacyGeneration(inventoryGeneration ?? inventoryData.ContentGeneration);
 
 		foreach (var sourcePatchPath in sourcePatchPaths)
 		{
@@ -165,7 +215,7 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 		var sourceCandidates = EquipmentUnitSourcePartBinder.Bind(targetCandidates, unitFacts);
 		return new ModEquipmentSourceFacts(
 			source.Id,
-			inventory.Generation ?? inventory.Data.ContentGeneration,
+			inventoryGeneration ?? inventoryData.ContentGeneration,
 			sourcePatchPaths,
 			sourceCandidates,
 			targetCandidates,

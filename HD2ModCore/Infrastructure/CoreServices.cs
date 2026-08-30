@@ -52,6 +52,14 @@ public static class CoreServices
 			informationCenter,
 			reader ?? throw new ArgumentNullException(nameof(reader)),
 			equipmentCatalog ?? CreateEquipmentUnitCatalogService(paths));
+	public static IModEquipmentSourceFactsReader CreateDirectModEquipmentSourceFactsReader(
+		StoragePaths paths,
+		IModInformationReader reader,
+		IEquipmentUnitCatalogService? equipmentCatalog = null)
+		=> new ModEquipmentSourceFactsReader(
+			CreateAssetInventoryProducer(reader ?? throw new ArgumentNullException(nameof(reader))),
+			reader,
+			equipmentCatalog ?? CreateEquipmentUnitCatalogService(paths));
 	public static IHelmetToArmorMergeService CreateHelmetToArmorMergeService(
 		StoragePaths paths,
 		IModInformationCenter informationCenter,
@@ -62,6 +70,16 @@ public static class CoreServices
 		ArgumentNullException.ThrowIfNull(reader);
 		return new HelmetToArmorMergeService(
 			CreateModEquipmentSourceFactsReader(paths, informationCenter, reader),
+			reader);
+	}
+	public static IHelmetToArmorMergeService CreateDirectHelmetToArmorMergeService(
+		StoragePaths paths,
+		IModInformationReader reader)
+	{
+		ArgumentNullException.ThrowIfNull(paths);
+		ArgumentNullException.ThrowIfNull(reader);
+		return new HelmetToArmorMergeService(
+			CreateDirectModEquipmentSourceFactsReader(paths, reader),
 			reader);
 	}
 	public static IAdvancedUnitAnalysisProducer CreateAdvancedUnitAnalysisProducer(IModInformationReader informationReader)

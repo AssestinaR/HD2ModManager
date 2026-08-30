@@ -220,32 +220,38 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 				}
 
 				var edits = new List<PatchUnitMeshEditResult>();
-				foreach (var targetGroup in armorPlans
-					.GroupBy(plan => (plan.ArmorUnitKey, plan.ArmorMeshInfoIndex)))
+				// One physical Unit must yield at most one Patch edit. A source Armor can
+				// legitimately expose multiple torso MeshInfo records (for example
+				// Slim/Stocky on a shared Unit), so aggregate every target Mesh family
+				// before calling the Canonical appender once.
+				foreach (var unitGroup in armorPlans.GroupBy(plan => plan.ArmorUnitKey))
 				{
 					cancellationToken.ThrowIfCancellationRequested();
-					var target = await ReadUnitAsync(targetGroup.Key.ArmorUnitKey).ConfigureAwait(false);
-					var targetRaw = target.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetGroup.Key.ArmorMeshInfoIndex);
-					var targetMesh = target.Model.Meshes.SingleOrDefault(mesh => mesh.Index == targetGroup.Key.ArmorMeshInfoIndex);
-					if (targetRaw is null || targetMesh is null)
+					var target = await ReadUnitAsync(unitGroup.Key).ConfigureAwait(false);
+					var inputsByTargetMesh = new Dictionary<int, List<CanonicalDecorationAppendInput>>();
+					foreach (var targetGroup in unitGroup.GroupBy(plan => plan.ArmorMeshInfoIndex))
 					{
-						issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ArmorMeshMissing", $"胸部 Unit 0x{target.Entry.AssetKey.FileId:x16} 缺少可写 MeshInfo {targetGroup.Key.ArmorMeshInfoIndex}。", patchPath, source.Id));
-						continue;
-					}
-
-					var inputsByTargetMesh = new Dictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>>();
-					foreach (var lodTarget in ResolveVisibleLodFamily(target.Model, targetRaw, targetMesh))
-					{
-						var inputs = new List<CanonicalDecorationAppendInput>();
-						foreach (var plan in targetGroup)
+						var targetRaw = target.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetGroup.Key);
+						var targetMesh = target.Model.Meshes.SingleOrDefault(mesh => mesh.Index == targetGroup.Key);
+						if (targetRaw is null || targetMesh is null)
 						{
-							var sourceMesh = ResolveSourceLod(plan.HelmetUnit.Model, plan.Candidate.HelmetPart.MeshInfoIndex, lodTarget.Raw.LodIndex);
-							if (sourceMesh is null) continue;
-							inputs.Add(new CanonicalDecorationAppendInput(
-								CreateFragment(plan.HelmetUnit, sourceMesh.Value.Mesh, sourceMesh.Value.Raw),
-								MaterialNamespace(plan.Candidate.CandidateId)));
+							issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ArmorMeshMissing", $"胸部 Unit 0x{target.Entry.AssetKey.FileId:x16} 缺少可写 MeshInfo {targetGroup.Key}。", patchPath, source.Id));
+							continue;
 						}
-						if (inputs.Count != 0) inputsByTargetMesh[lodTarget.Mesh.Index] = inputs;
+
+						foreach (var lodTarget in ResolveVisibleLodFamily(target.Model, targetRaw, targetMesh))
+						{
+							if (!inputsByTargetMesh.TryGetValue(lodTarget.Mesh.Index, out var inputs))
+								inputsByTargetMesh[lodTarget.Mesh.Index] = inputs = [];
+							foreach (var plan in targetGroup)
+							{
+								var sourceMesh = ResolveSourceLod(plan.HelmetUnit.Model, plan.Candidate.HelmetPart.MeshInfoIndex, lodTarget.Raw.LodIndex);
+								if (sourceMesh is null) continue;
+								inputs.Add(new CanonicalDecorationAppendInput(
+									CreateFragment(plan.HelmetUnit, sourceMesh.Value.Mesh, sourceMesh.Value.Raw),
+									MaterialNamespace(plan.Candidate.CandidateId)));
+							}
+						}
 					}
 
 					if (inputsByTargetMesh.Count == 0)
@@ -253,7 +259,10 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 						issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetLodPairMissing", $"头盔没有与胸部 Unit 0x{target.Entry.AssetKey.FileId:x16} 对应的可见 LOD。", patchPath, source.Id));
 						continue;
 					}
-					var append = new CanonicalDecorationUnitAppender().TryAppendLodFamily(target, inputsByTargetMesh, avatar);
+					var append = new CanonicalDecorationUnitAppender().TryAppendLodFamily(
+						target,
+						inputsByTargetMesh.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<CanonicalDecorationAppendInput>)pair.Value),
+						avatar);
 					if (!append.IsValid || append.Edit is null)
 					{
 						issues.AddRange(append.Diagnostics.Select(diagnostic =>
@@ -267,7 +276,11 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 				foreach (var hide in helmetPlans.Values)
 				{
 					if (!byKey.TryGetValue(hide.UnitKey, out var sourceEntry)) continue;
-					if (edits.Any(edit => edit.Entry.AssetKey == sourceEntry.AssetKey)) continue;
+					if (edits.Any(edit => edit.Entry.AssetKey == sourceEntry.AssetKey))
+					{
+						issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetHideSkippedArmorEdit", $"头盔 Unit 0x{hide.UnitKey.FileId:x16} 同时被选为胸部输出，已跳过隐藏以避免覆盖该 Unit 编辑。", patchPath, source.Id));
+						continue;
+					}
 					try
 					{
 						var targetHelmet = await targetReader.ReadAsync(

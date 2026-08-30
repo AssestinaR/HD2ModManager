@@ -22,14 +22,39 @@ public sealed class EquipmentUnitCatalogService : IEquipmentUnitCatalogService
 	{
 		if (!File.Exists(paths.DbPath)) return Array.Empty<EquipmentUnitCatalogEntry>();
 		await EnsureCurrentSchemaAsync(cancellationToken).ConfigureAwait(false);
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		return await ReadEntriesAsync(connection, unitAssetKeys, cancellationToken).ConfigureAwait(false);
+	}
+
+	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> GetEntriesReadOnlyAsync(IReadOnlySet<AssetKey>? unitAssetKeys = null, CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(paths.DbPath)) return Array.Empty<EquipmentUnitCatalogEntry>();
+		try
+		{
+			await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
+			await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+			return await ReadEntriesAsync(connection, unitAssetKeys, cancellationToken).ConfigureAwait(false);
+		}
+		catch (SqliteException)
+		{
+			// A CLI inspect must not repair/migrate an old database just to obtain
+			// a preview. The caller can ask the Manager to rebuild the index.
+			return Array.Empty<EquipmentUnitCatalogEntry>();
+		}
+	}
+
+	private static async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> ReadEntriesAsync(
+		SqliteConnection connection,
+		IReadOnlySet<AssetKey>? unitAssetKeys,
+		CancellationToken cancellationToken)
+	{
 		var unitIds = unitAssetKeys?
 			.Where(key => key.TypeId == AdaptationPatchUnitMeshReader.UnitTypeId)
 			.Select(key => unchecked((long)key.FileId))
 			.Distinct()
 			.ToArray();
 		if (unitAssetKeys is not null && unitIds is { Length: 0 }) return Array.Empty<EquipmentUnitCatalogEntry>();
-		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
-		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
 SELECT a.archive_id,a.category,a.display_name,
