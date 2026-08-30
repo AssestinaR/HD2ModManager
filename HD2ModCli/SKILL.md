@@ -21,6 +21,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Read actual Patch contents before choosing advanced operations: `patch-analysis`.
 - Rename, notes, images, Options, deletion, or Profiles: `mod-metadata`, `mod-media`, `option-management`, `safe-library-deletion`, `profile-management`, `profile-alignment`.
 - Create a decoration package: `decoration-package`.
+- Connect a verified standalone Patch output back to the library, Profile, deployment, and winner checks: `generated-patch-integration`.
 - Deploy or deactivate GameData: `safe-deployment`.
 - Inspect original GameData mappings or actual Data-Patch winners: `gamedata-inspection`.
 - Rebuild Manager-owned GameData indexes or Armor / Helmet Unit facts: `gamedata-index-management`.

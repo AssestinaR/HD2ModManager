@@ -37,6 +37,7 @@ public static class CliSkillCatalog
 		new("profile-alignment", "hd2mod-profile-alignment", "以可编辑规格和冻结计划精确对齐一个 Profile；仅写 profiles.json。", "HD2ModCli.Skill.profile-alignment"),
 		new("safe-deployment", "hd2mod-safe-deployment", "以 plan → validate → apply 安全部署或停用已证明归属的 Patch。", "HD2ModCli.Skill.safe-deployment"),
 		new("patch-resource-repackaging", "hd2mod-patch-resource-repackaging", "审阅并选择完整 AssetKey Payload，输出独立 Patch，不修改来源或部署。", "HD2ModCli.Skill.patch-resource-repackaging"),
+		new("generated-patch-integration", "hd2mod-generated-patch-integration", "将已验证的独立 Patch 输出安全导入、精确接入 Profile、部署并检查实际覆盖赢家。", "HD2ModCli.Skill.generated-patch-integration"),
 		new("helmet-to-armor-merge", "hd2mod-helmet-to-armor-merge", "审阅完整 Armor/Any Helmet 集合并输出独立的头盔合并 Patch。", "HD2ModCli.Skill.helmet-to-armor-merge"),
 		new("cross-armor-transfer", "hd2mod-cross-armor-transfer", "审阅来源装备 Unit 与目标装备目录，并输出隔离的跨护甲验证候选。", "HD2ModCli.Skill.cross-armor-transfer"),
 		new("host-derived-overwrite", "hd2mod-host-derived-overwrite", "安全启停装饰或临时头盔合并，并重建主体的单一管理器 Overwrite。", "HD2ModCli.Skill.host-derived-overwrite"),

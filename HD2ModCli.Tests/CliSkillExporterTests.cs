@@ -22,6 +22,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "cross-armor-transfer", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "profile-alignment", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-analysis", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "generated-patch-integration", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -99,6 +100,17 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("mod analyze", content, StringComparison.Ordinal);
 		Assert.Contains("PatchGroupAnalyzer", content, StringComparison.Ordinal);
 		Assert.Contains("mod-facts.sqlite", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void GeneratedPatchIntegrationSkill_ConnectsOutputToImportAlignmentAndDeployment()
+	{
+		var content = CliSkillCatalog.GetContent("generated-patch-integration");
+
+		Assert.Contains("import plan", content, StringComparison.Ordinal);
+		Assert.Contains("profile align", content, StringComparison.Ordinal);
+		Assert.Contains("deploy plan", content, StringComparison.Ordinal);
+		Assert.Contains("gamedata override show", content, StringComparison.Ordinal);
 	}
 
 	[Fact]
