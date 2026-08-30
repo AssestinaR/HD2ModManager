@@ -253,6 +253,64 @@ public sealed class OptionActivationStore
 		await SaveAsync(cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Removes persisted state for deleted Options and strips deleted hosts from
+	/// every surviving Option in one atomic in-memory transaction. Unlike the
+	/// legacy single-item removal APIs, this method only writes when state
+	/// actually changes, so deletion executors can safely batch their cleanup.
+	/// </summary>
+	public async Task<OptionActivationCleanupResult> CleanupAsync(
+		IEnumerable<string> optionIds,
+		IEnumerable<string> hostIds,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(optionIds);
+		ArgumentNullException.ThrowIfNull(hostIds);
+		cancellationToken.ThrowIfCancellationRequested();
+
+		var optionsToRemove = optionIds
+			.Where(optionId => !string.IsNullOrWhiteSpace(optionId))
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var hostsToRemove = hostIds
+			.Where(hostId => !string.IsNullOrWhiteSpace(hostId))
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+		var removedOptionRecordCount = 0;
+		var removedHostRelationshipCount = 0;
+		lock (_gate)
+		{
+			// An explicitly deleted Option is counted as a removed record; its
+			// contained host relationships are part of that record rather than
+			// separately reported as host-relation removals.
+			foreach (var optionId in optionsToRemove)
+			{
+				if (_states.Remove(optionId)) removedOptionRecordCount++;
+			}
+
+			foreach (var optionId in _states.Keys.ToArray())
+			{
+				var hosts = _states[optionId];
+				foreach (var hostId in hostsToRemove)
+				{
+					if (hosts.Remove(hostId)) removedHostRelationshipCount++;
+				}
+
+				if (hosts.Count == 0)
+				{
+					_states.Remove(optionId);
+					removedOptionRecordCount++;
+				}
+			}
+		}
+
+		var changed = removedOptionRecordCount > 0 || removedHostRelationshipCount > 0;
+		if (changed) await SaveAsync(cancellationToken).ConfigureAwait(false);
+		return new OptionActivationCleanupResult(
+			removedOptionRecordCount,
+			removedHostRelationshipCount,
+			changed);
+	}
+
 	public IReadOnlyDictionary<string, IReadOnlySet<string>> Snapshot()
 		=> CreateSnapshot().Options.ToDictionary(
 			option => option.Key,
@@ -326,6 +384,17 @@ public sealed record OptionHostState(bool Enabled, int? EffectiveOrder);
 public sealed record OptionActivationInitialization(string OptionId, string HostId, bool Enabled, int? EffectiveOrder = null);
 
 public sealed record OptionEffectiveOrderMutation(string OptionId, string HostId, int? EffectiveOrder);
+
+/// <summary>
+/// Result of one batched Option-activation cleanup transaction. Host-relation
+/// removals count only relations removed from Option records that survived the
+/// explicit Option cleanup; relations inside explicitly deleted Option records
+/// are represented by <see cref="RemovedOptionRecordCount"/> instead.
+/// </summary>
+public sealed record OptionActivationCleanupResult(
+	int RemovedOptionRecordCount,
+	int RemovedHostRelationshipCount,
+	bool Changed);
 
 public sealed record OptionActivationSnapshot(IReadOnlyDictionary<string, IReadOnlyDictionary<string, OptionHostState>> Options)
 {

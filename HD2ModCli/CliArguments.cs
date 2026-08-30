@@ -8,6 +8,8 @@ public sealed record CliGlobalOptions(
 	string? Plan,
 	string? Host,
 	int? Position,
+	bool SetActive,
+	bool WithUnsharedOptions,
 	bool Overwrite,
 	bool Confirm,
 	bool Json);
@@ -26,6 +28,8 @@ public static class CliArgumentParser
 		string? plan = null;
 		string? host = null;
 		int? position = null;
+		var setActive = false;
+		var withUnsharedOptions = false;
 		var overwrite = false;
 		var confirm = false;
 		var json = false;
@@ -60,6 +64,12 @@ public static class CliArgumentParser
 						throw new CliUserException("PositionInvalid", "参数 --position 必须是从 1 开始的正整数。");
 					position = parsedPosition;
 					break;
+				case "--set-active":
+					setActive = true;
+					break;
+				case "--with-unshared-options":
+					withUnsharedOptions = true;
+					break;
 				case "--overwrite":
 					overwrite = true;
 					break;
@@ -85,7 +95,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, position, overwrite, confirm, json));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, position, setActive, withUnsharedOptions, overwrite, confirm, json));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

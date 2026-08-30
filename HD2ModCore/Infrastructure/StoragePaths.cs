@@ -9,6 +9,9 @@ public sealed record StoragePaths(string AppRootDirectory, string? ModsRootDirec
 	public string ImportTempDirectory => Path.Combine(Directory.GetParent(ModsDirectory)?.FullName ?? AppRootDirectory, "tmp");
 	public string ModsDirectory => string.IsNullOrWhiteSpace(ModsRootDirectory) ? Path.Combine(AppRootDirectory, "mods") : Path.GetFullPath(ModsRootDirectory);
 	public string LibraryPath => Path.Combine(ModsDirectory, "library.json");
+	// Decoration activation is library-local because decoration and host IDs both
+	// belong to this library snapshot.
+	public string DecorationActivationsPath => Path.Combine(ModsDirectory, "decoration-activations.json");
 	// Pending deletion metadata belongs to the library because it describes physical roots under this library.
 	public string PendingDeletionPath => Path.Combine(ModsDirectory, "pending-deletions.json");
 	public string DeletionTrashDirectory => Path.Combine(ModsDirectory, ".hd2modmanager-trash");

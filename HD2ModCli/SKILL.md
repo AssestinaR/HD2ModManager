@@ -1,6 +1,6 @@
 ---
 name: hd2mod-cli-router
-description: Route an Agent to the smallest HD2 Mod Manager CLI capability Skill needed for local library inspection or safe Mod import.
+description: Route an Agent to the smallest HD2 Mod Manager CLI capability Skill needed for inspection, import, Mod metadata, Options, safe deletion, or Profile management.
 ---
 
 # HD2 Mod CLI Router
@@ -21,6 +21,9 @@ Current routing:
 
 - `library-inspection` — inspect Mod library, Option tree, Profile and effective deployment order without mutation.
 - `safe-import` — import a reviewed source through `plan → validate → apply --confirm`.
-- `mod-management` — rename/annotate Mod entries, and manage one host's direct Option state and order.
+- `mod-metadata` — rename or annotate one Mod.
+- `option-management` — manage direct Option state and order for one explicit host.
+- `safe-library-deletion` — preview and safely delete Mod nodes with relationship-aware cleanup.
+- `profile-management` — create and organize Profiles without deploying them.
 
-These are the only capability Skills currently shipped. This router is compatibility-only; it is not a workflow. Use `hd2mod capabilities --json` as the command authority and do not invent absent write commands.
+`mod-management` remains a compatibility aggregate only. This router is not a workflow; use `hd2mod capabilities --json` as the command authority and do not invent absent write commands.

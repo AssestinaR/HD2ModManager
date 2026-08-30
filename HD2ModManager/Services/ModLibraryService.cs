@@ -366,7 +366,7 @@ namespace HD2ModManager.Services
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
-            _decorationActivations = new DecorationActivationStore(Path.Combine(_paths.ModsDirectory, "decoration-activations.json"));
+            _decorationActivations = CoreServices.CreateDecorationActivationStore(_paths);
             _optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
             _decorationAttachments = new DecorationAttachmentService(_paths, _informationReader);
             _snapshot = EmptySnapshot();

@@ -11,6 +11,236 @@ namespace HD2ModCli;
 /// </summary>
 internal static class CliLibraryMutationOperations
 {
+	public static SafeModDeletionPlan CreateDeletionPlan(
+		CliLibraryState state,
+		IReadOnlyList<string> selectors,
+		SafeModDeletionScope scope)
+	{
+		ArgumentNullException.ThrowIfNull(state);
+		ArgumentNullException.ThrowIfNull(selectors);
+		var nodeIds = selectors
+			.Select(selector => CliProjections.ResolveMod(state.Snapshot.Nodes, selector).Id)
+			.ToArray();
+		return CreateDeletionPlan(state.Snapshot, nodeIds, scope, CreateDeletionSafetySnapshot(state.DecorationActivations));
+	}
+
+	public static async ValueTask<CliModDeletionExecutionResult> DeleteAsync(
+		CliLibraryWriteSession session,
+		IReadOnlyList<string> selectors,
+		SafeModDeletionScope scope,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(session);
+		ArgumentNullException.ThrowIfNull(selectors);
+		var snapshot = await RequireSnapshotAsync(session, cancellationToken).ConfigureAwait(false);
+		if (selectors.Count == 0)
+			throw new CliUserException("ModDeletionSelectionRequired", "请至少提供一个要删除的 Mod GUID 或唯一 GUID 前缀。");
+
+		var optionActivations = await CreateValidatedOptionActivationStoreAsync(session, cancellationToken).ConfigureAwait(false);
+		var decorationActivations = await CreateValidatedDecorationActivationStoreAsync(session, cancellationToken).ConfigureAwait(false);
+		var requestedIds = selectors
+			.Select(selector => CliProjections.ResolveMod(snapshot.Nodes, selector).Id)
+			.ToArray();
+		var safety = CreateDeletionSafetySnapshot(decorationActivations.CreateSnapshot().EnabledHostsByDecoration);
+		var plan = CreateDeletionPlan(snapshot, requestedIds, scope, safety);
+		if (plan.IsBlocked)
+		{
+			return new CliModDeletionExecutionResult(
+				CliModDeletionStatus.Blocked,
+				plan,
+				AppliedPlan: null,
+				snapshot,
+				Array.Empty<ModNodeId>(),
+				plan.LibraryNodeRemovals.Select(removal => removal.NodeId).ToArray(),
+				Array.Empty<ModNodeId>(),
+				Array.Empty<ModStorageDeletionResult>(),
+				OptionActivationCleanup: null,
+				DecorationActivationCleanup: null,
+				PostCommitError: null);
+		}
+
+		var physical = await DeletePlannedStorageAsync(session.Paths, snapshot, plan, cancellationToken).ConfigureAwait(false);
+		if (physical.RemovedNodeIds.Count == 0)
+		{
+			return new CliModDeletionExecutionResult(
+				CliModDeletionStatus.StorageNotRemoved,
+				plan,
+				AppliedPlan: null,
+				snapshot,
+				physical.RemovedNodeIds,
+				physical.FailedNodeIds,
+				physical.SkippedNodeIds,
+				physical.StorageResults,
+				OptionActivationCleanup: null,
+				DecorationActivationCleanup: null,
+				PostCommitError: null);
+		}
+
+		var appliedPlan = CreateDeletionPlan(snapshot, physical.RemovedNodeIds, SafeModDeletionScope.Selected, safety);
+		if (appliedPlan.IsBlocked)
+		{
+			return new CliModDeletionExecutionResult(
+				CliModDeletionStatus.PostCommitIncomplete,
+				plan,
+				appliedPlan,
+				snapshot,
+				physical.RemovedNodeIds,
+				physical.FailedNodeIds,
+				physical.SkippedNodeIds,
+				physical.StorageResults,
+				OptionActivationCleanup: null,
+				DecorationActivationCleanup: null,
+				PostCommitError: "物理目录已移除，但重新验证的逻辑删除计划被安全规则阻断；库快照未写入。请使用管理器检查并恢复。" );
+		}
+
+		var updatedSnapshot = ApplyDeletionPlan(snapshot, appliedPlan);
+		var persisted = await session.SaveSnapshotAsync(updatedSnapshot, cancellationToken).ConfigureAwait(false);
+		try
+		{
+			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+			var optionCleanup = await CleanupOptionActivationsAsync(optionActivations, appliedPlan, cancellationToken).ConfigureAwait(false);
+			var decorationCleanup = await CleanupDecorationActivationsAsync(decorationActivations, appliedPlan, cancellationToken).ConfigureAwait(false);
+			return new CliModDeletionExecutionResult(
+				CliModDeletionStatus.Completed,
+				plan,
+				appliedPlan,
+				persisted,
+				physical.RemovedNodeIds,
+				physical.FailedNodeIds,
+				physical.SkippedNodeIds,
+				physical.StorageResults,
+				optionCleanup,
+				decorationCleanup,
+				PostCommitError: null);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			return new CliModDeletionExecutionResult(
+				CliModDeletionStatus.PostCommitIncomplete,
+				plan,
+				appliedPlan,
+				persisted,
+				physical.RemovedNodeIds,
+				physical.FailedNodeIds,
+				physical.SkippedNodeIds,
+				physical.StorageResults,
+				OptionActivationCleanup: null,
+				DecorationActivationCleanup: null,
+				PostCommitError: exception.Message);
+		}
+	}
+
+	public static async ValueTask<CliProfileMutationExecutionResult> CreateProfileAsync(
+		CliLibraryWriteSession session,
+		string name,
+		bool makeActive,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileMutationAsync(
+			session,
+			snapshot => CoreServices.CreateProfileMutationService().CreateProfile(snapshot, name, makeActive),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> DeleteProfileAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileMutationForSelectedProfileAsync(
+			session,
+			profileSelector,
+			(snapshot, profile) => CoreServices.CreateProfileMutationService().DeleteProfile(snapshot, profile.Id),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> RenameProfileAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		string name,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileMutationForSelectedProfileAsync(
+			session,
+			profileSelector,
+			(snapshot, profile) => CoreServices.CreateProfileMutationService().RenameProfile(snapshot, profile.Id, name),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> SetActiveProfileAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileMutationForSelectedProfileAsync(
+			session,
+			profileSelector,
+			(snapshot, profile) => CoreServices.CreateProfileMutationService().SetActiveProfile(snapshot, profile.Id),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> ClearActiveProfileAsync(
+		CliLibraryWriteSession session,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileMutationAsync(
+			session,
+			snapshot => CoreServices.CreateProfileMutationService().SetActiveProfile(snapshot, null),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> AddProfileEntriesAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		IReadOnlyList<string> nodeSelectors,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileEntriesAsync(
+			session,
+			profileSelector,
+			nodeSelectors,
+			(snapshot, service, profile, nodeIds) => service.AddEntries(snapshot, profile.Id, nodeIds),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> RemoveProfileEntriesAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		IReadOnlyList<string> nodeSelectors,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileEntriesAsync(
+			session,
+			profileSelector,
+			nodeSelectors,
+			(snapshot, service, profile, nodeIds) => service.RemoveEntries(snapshot, profile.Id, nodeIds),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> InsertProfileEntriesAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		IReadOnlyList<string> nodeSelectors,
+		int oneBasedInsertionPosition,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileEntriesAsync(
+			session,
+			profileSelector,
+			nodeSelectors,
+			(snapshot, service, profile, nodeIds) => service.InsertEntries(snapshot, profile.Id, nodeIds, oneBasedInsertionPosition - 1),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> MoveProfileEntriesAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		IReadOnlyList<string> nodeSelectors,
+		int oneBasedInsertionPosition,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileEntriesAsync(
+			session,
+			profileSelector,
+			nodeSelectors,
+			(snapshot, service, profile, nodeIds) => service.MoveEntries(snapshot, profile.Id, nodeIds, oneBasedInsertionPosition - 1),
+			cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<CliProfileMutationExecutionResult> ReorderProfileEntriesAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		IReadOnlyList<string> nodeSelectors,
+		CancellationToken cancellationToken = default)
+		=> await ApplyProfileEntriesAsync(
+			session,
+			profileSelector,
+			nodeSelectors,
+			(snapshot, service, profile, nodeIds) => service.ReorderEntries(snapshot, profile.Id, nodeIds),
+			cancellationToken).ConfigureAwait(false);
+
 	public static async ValueTask<CliNodeMetadataMutationResult> RenameAsync(
 		CliLibraryWriteSession session,
 		string selector,
@@ -150,6 +380,221 @@ internal static class CliLibraryMutationOperations
 			"该操作只能修改已有的 Mod 库。请先导入至少一个 Mod，或在管理器中创建库状态。");
 	}
 
+	private static SafeModDeletionPlan CreateDeletionPlan(
+		LibrarySnapshot snapshot,
+		IReadOnlyCollection<ModNodeId> nodeIds,
+		SafeModDeletionScope scope,
+		SafeModDeletionSafetySnapshot safety)
+		=> new SafeModDeletionPlanningService().Plan(snapshot, nodeIds, scope, safety);
+
+	private static SafeModDeletionSafetySnapshot CreateDeletionSafetySnapshot(
+		IReadOnlyDictionary<string, IReadOnlySet<string>> decorationActivations)
+	{
+		ArgumentNullException.ThrowIfNull(decorationActivations);
+		var enabled = new List<SafeModDeletionEnabledDecoration>();
+		foreach (var (rawDecorationId, rawHostIds) in decorationActivations)
+		{
+			if (!Guid.TryParse(rawDecorationId, out var decorationGuid)) continue;
+			foreach (var rawHostId in rawHostIds)
+			{
+				if (!Guid.TryParse(rawHostId, out var hostGuid)) continue;
+				enabled.Add(new SafeModDeletionEnabledDecoration(new ModNodeId(decorationGuid), new ModNodeId(hostGuid)));
+			}
+		}
+		return new SafeModDeletionSafetySnapshot(
+			IsDecorationActivationStateKnown: true,
+			EnabledDecorations: enabled,
+			IsManagedOverwriteStateKnown: true,
+			ManagedOverwrites: Array.Empty<SafeModDeletionManagedOverwrite>());
+	}
+
+	private static async ValueTask<CliPhysicalDeletionResult> DeletePlannedStorageAsync(
+		StoragePaths paths,
+		LibrarySnapshot snapshot,
+		SafeModDeletionPlan plan,
+		CancellationToken cancellationToken)
+	{
+		var removalById = plan.LibraryNodeRemovals.ToDictionary(removal => removal.NodeId);
+		var plannedIds = removalById.Keys.ToHashSet();
+		var graph = OptionRelationshipGraph.Create(snapshot);
+		var pending = plan.PhysicalRelativePaths
+			.OrderBy(path => path.RelativePath, StringComparer.OrdinalIgnoreCase)
+			.ToList();
+		var removed = new HashSet<ModNodeId>();
+		var failed = new HashSet<ModNodeId>();
+		var results = new List<ModStorageDeletionResult>();
+		var storage = new ModStorageDeletionService(paths);
+
+		while (pending.Count > 0)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var readyIndex = pending.FindIndex(path => IsReady(path));
+			if (readyIndex < 0) break;
+			var path = pending[readyIndex];
+			pending.RemoveAt(readyIndex);
+			var result = await storage.DeleteAsync(path.RelativePath, cancellationToken).ConfigureAwait(false);
+			results.Add(result);
+			if (result.CanRemoveLibraryNode)
+			{
+				foreach (var nodeId in path.NodeIds) removed.Add(nodeId);
+			}
+			else
+			{
+				foreach (var nodeId in path.NodeIds) failed.Add(nodeId);
+			}
+		}
+
+		var skipped = pending
+			.SelectMany(path => path.NodeIds)
+			.Where(nodeId => !removed.Contains(nodeId) && !failed.Contains(nodeId))
+			.Distinct()
+			.OrderBy(nodeId => nodeId.Value)
+			.ToArray();
+		return new CliPhysicalDeletionResult(
+			removed.OrderBy(nodeId => nodeId.Value).ToArray(),
+			failed.OrderBy(nodeId => nodeId.Value).ToArray(),
+			skipped,
+			results);
+
+		bool IsReady(SafeModDeletionPhysicalPath path)
+		{
+			foreach (var nodeId in path.NodeIds)
+			{
+				if (!removalById.TryGetValue(nodeId, out var removal)) continue;
+				if (removal.Reason == SafeModDeletionRemovalReason.Requested) return true;
+				var plannedParents = graph.GetParents(nodeId).Where(plannedIds.Contains).ToArray();
+				if (plannedParents.All(parentId => removed.Contains(parentId) || path.NodeIds.Contains(parentId))) return true;
+			}
+			return false;
+		}
+	}
+
+	private static LibrarySnapshot ApplyDeletionPlan(LibrarySnapshot snapshot, SafeModDeletionPlan plan)
+	{
+		var removalIds = plan.LibraryNodeRemovals.Select(removal => removal.NodeId).ToHashSet();
+		if (removalIds.Count == 0) return snapshot;
+		var now = DateTimeOffset.UtcNow;
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+		foreach (var node in snapshot.Nodes.Values.Where(node => !removalIds.Contains(node.Id)))
+		{
+			var children = node.Children.Where(childId => !removalIds.Contains(childId)).ToArray();
+			var metadata = node.Metadata;
+			if (node.Metadata.Kind == ModNodeKind.Option)
+			{
+				var hostIds = (node.Metadata.HostModGuids ?? Array.Empty<string>())
+					.Where(rawHostId => !Guid.TryParse(rawHostId, out var hostGuid) || !removalIds.Contains(new ModNodeId(hostGuid)))
+					.ToArray();
+				if (!hostIds.SequenceEqual(node.Metadata.HostModGuids ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase))
+					metadata = metadata with { HostModGuids = hostIds, ModifiedUtc = now };
+			}
+			nodes[node.Id] = node with { Children = children, Metadata = metadata };
+		}
+
+		var profiles = snapshot.Profiles.Select(profile =>
+		{
+			var entries = profile.Entries
+				.Where(entry => !removalIds.Contains(entry.NodeId))
+				.OrderBy(entry => entry.LoadOrder)
+				.ThenBy(entry => entry.AddedUtc)
+				.ThenBy(entry => entry.NodeId.Value)
+				.Select((entry, index) => entry with { LoadOrder = index })
+				.ToArray();
+			return entries.SequenceEqual(profile.Entries)
+				? profile
+				: profile with { Entries = entries, ModifiedUtc = now, Revision = checked(profile.Revision + 1) };
+		}).ToArray();
+
+		return snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = now };
+	}
+
+	private static async ValueTask<OptionActivationCleanupResult> CleanupOptionActivationsAsync(
+		OptionActivationStore store,
+		SafeModDeletionPlan plan,
+		CancellationToken cancellationToken)
+	{
+		var optionIds = plan.ActivationCleanupKeys
+			.Where(item => item.Kind == SafeModDeletionActivationCleanupKind.OptionActivationForOption)
+			.Select(item => item.PrimaryNodeId.Value.ToString("N"))
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		var hostIds = plan.ActivationCleanupKeys
+			.Where(item => item.Kind == SafeModDeletionActivationCleanupKind.OptionActivationForHost)
+			.Select(item => item.PrimaryNodeId.Value.ToString("N"))
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		return await store.CleanupAsync(optionIds, hostIds, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async ValueTask<DecorationActivationCleanupResult> CleanupDecorationActivationsAsync(
+		DecorationActivationStore store,
+		SafeModDeletionPlan plan,
+		CancellationToken cancellationToken)
+	{
+		var decorationIds = plan.ActivationCleanupKeys
+			.Where(item => item.Kind == SafeModDeletionActivationCleanupKind.DecorationActivationForDecoration)
+			.Select(item => item.PrimaryNodeId.Value.ToString("N"))
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		var hostIds = plan.ActivationCleanupKeys
+			.Where(item => item.Kind == SafeModDeletionActivationCleanupKind.DecorationActivationForHost)
+			.Select(item => item.PrimaryNodeId.Value.ToString("N"))
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		return await store.CleanupAsync(decorationIds, hostIds, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static async ValueTask<CliProfileMutationExecutionResult> ApplyProfileMutationForSelectedProfileAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		Func<LibrarySnapshot, Profile, ProfileMutationResult> mutation,
+		CancellationToken cancellationToken)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(profileSelector);
+		ArgumentNullException.ThrowIfNull(mutation);
+		var snapshot = await RequireSnapshotAsync(session, cancellationToken).ConfigureAwait(false);
+		var profile = CliProjections.ResolveProfile(snapshot.Profiles, snapshot.ActiveProfileId, profileSelector);
+		return await ApplyProfileMutationAsync(session, _ => mutation(snapshot, profile), cancellationToken, snapshot).ConfigureAwait(false);
+	}
+
+	private static async ValueTask<CliProfileMutationExecutionResult> ApplyProfileEntriesAsync(
+		CliLibraryWriteSession session,
+		string profileSelector,
+		IReadOnlyList<string> nodeSelectors,
+		Func<LibrarySnapshot, IProfileMutationService, Profile, IReadOnlyList<ModNodeId>, ProfileMutationResult> mutation,
+		CancellationToken cancellationToken)
+	{
+		ArgumentNullException.ThrowIfNull(nodeSelectors);
+		ArgumentNullException.ThrowIfNull(mutation);
+		if (nodeSelectors.Count == 0)
+			throw new CliUserException("ProfileEntrySelectionRequired", "请至少提供一个 Mod GUID 或唯一 GUID 前缀。");
+		var snapshot = await RequireSnapshotAsync(session, cancellationToken).ConfigureAwait(false);
+		var profile = CliProjections.ResolveProfile(snapshot.Profiles, snapshot.ActiveProfileId, profileSelector);
+		var nodeIds = nodeSelectors.Select(selector => CliProjections.ResolveMod(snapshot.Nodes, selector).Id).ToArray();
+		return await ApplyProfileMutationAsync(
+			session,
+			_ => mutation(snapshot, CoreServices.CreateProfileMutationService(), profile, nodeIds),
+			cancellationToken,
+			snapshot).ConfigureAwait(false);
+	}
+
+	private static async ValueTask<CliProfileMutationExecutionResult> ApplyProfileMutationAsync(
+		CliLibraryWriteSession session,
+		Func<LibrarySnapshot, ProfileMutationResult> mutation,
+		CancellationToken cancellationToken,
+		LibrarySnapshot? knownSnapshot = null)
+	{
+		ArgumentNullException.ThrowIfNull(session);
+		ArgumentNullException.ThrowIfNull(mutation);
+		var before = knownSnapshot ?? await RequireSnapshotAsync(session, cancellationToken).ConfigureAwait(false);
+		var result = mutation(before);
+		if (!result.Succeeded)
+			throw ToCliUserException(result);
+		var after = result.Changed
+			? await session.SaveSnapshotAsync(result.Snapshot, cancellationToken).ConfigureAwait(false)
+			: before;
+		return new CliProfileMutationExecutionResult(result, before, after);
+	}
+
 	private static async ValueTask<ModNode> SaveNodeAsync(
 		CliLibraryWriteSession session,
 		LibrarySnapshot snapshot,
@@ -185,8 +630,31 @@ internal static class CliLibraryMutationOperations
 		}
 	}
 
+	private static async ValueTask<DecorationActivationStore> CreateValidatedDecorationActivationStoreAsync(
+		CliLibraryWriteSession session,
+		CancellationToken cancellationToken)
+	{
+		await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			_ = await DecorationActivationStore.TryLoadReadOnlySnapshotAsync(
+				session.Paths.DecorationActivationsPath,
+				cancellationToken).ConfigureAwait(false);
+			return CoreServices.CreateDecorationActivationStore(session.Paths);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			throw new CliUserException("DecorationActivationsUnreadable", $"无法安全读取 decoration-activations.json：{exception.Message}");
+		}
+	}
+
 	private static CliUserException ToCliUserException(OptionRelationshipMutationException exception)
 		=> new($"Option{exception.Failure}", exception.Message);
+
+	private static CliUserException ToCliUserException(ProfileMutationResult result)
+		=> new(
+			$"Profile{result.Failure ?? ProfileMutationFailure.ProfileNotFound}",
+			result.Message ?? "配置文件操作被安全规则拒绝。");
 }
 
 internal sealed record CliNodeMetadataMutationResult(ModNode Before, ModNode After, bool Changed);
@@ -194,3 +662,35 @@ internal sealed record CliNodeMetadataMutationResult(ModNode Before, ModNode Aft
 internal sealed record CliOptionRelationshipMutationResult(
 	OptionRelationshipMutationSnapshot Mutation,
 	int InitializedStateCount);
+
+internal sealed record CliProfileMutationExecutionResult(
+	ProfileMutationResult Mutation,
+	LibrarySnapshot Before,
+	LibrarySnapshot After);
+
+internal enum CliModDeletionStatus
+{
+	Blocked,
+	StorageNotRemoved,
+	Completed,
+	PostCommitIncomplete,
+}
+
+internal sealed record CliPhysicalDeletionResult(
+	IReadOnlyList<ModNodeId> RemovedNodeIds,
+	IReadOnlyList<ModNodeId> FailedNodeIds,
+	IReadOnlyList<ModNodeId> SkippedNodeIds,
+	IReadOnlyList<ModStorageDeletionResult> StorageResults);
+
+internal sealed record CliModDeletionExecutionResult(
+	CliModDeletionStatus Status,
+	SafeModDeletionPlan Plan,
+	SafeModDeletionPlan? AppliedPlan,
+	LibrarySnapshot Snapshot,
+	IReadOnlyList<ModNodeId> RemovedNodeIds,
+	IReadOnlyList<ModNodeId> FailedNodeIds,
+	IReadOnlyList<ModNodeId> SkippedNodeIds,
+	IReadOnlyList<ModStorageDeletionResult> StorageResults,
+	OptionActivationCleanupResult? OptionActivationCleanup,
+	DecorationActivationCleanupResult? DecorationActivationCleanup,
+	string? PostCommitError);

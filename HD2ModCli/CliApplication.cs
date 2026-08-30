@@ -119,6 +119,33 @@ public static class CliApplication
 				() => result.Changed ? "已清空 Mod 备注。未自动部署。" : "Mod 备注本来就是空的。未自动部署。");
 			return 0;
 		}
+		if (command.Length >= 4 && command[0] == "mod" && command[1] == "delete" && command[2] == "preview")
+		{
+			EnsureDeletionPreviewOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var plan = CliLibraryMutationOperations.CreateDeletionPlan(
+				state,
+				invocation.Command.Skip(3).ToArray(),
+				invocation.Options.WithUnsharedOptions ? SafeModDeletionScope.WithUnsharedOptions : SafeModDeletionScope.Selected);
+			Emit(invocation.Options,
+				new { ok = !plan.IsBlocked, deletion = CreateDeletionPlanProjection(plan) },
+				() => FormatDeletionPlan(plan));
+			return plan.IsBlocked ? 2 : 0;
+		}
+		if (command.Length >= 3 && command[0] == "mod" && command[1] == "delete")
+		{
+			EnsureDeletionMutationOptions(invocation.Options);
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.DeleteAsync(
+					session,
+					invocation.Command.Skip(2).ToArray(),
+					invocation.Options.WithUnsharedOptions ? SafeModDeletionScope.WithUnsharedOptions : SafeModDeletionScope.Selected)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = result.Status == CliModDeletionStatus.Completed, deletion = CreateDeletionExecutionProjection(result) },
+				() => FormatDeletionExecution(result));
+			return result.Status == CliModDeletionStatus.Completed ? 0 : 2;
+		}
 		if (command.Length == 3 && command[0] == "option" && command[1] is "enable" or "disable")
 		{
 			EnsureOptionMutationOptions(invocation.Options, $"option {command[1]}", requirePosition: false);
@@ -143,6 +170,89 @@ public static class CliApplication
 			Emit(invocation.Options,
 				new { ok = true, mutation = CreateOptionRelationshipMutationProjection(result) },
 				() => $"已重排当前主体的直属选项。自动补齐选项状态：{result.InitializedStateCount}。未自动部署。");
+			return 0;
+		}
+		if (command.Length == 3 && command[0] == "profile" && command[1] == "create")
+		{
+			EnsureProfileMutationOptions(invocation.Options, "profile create", allowSetActive: true);
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.CreateProfileAsync(session, invocation.Command[2], invocation.Options.SetActive)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateProfileMutationProjection(result) },
+				() => result.Mutation.Changed ? "已创建配置文件。未自动部署。" : "配置文件未变化。未自动部署。");
+			return 0;
+		}
+		if (command.Length == 3 && command[0] == "profile" && command[1] == "delete")
+		{
+			EnsureProfileMutationOptions(invocation.Options, "profile delete");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.DeleteProfileAsync(session, invocation.Command[2])).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateProfileMutationProjection(result) },
+				() => "已删除配置文件。未自动部署；如它此前处于部署状态，请显式执行后续部署操作。");
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "profile" && command[1] == "rename")
+		{
+			EnsureProfileMutationOptions(invocation.Options, "profile rename");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.RenameProfileAsync(session, invocation.Command[2], invocation.Command[3])).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateProfileMutationProjection(result) },
+				() => result.Mutation.Changed ? "已重命名配置文件。未自动部署。" : "配置文件名称未变化。未自动部署。");
+			return 0;
+		}
+		if (command.Length == 3 && command[0] == "profile" && command[1] == "set-active")
+		{
+			EnsureProfileMutationOptions(invocation.Options, "profile set-active");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.SetActiveProfileAsync(session, invocation.Command[2])).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateProfileMutationProjection(result) },
+				() => result.Mutation.Changed ? "已设为活动配置。未自动部署。" : "该配置本来就是活动配置。未自动部署。");
+			return 0;
+		}
+		if (Matches(command, "profile", "clear-active"))
+		{
+			EnsureProfileMutationOptions(invocation.Options, "profile clear-active");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.ClearActiveProfileAsync(session)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateProfileMutationProjection(result) },
+				() => result.Mutation.Changed ? "已清除活动配置。未自动部署。" : "当前本来没有活动配置。未自动部署。");
+			return 0;
+		}
+		if (command.Length >= 4 && command[0] == "profile" && command[1] is "add" or "remove" or "insert" or "move" or "reorder")
+		{
+			var operation = command[1];
+			var requiresPosition = operation is "insert" or "move";
+			EnsureProfileMutationOptions(invocation.Options, $"profile {operation}", allowPosition: requiresPosition);
+			if (requiresPosition && invocation.Options.Position is null)
+				throw new CliUserException("ProfilePositionRequired", $"profile {operation} 必须提供 --position <从 1 开始的插入槽位>。末尾位置为当前逻辑条目数 + 1。");
+			if (!requiresPosition && invocation.Options.Position is not null)
+				throw new CliUserException("CommandOptionNotSupported", $"profile {operation} 不接受 --position。");
+
+			var profileSelector = invocation.Command[2];
+			var nodeSelectors = invocation.Command.Skip(3).ToArray();
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => operation switch
+				{
+					"add" => CliLibraryMutationOperations.AddProfileEntriesAsync(session, profileSelector, nodeSelectors),
+					"remove" => CliLibraryMutationOperations.RemoveProfileEntriesAsync(session, profileSelector, nodeSelectors),
+					"insert" => CliLibraryMutationOperations.InsertProfileEntriesAsync(session, profileSelector, nodeSelectors, invocation.Options.Position!.Value),
+					"move" => CliLibraryMutationOperations.MoveProfileEntriesAsync(session, profileSelector, nodeSelectors, invocation.Options.Position!.Value),
+					"reorder" => CliLibraryMutationOperations.ReorderProfileEntriesAsync(session, profileSelector, nodeSelectors),
+					_ => throw new InvalidOperationException($"Unexpected profile operation: {operation}"),
+				}).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateProfileMutationProjection(result) },
+				() => result.Mutation.Changed ? "已更新配置文件逻辑顺序。未自动部署。" : "配置文件条目未变化。未自动部署。");
 			return 0;
 		}
 		if (Matches(command, "profile", "list"))
@@ -325,33 +435,33 @@ public static class CliApplication
 	private static void EnsureNoExplicitOutput(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
-			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
-			throw new CliUserException("CommandOptionNotSupported", "此命令不接受 --output、--overwrite、--plan、--confirm、--host 或 --position。");
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", "此命令不接受写入确认、导出、宿主、排序或删除范围参数。");
 	}
 
 	private static void EnsureNoPlanOrConfirm(CliGlobalOptions options, string command)
 	{
-		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
-			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --plan、--confirm、--host 或 --position。");
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --plan、--confirm、--host、--position、--set-active 或 --with-unshared-options。");
 	}
 
 	private static void EnsureValidateOptions(CliGlobalOptions options)
 	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
 			throw new CliUserException("CommandOptionNotSupported", "import validate 仅接受 --plan、--manager-root、--library、--game-data 和 --json。");
 	}
 
 	private static void EnsureApplyOptions(CliGlobalOptions options)
 	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
 			throw new CliUserException("CommandOptionNotSupported", "import apply 不接受 --output、--overwrite、--host 或 --position。");
 	}
 
 	private static void EnsureMetadataMutationOptions(CliGlobalOptions options, string command)
 	{
 		EnsureMutationBoundary(options, command);
-		if (!string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
-			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --host 或 --position。");
+		if (!string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --host、--position、--set-active 或 --with-unshared-options。");
 	}
 
 	private static void EnsureOptionMutationOptions(CliGlobalOptions options, string command, bool requirePosition)
@@ -362,6 +472,44 @@ public static class CliApplication
 			throw new CliUserException("OptionPositionRequired", $"{command} 必须提供 --position <从 1 开始的插入槽位>。末尾位置为直属选项数量 + 1。");
 		if (!requirePosition && options.Position is not null)
 			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --position。");
+		if (options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --set-active 或 --with-unshared-options。");
+	}
+
+	private static void EnsureProfileMutationOptions(
+		CliGlobalOptions options,
+		string command,
+		bool allowPosition = false,
+		bool allowSetActive = false)
+	{
+		EnsureMutationBoundary(options, command);
+		if (!string.IsNullOrWhiteSpace(options.Host))
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --host。");
+		if (!allowPosition && options.Position is not null)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --position。");
+		if (!allowSetActive && options.SetActive)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --set-active。");
+		if (options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --with-unshared-options。");
+	}
+
+	private static void EnsureDeletionPreviewOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod delete preview 仅接受 Mod 标识、--library/--manager-root、--with-unshared-options 与 --json。");
+		}
+	}
+
+	private static void EnsureDeletionMutationOptions(CliGlobalOptions options)
+	{
+		EnsureMutationBoundary(options, "mod delete");
+		if (!string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive)
+			throw new CliUserException("CommandOptionNotSupported", "mod delete 不接受 --host、--position 或 --set-active。");
 	}
 
 	private static void EnsureMutationBoundary(CliGlobalOptions options, string command)
@@ -567,6 +715,115 @@ public static class CliApplication
 			deployment = "not-performed",
 		};
 
+	private static object CreateProfileMutationProjection(CliProfileMutationExecutionResult result)
+	{
+		var profileId = result.Mutation.ProfileId;
+		var profile = profileId is { } id
+			? result.After.Profiles.FirstOrDefault(item => item.Id == id)
+			: null;
+		return new
+		{
+			operation = result.Mutation.Operation.ToString(),
+			changed = result.Mutation.Changed,
+			profileId = profileId is { } value ? CliProjections.FormatId(value) : null,
+			profile = profile is null
+				? null
+				: new
+				{
+					id = CliProjections.FormatId(profile.Id),
+					name = profile.Name,
+					logicalEntryCount = profile.Entries.Count,
+					revision = profile.Revision,
+				},
+			affectedModIds = result.Mutation.EntryIds.Select(CliProjections.FormatId).ToArray(),
+			activeProfileId = result.After.ActiveProfileId is { } active ? CliProjections.FormatId(active) : null,
+			deployment = "not-performed",
+		};
+	}
+
+	private static object CreateDeletionPlanProjection(SafeModDeletionPlan plan)
+		=> new
+		{
+			scope = plan.Scope.ToString(),
+			isBlocked = plan.IsBlocked,
+			requestedNodes = plan.RequestedNodes.Select(item => new
+			{
+				id = CliProjections.FormatId(item.NodeId),
+				item.Exists,
+				item.WillRemove,
+				item.RequestCount,
+			}).ToArray(),
+			libraryNodeRemovals = plan.LibraryNodeRemovals.Select(item => new
+			{
+				id = CliProjections.FormatId(item.NodeId),
+				item.Name,
+				kind = item.Kind.ToString().ToLowerInvariant(),
+				item.RelativePath,
+				reason = item.Reason.ToString(),
+			}).ToArray(),
+			retainedSharedOptions = plan.PreservedSharedOptions.Select(item => new
+			{
+				optionId = CliProjections.FormatId(item.OptionId),
+				item.Name,
+				removedHostIds = item.RemovedHostIds.Select(CliProjections.FormatId).ToArray(),
+				survivingHostIds = item.SurvivingHostIds.Select(CliProjections.FormatId).ToArray(),
+			}).ToArray(),
+			profileEntriesToClean = plan.ProfileEntriesToClean.Select(item => new
+			{
+				profileId = CliProjections.FormatId(item.ProfileId),
+				item.ProfileName,
+				nodeId = CliProjections.FormatId(item.NodeId),
+				item.LoadOrder,
+			}).ToArray(),
+			physicalPaths = plan.PhysicalRelativePaths.Select(item => new
+			{
+				item.RelativePath,
+				nodeIds = item.NodeIds.Select(CliProjections.FormatId).ToArray(),
+				item.IsSafeRelativePath,
+			}).ToArray(),
+			blockers = plan.Blockers.Select(item => new
+			{
+				item.Code,
+				severity = item.Severity.ToString().ToLowerInvariant(),
+				item.Message,
+				relatedNodeIds = item.RelatedNodeIds.Select(CliProjections.FormatId).ToArray(),
+				item.RelativePaths,
+			}).ToArray(),
+		};
+
+	private static object CreateDeletionExecutionProjection(CliModDeletionExecutionResult result)
+		=> new
+		{
+			status = result.Status.ToString().ToLowerInvariant(),
+			plan = CreateDeletionPlanProjection(result.Plan),
+			appliedPlan = result.AppliedPlan is null ? null : CreateDeletionPlanProjection(result.AppliedPlan),
+			removedNodeIds = result.RemovedNodeIds.Select(CliProjections.FormatId).ToArray(),
+			failedNodeIds = result.FailedNodeIds.Select(CliProjections.FormatId).ToArray(),
+			skippedNodeIds = result.SkippedNodeIds.Select(CliProjections.FormatId).ToArray(),
+			storageResults = result.StorageResults.Select(item => new
+			{
+				item.RelativePath,
+				state = item.State.ToString().ToLowerInvariant(),
+				item.Detail,
+				canRemoveLibraryNode = item.CanRemoveLibraryNode,
+			}).ToArray(),
+			optionActivationCleanup = result.OptionActivationCleanup is null ? null : new
+			{
+				result.OptionActivationCleanup.RemovedOptionRecordCount,
+				result.OptionActivationCleanup.RemovedHostRelationshipCount,
+				result.OptionActivationCleanup.Changed,
+			},
+			decorationActivationCleanup = result.DecorationActivationCleanup is null ? null : new
+			{
+				result.DecorationActivationCleanup.RemovedDecorationCount,
+				result.DecorationActivationCleanup.RemovedHostReferenceCount,
+				result.DecorationActivationCleanup.Changed,
+			},
+			derivedInformation = result.Status == CliModDeletionStatus.Completed ? "requires-manager-refresh" : "not-started",
+			deployment = "not-performed",
+			result.PostCommitError,
+		};
+
 	private static string FormatImportValidation(CliImportValidationResult validation)
 	{
 		var status = validation.IsValid ? "导入验证通过。" : "导入验证未通过。";
@@ -586,6 +843,32 @@ public static class CliApplication
 				: $"{Environment.NewLine}缓存失效状态：{result.CacheInvalidationStatus}；失败节点：{result.CacheInvalidationFailedNodeIds.Count}。可在下次管理器同步时重试。")
 			+ $"{Environment.NewLine}未自动部署。";
 
+	private static string FormatDeletionPlan(SafeModDeletionPlan plan)
+	{
+		var headings = new List<string>
+		{
+			$"删除预览：计划移除 {plan.LibraryNodeRemovals.Count} 个 Mod 节点。",
+			$"范围：{(plan.Scope == SafeModDeletionScope.WithUnsharedOptions ? "所选节点及无共享选项后代" : "仅所选节点")}。",
+		};
+		if (plan.PreservedSharedOptions.Count > 0)
+			headings.Add($"将保留 {plan.PreservedSharedOptions.Count} 个仍有其它主体的共享选项。");
+		if (plan.Blockers.Count > 0)
+			headings.AddRange(plan.Blockers.Select(item => $"- [{item.Code}] {item.Message}"));
+		else headings.Add("可执行：未发现阻断项。执行仍需 --confirm，且不会自动部署。");
+		return string.Join(Environment.NewLine, headings);
+	}
+
+	private static string FormatDeletionExecution(CliModDeletionExecutionResult result)
+	{
+		return result.Status switch
+		{
+			CliModDeletionStatus.Blocked => $"删除被安全规则阻断：{string.Join("；", result.Plan.Blockers.Where(item => item.Severity == SafeModDeletionBlockerSeverity.Blocking).Select(item => item.Code))}",
+			CliModDeletionStatus.StorageNotRemoved => "没有任何目标 Mod 存储目录被安全删除；库记录未改动。请查看 storageResults。",
+			CliModDeletionStatus.PostCommitIncomplete => $"部分删除已提交，但后续状态清理未完成：{result.PostCommitError ?? "请查看 JSON 结果。"}",
+			_ => $"已删除 {result.RemovedNodeIds.Count} 个 Mod 节点；失败 {result.FailedNodeIds.Count} 个，跳过 {result.SkippedNodeIds.Count} 个。未自动部署。",
+		};
+	}
+
 	private const string HelpText = """
 HD2 Mod Manager 命令行
 
@@ -597,12 +880,24 @@ HD2 Mod Manager 命令行
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod delete preview <Mod GUID或唯一前缀> [...] [--with-unshared-options] --library <Mod库目录> --json
+	  hd2mod mod delete <Mod GUID或唯一前缀> [...] [--with-unshared-options] --manager-root <管理器目录> --confirm --json
 	  hd2mod option enable <Option GUID或唯一前缀> --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod option disable <Option GUID或唯一前缀> --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
-	  hd2mod option move <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
+  hd2mod option move <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
 	  hd2mod option insert <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
   hd2mod profile list --library <Mod库目录> --json
 	  hd2mod profile show [名称或GUID前缀] --library <Mod库目录> --json
+	  hd2mod profile create <名称> [--set-active] --manager-root <管理器目录> --confirm --json
+	  hd2mod profile delete <名称或GUID前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod profile rename <名称或GUID前缀> <新名称> --manager-root <管理器目录> --confirm --json
+	  hd2mod profile set-active <名称或GUID前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod profile clear-active --manager-root <管理器目录> --confirm --json
+	  hd2mod profile add <配置> <Mod GUID或前缀> [...] --manager-root <管理器目录> --confirm --json
+	  hd2mod profile remove <配置> <Mod GUID或前缀> [...] --manager-root <管理器目录> --confirm --json
+	  hd2mod profile insert <配置> <Mod GUID或前缀> [...] --position <插入槽位> --manager-root <管理器目录> --confirm --json
+	  hd2mod profile move <配置> <Mod GUID或前缀> [...] --position <插入槽位> --manager-root <管理器目录> --confirm --json
+	  hd2mod profile reorder <配置> <按完整逻辑顺序的Mod GUID或前缀> [...] --manager-root <管理器目录> --confirm --json
 	  hd2mod import inspect <文件夹、压缩包或文件> --json
 	  hd2mod import plan <文件夹、压缩包或文件> --output import-plan.json
 	  hd2mod import validate --plan import-plan.json --manager-root <管理器目录> --json
@@ -623,6 +918,8 @@ HD2 Mod Manager 命令行
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
 	  --host <GUID或前缀>      Option 操作的明确主体；不支持隐式或全主体修改。
 	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
+	  --set-active              创建配置时同时将它设为活动配置。
+	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
 安全边界：写入命令均要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm；不会自动部署、修改配置、重构或直接修改 Patch 内容。

@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.3";
+	public const string ProtocolVersion = "1.5";
 
 	public static object CreateCapabilities()
 		=> new
@@ -23,12 +23,24 @@ public static class CliProjections
 				new { name = "mod rename", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时重命名一个 Mod" },
 				new { name = "mod notes set", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时设置一个 Mod 的备注" },
 				new { name = "mod notes clear", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时清空一个 Mod 的备注" },
+				new { name = "mod delete preview", safety = "read-only", description = "预览关系感知的安全删除后果与阻断项" },
+				new { name = "mod delete", safety = "explicit-confirm", description = "删除已审核 Mod；可显式带走无共享的递归 Option，永不自动部署" },
 				new { name = "option enable", safety = "explicit-confirm", description = "为明确指定的主体启用一个直属 Option" },
 				new { name = "option disable", safety = "explicit-confirm", description = "为明确指定的主体禁用一个直属 Option" },
 				new { name = "option move", safety = "explicit-confirm", description = "在明确主体的直属 Option 范围内重排一个或多个 Option" },
 				new { name = "option insert", safety = "explicit-confirm", description = "option move 的语法别名；不会把 Option 挂到新主体" },
 				new { name = "profile list", safety = "read-only", description = "列出配置文件" },
 				new { name = "profile show", safety = "read-only", description = "读取逻辑顺序与实际部署展开顺序" },
+				new { name = "profile create", safety = "explicit-confirm", description = "创建空配置文件，可选择设为活动配置" },
+				new { name = "profile delete", safety = "explicit-confirm", description = "删除一个配置文件；不会自动修改 GameData" },
+				new { name = "profile rename", safety = "explicit-confirm", description = "重命名一个配置文件" },
+				new { name = "profile set-active", safety = "explicit-confirm", description = "设置活动配置；不会自动部署" },
+				new { name = "profile clear-active", safety = "explicit-confirm", description = "清除活动配置；不会自动部署" },
+				new { name = "profile add", safety = "explicit-confirm", description = "将可部署 Standard 或 ReShade Mod 追加到一个明确配置" },
+				new { name = "profile remove", safety = "explicit-confirm", description = "从一个明确配置移除 Mod 条目" },
+				new { name = "profile insert", safety = "explicit-confirm", description = "按明确逻辑槽位插入新的配置条目" },
+				new { name = "profile move", safety = "explicit-confirm", description = "按明确逻辑槽位稳定移动已有配置条目" },
+				new { name = "profile reorder", safety = "explicit-confirm", description = "以完整明确列表重排一个配置的逻辑条目" },
 				new { name = "import inspect", safety = "read-only", description = "扫描待导入文件夹或压缩包，并输出导入前规划，不写入 Mod 库" },
 				new { name = "import plan", safety = "explicit-export", description = "仅在给定 --output 后写出带来源/导入树指纹的可审计导入计划，不写入 Mod 库" },
 				new { name = "import validate", safety = "read-only", description = "复扫来源并检查目标库、计划指纹和管理器进程；不写入 Mod 库" },
@@ -42,7 +54,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"删除、修改配置、部署、重构 Patch、替换护甲和任何原始 Patch 字节操作。",
+				"部署、重构 Patch、替换护甲和任何原始 Patch 字节操作。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
@@ -51,6 +63,8 @@ public static class CliProjections
 				"import apply 不自动部署、不修改 Profile、不写 Patch 字节，也不会启动昂贵的派生信息分析。",
 				"Mod 元数据与 Option 写入同样要求 --confirm、已有 library.json、所有桌面端实例关闭，以及库根目录的跨进程写租约。",
 				"Option 启停和排序必须显式指定 --host；CLI 不提供“所有主体”或隐式主体猜测。",
+				"Profile 写入要求 --confirm，且只更新 Mod 库中的配置状态；永不隐式部署或触碰 GameData。",
+				"删除必须先通过关系、激活状态和生成 Overwrite 安全预检；CLI 遇到活跃装饰或临时头盔合并会拒绝猜测性删除。",
 			},
 		};
 

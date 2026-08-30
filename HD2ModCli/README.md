@@ -1,14 +1,13 @@
 # HD2 Mod Manager CLI
 
-面向脚本与 AI Agent 的本地入口；以 `hd2mod capabilities --json` 为当前功能准则。
+供脚本和 AI Agent 使用的本地入口；先运行 `hd2mod capabilities --json`，再只导出所需 Skill。
 
 ```powershell
 hd2mod agent skills list --json
 hd2mod agent skills export --output .\.agents\skills
-hd2mod agent skills export safe-import --output .\.agents\skills
-hd2mod agent skills export mod-management --output .\.agents\skills
+hd2mod agent skills export safe-library-deletion --output .\.agents\skills
 ```
 
-可安装能力：`library-inspection`（只读库检查）、`safe-import`（`inspect → plan → validate → apply --confirm`）和 `mod-management`（重命名、备注、按主体管理 Option）。目录导出会写入独立 Skill 目录和 SHA-256 清单；不删除同级的其它用户 Skill。刷新同一输出目录请显式加 `--overwrite`。
+当前 Skill：`library-inspection`、`safe-import`、`mod-metadata`、`option-management`、`safe-library-deletion`、`profile-management`。写操作需要桌面端关闭、跨进程写租约与显式 `--confirm`；不会隐式部署或修改 Patch 字节。
 
-单文件兼容：`hd2mod agent skill export safe-import --output SKILL.md`；旧命令 `hd2mod agent skill --output SKILL.md` 输出轻量路由器。
+目录导出带 SHA-256 清单，不会删除同级用户 Skill；刷新已管理文件请加 `--overwrite`。旧 `agent skill export mod-management` 与 `agent skill` 仍可用作兼容入口。

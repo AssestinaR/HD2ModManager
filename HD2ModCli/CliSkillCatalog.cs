@@ -7,7 +7,8 @@ public sealed record CliSkillDefinition(
 	string DirectoryName,
 	string Description,
 	string ResourceName,
-	bool IsRouter = false);
+	bool IsRouter = false,
+	bool IsLegacy = false);
 
 /// <summary>
 /// Keeps every exported Agent Skill discoverable without forcing an Agent to
@@ -24,7 +25,11 @@ public static class CliSkillCatalog
 		new(RouterSkillName, "hd2mod-cli-router", "轻量路由：发现并按需导出 HD2 Mod CLI 的能力 Skill。", "HD2ModCli.Skill.cli-router", IsRouter: true),
 		new("library-inspection", "hd2mod-library-inspection", "只读查看 Mod 库、Option 关系、Profile 与有效部署顺序。", "HD2ModCli.Skill.library-inspection"),
 		new("safe-import", "hd2mod-safe-import", "以 plan → validate → apply 的显式确认流程安全导入 Mod。", "HD2ModCli.Skill.safe-import"),
-		new("mod-management", "hd2mod-mod-management", "安全重命名/备注、按主体启停 Option，以及重排直属 Option。", "HD2ModCli.Skill.mod-management"),
+		new("mod-metadata", "hd2mod-mod-metadata", "重命名与备注管理；不改变 Patch、Profile 或部署。", "HD2ModCli.Skill.mod-metadata"),
+		new("option-management", "hd2mod-option-management", "按明确主体启停和排序直属 Option。", "HD2ModCli.Skill.option-management"),
+		new("safe-library-deletion", "hd2mod-safe-library-deletion", "预览并执行关系感知的安全 Mod 删除。", "HD2ModCli.Skill.safe-library-deletion"),
+		new("profile-management", "hd2mod-profile-management", "创建、管理与排序 Profile；不自动部署。", "HD2ModCli.Skill.profile-management"),
+		new("mod-management", "hd2mod-mod-management", "兼容聚合 Skill：请优先使用更窄的 mod-metadata、option-management 或 safe-library-deletion。", "HD2ModCli.Skill.mod-management", IsLegacy: true),
 	];
 
 	/// <summary>
@@ -32,7 +37,7 @@ public static class CliSkillCatalog
 	/// it is a compatibility document, not a workflow capability.
 	/// </summary>
 	public static IReadOnlyList<CliSkillDefinition> ListCapabilitySkills()
-		=> Definitions.Where(definition => !definition.IsRouter).ToArray();
+		=> Definitions.Where(definition => !definition.IsRouter && !definition.IsLegacy).ToArray();
 
 	public static CliSkillDefinition Resolve(string name)
 	{

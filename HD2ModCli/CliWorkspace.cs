@@ -112,9 +112,19 @@ public sealed class CliWorkspace
 		{
 			throw new CliUserException("OptionActivationsUnreadable", $"无法安全读取 option-activations.json：{exception.Message}");
 		}
-		var decorationRead = ReadDecorationActivations(Path.Combine(LibraryRoot, "decoration-activations.json"));
-		var issues = _issues.Concat(decorationRead.Issues).ToArray();
-		return new CliLibraryState(snapshot, optionStates, decorationRead.Activations, issues);
+		DecorationActivationSnapshot decorationActivations;
+		try
+		{
+			decorationActivations = await DecorationActivationStore.TryLoadReadOnlySnapshotAsync(
+				paths.DecorationActivationsPath,
+				cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			throw new CliUserException("DecorationActivationsUnreadable", $"无法安全读取 decoration-activations.json：{exception.Message}");
+		}
+
+		return new CliLibraryState(snapshot, optionStates, decorationActivations.EnabledHostsByDecoration, _issues.ToArray());
 	}
 
 	private static string? ResolveLibraryRoot(
@@ -155,27 +165,4 @@ public sealed class CliWorkspace
 		}
 	}
 
-	private static DecorationActivationReadResult ReadDecorationActivations(string path)
-	{
-		if (!File.Exists(path))
-			return new DecorationActivationReadResult(new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase), Array.Empty<string>());
-		try
-		{
-			var values = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(File.ReadAllText(path), CliOutput.JsonOptions)
-				?? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-			var normalized = values.ToDictionary(
-				pair => pair.Key,
-				pair => (IReadOnlySet<string>)(pair.Value ?? []).Where(value => !string.IsNullOrWhiteSpace(value)).ToHashSet(StringComparer.OrdinalIgnoreCase),
-				StringComparer.OrdinalIgnoreCase);
-			return new DecorationActivationReadResult(normalized, Array.Empty<string>());
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
-		{
-			throw new CliUserException("DecorationActivationsUnreadable", $"无法安全读取 decoration-activations.json：{exception.Message}");
-		}
-	}
-
-	private sealed record DecorationActivationReadResult(
-		IReadOnlyDictionary<string, IReadOnlySet<string>> Activations,
-		IReadOnlyList<string> Issues);
 }
