@@ -49,6 +49,7 @@ namespace HD2ModManager.ViewModels
         private readonly IAdvancedModAssetQueryService _advancedAssetQueryService;
 		private readonly StoragePaths _paths;
         private readonly EventHandler<DerivedStateSnapshot> _snapshotChangedHandler;
+        private readonly ModListStateController<HostAttachmentListState, ModCardViewModel> _hostAttachments;
         private CancellationTokenSource? _advancedDetailsCancellation;
         private bool _advancedDetailsLoaded;
         private bool _disposed;
@@ -58,6 +59,7 @@ namespace HD2ModManager.ViewModels
         private bool _advancedOnlyIssues;
         private int _detailRequestGeneration;
         private ModUserStatus? _userStatus;
+        private IReadOnlyList<HostAttachmentListState> _hostAttachmentStates = Array.Empty<HostAttachmentListState>();
 
         public string ModId { get; }
         public ModEntity? Mod { get; private set; }
@@ -116,11 +118,11 @@ namespace HD2ModManager.ViewModels
         public bool CanPlanDecoration => !_disposed && CanShowDecorationPlan && TryGetCurrentNode(out _);
         public bool CanEditDecoration => !_disposed && IsDecoration && TryGetCurrentNode(out _);
         public string DecorationSummary { get; private set; } = "正在读取装饰计划。";
-        public BulkObservableCollection<ModCardViewModel> HostDecorations { get; } = new();
+        public ModListProjectionSource<ModCardViewModel> HostDecorations => _hostAttachments.Items;
         // Empty standard hosts still own their option list; an option becomes a
         // decoration host only when it owns patch content that can be rebuilt.
         public bool CanHostAttachments => !IsDecoration && !IsReShade && (IsStandardMod || (IsOption && HasPatchContent));
-        public bool HasHostDecorations => CanHostAttachments && HostDecorations.Count > 0;
+        public bool HasHostDecorations => CanHostAttachments && _hostAttachments.VisibleCount > 0;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -167,8 +169,15 @@ namespace HD2ModManager.ViewModels
 			_equipmentSourceFactsReader = _library.EquipmentSourceFactsReader;
             _advancedAnalysis = CoreServices.CreateAdvancedModAnalysisService(_paths, _derivedState.InformationCenter);
             _sourceUnitEligibility = CoreServices.CreateSourceUnitEligibilityService();
-			_patchGraphDiagnostics = CoreServices.CreatePatchGraphDiagnosticsService(_library.InformationReader);
+            _patchGraphDiagnostics = CoreServices.CreatePatchGraphDiagnosticsService(_library.InformationReader);
             _advancedAssetQueryService = CoreServices.CreateAdvancedModAssetQueryService(_paths, _derivedState.InformationCenter);
+            _hostAttachments = new ModListStateController<HostAttachmentListState, ModCardViewModel>(
+                state => state.Guid,
+                state => state.PresentationVersion,
+                CreateHostAttachmentCard,
+                (card, state) => card.ApplyAttachmentState(state.Mod, state.IsSelected, state.DecorationStatus, state.ContentVersion),
+                card => card.SelectionKey);
+            _hostAttachments.Committed += OnHostAttachmentProjectionCommitted;
             ModId = modId;
             RefreshCommand = new RelayCommand(Refresh);
             UpdateImageCommand = new RelayCommand(async path => await UpdateImageAsync(path), path => path is string imagePath && File.Exists(imagePath));
@@ -1114,19 +1123,32 @@ namespace HD2ModManager.ViewModels
         {
             if (Mod is null || !CanHostAttachments)
             {
-                HostDecorations.ReplaceWith(Array.Empty<ModCardViewModel>());
+                _hostAttachmentStates = Array.Empty<HostAttachmentListState>();
+                _hostAttachments.Submit(_hostAttachmentStates, _hostAttachmentStates.Select(state => state.Guid));
+                OnPropertyChanged(nameof(HasHostDecorations));
                 return;
             }
 
-            var cards = _library.GetAttachmentsForHost(Mod.Guid)
-                .Select(decoration => new ModCardViewModel(
-                    decoration,
-                    isSelected: IsHostDecorationSelected(decoration.Guid),
-                    decorationStatus: decoration.IsDecoration
-                        ? (_library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")
-                        : (_library.IsOptionEnabledForHost(decoration.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")))
+            _hostAttachmentStates = _library.GetAttachmentsForHost(Mod.Guid)
+                .Select(attachment => HostAttachmentListState.Create(
+                    attachment,
+                    IsHostDecorationSelected(attachment.Guid),
+                    attachment.IsDecoration
+                        ? (_library.IsDecorationEnabledForHost(attachment.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")
+                        : (_library.IsOptionEnabledForHost(attachment.Guid, Mod.Guid) ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。")))
                 .ToArray();
-            HostDecorations.ReplaceWith(cards);
+            _hostAttachments.Submit(_hostAttachmentStates, _hostAttachmentStates.Select(state => state.Guid));
+            OnPropertyChanged(nameof(HasHostDecorations));
+        }
+
+        private static ModCardViewModel CreateHostAttachmentCard(HostAttachmentListState state)
+        {
+            var card = new ModCardViewModel(
+                state.Mod,
+                state.IsSelected,
+                decorationStatus: state.DecorationStatus);
+            card.ApplyAttachmentState(state.Mod, state.IsSelected, state.DecorationStatus, state.ContentVersion);
+            return card;
         }
 
         private void OnSelectionChanged(object? sender, EventArgs e)
@@ -1142,8 +1164,17 @@ namespace HD2ModManager.ViewModels
 
         private void RefreshHostDecorationSelection()
         {
-            foreach (var decoration in HostDecorations)
-                decoration.IsSelected = IsHostDecorationSelected(decoration.Mod.Guid);
+            if (_hostAttachmentStates.Count == 0) return;
+            _hostAttachmentStates = _hostAttachmentStates
+                .Select(state => state.WithSelection(IsHostDecorationSelected(state.Guid)))
+                .ToArray();
+            _hostAttachments.SubmitContent(_hostAttachmentStates, commitImmediately: true);
+        }
+
+        private void OnHostAttachmentProjectionCommitted(object? sender, ModListStateCommittedEventArgs e)
+        {
+            if (_disposed) return;
+            OnPropertyChanged(nameof(HasHostDecorations));
         }
 
         private async Task<bool> HasCurrentGameDataIndexAsync()
@@ -1639,7 +1670,53 @@ namespace HD2ModManager.ViewModels
             _advancedDetailsCancellation?.Cancel();
             _advancedDetailsCancellation?.Dispose();
             _advancedDetailsCancellation = null;
+            _hostAttachments.Committed -= OnHostAttachmentProjectionCommitted;
+            _hostAttachments.Dispose();
         }
+    }
+
+    internal sealed record HostAttachmentListState(
+        string Guid,
+        ModEntity Mod,
+        bool IsSelected,
+        string? DecorationStatus,
+        string ContentVersion,
+        string PresentationVersion)
+    {
+        public static HostAttachmentListState Create(ModEntity mod, bool isSelected, string? decorationStatus)
+        {
+            var contentVersion = string.Join('\u001f',
+                mod.Guid,
+                mod.Name,
+                mod.Description,
+                mod.Image,
+                mod.SourcePath,
+                mod.IsDecoration,
+                mod.IsOption,
+                mod.IsReShade,
+                mod.HasPatchContent,
+                mod.IsHelmetToArmorMerged,
+                decorationStatus);
+            return new HostAttachmentListState(
+                mod.Guid,
+                mod,
+                isSelected,
+                decorationStatus,
+                contentVersion,
+                BuildPresentationVersion(contentVersion, isSelected));
+        }
+
+        public HostAttachmentListState WithSelection(bool isSelected)
+            => IsSelected == isSelected
+                ? this
+                : this with
+                {
+                    IsSelected = isSelected,
+                    PresentationVersion = BuildPresentationVersion(ContentVersion, isSelected)
+                };
+
+        private static string BuildPresentationVersion(string contentVersion, bool isSelected)
+            => string.Join('\u001f', contentVersion, isSelected);
     }
 
 }

@@ -398,7 +398,7 @@ public sealed class ModListItemProjectionController<TItem> : IDisposable
             _keySelector,
             versionSelector ?? _keySelector,
             item => item,
-            applyState ?? static (_, _) => { },
+            applyState ?? ((_, _) => { }),
             _keySelector,
             debounceInterval,
             dispatcher);

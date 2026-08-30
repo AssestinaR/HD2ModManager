@@ -839,6 +839,38 @@ namespace HD2ModManager.ViewModels
             if (imageChanged) OnPropertyChanged(nameof(ImagePath));
         }
 
+        internal void ApplyAttachmentState(
+            HD2ModManager.Models.ModEntity mod,
+            bool isSelected,
+            string? decorationStatus,
+            string contentVersion)
+        {
+            var contentChanged = !string.Equals(_contentVersion, contentVersion, StringComparison.Ordinal);
+            IsSelected = isSelected;
+            if (!contentChanged) return;
+
+            var nextThumbnailSource = mod.Image;
+            var imageChanged = !string.Equals(_thumbnailSourcePath, nextThumbnailSource, StringComparison.OrdinalIgnoreCase);
+            _mod = mod;
+            _assetSummary = null;
+            _unitCompatibility = null;
+            _userStatus = null;
+            _decorationStatus = decorationStatus;
+            _thumbnailSourcePath = nextThumbnailSource;
+            if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            _assetSummaryText = BuildAssetSummaryText(mod, null, decorationStatus);
+            _contentVersion = contentVersion;
+
+            OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(Description));
+            OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsReShade));
+            OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanJoinProfile)); OnPropertyChanged(nameof(ShowsPatchMetadata));
+            OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(UnitCompatibility));
+            OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(ModelCompatibilitySummary));
+            OnPropertyChanged(nameof(UserStatus)); OnPropertyChanged(nameof(UserStatusTitle)); OnPropertyChanged(nameof(UserStatusSummary));
+            OnPropertyChanged(nameof(HasUserStatus)); OnPropertyChanged(nameof(DecorationStatus));
+            if (imageChanged) OnPropertyChanged(nameof(ImagePath));
+        }
+
         internal static string BuildAssetSummaryText(HD2ModManager.Models.ModEntity mod, ModAssetSummary? assetSummary, string? decorationStatus)
             => mod.IsReShade
                 ? "ReShade 插件 · 部署到游戏 bin"
