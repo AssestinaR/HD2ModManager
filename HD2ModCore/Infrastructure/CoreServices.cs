@@ -213,6 +213,10 @@ public static class CoreServices
 	public static DecorationPackageSnapshotService CreateDecorationPackageSnapshotService(
 		IModInformationReader informationReader)
 		=> new(CreateModFileResolver(), informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
+	public static DecorationHostRebuildService CreateDecorationHostRebuildService(
+		StoragePaths paths,
+		IModInformationReader informationReader)
+		=> new(paths ?? throw new ArgumentNullException(nameof(paths)), informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static IApplyPlanner CreateApplyPlanner()
 		=> new ApplyPlanner(CreatePatchFileNameParser());
 	public static ILuaDeploymentService CreateLuaDeploymentService()
