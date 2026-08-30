@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.13";
+	public const string ProtocolVersion = "1.14";
 
 	public static object CreateCapabilities()
 		=> new
@@ -32,8 +32,11 @@ public static class CliProjections
 				new { name = "mod rename", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时重命名一个 Mod" },
 				new { name = "mod notes set", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时设置一个 Mod 的备注" },
 				new { name = "mod notes clear", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时清空一个 Mod 的备注" },
-				new { name = "mod delete preview", safety = "read-only", description = "预览关系感知的安全删除后果与阻断项" },
-				new { name = "mod delete", safety = "explicit-confirm", description = "删除已审核 Mod；可显式带走无共享的递归 Option，永不自动部署" },
+				new { name = "mod delete preview", safety = "read-only", description = "兼容快捷预览：读取关系感知的安全删除后果与阻断项" },
+				new { name = "mod delete plan", safety = "explicit-export", description = "导出冻结库、激活状态与待删目录内容指纹的可审计删除计划" },
+				new { name = "mod delete validate", safety = "read-only", description = "重建删除关系和存储指纹，拒绝任何目标或内容漂移" },
+				new { name = "mod delete apply", safety = "explicit-confirm", description = "仅在计划复核与库租约内执行关系感知删除；永不自动部署" },
+				new { name = "mod delete", safety = "explicit-confirm", description = "兼容直接删除入口；Agent 应优先使用 plan/validate/apply" },
 				new { name = "option enable", safety = "explicit-confirm", description = "为明确指定的主体启用一个直属 Option" },
 				new { name = "option disable", safety = "explicit-confirm", description = "为明确指定的主体禁用一个直属 Option" },
 				new { name = "option show", safety = "read-only", description = "检查一个 Option 的所有声明主体、激活状态与阻断原因" },
@@ -72,9 +75,9 @@ public static class CliProjections
 				new { name = "patch repair validate", safety = "read-only", description = "重新读取来源、GameData 指纹与 Canonical 重构资格，不写入文件" },
 				new { name = "patch repair apply", safety = "explicit-confirm", description = "只将已验证的 Same-key Canonical 候选输出到新的库外目录；不替换、导入或部署" },
 				new { name = "import inspect", safety = "read-only", description = "扫描待导入文件夹或压缩包，并输出导入前规划，不写入 Mod 库" },
-				new { name = "import plan", safety = "explicit-export", description = "仅在给定 --output 后写出带来源/导入树指纹的可审计导入计划，不写入 Mod 库" },
+				new { name = "import plan", safety = "explicit-export", description = "仅在给定 --output 后写出带来源/导入树指纹的可审计导入计划；可显式冻结导入后加入的 Profile" },
 				new { name = "import validate", safety = "read-only", description = "复扫来源并检查目标库、计划指纹和管理器进程；不写入 Mod 库" },
-				new { name = "import apply", safety = "explicit-confirm", description = "仅在 validate 通过且传入 --confirm 后导入 Mod 库；不部署、不修改配置文件" },
+				new { name = "import apply", safety = "explicit-confirm", description = "仅在 validate 通过且传入 --confirm 后导入 Mod 库；只会执行计划中明确冻结的 Profile 追加，永不部署" },
 				new { name = "context export", safety = "explicit-export", description = "仅在给定 --output 后写出 AI 上下文 JSON" },
 				new { name = "agent skill list", safety = "read-only", description = "兼容别名：列出可按需导出的能力 Skill" },
 				new { name = "agent skill export", safety = "explicit-export", description = "兼容单文件导出：仅在给定 --output 后导出指定能力 Skill" },
@@ -84,13 +87,13 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"批量/原地 Patch 修复、替换护甲、装饰包编辑、自动导入、启停与 Overwrite 重建，以及任何自定义 Patch 字节编辑工作流。",
+				"批量/原地 Patch 修复、替换护甲、装饰包编辑、基于桌面设置的隐式自动导入、装饰启停与 Overwrite 重建，以及任何自定义 Patch 字节编辑工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
 			{
 				"import apply 只会在计划复核成功、目标库可信、管理器未运行且显式 --confirm 时写入 Mod 库。",
-				"import apply 不自动部署、不修改 Profile、不写 Patch 字节，也不会启动昂贵的派生信息分析。",
+				"import apply 不自动部署、不写 Patch 字节，也不会启动昂贵的派生信息分析；仅当 import plan 明确带有 --add-to-profile 时，才会在 Profile 身份与版本未漂移的前提下追加可部署条目。",
 				"Mod 元数据与 Option 写入同样要求 --confirm、已有 library.json、所有桌面端实例关闭，以及库根目录的跨进程写租约。",
 				"Option 单主体启停和排序必须显式指定 --host；option enable-all/disable-all 只会在所有声明主体均存在、类型正确且为直属关系时整批执行，绝不猜测或部分写入。",
 				"library sync 只对账已存在的库目录与 library.json：它不会解析导入包树、不移动或删除文件、不改 Profile/激活状态，也会在已登记物理目录缺失时阻断。",
@@ -102,7 +105,7 @@ public static class CliProjections
 				"patch repackage 只允许在计划中选择已有完整 AssetKey Payload；apply 只写入新的 Mod 库外目录，绝不修改来源、自动导入或部署。",
 				"equipment helmet-merge 只允许从已检查的完整 Armor/Any Helmet 集合中选择；apply 会重新验证来源、GameData 索引、共享影响和 Unit 冲突，并且只发布新的库外、游戏根外目录。",
 				"patch repair 只允许 Core 的固定 Same-key Canonical 重构配方；CLI 必须固定一个来源 Patch 并重验来源/当前 GameData 指纹，绝不替换库内文件。",
-				"删除必须先通过关系、激活状态和生成 Overwrite 安全预检；CLI 遇到活跃装饰或临时头盔合并会拒绝猜测性删除。",
+				"删除计划会冻结关系、Profile/激活状态和待删目录内容；validate/apply 重新确认这些输入，遇到活跃装饰、临时头盔合并或任何漂移都会拒绝猜测性删除。",
 			},
 		};
 

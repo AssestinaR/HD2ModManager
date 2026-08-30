@@ -14,4 +14,4 @@ hd2mod mod notes set <mod-id> "<notes>" --manager-root "<manager>" --confirm --j
 hd2mod mod notes clear <mod-id> --manager-root "<manager>" --confirm --json
 ```
 
-The desktop manager must be closed. These commands take the library write lease and never deploy or alter Patch bytes.
+The desktop manager must be closed. These commands take the Mod-library write lease and do not deploy or alter Patch bytes.

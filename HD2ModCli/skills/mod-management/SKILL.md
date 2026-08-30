@@ -1,14 +1,14 @@
 ---
 name: hd2mod-mod-management
-description: Legacy aggregate routing note for HD2 Mod CLI Mod-management capabilities.
+description: Legacy routing note for HD2 Mod CLI metadata, Option, and safe-deletion capabilities.
 ---
 
 # Legacy Mod Management Skill
 
-Prefer the narrower Skill that matches the task:
+Use one narrow capability instead:
 
-- `mod-metadata` — rename and notes.
-- `option-management` — direct Option state and order.
-- `safe-library-deletion` — deletion preview and execution.
+- `mod-metadata` for names and notes.
+- `option-management` for direct Option state and order.
+- `safe-library-deletion` for previewed deletion.
 
-This compatibility Skill deliberately contains no duplicate command reference. Run `hd2mod capabilities --json` before acting; none of these capabilities deploys or edits Patch bytes.
+This compatibility Skill intentionally duplicates no command reference. Run `hd2mod capabilities --json` before acting; none of the three capabilities deploys or edits Patch bytes.

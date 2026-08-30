@@ -14,6 +14,7 @@ public sealed record CliImportValidationResult(
 	CliImportPlanDocument Document,
 	CliImportInspection? CurrentInspection,
 	CliImportTarget Target,
+	CliImportProfileTarget? ResolvedProfile,
 	IReadOnlyList<CliImportValidationIssue> Issues)
 {
 	public bool IsValid => !Issues.Any(issue => issue.IsBlocking);
@@ -50,7 +51,41 @@ public static class CliImportValidator
 		var targetValidation = await CliWriteTargetGuard.ValidateAsync(workspace, CliWriteTargetMode.Import, cancellationToken).ConfigureAwait(false);
 		foreach (var issue in targetValidation.Issues)
 			issues.Add(new CliImportValidationIssue(issue.Code, issue.Message));
-		return new CliImportValidationResult(document, current, targetValidation.Target.ToImportTarget(), issues);
+		var profile = ValidateProfileTarget(document.AddToProfile, targetValidation.Snapshot, issues);
+		return new CliImportValidationResult(document, current, targetValidation.Target.ToImportTarget(), profile, issues);
+	}
+
+	private static CliImportProfileTarget? ValidateProfileTarget(
+		CliImportProfileTarget? requested,
+		HD2ModCore.Domain.LibrarySnapshot? snapshot,
+		ICollection<CliImportValidationIssue> issues)
+	{
+		if (requested is null) return null;
+		if (!Guid.TryParse(requested.ProfileId, out var rawProfileId))
+		{
+			issues.Add(new CliImportValidationIssue("ImportProfileTargetInvalid", "导入计划中的目标配置文件 ID 无效。"));
+			return null;
+		}
+		if (snapshot is null)
+		{
+			issues.Add(new CliImportValidationIssue("ImportProfileTargetUnavailable", "无法读取目标 Mod 库，因此不能确认导入后加入配置文件的目标。"));
+			return null;
+		}
+
+		var profileId = new HD2ModCore.Domain.ProfileId(rawProfileId);
+		var current = snapshot.Profiles.FirstOrDefault(profile => profile.Id == profileId);
+		if (current is null)
+		{
+			issues.Add(new CliImportValidationIssue("ImportProfileTargetMissing", $"导入计划指定的配置文件已不存在：{requested.ProfileName}。请重新生成导入计划。"));
+			return null;
+		}
+		if (!string.Equals(current.Name, requested.ProfileName, StringComparison.Ordinal)
+			|| current.Revision != requested.ProfileRevision)
+		{
+			issues.Add(new CliImportValidationIssue("ImportProfileTargetChanged", "目标配置文件的名称或版本已变化；请重新生成导入计划并重新确认。"));
+			return null;
+		}
+		return requested;
 	}
 
 	private static void AddBlockingPlanDiagnostics(HD2ModCore.Domain.ImportPlan plan, ICollection<CliImportValidationIssue> issues)

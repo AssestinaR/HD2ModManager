@@ -7,6 +7,7 @@ public sealed record CliGlobalOptions(
 	string? Output,
 	string? Plan,
 	string? Host,
+	string? AddToProfile,
 	int? Position,
 	bool SetActive,
 	bool WithUnsharedOptions,
@@ -27,6 +28,7 @@ public static class CliArgumentParser
 		string? output = null;
 		string? plan = null;
 		string? host = null;
+		string? addToProfile = null;
 		int? position = null;
 		var setActive = false;
 		var withUnsharedOptions = false;
@@ -57,6 +59,9 @@ public static class CliArgumentParser
 					break;
 				case "--host":
 					host = ReadValue(args, ref index, argument);
+					break;
+				case "--add-to-profile":
+					addToProfile = ReadValue(args, ref index, argument);
 					break;
 				case "--position":
 					var rawPosition = ReadValue(args, ref index, argument);
@@ -95,7 +100,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, position, setActive, withUnsharedOptions, overwrite, confirm, json));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, addToProfile, position, setActive, withUnsharedOptions, overwrite, confirm, json));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

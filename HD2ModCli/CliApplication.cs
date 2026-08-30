@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
@@ -35,6 +36,13 @@ public static class CliApplication
 	private static async Task<int> DispatchAsync(CliInvocation invocation)
 	{
 		var command = invocation.Command.Select(value => value.Trim().ToLowerInvariant()).ToArray();
+		if (!string.IsNullOrWhiteSpace(invocation.Options.AddToProfile)
+			&& !(command.Length == 3 && command[0] == "import" && command[1] == "plan"))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"--add-to-profile 仅可用于 import plan；它会被固定在计划中，并在 validate/apply 时重新校验。");
+		}
 		if (Matches(command, "help"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -230,6 +238,44 @@ public static class CliApplication
 				new { ok = true, mutation = CreateNodeMetadataMutationProjection(result) },
 				() => result.Changed ? "已清空 Mod 备注。未自动部署。" : "Mod 备注本来就是空的。未自动部署。");
 			return 0;
+		}
+		if (command.Length >= 4 && command[0] == "mod" && command[1] == "delete" && command[2] == "plan")
+		{
+			EnsureModDeletionPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "mod delete plan");
+			var build = await CliModDeletionPlanArtifacts
+				.BuildAsync(
+					CliWorkspace.Open(invocation.Options),
+					invocation.Command.Skip(3).ToArray(),
+					invocation.Options.WithUnsharedOptions ? SafeModDeletionScope.WithUnsharedOptions : SafeModDeletionScope.Selected)
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), deletion = CreateModDeletionPlanDocumentProjection(build.Document) },
+				() => FormatModDeletionPlanDocument(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "mod", "delete", "validate"))
+		{
+			EnsureModDeletionValidateOptions(invocation.Options);
+			var document = await CliModDeletionPlanArtifacts.ReadDocumentAsync(RequireModDeletionPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliModDeletionPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateModDeletionValidationProjection(validation) },
+				() => FormatModDeletionValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "mod", "delete", "apply"))
+		{
+			EnsureModDeletionApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("ModDeletionApplyConfirmationRequired", "mod delete apply 会删除库内文件与状态；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliModDeletionPlanArtifacts.ReadDocumentAsync(RequireModDeletionPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliModDeletionExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateModDeletionApplyProjection(execution) },
+				() => FormatModDeletionApply(execution));
+			return execution.Success ? 0 : 2;
 		}
 		if (command.Length >= 4 && command[0] == "mod" && command[1] == "delete" && command[2] == "preview")
 		{
@@ -624,9 +670,12 @@ public static class CliApplication
 			EnsureNoPlanOrConfirm(invocation.Options, "import plan");
 			var output = RequireOutput(invocation.Options, "import plan");
 			var inspection = await CliImportPlanArtifacts.InspectAsync(invocation.Command[2]).ConfigureAwait(false);
-			var document = CliImportPlanArtifacts.CreateDocument(inspection);
+			var profileTarget = await ResolveImportProfileTargetAsync(invocation.Options).ConfigureAwait(false);
+			var document = CliImportPlanArtifacts.CreateDocument(inspection, profileTarget);
 			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(document), invocation.Options.Overwrite).ConfigureAwait(false);
-			Emit(invocation.Options, new { ok = true, output = Path.GetFullPath(output), schema = document.Schema, version = document.Version, sourceFingerprint = document.SourceFingerprint, importFingerprint = document.ImportFingerprint }, () => $"已导出可验证导入计划：{Path.GetFullPath(output)}");
+			Emit(invocation.Options,
+				new { ok = true, output = Path.GetFullPath(output), schema = document.Schema, version = document.Version, sourceFingerprint = document.SourceFingerprint, importFingerprint = document.ImportFingerprint, addToProfile = document.AddToProfile },
+				() => $"已导出可验证导入计划：{Path.GetFullPath(output)}" + (document.AddToProfile is null ? string.Empty : $"；导入后将加入配置：{document.AddToProfile.ProfileName}。"));
 			return 0;
 		}
 		if (Matches(command, "import", "validate"))
@@ -680,15 +729,33 @@ public static class CliApplication
 				var result = string.Equals(current.Kind, "archive", StringComparison.Ordinal)
 					? await execution.ImportArchiveAsync(current.EffectivePath).ConfigureAwait(false)
 					: await execution.ImportFolderAsync(current.EffectivePath).ConfigureAwait(false);
+				CliImportProfileAddition? profileAddition = null;
+				try
+				{
+					profileAddition = await AddImportedNodesToProfileAsync(paths, document.AddToProfile, result).ConfigureAwait(false);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+				{
+					Emit(invocation.Options,
+						new
+						{
+							ok = false,
+							status = "post-commit-incomplete",
+							partial = CreateImportExecutionProjection(result, libraryRoot, profileAddition),
+							error = new { code = "ImportProfilePostCommitIncomplete", message = exception.Message },
+						},
+						() => $"Mod 文件已导入，但导入后加入配置未完成：{exception.Message}");
+					return 1;
+				}
 				Emit(invocation.Options,
-					new { ok = true, applied = CreateImportExecutionProjection(result, libraryRoot) },
-					() => FormatImportExecution(result, libraryRoot));
+					new { ok = true, applied = CreateImportExecutionProjection(result, libraryRoot, profileAddition) },
+					() => FormatImportExecution(result, libraryRoot, profileAddition));
 				return 0;
 			}
 			catch (ModImportPostCommitException exception)
 			{
 				Emit(invocation.Options,
-					new { ok = false, status = "post-commit-incomplete", partial = CreateImportExecutionProjection(exception.PartialResult, libraryRoot), error = new { code = "ImportPostCommitIncomplete", message = exception.InnerException?.Message ?? exception.Message } },
+					new { ok = false, status = "post-commit-incomplete", partial = CreateImportExecutionProjection(exception.PartialResult, libraryRoot, null), error = new { code = "ImportPostCommitIncomplete", message = exception.InnerException?.Message ?? exception.Message } },
 					() => $"Mod 文件已导入，但默认选项状态未完成：{exception.InnerException?.Message ?? exception.Message}");
 				return 1;
 			}
@@ -696,7 +763,7 @@ public static class CliApplication
 			{
 				throw new CliUserException("LibraryWriteBusy", $"目标 Mod 库正被另一条 CLI 写入操作占用：{exception.LibraryRoot}。请等待当前操作完成后重试。");
 			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or DirectoryNotFoundException or FileNotFoundException)
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or DirectoryNotFoundException or FileNotFoundException)
 			{
 				throw new CliUserException("ImportApplyFailed", $"导入未完成：{exception.Message}");
 			}
@@ -1142,6 +1209,39 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", "mod delete 不接受 --host、--position 或 --set-active。");
 	}
 
+	private static void EnsureModDeletionPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod delete plan 仅接受 Mod 标识、--manager-root、--library、--with-unshared-options、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureModDeletionValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod delete validate 仅接受 --plan、--manager-root、--library 与 --json。删除范围已固定在计划中。 ");
+		}
+	}
+
+	private static void EnsureModDeletionApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod delete apply 仅接受 --plan、--manager-root、--library、--confirm 与 --json。删除范围已固定在计划中。 ");
+		}
+	}
+
 	private static void EnsureMutationBoundary(CliGlobalOptions options, string command)
 	{
 		if (!options.Confirm)
@@ -1177,6 +1277,122 @@ public static class CliApplication
 		}
 	}
 
+	private static async ValueTask<CliImportProfileTarget?> ResolveImportProfileTargetAsync(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.AddToProfile)) return null;
+		var workspace = CliWorkspace.Open(options);
+		if (string.IsNullOrWhiteSpace(workspace.ManagerRoot))
+		{
+			throw new CliUserException(
+				"ImportProfileManagerRootRequired",
+				"import plan 使用 --add-to-profile 时需要 --manager-root <管理器目录>，以固定可写入的 Mod 库与配置文件。 ");
+		}
+		var state = await workspace.LoadLibraryAsync().ConfigureAwait(false);
+		var selector = options.AddToProfile.Trim();
+		Profile profile;
+		if (string.Equals(selector, "active", StringComparison.OrdinalIgnoreCase))
+		{
+			if (state.Snapshot.ActiveProfileId is not { } activeProfileId
+				|| state.Snapshot.Profiles.FirstOrDefault(item => item.Id == activeProfileId) is not { } activeProfile)
+			{
+				throw new CliUserException(
+					"ImportActiveProfileMissing",
+					"--add-to-profile active 需要当前存在活动配置文件；请先显式创建或选择一个 Profile。 ");
+			}
+			profile = activeProfile;
+		}
+		else
+		{
+			profile = CliProjections.ResolveProfile(state.Snapshot.Profiles, state.Snapshot.ActiveProfileId, selector);
+		}
+
+		return new CliImportProfileTarget(
+			CliProjections.FormatId(profile.Id),
+			profile.Name,
+			profile.Revision);
+	}
+
+	private static async ValueTask<CliImportProfileAddition?> AddImportedNodesToProfileAsync(
+		StoragePaths paths,
+		CliImportProfileTarget? target,
+		ModImportExecutionResult import,
+		CancellationToken cancellationToken = default)
+	{
+		if (target is null) return null;
+		if (!Guid.TryParse(target.ProfileId, out var rawProfileId))
+			throw new InvalidDataException("导入计划中的目标配置文件 ID 无效。");
+
+		var store = new JsonModLibraryStore(paths, allowLegacyMigration: false);
+		var snapshot = await store.TryLoadReadOnlyAsync(cancellationToken).ConfigureAwait(false)
+			?? throw new InvalidDataException("导入完成后无法重新读取 Mod 库，不能安全加入配置文件。");
+		var profileId = new ProfileId(rawProfileId);
+		var profile = snapshot.Profiles.FirstOrDefault(item => item.Id == profileId)
+			?? throw new InvalidDataException($"导入后目标配置文件已不存在：{target.ProfileName}。");
+		if (!string.Equals(profile.Name, target.ProfileName, StringComparison.Ordinal)
+			|| profile.Revision != target.ProfileRevision)
+		{
+			throw new InvalidDataException("导入期间目标配置文件已变化；已保留导入内容，但拒绝把它加入可能不同的配置文件。");
+		}
+
+		var existing = profile.Entries.Select(entry => entry.NodeId).ToHashSet();
+		var deployable = new List<ModNodeId>();
+		var skipped = new List<string>();
+		foreach (var nodeId in import.AddedNodeIds.Distinct())
+		{
+			if (!snapshot.Nodes.TryGetValue(nodeId, out var node)
+				|| existing.Contains(nodeId)
+				|| !CanJoinProfile(node))
+			{
+				skipped.Add(CliProjections.FormatId(nodeId));
+				continue;
+			}
+			deployable.Add(nodeId);
+		}
+
+		if (deployable.Count == 0)
+		{
+			return new CliImportProfileAddition(
+				CliProjections.FormatId(profile.Id),
+				profile.Name,
+				profile.Revision,
+				profile.Revision,
+				Array.Empty<string>(),
+				skipped);
+		}
+
+		var mutation = CoreServices.CreateProfileMutationService().AddEntries(snapshot, profile.Id, deployable);
+		if (!mutation.Succeeded)
+			throw new InvalidDataException($"导入内容无法加入配置文件：{mutation.Message ?? mutation.Failure?.ToString() ?? "未知原因"}。");
+		if (mutation.Changed)
+			await store.SaveAsync(mutation.Snapshot, cancellationToken).ConfigureAwait(false);
+		var persisted = mutation.Changed
+			? await store.TryLoadReadOnlyAsync(cancellationToken).ConfigureAwait(false)
+			: snapshot;
+		if (persisted is null)
+			throw new InvalidDataException("保存后无法重新读取 Mod 库。");
+		var persistedProfile = persisted.Profiles.FirstOrDefault(item => item.Id == profile.Id)
+			?? throw new InvalidDataException("保存后无法重新定位目标配置文件。");
+		return new CliImportProfileAddition(
+			CliProjections.FormatId(profile.Id),
+			persistedProfile.Name,
+			profile.Revision,
+			persistedProfile.Revision,
+			deployable.Select(CliProjections.FormatId).ToArray(),
+			skipped);
+	}
+
+	private static bool CanJoinProfile(ModNode node)
+		=> node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.ReShade
+			&& (node.Metadata.Kind == ModNodeKind.ReShade || node.PatchGroups.Count != 0);
+
+	private sealed record CliImportProfileAddition(
+		string ProfileId,
+		string ProfileName,
+		long PreviousRevision,
+		long CurrentRevision,
+		IReadOnlyList<string> AddedNodeIds,
+		IReadOnlyList<string> SkippedNodeIds);
+
 	private static string RequireOutput(CliGlobalOptions options, string command)
 	{
 		if (string.IsNullOrWhiteSpace(options.Output))
@@ -1188,6 +1404,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("ImportPlanRequired", "请通过 --plan <计划文件.json> 提供已导出的导入计划。");
+		return options.Plan;
+	}
+
+	private static string RequireModDeletionPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("ModDeletionPlanRequired", "请通过 --plan <删除计划.json> 提供已导出的删除计划。 ");
 		return options.Plan;
 	}
 
@@ -1687,11 +1910,16 @@ public static class CliApplication
 				librarySnapshotExists = validation.Target.LibrarySnapshotExists,
 				runningManagerProcessIds = validation.Target.RunningManagerProcessIds,
 			},
+			addToProfile = validation.Document.AddToProfile,
+			resolvedProfile = validation.ResolvedProfile,
 			currentImport = validation.CurrentInspection is null ? null : CliProjections.CreateImportPlanProjection(validation.CurrentInspection.Import),
 			issues = validation.Issues.Select(issue => new { code = issue.Code, message = issue.Message, isBlocking = issue.IsBlocking }).ToArray(),
 		};
 
-	private static object CreateImportExecutionProjection(ModImportExecutionResult result, string libraryRoot)
+	private static object CreateImportExecutionProjection(
+		ModImportExecutionResult result,
+		string libraryRoot,
+		CliImportProfileAddition? profileAddition)
 		=> new
 		{
 			libraryRoot,
@@ -1703,6 +1931,7 @@ public static class CliApplication
 			hasOptionPathConflicts = result.HasOptionPathConflicts,
 			cacheInvalidation = result.CacheInvalidationStatus.ToString().ToLowerInvariant(),
 			cacheInvalidationFailedNodeIds = result.CacheInvalidationFailedNodeIds.Select(CliProjections.FormatId).ToArray(),
+			profileAddition,
 			derivedInformation = "not-started",
 			deployment = "not-performed",
 		};
@@ -1924,6 +2153,44 @@ public static class CliApplication
 			result.PostCommitError,
 		};
 
+	private static object CreateModDeletionPlanDocumentProjection(CliModDeletionPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			document.InputFingerprint,
+			isReady = document.IsReady,
+			request = new
+			{
+				nodeIds = document.Request.NodeIds,
+				scope = document.Request.Scope.ToString().ToLowerInvariant(),
+			},
+			target = document.Target,
+			deletion = CreateDeletionPlanProjection(document.Deletion),
+			inputs = document.Inputs,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateModDeletionValidationProjection(CliModDeletionValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateModDeletionPlanDocumentProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateModDeletionApplyProjection(CliModDeletionApplyResult execution)
+		=> new
+		{
+			execution.Success,
+			deletion = execution.Deletion is null ? null : CreateDeletionExecutionProjection(execution.Deletion),
+			diagnostics = execution.Diagnostics,
+			deployment = "not-performed",
+		};
+
 	private static string FormatImportValidation(CliImportValidationResult validation)
 	{
 		var status = validation.IsValid ? "导入验证通过。" : "导入验证未通过。";
@@ -2105,7 +2372,10 @@ public static class CliApplication
 			: $"部署被拒绝或失败：{string.Join("；", errors.Take(5).Select(error => $"[{error.Code}] {error.Message}"))}";
 	}
 
-	private static string FormatImportExecution(ModImportExecutionResult result, string libraryRoot)
+	private static string FormatImportExecution(
+		ModImportExecutionResult result,
+		string libraryRoot,
+		CliImportProfileAddition? profileAddition)
 		=> $"已导入：{result.SourceDisplayName}{Environment.NewLine}目标 Mod 库：{libraryRoot}{Environment.NewLine}新增 Mod：{result.AddedNodeIds.Count}；更新 Mod：{result.ChangedNodeIds.Count}；初始化选项状态：{result.InitializedOptionActivationCount}。"
 			+ (result.HasOptionPathConflicts
 				? $"{Environment.NewLine}检测到选项目录冲突：仅共享 Patch 内容未默认选择；其余选项已按通常规则初始化。"
@@ -2113,6 +2383,9 @@ public static class CliApplication
 			+ (result.CacheInvalidationStatus == ImportCacheInvalidationStatus.Completed
 				? string.Empty
 				: $"{Environment.NewLine}缓存失效状态：{result.CacheInvalidationStatus}；失败节点：{result.CacheInvalidationFailedNodeIds.Count}。可在下次管理器同步时重试。")
+			+ (profileAddition is null
+				? string.Empty
+				: $"{Environment.NewLine}已加入配置：{profileAddition.ProfileName}；新增 {profileAddition.AddedNodeIds.Count} 个可部署 Mod，跳过 {profileAddition.SkippedNodeIds.Count} 个非配置条目。")
 			+ $"{Environment.NewLine}未自动部署。";
 
 	private static string FormatDeletionPlan(SafeModDeletionPlan plan)
@@ -2141,6 +2414,37 @@ public static class CliApplication
 		};
 	}
 
+	private static string FormatModDeletionPlanDocument(CliModDeletionPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Where(diagnostic => diagnostic.Blocking).ToArray();
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出删除计划：{outputPath}",
+			$"请求删除：{document.Request.NodeIds.Count} 个 Mod；实际节点：{document.Deletion.LibraryNodeRemovals.Count}；物理目录：{document.Inputs.Storage.Count}。",
+			$"范围：{(document.Request.Scope == SafeModDeletionScope.WithUnsharedOptions ? "包含无共享选项后代" : "仅所选节点")}；阻断项：{blocking.Length}。",
+			blocking.Length == 0 ? "计划可执行；仍需 validate 后再 apply --confirm。" : string.Join(Environment.NewLine, blocking.Take(5).Select(item => $"- [{item.Code}] {item.Message}")),
+		]);
+	}
+
+	private static string FormatModDeletionValidation(CliModDeletionValidationResult validation)
+	{
+		var status = validation.IsValid ? "删除计划验证通过。" : "删除计划验证未通过。";
+		var diagnostics = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(item => $"- [{item.Code}] {item.Message}"));
+		return $"{status}{Environment.NewLine}{diagnostics}";
+	}
+
+	private static string FormatModDeletionApply(CliModDeletionApplyResult execution)
+	{
+		if (execution.Success && execution.Deletion is not null)
+			return FormatDeletionExecution(execution.Deletion);
+		var errors = execution.Diagnostics.Where(item => item.Blocking).Take(5).ToArray();
+		return errors.Length == 0
+			? "删除计划未完成；请查看 JSON 结果。"
+			: $"删除计划被拒绝或失败：{string.Join("；", errors.Select(item => $"[{item.Code}] {item.Message}"))}";
+	}
+
 	private const string HelpText = """
 HD2 Mod Manager 命令行
 
@@ -2161,6 +2465,9 @@ HD2 Mod Manager 命令行
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod delete plan <Mod GUID或唯一前缀> [...] [--with-unshared-options] --manager-root <管理器目录> --output deletion-plan.json --json
+	  hd2mod mod delete validate --plan deletion-plan.json --manager-root <管理器目录> --json
+	  hd2mod mod delete apply --plan deletion-plan.json --manager-root <管理器目录> --confirm --json
 	  hd2mod mod delete preview <Mod GUID或唯一前缀> [...] [--with-unshared-options] --library <Mod库目录> --json
 	  hd2mod mod delete <Mod GUID或唯一前缀> [...] [--with-unshared-options] --manager-root <管理器目录> --confirm --json
 	  hd2mod option show <Option GUID或唯一前缀> --library <Mod库目录> --json
@@ -2201,7 +2508,7 @@ HD2 Mod Manager 命令行
 	  hd2mod patch repair validate --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod patch repair apply --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外目录> --confirm --json
 	  hd2mod import inspect <文件夹、压缩包或文件> --json
-	  hd2mod import plan <文件夹、压缩包或文件> --output import-plan.json
+	  hd2mod import plan <文件夹、压缩包或文件> [--add-to-profile <名称|GUID|active>] --output import-plan.json
 	  hd2mod import validate --plan import-plan.json --manager-root <管理器目录> --json
 	  hd2mod import apply --plan import-plan.json --manager-root <管理器目录> --confirm --json
 	  hd2mod context export --library <Mod库目录> --output context.json
@@ -2219,11 +2526,12 @@ HD2 Mod Manager 命令行
 	  --plan <文件>           import/deploy/patch validate 与 apply 所需的计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
 	  --host <GUID或前缀>      Option 操作的明确主体，或 decoration package plan 的明确目标主体。
+	  --add-to-profile <目标>   import plan 专用；将目标配置身份与版本固定到导入计划，apply 只加入可部署条目，不自动部署。
 	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
 	  --set-active              创建配置时同时将它设为活动配置。
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并、装饰外部包和 Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。mod delete plan 会冻结库状态、激活状态与待删目录内容，validate/apply 会重新确认。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。import --add-to-profile 仅加入明确计划中的配置，不自动部署。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并、装饰外部包和 Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
 """;
 }

@@ -18,10 +18,11 @@ public sealed record CliImportPlanDocument(
 	CliImportSource Source,
 	CliImportFingerprint SourceFingerprint,
 	CliImportFingerprint ImportFingerprint,
-	ImportPlan Import)
+	ImportPlan Import,
+	CliImportProfileTarget? AddToProfile)
 {
 	public const string CurrentSchema = "hd2mod.import-plan";
-	public const int CurrentVersion = 3;
+	public const int CurrentVersion = 4;
 }
 
 public sealed record CliImportSource(
@@ -34,6 +35,16 @@ public sealed record CliImportFingerprint(
 	string Value,
 	int FileCount,
 	long TotalBytes);
+
+/// <summary>
+/// A profile target frozen into an import plan. The CLI deliberately records
+/// identity and revision rather than a display selector so a later apply can
+/// reject profile drift instead of adding content to a different profile.
+/// </summary>
+public sealed record CliImportProfileTarget(
+	string ProfileId,
+	string ProfileName,
+	long ProfileRevision);
 
 public sealed record CliImportInspection(
 	CliImportSource Source,
@@ -94,7 +105,9 @@ public static class CliImportPlanArtifacts
 		}
 	}
 
-	public static CliImportPlanDocument CreateDocument(CliImportInspection inspection)
+	public static CliImportPlanDocument CreateDocument(
+		CliImportInspection inspection,
+		CliImportProfileTarget? addToProfile = null)
 	{
 		ArgumentNullException.ThrowIfNull(inspection);
 		return new CliImportPlanDocument(
@@ -104,7 +117,8 @@ public static class CliImportPlanArtifacts
 			inspection.Source,
 			inspection.SourceFingerprint,
 			inspection.ImportFingerprint,
-			inspection.Import);
+			inspection.Import,
+			addToProfile);
 	}
 
 	public static async ValueTask<CliImportPlanDocument> ReadDocumentAsync(string path, CancellationToken cancellationToken = default)
@@ -135,6 +149,13 @@ public static class CliImportPlanArtifacts
 				|| document.Import is null)
 			{
 				throw new CliUserException("ImportPlanUnreadable", "导入计划缺少来源、指纹或导入树信息。");
+			}
+			if (document.AddToProfile is not null
+				&& (!Guid.TryParse(document.AddToProfile.ProfileId, out _)
+					|| string.IsNullOrWhiteSpace(document.AddToProfile.ProfileName)
+					|| document.AddToProfile.ProfileRevision < 0))
+			{
+				throw new CliUserException("ImportPlanUnreadable", "导入计划中的目标配置文件无效。");
 			}
 			return document;
 		}

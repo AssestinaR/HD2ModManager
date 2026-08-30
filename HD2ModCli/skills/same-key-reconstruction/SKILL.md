@@ -5,15 +5,13 @@ description: Inspect and output a fixed-source Same-key Canonical Patch reconstr
 
 # HD2 Mod Same-key Reconstruction
 
-Use this only to produce a new candidate Patch for one registered Mod and one explicitly selected base Patch file. It is not an in-place repair, import, or deployment workflow.
+Use only to produce a candidate Patch for one registered Mod and one explicit source base Patch filename. It is not an in-place repair, import, or deployment workflow.
 
 ```powershell
-hd2mod patch repair inspect <mod-guid> [base.patch_N] --manager-root "<manager>" --game-data "<game-data>" --json
-hd2mod patch repair plan <mod-guid> <base.patch_N> --manager-root "<manager>" --game-data "<game-data>" --output .\same-key.plan.json --json
-hd2mod patch repair validate --plan .\same-key.plan.json --manager-root "<manager>" --game-data "<game-data>" --json
-hd2mod patch repair apply --plan .\same-key.plan.json --manager-root "<manager>" --game-data "<game-data>" --output .\output\same-key --confirm --json
+hd2mod patch repair inspect <mod-id> [base.patch_N] --manager-root "<manager>" --library "<library>" --game-data "<data>" --json
+hd2mod patch repair plan <mod-id> <base.patch_N> --manager-root "<manager>" --library "<library>" --game-data "<data>" --output same-key-plan.json --json
+hd2mod patch repair validate --plan same-key-plan.json --manager-root "<manager>" --library "<library>" --game-data "<data>" --json
+hd2mod patch repair apply --plan same-key-plan.json --manager-root "<manager>" --library "<library>" --game-data "<data>" --output "<new-external-directory>" --confirm --json
 ```
 
-If a Mod has multiple base Patch files, first inspect without the optional file name and choose one from `availableSourcePatchFileNames`. Never guess or pass a path: the command accepts only a base Patch filename belonging to that Mod.
-
-`validate` and `apply` recheck the source Patch family, GameData index fingerprint, and Core's Canonical eligibility. Treat a blocking diagnostic as a stop condition. The result stays outside the library; use the normal import and deployment Skills separately if it should later be managed or used.
+For multi-Patch Mods, inspect without the optional filename and choose a listed `availableSourcePatchFileNames` value; do not pass a path. Validation and apply recheck source-family and GameData fingerprints plus Canonical eligibility. The result remains outside the library; import and deploy it separately if desired.

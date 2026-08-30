@@ -5,14 +5,13 @@ description: Inspect source Units and publish a new external, importable Decorat
 
 # HD2 Mod Decoration Package
 
-Use this Skill to generate a portable Decoration package from one source Mod for one explicit target host. It only writes a new external package directory; it does not import it, enable it, rebuild `Overwrite`, or deploy GameData.
+Use this to make a portable Decoration package from one source Mod for one explicit host. It writes a new external package only; it does not import, enable, rebuild `Overwrite`, or deploy GameData.
 
 ```powershell
 hd2mod decoration inspect source <source-id> --manager-root "<manager>" --library "<library>" --game-data "<data>" --json
-hd2mod decoration package plan <source-id> --host <target-host-id> --manager-root "<manager>" --library "<library>" --game-data "<data>" --output decoration-plan.json --json
+hd2mod decoration package plan <source-id> --host <host-id> --manager-root "<manager>" --library "<library>" --game-data "<data>" --output decoration-plan.json --json
 hd2mod decoration package validate --plan decoration-plan.json --manager-root "<manager>" --library "<library>" --game-data "<data>" --json
 hd2mod decoration package apply --plan decoration-plan.json --manager-root "<manager>" --library "<library>" --game-data "<data>" --output "<new-external-directory>" --confirm --json
-hd2mod decoration show <imported-decoration-id> --manager-root "<manager>" --library "<library>" --json
 ```
 
-Review `selections` and `attachment` in the plan before validating. The plan fixes source/target IDs and fingerprints every source base Patch plus `.stream` and `.gpu_resources`; validation rejects drift. Output must be a new directory outside the Mod library, GameData, and game root. Afterwards use `safe-import` to bring the generated package into the library, then use `decoration show` to inspect its declared targets and activation state. Activation and generated `Overwrite` rebuilding are intentionally separate capabilities.
+Review `selections` and `attachment` before validation; IDs must come from the inspect/plan JSON. Validation rejects source Patch-family and sidecar drift. Apply requires a fresh directory outside the Mod library and game directory. Import the result later with `safe-import`; `decoration show` only inspects an already imported package.

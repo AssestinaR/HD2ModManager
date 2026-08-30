@@ -1,11 +1,11 @@
 ---
 name: hd2mod-cli-router
-description: Route an Agent to one small HD2 Mod Manager CLI Skill.
+description: Discover and export one narrowly scoped HD2 Mod Manager CLI Skill for the requested task.
 ---
 
 # HD2 Mod CLI Router
 
-Discover the shipped capability Skills, then export only the one required:
+Discover the current command surface, then export only the needed capability Skill:
 
 ```powershell
 hd2mod capabilities --json
@@ -13,17 +13,14 @@ hd2mod agent skills list --json
 hd2mod agent skills export <skill-name> --output .\.agents\skills
 ```
 
-- `library-inspection` — read-only library, Option and Profile inspection.
-- `library-synchronization` — reviewed reconciliation of library directories and `library.json` Patch facts.
-- `decoration-package` — audited source-unit selection and external importable decoration-package output.
-- `safe-import` — reviewed source import.
-- `mod-metadata` — Mod name and notes.
-- `option-management` — direct Option state and order for one host, or all strictly validated direct hosts.
-- `safe-library-deletion` — previewed relationship-aware deletion.
-- `profile-management` — Profile lifecycle and logical order.
-- `safe-deployment` — audited GameData deployment or tracked deactivation.
-- `patch-resource-repackaging` — audited whole-entry resource selection into a standalone Patch.
-- `helmet-to-armor-merge` — audited Armor/Any Helmet merge into a standalone Patch.
-- `same-key-reconstruction` — audited Canonical reconstruction of one fixed source Patch into a standalone candidate.
+Use `agent skills export --output <directory>` to export all capability Skills. `agent skill --output SKILL.md` is only the compatibility router export.
 
-Do not load every Skill by default. `mod-management` is a legacy aggregate only. `safe-deployment` is the only Skill that authorizes GameData writes. The standalone Patch Skills only write new library-external output directories; none authorizes in-place Mod replacement, auto-import/deployment, or arbitrary Patch-byte editing.
+- Read state: `library-inspection`.
+- Reconcile library facts: `library-synchronization`.
+- Import: `safe-import`.
+- Rename, Options, deletion, or Profiles: `mod-metadata`, `option-management`, `safe-library-deletion`, `profile-management`.
+- Create a decoration package: `decoration-package`.
+- Deploy or deactivate GameData: `safe-deployment`.
+- Produce a standalone Patch: `patch-resource-repackaging`, `helmet-to-armor-merge`, or `same-key-reconstruction`.
+
+Use `--json` for Agent-facing calls. IDs are explicit GUIDs or unique prefixes; never guess an ambiguous selector. Plan export writes only its named output, validation is read-only, and every mutating `apply` requires explicit `--confirm`. `safe-deployment` is the only Skill that authorizes GameData writes. The standalone Patch Skills output fresh external directories and do not import, enable, or deploy their results. `mod-management` is a legacy aggregate pointer, not a preferred workflow.

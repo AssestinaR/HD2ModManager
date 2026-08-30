@@ -5,13 +5,15 @@ description: Preview and delete explicit Mod-library nodes with Option, Profile,
 
 # HD2 Mod Safe Library Deletion
 
-Always preview first. Do not bypass a blocked result by editing library JSON manually.
+Use the plan workflow for Agent-driven deletion. Do not bypass a blocked result by editing library JSON.
 
 ```powershell
-hd2mod mod delete preview <mod-id> [...] --library "<library>" --json
-hd2mod mod delete preview <mod-id> [...] --with-unshared-options --library "<library>" --json
-hd2mod mod delete <mod-id> [...] --manager-root "<manager>" --confirm --json
-hd2mod mod delete <mod-id> [...] --with-unshared-options --manager-root "<manager>" --confirm --json
+hd2mod mod delete plan <mod-id> [...] --manager-root "<manager>" --output deletion-plan.json --json
+hd2mod mod delete validate --plan deletion-plan.json --manager-root "<manager>" --json
+hd2mod mod delete apply --plan deletion-plan.json --manager-root "<manager>" --confirm --json
+
+# Optional recursive scope; it is frozen into the plan.
+hd2mod mod delete plan <mod-id> [...] --with-unshared-options --manager-root "<manager>" --output deletion-plan.json --json
 ```
 
-`--with-unshared-options` removes recursive Options only when no surviving real host owns them. Active decorations and temporary helmet-to-armor output block deletion. It never deploys automatically.
+The plan fingerprints the library, Profiles, activation files, and every target storage directory. Validate/apply reject drift. `--with-unshared-options` removes recursive Options only when no surviving real host owns them. Active Decorations and managed temporary helmet-to-armor output block deletion. This capability never deploys GameData. `mod delete preview` and direct `mod delete` remain compatibility shortcuts, not the preferred Agent workflow.
