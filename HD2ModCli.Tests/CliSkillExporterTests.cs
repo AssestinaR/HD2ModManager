@@ -21,6 +21,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "cross-armor-transfer", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "profile-alignment", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-analysis", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -88,6 +89,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("profile align export", content, StringComparison.Ordinal);
 		Assert.Contains("profile align apply", content, StringComparison.Ordinal);
 		Assert.Contains("profiles.json", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void PatchAnalysisSkill_DescribesDirectNoCacheInspection()
+	{
+		var content = CliSkillCatalog.GetContent("patch-analysis");
+
+		Assert.Contains("mod analyze", content, StringComparison.Ordinal);
+		Assert.Contains("PatchGroupAnalyzer", content, StringComparison.Ordinal);
+		Assert.Contains("mod-facts.sqlite", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

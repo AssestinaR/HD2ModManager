@@ -348,6 +348,15 @@ public static class CliApplication
 			Emit(invocation.Options, new { mod = CliProjections.CreateModProjection(node, workspace, state, graph), issues = state.ReadIssues }, () => FormatMod(node, state.Snapshot));
 			return 0;
 		}
+		if (command.Length == 3 && command[0] == "mod" && command[1] == "analyze")
+		{
+			EnsureModAnalyzeOptions(invocation.Options);
+			var analysis = await CliModAnalysis.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command[2]).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = analysis.IsReady, analysis },
+				() => FormatModAnalysis(analysis));
+			return analysis.IsReady ? 0 : 2;
+		}
 		if (command.Length == 4 && command[0] == "mod" && command[1] == "image" && command[2] == "show")
 		{
 			EnsureModImageShowOptions(invocation.Options);
@@ -1806,6 +1815,18 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --host、--position、--set-active 或 --with-unshared-options。");
 	}
 
+	private static void EnsureModAnalyzeOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod analyze 仅接受 Mod 标识、--manager-root/--library 与 --json；它直接只读扫描 Patch，不会写缓存、SQLite、Mod 库或 GameData。 ");
+		}
+	}
+
 	private static void EnsureModImageShowOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -2241,6 +2262,19 @@ public static class CliApplication
 			$"直接选项：{graph.GetDirectOptions(node.Id).Count}",
 			$"父选项：{graph.GetParents(node.Id).Count}",
 		]);
+	}
+
+	private static string FormatModAnalysis(CliModAnalysisDocument analysis)
+	{
+		var entries = analysis.PatchGroups.Sum(group => group.Entries.Count);
+		var references = analysis.PatchGroups.Sum(group => group.References.Count);
+		var units = analysis.PatchGroups.Sum(group => group.Entries.Count(entry => entry.Unit is not null));
+		var blocking = analysis.Diagnostics.Count(diagnostic => diagnostic.Blocking)
+			+ analysis.PatchGroups.Sum(group => group.Diagnostics.Count(diagnostic => diagnostic.Blocking));
+		return $"Patch 深度分析：{analysis.Source.Name}；Patch 组 {analysis.PatchGroups.Count}；条目 {entries}；引用 {references}；Unit {units}；阻断诊断 {blocking}。"
+			+ (analysis.IsReady
+				? " 未写入 Mod 库、缓存、SQLite 或 GameData。"
+				: " 返回了可读的部分结果；请查看 JSON 中的 diagnostics。");
 	}
 
 	private static object CreateModImageInspectionProjection(CliModImageInspection inspection)
@@ -4018,7 +4052,8 @@ HD2 Mod Manager 命令行
 	  hd2mod decoration package validate --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod decoration package apply --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
 	  hd2mod mod list --library <Mod库目录> --json
-  hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
+	  hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
+	  hd2mod mod analyze <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json

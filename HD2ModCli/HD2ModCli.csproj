@@ -31,6 +31,7 @@
     <EmbeddedResource Include="skills\mod-management\SKILL.md" LogicalName="HD2ModCli.Skill.mod-management" />
     <EmbeddedResource Include="skills\mod-metadata\SKILL.md" LogicalName="HD2ModCli.Skill.mod-metadata" />
 	<EmbeddedResource Include="skills\mod-media\SKILL.md" LogicalName="HD2ModCli.Skill.mod-media" />
+	<EmbeddedResource Include="skills\patch-analysis\SKILL.md" LogicalName="HD2ModCli.Skill.patch-analysis" />
     <EmbeddedResource Include="skills\option-management\SKILL.md" LogicalName="HD2ModCli.Skill.option-management" />
     <EmbeddedResource Include="skills\safe-library-deletion\SKILL.md" LogicalName="HD2ModCli.Skill.safe-library-deletion" />
     <EmbeddedResource Include="skills\profile-management\SKILL.md" LogicalName="HD2ModCli.Skill.profile-management" />
