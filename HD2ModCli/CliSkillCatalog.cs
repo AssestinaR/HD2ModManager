@@ -34,6 +34,7 @@ public static class CliSkillCatalog
 		new("safe-deployment", "hd2mod-safe-deployment", "以 plan → validate → apply 安全部署或停用已证明归属的 Patch。", "HD2ModCli.Skill.safe-deployment"),
 		new("patch-resource-repackaging", "hd2mod-patch-resource-repackaging", "审阅并选择完整 AssetKey Payload，输出独立 Patch，不修改来源或部署。", "HD2ModCli.Skill.patch-resource-repackaging"),
 		new("helmet-to-armor-merge", "hd2mod-helmet-to-armor-merge", "审阅完整 Armor/Any Helmet 集合并输出独立的头盔合并 Patch。", "HD2ModCli.Skill.helmet-to-armor-merge"),
+		new("host-derived-overwrite", "hd2mod-host-derived-overwrite", "安全启停装饰或临时头盔合并，并重建主体的单一管理器 Overwrite。", "HD2ModCli.Skill.host-derived-overwrite"),
 		new("same-key-reconstruction", "hd2mod-same-key-reconstruction", "固定一个来源 Patch，审阅并输出 Same-key Canonical 重构候选。", "HD2ModCli.Skill.same-key-reconstruction"),
 		new("mod-management", "hd2mod-mod-management", "兼容聚合 Skill：请优先使用更窄的 mod-metadata、option-management 或 safe-library-deletion。", "HD2ModCli.Skill.mod-management", IsLegacy: true),
 	];

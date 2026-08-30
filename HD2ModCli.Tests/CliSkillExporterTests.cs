@@ -7,7 +7,7 @@ namespace HD2ModCli.Tests;
 public sealed class CliSkillExporterTests
 {
 	[Fact]
-	public void CapabilitySkills_IncludeLibrarySynchronizationDecorationDeploymentAndPatchResourceRepackaging()
+	public void CapabilitySkills_IncludeLibrarySynchronizationDerivedOverwriteDecorationDeploymentAndPatchResourceRepackaging()
 	{
 		var skills = CliSkillCatalog.ListCapabilitySkills();
 
@@ -15,6 +15,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "library-synchronization", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "decoration-package", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-resource-repackaging", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "host-derived-overwrite", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
 	}
 
@@ -53,6 +54,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("patch repair inspect", content, StringComparison.Ordinal);
 		Assert.Contains("availableSourcePatchFileNames", content, StringComparison.Ordinal);
 		Assert.Contains("patch repair apply", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void HostDerivedOverwriteSkill_DescribesPlanGatedStateChanges()
+	{
+		var content = CliSkillCatalog.GetContent("host-derived-overwrite");
+
+		Assert.Contains("host-derived plan decoration", content, StringComparison.Ordinal);
+		Assert.Contains("host-derived apply", content, StringComparison.Ordinal);
+		Assert.Contains("Overwrite", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

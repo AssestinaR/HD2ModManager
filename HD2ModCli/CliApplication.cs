@@ -612,6 +612,108 @@ public static class CliApplication
 				() => FormatHelmetMergeExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 3 && command[0] == "host-derived" && command[1] == "inspect")
+		{
+			EnsureHostDerivedInspectOptions(invocation.Options);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var build = await CliHostDerivedOverwritePlanArtifacts
+				.BuildAsync(workspace, CreateHostDerivedRequest(
+					CliHostDerivedOperation.Rebuild,
+					CliHostDerivedAction.Rebuild,
+					invocation.Command.Skip(2).ToArray(),
+					Array.Empty<string>(),
+					false,
+					workspace.GameDataRoot))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = CreateHostDerivedPlanProjection(build.Document) },
+				() => FormatHostDerivedInspection(build.Document));
+			return 0;
+		}
+		if (command.Length >= 5 && command[0] == "host-derived" && command[1] == "plan" && command[2] == "decoration")
+		{
+			var allDeclaredHosts = command[3] is "enable-all" or "disable-all";
+			var action = ParseHostDerivedToggleAction(command[3], "装饰");
+			EnsureHostDerivedDecorationPlanOptions(invocation.Options, allDeclaredHosts);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var build = await CliHostDerivedOverwritePlanArtifacts
+				.BuildAsync(workspace, CreateHostDerivedRequest(
+					CliHostDerivedOperation.Decoration,
+					action,
+					allDeclaredHosts ? Array.Empty<string>() : [RequireHostDerivedDecorationHost(invocation.Options)],
+					invocation.Command.Skip(4).ToArray(),
+					allDeclaredHosts,
+					workspace.GameDataRoot))
+				.ConfigureAwait(false);
+			var output = RequireOutput(invocation.Options, "host-derived plan decoration");
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), hostDerived = CreateHostDerivedPlanProjection(build.Document) },
+				() => FormatHostDerivedPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (command.Length >= 5 && command[0] == "host-derived" && command[1] == "plan" && command[2] == "helmet")
+		{
+			EnsureHostDerivedHelmetPlanOptions(invocation.Options);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var build = await CliHostDerivedOverwritePlanArtifacts
+				.BuildAsync(workspace, CreateHostDerivedRequest(
+					CliHostDerivedOperation.Helmet,
+					ParseHostDerivedToggleAction(command[3], "头盔合并"),
+					invocation.Command.Skip(4).ToArray(),
+					Array.Empty<string>(),
+					false,
+					workspace.GameDataRoot))
+				.ConfigureAwait(false);
+			var output = RequireOutput(invocation.Options, "host-derived plan helmet");
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), hostDerived = CreateHostDerivedPlanProjection(build.Document) },
+				() => FormatHostDerivedPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (command.Length >= 4 && command[0] == "host-derived" && command[1] == "plan" && command[2] == "rebuild")
+		{
+			EnsureHostDerivedRebuildPlanOptions(invocation.Options);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var build = await CliHostDerivedOverwritePlanArtifacts
+				.BuildAsync(workspace, CreateHostDerivedRequest(
+					CliHostDerivedOperation.Rebuild,
+					CliHostDerivedAction.Rebuild,
+					invocation.Command.Skip(3).ToArray(),
+					Array.Empty<string>(),
+					false,
+					workspace.GameDataRoot))
+				.ConfigureAwait(false);
+			var output = RequireOutput(invocation.Options, "host-derived plan rebuild");
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), hostDerived = CreateHostDerivedPlanProjection(build.Document) },
+				() => FormatHostDerivedPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "host-derived", "validate"))
+		{
+			EnsureHostDerivedValidateOptions(invocation.Options);
+			var document = await CliHostDerivedOverwritePlanArtifacts.ReadDocumentAsync(RequireHostDerivedPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliHostDerivedOverwritePlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateHostDerivedValidationProjection(validation) },
+				() => FormatHostDerivedValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "host-derived", "apply"))
+		{
+			EnsureHostDerivedApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("HostDerivedApplyConfirmationRequired", "host-derived apply 会重建库内主体的 Overwrite 并提交相应状态；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliHostDerivedOverwritePlanArtifacts.ReadDocumentAsync(RequireHostDerivedPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliHostDerivedOverwriteExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateHostDerivedExecutionProjection(execution) },
+				() => FormatHostDerivedExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length is 4 or 5 && command[0] == "patch" && command[1] == "repair" && command[2] == "inspect")
 		{
 			EnsureSameKeyInspectOptions(invocation.Options);
@@ -1089,6 +1191,79 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureHostDerivedInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"host-derived inspect 仅接受主体标识、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureHostDerivedDecorationPlanOptions(CliGlobalOptions options, bool allDeclaredHosts)
+	{
+		EnsureHostDerivedPlanCommonOptions(options, "host-derived plan decoration");
+		if (allDeclaredHosts)
+		{
+			if (!string.IsNullOrWhiteSpace(options.Host))
+			{
+				throw new CliUserException(
+					"HostDerivedDecorationTargetAmbiguous",
+					"host-derived plan decoration enable-all/disable-all 不能同时提供 --host。 ");
+			}
+			return;
+		}
+		_ = RequireHostDerivedDecorationHost(options);
+	}
+
+	private static void EnsureHostDerivedHelmetPlanOptions(CliGlobalOptions options)
+	{
+		EnsureHostDerivedPlanCommonOptions(options, "host-derived plan helmet");
+		if (!string.IsNullOrWhiteSpace(options.Host))
+			throw new CliUserException("CommandOptionNotSupported", "host-derived plan helmet 使用位置参数指定主体，不接受 --host。 ");
+	}
+
+	private static void EnsureHostDerivedRebuildPlanOptions(CliGlobalOptions options)
+	{
+		EnsureHostDerivedPlanCommonOptions(options, "host-derived plan rebuild");
+		if (!string.IsNullOrWhiteSpace(options.Host))
+			throw new CliUserException("CommandOptionNotSupported", "host-derived plan rebuild 使用位置参数指定主体，不接受 --host。 ");
+	}
+
+	private static void EnsureHostDerivedPlanCommonOptions(CliGlobalOptions options, string command)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{command} 仅接受目标标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureHostDerivedValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"host-derived validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureHostDerivedApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"host-derived apply 仅接受 --plan、--manager-root、--library、--game-data、--confirm 与 --json。 ");
+		}
+	}
+
 	private static void EnsureSameKeyInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -1258,6 +1433,42 @@ public static class CliApplication
 			throw new CliUserException("OptionHostRequired", "选项操作必须显式提供 --host <主体 Mod GUID 或唯一前缀>。");
 		return options.Host;
 	}
+
+	private static string RequireHostDerivedDecorationHost(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Host))
+		{
+			throw new CliUserException(
+				"HostDerivedDecorationHostRequired",
+				"host-derived plan decoration enable/disable 必须显式提供 --host <主体 Mod GUID 或唯一前缀>。 ");
+		}
+		return options.Host;
+	}
+
+	private static CliHostDerivedAction ParseHostDerivedToggleAction(string rawAction, string subject)
+		=> rawAction.Trim().ToLowerInvariant() switch
+		{
+			"enable" or "enable-all" => CliHostDerivedAction.Enable,
+			"disable" or "disable-all" => CliHostDerivedAction.Disable,
+			_ => throw new CliUserException(
+				"HostDerivedActionInvalid",
+				$"{subject}操作只能使用 enable、disable（装饰也可使用 enable-all、disable-all）。"),
+		};
+
+	private static CliHostDerivedRequest CreateHostDerivedRequest(
+		CliHostDerivedOperation operation,
+		CliHostDerivedAction action,
+		IReadOnlyList<string> hostNodeIds,
+		IReadOnlyList<string> decorationNodeIds,
+		bool allDeclaredDecorationHosts,
+		string? gameDataDirectory)
+		=> new(
+			operation,
+			action,
+			hostNodeIds,
+			decorationNodeIds,
+			allDeclaredDecorationHosts,
+			gameDataDirectory ?? string.Empty);
 
 	private static async ValueTask<T> ExecuteMutationAsync<T>(
 		CliGlobalOptions options,
@@ -1479,6 +1690,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("SameKeyPlanRequired", "请通过 --plan <Same-key重构计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
+	private static string RequireHostDerivedPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("HostDerivedPlanRequired", "请通过 --plan <主体派生 Overwrite 计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -1861,6 +2079,64 @@ public static class CliApplication
 			diagnostics = execution.Diagnostics,
 			libraryMutation = "not-performed",
 			deployment = "not-performed",
+		};
+
+	private static object CreateHostDerivedPlanProjection(CliHostDerivedPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			noChanges = document.Hosts.Count == 0,
+			document.InputFingerprint,
+			request = document.Request,
+			target = document.Target,
+			hosts = document.Hosts.Select(host => new
+			{
+				host.NodeId,
+				host.Name,
+				host.Kind,
+				host.RelativePath,
+				host.PatchGroupCount,
+				current = new
+				{
+					helmetToArmorMerged = host.CurrentHelmetToArmorMerged,
+					decorations = host.CurrentDecorations,
+				},
+				planned = new
+				{
+					helmetToArmorMerged = host.PlannedHelmetToArmorMerged,
+					decorations = host.PlannedDecorations,
+				},
+				overwrite = host.Overwrite,
+			}).ToArray(),
+			inputs = document.Inputs,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateHostDerivedValidationProjection(CliHostDerivedValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateHostDerivedPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateHostDerivedExecutionProjection(CliHostDerivedExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.StateCommitted,
+			execution.StateMutation,
+			hosts = execution.Hosts,
+			rebuiltHostIds = execution.Hosts.Where(host => host.PlannedRebuildSucceeded).Select(host => host.NodeId).ToArray(),
+			rollbackAttemptedHostIds = execution.Hosts.Where(host => host.RollbackAttempted).Select(host => host.NodeId).ToArray(),
+			rollbackSucceededHostIds = execution.Hosts.Where(host => host.RollbackSucceeded).Select(host => host.NodeId).ToArray(),
+			diagnostics = execution.Diagnostics,
+			gameData = "read-only",
 		};
 
 	private static object CreateSameKeyInspectionProjection(CliSameKeyReconstructionInspection inspection)
@@ -2338,6 +2614,50 @@ public static class CliApplication
 			: $"头盔合并被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
+	private static string FormatHostDerivedInspection(CliHostDerivedPlanDocument document)
+	{
+		var unmanaged = document.Hosts.Count(host => host.Overwrite.Exists && !host.Overwrite.IsManaged);
+		return $"主体派生检查：主体 {document.Hosts.Count}；已启用装饰 {document.Hosts.Sum(host => host.CurrentDecorations.Count)}；临时头盔合并 {document.Hosts.Count(host => host.CurrentHelmetToArmorMerged)}；非管理器 Overwrite {unmanaged}。";
+	}
+
+	private static string FormatHostDerivedPlan(CliHostDerivedPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		var noChanges = document.Hosts.Count == 0 ? "；本次无状态变化" : string.Empty;
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出主体派生 Overwrite 计划：{outputPath}",
+			$"操作：{document.Request.Operation}/{document.Request.Action}；主体：{document.Hosts.Count}{noChanges}",
+			$"阻断诊断：{blocking}。validate 通过后，apply 才会重建库内 Overwrite 并提交相应状态。",
+		]);
+	}
+
+	private static string FormatHostDerivedValidation(CliHostDerivedValidationResult validation)
+	{
+		var status = validation.IsValid ? "主体派生 Overwrite 验证通过。" : "主体派生 Overwrite 验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}计划主体：{validation.Document.Hosts.Count}；当前可重建主体：{validation.Current?.Document.Hosts.Count ?? 0}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatHostDerivedExecution(CliHostDerivedExecutionResult execution)
+	{
+		if (execution.Success)
+		{
+			var rebuilt = execution.Hosts.Count(host => host.PlannedRebuildSucceeded);
+			return execution.StateCommitted
+				? $"主体派生 Overwrite 已完成：重建主体 {rebuilt}；已提交状态：{execution.StateMutation}。"
+				: rebuilt == 0
+					? "主体派生 Overwrite 已确认：当前状态无需变化。"
+					: $"主体派生 Overwrite 已重建：主体 {rebuilt}；未修改状态文件。";
+		}
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "主体派生 Overwrite 未完成；请查看 JSON 结果或日志。"
+			: $"主体派生 Overwrite 被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatSameKeyInspection(CliSameKeyReconstructionInspection inspection)
 	{
 		if (inspection.SelectedSourcePatchFileName is null)
@@ -2523,6 +2843,13 @@ HD2 Mod Manager 命令行
 	  hd2mod equipment helmet-merge plan <Mod GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output helmet-merge-plan.json --json
 	  hd2mod equipment helmet-merge validate --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod equipment helmet-merge apply --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
+	  hd2mod host-derived inspect <主体 GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod host-derived plan decoration enable|disable <装饰 GUID或前缀> [...] --host <主体 GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output host-derived-plan.json --json
+	  hd2mod host-derived plan decoration enable-all|disable-all <装饰 GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output host-derived-plan.json --json
+	  hd2mod host-derived plan helmet enable|disable <主体 GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output host-derived-plan.json --json
+	  hd2mod host-derived plan rebuild <主体 GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output host-derived-plan.json --json
+	  hd2mod host-derived validate --plan host-derived-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod host-derived apply --plan host-derived-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
 	  hd2mod patch repair inspect <Mod GUID或前缀> [base.patch_N] --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod patch repair plan <Mod GUID或前缀> <base.patch_N> --manager-root <管理器目录> --game-data <游戏data目录> --output same-key-plan.json --json
 	  hd2mod patch repair validate --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
@@ -2552,6 +2879,6 @@ HD2 Mod Manager 命令行
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。mod delete plan 会冻结库状态、激活状态与待删目录内容，validate/apply 会重新确认。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。import --add-to-profile 仅加入明确计划中的配置，不自动部署。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包、头盔合并、装饰外部包和 Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。mod delete plan 会冻结库状态、激活状态与待删目录内容，validate/apply 会重新确认。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。import --add-to-profile 仅加入明确计划中的配置，不自动部署。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。主体派生 Overwrite 先重建所有目标主体、再提交装饰或头盔状态；失败时回建已完成主体，且永不覆盖非管理器生成的 Overwrite。Patch 资源重打包、头盔合并、装饰外部包和 Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
 """;
 }

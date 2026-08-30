@@ -21,6 +21,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Rename, Options, deletion, or Profiles: `mod-metadata`, `option-management`, `safe-library-deletion`, `profile-management`.
 - Create a decoration package: `decoration-package`.
 - Deploy or deactivate GameData: `safe-deployment`.
+- Manage a host Mod's generated Overwrite: `host-derived-overwrite`.
 - Produce a standalone Patch: `patch-resource-repackaging`, `helmet-to-armor-merge`, or `same-key-reconstruction`.
 
 Use `--json` for Agent-facing calls. IDs are explicit GUIDs or unique prefixes; never guess an ambiguous selector. Plan export writes only its named output, validation is read-only, and every mutating `apply` requires explicit `--confirm`. `safe-deployment` is the only Skill that authorizes GameData writes. The standalone Patch Skills output fresh external directories and do not import, enable, or deploy their results. `mod-management` is a legacy aggregate pointer, not a preferred workflow.
