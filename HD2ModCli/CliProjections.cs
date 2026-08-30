@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.18";
+	public const string ProtocolVersion = "1.19";
 
 	public static object CreateCapabilities()
 		=> new
@@ -71,6 +71,11 @@ public static class CliProjections
 				new { name = "profile insert", safety = "explicit-confirm", description = "按明确逻辑槽位插入新的配置条目" },
 				new { name = "profile move", safety = "explicit-confirm", description = "按明确逻辑槽位稳定移动已有配置条目" },
 				new { name = "profile reorder", safety = "explicit-confirm", description = "以完整明确列表重排一个配置的逻辑条目" },
+				new { name = "profile align export", safety = "explicit-export", description = "从一个现有 Profile 导出可编辑的完整逻辑成员与活动状态规格" },
+				new { name = "profile align inspect", safety = "read-only", description = "以 Core 的完整成员替换规则检查 Profile 对齐规格，不写入任何状态" },
+				new { name = "profile align plan", safety = "explicit-export", description = "导出冻结目标 Profile 版本、成员顺序、活动状态与参与 Mod 身份的对齐计划" },
+				new { name = "profile align validate", safety = "read-only", description = "重新核验 Profile 对齐计划，区分可写、已对齐和漂移状态" },
+				new { name = "profile align apply", safety = "explicit-confirm", description = "在库写租约内二次验证后仅更新 profiles.json 的完整成员顺序和可审阅活动状态" },
 				new { name = "deploy plan", safety = "explicit-export", description = "只读重建配置、选项、Patch、Lua 和外部文件映射，并导出可审计部署计划" },
 				new { name = "deploy validate", safety = "read-only", description = "重建部署计划并检查目标、归属、来源漂移和游戏进程，不写入任何文件" },
 				new { name = "deploy apply", safety = "explicit-confirm", description = "在库与 GameData 双租约内重验计划、编译但不执行 Lua、精确替换已证明归属的 Patch" },
@@ -127,7 +132,7 @@ public static class CliProjections
 				"Option 单主体启停和排序必须显式指定 --host；option enable-all/disable-all 只会在所有声明主体均存在、类型正确且为直属关系时整批执行，绝不猜测或部分写入。",
 				"library sync 只对账已存在的库目录与 library.json：它不会解析导入包树、不移动或删除文件、不改 Profile/激活状态，也会在已登记物理目录缺失时阻断。",
 				"decoration package 只会从已验证的来源 Patch 家族复制选中 Unit 所在的完整 Patch 文件与 sidecar，并发布一个新的外部可导入包；它不会写 Mod 库、激活状态、Overwrite 或 GameData。",
-				"Profile 写入要求 --confirm，且只更新 Mod 库中的配置状态；永不隐式部署或触碰 GameData。",
+				"Profile 写入要求 --confirm，且只更新 Mod 库中的配置状态；永不隐式部署或触碰 GameData。profile align 额外冻结当前/目标语义指纹，在租约内二次验证，并且仅会写入 profiles.json。",
 				"deploy plan / validate 完全只读；deploy apply 要求 --confirm、桌面端和游戏均已退出、库与 GameData 双租约，以及 activation-state.json 对现有 Patch 的完整归属证明。",
 				"CLI 不会接管、清空或覆盖未登记 Patch；部署失败时仅恢复本次事务移动的已证明管理器 Patch。",
 				"CLI 物化 Lua 时仅做编译验证，不在本地 Lua 运行时执行 Mod Lua。",

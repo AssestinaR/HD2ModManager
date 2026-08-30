@@ -20,6 +20,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-index-management", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "cross-armor-transfer", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "profile-alignment", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -77,6 +78,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("host-derived plan decoration", content, StringComparison.Ordinal);
 		Assert.Contains("host-derived apply", content, StringComparison.Ordinal);
 		Assert.Contains("Overwrite", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void ProfileAlignmentSkill_DescribesProfileOnlyPlanGatedWorkflow()
+	{
+		var content = CliSkillCatalog.GetContent("profile-alignment");
+
+		Assert.Contains("profile align export", content, StringComparison.Ordinal);
+		Assert.Contains("profile align apply", content, StringComparison.Ordinal);
+		Assert.Contains("profiles.json", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

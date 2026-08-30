@@ -176,6 +176,45 @@ public sealed class ProfileMutationServiceTests
 	}
 
 	[Fact]
+	public void ReplaceEntries_ReplacesCompleteMembershipOnce_PreservesExistingAddedUtc_AndAllowsEmpty()
+	{
+		var clock = new TestTimeProvider(InitialTime);
+		var service = new ProfileMutationService(clock);
+		var a = Node("A");
+		var b = Node("B");
+		var c = Node("C");
+		var option = Node("Option", ModNodeKind.Option, hasPatch: true);
+		var profile = Profile(
+			"Profile",
+			[
+				new ProfileEntry(a.Id, 0, InitialTime.AddSeconds(1)),
+				new ProfileEntry(b.Id, 1, InitialTime.AddSeconds(2)),
+			]);
+		var snapshot = Snapshot([a, b, c, option], [profile]);
+
+		clock.Advance(TimeSpan.FromMinutes(2));
+		var replaced = service.ReplaceEntries(snapshot, profile.Id, [c.Id, a.Id]);
+		Assert.Equal(ProfileMutationStatus.Applied, replaced.Status);
+		Assert.Equal([c.Id, a.Id], Entries(replaced.Snapshot, profile.Id));
+		var changed = FindProfile(replaced.Snapshot, profile.Id);
+		Assert.Equal(1, changed.Revision);
+		Assert.Equal(InitialTime.AddSeconds(1), changed.Entries.Single(entry => entry.NodeId == a.Id).AddedUtc);
+		Assert.Equal(clock.GetUtcNow(), changed.Entries.Single(entry => entry.NodeId == c.Id).AddedUtc);
+
+		var same = service.ReplaceEntries(replaced.Snapshot, profile.Id, [c.Id, a.Id]);
+		Assert.Equal(ProfileMutationStatus.NoChange, same.Status);
+		Assert.Same(replaced.Snapshot, same.Snapshot);
+
+		var emptied = service.ReplaceEntries(replaced.Snapshot, profile.Id, Array.Empty<ModNodeId>());
+		Assert.Equal(ProfileMutationStatus.Applied, emptied.Status);
+		Assert.Empty(Entries(emptied.Snapshot, profile.Id));
+		Assert.Equal(2, FindProfile(emptied.Snapshot, profile.Id).Revision);
+
+		AssertRejected(service.ReplaceEntries(snapshot, profile.Id, [a.Id, a.Id]), ProfileMutationFailure.DuplicateEntrySelection, snapshot);
+		AssertRejected(service.ReplaceEntries(snapshot, profile.Id, [option.Id]), ProfileMutationFailure.NodeKindNotSupported, snapshot);
+	}
+
+	[Fact]
 	public void EntryMutations_RejectUnknownProfilesAndMalformedExistingProfileEntries()
 	{
 		var service = new ProfileMutationService(new TestTimeProvider(InitialTime));

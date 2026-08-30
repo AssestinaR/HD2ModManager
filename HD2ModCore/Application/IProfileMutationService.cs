@@ -57,6 +57,17 @@ public interface IProfileMutationService
 		LibrarySnapshot snapshot,
 		ProfileId profileId,
 		IReadOnlyList<ModNodeId> orderedNodeIds);
+
+	/// <summary>
+	/// Replaces a Profile's complete logical membership and order in one pure
+	/// mutation. Unlike a sequence of add/remove/reorder calls, this increments
+	/// the deployment revision at most once and permits an empty final Profile.
+	/// Existing entries retain their original AddedUtc timestamp.
+	/// </summary>
+	ProfileMutationResult ReplaceEntries(
+		LibrarySnapshot snapshot,
+		ProfileId profileId,
+		IReadOnlyList<ModNodeId> orderedNodeIds);
 }
 
 /// <summary>Identifies the requested pure Profile operation.</summary>
@@ -71,6 +82,7 @@ public enum ProfileMutationOperation
 	InsertEntries,
 	MoveEntries,
 	ReorderEntries,
+	ReplaceEntries,
 }
 
 /// <summary>Distinguishes an applied mutation, an idempotent request, and a safe rejection.</summary>

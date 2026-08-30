@@ -529,6 +529,69 @@ public static class CliApplication
 				() => $"已重排当前主体的直属选项。自动补齐选项状态：{result.InitializedStateCount}。未自动部署。");
 			return 0;
 		}
+		if (command.Length == 4 && command[0] == "profile" && command[1] == "align" && command[2] == "export")
+		{
+			EnsureProfileAlignExportOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "profile align export");
+			var specification = await CliProfileAlignPlanArtifacts
+				.ExportSpecAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3])
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(specification), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, output = Path.GetFullPath(output), specification },
+				() => FormatProfileAlignSpecification(specification, Path.GetFullPath(output)));
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "profile" && command[1] == "align" && command[2] == "inspect")
+		{
+			EnsureProfileAlignInspectOptions(invocation.Options);
+			var specification = await CliProfileAlignPlanArtifacts.ReadSpecAsync(invocation.Command[3]).ConfigureAwait(false);
+			var build = await CliProfileAlignPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), specification)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = build.Document },
+				() => FormatProfileAlignInspection(build.Document));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (command.Length == 4 && command[0] == "profile" && command[1] == "align" && command[2] == "plan")
+		{
+			EnsureProfileAlignPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "profile align plan");
+			var specification = await CliProfileAlignPlanArtifacts.ReadSpecAsync(invocation.Command[3]).ConfigureAwait(false);
+			var build = await CliProfileAlignPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), specification)
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), alignment = build.Document },
+				() => FormatProfileAlignPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "profile", "align", "validate"))
+		{
+			EnsureProfileAlignValidateOptions(invocation.Options);
+			var document = await CliProfileAlignPlanArtifacts.ReadDocumentAsync(RequireProfileAlignPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliProfileAlignPlanArtifacts
+				.ValidateAsync(document, CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = new { status = validation.Status.ToString().ToLowerInvariant(), document = validation.Document, diagnostics = validation.Diagnostics } },
+				() => FormatProfileAlignValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "profile", "align", "apply"))
+		{
+			EnsureProfileAlignApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("ProfileAlignApplyConfirmationRequired", "profile align apply 会仅更新 profiles.json；请在审阅计划后显式传入 --confirm。 ");
+			var document = await CliProfileAlignPlanArtifacts.ReadDocumentAsync(RequireProfileAlignPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliProfileAlignExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution },
+				() => FormatProfileAlignExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length == 3 && command[0] == "profile" && command[1] == "create")
 		{
 			EnsureProfileMutationOptions(invocation.Options, "profile create", allowSetActive: true);
@@ -1806,6 +1869,62 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --with-unshared-options。");
 	}
 
+	private static void EnsureProfileAlignExportOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"profile align export 仅接受 Profile 标识、--manager-root/--library、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureProfileAlignInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"profile align inspect 仅接受规格文件、--manager-root、--library 与 --json。 ");
+		}
+	}
+
+	private static void EnsureProfileAlignPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"profile align plan 仅接受规格文件、--manager-root、--library、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureProfileAlignValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"profile align validate 仅接受 --plan、--manager-root、--library 与 --json。 ");
+		}
+	}
+
+	private static void EnsureProfileAlignApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"profile align apply 仅接受 --plan、--manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
 	private static void EnsureDeletionPreviewOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
@@ -1993,6 +2112,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("ModDeletionPlanRequired", "请通过 --plan <删除计划.json> 提供已导出的删除计划。 ");
+		return options.Plan;
+	}
+
+	private static string RequireProfileAlignPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("ProfileAlignPlanRequired", "请通过 --plan <Profile对齐计划.json> 提供已导出的对齐计划。 ");
 		return options.Plan;
 	}
 
@@ -2193,6 +2319,44 @@ public static class CliApplication
 			$"逻辑条目：{profile.Entries.Count}",
 			$"实际部署展开条目：{effective.Entries.Count}",
 		]);
+	}
+
+	private static string FormatProfileAlignSpecification(CliProfileAlignSpecDocument specification, string outputPath)
+		=> $"已导出 Profile 对齐规格：{outputPath}{Environment.NewLine}Profile：{specification.ExpectedProfileName}；当前逻辑条目：{specification.EntryNodeIds.Count}；活动状态策略：{specification.ActiveMode}。";
+
+	private static string FormatProfileAlignInspection(CliProfileAlignPlanDocument document)
+	{
+		var status = document.IsReady ? "可生成计划" : "存在阻断项";
+		return $"Profile 对齐检查：{status}；当前条目 {document.Changes.CurrentEntryCount} → 目标条目 {document.Changes.TargetEntryCount}；成员变化={(document.Changes.EntriesChanged ? "是" : "否")}；活动配置变化={(document.Changes.ActiveProfileChanged ? "是" : "否")}；阻断诊断 {document.Diagnostics.Count(diagnostic => diagnostic.Blocking)}。";
+	}
+
+	private static string FormatProfileAlignPlan(CliProfileAlignPlanDocument document, string outputPath)
+		=> $"已导出 Profile 对齐计划：{outputPath}{Environment.NewLine}" + FormatProfileAlignInspection(document) + Environment.NewLine + "validate 通过后，apply --confirm 才会仅写入 profiles.json。";
+
+	private static string FormatProfileAlignValidation(CliProfileAlignValidationResult validation)
+	{
+		var status = validation.Status switch
+		{
+			CliProfileAlignValidationStatus.Ready => "Profile 对齐计划验证通过。",
+			CliProfileAlignValidationStatus.AlreadyAligned => "Profile 已达到计划目标；无需写入。",
+			_ => "Profile 对齐计划验证未通过。",
+		};
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatProfileAlignExecution(CliProfileAlignExecutionResult execution)
+	{
+		if (execution.Success && execution.Status == "already-aligned")
+			return "Profile 已达到计划目标；未改写 profiles.json，也未部署。";
+		if (execution.Success)
+			return $"Profile 对齐完成：{execution.Profile?.Name ?? execution.Profile?.ProfileId ?? "<unknown>"}；仅更新 profiles.json；未部署。";
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "Profile 对齐未完成；请查看 JSON 结果或日志。"
+			: $"Profile 对齐被拒绝：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
 	private static string FormatImportPlan(ImportPlan plan)
@@ -3885,6 +4049,11 @@ HD2 Mod Manager 命令行
 	  hd2mod profile insert <配置> <Mod GUID或前缀> [...] --position <插入槽位> --manager-root <管理器目录> --confirm --json
 	  hd2mod profile move <配置> <Mod GUID或前缀> [...] --position <插入槽位> --manager-root <管理器目录> --confirm --json
 	  hd2mod profile reorder <配置> <按完整逻辑顺序的Mod GUID或前缀> [...] --manager-root <管理器目录> --confirm --json
+	  hd2mod profile align export <配置名称、GUID或active> --library <Mod库目录> --output profile-spec.json --json
+	  hd2mod profile align inspect profile-spec.json --manager-root <管理器目录> --json
+	  hd2mod profile align plan profile-spec.json --manager-root <管理器目录> --output profile-align-plan.json --json
+	  hd2mod profile align validate --plan profile-align-plan.json --manager-root <管理器目录> --json
+	  hd2mod profile align apply --plan profile-align-plan.json --manager-root <管理器目录> --confirm --json
 	  hd2mod deploy plan [配置名称、GUID或active] --manager-root <管理器目录> --game-data <游戏data目录> --output deployment-plan.json --json
 	  hd2mod deploy validate --plan deployment-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod deploy apply --plan deployment-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json

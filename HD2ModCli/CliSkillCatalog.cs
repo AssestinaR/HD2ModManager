@@ -33,6 +33,7 @@ public static class CliSkillCatalog
 		new("option-management", "hd2mod-option-management", "按明确主体或严格校验的全部直属主体启停和排序 Option。", "HD2ModCli.Skill.option-management"),
 		new("safe-library-deletion", "hd2mod-safe-library-deletion", "以冻结目录内容的 plan → validate → apply 执行关系感知的安全 Mod 删除。", "HD2ModCli.Skill.safe-library-deletion"),
 		new("profile-management", "hd2mod-profile-management", "创建、管理与排序 Profile；不自动部署。", "HD2ModCli.Skill.profile-management"),
+		new("profile-alignment", "hd2mod-profile-alignment", "以可编辑规格和冻结计划精确对齐一个 Profile；仅写 profiles.json。", "HD2ModCli.Skill.profile-alignment"),
 		new("safe-deployment", "hd2mod-safe-deployment", "以 plan → validate → apply 安全部署或停用已证明归属的 Patch。", "HD2ModCli.Skill.safe-deployment"),
 		new("patch-resource-repackaging", "hd2mod-patch-resource-repackaging", "审阅并选择完整 AssetKey Payload，输出独立 Patch，不修改来源或部署。", "HD2ModCli.Skill.patch-resource-repackaging"),
 		new("helmet-to-armor-merge", "hd2mod-helmet-to-armor-merge", "审阅完整 Armor/Any Helmet 集合并输出独立的头盔合并 Patch。", "HD2ModCli.Skill.helmet-to-armor-merge"),

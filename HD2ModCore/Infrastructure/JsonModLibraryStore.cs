@@ -167,6 +167,29 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 		}
 	}
 
+	/// <summary>
+	/// Atomically persists only the separate Profiles document. Mod nodes and
+	/// library.json remain byte-for-byte untouched. This exists for operations
+	/// whose entire responsibility is a reviewed Profile state transition.
+	/// </summary>
+	public async ValueTask SaveProfilesOnlyAsync(LibrarySnapshot snapshot, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		if (!Directory.Exists(_paths.ModsDirectory))
+			throw new DirectoryNotFoundException($"Mod library directory does not exist: {_paths.ModsDirectory}");
+
+		var gate = GetFileGate();
+		await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+		try
+		{
+			await _profileStore.SaveAsync(snapshot.Profiles, snapshot.ActiveProfileId, cancellationToken).ConfigureAwait(false);
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
 	private async ValueTask SaveCoreAsync(LibrarySnapshot snapshot, CancellationToken cancellationToken)
 	{
 		if (snapshot is null)

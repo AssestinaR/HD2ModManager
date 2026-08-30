@@ -72,10 +72,16 @@ public sealed class JsonProfileStore
 		Directory.CreateDirectory(_paths.ModsDirectory);
 		var snapshot = new ProfileFileSnapshot(CurrentVersion, activeProfileId, profiles ?? Array.Empty<Profile>());
 		var json = JsonSerializer.Serialize(snapshot, SerializerOptions);
-		var tmp = _paths.ProfilesPath + ".tmp";
-		await File.WriteAllTextAsync(tmp, json, cancellationToken).ConfigureAwait(false);
-		File.Copy(tmp, _paths.ProfilesPath, overwrite: true);
-		File.Delete(tmp);
+		var tmp = _paths.ProfilesPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+		try
+		{
+			await File.WriteAllTextAsync(tmp, json, cancellationToken).ConfigureAwait(false);
+			File.Move(tmp, _paths.ProfilesPath, overwrite: true);
+		}
+		finally
+		{
+			if (File.Exists(tmp)) File.Delete(tmp);
+		}
 	}
 
 	// Strict read-only counterpart for headless inspection. Unlike TryLoadAsync it

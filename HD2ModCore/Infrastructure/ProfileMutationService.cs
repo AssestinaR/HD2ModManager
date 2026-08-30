@@ -258,6 +258,36 @@ public sealed class ProfileMutationService : IProfileMutationService
 		return ApplyEntries(snapshot, context, ProfileMutationOperation.ReorderEntries, entries, orderedNodeIds);
 	}
 
+	public ProfileMutationResult ReplaceEntries(
+		LibrarySnapshot snapshot,
+		ProfileId profileId,
+		IReadOnlyList<ModNodeId> orderedNodeIds)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		ArgumentNullException.ThrowIfNull(orderedNodeIds);
+		if (!TryGetProfile(snapshot, profileId, ProfileMutationOperation.ReplaceEntries, out var context, out var rejected))
+			return rejected!;
+		if (TryValidateRequestedDeployableNodes(
+			snapshot,
+			ProfileMutationOperation.ReplaceEntries,
+			profileId,
+			orderedNodeIds,
+			out rejected,
+			allowEmpty: true))
+		{
+			return rejected!;
+		}
+
+		var existingById = context.OrderedEntries.ToDictionary(entry => entry.NodeId);
+		var now = UtcNow();
+		var entries = orderedNodeIds
+			.Select((nodeId, index) => existingById.TryGetValue(nodeId, out var existing)
+				? existing with { LoadOrder = index }
+				: new ProfileEntry(nodeId, index, now))
+			.ToArray();
+		return ApplyEntries(snapshot, context, ProfileMutationOperation.ReplaceEntries, entries, orderedNodeIds, now);
+	}
+
 	private ProfileMutationResult InsertNewEntries(
 		LibrarySnapshot snapshot,
 		ProfileContext context,
@@ -394,9 +424,10 @@ public sealed class ProfileMutationService : IProfileMutationService
 		ProfileMutationOperation operation,
 		ProfileId profileId,
 		IReadOnlyList<ModNodeId> nodeIds,
-		out ProfileMutationResult? rejected)
+		out ProfileMutationResult? rejected,
+		bool allowEmpty = false)
 	{
-		if (nodeIds.Count == 0)
+		if (!allowEmpty && nodeIds.Count == 0)
 		{
 			rejected = Reject(
 				snapshot,

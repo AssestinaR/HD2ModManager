@@ -97,6 +97,25 @@ internal sealed class CliLibraryWriteSession : IAsyncDisposable
 			"保存后未能重新读取 library.json；CLI 未继续执行后续写入。");
 	}
 
+	/// <summary>
+	/// Persists only profiles.json under the same target and lease checks as a
+	/// normal mutation. It keeps library.json untouched for a profile-only
+	/// command such as an auditable full alignment operation.
+	/// </summary>
+	public async ValueTask<LibrarySnapshot> SaveProfilesOnlyAsync(
+		LibrarySnapshot snapshot,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		await VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+		ThrowIfDisposed();
+		await _store.SaveProfilesOnlyAsync(snapshot, cancellationToken).ConfigureAwait(false);
+		var persisted = await ReloadSnapshotAsync(cancellationToken).ConfigureAwait(false);
+		return persisted ?? throw new CliUserException(
+			"LibrarySnapshotUnreadable",
+			"保存后未能重新读取 Mod 库状态；CLI 未继续执行后续写入。");
+	}
+
 	public async ValueTask DisposeAsync()
 	{
 		var lease = Interlocked.Exchange(ref _lease, null);

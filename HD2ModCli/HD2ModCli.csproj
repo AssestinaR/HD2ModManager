@@ -34,6 +34,7 @@
     <EmbeddedResource Include="skills\option-management\SKILL.md" LogicalName="HD2ModCli.Skill.option-management" />
     <EmbeddedResource Include="skills\safe-library-deletion\SKILL.md" LogicalName="HD2ModCli.Skill.safe-library-deletion" />
     <EmbeddedResource Include="skills\profile-management\SKILL.md" LogicalName="HD2ModCli.Skill.profile-management" />
+	<EmbeddedResource Include="skills\profile-alignment\SKILL.md" LogicalName="HD2ModCli.Skill.profile-alignment" />
     <EmbeddedResource Include="skills\safe-deployment\SKILL.md" LogicalName="HD2ModCli.Skill.safe-deployment" />
     <EmbeddedResource Include="skills\patch-resource-repackaging\SKILL.md" LogicalName="HD2ModCli.Skill.patch-resource-repackaging" />
 	<EmbeddedResource Include="skills\helmet-to-armor-merge\SKILL.md" LogicalName="HD2ModCli.Skill.helmet-to-armor-merge" />
