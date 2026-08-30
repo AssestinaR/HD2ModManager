@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.2";
+	public const string ProtocolVersion = "1.3";
 
 	public static object CreateCapabilities()
 		=> new
@@ -20,6 +20,13 @@ public static class CliProjections
 				new { name = "status", safety = "read-only", description = "读取管理器、Mod 库与 GameData 路径状态" },
 				new { name = "mod list", safety = "read-only", description = "列出已登记 Mod" },
 				new { name = "mod show", safety = "read-only", description = "读取指定 Mod、选项关系和激活状态" },
+				new { name = "mod rename", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时重命名一个 Mod" },
+				new { name = "mod notes set", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时设置一个 Mod 的备注" },
+				new { name = "mod notes clear", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时清空一个 Mod 的备注" },
+				new { name = "option enable", safety = "explicit-confirm", description = "为明确指定的主体启用一个直属 Option" },
+				new { name = "option disable", safety = "explicit-confirm", description = "为明确指定的主体禁用一个直属 Option" },
+				new { name = "option move", safety = "explicit-confirm", description = "在明确主体的直属 Option 范围内重排一个或多个 Option" },
+				new { name = "option insert", safety = "explicit-confirm", description = "option move 的语法别名；不会把 Option 挂到新主体" },
 				new { name = "profile list", safety = "read-only", description = "列出配置文件" },
 				new { name = "profile show", safety = "read-only", description = "读取逻辑顺序与实际部署展开顺序" },
 				new { name = "import inspect", safety = "read-only", description = "扫描待导入文件夹或压缩包，并输出导入前规划，不写入 Mod 库" },
@@ -42,6 +49,8 @@ public static class CliProjections
 			{
 				"import apply 只会在计划复核成功、目标库可信、管理器未运行且显式 --confirm 时写入 Mod 库。",
 				"import apply 不自动部署、不修改 Profile、不写 Patch 字节，也不会启动昂贵的派生信息分析。",
+				"Mod 元数据与 Option 写入同样要求 --confirm、已有 library.json、所有桌面端实例关闭，以及库根目录的跨进程写租约。",
+				"Option 启停和排序必须显式指定 --host；CLI 不提供“所有主体”或隐式主体猜测。",
 			},
 		};
 
@@ -119,6 +128,22 @@ public static class CliProjections
 		var id = FormatId(node.Id);
 		var optionStates = ReadOptionStates(node.Id, state.OptionActivations);
 		var decorationHosts = ReadDecorationHosts(node.Id, state.DecorationActivations);
+		var hostKey = node.Id.Value.ToString("N");
+		var directOptions = graph.GetDirectOptions(node.Id)
+			.Select(option => new
+			{
+				id = FormatId(option.Id),
+				name = option.Metadata.Name,
+				patchGroupCount = option.PatchGroups.Count,
+				enabled = state.OptionActivations.IsEnabled(option.Id.Value.ToString("N"), hostKey),
+				effectiveOrder = state.OptionActivations.GetEffectiveOrder(option.Id.Value.ToString("N"), hostKey),
+				portableOrder = option.Metadata.OptionOrder,
+			})
+			.OrderBy(option => option.effectiveOrder ?? int.MaxValue)
+			.ThenBy(option => option.portableOrder ?? int.MaxValue)
+			.ThenBy(option => option.name, StringComparer.OrdinalIgnoreCase)
+			.ThenBy(option => option.id, StringComparer.Ordinal)
+			.ToArray();
 		return new
 		{
 			id,
@@ -137,6 +162,7 @@ public static class CliProjections
 			optionOrder = node.Metadata.OptionOrder,
 			hostModIds = NormalizeIds(node.Metadata.HostModGuids),
 			directOptionIds = graph.GetDirectOptions(node.Id).Select(option => FormatId(option.Id)).ToArray(),
+			directOptions,
 			parentOptionIds = graph.GetParents(node.Id).Select(FormatId).ToArray(),
 			declaredChildIds = node.Children.Select(FormatId).ToArray(),
 			optionActivation = node.Metadata.Kind == ModNodeKind.Option ? optionStates : Array.Empty<object>(),

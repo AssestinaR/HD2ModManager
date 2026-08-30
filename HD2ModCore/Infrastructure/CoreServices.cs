@@ -202,6 +202,8 @@ public static class CoreServices
 		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
 	public static OptionActivationStore CreateOptionActivationStore(StoragePaths paths)
 		=> new(Path.Combine(paths.ModsDirectory, "option-activations.json"));
+	public static IOptionRelationshipWriteService CreateOptionRelationshipWriteService()
+		=> new OptionRelationshipWriteService();
 	public static IModImportExecutionService CreateModImportExecutionService(StoragePaths paths)
 		=> new ModImportExecutionService(paths);
 	public static ILibraryWriteLeaseProvider CreateLibraryWriteLeaseProvider()

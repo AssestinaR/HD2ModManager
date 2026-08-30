@@ -21,5 +21,6 @@ Current routing:
 
 - `library-inspection` — inspect Mod library, Option tree, Profile and effective deployment order without mutation.
 - `safe-import` — import a reviewed source through `plan → validate → apply --confirm`.
+- `mod-management` — rename/annotate Mod entries, and manage one host's direct Option state and order.
 
-These are the only capability Skills currently shipped. This router is compatibility-only; it is not a third workflow. Use `hd2mod capabilities --json` as the command authority and do not invent absent write commands.
+These are the only capability Skills currently shipped. This router is compatibility-only; it is not a workflow. Use `hd2mod capabilities --json` as the command authority and do not invent absent write commands.

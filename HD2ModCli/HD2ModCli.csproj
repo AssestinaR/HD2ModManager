@@ -25,6 +25,7 @@
     <EmbeddedResource Include="SKILL.md" LogicalName="HD2ModCli.Skill.cli-router" />
     <EmbeddedResource Include="skills\library-inspection\SKILL.md" LogicalName="HD2ModCli.Skill.library-inspection" />
     <EmbeddedResource Include="skills\safe-import\SKILL.md" LogicalName="HD2ModCli.Skill.safe-import" />
+    <EmbeddedResource Include="skills\mod-management\SKILL.md" LogicalName="HD2ModCli.Skill.mod-management" />
   </ItemGroup>
 
   <!-- Lets the Manager copy the exact artifacts from this build, including

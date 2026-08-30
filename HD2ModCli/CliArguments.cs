@@ -6,6 +6,8 @@ public sealed record CliGlobalOptions(
 	string? GameData,
 	string? Output,
 	string? Plan,
+	string? Host,
+	int? Position,
 	bool Overwrite,
 	bool Confirm,
 	bool Json);
@@ -22,6 +24,8 @@ public static class CliArgumentParser
 		string? gameData = null;
 		string? output = null;
 		string? plan = null;
+		string? host = null;
+		int? position = null;
 		var overwrite = false;
 		var confirm = false;
 		var json = false;
@@ -46,6 +50,15 @@ public static class CliArgumentParser
 					break;
 				case "--plan":
 					plan = ReadValue(args, ref index, argument);
+					break;
+				case "--host":
+					host = ReadValue(args, ref index, argument);
+					break;
+				case "--position":
+					var rawPosition = ReadValue(args, ref index, argument);
+					if (!int.TryParse(rawPosition, out var parsedPosition) || parsedPosition < 1)
+						throw new CliUserException("PositionInvalid", "参数 --position 必须是从 1 开始的正整数。");
+					position = parsedPosition;
 					break;
 				case "--overwrite":
 					overwrite = true;
@@ -72,7 +85,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, overwrite, confirm, json));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, position, overwrite, confirm, json));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

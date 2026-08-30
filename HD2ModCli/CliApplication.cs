@@ -51,7 +51,7 @@ public static class CliApplication
 		if (Matches(command, "capabilities"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
-			Emit(invocation.Options, CliProjections.CreateCapabilities(), () => "当前 CLI 支持经计划验证和显式确认的安全导入。请使用 capabilities --json 获取完整机器可读能力清单。");
+			Emit(invocation.Options, CliProjections.CreateCapabilities(), () => "当前 CLI 支持安全导入，以及经显式确认的 Mod 元数据与 Option 管理。请使用 capabilities --json 获取完整机器可读能力清单。");
 			return 0;
 		}
 		if (Matches(command, "status"))
@@ -82,6 +82,67 @@ public static class CliApplication
 			var node = CliProjections.ResolveMod(state.Snapshot.Nodes, invocation.Command[2]);
 			var graph = OptionRelationshipGraph.Create(state.Snapshot);
 			Emit(invocation.Options, new { mod = CliProjections.CreateModProjection(node, workspace, state, graph), issues = state.ReadIssues }, () => FormatMod(node, state.Snapshot));
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "rename")
+		{
+			EnsureMetadataMutationOptions(invocation.Options, "mod rename");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.RenameAsync(session, invocation.Command[2], invocation.Command[3])).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateNodeMetadataMutationProjection(result) },
+				() => result.Changed
+					? $"已重命名 Mod：{result.Before.Metadata.Name} → {result.After.Metadata.Name}。未自动部署。"
+					: "Mod 名称未变化。未自动部署。");
+			return 0;
+		}
+		if (command.Length == 5 && command[0] == "mod" && command[1] == "notes" && command[2] == "set")
+		{
+			EnsureMetadataMutationOptions(invocation.Options, "mod notes set");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.SetNotesAsync(session, invocation.Command[3], invocation.Command[4])).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateNodeMetadataMutationProjection(result) },
+				() => result.Changed ? "已更新 Mod 备注。未自动部署。" : "Mod 备注未变化。未自动部署。");
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "notes" && command[2] == "clear")
+		{
+			EnsureMetadataMutationOptions(invocation.Options, "mod notes clear");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.SetNotesAsync(session, invocation.Command[3], null)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateNodeMetadataMutationProjection(result) },
+				() => result.Changed ? "已清空 Mod 备注。未自动部署。" : "Mod 备注本来就是空的。未自动部署。");
+			return 0;
+		}
+		if (command.Length == 3 && command[0] == "option" && command[1] is "enable" or "disable")
+		{
+			EnsureOptionMutationOptions(invocation.Options, $"option {command[1]}", requirePosition: false);
+			var enabled = command[1] == "enable";
+			var host = RequireHost(invocation.Options);
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.SetOptionEnabledAsync(session, invocation.Command[2], host, enabled)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateOptionRelationshipMutationProjection(result) },
+				() => $"已{(enabled ? "启用" : "禁用")}当前主体下的选项。未自动部署。");
+			return 0;
+		}
+		if (command.Length >= 3 && command[0] == "option" && command[1] is "move" or "insert")
+		{
+			EnsureOptionMutationOptions(invocation.Options, $"option {command[1]}", requirePosition: true);
+			var host = RequireHost(invocation.Options);
+			var position = invocation.Options.Position!.Value;
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.MoveOptionsAsync(session, invocation.Command.Skip(2).ToArray(), host, position)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, mutation = CreateOptionRelationshipMutationProjection(result) },
+				() => $"已重排当前主体的直属选项。自动补齐选项状态：{result.InitializedStateCount}。未自动部署。");
 			return 0;
 		}
 		if (Matches(command, "profile", "list"))
@@ -263,26 +324,79 @@ public static class CliApplication
 
 	private static void EnsureNoExplicitOutput(CliGlobalOptions options)
 	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm)
-			throw new CliUserException("CommandOptionNotSupported", "此命令不接受 --output、--overwrite、--plan 或 --confirm。");
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
+			throw new CliUserException("CommandOptionNotSupported", "此命令不接受 --output、--overwrite、--plan、--confirm、--host 或 --position。");
 	}
 
 	private static void EnsureNoPlanOrConfirm(CliGlobalOptions options, string command)
 	{
-		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm)
-			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --plan 或 --confirm。");
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --plan、--confirm、--host 或 --position。");
 	}
 
 	private static void EnsureValidateOptions(CliGlobalOptions options)
 	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm)
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
 			throw new CliUserException("CommandOptionNotSupported", "import validate 仅接受 --plan、--manager-root、--library、--game-data 和 --json。");
 	}
 
 	private static void EnsureApplyOptions(CliGlobalOptions options)
 	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite)
-			throw new CliUserException("CommandOptionNotSupported", "import apply 不接受 --output 或 --overwrite。");
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
+			throw new CliUserException("CommandOptionNotSupported", "import apply 不接受 --output、--overwrite、--host 或 --position。");
+	}
+
+	private static void EnsureMetadataMutationOptions(CliGlobalOptions options, string command)
+	{
+		EnsureMutationBoundary(options, command);
+		if (!string.IsNullOrWhiteSpace(options.Host) || options.Position is not null)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --host 或 --position。");
+	}
+
+	private static void EnsureOptionMutationOptions(CliGlobalOptions options, string command, bool requirePosition)
+	{
+		EnsureMutationBoundary(options, command);
+		_ = RequireHost(options);
+		if (requirePosition && options.Position is null)
+			throw new CliUserException("OptionPositionRequired", $"{command} 必须提供 --position <从 1 开始的插入槽位>。末尾位置为直属选项数量 + 1。");
+		if (!requirePosition && options.Position is not null)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --position。");
+	}
+
+	private static void EnsureMutationBoundary(CliGlobalOptions options, string command)
+	{
+		if (!options.Confirm)
+			throw new CliUserException("MutationConfirmationRequired", $"{command} 会写入 Mod 库；请在人工确认后显式传入 --confirm。");
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --output、--overwrite 或 --plan。");
+		if (!string.IsNullOrWhiteSpace(options.GameData))
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不读取或修改 GameData，不接受 --game-data。");
+	}
+
+	private static string RequireHost(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Host))
+			throw new CliUserException("OptionHostRequired", "选项操作必须显式提供 --host <主体 Mod GUID 或唯一前缀>。");
+		return options.Host;
+	}
+
+	private static async ValueTask<T> ExecuteMutationAsync<T>(
+		CliGlobalOptions options,
+		Func<CliLibraryWriteSession, ValueTask<T>> mutation)
+	{
+		ArgumentNullException.ThrowIfNull(mutation);
+		try
+		{
+			var workspace = CliWorkspace.Open(options);
+			await using var session = await CliWriteTargetGuard.AcquireSessionAsync(workspace).ConfigureAwait(false);
+			return await mutation(session).ConfigureAwait(false);
+		}
+		catch (CliUserException) { throw; }
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or DirectoryNotFoundException or FileNotFoundException)
+		{
+			throw new CliUserException("LibraryMutationFailed", $"Mod 库修改未完成：{exception.Message}");
+		}
 	}
 
 	private static string RequireOutput(CliGlobalOptions options, string command)
@@ -416,6 +530,43 @@ public static class CliApplication
 			deployment = "not-performed",
 		};
 
+	private static object CreateNodeMetadataMutationProjection(CliNodeMetadataMutationResult result)
+		=> new
+		{
+			changed = result.Changed,
+			modId = CliProjections.FormatId(result.After.Id),
+			before = new
+			{
+				name = result.Before.Metadata.Name,
+				notes = result.Before.Metadata.Notes,
+				modifiedUtc = result.Before.Metadata.ModifiedUtc,
+			},
+			after = new
+			{
+				name = result.After.Metadata.Name,
+				notes = result.After.Metadata.Notes,
+				modifiedUtc = result.After.Metadata.ModifiedUtc,
+			},
+			deployment = "not-performed",
+		};
+
+	private static object CreateOptionRelationshipMutationProjection(CliOptionRelationshipMutationResult result)
+		=> new
+		{
+			changed = result.Mutation.Changed,
+			hostModId = CliProjections.FormatId(result.Mutation.Host.HostId),
+			initializedOptionActivationCount = result.InitializedStateCount,
+			directOptions = result.Mutation.Host.DirectOptions.Select(state => new
+			{
+				optionId = CliProjections.FormatId(state.OptionId),
+				enabled = state.Enabled,
+				hasExplicitActivationState = state.HasExplicitActivationState,
+				effectiveOrder = state.EffectiveOrder,
+				position = state.Position + 1,
+			}).ToArray(),
+			deployment = "not-performed",
+		};
+
 	private static string FormatImportValidation(CliImportValidationResult validation)
 	{
 		var status = validation.IsValid ? "导入验证通过。" : "导入验证未通过。";
@@ -443,6 +594,13 @@ HD2 Mod Manager 命令行
   hd2mod status --manager-root <管理器目录> --json
   hd2mod mod list --library <Mod库目录> --json
   hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
+	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod notes clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod option enable <Option GUID或唯一前缀> --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod option disable <Option GUID或唯一前缀> --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod option move <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
+	  hd2mod option insert <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
   hd2mod profile list --library <Mod库目录> --json
 	  hd2mod profile show [名称或GUID前缀] --library <Mod库目录> --json
 	  hd2mod import inspect <文件夹、压缩包或文件> --json
@@ -463,8 +621,10 @@ HD2 Mod Manager 命令行
 	  --output <文件或目录>   import plan / context export / Agent Skill 导出使用。
 	  --plan <文件>           import validate / apply 所需的导入计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
-	  --confirm               仅 import apply：明确确认写入 Mod 库。
+	  --host <GUID或前缀>      Option 操作的明确主体；不支持隐式或全主体修改。
+	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
+	  --confirm               所有写入命令的明确确认。
 
-安全边界：import apply 只将已验证来源登记到 Mod 库，且不自动部署、不修改配置、不重构或直接修改 Patch 内容。
+安全边界：写入命令均要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm；不会自动部署、修改配置、重构或直接修改 Patch 内容。
 """;
 }

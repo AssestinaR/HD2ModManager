@@ -24,6 +24,7 @@ public static class CliSkillCatalog
 		new(RouterSkillName, "hd2mod-cli-router", "轻量路由：发现并按需导出 HD2 Mod CLI 的能力 Skill。", "HD2ModCli.Skill.cli-router", IsRouter: true),
 		new("library-inspection", "hd2mod-library-inspection", "只读查看 Mod 库、Option 关系、Profile 与有效部署顺序。", "HD2ModCli.Skill.library-inspection"),
 		new("safe-import", "hd2mod-safe-import", "以 plan → validate → apply 的显式确认流程安全导入 Mod。", "HD2ModCli.Skill.safe-import"),
+		new("mod-management", "hd2mod-mod-management", "安全重命名/备注、按主体启停 Option，以及重排直属 Option。", "HD2ModCli.Skill.mod-management"),
 	];
 
 	/// <summary>
