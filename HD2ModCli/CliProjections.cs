@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.20";
+	public const string ProtocolVersion = "1.21";
 
 	public static object CreateCapabilities()
 		=> new
@@ -42,6 +42,7 @@ public static class CliProjections
 				new { name = "mod list", safety = "read-only", description = "列出已登记 Mod" },
 				new { name = "mod show", safety = "read-only", description = "读取指定 Mod、选项关系和激活状态" },
 				new { name = "mod analyze", safety = "read-only-expensive", description = "直接使用 PatchGroupAnalyzer 深度读取一个 Mod 的 Patch 组、条目 AssetKey、引用、Unit/几何摘要和解析诊断；不写缓存或 SQLite" },
+				new { name = "mod external inspect", safety = "read-only", description = "直接检查一个 Mod 当前可安全部署的 ReShade add-on/预设、未识别候选和同 Mod 目标冲突；不写缓存或 SQLite" },
 				new { name = "mod image show", safety = "read-only", description = "读取一个 Mod 目录中按 icon.* 约定解析的图像状态" },
 				new { name = "mod image set", safety = "explicit-confirm", description = "以来源图像原子替换一个 Mod 的规范 icon.* 文件；不修改 Patch、配置或部署" },
 				new { name = "mod image clear", safety = "explicit-confirm", description = "只移除一个 Mod 的规范 icon.* 文件，不删除作者使用的其他图片资源" },
@@ -130,6 +131,7 @@ public static class CliProjections
 				"import apply 只会在计划复核成功、目标库可信、管理器未运行且显式 --confirm 时写入 Mod 库。",
 				"import apply 不自动部署、不写 Patch 字节，也不会启动昂贵的派生信息分析；仅当 import plan 明确带有 --add-to-profile 时，才会在 Profile 身份与版本未漂移的前提下追加可部署条目。",
 				"mod analyze 直接调用 Adaptation 的 PatchGroupAnalyzer，不使用 ModInformationCenter、持久化 Mod 信息缓存或 SQLite；它会返回结构化部分结果与解析诊断，但绝不写入状态。",
+				"mod external inspect 直接扫描当前 Mod 目录中受支持的 ReShade add-on/预设映射；未识别外部文件永不自动部署，跨 Mod 冲突必须由 deploy plan 审阅。",
 				"Mod 元数据与 Option 写入同样要求 --confirm、已有 library.json、所有桌面端实例关闭，以及库根目录的跨进程写租约。",
 				"Option 单主体启停和排序必须显式指定 --host；option enable-all/disable-all 只会在所有声明主体均存在、类型正确且为直属关系时整批执行，绝不猜测或部分写入。",
 				"library sync 只对账已存在的库目录与 library.json：它不会解析导入包树、不移动或删除文件、不改 Profile/激活状态，也会在已登记物理目录缺失时阻断。",

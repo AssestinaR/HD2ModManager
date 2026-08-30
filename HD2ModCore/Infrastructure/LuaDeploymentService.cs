@@ -425,7 +425,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					continue;
 				}
 
-				var mapping = new ExternalFileMapping(entry.NodeId, sourcePath, targetPath, fact.TargetRoot, fact.TargetRelativePath, fact.Length, fact.Sha256);
+				var mapping = new ExternalFileMapping(entry.NodeId, sourcePath, targetPath, fact.TargetRoot, fact.TargetRelativePath, fact.Length, fact.Sha256)
+				{
+					Kind = fact.Kind,
+				};
 				if (mappings.TryGetValue(fact.ConflictKey, out var previous))
 				{
 					if (!string.Equals(previous.Sha256, mapping.Sha256, StringComparison.OrdinalIgnoreCase))

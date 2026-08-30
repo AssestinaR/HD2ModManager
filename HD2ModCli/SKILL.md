@@ -23,9 +23,10 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Create a decoration package: `decoration-package`.
 - Connect a verified standalone Patch output back to the library, Profile, deployment, and winner checks: `generated-patch-integration`.
 - Deploy or deactivate GameData: `safe-deployment`.
+- Review and deploy Lua composition, ReShade add-ons/presets, and supported external files: `lua-reshade-external-deployment`.
 - Inspect original GameData mappings or actual Data-Patch winners: `gamedata-inspection`.
 - Rebuild Manager-owned GameData indexes or Armor / Helmet Unit facts: `gamedata-index-management`.
 - Manage a host Mod's generated Overwrite: `host-derived-overwrite`.
 - Produce a standalone Patch: `patch-resource-repackaging`, `helmet-to-armor-merge`, `cross-armor-transfer`, or `same-key-reconstruction`.
 
-Use `--json` for Agent-facing calls. IDs are explicit GUIDs or unique prefixes; never guess an ambiguous selector. Plan export writes only its named output, validation is read-only, and every mutating `apply` requires explicit `--confirm`. `safe-deployment` is the only Skill that authorizes GameData writes. The standalone Patch Skills output fresh external directories and do not import, enable, or deploy their results. `mod-management` is a legacy aggregate pointer, not a preferred workflow.
+Use `--json` for Agent-facing calls. IDs are explicit GUIDs or unique prefixes; never guess an ambiguous selector. Plan export writes only its named output, validation is read-only, and every mutating `apply` requires explicit `--confirm`. Only `deploy apply` writes GameData; both `safe-deployment` and `generated-patch-integration` may invoke it after explicit confirmation. The standalone Patch Skills output fresh external directories and do not import, enable, or deploy their results. `mod-management` is a retired aggregate pointer and is not exportable as an installable Skill.

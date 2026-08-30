@@ -18,7 +18,7 @@ public sealed record CliDeactivationPlanDocument(
 	IReadOnlyList<CliDeploymentDiagnostic> Diagnostics)
 {
 	public const string CurrentSchema = "hd2mod.deactivation-plan";
-	public const int CurrentVersion = 1;
+	public const int CurrentVersion = 2;
 	public bool IsReady => !Diagnostics.Any(diagnostic => diagnostic.Blocking);
 }
 
@@ -36,7 +36,8 @@ public sealed record CliDeactivationExternalFile(
 	string TargetRelativePath,
 	string? NodeId,
 	long Length,
-	string Sha256);
+	string Sha256,
+	ExternalInstallFileKind Kind = ExternalInstallFileKind.ReShadePlugin);
 
 internal sealed record CliDeactivationBuildResult(
 	CliDeactivationPlanDocument Document,
@@ -102,7 +103,8 @@ internal static class CliDeactivationPlanArtifacts
 				file.TargetRelativePath,
 				CliProjections.FormatId(file.NodeId),
 				file.Length,
-				file.Sha256))
+				file.Sha256,
+				file.Kind))
 			.ToArray();
 		return new CliDeactivationBuildResult(CreateDocument(target, ownership, patches, externalFiles, diagnostics), inspection);
 	}

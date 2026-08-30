@@ -185,25 +185,88 @@ public sealed class DeploymentCliTests
 		Assert.Empty(Directory.EnumerateFiles(fixture.GameDataDirectory, "*.patch_*", SearchOption.TopDirectoryOnly));
 	}
 
+	[Fact]
+	public async Task ExternalInspectionAndDeployment_ReShadeComponentsArePlannedTrackedAndSafelyRemoved()
+	{
+		await using var fixture = await DeploymentFixture.CreateAsync(luaPatchCount: 0, includeExternalComponents: true);
+		var externalNodeId = Assert.IsType<ModNodeId>(fixture.ExternalNodeId);
+		var deploymentPlanPath = Path.Combine(fixture.RootDirectory, "external-deploy.json");
+		var deactivationPlanPath = Path.Combine(fixture.RootDirectory, "external-deactivate.json");
+		var gameBin = Path.Combine(Directory.GetParent(fixture.GameDataDirectory)!.FullName, "bin");
+
+		var inspection = await CliTestConsole.RunCapturedAsync(
+			"mod", "external", "inspect", externalNodeId.Value.ToString("D"),
+			"--library", fixture.LibraryRoot,
+			"--json");
+		Assert.Equal(0, inspection.ExitCode);
+		using (var document = inspection.ParseJson())
+		{
+			var external = document.RootElement.GetProperty("external");
+			Assert.Equal(2, external.GetProperty("files").GetArrayLength());
+			Assert.Contains(external.GetProperty("files").EnumerateArray(), file => file.GetProperty("kind").GetString() == "reshadeplugin");
+			Assert.Contains(external.GetProperty("files").EnumerateArray(), file => file.GetProperty("kind").GetString() == "reshadepreset");
+			Assert.Contains(external.GetProperty("unrecognizedExternalPaths").EnumerateArray(), path => path.GetString() == "ReShade.ini");
+		}
+
+		Assert.Equal(0, await CliApplication.RunAsync(
+		[
+			"deploy", "plan", "active", "--manager-root", fixture.ManagerRoot, "--game-data", fixture.GameDataDirectory, "--output", deploymentPlanPath, "--json",
+		]));
+		var deploymentPlan = await CliDeploymentPlanArtifacts.ReadDocumentAsync(deploymentPlanPath);
+		Assert.Equal(2, deploymentPlan.ExternalFiles.Count);
+		Assert.Contains(deploymentPlan.ExternalFiles, file => file.Kind == ExternalInstallFileKind.ReShadePlugin && file.TargetRelativePath == "fixture.addon64");
+		Assert.Contains(deploymentPlan.ExternalFiles, file => file.Kind == ExternalInstallFileKind.ReShadePreset && file.TargetRelativePath == "presets/fixture.ini");
+		Assert.Equal(0, await CliApplication.RunAsync(
+		[
+			"deploy", "apply", "--manager-root", fixture.ManagerRoot, "--game-data", fixture.GameDataDirectory, "--plan", deploymentPlanPath, "--confirm", "--json",
+		]));
+
+		var state = await new JsonActivationStateStore().TryLoadAsync(fixture.GameDataDirectory);
+		Assert.NotNull(state);
+		Assert.Equal(2, state!.ExternalFiles.Count);
+		Assert.Contains(state.ExternalFiles, file => file.Kind == ExternalInstallFileKind.ReShadePlugin && file.TargetRelativePath == "fixture.addon64");
+		Assert.Contains(state.ExternalFiles, file => file.Kind == ExternalInstallFileKind.ReShadePreset && file.TargetRelativePath == "presets/fixture.ini");
+		Assert.True(File.Exists(Path.Combine(gameBin, "fixture.addon64")));
+		Assert.True(File.Exists(Path.Combine(gameBin, "presets", "fixture.ini")));
+		Assert.False(File.Exists(Path.Combine(gameBin, "ReShade.ini")));
+
+		Assert.Equal(0, await CliApplication.RunAsync(
+		[
+			"deploy", "deactivate", "plan", "--manager-root", fixture.ManagerRoot, "--game-data", fixture.GameDataDirectory, "--output", deactivationPlanPath, "--json",
+		]));
+		var deactivationPlan = await CliDeactivationPlanArtifacts.ReadDocumentAsync(deactivationPlanPath);
+		Assert.Equal(2, deactivationPlan.ExternalFiles.Count);
+		Assert.Contains(deactivationPlan.ExternalFiles, file => file.Kind == ExternalInstallFileKind.ReShadePlugin);
+		Assert.Contains(deactivationPlan.ExternalFiles, file => file.Kind == ExternalInstallFileKind.ReShadePreset);
+		Assert.Equal(0, await CliApplication.RunAsync(
+		[
+			"deploy", "deactivate", "apply", "--manager-root", fixture.ManagerRoot, "--game-data", fixture.GameDataDirectory, "--plan", deactivationPlanPath, "--confirm", "--json",
+		]));
+		Assert.False(File.Exists(Path.Combine(gameBin, "fixture.addon64")));
+		Assert.False(File.Exists(Path.Combine(gameBin, "presets", "fixture.ini")));
+	}
+
 	private sealed class DeploymentFixture : IAsyncDisposable
 	{
-		private DeploymentFixture(string rootDirectory, string managerRoot, string libraryRoot, string gameDataDirectory)
+		private DeploymentFixture(string rootDirectory, string managerRoot, string libraryRoot, string gameDataDirectory, ModNodeId? externalNodeId)
 		{
 			RootDirectory = rootDirectory;
 			ManagerRoot = managerRoot;
 			LibraryRoot = libraryRoot;
 			GameDataDirectory = gameDataDirectory;
+			ExternalNodeId = externalNodeId;
 		}
 
 		public string RootDirectory { get; }
 		public string ManagerRoot { get; }
 		public string LibraryRoot { get; }
 		public string GameDataDirectory { get; }
+		public ModNodeId? ExternalNodeId { get; }
 
-		public static ValueTask<DeploymentFixture> CreateAsync(bool includeLuaPatch = false)
-			=> CreateAsync(includeLuaPatch ? 1 : 0);
+		public static ValueTask<DeploymentFixture> CreateAsync(bool includeLuaPatch = false, bool includeExternalComponents = false)
+			=> CreateAsync(includeLuaPatch ? 1 : 0, includeExternalComponents);
 
-		public static async ValueTask<DeploymentFixture> CreateAsync(int luaPatchCount)
+		public static async ValueTask<DeploymentFixture> CreateAsync(int luaPatchCount, bool includeExternalComponents = false)
 		{
 			var root = Path.Combine(Path.GetTempPath(), "hd2-cli-deploy-" + Guid.NewGuid().ToString("N"));
 			var manager = Path.Combine(root, "manager");
@@ -236,10 +299,29 @@ public sealed class DeploymentCliTests
 					[]);
 				entries.Add(new ProfileEntry(nodeId, 0, DateTimeOffset.UtcNow));
 			}
+			ModNodeId? externalNodeId = null;
+			if (includeExternalComponents)
+			{
+				var nodeId = ModNodeId.New();
+				externalNodeId = nodeId;
+				var relativePath = "reshade-fixture";
+				var modDirectory = Path.Combine(library, relativePath);
+				Directory.CreateDirectory(Path.Combine(modDirectory, "bin", "presets"));
+				await File.WriteAllBytesAsync(Path.Combine(modDirectory, "fixture.addon64"), [0x01, 0x02, 0x03]);
+				await File.WriteAllTextAsync(Path.Combine(modDirectory, "bin", "presets", "fixture.ini"), "Techniques=FixtureTechnique\nTechniqueSorting=FixtureTechnique\n");
+				await File.WriteAllTextAsync(Path.Combine(modDirectory, "ReShade.ini"), "Techniques=ThisGlobalConfigurationMustNotDeploy\n");
+				nodes[nodeId] = new ModNode(
+					nodeId,
+					relativePath,
+					new ModNodeMetadata("ReShade Fixture", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, ModNodeKind.ReShade),
+					[],
+					[]);
+				entries.Add(new ProfileEntry(nodeId, entries.Count, DateTimeOffset.UtcNow));
+			}
 			var profile = new Profile(ProfileId.New(), "Default", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, entries);
 			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, nodes, [profile], profile.Id);
 			await new JsonModLibraryStore(new StoragePaths(manager, library), allowLegacyMigration: false).SaveAsync(snapshot);
-			return new DeploymentFixture(root, manager, library, gameData);
+			return new DeploymentFixture(root, manager, library, gameData, externalNodeId);
 		}
 
 		private static async ValueTask WriteFixtureLuaPatchAsync(string patchPath)

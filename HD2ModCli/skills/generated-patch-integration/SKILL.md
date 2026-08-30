@@ -7,7 +7,7 @@ description: Safely take a verified standalone Patch output through import, exac
 
 Use this only after one output-producing Skill has completed successfully (`patch repair`, `patch repackage`, `equipment helmet-merge`, `equipment cross-armor`, or an importable decoration package). The output tool itself never imports or deploys its result.
 
-1. Keep the output directory outside both the Mod library and the game directory. Inspect the source/output facts first when needed:
+1. Keep the output directory outside both the Mod library and the game directory. Inspect the source facts first when needed:
 
 ```powershell
 hd2mod mod analyze <source-mod-id> --library "<library>" --json
@@ -21,7 +21,11 @@ hd2mod import validate --plan generated-import-plan.json --manager-root "<manage
 hd2mod import apply --plan generated-import-plan.json --manager-root "<manager>" --confirm --json
 ```
 
-Read the imported Mod GUID from the apply JSON. Do not assume the directory name is its identity.
+Read the imported Mod GUID from the apply JSON. Do not assume the directory name is its identity. Immediately analyze the newly imported Mod; its AssetKey list, not the old source Mod's list, is the input for post-deployment winner checks:
+
+```powershell
+hd2mod mod analyze <imported-mod-id> --library "<library>" --json
+```
 
 3. Put the imported Mod at the intended final logical position using Profile alignment. Export the chosen Profile, edit only `entryNodeIds` so it contains the imported GUID exactly once in the desired order, then run the frozen plan:
 
@@ -43,4 +47,4 @@ hd2mod gamedata deployment inspect --game-data "<data>" --json
 hd2mod gamedata override show 0x<TYPE> 0x<FILE> --game-data "<data>" --json
 ```
 
-Stop on any blocking diagnostic. Never bypass this chain by copying generated Patch files directly into GameData: deployment records ownership, Lua compilation, external/ReShade files, and cleanup state that raw copying cannot safely reproduce.
+For every AssetKey reported by the newly imported Mod's `mod analyze`, check the actual winner with `gamedata override show`. Stop on any blocking diagnostic. Never bypass this chain by copying generated Patch files directly into GameData: deployment records ownership, Lua compilation, external/ReShade files, and cleanup state that raw copying cannot safely reproduce.

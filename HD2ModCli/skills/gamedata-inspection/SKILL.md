@@ -16,6 +16,8 @@ hd2mod gamedata asset find 0x<TypeID> 0x<FileID> --manager-root "<manager>" --ga
 hd2mod gamedata override status --game-data "<data-or-copy>" --json
 hd2mod gamedata override list --game-data "<data-or-copy>" --only-competition --limit 100 --json
 hd2mod gamedata override show 0x<TypeID> 0x<FileID> --game-data "<data-or-copy>" --json
+
+hd2mod gamedata browser --manager-root "<manager>" --library "<library>" --game-data "<data-or-copy>" --limit 100 --json
 ```
 
-Asset IDs are fixed 16-digit hexadecimal strings in output; never convert them to JavaScript numbers. Follow `nextCursor` exactly for the next page. Only treat archive mappings as usable when `index.mappingTrusted` is true, and only use override results for future write planning when `trusted` is true. `gamedata browser` is an explicit, expensive UI-parity diagnostic; it scans library Patch facts directly but never writes derived caches.
+Asset IDs are fixed 16-digit hexadecimal strings in output; never convert them to JavaScript numbers. Follow `nextCursor` exactly for the next page. Only treat archive mappings as usable when `index.mappingTrusted` is true, and only use override results for future write planning when `trusted` is true. Use `gamedata browser` only when the library logical order, deployed Patch state, original Archive mapping, and actual winners must be compared together; it is explicit and expensive, but never writes derived caches.

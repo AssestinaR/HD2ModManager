@@ -23,6 +23,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "profile-alignment", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-analysis", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "generated-patch-integration", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "lua-reshade-external-deployment", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -111,6 +112,25 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("profile align", content, StringComparison.Ordinal);
 		Assert.Contains("deploy plan", content, StringComparison.Ordinal);
 		Assert.Contains("gamedata override show", content, StringComparison.Ordinal);
+		Assert.Contains("<imported-mod-id>", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void LuaReShadeExternalDeploymentSkill_DescribesDirectInspectionAndGuardedCleanup()
+	{
+		var content = CliSkillCatalog.GetContent("lua-reshade-external-deployment");
+
+		Assert.Contains("mod external inspect", content, StringComparison.Ordinal);
+		Assert.Contains("lua.inputCount", content, StringComparison.Ordinal);
+		Assert.Contains("deploy deactivate apply", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void LegacyAggregateSkill_IsNotExportableAsAnInstallableCapability()
+	{
+		var exception = Assert.Throws<CliUserException>(() => CliSkillCatalog.ResolveCapability("mod-management"));
+
+		Assert.Equal("AgentSkillLegacyUnavailable", exception.Code);
 	}
 
 	[Fact]

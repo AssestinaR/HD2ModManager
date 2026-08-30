@@ -26,7 +26,7 @@ public sealed record CliDeploymentPlanDocument(
 	IReadOnlyList<CliDeploymentDiagnostic> Diagnostics)
 {
 	public const string CurrentSchema = "hd2mod.deployment-plan";
-	public const int CurrentVersion = 1;
+	public const int CurrentVersion = 2;
 
 	public bool IsReady => !Diagnostics.Any(diagnostic => diagnostic.Blocking);
 }
@@ -71,7 +71,8 @@ public sealed record CliDeploymentExternalFile(
 	ExternalInstallTargetRoot TargetRoot,
 	string TargetRelativePath,
 	long Length,
-	string Sha256);
+	string Sha256,
+	ExternalInstallFileKind Kind = ExternalInstallFileKind.ReShadePlugin);
 
 public sealed record CliDeploymentLua(
 	bool RequiresMaterialization,
@@ -252,7 +253,8 @@ internal static class CliDeploymentPlanArtifacts
 				mapping.TargetRoot,
 				mapping.TargetRelativePath,
 				mapping.Length,
-				mapping.Sha256))
+				mapping.Sha256,
+				mapping.Kind))
 			.ToArray();
 		var lua = new CliDeploymentLua(
 			luaPlan.RequiresMaterialization,
@@ -418,7 +420,8 @@ internal static class CliDeploymentPlanArtifacts
 				mapping.TargetRoot,
 				mapping.TargetRelativePath,
 				mapping.Length,
-				mapping.Sha256))
+				mapping.Sha256,
+				mapping.Kind))
 			.ToArray();
 		var lua = new CliDeploymentLua(
 			current.LuaPlan.RequiresMaterialization,

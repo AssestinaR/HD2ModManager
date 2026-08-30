@@ -357,6 +357,15 @@ public static class CliApplication
 				() => FormatModAnalysis(analysis));
 			return analysis.IsReady ? 0 : 2;
 		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "external" && command[2] == "inspect")
+		{
+			EnsureModExternalInspectOptions(invocation.Options);
+			var inspection = await CliModExternalInspection.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3]).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReady, external = inspection },
+				() => FormatModExternalInspection(inspection));
+			return inspection.IsReady ? 0 : 2;
+		}
 		if (command.Length == 4 && command[0] == "mod" && command[1] == "image" && command[2] == "show")
 		{
 			EnsureModImageShowOptions(invocation.Options);
@@ -1827,6 +1836,18 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureModExternalInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod external inspect 仅接受 Mod 标识、--manager-root/--library 与 --json；它直接只读扫描受支持的外部组件，不会写缓存、SQLite、Mod 库或 GameData。 ");
+		}
+	}
+
 	private static void EnsureModImageShowOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -2275,6 +2296,15 @@ public static class CliApplication
 			+ (analysis.IsReady
 				? " 未写入 Mod 库、缓存、SQLite 或 GameData。"
 				: " 返回了可读的部分结果；请查看 JSON 中的 diagnostics。");
+	}
+
+	private static string FormatModExternalInspection(CliModExternalInspectionDocument inspection)
+	{
+		var blocking = inspection.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return $"外部组件检查：{inspection.Source.Name}；可安全部署 {inspection.Files.Count} 个；未识别候选 {inspection.UnrecognizedExternalPaths.Count} 个；同 Mod 冲突 {inspection.Conflicts.Count} 个；阻断诊断 {blocking}。"
+			+ (inspection.IsReady
+				? " 未写入缓存、SQLite、Mod 库或 GameData。"
+				: " 已拒绝把存在冲突或无法读取的组件纳入自动部署；请查看 JSON 中的 diagnostics。");
 	}
 
 	private static object CreateModImageInspectionProjection(CliModImageInspection inspection)
@@ -4054,6 +4084,7 @@ HD2 Mod Manager 命令行
 	  hd2mod mod list --library <Mod库目录> --json
 	  hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod analyze <GUID或唯一前缀> --library <Mod库目录> --json
+	  hd2mod mod external inspect <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
@@ -4142,7 +4173,7 @@ HD2 Mod Manager 命令行
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
 	  --host <GUID或前缀>      Option 操作的明确主体，或 decoration package plan 的明确目标主体。
 	  --add-to-profile <目标>   import plan / import batch plan 专用；将目标配置身份与版本固定到导入计划，apply 只加入可部署条目，不自动部署。
-	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
+	  --position <正整数>      Option 直属顺序或 Profile 逻辑顺序的从 1 开始插入槽位；末尾规则由对应命令的输出说明。
 	  --limit <1-500>          gamedata 分页查询的单页条目数。
 	  --cursor <cursor>        gamedata 返回的下一页游标；索引或覆盖图变化后会拒绝混用。
 	  --with-effective         archive show 额外读取当前 Data-Patch 实际赢家。

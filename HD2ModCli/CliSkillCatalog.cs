@@ -36,6 +36,7 @@ public static class CliSkillCatalog
 		new("profile-management", "hd2mod-profile-management", "创建、管理与排序 Profile；不自动部署。", "HD2ModCli.Skill.profile-management"),
 		new("profile-alignment", "hd2mod-profile-alignment", "以可编辑规格和冻结计划精确对齐一个 Profile；仅写 profiles.json。", "HD2ModCli.Skill.profile-alignment"),
 		new("safe-deployment", "hd2mod-safe-deployment", "以 plan → validate → apply 安全部署或停用已证明归属的 Patch。", "HD2ModCli.Skill.safe-deployment"),
+		new("lua-reshade-external-deployment", "hd2mod-lua-reshade-external-deployment", "审阅并安全部署 Lua 合成以及 ReShade add-on/预设外部文件。", "HD2ModCli.Skill.lua-reshade-external-deployment"),
 		new("patch-resource-repackaging", "hd2mod-patch-resource-repackaging", "审阅并选择完整 AssetKey Payload，输出独立 Patch，不修改来源或部署。", "HD2ModCli.Skill.patch-resource-repackaging"),
 		new("generated-patch-integration", "hd2mod-generated-patch-integration", "将已验证的独立 Patch 输出安全导入、精确接入 Profile、部署并检查实际覆盖赢家。", "HD2ModCli.Skill.generated-patch-integration"),
 		new("helmet-to-armor-merge", "hd2mod-helmet-to-armor-merge", "审阅完整 Armor/Any Helmet 集合并输出独立的头盔合并 Patch。", "HD2ModCli.Skill.helmet-to-armor-merge"),
@@ -69,6 +70,10 @@ public static class CliSkillCatalog
 			throw new CliUserException(
 				"AgentSkillNotCapability",
 				$"{RouterSkillName} 是兼容路由器，不是可安装能力 Skill。请导出 library-inspection 或 safe-import；如需旧式路由文件，请使用 hd2mod agent skill --output SKILL.md。");
+		if (definition.IsLegacy)
+			throw new CliUserException(
+				"AgentSkillLegacyUnavailable",
+				$"{definition.Name} 是已退役的兼容指针，不再作为可安装能力导出。请改为导出 mod-metadata、option-management 或 safe-library-deletion。");
 		return definition;
 	}
 

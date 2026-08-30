@@ -5,7 +5,7 @@ description: Inspect an HD2 Mod Manager library, relationships, activation state
 
 # HD2 Mod Library Inspection
 
-Use only for read-only questions. It does not import, delete, deploy, or write a plan.
+Use this for state inspection. All commands below are read-only except `context export`, which writes only its explicitly named JSON output and never changes Manager, library, Profile, or GameData state.
 
 ```powershell
 hd2mod status --manager-root "<manager>" --json
