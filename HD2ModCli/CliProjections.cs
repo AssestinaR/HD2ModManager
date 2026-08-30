@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.12";
+	public const string ProtocolVersion = "1.13";
 
 	public static object CreateCapabilities()
 		=> new
@@ -23,6 +23,7 @@ public static class CliProjections
 				new { name = "library sync validate", safety = "read-only", description = "重扫库目录并拒绝计划、Patch 或待删除状态漂移" },
 				new { name = "library sync apply", safety = "explicit-confirm", description = "仅按验证通过的计划更新 library.json 的节点 Patch 记录；不导入、删除或部署" },
 				new { name = "decoration inspect source", safety = "read-only", description = "读取一个普通/选项 Mod 的可选装饰 Unit、默认选择和建议附着策略；不写缓存或包" },
+				new { name = "decoration show", safety = "read-only", description = "读取一个已导入装饰包的来源、附着策略、声明主体与当前启用状态" },
 				new { name = "decoration package plan", safety = "explicit-export", description = "导出固定来源/目标、Unit 选择和 Patch 家族指纹的外部装饰包计划" },
 				new { name = "decoration package validate", safety = "read-only", description = "重建来源候选并拒绝库、Patch、sidecar、目标或附件策略漂移" },
 				new { name = "decoration package apply", safety = "explicit-confirm", description = "仅发布新的库外且游戏目录外装饰包；不导入、启用、部署或重建 Overwrite" },

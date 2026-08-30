@@ -122,6 +122,17 @@ public static class CliApplication
 				() => FormatDecorationSourceInspection(inspection));
 			return inspection.IsReady ? 0 : 2;
 		}
+		if (command.Length == 3 && command[0] == "decoration" && command[1] == "show")
+		{
+			EnsureDecorationShowOptions(invocation.Options);
+			var inspection = await CliDecorationManagementInspectionArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command[2])
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReadable, decoration = inspection },
+				() => FormatDecorationManagementInspection(inspection));
+			return inspection.IsReadable ? 0 : 2;
+		}
 		if (command.Length == 4 && command[0] == "decoration" && command[1] == "package" && command[2] == "plan")
 		{
 			EnsureDecorationPackagePlanOptions(invocation.Options);
@@ -882,6 +893,17 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureDecorationShowOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration show 仅接受装饰 Mod 标识、--manager-root、--library 与 --json。 ");
+		}
+	}
+
 	private static void EnsureDecorationPackagePlanOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
@@ -1369,6 +1391,20 @@ public static class CliApplication
 		return blocking.Length == 0
 			? $"装饰来源检查未找到可用 Unit：{inspection.SourceModName}。"
 			: $"装饰来源检查未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatDecorationManagementInspection(CliDecorationManagementInspection inspection)
+	{
+		if (!inspection.IsReadable)
+		{
+			var blocking = inspection.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+			return blocking.Length == 0
+				? $"装饰详情不可读取：{inspection.DecorationName}。"
+				: $"装饰详情不可读取：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+		}
+		var available = inspection.DeclaredHosts.Count(host => host.IsAvailableForActivation);
+		var enabled = inspection.DeclaredHosts.Count(host => host.IsEnabled);
+		return $"装饰详情：{inspection.DecorationName}；来源 Unit {inspection.SourceUnits.Count} 个；声明主体 {inspection.DeclaredHosts.Count} 个（可启用 {available}，当前启用 {enabled}）。";
 	}
 
 	private static string FormatDecorationPackagePlan(CliDecorationPackagePlanDocument document, string outputPath)
@@ -2116,6 +2152,7 @@ HD2 Mod Manager 命令行
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync apply --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod decoration inspect source <Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod decoration show <装饰 Mod GUID或前缀> --manager-root <管理器目录> --json
 	  hd2mod decoration package plan <来源 Mod GUID或前缀> --host <目标主体 GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output decoration-package-plan.json --json
 	  hd2mod decoration package validate --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod decoration package apply --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json

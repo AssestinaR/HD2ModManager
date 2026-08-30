@@ -12,6 +12,7 @@ hd2mod decoration inspect source <source-id> --manager-root "<manager>" --librar
 hd2mod decoration package plan <source-id> --host <target-host-id> --manager-root "<manager>" --library "<library>" --game-data "<data>" --output decoration-plan.json --json
 hd2mod decoration package validate --plan decoration-plan.json --manager-root "<manager>" --library "<library>" --game-data "<data>" --json
 hd2mod decoration package apply --plan decoration-plan.json --manager-root "<manager>" --library "<library>" --game-data "<data>" --output "<new-external-directory>" --confirm --json
+hd2mod decoration show <imported-decoration-id> --manager-root "<manager>" --library "<library>" --json
 ```
 
-Review `selections` and `attachment` in the plan before validating. The plan fixes source/target IDs and fingerprints every source base Patch plus `.stream` and `.gpu_resources`; validation rejects drift. Output must be a new directory outside the Mod library, GameData, and game root. Afterwards use `safe-import` to bring the generated package into the library; activation and generated `Overwrite` rebuilding are intentionally separate capabilities.
+Review `selections` and `attachment` in the plan before validating. The plan fixes source/target IDs and fingerprints every source base Patch plus `.stream` and `.gpu_resources`; validation rejects drift. Output must be a new directory outside the Mod library, GameData, and game root. Afterwards use `safe-import` to bring the generated package into the library, then use `decoration show` to inspect its declared targets and activation state. Activation and generated `Overwrite` rebuilding are intentionally separate capabilities.
