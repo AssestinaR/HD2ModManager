@@ -31,6 +31,7 @@ public static class CliSkillCatalog
 		new("profile-management", "hd2mod-profile-management", "创建、管理与排序 Profile；不自动部署。", "HD2ModCli.Skill.profile-management"),
 		new("safe-deployment", "hd2mod-safe-deployment", "以 plan → validate → apply 安全部署或停用已证明归属的 Patch。", "HD2ModCli.Skill.safe-deployment"),
 		new("patch-resource-repackaging", "hd2mod-patch-resource-repackaging", "审阅并选择完整 AssetKey Payload，输出独立 Patch，不修改来源或部署。", "HD2ModCli.Skill.patch-resource-repackaging"),
+		new("same-key-reconstruction", "hd2mod-same-key-reconstruction", "固定一个来源 Patch，审阅并输出 Same-key Canonical 重构候选。", "HD2ModCli.Skill.same-key-reconstruction"),
 		new("mod-management", "hd2mod-mod-management", "兼容聚合 Skill：请优先使用更窄的 mod-metadata、option-management 或 safe-library-deletion。", "HD2ModCli.Skill.mod-management", IsLegacy: true),
 	];
 

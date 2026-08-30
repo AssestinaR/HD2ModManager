@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.7";
+	public const string ProtocolVersion = "1.8";
 
 	public static object CreateCapabilities()
 		=> new
@@ -51,6 +51,10 @@ public static class CliProjections
 				new { name = "patch repackage plan", safety = "explicit-export", description = "导出可审阅的 AssetKey 资源重打包计划；默认仅选择无冲突候选" },
 				new { name = "patch repackage validate", safety = "read-only", description = "重新扫描来源 Patch、验证选择、Payload 与 TOC 指纹，不写入文件" },
 				new { name = "patch repackage apply", safety = "explicit-confirm", description = "仅将经验证的完整 AssetKey 资源写入新的独立输出目录；不修改 Mod 库或 GameData" },
+				new { name = "patch repair inspect", safety = "read-only", description = "检查一个明确来源 Patch 的 Same-key Canonical 重构资格、Unit 目标和 GameData 索引，不写入来源或缓存" },
+				new { name = "patch repair plan", safety = "explicit-export", description = "导出固定 Mod、来源 Patch 与 GameData 指纹的 Same-key 重构计划" },
+				new { name = "patch repair validate", safety = "read-only", description = "重新读取来源、GameData 指纹与 Canonical 重构资格，不写入文件" },
+				new { name = "patch repair apply", safety = "explicit-confirm", description = "只将已验证的 Same-key Canonical 候选输出到新的库外目录；不替换、导入或部署" },
 				new { name = "import inspect", safety = "read-only", description = "扫描待导入文件夹或压缩包，并输出导入前规划，不写入 Mod 库" },
 				new { name = "import plan", safety = "explicit-export", description = "仅在给定 --output 后写出带来源/导入树指纹的可审计导入计划，不写入 Mod 库" },
 				new { name = "import validate", safety = "read-only", description = "复扫来源并检查目标库、计划指纹和管理器进程；不写入 Mod 库" },
@@ -64,7 +68,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"Patch 重构、替换护甲、头盔合并、装饰包生成和任何自定义 Patch 字节编辑工作流。",
+				"批量/原地 Patch 修复、替换护甲、头盔合并、装饰包生成和任何自定义 Patch 字节编辑工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
@@ -78,6 +82,7 @@ public static class CliProjections
 				"CLI 不会接管、清空或覆盖未登记 Patch；部署失败时仅恢复本次事务移动的已证明管理器 Patch。",
 				"CLI 物化 Lua 时仅做编译验证，不在本地 Lua 运行时执行 Mod Lua。",
 				"patch repackage 只允许在计划中选择已有完整 AssetKey Payload；apply 只写入新的 Mod 库外目录，绝不修改来源、自动导入或部署。",
+				"patch repair 只允许 Core 的固定 Same-key Canonical 重构配方；CLI 必须固定一个来源 Patch 并重验来源/当前 GameData 指纹，绝不替换库内文件。",
 				"删除必须先通过关系、激活状态和生成 Overwrite 安全预检；CLI 遇到活跃装饰或临时头盔合并会拒绝猜测性删除。",
 			},
 		};

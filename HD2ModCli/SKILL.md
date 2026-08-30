@@ -21,5 +21,6 @@ hd2mod agent skills export <skill-name> --output .\.agents\skills
 - `profile-management` — Profile lifecycle and logical order.
 - `safe-deployment` — audited GameData deployment or tracked deactivation.
 - `patch-resource-repackaging` — audited whole-entry resource selection into a standalone Patch.
+- `same-key-reconstruction` — audited Canonical reconstruction of one fixed source Patch into a standalone candidate.
 
-Do not load every Skill by default. `mod-management` is a legacy aggregate only. `safe-deployment` is the only Skill that authorizes GameData writes. `patch-resource-repackaging` only writes a new library-external output directory; neither Skill authorizes Patch reconstruction, armor replacement, or arbitrary Patch-byte editing.
+Do not load every Skill by default. `mod-management` is a legacy aggregate only. `safe-deployment` is the only Skill that authorizes GameData writes. The two standalone Patch Skills only write new library-external output directories; neither authorizes in-place Mod replacement, armor replacement, or arbitrary Patch-byte editing.

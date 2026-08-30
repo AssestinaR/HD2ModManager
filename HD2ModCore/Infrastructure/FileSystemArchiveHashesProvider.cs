@@ -15,7 +15,6 @@ public sealed class FileSystemArchiveHashesProvider : IArchiveHashesProvider
 
 	public async ValueTask<string> GetArchiveHashesJsonAsync(CancellationToken cancellationToken = default)
 	{
-		Directory.CreateDirectory(_paths.ResourcesDirectory);
 		if (!File.Exists(_paths.ArchiveHashesPath))
 		{
 			return "{}";

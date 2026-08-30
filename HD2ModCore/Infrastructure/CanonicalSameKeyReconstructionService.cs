@@ -48,12 +48,16 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
 
     public async ValueTask<ModSameKeyReconstructionState> InspectAsync(
         ModNode source, string modsRootDirectory, string gameDataDirectory,
-        CancellationToken cancellationToken = default, IProgress<OperationProgressEvent>? progress = null, Guid? operationId = null)
+        CancellationToken cancellationToken = default, IProgress<OperationProgressEvent>? progress = null, Guid? operationId = null,
+        string? sourcePatchTocPath = null)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var patch = FindBasePatchPaths(source, modsRootDirectory).FirstOrDefault();
+        var patch = ResolveBasePatchPath(source, modsRootDirectory, sourcePatchTocPath);
         var issues = new List<CoreIssue>();
-        if (patch is null) issues.Add(Error("PatchRequired", "Mod 没有 Patch 主文件。", source.Id));
+        if (patch is null) issues.Add(Error(
+            string.IsNullOrWhiteSpace(sourcePatchTocPath) ? "PatchRequired" : "SourcePatchNotFound",
+            string.IsNullOrWhiteSpace(sourcePatchTocPath) ? "Mod 没有 Patch 主文件。" : "指定的来源 Patch 主文件不属于当前 Mod 或不存在。",
+            source.Id));
         if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory)) issues.Add(Error("GameDataMissing", "Game Data 不可用。", source.Id));
         var current = false;
         if (issues.Count == 0)
@@ -80,12 +84,18 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
     public async ValueTask<SameKeyReconstructionOperationResult> GenerateCandidateAsync(
         ModNode source, string modsRootDirectory, string gameDataDirectory, string outputRootDirectory,
         CancellationToken cancellationToken = default, IProgress<OperationProgressEvent>? progress = null, Guid? operationId = null,
-        bool useSharedHiddenUnitTemplate = true)
+        bool useSharedHiddenUnitTemplate = true, string? sourcePatchTocPath = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         Report(progress, operationId, "InspectEligibility", "正在检查同 ID Canonical 重建资格", 0, 1);
-        var patch = FindBasePatchPaths(source, modsRootDirectory).FirstOrDefault();
-        if (patch is null) return Failure([Error("PatchRequired", "Mod 没有 Patch 主文件。", source.Id)]);
+        var patch = ResolveBasePatchPath(source, modsRootDirectory, sourcePatchTocPath);
+        if (patch is null)
+        {
+            return Failure([Error(
+                string.IsNullOrWhiteSpace(sourcePatchTocPath) ? "PatchRequired" : "SourcePatchNotFound",
+                string.IsNullOrWhiteSpace(sourcePatchTocPath) ? "Mod 没有 Patch 主文件。" : "指定的来源 Patch 主文件不属于当前 Mod 或不存在。",
+                source.Id)]);
+        }
         if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory)) return Failure([Error("GameDataMissing", "Game Data 不可用。", source.Id)]);
         var status = await assetIndex.GetIndexStatusAsync(gameDataDirectory, await archiveHashes.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
         await hiddenUnitCache.InitializeAsync(status.CurrentSourceFingerprint, status.IsCurrent, cancellationToken).ConfigureAwait(false);
@@ -845,6 +855,24 @@ public sealed class CanonicalSameKeyReconstructionService : IModSameKeyReconstru
         => Directory.Exists(Path.Combine(root, node.RelativePath))
             ? Directory.EnumerateFiles(Path.Combine(root, node.RelativePath), "*", SearchOption.TopDirectoryOnly).Where(path => fileNameParser.TryParse(Path.GetFileName(path), out var info) && info?.SidecarKind == PatchSidecarKind.Base).OrderBy(path => path).ToArray()
             : Array.Empty<string>();
+
+    // Desktop callers preserve the historical "first base Patch" behavior by
+    // omitting sourcePatchTocPath.  Non-interactive callers can pin an exact
+    // on-disk base Patch, but never point this service at an arbitrary file.
+    private string? ResolveBasePatchPath(ModNode node, string root, string? sourcePatchTocPath)
+    {
+        var candidates = FindBasePatchPaths(node, root);
+        if (string.IsNullOrWhiteSpace(sourcePatchTocPath)) return candidates.FirstOrDefault();
+        try
+        {
+            var requested = Path.GetFullPath(sourcePatchTocPath);
+            return candidates.FirstOrDefault(path => string.Equals(Path.GetFullPath(path), requested, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
 
     private SourceReadScope BeginSourceReadScope(ModNode source, string patch, Guid? operationId)
     {

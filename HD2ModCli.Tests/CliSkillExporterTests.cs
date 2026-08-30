@@ -13,6 +13,7 @@ public sealed class CliSkillExporterTests
 
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "safe-deployment", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-resource-repackaging", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -22,6 +23,16 @@ public sealed class CliSkillExporterTests
 
 		Assert.Contains("patch repackage plan", content, StringComparison.Ordinal);
 		Assert.Contains("patch repackage apply", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void SameKeyReconstructionSkill_RequiresAConcreteSourcePatch()
+	{
+		var content = CliSkillCatalog.GetContent("same-key-reconstruction");
+
+		Assert.Contains("patch repair inspect", content, StringComparison.Ordinal);
+		Assert.Contains("availableSourcePatchFileNames", content, StringComparison.Ordinal);
+		Assert.Contains("patch repair apply", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

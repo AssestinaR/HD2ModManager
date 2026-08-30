@@ -381,6 +381,52 @@ public static class CliApplication
 				() => FormatPatchResourceRepackagingExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length is 4 or 5 && command[0] == "patch" && command[1] == "repair" && command[2] == "inspect")
+		{
+			EnsureSameKeyInspectOptions(invocation.Options);
+			var inspection = await CliSameKeyReconstructionPlanArtifacts
+				.InspectAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3], command.Length == 5 ? invocation.Command[4] : null)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.Inspection.Summary?.CanAttemptGenerate == true && !inspection.Inspection.Diagnostics.Any(diagnostic => diagnostic.Blocking), inspection = CreateSameKeyInspectionProjection(inspection.Inspection) },
+				() => FormatSameKeyInspection(inspection.Inspection));
+			return 0;
+		}
+		if (command.Length == 5 && command[0] == "patch" && command[1] == "repair" && command[2] == "plan")
+		{
+			EnsureSameKeyPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "patch repair plan");
+			var build = await CliSameKeyReconstructionPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3], invocation.Command[4])
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), repair = CreateSameKeyPlanProjection(build.Document) },
+				() => FormatSameKeyPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "patch", "repair", "validate"))
+		{
+			EnsureSameKeyValidateOptions(invocation.Options);
+			var document = await CliSameKeyReconstructionPlanArtifacts.ReadDocumentAsync(RequireSameKeyPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliSameKeyReconstructionPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateSameKeyValidationProjection(validation) },
+				() => FormatSameKeyValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "patch", "repair", "apply"))
+		{
+			EnsureSameKeyApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("SameKeyApplyConfirmationRequired", "patch repair apply 会写出一个新的 Same-key 候选 Patch；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliSameKeyReconstructionPlanArtifacts.ReadDocumentAsync(RequireSameKeyPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliSameKeyReconstructionExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options), RequireOutput(invocation.Options, "patch repair apply")).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateSameKeyExecutionProjection(execution) },
+				() => FormatSameKeyExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length == 3 && command[0] == "import" && command[1] == "inspect")
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -650,6 +696,49 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureSameKeyInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair inspect 仅接受 Mod、可选 Patch 文件名、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureSameKeyPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair plan 仅接受 Mod、Patch 文件名、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureSameKeyValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureSameKeyApplyOptions(CliGlobalOptions options)
+	{
+		if (options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair apply 仅接受 --plan、--manager-root、--library、--game-data、--output、--confirm 与 --json。输出必须是一个新的目录。 ");
+		}
+	}
+
 	private static void EnsureMetadataMutationOptions(CliGlobalOptions options, string command)
 	{
 		EnsureMutationBoundary(options, command);
@@ -772,6 +861,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("PatchResourcePlanRequired", "请通过 --plan <Patch资源重打包计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
+	private static string RequireSameKeyPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("SameKeyPlanRequired", "请通过 --plan <Same-key重构计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -964,6 +1060,59 @@ public static class CliApplication
 			execution.OutputDirectory,
 			execution.PatchTocPath,
 			execution.SelectedAssetCount,
+			diagnostics = execution.Diagnostics,
+			libraryMutation = "not-performed",
+			deployment = "not-performed",
+		};
+
+	private static object CreateSameKeyInspectionProjection(CliSameKeyReconstructionInspection inspection)
+		=> new
+		{
+			inspection.SourceNodeId,
+			inspection.SourceModName,
+			availableSourcePatchFileNames = inspection.AvailableSourcePatchFileNames,
+			inspection.SelectedSourcePatchFileName,
+			sourcePatch = inspection.SourcePatch,
+			gameData = inspection.GameData,
+			summary = inspection.Summary,
+			units = inspection.Units,
+			diagnostics = inspection.Diagnostics,
+		};
+
+	private static object CreateSameKeyPlanProjection(CliSameKeyReconstructionPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			request = document.Request,
+			inspection = CreateSameKeyInspectionProjection(document.Inspection),
+		};
+
+	private static object CreateSameKeyValidationProjection(CliSameKeyReconstructionValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateSameKeyPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateSameKeyExecutionProjection(CliSameKeyReconstructionExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.OutputDirectory,
+			execution.ReportJsonPath,
+			execution.ReportMarkdownPath,
+			execution.OutputUnitCount,
+			execution.ReplacementUnitCount,
+			execution.MinifyOnlyUnitCount,
+			execution.ReplacementMeshCount,
+			execution.MinifiedMeshCount,
 			diagnostics = execution.Diagnostics,
 			libraryMutation = "not-performed",
 			deployment = "not-performed",
@@ -1234,6 +1383,47 @@ public static class CliApplication
 			: $"Patch 资源重打包被拒绝：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
+	private static string FormatSameKeyInspection(CliSameKeyReconstructionInspection inspection)
+	{
+		if (inspection.SelectedSourcePatchFileName is null)
+			return $"Same-key 来源检查：{inspection.SourceModName}；可用 Patch：{inspection.AvailableSourcePatchFileNames.Count}。请明确选择一个 base Patch 文件名后再生成计划。";
+		var summary = inspection.Summary;
+		return $"Same-key 来源检查：{inspection.SourceModName} / {inspection.SelectedSourcePatchFileName}；Unit：{summary?.SourceUnitCount ?? 0}；可尝试生成：{(summary?.CanAttemptGenerate == true ? "是" : "否")}。";
+	}
+
+	private static string FormatSameKeyPlan(CliSameKeyReconstructionPlanDocument document, string outputPath)
+	{
+		var summary = document.Inspection.Summary;
+		var blocking = document.Inspection.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出 Same-key 重构计划：{outputPath}",
+			$"来源：{document.Inspection.SourceModName} / {document.Request.SourcePatchFileName}；Unit：{summary?.SourceUnitCount ?? 0}；可替换：{summary?.ReplacementUnitCount ?? 0}；极小化：{summary?.MinifyOnlyUnitCount ?? 0}",
+			$"阻断诊断：{blocking}。仅当 validate 通过后，apply 才会输出新的独立候选 Patch。",
+		]);
+	}
+
+	private static string FormatSameKeyValidation(CliSameKeyReconstructionValidationResult validation)
+	{
+		var status = validation.IsValid ? "Same-key 重构验证通过。" : "Same-key 重构验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatSameKeyExecution(CliSameKeyReconstructionExecutionResult execution)
+	{
+		if (execution.Success)
+		{
+			return $"Same-key 重构完成：Unit {execution.OutputUnitCount}；替换 mesh {execution.ReplacementMeshCount}；极小化 mesh {execution.MinifiedMeshCount}；输出：{execution.OutputDirectory}";
+		}
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "Same-key 重构未完成；请查看 JSON 结果或报告。"
+			: $"Same-key 重构被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatDeploymentExecution(CliDeploymentExecutionResult execution)
 	{
 		var errors = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).ToArray();
@@ -1322,6 +1512,10 @@ HD2 Mod Manager 命令行
 	  hd2mod patch repackage plan <Mod GUID或前缀> [...] --library <Mod库目录> --output repackage-plan.json --json
 	  hd2mod patch repackage validate --plan repackage-plan.json --library <Mod库目录> --json
 	  hd2mod patch repackage apply --plan repackage-plan.json --library <Mod库目录> --output <新的库外目录> --confirm --json
+	  hd2mod patch repair inspect <Mod GUID或前缀> [base.patch_N] --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod patch repair plan <Mod GUID或前缀> <base.patch_N> --manager-root <管理器目录> --game-data <游戏data目录> --output same-key-plan.json --json
+	  hd2mod patch repair validate --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod patch repair apply --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外目录> --confirm --json
 	  hd2mod import inspect <文件夹、压缩包或文件> --json
 	  hd2mod import plan <文件夹、压缩包或文件> --output import-plan.json
 	  hd2mod import validate --plan import-plan.json --manager-root <管理器目录> --json
@@ -1337,7 +1531,7 @@ HD2 Mod Manager 命令行
   --library <目录>        显式指定 Mod 库；优先级高于 settings.json。
 	  --game-data <目录>      GameData 覆盖路径；部署命令要求真实游戏的 data 目录。
   --json                  输出机器可读 JSON。
-	  --output <文件或目录>   import/deploy/patch plan、patch 输出、context export、Agent Skill 导出使用。
+	  --output <文件或目录>   import/deploy/patch plan、Patch 输出、context export、Agent Skill 导出使用。
 	  --plan <文件>           import/deploy/patch validate 与 apply 所需的计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
 	  --host <GUID或前缀>      Option 操作的明确主体；不支持隐式或全主体修改。
@@ -1346,6 +1540,6 @@ HD2 Mod Manager 命令行
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。patch repackage 只复制计划中既有的完整 AssetKey Payload，且只写入新的库外目录。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。Patch 资源重打包与 Same-key 修复都只写入新的库外目录；不会替换、导入或部署结果。
 """;
 }

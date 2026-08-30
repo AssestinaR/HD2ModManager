@@ -11,7 +11,8 @@ public interface IModSameKeyReconstructionService
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default,
 		IProgress<OperationProgressEvent>? progress = null,
-		Guid? operationId = null);
+		Guid? operationId = null,
+		string? sourcePatchTocPath = null);
 
 	ValueTask<SameKeyReconstructionOperationResult> GenerateCandidateAsync(
 		ModNode source,
@@ -21,5 +22,6 @@ public interface IModSameKeyReconstructionService
 		CancellationToken cancellationToken = default,
 		IProgress<OperationProgressEvent>? progress = null,
 		Guid? operationId = null,
-		bool useSharedHiddenUnitTemplate = true);
+		bool useSharedHiddenUnitTemplate = true,
+		string? sourcePatchTocPath = null);
 }

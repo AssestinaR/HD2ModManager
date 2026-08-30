@@ -82,6 +82,10 @@ public static class CoreServices
 		StoragePaths paths,
 		IModInformationCenter informationCenter,
 		IModInformationReader informationReader)
+		=> CreateModSameKeyReconstructionService(paths, informationReader);
+	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(
+		StoragePaths paths,
+		IModInformationReader informationReader)
 		=> new CanonicalSameKeyReconstructionService(
 			CreatePatchFileNameParser(),
 			CreateAssetArchiveIndexService(paths),
