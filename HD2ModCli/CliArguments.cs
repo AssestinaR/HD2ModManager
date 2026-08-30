@@ -5,7 +5,9 @@ public sealed record CliGlobalOptions(
 	string? Library,
 	string? GameData,
 	string? Output,
+	string? Plan,
 	bool Overwrite,
+	bool Confirm,
 	bool Json);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
@@ -19,7 +21,9 @@ public static class CliArgumentParser
 		string? library = null;
 		string? gameData = null;
 		string? output = null;
+		string? plan = null;
 		var overwrite = false;
+		var confirm = false;
 		var json = false;
 		var command = new List<string>();
 
@@ -40,8 +44,14 @@ public static class CliArgumentParser
 				case "--output":
 					output = ReadValue(args, ref index, argument);
 					break;
+				case "--plan":
+					plan = ReadValue(args, ref index, argument);
+					break;
 				case "--overwrite":
 					overwrite = true;
+					break;
+				case "--confirm":
+					confirm = true;
 					break;
 				case "--json":
 					json = true;
@@ -62,7 +72,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, overwrite, json));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, overwrite, confirm, json));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

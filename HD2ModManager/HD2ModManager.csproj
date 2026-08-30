@@ -42,10 +42,14 @@
     <ItemGroup>
       <Hd2ModCliDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\README.md" />
       <Hd2ModCliDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\SKILL.md" />
+	  <Hd2ModCliSkillDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\skills\**\SKILL.md" />
     </ItemGroup>
     <Copy SourceFiles="@(Hd2ModCliDocumentation)"
           DestinationFiles="@(Hd2ModCliDocumentation->'$(TargetDir)hd2mod-docs\%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
+	<Copy SourceFiles="@(Hd2ModCliSkillDocumentation)"
+		  DestinationFiles="@(Hd2ModCliSkillDocumentation->'$(TargetDir)hd2mod-docs\skills\%(RecursiveDir)%(Filename)%(Extension)')"
+		  SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

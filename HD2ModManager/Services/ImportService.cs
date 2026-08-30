@@ -23,6 +23,7 @@ namespace HD2ModManager.Services
         // The most recent import's complete content-impact set (new and overwritten nodes).
         // Batch orchestration uses this to schedule derived data once after all file commits.
         public IReadOnlyList<ModNodeId> LastAffectedNodeIds { get; private set; } = Array.Empty<ModNodeId>();
+		public bool LastImportHasOptionPathConflicts { get; private set; }
 
         public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null, IModInformationCenter? informationCenter = null)
         {
@@ -116,8 +117,12 @@ namespace HD2ModManager.Services
 						.ToArray();
 					await _library.InitializeDefaultOptionActivationsAsync(
 						affectedNodeIds.Select(id => id.Value.ToString("N")),
+						// The importer marks only conflicted logical parents. Do not
+						// suppress defaults for every unrelated Mod in this batch.
+						enableDefaults: true,
 						ct).ConfigureAwait(false);
 					LastAffectedNodeIds = affectedNodeIds;
+					LastImportHasOptionPathConflicts = result.HasOptionPathConflicts;
 					foreach (var nodeId in affectedNodeIds)
 					{
 						await _library.InvalidateContentNodeAsync(nodeId, ct).ConfigureAwait(false);

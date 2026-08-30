@@ -202,6 +202,10 @@ public static class CoreServices
 		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
 	public static OptionActivationStore CreateOptionActivationStore(StoragePaths paths)
 		=> new(Path.Combine(paths.ModsDirectory, "option-activations.json"));
+	public static IModImportExecutionService CreateModImportExecutionService(StoragePaths paths)
+		=> new ModImportExecutionService(paths);
+	public static ILibraryWriteLeaseProvider CreateLibraryWriteLeaseProvider()
+		=> new LibraryWriteLeaseProvider();
 	public static DeploymentCapabilityService CreateDeploymentCapabilityService() => new();
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
 		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations, CreateLuaDeploymentService());

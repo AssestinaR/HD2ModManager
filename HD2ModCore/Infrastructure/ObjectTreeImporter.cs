@@ -65,7 +65,8 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 				HostModGuids: option?.HostModGuids,
 				SourcePackageGuid: option?.SourcePackageGuid,
 				SourcePackagePath: option?.SourcePath,
-				OptionOrder: option?.OptionOrder);
+				OptionOrder: option?.OptionOrder,
+				SuppressDefaultDirectOptionActivation: option?.SuppressDefaultDirectOptionActivation ?? false);
 
 			nodes[id] = new ModNode(
 				Id: id,

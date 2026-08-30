@@ -141,6 +141,50 @@ public sealed class ModImportPlannerParityTests
 		}
 	}
 
+	[Fact]
+	public async Task PlanFolderAsync_ExposesManifestPathConflictsPerPhysicalPathAndAffectedLogicalOption()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		try
+		{
+			var source = Path.Combine(root, "source", "ManifestConflictBundle");
+			Directory.CreateDirectory(source);
+			await File.WriteAllTextAsync(Path.Combine(source, "manifest.json"), """
+{
+  "name": "Conflict Root",
+  "options": [
+    { "name": "Alpha", "include": [ "shared" ] },
+    { "name": "Beta", "include": [ "shared" ] },
+    { "name": "Independent", "include": [ "independent" ] }
+  ]
+}
+""");
+			await WritePatchAsync(Path.Combine(source, "shared", "nested", "9ba626afa44a3aa3.patch_1"));
+			await WritePatchAsync(Path.Combine(source, "independent", "9ba626afa44a3aa4.patch_1"));
+
+			var planner = new ModImportPlanner(CoreServices.CreateObjectTreeImporter(), CoreServices.CreateArchiveObjectTreeImporter());
+			var plan = await planner.PlanFolderAsync(source);
+
+			var conflict = Assert.Single(plan.Diagnostics, item => item.Code == "OptionPathConflict");
+			Assert.Contains("shared/nested", conflict.Message, StringComparison.OrdinalIgnoreCase);
+			var alpha = Assert.Single(plan.Items, item => item.DisplayName == "Alpha");
+			var beta = Assert.Single(plan.Items, item => item.DisplayName == "Beta");
+			var independent = Assert.Single(plan.Items, item => item.DisplayName == "Independent");
+			Assert.Contains(alpha.Diagnostics ?? [], item => item.Code == "OptionPathConflict");
+			Assert.Contains(beta.Diagnostics ?? [], item => item.Code == "OptionPathConflict");
+			Assert.DoesNotContain(independent.Diagnostics ?? [], item => item.Code == "OptionPathConflict");
+			var sharedPayload = Assert.Single(plan.Items, item =>
+				item.PlannedFiles?.Contains("shared/nested", StringComparer.OrdinalIgnoreCase) == true
+				&& item.ParentPlanNodeKeys?.Count == 2);
+			Assert.Contains(sharedPayload.Diagnostics ?? [], item => item.Code == "SharedOptionPayload");
+		}
+		finally
+		{
+			ClearReadOnlyFiles(root);
+			try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
 	private static async Task WritePatchAsync(string path)
 	{
 		Directory.CreateDirectory(Path.GetDirectoryName(path)!);

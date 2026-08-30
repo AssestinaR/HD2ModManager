@@ -93,6 +93,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	{
 		ImportedObjectTree? firstStoredTree = null;
 		LibrarySnapshot? latestSnapshot = null;
+		var optionPathConflicts = new List<OptionPathConflict>();
+		var importedNodeIds = new List<ModNodeId>();
+		var cacheInvalidationFailedNodeIds = new List<ModNodeId>();
 		foreach (var unit in units)
 		{
 			try
@@ -103,9 +106,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					? PlanHeuristicImport(rawTree, unit.SourceRoot)
 					: PlanManifestImport(rawTree, unit.Manifest);
 				if (planned.Tree.Nodes.Count == 0) continue;
-
 				planned = await RestoreExportedNodeIdsAsync(planned, unit.SourceRoot, cancellationToken).ConfigureAwait(false);
-				var (storedTree, snapshot) = await CommitImportAsync(
+				optionPathConflicts.AddRange(planned.OptionPathConflicts);
+				var (storedTree, snapshot, invalidationFailures) = await CommitImportAsync(
 					planned,
 					unit.SourceRoot,
 					unit.SourceDisplayName,
@@ -115,6 +118,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				SetStoredTreeReadOnly(storedTree);
 				firstStoredTree ??= storedTree;
 				latestSnapshot = snapshot;
+				importedNodeIds.AddRange(storedTree.Nodes.Keys);
+				cacheInvalidationFailedNodeIds.AddRange(invalidationFailures);
 			}
 			finally
 			{
@@ -127,7 +132,25 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		if (firstStoredTree is null || latestSnapshot is null)
 			throw new InvalidDataException("No importable patch or decoration package was found.");
-		return new ImportResult(latestSnapshot, firstStoredTree.RootId, firstStoredTree.SourceDisplayName);
+		var distinctImportedNodeIds = importedNodeIds.Distinct().ToArray();
+		var distinctCacheFailures = cacheInvalidationFailedNodeIds.Distinct().ToArray();
+		var cacheInvalidationStatus = distinctCacheFailures.Length == 0
+			? ImportCacheInvalidationStatus.Completed
+			: distinctCacheFailures.Length >= distinctImportedNodeIds.Length
+				? ImportCacheInvalidationStatus.Failed
+				: ImportCacheInvalidationStatus.Partial;
+		return new ImportResult(
+			latestSnapshot,
+			firstStoredTree.RootId,
+			firstStoredTree.SourceDisplayName,
+			optionPathConflicts.Count > 0)
+		{
+			OptionPathConflicts = optionPathConflicts
+				.DistinctBy(conflict => (conflict.SourceRelativePath, string.Join("|", conflict.AffectedParentOptionIds.OrderBy(id => id.Value))))
+				.ToArray(),
+			CacheInvalidationStatus = cacheInvalidationStatus,
+			CacheInvalidationFailedNodeIds = distinctCacheFailures,
+		};
 	}
 
 	internal static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
@@ -202,7 +225,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return units;
 	}
 
-	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot)> CommitImportAsync(PlannedImportTree planned, string sourceRoot, string sourceName, bool preferHardLinks, CancellationToken cancellationToken, StandardModManifest? manifest = null)
+	private async ValueTask<(ImportedObjectTree Tree, LibrarySnapshot Snapshot, IReadOnlyList<ModNodeId> CacheInvalidationFailedNodeIds)> CommitImportAsync(PlannedImportTree planned, string sourceRoot, string sourceName, bool preferHardLinks, CancellationToken cancellationToken, StandardModManifest? manifest = null)
 	{
 		ImportedObjectTree? storedTree = null;
 		try
@@ -210,18 +233,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			storedTree = PersistFlattenedTree(planned, sourceRoot, sourceName, preferHardLinks, cancellationToken, manifest);
 			var snapshot = await MergeIntoSnapshotAsync(storedTree, cancellationToken).ConfigureAwait(false);
 			await _store.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
-			try
-			{
-				await InvalidateImportedNodesAsync(storedTree.Nodes.Keys).ConfigureAwait(false);
-			}
-			catch (Exception exception)
-			{
-				// The library snapshot and files are already committed.  A cache backend
-				// outage must not turn that successful import into a half-rolled-back
-				// library entry; synchronization will retry the invalidation boundary.
-				System.Diagnostics.Debug.WriteLine($"[ModLibraryImporter] cache invalidation failed after import: {exception}");
-			}
-			return (storedTree, snapshot);
+			var invalidationFailures = await InvalidateImportedNodesAsync(storedTree.Nodes.Keys).ConfigureAwait(false);
+			return (storedTree, snapshot, invalidationFailures);
 		}
 		catch
 		{
@@ -312,10 +325,16 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private static string ResolveStoredNodeDisplayName(ModNode node, string fallback, StandardModManifest? manifest)
 	{
 		if (manifest is null) return fallback;
+		var manifestNodeName = manifest.Nodes?
+			.FirstOrDefault(item => string.Equals(NormalizeRelativePath(item.RelativePath), node.Metadata.SourcePackagePath, StringComparison.OrdinalIgnoreCase))?
+			.Name;
+		if (!string.IsNullOrWhiteSpace(manifestNodeName)) return manifestNodeName;
 		var entries = BuildManifestEntries(manifest);
-		var entry = !string.IsNullOrWhiteSpace(node.Metadata.SourcePackagePath)
-			? FindManifestEntryByKey(entries, node.Metadata.SourcePackagePath!)
-			: FindManifestEntryForSourcePath(entries, NormalizeRelativePath(node.RelativePath));
+		var sourcePath = !string.IsNullOrWhiteSpace(node.Metadata.SourcePackagePath)
+			? node.Metadata.SourcePackagePath!
+			: NormalizeRelativePath(node.RelativePath);
+		var entry = FindManifestEntryByKey(entries, sourcePath)
+			?? FindUniqueManifestEntryForSourcePath(entries, sourcePath);
 		return string.IsNullOrWhiteSpace(entry?.Name) ? fallback : entry.Name!;
 	}
 
@@ -392,15 +411,26 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		var sourcePaths = planned.SourceRelativePaths.ToDictionary(
 			pair => replacements.GetValueOrDefault(pair.Key, pair.Key),
 			pair => pair.Value);
+		var optionPathConflicts = planned.OptionPathConflicts
+			.Select(conflict => conflict with
+			{
+				AffectedParentOptionIds = conflict.AffectedParentOptionIds
+					.Select(id => replacements.GetValueOrDefault(id, id))
+					.Distinct()
+					.ToArray(),
+			})
+			.ToArray();
 		return planned with
 		{
 			Tree = tree with { RootId = replacements.GetValueOrDefault(tree.RootId, tree.RootId), Nodes = nodes },
 			SourceRelativePaths = sourcePaths,
+			OptionPathConflicts = optionPathConflicts,
 		};
 	}
 
-	private async ValueTask InvalidateImportedNodesAsync(IEnumerable<ModNodeId> nodeIds)
+	private async ValueTask<IReadOnlyList<ModNodeId>> InvalidateImportedNodesAsync(IEnumerable<ModNodeId> nodeIds)
 	{
+		var failures = new List<ModNodeId>();
 		foreach (var nodeId in nodeIds.Distinct())
 		{
 			try
@@ -418,9 +448,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			{
 				// Continue through the remaining Nodes. One broken durable-cache entry
 				// must not keep unrelated imported content from crossing this boundary.
+				failures.Add(nodeId);
 				System.Diagnostics.Debug.WriteLine($"[ModLibraryImporter] cache invalidation failed for {nodeId}: {exception}");
 			}
 		}
+		return failures;
 	}
 
 	internal static PlannedImportTree PlanTreeForImport(ImportedObjectTree tree, string sourceRootDirectory, StandardModManifest? manifest)
@@ -431,7 +463,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	internal static PlannedImportTree PlanManifestImport(ImportedObjectTree tree, StandardModManifest manifest)
 	{
 		var entries = BuildManifestEntries(manifest);
-		ValidateManifestEntries(entries);
 		var rootEntry = entries[0];
 		var rootCandidate = tree.Nodes.Values.FirstOrDefault(node => string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath)));
 		// A community root Guid is package metadata, not a manager identity, when
@@ -492,16 +523,39 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		if (entryIds.Values.Distinct().Count() != entryIds.Count)
 			throw new InvalidDataException("manifest 为多个逻辑选项指定了相同的 Mod ID。");
 
-		foreach (var entry in entries.Where(entry => entry.Kind == ModNodeKind.Option))
+		var optionEntries = entries.Where(entry => entry.Kind == ModNodeKind.Option).ToArray();
+		var ownedPayloadNodes = optionEntries.ToDictionary(
+			entry => entry.Key,
+			_ => new List<ModNode>(),
+			StringComparer.OrdinalIgnoreCase);
+		var conflictingPayloadNodes = new List<ManifestPayloadConflict>();
+		foreach (var sourceNode in tree.Nodes.Values
+			.Where(node => node.Metadata.Kind != ModNodeKind.Decoration)
+			.Where(node => node.PatchGroups.Count > 0)
+			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase))
+		{
+			var sourcePath = NormalizeRelativePath(sourceNode.RelativePath);
+			var owners = FindManifestEntriesForSourcePath(entries, sourcePath);
+			if (owners.Count == 1 && owners[0].Kind == ModNodeKind.Option)
+			{
+				ownedPayloadNodes[owners[0].Key].Add(sourceNode);
+				continue;
+			}
+			if (owners.Count > 1)
+				conflictingPayloadNodes.Add(new ManifestPayloadConflict(sourceNode, sourcePath, owners));
+		}
+
+		var conflictParentIds = conflictingPayloadNodes
+			.SelectMany(conflict => conflict.Owners)
+			.Select(entry => entryIds[entry.Key])
+			.ToHashSet();
+		foreach (var entry in optionEntries)
 		{
 			var optionId = entryIds[entry.Key];
 			var parentId = entry.ParentKey is not null && entryIds.TryGetValue(entry.ParentKey, out var resolvedParent)
 				? resolvedParent
 				: rootId;
-			var matchedNodes = tree.Nodes.Values
-				.Where(node => node.Metadata.Kind != ModNodeKind.Decoration)
-				.Where(node => node.PatchGroups.Count > 0)
-				.Where(node => FindManifestEntryForSourcePath(entries, NormalizeRelativePath(node.RelativePath))?.Key == entry.Key)
+			var matchedNodes = ownedPayloadNodes[entry.Key]
 				.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
 				.ToArray();
 			var paths = matchedNodes
@@ -510,19 +564,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				.Distinct(StringComparer.OrdinalIgnoreCase)
 				.ToArray();
 			var sourceNode = matchedNodes.FirstOrDefault();
-			var primaryPath = paths.FirstOrDefault()
-				?? entry.IncludePaths.FirstOrDefault()
-				?? $"__logical_option__/{entry.Key}";
-			var patchGroups = matchedNodes
-				.SelectMany(node => node.PatchGroups)
-				.Distinct()
-				.OrderBy(group => group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
-				.ThenBy(group => group.PatchIndex)
-				.ToArray();
 			var fallbackName = sourceNode?.Metadata.Name ?? $"选项 {entry.OptionOrder.GetValueOrDefault() + 1}";
 			nodes[optionId] = new ModNode(
 				optionId,
-				primaryPath,
+				paths.FirstOrDefault() ?? entry.IncludePaths.FirstOrDefault() ?? $"__logical_option__/{entry.Key}",
 				new ModNodeMetadata(
 					string.IsNullOrWhiteSpace(entry.Name) ? fallbackName : entry.Name!,
 					entry.Notes,
@@ -532,10 +577,42 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					[parentId.Value.ToString("N")],
 					manifest.Guid,
 					entry.Key,
-					entry.OptionOrder),
-				patchGroups,
+					entry.OptionOrder,
+					SuppressDefaultDirectOptionActivation: conflictParentIds.Contains(optionId)),
+				matchedNodes
+					.SelectMany(node => node.PatchGroups)
+					.Distinct()
+					.OrderBy(group => group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
+					.ThenBy(group => group.PatchIndex)
+					.ToArray(),
 				Array.Empty<ModNodeId>());
 			sourcePaths[optionId] = paths;
+		}
+
+		for (var conflictIndex = 0; conflictIndex < conflictingPayloadNodes.Count; conflictIndex++)
+		{
+			var conflict = conflictingPayloadNodes[conflictIndex];
+			var physicalId = new ModNodeId(CreateStableNodeGuid(manifest.Guid ?? rootId.Value.ToString("N"), $"conflict:{conflict.SourceRelativePath}"));
+			var hostIds = conflict.Owners
+				.Select(entry => entryIds[entry.Key].Value.ToString("N"))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+			var manifestNode = manifest.Nodes?.FirstOrDefault(node => string.Equals(
+				NormalizeRelativePath(node.RelativePath),
+				conflict.SourceRelativePath,
+				StringComparison.OrdinalIgnoreCase));
+			var leafName = manifestNode?.Name;
+			if (string.IsNullOrWhiteSpace(leafName))
+				leafName = Path.GetFileName(conflict.SourceRelativePath.Replace('/', Path.DirectorySeparatorChar));
+			if (string.IsNullOrWhiteSpace(leafName)) leafName = "共享选项内容";
+			nodes[physicalId] = new ModNode(
+				physicalId,
+				conflict.SourceRelativePath,
+				new ModNodeMetadata(leafName, manifestNode?.Notes, conflict.SourceNode.Metadata.CreatedUtc, conflict.SourceNode.Metadata.ModifiedUtc,
+					ModNodeKind.Option, hostIds, manifest.Guid, conflict.SourceRelativePath, int.MinValue + conflictIndex),
+				conflict.SourceNode.PatchGroups,
+				Array.Empty<ModNodeId>());
+			sourcePaths[physicalId] = [conflict.SourceRelativePath];
 		}
 
 		foreach (var decoration in tree.Nodes.Values.Where(node => node.Metadata.Kind == ModNodeKind.Decoration))
@@ -545,24 +622,38 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			sourcePaths[decoration.Id] = [NormalizeRelativePath(decoration.RelativePath)];
 		}
 
-		return new PlannedImportTree(tree with { RootId = rootId, Nodes = nodes }, sourcePaths);
+		return new PlannedImportTree(tree with { RootId = rootId, Nodes = nodes }, sourcePaths)
+		{
+			OptionPathConflicts = conflictingPayloadNodes
+				.Select(conflict => new OptionPathConflict(
+					conflict.SourceRelativePath,
+					conflict.Owners.Select(entry => entryIds[entry.Key]).Distinct().ToArray()))
+				.ToArray(),
+		};
 	}
 
-	private static ManifestEntry? FindManifestEntryForSourcePath(IReadOnlyList<ManifestEntry> entries, string path)
+	private static IReadOnlyList<ManifestEntry> FindManifestEntriesForSourcePath(IReadOnlyList<ManifestEntry> entries, string path)
 	{
-		if (string.IsNullOrEmpty(path)) return FindManifestEntryByKey(entries, string.Empty);
+		if (string.IsNullOrEmpty(path))
+		{
+			var root = FindManifestEntryByKey(entries, string.Empty);
+			return root is null ? Array.Empty<ManifestEntry>() : [root];
+		}
 		var matches = entries
 			.Where(entry => entry.Kind == ModNodeKind.Option)
 			.SelectMany(entry => entry.IncludePaths.Select(include => (Entry: entry, Include: include)))
 			.Where(candidate => SourcePathMatchesInclude(path, candidate.Include))
 			.OrderByDescending(candidate => candidate.Include.Length)
 			.ToArray();
-		if (matches.Length == 0) return null;
+		if (matches.Length == 0) return Array.Empty<ManifestEntry>();
 		var longest = matches[0].Include.Length;
-		var top = matches.Where(candidate => candidate.Include.Length == longest).Select(candidate => candidate.Entry).Distinct().ToArray();
-		if (top.Length > 1)
-			throw new InvalidDataException($"manifest 中多个选项同时匹配目录“{path}”。");
-		return top[0];
+		return matches.Where(candidate => candidate.Include.Length == longest).Select(candidate => candidate.Entry).Distinct().ToArray();
+	}
+
+	private static ManifestEntry? FindUniqueManifestEntryForSourcePath(IReadOnlyList<ManifestEntry> entries, string path)
+	{
+		var matches = FindManifestEntriesForSourcePath(entries, path);
+		return matches.Count == 1 ? matches[0] : null;
 	}
 
 	private static bool SourcePathMatchesInclude(string sourcePath, string include)
@@ -715,17 +806,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 	}
 
-	private static void ValidateManifestEntries(IReadOnlyList<ManifestEntry> entries)
-	{
-		var duplicateInclude = entries
-			.Where(entry => entry.Kind == ModNodeKind.Option)
-			.SelectMany(entry => entry.IncludePaths.Select(path => (Path: path, entry.Key)))
-			.GroupBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
-			.FirstOrDefault(group => group.Select(item => item.Key).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1);
-		if (duplicateInclude is not null)
-			throw new InvalidDataException($"manifest 将目录“{duplicateInclude.Key}”分配给了多个选项，无法确定启用语义。");
-	}
-
 	private static string? FindNodeGuid(StandardModManifest manifest, IReadOnlyList<string> paths)
 	{
 		foreach (var path in paths)
@@ -740,9 +820,11 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	{
 		if (manifest is null) return;
 		var entries = BuildManifestEntries(manifest);
-		var entry = !string.IsNullOrWhiteSpace(node.Metadata.SourcePackagePath)
-			? FindManifestEntryByKey(entries, node.Metadata.SourcePackagePath!)
-			: FindManifestEntryForSourcePath(entries, NormalizeRelativePath(node.RelativePath));
+		var sourcePath = !string.IsNullOrWhiteSpace(node.Metadata.SourcePackagePath)
+			? node.Metadata.SourcePackagePath!
+			: NormalizeRelativePath(node.RelativePath);
+		var entry = FindManifestEntryByKey(entries, sourcePath)
+			?? FindUniqueManifestEntryForSourcePath(entries, sourcePath);
 		var image = entry?.Image ?? manifest.IconPath;
 		if (string.IsNullOrWhiteSpace(image)) return;
 		var source = Path.GetFullPath(Path.Combine(sourceRoot, image.Replace('/', Path.DirectorySeparatorChar)));
@@ -768,9 +850,18 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		ModNodeKind Kind,
 		int? OptionOrder);
 
+	private sealed record ManifestPayloadConflict(
+		ModNode SourceNode,
+		string SourceRelativePath,
+		IReadOnlyList<ManifestEntry> Owners);
+
 	internal sealed record PlannedImportTree(
 		ImportedObjectTree Tree,
-		IReadOnlyDictionary<ModNodeId, IReadOnlyList<string>> SourceRelativePaths);
+		IReadOnlyDictionary<ModNodeId, IReadOnlyList<string>> SourceRelativePaths)
+	{
+		public IReadOnlyList<OptionPathConflict> OptionPathConflicts { get; init; } = Array.Empty<OptionPathConflict>();
+		public bool HasOptionPathConflicts => OptionPathConflicts.Count > 0;
+	}
 
 	internal sealed record PackageRoot(string Directory, StandardModManifest? Manifest);
 
@@ -803,6 +894,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			SourcePackageGuid = metadata.SourcePackageGuid,
 			SourcePath = metadata.SourcePackagePath,
 			OptionOrder = metadata.OptionOrder,
+			SuppressDefaultDirectOptionActivation = metadata.SuppressDefaultDirectOptionActivation,
 		};
 		File.WriteAllText(
 			Path.Combine(destinationDirectory, "option.json"),

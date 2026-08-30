@@ -220,4 +220,41 @@ public sealed class ModLibraryImporterTests
 		}
 	}
 
+	[Fact]
+	public async Task ImportFolderAsync_ReportsFailedCacheInvalidationWithoutRollingBackCommittedContent()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var source = Path.Combine(root, "source");
+		Directory.CreateDirectory(source);
+		File.WriteAllText(Path.Combine(source, "9ba626afa44a3aa3.patch_0"), "patch");
+		try
+		{
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths),
+				derivedDataCleanup: new ThrowingDerivedDataCleanup());
+
+			var result = await importer.ImportFolderAsync(source);
+
+			Assert.Equal(ImportCacheInvalidationStatus.Failed, result.CacheInvalidationStatus);
+			var failedNodeId = Assert.Single(result.CacheInvalidationFailedNodeIds);
+			Assert.True(result.Snapshot.Nodes.ContainsKey(failedNodeId));
+			Assert.True(File.Exists(paths.LibraryPath));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	private sealed class ThrowingDerivedDataCleanup : IModDerivedDataCleanup
+	{
+		public ValueTask DeleteAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
+			=> throw new IOException("Simulated derived cache invalidation failure.");
+	}
+
 }

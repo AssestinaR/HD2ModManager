@@ -5,14 +5,14 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.0";
+	public const string ProtocolVersion = "1.2";
 
 	public static object CreateCapabilities()
 		=> new
 		{
 			protocolVersion = ProtocolVersion,
 			command = "hd2mod",
-			mode = "read-only",
+			mode = "plan-gated-write",
 			supports = new[]
 			{
 				new { name = "version", safety = "read-only", description = "读取 CLI 与协议版本" },
@@ -23,19 +23,25 @@ public static class CliProjections
 				new { name = "profile list", safety = "read-only", description = "列出配置文件" },
 				new { name = "profile show", safety = "read-only", description = "读取逻辑顺序与实际部署展开顺序" },
 				new { name = "import inspect", safety = "read-only", description = "扫描待导入文件夹或压缩包，并输出导入前规划，不写入 Mod 库" },
-				new { name = "import plan", safety = "explicit-export", description = "仅在给定 --output 后写出可审计的导入前规划 JSON，不写入 Mod 库" },
+				new { name = "import plan", safety = "explicit-export", description = "仅在给定 --output 后写出带来源/导入树指纹的可审计导入计划，不写入 Mod 库" },
+				new { name = "import validate", safety = "read-only", description = "复扫来源并检查目标库、计划指纹和管理器进程；不写入 Mod 库" },
+				new { name = "import apply", safety = "explicit-confirm", description = "仅在 validate 通过且传入 --confirm 后导入 Mod 库；不部署、不修改配置文件" },
 				new { name = "context export", safety = "explicit-export", description = "仅在给定 --output 后写出 AI 上下文 JSON" },
-				new { name = "agent skill", safety = "explicit-export", description = "仅在给定 --output 后写出本 CLI 的 Agent 指南" },
+				new { name = "agent skill list", safety = "read-only", description = "兼容别名：列出可按需导出的能力 Skill" },
+				new { name = "agent skill export", safety = "explicit-export", description = "兼容单文件导出：仅在给定 --output 后导出指定能力 Skill" },
+				new { name = "agent skills list", safety = "read-only", description = "列出可安装的能力 Skill 目录" },
+				new { name = "agent skills export", safety = "explicit-export", description = "仅在给定 --output 后导出一个或全部独立能力 Skill 目录与 SHA-256 清单" },
+				new { name = "agent skill", safety = "explicit-export", description = "兼容旧命令：导出轻量 Agent Skill 路由器" },
 			},
 			notSupportedYet = new[]
 			{
-				"导入、删除、修改配置、部署、重构 Patch、替换护甲和任何原始 Patch 字节操作。",
+				"删除、修改配置、部署、重构 Patch、替换护甲和任何原始 Patch 字节操作。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
 			{
-				"当前版本只提供 inspect 与显式上下文导出；不会创建、迁移、修复或写回 Mod 库。",
-				"未来写入型任务必须先通过声明式计划和 validate，再由用户明确 apply。",
+				"import apply 只会在计划复核成功、目标库可信、管理器未运行且显式 --confirm 时写入 Mod 库。",
+				"import apply 不自动部署、不修改 Profile、不写 Patch 字节，也不会启动昂贵的派生信息分析。",
 			},
 		};
 

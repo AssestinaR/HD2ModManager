@@ -53,6 +53,7 @@ namespace HD2ModManager.Services
         private readonly DecorationActivationStore _decorationActivations;
         private readonly OptionActivationStore _optionActivations;
         private readonly DecorationAttachmentService _decorationAttachments;
+		private readonly OptionActivationDefaultInitializer _optionDefaultInitializer = new();
         private readonly IHelmetToArmorMergeService _helmetToArmorMerge;
         private const string HelmetOverwriteMarkerName = ".hd2-helmet-to-armor-overwrite";
         private const string DecorationOverwriteMarkerName = ".hd2-decoration-overwrite";
@@ -240,30 +241,26 @@ namespace HD2ModManager.Services
 
         public async Task<int> InitializeDefaultOptionActivationsAsync(
             IEnumerable<string> affectedNodeIds,
+			bool enableDefaults = true,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(affectedNodeIds);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var graph = OptionRelationshipGraph.Create(_snapshot);
-                var startParents = new HashSet<ModNodeId>();
-                foreach (var rawId in affectedNodeIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (!TryParseNodeId(rawId, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
-                    if (node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option) startParents.Add(nodeId);
-                    foreach (var parentId in graph.GetParents(nodeId)) startParents.Add(parentId);
-                }
-                if (startParents.Count == 0) return 0;
-
-                var existingStates = _optionActivations.CreateSnapshot();
-                var defaults = new List<OptionActivationInitialization>();
-                var traversedEdges = new HashSet<(ModNodeId Parent, ModNodeId Child)>();
-                foreach (var parentId in startParents)
-                    PlanDefaults(parentId, new HashSet<ModNodeId> { parentId });
-
-                var changed = await _optionActivations.InitializeMissingStatesAsync(defaults, cancellationToken).ConfigureAwait(false);
+                var parsedAffectedNodeIds = affectedNodeIds
+					.Where(id => !string.IsNullOrWhiteSpace(id))
+					.Select(id => TryParseNodeId(id, out var nodeId) ? nodeId : (ModNodeId?)null)
+					.Where(nodeId => nodeId.HasValue)
+					.Select(nodeId => nodeId!.Value)
+					.Distinct()
+					.ToArray();
+				var changed = await _optionDefaultInitializer.InitializeMissingStatesAsync(
+					_snapshot,
+					_optionActivations,
+					parsedAffectedNodeIds,
+					enableDefaults,
+					cancellationToken).ConfigureAwait(false);
 
                 if (changed > 0)
                 {
@@ -271,26 +268,6 @@ namespace HD2ModManager.Services
                     OptionActivationChanged?.Invoke(this, EventArgs.Empty);
                 }
                 return changed;
-
-                void PlanDefaults(ModNodeId parentId, HashSet<ModNodeId> ancestors)
-                {
-                    if (!_snapshot.Nodes.TryGetValue(parentId, out var parent)) return;
-                    var children = graph.GetDirectOptions(parentId);
-                    var enableAllChildren = parent.Metadata.Kind == ModNodeKind.Standard;
-                    for (var index = 0; index < children.Count; index++)
-                    {
-                        var child = children[index];
-                        var relation = (parentId, child.Id);
-                        if (!traversedEdges.Add(relation)) continue;
-                        var parentKey = parentId.Value.ToString("N");
-                        var childKey = child.Id.Value.ToString("N");
-                        if (!existingStates.HasState(childKey, parentKey))
-                            defaults.Add(new OptionActivationInitialization(childKey, parentKey, enableAllChildren || index == 0));
-                        if (!ancestors.Add(child.Id)) continue;
-                        PlanDefaults(child.Id, ancestors);
-                        ancestors.Remove(child.Id);
-                    }
-                }
             }
             finally { _libraryMutationGate.Release(); }
         }

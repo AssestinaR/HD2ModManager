@@ -64,23 +64,29 @@ public sealed class StandardManifestImportTests
 	}
 
 	[Fact]
-	public async Task ImportFolderAsync_AggregatesMultipleIncludesIntoOneLogicalOption()
+	public async Task ImportFolderAsync_AggregatesMultipleIncludesFromNestedPatchDirectories_WithoutRestructuringOtherOptions()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
 		var appRoot = Path.Combine(root, "app");
 		var package = Path.Combine(root, "package");
-		Directory.CreateDirectory(Path.Combine(package, "part-a"));
-		Directory.CreateDirectory(Path.Combine(package, "part-b"));
+		Directory.CreateDirectory(Path.Combine(package, "part-a", "leaf-a"));
+		Directory.CreateDirectory(Path.Combine(package, "part-b", "leaf-b"));
+		Directory.CreateDirectory(Path.Combine(package, "other"));
 		Directory.CreateDirectory(appRoot);
 		try
 		{
-			await File.WriteAllTextAsync(Path.Combine(package, "part-a", "9ba626afa44a3aa3.patch_0"), "a");
-			await File.WriteAllTextAsync(Path.Combine(package, "part-b", "9ba626afa44a3aa4.patch_0"), "b");
+			await File.WriteAllTextAsync(Path.Combine(package, "part-a", "leaf-a", "9ba626afa44a3aa3.patch_0"), "a");
+			await File.WriteAllTextAsync(Path.Combine(package, "part-b", "leaf-b", "9ba626afa44a3aa4.patch_0"), "b");
+			await File.WriteAllTextAsync(Path.Combine(package, "other", "9ba626afa44a3aa5.patch_0"), "other");
 			await File.WriteAllTextAsync(Path.Combine(package, "manifest.json"), JsonSerializer.Serialize(new
 			{
 				Version = 1,
 				Name = "Combined",
-				Options = new[] { new { Name = "Full", Include = new[] { "part-a", "part-b" } } },
+				Options = new[]
+				{
+					new { Name = "Full", Include = new[] { "part-a", "part-b" } },
+					new { Name = "Other", Include = new[] { "other" } },
+				},
 			}));
 
 			var paths = new StoragePaths(appRoot);
@@ -91,11 +97,80 @@ public sealed class StandardManifestImportTests
 				new JsonModLibraryStore(paths));
 			var result = await importer.ImportFolderAsync(package);
 
-			var option = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Kind == ModNodeKind.Option);
-			Assert.Equal(2, option.PatchGroups.Count);
-			var stored = Path.Combine(paths.ModsDirectory, option.RelativePath);
+			Assert.False(result.HasOptionPathConflicts);
+			Assert.Empty(result.OptionPathConflicts);
+			Assert.Equal(3, result.Snapshot.Nodes.Count);
+			var full = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Full");
+			var other = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Other");
+			Assert.Equal(2, full.PatchGroups.Count);
+			Assert.Single(other.PatchGroups);
+			Assert.False(full.Metadata.SuppressDefaultDirectOptionActivation);
+			Assert.False(other.Metadata.SuppressDefaultDirectOptionActivation);
+			var stored = Path.Combine(paths.ModsDirectory, full.RelativePath);
 			Assert.True(File.Exists(Path.Combine(stored, "9ba626afa44a3aa3.patch_0")));
 			Assert.True(File.Exists(Path.Combine(stored, "9ba626afa44a3aa4.patch_0")));
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
+	[Fact]
+	public async Task ImportFolderAsync_ExposesOnlyTrueManifestPathConflicts_AndCopiesTheSharedPhysicalPayload()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var package = Path.Combine(root, "package");
+		Directory.CreateDirectory(Path.Combine(package, "shared", "nested"));
+		Directory.CreateDirectory(Path.Combine(package, "independent"));
+		Directory.CreateDirectory(appRoot);
+		try
+		{
+			await File.WriteAllTextAsync(Path.Combine(package, "shared", "nested", "9ba626afa44a3aa3.patch_0"), "shared");
+			await File.WriteAllTextAsync(Path.Combine(package, "independent", "9ba626afa44a3aa4.patch_0"), "independent");
+			await File.WriteAllTextAsync(Path.Combine(package, "manifest.json"), JsonSerializer.Serialize(new
+			{
+				Version = 1,
+				Guid = Guid.NewGuid(),
+				Name = "Conflict package",
+				Options = new[]
+				{
+					new { Name = "Alpha", Include = new[] { "shared" } },
+					new { Name = "Beta", Include = new[] { "shared" } },
+					new { Name = "Independent", Include = new[] { "independent" } },
+				},
+			}));
+
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths));
+			var result = await importer.ImportFolderAsync(package);
+
+			Assert.True(result.HasOptionPathConflicts);
+			var alpha = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Alpha");
+			var beta = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Beta");
+			var independent = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Independent");
+			var conflict = Assert.Single(result.OptionPathConflicts);
+			Assert.Equal("shared/nested", conflict.SourceRelativePath);
+			Assert.Equal(
+				new[] { alpha.Id, beta.Id }.OrderBy(id => id.Value),
+				conflict.AffectedParentOptionIds.OrderBy(id => id.Value));
+			Assert.Empty(alpha.PatchGroups);
+			Assert.Empty(beta.PatchGroups);
+			Assert.Single(independent.PatchGroups);
+			Assert.True(alpha.Metadata.SuppressDefaultDirectOptionActivation);
+			Assert.True(beta.Metadata.SuppressDefaultDirectOptionActivation);
+			Assert.False(independent.Metadata.SuppressDefaultDirectOptionActivation);
+
+			var sharedPhysical = Assert.Single(result.Snapshot.Nodes.Values, node =>
+				node.Metadata.Kind == ModNodeKind.Option
+				&& node.Metadata.SourcePackagePath == "shared/nested"
+				&& node.PatchGroups.Count == 1);
+			Assert.Equal(
+				new[] { alpha.Id.Value.ToString("N"), beta.Id.Value.ToString("N") }.OrderBy(id => id),
+				sharedPhysical.Metadata.HostModGuids!.OrderBy(id => id));
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, sharedPhysical.RelativePath, "9ba626afa44a3aa3.patch_0")));
 		}
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
@@ -130,9 +205,9 @@ public sealed class StandardManifestImportTests
 			await using var informationCenter = CoreServices.CreateModInformationCenter(paths, informationReader);
 			var importer = CoreServices.CreateModLibraryImporter(paths, informationCenter, informationReader);
             var result = await importer.ImportFolderAsync(package);
-            Assert.Equal(2, result.Snapshot.Nodes.Count);
-            var rootNode = Assert.Single(result.Snapshot.Nodes.Values, candidate => candidate.Metadata.Kind == ModNodeKind.Standard);
-            var node = Assert.Single(result.Snapshot.Nodes.Values, candidate => candidate.Metadata.Kind == ModNodeKind.Option);
+			Assert.Equal(2, result.Snapshot.Nodes.Count);
+			var rootNode = Assert.Single(result.Snapshot.Nodes.Values, candidate => candidate.Metadata.Kind == ModNodeKind.Standard);
+			var node = Assert.Single(result.Snapshot.Nodes.Values, candidate => candidate.Metadata.Kind == ModNodeKind.Option && candidate.PatchGroups.Count > 0);
             Assert.Equal(optionGuid, node.Id.Value);
             Assert.Equal("Option", node.Metadata.Name);
             Assert.Equal("Option note", node.Metadata.Notes);

@@ -60,7 +60,8 @@ internal sealed class OptionRelationDocument
     public int Version { get; init; }
     public string? Kind { get; init; }
     public List<string> HostModGuids { get; init; } = [];
-    public string? SourcePackageGuid { get; init; }
-    public string? SourcePath { get; init; }
-    public int? OptionOrder { get; init; }
+	public string? SourcePackageGuid { get; init; }
+	public string? SourcePath { get; init; }
+	public int? OptionOrder { get; init; }
+	public bool SuppressDefaultDirectOptionActivation { get; init; }
 }

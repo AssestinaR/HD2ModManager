@@ -6,6 +6,7 @@ namespace HD2ModCore.Infrastructure;
 // future drag/drop reorder never mutates the portable source-package order.
 public sealed class OptionActivationStore
 {
+	private const int FirstVersionedFormatVersion = 2;
 	private const int CurrentVersion = 3;
 	private readonly string _path;
 	private readonly object _gate = new();
@@ -32,8 +33,19 @@ public sealed class OptionActivationStore
 		try
 		{
 			using var document = JsonDocument.Parse(json);
-			if (document.RootElement.TryGetProperty("version", out _))
+			if (document.RootElement.ValueKind != JsonValueKind.Object)
+				throw new InvalidDataException("Option activation data must be a JSON object.");
+
+			if (document.RootElement.TryGetProperty("version", out var versionElement))
 			{
+				if (!versionElement.TryGetInt32(out var version)
+					|| version < FirstVersionedFormatVersion
+					|| version > CurrentVersion)
+				{
+					throw new InvalidDataException(
+						$"Unsupported option activation data version. Supported versions are {FirstVersionedFormatVersion} through {CurrentVersion}.");
+				}
+
 				var persisted = JsonSerializer.Deserialize<PersistedState>(document.RootElement.GetRawText(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
 				if (persisted?.Options is null)
 					throw new InvalidDataException("Option activation data is missing options.");

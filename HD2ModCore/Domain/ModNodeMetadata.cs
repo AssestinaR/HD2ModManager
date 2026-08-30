@@ -12,4 +12,5 @@ public sealed record ModNodeMetadata(
 	string? SourcePackageGuid = null,
 	string? SourcePackagePath = null,
 	int? OptionOrder = null,
-	bool HelmetToArmorMerged = false);
+	bool HelmetToArmorMerged = false,
+	bool SuppressDefaultDirectOptionActivation = false);

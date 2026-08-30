@@ -32,11 +32,13 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 	private const int CurrentVersion = 1;
 	private readonly StoragePaths _paths;
 	private readonly JsonProfileStore _profileStore;
+	private readonly bool _allowLegacyMigration;
 
-	public JsonModLibraryStore(StoragePaths paths)
+	public JsonModLibraryStore(StoragePaths paths, bool allowLegacyMigration = true)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_profileStore = new JsonProfileStore(paths);
+		_allowLegacyMigration = allowLegacyMigration;
 	}
 
 	private string SnapshotPath => _paths.LibraryPath;
@@ -86,9 +88,14 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 
 	private async ValueTask<LibrarySnapshot?> TryLoadCoreAsync(CancellationToken cancellationToken)
 	{
-		Directory.CreateDirectory(_paths.ModsDirectory);
 		if (!File.Exists(SnapshotPath))
 		{
+			if (!_allowLegacyMigration)
+			{
+				return null;
+			}
+
+			Directory.CreateDirectory(_paths.ModsDirectory);
 			var legacySnapshot = await TryLoadLegacyAsync(cancellationToken).ConfigureAwait(false);
 			if (legacySnapshot is null)
 			{

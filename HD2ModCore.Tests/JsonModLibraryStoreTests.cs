@@ -158,4 +158,39 @@ public sealed class JsonModLibraryStoreTests
 			try { Directory.Delete(root, recursive: true); } catch { }
 		}
 	}
+
+	[Fact]
+	public async Task TryLoadAsync_WhenLegacyMigrationIsDisabled_DoesNotReadOrPersistLegacyLibrary()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		try
+		{
+			var managerRoot = Path.Combine(root, "manager");
+			var libraryRoot = Path.Combine(root, "new-library");
+			var paths = new StoragePaths(managerRoot, libraryRoot);
+			var legacyPath = Path.Combine(paths.DataDirectory, "library", "library.json");
+			Directory.CreateDirectory(Path.GetDirectoryName(legacyPath)!);
+			await File.WriteAllTextAsync(legacyPath, """
+			{
+			  "version": 1,
+			  "savedUtc": "2026-08-30T00:00:00+00:00",
+			  "nodes": {},
+			  "profiles": []
+			}
+			""");
+
+			var store = new JsonModLibraryStore(paths, allowLegacyMigration: false);
+			var loaded = await store.TryLoadAsync();
+
+			Assert.Null(loaded);
+			Assert.True(File.Exists(legacyPath));
+			Assert.False(File.Exists(paths.LibraryPath));
+			Assert.False(File.Exists(paths.ProfilesPath));
+			Assert.False(Directory.Exists(paths.ModsDirectory));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
 }

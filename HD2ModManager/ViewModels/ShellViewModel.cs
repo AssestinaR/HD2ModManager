@@ -755,6 +755,8 @@ namespace HD2ModManager.ViewModels
                         libraryChanged = true;
                         task.UpdateStage("模组库已更新");
                         LogService.Info($"快速导入完成：来源={item.Path}，新增 Mod 数={created.Count}。导入仅写入模组库；除非后续显式加入活动配置，否则不会部署。");
+						if (import.LastImportHasOptionPathConflicts)
+							_notificationService.Show("Mod 导入成功，但部分选项共享同一 Patch 目录；这些共享内容默认未选择，其余选项已按通常规则初始化。", NotificationLevel.Warning, TimeSpan.FromSeconds(8));
                         _importQueue.MarkDone(item);
                         task.MarkCompleted();
                         if (created.Count > 0)

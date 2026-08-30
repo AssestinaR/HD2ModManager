@@ -143,6 +143,13 @@ public sealed class ModImportPlanner : IModImportPlanner
 		var planned = ModLibraryImporter.PlanTreeForImport(tree, packageRoot.Directory, packageRoot.Manifest);
 		var mode = packageRoot.Manifest is null ? ImportPlanMode.HeuristicFolder : ImportPlanMode.ManifestStrict;
 		var diagnostics = new List<ImportPlanDiagnostic>();
+		foreach (var conflict in planned.OptionPathConflicts)
+		{
+			diagnostics.Add(new ImportPlanDiagnostic(
+				"OptionPathConflict",
+				$"多个 manifest 选项以同等优先级归属实际 Patch 目录“{conflict.SourceRelativePath}”。导入会保留一份共享 payload；仅这些受影响父选项的直属共享内容不会默认启用，其他选项仍按正常规则初始化。",
+				presentationSourcePath));
+		}
 		if (!PathsEqual(packageRoot.Directory, presentationSourcePath) && packageRoot.Manifest is not null)
 		{
 			diagnostics.Add(new ImportPlanDiagnostic(
@@ -203,9 +210,26 @@ public sealed class ModImportPlanner : IModImportPlanner
 			var isLogicalNode = node.Metadata.Kind == ModNodeKind.Option
 				&& node.PatchGroups.Count == 0
 				&& sourcePaths.Length == 0;
-			var itemDiagnostics = isLogicalNode
-				? new[] { new ImportPlanDiagnostic("LogicalOption", "该条目只承载选项关系，不直接包含 patch。", sourcePath) }
-				: Array.Empty<ImportPlanDiagnostic>();
+			var itemDiagnostics = new List<ImportPlanDiagnostic>();
+			if (isLogicalNode)
+				itemDiagnostics.Add(new ImportPlanDiagnostic("LogicalOption", "该条目只承载选项关系，不直接包含 patch。", sourcePath));
+			foreach (var conflict in planned.OptionPathConflicts.Where(conflict => conflict.AffectedParentOptionIds.Contains(node.Id)))
+			{
+				itemDiagnostics.Add(new ImportPlanDiagnostic(
+					"OptionPathConflict",
+					$"该逻辑选项共享实际 Patch 目录“{conflict.SourceRelativePath}”；其直属共享 payload 默认不启用。",
+					sourcePath));
+			}
+			foreach (var conflict in planned.OptionPathConflicts.Where(conflict => string.Equals(
+				conflict.SourceRelativePath,
+				node.Metadata.SourcePackagePath,
+				StringComparison.OrdinalIgnoreCase)))
+			{
+				itemDiagnostics.Add(new ImportPlanDiagnostic(
+					"SharedOptionPayload",
+					$"该条目是由多个逻辑选项共享的实际 Patch payload：“{conflict.SourceRelativePath}”。",
+					sourcePath));
+			}
 			items.Add(new ImportPlanItem(
 				sourcePath,
 				node.Metadata.Name,

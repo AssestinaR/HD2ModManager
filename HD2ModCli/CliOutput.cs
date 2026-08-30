@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace HD2ModCli;
 
@@ -8,6 +9,7 @@ public static class CliOutput
 	{
 		WriteIndented = true,
 		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+		Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
 	};
 
 	public static void WriteJson(object value)

@@ -57,6 +57,9 @@ public sealed class ProfileApplyService : IProfileApplyService
 			allFacts.BuiltUtc,
 			allFacts.FilesByNode.Where(pair => activeNodeIds.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value),
 			allFacts.Issues.Where(issue => issue.NodeId is null || activeNodeIds.Contains(issue.NodeId.Value)).ToList());
+		var duplicatePhysicalSources = FindDuplicatePhysicalSources(effectiveProfile, snapshot);
+		if (duplicatePhysicalSources.Count > 0)
+			return new ApplyResult(false, Array.Empty<ApplyOperationResult>(), null, duplicatePhysicalSources);
 		var contentFacts = await RequestActiveContentFactsAsync(effectiveProfile, snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		var preparation = await _luaDeploymentService.PrepareAsync(
 			effectiveProfile,
@@ -83,6 +86,27 @@ public sealed class ProfileApplyService : IProfileApplyService
 		};
 		plan = plan with { DeploymentMethod = capability.Method.Value };
 		return await _executor.ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
+	}
+
+	private static IReadOnlyList<CoreIssue> FindDuplicatePhysicalSources(Profile profile, LibrarySnapshot snapshot)
+	{
+		var duplicates = profile.Entries
+			.Select(entry => snapshot.Nodes.TryGetValue(entry.NodeId, out var node) ? node : null)
+			.Where(node => node?.Metadata.Kind == ModNodeKind.Option
+				&& !string.IsNullOrWhiteSpace(node.Metadata.SourcePackageGuid)
+				&& !string.IsNullOrWhiteSpace(node.Metadata.SourcePackagePath)
+				&& node.PatchGroups.Count > 0)
+			.Cast<ModNode>()
+			.GroupBy(node => node.Metadata.SourcePackageGuid + "\u001F" + node.Metadata.SourcePackagePath, StringComparer.OrdinalIgnoreCase)
+			.Where(group => group.Select(node => node.Id).Distinct().Count() > 1)
+			.ToArray();
+		return duplicates.Select(group =>
+		{
+			var nodes = group.OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+			var sourcePath = nodes[0].Metadata.SourcePackagePath!;
+			var names = string.Join("、", nodes.Select(node => node.Metadata.Name));
+			return new CoreIssue(CoreIssueSeverity.Error, "DuplicatePhysicalOption", $"部署已取消：同一真实 Patch 目录被重复启用：{sourcePath}（{names}）。请关闭重复的相关选项后重试。", sourcePath, nodes[0].Id);
+		}).ToArray();
 	}
 
 	private async ValueTask<IReadOnlyDictionary<ModNodeId, ModContentFacts>> RequestActiveContentFactsAsync(
