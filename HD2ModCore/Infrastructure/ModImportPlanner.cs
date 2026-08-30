@@ -48,13 +48,11 @@ public sealed class ModImportPlanner : IModImportPlanner
 
     private static ImportPlan BuildManifestPlan(string source, ImportedObjectTree tree, StandardModManifest manifest)
     {
-        var entries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var option in manifest.Options)
-        {
-            foreach (var include in option.Include ?? []) entries.Add(Normalize(include));
-            foreach (var sub in option.SubOptions ?? [])
-                foreach (var include in sub.Include ?? []) entries.Add(Normalize(include));
-        }
+        var entries = EnumerateOptions(manifest.Options)
+            .SelectMany(option => option.Include ?? [])
+            .Select(Normalize)
+            .Where(path => !string.IsNullOrEmpty(path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var items = new List<ImportPlanItem>();
         foreach (var node in tree.Nodes.Values.OrderBy(n => Normalize(n.RelativePath).Length).ThenBy(n => n.RelativePath, StringComparer.OrdinalIgnoreCase))
@@ -122,5 +120,15 @@ public sealed class ModImportPlanner : IModImportPlanner
 
     private static string Normalize(string? path)
         => string.IsNullOrWhiteSpace(path) || path == "." ? string.Empty : path.Replace('\\', '/').Trim('/');
+
+    private static IEnumerable<StandardModManifestOption> EnumerateOptions(IEnumerable<StandardModManifestOption> options)
+    {
+        foreach (var option in options)
+        {
+            yield return option;
+            foreach (var descendant in EnumerateOptions(option.SubOptions ?? []))
+                yield return descendant;
+        }
+    }
 
 }

@@ -6,7 +6,7 @@ namespace HD2ModCore.Infrastructure;
 // future drag/drop reorder never mutates the portable source-package order.
 public sealed class OptionActivationStore
 {
-	private const int CurrentVersion = 2;
+	private const int CurrentVersion = 3;
 	private readonly string _path;
 	private readonly object _gate = new();
 	private Dictionary<string, Dictionary<string, OptionHostState>> _states = new(StringComparer.OrdinalIgnoreCase);
@@ -31,6 +31,14 @@ public sealed class OptionActivationStore
 			return _states.TryGetValue(optionId, out var hosts) && hosts.TryGetValue(hostId, out var state)
 				? state.EffectiveOrder
 				: null;
+	}
+
+	// A persisted disabled state is meaningful: it records that import defaults
+	// have already been applied and must not silently re-enable a user's choice.
+	public bool HasState(string optionId, string hostId)
+	{
+		lock (_gate)
+			return _states.TryGetValue(optionId, out var hosts) && hosts.ContainsKey(hostId);
 	}
 
 	public OptionActivationSnapshot CreateSnapshot()
@@ -61,6 +69,67 @@ public sealed class OptionActivationStore
 			}
 		}
 		await SaveAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	public async Task SetEnabledAsync(string optionId, string hostId, bool enabled, CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(optionId);
+		ArgumentException.ThrowIfNullOrWhiteSpace(hostId);
+		lock (_gate)
+		{
+			if (!_states.TryGetValue(optionId, out var hosts))
+				_states[optionId] = hosts = new Dictionary<string, OptionHostState>(StringComparer.OrdinalIgnoreCase);
+			hosts[hostId] = hosts.TryGetValue(hostId, out var existing)
+				? existing with { Enabled = enabled }
+				: new OptionHostState(enabled, null);
+		}
+		await SaveAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	public async Task SetEnabledForHostsAsync(string optionId, IEnumerable<string> hostIds, bool enabled, CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(optionId);
+		var normalized = hostIds.Where(host => !string.IsNullOrWhiteSpace(host)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+		if (normalized.Length == 0) return;
+		lock (_gate)
+		{
+			if (!_states.TryGetValue(optionId, out var hosts))
+				_states[optionId] = hosts = new Dictionary<string, OptionHostState>(StringComparer.OrdinalIgnoreCase);
+			foreach (var hostId in normalized)
+			{
+				hosts[hostId] = hosts.TryGetValue(hostId, out var existing)
+					? existing with { Enabled = enabled }
+					: new OptionHostState(enabled, null);
+			}
+		}
+		await SaveAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	public async Task<int> InitializeMissingStatesAsync(
+		IEnumerable<OptionActivationInitialization> initializations,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(initializations);
+		var normalizedByRelation = new Dictionary<string, OptionActivationInitialization>(StringComparer.OrdinalIgnoreCase);
+		foreach (var item in initializations.Where(item => !string.IsNullOrWhiteSpace(item.OptionId) && !string.IsNullOrWhiteSpace(item.HostId)))
+			// GUIDs cannot contain the separator, so this remains an unambiguous
+			// case-insensitive relation key without allocating a custom comparer.
+			normalizedByRelation[item.OptionId + "\u001F" + item.HostId] = item;
+		var normalized = normalizedByRelation.Values.ToArray();
+		var changed = 0;
+		lock (_gate)
+		{
+			foreach (var item in normalized)
+			{
+				if (!_states.TryGetValue(item.OptionId, out var hosts))
+					_states[item.OptionId] = hosts = new Dictionary<string, OptionHostState>(StringComparer.OrdinalIgnoreCase);
+				if (hosts.ContainsKey(item.HostId)) continue;
+				hosts[item.HostId] = new OptionHostState(item.Enabled, item.EffectiveOrder);
+				changed++;
+			}
+		}
+		if (changed > 0) await SaveAsync(cancellationToken).ConfigureAwait(false);
+		return changed;
 	}
 
 	public async Task SetEffectiveOrderAsync(string optionId, string hostId, int? effectiveOrder, CancellationToken cancellationToken = default)
@@ -166,8 +235,13 @@ public sealed class OptionActivationStore
 
 public sealed record OptionHostState(bool Enabled, int? EffectiveOrder);
 
+public sealed record OptionActivationInitialization(string OptionId, string HostId, bool Enabled, int? EffectiveOrder = null);
+
 public sealed record OptionActivationSnapshot(IReadOnlyDictionary<string, IReadOnlyDictionary<string, OptionHostState>> Options)
 {
+	public bool HasState(string optionId, string hostId)
+		=> Options.TryGetValue(optionId, out var hosts) && hosts.ContainsKey(hostId);
+
 	public bool IsEnabled(string optionId, string hostId)
 		=> Options.TryGetValue(optionId, out var hosts)
 			&& hosts.TryGetValue(hostId, out var state)

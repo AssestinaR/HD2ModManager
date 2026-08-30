@@ -119,9 +119,10 @@ namespace HD2ModManager.ViewModels
         public bool CanEditDecoration => !_disposed && IsDecoration && TryGetCurrentNode(out _);
         public string DecorationSummary { get; private set; } = "正在读取装饰计划。";
         public ModListProjectionSource<ModCardViewModel> HostDecorations => _hostAttachments.Items;
-        // Empty standard hosts still own their option list; an option becomes a
-        // decoration host only when it owns patch content that can be rebuilt.
-        public bool CanHostAttachments => !IsDecoration && !IsReShade && (IsStandardMod || (IsOption && HasPatchContent));
+        // Both a normal Mod and a logical/patch-bearing Option may own direct
+        // options.  Empty options are valid structural parents, so their child
+        // list must remain reachable even though they expose no patch tools.
+        public bool CanHostAttachments => !IsDecoration && !IsReShade && (IsStandardMod || IsOption);
         public bool HasHostDecorations => CanHostAttachments && _hostAttachments.VisibleCount > 0;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();

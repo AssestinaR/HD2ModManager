@@ -133,49 +133,56 @@ namespace HD2ModManager.Services
             => All().Where(mod => mod.IsDecoration && GetAvailableDecorationHostIds(mod.Guid).Contains(hostId, StringComparer.OrdinalIgnoreCase)).ToArray();
 
         public IReadOnlyList<ModEntity> GetOptionsForHost(string hostId)
-            => All().Where(mod => mod.IsOption && mod.HostModGuids.Any(host => SameModGuid(host, hostId))).ToArray();
+        {
+            if (!TryParseNodeId(hostId, out var parentId)) return Array.Empty<ModEntity>();
+            return OptionRelationshipGraph.Create(_snapshot)
+                .GetDirectOptions(parentId)
+                .Select(node => Get(node.Id.Value.ToString("N")))
+                .Where(mod => mod is not null)
+                .Cast<ModEntity>()
+                .ToArray();
+        }
+
+        public IReadOnlyList<ModEntity> GetOptionDescendantsForHost(string hostId)
+        {
+            if (!TryParseNodeId(hostId, out var parentId)) return Array.Empty<ModEntity>();
+            return OptionRelationshipGraph.Create(_snapshot)
+                .GetDescendantOptions(parentId)
+                .Select(node => Get(node.Id.Value.ToString("N")))
+                .Where(mod => mod is not null)
+                .Cast<ModEntity>()
+                .ToArray();
+        }
 
         public IReadOnlyList<ModEntity> GetAttachmentsForHost(string hostId)
             => GetDecorationsForHost(hostId).Concat(GetOptionsForHost(hostId)).ToArray();
 
-        public async Task<int> EnableDefaultOptionsForEmptyHostsAsync(
-            IEnumerable<string> hostIds,
+        public async Task<int> InitializeDefaultOptionActivationsAsync(
+            IEnumerable<string> affectedNodeIds,
             CancellationToken cancellationToken = default)
         {
-            ArgumentNullException.ThrowIfNull(hostIds);
+            ArgumentNullException.ThrowIfNull(affectedNodeIds);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var changed = 0;
-                foreach (var hostId in hostIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase))
+                var graph = OptionRelationshipGraph.Create(_snapshot);
+                var startParents = new HashSet<ModNodeId>();
+                foreach (var rawId in affectedNodeIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.OrdinalIgnoreCase))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var host = Get(hostId);
-                    if (host is null || host.IsDecoration || host.IsOption || host.HasPatchContent) continue;
-
-                    var options = GetOptionsForHost(hostId)
-                        .Where(option => option.HasPatchContent)
-                        .ToArray();
-                    if (options.Length == 0 || options.Any(option => IsOptionEnabledForHost(option.Guid, hostId))) continue;
-
-                    var hostNode = _snapshot.Nodes.Values.FirstOrDefault(node => SameModGuid(node.Id.Value.ToString("N"), hostId));
-                    var ordered = options
-                        .Select(option => (Option: option, Node: _snapshot.Nodes.Values.FirstOrDefault(node => SameModGuid(node.Id.Value.ToString("N"), option.Guid))))
-                        .Where(pair => pair.Node is not null);
-                    var selected = hostNode?.Metadata.SourcePackageGuid is not null
-                        ? ordered.OrderBy(pair => pair.Node!.Metadata.OptionOrder ?? int.MaxValue)
-                            .ThenBy(pair => pair.Option.Name, StringComparer.OrdinalIgnoreCase)
-                            .FirstOrDefault().Option
-                        : ordered.OrderByDescending(pair => GetStoredPayloadSize(pair.Option))
-                            .ThenBy(pair => pair.Option.Name, StringComparer.OrdinalIgnoreCase)
-                            .FirstOrDefault().Option;
-                    if (selected is null) continue;
-
-                    var enabledHosts = _optionActivations.GetEnabledHosts(selected.Guid).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    enabledHosts.Add(hostId);
-                    await _optionActivations.SetEnabledHostsAsync(selected.Guid, enabledHosts, cancellationToken).ConfigureAwait(false);
-                    changed++;
+                    if (!TryParseNodeId(rawId, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+                    if (node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option) startParents.Add(nodeId);
+                    foreach (var parentId in graph.GetParents(nodeId)) startParents.Add(parentId);
                 }
+                if (startParents.Count == 0) return 0;
+
+                var existingStates = _optionActivations.CreateSnapshot();
+                var defaults = new List<OptionActivationInitialization>();
+                var traversedEdges = new HashSet<(ModNodeId Parent, ModNodeId Child)>();
+                foreach (var parentId in startParents)
+                    PlanDefaults(parentId, new HashSet<ModNodeId> { parentId });
+
+                var changed = await _optionActivations.InitializeMissingStatesAsync(defaults, cancellationToken).ConfigureAwait(false);
 
                 if (changed > 0)
                 {
@@ -183,6 +190,26 @@ namespace HD2ModManager.Services
                     OptionActivationChanged?.Invoke(this, EventArgs.Empty);
                 }
                 return changed;
+
+                void PlanDefaults(ModNodeId parentId, HashSet<ModNodeId> ancestors)
+                {
+                    if (!_snapshot.Nodes.TryGetValue(parentId, out var parent)) return;
+                    var children = graph.GetDirectOptions(parentId);
+                    var enableAllChildren = parent.Metadata.Kind == ModNodeKind.Standard;
+                    for (var index = 0; index < children.Count; index++)
+                    {
+                        var child = children[index];
+                        var relation = (parentId, child.Id);
+                        if (!traversedEdges.Add(relation)) continue;
+                        var parentKey = parentId.Value.ToString("N");
+                        var childKey = child.Id.Value.ToString("N");
+                        if (!existingStates.HasState(childKey, parentKey))
+                            defaults.Add(new OptionActivationInitialization(childKey, parentKey, enableAllChildren || index == 0));
+                        if (!ancestors.Add(child.Id)) continue;
+                        PlanDefaults(child.Id, ancestors);
+                        ancestors.Remove(child.Id);
+                    }
+                }
             }
             finally { _libraryMutationGate.Release(); }
         }
@@ -190,25 +217,8 @@ namespace HD2ModManager.Services
         public bool IsOptionEnabledForHost(string optionId, string hostId)
             => _optionActivations.GetEnabledHosts(optionId).Any(host => SameModGuid(host, hostId));
 
-        private long GetStoredPayloadSize(ModEntity mod)
-        {
-            try
-            {
-                var directory = ResolveAbsolutePath(mod.SourcePath);
-                if (!Directory.Exists(directory)) return 0;
-                return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
-                    .Where(path => !string.Equals(Path.GetFileName(path), "option.json", StringComparison.OrdinalIgnoreCase)
-                        && !string.Equals(Path.GetFileName(path), "decoration.json", StringComparison.OrdinalIgnoreCase)
-                        && !new[] { ".png", ".jpg", ".jpeg", ".bmp", ".webp" }.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase))
-                    .Select(path => new FileInfo(path).Length)
-                    .Sum();
-            }
-            catch (IOException) { return 0; }
-            catch (UnauthorizedAccessException) { return 0; }
-        }
-
         private static bool IsOptionHost(ModEntity mod)
-            => !mod.IsDecoration && !mod.IsOption && !mod.IsReShade;
+            => !mod.IsDecoration && !mod.IsReShade;
 
         public string GetOptionActivationStatus(string optionId)
         {
@@ -222,11 +232,9 @@ namespace HD2ModManager.Services
         {
             var option = Get(optionId);
             if (option?.IsOption != true || !option.HostModGuids.Any(host => SameModGuid(host, hostId))) return "当前主体不支持该选项。";
-            var hosts = _optionActivations.GetEnabledHosts(optionId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var storedHost = hosts.FirstOrDefault(host => SameModGuid(host, hostId));
-            var enabled = storedHost is null;
-            if (enabled) hosts.Add(hostId); else hosts.Remove(storedHost!);
-            await _optionActivations.SetEnabledHostsAsync(optionId, hosts, cancellationToken).ConfigureAwait(false);
+            var storedHost = option.HostModGuids.First(host => SameModGuid(host, hostId));
+            var enabled = !IsOptionEnabledForHost(optionId, storedHost);
+            await _optionActivations.SetEnabledAsync(optionId, storedHost, enabled, cancellationToken).ConfigureAwait(false);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             OptionActivationChanged?.Invoke(this, EventArgs.Empty);
             return enabled ? "已为当前主体启用选项。" : "已为当前主体禁用选项。";
@@ -242,7 +250,7 @@ namespace HD2ModManager.Services
             if (available.Count == 0) return "无可用主体。";
             var enabled = _optionActivations.GetEnabledHosts(optionId);
             var enable = !available.All(enabled.Contains);
-            await _optionActivations.SetEnabledHostsAsync(optionId, enable ? available : Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
+            await _optionActivations.SetEnabledForHostsAsync(optionId, available, enable, cancellationToken).ConfigureAwait(false);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             OptionActivationChanged?.Invoke(this, EventArgs.Empty);
             return enable ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
@@ -254,7 +262,7 @@ namespace HD2ModManager.Services
             if (option?.IsOption != true) return "当前不是选项 Mod。";
             var available = option.HostModGuids.Where(host => All().Any(mod => IsOptionHost(mod) && SameModGuid(mod.Guid, host))).ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (available.Count == 0) return "无可用主体。";
-            await _optionActivations.SetEnabledHostsAsync(optionId, enabled ? available : Array.Empty<string>(), cancellationToken).ConfigureAwait(false);
+            await _optionActivations.SetEnabledForHostsAsync(optionId, available, enabled, cancellationToken).ConfigureAwait(false);
             SnapshotChanged?.Invoke(this, EventArgs.Empty);
             OptionActivationChanged?.Invoke(this, EventArgs.Empty);
             return enabled ? $"为 {available.Count} 个 Mod 启用了。" : "已对全部主体禁用。";
@@ -824,10 +832,11 @@ namespace HD2ModManager.Services
                 {
                     await _decorationActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
                 }
-                foreach (var hostId in deletedDecorationHosts.Except(deletedOptions, StringComparer.OrdinalIgnoreCase))
-                {
+                // An Option can itself be a parent. Remove every deleted node as a
+                // host before removing option-owned state, otherwise descendants
+                // would retain orphaned activation records.
+                foreach (var hostId in deletedDecorationHosts)
                     await _optionActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
-                }
                 foreach (var optionId in deletedOptions)
                     await _optionActivations.RemoveAsync(optionId, cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);

@@ -10,6 +10,40 @@ namespace HD2ModCore.Tests;
 public sealed class ModLibraryImporterTests
 {
 	[Fact]
+	public async Task ImportFolderAsync_HeuristicBuildsNestedOptionParents()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var source = Path.Combine(root, "source");
+		Directory.CreateDirectory(Path.Combine(source, "option-a"));
+		Directory.CreateDirectory(Path.Combine(source, "option-b", "variant-c"));
+		Directory.CreateDirectory(appRoot);
+		try
+		{
+			File.WriteAllText(Path.Combine(source, "option-a", "9ba626afa44a3aa3.patch_0"), "a");
+			File.WriteAllText(Path.Combine(source, "option-b", "variant-c", "9ba626afa44a3aa4.patch_0"), "c");
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths));
+
+			var result = await importer.ImportFolderAsync(source);
+
+			Assert.Equal(4, result.Snapshot.Nodes.Count);
+			var rootNode = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Kind == ModNodeKind.Standard);
+			var optionA = Assert.Single(result.Snapshot.Nodes.Values, node => node.RelativePath.Contains("option-a", StringComparison.OrdinalIgnoreCase));
+			var optionB = Assert.Single(result.Snapshot.Nodes.Values, node => node.PatchGroups.Count == 0 && node.Metadata.Kind == ModNodeKind.Option);
+			var variantC = Assert.Single(result.Snapshot.Nodes.Values, node => node.PatchGroups.Count != 0 && node.Id != optionA.Id);
+			Assert.Equal(rootNode.Id.Value.ToString("N"), Assert.Single(optionA.Metadata.HostModGuids!));
+			Assert.Equal(rootNode.Id.Value.ToString("N"), Assert.Single(optionB.Metadata.HostModGuids!));
+			Assert.Equal(optionB.Id.Value.ToString("N"), Assert.Single(variantC.Metadata.HostModGuids!));
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
+	[Fact]
 	public async Task ImportFolderAsync_SplitsPatchDirectories_AndNormalizesPatchNames()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

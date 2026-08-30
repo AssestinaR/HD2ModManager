@@ -107,7 +107,6 @@ namespace HD2ModManager.Services
 							&& !ModNodeSemanticComparer.AreEqual(previous, node))
 						.Select(node => node.Id)
 						.ToArray();
-					await _library.EnableDefaultOptionsForEmptyHostsAsync(importedGuids, ct).ConfigureAwait(false);
 					affectedNodeIds = importedGuids
 						.Select(guid => Guid.TryParse(guid, out var value) ? new ModNodeId(value) : (ModNodeId?)null)
 						.Concat(changedExistingNodeIds.Select(id => (ModNodeId?)id))
@@ -115,6 +114,9 @@ namespace HD2ModManager.Services
 						.Select(id => id!.Value)
 						.Distinct()
 						.ToArray();
+					await _library.InitializeDefaultOptionActivationsAsync(
+						affectedNodeIds.Select(id => id.Value.ToString("N")),
+						ct).ConfigureAwait(false);
 					LastAffectedNodeIds = affectedNodeIds;
 					foreach (var nodeId in affectedNodeIds)
 					{

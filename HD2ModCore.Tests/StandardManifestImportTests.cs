@@ -6,6 +6,100 @@ namespace HD2ModCore.Tests;
 
 public sealed class StandardManifestImportTests
 {
+	[Fact]
+	public async Task ImportFolderAsync_PreservesRecursiveLogicalOptions_AndCreatesEmptyParents()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var package = Path.Combine(root, "package");
+		Directory.CreateDirectory(Path.Combine(package, "simple"));
+		Directory.CreateDirectory(Path.Combine(package, "enhanced"));
+		Directory.CreateDirectory(appRoot);
+		try
+		{
+			await File.WriteAllTextAsync(Path.Combine(package, "simple", "9ba626afa44a3aa3.patch_0"), "simple");
+			await File.WriteAllTextAsync(Path.Combine(package, "enhanced", "9ba626afa44a3aa4.patch_0"), "enhanced");
+			var manifest = new
+			{
+				Version = 1,
+				Guid = Guid.NewGuid(),
+				Name = "HUD",
+				Options = new[]
+				{
+					new
+					{
+						Name = "Preset",
+						SubOptions = new[]
+						{
+							new { Name = "Simple", Include = new[] { "simple" } },
+							new { Name = "Enhanced", Include = new[] { "enhanced" } },
+						},
+					},
+				},
+			};
+			await File.WriteAllTextAsync(Path.Combine(package, "manifest.json"), JsonSerializer.Serialize(manifest));
+
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths));
+			var result = await importer.ImportFolderAsync(package);
+
+			Assert.Equal(4, result.Snapshot.Nodes.Count);
+			var rootNode = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Kind == ModNodeKind.Standard);
+			var preset = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Preset");
+			var simple = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Simple");
+			var enhanced = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Enhanced");
+			Assert.Empty(preset.PatchGroups);
+			Assert.Single(simple.PatchGroups);
+			Assert.Single(enhanced.PatchGroups);
+			Assert.Equal(rootNode.Id.Value.ToString("N"), Assert.Single(preset.Metadata.HostModGuids!));
+			Assert.Equal(preset.Id.Value.ToString("N"), Assert.Single(simple.Metadata.HostModGuids!));
+			Assert.Equal(preset.Id.Value.ToString("N"), Assert.Single(enhanced.Metadata.HostModGuids!));
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, preset.RelativePath, "option.json")));
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
+	[Fact]
+	public async Task ImportFolderAsync_AggregatesMultipleIncludesIntoOneLogicalOption()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var package = Path.Combine(root, "package");
+		Directory.CreateDirectory(Path.Combine(package, "part-a"));
+		Directory.CreateDirectory(Path.Combine(package, "part-b"));
+		Directory.CreateDirectory(appRoot);
+		try
+		{
+			await File.WriteAllTextAsync(Path.Combine(package, "part-a", "9ba626afa44a3aa3.patch_0"), "a");
+			await File.WriteAllTextAsync(Path.Combine(package, "part-b", "9ba626afa44a3aa4.patch_0"), "b");
+			await File.WriteAllTextAsync(Path.Combine(package, "manifest.json"), JsonSerializer.Serialize(new
+			{
+				Version = 1,
+				Name = "Combined",
+				Options = new[] { new { Name = "Full", Include = new[] { "part-a", "part-b" } } },
+			}));
+
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths));
+			var result = await importer.ImportFolderAsync(package);
+
+			var option = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Kind == ModNodeKind.Option);
+			Assert.Equal(2, option.PatchGroups.Count);
+			var stored = Path.Combine(paths.ModsDirectory, option.RelativePath);
+			Assert.True(File.Exists(Path.Combine(stored, "9ba626afa44a3aa3.patch_0")));
+			Assert.True(File.Exists(Path.Combine(stored, "9ba626afa44a3aa4.patch_0")));
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
     [Fact]
     public async Task ImportFolderAsync_UsesStandardOptionMetadataAndCopiesInheritedIcon()
     {

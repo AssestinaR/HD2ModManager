@@ -39,15 +39,10 @@ internal sealed class StandardModManifestOption
     public string? Description { get; init; }
     public string? Image { get; init; }
     public List<string>? Include { get; init; }
-    public List<StandardModManifestSubOption>? SubOptions { get; init; }
-}
-
-internal sealed class StandardModManifestSubOption
-{
-    public string? Name { get; init; }
-    public string? Description { get; init; }
-    public string? Image { get; init; }
-    public List<string>? Include { get; init; }
+    // Community manifests traditionally called the next level "subOptions".
+    // Keeping the same recursive shape means arbitrary option depth is parsed
+    // without inventing a manager-only nesting limit.
+    public List<StandardModManifestOption>? SubOptions { get; init; }
 }
 
 internal sealed class StandardModManifestNode

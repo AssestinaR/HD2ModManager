@@ -115,35 +115,40 @@ public sealed class ProfileApplyService : IProfileApplyService
 			.ToArray();
 		var resolved = new List<ProfileEntry>();
 		var includedOptions = new HashSet<ModNodeId>();
+		var optionGraph = OptionRelationshipGraph.Create(snapshot);
 		var nextLoadOrder = 0;
 		foreach (var hostEntry in sourceEntries)
 		{
 			resolved.Add(hostEntry with { LoadOrder = nextLoadOrder++ });
 			if (!snapshot.Nodes.TryGetValue(hostEntry.NodeId, out var host)
-				|| host.Metadata.Kind != ModNodeKind.Standard)
+				|| host.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.Option))
 				continue;
 
-			var hostId = host.Id.Value.ToString("N");
-			var enabledOptions = snapshot.Nodes.Values
-				.Where(node => node.Metadata.Kind == ModNodeKind.Option)
-				.Where(node => node.Metadata.HostModGuids?.Any(candidate => SameGuid(candidate, hostId)) == true)
-				.Where(node => optionStates.IsEnabled(node.Id.Value.ToString("N"), hostId))
-				.OrderBy(node => optionStates.GetEffectiveOrder(node.Id.Value.ToString("N"), hostId) ?? int.MaxValue)
-				.ThenBy(node => node.Metadata.OptionOrder ?? int.MaxValue)
-				.ThenBy(node => node.Id.Value)
+			AppendEnabledOptions(host.Id, new HashSet<ModNodeId> { host.Id });
+		}
+		return profile with { Entries = resolved };
+
+		void AppendEnabledOptions(ModNodeId parentId, HashSet<ModNodeId> ancestors)
+		{
+			var parentKey = parentId.Value.ToString("N");
+			var enabledOptions = optionGraph.GetDirectOptions(parentId)
+				.Where(option => optionStates.IsEnabled(option.Id.Value.ToString("N"), parentKey))
+				.OrderBy(option => optionStates.GetEffectiveOrder(option.Id.Value.ToString("N"), parentKey) ?? int.MaxValue)
+				.ThenBy(option => option.Metadata.OptionOrder ?? int.MaxValue)
+				.ThenBy(option => option.Id.Value)
 				.ToArray();
 			foreach (var option in enabledOptions)
 			{
-				// A shared option is physical patch content and must only appear once.
-				if (!includedOptions.Add(option.Id)) continue;
-				resolved.Add(new ProfileEntry(option.Id, nextLoadOrder++));
+				// Malformed legacy option.json files cannot turn deployment into an
+				// infinite loop. New imports are trees by construction.
+				if (!ancestors.Add(option.Id)) continue;
+				// A logical placeholder carries only the relationship. It is still
+				// traversed, but never becomes a fake deployable patch entry.
+				if (option.PatchGroups.Count > 0 && includedOptions.Add(option.Id))
+					resolved.Add(new ProfileEntry(option.Id, nextLoadOrder++));
+				AppendEnabledOptions(option.Id, ancestors);
+				ancestors.Remove(option.Id);
 			}
 		}
-		return profile with { Entries = resolved };
 	}
-
-	private static bool SameGuid(string? left, string? right)
-		=> Guid.TryParse(left, out var leftGuid) && Guid.TryParse(right, out var rightGuid)
-			? leftGuid == rightGuid
-			: string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
 }
