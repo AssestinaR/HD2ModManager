@@ -48,26 +48,27 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			throw new DirectoryNotFoundException($"GameData directory does not exist: {normalizedGameDataDirectory}");
 		}
 
-		var stored = await GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
-		if (stored is null)
-		{
-			return new GameDataIndexStatus(GameDataIndexState.Missing, null, Path.GetFullPath(gameDataDirectory), string.Empty);
-		}
-
-		ArchiveHashesRoot root;
 		try
 		{
-			root = JsonSerializer.Deserialize<ArchiveHashesRoot>(archiveHashesJson) ?? new ArchiveHashesRoot();
+			_ = JsonSerializer.Deserialize<ArchiveHashesRoot>(archiveHashesJson) ?? new ArchiveHashesRoot();
 		}
 		catch (JsonException)
 		{
-			return new GameDataIndexStatus(GameDataIndexState.Invalid, stored, Path.GetFullPath(gameDataDirectory), string.Empty);
+			return new GameDataIndexStatus(GameDataIndexState.Invalid, await GetFingerprintAsync(cancellationToken).ConfigureAwait(false), Path.GetFullPath(gameDataDirectory), string.Empty);
 		}
 
 		var currentFingerprint = await ComputeSourceFingerprintAsync(
 			normalizedGameDataDirectory,
 			archiveHashesJson,
 			cancellationToken).ConfigureAwait(false);
+		var stored = await GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
+		if (stored is null)
+		{
+			// A missing database still has a concrete GameData + archive metadata
+			// identity.  Exposing it lets plan-gated callers safely build an index
+			// from scratch and detect drift before apply.
+			return new GameDataIndexStatus(GameDataIndexState.Missing, null, Path.GetFullPath(gameDataDirectory), currentFingerprint);
+		}
 		await using var versionConnection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
 		await versionConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		var state = string.Equals(stored.SourceFingerprint, currentFingerprint, StringComparison.OrdinalIgnoreCase)

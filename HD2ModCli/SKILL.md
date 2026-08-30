@@ -22,6 +22,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Create a decoration package: `decoration-package`.
 - Deploy or deactivate GameData: `safe-deployment`.
 - Inspect original GameData mappings or actual Data-Patch winners: `gamedata-inspection`.
+- Rebuild Manager-owned GameData indexes or Armor / Helmet Unit facts: `gamedata-index-management`.
 - Manage a host Mod's generated Overwrite: `host-derived-overwrite`.
 - Produce a standalone Patch: `patch-resource-repackaging`, `helmet-to-armor-merge`, `cross-armor-transfer`, or `same-key-reconstruction`.
 

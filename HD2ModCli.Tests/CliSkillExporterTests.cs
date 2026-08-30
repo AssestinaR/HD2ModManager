@@ -17,6 +17,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-resource-repackaging", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "host-derived-overwrite", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-inspection", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-index-management", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "cross-armor-transfer", StringComparison.Ordinal));
 	}
@@ -86,6 +87,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("gamedata archive list", content, StringComparison.Ordinal);
 		Assert.Contains("gamedata override status", content, StringComparison.Ordinal);
 		Assert.Contains("mappingTrusted", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void GameDataIndexManagementSkill_DescribesPlanGatedIndexWrites()
+	{
+		var content = CliSkillCatalog.GetContent("gamedata-index-management");
+
+		Assert.Contains("gamedata index plan rebuild", content, StringComparison.Ordinal);
+		Assert.Contains("units-all", content, StringComparison.Ordinal);
+		Assert.Contains("gamedata index apply", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

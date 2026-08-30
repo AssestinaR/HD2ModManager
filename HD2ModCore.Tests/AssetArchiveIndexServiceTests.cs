@@ -327,6 +327,7 @@ public sealed class AssetArchiveIndexServiceTests
 			var missing = await missingIndexService.GetIndexStatusAsync(gameData, json);
 			Assert.Equal(GameDataIndexState.Missing, missing.State);
 			Assert.Null(missing.StoredFingerprint);
+			Assert.False(string.IsNullOrWhiteSpace(missing.CurrentSourceFingerprint));
 		}
 		finally
 		{

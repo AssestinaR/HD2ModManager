@@ -200,7 +200,7 @@ internal static class CliGameDataInspection
 					"GameDataIndexNotCurrent",
 					"error",
 					true,
-					"GameData 资产索引不可用、无效或已过期；请先在桌面管理器设置页重建资产索引。",
+					"GameData 资产索引不可用、无效或已过期；请先执行 gamedata index plan rebuild → validate → apply，或在桌面管理器设置页重建资产索引。",
 					resolvedGameDataDirectory));
 			}
 			return new CliGameDataIndexInspection(

@@ -166,6 +166,52 @@ public static class CliApplication
 				() => FormatGameDataBrowser(inspection));
 			return inspection.IsReady ? 0 : 2;
 		}
+		if (Matches(command, "gamedata", "index", "inspect"))
+		{
+			EnsureGameDataIndexInspectOptions(invocation.Options);
+			var build = await CliGameDataIndexPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), "rebuild")
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = CreateGameDataIndexPlanProjection(build.Document) },
+				() => FormatGameDataIndexMaintenanceInspection(build.Document));
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "gamedata" && command[1] == "index" && command[2] == "plan")
+		{
+			EnsureGameDataIndexPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "gamedata index plan");
+			var build = await CliGameDataIndexPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), command[3])
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), index = CreateGameDataIndexPlanProjection(build.Document) },
+				() => FormatGameDataIndexMaintenancePlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "gamedata", "index", "validate"))
+		{
+			EnsureGameDataIndexValidateOptions(invocation.Options);
+			var document = await CliGameDataIndexPlanArtifacts.ReadDocumentAsync(RequireGameDataIndexPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliGameDataIndexPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateGameDataIndexValidationProjection(validation) },
+				() => FormatGameDataIndexMaintenanceValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "gamedata", "index", "apply"))
+		{
+			EnsureGameDataIndexApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("GameDataIndexApplyConfirmationRequired", "gamedata index apply 会重建管理器的资产索引或 Unit 部位事实；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliGameDataIndexPlanArtifacts.ReadDocumentAsync(RequireGameDataIndexPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliGameDataIndexExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateGameDataIndexExecutionProjection(execution) },
+				() => FormatGameDataIndexMaintenanceExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (Matches(command, "library", "sync", "inspect"))
 		{
 			EnsureLibrarySyncInspectOptions(invocation.Options);
@@ -1480,6 +1526,46 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --only-competition。 ");
 	}
 
+	private static void EnsureGameDataIndexInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "gamedata index inspect 仅接受 --manager-root、可选 --library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureGameDataIndexPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "gamedata index plan 仅接受 rebuild、units-all 或 units-missing、--manager-root、可选 --library、--game-data、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureGameDataIndexValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "gamedata index validate 仅接受 --plan、--manager-root、可选 --library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureGameDataIndexApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "gamedata index apply 仅接受 --plan、--manager-root、可选 --library、--game-data、--confirm 与 --json。 ");
+		}
+	}
+
 	private static void EnsureSameKeyInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -1906,6 +1992,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("CrossArmorPlanRequired", "请通过 --plan <跨护甲计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
+	private static string RequireGameDataIndexPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("GameDataIndexPlanRequired", "请通过 --plan <GameData索引计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -2419,6 +2512,41 @@ public static class CliApplication
 				archiveHashesAvailable = inspection.ArchiveHashesAvailable,
 			},
 			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+
+	private static object CreateGameDataIndexPlanProjection(CliGameDataIndexPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			request = document.Request,
+			inputs = document.Inputs,
+			diagnostics = CreateGameDataDiagnosticsProjection(document.Diagnostics),
+		};
+
+	private static object CreateGameDataIndexValidationProjection(CliGameDataIndexPlanValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateGameDataIndexPlanProjection(validation.Current.Document),
+			diagnostics = CreateGameDataDiagnosticsProjection(validation.Diagnostics),
+		};
+
+	private static object CreateGameDataIndexExecutionProjection(CliGameDataIndexExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.Operation,
+			execution.BaseIndexCurrent,
+			execution.AdvancedEquipmentFactsCurrent,
+			diagnostics = CreateGameDataDiagnosticsProjection(execution.Diagnostics),
+			gameDataMutation = "not-performed",
+			libraryMutation = "not-performed",
 		};
 
 	private static object CreateGameDataArchiveListProjection(CliGameDataArchiveListInspection inspection, CliGlobalOptions options)
@@ -3299,6 +3427,39 @@ public static class CliApplication
 			: $"GameData 资产索引不可用：[{blocking.Code}] {blocking.Message}";
 	}
 
+	private static string FormatGameDataIndexMaintenanceInspection(CliGameDataIndexPlanDocument document)
+		=> $"GameData 索引维护检查：基础索引={document.Inputs.BaseIndexState}；Armor / Helmet Unit 部位事实={(document.Inputs.AdvancedEquipmentFactsCurrent ? "当前" : "缺失或过期")}；archivehashes={(document.Inputs.ArchiveHashes.Exists ? "可用" : "缺失")}。";
+
+	private static string FormatGameDataIndexMaintenancePlan(CliGameDataIndexPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出 GameData 索引计划：{outputPath}",
+			$"操作：{document.Request.Operation}；基础索引：{document.Inputs.BaseIndexState}；高级 Unit 部位事实：{(document.Inputs.AdvancedEquipmentFactsCurrent ? "当前" : "缺失或过期")}",
+			$"阻断诊断：{blocking}。validate 通过后，apply 才会写入管理器的索引数据库与派生缓存。",
+		]);
+	}
+
+	private static string FormatGameDataIndexMaintenanceValidation(CliGameDataIndexPlanValidationResult validation)
+	{
+		var status = validation.IsValid ? "GameData 索引计划验证通过。" : "GameData 索引计划验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatGameDataIndexMaintenanceExecution(CliGameDataIndexExecutionResult execution)
+	{
+		if (execution.Success)
+			return $"GameData 索引操作完成：{execution.Operation}；基础索引当前={execution.BaseIndexCurrent}；Armor / Helmet Unit 部位事实当前={execution.AdvancedEquipmentFactsCurrent}。";
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "GameData 索引操作未完成；请查看 JSON 结果或日志。"
+			: $"GameData 索引操作被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatGameDataArchiveList(CliGameDataArchiveListInspection inspection)
 		=> inspection.IsReady
 			? $"GameData archive 列表：{inspection.Archives.Count} 个。"
@@ -3489,6 +3650,10 @@ HD2 Mod Manager 命令行
 	  hd2mod gamedata override show <TypeID十六进制> <FileID十六进制> --game-data <游戏data或副本目录> --json
 	  hd2mod gamedata deployment inspect --game-data <游戏data或副本目录> --json  （兼容别名：同 override status）
 	  hd2mod gamedata browser --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data或副本目录> [--limit <1-500>] [--cursor <cursor>] --json
+	  hd2mod gamedata index inspect --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod gamedata index plan rebuild|units-all|units-missing --manager-root <管理器目录> --game-data <游戏data目录> --output gamedata-index-plan.json --json
+	  hd2mod gamedata index validate --plan gamedata-index-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod gamedata index apply --plan gamedata-index-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
 	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
