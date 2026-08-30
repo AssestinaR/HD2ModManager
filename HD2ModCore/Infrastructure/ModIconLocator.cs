@@ -24,6 +24,16 @@ public static class ModIconLocator
 		".bmp",
 	};
 
+	/// <summary>
+	/// The stable, manager-owned icon names. Callers that replace an icon should
+	/// operate on this set instead of deleting arbitrary image assets supplied by
+	/// a Mod author.
+	/// </summary>
+	public static IReadOnlyList<string> CanonicalFileNames => PreferredFileNames;
+
+	public static bool IsSupportedExtension(string? extension)
+		=> !string.IsNullOrWhiteSpace(extension) && SupportedExtensions.Contains(extension);
+
 	public static string? TryResolve(StoragePaths paths, ModNode node)
 	{
 		ArgumentNullException.ThrowIfNull(paths);

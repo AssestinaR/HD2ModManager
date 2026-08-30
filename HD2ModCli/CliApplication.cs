@@ -36,12 +36,13 @@ public static class CliApplication
 	private static async Task<int> DispatchAsync(CliInvocation invocation)
 	{
 		var command = invocation.Command.Select(value => value.Trim().ToLowerInvariant()).ToArray();
-		if (!string.IsNullOrWhiteSpace(invocation.Options.AddToProfile)
-			&& !(command.Length == 3 && command[0] == "import" && command[1] == "plan"))
+		var addToProfileSupported = (command.Length == 3 && command[0] == "import" && command[1] == "plan")
+			|| (command.Length >= 4 && command[0] == "import" && command[1] == "batch" && command[2] == "plan");
+		if (!string.IsNullOrWhiteSpace(invocation.Options.AddToProfile) && !addToProfileSupported)
 		{
 			throw new CliUserException(
 				"CommandOptionNotSupported",
-				"--add-to-profile 仅可用于 import plan；它会被固定在计划中，并在 validate/apply 时重新校验。");
+				"--add-to-profile 仅可用于 import plan 或 import batch plan；它会被固定在计划中，并在 validate/apply 时重新校验。");
 		}
 		if ((invocation.Options.Limit is not null
 			|| !string.IsNullOrWhiteSpace(invocation.Options.Cursor)
@@ -345,6 +346,38 @@ public static class CliApplication
 			var node = CliProjections.ResolveMod(state.Snapshot.Nodes, invocation.Command[2]);
 			var graph = OptionRelationshipGraph.Create(state.Snapshot);
 			Emit(invocation.Options, new { mod = CliProjections.CreateModProjection(node, workspace, state, graph), issues = state.ReadIssues }, () => FormatMod(node, state.Snapshot));
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "image" && command[2] == "show")
+		{
+			EnsureModImageShowOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var inspection = CliModImageOperations.Inspect(state, workspace, invocation.Command[3]);
+			Emit(invocation.Options,
+				new { image = CreateModImageInspectionProjection(inspection), issues = state.ReadIssues },
+				() => FormatModImageInspection(inspection));
+			return 0;
+		}
+		if (command.Length == 5 && command[0] == "mod" && command[1] == "image" && command[2] == "set")
+		{
+			EnsureMetadataMutationOptions(invocation.Options, "mod image set");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliModImageOperations.SetAsync(session, invocation.Command[3], invocation.Command[4])).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, image = CreateModImageMutationProjection(result) },
+				() => FormatModImageMutation(result));
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "image" && command[2] == "clear")
+		{
+			EnsureMetadataMutationOptions(invocation.Options, "mod image clear");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliModImageOperations.ClearAsync(session, invocation.Command[3])).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, image = CreateModImageMutationProjection(result) },
+				() => FormatModImageMutation(result));
 			return 0;
 		}
 		if (command.Length == 4 && command[0] == "mod" && command[1] == "rename")
@@ -957,6 +990,53 @@ public static class CliApplication
 				() => FormatSameKeyExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 4 && command[0] == "import" && command[1] == "batch" && command[2] == "inspect")
+		{
+			EnsureBatchImportInspectOptions(invocation.Options);
+			var build = await CliBatchImportPlanArtifacts
+				.BuildAsync(invocation.Command.Skip(3).ToArray(), addToProfile: null)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, batch = CreateBatchImportPlanProjection(build.Document) },
+				() => FormatBatchImportInspection(build.Document));
+			return 0;
+		}
+		if (command.Length >= 4 && command[0] == "import" && command[1] == "batch" && command[2] == "plan")
+		{
+			EnsureBatchImportPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "import batch plan");
+			var profileTarget = await ResolveImportProfileTargetAsync(invocation.Options).ConfigureAwait(false);
+			var build = await CliBatchImportPlanArtifacts
+				.BuildAsync(invocation.Command.Skip(3).ToArray(), profileTarget)
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, output = Path.GetFullPath(output), batch = CreateBatchImportPlanProjection(build.Document) },
+				() => FormatBatchImportPlan(build.Document, Path.GetFullPath(output)));
+			return 0;
+		}
+		if (Matches(command, "import", "batch", "validate"))
+		{
+			EnsureBatchImportValidateOptions(invocation.Options);
+			var document = await CliBatchImportPlanArtifacts.ReadDocumentAsync(RequireBatchImportPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliBatchImportPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateBatchImportValidationProjection(validation) },
+				() => FormatBatchImportValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "import", "batch", "apply"))
+		{
+			EnsureBatchImportApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("BatchImportApplyConfirmationRequired", "import batch apply 会依次写入多个 Mod；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliBatchImportPlanArtifacts.ReadDocumentAsync(RequireBatchImportPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliBatchImportExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateBatchImportExecutionProjection(execution) },
+				() => FormatBatchImportExecution(execution));
+			return execution.Success ? 0 : execution.Status == "validation-failed" ? 2 : 1;
+		}
 		if (command.Length == 3 && command[0] == "import" && command[1] == "inspect")
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -1031,7 +1111,9 @@ public static class CliApplication
 				CliImportProfileAddition? profileAddition = null;
 				try
 				{
-					profileAddition = await AddImportedNodesToProfileAsync(paths, document.AddToProfile, result).ConfigureAwait(false);
+					profileAddition = await CliImportProfileIntegration
+						.AddAsync(paths, document.AddToProfile, GetImportedNodeIds(result))
+						.ConfigureAwait(false);
 				}
 				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
 				{
@@ -1166,6 +1248,51 @@ public static class CliApplication
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
 			throw new CliUserException("CommandOptionNotSupported", "import apply 不接受 --output、--overwrite、--host 或 --position。");
+	}
+
+	private static void EnsureBatchImportInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"import batch inspect 仅接受一个或多个来源路径与 --json。 ");
+		}
+	}
+
+	private static void EnsureBatchImportPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"import batch plan 仅接受一个或多个来源路径、--manager-root、--library、可选 --add-to-profile、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureBatchImportValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"import batch validate 仅接受 --plan、--manager-root、--library 与 --json。 ");
+		}
+	}
+
+	private static void EnsureBatchImportApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"import batch apply 仅接受 --plan、--manager-root、--library、--confirm 与 --json。 ");
+		}
 	}
 
 	private static void EnsureDeploymentPlanOptions(CliGlobalOptions options)
@@ -1616,6 +1743,18 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --host、--position、--set-active 或 --with-unshared-options。");
 	}
 
+	private static void EnsureModImageShowOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod image show 仅接受 Mod 标识、--library/--manager-root 与 --json。 ");
+		}
+	}
+
 	private static void EnsureOptionMutationOptions(CliGlobalOptions options, string command, bool requirePosition)
 	{
 		EnsureMutationBoundary(options, command);
@@ -1826,104 +1965,8 @@ public static class CliApplication
 			Path.GetFullPath(workspace.LibraryRoot ?? throw new InvalidOperationException("导入目标配置缺少 Mod 库路径。")));
 	}
 
-	private static async ValueTask<CliImportProfileAddition?> AddImportedNodesToProfileAsync(
-		StoragePaths paths,
-		CliImportProfileTarget? target,
-		ModImportExecutionResult import,
-		CancellationToken cancellationToken = default)
-	{
-		if (target is null) return null;
-		if (!Guid.TryParse(target.ProfileId, out var rawProfileId))
-			throw new InvalidDataException("导入计划中的目标配置文件 ID 无效。");
-		if (!PathsEqual(target.LibraryRoot, paths.ModsDirectory))
-			throw new InvalidDataException("导入计划固定的 Mod 库与当前写入目标不同；已拒绝把导入内容加入错误配置文件。 ");
-
-		var store = new JsonModLibraryStore(paths, allowLegacyMigration: false);
-		var snapshot = await store.TryLoadReadOnlyAsync(cancellationToken).ConfigureAwait(false)
-			?? throw new InvalidDataException("导入完成后无法重新读取 Mod 库，不能安全加入配置文件。");
-		var profileId = new ProfileId(rawProfileId);
-		var profile = snapshot.Profiles.FirstOrDefault(item => item.Id == profileId)
-			?? throw new InvalidDataException($"导入后目标配置文件已不存在：{target.ProfileName}。");
-		if (!string.Equals(profile.Name, target.ProfileName, StringComparison.Ordinal)
-			|| profile.Revision != target.ProfileRevision)
-		{
-			throw new InvalidDataException("导入期间目标配置文件已变化；已保留导入内容，但拒绝把它加入可能不同的配置文件。");
-		}
-
-		var existing = profile.Entries.Select(entry => entry.NodeId).ToHashSet();
-		var deployable = new List<ModNodeId>();
-		var skipped = new List<string>();
-		var importedNodes = import.ImportedNodeIds.Count != 0 ? import.ImportedNodeIds : import.AddedNodeIds;
-		foreach (var nodeId in importedNodes.Distinct())
-		{
-			if (!snapshot.Nodes.TryGetValue(nodeId, out var node)
-				|| existing.Contains(nodeId)
-				|| !CanJoinProfile(node))
-			{
-				skipped.Add(CliProjections.FormatId(nodeId));
-				continue;
-			}
-			deployable.Add(nodeId);
-		}
-
-		if (deployable.Count == 0)
-		{
-			return new CliImportProfileAddition(
-				CliProjections.FormatId(profile.Id),
-				profile.Name,
-				profile.Revision,
-				profile.Revision,
-				Array.Empty<string>(),
-				skipped);
-		}
-
-		var mutation = CoreServices.CreateProfileMutationService().AddEntries(snapshot, profile.Id, deployable);
-		if (!mutation.Succeeded)
-			throw new InvalidDataException($"导入内容无法加入配置文件：{mutation.Message ?? mutation.Failure?.ToString() ?? "未知原因"}。");
-		if (mutation.Changed)
-			await store.SaveAsync(mutation.Snapshot, cancellationToken).ConfigureAwait(false);
-		var persisted = mutation.Changed
-			? await store.TryLoadReadOnlyAsync(cancellationToken).ConfigureAwait(false)
-			: snapshot;
-		if (persisted is null)
-			throw new InvalidDataException("保存后无法重新读取 Mod 库。");
-		var persistedProfile = persisted.Profiles.FirstOrDefault(item => item.Id == profile.Id)
-			?? throw new InvalidDataException("保存后无法重新定位目标配置文件。");
-		return new CliImportProfileAddition(
-			CliProjections.FormatId(profile.Id),
-			persistedProfile.Name,
-			profile.Revision,
-			persistedProfile.Revision,
-			deployable.Select(CliProjections.FormatId).ToArray(),
-			skipped);
-	}
-
-	private static bool CanJoinProfile(ModNode node)
-		=> node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.ReShade
-			&& (node.Metadata.Kind == ModNodeKind.ReShade || node.PatchGroups.Count != 0);
-
-	private static bool PathsEqual(string left, string right)
-	{
-		try
-		{
-			return string.Equals(
-				Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-				Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-				StringComparison.OrdinalIgnoreCase);
-		}
-		catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-		{
-			return false;
-		}
-	}
-
-	private sealed record CliImportProfileAddition(
-		string ProfileId,
-		string ProfileName,
-		long PreviousRevision,
-		long CurrentRevision,
-		IReadOnlyList<string> AddedNodeIds,
-		IReadOnlyList<string> SkippedNodeIds);
+	private static IReadOnlyList<ModNodeId> GetImportedNodeIds(ModImportExecutionResult import)
+		=> import.ImportedNodeIds.Count != 0 ? import.ImportedNodeIds : import.AddedNodeIds;
 
 	private static string RequireOutput(CliGlobalOptions options, string command)
 	{
@@ -1936,6 +1979,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("ImportPlanRequired", "请通过 --plan <计划文件.json> 提供已导出的导入计划。");
+		return options.Plan;
+	}
+
+	private static string RequireBatchImportPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("BatchImportPlanRequired", "请通过 --plan <批量导入计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -2067,6 +2117,49 @@ public static class CliApplication
 		]);
 	}
 
+	private static object CreateModImageInspectionProjection(CliModImageInspection inspection)
+		=> new
+		{
+			modId = CliProjections.FormatId(inspection.Node.Id),
+			modName = inspection.Node.Metadata.Name,
+			directory = inspection.Directory,
+			resolvedImagePath = inspection.ResolvedImagePath,
+			canonicalImagePaths = inspection.CanonicalImagePaths,
+		};
+
+	private static object CreateModImageMutationProjection(CliModImageMutationResult result)
+		=> new
+		{
+			operation = result.Operation,
+			modId = CliProjections.FormatId(result.Node.Id),
+			modName = result.Node.Metadata.Name,
+			sourcePath = result.SourcePath,
+			destinationPath = result.DestinationPath,
+			removedPaths = result.RemovedPaths,
+			resolvedImagePath = result.ResolvedImagePath,
+			deployment = "not-performed",
+		};
+
+	private static string FormatModImageInspection(CliModImageInspection inspection)
+		=> string.Join(Environment.NewLine,
+		[
+			$"{inspection.Node.Metadata.Name} 的图像",
+			$"目录：{inspection.Directory}",
+			$"当前图像：{inspection.ResolvedImagePath ?? "（未找到）"}",
+			$"规范 icon 文件：{(inspection.CanonicalImagePaths.Count == 0 ? "（无）" : string.Join("；", inspection.CanonicalImagePaths))}",
+		]);
+
+	private static string FormatModImageMutation(CliModImageMutationResult result)
+		=> string.Join(Environment.NewLine,
+		new[]
+		{
+			$"已{(result.Operation == "set" ? "更新" : "清除")} Mod 图像：{result.Node.Metadata.Name}",
+			result.DestinationPath is null ? string.Empty : $"目标：{result.DestinationPath}",
+			$"移除规范 icon 文件：{result.RemovedPaths.Count}",
+			$"当前解析图像：{result.ResolvedImagePath ?? "（未找到）"}",
+			"未修改 Patch、配置文件、选项状态或部署。",
+		}.Where(line => !string.IsNullOrWhiteSpace(line)));
+
 	private static string FormatOptionAllHostsInspection(ModNode option, OptionAllHostsRelationshipSnapshot scope)
 	{
 		var state = scope.CanMutate ? "可批量修改" : "不可批量修改";
@@ -2113,6 +2206,40 @@ public static class CliApplication
 			$"计划条目：{plan.Items.Count}",
 			$"阻断诊断：{blocking}",
 		]);
+	}
+
+	private static string FormatBatchImportInspection(CliBatchImportPlanDocument document)
+		=> $"批量导入检查完成：来源 {document.Imports.Count} 个；总计划条目 {document.Imports.Sum(item => item.Import.Items.Count)} 个。不会写入 Mod 库。";
+
+	private static string FormatBatchImportPlan(CliBatchImportPlanDocument document, string outputPath)
+		=> $"已导出批量导入计划：{outputPath}{Environment.NewLine}来源：{document.Imports.Count} 个；总计划条目：{document.Imports.Sum(item => item.Import.Items.Count)}。"
+			+ (document.AddToProfile is null ? string.Empty : $"{Environment.NewLine}全部来源导入后将一次加入配置：{document.AddToProfile.ProfileName}。")
+			+ $"{Environment.NewLine}执行为串行：已完成来源不会因后续失败被伪装为回滚。";
+
+	private static string FormatBatchImportValidation(CliBatchImportPlanValidationResult validation)
+	{
+		if (validation.IsValid) return $"批量导入验证通过：{validation.Sources.Count} 个来源均可执行。";
+		var failures = validation.Sources
+			.Where(source => !source.Validation.IsValid)
+			.Select(source => $"- #{source.Index + 1} {source.Document.Source.RequestedPath}：{string.Join("；", source.Validation.Issues.Where(issue => issue.IsBlocking).Select(issue => $"[{issue.Code}] {issue.Message}"))}")
+			.Take(5)
+			.ToArray();
+		return "批量导入验证未通过。" + (failures.Length == 0 ? string.Empty : Environment.NewLine + string.Join(Environment.NewLine, failures));
+	}
+
+	private static string FormatBatchImportExecution(CliBatchImportExecutionResult execution)
+	{
+		var completed = execution.Sources.Count(source => source.Status == "completed");
+		if (execution.Success)
+		{
+			return $"批量导入完成：{completed}/{execution.Sources.Count} 个来源已导入。"
+				+ (execution.ProfileAddition is null
+					? ""
+					: $" 已加入配置：{execution.ProfileAddition.ProfileName}，新增 {execution.ProfileAddition.AddedNodeIds.Count} 个可部署 Mod。")
+				+ " 未自动部署。";
+		}
+		return $"批量导入未完整完成：状态={execution.Status}；已完成来源={completed}；错误={execution.ErrorCode ?? "见验证结果"}。"
+			+ " 已完成来源保持已导入状态，CLI 未尝试猜测性回滚。";
 	}
 
 	private static string FormatLibrarySyncInspection(CliLibrarySynchronizationPlanDocument document)
@@ -2936,6 +3063,42 @@ public static class CliApplication
 			issues = validation.Issues.Select(issue => new { code = issue.Code, message = issue.Message, isBlocking = issue.IsBlocking }).ToArray(),
 		};
 
+	private static object CreateBatchImportPlanProjection(CliBatchImportPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			document.PlanFingerprint,
+			sourceCount = document.Imports.Count,
+			addToProfile = document.AddToProfile,
+			sequential = true,
+			rollback = "completed-sources-are-preserved",
+			imports = document.Imports.Select((import, index) => new
+			{
+				index,
+				source = import.Source,
+				sourceFingerprint = import.SourceFingerprint,
+				importFingerprint = import.ImportFingerprint,
+				import = CliProjections.CreateImportPlanProjection(import.Import),
+			}).ToArray(),
+		};
+
+	private static object CreateBatchImportValidationProjection(CliBatchImportPlanValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			sourceCount = validation.Sources.Count,
+			sources = validation.Sources.Select(source => new
+			{
+				source.Index,
+				sourcePath = source.Document.Source.RequestedPath,
+				sourceKind = source.Document.Source.Kind,
+				isValid = source.Validation.IsValid,
+				validation = CreateImportValidationProjection(source.Validation),
+			}).ToArray(),
+		};
+
 	private static object CreateImportExecutionProjection(
 		ModImportExecutionResult result,
 		string libraryRoot,
@@ -2956,6 +3119,33 @@ public static class CliApplication
 			derivedInformation = "not-started",
 			deployment = "not-performed",
 		};
+
+	private static object CreateBatchImportExecutionProjection(CliBatchImportExecutionResult execution)
+	{
+		var libraryRoot = execution.Validation.Target?.LibraryRoot;
+		return new
+		{
+			execution.Status,
+			execution.Success,
+			sequential = true,
+			rollback = "completed-sources-are-preserved",
+			profileAddition = execution.ProfileAddition,
+			execution.ErrorCode,
+			execution.ErrorMessage,
+			sources = execution.Sources.Select(source => new
+			{
+				source.Index,
+				source.SourcePath,
+				source.Status,
+				result = source.Result is null || string.IsNullOrWhiteSpace(libraryRoot)
+					? null
+					: CreateImportExecutionProjection(source.Result, libraryRoot, null),
+				source.ErrorCode,
+				source.ErrorMessage,
+			}).ToArray(),
+			validation = CreateBatchImportValidationProjection(execution.Validation),
+		};
+	}
 
 	private static object CreateNodeMetadataMutationProjection(CliNodeMetadataMutationResult result)
 		=> new
@@ -3665,6 +3855,9 @@ HD2 Mod Manager 命令行
 	  hd2mod decoration package apply --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
 	  hd2mod mod list --library <Mod库目录> --json
   hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
+	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
+	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
@@ -3721,6 +3914,10 @@ HD2 Mod Manager 命令行
 	  hd2mod patch repair plan <Mod GUID或前缀> <base.patch_N> --manager-root <管理器目录> --game-data <游戏data目录> --output same-key-plan.json --json
 	  hd2mod patch repair validate --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod patch repair apply --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外目录> --confirm --json
+	  hd2mod import batch inspect <文件夹、压缩包或文件> [...] --json
+	  hd2mod import batch plan <文件夹、压缩包或文件> [...] [--add-to-profile <名称|GUID|active>] --manager-root <管理器目录> --output batch-import-plan.json --json
+	  hd2mod import batch validate --plan batch-import-plan.json --manager-root <管理器目录> --json
+	  hd2mod import batch apply --plan batch-import-plan.json --manager-root <管理器目录> --confirm --json
 	  hd2mod import inspect <文件夹、压缩包或文件> --json
 	  hd2mod import plan <文件夹、压缩包或文件> [--add-to-profile <名称|GUID|active>] --output import-plan.json
 	  hd2mod import validate --plan import-plan.json --manager-root <管理器目录> --json
@@ -3740,7 +3937,7 @@ HD2 Mod Manager 命令行
 	  --plan <文件>           import/deploy/patch validate 与 apply 所需的计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
 	  --host <GUID或前缀>      Option 操作的明确主体，或 decoration package plan 的明确目标主体。
-	  --add-to-profile <目标>   import plan 专用；将目标配置身份与版本固定到导入计划，apply 只加入可部署条目，不自动部署。
+	  --add-to-profile <目标>   import plan / import batch plan 专用；将目标配置身份与版本固定到导入计划，apply 只加入可部署条目，不自动部署。
 	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
 	  --limit <1-500>          gamedata 分页查询的单页条目数。
 	  --cursor <cursor>        gamedata 返回的下一页游标；索引或覆盖图变化后会拒绝混用。

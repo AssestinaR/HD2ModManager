@@ -17,8 +17,8 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 
 - Read state: `library-inspection`.
 - Reconcile library facts: `library-synchronization`.
-- Import: `safe-import`.
-- Rename, Options, deletion, or Profiles: `mod-metadata`, `option-management`, `safe-library-deletion`, `profile-management`.
+- Import one source: `safe-import`; import a reviewed source collection: `batch-import`.
+- Rename, notes, images, Options, deletion, or Profiles: `mod-metadata`, `mod-media`, `option-management`, `safe-library-deletion`, `profile-management`.
 - Create a decoration package: `decoration-package`.
 - Deploy or deactivate GameData: `safe-deployment`.
 - Inspect original GameData mappings or actual Data-Patch winners: `gamedata-inspection`.
