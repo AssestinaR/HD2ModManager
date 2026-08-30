@@ -20,5 +20,6 @@ hd2mod agent skills export <skill-name> --output .\.agents\skills
 - `safe-library-deletion` — previewed relationship-aware deletion.
 - `profile-management` — Profile lifecycle and logical order.
 - `safe-deployment` — audited GameData deployment or tracked deactivation.
+- `patch-resource-repackaging` — audited whole-entry resource selection into a standalone Patch.
 
-Do not load every Skill by default. `mod-management` is a legacy aggregate only. `safe-deployment` is the only Skill that authorizes GameData writes, and it never authorizes Patch reconstruction, armor replacement, or arbitrary Patch-byte editing.
+Do not load every Skill by default. `mod-management` is a legacy aggregate only. `safe-deployment` is the only Skill that authorizes GameData writes. `patch-resource-repackaging` only writes a new library-external output directory; neither Skill authorizes Patch reconstruction, armor replacement, or arbitrary Patch-byte editing.

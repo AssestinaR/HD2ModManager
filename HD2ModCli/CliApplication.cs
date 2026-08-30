@@ -335,6 +335,52 @@ public static class CliApplication
 				() => FormatDeploymentExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 4 && command[0] == "patch" && command[1] == "repackage" && command[2] == "inspect")
+		{
+			EnsurePatchRepackagingInspectOptions(invocation.Options);
+			var build = await CliPatchResourceRepackagingPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command.Skip(3).ToArray())
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = CreatePatchResourceRepackagingPlanProjection(build.Document) },
+				() => FormatPatchResourceRepackagingInspection(build.Document));
+			return 0;
+		}
+		if (command.Length >= 4 && command[0] == "patch" && command[1] == "repackage" && command[2] == "plan")
+		{
+			EnsurePatchRepackagingPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "patch repackage plan");
+			var build = await CliPatchResourceRepackagingPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command.Skip(3).ToArray())
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), repackage = CreatePatchResourceRepackagingPlanProjection(build.Document) },
+				() => FormatPatchResourceRepackagingPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "patch", "repackage", "validate"))
+		{
+			EnsurePatchRepackagingValidateOptions(invocation.Options);
+			var document = await CliPatchResourceRepackagingPlanArtifacts.ReadDocumentAsync(RequirePatchResourcePlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliPatchResourceRepackagingPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreatePatchResourceRepackagingValidationProjection(validation) },
+				() => FormatPatchResourceRepackagingValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "patch", "repackage", "apply"))
+		{
+			EnsurePatchRepackagingApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("PatchResourceApplyConfirmationRequired", "patch repackage apply 会写出一个新的独立 Patch 目录；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliPatchResourceRepackagingPlanArtifacts.ReadDocumentAsync(RequirePatchResourcePlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliPatchResourceRepackagingExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options), RequireOutput(invocation.Options, "patch repackage apply")).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreatePatchResourceRepackagingExecutionProjection(execution) },
+				() => FormatPatchResourceRepackagingExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length == 3 && command[0] == "import" && command[1] == "inspect")
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -561,6 +607,49 @@ public static class CliApplication
 	private static void EnsureDeactivationApplyOptions(CliGlobalOptions options)
 		=> EnsureDeploymentApplyOptions(options);
 
+	private static void EnsurePatchRepackagingInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repackage inspect 仅接受 Mod 标识、--library/--manager-root 与 --json。 ");
+		}
+	}
+
+	private static void EnsurePatchRepackagingPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repackage plan 仅接受 Mod 标识、--library/--manager-root、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsurePatchRepackagingValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repackage validate 仅接受 --plan、--library/--manager-root 与 --json。 ");
+		}
+	}
+
+	private static void EnsurePatchRepackagingApplyOptions(CliGlobalOptions options)
+	{
+		if (options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repackage apply 仅接受 --plan、--library/--manager-root、--output、--confirm 与 --json。输出必须是一个新的目录。 ");
+		}
+	}
+
 	private static void EnsureMetadataMutationOptions(CliGlobalOptions options, string command)
 	{
 		EnsureMutationBoundary(options, command);
@@ -676,6 +765,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("DeactivationPlanRequired", "请通过 --plan <停用计划.json> 提供已导出的停用计划。");
+		return options.Plan;
+	}
+
+	private static string RequirePatchResourcePlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("PatchResourcePlanRequired", "请通过 --plan <Patch资源重打包计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -832,6 +928,45 @@ public static class CliApplication
 			recomputedPlanId = validation.Current?.Document.PlanId,
 			current = validation.Current is null ? null : CreateDeactivationPlanProjection(validation.Current.Document),
 			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreatePatchResourceRepackagingPlanProjection(CliPatchResourceRepackagingPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			document.LibraryRoot,
+			sourceNodeIds = document.SourceNodeIds,
+			patchGroups = document.PatchGroups,
+			candidates = document.Candidates,
+			selections = document.Selections,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreatePatchResourceRepackagingValidationProjection(CliPatchResourceRepackagingValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			resolvedSelectionCount = validation.ResolvedSelections.Count,
+			current = validation.Current is null ? null : CreatePatchResourceRepackagingPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreatePatchResourceRepackagingExecutionProjection(CliPatchResourceRepackagingExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.OutputDirectory,
+			execution.PatchTocPath,
+			execution.SelectedAssetCount,
+			diagnostics = execution.Diagnostics,
+			libraryMutation = "not-performed",
+			deployment = "not-performed",
 		};
 
 	private static object CreateImportValidationProjection(CliImportValidationResult validation)
@@ -1063,6 +1198,42 @@ public static class CliApplication
 		return $"{status}{Environment.NewLine}计划：{validation.Document.PlanId}{Environment.NewLine}{issues}";
 	}
 
+	private static string FormatPatchResourceRepackagingInspection(CliPatchResourceRepackagingPlanDocument document)
+	{
+		var conflicts = document.Candidates.Count(candidate => candidate.IsConflict);
+		return $"Patch 资源扫描完成：来源 Mod {document.SourceNodeIds.Count} 个；Patch 组 {document.PatchGroups.Count} 个；资源变体 {document.Candidates.Count} 个；冲突变体 {conflicts} 个。";
+	}
+
+	private static string FormatPatchResourceRepackagingPlan(CliPatchResourceRepackagingPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出 Patch 资源重打包计划：{outputPath}",
+			$"来源 Mod：{document.SourceNodeIds.Count}；Patch 组：{document.PatchGroups.Count}；候选变体：{document.Candidates.Count}；已默认选择：{document.Selections.Count}",
+			$"阻断诊断：{blocking}。请审阅或编辑 selections 后执行 validate。",
+		]);
+	}
+
+	private static string FormatPatchResourceRepackagingValidation(CliPatchResourceRepackagingValidationResult validation)
+	{
+		var status = validation.IsValid ? "Patch 资源重打包验证通过。" : "Patch 资源重打包验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}已解析选择：{validation.ResolvedSelections.Count}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatPatchResourceRepackagingExecution(CliPatchResourceRepackagingExecutionResult execution)
+	{
+		if (execution.Success)
+			return $"Patch 资源重打包完成：{execution.SelectedAssetCount} 个 AssetKey；输出：{execution.OutputDirectory}";
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "Patch 资源重打包未完成；请查看 JSON 结果或日志。"
+			: $"Patch 资源重打包被拒绝：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatDeploymentExecution(CliDeploymentExecutionResult execution)
 	{
 		var errors = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).ToArray();
@@ -1147,6 +1318,10 @@ HD2 Mod Manager 命令行
 	  hd2mod deploy deactivate plan --manager-root <管理器目录> --game-data <游戏data目录> --output deactivation-plan.json --json
 	  hd2mod deploy deactivate validate --plan deactivation-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod deploy deactivate apply --plan deactivation-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
+	  hd2mod patch repackage inspect <Mod GUID或前缀> [...] --library <Mod库目录> --json
+	  hd2mod patch repackage plan <Mod GUID或前缀> [...] --library <Mod库目录> --output repackage-plan.json --json
+	  hd2mod patch repackage validate --plan repackage-plan.json --library <Mod库目录> --json
+	  hd2mod patch repackage apply --plan repackage-plan.json --library <Mod库目录> --output <新的库外目录> --confirm --json
 	  hd2mod import inspect <文件夹、压缩包或文件> --json
 	  hd2mod import plan <文件夹、压缩包或文件> --output import-plan.json
 	  hd2mod import validate --plan import-plan.json --manager-root <管理器目录> --json
@@ -1162,8 +1337,8 @@ HD2 Mod Manager 命令行
   --library <目录>        显式指定 Mod 库；优先级高于 settings.json。
 	  --game-data <目录>      GameData 覆盖路径；部署命令要求真实游戏的 data 目录。
   --json                  输出机器可读 JSON。
-	  --output <文件或目录>   import/deploy plan、context export、Agent Skill 导出使用。
-	  --plan <文件>           import/deploy validate 与 apply 所需的计划。
+	  --output <文件或目录>   import/deploy/patch plan、patch 输出、context export、Agent Skill 导出使用。
+	  --plan <文件>           import/deploy/patch validate 与 apply 所需的计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
 	  --host <GUID或前缀>      Option 操作的明确主体；不支持隐式或全主体修改。
 	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
@@ -1171,6 +1346,6 @@ HD2 Mod Manager 命令行
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。patch repackage 只复制计划中既有的完整 AssetKey Payload，且只写入新的库外目录。
 """;
 }
