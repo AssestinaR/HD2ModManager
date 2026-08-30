@@ -125,9 +125,12 @@
                                 RowActionInvoked="OnHostDecorationRowActionInvoked"
                                  RowRightClicked="OnHostDecorationOpenDetailsOnRightClick"
                                  SelectionPolicy="Multiple"
-                                 SelectionRequested="OnHostDecorationSelectionRequested"
+                                  SelectionRequested="OnHostDecorationSelectionRequested"
                                  KeyboardCommandRequested="OnHostDecorationKeyboardCommandRequested"
-                                 Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
+                                 AllowInternalReorder="{Binding CanReorderHostOptions}"
+                                 InternalReorderRequested="OnHostAttachmentInternalReorderRequested"
+                                 TransitionStateChanged="OnHostAttachmentTransitionStateChanged"
+                                  Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
         </StackPanel>
     </ScrollViewer>
 </UserControl>

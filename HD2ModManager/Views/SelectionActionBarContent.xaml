@@ -7,7 +7,7 @@
     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
         <TextBlock Text="{Binding SelectionSummary}" VerticalAlignment="Center" Foreground="{StaticResource Accent}" FontWeight="SemiBold" Margin="2,0,14,0"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="加入配置" Command="{Binding SelectionPrimaryCommand}" Margin="0,0,8,0" Visibility="{Binding ShowAddToProfile, Converter={StaticResource BoolToVis}}"/>
-        <Button Style="{StaticResource AppPrimaryButton}" Content="移动" Command="{Binding BeginMoveCommand}" Margin="0,0,8,0" Visibility="{Binding ShowMove, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding MoveButtonText}" Command="{Binding BeginMoveCommand}" Margin="0,0,8,0" Visibility="{Binding ShowMove, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="插入" Command="{Binding BeginInsertCommand}" Margin="0,0,8,0" Visibility="{Binding ShowInsert, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="启用" Command="{Binding EnableDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowEnableDecorations, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppSecondaryButton}" Content="禁用" Command="{Binding DisableDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowDisableDecorations, Converter={StaticResource BoolToVis}}"/>

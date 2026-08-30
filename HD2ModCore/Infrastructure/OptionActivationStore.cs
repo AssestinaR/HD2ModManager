@@ -136,15 +136,40 @@ public sealed class OptionActivationStore
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(optionId);
 		ArgumentException.ThrowIfNullOrWhiteSpace(hostId);
+		await SetEffectiveOrdersAsync([new OptionEffectiveOrderMutation(optionId, hostId, effectiveOrder)], cancellationToken).ConfigureAwait(false);
+	}
+
+	// Persist a complete local ordering transaction with one JSON write. Ordering is
+	// scoped to one option/host relation, so this does not alter portable manifest
+	// order or any other parent that happens to expose the same option.
+	public async Task<int> SetEffectiveOrdersAsync(
+		IEnumerable<OptionEffectiveOrderMutation> mutations,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(mutations);
+		var normalizedByRelation = new Dictionary<string, OptionEffectiveOrderMutation>(StringComparer.OrdinalIgnoreCase);
+		foreach (var mutation in mutations.Where(item => !string.IsNullOrWhiteSpace(item.OptionId) && !string.IsNullOrWhiteSpace(item.HostId)))
+			normalizedByRelation[mutation.OptionId + "\u001F" + mutation.HostId] = mutation;
+
+		var changed = 0;
 		lock (_gate)
 		{
-			if (!_states.TryGetValue(optionId, out var hosts))
-				_states[optionId] = hosts = new Dictionary<string, OptionHostState>(StringComparer.OrdinalIgnoreCase);
-			hosts[hostId] = hosts.TryGetValue(hostId, out var existing)
-				? existing with { EffectiveOrder = effectiveOrder }
-				: new OptionHostState(false, effectiveOrder);
+			foreach (var mutation in normalizedByRelation.Values)
+			{
+				if (!_states.TryGetValue(mutation.OptionId, out var hosts))
+					_states[mutation.OptionId] = hosts = new Dictionary<string, OptionHostState>(StringComparer.OrdinalIgnoreCase);
+				if (hosts.TryGetValue(mutation.HostId, out var existing)
+					&& existing.EffectiveOrder == mutation.EffectiveOrder)
+					continue;
+				hosts[mutation.HostId] = hosts.TryGetValue(mutation.HostId, out existing)
+					? existing with { EffectiveOrder = mutation.EffectiveOrder }
+					: new OptionHostState(false, mutation.EffectiveOrder);
+				changed++;
+			}
 		}
-		await SaveAsync(cancellationToken).ConfigureAwait(false);
+
+		if (changed > 0) await SaveAsync(cancellationToken).ConfigureAwait(false);
+		return changed;
 	}
 
 	public async Task RemoveAsync(string optionId, CancellationToken cancellationToken = default)
@@ -236,6 +261,8 @@ public sealed class OptionActivationStore
 public sealed record OptionHostState(bool Enabled, int? EffectiveOrder);
 
 public sealed record OptionActivationInitialization(string OptionId, string HostId, bool Enabled, int? EffectiveOrder = null);
+
+public sealed record OptionEffectiveOrderMutation(string OptionId, string HostId, int? EffectiveOrder);
 
 public sealed record OptionActivationSnapshot(IReadOnlyDictionary<string, IReadOnlyDictionary<string, OptionHostState>> Options)
 {

@@ -16,6 +16,7 @@ namespace HD2ModManager.ViewModels
         private bool _isLibraryProfileCompanionVisible;
         private string? _editModId;
         private string? _editMode;
+        private string? _editHostId;
         private string _editText = string.Empty;
         private string? _selectedProfile;
         private bool _suppressSelectionCancel;
@@ -58,7 +59,7 @@ namespace HD2ModManager.ViewModels
             => Registrations.Remove(sourceId);
         public bool HasSelection => _selection.HasSelection;
         public bool HasTemporaryEditor => !string.IsNullOrWhiteSpace(_editMode);
-        public bool IsPositionEditor => _editMode is "Move" or "Insert";
+        public bool IsPositionEditor => _editMode is "Move" or "Insert" or "OptionMove";
         public bool HasContent => HasSelection || HasTemporaryEditor;
         public bool IsLibrarySelection => HasSelection && string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase);
         public bool IsProfileSelection => HasSelection && string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase);
@@ -72,21 +73,22 @@ namespace HD2ModManager.ViewModels
         public bool ShowDelete => IsLibrarySelection;
         public bool ShowRemove => IsProfileSelection;
         public bool ShowDeleteFromLibrary => IsProfileSelection;
-        public bool ShowMove => IsProfileSelection;
+        public bool ShowMove => IsProfileSelection || TryGetSelectedDirectHostOptions(out _, out _);
         public bool ShowInsert => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
+        public string MoveButtonText => IsDecorationHostSelection ? "调整顺序" : "移动";
         public string SelectionSummary => _selection.Summary;
-        public string EditLabel => _editMode is "Move" or "Insert" ? string.Empty
+        public string EditLabel => IsPositionEditor ? string.Empty
             : _editMode == "CreateProfile" ? "新建配置："
             : _editMode == "SwitchProfile" ? "选择配置："
             : _editMode == "RenameProfile" ? "重命名配置："
             : string.Equals(_editMode, "Description", StringComparison.Ordinal) ? "修改备注：" : "修改名称：";
-        public string PositionLabel => _editMode == "Move" ? "移动到："
-            : _editMode == "Insert" ? "插入到：" : string.Empty;
-        public string PositionHint => _editMode == "Move"
-            ? $"允许范围：1..{_profiles.SelectedProfile?.Entries.Count ?? 0}"
-            : _editMode == "Insert"
-                ? $"允许范围：1..{((_profiles.SelectedProfile?.Entries.Count ?? 0) + 1)}"
-                : string.Empty;
+        public string PositionLabel => _editMode == "Move" ? "移动到配置顺序："
+            : _editMode == "Insert" ? "插入到配置顺序："
+            : _editMode == "OptionMove" ? "调整到选项顺序："
+            : string.Empty;
+        public string PositionHint => IsPositionEditor
+            ? $"允许范围：1..{Math.Max(1, GetPositionMaximum())}"
+            : string.Empty;
         public string EditConfirmText => "确定";
         public bool IsProfileSwitchEditor => _editMode == "SwitchProfile";
         public bool IsTextEditor => HasTemporaryEditor && !IsProfileSwitchEditor;
@@ -101,9 +103,9 @@ namespace HD2ModManager.ViewModels
             get => _editText;
             set
             {
-                if ((_editMode == "Move" || _editMode == "Insert") && int.TryParse(value, out var number))
+                if (IsPositionEditor && int.TryParse(value, out var number))
                 {
-                    var max = _editMode == "Move" ? _profiles.SelectedProfile?.Entries.Count ?? 0 : (_profiles.SelectedProfile?.Entries.Count ?? 0) + 1;
+                    var max = GetPositionMaximum();
                     value = Math.Clamp(number, 1, Math.Max(1, max)).ToString();
                 }
                 SetField(ref _editText, value);
@@ -153,14 +155,26 @@ namespace HD2ModManager.ViewModels
 
         public void BeginMove()
         {
-            if (!IsProfileSelection || _profiles.SelectedProfile is null) return;
-            BeginPositionEdit("Move", _selection.SelectedIds);
+            if (IsProfileSelection && _profiles.SelectedProfile is { } profile)
+            {
+                BeginPositionEdit(
+                    "Move",
+                    _selection.SelectedIds,
+                    _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N")));
+                return;
+            }
+
+            if (TryGetSelectedDirectHostOptions(out var hostId, out var orderedOptions))
+                BeginPositionEdit("OptionMove", _selection.SelectedIds, orderedOptions, hostId);
         }
 
         public void BeginInsert()
         {
-            if (!IsLibrarySelection || _profiles.SelectedProfile is null) return;
-            BeginPositionEdit("Insert", _selection.SelectedIds);
+            if (!IsLibrarySelection || _profiles.SelectedProfile is not { } profile) return;
+            BeginPositionEdit(
+                "Insert",
+                _selection.SelectedIds,
+                _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N")));
         }
 
         public void CancelEdit()
@@ -174,6 +188,7 @@ namespace HD2ModManager.ViewModels
         {
             _editModId = null;
             _editMode = null;
+            _editHostId = null;
             _editText = string.Empty;
             SelectedProfile = null;
             OnPropertyChanged(nameof(EditText));
@@ -188,15 +203,26 @@ namespace HD2ModManager.ViewModels
             RefreshState();
         }
 
-        private void BeginPositionEdit(string mode, IEnumerable<string> ids)
+        private void BeginPositionEdit(
+            string mode,
+            IEnumerable<string> ids,
+            IEnumerable<string> scopeOrder,
+            string? hostId = null)
         {
-            var selected = ids.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var profileOrder = _profiles.SelectedProfile is { } profile
-                ? _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N"))
-                : Enumerable.Empty<string>();
-            var orderedIds = profileOrder.Where(selected.Contains).Concat(ids.Where(id => selected.Contains(id))).Distinct(StringComparer.OrdinalIgnoreCase);
+            var requestedIds = ids
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToArray();
+            var selected = requestedIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var orderedIds = scopeOrder
+                .Where(selected.Contains)
+                .Concat(requestedIds.Where(selected.Contains))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (orderedIds.Length == 0) return;
+
             _editModId = string.Join("|", orderedIds);
             _editMode = mode;
+            _editHostId = hostId;
             _editText = string.Empty;
             _suppressSelectionCancel = true;
             try { _selection.Clear(); }
@@ -233,7 +259,7 @@ namespace HD2ModManager.ViewModels
                 _refresh();
                 return;
             }
-            if (_editMode is "Move" or "Insert")
+            if (IsPositionEditor)
             {
                 await ConfirmPositionEditAsync();
                 return;
@@ -261,6 +287,12 @@ namespace HD2ModManager.ViewModels
         {
             if (!int.TryParse(EditText?.Trim(), out var requested)) return;
             var ids = (_editModId ?? string.Empty).Split('|', StringSplitOptions.RemoveEmptyEntries).ToList();
+            if (_editMode == "OptionMove")
+            {
+                await ConfirmOptionPositionEditAsync(ids, requested);
+                return;
+            }
+
             var profile = _profiles.SelectedProfile;
             if (profile is null || ids.Count == 0) { CancelEdit(); return; }
             var ordered = _profiles.GetSortedEntries(profile).Select(entry => entry.NodeId.Value.ToString("N")).ToList();
@@ -286,6 +318,74 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        private async Task ConfirmOptionPositionEditAsync(IReadOnlyList<string> ids, int requested)
+        {
+            if (string.IsNullOrWhiteSpace(_editHostId) || ids.Count == 0)
+            {
+                CancelEdit();
+                return;
+            }
+
+            var ordered = _library.GetOptionsForHost(_editHostId)
+                .Select(option => option.Guid)
+                .ToList();
+            var optionSet = ordered.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var selected = ids
+                .Where(optionSet.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (selected.Count == 0)
+            {
+                CancelEdit();
+                return;
+            }
+
+            var target = Math.Clamp(requested, 1, ordered.Count);
+            var selectedSet = selected.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            ordered.RemoveAll(selectedSet.Contains);
+            target = Math.Min(target, ordered.Count + 1);
+            ordered.InsertRange(target - 1, selected);
+            if (!await _library.ReplaceDirectOptionOrderAsync(_editHostId, ordered))
+            {
+                CancelEdit();
+                return;
+            }
+
+            _notifications.Show("已调整选项顺序。");
+            CancelEdit();
+            _refresh();
+        }
+
+        private int GetPositionMaximum()
+        {
+            if (_editMode == "OptionMove")
+                return string.IsNullOrWhiteSpace(_editHostId) ? 0 : _library.GetOptionsForHost(_editHostId).Count;
+
+            var entryCount = _profiles.SelectedProfile?.Entries.Count ?? 0;
+            return _editMode == "Insert" ? entryCount + 1 : entryCount;
+        }
+
+        private bool TryGetSelectedDirectHostOptions(out string hostId, out IReadOnlyList<string> orderedOptions)
+        {
+            hostId = string.Empty;
+            orderedOptions = Array.Empty<string>();
+            if (!IsDecorationHostSelection || string.IsNullOrWhiteSpace(_selection.Scope)) return false;
+
+            hostId = _selection.Scope["DecorationHost:".Length..];
+            if (string.IsNullOrWhiteSpace(hostId)) return false;
+
+            var current = _library.GetOptionsForHost(hostId)
+                .Select(option => option.Guid)
+                .ToArray();
+            if (current.Length == 0 || _selection.SelectedIds.Count == 0) return false;
+
+            var currentSet = current.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!_selection.SelectedIds.All(currentSet.Contains)) return false;
+
+            orderedOptions = current;
+            return true;
+        }
+
         private void RefreshState()
         {
             OnPropertyChanged(nameof(HasSelection));
@@ -306,6 +406,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowDeleteFromLibrary));
             OnPropertyChanged(nameof(ShowMove));
             OnPropertyChanged(nameof(ShowInsert));
+            OnPropertyChanged(nameof(MoveButtonText));
             OnPropertyChanged(nameof(SelectionSummary));
             OnPropertyChanged(nameof(EditLabel));
             OnPropertyChanged(nameof(PositionLabel));

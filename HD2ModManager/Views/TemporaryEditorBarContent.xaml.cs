@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using System.Windows.Controls;
 
 namespace HD2ModManager.Views
@@ -8,6 +9,16 @@ namespace HD2ModManager.Views
         public TemporaryEditorBarContent()
         {
             InitializeComponent();
+        }
+
+        private void OnEditorTextBoxPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Enter || Keyboard.Modifiers != ModifierKeys.None) return;
+            if (DataContext is not TemporaryEditorBarPresentation presentation) return;
+            if (!presentation.ConfirmEditCommand.CanExecute(null)) return;
+
+            presentation.ConfirmEditCommand.Execute(null);
+            e.Handled = true;
         }
     }
 }

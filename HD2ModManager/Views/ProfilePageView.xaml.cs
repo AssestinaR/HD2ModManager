@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
@@ -25,6 +26,16 @@ public partial class ProfilePageView : UserControl
             await vm.ReorderAsync(e.DraggedKeys, e.InsertionIndex);
     }
 
+    private void OnListTransitionStateChanged(object? sender, ModListTransitionStateChangedEventArgs e)
+    {
+        if (e.IsActive || DataContext is not ProfilePageViewModel vm) return;
+
+        // Keep changing order labels out of the FLIP frame itself. A background
+        // dispatcher turn gives the controller a clean visual boundary before
+        // the text content for the moved rows is updated.
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(vm.CommitDisplayedOrders));
+    }
+
     private async void OnExternalProfileDropRequested(object? sender, ModListExternalProfileDropEventArgs e)
     {
         if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
@@ -37,6 +48,10 @@ public partial class ProfilePageView : UserControl
         var shell = (Application.Current?.MainWindow as MainWindow)?.DataContext as ShellViewModel;
         switch (e.Command)
         {
+            case ModListKeyboardCommand.Rename when e.Item is ProfileListItemViewModel item:
+                shell?.ClearTransientSelection();
+                shell?.BeginBottomBarNameEdit(item.Guid, item.Name);
+                break;
             case ModListKeyboardCommand.OpenDetails when e.Item is ProfileListItemViewModel item:
                 shell?.OpenModDetailsFromPage(vm, item.Guid);
                 break;

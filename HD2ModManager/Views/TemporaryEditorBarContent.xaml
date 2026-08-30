@@ -8,7 +8,9 @@
         <TextBlock Text="{Binding EditLabel}" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}" Margin="0,0,6,0" Visibility="{Binding HasTemporaryEditor, Converter={StaticResource BoolToVis}}"/>
         <TextBlock Text="{Binding PositionLabel}" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}" Margin="0,0,6,0" Visibility="{Binding IsPositionEditor, Converter={StaticResource BoolToVis}}"/>
         <Grid Width="220" Visibility="{Binding IsTextEditor, Converter={StaticResource BoolToVis}}">
-            <TextBox Style="{StaticResource AppTextBox}" Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged}"/>
+            <TextBox Style="{StaticResource AppTextBox}"
+                     Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged}"
+                     PreviewKeyDown="OnEditorTextBoxPreviewKeyDown"/>
             <TextBlock Text="{Binding PositionHint}" Foreground="{StaticResource TextTertiary}" IsHitTestVisible="False" VerticalAlignment="Center" Margin="10,0,0,0">
                 <TextBlock.Style>
                     <Style TargetType="TextBlock">

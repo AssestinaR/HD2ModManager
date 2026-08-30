@@ -413,6 +413,9 @@ namespace HD2ModManager.ViewModels
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _thumbnailSources = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, int> _thumbnailRevisions = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _directOptionCounts = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _displayedOrderByGuid = new(StringComparer.OrdinalIgnoreCase);
+        private ProfileId? _displayedOrderProfileId;
         private string _query = string.Empty;
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
@@ -703,6 +706,9 @@ namespace HD2ModManager.ViewModels
             var profile = _profiles.SelectedProfile;
             if (profile == null)
             {
+                _directOptionCounts.Clear();
+                _displayedOrderByGuid.Clear();
+                _displayedOrderProfileId = null;
                 _list.Submit(
                     Array.Empty<ProfileModListState>(),
                     Array.Empty<string>(),
@@ -711,6 +717,8 @@ namespace HD2ModManager.ViewModels
                 OnPropertyChanged(nameof(HasItems));
                 return;
             }
+            RefreshDirectOptionCounts();
+            EnsureDisplayedOrders(profile);
             var states = new List<ProfileModListState>();
             foreach (var entry in _profiles.GetSortedEntries(profile))
             {
@@ -734,6 +742,32 @@ namespace HD2ModManager.ViewModels
         }
 
         public void RefreshFromShell() => QueueStatusRefresh();
+
+        // Reordering a long visible list must not also mutate every row's text
+        // before its FLIP move starts. The view calls this at the transition
+        // boundary so the logical order remains authoritative while labels catch
+        // up immediately after the motion completes.
+        public void CommitDisplayedOrders()
+        {
+            if (_disposed || _profiles.SelectedProfile is not { } profile) return;
+            if (_displayedOrderProfileId != profile.Id) return;
+
+            var orderedEntries = _profiles.GetSortedEntries(profile);
+            var isCurrent = orderedEntries.All(entry => _displayedOrderByGuid.GetValueOrDefault(entry.NodeId.Value.ToString("N"), -1) == entry.LoadOrder)
+                && _displayedOrderByGuid.Count == orderedEntries.Count;
+            if (isCurrent) return;
+
+            _displayedOrderByGuid.Clear();
+            foreach (var entry in orderedEntries)
+                _displayedOrderByGuid[entry.NodeId.Value.ToString("N")] = entry.LoadOrder;
+
+            var states = orderedEntries
+                .Select(entry => CreateCurrentListState(entry.NodeId.Value.ToString("N"), entry))
+                .Where(state => state is not null)
+                .Cast<ProfileModListState>()
+                .ToArray();
+            _list.SubmitContent(states, commitImmediately: true);
+        }
 
         private async void QueueThumbnailRefresh(IEnumerable<string>? requestedGuids = null)
         {
@@ -1064,7 +1098,11 @@ namespace HD2ModManager.ViewModels
             var description = mod?.Description;
             _thumbnailSources.TryGetValue(guid, out var thumbnailSource);
             var imagePath = thumbnailSource ?? mod?.Image;
-            var assetSummary = ModAssetSummaryFormatter.Format(derived?.AssetSummary);
+            var directOptionCount = _directOptionCounts.GetValueOrDefault(guid);
+            var assetSummary = ModCardViewModel.AppendDirectOptionSummary(
+                ModAssetSummaryFormatter.Format(derived?.AssetSummary),
+                directOptionCount);
+            var displayOrder = _displayedOrderByGuid.GetValueOrDefault(guid, loadOrder);
             var selected = IsSelected(guid);
             var contentVersion = ProfileModListState.BuildContentVersion(
                 guid,
@@ -1072,7 +1110,8 @@ namespace HD2ModManager.ViewModels
                 description,
                 imagePath,
                 assetSummary,
-                loadOrder,
+                displayOrder,
+                directOptionCount,
                 addedUtc,
                 derived?.UnitCompatibility,
                 userStatus,
@@ -1084,6 +1123,8 @@ namespace HD2ModManager.ViewModels
                 imagePath,
                 assetSummary,
                 loadOrder,
+                displayOrder,
+                directOptionCount,
                 addedUtc,
                 selected,
                 derived?.UnitCompatibility,
@@ -1093,6 +1134,21 @@ namespace HD2ModManager.ViewModels
                 ProfileModListState.BuildPresentationVersion(
                     contentVersion,
                     selected));
+        }
+
+        private void RefreshDirectOptionCounts()
+        {
+            _directOptionCounts.Clear();
+            foreach (var pair in _library.GetDirectOptionCounts()) _directOptionCounts[pair.Key] = pair.Value;
+        }
+
+        private void EnsureDisplayedOrders(Profile profile)
+        {
+            if (_displayedOrderProfileId == profile.Id) return;
+            _displayedOrderProfileId = profile.Id;
+            _displayedOrderByGuid.Clear();
+            foreach (var entry in _profiles.GetSortedEntries(profile))
+                _displayedOrderByGuid[entry.NodeId.Value.ToString("N")] = entry.LoadOrder;
         }
 
         private void OnListProjectionCommitted(object? sender, ModListStateCommittedEventArgs e)
@@ -1131,6 +1187,8 @@ namespace HD2ModManager.ViewModels
         string? ImagePath,
         string AssetSummary,
         int LoadOrder,
+        int DisplayOrder,
+        int DirectOptionCount,
         DateTimeOffset AddedUtc,
         bool IsSelected,
         ModUnitCompatibilityReport? UnitCompatibility,
@@ -1145,7 +1203,8 @@ namespace HD2ModManager.ViewModels
             string? description,
             string? imagePath,
             string assetSummary,
-            int loadOrder,
+            int displayOrder,
+            int directOptionCount,
             DateTimeOffset addedUtc,
             ModUnitCompatibilityReport? unitCompatibility,
             ModUserStatus? userStatus,
@@ -1156,6 +1215,8 @@ namespace HD2ModManager.ViewModels
                 description,
                 imagePath,
                 assetSummary,
+                displayOrder,
+                directOptionCount,
                 addedUtc.UtcTicks,
                 unitCompatibility?.Status,
                 unitCompatibility?.UnitCount,
@@ -1220,7 +1281,7 @@ namespace HD2ModManager.ViewModels
         private async void Confirm() => await _page.RenameCurrentProfileAsync(NewName);
     }
 
-    public sealed class ProfileListItemViewModel : BaseViewModel, IModListSelectable
+    public sealed class ProfileListItemViewModel : BaseViewModel, IModListSelectable, IModListInternalReorderable
     {
         public string Guid { get; }
         public string SelectionKey => Guid;
@@ -1236,6 +1297,7 @@ namespace HD2ModManager.ViewModels
         private ModUserStatus? _userStatus;
         private ModListRowPresentation _rowPresentation = ModListRowPresentation.Empty;
         private int _loadOrder;
+        private int _displayOrder;
         private DateTimeOffset _addedUtc;
         public string Name => _name;
         public string? Description => _description;
@@ -1244,14 +1306,14 @@ namespace HD2ModManager.ViewModels
         public string AssetSummaryText => SecondaryDetailText;
         public ModListRowPresentation RowPresentation => _rowPresentation;
         public int LoadOrder => _loadOrder;
+        public bool CanInternalReorder => true;
         public DateTimeOffset AddedUtc => _addedUtc;
         public ModUserStatus? UserStatus => _userStatus;
         public ModUnitCompatibilityReport? UnitCompatibility => _unitCompatibility;
         public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
         public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
-        // The list position already communicates deployment order. Keeping a
-        // changing ordinal in every row's status forces every row to rebind on
-        // one reorder and starves the actual move animation of render time.
+        // Display order is staged by ProfilePageViewModel after a list move has
+        // reached its visual transition boundary.
         public string StatusText => UserStatus?.Title ?? "配置成员";
         public string UserStatusTitle => StatusText;
         public bool IsVisible => true;
@@ -1259,7 +1321,7 @@ namespace HD2ModManager.ViewModels
         private bool _isSelected;
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
 
-        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string assetSummary, int loadOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
+        public ProfileListItemViewModel(string guid, string name, string? description, string? imagePath, string assetSummary, int loadOrder, int displayOrder, DateTimeOffset addedUtc, bool isSelected = false, ModUnitCompatibilityReport? unitCompatibility = null, ModUserStatus? userStatus = null)
         {
             Guid = guid;
             _name = name;
@@ -1268,11 +1330,12 @@ namespace HD2ModManager.ViewModels
             _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
             _assetSummary = assetSummary;
             _loadOrder = loadOrder;
+            _displayOrder = displayOrder;
             _addedUtc = addedUtc;
             _isSelected = isSelected;
 			_unitCompatibility = unitCompatibility;
             _userStatus = userStatus;
-            _rowPresentation = BuildRowPresentation(_description, _assetSummary, _unitCompatibility, _userStatus);
+            _rowPresentation = BuildRowPresentation(_description, _assetSummary, _unitCompatibility, _userStatus, _displayOrder);
         }
 
         internal ProfileListItemViewModel(ProfileModListState state)
@@ -1283,6 +1346,7 @@ namespace HD2ModManager.ViewModels
                 state.ImagePath,
                 state.AssetSummary,
                 state.LoadOrder,
+                state.DisplayOrder,
                 state.AddedUtc,
                 state.IsSelected,
                 state.UnitCompatibility,
@@ -1317,10 +1381,11 @@ namespace HD2ModManager.ViewModels
             if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
             _assetSummary = state.AssetSummary;
             _loadOrder = state.LoadOrder;
+            _displayOrder = state.DisplayOrder;
             _addedUtc = state.AddedUtc;
             _unitCompatibility = state.UnitCompatibility;
             _userStatus = state.UserStatus;
-            _rowPresentation = BuildRowPresentation(_description, _assetSummary, _unitCompatibility, _userStatus);
+            _rowPresentation = BuildRowPresentation(_description, _assetSummary, _unitCompatibility, _userStatus, _displayOrder);
             if (nameChanged) OnPropertyChanged(nameof(Name));
             if (descriptionChanged) OnPropertyChanged(nameof(Description));
             if (imageChanged) OnPropertyChanged(nameof(ImagePath));
@@ -1350,9 +1415,10 @@ namespace HD2ModManager.ViewModels
             string? description,
             string? assetSummary,
             ModUnitCompatibilityReport? unitCompatibility,
-            ModUserStatus? userStatus)
+            ModUserStatus? userStatus,
+            int displayOrder)
         {
-            var summary = string.Join(" · ", new[] { description, assetSummary }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            var summary = assetSummary ?? string.Empty;
             var activationLabel = userStatus?.IsInActiveProfile == true ? "已启用" : "当前配置成员";
             var activationTone = userStatus?.IsInActiveProfile == true ? ModListRowTone.Success : ModListRowTone.Accent;
             var warnings = new List<string>();
@@ -1377,7 +1443,10 @@ namespace HD2ModManager.ViewModels
                 ActivationTone: activationTone,
                 WarningLabel: warnings.Count == 0 ? null : string.Join(" · ", warnings),
                 WarningTone: warningTone,
-                Summary: summary);
+                Summary: summary,
+                OrderLabel: $"配置顺序 {displayOrder + 1}",
+                OrderTone: ModListRowTone.Accent,
+                Note: description);
         }
     }
 

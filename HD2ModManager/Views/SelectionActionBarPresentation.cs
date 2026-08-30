@@ -33,6 +33,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public string SelectionSummary => _bottomBar.SelectionSummary;
     public bool ShowAddToProfile => _bottomBar.ShowAddToProfile;
     public bool ShowMove => _bottomBar.ShowMove;
+    public string MoveButtonText => _bottomBar.MoveButtonText;
     public bool ShowInsert => _bottomBar.ShowInsert;
     public bool ShowDelete => _bottomBar.ShowDelete;
     public bool ShowRemove => _bottomBar.ShowRemove;

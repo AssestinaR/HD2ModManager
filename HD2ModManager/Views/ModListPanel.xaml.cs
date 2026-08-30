@@ -89,8 +89,9 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty ExternalDropDetailProperty = DependencyProperty.Register(nameof(ExternalDropDetail), typeof(string), typeof(ModListPanel), new PropertyMetadata("不会改变当前配置中的排列顺序"));
     public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
-	public static readonly DependencyProperty UseInternalScrollProperty = DependencyProperty.Register(nameof(UseInternalScroll), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true, OnUseInternalScrollChanged));
+    public static readonly DependencyProperty UseInternalScrollProperty = DependencyProperty.Register(nameof(UseInternalScroll), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true, OnUseInternalScrollChanged));
     public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
+    public static readonly DependencyProperty AllowKeyboardRenameProperty = DependencyProperty.Register(nameof(AllowKeyboardRename), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasPresentedItemsProperty = HasPresentedItemsPropertyKey.DependencyProperty;
@@ -119,8 +120,9 @@ public partial class ModListPanel : UserControl
     public string ExternalDropDetail { get => (string)GetValue(ExternalDropDetailProperty); set => SetValue(ExternalDropDetailProperty, value); }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
-	public bool UseInternalScroll { get => (bool)GetValue(UseInternalScrollProperty); set => SetValue(UseInternalScrollProperty, value); }
+    public bool UseInternalScroll { get => (bool)GetValue(UseInternalScrollProperty); set => SetValue(UseInternalScrollProperty, value); }
     public ModListRowAction RowActions { get => (ModListRowAction)GetValue(RowActionsProperty); set => SetValue(RowActionsProperty, value); }
+    public bool AllowKeyboardRename { get => (bool)GetValue(AllowKeyboardRenameProperty); set => SetValue(AllowKeyboardRenameProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
     public bool HasSearchActions => (bool)GetValue(HasSearchActionsProperty);
@@ -132,6 +134,7 @@ public partial class ModListPanel : UserControl
     public event EventHandler<ModListSelectionRequestEventArgs>? SelectionRequested;
     public event EventHandler<ModListRowActionEventArgs>? RowActionInvoked;
     public event EventHandler<ModListKeyboardCommandEventArgs>? KeyboardCommandRequested;
+    public event EventHandler<ModListTransitionStateChangedEventArgs>? TransitionStateChanged;
     public event EventHandler<ModListInternalReorderEventArgs>? InternalReorderRequested;
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileDropRequested;
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileRemovalRequested;
@@ -144,7 +147,10 @@ public partial class ModListPanel : UserControl
         => SetValue(HasOutgoingPresentedItemsPropertyKey, _transitionController.OutgoingPresentedItems.Count != 0);
 
     private void OnTransitionStateChanged(bool isTransitionActive)
-        => ItemsList.IsHitTestVisible = !isTransitionActive;
+    {
+        ItemsList.IsHitTestVisible = !isTransitionActive;
+        TransitionStateChanged?.Invoke(this, new ModListTransitionStateChangedEventArgs(isTransitionActive));
+    }
 
     private void OnToggleSearchClick(object sender, RoutedEventArgs e)
     {
@@ -223,7 +229,10 @@ public partial class ModListPanel : UserControl
         var selectedItems = GetSelectedItems();
         if (selectedItems.Count == 0) return;
 
-        if (e.Key == Key.F2 && modifiers == ModifierKeys.None && RowActions.HasFlag(ModListRowAction.Rename) && selectedItems.Count == 1)
+        if (e.Key == Key.F2
+            && modifiers == ModifierKeys.None
+            && (AllowKeyboardRename || RowActions.HasFlag(ModListRowAction.Rename))
+            && selectedItems.Count == 1)
         {
             RaiseKeyboardCommand(ModListKeyboardCommand.Rename, selectedItems);
             e.Handled = true;
@@ -365,13 +374,17 @@ public partial class ModListPanel : UserControl
             if ((AllowInternalReorder || AllowExternalProfileDrag)
                 && FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is IModListSelectable { IsSelected: true } selectable)
             {
-                var selectedKeys = ItemsList.Items.OfType<IModListSelectable>()
+                var selectedItems = ItemsList.Items.OfType<IModListSelectable>()
                     .Where(item => item.IsSelected)
-                    .Select(item => item.SelectionKey)
                     .ToList();
-                if (selectedKeys.Count != 0)
+                var canInternalReorder = AllowInternalReorder
+                    && selectedItems.Count != 0
+                    && selectedItems.All(item => item is IModListInternalReorderable { CanInternalReorder: true });
+                if ((canInternalReorder || AllowExternalProfileDrag) && selectedItems.Count != 0)
                 {
-                    _dragCandidate = new DragCandidate(selectable.SelectionKey, selectedKeys);
+                    _dragCandidate = new DragCandidate(
+                        selectable.SelectionKey,
+                        selectedItems.Select(item => item.SelectionKey).ToList());
                     _dragStartPoint = e.GetPosition(ItemsList);
                 }
             }
@@ -928,6 +941,11 @@ public sealed class ModListKeyboardCommandEventArgs(
     public IReadOnlyList<object> Items { get; } = items;
     public IReadOnlyList<string> SelectedKeys { get; } = selectedKeys;
     public object? Item => Items.Count == 1 ? Items[0] : null;
+}
+
+public sealed class ModListTransitionStateChangedEventArgs(bool isActive) : EventArgs
+{
+    public bool IsActive { get; } = isActive;
 }
 
 public sealed class ModListInternalReorderEventArgs(IReadOnlyList<string> draggedKeys, int insertionIndex) : EventArgs

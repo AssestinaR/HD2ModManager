@@ -29,7 +29,10 @@ public sealed record ModListRowPresentation(
     ModListRowTone ActivationTone = ModListRowTone.Muted,
     string? WarningLabel = null,
     ModListRowTone WarningTone = ModListRowTone.Warning,
-    string? Summary = null)
+    string? Summary = null,
+    string? OrderLabel = null,
+    ModListRowTone OrderTone = ModListRowTone.Accent,
+    string? Note = null)
 {
     public static ModListRowPresentation Empty { get; } = new();
 
@@ -37,6 +40,8 @@ public sealed record ModListRowPresentation(
     public bool HasActivation => !string.IsNullOrWhiteSpace(ActivationLabel);
     public bool HasWarning => !string.IsNullOrWhiteSpace(WarningLabel);
     public bool HasSummary => !string.IsNullOrWhiteSpace(Summary);
+    public bool HasOrder => !string.IsNullOrWhiteSpace(OrderLabel);
+    public bool HasNote => !string.IsNullOrWhiteSpace(Note);
 }
 
 public interface IModListSelectable
@@ -45,6 +50,14 @@ public interface IModListSelectable
     bool IsSelected { get; set; }
     bool IsDecoration { get; }
     ModListRowPresentation RowPresentation { get; }
+}
+
+// Internal drag is meaningful only for rows whose host owns a real ordering
+// dimension.  Decorations may share the same visual list as options, but they
+// deliberately do not opt into option-order drag operations.
+public interface IModListInternalReorderable
+{
+    bool CanInternalReorder { get; }
 }
 
 public sealed class ModListSelectionRequestEventArgs(object item, IReadOnlyList<string> selectedKeys, ModifierKeys modifiers) : EventArgs

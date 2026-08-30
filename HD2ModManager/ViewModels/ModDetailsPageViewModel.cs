@@ -60,6 +60,9 @@ namespace HD2ModManager.ViewModels
         private int _detailRequestGeneration;
         private ModUserStatus? _userStatus;
         private IReadOnlyList<HostAttachmentListState> _hostAttachmentStates = Array.Empty<HostAttachmentListState>();
+        private int _directHostOptionCount;
+        private readonly Dictionary<string, int> _displayedHostOptionOrderByGuid = new(StringComparer.OrdinalIgnoreCase);
+        private string? _displayedHostOptionHostId;
 
         public string ModId { get; }
         public ModEntity? Mod { get; private set; }
@@ -124,6 +127,10 @@ namespace HD2ModManager.ViewModels
         // list must remain reachable even though they expose no patch tools.
         public bool CanHostAttachments => !IsDecoration && !IsReShade && (IsStandardMod || IsOption);
         public bool HasHostDecorations => CanHostAttachments && _hostAttachments.VisibleCount > 0;
+        // The shared attachment list can also contain decorations. Only direct
+        // options have a host-scoped effective ordering, so they are the only
+        // rows eligible for internal drag reorder.
+        public bool CanReorderHostOptions => CanHostAttachments && _directHostOptionCount > 1;
         private bool HasPatchGroups => Mod?.FileGroups?.Count > 0;
         public BulkObservableCollection<AdvancedModAssetRowViewModel> AdvancedAssets { get; } = new();
         public string AdvancedAssetQuery { get => _advancedAssetQuery; set { if (SetField(ref _advancedAssetQuery, value)) ApplyAdvancedAssetFilter(); } }
@@ -1099,6 +1106,24 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        public async Task ReorderHostOptionsAsync(IReadOnlyList<string> draggedKeys, int insertionIndex)
+        {
+            if (Mod is null || !CanHostAttachments || draggedKeys.Count == 0) return;
+
+            var currentOptions = _library.GetOptionsForHost(Mod.Guid);
+            if (currentOptions.Count <= 1) return;
+            var currentIds = currentOptions
+                .Select(option => option.Guid)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!draggedKeys.Any(currentIds.Contains)) return;
+
+            if (!await _library.ReorderDirectOptionsForHostAsync(Mod.Guid, draggedKeys, insertionIndex).ConfigureAwait(true))
+                return;
+
+            _notifications?.Show("已调整选项顺序。");
+            RefreshHostDecorations();
+        }
+
         public void OpenModFolder(string modId)
         {
             var mod = _library.Get(modId);
@@ -1108,38 +1133,89 @@ namespace HD2ModManager.ViewModels
                 Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
         }
 
-        public async Task DeleteDecorationAsync(string decorationId)
+        // Like profile order labels, option labels intentionally trail the visual
+        // list position for one transition. Rebinding every ordinal in the same
+        // frame as a drag move makes WPF spend the animation budget on text/layout
+        // invalidation instead of the actual FLIP transform.
+        public void CommitDisplayedHostOptionOrders()
         {
-            var decoration = _library.Get(decorationId);
-            if (decoration?.IsDecoration != true) return;
-            var deletion = await _library.RemoveAsync(decorationId).ConfigureAwait(true);
-            _notifications?.Show(
-                ModLibraryService.DescribeDeletionResult(deletion),
-                deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);
-            if (!deletion.RemovedNodeIds.Any(id => string.Equals(id.Value.ToString("N"), decorationId, StringComparison.OrdinalIgnoreCase))) return;
-            Refresh();
+            if (_disposed || Mod is null || !CanHostAttachments) return;
+
+            var directOptions = _library.GetOptionsForHost(Mod.Guid);
+            var isCurrent = string.Equals(_displayedHostOptionHostId, Mod.Guid, StringComparison.OrdinalIgnoreCase)
+                && directOptions.Count == _displayedHostOptionOrderByGuid.Count
+                && directOptions.Select((option, index) =>
+                    _displayedHostOptionOrderByGuid.GetValueOrDefault(option.Guid, -1) == index).All(value => value);
+            if (isCurrent) return;
+
+            _displayedHostOptionHostId = Mod.Guid;
+            _displayedHostOptionOrderByGuid.Clear();
+            for (var index = 0; index < directOptions.Count; index++)
+                _displayedHostOptionOrderByGuid[directOptions[index].Guid] = index;
+
+            RefreshHostDecorations(contentOnly: true, commitImmediately: true);
         }
 
-        private void RefreshHostDecorations()
+        private void RefreshHostDecorations(bool contentOnly = false, bool commitImmediately = false)
         {
             if (Mod is null || !CanHostAttachments)
             {
+                _directHostOptionCount = 0;
+                _displayedHostOptionHostId = null;
+                _displayedHostOptionOrderByGuid.Clear();
                 _hostAttachmentStates = Array.Empty<HostAttachmentListState>();
                 _hostAttachments.Submit(_hostAttachmentStates, _hostAttachmentStates.Select(state => state.Guid));
                 OnPropertyChanged(nameof(HasHostDecorations));
+                OnPropertyChanged(nameof(CanReorderHostOptions));
                 return;
             }
 
-            _hostAttachmentStates = _library.GetAttachmentsForHost(Mod.Guid)
-                .Select(attachment => HostAttachmentListState.Create(
-                    attachment,
-                    IsHostDecorationSelected(attachment.Guid),
-                    attachment.IsDecoration
-                        ? _library.IsDecorationEnabledForHost(attachment.Guid, Mod.Guid)
-                        : _library.IsOptionEnabledForHost(attachment.Guid, Mod.Guid)))
-                .ToArray();
-            _hostAttachments.Submit(_hostAttachmentStates, _hostAttachmentStates.Select(state => state.Guid));
+            var directOptions = _library.GetOptionsForHost(Mod.Guid);
+            var directOptionCounts = _library.GetDirectOptionCounts();
+            EnsureDisplayedHostOptionOrders(Mod.Guid, directOptions);
+            _directHostOptionCount = directOptions.Count;
+            var decorations = _library.GetDecorationsForHost(Mod.Guid);
+            var attachmentStates = new List<HostAttachmentListState>(directOptions.Count + decorations.Count);
+
+            for (var index = 0; index < directOptions.Count; index++)
+            {
+                var option = directOptions[index];
+                attachmentStates.Add(HostAttachmentListState.Create(
+                    option,
+                    IsHostDecorationSelected(option.Guid),
+                    _library.IsOptionEnabledForHost(option.Guid, Mod.Guid),
+                    optionOrder: _displayedHostOptionOrderByGuid.GetValueOrDefault(option.Guid, index),
+                    directOptionCount: directOptionCounts.GetValueOrDefault(option.Guid)));
+            }
+
+            foreach (var decoration in decorations)
+            {
+                attachmentStates.Add(HostAttachmentListState.Create(
+                    decoration,
+                    IsHostDecorationSelected(decoration.Guid),
+                    _library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid),
+                    directOptionCount: directOptionCounts.GetValueOrDefault(decoration.Guid)));
+            }
+
+            _hostAttachmentStates = attachmentStates;
+            if (contentOnly)
+                _hostAttachments.SubmitContent(_hostAttachmentStates, commitImmediately);
+            else
+                _hostAttachments.Submit(_hostAttachmentStates, _hostAttachmentStates.Select(state => state.Guid), commitImmediately);
             OnPropertyChanged(nameof(HasHostDecorations));
+            OnPropertyChanged(nameof(CanReorderHostOptions));
+        }
+
+        private void EnsureDisplayedHostOptionOrders(string hostId, IReadOnlyList<ModEntity> directOptions)
+        {
+            if (!string.Equals(_displayedHostOptionHostId, hostId, StringComparison.OrdinalIgnoreCase))
+            {
+                _displayedHostOptionHostId = hostId;
+                _displayedHostOptionOrderByGuid.Clear();
+            }
+
+            for (var index = 0; index < directOptions.Count; index++)
+                _displayedHostOptionOrderByGuid.TryAdd(directOptions[index].Guid, index);
         }
 
         private static ModCardViewModel CreateHostAttachmentCard(HostAttachmentListState state)
@@ -1686,16 +1762,26 @@ namespace HD2ModManager.ViewModels
         string ContentVersion,
         string PresentationVersion)
     {
-        public static HostAttachmentListState Create(ModEntity mod, bool isSelected, bool isEnabled)
+        public static HostAttachmentListState Create(
+            ModEntity mod,
+            bool isSelected,
+            bool isEnabled,
+            int? optionOrder = null,
+            int directOptionCount = 0)
         {
             var decorationStatus = isEnabled ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。";
+            var assetSummary = ModCardViewModel.AppendDirectOptionSummary(
+                ModCardViewModel.BuildAssetSummaryText(mod, null),
+                directOptionCount);
             var rowPresentation = ModCardViewModel.BuildRowPresentation(
                 mod,
-                ModCardViewModel.BuildAssetSummaryText(mod, null),
+                assetSummary,
                 null,
                 null,
                 isEnabled ? "已为当前主体启用" : "未为当前主体启用",
-                isEnabled ? ModListRowTone.Success : ModListRowTone.Warning);
+                isEnabled ? ModListRowTone.Success : ModListRowTone.Warning,
+                mod.IsOption && optionOrder.HasValue ? $"选项顺序 {optionOrder.Value + 1}" : null,
+                ModListRowTone.Accent);
             var contentVersion = string.Join('\u001f',
                 mod.Guid,
                 mod.Name,
@@ -1714,7 +1800,10 @@ namespace HD2ModManager.ViewModels
                 rowPresentation.ActivationTone,
                 rowPresentation.WarningLabel,
                 rowPresentation.WarningTone,
-                rowPresentation.Summary);
+                rowPresentation.Summary,
+                rowPresentation.OrderLabel,
+                rowPresentation.OrderTone,
+                rowPresentation.Note);
             return new HostAttachmentListState(
                 mod.Guid,
                 mod,

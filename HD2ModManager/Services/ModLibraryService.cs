@@ -135,12 +135,93 @@ namespace HD2ModManager.Services
         public IReadOnlyList<ModEntity> GetOptionsForHost(string hostId)
         {
             if (!TryParseNodeId(hostId, out var parentId)) return Array.Empty<ModEntity>();
+            var parentKey = parentId.Value.ToString("N");
             return OptionRelationshipGraph.Create(_snapshot)
                 .GetDirectOptions(parentId)
+                .OrderBy(node => _optionActivations.GetEffectiveOrder(node.Id.Value.ToString("N"), parentKey) ?? int.MaxValue)
+                .ThenBy(node => node.Metadata.OptionOrder ?? int.MaxValue)
+                .ThenBy(node => node.Id.Value)
                 .Select(node => Get(node.Id.Value.ToString("N")))
                 .Where(mod => mod is not null)
                 .Cast<ModEntity>()
                 .ToArray();
+        }
+
+        public IReadOnlyDictionary<string, int> GetDirectOptionCounts()
+        {
+            var graph = OptionRelationshipGraph.Create(_snapshot);
+            return _snapshot.Nodes.Values
+                .Where(node => node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option)
+                .Select(node => new
+                {
+                    Id = node.Id.Value.ToString("N"),
+                    Count = graph.GetDirectOptions(node.Id).Count,
+                })
+                .Where(item => item.Count != 0)
+                .ToDictionary(item => item.Id, item => item.Count, StringComparer.OrdinalIgnoreCase);
+        }
+
+        public bool IsDirectOptionForHost(string optionId, string hostId)
+            => GetOptionsForHost(hostId).Any(option => SameModGuid(option.Guid, optionId));
+
+        public async Task<bool> ReorderDirectOptionsForHostAsync(
+            string hostId,
+            IReadOnlyList<string> draggedOptionIds,
+            int insertionIndex,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(draggedOptionIds);
+            var current = GetOptionsForHost(hostId)
+                .Select(option => option.Guid)
+                .ToList();
+            if (current.Count == 0) return false;
+
+            var currentSet = current.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var selected = draggedOptionIds
+                .Where(currentSet.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (selected.Count == 0) return false;
+
+            var selectedSet = selected.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var originalInsertionIndex = Math.Clamp(insertionIndex, 0, current.Count);
+            var removedBefore = current.Take(originalInsertionIndex).Count(selectedSet.Contains);
+            current.RemoveAll(selectedSet.Contains);
+            current.InsertRange(Math.Clamp(originalInsertionIndex - removedBefore, 0, current.Count), selected);
+            return await ReplaceDirectOptionOrderAsync(hostId, current, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<bool> ReplaceDirectOptionOrderAsync(
+            string hostId,
+            IReadOnlyList<string> orderedOptionIds,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(orderedOptionIds);
+            if (!TryParseNodeId(hostId, out var hostNodeId)) return false;
+
+            var current = GetOptionsForHost(hostId)
+                .Select(option => option.Guid)
+                .ToList();
+            if (current.Count == 0) return false;
+
+            var currentSet = current.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var ordered = orderedOptionIds
+                .Where(currentSet.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            ordered.AddRange(current.Where(id => !ordered.Contains(id, StringComparer.OrdinalIgnoreCase)));
+            if (current.SequenceEqual(ordered, StringComparer.OrdinalIgnoreCase)) return false;
+
+            var hostKey = hostNodeId.Value.ToString("N");
+            var mutations = ordered
+                .Select((optionId, index) => new OptionEffectiveOrderMutation(optionId, hostKey, index))
+                .ToArray();
+            var changed = await _optionActivations.SetEffectiveOrdersAsync(mutations, cancellationToken).ConfigureAwait(false);
+            if (changed == 0) return false;
+
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+            OptionActivationChanged?.Invoke(this, EventArgs.Empty);
+            return true;
         }
 
         public IReadOnlyList<ModEntity> GetOptionDescendantsForHost(string hostId)
@@ -155,7 +236,7 @@ namespace HD2ModManager.Services
         }
 
         public IReadOnlyList<ModEntity> GetAttachmentsForHost(string hostId)
-            => GetDecorationsForHost(hostId).Concat(GetOptionsForHost(hostId)).ToArray();
+            => GetOptionsForHost(hostId).Concat(GetDecorationsForHost(hostId)).ToArray();
 
         public async Task<int> InitializeDefaultOptionActivationsAsync(
             IEnumerable<string> affectedNodeIds,

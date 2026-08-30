@@ -1,6 +1,8 @@
+using System;
 using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
@@ -61,9 +63,21 @@ namespace HD2ModManager.Views
                     details.OpenModFolder(card.Mod.Guid);
                     break;
                 case ModListRowAction.DeleteFromLibrary:
-                    await details.DeleteDecorationAsync(card.Mod.Guid);
+                    if (shell is not null) await shell.DeleteModsFromLibraryAsync([card.Mod.Guid]);
                     break;
             }
+        }
+
+        private async void OnHostAttachmentInternalReorderRequested(object? sender, ModListInternalReorderEventArgs e)
+        {
+            if (DataContext is ModDetailsPageViewModel details)
+                await details.ReorderHostOptionsAsync(e.DraggedKeys, e.InsertionIndex);
+        }
+
+        private void OnHostAttachmentTransitionStateChanged(object? sender, ModListTransitionStateChangedEventArgs e)
+        {
+            if (e.IsActive || DataContext is not ModDetailsPageViewModel details) return;
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(details.CommitDisplayedHostOptionOrders));
         }
 
         private void OnHostDecorationOpenDetailsOnRightClick(object? sender, ModListRowEventArgs e)

@@ -36,8 +36,10 @@
                          ExternalProfileDropRequested="OnExternalProfileDropRequested"
                          SelectionRequested="OnSelectionRequested"
                          KeyboardCommandRequested="OnKeyboardCommandRequested"
-                         AllowInternalReorder="{Binding CanReorder}"
-                        InternalReorderRequested="OnInternalReorderRequested"
+                         AllowKeyboardRename="True"
+                          AllowInternalReorder="{Binding CanReorder}"
+                         InternalReorderRequested="OnInternalReorderRequested"
+                         TransitionStateChanged="OnListTransitionStateChanged"
                         RowRightClicked="OnOpenDetailsOnRightClick"
                         BackgroundClicked="OnListBackgroundClick"/>
 </UserControl>

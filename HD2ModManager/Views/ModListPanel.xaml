@@ -82,7 +82,8 @@
                             <Border.ToolTip>
                                 <StackPanel>
                                     <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
-                                    <TextBlock Text="{Binding Description}" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding RowPresentation.Note}" TextWrapping="Wrap"
+                                               Visibility="{Binding RowPresentation.HasNote, Converter={StaticResource BoolToVis}}"/>
                                     <TextBlock Text="{Binding RowPresentation.Summary}" Foreground="{StaticResource TextSecondary}"/>
                                 </StackPanel>
                             </Border.ToolTip>
@@ -108,11 +109,17 @@
                                     <Image Source="{Binding ImagePath, Converter={StaticResource ImagePlaceholder}, ConverterParameter=72}"
                                            Stretch="UniformToFill"/>
                                 </Border>
-                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"
+                                <Grid Grid.Column="2" VerticalAlignment="Center">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"
                                                TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-                                    <Grid Margin="0,2,0,0">
+                                    <Grid Grid.Row="1" Margin="0,2,0,0">
                                         <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
                                             <ColumnDefinition Width="Auto"/>
@@ -131,21 +138,39 @@
                                                    Margin="0,0,7,0"
                                                    Visibility="{Binding RowPresentation.HasActivation, Converter={StaticResource BoolToVis}}"/>
                                         <TextBlock Grid.Column="2"
+                                                   Text="{Binding RowPresentation.OrderLabel}"
+                                                   Foreground="{Binding RowPresentation.OrderTone, Converter={StaticResource RowToneBrush}}"
+                                                   FontSize="12"
+                                                   Margin="0,0,7,0"
+                                                   Visibility="{Binding RowPresentation.HasOrder, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBlock Grid.Column="3"
                                                    Text="{Binding RowPresentation.WarningLabel}"
                                                    Foreground="{Binding RowPresentation.WarningTone, Converter={StaticResource RowToneBrush}}"
                                                    FontSize="12"
                                                    Margin="0,0,7,0"
                                                    Visibility="{Binding RowPresentation.HasWarning, Converter={StaticResource BoolToVis}}"/>
-                                        <TextBlock Grid.Column="3"
+                                        <TextBlock Grid.Column="4"
                                                    Text="{Binding RowPresentation.Summary}"
                                                    Foreground="{StaticResource TextSecondary}"
                                                    FontSize="12"
+                                                   MaxWidth="260"
+                                                   Margin="0,0,7,0"
                                                    MinWidth="0"
                                                    TextWrapping="NoWrap"
                                                    TextTrimming="CharacterEllipsis"
                                                    Visibility="{Binding RowPresentation.HasSummary, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBlock Grid.Column="5"
+                                                   Text="{Binding RowPresentation.Note}"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   FontSize="12"
+                                                   MinWidth="0"
+                                                   HorizontalAlignment="Right"
+                                                   TextAlignment="Right"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Visibility="{Binding RowPresentation.HasNote, Converter={StaticResource BoolToVis}}"/>
                                     </Grid>
-                                </StackPanel>
+                                </Grid>
                                 <Border x:Name="ActionPanel" Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center"
                                         Height="32" Padding="2" Margin="0,0,2,0" CornerRadius="16"
                                         Background="{StaticResource SurfaceCard}" Opacity="0" IsHitTestVisible="False"

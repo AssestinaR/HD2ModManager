@@ -66,7 +66,7 @@ namespace HD2ModManager.ViewModels
         {
             "Library" => $"已选择 {_selectedIds.Count} 个库内 Mod",
             "Profile" => $"已选择 {_selectedIds.Count} 个配置项",
-            var scope when scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true => $"已选择 {_selectedIds.Count} 个装饰 Mod",
+            var scope when scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true => $"已选择 {_selectedIds.Count} 个附加 Mod",
             _ => $"已选择 {_selectedIds.Count} 项",
         };
 

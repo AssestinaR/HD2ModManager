@@ -16,8 +16,8 @@ public sealed class ProfileOptionTreeTests
         var now = DateTimeOffset.UtcNow;
         var root = Node(rootId, "Root", ModNodeKind.Standard, [], []);
         var preset = Node(presetId, "Preset", ModNodeKind.Option, [rootId.Value.ToString("N")], []);
-        var simple = Node(simpleId, "Simple", ModNodeKind.Option, [presetId.Value.ToString("N")], [new PatchGroupKey("9ba626afa44a3aa3", 0)]);
-        var enhanced = Node(enhancedId, "Enhanced", ModNodeKind.Option, [presetId.Value.ToString("N")], [new PatchGroupKey("9ba626afa44a3aa4", 0)]);
+        var simple = Node(simpleId, "Simple", ModNodeKind.Option, [presetId.Value.ToString("N")], [new PatchGroupKey("9ba626afa44a3aa3", 0)], optionOrder: 0);
+        var enhanced = Node(enhancedId, "Enhanced", ModNodeKind.Option, [presetId.Value.ToString("N")], [new PatchGroupKey("9ba626afa44a3aa4", 0)], optionOrder: 1);
         var snapshot = new LibrarySnapshot(
             1,
             now,
@@ -74,16 +74,95 @@ public sealed class ProfileOptionTreeTests
         finally { try { Directory.Delete(root, recursive: true); } catch { } }
     }
 
+    [Fact]
+    public async Task OptionActivationStore_BatchOrder_PreservesEnabledStateAndRoundTrips()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var path = Path.Combine(root, "option-activations.json");
+            var firstOptionId = Guid.NewGuid().ToString("N");
+            var secondOptionId = Guid.NewGuid().ToString("N");
+            var hostId = Guid.NewGuid().ToString("N");
+            var store = new OptionActivationStore(path);
+            await store.InitializeMissingStatesAsync(
+            [
+                new OptionActivationInitialization(firstOptionId, hostId, true),
+                new OptionActivationInitialization(secondOptionId, hostId, false),
+            ]);
+
+            var changed = await store.SetEffectiveOrdersAsync(
+            [
+                new OptionEffectiveOrderMutation(firstOptionId, hostId, 1),
+                new OptionEffectiveOrderMutation(secondOptionId, hostId, 0),
+            ]);
+
+            Assert.Equal(2, changed);
+            var snapshot = store.CreateSnapshot();
+            Assert.True(snapshot.IsEnabled(firstOptionId, hostId));
+            Assert.False(snapshot.IsEnabled(secondOptionId, hostId));
+            Assert.Equal(1, snapshot.GetEffectiveOrder(firstOptionId, hostId));
+            Assert.Equal(0, snapshot.GetEffectiveOrder(secondOptionId, hostId));
+
+            var reloaded = new OptionActivationStore(path).CreateSnapshot();
+            Assert.True(reloaded.IsEnabled(firstOptionId, hostId));
+            Assert.False(reloaded.IsEnabled(secondOptionId, hostId));
+            Assert.Equal(1, reloaded.GetEffectiveOrder(firstOptionId, hostId));
+            Assert.Equal(0, reloaded.GetEffectiveOrder(secondOptionId, hostId));
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
+    [Fact]
+    public void ResolveEffectiveProfile_UsesHostScopedEffectiveOptionOrder()
+    {
+        var rootId = ModNodeId.New();
+        var firstOptionId = ModNodeId.New();
+        var secondOptionId = ModNodeId.New();
+        var now = DateTimeOffset.UtcNow;
+        var root = Node(rootId, "Root", ModNodeKind.Standard, [], []);
+        var first = Node(firstOptionId, "First", ModNodeKind.Option, [rootId.Value.ToString("N")], [new PatchGroupKey("9ba626afa44a3aa3", 0)]);
+        var second = Node(secondOptionId, "Second", ModNodeKind.Option, [rootId.Value.ToString("N")], [new PatchGroupKey("9ba626afa44a3aa4", 0)]);
+        var snapshot = new LibrarySnapshot(
+            1,
+            now,
+            new Dictionary<ModNodeId, ModNode>
+            {
+                [rootId] = root,
+                [firstOptionId] = first,
+                [secondOptionId] = second,
+            },
+            Array.Empty<Profile>());
+        var profile = new Profile(ProfileId.New(), "Active", now, null, [new ProfileEntry(rootId, 0)]);
+        var parentKey = rootId.Value.ToString("N");
+        var states = new OptionActivationSnapshot(new Dictionary<string, IReadOnlyDictionary<string, OptionHostState>>
+        {
+            [firstOptionId.Value.ToString("N")] = new Dictionary<string, OptionHostState>
+            {
+                [parentKey] = new(true, 1),
+            },
+            [secondOptionId.Value.ToString("N")] = new Dictionary<string, OptionHostState>
+            {
+                [parentKey] = new(true, 0),
+            },
+        });
+
+        var effective = Resolve(profile, snapshot, states);
+
+        Assert.Equal([rootId, secondOptionId, firstOptionId], effective.Entries.Select(entry => entry.NodeId).ToArray());
+    }
+
     private static ModNode Node(
         ModNodeId id,
         string name,
         ModNodeKind kind,
         IReadOnlyList<string> hosts,
-        IReadOnlyList<PatchGroupKey> patchGroups)
+        IReadOnlyList<PatchGroupKey> patchGroups,
+        int? optionOrder = null)
         => new(
             id,
             id.Value.ToString("N"),
-            new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null, kind, hosts),
+            new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null, kind, hosts, OptionOrder: optionOrder),
             patchGroups,
             Array.Empty<ModNodeId>());
 

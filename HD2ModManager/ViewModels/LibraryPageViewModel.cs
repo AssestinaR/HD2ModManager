@@ -27,6 +27,7 @@ namespace HD2ModManager.ViewModels
         private readonly Dictionary<string, ModUserStatus> _userStatuses = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _thumbnailSources = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, int> _thumbnailRevisions = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _directOptionCounts = new(StringComparer.OrdinalIgnoreCase);
         private CancellationTokenSource? _searchCancellation;
         private CancellationTokenSource? _thumbnailCancellation;
         private readonly HashSet<string> _pendingProjectionGuids = new(StringComparer.OrdinalIgnoreCase);
@@ -248,6 +249,7 @@ namespace HD2ModManager.ViewModels
                 thresholdMilliseconds: 25,
                 details: () => $"kind={transitionKind}; result={Items.Count}; query={(string.IsNullOrWhiteSpace(Query) ? "empty" : "set")}; decorations={ShowDecorations}; options={ShowOptions}; outdated={ShowOnlyOutdated}");
             var libraryMods = _library.All().ToList();
+            RefreshDirectOptionCounts();
             var all = libraryMods;
             if (!ShowDecorations) all = all.Where(mod => !mod.IsDecoration).ToList();
             if (!ShowOptions) all = all.Where(mod => !mod.IsOption).ToList();
@@ -651,7 +653,9 @@ namespace HD2ModManager.ViewModels
                 availableHostCount = activation.AvailableHostCount;
             }
             var selected = IsSelected(mod.Guid);
-            var assetSummaryText = ModCardViewModel.BuildAssetSummaryText(mod, derived?.AssetSummary);
+            var assetSummaryText = ModCardViewModel.AppendDirectOptionSummary(
+                ModCardViewModel.BuildAssetSummaryText(mod, derived?.AssetSummary),
+                _directOptionCounts.GetValueOrDefault(mod.Guid));
             var (activationLabel, activationTone) = mod.IsDecoration || mod.IsOption
                 ? BuildAttachmentActivationPresentation(enabledHostCount, availableHostCount)
                 : (null, ModListRowTone.Muted);
@@ -695,6 +699,12 @@ namespace HD2ModManager.ViewModels
             if (enabledHostCount == 0) return ("尚未启用", ModListRowTone.Muted);
             if (enabledHostCount == availableHostCount) return ($"已为 {enabledHostCount} 个主体启用", ModListRowTone.Success);
             return ($"已为 {enabledHostCount}/{availableHostCount} 个主体启用", ModListRowTone.Accent);
+        }
+
+        private void RefreshDirectOptionCounts()
+        {
+            _directOptionCounts.Clear();
+            foreach (var pair in _library.GetDirectOptionCounts()) _directOptionCounts[pair.Key] = pair.Value;
         }
 
         private void OnListProjectionCommitted(object? sender, ModListStateCommittedEventArgs e)
@@ -769,6 +779,9 @@ namespace HD2ModManager.ViewModels
                 rowPresentation.WarningLabel,
                 rowPresentation.WarningTone,
                 rowPresentation.Summary,
+                rowPresentation.OrderLabel,
+                rowPresentation.OrderTone,
+                rowPresentation.Note,
                 unitCompatibility?.Status,
                 unitCompatibility?.UnitCount,
                 unitCompatibility?.ReadableUnitCount,
@@ -787,7 +800,7 @@ namespace HD2ModManager.ViewModels
             => string.Join('\u001f', contentVersion, isSelected);
     }
 
-    public class ModCardViewModel : BaseViewModel, IModListSelectable
+    public class ModCardViewModel : BaseViewModel, IModListSelectable, IModListInternalReorderable
     {
         private HD2ModManager.Models.ModEntity _mod;
         private ModAssetSummary? _assetSummary;
@@ -803,6 +816,7 @@ namespace HD2ModManager.ViewModels
         public bool IsOption => Mod.IsOption;
         public bool IsReShade => Mod.IsReShade;
         public bool IsAttachable => Mod.IsDecoration || Mod.IsOption;
+        public bool CanInternalReorder => Mod.IsOption;
         public bool CanJoinProfile => Mod.Capabilities.CanJoinProfile;
         private string? _thumbnailSourcePath;
         private string? _imagePath;
@@ -887,7 +901,7 @@ namespace HD2ModManager.ViewModels
             _assetSummaryText = state.AssetSummaryText;
             _rowPresentation = state.RowPresentation;
             _contentVersion = state.ContentVersion;
-            OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsReShade)); OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanJoinProfile));
+            OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsReShade)); OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanInternalReorder)); OnPropertyChanged(nameof(CanJoinProfile));
             OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(RowPresentation)); OnPropertyChanged(nameof(UnitCompatibility));
             OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(UserStatus)); OnPropertyChanged(nameof(UserStatusTitle));
             OnPropertyChanged(nameof(UserStatusSummary)); OnPropertyChanged(nameof(DecorationStatus));
@@ -920,7 +934,7 @@ namespace HD2ModManager.ViewModels
 
             OnPropertyChanged(nameof(Mod)); OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(Description));
             OnPropertyChanged(nameof(IsDecoration)); OnPropertyChanged(nameof(IsOption)); OnPropertyChanged(nameof(IsReShade));
-            OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanJoinProfile)); OnPropertyChanged(nameof(ShowsPatchMetadata));
+            OnPropertyChanged(nameof(IsAttachable)); OnPropertyChanged(nameof(CanInternalReorder)); OnPropertyChanged(nameof(CanJoinProfile)); OnPropertyChanged(nameof(ShowsPatchMetadata));
             OnPropertyChanged(nameof(AssetSummary)); OnPropertyChanged(nameof(AssetSummaryText)); OnPropertyChanged(nameof(RowPresentation)); OnPropertyChanged(nameof(UnitCompatibility));
             OnPropertyChanged(nameof(IsModelOutdated)); OnPropertyChanged(nameof(ModelCompatibilitySummary));
             OnPropertyChanged(nameof(UserStatus)); OnPropertyChanged(nameof(UserStatusTitle)); OnPropertyChanged(nameof(UserStatusSummary));
@@ -932,10 +946,17 @@ namespace HD2ModManager.ViewModels
             => mod.IsReShade
                 ? "部署到游戏 bin"
                 : !mod.HasPatchContent && !mod.IsDecoration && !mod.IsOption
-                    ? mod.Description ?? string.Empty
+                    ? string.Empty
                     : mod.IsDecoration || mod.IsOption
                         ? mod.HasPatchContent ? "包含 Patch 内容" : "逻辑附加项"
                         : ModAssetSummaryFormatter.Format(assetSummary);
+
+        internal static string AppendDirectOptionSummary(string? summary, int directOptionCount)
+        {
+            if (directOptionCount <= 0) return summary ?? string.Empty;
+            var optionSummary = $"包含 {directOptionCount} 个选项";
+            return string.IsNullOrWhiteSpace(summary) ? optionSummary : $"{summary} · {optionSummary}";
+        }
 
         internal static ModListRowPresentation BuildRowPresentation(
             HD2ModManager.Models.ModEntity mod,
@@ -943,7 +964,9 @@ namespace HD2ModManager.ViewModels
             ModUnitCompatibilityReport? unitCompatibility,
             ModUserStatus? userStatus,
             string? activationLabel = null,
-            ModListRowTone activationTone = ModListRowTone.Muted)
+            ModListRowTone activationTone = ModListRowTone.Muted,
+            string? orderLabel = null,
+            ModListRowTone orderTone = ModListRowTone.Accent)
         {
             var typeLabel = mod.IsReShade ? "ReShade" : mod.IsDecoration ? "装饰" : mod.IsOption ? "选项" : null;
             var typeTone = mod.IsReShade ? ModListRowTone.Accent : ModListRowTone.Muted;
@@ -980,7 +1003,10 @@ namespace HD2ModManager.ViewModels
                 activationTone,
                 warnings.Count == 0 ? null : string.Join(" · ", warnings),
                 warningTone,
-                summary);
+                summary,
+                orderLabel,
+                orderTone,
+                mod.Description);
         }
 
     }
