@@ -1309,7 +1309,8 @@ public static class CliApplication
 		return new CliImportProfileTarget(
 			CliProjections.FormatId(profile.Id),
 			profile.Name,
-			profile.Revision);
+			profile.Revision,
+			Path.GetFullPath(workspace.LibraryRoot ?? throw new InvalidOperationException("导入目标配置缺少 Mod 库路径。")));
 	}
 
 	private static async ValueTask<CliImportProfileAddition?> AddImportedNodesToProfileAsync(
@@ -1321,6 +1322,8 @@ public static class CliApplication
 		if (target is null) return null;
 		if (!Guid.TryParse(target.ProfileId, out var rawProfileId))
 			throw new InvalidDataException("导入计划中的目标配置文件 ID 无效。");
+		if (!PathsEqual(target.LibraryRoot, paths.ModsDirectory))
+			throw new InvalidDataException("导入计划固定的 Mod 库与当前写入目标不同；已拒绝把导入内容加入错误配置文件。 ");
 
 		var store = new JsonModLibraryStore(paths, allowLegacyMigration: false);
 		var snapshot = await store.TryLoadReadOnlyAsync(cancellationToken).ConfigureAwait(false)
@@ -1337,7 +1340,8 @@ public static class CliApplication
 		var existing = profile.Entries.Select(entry => entry.NodeId).ToHashSet();
 		var deployable = new List<ModNodeId>();
 		var skipped = new List<string>();
-		foreach (var nodeId in import.AddedNodeIds.Distinct())
+		var importedNodes = import.ImportedNodeIds.Count != 0 ? import.ImportedNodeIds : import.AddedNodeIds;
+		foreach (var nodeId in importedNodes.Distinct())
 		{
 			if (!snapshot.Nodes.TryGetValue(nodeId, out var node)
 				|| existing.Contains(nodeId)
@@ -1384,6 +1388,21 @@ public static class CliApplication
 	private static bool CanJoinProfile(ModNode node)
 		=> node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.ReShade
 			&& (node.Metadata.Kind == ModNodeKind.ReShade || node.PatchGroups.Count != 0);
+
+	private static bool PathsEqual(string left, string right)
+	{
+		try
+		{
+			return string.Equals(
+				Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+				Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+				StringComparison.OrdinalIgnoreCase);
+		}
+		catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			return false;
+		}
+	}
 
 	private sealed record CliImportProfileAddition(
 		string ProfileId,
@@ -1924,6 +1943,7 @@ public static class CliApplication
 		{
 			libraryRoot,
 			sourceDisplayName = result.SourceDisplayName,
+			importedNodeIds = result.ImportedNodeIds.Select(CliProjections.FormatId).ToArray(),
 			addedNodeIds = result.AddedNodeIds.Select(CliProjections.FormatId).ToArray(),
 			changedNodeIds = result.ChangedNodeIds.Select(CliProjections.FormatId).ToArray(),
 			affectedNodeIds = result.AffectedNodeIds.Select(CliProjections.FormatId).ToArray(),

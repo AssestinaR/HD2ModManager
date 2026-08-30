@@ -22,7 +22,7 @@ public sealed record CliImportPlanDocument(
 	CliImportProfileTarget? AddToProfile)
 {
 	public const string CurrentSchema = "hd2mod.import-plan";
-	public const int CurrentVersion = 4;
+	public const int CurrentVersion = 5;
 }
 
 public sealed record CliImportSource(
@@ -44,7 +44,8 @@ public sealed record CliImportFingerprint(
 public sealed record CliImportProfileTarget(
 	string ProfileId,
 	string ProfileName,
-	long ProfileRevision);
+	long ProfileRevision,
+	string LibraryRoot);
 
 public sealed record CliImportInspection(
 	CliImportSource Source,
@@ -153,7 +154,8 @@ public static class CliImportPlanArtifacts
 			if (document.AddToProfile is not null
 				&& (!Guid.TryParse(document.AddToProfile.ProfileId, out _)
 					|| string.IsNullOrWhiteSpace(document.AddToProfile.ProfileName)
-					|| document.AddToProfile.ProfileRevision < 0))
+					|| document.AddToProfile.ProfileRevision < 0
+					|| string.IsNullOrWhiteSpace(document.AddToProfile.LibraryRoot)))
 			{
 				throw new CliUserException("ImportPlanUnreadable", "导入计划中的目标配置文件无效。");
 			}

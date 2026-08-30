@@ -79,6 +79,7 @@ public sealed class ModImportExecutionService : IModImportExecutionService
 			.ToArray();
 		var partial = new ModImportExecutionResult(imported.Snapshot, imported.SourceDisplayName, added, changed, 0, imported.HasOptionPathConflicts)
 		{
+			ImportedNodeIds = imported.ImportedNodeIds.Count != 0 ? imported.ImportedNodeIds : [imported.ImportedRootId],
 			CacheInvalidationStatus = imported.CacheInvalidationStatus,
 			CacheInvalidationFailedNodeIds = imported.CacheInvalidationFailedNodeIds,
 		};

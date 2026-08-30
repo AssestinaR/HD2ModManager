@@ -51,13 +51,14 @@ public static class CliImportValidator
 		var targetValidation = await CliWriteTargetGuard.ValidateAsync(workspace, CliWriteTargetMode.Import, cancellationToken).ConfigureAwait(false);
 		foreach (var issue in targetValidation.Issues)
 			issues.Add(new CliImportValidationIssue(issue.Code, issue.Message));
-		var profile = ValidateProfileTarget(document.AddToProfile, targetValidation.Snapshot, issues);
+		var profile = ValidateProfileTarget(document.AddToProfile, targetValidation.Snapshot, targetValidation.Target.LibraryRoot, issues);
 		return new CliImportValidationResult(document, current, targetValidation.Target.ToImportTarget(), profile, issues);
 	}
 
 	private static CliImportProfileTarget? ValidateProfileTarget(
 		CliImportProfileTarget? requested,
 		HD2ModCore.Domain.LibrarySnapshot? snapshot,
+		string? currentLibraryRoot,
 		ICollection<CliImportValidationIssue> issues)
 	{
 		if (requested is null) return null;
@@ -69,6 +70,13 @@ public static class CliImportValidator
 		if (snapshot is null)
 		{
 			issues.Add(new CliImportValidationIssue("ImportProfileTargetUnavailable", "无法读取目标 Mod 库，因此不能确认导入后加入配置文件的目标。"));
+			return null;
+		}
+		if (string.IsNullOrWhiteSpace(requested.LibraryRoot)
+			|| string.IsNullOrWhiteSpace(currentLibraryRoot)
+			|| !PathsEqual(requested.LibraryRoot, currentLibraryRoot))
+		{
+			issues.Add(new CliImportValidationIssue("ImportProfileLibraryChanged", "导入计划固定的 Mod 库与当前目标不同；请在正确的库上重新生成计划。"));
 			return null;
 		}
 
@@ -86,6 +94,21 @@ public static class CliImportValidator
 			return null;
 		}
 		return requested;
+	}
+
+	private static bool PathsEqual(string left, string right)
+	{
+		try
+		{
+			return string.Equals(
+				Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+				Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+				StringComparison.OrdinalIgnoreCase);
+		}
+		catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			return false;
+		}
 	}
 
 	private static void AddBlockingPlanDiagnostics(HD2ModCore.Domain.ImportPlan plan, ICollection<CliImportValidationIssue> issues)
@@ -116,11 +139,5 @@ public static class CliImportValidator
 			return false;
 		}
 	}
-
-	private static bool PathsEqual(string left, string right)
-		=> string.Equals(
-			Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-			Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-			StringComparison.OrdinalIgnoreCase);
 
 }

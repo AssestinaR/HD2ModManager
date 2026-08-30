@@ -173,6 +173,13 @@ internal static class CliModDeletionPlanArtifacts
 			foreach (var nodeId in document.Request.NodeIds)
 				if (!Guid.TryParse(nodeId, out _))
 					throw new CliUserException("ModDeletionPlanUnreadable", $"删除计划包含无效 Mod ID：{nodeId}");
+			var declaredFingerprint = ComputeInputFingerprint(document.Request, document.Target, document.Deletion, document.Inputs);
+			if (!string.Equals(document.InputFingerprint, declaredFingerprint, StringComparison.OrdinalIgnoreCase))
+			{
+				throw new CliUserException(
+					"ModDeletionPlanIntegrityMismatch",
+					"删除计划的审阅内容或输入快照在导出后被修改；请重新生成计划，不能继续验证或删除。 ");
+			}
 			return document;
 		}
 		catch (CliUserException) { throw; }

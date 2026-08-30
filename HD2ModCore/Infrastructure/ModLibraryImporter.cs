@@ -145,6 +145,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			firstStoredTree.SourceDisplayName,
 			optionPathConflicts.Count > 0)
 		{
+			ImportedNodeIds = distinctImportedNodeIds,
 			OptionPathConflicts = optionPathConflicts
 				.DistinctBy(conflict => (conflict.SourceRelativePath, string.Join("|", conflict.AffectedParentOptionIds.OrderBy(id => id.Value))))
 				.ToArray(),

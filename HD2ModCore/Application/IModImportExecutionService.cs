@@ -21,6 +21,15 @@ public sealed record ModImportExecutionResult(
 	int InitializedOptionActivationCount,
 	bool HasOptionPathConflicts = false)
 {
+	/// <summary>
+	/// Every stable node identity discovered by the current import source,
+	/// including identities that already existed before a retry. This lets a
+	/// caller safely resume a post-import Profile append without treating the
+	/// absence of newly added nodes as proof that the source had no deployable
+	/// roots.
+	/// </summary>
+	public IReadOnlyList<ModNodeId> ImportedNodeIds { get; init; } = Array.Empty<ModNodeId>();
+
 	public IReadOnlyList<ModNodeId> AffectedNodeIds
 		=> AddedNodeIds.Concat(ChangedNodeIds).Distinct().ToArray();
 

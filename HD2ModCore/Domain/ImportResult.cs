@@ -21,6 +21,13 @@ public sealed record ImportResult(
 	bool HasOptionPathConflicts = false)
 {
 	/// <summary>
+	/// Stable identities for every node represented by this import source. The
+	/// legacy <see cref="ImportedRootId"/> remains the first imported tree root
+	/// for callers that only need a single display representative.
+	/// </summary>
+	public IReadOnlyList<ModNodeId> ImportedNodeIds { get; init; } = Array.Empty<ModNodeId>();
+
+	/// <summary>
 	/// The concrete logical Option parents affected by manifest Include path
 	/// collisions. Callers can keep ordinary defaults for every other node
 	/// instead of treating a whole import batch as conflicted.

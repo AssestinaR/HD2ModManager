@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using Xunit;
@@ -96,6 +97,49 @@ public sealed class ImportAndDeletionPlanCliTests
 	}
 
 	[Fact]
+	public async Task ImportPlan_AddToProfile_RejectsAnotherLibraryEvenWhenProfileIdentityMatches()
+	{
+		await using var fixture = await CliManagementFixture.CreateAsync();
+		var source = Path.Combine(fixture.RootDirectory, "incoming-library-target");
+		Directory.CreateDirectory(source);
+		await File.WriteAllBytesAsync(Path.Combine(source, "0123456789abcdef.patch_0"), [0x01]);
+		var planPath = Path.Combine(fixture.RootDirectory, "import-library-target-plan.json");
+		Assert.Equal(0, await HD2ModCli.CliApplication.RunAsync(
+		[
+			"import", "plan", source,
+			"--add-to-profile", fixture.DefaultProfile.Name,
+			"--manager-root", fixture.ManagerRoot,
+			"--output", planPath,
+			"--json",
+		]));
+
+		var otherManager = Path.Combine(fixture.RootDirectory, "other-manager");
+		var otherLibrary = Path.Combine(fixture.RootDirectory, "other-library");
+		Directory.CreateDirectory(otherManager);
+		Directory.CreateDirectory(otherLibrary);
+		await File.WriteAllTextAsync(Path.Combine(otherManager, "settings.json"), JsonSerializer.Serialize(new { ModLibraryFolder = otherLibrary }));
+		var snapshot = await fixture.LoadSnapshotAsync();
+		await new JsonModLibraryStore(new StoragePaths(otherManager, otherLibrary), allowLegacyMigration: false).SaveAsync(snapshot);
+		foreach (var node in snapshot.Nodes.Values)
+		{
+			var directory = Path.Combine(otherLibrary, node.RelativePath);
+			Directory.CreateDirectory(directory);
+			foreach (var group in node.PatchGroups)
+				await File.WriteAllBytesAsync(Path.Combine(directory, $"{group.ArchiveHex16}.patch_{group.PatchIndex}"), [0x01]);
+		}
+
+		var validation = await CliTestConsole.RunCapturedAsync(
+			"import", "validate", "--plan", planPath,
+			"--manager-root", otherManager,
+			"--json");
+		Assert.Equal(2, validation.ExitCode);
+		using var validationJson = validation.ParseJson();
+		var codes = validationJson.RootElement.GetProperty("validation").GetProperty("issues")
+			.EnumerateArray().Select(item => item.GetProperty("code").GetString()).ToArray();
+		Assert.Contains("ImportProfileLibraryChanged", codes);
+	}
+
+	[Fact]
 	public async Task ModDeletePlan_FreezesStorageThenValidatesAndAppliesUnderThePlan()
 	{
 		await using var fixture = await CliManagementFixture.CreateAsync();
@@ -162,5 +206,32 @@ public sealed class ImportAndDeletionPlanCliTests
 		var snapshot = await fixture.LoadSnapshotAsync();
 		Assert.Contains(fixture.StandardC.Id, snapshot.Nodes.Keys);
 		Assert.True(File.Exists(Path.Combine(fixture.LibraryRoot, fixture.StandardC.RelativePath, "unreviewed.txt")));
+	}
+
+	[Fact]
+	public async Task ModDeletePlan_RejectsAnyTamperingOfTheReviewedPlanProjection()
+	{
+		await using var fixture = await CliManagementFixture.CreateAsync();
+		var planPath = Path.Combine(fixture.RootDirectory, "deletion-integrity-plan.json");
+		Assert.Equal(0, await HD2ModCli.CliApplication.RunAsync(
+		[
+			"mod", "delete", "plan", fixture.StandardCSelector,
+			"--manager-root", fixture.ManagerRoot,
+			"--output", planPath,
+			"--json",
+		]));
+		var root = JsonNode.Parse(await File.ReadAllTextAsync(planPath))!.AsObject();
+		root["deletion"]!["libraryNodeRemovals"]![0]!["name"] = "forged-name";
+		await File.WriteAllTextAsync(planPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+		var validation = await CliTestConsole.RunCapturedAsync(
+			"mod", "delete", "validate", "--plan", planPath,
+			"--manager-root", fixture.ManagerRoot,
+			"--json");
+		Assert.Equal(2, validation.ExitCode);
+		using var validationJson = validation.ParseJson();
+		Assert.Equal("ModDeletionPlanIntegrityMismatch", validationJson.RootElement.GetProperty("error").GetProperty("code").GetString());
+		var snapshot = await fixture.LoadSnapshotAsync();
+		Assert.Contains(fixture.StandardC.Id, snapshot.Nodes.Keys);
 	}
 }
