@@ -194,6 +194,8 @@ public static class CoreServices
 		=> new LuaDeploymentService();
 	public static IActivationStateStore CreateActivationStateStore()
 		=> new JsonActivationStateStore();
+	public static IDeploymentOwnershipInspector CreateDeploymentOwnershipInspector()
+		=> new DeploymentOwnershipInspector(CreateActivationStateStore(), CreatePatchFileNameParser());
 	public static IDeployedOverrideGraphService CreateDeployedOverrideGraphService()
 		=> new DeployedOverrideGraphService(CreateActivationStateStore(), CreatePatchFileNameParser());
 	public static IGameDataArchiveBrowserService CreateGameDataArchiveBrowserService(StoragePaths paths, IModInformationCenter informationCenter)
@@ -212,6 +214,8 @@ public static class CoreServices
 		=> new ModImportExecutionService(paths);
 	public static ILibraryWriteLeaseProvider CreateLibraryWriteLeaseProvider()
 		=> new LibraryWriteLeaseProvider();
+	public static IGameDataDeploymentLeaseProvider CreateGameDataDeploymentLeaseProvider()
+		=> new GameDataDeploymentLeaseProvider();
 	public static DeploymentCapabilityService CreateDeploymentCapabilityService() => new();
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
 		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations, CreateLuaDeploymentService());

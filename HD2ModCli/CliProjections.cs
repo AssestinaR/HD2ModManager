@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.5";
+	public const string ProtocolVersion = "1.6";
 
 	public static object CreateCapabilities()
 		=> new
@@ -41,6 +41,12 @@ public static class CliProjections
 				new { name = "profile insert", safety = "explicit-confirm", description = "按明确逻辑槽位插入新的配置条目" },
 				new { name = "profile move", safety = "explicit-confirm", description = "按明确逻辑槽位稳定移动已有配置条目" },
 				new { name = "profile reorder", safety = "explicit-confirm", description = "以完整明确列表重排一个配置的逻辑条目" },
+				new { name = "deploy plan", safety = "explicit-export", description = "只读重建配置、选项、Patch、Lua 和外部文件映射，并导出可审计部署计划" },
+				new { name = "deploy validate", safety = "read-only", description = "重建部署计划并检查目标、归属、来源漂移和游戏进程，不写入任何文件" },
+				new { name = "deploy apply", safety = "explicit-confirm", description = "在库与 GameData 双租约内重验计划、编译但不执行 Lua、精确替换已证明归属的 Patch" },
+				new { name = "deploy deactivate plan", safety = "explicit-export", description = "导出仅清理当前 activation-state 完整证明归属的 Patch 和外部文件的停用计划" },
+				new { name = "deploy deactivate validate", safety = "read-only", description = "重新验证停用计划、文件归属和游戏进程，不写入任何文件" },
+				new { name = "deploy deactivate apply", safety = "explicit-confirm", description = "在双租约内精确停用已管理部署；不会改动活动配置或未登记 Patch" },
 				new { name = "import inspect", safety = "read-only", description = "扫描待导入文件夹或压缩包，并输出导入前规划，不写入 Mod 库" },
 				new { name = "import plan", safety = "explicit-export", description = "仅在给定 --output 后写出带来源/导入树指纹的可审计导入计划，不写入 Mod 库" },
 				new { name = "import validate", safety = "read-only", description = "复扫来源并检查目标库、计划指纹和管理器进程；不写入 Mod 库" },
@@ -54,7 +60,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"部署、重构 Patch、替换护甲和任何原始 Patch 字节操作。",
+				"Patch 重构、替换护甲、头盔合并、资源重打包和任何自定义 Patch 字节生成工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
@@ -64,6 +70,9 @@ public static class CliProjections
 				"Mod 元数据与 Option 写入同样要求 --confirm、已有 library.json、所有桌面端实例关闭，以及库根目录的跨进程写租约。",
 				"Option 启停和排序必须显式指定 --host；CLI 不提供“所有主体”或隐式主体猜测。",
 				"Profile 写入要求 --confirm，且只更新 Mod 库中的配置状态；永不隐式部署或触碰 GameData。",
+				"deploy plan / validate 完全只读；deploy apply 要求 --confirm、桌面端和游戏均已退出、库与 GameData 双租约，以及 activation-state.json 对现有 Patch 的完整归属证明。",
+				"CLI 不会接管、清空或覆盖未登记 Patch；部署失败时仅恢复本次事务移动的已证明管理器 Patch。",
+				"CLI 物化 Lua 时仅做编译验证，不在本地 Lua 运行时执行 Mod Lua。",
 				"删除必须先通过关系、激活状态和生成 Overwrite 安全预检；CLI 遇到活跃装饰或临时头盔合并会拒绝猜测性删除。",
 			},
 		};

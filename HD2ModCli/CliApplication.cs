@@ -267,6 +267,74 @@ public static class CliApplication
 			Emit(invocation.Options, new { count = profiles.Length, profiles, issues = state.ReadIssues }, () => FormatProfileList(state.Snapshot));
 			return 0;
 		}
+		if (Matches(command, "deploy", "deactivate", "plan"))
+		{
+			EnsureDeactivationPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "deploy deactivate plan");
+			var build = await CliDeactivationPlanArtifacts.BuildAsync(CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), deactivation = CreateDeactivationPlanProjection(build.Document) },
+				() => FormatDeactivationPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "deploy", "deactivate", "validate"))
+		{
+			EnsureDeactivationValidateOptions(invocation.Options);
+			var document = await CliDeactivationPlanArtifacts.ReadDocumentAsync(RequireDeactivationPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliDeactivationPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options), includeProcessCheck: true).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateDeactivationValidationProjection(validation) },
+				() => FormatDeactivationValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "deploy", "deactivate", "apply"))
+		{
+			EnsureDeactivationApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("DeactivationApplyConfirmationRequired", "deploy deactivate apply 会删除已证明归属的 GameData Patch；请显式传入 --confirm。 ");
+			var document = await CliDeactivationPlanArtifacts.ReadDocumentAsync(RequireDeactivationPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliDeactivationExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateDeploymentExecutionProjection(execution) },
+				() => FormatDeploymentExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
+		if (command.Length is 2 or 3 && command[0] == "deploy" && command[1] == "plan")
+		{
+			EnsureDeploymentPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "deploy plan");
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var selector = invocation.Command.Count == 3 ? invocation.Command[2] : null;
+			var build = await CliDeploymentPlanArtifacts.BuildAsync(workspace, selector).ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), deployment = CreateDeploymentPlanProjection(build.Document) },
+				() => FormatDeploymentPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "deploy", "validate"))
+		{
+			EnsureDeploymentValidateOptions(invocation.Options);
+			var document = await CliDeploymentPlanArtifacts.ReadDocumentAsync(RequireDeploymentPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliDeploymentPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options), includeProcessCheck: true).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateDeploymentValidationProjection(validation) },
+				() => FormatDeploymentValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "deploy", "apply"))
+		{
+			EnsureDeploymentApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("DeploymentApplyConfirmationRequired", "deploy apply 会写入 GameData；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliDeploymentPlanArtifacts.ReadDocumentAsync(RequireDeploymentPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliDeploymentExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateDeploymentExecutionProjection(execution) },
+				() => FormatDeploymentExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length == 3 && command[0] == "import" && command[1] == "inspect")
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -457,6 +525,42 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", "import apply 不接受 --output、--overwrite、--host 或 --position。");
 	}
 
+	private static void EnsureDeploymentPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "deploy plan 仅接受配置标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。");
+		}
+	}
+
+	private static void EnsureDeploymentValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "deploy validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。");
+		}
+	}
+
+	private static void EnsureDeploymentApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "deploy apply 仅接受 --plan、--manager-root、--library、--game-data、--confirm 与 --json。");
+		}
+	}
+
+	private static void EnsureDeactivationPlanOptions(CliGlobalOptions options)
+		=> EnsureDeploymentPlanOptions(options);
+
+	private static void EnsureDeactivationValidateOptions(CliGlobalOptions options)
+		=> EnsureDeploymentValidateOptions(options);
+
+	private static void EnsureDeactivationApplyOptions(CliGlobalOptions options)
+		=> EnsureDeploymentApplyOptions(options);
+
 	private static void EnsureMetadataMutationOptions(CliGlobalOptions options, string command)
 	{
 		EnsureMutationBoundary(options, command);
@@ -561,6 +665,20 @@ public static class CliApplication
 		return options.Plan;
 	}
 
+	private static string RequireDeploymentPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("DeploymentPlanRequired", "请通过 --plan <部署计划.json> 提供已导出的部署计划。");
+		return options.Plan;
+	}
+
+	private static string RequireDeactivationPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("DeactivationPlanRequired", "请通过 --plan <停用计划.json> 提供已导出的停用计划。");
+		return options.Plan;
+	}
+
 	private static bool Matches(IReadOnlyList<string> actual, params string[] expected)
 		=> actual.Count == expected.Length && actual.SequenceEqual(expected, StringComparer.Ordinal);
 
@@ -644,6 +762,77 @@ public static class CliApplication
 			$"阻断诊断：{blocking}",
 		]);
 	}
+
+	private static object CreateDeploymentPlanProjection(CliDeploymentPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			document.PlanId,
+			ready = document.IsReady,
+			target = document.Target,
+			profile = document.Profile,
+			ownership = document.Ownership,
+			inputFingerprint = document.InputFingerprint,
+			patches = document.Patches,
+			externalFiles = document.ExternalFiles,
+			lua = document.Lua,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateDeploymentValidationProjection(CliDeploymentValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedPlanId = validation.Document.PlanId,
+			recomputedPlanId = validation.Current?.Document.PlanId,
+			current = validation.Current is null ? null : CreateDeploymentPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateDeploymentExecutionProjection(CliDeploymentExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.DeploymentMethod,
+			operations = execution.ApplyResult?.Operations.Select(operation => new
+			{
+				kind = operation.Operation.Kind.ToString().ToLowerInvariant(),
+				operation.Operation.TargetPath,
+				operation.Success,
+				method = operation.Method?.ToString().ToLowerInvariant(),
+				operation.ErrorCode,
+				operation.Message,
+			}).ToArray() ?? Array.Empty<object>(),
+			state = execution.ApplyResult?.StateReport,
+			diagnostics = execution.Diagnostics,
+		};
+
+	private static object CreateDeactivationPlanProjection(CliDeactivationPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			document.PlanId,
+			ready = document.IsReady,
+			target = document.Target,
+			ownership = document.Ownership,
+			patches = document.Patches,
+			externalFiles = document.ExternalFiles,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateDeactivationValidationProjection(CliDeactivationValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedPlanId = validation.Document.PlanId,
+			recomputedPlanId = validation.Current?.Document.PlanId,
+			current = validation.Current is null ? null : CreateDeactivationPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
 
 	private static object CreateImportValidationProjection(CliImportValidationResult validation)
 		=> new
@@ -833,6 +1022,60 @@ public static class CliApplication
 		return $"{status}{Environment.NewLine}目标 Mod 库：{validation.Target.LibraryRoot ?? "（未确定）"}{Environment.NewLine}{issues}";
 	}
 
+	private static string FormatDeploymentPlan(CliDeploymentPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出部署计划：{outputPath}",
+			$"配置：{document.Profile.Name}；有效条目：{document.Profile.EffectiveEntryIds.Count}",
+			$"Patch：{document.Patches.Count}；外部文件：{document.ExternalFiles.Count}；Lua 合成：{(document.Lua.RequiresMaterialization ? "需要" : "不需要")}",
+			$"当前归属：{document.Ownership.Status}；阻断诊断：{blocking}",
+		]);
+	}
+
+	private static string FormatDeactivationPlan(CliDeactivationPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出停用计划：{outputPath}",
+			$"将移除 Patch：{document.Patches.Count}；外部文件：{document.ExternalFiles.Count}",
+			$"当前归属：{document.Ownership.Status}；阻断诊断：{blocking}",
+		]);
+	}
+
+	private static string FormatDeploymentValidation(CliDeploymentValidationResult validation)
+	{
+		var status = validation.IsValid ? "部署验证通过。" : "部署验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}计划：{validation.Document.PlanId}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatDeactivationValidation(CliDeactivationValidationResult validation)
+	{
+		var status = validation.IsValid ? "停用验证通过。" : "停用验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}计划：{validation.Document.PlanId}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatDeploymentExecution(CliDeploymentExecutionResult execution)
+	{
+		var errors = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).ToArray();
+		if (execution.Success)
+		{
+			var patchCount = execution.ApplyResult?.Operations.Count(operation => operation.Operation.Kind == ApplyOperationKind.DeployPatch && operation.Success) ?? 0;
+			return $"部署完成：{patchCount} 个 Patch 操作成功；方式：{execution.DeploymentMethod ?? "未知"}。";
+		}
+		return errors.Length == 0
+			? "部署未完成；请查看 JSON 结果或日志。"
+			: $"部署被拒绝或失败：{string.Join("；", errors.Take(5).Select(error => $"[{error.Code}] {error.Message}"))}";
+	}
+
 	private static string FormatImportExecution(ModImportExecutionResult result, string libraryRoot)
 		=> $"已导入：{result.SourceDisplayName}{Environment.NewLine}目标 Mod 库：{libraryRoot}{Environment.NewLine}新增 Mod：{result.AddedNodeIds.Count}；更新 Mod：{result.ChangedNodeIds.Count}；初始化选项状态：{result.InitializedOptionActivationCount}。"
 			+ (result.HasOptionPathConflicts
@@ -898,6 +1141,12 @@ HD2 Mod Manager 命令行
 	  hd2mod profile insert <配置> <Mod GUID或前缀> [...] --position <插入槽位> --manager-root <管理器目录> --confirm --json
 	  hd2mod profile move <配置> <Mod GUID或前缀> [...] --position <插入槽位> --manager-root <管理器目录> --confirm --json
 	  hd2mod profile reorder <配置> <按完整逻辑顺序的Mod GUID或前缀> [...] --manager-root <管理器目录> --confirm --json
+	  hd2mod deploy plan [配置名称、GUID或active] --manager-root <管理器目录> --game-data <游戏data目录> --output deployment-plan.json --json
+	  hd2mod deploy validate --plan deployment-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod deploy apply --plan deployment-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
+	  hd2mod deploy deactivate plan --manager-root <管理器目录> --game-data <游戏data目录> --output deactivation-plan.json --json
+	  hd2mod deploy deactivate validate --plan deactivation-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod deploy deactivate apply --plan deactivation-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
 	  hd2mod import inspect <文件夹、压缩包或文件> --json
 	  hd2mod import plan <文件夹、压缩包或文件> --output import-plan.json
 	  hd2mod import validate --plan import-plan.json --manager-root <管理器目录> --json
@@ -911,10 +1160,10 @@ HD2 Mod Manager 命令行
 全局参数：
   --manager-root <目录>   包含管理器 settings.json 的目录。
   --library <目录>        显式指定 Mod 库；优先级高于 settings.json。
-  --game-data <目录>      只读上下文中的 GameData 覆盖路径。
+	  --game-data <目录>      GameData 覆盖路径；部署命令要求真实游戏的 data 目录。
   --json                  输出机器可读 JSON。
-	  --output <文件或目录>   import plan / context export / Agent Skill 导出使用。
-	  --plan <文件>           import validate / apply 所需的导入计划。
+	  --output <文件或目录>   import/deploy plan、context export、Agent Skill 导出使用。
+	  --plan <文件>           import/deploy validate 与 apply 所需的计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
 	  --host <GUID或前缀>      Option 操作的明确主体；不支持隐式或全主体修改。
 	  --position <正整数>      Option 排序的从 1 开始插入槽位；末尾为直属选项数 + 1。
@@ -922,6 +1171,6 @@ HD2 Mod Manager 命令行
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-安全边界：写入命令均要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm；不会自动部署、修改配置、重构或直接修改 Patch 内容。
+安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。
 """;
 }

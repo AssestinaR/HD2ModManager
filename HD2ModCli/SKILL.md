@@ -1,29 +1,24 @@
 ---
 name: hd2mod-cli-router
-description: Route an Agent to the smallest HD2 Mod Manager CLI capability Skill needed for inspection, import, Mod metadata, Options, safe deletion, or Profile management.
+description: Route an Agent to one small HD2 Mod Manager CLI Skill.
 ---
 
 # HD2 Mod CLI Router
 
-Do not load every workflow by default. Discover the shipped capability Skills:
+Discover the shipped capability Skills, then export only the one required:
 
 ```powershell
+hd2mod capabilities --json
 hd2mod agent skills list --json
-```
-
-Export only the relevant Skill:
-
-```powershell
 hd2mod agent skills export <skill-name> --output .\.agents\skills
 ```
 
-Current routing:
+- `library-inspection` — read-only library, Option and Profile inspection.
+- `safe-import` — reviewed source import.
+- `mod-metadata` — Mod name and notes.
+- `option-management` — direct Option state and order for one host.
+- `safe-library-deletion` — previewed relationship-aware deletion.
+- `profile-management` — Profile lifecycle and logical order.
+- `safe-deployment` — audited GameData deployment or tracked deactivation.
 
-- `library-inspection` — inspect Mod library, Option tree, Profile and effective deployment order without mutation.
-- `safe-import` — import a reviewed source through `plan → validate → apply --confirm`.
-- `mod-metadata` — rename or annotate one Mod.
-- `option-management` — manage direct Option state and order for one explicit host.
-- `safe-library-deletion` — preview and safely delete Mod nodes with relationship-aware cleanup.
-- `profile-management` — create and organize Profiles without deploying them.
-
-`mod-management` remains a compatibility aggregate only. This router is not a workflow; use `hd2mod capabilities --json` as the command authority and do not invent absent write commands.
+Do not load every Skill by default. `mod-management` is a legacy aggregate only. `safe-deployment` is the only Skill that authorizes GameData writes, and it never authorizes Patch reconstruction, armor replacement, or arbitrary Patch-byte editing.

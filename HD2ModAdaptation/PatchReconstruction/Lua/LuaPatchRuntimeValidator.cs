@@ -20,6 +20,24 @@ public sealed class LuaPatchRuntimeValidator
 		string sourceText,
 		string luaLibraryPath,
 		CancellationToken cancellationToken = default)
+		=> ValidateCoreAsync(sourceText, luaLibraryPath, executeSmokeTest: true, cancellationToken);
+
+	/// <summary>
+	/// Compiles the generated Lua chunk without opening standard libraries or
+	/// executing its top-level code. This is the safe default for untrusted Mod
+	/// Lua in non-interactive automation.
+	/// </summary>
+	public ValueTask<LuaRuntimeValidationResult> ValidateCompilationAsync(
+		string sourceText,
+		string luaLibraryPath,
+		CancellationToken cancellationToken = default)
+		=> ValidateCoreAsync(sourceText, luaLibraryPath, executeSmokeTest: false, cancellationToken);
+
+	private ValueTask<LuaRuntimeValidationResult> ValidateCoreAsync(
+		string sourceText,
+		string luaLibraryPath,
+		bool executeSmokeTest,
+		CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(sourceText);
 		ArgumentException.ThrowIfNullOrWhiteSpace(luaLibraryPath);
@@ -29,7 +47,7 @@ public sealed class LuaPatchRuntimeValidator
 
 		try
 		{
-			return ValueTask.FromResult(ValidateCore(sourceText, luaLibraryPath));
+			return ValueTask.FromResult(ValidateCore(sourceText, luaLibraryPath, executeSmokeTest));
 		}
 		catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException or UnauthorizedAccessException or IOException)
 		{
@@ -37,22 +55,22 @@ public sealed class LuaPatchRuntimeValidator
 		}
 	}
 
-	private static LuaRuntimeValidationResult ValidateCore(string sourceText, string luaLibraryPath)
+	private static LuaRuntimeValidationResult ValidateCore(string sourceText, string luaLibraryPath, bool executeSmokeTest)
 	{
 		var library = NativeLibrary.Load(luaLibraryPath);
 		try
 		{
 			var newState = Load<LuaLNewState>(library, "luaL_newstate");
-			var openLibs = Load<LuaLOpenLibs>(library, "luaL_openlibs");
 			var loadBuffer = Load<LuaLLoadBuffer>(library, "luaL_loadbuffer");
-			var pCall = Load<LuaPCall>(library, "lua_pcall");
 			var toString = Load<LuaToString>(library, "lua_tolstring");
 			var close = Load<LuaClose>(library, "lua_close");
+			LuaLOpenLibs? openLibs = executeSmokeTest ? Load<LuaLOpenLibs>(library, "luaL_openlibs") : null;
+			LuaPCall? pCall = executeSmokeTest ? Load<LuaPCall>(library, "lua_pcall") : null;
 			var state = newState();
 			if (state == IntPtr.Zero) return new LuaRuntimeValidationResult(true, false, false, false, "luaL_newstate returned null.");
 			try
 			{
-				openLibs(state);
+				if (executeSmokeTest) openLibs!(state);
 				var sourceBytes = Encoding.UTF8.GetBytes(sourceText);
 				var sourceBuffer = Marshal.AllocHGlobal(sourceBytes.Length);
 				var chunkName = Marshal.StringToHGlobalAnsi("@HD2LuaMergeV1");
@@ -62,8 +80,10 @@ public sealed class LuaPatchRuntimeValidator
 					var compileResult = loadBuffer(state, sourceBuffer, (UIntPtr)sourceBytes.Length, chunkName);
 					if (compileResult != 0)
 						return new LuaRuntimeValidationResult(true, false, false, false, ReadTopString(state, toString));
+					if (!executeSmokeTest)
+						return new LuaRuntimeValidationResult(true, true, false, true, "Lua chunk compiled without executing Mod code.");
 
-					var runResult = pCall(state, 0, 0, 0);
+					var runResult = pCall!(state, 0, 0, 0);
 					if (runResult == 0)
 						return new LuaRuntimeValidationResult(true, true, true, false, null);
 

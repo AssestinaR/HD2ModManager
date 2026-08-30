@@ -1,18 +1,19 @@
 ---
 name: hd2mod-library-inspection
-description: Inspect an HD2 Mod Manager library, Mod relationships, activation state, Profile content, and effective deployment order without changing anything.
+description: Inspect an HD2 Mod Manager library, Mod relationships, activation state, Profiles, and effective deployment order without mutation.
 ---
 
 # HD2 Mod Library Inspection
 
-Use only for read-only questions. It does not authorize import, deletion, deployment, Profile edits, or Patch operations.
+Use this Skill only for read-only questions.
 
 ```powershell
 hd2mod capabilities --json
-hd2mod status --manager-root "<manager directory>" --json
-hd2mod context export --manager-root "<manager directory>" --output context.json
-hd2mod mod show <guid-or-unique-prefix> --library "<mod library>" --json
-hd2mod profile show [name-or-guid-prefix] --library "<mod library>" --json
+hd2mod status --manager-root "<manager>" --json
+hd2mod mod list --library "<library>" --json
+hd2mod mod show <mod-guid-or-unique-prefix> --library "<library>" --json
+hd2mod profile show [name-or-guid-prefix] --library "<library>" --json
+hd2mod context export --library "<library>" --output context.json
 ```
 
-Treat `context.json` as a point-in-time snapshot. For Options, read host-scoped `optionActivation` and relationship IDs; for Profiles, distinguish `logicalEntries` from `effectiveDeploymentEntries`. Never guess an ambiguous GUID prefix or repair malformed library files by hand.
+Treat exported context as a point-in-time snapshot. Read `directOptions`, host-scoped `optionActivation`, `logicalEntries`, and `effectiveDeploymentEntries`; never guess an ambiguous GUID prefix. This Skill does not authorize a mutation, deployment, or Patch operation.

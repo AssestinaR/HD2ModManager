@@ -28,6 +28,35 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		_externalFiles = externalFiles ?? new ExternalInstallFileFactsService();
 	}
 
+	public async ValueTask<LuaDeploymentPlan> PlanAsync(
+		Profile profile,
+		LibrarySnapshot snapshot,
+		PatchFileIndex patchIndex,
+		string modsRootDirectory,
+		string gameDataDirectory,
+		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
+		CancellationToken cancellationToken = default)
+	{
+		var result = await BuildAsync(
+			profile,
+			snapshot,
+			patchIndex,
+			modsRootDirectory,
+			gameDataDirectory,
+			contentFacts,
+			materialize: false,
+			validationMode: null,
+			cancellationToken).ConfigureAwait(false);
+		return new LuaDeploymentPlan(
+			result.PatchIndex,
+			result.GeneratedPatchGroups,
+			result.ExternalFiles,
+			result.Issues,
+			result.RequiresMaterialization,
+			result.CompositionFingerprint,
+			result.InputCount);
+	}
+
 	public async ValueTask<LuaDeploymentPreparation> PrepareAsync(
 		Profile profile,
 		LibrarySnapshot snapshot,
@@ -36,6 +65,49 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
 		CancellationToken cancellationToken = default)
+		=> await MaterializeAsync(
+			profile,
+			snapshot,
+			patchIndex,
+			modsRootDirectory,
+			gameDataDirectory,
+			contentFacts,
+			LuaDeploymentValidationMode.CompileAndSmoke,
+			cancellationToken).ConfigureAwait(false);
+
+	public async ValueTask<LuaDeploymentPreparation> MaterializeAsync(
+		Profile profile,
+		LibrarySnapshot snapshot,
+		PatchFileIndex patchIndex,
+		string modsRootDirectory,
+		string gameDataDirectory,
+		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
+		LuaDeploymentValidationMode validationMode,
+		CancellationToken cancellationToken = default)
+	{
+		var result = await BuildAsync(
+			profile,
+			snapshot,
+			patchIndex,
+			modsRootDirectory,
+			gameDataDirectory,
+			contentFacts,
+			materialize: true,
+			validationMode,
+			cancellationToken).ConfigureAwait(false);
+		return new LuaDeploymentPreparation(result.PatchIndex, result.GeneratedPatchGroups, result.ExternalFiles, result.Issues);
+	}
+
+	private async ValueTask<LuaBuildResult> BuildAsync(
+		Profile profile,
+		LibrarySnapshot snapshot,
+		PatchFileIndex patchIndex,
+		string modsRootDirectory,
+		string gameDataDirectory,
+		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
+		bool materialize,
+		LuaDeploymentValidationMode? validationMode,
+		CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(profile);
 		ArgumentNullException.ThrowIfNull(snapshot);
@@ -76,6 +148,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					&& candidate.Id.SourcePatchIndex == group.Key.SourcePatchIndex
 					&& candidate.NormalizedOrder == group.Key.NormalizedOrder);
 				var luaKeys = factGroup?.AssetKeys.Where(IsLuaAssetKey).Distinct().ToArray() ?? Array.Empty<AssetKey>();
+				// A lightweight AssetInventory may exist but still be incomplete for
+				// a legacy or freshly generated boot archive. Do not silently deploy
+				// such a Patch as ordinary content: the boot archive has one exact
+				// identity, so a direct TOC read is a safe, narrow fallback.
+				if (factGroup is not null && luaKeys.Length == 0 && IsLuaBootArchive(group.Key.ArchiveHex16))
+					factGroup = null;
 				HD2ModAdaptation.PatchReconstruction.PatchTocEntry? knownLuaEntry = null;
 				IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>? entries = null;
 				if (factGroup is not null)
@@ -195,12 +273,13 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			cancellationToken).ConfigureAwait(false);
 
 		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
-			return new LuaDeploymentPreparation(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues);
+			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 
 		if (documents.Count < 2)
-			return new LuaDeploymentPreparation(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues);
+			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 
 		GeneratedPatchGroup generated;
+		string? fingerprint = null;
 		try
 		{
 			var orderedDocuments = documents
@@ -211,12 +290,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				.ToArray();
 			var composition = _luaComposer.Compose(orderedDocuments);
 			var gameRoot = Directory.GetParent(Path.GetFullPath(gameDataDirectory))?.FullName;
-			if (!string.IsNullOrWhiteSpace(gameRoot))
+			if (validationMode is not null && !string.IsNullOrWhiteSpace(gameRoot))
 			{
-				var validation = await _luaRuntimeValidator.ValidateAsync(
-					composition.SourceText,
-					Path.Combine(gameRoot, "bin", "lua51.dll"),
-					cancellationToken).ConfigureAwait(false);
+				var luaLibraryPath = Path.Combine(gameRoot, "bin", "lua51.dll");
+				var validation = validationMode == LuaDeploymentValidationMode.CompileOnly
+					? await _luaRuntimeValidator.ValidateCompilationAsync(composition.SourceText, luaLibraryPath, cancellationToken).ConfigureAwait(false)
+					: await _luaRuntimeValidator.ValidateAsync(composition.SourceText, luaLibraryPath, cancellationToken).ConfigureAwait(false);
 				if (!validation.Available)
 				{
 					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "LuaRuntimeValidationUnavailable", validation.Message ?? "The game's Lua runtime was unavailable; merged Lua was only structurally validated."));
@@ -224,35 +303,51 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				else if (!validation.CompileSucceeded)
 				{
 					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "LuaRuntimeCompileFailed", validation.Message ?? "The merged Lua chunk failed to compile."));
-					return new LuaDeploymentPreparation(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues);
+					return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 				}
-				else if (!validation.RuntimeSucceeded)
+				else if (validationMode == LuaDeploymentValidationMode.CompileAndSmoke && !validation.RuntimeSucceeded)
 				{
 					var severity = validation.EnvironmentLimited ? CoreIssueSeverity.Warning : CoreIssueSeverity.Error;
 					issues.Add(new CoreIssue(severity, "LuaRuntimeSmokeTestFailed", validation.Message ?? "The merged Lua chunk failed its smoke test."));
 					if (severity == CoreIssueSeverity.Error)
-						return new LuaDeploymentPreparation(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues);
+					return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 				}
 			}
-			var fingerprint = CreateCompositionFingerprint(documents);
+			fingerprint = CreateCompositionFingerprint(documents);
 			var outputDirectory = Path.Combine(Path.GetFullPath(modsRootDirectory), ".runtime", "lua", fingerprint);
 			var outputPath = Path.Combine(outputDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
-			var write = await _luaComposer.WriteAsync(outputPath, composition, cancellationToken).ConfigureAwait(false);
-			generated = new GeneratedPatchGroup(
-				$"{LuaAssetKeys.BootArchiveId:x16}",
-				0,
+			GeneratedPatchFile[] outputFiles;
+			if (materialize)
+			{
+				var write = await _luaComposer.WriteAsync(outputPath, composition, cancellationToken).ConfigureAwait(false);
+				outputFiles =
 				[
 					CreateGeneratedFile(write.PatchPath, PatchSidecarKind.Base),
 					CreateGeneratedFile(write.StreamPath, PatchSidecarKind.Stream),
 					CreateGeneratedFile(write.GpuResourcesPath, PatchSidecarKind.GpuResources),
-				],
+				];
+			}
+			else
+			{
+				var expectedPatchLength = checked(composition.HeaderTemplate.Length + composition.PayloadBytes.LongLength);
+				outputFiles =
+				[
+					new GeneratedPatchFile(PatchSidecarKind.Base, outputPath, Path.GetFileName(outputPath), expectedPatchLength, DateTimeOffset.MinValue),
+					new GeneratedPatchFile(PatchSidecarKind.Stream, outputPath + ".stream", Path.GetFileName(outputPath) + ".stream", 0, DateTimeOffset.MinValue),
+					new GeneratedPatchFile(PatchSidecarKind.GpuResources, outputPath + ".gpu_resources", Path.GetFileName(outputPath) + ".gpu_resources", 0, DateTimeOffset.MinValue),
+				];
+			}
+			generated = new GeneratedPatchGroup(
+				$"{LuaAssetKeys.BootArchiveId:x16}",
+				0,
+				outputFiles,
 				"HD2LuaMergeV1 generated Lua patch",
 				PlacementOrder: documents.Max(document => document.ProfileLoadOrder));
 		}
 		catch (Exception exception) when (exception is LuaPatchFormatException or IOException or UnauthorizedAccessException)
 		{
 			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "LuaMergeFailed", exception.Message, ExceptionMessage: exception.ToString()));
-			return new LuaDeploymentPreparation(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues);
+			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 		}
 
 		var filteredFiles = patchIndex.FilesByNode.ToDictionary(
@@ -261,7 +356,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				.Where(file => !removedGroups.Contains(new PatchGroupIdentity(file.NodeId, file.ArchiveHex16, file.SourcePatchIndex, file.NormalizedOrder)))
 			.ToArray());
 		var filteredIndex = patchIndex with { FilesByNode = filteredFiles };
-		return new LuaDeploymentPreparation(filteredIndex, [generated], externalMappings, issues);
+		return new LuaBuildResult(filteredIndex, [generated], externalMappings, issues, true, fingerprint, documents.Count);
 	}
 
 	private static bool IsLuaAssetKey(AssetKey key)
@@ -380,4 +475,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 
 	private sealed record LuaDocumentSource(ModNodeId NodeId, int ProfileLoadOrder, PatchGroupIdentity Group, LuaPatchDocument Document);
 	private readonly record struct PatchGroupIdentity(ModNodeId NodeId, string ArchiveHex16, int SourcePatchIndex, int NormalizedOrder);
+	private sealed record LuaBuildResult(
+		PatchFileIndex PatchIndex,
+		IReadOnlyList<GeneratedPatchGroup> GeneratedPatchGroups,
+		IReadOnlyList<ExternalFileMapping> ExternalFiles,
+		IReadOnlyList<CoreIssue> Issues,
+		bool RequiresMaterialization,
+		string? CompositionFingerprint,
+		int InputCount);
 }

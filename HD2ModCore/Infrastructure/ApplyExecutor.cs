@@ -37,6 +37,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 		var operationResults = new List<ApplyOperationResult>();
 		var issues = new List<CoreIssue>(plan.Issues);
 		var deployOperations = plan.Operations.Where(operation => operation.Kind == ApplyOperationKind.DeployPatch).ToList();
+		var controlledPatchTargets = GetControlledPatchTargets(plan);
 		var externalDeployMappings = plan.ExternalFileMappings ?? Array.Empty<ExternalFileMapping>();
 		ActivationState? previousState = null;
 		try
@@ -86,7 +87,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 				}
 
 				var source = preflight.Sources[operation.SourcePath!];
-				deployed.Add(new ActivationStateFileEntry(operation.TargetPath, operation.SourcePath!, result.Method.Value, operation.ArchiveHex16!, operation.SourcePatchIndex!.Value, operation.TargetPatchIndex!.Value, operation.SidecarKind!.Value, operation.NodeId, source.Length, string.Empty));
+				deployed.Add(new ActivationStateFileEntry(operation.TargetPath, operation.SourcePath!, result.Method.Value, operation.ArchiveHex16!, operation.SourcePatchIndex!.Value, operation.TargetPatchIndex!.Value, operation.SidecarKind!.Value, operation.NodeId, source.Length, source.Sha256));
 			}
 
 			if (!commitFailed)
@@ -108,7 +109,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 
 		if (commitFailed)
 		{
-			CleanupControlledFiles(plan.GameDataDirectory);
+			CleanupControlledFiles(plan.GameDataDirectory, controlledPatchTargets);
 			if (externalCommit is not null)
 				issues.AddRange(await externalCommit.RollbackAsync().ConfigureAwait(false));
 			await FinalizeFailedApplyStateAsync(plan.GameDataDirectory, previousState, externalCommit, issues).ConfigureAwait(false);
@@ -127,7 +128,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 		issues.AddRange(await VerifyExternalFilesAsync(deployedExternal).ConfigureAwait(false));
 		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
 		{
-			CleanupControlledFiles(plan.GameDataDirectory);
+			CleanupControlledFiles(plan.GameDataDirectory, controlledPatchTargets);
 			if (externalCommit is not null)
 				issues.AddRange(await externalCommit.RollbackAsync().ConfigureAwait(false));
 			await FinalizeFailedApplyStateAsync(plan.GameDataDirectory, previousState, externalCommit, issues).ConfigureAwait(false);
@@ -149,7 +150,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 		{
 			operationResults.Add(new ApplyOperationResult(stateOperation, false, DeploymentMethod.StateFile, "WriteStateFailed", exception.Message));
 			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "WriteStateFailed", exception.Message, statePath, ExceptionMessage: exception.ToString()));
-			CleanupControlledFiles(plan.GameDataDirectory);
+			CleanupControlledFiles(plan.GameDataDirectory, controlledPatchTargets);
 			if (externalCommit is not null)
 				issues.AddRange(await externalCommit.RollbackAsync().ConfigureAwait(false));
 			await FinalizeFailedApplyStateAsync(plan.GameDataDirectory, previousState, externalCommit, issues).ConfigureAwait(false);
@@ -174,9 +175,22 @@ public sealed class ApplyExecutor : IApplyExecutor
 		{
 			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "ReadActivationStateFailed", exception.Message, Path.Combine(gameDataDirectory, JsonActivationStateStore.StateFileName), ExceptionMessage: exception.ToString()));
 		}
-		foreach (var path in EnumerateControlledFiles(gameDataDirectory).ToList())
+		if (previousState is null)
 		{
-			var operation = new ApplyOperation(ApplyOperationKind.DeletePatch, path, null, null, null, null, null, null);
+			if (EnumerateControlledFiles(gameDataDirectory).Any())
+				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "ActivationStateMissingForPatches", "GameData 中存在可解析 Patch，但没有可用的 activation-state.json；停用不会猜测性删除这些文件。", gameDataDirectory));
+			var emptyReport = await _stateScanner.ScanAsync(gameDataDirectory, false, CancellationToken.None).ConfigureAwait(false);
+			issues.AddRange(emptyReport.Issues);
+			return new ApplyResult(!issues.Any(issue => issue.Severity == CoreIssueSeverity.Error), operations, emptyReport, issues);
+		}
+		foreach (var file in previousState.Files)
+		{
+			if (!IsSafePatchTarget(gameDataDirectory, file.TargetPath))
+			{
+				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "ActivationStatePatchTargetRejected", "activation-state.json 中的 Patch 目标不位于当前 GameData 顶层或文件名无效；停用不会删除它。", file.TargetPath, file.NodeId));
+				continue;
+			}
+			var operation = new ApplyOperation(ApplyOperationKind.DeletePatch, file.TargetPath, null, file.ArchiveHex16, file.SourcePatchIndex, file.TargetPatchIndex, file.SidecarKind, file.NodeId);
 			var result = DeletePatch(operation);
 			operations.Add(result);
 			if (!result.Success) issues.Add(ToIssue(result, operation));
@@ -266,7 +280,8 @@ public sealed class ApplyExecutor : IApplyExecutor
 					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "SourceFileMissing", $"Source file does not exist: {operation.SourcePath}", operation.SourcePath, operation.NodeId));
 					continue;
 				}
-				sources[operation.SourcePath] = new SourceFileFact(info.Length);
+				var sha256 = await ComputeSha256Async(operation.SourcePath, cancellationToken).ConfigureAwait(false);
+				sources[operation.SourcePath] = new SourceFileFact(info.Length, sha256);
 			}
 			catch (Exception exception) when (exception is not OperationCanceledException)
 			{
@@ -663,7 +678,21 @@ public sealed class ApplyExecutor : IApplyExecutor
 				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedLengthMismatch", "Deployed target length differs from its source.", file.TargetPath, file.NodeId));
 				continue;
 			}
-			// Link deployment is validated by link target/length; content hashing is reserved for diagnostics.
+			if (string.IsNullOrWhiteSpace(file.ContentSha256))
+			{
+				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedHashMissing", "Deployed Patch has no recorded content hash.", file.TargetPath, file.NodeId));
+				continue;
+			}
+			try
+			{
+				var hash = await ComputeSha256Async(file.TargetPath, CancellationToken.None).ConfigureAwait(false);
+				if (!string.Equals(hash, file.ContentSha256, StringComparison.OrdinalIgnoreCase))
+					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedHashMismatch", "Deployed target content differs from its recorded source hash.", file.TargetPath, file.NodeId));
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+			{
+				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedTargetUnreadable", exception.Message, file.TargetPath, file.NodeId, exception.ToString()));
+			}
 		}
 		return issues;
 	}
@@ -707,10 +736,39 @@ public sealed class ApplyExecutor : IApplyExecutor
 		}
 	}
 
-	private void CleanupControlledFiles(string gameDataDirectory)
+	private IReadOnlyList<string> GetControlledPatchTargets(ApplyPlan plan)
 	{
-		foreach (var path in EnumerateControlledFiles(gameDataDirectory).ToList())
+		var gameData = Path.GetFullPath(plan.GameDataDirectory);
+		return plan.Operations
+			.Where(operation => operation.Kind is ApplyOperationKind.DeletePatch or ApplyOperationKind.DeployPatch)
+			.Select(operation => operation.TargetPath)
+			.Where(path => IsSafePatchTarget(gameData, path))
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+	}
+
+	private bool IsSafePatchTarget(string gameDataDirectory, string? candidate)
+	{
+		if (string.IsNullOrWhiteSpace(candidate)) return false;
+		try
 		{
+			var gameData = Path.GetFullPath(gameDataDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+			var target = Path.GetFullPath(candidate);
+			if (!target.StartsWith(gameData + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return false;
+			if (!string.Equals(Path.GetDirectoryName(target), gameData, StringComparison.OrdinalIgnoreCase)) return false;
+			return _fileNameParser.TryParse(Path.GetFileName(target), out _);
+		}
+		catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException)
+		{
+			return false;
+		}
+	}
+
+	private void CleanupControlledFiles(string gameDataDirectory, IReadOnlyList<string> controlledTargets)
+	{
+		foreach (var path in controlledTargets)
+		{
+			if (!IsSafePatchTarget(gameDataDirectory, path)) continue;
 			try
 			{
 				ClearReadOnlyAttribute(path);
@@ -995,6 +1053,6 @@ public sealed class ApplyExecutor : IApplyExecutor
 	}
 
 	private sealed record ExternalBackup(string TargetPath, string BackupPath);
-	private sealed record SourceFileFact(long Length);
+	private sealed record SourceFileFact(long Length, string Sha256);
 	private sealed record PreflightResult(IReadOnlyDictionary<string, SourceFileFact> Sources, IReadOnlyList<CoreIssue> Issues);
 }

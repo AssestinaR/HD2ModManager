@@ -1,13 +1,15 @@
 # HD2 Mod Manager CLI
 
-供脚本和 AI Agent 使用的本地入口；先运行 `hd2mod capabilities --json`，再只导出所需 Skill。
+`hd2mod.exe` 会随管理器输出放在 `HD2ModManager.exe` 旁边。它面向脚本与 Agent：检查、导入、Mod/Option/Profile 管理，以及安全部署或停用；不提供 Patch 重构、护甲替换或任意自定义 Patch 字节编辑。
 
 ```powershell
-hd2mod agent skills list --json
-hd2mod agent skills export --output .\.agents\skills
-hd2mod agent skills export safe-library-deletion --output .\.agents\skills
+.\hd2mod.exe --help
+.\hd2mod.exe capabilities --json
+.\hd2mod.exe agent skills list --json
+.\hd2mod.exe agent skills export safe-import --output .\.agents\skills
+.\hd2mod.exe agent skills export safe-deployment --output .\.agents\skills
 ```
 
-当前 Skill：`library-inspection`、`safe-import`、`mod-metadata`、`option-management`、`safe-library-deletion`、`profile-management`。写操作需要桌面端关闭、跨进程写租约与显式 `--confirm`；不会隐式部署或修改 Patch 字节。
+`--json` 用于机器读取；以 `capabilities --json` 和 `--help` 作为当前命令表的唯一依据。库写入需要桌面管理器关闭、跨进程库租约和显式 `--confirm`。部署还要求游戏退出、真实 `data` 目录、双租约及完整 Patch 归属证明；不会接管未知 Patch 或执行 Mod Lua。
 
-目录导出带 SHA-256 清单，不会删除同级用户 Skill；刷新已管理文件请加 `--overwrite`。旧 `agent skill export mod-management` 与 `agent skill` 仍可用作兼容入口。
+当前**不支持** `--dry-run`；无写入流程统一使用 `inspect/plan` → `validate`。只有人工确认后才可 `apply --confirm`。
