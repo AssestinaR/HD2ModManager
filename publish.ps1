@@ -11,6 +11,8 @@ $managerProject = Join-Path $repoRoot 'HD2ModManager\\HD2ModManager.csproj'
 $cliProject = Join-Path $repoRoot 'HD2ModCli\\HD2ModCli.csproj'
 $cliOutput = Join-Path $repoRoot 'HD2ModCli\\bin\\Release\\net10.0\\win-x64'
 
+$cliDocumentationSource = Join-Path $repoRoot 'HD2ModCli'
+
 if ([System.IO.Path]::IsPathRooted($OutputDirectory)) {
     $publishDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 }
@@ -18,7 +20,9 @@ else {
     $publishDirectory = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDirectory))
 }
 
-$relativePublishDirectory = [System.IO.Path]::GetRelativePath($repoRoot, $publishDirectory)
+$repoRootUri = New-Object -TypeName System.Uri -ArgumentList ([System.IO.Path]::GetFullPath($repoRoot).TrimEnd('\') + '\')
+$publishUri = New-Object -TypeName System.Uri -ArgumentList ($publishDirectory.TrimEnd('\') + '\')
+$relativePublishDirectory = [System.Uri]::UnescapeDataString($repoRootUri.MakeRelativeUri($publishUri).ToString()).Replace('/', '\').TrimEnd('\')
 if ([System.IO.Path]::IsPathRooted($relativePublishDirectory) -or
     $relativePublishDirectory -eq '..' -or
     $relativePublishDirectory.StartsWith("..$([System.IO.Path]::DirectorySeparatorChar)")) {
@@ -62,16 +66,36 @@ Invoke-DotNet @(
     '-p:PublishReadyToRun=false'
 )
 
+$cliOutputUri = New-Object -TypeName System.Uri -ArgumentList ([System.IO.Path]::GetFullPath($cliOutput).TrimEnd('\') + '\')
+
 # PublishSingleFile packages the Manager only. Keep the companion CLI and all
 # of its runtime dependencies beside it so hd2mod.exe remains directly usable.
 Get-ChildItem -LiteralPath $cliOutput -File -Recurse | ForEach-Object {
-    $relativePath = [System.IO.Path]::GetRelativePath($cliOutput, $_.FullName)
+    $fileUri = New-Object -TypeName System.Uri -ArgumentList $_.FullName
+    $relativePath = [System.Uri]::UnescapeDataString($cliOutputUri.MakeRelativeUri($fileUri).ToString()).Replace('/', '\')
     $destination = Join-Path $publishDirectory $relativePath
     New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
     Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
 }
 
-$requiredPublishFiles = @('HD2ModManager.exe', 'hd2mod.exe', 'hd2mod.deps.json', 'hd2mod.runtimeconfig.json')
+# The executable embeds every Skill for `agent skills export`, while these
+# files are the directly discoverable documentation shipped beside the GUI.
+$documentationOutput = Join-Path $publishDirectory 'hd2mod-docs'
+New-Item -ItemType Directory -Path $documentationOutput -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'README.md') -Destination (Join-Path $documentationOutput 'README.md') -Force
+Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'SKILL.md') -Destination (Join-Path $documentationOutput 'SKILL.md') -Force
+Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'skills') -Destination $documentationOutput -Recurse -Force
+
+$requiredPublishFiles = @(
+    'HD2ModManager.exe',
+    'hd2mod.exe',
+    'hd2mod.deps.json',
+    'hd2mod.runtimeconfig.json',
+    'hd2mod-docs\README.md',
+    'hd2mod-docs\SKILL.md',
+    'hd2mod-docs\skills\safe-import\SKILL.md',
+    'hd2mod-docs\skills\asset-metadata-management\SKILL.md'
+)
 foreach ($file in $requiredPublishFiles) {
     $path = Join-Path $publishDirectory $file
     if (-not (Test-Path -LiteralPath $path)) {
