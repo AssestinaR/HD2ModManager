@@ -160,7 +160,10 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
 			TargetPart = DecorationPlanningDefaults.ResolveTargetPart(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
 			TargetBodyVariant = DecorationPlanningDefaults.ResolveTargetBodyVariant(_allSourceUnits.Where(item => item.IsSelected).Select(item => item.Part));
             _allTargetMods = _library.All()
-                .Where(mod => !mod.IsDecoration && !mod.IsReShade && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
+                .Where(mod => mod.HasPatchContent
+                    && !mod.IsDecoration
+                    && !mod.IsReShade
+                    && !string.Equals(mod.Guid, SourceModId, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(mod => mod.Name)
                 .Select(mod => new DecorationTargetModItem(mod.Guid, mod.Name, mod.Description, mod.Image, mod.IsOption, OnSelectionChanged))
                 .ToArray();

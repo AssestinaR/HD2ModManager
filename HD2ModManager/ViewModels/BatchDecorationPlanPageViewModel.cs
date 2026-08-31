@@ -298,7 +298,7 @@ public sealed class DecorationBatchSourceModItem : BaseViewModel, IModListSelect
     public bool IsSelected { get => _isSelected; set { if (SetField(ref _isSelected, value)) _changed(); } }
 }
 
-public sealed class DecorationBatchSourcePlanItem : BaseViewModel
+public sealed class DecorationBatchSourcePlanItem : BaseViewModel, IModListKeyed
 {
     private readonly Action _changed;
     private string _targetBodyVariant = "双身形";
