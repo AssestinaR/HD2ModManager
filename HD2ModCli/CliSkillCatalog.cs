@@ -45,6 +45,7 @@ public static class CliSkillCatalog
 		new("cross-armor-transfer", "hd2mod-cross-armor-transfer", "审阅来源装备 Unit 与目标装备目录，并输出隔离的跨护甲验证候选。", "HD2ModCli.Skill.cross-armor-transfer"),
 		new("host-derived-overwrite", "hd2mod-host-derived-overwrite", "安全启停装饰或临时头盔合并，并重建主体的单一管理器 Overwrite。", "HD2ModCli.Skill.host-derived-overwrite"),
 		new("gamedata-inspection", "hd2mod-gamedata-inspection", "只读检查原版 Archive 索引、AssetKey 映射与当前 Data-Patch 覆盖赢家。", "HD2ModCli.Skill.gamedata-inspection"),
+		new("asset-metadata-management", "hd2mod-asset-metadata-management", "固定在线资产 hashlist 内容并安全提交到管理器缓存，供索引和高级 Patch 工具使用。", "HD2ModCli.Skill.asset-metadata-management"),
 		new("gamedata-index-management", "hd2mod-gamedata-index-management", "计划化重建 Manager 的 GameData 基础索引或 Armor / Helmet Unit 部位事实。", "HD2ModCli.Skill.gamedata-index-management"),
 		new("batch-patch-repair", "hd2mod-batch-patch-repair", "审阅并显式确认多个过时 Mod 的 Canonical 原地 Patch 修复、备份与派生 Overwrite 回建。", "HD2ModCli.Skill.batch-patch-repair"),
 		new("same-key-reconstruction", "hd2mod-same-key-reconstruction", "固定一个来源 Patch，审阅并输出 Same-key Canonical 重构候选。", "HD2ModCli.Skill.same-key-reconstruction"),

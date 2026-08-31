@@ -33,7 +33,7 @@ namespace HD2ModManager.Services
             public string? DefaultExportPath { get; set; }
         }
 
-        public const string DefaultAssetMetadataRepository = "https://raw.githubusercontent.com/Boxofbiscuits97/HD2SDK-CommunityEdition/main";
+        public const string DefaultAssetMetadataRepository = GitHubAssetMetadataSyncService.DefaultRepositoryRawBaseUrl;
         public const string DefaultExportPath = "Output";
 
         public static string GetDefaultExportPath()

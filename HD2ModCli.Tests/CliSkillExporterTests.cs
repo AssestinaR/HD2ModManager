@@ -19,6 +19,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-resource-repackaging", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "host-derived-overwrite", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-inspection", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "asset-metadata-management", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-index-management", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "batch-patch-repair", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
@@ -184,6 +185,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("gamedata index plan rebuild", content, StringComparison.Ordinal);
 		Assert.Contains("units-all", content, StringComparison.Ordinal);
 		Assert.Contains("gamedata index apply", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AssetMetadataManagementSkill_DescribesStagedNetworkWorkflow()
+	{
+		var content = CliSkillCatalog.GetContent("asset-metadata-management");
+
+		Assert.Contains("assets metadata plan", content, StringComparison.Ordinal);
+		Assert.Contains("assets metadata validate", content, StringComparison.Ordinal);
+		Assert.Contains("不会再联网", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

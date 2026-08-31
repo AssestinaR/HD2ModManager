@@ -7,6 +7,8 @@ description: Safely rebuild Manager-owned GameData archive indexes or Armor/Helm
 
 Use this when a Patch workflow requires a current GameData asset index or current Armor / Helmet Unit facts. It writes only Manager-owned derived data; it never touches GameData, library.json, Profiles, or deployment.
 
+If `archivehashes.json` is missing or invalid, export and use `asset-metadata-management` first; do not hand-edit hashlist files.
+
 ```powershell
 hd2mod gamedata index inspect --manager-root "<manager>" --game-data "<data>" --json
 hd2mod gamedata index plan rebuild --manager-root "<manager>" --game-data "<data>" --output index-plan.json --json

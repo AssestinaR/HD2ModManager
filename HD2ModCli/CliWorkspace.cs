@@ -7,7 +7,9 @@ namespace HD2ModCli;
 public sealed record CliManagerSettings(
 	string? SelectedProfileKey,
 	string? ModLibraryFolder,
-	string? GameDataFolder);
+	string? GameDataFolder,
+	string? AssetMetadataRepository = null,
+	DateTime? LastAssetMetadataCheckUtc = null);
 
 public sealed record CliLibraryState(
 	LibrarySnapshot Snapshot,

@@ -10,6 +10,8 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Downloads and validates asset metadata hash lists from a configurable GitHub raw repository URL.
 public sealed class GitHubAssetMetadataSyncService : IAssetMetadataSyncService
 {
+	public const string DefaultRepositoryRawBaseUrl = "https://raw.githubusercontent.com/Boxofbiscuits97/HD2SDK-CommunityEdition/main";
+
 	private static readonly JsonSerializerOptions ManifestJsonOptions = new() { WriteIndented = true };
 	private static readonly IReadOnlyList<AssetMetadataFileSpec> Files = new[]
 	{

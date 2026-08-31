@@ -80,6 +80,53 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateStatus(workspace), () => FormatStatus(workspace));
 			return 0;
 		}
+		if (Matches(command, "assets", "metadata", "inspect"))
+		{
+			EnsureAssetMetadataInspectOptions(invocation.Options);
+			var inspection = await CliAssetMetadataPlanArtifacts
+				.InspectAsync(CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = inspection.IsReady, metadata = CreateAssetMetadataInspectionProjection(inspection) },
+				() => FormatAssetMetadataInspection(inspection));
+			return inspection.IsReady ? 0 : 2;
+		}
+		if ((command.Length == 3 || command.Length == 4)
+			&& command[0] == "assets" && command[1] == "metadata" && command[2] == "plan")
+		{
+			EnsureAssetMetadataPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "assets metadata plan");
+			var build = await CliAssetMetadataPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), command.Length == 4 ? invocation.Command[3] : null, output, invocation.Options.Overwrite)
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), metadata = CreateAssetMetadataPlanProjection(build.Document) },
+				() => FormatAssetMetadataPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "assets", "metadata", "validate"))
+		{
+			EnsureAssetMetadataValidateOptions(invocation.Options);
+			var document = await CliAssetMetadataPlanArtifacts.ReadDocumentAsync(RequireAssetMetadataPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliAssetMetadataPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateAssetMetadataValidationProjection(validation) },
+				() => FormatAssetMetadataValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "assets", "metadata", "apply"))
+		{
+			EnsureAssetMetadataApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("AssetMetadataApplyConfirmationRequired", "assets metadata apply 会替换管理器缓存的在线资产元数据并更新最后检查时间；请在人工确认后显式传入 --confirm。 ");
+			var document = await CliAssetMetadataPlanArtifacts.ReadDocumentAsync(RequireAssetMetadataPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliAssetMetadataExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateAssetMetadataExecutionProjection(execution) },
+				() => FormatAssetMetadataExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (Matches(command, "gamedata", "status"))
 		{
 			EnsureGameDataReadOnlyOptions(invocation.Options, "gamedata status");
@@ -2020,6 +2067,50 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureAssetMetadataInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.Library) || !string.IsNullOrWhiteSpace(options.GameData)
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "assets metadata inspect 仅接受 --manager-root 与 --json。 ");
+		}
+	}
+
+	private static void EnsureAssetMetadataPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.Library) || !string.IsNullOrWhiteSpace(options.GameData)
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "assets metadata plan 仅接受可选在线资产索引源、--manager-root、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureAssetMetadataValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.Library) || !string.IsNullOrWhiteSpace(options.GameData)
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "assets metadata validate 仅接受 --plan、--manager-root 与 --json。 ");
+		}
+	}
+
+	private static void EnsureAssetMetadataApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.Library) || !string.IsNullOrWhiteSpace(options.GameData)
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported", "assets metadata apply 仅接受 --plan、--manager-root、--confirm 与 --json。 ");
+		}
+	}
+
 	private static void EnsureSameKeyInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -2521,6 +2612,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("GameDataIndexPlanRequired", "请通过 --plan <GameData索引计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
+	private static string RequireAssetMetadataPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("AssetMetadataPlanRequired", "请通过 --plan <资产元数据计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -3310,6 +3408,93 @@ public static class CliApplication
 			gameDataMutation = "not-performed",
 			libraryMutation = "not-performed",
 		};
+
+	private static object CreateAssetMetadataInspectionProjection(CliAssetMetadataInspection inspection)
+		=> new
+		{
+			managerRoot = inspection.ManagerRoot,
+			settingsPath = inspection.SettingsPath,
+			effectiveRepository = inspection.EffectiveRepository,
+			lastCheckUtc = inspection.LastCheckUtc,
+			ready = inspection.IsReady,
+			local = CreateAssetMetadataSnapshotProjection(inspection.Local),
+			diagnostics = CreateAssetMetadataDiagnosticsProjection(inspection.Diagnostics),
+		};
+
+	private static object CreateAssetMetadataPlanProjection(CliAssetMetadataPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			request = new
+			{
+				document.Request.RepositoryInput,
+				document.Request.RepositoryFromSettings,
+				document.Request.StagingRootDirectory,
+			},
+			inputs = new
+			{
+				document.Inputs.ManagerRoot,
+				document.Inputs.SettingsPath,
+				current = CreateAssetMetadataSnapshotProjection(document.Inputs.Current),
+			},
+			staging = new
+			{
+				document.Staging.RepositoryRawBaseUrl,
+				snapshot = CreateAssetMetadataSnapshotProjection(document.Staging.Snapshot),
+			},
+			diagnostics = CreateAssetMetadataDiagnosticsProjection(document.Diagnostics),
+		};
+
+	private static object CreateAssetMetadataValidationProjection(CliAssetMetadataPlanValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateAssetMetadataInspectionProjection(validation.Current),
+			diagnostics = CreateAssetMetadataDiagnosticsProjection(validation.Diagnostics),
+		};
+
+	private static object CreateAssetMetadataExecutionProjection(CliAssetMetadataExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.SettingsUpdated,
+			execution.RollbackAttempted,
+			execution.RollbackSucceeded,
+			execution.PreservedBackupDirectory,
+			local = execution.Local is null ? null : CreateAssetMetadataSnapshotProjection(execution.Local),
+			diagnostics = CreateAssetMetadataDiagnosticsProjection(execution.Diagnostics),
+			gameDataMutation = "not-performed",
+			libraryMutation = "not-performed",
+		};
+
+	private static object CreateAssetMetadataSnapshotProjection(CliAssetMetadataSnapshot snapshot)
+		=> new
+		{
+			snapshot.ResourcesDirectory,
+			snapshot.ManifestReadable,
+			snapshot.ManifestMatchesFiles,
+			snapshot.ManifestSource,
+			snapshot.ManifestUpdatedAtUtc,
+			snapshot.Fingerprint,
+			completeAndVerified = snapshot.IsCompleteAndVerified,
+			files = snapshot.Files.Select(file => new { file.FileName, file.Exists, file.Length, file.Sha256 }).ToArray(),
+			diagnostics = CreateAssetMetadataDiagnosticsProjection(snapshot.Diagnostics),
+		};
+
+	private static object[] CreateAssetMetadataDiagnosticsProjection(IEnumerable<CliAssetMetadataDiagnostic> diagnostics)
+		=> diagnostics.Select(diagnostic => (object)new
+		{
+			diagnostic.Code,
+			diagnostic.Severity,
+			diagnostic.Blocking,
+			diagnostic.Message,
+			diagnostic.Path,
+		}).ToArray();
 
 	private static object CreateGameDataArchiveListProjection(CliGameDataArchiveListInspection inspection, CliGlobalOptions options)
 	{
@@ -4331,6 +4516,45 @@ public static class CliApplication
 			: $"GameData 索引操作被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
+	private static string FormatAssetMetadataInspection(CliAssetMetadataInspection inspection)
+	{
+		var files = inspection.Local.Files.Count(file => file.Exists);
+		return inspection.IsReady
+			? $"在线资产元数据缓存可用：{files}/{inspection.Local.Files.Count} 个文件；来源：{inspection.Local.ManifestSource ?? inspection.EffectiveRepository}。"
+			: $"在线资产元数据缓存尚未就绪：{files}/{inspection.Local.Files.Count} 个文件；请执行 assets metadata plan → validate → apply。";
+	}
+
+	private static string FormatAssetMetadataPlan(CliAssetMetadataPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出在线资产元数据计划：{outputPath}",
+			$"来源：{document.Staging.RepositoryRawBaseUrl}；暂存：{document.Request.StagingRootDirectory}",
+			$"暂存文件：{document.Staging.Snapshot.Files.Count(file => file.Exists)}/{document.Staging.Snapshot.Files.Count}；阻断诊断：{blocking}。",
+			"远端内容已在计划阶段下载并固定；validate/apply 不会再次联网。",
+		]);
+	}
+
+	private static string FormatAssetMetadataValidation(CliAssetMetadataPlanValidationResult validation)
+	{
+		var status = validation.IsValid ? "在线资产元数据计划验证通过。" : "在线资产元数据计划验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatAssetMetadataExecution(CliAssetMetadataExecutionResult execution)
+	{
+		if (execution.Success)
+			return $"在线资产元数据已更新：{execution.Local?.Files.Count(file => file.Exists) ?? 0} 个文件；设置检查时间已同步。";
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "在线资产元数据未完成；请查看 JSON 结果或日志。"
+			: $"在线资产元数据更新被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatGameDataArchiveList(CliGameDataArchiveListInspection inspection)
 		=> inspection.IsReady
 			? $"GameData archive 列表：{inspection.Archives.Count} 个。"
@@ -4548,6 +4772,10 @@ HD2 Mod Manager 命令行
 用法：
 	  hd2mod capabilities --json
 	  hd2mod status --manager-root <管理器目录> --json
+	  hd2mod assets metadata inspect --manager-root <管理器目录> --json
+	  hd2mod assets metadata plan [https://raw.githubusercontent.com/.../branch] --manager-root <管理器目录> --output asset-metadata-plan.json --json
+	  hd2mod assets metadata validate --plan asset-metadata-plan.json --manager-root <管理器目录> --json
+	  hd2mod assets metadata apply --plan asset-metadata-plan.json --manager-root <管理器目录> --confirm --json
 	  hd2mod gamedata status --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod gamedata archive list --manager-root <管理器目录> --game-data <游戏data或副本目录> [--limit <1-500>] [--cursor <cursor>] --json
 	  hd2mod gamedata archive show <archive ID> --manager-root <管理器目录> --game-data <游戏data或副本目录> [--with-effective] [--limit <1-500>] [--cursor <cursor>] --json

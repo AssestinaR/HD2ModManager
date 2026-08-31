@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.24";
+	public const string ProtocolVersion = "1.25";
 
 	public static object CreateCapabilities()
 		=> new
@@ -18,6 +18,10 @@ public static class CliProjections
 				new { name = "version", safety = "read-only", description = "读取 CLI 与协议版本" },
 				new { name = "capabilities", safety = "read-only", description = "读取当前可用命令与安全边界" },
 				new { name = "status", safety = "read-only", description = "读取管理器、Mod 库与 GameData 路径状态" },
+				new { name = "assets metadata inspect", safety = "read-only", description = "读取设置页使用的在线资产元数据缓存、manifest 与有效远端来源" },
+				new { name = "assets metadata plan", safety = "explicit-export-network", description = "下载并验证在线资产元数据到计划旁暂存区，导出固定内容哈希的提交计划" },
+				new { name = "assets metadata validate", safety = "read-only", description = "验证管理器设置、本地缓存与计划旁暂存的远端内容均未漂移；不会联网" },
+				new { name = "assets metadata apply", safety = "explicit-confirm", description = "仅将验证通过的已暂存元数据提交到 Manager resources，并原子记录最后检查时间" },
 				new { name = "gamedata status", safety = "read-only", description = "读取指定 GameData 目录的可读性与原版 Archive 索引状态；不会重建索引" },
 				new { name = "gamedata archive list", safety = "read-only", description = "分页读取持久化原版 Archive 索引；AssetKey 映射仅在 index.mappingTrusted=true 时可信" },
 				new { name = "gamedata archive show", safety = "read-only", description = "分页读取一个 Archive 的安全十六进制 AssetKey；可用 --with-effective 附加当前 Data-Patch 胜者" },
@@ -160,6 +164,7 @@ public static class CliProjections
 				"host-derived apply 只写入已验证主体库目录下的管理器 Overwrite 与对应的一个状态文件；它不触碰 GameData，且绝不覆盖或删除没有管理器标记的 Overwrite。",
 				"patch repair batch 只会处理计划冻结范围内仍确认过时、且 selected=true 的 Mod；apply 在库写租约内再次验证所有来源与 GameData 索引，每个 Mod 先备份、候选失败自动恢复，成功后只刷新实际修复节点的 library.json 指纹并回建活动管理器 Overwrite。",
 				"gamedata 的检查命令全部只读：绝不调用索引重建、绝不写 Mod facts 或 GameData；Archive 映射的可信度与 Data-Patch 覆盖图的可信度分别报告，不能互相替代。",
+				"assets metadata plan 是唯一允许联网的计划操作：它把已验证的 hashlist 固定到计划同级暂存目录；validate/apply 永不重新下载，apply 要求 Manager 已关闭、Manager data 独占锁和 --confirm，失败会恢复本地 metadata 与 settings.json。",
 				"gamedata index 是唯一的例外：它必须使用 plan → validate → apply --confirm，要求 Manager 已关闭并在 Manager data 目录持有独占锁；它只写管理器拥有的索引/隐藏 Unit 缓存，绝不修改 GameData 或 Mod 库。",
 				"patch repair 只允许 Core 的固定 Same-key Canonical 重构配方；CLI 必须固定一个来源 Patch 并重验来源/当前 GameData 指纹，绝不替换库内文件。",
 				"删除计划会冻结关系、Profile/激活状态和待删目录内容；validate/apply 重新确认这些输入，遇到活跃装饰、临时头盔合并或任何漂移都会拒绝猜测性删除。",
