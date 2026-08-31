@@ -65,6 +65,7 @@ internal static class CliDecorationSourceInspectionArtifacts
 	public static async ValueTask<CliDecorationSourceInspection> BuildAsync(
 		CliWorkspace workspace,
 		string sourceSelector,
+		bool allowSnapshotDecoration = false,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
@@ -77,13 +78,14 @@ internal static class CliDecorationSourceInspectionArtifacts
 
 		var state = await workspace.LoadLibraryAsync(cancellationToken).ConfigureAwait(false);
 		var source = CliProjections.ResolveMod(state.Snapshot.Nodes, sourceSelector);
-		if (source.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.Option))
+		var isSnapshotDecoration = allowSnapshotDecoration && source.Metadata.Kind == ModNodeKind.Decoration;
+		if (source.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.Option) && !isSnapshotDecoration)
 		{
 			throw new CliUserException(
 				"DecorationSourceKindUnsupported",
-				$"Mod “{source.Metadata.Name}”的类型为 {source.Metadata.Kind}，不能作为装饰模型来源。只有带 Patch 的普通 Mod 或选项 Mod 可用。 ");
+				$"Mod “{source.Metadata.Name}”的类型为 {source.Metadata.Kind}，不能作为装饰模型来源。只有带 Patch 的普通 Mod、选项 Mod，或编辑时的 PatchSnapshot 装饰 Mod 可用。 ");
 		}
-		if (source.PatchGroups.Count == 0)
+		if (!isSnapshotDecoration && source.PatchGroups.Count == 0)
 		{
 			throw new CliUserException(
 				"DecorationSourcePatchMissing",

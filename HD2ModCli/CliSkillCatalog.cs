@@ -26,6 +26,7 @@ public static class CliSkillCatalog
 		new("library-inspection", "hd2mod-library-inspection", "只读查看 Mod 库、Option 关系、Profile 与有效部署顺序。", "HD2ModCli.Skill.library-inspection"),
 		new("library-synchronization", "hd2mod-library-synchronization", "审阅并确认库目录与 library.json 的 Patch 记录对账；不导入、删除或部署。", "HD2ModCli.Skill.library-synchronization"),
 		new("decoration-package", "hd2mod-decoration-package", "审阅来源 Unit 并输出独立、可导入的装饰包；不自动导入、启用或部署。", "HD2ModCli.Skill.decoration-package"),
+		new("decoration-edit", "hd2mod-decoration-edit", "编辑已导入 PatchSnapshot 装饰的来源 Unit 和附着策略，并安全回建已启用主体。", "HD2ModCli.Skill.decoration-edit"),
 		new("safe-import", "hd2mod-safe-import", "以 plan → validate → apply 安全导入 Mod；可显式在计划中追加到指定 Profile。", "HD2ModCli.Skill.safe-import"),
 		new("batch-import", "hd2mod-batch-import", "以逐来源 plan → validate → apply 串行安全导入多个 Mod；已完成来源不会伪装为回滚。", "HD2ModCli.Skill.batch-import"),
 		new("mod-metadata", "hd2mod-mod-metadata", "重命名与备注管理；不改变 Patch、Profile 或部署。", "HD2ModCli.Skill.mod-metadata"),

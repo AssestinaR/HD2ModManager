@@ -161,6 +161,122 @@ internal static class CliHostDerivedOverwriteExecutor
 		}
 	}
 
+	/// <summary>
+	/// Rebuilds a live, already re-evaluated host-derived build inside an
+	/// existing library write session.  It is intentionally internal: callers
+	/// still own the surrounding plan validation and any companion-file
+	/// transaction.  <paramref name="rollbackBuilds"/> lets a compound command
+	/// restore a known pre-mutation decoration plan rather than the just-written
+	/// desired plan when a later state-file write fails.
+	/// </summary>
+	internal static async ValueTask<CliHostDerivedExecutionResult> ApplyBuiltAsync(
+		CliHostDerivedBuildResult current,
+		CliLibraryWriteSession session,
+		IReadOnlyDictionary<ModNodeId, CliHostDerivedHostBuild>? rollbackBuilds = null,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(current);
+		ArgumentNullException.ThrowIfNull(session);
+		var document = current.Document;
+		var executions = new List<CliHostDerivedExecutionHost>();
+		var completed = new List<CliHostDerivedHostBuild>();
+		var diagnostics = new List<CliHostDerivedDiagnostic>(document.Diagnostics);
+		HostDerivedOverwriteService? overwriteService = null;
+		try
+		{
+			if (!document.IsReady)
+				return Failure(diagnostics);
+			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+			if (current.HostsById.Count == 0)
+			{
+				return new CliHostDerivedExecutionResult(
+					true,
+					false,
+					"none",
+					Array.Empty<CliHostDerivedExecutionHost>(),
+					DistinctDiagnostics(diagnostics));
+			}
+
+			await using var reader = CoreServices.CreateModInformationReader();
+			var decorationRebuild = CoreServices.CreateDecorationHostRebuildService(session.Paths, reader);
+			var helmetMerge = CoreServices.CreateDirectHelmetToArmorMergeService(session.Paths, reader);
+			overwriteService = CoreServices.CreateHostDerivedOverwriteService(decorationRebuild, helmetMerge);
+
+			foreach (var build in current.HostsById.Values.OrderBy(item => item.Host.Id.Value))
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				HostDerivedOverwriteResult result;
+				try
+				{
+					result = await overwriteService.RebuildAsync(
+						new HostDerivedOverwriteRequest(
+							build.Host,
+							build.PlannedAttachments,
+							build.PlannedHelmetMerged,
+							session.Paths.ModsDirectory,
+							document.Request.GameDataDirectory),
+						cancellationToken).ConfigureAwait(false);
+				}
+				catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+				{
+					await RollbackOverwritesAsync(overwriteService, completed, document.Request.GameDataDirectory, session.Paths, executions, diagnostics, rollbackBuilds).ConfigureAwait(false);
+					throw;
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or DirectoryNotFoundException or FileNotFoundException)
+				{
+					diagnostics.Add(CreateApplyFailureDiagnostic(build.Host, exception));
+					await RollbackOverwritesAsync(overwriteService, completed, document.Request.GameDataDirectory, session.Paths, executions, diagnostics, rollbackBuilds).ConfigureAwait(false);
+					return new CliHostDerivedExecutionResult(false, false, "none", executions, DistinctDiagnostics(diagnostics));
+				}
+
+				var execution = CreateExecution(build, result);
+				executions.Add(execution);
+				diagnostics.AddRange(execution.Diagnostics);
+				if (!result.Succeeded)
+				{
+					await RollbackOverwritesAsync(overwriteService, completed, document.Request.GameDataDirectory, session.Paths, executions, diagnostics, rollbackBuilds).ConfigureAwait(false);
+					return new CliHostDerivedExecutionResult(false, false, "none", executions, DistinctDiagnostics(diagnostics));
+				}
+				completed.Add(build);
+			}
+
+			var persistence = await CommitStateAsync(document, current, session, cancellationToken).ConfigureAwait(false);
+			if (!persistence.Success)
+			{
+				diagnostics.AddRange(persistence.Diagnostics);
+				await RollbackOverwritesAsync(overwriteService, completed, document.Request.GameDataDirectory, session.Paths, executions, diagnostics, rollbackBuilds).ConfigureAwait(false);
+				return new CliHostDerivedExecutionResult(false, false, persistence.Mutation, executions, DistinctDiagnostics(diagnostics));
+			}
+
+			return new CliHostDerivedExecutionResult(
+				true,
+				persistence.Committed,
+				persistence.Mutation,
+				executions,
+				DistinctDiagnostics(diagnostics));
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			if (overwriteService is not null && completed.Count != 0)
+				await RollbackOverwritesAsync(overwriteService, completed, document.Request.GameDataDirectory, session.Paths, executions, diagnostics, rollbackBuilds).ConfigureAwait(false);
+			throw;
+		}
+		catch (CliUserException exception)
+		{
+			if (overwriteService is not null && completed.Count != 0)
+				await RollbackOverwritesAsync(overwriteService, completed, document.Request.GameDataDirectory, session.Paths, executions, diagnostics, rollbackBuilds).ConfigureAwait(false);
+			diagnostics.Add(new CliHostDerivedDiagnostic(exception.Code, "error", true, exception.Message));
+			return new CliHostDerivedExecutionResult(false, false, "none", executions, DistinctDiagnostics(diagnostics));
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or DirectoryNotFoundException or FileNotFoundException)
+		{
+			if (overwriteService is not null && completed.Count != 0)
+				await RollbackOverwritesAsync(overwriteService, completed, document.Request.GameDataDirectory, session.Paths, executions, diagnostics, rollbackBuilds).ConfigureAwait(false);
+			diagnostics.Add(new CliHostDerivedDiagnostic("HostDerivedApplyFailed", "error", true, exception.Message, Details: exception.ToString()));
+			return new CliHostDerivedExecutionResult(false, false, "none", executions, DistinctDiagnostics(diagnostics));
+		}
+	}
+
 	private static async ValueTask<CliHostDerivedStateCommit> CommitStateAsync(
 		CliHostDerivedPlanDocument document,
 		CliHostDerivedBuildResult current,
@@ -242,19 +358,31 @@ internal static class CliHostDerivedOverwriteExecutor
 		string gameDataDirectory,
 		StoragePaths paths,
 		IList<CliHostDerivedExecutionHost> executions,
-		ICollection<CliHostDerivedDiagnostic> diagnostics)
+		ICollection<CliHostDerivedDiagnostic> diagnostics,
+		IReadOnlyDictionary<ModNodeId, CliHostDerivedHostBuild>? rollbackBuilds = null)
 	{
 		foreach (var build in completed.Reverse())
 		{
+			CliHostDerivedHostBuild rollback;
+			if (rollbackBuilds is null)
+				rollback = build;
+			else if (!rollbackBuilds.TryGetValue(build.Host.Id, out rollback!))
+			{
+				diagnostics.Add(new CliHostDerivedDiagnostic(
+					"HostDerivedRollbackPlanMissing", "error", true,
+					$"回滚计划缺少主体“{build.Host.Metadata.Name}”的原始派生状态，已拒绝用新计划冒充回滚内容。",
+					NodeId: CliProjections.FormatId(build.Host.Id)));
+				continue;
+			}
 			var index = FindExecution(executions, build.Host.Id);
 			if (index >= 0) executions[index] = executions[index] with { RollbackAttempted = true };
 			try
 			{
 				var result = await overwriteService.RebuildAsync(
 					new HostDerivedOverwriteRequest(
-						build.Host,
-						build.CurrentAttachments,
-						build.CurrentHelmetMerged,
+						rollback.Host,
+						rollback.CurrentAttachments,
+						rollback.CurrentHelmetMerged,
 						paths.ModsDirectory,
 						gameDataDirectory),
 					CancellationToken.None).ConfigureAwait(false);
@@ -265,17 +393,17 @@ internal static class CliHostDerivedOverwriteExecutor
 				}
 				diagnostics.Add(new CliHostDerivedDiagnostic(
 					"HostDerivedRollbackFailed", "error", true,
-					$"无法将主体“{build.Host.Metadata.Name}”的 Overwrite 恢复到计划前状态。",
-					NodeId: CliProjections.FormatId(build.Host.Id)));
+					$"无法将主体“{rollback.Host.Metadata.Name}”的 Overwrite 恢复到计划前状态。",
+					NodeId: CliProjections.FormatId(rollback.Host.Id)));
 				foreach (var issue in result.Issues)
-					diagnostics.Add(CreateCoreDiagnostic(issue, "rollback", build.Host));
+					diagnostics.Add(CreateCoreDiagnostic(issue, "rollback", rollback.Host));
 			}
 			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or DirectoryNotFoundException or FileNotFoundException)
 			{
 				diagnostics.Add(new CliHostDerivedDiagnostic(
 					"HostDerivedRollbackFailed", "error", true,
-					$"恢复主体“{build.Host.Metadata.Name}”的 Overwrite 时发生异常：{exception.Message}",
-					NodeId: CliProjections.FormatId(build.Host.Id), Details: exception.ToString()));
+					$"恢复主体“{rollback.Host.Metadata.Name}”的 Overwrite 时发生异常：{exception.Message}",
+					NodeId: CliProjections.FormatId(rollback.Host.Id), Details: exception.ToString()));
 			}
 		}
 	}

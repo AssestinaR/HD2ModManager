@@ -325,6 +325,79 @@ public static class CliApplication
 				() => FormatDecorationPackageExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length == 4 && command[0] == "decoration" && command[1] == "edit" && command[2] == "export")
+		{
+			EnsureDecorationEditExportOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "decoration edit export");
+			var specification = await CliDecorationEditPlanArtifacts
+				.ExportSpecAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3])
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(specification), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = specification.IsReady, output = Path.GetFullPath(output), specification },
+				() => FormatDecorationEditSpecification(specification, Path.GetFullPath(output)));
+			return specification.IsReady ? 0 : 2;
+		}
+		if (command.Length == 4 && command[0] == "decoration" && command[1] == "edit" && command[2] == "inspect")
+		{
+			EnsureDecorationEditInspectOptions(invocation.Options);
+			var specification = await CliDecorationEditPlanArtifacts.ReadSpecAsync(invocation.Command[3]).ConfigureAwait(false);
+			var build = await CliDecorationEditPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), new CliDecorationEditRequest(
+					specification.Source.DecorationNodeId,
+					specification.Selections,
+					specification.Attachment,
+					specification.Source.CurrentPlanSha256))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = build.Document },
+				() => FormatDecorationEditInspection(build.Document));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (command.Length == 4 && command[0] == "decoration" && command[1] == "edit" && command[2] == "plan")
+		{
+			EnsureDecorationEditPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "decoration edit plan");
+			var specification = await CliDecorationEditPlanArtifacts.ReadSpecAsync(invocation.Command[3]).ConfigureAwait(false);
+			var build = await CliDecorationEditPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), new CliDecorationEditRequest(
+					specification.Source.DecorationNodeId,
+					specification.Selections,
+					specification.Attachment,
+					specification.Source.CurrentPlanSha256))
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), edit = build.Document },
+				() => FormatDecorationEditPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "decoration", "edit", "validate"))
+		{
+			EnsureDecorationEditValidateOptions(invocation.Options);
+			var document = await CliDecorationEditPlanArtifacts.ReadDocumentAsync(RequireDecorationEditPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliDecorationEditPlanArtifacts
+				.ValidateAsync(document, CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation },
+				() => FormatDecorationEditValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "decoration", "edit", "apply"))
+		{
+			EnsureDecorationEditApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("DecorationEditApplyConfirmationRequired", "decoration edit apply 会更新库内 decoration.json、回建所有已启用主体的 Overwrite，并可能清理已移除主体的装饰启用状态；请审阅计划后显式传入 --confirm。 ");
+			var document = await CliDecorationEditPlanArtifacts.ReadDocumentAsync(RequireDecorationEditPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliDecorationEditExecutor
+				.ApplyAsync(document, CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution },
+				() => FormatDecorationEditExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (Matches(command, "mod", "list"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -1510,6 +1583,61 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureDecorationEditExportOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration edit export 仅接受装饰 Mod 标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureDecorationEditInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration edit inspect 仅接受编辑规格文件、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureDecorationEditPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration edit plan 仅接受编辑规格文件、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureDecorationEditValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration edit validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureDecorationEditApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"decoration edit apply 仅接受 --plan、--manager-root、--library、--game-data、--confirm 与 --json。 ");
+		}
+	}
+
 	private static void EnsurePatchRepackagingInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -2192,6 +2320,13 @@ public static class CliApplication
 		return options.Plan;
 	}
 
+	private static string RequireDecorationEditPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("DecorationEditPlanRequired", "请通过 --plan <装饰编辑计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
 	private static string RequirePatchResourcePlan(CliGlobalOptions options)
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
@@ -2564,6 +2699,62 @@ public static class CliApplication
 		return blocking.Length == 0
 			? "装饰外部包未完成；请查看 JSON 结果或计划。"
 			: $"装饰外部包未完成：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatDecorationEditSpecification(CliDecorationEditSpecDocument specification, string outputPath)
+	{
+		var status = specification.IsReady
+			? $"装饰编辑规格已写出：{specification.Source.DecorationName}；可选 Unit {specification.Candidates.Count} 个；当前选择 {specification.Selections.Count} 个。"
+			: $"装饰编辑规格已写出，但当前不可执行：{specification.Diagnostics.Count(diagnostic => diagnostic.Blocking)} 个阻断项。";
+		return $"{status}{Environment.NewLine}规格：{outputPath}{Environment.NewLine}请只编辑 selections 与 attachment，然后执行 decoration edit inspect 或 decoration edit plan。";
+	}
+
+	private static string FormatDecorationEditInspection(CliDecorationEditPlanDocument document)
+	{
+		if (document.IsReady)
+		{
+			var active = document.ActiveHosts.Count(host => host.Exists);
+			var detached = document.ActiveHosts.Count(host => host.Exists && host.WasDeclaredBeforeEdit && !host.WillBeDeclaredAfterEdit);
+			return $"装饰编辑检查通过：选择来源 Unit {document.ProposedSourceUnits.Count} 个；目标主体 {document.ProposedAttachment.TargetHostNodeIds.Count} 个；需要回建的已启用主体 {active} 个；将移除 {detached} 个失效启用关联。";
+		}
+		var blocking = document.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "装饰编辑检查未通过；请查看 JSON 结果。"
+			: $"装饰编辑检查未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatDecorationEditPlan(CliDecorationEditPlanDocument document, string outputPath)
+	{
+		var status = document.IsReady
+			? $"装饰编辑计划已写出：来源 Unit {document.ProposedSourceUnits.Count} 个；目标主体 {document.ProposedAttachment.TargetHostNodeIds.Count} 个。"
+			: $"装饰编辑计划已写出，但当前不可执行：{document.Diagnostics.Count(diagnostic => diagnostic.Blocking)} 个阻断项。";
+		return $"{status}{Environment.NewLine}计划：{outputPath}{Environment.NewLine}apply 会更新 decoration.json，并回建所有当前启用的主体；被移出目标列表的已启用主体会清除该装饰关联。";
+	}
+
+	private static string FormatDecorationEditValidation(CliDecorationEditValidationResult validation)
+	{
+		if (validation.IsValid)
+			return $"装饰编辑计划验证通过：来源 Unit {validation.Current!.Document.ProposedSourceUnits.Count} 个；已启用主体 {validation.Current.Document.ActiveHosts.Count(host => host.Exists)} 个。";
+		var blocking = validation.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "装饰编辑计划验证未通过；请查看 JSON 结果。"
+			: $"装饰编辑计划验证未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatDecorationEditExecution(CliDecorationEditExecutionResult execution)
+	{
+		if (execution.Success)
+		{
+			var rebuilt = execution.Hosts.Count(host => host.PlannedRebuildSucceeded);
+			var state = execution.ActivationStateCommitted
+				? $"；已清理 {execution.PrunedActivationHostCount} 个失效启用关联"
+				: string.Empty;
+			return $"装饰编辑已完成：已更新 decoration.json；已回建 {rebuilt} 个主体{state}。未自动部署。";
+		}
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "装饰编辑未完成；已尝试回滚，请查看 JSON 结果。"
+			: $"装饰编辑未完成：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
 	private static object CreateDeploymentPlanProjection(CliDeploymentPlanDocument document)
@@ -4081,6 +4272,11 @@ HD2 Mod Manager 命令行
 	  hd2mod decoration package plan <来源 Mod GUID或前缀> --host <目标主体 GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output decoration-package-plan.json --json
 	  hd2mod decoration package validate --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod decoration package apply --plan decoration-package-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
+	  hd2mod decoration edit export <装饰 Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output decoration-edit-spec.json --json
+	  hd2mod decoration edit inspect decoration-edit-spec.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod decoration edit plan decoration-edit-spec.json --manager-root <管理器目录> --game-data <游戏data目录> --output decoration-edit-plan.json --json
+	  hd2mod decoration edit validate --plan decoration-edit-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod decoration edit apply --plan decoration-edit-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
 	  hd2mod mod list --library <Mod库目录> --json
 	  hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod analyze <GUID或唯一前缀> --library <Mod库目录> --json

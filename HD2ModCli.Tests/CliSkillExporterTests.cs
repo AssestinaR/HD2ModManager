@@ -14,6 +14,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "safe-deployment", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "library-synchronization", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "decoration-package", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "decoration-edit", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "patch-resource-repackaging", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "host-derived-overwrite", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-inspection", StringComparison.Ordinal));
@@ -33,6 +34,16 @@ public sealed class CliSkillExporterTests
 
 		Assert.Contains("decoration package plan", content, StringComparison.Ordinal);
 		Assert.Contains("decoration package apply", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void DecorationEditSkill_DescribesTheRollbackAwareWorkflow()
+	{
+		var content = CliSkillCatalog.GetContent("decoration-edit");
+
+		Assert.Contains("decoration edit export", content, StringComparison.Ordinal);
+		Assert.Contains("decoration edit apply", content, StringComparison.Ordinal);
+		Assert.Contains("PatchSnapshot", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

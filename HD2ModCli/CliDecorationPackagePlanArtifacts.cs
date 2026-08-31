@@ -150,7 +150,9 @@ internal static class CliDecorationPackagePlanArtifacts
 			var sourceDirectory = ResolveSourceDirectory(paths, source);
 			var beforeLibrary = await ComputeFileHashAsync(Path.Combine(workspace.LibraryRoot, "library.json"), cancellationToken).ConfigureAwait(false);
 			var beforePatches = await ComputePatchFamiliesAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
-			var inspection = await CliDecorationSourceInspectionArtifacts.BuildAsync(workspace, CliProjections.FormatId(source.Id), cancellationToken).ConfigureAwait(false);
+			var inspection = await CliDecorationSourceInspectionArtifacts
+				.BuildAsync(workspace, CliProjections.FormatId(source.Id), allowSnapshotDecoration: false, cancellationToken)
+				.ConfigureAwait(false);
 			var afterPatches = await ComputePatchFamiliesAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
 			var afterLibrary = await ComputeFileHashAsync(Path.Combine(workspace.LibraryRoot, "library.json"), cancellationToken).ConfigureAwait(false);
 

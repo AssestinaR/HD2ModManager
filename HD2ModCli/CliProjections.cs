@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.21";
+	public const string ProtocolVersion = "1.22";
 
 	public static object CreateCapabilities()
 		=> new
@@ -39,6 +39,11 @@ public static class CliProjections
 				new { name = "decoration package plan", safety = "explicit-export", description = "导出固定来源/目标、Unit 选择和 Patch 家族指纹的外部装饰包计划" },
 				new { name = "decoration package validate", safety = "read-only", description = "重建来源候选并拒绝库、Patch、sidecar、目标或附件策略漂移" },
 				new { name = "decoration package apply", safety = "explicit-confirm", description = "仅发布新的库外且游戏目录外装饰包；不导入、启用、部署或重建 Overwrite" },
+				new { name = "decoration edit export", safety = "explicit-export", description = "从已导入的 PatchSnapshot 装饰包导出可编辑 Unit 选择与附件策略规格" },
+				new { name = "decoration edit inspect", safety = "read-only", description = "从编辑规格重建候选、目标主体、启用主体和回建影响；不写入任何文件" },
+				new { name = "decoration edit plan", safety = "explicit-export", description = "导出冻结 decoration.json、来源快照、启用状态、主体 Overwrite 与 GameData 索引输入的编辑计划" },
+				new { name = "decoration edit validate", safety = "read-only", description = "重建装饰编辑计划并拒绝来源、附件、启用状态、Overwrite 或 GameData 漂移" },
+				new { name = "decoration edit apply", safety = "explicit-confirm", description = "原子更新已导入装饰定义、回建所有已启用主体，并仅清理因移除目标而失效的启用关联" },
 				new { name = "mod list", safety = "read-only", description = "列出已登记 Mod" },
 				new { name = "mod show", safety = "read-only", description = "读取指定 Mod、选项关系和激活状态" },
 				new { name = "mod analyze", safety = "read-only-expensive", description = "直接使用 PatchGroupAnalyzer 深度读取一个 Mod 的 Patch 组、条目 AssetKey、引用、Unit/几何摘要和解析诊断；不写缓存或 SQLite" },
@@ -123,7 +128,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"批量/原地 Patch 修复、装饰包编辑、基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
+				"批量/原地 Patch 修复、基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
@@ -136,6 +141,7 @@ public static class CliProjections
 				"Option 单主体启停和排序必须显式指定 --host；option enable-all/disable-all 只会在所有声明主体均存在、类型正确且为直属关系时整批执行，绝不猜测或部分写入。",
 				"library sync 只对账已存在的库目录与 library.json：它不会解析导入包树、不移动或删除文件、不改 Profile/激活状态，也会在已登记物理目录缺失时阻断。",
 				"decoration package 只会从已验证的来源 Patch 家族复制选中 Unit 所在的完整 Patch 文件与 sidecar，并发布一个新的外部可导入包；它不会写 Mod 库、激活状态、Overwrite 或 GameData。",
+				"decoration edit 只支持管理器当前 PatchSnapshot 装饰格式：apply 在库写租约内先更新 decoration.json、回建每个当前启用主体，再清理被移出目标列表的对应启用关联；任何一步失败都会恢复原定义和已完成主体。",
 				"Profile 写入要求 --confirm，且只更新 Mod 库中的配置状态；永不隐式部署或触碰 GameData。profile align 额外冻结当前/目标语义指纹，在租约内二次验证，并且仅会写入 profiles.json。",
 				"deploy plan / validate 完全只读；deploy apply 要求 --confirm、桌面端和游戏均已退出、库与 GameData 双租约，以及 activation-state.json 对现有 Patch 的完整归属证明。",
 				"CLI 不会接管、清空或覆盖未登记 Patch；部署失败时仅恢复本次事务移动的已证明管理器 Patch。",
