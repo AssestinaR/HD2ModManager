@@ -20,6 +20,7 @@ public sealed class CliSkillExporterTests
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "host-derived-overwrite", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-inspection", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "gamedata-index-management", StringComparison.Ordinal));
+		Assert.Contains(skills, skill => string.Equals(skill.Name, "batch-patch-repair", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "same-key-reconstruction", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "cross-armor-transfer", StringComparison.Ordinal));
 		Assert.Contains(skills, skill => string.Equals(skill.Name, "profile-alignment", StringComparison.Ordinal));
@@ -83,6 +84,16 @@ public sealed class CliSkillExporterTests
 		Assert.Contains("patch repair inspect", content, StringComparison.Ordinal);
 		Assert.Contains("availableSourcePatchFileNames", content, StringComparison.Ordinal);
 		Assert.Contains("patch repair apply", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void BatchPatchRepairSkill_DescribesInPlacePlanGatedRepair()
+	{
+		var content = CliSkillCatalog.GetContent("batch-patch-repair");
+
+		Assert.Contains("patch repair batch plan", content, StringComparison.Ordinal);
+		Assert.Contains("patch repair batch apply", content, StringComparison.Ordinal);
+		Assert.Contains("selected", content, StringComparison.Ordinal);
 	}
 
 	[Fact]

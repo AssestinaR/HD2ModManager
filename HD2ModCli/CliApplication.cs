@@ -1137,6 +1137,52 @@ public static class CliApplication
 				() => FormatHostDerivedExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 4 && command[0] == "patch" && command[1] == "repair" && command[2] == "batch" && command[3] == "inspect")
+		{
+			EnsureBatchPatchRepairInspectOptions(invocation.Options);
+			var build = await CliBatchPatchRepairPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command.Skip(4).ToArray())
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, inspection = CreateBatchPatchRepairPlanProjection(build.Document) },
+				() => FormatBatchPatchRepairInspection(build.Document));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (command.Length >= 4 && command[0] == "patch" && command[1] == "repair" && command[2] == "batch" && command[3] == "plan")
+		{
+			EnsureBatchPatchRepairPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "patch repair batch plan");
+			var build = await CliBatchPatchRepairPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command.Skip(4).ToArray())
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), repair = CreateBatchPatchRepairPlanProjection(build.Document) },
+				() => FormatBatchPatchRepairPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "patch", "repair", "batch", "validate"))
+		{
+			EnsureBatchPatchRepairValidateOptions(invocation.Options);
+			var document = await CliBatchPatchRepairPlanArtifacts.ReadDocumentAsync(RequireBatchPatchRepairPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliBatchPatchRepairPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateBatchPatchRepairValidationProjection(validation) },
+				() => FormatBatchPatchRepairValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "patch", "repair", "batch", "apply"))
+		{
+			EnsureBatchPatchRepairApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("BatchRepairApplyConfirmationRequired", "patch repair batch apply 会备份并原地替换计划中选中的 Mod Patch；请在审阅计划后显式传入 --confirm。 ");
+			var document = await CliBatchPatchRepairPlanArtifacts.ReadDocumentAsync(RequireBatchPatchRepairPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliBatchPatchRepairExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution = CreateBatchPatchRepairExecutionProjection(execution) },
+				() => FormatBatchPatchRepairExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length is 4 or 5 && command[0] == "patch" && command[1] == "repair" && command[2] == "inspect")
 		{
 			EnsureSameKeyInspectOptions(invocation.Options);
@@ -1985,6 +2031,50 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureBatchPatchRepairInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair batch inspect 仅接受可选 Mod 标识、--manager-root、--library、--game-data 与 --json。省略 Mod 时检查整个库。 ");
+		}
+	}
+
+	private static void EnsureBatchPatchRepairPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair batch plan 仅接受可选 Mod 标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。省略 Mod 时冻结整个库。 ");
+		}
+	}
+
+	private static void EnsureBatchPatchRepairValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair batch validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+		}
+	}
+
+	private static void EnsureBatchPatchRepairApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"patch repair batch apply 仅接受 --plan、--manager-root、--library、--game-data、--confirm 与 --json。它会原地替换计划中选中的 Mod Patch。 ");
+		}
+	}
+
 	private static void EnsureSameKeyPlanOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
@@ -2438,6 +2528,13 @@ public static class CliApplication
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("SameKeyPlanRequired", "请通过 --plan <Same-key重构计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
+	private static string RequireBatchPatchRepairPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("BatchRepairPlanRequired", "请通过 --plan <批量 Patch 修复计划.json> 提供计划文件。 ");
 		return options.Plan;
 	}
 
@@ -3529,6 +3626,52 @@ public static class CliApplication
 			?? inspection.StoredFingerprint?.SourceFingerprint
 			?? $"{inspection.IndexState}:{inspection.GameDataDirectory}";
 
+	private static object CreateBatchPatchRepairPlanProjection(CliBatchPatchRepairPlanDocument document)
+		=> new
+		{
+			document.Schema,
+			document.Version,
+			document.CreatedUtc,
+			ready = document.IsReady,
+			document.InputFingerprint,
+			document.ManagerRoot,
+			document.LibraryRoot,
+			gameData = document.GameData,
+			selectedModCount = document.SelectedNodeIds.Count,
+			outdatedModCount = document.Mods.Count(mod => mod.IsOutdated),
+			eligibleModCount = document.Mods.Count(mod => mod.CanAttemptGenerate),
+			mods = document.Mods,
+			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateBatchPatchRepairValidationProjection(CliBatchPatchRepairValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			current = validation.Current is null ? null : CreateBatchPatchRepairPlanProjection(validation.Current.Document),
+			diagnostics = validation.Diagnostics,
+		};
+
+	private static object CreateBatchPatchRepairExecutionProjection(CliBatchPatchRepairExecutionResult execution)
+		=> new
+		{
+			execution.Success,
+			execution.LibrarySnapshotUpdated,
+			execution.SelectedModCount,
+			execution.RepairedModCount,
+			execution.SkippedModCount,
+			execution.FailedModCount,
+			execution.CanceledModCount,
+			execution.NotStartedModCount,
+			execution.BackupDirectory,
+			execution.ManifestPath,
+			mods = execution.Mods,
+			overwrites = execution.Overwrites,
+			diagnostics = execution.Diagnostics,
+		};
+
 	private static object CreateSameKeyInspectionProjection(CliSameKeyReconstructionInspection inspection)
 		=> new
 		{
@@ -4236,6 +4379,42 @@ public static class CliApplication
 		return $"GameData 浏览器：archive {browser.Archives.Count}；已生效替换 {effective}；竞争 archive {competitions}。";
 	}
 
+	private static string FormatBatchPatchRepairInspection(CliBatchPatchRepairPlanDocument document)
+		=> $"批量 Patch 修复检查：Mod {document.Mods.Count}；确认过时 {document.Mods.Count(mod => mod.IsOutdated)}；默认选择 {document.SelectedNodeIds.Count}；当前可尝试 Canonical 重构 {document.Mods.Count(mod => mod.CanAttemptGenerate)}。不会写入来源或 Mod 库。";
+
+	private static string FormatBatchPatchRepairPlan(CliBatchPatchRepairPlanDocument document, string outputPath)
+	{
+		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking)
+			+ document.Mods.Sum(mod => mod.Diagnostics.Count(diagnostic => diagnostic.Blocking));
+		return string.Join(Environment.NewLine,
+		[
+			$"已导出批量 Patch 修复计划：{outputPath}",
+			$"范围：Mod {document.Mods.Count}；确认过时 {document.Mods.Count(mod => mod.IsOutdated)}；默认选择 {document.SelectedNodeIds.Count}；当前可尝试 Canonical 重构 {document.Mods.Count(mod => mod.CanAttemptGenerate)}。",
+			$"阻断诊断：{blocking}。可在计划中仅修改 selected，随后运行 validate；apply 会备份并原地替换已选来源 Patch。",
+		]);
+	}
+
+	private static string FormatBatchPatchRepairValidation(CliBatchPatchRepairValidationResult validation)
+	{
+		var status = validation.IsValid ? "批量 Patch 修复验证通过。" : "批量 Patch 修复验证未通过。";
+		var issues = validation.Diagnostics.Count == 0
+			? "无诊断。"
+			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
+		return $"{status}{Environment.NewLine}{issues}";
+	}
+
+	private static string FormatBatchPatchRepairExecution(CliBatchPatchRepairExecutionResult execution)
+	{
+		if (execution.Success)
+		{
+			return $"批量 Patch 修复完成：选择 {execution.SelectedModCount}；已修复 {execution.RepairedModCount}；跳过 {execution.SkippedModCount}；活动 Overwrite 回建 {execution.Overwrites.Count} 个；备份：{execution.BackupDirectory}";
+		}
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? $"批量 Patch 修复未完整完成：已修复 {execution.RepairedModCount}；失败 {execution.FailedModCount}；请查看 JSON 结果与备份清单。"
+			: $"批量 Patch 修复未完整完成：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
 	private static string FormatSameKeyInspection(CliSameKeyReconstructionInspection inspection)
 	{
 		if (inspection.SelectedSourcePatchFileName is null)
@@ -4463,6 +4642,10 @@ HD2 Mod Manager 命令行
 	  hd2mod host-derived plan rebuild <主体 GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output host-derived-plan.json --json
 	  hd2mod host-derived validate --plan host-derived-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod host-derived apply --plan host-derived-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
+	  hd2mod patch repair batch inspect [Mod GUID或前缀] [...] --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod patch repair batch plan [Mod GUID或前缀] [...] --manager-root <管理器目录> --game-data <游戏data目录> --output batch-repair-plan.json --json
+	  hd2mod patch repair batch validate --plan batch-repair-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod patch repair batch apply --plan batch-repair-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
 	  hd2mod patch repair inspect <Mod GUID或前缀> [base.patch_N] --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod patch repair plan <Mod GUID或前缀> <base.patch_N> --manager-root <管理器目录> --game-data <游戏data目录> --output same-key-plan.json --json
 	  hd2mod patch repair validate --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
@@ -4500,6 +4683,6 @@ HD2 Mod Manager 命令行
 	  --with-unshared-options   删除主体时同时删除没有幸存主体的递归 Option（仅 delete 命令可用）。
 	  --confirm               所有写入命令的明确确认。
 
-	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。mod delete plan 会冻结库状态、激活状态与待删目录内容，validate/apply 会重新确认。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。import --add-to-profile 仅加入明确计划中的配置，不自动部署。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。主体派生 Overwrite 先重建所有目标主体、再提交装饰或头盔状态；失败时回建已完成主体，且永不覆盖非管理器生成的 Overwrite。Patch 资源重打包、头盔合并、装饰外部包和 Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
+	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。mod delete plan 会冻结库状态、激活状态与待删目录内容，validate/apply 会重新确认。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。import --add-to-profile 仅加入明确计划中的配置，不自动部署。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。批量 Patch 修复只会替换计划中仍确认过时且被 selected 的 Mod：每个 Patch 家族会先备份，候选失败会恢复原文件，成功后才更新对应库指纹并回建当前活动的管理器 Overwrite。主体派生 Overwrite 永不覆盖非管理器生成的 Overwrite。Patch 资源重打包、头盔合并、装饰外部包和单 Patch Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
 """;
 }

@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.23";
+	public const string ProtocolVersion = "1.24";
 
 	public static object CreateCapabilities()
 		=> new
@@ -110,6 +110,10 @@ public static class CliProjections
 				new { name = "host-derived plan rebuild", safety = "explicit-export", description = "导出只重建当前派生 Overwrite、不会改变任何状态文件的计划" },
 				new { name = "host-derived validate", safety = "read-only", description = "重建主体派生计划并拒绝状态、Patch、Overwrite 或 GameData 索引漂移" },
 				new { name = "host-derived apply", safety = "explicit-confirm", description = "在库写租约内先重建全部主体 Overwrite，再提交装饰或头盔状态；失败时回建已完成主体" },
+				new { name = "patch repair batch inspect", safety = "read-only-expensive", description = "扫描可选范围或整个库的 Unit 版本、来源 Patch 指纹与 Canonical 修复资格；不写入来源、缓存或 GameData" },
+				new { name = "patch repair batch plan", safety = "explicit-export", description = "导出冻结 Mod 范围、来源 Patch、Unit 版本与 GameData 索引指纹的批量原地修复计划；仅 selected 可编辑" },
+				new { name = "patch repair batch validate", safety = "read-only", description = "重新检查批量修复计划的库、Patch、Unit 版本和 GameData 索引漂移；不写入文件" },
+				new { name = "patch repair batch apply", safety = "explicit-confirm", description = "在库写租约内备份并原地替换计划中已选择的过时 Mod Patch，随后刷新对应库指纹并回建活动管理器 Overwrite" },
 				new { name = "patch repair inspect", safety = "read-only", description = "检查一个明确来源 Patch 的 Same-key Canonical 重构资格、Unit 目标和 GameData 索引，不写入来源或缓存" },
 				new { name = "patch repair plan", safety = "explicit-export", description = "导出固定 Mod、来源 Patch 与 GameData 指纹的 Same-key 重构计划" },
 				new { name = "patch repair validate", safety = "read-only", description = "重新读取来源、GameData 指纹与 Canonical 重构资格，不写入文件" },
@@ -131,7 +135,7 @@ public static class CliProjections
 			},
 			notSupportedYet = new[]
 			{
-				"批量/原地 Patch 修复、基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
+				"基于桌面设置的隐式自动导入，以及任何自定义 Patch 字节编辑工作流。",
 			},
 			workflow = new[] { "inspect", "plan", "validate", "apply" },
 			safetyRules = new[]
@@ -154,6 +158,7 @@ public static class CliProjections
 				"equipment helmet-merge 只允许从已检查的完整 Armor/Any Helmet 集合中选择；apply 会重新验证来源、GameData 索引、共享影响和 Unit 冲突，并且只发布新的库外、游戏根外目录。",
 				"equipment cross-armor 固定使用桌面版的 Direct-source Unit 生产路径；一个来源 Mod 必须恰有一个 base Patch，Agent 只能在计划 request 中选择已列出的 ArchiveId/AssetKey，apply 会双重验证并发布到新的外部目录。",
 				"host-derived apply 只写入已验证主体库目录下的管理器 Overwrite 与对应的一个状态文件；它不触碰 GameData，且绝不覆盖或删除没有管理器标记的 Overwrite。",
+				"patch repair batch 只会处理计划冻结范围内仍确认过时、且 selected=true 的 Mod；apply 在库写租约内再次验证所有来源与 GameData 索引，每个 Mod 先备份、候选失败自动恢复，成功后只刷新实际修复节点的 library.json 指纹并回建活动管理器 Overwrite。",
 				"gamedata 的检查命令全部只读：绝不调用索引重建、绝不写 Mod facts 或 GameData；Archive 映射的可信度与 Data-Patch 覆盖图的可信度分别报告，不能互相替代。",
 				"gamedata index 是唯一的例外：它必须使用 plan → validate → apply --confirm，要求 Manager 已关闭并在 Manager data 目录持有独占锁；它只写管理器拥有的索引/隐藏 Unit 缓存，绝不修改 GameData 或 Mod 库。",
 				"patch repair 只允许 Core 的固定 Same-key Canonical 重构配方；CLI 必须固定一个来源 Patch 并重验来源/当前 GameData 指纹，绝不替换库内文件。",
