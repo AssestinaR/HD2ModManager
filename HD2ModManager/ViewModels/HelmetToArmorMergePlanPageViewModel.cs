@@ -319,6 +319,7 @@ public sealed class HelmetMergeSourceModItem : BaseViewModel, IModListSelectable
 
     public ModEntity Mod { get; }
     public string SelectionKey => Mod.Guid;
+    public string ListKey => SelectionKey;
     public bool IsDecoration => Mod.IsDecoration;
     public bool IsOption => Mod.IsOption;
     public bool IsAttachable => Mod.IsOption;
@@ -357,6 +358,7 @@ public sealed class HelmetMergeModelSetItem : BaseViewModel, IModListSelectable
     public string? SourceImage { get; }
     public HelmetToArmorMergeCandidate Candidate { get; }
     public string SelectionKey => Candidate.CandidateId + "|" + SourceModId;
+    public string ListKey => SelectionKey;
     public bool IsDecoration => false;
     public bool IsSelected { get => _isSelected; set { if (SetField(ref _isSelected, value)) _changed(); } }
     public string Name => Candidate.DisplayName;

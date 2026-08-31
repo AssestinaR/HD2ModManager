@@ -812,6 +812,7 @@ namespace HD2ModManager.ViewModels
         private string _contentVersion = string.Empty;
         public HD2ModManager.Models.ModEntity Mod => _mod;
         public string SelectionKey => Mod.Guid;
+        public string ListKey => SelectionKey;
         public bool IsDecoration => Mod.IsDecoration;
         public bool IsOption => Mod.IsOption;
         public bool IsReShade => Mod.IsReShade;

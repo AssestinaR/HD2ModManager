@@ -431,6 +431,7 @@ public sealed class PatchResourceRepackagingModItem : BaseViewModel, IModListSel
     }
     public ModEntity Mod { get; }
     public string SelectionKey => Mod.Guid;
+    public string ListKey => SelectionKey;
     public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
     public bool IsDecoration => Mod.IsDecoration;
     public bool IsOption => Mod.IsOption;

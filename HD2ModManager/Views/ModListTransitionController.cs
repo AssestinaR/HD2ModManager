@@ -451,7 +451,9 @@ internal sealed class ModListTransitionController : IDisposable
             GetItemKey,
             reportDuplicateKeys
                 ? key => LogService.Warn($"Mod 列表投影出现重复稳定键，已忽略后续行：{key}")
-                : null);
+                : null,
+            item => LogService.Warn(
+                $"Mod 列表投影条目缺少稳定列表键，已忽略：type={item?.GetType().FullName ?? "<null>"}。请实现 IModListKeyed。"));
 
     // Keep surviving row objects in the actual ItemsControl collection. WPF can
     // then retain their containers, virtualize normally, and let the FLIP step
@@ -763,6 +765,8 @@ internal sealed class ModListTransitionController : IDisposable
     private static string? GetItemKey(object? item)
     {
         if (item is null) return null;
+        if (item is IModListKeyed keyed && !string.IsNullOrWhiteSpace(keyed.ListKey))
+            return keyed.ListKey;
         if (item is IModListSelectable selectable && !string.IsNullOrWhiteSpace(selectable.SelectionKey))
             return selectable.SelectionKey;
 

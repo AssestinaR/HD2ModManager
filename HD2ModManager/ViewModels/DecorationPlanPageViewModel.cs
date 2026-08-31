@@ -390,6 +390,7 @@ public sealed class DecorationTargetModItem : BaseViewModel, IModListSelectable
     }
     public string ModId { get; }
     public string SelectionKey => ModId;
+    public string ListKey => SelectionKey;
     public bool IsDecoration => false;
     public bool IsOption { get; }
     public string Name { get; }

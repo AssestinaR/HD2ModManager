@@ -1285,6 +1285,7 @@ namespace HD2ModManager.ViewModels
     {
         public string Guid { get; }
         public string SelectionKey => Guid;
+        public string ListKey => SelectionKey;
         public bool IsDecoration => false;
         private string _name;
         private string? _description;

@@ -10,6 +10,14 @@ public enum ModListSelectionPolicy
     ReadOnly,
 }
 
+// Every item presented by an animated list needs an identity independent from
+// whether the host allows selecting it. Plan cards, for example, are keyed but
+// are not themselves selectable rows.
+public interface IModListKeyed
+{
+    string ListKey { get; }
+}
+
 // The shared row contract deliberately keeps presentation data separate from
 // Mod/domain state.  A list host decides what "enabled" means in its own
 // context; the shared panel only renders the resulting concise facts.
@@ -44,7 +52,7 @@ public sealed record ModListRowPresentation(
     public bool HasNote => !string.IsNullOrWhiteSpace(Note);
 }
 
-public interface IModListSelectable
+public interface IModListSelectable : IModListKeyed
 {
     string SelectionKey { get; }
     bool IsSelected { get; set; }

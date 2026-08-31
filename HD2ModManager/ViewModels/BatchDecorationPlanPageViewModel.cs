@@ -284,6 +284,7 @@ public sealed class DecorationBatchSourceModItem : BaseViewModel, IModListSelect
     public ModEntity Mod { get; }
     public string ModId => Mod.Guid;
     public string SelectionKey => ModId;
+    public string ListKey => SelectionKey;
     public bool IsDecoration => false;
     public bool IsOption => Mod.IsOption;
     public string Name => Mod.Name;
@@ -315,6 +316,7 @@ public sealed class DecorationBatchSourcePlanItem : BaseViewModel
     public DecorationBatchSourceModItem Source { get; }
     public ModNode SourceNode { get; }
     public string SourceModId => Source.ModId;
+    public string ListKey => SourceModId;
     public string Name => Source.Name;
     public string? Description => Source.Description;
     public string? ImagePath => Source.ImagePath;

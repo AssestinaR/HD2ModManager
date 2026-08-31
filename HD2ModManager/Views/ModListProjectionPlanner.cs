@@ -16,7 +16,8 @@ internal static class ModListProjectionPlanner
     public static List<Entry> CreateEntries(
         IReadOnlyList<object> desired,
         Func<object?, string?> keySelector,
-        Action<string>? onDuplicateKey = null)
+        Action<string>? onDuplicateKey = null,
+        Action<object?>? onMissingKey = null)
     {
         ArgumentNullException.ThrowIfNull(desired);
         ArgumentNullException.ThrowIfNull(keySelector);
@@ -26,7 +27,11 @@ internal static class ModListProjectionPlanner
         foreach (var item in desired)
         {
             var key = keySelector(item);
-            if (string.IsNullOrWhiteSpace(key)) continue;
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                onMissingKey?.Invoke(item);
+                continue;
+            }
             if (!keys.Add(key))
             {
                 onDuplicateKey?.Invoke(key);
