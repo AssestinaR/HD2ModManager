@@ -19,8 +19,14 @@
   <ItemGroup>
     <Resource Include="Resources\helldivers2.ico" />
     <Resource Include="Resources\helldivers2.png" />
-    <Content Include="..\tools\ref\HD2SDK-CommunityEdition\hashlists\bonehash.txt" Link="data\resources\bonehash.txt" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="ThirdParty\7zip\**\*" Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\tools\ref\HD2SDK-CommunityEdition\hashlists\bonehash.txt" Link="data\resources\bonehash.txt" CopyToOutputDirectory="PreserveNewest">
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
+    <Content Include="ThirdParty\7zip\**\*" Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest">
+      <!-- 7z.exe is launched as a real child process, so it must remain a
+           physical file beside the published application. -->
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
   </ItemGroup>
   
   <!-- Rely on implicit ApplicationDefinition for App.xaml -->
@@ -29,9 +35,9 @@
 
   <!-- Use implicit EmbeddedResource items for .resx files; remove explicit includes to avoid duplicates -->
 
-  <!-- Place the CLI entry artifacts beside HD2ModManager.exe. The CLI project
-       reports the artifacts for the exact active output root, so isolated
-       builds cannot accidentally copy a stale normal-build executable. -->
+  <!-- Keep CLI entry artifacts beside development builds. The release script
+       intentionally relocates the published CLI into bin and validates it
+       against the matching release layout. -->
   <Target Name="CopyHd2ModCliArtifacts" AfterTargets="Build">
     <MSBuild Projects="$(MSBuildProjectDirectory)\..\HD2ModCli\HD2ModCli.csproj"
              Targets="GetHd2ModCliArtifactFiles"

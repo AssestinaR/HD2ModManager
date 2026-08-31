@@ -16,7 +16,11 @@
   <ItemGroup>
     <Content Include="..\HD2ModManager\ThirdParty\7zip\**\*"
              Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)"
-             CopyToOutputDirectory="PreserveNewest" />
+             CopyToOutputDirectory="PreserveNewest">
+      <!-- The archive extractor executes 7z.exe by path, so a bundled-only
+           copy would be unusable after single-file publishing. -->
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>
