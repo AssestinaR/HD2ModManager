@@ -78,13 +78,20 @@ Get-ChildItem -LiteralPath $cliOutput -File -Recurse | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
 }
 
-# The executable embeds every Skill for `agent skills export`, while these
-# files are the directly discoverable documentation shipped beside the GUI.
+# The executable is the source of truth for exportable Agent Skills. Use it
+# instead of copying the source folder so the shipped documentation cannot
+# accidentally include retired routing-only Skills.
 $documentationOutput = Join-Path $publishDirectory 'hd2mod-docs'
 New-Item -ItemType Directory -Path $documentationOutput -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'README.md') -Destination (Join-Path $documentationOutput 'README.md') -Force
 Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'SKILL.md') -Destination (Join-Path $documentationOutput 'SKILL.md') -Force
-Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'skills') -Destination $documentationOutput -Recurse -Force
+
+$documentationSkillsOutput = Join-Path $documentationOutput 'skills'
+$publishedCli = Join-Path $publishDirectory 'hd2mod.exe'
+& $publishedCli 'agent' 'skills' 'export' '--output' $documentationSkillsOutput '--overwrite'
+if ($LASTEXITCODE -ne 0) {
+    throw "The published CLI could not export its Agent Skills (exit code $LASTEXITCODE)."
+}
 
 $requiredPublishFiles = @(
     'HD2ModManager.exe',
@@ -93,8 +100,9 @@ $requiredPublishFiles = @(
     'hd2mod.runtimeconfig.json',
     'hd2mod-docs\README.md',
     'hd2mod-docs\SKILL.md',
-    'hd2mod-docs\skills\safe-import\SKILL.md',
-    'hd2mod-docs\skills\asset-metadata-management\SKILL.md'
+    'hd2mod-docs\skills\hd2mod-agent-skills.manifest.json',
+    'hd2mod-docs\skills\hd2mod-safe-import\SKILL.md',
+    'hd2mod-docs\skills\hd2mod-asset-metadata-management\SKILL.md'
 )
 foreach ($file in $requiredPublishFiles) {
     $path = Join-Path $publishDirectory $file
