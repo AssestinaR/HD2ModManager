@@ -7,4 +7,8 @@ public sealed record ExportManifest(
 	string RootName,
 	DateTimeOffset ExportedUtc,
 	IReadOnlyList<ExportManifestNode> Nodes,
-	string? Guid = null);
+	string? Guid = null,
+	string? Name = null,
+	string? Description = null,
+	string? IconPath = null,
+	IReadOnlyList<ExportManifestOption>? Options = null);

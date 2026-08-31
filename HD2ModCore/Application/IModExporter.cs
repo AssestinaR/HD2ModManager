@@ -2,8 +2,8 @@
 
 namespace HD2ModCore.Application;
 
-// 作用：将对象树中的某个根节点导出为 zip（包含 manifest.json），保留原始文件名且按根节点名命名 zip。
-// Purpose: Exports a root node from the object tree as a zip (with manifest.json), keeping original filenames and naming the zip after the root node.
+// 作用：将 Mod 库中的某个主体及其递归选项树导出为可重新导入的 zip（包含标准 manifest.json）。
+// Purpose: Exports a host and its recursive Option tree from the Mod library as a re-importable zip with a standard manifest.json.
 public interface IModExporter
 {
 	ValueTask<string> ExportToZipAsync(

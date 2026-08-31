@@ -21,6 +21,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Read actual Patch contents before choosing advanced operations: `patch-analysis`.
 - Rename, notes, images, Options, deletion, or Profiles: `mod-metadata`, `mod-media`, `option-management`, `safe-library-deletion`, `profile-management`, `profile-alignment`.
 - Create a decoration package: `decoration-package`; edit an imported PatchSnapshot decoration: `decoration-edit`.
+- Export an imported Mod tree: `mod-export`.
 - Connect a verified standalone Patch output back to the library, Profile, deployment, and winner checks: `generated-patch-integration`.
 - Deploy or deactivate GameData: `safe-deployment`.
 - Review and deploy Lua composition, ReShade add-ons/presets, and supported external files: `lua-reshade-external-deployment`.

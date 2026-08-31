@@ -398,6 +398,45 @@ public static class CliApplication
 				() => FormatDecorationEditExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "export" && command[2] == "plan")
+		{
+			EnsureModExportPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "mod export plan");
+			var build = await CliModExportPlanArtifacts
+				.BuildAsync(CliWorkspace.Open(invocation.Options), invocation.Command[3])
+				.ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), export = build.Document },
+				() => FormatModExportPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "mod", "export", "validate"))
+		{
+			EnsureModExportValidateOptions(invocation.Options);
+			var document = await CliModExportPlanArtifacts.ReadDocumentAsync(RequireModExportPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliModExportPlanArtifacts
+				.ValidateAsync(document, CliWorkspace.Open(invocation.Options))
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = validation.IsValid, validation = CreateModExportValidationProjection(validation) },
+				() => FormatModExportValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "mod", "export", "apply"))
+		{
+			EnsureModExportApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("ModExportApplyConfirmationRequired", "mod export apply 会在指定目录写出 Mod 压缩包；请审阅计划后显式传入 --confirm。 ");
+			var document = await CliModExportPlanArtifacts.ReadDocumentAsync(RequireModExportPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliModExportExecutor
+				.ApplyAsync(document, CliWorkspace.Open(invocation.Options), RequireOutput(invocation.Options, "mod export apply"), invocation.Options.Overwrite)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = execution.Success, execution },
+				() => FormatModExportExecution(execution));
+			return execution.Success ? 0 : 2;
+		}
 		if (Matches(command, "mod", "list"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -1840,6 +1879,39 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureModExportPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod export plan 仅接受根 Mod 标识、--manager-root、--library、--output、--overwrite 与 --json。 ");
+		}
+	}
+
+	private static void EnsureModExportValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod export validate 仅接受 --plan、--manager-root、--library 与 --json。 ");
+		}
+	}
+
+	private static void EnsureModExportApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod export apply 仅接受 --plan、--manager-root、--library、--output、--overwrite、--confirm 与 --json。 ");
+		}
+	}
+
 	private static void EnsureGameDataReadOnlyOptions(
 		CliGlobalOptions options,
 		string command,
@@ -2327,6 +2399,13 @@ public static class CliApplication
 		return options.Plan;
 	}
 
+	private static string RequireModExportPlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan))
+			throw new CliUserException("ModExportPlanRequired", "请通过 --plan <Mod导出计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
 	private static string RequirePatchResourcePlan(CliGlobalOptions options)
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
@@ -2418,6 +2497,35 @@ public static class CliApplication
 			$"直接选项：{graph.GetDirectOptions(node.Id).Count}",
 			$"父选项：{graph.GetParents(node.Id).Count}",
 		]);
+	}
+
+	private static string FormatModExportPlan(CliModExportPlanDocument document, string outputPath)
+	{
+		var status = document.IsReady
+			? $"Mod 导出计划已写出：根节点 {document.Nodes.FirstOrDefault()?.Name ?? document.Request.NodeId}；节点 {document.Nodes.Count} 个；文件 {document.Nodes.Sum(node => node.Files.Count)} 个。"
+			: $"Mod 导出计划已写出，但当前不可执行：{document.Diagnostics.Count(diagnostic => diagnostic.Blocking)} 个阻断项。";
+		return $"{status}{Environment.NewLine}计划：{outputPath}{Environment.NewLine}apply 会输出带 manifest.json 的压缩包，不会修改 Mod 库或部署。";
+	}
+
+	private static string FormatModExportValidation(CliModExportValidationResult validation)
+	{
+		if (validation.IsValid)
+			return $"Mod 导出计划验证通过：节点 {validation.Current!.Document.Nodes.Count} 个；文件 {validation.Current.Document.Nodes.Sum(node => node.Files.Count)} 个。";
+		var blocking = validation.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "Mod 导出计划验证未通过；请查看 JSON 结果。"
+			: $"Mod 导出计划验证未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
+	}
+
+	private static string FormatModExportExecution(CliModExportExecutionResult execution)
+	{
+		if (execution.Success)
+			return $"Mod 已导出：节点 {execution.ExportedNodeCount} 个；文件 {execution.ExportedFileCount} 个；压缩包：{execution.ZipPath}。"
+			+ (execution.OverwroteExisting ? " 已替换同名旧压缩包。" : string.Empty);
+		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "Mod 导出未完成；请查看 JSON 结果或日志。"
+			: $"Mod 导出未完成：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
 	private static string FormatModAnalysis(CliModAnalysisDocument analysis)
@@ -2773,6 +2881,17 @@ public static class CliApplication
 			externalFiles = document.ExternalFiles,
 			lua = document.Lua,
 			diagnostics = document.Diagnostics,
+		};
+
+	private static object CreateModExportValidationProjection(CliModExportValidationResult validation)
+		=> new
+		{
+			isValid = validation.IsValid,
+			requestedInputFingerprint = validation.Document.InputFingerprint,
+			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
+			requestedNodes = validation.Document.Nodes,
+			recomputedNodes = validation.Current?.Document.Nodes,
+			diagnostics = validation.Diagnostics,
 		};
 
 	private static object CreateDeploymentValidationProjection(CliDeploymentValidationResult validation)
@@ -4277,6 +4396,9 @@ HD2 Mod Manager 命令行
 	  hd2mod decoration edit plan decoration-edit-spec.json --manager-root <管理器目录> --game-data <游戏data目录> --output decoration-edit-plan.json --json
 	  hd2mod decoration edit validate --plan decoration-edit-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod decoration edit apply --plan decoration-edit-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
+	  hd2mod mod export plan <根 Mod GUID或前缀> --manager-root <管理器目录> --library <Mod库目录> --output mod-export-plan.json --json
+	  hd2mod mod export validate --plan mod-export-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
+	  hd2mod mod export apply --plan mod-export-plan.json --manager-root <管理器目录> --library <Mod库目录> --output <导出目录> --confirm --json
 	  hd2mod mod list --library <Mod库目录> --json
 	  hd2mod mod show <GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod analyze <GUID或唯一前缀> --library <Mod库目录> --json

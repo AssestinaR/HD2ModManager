@@ -27,6 +27,7 @@
 	<EmbeddedResource Include="skills\library-synchronization\SKILL.md" LogicalName="HD2ModCli.Skill.library-synchronization" />
 	<EmbeddedResource Include="skills\decoration-package\SKILL.md" LogicalName="HD2ModCli.Skill.decoration-package" />
 	<EmbeddedResource Include="skills\decoration-edit\SKILL.md" LogicalName="HD2ModCli.Skill.decoration-edit" />
+	<EmbeddedResource Include="skills\mod-export\SKILL.md" LogicalName="HD2ModCli.Skill.mod-export" />
 	<EmbeddedResource Include="skills\safe-import\SKILL.md" LogicalName="HD2ModCli.Skill.safe-import" />
 	<EmbeddedResource Include="skills\batch-import\SKILL.md" LogicalName="HD2ModCli.Skill.batch-import" />
     <EmbeddedResource Include="skills\mod-management\SKILL.md" LogicalName="HD2ModCli.Skill.mod-management" />

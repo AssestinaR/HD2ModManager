@@ -407,7 +407,19 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			cancellationToken.ThrowIfCancellationRequested();
 			var nodeId = replacements.GetValueOrDefault(node.Id, node.Id);
 			var children = node.Children.Select(child => replacements.GetValueOrDefault(child, child)).ToArray();
-			nodes.Add(nodeId, node with { Id = nodeId, Children = children });
+			var metadata = node.Metadata;
+			if (metadata.HostModGuids is { Count: > 0 })
+			{
+				var hosts = metadata.HostModGuids
+					.Select(rawHostId => Guid.TryParse(rawHostId, out var rawGuid)
+						&& replacements.TryGetValue(new ModNodeId(rawGuid), out var replacement)
+						? replacement.Value.ToString("N")
+						: rawHostId)
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.ToArray();
+				metadata = metadata with { HostModGuids = hosts };
+			}
+			nodes.Add(nodeId, node with { Id = nodeId, Children = children, Metadata = metadata });
 		}
 		var sourcePaths = planned.SourceRelativePaths.ToDictionary(
 			pair => replacements.GetValueOrDefault(pair.Key, pair.Key),

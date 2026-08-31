@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.22";
+	public const string ProtocolVersion = "1.23";
 
 	public static object CreateCapabilities()
 		=> new
@@ -44,6 +44,9 @@ public static class CliProjections
 				new { name = "decoration edit plan", safety = "explicit-export", description = "导出冻结 decoration.json、来源快照、启用状态、主体 Overwrite 与 GameData 索引输入的编辑计划" },
 				new { name = "decoration edit validate", safety = "read-only", description = "重建装饰编辑计划并拒绝来源、附件、启用状态、Overwrite 或 GameData 漂移" },
 				new { name = "decoration edit apply", safety = "explicit-confirm", description = "原子更新已导入装饰定义、回建所有已启用主体，并仅清理因移除目标而失效的启用关联" },
+				new { name = "mod export plan", safety = "explicit-export", description = "冻结一个 Mod 及其递归选项树、库记录和源文件，导出可审阅的压缩包计划" },
+				new { name = "mod export validate", safety = "read-only", description = "重新核验 Mod 树、library.json 和源文件内容是否仍与导出计划一致" },
+				new { name = "mod export apply", safety = "explicit-confirm", description = "将验证通过的 Mod 树输出为带 manifest.json 的压缩包，不修改库或部署" },
 				new { name = "mod list", safety = "read-only", description = "列出已登记 Mod" },
 				new { name = "mod show", safety = "read-only", description = "读取指定 Mod、选项关系和激活状态" },
 				new { name = "mod analyze", safety = "read-only-expensive", description = "直接使用 PatchGroupAnalyzer 深度读取一个 Mod 的 Patch 组、条目 AssetKey、引用、Unit/几何摘要和解析诊断；不写缓存或 SQLite" },
@@ -142,6 +145,7 @@ public static class CliProjections
 				"library sync 只对账已存在的库目录与 library.json：它不会解析导入包树、不移动或删除文件、不改 Profile/激活状态，也会在已登记物理目录缺失时阻断。",
 				"decoration package 只会从已验证的来源 Patch 家族复制选中 Unit 所在的完整 Patch 文件与 sidecar，并发布一个新的外部可导入包；它不会写 Mod 库、激活状态、Overwrite 或 GameData。",
 				"decoration edit 只支持管理器当前 PatchSnapshot 装饰格式：apply 在库写租约内先更新 decoration.json、回建每个当前启用主体，再清理被移出目标列表的对应启用关联；任何一步失败都会恢复原定义和已完成主体。",
+				"mod export 只从已登记 Mod 库读取一个根节点及其递归子树；apply 先在库租约内冻结并复核源文件，写入临时压缩包后再发布到库外目录，不会导出或覆盖库内内容。",
 				"Profile 写入要求 --confirm，且只更新 Mod 库中的配置状态；永不隐式部署或触碰 GameData。profile align 额外冻结当前/目标语义指纹，在租约内二次验证，并且仅会写入 profiles.json。",
 				"deploy plan / validate 完全只读；deploy apply 要求 --confirm、桌面端和游戏均已退出、库与 GameData 双租约，以及 activation-state.json 对现有 Patch 的完整归属证明。",
 				"CLI 不会接管、清空或覆盖未登记 Patch；部署失败时仅恢复本次事务移动的已证明管理器 Patch。",
