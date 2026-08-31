@@ -1,0 +1,22 @@
+{
+  "Source": "https://raw.githubusercontent.com/Boxofbiscuits97/HD2SDK-CommunityEdition/main",
+  "UpdatedAtUtc": "2026-08-25T06:02:17.3433184+00:00",
+  "Files": {
+    "archivehashes.json": {
+      "Bytes": 35486,
+      "Sha256": "e6b5203580f13d2e55072b9ea86a397c8775288397d613767ca9d93a101e9cb7"
+    },
+    "bonehash.txt": {
+      "Bytes": 131709,
+      "Sha256": "2d6127db67e1759487c00c286087b505bf4e3d1fc8b930b3bbbd597cc22d46ff"
+    },
+    "typehash.txt": {
+      "Bytes": 1351,
+      "Sha256": "de1d706ecc017050d79261dfaf3ebecdb1958dc0c2ead7302858232ecfa33754"
+    },
+    "friendlynames.txt": {
+      "Bytes": 229441,
+      "Sha256": "c897b0f2278df45f607e939a318d3948e7f5bd3e992c31050f2058ad5e7e8a46"
+    }
+  }
+}

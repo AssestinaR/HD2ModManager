@@ -19,7 +19,10 @@
   <ItemGroup>
     <Resource Include="Resources\helldivers2.ico" />
     <Resource Include="Resources\helldivers2.png" />
-    <Content Include="..\tools\ref\HD2SDK-CommunityEdition\hashlists\bonehash.txt" Link="data\resources\bonehash.txt" CopyToOutputDirectory="PreserveNewest">
+    <!-- Ship one consistent, versioned metadata snapshot so first launch and
+         GameData indexing do not depend on GitHub being reachable. Online
+         metadata maintenance can still safely replace these files later. -->
+    <Content Include="Resources\AssetMetadata\**\*" Link="data\resources\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest">
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
     <Content Include="ThirdParty\7zip\**\*" Link="third_party\7zip\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest">

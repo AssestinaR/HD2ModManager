@@ -188,7 +188,11 @@ function Assert-ReleaseLayout {
         'HD2ModManager.exe',
         'README.md',
         'hd2mod.cmd',
+        'data\resources\archivehashes.json',
+        'data\resources\asset-metadata-manifest.json',
         'data\resources\bonehash.txt',
+        'data\resources\friendlynames.txt',
+        'data\resources\typehash.txt',
         'third_party\7zip\7z.exe',
         'third_party\7zip\7z.dll',
         'bin\hd2mod.exe',
@@ -277,7 +281,10 @@ function Publish-ReleaseVariant {
 
     # AppHostRelativeDotNet is embedded into the native app host. Clean each
     # project first so the complete and requires-dotnet variants never reuse
-    # an AppHost generated for the other layout.
+    # an AppHost generated for the other layout. A normal VS Debug build has
+    # no runtime-specific restore target, so restore win-x64 before asking
+    # Clean to resolve that target.
+    Invoke-DotNet @('restore', $managerProject, '--runtime', 'win-x64', '--nologo')
     Invoke-DotNet @('clean', $managerProject, '--configuration', 'Release', '--runtime', 'win-x64', '--nologo')
 
     $managerArguments = @(
@@ -314,6 +321,7 @@ function Publish-ReleaseVariant {
     Remove-PublishOwnedPath $privateRuntimeDirectory
     Remove-PublishOwnedPath $documentationDirectory
 
+    Invoke-DotNet @('restore', $cliProject, '--runtime', 'win-x64', '--nologo')
     Invoke-DotNet @('clean', $cliProject, '--configuration', 'Release', '--runtime', 'win-x64', '--nologo')
 
     $cliArguments = @(

@@ -78,7 +78,8 @@
                                 EmptyMessage="没有可作为装饰来源的 Mod。" ItemsSource="{Binding SourceMods}"
                                 SearchText="{Binding SourceQuery, UpdateSourceTrigger=PropertyChanged}"
                                 SearchActionsTemplate="{StaticResource BatchSourceSearchActions}"
-                                SelectionPolicy="Multiple" SelectionRequested="OnSelectionRequested"/>
+                                SelectionPolicy="Multiple" ShowSelectionCheckbox="True"
+                                SelectionRequested="OnSelectionRequested"/>
         </Grid>
         <local:AnimatedPlanList Grid.Column="2" ItemsSource="{Binding Plans}" ItemTemplate="{StaticResource BatchPlanCardTemplate}"/>
     </Grid>

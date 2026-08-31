@@ -3,7 +3,7 @@
 - HD2ModManager.exe：图形化管理器入口。
 - hd2mod.cmd：供脚本和 Agent 使用的命令行入口；完整指南位于 hd2mod-docs。
 - settings.json：首次启动管理器后在此目录自动生成；请不要手工创建空文件。
-- data、third_party：管理器随包资源，请保留。
+- data、third_party：管理器随包资源，请保留。其中 data\resources 已内置离线资产索引；网络恢复后仍可在设置页更新在线资产信息。
 
 {{RUNTIME_INSTRUCTIONS}}
 

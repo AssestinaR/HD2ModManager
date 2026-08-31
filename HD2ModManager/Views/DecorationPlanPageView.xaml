@@ -118,6 +118,7 @@
                             SearchText="{Binding TargetQuery, UpdateSourceTrigger=PropertyChanged}"
                             SearchActionsTemplate="{StaticResource DecorationTargetSearchActions}"
                             SelectionPolicy="Multiple"
+                            ShowSelectionCheckbox="True"
                             SelectionRequested="OnSelectionRequested"/>
     </Grid>
 </UserControl>

@@ -411,7 +411,36 @@ public partial class ModListPanel : UserControl
             return;
         }
 
+        // Rows with a selection policy are owned by this panel, rather than by
+        // ListBox's native selection model. Commit their selection here, at the
+        // ListBox preview boundary, so virtualized/templated rows cannot lose
+        // the bubbling MouseLeftButtonUp event before their host ViewModel sees
+        // the complete selected-key set. This is especially important for the
+        // decoration planners, where a selection immediately drives the plan.
+        if (TryRequestSelectionAtPointer(e))
+        {
+            _dragCandidate = null;
+            e.Handled = true;
+            return;
+        }
+
         _dragCandidate = null;
+    }
+
+    private bool TryRequestSelectionAtPointer(MouseButtonEventArgs e)
+    {
+        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null
+            || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null)
+            return false;
+
+        if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is not IModListSelectable selectable
+            || SelectionPolicy is ModListSelectionPolicy.None or ModListSelectionPolicy.ReadOnly)
+            return false;
+
+        ItemsList.Focus();
+        var selectedKeys = ResolveSelection(selectable, Keyboard.Modifiers);
+        SelectionRequested?.Invoke(this, new ModListSelectionRequestEventArgs(selectable, selectedKeys, Keyboard.Modifiers));
+        return true;
     }
 
     private void OnItemsListPreviewMouseMove(object sender, MouseEventArgs e)
