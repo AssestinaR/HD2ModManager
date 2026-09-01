@@ -33,6 +33,10 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 	public async ValueTask<GameDataPackageToc?> GetPackageTocAsync(string packageName, CancellationToken cancellationToken = default)
 	{
 		var path = Path.Combine(gameDataDirectory, Path.GetFileName(packageName));
+		if (File.Exists(path) && new FileInfo(path).Length < 12)
+		{
+			return null;
+		}
 		var type = await GetStorageTypeAsync(path, cancellationToken).ConfigureAwait(false);
 		var data = type switch
 		{
@@ -41,7 +45,11 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 			StorageType.Bundled => await ReadBundledTocAsync(Path.GetFileName(packageName), cancellationToken).ConfigureAwait(false),
 			_ => null
 		};
-		return data is { Length: > 0 } ? new GameDataPackageToc(data, type is StorageType.Dsar or StorageType.Bundled) : null;
+		// DSAR files can also carry non-TOC data libraries.  Only a real package
+		// TOC belongs in dependency/global archive discovery.
+		return data is { Length: >= 12 } && ReadUInt32(data, 0) == TocMagic
+			? new GameDataPackageToc(data, type is StorageType.Dsar or StorageType.Bundled)
+			: null;
 	}
 
 	private async ValueTask<byte[]?> ReadBundledTocAsync(string packageName, CancellationToken cancellationToken)
@@ -104,7 +112,12 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 
 		var directPackages = Directory.EnumerateFiles(gameDataDirectory)
 			.Select(Path.GetFileName)
-			.Where(name => name is not null && !name.Contains(".patch", StringComparison.OrdinalIgnoreCase) && (Path.GetExtension(name) is "" or ".stream" or ".gpu_resources"))
+			// A .stream / .gpu_resources file is only a sidecar of its base archive,
+			// never an independently indexable TOC. Sidecars remain directly resolvable
+			// when a TOC entry asks for their payload.
+			.Where(name => name is not null
+				&& !name.Contains(".patch", StringComparison.OrdinalIgnoreCase)
+				&& Path.GetExtension(name) is "")
 			.Cast<string>()
 			.Order(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
@@ -112,7 +125,7 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 		// 当前游戏目录可能同时有直接 archive 和 bundles.nxa；只返回前者会遗漏
 		// 被 bundle 提供的当前 Unit/Material，从而错误报告“Game Data 中不存在”。
 		return directPackages
-			.Concat(packages.Keys)
+			.Concat(packages.Keys.Where(IsBasePackageName))
 			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.Order(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
@@ -185,7 +198,10 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 			for (var item = 0; item < itemCount && itemsOffset + item * 0x10 + 0x10 <= data.Length; item++)
 			{
 				var itemOffset = itemsOffset + item * 0x10;
-				package.Entries.Add(new BundleEntry(ReadInt64(data, itemOffset), ReadInt32(data, itemOffset + 8), data[itemOffset + 0x0f]));
+				// The SDK stores this as an unsigned 32-bit offset into the
+				// uncompressed bundle.  Current bundles legitimately set the
+				// high bit; Int32 would turn valid GPU offsets into negatives.
+				package.Entries.Add(new BundleEntry(ReadInt64(data, itemOffset), ReadUInt32(data, itemOffset + 8), data[itemOffset + 0x0f]));
 			}
 			packages[name] = package;
 		}
@@ -278,6 +294,9 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 	private static long ReadInt64(byte[] data, int offset) => BinaryPrimitives.ReadInt64LittleEndian(data.AsSpan(offset, 8));
 	private static uint ReadUInt32(byte[] data, int offset) => BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
 	private static ulong ReadUInt64(byte[] data, int offset) => BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan(offset, 8));
+	private static bool IsBasePackageName(string name)
+		=> !name.EndsWith(".stream", StringComparison.OrdinalIgnoreCase)
+			&& !name.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase);
 	private static string ReadNullTerminatedString(byte[] data, int offset) { if (offset < 0 || offset >= data.Length) return string.Empty; var end = offset; while (end < data.Length && data[end] != 0) end++; return Encoding.UTF8.GetString(data, offset, end - offset); }
 	private static async Task ReadExactlyAsync(Stream stream, byte[] data, CancellationToken cancellationToken) { var read = 0; while (read < data.Length) { var count = await stream.ReadAsync(data.AsMemory(read), cancellationToken).ConfigureAwait(false); if (count == 0) throw new EndOfStreamException(); read += count; } }
 	private enum StorageType { Legacy, Dsar, Bundled }

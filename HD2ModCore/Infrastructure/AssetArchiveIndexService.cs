@@ -20,13 +20,34 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 {
 	private readonly StoragePaths _paths;
 	private readonly IGameDataArchiveIndexer _archiveIndexer;
-	private readonly UnitMeshPartClassifier _unitPartClassifier;
+	private readonly IGameDataAuthorityProvider _authorityProvider;
 
-	public AssetArchiveIndexService(StoragePaths paths, IGameDataArchiveIndexer? archiveIndexer = null)
+	public AssetArchiveIndexService(
+		StoragePaths paths,
+		IGameDataArchiveIndexer? archiveIndexer = null,
+		IGameDataAuthorityProvider? authorityProvider = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_archiveIndexer = archiveIndexer ?? new GameDataArchiveIndexer();
-		_unitPartClassifier = new UnitMeshPartClassifier();
+		_authorityProvider = authorityProvider ?? new GameDataAuthorityProvider(ReadConfiguredPreferredLocale(paths));
+	}
+
+	private static string? ReadConfiguredPreferredLocale(StoragePaths paths)
+	{
+		try
+		{
+			if (!File.Exists(paths.SettingsPath)) return null;
+			using var document = JsonDocument.Parse(File.ReadAllText(paths.SettingsPath));
+			if (!document.RootElement.TryGetProperty("Language", out var language)
+				|| language.ValueKind != JsonValueKind.String)
+			{
+				return null;
+			}
+			return string.IsNullOrWhiteSpace(language.GetString()) ? null : language.GetString();
+		}
+		catch (IOException) { return null; }
+		catch (UnauthorizedAccessException) { return null; }
+		catch (JsonException) { return null; }
 	}
 
 	public ValueTask<bool> IndexExistsAsync(CancellationToken cancellationToken = default)
@@ -48,18 +69,10 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			throw new DirectoryNotFoundException($"GameData directory does not exist: {normalizedGameDataDirectory}");
 		}
 
-		try
-		{
-			_ = JsonSerializer.Deserialize<ArchiveHashesRoot>(archiveHashesJson) ?? new ArchiveHashesRoot();
-		}
-		catch (JsonException)
-		{
-			return new GameDataIndexStatus(GameDataIndexState.Invalid, await GetFingerprintAsync(cancellationToken).ConfigureAwait(false), Path.GetFullPath(gameDataDirectory), string.Empty);
-		}
-
+		var authority = await _authorityProvider.LoadAsync(normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
 		var currentFingerprint = await ComputeSourceFingerprintAsync(
 			normalizedGameDataDirectory,
-			archiveHashesJson,
+			authority,
 			cancellationToken).ConfigureAwait(false);
 		var stored = await GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
 		if (stored is null)
@@ -69,8 +82,6 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			// from scratch and detect drift before apply.
 			return new GameDataIndexStatus(GameDataIndexState.Missing, null, Path.GetFullPath(gameDataDirectory), currentFingerprint);
 		}
-		await using var versionConnection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
-		await versionConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		var state = string.Equals(stored.SourceFingerprint, currentFingerprint, StringComparison.OrdinalIgnoreCase)
 			? GameDataIndexState.Current
 			: GameDataIndexState.Stale;
@@ -217,7 +228,7 @@ ORDER BY type_id, file_id;";
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
-SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason
+SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason
 FROM game_data_unit_parts
 
 WHERE unit_type_id=$unitType AND unit_file_id IN (SELECT value FROM json_each($fileIds))
@@ -240,9 +251,13 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 				reader.GetInt32(10),
 				reader.GetInt32(11) != 0,
 				reader.GetInt32(12) != 0,
-				reader.GetString(13))
+				reader.GetString(17))
 			{
-				PieceType = reader.GetString(9)
+				PieceType = reader.GetString(9),
+				VertexCount = reader.GetInt32(13),
+				TriangleCount = reader.GetInt32(14),
+				GeometryQuality = (UnitMeshGeometryQuality)reader.GetInt32(15),
+				Origin = (GameDataFactOrigin)reader.GetInt32(16)
 			};
 			if (!result.TryGetValue(fact.UnitAssetKey, out var parts))
 			{
@@ -273,30 +288,23 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 
 		Directory.CreateDirectory(_paths.IndexDirectory);
 
-		ArchiveHashesRoot root;
-		try
-		{
-			root = JsonSerializer.Deserialize<ArchiveHashesRoot>(archiveHashesJson) ?? new ArchiveHashesRoot();
-		}
-		catch (JsonException ex)
-		{
-			throw new FormatException("Invalid archivehashes.json format.", ex);
-		}
-
+		var root = TryParseCommunityArchiveMetadata(archiveHashesJson);
+		var authority = await _authorityProvider.LoadAsync(normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
 
 		SqliteConnection.ClearAllPools();
 		NormalizeExistingIndexFileAttributes();
 
 		var archives = FlattenArchives(root);
-		var metadataByPackage = BuildMetadataByPackage(archives);
+		var metadataByPackage = BuildMetadataByPackage(archives, authority.BuildArchiveMetadata());
 		var sourceFingerprint = await ComputeSourceFingerprintAsync(
 			normalizedGameDataDirectory,
-			archiveHashesJson,
+			authority,
 			cancellationToken).ConfigureAwait(false);
 		var archiveProgress = new Progress<GameDataArchiveIndexProgress>(item =>
 			progress?.Report(new IndexBuildProgress(item.Current, Math.Max(item.Total, 1), $"{item.Stage}：{item.Item}")));
 		var facts = await _archiveIndexer.BuildAsync(
-			new GameDataArchiveInput(normalizedGameDataDirectory, metadataByPackage.Keys.ToArray(), metadataByPackage, IncludeStreamLayouts: false),
+			// Archive discovery must come from the installed GameData, not a community-maintained name list.
+			new GameDataArchiveInput(normalizedGameDataDirectory, PackageNames: null, MetadataByPackageName: metadataByPackage, IncludeStreamLayouts: false),
 			archiveProgress,
 			cancellationToken).ConfigureAwait(false);
 		if (facts.Archives.Count == 0)
@@ -367,6 +375,8 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 			}
 		}
 
+		await SaveAuthoritySnapshotAsync(connection, tx, authority, cancellationToken).ConfigureAwait(false);
+
 		await RestoreUnitPartFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 
 		await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -377,6 +387,10 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await SqliteSchema.SetMetaAsync(connection, "asset_keys_total", df.Count.ToString(), cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "game_data_directory", normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "source_fingerprint", sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_kind", authority.SourceKind.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_path", authority.SourcePath ?? string.Empty, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_fingerprint", authority.SourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_version", "authority-v1", cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
 		// Readers use pooled shared-cache connections. Purge their pre-rebuild pages so
@@ -442,49 +456,6 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 			var components = JsonSerializer.Deserialize<List<HD2ModCore.Domain.GameDataStreamComponentFact>>(reader.GetString(7)) ?? new List<HD2ModCore.Domain.GameDataStreamComponentFact>();
 			result.Add(new HD2ModCore.Domain.GameDataStreamLayoutFact(reader.GetString(0), new CoreAssetKey(unchecked((ulong)reader.GetInt64(1)), unchecked((ulong)reader.GetInt64(2))), reader.GetInt32(3), unchecked((ulong)reader.GetInt64(4)), unchecked((uint)reader.GetInt64(5)), unchecked((uint)reader.GetInt64(6)), components, reader.GetString(8), reader.GetInt32(9) != 0));
 		}
-		return result;
-	}
-
-	private async ValueTask<IReadOnlyList<GameDataUnitPartFact>> AnalyzeEquipmentUnitPartsAsync(
-		string gameDataDirectory,
-		IReadOnlyList<GameDataArchiveFact> archives,
-		IReadOnlySet<string> equipmentArchiveIds,
-		IReadOnlyDictionary<uint, string> globalBoneNames,
-		IProgress<IndexBuildProgress>? progress,
-		CancellationToken cancellationToken)
-	{
-		if (equipmentArchiveIds.Count == 0)
-		{
-			return Array.Empty<GameDataUnitPartFact>();
-		}
-
-		var equipmentArchives = archives.Where(archive => archive.IsIndexed && equipmentArchiveIds.Contains(archive.PackageName)).ToArray();
-		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameDataDirectory);
-		var reader = new GameDataUnitMeshReader(resolver);
-		var result = new List<GameDataUnitPartFact>();
-		var total = equipmentArchives.Sum(archive => archive.Entries.Count(entry => entry.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId));
-		var current = 0;
-		foreach (var archive in equipmentArchives)
-		{
-			foreach (var entry in archive.Entries.Where(entry => entry.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId))
-			{
-				cancellationToken.ThrowIfCancellationRequested();
-				current++;
-				progress?.Report(new IndexBuildProgress(current, Math.Max(total, 1), $"分析装备 Unit：{archive.PackageName}"));
-				var unitKey = new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId);
-				try
-				{
-					var unit = await reader.ReadAsync(archive.PackageName, entry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-					result.AddRange(_unitPartClassifier.Classify(entry.AssetKey, unit.Model, globalBoneNames)
-						.Select(part => new GameDataUnitPartFact(archive.PackageName, unitKey, part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason)));
-				}
-				catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException)
-				{
-					// Preserve the completed archive index even when an individual legacy/unsupported Unit cannot be parsed.
-				}
-			}
-		}
-
 		return result;
 	}
 
@@ -597,9 +568,10 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		var archives = new List<(string ArchiveId, string Category, string DisplayName)>();
 		foreach (var (category, map) in root)
 		{
+			if (map is null) continue;
 			foreach (var (archiveId, displayName) in map)
 			{
-				if (string.IsNullOrWhiteSpace(archiveId))
+				if (string.IsNullOrWhiteSpace(archiveId) || string.IsNullOrWhiteSpace(displayName))
 				{
 					continue;
 				}
@@ -611,54 +583,44 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		return archives;
 	}
 
-	private static IReadOnlySet<string> GetEquipmentArchiveIds(ArchiveHashesRoot root)
+	private static ArchiveHashesRoot TryParseCommunityArchiveMetadata(string archiveHashesJson)
 	{
-		var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		foreach (var (category, archives) in root)
+		if (string.IsNullOrWhiteSpace(archiveHashesJson)) return new ArchiveHashesRoot();
+		try
 		{
-			if (!category.Contains("armor", StringComparison.OrdinalIgnoreCase)
-				&& !category.Contains("helmet", StringComparison.OrdinalIgnoreCase))
+			var parsed = JsonSerializer.Deserialize<ArchiveHashesRoot>(archiveHashesJson);
+			if (parsed is null) return new ArchiveHashesRoot();
+			var sanitized = new ArchiveHashesRoot();
+			foreach (var (category, map) in parsed)
 			{
-				continue;
+				if (string.IsNullOrWhiteSpace(category) || map is null) continue;
+				var validEntries = map
+					.Where(pair => !string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+					.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+				if (validEntries.Count != 0) sanitized[category] = validEntries;
 			}
-
-			foreach (var archiveId in archives.Keys)
-			{
-				result.Add(archiveId.Trim().ToLowerInvariant());
-			}
+			return sanitized;
 		}
-		return result;
-	}
-
-	private static IReadOnlyDictionary<uint, string> LoadGlobalBoneNames(string path)
-	{
-		if (!File.Exists(path))
+		catch (JsonException)
 		{
-			return new Dictionary<uint, string>();
+			// Community files are display metadata only. Their failure must not prevent
+			// installed GameData from supplying a real archive inventory.
+			return new ArchiveHashesRoot();
 		}
-
-		var result = new Dictionary<uint, string>();
-		foreach (var line in File.ReadLines(path))
-		{
-			var fields = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-			if (fields.Length == 2 && uint.TryParse(fields[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var meshId))
-			{
-				result.TryAdd(meshId, fields[1]);
-			}
-		}
-		return result;
 	}
 
 	private static async ValueTask<string> ComputeSourceFingerprintAsync(
 		string gameDataDirectory,
-		string archiveHashesJson,
+		GameDataAuthoritySnapshot authority,
 		CancellationToken cancellationToken)
 	{
 		using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 		AppendFingerprintValue(hash, Path.GetFullPath(gameDataDirectory));
 		AppendFingerprintValue(hash, SqliteSchema.SchemaVersion.ToString(CultureInfo.InvariantCulture));
-		AppendFingerprintValue(hash, "package-toc-v1");
-		AppendFingerprintValue(hash, archiveHashesJson);
+		AppendFingerprintValue(hash, "package-toc-v2-installed-archive-discovery");
+		AppendFingerprintValue(hash, authority.SourceKind.ToString());
+		AppendFingerprintValue(hash, authority.SourceFingerprint);
+		AppendFingerprintValue(hash, authority.PreferredLocale);
 
 		foreach (var path in Directory.EnumerateFiles(gameDataDirectory, "*", SearchOption.TopDirectoryOnly)
 			.Where(IsGameDataSourceFile)
@@ -694,7 +656,8 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		=> int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? result : 0;
 
 	private static IReadOnlyDictionary<string, GameDataArchiveMetadata> BuildMetadataByPackage(
-		IEnumerable<(string ArchiveId, string Category, string DisplayName)> archives)
+		IEnumerable<(string ArchiveId, string Category, string DisplayName)> archives,
+		IReadOnlyDictionary<string, GameDataAuthorityArchiveMetadata> authorityArchives)
 	{
 		var result = new Dictionary<string, GameDataArchiveMetadata>(StringComparer.OrdinalIgnoreCase);
 		foreach (var archive in archives)
@@ -719,7 +682,177 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 			};
 		}
 
+		foreach (var authority in authorityArchives.Values)
+		{
+			if (result.TryGetValue(authority.ArchiveId, out var existing))
+			{
+				// A name resolved from the installed GameData is authoritative for
+				// this archive. Community metadata remains a useful fallback only
+				// when the installed relation does not provide a readable name.
+				var displayName = IsReadableAuthorityDisplayName(authority.DisplayName)
+					? authority.DisplayName
+					: existing.DisplayName;
+				var category = string.Join(", ", new[] { existing.Category, authority.Category }
+					.Where(value => !string.IsNullOrWhiteSpace(value))
+					.SelectMany(value => value!.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+				result[authority.ArchiveId] = existing with
+				{
+					ArchiveHex = authority.ArchiveId,
+					DisplayName = displayName,
+					Category = category,
+				};
+			}
+			else
+			{
+				result[authority.ArchiveId] = new GameDataArchiveMetadata(
+					authority.ArchiveId,
+					authority.DisplayName,
+					authority.Category);
+			}
+		}
+
 		return result;
+	}
+
+	private static bool IsOpaqueDisplayName(string? value)
+		=> string.IsNullOrWhiteSpace(value)
+			|| value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+			|| value.Equals("—", StringComparison.Ordinal);
+
+	private static bool IsReadableAuthorityDisplayName(string? value)
+		=> value is not null
+			&& !IsOpaqueDisplayName(value)
+			&& !value.StartsWith("hash-", StringComparison.OrdinalIgnoreCase);
+
+	private static async Task SaveAuthoritySnapshotAsync(
+		SqliteConnection connection,
+		SqliteTransaction transaction,
+		GameDataAuthoritySnapshot snapshot,
+		CancellationToken cancellationToken)
+	{
+		await using var kitCommand = connection.CreateCommand();
+		kitCommand.Transaction = transaction;
+		kitCommand.CommandText = @"
+INSERT INTO game_data_authority_kits(item_id,dlc_id,set_id,kit_kind,archive_id,display_name)
+VALUES($item,$dlc,$set,$kind,$archive,$name);";
+		foreach (var name in new[] { "$item", "$dlc", "$set", "$kind" }) kitCommand.Parameters.Add(name, SqliteType.Integer);
+		foreach (var name in new[] { "$archive", "$name" }) kitCommand.Parameters.Add(name, SqliteType.Text);
+		kitCommand.Prepare();
+
+		await using var pieceCommand = connection.CreateCommand();
+		pieceCommand.Transaction = transaction;
+		pieceCommand.CommandText = @"
+INSERT INTO game_data_authority_pieces(item_id,archive_id,kit_kind,raw_body_type,body_variant,slot,part_kind,piece_type,weight,tone_variations,unit_type_id,unit_file_id)
+VALUES($item,$archive,$kind,$rawBody,$body,$slot,$part,$piece,$weight,$tone,$unitType,$unitFile);";
+		foreach (var name in new[] { "$item", "$kind", "$rawBody", "$body", "$slot", "$part", "$piece", "$weight", "$tone", "$unitType", "$unitFile" }) pieceCommand.Parameters.Add(name, SqliteType.Integer);
+		pieceCommand.Parameters.Add("$archive", SqliteType.Text);
+		pieceCommand.Prepare();
+
+		await using var resourceCommand = connection.CreateCommand();
+		resourceCommand.Transaction = transaction;
+		resourceCommand.CommandText = "INSERT INTO game_data_authority_resources(piece_id,role,file_id) VALUES($pieceId,$role,$file);";
+		resourceCommand.Parameters.Add("$pieceId", SqliteType.Integer);
+		resourceCommand.Parameters.Add("$role", SqliteType.Text);
+		resourceCommand.Parameters.Add("$file", SqliteType.Integer);
+		resourceCommand.Prepare();
+
+		await using var pieceIdCommand = connection.CreateCommand();
+		pieceIdCommand.Transaction = transaction;
+		pieceIdCommand.CommandText = "SELECT last_insert_rowid();";
+
+		await using var nameCommand = connection.CreateCommand();
+		nameCommand.Transaction = transaction;
+		nameCommand.CommandText = @"
+INSERT INTO game_data_archive_names(archive_id,locale,display_name,source,confidence,item_id)
+VALUES($archive,$locale,$name,$source,$confidence,$item);";
+		nameCommand.Parameters.Add("$archive", SqliteType.Text);
+		nameCommand.Parameters.Add("$locale", SqliteType.Text);
+		nameCommand.Parameters.Add("$name", SqliteType.Text);
+		nameCommand.Parameters.Add("$source", SqliteType.Text);
+		nameCommand.Parameters.Add("$confidence", SqliteType.Integer);
+		nameCommand.Parameters.Add("$item", SqliteType.Integer);
+		nameCommand.Prepare();
+
+		foreach (var name in snapshot.ArchiveNames)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (string.IsNullOrWhiteSpace(name.ArchiveId)
+				|| string.IsNullOrWhiteSpace(name.Locale)
+				|| string.IsNullOrWhiteSpace(name.DisplayName))
+			{
+				continue;
+			}
+
+			nameCommand.Parameters["$archive"].Value = name.ArchiveId;
+			nameCommand.Parameters["$locale"].Value = name.Locale;
+			nameCommand.Parameters["$name"].Value = name.DisplayName;
+			nameCommand.Parameters["$source"].Value = name.Source;
+			nameCommand.Parameters["$confidence"].Value = name.Confidence;
+			nameCommand.Parameters["$item"].Value = name.ItemId;
+			await nameCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		}
+
+		foreach (var kit in snapshot.Kits)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			kitCommand.Parameters["$item"].Value = kit.ItemId;
+			kitCommand.Parameters["$dlc"].Value = kit.DlcId;
+			kitCommand.Parameters["$set"].Value = kit.SetId;
+			kitCommand.Parameters["$kind"].Value = (int)kit.Kind;
+			kitCommand.Parameters["$archive"].Value = kit.ArchiveId;
+			kitCommand.Parameters["$name"].Value = kit.DisplayName;
+			await kitCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+			foreach (var piece in kit.Pieces)
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				pieceCommand.Parameters["$item"].Value = kit.ItemId;
+				pieceCommand.Parameters["$archive"].Value = kit.ArchiveId;
+				pieceCommand.Parameters["$kind"].Value = (int)kit.Kind;
+				pieceCommand.Parameters["$rawBody"].Value = piece.RawBodyType;
+				pieceCommand.Parameters["$body"].Value = (int)piece.BodyVariant;
+				pieceCommand.Parameters["$slot"].Value = piece.Slot;
+				pieceCommand.Parameters["$part"].Value = (int)piece.PartKind;
+				pieceCommand.Parameters["$piece"].Value = piece.PieceType;
+				pieceCommand.Parameters["$weight"].Value = piece.Weight;
+				pieceCommand.Parameters["$tone"].Value = piece.ToneVariations;
+				pieceCommand.Parameters["$unitType"].Value = unchecked((long)piece.UnitAssetKey.TypeId);
+				pieceCommand.Parameters["$unitFile"].Value = unchecked((long)piece.UnitAssetKey.FileId);
+				await pieceCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+				var pieceId = Convert.ToInt64(await pieceIdCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+
+				foreach (var resource in piece.Resources)
+				{
+					resourceCommand.Parameters["$pieceId"].Value = pieceId;
+					resourceCommand.Parameters["$role"].Value = resource.Role;
+					resourceCommand.Parameters["$file"].Value = unchecked((long)resource.FileId);
+					await resourceCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+				}
+			}
+		}
+
+		await using var issueCommand = connection.CreateCommand();
+		issueCommand.Transaction = transaction;
+		issueCommand.CommandText = @"
+INSERT INTO game_data_authority_issues(severity,code,message,file_path,exception_message)
+VALUES($severity,$code,$message,$path,$exception);";
+		issueCommand.Parameters.Add("$severity", SqliteType.Integer);
+		issueCommand.Parameters.Add("$code", SqliteType.Text);
+		issueCommand.Parameters.Add("$message", SqliteType.Text);
+		issueCommand.Parameters.Add("$path", SqliteType.Text);
+		issueCommand.Parameters.Add("$exception", SqliteType.Text);
+		issueCommand.Prepare();
+		foreach (var issue in snapshot.Issues)
+		{
+			issueCommand.Parameters["$severity"].Value = (int)issue.Severity;
+			issueCommand.Parameters["$code"].Value = issue.Code;
+			issueCommand.Parameters["$message"].Value = issue.Message;
+			issueCommand.Parameters["$path"].Value = (object?)issue.FilePath ?? DBNull.Value;
+			issueCommand.Parameters["$exception"].Value = (object?)issue.ExceptionMessage ?? DBNull.Value;
+			await issueCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		}
 	}
 
 	private static async Task PreserveUnitPartFactsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
@@ -729,7 +862,7 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		command.CommandText = @"
 DROP TABLE IF EXISTS temp.preserved_game_data_unit_parts;
 CREATE TEMP TABLE preserved_game_data_unit_parts AS
-SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason
+SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason
 FROM game_data_unit_parts;";
 		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
@@ -739,8 +872,8 @@ FROM game_data_unit_parts;";
 		await using var command = connection.CreateCommand();
 		command.Transaction = transaction;
 		command.CommandText = @"
-INSERT OR IGNORE INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason)
-SELECT p.archive_id,p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.is_visual,p.is_lod,p.reason
+INSERT OR IGNORE INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason)
+SELECT p.archive_id,p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.is_visual,p.is_lod,p.vertex_count,p.triangle_count,p.geometry_quality,p.fact_origin,p.reason
 FROM preserved_game_data_unit_parts p
 JOIN archives a ON a.archive_id=p.archive_id
 JOIN archive_entries e ON e.archive_id=p.archive_id AND e.type_id=p.unit_type_id AND e.file_id=p.unit_file_id
@@ -820,10 +953,10 @@ VALUES($a,$i,$t,$f,1,$td,$so,$go,$ts,$ss,$gs,$u1,$u2,$u3,$u4)";
 	{
 		var command = connection.CreateCommand();
 		command.CommandText = @"INSERT INTO game_data_unit_parts
-(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,reason)
-VALUES($archive,$type,$file,$mesh,$meshId,$kind,$layer,$variant,$name,$piece,$confidence,$visual,$lod,$reason)";
+(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason)
+VALUES($archive,$type,$file,$mesh,$meshId,$kind,$layer,$variant,$name,$piece,$confidence,$visual,$lod,$vertices,$triangles,$quality,$origin,$reason)";
 		foreach (var name in new[] { "$archive", "$name", "$piece", "$reason" }) command.Parameters.Add(name, SqliteType.Text);
-		foreach (var name in new[] { "$type", "$file", "$mesh", "$meshId", "$kind", "$layer", "$variant", "$confidence", "$visual", "$lod" }) command.Parameters.Add(name, SqliteType.Integer);
+		foreach (var name in new[] { "$type", "$file", "$mesh", "$meshId", "$kind", "$layer", "$variant", "$confidence", "$visual", "$lod", "$vertices", "$triangles", "$quality", "$origin" }) command.Parameters.Add(name, SqliteType.Integer);
 		command.Prepare();
 		return command;
 	}
@@ -843,6 +976,10 @@ VALUES($archive,$type,$file,$mesh,$meshId,$kind,$layer,$variant,$name,$piece,$co
 		command.Parameters["$confidence"].Value = part.Confidence;
 		command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0;
 		command.Parameters["$lod"].Value = part.IsLod ? 1 : 0;
+		command.Parameters["$vertices"].Value = part.VertexCount;
+		command.Parameters["$triangles"].Value = part.TriangleCount;
+		command.Parameters["$quality"].Value = (int)part.GeometryQuality;
+		command.Parameters["$origin"].Value = (int)part.Origin;
 		command.Parameters["$reason"].Value = part.Reason;
 		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}

@@ -371,7 +371,7 @@ namespace HD2ModManager.ViewModels
 
             var gameData = SettingsService.GetGameDataFolder();
             var paths = SettingsService.CreateStoragePaths();
-            if (string.IsNullOrWhiteSpace(gameData) || !System.IO.Directory.Exists(gameData) || !System.IO.File.Exists(paths.ArchiveHashesPath)) return;
+            if (string.IsNullOrWhiteSpace(gameData) || !System.IO.Directory.Exists(gameData)) return;
 
             var task = _backgroundTasks.Enqueue(
                 BackgroundTaskKind.BuildAssetIndex,
@@ -384,9 +384,10 @@ namespace HD2ModManager.ViewModels
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 task.MarkRunning("正在检查索引指纹");
-                var archiveHashes = await System.IO.File.ReadAllTextAsync(paths.ArchiveHashesPath).ConfigureAwait(false);
-                var index = CoreServices.CreateAssetArchiveIndexService(paths);
                 using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(task.CancellationToken, cancellationToken);
+                var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(paths)
+                    .GetArchiveHashesJsonAsync(linkedCancellation.Token).ConfigureAwait(false);
+                var index = CoreServices.CreateAssetArchiveIndexService(paths);
                 var status = await index.GetIndexStatusAsync(gameData, archiveHashes, linkedCancellation.Token).ConfigureAwait(false);
                 SettingsService.SetLastGameDataIndexCheckUtc(DateTime.UtcNow);
                 if (status.IsCurrent)

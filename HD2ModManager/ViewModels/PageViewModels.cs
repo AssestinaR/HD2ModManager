@@ -166,9 +166,9 @@ namespace HD2ModManager.ViewModels
 					};
 					var notice = status.State switch
 					{
-						GameDataIndexState.Stale => "你的游戏已经更新，请前往设置页重新拉取在线索引并构建 GameData 索引。",
-						GameDataIndexState.Missing => "尚未构建 GameData 索引，请前往设置页拉取在线索引并构建 GameData 索引。",
-						_ => "GameData 索引不可用，请前往设置页重新拉取在线索引并构建 GameData 索引。"
+						GameDataIndexState.Stale => "你的游戏已经更新，请前往设置页重建 GameData 索引；在线资料仅用于补充显示名称。",
+						GameDataIndexState.Missing => "尚未构建 GameData 索引，请前往设置页构建；在线资料仅用于补充显示名称。",
+						_ => "GameData 索引不可用，请前往设置页重建；在线资料仅用于补充显示名称。"
 					};
 					SetGameDataHealth(health, notice);
 					return;
@@ -181,7 +181,7 @@ namespace HD2ModManager.ViewModels
 			}
 			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
 			{
-				SetGameDataHealth("索引不可用", "GameData 索引不可用，请前往设置页重新拉取在线索引并构建 GameData 索引。");
+				SetGameDataHealth("索引不可用", "GameData 索引不可用，请前往设置页重建；在线资料仅用于补充显示名称。");
 			}
 		}
 
@@ -224,11 +224,9 @@ namespace HD2ModManager.ViewModels
             var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, SynchronizationContext.Current ?? new SynchronizationContext());
             try
             {
-                if (!File.Exists(_paths.ArchiveHashesPath))
-                    throw new InvalidOperationException("缺少 archivehashes.json；请先在设置页更新在线资产信息。");
-
                 task.MarkRunning("正在重建 GameData 资产索引");
-                var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath, task.CancellationToken);
+                var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
+                    .GetArchiveHashesJsonAsync(task.CancellationToken);
                 var assetIndex = CoreServices.CreateAssetArchiveIndexService(_paths);
                 var lastProgressUpdate = 0L;
                 var indexProgress = new Progress<IndexBuildProgress>(item =>
@@ -1749,21 +1747,14 @@ namespace HD2ModManager.ViewModels
                     AssetIndexSummary = "未找到资产反向索引数据库。";
                     AssetIndexBuiltUtc = "无";
                     AssetIndexCounts = "无";
-                    AssetIndexHint = "更新在线资产信息后，明确启动“建立 / 重建资产索引”。";
+                    AssetIndexHint = "可直接建立索引；在线资料仅用于补充显示名称。";
                     return;
                 }
 
                 AssetIndexBuiltUtc = fingerprint.BuiltUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
                 AssetIndexCounts = $"Archive {fingerprint.ArchivesIndexed}/{fingerprint.ArchivesTotal}，AssetKey {fingerprint.AssetKeysTotal}";
-                if (!File.Exists(_paths.ArchiveHashesPath))
-                {
-                    AssetIndexState = "无法校验";
-                    AssetIndexSummary = "索引存在，但缺少 archivehashes.json。";
-                    AssetIndexHint = "请先更新在线资产信息。";
-                    return;
-                }
-
-                var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath, cancellationToken);
+                var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
+                    .GetArchiveHashesJsonAsync(cancellationToken);
                 var status = await index.GetIndexStatusAsync(gameData, archiveHashes, cancellationToken);
                 SettingsService.SetLastGameDataIndexCheckUtc(DateTime.UtcNow);
                 OnPropertyChanged(nameof(GameDataIndexLastCheckText));
@@ -1771,12 +1762,14 @@ namespace HD2ModManager.ViewModels
                 AssetIndexSummary = status.State switch
                 {
                     GameDataIndexState.Current => "索引与当前 Game Data 匹配。",
-                    GameDataIndexState.Stale => "索引存在但已过期，游戏文件或资产元数据已变化。",
-                    GameDataIndexState.Invalid => "索引状态无法验证，资产元数据格式可能无效。",
+                    GameDataIndexState.Stale => "索引存在但已过期，游戏文件或权威装备关系表已变化。",
+                    GameDataIndexState.Invalid => "索引状态无法验证，请检查 GameData 文件。",
                     _ => "未找到资产反向索引数据库。"
                 };
                 AssetIndexHint = status.IsCurrent
-                    ? "资产标签可以使用真实 archive 语义。"
+                    ? (File.Exists(_paths.ArchiveHashesPath)
+                        ? "资产标签使用真实 archive 语义；在线资料仅补充显示名称。"
+                        : "资产标签使用真实 archive 语义；未安装在线显示资料，部分名称将显示为哈希。")
                     : "索引过期或缺失；不会自动重建，请确认后手动启动重建。";
             }
             catch (OperationCanceledException) { }
@@ -1784,7 +1777,7 @@ namespace HD2ModManager.ViewModels
             {
                 AssetIndexState = "检查失败";
                 AssetIndexSummary = exception.Message;
-                AssetIndexHint = "请检查 Game Data 路径与在线资产信息。";
+                AssetIndexHint = "请检查 Game Data 路径与游戏文件完整性。";
             }
             finally
             {
@@ -1803,13 +1796,6 @@ namespace HD2ModManager.ViewModels
                 AssetIndexSummary = "Game Data 目录未设置或不存在。";
                 return;
             }
-            if (!File.Exists(_paths.ArchiveHashesPath))
-            {
-                AssetIndexState = "无法建立";
-                AssetIndexSummary = "缺少 archivehashes.json；请先更新在线资产信息。";
-                return;
-            }
-
             IsBuildingAssetIndex = true;
             BuildAssetIndexCommand.RaiseCanExecuteChanged();
             RefreshAssetIndexStatusCommand.RaiseCanExecuteChanged();
@@ -1826,8 +1812,9 @@ namespace HD2ModManager.ViewModels
             {
                 task?.MarkRunning("正在准备资产索引");
                 AssetIndexState = "建立中";
-                AssetIndexSummary = "正在扫描 Archive TOC、资源映射，并重建 Armor / Helmet Unit 部件事实。";
-                var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath);
+                AssetIndexSummary = "正在扫描实际 Archive TOC、权威装备关系与资源映射，并重建 Armor / Helmet Unit 部件事实。";
+                var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
+                    .GetArchiveHashesJsonAsync(task?.CancellationToken ?? CancellationToken.None);
                 var index = CoreServices.CreateAssetArchiveIndexService(_paths);
 				var lastProgressUpdate = 0L;
                 var progress = new Progress<IndexBuildProgress>(item =>

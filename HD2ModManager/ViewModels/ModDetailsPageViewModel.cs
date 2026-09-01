@@ -1261,10 +1261,11 @@ namespace HD2ModManager.ViewModels
             try
             {
                 var gameDataDirectory = SettingsService.GetGameDataFolder();
-                if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory) || !File.Exists(_paths.ArchiveHashesPath))
+                if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
                     return false;
 
-                var archiveHashes = await File.ReadAllTextAsync(_paths.ArchiveHashesPath).ConfigureAwait(false);
+                var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
+                    .GetArchiveHashesJsonAsync().ConfigureAwait(false);
                 var index = CoreServices.CreateAssetArchiveIndexService(_paths);
                 return (await index.GetIndexStatusAsync(gameDataDirectory, archiveHashes).ConfigureAwait(false)).IsCurrent;
             }

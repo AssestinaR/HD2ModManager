@@ -502,16 +502,20 @@ internal static class CliBatchPatchRepairPlanArtifacts
 			diagnostics.Add(new CliBatchPatchRepairDiagnostic("BatchRepairGameDataMissing", "error", true, "GameData 目录不存在。", gameData));
 			return new CliBatchPatchRepairGameDataSnapshot(gameData, "missing", false, string.Empty, null);
 		}
-		if (!File.Exists(paths.ArchiveHashesPath))
-		{
-			diagnostics.Add(new CliBatchPatchRepairDiagnostic("BatchRepairArchiveHashesMissing", "error", true, "缺少 archivehashes.json；请先维护在线资产信息。", paths.ArchiveHashesPath));
-			return new CliBatchPatchRepairGameDataSnapshot(gameData, "archivehashes-missing", false, string.Empty, null);
-		}
-
 		GameDataIndexStatus status;
 		try
 		{
-			var archiveHashes = await File.ReadAllTextAsync(paths.ArchiveHashesPath, cancellationToken).ConfigureAwait(false);
+			if (!File.Exists(paths.ArchiveHashesPath))
+			{
+				diagnostics.Add(new CliBatchPatchRepairDiagnostic(
+					"BatchRepairArchiveHashesMissing",
+					"warning",
+					false,
+					"未找到 archivehashes.json；将仅使用安装目录中的 GameData 权威装备事实，Archive 显示名称可能退回为哈希。",
+					paths.ArchiveHashesPath));
+			}
+			var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(paths)
+				.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false);
 			status = await CoreServices.CreateAssetArchiveIndexService(paths)
 				.GetIndexStatusAsync(gameData, archiveHashes, cancellationToken)
 				.ConfigureAwait(false);

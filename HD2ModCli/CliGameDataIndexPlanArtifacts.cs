@@ -96,12 +96,12 @@ internal static class CliGameDataIndexPlanArtifacts
 		if (!archiveHashes.File.Exists)
 		{
 			diagnostics.Add(new CliGameDataDiagnostic(
-				"ArchiveHashesMissing", "error", true,
-				"缺少 archivehashes.json；请先在管理器设置页更新在线资产信息。", paths.ArchiveHashesPath));
+				"ArchiveHashesMissing", "warning", false,
+				"未找到 archivehashes.json；将仅使用安装目录中的 GameData 权威装备事实，Archive 显示名称可能退回为哈希。", paths.ArchiveHashesPath));
 		}
-		if (status.State == GameDataIndexState.Invalid)
+		if (archiveHashes.File.Exists && archiveHashes.IsReadable && !archiveHashes.IsValid)
 		{
-			diagnostics.Add(new CliGameDataDiagnostic("ArchiveHashesInvalid", "error", true, "archivehashes.json 无法解析，不能安全建立或验证资产索引。", paths.ArchiveHashesPath));
+			diagnostics.Add(new CliGameDataDiagnostic("ArchiveHashesInvalid", "warning", false, "archivehashes.json 无法解析；将忽略社区显示资料并继续使用 GameData 权威事实。", paths.ArchiveHashesPath));
 		}
 		if (operation is CliGameDataIndexOperation.RebuildAllEquipmentFacts or CliGameDataIndexOperation.BuildMissingEquipmentFacts)
 		{
@@ -191,7 +191,7 @@ internal static class CliGameDataIndexPlanArtifacts
 		{
 			diagnostics.Add(new CliGameDataDiagnostic(
 				"GameDataIndexInputChanged", "error", true,
-				"GameData 文件、archivehashes、基础索引状态或 Unit 部位事实状态已变化；请重新生成计划并确认当前输入。"));
+				"GameData 文件、可选 archivehashes、基础索引状态或 Unit 部位事实状态已变化；请重新生成计划并确认当前输入。"));
 		}
 		diagnostics.AddRange(current.Document.Diagnostics.Where(diagnostic => diagnostic.Blocking));
 		return new CliGameDataIndexPlanValidationResult(document, current, DistinctDiagnostics(diagnostics));
@@ -242,24 +242,45 @@ internal static class CliGameDataIndexPlanArtifacts
 		return workspace.GameDataRoot;
 	}
 
-	private static async ValueTask<(CliGameDataIndexFile File, string Content)> ReadArchiveHashesAsync(
+	private static async ValueTask<(CliGameDataIndexFile File, string Content, bool IsValid, bool IsReadable)> ReadArchiveHashesAsync(
 		StoragePaths paths,
 		ICollection<CliGameDataDiagnostic> diagnostics,
 		CancellationToken cancellationToken)
 	{
 		var path = paths.ArchiveHashesPath;
-		if (!File.Exists(path)) return (new CliGameDataIndexFile(Path.GetFileName(path), false, 0, null), "{}");
+		if (!File.Exists(path)) return (new CliGameDataIndexFile(Path.GetFileName(path), false, 0, null), "{}", true, true);
 		try
 		{
 			var info = new FileInfo(path);
 			var content = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
 			var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
-			return (new CliGameDataIndexFile(Path.GetFileName(path), true, info.Length, hash), content);
+			var isValid = IsValidCommunityArchiveHashesJson(content);
+			return (new CliGameDataIndexFile(Path.GetFileName(path), true, info.Length, hash), isValid ? content : "{}", isValid, true);
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			diagnostics.Add(new CliGameDataDiagnostic("ArchiveHashesUnreadable", "error", true, $"无法读取 archivehashes：{exception.Message}", path));
-			return (new CliGameDataIndexFile(Path.GetFileName(path), true, 0, null), "{}");
+			diagnostics.Add(new CliGameDataDiagnostic("ArchiveHashesUnreadable", "warning", false, $"无法读取 archivehashes；将忽略社区显示资料并继续使用 GameData 权威事实：{exception.Message}", path));
+			return (new CliGameDataIndexFile(Path.GetFileName(path), true, 0, null), "{}", false, false);
+		}
+	}
+
+	internal static bool IsValidCommunityArchiveHashesJson(string content)
+	{
+		if (string.IsNullOrWhiteSpace(content)) return false;
+		try
+		{
+			var root = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(content);
+			if (root is null) return false;
+			foreach (var (category, map) in root)
+			{
+				if (string.IsNullOrWhiteSpace(category) || map is null) return false;
+				if (map.Any(pair => string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))) return false;
+			}
+			return true;
+		}
+		catch (JsonException)
+		{
+			return false;
 		}
 	}
 

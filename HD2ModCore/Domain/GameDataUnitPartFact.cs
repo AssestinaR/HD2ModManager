@@ -18,6 +18,7 @@ public sealed record GameDataUnitPartFact(
 	bool IsLod,
 	string Reason)
 {
+	public GameDataFactOrigin Origin { get; init; } = GameDataFactOrigin.DerivedUnitStructure;
 	public string PieceType { get; init; } = string.Empty;
 	public int VertexCount { get; init; }
 	public int TriangleCount { get; init; }

@@ -6,7 +6,11 @@ namespace HD2ModCore.Infrastructure.Sqlite;
 // Purpose: Defines and applies the persisted GameData facts and asset->archive reverse index schema.
 internal static class SqliteSchema
 {
-	public const int SchemaVersion = 5;
+	// Version 8 adds installed-game weapon and vehicle customization names to
+	// the persisted authority snapshot. Bumping the source identity ensures an
+	// existing index is rebuilt rather than silently retaining the old display
+	// metadata.
+	public const int SchemaVersion = 8;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -94,6 +98,7 @@ CREATE TABLE IF NOT EXISTS game_data_unit_parts (
 	vertex_count INTEGER NOT NULL DEFAULT 0,
 	triangle_count INTEGER NOT NULL DEFAULT 0,
 	geometry_quality INTEGER NOT NULL DEFAULT 0,
+	fact_origin INTEGER NOT NULL DEFAULT 2,
 	reason TEXT NOT NULL,
 	PRIMARY KEY(archive_id, unit_type_id, unit_file_id, mesh_info_index),
 	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
@@ -119,6 +124,69 @@ CREATE TABLE IF NOT EXISTS game_data_stream_layouts (
 CREATE INDEX IF NOT EXISTS ix_game_data_stream_layouts_signature ON game_data_stream_layouts(layout_signature, vertex_stride, is_skinned);
 CREATE INDEX IF NOT EXISTS ix_game_data_stream_layouts_component_info ON game_data_stream_layouts(component_info_id);
 
+CREATE TABLE IF NOT EXISTS game_data_authority_kits (
+	item_id INTEGER PRIMARY KEY,
+	dlc_id INTEGER NOT NULL,
+	set_id INTEGER NOT NULL,
+	kit_kind INTEGER NOT NULL,
+	archive_id TEXT NOT NULL,
+	display_name TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_game_data_authority_kits_archive ON game_data_authority_kits(archive_id, kit_kind);
+
+CREATE TABLE IF NOT EXISTS game_data_archive_names (
+	archive_id TEXT NOT NULL,
+	locale TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	source TEXT NOT NULL,
+	confidence INTEGER NOT NULL,
+	item_id INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY(archive_id, locale, display_name, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_game_data_archive_names_archive_locale ON game_data_archive_names(archive_id, locale);
+
+CREATE TABLE IF NOT EXISTS game_data_authority_pieces (
+	piece_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	item_id INTEGER NOT NULL,
+	archive_id TEXT NOT NULL,
+	kit_kind INTEGER NOT NULL,
+	raw_body_type INTEGER NOT NULL,
+	body_variant INTEGER NOT NULL,
+	slot INTEGER NOT NULL,
+	part_kind INTEGER NOT NULL,
+	piece_type INTEGER NOT NULL,
+	weight INTEGER NOT NULL,
+	tone_variations INTEGER NOT NULL,
+	unit_type_id INTEGER NOT NULL,
+	unit_file_id INTEGER NOT NULL,
+	UNIQUE(item_id, raw_body_type, slot, piece_type, unit_type_id, unit_file_id),
+	FOREIGN KEY(item_id) REFERENCES game_data_authority_kits(item_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_game_data_authority_pieces_archive_unit ON game_data_authority_pieces(archive_id, unit_type_id, unit_file_id);
+CREATE INDEX IF NOT EXISTS ix_game_data_authority_pieces_unit ON game_data_authority_pieces(unit_type_id, unit_file_id);
+
+CREATE TABLE IF NOT EXISTS game_data_authority_resources (
+	piece_id INTEGER NOT NULL,
+	role TEXT NOT NULL,
+	file_id INTEGER NOT NULL,
+	PRIMARY KEY(piece_id, role, file_id),
+	FOREIGN KEY(piece_id) REFERENCES game_data_authority_pieces(piece_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_game_data_authority_resources_file ON game_data_authority_resources(file_id);
+
+CREATE TABLE IF NOT EXISTS game_data_authority_issues (
+	issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	severity INTEGER NOT NULL,
+	code TEXT NOT NULL,
+	message TEXT NOT NULL,
+	file_path TEXT NULL,
+	exception_message TEXT NULL
+);
+
 DROP TABLE IF EXISTS game_data_unit_part_scans;
 
 ";
@@ -133,6 +201,7 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "vertex_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "triangle_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "geometry_quality", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "fact_origin", "INTEGER NOT NULL DEFAULT 2", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
 	}
@@ -184,6 +253,11 @@ DELETE FROM asset_archives;
 DELETE FROM assets;
 DELETE FROM game_data_stream_layouts;
 DELETE FROM game_data_unit_parts;
+DELETE FROM game_data_authority_resources;
+DELETE FROM game_data_authority_pieces;
+DELETE FROM game_data_authority_kits;
+DELETE FROM game_data_archive_names;
+DELETE FROM game_data_authority_issues;
 DELETE FROM archive_issues;
 DELETE FROM archive_entries;
 DELETE FROM archives;

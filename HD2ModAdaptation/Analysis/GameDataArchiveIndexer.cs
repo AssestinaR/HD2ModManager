@@ -25,6 +25,7 @@ public sealed class GameDataArchiveIndexer : IGameDataArchiveIndexer
 		}
 
 		var resolver = resolverFactory(directory);
+		var packageNamesWereExplicit = input.PackageNames is not null;
 		var packageNames = input.PackageNames?.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
 			?? (await resolver.GetPackageNamesAsync(cancellationToken).ConfigureAwait(false)).ToArray();
 		var archives = new List<GameDataArchiveFact>();
@@ -41,6 +42,14 @@ public sealed class GameDataArchiveIndexer : IGameDataArchiveIndexer
 				var packageToc = await resolver.GetPackageTocAsync(packageName, cancellationToken).ConfigureAwait(false);
 				if (packageToc is null)
 				{
+					// Installed GameData enumeration also sees non-TOC data libraries
+					// such as generated_customization_armor_sets.  They are inputs for
+					// specialized readers, never standalone asset archives.  Preserve a
+					// missing-entry diagnostic only for a caller's explicit archive list.
+					if (!packageNamesWereExplicit)
+					{
+						continue;
+					}
 					var issue = new PatchAnalysisIssue("MissingArchiveToc", $"Game Data archive TOC was not found: {packageName}", packageName);
 					archives.Add(new GameDataArchiveFact(packageName, metadata?.ArchiveHex, metadata?.DisplayName, metadata?.Category, false, Array.Empty<GameDataArchiveEntryFact>(), new[] { issue }));
 					issues.Add(issue);

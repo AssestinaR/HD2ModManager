@@ -38,11 +38,12 @@ internal static class CliGameDataIndexExecutor
 
 		try
 		{
-			switch (validation.Current.Operation)
-			{
+				switch (validation.Current.Operation)
+				{
 				case CliGameDataIndexOperation.RebuildBase:
 				{
-					var archiveHashes = await File.ReadAllTextAsync(validation.Current.Paths.ArchiveHashesPath, cancellationToken).ConfigureAwait(false);
+					var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(validation.Current.Paths)
+						.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false);
 					await CoreServices.CreateAssetArchiveIndexService(validation.Current.Paths)
 						.BuildOrRebuildAsync(document.Request.GameDataDirectory, archiveHashes, progress: null, cancellationToken)
 						.ConfigureAwait(false);

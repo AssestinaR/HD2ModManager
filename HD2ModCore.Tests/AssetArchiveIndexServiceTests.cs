@@ -9,6 +9,119 @@ namespace HD2ModCore.Tests;
 public sealed class AssetArchiveIndexServiceTests
 {
 	[Fact]
+	public async Task Build_AuthoritativeGameDataName_OverridesCommunityDisplayName()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc([new AssetKey(20, 200)]));
+			var authority = new GameDataAuthoritySnapshot(
+				GameDataAuthoritySourceKind.PlaintextDataLibrary,
+				"installed-game-data",
+				"authority-fingerprint",
+				DateTimeOffset.UtcNow,
+				Array.Empty<GameDataAuthorityKit>(),
+				Array.Empty<CoreIssue>())
+			{
+				ArchiveNames =
+				[
+					new GameDataAuthorityArchiveName(archive, 0, "en-US", "Installed authoritative name", "game-data-test", 100, "Armor")
+				]
+			};
+			var community = JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>>
+			{
+				["Armor"] = new() { [archive] = "Community name" }
+			});
+
+			var service = new AssetArchiveIndexService(
+				new StoragePaths(appRoot),
+				authorityProvider: new FixedAuthorityProvider(authority));
+			await service.BuildOrRebuildAsync(gameData, community);
+
+			var details = await service.GetArchiveDetailsAsync(archive);
+			Assert.NotNull(details);
+			Assert.Equal("Installed authoritative name", details.Summary.DisplayName);
+			Assert.Equal("Armor", details.Summary.Category);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task Build_EmptyCommunityMetadata_IndexesInstalledArchivesOnly()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			var key = new AssetKey(20, 200);
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc([key]));
+			// Both sidecars and data libraries belong to GameData but are not independently
+			// indexable Archive TOCs.
+			File.WriteAllBytes(Path.Combine(gameData, archive + ".stream"), [1, 2, 3]);
+			File.WriteAllBytes(Path.Combine(gameData, archive + ".gpu_resources"), [4, 5, 6]);
+			File.WriteAllBytes(Path.Combine(gameData, "generated_customization_armor_sets"), [7, 8, 9]);
+
+			var service = new AssetArchiveIndexService(new StoragePaths(appRoot));
+			await service.BuildOrRebuildAsync(gameData, "{}");
+
+			var fingerprint = await service.GetFingerprintAsync();
+			Assert.NotNull(fingerprint);
+			Assert.Equal(1, fingerprint.ArchivesTotal);
+			var match = Assert.Single(await service.FindAssetArchivesAsync(new HashSet<AssetKey> { key }));
+			Assert.Equal(archive, Assert.Single(match.Archives).ArchiveId);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task MalformedCommunityMetadata_DoesNotBlockInstalledArchiveIndex()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc(new[] { new AssetKey(20, 200) }));
+			var paths = new StoragePaths(appRoot);
+			Directory.CreateDirectory(paths.ResourcesDirectory);
+			await File.WriteAllTextAsync(paths.ArchiveHashesPath, "{\"Armor\":null}");
+
+			var service = new AssetArchiveIndexService(paths);
+			await service.BuildOrRebuildAsync(gameData, await File.ReadAllTextAsync(paths.ArchiveHashesPath));
+
+			var fingerprint = await service.GetFingerprintAsync();
+			Assert.NotNull(fingerprint);
+			Assert.Equal(1, fingerprint.ArchivesTotal);
+			Assert.Equal(1, fingerprint.ArchivesIndexed);
+			var catalog = await new FileSystemAssetMetadataCatalogProvider(paths).LoadAsync();
+			Assert.Empty(catalog.Archives);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task BuildAndVote_PercentageFilter_FiltersHighDfKeys()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
@@ -191,7 +304,8 @@ public sealed class AssetArchiveIndexServiceTests
 
 			var fingerprint = await indexService.GetFingerprintAsync();
 			Assert.NotNull(fingerprint);
-			Assert.Equal(2, fingerprint.ArchivesTotal);
+			// Installed files, not stale community records, define the index inventory.
+			Assert.Equal(1, fingerprint.ArchivesTotal);
 			Assert.Equal(1, fingerprint.ArchivesIndexed);
 			Assert.Equal(1, fingerprint.AssetKeysTotal);
 			Assert.False(string.IsNullOrWhiteSpace(fingerprint.SourceFingerprint));
@@ -445,6 +559,36 @@ public sealed class AssetArchiveIndexServiceTests
 	}
 
 	[Fact]
+	public async Task GameDataPackageResolvers_BundledSidecar_ReadsHighBitVirtualOffset()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			const ulong virtualOffset = 0x803fbb8f;
+			var payload = new byte[] { 7, 11, 19, 23, 31 };
+			File.WriteAllBytes(
+				Path.Combine(gameData, "bundles.nxa"),
+				BuildDsar(BuildBundleDatabase($"{archive}.gpu_resources", payload.Length, virtualOffset)));
+			File.WriteAllBytes(Path.Combine(gameData, "bundles.00.nxa"), BuildDsar(payload, virtualOffset));
+
+			var coreData = await new HD2ModCore.Infrastructure.GameDataPackageResolver(gameData)
+				.GetPackageResourceAsync($"{archive}.gpu_resources", 0, (uint)payload.Length);
+			var adaptationData = await new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameData)
+				.GetPackageResourceAsync($"{archive}.gpu_resources", 0, (uint)payload.Length);
+
+			Assert.Equal(payload, coreData);
+			Assert.Equal(payload, adaptationData);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task GameDataPackageResolver_PackageNames_IncludeDirectAndBundledArchives()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
@@ -578,7 +722,7 @@ public sealed class AssetArchiveIndexServiceTests
 		return buffer;
 	}
 
-	private static byte[] BuildBundleDatabase(string archiveId, int packageSize)
+	private static byte[] BuildBundleDatabase(string archiveId, int packageSize, ulong bundleOffset = 0, byte bundleIndex = 0)
 	{
 		var data = new byte[0x90];
 		WriteUInt32(data, 0x0C, 1); // num bundles
@@ -590,18 +734,18 @@ public sealed class AssetArchiveIndexServiceTests
 		var nameBytes = System.Text.Encoding.ASCII.GetBytes(archiveId);
 		Array.Copy(nameBytes, 0, data, 0x40, nameBytes.Length);
 		WriteUInt64(data, 0x60, 0); // original archive offset
-		WriteUInt32(data, 0x68, 0); // uncompressed bundle offset
-		data[0x6F] = 0; // bundle index
+		WriteUInt32(data, 0x68, checked((uint)bundleOffset)); // uncompressed bundle offset
+		data[0x6F] = bundleIndex; // bundle index
 		return data;
 	}
 
-	private static byte[] BuildDsar(byte[] payload)
+	private static byte[] BuildDsar(byte[] payload, ulong uncompressedOffset = 0)
 	{
 		var dataOffset = 0x40;
 		var buffer = new byte[dataOffset + payload.Length];
 		WriteUInt32(buffer, 0, 0x52415344);
 		WriteUInt32(buffer, 8, 1);
-		WriteUInt64(buffer, 0x20, 0); // uncompressed offset
+		WriteUInt64(buffer, 0x20, uncompressedOffset); // uncompressed offset
 		WriteUInt64(buffer, 0x28, (ulong)dataOffset); // compressed offset
 		WriteUInt32(buffer, 0x30, (uint)payload.Length); // uncompressed size
 		WriteUInt32(buffer, 0x34, (uint)payload.Length); // compressed size
@@ -642,5 +786,11 @@ public sealed class AssetArchiveIndexServiceTests
 		buffer[offset + 5] = (byte)((value >> 40) & 0xFF);
 		buffer[offset + 6] = (byte)((value >> 48) & 0xFF);
 		buffer[offset + 7] = (byte)((value >> 56) & 0xFF);
+	}
+
+	private sealed class FixedAuthorityProvider(GameDataAuthoritySnapshot snapshot) : HD2ModCore.Application.IGameDataAuthorityProvider
+	{
+		public ValueTask<GameDataAuthoritySnapshot> LoadAsync(string gameDataDirectory, CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult(snapshot);
 	}
 }

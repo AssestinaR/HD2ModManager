@@ -87,13 +87,14 @@ Core 在实现时不得直接依赖 Blender；仅复刻必要二进制解析逻�
 ### 4.2 扫描范围
 
 - 扫描目录固定为游戏 `data` 目录。
-- 扫描对象仅限于 `archivehashes.json` 列出的 archives（全分类）。
+- Archive 清单以实际安装的 GameData 为准；`archivehashes.json` 仅用于补充显示名称与分类，不能决定是否扫描某个实际存在的 Archive。
 
 ### 4.3 索引生成触发
 
 - 若检测到索引文件不存在：应用启动后后台自动生成一次。
 - 设置页提供“手动重建索引”按钮：
-  - 将先尝试从 GitHub 同步更新最新版 `archivehashes.json`。
+  - 可选地尝试从 GitHub 同步更新最新版 `archivehashes.json`。
+  - 即使在线资料缺失或不可解析，也应允许使用 GameData 权威关系表建立索引。
   - 若同步失败或格式变更不可解析，则继续使用本地旧版文件。
 
 ### 4.4 后台生成与进度
@@ -128,7 +129,8 @@ Core 在实现时不得直接依赖 Blender；仅复刻必要二进制解析逻�
 计划支持多来源映射（不强耦合索引）：
 - `friendlynames.txt`：`FileID -> name/path`（可能存在歧义，仅作辅助）
 - `typehash.txt`：`TypeID(hex64) -> type name`
-- `archivehashes.json`：`ArchiveId(hex) -> display name`（按分类）
+- `archivehashes.json`：`ArchiveId(hex) -> display name`（按分类，仅显示辅助）
+- 安装目录中的 `generated_customization_armor_sets`：Armor / Helmet / Cape 与 Unit 的权威关系（索引身份与装备部位的首选来源）
 
 未来可在管理器内提供窗口进行增补维护：
 - 支持别名（aliases），用于搜索与俗称。

@@ -4,18 +4,18 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
-using HD2ModCore.Infrastructure.ArchiveHashes;
 using HD2ModCore.Infrastructure.Sqlite;
 using Microsoft.Data.Sqlite;
 using CoreAssetKey = HD2ModCore.Domain.AssetKey;
 using AdaptationStreamLayoutFact = HD2ModAdaptation.Analysis.GameDataStreamLayoutFact;
+using AdaptationStreamComponentFact = HD2ModAdaptation.Analysis.GameDataStreamComponentFact;
 
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Builds optional incremental Armor Unit mesh facts for cross-armor transfer.
 public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexService
 {
-	private const string Version = "equipment-v5-geometry-facts";
+	private const string Version = "equipment-v6-authoritative-equipment-facts";
 	private const string SourceFingerprintMetaKey = "advanced_equipment_index_source_fingerprint";
 	private readonly StoragePaths paths;
 	private readonly IGameDataArchiveIndexer archiveIndexer;
@@ -38,15 +38,29 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 	public async ValueTask<bool> IsCurrentAsync(CancellationToken cancellationToken = default)
 	{
 		if (!File.Exists(paths.DbPath)) return false;
-		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
-		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-		var currentBaseFingerprint = await SqliteSchema.GetMetaAsync(connection, "source_fingerprint", cancellationToken).ConfigureAwait(false);
-		var advancedSourceFingerprint = await SqliteSchema.GetMetaAsync(connection, SourceFingerprintMetaKey, cancellationToken).ConfigureAwait(false);
-		return !string.IsNullOrWhiteSpace(currentBaseFingerprint)
-			&& string.Equals(advancedSourceFingerprint, currentBaseFingerprint, StringComparison.OrdinalIgnoreCase)
-			&& string.Equals(await SqliteSchema.GetMetaAsync(connection, "advanced_equipment_index_version", cancellationToken).ConfigureAwait(false), Version, StringComparison.Ordinal)
-			&& await HasRowsAsync(connection, "game_data_unit_parts", cancellationToken).ConfigureAwait(false)
-			&& await HasRowsAsync(connection, "game_data_stream_layouts", cancellationToken).ConfigureAwait(false);
+		try
+		{
+			await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
+			await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+			var schemaVersion = await SqliteSchema.GetMetaAsync(connection, "schema_version", cancellationToken).ConfigureAwait(false);
+			if (!string.Equals(schemaVersion, SqliteSchema.SchemaVersion.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal))
+			{
+				return false;
+			}
+
+			var currentBaseFingerprint = await SqliteSchema.GetMetaAsync(connection, "source_fingerprint", cancellationToken).ConfigureAwait(false);
+			var advancedSourceFingerprint = await SqliteSchema.GetMetaAsync(connection, SourceFingerprintMetaKey, cancellationToken).ConfigureAwait(false);
+			return !string.IsNullOrWhiteSpace(currentBaseFingerprint)
+				&& string.Equals(advancedSourceFingerprint, currentBaseFingerprint, StringComparison.OrdinalIgnoreCase)
+				&& string.Equals(await SqliteSchema.GetMetaAsync(connection, "advanced_equipment_index_version", cancellationToken).ConfigureAwait(false), Version, StringComparison.Ordinal)
+				&& await HasCompleteEquipmentFactsAsync(connection, cancellationToken).ConfigureAwait(false);
+		}
+		catch (SqliteException exception) when (IsMissingSchemaObject(exception))
+		{
+			// An older or partially-created database is not current. The next
+			// write path will migrate it through EnsureSchemaAsync.
+			return false;
+		}
 	}
 
 	public async ValueTask BuildOrRefreshAsync(string gameDataDirectory, IProgress<IndexBuildProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -55,6 +69,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		var directory = Path.GetFullPath(gameDataDirectory);
 		if (!Directory.Exists(directory)) throw new DirectoryNotFoundException($"GameData directory does not exist: {directory}");
 		if (!File.Exists(paths.DbPath)) throw new InvalidOperationException("请先建立基础 Game Data 资产索引。");
+		await EnsureSchemaAsync(cancellationToken).ConfigureAwait(false);
 
 		var archives = await ReadArchivesAsync(cancellationToken).ConfigureAwait(false);
 		if (archives.Count == 0) throw new InvalidDataException("基础索引中没有可用 Archive。");
@@ -66,7 +81,7 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		var rebuildEquipmentFacts = !await IsCurrentAsync(cancellationToken).ConfigureAwait(false);
 		var adapterProgress = new Progress<GameDataArchiveIndexProgress>(item => progress?.Report(new IndexBuildProgress(item.Current, Math.Max(item.Total, 1), $"{item.Stage}：{item.Item}")));
 		var index = await archiveIndexer.BuildAsync(new GameDataArchiveInput(directory, archives.Select(item => item.Id).ToArray(), metadata, IncludeStreamLayouts: true), adapterProgress, cancellationToken).ConfigureAwait(false);
-		var boneNames = LoadBoneNames(paths.BoneHashesPath);
+		var authorityRoles = await ReadAuthorityRolesAsync(cancellationToken).ConfigureAwait(false);
 		if (rebuildEquipmentFacts)
 		{
 			await ClearEquipmentFactsAsync(cancellationToken).ConfigureAwait(false);
@@ -85,7 +100,8 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 			try
 			{
 				var unit = await reader.ReadAsync(archiveId, entry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				parts.AddRange(CreatePartFacts(archiveId, new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.AssetKey, unit.Model, boneNames));
+				authorityRoles.TryGetValue(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), out var authorityRole);
+				parts.AddRange(CreatePartFacts(archiveId, new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.AssetKey, unit.Model, authorityRole));
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException) { }
 		}
@@ -115,12 +131,13 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		var units = effectiveRebuildAll
 			? allUnits
 			: allUnits.Where(unit => !unit.HasPartFacts).ToArray();
-		var boneNames = LoadBoneNames(paths.BoneHashesPath);
+		var authorityRoles = await ReadAuthorityRolesAsync(cancellationToken).ConfigureAwait(false);
 		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(Path.GetFullPath(gameDataDirectory));
 		var reader = new GameDataUnitMeshReader(resolver);
 		await hiddenUnitCache.InitializeAsync(fingerprint.SourceFingerprint, gameDataIndexIsCurrent: true, cancellationToken).ConfigureAwait(false);
 		var avatarTransforms = await new CanonicalAvatarRigReader(resolver).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 		var parts = new List<GameDataUnitPartFact>();
+		var layouts = new List<AdaptationStreamLayoutFact>();
 		var total = Math.Max(units.Count, 1);
 		for (var index = 0; index < units.Count; index++)
 		{
@@ -131,7 +148,21 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 			{
 				var adaptationKey = new HD2ModAdaptation.PatchReconstruction.AssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId);
 				var parsed = await reader.ReadAsync(unit.ArchiveId, adaptationKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				parts.AddRange(CreatePartFacts(unit.ArchiveId, new CoreAssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId), adaptationKey, parsed.Model, boneNames));
+				authorityRoles.TryGetValue(unit.AssetKey, out var authorityRole);
+				parts.AddRange(CreatePartFacts(unit.ArchiveId, new CoreAssetKey(unit.AssetKey.TypeId, unit.AssetKey.FileId), adaptationKey, parsed.Model, authorityRole));
+				layouts.AddRange(parsed.Model.Streams.Select(stream => new AdaptationStreamLayoutFact(
+					unit.ArchiveId,
+					adaptationKey,
+					stream.Index,
+					stream.ComponentInfoId,
+					parsed.Model.Version,
+					stream.VertexStride,
+					stream.Components.Select(component => new AdaptationStreamComponentFact(
+						component.Type,
+						component.Format,
+						component.Index,
+						component.Unknown,
+						component.Size)).ToArray())));
 				try
 				{
 					if (await hiddenUnitCache.TryReadAsync(unit.ArchiveId, adaptationKey, cancellationToken).ConfigureAwait(false) is null)
@@ -150,7 +181,13 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 				// Keep one malformed Unit from aborting the remaining independent facts.
 			}
 		}
-		await SaveUnitPartFactsAsync(parts, units.Select(unit => (unit.ArchiveId, unit.AssetKey)).ToArray(), effectiveRebuildAll, fingerprint.SourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SaveUnitPartFactsAsync(
+			parts,
+			units.Select(unit => (unit.ArchiveId, unit.AssetKey)).ToArray(),
+			effectiveRebuildAll,
+			layouts,
+			fingerprint.SourceFingerprint,
+			cancellationToken).ConfigureAwait(false);
 		progress?.Report(new IndexBuildProgress(total, total, effectiveRebuildAll ? "全部 Armor / Helmet Unit 部位事实已完成。" : "缺失 Armor / Helmet Unit 部位事实已完成。"));
 	}
 
@@ -230,6 +267,7 @@ ORDER BY a.archive_id,e.file_id;";
 		IReadOnlyList<GameDataUnitPartFact> parts,
 		IReadOnlyList<(string ArchiveId, CoreAssetKey UnitAssetKey)> units,
 		bool rebuildAll,
+		IReadOnlyList<AdaptationStreamLayoutFact> layouts,
 		string sourceFingerprint,
 		CancellationToken cancellationToken)
 	{
@@ -259,8 +297,27 @@ ORDER BY a.archive_id,e.file_id;";
 				await unitDelete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 			}
 		}
+		if (rebuildAll)
+		{
+			await ExecuteAsync(connection, transaction, "DELETE FROM game_data_stream_layouts;", cancellationToken).ConfigureAwait(false);
+		}
+		else
+		{
+			foreach (var unit in units)
+			{
+				await using var layoutDelete = connection.CreateCommand();
+				layoutDelete.Transaction = transaction;
+				layoutDelete.CommandText = "DELETE FROM game_data_stream_layouts WHERE archive_id=$archive AND unit_type_id=$type AND unit_file_id=$file;";
+				layoutDelete.Parameters.AddWithValue("$archive", unit.ArchiveId);
+				layoutDelete.Parameters.AddWithValue("$type", unchecked((long)unit.UnitAssetKey.TypeId));
+				layoutDelete.Parameters.AddWithValue("$file", unchecked((long)unit.UnitAssetKey.FileId));
+				await layoutDelete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+			}
+		}
 		await using var insert = CreatePartCommand(connection, transaction);
 		foreach (var part in parts) await InsertPartAsync(insert, part, cancellationToken).ConfigureAwait(false);
+		await using var layoutInsert = CreateLayoutCommand(connection, transaction);
+		foreach (var layout in layouts) await InsertLayoutAsync(layoutInsert, layout, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -283,16 +340,91 @@ ORDER BY a.archive_id,e.file_id;";
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async ValueTask<bool> HasRowsAsync(SqliteConnection connection, string table, CancellationToken cancellationToken)
+	private static async ValueTask<bool> HasCompleteEquipmentFactsAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
-		await using var command = connection.CreateCommand(); command.CommandText = $"SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1);";
+		await using var command = connection.CreateCommand();
+		command.CommandText = @"
+WITH equipment_units AS
+(
+    SELECT a.archive_id, e.type_id, e.file_id
+    FROM archives a
+    JOIN archive_entries e ON e.archive_id = a.archive_id
+    WHERE a.status = 'Indexed'
+      AND (lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%')
+      AND e.type_id = $unitType
+)
+SELECT CASE WHEN
+    EXISTS (SELECT 1 FROM equipment_units)
+    AND NOT EXISTS
+    (
+        SELECT 1
+        FROM equipment_units u
+        WHERE NOT EXISTS
+        (
+            SELECT 1
+            FROM game_data_unit_parts p
+            WHERE p.archive_id = u.archive_id
+              AND p.unit_type_id = u.type_id
+              AND p.unit_file_id = u.file_id
+        )
+    )
+    AND NOT EXISTS
+    (
+        SELECT 1
+        FROM equipment_units u
+        WHERE NOT EXISTS
+        (
+            SELECT 1
+            FROM game_data_stream_layouts s
+            WHERE s.archive_id = u.archive_id
+              AND s.unit_type_id = u.type_id
+              AND s.unit_file_id = u.file_id
+        )
+    )
+    THEN 1 ELSE 0 END;";
+		command.Parameters.AddWithValue("$unitType", unchecked((long)PatchUnitMeshReader.UnitTypeId));
 		return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 0;
 	}
 
-	private static IReadOnlyDictionary<uint, string> LoadBoneNames(string path)
+	private static bool IsMissingSchemaObject(SqliteException exception)
+		=> exception.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase)
+			|| exception.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
+			|| exception.Message.Contains("file is not a database", StringComparison.OrdinalIgnoreCase);
+
+	private async ValueTask<IReadOnlyDictionary<CoreAssetKey, AuthorityUnitRole>> ReadAuthorityRolesAsync(
+		CancellationToken cancellationToken)
 	{
-		if (!File.Exists(path)) return new Dictionary<uint, string>();
-		return File.ReadLines(path).Select(line => line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)).Where(fields => fields.Length == 2 && uint.TryParse(fields[0], out _)).ToDictionary(fields => uint.Parse(fields[0], CultureInfo.InvariantCulture), fields => fields[1]);
+		// The customization table's archive hash identifies the logical equipment
+		// item, not necessarily the physical archive that stores a shared Unit.
+		// Index roles by Unit AssetKey globally so a shared body/helmet Unit keeps
+		// its authoritative slot and body variant when it is stored in another archive.
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = @"
+		SELECT unit_type_id,unit_file_id,body_variant,part_kind,piece_type
+		FROM game_data_authority_pieces
+		WHERE kit_kind IN ($armor,$helmet)
+	  AND unit_type_id=$unitType
+		ORDER BY unit_file_id,piece_id;";
+		command.Parameters.AddWithValue("$armor", (int)GameDataEquipmentKitKind.Armor);
+		command.Parameters.AddWithValue("$helmet", (int)GameDataEquipmentKitKind.Helmet);
+		command.Parameters.AddWithValue("$unitType", unchecked((long)PatchUnitMeshReader.UnitTypeId));
+		var grouped = new Dictionary<CoreAssetKey, List<AuthorityRoleInput>>();
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			var key = new CoreAssetKey(
+				unchecked((ulong)reader.GetInt64(0)),
+				unchecked((ulong)reader.GetInt64(1)));
+			if (!grouped.TryGetValue(key, out var values)) grouped[key] = values = new List<AuthorityRoleInput>();
+			values.Add(new AuthorityRoleInput(
+				(UnitMeshBodyVariant)reader.GetInt32(2),
+				(UnitMeshPartKind)reader.GetInt32(3),
+				unchecked((uint)reader.GetInt64(4))));
+		}
+
+		return grouped.ToDictionary(pair => pair.Key, pair => AuthorityUnitRole.Create(pair.Value));
 	}
 
 	private static async ValueTask ExecuteAsync(SqliteConnection connection, SqliteTransaction transaction, string sql, CancellationToken cancellationToken)
@@ -303,32 +435,84 @@ ORDER BY a.archive_id,e.file_id;";
 	private static SqliteCommand CreatePartCommand(SqliteConnection connection, SqliteTransaction transaction)
 	{
 		var command = connection.CreateCommand(); command.Transaction = transaction;
-		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$piece,$c,$visual,$lod,$vertices,$triangles,$quality,$r)";
+		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$piece,$c,$visual,$lod,$vertices,$triangles,$quality,$origin,$r)";
 		foreach (var name in new[] { "$a", "$n", "$piece", "$r" }) command.Parameters.Add(name, SqliteType.Text);
-		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod", "$vertices", "$triangles", "$quality" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
+		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod", "$vertices", "$triangles", "$quality", "$origin" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
 	}
 
 	private sealed record EquipmentUnitWorkItem(string ArchiveId, CoreAssetKey AssetKey, bool HasPartFacts);
 
 	private static async ValueTask InsertPartAsync(SqliteCommand command, GameDataUnitPartFact part, CancellationToken cancellationToken)
 	{
-		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$piece"].Value = part.PieceType; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$vertices"].Value = part.VertexCount; command.Parameters["$triangles"].Value = part.TriangleCount; command.Parameters["$quality"].Value = (int)part.GeometryQuality; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$piece"].Value = part.PieceType; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$vertices"].Value = part.VertexCount; command.Parameters["$triangles"].Value = part.TriangleCount; command.Parameters["$quality"].Value = (int)part.GeometryQuality; command.Parameters["$origin"].Value = (int)part.Origin; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private IReadOnlyList<GameDataUnitPartFact> CreatePartFacts(string archiveId, CoreAssetKey unitKey, HD2ModAdaptation.PatchReconstruction.AssetKey adaptationKey, UnitMeshModel model, IReadOnlyDictionary<uint, string> boneNames)
+	private IReadOnlyList<GameDataUnitPartFact> CreatePartFacts(
+		string archiveId,
+		CoreAssetKey unitKey,
+		HD2ModAdaptation.PatchReconstruction.AssetKey adaptationKey,
+		UnitMeshModel model,
+		AuthorityUnitRole? authorityRole)
 	{
 		var geometryByMesh = UnitGeometryFactsBuilder.Analyze(model).Meshes.ToDictionary(fact => fact.MeshInfoIndex);
-		return classifier.Classify(adaptationKey, model, boneNames).Select(part =>
+		// The model parser still owns visual/culling/LOD and geometry facts.  The
+		// installed customization table owns the player-equipment identity, so
+		// avoid community bone-name lookup here entirely.
+		return classifier.Classify(adaptationKey, model).Select(part =>
 		{
 			geometryByMesh.TryGetValue(part.MeshInfoIndex, out var geometry);
-			return new GameDataUnitPartFact(archiveId, unitKey, part.MeshInfoIndex, part.MeshId, part.PartKind, part.Layer, part.BodyVariant, part.SemanticName, part.Confidence, part.IsVisualMesh, part.IsLod, part.Reason)
+			var kind = authorityRole?.PartKind ?? part.PartKind;
+			var bodyVariant = authorityRole?.BodyVariant ?? part.BodyVariant;
+			var layer = part.Layer == UnitMeshPartLayer.Unknown && authorityRole?.FallbackLayer is { } fallbackLayer
+				? fallbackLayer
+				: part.Layer;
+			var hasAuthorityIdentity = authorityRole?.HasIdentity == true;
+			var reason = hasAuthorityIdentity
+				? $"{authorityRole!.Detail}; geometry from parsed Unit."
+				: part.Reason;
+			return new GameDataUnitPartFact(archiveId, unitKey, part.MeshInfoIndex, part.MeshId, kind, layer, bodyVariant, part.SemanticName, hasAuthorityIdentity ? 100 : part.Confidence, part.IsVisualMesh, part.IsLod, reason)
 			{
+				Origin = hasAuthorityIdentity ? GameDataFactOrigin.AuthoritativeGameData : GameDataFactOrigin.DerivedUnitStructure,
 				PieceType = part.PieceType,
 				VertexCount = geometry?.VertexCount ?? 0,
 				TriangleCount = geometry?.TriangleCount ?? 0,
 				GeometryQuality = geometry?.Quality ?? UnitMeshGeometryQuality.Unreadable
 			};
 		}).ToArray();
+	}
+
+	private sealed record AuthorityRoleInput(UnitMeshBodyVariant BodyVariant, UnitMeshPartKind PartKind, uint PieceType);
+
+	private sealed record AuthorityUnitRole(
+		UnitMeshPartKind? PartKind,
+		UnitMeshBodyVariant? BodyVariant,
+		UnitMeshPartLayer? FallbackLayer,
+		string Detail)
+	{
+		public bool HasIdentity => PartKind is not null || BodyVariant is not null;
+
+		public static AuthorityUnitRole Create(IReadOnlyList<AuthorityRoleInput> inputs)
+		{
+			var partKinds = inputs.Select(input => input.PartKind)
+				.Where(kind => kind != UnitMeshPartKind.Unknown)
+				.Distinct()
+				.ToArray();
+			UnitMeshPartKind? partKind = partKinds.Length == 1 ? partKinds[0] : null;
+			var variants = inputs.Select(input => input.BodyVariant)
+				.Where(variant => variant != UnitMeshBodyVariant.Unknown && variant != UnitMeshBodyVariant.Other)
+				.Distinct()
+				.ToArray();
+			UnitMeshBodyVariant? bodyVariant = variants.Contains(UnitMeshBodyVariant.Any)
+				|| variants.Contains(UnitMeshBodyVariant.Slim) && variants.Contains(UnitMeshBodyVariant.Stocky)
+					? UnitMeshBodyVariant.Any
+					: variants.Length == 1 ? variants[0] : null;
+			var pieceTypes = inputs.Select(input => input.PieceType).Distinct().OrderBy(value => value).ToArray();
+			UnitMeshPartLayer? fallbackLayer = pieceTypes.Length != 0 && pieceTypes.All(value => value == 1)
+				? UnitMeshPartLayer.Undergarment
+				: pieceTypes.Length != 0 ? UnitMeshPartLayer.Armor : null;
+			var detail = $"Authoritative GameData equipment relation: Part={partKind?.ToString() ?? "Ambiguous"}; Body={bodyVariant?.ToString() ?? "Ambiguous"}; PieceType={string.Join(',', pieceTypes)}";
+			return new AuthorityUnitRole(partKind, bodyVariant, fallbackLayer, detail);
+		}
 	}
 
 	private static SqliteCommand CreateLayoutCommand(SqliteConnection connection, SqliteTransaction transaction)

@@ -124,6 +124,8 @@ public static class CoreServices
 	}
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
+	public static IGameDataAuthorityProvider CreateGameDataAuthorityProvider()
+		=> new GameDataAuthorityProvider();
 	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)
 		=> new AdvancedEquipmentIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)

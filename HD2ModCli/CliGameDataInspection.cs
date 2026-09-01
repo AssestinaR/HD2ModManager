@@ -154,7 +154,7 @@ internal static class CliGameDataInspection
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
 		if (string.IsNullOrWhiteSpace(workspace.ManagerRoot))
-			throw new CliUserException("GameDataManagerRootRequired", "gamedata 命令需要 --manager-root <管理器目录>，以读取资产索引和 archivehashes。 ");
+			throw new CliUserException("GameDataManagerRootRequired", "gamedata 命令需要 --manager-root <管理器目录>，以读取资产索引和可选显示资料。 ");
 		if (string.IsNullOrWhiteSpace(workspace.GameDataRoot))
 			throw new CliUserException("GameDataDirectoryRequired", "gamedata 命令需要 --game-data <游戏 data 目录>，或可读取的管理器 GameDataFolder 设置。 ");
 
@@ -182,11 +182,16 @@ internal static class CliGameDataInspection
 			archiveHashes = archiveHashesAvailable
 				? await File.ReadAllTextAsync(paths.ArchiveHashesPath, cancellationToken).ConfigureAwait(false)
 				: "{}";
+			if (archiveHashesAvailable && !CliGameDataIndexPlanArtifacts.IsValidCommunityArchiveHashesJson(archiveHashes))
+			{
+				diagnostics.Add(new CliGameDataDiagnostic("ArchiveHashesInvalid", "warning", false, "archivehashes.json 格式无效；将忽略社区显示资料并继续使用 GameData 权威事实。", paths.ArchiveHashesPath));
+				archiveHashes = "{}";
+			}
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			diagnostics.Add(new CliGameDataDiagnostic("ArchiveHashesUnreadable", "error", true, $"无法读取 archivehashes：{exception.Message}", paths.ArchiveHashesPath, exception.ToString()));
-			return new CliGameDataIndexInspection(resolvedGameDataDirectory, true, "unavailable", false, null, null, archiveHashesAvailable, DistinctDiagnostics(diagnostics));
+			diagnostics.Add(new CliGameDataDiagnostic("ArchiveHashesUnreadable", "warning", false, $"无法读取 archivehashes；将忽略社区显示资料并继续使用 GameData 权威事实：{exception.Message}", paths.ArchiveHashesPath, exception.ToString()));
+			archiveHashes = "{}";
 		}
 
 		try

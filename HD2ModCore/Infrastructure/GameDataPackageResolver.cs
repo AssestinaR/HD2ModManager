@@ -38,6 +38,10 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 	public async ValueTask<GameDataPackageToc?> GetPackageTocAsync(string packageName, CancellationToken cancellationToken = default)
 	{
 		var fullPath = Path.Combine(_gameDataDirectory, Path.GetFileName(packageName));
+		if (File.Exists(fullPath) && new FileInfo(fullPath).Length < 12)
+		{
+			return null;
+		}
 		var type = await GetPackageTypeAsync(fullPath, cancellationToken).ConfigureAwait(false);
 		var toc = type switch
 		{
@@ -47,7 +51,12 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 			_ => null,
 		};
 
-		return toc is null || toc.Length == 0 ? null : new GameDataPackageToc(toc, type is PackageStorageType.Dsar or PackageStorageType.Bundled);
+		// `data` also contains data libraries (for example the explicit armor-set
+		// relationship table).  They can be DSAR-backed, but they are not archive
+		// TOCs and must not enter the reverse asset index as broken archives.
+		return toc is null || toc.Length < 12 || BinaryPrimitives.ReadUInt32LittleEndian(toc.AsSpan(0, sizeof(uint))) != TocMagic
+			? null
+			: new GameDataPackageToc(toc, type is PackageStorageType.Dsar or PackageStorageType.Bundled);
 	}
 
 	public async ValueTask<byte[]?> GetPackageResourceAsync(string packageName, ulong resourceOffset, uint resourceSize, CancellationToken cancellationToken = default)
@@ -89,14 +98,14 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 			.Select(Path.GetFileName)
 			.Where(name => !string.IsNullOrWhiteSpace(name)
 				&& !name.Contains(".patch", StringComparison.OrdinalIgnoreCase)
-				&& Path.GetExtension(name) is "" or ".stream" or ".gpu_resources")
+				&& Path.GetExtension(name) is "")
 			.Cast<string>()
 			.ToArray();
 
 		// 新版目录可同时存在直接 archive 与 bundles.nxa。两者共同构成当前 Game Data；
 		// 只返回 bundle 清单会使 SQLite 索引漏掉直接资源，反之亦然。
 		return directPackages
-			.Concat(_packages.Keys)
+			.Concat(_packages.Keys.Where(IsBasePackageName))
 			.Distinct(StringComparer.OrdinalIgnoreCase)
 			.Order(StringComparer.OrdinalIgnoreCase)
 			.ToArray();
@@ -276,7 +285,11 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 
 				package.Entries.Add(new BundleEntryInfo(
 					ReadInt64(bundleContents, itemOffset),
-					ReadInt32(bundleContents, itemOffset + 8),
+					// The SDK stores this as an unsigned 32-bit offset into the
+					// uncompressed bundle.  Current bundles legitimately set the
+					// high bit, so reading it as Int32 makes valid GPU ranges
+					// negative and makes the chunk map lookup fail.
+					ReadUInt32(bundleContents, itemOffset + 8),
 					bundleContents[itemOffset + 0x0F]));
 			}
 
@@ -518,6 +531,13 @@ public sealed class GameDataPackageResolver : IGameDataPackageResolver
 
 	private static int ReadInt32(byte[] data, int offset)
 		=> BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(offset, 4));
+
+	private static uint ReadUInt32(byte[] data, int offset)
+		=> BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
+
+	private static bool IsBasePackageName(string name)
+		=> !name.EndsWith(".stream", StringComparison.OrdinalIgnoreCase)
+			&& !name.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase);
 
 	private static string ReadNullTerminatedString(byte[] data, int offset)
 	{

@@ -4484,7 +4484,7 @@ public static class CliApplication
 	}
 
 	private static string FormatGameDataIndexMaintenanceInspection(CliGameDataIndexPlanDocument document)
-		=> $"GameData 索引维护检查：基础索引={document.Inputs.BaseIndexState}；Armor / Helmet Unit 部位事实={(document.Inputs.AdvancedEquipmentFactsCurrent ? "当前" : "缺失或过期")}；archivehashes={(document.Inputs.ArchiveHashes.Exists ? "可用" : "缺失")}。";
+		=> $"GameData 索引维护检查：基础索引={document.Inputs.BaseIndexState}；Armor / Helmet Unit 部位事实={(document.Inputs.AdvancedEquipmentFactsCurrent ? "当前" : "缺失或过期")}；可选 archivehashes={(document.Inputs.ArchiveHashes.Exists ? "已提供" : "未提供")}。";
 
 	private static string FormatGameDataIndexMaintenancePlan(CliGameDataIndexPlanDocument document, string outputPath)
 	{

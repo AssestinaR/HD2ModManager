@@ -1,6 +1,6 @@
 # 在线资产元数据
 
-在需要建立 GameData 索引、分析装备或修复 Patch，而本地 `archivehashes.json` 缺失、过期或来源需要审阅时使用。
+在需要更新可选的社区资产显示资料，或需要审阅 `archivehashes.json` 来源时使用。GameData 索引和 Armor / Helmet 权威事实不依赖该文件；缺失或无效时会退回安装目录中的实际 GameData。
 
 先读取状态：
 

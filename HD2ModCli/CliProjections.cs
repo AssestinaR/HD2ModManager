@@ -32,7 +32,7 @@ public static class CliProjections
 				new { name = "gamedata browser", safety = "read-only-expensive", description = "显式构建 UI 对照的 Archive + 库 + 活动配置 + 实际赢家全景；直读 Patch，不写派生缓存" },
 				new { name = "gamedata index inspect", safety = "read-only", description = "检查基础资产索引、archivehashes 与 Armor / Helmet Unit 部位事实的当前状态" },
 				new { name = "gamedata index plan", safety = "explicit-export", description = "导出 rebuild、units-all 或 units-missing 的 GameData 索引维护计划" },
-				new { name = "gamedata index validate", safety = "read-only", description = "重新核验 GameData、archivehashes 和现有索引状态，拒绝任何漂移" },
+				new { name = "gamedata index validate", safety = "read-only", description = "重新核验 GameData、可选 archivehashes 和现有索引状态，拒绝任何漂移" },
 				new { name = "gamedata index apply", safety = "explicit-confirm", description = "仅重建管理器拥有的基础索引或 Armor / Helmet Unit 部位事实；不写 GameData 或 Mod 库" },
 				new { name = "library sync inspect", safety = "read-only", description = "检查已登记 Mod 与库目录实际 Patch 的差异，不写入任何文件" },
 				new { name = "library sync plan", safety = "explicit-export", description = "导出固定新增 Mod ID 与输入指纹的库对账计划" },

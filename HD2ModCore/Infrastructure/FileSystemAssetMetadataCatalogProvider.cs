@@ -33,18 +33,33 @@ public sealed class FileSystemAssetMetadataCatalogProvider : IAssetMetadataCatal
 
 	private static async Task<IReadOnlyDictionary<string, ArchiveMetadata>> LoadArchivesAsync(string path, CancellationToken cancellationToken)
 	{
-		await using var stream = File.OpenRead(path);
-		var root = await JsonSerializer.DeserializeAsync<ArchiveHashesRoot>(stream, cancellationToken: cancellationToken).ConfigureAwait(false)
-			?? new ArchiveHashesRoot();
+		ArchiveHashesRoot root;
+		try
+		{
+			await using var stream = File.OpenRead(path);
+			root = await JsonSerializer.DeserializeAsync<ArchiveHashesRoot>(stream, cancellationToken: cancellationToken).ConfigureAwait(false)
+				?? new ArchiveHashesRoot();
+		}
+		catch (Exception exception) when (exception is JsonException or NotSupportedException or IOException or UnauthorizedAccessException)
+		{
+			// This file is optional display metadata. A damaged cache must not
+			// make the authoritative installed-GameData index unusable.
+			return new Dictionary<string, ArchiveMetadata>(StringComparer.OrdinalIgnoreCase);
+		}
 
 		var result = new Dictionary<string, ArchiveMetadata>(StringComparer.OrdinalIgnoreCase);
 		var categoryOrder = 0;
 		foreach (var (category, map) in root)
 		{
+			if (string.IsNullOrWhiteSpace(category) || map is null)
+			{
+				categoryOrder++;
+				continue;
+			}
 			var archiveOrder = 0;
 			foreach (var (archiveId, displayName) in map)
 			{
-				if (string.IsNullOrWhiteSpace(archiveId))
+				if (string.IsNullOrWhiteSpace(archiveId) || string.IsNullOrWhiteSpace(displayName))
 				{
 					archiveOrder++;
 					continue;

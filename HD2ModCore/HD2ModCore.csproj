@@ -15,7 +15,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\HD2ModAdaptation\HD2ModAdaptation.csproj" />
+	<ProjectReference Include="..\HD2ModAdaptation\HD2ModAdaptation.csproj" />
+	<ProjectReference Include="..\HD2GameItemAssets\HD2GameItemAssets.csproj" />
+	<ProjectReference Include="..\Decryptor\Decryptor.csproj" />
   </ItemGroup>
 
 </Project>

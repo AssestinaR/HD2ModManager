@@ -2,8 +2,8 @@
 
 namespace HD2ModCore.Infrastructure;
 
-// 作用：从本地文件系统读取 archivehashes.json（用于索引构建的输入数据）。
-// Purpose: Reads archivehashes.json from the local filesystem (input data for index building).
+// 作用：从本地文件系统读取可选的 archivehashes.json（仅补充显示名称）。
+// Purpose: Reads optional community archive metadata used only to enrich display names.
 public sealed class FileSystemArchiveHashesProvider : IArchiveHashesProvider
 {
 	private readonly StoragePaths _paths;
