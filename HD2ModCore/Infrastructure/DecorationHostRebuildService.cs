@@ -161,6 +161,7 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
         {
             Geometry = geometryByMesh.GetValueOrDefault((candidate.Part.UnitAssetKey, candidate.Part.MeshInfoIndex))
         }).ToArray();
+        candidates = RebindCandidatesToActualUnits(candidates, unitsByKey, patchRequest, issues).ToArray();
         var targets = ResolveTargets(candidates, attachments);
         var targetsByUnit = targets
             .GroupBy(target => target.Part.UnitAssetKey)
@@ -181,7 +182,7 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
                 : await ReadUnitAsync(entry, entries, patchRequest, canonicalSource: false, cancellationToken).ConfigureAwait(false);
             progress?.Report(new DecorationOperationProgress("正在合并目标 Unit", targetIndex, targetEntries.Length));
             var targetRaw = unit.Model.RawMeshData.SingleOrDefault(raw => raw.MeshInfoIndex == targetPart.MeshInfoIndex)
-                ?? throw new InvalidDataException($"Target MeshInfo {targetPart.MeshInfoIndex} has no readable RawMesh.");
+                ?? throw new InvalidDataException($"Target MeshInfo {targetPart.MeshInfoIndex} has no readable RawMesh after actual Unit rebinding.");
             var targetMesh = unit.Model.Meshes.Single(mesh => mesh.Index == targetPart.MeshInfoIndex);
             var selectedAttachments = matching
                 .GroupBy(target => (target.Attachment.Attachment.DecorationId, target.Attachment.Payload.BodyVariant), StringTupleComparer.OrdinalIgnoreCase)
@@ -258,6 +259,49 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
         return facts;
     }
 
+    private static IReadOnlyList<DecorationHostCandidate> RebindCandidatesToActualUnits(
+        IReadOnlyList<DecorationHostCandidate> candidates,
+        IReadOnlyDictionary<CoreAssetKey, PatchUnitMesh> unitsByKey,
+        ModInformationReadRequest patchRequest,
+        ICollection<CoreIssue> issues)
+    {
+        var rebound = new List<DecorationHostCandidate>(candidates.Count);
+        foreach (var scope in candidates.GroupBy(candidate => (candidate.ArchiveId, candidate.Part.UnitAssetKey)))
+        {
+            var indexedParts = scope.Select(candidate => candidate.Part).ToArray();
+            if (!unitsByKey.TryGetValue(scope.Key.UnitAssetKey, out var actualUnit))
+                continue;
+
+            foreach (var candidate in scope)
+            {
+                if (DecorationHostTargetBinder.TryBind(candidate.Part, indexedParts, actualUnit.Model, out var bound) && bound is not null)
+                {
+                    rebound.Add(candidate with { Part = bound.Part, Geometry = bound.Geometry });
+                    continue;
+                }
+
+                var actualMeshes = string.Join(",", actualUnit.Model.Meshes
+                    .Where(mesh => mesh.SemanticInfo.IsVisualMesh)
+                    .Select(mesh => $"M{mesh.Index}/ID0x{mesh.MeshId:x8}/L{mesh.LodIndex}")
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+                issues.Add(new CoreIssue(
+                    CoreIssueSeverity.Warning,
+                    "DecorationHostTargetRebindSkipped",
+                    $"跳过无法绑定的主体部件：Unit 0x{candidate.Part.UnitAssetKey.FileId:x16}，目录 MeshInfo={candidate.Part.MeshInfoIndex}/MeshId=0x{candidate.Part.MeshId:x8}；当前 Unit 可见 Mesh=[{actualMeshes}]。",
+                    patchRequest.SourcePath,
+                    patchRequest.NodeId));
+            }
+        }
+
+        return rebound
+            .GroupBy(candidate => (candidate.ArchiveId, candidate.Part.UnitAssetKey, candidate.Part.MeshInfoIndex))
+            .Select(group => group
+                .OrderByDescending(candidate => GeometryRank(candidate))
+                .ThenByDescending(candidate => candidate.Part.Confidence)
+                .First())
+            .ToArray();
+    }
+
     private async ValueTask<PatchUnitMesh> ReadUnitAsync(
         HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry,
         IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries,
@@ -310,8 +354,15 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
         DecorationAttachmentPlan plan,
         IReadOnlySet<UnitMeshPartLayer> sourceLayers)
     {
-        var realGeometry = candidates.Where(HasRenderableGeometry).ToArray();
-        var geometryEligible = realGeometry.Length != 0 ? realGeometry : candidates.ToArray();
+        // Rebinding has already required a real RawMesh from the actual host
+        // Unit. Do not fall back to catalog-only candidates here: that would
+        // select an indexed mesh that cannot be read from this Patch. A real
+        // placeholder remains eligible when it is the only readable visual
+        // host, because appending geometry to it is a supported operation.
+        var readable = candidates.Where(candidate => candidate.Geometry is not null).ToArray();
+        var realGeometry = readable.Where(HasRenderableGeometry).ToArray();
+        var geometryEligible = realGeometry.Length != 0 ? realGeometry : readable;
+        if (geometryEligible.Length == 0) return [];
         var sameLayer = sourceLayers.Count == 0
             ? geometryEligible
             : geometryEligible.Where(candidate => sourceLayers.Contains(candidate.Part.Layer)).ToArray();

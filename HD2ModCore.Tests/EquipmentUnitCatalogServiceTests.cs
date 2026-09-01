@@ -501,6 +501,23 @@ public sealed class EquipmentUnitCatalogServiceTests
 	}
 
 	[Fact]
+	public async Task CreatePlanAsync_ManualMappingAllowsDifferentPart()
+	{
+		var source = Part(SourceUnit, 1, "left-arm-source") with { PartKind = UnitMeshPartKind.LeftArm };
+		var target = Part(TargetUnit, 2, "right-leg-target") with { PartKind = UnitMeshPartKind.RightLeg };
+
+		var plan = await CreateService().CreatePlanAsync(
+			[Entry("source", source)], [Entry("target", target)], "source", UnitMeshBodyVariant.Any,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, ["target"],
+			manualMappings: [new CrossArmorManualMapping(new CrossArmorPhysicalTargetKey(TargetUnit), SourceUnit)], manualMode: true);
+
+		var mapping = Assert.Single(plan.Mappings);
+		Assert.Equal(source, mapping.Source);
+		Assert.True(mapping.IsManual);
+		Assert.Equal("强制命中", mapping.Reason);
+	}
+
+	[Fact]
 	public async Task CreatePlanAsync_AdditionalSelectedSourceIsIncluded()
 	{
 		var armorSource = Part(SourceUnit, 1, "armor") with { PartKind = UnitMeshPartKind.LeftArm, StoredBytes = 1024 };

@@ -32,9 +32,7 @@ namespace HD2ModManager.Services
         public string Title => _task?.Name ?? _notification?.Message ?? string.Empty;
         public string Detail => _task is null
             ? BuildNotificationDetail(_notification!)
-            : string.IsNullOrWhiteSpace(_task.Stage) || string.Equals(_task.Stage, _task.StatusText, StringComparison.Ordinal)
-                ? _task.StatusText
-                : $"{_task.StatusText} · {_task.Stage}";
+            : BuildTaskDetail(_task);
         public NotificationLevel Level => _notification?.Level ?? _task?.Status switch
         {
             BackgroundTaskStatus.Failed => NotificationLevel.Error,
@@ -66,9 +64,25 @@ namespace HD2ModManager.Services
 
         private static string BuildNotificationDetail(NotificationItem notification)
         {
-            var source = string.IsNullOrWhiteSpace(notification.Source) ? string.Empty : $"{notification.Source} · ";
+            var parts = new System.Collections.Generic.List<string>
+            {
+                notification.UpdatedAt.ToLocalTime().ToString("HH:mm:ss")
+            };
+            if (!string.IsNullOrWhiteSpace(notification.Source)) parts.Add(notification.Source!);
             var count = notification.OccurrenceCount > 1 ? $" · 重复 {notification.OccurrenceCount} 次" : string.Empty;
-            return $"{source}{notification.UpdatedAt.ToLocalTime():HH:mm:ss}{count}";
+            if (count.Length != 0) parts.Add(count.Trim(' ', '·'));
+            return string.Join(" · ", parts);
+        }
+
+        private static string BuildTaskDetail(BackgroundTaskItem task)
+        {
+            var timestamp = (task.FinishedAt ?? task.StartedAt ?? task.CreatedAt)
+                .ToLocalTime()
+                .ToString("HH:mm:ss");
+            var state = string.IsNullOrWhiteSpace(task.Stage) || string.Equals(task.Stage, task.StatusText, StringComparison.Ordinal)
+                ? task.StatusText
+                : $"{task.StatusText} · {task.Stage}";
+            return $"{timestamp} · {state}";
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

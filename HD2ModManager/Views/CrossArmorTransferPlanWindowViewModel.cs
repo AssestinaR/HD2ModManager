@@ -90,7 +90,37 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	}
 	public IReadOnlyList<EquipmentUnitPart> ManualSourceChoices => SelectedTargetMapping is null
 		? Array.Empty<EquipmentUnitPart>()
-		: SourceParts.Where(part => part.PartKind == SelectedTargetMapping.Target.PartKind).ToArray();
+		: GetManualSourceChoices(SelectedTargetMapping);
+
+	// Keep same-part sources at the top for the two quick actions, but retain every
+	// readable source so the context menu can still apply an intentional cross-part
+	// override when automatic prediction is not suitable.
+	public IReadOnlyList<EquipmentUnitPart> GetManualSourceChoices(CrossArmorTransferMapping target)
+	{
+		ArgumentNullException.ThrowIfNull(target);
+		return SourceParts
+			.Where(IsUsableManualSource)
+			.OrderByDescending(part => part.PartKind == target.Target.PartKind)
+			.ThenByDescending(part => part.Layer == target.Target.Layer)
+			.ThenByDescending(part => part.BodyVariant == target.Target.BodyVariant)
+			.ThenByDescending(part => part.BodyVariant == UnitMeshBodyVariant.Any)
+			.ThenByDescending(part => part.HasRenderableGeometry)
+			.ThenByDescending(part => part.TriangleCount)
+			.ThenByDescending(part => part.VertexCount)
+			.ThenByDescending(part => part.StoredBytes)
+			.ThenBy(part => part.PartKind)
+			.ThenBy(part => part.Layer)
+			.ThenBy(part => part.BodyVariant)
+			.ThenBy(part => part.UnitAssetKey.FileId)
+			.ThenBy(part => part.MeshInfoIndex)
+			.ToArray();
+	}
+
+	private static bool IsUsableManualSource(EquipmentUnitPart part)
+		=> part.PartKind != UnitMeshPartKind.Unknown
+			&& part.Confidence == 100
+			&& !part.IsCullingMesh;
+
 	public bool CanEditSelectedMapping => SelectedTargetMapping is not null;
 	public CrossArmorBodyVariantPreference BodyVariantPreference
 	{
@@ -462,13 +492,15 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public void ClearManualMapping(CrossArmorTransferMapping target)
 	{
 		ArgumentNullException.ThrowIfNull(target);
-		if (manualMappings.Remove(target.PhysicalTarget)) QueueRefreshPlan();
+		RestoreAutomaticMapping(target);
 	}
 
 	public void RestoreAutomaticMapping(CrossArmorTransferMapping target)
 	{
 		ArgumentNullException.ThrowIfNull(target);
-		if (suppressedTargets.Remove(target.PhysicalTarget)) QueueRefreshPlan();
+		var removedManualMapping = manualMappings.Remove(target.PhysicalTarget);
+		var removedSuppression = suppressedTargets.Remove(target.PhysicalTarget);
+		if (removedManualMapping || removedSuppression) QueueRefreshPlan();
 	}
 
 	public void SetAllTargetsSelected(bool? selected)
