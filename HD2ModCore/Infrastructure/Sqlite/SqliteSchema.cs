@@ -6,11 +6,13 @@ namespace HD2ModCore.Infrastructure.Sqlite;
 // Purpose: Defines and applies the persisted GameData facts and asset->archive reverse index schema.
 internal static class SqliteSchema
 {
-	// Version 8 adds installed-game weapon and vehicle customization names to
+	// Version 9 adds generated-entity encyclopedia facts alongside the
+	// installed-game weapon and vehicle customization names.
+	// Version 8 added installed-game weapon and vehicle customization names to
 	// the persisted authority snapshot. Bumping the source identity ensures an
 	// existing index is rebuilt rather than silently retaining the old display
 	// metadata.
-	public const int SchemaVersion = 8;
+	public const int SchemaVersion = 10;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -147,6 +149,20 @@ CREATE TABLE IF NOT EXISTS game_data_archive_names (
 
 CREATE INDEX IF NOT EXISTS ix_game_data_archive_names_archive_locale ON game_data_archive_names(archive_id, locale);
 
+CREATE TABLE IF NOT EXISTS game_data_authority_entities (
+	entity_id INTEGER PRIMARY KEY,
+	unit_type_id INTEGER NOT NULL,
+	unit_file_id INTEGER NOT NULL,
+	is_exact_unit_match INTEGER NOT NULL,
+	is_weapon_candidate INTEGER NOT NULL,
+	equipment_type INTEGER NULL,
+	component_type_ids_json TEXT NOT NULL,
+	localized_names_json TEXT NOT NULL,
+	localized_designations_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS ix_game_data_authority_entities_unit ON game_data_authority_entities(unit_type_id, unit_file_id);
+
 CREATE TABLE IF NOT EXISTS game_data_authority_pieces (
 	piece_id INTEGER PRIMARY KEY AUTOINCREMENT,
 	item_id INTEGER NOT NULL,
@@ -202,6 +218,7 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "triangle_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "geometry_quality", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "fact_origin", "INTEGER NOT NULL DEFAULT 2", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_authority_entities", "localized_designations_json", "TEXT NOT NULL DEFAULT '{}'", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
 	}
@@ -257,6 +274,7 @@ DELETE FROM game_data_authority_resources;
 DELETE FROM game_data_authority_pieces;
 DELETE FROM game_data_authority_kits;
 DELETE FROM game_data_archive_names;
+DELETE FROM game_data_authority_entities;
 DELETE FROM game_data_authority_issues;
 DELETE FROM archive_issues;
 DELETE FROM archive_entries;

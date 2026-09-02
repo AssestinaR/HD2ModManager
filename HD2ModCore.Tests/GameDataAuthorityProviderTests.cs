@@ -2,6 +2,7 @@ using HD2GameItemAssets;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using FileDecryptor;
 
 namespace HD2ModCore.Tests;
 
@@ -9,7 +10,7 @@ namespace HD2ModCore.Tests;
 public sealed class GameDataAuthorityProviderTests
 {
 	[Fact]
-	public async Task LoadAsync_ValidPlaintextLibrary_UsesPlaintextWithoutEncryptedMirror()
+	public async Task LoadAsync_ValidPlaintextLibrary_UsesPlaintextWhenEncryptedMirrorIsAbsent()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2-authority-tests", Guid.NewGuid().ToString("N"));
 		var gameData = Path.Combine(root, "data");
@@ -26,10 +27,6 @@ public sealed class GameDataAuthorityProviderTests
 						(bodyType: 3u, slot: CustomizationKitSlot.LeftArm, unitId: 0xccccUL),
 					}));
 			await File.WriteAllBytesAsync(Path.Combine(gameDirectory, "generated_customization_armor_sets"), plaintext);
-			// Deliberately invalid encrypted data: a valid plaintext source must not load
-			// Decryptor/native libsodium merely to "verify" this optional mirror.
-			await File.WriteAllBytesAsync(Path.Combine(gameDirectory, "generated_customization_armor_sets.dl_bin"), [1, 2, 3, 4]);
-
 			var snapshot = await new GameDataAuthorityProvider().LoadAsync(gameData);
 
 			Assert.Equal(GameDataAuthoritySourceKind.PlaintextDataLibrary, snapshot.SourceKind);
@@ -39,6 +36,42 @@ public sealed class GameDataAuthorityProviderTests
 			Assert.Equal([UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim, UnitMeshBodyVariant.Any], kit.Pieces.Select(piece => piece.BodyVariant).ToArray());
 			Assert.Equal([UnitMeshPartKind.Torso, UnitMeshPartKind.Torso, UnitMeshPartKind.LeftArm], kit.Pieces.Select(piece => piece.PartKind).ToArray());
 			Assert.DoesNotContain(snapshot.Issues, issue => issue.Code.Contains("Encrypted", StringComparison.Ordinal));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task LoadAsync_CurrentEncryptedLibrary_RefreshesOlderPlaintextCache()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-authority-tests", Guid.NewGuid().ToString("N"));
+		var gameData = Path.Combine(root, "data");
+		var gameDirectory = Path.Combine(gameData, "game");
+		Directory.CreateDirectory(gameDirectory);
+		try
+		{
+			var oldPlaintext = BuildLibrary(
+				(itemId: 101u, archiveId: 0x1111111111111111UL, kitType: CustomizationKitType.Armor,
+					bodies: [(bodyType: 0u, slot: CustomizationKitSlot.Torso, unitId: 0xaaaaUL)]));
+			var currentPlaintext = BuildLibrary(
+				(itemId: 202u, archiveId: 0x2222222222222222UL, kitType: CustomizationKitType.Helmet,
+					bodies: [(bodyType: 3u, slot: CustomizationKitSlot.Helmet, unitId: 0xbbbbUL)]));
+			var plaintextPath = Path.Combine(gameDirectory, "generated_customization_armor_sets");
+			await File.WriteAllBytesAsync(plaintextPath, oldPlaintext);
+#pragma warning disable CS0618
+			var encrypted = Decryptor.CreateWithEmbeddedKeys().EncodeData(currentPlaintext);
+#pragma warning restore CS0618
+			await File.WriteAllBytesAsync(Path.Combine(gameDirectory, "generated_customization_armor_sets.dl_bin"), encrypted);
+
+			var snapshot = await new GameDataAuthorityProvider().LoadAsync(gameData, refreshPlaintextCache: true);
+
+			Assert.Equal(GameDataAuthoritySourceKind.DecryptedDataLibrary, snapshot.SourceKind);
+			var kit = Assert.Single(snapshot.Kits);
+			Assert.Equal("2222222222222222", kit.ArchiveId);
+			Assert.Equal(GameDataEquipmentKitKind.Helmet, kit.Kind);
+			Assert.Equal(currentPlaintext, await File.ReadAllBytesAsync(plaintextPath));
 		}
 		finally
 		{

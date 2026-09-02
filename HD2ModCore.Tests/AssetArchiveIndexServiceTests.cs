@@ -790,7 +790,10 @@ public sealed class AssetArchiveIndexServiceTests
 
 	private sealed class FixedAuthorityProvider(GameDataAuthoritySnapshot snapshot) : HD2ModCore.Application.IGameDataAuthorityProvider
 	{
-		public ValueTask<GameDataAuthoritySnapshot> LoadAsync(string gameDataDirectory, CancellationToken cancellationToken = default)
+		public ValueTask<GameDataAuthoritySnapshot> LoadAsync(
+			string gameDataDirectory,
+			CancellationToken cancellationToken = default,
+			bool refreshPlaintextCache = false)
 			=> ValueTask.FromResult(snapshot);
 	}
 }

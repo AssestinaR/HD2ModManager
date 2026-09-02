@@ -7,5 +7,6 @@ public interface IGameDataAuthorityProvider
 {
 	ValueTask<GameDataAuthoritySnapshot> LoadAsync(
 		string gameDataDirectory,
-		CancellationToken cancellationToken = default);
+		CancellationToken cancellationToken = default,
+		bool refreshPlaintextCache = false);
 }

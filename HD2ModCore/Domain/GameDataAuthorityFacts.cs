@@ -85,6 +85,26 @@ public sealed record GameDataAuthorityArchiveName(
 	int Confidence,
 	string Category = "");
 
+// Purpose: Keeps the installed game's Entity -> Unit -> localized-name facts
+// available until the archive TOC index can join them to physical Archives.
+// An Entity can share a Unit with other Entities, so this fact deliberately
+// retains both identities and the component evidence used for classification.
+public sealed record GameDataAuthorityEntityFact(
+	ulong EntityId,
+	AssetKey UnitAssetKey,
+	bool IsExactUnitMatch,
+	bool IsWeaponCandidate,
+	IReadOnlyList<uint> ComponentTypeIds,
+	IReadOnlyDictionary<string, string> LocalizedNames,
+	uint? EquipmentType = null,
+	IReadOnlyDictionary<string, string>? LocalizedDesignations = null)
+{
+	public IReadOnlyDictionary<string, string> Designations
+		=> LocalizedDesignations ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+	public bool HasComponent(uint typeId) => ComponentTypeIds.Contains(typeId);
+}
+
 // Purpose: Immutable, fingerprinted result of parsing the installed generated_customization_armor_sets library.
 public sealed record GameDataAuthoritySnapshot(
 	GameDataAuthoritySourceKind SourceKind,
@@ -97,8 +117,11 @@ public sealed record GameDataAuthoritySnapshot(
 	public string PreferredLocale { get; init; } = "en-US";
 	public IReadOnlyList<GameDataAuthorityArchiveName> ArchiveNames { get; init; }
 		= Array.Empty<GameDataAuthorityArchiveName>();
+	public IReadOnlyList<GameDataAuthorityEntityFact> EntityFacts { get; init; }
+		= Array.Empty<GameDataAuthorityEntityFact>();
 
-	public bool IsAvailable => SourceKind != GameDataAuthoritySourceKind.Unavailable && Kits.Count != 0;
+	public bool IsAvailable => (SourceKind != GameDataAuthoritySourceKind.Unavailable && Kits.Count != 0)
+		|| EntityFacts.Count != 0;
 
 	public IReadOnlyDictionary<string, GameDataAuthorityArchiveMetadata> BuildArchiveMetadata()
 	{
@@ -112,12 +135,7 @@ public sealed record GameDataAuthoritySnapshot(
 					.GroupBy(name => name.Locale, StringComparer.OrdinalIgnoreCase)
 					.ToDictionary(
 						locale => locale.Key,
-						locale => locale
-							.OrderByDescending(name => name.Confidence)
-							.ThenBy(name => name.ItemId)
-							.ThenBy(name => name.DisplayName, StringComparer.Ordinal)
-							.Select(name => name.DisplayName)
-							.First(),
+						locale => SelectLocalizedNames(locale),
 						StringComparer.OrdinalIgnoreCase),
 				StringComparer.OrdinalIgnoreCase);
 
@@ -200,6 +218,38 @@ public sealed record GameDataAuthoritySnapshot(
 		return kitNames.FirstOrDefault(IsReadable)
 			?? kitNames.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
 			?? fallback;
+	}
+
+	private static string SelectLocalizedNames(IEnumerable<GameDataAuthorityArchiveName> names)
+	{
+		var ordered = names
+			.Where(name => IsReadable(name.DisplayName))
+			.OrderByDescending(name => name.Confidence)
+			.ThenBy(name => name.ItemId)
+			.ThenBy(name => name.DisplayName, StringComparer.Ordinal)
+			.ToArray();
+		if (ordered.Length == 0)
+		{
+			return string.Empty;
+		}
+
+		// Prefer the generated Entity encyclopedia when it is present. A physical
+		// Archive can also be referenced by a customization settings table; those
+		// entries describe attachments/skins and must not be concatenated onto the
+		// weapon body's display name.
+		var entityNames = ordered
+			.Where(name => name.Source.StartsWith("GameData.generated_entities", StringComparison.OrdinalIgnoreCase))
+			.ToArray();
+		if (entityNames.Length == 0)
+		{
+			return ordered[0].DisplayName.Trim();
+		}
+
+		return string.Join(
+			" & ",
+			entityNames
+				.Select(name => name.DisplayName.Trim())
+				.Distinct(StringComparer.Ordinal));
 	}
 
 	private static bool IsReadable(string? value)

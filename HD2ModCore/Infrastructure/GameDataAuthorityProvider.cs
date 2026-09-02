@@ -13,14 +13,18 @@ using HD2ModCore.Domain;
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Reads the game's explicit Armor/Helmet/Cape customization map. The
-// installed plaintext library is authoritative when it is valid; the encrypted
-// mirror is loaded only when the plaintext file is unavailable or unreadable.
+// encrypted .dl_bin is the update-authoritative source.  On every explicit
+// asset-index rebuild we decode it first and atomically refresh the adjacent
+// plaintext cache used by the armor-set reader.  This prevents a game update
+// from silently leaving an older generated_customization_armor_sets file in
+// place and poisoning an otherwise newly-built SQLite index.
 public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 {
 	private const string GeneratedLibraryName = "generated_customization_armor_sets";
 	private const string EncryptedLibraryName = "generated_customization_armor_sets.dl_bin";
 	private const string GeneratedWeaponCustomizationSettingsName = "generated_weapon_customization_settings.dl_bin";
 	private const string GeneratedUnitCustomizationSettingsName = "generated_unit_customization_settings.dl_bin";
+	private const string GeneratedEntitiesName = "generated_entities.dl_bin";
 	private const string StringsArchiveName = "9ba626afa44a3aa3";
 	private const string LanguageSettingsName = "generated_language_settings.dl_bin";
 	private const ulong HashLookupTypeId = 0xe3f2851035957af5;
@@ -28,7 +32,9 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 	private const string LocalizedNameSource = "GameData.generated_customization_armor_sets+strings";
 	private const string WeaponNameSource = "GameData.generated_weapon_customization_settings+strings";
 	private const string UnitNameSource = "GameData.generated_unit_customization_settings+strings";
+	private const string EntityNameSource = "GameData.generated_entities+strings";
 	private static readonly ConcurrentDictionary<string, LocalizedNameCacheEntry> LocalizedNameCache = new(StringComparer.OrdinalIgnoreCase);
+	private static readonly ConcurrentDictionary<string, GeneratedEntityCacheEntry> GeneratedEntityCache = new(StringComparer.OrdinalIgnoreCase);
 	private readonly string _preferredLocale;
 
 	public GameDataAuthorityProvider(string? preferredLocale = null)
@@ -40,13 +46,15 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 
 	public async ValueTask<GameDataAuthoritySnapshot> LoadAsync(
 		string gameDataDirectory,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		bool refreshPlaintextCache = false)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
 		var dataRoot = Path.GetFullPath(gameDataDirectory);
 		var gameRoot = Path.Combine(dataRoot, "game");
 		var plaintextPath = Path.Combine(gameRoot, GeneratedLibraryName);
 		var encryptedPath = Path.Combine(gameRoot, EncryptedLibraryName);
+		var entitiesPath = Path.Combine(gameRoot, GeneratedEntitiesName);
 		var issues = new List<CoreIssue>();
 
 		GameItemAssetCatalog? catalog = null;
@@ -54,7 +62,63 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		GameDataAuthoritySourceKind sourceKind = GameDataAuthoritySourceKind.Unavailable;
 		string? sourcePath = null;
 
-		if (File.Exists(plaintextPath))
+		// Do not trust a pre-existing plaintext cache before the current .dl_bin.
+		// Steam updates the latter, but knows nothing about our locally generated
+		// cache.  Decoding is inexpensive compared to scanning every GameData TOC,
+		// and also gives a rebuild one single authoritative update boundary.
+		if (File.Exists(encryptedPath))
+		{
+			var encrypted = await TryReadEncryptedDataLibraryAsync(encryptedPath, cancellationToken).ConfigureAwait(false);
+			if (encrypted.Error is null && encrypted.Bytes is not null)
+			{
+				try
+				{
+					catalog = CustomizationArmorSetsReader.Read(encrypted.Bytes);
+					if (catalog.Items.Count == 0)
+						throw new InvalidDataException("解密后的装备关系表不包含任何可用装备条目。");
+					authoritativeBytes = encrypted.Bytes;
+					sourceKind = GameDataAuthoritySourceKind.DecryptedDataLibrary;
+					sourcePath = encryptedPath;
+
+					if (refreshPlaintextCache)
+					{
+						var cacheWriteError = await TryRefreshPlaintextCacheAsync(plaintextPath, encrypted.Bytes, cancellationToken).ConfigureAwait(false);
+						if (cacheWriteError is not null)
+						{
+							issues.Add(new CoreIssue(
+								CoreIssueSeverity.Warning,
+								"GameDataAuthorityPlaintextRefreshFailed",
+								$"已从当前 .dl_bin 读取装备关系表，但无法刷新本地明文缓存：{cacheWriteError.Message}",
+								plaintextPath,
+								ExceptionMessage: cacheWriteError.ToString()));
+						}
+					}
+				}
+				catch (Exception exception) when (exception is InvalidDataException
+					or OverflowException
+					or ArgumentOutOfRangeException
+					or IndexOutOfRangeException)
+				{
+					issues.Add(new CoreIssue(
+						CoreIssueSeverity.Error,
+						"GameDataAuthorityDecryptedFormatInvalid",
+						$"解密后的装备关系表格式无效：{exception.Message}",
+						encryptedPath,
+						ExceptionMessage: exception.ToString()));
+				}
+			}
+			else if (encrypted.Error is not null)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Warning,
+					"GameDataAuthorityEncryptedRefreshFailed",
+					$"无法从当前 .dl_bin 重建装备关系明文缓存，将尝试使用现有明文：{encrypted.Error.Message}",
+					encryptedPath,
+					ExceptionMessage: encrypted.Error.ToString()));
+			}
+		}
+
+		if (catalog is null && File.Exists(plaintextPath))
 		{
 			try
 			{
@@ -76,69 +140,24 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 				issues.Add(new CoreIssue(
 					CoreIssueSeverity.Warning,
 					"GameDataAuthorityPlaintextUnreadable",
-					$"无法读取游戏明文装备关系表，将尝试加密镜像：{exception.Message}",
+					$"无法读取本地明文装备关系表：{exception.Message}",
 					plaintextPath,
 					ExceptionMessage: exception.ToString()));
 			}
 		}
 
-		if (catalog is null && File.Exists(encryptedPath))
-		{
-			var fallback = await TryReadEncryptedDataLibraryAsync(encryptedPath, cancellationToken).ConfigureAwait(false);
-			if (fallback.Error is null && fallback.Bytes is not null)
-			{
-				try
-				{
-					catalog = CustomizationArmorSetsReader.Read(fallback.Bytes);
-					authoritativeBytes = fallback.Bytes;
-					sourceKind = GameDataAuthoritySourceKind.DecryptedDataLibrary;
-					sourcePath = encryptedPath;
-				}
-				catch (Exception exception) when (exception is InvalidDataException
-					or OverflowException
-					or ArgumentOutOfRangeException
-					or IndexOutOfRangeException)
-				{
-					issues.Add(new CoreIssue(
-						CoreIssueSeverity.Error,
-						"GameDataAuthorityDecryptedFormatInvalid",
-						$"解密后的装备关系表格式无效：{exception.Message}",
-						encryptedPath,
-						ExceptionMessage: exception.ToString()));
-				}
-			}
-			else if (fallback.Error is not null)
-			{
-				issues.Add(new CoreIssue(
-					CoreIssueSeverity.Error,
-					"GameDataAuthorityEncryptedFallbackFailed",
-					$"无法解密游戏装备关系表：{fallback.Error.Message}",
-					encryptedPath,
-					ExceptionMessage: fallback.Error.ToString()));
-			}
-		}
-
-		if (catalog is null || authoritativeBytes is null)
+		if (catalog is null)
 		{
 			issues.Add(new CoreIssue(
 				CoreIssueSeverity.Warning,
-				"GameDataAuthorityUnavailable",
-				"未找到可验证的游戏装备关系表；原生装备将暂时回退到 Unit 结构事实和社区显示资料。",
+				"GameDataAuthorityArmorCatalogUnavailable",
+				"未找到可验证的游戏装备关系表；护甲/头盔关系将暂时不可用，但仍会继续读取实体百科以解析武器等通用 Unit 名称。",
 				File.Exists(plaintextPath) ? plaintextPath : encryptedPath));
-			return new GameDataAuthoritySnapshot(
-				GameDataAuthoritySourceKind.Unavailable,
-				null,
-				ComputeFingerprint(GameDataAuthoritySourceKind.Unavailable, Array.Empty<byte>()),
-				DateTimeOffset.UtcNow,
-				Array.Empty<GameDataAuthorityKit>(),
-				issues)
-			{
-				PreferredLocale = _preferredLocale
-			};
 		}
 
 		var localized = await LoadLocalizedArchiveNamesAsync(dataRoot, catalog, issues, cancellationToken).ConfigureAwait(false);
 		var supplemental = await LoadSupplementalArchiveNamesAsync(dataRoot, localized, issues, cancellationToken).ConfigureAwait(false);
+		var entities = await LoadGeneratedEntityFactsAsync(dataRoot, entitiesPath, localized.Tables, issues, cancellationToken).ConfigureAwait(false);
 		var allNames = localized.Names.Concat(supplemental.Names)
 			.GroupBy(name => (name.ArchiveId, name.ItemId, name.Locale, name.DisplayName, name.Source), FullNameComparer.Instance)
 			.Select(group => group.OrderByDescending(name => name.Confidence).First())
@@ -147,17 +166,29 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 			.ThenBy(name => name.Locale, StringComparer.OrdinalIgnoreCase)
 			.ThenBy(name => name.DisplayName, StringComparer.Ordinal)
 			.ToArray();
-		var kits = Project(catalog, issues, allNames);
+		var kits = catalog is null
+			? Array.Empty<GameDataAuthorityKit>()
+			: Project(catalog, issues, allNames);
+		if (catalog is null && entities.Facts.Count == 0)
+		{
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Warning,
+				"GameDataAuthorityUnavailable",
+				"未找到可验证的游戏装备关系表或实体百科；原生装备将暂时回退到 Unit 结构事实和社区显示资料。",
+				File.Exists(entitiesPath) ? entitiesPath : (File.Exists(plaintextPath) ? plaintextPath : encryptedPath)));
+		}
+
 		return new GameDataAuthoritySnapshot(
 			sourceKind,
 			sourcePath,
-			ComputeFingerprint(sourceKind, authoritativeBytes, localized.SourceFingerprint, supplemental.SourceFingerprint),
+			ComputeFingerprint(sourceKind, authoritativeBytes ?? Array.Empty<byte>(), localized.SourceFingerprint, supplemental.SourceFingerprint, entities.SourceFingerprint),
 			DateTimeOffset.UtcNow,
 			kits,
 			issues)
 		{
 			PreferredLocale = _preferredLocale,
-			ArchiveNames = allNames
+			ArchiveNames = allNames,
+			EntityFacts = entities.Facts
 		};
 	}
 
@@ -182,6 +213,80 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 			return (null, exception);
 		}
 	}
+
+	private static async ValueTask<Exception?> TryRefreshPlaintextCacheAsync(
+		string plaintextPath,
+		byte[] decodedBytes,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			if (File.Exists(plaintextPath))
+			{
+				var existing = await ReadAllBytesSharedAsync(plaintextPath, cancellationToken).ConfigureAwait(false);
+				if (existing.AsSpan().SequenceEqual(decodedBytes))
+				{
+					return null;
+				}
+			}
+
+			var temporaryPath = plaintextPath + ".refresh-" + Guid.NewGuid().ToString("N") + ".tmp";
+			try
+			{
+				await File.WriteAllBytesAsync(temporaryPath, decodedBytes, cancellationToken).ConfigureAwait(false);
+				File.Move(temporaryPath, plaintextPath, overwrite: true);
+			}
+			finally
+			{
+				if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+			}
+
+			return null;
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or NotSupportedException)
+		{
+			return exception;
+		}
+	}
+
+	private static async ValueTask<(byte[]? Bytes, Exception? Error)> TryReadGeneratedEntitiesAsync(
+		string path,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			var raw = await ReadAllBytesSharedAsync(path, cancellationToken).ConfigureAwait(false);
+			if (LooksLikePlaintextGeneratedEntities(raw))
+			{
+				return (raw, null);
+			}
+
+#pragma warning disable CS0618
+			var decryptor = Decryptor.CreateWithEmbeddedKeys();
+#pragma warning restore CS0618
+			return decryptor.TryDecodeData(raw, out var decoded)
+				? (decoded, null)
+				: (null, new CryptographicException("generated_entities.dl_bin is not valid plaintext and could not be decrypted with the installed GameData key."));
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or CryptographicException
+			or InvalidOperationException
+			or TypeInitializationException
+			or DllNotFoundException
+			or BadImageFormatException)
+		{
+			return (null, exception);
+		}
+	}
+
+	private static bool LooksLikePlaintextGeneratedEntities(ReadOnlySpan<byte> data)
+		=> data.Length >= 20
+			&& BitConverter.ToUInt32(data[..4]) == GeneratedEntityTypeIds.EntitySettingsHashmap
+			&& data.Slice(4, 4).SequenceEqual("LDLD"u8)
+			&& BitConverter.ToUInt32(data.Slice(12, 4)) == GeneratedEntityTypeIds.EntitySettingsHashmap;
 
 	private static async ValueTask<byte[]> ReadAllBytesSharedAsync(string path, CancellationToken cancellationToken)
 	{
@@ -236,7 +341,7 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 
 	private static async ValueTask<LocalizedNameLoadResult> LoadLocalizedArchiveNamesAsync(
 		string gameDataDirectory,
-		GameItemAssetCatalog catalog,
+		GameItemAssetCatalog? catalog,
 		ICollection<CoreIssue> issues,
 		CancellationToken cancellationToken)
 	{
@@ -247,7 +352,7 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 			return new LocalizedNameLoadResult(cached.SourceFingerprint, cached.Names, cached.Tables, cached.ArchiveByPath);
 		}
 
-		var requiredIds = catalog.Items
+		var requiredIds = (catalog?.Items ?? Array.Empty<GameItemAssetRecord>())
 			.SelectMany(item => new[] { item.NameCasedStringId, item.NameUpperStringId })
 			.Where(id => id != 0)
 			.ToHashSet();
@@ -370,6 +475,11 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 						StringsArchiveName));
 				}
 
+				if (catalog is null)
+				{
+					continue;
+				}
+
 				foreach (var item in catalog.Items)
 				{
 					var value = ResolveLocalizedName(table, item, requiredIds);
@@ -423,6 +533,151 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 			new Dictionary<ulong, ulong>(archiveByPath));
 		LocalizedNameCache[gameDataDirectory] = cache;
 		return new LocalizedNameLoadResult(cache.SourceFingerprint, cache.Names, cache.Tables, cache.ArchiveByPath);
+	}
+
+	private static async ValueTask<GeneratedEntityLoadResult> LoadGeneratedEntityFactsAsync(
+		string gameDataDirectory,
+		string path,
+		IReadOnlyList<GameDataStringTable> tables,
+		ICollection<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		AppendFingerprintValue(hash, GeneratedEntityEncyclopediaReader.ParserVersion);
+		AppendFileFingerprint(hash, path);
+		var sourceFingerprint = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+
+		if (!File.Exists(path))
+		{
+			return new GeneratedEntityLoadResult(sourceFingerprint, Array.Empty<GameDataAuthorityEntityFact>());
+		}
+
+		GeneratedEntityEncyclopediaCatalog catalog;
+		if (GeneratedEntityCache.TryGetValue(path, out var cached)
+			&& string.Equals(cached.SourceFingerprint, sourceFingerprint, StringComparison.OrdinalIgnoreCase))
+		{
+			catalog = cached.Catalog;
+		}
+		else
+		{
+			var decoded = await TryReadGeneratedEntitiesAsync(path, cancellationToken).ConfigureAwait(false);
+			if (decoded.Error is not null || decoded.Bytes is null)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Warning,
+					"GameDataAuthorityGeneratedEntitiesUnreadable",
+					$"无法读取游戏实体百科数据，武器本体名称将继续回退到其他名称来源：{decoded.Error?.Message ?? "解密结果为空"}",
+					path,
+					ExceptionMessage: decoded.Error?.ToString()));
+				return new GeneratedEntityLoadResult(sourceFingerprint, Array.Empty<GameDataAuthorityEntityFact>());
+			}
+
+			try
+			{
+				catalog = GeneratedEntityEncyclopediaReader.Read(decoded.Bytes);
+				GeneratedEntityCache[path] = new GeneratedEntityCacheEntry(sourceFingerprint, catalog);
+			}
+			catch (Exception exception) when (exception is InvalidDataException
+				or OverflowException
+				or ArgumentOutOfRangeException
+				or IndexOutOfRangeException)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Warning,
+					"GameDataAuthorityGeneratedEntitiesInvalid",
+					$"无法验证游戏实体百科数据布局，武器本体名称将继续回退到其他名称来源：{exception.Message}",
+					path,
+					ExceptionMessage: exception.ToString()));
+				return new GeneratedEntityLoadResult(sourceFingerprint, Array.Empty<GameDataAuthorityEntityFact>());
+			}
+		}
+
+		var facts = new List<GameDataAuthorityEntityFact>(catalog.Entries.Count);
+		foreach (var entry in catalog.Entries)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var localizedNames = ResolveEntityLocalizedNames(entry, tables);
+			var localizedDesignations = ResolveEntityFieldLocalizedValues(entry, tables, GeneratedEntityEncyclopediaEntry.DesignationFieldIndex);
+			var hasEquipmentAndWieldable = entry.HasComponent(GeneratedEntityTypeIds.EquipmentComponentData)
+				&& entry.HasComponent(GeneratedEntityTypeIds.WieldableComponentData);
+			var isWeaponCandidate = hasEquipmentAndWieldable
+				&& (entry.HasComponent(GeneratedEntityTypeIds.WeaponDataComponentData)
+					|| entry.IsWeaponLikeEquipment);
+			facts.Add(new GameDataAuthorityEntityFact(
+				entry.EntityId,
+				new AssetKey(StingrayAssetId.UnitTypeHash, entry.UnitPath),
+				entry.IsExactUnitMatch,
+				isWeaponCandidate,
+				entry.ComponentTypeIds,
+				localizedNames,
+				entry.EquipmentType,
+				localizedDesignations));
+		}
+
+		return new GeneratedEntityLoadResult(sourceFingerprint, facts);
+	}
+
+	private static IReadOnlyDictionary<string, string> ResolveEntityLocalizedNames(
+		GeneratedEntityEncyclopediaEntry entry,
+		IReadOnlyList<GameDataStringTable> tables)
+	{
+		var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		// LocName is the canonical display label. Upper/short variants are only
+		// fallbacks for entities whose canonical field is absent in a particular
+		// language table. Plural is intentionally last because it is not suitable
+		// for a singular Archive row.
+		var preferredFields = new[] { 0, 2, 3, 4, 1 };
+		foreach (var localeTables in tables
+			.GroupBy(table => table.Locale, StringComparer.OrdinalIgnoreCase)
+			.OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+		{
+			foreach (var field in preferredFields)
+			{
+				if (field >= entry.NameStringIds.Count) continue;
+				var value = ResolveEntityFieldLocalizedValue(entry, localeTables, field);
+				if (IsReadableName(value))
+				{
+					result[localeTables.Key] = value!;
+					break;
+				}
+			}
+		}
+
+		return result;
+	}
+
+	private static IReadOnlyDictionary<string, string> ResolveEntityFieldLocalizedValues(
+		GeneratedEntityEncyclopediaEntry entry,
+		IReadOnlyList<GameDataStringTable> tables,
+		int field)
+	{
+		var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var localeTables in tables
+			.GroupBy(table => table.Locale, StringComparer.OrdinalIgnoreCase)
+			.OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase))
+		{
+			var value = ResolveEntityFieldLocalizedValue(entry, localeTables, field);
+			if (IsReadableName(value))
+			{
+				result[localeTables.Key] = value!;
+			}
+		}
+
+		return result;
+	}
+
+	private static string? ResolveEntityFieldLocalizedValue(
+		GeneratedEntityEncyclopediaEntry entry,
+		IEnumerable<GameDataStringTable> localeTables,
+		int field)
+	{
+		if (field < 0 || field >= entry.NameStringIds.Count) return null;
+		var id = entry.NameStringIds[field];
+		if (id == 0) return null;
+		return localeTables
+			.OrderBy(table => table.FileId)
+			.Select(table => table.TryGet(id, out var value) ? value : null)
+			.FirstOrDefault(IsReadableName);
 	}
 
 	private static async ValueTask<SupplementalNameLoadResult> LoadSupplementalArchiveNamesAsync(
@@ -639,6 +894,8 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		AppendFingerprintValue(hash, "game-data-localized-names-v1");
 		var languageSettings = Path.Combine(gameDataDirectory, "game", LanguageSettingsName);
 		AppendFileFingerprint(hash, languageSettings);
+		AppendFileFingerprint(hash, Path.Combine(gameDataDirectory, "game", GeneratedLibraryName));
+		AppendFileFingerprint(hash, Path.Combine(gameDataDirectory, "game", EncryptedLibraryName));
 		try
 		{
 			var resolver = new GameDataPackageResolver(gameDataDirectory);
@@ -763,10 +1020,11 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		GameDataAuthoritySourceKind sourceKind,
 		ReadOnlySpan<byte> data,
 		string? localizedSourceFingerprint = null,
-		string? supplementalSourceFingerprint = null)
+		string? supplementalSourceFingerprint = null,
+		string? generatedEntitySourceFingerprint = null)
 	{
 		using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-		hash.AppendData(System.Text.Encoding.UTF8.GetBytes($"game-data-authority-v2:{sourceKind}:"));
+		hash.AppendData(System.Text.Encoding.UTF8.GetBytes($"game-data-authority-v3:{sourceKind}:"));
 		hash.AppendData(data);
 		if (!string.IsNullOrWhiteSpace(localizedSourceFingerprint))
 		{
@@ -777,6 +1035,11 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		{
 			hash.AppendData(System.Text.Encoding.UTF8.GetBytes("\0supplemental:"));
 			hash.AppendData(System.Text.Encoding.UTF8.GetBytes(supplementalSourceFingerprint));
+		}
+		if (!string.IsNullOrWhiteSpace(generatedEntitySourceFingerprint))
+		{
+			hash.AppendData(System.Text.Encoding.UTF8.GetBytes("\0generated-entities:"));
+			hash.AppendData(System.Text.Encoding.UTF8.GetBytes(generatedEntitySourceFingerprint));
 		}
 		return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
 	}
@@ -796,6 +1059,14 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 	private sealed record SupplementalNameLoadResult(
 		string SourceFingerprint,
 		IReadOnlyList<GameDataAuthorityArchiveName> Names);
+
+	private sealed record GeneratedEntityCacheEntry(
+		string SourceFingerprint,
+		GeneratedEntityEncyclopediaCatalog Catalog);
+
+	private sealed record GeneratedEntityLoadResult(
+		string SourceFingerprint,
+		IReadOnlyList<GameDataAuthorityEntityFact> Facts);
 
 	private sealed class StringTupleComparer : IEqualityComparer<(string ArchiveId, uint ItemId, string Locale)>
 	{

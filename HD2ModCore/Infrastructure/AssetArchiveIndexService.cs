@@ -289,7 +289,10 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		Directory.CreateDirectory(_paths.IndexDirectory);
 
 		var root = TryParseCommunityArchiveMetadata(archiveHashesJson);
-		var authority = await _authorityProvider.LoadAsync(normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
+		var authority = await _authorityProvider.LoadAsync(
+			normalizedGameDataDirectory,
+			cancellationToken,
+			refreshPlaintextCache: true).ConfigureAwait(false);
 
 		SqliteConnection.ClearAllPools();
 		NormalizeExistingIndexFileAttributes();
@@ -311,6 +314,13 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		{
 			throw new InvalidDataException($"No GameData archives were discovered in: {normalizedGameDataDirectory}");
 		}
+
+		// The generated Entity encyclopedia can name a weapon through its Unit,
+		// but the Unit-to-Archive relationship is only known after the TOCs have
+		// been scanned. Join those two authoritative facts now, then apply the
+		// resolved metadata to the archive rows that will be persisted.
+		authority = GameDataAuthorityArchiveNameResolver.Enrich(authority, facts);
+		facts = ApplyArchiveMetadata(facts, BuildMetadataByPackage(archives, authority.BuildArchiveMetadata()));
 
 		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Pooling=False");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -390,7 +400,7 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_kind", authority.SourceKind.ToString(), cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_path", authority.SourcePath ?? string.Empty, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_fingerprint", authority.SourceFingerprint, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_version", "authority-v1", cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_version", "authority-v2-entity-encyclopedia-v1", cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
 		// Readers use pooled shared-cache connections. Purge their pre-rebuild pages so
@@ -726,6 +736,28 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 			&& !IsOpaqueDisplayName(value)
 			&& !value.StartsWith("hash-", StringComparison.OrdinalIgnoreCase);
 
+	private static GameDataArchiveIndex ApplyArchiveMetadata(
+		GameDataArchiveIndex index,
+		IReadOnlyDictionary<string, GameDataArchiveMetadata> metadataByPackage)
+	{
+		if (metadataByPackage.Count == 0)
+		{
+			return index;
+		}
+
+		var archives = index.Archives
+			.Select(archive => metadataByPackage.TryGetValue(archive.PackageName, out var metadata)
+				? archive with
+				{
+					ArchiveHex = string.IsNullOrWhiteSpace(metadata.ArchiveHex) ? archive.ArchiveHex : metadata.ArchiveHex,
+					DisplayName = string.IsNullOrWhiteSpace(metadata.DisplayName) ? archive.DisplayName : metadata.DisplayName,
+					Category = string.IsNullOrWhiteSpace(metadata.Category) ? archive.Category : metadata.Category
+				}
+				: archive)
+			.ToArray();
+		return index with { Archives = archives };
+	}
+
 	private static async Task SaveAuthoritySnapshotAsync(
 		SqliteConnection connection,
 		SqliteTransaction transaction,
@@ -774,6 +806,39 @@ VALUES($archive,$locale,$name,$source,$confidence,$item);";
 		nameCommand.Parameters.Add("$confidence", SqliteType.Integer);
 		nameCommand.Parameters.Add("$item", SqliteType.Integer);
 		nameCommand.Prepare();
+
+		await using var entityCommand = connection.CreateCommand();
+		entityCommand.Transaction = transaction;
+		entityCommand.CommandText = @"
+INSERT INTO game_data_authority_entities(entity_id,unit_type_id,unit_file_id,is_exact_unit_match,is_weapon_candidate,equipment_type,component_type_ids_json,localized_names_json,localized_designations_json)
+VALUES($entity,$unitType,$unitFile,$exact,$weapon,$equipmentType,$components,$names,$designations);";
+		entityCommand.Parameters.Add("$entity", SqliteType.Integer);
+		entityCommand.Parameters.Add("$unitType", SqliteType.Integer);
+		entityCommand.Parameters.Add("$unitFile", SqliteType.Integer);
+		entityCommand.Parameters.Add("$exact", SqliteType.Integer);
+		entityCommand.Parameters.Add("$weapon", SqliteType.Integer);
+		entityCommand.Parameters.Add("$equipmentType", SqliteType.Integer);
+		entityCommand.Parameters.Add("$components", SqliteType.Text);
+		entityCommand.Parameters.Add("$names", SqliteType.Text);
+		entityCommand.Parameters.Add("$designations", SqliteType.Text);
+		entityCommand.Prepare();
+
+		foreach (var entity in snapshot.EntityFacts)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			entityCommand.Parameters["$entity"].Value = unchecked((long)entity.EntityId);
+			entityCommand.Parameters["$unitType"].Value = unchecked((long)entity.UnitAssetKey.TypeId);
+			entityCommand.Parameters["$unitFile"].Value = unchecked((long)entity.UnitAssetKey.FileId);
+			entityCommand.Parameters["$exact"].Value = entity.IsExactUnitMatch ? 1 : 0;
+			entityCommand.Parameters["$weapon"].Value = entity.IsWeaponCandidate ? 1 : 0;
+			entityCommand.Parameters["$equipmentType"].Value = entity.EquipmentType is uint equipmentType
+				? unchecked((long)equipmentType)
+				: DBNull.Value;
+			entityCommand.Parameters["$components"].Value = JsonSerializer.Serialize(entity.ComponentTypeIds);
+			entityCommand.Parameters["$names"].Value = JsonSerializer.Serialize(entity.LocalizedNames);
+			entityCommand.Parameters["$designations"].Value = JsonSerializer.Serialize(entity.Designations);
+			await entityCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		}
 
 		foreach (var name in snapshot.ArchiveNames)
 		{
