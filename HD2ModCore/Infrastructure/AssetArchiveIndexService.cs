@@ -321,6 +321,7 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		// resolved metadata to the archive rows that will be persisted.
 		authority = GameDataAuthorityArchiveNameResolver.Enrich(authority, facts);
 		facts = ApplyArchiveMetadata(facts, BuildMetadataByPackage(archives, authority.BuildArchiveMetadata()));
+		facts = ApplySemanticArchiveCategories(facts, authority);
 
 		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Pooling=False");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -754,6 +755,22 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 					Category = string.IsNullOrWhiteSpace(metadata.Category) ? archive.Category : metadata.Category
 				}
 				: archive)
+			.ToArray();
+		return index with { Archives = archives };
+	}
+
+	private static GameDataArchiveIndex ApplySemanticArchiveCategories(
+		GameDataArchiveIndex index,
+		GameDataAuthoritySnapshot authority)
+	{
+		var archives = index.Archives
+			.Select(archive => archive with
+			{
+				Category = GameDataArchiveSemanticClassifier.Classify(
+					archive.PackageName,
+					archive.Category,
+					authority)
+			})
 			.ToArray();
 		return index with { Archives = archives };
 	}

@@ -208,7 +208,9 @@ public sealed class AssetArchiveIndexServiceTests
 			var matches = await service.FindAssetArchivesAsync(new HashSet<AssetKey> { new(10, 100) });
 			var match = Assert.Single(matches);
 			var archive = Assert.Single(match.Archives);
-			Assert.Equal("Mag, Pistol", archive.Category);
+			// The public index exposes the stable semantic class rather than the
+			// duplicate community labels that happened to mention Mag and Pistol.
+			Assert.Equal("Weapon", archive.Category);
 		}
 		finally
 		{
