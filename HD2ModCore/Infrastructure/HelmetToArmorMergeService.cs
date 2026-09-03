@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
@@ -93,7 +94,8 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 		string gameDataDirectory,
 		IReadOnlyCollection<HelmetToArmorMergeCandidate>? selectedCandidates = null,
 		CancellationToken cancellationToken = default,
-		IProgress<HelmetToArmorMergeProgress>? progress = null)
+		IProgress<HelmetToArmorMergeProgress>? progress = null,
+		HelmetToArmorMergeOutputMode outputMode = HelmetToArmorMergeOutputMode.FirstHelmetOnly)
 	{
 		ArgumentNullException.ThrowIfNull(source);
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourceDirectory);
@@ -120,9 +122,10 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 		if (selected.Count == 0)
 			return Failure(outputRoot, "HelmetArmorCandidatesMissing", "没有选择可执行的 Armor/Helmet 模型集合。", sourceRoot);
 
-		var selectionIssues = ValidateSelectedCandidates(selected.Values);
+		var selectionIssues = ValidateSelectedCandidates(selected.Values, outputMode);
 		if (selectionIssues.Count != 0)
 			return new HelmetToArmorMergeResult(false, outputRoot, 0, 0, 0, selectionIssues);
+		var primaryCandidates = SelectPrimaryCandidates(selected.Values);
 
 		var operationId = Guid.NewGuid();
 		var context = ModInformationRequestContext.Create(
@@ -165,7 +168,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 
 				var entries = indexResult.Data.Entries;
 				var byKey = entries.ToDictionary(entry => entry.AssetKey);
-				var patchCandidates = selected.Values
+				var patchCandidates = primaryCandidates
 					.Where(candidate => string.Equals(candidate.SourcePatchFileName, patchFileName, StringComparison.OrdinalIgnoreCase))
 					.ToArray();
 				if (patchCandidates.Length == 0) continue;
@@ -216,6 +219,21 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 						}
 						if (plannedArmorTargets.Add((armorKey, armorPart.MeshInfoIndex, helmetKey)))
 							armorPlans.Add(new ArmorAppendPlan(armorKey, armorPart.MeshInfoIndex, helmetKey, candidate, helmetUnit));
+					}
+				}
+				// Every candidate remains a source of a helmet Unit that must be hidden
+				// in the main output. This is essential when several Armor Archives share
+				// one chest Unit but point at different Helmets: a later variant only
+				// replaces the chest Unit and must not reveal an alternate helmet.
+				if (outputMode == HelmetToArmorMergeOutputMode.SharedArmorVariants)
+				{
+					foreach (var candidate in selected.Values.Where(candidate =>
+						string.Equals(candidate.SourcePatchFileName, patchFileName, StringComparison.OrdinalIgnoreCase)))
+					{
+						var helmetKey = ToAdaptation(candidate.HelmetPart.UnitAssetKey);
+						if (!byKey.ContainsKey(helmetKey)) continue;
+						var helmetUnit = await ReadUnitAsync(helmetKey).ConfigureAwait(false);
+						AddHelmetPlan(helmetPlans, helmetKey, candidate, helmetUnit);
 					}
 				}
 
@@ -319,6 +337,18 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "HelmetArmorMergeNoOutput", "没有成功生成任何胸部合并结果。", outputRoot, source.Id));
 				return new HelmetToArmorMergeResult(false, outputRoot, processedPatches, mergedArmorUnits, hiddenHelmetUnits, issues);
 			}
+			if (outputMode == HelmetToArmorMergeOutputMode.SharedArmorVariants)
+			{
+				await GenerateSharedArmorVariantsAsync(
+					source,
+					sourceRoot,
+					outputRoot,
+					selected.Values,
+					primaryCandidates,
+					gameDataDirectory,
+					cancellationToken,
+					issues).ConfigureAwait(false);
+			}
 			return new HelmetToArmorMergeResult(true, outputRoot, processedPatches, mergedArmorUnits, hiddenHelmetUnits, issues);
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -334,6 +364,113 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 		{
 			informationReader.ClearOperation(operationId);
 		}
+	}
+
+	private async Task GenerateSharedArmorVariantsAsync(
+		ModNode source,
+		string sourceRoot,
+		string outputRoot,
+		IEnumerable<HelmetToArmorMergeCandidate> selected,
+		IReadOnlyList<HelmetToArmorMergeCandidate> primary,
+		string gameDataDirectory,
+		CancellationToken cancellationToken,
+		ICollection<CoreIssue> issues)
+	{
+		var primaryByTarget = primary.ToDictionary(TargetKey, StringComparer.OrdinalIgnoreCase);
+		var alternatives = selected
+			.Where(candidate => primaryByTarget.TryGetValue(TargetKey(candidate), out var first)
+				&& !string.Equals(first.CandidateId, candidate.CandidateId, StringComparison.OrdinalIgnoreCase))
+			.GroupBy(candidate => candidate.CandidateId, StringComparer.OrdinalIgnoreCase)
+			.Select(group => group.First())
+			.ToArray();
+		if (alternatives.Length == 0) return;
+
+		var manifestOptions = new List<object>();
+		var usedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var candidate in alternatives)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var safeName = SanitizeDirectoryName($"变体：{candidate.DisplayName} 使用头盔 0x{candidate.HelmetArchiveId}");
+			var variantName = safeName;
+			var suffix = 2;
+			while (!usedNames.Add(variantName)) variantName = $"{safeName}_{suffix++}";
+			var variantRoot = Path.Combine(outputRoot, variantName);
+			var temporaryRoot = Path.Combine(Path.GetTempPath(), "HD2ModManager-HelmetVariant-" + Guid.NewGuid().ToString("N"));
+			try
+			{
+				var temporaryResult = await ExecuteAsync(
+					source,
+					sourceRoot,
+					temporaryRoot,
+					gameDataDirectory,
+					[candidate],
+					cancellationToken,
+					progress: null,
+					outputMode: HelmetToArmorMergeOutputMode.FirstHelmetOnly).ConfigureAwait(false);
+				if (!temporaryResult.IsSuccessful)
+				{
+					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetVariantFailed", $"无法生成差分变体“{variantName}”。", outputRoot, source.Id));
+					continue;
+				}
+				var sourcePatch = Path.Combine(temporaryRoot, candidate.SourcePatchFileName);
+				var selectedKeys = candidate.ArmorUnitKeys
+					.Select(key => new AdaptationAssetKey(key.TypeId, key.FileId))
+					.ToArray();
+				if (!File.Exists(sourcePatch) || selectedKeys.Length == 0)
+				{
+					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetVariantPatchMissing", $"差分变体“{variantName}”缺少可提取的胸甲 Unit。", outputRoot, source.Id));
+					continue;
+				}
+				Directory.CreateDirectory(variantRoot);
+				await new PatchSubsetWriter().WriteSelectedAsync(
+					sourcePatch,
+					variantRoot,
+					selectedKeys.Select(key => new PatchSubsetSelection(sourcePatch, key)).ToArray(),
+					overwriteExisting: true,
+					cancellationToken).ConfigureAwait(false);
+				manifestOptions.Add(new
+				{
+					Name = $"{candidate.DisplayName}：使用头盔 {candidate.HelmetArchiveId}",
+					Description = $"共享胸甲 {string.Join(", ", candidate.ArmorUnitKeys.Select(key => $"0x{key.FileId:x16}"))} 的差分头盔方案。",
+					Include = new[] { variantName },
+				});
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or InvalidOperationException)
+			{
+				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetVariantFailed", $"差分变体“{variantName}”生成失败：{exception.Message}", outputRoot, source.Id, exception.ToString()));
+			}
+			finally
+			{
+				if (Directory.Exists(temporaryRoot)) Directory.Delete(temporaryRoot, recursive: true);
+			}
+		}
+
+		if (manifestOptions.Count > 0)
+		{
+			var manifest = new
+			{
+				Version = 1,
+				Name = source.Metadata.Name,
+				Description = "头盔合并到盔甲输出；主 Patch 为首个头盔方案，子目录为共享胸甲差分变体。",
+				Options = manifestOptions,
+			};
+			await File.WriteAllTextAsync(
+				Path.Combine(outputRoot, "manifest.json"),
+				JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }),
+				cancellationToken).ConfigureAwait(false);
+		}
+	}
+
+	private static string TargetKey(HelmetToArmorMergeCandidate candidate)
+		=> candidate.SourcePatchFileName + "\u001f" + string.Join("|", candidate.ArmorParts
+			.Select(part => $"{part.UnitAssetKey.TypeId:x16}:{part.UnitAssetKey.FileId:x16}:{part.MeshInfoIndex}")
+			.OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+
+	private static string SanitizeDirectoryName(string value)
+	{
+		var invalid = Path.GetInvalidFileNameChars();
+		var safe = new string(value.Select(character => invalid.Contains(character) ? '_' : character).ToArray()).Trim();
+		return string.IsNullOrWhiteSpace(safe) ? "头盔合并变体" : safe;
 	}
 
 	private static IReadOnlyList<HelmetToArmorMergeCandidate> BuildCandidates(ModEquipmentSourceFacts facts)
@@ -383,7 +520,8 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 	}
 
 	private static IReadOnlyList<CoreIssue> ValidateSelectedCandidates(
-		IEnumerable<HelmetToArmorMergeCandidate> candidates)
+		IEnumerable<HelmetToArmorMergeCandidate> candidates,
+		HelmetToArmorMergeOutputMode outputMode)
 	{
 		var issues = new List<CoreIssue>();
 		var conflicts = candidates
@@ -402,17 +540,32 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 
 		foreach (var conflict in conflicts)
 		{
-			var sources = string.Join(", ", conflict
-				.Select(item => $"{item.Candidate.DisplayName} / 0x{item.Candidate.HelmetPart.UnitAssetKey.FileId:x16}")
-				.Distinct(StringComparer.OrdinalIgnoreCase));
 			issues.Add(new CoreIssue(
-				CoreIssueSeverity.Error,
-				"HelmetArmorTargetConflict",
-				$"同一胸部 Unit 0x{conflict.Key.Unit.FileId:x16} 的 MeshInfo {conflict.Key.MeshInfoIndex} 被规划为多个不同头盔来源：{sources}。请只选择其中一个模型集合。",
+				CoreIssueSeverity.Warning,
+				outputMode == HelmetToArmorMergeOutputMode.SharedArmorVariants
+					? "HelmetArmorSharedTargetVariants"
+					: "HelmetArmorSharedTargetFirstHelmet",
+				$"胸甲目标 {conflict.Key.Unit.FileId:x16}/MeshInfo {conflict.Key.MeshInfoIndex} 对应多个头盔；将按当前输出策略处理。",
 				conflict.Key.Patch));
+			if (outputMode == HelmetToArmorMergeOutputMode.SharedArmorVariants)
+				continue;
 		}
 
 		return issues;
+	}
+
+	private static IReadOnlyList<HelmetToArmorMergeCandidate> SelectPrimaryCandidates(
+		IEnumerable<HelmetToArmorMergeCandidate> candidates)
+	{
+		var all = candidates.ToArray();
+		return all
+			.GroupBy(candidate => candidate.SourcePatchFileName + "\u001f" + string.Join(
+				"|",
+				candidate.ArmorParts
+					.Select(part => $"{part.UnitAssetKey.TypeId:x16}:{part.UnitAssetKey.FileId:x16}:{part.MeshInfoIndex}")
+					.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)), StringComparer.OrdinalIgnoreCase)
+			.Select(group => group.First())
+			.ToArray();
 	}
 
 	private static IReadOnlyList<EquipmentUnitPart> SelectTorsoParts(IReadOnlyList<EquipmentUnitPart> parts)

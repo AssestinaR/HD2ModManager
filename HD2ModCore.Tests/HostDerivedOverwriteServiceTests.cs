@@ -93,5 +93,8 @@ public sealed class HostDerivedOverwriteServiceTests
 
 		public ValueTask<HelmetToArmorMergeResult> ExecuteAsync(ModNode source, string sourceDirectory, string outputDirectory, string gameDataDirectory, IReadOnlyCollection<HelmetToArmorMergeCandidate>? selectedCandidates = null, CancellationToken cancellationToken = default, IProgress<HelmetToArmorMergeProgress>? progress = null)
 			=> ValueTask.FromException<HelmetToArmorMergeResult>(new Xunit.Sdk.XunitException("No-helmet path must not execute helmet merging."));
+
+		public ValueTask<HelmetToArmorMergeResult> ExecuteAsync(ModNode source, string sourceDirectory, string outputDirectory, string gameDataDirectory, IReadOnlyCollection<HelmetToArmorMergeCandidate>? selectedCandidates, CancellationToken cancellationToken, IProgress<HelmetToArmorMergeProgress>? progress, HelmetToArmorMergeOutputMode outputMode)
+			=> ValueTask.FromException<HelmetToArmorMergeResult>(new Xunit.Sdk.XunitException("No-helmet path must not execute helmet merging."));
 	}
 }

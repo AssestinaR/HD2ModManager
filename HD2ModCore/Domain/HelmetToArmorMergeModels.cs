@@ -2,6 +2,12 @@ using HD2ModAdaptation.Analysis;
 
 namespace HD2ModCore.Domain;
 
+public enum HelmetToArmorMergeOutputMode
+{
+	FirstHelmetOnly,
+	SharedArmorVariants,
+}
+
 // 作用：描述一个来源 Patch 中可将 Helmet 合并到 Torso 的完整模型集合。
 // Purpose: Describes one complete Armor/Helmet model set that can be merged.
 public sealed record HelmetToArmorMergeCandidate(

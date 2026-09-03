@@ -19,7 +19,8 @@ public interface IHelmetToArmorMergeService
 		string gameDataDirectory,
 		IReadOnlyCollection<HelmetToArmorMergeCandidate>? selectedCandidates = null,
 		CancellationToken cancellationToken = default,
-		IProgress<HelmetToArmorMergeProgress>? progress = null);
+		IProgress<HelmetToArmorMergeProgress>? progress = null,
+		HelmetToArmorMergeOutputMode outputMode = HelmetToArmorMergeOutputMode.FirstHelmetOnly);
 }
 
 public sealed record HelmetToArmorMergeProgress(

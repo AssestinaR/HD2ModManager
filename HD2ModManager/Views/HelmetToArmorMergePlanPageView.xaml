@@ -53,6 +53,18 @@
                                     Command="{Binding BrowseOutputCommand}"
                                     Margin="8,0,0,0"/>
                         </Grid>
+                        <TextBlock Text="胸甲复用时的输出方式"
+                                   Style="{StaticResource AppSupportingText}"
+                                   Margin="0,10,0,3"/>
+                        <ComboBox ItemsSource="{Binding OutputModes}"
+                                  DisplayMemberPath="Display"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding OutputMode, Mode=TwoWay}"
+                                  Style="{StaticResource AppComboBox}"/>
+                        <TextBlock Text="默认方案使用首个头盔；差分方案会额外生成仅包含胸甲 Unit 的变体目录。"
+                                   Style="{StaticResource AppSupportingText}"
+                                   Margin="0,4,0,0"
+                                   TextWrapping="Wrap"/>
                         <Button Style="{StaticResource AppPrimaryButton}"
                                 Content="生成"
                                 Command="{Binding GenerateCommand}"

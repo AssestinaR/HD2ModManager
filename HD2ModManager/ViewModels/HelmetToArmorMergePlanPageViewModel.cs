@@ -24,6 +24,7 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
     private string _state = "请选择来源 Mod。";
     private bool _isInspecting;
     private bool _isGenerating;
+    private HelmetToArmorMergeOutputMode _outputMode = HelmetToArmorMergeOutputMode.FirstHelmetOnly;
 
     public HelmetToArmorMergePlanPageViewModel(
         ModLibraryService library,
@@ -92,6 +93,16 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
     }
 
     public string State { get => _state; private set => SetField(ref _state, value); }
+    public IReadOnlyList<HelmetMergeOutputModeOption> OutputModes { get; } =
+    [
+        new(HelmetToArmorMergeOutputMode.FirstHelmetOnly, "胸甲复用时只附加首个头盔"),
+        new(HelmetToArmorMergeOutputMode.SharedArmorVariants, "胸甲复用时生成额外差分 Patch"),
+    ];
+    public HelmetToArmorMergeOutputMode OutputMode
+    {
+        get => _outputMode;
+        set => SetField(ref _outputMode, value);
+    }
     public bool IsInspecting { get => _isInspecting; private set { if (SetField(ref _isInspecting, value)) OnPropertyChanged(nameof(CanGenerate)); } }
     public bool IsGenerating { get => _isGenerating; private set { if (SetField(ref _isGenerating, value)) { OnPropertyChanged(nameof(CanGenerate)); GenerateCommand.RaiseCanExecuteChanged(); } } }
     public bool CanGenerate => !IsInspecting && !IsGenerating && !string.IsNullOrWhiteSpace(OutputDirectory) && ModelSets.Any(item => item.IsSelected);
@@ -263,7 +274,8 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
                     SettingsService.GetGameDataFolder(),
                     group.Select(item => item.Candidate).ToArray(),
                     task?.CancellationToken ?? CancellationToken.None,
-                    progress).ConfigureAwait(true);
+                    progress,
+                    OutputMode).ConfigureAwait(true);
                 if (!result.IsSuccessful)
                 {
                     var detail = string.Join("；", result.Issues.Take(4).Select(issue => issue.Message));
@@ -300,6 +312,8 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
         return string.IsNullOrWhiteSpace(safe) ? "未命名Mod" : safe;
     }
 }
+
+public sealed record HelmetMergeOutputModeOption(HelmetToArmorMergeOutputMode Value, string Display);
 
 public sealed class HelmetMergeSourceModItem : BaseViewModel, IModListSelectable
 {
