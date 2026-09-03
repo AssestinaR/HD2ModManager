@@ -84,7 +84,11 @@ public sealed class ProfileApplyService : IProfileApplyService
 			Issues = plan.Issues.Concat(preparation.Issues).ToArray(),
 			ExternalFileMappings = preparation.ExternalFiles,
 		};
-		plan = plan with { DeploymentMethod = capability.Method.Value };
+		plan = plan with
+		{
+			DeploymentMethod = capability.Method.Value,
+			UseFastLinkValidation = capability.Method.Value is DeploymentMethod.HardLink or DeploymentMethod.SymbolicLink,
+		};
 		return await _executor.ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
 	}
 

@@ -49,7 +49,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "ReadActivationStateFailed", exception.Message, Path.Combine(plan.GameDataDirectory, JsonActivationStateStore.StateFileName), ExceptionMessage: exception.ToString()));
 			return new ApplyResult(false, operationResults, await _stateScanner.ScanAsync(plan.GameDataDirectory, false, CancellationToken.None).ConfigureAwait(false), issues);
 		}
-		var preflight = await PreflightAsync(plan.GameDataDirectory, deployOperations, externalDeployMappings, previousState?.ExternalFiles ?? Array.Empty<ExternalFileMapping>(), cancellationToken).ConfigureAwait(false);
+		var preflight = await PreflightAsync(plan.GameDataDirectory, deployOperations, externalDeployMappings, previousState?.ExternalFiles ?? Array.Empty<ExternalFileMapping>(), plan.UseFastLinkValidation, cancellationToken).ConfigureAwait(false);
 		issues.AddRange(preflight.Issues);
 		if (preflight.Issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
 		{
@@ -124,7 +124,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 
 		var report = await _stateScanner.ScanAsync(plan.GameDataDirectory, recursive: false, CancellationToken.None).ConfigureAwait(false);
 		issues.AddRange(report.Issues);
-		issues.AddRange(await VerifyDeployedFilesAsync(deployed).ConfigureAwait(false));
+		issues.AddRange(await VerifyDeployedFilesAsync(deployed, plan.UseFastLinkValidation).ConfigureAwait(false));
 		issues.AddRange(await VerifyExternalFilesAsync(deployedExternal).ConfigureAwait(false));
 		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
 		{
@@ -254,6 +254,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 		IReadOnlyList<ApplyOperation> operations,
 		IReadOnlyList<ExternalFileMapping> externalMappings,
 		IReadOnlyList<ExternalFileMapping> previousExternalMappings,
+		bool useFastLinkValidation,
 		CancellationToken cancellationToken)
 	{
 		var issues = new List<CoreIssue>();
@@ -280,7 +281,9 @@ public sealed class ApplyExecutor : IApplyExecutor
 					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "SourceFileMissing", $"Source file does not exist: {operation.SourcePath}", operation.SourcePath, operation.NodeId));
 					continue;
 				}
-				var sha256 = await ComputeSha256Async(operation.SourcePath, cancellationToken).ConfigureAwait(false);
+				var sha256 = useFastLinkValidation
+					? string.Empty
+					: await ComputeSha256Async(operation.SourcePath, cancellationToken).ConfigureAwait(false);
 				sources[operation.SourcePath] = new SourceFileFact(info.Length, sha256);
 			}
 			catch (Exception exception) when (exception is not OperationCanceledException)
@@ -658,7 +661,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 			throw new IOException("The external target path exists but is not a regular file.");
 	}
 
-	private static async ValueTask<IReadOnlyList<CoreIssue>> VerifyDeployedFilesAsync(IReadOnlyList<ActivationStateFileEntry> files)
+	private static async ValueTask<IReadOnlyList<CoreIssue>> VerifyDeployedFilesAsync(IReadOnlyList<ActivationStateFileEntry> files, bool useFastLinkValidation)
 	{
 		var issues = new List<CoreIssue>();
 		foreach (var file in files)
@@ -678,6 +681,7 @@ public sealed class ApplyExecutor : IApplyExecutor
 				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedLengthMismatch", "Deployed target length differs from its source.", file.TargetPath, file.NodeId));
 				continue;
 			}
+			if (useFastLinkValidation) continue;
 			if (string.IsNullOrWhiteSpace(file.ContentSha256))
 			{
 				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "DeployedHashMissing", "Deployed Patch has no recorded content hash.", file.TargetPath, file.NodeId));

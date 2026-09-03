@@ -25,14 +25,16 @@ namespace HD2ModManager.Services
 
     public sealed class ModContentFactsChangedEventArgs : EventArgs
     {
-        public ModContentFactsChangedEventArgs(IReadOnlyCollection<ModNodeId> nodeIds, ModContentChangeKind kind)
+        public ModContentFactsChangedEventArgs(IReadOnlyCollection<ModNodeId> nodeIds, ModContentChangeKind kind, bool requiresDeployment = true)
         {
             NodeIds = nodeIds;
             Kind = kind;
+            RequiresDeployment = requiresDeployment;
         }
 
         public IReadOnlyCollection<ModNodeId> NodeIds { get; }
         public ModContentChangeKind Kind { get; }
+        public bool RequiresDeployment { get; }
     }
 
     // 作用：为现有 WPF UI 提供基于 HD2ModCore LibrarySnapshot 的模组库外观。
@@ -63,6 +65,7 @@ namespace HD2ModManager.Services
         private CancellationTokenSource? _decorationDebounceCancellation;
         private Task? _decorationDebounceTask;
         private long _stateVersion;
+		public ModLibrarySynchronizationResult? LastSynchronizationResult { get; private set; }
 
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
         public LibrarySnapshot Snapshot => _snapshot;
@@ -417,6 +420,7 @@ namespace HD2ModManager.Services
             IEnumerable<ModNodeId> nodeIds,
             ModContentChangeKind changeKind = ModContentChangeKind.Changed,
             bool alreadyInvalidated = false,
+            bool notifyContentChange = true,
             CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(nodeIds);
@@ -431,12 +435,13 @@ namespace HD2ModManager.Services
 
             await RefreshDerivedDataAsync(
                 affectedNodeIds.Select(nodeId => nodeId.Value.ToString("N")),
-                changeKind,
+                notifyContentChange ? changeKind : ModContentChangeKind.DerivedOnly,
                 cancellationToken,
-                includeReferenceGraphs: true).ConfigureAwait(false);
+                includeReferenceGraphs: true,
+                requiresDeployment: notifyContentChange).ConfigureAwait(false);
         }
 
-        public async Task<bool> SynchronizeAsync(CancellationToken cancellationToken = default)
+        public async Task<bool> SynchronizeAsync(CancellationToken cancellationToken = default, bool suppressDeploymentNotification = false)
         {
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -454,6 +459,7 @@ namespace HD2ModManager.Services
                 _paths.ModsDirectory,
                 synchronizationExclusions,
                 cancellationToken).ConfigureAwait(false);
+			LastSynchronizationResult = result;
             if (!result.FilesystemChanged) return false;
 
             if (synchronizeVersion != Volatile.Read(ref _stateVersion))
@@ -472,6 +478,7 @@ namespace HD2ModManager.Services
                 result.AddedNodeIds.Concat(result.ChangedNodeIds),
                 ModContentChangeKind.Changed,
                 alreadyInvalidated: true,
+                notifyContentChange: !suppressDeploymentNotification,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
             return true;
             }
@@ -488,7 +495,8 @@ namespace HD2ModManager.Services
             IEnumerable<string>? guids,
             ModContentChangeKind changeKind,
             CancellationToken cancellationToken = default,
-            bool includeReferenceGraphs = false)
+            bool includeReferenceGraphs = false,
+            bool requiresDeployment = true)
         {
             await _derivedRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -530,7 +538,7 @@ namespace HD2ModManager.Services
                     IReadOnlyCollection<ModNodeId> changedNodeIds = nodeIds is null ? rebuilt.Nodes.Keys.ToArray() : nodeIds;
                     if (changedNodeIds.Count > 0)
                     {
-                        ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(changedNodeIds, changeKind));
+                        ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(changedNodeIds, changeKind, requiresDeployment));
                     }
                     break;
                 }

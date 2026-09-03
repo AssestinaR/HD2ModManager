@@ -113,6 +113,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ShowSplitCommand { get; }
         public RelayCommand ShowSettingsCommand { get; }
         public RelayCommand ApplyChangesCommand { get; }
+        public RelayCommand ValidateModLibraryCommand { get; }
         public RelayCommand ImportCommand { get; }
         public RelayCommand RefreshCommand { get; }
         public RelayCommand CancelSelectionCommand { get; }
@@ -208,7 +209,7 @@ namespace HD2ModManager.ViewModels
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();
             _libraryService.ModContentFactsChanged += (_, change) =>
             {
-                if (change.Kind == ModContentChangeKind.DerivedOnly)
+                if (!change.RequiresDeployment || change.Kind == ModContentChangeKind.DerivedOnly)
                 {
                     LogService.Info($"部署触发检查：派生投影已刷新，节点数={change.NodeIds.Count}；不触发部署。");
                     return;
@@ -251,6 +252,7 @@ namespace HD2ModManager.ViewModels
             ShowSplitCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileLibrarySplit));
             ShowSettingsCommand = new RelayCommand(() => Navigate(WorkspaceMode.Settings));
             ApplyChangesCommand = new RelayCommand(QueueActiveProfileDeployment);
+            ValidateModLibraryCommand = new RelayCommand(ValidateModLibrary);
             ImportCommand = new RelayCommand(BrowseAndImport);
             RefreshCommand = new RelayCommand(RefreshCurrentPage);
             CancelSelectionCommand = new RelayCommand(_selection.Clear);
@@ -1755,7 +1757,40 @@ namespace HD2ModManager.ViewModels
         {
             page.PageActions.Add(new PageActionViewModel("＋", "导入 Mod", ImportCommand, order: 20, kind: "Import"));
             page.PageActions.Add(new PageActionViewModel("▶", "立即重新部署", ApplyChangesCommand, background: new SolidColorBrush(Color.FromRgb(46, 125, 50)), order: 30, kind: "ScheduleDeployment"));
+            page.PageActions.Add(new PageActionViewModel("✓", "校验 Mod 库", ValidateModLibraryCommand, order: 40, kind: "ValidateLibrary"));
         }
+
+		private async void ValidateModLibrary()
+		{
+			var task = _backgroundTasks.Enqueue(
+				BackgroundTaskKind.RefreshLibrary,
+				"校验 Mod 库",
+				"扫描实际 Mod 文件夹并同步库索引",
+				presentation: BackgroundTaskPresentation.Foreground);
+			try
+			{
+				task.MarkRunning("正在扫描 Mod 文件夹");
+				await Task.Run(() => _libraryService.SynchronizeAsync(_lifetimeCancellation.Token, suppressDeploymentNotification: true), _lifetimeCancellation.Token).ConfigureAwait(false);
+				var result = _libraryService.LastSynchronizationResult;
+				var added = result?.AddedNodeIds.Count ?? 0;
+				var changed = result?.ChangedNodeIds.Count ?? 0;
+				var missing = result?.MissingNodeIds.Count ?? 0;
+				task.MarkCompleted();
+				var message = added == 0 && changed == 0 && missing == 0
+					? "Mod 库校验完成，库索引与实际文件夹一致。"
+					: $"Mod 库校验完成：新增 {added} 个，更新 {changed} 个，缺失 {missing} 个。";
+				RefreshOnUiThread(() => _notificationService.Show(message, missing > 0 ? NotificationLevel.Warning : NotificationLevel.Info, TimeSpan.FromSeconds(8)));
+			}
+			catch (OperationCanceledException)
+			{
+				task.MarkCanceled();
+			}
+			catch (Exception exception)
+			{
+				task.MarkFailed(exception.Message);
+				RefreshOnUiThread(() => _notificationService.Show($"校验 Mod 库失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(10)));
+			}
+		}
 
         private void UpdateModeFromSlots()
         {

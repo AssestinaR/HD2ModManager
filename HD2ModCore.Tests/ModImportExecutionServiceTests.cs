@@ -70,11 +70,12 @@ public sealed class ModImportExecutionServiceTests
 			var result = await CoreServices.CreateModImportExecutionService(paths).ImportFolderAsync(source);
 
 			Assert.True(result.HasOptionPathConflicts);
-			Assert.Equal(5, result.InitializedOptionActivationCount);
+			Assert.Equal(6, result.InitializedOptionActivationCount);
 			var rootNode = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Kind == ModNodeKind.Standard);
 			var choiceA = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Choice A");
 			var choiceB = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Choice B");
-			var independent = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Independent");
+			var independent = Assert.Single(result.Snapshot.Nodes.Values, node =>
+				node.Metadata.Name == "Independent" && node.Metadata.SourcePackagePath == "option:2");
 			var physical = Assert.Single(result.Snapshot.Nodes.Values, node =>
 				node.Metadata.Kind == ModNodeKind.Option
 				&& node.Metadata.SourcePackagePath == "shared"
@@ -86,6 +87,11 @@ public sealed class ModImportExecutionServiceTests
 			Assert.True(optionStates.IsEnabled(independent.Id.Value.ToString("N"), rootNode.Id.Value.ToString("N")));
 			Assert.False(optionStates.IsEnabled(physical.Id.Value.ToString("N"), choiceA.Id.Value.ToString("N")));
 			Assert.False(optionStates.IsEnabled(physical.Id.Value.ToString("N"), choiceB.Id.Value.ToString("N")));
+			var independentPhysical = Assert.Single(result.Snapshot.Nodes.Values, node =>
+				node.Metadata.SourcePackagePath == "independent"
+				&& node.PatchGroups.Count > 0);
+			Assert.Equal(independent.Id.Value.ToString("N"), Assert.Single(independentPhysical.Metadata.HostModGuids!));
+			Assert.True(optionStates.IsEnabled(independentPhysical.Id.Value.ToString("N"), independent.Id.Value.ToString("N")));
 		}
 		finally
 		{

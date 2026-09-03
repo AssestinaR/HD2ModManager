@@ -557,6 +557,13 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			if (owners.Count > 1)
 				conflictingPayloadNodes.Add(new ManifestPayloadConflict(sourceNode, sourcePath, owners));
 		}
+		// A repeated Include changes the physical meaning of the whole manifest.
+		// Logical manifest entries must remain relationship-only nodes; every
+		// actual Patch directory becomes its own flattened library node.  Mixing
+		// this with the ordinary "aggregate all Includes into one node" path would
+		// flatten unrelated Patch files with identical names (for example several
+		// different 9ba...patch_0 files) into one directory.
+		var compatibilityMode = conflictingPayloadNodes.Count > 0;
 
 		var conflictParentIds = conflictingPayloadNodes
 			.SelectMany(conflict => conflict.Owners)
@@ -592,40 +599,57 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					entry.Key,
 					entry.OptionOrder,
 					SuppressDefaultDirectOptionActivation: conflictParentIds.Contains(optionId)),
-				matchedNodes
-					.SelectMany(node => node.PatchGroups)
-					.Distinct()
-					.OrderBy(group => group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
-					.ThenBy(group => group.PatchIndex)
-					.ToArray(),
+				compatibilityMode
+					? Array.Empty<PatchGroupKey>()
+					: matchedNodes
+						.SelectMany(node => node.PatchGroups)
+						.Distinct()
+						.OrderBy(group => group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
+						.ThenBy(group => group.PatchIndex)
+						.ToArray(),
 				Array.Empty<ModNodeId>());
-			sourcePaths[optionId] = paths;
+			sourcePaths[optionId] = compatibilityMode ? Array.Empty<string>() : paths;
 		}
 
-		for (var conflictIndex = 0; conflictIndex < conflictingPayloadNodes.Count; conflictIndex++)
+		var physicalPayloadNodes = compatibilityMode
+			? tree.Nodes.Values
+				.Where(node => node.Metadata.Kind != ModNodeKind.Decoration)
+				.Where(node => node.PatchGroups.Count > 0)
+				.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
+			.ToArray()
+			: conflictingPayloadNodes.Select(conflict => conflict.SourceNode).ToArray();
+		for (var physicalIndex = 0; physicalIndex < physicalPayloadNodes.Length; physicalIndex++)
 		{
-			var conflict = conflictingPayloadNodes[conflictIndex];
-			var physicalId = new ModNodeId(CreateStableNodeGuid(manifest.Guid ?? rootId.Value.ToString("N"), $"conflict:{conflict.SourceRelativePath}"));
-			var hostIds = conflict.Owners
+			var physicalSource = physicalPayloadNodes[physicalIndex];
+			var physicalPath = NormalizeRelativePath(physicalSource.RelativePath);
+			var owners = FindManifestEntriesForSourcePath(entries, physicalPath)
+				.Where(entry => entry.Kind == ModNodeKind.Option)
+				.ToArray();
+			var physicalId = new ModNodeId(CreateStableNodeGuid(
+				manifest.Guid ?? rootId.Value.ToString("N"),
+				$"physical:{physicalPath}"));
+			var hostIds = owners
 				.Select(entry => entryIds[entry.Key].Value.ToString("N"))
 				.Distinct(StringComparer.OrdinalIgnoreCase)
 				.ToArray();
 			var manifestNode = manifest.Nodes?.FirstOrDefault(node => string.Equals(
 				NormalizeRelativePath(node.RelativePath),
-				conflict.SourceRelativePath,
+				physicalPath,
 				StringComparison.OrdinalIgnoreCase));
 			var leafName = manifestNode?.Name;
 			if (string.IsNullOrWhiteSpace(leafName))
-				leafName = Path.GetFileName(conflict.SourceRelativePath.Replace('/', Path.DirectorySeparatorChar));
+				leafName = Path.GetFileName(physicalPath.Replace('/', Path.DirectorySeparatorChar));
 			if (string.IsNullOrWhiteSpace(leafName)) leafName = "共享选项内容";
 			nodes[physicalId] = new ModNode(
 				physicalId,
-				conflict.SourceRelativePath,
-				new ModNodeMetadata(leafName, manifestNode?.Notes, conflict.SourceNode.Metadata.CreatedUtc, conflict.SourceNode.Metadata.ModifiedUtc,
-					ModNodeKind.Option, hostIds, manifest.Guid, conflict.SourceRelativePath, int.MinValue + conflictIndex),
-				conflict.SourceNode.PatchGroups,
+				physicalPath,
+				new ModNodeMetadata(leafName, manifestNode?.Notes, physicalSource.Metadata.CreatedUtc, physicalSource.Metadata.ModifiedUtc,
+					hostIds.Length == 0 ? ModNodeKind.Standard : ModNodeKind.Option,
+					hostIds.Length == 0 ? null : hostIds, manifest.Guid, physicalPath,
+					int.MinValue + physicalIndex),
+				physicalSource.PatchGroups,
 				Array.Empty<ModNodeId>());
-			sourcePaths[physicalId] = [conflict.SourceRelativePath];
+			sourcePaths[physicalId] = [physicalPath];
 		}
 
 		foreach (var decoration in tree.Nodes.Values.Where(node => node.Metadata.Kind == ModNodeKind.Decoration))

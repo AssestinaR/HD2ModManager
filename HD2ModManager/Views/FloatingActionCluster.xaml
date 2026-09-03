@@ -83,6 +83,7 @@
                         <Path x:Name="RenameIcon" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round" Visibility="Collapsed"/>
                         <Path x:Name="DeleteIcon" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
                         <Path x:Name="RefreshIcon" Data="M12.5,6 A5.5,5.5 0 1 0 13,10 M12.5,2.5 L12.5,6 L9,6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                        <Path x:Name="ValidateLibraryIcon" Data="M13,5 A5.5,5.5 0 1 0 13.5,9 M13,2.5 L13,5 L10,5 M3,11 A5.5,5.5 0 0 0 8,13.5 M3,11 L3,13.5 L6,13.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
                         <Path x:Name="ExportIcon" Data="M8,2 L8,10 M4.5,5.5 L8,2 L11.5,5.5 M3,12.5 L13,12.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
                     </Grid>
                 </Button>
@@ -109,6 +110,7 @@
                 <DataTrigger Binding="{Binding Kind}" Value="RemoveProfile"><Setter TargetName="DeleteIcon" Property="Visibility" Value="Visible"/></DataTrigger>
                 <DataTrigger Binding="{Binding Kind}" Value="RefreshProfile"><Setter TargetName="RefreshIcon" Property="Visibility" Value="Visible"/></DataTrigger>
                 <DataTrigger Binding="{Binding Kind}" Value="Refresh"><Setter TargetName="RefreshIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="ValidateLibrary"><Setter TargetName="ValidateLibraryIcon" Property="Visibility" Value="Visible"/></DataTrigger>
                 <DataTrigger Binding="{Binding Kind}" Value="Export"><Setter TargetName="ExportIcon" Property="Visibility" Value="Visible"/></DataTrigger>
                 <MultiDataTrigger>
                     <MultiDataTrigger.Conditions><Condition Binding="{Binding Kind}" Value=""/></MultiDataTrigger.Conditions>

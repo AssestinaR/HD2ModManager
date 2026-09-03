@@ -114,7 +114,7 @@ public sealed class StandardManifestImportTests
 	}
 
 	[Fact]
-	public async Task ImportFolderAsync_ExposesOnlyTrueManifestPathConflicts_AndCopiesTheSharedPhysicalPayload()
+	public async Task ImportFolderAsync_UsesCompatibilityModeForEveryPhysicalPayload_WhenAnyIncludeIsShared()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
 		var appRoot = Path.Combine(root, "app");
@@ -150,7 +150,7 @@ public sealed class StandardManifestImportTests
 			Assert.True(result.HasOptionPathConflicts);
 			var alpha = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Alpha");
 			var beta = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Beta");
-			var independent = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Independent");
+			var independent = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Independent" && node.Metadata.SourcePackagePath == "option:2");
 			var conflict = Assert.Single(result.OptionPathConflicts);
 			Assert.Equal("shared/nested", conflict.SourceRelativePath);
 			Assert.Equal(
@@ -158,7 +158,7 @@ public sealed class StandardManifestImportTests
 				conflict.AffectedParentOptionIds.OrderBy(id => id.Value));
 			Assert.Empty(alpha.PatchGroups);
 			Assert.Empty(beta.PatchGroups);
-			Assert.Single(independent.PatchGroups);
+			Assert.Empty(independent.PatchGroups);
 			Assert.True(alpha.Metadata.SuppressDefaultDirectOptionActivation);
 			Assert.True(beta.Metadata.SuppressDefaultDirectOptionActivation);
 			Assert.False(independent.Metadata.SuppressDefaultDirectOptionActivation);
@@ -171,6 +171,12 @@ public sealed class StandardManifestImportTests
 				new[] { alpha.Id.Value.ToString("N"), beta.Id.Value.ToString("N") }.OrderBy(id => id),
 				sharedPhysical.Metadata.HostModGuids!.OrderBy(id => id));
 			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, sharedPhysical.RelativePath, "9ba626afa44a3aa3.patch_0")));
+
+			var independentPhysical = Assert.Single(result.Snapshot.Nodes.Values, node =>
+				node.Metadata.SourcePackagePath == "independent"
+				&& node.PatchGroups.Count == 1);
+			Assert.Equal(independent.Id.Value.ToString("N"), Assert.Single(independentPhysical.Metadata.HostModGuids!));
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, independentPhysical.RelativePath, "9ba626afa44a3aa4.patch_0")));
 		}
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}

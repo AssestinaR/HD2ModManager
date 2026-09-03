@@ -11,6 +11,9 @@ public sealed record ApplyPlan(
 	IReadOnlyList<CoreIssue> Issues,
 	DeploymentMethod DeploymentMethod = DeploymentMethod.HardLink)
 {
+	// Fast link deployment relies on the library's path/length/mtime fingerprint
+	// and validates link creation without re-reading every Patch payload.
+	public bool UseFastLinkValidation { get; init; }
 	public IReadOnlyList<DeploymentPatchMapping> PatchMappings { get; init; } = Array.Empty<DeploymentPatchMapping>();
 	public IReadOnlyList<ExternalFileMapping> ExternalFileMappings { get; init; } = Array.Empty<ExternalFileMapping>();
 	public ApplyPlan(string gameDataDirectory, IReadOnlyList<ApplyOperation> operations)

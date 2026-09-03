@@ -381,3 +381,4 @@ tmp/
 Decryptor.Tests/
 ._cache_py.exe
 _codex_build/
+_buildverify/

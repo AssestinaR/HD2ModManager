@@ -396,15 +396,19 @@ public sealed class DeploymentOwnershipInspector : IDeploymentOwnershipInspector
 		}
 
 		var hasValidHash = true;
+		var usesFastLinkValidation = entry.Method is DeploymentMethod.HardLink or DeploymentMethod.SymbolicLink;
 		if (string.IsNullOrWhiteSpace(entry.ContentSha256))
 		{
-			issues.Add(new CoreIssue(
-				CoreIssueSeverity.Error,
-				"ManagedPatchHashMissing",
-				"activation-state.json 中的已部署 Patch 缺少内容 SHA-256。",
-				targetPath,
-				entry.NodeId));
-			hasValidHash = false;
+			if (!usesFastLinkValidation)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Error,
+					"ManagedPatchHashMissing",
+					"activation-state.json 中的已部署 Patch 缺少内容 SHA-256。",
+					targetPath,
+					entry.NodeId));
+				hasValidHash = false;
+			}
 		}
 		else if (!IsSha256(entry.ContentSha256))
 		{
@@ -438,6 +442,7 @@ public sealed class DeploymentOwnershipInspector : IDeploymentOwnershipInspector
 			if (!TryVerifySymbolicLinkTarget(actualPatch.Path, entry.SourcePath, issues, entry.NodeId))
 				return;
 		}
+		if (string.IsNullOrWhiteSpace(entry.ContentSha256)) return;
 
 		try
 		{
