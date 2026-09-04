@@ -248,6 +248,7 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
             userVisibleReason: "将来源头盔模型追加到胸部 Unit，并生成隐藏头盔的 Patch。",
             canCancel: true,
             presentation: BackgroundTaskPresentation.Foreground);
+        await using var resourceMonitor = ResourceUsageMonitor.Start(Guid.NewGuid(), "头盔合并到盔甲并输出");
         IsGenerating = true;
         var outputs = new List<string>();
         try
@@ -264,7 +265,9 @@ public sealed class HelmetToArmorMergePlanPageViewModel : FullWorkspacePageViewM
                 var destination = Path.Combine(outputRoot, $"{SanitizeDirectoryName(mod.Name)}-{timestamp}-头盔合并");
                 var progress = task is null ? null : new Progress<HelmetToArmorMergeProgress>(value =>
                 {
-                    task.UpdateStage($"{mod.Name}：{value.Stage}");
+                    task.UpdateStage(value.Total > 0
+                        ? $"{mod.Name}：{value.Stage}（{value.Completed}/{value.Total}）"
+                        : $"{mod.Name}：{value.Stage}");
                     task.UpdateProgress(groups.Length == 0 ? 0 : (completed + value.Fraction) / groups.Length);
                 });
                 var result = await _library.HelmetToArmorMergeService.ExecuteAsync(

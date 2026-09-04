@@ -1298,7 +1298,8 @@ namespace HD2ModManager.Services
             bool helmetMerged,
             CancellationToken cancellationToken,
             IProgress<DecorationOperationProgress>? decorationProgress = null,
-            HelmetToArmorMergeInspection? preparedHelmetInspection = null)
+            HelmetToArmorMergeInspection? preparedHelmetInspection = null,
+            IProgress<HelmetToArmorMergeProgress>? helmetProgress = null)
         {
             var attachments = enabledDecorations
                 .Select(item => new DecorationHostRebuildAttachment(
@@ -1315,7 +1316,8 @@ namespace HD2ModManager.Services
                     SettingsService.GetGameDataFolder(),
                     preparedHelmetInspection),
                 cancellationToken,
-                decorationProgress).ConfigureAwait(false);
+                decorationProgress,
+                helmetProgress).ConfigureAwait(false);
             EnsureHostDerivedOverwriteResult(result);
             return result.HelmetMerge;
         }
@@ -1341,7 +1343,8 @@ namespace HD2ModManager.Services
         private async Task<HelmetToArmorMergeResult> RebuildHelmetOverwriteStateAsync(
             ModNode host,
             bool enabled,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            IProgress<HelmetToArmorMergeProgress>? progress = null)
         {
             var decorations = await ReadEnabledDecorationsAsync(host.Id.Value.ToString("N"), null, cancellationToken).ConfigureAwait(false);
             var inspection = enabled
@@ -1352,14 +1355,16 @@ namespace HD2ModManager.Services
                 decorations,
                 enabled,
                 cancellationToken,
-                preparedHelmetInspection: inspection).ConfigureAwait(false);
+                preparedHelmetInspection: inspection,
+                helmetProgress: progress).ConfigureAwait(false);
             return result ?? new HelmetToArmorMergeResult(true, Path.Combine(_paths.ModsDirectory, host.RelativePath, "Overwrite"), 0, 0, 0, Array.Empty<CoreIssue>());
         }
 
         public async Task<HelmetToArmorMergeResult> SetHelmetToArmorMergedAsync(
             string guid,
             bool enabled,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<HelmetToArmorMergeProgress>? progress = null)
         {
             await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -1372,7 +1377,7 @@ namespace HD2ModManager.Services
                 if (host.Metadata.HelmetToArmorMerged == enabled)
                     return new HelmetToArmorMergeResult(true, Path.Combine(_paths.ModsDirectory, host.RelativePath, "Overwrite"), 0, 0, 0, Array.Empty<CoreIssue>());
 
-                var result = await RebuildHelmetOverwriteStateAsync(host, enabled, cancellationToken).ConfigureAwait(false);
+                var result = await RebuildHelmetOverwriteStateAsync(host, enabled, cancellationToken, progress).ConfigureAwait(false);
                 EnsureHelmetMergeResult(result);
                 var metadata = host.Metadata with
                 {
@@ -1396,6 +1401,10 @@ namespace HD2ModManager.Services
             var detail = result.Issues.Count == 0
                 ? "头盔合并没有生成有效输出。"
                 : string.Join("；", result.Issues.Take(4).Select(issue => issue.Message));
+            LogService.Error(
+                $"头盔合并失败：输出={result.OutputDirectory ?? "(无输出目录)"}，"
+                + $"Patch={result.ProcessedPatchCount}，胸甲Unit={result.MergedArmorUnitCount}，隐藏头盔={result.HiddenHelmetUnitCount}，"
+                + $"问题={string.Join(" | ", result.Issues.Select(issue => $"{issue.Severity}/{issue.Code}: {issue.Message}"))}");
             throw new InvalidDataException(detail);
         }
 

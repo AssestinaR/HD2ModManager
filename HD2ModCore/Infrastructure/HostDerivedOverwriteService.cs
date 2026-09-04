@@ -27,7 +27,8 @@ public sealed class HostDerivedOverwriteService
     public async Task<HostDerivedOverwriteResult> RebuildAsync(
         HostDerivedOverwriteRequest request,
         CancellationToken cancellationToken = default,
-        IProgress<DecorationOperationProgress>? decorationProgress = null)
+        IProgress<DecorationOperationProgress>? decorationProgress = null,
+        IProgress<HelmetToArmorMergeProgress>? helmetProgress = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Host);
@@ -70,7 +71,7 @@ public sealed class HostDerivedOverwriteService
         }
 
         if (decorations.Length == 0)
-            return await BuildHelmetOverwriteFromSourceAsync(request, output, inspection.Candidates, cancellationToken).ConfigureAwait(false);
+            return await BuildHelmetOverwriteFromSourceAsync(request, output, inspection.Candidates, cancellationToken, helmetProgress).ConfigureAwait(false);
 
         // The decoration rebuild writes only the Patch families it edits. Its output
         // must therefore be overlaid onto the original host before helmet planning,
@@ -90,14 +91,16 @@ public sealed class HostDerivedOverwriteService
             output,
             decorationResult,
             inspection.Candidates,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            helmetProgress).ConfigureAwait(false);
     }
 
     private async Task<HostDerivedOverwriteResult> BuildHelmetOverwriteFromSourceAsync(
         HostDerivedOverwriteRequest request,
         string overwrite,
         IReadOnlyCollection<HelmetToArmorMergeCandidate> candidates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<HelmetToArmorMergeProgress>? helmetProgress)
     {
         var source = ResolveHostDirectory(request.Host, request.ModsRootDirectory);
         var backup = PrepareManagedOverwrite(overwrite);
@@ -109,7 +112,8 @@ public sealed class HostDerivedOverwriteService
                 overwrite,
                 request.GameDataDirectory,
                 candidates,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                helmetProgress).ConfigureAwait(false);
             if (!result.IsSuccessful)
             {
                 RestoreManagedOverwrite(overwrite, backup);
@@ -135,7 +139,8 @@ public sealed class HostDerivedOverwriteService
         string overwrite,
         DecorationHostRebuildResult decorationResult,
         IReadOnlyCollection<HelmetToArmorMergeCandidate> candidates,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<HelmetToArmorMergeProgress>? helmetProgress)
     {
         var temporary = overwrite + ".helmet-merge-" + Guid.NewGuid().ToString("N");
         var effectiveSource = CreateEffectiveHelmetMergeSource(request.Host, request.ModsRootDirectory, overwrite, cancellationToken);
@@ -148,7 +153,8 @@ public sealed class HostDerivedOverwriteService
                 temporary,
                 request.GameDataDirectory,
                 candidates,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                helmetProgress).ConfigureAwait(false);
             if (!result.IsSuccessful)
                 return HostDerivedOverwriteResult.Failure(overwrite, decorationResult, result, result.Issues);
 

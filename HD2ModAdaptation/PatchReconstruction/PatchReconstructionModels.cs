@@ -17,7 +17,15 @@ public sealed record PatchTocEntry(
 	uint GpuResourceSize = 0,
 	uint Unknown3 = 0,
 	uint Unknown4 = 0,
-	uint EntryIndex = 0);
+	uint EntryIndex = 0)
+{
+	// The source TOC declaration is retained when a known streamless compatibility
+	// signature is normalized for reading. Writers use StreamSize (the effective
+	// readable size), while diagnostics can still explain the original metadata.
+	public uint DeclaredStreamSize { get; init; }
+	public bool UsesEmptyStreamCompatibilityOverride
+		=> DeclaredStreamSize != 0 && StreamSize == 0 && DeclaredStreamSize != StreamSize;
+}
 
 public sealed record PatchEntryPayload(PatchTocEntry Entry, byte[] TocData, byte[] StreamData, byte[] GpuResourceData);
 

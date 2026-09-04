@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $OutputDirectory = "artifacts\publish",
-    [switch] $KeepExistingOutput
+    [switch] $KeepExistingOutput,
+    [switch] $CompatibilityMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,7 +33,9 @@ if ([System.IO.Path]::IsPathRooted($relativeArchiveDirectory) -or
 function Invoke-DotNet {
     param([string[]] $Arguments)
 
-    & dotnet @Arguments
+    # Keep native build output visible while preventing it from becoming the
+    # return value of Publish-ReleaseVariant when that function is assigned.
+    & dotnet @Arguments | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
@@ -143,7 +146,8 @@ function Write-RootReadme {
     param(
         [string] $PackageDirectory,
         [bool] $IncludesPrivateRuntime,
-        [pscustomobject] $RuntimeLayout
+        [pscustomobject] $RuntimeLayout,
+        [bool] $CompatibilityMode
     )
 
     if (-not (Test-Path -LiteralPath $releaseReadmeSource)) {
@@ -157,7 +161,16 @@ function Write-RootReadme {
         "This package does not include .NET Runtime. Install .NET $($RuntimeLayout.RuntimeVersion.Split('.')[0]) Windows Desktop Runtime (x64) first. If it is missing, the .NET host shows an install prompt when HD2ModManager.exe starts."
     }
 
+    $compatibilityInstructions = if ($CompatibilityMode) {
+        "Compatibility build: CET compatibility is disabled for older Windows 10 or older hardware. This build is provided as a targeted workaround and is not the default supported release."
+    }
+    else {
+        ""
+    }
     $content = (Get-Content -LiteralPath $releaseReadmeSource -Raw -Encoding UTF8).Replace('{{RUNTIME_INSTRUCTIONS}}', $runtimeInstructions)
+    if (-not [string]::IsNullOrWhiteSpace($compatibilityInstructions)) {
+        $content = $content.TrimEnd() + [Environment]::NewLine + [Environment]::NewLine + $compatibilityInstructions
+    }
     $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
     [System.IO.File]::WriteAllText(
         (Join-Path $PackageDirectory 'README.md'),
@@ -272,7 +285,8 @@ function Publish-ReleaseVariant {
         [bool] $IncludesPrivateRuntime,
         [string] $Timestamp,
         [pscustomobject] $RuntimeLayout,
-        [string] $StagingDirectory
+        [string] $StagingDirectory,
+        [bool] $CompatibilityMode
     )
 
     $stageDirectory = Join-Path $StagingDirectory $VariantName
@@ -310,6 +324,9 @@ function Publish-ReleaseVariant {
             '-p:AppHostRelativeDotNet=bin\dotnet'
         )
     }
+    if ($CompatibilityMode) {
+        $managerArguments += '-p:CETCompat=false'
+    }
     Invoke-DotNet $managerArguments
 
     Remove-LegacyCliRootArtifacts $stageDirectory
@@ -343,6 +360,9 @@ function Publish-ReleaseVariant {
             '-p:AppHostRelativeDotNet=dotnet'
         )
     }
+    if ($CompatibilityMode) {
+        $cliArguments += '-p:CETCompat=false'
+    }
     Invoke-DotNet $cliArguments
 
     if ($IncludesPrivateRuntime) {
@@ -360,11 +380,12 @@ function Publish-ReleaseVariant {
         throw "The published CLI could not export its Agent Skills (exit code $LASTEXITCODE)."
     }
 
-    Write-RootReadme -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout
+    Write-RootReadme -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout -CompatibilityMode $CompatibilityMode
     Write-CliLauncher -PackageDirectory $stageDirectory
     Assert-ReleaseLayout -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout
 
-    $archivePath = Join-Path $archiveDirectory "HD2ModManager-win-x64-$Timestamp-$VariantName.zip"
+    $variantLabel = if ($CompatibilityMode) { "compat-$VariantName" } else { $VariantName }
+    $archivePath = Join-Path $archiveDirectory "HD2ModManager-win-x64-$Timestamp-$variantLabel.zip"
     Compress-ReleaseStage -StageDirectory $stageDirectory -ArchivePath $archivePath
     Remove-PublishOwnedPath $stageDirectory
     return $archivePath
@@ -385,8 +406,8 @@ $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmssfff')
 $stagingDirectory = Join-Path $archiveDirectory '.staging'
 New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
 
-$completeArchive = Publish-ReleaseVariant -VariantName 'complete' -IncludesPrivateRuntime $true -Timestamp $timestamp -RuntimeLayout $privateRuntimeLayout -StagingDirectory $stagingDirectory
-$requiresDotNetArchive = Publish-ReleaseVariant -VariantName 'requires-dotnet' -IncludesPrivateRuntime $false -Timestamp $timestamp -RuntimeLayout $privateRuntimeLayout -StagingDirectory $stagingDirectory
+$completeArchive = Publish-ReleaseVariant -VariantName 'complete' -IncludesPrivateRuntime $true -Timestamp $timestamp -RuntimeLayout $privateRuntimeLayout -StagingDirectory $stagingDirectory -CompatibilityMode $CompatibilityMode
+$requiresDotNetArchive = Publish-ReleaseVariant -VariantName 'requires-dotnet' -IncludesPrivateRuntime $false -Timestamp $timestamp -RuntimeLayout $privateRuntimeLayout -StagingDirectory $stagingDirectory -CompatibilityMode $CompatibilityMode
 
 if ((Get-ChildItem -LiteralPath $stagingDirectory -Force | Measure-Object).Count -eq 0) {
     Remove-PublishOwnedPath $stagingDirectory

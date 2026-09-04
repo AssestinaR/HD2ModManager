@@ -18,9 +18,9 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Produces Adaptation-owned patch analyses while keeping every Patch read behind IModInformationReader.
 public sealed class ModInformationPatchGroupAnalysisProvider : IPatchGroupAnalysisProvider
 {
-	private const string FullAnalyzerVersion = "patch-group-v5-sdk-source-eligibility";
-	private const string InventoryAnalyzerVersion = "patch-group-v5-inventory";
-	private const string DependencyGraphAnalyzerVersion = "patch-group-v6-dependency-graph";
+	private const string FullAnalyzerVersion = "patch-group-v6-streamless-compatibility";
+	private const string InventoryAnalyzerVersion = "patch-group-v6-streamless-compatibility";
+	private const string DependencyGraphAnalyzerVersion = "patch-group-v7-streamless-compatibility";
 
 	private readonly SharedState _state;
 	private readonly PatchAnalysisDepth _depth;
@@ -192,6 +192,7 @@ public sealed class ModInformationPatchGroupAnalysisProvider : IPatchGroupAnalys
 			index = indexResult.Data;
 			AppendReaderIssues(indexResult.State, issues, tocPath);
 			entries = index.Entries;
+			AppendEmptyStreamCompatibilityIssue(entries, issues, tocPath);
 			foreach (var entry in entries)
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -233,6 +234,19 @@ public sealed class ModInformationPatchGroupAnalysisProvider : IPatchGroupAnalys
 		}
 
 		return CreateResult(input, assets, references, issues, _depth, entries, preparedSourceUnits);
+	}
+
+	private static void AppendEmptyStreamCompatibilityIssue(
+		IReadOnlyList<PatchTocEntry> entries,
+		ICollection<PatchAnalysisIssue> issues,
+		string tocPath)
+	{
+		var sentinel = PatchStreamCompatibility.GetEmptyStreamSentinel(entries);
+		if (!sentinel.HasValue) return;
+		issues.Add(new PatchAnalysisIssue(
+			"NonStandardEmptyStreamSentinel",
+			$"Patch 使用空或省略的 .stream 与统一 StreamSize 占位值 0x{sentinel.Value:x8}；已按无 Stream 资源兼容读取。",
+			tocPath));
 	}
 
 	private async ValueTask ReadMaterialTextureReferencesAsync(

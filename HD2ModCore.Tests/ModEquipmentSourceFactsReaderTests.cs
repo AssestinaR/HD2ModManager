@@ -15,6 +15,108 @@ namespace HD2ModCore.Tests;
 public sealed class ModEquipmentSourceFactsReaderTests
 {
 	[Fact]
+	public void HelmetMergeSharedArmorWarning_DoesNotBlockExecution()
+	{
+		var armor = Part(Key(0x501), UnitMeshPartKind.Torso);
+		var helmetA = Part(Key(0x601), UnitMeshPartKind.Head);
+		var helmetB = Part(Key(0x602), UnitMeshPartKind.Head);
+		var candidates = new[]
+		{
+			new HelmetToArmorMergeCandidate("patch|armor|helmet-a", "patch_0", "armor", "helmet-a", "Set", [armor], helmetA),
+			new HelmetToArmorMergeCandidate("patch|armor|helmet-b", "patch_0", "armor", "helmet-b", "Set", [armor], helmetB),
+		};
+
+		var issues = HelmetToArmorMergeService.ValidateSelectedCandidates(candidates, HelmetToArmorMergeOutputMode.FirstHelmetOnly);
+
+		var issue = Assert.Single(issues);
+		Assert.Equal(CoreIssueSeverity.Warning, issue.Severity);
+		Assert.Equal("HelmetArmorSharedTargetFirstHelmet", issue.Code);
+		Assert.False(HelmetToArmorMergeService.HasBlockingIssues(issues));
+	}
+
+	[Fact]
+	public void HelmetMergeCandidates_ReusesOnlyHelmetWhenArmorCountIsGreater()
+	{
+		var patchPath = Path.Combine(Path.GetTempPath(), "helmet-count-shortage-" + Guid.NewGuid().ToString("N") + ".patch_0");
+		var armorA = Key(0x101);
+		var armorB = Key(0x102);
+		var helmet = Key(0x201);
+		var facts = CreateHelmetFacts(patchPath,
+			Armor("Set", "armor-a", armorA),
+			Armor("Set", "armor-b", armorB),
+			Helmet("Set", "helmet-a", helmet));
+		var issues = new List<CoreIssue>();
+
+		var candidates = HelmetToArmorMergeService.BuildCandidates(facts, issues);
+
+		Assert.Equal(2, candidates.Count);
+		Assert.All(candidates, candidate => Assert.Equal("helmet-a", candidate.HelmetArchiveId));
+		Assert.Contains(issues, issue => issue.Code == "HelmetFallbackReused");
+	}
+
+	[Fact]
+	public void HelmetMergeCandidates_IgnoresExtraHelmetArchives()
+	{
+		var patchPath = Path.Combine(Path.GetTempPath(), "helmet-count-extra-" + Guid.NewGuid().ToString("N") + ".patch_0");
+		var armor = Key(0x301);
+		var helmetA = Key(0x401);
+		var helmetB = Key(0x402);
+		var facts = CreateHelmetFacts(patchPath,
+			Armor("Set", "armor-a", armor),
+			Helmet("Set", "helmet-a", helmetA),
+			Helmet("Set", "helmet-b", helmetB));
+		var issues = new List<CoreIssue>();
+
+		var candidates = HelmetToArmorMergeService.BuildCandidates(facts, issues);
+
+		var candidate = Assert.Single(candidates);
+		Assert.Equal("helmet-a", candidate.HelmetArchiveId);
+		Assert.Contains(issues, issue => issue.Code == "HelmetExtraIgnored");
+	}
+
+	private static ModEquipmentSourceFacts CreateHelmetFacts(
+		string patchPath,
+		params EquipmentUnitCatalogEntry[] entries)
+	{
+		var nodeId = ModNodeId.New();
+		var unitEntries = entries.SelectMany(entry => entry.Parts)
+			.Select(part => new AdaptationPatchTocEntry(
+				new AdaptationAssetKey(part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId),
+				patchPath,
+				Path.GetFileName(patchPath)))
+			.ToArray();
+		return new ModEquipmentSourceFacts(
+			nodeId,
+			"test",
+			[patchPath],
+			entries,
+			entries,
+			new Dictionary<string, IReadOnlyList<AdaptationPatchTocEntry>>(StringComparer.OrdinalIgnoreCase)
+			{
+				[patchPath] = unitEntries
+			},
+			[],
+			[]);
+	}
+
+	private static EquipmentUnitCatalogEntry Armor(string displayName, string archiveId, CoreAssetKey unit)
+		=> new(archiveId, "Armor", displayName, [Part(unit, UnitMeshPartKind.Torso)]);
+
+	private static EquipmentUnitCatalogEntry Helmet(string displayName, string archiveId, CoreAssetKey unit)
+		=> new(archiveId, "Helmet", displayName, [Part(unit, UnitMeshPartKind.Head)]);
+
+	private static EquipmentUnitPart Part(CoreAssetKey unit, UnitMeshPartKind kind)
+		=> new(unit, 0, 1, kind, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any, kind.ToString(), 100, [])
+		{
+			GeometryQuality = UnitMeshGeometryQuality.RenderableLod0,
+			StoredBytes = 100,
+			PieceType = kind.ToString()
+		};
+
+	private static CoreAssetKey Key(ulong fileId)
+		=> new(PatchUnitMeshReader.UnitTypeId, fileId);
+
+	[Fact]
 	public async Task ReadAsync_RebindsSingleCatalogPartToCurrentRenderableMesh()
 	{
 		var node = new ModNode(ModNodeId.New(), "source", new ModNodeMetadata("Source", null, DateTimeOffset.UtcNow, null), [], []);

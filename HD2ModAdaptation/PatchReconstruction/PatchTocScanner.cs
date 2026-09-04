@@ -15,7 +15,8 @@ public sealed class PatchTocScanner : IPatchTocScanner
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(patchTocFilePath);
 		var data = await File.ReadAllBytesAsync(patchTocFilePath, cancellationToken).ConfigureAwait(false);
-		return ScanEntries(data, patchTocFilePath);
+		var entries = ScanEntries(data, patchTocFilePath);
+		return PatchStreamCompatibility.NormalizeKnownEmptyStreamSentinel(patchTocFilePath, entries);
 	}
 
 	public IReadOnlyList<PatchTocEntry> ScanEntries(ReadOnlySpan<byte> tocData, string sourceFilePath, bool usesSlimEntryOffset = false)
@@ -30,9 +31,11 @@ public sealed class PatchTocScanner : IPatchTocScanner
 		for (var index = 0; index < fileCount; index++)
 		{
 			var offset = checked(entriesOffset + checked((int)index * EntryRecordSize));
+			var streamSize = Read32(tocData, offset + 60);
 			result.Add(new PatchTocEntry(new AssetKey(Read64(tocData, offset + 8), Read64(tocData, offset)), sourceFilePath, name,
 				Read64(tocData, offset + 16), Read64(tocData, offset + 24), Read64(tocData, offset + 32), Read64(tocData, offset + 40), Read64(tocData, offset + 48),
-				Read32(tocData, offset + 56), Read32(tocData, offset + 60), Read32(tocData, offset + 64), Read32(tocData, offset + 68), Read32(tocData, offset + 72), Read32(tocData, offset + 76)));
+				Read32(tocData, offset + 56), streamSize, Read32(tocData, offset + 64), Read32(tocData, offset + 68), Read32(tocData, offset + 72), Read32(tocData, offset + 76))
+				{ DeclaredStreamSize = streamSize });
 		}
 		return result;
 	}

@@ -7,9 +7,9 @@ namespace HD2ModAdaptation.Analysis;
 // Purpose: Performs the first low-cost patch-group analysis using the canonical TOC scanner.
 public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependencyGraphPatchGroupAnalyzer
 {
-	private const string FullAnalyzerVersion = "patch-group-v5-sdk-source-eligibility";
-	private const string InventoryAnalyzerVersion = "patch-group-v5-inventory";
-	private const string DependencyGraphAnalyzerVersion = "patch-group-v6-dependency-graph";
+	private const string FullAnalyzerVersion = "patch-group-v6-streamless-compatibility";
+	private const string InventoryAnalyzerVersion = "patch-group-v6-streamless-compatibility";
+	private const string DependencyGraphAnalyzerVersion = "patch-group-v7-streamless-compatibility";
 	private readonly IPatchTocScanner tocScanner;
 	private readonly IPatchEntryPayloadReader payloadReader;
 	private readonly IUnitMaterialReferenceReader unitMaterialReader;
@@ -54,6 +54,7 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 		try
 		{
 			entries = await tocScanner.ScanEntriesAsync(tocPath, cancellationToken).ConfigureAwait(false);
+			AppendEmptyStreamCompatibilityIssue(entries, issues, tocPath);
 			foreach (var entry in entries)
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -84,6 +85,19 @@ public sealed class PatchGroupAnalyzer : IInventoryPatchGroupAnalyzer, IDependen
 		}
 
 		return CreateResult(input, assets, references, issues, depth, entries, preparedSourceUnits);
+	}
+
+	private static void AppendEmptyStreamCompatibilityIssue(
+		IReadOnlyList<PatchTocEntry> entries,
+		ICollection<PatchAnalysisIssue> issues,
+		string tocPath)
+	{
+		var sentinel = PatchStreamCompatibility.GetEmptyStreamSentinel(entries);
+		if (!sentinel.HasValue) return;
+		issues.Add(new PatchAnalysisIssue(
+			"NonStandardEmptyStreamSentinel",
+			$"Patch 使用空或省略的 .stream 与统一 StreamSize 占位值 0x{sentinel.Value:x8}；已按无 Stream 资源兼容读取。",
+			tocPath));
 	}
 
 	private async ValueTask ReadDirectUnitMaterialReferencesAsync(IReadOnlyList<PatchTocEntry> entries, ICollection<PatchAssetReference> references, ICollection<PatchAnalysisIssue> issues, CancellationToken cancellationToken)

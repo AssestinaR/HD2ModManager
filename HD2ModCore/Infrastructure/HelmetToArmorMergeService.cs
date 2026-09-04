@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction;
+using HD2ModAdaptation.PatchReconstruction.PatchWorkspace;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Application;
@@ -25,13 +26,19 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 {
 	private readonly IModEquipmentSourceFactsReader equipmentFacts;
 	private readonly IModInformationReader informationReader;
+	private readonly IPatchWorkspaceWriter workspaceWriter;
+	private readonly IPatchOperationWorkspaceFactory operationWorkspaceFactory;
 
 	public HelmetToArmorMergeService(
 		IModEquipmentSourceFactsReader equipmentFacts,
-		IModInformationReader informationReader)
+		IModInformationReader informationReader,
+		IPatchWorkspaceWriter? workspaceWriter = null,
+		IPatchOperationWorkspaceFactory? operationWorkspaceFactory = null)
 	{
 		this.equipmentFacts = equipmentFacts ?? throw new ArgumentNullException(nameof(equipmentFacts));
 		this.informationReader = informationReader ?? throw new ArgumentNullException(nameof(informationReader));
+		this.workspaceWriter = workspaceWriter ?? new PatchWorkspaceWriter();
+		this.operationWorkspaceFactory = operationWorkspaceFactory ?? new PatchOperationWorkspaceFactory();
 	}
 
 	public async ValueTask<HelmetToArmorMergeInspection> InspectAsync(
@@ -63,8 +70,8 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 					Property = ModInformationPropertyKind.UnitGeometrySummary
 				},
 				cancellationToken).ConfigureAwait(false);
-			var candidates = BuildCandidates(result);
 			var issues = result.Issues.ToList();
+			var candidates = BuildCandidates(result, issues);
 			if (candidates.Count == 0)
 			{
 				issues.Add(new CoreIssue(
@@ -123,9 +130,19 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 			return Failure(outputRoot, "HelmetArmorCandidatesMissing", "没有选择可执行的 Armor/Helmet 模型集合。", sourceRoot);
 
 		var selectionIssues = ValidateSelectedCandidates(selected.Values, outputMode);
-		if (selectionIssues.Count != 0)
+		if (HasBlockingIssues(selectionIssues))
 			return new HelmetToArmorMergeResult(false, outputRoot, 0, 0, 0, selectionIssues);
 		var primaryCandidates = SelectPrimaryCandidates(selected.Values);
+		var estimatedWorkTotal = Math.Max(1,
+			primaryCandidates.SelectMany(candidate => candidate.ArmorUnitKeys).Distinct().Count()
+			+ primaryCandidates.Select(candidate => candidate.HelmetPart.UnitAssetKey).Distinct().Count()
+			+ primaryCandidates.Select(candidate => candidate.SourcePatchFileName).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+		var completedWork = 0;
+		void ReportProgress(string stage, bool completed = false)
+		{
+			if (completed) completedWork++;
+			progress?.Report(new HelmetToArmorMergeProgress(stage, Math.Min(completedWork, estimatedWorkTotal), estimatedWorkTotal));
+		}
 
 		var operationId = Guid.NewGuid();
 		var context = ModInformationRequestContext.Create(
@@ -133,7 +150,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 			operationId: operationId,
 			sessionId: operationId,
 			operationName: "HelmetToArmorMergeExecute");
-		var issues = new List<CoreIssue>();
+		var issues = new List<CoreIssue>(selectionIssues);
 		var processedPatches = 0;
 		var mergedArmorUnits = 0;
 		var hiddenHelmetUnits = 0;
@@ -150,7 +167,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 				cancellationToken.ThrowIfCancellationRequested();
 				var patchPath = patches[patchIndex];
 				var patchFileName = Path.GetFileName(patchPath);
-				progress?.Report(new HelmetToArmorMergeProgress($"正在读取 {patchFileName}", patchIndex, patchTotal));
+				ReportProgress($"正在准备 Patch {patchIndex + 1}/{patchTotal}：{patchFileName}");
 
 				var indexResult = await informationReader.ReadPatchIndexAsync(
 					new ModInformationReadRequest(
@@ -173,26 +190,28 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 					.ToArray();
 				if (patchCandidates.Length == 0) continue;
 
-				var unitCache = new Dictionary<AdaptationAssetKey, AdaptationPatchUnitMesh>();
+				// Decoded Units contain the full vertex graph and are intentionally read outside
+				// the operation cache.  This operation may touch many large torso Units; keeping
+				// them until the final archive write used to make peak memory proportional to the
+				// whole Patch rather than to the current Unit.
+				var unitRequest = new ModInformationReadRequest(
+					patchPath,
+					context with { CacheScope = ModInformationCacheScope.None },
+					ContentView: ModInformationContentView.Source,
+					NodeId: source.Id);
 				async ValueTask<AdaptationPatchUnitMesh> ReadUnitAsync(AdaptationAssetKey key)
 				{
-					if (unitCache.TryGetValue(key, out var cached)) return cached;
 					if (!byKey.TryGetValue(key, out var entry))
 						throw new InvalidDataException($"Patch 中不存在 Unit 0x{key.FileId:x16}。");
 					var read = await informationReader.ReadUnitAsync(
 						entry,
 						entries,
 						PatchUnitDependencyPolicy.RequirePatchLocalComposite,
-						new ModInformationReadRequest(
-							patchPath,
-							context,
-							ContentView: ModInformationContentView.Source,
-							NodeId: source.Id),
+						unitRequest,
 						canonicalSource: false,
 						cancellationToken).ConfigureAwait(false);
 					if (read.Data is null)
 						throw new InvalidDataException($"无法读取 Unit 0x{key.FileId:x16}。");
-					unitCache[key] = read.Data;
 					return read.Data;
 				}
 
@@ -207,8 +226,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 						issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetUnitMissing", $"来源 Patch 缺少头盔 Unit 0x{helmetKey.FileId:x16}。", patchPath, source.Id));
 						continue;
 					}
-					var helmetUnit = await ReadUnitAsync(helmetKey).ConfigureAwait(false);
-					AddHelmetPlan(helmetPlans, helmetKey, candidate, helmetUnit);
+					AddHelmetPlan(helmetPlans, helmetKey, candidate);
 					foreach (var armorPart in candidate.ArmorParts)
 					{
 						var armorKey = ToAdaptation(armorPart.UnitAssetKey);
@@ -218,7 +236,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 							continue;
 						}
 						if (plannedArmorTargets.Add((armorKey, armorPart.MeshInfoIndex, helmetKey)))
-							armorPlans.Add(new ArmorAppendPlan(armorKey, armorPart.MeshInfoIndex, helmetKey, candidate, helmetUnit));
+							armorPlans.Add(new ArmorAppendPlan(armorKey, armorPart.MeshInfoIndex, helmetKey, candidate));
 					}
 				}
 				// Every candidate remains a source of a helmet Unit that must be hidden
@@ -232,20 +250,34 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 					{
 						var helmetKey = ToAdaptation(candidate.HelmetPart.UnitAssetKey);
 						if (!byKey.ContainsKey(helmetKey)) continue;
-						var helmetUnit = await ReadUnitAsync(helmetKey).ConfigureAwait(false);
-						AddHelmetPlan(helmetPlans, helmetKey, candidate, helmetUnit);
+						AddHelmetPlan(helmetPlans, helmetKey, candidate);
 					}
 				}
 
-				var edits = new List<PatchUnitMeshEditResult>();
+				using var operationWorkspace = operationWorkspaceFactory.Create(outputRoot, "helmet-to-armor");
+				var jobs = new List<PatchWorkspaceJobResult>();
+				var editedAssetKeys = new HashSet<AdaptationAssetKey>();
+				var armorUnitGroups = armorPlans.GroupBy(plan => plan.ArmorUnitKey).ToArray();
+				var completedArmorUnits = 0;
 				// One physical Unit must yield at most one Patch edit. A source Armor can
 				// legitimately expose multiple torso MeshInfo records (for example
 				// Slim/Stocky on a shared Unit), so aggregate every target Mesh family
 				// before calling the Canonical appender once.
-				foreach (var unitGroup in armorPlans.GroupBy(plan => plan.ArmorUnitKey))
+				foreach (var unitGroup in armorUnitGroups)
 				{
 					cancellationToken.ThrowIfCancellationRequested();
 					var target = await ReadUnitAsync(unitGroup.Key).ConfigureAwait(false);
+					// A helmet can be used by several MeshInfo records of this one physical
+					// torso. Keep it only for that Unit, then let it be collected before the
+					// next torso is decoded.
+					var helmetUnits = new Dictionary<AdaptationAssetKey, AdaptationPatchUnitMesh>();
+					async ValueTask<AdaptationPatchUnitMesh> ReadHelmetAsync(AdaptationAssetKey key)
+					{
+						if (helmetUnits.TryGetValue(key, out var cached)) return cached;
+						var unit = await ReadUnitAsync(key).ConfigureAwait(false);
+						helmetUnits.Add(key, unit);
+						return unit;
+					}
 					var inputsByTargetMesh = new Dictionary<int, List<CanonicalDecorationAppendInput>>();
 					foreach (var targetGroup in unitGroup.GroupBy(plan => plan.ArmorMeshInfoIndex))
 					{
@@ -263,10 +295,11 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 								inputsByTargetMesh[lodTarget.Mesh.Index] = inputs = [];
 							foreach (var plan in targetGroup)
 							{
-								var sourceMesh = ResolveSourceLod(plan.HelmetUnit.Model, plan.Candidate.HelmetPart.MeshInfoIndex, lodTarget.Raw.LodIndex);
+								var helmetUnit = await ReadHelmetAsync(plan.HelmetUnitKey).ConfigureAwait(false);
+								var sourceMesh = ResolveSourceLod(helmetUnit.Model, plan.Candidate.HelmetPart.MeshInfoIndex, lodTarget.Raw.LodIndex);
 								if (sourceMesh is null) continue;
 								inputs.Add(new CanonicalDecorationAppendInput(
-									CreateFragment(plan.HelmetUnit, sourceMesh.Value.Mesh, sourceMesh.Value.Raw),
+									CreateFragment(helmetUnit, sourceMesh.Value.Mesh, sourceMesh.Value.Raw),
 									MaterialNamespace(plan.Candidate.CandidateId)));
 							}
 						}
@@ -287,14 +320,20 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 							new CoreIssue(CoreIssueSeverity.Warning, diagnostic.Code, diagnostic.Message, patchPath, source.Id)));
 						continue;
 					}
-					edits.Add(append.Edit);
+					var stagedOutputs = StageEdit(operationWorkspace, append.Edit, byKey);
+					jobs.Add(new PatchWorkspaceJobResult(stagedOutputs, Array.Empty<CanonicalPlanDiagnostic>(), "HelmetAppend", $"0x{append.Edit.Entry.AssetKey.FileId:x16}"));
+					foreach (var stagedOutput in stagedOutputs) editedAssetKeys.Add(stagedOutput.Key);
 					mergedArmorUnits++;
+					completedArmorUnits++;
+					ReportProgress($"正在合并胸甲 {completedArmorUnits}/{armorUnitGroups.Length}：0x{unitGroup.Key.FileId:x16}", completed: true);
 				}
 
+				var completedHelmetUnits = 0;
 				foreach (var hide in helmetPlans.Values)
 				{
+					completedHelmetUnits++;
 					if (!byKey.TryGetValue(hide.UnitKey, out var sourceEntry)) continue;
-					if (edits.Any(edit => edit.Entry.AssetKey == sourceEntry.AssetKey))
+					if (editedAssetKeys.Contains(sourceEntry.AssetKey))
 					{
 						issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetHideSkippedArmorEdit", $"头盔 Unit 0x{hide.UnitKey.FileId:x16} 同时被选为胸部输出，已跳过隐藏以避免覆盖该 Unit 编辑。", patchPath, source.Id));
 						continue;
@@ -307,30 +346,41 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 							allowGlobalDependencySearch: true,
 							cancellationToken: cancellationToken).ConfigureAwait(false);
 						var hidden = new CanonicalHiddenUnitBuilder().Build(targetHelmet, avatar);
-						edits.Add(new PatchUnitMeshEditResult(
-							sourceEntry,
-							hide.SourceUnit.Payload,
-							hidden.Entry.EffectiveTocData,
-							hidden.Entry.EffectiveGpuData));
+						var output = CreateOutputEntry(sourceEntry, hidden.Entry.EffectiveTocData, hidden.Entry.EffectiveGpuData);
+						var stagedOutput = operationWorkspace.Stage(output);
+						jobs.Add(PatchWorkspaceJobResult.Unit(stagedOutput, $"hidden-0x{hide.UnitKey.FileId:x16}"));
+						editedAssetKeys.Add(stagedOutput.Key);
 						hiddenHelmetUnits++;
 					}
 					catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or InvalidOperationException)
 					{
 						issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetHideFailed", $"头盔 Unit 0x{hide.UnitKey.FileId:x16} 无法生成隐藏版：{exception.Message}", patchPath, source.Id, exception.ToString()));
 					}
+					finally
+					{
+						ReportProgress($"正在隐藏头盔 {completedHelmetUnits}/{helmetPlans.Count}：0x{hide.UnitKey.FileId:x16}", completed: true);
+					}
 				}
 
-				if (edits.Count != 0)
+				if (jobs.Count != 0)
 				{
-					await new PatchArchiveWriter().WriteAsync(
-						patchPath,
+					ReportProgress($"正在打包 Patch {patchIndex + 1}/{patchTotal}：{patchFileName}");
+					await workspaceWriter.WriteAsync(
+						indexResult.Data,
+						jobs,
+						new HashSet<AdaptationAssetKey>(),
 						outputRoot,
-						edits,
+						patchFileName,
 						overwriteExisting: true,
 						cancellationToken: cancellationToken).ConfigureAwait(false);
 					processedPatches++;
+					ReportProgress($"已打包 Patch {patchIndex + 1}/{patchTotal}：{patchFileName}", completed: true);
 				}
-				progress?.Report(new HelmetToArmorMergeProgress($"已完成 {patchFileName}", patchIndex + 1, patchTotal));
+				// GameData reader caches archive TOCs for hidden-Unit generation. The next
+				// Patch does not need those retained arrays, so release them at the same
+				// boundary as the staged Unit payloads.
+				targetReader.ClearCaches();
+				ReportProgress($"已完成 Patch {patchIndex + 1}/{patchTotal}：{patchFileName}");
 			}
 			if (processedPatches == 0 || mergedArmorUnits == 0)
 			{
@@ -349,6 +399,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 					cancellationToken,
 					issues).ConfigureAwait(false);
 			}
+			progress?.Report(new HelmetToArmorMergeProgress("头盔合并完成", estimatedWorkTotal, estimatedWorkTotal));
 			return new HelmetToArmorMergeResult(true, outputRoot, processedPatches, mergedArmorUnits, hiddenHelmetUnits, issues);
 		}
 		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -473,7 +524,9 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 		return string.IsNullOrWhiteSpace(safe) ? "头盔合并变体" : safe;
 	}
 
-	private static IReadOnlyList<HelmetToArmorMergeCandidate> BuildCandidates(ModEquipmentSourceFacts facts)
+	internal static IReadOnlyList<HelmetToArmorMergeCandidate> BuildCandidates(
+		ModEquipmentSourceFacts facts,
+		ICollection<CoreIssue>? diagnostics = null)
 	{
 		var candidates = new List<HelmetToArmorMergeCandidate>();
 		foreach (var group in facts.PreparedEntries)
@@ -489,18 +542,55 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 				.Select(entry => entry with { Parts = entry.Parts.Where(part => unitKeys.Contains(part.UnitAssetKey)).ToArray() })
 				.Where(entry => entry.Parts.Count != 0)
 				.ToArray();
-			var armors = sourceEntries.Where(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase));
-			var helmets = sourceEntries.Where(entry => string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase));
-			foreach (var armor in armors)
+			var armors = sourceEntries
+				.Where(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase))
+				.OrderBy(entry => entry.DisplayName, StringComparer.OrdinalIgnoreCase)
+				.ThenBy(entry => entry.ArchiveId, StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+			var helmetEntries = sourceEntries
+				.Where(entry => string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase))
+				.Select(entry => (Entry: entry, ArchiveId: entry.ArchiveId, Part: SelectHelmetPart(entry.Parts)))
+				.Where(item => item.Part is not null)
+				.OrderBy(item => item.Entry.DisplayName, StringComparer.OrdinalIgnoreCase)
+				.ThenBy(item => item.Entry.ArchiveId, StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+			var helmetsByName = helmetEntries
+				.GroupBy(item => item.Entry.DisplayName, StringComparer.OrdinalIgnoreCase)
+				.ToDictionary(items => items.Key, items => items.ToArray(), StringComparer.OrdinalIgnoreCase);
+			var usedHelmetArchives = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var armorGroup in armors.GroupBy(entry => entry.DisplayName, StringComparer.OrdinalIgnoreCase))
 			{
-				var armorParts = SelectTorsoParts(armor.Parts);
-				if (armorParts.Count == 0) continue;
-				foreach (var helmet in helmets.Where(helmet => string.Equals(helmet.DisplayName, armor.DisplayName, StringComparison.OrdinalIgnoreCase)))
+				var armorEntries = armorGroup.ToArray();
+				var matchingHelmets = helmetsByName.GetValueOrDefault(armorGroup.Key)
+				?? Array.Empty<(EquipmentUnitCatalogEntry Entry, string ArchiveId, EquipmentUnitPart? Part)>();
+				if (matchingHelmets.Length == 0 && helmetEntries.Length == 1)
 				{
-					var helmetPart = SelectHelmetPart(helmet.Parts);
-					if (helmetPart is null) continue;
-					var candidateId = BuildCandidateId(patchFileName, armor.ArchiveId, helmet.ArchiveId);
+					matchingHelmets = helmetEntries;
+					diagnostics?.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetFallbackBySingleSource",
+						$"Patch {patchFileName} 中未找到与“{armorGroup.Key}”同名的头盔，已使用唯一可用头盔作为安全兜底。", group.Key));
+				}
+				if (matchingHelmets.Length == 0)
+				{
+					diagnostics?.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetArmorPairMissing",
+						$"Patch {patchFileName} 中的盔甲集合“{armorGroup.Key}”没有可配对的 Any 头盔。", group.Key));
+					continue;
+				}
+				if (matchingHelmets.Length > armorEntries.Length)
+					diagnostics?.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetExtraIgnored",
+						$"Patch {patchFileName} 中“{armorGroup.Key}”有 {matchingHelmets.Length} 个可用头盔，但只有 {armorEntries.Length} 个胸甲集合；多余头盔不会生成隐藏或合并结果。", group.Key));
+				if (matchingHelmets.Length < armorEntries.Length)
+					diagnostics?.Add(new CoreIssue(CoreIssueSeverity.Warning, "HelmetFallbackReused",
+						$"Patch {patchFileName} 中“{armorGroup.Key}”只有 {matchingHelmets.Length} 个可用头盔，将从首个头盔继承到缺少配对的胸甲集合。", group.Key));
+				for (var armorIndex = 0; armorIndex < armorEntries.Length; armorIndex++)
+				{
+					var armor = armorEntries[armorIndex];
+					var armorParts = SelectTorsoParts(armor.Parts);
+					if (armorParts.Count == 0) continue;
+					var helmet = matchingHelmets[Math.Min(armorIndex, matchingHelmets.Length - 1)];
+					var helmetPart = helmet.Part!;
+					var candidateId = BuildCandidateId(patchFileName, armor.ArchiveId, helmet.Entry.ArchiveId);
 					if (candidates.Any(candidate => string.Equals(candidate.CandidateId, candidateId, StringComparison.OrdinalIgnoreCase))) continue;
+					usedHelmetArchives.Add(helmet.Entry.ArchiveId);
 					candidates.Add(new HelmetToArmorMergeCandidate(
 						candidateId,
 						patchFileName,
@@ -511,6 +601,12 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 						helmetPart));
 				}
 			}
+			foreach (var extra in helmetEntries.Where(item => !usedHelmetArchives.Contains(item.Entry.ArchiveId)))
+				diagnostics?.Add(new CoreIssue(
+					CoreIssueSeverity.Warning,
+					"HelmetExtraIgnored",
+					$"头盔 Archive {extra.Entry.ArchiveId}（{extra.Entry.DisplayName}）没有被稳定配对，已忽略。",
+					group.Key));
 		}
 		return candidates
 			.OrderBy(candidate => candidate.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -519,7 +615,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 			.ToArray();
 	}
 
-	private static IReadOnlyList<CoreIssue> ValidateSelectedCandidates(
+	internal static IReadOnlyList<CoreIssue> ValidateSelectedCandidates(
 		IEnumerable<HelmetToArmorMergeCandidate> candidates,
 		HelmetToArmorMergeOutputMode outputMode)
 	{
@@ -554,6 +650,9 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 		return issues;
 	}
 
+	internal static bool HasBlockingIssues(IEnumerable<CoreIssue> issues)
+		=> issues.Any(issue => issue.Severity == CoreIssueSeverity.Error);
+
 	private static IReadOnlyList<HelmetToArmorMergeCandidate> SelectPrimaryCandidates(
 		IEnumerable<HelmetToArmorMergeCandidate> candidates)
 	{
@@ -564,7 +663,9 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 				candidate.ArmorParts
 					.Select(part => $"{part.UnitAssetKey.TypeId:x16}:{part.UnitAssetKey.FileId:x16}:{part.MeshInfoIndex}")
 					.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)), StringComparer.OrdinalIgnoreCase)
-			.Select(group => group.First())
+			.Select(group => group
+				.OrderBy(candidate => candidate.CandidateId, StringComparer.OrdinalIgnoreCase)
+				.First())
 			.ToArray();
 	}
 
@@ -679,14 +780,55 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 		return BitConverter.ToUInt64(hash, 0);
 	}
 
+	// The output Unit owns rebuilt TOC/GPU bytes, but its stream sidecar remains an
+	// immutable source range.  Keeping that range avoids loading an unchanged stream
+	// payload merely to write it back into the final archive.
+	private static CanonicalPatchSessionEntry CreateOutputEntry(
+		AdaptationPatchTocEntry sourceEntry,
+		byte[] tocData,
+		byte[] gpuData)
+		=> new CanonicalPatchSessionEntry(
+			sourceEntry.AssetKey,
+			CanonicalPatchEntryOwnership.TargetOutput,
+			tocData,
+			gpuData,
+			sourceEntry.StreamSize == 0 ? Array.Empty<byte>() : null,
+			sourceEntry.Unknown1,
+			sourceEntry.Unknown2,
+			sourceEntry.Unknown3,
+			sourceEntry.Unknown4)
+		{
+			StreamDataSource = sourceEntry.StreamSize == 0
+				? null
+				: new CanonicalPayloadSourceRange(sourceEntry.SourceFilePath + ".stream", sourceEntry.StreamOffset, sourceEntry.StreamSize)
+		};
+
+	private static IReadOnlyList<CanonicalPatchSessionEntry> StageEdit(
+		IPatchOperationWorkspace workspace,
+		PatchUnitMeshEditResult edit,
+		IReadOnlyDictionary<AdaptationAssetKey, AdaptationPatchTocEntry> entriesByKey)
+	{
+		var outputs = new List<CanonicalPatchSessionEntry>
+		{
+			workspace.Stage(CreateOutputEntry(edit.Entry, edit.TocData, edit.GpuResourceData))
+		};
+		if (edit.CompositeAssetKey is not { } compositeKey || compositeKey == edit.Entry.AssetKey)
+			return outputs;
+		if (edit.CompositeTocData is null || edit.CompositeGpuResourceData is null)
+			throw new InvalidDataException($"胸甲 Unit 0x{edit.Entry.AssetKey.FileId:x16} 的 Composite 输出不完整。");
+		if (!entriesByKey.TryGetValue(compositeKey, out var compositeEntry))
+			throw new InvalidDataException($"胸甲 Unit 0x{edit.Entry.AssetKey.FileId:x16} 引用了 Patch 中不存在的 Composite 0x{compositeKey.FileId:x16}。");
+		outputs.Add(workspace.Stage(CreateOutputEntry(compositeEntry, edit.CompositeTocData, edit.CompositeGpuResourceData)));
+		return outputs;
+	}
+
 	private static void AddHelmetPlan(
 		IDictionary<AdaptationAssetKey, HelmetHidePlan> plans,
 		AdaptationAssetKey key,
-		HelmetToArmorMergeCandidate candidate,
-		AdaptationPatchUnitMesh sourceUnit)
+		HelmetToArmorMergeCandidate candidate)
 	{
 		if (!plans.ContainsKey(key))
-			plans.Add(key, new HelmetHidePlan(key, candidate.HelmetArchiveId, candidate, sourceUnit));
+			plans.Add(key, new HelmetHidePlan(key, candidate.HelmetArchiveId, candidate));
 	}
 
 	private static HelmetToArmorMergeResult Failure(string outputDirectory, string code, string message, string path)
@@ -696,12 +838,10 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 		AdaptationAssetKey ArmorUnitKey,
 		int ArmorMeshInfoIndex,
 		AdaptationAssetKey HelmetUnitKey,
-		HelmetToArmorMergeCandidate Candidate,
-		AdaptationPatchUnitMesh HelmetUnit);
+		HelmetToArmorMergeCandidate Candidate);
 
 	private sealed record HelmetHidePlan(
 		AdaptationAssetKey UnitKey,
 		string ArchiveId,
-		HelmetToArmorMergeCandidate Candidate,
-		AdaptationPatchUnitMesh SourceUnit);
+		HelmetToArmorMergeCandidate Candidate);
 }

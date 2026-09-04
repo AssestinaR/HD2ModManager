@@ -46,6 +46,7 @@ public sealed class PatchValidator : IPatchValidator
 		}
 
 		ValidateEntryIdentity(entries, issues);
+		AppendEmptyStreamCompatibilityWarning(entries, fullPath, issues);
 		ValidateSidecars(fullPath, entries, issues);
 		var sourceGeometry = await PrepareSourceGeometryValidationAsync(entries, fullPath, options, issues, cancellationToken).ConfigureAwait(false);
 		var unitsChecked = 0;
@@ -178,6 +179,19 @@ public sealed class PatchValidator : IPatchValidator
 		foreach (var sourceEntry in entriesToPreserve.Where(entry => !outputKeys.Contains(entry.AssetKey)))
 			issues.Add(GeometryIssue(options, "SourceUnitMissing", $"Output Patch is missing source Unit 0x{sourceEntry.AssetKey.FileId:x16}.", sourceEntry.AssetKey, outputPath));
 		return new(sourceEntries, entriesToPreserve.ToDictionary(entry => entry.AssetKey));
+	}
+
+	private static void AppendEmptyStreamCompatibilityWarning(
+		IReadOnlyList<PatchTocEntry> entries,
+		string tocPath,
+		ICollection<PatchValidationIssue> issues)
+	{
+		var sentinel = PatchStreamCompatibility.GetEmptyStreamSentinel(entries);
+		if (!sentinel.HasValue) return;
+		issues.Add(Warning(
+			"NonStandardEmptyStreamSentinel",
+			$"Patch 使用空或省略的 .stream 与统一 StreamSize 占位值 0x{sentinel.Value:x8}；已按无 Stream 资源兼容读取。",
+			filePath: tocPath));
 	}
 
 	private async ValueTask ValidateSourceGeometryForUnitAsync(

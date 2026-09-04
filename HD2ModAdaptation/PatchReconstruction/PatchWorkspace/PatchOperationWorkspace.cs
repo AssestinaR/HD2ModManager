@@ -74,17 +74,20 @@ public sealed class PatchOperationWorkspace : IPatchOperationWorkspace
 		var tocPath = Path.Combine(DirectoryPath, prefix + ".toc");
 		var gpuPath = Path.Combine(DirectoryPath, prefix + ".gpu");
 		var streamPath = Path.Combine(DirectoryPath, prefix + ".stream");
-		WriteAtomically(tocPath, entry.EffectiveTocData);
-		WriteAtomically(gpuPath, entry.EffectiveGpuData);
-		WriteAtomically(streamPath, entry.EffectiveStreamData);
+		var stagedToc = StagePayload(tocPath, entry.TocData, entry.TocDataPath, entry.TocDataSource);
+		var stagedGpu = StagePayload(gpuPath, entry.GpuData, entry.GpuDataPath, entry.GpuDataSource);
+		var stagedStream = StagePayload(streamPath, entry.StreamData, entry.StreamDataPath, entry.StreamDataSource);
 		var staged = entry with
 		{
-			TocData = null,
-			GpuData = null,
-			StreamData = null,
-			TocDataPath = tocPath,
-			GpuDataPath = gpuPath,
-			StreamDataPath = streamPath
+			TocData = stagedToc.Path is null ? entry.TocData : null,
+			GpuData = stagedGpu.Path is null ? entry.GpuData : null,
+			StreamData = stagedStream.Path is null ? entry.StreamData : null,
+			TocDataPath = stagedToc.Path,
+			GpuDataPath = stagedGpu.Path,
+			StreamDataPath = stagedStream.Path,
+			TocDataSource = stagedToc.Source,
+			GpuDataSource = stagedGpu.Source,
+			StreamDataSource = stagedStream.Source
 		};
 		RegisterManifestEntry(staged);
 		return staged;
@@ -119,16 +122,13 @@ public sealed class PatchOperationWorkspace : IPatchOperationWorkspace
 
 	private void RegisterManifestEntry(CanonicalPatchSessionEntry entry)
 	{
-		if (entry.TocDataPath is null || entry.GpuDataPath is null || entry.StreamDataPath is null)
-			throw new InvalidOperationException("A staged workspace entry must have TOC, GPU, and Stream paths.");
-
 		manifestEntries.RemoveAll(existing => existing.Key == entry.Key);
 		manifestEntries.Add(new PatchOperationManifestEntry(
 			entry.Key,
 			entry.Ownership.ToString(),
-			Path.GetFileName(entry.TocDataPath),
-			Path.GetFileName(entry.GpuDataPath),
-			Path.GetFileName(entry.StreamDataPath)));
+			DescribePayload(entry.TocDataPath, entry.TocDataSource, entry.TocData),
+			DescribePayload(entry.GpuDataPath, entry.GpuDataSource, entry.GpuData),
+			DescribePayload(entry.StreamDataPath, entry.StreamDataSource, entry.StreamData)));
 		manifestDirty = true;
 		stagedEntriesSinceManifest++;
 		// Keep a recoverable manifest after the first output, then avoid rewriting an
@@ -169,6 +169,60 @@ public sealed class PatchOperationWorkspace : IPatchOperationWorkspace
 			{
 				File.WriteAllBytes(temporaryPath, data);
 				File.Move(temporaryPath, path, overwrite: true);
+				return;
+			}
+			catch (Exception exception) when (attempt < AtomicWriteAttempts && exception is IOException or UnauthorizedAccessException)
+			{
+				Thread.Sleep(TimeSpan.FromMilliseconds(50 * (1 << (attempt - 1))));
+			}
+			finally
+			{
+				try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
+				catch (IOException) { }
+				catch (UnauthorizedAccessException) { }
+			}
+		}
+	}
+
+	// Source ranges are already durable and may be very large.  Staging them by first
+	// materializing Effective*Data would defeat the workspace's disk-backed boundary.
+	private static (string? Path, CanonicalPayloadSourceRange? Source) StagePayload(
+		string stagedPath,
+		byte[]? data,
+		string? existingPath,
+		CanonicalPayloadSourceRange? source)
+	{
+		if (data is not null)
+		{
+			WriteAtomically(stagedPath, data);
+			return (stagedPath, null);
+		}
+		if (existingPath is not null)
+		{
+			CopyAtomically(stagedPath, existingPath);
+			return (stagedPath, null);
+		}
+		if (source is not null)
+			return (null, source);
+		throw new InvalidOperationException("A workspace entry must own a payload or reference a valid source range.");
+	}
+
+	private static string DescribePayload(string? path, CanonicalPayloadSourceRange? source, byte[]? data)
+		=> path is not null
+			? Path.GetFileName(path)
+			: source is not null
+				? $"source:{Path.GetFileName(source.FilePath)}@{source.Offset}+{source.Length}"
+				: $"memory:{data?.Length ?? 0}";
+
+	private static void CopyAtomically(string destination, string source)
+	{
+		for (var attempt = 1; ; attempt++)
+		{
+			var temporaryPath = destination + ".tmp-" + Guid.NewGuid().ToString("N");
+			try
+			{
+				File.Copy(source, temporaryPath, overwrite: true);
+				File.Move(temporaryPath, destination, overwrite: true);
 				return;
 			}
 			catch (Exception exception) when (attempt < AtomicWriteAttempts && exception is IOException or UnauthorizedAccessException)

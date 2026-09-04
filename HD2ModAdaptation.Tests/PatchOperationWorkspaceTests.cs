@@ -63,4 +63,35 @@ public sealed class PatchOperationWorkspaceTests
 			if (Directory.Exists(output)) Directory.Delete(output, recursive: true);
 		}
 	}
+
+	[Fact]
+	public void StageKeepsLargeImmutableSourceRangesOutOfTheWorkspace()
+	{
+		var output = Path.Combine(Path.GetTempPath(), "HD2ModAdaptationTests", Guid.NewGuid().ToString("N"));
+		var source = Path.Combine(output, "source.stream");
+		Directory.CreateDirectory(output);
+		try
+		{
+			File.WriteAllBytes(source, [9, 8, 7, 6]);
+			using var workspace = new PatchOperationWorkspace(output, "unit-rebuild");
+			var staged = workspace.Stage(new CanonicalPatchSessionEntry(
+				new AssetKey(0x10, 0x21),
+				CanonicalPatchEntryOwnership.TargetOutput,
+				[1, 2], [3, 4], null)
+			{
+				StreamDataSource = new CanonicalPayloadSourceRange(source, 1, 2)
+			});
+
+			Assert.Null(staged.StreamData);
+			Assert.Null(staged.StreamDataPath);
+			Assert.Equal(new CanonicalPayloadSourceRange(source, 1, 2), staged.StreamDataSource);
+			Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "0000000000000010-0000000000000021.stream")));
+			using var manifest = JsonDocument.Parse(File.ReadAllText(workspace.ManifestPath));
+			Assert.StartsWith("source:source.stream@1+2", manifest.RootElement.GetProperty("Outputs")[0].GetProperty("StreamFile").GetString());
+		}
+		finally
+		{
+			if (Directory.Exists(output)) Directory.Delete(output, recursive: true);
+		}
+	}
 }

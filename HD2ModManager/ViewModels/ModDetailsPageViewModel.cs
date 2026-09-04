@@ -1591,10 +1591,22 @@ namespace HD2ModManager.ViewModels
                 userVisibleReason: enable ? "生成并启用当前 Mod 的头盔合并 Overwrite。" : "移除头盔合并状态并恢复当前 Mod 的原始/装饰 Overwrite。",
                 canCancel: true,
                 presentation: BackgroundTaskPresentation.Foreground);
+            await using var resourceMonitor = ResourceUsageMonitor.Start(
+                Guid.NewGuid(),
+                enable ? "临时头盔合并" : "取消临时头盔合并");
             try
             {
                 task?.MarkRunning(enable ? "正在合并" : "正在恢复");
-                var result = await _library.SetHelmetToArmorMergedAsync(Mod.Guid, enable, task?.CancellationToken ?? CancellationToken.None).ConfigureAwait(true);
+                var progress = task is null ? null : new Progress<HelmetToArmorMergeProgress>(value =>
+                {
+                    task.UpdateStage(value.Total > 0 ? $"{value.Stage}（{value.Completed}/{value.Total}）" : value.Stage);
+                    task.UpdateProgress(value.Fraction);
+                });
+                var result = await _library.SetHelmetToArmorMergedAsync(
+                    Mod.Guid,
+                    enable,
+                    task?.CancellationToken ?? CancellationToken.None,
+                    progress).ConfigureAwait(true);
                 task?.MarkCompleted();
                 Refresh();
                 _notifications?.Show(enable
@@ -1609,6 +1621,7 @@ namespace HD2ModManager.ViewModels
             catch (Exception exception)
             {
                 task?.MarkFailed(exception.Message);
+                LogService.Error($"头盔合并操作失败：Mod={Mod.Guid}，启用={enable}，异常={exception}");
                 _notifications?.Show($"头盔合并操作失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(12));
             }
             finally

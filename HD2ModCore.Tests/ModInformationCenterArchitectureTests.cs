@@ -31,12 +31,16 @@ public sealed class ModInformationCenterArchitectureTests
 		var root = FindRepositoryRoot();
 		var sameKey = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CanonicalSameKeyReconstructionService.cs"));
 		var crossArmor = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CanonicalCrossArmorOrchestrator.cs"));
+		var helmetMerge = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "HelmetToArmorMergeService.cs"));
 
 		Assert.Contains("IPatchOperationWorkspaceFactory", sameKey);
 		Assert.Contains("operationWorkspace.Stage(rebuilt.Job)", sameKey);
 		Assert.Contains("IPatchOperationWorkspaceFactory", crossArmor);
 		Assert.Contains("operationWorkspace.Stage(outputTargetEntry)", crossArmor);
 		Assert.DoesNotContain("StagePayloads(", crossArmor);
+		Assert.Contains("IPatchOperationWorkspaceFactory", helmetMerge);
+		Assert.Contains("StageEdit(operationWorkspace", helmetMerge);
+		Assert.Contains("CacheScope = ModInformationCacheScope.None", helmetMerge);
 	}
 
 	[Fact]
