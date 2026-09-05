@@ -21,14 +21,14 @@ public interface IProfileMutationService
 	/// <summary>Sets the sole active Profile, or clears it when <paramref name="profileId"/> is null.</summary>
 	ProfileMutationResult SetActiveProfile(LibrarySnapshot snapshot, ProfileId? profileId);
 
-	/// <summary>Appends new deployable Mod entries to one Profile.</summary>
+	/// <summary>Appends new valid top-level Mod intent entries to one Profile.</summary>
 	ProfileMutationResult AddEntries(LibrarySnapshot snapshot, ProfileId profileId, IReadOnlyList<ModNodeId> nodeIds);
 
-	/// <summary>Removes existing deployable Mod entries from one Profile.</summary>
+	/// <summary>Removes existing Mod intent entries from one Profile.</summary>
 	ProfileMutationResult RemoveEntries(LibrarySnapshot snapshot, ProfileId profileId, IReadOnlyList<ModNodeId> nodeIds);
 
 	/// <summary>
-	/// Inserts new deployable Mod entries at a zero-based position in the Profile's
+	/// Inserts new valid top-level Mod entries at a zero-based position in the Profile's
 	/// current stable order. Position <c>0</c> is before the first entry and
 	/// <c>Entries.Count</c> is after the last entry.
 	/// </summary>
@@ -39,7 +39,7 @@ public interface IProfileMutationService
 		int targetPosition);
 
 	/// <summary>
-	/// Moves existing Profile entries as one stable block to a zero-based
+	/// Moves existing Profile intent entries as one stable block to a zero-based
 	/// pre-move insertion position. Selected entries keep their current relative
 	/// order regardless of the order in which their IDs were supplied.
 	/// </summary>

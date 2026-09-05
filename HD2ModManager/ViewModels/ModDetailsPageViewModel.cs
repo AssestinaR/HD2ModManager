@@ -1173,6 +1173,10 @@ namespace HD2ModManager.ViewModels
 
             var directOptions = _library.GetOptionsForHost(Mod.Guid);
             var directOptionCounts = _library.GetDirectOptionCounts();
+            var routeProfile = _profiles.SelectedProfile ?? _profiles.ActiveProfile;
+            var optionRoutes = routeProfile is { } selectedProfile
+                ? _library.ResolveOptionRoutes(selectedProfile)
+                : ProfileOptionRouteResolution.Empty;
             EnsureDisplayedHostOptionOrders(Mod.Guid, directOptions);
             _directHostOptionCount = directOptions.Count;
             var decorations = _library.GetDecorationsForHost(Mod.Guid);
@@ -1181,12 +1185,16 @@ namespace HD2ModManager.ViewModels
             for (var index = 0; index < directOptions.Count; index++)
             {
                 var option = directOptions[index];
+                var routePresentation = BuildOptionRoutePresentation(option.Guid, Mod.Guid, optionRoutes);
                 attachmentStates.Add(HostAttachmentListState.Create(
                     option,
                     IsHostDecorationSelected(option.Guid),
-                    _library.IsOptionEnabledForHost(option.Guid, Mod.Guid),
+                    routePresentation.IsEnabledForCurrentHost,
                     optionOrder: _displayedHostOptionOrderByGuid.GetValueOrDefault(option.Guid, index),
-                    directOptionCount: directOptionCounts.GetValueOrDefault(option.Guid)));
+                    directOptionCount: directOptionCounts.GetValueOrDefault(option.Guid),
+                    activationLabel: routePresentation.ActivationLabel,
+                    activationTone: routePresentation.ActivationTone,
+                    activationSummary: routePresentation.Summary));
             }
 
             foreach (var decoration in decorations)
@@ -1219,6 +1227,53 @@ namespace HD2ModManager.ViewModels
                 _displayedHostOptionOrderByGuid.TryAdd(directOptions[index].Guid, index);
         }
 
+        private OptionRoutePresentation BuildOptionRoutePresentation(
+            string optionId,
+            string hostId,
+            ProfileOptionRouteResolution routes)
+        {
+            var isEnabledForCurrentHost = _library.IsOptionEnabledForHost(optionId, hostId);
+            if (!TryParseNodeId(optionId, out var parsedOptionId)
+                || !TryParseNodeId(hostId, out var parsedHostId)
+                || !routes.HasActiveProfile)
+            {
+                return isEnabledForCurrentHost
+                    ? new OptionRoutePresentation(true, "已为当前主体启用", ModListRowTone.Success, null)
+                    : new OptionRoutePresentation(false, "未为当前主体启用", ModListRowTone.Warning, null);
+            }
+
+            var otherHostNames = routes.ReachableRelations
+                .Where(route => route.OptionId == parsedOptionId && route.HostId != parsedHostId)
+                .Select(route => _library.Get(route.HostId.Value.ToString("N"))?.Name)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var isReachableForCurrentHost = routes.IsRelationReachable(parsedHostId, parsedOptionId);
+            if (!isEnabledForCurrentHost && otherHostNames.Length != 0)
+            {
+                var names = string.Join("、", otherHostNames.Take(2));
+                if (otherHostNames.Length > 2) names += " 等";
+                return new OptionRoutePresentation(
+                    false,
+                    "已由其他主体启用",
+                    ModListRowTone.Accent,
+                    $"当前主体设置不影响部署：已由 {names} 决定。 ");
+            }
+
+            if (isEnabledForCurrentHost && !isReachableForCurrentHost)
+            {
+                return new OptionRoutePresentation(
+                    true,
+                    "已设置启用",
+                    ModListRowTone.Accent,
+                    "当前选定配置尚未通过该主体展开。 ");
+            }
+
+            return isEnabledForCurrentHost
+                ? new OptionRoutePresentation(true, "已为当前主体启用", ModListRowTone.Success, null)
+                : new OptionRoutePresentation(false, "未为当前主体启用", ModListRowTone.Warning, null);
+        }
+
         private static ModCardViewModel CreateHostAttachmentCard(HostAttachmentListState state)
         {
             var card = new ModCardViewModel(
@@ -1229,6 +1284,12 @@ namespace HD2ModManager.ViewModels
             card.ApplyAttachmentState(state.Mod, state.IsSelected, state.DecorationStatus, state.RowPresentation, state.ContentVersion);
             return card;
         }
+
+        private sealed record OptionRoutePresentation(
+            bool IsEnabledForCurrentHost,
+            string ActivationLabel,
+            ModListRowTone ActivationTone,
+            string? Summary);
 
         private void OnSelectionChanged(object? sender, EventArgs e)
             => RunOnUiThread(RefreshHostDecorationSelection);
@@ -1685,10 +1746,33 @@ namespace HD2ModManager.ViewModels
             var active = _profiles.ActiveProfile;
             if (active == null) return "当前没有活动配置";
             if (!TryParseNodeId(Mod.Guid, out var nodeId)) return "无法识别 Mod ID";
-            var entry = active.Entries.FirstOrDefault(e => e.NodeId == nodeId);
-            return entry == null
-                ? $"未加入活动配置：{active.Name}"
-                : $"已启用在活动配置：{active.Name}，顺序 {entry.LoadOrder}";
+            var directEntry = active.Entries.FirstOrDefault(e => e.NodeId == nodeId);
+            if (directEntry is not null)
+            {
+                return Mod.IsLogicalContainer
+                    ? $"已作为结构锚点加入活动配置：{active.Name}"
+                    : $"已启用在活动配置：{active.Name}，顺序 {directEntry.LoadOrder + 1}";
+            }
+
+            if (Mod.IsOption)
+            {
+                var routes = _library.ResolveOptionRoutes(active);
+                var effectiveEntry = routes.EffectiveProfile?.Entries.FirstOrDefault(e => e.NodeId == nodeId);
+                if (effectiveEntry is not null)
+                {
+                    var routeNames = routes.ReachableRelations
+                        .Where(route => route.OptionId == nodeId)
+                        .Select(route => _library.Get(route.HostId.Value.ToString("N"))?.Name)
+                        .Where(name => !string.IsNullOrWhiteSpace(name))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(2)
+                        .ToArray();
+                    var source = routeNames.Length == 0 ? "其父级" : string.Join("、", routeNames);
+                    return $"已由 {source} 展开到活动配置：{active.Name}，实际顺序 {effectiveEntry.LoadOrder + 1}";
+                }
+            }
+
+            return $"未加入活动配置：{active.Name}";
         }
 
         private string BuildFileIntegritySummary()
@@ -1782,9 +1866,13 @@ namespace HD2ModManager.ViewModels
             bool isSelected,
             bool isEnabled,
             int? optionOrder = null,
-            int directOptionCount = 0)
+            int directOptionCount = 0,
+            string? activationLabel = null,
+            ModListRowTone activationTone = ModListRowTone.Muted,
+            string? activationSummary = null)
         {
-            var decorationStatus = isEnabled ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。";
+            var decorationStatus = activationSummary
+                ?? (isEnabled ? "已为当前 Mod 启用。" : "未为当前 Mod 启用。");
             var assetSummary = ModCardViewModel.AppendDirectOptionSummary(
                 ModCardViewModel.BuildAssetSummaryText(mod, null),
                 directOptionCount);
@@ -1793,8 +1881,10 @@ namespace HD2ModManager.ViewModels
                 assetSummary,
                 null,
                 null,
-                isEnabled ? "已为当前主体启用" : "未为当前主体启用",
-                isEnabled ? ModListRowTone.Success : ModListRowTone.Warning,
+                activationLabel ?? (isEnabled ? "已为当前主体启用" : "未为当前主体启用"),
+                activationLabel is null
+                    ? (isEnabled ? ModListRowTone.Success : ModListRowTone.Warning)
+                    : activationTone,
                 mod.IsOption && optionOrder.HasValue ? $"选项顺序 {optionOrder.Value + 1}" : null,
                 ModListRowTone.Accent);
             var contentVersion = string.Join('\u001f',

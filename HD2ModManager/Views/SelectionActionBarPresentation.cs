@@ -16,6 +16,9 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         ICommand deleteFromLibraryCommand,
         ICommand enableDecorationsCommand,
         ICommand disableDecorationsCommand,
+        ICommand setSelectedModsAsOptionsCommand,
+        ICommand attachSelectedDecorationsCommand,
+        ICommand removeSelectedOptionsFromHostCommand,
         ICommand cancelSelectionCommand)
     {
         _bottomBar = bottomBar;
@@ -24,6 +27,9 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         DeleteFromLibraryCommand = deleteFromLibraryCommand;
         EnableDecorationsCommand = enableDecorationsCommand;
         DisableDecorationsCommand = disableDecorationsCommand;
+        SetSelectedModsAsOptionsCommand = setSelectedModsAsOptionsCommand;
+        AttachSelectedDecorationsCommand = attachSelectedDecorationsCommand;
+        RemoveSelectedOptionsFromHostCommand = removeSelectedOptionsFromHostCommand;
         CancelSelectionCommand = cancelSelectionCommand;
         BeginMoveCommand = bottomBar.BeginMoveCommand;
         BeginInsertCommand = bottomBar.BeginInsertCommand;
@@ -40,6 +46,11 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public bool ShowDeleteFromLibrary => _bottomBar.ShowDeleteFromLibrary;
     public bool ShowEnableDecorations => _bottomBar.ShowEnableDecorations;
     public bool ShowDisableDecorations => _bottomBar.ShowDisableDecorations;
+    public bool ShowSetAsOption => _bottomBar.ShowSetAsOption;
+    public string SetAsOptionText => _bottomBar.SetAsOptionText;
+    public bool ShowAttachDecorationsToHost => _bottomBar.ShowAttachDecorationsToHost;
+    public string AttachDecorationsToHostText => _bottomBar.AttachDecorationsToHostText;
+    public bool ShowRemoveOptionsFromHost => _bottomBar.ShowRemoveOptionsFromHost;
     public ICommand BeginMoveCommand { get; }
     public ICommand BeginInsertCommand { get; }
     public ICommand SelectionPrimaryCommand { get; }
@@ -47,5 +58,8 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public ICommand DeleteFromLibraryCommand { get; }
     public ICommand EnableDecorationsCommand { get; }
     public ICommand DisableDecorationsCommand { get; }
+    public ICommand SetSelectedModsAsOptionsCommand { get; }
+    public ICommand AttachSelectedDecorationsCommand { get; }
+    public ICommand RemoveSelectedOptionsFromHostCommand { get; }
     public ICommand CancelSelectionCommand { get; }
 }

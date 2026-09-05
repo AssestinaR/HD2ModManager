@@ -19,7 +19,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Reconcile library facts: `library-synchronization`.
 - Import one source: `safe-import`; import a reviewed source collection: `batch-import`.
 - Read actual Patch contents before choosing advanced operations: `patch-analysis`.
-- Rename, notes, images, Options, deletion, or Profiles: `mod-metadata`, `mod-media`, `option-management`, `safe-library-deletion`, `profile-management`, `profile-alignment`.
+- Create logical containers, manage multi-parent Options, rename, notes, images, deletion, or Profiles: `option-management`, `mod-metadata`, `mod-media`, `safe-library-deletion`, `profile-management`, `profile-alignment`.
 - Create a decoration package: `decoration-package`; edit an imported PatchSnapshot decoration: `decoration-edit`.
 - Export an imported Mod tree: `mod-export`.
 - Connect a verified standalone Patch output back to the library, Profile, deployment, and winner checks: `generated-patch-integration`.

@@ -7,6 +7,8 @@ namespace HD2ModCore.Infrastructure;
 /// Pure, UI-neutral Profile mutation rules. This class never reads or writes a
 /// store; callers supply the snapshot to transform and persist the returned
 /// snapshot only after their own validation and write-lock policy succeeds.
+/// Profile membership is an intent/reference layer: a Standard node without
+/// PatchGroups is valid here and is filtered only by deployment planning.
 /// </summary>
 public sealed class ProfileMutationService : IProfileMutationService
 {
@@ -133,7 +135,7 @@ public sealed class ProfileMutationService : IProfileMutationService
 		ArgumentNullException.ThrowIfNull(nodeIds);
 		if (!TryGetProfile(snapshot, profileId, ProfileMutationOperation.RemoveEntries, out var context, out var rejected))
 			return rejected!;
-		if (TryValidateRequestedDeployableNodes(snapshot, ProfileMutationOperation.RemoveEntries, profileId, nodeIds, out rejected))
+		if (TryValidateRequestedProfileNodes(snapshot, ProfileMutationOperation.RemoveEntries, profileId, nodeIds, out rejected, validateKinds: true))
 			return rejected!;
 
 		var currentIds = context.OrderedEntries.Select(entry => entry.NodeId).ToHashSet();
@@ -178,7 +180,7 @@ public sealed class ProfileMutationService : IProfileMutationService
 		ArgumentNullException.ThrowIfNull(nodeIds);
 		if (!TryGetProfile(snapshot, profileId, ProfileMutationOperation.MoveEntries, out var context, out var rejected))
 			return rejected!;
-		if (TryValidateRequestedDeployableNodes(snapshot, ProfileMutationOperation.MoveEntries, profileId, nodeIds, out rejected))
+		if (TryValidateRequestedProfileNodes(snapshot, ProfileMutationOperation.MoveEntries, profileId, nodeIds, out rejected, validateKinds: false))
 			return rejected!;
 		if (targetPosition < 0 || targetPosition > context.OrderedEntries.Count)
 		{
@@ -237,7 +239,7 @@ public sealed class ProfileMutationService : IProfileMutationService
 				profileId,
 				orderedNodeIds);
 		}
-		if (TryValidateRequestedDeployableNodes(snapshot, ProfileMutationOperation.ReorderEntries, profileId, orderedNodeIds, out rejected))
+		if (TryValidateRequestedProfileNodes(snapshot, ProfileMutationOperation.ReorderEntries, profileId, orderedNodeIds, out rejected, validateKinds: false))
 			return rejected!;
 
 		var currentById = context.OrderedEntries.ToDictionary(entry => entry.NodeId);
@@ -267,13 +269,14 @@ public sealed class ProfileMutationService : IProfileMutationService
 		ArgumentNullException.ThrowIfNull(orderedNodeIds);
 		if (!TryGetProfile(snapshot, profileId, ProfileMutationOperation.ReplaceEntries, out var context, out var rejected))
 			return rejected!;
-		if (TryValidateRequestedDeployableNodes(
+		if (TryValidateRequestedProfileNodes(
 			snapshot,
 			ProfileMutationOperation.ReplaceEntries,
 			profileId,
 			orderedNodeIds,
 			out rejected,
-			allowEmpty: true))
+			allowEmpty: true,
+			validateKinds: true))
 		{
 			return rejected!;
 		}
@@ -295,7 +298,7 @@ public sealed class ProfileMutationService : IProfileMutationService
 		IReadOnlyList<ModNodeId> nodeIds,
 		int targetPosition)
 	{
-		if (TryValidateRequestedDeployableNodes(snapshot, operation, context.Profile.Id, nodeIds, out var rejected))
+		if (TryValidateRequestedProfileNodes(snapshot, operation, context.Profile.Id, nodeIds, out var rejected, validateKinds: true))
 			return rejected!;
 		if (targetPosition < 0 || targetPosition > context.OrderedEntries.Count)
 		{
@@ -400,14 +403,14 @@ public sealed class ProfileMutationService : IProfileMutationService
 					[entry.NodeId]);
 				return false;
 			}
-			if (GetDeployabilityFailure(node) is not null)
+			if (GetProfileKindFailure(node) is { })
 			{
 				context = default!;
 				rejected = Reject(
 					snapshot,
 					operation,
 					ProfileMutationFailure.ProfileContainsNonDeployableEntry,
-					$"Profile '{ToKey(profileId)}' contains non-deployable Mod '{ToKey(node.Id)}' ({node.Metadata.Kind}).",
+					$"Profile '{ToKey(profileId)}' contains a Mod kind that cannot be a top-level Profile entry: '{ToKey(node.Id)}' ({node.Metadata.Kind}).",
 					profileId,
 					[node.Id]);
 				return false;
@@ -419,13 +422,14 @@ public sealed class ProfileMutationService : IProfileMutationService
 		return true;
 	}
 
-	private static bool TryValidateRequestedDeployableNodes(
+	private static bool TryValidateRequestedProfileNodes(
 		LibrarySnapshot snapshot,
 		ProfileMutationOperation operation,
 		ProfileId profileId,
 		IReadOnlyList<ModNodeId> nodeIds,
 		out ProfileMutationResult? rejected,
-		bool allowEmpty = false)
+		bool allowEmpty = false,
+		bool validateKinds = true)
 	{
 		if (!allowEmpty && nodeIds.Count == 0)
 		{
@@ -463,13 +467,13 @@ public sealed class ProfileMutationService : IProfileMutationService
 					[nodeId]);
 				return true;
 			}
-			if (GetDeployabilityFailure(node) is { } failure)
+			if (validateKinds && GetProfileKindFailure(node) is { } failure)
 			{
 				rejected = Reject(
 					snapshot,
 					operation,
 					failure,
-					BuildDeployabilityMessage(node),
+					BuildProfileEntryMessage(node),
 					profileId,
 					[nodeId]);
 				return true;
@@ -480,21 +484,15 @@ public sealed class ProfileMutationService : IProfileMutationService
 		return false;
 	}
 
-	private static ProfileMutationFailure? GetDeployabilityFailure(ModNode node)
+	private static ProfileMutationFailure? GetProfileKindFailure(ModNode node)
 		=> node.Metadata.Kind switch
 		{
-			ModNodeKind.Standard when node.PatchGroups.Count == 0 => ProfileMutationFailure.NodeNotDeployable,
 			ModNodeKind.Standard or ModNodeKind.ReShade => null,
 			_ => ProfileMutationFailure.NodeKindNotSupported,
 		};
 
-	private static string BuildDeployabilityMessage(ModNode node)
-		=> node.Metadata.Kind switch
-		{
-			ModNodeKind.Standard when node.PatchGroups.Count == 0
-				=> $"Standard Mod '{ToKey(node.Id)}' has no Patch groups and is a non-deployable logical placeholder.",
-			_ => $"{node.Metadata.Kind} Mod '{ToKey(node.Id)}' cannot be added to a Profile.",
-		};
+	private static string BuildProfileEntryMessage(ModNode node)
+		=> $"{node.Metadata.Kind} Mod '{ToKey(node.Id)}' cannot be added to a Profile.";
 
 	private static IReadOnlyList<ProfileEntry> OrderEntries(IReadOnlyList<ProfileEntry> entries)
 		=> entries

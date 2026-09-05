@@ -33,7 +33,7 @@ public static class CliSkillCatalog
 		new("mod-metadata", "hd2mod-mod-metadata", "重命名与备注管理；不改变 Patch、Profile 或部署。", "HD2ModCli.Skill.mod-metadata"),
 		new("mod-media", "hd2mod-mod-media", "查看、替换或清除 Mod 目录中的规范 icon.* 图像；不改变 Patch、Profile 或部署。", "HD2ModCli.Skill.mod-media"),
 		new("patch-analysis", "hd2mod-patch-analysis", "直接无缓存分析 Mod 的 Patch 条目、引用和 Unit/几何摘要；不写库或 SQLite。", "HD2ModCli.Skill.patch-analysis"),
-		new("option-management", "hd2mod-option-management", "按明确主体或严格校验的全部直属主体启停和排序 Option。", "HD2ModCli.Skill.option-management"),
+		new("option-management", "hd2mod-option-management", "创建逻辑容器，并按明确主体管理多父级 Option 的归属、启停和排序。", "HD2ModCli.Skill.option-management"),
 		new("safe-library-deletion", "hd2mod-safe-library-deletion", "以冻结目录内容的 plan → validate → apply 执行关系感知的安全 Mod 删除。", "HD2ModCli.Skill.safe-library-deletion"),
 		new("profile-management", "hd2mod-profile-management", "创建、管理与排序 Profile；不自动部署。", "HD2ModCli.Skill.profile-management"),
 		new("profile-alignment", "hd2mod-profile-alignment", "以可编辑规格和冻结计划精确对齐一个 Profile；仅写 profiles.json。", "HD2ModCli.Skill.profile-alignment"),

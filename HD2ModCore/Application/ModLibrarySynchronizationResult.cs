@@ -20,10 +20,11 @@ public sealed record ModLibrarySynchronizationResult(
 }
 
 /// <summary>
-/// A pure top-level library scan. <see cref="Directories"/> contains only
-/// folders with at least one base Patch; <see cref="SeenRelativePaths"/> also
-/// includes folders with no usable base Patch so callers can distinguish a
-/// missing directory from a known Mod whose Patch payload disappeared.
+/// A pure top-level library scan. <see cref="Directories"/> contains folders
+/// with at least one base Patch or a valid logical-container marker;
+/// <see cref="SeenRelativePaths"/> also includes folders with no usable base
+/// Patch so callers can distinguish a missing directory from a known Mod whose
+/// Patch payload disappeared.
 /// </summary>
 public sealed record ModLibrarySynchronizationInspection(
 	IReadOnlyList<ModLibrarySynchronizationDirectory> Directories,
@@ -34,4 +35,6 @@ public sealed record ModLibrarySynchronizationDirectory(
 	string RelativePath,
 	string Name,
 	IReadOnlyList<PatchGroupKey> PatchGroups,
-	string ContentFingerprint);
+	string ContentFingerprint,
+	bool IsLogicalContainer = false,
+	ModNodeId? LogicalNodeId = null);

@@ -19,6 +19,7 @@ namespace HD2ModManager.Models
         public bool IsDecoration { get; set; }
         public bool IsOption { get; set; }
         public bool IsReShade { get; set; }
+        public bool IsLogicalContainer { get; set; }
         public string[] HostModGuids { get; set; } = Array.Empty<string>();
         // This is a lightweight structural fact projected from ModNode.PatchGroups.
         // It must not depend on FileGroups, which may intentionally be omitted

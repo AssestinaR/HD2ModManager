@@ -96,6 +96,76 @@ public sealed class JsonModLibraryStoreTests
 	}
 
 	[Fact]
+	public async Task SaveAsync_WhenNodeCommitFails_RestoresProfilesAndNodesAsOneSnapshot()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var paths = new StoragePaths(root);
+			var now = DateTimeOffset.UtcNow;
+			var originalNode = new ModNode(
+				ModNodeId.New(),
+				"original",
+				new ModNodeMetadata("原始 Mod", null, now, now),
+				[new PatchGroupKey("1111111111111111", 0)],
+				[]);
+			var originalProfile = new Profile(
+				ProfileId.New(),
+				"原始配置",
+				now,
+				now,
+				[new ProfileEntry(originalNode.Id, 0, now)]);
+			var original = new LibrarySnapshot(
+				1,
+				now,
+				new Dictionary<ModNodeId, ModNode> { [originalNode.Id] = originalNode },
+				[originalProfile],
+				originalProfile.Id);
+			var seed = new JsonModLibraryStore(paths, allowLegacyMigration: false);
+			await seed.SaveAsync(original);
+			var libraryBefore = await File.ReadAllBytesAsync(paths.LibraryPath);
+			var profilesBefore = await File.ReadAllBytesAsync(paths.ProfilesPath);
+
+			var nextNode = originalNode with
+			{
+				Metadata = originalNode.Metadata with { Name = "不应提交的 Mod", ModifiedUtc = now.AddMinutes(1) },
+			};
+			var nextProfile = originalProfile with
+			{
+				Name = "不应提交的配置",
+				ModifiedUtc = now.AddMinutes(1),
+				Revision = originalProfile.Revision + 1,
+			};
+			var next = original with
+			{
+				SavedUtc = now.AddMinutes(1),
+				Nodes = new Dictionary<ModNodeId, ModNode> { [nextNode.Id] = nextNode },
+				Profiles = [nextProfile],
+				ActiveProfileId = nextProfile.Id,
+			};
+			var faulting = new JsonModLibraryStore(
+				paths,
+				allowLegacyMigration: false,
+				beforeNodeFileCommit: _ => ValueTask.FromException(new IOException("injected node commit failure")));
+
+			await Assert.ThrowsAsync<IOException>(async () => await faulting.SaveAsync(next).AsTask());
+
+			Assert.Equal(libraryBefore, await File.ReadAllBytesAsync(paths.LibraryPath));
+			Assert.Equal(profilesBefore, await File.ReadAllBytesAsync(paths.ProfilesPath));
+			Assert.False(File.Exists(Path.Combine(paths.ModsDirectory, ".hd2modmanager-library-transaction.json")));
+			var reloaded = await seed.TryLoadAsync();
+			Assert.NotNull(reloaded);
+			Assert.Equal("原始 Mod", reloaded!.Nodes[originalNode.Id].Metadata.Name);
+			Assert.Equal("原始配置", Assert.Single(reloaded.Profiles).Name);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task TryLoadAsync_UpgradesLegacyProfileListWithoutStartupFailure()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

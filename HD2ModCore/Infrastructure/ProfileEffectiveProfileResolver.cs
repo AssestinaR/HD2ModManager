@@ -25,12 +25,25 @@ public static class ProfileEffectiveProfileResolver
 		var nextLoadOrder = 0;
 		foreach (var hostEntry in sourceEntries)
 		{
-			resolved.Add(hostEntry with { LoadOrder = nextLoadOrder++ });
+			// Explicit logical containers are structural Profile anchors and do not
+			// represent deployable content. Keep legacy unmarked empty Standard
+			// entries in the projection for backwards compatibility; imported and
+			// user-created logical entries carry the durable marker and are omitted
+			// from the effective deployment list while their descendants expand.
 			if (!snapshot.Nodes.TryGetValue(hostEntry.NodeId, out var host)
-				|| host.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.Option))
+				|| host.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.Option or ModNodeKind.ReShade))
+			{
+				resolved.Add(hostEntry with { LoadOrder = nextLoadOrder++ });
 				continue;
+			}
 
-			AppendEnabledOptions(host.Id, new HashSet<ModNodeId> { host.Id });
+			if (host.Metadata.Kind != ModNodeKind.Standard
+				|| !host.Metadata.IsLogicalContainer)
+			{
+				resolved.Add(hostEntry with { LoadOrder = nextLoadOrder++ });
+			}
+			if (host.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option)
+				AppendEnabledOptions(host.Id, new HashSet<ModNodeId> { host.Id });
 		}
 		return profile with { Entries = resolved };
 

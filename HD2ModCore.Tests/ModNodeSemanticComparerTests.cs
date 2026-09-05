@@ -55,5 +55,6 @@ public sealed class ModNodeSemanticComparerTests
 		Assert.False(ModNodeSemanticComparer.AreEqual(node, node with { ContentFingerprint = "changed" }));
 		Assert.False(ModNodeSemanticComparer.AreEqual(node, node with { PatchGroups = new[] { new PatchGroupKey("ABCDEF", 1) } }));
 		Assert.False(ModNodeSemanticComparer.AreEqual(node, node with { Metadata = node.Metadata with { Name = "Changed" } }));
+		Assert.False(ModNodeSemanticComparer.AreEqual(node, node with { Metadata = node.Metadata with { IsLogicalContainer = true } }));
 	}
 }

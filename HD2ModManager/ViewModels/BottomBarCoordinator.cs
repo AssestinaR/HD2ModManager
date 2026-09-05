@@ -14,6 +14,8 @@ namespace HD2ModManager.ViewModels
         private readonly NotificationService _notifications;
         private readonly Action _refresh;
         private bool _isLibraryProfileCompanionVisible;
+        private string? _relationshipHostId;
+        private string? _relationshipHostName;
         private string? _editModId;
         private string? _editMode;
         private string? _editHostId;
@@ -64,21 +66,36 @@ namespace HD2ModManager.ViewModels
         public bool IsLibrarySelection => HasSelection && string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase);
         public bool IsProfileSelection => HasSelection && string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase);
         public bool IsDecorationHostSelection => HasSelection && _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true;
+        public bool IsRelationshipSourceSelection => IsLibrarySelection || IsProfileSelection;
+        public string? RelationshipHostId => _relationshipHostId;
+        public string RelationshipHostName => _relationshipHostName ?? "当前 Mod";
         private bool HasSelectedDecorations => _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration == true);
         private bool HasSelectedOptions => _selection.SelectedIds.Any(id => _library.Get(id)?.IsOption == true);
         private bool HasSelectedStandardMods => _selection.SelectedIds.Any(id => _library.Get(id)?.Capabilities.CanJoinProfile == true);
+        private bool HasRelationshipHost => GetRelationshipHost() is not null;
+        private bool HasSelectedOptionCandidates => GetSelectedOptionCandidateIds().Count != 0;
+        private bool HasSelectedAttachableDecorations => !string.IsNullOrWhiteSpace(_relationshipHostId)
+            && _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration == true
+                && _library.IsDecorationAvailableForHost(id, _relationshipHostId));
+        private bool HasSelectedDirectHostOptions => TryGetSelectedDirectHostOptions(out _, out _);
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
+        public bool ShowSetAsOption => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedOptionCandidates;
+        public bool ShowAttachDecorationsToHost => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedAttachableDecorations;
         public bool ShowEnableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && (HasSelectedDecorations || HasSelectedOptions);
         public bool ShowDisableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && (HasSelectedDecorations || HasSelectedOptions);
         public bool ShowDelete => IsLibrarySelection;
         public bool ShowRemove => IsProfileSelection;
+        public bool ShowRemoveOptionsFromHost => IsDecorationHostSelection && HasSelectedDirectHostOptions;
         public bool ShowDeleteFromLibrary => IsProfileSelection;
         public bool ShowMove => IsProfileSelection || TryGetSelectedDirectHostOptions(out _, out _);
         public bool ShowInsert => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
         public string MoveButtonText => IsDecorationHostSelection ? "调整顺序" : "移动";
+        public string SetAsOptionText => $"设为“{RelationshipHostName}”的选项";
+        public string AttachDecorationsToHostText => $"附加到“{RelationshipHostName}”";
         public string SelectionSummary => _selection.Summary;
         public string EditLabel => IsPositionEditor ? string.Empty
             : _editMode == "CreateProfile" ? "新建配置："
+            : _editMode == "CreateLogicalMod" ? "新建逻辑 Mod："
             : _editMode == "SwitchProfile" ? "选择配置："
             : _editMode == "RenameProfile" ? "重命名配置："
             : string.Equals(_editMode, "Description", StringComparison.Ordinal) ? "修改备注：" : "修改名称：";
@@ -120,6 +137,22 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowInsert));
         }
 
+        // The Shell supplies this only when a Library/Profile page is paired
+        // with a Mod-details page. The BottomBar remains UI-neutral: it merely
+        // derives whether the current selection can target that host.
+        public void SetRelationshipHostContext(string? hostId, string? hostName)
+        {
+            var normalizedId = string.IsNullOrWhiteSpace(hostId) ? null : hostId.Trim();
+            var normalizedName = string.IsNullOrWhiteSpace(hostName) ? null : hostName.Trim();
+            if (string.Equals(_relationshipHostId, normalizedId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(_relationshipHostName, normalizedName, StringComparison.Ordinal))
+                return;
+
+            _relationshipHostId = normalizedId;
+            _relationshipHostName = normalizedName;
+            RefreshState();
+        }
+
         public void SetSelectionActions(object content)
         {
             ArgumentNullException.ThrowIfNull(content);
@@ -143,6 +176,7 @@ namespace HD2ModManager.ViewModels
         public void BeginNameEdit(string modId, string currentValue) => BeginEdit(modId, "Name", currentValue);
         public void BeginDescriptionEdit(string modId, string currentValue) => BeginEdit(modId, "Description", currentValue);
         public void BeginCreateProfile() => BeginEdit(null, "CreateProfile", string.Empty);
+        public void BeginCreateLogicalMod() => BeginEdit(null, "CreateLogicalMod", string.Empty);
         public void BeginRenameProfile() => BeginEdit(null, "RenameProfile", _profiles.SelectedKey ?? string.Empty);
         public void BeginSwitchProfile()
         {
@@ -247,6 +281,23 @@ namespace HD2ModManager.ViewModels
                 EndEditWithoutRefresh();
                 RefreshState();
                 _refresh();
+                return;
+            }
+            if (_editMode == "CreateLogicalMod")
+            {
+                if (string.IsNullOrWhiteSpace(EditText)) return;
+                try
+                {
+                    var created = await _library.CreateLogicalContainerAsync(EditText.Trim());
+                    _notifications.Show($"已新建逻辑 Mod：{created.Name}");
+                    EndEditWithoutRefresh();
+                    RefreshState();
+                    _refresh();
+                }
+                catch (Exception exception)
+                {
+                    _notifications.Show($"新建逻辑 Mod 失败：{exception.Message}", NotificationLevel.Error);
+                }
                 return;
             }
             if (_editMode == "RenameProfile")
@@ -386,6 +437,25 @@ namespace HD2ModManager.ViewModels
             return true;
         }
 
+        private IReadOnlyList<string> GetSelectedOptionCandidateIds()
+        {
+            if (!IsRelationshipSourceSelection || string.IsNullOrWhiteSpace(_relationshipHostId))
+                return Array.Empty<string>();
+
+            return _selection.SelectedIds
+                .Where(id => !string.Equals(id, _relationshipHostId, StringComparison.OrdinalIgnoreCase))
+                .Where(id => _library.Get(id) is { } mod && !mod.IsDecoration && !mod.IsReShade)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private HD2ModManager.Models.ModEntity? GetRelationshipHost()
+        {
+            if (string.IsNullOrWhiteSpace(_relationshipHostId)) return null;
+            var host = _library.Get(_relationshipHostId);
+            return host is null || host.IsDecoration || host.IsReShade ? null : host;
+        }
+
         private void RefreshState()
         {
             OnPropertyChanged(nameof(HasSelection));
@@ -398,15 +468,23 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsLibrarySelection));
             OnPropertyChanged(nameof(IsProfileSelection));
             OnPropertyChanged(nameof(IsDecorationHostSelection));
+            OnPropertyChanged(nameof(IsRelationshipSourceSelection));
+            OnPropertyChanged(nameof(RelationshipHostId));
+            OnPropertyChanged(nameof(RelationshipHostName));
             OnPropertyChanged(nameof(ShowAddToProfile));
+            OnPropertyChanged(nameof(ShowSetAsOption));
+            OnPropertyChanged(nameof(ShowAttachDecorationsToHost));
             OnPropertyChanged(nameof(ShowEnableDecorations));
             OnPropertyChanged(nameof(ShowDisableDecorations));
             OnPropertyChanged(nameof(ShowDelete));
             OnPropertyChanged(nameof(ShowRemove));
+            OnPropertyChanged(nameof(ShowRemoveOptionsFromHost));
             OnPropertyChanged(nameof(ShowDeleteFromLibrary));
             OnPropertyChanged(nameof(ShowMove));
             OnPropertyChanged(nameof(ShowInsert));
             OnPropertyChanged(nameof(MoveButtonText));
+            OnPropertyChanged(nameof(SetAsOptionText));
+            OnPropertyChanged(nameof(AttachDecorationsToHostText));
             OnPropertyChanged(nameof(SelectionSummary));
             OnPropertyChanged(nameof(EditLabel));
             OnPropertyChanged(nameof(PositionLabel));

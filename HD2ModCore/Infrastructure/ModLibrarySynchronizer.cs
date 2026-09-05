@@ -52,12 +52,22 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 				continue;
 			seenPaths.Add(relativePath);
 			var patchGroups = DiscoverPatchGroups(directory, cancellationToken);
-			if (patchGroups.Count == 0) continue;
+			var logicalNodeId = ModNodeStorageProtocol.TryReadLogicalNodeId(directory, out var parsedLogicalNodeId)
+				? parsedLogicalNodeId
+				: (ModNodeId?)null;
+			// A stale logical marker must never suppress real Patch deployment.
+			// Treat the directory as payload-bearing as soon as it contains a base
+			// Patch; the marker remains discoverable for repair but no longer changes
+			// the node's deployment semantics.
+			var isLogicalContainer = logicalNodeId.HasValue && patchGroups.Count == 0;
+			if (patchGroups.Count == 0 && !isLogicalContainer) continue;
 			directories.Add(new ModLibrarySynchronizationDirectory(
 				relativePath,
 				Path.GetFileName(directory),
 				patchGroups,
-				ComputeFingerprint(directory, cancellationToken)));
+				ComputeFingerprint(directory, cancellationToken),
+				isLogicalContainer,
+				logicalNodeId));
 		}
 		return new ModLibrarySynchronizationInspection(
 			directories.OrderBy(directory => directory.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray(),
@@ -88,26 +98,34 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 			if (existingByPath.TryGetValue(relativePath, out var existing))
 			{
 				if (!string.Equals(existing.ContentFingerprint, directory.ContentFingerprint, StringComparison.Ordinal)
-					|| !PatchGroupsEqual(existing.PatchGroups, directory.PatchGroups))
+					|| !PatchGroupsEqual(existing.PatchGroups, directory.PatchGroups)
+					|| existing.Metadata.IsLogicalContainer != directory.IsLogicalContainer)
 				{
 					nodes[existing.Id] = existing with
 					{
 						PatchGroups = directory.PatchGroups,
 						ContentFingerprint = directory.ContentFingerprint,
-						Metadata = existing.Metadata with { ModifiedUtc = timestamp }
+						Metadata = existing.Metadata with
+						{
+							ModifiedUtc = timestamp,
+							IsLogicalContainer = directory.IsLogicalContainer,
+						}
 					};
 					changed.Add(existing.Id);
 				}
 				continue;
 			}
 
-			var id = plannedIds.TryGetValue(relativePath, out var plannedId) ? plannedId : ModNodeId.New();
+			var id = plannedIds.TryGetValue(relativePath, out var plannedId)
+				? plannedId
+				: directory.LogicalNodeId ?? ModNodeId.New();
 			if (nodes.ContainsKey(id))
-				throw new InvalidOperationException($"A planned synchronization node ID already exists: {id.Value:N}");
+				throw new InvalidOperationException($"同步发现逻辑目录“{relativePath}”的节点 GUID 已被其他库节点占用：{id.Value:N}。请修复其 .hd2modmanager-logical.json 或重新导入该逻辑 Mod。");
 			nodes[id] = new ModNode(
 				id,
 				relativePath,
-				new ModNodeMetadata(directory.Name, null, timestamp, null),
+				new ModNodeMetadata(directory.Name, null, timestamp, null, ModNodeKind.Standard,
+					IsLogicalContainer: directory.IsLogicalContainer),
 				directory.PatchGroups,
 				Array.Empty<ModNodeId>(),
 				directory.ContentFingerprint);
@@ -123,13 +141,18 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 				missing.Add(node.Id);
 				continue;
 			}
-			if (!directoriesByPath.ContainsKey(relativePath) && node.PatchGroups.Count != 0)
+			if (!directoriesByPath.ContainsKey(relativePath)
+				&& (node.PatchGroups.Count != 0 || node.Metadata.IsLogicalContainer))
 			{
 				nodes[node.Id] = node with
 				{
 					PatchGroups = Array.Empty<PatchGroupKey>(),
 					ContentFingerprint = ComputeEmptyFingerprint(),
-					Metadata = node.Metadata with { ModifiedUtc = timestamp }
+					Metadata = node.Metadata with
+					{
+						ModifiedUtc = timestamp,
+						IsLogicalContainer = false,
+					}
 				};
 				changed.Add(node.Id);
 			}

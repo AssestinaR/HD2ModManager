@@ -28,7 +28,8 @@ public static class ModNodeSemanticComparer
 			&& string.Equals(left.SourcePackagePath, right.SourcePackagePath, StringComparison.Ordinal)
 			&& left.OptionOrder == right.OptionOrder
 			&& left.HelmetToArmorMerged == right.HelmetToArmorMerged
-			&& left.SuppressDefaultDirectOptionActivation == right.SuppressDefaultDirectOptionActivation;
+			&& left.SuppressDefaultDirectOptionActivation == right.SuppressDefaultDirectOptionActivation
+			&& left.IsLogicalContainer == right.IsLogicalContainer;
 
 	private static bool PatchGroupsEqual(IReadOnlyList<PatchGroupKey>? left, IReadOnlyList<PatchGroupKey>? right)
 	{

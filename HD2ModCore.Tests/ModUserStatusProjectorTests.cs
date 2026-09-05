@@ -73,6 +73,37 @@ public sealed class ModUserStatusProjectorTests
         Assert.Equal(ModUserStatusKind.Enabled, Assert.Single(statuses).Value.Kind);
     }
 
+    [Fact]
+    public void Project_EnabledNestedOption_IsReportedAsInActiveProfile()
+    {
+        var rootId = ModNodeId.New();
+        var optionId = ModNodeId.New();
+        var now = DateTimeOffset.UtcNow;
+        var root = new ModNode(rootId, "root", new ModNodeMetadata("Root", null, now, null), [new PatchGroupKey("9ba626afa44a3aa1", 0)], []);
+        var option = new ModNode(optionId, "option", new ModNodeMetadata(
+            "Option", null, now, null, ModNodeKind.Option, [rootId.Value.ToString("N")]),
+            [new PatchGroupKey("9ba626afa44a3aa2", 0)], []);
+        var profile = new Profile(ProfileId.New(), "Active", now, null, [new ProfileEntry(rootId, 0, now)]);
+        var snapshot = new LibrarySnapshot(1, now, new Dictionary<ModNodeId, ModNode>
+        {
+            [rootId] = root,
+            [optionId] = option,
+        }, [profile], profile.Id);
+        var activations = new OptionActivationSnapshot(new Dictionary<string, IReadOnlyDictionary<string, OptionHostState>>
+        {
+            [optionId.Value.ToString("N")] = new Dictionary<string, OptionHostState>
+            {
+                [rootId.Value.ToString("N")] = new(true, 0),
+            },
+        });
+
+        var statuses = ModUserStatusProjector.Project(snapshot, profile.Id, new Dictionary<ModNodeId, ModContentFacts>(), null, null, null, activations);
+
+        Assert.True(statuses[optionId].IsInSelectedProfile);
+        Assert.True(statuses[optionId].IsInActiveProfile);
+        Assert.Equal(ModUserStatusKind.Enabled, statuses[optionId].Kind);
+    }
+
     private static ModNode CreateNode(ModNodeId id)
         => new(id, "test", new ModNodeMetadata("Test", null, DateTimeOffset.UtcNow, null), [], []);
 }

@@ -13,4 +13,7 @@ public sealed record ModNodeMetadata(
 	string? SourcePackagePath = null,
 	int? OptionOrder = null,
 	bool HelmetToArmorMerged = false,
-	bool SuppressDefaultDirectOptionActivation = false);
+	bool SuppressDefaultDirectOptionActivation = false,
+	// A logical container has a durable library directory but no deployable Patch
+	// payload of its own. It is allowed to act as a structural host for Options.
+	bool IsLogicalContainer = false);

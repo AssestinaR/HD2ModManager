@@ -31,6 +31,8 @@ public partial class ModListPanel : UserControl
     private double _dragAutoScrollStep;
     private bool _isInternalDragActive;
     private bool _isExternalProfileDragActive;
+    private bool _isRelationshipDragActive;
+    private bool _isRelationshipDropTargetActive;
     private bool _isExternalProfileRemovalTargetActive;
     private InternalDragPayload? _activeInternalDragPayload;
     private Cursor? _previousOverrideCursor;
@@ -67,6 +69,7 @@ public partial class ModListPanel : UserControl
             // realized row from scratch.
             _transitionController.Suspend();
             EndInternalDrag();
+            EndExternalRelationshipDrag(commit: false);
             EndExternalProfileDrag(commit: false);
             StopDragAutoScroll();
 			ConfigureInternalSmoothScroll(false);
@@ -85,6 +88,8 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty AllowExternalProfileDropProperty = DependencyProperty.Register(nameof(AllowExternalProfileDrop), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty AllowExternalProfileRemovalDragProperty = DependencyProperty.Register(nameof(AllowExternalProfileRemovalDrag), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty AllowExternalProfileRemovalDropProperty = DependencyProperty.Register(nameof(AllowExternalProfileRemovalDrop), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty RelationshipDragOperationProperty = DependencyProperty.Register(nameof(RelationshipDragOperation), typeof(ModRelationshipDragOperation), typeof(ModListPanel), new PropertyMetadata(ModRelationshipDragOperation.None));
+    public static readonly DependencyProperty RelationshipDragSourceHostIdProperty = DependencyProperty.Register(nameof(RelationshipDragSourceHostId), typeof(string), typeof(ModListPanel), new PropertyMetadata(null));
     public static readonly DependencyProperty ExternalDropTitleProperty = DependencyProperty.Register(nameof(ExternalDropTitle), typeof(string), typeof(ModListPanel), new PropertyMetadata("拖到这里释放以加入配置"));
     public static readonly DependencyProperty ExternalDropDetailProperty = DependencyProperty.Register(nameof(ExternalDropDetail), typeof(string), typeof(ModListPanel), new PropertyMetadata("不会改变当前配置中的排列顺序"));
     public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
@@ -116,6 +121,8 @@ public partial class ModListPanel : UserControl
     public bool AllowExternalProfileDrop { get => (bool)GetValue(AllowExternalProfileDropProperty); set => SetValue(AllowExternalProfileDropProperty, value); }
     public bool AllowExternalProfileRemovalDrag { get => (bool)GetValue(AllowExternalProfileRemovalDragProperty); set => SetValue(AllowExternalProfileRemovalDragProperty, value); }
     public bool AllowExternalProfileRemovalDrop { get => (bool)GetValue(AllowExternalProfileRemovalDropProperty); set => SetValue(AllowExternalProfileRemovalDropProperty, value); }
+    public ModRelationshipDragOperation RelationshipDragOperation { get => (ModRelationshipDragOperation)GetValue(RelationshipDragOperationProperty); set => SetValue(RelationshipDragOperationProperty, value); }
+    public string? RelationshipDragSourceHostId { get => (string?)GetValue(RelationshipDragSourceHostIdProperty); set => SetValue(RelationshipDragSourceHostIdProperty, value); }
     public string ExternalDropTitle { get => (string)GetValue(ExternalDropTitleProperty); set => SetValue(ExternalDropTitleProperty, value); }
     public string ExternalDropDetail { get => (string)GetValue(ExternalDropDetailProperty); set => SetValue(ExternalDropDetailProperty, value); }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
@@ -371,7 +378,9 @@ public partial class ModListPanel : UserControl
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
         if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject) is not null)
         {
-            if ((AllowInternalReorder || AllowExternalProfileDrag)
+            if ((AllowInternalReorder
+                || AllowExternalProfileDrag
+                || RelationshipDragOperation != ModRelationshipDragOperation.None)
                 && FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is IModListSelectable { IsSelected: true } selectable)
             {
                 var selectedItems = ItemsList.Items.OfType<IModListSelectable>()
@@ -380,7 +389,9 @@ public partial class ModListPanel : UserControl
                 var canInternalReorder = AllowInternalReorder
                     && selectedItems.Count != 0
                     && selectedItems.All(item => item is IModListInternalReorderable { CanInternalReorder: true });
-                if ((canInternalReorder || AllowExternalProfileDrag) && selectedItems.Count != 0)
+                var canRelationshipDrag = RelationshipDragOperation != ModRelationshipDragOperation.None
+                    && selectedItems.Count != 0;
+                if ((canInternalReorder || AllowExternalProfileDrag || canRelationshipDrag) && selectedItems.Count != 0)
                 {
                     _dragCandidate = new DragCandidate(
                         selectable.SelectionKey,
@@ -407,6 +418,13 @@ public partial class ModListPanel : UserControl
         if (_isExternalProfileDragActive)
         {
             EndExternalProfileDrag(commit: true, e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
+        if (_isRelationshipDragActive)
+        {
+            EndExternalRelationshipDrag(commit: true, e.GetPosition(this));
             e.Handled = true;
             return;
         }
@@ -452,7 +470,7 @@ public partial class ModListPanel : UserControl
             return;
         }
 
-        if (_isExternalProfileDragActive) return;
+        if (_isExternalProfileDragActive || _isRelationshipDragActive) return;
 
         if (_dragCandidate is null || e.LeftButton != MouseButtonState.Pressed) return;
         if (Math.Abs(position.X - _dragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance
@@ -460,16 +478,27 @@ public partial class ModListPanel : UserControl
 
         var candidate = _dragCandidate;
         _dragCandidate = null;
-        if (AllowExternalProfileDrag)
-            BeginExternalProfileDrag(candidate);
-        else
+        if (AllowInternalReorder)
             BeginInternalDrag(candidate, position);
+        else if (RelationshipDragOperation != ModRelationshipDragOperation.None
+            && BeginExternalRelationshipDrag(candidate))
+        {
+            // The relationship target accepted the gesture.
+        }
+        else if (AllowExternalProfileDrag)
+            BeginExternalProfileDrag(candidate);
     }
 
     private void BeginInternalDrag(DragCandidate candidate, Point position)
     {
         _isInternalDragActive = true;
         _activeInternalDragPayload = new InternalDragPayload(candidate.SelectedKeys);
+        _isRelationshipDropTargetActive = RelationshipDragOperation != ModRelationshipDragOperation.None
+            && ModRelationshipDragCoordinator.TryBegin(
+                this,
+                RelationshipDragOperation,
+                GetRelationshipDragKeys(candidate.SelectedKeys),
+                RelationshipDragSourceHostId);
         _isExternalProfileRemovalTargetActive = AllowExternalProfileRemovalDrag
             && ModListExternalProfileRemovalCoordinator.TryBegin(this, candidate.SelectedKeys);
         _previousOverrideCursor = Mouse.OverrideCursor;
@@ -502,14 +531,20 @@ public partial class ModListPanel : UserControl
         try
         {
             var position = dropPosition;
-            var removed = _isExternalProfileRemovalTargetActive
+            var relationshipCompleted = _isRelationshipDropTargetActive
+                && position is { } relationshipPosition
+                && ModRelationshipDragCoordinator.Complete(this, ItemsList.PointToScreen(relationshipPosition));
+            var removed = !relationshipCompleted
+                && _isExternalProfileRemovalTargetActive
                 && position is { } screenCandidate
                 && ModListExternalProfileRemovalCoordinator.Complete(this, ItemsList.PointToScreen(screenCandidate));
-            if (!removed && payload is not null && position is { } listPosition && IsPointInsideItemsList(listPosition))
+            if (!relationshipCompleted && !removed && payload is not null && position is { } listPosition && IsPointInsideItemsList(listPosition))
                 InternalReorderRequested?.Invoke(this, new ModListInternalReorderEventArgs(payload.SelectedKeys, GetInsertionIndex(listPosition)));
         }
         finally
         {
+            if (_isRelationshipDropTargetActive) ModRelationshipDragCoordinator.Cancel(this);
+            _isRelationshipDropTargetActive = false;
             if (_isExternalProfileRemovalTargetActive) ModListExternalProfileRemovalCoordinator.Cancel(this);
             _isExternalProfileRemovalTargetActive = false;
             if (Mouse.Captured == ItemsList) Mouse.Capture(null);
@@ -526,6 +561,7 @@ public partial class ModListPanel : UserControl
     private void OnItemsListLostMouseCapture(object sender, MouseEventArgs e)
     {
         if (_isInternalDragActive) EndInternalDrag();
+        if (_isRelationshipDragActive) EndExternalRelationshipDrag(commit: false);
         if (_isExternalProfileDragActive) EndExternalProfileDrag(commit: false);
     }
 
@@ -536,6 +572,40 @@ public partial class ModListPanel : UserControl
         _previousOverrideCursor = Mouse.OverrideCursor;
         Mouse.OverrideCursor = Cursors.SizeAll;
         Mouse.Capture(ItemsList, CaptureMode.Element);
+    }
+
+    private bool BeginExternalRelationshipDrag(DragCandidate candidate)
+    {
+        var selectedKeys = GetRelationshipDragKeys(candidate.SelectedKeys);
+        if (!ModRelationshipDragCoordinator.TryBegin(
+                this,
+                RelationshipDragOperation,
+                selectedKeys,
+                RelationshipDragSourceHostId))
+            return false;
+
+        _isRelationshipDragActive = true;
+        _previousOverrideCursor = Mouse.OverrideCursor;
+        Mouse.OverrideCursor = Cursors.SizeAll;
+        Mouse.Capture(ItemsList, CaptureMode.Element);
+        return true;
+    }
+
+    private IReadOnlyList<string> GetRelationshipDragKeys(IReadOnlyList<string> selectedKeys)
+    {
+        if (RelationshipDragOperation != ModRelationshipDragOperation.RemoveOptionParent)
+            return selectedKeys;
+
+        // The details list displays Options and Decorations together. A release
+        // gesture must never accidentally detach a Decoration; those rows are
+        // filtered before the drop target is shown.
+        var selectableByKey = ItemsList.Items
+            .OfType<IModListSelectable>()
+            .ToDictionary(item => item.SelectionKey, StringComparer.OrdinalIgnoreCase);
+        return selectedKeys
+            .Where(key => selectableByKey.TryGetValue(key, out var item) && !item.IsDecoration)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private void EndExternalProfileDrag(bool commit, Point? dropPosition = null)
@@ -549,6 +619,26 @@ public partial class ModListPanel : UserControl
                 ModListExternalProfileDropCoordinator.Complete(this, PointToScreen(position));
             else
                 ModListExternalProfileDropCoordinator.Cancel(this);
+        }
+        finally
+        {
+            if (Mouse.Captured == ItemsList) Mouse.Capture(null);
+            Mouse.OverrideCursor = _previousOverrideCursor;
+            _previousOverrideCursor = null;
+        }
+    }
+
+    private void EndExternalRelationshipDrag(bool commit, Point? dropPosition = null)
+    {
+        if (!_isRelationshipDragActive) return;
+        _isRelationshipDragActive = false;
+        _dragCandidate = null;
+        try
+        {
+            if (commit && dropPosition is { } position)
+                ModRelationshipDragCoordinator.Complete(this, PointToScreen(position));
+            else
+                ModRelationshipDragCoordinator.Cancel(this);
         }
         finally
         {

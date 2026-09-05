@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.25";
+	public const string ProtocolVersion = "1.26";
 
 	public static object CreateCapabilities()
 		=> new
@@ -58,9 +58,11 @@ public static class CliProjections
 				new { name = "mod image show", safety = "read-only", description = "读取一个 Mod 目录中按 icon.* 约定解析的图像状态" },
 				new { name = "mod image set", safety = "explicit-confirm", description = "以来源图像原子替换一个 Mod 的规范 icon.* 文件；不修改 Patch、配置或部署" },
 				new { name = "mod image clear", safety = "explicit-confirm", description = "只移除一个 Mod 的规范 icon.* 文件，不删除作者使用的其他图片资源" },
+				new { name = "mod create", safety = "explicit-confirm", description = "创建一个无 Patch 的逻辑 Mod 容器，可加入 Profile 并作为 Option 主体" },
 				new { name = "mod rename", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时重命名一个 Mod" },
 				new { name = "mod notes set", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时设置一个 Mod 的备注" },
 				new { name = "mod notes clear", safety = "explicit-confirm", description = "在持有库写租约且桌面端关闭时清空一个 Mod 的备注" },
+				new { name = "mod convert-to-option", safety = "explicit-confirm", description = "将一个普通或共享 Mod 添加为明确主体的 Option；会从全部 Profile 释放该 Mod" },
 				new { name = "mod delete preview", safety = "read-only", description = "兼容快捷预览：读取关系感知的安全删除后果与阻断项" },
 				new { name = "mod delete plan", safety = "explicit-export", description = "导出冻结库、激活状态与待删目录内容指纹的可审计删除计划" },
 				new { name = "mod delete validate", safety = "read-only", description = "重建删除关系和存储指纹，拒绝任何目标或内容漂移" },
@@ -73,6 +75,8 @@ public static class CliProjections
 				new { name = "option disable-all", safety = "explicit-confirm", description = "仅在全部声明主体均为有效直属关系时，为一个 Option 禁用所有主体范围" },
 				new { name = "option move", safety = "explicit-confirm", description = "在明确主体的直属 Option 范围内重排一个或多个 Option" },
 				new { name = "option insert", safety = "explicit-confirm", description = "option move 的语法别名；不会把 Option 挂到新主体" },
+				new { name = "option parent add", safety = "explicit-confirm", description = "把一个或多个普通/Option Mod 添加到明确主体下；支持一个 Option 拥有多个父级" },
+				new { name = "option parent remove", safety = "explicit-confirm", description = "从明确主体移除一个或多个直属 Option；最后一个父级移除后恢复为普通 Mod" },
 				new { name = "profile list", safety = "read-only", description = "列出配置文件" },
 				new { name = "profile show", safety = "read-only", description = "读取逻辑顺序与实际部署展开顺序" },
 				new { name = "profile create", safety = "explicit-confirm", description = "创建空配置文件，可选择设为活动配置" },
@@ -276,6 +280,7 @@ public static class CliProjections
 			}).ToArray(),
 			patchGroupCount = node.PatchGroups.Count,
 			isDeployable = node.PatchGroups.Count > 0,
+			isLogicalContainer = node.Metadata.IsLogicalContainer,
 			optionOrder = node.Metadata.OptionOrder,
 			hostModIds = NormalizeIds(node.Metadata.HostModGuids),
 			directOptionIds = graph.GetDirectOptions(node.Id).Select(option => FormatId(option.Id)).ToArray(),

@@ -484,6 +484,31 @@ public static class CliApplication
 				() => FormatModExportExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 3 && command[0] == "mod" && command[1] == "create")
+		{
+			EnsureLogicalModCreateOptions(invocation.Options);
+			var name = string.Join(" ", invocation.Command.Skip(2)).Trim();
+			if (string.IsNullOrWhiteSpace(name))
+				throw new CliUserException("ModNameRequired", "mod create 必须提供逻辑 Mod 名称。 ");
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.CreateLogicalModAsync(session, name)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new
+				{
+					ok = result.Changed,
+					mod = new
+					{
+						id = CliProjections.FormatId(result.Node.Id),
+						name = result.Node.Metadata.Name,
+						kind = result.Node.Metadata.Kind.ToString().ToLowerInvariant(),
+						isLogicalContainer = result.Node.Metadata.IsLogicalContainer,
+						relativePath = result.Node.RelativePath,
+					},
+				},
+				() => $"已创建逻辑 Mod：{result.Node.Metadata.Name}（{CliProjections.FormatId(result.Node.Id)}）。");
+			return result.Changed ? 0 : 2;
+		}
 		if (Matches(command, "mod", "list"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -657,6 +682,21 @@ public static class CliApplication
 				() => FormatDeletionExecution(result));
 			return result.Status == CliModDeletionStatus.Completed ? 0 : 2;
 		}
+		if (command.Length >= 3 && command[0] == "mod" && command[1] == "convert-to-option")
+		{
+			EnsureRelationshipMutationOptions(invocation.Options, "mod convert-to-option");
+			var host = RequireHost(invocation.Options);
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => CliLibraryMutationOperations.AddOptionParentsAsync(
+					session,
+					host,
+					invocation.Command.Skip(2).ToArray())).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = result.Changed, mutation = CreateModRelationshipMutationProjection(result) },
+				() => FormatModRelationshipMutation(result, adding: true));
+			return result.Changed ? 0 : 2;
+		}
 		if (command.Length == 3 && command[0] == "option" && command[1] == "show")
 		{
 			EnsureOptionShowOptions(invocation.Options);
@@ -705,6 +745,22 @@ public static class CliApplication
 				new { ok = true, mutation = CreateOptionRelationshipMutationProjection(result) },
 				() => $"已重排当前主体的直属选项。自动补齐选项状态：{result.InitializedStateCount}。未自动部署。");
 			return 0;
+		}
+		if (command.Length >= 4 && command[0] == "option" && command[1] == "parent" && command[2] is "add" or "remove")
+		{
+			var adding = command[2] == "add";
+			EnsureRelationshipMutationOptions(invocation.Options, $"option parent {command[2]}");
+			var host = RequireHost(invocation.Options);
+			var optionSelectors = invocation.Command.Skip(3).ToArray();
+			var result = await ExecuteMutationAsync(
+				invocation.Options,
+				session => adding
+					? CliLibraryMutationOperations.AddOptionParentsAsync(session, host, optionSelectors)
+					: CliLibraryMutationOperations.RemoveOptionParentsAsync(session, host, optionSelectors)).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = result.Changed, mutation = CreateModRelationshipMutationProjection(result) },
+				() => FormatModRelationshipMutation(result, adding));
+			return result.Changed ? 0 : 2;
 		}
 		if (command.Length == 4 && command[0] == "profile" && command[1] == "align" && command[2] == "export")
 		{
@@ -2205,6 +2261,21 @@ public static class CliApplication
 			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --host、--position、--set-active 或 --with-unshared-options。");
 	}
 
+	private static void EnsureLogicalModCreateOptions(CliGlobalOptions options)
+	{
+		EnsureMutationBoundary(options, "mod create");
+		if (!string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", "mod create 不接受 --host、--position、--set-active 或 --with-unshared-options。");
+	}
+
+	private static void EnsureRelationshipMutationOptions(CliGlobalOptions options, string command)
+	{
+		EnsureMutationBoundary(options, command);
+		_ = RequireHost(options);
+		if (options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --position、--set-active 或 --with-unshared-options。");
+	}
+
 	private static void EnsureModAnalyzeOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -2465,6 +2536,10 @@ public static class CliApplication
 			return await mutation(session).ConfigureAwait(false);
 		}
 		catch (CliUserException) { throw; }
+		catch (ModRelationshipMutationException exception)
+		{
+			throw new CliUserException($"ModRelationship{exception.Failure}", exception.Message);
+		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or DirectoryNotFoundException or FileNotFoundException)
 		{
 			throw new CliUserException("LibraryMutationFailed", $"Mod 库修改未完成：{exception.Message}");
@@ -2801,6 +2876,17 @@ public static class CliApplication
 		if (!result.Mutation.Changed)
 			return $"选项“{result.Option.Metadata.Name}”的 {hosts} 个已验证直属主体已处于目标状态。未自动部署。";
 		return $"已为 {hosts} 个已验证直属主体{(result.RequestedEnabled ? "启用" : "禁用")}选项“{result.Option.Metadata.Name}”。未自动部署。";
+	}
+
+	private static string FormatModRelationshipMutation(ModRelationshipMutationResult result, bool adding)
+	{
+		if (!result.Changed)
+			return "Mod 父子关系未发生变化。未自动部署。";
+		var relationCount = adding ? result.AddedRelationOptionIds.Count : result.RemovedRelationOptionIds.Count;
+		var profileText = adding && result.AffectedProfileIds.Count > 0
+			? $"已从 {result.AffectedProfileIds.Count} 个配置文件释放这些新选项。"
+			: string.Empty;
+		return $"已{(adding ? "添加" : "移除")} {relationCount} 条 Option 父级关系；{profileText}未自动部署。";
 	}
 
 	private static string FormatProfileList(LibrarySnapshot snapshot)
@@ -4050,6 +4136,18 @@ public static class CliApplication
 			deployment = "not-performed",
 		};
 
+	private static object CreateModRelationshipMutationProjection(ModRelationshipMutationResult result)
+		=> new
+		{
+			changed = result.Changed,
+			hostModId = CliProjections.FormatId(result.HostId),
+			changedModIds = result.ChangedNodeIds.Select(CliProjections.FormatId).ToArray(),
+			addedOptionParentModIds = result.AddedRelationOptionIds.Select(CliProjections.FormatId).ToArray(),
+			removedOptionParentModIds = result.RemovedRelationOptionIds.Select(CliProjections.FormatId).ToArray(),
+			affectedProfileIds = result.AffectedProfileIds.Select(CliProjections.FormatId).ToArray(),
+			deployment = "not-performed",
+		};
+
 	private static object CreateOptionAllHostsInspectionProjection(
 		ModNode option,
 		OptionAllHostsRelationshipSnapshot scope)
@@ -4813,9 +4911,11 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod create <逻辑 Mod 名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod convert-to-option <Mod GUID或唯一前缀> --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod delete plan <Mod GUID或唯一前缀> [...] [--with-unshared-options] --manager-root <管理器目录> --output deletion-plan.json --json
 	  hd2mod mod delete validate --plan deletion-plan.json --manager-root <管理器目录> --json
 	  hd2mod mod delete apply --plan deletion-plan.json --manager-root <管理器目录> --confirm --json
@@ -4828,6 +4928,8 @@ HD2 Mod Manager 命令行
 	  hd2mod option disable-all <Option GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod option move <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
 	  hd2mod option insert <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --position <插入槽位> --manager-root <管理器目录> --confirm --json
+	  hd2mod option parent add <Mod GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod option parent remove <Option GUID或唯一前缀> [...] --host <主体 GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
   hd2mod profile list --library <Mod库目录> --json
 	  hd2mod profile show [名称或GUID前缀] --library <Mod库目录> --json
 	  hd2mod profile create <名称> [--set-active] --manager-root <管理器目录> --confirm --json

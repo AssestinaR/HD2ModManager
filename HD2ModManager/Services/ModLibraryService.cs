@@ -55,6 +55,7 @@ namespace HD2ModManager.Services
         private readonly SemaphoreSlim _libraryMutationGate = new(1, 1);
         private readonly DecorationActivationStore _decorationActivations;
         private readonly OptionActivationStore _optionActivations;
+        private readonly IModRelationshipMutationService _relationshipMutations;
         private readonly DecorationHostRebuildService _decorationHostRebuild;
 		private readonly HostDerivedOverwriteService _hostDerivedOverwrites;
 		private readonly OptionActivationDefaultInitializer _optionDefaultInitializer = new();
@@ -72,13 +73,26 @@ namespace HD2ModManager.Services
         public DerivedLibraryData DerivedData => _derivedData;
         public string ModsRootDirectory => _paths.ModsDirectory;
         public HD2ModCore.Application.IModInformationCenter InformationCenter => _informationCenter;
-		public HD2ModCore.Application.IModInformationReader InformationReader => _informationReader;
+        public HD2ModCore.Application.IModInformationReader InformationReader => _informationReader;
         public HD2ModCore.Application.IModEquipmentSourceFactsReader EquipmentSourceFactsReader => _equipmentSourceFactsReader;
         public IHelmetToArmorMergeService HelmetToArmorMergeService => _helmetToArmorMerge;
         public bool IsHelmetToArmorMerged(string guid) => Get(guid)?.IsHelmetToArmorMerged == true;
+        public OptionActivationSnapshot GetOptionActivationSnapshot() => _optionActivations.CreateSnapshot();
+
+        // Resolves host-scoped Option routes against the same current library
+        // graph and activation store used by deployment. Details pages use this
+        // to explain why a shared Option can be disabled at the current host but
+        // still be effectively deployed through another parent.
+        public ProfileOptionRouteResolution ResolveOptionRoutes(Profile profile)
+        {
+            ArgumentNullException.ThrowIfNull(profile);
+            return ProfileOptionRouteResolver.Resolve(profile, _snapshot, _optionActivations.CreateSnapshot());
+        }
+
         public event EventHandler<ModContentFactsChangedEventArgs>? ModContentFactsChanged;
         public event EventHandler? SnapshotChanged;
         public event EventHandler? OptionActivationChanged;
+        public event EventHandler<ModRelationshipMutationResult>? ModRelationshipsChanged;
 
         public void AttachBackgroundTasks(BackgroundTaskService backgroundTasks) => _backgroundTasks = backgroundTasks;
 
@@ -135,6 +149,10 @@ namespace HD2ModManager.Services
 
         public IReadOnlyList<ModEntity> GetDecorationsForHost(string hostId)
             => All().Where(mod => mod.IsDecoration && GetAvailableDecorationHostIds(mod.Guid).Contains(hostId, StringComparer.OrdinalIgnoreCase)).ToArray();
+
+        public bool IsDecorationAvailableForHost(string decorationId, string hostId)
+            => !string.IsNullOrWhiteSpace(hostId)
+               && GetAvailableDecorationHostIds(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase);
 
         public IReadOnlyList<ModEntity> GetOptionsForHost(string hostId)
         {
@@ -371,6 +389,7 @@ namespace HD2ModManager.Services
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
             _decorationActivations = CoreServices.CreateDecorationActivationStore(_paths);
             _optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
+            _relationshipMutations = CoreServices.CreateModRelationshipMutationService(_paths, _optionActivations);
             _decorationHostRebuild = CoreServices.CreateDecorationHostRebuildService(_paths, _informationReader);
 			_hostDerivedOverwrites = CoreServices.CreateHostDerivedOverwriteService(_decorationHostRebuild, _helmetToArmorMerge);
             _snapshot = EmptySnapshot();
@@ -1051,6 +1070,83 @@ namespace HD2ModManager.Services
 
         public IEnumerable<ModEntity> All() => Volatile.Read(ref _byGuid).Values;
 
+        public async Task<ModEntity> CreateLogicalContainerAsync(
+            string name,
+            string? notes = null,
+            CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // ProfileService and this service persist through the same
+                // library store but keep independent in-memory snapshots. A
+                // relationship mutation also removes ordinary entries from
+                // every Profile, so always start from the latest durable
+                // snapshot before building the compound transaction.
+                _snapshot = await _manager.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+                var result = await _relationshipMutations
+                    .CreateLogicalContainerAsync(_snapshot, name, notes, cancellationToken)
+                    .ConfigureAwait(false);
+                _snapshot = result.Snapshot;
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex(buildDerivedData: false);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return ToEntity(result.Node, includePatchFiles: false);
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
+        public async Task<ModRelationshipMutationResult> AddOptionsToHostAsync(
+            string hostId,
+            IReadOnlyList<string> optionIds,
+            CancellationToken cancellationToken = default)
+            => await MutateOptionParentsAsync(hostId, optionIds, add: true, cancellationToken).ConfigureAwait(false);
+
+        public async Task<ModRelationshipMutationResult> RemoveOptionsFromHostAsync(
+            string hostId,
+            IReadOnlyList<string> optionIds,
+            CancellationToken cancellationToken = default)
+            => await MutateOptionParentsAsync(hostId, optionIds, add: false, cancellationToken).ConfigureAwait(false);
+
+        private async Task<ModRelationshipMutationResult> MutateOptionParentsAsync(
+            string hostId,
+            IReadOnlyList<string> optionIds,
+            bool add,
+            CancellationToken cancellationToken)
+        {
+            if (!TryParseNodeId(hostId, out var parsedHostId))
+                throw new ModRelationshipMutationException(ModRelationshipMutationFailure.HostNotFound, $"目标主体标识无效：{hostId}。");
+            var parsedOptionIds = optionIds
+                .Where(id => TryParseNodeId(id, out _))
+                .Select(id => new ModNodeId(Guid.Parse(id)))
+                .ToArray();
+            if (parsedOptionIds.Length != optionIds.Count)
+                throw new ModRelationshipMutationException(ModRelationshipMutationFailure.SourceNotFound, "选中的 Mod 标识中包含无效 GUID。");
+
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                // Do not let a recent Profile edit be overwritten by the
+                // relationship service's snapshot captured before that edit.
+                _snapshot = await _manager.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+                var result = add
+                    ? await _relationshipMutations.AddOptionParentsAsync(_snapshot, parsedHostId, parsedOptionIds, cancellationToken).ConfigureAwait(false)
+                    : await _relationshipMutations.RemoveOptionParentsAsync(_snapshot, parsedHostId, parsedOptionIds, cancellationToken).ConfigureAwait(false);
+                if (!result.Changed) return result;
+                _snapshot = result.Snapshot;
+                Interlocked.Increment(ref _stateVersion);
+                RebuildIndex(buildDerivedData: false);
+                ModRelationshipsChanged?.Invoke(this, result);
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                // Relationship mutations also create/remove host-scoped
+                // activation records. Notify deployment and attachment views
+                // through the same boundary as ordinary activation changes.
+                OptionActivationChanged?.Invoke(this, EventArgs.Empty);
+                return result;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
+
         private static DecorationSourceUnit CloneDecorationSourceUnit(DecorationSourceUnit unit) => new()
         {
             TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex,
@@ -1067,9 +1163,11 @@ namespace HD2ModManager.Services
                 if (!File.Exists(path)) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web));
                 var targets = plan?.Plan?.TargetModGuids ?? [];
-                var availableHosts = _snapshot.Nodes.Values
-                    .Where(node => node.Metadata.Kind == ModNodeKind.Standard
-                        || (node.Metadata.Kind == ModNodeKind.Option && node.PatchGroups.Count > 0))
+				var availableHosts = _snapshot.Nodes.Values
+					// A logical container is a relationship anchor, not an injection
+					// target. Decorations require a real Patch-bearing host Unit.
+					.Where(node => node.PatchGroups.Count > 0
+						&& node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option)
                     .Select(node => node.Id.Value.ToString("N"))
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 return targets.Where(availableHosts.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -1523,6 +1621,7 @@ namespace HD2ModManager.Services
                 IsOption = node.Metadata.Kind == ModNodeKind.Option,
                 IsReShade = node.Metadata.Kind == ModNodeKind.ReShade,
                 IsHelmetToArmorMerged = node.Metadata.HelmetToArmorMerged,
+                IsLogicalContainer = node.Metadata.IsLogicalContainer,
                 HostModGuids = node.Metadata.HostModGuids?.ToArray() ?? Array.Empty<string>(),
                 HasPatchContent = node.PatchGroups.Count > 0,
                 CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,

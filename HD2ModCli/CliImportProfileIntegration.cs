@@ -90,8 +90,7 @@ internal static class CliImportProfileIntegration
 	}
 
 	private static bool CanJoinProfile(ModNode node)
-		=> node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.ReShade
-			&& (node.Metadata.Kind == ModNodeKind.ReShade || node.PatchGroups.Count != 0);
+		=> node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.ReShade;
 
 	private static bool PathsEqual(string left, string right)
 	{

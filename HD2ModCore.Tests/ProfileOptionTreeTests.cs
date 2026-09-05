@@ -189,6 +189,87 @@ public sealed class ProfileOptionTreeTests
         Assert.Equal([rootId, secondOptionId, firstOptionId], effective.Entries.Select(entry => entry.NodeId).ToArray());
     }
 
+    [Fact]
+    public void ResolveActive_MultiParentOption_SeparatesCurrentRouteFromOtherEffectiveRoute()
+    {
+        var rootAId = ModNodeId.New();
+        var rootBId = ModNodeId.New();
+        var sharedOptionId = ModNodeId.New();
+        var now = DateTimeOffset.UtcNow;
+        var rootA = Node(rootAId, "Root A", ModNodeKind.Standard, [], [new PatchGroupKey("9ba626afa44a3aa1", 0)]);
+        var rootB = Node(rootBId, "Root B", ModNodeKind.Standard, [], [new PatchGroupKey("9ba626afa44a3aa2", 0)]);
+        var shared = Node(sharedOptionId, "Shared", ModNodeKind.Option,
+            [rootAId.Value.ToString("N"), rootBId.Value.ToString("N")],
+            [new PatchGroupKey("9ba626afa44a3aa3", 0)]);
+        var profile = new Profile(ProfileId.New(), "Active", now, null,
+        [
+            new ProfileEntry(rootAId, 0, now),
+            new ProfileEntry(rootBId, 1, now),
+        ]);
+        var snapshot = new LibrarySnapshot(1, now, new Dictionary<ModNodeId, ModNode>
+        {
+            [rootAId] = rootA,
+            [rootBId] = rootB,
+            [sharedOptionId] = shared,
+        }, [profile], profile.Id);
+        var states = new OptionActivationSnapshot(new Dictionary<string, IReadOnlyDictionary<string, OptionHostState>>
+        {
+            [sharedOptionId.Value.ToString("N")] = new Dictionary<string, OptionHostState>
+            {
+                [rootAId.Value.ToString("N")] = new(false, 0),
+                [rootBId.Value.ToString("N")] = new(true, 0),
+            },
+        });
+
+        var routes = ProfileOptionRouteResolver.ResolveActive(snapshot, states);
+
+        Assert.True(routes.IsNodeEffectivelyDeployed(sharedOptionId));
+        Assert.False(routes.IsRelationReachable(rootAId, sharedOptionId));
+        Assert.True(routes.IsRelationReachable(rootBId, sharedOptionId));
+        Assert.Equal(1, routes.GetReachableParentCount(sharedOptionId));
+    }
+
+    [Fact]
+    public void ResolveActive_MultiParentOption_EnabledThroughBothRoutes_DeploysNodeOnlyOnce()
+    {
+        var rootAId = ModNodeId.New();
+        var rootBId = ModNodeId.New();
+        var sharedOptionId = ModNodeId.New();
+        var now = DateTimeOffset.UtcNow;
+        var rootA = Node(rootAId, "Root A", ModNodeKind.Standard, [], [new PatchGroupKey("9ba626afa44a3aa1", 0)]);
+        var rootB = Node(rootBId, "Root B", ModNodeKind.Standard, [], [new PatchGroupKey("9ba626afa44a3aa2", 0)]);
+        var shared = Node(sharedOptionId, "Shared", ModNodeKind.Option,
+            [rootAId.Value.ToString("N"), rootBId.Value.ToString("N")],
+            [new PatchGroupKey("9ba626afa44a3aa3", 0)]);
+        var profile = new Profile(ProfileId.New(), "Active", now, null,
+        [
+            new ProfileEntry(rootAId, 0, now),
+            new ProfileEntry(rootBId, 1, now),
+        ]);
+        var snapshot = new LibrarySnapshot(1, now, new Dictionary<ModNodeId, ModNode>
+        {
+            [rootAId] = rootA,
+            [rootBId] = rootB,
+            [sharedOptionId] = shared,
+        }, [profile], profile.Id);
+        var states = new OptionActivationSnapshot(new Dictionary<string, IReadOnlyDictionary<string, OptionHostState>>
+        {
+            [sharedOptionId.Value.ToString("N")] = new Dictionary<string, OptionHostState>
+            {
+                [rootAId.Value.ToString("N")] = new(true, 0),
+                [rootBId.Value.ToString("N")] = new(true, 0),
+            },
+        });
+
+        var routes = ProfileOptionRouteResolver.ResolveActive(snapshot, states);
+
+        Assert.True(routes.IsNodeEffectivelyDeployed(sharedOptionId));
+        Assert.True(routes.IsRelationReachable(rootAId, sharedOptionId));
+        Assert.True(routes.IsRelationReachable(rootBId, sharedOptionId));
+        Assert.Equal(2, routes.GetReachableParentCount(sharedOptionId));
+        Assert.Equal(1, routes.EffectiveProfile!.Entries.Count(entry => entry.NodeId == sharedOptionId));
+    }
+
     private static ModNode Node(
         ModNodeId id,
         string name,

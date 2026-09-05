@@ -26,22 +26,48 @@
             </StackPanel>
         </DataTemplate>
     </UserControl.Resources>
-    <local:ModListPanel x:Name="LibraryModList" ItemsSource="{Binding Items}"
-                        HeaderTitle="模组库"
-                        HeaderSummary="{Binding ItemCountText}"
-                        EmptyMessage="{Binding EmptyMessage}"
-                        SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                        SearchActionsTemplate="{StaticResource LibrarySearchActions}"
-                        RowActions="Rename, Details, AddToProfile, ToggleDecoration, OpenFolder, DeleteFromLibrary"
-                        RowActionInvoked="OnRowActionInvoked"
-                        SelectionPolicy="Multiple"
-                        AllowExternalProfileDrag="{Binding CanDragToProfile}"
-                        AllowExternalProfileRemovalDrop="{Binding CanDragToProfile}"
-                        ExternalDropTitle="拖到这里释放以从配置移除"
-                        ExternalDropDetail="仅从当前配置移除，不会删除模组文件"
-                         ExternalProfileRemovalRequested="OnExternalProfileRemovalRequested"
-                         SelectionRequested="OnSelectionRequested"
-                         KeyboardCommandRequested="OnKeyboardCommandRequested"
-                         RowRightClicked="OnOpenDetailsOnRightClick"
-                        BackgroundClicked="OnListBackgroundClick"/>
+    <Grid>
+        <local:ModListPanel x:Name="LibraryModList" ItemsSource="{Binding Items}"
+                            HeaderTitle="模组库"
+                            HeaderSummary="{Binding ItemCountText}"
+                            EmptyMessage="{Binding EmptyMessage}"
+                            SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                            SearchActionsTemplate="{StaticResource LibrarySearchActions}"
+                            RowActions="Rename, Details, AddToProfile, ToggleDecoration, OpenFolder, DeleteFromLibrary"
+                            RowActionInvoked="OnRowActionInvoked"
+                            SelectionPolicy="Multiple"
+                            RelationshipDragOperation="SetAsOption"
+                            AllowExternalProfileDrag="{Binding CanDragToProfile}"
+                            AllowExternalProfileRemovalDrop="{Binding CanDragToProfile}"
+                            ExternalDropTitle="拖到这里释放以从配置移除"
+                            ExternalDropDetail="仅从当前配置移除，不会删除模组文件"
+                            ExternalProfileRemovalRequested="OnExternalProfileRemovalRequested"
+                            SelectionRequested="OnSelectionRequested"
+                            KeyboardCommandRequested="OnKeyboardCommandRequested"
+                            RowRightClicked="OnOpenDetailsOnRightClick"
+                            BackgroundClicked="OnListBackgroundClick"/>
+        <Border x:Name="RelationshipDropOverlay"
+                Panel.ZIndex="20"
+                Margin="{StaticResource CardStackMargin}"
+                Background="#E8FFFFFF"
+                BorderBrush="{StaticResource Accent}"
+                BorderThickness="1.5"
+                CornerRadius="{StaticResource RadiusCard}"
+                Visibility="Collapsed"
+                Opacity="0"
+                IsHitTestVisible="False">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock x:Name="RelationshipDropTitle"
+                           Foreground="{StaticResource TextPrimary}"
+                           FontWeight="SemiBold"
+                           FontSize="15"
+                           HorizontalAlignment="Center"/>
+                <TextBlock x:Name="RelationshipDropDetail"
+                           Foreground="{StaticResource TextSecondary}"
+                           FontSize="12"
+                           Margin="0,5,0,0"
+                           HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+    </Grid>
 </UserControl>

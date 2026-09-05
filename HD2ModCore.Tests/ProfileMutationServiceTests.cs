@@ -93,7 +93,7 @@ public sealed class ProfileMutationServiceTests
 	}
 
 	[Fact]
-	public void AddAndRemoveEntries_AcceptsStandardAndReShade_AndRejectsDuplicatesOptionsDecorationsAndPlaceholders()
+	public void AddAndRemoveEntries_AcceptsEmptyStandardEntries_AndRejectsDuplicatesOptionsAndDecorations()
 	{
 		var service = new ProfileMutationService(new TestTimeProvider(InitialTime));
 		var standard = Node("Standard", ModNodeKind.Standard, hasPatch: true);
@@ -104,21 +104,20 @@ public sealed class ProfileMutationServiceTests
 		var profile = Profile("Profile");
 		var snapshot = Snapshot([standard, reshade, option, decoration, emptyStandard], [profile]);
 
-		var added = service.AddEntries(snapshot, profile.Id, [standard.Id, reshade.Id]);
+		var added = service.AddEntries(snapshot, profile.Id, [standard.Id, reshade.Id, emptyStandard.Id]);
 		Assert.Equal(ProfileMutationStatus.Applied, added.Status);
-		Assert.Equal([standard.Id, reshade.Id], Entries(added.Snapshot, profile.Id));
+		Assert.Equal([standard.Id, reshade.Id, emptyStandard.Id], Entries(added.Snapshot, profile.Id));
 		Assert.Equal(1, FindProfile(added.Snapshot, profile.Id).Revision);
 
 		var removed = service.RemoveEntries(added.Snapshot, profile.Id, [standard.Id]);
 		Assert.Equal(ProfileMutationStatus.Applied, removed.Status);
-		Assert.Equal([reshade.Id], Entries(removed.Snapshot, profile.Id));
+		Assert.Equal([reshade.Id, emptyStandard.Id], Entries(removed.Snapshot, profile.Id));
 		Assert.Equal(2, FindProfile(removed.Snapshot, profile.Id).Revision);
 
 		AssertRejected(service.AddEntries(snapshot, profile.Id, [standard.Id, standard.Id]), ProfileMutationFailure.DuplicateEntrySelection, snapshot);
 		AssertRejected(service.AddEntries(added.Snapshot, profile.Id, [standard.Id]), ProfileMutationFailure.EntryAlreadyPresent, added.Snapshot);
 		AssertRejected(service.AddEntries(snapshot, profile.Id, [option.Id]), ProfileMutationFailure.NodeKindNotSupported, snapshot);
 		AssertRejected(service.AddEntries(snapshot, profile.Id, [decoration.Id]), ProfileMutationFailure.NodeKindNotSupported, snapshot);
-		AssertRejected(service.AddEntries(snapshot, profile.Id, [emptyStandard.Id]), ProfileMutationFailure.NodeNotDeployable, snapshot);
 		AssertRejected(service.RemoveEntries(added.Snapshot, profile.Id, [option.Id]), ProfileMutationFailure.NodeKindNotSupported, added.Snapshot);
 	}
 

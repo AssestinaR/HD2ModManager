@@ -83,6 +83,86 @@ public sealed class ModLibraryManagerTests
 	}
 
 	[Fact]
+	public async Task UpsertProfile_AllowsNoPatchStandardEntries_AndCanReorderThem()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+
+		try
+		{
+			var paths = new StoragePaths(root);
+			var store = new JsonModLibraryStore(paths);
+			var manager = new ModLibraryManager(paths, store);
+			var first = CreateNode(ModNodeId.New(), "first");
+			var second = CreateNode(ModNodeId.New(), "second");
+			var now = DateTimeOffset.UtcNow;
+			var profile = new Profile(
+				ProfileId.New(),
+				"p",
+				now,
+				now,
+				[new ProfileEntry(first.Id, 0, now), new ProfileEntry(second.Id, 1, now)]);
+			var snapshot = new LibrarySnapshot(
+				1,
+				now,
+				new Dictionary<ModNodeId, ModNode> { [first.Id] = first, [second.Id] = second },
+				[profile]);
+			await store.SaveAsync(snapshot);
+
+			var reordered = await manager.UpsertProfileAsync(profile with
+			{
+				Entries = [new ProfileEntry(second.Id, 0, now), new ProfileEntry(first.Id, 1, now)],
+			});
+
+			Assert.Equal([second.Id, first.Id], reordered.Profiles.Single().Entries.OrderBy(entry => entry.LoadOrder).Select(entry => entry.NodeId));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task DeleteNodeAsync_RemovesEmptyAffectedProfileHost_ButLeavesTheLibraryNode()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+
+		try
+		{
+			var paths = new StoragePaths(root);
+			var store = new JsonModLibraryStore(paths);
+			var manager = new ModLibraryManager(paths, store);
+			var now = DateTimeOffset.UtcNow;
+			var host = CreateNode(ModNodeId.New(), "empty-host") with
+			{
+				Metadata = new ModNodeMetadata("empty-host", null, now, now, ModNodeKind.Standard, IsLogicalContainer: true),
+			};
+			var child = new ModNode(
+				ModNodeId.New(),
+				"child",
+				new ModNodeMetadata("child", null, now, now, ModNodeKind.Option, [host.Id.Value.ToString("N")]),
+				[new PatchGroupKey("0123456789abcdef", 0)],
+				[]);
+			var profile = new Profile(ProfileId.New(), "p", now, now, [new ProfileEntry(host.Id, 0, now)]);
+			await store.SaveAsync(new LibrarySnapshot(
+				1,
+				now,
+				new Dictionary<ModNodeId, ModNode> { [host.Id] = host, [child.Id] = child },
+				[profile]));
+
+			var result = await manager.DeleteNodeAsync(child.Id, deleteStoredFiles: false);
+
+			Assert.True(result.Nodes.ContainsKey(host.Id));
+			Assert.Empty(result.Profiles.Single().Entries);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task DeleteNodesWithResultAsync_ClearsReadOnlyStoredFiles_ThenRemovesNode()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
@@ -152,6 +232,88 @@ public sealed class ModLibraryManagerTests
 			Assert.Equal(ModStorageDeletionState.Failed, Assert.Single(result.StorageResults).State);
 			Assert.True(Directory.Exists(unsafeDirectory));
 			Assert.True((await store.TryLoadAsync())!.Nodes.ContainsKey(nodeId));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task DeleteNodesWithResultAsync_RemovingHost_PrunesSurvivingOptionRelationsAndSidecars()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+
+		try
+		{
+			var paths = new StoragePaths(root);
+			var store = new JsonModLibraryStore(paths);
+			var manager = new ModLibraryManager(paths, store);
+			var now = DateTimeOffset.UtcNow;
+			var hostA = CreateNode(ModNodeId.New(), "host-a") with
+			{
+				PatchGroups = [new PatchGroupKey("1111111111111111", 0)],
+			};
+			var hostB = CreateNode(ModNodeId.New(), "host-b") with
+			{
+				PatchGroups = [new PatchGroupKey("2222222222222222", 0)],
+			};
+			var shared = new ModNode(
+				ModNodeId.New(),
+				"shared-option",
+				new ModNodeMetadata(
+					"共享选项", null, now, now, ModNodeKind.Option,
+					[hostA.Id.Value.ToString("N"), hostB.Id.Value.ToString("N")],
+					OptionOrder: 0),
+				[new PatchGroupKey("3333333333333333", 0)],
+				[]);
+			var logicalOnly = new ModNode(
+				ModNodeId.New(),
+				"logical-option",
+				new ModNodeMetadata(
+					"仅逻辑选项", null, now, now, ModNodeKind.Option,
+					[hostA.Id.Value.ToString("N")],
+					IsLogicalContainer: true),
+				[],
+				[]);
+			foreach (var node in new[] { hostA, hostB, shared, logicalOnly })
+			{
+				var directory = Path.Combine(paths.ModsDirectory, node.RelativePath);
+				Directory.CreateDirectory(directory);
+				foreach (var patch in node.PatchGroups)
+					await File.WriteAllBytesAsync(Path.Combine(directory, $"{patch.ArchiveHex16}.patch_{patch.PatchIndex}"), [0x01]);
+				ModNodeStorageProtocol.SynchronizeNodeMetadata(directory, node);
+			}
+			await store.SaveAsync(new LibrarySnapshot(
+				1,
+				now,
+				new Dictionary<ModNodeId, ModNode>
+				{
+					[hostA.Id] = hostA,
+					[hostB.Id] = hostB,
+					[shared.Id] = shared,
+					[logicalOnly.Id] = logicalOnly,
+				},
+				Array.Empty<Profile>()));
+
+			var result = await manager.DeleteNodesWithResultAsync([hostA.Id], deleteStoredFiles: true);
+
+			Assert.Contains(hostA.Id, result.RemovedNodeIds);
+			var retainedShared = result.Snapshot.Nodes[shared.Id];
+			Assert.Equal(ModNodeKind.Option, retainedShared.Metadata.Kind);
+			Assert.Equal([hostB.Id.Value.ToString("N")], retainedShared.Metadata.HostModGuids);
+			var sharedSidecar = await File.ReadAllTextAsync(ModNodeStorageProtocol.OptionRelationPath(Path.Combine(paths.ModsDirectory, shared.RelativePath)));
+			Assert.Contains(hostB.Id.Value.ToString("N"), sharedSidecar, StringComparison.OrdinalIgnoreCase);
+			Assert.DoesNotContain(hostA.Id.Value.ToString("N"), sharedSidecar, StringComparison.OrdinalIgnoreCase);
+
+			var restored = result.Snapshot.Nodes[logicalOnly.Id];
+			Assert.Equal(ModNodeKind.Standard, restored.Metadata.Kind);
+			Assert.Null(restored.Metadata.HostModGuids);
+			Assert.True(restored.Metadata.IsLogicalContainer);
+			var logicalDirectory = Path.Combine(paths.ModsDirectory, logicalOnly.RelativePath);
+			Assert.True(File.Exists(ModNodeStorageProtocol.LogicalMarkerPath(logicalDirectory)));
+			Assert.False(File.Exists(ModNodeStorageProtocol.OptionRelationPath(logicalDirectory)));
 		}
 		finally
 		{

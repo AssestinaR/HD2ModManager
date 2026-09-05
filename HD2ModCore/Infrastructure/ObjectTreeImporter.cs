@@ -35,9 +35,15 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 			var patchGroups = CollectPatchGroups(dir);
 			var isDecoration = IsDecorationPackageDirectory(dir);
 			var option = !isDecoration ? TryReadOptionRelation(dir) : null;
+			// Logical markers describe zero-payload structure only. If a user later
+			// places a real Patch in the directory, preserve the Patch as deployable
+			// instead of silently importing it as a skipped logical anchor.
+			var isLogicalContainer = !isDecoration
+				&& patchGroups.Count == 0
+				&& ModNodeStorageProtocol.IsLogicalDirectory(dir.FullName);
 			var hasExternalInstallFiles = dir.FullName.Equals(rootDir.FullName, StringComparison.OrdinalIgnoreCase)
 				&& ExternalInstallFileFactsService.HasRecognizedFiles(dir.FullName);
-			if (patchGroups.Count == 0 && !isDecoration && option is null && !hasExternalInstallFiles)
+			if (patchGroups.Count == 0 && !isDecoration && option is null && !hasExternalInstallFiles && !isLogicalContainer)
 			{
 				continue;
 			}
@@ -66,7 +72,8 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 				SourcePackageGuid: option?.SourcePackageGuid,
 				SourcePackagePath: option?.SourcePath,
 				OptionOrder: option?.OptionOrder,
-				SuppressDefaultDirectOptionActivation: option?.SuppressDefaultDirectOptionActivation ?? false);
+				SuppressDefaultDirectOptionActivation: option?.SuppressDefaultDirectOptionActivation ?? false,
+				IsLogicalContainer: isLogicalContainer || option is not null && patchGroups.Count == 0);
 
 			nodes[id] = new ModNode(
 				Id: id,

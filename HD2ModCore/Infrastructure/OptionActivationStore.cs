@@ -241,6 +241,77 @@ public sealed class OptionActivationStore
 		await SaveAsync(cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// Removes one host-scoped activation relation without disturbing the same
+	/// Option under any other parent. This is required when a shared Option is
+	/// detached from only one host.
+	/// </summary>
+	public async Task<bool> RemoveRelationAsync(
+		string optionId,
+		string hostId,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(optionId);
+		ArgumentException.ThrowIfNullOrWhiteSpace(hostId);
+		var changed = false;
+		lock (_gate)
+		{
+			if (_states.TryGetValue(optionId, out var hosts) && hosts.Remove(hostId))
+			{
+				changed = true;
+				if (hosts.Count == 0) _states.Remove(optionId);
+			}
+		}
+		if (changed) await SaveAsync(cancellationToken).ConfigureAwait(false);
+		return changed;
+	}
+
+	/// <summary>
+	/// Removes several host-scoped relations with one persisted JSON write.
+	/// </summary>
+	public async Task<int> RemoveRelationsAsync(
+		IEnumerable<(string OptionId, string HostId)> relations,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(relations);
+		var normalized = relations
+			.Where(relation => !string.IsNullOrWhiteSpace(relation.OptionId) && !string.IsNullOrWhiteSpace(relation.HostId))
+			.Distinct()
+			.ToArray();
+		var changed = 0;
+		lock (_gate)
+		{
+			foreach (var (optionId, hostId) in normalized)
+			{
+				if (!_states.TryGetValue(optionId, out var hosts) || !hosts.Remove(hostId)) continue;
+				changed++;
+				if (hosts.Count == 0) _states.Remove(optionId);
+			}
+		}
+		if (changed > 0) await SaveAsync(cancellationToken).ConfigureAwait(false);
+		return changed;
+	}
+
+	/// <summary>
+	/// Restores a previously captured in-memory/file state for a failed compound
+	/// relationship transaction. This is intentionally public for the Core
+	/// mutation service, not for UI callers.
+	/// </summary>
+	public async Task RestoreSnapshotAsync(
+		OptionActivationSnapshot snapshot,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(snapshot);
+		lock (_gate)
+		{
+			_states = snapshot.Options.ToDictionary(
+				option => option.Key,
+				option => option.Value.ToDictionary(host => host.Key, host => host.Value, StringComparer.OrdinalIgnoreCase),
+				StringComparer.OrdinalIgnoreCase);
+		}
+		await SaveAsync(cancellationToken).ConfigureAwait(false);
+	}
+
 	public async Task RemoveHostAsync(string hostId, CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrWhiteSpace(hostId)) return;

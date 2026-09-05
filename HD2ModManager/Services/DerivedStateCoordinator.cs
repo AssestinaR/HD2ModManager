@@ -37,9 +37,11 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
         _profileGraph = CoreServices.CreateProfileOverrideGraphService(_paths, _informationCenter);
         _profileMaterialDiagnostics = CoreServices.CreateProfileMaterialDiagnosticsService(_paths, _informationCenter);
-        _activeProfileSignature = GetActiveProfileSignature(_profiles.Snapshot);
+        _activeProfileSignature = GetActiveProfileSignature(GetEvaluationSnapshot());
         _profiles.Changed += OnProfilesChanged;
         _library.ModContentFactsChanged += OnContentChanged;
+        _library.ModRelationshipsChanged += OnModRelationshipsChanged;
+        _library.OptionActivationChanged += OnOptionActivationChanged;
     }
 
     // Player-facing status is profile-derived. Deployment validation is an explicit diagnostic, not a page-open scan.
@@ -63,7 +65,14 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     public IReadOnlyDictionary<ModNodeId, ModUserStatus> ProjectStatuses(ProfileId? selectedProfileId)
     {
         var snapshot = Snapshot;
-        return ModUserStatusProjector.Project(_profiles.Snapshot, selectedProfileId, snapshot.ContentFacts, snapshot.ExpectedGraph, snapshot.MaterialDiagnostics, snapshot.DeployedGraph);
+        return ModUserStatusProjector.Project(
+            GetEvaluationSnapshot(),
+            selectedProfileId,
+            snapshot.ContentFacts,
+            snapshot.ExpectedGraph,
+            snapshot.MaterialDiagnostics,
+            snapshot.DeployedGraph,
+            _library.GetOptionActivationSnapshot());
     }
 
     private async Task RefreshCoreAsync(CancellationToken cancellationToken, long refreshVersion)
@@ -71,7 +80,13 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var profileSnapshot = _profiles.Snapshot;
+            // ProfileService and ModLibraryService deliberately have separate
+            // write paths. A Profile mutation reaches ProfileService first;
+            // a relation mutation reaches ModLibraryService first. Build one
+            // coherent evaluation snapshot from the newer profile payload and
+            // the authoritative current node graph so an Option relation can
+            // never be projected using yesterday's parent graph.
+            var profileSnapshot = GetEvaluationSnapshot();
             var profileSignature = GetActiveProfileSignature(profileSnapshot);
             var librarySnapshotSignature = _library.Snapshot.SavedUtc;
             var current = Snapshot;
@@ -88,7 +103,10 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             }
 
             var active = profileSnapshot.ActiveProfileId is { } activeId ? profileSnapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId) : null;
-            var activeNodeIds = active?.Entries.Select(entry => entry.NodeId).Where(profileSnapshot.Nodes.ContainsKey).ToHashSet()
+            var effectiveActive = active is null
+                ? null
+                : ProfileEffectiveProfileResolver.Resolve(active, profileSnapshot, _library.GetOptionActivationSnapshot());
+            var activeNodeIds = effectiveActive?.Entries.Select(entry => entry.NodeId).Where(profileSnapshot.Nodes.ContainsKey).ToHashSet()
                 ?? new HashSet<ModNodeId>();
             contentDirty |= !SameNodeSet(content.Keys, activeNodeIds);
 
@@ -108,8 +126,9 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             }
             else if (expectedDirty || !IsExpectedCurrent(expected, active, content))
             {
-                expected = await _profileGraph.BuildAsync(active, profileSnapshot, _library.ModsRootDirectory, cancellationToken).ConfigureAwait(false);
-				materialDiagnostics = await _profileMaterialDiagnostics.BuildAsync(active, profileSnapshot, _library.ModsRootDirectory, cancellationToken).ConfigureAwait(false);
+                var effectiveProfile = effectiveActive ?? active;
+                expected = await _profileGraph.BuildAsync(effectiveProfile, profileSnapshot, _library.ModsRootDirectory, cancellationToken).ConfigureAwait(false);
+				materialDiagnostics = await _profileMaterialDiagnostics.BuildAsync(effectiveProfile, profileSnapshot, _library.ModsRootDirectory, cancellationToken).ConfigureAwait(false);
             }
 
             // Do not scan GameData while a profile page is opening. It cannot affect the four player states.
@@ -119,7 +138,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
             lock (_sync)
             {
                 if (refreshVersion != _refreshVersion
-                    || profileSignature != GetActiveProfileSignature(_profiles.Snapshot)
+                    || profileSignature != GetActiveProfileSignature(GetEvaluationSnapshot())
                     || librarySnapshotSignature != _library.Snapshot.SavedUtc)
                     return;
                 _contentDirty = false;
@@ -164,7 +183,7 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
 
     private void OnProfilesChanged(object? sender, EventArgs e)
     {
-        var current = GetActiveProfileSignature(_profiles.Snapshot);
+        var current = GetActiveProfileSignature(GetEvaluationSnapshot());
         var activeChanged = current != _activeProfileSignature;
         _activeProfileSignature = current;
         MarkDirty(content: false, expected: activeChanged, deployed: false);
@@ -173,12 +192,37 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     {
         if (e.Kind == ModContentChangeKind.DerivedOnly) return;
 
-        var active = _profiles.ActiveProfile;
-        var affectsActiveProfile = active is not null && e.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId));
+        var evaluation = GetEvaluationSnapshot();
+        var active = GetActiveProfile(evaluation);
+        var activeRoutes = active is null
+            ? ProfileOptionRouteResolution.Empty
+            : ProfileOptionRouteResolver.Resolve(active, evaluation, _library.GetOptionActivationSnapshot());
+        var affectsActiveProfile = active is not null && e.NodeIds.Any(nodeId =>
+            active.Entries.Any(entry => entry.NodeId == nodeId)
+            || activeRoutes.IsNodeReachable(nodeId));
         if (affectsActiveProfile)
         {
             MarkDirty(content: true, expected: true, deployed: false);
         }
+    }
+
+    private void OnModRelationshipsChanged(object? sender, ModRelationshipMutationResult e)
+    {
+        // A relationship mutation can change the effective node set even when
+        // no Patch bytes changed: a physical Option may have been added to or
+        // removed from an active Profile, or a logical anchor may have gained
+        // descendants. Invalidate the shared projection at the same boundary as
+        // the library mutation instead of waiting for a page to be reopened.
+        MarkDirty(content: false, expected: true, deployed: false);
+    }
+
+    private void OnOptionActivationChanged(object? sender, EventArgs e)
+    {
+        // Option activation is host-scoped and is persisted outside
+        // LibrarySnapshot. It therefore cannot be detected by the snapshot
+        // signature alone, but it directly changes effective deployment and
+        // user-status projections for shared Options.
+        MarkDirty(content: false, expected: true, deployed: false);
     }
 
     private void MarkDirty(bool content, bool expected, bool deployed)
@@ -199,12 +243,32 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     private static bool SameNodeSet(IEnumerable<ModNodeId> left, IEnumerable<ModNodeId> right)
         => left.OrderBy(id => id.Value).SequenceEqual(right.OrderBy(id => id.Value));
 
+    private LibrarySnapshot GetEvaluationSnapshot()
+    {
+        var library = _library.Snapshot;
+        var profiles = _profiles.Snapshot;
+
+        // If a profile write committed most recently, use its profile list and
+        // active selection. If a library/relation mutation committed most
+        // recently, it already contains the canonical Profile updates produced
+        // by the compound relationship transaction. Nodes always come from the
+        // library service because it owns relationship metadata and never lags
+        // a ModRelationshipMutationResult.
+        var profileSource = profiles.SavedUtc > library.SavedUtc ? profiles : library;
+        return profileSource with { Nodes = library.Nodes };
+    }
+
+    private static Profile? GetActiveProfile(LibrarySnapshot snapshot)
+        => snapshot.ActiveProfileId is { } activeId
+            ? snapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId)
+            : null;
+
     private static bool IsExpectedCurrent(ProfileOverrideGraph? graph, Profile active, IReadOnlyDictionary<ModNodeId, ModContentFacts> content)
         => graph is not null && graph.ProfileId == active.Id && graph.ProfileRevision == active.Revision;
 
     private static (ProfileId? Id, long Revision) GetActiveProfileSignature(LibrarySnapshot snapshot)
     {
-        var active = snapshot.ActiveProfileId is { } activeId ? snapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId) : null;
+        var active = GetActiveProfile(snapshot);
         return active is null ? (null, 0) : (active.Id, active.Revision);
     }
 
@@ -212,6 +276,8 @@ public sealed class DerivedStateCoordinator : IAsyncDisposable
     {
         _profiles.Changed -= OnProfilesChanged;
         _library.ModContentFactsChanged -= OnContentChanged;
+        _library.ModRelationshipsChanged -= OnModRelationshipsChanged;
+        _library.OptionActivationChanged -= OnOptionActivationChanged;
         lock (_sync)
         {
             _refreshCancellation?.Cancel();

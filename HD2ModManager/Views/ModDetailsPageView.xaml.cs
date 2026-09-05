@@ -2,17 +2,24 @@ using System;
 using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
 {
     // 作用：显示单个 Mod 的详情信息与派生文件组概览。
-    public partial class ModDetailsPageView : UserControl
+    public partial class ModDetailsPageView : UserControl, IModRelationshipDropTarget
     {
         public ModDetailsPageView()
         {
             InitializeComponent();
+            Loaded += (_, _) => ModRelationshipDragCoordinator.RegisterTarget(this);
+            Unloaded += (_, _) =>
+            {
+                ResetRelationshipDropOverlay();
+                ModRelationshipDragCoordinator.UnregisterTarget(this);
+            };
         }
 
         private void OnSelectImageClick(object sender, RoutedEventArgs e)
@@ -112,6 +119,91 @@ namespace HD2ModManager.Views
                     if (shell is not null) await shell.DeleteModsFromLibraryAsync(e.SelectedKeys);
                     break;
             }
+        }
+
+        bool IModRelationshipDropTarget.CanAcceptRelationshipDrop(ModRelationshipDragPayload payload)
+            => IsLoaded
+                && IsVisible
+                && ModRelationshipDragCoordinator.IsVisuallyActive(this)
+                && payload.Operation == ModRelationshipDragOperation.SetAsOption
+                && payload.SelectedKeys.Count > 0
+                && DataContext is ModDetailsPageViewModel details
+                && details.CanHostAttachments;
+
+        bool IModRelationshipDropTarget.ContainsScreenPoint(Point screenPoint)
+        {
+            if (!IsLoaded
+                || !IsVisible
+                || !ModRelationshipDragCoordinator.IsVisuallyActive(this)
+                || RelationshipDropOverlay.Visibility != Visibility.Visible
+                || RelationshipDropOverlay.ActualWidth <= 0
+                || RelationshipDropOverlay.ActualHeight <= 0)
+                return false;
+            try
+            {
+                var local = RelationshipDropOverlay.PointFromScreen(screenPoint);
+                return local.X >= 0
+                    && local.Y >= 0
+                    && local.X <= RelationshipDropOverlay.ActualWidth
+                    && local.Y <= RelationshipDropOverlay.ActualHeight;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        bool IModRelationshipDropTarget.ContainsElement(DependencyObject element)
+            => IsAncestorOf(element);
+
+        void IModRelationshipDropTarget.SetRelationshipDropOverlay(ModRelationshipDragPayload payload, bool visible)
+        {
+            if (visible)
+            {
+                var hostName = DataContext is ModDetailsPageViewModel details
+                    ? details.Name
+                    : "当前 Mod";
+                RelationshipDropTitle.Text = $"释放以设为“{hostName}”的选项";
+                RelationshipDropDetail.Text = $"将 {payload.SelectedKeys.Count} 个 Mod 挂载到该主体下";
+                RelationshipDropOverlay.Visibility = Visibility.Visible;
+                RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+                RelationshipDropOverlay.BeginAnimation(
+                    UIElement.OpacityProperty,
+                    new DoubleAnimation(0.92, TimeSpan.FromMilliseconds(140)));
+                return;
+            }
+
+            if (!IsLoaded)
+            {
+                ResetRelationshipDropOverlay();
+                return;
+            }
+            if (RelationshipDropOverlay.Visibility != Visibility.Visible) return;
+            RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+            var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
+            fadeOut.Completed += (_, _) =>
+            {
+                if (RelationshipDropOverlay.Opacity <= 0.01)
+                    RelationshipDropOverlay.Visibility = Visibility.Collapsed;
+            };
+            RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+        }
+
+        void IModRelationshipDropTarget.RaiseRelationshipDropRequested(ModRelationshipDragPayload payload)
+        {
+            if (payload.Operation != ModRelationshipDragOperation.SetAsOption
+                || DataContext is not ModDetailsPageViewModel details)
+                return;
+            var shell = Application.Current?.MainWindow?.DataContext as ShellViewModel;
+            if (shell is not null)
+                _ = shell.SetModsAsOptionsForHostAsync(details.ModId, payload.SelectedKeys);
+        }
+
+        private void ResetRelationshipDropOverlay()
+        {
+            RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+            RelationshipDropOverlay.Visibility = Visibility.Collapsed;
+            RelationshipDropOverlay.Opacity = 0;
         }
     }
 }

@@ -10,6 +10,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 	private readonly StoragePaths _paths;
 	private readonly IModLibraryStore _store;
 	private readonly IModStorageDeletionService _storageDeletion;
+	private readonly ProfileStructuralMaintenanceService _profileStructuralMaintenance = new();
 
 	public ModLibraryManager(StoragePaths paths, IModLibraryStore store, IModStorageDeletionService? storageDeletion = null)
 	{
@@ -89,8 +90,15 @@ public sealed class ModLibraryManager : IModLibraryManager
 		if (removableIds.Count == 0)
 			return new ModLibraryDeletionResult(snapshot, Array.Empty<ModNodeId>(), failedIds, storageResults);
 
+		var timestamp = DateTimeOffset.UtcNow;
+		var relationshipUpdates = ModRelationshipDeletionProjection.GetSurvivingOptionUpdates(
+			snapshot,
+			removableIds,
+			timestamp);
 		var nodes = new Dictionary<ModNodeId, ModNode>(snapshot.Nodes);
 		foreach (var removedId in removableIds) nodes.Remove(removedId);
+		foreach (var (nodeId, updatedNode) in relationshipUpdates)
+			nodes[nodeId] = updatedNode;
 
 		// Remove references from other nodes' children.
 		foreach (var kv in nodes.ToList())
@@ -102,19 +110,37 @@ public sealed class ModLibraryManager : IModLibraryManager
 			}
 		}
 
-		// Remove from profiles.
-		var profiles = snapshot.Profiles
-			.Select(p =>
+		// Profile cleanup is intentionally performed in one pass with the deletion:
+		// remove deleted references and reclaim only affected empty relationship
+		// roots, so a single deletion produces at most one Profile revision.
+		var updated = snapshot with { Nodes = nodes, Profiles = snapshot.Profiles, SavedUtc = timestamp };
+		updated = _profileStructuralMaintenance
+			.CleanupAfterMutation(
+				snapshot,
+				updated,
+				removableIds.Concat(relationshipUpdates.Keys).Distinct().ToArray(),
+				removableIds,
+				timestamp)
+			.Snapshot;
+		var sidecarBackups = new List<RelationshipSidecarBackup>();
+		try
+		{
+			foreach (var updatedNode in relationshipUpdates.Values)
 			{
-				var entries = NormalizeEntryOrder(p.Entries.Where(entry => !removableIds.Contains(entry.NodeId)).ToList());
-				return entries.SequenceEqual(p.Entries)
-					? p
-					: p with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(p.Revision + 1) };
-			})
-			.ToList();
-
-		var updated = snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = DateTimeOffset.UtcNow };
-		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+				var before = snapshot.Nodes[updatedNode.Id];
+				if (!ModRelationshipDeletionProjection.RequiresStorageProtocolWrite(before, updatedNode)
+					|| !TryResolveExistingManagedDirectory(updatedNode.RelativePath, out var directory))
+					continue;
+				sidecarBackups.Add(CaptureRelationshipSidecars(directory));
+				ModNodeStorageProtocol.SynchronizeNodeMetadata(directory, updatedNode, cancellationToken);
+			}
+			await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+		}
+		catch
+		{
+			foreach (var backup in sidecarBackups) RestoreRelationshipSidecars(backup);
+			throw;
+		}
 		return new ModLibraryDeletionResult(updated, removableIds.ToArray(), failedIds, storageResults);
 	}
 
@@ -132,7 +158,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 		}
 
 		var snapshot = await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
-		EnsureProfileEntriesAreDeployable(snapshot, profile.Entries);
+		ValidateProfileEntries(snapshot, profile.Entries);
 		var profiles = snapshot.Profiles.ToList();
 
 		var index = profiles.FindIndex(p => p.Id == profile.Id);
@@ -368,15 +394,84 @@ public sealed class ModLibraryManager : IModLibraryManager
 			.ToList();
 	}
 
-	private static void EnsureProfileEntriesAreDeployable(LibrarySnapshot snapshot, IReadOnlyList<ProfileEntry> entries)
+	private bool TryResolveExistingManagedDirectory(string relativePath, out string directory)
 	{
+		directory = string.Empty;
+		if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath)) return false;
+		try
+		{
+			var root = Path.GetFullPath(_paths.ModsDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+			var candidate = Path.GetFullPath(Path.Combine(root, relativePath));
+			if (!candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+				|| !Directory.Exists(candidate)) return false;
+			directory = candidate;
+			return true;
+		}
+		catch (ArgumentException) { return false; }
+		catch (NotSupportedException) { return false; }
+		catch (PathTooLongException) { return false; }
+	}
+
+	private static RelationshipSidecarBackup CaptureRelationshipSidecars(string directory)
+		=> new(
+			CaptureSidecar(ModNodeStorageProtocol.LogicalMarkerPath(directory)),
+			CaptureSidecar(ModNodeStorageProtocol.OptionRelationPath(directory)));
+
+	private static SidecarFileBackup CaptureSidecar(string path)
+	{
+		if (!File.Exists(path)) return new SidecarFileBackup(path, false, null, null);
+		return new SidecarFileBackup(path, true, File.ReadAllBytes(path), File.GetAttributes(path));
+	}
+
+	private static void RestoreRelationshipSidecars(RelationshipSidecarBackup backup)
+	{
+		RestoreSidecar(backup.LogicalMarker);
+		RestoreSidecar(backup.OptionRelation);
+	}
+
+	private static void RestoreSidecar(SidecarFileBackup backup)
+	{
+		try
+		{
+			if (!backup.Exists)
+			{
+				if (File.Exists(backup.Path))
+				{
+					var current = File.GetAttributes(backup.Path);
+					if ((current & FileAttributes.ReadOnly) != 0)
+						File.SetAttributes(backup.Path, current & ~FileAttributes.ReadOnly);
+					File.Delete(backup.Path);
+				}
+				return;
+			}
+
+			Directory.CreateDirectory(Path.GetDirectoryName(backup.Path)!);
+			if (File.Exists(backup.Path))
+			{
+				var current = File.GetAttributes(backup.Path);
+				if ((current & FileAttributes.ReadOnly) != 0)
+					File.SetAttributes(backup.Path, current & ~FileAttributes.ReadOnly);
+			}
+			File.WriteAllBytes(backup.Path, backup.Content!);
+			if (backup.Attributes is { } attributes) File.SetAttributes(backup.Path, attributes);
+		}
+		catch { }
+	}
+
+	private static void ValidateProfileEntries(LibrarySnapshot snapshot, IReadOnlyList<ProfileEntry> entries)
+	{
+		var seen = new HashSet<ModNodeId>();
 		foreach (var entry in entries)
 		{
-			if (snapshot.Nodes.TryGetValue(entry.NodeId, out var node)) EnsureNodeIsDeployable(node);
+			if (!seen.Add(entry.NodeId))
+				throw new InvalidOperationException($"Profile contains duplicate Mod entry: {entry.NodeId.Value:N}");
+			if (!snapshot.Nodes.TryGetValue(entry.NodeId, out var node))
+				throw new InvalidOperationException($"Profile references a missing Mod node: {entry.NodeId.Value:N}");
+			EnsureNodeCanBeProfileEntry(node);
 		}
 	}
 
-	private static void EnsureNodeIsDeployable(ModNode node)
+	private static void EnsureNodeCanBeProfileEntry(ModNode node)
 	{
 		if (node.Metadata.Kind is not (ModNodeKind.Standard or ModNodeKind.ReShade))
 			throw new InvalidOperationException($"{node.Metadata.Kind} Mod cannot be added to a profile: {node.Metadata.Name}");
@@ -392,4 +487,7 @@ public sealed class ModLibraryManager : IModLibraryManager
 			? "Mod 存储目录无法删除，库快照未提交。"
 			: "部分 Mod 存储目录无法删除，未移除对应库记录：" + string.Join("；", details);
 	}
+
+	private sealed record RelationshipSidecarBackup(SidecarFileBackup LogicalMarker, SidecarFileBackup OptionRelation);
+	private sealed record SidecarFileBackup(string Path, bool Exists, byte[]? Content, FileAttributes? Attributes);
 }

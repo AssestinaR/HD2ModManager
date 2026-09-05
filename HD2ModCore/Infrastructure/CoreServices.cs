@@ -273,8 +273,21 @@ public static class CoreServices
 		=> new(paths.DecorationActivationsPath);
 	public static IOptionRelationshipWriteService CreateOptionRelationshipWriteService()
 		=> new OptionRelationshipWriteService();
+	public static IModRelationshipMutationService CreateModRelationshipMutationService(
+		StoragePaths paths,
+		OptionActivationStore? optionActivations = null)
+	{
+		ArgumentNullException.ThrowIfNull(paths);
+		var store = CreateModLibraryStore(paths);
+		return new ModRelationshipMutationService(
+			paths,
+			store,
+			optionActivations ?? CreateOptionActivationStore(paths));
+	}
 	public static IProfileMutationService CreateProfileMutationService()
 		=> new ProfileMutationService();
+	public static ProfileStructuralMaintenanceService CreateProfileStructuralMaintenanceService()
+		=> new();
 	public static IModImportExecutionService CreateModImportExecutionService(StoragePaths paths)
 		=> new ModImportExecutionService(paths);
 	public static ILibraryWriteLeaseProvider CreateLibraryWriteLeaseProvider()

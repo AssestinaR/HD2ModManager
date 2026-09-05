@@ -115,11 +115,15 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ApplyChangesCommand { get; }
         public RelayCommand ValidateModLibraryCommand { get; }
         public RelayCommand ImportCommand { get; }
+        public RelayCommand CreateLogicalModCommand { get; }
         public RelayCommand RefreshCommand { get; }
         public RelayCommand CancelSelectionCommand { get; }
         public RelayCommand SelectionPrimaryCommand { get; }
         public RelayCommand SelectionDeleteCommand { get; }
         public RelayCommand SelectionDeleteFromLibraryCommand { get; }
+        public RelayCommand SetSelectedModsAsOptionsCommand { get; }
+        public RelayCommand AttachSelectedDecorationsCommand { get; }
+        public RelayCommand RemoveSelectedOptionsFromHostCommand { get; }
         public RelayCommand EnableSelectedDecorationsCommand { get; }
         public RelayCommand DisableSelectedDecorationsCommand { get; }
         public RelayCommand ToggleMessagePanelCommand { get; }
@@ -216,7 +220,12 @@ namespace HD2ModManager.ViewModels
                 }
 
                 var active = _profileService.ActiveProfile;
-                var affectsActiveProfile = active is not null && change.NodeIds.Any(nodeId => active.Entries.Any(entry => entry.NodeId == nodeId));
+                var activeRoutes = active is null
+                    ? ProfileOptionRouteResolution.Empty
+                    : ProfileOptionRouteResolver.Resolve(active, _libraryService.Snapshot, _libraryService.GetOptionActivationSnapshot());
+                var affectsActiveProfile = active is not null && change.NodeIds.Any(nodeId =>
+                    active.Entries.Any(entry => entry.NodeId == nodeId)
+                    || activeRoutes.IsNodeReachable(nodeId));
                 LogService.Info($"部署触发检查：库内容{change.Kind}，节点数={change.NodeIds.Count}，影响活动配置={affectsActiveProfile}。");
                 if (affectsActiveProfile)
                 {
@@ -254,11 +263,15 @@ namespace HD2ModManager.ViewModels
             ApplyChangesCommand = new RelayCommand(QueueActiveProfileDeployment);
             ValidateModLibraryCommand = new RelayCommand(ValidateModLibrary);
             ImportCommand = new RelayCommand(BrowseAndImport);
+            CreateLogicalModCommand = new RelayCommand(_ => BeginCreateLogicalMod());
             RefreshCommand = new RelayCommand(RefreshCurrentPage);
             CancelSelectionCommand = new RelayCommand(_selection.Clear);
             SelectionPrimaryCommand = new RelayCommand(async _ => await ExecuteSelectionPrimaryAsync());
             SelectionDeleteCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteAsync());
             SelectionDeleteFromLibraryCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteFromLibraryAsync());
+            SetSelectedModsAsOptionsCommand = new RelayCommand(async _ => await SetSelectedModsAsOptionsAsync());
+            AttachSelectedDecorationsCommand = new RelayCommand(async _ => await AttachSelectedDecorationsAsync());
+            RemoveSelectedOptionsFromHostCommand = new RelayCommand(async _ => await RemoveSelectedOptionsFromHostAsync());
             EnableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(true));
             DisableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(false));
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
@@ -510,6 +523,11 @@ namespace HD2ModManager.ViewModels
 
         public void BeginBottomBarNameEdit(string modId, string currentValue) => _bottomBar.BeginNameEdit(modId, currentValue);
         public void BeginBottomBarDescriptionEdit(string modId, string currentValue) => _bottomBar.BeginDescriptionEdit(modId, currentValue);
+        public void BeginCreateLogicalMod()
+        {
+            ClearTransientSelection();
+            _bottomBar.BeginCreateLogicalMod();
+        }
         public void CancelBottomBarEdit() => _bottomBar.CancelEdit();
         public void ClearTransientSelection()
         {
@@ -1455,6 +1473,182 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        private async Task SetSelectedModsAsOptionsAsync()
+        {
+            if (!_selection.HasSelection
+                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection)
+                || string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId)) return;
+
+            await SetModsAsOptionsForHostAsync(
+                _bottomBar.RelationshipHostId,
+                _selection.SelectedIds).ConfigureAwait(true);
+        }
+
+        /// <summary>
+        /// Applies the same relationship transaction used by the selection bar
+        /// to an explicit host and source list. Cross-page drag targets call
+        /// this method so they never mutate the library snapshot themselves.
+        /// </summary>
+        public async Task<bool> SetModsAsOptionsForHostAsync(
+            string hostId,
+            IReadOnlyList<string> sourceModIds,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(sourceModIds);
+            var host = string.IsNullOrWhiteSpace(hostId) ? null : _libraryService.Get(hostId.Trim());
+            if (host is null || host.IsDecoration || host.IsReShade)
+            {
+                _notificationService.Show("当前 Mod 不能作为选项主体。", NotificationLevel.Warning);
+                return false;
+            }
+
+            var selected = sourceModIds
+                .Where(id => !string.Equals(id, host.Guid, StringComparison.OrdinalIgnoreCase))
+                .Select(_libraryService.Get)
+                .Where(mod => mod is not null && !mod.IsDecoration && !mod.IsReShade)
+                .Cast<HD2ModManager.Models.ModEntity>()
+                .GroupBy(mod => mod.Guid, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToArray();
+            if (selected.Length == 0)
+            {
+                _notificationService.Show("没有可挂载到该主体的 Mod。", NotificationLevel.Warning);
+                return false;
+            }
+
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "调整 Mod 父子关系", $"将 {selected.Length} 个 Mod 设为选项");
+            task.MarkRunning("正在更新 Option 父级关系");
+            try
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, task.CancellationToken);
+                var result = await _libraryService.AddOptionsToHostAsync(
+                    host.Guid,
+                    selected.Select(mod => mod.Guid).ToArray(),
+                    linked.Token);
+                task.MarkCompleted();
+                var message = result.ChangedNodeIds.Count == 0
+                    ? $"已确认这些 Mod 属于“{host.Name}”的选项。"
+                    : $"已将 {result.ChangedNodeIds.Count} 个 Mod 设为“{host.Name}”的选项。";
+                if (result.AffectedProfileIds.Count > 0)
+                    message += $" 已从 {result.AffectedProfileIds.Count} 个配置文件释放。";
+                _notificationService.Show(message);
+                _selection.Clear();
+                RefreshCurrentPage();
+                return true;
+            }
+            catch (OperationCanceledException) { task.MarkCanceled(); return false; }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+                _notificationService.Show($"调整 Mod 父子关系失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+                return false;
+            }
+        }
+
+        private async Task AttachSelectedDecorationsAsync()
+        {
+            if (!_selection.HasSelection
+                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection)
+                || string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId)) return;
+
+            var host = _libraryService.Get(_bottomBar.RelationshipHostId);
+            if (host is null || host.IsDecoration || host.IsReShade) return;
+            var decorations = _selection.SelectedIds
+                .Select(_libraryService.Get)
+                .Where(mod => mod?.IsDecoration == true)
+                .Cast<HD2ModManager.Models.ModEntity>()
+                .Where(decoration => _libraryService.IsDecorationAvailableForHost(decoration.Guid, host.Guid))
+                .GroupBy(decoration => decoration.Guid, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToArray();
+            if (decorations.Length == 0)
+            {
+                _notificationService.Show($"所选装饰没有可附加到“{host.Name}”的主体。", NotificationLevel.Warning);
+                return;
+            }
+
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "附加装饰", $"为“{host.Name}”附加 {decorations.Length} 个装饰");
+            task.MarkRunning("正在更新装饰状态");
+            try
+            {
+                await _libraryService.ApplyDecorationActivationBatchAsync(
+                    decorations.Select(decoration => new DecorationActivationMutation(decoration.Guid, true, host.Guid)).ToArray(),
+                    task.CancellationToken);
+                task.MarkCompleted();
+                _notificationService.Show($"已将 {decorations.Length} 个装饰附加到“{host.Name}”；后台将合并主体覆盖文件。 ");
+                _selection.Clear();
+                RefreshCurrentPage();
+            }
+            catch (OperationCanceledException) { task.MarkCanceled(); }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+                _notificationService.Show($"附加装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+            }
+        }
+
+        private async Task RemoveSelectedOptionsFromHostAsync()
+        {
+            if (!_selection.HasSelection
+                || !_bottomBar.IsDecorationHostSelection
+                || string.IsNullOrWhiteSpace(_selection.Scope)) return;
+
+            var hostId = _selection.Scope["DecorationHost:".Length..];
+            await RemoveOptionsFromHostAsync(hostId, _selection.SelectedIds).ConfigureAwait(true);
+        }
+
+        /// <summary>
+        /// Removes only direct Option parent relations for the supplied host.
+        /// The operation is shared by the details-page selection bar and the
+        /// details-to-library drag gesture.
+        /// </summary>
+        public async Task<bool> RemoveOptionsFromHostAsync(
+            string hostId,
+            IReadOnlyList<string> optionIds,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(optionIds);
+            if (string.IsNullOrWhiteSpace(hostId)) return false;
+
+            var options = optionIds
+                .Select(_libraryService.Get)
+                .Where(mod => mod?.IsOption == true)
+                .Cast<HD2ModManager.Models.ModEntity>()
+                .Where(option => _libraryService.IsDirectOptionForHost(option.Guid, hostId))
+                .GroupBy(option => option.Guid, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToArray();
+            if (options.Length == 0)
+            {
+                _notificationService.Show("没有可从该主体移除的直属选项。", NotificationLevel.Warning);
+                return false;
+            }
+
+            var host = _libraryService.Get(hostId);
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "移除 Option 父级", $"从“{host?.Name ?? hostId}”移除 {options.Length} 个选项");
+            task.MarkRunning("正在更新 Option 父级关系");
+            try
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, task.CancellationToken);
+                var result = await _libraryService.RemoveOptionsFromHostAsync(
+                    hostId,
+                    options.Select(option => option.Guid).ToArray(),
+                    linked.Token);
+                task.MarkCompleted();
+                _notificationService.Show($"已从“{host?.Name ?? "当前 Mod"}”移除 {result.RemovedRelationOptionIds.Count} 个选项。 ");
+                _selection.Clear();
+                RefreshCurrentPage();
+                return true;
+            }
+            catch (OperationCanceledException) { task.MarkCanceled(); return false; }
+            catch (Exception exception)
+            {
+                task.MarkFailed(exception.Message);
+                _notificationService.Show($"移除 Option 父级失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+                return false;
+            }
+        }
+
         public async Task AddModToSelectedProfileAsync(string modId, string modName)
         {
             var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "加入配置", modName);
@@ -1755,6 +1949,7 @@ namespace HD2ModManager.ViewModels
 
         private void RegisterLibraryActions(PageViewModel page)
         {
+            page.PageActions.Add(new PageActionViewModel("□", "新建逻辑 Mod", CreateLogicalModCommand, order: 10, kind: "CreateLogicalMod"));
             page.PageActions.Add(new PageActionViewModel("＋", "导入 Mod", ImportCommand, order: 20, kind: "Import"));
             page.PageActions.Add(new PageActionViewModel("▶", "立即重新部署", ApplyChangesCommand, background: new SolidColorBrush(Color.FromRgb(46, 125, 50)), order: 30, kind: "ScheduleDeployment"));
             page.PageActions.Add(new PageActionViewModel("✓", "校验 Mod 库", ValidateModLibraryCommand, order: 40, kind: "ValidateLibrary"));
@@ -1852,6 +2047,26 @@ namespace HD2ModManager.ViewModels
                 leftProfile.SetLibraryDropTargetAvailable(isLibraryProfilePair);
             if (RightPage is ProfilePageViewModel rightProfile)
                 rightProfile.SetLibraryDropTargetAvailable(isLibraryProfilePair);
+
+            UpdateRelationshipHostContext();
+        }
+
+        private void UpdateRelationshipHostContext()
+        {
+            ModDetailsPageViewModel? target = null;
+            if (IsSplitView)
+            {
+                if (LeftPage is ModDetailsPageViewModel leftDetails
+                    && RightPage is (LibraryPageViewModel or ProfilePageViewModel))
+                    target = leftDetails;
+                else if (RightPage is ModDetailsPageViewModel rightDetails
+                    && LeftPage is (LibraryPageViewModel or ProfilePageViewModel))
+                    target = rightDetails;
+            }
+
+            _bottomBar.SetRelationshipHostContext(
+                target?.CanHostAttachments == true ? target.ModId : null,
+                target?.CanHostAttachments == true ? target.Name : null);
         }
 
         private void RaiseActionFlags()

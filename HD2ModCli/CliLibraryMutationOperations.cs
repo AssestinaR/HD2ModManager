@@ -11,6 +11,74 @@ namespace HD2ModCli;
 /// </summary>
 internal static class CliLibraryMutationOperations
 {
+	public static async ValueTask<LogicalModCreationResult> CreateLogicalModAsync(
+		CliLibraryWriteSession session,
+		string name,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(session);
+		var snapshot = await RequireSnapshotAsync(session, cancellationToken).ConfigureAwait(false);
+		var optionActivations = await CreateValidatedOptionActivationStoreAsync(session, cancellationToken).ConfigureAwait(false);
+		var service = CoreServices.CreateModRelationshipMutationService(session.Paths, optionActivations);
+		try
+		{
+			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+			return await service
+				.CreateLogicalContainerAsync(snapshot, name, cancellationToken: cancellationToken)
+				.ConfigureAwait(false);
+		}
+		catch (ModRelationshipMutationException exception)
+		{
+			throw ToCliUserException(exception);
+		}
+	}
+
+	public static async ValueTask<ModRelationshipMutationResult> AddOptionParentsAsync(
+		CliLibraryWriteSession session,
+		string hostSelector,
+		IReadOnlyList<string> optionSelectors,
+		CancellationToken cancellationToken = default)
+		=> await MutateOptionParentsAsync(session, hostSelector, optionSelectors, add: true, cancellationToken).ConfigureAwait(false);
+
+	public static async ValueTask<ModRelationshipMutationResult> RemoveOptionParentsAsync(
+		CliLibraryWriteSession session,
+		string hostSelector,
+		IReadOnlyList<string> optionSelectors,
+		CancellationToken cancellationToken = default)
+		=> await MutateOptionParentsAsync(session, hostSelector, optionSelectors, add: false, cancellationToken).ConfigureAwait(false);
+
+	private static async ValueTask<ModRelationshipMutationResult> MutateOptionParentsAsync(
+		CliLibraryWriteSession session,
+		string hostSelector,
+		IReadOnlyList<string> optionSelectors,
+		bool add,
+		CancellationToken cancellationToken)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(hostSelector);
+		ArgumentNullException.ThrowIfNull(optionSelectors);
+		if (optionSelectors.Count == 0)
+			throw new CliUserException("OptionParentSelectionRequired", "请至少提供一个要设置关系的 Mod GUID 或唯一 GUID 前缀。");
+
+		var snapshot = await RequireSnapshotAsync(session, cancellationToken).ConfigureAwait(false);
+		var host = CliProjections.ResolveMod(snapshot.Nodes, hostSelector);
+		var optionIds = optionSelectors
+			.Select(selector => CliProjections.ResolveMod(snapshot.Nodes, selector).Id)
+			.ToArray();
+		var optionActivations = await CreateValidatedOptionActivationStoreAsync(session, cancellationToken).ConfigureAwait(false);
+		var service = CoreServices.CreateModRelationshipMutationService(session.Paths, optionActivations);
+		try
+		{
+			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
+			return add
+				? await service.AddOptionParentsAsync(snapshot, host.Id, optionIds, cancellationToken).ConfigureAwait(false)
+				: await service.RemoveOptionParentsAsync(snapshot, host.Id, optionIds, cancellationToken).ConfigureAwait(false);
+		}
+		catch (ModRelationshipMutationException exception)
+		{
+			throw ToCliUserException(exception);
+		}
+	}
+
 	public static SafeModDeletionPlan CreateDeletionPlan(
 		CliLibraryState state,
 		IReadOnlyList<string> selectors,
@@ -94,7 +162,17 @@ internal static class CliLibraryMutationOperations
 		}
 
 		var updatedSnapshot = ApplyDeletionPlan(snapshot, appliedPlan);
-		var persisted = await session.SaveSnapshotAsync(updatedSnapshot, cancellationToken).ConfigureAwait(false);
+		var sidecarBackups = SynchronizeSurvivingRelationshipStorage(session.Paths, snapshot, updatedSnapshot, cancellationToken);
+		LibrarySnapshot persisted;
+		try
+		{
+			persisted = await session.SaveSnapshotAsync(updatedSnapshot, cancellationToken).ConfigureAwait(false);
+		}
+		catch
+		{
+			foreach (var backup in sidecarBackups) RestoreRelationshipSidecars(backup);
+			throw;
+		}
 		try
 		{
 			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
@@ -514,37 +592,117 @@ internal static class CliLibraryMutationOperations
 		var removalIds = plan.LibraryNodeRemovals.Select(removal => removal.NodeId).ToHashSet();
 		if (removalIds.Count == 0) return snapshot;
 		var now = DateTimeOffset.UtcNow;
+		var relationshipUpdates = ModRelationshipDeletionProjection.GetSurvivingOptionUpdates(snapshot, removalIds, now);
 		var nodes = new Dictionary<ModNodeId, ModNode>();
 		foreach (var node in snapshot.Nodes.Values.Where(node => !removalIds.Contains(node.Id)))
 		{
 			var children = node.Children.Where(childId => !removalIds.Contains(childId)).ToArray();
-			var metadata = node.Metadata;
-			if (node.Metadata.Kind == ModNodeKind.Option)
-			{
-				var hostIds = (node.Metadata.HostModGuids ?? Array.Empty<string>())
-					.Where(rawHostId => !Guid.TryParse(rawHostId, out var hostGuid) || !removalIds.Contains(new ModNodeId(hostGuid)))
-					.ToArray();
-				if (!hostIds.SequenceEqual(node.Metadata.HostModGuids ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase))
-					metadata = metadata with { HostModGuids = hostIds, ModifiedUtc = now };
-			}
-			nodes[node.Id] = node with { Children = children, Metadata = metadata };
+			var updated = relationshipUpdates.TryGetValue(node.Id, out var relationshipUpdated)
+				? relationshipUpdated
+				: node;
+			nodes[node.Id] = updated with { Children = children };
 		}
 
-		var profiles = snapshot.Profiles.Select(profile =>
-		{
-			var entries = profile.Entries
-				.Where(entry => !removalIds.Contains(entry.NodeId))
-				.OrderBy(entry => entry.LoadOrder)
-				.ThenBy(entry => entry.AddedUtc)
-				.ThenBy(entry => entry.NodeId.Value)
-				.Select((entry, index) => entry with { LoadOrder = index })
-				.ToArray();
-			return entries.SequenceEqual(profile.Entries)
-				? profile
-				: profile with { Entries = entries, ModifiedUtc = now, Revision = checked(profile.Revision + 1) };
-		}).ToArray();
+		var profileReady = snapshot with { Nodes = nodes, Profiles = snapshot.Profiles, SavedUtc = now };
+		return CoreServices.CreateProfileStructuralMaintenanceService()
+			.CleanupAfterMutation(
+				snapshot,
+				profileReady,
+				removalIds.Concat(relationshipUpdates.Keys).Distinct().ToArray(),
+				removalIds,
+				now)
+			.Snapshot;
+	}
 
-		return snapshot with { Nodes = nodes, Profiles = profiles, SavedUtc = now };
+	private static IReadOnlyList<CliRelationshipSidecarBackup> SynchronizeSurvivingRelationshipStorage(
+		StoragePaths paths,
+		LibrarySnapshot before,
+		LibrarySnapshot after,
+		CancellationToken cancellationToken)
+	{
+		var backups = new List<CliRelationshipSidecarBackup>();
+		try
+		{
+			foreach (var updated in after.Nodes.Values)
+			{
+				if (!before.Nodes.TryGetValue(updated.Id, out var original)
+					|| !ModRelationshipDeletionProjection.RequiresStorageProtocolWrite(original, updated)
+					|| !TryResolveExistingManagedDirectory(paths, updated.RelativePath, out var directory))
+					continue;
+				backups.Add(CaptureRelationshipSidecars(directory));
+				ModNodeStorageProtocol.SynchronizeNodeMetadata(directory, updated, cancellationToken);
+			}
+			return backups;
+		}
+		catch
+		{
+			foreach (var backup in backups) RestoreRelationshipSidecars(backup);
+			throw;
+		}
+	}
+
+	private static bool TryResolveExistingManagedDirectory(StoragePaths paths, string relativePath, out string directory)
+	{
+		directory = string.Empty;
+		if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath)) return false;
+		try
+		{
+			var root = Path.GetFullPath(paths.ModsDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+			var candidate = Path.GetFullPath(Path.Combine(root, relativePath));
+			if (!candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+				|| !Directory.Exists(candidate)) return false;
+			directory = candidate;
+			return true;
+		}
+		catch (ArgumentException) { return false; }
+		catch (NotSupportedException) { return false; }
+		catch (PathTooLongException) { return false; }
+	}
+
+	private static CliRelationshipSidecarBackup CaptureRelationshipSidecars(string directory)
+		=> new(
+			CaptureSidecar(ModNodeStorageProtocol.LogicalMarkerPath(directory)),
+			CaptureSidecar(ModNodeStorageProtocol.OptionRelationPath(directory)));
+
+	private static CliSidecarFileBackup CaptureSidecar(string path)
+	{
+		if (!File.Exists(path)) return new CliSidecarFileBackup(path, false, null, null);
+		return new CliSidecarFileBackup(path, true, File.ReadAllBytes(path), File.GetAttributes(path));
+	}
+
+	private static void RestoreRelationshipSidecars(CliRelationshipSidecarBackup backup)
+	{
+		RestoreSidecar(backup.LogicalMarker);
+		RestoreSidecar(backup.OptionRelation);
+	}
+
+	private static void RestoreSidecar(CliSidecarFileBackup backup)
+	{
+		try
+		{
+			if (!backup.Exists)
+			{
+				if (File.Exists(backup.Path))
+				{
+					var current = File.GetAttributes(backup.Path);
+					if ((current & FileAttributes.ReadOnly) != 0)
+						File.SetAttributes(backup.Path, current & ~FileAttributes.ReadOnly);
+					File.Delete(backup.Path);
+				}
+				return;
+			}
+
+			Directory.CreateDirectory(Path.GetDirectoryName(backup.Path)!);
+			if (File.Exists(backup.Path))
+			{
+				var current = File.GetAttributes(backup.Path);
+				if ((current & FileAttributes.ReadOnly) != 0)
+					File.SetAttributes(backup.Path, current & ~FileAttributes.ReadOnly);
+			}
+			File.WriteAllBytes(backup.Path, backup.Content!);
+			if (backup.Attributes is { } attributes) File.SetAttributes(backup.Path, attributes);
+		}
+		catch { }
 	}
 
 	private static async ValueTask<OptionActivationCleanupResult> CleanupOptionActivationsAsync(
@@ -691,6 +849,9 @@ internal static class CliLibraryMutationOperations
 	private static CliUserException ToCliUserException(OptionRelationshipMutationException exception)
 		=> new($"Option{exception.Failure}", exception.Message);
 
+	private static CliUserException ToCliUserException(ModRelationshipMutationException exception)
+		=> new($"ModRelationship{exception.Failure}", exception.Message);
+
 	private static CliUserException ToCliUserException(ProfileMutationResult result)
 		=> new(
 			$"Profile{result.Failure ?? ProfileMutationFailure.ProfileNotFound}",
@@ -739,3 +900,13 @@ internal sealed record CliModDeletionExecutionResult(
 	OptionActivationCleanupResult? OptionActivationCleanup,
 	DecorationActivationCleanupResult? DecorationActivationCleanup,
 	string? PostCommitError);
+
+internal sealed record CliRelationshipSidecarBackup(
+	CliSidecarFileBackup LogicalMarker,
+	CliSidecarFileBackup OptionRelation);
+
+internal sealed record CliSidecarFileBackup(
+	string Path,
+	bool Exists,
+	byte[]? Content,
+	FileAttributes? Attributes);

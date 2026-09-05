@@ -155,7 +155,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	}
 
 	internal static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
-		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0 || node.Metadata.Kind == ModNodeKind.Decoration)
+		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0
+			|| node.Metadata.Kind == ModNodeKind.Decoration
+			|| node.Metadata.IsLogicalContainer)
 			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory);
 
 	internal static PackageRoot ResolvePackageRoot(string directory)
@@ -305,7 +307,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				CopyExternalInstallFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
 			}
 			CopyResolvedIcon(sourceRoot, destDir, node, manifest, cancellationToken);
-			WriteRelationMetadata(destDir, node.Metadata, cancellationToken);
+			ModNodeStorageProtocol.SynchronizeNodeMetadata(destDir, node, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
 
 			nodes[kvp.Key] = node with
@@ -504,6 +506,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					HostModGuids = null,
 					SourcePackageGuid = manifest.Guid,
 					SourcePackagePath = null,
+					IsLogicalContainer = rootCandidate.Metadata.IsLogicalContainer || rootCandidate.PatchGroups.Count == 0,
 				},
 			};
 		}
@@ -519,7 +522,8 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					null,
 					ModNodeKind.Standard,
 					null,
-					manifest.Guid),
+					manifest.Guid,
+					IsLogicalContainer: true),
 				Array.Empty<PatchGroupKey>(),
 				Array.Empty<ModNodeId>());
 		}
@@ -598,7 +602,13 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					manifest.Guid,
 					entry.Key,
 					entry.OptionOrder,
-					SuppressDefaultDirectOptionActivation: conflictParentIds.Contains(optionId)),
+					SuppressDefaultDirectOptionActivation: conflictParentIds.Contains(optionId),
+					// Compatibility mode intentionally moves every real Patch directory
+					// into an independent physical node. The manifest Option remains a
+					// durable relationship-only container even when it originally
+					// matched payload paths, so it needs the same marker as any other
+					// empty logical node.
+					IsLogicalContainer: compatibilityMode || matchedNodes.Length == 0),
 				compatibilityMode
 					? Array.Empty<PatchGroupKey>()
 					: matchedNodes
@@ -707,6 +717,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		var payloadNodes = tree.Nodes.Values
 			.Where(node => node.PatchGroups.Count > 0
 				|| node.Metadata.Kind == ModNodeKind.Decoration
+				|| node.Metadata.IsLogicalContainer
 				|| (string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
 					&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)))
 			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
@@ -734,7 +745,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			return new PlannedImportTree(tree with { RootId = payloadNodes[0].Id, Nodes = payloadNodes.ToDictionary(node => node.Id) }, sourcePaths);
 		}
 
-		var rootCandidate = patchNodes.FirstOrDefault(node => string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath)));
+		var rootCandidate = payloadNodes.FirstOrDefault(node =>
+			string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
+			&& (node.Metadata.IsLogicalContainer || node.PatchGroups.Count > 0));
 		var rootId = rootCandidate?.Id ?? ModNodeId.New();
 		var nodes = new Dictionary<ModNodeId, ModNode>();
 		var sourcePathsByNode = new Dictionary<ModNodeId, IReadOnlyList<string>>();
@@ -743,7 +756,13 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			nodes[rootId] = rootCandidate with
 			{
 				Id = rootId,
-				Metadata = rootCandidate.Metadata with { Kind = ModNodeKind.Standard, HostModGuids = null, SourcePackagePath = null },
+				Metadata = rootCandidate.Metadata with
+				{
+					Kind = ModNodeKind.Standard,
+					HostModGuids = null,
+					SourcePackagePath = null,
+					IsLogicalContainer = rootCandidate.Metadata.IsLogicalContainer || rootCandidate.PatchGroups.Count == 0,
+				},
 			};
 			sourcePathsByNode[rootId] = [string.Empty];
 		}
@@ -752,7 +771,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			nodes[rootId] = new ModNode(
 				rootId,
 				string.Empty,
-				new ModNodeMetadata(tree.SourceDisplayName, null, DateTimeOffset.UtcNow, null, ModNodeKind.Standard),
+				new ModNodeMetadata(tree.SourceDisplayName, null, DateTimeOffset.UtcNow, null, ModNodeKind.Standard, IsLogicalContainer: true),
 				Array.Empty<PatchGroupKey>(),
 				Array.Empty<ModNodeId>());
 			sourcePathsByNode[rootId] = Array.Empty<string>();
@@ -802,6 +821,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					HostModGuids = [parentId.Value.ToString("N")],
 					SourcePackagePath = path,
 					OptionOrder = siblingOrders[path],
+					IsLogicalContainer = physicalNode is null,
 				},
 				Children = Array.Empty<ModNodeId>(),
 			};
@@ -918,26 +938,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		guidBytes[8] = (byte)((guidBytes[8] & 0x3F) | 0x80);
 		return new Guid(guidBytes);
 	}
-
-	private static void WriteRelationMetadata(string destinationDirectory, ModNodeMetadata metadata, CancellationToken cancellationToken)
-	{
-		if (metadata.Kind != ModNodeKind.Option || metadata.HostModGuids is not { Count: > 0 }) return;
-		cancellationToken.ThrowIfCancellationRequested();
-		var relation = new OptionRelationDocument
-		{
-			Version = 1,
-			Kind = "Option",
-			HostModGuids = metadata.HostModGuids.ToList(),
-			SourcePackageGuid = metadata.SourcePackageGuid,
-			SourcePath = metadata.SourcePackagePath,
-			OptionOrder = metadata.OptionOrder,
-			SuppressDefaultDirectOptionActivation = metadata.SuppressDefaultDirectOptionActivation,
-		};
-		File.WriteAllText(
-			Path.Combine(destinationDirectory, "option.json"),
-			JsonSerializer.Serialize(relation, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
-	}
-
 
 	private static string NormalizeRelativePath(string? path)
 		=> string.IsNullOrWhiteSpace(path) || path == "." ? string.Empty : path.Replace('\\', '/').Trim('/');

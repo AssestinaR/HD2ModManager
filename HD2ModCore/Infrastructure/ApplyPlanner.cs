@@ -86,11 +86,13 @@ public sealed class ApplyPlanner : IApplyPlanner
 
 			if (!patchIndex.FilesByNode.TryGetValue(entry.NodeId, out var files) || files.Count == 0)
 			{
-				if (snapshot.Nodes.TryGetValue(entry.NodeId, out var noPatchNode)
-					&& noPatchNode.Metadata.Kind == ModNodeKind.ReShade)
+				if (snapshot.Nodes.TryGetValue(entry.NodeId, out var noPayloadNode)
+					&& (noPayloadNode.Metadata.Kind == ModNodeKind.ReShade
+						|| noPayloadNode.PatchGroups.Count == 0))
 				{
-					// ReShade components are deployed through ExternalFileMappings and
-					// intentionally have no GameData patch files.
+					// Profile entries are intent references. Logical/empty nodes are
+					// allowed to remain in a Profile and have no GameData payload of
+					// their own; ReShade is handled through external mappings.
 					continue;
 				}
 				issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "ProfileModHasNoPatchFiles", $"Profile mod has no patch files: {entry.NodeId}", NodeId: entry.NodeId));

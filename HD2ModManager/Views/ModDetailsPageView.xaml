@@ -4,9 +4,11 @@
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
+        <local:AttachmentListMaxHeightConverter x:Key="AttachmentListMaxHeight"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </UserControl.Resources>
-    <ScrollViewer Background="Transparent" local:SmoothScrollBehavior.IsEnabled="True">
+    <Grid>
+    <ScrollViewer x:Name="DetailsScrollViewer" Background="Transparent" local:SmoothScrollBehavior.IsEnabled="True">
         <StackPanel>
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <Grid>
@@ -116,21 +118,49 @@
                 </StackPanel>
             </Border>
 
-            <local:ModListPanel ItemsSource="{Binding HostDecorations}"
+            <local:ModListPanel x:Name="HostAttachmentList"
+                                ItemsSource="{Binding HostDecorations}"
                                 HeaderTitle="可为该 Mod 启用的附加选项"
                                 HeaderSummary="已列出支持当前主体的装饰与选项。"
-                                VerticalScrollBarVisibility="Disabled"
-								UseInternalScroll="False"
+                                MaxHeight="{Binding ActualHeight, ElementName=DetailsScrollViewer, Converter={StaticResource AttachmentListMaxHeight}}"
+                                VerticalScrollBarVisibility="Auto"
+                                UseInternalScroll="True"
                                 RowActions="Rename, Details, ToggleDecoration, OpenFolder, DeleteFromLibrary"
                                 RowActionInvoked="OnHostDecorationRowActionInvoked"
                                  RowRightClicked="OnHostDecorationOpenDetailsOnRightClick"
-                                 SelectionPolicy="Multiple"
+                                  SelectionPolicy="Multiple"
                                   SelectionRequested="OnHostDecorationSelectionRequested"
-                                 KeyboardCommandRequested="OnHostDecorationKeyboardCommandRequested"
-                                 AllowInternalReorder="{Binding CanReorderHostOptions}"
+                                  KeyboardCommandRequested="OnHostDecorationKeyboardCommandRequested"
+                                  RelationshipDragOperation="RemoveOptionParent"
+                                  RelationshipDragSourceHostId="{Binding ModId}"
+                                  AllowInternalReorder="{Binding CanReorderHostOptions}"
                                  InternalReorderRequested="OnHostAttachmentInternalReorderRequested"
                                  TransitionStateChanged="OnHostAttachmentTransitionStateChanged"
                                   Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
-        </StackPanel>
+         </StackPanel>
     </ScrollViewer>
+        <Border x:Name="RelationshipDropOverlay"
+                Panel.ZIndex="30"
+                Margin="{StaticResource CardStackMargin}"
+                Background="#E8FFFFFF"
+                BorderBrush="{StaticResource Accent}"
+                BorderThickness="1.5"
+                CornerRadius="{StaticResource RadiusCard}"
+                Visibility="Collapsed"
+                Opacity="0"
+                IsHitTestVisible="False">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock x:Name="RelationshipDropTitle"
+                           Foreground="{StaticResource TextPrimary}"
+                           FontWeight="SemiBold"
+                           FontSize="16"
+                           HorizontalAlignment="Center"/>
+                <TextBlock x:Name="RelationshipDropDetail"
+                           Foreground="{StaticResource TextSecondary}"
+                           FontSize="12"
+                           Margin="0,5,0,0"
+                           HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+    </Grid>
 </UserControl>

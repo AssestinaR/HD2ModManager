@@ -159,9 +159,15 @@ public sealed class StandardManifestImportTests
 			Assert.Empty(alpha.PatchGroups);
 			Assert.Empty(beta.PatchGroups);
 			Assert.Empty(independent.PatchGroups);
+			Assert.True(alpha.Metadata.IsLogicalContainer);
+			Assert.True(beta.Metadata.IsLogicalContainer);
+			Assert.True(independent.Metadata.IsLogicalContainer);
 			Assert.True(alpha.Metadata.SuppressDefaultDirectOptionActivation);
 			Assert.True(beta.Metadata.SuppressDefaultDirectOptionActivation);
 			Assert.False(independent.Metadata.SuppressDefaultDirectOptionActivation);
+			Assert.True(File.Exists(ModNodeStorageProtocol.LogicalMarkerPath(Path.Combine(paths.ModsDirectory, alpha.RelativePath))));
+			Assert.True(File.Exists(ModNodeStorageProtocol.LogicalMarkerPath(Path.Combine(paths.ModsDirectory, beta.RelativePath))));
+			Assert.True(File.Exists(ModNodeStorageProtocol.LogicalMarkerPath(Path.Combine(paths.ModsDirectory, independent.RelativePath))));
 
 			var sharedPhysical = Assert.Single(result.Snapshot.Nodes.Values, node =>
 				node.Metadata.Kind == ModNodeKind.Option

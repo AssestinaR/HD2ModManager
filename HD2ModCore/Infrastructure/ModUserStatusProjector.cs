@@ -11,13 +11,20 @@ public static class ModUserStatusProjector
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> content,
 		ProfileOverrideGraph? expected,
 		ProfileMaterialDiagnostics? materialDiagnostics,
-		DeployedOverrideGraph? actual)
+		DeployedOverrideGraph? actual,
+		OptionActivationSnapshot? optionStates = null)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
 		var selected = selectedProfileId is { } selectedId ? snapshot.Profiles.FirstOrDefault(profile => profile.Id == selectedId) : null;
 		var active = snapshot.ActiveProfileId is { } activeId ? snapshot.Profiles.FirstOrDefault(profile => profile.Id == activeId) : null;
+		var activations = optionStates ?? new OptionActivationSnapshot(
+			new Dictionary<string, IReadOnlyDictionary<string, OptionHostState>>(StringComparer.OrdinalIgnoreCase));
 		var selectedIds = selected?.Entries.Select(entry => entry.NodeId).ToHashSet() ?? [];
 		var activeIds = active?.Entries.Select(entry => entry.NodeId).ToHashSet() ?? [];
+		if (selected is not null)
+			selectedIds.UnionWith(ProfileEffectiveProfileResolver.Resolve(selected, snapshot, activations).Entries.Select(entry => entry.NodeId));
+		if (active is not null)
+			activeIds.UnionWith(ProfileEffectiveProfileResolver.Resolve(active, snapshot, activations).Entries.Select(entry => entry.NodeId));
 		var expectedIsCurrent = active is not null
 			&& expected is not null
 			&& expected.ProfileId == active.Id

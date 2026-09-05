@@ -20,9 +20,9 @@ public sealed class CliWorkflowCoverageTests
 		AssertWorkflowCoverage(capabilities, "单个与批量导入",
 			"import inspect", "import plan", "import validate", "import apply", "import batch plan", "import batch apply");
 		AssertWorkflowCoverage(capabilities, "Mod 库、图片、元数据与安全删除",
-			"mod list", "mod show", "mod image set", "mod rename", "mod delete plan", "mod delete apply");
+			"mod list", "mod show", "mod image set", "mod create", "mod rename", "mod convert-to-option", "mod delete plan", "mod delete apply");
 		AssertWorkflowCoverage(capabilities, "多层 Option 启停与排序",
-			"option show", "option enable", "option disable", "option move", "option insert");
+			"option show", "option enable", "option disable", "option move", "option insert", "option parent add", "option parent remove");
 		AssertWorkflowCoverage(capabilities, "Profile 管理与精确对齐",
 			"profile list", "profile create", "profile move", "profile align plan", "profile align apply");
 		AssertWorkflowCoverage(capabilities, "部署、停用、Lua 与 ReShade",

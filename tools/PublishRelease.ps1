@@ -7,6 +7,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Native dotnet processes emit UTF-8. Explicitly align both the host console
+# and PowerShell's native-command bridge so direct Windows PowerShell 5.1
+# invocation is not decoded with the legacy system code page.
+$publishUtf8 = New-Object System.Text.UTF8Encoding($false)
+try { & chcp.com 65001 | Out-Null } catch { }
+[Console]::InputEncoding = $publishUtf8
+[Console]::OutputEncoding = $publishUtf8
+$OutputEncoding = $publishUtf8
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $managerProject = Join-Path $repoRoot 'HD2ModManager\HD2ModManager.csproj'
 $cliProject = Join-Path $repoRoot 'HD2ModCli\HD2ModCli.csproj'
