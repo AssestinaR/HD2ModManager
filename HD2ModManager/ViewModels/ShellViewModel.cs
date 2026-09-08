@@ -207,7 +207,10 @@ namespace HD2ModManager.ViewModels
                 storagePaths,
                 SettingsService.GetGameDataFolder,
                 informationCenter,
-                optionActivations: optionActivations);
+                optionActivations: optionActivations,
+                luaPermissionProvider: () => SettingsService.GetAllowUnsafeLuaMerge()
+                    ? HD2ModCore.Application.LuaDeploymentPermission.AllowOpaque
+                    : HD2ModCore.Application.LuaDeploymentPermission.DenyOpaque);
             _deploymentCoordinator.StatusChanged += OnDeploymentStatusChanged;
             _profileService.ActiveProfileDeploymentRequired += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();
@@ -1076,6 +1079,8 @@ namespace HD2ModManager.ViewModels
                     var failureMessage = status.Message ?? "活动配置部署失败。";
                     if (status.ApplyResult is { Issues.Count: > 0 } failedResult)
                     {
+                        if (failedResult.Issues.Any(issue => string.Equals(issue.Code, "LuaOpaqueMergeDisabled", StringComparison.Ordinal)))
+                            _notificationService.Show("当前配置包含需要合并的不安全 Lua，部署已停止。请在设置页的“通用”中打开“允许不安全 Lua 合并部署”，然后重新部署。", NotificationLevel.Warning, TimeSpan.FromSeconds(10));
                         var details = failedResult.Issues.Take(3).Select(issue => $"{issue.Code}: {issue.Message}");
                         failureMessage = $"{failureMessage}\n{string.Join("\n", details)}";
                     }

@@ -959,7 +959,7 @@ public static class CliApplication
 			var output = RequireOutput(invocation.Options, "deploy plan");
 			var workspace = CliWorkspace.Open(invocation.Options);
 			var selector = invocation.Command.Count == 3 ? invocation.Command[2] : null;
-			var build = await CliDeploymentPlanArtifacts.BuildAsync(workspace, selector).ConfigureAwait(false);
+			var build = await CliDeploymentPlanArtifacts.BuildAsync(workspace, selector, allowUnsafeLua: invocation.Options.AllowUnsafeLua).ConfigureAwait(false);
 			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
 			Emit(invocation.Options,
 				new { ok = build.Document.IsReady, output = Path.GetFullPath(output), deployment = CreateDeploymentPlanProjection(build.Document) },
@@ -970,7 +970,7 @@ public static class CliApplication
 		{
 			EnsureDeploymentValidateOptions(invocation.Options);
 			var document = await CliDeploymentPlanArtifacts.ReadDocumentAsync(RequireDeploymentPlan(invocation.Options)).ConfigureAwait(false);
-			var validation = await CliDeploymentPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options), includeProcessCheck: true).ConfigureAwait(false);
+			var validation = await CliDeploymentPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options), includeProcessCheck: true, allowUnsafeLua: invocation.Options.AllowUnsafeLua).ConfigureAwait(false);
 			Emit(invocation.Options,
 				new { ok = validation.IsValid, validation = CreateDeploymentValidationProjection(validation) },
 				() => FormatDeploymentValidation(validation));
@@ -982,7 +982,7 @@ public static class CliApplication
 			if (!invocation.Options.Confirm)
 				throw new CliUserException("DeploymentApplyConfirmationRequired", "deploy apply 会写入 GameData；请在人工确认后显式传入 --confirm。 ");
 			var document = await CliDeploymentPlanArtifacts.ReadDocumentAsync(RequireDeploymentPlan(invocation.Options)).ConfigureAwait(false);
-			var execution = await CliDeploymentExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliDeploymentExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options), allowUnsafeLua: invocation.Options.AllowUnsafeLua).ConfigureAwait(false);
 			Emit(invocation.Options,
 				new { ok = execution.Success, execution = CreateDeploymentExecutionProjection(execution) },
 				() => FormatDeploymentExecution(execution));

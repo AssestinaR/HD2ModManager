@@ -8,6 +8,6 @@ public interface IProfileDeploymentCoordinator : IAsyncDisposable
 	ProfileDeploymentStatus Status { get; }
 	event EventHandler<ProfileDeploymentStatus>? StatusChanged;
 	void NotifyActiveProfileChanged();
-	Task<ProfileDeploymentStatus> FlushAsync(CancellationToken cancellationToken = default);
+	Task<ProfileDeploymentStatus> FlushAsync(CancellationToken cancellationToken = default, LuaDeploymentPermission? luaPermission = null);
 	Task DeactivateAsync(CancellationToken cancellationToken = default);
 }

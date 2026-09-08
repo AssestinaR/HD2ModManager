@@ -14,7 +14,7 @@ public static class LuaAssetKeys
 	public static bool IsLuaEntry(PatchTocEntry entry) => entry is not null && IsBoot(entry.AssetKey);
 }
 
-public enum LuaPatchWrapperKind { Single, LegacyHd2PbMarkerMerge, LegacyHd2PbMerge, Hd2LuaMergeV1 }
+public enum LuaPatchWrapperKind { Single, LegacyHd2PbMarkerMerge, LegacyHd2PbMerge, Hd2LuaMergeV1, Opaque }
 
 public sealed class LuaPatchFormatException(string message) : Exception(message);
 
@@ -86,7 +86,10 @@ public sealed record LuaPatchDocument(
 	LuaMergeLedger? Ledger,
 	string SourceText,
 	string BootOkVariable = "boot_ok",
-	string BootReturnVariable = "boot_ret");
+	string BootReturnVariable = "boot_ret")
+{
+	public bool IsOpaque => WrapperKind == LuaPatchWrapperKind.Opaque;
+}
 
 public sealed record LuaPatchComposition(byte[] HeaderTemplate, byte[] BootBytecode, string SourceText, IReadOnlyList<LuaPatchBlock> Blocks, LuaMergeLedger Ledger)
 {

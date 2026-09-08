@@ -145,7 +145,7 @@ public sealed class ProfileDeploymentCoordinatorTests
 		private readonly TaskCompletionSource _called = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		public int CallCount { get; private set; }
 		public Profile? LastProfile { get; private set; }
-		public ValueTask<ApplyResult> ApplyAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, string gameDataDirectory, CancellationToken cancellationToken = default)
+		public ValueTask<ApplyResult> ApplyAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, string gameDataDirectory, CancellationToken cancellationToken = default, LuaDeploymentPermission luaPermission = LuaDeploymentPermission.DenyOpaque)
 		{
 			CallCount++;
 			LastProfile = profile;

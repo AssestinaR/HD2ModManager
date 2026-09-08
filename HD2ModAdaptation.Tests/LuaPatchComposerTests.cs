@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.Lua;
 using Xunit;
 
@@ -107,6 +108,34 @@ public sealed class LuaPatchComposerTests
 		{
 			var composition = new LuaPatchComposer().Compose(documents);
 			Assert.Equal(documents.Sum(document => document.Blocks.Count), composition.Blocks.Count);
+		}
+	}
+
+	[Fact]
+	public async Task ComposeOpaque_WrapsCompleteChunksAndPreservesLastReturn()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-lua-tests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var firstPath = Path.Combine(root, "first.patch_0");
+			var secondPath = Path.Combine(root, "second.patch_0");
+			await File.WriteAllBytesAsync(firstPath, BuildPatch("First", "return { first = true }"));
+			await File.WriteAllBytesAsync(secondPath, BuildPatch("Second", "return { second = true }"));
+			var inspector = new LuaPatchInspector();
+			var first = await inspector.InspectOpaqueAsync(firstPath, new PatchTocEntry(LuaAssetKeys.BootAssetKey, firstPath, Path.GetFileName(firstPath)));
+			var second = await inspector.InspectOpaqueAsync(secondPath, new PatchTocEntry(LuaAssetKeys.BootAssetKey, secondPath, Path.GetFileName(secondPath)));
+
+			var composition = new LuaPatchComposer().ComposeOpaque([first, second]);
+
+			Assert.Contains("local __hd2_opaque_runner_1 = function(...)", composition.SourceText, StringComparison.Ordinal);
+			Assert.Contains("local __hd2_opaque_runner_2 = function(...)", composition.SourceText, StringComparison.Ordinal);
+			Assert.Contains("__hd2_opaque_runner_1(...)", composition.SourceText, StringComparison.Ordinal);
+			Assert.EndsWith("return __hd2_opaque_runner_2(...)" + Environment.NewLine, composition.SourceText, StringComparison.Ordinal);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
 		}
 	}
 

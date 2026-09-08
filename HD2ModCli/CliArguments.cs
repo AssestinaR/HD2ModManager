@@ -17,7 +17,8 @@ public sealed record CliGlobalOptions(
 	bool OnlyCompetition,
 	bool Overwrite,
 	bool Confirm,
-	bool Json);
+	bool Json,
+	bool AllowUnsafeLua = false);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -42,6 +43,7 @@ public static class CliArgumentParser
 		var onlyCompetition = false;
 		var overwrite = false;
 		var confirm = false;
+		var allowUnsafeLua = false;
 		var json = false;
 		var command = new List<string>();
 
@@ -104,6 +106,9 @@ public static class CliArgumentParser
 				case "--confirm":
 					confirm = true;
 					break;
+				case "--allow-unsafe-lua":
+					allowUnsafeLua = true;
+					break;
 				case "--json":
 					json = true;
 					break;
@@ -123,7 +128,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, addToProfile, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, addToProfile, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

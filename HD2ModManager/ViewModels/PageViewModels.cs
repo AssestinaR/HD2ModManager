@@ -1487,6 +1487,17 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        public bool AllowUnsafeLuaMerge
+        {
+            get => SettingsService.GetAllowUnsafeLuaMerge();
+            set
+            {
+                if (SettingsService.SetAllowUnsafeLuaMerge(value))
+                    _profiles.RequestActiveProfileDeployment();
+                OnPropertyChanged(nameof(AllowUnsafeLuaMerge));
+            }
+        }
+
         public bool AutoUpdateAssetMetadata
         {
             get => SettingsService.GetAutoUpdateAssetMetadata();
@@ -1632,6 +1643,7 @@ namespace HD2ModManager.ViewModels
         {
             OnPropertyChanged(nameof(Language));
             OnPropertyChanged(nameof(AutoImportToActiveProfile));
+            OnPropertyChanged(nameof(AllowUnsafeLuaMerge));
             OnPropertyChanged(nameof(AutoUpdateAssetMetadata));
             OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));
             OnPropertyChanged(nameof(AssetMetadataLastCheckText));

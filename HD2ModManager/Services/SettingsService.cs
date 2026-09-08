@@ -30,6 +30,7 @@ namespace HD2ModManager.Services
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
+            public bool AllowUnsafeLuaMerge { get; set; } = false;
             public string? DefaultExportPath { get; set; }
         }
 
@@ -170,6 +171,14 @@ namespace HD2ModManager.Services
         public static bool SetAutoImportToActiveProfile(bool enabled)
         {
             try { Update(model => model.AutoImportToActiveProfile = enabled); return true; }
+            catch { return false; }
+        }
+
+        public static bool GetAllowUnsafeLuaMerge() => LoadAll()?.AllowUnsafeLuaMerge ?? false;
+
+        public static bool SetAllowUnsafeLuaMerge(bool enabled)
+        {
+            try { Update(model => model.AllowUnsafeLuaMerge = enabled); return true; }
             catch { return false; }
         }
 

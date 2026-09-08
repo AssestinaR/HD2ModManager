@@ -35,7 +35,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		string modsRootDirectory,
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
 	{
 		var result = await BuildAsync(
 			profile,
@@ -46,7 +47,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			contentFacts,
 			materialize: false,
 			validationMode: null,
-			cancellationToken).ConfigureAwait(false);
+			permission: permission,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
 		return new LuaDeploymentPlan(
 			result.PatchIndex,
 			result.GeneratedPatchGroups,
@@ -64,7 +66,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		string modsRootDirectory,
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
 		=> await MaterializeAsync(
 			profile,
 			snapshot,
@@ -73,7 +76,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			gameDataDirectory,
 			contentFacts,
 			LuaDeploymentValidationMode.CompileAndSmoke,
-			cancellationToken).ConfigureAwait(false);
+			cancellationToken,
+			permission).ConfigureAwait(false);
 
 	public async ValueTask<LuaDeploymentPreparation> MaterializeAsync(
 		Profile profile,
@@ -83,7 +87,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
 		LuaDeploymentValidationMode validationMode,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
 	{
 		var result = await BuildAsync(
 			profile,
@@ -93,8 +98,9 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			gameDataDirectory,
 			contentFacts,
 			materialize: true,
-			validationMode,
-			cancellationToken).ConfigureAwait(false);
+			validationMode: validationMode,
+			permission: permission,
+			cancellationToken: cancellationToken).ConfigureAwait(false);
 		return new LuaDeploymentPreparation(result.PatchIndex, result.GeneratedPatchGroups, result.ExternalFiles, result.Issues);
 	}
 
@@ -107,6 +113,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
 		bool materialize,
 		LuaDeploymentValidationMode? validationMode,
+		LuaDeploymentPermission permission,
 		CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(profile);
@@ -252,6 +259,25 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				}
 				catch (Exception exception) when (exception is LuaPatchFormatException or IOException or UnauthorizedAccessException)
 				{
+					if (exception is LuaPatchFormatException)
+					{
+						try
+						{
+							var opaque = await _luaInspector.InspectOpaqueAsync(baseFile.FilePath, knownLuaEntry, cancellationToken).ConfigureAwait(false);
+							var patchGroupName = $"{baseFile.ArchiveHex16}.patch_{baseFile.SourcePatchIndex}";
+							var opaqueBlocks = opaque.Blocks
+								.Select(block => block with { SourceModId = profileEntry.NodeId.Value.ToString("N"), SourcePatchGroup = patchGroupName })
+							.ToArray();
+							opaque = opaque with { Blocks = opaqueBlocks };
+							documents.Add(new LuaDocumentSource(profileEntry.NodeId, profileEntry.LoadOrder, group.Key, opaque));
+							removedGroups.Add(group.Key);
+							continue;
+						}
+						catch (LuaPatchFormatException)
+						{
+							// Fall through to the original structural error below.
+						}
+					}
 					issues.Add(new CoreIssue(
 						CoreIssueSeverity.Error,
 						"LuaPatchUnsupportedFormat",
@@ -278,6 +304,14 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		if (documents.Count < 2)
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 
+		var opaqueDocuments = documents.Where(document => document.Document.IsOpaque).ToArray();
+		if (opaqueDocuments.Length > 0 && permission != LuaDeploymentPermission.AllowOpaque)
+		{
+			var names = string.Join("、", opaqueDocuments.Select(document => Path.GetFileName(document.Document.SourcePatchPath)));
+			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "LuaOpaqueMergeDisabled", $"检测到需要合并的不安全 Lua：{names}。请在设置页打开“允许不安全 Lua 合并部署”后重试。"));
+			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
+		}
+
 		GeneratedPatchGroup generated;
 		string? fingerprint = null;
 		try
@@ -288,12 +322,17 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				.ThenBy(item => item.Group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
 				.Select(item => item.Document)
 				.ToArray();
-			var composition = _luaComposer.Compose(orderedDocuments);
+			var composition = opaqueDocuments.Length == 0
+				? _luaComposer.Compose(orderedDocuments)
+				: _luaComposer.ComposeOpaque(orderedDocuments);
 			var gameRoot = Directory.GetParent(Path.GetFullPath(gameDataDirectory))?.FullName;
 			if (validationMode is not null && !string.IsNullOrWhiteSpace(gameRoot))
 			{
 				var luaLibraryPath = Path.Combine(gameRoot, "bin", "lua51.dll");
-				var validation = validationMode == LuaDeploymentValidationMode.CompileOnly
+				var effectiveValidationMode = opaqueDocuments.Length > 0
+					? LuaDeploymentValidationMode.CompileOnly
+					: validationMode;
+				var validation = effectiveValidationMode == LuaDeploymentValidationMode.CompileOnly
 					? await _luaRuntimeValidator.ValidateCompilationAsync(composition.SourceText, luaLibraryPath, cancellationToken).ConfigureAwait(false)
 					: await _luaRuntimeValidator.ValidateAsync(composition.SourceText, luaLibraryPath, cancellationToken).ConfigureAwait(false);
 				if (!validation.Available)
@@ -305,7 +344,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "LuaRuntimeCompileFailed", validation.Message ?? "The merged Lua chunk failed to compile."));
 					return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 				}
-				else if (validationMode == LuaDeploymentValidationMode.CompileAndSmoke && !validation.RuntimeSucceeded)
+				else if (effectiveValidationMode == LuaDeploymentValidationMode.CompileAndSmoke && !validation.RuntimeSucceeded)
 				{
 					var severity = validation.EnvironmentLimited ? CoreIssueSeverity.Warning : CoreIssueSeverity.Error;
 					issues.Add(new CoreIssue(severity, "LuaRuntimeSmokeTestFailed", validation.Message ?? "The merged Lua chunk failed its smoke test."));

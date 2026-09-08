@@ -33,6 +33,8 @@ namespace HD2ModManager.Services
         public event EventHandler? ActiveProfileDeactivationRequired;
         public event EventHandler? Changed;
 
+        public void RequestActiveProfileDeployment() => ActiveProfileDeploymentRequired?.Invoke(this, EventArgs.Empty);
+
         public void Load()
         {
             _writeGate.Wait();

@@ -11,5 +11,6 @@ public interface IProfileApplyService
 		LibrarySnapshot snapshot,
 		string modsRootDirectory,
 		string gameDataDirectory,
-		CancellationToken cancellationToken = default);
+		CancellationToken cancellationToken = default,
+		LuaDeploymentPermission luaPermission = LuaDeploymentPermission.DenyOpaque);
 }
