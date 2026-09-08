@@ -27,14 +27,12 @@
                     <Path Grid.RowSpan="2" Width="14" Height="14" VerticalAlignment="Center" Data="M7,1.5 A5.5,5.5 0 1 0 7,12.5 A5.5,5.5 0 1 0 7,1.5 M7,4 L7,7.5 M7,9.5 L7,9.7" Stroke="{StaticResource Accent}" StrokeThickness="1.3" StrokeStartLineCap="Round"/>
                     <TextBlock Grid.Column="1" Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" MaxHeight="42" TextTrimming="CharacterEllipsis"/>
                     <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="标记为已阅" Command="{Binding DataContext.AcknowledgeMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Visibility="{Binding CanAcknowledge, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M2,6.5 L5,9.5 10.5,3" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Button>
-                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="取消任务" Command="{Binding DataContext.CancelTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M2,2 L10,2 10,10 2,10 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3"/></Button>
-                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="重试任务" Command="{Binding DataContext.RetryTaskCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding CanRetry, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M10,4 A4,4 0 1 0 10,9 M10,4 L10,1.5 M10,4 L7.5,4" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.3" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Button>
-                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="打开报告" Command="{Binding DataContext.OpenTaskReportCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding HasReport, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="14" Data="M3,1 L8,1 11,4 L11,13 3,13 Z M8,1 L8,4 11,4 M4.5,7 L9.5,7 M4.5,10 L8.5,10" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeLineJoin="Round"/></Button>
-                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="打开输出目录" Command="{Binding DataContext.OpenTaskOutputCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Task}" Visibility="{Binding HasOutputDirectory, Converter={StaticResource BoolToVis}}"><Path Width="14" Height="12" Data="M1,3 L5.5,3 7,4.5 13,4.5 13,11.5 1,11.5 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeLineJoin="Round"/></Button>
+                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="复制消息" Command="{Binding DataContext.CopyMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"><Path Width="12" Height="12" Data="M4,4 L11,4 11,11 4,11 Z M2,8 L2,2 8,2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeLineJoin="Round"/></Button>
+                        <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="我知道了，移除消息" Command="{Binding DataContext.DismissMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Visibility="{Binding CanDismiss, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M2,6.5 L5,9.5 10.5,3" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Button>
                     </StackPanel>
                     <TextBlock Grid.Row="1" Grid.Column="1" Foreground="{StaticResource TextSecondary}" FontSize="11" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" Margin="0,2,4,0"/>
                     <ProgressBar Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Value="{Binding Progress, Mode=OneWay}" Maximum="1" Height="3" Margin="0,21,4,0" Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding ExpandedDetail, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" BorderThickness="0" Background="Transparent" Margin="0,6,4,0" Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
             </Border>
         </DataTemplate>
@@ -331,18 +329,14 @@
                 <Border.RenderTransform><TranslateTransform Y="0"/></Border.RenderTransform>
                 <Grid>
 					<Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-					<DockPanel Margin="4,2,2,6">
+                    <DockPanel Margin="4,2,2,6">
 						<TextBlock Text="消息中心" FontWeight="SemiBold" VerticalAlignment="Center"/>
-						<TextBlock Text="运行任务与最近事件" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="本次运行的消息" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                        <Button DockPanel.Dock="Right" Style="{StaticResource AppHeaderTextButton}" Padding="8,3" Content="清理已读" Command="{Binding ClearReadMessagesCommand}" ToolTip="移除所有已读消息"/>
 					</DockPanel>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel>
-                            <TextBlock Text="运行中任务" FontWeight="SemiBold" FontSize="12" Margin="4,4,4,2"/>
-                            <ItemsControl ItemsSource="{Binding ActiveMessageTasks}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
-                            <TextBlock Text="需要注意" FontWeight="SemiBold" FontSize="12" Margin="4,12,4,2"/>
-                            <ItemsControl ItemsSource="{Binding AttentionMessageItems}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
-                            <TextBlock Text="最近消息" FontWeight="SemiBold" FontSize="12" Margin="4,12,4,2"/>
-                            <ItemsControl ItemsSource="{Binding RecentMessageItems}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
+                            <ItemsControl ItemsSource="{Binding MessageItems}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
@@ -354,11 +348,11 @@
                         Panel.ZIndex="19" Cursor="Hand" Visibility="Collapsed" RenderTransformOrigin="0.5,0"
                         MouseLeftButtonUp="OnMessagePreviewClick">
                 <StackPanel.RenderTransform><TranslateTransform Y="0"/></StackPanel.RenderTransform>
-                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Margin="0,0,0,6" Visibility="{Binding HasActivityToast, Converter={StaticResource BoolToVis}}">
-                    <ContentControl Content="{Binding ActivityToastItem}" ContentTemplate="{StaticResource MessageItemTemplate}"/>
+                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Margin="0,0,0,6" Visibility="{Binding HasActiveTaskToasts, Converter={StaticResource BoolToVis}}">
+                    <ItemsControl ItemsSource="{Binding ActiveTaskToasts}" ItemTemplate="{StaticResource MessageItemTemplate}"/>
                 </Border>
-                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Visibility="{Binding HasAttentionToast, Converter={StaticResource BoolToVis}}">
-                    <ContentControl Content="{Binding AttentionToastItem}" ContentTemplate="{StaticResource MessageItemTemplate}"/>
+                <Border Style="{StaticResource AppElevatedPanel}" Padding="6" Visibility="{Binding HasTransientToast, Converter={StaticResource BoolToVis}}">
+                    <ContentControl Content="{Binding CurrentTransientToast}" ContentTemplate="{StaticResource MessageItemTemplate}"/>
                 </Border>
             </StackPanel>
         </Grid>

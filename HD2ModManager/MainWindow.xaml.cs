@@ -467,7 +467,7 @@ namespace HD2ModManager
         {
             if (e.OriginalSource is DependencyObject source && FindVisualParent<Button>(source) is not null) return;
             if (sender is FrameworkElement element && element.DataContext is HD2ModManager.Services.MessageCenterItem item
-                && DataContext is ShellViewModel shell) shell.CopyMessageCommand.Execute(item);
+                && DataContext is ShellViewModel shell) shell.ToggleMessageExpansionCommand.Execute(item);
             e.Handled = true;
         }
 

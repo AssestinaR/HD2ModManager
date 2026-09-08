@@ -94,12 +94,11 @@ namespace HD2ModManager.ViewModels
         public string? SelectedModId { get => _selectedModId; private set => SetField(ref _selectedModId, value); }
         public bool IsMessagePanelOpen { get => _isMessagePanelOpen; private set => SetField(ref _isMessagePanelOpen, value); }
         public ReadOnlyObservableCollection<MessageCenterItem> ActiveMessageTasks => _messageCenter.ActiveTasks;
-        public ReadOnlyObservableCollection<MessageCenterItem> AttentionMessageItems => _messageCenter.AttentionItems;
-        public ReadOnlyObservableCollection<MessageCenterItem> RecentMessageItems => _messageCenter.RecentNotifications;
-        public MessageCenterItem? ActivityToastItem => _messageCenter.ActivityToastItem;
-        public MessageCenterItem? AttentionToastItem => _messageCenter.AttentionToastItem;
-        public bool HasActivityToast => _messageCenter.HasActivityToast;
-        public bool HasAttentionToast => _messageCenter.HasAttentionToast;
+        public ReadOnlyObservableCollection<MessageCenterItem> MessageItems => _messageCenter.Messages;
+        public ReadOnlyObservableCollection<MessageCenterItem> ActiveTaskToasts => _messageCenter.ActiveTaskToasts;
+        public bool HasActiveTaskToasts => _messageCenter.HasActiveTaskToasts;
+        public MessageCenterItem? CurrentTransientToast => _messageCenter.CurrentTransientToast;
+        public bool HasTransientToast => _messageCenter.HasTransientToast;
         public int ActiveTaskCount => _backgroundTasks.CountQueued + _backgroundTasks.CountRunning;
         public int MessageUnreadCount => _messageCenter.SuppressedUnreadCount;
         public bool HasUnreadTaskHubEvents => MessageUnreadCount > 0;
@@ -131,8 +130,10 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RetryTaskCommand { get; }
         public RelayCommand OpenTaskReportCommand { get; }
         public RelayCommand OpenTaskOutputCommand { get; }
-        public RelayCommand AcknowledgeMessageCommand { get; }
+        public RelayCommand DismissMessageCommand { get; }
+        public RelayCommand ClearReadMessagesCommand { get; }
         public RelayCommand CopyMessageCommand { get; }
+        public RelayCommand ToggleMessageExpansionCommand { get; }
 
         public bool IsHomeActive => CurrentMode == WorkspaceMode.Home;
         public bool ShowHomeTitle => IsHomeActive;
@@ -246,10 +247,8 @@ namespace HD2ModManager.ViewModels
             _notificationService.Changed += (_, _) => RefreshOnUiThread(RefreshTaskHubState);
             _messageCenter.Changed += (_, _) => RefreshOnUiThread(() =>
             {
-                OnPropertyChanged(nameof(ActivityToastItem));
-                OnPropertyChanged(nameof(AttentionToastItem));
-                OnPropertyChanged(nameof(HasActivityToast));
-                OnPropertyChanged(nameof(HasAttentionToast));
+                OnPropertyChanged(nameof(CurrentTransientToast));
+                OnPropertyChanged(nameof(HasTransientToast));
                 OnPropertyChanged(nameof(MessageUnreadCount));
                 OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
                 OnPropertyChanged(nameof(MessageBadgeText));
@@ -282,8 +281,10 @@ namespace HD2ModManager.ViewModels
             RetryTaskCommand = new RelayCommand(async task => await RetryTaskAsync(task), task => task is BackgroundTaskItem { CanRetry: true });
             OpenTaskReportCommand = new RelayCommand(OpenTaskReport, task => task is BackgroundTaskItem { HasReport: true });
             OpenTaskOutputCommand = new RelayCommand(OpenTaskOutput, task => task is BackgroundTaskItem { HasOutputDirectory: true });
-            AcknowledgeMessageCommand = new RelayCommand(AcknowledgeMessage, item => item is MessageCenterItem { CanAcknowledge: true });
+            DismissMessageCommand = new RelayCommand(DismissMessage, item => item is MessageCenterItem { CanDismiss: true });
+            ClearReadMessagesCommand = new RelayCommand(_messageCenter.DismissRead);
             CopyMessageCommand = new RelayCommand(CopyMessage, item => item is MessageCenterItem);
+            ToggleMessageExpansionCommand = new RelayCommand(item => (item as MessageCenterItem)?.ToggleExpanded(), item => item is MessageCenterItem);
             _selection.SelectionChanged += (_, _) => RaiseSelectionFlags();
 
             Navigate(WorkspaceMode.Home);
@@ -472,7 +473,8 @@ namespace HD2ModManager.ViewModels
         {
             IsMessagePanelOpen = true;
             IsMessagePreviewOpen = false;
-            _messageCenter.MarkAllRead();
+            _messageCenter.ClearTransientToasts();
+            _messageCenter.MarkCurrentMessagesRead();
             RefreshTaskHubState();
         }
 
@@ -486,7 +488,7 @@ namespace HD2ModManager.ViewModels
         private void ShowMessagePreview()
         {
             if (IsMessagePanelOpen) return;
-            IsMessagePreviewOpen = HasActivityToast || HasAttentionToast;
+            IsMessagePreviewOpen = HasTransientToast || ActiveTaskToasts.Count > 0;
         }
 
         public void OpenSinglePage(WorkspacePageType pageType)
@@ -1068,6 +1070,8 @@ namespace HD2ModManager.ViewModels
                 case ProfileDeploymentStage.Completed:
 					StopDeploymentBufferTimer();
                     _deploymentTask?.MarkCompleted();
+                    _notificationService.Supersede("deployment-result");
+                    _notificationService.Show(status.Message ?? "活动配置部署完成。", NotificationLevel.Info, TimeSpan.FromSeconds(6), "部署", "deployment-result");
                     if (status.ApplyResult is { } success) _applyStatus.Record(new ApplyExecutionStatus(success.Success, status.Message ?? "部署完成", success));
                     _derivedState.MarkDeploymentDirty();
                     RefreshCurrentPage();
@@ -1080,14 +1084,16 @@ namespace HD2ModManager.ViewModels
                     if (status.ApplyResult is { Issues.Count: > 0 } failedResult)
                     {
                         if (failedResult.Issues.Any(issue => string.Equals(issue.Code, "LuaOpaqueMergeDisabled", StringComparison.Ordinal)))
-                            _notificationService.Show("当前配置包含需要合并的不安全 Lua，部署已停止。请在设置页的“通用”中打开“允许不安全 Lua 合并部署”，然后重新部署。", NotificationLevel.Warning, TimeSpan.FromSeconds(10));
+                            _notificationService.Supersede("deployment-result");
+                            _notificationService.Show("当前配置包含需要合并的不安全 Lua，部署已停止。请在设置页的“通用”中打开“允许不安全 Lua 合并部署”，然后重新部署。", NotificationLevel.Warning, TimeSpan.FromSeconds(10), "部署", "deployment-result");
                         var details = failedResult.Issues.Take(3).Select(issue => $"{issue.Code}: {issue.Message}");
                         failureMessage = $"{failureMessage}\n{string.Join("\n", details)}";
                     }
                     // A foreground deployment task already owns the persistent error toast.
                     // Keep this fallback only for failures reported before a task could be created.
                     if (_deploymentTask is null)
-                        _notificationService.Show(failureMessage, NotificationLevel.Error, TimeSpan.FromSeconds(12));
+                        _notificationService.Supersede("deployment-result");
+                        _notificationService.Show(failureMessage, NotificationLevel.Error, TimeSpan.FromSeconds(12), "部署", "deployment-result");
                     RefreshCurrentPage();
                     break;
                 case ProfileDeploymentStage.Canceled:
@@ -1286,7 +1292,7 @@ namespace HD2ModManager.ViewModels
 			_deploymentTask?.UpdateProgress(progress);
 		}
 
-        private void AcknowledgeMessage(object? value)
+        private void DismissMessage(object? value)
         {
             if (value is not MessageCenterItem item) return;
             _messageCenter.Acknowledge(item);
@@ -1375,19 +1381,19 @@ namespace HD2ModManager.ViewModels
                 thresholdMilliseconds: 6,
                 details: () => $"tasks={_backgroundTasks.Tasks.Count}; unread={MessageUnreadCount}; messagePanel={IsMessagePanelOpen}; preview={IsMessagePreviewOpen}");
             OnPropertyChanged(nameof(ActiveMessageTasks));
-            OnPropertyChanged(nameof(AttentionMessageItems));
-            OnPropertyChanged(nameof(RecentMessageItems));
-            OnPropertyChanged(nameof(ActivityToastItem));
-            OnPropertyChanged(nameof(AttentionToastItem));
-            OnPropertyChanged(nameof(HasActivityToast));
-            OnPropertyChanged(nameof(HasAttentionToast));
+            OnPropertyChanged(nameof(MessageItems));
+            OnPropertyChanged(nameof(ActiveTaskToasts));
+                OnPropertyChanged(nameof(HasActiveTaskToasts));
+            OnPropertyChanged(nameof(HasActiveTaskToasts));
+            OnPropertyChanged(nameof(CurrentTransientToast));
+            OnPropertyChanged(nameof(HasTransientToast));
             OnPropertyChanged(nameof(ActiveTaskCount));
             OnPropertyChanged(nameof(MessageUnreadCount));
             OnPropertyChanged(nameof(HasUnreadTaskHubEvents));
             OnPropertyChanged(nameof(MessageBadgeText));
             CancelTaskCommand.RaiseCanExecuteChanged();
             RetryTaskCommand.RaiseCanExecuteChanged();
-            AcknowledgeMessageCommand.RaiseCanExecuteChanged();
+            DismissMessageCommand.RaiseCanExecuteChanged();
             OpenTaskReportCommand.RaiseCanExecuteChanged();
             OpenTaskOutputCommand.RaiseCanExecuteChanged();
         }

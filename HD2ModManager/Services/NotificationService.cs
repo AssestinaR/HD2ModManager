@@ -30,6 +30,7 @@ namespace HD2ModManager.Services
         public bool IsAcknowledged { get => _isAcknowledged; private set => SetField(ref _isAcknowledged, value); }
         public int AttentionViewCount { get => _attentionViewCount; private set => SetField(ref _attentionViewCount, value); }
         public string? Source { get; init; }
+        public string? AggregationKey { get; init; }
         internal string? Tag { get; set; }
         public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -85,6 +86,7 @@ namespace HD2ModManager.Services
         public ReadOnlyObservableCollection<NotificationItem> Items { get; }
         public ReadOnlyObservableCollection<NotificationItem> History { get; }
         public event EventHandler? Changed;
+        public event EventHandler<NotificationItem>? Published;
 
         public NotificationService()
         {
@@ -92,7 +94,7 @@ namespace HD2ModManager.Services
             History = new ReadOnlyObservableCollection<NotificationItem>(_history);
         }
 
-        public void Show(string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null, string? source = null)
+        public void Show(string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null, string? source = null, string? aggregationKey = null)
         {
             UiPerformanceDiagnostics.RecordBurst(
                 "Notification.Request",
@@ -101,48 +103,106 @@ namespace HD2ModManager.Services
             RunOnUi(() =>
             {
                 var now = DateTime.UtcNow;
-                var item = FindRecentDuplicate(message, level, source, now);
+                var item = FindRecentDuplicate(message, level, source, aggregationKey, now);
                 if (item is not null)
                 {
                     item.RecordRepeat(now);
+                    if (!_items.Contains(item)) _items.Add(item);
+                    Published?.Invoke(this, item);
                     RaiseChanged();
                     return;
                 }
 
-                item = new NotificationItem { Message = message, Level = level, Duration = duration ?? TimeSpan.FromSeconds(6), Source = source };
+                item = new NotificationItem
+                {
+                    Message = message,
+                    Level = level,
+                    Duration = duration ?? TimeSpan.FromSeconds(6),
+                    Source = source,
+                    AggregationKey = aggregationKey,
+                };
                 _items.Add(item);
                 _history.Add(item);
                 TrimHistory();
                 if (item.Duration.HasValue) _ = AutoDismissAsync(item);
+                Published?.Invoke(this, item);
                 RaiseChanged();
             });
         }
 
-        public void ShowOrUpdate(string key, string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null)
+        public void ShowOrUpdate(string key, string message, NotificationLevel level = NotificationLevel.Info, TimeSpan? duration = null, string? source = null)
         {
             UiPerformanceDiagnostics.RecordBurst("Notification.ShowOrUpdate", $"level={level}", threshold: 12);
             RunOnUi(() =>
             {
-                var item = _items.FirstOrDefault(candidate => string.Equals(candidate.Tag, key, StringComparison.Ordinal));
+                var item = _history.FirstOrDefault(candidate => string.Equals(candidate.Tag, key, StringComparison.Ordinal));
                 if (item is null)
                 {
-                    item = new NotificationItem { Message = message, Level = level, Duration = duration, Tag = key };
+                    item = new NotificationItem { Message = message, Level = level, Duration = duration, Source = source, AggregationKey = key, Tag = key };
                     _items.Add(item);
                     _history.Add(item);
                     TrimHistory();
+                    Published?.Invoke(this, item);
                     RaiseChanged();
                     return;
                 }
 
                 item.Update(message, level, duration, DateTime.UtcNow);
+                if (!_items.Contains(item)) _items.Add(item);
+                Published?.Invoke(this, item);
                 RaiseChanged();
             });
         }
 
-        public void MarkAllRead()
+        public void MarkRead(IReadOnlyCollection<NotificationItem> snapshot)
         {
-            foreach (var item in _history) item.IsUnread = false;
-            RaiseChanged();
+            RunOnUi(() =>
+            {
+                foreach (var item in snapshot.Where(_history.Contains)) item.IsUnread = false;
+                RaiseChanged();
+            });
+        }
+
+        public void MarkAllRead() => MarkRead(_history.ToList());
+
+        public void Dismiss(NotificationItem item)
+        {
+            if (item is null) return;
+            RunOnUi(() =>
+            {
+                _items.Remove(item);
+                _history.Remove(item);
+                RaiseChanged();
+            });
+        }
+
+        public void DismissRead()
+        {
+            RunOnUi(() =>
+            {
+                var removed = _history.Where(item => !item.IsUnread).ToList();
+                foreach (var item in removed)
+                {
+                    _items.Remove(item);
+                    _history.Remove(item);
+                }
+                if (removed.Count != 0) RaiseChanged();
+            });
+        }
+
+        public void Supersede(string aggregationKey)
+        {
+            if (string.IsNullOrWhiteSpace(aggregationKey)) return;
+            RunOnUi(() =>
+            {
+                var removed = _history.Where(item => string.Equals(item.AggregationKey, aggregationKey, StringComparison.Ordinal)).ToList();
+                foreach (var item in removed)
+                {
+                    _items.Remove(item);
+                    _history.Remove(item);
+                }
+                if (removed.Count != 0) RaiseChanged();
+            });
         }
 
         public void MarkAttentionViewed()
@@ -193,10 +253,11 @@ namespace HD2ModManager.Services
             Changed?.Invoke(this, EventArgs.Empty);
         }
 
-        private NotificationItem? FindRecentDuplicate(string message, NotificationLevel level, string? source, DateTime now)
+        private NotificationItem? FindRecentDuplicate(string message, NotificationLevel level, string? source, string? aggregationKey, DateTime now)
             => _history.LastOrDefault(item => item.Level == level
                 && string.Equals(item.Message, message, StringComparison.Ordinal)
                 && string.Equals(item.Source, source, StringComparison.Ordinal)
+            && string.Equals(item.AggregationKey, aggregationKey, StringComparison.Ordinal)
                 && now - item.UpdatedAt <= TimeSpan.FromSeconds(10));
 
         private void TrimHistory()

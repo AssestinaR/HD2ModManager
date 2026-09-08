@@ -340,11 +340,17 @@ namespace HD2ModManager.Services
         {
             RunOnUi(() =>
             {
-                foreach (var task in _tasks.Where(t => t.Status is BackgroundTaskStatus.Completed or BackgroundTaskStatus.Failed or BackgroundTaskStatus.Canceled).ToList())
-                {
-                    task.PropertyChanged -= OnTaskPropertyChanged;
-                    _tasks.Remove(task);
-                }
+                foreach (var task in _tasks.Where(t => t.Status is BackgroundTaskStatus.Completed or BackgroundTaskStatus.Failed or BackgroundTaskStatus.Canceled).ToList()) Remove(task);
+            });
+        }
+
+        public void Remove(BackgroundTaskItem task)
+        {
+            if (task is null || task.IsActive) return;
+            RunOnUi(() =>
+            {
+                if (!_tasks.Remove(task)) return;
+                task.PropertyChanged -= OnTaskPropertyChanged;
             });
         }
 
