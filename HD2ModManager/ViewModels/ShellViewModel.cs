@@ -806,13 +806,9 @@ namespace HD2ModManager.ViewModels
 
                 if (libraryChanged)
                 {
-                    using (UiPerformanceDiagnostics.Measure(
-                        "Import.QueueSynchronize",
-                        thresholdMilliseconds: 100,
-                        details: () => $"affected={affectedNodeIds.Count}"))
-                    {
-                        await _libraryService.SynchronizeAsync().ConfigureAwait(false);
-                    }
+                    // ImportPathAsync already commits the copied filesystem nodes and
+                    // the matching snapshot. Synchronizing the whole library here would
+                    // rediscover the same batch and publish a second content change.
                     if (affectedNodeIds.Count > 0)
                     {
                         using (UiPerformanceDiagnostics.Measure(
@@ -1084,16 +1080,20 @@ namespace HD2ModManager.ViewModels
                     if (status.ApplyResult is { Issues.Count: > 0 } failedResult)
                     {
                         if (failedResult.Issues.Any(issue => string.Equals(issue.Code, "LuaOpaqueMergeDisabled", StringComparison.Ordinal)))
+                        {
                             _notificationService.Supersede("deployment-result");
                             _notificationService.Show("当前配置包含需要合并的不安全 Lua，部署已停止。请在设置页的“通用”中打开“允许不安全 Lua 合并部署”，然后重新部署。", NotificationLevel.Warning, TimeSpan.FromSeconds(10), "部署", "deployment-result");
+                        }
                         var details = failedResult.Issues.Take(3).Select(issue => $"{issue.Code}: {issue.Message}");
                         failureMessage = $"{failureMessage}\n{string.Join("\n", details)}";
                     }
                     // A foreground deployment task already owns the persistent error toast.
                     // Keep this fallback only for failures reported before a task could be created.
                     if (_deploymentTask is null)
+                    {
                         _notificationService.Supersede("deployment-result");
                         _notificationService.Show(failureMessage, NotificationLevel.Error, TimeSpan.FromSeconds(12), "部署", "deployment-result");
+                    }
                     RefreshCurrentPage();
                     break;
                 case ProfileDeploymentStage.Canceled:

@@ -47,7 +47,12 @@ public sealed class OptionActivationDefaultInitializer
 			if (!snapshot.Nodes.TryGetValue(parentId, out var parent)) return;
 			var children = graph.GetDirectOptions(parentId);
 			var suppressDirectDefaults = parent.Metadata.SuppressDefaultDirectOptionActivation;
-			var enableAllChildren = parent.Metadata.Kind == ModNodeKind.Standard;
+			// Virtual-reference Manifest imports use an empty logical Option as a
+			// relationship hub. Every physical Include child is required for that
+			// logical choice, unlike ordinary Option siblings where only the first
+			// choice is enabled by default.
+			var enableAllChildren = parent.Metadata.Kind == ModNodeKind.Standard
+				|| parent.Metadata.IsLogicalContainer;
 			for (var index = 0; index < children.Count; index++)
 			{
 				var child = children[index];

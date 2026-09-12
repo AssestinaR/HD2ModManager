@@ -1,3 +1,4 @@
+using HD2ModCore.Application;
 using HD2ModManager.Models;
 
 namespace HD2ModManager.Services;
@@ -40,8 +41,13 @@ public static class ModDeletionConfirmation
             "删除关联选项",
             System.Windows.MessageBoxButton.YesNo,
             System.Windows.MessageBoxImage.Warning);
-        if (related == System.Windows.MessageBoxResult.Yes)
-            targets.AddRange(attachedOptions.Select(option => option.Guid));
+            if (related == System.Windows.MessageBoxResult.Yes)
+            {
+                var plan = library.PlanDeletion(targets, SafeModDeletionScope.WithUnsharedOptions);
+                targets = plan.LibraryNodeRemovals
+                    .Select(removal => removal.NodeId.Value.ToString("N"))
+                    .ToList();
+            }
         return targets;
     }
 }

@@ -49,6 +49,19 @@ public sealed class ProfileApplyService : IProfileApplyService
 			modsRootDirectory,
 			new ModInformationRequest(ModInformationKind.FileFacts, "Deployment"),
 			cancellationToken).ConfigureAwait(false);
+		if (fileFactsResult.Data is null
+			&& fileFactsResult.Issues.Any(issue => string.Equals(issue.Code, "FileFactsInvalidated", StringComparison.Ordinal)))
+		{
+			// A library commit can invalidate a snapshot-wide production that started
+			// just before the commit. Retry only this known transient outcome so a
+			// deployment observes the latest snapshot instead of reporting a false
+			// permanent failure.
+			fileFactsResult = await _informationCenter.RequestFileFactsAsync(
+				snapshot,
+				modsRootDirectory,
+				new ModInformationRequest(ModInformationKind.FileFacts, "Deployment", RequireFresh: true),
+				cancellationToken).ConfigureAwait(false);
+		}
 		if (fileFactsResult.Data is null)
 			return new ApplyResult(false, [], null, fileFactsResult.Issues);
 		var allFacts = fileFactsResult.Data;

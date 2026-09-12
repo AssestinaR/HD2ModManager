@@ -48,6 +48,7 @@ namespace HD2ModManager.Services
 		private readonly HD2ModCore.Application.IModInformationReader _informationReader;
 		private readonly HD2ModCore.Application.IModEquipmentSourceFactsReader _equipmentSourceFactsReader;
         private readonly HD2ModCore.Application.IModLibrarySynchronizer _synchronizer;
+            private readonly HD2ModCore.Application.ISafeModDeletionPlanningService _safeDeletionPlanner;
         private LibrarySnapshot _snapshot;
         private DerivedLibraryData _derivedData;
         private Dictionary<string, ModEntity> _byGuid = new(StringComparer.OrdinalIgnoreCase);
@@ -257,6 +258,28 @@ namespace HD2ModManager.Services
                 .ToArray();
         }
 
+            // The UI may ask whether related Options should follow a host deletion,
+            // but the relationship-aware planner remains the authority on the
+            // actual removable closure and shared-parent retention.
+            public SafeModDeletionPlan PlanDeletion(
+                IEnumerable<string> requestedIds,
+                SafeModDeletionScope scope,
+                CancellationToken cancellationToken = default)
+            {
+                ArgumentNullException.ThrowIfNull(requestedIds);
+                var nodeIds = requestedIds
+                    .Where(id => TryParseNodeId(id, out _))
+                    .Select(id => ParseNodeId(id)!.Value)
+                    .Distinct()
+                    .ToArray();
+                return _safeDeletionPlanner.Plan(
+                    _snapshot,
+                    nodeIds,
+                    scope,
+                    SafeModDeletionSafetySnapshot.Unknown,
+                    cancellationToken);
+            }
+
         public IReadOnlyList<ModEntity> GetAttachmentsForHost(string hostId)
             => GetOptionsForHost(hostId).Concat(GetDecorationsForHost(hostId)).ToArray();
 
@@ -380,6 +403,7 @@ namespace HD2ModManager.Services
         {
             _paths = SettingsService.CreateStoragePaths();
             _manager = CoreServices.CreateModLibraryManager(_paths);
+                _safeDeletionPlanner = new SafeModDeletionPlanningService();
             _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 			_informationReader = informationReader ?? CoreServices.CreateModInformationReader();
             _equipmentSourceFactsReader = CoreServices.CreateModEquipmentSourceFactsReader(_paths, _informationCenter, _informationReader);
@@ -865,14 +889,54 @@ namespace HD2ModManager.Services
                 if (nodeIds.Length == 0)
                     return new ModLibraryDeletionResult(_snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>());
 
+                var requestedSet = nodeIds.ToHashSet();
+                var directlySelectedSharedOptions = nodeIds
+                    .Where(nodeId => _snapshot.Nodes[nodeId].Metadata.Kind == ModNodeKind.Option)
+                    .Where(nodeId => (_snapshot.Nodes[nodeId].Metadata.HostModGuids ?? Array.Empty<string>())
+                        .Select(hostId => Guid.TryParse(hostId, out var hostGuid) ? new ModNodeId(hostGuid) : (ModNodeId?)null)
+                        .Any(hostId => hostId.HasValue && !requestedSet.Contains(hostId.Value) && _snapshot.Nodes.ContainsKey(hostId.Value)))
+                    .ToArray();
+                if (directlySelectedSharedOptions.Length > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"删除计划包含仍被存活父级引用的 Option：{string.Join(", ", directlySelectedSharedOptions.Select(id => id.Value.ToString("N")))}。请通过主体删除确认流程重新计算安全删除范围。");
+                }
+
+                var deletionPlan = _safeDeletionPlanner.Plan(
+                    _snapshot,
+                    nodeIds,
+                    SafeModDeletionScope.Selected,
+                    SafeModDeletionSafetySnapshot.Unknown,
+                    cancellationToken);
+                if (deletionPlan.IsBlocked)
+                {
+                    var blockers = string.Join("；", deletionPlan.Blockers
+                        .Where(blocker => blocker.Severity == SafeModDeletionBlockerSeverity.Blocking)
+                        .Select(blocker => blocker.Message));
+                    throw new InvalidOperationException($"删除计划被安全检查阻止：{blockers}");
+                }
+                nodeIds = deletionPlan.LibraryNodeRemovals
+                    .Select(removal => removal.NodeId)
+                    .Distinct()
+                    .ToArray();
+                if (nodeIds.Length == 0)
+                    return new ModLibraryDeletionResult(_snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>());
+
                 // Cancel our own information/thumbnail work before asking Windows to move or
                 // remove the directory. Cancellation is intentionally best-effort: a failed
                 // cache invalidation must not hide the actual filesystem error from the user.
                 ThumbnailService.CancelPendingGeneration();
-                foreach (var nodeId in nodeIds)
+                // Cache invalidation is independent per node. Use a small bounded
+                // batch instead of serially awaiting every node, while retaining
+                // the information center's generation/invalidation boundary.
+                foreach (var batch in nodeIds.Chunk(4))
                 {
-                    try { await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false); }
-                    catch (Exception exception) { LogService.Error($"删除 Mod 前取消信息读取失败：节点={nodeId.Value:N}，错误={exception}"); }
+                    var invalidations = batch.Select(async nodeId =>
+                    {
+                        try { await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false); }
+                        catch (Exception exception) { LogService.Error($"删除 Mod 前取消信息读取失败：节点={nodeId.Value:N}，错误={exception}"); }
+                    });
+                    await Task.WhenAll(invalidations).ConfigureAwait(false);
                 }
 
                 var requestedNodes = nodeIds.ToDictionary(nodeId => nodeId, nodeId => _snapshot.Nodes[nodeId]);
@@ -937,19 +1001,19 @@ namespace HD2ModManager.Services
                         && (node.Metadata.Kind == ModNodeKind.Standard || node.Metadata.Kind == ModNodeKind.Option))
                     .Select(nodeId => nodeId.Value.ToString("N"))
                     .ToArray();
-                if (deletedDecorations.Length > 0)
-                    await _decorationActivations.RemoveDecorationsAsync(deletedDecorations, cancellationToken).ConfigureAwait(false);
-                foreach (var hostId in deletedDecorationHosts)
-                {
-                    await _decorationActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
-                }
+                await _decorationActivations.CleanupAsync(
+                    deletedDecorations,
+                    deletedDecorationHosts,
+                    cancellationToken).ConfigureAwait(false);
                 // An Option can itself be a parent. Remove every deleted node as a
                 // host before removing option-owned state, otherwise descendants
-                // would retain orphaned activation records.
-                foreach (var hostId in deletedDecorationHosts)
-                    await _optionActivations.RemoveHostAsync(hostId, cancellationToken).ConfigureAwait(false);
-                foreach (var optionId in deletedOptions)
-                    await _optionActivations.RemoveAsync(optionId, cancellationToken).ConfigureAwait(false);
+                // would retain orphaned activation records. CleanupAsync performs
+                // both operations with one persisted JSON write and does not touch
+                // surviving host relations of retained shared Options.
+                await _optionActivations.CleanupAsync(
+                    deletedOptions,
+                    deletedDecorationHosts,
+                    cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
                 foreach (var thumbnailPath in removedIds.Select(nodeId => thumbnailPaths.GetValueOrDefault(nodeId)))
                     ThumbnailService.DeleteCachedThumbnailsForSource(thumbnailPath);

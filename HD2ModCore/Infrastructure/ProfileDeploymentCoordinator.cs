@@ -56,6 +56,7 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		ProfileDeploymentStatus? waitingStatus = null;
 		lock (_sync)
 		{
+			_luaPermission = _luaPermissionProvider();
 			_requestedRevision++;
 			if (_deactivationRequested)
 			{
@@ -192,7 +193,7 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 				ApplyResult result;
 				try
 				{
-					result = await _profileApplyService.ApplyAsync(profile, snapshot, _paths.ModsDirectory, gameData, CancellationToken.None, _luaPermission).ConfigureAwait(false);
+					result = await ApplyWithFreshSnapshotRetryAsync(profile, snapshot, gameData).ConfigureAwait(false);
 				}
 				catch (Exception exception)
 				{
@@ -215,6 +216,37 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 			}
 		}
 	}
+
+	private async Task<ApplyResult> ApplyWithFreshSnapshotRetryAsync(Profile profile, LibrarySnapshot snapshot, string gameData)
+	{
+		var result = await _profileApplyService.ApplyAsync(
+			profile,
+			snapshot,
+			_paths.ModsDirectory,
+			gameData,
+			CancellationToken.None,
+			_luaPermission).ConfigureAwait(false);
+		if (!IsFileFactsInvalidated(result)) return result;
+
+		// A content commit can invalidate a snapshot-wide FileFacts production
+		// while deployment is preparing. Reload both the library snapshot and the
+		// active profile before retrying so all derived products use one generation.
+		var latest = await _libraryManager.LoadOrCreateAsync().ConfigureAwait(false);
+		var latestProfile = latest.ActiveProfileId is { } latestActiveId
+			? latest.Profiles.FirstOrDefault(item => item.Id == latestActiveId)
+			: null;
+		if (latestProfile is null) return result;
+		return await _profileApplyService.ApplyAsync(
+			latestProfile,
+			latest,
+			_paths.ModsDirectory,
+			gameData,
+			CancellationToken.None,
+			_luaPermission).ConfigureAwait(false);
+	}
+
+	private static bool IsFileFactsInvalidated(ApplyResult result)
+		=> result.Issues.Any(issue => string.Equals(issue.Code, "FileFactsInvalidated", StringComparison.Ordinal));
 
 	private async Task WaitForStableStateAsync(long targetRevision)
 	{

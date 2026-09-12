@@ -187,6 +187,67 @@ public sealed class StandardManifestImportTests
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
 
+	[Fact]
+	public async Task ImportFolderAsync_SplitsSameLogicalOptionIncludesIntoIndependentPhysicalOptions()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var package = Path.Combine(root, "package");
+		Directory.CreateDirectory(Path.Combine(package, "required", "body"));
+		Directory.CreateDirectory(Path.Combine(package, "required", "eyes"));
+		Directory.CreateDirectory(appRoot);
+		try
+		{
+			await File.WriteAllTextAsync(Path.Combine(package, "required", "body", "9ba626afa44a3aa3.patch_0"), "body");
+			await File.WriteAllTextAsync(Path.Combine(package, "required", "eyes", "9ba626afa44a3aa3.patch_0"), "eyes");
+			await File.WriteAllTextAsync(Path.Combine(package, "manifest.json"), JsonSerializer.Serialize(new
+			{
+				Version = 1,
+				Guid = Guid.NewGuid(),
+				Name = "Multi include package",
+				Options = new[]
+				{
+					new
+					{
+						Name = "Required",
+						SubOptions = new[]
+						{
+							new { Name = "Core", Include = new[] { "required/body", "required/eyes" } },
+						},
+					},
+				},
+			}));
+
+			var paths = new StoragePaths(appRoot);
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				new JsonModLibraryStore(paths));
+			var result = await importer.ImportFolderAsync(package);
+
+			var rootNode = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Kind == ModNodeKind.Standard);
+			var required = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Required");
+			var core = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Core" && node.PatchGroups.Count == 0);
+			var physical = result.Snapshot.Nodes.Values
+				.Where(node => node.Metadata.Kind == ModNodeKind.Option && node.PatchGroups.Count == 1)
+			.ToArray();
+
+			Assert.Equal(2, physical.Length);
+			Assert.Empty(core.PatchGroups);
+			Assert.True(core.Metadata.IsLogicalContainer);
+			Assert.Equal(required.Id.Value.ToString("N"), Assert.Single(core.Metadata.HostModGuids!));
+			Assert.All(physical, node =>
+			{
+				Assert.Equal(core.Id.Value.ToString("N"), Assert.Single(node.Metadata.HostModGuids!));
+				Assert.True(Directory.Exists(Path.Combine(paths.ModsDirectory, node.RelativePath)));
+				Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, node.RelativePath, "9ba626afa44a3aa3.patch_0")));
+			});
+			Assert.NotEqual(physical[0].RelativePath, physical[1].RelativePath);
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
     [Fact]
     public async Task ImportFolderAsync_UsesStandardOptionMetadataAndCopiesInheritedIcon()
     {

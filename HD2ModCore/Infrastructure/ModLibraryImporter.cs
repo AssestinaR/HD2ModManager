@@ -567,7 +567,17 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		// this with the ordinary "aggregate all Includes into one node" path would
 		// flatten unrelated Patch files with identical names (for example several
 		// different 9ba...patch_0 files) into one directory.
-		var compatibilityMode = conflictingPayloadNodes.Count > 0;
+		// A logical option may include several independent physical Patch
+		// directories. They are ordinary Option nodes in the library and must not
+		// be flattened into one directory: different Include roots are allowed to
+		// contain the same Patch filename with different bytes. Shared Include
+		// paths require the same representation because one physical payload may
+		// be referenced by several logical options.
+		var overlappingPayloadLogicalOptions = ownedPayloadNodes.Values.Any(nodes => nodes
+			.SelectMany(node => node.PatchGroups)
+			.GroupBy(group => group)
+			.Any(group => group.Count() > 1));
+		var compatibilityMode = conflictingPayloadNodes.Count > 0 || overlappingPayloadLogicalOptions;
 
 		var conflictParentIds = conflictingPayloadNodes
 			.SelectMany(conflict => conflict.Owners)
@@ -671,6 +681,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		return new PlannedImportTree(tree with { RootId = rootId, Nodes = nodes }, sourcePaths)
 		{
+			RequiresVirtualReferences = compatibilityMode,
 			OptionPathConflicts = conflictingPayloadNodes
 				.Select(conflict => new OptionPathConflict(
 					conflict.SourceRelativePath,
@@ -916,6 +927,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		ImportedObjectTree Tree,
 		IReadOnlyDictionary<ModNodeId, IReadOnlyList<string>> SourceRelativePaths)
 	{
+		public bool RequiresVirtualReferences { get; init; }
 		public IReadOnlyList<OptionPathConflict> OptionPathConflicts { get; init; } = Array.Empty<OptionPathConflict>();
 		public bool HasOptionPathConflicts => OptionPathConflicts.Count > 0;
 	}
