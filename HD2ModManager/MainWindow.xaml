@@ -9,6 +9,7 @@
         WindowStyle="None"
         ResizeMode="CanResize"
         AllowsTransparency="False"
+        Icon="Resources/helldivers2.ico"
         Background="{StaticResource AppSurfaceBrush}"
         Title="HD2 Mod Manager" Height="720" Width="1200" MinHeight="720" MinWidth="1200">
     <Window.Resources>

@@ -61,6 +61,7 @@
                     <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}">
                         <Button Style="{StaticResource AppSecondaryButton}" Content="修复 patch" Command="{Binding RebuildSameKeyCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="生成替换其他护甲的模组" Command="{Binding PlanCrossArmorTransferCommand}" Margin="0,0,8,0"/>
+                        <Button Style="{StaticResource AppSecondaryButton}" Content="规整护甲patch包" Command="{Binding NormalizeArmorCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="Patch 资源重打包" Command="{Binding PatchResourceRepackagingCommand}"/>
                     </WrapPanel>
                     <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding IsDecoration, Converter={StaticResource BoolToVis}}">

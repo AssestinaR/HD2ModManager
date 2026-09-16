@@ -20,7 +20,7 @@ using HD2ModManager.Services;
 namespace HD2ModManager.ViewModels
 {
     // 作用：展示单个 Mod 的派生信息与文件组概览。
-    public class ModDetailsPageViewModel : PageViewModel
+    public partial class ModDetailsPageViewModel : PageViewModel
     {
         private readonly ModLibraryService _library;
         private readonly ProfileService _profiles;
@@ -152,6 +152,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand EmbedExternalMaterialsCommand { get; }
         public RelayCommand PatchResourceRepackagingCommand { get; }
         public RelayCommand RebuildSameKeyCommand { get; }
+        public RelayCommand NormalizeArmorCommand { get; }
         public RelayCommand PlanCrossArmorTransferCommand { get; }
         public RelayCommand PlanHelmetToArmorMergeCommand { get; }
         public RelayCommand ToggleHelmetToArmorMergeCommand { get; }
@@ -199,6 +200,7 @@ namespace HD2ModManager.ViewModels
             EmbedExternalMaterialsCommand = new RelayCommand(_ => OpenMaterialPackaging(splitEmbeddedMaterials: false, requireAllExternalMaterials: true), _ => CanEmbedExternalMaterials);
             PatchResourceRepackagingCommand = new RelayCommand(_ => OpenPatchResourceRepackaging(), _ => CanPatchResourceRepackaging);
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
+            NormalizeArmorCommand = new RelayCommand(_ => OpenArmorNormalization(), _ => CanNormalizeArmor);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
             PlanHelmetToArmorMergeCommand = new RelayCommand(_ => OpenHelmetToArmorMergePlan(), _ => CanPlanHelmetToArmorMerge);
             ToggleHelmetToArmorMergeCommand = new RelayCommand(async _ => await ToggleHelmetToArmorMergeAsync(), _ => CanToggleHelmetToArmorMerge);
@@ -1600,6 +1602,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(CanRebuildSameKey));
 			OnPropertyChanged(nameof(CanPlanCrossArmorTransfer));
             RebuildSameKeyCommand.RaiseCanExecuteChanged();
+            NormalizeArmorCommand.RaiseCanExecuteChanged();
 			PlanCrossArmorTransferCommand.RaiseCanExecuteChanged();
 			PlanHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
 			ToggleHelmetToArmorMergeCommand.RaiseCanExecuteChanged();

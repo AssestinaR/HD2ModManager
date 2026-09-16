@@ -7,13 +7,15 @@ namespace HD2ModManager.ViewModels;
 public sealed class SameKeyRebuildBottomBarViewModel : BaseViewModel
 {
     private readonly Func<string, bool, Task> generate;
+    private readonly string browseTitle;
     private string outputDirectory = SettingsService.GetResolvedDefaultExportPath();
     private bool importToLibrary;
     private bool isRunning;
 
-    public SameKeyRebuildBottomBarViewModel(Func<string, bool, Task> generate)
+    public SameKeyRebuildBottomBarViewModel(Func<string, bool, Task> generate, string browseTitle = "选择修复 patch 输出根目录")
     {
         this.generate = generate ?? throw new ArgumentNullException(nameof(generate));
+        this.browseTitle = browseTitle;
         BrowseCommand = new RelayCommand(_ => Browse());
         GenerateCommand = new RelayCommand(async _ => await GenerateAsync(), _ => !IsRunning && !string.IsNullOrWhiteSpace(OutputDirectory));
     }
@@ -26,7 +28,7 @@ public sealed class SameKeyRebuildBottomBarViewModel : BaseViewModel
 
     private void Browse()
     {
-        var dialog = new OpenFolderDialog { Title = "选择修复 patch 输出根目录", Multiselect = false, InitialDirectory = OutputDirectory };
+        var dialog = new OpenFolderDialog { Title = browseTitle, Multiselect = false, InitialDirectory = OutputDirectory };
         if (dialog.ShowDialog() == true) OutputDirectory = dialog.FolderName;
     }
 

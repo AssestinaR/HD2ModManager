@@ -86,7 +86,7 @@ public static class CoreServices
 	{
 		ArgumentNullException.ThrowIfNull(paths);
 		ArgumentNullException.ThrowIfNull(reader);
-		return new ArmorNormalizationService(CreateDirectModEquipmentSourceFactsReader(paths, reader), reader);
+		return new ArmorNormalizationService(CreateDirectModEquipmentSourceFactsReader(paths, reader), reader, paths.ModsDirectory);
 	}
 	public static IAdvancedUnitAnalysisProducer CreateAdvancedUnitAnalysisProducer(IModInformationReader informationReader)
 		=> new AdvancedUnitAnalysisProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader)));

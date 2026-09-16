@@ -14,11 +14,13 @@ public sealed class ArmorNormalizationService : IArmorNormalizationService
 {
     private readonly IModEquipmentSourceFactsReader factsReader;
     private readonly IModInformationReader informationReader;
+    private readonly string modsRootDirectory;
 
-    public ArmorNormalizationService(IModEquipmentSourceFactsReader factsReader, IModInformationReader informationReader)
+    public ArmorNormalizationService(IModEquipmentSourceFactsReader factsReader, IModInformationReader informationReader, string modsRootDirectory)
     {
         this.factsReader = factsReader;
         this.informationReader = informationReader;
+        this.modsRootDirectory = modsRootDirectory;
     }
 
     public async ValueTask<ArmorNormalizationInspection> InspectAsync(ModNode source, string modsRootDirectory, string gameDataDirectory, CancellationToken cancellationToken = default)
@@ -82,7 +84,8 @@ public sealed class ArmorNormalizationService : IArmorNormalizationService
         var issues = new List<CoreIssue>();
         if (!Directory.Exists(sourceDirectory)) return new(false, outputDirectory, 0, 0, 0, [new(CoreIssueSeverity.Error, "ArmorNormalizeSourceMissing", "来源目录不存在。", sourceDirectory, source.Id)]);
         Directory.CreateDirectory(outputDirectory);
-        var inspection = await InspectAsync(source, Path.GetDirectoryName(sourceDirectory) ?? sourceDirectory, gameDataDirectory, cancellationToken).ConfigureAwait(false);
+        var inspection = await InspectAsync(source, modsRootDirectory, gameDataDirectory, cancellationToken).ConfigureAwait(false);
+        if (!inspection.IsReady) return new(false, outputDirectory, 0, 0, 0, inspection.Issues);
         issues.AddRange(inspection.Issues);
         var avatarTransforms = await new CanonicalAvatarRigReader(
             new AdaptationGameDataPackageResolver(gameDataDirectory))
