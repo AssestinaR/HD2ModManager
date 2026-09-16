@@ -82,6 +82,12 @@ public static class CoreServices
 			CreateDirectModEquipmentSourceFactsReader(paths, reader),
 			reader);
 	}
+	public static IArmorNormalizationService CreateDirectArmorNormalizationService(StoragePaths paths, IModInformationReader reader)
+	{
+		ArgumentNullException.ThrowIfNull(paths);
+		ArgumentNullException.ThrowIfNull(reader);
+		return new ArmorNormalizationService(CreateDirectModEquipmentSourceFactsReader(paths, reader), reader);
+	}
 	public static IAdvancedUnitAnalysisProducer CreateAdvancedUnitAnalysisProducer(IModInformationReader informationReader)
 		=> new AdvancedUnitAnalysisProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static IAdvancedUnitAnalysisProducer CreateAdvancedUnitAnalysisProducer(IPatchGroupAnalysisProvider analysisProvider)
