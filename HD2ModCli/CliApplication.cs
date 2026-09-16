@@ -1084,6 +1084,40 @@ public static class CliApplication
 				() => FormatHelmetMergeExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length == 4 && command[0] == "equipment" && command[1] == "armor-normalize" && command[2] == "inspect")
+		{
+			EnsureArmorNormalizeInspectOptions(invocation.Options);
+			var build = await CliArmorNormalizationPlanArtifacts.BuildAsync(CliWorkspace.Open(invocation.Options), command[3]).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = build.Document.IsReady, inspection = CreateArmorNormalizationPlanProjection(build.Document) }, () => FormatArmorNormalizationInspection(build.Document));
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "equipment" && command[1] == "armor-normalize" && command[2] == "plan")
+		{
+			EnsureArmorNormalizePlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "equipment armor-normalize plan");
+			var build = await CliArmorNormalizationPlanArtifacts.BuildAsync(CliWorkspace.Open(invocation.Options), command[3]).ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(build.Document), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = build.Document.IsReady, output = Path.GetFullPath(output), armorNormalize = CreateArmorNormalizationPlanProjection(build.Document) }, () => FormatArmorNormalizationPlan(build.Document, Path.GetFullPath(output)));
+			return build.Document.IsReady ? 0 : 2;
+		}
+		if (Matches(command, "equipment", "armor-normalize", "validate"))
+		{
+			EnsureArmorNormalizeValidateOptions(invocation.Options);
+			var document = await CliArmorNormalizationPlanArtifacts.ReadDocumentAsync(RequireArmorNormalizePlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliArmorNormalizationPlanArtifacts.ValidateAsync(document, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = validation.IsValid, validation = CreateArmorNormalizationValidationProjection(validation) }, () => FormatArmorNormalizationValidation(validation));
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "equipment", "armor-normalize", "apply"))
+		{
+			EnsureArmorNormalizeApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException("ArmorNormalizeApplyConfirmationRequired", "equipment armor-normalize apply 会写出新的独立 Mod；请审阅计划后显式传入 --confirm。 ");
+			var document = await CliArmorNormalizationPlanArtifacts.ReadDocumentAsync(RequireArmorNormalizePlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliArmorNormalizationExecutor.ApplyAsync(document, CliWorkspace.Open(invocation.Options), RequireOutput(invocation.Options, "equipment armor-normalize apply")).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = execution.Success, execution }, () => $"{(execution.Success ? "护甲规整输出完成" : "护甲规整输出失败")}：{execution.OutputDirectory ?? "未发布"}；Patch {execution.ProcessedPatches}；重建 {execution.RebuiltUnits}；隐藏 {execution.HiddenUnits}。");
+			return execution.Success ? 0 : 2;
+		}
 		if (command.Length >= 4 && command[0] == "equipment" && command[1] == "cross-armor" && command[2] == "inspect")
 		{
 			EnsureCrossArmorInspectOptions(invocation.Options);
@@ -1912,6 +1946,27 @@ public static class CliApplication
 		}
 	}
 
+	private static void EnsureArmorNormalizeInspectOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", "equipment armor-normalize inspect 仅接受 Mod 标识、--manager-root、--library、--game-data 与 --json。 ");
+	}
+	private static void EnsureArmorNormalizePlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", "equipment armor-normalize plan 仅接受 Mod 标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
+	}
+	private static void EnsureArmorNormalizeValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", "equipment armor-normalize validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
+	}
+	private static void EnsureArmorNormalizeApplyOptions(CliGlobalOptions options)
+	{
+		if (options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+			throw new CliUserException("CommandOptionNotSupported", "equipment armor-normalize apply 仅接受 --plan、--manager-root、--library、--game-data、--output、--confirm 与 --json。 ");
+	}
+
 	private static void EnsureCrossArmorInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -2683,6 +2738,12 @@ public static class CliApplication
 		return options.Plan;
 	}
 
+	private static string RequireArmorNormalizePlan(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.Plan)) throw new CliUserException("ArmorNormalizePlanRequired", "请通过 --plan <护甲规整计划.json> 提供计划文件。 ");
+		return options.Plan;
+	}
+
 	private static string RequireGameDataIndexPlan(CliGlobalOptions options)
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
@@ -3356,7 +3417,13 @@ public static class CliApplication
 			targetCandidates = document.TargetCandidates,
 			plan = document.Plan,
 			diagnostics = document.Diagnostics,
-		};
+	};
+
+	private static object CreateArmorNormalizationPlanProjection(CliArmorNormalizationPlanDocument document)
+		=> new { document.Schema, document.Version, document.CreatedUtc, ready = document.IsReady, document.InputFingerprint, document.SourceNodeId, document.SourceModName, document.SourcePatchPaths, armors = document.Armors, diagnostics = document.Diagnostics };
+
+	private static object CreateArmorNormalizationValidationProjection(CliArmorNormalizationValidationResult validation)
+		=> new { isValid = validation.IsValid, requestedInputFingerprint = validation.Document.InputFingerprint, recomputedInputFingerprint = validation.Current?.InputFingerprint, current = validation.Current is null ? null : CreateArmorNormalizationPlanProjection(validation.Current), diagnostics = validation.Diagnostics };
 
 	private static object CreateCrossArmorValidationProjection(CliCrossArmorTransferValidationResult validation)
 		=> new
@@ -4496,6 +4563,10 @@ public static class CliApplication
 	private static string FormatCrossArmorInspection(CliCrossArmorTransferPlanDocument document)
 		=> $"跨护甲检查：来源 {document.Source.ModName}；来源装备 {document.Source.SourceCandidates.Count}；目标装备 {document.TargetCandidates.Count}；当前已选目标 {document.Request.SelectedTargetArchiveIds.Count}；映射 {document.Plan.Mappings.Count}。";
 
+	private static string FormatArmorNormalizationInspection(CliArmorNormalizationPlanDocument document) => $"护甲规整检查：来源 {document.SourceModName}；护甲 {document.Armors.Count}；阻断诊断 {document.Diagnostics.Count(d => d.Blocking)}。";
+	private static string FormatArmorNormalizationPlan(CliArmorNormalizationPlanDocument document, string outputPath) => $"已导出护甲规整计划：{outputPath}{Environment.NewLine}护甲 {document.Armors.Count}；阻断诊断 {document.Diagnostics.Count(d => d.Blocking)}。";
+	private static string FormatArmorNormalizationValidation(CliArmorNormalizationValidationResult validation) => $"{(validation.IsValid ? "护甲规整验证通过。" : "护甲规整验证未通过。")}{Environment.NewLine}{string.Join(Environment.NewLine, validation.Diagnostics.Select(d => $"- [{d.Code}] {d.Message}"))}";
+
 	private static string FormatCrossArmorPlan(CliCrossArmorTransferPlanDocument document, string outputPath)
 	{
 		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
@@ -4961,6 +5032,10 @@ HD2 Mod Manager 命令行
 	  hd2mod equipment helmet-merge plan <Mod GUID或前缀> [...] --manager-root <管理器目录> --game-data <游戏data目录> --output helmet-merge-plan.json --json
 	  hd2mod equipment helmet-merge validate --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod equipment helmet-merge apply --plan helmet-merge-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外且游戏目录外目录> --confirm --json
+	  hd2mod equipment armor-normalize inspect <Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod equipment armor-normalize plan <Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output armor-normalize-plan.json --json
+	  hd2mod equipment armor-normalize validate --plan armor-normalize-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
+	  hd2mod equipment armor-normalize apply --plan armor-normalize-plan.json --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --output <新目录> --confirm --json
 	  hd2mod equipment cross-armor inspect <来源 Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod equipment cross-armor plan <来源 Mod GUID或前缀> --manager-root <管理器目录> --game-data <游戏data目录> --output cross-armor-plan.json --json
 	  hd2mod equipment cross-armor validate --plan cross-armor-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
