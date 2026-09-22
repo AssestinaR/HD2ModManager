@@ -77,6 +77,11 @@ CLI 仅原子替换 `armor-registry.protocol`，不会写 Lua 拥有的状态或
 `armor-registry status` 还会验证状态中的 PID 是否确为正在运行的游戏进程，
 并报告该进程是否已经确认当前协议 revision。
 
+管理器 GUI 可从“设置 → 游戏与资产 → 运行时护甲注册”进入。页面使用资产
+索引中的护甲名称选择目标与视觉来源，并显示 Lua 是否已确认当前 revision；
+用户不需要手工查询 Item ID 或编辑协议文件。GUI 与 CLI 使用同一把
+`.manager.lock`、同一份指纹漂移检查和原子写入流程。
+
 ## 测试与构建
 
 ```powershell

@@ -192,6 +192,8 @@ public static class CoreServices
 		=> new MaterialDeliveryFactsService(informationCenter, paths, CreateGameDataMappingFactsService(paths), CreateReferenceGraphQueryIndex(paths));
 	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
 		=> new EquipmentUnitCatalogService(paths);
+	public static RuntimeArmorRegistryService CreateRuntimeArmorRegistryService(StoragePaths paths, string? registryRoot = null)
+		=> new(paths, registryRoot);
 	public static CanonicalCrossArmorOrchestrator CreateCanonicalCrossArmorOrchestrator(IModInformationReader informationReader)
 		=> new(informationReader: informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	/// <summary>

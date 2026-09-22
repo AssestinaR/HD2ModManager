@@ -17,5 +17,6 @@ namespace HD2ModManager.Enums
         DecorationPlan,
         BatchDecorationPlan,
         HelmetToArmorMergePlan,
+        ArmorRegistry,
     }
 }

@@ -1608,6 +1608,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ResetDefaultExportPathCommand { get; }
         public RelayCommand DetectGameDataFolderCommand { get; }
         public RelayCommand ViewGameDataIndexCommand { get; }
+        public RelayCommand OpenArmorRegistryCommand { get; }
         public RelayCommand RebuildAllUnitPartFactsCommand { get; }
         public RelayCommand BuildMissingUnitPartFactsCommand { get; }
         public RelayCommand UpdateAssetMetadataCommand { get; }
@@ -1632,6 +1633,7 @@ namespace HD2ModManager.ViewModels
             ResetDefaultExportPathCommand = new RelayCommand(() => DefaultExportPath = SettingsService.DefaultExportPath);
             DetectGameDataFolderCommand = new RelayCommand(DetectGameDataFolder);
             ViewGameDataIndexCommand = new RelayCommand(_ => ViewGameDataIndex(), _ => !IsLoadingGameDataIndex);
+            OpenArmorRegistryCommand = new RelayCommand(OpenArmorRegistry);
             RebuildAllUnitPartFactsCommand = new RelayCommand(_ => _ = BuildUnitPartFactsAsync(rebuildAll: true), _ => !IsBuildingAssetIndex);
             BuildMissingUnitPartFactsCommand = new RelayCommand(_ => _ = BuildUnitPartFactsAsync(rebuildAll: false), _ => !IsBuildingAssetIndex);
             UpdateAssetMetadataCommand = new RelayCommand(UpdateAssetMetadata);
@@ -1935,6 +1937,12 @@ namespace HD2ModManager.ViewModels
         {
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.OpenGameDataBrowser();
+        }
+
+        private static void OpenArmorRegistry()
+        {
+            if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+                shell.OpenArmorRegistry();
         }
 
         public void PromptLanguageIfMissing()

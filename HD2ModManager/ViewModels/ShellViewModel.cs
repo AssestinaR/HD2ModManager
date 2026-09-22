@@ -566,6 +566,12 @@ namespace HD2ModManager.ViewModels
             RaiseSlotFlags();
         }
 
+        public void OpenArmorRegistry()
+        {
+            ClearTransientSelection();
+            OpenSinglePage(WorkspacePageType.ArmorRegistry);
+        }
+
         public void OpenCrossArmorPlan(HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel plan)
         {
             LeftPageType = WorkspacePageType.CrossArmorPlan;
@@ -1918,6 +1924,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
                 WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
+                WorkspacePageType.ArmorRegistry => new ArmorRegistryPageViewModel(_notificationService),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
@@ -2027,6 +2034,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.DecorationPlan => "生成装饰 Mod",
             WorkspacePageType.BatchDecorationPlan => "批量生成装饰",
             WorkspacePageType.HelmetToArmorMergePlan => "头盔合并到盔甲并输出",
+            WorkspacePageType.ArmorRegistry => "运行时护甲注册",
             _ => "页面",
         };
 
