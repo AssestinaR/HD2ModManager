@@ -17,6 +17,35 @@ try {
         "$project/tests/test_re824_to_re2310_override.lua" `
         "$project/src/re824_to_re2310_override.lua"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    & $LuaJit `
+        "$project/tests/test_composition_schema.lua" `
+        "$project/src/composition_schema.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    & $LuaJit "$project/tests/test_composition_runtime_probe.lua" `
+        "$project/src/composition_runtime_probe.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    & $LuaJit "$project/tests/test_composition_chain.lua" `
+        "$project/src/composition_schema.lua" "$project/src/composition_chain.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    & $LuaJit "$project/tests/test_composition_index.lua" `
+        "$project/src/composition_index.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_composition_clone_plan.lua" `
+        "$project/src/composition_schema.lua" "$project/src/composition_clone_plan.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_composition_index_swap_test.lua" `
+        "$project/src/composition_index_swap_test.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_composition_clone_publish_test.lua" `
+        "$project/src/composition_clone_publish_test.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_registry_protocol.lua" `
+        "$project/src/armor_registry_protocol.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 finally {
     Pop-Location

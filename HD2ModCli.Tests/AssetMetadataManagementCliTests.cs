@@ -101,7 +101,7 @@ public sealed class AssetMetadataManagementCliTests
 	}
 
 	private static CliGlobalOptions CreateOptions(string managerRoot)
-		=> new(managerRoot, null, null, null, null, null, null, null, null, null, false, false, false, false, false, false, false);
+		=> new(managerRoot, null, null, null, null, null, null, null, null, null, null, false, false, false, false, false, false, false);
 
 	private sealed class Fixture : IAsyncDisposable
 	{

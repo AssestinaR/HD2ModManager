@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.26";
+	public const string ProtocolVersion = "1.27";
 
 	public static object CreateCapabilities()
 		=> new
@@ -18,6 +18,11 @@ public static class CliProjections
 				new { name = "version", safety = "read-only", description = "读取 CLI 与协议版本" },
 				new { name = "capabilities", safety = "read-only", description = "读取当前可用命令与安全边界" },
 				new { name = "status", safety = "read-only", description = "读取管理器、Mod 库与 GameData 路径状态" },
+				new { name = "armor-registry status", safety = "read-only", description = "读取外置护甲注册协议、Lua 运行状态和版本定位缓存；不写入文件" },
+				new { name = "armor-registry show", safety = "read-only", description = "严格读取当前目标护甲到视觉来源护甲的运行时映射协议" },
+				new { name = "armor-registry plan", safety = "explicit-export", description = "从 JSON 规格导出冻结当前协议指纹、revision 和目标映射的热更新计划" },
+				new { name = "armor-registry validate", safety = "read-only", description = "验证计划完整性、协议目录身份和当前协议内容未漂移" },
+				new { name = "armor-registry apply", safety = "explicit-confirm", description = "只原子替换 armor-registry.protocol，由 Lua 在运行中轮询并安全应用；不写运行状态或定位缓存" },
 				new { name = "assets metadata inspect", safety = "read-only", description = "读取设置页使用的在线资产元数据缓存、manifest 与有效远端来源" },
 				new { name = "assets metadata plan", safety = "explicit-export-network", description = "下载并验证在线资产元数据到计划旁暂存区，导出固定内容哈希的提交计划" },
 				new { name = "assets metadata validate", safety = "read-only", description = "验证管理器设置、本地缓存与计划旁暂存的远端内容均未漂移；不会联网" },

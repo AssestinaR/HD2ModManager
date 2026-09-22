@@ -51,6 +51,7 @@
 	<EmbeddedResource Include="skills\host-derived-overwrite\SKILL.md" LogicalName="HD2ModCli.Skill.host-derived-overwrite" />
 	<EmbeddedResource Include="skills\gamedata-inspection\SKILL.md" LogicalName="HD2ModCli.Skill.gamedata-inspection" />
 	<EmbeddedResource Include="skills\asset-metadata-management\SKILL.md" LogicalName="HD2ModCli.Skill.asset-metadata-management" />
+	<EmbeddedResource Include="skills\armor-registry\SKILL.md" LogicalName="HD2ModCli.Skill.armor-registry" />
 	<EmbeddedResource Include="skills\gamedata-index-management\SKILL.md" LogicalName="HD2ModCli.Skill.gamedata-index-management" />
 	<EmbeddedResource Include="skills\batch-patch-repair\SKILL.md" LogicalName="HD2ModCli.Skill.batch-patch-repair" />
 	<EmbeddedResource Include="skills\same-key-reconstruction\SKILL.md" LogicalName="HD2ModCli.Skill.same-key-reconstruction" />

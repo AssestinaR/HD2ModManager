@@ -4,6 +4,7 @@ public sealed record CliGlobalOptions(
 	string? ManagerRoot,
 	string? Library,
 	string? GameData,
+	string? RegistryRoot,
 	string? Output,
 	string? Plan,
 	string? Host,
@@ -30,6 +31,7 @@ public static class CliArgumentParser
 		string? managerRoot = null;
 		string? library = null;
 		string? gameData = null;
+		string? registryRoot = null;
 		string? output = null;
 		string? plan = null;
 		string? host = null;
@@ -60,6 +62,9 @@ public static class CliArgumentParser
 					break;
 				case "--game-data":
 					gameData = ReadValue(args, ref index, argument);
+					break;
+				case "--registry-root":
+					registryRoot = ReadValue(args, ref index, argument);
 					break;
 				case "--output":
 					output = ReadValue(args, ref index, argument);
@@ -128,7 +133,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, output, plan, host, addToProfile, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

@@ -1,0 +1,13 @@
+schema=1
+runtime_version=0.1.0
+state=ready
+pid=13828
+game_timestamp=1789487892
+game_image_size=74907648
+revision=3
+active_mappings=1
+record_count=411
+blob_bytes=384196
+blob_base=0x0000024818d80000
+index_base=0x00000244da5fb750
+message=protocol applied

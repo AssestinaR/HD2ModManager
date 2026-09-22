@@ -1,0 +1,4 @@
+{"record_type":"probe_start","version":"0.10.0","read_only":true}
+{"record_type":"composition_region_inventory","max_attempted_bytes":8589934592,"queried":15882,"max_region_size":134217728,"readable_regions":13662}
+{"record_type":"composition_fast_registry","blob_base":"0x0000018a9ae60000","matched_entries":411,"blob_bytes":384196,"index_base":"0x00000187c4e3c560","consumer_proven":false,"read_only":true,"roots":{"2546928266":{"address":1694815978876,"index":77},"488691438":{"address":1694815994908,"index":89},"3340614564":{"address":1694816156028,"index":229},"820333399":{"address":1694816153452,"index":227}}}
+{"record_type":"composition_scan","game_dll_base":"0x00007ff8d64e0000","matched_entries":411,"complete_address_space":false,"consumer_proven":false,"fast_path":true}

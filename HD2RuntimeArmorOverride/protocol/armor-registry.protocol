@@ -1,0 +1,5 @@
+# HD2 Runtime Armor Registry Protocol
+schema=1
+revision=0
+enabled=false
+# map=target_item_id,source_item_id

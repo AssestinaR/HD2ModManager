@@ -27,6 +27,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Review and deploy Lua composition, ReShade add-ons/presets, and supported external files: `lua-reshade-external-deployment`.
 - Inspect original GameData mappings or actual Data-Patch winners: `gamedata-inspection`.
 - Refresh the verified online asset hashlist cache: `asset-metadata-management`.
+- Inspect or hot-update runtime armor visual mappings: `armor-registry`.
 - Rebuild Manager-owned GameData indexes or Armor / Helmet Unit facts: `gamedata-index-management`.
 - Review and explicitly confirm in-place repairs for outdated library Mods: `batch-patch-repair`.
 - Manage a host Mod's generated Overwrite: `host-derived-overwrite`.

@@ -1,0 +1,23 @@
+CLI apply:
+status=applied
+revision=5
+active_mappings=1
+
+Runtime before:
+state=ready
+pid=43712
+revision=4
+active_mappings=1
+blob_base=0x0000022923930000
+index_base=0x00000226339fb750
+
+Runtime after:
+state=ready
+pid=43712
+revision=5
+active_mappings=1
+blob_base=0x0000022923930000
+index_base=0x00000226339fb750
+
+The unchanged process-local registry addresses show that the protocol hot
+update did not repeat registry discovery.

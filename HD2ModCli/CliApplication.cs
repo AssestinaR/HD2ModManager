@@ -54,6 +54,13 @@ public static class CliApplication
 				"CommandOptionNotSupported",
 				"--limit、--cursor、--with-effective 与 --only-competition 仅适用于 gamedata 只读查询。 ");
 		}
+		if (!string.IsNullOrWhiteSpace(invocation.Options.RegistryRoot)
+			&& (command.Length == 0 || command[0] != "armor-registry"))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"--registry-root 仅适用于 armor-registry 命令。");
+		}
 		if (Matches(command, "help"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -79,6 +86,86 @@ public static class CliApplication
 			var workspace = CliWorkspace.Open(invocation.Options);
 			Emit(invocation.Options, CliProjections.CreateStatus(workspace), () => FormatStatus(workspace));
 			return 0;
+		}
+		if (Matches(command, "armor-registry", "status"))
+		{
+			EnsureArmorRegistryReadOptions(invocation.Options, "armor-registry status");
+			var root = CliArmorRegistryProtocol.ResolveRegistryRoot(invocation.Options.RegistryRoot);
+			var status = await CliArmorRegistryProtocol.ReadStatusAsync(root).ConfigureAwait(false);
+			Emit(
+				invocation.Options,
+				new { ok = true, armorRegistry = status },
+				() => $"护甲注册运行时状态目录：{root}");
+			return 0;
+		}
+		if (Matches(command, "armor-registry", "show"))
+		{
+			EnsureArmorRegistryReadOptions(invocation.Options, "armor-registry show");
+			var root = CliArmorRegistryProtocol.ResolveRegistryRoot(invocation.Options.RegistryRoot);
+			var document = await CliArmorRegistryProtocol.ReadProtocolAsync(root, allowMissing: false).ConfigureAwait(false);
+			Emit(
+				invocation.Options,
+				new
+				{
+					ok = true,
+					registryRoot = root,
+					protocolPath = Path.Combine(root, CliArmorRegistryProtocol.ProtocolFileName),
+					protocol = document,
+				},
+				() => $"护甲注册协议 revision={document.Revision}，enabled={document.Enabled}，映射 {document.Mappings.Count} 条。");
+			return 0;
+		}
+		if (command.Length == 3 && command[0] == "armor-registry" && command[1] == "plan")
+		{
+			EnsureArmorRegistryPlanOptions(invocation.Options);
+			var output = RequireOutput(invocation.Options, "armor-registry plan");
+			var root = CliArmorRegistryProtocol.ResolveRegistryRoot(invocation.Options.RegistryRoot);
+			var plan = await CliArmorRegistryProtocol.BuildPlanAsync(invocation.Command[2], root).ConfigureAwait(false);
+			await CliOutput.WriteExplicitFileAsync(output, CliOutput.ToJson(plan), invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(
+				invocation.Options,
+				new
+				{
+					ok = true,
+					output = Path.GetFullPath(output),
+					plan = new
+					{
+						plan.Schema,
+						plan.RegistryRoot,
+						plan.InputFingerprint,
+						plan.Desired,
+					},
+				},
+				() => $"已导出护甲注册计划：{Path.GetFullPath(output)}");
+			return 0;
+		}
+		if (Matches(command, "armor-registry", "validate"))
+		{
+			EnsureArmorRegistryValidateOptions(invocation.Options);
+			var plan = await CliArmorRegistryProtocol.ReadPlanAsync(RequireArmorRegistryPlan(invocation.Options)).ConfigureAwait(false);
+			var validation = await CliArmorRegistryProtocol.ValidateAsync(plan, invocation.Options.RegistryRoot).ConfigureAwait(false);
+			Emit(
+				invocation.Options,
+				new { ok = validation.IsValid, validation },
+				() => validation.IsValid
+					? $"护甲注册计划状态：{validation.Status}。"
+					: $"护甲注册计划已失效：{string.Join("；", validation.Diagnostics.Select(item => item.Message))}");
+			return validation.IsValid ? 0 : 2;
+		}
+		if (Matches(command, "armor-registry", "apply"))
+		{
+			EnsureArmorRegistryApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException(
+					"ArmorRegistryApplyConfirmationRequired",
+					"armor-registry apply 会原子替换外置护甲注册协议并触发运行时热更新；请审阅计划后显式传入 --confirm。");
+			var plan = await CliArmorRegistryProtocol.ReadPlanAsync(RequireArmorRegistryPlan(invocation.Options)).ConfigureAwait(false);
+			var execution = await CliArmorRegistryProtocol.ApplyAsync(plan, invocation.Options.RegistryRoot).ConfigureAwait(false);
+			Emit(
+				invocation.Options,
+				new { ok = execution.Success, execution },
+				() => $"护甲注册协议状态：{execution.Status}，revision={execution.Revision}，活动映射 {execution.ActiveMappingCount} 条。");
+			return execution.Success ? 0 : 2;
 		}
 		if (Matches(command, "assets", "metadata", "inspect"))
 		{
@@ -1600,6 +1687,86 @@ public static class CliApplication
 		var state = await workspace.LoadLibraryAsync().ConfigureAwait(false);
 		return (workspace, state);
 	}
+
+	private static void EnsureArmorRegistryReadOptions(CliGlobalOptions options, string command)
+	{
+		if (!string.IsNullOrWhiteSpace(options.ManagerRoot)
+			|| !string.IsNullOrWhiteSpace(options.Library)
+			|| !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.Output)
+			|| !string.IsNullOrWhiteSpace(options.Plan)
+			|| options.Overwrite
+			|| options.Confirm
+			|| HasUnrelatedArmorRegistryOptions(options))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{command} 仅接受 --registry-root 与 --json。");
+		}
+	}
+
+	private static void EnsureArmorRegistryPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.ManagerRoot)
+			|| !string.IsNullOrWhiteSpace(options.Library)
+			|| !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.Plan)
+			|| options.Confirm
+			|| HasUnrelatedArmorRegistryOptions(options))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"armor-registry plan 仅接受规格文件、--registry-root、--output、--overwrite 与 --json。");
+		}
+	}
+
+	private static void EnsureArmorRegistryValidateOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.ManagerRoot)
+			|| !string.IsNullOrWhiteSpace(options.Library)
+			|| !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.Output)
+			|| options.Overwrite
+			|| options.Confirm
+			|| HasUnrelatedArmorRegistryOptions(options))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"armor-registry validate 仅接受 --plan、--registry-root 与 --json。");
+		}
+	}
+
+	private static void EnsureArmorRegistryApplyOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.ManagerRoot)
+			|| !string.IsNullOrWhiteSpace(options.Library)
+			|| !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.Output)
+			|| options.Overwrite
+			|| HasUnrelatedArmorRegistryOptions(options))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"armor-registry apply 仅接受 --plan、--registry-root、--confirm 与 --json。");
+		}
+	}
+
+	private static bool HasUnrelatedArmorRegistryOptions(CliGlobalOptions options)
+		=> !string.IsNullOrWhiteSpace(options.Host)
+			|| !string.IsNullOrWhiteSpace(options.AddToProfile)
+			|| options.Position is not null
+			|| options.Limit is not null
+			|| !string.IsNullOrWhiteSpace(options.Cursor)
+			|| options.SetActive
+			|| options.WithUnsharedOptions
+			|| options.WithEffective
+			|| options.OnlyCompetition
+			|| options.AllowUnsafeLua;
+
+	private static string RequireArmorRegistryPlan(CliGlobalOptions options)
+		=> string.IsNullOrWhiteSpace(options.Plan)
+			? throw new CliUserException("ArmorRegistryPlanRequired", "请通过 --plan <护甲注册计划.json> 提供计划文件。")
+			: options.Plan;
 
 	private static void EnsureNoExplicitOutput(CliGlobalOptions options)
 	{
@@ -4941,6 +5108,11 @@ HD2 Mod Manager 命令行
 用法：
 	  hd2mod capabilities --json
 	  hd2mod status --manager-root <管理器目录> --json
+	  hd2mod armor-registry status [--registry-root <协议目录>] --json
+	  hd2mod armor-registry show [--registry-root <协议目录>] --json
+	  hd2mod armor-registry plan armor-registry-spec.json [--registry-root <协议目录>] --output armor-registry-plan.json --json
+	  hd2mod armor-registry validate --plan armor-registry-plan.json [--registry-root <协议目录>] --json
+	  hd2mod armor-registry apply --plan armor-registry-plan.json [--registry-root <协议目录>] --confirm --json
 	  hd2mod assets metadata inspect --manager-root <管理器目录> --json
 	  hd2mod assets metadata plan [https://raw.githubusercontent.com/.../branch] --manager-root <管理器目录> --output asset-metadata-plan.json --json
 	  hd2mod assets metadata validate --plan asset-metadata-plan.json --manager-root <管理器目录> --json
@@ -5070,10 +5242,11 @@ HD2 Mod Manager 命令行
 	  hd2mod agent skill --output SKILL.md
 
 全局参数：
-  --manager-root <目录>   包含管理器 settings.json 的目录。
-  --library <目录>        显式指定 Mod 库；优先级高于 settings.json。
+	  --manager-root <目录>   包含管理器 settings.json 的目录。
+	  --library <目录>        显式指定 Mod 库；优先级高于 settings.json。
 	  --game-data <目录>      GameData 覆盖路径；部署命令要求真实游戏的 data 目录。
-  --json                  输出机器可读 JSON。
+	  --registry-root <目录>  护甲注册协议目录；默认位于 LocalAppData 的 CowboyBingus/Helldivers2/ArmorRegistry。
+	  --json                  输出机器可读 JSON。
 	  --output <文件或目录>   import/deploy/patch plan、Patch 输出、context export、Agent Skill 导出使用。
 	  --plan <文件>           import/deploy/patch validate 与 apply 所需的计划。
 	  --overwrite             显式允许覆盖已有导出文件或已命名 Skill 目录中的 SKILL.md。
