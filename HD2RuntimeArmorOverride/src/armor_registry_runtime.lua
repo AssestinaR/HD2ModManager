@@ -339,24 +339,12 @@ local function locate_registry()
     return layout
 end
 
-local function add_weight(set,value)
-    set[value]=true
-end
-local function one_weight(set)
-    local result
-    for value in pairs(set or {}) do
-        if result~=nil and result~=value then return nil end
-        result=value
-    end
-    return result
-end
 local function target_weights(root)
     local bodies,body_count=qword(root+48),qword(root+56)
     if bodies<65536 or body_count<1 or body_count>16 then
         return nil,'invalid target Body array'
     end
-    local meta={exact={},body_visible={},body_metadata={},
-        global_visible={},global_metadata={}}
+    local pieces_index={}
     for i=0,body_count-1 do
         local row=bodies+i*24
         local body=dword(row)
@@ -364,34 +352,23 @@ local function target_weights(root)
         if pieces<65536 or count<1 or count>4096 then
             return nil,'invalid target Piece array'
         end
-        meta.body_visible[body]=meta.body_visible[body] or {}
-        meta.body_metadata[body]=meta.body_metadata[body] or {}
         for piece=0,count-1 do
             local address=pieces+piece*96
             local slot,piece_type,weight=dword(address+8),dword(address+12),dword(address+16)
-            meta.exact[body..':'..slot..':'..piece_type]=weight
-            if slot==1 then
-                add_weight(meta.body_metadata[body],weight)
-                add_weight(meta.global_metadata,weight)
-            else
-                add_weight(meta.body_visible[body],weight)
-                add_weight(meta.global_visible,weight)
-            end
+            pieces_index[#pieces_index+1]={body=body,slot=slot,
+                piece_type=piece_type,weight=weight}
         end
     end
-    return meta
+    return ARMOR_METADATA_PROBE_CORE.weight_index(pieces_index)
 end
 local function resolve_weight(meta,body,slot,piece_type)
-    local exact=meta.exact[body..':'..slot..':'..piece_type]
-    if exact~=nil then return exact end
-    if slot==1 then
-        return one_weight(meta.body_metadata[body]) or one_weight(meta.global_metadata)
-    end
-    return one_weight(meta.body_visible[body]) or one_weight(meta.global_visible)
+    return ARMOR_METADATA_PROBE_CORE.resolve_weight(meta,body,slot,piece_type)
 end
 local function weight_values(set)
     local values={}
-    for value in pairs(set or {}) do values[#values+1]=value end
+    for value,count in pairs(set or {}) do
+        values[#values+1]=tostring(value)..'x'..tostring(count)
+    end
     table.sort(values)
     return table.concat(values,'|')
 end
@@ -402,7 +379,7 @@ local function audit_clone_weights(target_root,source_root)
     if source_bodies<65536 or body_count<1 or body_count>16 then
         return nil,'invalid source Body array'
     end
-    local total,ambiguous=0,{}
+    local total,ambiguous,resolutions=0,{},{}
     for i=0,body_count-1 do
         local row=source_bodies+i*24
         local body=dword(row)
@@ -413,26 +390,24 @@ local function audit_clone_weights(target_root,source_root)
         for piece=0,count-1 do
             local address=pieces+piece*96
             local slot,piece_type=dword(address+8),dword(address+12)
-            if resolve_weight(weights,body,slot,piece_type)==nil then
-                local candidates
-                if slot==1 then
-                    candidates=weights.body_metadata[body]
-                    if one_weight(candidates)==nil then candidates=weights.global_metadata end
-                else
-                    candidates=weights.body_visible[body]
-                    if one_weight(candidates)==nil then candidates=weights.global_visible end
-                end
+            local weight,level=resolve_weight(weights,body,slot,piece_type)
+            if weight==nil then
+                local candidates=slot==1
+                    and (weights.body_metadata[body] or weights.global_metadata)
+                    or (weights.body_visible[body] or weights.global_visible)
                 if #ambiguous<32 then
                     ambiguous[#ambiguous+1]=table.concat({
                         body,slot,piece_type,weight_values(candidates)
                     },':')
                 end
+            else
+                resolutions[level]=(resolutions[level] or 0)+1
             end
             total=total+1
         end
         if i%4==0 then coroutine.yield() end
     end
-    return {pieces=total,ambiguous=ambiguous}
+    return {pieces=total,ambiguous=ambiguous,resolutions=resolutions}
 end
 local function parse_weight_audit_request(text)
     local source,targets=nil,{}
@@ -494,8 +469,14 @@ local function run_weight_audit(source_id,target_ids)
         end
         if result and #result.ambiguous==0 then
             compatible=compatible+1
+            local resolution_parts={}
+            for _,level in ipairs({'exact','body','global'}) do
+                local count=result.resolutions[level] or 0
+                if count>0 then resolution_parts[#resolution_parts+1]=level..'='..count end
+            end
             rows[#rows+1]=table.concat({
                 'target',target_id,'ok','pieces='..result.pieces
+                    ..';weight_resolution='..table.concat(resolution_parts,'/')
             },',')
         else
             failed=failed+1
@@ -551,6 +532,7 @@ local function build_clone(target_root,source_root)
     ffi.copy(buffer,ffi.cast('const void *',target_root),64)
     put_qword(base+48,base+64);put_qword(base+56,body_count)
     local piece_at=64+body_count*24
+    local resolutions={exact=0,body=0,global=0}
     for i,row in ipairs(rows) do
         local target_row=base+64+(i-1)*24
         ffi.copy(ffi.cast('void *',target_row),
@@ -561,14 +543,18 @@ local function build_clone(target_root,source_root)
             ffi.cast('const void *',row.pieces),piece_bytes)
         for piece=0,row.count-1 do
             local address=base+piece_at+piece*96
-            local weight=resolve_weight(weights,row.body,dword(address+8),dword(address+12))
-            if weight==nil then return nil,'target weight metadata is ambiguous' end
+            local weight,level=resolve_weight(weights,row.body,dword(address+8),dword(address+12))
+            if weight==nil then
+                return nil,'target weight metadata has no unique majority'
+            end
             put_dword(address+16,weight)
+            resolutions[level]=resolutions[level]+1
         end
         piece_at=piece_at+piece_bytes
     end
     if piece_at~=bytes then return nil,'clone length self-check failed' end
-    return {buffer=buffer,base=base,bytes=bytes,bodies=body_count,pieces=total}
+    return {buffer=buffer,base=base,bytes=bytes,bodies=body_count,
+        pieces=total,weight_resolutions=resolutions}
 end
 
 local function apply_document(document)

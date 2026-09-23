@@ -8,6 +8,10 @@ $repo = Split-Path -Parent $project
 
 Push-Location $repo
 try {
+    & $LuaJit "$project/tests/test_armor_metadata_probe_core.lua" `
+        "$project/src/armor_metadata_probe_core.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
     & $LuaJit `
         "$project/tests/test_lua_surface_probe.lua" `
         "$project/src/lua_surface_probe.lua"

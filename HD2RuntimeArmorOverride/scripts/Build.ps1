@@ -25,7 +25,6 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $registryEntry = Join-Path $OutputDirectory "armor_registry.generated.lua"
 & $Python (Join-Path $PSScriptRoot "build_armor_registry.py") --output $registryEntry
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
 & $Python $builder `
     --name mods/codex/armor_re824_to_re2310_override `
     --entry (Join-Path $project "src/re824_to_re2310_override.lua") `

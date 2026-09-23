@@ -24,14 +24,43 @@ Armor Archive 注册表，构造保留目标身份与 gameplay metadata 的组�
 ## 正式文件
 
 - `src/armor_registry_runtime.lua`：定位、clone、发布、回滚与热更新运行时。
+- `src/armor_metadata_probe.lua` 与 `src/armor_metadata_probe_core.lua`：默认空闲、按请求生成 Kit/Piece 只读快照，并以与正式 clone 相同的多数 weight 规则模拟目标 weight 保留。
 - `src/armor_registry_protocol.lua`：严格的 v1 协议解析与序列化。
 - `scripts/build_armor_registry.py`：生成单文件 Lua 入口。
 - `protocol/armor-registry.protocol`：默认关闭的协议示例。
 - `notes/armor-registry-protocol.md`：管理器协议、安全边界与 v2 演进设计。
 - `tests/test_armor_registry_protocol.lua`：LuaJIT 协议测试。
 
-其余 `composition_*`、探针、日志和 evidence 是定位 ABI 与验证消费链的研究
-材料，继续保留用于游戏更新后的诊断，不属于正常运行时部署面。
+`HD2-Runtime-Armor-Registry` 正式入口包含默认空闲的元数据探针；没有请求文件时
+不会遍历或采样护甲。其余 `composition_*`、旧探针、日志和 evidence 是定位
+ABI 与验证消费链的研究材料，继续保留用于游戏更新后的诊断。
+
+### 只读元数据探针
+
+管理器托管运行时和 `HD2-Runtime-Armor-Registry.zip` 都包含此探针；direct 与
+Shared Loader 部署都可使用。它不会读取或写入注册表协议，也不会写游戏进程
+内存。准备请求文件：
+
+```text
+%LOCALAPPDATA%/CowboyBingus/Helldivers2/ArmorRegistry/metadata-probe.request
+```
+
+请求文件每次指定一个来源和最多 16 个目标，例如：
+
+```text
+source=820333399
+target=488691438
+target=3340614564
+target=651522724
+```
+
+游戏内探针会消费请求，并将 JSONL 写入同目录的
+`metadata-probe.report`，运行日志位于 `Logs/ArmorMetadataProbe.log`。报告包含
+原始 Kit/Piece 字段、目标 identity header、来源 Piece 与私有模拟结果的差异。
+weight 全量审计会逐目标报告精确键、同 Body 类别和全局类别各自解析的 Piece 数量；
+恢复 weight 时按唯一众数逐级回退，完全平票仍会阻止映射。
+私有模拟不发布指针。它能验证当前克隆逻辑的数据变更范围，但不能单独证明
+某字段对游戏玩法属性的因果影响；该结论仍需与受控游戏内属性测试结合。
 
 ## 外置协议
 

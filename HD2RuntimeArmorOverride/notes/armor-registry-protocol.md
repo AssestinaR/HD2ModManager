@@ -106,7 +106,11 @@ Required rules:
   deployed game/Patch asset set. The protocol registers composition references;
   it does not embed GPU payload bytes.
 - Duplicate model keys, missing model references, invalid Body/Piece layouts,
-  ambiguous target weight restoration, and dependency cycles are blocking.
+  unresolved weight ties, and dependency cycles are blocking. Target weight
+  restoration chooses a unique mode at the exact `(Body, slot, piece_type)`
+  scope, then falls back to the same Body and metadata/visible class, then to
+  the global metadata/visible class. A tied mode falls back to the next wider
+  scope; a tie or missing values at every scope remains blocking.
 - An update is transactional: parse all model bases, build/validate all
   compositions, build all target clones, then publish. Failure leaves the last
   applied revision active.
