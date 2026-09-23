@@ -38,9 +38,10 @@ namespace HD2ModManager.ViewModels
 
         private PageViewModel? _leftPage;
         private PageViewModel? _rightPage;
-        // These two workspace pages own long-lived list and thumbnail state. Navigation only changes hosts.
+        // These workspace pages own long-lived list state. Navigation only changes hosts.
         private ProfilePageViewModel? _profileWorkspacePage;
         private LibraryPageViewModel? _libraryWorkspacePage;
+        private ArmorRegistryPageViewModel? _armorRegistryWorkspacePage;
         private WorkspaceMode _currentMode;
         private WorkspacePageType _leftPageType;
         private WorkspacePageType _rightPageType;
@@ -929,13 +930,19 @@ namespace HD2ModManager.ViewModels
             DisposePageIfTransient(right, left);
             (_profileWorkspacePage as IDisposable)?.Dispose();
             if (!ReferenceEquals(_libraryWorkspacePage, _profileWorkspacePage)) (_libraryWorkspacePage as IDisposable)?.Dispose();
+            (_armorRegistryWorkspacePage as IDisposable)?.Dispose();
             _profileWorkspacePage = null;
             _libraryWorkspacePage = null;
+            _armorRegistryWorkspacePage = null;
         }
 
         private void DisposePageIfTransient(PageViewModel? page, PageViewModel? retainedElsewhere)
         {
-            if (page is null || ReferenceEquals(page, retainedElsewhere) || ReferenceEquals(page, _profileWorkspacePage) || ReferenceEquals(page, _libraryWorkspacePage)) return;
+            if (page is null
+                || ReferenceEquals(page, retainedElsewhere)
+                || ReferenceEquals(page, _profileWorkspacePage)
+                || ReferenceEquals(page, _libraryWorkspacePage)
+                || ReferenceEquals(page, _armorRegistryWorkspacePage)) return;
             (page as IDisposable)?.Dispose();
         }
 
@@ -1956,11 +1963,18 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
                 WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
-                WorkspacePageType.ArmorRegistry => new ArmorRegistryPageViewModel(_libraryService, _notificationService, _deploymentCoordinator, _selection),
+                WorkspacePageType.ArmorRegistry => CreateArmorRegistryPage(),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
         }
+
+        private ArmorRegistryPageViewModel CreateArmorRegistryPage()
+            => _armorRegistryWorkspacePage ??= new ArmorRegistryPageViewModel(
+                _libraryService,
+                _notificationService,
+                _deploymentCoordinator,
+                _selection);
 
         private LibraryPageViewModel CreateLibraryPage()
         {

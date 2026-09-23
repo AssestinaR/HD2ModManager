@@ -7,8 +7,6 @@ namespace HD2ModManager.Views;
 
 public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTarget
 {
-	private bool initialized;
-
 	public ArmorRegistryPageView()
 	{
 		InitializeComponent();
@@ -23,8 +21,7 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 
 	private async void OnLoaded(object sender, RoutedEventArgs e)
 	{
-		if (initialized || DataContext is not ArmorRegistryPageViewModel viewModel) return;
-		initialized = true;
+		if (DataContext is not ArmorRegistryPageViewModel viewModel) return;
 		await viewModel.InitializeAsync();
 	}
 

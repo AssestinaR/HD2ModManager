@@ -251,7 +251,8 @@ internal sealed class WorkspacePagePresentationController : IDisposable
         => page is HomePageViewModel
             or ProfilePageViewModel
             or LibraryPageViewModel
-            or SettingsPageViewModel;
+            or SettingsPageViewModel
+            or ArmorRegistryPageViewModel;
 
     private FrameworkElement? CreateTemplatedPageView(object page)
     {

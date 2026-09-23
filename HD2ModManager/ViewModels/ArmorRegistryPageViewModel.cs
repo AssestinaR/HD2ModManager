@@ -33,6 +33,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private string providerDetailSearchText = string.Empty;
 	private uint? selectedProviderId;
 	private readonly HashSet<uint> pendingProviderIds = [];
+	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
+	private IReadOnlyDictionary<string, string?> cachedIconPaths = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+	private bool hasLoadedCatalog;
 
 	public ArmorRegistryPageViewModel(
 		ModLibraryService library,
@@ -58,9 +61,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OpenRegistryFolderCommand = new RelayCommand(OpenRegistryFolder);
 	}
 
-	public ObservableCollection<RuntimeArmorChoiceViewModel> AvailableArmors { get; } = [];
-	public ObservableCollection<RuntimeArmorChoiceViewModel> Providers { get; } = [];
-	public ObservableCollection<RuntimeArmorChoiceViewModel> ProviderDetailItems { get; } = [];
+	public BulkObservableCollection<RuntimeArmorChoiceViewModel> AvailableArmors { get; } = [];
+	public BulkObservableCollection<RuntimeArmorChoiceViewModel> Providers { get; } = [];
+	public BulkObservableCollection<RuntimeArmorChoiceViewModel> ProviderDetailItems { get; } = [];
 	public ICollectionView AvailableArmorsView { get; }
 	public ICollectionView ProvidersView { get; }
 	public ICollectionView ProviderDetailItemsView { get; }
@@ -164,7 +167,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public AsyncRelayCommand ApplyCommand { get; }
 	public RelayCommand OpenRegistryFolderCommand { get; }
 
-	public Task InitializeAsync() => RefreshAsync();
+	public Task InitializeAsync() => hasLoadedCatalog ? RefreshRuntimeStatusAsync() : RefreshAsync();
 
 	private async Task RefreshAsync()
 	{
@@ -178,41 +181,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			var snapshot = await snapshotTask;
 			var catalog = await catalogTask;
 			var iconPaths = await ReadArmorIconPathsAsync(catalog);
-
-			Choices = catalog
-				.Select(item => new RuntimeArmorChoiceViewModel(
-					item.ItemId,
-					item.ArchiveId,
-					item.DisplayName,
-					iconPaths.GetValueOrDefault(item.ArchiveId)))
-				.ToDictionary(item => item.ItemId);
-			foreach (var mapping in snapshot.Document.Mappings)
-			{
-				if (!Choices.ContainsKey(mapping.TargetItemId))
-					Choices[mapping.TargetItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.TargetItemId);
-				if (!Choices.ContainsKey(mapping.SourceItemId))
-					Choices[mapping.SourceItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.SourceItemId);
-			}
-
-			Mappings.Clear();
-			foreach (var mapping in snapshot.Document.Mappings)
-				Mappings.Add(new RuntimeArmorMappingRowViewModel(
-					Choices[mapping.TargetItemId],
-					Choices[mapping.SourceItemId]));
-			pendingProviderIds.Clear();
-			selectedProviderId = null;
-			OnPropertyChanged(nameof(IsProviderDetailOpen));
-			selection.Clear();
-			RebuildProjections();
-
-			enabled = snapshot.Document.Enabled;
-			OnPropertyChanged(nameof(Enabled));
-			baselineEnabled = enabled;
-			baselineMappings = GetMappingKeys();
-			fingerprint = snapshot.Fingerprint;
-			RevisionText = $"revision {snapshot.Document.Revision} · {Mappings.Count} 条映射";
-			UpdateStatus(snapshot);
-			HasChanges = false;
+			cachedCatalog = catalog;
+			cachedIconPaths = iconPaths;
+			hasLoadedCatalog = true;
+			ApplySnapshot(snapshot, rebuildChoices: true, resetNavigation: true);
 		}
 		catch (Exception exception) when (exception is IOException
 			or UnauthorizedAccessException
@@ -228,6 +200,83 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			IsBusy = false;
 		}
+	}
+
+	public async Task RefreshRuntimeStatusAsync()
+	{
+		if (IsBusy) return;
+		try
+		{
+			var snapshot = await service.ReadSnapshotAsync();
+			if (!HasChanges && !string.Equals(snapshot.Fingerprint, fingerprint, StringComparison.Ordinal))
+				ApplySnapshot(snapshot, rebuildChoices: hasLoadedCatalog, resetNavigation: false);
+			else
+				UpdateStatus(snapshot);
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or InvalidDataException
+			or InvalidOperationException)
+		{
+			LogService.Warn($"刷新护甲注册运行时状态失败：{exception.Message}");
+		}
+	}
+
+	private void ApplySnapshot(
+		RuntimeArmorRegistrySnapshot snapshot,
+		bool rebuildChoices,
+		bool resetNavigation)
+	{
+		if (rebuildChoices)
+		{
+			Choices = cachedCatalog
+				.Select(item => new RuntimeArmorChoiceViewModel(
+					item.ItemId,
+					item.ArchiveId,
+					item.DisplayName,
+					cachedIconPaths.GetValueOrDefault(item.ArchiveId)))
+				.ToDictionary(item => item.ItemId);
+		}
+		foreach (var mapping in snapshot.Document.Mappings)
+		{
+			if (!Choices.ContainsKey(mapping.TargetItemId))
+				Choices[mapping.TargetItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.TargetItemId);
+			if (!Choices.ContainsKey(mapping.SourceItemId))
+				Choices[mapping.SourceItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.SourceItemId);
+		}
+
+		Mappings.Clear();
+		foreach (var mapping in snapshot.Document.Mappings)
+			Mappings.Add(new RuntimeArmorMappingRowViewModel(
+				Choices[mapping.TargetItemId],
+				Choices[mapping.SourceItemId]));
+		if (resetNavigation)
+		{
+			pendingProviderIds.Clear();
+			selectedProviderId = null;
+			OnPropertyChanged(nameof(IsProviderDetailOpen));
+		}
+		else
+		{
+			pendingProviderIds.Clear();
+			if (selectedProviderId is { } selected
+				&& !snapshot.Document.Mappings.Any(mapping => mapping.SourceItemId == selected))
+			{
+				selectedProviderId = null;
+				OnPropertyChanged(nameof(IsProviderDetailOpen));
+			}
+		}
+
+		selection.Clear();
+		RebuildProjections();
+		enabled = snapshot.Document.Enabled;
+		OnPropertyChanged(nameof(Enabled));
+		baselineEnabled = enabled;
+		baselineMappings = GetMappingKeys();
+		fingerprint = snapshot.Fingerprint;
+		RevisionText = $"revision {snapshot.Document.Revision} · {Mappings.Count} 条映射";
+		UpdateStatus(snapshot);
+		HasChanges = false;
 	}
 
 	private async Task<IReadOnlyDictionary<string, string?>> ReadArmorIconPathsAsync(
@@ -532,15 +581,17 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var targetIds = Mappings.Select(mapping => mapping.Target.ItemId).ToHashSet();
 		var managedIds = sourceIds.Concat(targetIds).ToHashSet();
 
-		ReplaceWith(Providers, sourceIds
+		Providers.ReplaceWith(sourceIds
 			.Where(Choices.ContainsKey)
 			.Select(id => Choices[id])
-			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase));
-		ReplaceWith(AvailableArmors, Choices.Values
+			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase),
+			ListTransitionKind.Replace);
+		AvailableArmors.ReplaceWith(Choices.Values
 			.Where(choice => !managedIds.Contains(choice.ItemId))
-			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase));
+			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase),
+			ListTransitionKind.Replace);
 
-		ProviderDetailItems.Clear();
+		var detailItems = new List<RuntimeArmorChoiceViewModel>();
 		if (selectedProviderId is { } selected && Choices.TryGetValue(selected, out var provider))
 		{
 			foreach (var target in Mappings
@@ -549,9 +600,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase))
 			{
 				target.SetRolePresentation("映射目标", null);
-				ProviderDetailItems.Add(target);
+				detailItems.Add(target);
 			}
 		}
+		ProviderDetailItems.ReplaceWith(detailItems, ListTransitionKind.Replace);
 		foreach (var item in AvailableArmors) item.SetRolePresentation(null, null);
 		foreach (var item in Providers) item.SetRolePresentation("视觉来源", Mappings.Count(mapping => mapping.Source.ItemId == item.ItemId));
 
@@ -579,14 +631,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			|| choice.Name.Contains(term, StringComparison.CurrentCultureIgnoreCase)
 			|| choice.ArchiveId.Contains(term, StringComparison.OrdinalIgnoreCase)
 			|| choice.ItemIdText.Contains(term, StringComparison.OrdinalIgnoreCase);
-	}
-
-	private static void ReplaceWith(
-		ObservableCollection<RuntimeArmorChoiceViewModel> collection,
-		IEnumerable<RuntimeArmorChoiceViewModel> values)
-	{
-		collection.Clear();
-		foreach (var value in values) collection.Add(value);
 	}
 
 	private HashSet<(uint Target, uint Source)> GetMappingKeys()
