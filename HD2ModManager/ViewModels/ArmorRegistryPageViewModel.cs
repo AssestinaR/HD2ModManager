@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.ComponentModel;
+using System.Windows.Data;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
@@ -26,6 +28,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private string statusTitle = "尚未读取";
 	private string statusDetail = "正在等待读取运行时护甲注册状态。";
 	private string revisionText = "revision —";
+	private string providersSearchText = string.Empty;
+	private string availableSearchText = string.Empty;
+	private string providerDetailSearchText = string.Empty;
 	private uint? selectedProviderId;
 	private readonly HashSet<uint> pendingProviderIds = [];
 
@@ -41,6 +46,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		this.deploymentCoordinator = deploymentCoordinator ?? throw new ArgumentNullException(nameof(deploymentCoordinator));
 		this.selection = selection ?? throw new ArgumentNullException(nameof(selection));
 		this.selection.SelectionChanged += OnGlobalSelectionChanged;
+		ProvidersView = CollectionViewSource.GetDefaultView(Providers);
+		AvailableArmorsView = CollectionViewSource.GetDefaultView(AvailableArmors);
+		ProviderDetailItemsView = CollectionViewSource.GetDefaultView(ProviderDetailItems);
+		ProvidersView.Filter = FilterProvider;
+		AvailableArmorsView.Filter = FilterAvailableArmor;
+		ProviderDetailItemsView.Filter = FilterProviderDetailItem;
 		service = CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths());
 		RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !IsBusy && !HasChanges);
 		ApplyCommand = new AsyncRelayCommand(_ => ApplyAsync(), _ => !IsBusy && HasChanges);
@@ -50,7 +61,43 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public ObservableCollection<RuntimeArmorChoiceViewModel> AvailableArmors { get; } = [];
 	public ObservableCollection<RuntimeArmorChoiceViewModel> Providers { get; } = [];
 	public ObservableCollection<RuntimeArmorChoiceViewModel> ProviderDetailItems { get; } = [];
+	public ICollectionView AvailableArmorsView { get; }
+	public ICollectionView ProvidersView { get; }
+	public ICollectionView ProviderDetailItemsView { get; }
 	public ObservableCollection<RuntimeArmorMappingRowViewModel> Mappings { get; } = [];
+
+	public string ProvidersSearchText
+	{
+		get => providersSearchText;
+		set
+		{
+			if (!SetField(ref providersSearchText, value ?? string.Empty)) return;
+			ProvidersView.Refresh();
+			OnPropertyChanged(nameof(ProvidersSummary));
+		}
+	}
+
+	public string AvailableSearchText
+	{
+		get => availableSearchText;
+		set
+		{
+			if (!SetField(ref availableSearchText, value ?? string.Empty)) return;
+			AvailableArmorsView.Refresh();
+			OnPropertyChanged(nameof(AvailableSummary));
+		}
+	}
+
+	public string ProviderDetailSearchText
+	{
+		get => providerDetailSearchText;
+		set
+		{
+			if (!SetField(ref providerDetailSearchText, value ?? string.Empty)) return;
+			ProviderDetailItemsView.Refresh();
+			OnPropertyChanged(nameof(ProviderDetailSummary));
+		}
+	}
 
 	public override void Dispose()
 	{
@@ -95,15 +142,21 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public string StatusDetail { get => statusDetail; private set => SetField(ref statusDetail, value); }
 	public string RevisionText { get => revisionText; private set => SetField(ref revisionText, value); }
 	public string RegistryPath => service.RegistryRoot;
-	public string ProvidersSummary => $"{Providers.Count} 个视觉来源";
-	public string AvailableSummary => $"{AvailableArmors.Count} 个未管理护甲";
+	public string ProvidersSummary => providersSearchText.Length == 0
+		? $"{Providers.Count} 个视觉来源"
+		: $"{ProvidersView.Cast<object>().Count()} / {Providers.Count} 个视觉来源";
+	public string AvailableSummary => availableSearchText.Length == 0
+		? $"{AvailableArmors.Count} 个未管理护甲"
+		: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 个未管理护甲";
 	public string ProviderDetailTitle => selectedProviderId is { } id
 		? Choices.TryGetValue(id, out var choice) ? choice.Name : $"未知护甲 {id}"
 		: "视觉映射目标";
 	public string ProviderDetailHeaderTitle => $"←  {ProviderDetailTitle}";
 	public string AvailableRowActionToolTip => IsProviderDetailOpen ? "注册到该视觉对象" : "转为视觉对象";
 	public string ProviderDetailSummary => selectedProviderId is { } id
-		? $"{Mappings.Count(row => row.Source.ItemId == id)} 个映射目标"
+		? providerDetailSearchText.Length == 0
+			? $"{Mappings.Count(row => row.Source.ItemId == id)} 个映射目标"
+			: $"{ProviderDetailItemsView.Cast<object>().Count()} / {Mappings.Count(row => row.Source.ItemId == id)} 个映射目标"
 		: "选择一个视觉来源";
 	private Dictionary<uint, RuntimeArmorChoiceViewModel> Choices { get; set; } = [];
 
@@ -510,6 +563,24 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(HasMappings));
 	}
 
+	private bool FilterProvider(object item)
+		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, providersSearchText);
+
+	private bool FilterAvailableArmor(object item)
+		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, availableSearchText);
+
+	private bool FilterProviderDetailItem(object item)
+		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, providerDetailSearchText);
+
+	private static bool MatchesSearch(RuntimeArmorChoiceViewModel choice, string query)
+	{
+		var term = query.Trim();
+		return term.Length == 0
+			|| choice.Name.Contains(term, StringComparison.CurrentCultureIgnoreCase)
+			|| choice.ArchiveId.Contains(term, StringComparison.OrdinalIgnoreCase)
+			|| choice.ItemIdText.Contains(term, StringComparison.OrdinalIgnoreCase);
+	}
+
 	private static void ReplaceWith(
 		ObservableCollection<RuntimeArmorChoiceViewModel> collection,
 		IEnumerable<RuntimeArmorChoiceViewModel> values)
@@ -566,9 +637,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				if (deployment.Stage != ProfileDeploymentStage.Completed)
 					throw new InvalidOperationException(deployment.Message ?? "活动配置部署失败。");
 			}
-			UpdateStatus(snapshot);
-			if (snapshot.RuntimeAcknowledged)
+			var runtimeReportedApply = RuntimeReportedRevision(snapshot, result.Document.Revision);
+			if (runtimeReportedApply)
 			{
+				StatusTitle = "游戏已同步";
+				StatusDetail = $"运行时状态已报告 revision {result.Document.Revision}，当前为{GetRuntimeMode(snapshot)}。";
 				notifications.Show(
 					$"护甲外观注册已在线应用：revision {result.Document.Revision}。",
 					NotificationLevel.Info,
@@ -576,26 +649,33 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					"护甲注册",
 					"armor-registry-apply");
 			}
-			else if (snapshot.RuntimeProcessRunning)
-			{
-				notifications.Show(
-					"协议已保存，但游戏运行时尚未确认；请稍后刷新状态。",
-					NotificationLevel.Warning,
-					TimeSpan.FromSeconds(8),
-					"护甲注册",
-					"armor-registry-apply");
-			}
-			else if (gameRunning)
-			{
-				StatusTitle = "等待下次部署";
-				StatusDetail = Enabled
-					? "游戏正在运行且尚未加载托管运行时；退出游戏并部署活动配置后生效。"
-					: "停用协议已保存；托管运行时将在游戏退出后的下一次部署中移除。";
-				notifications.Show(StatusDetail, NotificationLevel.Warning, TimeSpan.FromSeconds(8), "护甲注册", "armor-registry-apply");
-			}
 			else
 			{
-				notifications.Show("协议已保存，将在下次启动游戏时应用。", NotificationLevel.Info, TimeSpan.FromSeconds(6), "护甲注册", "armor-registry-apply");
+				UpdateStatus(snapshot);
+				if (snapshot.RuntimeProcessRunning)
+				{
+					notifications.Show(
+						"协议已保存，但游戏运行时尚未确认；请稍后刷新状态。",
+						NotificationLevel.Warning,
+						TimeSpan.FromSeconds(8),
+						"护甲注册",
+						"armor-registry-apply");
+				}
+				else if (gameRunning)
+				{
+					StatusTitle = "协议已保存";
+					StatusDetail = $"游戏正在运行，但暂时没有 revision {result.Document.Revision} 的运行时回执。状态文件或进程探测不可用不代表映射未生效，请以游戏内效果为准，稍后可刷新确认。";
+					notifications.Show(
+						"护甲映射协议已更新；未取得运行时回执，当前状态无法确认，但这不代表映射未生效。",
+						NotificationLevel.Info,
+						TimeSpan.FromSeconds(8),
+						"护甲注册",
+						"armor-registry-apply");
+				}
+				else
+				{
+					notifications.Show("协议已保存，将在下次启动游戏时应用。", NotificationLevel.Info, TimeSpan.FromSeconds(6), "护甲注册", "armor-registry-apply");
+				}
 			}
 		}
 		catch (Exception exception) when (exception is IOException
@@ -616,18 +696,34 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private async Task<RuntimeArmorRegistrySnapshot> WaitForRuntimeAsync(int revision)
 	{
 		var snapshot = await service.ReadSnapshotAsync();
-		if (!snapshot.RuntimeProcessRunning || snapshot.RuntimeAcknowledged) return snapshot;
+		if (RuntimeReportedRevision(snapshot, revision)) return snapshot;
 		for (var attempt = 0; attempt < 8; attempt++)
 		{
 			await Task.Delay(250);
 			snapshot = await service.ReadSnapshotAsync();
-			if (!snapshot.RuntimeProcessRunning
-				|| snapshot.RuntimeAcknowledged
+			if (RuntimeReportedRevision(snapshot, revision)
 				|| snapshot.Document.Revision != revision)
 				break;
 		}
 		return snapshot;
 	}
+
+	private static bool RuntimeReportedRevision(RuntimeArmorRegistrySnapshot snapshot, int revision)
+		=> string.Equals(snapshot.RuntimeStatus.GetValueOrDefault("state"), "ready", StringComparison.Ordinal)
+			&& int.TryParse(
+				snapshot.RuntimeStatus.GetValueOrDefault("revision"),
+				NumberStyles.Integer,
+				CultureInfo.InvariantCulture,
+				out var runtimeRevision)
+			&& runtimeRevision == revision;
+
+	private static string GetRuntimeMode(RuntimeArmorRegistrySnapshot snapshot)
+		=> snapshot.RuntimeStatus.GetValueOrDefault("deployment_mode") switch
+		{
+			"shared_loader" => "Bingus 插件模式",
+			"direct" => "管理器独占模式",
+			_ => "运行时模式未知",
+		};
 
 	private void UpdateStatus(RuntimeArmorRegistrySnapshot snapshot)
 	{

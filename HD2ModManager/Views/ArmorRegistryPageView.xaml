@@ -53,9 +53,10 @@
 
             <Grid Margin="0,0,6,0">
                 <local:ModListPanel x:Name="ProviderList"
-                                    ItemsSource="{Binding Providers}"
+                                    ItemsSource="{Binding ProvidersView}"
                                     HeaderTitle="视觉来源"
                                     HeaderSummary="{Binding ProvidersSummary}"
+                                    SearchText="{Binding ProvidersSearchText, UpdateSourceTrigger=PropertyChanged}"
                                     EmptyMessage="将右侧一个护甲拖到这里，设为视觉来源。"
                                     SelectionPolicy="Multiple"
                                     RowActions="ArmorRelease, ArmorOpenDetails"
@@ -78,9 +79,10 @@
                 </local:ModListPanel>
                 <Grid Visibility="{Binding IsProviderDetailOpen, Converter={StaticResource BoolToVis}}">
                     <local:ModListPanel x:Name="ProviderDetailList"
-                                        ItemsSource="{Binding ProviderDetailItems}"
+                                        ItemsSource="{Binding ProviderDetailItemsView}"
                                         HeaderTitle="{Binding ProviderDetailHeaderTitle}"
                                         HeaderSummary="{Binding ProviderDetailSummary}"
+                                        SearchText="{Binding ProviderDetailSearchText, UpdateSourceTrigger=PropertyChanged}"
                                         HeaderTitleClickable="True"
                                         EmptyMessage="此来源尚无目标；可从右侧添加护甲。"
                                         SelectionPolicy="Multiple"
@@ -109,9 +111,10 @@
 
             <Grid Grid.Column="1" Margin="6,0,0,0">
                 <local:ModListPanel x:Name="AvailableArmorList"
-                                    ItemsSource="{Binding AvailableArmors}"
+                                    ItemsSource="{Binding AvailableArmorsView}"
                                     HeaderTitle="可用护甲"
                                     HeaderSummary="{Binding AvailableSummary}"
+                                    SearchText="{Binding AvailableSearchText, UpdateSourceTrigger=PropertyChanged}"
                                     EmptyMessage="所有护甲都已分配为视觉来源或映射目标。"
                                     SelectionPolicy="Multiple"
                                     RowActions="ArmorAssign"
