@@ -20,4 +20,11 @@
 	<ProjectReference Include="..\Decryptor\Decryptor.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_protocol.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_protocol.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
+  </ItemGroup>
+
 </Project>

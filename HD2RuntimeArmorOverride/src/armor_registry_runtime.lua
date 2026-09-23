@@ -4,23 +4,18 @@ local M={version='0.1.0',status='starting',active={}}
 rawset(_G,'HD2RuntimeArmorRegistry',M)
 
 local loader=rawget(_G,'CowboyBingusModLoader')
-if type(loader)~='table' or loader.api~=1 or type(loader.open_log)~='function' then
-    M.status='loader_unavailable';return M
-end
-local opened,log_file=pcall(loader.open_log,'ArmorRegistryRuntime.log')
-if not opened or not log_file then M.status='log_open_failed';return M end
-local function log(text)
-    log_file:write(tostring(text)..'\n');log_file:flush()
-end
+local shared_loader=type(loader)=='table' and loader.api==1
+    and type(loader.open_log)=='function'
 
 local ok,ffi=pcall(require,'ffi')
 if not ok or ffi.os~='Windows' or not ffi.abi('64bit') then
-    M.status='unsupported';log('windows_x64_ffi_required');return M
+    M.status='unsupported';return M
 end
 ffi.cdef[[
 void *GetModuleHandleA(const char *);
 void *GetCurrentProcess(void);
 uint32_t GetCurrentProcessId(void);
+uint32_t GetEnvironmentVariableA(const char *,char *,uint32_t);
 int ReadProcessMemory(void *,const void *,void *,size_t,size_t *);
 size_t VirtualQuery(const void *,void *,size_t);
 int CreateDirectoryA(const char *,void *);
@@ -73,17 +68,57 @@ local function mkdir(path)
     if kernel.CreateDirectoryA(path,nil)~=0 then return true end
     return tonumber(kernel.GetLastError())==183
 end
-local base_directory=loader.log_directory and loader.log_directory:gsub('/Logs$','')
-if not base_directory then
-    M.status='directory_unavailable';log('loader_log_directory_unavailable');return M
+local function environment(name)
+    local required=tonumber(kernel.GetEnvironmentVariableA(name,nil,0))
+    if not required or required<2 or required>32768 then return nil end
+    local buffer=ffi.new('char[?]',required)
+    local written=tonumber(kernel.GetEnvironmentVariableA(name,buffer,required))
+    if not written or written<1 or written>=required then return nil end
+    return ffi.string(buffer,written)
 end
+local function mkdir_tree(path)
+    local current=''
+    local drive=path:match('^(%a:)[/\\]')
+    if drive then current=drive;path=path:sub(4) end
+    for part in path:gmatch('[^/\\]+') do
+        current=current=='' and part or (current..'/'..part)
+        if not mkdir(current) then return false end
+    end
+    return true
+end
+local base_directory
+if shared_loader and type(loader.log_directory)=='string' then
+    base_directory=loader.log_directory:gsub('[/\\]Logs$','')
+else
+    local local_app_data=environment('LOCALAPPDATA')
+    base_directory=local_app_data and (local_app_data..'/CowboyBingus/Helldivers2')
+end
+if not base_directory or not mkdir_tree(base_directory) then
+    M.status='directory_unavailable';return M
+end
+local logs_directory=base_directory..'/Logs'
 local registry_directory=base_directory..'/ArmorRegistry'
-if not mkdir(registry_directory) then
-    M.status='directory_create_failed';log('registry_directory_create_failed');return M
+if not mkdir_tree(logs_directory) or not mkdir_tree(registry_directory) then
+    M.status='directory_create_failed';return M
 end
+local log_file
+if shared_loader then
+    local opened,result=pcall(loader.open_log,'ArmorRegistryRuntime.log')
+    if opened then log_file=result end
+else
+    log_file=io.open(logs_directory..'/ArmorRegistryRuntime.log','ab')
+end
+local function log(text)
+    if not log_file then return end
+    log_file:write(tostring(text)..'\n');log_file:flush()
+end
+M.deployment_mode=shared_loader and 'shared_loader' or 'direct'
+log('deployment_mode='..M.deployment_mode)
 local protocol_path=registry_directory..'/armor-registry.protocol'
 local status_path=registry_directory..'/runtime.status'
 local cache_path=registry_directory..'/locator.cache'
+local weight_audit_request_path=registry_directory..'/weight-audit.request'
+local weight_audit_report_path=registry_directory..'/weight-audit.report'
 
 local function read_file(path,limit)
     local file=io.open(path,'rb')
@@ -139,6 +174,7 @@ local function status_text(state,message,applied_revision)
     local lines={
         'schema=1',
         'runtime_version='..M.version,
+        'deployment_mode='..M.deployment_mode,
         'state='..state,
         'pid='..tostring(pid),
         'game_timestamp='..tostring(fingerprint.timestamp),
@@ -353,6 +389,144 @@ local function resolve_weight(meta,body,slot,piece_type)
     end
     return one_weight(meta.body_visible[body]) or one_weight(meta.global_visible)
 end
+local function weight_values(set)
+    local values={}
+    for value in pairs(set or {}) do values[#values+1]=value end
+    table.sort(values)
+    return table.concat(values,'|')
+end
+local function audit_clone_weights(target_root,source_root)
+    local weights,weight_error=target_weights(target_root)
+    if not weights then return nil,weight_error end
+    local source_bodies,body_count=qword(source_root+48),qword(source_root+56)
+    if source_bodies<65536 or body_count<1 or body_count>16 then
+        return nil,'invalid source Body array'
+    end
+    local total,ambiguous=0,{}
+    for i=0,body_count-1 do
+        local row=source_bodies+i*24
+        local body=dword(row)
+        local pieces,count=qword(row+8),qword(row+16)
+        if pieces<65536 or count<1 or count>4096 then
+            return nil,'invalid source Piece array'
+        end
+        for piece=0,count-1 do
+            local address=pieces+piece*96
+            local slot,piece_type=dword(address+8),dword(address+12)
+            if resolve_weight(weights,body,slot,piece_type)==nil then
+                local candidates
+                if slot==1 then
+                    candidates=weights.body_metadata[body]
+                    if one_weight(candidates)==nil then candidates=weights.global_metadata end
+                else
+                    candidates=weights.body_visible[body]
+                    if one_weight(candidates)==nil then candidates=weights.global_visible end
+                end
+                if #ambiguous<32 then
+                    ambiguous[#ambiguous+1]=table.concat({
+                        body,slot,piece_type,weight_values(candidates)
+                    },':')
+                end
+            end
+            total=total+1
+        end
+        if i%4==0 then coroutine.yield() end
+    end
+    return {pieces=total,ambiguous=ambiguous}
+end
+local function parse_weight_audit_request(text)
+    local source,targets=nil,{}
+    for line in text:gmatch('[^\r\n]+') do
+        local source_value=line:match('^source=(%d+)$')
+        local target_value=line:match('^target=(%d+)$')
+        if source_value then
+            if source then return nil,nil,'duplicate_source' end
+            source=source_value
+        elseif target_value then
+            if #targets>=2048 then return nil,nil,'too_many_targets' end
+            targets[#targets+1]=target_value
+        else
+            return nil,nil,'invalid_request_line'
+        end
+    end
+    if not source or #targets==0 then return nil,nil,'missing_source_or_targets' end
+    return source,targets
+end
+local function run_weight_audit(source_id,target_ids)
+    local source=tonumber(source_id)
+    if not source or source<0 or source>0xffffffff or source~=math.floor(source) then
+        write_atomic(weight_audit_report_path,
+            'schema=1\nstate=error\nmessage=invalid_source_item_id\n')
+        return
+    end
+    local source_item=M.registry.items[source]
+    if not source_item then
+        write_atomic(weight_audit_report_path,table.concat({
+            'schema=1','state=error','source_item_id='..source,
+            'message=source_item_not_found',''
+        },'\n'))
+        return
+    end
+    local ids,seen={},{}
+    for _,raw_id in ipairs(target_ids) do
+        local item=tonumber(raw_id)
+        if not item or item<0 or item>0xffffffff or item~=math.floor(item) then
+            write_atomic(weight_audit_report_path,
+                'schema=1\nstate=error\nmessage=invalid_target_item_id\n')
+            return
+        end
+        if not seen[item] then
+            seen[item]=true
+            ids[#ids+1]=item
+        end
+    end
+    table.sort(ids)
+    local rows={}
+    local compatible,failed,registered=0,0,0
+    for index,target_id in ipairs(ids) do
+        local target_item=M.registry.items[target_id]
+        local result,reason
+        if target_item then
+            registered=registered+1
+            result,reason=audit_clone_weights(target_item.address,source_item.address)
+        else
+            reason='target_item_not_found'
+        end
+        if result and #result.ambiguous==0 then
+            compatible=compatible+1
+            rows[#rows+1]=table.concat({
+                'target',target_id,'ok','pieces='..result.pieces
+            },',')
+        else
+            failed=failed+1
+            local detail=result
+                and ('ambiguous='..#result.ambiguous
+                    ..';pieces='..result.pieces
+                    ..';details='..table.concat(result.ambiguous,'~'))
+                or ('error='..tostring(reason):gsub('[\r\n,=]',' '))
+            rows[#rows+1]=table.concat({
+                'target',target_id,'failed',detail
+            },',')
+        end
+        if index%8==0 then coroutine.yield() end
+    end
+    local report={
+        'schema=1',
+        'state=complete',
+        'source_item_id='..source,
+        'runtime_registry_count='..(M.registry.count or 0),
+        'scope=explicit_target_list',
+        'requested_target_count='..#ids,
+        'registered_target_count='..registered,
+        'compatible_count='..compatible,
+        'failed_count='..failed
+    }
+    for _,row in ipairs(rows) do report[#report+1]=row end
+    report[#report+1]=''
+    write_atomic(weight_audit_report_path,table.concat(report,'\n'))
+    log('weight_audit_complete source='..source
+        ..' targets='..#ids..' compatible='..compatible..' failed='..failed)
+end
 local function build_clone(target_root,source_root)
     local weights,weight_error=target_weights(target_root)
     if not weights then return nil,weight_error end
@@ -453,6 +627,31 @@ local function apply_document(document)
 end
 
 local desired,last_protocol_text
+local audit_worker
+local audit_poll_elapsed,audit_poll_at=0,0
+local function poll_weight_audit(dt)
+    if type(dt)=='number' and dt>=0 and dt<10 then
+        audit_poll_elapsed=audit_poll_elapsed+dt
+    end
+    if not M.registry or audit_worker or audit_poll_elapsed<audit_poll_at then return end
+    audit_poll_at=audit_poll_elapsed+1
+    local request=read_file(weight_audit_request_path,32768)
+    if not request then return end
+    if os.remove(weight_audit_request_path)==nil then
+        log('weight_audit_request_remove_failed')
+        return
+    end
+    local source_id,target_ids,request_error=parse_weight_audit_request(request)
+    if not source_id then
+        write_atomic(weight_audit_report_path,table.concat({
+            'schema=1','state=error','message='..request_error,''
+        },'\n'))
+        return
+    end
+    audit_worker=coroutine.create(function()
+        run_weight_audit(source_id,target_ids)
+    end)
+end
 local function poll_protocol()
     local text=read_file(protocol_path,65536)
     if not text or text==last_protocol_text then return end
@@ -484,6 +683,20 @@ local wrapper
 wrapper=function(dt,...)
     if type(dt)=='number' and dt>=0 and dt<10 then elapsed=elapsed+dt end
     if elapsed>=poll_at then poll_at=elapsed+1;poll_protocol() end
+    poll_weight_audit(dt)
+    if audit_worker then
+        local resumed,reason=coroutine.resume(audit_worker)
+        if not resumed then
+            write_atomic(weight_audit_report_path,table.concat({
+                'schema=1','state=error',
+                'message='..tostring(reason):gsub('[\r\n=]',' '),''
+            },'\n'))
+            log('weight_audit_error: '..tostring(reason))
+            audit_worker=nil
+        elseif coroutine.status(audit_worker)=='dead' then
+            audit_worker=nil
+        end
+    end
     if not M.registry and elapsed>=locate_at then
         if not worker then
             worker=coroutine.create(function()

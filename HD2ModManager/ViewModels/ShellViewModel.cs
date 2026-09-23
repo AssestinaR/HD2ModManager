@@ -1924,7 +1924,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
                 WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
-                WorkspacePageType.ArmorRegistry => new ArmorRegistryPageViewModel(_notificationService),
+                WorkspacePageType.ArmorRegistry => new ArmorRegistryPageViewModel(_notificationService, _deploymentCoordinator),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;

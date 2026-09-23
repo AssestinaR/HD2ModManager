@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using HD2ModAdaptation.PatchReconstruction.Lua;
@@ -15,17 +16,23 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private readonly LuaPatchComposer _luaComposer;
 	private readonly LuaPatchRuntimeValidator _luaRuntimeValidator;
 	private readonly IExternalInstallFileFactsService _externalFiles;
+	private readonly RuntimeArmorRegistryService? _armorRegistry;
+	private static readonly ModNodeId ArmorRegistryNodeId = new(Guid.Parse("6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"));
+	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
+	private const string BingusLoaderPackageGuid = "612eaf70-d682-43c7-9efd-16dcc695f977";
 
 	public LuaDeploymentService(
 		LuaPatchInspector? luaInspector = null,
 		LuaPatchComposer? luaComposer = null,
 		LuaPatchRuntimeValidator? luaRuntimeValidator = null,
-		IExternalInstallFileFactsService? externalFiles = null)
+		IExternalInstallFileFactsService? externalFiles = null,
+		RuntimeArmorRegistryService? armorRegistry = null)
 	{
 		_luaInspector = luaInspector ?? new LuaPatchInspector();
 		_luaComposer = luaComposer ?? new LuaPatchComposer();
 		_luaRuntimeValidator = luaRuntimeValidator ?? new LuaPatchRuntimeValidator();
 		_externalFiles = externalFiles ?? new ExternalInstallFileFactsService();
+		_armorRegistry = armorRegistry;
 	}
 
 	public async ValueTask<LuaDeploymentPlan> PlanAsync(
@@ -126,6 +133,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		var issues = new List<CoreIssue>();
 		var documents = new List<LuaDocumentSource>();
 		var removedGroups = new HashSet<PatchGroupIdentity>();
+		var managedRemovedGroups = new HashSet<PatchGroupIdentity>();
 		var orderedEntries = profile.Entries
 			.OrderBy(entry => entry.LoadOrder)
 			.ThenBy(entry => entry.AddedUtc)
@@ -146,6 +154,18 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				.ToArray();
 			foreach (var group in groups)
 			{
+				if (snapshot.Nodes.TryGetValue(profileEntry.NodeId, out var managedNode)
+					&& string.Equals(
+						managedNode.Metadata.SourcePackageGuid,
+						ArmorRegistryPackageGuid,
+						StringComparison.OrdinalIgnoreCase))
+				{
+					// Migrate the old manually imported addon into the hidden
+					// manager-owned component without deleting the user's library node.
+					removedGroups.Add(group.Key);
+					managedRemovedGroups.Add(group.Key);
+					continue;
+				}
 				var baseFile = group.FirstOrDefault(file => file.SidecarKind == PatchSidecarKind.Base);
 				if (baseFile is null) continue;
 
@@ -298,11 +318,64 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			issues,
 			cancellationToken).ConfigureAwait(false);
 
+		var armorRuntimeEnabled = false;
+		GeneratedPatchGroup? armorAddon = null;
+		if (_armorRegistry is not null)
+		{
+			try
+			{
+				var registrySnapshot = await _armorRegistry.ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
+				armorRuntimeEnabled = registrySnapshot.Document.Enabled
+					&& await _armorRegistry.IsManagedDeploymentEnabledAsync(cancellationToken).ConfigureAwait(false);
+				if (armorRuntimeEnabled)
+				{
+					if (HasActiveBingusLoader(orderedEntries, snapshot))
+					{
+						armorAddon = await CreateArmorRegistryAddonAsync(
+							modsRootDirectory,
+							materialize,
+							cancellationToken).ConfigureAwait(false);
+					}
+					else
+					{
+						var runtimeDocument = await CreateArmorRegistryDocumentAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
+						documents.Add(new LuaDocumentSource(
+							ArmorRegistryNodeId,
+							int.MaxValue,
+							new PatchGroupIdentity(ArmorRegistryNodeId, $"{LuaAssetKeys.BootArchiveId:x16}", 0, int.MaxValue),
+							runtimeDocument));
+					}
+				}
+			}
+			catch (Exception exception) when (exception is IOException
+				or UnauthorizedAccessException
+				or InvalidDataException
+				or LuaPatchFormatException)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Error,
+					"RuntimeArmorRegistryPreparationFailed",
+					$"无法准备运行时护甲注册组件：{exception.Message}",
+					ExceptionMessage: exception.ToString()));
+			}
+		}
+
 		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 
-		if (documents.Count < 2)
-			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
+		var filteredIndex = FilterPatchIndex(patchIndex, removedGroups);
+		if (documents.Count < 2 && (!armorRuntimeEnabled || armorAddon is not null))
+		{
+			var addonGroups = armorAddon is null ? Array.Empty<GeneratedPatchGroup>() : new[] { armorAddon };
+			return new LuaBuildResult(
+				FilterPatchIndex(patchIndex, managedRemovedGroups),
+				addonGroups,
+				externalMappings,
+				issues,
+				armorAddon is not null,
+				armorAddon is null ? null : ArmorRegistrySourceFingerprint(),
+				documents.Count);
+		}
 
 		var opaqueDocuments = documents.Where(document => document.Document.IsOpaque).ToArray();
 		if (opaqueDocuments.Length > 0 && permission != LuaDeploymentPermission.AllowOpaque)
@@ -389,13 +462,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 		}
 
-		var filteredFiles = patchIndex.FilesByNode.ToDictionary(
-			pair => pair.Key,
-			pair => (IReadOnlyList<IndexedPatchFile>)pair.Value
-				.Where(file => !removedGroups.Contains(new PatchGroupIdentity(file.NodeId, file.ArchiveHex16, file.SourcePatchIndex, file.NormalizedOrder)))
-			.ToArray());
-		var filteredIndex = patchIndex with { FilesByNode = filteredFiles };
-		return new LuaBuildResult(filteredIndex, [generated], externalMappings, issues, true, fingerprint, documents.Count);
+		var generatedGroups = armorAddon is null
+			? new[] { generated }
+			: new[] { generated, armorAddon };
+		return new LuaBuildResult(filteredIndex, generatedGroups, externalMappings, issues, true, fingerprint, documents.Count);
 	}
 
 	private static bool IsLuaAssetKey(AssetKey key)
@@ -403,6 +473,227 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 
 	private static bool IsLuaBootArchive(string archiveHex16)
 		=> string.Equals(archiveHex16, $"{LuaAssetKeys.BootArchiveId:x16}", StringComparison.OrdinalIgnoreCase);
+
+	private static bool HasActiveBingusLoader(
+		IReadOnlyList<ProfileEntry> entries,
+		LibrarySnapshot snapshot)
+		=> entries.Any(entry =>
+			snapshot.Nodes.TryGetValue(entry.NodeId, out var node)
+			&& string.Equals(
+				node.Metadata.SourcePackageGuid,
+				BingusLoaderPackageGuid,
+				StringComparison.OrdinalIgnoreCase));
+
+	private static PatchFileIndex FilterPatchIndex(
+		PatchFileIndex patchIndex,
+		IReadOnlySet<PatchGroupIdentity> removedGroups)
+	{
+		if (removedGroups.Count == 0) return patchIndex;
+		var filteredFiles = patchIndex.FilesByNode.ToDictionary(
+			pair => pair.Key,
+			pair => (IReadOnlyList<IndexedPatchFile>)pair.Value
+				.Where(file => !removedGroups.Contains(new PatchGroupIdentity(
+					file.NodeId,
+					file.ArchiveHex16,
+					file.SourcePatchIndex,
+					file.NormalizedOrder)))
+				.ToArray());
+		return patchIndex with { FilesByNode = filteredFiles };
+	}
+
+	private static async ValueTask<GeneratedPatchGroup> CreateArmorRegistryAddonAsync(
+		string modsRootDirectory,
+		bool materialize,
+		CancellationToken cancellationToken)
+	{
+		var source = RuntimeArmorRegistryLuaSource.Load();
+		var fingerprint = ArmorRegistrySourceFingerprint();
+		var outputDirectory = Path.Combine(
+			Path.GetFullPath(modsRootDirectory),
+			".runtime",
+			"armor-registry-addon",
+			fingerprint);
+		var outputPath = Path.Combine(outputDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
+		var archive = BuildArmorRegistryAddonArchive(source);
+		GeneratedPatchFile[] files;
+		if (materialize)
+		{
+			Directory.CreateDirectory(outputDirectory);
+			await File.WriteAllBytesAsync(outputPath, archive, cancellationToken).ConfigureAwait(false);
+			await File.WriteAllBytesAsync(outputPath + ".stream", [], cancellationToken).ConfigureAwait(false);
+			await File.WriteAllBytesAsync(outputPath + ".gpu_resources", [], cancellationToken).ConfigureAwait(false);
+			files =
+			[
+				CreateGeneratedFile(outputPath, PatchSidecarKind.Base),
+				CreateGeneratedFile(outputPath + ".stream", PatchSidecarKind.Stream),
+				CreateGeneratedFile(outputPath + ".gpu_resources", PatchSidecarKind.GpuResources),
+			];
+		}
+		else
+		{
+			files =
+			[
+				new GeneratedPatchFile(PatchSidecarKind.Base, outputPath, Path.GetFileName(outputPath), archive.LongLength, DateTimeOffset.MinValue),
+				new GeneratedPatchFile(PatchSidecarKind.Stream, outputPath + ".stream", Path.GetFileName(outputPath) + ".stream", 0, DateTimeOffset.MinValue),
+				new GeneratedPatchFile(PatchSidecarKind.GpuResources, outputPath + ".gpu_resources", Path.GetFileName(outputPath) + ".gpu_resources", 0, DateTimeOffset.MinValue),
+			];
+		}
+		return new GeneratedPatchGroup(
+			$"{LuaAssetKeys.BootArchiveId:x16}",
+			0,
+			files,
+			"HD2 Runtime Armor Registry managed addon",
+			PlacementOrder: int.MaxValue);
+	}
+
+	private static byte[] BuildArmorRegistryAddonArchive(string source)
+	{
+		const string resourceName = "mods/codex/runtime_armor_registry";
+		var declaration = $"-- HD2-Addon: {resourceName}\n";
+		var body = Encoding.UTF8.GetBytes(
+			source.StartsWith("-- HD2-Addon:", StringComparison.Ordinal)
+				? source
+				: declaration + source);
+		var resource = new byte[8 + body.Length];
+		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(0), checked((uint)body.Length));
+		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(4), 2);
+		body.CopyTo(resource.AsSpan(8));
+
+		const int headerLength = 104;
+		const int entryLength = 80;
+		var payloadOffset = Align16(headerLength + entryLength);
+		var archiveLength = Align16(payloadOffset + resource.Length);
+		var archive = new byte[archiveLength];
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(0), 0xF0000011);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(4), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(8), 1);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(32), checked((ulong)archiveLength));
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(72 + 8), LuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(72 + 16), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(72 + 24), 16);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(72 + 28), 16);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(104), StingrayHash(resourceName));
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(112), LuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(120), checked((ulong)payloadOffset));
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(160), checked((uint)resource.Length));
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(172), 16);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(176), 16);
+		resource.CopyTo(archive.AsSpan(payloadOffset));
+		return archive;
+	}
+
+	private static int Align16(int value) => checked((value + 15) & ~15);
+
+	private static ulong StingrayHash(string value)
+	{
+		const ulong mix = 0xC6A4A7935BD1E995;
+		var data = Encoding.UTF8.GetBytes(value);
+		var hash = unchecked((ulong)data.Length * mix);
+		var offset = 0;
+		while (offset + 8 <= data.Length)
+		{
+			var word = BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan(offset, 8));
+			word = unchecked(word * mix);
+			word ^= word >> 47;
+			hash = unchecked((hash ^ unchecked(word * mix)) * mix);
+			offset += 8;
+		}
+		if (offset < data.Length)
+		{
+			ulong tail = 0;
+			for (var index = 0; offset + index < data.Length; index++)
+				tail |= (ulong)data[offset + index] << (index * 8);
+			hash = unchecked((hash ^ tail) * mix);
+		}
+		hash ^= hash >> 47;
+		hash = unchecked(hash * mix);
+		return hash ^ (hash >> 47);
+	}
+
+	private static string ArmorRegistrySourceFingerprint()
+		=> Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(RuntimeArmorRegistryLuaSource.Load())))
+			.ToLowerInvariant();
+
+	private static async ValueTask<LuaPatchDocument> CreateArmorRegistryDocumentAsync(
+		string gameDataDirectory,
+		CancellationToken cancellationToken)
+	{
+		var packageName = $"{LuaAssetKeys.BootArchiveId:x16}";
+		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameDataDirectory);
+		var toc = await resolver.GetPackageTocAsync(packageName, cancellationToken).ConfigureAwait(false)
+			?? throw new InvalidDataException($"游戏数据中找不到 Lua 启动 Archive：{packageName}");
+		var entry = new HD2ModAdaptation.PatchReconstruction.PatchTocScanner()
+			.ScanEntries(toc.Data, packageName, toc.UsesSlimEntryOffset)
+			.SingleOrDefault(candidate => LuaAssetKeys.IsBoot(candidate.AssetKey))
+			?? throw new InvalidDataException("游戏 Lua 启动 Archive 中找不到 boot AssetKey。");
+		var boot = await resolver.GetPackageResourceAsync(
+			packageName,
+			entry.TocDataOffset,
+			entry.TocDataSize,
+			cancellationToken).ConfigureAwait(false)
+			?? throw new InvalidDataException("无法读取游戏原始 Lua 启动资源。");
+		if (boot.Length < 9)
+			throw new InvalidDataException("游戏原始 Lua 启动资源过短。");
+		var declaredBootLength = BinaryPrimitives.ReadUInt32LittleEndian(boot.AsSpan(0, 4));
+		var bootKind = BinaryPrimitives.ReadUInt32LittleEndian(boot.AsSpan(4, 4));
+		if (bootKind != 2 || declaredBootLength != boot.Length - 8)
+			throw new InvalidDataException("游戏原始 Lua 启动资源的封装格式不受支持。");
+		boot = boot.AsSpan(8).ToArray();
+
+		var header = CreateLuaHeaderTemplate();
+		var syntheticEntry = new HD2ModAdaptation.PatchReconstruction.PatchTocEntry(
+			LuaAssetKeys.BootAssetKey,
+			"<manager:runtime-armor-registry>",
+			$"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
+		var runtimeSource = Encoding.UTF8.GetBytes(RuntimeArmorRegistryLuaSource.Load());
+		var body = "local __hd2_registry_loader = rawget(_G, \"loadstring\") or rawget(_G, \"load\")\n"
+			+ "local __hd2_registry_chunk = __hd2_registry_loader and __hd2_registry_loader(\""
+			+ EscapeLuaBytes(runtimeSource)
+			+ "\", \"@mods/codex/runtime_armor_registry\")\n"
+			+ "if __hd2_registry_chunk then pcall(__hd2_registry_chunk) end";
+		return new LuaPatchDocument(
+			syntheticEntry.SourceFilePath,
+			syntheticEntry,
+			new HD2ModAdaptation.PatchReconstruction.PatchEntryPayload(syntheticEntry, boot, [], []),
+			header,
+			boot,
+			[
+				new LuaPatchBlock(
+					"HD2 Runtime Armor Registry",
+					string.Empty,
+					body,
+					WrapBootReturn: false,
+					IsManagedBlock: true,
+					SourceModId: ArmorRegistryNodeId.Value.ToString("N"),
+					SourcePatchGroup: "manager/runtime-armor-registry")
+			],
+			LuaPatchWrapperKind.Single,
+			null,
+			string.Empty);
+	}
+
+	private static byte[] CreateLuaHeaderTemplate()
+	{
+		var header = new byte[0xC0];
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0), 0xF0000011);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(4), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(8), 1);
+		const int typeOffset = 72;
+		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(typeOffset + 8), LuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(typeOffset + 16), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(typeOffset + 24), 16);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(typeOffset + 28), 64);
+		const int entryOffset = 104;
+		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(entryOffset), LuaAssetKeys.BootFileId);
+		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(entryOffset + 8), LuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(entryOffset + 16), 0xB8);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(entryOffset + 76), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0xBC), 2);
+		return header;
+	}
+
+	private static string EscapeLuaBytes(IEnumerable<byte> bytes)
+		=> string.Concat(bytes.Select(value => "\\" + value.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
 	private async ValueTask<IReadOnlyList<ExternalFileMapping>> BuildExternalMappingsAsync(
 		IReadOnlyList<ProfileEntry> entries,

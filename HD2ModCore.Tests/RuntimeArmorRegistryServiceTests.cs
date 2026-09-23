@@ -1,5 +1,11 @@
+using System.Buffers.Binary;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using AdaptationLuaAssetKeys = HD2ModAdaptation.PatchReconstruction.Lua.LuaAssetKeys;
+using AdaptationLuaPatchInspector = HD2ModAdaptation.PatchReconstruction.Lua.LuaPatchInspector;
+using AdaptationPatchEntryPayloadReader = HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader;
+using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using Microsoft.Data.Sqlite;
 
 namespace HD2ModCore.Tests;
@@ -107,6 +113,144 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(2, entries.Count);
 		Assert.Equal(["Alpha", "Zulu"], entries.Select(entry => entry.DisplayName));
 		Assert.Equal([20u, 10u], entries.Select(entry => entry.ItemId));
+	}
+
+	[Fact]
+	public async Task LuaDeployment_WithActiveBingus_MaterializesManagedAddonAndMigratesLegacyPackage()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
+
+		var loaderId = ModNodeId.New();
+		var legacyId = ModNodeId.New();
+		var loader = new ModNode(
+			loaderId,
+			"loader",
+			new ModNodeMetadata("Bingus", null, DateTimeOffset.UtcNow, null, SourcePackageGuid: "612eaf70-d682-43c7-9efd-16dcc695f977"),
+			[],
+			[]);
+		var legacy = new ModNode(
+			legacyId,
+			"legacy",
+			new ModNodeMetadata("Legacy runtime", null, DateTimeOffset.UtcNow, null, SourcePackageGuid: "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"),
+			[],
+			[]);
+		var profile = new Profile(
+			ProfileId.New(),
+			"test",
+			DateTimeOffset.UtcNow,
+			null,
+			[new ProfileEntry(loaderId, 0), new ProfileEntry(legacyId, 1)]);
+		var snapshot = new LibrarySnapshot(
+			1,
+			DateTimeOffset.UtcNow,
+			new Dictionary<ModNodeId, ModNode> { [loaderId] = loader, [legacyId] = legacy },
+			[profile],
+			profile.Id);
+		var legacyPatch = Path.Combine(fixture.Root, "legacy", "9ba626afa44a3aa3.patch_0");
+		Directory.CreateDirectory(Path.GetDirectoryName(legacyPatch)!);
+		await File.WriteAllBytesAsync(legacyPatch, [1]);
+		var index = new PatchFileIndex(
+			DateTimeOffset.UtcNow,
+			new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>
+			{
+				[legacyId] =
+				[
+					new IndexedPatchFile(
+						legacyId,
+						legacyPatch,
+						Path.GetFileName(legacyPatch),
+						"9ba626afa44a3aa3",
+						0,
+						0,
+						PatchSidecarKind.Base,
+						1,
+						DateTimeOffset.UtcNow),
+				],
+			},
+			[]);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			index,
+			modsRoot,
+			Path.Combine(fixture.Root, "unused-game-data"),
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		var group = Assert.Single(result.GeneratedPatchGroups);
+		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+		var entry = Assert.Single(await new AdaptationPatchTocScanner().ScanEntriesAsync(patch.FilePath));
+		Assert.Equal(AdaptationLuaAssetKeys.LuaTypeId, entry.AssetKey.TypeId);
+		Assert.Equal(0x0A2E0E3386517D4CUL, entry.AssetKey.FileId);
+		var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(entry);
+		Assert.StartsWith("-- HD2-Addon: mods/codex/runtime_armor_registry\n", System.Text.Encoding.UTF8.GetString(payload.TocData.AsSpan(8)));
+		Assert.Empty(result.PatchIndex.FilesByNode[legacyId]);
+	}
+
+	[Fact]
+	public async Task LuaDeployment_WithoutBingus_BuildsDirectBootPatchFromInstalledGameResource()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		var bootBytecode = new byte[] { 0x1B, 0x4C, 0x4A, 0x02 };
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}"),
+			CreateGameBootArchive(bootBytecode));
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []),
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		var group = Assert.Single(result.GeneratedPatchGroups);
+		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+		var document = await new AdaptationLuaPatchInspector().InspectAsync(patch.FilePath);
+		Assert.Equal(bootBytecode, document.BootBytecode);
+		var runtimeBlock = Assert.Single(document.Blocks, block => block.Name == "HD2 Runtime Armor Registry");
+		Assert.Contains("@mods/codex/runtime_armor_registry", runtimeBlock.Body, StringComparison.Ordinal);
+	}
+
+	private static byte[] CreateGameBootArchive(byte[] bootBytecode)
+	{
+		var resource = new byte[bootBytecode.Length + 8];
+		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(0), checked((uint)bootBytecode.Length));
+		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(4), 2);
+		bootBytecode.CopyTo(resource.AsSpan(8));
+		const int typeOffset = 60;
+		const int entryOffset = 92;
+		const int payloadOffset = 176;
+		var archive = new byte[payloadOffset + resource.Length];
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(0), 0xF0000011);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(4), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(8), 1);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(typeOffset + 8), AdaptationLuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(typeOffset + 16), 1);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(typeOffset + 24), 16);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(typeOffset + 28), 64);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(entryOffset), AdaptationLuaAssetKeys.BootFileId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(entryOffset + 8), AdaptationLuaAssetKeys.LuaTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(entryOffset + 16), payloadOffset);
+		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(entryOffset + 56), checked((uint)resource.Length));
+		resource.CopyTo(archive.AsSpan(payloadOffset));
+		return archive;
 	}
 
 	private sealed class Fixture : IAsyncDisposable

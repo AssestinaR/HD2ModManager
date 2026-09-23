@@ -213,7 +213,8 @@ internal static class CliDeploymentPlanArtifacts
 				.Where(pair => activeNodeIds.Contains(pair.Key))
 				.ToDictionary(pair => pair.Key, pair => pair.Value),
 			originalIndex.Issues.Where(issue => issue.NodeId is null || activeNodeIds.Contains(issue.NodeId.Value)).ToArray());
-		var luaPlan = await CoreServices.CreateLuaDeploymentService()
+		var deploymentPaths = new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot);
+		var luaPlan = await CoreServices.CreateLuaDeploymentService(deploymentPaths)
 			.PlanAsync(effective, libraryState.Snapshot, filteredIndex, workspace.LibraryRoot, targetValidation.GameDataDirectory!, contentFacts, cancellationToken, allowUnsafeLua ? LuaDeploymentPermission.AllowOpaque : LuaDeploymentPermission.DenyOpaque)
 			.ConfigureAwait(false);
 		AddCoreIssues(diagnostics, luaPlan.Issues, "lua");
@@ -384,7 +385,10 @@ internal static class CliDeploymentPlanArtifacts
 			return new CliDeploymentMaterializedPlan(null, [], [], new CliDeploymentLua(false, 0, null, []), diagnostics);
 		}
 
-		var preparation = await CoreServices.CreateLuaDeploymentService()
+		var deploymentPaths = new StoragePaths(
+			current.Document.Target.ManagerRoot ?? Directory.GetCurrentDirectory(),
+			current.Document.Target.LibraryRoot);
+		var preparation = await CoreServices.CreateLuaDeploymentService(deploymentPaths)
 			.MaterializeAsync(
 				current.EffectiveProfile,
 				current.Snapshot,

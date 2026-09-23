@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Services;
@@ -11,6 +12,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 {
 	private readonly RuntimeArmorRegistryService service;
 	private readonly NotificationService notifications;
+	private readonly IProfileDeploymentCoordinator deploymentCoordinator;
 	private string fingerprint = "missing";
 	private bool enabled;
 	private bool isBusy;
@@ -21,10 +23,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private RuntimeArmorChoiceViewModel? selectedTarget;
 	private RuntimeArmorChoiceViewModel? selectedSource;
 
-	public ArmorRegistryPageViewModel(NotificationService notifications)
+	public ArmorRegistryPageViewModel(
+		NotificationService notifications,
+		IProfileDeploymentCoordinator deploymentCoordinator)
 	{
 		Title = "运行时护甲注册";
 		this.notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
+		this.deploymentCoordinator = deploymentCoordinator ?? throw new ArgumentNullException(nameof(deploymentCoordinator));
 		service = CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths());
 		RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !IsBusy && !HasChanges);
 		ApplyCommand = new AsyncRelayCommand(_ => ApplyAsync(), _ => !IsBusy && HasChanges);
@@ -205,6 +210,17 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			HasChanges = false;
 
 			var snapshot = await WaitForRuntimeAsync(result.Document.Revision);
+			var gameRunning = IsGameRunning();
+			if (!gameRunning)
+			{
+				StatusTitle = Enabled ? "正在部署运行时" : "正在移除运行时";
+				StatusDetail = Enabled
+					? "协议已保存，正在把管理器托管的运行时组件部署到活动配置。"
+					: "停用协议已发布，正在从活动配置移除运行时组件。";
+				var deployment = await deploymentCoordinator.FlushAsync();
+				if (deployment.Stage != ProfileDeploymentStage.Completed)
+					throw new InvalidOperationException(deployment.Message ?? "活动配置部署失败。");
+			}
 			UpdateStatus(snapshot);
 			if (snapshot.RuntimeAcknowledged)
 			{
@@ -219,6 +235,19 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			{
 				notifications.Show(
 					"协议已保存，但游戏运行时尚未确认；请稍后刷新状态。",
+					NotificationLevel.Warning,
+					TimeSpan.FromSeconds(8),
+					"护甲注册",
+					"armor-registry-apply");
+			}
+			else if (gameRunning)
+			{
+				StatusTitle = "等待下次部署";
+				StatusDetail = Enabled
+					? "游戏正在运行且尚未加载托管运行时；退出游戏并部署活动配置后生效。"
+					: "停用协议已保存；托管运行时将在游戏退出后的下一次部署中移除。";
+				notifications.Show(
+					StatusDetail,
 					NotificationLevel.Warning,
 					TimeSpan.FromSeconds(8),
 					"护甲注册",
@@ -269,8 +298,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		if (snapshot.RuntimeAcknowledged)
 		{
+			var mode = snapshot.RuntimeStatus.GetValueOrDefault("deployment_mode") switch
+			{
+				"shared_loader" => "Bingus 插件模式",
+				"direct" => "管理器独占模式",
+				_ => "运行时模式未知",
+			};
 			StatusTitle = "游戏已同步";
-			StatusDetail = $"运行中的游戏已确认 revision {snapshot.Document.Revision}。";
+			StatusDetail = $"运行中的游戏已确认 revision {snapshot.Document.Revision}，当前为{mode}。";
 		}
 		else if (snapshot.RuntimeProcessRunning)
 		{
@@ -283,7 +318,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			StatusTitle = snapshot.ProtocolExists ? "等待游戏启动" : "尚未创建协议";
 			StatusDetail = snapshot.ProtocolExists
-				? "配置已保存在外置协议中，启动游戏后会自动定位并应用。"
+				? snapshot.Document.Enabled
+					? "配置及托管运行时已部署；启动游戏后会自动定位并应用。"
+					: "映射已停用，托管运行时会在部署时从游戏 Data 中移除。"
 				: "添加映射并应用后将创建外置协议。";
 		}
 	}
@@ -308,6 +345,25 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		Directory.CreateDirectory(service.RegistryRoot);
 		Process.Start(new ProcessStartInfo(service.RegistryRoot) { UseShellExecute = true });
+	}
+
+	private static bool IsGameRunning()
+	{
+		try
+		{
+			return Process.GetProcessesByName("helldivers2").Any(process =>
+			{
+				using (process) return !process.HasExited;
+			});
+		}
+		catch (InvalidOperationException)
+		{
+			return true;
+		}
+		catch (System.ComponentModel.Win32Exception)
+		{
+			return true;
+		}
 	}
 }
 

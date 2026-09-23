@@ -12,6 +12,7 @@ public sealed class RuntimeArmorRegistryService
 	public const string ProtocolFileName = "armor-registry.protocol";
 	public const string RuntimeStatusFileName = "runtime.status";
 	public const string LocatorCacheFileName = "locator.cache";
+	public const string DeploymentStateFileName = "runtime-armor-registry.deployment";
 
 	private const int MaximumProtocolBytes = 65536;
 	private readonly StoragePaths paths;
@@ -24,6 +25,15 @@ public sealed class RuntimeArmorRegistryService
 	}
 
 	public string RegistryRoot => registryRoot;
+	public string DeploymentStatePath => Path.Combine(paths.DataDirectory, DeploymentStateFileName);
+
+	public async ValueTask<bool> IsManagedDeploymentEnabledAsync(
+		CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(DeploymentStatePath)) return false;
+		var text = await ReadBoundedTextAsync(DeploymentStatePath, 256, cancellationToken).ConfigureAwait(false);
+		return string.Equals(text.Trim(), "enabled=true", StringComparison.Ordinal);
+	}
 
 	public static string ResolveRegistryRoot(string? overridePath = null)
 	{
@@ -141,6 +151,12 @@ public sealed class RuntimeArmorRegistryService
 		{
 			if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
 		}
+		Directory.CreateDirectory(paths.DataDirectory);
+		await File.WriteAllTextAsync(
+			DeploymentStatePath,
+			enabled ? "enabled=true\n" : "enabled=false\n",
+			new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+			cancellationToken).ConfigureAwait(false);
 		var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
 		return new RuntimeArmorRegistryApplyResult(
 			snapshot.Document,
