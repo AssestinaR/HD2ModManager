@@ -4,6 +4,12 @@
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <DataTemplate x:Key="AvailableArmorSearchActions">
+            <Button Style="{StaticResource AppHeaderTextButton}"
+                    Content="{Binding AvailableArmorUnitFilterText}"
+                    ToolTip="按当前活动配置中生效的 Unit 覆盖筛选；无法确认的护甲仅在“全部”中显示"
+                    Click="OnCycleAvailableArmorUnitFilterClick"/>
+        </DataTemplate>
     </UserControl.Resources>
     <Grid>
         <Grid.RowDefinitions>
@@ -115,6 +121,7 @@
                                     HeaderTitle="可用护甲"
                                     HeaderSummary="{Binding AvailableSummary}"
                                     SearchText="{Binding AvailableSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                    SearchActionsTemplate="{StaticResource AvailableArmorSearchActions}"
                                     EmptyMessage="所有护甲都已分配为视觉来源或映射目标。"
                                     SelectionPolicy="Multiple"
                                     RowActions="ArmorAssign"

@@ -14,6 +14,13 @@ namespace HD2ModManager.ViewModels;
 
 public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 {
+	private enum AvailableArmorUnitFilter
+	{
+		All,
+		HasEffectiveUnitOverride,
+		NoEffectiveUnitOverride,
+	}
+
 	private readonly RuntimeArmorRegistryService service;
 	private readonly NotificationService notifications;
 	private readonly IProfileDeploymentCoordinator deploymentCoordinator;
@@ -31,10 +38,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private string providersSearchText = string.Empty;
 	private string availableSearchText = string.Empty;
 	private string providerDetailSearchText = string.Empty;
+	private AvailableArmorUnitFilter availableArmorUnitFilter;
 	private uint? selectedProviderId;
 	private readonly HashSet<uint> pendingProviderIds = [];
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
-	private IReadOnlyDictionary<string, string?> cachedIconPaths = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
 	private bool hasLoadedCatalog;
 
 	public ArmorRegistryPageViewModel(
@@ -89,6 +97,26 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			AvailableArmorsView.Refresh();
 			OnPropertyChanged(nameof(AvailableSummary));
 		}
+	}
+
+	public string AvailableArmorUnitFilterText => availableArmorUnitFilter switch
+	{
+		AvailableArmorUnitFilter.HasEffectiveUnitOverride => "Unit 覆盖：已命中",
+		AvailableArmorUnitFilter.NoEffectiveUnitOverride => "Unit 覆盖：未命中",
+		_ => "Unit 覆盖：全部",
+	};
+
+	public void CycleAvailableArmorUnitFilter()
+	{
+		availableArmorUnitFilter = availableArmorUnitFilter switch
+		{
+			AvailableArmorUnitFilter.All => AvailableArmorUnitFilter.HasEffectiveUnitOverride,
+			AvailableArmorUnitFilter.HasEffectiveUnitOverride => AvailableArmorUnitFilter.NoEffectiveUnitOverride,
+			_ => AvailableArmorUnitFilter.All,
+		};
+		OnPropertyChanged(nameof(AvailableArmorUnitFilterText));
+		AvailableArmorsView.Refresh();
+		OnPropertyChanged(nameof(AvailableSummary));
 	}
 
 	public string ProviderDetailSearchText
@@ -149,7 +177,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		? $"{Providers.Count} 个视觉来源"
 		: $"{ProvidersView.Cast<object>().Count()} / {Providers.Count} 个视觉来源";
 	public string AvailableSummary => availableSearchText.Length == 0
-		? $"{AvailableArmors.Count} 个未管理护甲"
+		&& availableArmorUnitFilter == AvailableArmorUnitFilter.All
+			? $"{AvailableArmors.Count} 个未管理护甲"
 		: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 个未管理护甲";
 	public string ProviderDetailTitle => selectedProviderId is { } id
 		? Choices.TryGetValue(id, out var choice) ? choice.Name : $"未知护甲 {id}"
@@ -180,9 +209,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			await Task.WhenAll(catalogTask, snapshotTask);
 			var snapshot = await snapshotTask;
 			var catalog = await catalogTask;
-			var iconPaths = await ReadArmorIconPathsAsync(catalog);
+			var armorDisplayFacts = await ReadArmorDisplayFactsAsync(catalog);
 			cachedCatalog = catalog;
-			cachedIconPaths = iconPaths;
+			cachedArmorDisplayFacts = armorDisplayFacts;
 			hasLoadedCatalog = true;
 			ApplySnapshot(snapshot, rebuildChoices: true, resetNavigation: true);
 		}
@@ -234,7 +263,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					item.ItemId,
 					item.ArchiveId,
 					item.DisplayName,
-					cachedIconPaths.GetValueOrDefault(item.ArchiveId)))
+					cachedArmorDisplayFacts.GetValueOrDefault(item.ArchiveId)?.ImagePath,
+					cachedArmorDisplayFacts.TryGetValue(item.ArchiveId, out var facts)
+						? facts.HasEffectiveUnitOverride
+						: null))
 				.ToDictionary(item => item.ItemId);
 		}
 		foreach (var mapping in snapshot.Document.Mappings)
@@ -279,10 +311,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		HasChanges = false;
 	}
 
-	private async Task<IReadOnlyDictionary<string, string?>> ReadArmorIconPathsAsync(
+	private async Task<IReadOnlyDictionary<string, ArmorDisplayFacts>> ReadArmorDisplayFactsAsync(
 		IReadOnlyList<RuntimeArmorCatalogEntry> catalog)
 	{
-		var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+		var result = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
 		var gameData = SettingsService.GetGameDataFolder();
 		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
 			return result;
@@ -330,6 +362,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					string.Equals(candidate.Archive.PackageName, item.ArchiveId, StringComparison.OrdinalIgnoreCase));
 				if (archive is null) continue;
 
+				var hasEffectiveUnitOverride = archive.Overlay.EffectiveAssets.Any(asset =>
+					asset.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId
+					&& asset.WinnerNodeId is not null);
 				var unitWinners = archive.Overlay.EffectiveAssets
 					.Where(asset => asset.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId)
 					.Where(asset => asset.WinnerNodeId is not null)
@@ -347,8 +382,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					.ThenBy(group => group.Key.Value)
 					.Select(group => (ModNodeId?)group.Key)
 					.FirstOrDefault();
-				if (directWinner is { } winner && nodesById.ContainsKey(winner))
-					result[item.ArchiveId] = FindModIconInParentChain(winner.Value, parents);
+				var imagePath = directWinner is { } winner && nodesById.ContainsKey(winner)
+					? FindModIconInParentChain(winner.Value, parents)
+					: null;
+				result[item.ArchiveId] = new ArmorDisplayFacts(imagePath, hasEffectiveUnitOverride);
 			}
 		}
 		catch (Exception exception) when (exception is IOException
@@ -619,7 +656,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, providersSearchText);
 
 	private bool FilterAvailableArmor(object item)
-		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, availableSearchText);
+	{
+		if (item is not RuntimeArmorChoiceViewModel choice || !MatchesSearch(choice, availableSearchText))
+			return false;
+		return availableArmorUnitFilter switch
+		{
+			AvailableArmorUnitFilter.HasEffectiveUnitOverride => choice.HasEffectiveUnitOverride == true,
+			AvailableArmorUnitFilter.NoEffectiveUnitOverride => choice.HasEffectiveUnitOverride == false,
+			_ => true,
+		};
+	}
 
 	private bool FilterProviderDetailItem(object item)
 		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, providerDetailSearchText);
@@ -632,6 +678,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			|| choice.ArchiveId.Contains(term, StringComparison.OrdinalIgnoreCase)
 			|| choice.ItemIdText.Contains(term, StringComparison.OrdinalIgnoreCase);
 	}
+
+	private sealed record ArmorDisplayFacts(string? ImagePath, bool HasEffectiveUnitOverride);
 
 	private HashSet<(uint Target, uint Source)> GetMappingKeys()
 		=> Mappings.Select(mapping => (mapping.Target.ItemId, mapping.Source.ItemId)).ToHashSet();
@@ -837,12 +885,19 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	private bool isSelected;
 	private ModListRowPresentation rowPresentation = ModListRowPresentation.Empty;
 
-	public RuntimeArmorChoiceViewModel(uint itemId, string archiveId, string displayName, string? imagePath = null, bool isUnknown = false)
+	public RuntimeArmorChoiceViewModel(
+		uint itemId,
+		string archiveId,
+		string displayName,
+		string? imagePath = null,
+		bool? hasEffectiveUnitOverride = null,
+		bool isUnknown = false)
 	{
 		ItemId = itemId;
 		ArchiveId = archiveId;
 		Name = displayName;
 		ImagePath = imagePath;
+		HasEffectiveUnitOverride = hasEffectiveUnitOverride;
 		IsUnknown = isUnknown;
 	}
 
@@ -850,6 +905,7 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public string ArchiveId { get; }
 	public string Name { get; }
 	public string? ImagePath { get; }
+	public bool? HasEffectiveUnitOverride { get; }
 	public bool IsUnknown { get; }
 	public string ListKey => SelectionKey;
 	public string SelectionKey => ItemId.ToString(CultureInfo.InvariantCulture);
