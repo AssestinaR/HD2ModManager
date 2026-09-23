@@ -15,6 +15,7 @@ namespace HD2ModManager.ViewModels
 {
     public sealed class ShellViewModel : BaseViewModel, IAsyncDisposable
     {
+        private enum ArmorRegistrySelectionAction { Promote, ReleaseProviders, ReleaseTargets }
         private readonly ProfileService _profileService;
         private readonly ModLibraryService _libraryService;
         private readonly ImportQueueService _importQueue;
@@ -111,6 +112,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand LaunchGameCommand { get; }
         public RelayCommand ShowSplitCommand { get; }
         public RelayCommand ShowSettingsCommand { get; }
+        public RelayCommand ShowArmorRegistryCommand { get; }
         public RelayCommand ApplyChangesCommand { get; }
         public RelayCommand ValidateModLibraryCommand { get; }
         public RelayCommand ImportCommand { get; }
@@ -123,6 +125,9 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SetSelectedModsAsOptionsCommand { get; }
         public RelayCommand AttachSelectedDecorationsCommand { get; }
         public RelayCommand RemoveSelectedOptionsFromHostCommand { get; }
+        public RelayCommand PromoteArmorProvidersCommand { get; }
+        public RelayCommand ReleaseArmorProvidersCommand { get; }
+        public RelayCommand ReleaseArmorTargetsCommand { get; }
         public RelayCommand EnableSelectedDecorationsCommand { get; }
         public RelayCommand DisableSelectedDecorationsCommand { get; }
         public RelayCommand ToggleMessagePanelCommand { get; }
@@ -142,6 +147,7 @@ namespace HD2ModManager.ViewModels
         public bool IsLibraryActive => CurrentMode == WorkspaceMode.LibraryOnly;
         public bool IsSplitActive => CurrentMode == WorkspaceMode.ProfileLibrarySplit;
         public bool IsSettingsActive => CurrentMode == WorkspaceMode.Settings;
+        public bool IsArmorRegistryActive => CurrentMode == WorkspaceMode.ArmorRegistry;
         // Page type alone is insufficient: two different Mod detail pages both
         // use ModDetails, but they still need to occupy two visible slots.
         public bool IsSplitView => RightPage is not null
@@ -262,6 +268,7 @@ namespace HD2ModManager.ViewModels
             LaunchGameCommand = new RelayCommand(async _ => await LaunchGameAsync());
             ShowSplitCommand = new RelayCommand(() => Navigate(WorkspaceMode.ProfileLibrarySplit));
             ShowSettingsCommand = new RelayCommand(() => Navigate(WorkspaceMode.Settings));
+            ShowArmorRegistryCommand = new RelayCommand(OpenArmorRegistry);
             ApplyChangesCommand = new RelayCommand(QueueActiveProfileDeployment);
             ValidateModLibraryCommand = new RelayCommand(ValidateModLibrary);
             ImportCommand = new RelayCommand(BrowseAndImport);
@@ -274,6 +281,9 @@ namespace HD2ModManager.ViewModels
             SetSelectedModsAsOptionsCommand = new RelayCommand(async _ => await SetSelectedModsAsOptionsAsync());
             AttachSelectedDecorationsCommand = new RelayCommand(async _ => await AttachSelectedDecorationsAsync());
             RemoveSelectedOptionsFromHostCommand = new RelayCommand(async _ => await RemoveSelectedOptionsFromHostAsync());
+            PromoteArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.Promote));
+            ReleaseArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseProviders));
+            ReleaseArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseTargets));
             EnableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(true));
             DisableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(false));
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
@@ -439,6 +449,7 @@ namespace HD2ModManager.ViewModels
                 WorkspaceMode.ProfileOnly => (WorkspacePageType.Profile, null),
                 WorkspaceMode.LibraryOnly => (WorkspacePageType.Library, null),
                 WorkspaceMode.Settings => (WorkspacePageType.Settings, null),
+                WorkspaceMode.ArmorRegistry => (WorkspacePageType.ArmorRegistry, null),
                 _ => (WorkspacePageType.Home, null),
             };
             CommitNavigation(left, right, mode);
@@ -570,6 +581,27 @@ namespace HD2ModManager.ViewModels
         {
             ClearTransientSelection();
             OpenSinglePage(WorkspacePageType.ArmorRegistry);
+        }
+
+        private void ApplyArmorRegistrySelection(ArmorRegistrySelectionAction action)
+        {
+            var page = LeftPage as ArmorRegistryPageViewModel
+                ?? RightPage as ArmorRegistryPageViewModel;
+            if (page is null || !_selection.HasSelection) return;
+            var ids = _selection.SelectedIds.ToArray();
+            switch (action)
+            {
+                case ArmorRegistrySelectionAction.Promote:
+                    page.PromoteAvailableAsProviders(ids);
+                    break;
+                case ArmorRegistrySelectionAction.ReleaseProviders:
+                    page.ReleaseProviderSelection(ids);
+                    break;
+                case ArmorRegistrySelectionAction.ReleaseTargets:
+                    page.ReleaseTargetSelection(ids);
+                    break;
+            }
+            _selection.Clear();
         }
 
         public void OpenCrossArmorPlan(HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel plan)
@@ -1924,7 +1956,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
                 WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
-                WorkspacePageType.ArmorRegistry => new ArmorRegistryPageViewModel(_notificationService, _deploymentCoordinator),
+                WorkspacePageType.ArmorRegistry => new ArmorRegistryPageViewModel(_libraryService, _notificationService, _deploymentCoordinator, _selection),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
             };
             return page;
@@ -2014,6 +2046,7 @@ namespace HD2ModManager.ViewModels
                 (WorkspacePageType.Library, WorkspacePageType.Library, false) => WorkspaceMode.LibraryOnly,
                 (WorkspacePageType.Profile, WorkspacePageType.Library, true) => WorkspaceMode.ProfileLibrarySplit,
                 (WorkspacePageType.Settings, WorkspacePageType.Settings, false) => WorkspaceMode.Settings,
+                (WorkspacePageType.ArmorRegistry, WorkspacePageType.ArmorRegistry, false) => WorkspaceMode.ArmorRegistry,
                 _ => CurrentMode,
             };
         }
@@ -2108,6 +2141,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsLibraryActive));
             OnPropertyChanged(nameof(IsSplitActive));
             OnPropertyChanged(nameof(IsSettingsActive));
+            OnPropertyChanged(nameof(IsArmorRegistryActive));
         }
     }
 }

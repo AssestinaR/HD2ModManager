@@ -11,6 +11,14 @@
         <local:DecorationRowActionVisibilityConverter x:Key="DecorationRowActionVisibility"/>
         <local:ModListRowToneBrushConverter x:Key="RowToneBrush"/>
         <DropShadowEffect x:Key="RowActionPillShadow" BlurRadius="8" ShadowDepth="2" Opacity="0.16" Color="#243042"/>
+        <Style x:Key="ModListHeaderTitle" TargetType="TextBlock" BasedOn="{StaticResource AppCardTitle}">
+            <Setter Property="Cursor" Value="Arrow"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding HeaderTitleClickable, ElementName=Root}" Value="True">
+                    <Setter Property="Cursor" Value="Hand"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
     </UserControl.Resources>
     <DockPanel Background="Transparent">
         <Border x:Name="HeaderCard"
@@ -29,8 +37,9 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="HeaderTitleElement"
                            Text="{Binding HeaderTitle, ElementName=Root}"
-                           Style="{StaticResource AppCardTitle}"
-                           VerticalAlignment="Center"/>
+                           Style="{StaticResource ModListHeaderTitle}"
+                           VerticalAlignment="Center"
+                           MouseLeftButtonUp="OnHeaderTitleClick"/>
                 <TextBox x:Name="HeaderSearchBox"
                          Grid.Column="0"
                          Style="{StaticResource AppSearchBox}"
@@ -184,6 +193,18 @@
                                         <Button Tag="{x:Static local:ModListRowAction.Details}" ToolTip="查看详情" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
                                                 Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.Details}}">
                                             <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.ArmorAssign}" ToolTip="{Binding ArmorAssignToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorAssign}}">
+                                            <TextBlock Text="←" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.ArmorRelease}" ToolTip="{Binding ArmorReleaseToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorRelease}}">
+                                            <TextBlock Text="→" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.ArmorOpenDetails}" ToolTip="{Binding ArmorOpenDetailsToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorOpenDetails}}">
+                                            <TextBlock Text="ⓘ" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                                         </Button>
                                         <Button Tag="{x:Static local:ModListRowAction.AddToProfile}" ToolTip="加入正在编辑的配置" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
                                                 >

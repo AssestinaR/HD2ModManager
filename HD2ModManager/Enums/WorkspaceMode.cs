@@ -8,5 +8,6 @@ namespace HD2ModManager.Enums
         LibraryOnly,
         ProfileLibrarySplit,
         Settings,
+        ArmorRegistry,
     }
 }

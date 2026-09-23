@@ -224,8 +224,22 @@
                                                MiddleCommand="{Binding ShowSplitCommand}"
                                                RightCommand="{Binding ShowLibraryCommand}"
                                                LeftIsActive="{Binding IsProfileActive}"
-                                               MiddleIsActive="{Binding IsSplitActive}"
-                                               RightIsActive="{Binding IsLibraryActive}"/>
+                                             MiddleIsActive="{Binding IsSplitActive}"
+                                             RightIsActive="{Binding IsLibraryActive}"/>
+                <Button x:Name="ArmorRegistryNavigationButton" Command="{Binding ShowArmorRegistryCommand}" Margin="0,8,0,8" Padding="12,0">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Path Width="15" Height="15" Margin="0,0,6,0"
+                              Data="M3,2.5 L13,2.5 L13,13.5 L3,13.5 Z M5,5 L11,5 M5,8 L11,8 M5,11 L9,11"
+                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.3" StrokeLineJoin="Round" StrokeStartLineCap="Round"/>
+                        <TextBlock Text="护甲映射" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
+                            <Style.Triggers><DataTrigger Binding="{Binding IsArmorRegistryActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
                 <Button x:Name="SettingsNavigationButton" Command="{Binding ShowSettingsCommand}">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <Path Width="15" Height="15" Margin="0,0,6,0" Data="M8,4.5 A3.5,3.5 0 1 0 8,11.5 A3.5,3.5 0 1 0 8,4.5 M8,1.5 L8,3 M8,13 L8,14.5 M1.5,8 L3,8 M13,8 L14.5,8 M3.4,3.4 L4.5,4.5 M11.5,11.5 L12.6,12.6 M12.6,3.4 L11.5,4.5 M4.5,11.5 L3.4,12.6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round"/>

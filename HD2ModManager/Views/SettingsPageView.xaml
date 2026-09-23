@@ -146,7 +146,6 @@
                                 <Button Style="{StaticResource AppPrimaryButton}" Content="建立 / 重建资产索引" Command="{Binding BuildAssetIndexCommand}"/>
                                 <Button Style="{StaticResource AppSecondaryButton}" Content="刷新状态" Command="{Binding RefreshAssetIndexStatusCommand}" Margin="8,0,0,0"/>
                                 <Button Style="{StaticResource AppSecondaryButton}" Content="查看资产索引" Command="{Binding ViewGameDataIndexCommand}" Margin="8,0,0,0"/>
-                                <Button Style="{StaticResource AppSecondaryButton}" Content="运行时护甲注册" Command="{Binding OpenArmorRegistryCommand}" Margin="8,0,0,0"/>
                                 <Button Style="{StaticResource AppSecondaryButton}" Content="完全重算护甲类 Unit 部位" Command="{Binding RebuildAllUnitPartFactsCommand}" Margin="8,0,0,0"/>
                                 <Button Style="{StaticResource AppSecondaryButton}" Content="重算新增的护甲类 Unit 部位" Command="{Binding BuildMissingUnitPartFactsCommand}" Margin="8,0,0,0"/>
                             </StackPanel>

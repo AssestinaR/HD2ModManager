@@ -19,6 +19,9 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         ICommand setSelectedModsAsOptionsCommand,
         ICommand attachSelectedDecorationsCommand,
         ICommand removeSelectedOptionsFromHostCommand,
+        ICommand promoteArmorProvidersCommand,
+        ICommand releaseArmorProvidersCommand,
+        ICommand releaseArmorTargetsCommand,
         ICommand cancelSelectionCommand)
     {
         _bottomBar = bottomBar;
@@ -30,6 +33,9 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         SetSelectedModsAsOptionsCommand = setSelectedModsAsOptionsCommand;
         AttachSelectedDecorationsCommand = attachSelectedDecorationsCommand;
         RemoveSelectedOptionsFromHostCommand = removeSelectedOptionsFromHostCommand;
+        PromoteArmorProvidersCommand = promoteArmorProvidersCommand;
+        ReleaseArmorProvidersCommand = releaseArmorProvidersCommand;
+        ReleaseArmorTargetsCommand = releaseArmorTargetsCommand;
         CancelSelectionCommand = cancelSelectionCommand;
         BeginMoveCommand = bottomBar.BeginMoveCommand;
         BeginInsertCommand = bottomBar.BeginInsertCommand;
@@ -51,6 +57,9 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public bool ShowAttachDecorationsToHost => _bottomBar.ShowAttachDecorationsToHost;
     public string AttachDecorationsToHostText => _bottomBar.AttachDecorationsToHostText;
     public bool ShowRemoveOptionsFromHost => _bottomBar.ShowRemoveOptionsFromHost;
+    public bool ShowPromoteArmorProviders => _bottomBar.ShowPromoteArmorProviders;
+    public bool ShowReleaseArmorProviders => _bottomBar.ShowReleaseArmorProviders;
+    public bool ShowReleaseArmorTargets => _bottomBar.ShowReleaseArmorTargets;
     public ICommand BeginMoveCommand { get; }
     public ICommand BeginInsertCommand { get; }
     public ICommand SelectionPrimaryCommand { get; }
@@ -61,5 +70,8 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public ICommand SetSelectedModsAsOptionsCommand { get; }
     public ICommand AttachSelectedDecorationsCommand { get; }
     public ICommand RemoveSelectedOptionsFromHostCommand { get; }
+    public ICommand PromoteArmorProvidersCommand { get; }
+    public ICommand ReleaseArmorProvidersCommand { get; }
+    public ICommand ReleaseArmorTargetsCommand { get; }
     public ICommand CancelSelectionCommand { get; }
 }

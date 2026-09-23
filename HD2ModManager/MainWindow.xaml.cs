@@ -273,6 +273,9 @@ namespace HD2ModManager
                 shell.SetSelectedModsAsOptionsCommand,
                 shell.AttachSelectedDecorationsCommand,
                 shell.RemoveSelectedOptionsFromHostCommand,
+                shell.PromoteArmorProvidersCommand,
+                shell.ReleaseArmorProvidersCommand,
+                shell.ReleaseArmorTargetsCommand,
                 shell.CancelSelectionCommand);
             _temporaryEditorPresentation ??= new TemporaryEditorBarPresentation(shell.BottomBar);
 
@@ -409,7 +412,8 @@ namespace HD2ModManager
                 or nameof(ShellViewModel.IsProfileActive)
                 or nameof(ShellViewModel.IsLibraryActive)
                 or nameof(ShellViewModel.IsSplitActive)
-                or nameof(ShellViewModel.IsSettingsActive))
+                or nameof(ShellViewModel.IsSettingsActive)
+                or nameof(ShellViewModel.IsArmorRegistryActive))
             {
                 Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
             }
@@ -496,6 +500,7 @@ namespace HD2ModManager
             {
                 WorkspaceMode.Home => HomeNavigationButton,
                 WorkspaceMode.Settings => SettingsNavigationButton,
+                WorkspaceMode.ArmorRegistry => ArmorRegistryNavigationButton,
                 WorkspaceMode.ProfileOnly or WorkspaceMode.LibraryOnly or WorkspaceMode.ProfileLibrarySplit => WorkspaceCapsuleGroup.GetActiveButton(),
                 _ => null
             };

@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModManager.Models;
 using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels;
@@ -13,33 +15,48 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private readonly RuntimeArmorRegistryService service;
 	private readonly NotificationService notifications;
 	private readonly IProfileDeploymentCoordinator deploymentCoordinator;
+	private readonly ModLibraryService library;
+	private readonly SelectionCoordinator selection;
 	private string fingerprint = "missing";
 	private bool enabled;
 	private bool isBusy;
 	private bool hasChanges;
+	private bool baselineEnabled;
+	private HashSet<(uint Target, uint Source)> baselineMappings = [];
 	private string statusTitle = "尚未读取";
 	private string statusDetail = "正在等待读取运行时护甲注册状态。";
 	private string revisionText = "revision —";
-	private RuntimeArmorChoiceViewModel? selectedTarget;
-	private RuntimeArmorChoiceViewModel? selectedSource;
+	private uint? selectedProviderId;
+	private readonly HashSet<uint> pendingProviderIds = [];
 
 	public ArmorRegistryPageViewModel(
+		ModLibraryService library,
 		NotificationService notifications,
-		IProfileDeploymentCoordinator deploymentCoordinator)
+		IProfileDeploymentCoordinator deploymentCoordinator,
+		SelectionCoordinator selection)
 	{
 		Title = "运行时护甲注册";
+		this.library = library ?? throw new ArgumentNullException(nameof(library));
 		this.notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
 		this.deploymentCoordinator = deploymentCoordinator ?? throw new ArgumentNullException(nameof(deploymentCoordinator));
+		this.selection = selection ?? throw new ArgumentNullException(nameof(selection));
+		this.selection.SelectionChanged += OnGlobalSelectionChanged;
 		service = CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths());
 		RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !IsBusy && !HasChanges);
 		ApplyCommand = new AsyncRelayCommand(_ => ApplyAsync(), _ => !IsBusy && HasChanges);
-		AddMappingCommand = new RelayCommand(_ => AddMapping(), _ => CanAddMapping);
-		RemoveMappingCommand = new RelayCommand(RemoveMapping, value => value is RuntimeArmorMappingRowViewModel && !IsBusy);
 		OpenRegistryFolderCommand = new RelayCommand(OpenRegistryFolder);
 	}
 
-	public ObservableCollection<RuntimeArmorChoiceViewModel> ArmorChoices { get; } = new();
-	public ObservableCollection<RuntimeArmorMappingRowViewModel> Mappings { get; } = new();
+	public ObservableCollection<RuntimeArmorChoiceViewModel> AvailableArmors { get; } = [];
+	public ObservableCollection<RuntimeArmorChoiceViewModel> Providers { get; } = [];
+	public ObservableCollection<RuntimeArmorChoiceViewModel> ProviderDetailItems { get; } = [];
+	public ObservableCollection<RuntimeArmorMappingRowViewModel> Mappings { get; } = [];
+
+	public override void Dispose()
+	{
+		selection.SelectionChanged -= OnGlobalSelectionChanged;
+		base.Dispose();
+	}
 
 	public bool Enabled
 	{
@@ -47,7 +64,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		set
 		{
 			if (!SetField(ref enabled, value)) return;
-			MarkChanged();
+			RecomputeHasChanges();
 		}
 	}
 
@@ -72,44 +89,26 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 	}
 
+	public bool IsProviderDetailOpen => selectedProviderId is not null;
 	public bool HasMappings => Mappings.Count != 0;
 	public string StatusTitle { get => statusTitle; private set => SetField(ref statusTitle, value); }
 	public string StatusDetail { get => statusDetail; private set => SetField(ref statusDetail, value); }
 	public string RevisionText { get => revisionText; private set => SetField(ref revisionText, value); }
 	public string RegistryPath => service.RegistryRoot;
-
-	public RuntimeArmorChoiceViewModel? SelectedTarget
-	{
-		get => selectedTarget;
-		set
-		{
-			if (!SetField(ref selectedTarget, value)) return;
-			OnPropertyChanged(nameof(CanAddMapping));
-			AddMappingCommand.RaiseCanExecuteChanged();
-		}
-	}
-
-	public RuntimeArmorChoiceViewModel? SelectedSource
-	{
-		get => selectedSource;
-		set
-		{
-			if (!SetField(ref selectedSource, value)) return;
-			OnPropertyChanged(nameof(CanAddMapping));
-			AddMappingCommand.RaiseCanExecuteChanged();
-		}
-	}
-
-	public bool CanAddMapping => !IsBusy
-		&& SelectedTarget is not null
-		&& SelectedSource is not null
-		&& SelectedTarget.ItemId != SelectedSource.ItemId
-		&& Mappings.All(row => row.Target.ItemId != SelectedTarget.ItemId);
+	public string ProvidersSummary => $"{Providers.Count} 个视觉来源";
+	public string AvailableSummary => $"{AvailableArmors.Count} 个未管理护甲";
+	public string ProviderDetailTitle => selectedProviderId is { } id
+		? Choices.TryGetValue(id, out var choice) ? choice.Name : $"未知护甲 {id}"
+		: "视觉映射目标";
+	public string ProviderDetailHeaderTitle => $"←  {ProviderDetailTitle}";
+	public string AvailableRowActionToolTip => IsProviderDetailOpen ? "注册到该视觉对象" : "转为视觉对象";
+	public string ProviderDetailSummary => selectedProviderId is { } id
+		? $"{Mappings.Count(row => row.Source.ItemId == id)} 个映射目标"
+		: "选择一个视觉来源";
+	private Dictionary<uint, RuntimeArmorChoiceViewModel> Choices { get; set; } = [];
 
 	public AsyncRelayCommand RefreshCommand { get; }
 	public AsyncRelayCommand ApplyCommand { get; }
-	public RelayCommand AddMappingCommand { get; }
-	public RelayCommand RemoveMappingCommand { get; }
 	public RelayCommand OpenRegistryFolderCommand { get; }
 
 	public Task InitializeAsync() => RefreshAsync();
@@ -125,41 +124,41 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			await Task.WhenAll(catalogTask, snapshotTask);
 			var snapshot = await snapshotTask;
 			var catalog = await catalogTask;
-			var choices = catalog
-				.Select(item => new RuntimeArmorChoiceViewModel(item.ItemId, item.ArchiveId, item.DisplayName))
+			var iconPaths = await ReadArmorIconPathsAsync(catalog);
+
+			Choices = catalog
+				.Select(item => new RuntimeArmorChoiceViewModel(
+					item.ItemId,
+					item.ArchiveId,
+					item.DisplayName,
+					iconPaths.GetValueOrDefault(item.ArchiveId)))
 				.ToDictionary(item => item.ItemId);
 			foreach (var mapping in snapshot.Document.Mappings)
 			{
-				if (!choices.ContainsKey(mapping.TargetItemId))
-					choices[mapping.TargetItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.TargetItemId);
-				if (!choices.ContainsKey(mapping.SourceItemId))
-					choices[mapping.SourceItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.SourceItemId);
-			}
-
-			ArmorChoices.Clear();
-			foreach (var choice in choices.Values
-				.OrderBy(item => item.IsUnknown)
-				.ThenBy(item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-				.ThenBy(item => item.ArchiveId, StringComparer.OrdinalIgnoreCase))
-			{
-				ArmorChoices.Add(choice);
+				if (!Choices.ContainsKey(mapping.TargetItemId))
+					Choices[mapping.TargetItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.TargetItemId);
+				if (!Choices.ContainsKey(mapping.SourceItemId))
+					Choices[mapping.SourceItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.SourceItemId);
 			}
 
 			Mappings.Clear();
 			foreach (var mapping in snapshot.Document.Mappings)
-			{
 				Mappings.Add(new RuntimeArmorMappingRowViewModel(
-					choices[mapping.TargetItemId],
-					choices[mapping.SourceItemId]));
-			}
+					Choices[mapping.TargetItemId],
+					Choices[mapping.SourceItemId]));
+			pendingProviderIds.Clear();
+			selectedProviderId = null;
+			OnPropertyChanged(nameof(IsProviderDetailOpen));
+			selection.Clear();
+			RebuildProjections();
+
 			enabled = snapshot.Document.Enabled;
 			OnPropertyChanged(nameof(Enabled));
-			OnPropertyChanged(nameof(HasMappings));
+			baselineEnabled = enabled;
+			baselineMappings = GetMappingKeys();
 			fingerprint = snapshot.Fingerprint;
 			RevisionText = $"revision {snapshot.Document.Revision} · {Mappings.Count} 条映射";
 			UpdateStatus(snapshot);
-			SelectedTarget = null;
-			SelectedSource = null;
 			HasChanges = false;
 		}
 		catch (Exception exception) when (exception is IOException
@@ -178,21 +177,353 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 	}
 
-	private void AddMapping()
+	private async Task<IReadOnlyDictionary<string, string?>> ReadArmorIconPathsAsync(
+		IReadOnlyList<RuntimeArmorCatalogEntry> catalog)
 	{
-		if (!CanAddMapping || SelectedTarget is null || SelectedSource is null) return;
-		Mappings.Add(new RuntimeArmorMappingRowViewModel(SelectedTarget, SelectedSource));
-		SelectedTarget = null;
-		SelectedSource = null;
-		OnPropertyChanged(nameof(HasMappings));
-		MarkChanged();
+		var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+		var gameData = SettingsService.GetGameDataFolder();
+		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
+			return result;
+
+		try
+		{
+			var browser = CoreServices.CreateGameDataArchiveBrowserService(
+				SettingsService.CreateStoragePaths(),
+				library.InformationCenter);
+			var snapshot = await browser.BuildAsync(library.Snapshot, library.ModsRootDirectory, gameData);
+			if (snapshot is null) return result;
+
+			var parents = new Dictionary<Guid, IReadOnlyList<Guid>>();
+			var nodesById = library.Snapshot.Nodes;
+			var explicitParentRelations = new HashSet<Guid>();
+			foreach (var node in library.Snapshot.Nodes.Values)
+			{
+				var declaredHosts = (node.Metadata.HostModGuids ?? [])
+					.Select(host => Guid.TryParse(host, out var id) ? (Guid?)id : null)
+					.Where(id => id is not null)
+					.Select(id => id!.Value)
+					.Where(id => library.Snapshot.Nodes.Keys.Any(key => key.Value == id))
+					.ToArray();
+				if (declaredHosts.Length > 0)
+				{
+					parents[node.Id.Value] = declaredHosts;
+					explicitParentRelations.Add(node.Id.Value);
+				}
+			}
+			foreach (var node in library.Snapshot.Nodes.Values)
+			{
+				foreach (var child in node.Children)
+				{
+					if (explicitParentRelations.Contains(child.Value)) continue;
+					if (!parents.TryGetValue(child.Value, out var existing))
+						parents[child.Value] = [node.Id.Value];
+					else
+						parents[child.Value] = existing.Append(node.Id.Value).ToArray();
+				}
+			}
+
+			foreach (var item in catalog)
+			{
+				var archive = snapshot.Archives.FirstOrDefault(candidate =>
+					string.Equals(candidate.Archive.PackageName, item.ArchiveId, StringComparison.OrdinalIgnoreCase));
+				if (archive is null) continue;
+
+				var unitWinners = archive.Overlay.EffectiveAssets
+					.Where(asset => asset.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId)
+					.Where(asset => asset.WinnerNodeId is not null)
+					.GroupBy(asset => asset.WinnerNodeId!.Value)
+					.OrderByDescending(group => group.Count())
+					.ThenByDescending(group => group.Max(asset => asset.TargetPatchIndex))
+					.ThenBy(group => group.Key.Value);
+				var unitWinner = unitWinners.FirstOrDefault()?.Key;
+
+				var directWinner = unitWinner ?? archive.Overlay.EffectiveAssets
+					.Where(asset => asset.WinnerNodeId is not null)
+					.GroupBy(asset => asset.WinnerNodeId!.Value)
+					.OrderByDescending(group => group.Count())
+					.ThenByDescending(group => group.Max(asset => asset.TargetPatchIndex))
+					.ThenBy(group => group.Key.Value)
+					.Select(group => (ModNodeId?)group.Key)
+					.FirstOrDefault();
+				if (directWinner is { } winner && nodesById.ContainsKey(winner))
+					result[item.ArchiveId] = FindModIconInParentChain(winner.Value, parents);
+			}
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or InvalidOperationException
+			or Microsoft.Data.Sqlite.SqliteException)
+		{
+			LogService.Warn($"读取护甲覆盖图标失败：{exception.Message}");
+		}
+
+		return result;
 	}
 
-	private void RemoveMapping(object? value)
+	private string? FindModIconInParentChain(Guid nodeId, IReadOnlyDictionary<Guid, IReadOnlyList<Guid>> parents)
 	{
-		if (value is not RuntimeArmorMappingRowViewModel row || !Mappings.Remove(row)) return;
+		var visited = new HashSet<Guid>();
+		var queue = new Queue<Guid>();
+		queue.Enqueue(nodeId);
+		while (queue.TryDequeue(out var current))
+		{
+			if (!visited.Add(current)) continue;
+			var mod = library.Get(current.ToString("N"));
+			var icon = new[] { mod?.Image, mod?.IconPath, mod?.ThumbImage }
+				.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
+			if (icon is not null) return icon;
+			if (parents.TryGetValue(current, out var parentIds))
+			{
+				foreach (var parentId in parentIds) queue.Enqueue(parentId);
+			}
+		}
+		return null;
+	}
+
+	public void ApplyProviderSelection(IReadOnlyList<string> selectedKeys)
+	{
+		ApplyMutuallyExclusiveSelection("ArmorRegistry:Providers", Providers, selectedKeys);
+	}
+
+	public void ApplyDetailSelection(IReadOnlyList<string> selectedKeys)
+	{
+		ApplyMutuallyExclusiveSelection("ArmorRegistry:Targets", ProviderDetailItems, selectedKeys);
+	}
+
+	public void ApplyAvailableSelection(IReadOnlyList<string> selectedKeys)
+	{
+		ApplyMutuallyExclusiveSelection("ArmorRegistry:Available", AvailableArmors, selectedKeys);
+	}
+
+	private void ApplyMutuallyExclusiveSelection(
+		string scope,
+		IEnumerable<RuntimeArmorChoiceViewModel> selectedItems,
+		IReadOnlyList<string> selectedKeys)
+	{
+		var selected = selectedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		foreach (var item in AvailableArmors.Concat(Providers).Concat(ProviderDetailItems))
+			item.IsSelected = false;
+		foreach (var item in selectedItems)
+			item.IsSelected = selected.Contains(item.SelectionKey);
+		selection.Replace(scope, selectedKeys);
+	}
+
+	private void OnGlobalSelectionChanged(object? sender, SelectionChangedEventArgs e)
+	{
+		if (e.Scope?.StartsWith("ArmorRegistry:", StringComparison.Ordinal) == true) return;
+		foreach (var item in AvailableArmors.Concat(Providers).Concat(ProviderDetailItems))
+			item.IsSelected = false;
+	}
+
+	public void OpenProviderDetails(RuntimeArmorChoiceViewModel? provider)
+	{
+		if (provider is null || !Providers.Any(item => item.ItemId == provider.ItemId)) return;
+		foreach (var item in AvailableArmors.Concat(Providers).Concat(ProviderDetailItems))
+			item.IsSelected = false;
+		selection.Clear();
+		selectedProviderId = provider.ItemId;
+		OnPropertyChanged(nameof(IsProviderDetailOpen));
+		OnPropertyChanged(nameof(ProviderDetailTitle));
+		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
+		OnPropertyChanged(nameof(AvailableRowActionToolTip));
+		OnPropertyChanged(nameof(ProviderDetailSummary));
+		RebuildProjections();
+	}
+
+	public void CloseProvider()
+	{
+		if (selectedProviderId is null) return;
+		selectedProviderId = null;
+		OnPropertyChanged(nameof(IsProviderDetailOpen));
+		OnPropertyChanged(nameof(ProviderDetailTitle));
+		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
+		OnPropertyChanged(nameof(AvailableRowActionToolTip));
+		OnPropertyChanged(nameof(ProviderDetailSummary));
+		selection.Clear();
+		RebuildProjections();
+	}
+
+	public void PromoteAvailableAsProviders(IReadOnlyList<string> keys)
+	{
+		if (IsBusy || keys.Count == 0) return;
+		var ids = keys
+			.Select(key => uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id) ? (uint?)id : null)
+			.ToArray();
+		if (ids.Any(id => id is null) || ids.Any(id => !AvailableArmors.Any(item => item.ItemId == id))) return;
+		foreach (var id in ids)
+			pendingProviderIds.Add(id!.Value);
+		RebuildProjections();
+		RecomputeHasChanges();
+		selection.Clear();
+	}
+
+	public void ReleaseProviderSelection(IReadOnlyList<string> keys) => ReleaseToAvailable(keys);
+	public void ReleaseTargetSelection(IReadOnlyList<string> keys) => ReleaseToAvailable(keys);
+
+	public void AssignAvailableItem(RuntimeArmorChoiceViewModel? item)
+	{
+		if (item is not null) AssignFromAvailable([item.SelectionKey]);
+	}
+
+	public void ReleaseProviderItem(RuntimeArmorChoiceViewModel? item)
+	{
+		if (item is not null) ReleaseToAvailable([item.SelectionKey]);
+	}
+
+	public void ReleaseTargetItem(RuntimeArmorChoiceViewModel? item)
+	{
+		if (item is not null) ReleaseToAvailable([item.SelectionKey]);
+	}
+
+	public bool CanAssignFromAvailable(IReadOnlyList<string> keys)
+	{
+		if (IsBusy || keys.Count == 0) return false;
+		return keys.All(key =>
+			uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id)
+			&& AvailableArmors.Any(armor => armor.ItemId == id));
+	}
+
+	public void AssignFromAvailable(IReadOnlyList<string> keys)
+	{
+		if (!CanAssignFromAvailable(keys)) return;
+		var ids = keys.Select(key => uint.Parse(key, CultureInfo.InvariantCulture)).ToArray();
+		if (selectedProviderId is null)
+		{
+			if (ids.Length > 1)
+			{
+				foreach (var id in ids)
+					pendingProviderIds.Add(id);
+				RebuildProjections();
+				RecomputeHasChanges();
+				selection.Clear();
+				return;
+			}
+
+			var providerId = ids[0];
+			if (!Choices.ContainsKey(providerId)) return;
+			pendingProviderIds.Add(providerId);
+			selectedProviderId = providerId;
+			OnPropertyChanged(nameof(IsProviderDetailOpen));
+			OnPropertyChanged(nameof(ProviderDetailTitle));
+			OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
+			OnPropertyChanged(nameof(AvailableRowActionToolTip));
+			OnPropertyChanged(nameof(ProviderDetailSummary));
+			RebuildProjections();
+			selection.Clear();
+			return;
+		}
+
+		var source = selectedProviderId.Value;
+		foreach (var id in ids)
+		{
+			if (id == source
+				|| Mappings.Any(mapping => mapping.Target.ItemId == id)
+				|| Providers.Any(provider => provider.ItemId == id))
+				continue;
+			Mappings.Add(new RuntimeArmorMappingRowViewModel(Choices[id], Choices[source]));
+		}
+		if (ids.Any(id => Mappings.Any(mapping => mapping.Source.ItemId == source && mapping.Target.ItemId == id)))
+			pendingProviderIds.Remove(source);
+		RebuildProjections();
+		RecomputeHasChanges();
+		selection.Clear();
+	}
+
+	public bool CanReleaseToAvailable(IReadOnlyList<string> keys)
+	{
+		if (IsBusy || keys.Count == 0) return false;
+		var ids = keys
+			.Select(key => uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id) ? (uint?)id : null)
+			.ToArray();
+		if (ids.Any(id => id is null)) return false;
+		var values = ids.Select(id => id!.Value).ToArray();
+		var sourceIds = Providers.Select(provider => provider.ItemId).ToHashSet();
+		var selectedSources = values.Where(sourceIds.Contains).Distinct().ToArray();
+		if (selectedSources.Length > 0)
+			return selectedSources.Length == values.Length;
+		return values.All(id => Mappings.Any(mapping => mapping.Target.ItemId == id));
+	}
+
+	public void ReleaseToAvailable(IReadOnlyList<string> keys)
+	{
+		if (!CanReleaseToAvailable(keys)) return;
+		var ids = keys.Select(key => uint.Parse(key, CultureInfo.InvariantCulture)).ToHashSet();
+		var sourceIds = Providers.Select(provider => provider.ItemId).ToHashSet();
+		var selectedSources = ids.Where(sourceIds.Contains).ToArray();
+		if (selectedSources.Length > 0)
+		{
+			var removed = Mappings.Where(mapping => selectedSources.Contains(mapping.Source.ItemId)).ToArray();
+			foreach (var mapping in removed) Mappings.Remove(mapping);
+			foreach (var sourceId in selectedSources) pendingProviderIds.Remove(sourceId);
+			if (selectedProviderId is { } detailSource && selectedSources.Contains(detailSource)) CloseProvider();
+		}
+		else
+		{
+			var removed = Mappings.Where(mapping => ids.Contains(mapping.Target.ItemId)).ToArray();
+			foreach (var mapping in removed) Mappings.Remove(mapping);
+			if (selectedProviderId is { } currentSource
+				&& !pendingProviderIds.Contains(currentSource)
+				&& !Mappings.Any(mapping => mapping.Source.ItemId == currentSource))
+				CloseProvider();
+		}
+		RebuildProjections();
+		RecomputeHasChanges();
+		selection.Clear();
+	}
+
+	private void RebuildProjections()
+	{
+		var sourceIds = Mappings.Select(mapping => mapping.Source.ItemId)
+			.Concat(pendingProviderIds)
+			.ToHashSet();
+		var targetIds = Mappings.Select(mapping => mapping.Target.ItemId).ToHashSet();
+		var managedIds = sourceIds.Concat(targetIds).ToHashSet();
+
+		ReplaceWith(Providers, sourceIds
+			.Where(Choices.ContainsKey)
+			.Select(id => Choices[id])
+			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase));
+		ReplaceWith(AvailableArmors, Choices.Values
+			.Where(choice => !managedIds.Contains(choice.ItemId))
+			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase));
+
+		ProviderDetailItems.Clear();
+		if (selectedProviderId is { } selected && Choices.TryGetValue(selected, out var provider))
+		{
+			foreach (var target in Mappings
+				.Where(mapping => mapping.Source.ItemId == selected)
+				.Select(mapping => mapping.Target)
+				.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase))
+			{
+				target.SetRolePresentation("映射目标", null);
+				ProviderDetailItems.Add(target);
+			}
+		}
+		foreach (var item in AvailableArmors) item.SetRolePresentation(null, null);
+		foreach (var item in Providers) item.SetRolePresentation("视觉来源", Mappings.Count(mapping => mapping.Source.ItemId == item.ItemId));
+
+		OnPropertyChanged(nameof(ProvidersSummary));
+		OnPropertyChanged(nameof(AvailableSummary));
+		OnPropertyChanged(nameof(ProviderDetailTitle));
+		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
+		OnPropertyChanged(nameof(ProviderDetailSummary));
 		OnPropertyChanged(nameof(HasMappings));
-		MarkChanged();
+	}
+
+	private static void ReplaceWith(
+		ObservableCollection<RuntimeArmorChoiceViewModel> collection,
+		IEnumerable<RuntimeArmorChoiceViewModel> values)
+	{
+		collection.Clear();
+		foreach (var value in values) collection.Add(value);
+	}
+
+	private HashSet<(uint Target, uint Source)> GetMappingKeys()
+		=> Mappings.Select(mapping => (mapping.Target.ItemId, mapping.Source.ItemId)).ToHashSet();
+
+	private void RecomputeHasChanges()
+	{
+		HasChanges = enabled != baselineEnabled || !GetMappingKeys().SetEquals(baselineMappings);
 	}
 
 	private async Task ApplyAsync()
@@ -201,13 +532,27 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		IsBusy = true;
 		try
 		{
+			var sourceIds = Mappings.Select(mapping => mapping.Source.ItemId).ToHashSet();
+			var targetIds = Mappings.Select(mapping => mapping.Target.ItemId).ToHashSet();
+			if (sourceIds.Overlaps(targetIds))
+				throw new InvalidOperationException("当前协议包含“视觉来源同时作为映射目标”的链式关系。请先移除冲突映射；GUI 不会创建或保存此类关系。");
+
 			var desired = Mappings
 				.Select(row => new RuntimeArmorRegistryMapping(row.Target.ItemId, row.Source.ItemId))
 				.ToArray();
 			var result = await service.ApplyAsync(fingerprint, Enabled, desired);
 			fingerprint = result.Fingerprint;
 			RevisionText = $"revision {result.Document.Revision} · {desired.Length} 条映射";
+			baselineEnabled = Enabled;
+			baselineMappings = GetMappingKeys();
 			HasChanges = false;
+			pendingProviderIds.Clear();
+			if (selectedProviderId is { } selected && !sourceIds.Contains(selected))
+			{
+				selectedProviderId = null;
+				OnPropertyChanged(nameof(IsProviderDetailOpen));
+			}
+			RebuildProjections();
 
 			var snapshot = await WaitForRuntimeAsync(result.Document.Revision);
 			var gameRunning = IsGameRunning();
@@ -246,21 +591,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				StatusDetail = Enabled
 					? "游戏正在运行且尚未加载托管运行时；退出游戏并部署活动配置后生效。"
 					: "停用协议已保存；托管运行时将在游戏退出后的下一次部署中移除。";
-				notifications.Show(
-					StatusDetail,
-					NotificationLevel.Warning,
-					TimeSpan.FromSeconds(8),
-					"护甲注册",
-					"armor-registry-apply");
+				notifications.Show(StatusDetail, NotificationLevel.Warning, TimeSpan.FromSeconds(8), "护甲注册", "armor-registry-apply");
 			}
 			else
 			{
-				notifications.Show(
-					"协议已保存，将在下次启动游戏时应用。",
-					NotificationLevel.Info,
-					TimeSpan.FromSeconds(6),
-					"护甲注册",
-					"armor-registry-apply");
+				notifications.Show("协议已保存，将在下次启动游戏时应用。", NotificationLevel.Info, TimeSpan.FromSeconds(6), "护甲注册", "armor-registry-apply");
 			}
 		}
 		catch (Exception exception) when (exception is IOException
@@ -321,24 +656,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				? snapshot.Document.Enabled
 					? "配置及托管运行时已部署；启动游戏后会自动定位并应用。"
 					: "映射已停用，托管运行时会在部署时从游戏 Data 中移除。"
-				: "添加映射并应用后将创建外置协议。";
+				: "拖入视觉来源并添加映射后将创建外置协议。";
 		}
-	}
-
-	private void MarkChanged()
-	{
-		HasChanges = true;
-		OnPropertyChanged(nameof(CanAddMapping));
-		AddMappingCommand.RaiseCanExecuteChanged();
 	}
 
 	private void RaiseCommandStates()
 	{
 		RefreshCommand.RaiseCanExecuteChanged();
 		ApplyCommand.RaiseCanExecuteChanged();
-		AddMappingCommand.RaiseCanExecuteChanged();
-		RemoveMappingCommand.RaiseCanExecuteChanged();
-		OnPropertyChanged(nameof(CanAddMapping));
 	}
 
 	private void OpenRegistryFolder()
@@ -367,17 +692,46 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	}
 }
 
-public sealed record RuntimeArmorChoiceViewModel(
-	uint ItemId,
-	string ArchiveId,
-	string DisplayName,
-	bool IsUnknown = false)
+public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelectable
 {
-	public string Display => $"{DisplayName} · {ArchiveId}";
-	public string ItemIdText => ItemId.ToString();
+	private bool isSelected;
+	private ModListRowPresentation rowPresentation = ModListRowPresentation.Empty;
+
+	public RuntimeArmorChoiceViewModel(uint itemId, string archiveId, string displayName, string? imagePath = null, bool isUnknown = false)
+	{
+		ItemId = itemId;
+		ArchiveId = archiveId;
+		Name = displayName;
+		ImagePath = imagePath;
+		IsUnknown = isUnknown;
+	}
+
+	public uint ItemId { get; }
+	public string ArchiveId { get; }
+	public string Name { get; }
+	public string? ImagePath { get; }
+	public bool IsUnknown { get; }
+	public string ListKey => SelectionKey;
+	public string SelectionKey => ItemId.ToString(CultureInfo.InvariantCulture);
+	public bool IsDecoration => false;
+	public string Display => $"{Name} · {ArchiveId}";
+	public string ItemIdText => ItemId.ToString(CultureInfo.InvariantCulture);
+	public bool IsSelected { get => isSelected; set => SetField(ref isSelected, value); }
+	public ModListRowPresentation RowPresentation { get => rowPresentation; private set => SetField(ref rowPresentation, value); }
+
+	public void SetRolePresentation(string? role, int? count)
+	{
+		var summary = role switch
+		{
+			"视觉来源" when count is { } value => value == 0 ? "视觉来源 · 尚无映射目标" : $"视觉来源 · {value} 个目标",
+			"映射目标" => "映射目标",
+			_ => null,
+		};
+		RowPresentation = new ModListRowPresentation(TypeLabel: role, TypeTone: ModListRowTone.Accent, Summary: summary);
+	}
 
 	public static RuntimeArmorChoiceViewModel Unknown(uint itemId)
-		=> new(itemId, itemId.ToString(), $"未知护甲 {itemId}", true);
+		=> new(itemId, itemId.ToString(CultureInfo.InvariantCulture), $"未知护甲 {itemId}", isUnknown: true);
 }
 
 public sealed record RuntimeArmorMappingRowViewModel(

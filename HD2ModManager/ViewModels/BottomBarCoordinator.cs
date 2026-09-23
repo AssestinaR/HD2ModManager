@@ -66,6 +66,9 @@ namespace HD2ModManager.ViewModels
         public bool IsLibrarySelection => HasSelection && string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase);
         public bool IsProfileSelection => HasSelection && string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase);
         public bool IsDecorationHostSelection => HasSelection && _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true;
+        public bool IsArmorRegistryAvailableSelection => HasSelection && string.Equals(_selection.Scope, "ArmorRegistry:Available", StringComparison.Ordinal);
+        public bool IsArmorRegistryProviderSelection => HasSelection && string.Equals(_selection.Scope, "ArmorRegistry:Providers", StringComparison.Ordinal);
+        public bool IsArmorRegistryTargetSelection => HasSelection && string.Equals(_selection.Scope, "ArmorRegistry:Targets", StringComparison.Ordinal);
         public bool IsRelationshipSourceSelection => IsLibrarySelection || IsProfileSelection;
         public string? RelationshipHostId => _relationshipHostId;
         public string RelationshipHostName => _relationshipHostName ?? "当前 Mod";
@@ -92,7 +95,12 @@ namespace HD2ModManager.ViewModels
         public string MoveButtonText => IsDecorationHostSelection ? "调整顺序" : "移动";
         public string SetAsOptionText => $"设为“{RelationshipHostName}”的选项";
         public string AttachDecorationsToHostText => $"附加到“{RelationshipHostName}”";
-        public string SelectionSummary => _selection.Summary;
+        public bool ShowPromoteArmorProviders => IsArmorRegistryAvailableSelection;
+        public bool ShowReleaseArmorProviders => IsArmorRegistryProviderSelection;
+        public bool ShowReleaseArmorTargets => IsArmorRegistryTargetSelection;
+        public string SelectionSummary => IsArmorRegistryAvailableSelection || IsArmorRegistryProviderSelection || IsArmorRegistryTargetSelection
+            ? $"已选择 {_selection.SelectedIds.Count} 个目标"
+            : _selection.Summary;
         public string EditLabel => IsPositionEditor ? string.Empty
             : _editMode == "CreateProfile" ? "新建配置："
             : _editMode == "CreateLogicalMod" ? "新建逻辑 Mod："
@@ -468,6 +476,9 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsLibrarySelection));
             OnPropertyChanged(nameof(IsProfileSelection));
             OnPropertyChanged(nameof(IsDecorationHostSelection));
+            OnPropertyChanged(nameof(IsArmorRegistryAvailableSelection));
+            OnPropertyChanged(nameof(IsArmorRegistryProviderSelection));
+            OnPropertyChanged(nameof(IsArmorRegistryTargetSelection));
             OnPropertyChanged(nameof(IsRelationshipSourceSelection));
             OnPropertyChanged(nameof(RelationshipHostId));
             OnPropertyChanged(nameof(RelationshipHostName));
@@ -482,6 +493,9 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowDeleteFromLibrary));
             OnPropertyChanged(nameof(ShowMove));
             OnPropertyChanged(nameof(ShowInsert));
+            OnPropertyChanged(nameof(ShowPromoteArmorProviders));
+            OnPropertyChanged(nameof(ShowReleaseArmorProviders));
+            OnPropertyChanged(nameof(ShowReleaseArmorTargets));
             OnPropertyChanged(nameof(MoveButtonText));
             OnPropertyChanged(nameof(SetAsOptionText));
             OnPropertyChanged(nameof(AttachDecorationsToHostText));

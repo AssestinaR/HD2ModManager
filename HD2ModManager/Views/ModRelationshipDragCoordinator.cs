@@ -4,15 +4,17 @@ using System.Windows.Media;
 namespace HD2ModManager.Views;
 
 /// <summary>
-/// The two cross-page relationship gestures supported by the Manager.
-/// Keeping the operation in the drag payload prevents a target page from
-/// guessing whether a drop means "attach" or "release".
+/// Cross-list relationship gestures supported by the Manager. Keeping the
+/// operation in the drag payload prevents a target from guessing what a drop
+/// means.
 /// </summary>
 public enum ModRelationshipDragOperation
 {
     None,
     SetAsOption,
     RemoveOptionParent,
+    ArmorRegistryAssign,
+    ArmorRegistryRelease,
 }
 
 public sealed record ModRelationshipDragPayload(
@@ -53,6 +55,7 @@ internal static class ModRelationshipDragCoordinator
     private static ModListPanel? _source;
     private static ModRelationshipDragPayload? _payload;
     private static IReadOnlyList<IModRelationshipDropTarget> _activeTargets = Array.Empty<IModRelationshipDropTarget>();
+    internal static ModRelationshipDragPayload? CurrentPayload => _payload;
 
     public static void RegisterTarget(IModRelationshipDropTarget target)
     {

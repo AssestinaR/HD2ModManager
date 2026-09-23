@@ -96,6 +96,10 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
     public static readonly DependencyProperty UseInternalScrollProperty = DependencyProperty.Register(nameof(UseInternalScroll), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true, OnUseInternalScrollChanged));
     public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
+    public static readonly DependencyProperty HeaderTitleClickableProperty = DependencyProperty.Register(nameof(HeaderTitleClickable), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty ArmorAssignToolTipProperty = DependencyProperty.Register(nameof(ArmorAssignToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("加入视觉来源或其映射"));
+    public static readonly DependencyProperty ArmorReleaseToolTipProperty = DependencyProperty.Register(nameof(ArmorReleaseToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("解除视觉来源或映射"));
+    public static readonly DependencyProperty ArmorOpenDetailsToolTipProperty = DependencyProperty.Register(nameof(ArmorOpenDetailsToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("查看映射目标"));
     public static readonly DependencyProperty AllowKeyboardRenameProperty = DependencyProperty.Register(nameof(AllowKeyboardRename), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
@@ -129,6 +133,10 @@ public partial class ModListPanel : UserControl
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
     public bool UseInternalScroll { get => (bool)GetValue(UseInternalScrollProperty); set => SetValue(UseInternalScrollProperty, value); }
     public ModListRowAction RowActions { get => (ModListRowAction)GetValue(RowActionsProperty); set => SetValue(RowActionsProperty, value); }
+    public bool HeaderTitleClickable { get => (bool)GetValue(HeaderTitleClickableProperty); set => SetValue(HeaderTitleClickableProperty, value); }
+    public string ArmorAssignToolTip { get => (string)GetValue(ArmorAssignToolTipProperty); set => SetValue(ArmorAssignToolTipProperty, value); }
+    public string ArmorReleaseToolTip { get => (string)GetValue(ArmorReleaseToolTipProperty); set => SetValue(ArmorReleaseToolTipProperty, value); }
+    public string ArmorOpenDetailsToolTip { get => (string)GetValue(ArmorOpenDetailsToolTipProperty); set => SetValue(ArmorOpenDetailsToolTipProperty, value); }
     public bool AllowKeyboardRename { get => (bool)GetValue(AllowKeyboardRenameProperty); set => SetValue(AllowKeyboardRenameProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
@@ -140,6 +148,7 @@ public partial class ModListPanel : UserControl
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
     public event EventHandler<ModListSelectionRequestEventArgs>? SelectionRequested;
     public event EventHandler<ModListRowActionEventArgs>? RowActionInvoked;
+    public event EventHandler? HeaderTitleClicked;
     public event EventHandler<ModListKeyboardCommandEventArgs>? KeyboardCommandRequested;
     public event EventHandler<ModListTransitionStateChangedEventArgs>? TransitionStateChanged;
     public event EventHandler<ModListInternalReorderEventArgs>? InternalReorderRequested;
@@ -168,6 +177,13 @@ public partial class ModListPanel : UserControl
         }
 
         ShowSearchAndFocus();
+    }
+
+    private void OnHeaderTitleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (!HeaderTitleClickable) return;
+        HeaderTitleClicked?.Invoke(this, EventArgs.Empty);
+        e.Handled = true;
     }
 
     private void ShowSearchAndFocus()
@@ -1032,6 +1048,9 @@ public enum ModListRowAction
     RemoveFromProfile = 1 << 6,
     DeleteFromLibrary = 1 << 7,
     ToggleDecoration = 1 << 8,
+    ArmorAssign = 1 << 9,
+    ArmorRelease = 1 << 10,
+    ArmorOpenDetails = 1 << 11,
 }
 
 public sealed class ModListRowActionEventArgs(object item, ModListRowAction action) : EventArgs
