@@ -18,5 +18,5 @@ $actual = @(& $LuaJit "$PSScriptRoot/Inspect-Composition.lua" "$PSScriptRoot/../
 if ($LASTEXITCODE -ne 0) { throw "Lua decoder failed." }
 $difference = Compare-Object @($expected | Sort-Object) @($actual | Sort-Object) -CaseSensitive
 if ($difference) { $difference | Format-Table; throw "Authority composition mismatch." }
-if ($actual.Count -ne 90) { throw "Unexpected total sample cardinality: $($actual.Count)" }
-Write-Output "PASS: all 90 authority pieces match plaintext, including slots, body types and auxiliary resources."
+if ($actual.Count -ne 109) { throw "Unexpected total sample cardinality: $($actual.Count)" }
+Write-Output "PASS: all 109 authority pieces match plaintext, including slots, body types and auxiliary resources."

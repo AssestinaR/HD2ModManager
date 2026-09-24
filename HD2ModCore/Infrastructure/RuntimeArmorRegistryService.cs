@@ -113,10 +113,21 @@ public sealed class RuntimeArmorRegistryService
 		bool enabled,
 		IReadOnlyList<RuntimeArmorRegistryMapping> mappings,
 		CancellationToken cancellationToken = default)
+		=> await ApplyAsync(expectedFingerprint, enabled, mappings,
+			Array.Empty<RuntimeArmorRegistryModel>(), cancellationToken).ConfigureAwait(false);
+
+	public async ValueTask<RuntimeArmorRegistryApplyResult> ApplyAsync(
+		string expectedFingerprint,
+		bool enabled,
+		IReadOnlyList<RuntimeArmorRegistryMapping> mappings,
+		IReadOnlyList<RuntimeArmorRegistryModel> models,
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(expectedFingerprint);
 		ArgumentNullException.ThrowIfNull(mappings);
+		ArgumentNullException.ThrowIfNull(models);
 		ValidateMappings(mappings);
+		ValidateModels(models, mappings);
 		Directory.CreateDirectory(registryRoot);
 		var lockPath = Path.Combine(registryRoot, ".manager.lock");
 		await using var lease = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -134,7 +145,8 @@ public sealed class RuntimeArmorRegistryService
 		var desired = new RuntimeArmorRegistryDocument(
 			current.Revision + 1,
 			enabled,
-			NormalizeMappings(mappings));
+			NormalizeMappings(mappings),
+			NormalizeModels(models));
 		var text = SerializeProtocol(desired);
 		var protocolPath = Path.Combine(registryRoot, ProtocolFileName);
 		var temporaryPath = Path.Combine(registryRoot, "." + ProtocolFileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -174,6 +186,8 @@ public sealed class RuntimeArmorRegistryService
 		int? revision = null;
 		bool? enabled = null;
 		var mappings = new List<RuntimeArmorRegistryMapping>();
+		var models = new List<RuntimeArmorRegistryModel>();
+		var modelKeys = new HashSet<string>(StringComparer.Ordinal);
 		var targets = new HashSet<uint>();
 		var lineNumber = 0;
 		foreach (var rawLine in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
@@ -189,7 +203,7 @@ public sealed class RuntimeArmorRegistryService
 			{
 				case "schema":
 					if (schema is not null) throw InvalidLine(lineNumber, "schema 重复。");
-					schema = ParseInteger(value, lineNumber, "schema", 1, 1);
+					schema = ParseInteger(value, lineNumber, "schema", 1, 2);
 					break;
 				case "revision":
 					if (revision is not null) throw InvalidLine(lineNumber, "revision 重复。");
@@ -211,16 +225,50 @@ public sealed class RuntimeArmorRegistryService
 					var source = ParseItemId(parts[1], lineNumber, "来源");
 					if (target == source) throw InvalidLine(lineNumber, "目标与来源护甲不能相同。");
 					if (!targets.Add(target)) throw InvalidLine(lineNumber, $"目标护甲 {target} 重复。");
-					mappings.Add(new RuntimeArmorRegistryMapping(target, source));
+					mappings.Add(new RuntimeArmorRegistryMapping(target, source, null));
+					break;
+				case "model":
+					var modelParts = value.Split(',');
+					if (modelParts.Length != 2) throw InvalidLine(lineNumber, "model 必须是 key,source_item_id。");
+					var modelKey = ParseModelKey(modelParts[0], lineNumber);
+					var modelSource = string.IsNullOrWhiteSpace(modelParts[1])
+						? (uint?)null
+						: ParseItemId(modelParts[1], lineNumber, "模型来源");
+					if (!modelKeys.Add(modelKey)) throw InvalidLine(lineNumber, $"模型键 {modelKey} 重复。");
+					models.Add(new RuntimeArmorRegistryModel(modelKey, modelSource));
+					break;
+				case "model_piece":
+					var pieceParts = value.Split(',');
+					if (pieceParts.Length != 6)
+						throw InvalidLine(lineNumber, "model_piece 必须是 key,body,unit,slot,piece_type,tone。");
+					_ = ParseModelKey(pieceParts[0], lineNumber);
+					_ = ParseInteger(pieceParts[1], lineNumber, "model body", 0, int.MaxValue);
+					var unit = pieceParts[2].Trim();
+					if (unit.Length != 16 || !unit.All(Uri.IsHexDigit))
+						throw InvalidLine(lineNumber, "model unit 必须是 16 位十六进制 ID。");
+					_ = ParseInteger(pieceParts[3], lineNumber, "model slot", 1, int.MaxValue);
+					_ = ParseInteger(pieceParts[4], lineNumber, "model piece type", 0, int.MaxValue);
+					_ = ParseInteger(pieceParts[5], lineNumber, "model tone", 0, 255);
+					break;
+				case "map_model":
+					var modelMappingParts = value.Split(',');
+					if (modelMappingParts.Length != 2) throw InvalidLine(lineNumber, "map_model 必须是 target_item_id,model_key。");
+					var modelTarget = ParseItemId(modelMappingParts[0], lineNumber, "目标");
+					var targetModelKey = ParseModelKey(modelMappingParts[1], lineNumber);
+					if (!targets.Add(modelTarget)) throw InvalidLine(lineNumber, $"目标护甲 {modelTarget} 重复。");
+					mappings.Add(new RuntimeArmorRegistryMapping(modelTarget, null, targetModelKey));
 					break;
 				default:
 					throw InvalidLine(lineNumber, $"未知字段：{key}");
 			}
 		}
-		if (schema != 1) throw new InvalidDataException("护甲注册协议必须包含 schema=1。");
+		if (schema is not (1 or 2)) throw new InvalidDataException("护甲注册协议必须包含 schema=1 或 schema=2。");
 		if (revision is null) throw new InvalidDataException("护甲注册协议缺少 revision。");
 		if (enabled is null) throw new InvalidDataException("护甲注册协议缺少 enabled。");
-		return new RuntimeArmorRegistryDocument(revision.Value, enabled.Value, NormalizeMappings(mappings));
+		if (schema == 1 && models.Count > 0)
+			throw new InvalidDataException("schema=1 不支持模型素体。");
+		return new RuntimeArmorRegistryDocument(revision.Value, enabled.Value,
+			NormalizeMappings(mappings), models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray());
 	}
 
 	public static string SerializeProtocol(RuntimeArmorRegistryDocument document)
@@ -229,15 +277,23 @@ public sealed class RuntimeArmorRegistryService
 		if (document.Revision < 0) throw new InvalidDataException("护甲注册协议 revision 无效。");
 		ValidateMappings(document.Mappings);
 		var builder = new StringBuilder()
-			.Append("schema=1\n")
+			.Append("schema=2\n")
 			.Append("revision=").Append(document.Revision.ToString(CultureInfo.InvariantCulture)).Append('\n')
 			.Append("enabled=").Append(document.Enabled ? "true" : "false").Append('\n');
+		foreach (var model in document.ModelDefinitions.OrderBy(model => model.Key, StringComparer.Ordinal))
+		{
+			builder.Append("model=")
+				.Append(model.Key).Append(',')
+				.Append(model.SourceItemId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('\n');
+		}
 		foreach (var mapping in NormalizeMappings(document.Mappings))
 		{
-			builder.Append("map=")
+			builder.Append(mapping.IsModelMapping ? "map_model=" : "map=")
 				.Append(mapping.TargetItemId.ToString(CultureInfo.InvariantCulture))
 				.Append(',')
-				.Append(mapping.SourceItemId.ToString(CultureInfo.InvariantCulture))
+				.Append(mapping.IsModelMapping
+					? mapping.ModelKey
+					: mapping.SourceItemId.GetValueOrDefault().ToString(CultureInfo.InvariantCulture))
 				.Append('\n');
 		}
 		return builder.ToString();
@@ -302,7 +358,11 @@ public sealed class RuntimeArmorRegistryService
 		var targets = new HashSet<uint>();
 		foreach (var mapping in mappings)
 		{
-			if (mapping.TargetItemId == mapping.SourceItemId)
+			if (!mapping.IsModelMapping && mapping.SourceItemId is null)
+				throw new InvalidDataException($"目标护甲 {mapping.TargetItemId} 缺少视觉来源。");
+			if (mapping.IsModelMapping && mapping.SourceItemId is not null)
+				throw new InvalidDataException($"目标护甲 {mapping.TargetItemId} 同时指定了护甲和模型来源。");
+			if (!mapping.IsModelMapping && mapping.TargetItemId == mapping.SourceItemId)
 				throw new InvalidDataException($"目标护甲 {mapping.TargetItemId} 不能映射到自身。");
 			if (!targets.Add(mapping.TargetItemId))
 				throw new InvalidDataException($"目标护甲 {mapping.TargetItemId} 重复。");
@@ -312,6 +372,29 @@ public sealed class RuntimeArmorRegistryService
 	private static IReadOnlyList<RuntimeArmorRegistryMapping> NormalizeMappings(
 		IEnumerable<RuntimeArmorRegistryMapping> mappings)
 		=> mappings.OrderBy(mapping => mapping.TargetItemId).ToArray();
+
+	private static IReadOnlyList<RuntimeArmorRegistryModel> NormalizeModels(
+		IEnumerable<RuntimeArmorRegistryModel> models)
+		=> models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray();
+
+	private static void ValidateModels(
+		IEnumerable<RuntimeArmorRegistryModel> models,
+		IEnumerable<RuntimeArmorRegistryMapping> mappings)
+	{
+		var definitions = models.ToArray();
+		var keys = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var model in definitions)
+		{
+			_ = ParseModelKey(model.Key, 0);
+			if (!keys.Add(model.Key))
+				throw new InvalidDataException($"模型键 {model.Key} 重复。");
+		}
+		foreach (var mapping in mappings.Where(mapping => mapping.IsModelMapping))
+		{
+			if (!keys.Contains(mapping.ModelKey!))
+				throw new InvalidDataException($"目标护甲 {mapping.TargetItemId} 引用了未定义模型 {mapping.ModelKey}。");
+		}
+	}
 
 	private static int ParseInteger(string value, int line, string field, int minimum, int maximum)
 		=> int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var result)
@@ -331,6 +414,16 @@ public sealed class RuntimeArmorRegistryService
 		return uint.TryParse(value, style, CultureInfo.InvariantCulture, out var result)
 			? result
 			: throw InvalidLine(line, $"{label} Item ID 不是 32 位无符号整数。");
+	}
+
+	private static string ParseModelKey(string value, int line)
+	{
+		var key = value.Trim();
+		if (key.Length is < 1 or > 96
+			|| key.Any(character => !(char.IsLetterOrDigit(character)
+				|| character is '_' or '.' or '-' or '/' or ':')))
+			throw InvalidLine(line, "模型键包含不支持的字符。");
+		return key;
 	}
 
 	private static InvalidDataException InvalidLine(int line, string message)

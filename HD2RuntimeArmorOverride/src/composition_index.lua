@@ -30,20 +30,39 @@ function M.library(read,base,size,anchor)
     if not found then return nil end
     return {base=base,count=count,bytes=offset,roots=roots,indices=indices}
 end
-function M.check(read,layout,reference,root)
+function M.check(read,layout,reference,root,allowed_mapped_items)
     local index=layout.indices[root]
     if not index then return nil end
     local base=reference-index*8
     if base<65536 then return nil end
     local data=read(base,layout.count*8)
     if not data then return nil end
+    local mapped,unmodified={},0
     for i,address in ipairs(layout.roots) do
-        if ptr(data,(i-1)*8)~=address then return nil end
+        local actual=ptr(data,(i-1)*8)
+        if actual~=address then
+            if not allowed_mapped_items then return nil end
+            local original_header=read(address,4)
+            local actual_header=actual and read(actual,4)
+            local item=original_header and u32(original_header,0)
+            if not item or not allowed_mapped_items[item]
+                or not actual_header or u32(actual_header,0)~=item then
+                return nil
+            end
+            mapped[#mapped+1]={
+                index=i-1,item=item,
+                original=string.format('0x%016x',address),
+                actual=string.format('0x%016x',actual)
+            }
+        else
+            unmodified=unmodified+1
+        end
     end
     return {index_base=string.format('0x%016x',base),
         blob_base=string.format('0x%016x',layout.base),
         matched_entries=layout.count,blob_bytes=layout.bytes,
         index_bytes=layout.count*8,ownership_proven=false,
-        consumer_proven=false,self_copy_excluded=false}
+        consumer_proven=false,self_copy_excluded=false,
+        unmodified_entries=unmodified,mapped_entries=mapped}
 end
 return M

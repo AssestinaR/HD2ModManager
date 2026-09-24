@@ -1,11 +1,24 @@
 namespace HD2ModCore.Domain;
 
-public sealed record RuntimeArmorRegistryMapping(uint TargetItemId, uint SourceItemId);
+public sealed record RuntimeArmorRegistryModel(string Key, uint? SourceItemId);
+
+public sealed record RuntimeArmorRegistryMapping(
+	uint TargetItemId,
+	uint? SourceItemId = null,
+	string? ModelKey = null)
+{
+	public bool IsModelMapping => !string.IsNullOrWhiteSpace(ModelKey);
+}
 
 public sealed record RuntimeArmorRegistryDocument(
 	int Revision,
 	bool Enabled,
-	IReadOnlyList<RuntimeArmorRegistryMapping> Mappings);
+	IReadOnlyList<RuntimeArmorRegistryMapping> Mappings,
+	IReadOnlyList<RuntimeArmorRegistryModel>? Models = null)
+{
+	public IReadOnlyList<RuntimeArmorRegistryModel> ModelDefinitions { get; init; }
+		= Models ?? Array.Empty<RuntimeArmorRegistryModel>();
+}
 
 public sealed record RuntimeArmorCatalogEntry(
 	uint ItemId,

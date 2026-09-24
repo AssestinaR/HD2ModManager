@@ -7,18 +7,38 @@ using System.Text.Json.Serialization;
 
 namespace HD2ModCli;
 
-public sealed record CliArmorRegistryMapping(uint TargetItemId, uint SourceItemId);
+public sealed record CliArmorRegistryModel(
+	string Key,
+	uint? SourceItemId = null,
+	IReadOnlyList<CliArmorRegistryModelPiece>? Pieces = null);
+
+public sealed record CliArmorRegistryModelPiece(
+	uint Body,
+	string Unit,
+	uint Slot,
+	uint PieceType,
+	byte Tone = 0);
+
+public sealed record CliArmorRegistryMapping(
+	uint TargetItemId,
+	uint? SourceItemId = null,
+	string? ModelKey = null)
+{
+	public bool IsModelMapping => !string.IsNullOrWhiteSpace(ModelKey);
+}
 
 public sealed record CliArmorRegistrySpecification(
 	string Schema,
 	bool Enabled,
-	IReadOnlyList<CliArmorRegistryMapping> Mappings);
+	IReadOnlyList<CliArmorRegistryMapping> Mappings,
+	IReadOnlyList<CliArmorRegistryModel>? Models = null);
 
 public sealed record CliArmorRegistryDocument(
 	int Schema,
 	int Revision,
 	bool Enabled,
-	IReadOnlyList<CliArmorRegistryMapping> Mappings);
+	IReadOnlyList<CliArmorRegistryMapping> Mappings,
+	IReadOnlyList<CliArmorRegistryModel>? Models = null);
 
 public sealed record CliArmorRegistryPlan(
 	string Schema,
@@ -122,6 +142,8 @@ public static class CliArmorRegistryProtocol
 		int? revision = null;
 		bool? enabled = null;
 		var mappings = new List<CliArmorRegistryMapping>();
+		var models = new List<CliArmorRegistryModel>();
+		var modelKeys = new HashSet<string>(StringComparer.Ordinal);
 		var targets = new HashSet<uint>();
 		var lineNumber = 0;
 		foreach (var rawLine in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
@@ -138,7 +160,7 @@ public static class CliArmorRegistryProtocol
 			{
 				case "schema":
 					if (schema is not null) throw InvalidProtocol(lineNumber, "schema 重复。");
-					schema = ParseInteger(value, "schema", lineNumber, 1, 1);
+					schema = ParseInteger(value, "schema", lineNumber, 1, 2);
 					break;
 				case "revision":
 					if (revision is not null) throw InvalidProtocol(lineNumber, "revision 重复。");
@@ -165,30 +187,85 @@ public static class CliArmorRegistryProtocol
 						throw InvalidProtocol(lineNumber, $"目标护甲 {target} 重复。");
 					mappings.Add(new CliArmorRegistryMapping(target, source));
 					break;
+				case "model":
+					var modelParts = value.Split(',');
+					if (modelParts.Length != 2)
+						throw InvalidProtocol(lineNumber, "model 必须是 key,source_item_id。");
+					var modelKey = ParseModelKey(modelParts[0], lineNumber);
+					var modelSource = string.IsNullOrWhiteSpace(modelParts[1])
+						? (uint?)null
+						: ParseItemId(modelParts[1], lineNumber, "模型来源");
+					if (!modelKeys.Add(modelKey))
+						throw InvalidProtocol(lineNumber, $"模型键 {modelKey} 重复。");
+					models.Add(new CliArmorRegistryModel(modelKey, modelSource, Array.Empty<CliArmorRegistryModelPiece>()));
+					break;
+				case "model_piece":
+					var pieceParts = value.Split(',');
+					if (pieceParts.Length != 6)
+						throw InvalidProtocol(lineNumber, "model_piece 必须是 key,body,unit,slot,piece_type,tone。");
+					var pieceKey = ParseModelKey(pieceParts[0], lineNumber);
+					var modelIndex = models.FindIndex(model => string.Equals(model.Key, pieceKey, StringComparison.Ordinal));
+					if (modelIndex < 0)
+						throw InvalidProtocol(lineNumber, $"model_piece 引用了未定义模型 {pieceKey}。");
+					var piece = new CliArmorRegistryModelPiece(
+						ParseUInt32(pieceParts[1], lineNumber, "model body"),
+						ParseUnitId(pieceParts[2], lineNumber),
+						ParseModelSlot(pieceParts[3], lineNumber),
+						ParseUInt32(pieceParts[4], lineNumber, "model piece type"),
+						(byte)ParseInteger(pieceParts[5], "model tone", lineNumber, 0, 255));
+					var existingPieces = models[modelIndex].Pieces ?? Array.Empty<CliArmorRegistryModelPiece>();
+					models[modelIndex] = models[modelIndex] with { Pieces = existingPieces.Append(piece).ToArray() };
+					break;
+				case "map_model":
+					var modelMappingParts = value.Split(',');
+					if (modelMappingParts.Length != 2)
+						throw InvalidProtocol(lineNumber, "map_model 必须是 target_item_id,model_key。");
+					var modelTarget = ParseItemId(modelMappingParts[0], lineNumber, "目标");
+					var targetModel = ParseModelKey(modelMappingParts[1], lineNumber);
+					if (!targets.Add(modelTarget))
+						throw InvalidProtocol(lineNumber, $"目标护甲 {modelTarget} 重复。");
+					mappings.Add(new CliArmorRegistryMapping(modelTarget, null, targetModel));
+					break;
 				default:
 					throw InvalidProtocol(lineNumber, $"未知字段：{key}");
 			}
 		}
 
-		if (schema != 1) throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议必须包含 schema=1。");
+		if (schema is not (1 or 2)) throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议必须包含 schema=1 或 schema=2。");
 		if (revision is null) throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议缺少 revision。");
 		if (enabled is null) throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议缺少 enabled。");
-		return new CliArmorRegistryDocument(1, revision.Value, enabled.Value, NormalizeMappings(mappings));
+		return new CliArmorRegistryDocument(schema.Value, revision.Value, enabled.Value,
+			NormalizeMappings(mappings), models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray());
 	}
 
 	public static string SerializeProtocol(CliArmorRegistryDocument document)
 	{
 		ValidateDocument(document);
 		var builder = new StringBuilder();
-		builder.AppendLine("schema=1");
+		builder.AppendLine("schema=2");
 		builder.Append("revision=").Append(document.Revision.ToString(CultureInfo.InvariantCulture)).Append('\n');
 		builder.Append("enabled=").Append(document.Enabled ? "true" : "false").Append('\n');
+		foreach (var model in (document.Models ?? Array.Empty<CliArmorRegistryModel>())
+			.OrderBy(model => model.Key, StringComparer.Ordinal))
+		{
+			builder.Append("model=").Append(model.Key).Append(',')
+				.Append(model.SourceItemId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('\n');
+			foreach (var piece in model.Pieces ?? Array.Empty<CliArmorRegistryModelPiece>())
+			{
+				builder.Append("model_piece=").Append(model.Key).Append(',')
+					.Append(piece.Body.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.Unit).Append(',')
+					.Append(piece.Slot.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.PieceType.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.Tone.ToString(CultureInfo.InvariantCulture)).Append('\n');
+			}
+		}
 		foreach (var mapping in NormalizeMappings(document.Mappings))
 		{
-			builder.Append("map=")
+			builder.Append(mapping.IsModelMapping ? "map_model=" : "map=")
 				.Append(mapping.TargetItemId.ToString(CultureInfo.InvariantCulture))
 				.Append(',')
-				.Append(mapping.SourceItemId.ToString(CultureInfo.InvariantCulture))
+				.Append(mapping.IsModelMapping ? mapping.ModelKey : mapping.SourceItemId.GetValueOrDefault().ToString(CultureInfo.InvariantCulture))
 				.Append('\n');
 		}
 		return builder.ToString();
@@ -204,10 +281,11 @@ public static class CliArmorRegistryProtocol
 		if (current.Revision == MaximumRevision)
 			throw new CliUserException("ArmorRegistryRevisionExhausted", "当前护甲注册协议 revision 已达到上限，无法继续递增。");
 		var desired = new CliArmorRegistryDocument(
-			1,
+			2,
 			current.Revision + 1,
 			specification.Enabled,
-			NormalizeMappings(specification.Mappings));
+			NormalizeMappings(specification.Mappings),
+			NormalizeModels(specification.Models ?? Array.Empty<CliArmorRegistryModel>()));
 		ValidateDocument(desired);
 		var fingerprint = await FingerprintProtocolAsync(registryRoot, cancellationToken).ConfigureAwait(false);
 		var unsigned = new CliArmorRegistryPlan(
@@ -420,7 +498,12 @@ public static class CliArmorRegistryProtocol
 			if (specification.Mappings is null)
 				throw new CliUserException("ArmorRegistrySpecificationInvalid", "护甲注册规格缺少 mappings。");
 			ValidateMappings(specification.Mappings);
-			return specification with { Mappings = NormalizeMappings(specification.Mappings) };
+			ValidateModels(specification.Models ?? Array.Empty<CliArmorRegistryModel>(), specification.Mappings);
+			return specification with
+			{
+				Mappings = NormalizeMappings(specification.Mappings),
+				Models = NormalizeModels(specification.Models ?? Array.Empty<CliArmorRegistryModel>())
+			};
 		}
 		catch (CliUserException)
 		{
@@ -456,13 +539,14 @@ public static class CliArmorRegistryProtocol
 
 	private static void ValidateDocument(CliArmorRegistryDocument document)
 	{
-		if (document.Schema != 1)
-			throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议 schema 必须是 1。");
+		if (document.Schema is not (1 or 2))
+			throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议 schema 必须是 1 或 2。");
 		if (document.Revision is < 0 or > MaximumRevision)
 			throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议 revision 超出支持范围。");
 		if (document.Mappings is null)
 			throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议缺少 mappings。");
 		ValidateMappings(document.Mappings);
+		ValidateModels(document.Models ?? Array.Empty<CliArmorRegistryModel>(), document.Mappings);
 	}
 
 	private static void ValidateMappings(IEnumerable<CliArmorRegistryMapping> mappings)
@@ -470,7 +554,11 @@ public static class CliArmorRegistryProtocol
 		var targets = new HashSet<uint>();
 		foreach (var mapping in mappings)
 		{
-			if (mapping.TargetItemId == mapping.SourceItemId)
+			if (!mapping.IsModelMapping && mapping.SourceItemId is null)
+				throw new CliUserException("ArmorRegistryMappingInvalid", $"目标护甲 {mapping.TargetItemId} 缺少视觉来源。");
+			if (mapping.IsModelMapping && mapping.SourceItemId is not null)
+				throw new CliUserException("ArmorRegistryMappingInvalid", $"目标护甲 {mapping.TargetItemId} 同时指定了护甲和模型来源。");
+			if (!mapping.IsModelMapping && mapping.TargetItemId == mapping.SourceItemId)
 				throw new CliUserException("ArmorRegistryMappingInvalid", $"目标护甲 {mapping.TargetItemId} 不能映射到自身。");
 			if (!targets.Add(mapping.TargetItemId))
 				throw new CliUserException("ArmorRegistryMappingDuplicateTarget", $"目标护甲 {mapping.TargetItemId} 重复。");
@@ -479,6 +567,39 @@ public static class CliArmorRegistryProtocol
 
 	private static IReadOnlyList<CliArmorRegistryMapping> NormalizeMappings(IEnumerable<CliArmorRegistryMapping> mappings)
 		=> mappings.OrderBy(mapping => mapping.TargetItemId).ToArray();
+
+	private static IReadOnlyList<CliArmorRegistryModel> NormalizeModels(IEnumerable<CliArmorRegistryModel> models)
+		=> models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray();
+
+	private static void ValidateModels(
+		IEnumerable<CliArmorRegistryModel> models,
+		IEnumerable<CliArmorRegistryMapping> mappings)
+	{
+		var keys = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var model in models)
+		{
+			_ = ParseModelKey(model.Key, 0);
+			if (!keys.Add(model.Key))
+				throw new CliUserException("ArmorRegistryModelDuplicate", $"模型键 {model.Key} 重复。");
+			var pieceKeys = new HashSet<(uint Body, uint Slot, uint PieceType)>();
+			foreach (var piece in model.Pieces ?? Array.Empty<CliArmorRegistryModelPiece>())
+			{
+				if (piece.Slot == 0)
+					throw new CliUserException(
+						"ArmorRegistryModelSlotInvalid",
+						$"模型 {model.Key} 使用了无效的 slot=0；护甲视觉槽位从 1 开始。");
+				if (!pieceKeys.Add((piece.Body, piece.Slot, piece.PieceType)))
+					throw new CliUserException(
+						"ArmorRegistryModelPieceDuplicate",
+						$"模型 {model.Key} 重复使用 body={piece.Body}, slot={piece.Slot}, piece_type={piece.PieceType}。");
+			}
+		}
+		foreach (var mapping in mappings.Where(mapping => mapping.IsModelMapping))
+		{
+			if (!keys.Contains(mapping.ModelKey!))
+				throw new CliUserException("ArmorRegistryModelMissing", $"目标护甲 {mapping.TargetItemId} 引用了未定义模型 {mapping.ModelKey}。");
+		}
+	}
 
 	private static string ResolvePlanRoot(CliArmorRegistryPlan plan, string? overridePath)
 	{
@@ -515,6 +636,37 @@ public static class CliArmorRegistryProtocol
 		return uint.TryParse(value, style, CultureInfo.InvariantCulture, out var parsed)
 			? parsed
 			: throw InvalidProtocol(line, $"{label} Item ID 不是 32 位无符号整数。");
+	}
+
+	private static uint ParseUInt32(string value, int line, string label)
+		=> uint.TryParse(value.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+			? parsed
+			: throw InvalidProtocol(line, $"{label} 不是 32 位无符号整数。");
+
+	private static uint ParseModelSlot(string value, int line)
+	{
+		var slot = ParseUInt32(value, line, "model slot");
+		return slot == 0
+			? throw InvalidProtocol(line, "model slot=0 不是有效的护甲视觉槽位；护甲槽位从 1 开始。")
+			: slot;
+	}
+
+	private static string ParseUnitId(string value, int line)
+	{
+		var unit = value.Trim();
+		if (unit.Length != 16 || !unit.All(Uri.IsHexDigit))
+			throw InvalidProtocol(line, "model unit 必须是 16 位十六进制 ID。");
+		return unit.ToLowerInvariant();
+	}
+
+	private static string ParseModelKey(string value, int line)
+	{
+		var key = value.Trim();
+		if (key.Length is < 1 or > 96
+			|| key.Any(character => !(char.IsLetterOrDigit(character)
+				|| character is '_' or '.' or '-' or '/' or ':')))
+			throw InvalidProtocol(line, "模型键包含不支持的字符。");
+		return key;
 	}
 
 	private static CliUserException InvalidProtocol(int line, string message)

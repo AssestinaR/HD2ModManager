@@ -1,0 +1,27 @@
+{
+  "schema": "hd2mod.armor-registry-spec",
+  "enabled": true,
+  "models": [
+    {
+      "key": "custom/lunalice-visible",
+      "sourceItemId": null,
+      "pieces": [
+        { "body": 3, "unit": "df431352d9b95e83", "slot": 1, "pieceType": 0, "tone": 0 },
+        { "body": 1, "unit": "d7da843a4908511e", "slot": 3, "pieceType": 1, "tone": 0 },
+        { "body": 0, "unit": "da5e6dc74cdb08a3", "slot": 6, "pieceType": 1, "tone": 0 },
+        { "body": 0, "unit": "df7bce4ca49ccda8", "slot": 7, "pieceType": 1, "tone": 0 },
+        { "body": 1, "unit": "d1eb7be84016ceab", "slot": 6, "pieceType": 1, "tone": 0 },
+        { "body": 1, "unit": "d336c6b662522f0e", "slot": 7, "pieceType": 1, "tone": 0 },
+        { "body": 1, "unit": "dae35ee15168145f", "slot": 2, "pieceType": 1, "tone": 0 },
+        { "body": 0, "unit": "d841b16544c8fbae", "slot": 2, "pieceType": 1, "tone": 0 },
+        { "body": 0, "unit": "d5d79d84b8933a7f", "slot": 3, "pieceType": 1, "tone": 0 }
+      ]
+    }
+  ],
+  "mappings": [
+    {
+      "targetItemId": 4259903063,
+      "modelKey": "custom/lunalice-visible"
+    }
+  ]
+}

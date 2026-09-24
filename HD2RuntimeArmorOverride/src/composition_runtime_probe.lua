@@ -47,6 +47,7 @@ end
 ffi.cdef [[
 void *GetModuleHandleA(const char *);
 void *GetCurrentProcess(void);
+uint32_t GetCurrentProcessId(void);
 int ReadProcessMemory(void *, const void *, void *, size_t, size_t *);
 size_t VirtualQuery(const void *, void *, size_t);
 ]]
@@ -102,6 +103,7 @@ local targets = {
     {name='B-08', item=488691438, archive='dfa7c28c3b490a8c', pieces=19},
     {name='RE-1861', item=3340614564, archive='39fe1f0308f4514a', pieces=15},
     {name='RE-2310', item=820333399, archive='d923906f8b815987', pieces=23},
+    {name='RE-824', item=4259903063, archive='f50c7fd427839c47', pieces=23},
     {name='CE-81', item=2546928266, archive='88ccc33c4cca4d20', pieces=29}
 }
 local patterns, expected_by_name = {}, {}
@@ -300,12 +302,119 @@ classify_holder_context=function(data, target_value)
         likely_container=score>=5
     }
 end
+local function runtime_status_hint()
+    local local_app=os.getenv('LOCALAPPDATA')
+    if not local_app or local_app=='' then return nil,'localappdata_unavailable' end
+    local path=local_app..'\\CowboyBingus\\Helldivers2\\ArmorRegistry\\runtime.status'
+    local opened,status_file=pcall(io.open,path,'rb')
+    if not opened or not status_file then return nil,'runtime_status_unavailable' end
+    local fields={}
+    for line in status_file:lines() do
+        local key,value=line:match('^([%w_]+)=(.*)$')
+        if key then fields[key]=value end
+    end
+    status_file:close()
+    local pid_ok,current_pid=pcall(function()
+        return tonumber(kernel.GetCurrentProcessId())
+    end)
+    if not pid_ok or not current_pid or tonumber(fields.pid)~=current_pid then
+        return nil,'runtime_status_pid_mismatch'
+    end
+    if fields.state~='ready' then return nil,'runtime_status_not_ready' end
+    local blob,index=hex_number(fields.blob_base or ''),hex_number(fields.index_base or '')
+    if not blob or not index then return nil,'runtime_status_addresses_invalid' end
+    local protocol_path=local_app..'\\CowboyBingus\\Helldivers2\\ArmorRegistry\\armor-registry.protocol'
+    local protocol_opened,protocol_file=pcall(io.open,protocol_path,'rb')
+    if not protocol_opened or not protocol_file then
+        return nil,'armor_registry_protocol_unavailable'
+    end
+    local schema,revision,enabled,mapped_items=nil,nil,nil,{}
+    for line in protocol_file:lines() do
+        local value=line:match('^revision=(%d+)%s*$')
+        if value then revision=tonumber(value) end
+        value=line:match('^schema=(%d+)%s*$')
+        if value then schema=tonumber(value) end
+        value=line:match('^enabled=(%a+)%s*$')
+        if value then enabled=value=='true' end
+        local target=line:match('^map=(%d+),%d+%s*$')
+        if target then mapped_items[tonumber(target)]=true end
+    end
+    protocol_file:close()
+    if schema~=1 or enabled==nil then return nil,'armor_registry_protocol_invalid' end
+    if revision~=tonumber(fields.revision) then
+        return nil,'runtime_protocol_revision_mismatch'
+    end
+    if enabled~=true then mapped_items={} end
+    return {
+        pid=current_pid,blob_base=blob,index_base=index,
+        mapped_items=mapped_items,mapped_target_count=(function()
+            local count=0
+            for _ in pairs(mapped_items) do count=count+1 end
+            return count
+        end)()
+    }
+end
+local function publish_fast_registry(fast_layout,candidate,locator_source)
+    local roots,names_by_item={},{}
+    for _,target in ipairs(targets) do
+        names_by_item[tostring(target.item)]=target.name
+    end
+    for index,root in ipairs(fast_layout.roots) do
+        local header=read(root,4)
+        local item=header and u32(header,0)
+        if names_by_item[tostring(item)] then
+            roots[tostring(item)]={address=root,index=index-1}
+        end
+    end
+    for _,target in ipairs(targets) do
+        if not roots[tostring(target.item)] then return false end
+    end
+    local chain_verified,chain_failures=0,0
+    for item,root in pairs(roots) do
+        local target_name=names_by_item[item]
+        local checked,chain=pcall(COMPOSITION_VERIFY,read,root.address)
+        if checked and chain then
+            chain.target=target_name
+            chain.registry_index=root.index
+            chain.validation_source=locator_source
+            emit('composition_chain_candidate',chain)
+            chain_verified=chain_verified+1
+        else
+            emit('composition_chain_validation_failure',{
+                target=target_name,item=tonumber(item),
+                root=region_number(root.address),registry_index=root.index,
+                reason=checked and 'tuple_or_boundary_mismatch' or tostring(chain)
+            })
+            chain_failures=chain_failures+1
+        end
+    end
+    M.result={
+        index_base=hex_number(candidate.index_base),blob_base=fast_layout.base,
+        matched_entries=411,roots=roots,chain_verified=chain_verified,
+        chain_failures=chain_failures,fast_path=true,read_only_probe=true,
+        consumer_proven=false,ownership_proven=false
+    }
+    emit('composition_fast_registry',{
+        index_base=candidate.index_base,blob_base=region_number(fast_layout.base),
+        blob_bytes=fast_layout.bytes,matched_entries=411,roots=roots,
+        chain_verified=chain_verified,chain_failures=chain_failures,
+        mapped_index_entries=candidate.mapped_entries,
+        unmodified_index_entries=candidate.unmodified_entries,
+        locator_source=locator_source,read_only=true,consumer_proven=false
+    })
+    emit('composition_scan',{
+        game_dll_base=region_number(base),fast_path=true,matched_entries=411,
+        chain_verified=chain_verified,chain_failures=chain_failures,
+        complete_address_space=false,consumer_proven=false
+    })
+    return true
+end
 local function scan()
     local available, queried = memory_regions()
     local hits, scanned, scanned_regions = {}, 0, 0
     local raw_item_hits, header_anchor_hits = 0, 0
     local successful_bytes, failed_bytes, skipped_bytes = 0, 0, 0
-    local max_scanned, chunk_size = 0x200000000, 0x100000
+    local max_scanned, chunk_size = 0x10000000, 0x100000
     local max_region_size = 0x08000000
     local bytes_by_type = {}
     local verified_roots = {}
@@ -316,6 +425,77 @@ local function scan()
     })
     if COMPOSITION_INDEX then
         local fast_layout
+        local hint,hint_reason
+        for _=1,7200 do
+            hint,hint_reason=runtime_status_hint()
+            if hint then break end
+            coroutine.yield()
+        end
+        if hint then
+            local blob_region,index_region
+            for _,entry in ipairs(available) do
+                if hint.blob_base>=entry.base
+                    and hint.blob_base+384196<=entry.base+entry.size then
+                    blob_region=entry
+                end
+                if hint.index_base>=entry.base
+                    and hint.index_base+411*8<=entry.base+entry.size then
+                    index_region=entry
+                end
+            end
+            if blob_region and blob_region.kind==0x20000
+                and index_region and index_region.kind==0x20000 then
+                local checked=COMPOSITION_INDEX.library(
+                    read,hint.blob_base,384196,nil)
+                if checked and checked.count==411 and checked.bytes==384196 then
+                    local candidate=COMPOSITION_INDEX.check(
+                        read,checked,hint.index_base,checked.roots[1],
+                        hint.mapped_items)
+                    if candidate and candidate.matched_entries==411 then
+                        local sample_is_mapped=false
+                        for _,target in ipairs(targets) do
+                            if hint.mapped_items[target.item] then
+                                sample_is_mapped=true
+                                hint_reason='sample_item_is_currently_mapped'
+                                break
+                            end
+                        end
+                        if not sample_is_mapped then
+                            emit('composition_locator_hint',{
+                                accepted=true,source='same_pid_runtime_status',
+                                pid=hint.pid,matched_entries=411,
+                                mapped_index_entries=#candidate.mapped_entries,
+                                sample_items_unmapped=true
+                            })
+                            if publish_fast_registry(
+                                checked,candidate,'same_pid_runtime_status') then
+                                return {}
+                            end
+                            hint_reason='target_roots_missing'
+                        end
+                    else
+                        hint_reason='full_index_validation_failed'
+                    end
+                else
+                    hint_reason='blob_framing_validation_failed'
+                end
+            else
+                hint_reason='hint_regions_not_readable_private_memory'
+            end
+        end
+        if not hint then hint_reason=hint_reason or 'runtime_status_hint_unavailable' end
+        emit('composition_locator_hint',{
+            accepted=false,reason=hint_reason,broad_scan_budget_bytes=max_scanned
+        })
+        if not M.result
+            and rawget(_G,'HD2ArmorCompositionProbeAllowUnhintedScan')~=true then
+            emit('composition_scan',{
+                fast_path=false,complete_address_space=false,
+                failed_closed=true,reason=hint_reason,
+                consumer_proven=false
+            })
+            return {}
+        end
         for _,entry in ipairs(available) do
             if entry.kind==0x20000 and entry.size>=384196 and entry.size<=0x80000 then
                 local prefix=read(entry.base,4)
@@ -341,38 +521,8 @@ local function scan()
                             local candidate=COMPOSITION_INDEX.check(
                                 read,fast_layout,entry.base+at,fast_layout.roots[1])
                             if candidate then
-                                local roots={}
-                                for index,root in ipairs(fast_layout.roots) do
-                                    local header=read(root,4)
-                                    local item=header and u32(header,0)
-                                    if item==488691438 or item==3340614564
-                                        or item==820333399 or item==2546928266 then
-                                        roots[tostring(item)]={
-                                            address=root,index=index-1
-                                        }
-                                    end
-                                end
-                                if roots['488691438'] and roots['3340614564']
-                                    and roots['820333399'] and roots['2546928266'] then
-                                    M.result={
-                                        index_base=hex_number(candidate.index_base),
-                                        blob_base=fast_layout.base,
-                                        matched_entries=411,roots=roots,
-                                        fast_path=true,read_only_probe=true,
-                                        consumer_proven=false,ownership_proven=false
-                                    }
-                                    emit('composition_fast_registry',{
-                                        index_base=candidate.index_base,
-                                        blob_base=region_number(fast_layout.base),
-                                        blob_bytes=fast_layout.bytes,
-                                        matched_entries=411,roots=roots,
-                                        read_only=true,consumer_proven=false
-                                    })
-                                    emit('composition_scan',{
-                                        game_dll_base=region_number(base),
-                                        fast_path=true,matched_entries=411,
-                                        complete_address_space=false,
-                                        consumer_proven=false})
+                                if publish_fast_registry(
+                                    fast_layout,candidate,'validated_full_index') then
                                     return {}
                                 end
                             end

@@ -63,7 +63,7 @@ public sealed class ArmorRegistryCliTests
 
 		var protocol = await File.ReadAllTextAsync(fixture.ProtocolPath);
 		Assert.Equal(
-			"schema=1\nrevision=4\nenabled=true\nmap=488691438,820333399\nmap=718698115,820333399\n",
+			"schema=2\nrevision=4\nenabled=true\nmap=488691438,820333399\nmap=718698115,820333399\n",
 			protocol.Replace("\r\n", "\n", StringComparison.Ordinal));
 		Assert.Equal(statusBefore, await File.ReadAllBytesAsync(fixture.RuntimeStatusPath));
 		Assert.Equal(cacheBefore, await File.ReadAllBytesAsync(fixture.LocatorCachePath));
@@ -198,6 +198,62 @@ public sealed class ArmorRegistryCliTests
 		Assert.Equal(2, mismatch.ExitCode);
 		using var mismatchJson = mismatch.ParseJson();
 		Assert.Equal("ArmorRegistryRootMismatch", mismatchJson.RootElement.GetProperty("error").GetProperty("code").GetString());
+	}
+
+	[Theory]
+	[InlineData(
+		"""
+		{
+		  "schema": "hd2mod.armor-registry-spec",
+		  "enabled": true,
+		  "models": [
+		    {
+		      "key": "custom/bad",
+		      "pieces": [
+		        { "body": 3, "unit": "0011223344556677", "slot": 0, "pieceType": 0, "tone": 0 }
+		      ]
+		    }
+		  ],
+		  "mappings": [
+		    { "targetItemId": 488691438, "modelKey": "custom/bad" }
+		  ]
+		}
+		""",
+		"ArmorRegistryModelSlotInvalid")]
+	[InlineData(
+		"""
+		{
+		  "schema": "hd2mod.armor-registry-spec",
+		  "enabled": true,
+		  "models": [
+		    {
+		      "key": "custom/bad",
+		      "pieces": [
+		        { "body": 3, "unit": "0011223344556677", "slot": 1, "pieceType": 0, "tone": 0 },
+		        { "body": 3, "unit": "8899aabbccddeeff", "slot": 1, "pieceType": 0, "tone": 0 }
+		      ]
+		    }
+		  ],
+		  "mappings": [
+		    { "targetItemId": 488691438, "modelKey": "custom/bad" }
+		  ]
+		}
+		""",
+		"ArmorRegistryModelPieceDuplicate")]
+	public async Task ArmorRegistry_RejectsUnsafeModelPieces(string specification, string expectedCode)
+	{
+		await using var fixture = await ArmorRegistryFixture.CreateAsync(withProtocol: true);
+		await File.WriteAllTextAsync(fixture.SpecificationPath, specification);
+
+		var result = await CliTestConsole.RunCapturedAsync(
+			"armor-registry", "plan", fixture.SpecificationPath,
+			"--registry-root", fixture.RegistryRoot,
+			"--output", fixture.PlanPath,
+			"--json");
+
+		Assert.Equal(2, result.ExitCode);
+		using var json = result.ParseJson();
+		Assert.Equal(expectedCode, json.RootElement.GetProperty("error").GetProperty("code").GetString());
 	}
 
 	private static async ValueTask<int> RunAsync(params string[] args)

@@ -129,9 +129,22 @@ HD2RuntimeArmorOverride/dist/HD2-Runtime-Armor-Registry.zip
 
 ## 虚拟模型素体
 
-后续协议会把“真实游戏护甲”与“Lua 自有模型素体”分离。模型素体使用稳定
-字符串 key，不占用或伪造游戏 Item ID，也不需要原版注册表中存在对应护甲。
-管理器可定义完整 Body/Piece/Unit 组合，多个真实护甲再引用同一 model key。
+协议 `schema=2` 已把“真实游戏护甲”与“Lua 自有模型素体”分离。模型素体
+使用稳定字符串 key，不占用或伪造游戏 Item ID，也不需要原版注册表中存在
+对应护甲。当前首版模型定义以一个真实护甲作为经过验证的 Body/Piece 模板，
+多个真实护甲可以引用同一 `model key`：
+
+```text
+schema=2
+revision=8
+enabled=true
+model=base/re2310,820333399
+map_model=651522724,base/re2310
+```
+
+模型素体只能作为视觉来源，不能作为映射目标；目标护甲的名称、护甲值、
+被动技能、解锁状态和其他 gameplay metadata 始终保留。管理器自定义
+Body/Piece/Unit 组合的编辑器将在此协议基础上继续增加。
 
 虚拟模型只提供视觉组合，不携带名称、护甲数值或被动技能。目标护甲始终
 保留自己的身份和 gameplay metadata。具体 v2 语义与发布条件见协议文档。

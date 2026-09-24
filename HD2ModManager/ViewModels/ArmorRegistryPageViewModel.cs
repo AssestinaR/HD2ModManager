@@ -271,17 +271,21 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 		foreach (var mapping in snapshot.Document.Mappings)
 		{
+			if (mapping.SourceItemId is not { } sourceItemId) continue;
 			if (!Choices.ContainsKey(mapping.TargetItemId))
 				Choices[mapping.TargetItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.TargetItemId);
-			if (!Choices.ContainsKey(mapping.SourceItemId))
-				Choices[mapping.SourceItemId] = RuntimeArmorChoiceViewModel.Unknown(mapping.SourceItemId);
+			if (!Choices.ContainsKey(sourceItemId))
+				Choices[sourceItemId] = RuntimeArmorChoiceViewModel.Unknown(sourceItemId);
 		}
 
 		Mappings.Clear();
 		foreach (var mapping in snapshot.Document.Mappings)
+		{
+			if (mapping.SourceItemId is not { } sourceItemId) continue;
 			Mappings.Add(new RuntimeArmorMappingRowViewModel(
 				Choices[mapping.TargetItemId],
-				Choices[mapping.SourceItemId]));
+				Choices[sourceItemId]));
+		}
 		if (resetNavigation)
 		{
 			pendingProviderIds.Clear();

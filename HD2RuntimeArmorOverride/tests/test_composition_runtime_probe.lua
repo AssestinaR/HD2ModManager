@@ -97,6 +97,7 @@ local function memory_fixture(fail_reads)
             consumer_proven=false,self_copy_excluded=false}
     end
     env.COMPOSITION_INDEX=nil
+    env.HD2ArmorCompositionProbeAllowUnhintedScan=true
     env.require=function() return fake end
     env.update=function() end
     env.CowboyBingusModLoader={api=1,open_log=function()

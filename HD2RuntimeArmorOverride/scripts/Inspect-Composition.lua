@@ -2,7 +2,10 @@ local schema = dofile(arg[1])
 local input = assert(io.open(arg[2],'rb'))
 local data = input:read('*a'); input:close()
 local kits = schema.library(data)
-local selected = { [820333399]=true, [3340614564]=true, [2546928266]=true }
+local selected = {
+    [488691438]=true, [820333399]=true,
+    [3340614564]=true, [2546928266]=true
+}
 -- RE-824 is selected by archive to avoid guessing its item ID.
 for _,kit in ipairs(kits) do
     if selected[kit.itemId] or kit.archive == 'f50c7fd427839c47' then

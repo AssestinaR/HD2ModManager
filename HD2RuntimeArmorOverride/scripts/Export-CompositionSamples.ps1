@@ -30,7 +30,7 @@ FROM game_data_authority_kits k
 JOIN game_data_authority_pieces p ON p.item_id=k.item_id
 LEFT JOIN game_data_authority_resources r ON r.piece_id=p.piece_id
 WHERE k.kit_kind=0 AND k.archive_id IN
-('39fe1f0308f4514a','d923906f8b815987','f50c7fd427839c47','88ccc33c4cca4d20')
+('dfa7c28c3b490a8c','39fe1f0308f4514a','d923906f8b815987','f50c7fd427839c47','88ccc33c4cca4d20')
 ORDER BY k.item_id,p.piece_id,r.role,r.file_id
 "@
     $reader = $command.ExecuteReader()
@@ -63,7 +63,7 @@ ORDER BY k.item_id,p.piece_id,r.role,r.file_id
     }
     $reader.Dispose()
     $transaction.Commit()
-    if ($kits.Count -ne 4) { throw "Expected four complete armor samples." }
+    if ($kits.Count -ne 5) { throw "Expected five complete armor samples." }
     $document = [ordered]@{
         schema = 1; sourceFingerprint = $index.observedSourceFingerprint
         scope = "Indexed authority records; not runtime ownership or capacity evidence"

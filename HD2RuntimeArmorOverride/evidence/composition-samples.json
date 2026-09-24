@@ -4,6 +4,240 @@
   "scope": "Indexed authority records; not runtime ownership or capacity evidence",
   "kits": [
     {
+      "itemId": 488691438,
+      "archive": "dfa7c28c3b490a8c",
+      "name": "B-08“轻装枪手”",
+      "dlcId": 3715278879,
+      "setId": 3794083209,
+      "pieces": [
+        {
+          "rawBodyType": 3,
+          "slot": 1,
+          "pieceType": 0,
+          "weight": 1,
+          "toneVariations": 0,
+          "unit": "3c33cf10a26cbb3e",
+          "resources": {}
+        },
+        {
+          "rawBodyType": 3,
+          "slot": 4,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "8b397a9551f115d9",
+          "resources": {
+            "MaterialLut": "9b1b3149dc064892",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 3,
+          "slot": 5,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "6cf0c933f89d2c61",
+          "resources": {
+            "MaterialLut": "9b1b3149dc064892",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 3,
+          "slot": 4,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "92fec815b9e02723",
+          "resources": {
+            "MaterialLut": "3f3f685c61ee1263",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 3,
+          "slot": 7,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "ff2127729cb8610e",
+          "resources": {
+            "MaterialLut": "639aad5da4a1fdf0",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 3,
+          "slot": 6,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "82e334ad224d174c",
+          "resources": {
+            "MaterialLut": "639aad5da4a1fdf0",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 3,
+          "slot": 5,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "070df80412814549",
+          "resources": {
+            "MaterialLut": "3f3f685c61ee1263",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 0,
+          "slot": 7,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "c19ad4635cf57c68",
+          "resources": {
+            "MaterialLut": "281b95b9e00dfa0d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 0,
+          "slot": 9,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "58bcd7e50a12e436",
+          "resources": {
+            "MaterialLut": "13228b385fcfba7d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 0,
+          "slot": 3,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "6314cdd330eb03a1",
+          "resources": {
+            "MaterialLut": "9b1b3149dc064892",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 0,
+          "slot": 6,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "07db4515d78027b6",
+          "resources": {
+            "MaterialLut": "281b95b9e00dfa0d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 0,
+          "slot": 2,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "a31c71be0a3660a0",
+          "resources": {
+            "MaterialLut": "9e99f10aa837ffb2",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 0,
+          "slot": 2,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "834547bc83a76133",
+          "resources": {
+            "MaterialLut": "281b95b9e00dfa0d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 1,
+          "slot": 9,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "4b7407afd5e9a43e",
+          "resources": {
+            "MaterialLut": "13228b385fcfba7d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 1,
+          "slot": 6,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "4c28e97d1bf51e2b",
+          "resources": {
+            "MaterialLut": "281b95b9e00dfa0d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 1,
+          "slot": 7,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "e6980827cce04d17",
+          "resources": {
+            "MaterialLut": "281b95b9e00dfa0d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 1,
+          "slot": 2,
+          "pieceType": 0,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "db42d5128b89d58c",
+          "resources": {
+            "MaterialLut": "9e99f10aa837ffb2",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 1,
+          "slot": 3,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "eaa587b00a8e53ec",
+          "resources": {
+            "MaterialLut": "9b1b3149dc064892",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        },
+        {
+          "rawBodyType": 1,
+          "slot": 2,
+          "pieceType": 1,
+          "weight": 0,
+          "toneVariations": 0,
+          "unit": "6814376571f9a642",
+          "resources": {
+            "MaterialLut": "281b95b9e00dfa0d",
+            "PatternLut": "cf0cc31b981786c9"
+          }
+        }
+      ]
+    },
+    {
       "itemId": 820333399,
       "archive": "d923906f8b815987",
       "name": "RE-2310“荣誉卫队”",

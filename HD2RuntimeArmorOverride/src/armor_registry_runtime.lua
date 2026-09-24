@@ -54,6 +54,13 @@ end
 local function put_dword(address,value)
     ffi.cast('uint32_t *',address)[0]=ffi.new('uint32_t',value)
 end
+local function put_hex64(address,value)
+    for i=0,7 do
+        local at=#value-(i+1)*2+1
+        local byte=tonumber(value:sub(at,at+1),16)
+        ffi.cast('uint8_t *',address+i)[0]=byte
+    end
+end
 local function pack64(value)
     local out={}
     for _=1,8 do
@@ -364,6 +371,24 @@ end
 local function resolve_weight(meta,body,slot,piece_type)
     return ARMOR_METADATA_PROBE_CORE.resolve_weight(meta,body,slot,piece_type)
 end
+local function find_target_piece(root,body,slot,piece_type)
+    local bodies,body_count=qword(root+48),qword(root+56)
+    if bodies<65536 or body_count<1 or body_count>16 then return nil end
+    for i=0,body_count-1 do
+        local row=bodies+i*24
+        if dword(row)==body then
+            local pieces,count=qword(row+8),qword(row+16)
+            if pieces<65536 or count<1 or count>4096 then return nil end
+            for piece=0,count-1 do
+                local address=pieces+piece*96
+                if dword(address+8)==slot and dword(address+12)==piece_type then
+                    return address
+                end
+            end
+        end
+    end
+    return nil
+end
 local function weight_values(set)
     local values={}
     for value,count in pairs(set or {}) do
@@ -557,9 +582,92 @@ local function build_clone(target_root,source_root)
         pieces=total,weight_resolutions=resolutions}
 end
 
+local function build_model_clone(target_root,model)
+    local weights,weight_error=target_weights(target_root)
+    if not weights then return nil,weight_error end
+    local grouped,order={},{}
+    for _,piece in ipairs(model.pieces or {}) do
+        if not grouped[piece.body] then
+            grouped[piece.body]={body=piece.body,pieces={}}
+            order[#order+1]=piece.body
+        end
+        grouped[piece.body].pieces[#grouped[piece.body].pieces+1]=piece
+    end
+    if #order<1 or #order>16 then return nil,'model Body count is invalid' end
+    -- Stingray's current armor consumer emits the three body arrays in the
+    -- stable order Any(3), Stocky(0), Slim(1). Keep custom models in that
+    -- order as well; insertion order is not a safe ABI contract.
+    local body_rank={ [3]=1, [0]=2, [1]=3 }
+    table.sort(order,function(left,right)
+        local left_rank=body_rank[left] or 1000+left
+        local right_rank=body_rank[right] or 1000+right
+        return left_rank<right_rank
+    end)
+    local total=0
+    for _,body in ipairs(order) do
+        local count=#grouped[body].pieces
+        if count<1 or count>4096 then return nil,'model Piece count is invalid' end
+        total=total+count
+    end
+    if total>4096 then return nil,'model Piece total too large' end
+    local bytes=64+#order*24+total*96
+    local buffer=ffi.new('uint8_t[?]',bytes)
+    local base=tonumber(ffi.cast('uintptr_t',buffer))
+    ffi.copy(buffer,ffi.cast('const void *',target_root),64)
+    put_qword(base+48,base+64);put_qword(base+56,#order)
+    local piece_at=64+#order*24
+    local resolutions={exact=0,body=0,global=0}
+    for index,body_id in ipairs(order) do
+        local group=grouped[body_id]
+        local body_row=base+64+(index-1)*24
+        put_dword(body_row,body_id)
+        put_qword(body_row+8,base+piece_at)
+        put_qword(body_row+16,#group.pieces)
+        for piece_index,piece in ipairs(group.pieces) do
+            local address=base+piece_at+(piece_index-1)*96
+            local target_piece=find_target_piece(target_root,body_id,piece.slot,piece.piece_type)
+            if target_piece then
+                -- Preserve the target's auxiliary resource hashes and other
+                -- engine-owned Piece fields. Only visual Unit/slot/type,
+                -- target gameplay weight, and tone are replaced below.
+                ffi.copy(ffi.cast('void *',address),
+                    ffi.cast('const void *',target_piece),96)
+            else
+                ffi.fill(ffi.cast('void *',address),96,0)
+            end
+            put_hex64(address,piece.unit)
+            put_dword(address+8,piece.slot)
+            put_dword(address+12,piece.piece_type)
+            local weight,level=resolve_weight(weights,body_id,piece.slot,piece.piece_type)
+            if weight==nil then return nil,'target weight metadata has no unique majority' end
+            put_dword(address+16,weight)
+            -- The serialized Piece contract stores tone variation at +88.
+            -- Writing at +89 corrupts the adjacent byte and can surface only
+            -- later when the engine revisits the composed armor.
+            ffi.cast('uint8_t *',address+88)[0]=piece.tone or 0
+            resolutions[level]=resolutions[level]+1
+        end
+        piece_at=piece_at+#group.pieces*96
+    end
+    return {buffer=buffer,base=base,bytes=bytes,bodies=#order,
+        pieces=total,weight_resolutions=resolutions}
+end
+
 local function apply_document(document)
     local registry=M.registry
     if not registry then return false,'registry is not ready' end
+    local models={}
+    local model_keys={}
+    for _,model in ipairs(document.models or {}) do
+        if model_keys[model.key] then return false,'duplicate model key '..model.key end
+        model_keys[model.key]=true
+        local source=model.source and registry.items[model.source] or nil
+        if not source and #(model.pieces or {})==0 then
+            return false,'unknown model source item '..tostring(model.source)
+        end
+        models[model.key]={key=model.key,source=model.source,
+            address=source and source.address,pieces=model.pieces or {}}
+    end
     local desired={}
     if document.enabled then
         for _,mapping in ipairs(document.mappings) do
@@ -569,12 +677,25 @@ local function apply_document(document)
     local prepared={}
     for key,mapping in pairs(desired) do
         local target=registry.items[mapping.target]
-        local source=registry.items[mapping.source]
+        local source
+        local model_definition
+        if mapping.model then
+            source=models[mapping.model]
+            if not source then return false,'unknown model '..mapping.model end
+            model_definition=source
+        else
+            source=registry.items[mapping.source]
+        end
         if not target then return false,'unknown target item '..mapping.target end
-        if not source then return false,'unknown source item '..mapping.source end
-        local clone,reason=build_clone(target.address,source.address)
+        if not source then return false,'unknown source item '..tostring(mapping.source) end
+        local clone,reason=model_definition
+            and (#(model_definition.pieces or {})>0
+                and build_model_clone(target.address,model_definition)
+                or build_clone(target.address,source.address))
+            or build_clone(target.address,source.address)
         if not clone then return false,'target '..mapping.target..': '..reason end
         clone.target=mapping.target;clone.source=mapping.source
+        clone.model=mapping.model
         clone.original=target.address;clone.slot=registry.index_base+target.index*8
         prepared[key]=clone
     end
