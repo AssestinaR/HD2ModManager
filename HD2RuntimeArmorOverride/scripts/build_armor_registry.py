@@ -7,11 +7,15 @@ def build(project: Path, output: Path) -> None:
     protocol = (project / "src/armor_registry_protocol.lua").read_text(encoding="utf-8")
     probe_core = (project / "src/armor_metadata_probe_core.lua").read_text(encoding="utf-8")
     runtime = (project / "src/armor_registry_runtime.lua").read_text(encoding="utf-8")
+    transaction = (project / "src/armor_registry_transaction.lua").read_text(encoding="utf-8")
+    composition = (project / "src/armor_registry_composition.lua").read_text(encoding="utf-8")
     probe = (project / "src/armor_metadata_probe.lua").read_text(encoding="utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         f"local ARMOR_REGISTRY_PROTOCOL=(function()\n{protocol}\nend)()\n"
         f"local ARMOR_METADATA_PROBE_CORE=(function()\n{probe_core}\nend)()\n"
+        f"local ARMOR_REGISTRY_TRANSACTION=(function()\n{transaction}\nend)()\n"
+        f"local ARMOR_REGISTRY_COMPOSITION=(function()\n{composition}\nend)()\n"
         f"local __hd2_runtime=(function()\n{runtime}\nend)()\n"
         f"{probe}",
         encoding="utf-8",

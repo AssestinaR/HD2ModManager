@@ -308,8 +308,7 @@ public static class CliArmorRegistryProtocol
 					.Append(piece.PieceType.ToString(CultureInfo.InvariantCulture)).Append(',')
 					.Append(piece.Tone.ToString(CultureInfo.InvariantCulture)).Append(',')
 					.Append(piece.Enabled ? "true" : "false");
-				if (piece.IsDefaultBase)
-					builder.Append(",true");
+				// Keep the wire format compatible with runtimes accepting 6/7 fields.
 				builder.Append('\n');
 			}
 		}

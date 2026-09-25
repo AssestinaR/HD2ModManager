@@ -13,6 +13,34 @@ namespace HD2ModCore.Tests;
 public sealed class RuntimeArmorRegistryServiceTests
 {
 	[Fact]
+	public async Task EditorDefaultBase_RemainsInWorkspaceButNeverInRuntimeProtocol()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		const string legacy = "schema=2\nrevision=27\nenabled=true\nmodel=custom,\n"
+			+ "model_piece=custom,0,044e0dee2a7b0002,2,0,0,true,true\nmap_model=42,custom\n";
+		var document = RuntimeArmorRegistryService.ParseProtocol(legacy);
+		Assert.True(document.ModelDefinitions[0].Pieces![0].IsDefaultBase);
+		await fixture.Service.SaveWorkspaceAsync(document);
+		var reloaded = await fixture.Service.ReadSnapshotAsync();
+		Assert.True(reloaded.Document.ModelDefinitions[0].Pieces![0].IsDefaultBase);
+		var wire = RuntimeArmorRegistryService.SerializeProtocol(reloaded.Document);
+		var line = Assert.Single(wire.Split('\n'), l => l.StartsWith("model_piece="));
+		Assert.Equal("model_piece=custom,0,044e0dee2a7b0002,2,0,0,true", line);
+		Assert.Equal(7, line.Split(',').Length);
+
+		// Recreate an old release's successfully saved workspace + incompatible
+		// protocol. The upgraded GUI must offer Apply even without further edits.
+		var applied = await fixture.Service.ApplyAsync(reloaded.Fingerprint, document.Enabled,
+			document.Mappings, document.ModelDefinitions);
+		Assert.False((await fixture.Service.ReadSnapshotAsync()).HasUnappliedChanges);
+		var protocolPath = Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName);
+		var oldWire = (await File.ReadAllTextAsync(protocolPath)).Replace(
+			"044e0dee2a7b0002,2,0,0,true\n", "044e0dee2a7b0002,2,0,0,true,true\n");
+		await File.WriteAllTextAsync(protocolPath, oldWire);
+		Assert.True((await fixture.Service.ReadSnapshotAsync()).HasUnappliedChanges);
+	}
+
+	[Fact]
 	public async Task WorkspaceEdits_SurviveReloadWithoutCompilingAndStayPending()
 	{
 		await using var fixture = await Fixture.CreateAsync();

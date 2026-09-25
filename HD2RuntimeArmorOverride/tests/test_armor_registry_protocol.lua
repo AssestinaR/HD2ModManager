@@ -33,6 +33,17 @@ assert(custom.models[1].source==nil and #custom.models[1].pieces==2
     and custom.models[1].pieces[2].enabled==false)
 local custom_roundtrip=protocol.parse(protocol.serialize(custom))
 assert(custom_roundtrip.models[1].pieces[2].enabled==false)
+for _,flag in ipairs({'true','false'}) do
+    local legacy='schema=2\nrevision=27\nenabled=true\nmodel=custom,\n'
+        ..'model_piece=custom,0,044e0dee2a7b0002,2,0,0,true,'..flag..'\nmap_model=42,custom\n'
+    local model=protocol.parse(legacy)
+    assert(model.models[1].pieces[1].enabled==true)
+    assert(protocol.serialize(model):find('model_piece=custom,0,044e0dee2a7b0002,2,0,0\n',1,true))
+end
+for _,extra in ipairs({'invalid','true,extra'}) do
+    assert(not pcall(protocol.parse,'schema=2\nrevision=1\nenabled=true\nmodel=custom,\n'
+        ..'model_piece=custom,0,044e0dee2a7b0002,2,0,0,true,'..extra..'\n'))
+end
 assert(not pcall(protocol.parse,[[
 schema=2
 revision=1

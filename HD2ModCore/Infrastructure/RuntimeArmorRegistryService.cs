@@ -226,6 +226,14 @@ public sealed class RuntimeArmorRegistryService
 			: !protocolExists || !string.Equals(
 				await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false),
 				SerializeProtocol(document), StringComparison.Ordinal);
+		// A previously "applied" workspace can still have an incompatible wire
+		// file. Keep Apply available after upgrading without requiring a dummy edit.
+		if (!pendingChanges && protocolExists)
+		{
+			var existingProtocol = await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false);
+			pendingChanges = existingProtocol.Split('\n').Any(line =>
+				line.TrimStart().StartsWith("model_piece=", StringComparison.Ordinal) && line.Split(',').Length == 8);
+		}
 		return new RuntimeArmorRegistrySnapshot(
 			registryRoot,
 			protocolPath,
@@ -596,8 +604,7 @@ public sealed class RuntimeArmorRegistryService
 					.Append(piece.PieceType.ToString(CultureInfo.InvariantCulture)).Append(',')
 					.Append(piece.Tone.ToString(CultureInfo.InvariantCulture)).Append(',')
 					.Append(piece.Enabled ? "true" : "false");
-				if (piece.IsDefaultBase)
-					builder.Append(",true");
+				// Editor-only metadata belongs in the library workspace, not the Lua ABI.
 				builder.Append('\n');
 			}
 		}

@@ -20,7 +20,15 @@ public static class PatchStreamCompatibility
 		// Mod import intentionally omits zero-byte files, so a missing .stream is
 		// equivalent to an empty one here. The remaining TOC-wide signature is
 		// deliberately strict enough that a normally missing stream still fails.
-		if (File.Exists(streamPath) && new FileInfo(streamPath).Length != 0) return entries;
+		// Inspect the opened resource, not symbolic-link metadata: a non-empty
+		// deployed stream must never be mistaken for the empty-stream sentinel.
+		try
+		{
+			using var stream = File.OpenRead(streamPath);
+			if (stream.Length != 0) return entries;
+		}
+		catch (FileNotFoundException) { }
+		catch (DirectoryNotFoundException) { }
 		if (entries.Any(entry => entry.StreamOffset != 0)) return entries;
 
 		var declaredSizes = entries

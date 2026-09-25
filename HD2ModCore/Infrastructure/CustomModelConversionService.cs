@@ -164,7 +164,8 @@ public sealed class CustomModelConversionService(StoragePaths paths, IModInforma
 				.GroupBy(e => e.AssetKey).Select(g => g.OrderBy(e => new PatchFileNameParser().Parse(e.SourceFileName).PatchIndex).Last()).ToArray();
 			var combined = await new PatchSubsetWriter().WriteSelectedAsync(facts.SourcePatchTocPaths[0], stage,
 				winners.Select(e => new PatchSubsetSelection(e.SourceFilePath, e.AssetKey)).ToArray(), cancellationToken: token);
-			var stagedPath = Path.Combine(stage, sources[0].ArchiveId + ".patch_0");
+			// Keep the loadable carrier separate from the selected armor identity.
+			var stagedPath = Path.Combine(stage, CanonicalCrossArmorOrchestrator.ArmorOutputPatchFileName);
 			if (!string.Equals(combined.TocFilePath, stagedPath, StringComparison.OrdinalIgnoreCase))
 			{
 				foreach (var suffix in new[] { "", ".gpu_resources", ".stream" })

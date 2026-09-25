@@ -8,6 +8,17 @@ namespace HD2ModCli.Tests;
 public sealed class ArmorRegistryCliTests
 {
 	[Fact]
+	public void RuntimeProtocol_DoesNotEmitLegacyEditorDefaultBaseField()
+	{
+		var document = CliArmorRegistryProtocol.ParseProtocol(
+			"schema=2\nrevision=27\nenabled=true\nmodel=custom,\n"
+			+ "model_piece=custom,0,044e0dee2a7b0002,2,0,0,true,true\nmap_model=42,custom\n");
+		var text = CliArmorRegistryProtocol.SerializeProtocol(document);
+		var line = Assert.Single(text.Split('\n'), l => l.StartsWith("model_piece="));
+		Assert.Equal("model_piece=custom,0,044e0dee2a7b0002,2,0,0,true", line);
+	}
+
+	[Fact]
 	public async Task ArmorRegistry_PlanValidateApply_HotUpdatesOnlyManagerOwnedProtocol()
 	{
 		await using var fixture = await ArmorRegistryFixture.CreateAsync(withProtocol: true);

@@ -68,8 +68,14 @@ function M.parse(text)
             elseif key=='model_piece' then
                 local fields={}
                 for field in (value..','):gmatch('(.-),') do fields[#fields+1]=field end
-                assert(#fields==6 or #fields==7,
-                    'model_piece must be key,body,unit,slot,piece_type,tone[,enabled]')
+                assert(#fields>=6 and #fields<=8,
+                    'model_piece must be key,body,unit,slot,piece_type,tone[,enabled[,default_base]]')
+                -- Older managers leaked this editor-only flag into the protocol.
+                -- Validate it for backwards compatibility; never use it in native layout.
+                if fields[8]~=nil then
+                    assert(fields[8]=='true' or fields[8]=='false',
+                        'model piece default_base must be true or false')
+                end
                 local name,body,unit,slot,piece_type,tone=
                     fields[1],fields[2],fields[3],fields[4],fields[5],fields[6]
                 name=model_key(name)
@@ -98,6 +104,22 @@ function M.parse(text)
                     piece_type=parsed_piece_type,
                     tone=integer(tone,'model tone',0,255),
                     enabled=piece_enabled}
+            elseif key=='test_piece_template' then
+                -- Diagnostic B only: explicit provenance, never a guessed template.
+                local name,unit,item,body,donor=value:match(
+                    '^([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)$')
+                assert(donor,'test_piece_template must be model,unit,item,body,donor_unit')
+                local model
+                for _,candidate in ipairs(result.models) do
+                    if candidate.key==model_key(name) then model=candidate end
+                end
+                assert(model,'unknown test template model')
+                unit=hex_id(unit,'template destination')
+                model.test_templates=model.test_templates or {}
+                assert(not model.test_templates[unit],'duplicate test template')
+                model.test_templates[unit]={item=item_id(item,'template item'),
+                    body=integer(body,'template body',0,3),
+                    unit=hex_id(donor,'template donor Unit')}
             elseif key=='map' then
                 local target,source=value:match('^([^,]+),([^,]+)$')
                 assert(target and source,'map must be target_item,source_item')
@@ -142,6 +164,18 @@ function M.parse(text)
     assert(result.schema==1 or result.schema==2,'schema=1 or schema=2 is required')
     assert(result.revision~=nil,'revision is required')
     assert(result.enabled~=nil,'enabled is required')
+    for _,model in ipairs(result.models) do
+        if model.test_templates then
+            local seen_units={}
+            for _,piece in ipairs(model.pieces) do
+                assert(model.test_templates[piece.unit],'test model requires every Piece template')
+                seen_units[piece.unit]=true
+            end
+            for unit in pairs(model.test_templates) do
+                assert(seen_units[unit],'test template destination not in model')
+            end
+        end
+    end
     table.sort(result.mappings,function(a,b) return a.target<b.target end)
     table.sort(result.models,function(a,b) return a.key<b.key end)
     table.sort(result.piece_overrides,function(a,b)
@@ -155,6 +189,9 @@ end
 
 function M.serialize(document)
     assert(type(document)=='table','protocol document is required')
+    for _,model in ipairs(document.models or {}) do
+        assert(not model.test_templates,'diagnostic template protocol cannot be serialized by production writer')
+    end
     local lines={'schema=2','revision='..tostring(document.revision or 0),
         'enabled='..tostring(document.enabled==true)}
     local models={}

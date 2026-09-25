@@ -1,6 +1,6 @@
 local existing=rawget(_G,'HD2RuntimeArmorRegistry')
 if existing then return existing end
-local M={version='0.1.0',status='starting',active={}}
+local M={version='0.2.0',status='starting',active={}}
 rawset(_G,'HD2RuntimeArmorRegistry',M)
 
 local loader=rawget(_G,'CowboyBingusModLoader')
@@ -17,7 +17,10 @@ void *GetCurrentProcess(void);
 uint32_t GetCurrentProcessId(void);
 uint32_t GetEnvironmentVariableA(const char *,char *,uint32_t);
 int ReadProcessMemory(void *,const void *,void *,size_t,size_t *);
+int WriteProcessMemory(void *,void *,const void *,size_t,size_t *);
 size_t VirtualQuery(const void *,void *,size_t);
+int QueryPerformanceCounter(int64_t *);
+int QueryPerformanceFrequency(int64_t *);
 int CreateDirectoryA(const char *,void *);
 uint32_t GetLastError(void);
 int MoveFileExA(const char *,const char *,uint32_t);
@@ -26,6 +29,18 @@ local kernel=ffi.load('kernel32')
 local process=kernel.GetCurrentProcess()
 local module_base=tonumber(ffi.cast('uintptr_t',kernel.GetModuleHandleA('game.dll')))
 local pid=tonumber(kernel.GetCurrentProcessId())
+local frequency=ffi.new('int64_t[1]')
+local counter=ffi.new('int64_t[1]')
+assert(kernel.QueryPerformanceFrequency(frequency)~=0,'performance clock unavailable')
+local clock_frequency=tonumber(frequency[0])
+local function clock()
+    kernel.QueryPerformanceCounter(counter)
+    return tonumber(counter[0])/clock_frequency
+end
+local runtime_started=clock()
+-- Discovery shares the soft frame budget with preparation and auditing.
+-- Timing diagnostics are not an engine resource-readiness guarantee.
+M.locator_pacing='frame_budget'
 
 local function read(address,size)
     if not address or address<65536 or size<1 or size>0x400000 then return nil end
@@ -41,25 +56,18 @@ local function u32(data,at)
     return a+b*256+c*65536+d*16777216
 end
 local function qword(address)
-    return tonumber(ffi.cast('uint64_t *',address)[0])
+    local data=assert(read(address,8),'unreadable pointer/count')
+    local low,high=u32(data,0),u32(data,4)
+    assert(high<0x200000,'pointer/count exceeds exact integer range')
+    return low+high*4294967296
 end
 local function dword(address)
-    return tonumber(ffi.cast('uint32_t *',address)[0])
+    return assert(u32(read(address,4),0),'unreadable dword')
 end
 local function put_qword(address,value)
     if address%8~=0 then return false end
     ffi.cast('uint64_t *',address)[0]=ffi.new('uint64_t',value)
     return qword(address)==value
-end
-local function put_dword(address,value)
-    ffi.cast('uint32_t *',address)[0]=ffi.new('uint32_t',value)
-end
-local function put_hex64(address,value)
-    for i=0,7 do
-        local at=#value-(i+1)*2+1
-        local byte=tonumber(value:sub(at,at+1),16)
-        ffi.cast('uint8_t *',address+i)[0]=byte
-    end
 end
 local function pack64(value)
     local out={}
@@ -70,6 +78,35 @@ local function pack64(value)
     return table.concat(out)
 end
 local function hex(value) return string.format('0x%016x',value or 0) end
+
+local function slot_writable(address)
+    if not address or address<65536 or address%8~=0 then return false end
+    local mbi=ffi.new('uint8_t[48]')
+    if kernel.VirtualQuery(ffi.cast('void *',address),mbi,48)==0 then return false end
+    local base=tonumber(ffi.cast('uintptr_t *',mbi)[0])
+    local size=tonumber(ffi.cast('size_t *',mbi+24)[0])
+    local state=tonumber(ffi.cast('uint32_t *',mbi+32)[0])
+    local protection=tonumber(ffi.cast('uint32_t *',mbi+36)[0])
+    local p=protection%256
+    return state==0x1000 and math.floor(protection/256)%2==0
+        and (p==4 or p==8 or p==64 or p==128) and address+8<=base+size
+end
+local function slot_read(address)
+    local data=read(address,8)
+    if not data then return nil end
+    return u32(data,0)+u32(data,4)*4294967296
+end
+local function slot_write(address,value,expected)
+    if not slot_writable(address) or slot_read(address)~=expected then return false end
+    local buffer=ffi.new('uint64_t[1]',value)
+    local written=ffi.new('size_t[1]')
+    return kernel.WriteProcessMemory(process,ffi.cast('void *',address),buffer,8,written)~=0
+        and tonumber(written[0])==8 and slot_read(address)==value
+end
+local transaction=ARMOR_REGISTRY_TRANSACTION.new({
+    read=slot_read,write=slot_write,writable=slot_writable})
+-- This strong reference also pins buffers after an unexpected script exception.
+M.transaction=transaction
 
 local function mkdir(path)
     if kernel.CreateDirectoryA(path,nil)~=0 then return true end
@@ -189,6 +226,17 @@ local function status_text(state,message,applied_revision)
         'revision='..tostring(applied_revision or -1),
         'active_mappings='..tostring(M.active_count or 0)
     }
+    lines[#lines+1]='retained_clone_count='..transaction.retained_count
+    lines[#lines+1]='retained_clone_bytes='..transaction.retained_bytes
+    for _,key in ipairs({'built','reused','removed','writes','prepare_ms','publish_ms'}) do
+        if M.last_apply and M.last_apply[key]~=nil then
+            lines[#lines+1]='last_'..key..'='..tostring(M.last_apply[key])
+        end
+    end
+    if M.locate_ms then lines[#lines+1]='locate_ms='..tostring(M.locate_ms) end
+    lines[#lines+1]='locator_pacing='..M.locator_pacing
+    if M.located_after_ms then lines[#lines+1]='located_after_ms='..M.located_after_ms end
+    if M.first_applied_after_ms then lines[#lines+1]='first_applied_after_ms='..M.first_applied_after_ms end
     if registry then
         lines[#lines+1]='record_count='..tostring(registry.count)
         lines[#lines+1]='blob_bytes='..tostring(registry.bytes)
@@ -225,7 +273,7 @@ local function memory_regions()
         end
         cursor=base+math.max(size,0x1000)
         queries=queries+1
-        if queries%2048==0 then coroutine.yield() end
+        if queries%64==0 then coroutine.yield() end
     end
     return regions
 end
@@ -370,24 +418,6 @@ local function target_weights(root)
 end
 local function resolve_weight(meta,body,slot,piece_type)
     return ARMOR_METADATA_PROBE_CORE.resolve_weight(meta,body,slot,piece_type)
-end
-local function find_target_piece(root,body,slot,piece_type)
-    local bodies,body_count=qword(root+48),qword(root+56)
-    if bodies<65536 or body_count<1 or body_count>16 then return nil end
-    for i=0,body_count-1 do
-        local row=bodies+i*24
-        if dword(row)==body then
-            local pieces,count=qword(row+8),qword(row+16)
-            if pieces<65536 or count<1 or count>4096 then return nil end
-            for piece=0,count-1 do
-                local address=pieces+piece*96
-                if dword(address+8)==slot and dword(address+12)==piece_type then
-                    return address
-                end
-            end
-        end
-    end
-    return nil
 end
 local function weight_values(set)
     local values={}
@@ -558,229 +588,132 @@ local function piece_enabled(overrides,owner,body,unit,slot,piece_type)
     return position_value==nil and true or position_value
 end
 
-local function build_clone(target_root,source_root,source_owner,overrides)
-    local weights,weight_error=target_weights(target_root)
-    if not weights then return nil,weight_error end
-    local source_bodies,body_count=qword(source_root+48),qword(source_root+56)
-    if source_bodies<65536 or body_count<1 or body_count>16 then
-        return nil,'invalid source Body array'
+-- Snapshot original engine data with checked reads; clone builders never dereference
+-- a game pointer. Snapshots are scoped to one transaction (no stale cross-run cache).
+local function snapshot_root(root,checkpoint)
+    local header=assert(read(root,64),'unreadable Kit header')
+    local function pointer(data,at)
+        local high=u32(data,at+4)
+        assert(high<0x200000,'invalid pointer/count')
+        return u32(data,at)+high*4294967296
     end
-    local rows,total={},0
-    for i=0,body_count-1 do
-        local row=source_bodies+i*24
-        local pieces,count=qword(row+8),qword(row+16)
-        if pieces<65536 or count<1 or count>4096 then
-            return nil,'invalid source Piece array'
-        end
-        local body=dword(row)
-        local selected={}
-        for piece=0,count-1 do
-            local address=pieces+piece*96
-            local unit=string.format('%016x',qword(address))
-            local slot=dword(address+8)
-            local piece_type=dword(address+12)
-            if piece_enabled(overrides,source_owner,body,unit,slot,piece_type) then
-                selected[#selected+1]=address
-            end
-        end
-        if #selected==0 then return nil,'source body has no enabled Piece' end
-        rows[i+1]={body=body,source_row=row,pieces=selected,count=#selected}
-        total=total+#selected
-        if total>4096 then return nil,'source Piece total too large' end
+    local bodies,count=pointer(header,48),pointer(header,56)
+    assert(count>=1 and count<=16,'invalid Body count')
+    local body_data=assert(read(bodies,count*24),'unreadable Body array')
+    local rows,total,guards={},0,{{address=root,data=header},{address=bodies,data=body_data}}
+    for i=0,count-1 do
+        local at=i*24
+        local address,n=pointer(body_data,at+8),pointer(body_data,at+16)
+        total=total+n
+        assert(n>=1 and total<=4096,'invalid Piece count')
+        local data=assert(read(address,n*96),'unreadable Piece array')
+        guards[#guards+1]={address=address,data=data}
+        local pieces={}
+        for j=0,n-1 do pieces[#pieces+1]=data:sub(j*96+1,(j+1)*96) end
+        rows[#rows+1]={body=u32(body_data,at),header=body_data:sub(at+1,at+8),pieces=pieces}
+        checkpoint()
     end
-    local bytes=64+body_count*24+total*96
-    local buffer=ffi.new('uint8_t[?]',bytes)
-    local base=tonumber(ffi.cast('uintptr_t',buffer))
-    ffi.copy(buffer,ffi.cast('const void *',target_root),64)
-    put_qword(base+48,base+64);put_qword(base+56,body_count)
-    local piece_at=64+body_count*24
-    local resolutions={exact=0,body=0,global=0}
-    for i,row in ipairs(rows) do
-        local target_row=base+64+(i-1)*24
-        ffi.copy(ffi.cast('void *',target_row),
-            ffi.cast('const void *',row.source_row),8)
-        put_qword(target_row+8,base+piece_at);put_qword(target_row+16,row.count)
-        local piece_bytes=row.count*96
-        for piece=0,row.count-1 do
-            local address=base+piece_at+piece*96
-            ffi.copy(ffi.cast('void *',address),
-                ffi.cast('const void *',row.pieces[piece+1]),96)
-            local weight,level=resolve_weight(weights,row.body,dword(address+8),dword(address+12))
-            if weight==nil then
-                return nil,'target weight metadata has no unique majority'
-            end
-            put_dword(address+16,weight)
-            resolutions[level]=resolutions[level]+1
-        end
-        piece_at=piece_at+piece_bytes
-    end
-    if piece_at~=bytes then return nil,'clone length self-check failed' end
-    return {buffer=buffer,base=base,bytes=bytes,bodies=body_count,
-        pieces=total,weight_resolutions=resolutions}
+    return {header=header,rows=rows,guards=guards}
 end
-
-local function build_model_clone(target_root,model,target_owner,overrides)
-    local weights,weight_error=target_weights(target_root)
-    if not weights then return nil,weight_error end
-    local grouped,order={},{}
-    for _,piece in ipairs(model.pieces or {}) do
-        if piece.enabled~=false
-            and piece_enabled(overrides,target_owner,piece.body,piece.unit,
-                piece.slot,piece.piece_type) then
-            if not grouped[piece.body] then
-                grouped[piece.body]={body=piece.body,pieces={}}
-                order[#order+1]=piece.body
-            end
-            grouped[piece.body].pieces[#grouped[piece.body].pieces+1]=piece
-        end
-    end
-    if #order<1 or #order>16 then return nil,'model Body count is invalid' end
-    -- Stingray's current armor consumer emits the three body arrays in the
-    -- stable order Any(3), Stocky(0), Slim(1). Keep custom models in that
-    -- order as well; insertion order is not a safe ABI contract.
-    local body_rank={ [3]=1, [0]=2, [1]=3 }
-    table.sort(order,function(left,right)
-        local left_rank=body_rank[left] or 1000+left
-        local right_rank=body_rank[right] or 1000+right
-        return left_rank<right_rank
-    end)
-    local total=0
-    for _,body in ipairs(order) do
-        local count=#grouped[body].pieces
-        if count<1 or count>4096 then return nil,'model Piece count is invalid' end
-        total=total+count
-    end
-    if total>4096 then return nil,'model Piece total too large' end
-    local bytes=64+#order*24+total*96
-    local buffer=ffi.new('uint8_t[?]',bytes)
+local function allocate_plan(plan)
+    local buffer=ffi.new('uint8_t[?]',plan.bytes)
     local base=tonumber(ffi.cast('uintptr_t',buffer))
-    ffi.copy(buffer,ffi.cast('const void *',target_root),64)
-    put_qword(base+48,base+64);put_qword(base+56,#order)
-    local piece_at=64+#order*24
-    local resolutions={exact=0,body=0,global=0}
-    for index,body_id in ipairs(order) do
-        local group=grouped[body_id]
-        local body_row=base+64+(index-1)*24
-        put_dword(body_row,body_id)
-        put_qword(body_row+8,base+piece_at)
-        put_qword(body_row+16,#group.pieces)
-        for piece_index,piece in ipairs(group.pieces) do
-            local address=base+piece_at+(piece_index-1)*96
-            local target_piece=find_target_piece(target_root,body_id,piece.slot,piece.piece_type)
-            if target_piece then
-                -- Preserve the target's auxiliary resource hashes and other
-                -- engine-owned Piece fields. Only visual Unit/slot/type,
-                -- target gameplay weight, and tone are replaced below.
-                ffi.copy(ffi.cast('void *',address),
-                    ffi.cast('const void *',target_piece),96)
-            else
-                ffi.fill(ffi.cast('void *',address),96,0)
-            end
-            put_hex64(address,piece.unit)
-            put_dword(address+8,piece.slot)
-            put_dword(address+12,piece.piece_type)
-            local weight,level=resolve_weight(weights,body_id,piece.slot,piece.piece_type)
-            if weight==nil then return nil,'target weight metadata has no unique majority' end
-            put_dword(address+16,weight)
-            -- The serialized Piece contract stores tone variation at +88.
-            -- Writing at +89 corrupts the adjacent byte and can surface only
-            -- later when the engine revisits the composed armor.
-            ffi.cast('uint8_t *',address+88)[0]=piece.tone or 0
-            resolutions[level]=resolutions[level]+1
-        end
-        piece_at=piece_at+#group.pieces*96
+    ffi.copy(buffer,plan.payload,plan.bytes)
+    for _,at in ipairs(plan.fixups) do
+        local offset=u32(plan.payload,at)+u32(plan.payload,at+4)*4294967296
+        assert(put_qword(base+at,base+offset),'private clone relocation failed')
     end
-    return {buffer=buffer,base=base,bytes=bytes,bodies=#order,
-        pieces=total,weight_resolutions=resolutions}
+    return {buffer=buffer,base=base,bytes=plan.bytes,bodies=plan.bodies,pieces=plan.pieces}
 end
-
-local function apply_document(document)
+local function prepare_document(document,checkpoint)
     local registry=M.registry
-    if not registry then return false,'registry is not ready' end
+    if not registry then return nil,'registry is not ready' end
     local models={}
-    local model_keys={}
-    for _,model in ipairs(document.models or {}) do
-        if model_keys[model.key] then return false,'duplicate model key '..model.key end
-        model_keys[model.key]=true
-        local source=model.source and registry.items[model.source] or nil
-        if not source and #(model.pieces or {})==0 then
-            return false,'unknown model source item '..tostring(model.source)
+    for _,model in ipairs(document.models or {}) do models[model.key]=model end
+    local overrides=build_override_index(document)
+    local snapshots={}
+    local function snapshot(item)
+        local entry=registry.items[item]
+        assert(entry,'unknown armor item '..tostring(item))
+        if not snapshots[item] then
+            snapshots[item]=snapshot_root(entry.address,checkpoint)
+            assert(u32(snapshots[item].header,0)==item,'Kit identity changed')
         end
-        models[model.key]={key=model.key,source=model.source,
-            address=source and source.address,pieces=model.pieces or {}}
+        return snapshots[item],entry
     end
-    local override_index=build_override_index(document)
-    local target_modes=document.target_modes or {}
-    local desired={}
-    if document.enabled then
-        for _,mapping in ipairs(document.mappings) do
-            desired[tostring(mapping.target)]=mapping
-        end
-    end
-    local prepared={}
-    for key,mapping in pairs(desired) do
-        local target=registry.items[mapping.target]
-        local source
-        local model_definition
+    local requests={}
+    for _,mapping in ipairs(document.enabled and document.mappings or {}) do
+        local target,entry=snapshot(mapping.target)
+        local model,source,owner
         if mapping.model then
-            source=models[mapping.model]
-            if not source then return false,'unknown model '..mapping.model end
-            model_definition=source
-        else
-            source=registry.items[mapping.source]
+            model=assert(models[mapping.model],'unknown model '..mapping.model)
+            owner=model.source
+            if #(model.pieces or {})==0 then source=snapshot(model.source);model=nil end
+            if model and model.test_templates then
+                local templates={}
+                for unit,ref in pairs(model.test_templates) do
+                    local donor=snapshot(ref.item)
+                    local found
+                    for _,row in ipairs(donor.rows) do
+                        if row.body==ref.body then
+                            for _,piece in ipairs(row.pieces) do
+                                if ARMOR_REGISTRY_COMPOSITION.unit(piece)==ref.unit then
+                                    assert(not found,'ambiguous diagnostic donor Piece')
+                                    found={body=row.body,data=piece}
+                                end
+                            end
+                        end
+                    end
+                    assert(found,'diagnostic donor Piece not found: '..ref.unit)
+                    templates[unit]=found
+                end
+                source={test_templates=templates}
+                log('diagnostic_B: exact donor Piece templates for target '..mapping.target)
+            end
+        else source=snapshot(mapping.source);owner=mapping.source end
+        if (document.target_modes or {})[mapping.target]==false then owner=mapping.target end
+        local plan,reason=ARMOR_REGISTRY_COMPOSITION.plan(target,source,model,
+            function(body,unit,slot,piece_type)
+                return piece_enabled(overrides,owner,body,unit,slot,piece_type)
+            end,ARMOR_METADATA_PROBE_CORE,checkpoint)
+        if not plan then return nil,'target '..mapping.target..': '..tostring(reason) end
+        requests[#requests+1]={key=tostring(mapping.target),original=entry.address,
+            slot=registry.index_base+entry.index*8,signature=plan.payload,bytes=plan.bytes,
+            build=function()return allocate_plan(plan)end}
+        checkpoint()
+    end
+    -- Removal is a native publication too: never restore an unreadable/stale
+    -- original root merely because its index still points at our current clone.
+    local requested={}
+    for _,request in ipairs(requests) do requested[request.key]=true end
+    for key,active in pairs(transaction.active) do
+        if not requested[key] then
+            local _,entry=snapshot(tonumber(key))
+            if entry.address~=active.original then return nil,'original Kit identity changed' end
         end
-        if not target then return false,'unknown target item '..mapping.target end
-        if not source then return false,'unknown source item '..tostring(mapping.source) end
-        local follow_source=target_modes[mapping.target]~=false
-        local override_owner=follow_source
-            and (mapping.source or (model_definition and model_definition.source))
-            or mapping.target
-        local clone,reason=model_definition
-            and (#(model_definition.pieces or {})>0
-                and build_model_clone(target.address,model_definition,
-                    override_owner,override_index)
-                or build_clone(target.address,source.address,
-                    override_owner,override_index))
-            or build_clone(target.address,source.address,
-                override_owner,override_index)
-        if not clone then return false,'target '..mapping.target..': '..reason end
-        clone.target=mapping.target;clone.source=mapping.source
-        clone.model=mapping.model
-        clone.original=target.address;clone.slot=registry.index_base+target.index*8
-        prepared[key]=clone
     end
-    local operations={}
-    for key,active in pairs(M.active) do
-        if not prepared[key] then
-            operations[#operations+1]={slot=active.slot,value=active.original,
-                allowed=active.base,key=key}
+    local plan,reason=transaction.prepare(requests,checkpoint)
+    if not plan then return nil,reason end
+    plan.snapshots=snapshots
+    return plan
+end
+local function publish_document(plan,document)
+    -- Revalidate snapshots after yielding during preparation. No yielding after
+    -- this check and during publication; this is NOT an engine-wide thread lock.
+    for _,snapshot in pairs(plan.snapshots) do
+        for _,guard in ipairs(snapshot.guards) do
+            if read(guard.address,#guard.data)~=guard.data then
+                return false,'registry changed during preparation'
+            end
         end
     end
-    for key,clone in pairs(prepared) do
-        local active=M.active[key]
-        operations[#operations+1]={slot=clone.slot,value=clone.base,
-            allowed=active and active.base or clone.original,key=key}
-    end
-    for _,operation in ipairs(operations) do
-        if qword(operation.slot)~=operation.allowed then
-            return false,'index slot changed externally for target '..operation.key
-        end
-    end
-    local changed={}
-    for _,operation in ipairs(operations) do
-        local before=qword(operation.slot)
-        if not put_qword(operation.slot,operation.value) then
-            for i=#changed,1,-1 do put_qword(changed[i].slot,changed[i].before) end
-            return false,'index publication failed for target '..operation.key
-        end
-        changed[#changed+1]={slot=operation.slot,before=before}
-    end
-    M.active=prepared
-    local count=0
-    for _ in pairs(prepared) do count=count+1 end
-    M.active_count=count
+    local okay,stats=transaction.commit(plan)
+    if not okay then return false,stats end
+    M.active=transaction.active
+    M.active_count=0
+    for _ in pairs(M.active) do M.active_count=M.active_count+1 end
     M.applied_revision=document.revision
-    return true
+    return true,stats
 end
 
 local desired,last_protocol_text
@@ -809,21 +742,80 @@ local function poll_weight_audit(dt)
         run_weight_audit(source_id,target_ids)
     end)
 end
+local apply_worker,apply_document_pending,attempts,retry_at=nil,nil,0,0
 local function poll_protocol()
     local text=read_file(protocol_path,65536)
     if not text or text==last_protocol_text then return end
+    last_protocol_text=text -- Deduplicate malformed input as well.
+    apply_worker=nil;apply_document_pending=nil;desired=nil
+    attempts=0;retry_at=0
     local parsed,document=pcall(ARMOR_REGISTRY_PROTOCOL.parse,text)
     if not parsed then
         set_status('protocol_error',tostring(document),M.applied_revision)
         return
     end
     desired=document
-    last_protocol_text=text
-    if M.registry then
-        local applied,reason=apply_document(document)
-        if applied then
-            set_status('ready','protocol applied',document.revision)
+end
+
+-- A soft 1 ms/frame budget shared by locator, auditing and preparation.
+-- Native reads and the final publication cannot be preempted mid-operation.
+local frame_deadline=0
+local function checkpoint()
+    if clock()>=frame_deadline then coroutine.yield() end
+end
+local function advance(worker)
+    repeat
+        local okay,result=coroutine.resume(worker)
+        if not okay then return false,result end
+        if coroutine.status(worker)=='dead' then return true,result,true end
+    until clock()>=frame_deadline
+    return true,nil,false
+end
+local function step_apply(elapsed)
+    if not M.registry or not desired or elapsed<retry_at or attempts>=3 then return end
+    if not apply_worker then
+        apply_document_pending=desired
+        local document=desired
+        local protocol_text=last_protocol_text
+        apply_worker=coroutine.create(function()
+            local started=clock()
+            local plan,reason=prepare_document(document,checkpoint)
+            if not plan then return {okay=false,reason=reason} end
+            -- A replacement may arrive between polling ticks while preparation
+            -- spans frames. Do not briefly publish an obsolete composition.
+            if read_file(protocol_path,65536)~=protocol_text then
+                return {superseded=true}
+            end
+            local prepared=clock()
+            local okay,stats=publish_document(plan,document)
+            if not okay then return {okay=false,reason=stats} end
+            stats.prepare_ms=math.floor((prepared-started)*1000+0.5)
+            stats.publish_ms=math.floor((clock()-prepared)*1000+0.5)
+            return {okay=true,stats=stats}
+        end)
+    end
+    local okay,result,done=advance(apply_worker)
+    if not okay or done then
+        apply_worker=nil
+        if okay and result.superseded then
+            desired=nil
+            poll_protocol()
+        elseif okay and result.okay then
+            M.last_apply=result.stats
+            if not M.first_applied_after_ms then
+                M.first_applied_after_ms=math.floor((clock()-runtime_started)*1000+0.5)
+                log('timing: locator_pacing='..M.locator_pacing
+                    ..' located_after_ms='..tostring(M.located_after_ms)
+                    ..' first_applied_after_ms='..M.first_applied_after_ms)
+            end
+            set_status('ready',string.format('incremental applied: built=%d reused=%d removed=%d writes=%d',
+                result.stats.built,result.stats.reused,result.stats.removed,result.stats.writes),
+                apply_document_pending.revision)
+            desired=nil
         else
+            attempts=attempts+1;retry_at=elapsed+attempts*2
+            local reason=okay and result.reason or tostring(result)
+            if not reason:find('registry changed during preparation',1,true) then attempts=3 end
             set_status('apply_error',reason,M.applied_revision)
         end
     end
@@ -836,56 +828,50 @@ end
 local elapsed,poll_at,locate_at=0,0,5
 local worker
 set_status('waiting','waiting for armor registry',nil)
-local wrapper
-wrapper=function(dt,...)
+local function tick(dt)
+    frame_deadline=clock()+0.001
     if type(dt)=='number' and dt>=0 and dt<10 then elapsed=elapsed+dt end
     if elapsed>=poll_at then poll_at=elapsed+1;poll_protocol() end
     poll_weight_audit(dt)
-    if audit_worker then
-        local resumed,reason=coroutine.resume(audit_worker)
-        if not resumed then
-            write_atomic(weight_audit_report_path,table.concat({
-                'schema=1','state=error',
-                'message='..tostring(reason):gsub('[\r\n=]',' '),''
-            },'\n'))
-            log('weight_audit_error: '..tostring(reason))
-            audit_worker=nil
-        elseif coroutine.status(audit_worker)=='dead' then
-            audit_worker=nil
-        end
+    if audit_worker and clock()<frame_deadline then
+        local okay,result,done=advance(audit_worker)
+        if not okay then
+            write_atomic(weight_audit_report_path,'schema=1\nstate=error\nmessage='
+                ..tostring(result):gsub('[\r\n=]',' ')..'\n')
+            log('weight_audit_error: '..tostring(result));audit_worker=nil
+        elseif done then audit_worker=nil end
     end
-    if not M.registry and elapsed>=locate_at then
+    if not M.registry and elapsed>=locate_at and clock()<frame_deadline then
         if not worker then
+            local started=clock()
             worker=coroutine.create(function()
                 local registry,reason=locate_registry()
                 if registry then
                     M.registry=registry
+                    M.locate_ms=math.floor((clock()-started)*1000+0.5)
+                    M.located_after_ms=math.floor((clock()-runtime_started)*1000+0.5)
                     set_status('located','validated runtime registry',M.applied_revision)
-                    if desired then
-                        local applied,apply_reason=apply_document(desired)
-                        if applied then
-                            set_status('ready','protocol applied',desired.revision)
-                        else
-                            set_status('apply_error',apply_reason,M.applied_revision)
-                        end
-                    end
-                else
-                    M.last_locate_error=reason
-                end
+                else M.last_locate_error=reason end
             end)
         end
-        local resumed,reason=coroutine.resume(worker)
-        if not resumed then
-            set_status('locator_error',tostring(reason),M.applied_revision)
+        local okay,result,done=advance(worker)
+        if not okay or done then
             worker=nil;locate_at=elapsed+5
-        elseif coroutine.status(worker)=='dead' then
-            if not M.registry then
-                set_status('waiting',M.last_locate_error or 'registry not ready',
-                    M.applied_revision)
-                worker=nil;locate_at=elapsed+5
+            if not okay then set_status('locator_error',tostring(result),M.applied_revision)
+            elseif not M.registry then
+                set_status('waiting',M.last_locate_error or 'registry not ready',M.applied_revision)
             end
         end
     end
+    if clock()<frame_deadline then step_apply(elapsed) end
+end
+local wrapper=function(dt,...)
+    local okay,reason=pcall(tick,dt)
+    if not okay then
+        apply_worker=nil;desired=nil
+        pcall(set_status,'runtime_error',tostring(reason),M.applied_revision)
+    end
+    -- Never swallow the game's own errors or suppress its normal update.
     return previous(dt,...)
 end
 rawset(_G,'update',wrapper)

@@ -13,6 +13,25 @@ namespace HD2ModCore.Tests;
 public sealed class CanonicalCrossArmorOrchestratorTests
 {
 	[Theory]
+	[InlineData("d923906f8b815987.patch_0")]
+	[InlineData("9ba626afa44a3aa3.patch_0")]
+	[InlineData("0123456789ABCDEF.patch_0")]
+	public void OutputCarrierIsFixedRegardlessOfSourceArmor(string source)
+	{
+		Assert.Equal("9ba626afa44a3aa3.patch_0",
+			CanonicalCrossArmorOrchestrator.ResolveOutputPatchFileName(Path.Combine("source", source)));
+	}
+
+	[Theory]
+	[InlineData("custom-model:test.patch_0")]
+	[InlineData("d923906f8b815987.patch_1")]
+	public void OutputCarrierStillRejectsInvalidSourceNames(string source)
+	{
+		Assert.Throws<InvalidDataException>(() =>
+			CanonicalCrossArmorOrchestrator.ResolveOutputPatchFileName(source));
+	}
+
+	[Theory]
 	[InlineData(false, true)]
 	[InlineData(true, false)]
 	public async Task ExecuteAsync_CustomTargetRejectsFallbackAndIncompleteOutputBeforeIO(bool direct, bool mapped)

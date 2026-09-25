@@ -21,6 +21,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_transaction.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_transaction.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_composition.lua"
+                      Link="RuntimeArmorRegistry\armor_registry_composition.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_protocol.lua"
                       Link="RuntimeArmorRegistry\armor_registry_protocol.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"

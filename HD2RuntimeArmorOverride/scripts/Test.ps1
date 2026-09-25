@@ -8,6 +8,12 @@ $repo = Split-Path -Parent $project
 
 Push-Location $repo
 try {
+    # Legacy probe tests emit fixtures here; the directory is git-ignored.
+    New-Item -ItemType Directory -Path "$project/evidence" -Force | Out-Null
+    & $LuaJit "$project/tests/test_armor_registry_incremental.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_registry_runtime.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $LuaJit "$project/tests/test_armor_metadata_probe_core.lua" `
         "$project/src/armor_metadata_probe_core.lua"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

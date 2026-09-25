@@ -20,9 +20,9 @@ public static class RuntimeArmorResourceFilter
 		foreach (var patch in patches)
 		{
 			var entries = await new PatchTocScanner().ScanEntriesAsync(patch.Path, cancellationToken).ConfigureAwait(false);
-			var tocLength = (ulong)new FileInfo(patch.Path).Length;
-			var streamLength = File.Exists(patch.Path + ".stream") ? (ulong)new FileInfo(patch.Path + ".stream").Length : 0UL;
-			var gpuLength = File.Exists(patch.Path + ".gpu_resources") ? (ulong)new FileInfo(patch.Path + ".gpu_resources").Length : 0UL;
+			var tocLength = ReadContentLength(patch.Path);
+			var streamLength = ReadContentLength(patch.Path + ".stream", optional: true);
+			var gpuLength = ReadContentLength(patch.Path + ".gpu_resources", optional: true);
 			foreach (var entry in entries.Where(e => e.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
 			{
 				if (entry.TocDataSize > 0
@@ -34,6 +34,19 @@ public static class RuntimeArmorResourceFilter
 			}
 		}
 		return units;
+	}
+
+	private static ulong ReadContentLength(string path, bool optional = false)
+	{
+		// Windows FileInfo.Length may describe the symbolic link (zero bytes),
+		// while TOC reads and the game follow it to the deployed library resource.
+		try
+		{
+			using var stream = File.OpenRead(path);
+			return checked((ulong)stream.Length);
+		}
+		catch (FileNotFoundException) when (optional) { return 0; }
+		catch (DirectoryNotFoundException) when (optional) { return 0; }
 	}
 
 	private static bool Fits(ulong offset, uint size, ulong length)

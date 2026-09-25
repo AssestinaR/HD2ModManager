@@ -1129,12 +1129,16 @@ public sealed class CanonicalCrossArmorOrchestrator
 		};
 	}
 
-	private static string ResolveOutputPatchFileName(string sourcePatchTocPath)
+	// The carrier archive is not the armor's semantic archive. Custom Unit IDs
+	// under a per-armor carrier were not resolved in the in-game A/B test.
+	internal const string ArmorOutputPatchFileName = "9ba626afa44a3aa3.patch_0";
+
+	internal static string ResolveOutputPatchFileName(string sourcePatchTocPath)
 	{
 		var fileName = Path.GetFileName(sourcePatchTocPath);
 		if (!Regex.IsMatch(fileName, "^[0-9a-fA-F]{16}\\.patch_0$", RegexOptions.CultureInvariant))
 			throw new InvalidDataException("Canonical 输出要求来源 Patch 文件名为 16 位十六进制 ID 加 .patch_0。");
-		return fileName.ToLowerInvariant();
+		return ArmorOutputPatchFileName;
 	}
 
 	private async ValueTask<IReadOnlyList<CanonicalPlanDiagnostic>> ValidateWrittenFilesAsync(
