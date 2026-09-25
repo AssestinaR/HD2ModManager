@@ -100,6 +100,7 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty ArmorAssignToolTipProperty = DependencyProperty.Register(nameof(ArmorAssignToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("加入视觉来源或其映射"));
     public static readonly DependencyProperty ArmorReleaseToolTipProperty = DependencyProperty.Register(nameof(ArmorReleaseToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("解除视觉来源或映射"));
     public static readonly DependencyProperty ArmorOpenDetailsToolTipProperty = DependencyProperty.Register(nameof(ArmorOpenDetailsToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("查看映射目标"));
+    public static readonly DependencyProperty ArmorEditComponentsToolTipProperty = DependencyProperty.Register(nameof(ArmorEditComponentsToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("编辑视觉组件"));
     public static readonly DependencyProperty AllowKeyboardRenameProperty = DependencyProperty.Register(nameof(AllowKeyboardRename), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
@@ -137,6 +138,7 @@ public partial class ModListPanel : UserControl
     public string ArmorAssignToolTip { get => (string)GetValue(ArmorAssignToolTipProperty); set => SetValue(ArmorAssignToolTipProperty, value); }
     public string ArmorReleaseToolTip { get => (string)GetValue(ArmorReleaseToolTipProperty); set => SetValue(ArmorReleaseToolTipProperty, value); }
     public string ArmorOpenDetailsToolTip { get => (string)GetValue(ArmorOpenDetailsToolTipProperty); set => SetValue(ArmorOpenDetailsToolTipProperty, value); }
+    public string ArmorEditComponentsToolTip { get => (string)GetValue(ArmorEditComponentsToolTipProperty); set => SetValue(ArmorEditComponentsToolTipProperty, value); }
     public bool AllowKeyboardRename { get => (bool)GetValue(AllowKeyboardRenameProperty); set => SetValue(AllowKeyboardRenameProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
@@ -1051,6 +1053,9 @@ public enum ModListRowAction
     ArmorAssign = 1 << 9,
     ArmorRelease = 1 << 10,
     ArmorOpenDetails = 1 << 11,
+    ArmorEditComponents = 1 << 12,
+    ArmorDeleteCustomModel = 1 << 13,
+    ArmorRenameCustomModel = 1 << 14,
 }
 
 public sealed class ModListRowActionEventArgs(object item, ModListRowAction action) : EventArgs
@@ -1124,6 +1129,28 @@ public sealed class DecorationRowActionVisibilityConverter : System.Windows.Data
     }
 
     public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+public sealed class CustomArmorRowActionVisibilityConverter : System.Windows.Data.IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+    {
+        if (values.Length < 2
+            || values[0] is not ModListRowAction actions
+            || parameter is not ModListRowAction requested)
+            return Visibility.Collapsed;
+        var isCustom = values[1] is true;
+        if (!actions.HasFlag(requested)) return Visibility.Collapsed;
+        if (requested == ModListRowAction.ArmorRelease && isCustom)
+            return Visibility.Collapsed;
+        if ((requested == ModListRowAction.ArmorDeleteCustomModel
+                || requested == ModListRowAction.ArmorRenameCustomModel) && !isCustom)
+            return Visibility.Collapsed;
+        return Visibility.Visible;
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object? parameter, System.Globalization.CultureInfo culture)
         => throw new NotSupportedException();
 }
 

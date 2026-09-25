@@ -27,7 +27,7 @@ public sealed class RuntimeArmorRegistryServiceTests
 		var parsed = RuntimeArmorRegistryService.ParseProtocol(text);
 
 		Assert.Equal(
-			"schema=1\nrevision=7\nenabled=true\nmap=10,100\nmap=30,300\n",
+			"schema=2\nrevision=7\nenabled=true\nmap=10,100\nmap=30,300\n",
 			text);
 		Assert.Equal(7, parsed.Revision);
 		Assert.True(parsed.Enabled);
@@ -35,7 +35,6 @@ public sealed class RuntimeArmorRegistryServiceTests
 	}
 
 	[Theory]
-	[InlineData("schema=2\nrevision=0\nenabled=false\n")]
 	[InlineData("schema=1\nrevision=0\nenabled=false\nmodel=custom:test\n")]
 	[InlineData("schema=1\nrevision=0\nenabled=false\nmap=10,10\n")]
 	[InlineData("schema=1\nrevision=0\nenabled=false\nmap=10,20\nmap=10,30\n")]
@@ -83,6 +82,32 @@ public sealed class RuntimeArmorRegistryServiceTests
 				false,
 				Array.Empty<RuntimeArmorRegistryMapping>()));
 		Assert.Contains("其他操作修改", exception.Message, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task Apply_WritesModLibraryWorkspaceAndSnapshotPrefersIt()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		var model = new RuntimeArmorRegistryModel(
+			"custom/coat",
+			null,
+			[new RuntimeArmorRegistryModelPiece(3, "0011223344556677", 1, 0, 0, false)]);
+
+		await fixture.Service.ApplyAsync(
+			initial.Fingerprint,
+			true,
+			[new RuntimeArmorRegistryMapping(488691438, null, "custom/coat")],
+			[model]);
+
+		Assert.True(File.Exists(fixture.Service.WorkspacePath));
+		Assert.Contains("\"custom/coat\"", await File.ReadAllTextAsync(fixture.Service.WorkspacePath), StringComparison.Ordinal);
+
+		var reloaded = await fixture.Service.ReadSnapshotAsync();
+		Assert.Equal(1, reloaded.Document.Revision);
+		Assert.Equal("custom/coat", Assert.Single(reloaded.Document.ModelDefinitions).Key);
+		Assert.False(Assert.Single(Assert.Single(reloaded.Document.ModelDefinitions).Pieces!).Enabled);
+		Assert.True(reloaded.Document.Mappings.Single().IsModelMapping);
 	}
 
 	[Fact]

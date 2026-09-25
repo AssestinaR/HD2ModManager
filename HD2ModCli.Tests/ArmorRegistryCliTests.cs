@@ -256,6 +256,29 @@ public sealed class ArmorRegistryCliTests
 		Assert.Equal(expectedCode, json.RootElement.GetProperty("error").GetProperty("code").GetString());
 	}
 
+	[Fact]
+	public void ArmorRegistry_ModelPiecesRoundTripPreservesEnabledState()
+	{
+		var document = CliArmorRegistryProtocol.ParseProtocol(
+			"""
+			schema=2
+			revision=7
+			enabled=true
+			model=custom/coat,
+			model_piece=custom/coat,3,0011223344556677,1,0,0,true
+			model_piece=custom/coat,3,8899aabbccddeeff,2,1,0,false
+			map_model=488691438,custom/coat
+			""");
+
+		var model = Assert.Single(document.Models!);
+		Assert.Equal([true, false], model.Pieces!.Select(piece => piece.Enabled).ToArray());
+		var serialized = CliArmorRegistryProtocol.SerializeProtocol(document);
+		Assert.Contains("model_piece=custom/coat,3,0011223344556677,1,0,0,true", serialized, StringComparison.Ordinal);
+		Assert.Contains("model_piece=custom/coat,3,8899aabbccddeeff,2,1,0,false", serialized, StringComparison.Ordinal);
+		var reparsed = CliArmorRegistryProtocol.ParseProtocol(serialized);
+		Assert.Equal([true, false], reparsed.Models!.Single().Pieces!.Select(piece => piece.Enabled).ToArray());
+	}
+
 	private static async ValueTask<int> RunAsync(params string[] args)
 		=> (await CliTestConsole.RunCapturedAsync(args)).ExitCode;
 

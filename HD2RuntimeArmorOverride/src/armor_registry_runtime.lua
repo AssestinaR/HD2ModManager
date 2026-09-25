@@ -533,7 +533,32 @@ local function run_weight_audit(source_id,target_ids)
     log('weight_audit_complete source='..source
         ..' targets='..#ids..' compatible='..compatible..' failed='..failed)
 end
-local function build_clone(target_root,source_root)
+local function build_override_index(document)
+    local exact,position={},{}
+    for _,item in ipairs(document.piece_overrides or {}) do
+        exact[item.owner]=exact[item.owner] or {}
+        position[item.owner]=position[item.owner] or {}
+        local exact_key=table.concat({item.body,item.unit,item.slot,item.piece_type},':')
+        local position_key=table.concat({item.body,item.slot,item.piece_type},':')
+        exact[item.owner][exact_key]=item.enabled~=false
+        position[item.owner][position_key]=item.enabled~=false
+    end
+    return {exact=exact,position=position}
+end
+
+local function piece_enabled(overrides,owner,body,unit,slot,piece_type)
+    if not owner or not overrides then return true end
+    local exact_owner=overrides.exact[owner]
+    if not exact_owner then return true end
+    local exact_value=exact_owner[table.concat({body,unit,slot,piece_type},':')]
+    if exact_value~=nil then return exact_value end
+    local position_owner=overrides.position[owner]
+    local position_value=position_owner
+        and position_owner[table.concat({body,slot,piece_type},':')]
+    return position_value==nil and true or position_value
+end
+
+local function build_clone(target_root,source_root,source_owner,overrides)
     local weights,weight_error=target_weights(target_root)
     if not weights then return nil,weight_error end
     local source_bodies,body_count=qword(source_root+48),qword(source_root+56)
@@ -547,8 +572,20 @@ local function build_clone(target_root,source_root)
         if pieces<65536 or count<1 or count>4096 then
             return nil,'invalid source Piece array'
         end
-        rows[i+1]={body=dword(row),source_row=row,pieces=pieces,count=count}
-        total=total+count
+        local body=dword(row)
+        local selected={}
+        for piece=0,count-1 do
+            local address=pieces+piece*96
+            local unit=string.format('%016x',qword(address))
+            local slot=dword(address+8)
+            local piece_type=dword(address+12)
+            if piece_enabled(overrides,source_owner,body,unit,slot,piece_type) then
+                selected[#selected+1]=address
+            end
+        end
+        if #selected==0 then return nil,'source body has no enabled Piece' end
+        rows[i+1]={body=body,source_row=row,pieces=selected,count=#selected}
+        total=total+#selected
         if total>4096 then return nil,'source Piece total too large' end
     end
     local bytes=64+body_count*24+total*96
@@ -564,10 +601,10 @@ local function build_clone(target_root,source_root)
             ffi.cast('const void *',row.source_row),8)
         put_qword(target_row+8,base+piece_at);put_qword(target_row+16,row.count)
         local piece_bytes=row.count*96
-        ffi.copy(ffi.cast('void *',base+piece_at),
-            ffi.cast('const void *',row.pieces),piece_bytes)
         for piece=0,row.count-1 do
             local address=base+piece_at+piece*96
+            ffi.copy(ffi.cast('void *',address),
+                ffi.cast('const void *',row.pieces[piece+1]),96)
             local weight,level=resolve_weight(weights,row.body,dword(address+8),dword(address+12))
             if weight==nil then
                 return nil,'target weight metadata has no unique majority'
@@ -582,16 +619,20 @@ local function build_clone(target_root,source_root)
         pieces=total,weight_resolutions=resolutions}
 end
 
-local function build_model_clone(target_root,model)
+local function build_model_clone(target_root,model,target_owner,overrides)
     local weights,weight_error=target_weights(target_root)
     if not weights then return nil,weight_error end
     local grouped,order={},{}
     for _,piece in ipairs(model.pieces or {}) do
-        if not grouped[piece.body] then
-            grouped[piece.body]={body=piece.body,pieces={}}
-            order[#order+1]=piece.body
+        if piece.enabled~=false
+            and piece_enabled(overrides,target_owner,piece.body,piece.unit,
+                piece.slot,piece.piece_type) then
+            if not grouped[piece.body] then
+                grouped[piece.body]={body=piece.body,pieces={}}
+                order[#order+1]=piece.body
+            end
+            grouped[piece.body].pieces[#grouped[piece.body].pieces+1]=piece
         end
-        grouped[piece.body].pieces[#grouped[piece.body].pieces+1]=piece
     end
     if #order<1 or #order>16 then return nil,'model Body count is invalid' end
     -- Stingray's current armor consumer emits the three body arrays in the
@@ -668,6 +709,8 @@ local function apply_document(document)
         models[model.key]={key=model.key,source=model.source,
             address=source and source.address,pieces=model.pieces or {}}
     end
+    local override_index=build_override_index(document)
+    local target_modes=document.target_modes or {}
     local desired={}
     if document.enabled then
         for _,mapping in ipairs(document.mappings) do
@@ -688,11 +731,18 @@ local function apply_document(document)
         end
         if not target then return false,'unknown target item '..mapping.target end
         if not source then return false,'unknown source item '..tostring(mapping.source) end
+        local follow_source=target_modes[mapping.target]~=false
+        local override_owner=follow_source
+            and (mapping.source or (model_definition and model_definition.source))
+            or mapping.target
         local clone,reason=model_definition
             and (#(model_definition.pieces or {})>0
-                and build_model_clone(target.address,model_definition)
-                or build_clone(target.address,source.address))
-            or build_clone(target.address,source.address)
+                and build_model_clone(target.address,model_definition,
+                    override_owner,override_index)
+                or build_clone(target.address,source.address,
+                    override_owner,override_index))
+            or build_clone(target.address,source.address,
+                override_owner,override_index)
         if not clone then return false,'target '..mapping.target..': '..reason end
         clone.target=mapping.target;clone.source=mapping.source
         clone.model=mapping.model

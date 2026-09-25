@@ -1,3 +1,0 @@
-{"record_type":"probe_start","version":"0.2.0","read_only":true}
-{"record_type":"composition_region_inventory","queried":12929,"max_attempted_bytes":8589934592,"readable_regions":10667}
-{"record_type":"probe_timeout","seconds":180.00623504800024}

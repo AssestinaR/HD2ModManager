@@ -8,6 +8,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
         <local:RowActionVisibilityConverter x:Key="RowActionVisibility"/>
+        <local:CustomArmorRowActionVisibilityConverter x:Key="CustomArmorRowActionVisibility"/>
         <local:DecorationRowActionVisibilityConverter x:Key="DecorationRowActionVisibility"/>
         <local:ModListRowToneBrushConverter x:Key="RowToneBrush"/>
         <DropShadowEffect x:Key="RowActionPillShadow" BlurRadius="8" ShadowDepth="2" Opacity="0.16" Color="#243042"/>
@@ -196,15 +197,43 @@
                                         </Button>
                                         <Button Tag="{x:Static local:ModListRowAction.ArmorAssign}" ToolTip="{Binding ArmorAssignToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
                                                 Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorAssign}}">
-                                            <TextBlock Text="←" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                            <Path Width="16" Height="16" Data="M13,8 L3,8 M3,8 L7,4 M3,8 L7,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
                                         </Button>
                                         <Button Tag="{x:Static local:ModListRowAction.ArmorRelease}" ToolTip="{Binding ArmorReleaseToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorRelease}}">
-                                            <TextBlock Text="→" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                                >
+                                            <Button.Visibility>
+                                                <MultiBinding Converter="{StaticResource CustomArmorRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ArmorRelease}">
+                                                    <Binding Path="RowActions" ElementName="Root"/>
+                                                    <Binding Path="IsCustomModel"/>
+                                                </MultiBinding>
+                                            </Button.Visibility>
+                                            <Path Width="16" Height="16" Data="M3,8 L13,8 M13,8 L9,4 M13,8 L9,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.ArmorDeleteCustomModel}" ToolTip="删除自定义素体" Style="{StaticResource RowIconButton}" Margin="0" Foreground="{StaticResource StatusDanger}" Click="OnRowActionClick">
+                                            <Button.Visibility>
+                                                <MultiBinding Converter="{StaticResource CustomArmorRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ArmorDeleteCustomModel}">
+                                                    <Binding Path="RowActions" ElementName="Root"/>
+                                                    <Binding Path="IsCustomModel"/>
+                                                </MultiBinding>
+                                            </Button.Visibility>
+                                            <Path Width="16" Height="16" Data="M3,4 L13,4 M6,4 L6,2 L10,2 L10,4 M5,6 L5.5,13 L10.5,13 L11,6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.ArmorRenameCustomModel}" ToolTip="重命名自定义素体" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick">
+                                            <Button.Visibility>
+                                                <MultiBinding Converter="{StaticResource CustomArmorRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ArmorRenameCustomModel}">
+                                                    <Binding Path="RowActions" ElementName="Root"/>
+                                                    <Binding Path="IsCustomModel"/>
+                                                </MultiBinding>
+                                            </Button.Visibility>
+                                            <Path Width="16" Height="16" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
                                         </Button>
                                         <Button Tag="{x:Static local:ModListRowAction.ArmorOpenDetails}" ToolTip="{Binding ArmorOpenDetailsToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
                                                 Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorOpenDetails}}">
-                                            <TextBlock Text="ⓘ" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                                            <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
+                                        </Button>
+                                        <Button Tag="{x:Static local:ModListRowAction.ArmorEditComponents}" ToolTip="{Binding ArmorEditComponentsToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
+                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorEditComponents}}">
+                                            <Path Width="16" Height="16" Data="M6.8,1.5 L9.2,1.5 L9.7,3.1 A5.2,5.2 0 0 1 11.1,3.9 L12.7,3.3 L14.4,5 L13.6,6.5 A5.3,5.3 0 0 1 13.8,8 L15,9 L14.1,11.2 L12.4,11 A5.4,5.4 0 0 1 11.2,12.1 L11.3,13.8 L9,14.5 L8,13 A5.3,5.3 0 0 1 6.4,13 L5.3,14.2 L3.1,13 L3.7,11.4 A5.2,5.2 0 0 1 2.8,10.2 L1.4,9.6 L1.8,7.2 L3.4,6.8 A5.2,5.2 0 0 1 3.8,5.2 L3,3.8 L4.9,2.4 L6.1,3.2 Z M8,5.2 A2.8,2.8 0 1 0 8,10.8 A2.8,2.8 0 1 0 8,5.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.1" StrokeLineJoin="Round"/>
                                         </Button>
                                         <Button Tag="{x:Static local:ModListRowAction.AddToProfile}" ToolTip="加入正在编辑的配置" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
                                                 >

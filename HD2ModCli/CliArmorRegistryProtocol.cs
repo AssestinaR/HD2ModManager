@@ -17,7 +17,19 @@ public sealed record CliArmorRegistryModelPiece(
 	string Unit,
 	uint Slot,
 	uint PieceType,
-	byte Tone = 0);
+	byte Tone = 0,
+	bool Enabled = true,
+	bool IsDefaultBase = false);
+
+public sealed record CliArmorRegistryPieceOverride(
+	uint OwnerItemId,
+	uint Body,
+	string Unit,
+	uint Slot,
+	uint PieceType,
+	bool Enabled = true);
+
+public sealed record CliArmorRegistryTargetMode(uint TargetItemId, bool FollowSource = true);
 
 public sealed record CliArmorRegistryMapping(
 	uint TargetItemId,
@@ -31,14 +43,18 @@ public sealed record CliArmorRegistrySpecification(
 	string Schema,
 	bool Enabled,
 	IReadOnlyList<CliArmorRegistryMapping> Mappings,
-	IReadOnlyList<CliArmorRegistryModel>? Models = null);
+	IReadOnlyList<CliArmorRegistryModel>? Models = null,
+	IReadOnlyList<CliArmorRegistryPieceOverride>? PieceOverrides = null,
+	IReadOnlyList<CliArmorRegistryTargetMode>? TargetModes = null);
 
 public sealed record CliArmorRegistryDocument(
 	int Schema,
 	int Revision,
 	bool Enabled,
 	IReadOnlyList<CliArmorRegistryMapping> Mappings,
-	IReadOnlyList<CliArmorRegistryModel>? Models = null);
+	IReadOnlyList<CliArmorRegistryModel>? Models = null,
+	IReadOnlyList<CliArmorRegistryPieceOverride>? PieceOverrides = null,
+	IReadOnlyList<CliArmorRegistryTargetMode>? TargetModes = null);
 
 public sealed record CliArmorRegistryPlan(
 	string Schema,
@@ -143,6 +159,8 @@ public static class CliArmorRegistryProtocol
 		bool? enabled = null;
 		var mappings = new List<CliArmorRegistryMapping>();
 		var models = new List<CliArmorRegistryModel>();
+		var pieceOverrides = new List<CliArmorRegistryPieceOverride>();
+		var targetModes = new List<CliArmorRegistryTargetMode>();
 		var modelKeys = new HashSet<string>(StringComparer.Ordinal);
 		var targets = new HashSet<uint>();
 		var lineNumber = 0;
@@ -201,8 +219,8 @@ public static class CliArmorRegistryProtocol
 					break;
 				case "model_piece":
 					var pieceParts = value.Split(',');
-					if (pieceParts.Length != 6)
-						throw InvalidProtocol(lineNumber, "model_piece 必须是 key,body,unit,slot,piece_type,tone。");
+					if (pieceParts.Length is not (6 or 7 or 8))
+						throw InvalidProtocol(lineNumber, "model_piece 必须是 key,body,unit,slot,piece_type,tone[,enabled[,default_base]]。");
 					var pieceKey = ParseModelKey(pieceParts[0], lineNumber);
 					var modelIndex = models.FindIndex(model => string.Equals(model.Key, pieceKey, StringComparison.Ordinal));
 					if (modelIndex < 0)
@@ -212,7 +230,9 @@ public static class CliArmorRegistryProtocol
 						ParseUnitId(pieceParts[2], lineNumber),
 						ParseModelSlot(pieceParts[3], lineNumber),
 						ParseUInt32(pieceParts[4], lineNumber, "model piece type"),
-						(byte)ParseInteger(pieceParts[5], "model tone", lineNumber, 0, 255));
+						(byte)ParseInteger(pieceParts[5], "model tone", lineNumber, 0, 255),
+						pieceParts.Length == 6 || ParseBoolean(pieceParts[6], lineNumber, "model piece enabled"),
+						pieceParts.Length == 8 && ParseBoolean(pieceParts[7], lineNumber, "model piece default_base"));
 					var existingPieces = models[modelIndex].Pieces ?? Array.Empty<CliArmorRegistryModelPiece>();
 					models[modelIndex] = models[modelIndex] with { Pieces = existingPieces.Append(piece).ToArray() };
 					break;
@@ -226,6 +246,34 @@ public static class CliArmorRegistryProtocol
 						throw InvalidProtocol(lineNumber, $"目标护甲 {modelTarget} 重复。");
 					mappings.Add(new CliArmorRegistryMapping(modelTarget, null, targetModel));
 					break;
+				case "piece_override":
+					var overrideParts = value.Split(',');
+					if (overrideParts.Length != 6)
+						throw InvalidProtocol(lineNumber, "piece_override 必须是 item_id,body,unit,slot,piece_type,enabled。");
+					var owner = ParseItemId(overrideParts[0], lineNumber, "组件覆盖对象");
+					var overrideBody = ParseUInt32(overrideParts[1], lineNumber, "override body");
+					var overrideUnit = ParseUnitId(overrideParts[2], lineNumber);
+					var overrideSlot = ParseModelSlot(overrideParts[3], lineNumber);
+					var overridePieceType = ParseUInt32(overrideParts[4], lineNumber, "override piece type");
+					var overrideEnabled = ParseBoolean(overrideParts[5], lineNumber, "piece_override enabled");
+					pieceOverrides.Add(new CliArmorRegistryPieceOverride(
+						owner, overrideBody, overrideUnit, overrideSlot, overridePieceType, overrideEnabled));
+					break;
+				case "target_mode":
+					var modeParts = value.Split(',');
+					if (modeParts.Length != 2)
+						throw InvalidProtocol(lineNumber, "target_mode 必须是 target_item_id,follow|manual。");
+					var modeTarget = ParseItemId(modeParts[0], lineNumber, "目标");
+					var follow = modeParts[1].Trim() switch
+					{
+						"follow" => true,
+						"manual" => false,
+						_ => throw InvalidProtocol(lineNumber, "target_mode 必须是 follow 或 manual。"),
+					};
+					if (targetModes.Any(mode => mode.TargetItemId == modeTarget))
+						throw InvalidProtocol(lineNumber, $"目标护甲 {modeTarget} 的 target_mode 重复。");
+					targetModes.Add(new CliArmorRegistryTargetMode(modeTarget, follow));
+					break;
 				default:
 					throw InvalidProtocol(lineNumber, $"未知字段：{key}");
 			}
@@ -235,7 +283,8 @@ public static class CliArmorRegistryProtocol
 		if (revision is null) throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议缺少 revision。");
 		if (enabled is null) throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议缺少 enabled。");
 		return new CliArmorRegistryDocument(schema.Value, revision.Value, enabled.Value,
-			NormalizeMappings(mappings), models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray());
+			NormalizeMappings(mappings), models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray(),
+			pieceOverrides, targetModes);
 	}
 
 	public static string SerializeProtocol(CliArmorRegistryDocument document)
@@ -257,7 +306,11 @@ public static class CliArmorRegistryProtocol
 					.Append(piece.Unit).Append(',')
 					.Append(piece.Slot.ToString(CultureInfo.InvariantCulture)).Append(',')
 					.Append(piece.PieceType.ToString(CultureInfo.InvariantCulture)).Append(',')
-					.Append(piece.Tone.ToString(CultureInfo.InvariantCulture)).Append('\n');
+					.Append(piece.Tone.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.Enabled ? "true" : "false");
+				if (piece.IsDefaultBase)
+					builder.Append(",true");
+				builder.Append('\n');
 			}
 		}
 		foreach (var mapping in NormalizeMappings(document.Mappings))
@@ -267,6 +320,23 @@ public static class CliArmorRegistryProtocol
 				.Append(',')
 				.Append(mapping.IsModelMapping ? mapping.ModelKey : mapping.SourceItemId.GetValueOrDefault().ToString(CultureInfo.InvariantCulture))
 				.Append('\n');
+		}
+		foreach (var item in (document.PieceOverrides ?? Array.Empty<CliArmorRegistryPieceOverride>())
+			.OrderBy(item => item.OwnerItemId).ThenBy(item => item.Body)
+			.ThenBy(item => item.Slot).ThenBy(item => item.PieceType))
+		{
+			builder.Append("piece_override=").Append(item.OwnerItemId.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.Body.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.Unit).Append(',')
+				.Append(item.Slot.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.PieceType.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.Enabled ? "true" : "false").Append('\n');
+		}
+		foreach (var mode in (document.TargetModes ?? Array.Empty<CliArmorRegistryTargetMode>())
+			.OrderBy(mode => mode.TargetItemId))
+		{
+			builder.Append("target_mode=").Append(mode.TargetItemId.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(mode.FollowSource ? "follow" : "manual").Append('\n');
 		}
 		return builder.ToString();
 	}
@@ -285,7 +355,9 @@ public static class CliArmorRegistryProtocol
 			current.Revision + 1,
 			specification.Enabled,
 			NormalizeMappings(specification.Mappings),
-			NormalizeModels(specification.Models ?? Array.Empty<CliArmorRegistryModel>()));
+			NormalizeModels(specification.Models ?? Array.Empty<CliArmorRegistryModel>()),
+			specification.PieceOverrides ?? Array.Empty<CliArmorRegistryPieceOverride>(),
+			specification.TargetModes ?? Array.Empty<CliArmorRegistryTargetMode>());
 		ValidateDocument(desired);
 		var fingerprint = await FingerprintProtocolAsync(registryRoot, cancellationToken).ConfigureAwait(false);
 		var unsigned = new CliArmorRegistryPlan(
@@ -650,6 +722,14 @@ public static class CliArmorRegistryProtocol
 			? throw InvalidProtocol(line, "model slot=0 不是有效的护甲视觉槽位；护甲槽位从 1 开始。")
 			: slot;
 	}
+
+	private static bool ParseBoolean(string value, int line, string label)
+		=> value.Trim() switch
+		{
+			"true" => true,
+			"false" => false,
+			_ => throw InvalidProtocol(line, $"{label} 必须是 true 或 false。"),
+		};
 
 	private static string ParseUnitId(string value, int line)
 	{

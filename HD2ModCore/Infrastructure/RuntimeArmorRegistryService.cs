@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using HD2ModCore.Domain;
 using Microsoft.Data.Sqlite;
 
@@ -13,6 +15,7 @@ public sealed class RuntimeArmorRegistryService
 	public const string RuntimeStatusFileName = "runtime.status";
 	public const string LocatorCacheFileName = "locator.cache";
 	public const string DeploymentStateFileName = "runtime-armor-registry.deployment";
+	public const string WorkspaceFileName = "armor-registry.workspace.json";
 
 	private const int MaximumProtocolBytes = 65536;
 	private readonly StoragePaths paths;
@@ -25,14 +28,29 @@ public sealed class RuntimeArmorRegistryService
 	}
 
 	public string RegistryRoot => registryRoot;
+	public string WorkspaceRoot => Path.Combine(paths.ModsDirectory, ".hd2modmanager");
+	public string WorkspacePath => Path.Combine(WorkspaceRoot, WorkspaceFileName);
 	public string DeploymentStatePath => Path.Combine(paths.DataDirectory, DeploymentStateFileName);
+
+	public async ValueTask SaveWorkspaceAsync(
+		RuntimeArmorRegistryDocument document,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(document);
+		ValidateMappings(document.Mappings);
+		ValidateModels(document.ModelDefinitions, document.Mappings);
+		ValidatePieceOverrides(document.PieceOverrideDefinitions);
+		ValidateTargetModes(document.TargetModeDefinitions);
+		await WriteWorkspaceAsync(document, cancellationToken).ConfigureAwait(false);
+	}
 
 	public async ValueTask<bool> IsManagedDeploymentEnabledAsync(
 		CancellationToken cancellationToken = default)
 	{
 		if (!File.Exists(DeploymentStatePath)) return false;
-		var text = await ReadBoundedTextAsync(DeploymentStatePath, 256, cancellationToken).ConfigureAwait(false);
-		return string.Equals(text.Trim(), "enabled=true", StringComparison.Ordinal);
+		var values = await ReadKeyValueFileAsync(DeploymentStatePath, cancellationToken).ConfigureAwait(false);
+		return values.Values.TryGetValue("enabled", out var enabled)
+			&& string.Equals(enabled, "true", StringComparison.Ordinal);
 	}
 
 	public static string ResolveRegistryRoot(string? overridePath = null)
@@ -74,16 +92,58 @@ public sealed class RuntimeArmorRegistryService
 		return entries;
 	}
 
+	public async ValueTask<IReadOnlyList<RuntimeArmorRegistryModelPiece>> ReadArmorPiecesAsync(
+		uint itemId,
+		CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(paths.DbPath)) return Array.Empty<RuntimeArmorRegistryModelPiece>();
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = """
+			SELECT body_variant, unit_file_id, slot, piece_type, tone_variations
+			FROM game_data_authority_pieces
+			WHERE item_id = $item
+			ORDER BY slot, body_variant, piece_type, unit_file_id;
+			""";
+		command.Parameters.AddWithValue("$item", (long)itemId);
+		var pieces = new List<RuntimeArmorRegistryModelPiece>();
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			var rawUnit = reader.GetInt64(1);
+			if (rawUnit < 0) continue;
+			var body = (uint)reader.GetInt64(0);
+			pieces.Add(new RuntimeArmorRegistryModelPiece(
+				body,
+				((ulong)rawUnit).ToString("x16", CultureInfo.InvariantCulture),
+				(uint)reader.GetInt64(2),
+				(uint)reader.GetInt64(3),
+				(byte)Math.Clamp(reader.GetInt64(4), 0, byte.MaxValue)));
+		}
+		return pieces;
+	}
+
 	public async ValueTask<RuntimeArmorRegistrySnapshot> ReadSnapshotAsync(
 		CancellationToken cancellationToken = default)
 	{
 		var protocolPath = Path.Combine(registryRoot, ProtocolFileName);
 		var runtimePath = Path.Combine(registryRoot, RuntimeStatusFileName);
 		var cachePath = Path.Combine(registryRoot, LocatorCacheFileName);
+		var deploymentPath = DeploymentStatePath;
 		var protocolExists = File.Exists(protocolPath);
-		var document = protocolExists
-			? ParseProtocol(await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false))
-			: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
+		var deployment = await ReadKeyValueFileAsync(deploymentPath, cancellationToken).ConfigureAwait(false);
+		var workspaceBelongsToCurrentLibrary = !deployment.Exists
+			|| !deployment.Values.TryGetValue("workspace", out var deployedWorkspace)
+			|| string.Equals(
+				Path.GetFullPath(deployedWorkspace),
+				Path.GetFullPath(WorkspacePath),
+				StringComparison.OrdinalIgnoreCase);
+		var document = File.Exists(WorkspacePath)
+			? await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false)
+			: protocolExists && workspaceBelongsToCurrentLibrary
+				? ParseProtocol(await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false))
+				: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
 		var fingerprint = await FingerprintProtocolAsync(cancellationToken).ConfigureAwait(false);
 		var runtime = await ReadKeyValueFileAsync(runtimePath, cancellationToken).ConfigureAwait(false);
 		var cache = await ReadKeyValueFileAsync(cachePath, cancellationToken).ConfigureAwait(false);
@@ -122,23 +182,42 @@ public sealed class RuntimeArmorRegistryService
 		IReadOnlyList<RuntimeArmorRegistryMapping> mappings,
 		IReadOnlyList<RuntimeArmorRegistryModel> models,
 		CancellationToken cancellationToken = default)
+		=> await ApplyAsync(expectedFingerprint, enabled, mappings, models,
+			Array.Empty<RuntimeArmorRegistryPieceOverride>(),
+			Array.Empty<RuntimeArmorRegistryTargetMode>(),
+			cancellationToken).ConfigureAwait(false);
+
+	public async ValueTask<RuntimeArmorRegistryApplyResult> ApplyAsync(
+		string expectedFingerprint,
+		bool enabled,
+		IReadOnlyList<RuntimeArmorRegistryMapping> mappings,
+		IReadOnlyList<RuntimeArmorRegistryModel> models,
+		IReadOnlyList<RuntimeArmorRegistryPieceOverride> pieceOverrides,
+		IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes,
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(expectedFingerprint);
 		ArgumentNullException.ThrowIfNull(mappings);
 		ArgumentNullException.ThrowIfNull(models);
+		ArgumentNullException.ThrowIfNull(pieceOverrides);
+		ArgumentNullException.ThrowIfNull(targetModes);
 		ValidateMappings(mappings);
 		ValidateModels(models, mappings);
+		ValidatePieceOverrides(pieceOverrides);
+		ValidateTargetModes(targetModes);
 		Directory.CreateDirectory(registryRoot);
 		var lockPath = Path.Combine(registryRoot, ".manager.lock");
 		await using var lease = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
 		var currentFingerprint = await FingerprintProtocolAsync(cancellationToken).ConfigureAwait(false);
 		if (!string.Equals(currentFingerprint, expectedFingerprint, StringComparison.Ordinal))
 			throw new InvalidOperationException("护甲注册协议已被其他操作修改，请刷新后重试。");
-		var current = File.Exists(Path.Combine(registryRoot, ProtocolFileName))
-			? ParseProtocol(await ReadBoundedTextAsync(
-				Path.Combine(registryRoot, ProtocolFileName),
-				MaximumProtocolBytes,
-				cancellationToken).ConfigureAwait(false))
+		var current = File.Exists(WorkspacePath)
+			? await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false)
+			: File.Exists(Path.Combine(registryRoot, ProtocolFileName))
+				? ParseProtocol(await ReadBoundedTextAsync(
+					Path.Combine(registryRoot, ProtocolFileName),
+					MaximumProtocolBytes,
+					cancellationToken).ConfigureAwait(false))
 			: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
 		if (current.Revision == int.MaxValue)
 			throw new InvalidOperationException("护甲注册协议 revision 已达到上限。");
@@ -146,7 +225,9 @@ public sealed class RuntimeArmorRegistryService
 			current.Revision + 1,
 			enabled,
 			NormalizeMappings(mappings),
-			NormalizeModels(models));
+			NormalizeModels(models),
+			NormalizePieceOverrides(pieceOverrides),
+			NormalizeTargetModes(targetModes));
 		var text = SerializeProtocol(desired);
 		var protocolPath = Path.Combine(registryRoot, ProtocolFileName);
 		var temporaryPath = Path.Combine(registryRoot, "." + ProtocolFileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -163,10 +244,12 @@ public sealed class RuntimeArmorRegistryService
 		{
 			if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
 		}
+		await WriteWorkspaceAsync(desired, cancellationToken).ConfigureAwait(false);
 		Directory.CreateDirectory(paths.DataDirectory);
 		await File.WriteAllTextAsync(
 			DeploymentStatePath,
-			enabled ? "enabled=true\n" : "enabled=false\n",
+			(enabled ? "enabled=true\n" : "enabled=false\n")
+				+ "workspace=" + WorkspacePath + "\n",
 			new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
 			cancellationToken).ConfigureAwait(false);
 		var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
@@ -176,6 +259,84 @@ public sealed class RuntimeArmorRegistryService
 			snapshot.RuntimeProcessRunning,
 			snapshot.RuntimeAcknowledged);
 	}
+
+	private static readonly JsonSerializerOptions WorkspaceJsonOptions = new(JsonSerializerDefaults.Web)
+	{
+		WriteIndented = true,
+		DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+		UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+	};
+
+	private async ValueTask<RuntimeArmorRegistryDocument> ReadWorkspaceAsync(
+		CancellationToken cancellationToken)
+	{
+		var info = new FileInfo(WorkspacePath);
+		if (info.Length > MaximumProtocolBytes * 4)
+			throw new InvalidDataException("护甲注册源文件超过 256 KiB 上限。");
+		var json = await File.ReadAllTextAsync(WorkspacePath, cancellationToken).ConfigureAwait(false);
+		WorkspaceDocument? workspace;
+		try
+		{
+			workspace = JsonSerializer.Deserialize<WorkspaceDocument>(json, WorkspaceJsonOptions);
+		}
+		catch (JsonException exception)
+		{
+			throw new InvalidDataException($"护甲注册源文件 JSON 无效：{exception.Message}", exception);
+		}
+		if (workspace is null || workspace.Schema != 1)
+			throw new InvalidDataException("护甲注册源文件 schema 必须是 1。");
+		var document = new RuntimeArmorRegistryDocument(
+			workspace.Revision,
+			workspace.Enabled,
+			workspace.Mappings ?? Array.Empty<RuntimeArmorRegistryMapping>(),
+			workspace.Models ?? Array.Empty<RuntimeArmorRegistryModel>(),
+			workspace.PieceOverrides ?? Array.Empty<RuntimeArmorRegistryPieceOverride>(),
+			workspace.TargetModes ?? Array.Empty<RuntimeArmorRegistryTargetMode>());
+		ValidateMappings(document.Mappings);
+		ValidateModels(document.ModelDefinitions, document.Mappings);
+		ValidatePieceOverrides(document.PieceOverrideDefinitions);
+		ValidateTargetModes(document.TargetModeDefinitions);
+		return document;
+	}
+
+	private async ValueTask WriteWorkspaceAsync(
+		RuntimeArmorRegistryDocument document,
+		CancellationToken cancellationToken)
+	{
+		Directory.CreateDirectory(WorkspaceRoot);
+		var workspace = new WorkspaceDocument(
+			1,
+			document.Revision,
+			document.Enabled,
+			document.Mappings,
+			document.ModelDefinitions,
+			document.PieceOverrideDefinitions,
+			document.TargetModeDefinitions);
+		var json = JsonSerializer.Serialize(workspace, WorkspaceJsonOptions);
+		var temporaryPath = WorkspacePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+		try
+		{
+			await File.WriteAllTextAsync(
+				temporaryPath,
+				json,
+				new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+				cancellationToken).ConfigureAwait(false);
+			File.Move(temporaryPath, WorkspacePath, overwrite: true);
+		}
+		finally
+		{
+			if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+		}
+	}
+
+	private sealed record WorkspaceDocument(
+		int Schema,
+		int Revision,
+		bool Enabled,
+		IReadOnlyList<RuntimeArmorRegistryMapping>? Mappings,
+		IReadOnlyList<RuntimeArmorRegistryModel>? Models,
+		IReadOnlyList<RuntimeArmorRegistryPieceOverride>? PieceOverrides,
+		IReadOnlyList<RuntimeArmorRegistryTargetMode>? TargetModes);
 
 	public static RuntimeArmorRegistryDocument ParseProtocol(string text)
 	{
@@ -188,6 +349,10 @@ public sealed class RuntimeArmorRegistryService
 		var mappings = new List<RuntimeArmorRegistryMapping>();
 		var models = new List<RuntimeArmorRegistryModel>();
 		var modelKeys = new HashSet<string>(StringComparer.Ordinal);
+		var modelPieces = new Dictionary<string, List<RuntimeArmorRegistryModelPiece>>(StringComparer.Ordinal);
+		var modelPieceKeys = new Dictionary<string, HashSet<(uint Body, uint Slot, uint PieceType)>>(StringComparer.Ordinal);
+		var pieceOverrides = new List<RuntimeArmorRegistryPieceOverride>();
+		var targetModes = new List<RuntimeArmorRegistryTargetMode>();
 		var targets = new HashSet<uint>();
 		var lineNumber = 0;
 		foreach (var rawLine in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
@@ -235,20 +400,30 @@ public sealed class RuntimeArmorRegistryService
 						? (uint?)null
 						: ParseItemId(modelParts[1], lineNumber, "模型来源");
 					if (!modelKeys.Add(modelKey)) throw InvalidLine(lineNumber, $"模型键 {modelKey} 重复。");
-					models.Add(new RuntimeArmorRegistryModel(modelKey, modelSource));
+					models.Add(new RuntimeArmorRegistryModel(modelKey, modelSource, Array.Empty<RuntimeArmorRegistryModelPiece>()));
+					modelPieces[modelKey] = [];
+					modelPieceKeys[modelKey] = [];
 					break;
 				case "model_piece":
 					var pieceParts = value.Split(',');
-					if (pieceParts.Length != 6)
-						throw InvalidLine(lineNumber, "model_piece 必须是 key,body,unit,slot,piece_type,tone。");
-					_ = ParseModelKey(pieceParts[0], lineNumber);
-					_ = ParseInteger(pieceParts[1], lineNumber, "model body", 0, int.MaxValue);
+					if (pieceParts.Length is not (6 or 7 or 8))
+						throw InvalidLine(lineNumber, "model_piece 必须是 key,body,unit,slot,piece_type,tone[,enabled[,default_base]]。");
+					var pieceModelKey = ParseModelKey(pieceParts[0], lineNumber);
+					if (!modelKeys.Contains(pieceModelKey))
+						throw InvalidLine(lineNumber, $"model_piece 引用了未定义模型 {pieceModelKey}。");
+					var body = (uint)ParseInteger(pieceParts[1], lineNumber, "model body", 0, int.MaxValue);
 					var unit = pieceParts[2].Trim();
 					if (unit.Length != 16 || !unit.All(Uri.IsHexDigit))
 						throw InvalidLine(lineNumber, "model unit 必须是 16 位十六进制 ID。");
-					_ = ParseInteger(pieceParts[3], lineNumber, "model slot", 1, int.MaxValue);
-					_ = ParseInteger(pieceParts[4], lineNumber, "model piece type", 0, int.MaxValue);
-					_ = ParseInteger(pieceParts[5], lineNumber, "model tone", 0, 255);
+					var slot = (uint)ParseInteger(pieceParts[3], lineNumber, "model slot", 1, int.MaxValue);
+					var pieceType = (uint)ParseInteger(pieceParts[4], lineNumber, "model piece type", 0, int.MaxValue);
+					var tone = (byte)ParseInteger(pieceParts[5], lineNumber, "model tone", 0, 255);
+					var pieceEnabled = pieceParts.Length == 6 || ParseBoolean(pieceParts[6], lineNumber, "model piece enabled");
+					var isDefaultBase = pieceParts.Length == 8 && ParseBoolean(pieceParts[7], lineNumber, "model piece default_base");
+					if (!modelPieceKeys[pieceModelKey].Add((body, slot, pieceType)))
+						throw InvalidLine(lineNumber, $"模型 {pieceModelKey} 重复使用 body={body}, slot={slot}, piece_type={pieceType}。");
+					modelPieces[pieceModelKey].Add(new RuntimeArmorRegistryModelPiece(
+						body, unit.ToLowerInvariant(), slot, pieceType, tone, pieceEnabled, isDefaultBase));
 					break;
 				case "map_model":
 					var modelMappingParts = value.Split(',');
@@ -257,6 +432,36 @@ public sealed class RuntimeArmorRegistryService
 					var targetModelKey = ParseModelKey(modelMappingParts[1], lineNumber);
 					if (!targets.Add(modelTarget)) throw InvalidLine(lineNumber, $"目标护甲 {modelTarget} 重复。");
 					mappings.Add(new RuntimeArmorRegistryMapping(modelTarget, null, targetModelKey));
+					break;
+				case "piece_override":
+					var overrideParts = value.Split(',');
+					if (overrideParts.Length != 6)
+						throw InvalidLine(lineNumber, "piece_override 必须是 item_id,body,unit,slot,piece_type,enabled。");
+					var owner = ParseItemId(overrideParts[0], lineNumber, "组件覆盖对象");
+					var overrideBody = (uint)ParseInteger(overrideParts[1], lineNumber, "override body", 0, int.MaxValue);
+					var overrideUnit = overrideParts[2].Trim();
+					if (overrideUnit.Length != 16 || !overrideUnit.All(Uri.IsHexDigit))
+						throw InvalidLine(lineNumber, "piece_override unit 必须是 16 位十六进制 ID。");
+					var overrideSlot = (uint)ParseInteger(overrideParts[3], lineNumber, "override slot", 1, int.MaxValue);
+					var overridePieceType = (uint)ParseInteger(overrideParts[4], lineNumber, "override piece type", 0, int.MaxValue);
+					var overrideEnabled = ParseBoolean(overrideParts[5], lineNumber, "piece_override enabled");
+					pieceOverrides.Add(new RuntimeArmorRegistryPieceOverride(
+						owner, overrideBody, overrideUnit.ToLowerInvariant(), overrideSlot, overridePieceType, overrideEnabled));
+					break;
+				case "target_mode":
+					var modeParts = value.Split(',');
+					if (modeParts.Length != 2)
+						throw InvalidLine(lineNumber, "target_mode 必须是 target_item_id,follow|manual。");
+					var modeTarget = ParseItemId(modeParts[0], lineNumber, "目标");
+					var follow = modeParts[1].Trim() switch
+					{
+						"follow" => true,
+						"manual" => false,
+						_ => throw InvalidLine(lineNumber, "target_mode 必须是 follow 或 manual。"),
+					};
+					if (targetModes.Any(mode => mode.TargetItemId == modeTarget))
+						throw InvalidLine(lineNumber, $"目标护甲 {modeTarget} 的 target_mode 重复。");
+					targetModes.Add(new RuntimeArmorRegistryTargetMode(modeTarget, follow));
 					break;
 				default:
 					throw InvalidLine(lineNumber, $"未知字段：{key}");
@@ -267,8 +472,12 @@ public sealed class RuntimeArmorRegistryService
 		if (enabled is null) throw new InvalidDataException("护甲注册协议缺少 enabled。");
 		if (schema == 1 && models.Count > 0)
 			throw new InvalidDataException("schema=1 不支持模型素体。");
+		var parsedModels = models
+			.Select(model => model with { Pieces = modelPieces[model.Key].ToArray() })
+			.OrderBy(model => model.Key, StringComparer.Ordinal)
+			.ToArray();
 		return new RuntimeArmorRegistryDocument(revision.Value, enabled.Value,
-			NormalizeMappings(mappings), models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray());
+			NormalizeMappings(mappings), parsedModels, pieceOverrides, targetModes);
 	}
 
 	public static string SerializeProtocol(RuntimeArmorRegistryDocument document)
@@ -285,6 +494,19 @@ public sealed class RuntimeArmorRegistryService
 			builder.Append("model=")
 				.Append(model.Key).Append(',')
 				.Append(model.SourceItemId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('\n');
+			foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+			{
+				builder.Append("model_piece=").Append(model.Key).Append(',')
+					.Append(piece.Body.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.Unit).Append(',')
+					.Append(piece.Slot.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.PieceType.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.Tone.ToString(CultureInfo.InvariantCulture)).Append(',')
+					.Append(piece.Enabled ? "true" : "false");
+				if (piece.IsDefaultBase)
+					builder.Append(",true");
+				builder.Append('\n');
+			}
 		}
 		foreach (var mapping in NormalizeMappings(document.Mappings))
 		{
@@ -295,6 +517,23 @@ public sealed class RuntimeArmorRegistryService
 					? mapping.ModelKey
 					: mapping.SourceItemId.GetValueOrDefault().ToString(CultureInfo.InvariantCulture))
 				.Append('\n');
+		}
+		foreach (var item in document.PieceOverrideDefinitions.OrderBy(item => item.OwnerItemId)
+			.ThenBy(item => item.Body).ThenBy(item => item.Slot).ThenBy(item => item.PieceType))
+		{
+			builder.Append("piece_override=")
+				.Append(item.OwnerItemId.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.Body.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.Unit).Append(',')
+				.Append(item.Slot.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.PieceType.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(item.Enabled ? "true" : "false").Append('\n');
+		}
+		foreach (var mode in document.TargetModeDefinitions.OrderBy(mode => mode.TargetItemId))
+		{
+			builder.Append("target_mode=")
+				.Append(mode.TargetItemId.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(mode.FollowSource ? "follow" : "manual").Append('\n');
 		}
 		return builder.ToString();
 	}
@@ -377,6 +616,47 @@ public sealed class RuntimeArmorRegistryService
 		IEnumerable<RuntimeArmorRegistryModel> models)
 		=> models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray();
 
+	private static IReadOnlyList<RuntimeArmorRegistryPieceOverride> NormalizePieceOverrides(
+		IEnumerable<RuntimeArmorRegistryPieceOverride> overrides)
+		=> overrides
+			.OrderBy(item => item.OwnerItemId)
+			.ThenBy(item => item.Body)
+			.ThenBy(item => item.Slot)
+			.ThenBy(item => item.PieceType)
+			.ThenBy(item => item.Unit, StringComparer.Ordinal)
+			.ToArray();
+
+	private static IReadOnlyList<RuntimeArmorRegistryTargetMode> NormalizeTargetModes(
+		IEnumerable<RuntimeArmorRegistryTargetMode> modes)
+		=> modes.OrderBy(mode => mode.TargetItemId).ToArray();
+
+	private static void ValidatePieceOverrides(
+		IEnumerable<RuntimeArmorRegistryPieceOverride> overrides)
+	{
+		var keys = new HashSet<(uint Owner, uint Body, uint Slot, uint PieceType, string Unit)>();
+		foreach (var item in overrides)
+		{
+			if (item.Slot == 0)
+				throw new InvalidDataException($"组件覆盖对象 {item.OwnerItemId} 使用了无效的 slot=0。");
+			if (item.Unit.Length != 16 || !item.Unit.All(Uri.IsHexDigit))
+				throw new InvalidDataException($"组件覆盖对象 {item.OwnerItemId} 包含无效 Unit ID。");
+			if (!keys.Add((item.OwnerItemId, item.Body, item.Slot, item.PieceType, item.Unit)))
+				throw new InvalidDataException(
+					$"组件覆盖对象 {item.OwnerItemId} 重复使用 body={item.Body}, slot={item.Slot}, piece_type={item.PieceType}, unit={item.Unit}。");
+		}
+	}
+
+	private static void ValidateTargetModes(
+		IEnumerable<RuntimeArmorRegistryTargetMode> modes)
+	{
+		var targets = new HashSet<uint>();
+		foreach (var mode in modes)
+		{
+			if (!targets.Add(mode.TargetItemId))
+				throw new InvalidDataException($"目标护甲 {mode.TargetItemId} 的 target_mode 重复。");
+		}
+	}
+
 	private static void ValidateModels(
 		IEnumerable<RuntimeArmorRegistryModel> models,
 		IEnumerable<RuntimeArmorRegistryMapping> mappings)
@@ -388,6 +668,17 @@ public sealed class RuntimeArmorRegistryService
 			_ = ParseModelKey(model.Key, 0);
 			if (!keys.Add(model.Key))
 				throw new InvalidDataException($"模型键 {model.Key} 重复。");
+			var pieceKeys = new HashSet<(uint Body, uint Slot, uint PieceType)>();
+			foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+			{
+				if (piece.Slot == 0)
+					throw new InvalidDataException($"模型 {model.Key} 使用了无效的 slot=0。");
+				if (piece.Unit.Length != 16 || !piece.Unit.All(Uri.IsHexDigit))
+					throw new InvalidDataException($"模型 {model.Key} 包含无效 Unit ID。");
+				if (!pieceKeys.Add((piece.Body, piece.Slot, piece.PieceType)))
+					throw new InvalidDataException(
+						$"模型 {model.Key} 重复使用 body={piece.Body}, slot={piece.Slot}, piece_type={piece.PieceType}。");
+			}
 		}
 		foreach (var mapping in mappings.Where(mapping => mapping.IsModelMapping))
 		{
@@ -401,6 +692,14 @@ public sealed class RuntimeArmorRegistryService
 			&& result >= minimum && result <= maximum
 				? result
 				: throw InvalidLine(line, $"{field} 超出支持范围。");
+
+	private static bool ParseBoolean(string value, int line, string field)
+		=> value.Trim() switch
+		{
+			"true" => true,
+			"false" => false,
+			_ => throw InvalidLine(line, $"{field} 必须是 true 或 false。"),
+		};
 
 	private static uint ParseItemId(string value, int line, string label)
 	{

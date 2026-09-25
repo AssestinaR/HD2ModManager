@@ -86,6 +86,8 @@
                         <Path x:Name="ValidateLibraryIcon" Data="M13,5 A5.5,5.5 0 1 0 13.5,9 M13,2.5 L13,5 L10,5 M3,11 A5.5,5.5 0 0 0 8,13.5 M3,11 L3,13.5 L6,13.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
                         <Path x:Name="ExportIcon" Data="M8,2 L8,10 M4.5,5.5 L8,2 L11.5,5.5 M3,12.5 L13,12.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
                         <Path x:Name="CreateLogicalModIcon" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z M8,7 L8,11 M6,9 L10,9" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeLineJoin="Round" StrokeStartLineCap="Round" Visibility="Collapsed"/>
+                        <Path x:Name="FolderIcon" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeLineJoin="Round" Visibility="Collapsed"/>
+                        <Path x:Name="ArmorCreateIcon" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" Visibility="Collapsed"/>
                     </Grid>
                 </Button>
             </Grid>
@@ -114,6 +116,8 @@
                 <DataTrigger Binding="{Binding Kind}" Value="ValidateLibrary"><Setter TargetName="ValidateLibraryIcon" Property="Visibility" Value="Visible"/></DataTrigger>
                 <DataTrigger Binding="{Binding Kind}" Value="Export"><Setter TargetName="ExportIcon" Property="Visibility" Value="Visible"/></DataTrigger>
                 <DataTrigger Binding="{Binding Kind}" Value="CreateLogicalMod"><Setter TargetName="CreateLogicalModIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="OpenFolder"><Setter TargetName="FolderIcon" Property="Visibility" Value="Visible"/></DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="ArmorCreateModel"><Setter TargetName="ArmorCreateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
                 <MultiDataTrigger>
                     <MultiDataTrigger.Conditions><Condition Binding="{Binding Kind}" Value=""/></MultiDataTrigger.Conditions>
                     <Setter TargetName="DefaultIcon" Property="Visibility" Value="Visible"/>

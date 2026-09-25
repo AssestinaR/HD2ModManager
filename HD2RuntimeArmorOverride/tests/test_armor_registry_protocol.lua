@@ -25,10 +25,14 @@ revision=1
 enabled=true
 model=custom/coat,
 model_piece=custom/coat,3,0011223344556677,4,0,0
-model_piece=custom/coat,3,8899aabbccddeeff,5,0,0
+model_piece=custom/coat,3,8899aabbccddeeff,5,0,0,false
 map_model=488691438,custom/coat
 ]])
-assert(custom.models[1].source==nil and #custom.models[1].pieces==2)
+assert(custom.models[1].source==nil and #custom.models[1].pieces==2
+    and custom.models[1].pieces[1].enabled==true
+    and custom.models[1].pieces[2].enabled==false)
+local custom_roundtrip=protocol.parse(protocol.serialize(custom))
+assert(custom_roundtrip.models[1].pieces[2].enabled==false)
 assert(not pcall(protocol.parse,[[
 schema=2
 revision=1
