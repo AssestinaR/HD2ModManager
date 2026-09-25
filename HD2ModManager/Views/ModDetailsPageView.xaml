@@ -44,6 +44,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -76,6 +77,9 @@
                         <Button Style="{StaticResource AppSecondaryButton}" Content="头盔合并到盔甲并输出" Command="{Binding PlanHelmetToArmorMergeCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="{Binding HelmetMergeToggleText}" Command="{Binding ToggleHelmetToArmorMergeCommand}"/>
                     </WrapPanel>
+                    <Button Grid.Row="4" HorizontalAlignment="Right" Margin="0,10,0,0" Style="{StaticResource AppSecondaryButton}"
+                            Content="一键转为自定义素体" Command="{Binding ConvertToCustomModelCommand}"
+                            Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
             </Border>
 

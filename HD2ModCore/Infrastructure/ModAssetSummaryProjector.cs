@@ -1,5 +1,8 @@
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -8,11 +11,14 @@ public sealed class ModAssetSummaryProjector
 {
 	private readonly IGameDataMappingFactsService mappingFactsService;
 	private readonly IAssetMetadataCatalogProvider? fallbackCatalogProvider;
+	private readonly RuntimeArmorRegistryService? registry;
 
-	public ModAssetSummaryProjector(IGameDataMappingFactsService mappingFactsService, IAssetMetadataCatalogProvider? fallbackCatalogProvider = null)
+	public ModAssetSummaryProjector(IGameDataMappingFactsService mappingFactsService, IAssetMetadataCatalogProvider? fallbackCatalogProvider = null,
+		RuntimeArmorRegistryService? registry = null)
 	{
 		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
 		this.fallbackCatalogProvider = fallbackCatalogProvider;
+		this.registry = registry;
 	}
 
 	public async ValueTask<ModAssetSummary> ProjectAsync(ModNode node, ModContentFacts facts, CancellationToken cancellationToken = default)
@@ -20,7 +26,7 @@ public sealed class ModAssetSummaryProjector
 		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(facts);
 		var sourceByKey = BuildSourceByKey(facts);
-		var mapping = await mappingFactsService.MapAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var mapping = await MapAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
 		return Project(node, sourceByKey, mapping, await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false));
 	}
 
@@ -28,7 +34,7 @@ public sealed class ModAssetSummaryProjector
 	{
 		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(facts);
-		var mapping = await mappingFactsService.MapAsync(facts.Structure.Assets.Select(asset => asset.AssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var mapping = await MapAsync(facts.Structure.Assets.Select(asset => asset.AssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
 		return ProjectStructure(facts.Structure, mapping);
 	}
 
@@ -38,7 +44,7 @@ public sealed class ModAssetSummaryProjector
 	public async ValueTask<ModAssetSummaryProjection> ProjectManyWithGenerationAsync(IReadOnlyDictionary<ModNode, ModContentFacts> factsByNode, CancellationToken cancellationToken = default)
 	{
 		var sourceByNode = factsByNode.ToDictionary(pair => pair.Key, pair => BuildSourceByKey(pair.Value));
-		var mapping = await mappingFactsService.MapAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var mapping = await MapAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
 		var catalog = await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false);
 		var summaries = sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog));
 		var structures = factsByNode.ToDictionary(pair => pair.Key.Id, pair => ProjectStructure(pair.Value.Structure, mapping));
@@ -46,7 +52,30 @@ public sealed class ModAssetSummaryProjector
 	}
 
 	public async ValueTask<string> GetMappingGenerationAsync(CancellationToken cancellationToken = default)
-		=> (await mappingFactsService.MapAsync(new HashSet<AssetKey>(), cancellationToken).ConfigureAwait(false)).MappingGeneration;
+		=> (await MapAsync(new HashSet<AssetKey>(), cancellationToken).ConfigureAwait(false)).MappingGeneration;
+
+	private async ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<AssetKey> keys, CancellationToken token)
+	{
+		var mapping = await mappingFactsService.MapAsync(keys, token).ConfigureAwait(false);
+		var models = registry is null ? Array.Empty<RuntimeArmorRegistryModel>()
+			: await registry.ReadWorkspaceModelsAsync(token).ConfigureAwait(false);
+		// Include reserved/disabled IDs: these still identify physical resources in a Patch.
+		var owners = models.SelectMany(model => (model.Pieces ?? []).Select(piece => (model, piece)))
+			.Where(item => ulong.TryParse(item.piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _))
+			.GroupBy(item => ulong.Parse(item.piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture))
+			.ToDictionary(group => group.Key, group => group.Select(item =>
+				new ArchiveMetadata("custom-model:" + item.model.Key, "CustomModel", item.model.Name ?? item.model.Key))
+				.Distinct().ToArray());
+		var assets = mapping.Assets.ToDictionary(pair => pair.Key, pair => pair.Value);
+		foreach (var key in keys.Where(key => key.TypeId == 0xe0a48d0be9a7453f))
+			if (owners.TryGetValue(key.FileId, out var archives)
+				&& (!assets.TryGetValue(key, out var existing) || existing.TargetArchives.Count == 0))
+				assets[key] = new(key, $"0x{key.FileId:x16}", "Unit", AssetTypeCategory.Model, archives);
+		var identity = string.Join("\n", models.OrderBy(m => m.Key, StringComparer.Ordinal)
+			.Select(m => $"{m.Key}|{m.Name}|{string.Join(",", (m.Pieces ?? []).Select(p => p.Unit).Order(StringComparer.Ordinal))}"));
+		var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+		return mapping with { Assets = assets, MappingGeneration = mapping.MappingGeneration + ":unit-labels-v2:" + version };
+	}
 
 	private async ValueTask<AssetMetadataCatalog> ResolveCatalogAsync(GameDataMappingFacts mapping, CancellationToken cancellationToken)
 		=> mapping.Catalog
@@ -97,15 +126,23 @@ public sealed class ModAssetSummaryProjector
 			.ThenBy(pair => pair.Key.FileId)
 			.Select(pair => CreateEntry(pair.Key, pair.Value, mapping.Assets.GetValueOrDefault(pair.Key), catalog))
 			.ToArray();
-		var tags = assets.SelectMany(asset => asset.DerivedTags).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
-		return new ModAssetSummary(node.Id, node.Metadata.Name, assets, tags, BuildTargetGroups(assets));
+		// Unit-bearing patches describe armor replacements by Unit ownership, not by
+		// retained materials/textures or the source container's name. Keep dependencies
+		// in Assets for inspection, including genuine material-only patches.
+		var hasCustomUnits = assets.Any(asset => asset.Key.TypeId == 0xe0a48d0be9a7453f
+			&& asset.ArchiveCategory.Equals("CustomModel", StringComparison.OrdinalIgnoreCase));
+		var targets = assets.Where(asset => !hasCustomUnits || asset.Key.TypeId == 0xe0a48d0be9a7453f
+			|| !(asset.ArchiveCategory.Equals("Armor", StringComparison.OrdinalIgnoreCase)
+				|| asset.ArchiveCategory.Equals("Helmet", StringComparison.OrdinalIgnoreCase))).ToArray();
+		var tags = targets.SelectMany(asset => asset.DerivedTags).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+		return new ModAssetSummary(node.Id, node.Metadata.Name, assets, tags, BuildTargetGroups(targets));
 	}
 
 	private static PatchAssetEntry CreateEntry(AssetKey key, SourceInfo source, GameDataMappedAssetFact? mapped, AssetMetadataCatalog catalog)
 	{
 		var archives = mapped?.TargetArchives ?? Array.Empty<ArchiveMetadata>();
 		var archive = archives.FirstOrDefault();
-		var fallbackArchive = source.SourceArchiveHexes
+		var fallbackArchive = key.TypeId == 0xe0a48d0be9a7453f ? null : source.SourceArchiveHexes
 			.Select(catalog.FindArchive)
 			.FirstOrDefault(archive => archive is not null);
 		var category = archive?.Category ?? fallbackArchive?.Category ?? "Unknown";

@@ -6,6 +6,9 @@
              HorizontalAlignment="Left"
              VerticalAlignment="Bottom">
     <UserControl.Resources>
+        <DataTemplate DataType="{x:Type viewModels:CustomModelConversionBottomBarRow}">
+            <local:CustomModelConversionBottomBarContent/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type local:TemporaryEditorBarPresentation}">
             <local:TemporaryEditorBarContent/>
         </DataTemplate>

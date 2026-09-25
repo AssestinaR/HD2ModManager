@@ -159,11 +159,25 @@ public sealed class CanonicalCrossArmorOrchestrator
 		}
 		if (!request.Plan.CanContinue)
 			return Failure(issues, "CanonicalPlanNotReady", "Canonical 链路要求现有 CrossArmorTransferPlan 已通过校验。");
+		var customParts = request.Plan.SelectedTargets.Where(target => target.IsCustomModel).SelectMany(target => target.Parts).ToArray();
+		var customKeys = customParts.Select(part => part.UnitAssetKey).ToHashSet();
+		if (customKeys.Count > 0 && (!request.DirectSourceUnitReuse
+			|| customKeys.Count != customParts.Length
+			|| customParts.Any(part => !request.Plan.Mappings.Any(mapping => mapping.PhysicalTarget.UnitAssetKey == part.UnitAssetKey && mapping.WillReplace && mapping.Source is not null))))
+			return Failure(issues, "CustomModelOutputIncomplete", "自定义素体必须通过完整来源 Unit 复用生成，每个启用组件都必须有来源；不支持读取原版目标或自动隐藏缺失组件。");
 		if (!File.Exists(request.SourcePatchTocPath))
 			return Failure(issues, "CanonicalSourcePatchMissing", "Canonical 链路找不到 source patch TOC。");
 		if (!Directory.Exists(request.GameDataDirectory))
 			return Failure(issues, "CanonicalGameDataMissing", "Canonical 链路找不到 Game Data 目录。");
 		var indexStatus = await assetIndex.GetIndexStatusAsync(request.GameDataDirectory, await archiveHashes.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+		if (customKeys.Count > 0)
+		{
+			if (!indexStatus.IsCurrent)
+				return Failure(issues, "CustomModelIndexRequired", "生成自定义素体需要当前有效的游戏资产索引以排除 Unit ID 冲突。");
+			var collisions = await assetIndex.FindAssetArchivesAsync(customKeys, cancellationToken).ConfigureAwait(false);
+			if (collisions.Any(match => match.Found))
+				return Failure(issues, "CustomModelUnitCollision", "自定义 Unit ID 与游戏原版资产冲突；请更换素体 ID 后重试。");
+		}
 		if (indexStatus.IsCurrent && !string.IsNullOrWhiteSpace(indexStatus.CurrentSourceFingerprint))
 			await hiddenUnitCache.InitializeAsync(indexStatus.CurrentSourceFingerprint, gameDataIndexIsCurrent: true, cancellationToken).ConfigureAwait(false);
 		using var sourceReadScope = BeginSourceReadScope(request);
@@ -199,6 +213,8 @@ public sealed class CanonicalCrossArmorOrchestrator
 				: indexedSourceWorkspace;
 			var sourceEntries = sourceWorkspaceIndex.Entries;
 			var sourceByKey = sourceEntries.ToDictionary(entry => entry.AssetKey);
+			if (customKeys.Any(key => sourceByKey.ContainsKey(new AdaptationAssetKey(key.TypeId, key.FileId))))
+				return Failure(issues, "CustomModelSourceCollision", "自定义目标 ID 已存在于来源 Patch；本流程要求新的目标 ID，不能覆盖来源资产。");
 			var sourceKeys = replacementPlanMappings.Select(mapping => mapping.Source.UnitKey).Distinct().ToArray();
 			if (sourceKeys.Any(key => !sourceByKey.ContainsKey(key)))
 				return Failure(issues, "CanonicalSourceUnitMissing", "Canonical 计划引用的 source Unit 不在 source patch 中。");
@@ -759,7 +775,10 @@ public sealed class CanonicalCrossArmorOrchestrator
 			ReportProgress(request, "ValidateUnitReferences", "正在验证 Unit 材质引用表。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
 			var finalized = patchWorkspaceSessionComposer.ComposeJobs(session, workspaceJobs, Array.Empty<CanonicalPatchSessionEntry>(), CanonicalDependencyClosureValidation.Valid);
 			if (!finalized.IsValid) return Failure(issues, finalized.Diagnostics);
-			var headerArchive = request.Plan.SelectedTargets.FirstOrDefault()?.ArchiveId;
+			// A virtual catalog ID is not a package name. For a custom-only output,
+			// use the real source archive's header rather than querying a phantom archive.
+			var headerArchive = request.Plan.SelectedTargets.FirstOrDefault(target => !target.IsCustomModel)?.ArchiveId
+				?? request.Plan.SelectedSource?.ArchiveId;
 			var header = headerArchive is null ? null : await new AdaptationGameDataPackageResolver(request.GameDataDirectory).GetPackageTocAsync(headerArchive, cancellationToken).ConfigureAwait(false);
 			ReportProgress(request, "WritePatch", "正在写入 Canonical Patch 和 GPU sidecar。", targetUnits.Length, Math.Max(targetUnits.Length, 1), totalStopwatch);
 			var removedSourceKeys = sourceWorkspaceIndex.Entries.Select(entry => entry.AssetKey).ToHashSet();

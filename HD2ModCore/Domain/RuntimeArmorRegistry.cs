@@ -13,7 +13,9 @@ public sealed record RuntimeArmorRegistryModelPiece(
 	uint PieceType,
 	byte Tone = 0,
 	bool Enabled = true,
-	bool IsDefaultBase = false);
+	bool IsDefaultBase = false,
+	bool IsReserved = false,
+	uint? OriginalBody = null);
 
 public sealed record RuntimeArmorRegistryPieceOverride(
 	uint OwnerItemId,
@@ -67,7 +69,10 @@ public sealed record RuntimeArmorRegistrySnapshot(
 	bool RuntimeAcknowledged,
 	IReadOnlyDictionary<string, string> RuntimeStatus,
 	bool LocatorCacheExists,
-	IReadOnlyDictionary<string, string> LocatorCache);
+	IReadOnlyDictionary<string, string> LocatorCache)
+{
+	public bool HasUnappliedChanges { get; init; }
+}
 
 public sealed record RuntimeArmorRegistryApplyResult(
 	RuntimeArmorRegistryDocument Document,

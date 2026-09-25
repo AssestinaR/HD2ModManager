@@ -154,6 +154,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RebuildSameKeyCommand { get; }
         public RelayCommand NormalizeArmorCommand { get; }
         public RelayCommand PlanCrossArmorTransferCommand { get; }
+        public RelayCommand ConvertToCustomModelCommand { get; }
         public RelayCommand PlanHelmetToArmorMergeCommand { get; }
         public RelayCommand ToggleHelmetToArmorMergeCommand { get; }
         public RelayCommand PlanDecorationCommand { get; }
@@ -202,6 +203,7 @@ namespace HD2ModManager.ViewModels
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             NormalizeArmorCommand = new RelayCommand(_ => OpenArmorNormalization(), _ => CanNormalizeArmor);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
+            ConvertToCustomModelCommand = new RelayCommand(async _ => await OpenCustomModelConversionAsync(), _ => CanPlanCrossArmorTransfer);
             PlanHelmetToArmorMergeCommand = new RelayCommand(_ => OpenHelmetToArmorMergePlan(), _ => CanPlanHelmetToArmorMerge);
             ToggleHelmetToArmorMergeCommand = new RelayCommand(async _ => await ToggleHelmetToArmorMergeAsync(), _ => CanToggleHelmetToArmorMerge);
             PlanDecorationCommand = new RelayCommand(_ => OpenDecorationPlan(), _ => CanPlanDecoration);
@@ -1472,7 +1474,8 @@ namespace HD2ModManager.ViewModels
 					CancellationToken.None).ConfigureAwait(false);
 				var sourcePatchPaths = sourceFacts.SourcePatchTocPaths.ToArray();
 				var sourceCandidates = sourceFacts.SourceCandidates;
-				var allCandidates = sourceFacts.TargetCandidates;
+				IReadOnlyList<EquipmentUnitCatalogEntry> allCandidates = sourceFacts.TargetCandidates
+					.Concat(await CoreServices.CreateRuntimeArmorRegistryService(_paths).ReadCustomModelCatalogAsync()).ToArray();
 				var transferableSourceUnitKeys = sourceCandidates
 					.SelectMany(entry => entry.Parts)
 					.Select(part => part.UnitAssetKey)

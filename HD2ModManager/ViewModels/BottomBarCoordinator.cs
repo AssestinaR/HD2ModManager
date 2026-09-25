@@ -20,6 +20,7 @@ namespace HD2ModManager.ViewModels
         private string? _editMode;
         private string? _editHostId;
         private string _editText = string.Empty;
+        private Func<string, Task>? _customNameEdit;
         private string? _selectedProfile;
         private bool _suppressSelectionCancel;
 
@@ -182,12 +183,18 @@ namespace HD2ModManager.ViewModels
         public void ClearTemporaryEditor() => Registrations.Remove("temporary-editor");
 
         public void BeginNameEdit(string modId, string currentValue) => BeginEdit(modId, "Name", currentValue);
+        public void BeginCustomNameEdit(string currentValue, Func<string, Task> save)
+        {
+            BeginEdit(null, "CustomName", currentValue);
+            _customNameEdit = save;
+        }
         public void BeginDescriptionEdit(string modId, string currentValue) => BeginEdit(modId, "Description", currentValue);
         public void BeginCreateProfile() => BeginEdit(null, "CreateProfile", string.Empty);
         public void BeginCreateLogicalMod() => BeginEdit(null, "CreateLogicalMod", string.Empty);
         public void BeginRenameProfile() => BeginEdit(null, "RenameProfile", _profiles.SelectedKey ?? string.Empty);
         public void BeginSwitchProfile()
         {
+            _customNameEdit = null;
             _editModId = null;
             _editMode = "SwitchProfile";
             SelectedProfile = _profiles.SelectedKey;
@@ -228,6 +235,7 @@ namespace HD2ModManager.ViewModels
 
         private void EndEditWithoutRefresh()
         {
+            _customNameEdit = null;
             _editModId = null;
             _editMode = null;
             _editHostId = null;
@@ -238,6 +246,7 @@ namespace HD2ModManager.ViewModels
 
         private void BeginEdit(string? modId, string mode, string currentValue)
         {
+            _customNameEdit = null;
             _editModId = modId;
             _editMode = mode;
             _editText = currentValue ?? string.Empty;
@@ -262,6 +271,7 @@ namespace HD2ModManager.ViewModels
                 .ToArray();
             if (orderedIds.Length == 0) return;
 
+            _customNameEdit = null;
             _editModId = string.Join("|", orderedIds);
             _editMode = mode;
             _editHostId = hostId;
@@ -275,6 +285,20 @@ namespace HD2ModManager.ViewModels
 
         private async Task ConfirmEditAsync()
         {
+            if (_editMode == "CustomName")
+            {
+                if (string.IsNullOrWhiteSpace(EditText) || _customNameEdit is null) return;
+                try
+                {
+                    await _customNameEdit(EditText.Trim());
+                    CancelEdit();
+                }
+                catch (Exception exception)
+                {
+                    _notifications.Show($"重命名失败：{exception.Message}", NotificationLevel.Error);
+                }
+                return;
+            }
             if (_editMode == "SwitchProfile")
             {
                 if (!string.IsNullOrWhiteSpace(SelectedProfile)) _profiles.Select(SelectedProfile);

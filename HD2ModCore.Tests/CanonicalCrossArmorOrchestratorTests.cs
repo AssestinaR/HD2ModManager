@@ -12,6 +12,23 @@ namespace HD2ModCore.Tests;
 // documentation reference: docs/sdk流程架构.md sections 1-8.
 public sealed class CanonicalCrossArmorOrchestratorTests
 {
+	[Theory]
+	[InlineData(false, true)]
+	[InlineData(true, false)]
+	public async Task ExecuteAsync_CustomTargetRejectsFallbackAndIncompleteOutputBeforeIO(bool direct, bool mapped)
+	{
+		var source = new EquipmentUnitPart(new HD2ModCore.Domain.AssetKey(PatchUnitMeshReader.UnitTypeId, 1),
+			0, 1, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any, "source", 100, []);
+		var target = source with { UnitAssetKey = new(PatchUnitMeshReader.UnitTypeId, 0xfedcba9876543210) };
+		var custom = new EquipmentUnitCatalogEntry("custom-model:test", "CustomModel", "test", [target]) { CustomModelKey = "test" };
+		var plan = new CrossArmorTransferPlan([], new("source", "Armor", "source", [source]), [custom],
+			[new(new(target.UnitAssetKey), target, mapped ? source : null, mapped, "", [], [], false, false)], [], []);
+		var result = await new CanonicalCrossArmorOrchestrator().ExecuteAsync(
+			new("missing-source.patch_0", "missing-data", "must-not-create", plan, DirectSourceUnitReuse: direct));
+		Assert.False(result.IsSuccessful);
+		Assert.Contains(result.Issues, issue => issue.Code == "CustomModelOutputIncomplete");
+	}
+
 	[Fact]
 	public async Task ExecuteAsync_RejectsEmptyPlanBeforeReadersOrLegacyPath()
 	{

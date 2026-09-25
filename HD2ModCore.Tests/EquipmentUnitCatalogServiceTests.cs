@@ -548,6 +548,67 @@ public sealed class EquipmentUnitCatalogServiceTests
 	}
 
 	private static EquipmentUnitCatalogService CreateService() => new(new StoragePaths(Path.GetTempPath()));
+	[Fact]
+	public async Task CustomTargets_ReuseAnyAcrossShapesButNotExtraOverlappingSlots()
+	{
+		var first = Part(SourceUnit, 1, "unrelated-source-family") with { BodyVariant = UnitMeshBodyVariant.Any, StoredBytes = 1024 };
+		var second = Part(AdditionalSourceUnit, 2, "extra-family") with { BodyVariant = UnitMeshBodyVariant.Any };
+		var stocky = Part(TargetUnit, 0, "virtual") with { BodyVariant = UnitMeshBodyVariant.Stocky, PieceType = "0" };
+		var slim = stocky with { UnitAssetKey = new(TargetUnit.TypeId, 0x201), BodyVariant = UnitMeshBodyVariant.Slim };
+		var extra = stocky with { UnitAssetKey = new(TargetUnit.TypeId, 0x202), BodyVariant = UnitMeshBodyVariant.Any, PieceType = "1" };
+		var custom = Entry("custom-model:test", stocky, slim, extra) with { CustomModelKey = "test", Category = "CustomModel" };
+		var plan = await CreateService().CreatePlanAsync([Entry("source", first, second)], [custom],
+			"source", null, CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, [custom.ArchiveId], writePlannerDebugLog: false);
+		Assert.True(plan.CanContinue);
+		Assert.Equal(3, plan.Mappings.Count);
+		Assert.All(plan.Mappings.Take(2), mapping => Assert.Equal(SourceUnit, mapping.Source!.UnitAssetKey));
+		Assert.Equal(AdditionalSourceUnit, plan.Mappings.Last().Source!.UnitAssetKey);
+	}
+
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task CustomTargets_MissingOrSuppressedComponentsBlockOutput(bool suppressed)
+	{
+		var source = Part(SourceUnit, 1, "source");
+		var target = Part(TargetUnit, 0, "virtual") with { PartKind = suppressed ? source.PartKind : UnitMeshPartKind.Head };
+		var custom = Entry("custom-model:test", target) with { CustomModelKey = "test" };
+		var plan = await CreateService().CreatePlanAsync([Entry("source", source)], [custom], "source", null,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, [custom.ArchiveId],
+			manualSuppressions: suppressed ? [new(new(TargetUnit))] : [], writePlannerDebugLog: false);
+		Assert.False(plan.CanContinue);
+		Assert.Contains(plan.Issues, issue => issue.Code == "CustomModelComponentUnassigned");
+	}
+
+	[Fact]
+	public async Task CustomTargets_CollisionWithUnselectedVanillaTargetBlocksOutput()
+	{
+		var source = Part(SourceUnit, 1, "source");
+		var target = Part(TargetUnit, 0, "virtual");
+		var custom = Entry("custom-model:test", target) with { CustomModelKey = "test" };
+		var plan = await CreateService().CreatePlanAsync([Entry("source", source)], [custom, Entry("vanilla", target)], "source", null,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, [custom.ArchiveId], writePlannerDebugLog: false);
+		Assert.False(plan.CanContinue);
+		Assert.Contains(plan.Issues, issue => issue.Code == "CustomModelTargetInvalid");
+	}
+
+	[Fact]
+	public async Task CustomTargets_ManualSameRegionAssignmentAndVanillaPlanningCoexist()
+	{
+		var first = Part(SourceUnit, 1, "source") with { StoredBytes = 1024 };
+		var second = Part(AdditionalSourceUnit, 2, "extra");
+		var target = Part(new(TargetUnit.TypeId, 0xfedcba9876543210), 0, "virtual");
+		var custom = Entry("custom-model:test", target) with { CustomModelKey = "test" };
+		var vanilla = Entry("vanilla", Part(TargetUnit, 0, "target"));
+		var plan = await CreateService().CreatePlanAsync([Entry("source", first, second)], [custom, vanilla], "source", null,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, [custom.ArchiveId, vanilla.ArchiveId],
+			manualMappings: [new(new(target.UnitAssetKey), AdditionalSourceUnit)], writePlannerDebugLog: false);
+		Assert.True(plan.CanContinue);
+		Assert.Equal(2, plan.Mappings.Count);
+		var mapped = Assert.Single(plan.Mappings, m => m.Target.UnitAssetKey == target.UnitAssetKey);
+		Assert.True(mapped.IsManual);
+		Assert.Equal(AdditionalSourceUnit, mapped.Source!.UnitAssetKey);
+	}
 	private static EquipmentUnitCatalogEntry Entry(string id, params EquipmentUnitPart[] parts) => new(id, "Armor", id, parts);
 	private static EquipmentUnitPart Part(AssetKey unit, int mesh, string name)
 		=> new(unit, mesh, checked((uint)mesh), UnitMeshPartKind.RightLeg, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Slim, name, 100, Array.Empty<string>());

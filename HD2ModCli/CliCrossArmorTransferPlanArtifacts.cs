@@ -73,7 +73,10 @@ public sealed record CliCrossArmorEquipment(
 	string ArchiveId,
 	string Category,
 	string DisplayName,
-	IReadOnlyList<CliCrossArmorUnitPart> Parts);
+	IReadOnlyList<CliCrossArmorUnitPart> Parts)
+{
+	public string? CustomModelKey { get; init; }
+}
 
 public sealed record CliCrossArmorUnitPart(
 	string AssetKey,
@@ -361,11 +364,13 @@ internal static class CliCrossArmorTransferPlanArtifacts
 					"计划固定的来源 Patch 文件名不属于当前唯一来源 Patch 组。", sourceDirectory, CliProjections.FormatId(source.Id)));
 			}
 
-			var resolution = ResolveRequest(request, facts.SourceCandidates, facts.TargetCandidates, diagnostics);
+			var targetCandidates = facts.TargetCandidates.Concat(
+				await CoreServices.CreateRuntimeArmorRegistryService(paths).ReadCustomModelCatalogAsync(cancellationToken).ConfigureAwait(false)).ToArray();
+			var resolution = ResolveRequest(request, facts.SourceCandidates, targetCandidates, diagnostics);
 			CrossArmorTransferPlan corePlan;
 			if (diagnostics.Any(diagnostic => diagnostic.Blocking))
 			{
-				corePlan = CreateBlockedPlan(facts.SourceCandidates, facts.TargetCandidates, resolution.SelectedTargetArchiveIds,
+				corePlan = CreateBlockedPlan(facts.SourceCandidates, targetCandidates, resolution.SelectedTargetArchiveIds,
 					"跨护甲输入未通过校验，尚未调用 Core 映射规划器。 ");
 			}
 			else
@@ -373,7 +378,7 @@ internal static class CliCrossArmorTransferPlanArtifacts
 				var catalog = CoreServices.CreateEquipmentUnitCatalogService(paths);
 				corePlan = await catalog.CreatePlanAsync(
 					facts.SourceCandidates,
-					facts.TargetCandidates,
+					targetCandidates,
 					resolution.PrimarySourceArchiveId,
 					resolution.SourceBodyVariant,
 					resolution.BodyVariantPreference,
@@ -396,7 +401,7 @@ internal static class CliCrossArmorTransferPlanArtifacts
 				facts.ContentGeneration,
 				afterPatchFamilies,
 				facts.SourceCandidates.Select(CreateEquipment).OrderBy(item => item.Category, StringComparer.OrdinalIgnoreCase).ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase).ThenBy(item => item.ArchiveId, StringComparer.Ordinal).ToArray());
-			var targetProjection = facts.TargetCandidates.Select(CreateEquipment)
+			var targetProjection = targetCandidates.Select(CreateEquipment)
 				.OrderBy(item => item.Category, StringComparer.OrdinalIgnoreCase)
 				.ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
 				.ThenBy(item => item.ArchiveId, StringComparer.Ordinal)
@@ -666,7 +671,7 @@ internal static class CliCrossArmorTransferPlanArtifacts
 
 	private static CliCrossArmorEquipment CreateEquipment(EquipmentUnitCatalogEntry entry)
 		=> new(entry.ArchiveId, entry.Category, entry.DisplayName,
-			entry.Parts.Select(CreateUnitPart).OrderBy(part => part.PartKind, StringComparer.Ordinal).ThenBy(part => part.Layer, StringComparer.Ordinal).ThenBy(part => part.AssetKey, StringComparer.Ordinal).ToArray());
+			entry.Parts.Select(CreateUnitPart).OrderBy(part => part.PartKind, StringComparer.Ordinal).ThenBy(part => part.Layer, StringComparer.Ordinal).ThenBy(part => part.AssetKey, StringComparer.Ordinal).ToArray()) { CustomModelKey = entry.CustomModelKey };
 
 	private static CliCrossArmorUnitPart CreateUnitPart(EquipmentUnitPart part)
 		=> new(

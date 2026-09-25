@@ -89,6 +89,18 @@ namespace HD2ModManager.ViewModels
             _plan.CandidateGenerationRunning = true;
             try
             {
+				var customTargets = plan.SelectedTargets.Where(target => target.IsCustomModel).ToArray();
+				if (customTargets.Length > 0)
+				{
+					var current = await CoreServices.CreateRuntimeArmorRegistryService(_plan.Paths).ReadCustomModelCatalogAsync(task.CancellationToken);
+					foreach (var target in customTargets)
+					{
+						var fresh = current.SingleOrDefault(entry => entry.CustomModelKey == target.CustomModelKey);
+						if (fresh is null || !fresh.Parts.Select(part => (part.UnitAssetKey, part.PartKind, part.BodyVariant, part.PieceType))
+							.SequenceEqual(target.Parts.Select(part => (part.UnitAssetKey, part.PartKind, part.BodyVariant, part.PieceType))))
+							throw new InvalidOperationException("自定义素体组件已变化，请重新打开替换护甲计划。");
+					}
+				}
 				await _plan.EnsurePreparedSourceEntriesAsync(task.CancellationToken).ConfigureAwait(false);
 				bridge.Apply(new OperationProgressEvent(operationId, OperationKind.CrossArmorTransfer, OperationStage.Preparing, OperationState.Started, sequence: sequence++));
 				var progress = new InlineProgress<CrossArmorTransferProgress>(update =>
@@ -106,7 +118,7 @@ namespace HD2ModManager.ViewModels
 				// The orchestrator owns Patch staging and validation; this production
 				// request explicitly selects DirectSourceUnitReuse. Unit-local LOD
 				// dependencies are carried by the source Unit closure.
-				var result = await Task.Run(() => CoreServices.CreateCanonicalCrossArmorOrchestrator(_plan.InformationReader)
+				var result = await Task.Run(() => CoreServices.CreateCanonicalCrossArmorOrchestrator(_plan.Paths, _plan.InformationReader)
                     .ExecuteAsync(request, task.CancellationToken).AsTask(), task.CancellationToken);
                 var presentation = CrossArmorCandidateResultPresenter.Map(result);
                 if (presentation.IsFailure)
@@ -157,7 +169,7 @@ namespace HD2ModManager.ViewModels
         private string BuildCandidateDirectory(CrossArmorTransferPlan plan)
         {
             var sourceName = SanitizeDirectoryName(plan.SelectedSource?.DisplayName ?? "未知来源");
-            var armorTargets = plan.SelectedTargets.Where(target => string.Equals(target.Category, "Armor", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var armorTargets = plan.SelectedTargets.Where(target => target.IsCustomModel || string.Equals(target.Category, "Armor", StringComparison.OrdinalIgnoreCase)).ToArray();
             var targetName = armorTargets.Length == 0
                 ? "无护甲目标"
                 : SanitizeDirectoryName(armorTargets[0].DisplayName) + (armorTargets.Length > 1 ? $"以及更多的{armorTargets.Length - 1}个" : string.Empty);

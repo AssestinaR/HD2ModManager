@@ -26,6 +26,8 @@ namespace HD2ModManager
         private SelectionActionBarPresentation? _selectionActionPresentation;
         private TemporaryEditorBarPresentation? _temporaryEditorPresentation;
         private readonly WorkspacePagePresentationController _workspacePages;
+        private bool _workspaceCloseAllowed;
+        private bool _workspaceClosePending;
         [StructLayout(LayoutKind.Sequential)]
         struct MARGINS
         {
@@ -109,6 +111,7 @@ namespace HD2ModManager
             Loaded += MainWindow_Loaded;
             DataContextChanged += MainWindow_DataContextChanged;
             Closed += MainWindow_Closed;
+            Closing += MainWindow_Closing;
             SourceInitialized += MainWindow_SourceInitialized;
             StateChanged += MainWindow_StateChanged; // 处理最大化时的阴影切换
             Title = HD2ModManager.Resources.Strings.App_Title;
@@ -188,6 +191,28 @@ namespace HD2ModManager
             }
         }
 
+        private async void MainWindow_Closing(object? sender, CancelEventArgs e)
+        {
+            if (_workspaceCloseAllowed || DataContext is not ShellViewModel shell) return;
+            e.Cancel = true;
+            if (_workspaceClosePending) return;
+            _workspaceClosePending = true;
+            try
+            {
+                await shell.SaveArmorRegistryWorkspaceBeforeCloseAsync();
+                _workspaceCloseAllowed = true;
+                // Close must run after the current Closing event has unwound.
+                _ = Dispatcher.BeginInvoke(new Action(Close));
+            }
+            catch (Exception exception)
+            {
+                LogService.Error($"退出前保存护甲组件失败：{exception}");
+                MessageBox.Show("护甲组件尚未成功保存，已暂缓关闭。\n" + exception.Message,
+                    "保存失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally { _workspaceClosePending = false; }
+        }
+
         private void MainWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
         {
             if (DataContext is ShellViewModel { IsMessagePanelOpen: true } messageShell
@@ -200,6 +225,7 @@ namespace HD2ModManager
             if (DataContext is not ShellViewModel shell) return;
             if (shell.HasMaterialPackagingBottomBar || shell.HasSameKeyRebuildBottomBar)
             {
+                if (e.OriginalSource is DependencyObject popupSource && FindAncestor<ComboBoxItem>(popupSource) is not null) return;
                 if (e.OriginalSource is DependencyObject materialSource && IsDescendantOf(materialSource, BottomContextBar)) return;
                 shell.DismissToolBottomBars();
                 return;

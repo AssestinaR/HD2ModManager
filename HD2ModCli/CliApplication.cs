@@ -87,6 +87,41 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateStatus(workspace), () => FormatStatus(workspace));
 			return 0;
 		}
+		if (command.Length >= 3 && command[0] == "custom-model" && command[1] is "inspect" or "convert")
+		{
+			var convert = command[1] == "convert";
+			if (command.Length != (convert ? 5 : 3))
+				throw new CliUserException("InvalidArguments", "custom-model inspect <mod>；custom-model convert <mod> <archive> <name> --output <目录> --confirm");
+			if (convert && !invocation.Options.Confirm)
+				throw new CliUserException("ConfirmationRequired", "转换会输出新 Patch 并在当前 Mod 库登记素体，请指定 --confirm。");
+			var workspace = CliWorkspace.Open(invocation.Options);
+			if (workspace.ManagerRoot is null || workspace.LibraryRoot is null || workspace.GameDataRoot is null)
+				throw new CliUserException("WorkspaceRequired", "请指定 --manager-root、--library 和 --game-data。");
+			var state = await workspace.LoadLibraryAsync();
+			var source = CliProjections.ResolveMod(state.Snapshot.Nodes, invocation.Command[2]);
+			var paths = new StoragePaths(workspace.ManagerRoot, workspace.LibraryRoot);
+			await using var reader = CoreServices.CreateModInformationReader();
+			var facts = await CoreServices.CreateDirectModEquipmentSourceFactsReader(paths, reader).ReadAsync(
+				source, workspace.LibraryRoot,
+				new ModInformationRequest(ModInformationKind.AssetInventory, "CustomModelConversion",
+					Context: ModInformationRequestContext.Create(ModInformationCacheScope.None, operationName: "CustomModelConversion"))
+				{ Property = ModInformationPropertyKind.UnitPartMapping });
+			var converter = new CustomModelConversionService(paths, reader);
+			if (!convert)
+			{
+				EnsureNoExplicitOutput(invocation.Options);
+				var sources = await converter.InspectAsync(facts);
+				Emit(invocation.Options, new { ok = true, sources }, () => string.Join(Environment.NewLine,
+					sources.Select(item => $"{item.ArchiveId}  {item.DisplayName}  {item.Parts.Select(p => p.UnitAssetKey).Distinct().Count()} Units")));
+			}
+			else
+			{
+				var result = await converter.GenerateAsync(facts, invocation.Command[3].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries), invocation.Command[4],
+					RequireOutput(invocation.Options, "custom-model convert"), workspace.GameDataRoot);
+				Emit(invocation.Options, new { ok = true, result }, () => $"已生成并登记素体：{result.OutputDirectory}");
+			}
+			return 0;
+		}
 		if (Matches(command, "armor-registry", "status"))
 		{
 			EnsureArmorRegistryReadOptions(invocation.Options, "armor-registry status");
@@ -5108,6 +5143,8 @@ HD2 Mod Manager 命令行
 用法：
 	  hd2mod capabilities --json
 	  hd2mod status --manager-root <管理器目录> --json
+	  hd2mod custom-model inspect <Mod GUID> --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --json
+	  hd2mod custom-model convert <Mod GUID> <来源Archive[,头盔Archive]> <素体名称> --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --output <输出根目录> --confirm --json
 	  hd2mod armor-registry status [--registry-root <协议目录>] --json
 	  hd2mod armor-registry show [--registry-root <协议目录>] --json
 	  hd2mod armor-registry plan armor-registry-spec.json [--registry-root <协议目录>] --output armor-registry-plan.json --json

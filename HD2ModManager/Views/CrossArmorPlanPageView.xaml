@@ -30,7 +30,7 @@
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <StackPanel>
                             <TextBlock Text="替换模型到选择的护甲" Style="{StaticResource AppCardTitle}"/>
-                            <TextBlock Text="此页只替换护甲，并将文件默认输出到管理器内/Output文件夹" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                            <TextBlock Text="输出独立 Patch，不修改来源。自定义素体仅生成已启用组件；安装后需在护甲映射页映射到真实护甲并应用。" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             <TextBlock Text="{Binding CandidateOutput.State}" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                             <Button Style="{StaticResource AppPrimaryButton}" Grid.Column="1" Content="生成" Command="{Binding CandidateOutput.GenerateCommand}" IsEnabled="{Binding CandidateOutput.CanGenerate}" MinWidth="78" Margin="12,0,0,0" VerticalAlignment="Top"/>
@@ -68,7 +68,7 @@
                             <CheckBox Style="{StaticResource AppCheckBox}" Content="自动多选通用部件的对象" IsChecked="{Binding AutoSelectSharedParts}" Margin="0,0,12,0"/>
                             <CheckBox Style="{StaticResource AppCheckBox}" Content="自动勾选头盔" IsChecked="{Binding AutoSelectMatchingHelmet}"/>
                         </StackPanel>
-                        <TextBlock Text="目标装备（可多选）" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <TextBlock Text="目标护甲 / 自定义素体（可多选）" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     </DockPanel>
                     <ListBox Grid.Row="1" ItemsSource="{Binding TargetChoices}" Margin="0,8,0,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True">
                         <ListBox.ItemTemplate><DataTemplate><CheckBox Style="{StaticResource AppCheckBox}" Content="{Binding Display}" IsChecked="{Binding IsSelected}"/></DataTemplate></ListBox.ItemTemplate>

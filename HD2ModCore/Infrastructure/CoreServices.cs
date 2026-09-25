@@ -141,7 +141,7 @@ public static class CoreServices
 	public static IAssetMetadataCatalogProvider CreateAssetMetadataCatalogProvider(StoragePaths paths)
 		=> new FileSystemAssetMetadataCatalogProvider(paths);
 	public static ModAssetSummaryProjector CreateModAssetSummaryProjector(StoragePaths paths)
-		=> new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths));
+		=> new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths), new RuntimeArmorRegistryService(paths));
 	public static IAssetMetadataSyncService CreateAssetMetadataSyncService(StoragePaths paths)
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
 	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(IModInformationReader informationReader)

@@ -44,7 +44,9 @@ public sealed class LibraryDerivedDataServiceTests
 			Assert.Equal(node.Id, nodeData.ContentFacts.PatchGroups[0].Id.NodeId);
 			Assert.False(string.IsNullOrWhiteSpace(nodeData.ContentFacts.ContentGeneration));
 			Assert.NotNull(nodeData.AssetSummary);
-			Assert.Contains("armor", nodeData.AssetSummary!.DerivedTags);
+			// No asset index proves Unit ownership here. A container name alone must
+			// not label a new/private Unit as replacing the container's old armor.
+			Assert.DoesNotContain("armor", nodeData.AssetSummary!.DerivedTags);
 			Assert.Contains("model", nodeData.AssetSummary.DerivedTags);
 		}
 		finally

@@ -17,6 +17,12 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			ModRelationshipDragCoordinator.UnregisterTarget(this);
 			ResetDropOverlays();
 		};
+		Unloaded += async (_, _) =>
+		{
+			if (DataContext is not ArmorRegistryPageViewModel viewModel) return;
+			try { await viewModel.FlushWorkspaceAsync(); }
+			catch (Exception exception) { HD2ModManager.Services.LogService.Error(exception.ToString()); }
+		};
 	}
 
 	private async void OnLoaded(object sender, RoutedEventArgs e)

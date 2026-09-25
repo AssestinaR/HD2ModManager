@@ -10,6 +10,41 @@ namespace HD2ModCli.Tests;
 public sealed class CrossArmorTransferCliTests
 {
 	[Fact]
+	public async Task CustomModelConvert_RequiresConfirmationBeforeAnyWrites()
+	{
+		await using var fixture = await CrossArmorFixture.CreateAsync();
+		var output = Path.Combine(fixture.RootDirectory, "must-not-exist");
+		var exitCode = await RunAsync("custom-model", "convert", fixture.NodeSelector, "0123456789abcdef", "Test",
+			"--manager-root", fixture.ManagerRoot, "--library", fixture.LibraryRoot,
+			"--game-data", fixture.GameDataDirectory, "--output", output, "--json");
+		Assert.Equal(2, exitCode);
+		Assert.False(Directory.Exists(output));
+		Assert.False(File.Exists(new RuntimeArmorRegistryService(new StoragePaths(fixture.ManagerRoot, fixture.LibraryRoot)).WorkspacePath));
+	}
+
+	[Fact]
+	public async Task CrossArmorPlan_IncludesCurrentLibraryCustomModelAndPersistentIds()
+	{
+		await using var fixture = await CrossArmorFixture.CreateAsync();
+		var service = new RuntimeArmorRegistryService(new StoragePaths(fixture.ManagerRoot, fixture.LibraryRoot));
+		await service.SaveWorkspaceAsync(new(0, false, [], [
+			new("custom-test", null, [new(3, "fedcba9876543210", 2, 0)], "自定义素体")
+		]));
+		var before = await File.ReadAllTextAsync(service.WorkspacePath);
+		var planPath = Path.Combine(fixture.RootDirectory, "custom-plan.json");
+		Assert.Equal(2, await RunAsync("equipment", "cross-armor", "plan", fixture.NodeSelector,
+			"--manager-root", fixture.ManagerRoot, "--library", fixture.LibraryRoot,
+			"--game-data", fixture.GameDataDirectory, "--output", planPath, "--json"));
+		using var plan = JsonDocument.Parse(await File.ReadAllTextAsync(planPath));
+		var custom = Assert.Single(plan.RootElement.GetProperty("targetCandidates").EnumerateArray(),
+			item => item.GetProperty("category").GetString() == "CustomModel");
+		Assert.Equal("custom-model:custom-test", custom.GetProperty("archiveId").GetString());
+		Assert.Equal("custom-test", custom.GetProperty("customModelKey").GetString());
+		Assert.Contains("fedcba9876543210", custom.GetProperty("parts")[0].GetProperty("assetKey").GetString());
+		Assert.Equal(before, await File.ReadAllTextAsync(service.WorkspacePath));
+	}
+
+	[Fact]
 	public async Task CrossArmorInspect_WithNoUsableEquipment_ReturnsReadOnlyInspection()
 	{
 		await using var fixture = await CrossArmorFixture.CreateAsync();

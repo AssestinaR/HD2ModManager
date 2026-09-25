@@ -9,7 +9,12 @@ public sealed record EquipmentUnitCatalogEntry(
 	string ArchiveId,
 	string Category,
 	string DisplayName,
-	IReadOnlyList<EquipmentUnitPart> Parts);
+	IReadOnlyList<EquipmentUnitPart> Parts)
+{
+	// Virtual targets own persistent Unit IDs, but are not GameData archives.
+	public string? CustomModelKey { get; init; }
+	public bool IsCustomModel => CustomModelKey is not null;
+}
 
 // Purpose: Describes one visible, non-LOD Unit mesh that can participate in source or target selection.
 public sealed record EquipmentUnitPart(

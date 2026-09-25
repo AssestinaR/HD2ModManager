@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
 using Microsoft.Data.Sqlite;
 
@@ -16,6 +18,7 @@ public sealed class RuntimeArmorRegistryService
 	public const string LocatorCacheFileName = "locator.cache";
 	public const string DeploymentStateFileName = "runtime-armor-registry.deployment";
 	public const string WorkspaceFileName = "armor-registry.workspace.json";
+	public const string AppliedSourceFileName = "armor-registry.applied.json";
 
 	private const int MaximumProtocolBytes = 65536;
 	private readonly StoragePaths paths;
@@ -31,6 +34,12 @@ public sealed class RuntimeArmorRegistryService
 	public string WorkspaceRoot => Path.Combine(paths.ModsDirectory, ".hd2modmanager");
 	public string WorkspacePath => Path.Combine(WorkspaceRoot, WorkspaceFileName);
 	public string DeploymentStatePath => Path.Combine(paths.DataDirectory, DeploymentStateFileName);
+
+	// Library projections must not inspect the running game or another library's deployed protocol.
+	public async ValueTask<IReadOnlyList<RuntimeArmorRegistryModel>> ReadWorkspaceModelsAsync(CancellationToken cancellationToken = default)
+		=> File.Exists(WorkspacePath)
+			? (await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false)).ModelDefinitions
+			: Array.Empty<RuntimeArmorRegistryModel>();
 
 	public async ValueTask SaveWorkspaceAsync(
 		RuntimeArmorRegistryDocument document,
@@ -124,6 +133,62 @@ public sealed class RuntimeArmorRegistryService
 		return pieces;
 	}
 
+	/// <summary>
+	/// Projects the manager-owned virtual model bases into the same catalog shape
+	/// consumed by the cross-armor planner.  These entries intentionally have no
+	/// GameData archive; their Unit IDs are output-only targets.
+	/// </summary>
+	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> ReadCustomModelCatalogAsync(
+		CancellationToken cancellationToken = default)
+	{
+		var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
+		ValidateModels(snapshot.Document.ModelDefinitions, snapshot.Document.Mappings);
+		return snapshot.Document.ModelDefinitions
+			.Where(model => model.Pieces is { Count: > 0 })
+			.Select(model => new EquipmentUnitCatalogEntry(
+				"custom-model:" + model.Key,
+				"CustomModel",
+				string.IsNullOrWhiteSpace(model.Name) ? model.Key : model.Name!,
+				RuntimeArmorModelStructure.Active(model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+					.Where(piece => piece.Enabled)
+					.Select(piece => new EquipmentUnitPart(
+						new AssetKey(HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId,
+							ulong.Parse(piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture)),
+						0,
+						0,
+						ToPartKind(piece.Slot),
+						UnitMeshPartLayer.Armor,
+						piece.Body switch
+						{
+							0 => UnitMeshBodyVariant.Stocky,
+							1 => UnitMeshBodyVariant.Slim,
+							3 => UnitMeshBodyVariant.Any,
+							_ => UnitMeshBodyVariant.Other
+						},
+						$"custom_{model.Key}_{piece.Slot}_{piece.PieceType}",
+						100,
+						Array.Empty<string>())
+					{
+						PieceType = piece.PieceType.ToString(CultureInfo.InvariantCulture),
+						GeometryQuality = UnitMeshGeometryQuality.Unreadable
+					})
+					.ToArray()) { CustomModelKey = model.Key })
+			.ToArray();
+	}
+
+	private static HD2ModAdaptation.Analysis.UnitMeshPartKind ToPartKind(uint slot)
+		=> slot switch
+		{
+			1 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Head,
+			2 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Torso,
+			3 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Pelvis,
+			4 => HD2ModAdaptation.Analysis.UnitMeshPartKind.LeftLeg,
+			5 => HD2ModAdaptation.Analysis.UnitMeshPartKind.RightLeg,
+			6 => HD2ModAdaptation.Analysis.UnitMeshPartKind.LeftArm,
+			7 => HD2ModAdaptation.Analysis.UnitMeshPartKind.RightArm,
+			_ => HD2ModAdaptation.Analysis.UnitMeshPartKind.Unknown
+		};
+
 	public async ValueTask<RuntimeArmorRegistrySnapshot> ReadSnapshotAsync(
 		CancellationToken cancellationToken = default)
 	{
@@ -154,6 +219,13 @@ public sealed class RuntimeArmorRegistryService
 			&& runtime.Values.TryGetValue("revision", out var rawRevision)
 			&& int.TryParse(rawRevision, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision)
 			&& revision == document.Revision;
+		var appliedSourcePath = Path.Combine(WorkspaceRoot, AppliedSourceFileName);
+		var pendingChanges = !File.Exists(WorkspacePath) && !protocolExists ? false : File.Exists(appliedSourcePath)
+			? !string.Equals(await File.ReadAllTextAsync(appliedSourcePath, cancellationToken).ConfigureAwait(false),
+				SerializeWorkspace(document), StringComparison.Ordinal)
+			: !protocolExists || !string.Equals(
+				await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false),
+				SerializeProtocol(document), StringComparison.Ordinal);
 		return new RuntimeArmorRegistrySnapshot(
 			registryRoot,
 			protocolPath,
@@ -165,7 +237,7 @@ public sealed class RuntimeArmorRegistryService
 			acknowledged,
 			runtime.Values,
 			cache.Exists,
-			cache.Values);
+			cache.Values) { HasUnappliedChanges = pendingChanges };
 	}
 
 	public async ValueTask<RuntimeArmorRegistryApplyResult> ApplyAsync(
@@ -194,7 +266,8 @@ public sealed class RuntimeArmorRegistryService
 		IReadOnlyList<RuntimeArmorRegistryModel> models,
 		IReadOnlyList<RuntimeArmorRegistryPieceOverride> pieceOverrides,
 		IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string? gameDataDirectory = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(expectedFingerprint);
 		ArgumentNullException.ThrowIfNull(mappings);
@@ -228,7 +301,15 @@ public sealed class RuntimeArmorRegistryService
 			NormalizeModels(models),
 			NormalizePieceOverrides(pieceOverrides),
 			NormalizeTargetModes(targetModes));
-		var text = SerializeProtocol(desired);
+		var compiled = desired;
+		if (gameDataDirectory is not null && desired.ModelDefinitions.Any(model => model.SourceItemId is null))
+			compiled = RuntimeArmorResourceFilter.Compile(desired,
+				await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false));
+		var text = SerializeProtocol(compiled);
+		if (Encoding.UTF8.GetByteCount(text) > MaximumProtocolBytes)
+			throw new InvalidDataException("编译后的护甲注册协议超过 64 KiB 上限。");
+		if (System.Text.Encoding.UTF8.GetByteCount(SerializeWorkspace(desired)) > MaximumProtocolBytes * 4)
+			throw new InvalidDataException("护甲注册源文件超过 256 KiB 上限。");
 		var protocolPath = Path.Combine(registryRoot, ProtocolFileName);
 		var temporaryPath = Path.Combine(registryRoot, "." + ProtocolFileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
 		try
@@ -245,6 +326,8 @@ public sealed class RuntimeArmorRegistryService
 			if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
 		}
 		await WriteWorkspaceAsync(desired, cancellationToken).ConfigureAwait(false);
+		await WriteAtomicTextAsync(Path.Combine(WorkspaceRoot, AppliedSourceFileName),
+			SerializeWorkspace(desired), cancellationToken).ConfigureAwait(false);
 		Directory.CreateDirectory(paths.DataDirectory);
 		await File.WriteAllTextAsync(
 			DeploymentStatePath,
@@ -304,6 +387,11 @@ public sealed class RuntimeArmorRegistryService
 		CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(WorkspaceRoot);
+		await WriteAtomicTextAsync(WorkspacePath, SerializeWorkspace(document), cancellationToken).ConfigureAwait(false);
+	}
+
+	private static string SerializeWorkspace(RuntimeArmorRegistryDocument document)
+	{
 		var workspace = new WorkspaceDocument(
 			1,
 			document.Revision,
@@ -312,16 +400,21 @@ public sealed class RuntimeArmorRegistryService
 			document.ModelDefinitions,
 			document.PieceOverrideDefinitions,
 			document.TargetModeDefinitions);
-		var json = JsonSerializer.Serialize(workspace, WorkspaceJsonOptions);
-		var temporaryPath = WorkspacePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+		return JsonSerializer.Serialize(workspace, WorkspaceJsonOptions);
+	}
+
+	private static async Task WriteAtomicTextAsync(string path, string text, CancellationToken cancellationToken)
+	{
+		var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
 		try
 		{
 			await File.WriteAllTextAsync(
 				temporaryPath,
-				json,
+				text,
 				new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
 				cancellationToken).ConfigureAwait(false);
-			File.Move(temporaryPath, WorkspacePath, overwrite: true);
+			cancellationToken.ThrowIfCancellationRequested();
+			File.Move(temporaryPath, path, overwrite: true);
 		}
 		finally
 		{
@@ -494,7 +587,7 @@ public sealed class RuntimeArmorRegistryService
 			builder.Append("model=")
 				.Append(model.Key).Append(',')
 				.Append(model.SourceItemId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty).Append('\n');
-			foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+			foreach (var piece in RuntimeArmorModelStructure.Active(model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>()))
 			{
 				builder.Append("model_piece=").Append(model.Key).Append(',')
 					.Append(piece.Body.ToString(CultureInfo.InvariantCulture)).Append(',')
@@ -614,7 +707,8 @@ public sealed class RuntimeArmorRegistryService
 
 	private static IReadOnlyList<RuntimeArmorRegistryModel> NormalizeModels(
 		IEnumerable<RuntimeArmorRegistryModel> models)
-		=> models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray();
+		=> models.Select(model => model with { Pieces = RuntimeArmorModelStructure.Normalize(model.Pieces ?? []) })
+			.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray();
 
 	private static IReadOnlyList<RuntimeArmorRegistryPieceOverride> NormalizePieceOverrides(
 		IEnumerable<RuntimeArmorRegistryPieceOverride> overrides)

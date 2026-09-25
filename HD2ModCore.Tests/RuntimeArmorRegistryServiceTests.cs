@@ -13,6 +13,78 @@ namespace HD2ModCore.Tests;
 public sealed class RuntimeArmorRegistryServiceTests
 {
 	[Fact]
+	public async Task WorkspaceEdits_SurviveReloadWithoutCompilingAndStayPending()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var first = await fixture.Service.ReadSnapshotAsync();
+		var model = new RuntimeArmorRegistryModel("model", null, [new(0, "0000000000000001", 2, 0), new(1, "0000000000000002", 2, 0)]);
+		await fixture.Service.ApplyAsync(first.Fingerprint, false, [], [model]);
+		var before = await File.ReadAllTextAsync(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName));
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+		Assert.False(snapshot.HasUnappliedChanges);
+		await fixture.Service.SaveWorkspaceAsync(snapshot.Document with
+		{
+			ModelDefinitions = [model with { Pieces = RuntimeArmorModelStructure.Merge(model.Pieces!, 2, 0) }]
+		});
+		var reloaded = await fixture.Service.ReadSnapshotAsync();
+		Assert.True(reloaded.HasUnappliedChanges);
+		Assert.Equal(2, reloaded.Document.ModelDefinitions.Single().Pieces!.Count);
+		Assert.Single(RuntimeArmorModelStructure.Active(reloaded.Document.ModelDefinitions.Single().Pieces!));
+		Assert.Equal(before, await File.ReadAllTextAsync(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName)));
+		var catalog = Assert.Single(await fixture.Service.ReadCustomModelCatalogAsync());
+		Assert.Single(catalog.Parts);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, catalog.Parts[0].BodyVariant);
+	}
+
+	[Fact]
+	public async Task ApplyFilter_KeepsAllWorkspacePiecesAndOnlyCompilesPresentUnits()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var data = Path.Combine(fixture.Root, "data");
+		Directory.CreateDirectory(data);
+		var bytes = CreateGameBootArchive([1, 2, 3, 4]);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(68), HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(92), 1);
+		BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(100), HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId);
+		await File.WriteAllBytesAsync(Path.Combine(data, "0000000000000001.patch_0"), bytes);
+		var model = new RuntimeArmorRegistryModel("test", null, [new(3, "0000000000000001", 2, 0), new(3, "0000000000000002", 3, 0)]);
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new(42, null, "test")], [model], [], [], gameDataDirectory: data);
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+		Assert.False(snapshot.HasUnappliedChanges);
+		Assert.Equal(2, snapshot.Document.ModelDefinitions.Single().Pieces!.Count);
+		var protocol = RuntimeArmorRegistryService.ParseProtocol(await File.ReadAllTextAsync(snapshot.ProtocolPath));
+		Assert.Equal("0000000000000001", Assert.Single(protocol.ModelDefinitions.Single().Pieces!).Unit);
+	}
+
+	[Fact]
+	public async Task CustomCatalog_UsesPersistentUnsignedIdsAndOnlyEnabledExplicitPieces()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await fixture.Service.SaveWorkspaceAsync(new(0, false, [], [
+			new("virtual", null, [
+				new(0, "fedcba9876543210", 2, 0),
+				new(1, "fedcba9876543211", 2, 0),
+				new(3, "fedcba9876543212", 3, 7),
+				new(1, "fedcba9876543213", 3, 7, Enabled: false)
+			], "测试素体"),
+			new("alias", 42)
+		]));
+		var entry = Assert.Single(await fixture.Service.ReadCustomModelCatalogAsync());
+		Assert.True(entry.IsCustomModel);
+		Assert.Equal("custom-model:virtual", entry.ArchiveId);
+		Assert.Equal("virtual", entry.CustomModelKey);
+		Assert.Equal("测试素体", entry.DisplayName);
+		Assert.Equal(3, entry.Parts.Count);
+		Assert.Equal(0xfedcba9876543210UL, entry.Parts[0].UnitAssetKey.FileId);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Stocky, entry.Parts[0].BodyVariant);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Slim, entry.Parts[1].BodyVariant);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Pelvis, entry.Parts[2].PartKind);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, entry.Parts[2].BodyVariant);
+		Assert.Equal("7", entry.Parts[2].PieceType);
+	}
+
+	[Fact]
 	public void Protocol_RoundTripsNormalizedMappings()
 	{
 		var document = new RuntimeArmorRegistryDocument(

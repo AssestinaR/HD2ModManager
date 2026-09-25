@@ -60,7 +60,7 @@ namespace HD2ModManager.ViewModels
 
         public PageViewModel? CurrentPage => LeftPage;
         public bool HasMaterialPackagingBottomBar => _materialPackagingBottomBarOperation is not null;
-        public bool HasSameKeyRebuildBottomBar => _sameKeyRebuildBottomBarOperation is not null;
+        public bool HasSameKeyRebuildBottomBar => _sameKeyRebuildBottomBarRegistrations.Count != 0;
         public PageViewModel? LeftPage
         {
             get => _leftPage;
@@ -709,6 +709,34 @@ namespace HD2ModManager.ViewModels
             ClearSameKeyRebuildBottomBar();
         }
 
+        public void OpenCustomModelConversion(CustomModelConversionBottomBarViewModel operation)
+        {
+            DismissToolBottomBars();
+            foreach (var output in new[] { true, false })
+                _sameKeyRebuildBottomBarRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                    "custom-model-" + (output ? "output" : "options"),
+                    [new BottomBarRowDefinition("main", new CustomModelConversionBottomBarRow(operation, output))],
+                    output ? 1 : null)));
+        }
+
+        public async Task FlushArmorRegistryWorkspaceAsync()
+        {
+            var page = CreateArmorRegistryPage();
+            await page.InitializeAsync();
+            await page.BeginExternalWorkspaceEditAsync();
+        }
+
+        public void EndArmorRegistryWorkspaceEdit() => _armorRegistryWorkspacePage?.EndExternalWorkspaceEdit();
+
+        public Task SaveArmorRegistryWorkspaceBeforeCloseAsync()
+            => _armorRegistryWorkspacePage?.FlushWorkspaceAsync() ?? Task.CompletedTask;
+
+        public async Task ReloadArmorRegistryWorkspaceAsync()
+        {
+            if (_armorRegistryWorkspacePage is not null)
+                await _armorRegistryWorkspacePage.ReloadWorkspaceAsync();
+        }
+
         private void RegisterMaterialPackagingRow(string sourceId, MaterialPackagingBottomBarRowKind kind, int? insertAtRow = null)
         {
             if (_materialPackagingBottomBarOperation is null) return;
@@ -898,6 +926,12 @@ namespace HD2ModManager.ViewModels
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try
+            {
+                if (_armorRegistryWorkspacePage is not null)
+                    await _armorRegistryWorkspacePage.FlushWorkspaceAsync();
+            }
+            catch (Exception exception) { LogService.Error($"退出前护甲组件保存失败：{exception}"); }
             try
             {
                 // Window close is a consistency boundary too: do not leave a successful UI

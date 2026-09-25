@@ -67,7 +67,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public RelayCommand InvertTargetSelectionCommand { get; }
 	public RelayCommand SelectAllUnreplacedTargetsCommand { get; }
 	public bool CanSelectAllUnreplacedTargets => targetReplacementFactsAvailable;
-	public bool IsPlanning { get => isPlanning; private set { if (isPlanning == value) return; isPlanning = value; OnPropertyChanged(); } }
+	public bool IsPlanning { get => isPlanning; private set { if (isPlanning == value) return; isPlanning = value; OnPropertyChanged(); OnPropertyChanged(nameof(CanGenerateCandidate)); } }
 	public string PlanState { get => planState; private set { if (planState == value) return; planState = value; OnPropertyChanged(); } }
 	public CrossArmorTransferMapping? SelectedTargetMapping
 	{
@@ -223,7 +223,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		.Where(mapping => SelectedTargetArchiveFilter?.ArchiveId is null || mapping.UsedByArchiveIds.Contains(SelectedTargetArchiveFilter.ArchiveId, StringComparer.OrdinalIgnoreCase))
 		.ToArray();
 	public IReadOnlyList<CrossArmorTransferImpact> Impacts => plan?.Impacts ?? Array.Empty<CrossArmorTransferImpact>();
-	public bool CanGenerateCandidate => plan?.CanContinue == true && !candidateGenerationRunning;
+	public bool CanGenerateCandidate => plan?.CanContinue == true && !IsPlanning && !candidateGenerationRunning;
 	public bool CandidateGenerationRunning
 	{
 		get => candidateGenerationRunning;
@@ -271,7 +271,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			? targetReplacementSnapshot.Archives
 			.ToDictionary(item => item.Archive.PackageName, item => item.Overlay, StringComparer.OrdinalIgnoreCase)
 			: null;
-		targetReplacementFactsAvailable = overlays is not null && targetCandidates.All(entry => overlays.ContainsKey(entry.ArchiveId));
+		targetReplacementFactsAvailable = overlays is not null && targetCandidates.Where(entry => !entry.IsCustomModel).All(entry => overlays.ContainsKey(entry.ArchiveId));
 		TargetChoices = targetCandidates.Select(entry => new CrossArmorTransferEquipmentRow(entry, IsConfirmedUnreplaced(entry, overlays))).ToArray();
 		foreach (var target in TargetChoices) target.PropertyChanged += OnTargetChoicePropertyChanged;
 		RefreshPlanCommand = new RelayCommand(_ => QueueRefreshPlan(), _ => !IsPlanning);
@@ -296,7 +296,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			var overlays = snapshot.Archives.ToDictionary(item => item.Archive.PackageName, item => item.Overlay, StringComparer.OrdinalIgnoreCase);
 			foreach (var target in TargetChoices)
 				target.IsConfirmedUnreplaced = IsConfirmedUnreplaced(target.Entry, overlays);
-			targetReplacementFactsAvailable = TargetChoices.All(target => overlays.ContainsKey(target.Entry.ArchiveId));
+			targetReplacementFactsAvailable = TargetChoices.Where(target => !target.Entry.IsCustomModel).All(target => overlays.ContainsKey(target.Entry.ArchiveId));
 			OnPropertyChanged(nameof(CanSelectAllUnreplacedTargets));
 			SelectAllUnreplacedTargetsCommand.RaiseCanExecuteChanged();
 		}
@@ -366,6 +366,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 
 	private IEnumerable<CrossArmorTransferEquipmentRow> RelatedTargetChoices(CrossArmorTransferEquipmentRow current)
 	{
+		if (current.Entry.IsCustomModel) yield break;
 		if (AutoSelectSharedParts && IsArmor(current.Entry))
 		{
 			var units = current.Entry.Parts.Select(part => part.UnitAssetKey).ToHashSet();
@@ -570,7 +571,11 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		catch (OperationCanceledException) { }
 		catch (Exception exception)
 		{
-			if (ReferenceEquals(planCancellation, currentCancellation) && !cancellationToken.IsCancellationRequested) PlanState = $"计划读取失败：{exception.Message}";
+			if (ReferenceEquals(planCancellation, currentCancellation) && !cancellationToken.IsCancellationRequested)
+			{
+				plan = null;
+				PlanState = $"计划读取失败：{exception.Message}";
+			}
 		}
 		finally
 		{
@@ -683,7 +688,9 @@ public sealed class CrossArmorTransferEquipmentRow : INotifyPropertyChanged
 	private bool isSelected;
 	public event PropertyChangedEventHandler? PropertyChanged;
 	public EquipmentUnitCatalogEntry Entry { get; }
-	public string Display => $"{Entry.DisplayName}（{Entry.Category}，{Entry.Parts.Count} 个可见部件）";
+	public string Display => Entry.IsCustomModel
+		? $"{Entry.DisplayName}（自定义素体，{Entry.Parts.Count} 个启用组件）"
+		: $"{Entry.DisplayName}（{Entry.Category}，{Entry.Parts.Count} 个可见部件）";
 	public bool IsConfirmedUnreplaced { get; internal set; }
 	public bool IsSelected
 	{
