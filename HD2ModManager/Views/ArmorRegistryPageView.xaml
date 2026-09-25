@@ -5,28 +5,120 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <DataTemplate x:Key="ArmorPieceEditorTemplate">
-            <Grid Margin="4,3">
+            <Grid Margin="12,8" MinHeight="42">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <TextBlock Text="{Binding SlotLabel}" Foreground="{StaticResource TextSecondary}" Margin="0,0,6,0"/>
-                    <TextBlock Text="{Binding BodyLabel}" Foreground="{StaticResource TextSecondary}" Margin="0,0,6,0"/>
-                    <TextBlock Text="{Binding Unit}" FontFamily="Consolas" Foreground="{StaticResource TextSecondary}"
-                               TextTrimming="CharacterEllipsis"/>
-                </StackPanel>
+                <TextBlock x:Name="BodyName" Text="{Binding BodyLabel}" VerticalAlignment="Center"
+                           Foreground="{StaticResource TextPrimary}" FontWeight="SemiBold"/>
                 <CheckBox Grid.Column="1"
                           IsChecked="{Binding Enabled, Mode=TwoWay}"
-                          Content="启用"
-                          Style="{StaticResource AppCheckBox}"
-                          VerticalAlignment="Center"/>
-                <Button Grid.Column="2" Content="删除" Command="{Binding RemoveCommand}"
-                        Style="{StaticResource AppHeaderTextButton}"
+                          Style="{StaticResource AppToggleSwitch}"
+                          ToolTip="启用或停用此 Unit"
+                          AutomationProperties.Name="{Binding BodyLabel, StringFormat={}{0} 组件启用}"
+                          VerticalAlignment="Center"
+                          Margin="6,0,0,0"/>
+                <Button Grid.Column="2" Command="{Binding RemoveCommand}"
+                        Style="{StaticResource RowIconButton}"
+                        Foreground="{StaticResource StatusDanger}"
+                        ToolTip="删除 Unit" AutomationProperties.Name="删除 Unit"
                         Visibility="{Binding CanRemove, Converter={StaticResource BoolToVis}}"
-                        Padding="6,1"/>
+                        Margin="0">
+                    <Path Width="16" Height="16"
+                          Data="M3,4 L13,4 M6,4 L6,2 L10,2 L10,4 M5,6 L5.5,13 L10.5,13 L11,6"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                          StrokeThickness="1.4" StrokeLineJoin="Round"/>
+                </Button>
+                <TextBlock x:Name="UnitId" Grid.Row="1" Grid.ColumnSpan="3"
+                           Text="{Binding Unit}" FontFamily="Consolas" FontSize="11"
+                           Margin="0,4,0,0" Foreground="{StaticResource TextSecondary}"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Unit}"/>
             </Grid>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding Enabled}" Value="False">
+                    <Setter TargetName="BodyName" Property="Foreground" Value="{StaticResource TextTertiary}"/>
+                    <Setter TargetName="UnitId" Property="Opacity" Value="0.55"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+        <Style x:Key="ArmorPieceHost" TargetType="ContentControl">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="ContentTemplate" Value="{StaticResource ArmorPieceEditorTemplate}"/>
+            <Style.Triggers>
+                <Trigger Property="Content" Value="{x:Null}">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <DataTemplate x:Key="ArmorComponentRowTemplate">
+            <Border BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,0,0,1" Padding="0,6">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid Grid.ColumnSpan="2" Margin="12,2,8,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding SlotLabel}" FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimary}"/>
+                            <TextBlock Text="{Binding LayerLabel}" Margin="8,0,0,0" FontSize="11"
+                                       Foreground="{StaticResource TextTertiary}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="{Binding StructureActionLabel}"
+                                Command="{Binding StructureActionCommand}"
+                                Style="{StaticResource AppHeaderTextButton}" FontSize="11"
+                                Padding="6,3"
+                                Visibility="{Binding CanEditStructure, Converter={StaticResource BoolToVis}}"/>
+                    </Grid>
+                    <Grid x:Name="BodyPair" Grid.Row="1" Grid.ColumnSpan="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <ContentControl Content="{Binding Stocky}" Style="{StaticResource ArmorPieceHost}"/>
+                        <Border Grid.Column="1" BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="1,0,0,0">
+                            <ContentControl Content="{Binding Slim}" Style="{StaticResource ArmorPieceHost}"/>
+                        </Border>
+                        <StackPanel Margin="12,8" Visibility="{Binding HasMissingStocky, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Stocky · 未配置" Foreground="{StaticResource TextTertiary}" FontSize="12"/>
+                            <Button Content="添加 Stocky" Command="{Binding AddMissingStockyCommand}"
+                                    Style="{StaticResource AppHeaderTextButton}" HorizontalAlignment="Left"
+                                    Padding="0,4" Margin="0,4,0,0"
+                                    Visibility="{Binding CanEditStructure, Converter={StaticResource BoolToVis}}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="12,8"
+                                    Visibility="{Binding HasMissingSlim, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="Slim · 未配置" Foreground="{StaticResource TextTertiary}" FontSize="12"/>
+                            <Button Content="添加 Slim" Command="{Binding AddMissingSlimCommand}"
+                                    Style="{StaticResource AppHeaderTextButton}" HorizontalAlignment="Left"
+                                    Padding="0,4" Margin="0,4,0,0"
+                                    Visibility="{Binding CanEditStructure, Converter={StaticResource BoolToVis}}"/>
+                        </StackPanel>
+                    </Grid>
+                    <ContentControl Grid.Row="1" Grid.ColumnSpan="2" Content="{Binding Any}"
+                                    Style="{StaticResource ArmorPieceHost}"
+                                    Visibility="{Binding IsAny, Converter={StaticResource BoolToVis}}"/>
+                </Grid>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsAny}" Value="True">
+                    <Setter TargetName="BodyPair" Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
         </DataTemplate>
         <DataTemplate x:Key="AvailableArmorSearchActions">
             <Button Style="{StaticResource AppHeaderTextButton}"
@@ -113,132 +205,105 @@
                                         HeaderTitleClicked="OnBackToProvidersClick"
                                         RowActionInvoked="OnDetailRowActionInvoked"/>
                 </Grid>
-                <Grid Grid.Row="0" Background="{StaticResource SurfaceCanvas}"
+                <Grid x:Name="ComponentEditorSurface" Grid.Row="0" Background="{StaticResource SurfaceCanvas}"
                       Visibility="{Binding IsComponentEditorOpen, Converter={StaticResource BoolToVis}}">
-                    <Border Style="{StaticResource CardContainer}" Padding="12">
+                    <Border Style="{StaticResource CardContainer}" Padding="0">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
-                            <Button Grid.Row="0"
-                                    Content="{Binding ComponentEditorTitle}"
-                                    Style="{StaticResource AppHeaderTextButton}"
-                                    HorizontalAlignment="Left"
-                                    Click="OnCloseComponentEditorClick"
-                                    ToolTip="返回视觉来源列表"/>
-                            <CheckBox Grid.Row="0"
-                                      Margin="0,0,8,0"
-                                      HorizontalAlignment="Right"
-                                      VerticalAlignment="Center"
-                                      Content="跟随视觉来源"
-                                      IsChecked="{Binding ComponentEditorFollowSource, Mode=TwoWay}"
-                                      Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}"
-                                      Style="{StaticResource AppCheckBox}"/>
-                            <Grid Grid.Row="1" Margin="0,10,0,0"
-                                  IsEnabled="{Binding ComponentEditorEditable}">
+                            <Border Grid.Row="0"
+                                    BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,0,0,1"
+                                    Padding="14,12">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button Grid.Column="0"
+                                            Style="{StaticResource AppHeaderTextButton}"
+                                            HorizontalContentAlignment="Stretch"
+                                            Click="OnCloseComponentEditorClick"
+                                            ToolTip="返回" AutomationProperties.Name="返回">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="26"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Path Width="16" Height="16" VerticalAlignment="Center"
+                                                  Data="M13,8 L3,8 M3,8 L7,4 M3,8 L7,12"
+                                                  Stroke="{StaticResource TextSecondary}" StrokeThickness="1.6"
+                                                  StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock Text="{Binding ComponentEditorName}" FontSize="16" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource TextPrimary}"
+                                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding ComponentEditorName}"/>
+                                                <TextBlock Text="视觉组件" Foreground="{StaticResource TextSecondary}"
+                                                           FontSize="12" Margin="0,3,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Button>
+                                    <CheckBox Grid.Column="1"
+                                              Margin="16,0,0,0"
+                                              HorizontalAlignment="Right"
+                                              VerticalAlignment="Center"
+                                              Content="跟随视觉来源"
+                                              IsChecked="{Binding ComponentEditorFollowSource, Mode=TwoWay}"
+                                              Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}"
+                                              Style="{StaticResource AppToggleSwitch}"/>
+                                </Grid>
+                            </Border>
+                            <Grid Grid.Row="1" Margin="0,10,0,0">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
-                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8"
-                                            Visibility="{Binding IsComponentEditorCustomModel, Converter={StaticResource BoolToVis}}">
-                                    <TextBlock Text="新增" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                    <ComboBox Style="{StaticResource AppComboBox}"
-                                              ItemsSource="{Binding ComponentSlotOptions}"
-                                              SelectedValue="{Binding NewComponentSlot, Mode=TwoWay}"
-                                              DisplayMemberPath="Name"
-                                              SelectedValuePath="Slot"
-                                              MinWidth="120"
-                                              Margin="0,0,8,0"/>
-                                    <Button Content="确定"
-                                            Command="{Binding ConfirmAddComponentRowCommand}"
-                                            Style="{StaticResource AppSecondaryButton}"/>
-                                </StackPanel>
+                                <Border Grid.Row="0" Margin="14,0,14,10"
+                                        IsEnabled="{Binding ComponentEditorEditable}"
+                                        Visibility="{Binding IsComponentEditorCustomModel, Converter={StaticResource BoolToVis}}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="新增组件" VerticalAlignment="Center"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   Margin="0,0,12,0"/>
+                                        <ComboBox Grid.Column="1"
+                                                  Style="{StaticResource AppComboBox}"
+                                                  ItemsSource="{Binding ComponentSlotOptions}"
+                                                  SelectedValue="{Binding NewComponentSlot, Mode=TwoWay}"
+                                                  DisplayMemberPath="Name"
+                                                  SelectedValuePath="Slot"
+                                                  MinWidth="140"/>
+                                        <Button Grid.Column="2"
+                                                Content="添加"
+                                                Command="{Binding ConfirmAddComponentRowCommand}"
+                                                Style="{StaticResource AppSecondaryButton}"
+                                                Padding="12,5"
+                                                Margin="10,0,0,0"/>
+                                    </Grid>
+                                </Border>
                                 <ScrollViewer Grid.Row="1"
+                                              HorizontalScrollBarVisibility="Disabled"
                                               VerticalScrollBarVisibility="Auto">
-                                <ItemsControl ItemsSource="{Binding ComponentEditorRows}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border BorderBrush="{StaticResource StrokeSubtle}"
-                                                    BorderThickness="0,0,0,1"
-                                                    Background="{Binding RowBackground}"
-                                                    Padding="0,2">
-                                                <Grid MinHeight="42">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="172"/>
-                                                                    <ColumnDefinition Width="1*"/>
-                                                                    <ColumnDefinition Width="1*"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <StackPanel Grid.Column="0" Orientation="Vertical" Margin="0,0,8,0"
-                                                                            Visibility="{Binding CanEditStructure, Converter={StaticResource BoolToVis}}">
-                                                                    <Button Content="{Binding StructureActionLabel}"
-                                                                            Command="{Binding StructureActionCommand}"
-                                                                            Style="{StaticResource AppHeaderTextButton}"
-                                                                            Padding="4,1"/>
-                                                                    <Button Content="新增 Stocky"
-                                                                            Command="{Binding AddMissingStockyCommand}"
-                                                                            Style="{StaticResource AppHeaderTextButton}"
-                                                                            Padding="4,1"
-                                                                            Visibility="{Binding HasMissingStocky, Converter={StaticResource BoolToVis}}"/>
-                                                                    <Button Content="新增 Slim"
-                                                                            Command="{Binding AddMissingSlimCommand}"
-                                                                            Style="{StaticResource AppHeaderTextButton}"
-                                                                            Padding="4,1"
-                                                                            Visibility="{Binding HasMissingSlim, Converter={StaticResource BoolToVis}}"/>
-                                                                </StackPanel>
-                                                                <Border Grid.Column="1" BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="1,0,1,0" Padding="4,0">
-                                                                    <ContentControl
-                                                                                Content="{Binding Stocky}"
-                                                                                ContentTemplate="{StaticResource ArmorPieceEditorTemplate}">
-                                                                    <ContentControl.Style>
-                                                                        <Style TargetType="ContentControl">
-                                                                            <Style.Triggers>
-                                                                                <DataTrigger Binding="{Binding IsAny}" Value="True">
-                                                                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                                                                </DataTrigger>
-                                                                            </Style.Triggers>
-                                                                        </Style>
-                                                                    </ContentControl.Style>
-                                                                    </ContentControl>
-                                                                </Border>
-                                                                <Border Grid.Column="2" BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,0,1,0" Padding="4,0">
-                                                                    <ContentControl
-                                                                                Content="{Binding Slim}"
-                                                                                ContentTemplate="{StaticResource ArmorPieceEditorTemplate}">
-                                                                    <ContentControl.Style>
-                                                                        <Style TargetType="ContentControl">
-                                                                            <Style.Triggers>
-                                                                                <DataTrigger Binding="{Binding IsAny}" Value="True">
-                                                                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                                                                </DataTrigger>
-                                                                            </Style.Triggers>
-                                                                        </Style>
-                                                                    </ContentControl.Style>
-                                                                    </ContentControl>
-                                                                </Border>
-                                                                <Border Grid.Column="1" Grid.ColumnSpan="2"
-                                                                        BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="1,0,1,0" Padding="4,0">
-                                                                    <ContentControl
-                                                                                Content="{Binding Any}"
-                                                                                ContentTemplate="{StaticResource ArmorPieceEditorTemplate}">
-                                                                    <ContentControl.Style>
-                                                                        <Style TargetType="ContentControl">
-                                                                            <Setter Property="Visibility" Value="Collapsed"/>
-                                                                            <Style.Triggers>
-                                                                                <DataTrigger Binding="{Binding IsAny}" Value="True">
-                                                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                                                </DataTrigger>
-                                                                            </Style.Triggers>
-                                                                        </Style>
-                                                                    </ContentControl.Style>
-                                                                    </ContentControl>
-                                                                </Border>
-                                                            </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
+                                    <ItemsControl ItemsSource="{Binding ComponentEditorRows}" Margin="6,0,6,12"
+                                                  ItemTemplate="{StaticResource ArmorComponentRowTemplate}">
+                                        <ItemsControl.Style>
+                                            <Style TargetType="ItemsControl">
+                                                <Setter Property="IsEnabled" Value="True"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ComponentEditorEditable}" Value="False">
+                                                        <Setter Property="IsEnabled" Value="False"/>
+                                                        <Setter Property="Opacity" Value="0.5"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ItemsControl.Style>
+                                    </ItemsControl>
                                 </ScrollViewer>
                             </Grid>
                         </Grid>

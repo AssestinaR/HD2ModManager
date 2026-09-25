@@ -9,9 +9,6 @@
     <ApplicationIcon>Resources\helldivers2.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove="artifacts\**\*.cs" />
-  </ItemGroup>
-  <ItemGroup>
     <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
     <!-- Build the headless companion with the desktop application, without
          making the WPF application depend on the CLI assembly at runtime. -->
@@ -43,9 +40,7 @@
        intentionally relocates the published CLI into bin and validates it
        against the matching release layout. -->
   <Target Name="CopyHd2ModCliArtifacts" AfterTargets="Build">
-    <MSBuild Projects="$(MSBuildProjectDirectory)\..\HD2ModCli\HD2ModCli.csproj"
-             Targets="GetHd2ModCliArtifactFiles"
-             Properties="Configuration=$(Configuration);Platform=$(Platform);BaseOutputPath=$(BaseOutputPath)">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\..\HD2ModCli\HD2ModCli.csproj" Targets="GetHd2ModCliArtifactFiles" Properties="Configuration=$(Configuration);Platform=$(Platform);BaseOutputPath=$(BaseOutputPath)">
       <Output TaskParameter="TargetOutputs" ItemName="Hd2ModCliArtifact" />
     </MSBuild>
     <Copy SourceFiles="@(Hd2ModCliArtifact)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
@@ -54,12 +49,8 @@
       <Hd2ModCliDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\SKILL.md" />
 	  <Hd2ModCliSkillDocumentation Include="$(MSBuildProjectDirectory)\..\HD2ModCli\skills\**\SKILL.md" />
     </ItemGroup>
-    <Copy SourceFiles="@(Hd2ModCliDocumentation)"
-          DestinationFiles="@(Hd2ModCliDocumentation->'$(TargetDir)hd2mod-docs\%(Filename)%(Extension)')"
-          SkipUnchangedFiles="true" />
-	<Copy SourceFiles="@(Hd2ModCliSkillDocumentation)"
-		  DestinationFiles="@(Hd2ModCliSkillDocumentation->'$(TargetDir)hd2mod-docs\skills\%(RecursiveDir)%(Filename)%(Extension)')"
-		  SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(Hd2ModCliDocumentation)" DestinationFiles="@(Hd2ModCliDocumentation->'$(TargetDir)hd2mod-docs\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+	<Copy SourceFiles="@(Hd2ModCliSkillDocumentation)" DestinationFiles="@(Hd2ModCliSkillDocumentation->'$(TargetDir)hd2mod-docs\skills\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

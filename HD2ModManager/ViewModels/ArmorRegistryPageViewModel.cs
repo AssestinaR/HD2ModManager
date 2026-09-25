@@ -231,6 +231,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public string ComponentEditorTitle => componentEditorOwnerId is { } id
 		? (Choices.TryGetValue(id, out var choice) ? $"←  {choice.Name} · 视觉组件" : $"←  护甲 {id} · 视觉组件")
 		: "视觉组件";
+	public string ComponentEditorName => componentEditorOwnerId is { } id
+		? Choices.TryGetValue(id, out var choice) ? choice.Name : $"护甲 {id}"
+		: "视觉组件";
 	public bool HasMappings => Mappings.Count != 0;
 	public bool HasCustomModels => CustomModels.Count != 0;
 	public IReadOnlyList<RuntimeArmorRegistryModel> ModelDefinitions => modelDefinitions;
@@ -621,6 +624,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(ComponentEditorFollowSource));
 		OnPropertyChanged(nameof(ComponentEditorEditable));
 		OnPropertyChanged(nameof(ComponentEditorTitle));
+		OnPropertyChanged(nameof(ComponentEditorName));
 		ConfirmAddComponentRowCommand.RaiseCanExecuteChanged();
 		selection.Clear();
 	}
@@ -645,6 +649,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(ComponentEditorFollowSource));
 		OnPropertyChanged(nameof(ComponentEditorEditable));
 		OnPropertyChanged(nameof(ComponentEditorTitle));
+		OnPropertyChanged(nameof(ComponentEditorName));
 	}
 
 	public void PromoteAvailableAsProviders(IReadOnlyList<string> keys)
@@ -1666,6 +1671,8 @@ public sealed class RuntimeArmorComponentRowViewModel
 	public RuntimeArmorModelPieceEditorViewModel? Slim { get; }
 	public RuntimeArmorModelPieceEditorViewModel? Any { get; }
 	public bool IsAny => Any is not null;
+	public string SlotLabel => (Any ?? Stocky ?? Slim)?.SlotLabel ?? "组件";
+	public string LayerLabel => $"层级 {PieceType}";
 	public string StructureActionLabel => IsAny ? "拆分为双身形" : "合并为 Any";
 	public RelayCommand MergeAnyCommand { get; }
 	public RelayCommand SplitCommand { get; }
