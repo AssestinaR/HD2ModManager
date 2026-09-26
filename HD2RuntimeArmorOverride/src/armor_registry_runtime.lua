@@ -187,6 +187,287 @@ if not read_file(protocol_path) then
         'schema=1\nrevision=0\nenabled=false\n# map=target_item_id,source_item_id\n')
 end
 
+local refresh_probe
+-- Diagnostic-only, fixed-size inspection of a known Lua C binding. Never
+-- accepts an address from the protocol or calls the inspected binding.
+local function inspect_refresh_binding(f,name,unit,code_cache,resolve_only)
+    local ok_util,util=pcall(require,'jit.util')
+    if not ok_util or type(util)~='table' or type(util.funcinfo)~='function' then
+        return {state='introspection_unavailable'}
+    end
+    local ok_info,info=pcall(util.funcinfo,f)
+    local address=ok_info and type(info)=='table' and rawget(info,'addr')
+    if type(address)~='number' or address~=math.floor(address) then
+        return {state='c_address_unavailable'}
+    end
+    local function capture(address)
+    if code_cache and code_cache[address] then return code_cache[address] end
+    local binding_base,binding_name,pe,size
+    for _,name in ipairs({'game.dll','helldivers2.exe','lua51.dll'}) do
+        local base=tonumber(ffi.cast('uintptr_t',kernel.GetModuleHandleA(name)))
+        local dos=base and base>=65536 and read(base,64)
+        local peoff=dos and u32(dos,0x3c)
+        local header=peoff and peoff<0x100000 and read(base+peoff,0x58)
+        if header and header:sub(1,4)=='PE\0\0' then
+            local bytes=u32(header,0x50)
+            if address>=base and address+2048<=base+bytes then
+                binding_base,binding_name,pe,size=base,name,header,bytes;break
+            end
+        end
+    end
+    if not binding_base then return {state='outside_allowed_modules'} end
+    local mbi=ffi.new('uint8_t[48]')
+    if kernel.VirtualQuery(ffi.cast('void *',address),mbi,48)==0 then
+        return {state='region_unavailable'}
+    end
+    local region_base=tonumber(ffi.cast('uintptr_t *',mbi)[0])
+    local region_size=tonumber(ffi.cast('size_t *',mbi+24)[0])
+    local state=tonumber(ffi.cast('uint32_t *',mbi+32)[0])
+    local protection=tonumber(ffi.cast('uint32_t *',mbi+36)[0])
+    local p=protection%256
+    if state~=0x1000 or math.floor(protection/256)%2~=0
+        or (p~=0x20 and p~=0x40 and p~=0x80)
+        or address+2048>region_base+region_size then
+        return {state='not_readable_executable_region'}
+    end
+    local bytes=read(address,2048)
+    if not bytes then return {state='read_failed'} end
+    local result={state='captured',module=binding_name,rva=address-binding_base,
+        module_base=hex(binding_base),timestamp=u32(pe,8),image_size=size,
+        code_hex=(bytes:gsub('.',function(c)return string.format('%02x',c:byte())end)),
+        byte_count=#bytes,called=false}
+    if code_cache then code_cache[address]=result end
+    return result
+    end
+    local row=capture(address)
+    -- Offline-reviewed E8 sites, pinned to the observed build and binding.
+    -- This copies the callee's bytes; it never executes or recursively follows it.
+    local reviewed_site=name=='Unit.is_child' and row.rva==4267568 and 0x4e
+        or name=='Unit.world' and row.rva==4224528 and 0x26
+        or name=='World.link_unit' and row.rva==0x3eb860 and 0xb8
+    if reviewed_site and row.state=='captured'
+        and row.module=='helldivers2.exe' and row.timestamp==1790149348
+        and row.image_size==60719104 then
+        local instruction=read(address+reviewed_site,5)
+        if instruction and instruction:byte(1)==0xe8 then
+            local delta=u32(instruction,1)
+            if delta>=0x80000000 then delta=delta-0x100000000 end
+            local target=capture(address+reviewed_site+5+delta)
+            row.callee_state=target.state
+            if target.state=='captured' then
+                row.callee_rva=target.rva;row.callee_module=target.module
+                row.callee_code_hex=target.code_hex;row.callee_byte_count=target.byte_count
+                row.callee_module_base=target.module_base;row.callee_site_offset=reviewed_site
+                -- One explicitly reviewed tail edge, not a recursive code walk.
+                -- Captured 2026-09-26: link wrapper resolves two Unit handles,
+                -- then tail-jumps from 3361c0+6e to the World implementation.
+                if name=='World.link_unit' and target.module=='helldivers2.exe'
+                    and target.rva==0x3361c0 then
+                    local tail_at=address-row.rva+target.rva+0x6e
+                    local tail=read(tail_at,5)
+                    row.implementation_state='reviewed_tail_mismatch'
+                    if tail and tail:byte(1)==0xe9 then
+                        local d=u32(tail,1)
+                        if d>=0x80000000 then d=d-0x100000000 end
+                        local destination=tail_at+5+d
+                        if destination==address-row.rva+0x1af240 then
+                            local implementation=capture(destination)
+                            row.implementation_state=implementation.state
+                            if implementation.state=='captured' then
+                                row.implementation_rva=implementation.rva
+                                row.implementation_module=implementation.module
+                                row.implementation_code_hex=implementation.code_hex
+                                row.implementation_byte_count=implementation.byte_count
+                            end
+                        else row.implementation_state='reviewed_destination_mismatch' end
+                    end
+                end
+            end
+        else row.callee_state='reviewed_site_mismatch' end
+    end
+    if unit~=nil then
+        local out={state='native_unit_unavailable',called=false}
+        if name~='Unit.world' or row.callee_state~='captured'
+            or row.callee_rva~=0x9d8c0 or row.callee_module~='helldivers2.exe' then
+            out.state='resolver_build_mismatch';return out
+        end
+        local base=address-row.rva
+        local resolver=base+row.callee_rva
+        local load=read(resolver+0xf,7)
+        if not load or load:sub(1,3)~='\x48\x8b\x35' then
+            out.state='resolver_instruction_mismatch';return out
+        end
+        local function ptr(at)
+            local b=read(at,8)
+            if not b then return nil end
+            local lo,hi=u32(b,0),u32(b,4)
+            if hi>=0x8000 then return nil end
+            local v=lo+hi*4294967296
+            return v>=65536 and v or nil
+        end
+        local okay,encoded=pcall(function()return tonumber(ffi.cast('uintptr_t',unit))end)
+        if not okay or type(encoded)~='number' or encoded<0 or encoded>0xffffffff
+            or encoded~=math.floor(encoded) then out.state='unsupported_unit_handle';return out end
+        local id=math.floor(encoded/4)
+        local index=id%0x400000
+        local generation=math.floor(id/0x400000)
+        local delta=u32(load,3)
+        if delta>=0x80000000 then delta=delta-0x100000000 end
+        local manager_slot=resolver+0x16+delta
+        local manager=ptr(manager_slot)
+        if not manager then out.state='manager_unreadable';return out end
+        local count_bytes=read(manager+0x98,4)
+        local count=count_bytes and u32(count_bytes,0)
+        local objects,generations=ptr(manager+0x88),ptr(manager+0xa0)
+        if not count or count>0x400000 or index>=count or not objects or not generations then
+            out.state='invalid_handle_table';return out
+        end
+        local gen=read(generations+index,1)
+        if not gen or gen:byte(1)~=generation then out.state='generation_mismatch';return out end
+        local object=ptr(objects+index*8)
+        local vtable=object and ptr(object)
+        local method=vtable and ptr(vtable+0x1e8)
+        if not object or not vtable or not method then out.state='object_unreadable';return out end
+        local method_code=resolve_only and {state='not_requested'} or capture(method)
+        local object_world=ptr(object+0x18)
+        -- No lock is taken: reject observations when the table/slot changes.
+        if ptr(manager_slot)~=manager or read(manager+0x98,4)~=count_bytes
+            or ptr(manager+0x88)~=objects or ptr(manager+0xa0)~=generations
+            or read(generations+index,1)~=gen or ptr(objects+index*8)~=object
+            or ptr(object)~=vtable or ptr(vtable+0x1e8)~=method then
+            out.state='unstable_handle_table';return out
+        end
+        out.state='resolved_candidate';out.handle_index=index;out.handle_generation=generation
+        out.encoded_handle=encoded
+        out.object=hex(object);out.vtable=hex(vtable)
+        out.object_world=object_world and hex(object_world)
+        if resolve_only then return out end
+        out.method_state=method_code.state;out.relationship_proven=false
+        if method_code.state=='captured' then
+            out.method_module=method_code.module;out.method_rva=method_code.rva
+            out.method_code_hex=method_code.code_hex;out.method_byte_count=method_code.byte_count
+            out.method_module_base=method_code.module_base
+            out.method_timestamp=method_code.timestamp;out.method_image_size=method_code.image_size
+        end
+        -- Reviewed implementation copies object+1d8, then follows node+1e0.
+        -- Read that bounded list directly, without calling its allocating method.
+        out.association_state='method_not_reviewed'
+        if method_code.state=='captured' and method_code.module=='helldivers2.exe'
+            and method_code.rva==0x2beb90 and method_code.timestamp==1790149348
+            and method_code.image_size==60719104
+            and method_code.code_hex:sub(0xa*2+1,0x11*2)=='488db9d8010000'
+            and method_code.code_hex:sub(0x65*2+1,0x71*2)=='488b3f8b134881c7e0010000' then
+            local observations={}
+            local function link(at)
+                local bytes=read(at,8)
+                if not bytes or #bytes~=8 then return nil end
+                observations[#observations+1]={at=at,bytes=bytes}
+                local low,high=u32(bytes,0),u32(bytes,4)
+                if high>=0x8000 then return nil end
+                local value=low+high*4294967296
+                if value~=0 and value<65536 then return nil end
+                return value
+            end
+            local node=link(object+0x1d8)
+            local seen,list={},{}
+            out.association_state='complete'
+            while node and node~=0 do
+                if seen[node] then out.association_state='cycle';break end
+                if #list>=64 then out.association_state='capped';break end
+                seen[node]=true
+                local child_vtable=link(node)
+                local child_world=link(node+0x18)
+                if not child_vtable or child_vtable==0 or child_world~=object_world then
+                    out.association_state='invalid_child';break
+                end
+                list[#list+1]=hex(node)
+                node=link(node+0x1e0)
+            end
+            if not node then out.association_state='unreadable' end
+            for _,observation in ipairs(observations) do
+                if read(observation.at,8)~=observation.bytes then
+                    out.association_state='unstable';break
+                end
+            end
+            if ptr(manager_slot)~=manager or ptr(manager+0x88)~=objects
+                or ptr(manager+0xa0)~=generations or read(generations+index,1)~=gen
+                or ptr(objects+index*8)~=object or ptr(object)~=vtable
+                or ptr(object+0x18)~=object_world or ptr(vtable+0x1e8)~=method then
+                out.association_state='unstable'
+            end
+            if out.association_state=='complete' then
+                out.association_count=#list
+                out.association_objects=table.concat(list,';')
+                out.association_atomic=false
+            end
+        end
+        return out
+    end
+    return row
+end
+local refresh_hotkey
+if ARMOR_REFRESH_HOTKEY then
+    refresh_hotkey=ARMOR_REFRESH_HOTKEY.new({
+        pid=pid,clock=clock,frequency=clock_frequency,globals=_G,
+        world_probe=ARMOR_REFRESH_WORLD_PROBE,
+        resource_probe=ARMOR_REFRESH_RESOURCES,
+        component_probe=ARMOR_REFRESH_MULTISITE,
+        component_host={read=read,u32=u32,clock=clock,base=function(name)
+            return tonumber(ffi.cast('uintptr_t',kernel.GetModuleHandleA(name)))
+        end},
+        inspect_unit=function(f,unit,cache,resolve_only)return inspect_refresh_binding(f,'Unit.world',unit,cache,resolve_only)end,
+        revision=function()return M.applied_revision or -1 end,
+        read=function(name,limit)return read_file(registry_directory..'/'..name,limit)end,
+        write=function(name,text)return write_atomic(registry_directory..'/'..name,text)end,
+        open=function(name)return io.open(registry_directory..'/'..name,'wb')end
+    })
+end
+local function refresh_pending_write(address,manager,index,guards)
+    if index~=0 or address~=manager+0x995 or M.status~='ready'
+        then return false end
+    -- Writable data only; do not change page protection or write code.
+    local mbi=ffi.new('uint8_t[48]')
+    if kernel.VirtualQuery(ffi.cast('void *',address),mbi,48)==0 then return false end
+    local state=tonumber(ffi.cast('uint32_t *',mbi+32)[0])
+    local protection=tonumber(ffi.cast('uint32_t *',mbi+36)[0])
+    if state~=0x1000 or (protection~=4 and protection~=8) then return false end
+    for _,g in ipairs(guards) do
+        if read(g[1],#g[2])~=g[2] then return false end
+    end
+    if read(address,1)~='\0' then return false end
+    local buffer=ffi.new('uint8_t[1]',1)
+    local written=ffi.new('size_t[1]')
+    return kernel.WriteProcessMemory(process,ffi.cast('void *',address),buffer,1,written)~=0
+        and tonumber(written[0])==1
+end
+if ARMOR_REFRESH_PROBE then
+    local dbg=rawget(_G,'debug')
+    refresh_probe=ARMOR_REFRESH_PROBE.new({
+        globals=_G,pid=pid,clock=clock,
+        world_probe=ARMOR_REFRESH_WORLD_PROBE,
+        code_probe=ARMOR_REFRESH_CODE_PROBE,
+        route_probe=ARMOR_REFRESH_ROUTE_PROBE,
+        -- Explicit diagnostic mode only. Never wired to protocol application.
+        pulse_allowed=function()
+            return M.status=='ready' and M.applied_revision~=nil and next(M.active)==nil
+        end,
+        pulse_write=function(address,manager,index,guards)
+            if next(M.active)~=nil then return false end
+            return refresh_pending_write(address,manager,index,guards)
+        end,
+        code_host={read=read,u32=u32,base=function(name)
+            return tonumber(ffi.cast('uintptr_t',kernel.GetModuleHandleA(name)))
+        end},
+        inspect_binding=inspect_refresh_binding,
+        inspect_unit=function(f,unit)return inspect_refresh_binding(f,'Unit.world',unit)end,
+        getinfo=type(dbg)=='table' and rawget(dbg,'getinfo'),
+        revision=function()return M.applied_revision or -1 end,
+        read=function(name,limit)return read_file(registry_directory..'/'..name,limit)end,
+        write=function(name,text)return write_atomic(registry_directory..'/'..name,text)end,
+        open=function(name)return io.open(registry_directory..'/'..name,'wb')end
+    })
+end
+
 local function game_fingerprint()
     local dos=read(module_base,0x40)
     local pe_offset=dos and u32(dos,0x3c)
@@ -697,6 +978,7 @@ local function prepare_document(document,checkpoint)
     plan.snapshots=snapshots
     return plan
 end
+local auto_refresh
 local function publish_document(plan,document)
     -- Revalidate snapshots after yielding during preparation. No yielding after
     -- this check and during publication; this is NOT an engine-wide thread lock.
@@ -713,6 +995,12 @@ local function publish_document(plan,document)
     M.active_count=0
     for _ in pairs(M.active) do M.active_count=M.active_count+1 end
     M.applied_revision=document.revision
+    if auto_refresh then
+        local changed={}
+        for _,op in ipairs(plan.operations) do changed[op.key]=true end
+        local notified,err=pcall(auto_refresh.published,document.revision,changed)
+        if not notified then auto_refresh.fail(err) end
+    end
     return true,stats
 end
 
@@ -821,6 +1109,58 @@ local function step_apply(elapsed)
     end
 end
 
+-- Guarded automatic refresh for all body armor IDs. Explicit local kill
+-- switch remains separate from mapping definitions and runtime protocol.
+if ARMOR_REFRESH_ROUTE_PROBE then
+    local config_path=registry_directory..'/refresh-auto.config'
+    local config_cache,config_at=nil,0
+    local function test_config()
+        if clock()<config_at then return config_cache end
+        config_at=clock()+0.5;config_cache=nil
+        local c=parse_key_values(read_file(config_path,1024))
+        if c.schema=='2' and c.enabled=='true' and c.scope=='local_equipped_body'
+            and c.confirm=='single_player_ship_armory_closed' then config_cache={} end
+        return config_cache
+    end
+    local file,log_bytes=nil,0
+    local refresh_log_path=registry_directory..'/refresh-auto-'..pid..'.log'
+    local function report(row)
+        if not file then
+            file=io.open(refresh_log_path,'ab')
+            if file then log_bytes=file:seek('end') or 0 end
+        end
+        local fields={'utc='..os.date('!%Y-%m-%dT%H:%M:%SZ'),'pid='..pid}
+        for k,v in pairs(row) do
+            if type(v)~='table' then fields[#fields+1]=k..'='..tostring(v):gsub('[\r\n]',' ') end
+        end
+        local line=table.concat(fields,' ')..'\n'
+        if file and log_bytes+#line>2*1024*1024 then
+            file:close();file=nil
+            os.remove(refresh_log_path..'.previous')
+            os.rename(refresh_log_path,refresh_log_path..'.previous')
+            file=io.open(refresh_log_path,'wb');log_bytes=0
+        end
+        if file then file:write(line);file:flush();log_bytes=log_bytes+#line end
+        if row.kind~='pulse_observation' then log('refresh: '..line:gsub('\n$','')) end
+        M.refresh_test_state=row.kind
+        if row.kind~='pulse_observation' then
+            write_atomic(registry_directory..'/refresh-auto.status','schema=1\npid='..pid
+                ..'\nstate='..tostring(row.kind)..'\nrevision='..tostring(M.applied_revision or -1)
+                ..'\nreason='..tostring(row.reason or row.skipped or ''):gsub('[\r\n]',' ')
+                ..'\nattempt='..tostring(row.attempt or '')..'\n')
+        end
+    end
+    auto_refresh=ARMOR_REFRESH_ROUTE_PROBE.auto({clock=clock,read=read,u32=u32,
+        base=function(name)return tonumber(ffi.cast('uintptr_t',kernel.GetModuleHandleA(name)))end,
+        config=test_config,revision=function()return M.applied_revision or -1 end,
+        ready=function()
+            return M.status=='ready' and not desired and not apply_worker
+                and read_file(protocol_path,65536)==last_protocol_text
+        end,
+        pulse_write=refresh_pending_write,emit=report,
+        flush=function()if file then file:flush()end end})
+end
+
 local previous=rawget(_G,'update')
 if type(previous)~='function' then
     M.status='update_unavailable';log('update_unavailable');return M
@@ -870,6 +1210,18 @@ local wrapper=function(dt,...)
     if not okay then
         apply_worker=nil;desired=nil
         pcall(set_status,'runtime_error',tostring(reason),M.applied_revision)
+    end
+    if auto_refresh then
+        local refresh_ok,err=pcall(auto_refresh.tick)
+        if not refresh_ok then pcall(auto_refresh.fail,err) end
+    end
+    if refresh_probe then
+        local probe_ok=pcall(refresh_probe.tick)
+        if not probe_ok then refresh_probe.fail() end
+    end
+    if refresh_hotkey then
+        local okay=pcall(refresh_hotkey.tick)
+        if not okay then refresh_hotkey.fail() end
     end
     -- Never swallow the game's own errors or suppress its normal update.
     return previous(dt,...)

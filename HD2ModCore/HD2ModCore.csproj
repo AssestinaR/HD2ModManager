@@ -6,6 +6,14 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_hotkey.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_hotkey.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_resources.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_resources.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_component.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_component.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_multisite.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_multisite.lua" />
     <Compile Remove="artifacts\**\*.cs" />
   </ItemGroup>
 
@@ -21,6 +29,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_code_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_code_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_route_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_route_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_world_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_world_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_probe.lua"
+                      Link="RuntimeArmorRegistry\armor_refresh_probe.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_transaction.lua"
                       Link="RuntimeArmorRegistry\armor_registry_transaction.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_composition.lua"

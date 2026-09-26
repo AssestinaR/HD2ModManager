@@ -93,6 +93,18 @@ local function fixture()
     env.ARMOR_METADATA_PROBE_CORE=assert(loadfile(root..'armor_metadata_probe_core.lua'))()
     env.ARMOR_REGISTRY_TRANSACTION=assert(loadfile(root..'armor_registry_transaction.lua'))()
     env.ARMOR_REGISTRY_COMPOSITION=C
+    env.ARMOR_REFRESH_PROBE=assert(loadfile(root..'armor_refresh_probe.lua'))()
+    env.ARMOR_REFRESH_WORLD_PROBE=assert(loadfile(root..'armor_refresh_world_probe.lua'))()
+    env.refresh_publications={}
+    env.ARMOR_REFRESH_ROUTE_PROBE={auto=function(host)
+        env.refresh_host=host
+        return {
+            published=function(revision,changed)
+                env.refresh_publications[#env.refresh_publications+1]={revision=revision,changed=changed}
+            end,
+            tick=function()end,
+            fail=function(reason)error(reason)end}
+    end}
     local chunk=assert(loadfile(root..'armor_registry_runtime.lua'));setfenv(chunk,env)
     local runtime=chunk()
     local function protocol(text)
@@ -111,16 +123,21 @@ local env,m,write,settle,index,roots=fixture()
 write('schema=2\nrevision=1\nenabled=true\nmap=1,3\nmap=2,3\n')
 settle(1)
 assert(m.registry.count==100 and m.last_apply.built==2 and m.last_apply.writes==2)
+assert(env.refresh_publications[1].revision==1 and env.refresh_publications[1].changed['1']
+    and env.refresh_publications[1].changed['2'])
+assert(env.refresh_host.config()==nil,'refresh test must default off')
 assert(m.locator_pacing=='frame_budget')
 assert(m.first_applied_after_ms>=m.located_after_ms)
 local old=m.active['1'].base
 write('schema=2\nrevision=2\nenabled=true\nmap=2,3\nmap=1,3\n# comment\n')
 settle(2)
 assert(m.active['1'].base==old and m.last_apply.built==0 and m.last_apply.writes==0)
+assert(next(env.refresh_publications[2].changed)==nil,'no-op emitted target change')
 write('schema=2\nrevision=3\nenabled=true\nmap=1,3\nmap=2,3\n'..
     'target_mode=1,manual\npiece_override=1,0,9841b16544c8fbae,2,0,false\n')
 settle(3)
 assert(m.last_apply.built==1 and m.last_apply.reused==1 and m.last_apply.writes==1)
+assert(env.refresh_publications[3].changed['1'] and not env.refresh_publications[3].changed['2'])
 assert(m.active['1'].pieces==1)
 write('schema=2\nrevision=4\nenabled=true\nmap=1,3\nmap=2,3\n')
 settle(4)
@@ -138,6 +155,7 @@ write('schema=2\nrevision=6\nenabled=true\nmodel=custom,\n'..
     'model_piece=custom,0,9841b16544c8fbae,2,0,0,false\nmap_model=1,custom\n')
 for _=1,30 do env.update(0.1) end
 assert(m.status=='apply_error' and m.applied_revision==5)
+assert(#env.refresh_publications==5,'failed apply queued a refresh')
 local logs=#env.logs
 for _=1,30 do env.update(0.1) end
 assert(#env.logs==logs,'permanent failure should not spam/retry')
@@ -149,6 +167,8 @@ assert(#env.logs==logs and m.applied_revision==5)
 write('schema=2\nrevision=7\nenabled=false\n')
 settle(7)
 assert(m.active_count==0 and tonumber(ffi.cast('uint64_t *',index)[0])==roots[1])
+assert(env.refresh_publications[6].revision==7 and env.refresh_publications[6].changed['1'],
+    'removal failed to notify refresh queue')
 collectgarbage('collect')
 assert(m.transaction.retained_count>=4)
 -- An unreadable native source must become an error, not an access violation.

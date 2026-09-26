@@ -40,6 +40,8 @@
        intentionally relocates the published CLI into bin and validates it
        against the matching release layout. -->
   <Target Name="CopyHd2ModCliArtifacts" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\HD2ModCli\Armor-Diagnostics.cmd" DestinationFolder="$(TargetDir)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\HD2ModCli\ARMOR-DIAGNOSTICS.md" DestinationFolder="$(TargetDir)hd2mod-docs" />
     <MSBuild Projects="$(MSBuildProjectDirectory)\..\HD2ModCli\HD2ModCli.csproj" Targets="GetHd2ModCliArtifactFiles" Properties="Configuration=$(Configuration);Platform=$(Platform);BaseOutputPath=$(BaseOutputPath)">
       <Output TaskParameter="TargetOutputs" ItemName="Hd2ModCliArtifact" />
     </MSBuild>

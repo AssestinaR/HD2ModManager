@@ -14,10 +14,26 @@ internal static class RuntimeArmorRegistryLuaSource
 		var probe = Read(assembly, "armor_metadata_probe.lua");
 		var transaction = Read(assembly, "armor_registry_transaction.lua");
 		var composition = Read(assembly, "armor_registry_composition.lua");
+		var refreshProbe = Read(assembly, "armor_refresh_probe.lua");
+		var worldProbe = Read(assembly, "armor_refresh_world_probe.lua");
+		var codeProbe = Read(assembly, "armor_refresh_code_probe.lua");
+		var routeProbe = Read(assembly, "armor_refresh_route_probe.lua");
+		var hotkeyProbe = Read(assembly, "armor_refresh_hotkey.lua");
+		var resourceProbe = Read(assembly, "armor_refresh_resources.lua");
+		var componentProbe = Read(assembly, "armor_refresh_component.lua");
+		var multisiteProbe = Read(assembly, "armor_refresh_multisite.lua");
 		return $"local ARMOR_REGISTRY_PROTOCOL=(function()\n{protocol}\nend)()\n"
 			+ $"local ARMOR_METADATA_PROBE_CORE=(function()\n{probeCore}\nend)()\n"
 			+ $"local ARMOR_REGISTRY_TRANSACTION=(function()\n{transaction}\nend)()\n"
 			+ $"local ARMOR_REGISTRY_COMPOSITION=(function()\n{composition}\nend)()\n"
+			+ $"local ARMOR_REFRESH_PROBE=(function()\n{refreshProbe}\nend)()\n"
+			+ $"local ARMOR_REFRESH_WORLD_PROBE=(function()\n{worldProbe}\nend)()\n"
+			+ $"local ARMOR_REFRESH_CODE_PROBE=(function()\n{codeProbe}\nend)()\n"
+			+ $"local ARMOR_REFRESH_ROUTE_PROBE=(function()\n{routeProbe}\nend)()\n"
+			+ $"local ARMOR_REFRESH_HOTKEY=(function()\n{hotkeyProbe}\nend)()\n"
+			+ $"local ARMOR_REFRESH_RESOURCES=(function()\n{resourceProbe}\nend)()\n"
+			+ $"local ARMOR_REFRESH_COMPONENT=(function()\n{componentProbe}\nend)()\n"
+			+ $"local ARMOR_REFRESH_MULTISITE=(function()\n{multisiteProbe}\nend)()\n"
 			+ $"local __hd2_runtime=(function()\n{runtime}\nend)()\n{probe}";
 	}
 

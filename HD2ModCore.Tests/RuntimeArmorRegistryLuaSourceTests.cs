@@ -20,6 +20,20 @@ public sealed class RuntimeArmorRegistryLuaSourceTests
 		Assert.Contains("local function publish_document", source);
 		Assert.Contains("incremental applied: built=", source);
 		Assert.Contains("metadata-probe.request", source);
+		Assert.Contains("local ARMOR_REFRESH_PROBE=", source);
+		Assert.Contains("local ARMOR_REFRESH_WORLD_PROBE=", source);
+		Assert.Contains("refresh-probe.request", source);
+		Assert.Contains("probe_version=10", source);
+		Assert.Contains("local ARMOR_REFRESH_CODE_PROBE=", source);
+		Assert.Contains("local ARMOR_REFRESH_ROUTE_PROBE=", source);
+		Assert.Contains("local ARMOR_REFRESH_HOTKEY=", source);
+		Assert.Contains("refresh-hotkey.request", source);
+		Assert.Contains("hotkey_version=4", source);
+		Assert.Contains("local ARMOR_REFRESH_MULTISITE=", source);
+		Assert.Contains("local ARMOR_REFRESH_COMPONENT=", source);
+		Assert.Contains("local ARMOR_REFRESH_RESOURCES=", source);
+		Assert.Contains("native_owner_trace", source);
+		Assert.Contains("World.link_unit", source);
 		Assert.DoesNotContain("local function apply_document(document)", source);
 	}
 }

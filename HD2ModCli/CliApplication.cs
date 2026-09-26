@@ -36,6 +36,9 @@ public static class CliApplication
 	private static async Task<int> DispatchAsync(CliInvocation invocation)
 	{
 		var command = invocation.Command.Select(value => value.Trim().ToLowerInvariant()).ToArray();
+		if (command.Length == 3 && command[0] == "diagnostics" && command[1] == "armor"
+			&& command[2] is "wizard" or "recover")
+			return await ArmorDiagnosticWizard.RunAsync(invocation.Options, command[2]).ConfigureAwait(false);
 		var addToProfileSupported = (command.Length == 3 && command[0] == "import" && command[1] == "plan")
 			|| (command.Length >= 4 && command[0] == "import" && command[1] == "batch" && command[2] == "plan");
 		if (!string.IsNullOrWhiteSpace(invocation.Options.AddToProfile) && !addToProfileSupported)
@@ -5141,6 +5144,8 @@ public static class CliApplication
 HD2 Mod Manager 命令行
 
 用法：
+	  hd2mod diagnostics armor wizard [--manager-root <管理器目录>]
+	  hd2mod diagnostics armor recover [--manager-root <管理器目录>]
 	  hd2mod capabilities --json
 	  hd2mod status --manager-root <管理器目录> --json
 	  hd2mod custom-model inspect <Mod GUID> --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --json

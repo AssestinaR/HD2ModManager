@@ -10,6 +10,24 @@ Push-Location $repo
 try {
     # Legacy probe tests emit fixtures here; the directory is git-ignored.
     New-Item -ItemType Directory -Path "$project/evidence" -Force | Out-Null
+    & $LuaJit "$project/tests/test_armor_refresh_hotkey.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_refresh_resources.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_refresh_component.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_refresh_multisite.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_refresh_world_probe.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_refresh_code_probe.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_refresh_route_probe.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_refresh_binding_inspector.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_refresh_probe.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $LuaJit "$project/tests/test_armor_registry_incremental.lua"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $LuaJit "$project/tests/test_armor_registry_runtime.lua"

@@ -10,12 +10,28 @@ def build(project: Path, output: Path) -> None:
     transaction = (project / "src/armor_registry_transaction.lua").read_text(encoding="utf-8")
     composition = (project / "src/armor_registry_composition.lua").read_text(encoding="utf-8")
     probe = (project / "src/armor_metadata_probe.lua").read_text(encoding="utf-8")
+    refresh_probe = (project / "src/armor_refresh_probe.lua").read_text(encoding="utf-8")
+    world_probe = (project / "src/armor_refresh_world_probe.lua").read_text(encoding="utf-8")
+    code_probe = (project / "src/armor_refresh_code_probe.lua").read_text(encoding="utf-8")
+    route_probe = (project / "src/armor_refresh_route_probe.lua").read_text(encoding="utf-8")
+    hotkey_probe = (project / "src/armor_refresh_hotkey.lua").read_text(encoding="utf-8")
+    resource_probe = (project / "src/armor_refresh_resources.lua").read_text(encoding="utf-8")
+    component_probe = (project / "src/armor_refresh_component.lua").read_text(encoding="utf-8")
+    multisite_probe = (project / "src/armor_refresh_multisite.lua").read_text(encoding="utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         f"local ARMOR_REGISTRY_PROTOCOL=(function()\n{protocol}\nend)()\n"
         f"local ARMOR_METADATA_PROBE_CORE=(function()\n{probe_core}\nend)()\n"
         f"local ARMOR_REGISTRY_TRANSACTION=(function()\n{transaction}\nend)()\n"
         f"local ARMOR_REGISTRY_COMPOSITION=(function()\n{composition}\nend)()\n"
+        f"local ARMOR_REFRESH_PROBE=(function()\n{refresh_probe}\nend)()\n"
+        f"local ARMOR_REFRESH_WORLD_PROBE=(function()\n{world_probe}\nend)()\n"
+        f"local ARMOR_REFRESH_CODE_PROBE=(function()\n{code_probe}\nend)()\n"
+        f"local ARMOR_REFRESH_ROUTE_PROBE=(function()\n{route_probe}\nend)()\n"
+        f"local ARMOR_REFRESH_HOTKEY=(function()\n{hotkey_probe}\nend)()\n"
+        f"local ARMOR_REFRESH_RESOURCES=(function()\n{resource_probe}\nend)()\n"
+        f"local ARMOR_REFRESH_COMPONENT=(function()\n{component_probe}\nend)()\n"
+        f"local ARMOR_REFRESH_MULTISITE=(function()\n{multisite_probe}\nend)()\n"
         f"local __hd2_runtime=(function()\n{runtime}\nend)()\n"
         f"{probe}",
         encoding="utf-8",
