@@ -87,13 +87,39 @@ public sealed class RuntimeArmorModelStructureTests
 		var id = 100UL;
 		var plan = CustomModelConversionService.BuildPlan([armor, helmet], "Outfit", "test", () => (++id).ToString("x16"));
 		Assert.Equal(2, plan.Model.Pieces!.Count);
-		Assert.Contains(plan.Model.Pieces, p => p.Slot == 1);
+		Assert.Contains(plan.Model.Pieces, p => p.Slot == 0 && p.Body == 3);
 		Assert.Contains(plan.Model.Pieces, p => p.Slot == 2);
 		Assert.Equal(2, plan.Transfer.Mappings.Count);
 		Assert.Throws<InvalidDataException>(() => CustomModelConversionService.BuildPlan(
 			[armor, armor with { ArchiveId = "b" }], "Invalid", "test", () => "1"));
 		Assert.Throws<InvalidDataException>(() => CustomModelConversionService.BuildPlan(
 			Array.Empty<EquipmentUnitCatalogEntry>(), "Invalid", "test", () => "1"));
+	}
+
+	[Fact]
+	public void MappingPairing_SeparatesArmorAndHelmetMembersAndSupportsVirtualSource()
+	{
+		RuntimeArmorProviderMember[] combined = [
+			new(10, GameDataEquipmentKitKind.Armor),
+			new(11, GameDataEquipmentKitKind.Helmet)
+		];
+		Assert.Equal(10u, RuntimeArmorMappingPairing.FindUniqueSourceForTarget(
+			combined, GameDataEquipmentKitKind.Armor));
+		Assert.Equal(11u, RuntimeArmorMappingPairing.FindUniqueSourceForTarget(
+			combined, GameDataEquipmentKitKind.Helmet));
+		Assert.Null(RuntimeArmorMappingPairing.FindUniqueSourceForTarget(
+			combined, GameDataEquipmentKitKind.Cape));
+		Assert.Null(RuntimeArmorMappingPairing.FindUniqueSourceForTarget(
+			[new(10, GameDataEquipmentKitKind.Armor)], GameDataEquipmentKitKind.Helmet));
+		Assert.Equal(20u, RuntimeArmorMappingPairing.FindUniqueSourceForTarget(
+			[new(20, GameDataEquipmentKitKind.Unknown, IsCustomModel: true)],
+			GameDataEquipmentKitKind.Helmet));
+		Assert.Null(RuntimeArmorMappingPairing.FindUniqueSourceForTarget(
+			[
+				new(20, GameDataEquipmentKitKind.Unknown, IsCustomModel: true),
+				new(21, GameDataEquipmentKitKind.Unknown, IsCustomModel: true)
+			],
+			GameDataEquipmentKitKind.Helmet));
 	}
 
 	[Fact]

@@ -93,6 +93,12 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			viewModel.CycleAvailableArmorUnitFilter();
 	}
 
+	private void OnCycleAvailableArmorKindFilterClick(object sender, RoutedEventArgs e)
+	{
+		if (DataContext is ArmorRegistryPageViewModel viewModel)
+			viewModel.CycleAvailableArmorKindFilter();
+	}
+
 	private void OnBackToProvidersClick(object? sender, EventArgs e)
 	{
 		if (DataContext is ArmorRegistryPageViewModel viewModel)

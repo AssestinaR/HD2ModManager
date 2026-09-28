@@ -16,6 +16,7 @@ public sealed class RuntimeArmorRegistryService
 	public const string ProtocolFileName = "armor-registry.protocol";
 	public const string RuntimeStatusFileName = "runtime.status";
 	public const string LocatorCacheFileName = "locator.cache";
+	public const string RuntimeLogFileName = "ArmorRegistryRuntime.log";
 	public const string DeploymentStateFileName = "runtime-armor-registry.deployment";
 	public const string WorkspaceFileName = "armor-registry.workspace.json";
 	public const string AppliedSourceFileName = "armor-registry.applied.json";
@@ -34,6 +35,29 @@ public sealed class RuntimeArmorRegistryService
 	public string WorkspaceRoot => Path.Combine(paths.ModsDirectory, ".hd2modmanager");
 	public string WorkspacePath => Path.Combine(WorkspaceRoot, WorkspaceFileName);
 	public string DeploymentStatePath => Path.Combine(paths.DataDirectory, DeploymentStateFileName);
+	public string RuntimeLogPath => Path.Combine(
+		Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+		"CowboyBingus", "Helldivers2", "Logs", RuntimeLogFileName);
+
+	public async ValueTask<IReadOnlyList<string>> ReadRecentRuntimeLogSummaryAsync(
+		CancellationToken cancellationToken = default)
+	{
+		if (!File.Exists(RuntimeLogPath)) return Array.Empty<string>();
+		const int maximumBytes = 128 * 1024;
+		await using var stream = new FileStream(RuntimeLogPath, FileMode.Open, FileAccess.Read,
+			FileShare.ReadWrite, 4096, FileOptions.SequentialScan);
+		var start = Math.Max(0, stream.Length - maximumBytes);
+		stream.Seek(start, SeekOrigin.Begin);
+		using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+		var text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+		return text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+			.Where(line => line.Contains("skipped_target:", StringComparison.Ordinal)
+				|| line.Contains("partial_apply:", StringComparison.Ordinal)
+				|| line.Contains("apply_error:", StringComparison.Ordinal)
+				|| line.Contains("protocol_error:", StringComparison.Ordinal))
+			.TakeLast(12)
+			.ToArray();
+	}
 
 	// Library projections must not inspect the running game or another library's deployed protocol.
 	public async ValueTask<IReadOnlyList<RuntimeArmorRegistryModel>> ReadWorkspaceModelsAsync(CancellationToken cancellationToken = default)
@@ -82,9 +106,9 @@ public sealed class RuntimeArmorRegistryService
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
 		command.CommandText = """
-			SELECT item_id, archive_id, display_name
+			SELECT item_id, archive_id, display_name, kit_kind, set_id, dlc_id
 			FROM game_data_authority_kits
-			WHERE kit_kind = 0
+			WHERE kit_kind IN (0, 1)
 			ORDER BY display_name, archive_id, item_id;
 			""";
 		var entries = new List<RuntimeArmorCatalogEntry>();
@@ -96,7 +120,15 @@ public sealed class RuntimeArmorRegistryService
 			entries.Add(new RuntimeArmorCatalogEntry(
 				(uint)raw,
 				reader.GetString(1),
-				reader.GetString(2)));
+				reader.GetString(2),
+				reader.GetInt64(3) switch
+				{
+					0 => GameDataEquipmentKitKind.Armor,
+					1 => GameDataEquipmentKitKind.Helmet,
+					_ => GameDataEquipmentKitKind.Unknown
+				},
+				(uint)Math.Clamp(reader.GetInt64(4), 0, uint.MaxValue),
+				(uint)Math.Clamp(reader.GetInt64(5), 0, uint.MaxValue)));
 		}
 		return entries;
 	}
@@ -179,7 +211,7 @@ public sealed class RuntimeArmorRegistryService
 	private static HD2ModAdaptation.Analysis.UnitMeshPartKind ToPartKind(uint slot)
 		=> slot switch
 		{
-			1 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Head,
+			0 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Head,
 			2 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Torso,
 			3 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Pelvis,
 			4 => HD2ModAdaptation.Analysis.UnitMeshPartKind.LeftLeg,
@@ -383,7 +415,7 @@ public sealed class RuntimeArmorRegistryService
 			workspace.Revision,
 			workspace.Enabled,
 			workspace.Mappings ?? Array.Empty<RuntimeArmorRegistryMapping>(),
-			workspace.Models ?? Array.Empty<RuntimeArmorRegistryModel>(),
+			NormalizeLegacyHelmetSlots(workspace.Models ?? Array.Empty<RuntimeArmorRegistryModel>()),
 			workspace.PieceOverrides ?? Array.Empty<RuntimeArmorRegistryPieceOverride>(),
 			workspace.TargetModes ?? Array.Empty<RuntimeArmorRegistryTargetMode>(),
 			workspace.CompositionMode);
@@ -528,7 +560,7 @@ public sealed class RuntimeArmorRegistryService
 					var unit = pieceParts[2].Trim();
 					if (unit.Length != 16 || !unit.All(Uri.IsHexDigit))
 						throw InvalidLine(lineNumber, "model unit 必须是 16 位十六进制 ID。");
-					var slot = (uint)ParseInteger(pieceParts[3], lineNumber, "model slot", 1, int.MaxValue);
+					var slot = ParseModelSlot(pieceParts[3], lineNumber, body);
 					var pieceType = (uint)ParseInteger(pieceParts[4], lineNumber, "model piece type", 0, int.MaxValue);
 					var tone = (byte)ParseInteger(pieceParts[5], lineNumber, "model tone", 0, 255);
 					var pieceEnabled = pieceParts.Length == 6 || ParseBoolean(pieceParts[6], lineNumber, "model piece enabled");
@@ -555,7 +587,7 @@ public sealed class RuntimeArmorRegistryService
 					var overrideUnit = overrideParts[2].Trim();
 					if (overrideUnit.Length != 16 || !overrideUnit.All(Uri.IsHexDigit))
 						throw InvalidLine(lineNumber, "piece_override unit 必须是 16 位十六进制 ID。");
-					var overrideSlot = (uint)ParseInteger(overrideParts[3], lineNumber, "override slot", 1, int.MaxValue);
+					var overrideSlot = ParseOverrideSlot(overrideParts[3], lineNumber, overrideBody);
 					var overridePieceType = (uint)ParseInteger(overrideParts[4], lineNumber, "override piece type", 0, int.MaxValue);
 					var overrideEnabled = ParseBoolean(overrideParts[5], lineNumber, "piece_override enabled");
 					pieceOverrides.Add(new RuntimeArmorRegistryPieceOverride(
@@ -590,7 +622,8 @@ public sealed class RuntimeArmorRegistryService
 			.OrderBy(model => model.Key, StringComparer.Ordinal)
 			.ToArray();
 		return new RuntimeArmorRegistryDocument(revision.Value, enabled.Value,
-			NormalizeMappings(mappings), parsedModels, pieceOverrides, targetModes, compositionMode);
+			NormalizeMappings(mappings), NormalizeLegacyHelmetSlots(parsedModels),
+			pieceOverrides, targetModes, compositionMode);
 	}
 
 	public static string SerializeProtocol(RuntimeArmorRegistryDocument document)
@@ -741,6 +774,32 @@ public sealed class RuntimeArmorRegistryService
 			.ThenBy(item => item.Unit, StringComparer.Ordinal)
 			.ToArray();
 
+	private static IReadOnlyList<RuntimeArmorRegistryModel> NormalizeLegacyHelmetSlots(
+		IEnumerable<RuntimeArmorRegistryModel> models)
+		=> models.Select(model => model with
+		{
+			Pieces = (model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+				.Select(piece => piece.Body == 3 && piece.Slot == 1 ? piece with { Slot = 0 } : piece)
+				.ToArray()
+		}).ToArray();
+
+	private static uint ParseModelSlot(string value, int lineNumber, uint body)
+	{
+		var slot = (uint)ParseInteger(value, lineNumber, "model slot", 0, int.MaxValue);
+		if (body == 3 && slot == 1) slot = 0;
+		if (slot == 0 && body != 3)
+			throw InvalidLine(lineNumber, "头盔 slot=0 只能用于 body=3 的 Any Piece。");
+		return slot;
+	}
+
+	private static uint ParseOverrideSlot(string value, int lineNumber, uint body)
+	{
+		var slot = (uint)ParseInteger(value, lineNumber, "override slot", 0, int.MaxValue);
+		if (slot == 0 && body != 3)
+			throw InvalidLine(lineNumber, "头盔 slot=0 只能用于 body=3 的 Any Piece。");
+		return slot;
+	}
+
 	private static IReadOnlyList<RuntimeArmorRegistryTargetMode> NormalizeTargetModes(
 		IEnumerable<RuntimeArmorRegistryTargetMode> modes)
 		=> modes.OrderBy(mode => mode.TargetItemId).ToArray();
@@ -751,8 +810,8 @@ public sealed class RuntimeArmorRegistryService
 		var keys = new HashSet<(uint Owner, uint Body, uint Slot, uint PieceType, string Unit)>();
 		foreach (var item in overrides)
 		{
-			if (item.Slot == 0)
-				throw new InvalidDataException($"组件覆盖对象 {item.OwnerItemId} 使用了无效的 slot=0。");
+			if (item.Slot == 0 && item.Body != 3)
+				throw new InvalidDataException($"组件覆盖对象 {item.OwnerItemId} 的头盔 slot=0 只能用于 body=3。");
 			if (item.Unit.Length != 16 || !item.Unit.All(Uri.IsHexDigit))
 				throw new InvalidDataException($"组件覆盖对象 {item.OwnerItemId} 包含无效 Unit ID。");
 			if (!keys.Add((item.OwnerItemId, item.Body, item.Slot, item.PieceType, item.Unit)))
@@ -786,8 +845,8 @@ public sealed class RuntimeArmorRegistryService
 			var pieceKeys = new HashSet<(uint Body, uint Slot, uint PieceType)>();
 			foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
 			{
-				if (piece.Slot == 0)
-					throw new InvalidDataException($"模型 {model.Key} 使用了无效的 slot=0。");
+				if (piece.Slot == 0 && piece.Body != 3)
+					throw new InvalidDataException($"模型 {model.Key} 的头盔 slot=0 只能用于 body=3。");
 				if (piece.Unit.Length != 16 || !piece.Unit.All(Uri.IsHexDigit))
 					throw new InvalidDataException($"模型 {model.Key} 包含无效 Unit ID。");
 				if (!pieceKeys.Add((piece.Body, piece.Slot, piece.PieceType)))

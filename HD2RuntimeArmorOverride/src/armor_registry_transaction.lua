@@ -11,7 +11,8 @@ function T.new(io,limits)
         if self.faulted then return nil,'publication fault: restart the game' end
         local next_active,new={},{}
         local stats={reused=0,built=0,removed=0,writes=0,
-            mode='full',replaced=0,skipped_source=0,structure_preserved=false}
+            mode='full',replaced=0,skipped_source=0,structure_preserved=false,
+            skipped=0,skipped_targets={}}
         local bytes,count=self.retained_bytes,self.retained_count
         for _,request in ipairs(requests) do
             local composition=request.composition
@@ -24,32 +25,42 @@ function T.new(io,limits)
             local key=request.key
             if next_active[key] then return nil,'duplicate target '..key end
             local active=self.active[key]
-            local pooled=self.pool[key] and self.pool[key][request.signature]
-            local clone
-            if active and active.signature==request.signature then
-                clone=active
-            elseif pooled then clone=pooled end
-            if clone then
-                if clone.slot~=request.slot or clone.original~=request.original then
+            if request.retain_active then
+                if not active then return nil,'cannot retain inactive target '..key end
+                if active.slot~=request.slot or active.original~=request.original then
                     return nil,'registry identity changed for target '..key
                 end
+                next_active[key]=active
                 stats.reused=stats.reused+1
+                if checkpoint then checkpoint() end
             else
-                bytes=bytes+request.bytes;count=count+1
-                if bytes>self.byte_limit or count>self.count_limit then
-                    return nil,'published buffer limit reached: restart the game'
+                local pooled=self.pool[key] and self.pool[key][request.signature]
+                local clone
+                if active and active.signature==request.signature then
+                    clone=active
+                elseif pooled then clone=pooled end
+                if clone then
+                    if clone.slot~=request.slot or clone.original~=request.original then
+                        return nil,'registry identity changed for target '..key
+                    end
+                    stats.reused=stats.reused+1
+                else
+                    bytes=bytes+request.bytes;count=count+1
+                    if bytes>self.byte_limit or count>self.count_limit then
+                        return nil,'published buffer limit reached: restart the game'
+                    end
+                    local reason
+                    clone,reason=request.build()
+                    if not clone then return nil,'target '..key..': '..tostring(reason) end
+                    if clone.bytes~=request.bytes then return nil,'clone size mismatch' end
+                    clone.signature=request.signature;clone.key=key
+                    clone.slot=request.slot;clone.original=request.original
+                    new[#new+1]=clone
+                    stats.built=stats.built+1
                 end
-                local reason
-                clone,reason=request.build()
-                if not clone then return nil,'target '..key..': '..tostring(reason) end
-                if clone.bytes~=request.bytes then return nil,'clone size mismatch' end
-                clone.signature=request.signature;clone.key=key
-                clone.slot=request.slot;clone.original=request.original
-                new[#new+1]=clone
-                stats.built=stats.built+1
+                next_active[key]=clone
+                if checkpoint then checkpoint() end
             end
-            next_active[key]=clone
-            if checkpoint then checkpoint() end
         end
         local operations={}
         for key,active in pairs(self.active) do

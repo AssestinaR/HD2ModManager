@@ -19,6 +19,19 @@ public sealed class ArmorRegistryCliTests
 	}
 
 	[Fact]
+	public void LegacyAnyHelmetSlot_IsMigratedToNativeSlotZero()
+	{
+		var document = CliArmorRegistryProtocol.ParseProtocol(
+			"schema=2\nrevision=1\nenabled=true\nmodel=custom,\n"
+			+ "model_piece=custom,3,0000000000000001,1,0,0\n"
+			+ "model_piece=custom,0,0000000000000002,1,0,0\n"
+			+ "piece_override=43,3,0000000000000003,1,0,true\nmap_model=42,custom\n");
+		Assert.Contains(document.Models![0].Pieces!, piece => piece.Body == 3 && piece.Slot == 0);
+		Assert.Contains(document.Models[0].Pieces!, piece => piece.Body == 0 && piece.Slot == 1);
+		Assert.Equal(1u, Assert.Single(document.PieceOverrides!).Slot);
+	}
+
+	[Fact]
 	public async Task ArmorRegistry_PlanValidateApply_HotUpdatesOnlyManagerOwnedProtocol()
 	{
 		await using var fixture = await ArmorRegistryFixture.CreateAsync(withProtocol: true);
@@ -221,7 +234,7 @@ public sealed class ArmorRegistryCliTests
 		    {
 		      "key": "custom/bad",
 		      "pieces": [
-		        { "body": 3, "unit": "0011223344556677", "slot": 0, "pieceType": 0, "tone": 0 }
+		        { "body": 0, "unit": "0011223344556677", "slot": 0, "pieceType": 0, "tone": 0 }
 		      ]
 		    }
 		  ],
@@ -276,7 +289,7 @@ public sealed class ArmorRegistryCliTests
 			revision=7
 			enabled=true
 			model=custom/coat,
-			model_piece=custom/coat,3,0011223344556677,1,0,0,true
+			model_piece=custom/coat,3,0011223344556677,0,0,0,true
 			model_piece=custom/coat,3,8899aabbccddeeff,2,1,0,false
 			map_model=488691438,custom/coat
 			""");
@@ -284,7 +297,7 @@ public sealed class ArmorRegistryCliTests
 		var model = Assert.Single(document.Models!);
 		Assert.Equal([true, false], model.Pieces!.Select(piece => piece.Enabled).ToArray());
 		var serialized = CliArmorRegistryProtocol.SerializeProtocol(document);
-		Assert.Contains("model_piece=custom/coat,3,0011223344556677,1,0,0,true", serialized, StringComparison.Ordinal);
+		Assert.Contains("model_piece=custom/coat,3,0011223344556677,0,0,0,true", serialized, StringComparison.Ordinal);
 		Assert.Contains("model_piece=custom/coat,3,8899aabbccddeeff,2,1,0,false", serialized, StringComparison.Ordinal);
 		var reparsed = CliArmorRegistryProtocol.ParseProtocol(serialized);
 		Assert.Equal([true, false], reparsed.Models!.Single().Pieces!.Select(piece => piece.Enabled).ToArray());

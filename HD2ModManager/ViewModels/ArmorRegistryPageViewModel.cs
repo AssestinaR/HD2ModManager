@@ -23,6 +23,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		NoEffectiveUnitOverride,
 	}
 
+	private enum AvailableArmorKindFilter
+	{
+		AutomaticCombination,
+		ArmorOnly,
+		HelmetOnly,
+	}
+
 	private readonly RuntimeArmorRegistryService service;
 	private readonly NotificationService notifications;
 	private readonly IProfileDeploymentCoordinator deploymentCoordinator;
@@ -42,7 +49,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private string availableSearchText = string.Empty;
 	private string providerDetailSearchText = string.Empty;
 	private AvailableArmorUnitFilter availableArmorUnitFilter;
+	private AvailableArmorKindFilter availableArmorKindFilter;
 	private uint? selectedProviderId;
+	private IReadOnlyList<uint> selectedProviderMemberIds = [];
 	private uint? componentEditorOwnerId;
 	private bool componentEditorIsTarget;
 	private IReadOnlyList<RuntimeArmorRegistryModelPiece> componentEditorSourcePieces = [];
@@ -143,6 +152,30 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		_ => "Unit 覆盖：全部",
 	};
 
+	public string AvailableArmorKindFilterText => availableArmorKindFilter switch
+	{
+		AvailableArmorKindFilter.ArmorOnly => "类型：仅护甲",
+		AvailableArmorKindFilter.HelmetOnly => "类型：仅头盔",
+		_ => "类型：自动组合",
+	};
+
+	public void CycleAvailableArmorKindFilter()
+	{
+		availableArmorKindFilter = availableArmorKindFilter switch
+		{
+			AvailableArmorKindFilter.AutomaticCombination => AvailableArmorKindFilter.ArmorOnly,
+			AvailableArmorKindFilter.ArmorOnly => AvailableArmorKindFilter.HelmetOnly,
+			_ => AvailableArmorKindFilter.AutomaticCombination,
+		};
+		OnPropertyChanged(nameof(AvailableArmorKindFilterText));
+		RebuildProjections();
+		ProvidersView.Refresh();
+		ProviderDetailItemsView.Refresh();
+		OnPropertyChanged(nameof(AvailableSummary));
+		OnPropertyChanged(nameof(ProvidersSummary));
+		OnPropertyChanged(nameof(ProviderDetailSummary));
+	}
+
 	public void CycleAvailableArmorUnitFilter()
 	{
 		availableArmorUnitFilter = availableArmorUnitFilter switch
@@ -230,7 +263,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public bool ComponentEditorEditable => !IsBusy && (!ComponentEditorIsTarget || !ComponentEditorFollowSource);
 	public IReadOnlyList<ArmorComponentSlotOption> ComponentSlotOptions { get; } =
 	[
-		new(1, "头盔"), new(2, "胸部"), new(6, "左臂"), new(7, "右臂"),
+		new(0, "头盔"), new(2, "胸部"), new(6, "左臂"), new(7, "右臂"),
 		new(3, "胯部"), new(4, "左腿"), new(5, "右腿")
 	];
 	private uint newComponentSlot = 2;
@@ -262,14 +295,18 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			? $"{AvailableArmors.Count} 个未管理护甲"
 		: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 个未管理护甲";
 	public string ProviderDetailTitle => selectedProviderId is { } id
-		? Choices.TryGetValue(id, out var choice) ? choice.Name : $"未知护甲 {id}"
+		? Providers.FirstOrDefault(item => item.MemberItemIds.SequenceEqual(selectedProviderMemberIds))?.Name
+			?? (selectedProviderMemberIds.Count > 1
+				? string.Join(" + ", selectedProviderMemberIds.Select(memberId =>
+					Choices.TryGetValue(memberId, out var member) ? member.Name : $"未知护甲 {memberId}"))
+				: Choices.TryGetValue(id, out var choice) ? choice.Name : $"未知护甲 {id}")
 		: "视觉映射目标";
 	public string ProviderDetailHeaderTitle => $"←  {ProviderDetailTitle}";
 	public string AvailableRowActionToolTip => IsProviderDetailOpen ? "注册到该视觉对象" : "转为视觉对象";
-	public string ProviderDetailSummary => selectedProviderId is { } id
+	public string ProviderDetailSummary => selectedProviderId is not null
 		? providerDetailSearchText.Length == 0
-			? $"{Mappings.Count(row => row.Source.ItemId == id)} 个映射目标"
-			: $"{ProviderDetailItemsView.Cast<object>().Count()} / {Mappings.Count(row => row.Source.ItemId == id)} 个映射目标"
+			? $"{Mappings.Count(row => selectedProviderMemberIds.Contains(row.Source.ItemId))} 个映射目标"
+			: $"{ProviderDetailItemsView.Cast<object>().Count()} / {Mappings.Count(row => selectedProviderMemberIds.Contains(row.Source.ItemId))} 个映射目标"
 		: "选择一个视觉来源";
 	private Dictionary<uint, RuntimeArmorChoiceViewModel> Choices { get; set; } = [];
 
@@ -380,7 +417,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					cachedArmorDisplayFacts.GetValueOrDefault(item.ArchiveId)?.ImagePath,
 					cachedArmorDisplayFacts.TryGetValue(item.ArchiveId, out var facts)
 						? facts.HasEffectiveUnitOverride
-						: null))
+					: null,
+					kitKind: item.KitKind,
+					setId: item.SetId,
+					dlcId: item.DlcId))
 				.ToDictionary(item => item.ItemId);
 		}
 		foreach (var mapping in snapshot.Document.Mappings)
@@ -432,15 +472,18 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			pendingProviderIds.Clear();
 			selectedProviderId = null;
+			selectedProviderMemberIds = [];
 			OnPropertyChanged(nameof(IsProviderDetailOpen));
 		}
 		else
 		{
 			pendingProviderIds.Clear();
-			if (selectedProviderId is { } selected
-				&& !snapshot.Document.Mappings.Any(mapping => mapping.SourceItemId == selected))
+			if (selectedProviderId is not null
+				&& !selectedProviderMemberIds.Any(memberId =>
+					snapshot.Document.Mappings.Any(mapping => mapping.SourceItemId == memberId)))
 			{
 				selectedProviderId = null;
+				selectedProviderMemberIds = [];
 				OnPropertyChanged(nameof(IsProviderDetailOpen));
 			}
 		}
@@ -604,11 +647,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public void OpenProviderDetails(RuntimeArmorChoiceViewModel? provider)
 	{
-		if (provider is null || !Providers.Any(item => item.ItemId == provider.ItemId)) return;
+		if (provider is null || !Providers.Any(item => item.SelectionKey == provider.SelectionKey)) return;
 		foreach (var item in AvailableArmors.Concat(Providers).Concat(ProviderDetailItems))
 			item.IsSelected = false;
 		selection.Clear();
 		selectedProviderId = provider.ItemId;
+		selectedProviderMemberIds = provider.MemberItemIds.ToArray();
 		OnPropertyChanged(nameof(IsProviderDetailOpen));
 		OnPropertyChanged(nameof(ProviderDetailTitle));
 		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
@@ -621,6 +665,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		if (selectedProviderId is null) return;
 		selectedProviderId = null;
+		selectedProviderMemberIds = [];
 		OnPropertyChanged(nameof(IsProviderDetailOpen));
 		OnPropertyChanged(nameof(ProviderDetailTitle));
 		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
@@ -716,11 +761,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		if (IsBusy || keys.Count == 0) return;
 		var ids = keys
-			.Select(key => uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id) ? (uint?)id : null)
+			.SelectMany(key => AvailableArmors
+				.FirstOrDefault(item => string.Equals(item.SelectionKey, key, StringComparison.OrdinalIgnoreCase))
+				?.MemberItemIds ?? [])
 			.ToArray();
-		if (ids.Any(id => id is null) || ids.Any(id => !AvailableArmors.Any(item => item.ItemId == id))) return;
+		if (ids.Length == 0 || ids.Any(id => !AvailableArmors.Any(item => item.MemberItemIds.Contains(id)))) return;
 		foreach (var id in ids)
-			pendingProviderIds.Add(id!.Value);
+			pendingProviderIds.Add(id);
 		RebuildProjections();
 		RecomputeHasChanges();
 		selection.Clear();
@@ -781,15 +828,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public bool CanAssignFromAvailable(IReadOnlyList<string> keys)
 	{
 		if (IsBusy || keys.Count == 0) return false;
-		return keys.All(key =>
-			uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id)
-			&& AvailableArmors.Any(armor => armor.ItemId == id));
+		return keys.All(key => AvailableArmors.Any(armor => armor.SelectionKey == key));
 	}
 
 	public void AssignFromAvailable(IReadOnlyList<string> keys)
 	{
 		if (!CanAssignFromAvailable(keys)) return;
-		var ids = keys.Select(key => uint.Parse(key, CultureInfo.InvariantCulture)).ToArray();
+		var ids = keys
+			.SelectMany(key => AvailableArmors.First(item => item.SelectionKey == key).MemberItemIds)
+			.Distinct()
+			.ToArray();
 		if (selectedProviderId is null)
 		{
 			if (ids.Length > 1)
@@ -806,6 +854,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			if (!Choices.ContainsKey(providerId)) return;
 			pendingProviderIds.Add(providerId);
 			selectedProviderId = providerId;
+			selectedProviderMemberIds = [providerId];
 			OnPropertyChanged(nameof(IsProviderDetailOpen));
 			OnPropertyChanged(nameof(ProviderDetailTitle));
 			OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
@@ -816,21 +865,35 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			return;
 		}
 
-		var source = selectedProviderId.Value;
-		var sourceChoice = Choices[source];
+		var sourceIds = selectedProviderMemberIds.Count > 0
+			? selectedProviderMemberIds
+			: [selectedProviderId.Value];
+		var sourceMembers = sourceIds
+			.Where(Choices.ContainsKey)
+			.Select(sourceId =>
+			{
+				var sourceChoice = Choices[sourceId];
+				return new RuntimeArmorProviderMember(
+					sourceChoice.ItemId,
+					sourceChoice.KitKind,
+					sourceChoice.IsCustomModel);
+			})
+			.ToArray();
 		foreach (var id in ids)
 		{
-			if (id == source
+			if (!Choices.TryGetValue(id, out var targetChoice)
 				|| Mappings.Any(mapping => mapping.Target.ItemId == id)
-				|| Providers.Any(provider => provider.ItemId == id))
-				continue;
+				|| Providers.Any(provider => provider.MemberItemIds.Contains(id))) continue;
+			var sourceId = RuntimeArmorMappingPairing.FindUniqueSourceForTarget(sourceMembers, targetChoice.KitKind);
+			if (sourceId is null || sourceId == id || !Choices.TryGetValue(sourceId.Value, out var sourceChoice)) continue;
 			Mappings.Add(new RuntimeArmorMappingRowViewModel(
-				Choices[id],
+				targetChoice,
 				sourceChoice,
 				sourceChoice.IsCustomModel ? sourceChoice.ModelKey : null));
 		}
-		if (ids.Any(id => Mappings.Any(mapping => mapping.Source.ItemId == source && mapping.Target.ItemId == id)))
-			pendingProviderIds.Remove(source);
+		foreach (var sourceId in sourceIds)
+			if (ids.Any(id => Mappings.Any(mapping => mapping.Source.ItemId == sourceId && mapping.Target.ItemId == id)))
+				pendingProviderIds.Remove(sourceId);
 		RebuildProjections();
 		RecomputeHasChanges();
 		selection.Clear();
@@ -839,14 +902,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public bool CanReleaseToAvailable(IReadOnlyList<string> keys)
 	{
 		if (IsBusy || keys.Count == 0) return false;
-		var ids = keys
-			.Select(key => uint.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out var id) ? (uint?)id : null)
+		var values = keys
+			.SelectMany(key => FindDisplayedItem(key)?.MemberItemIds ?? [])
+			.Distinct()
 			.ToArray();
-		if (ids.Any(id => id is null)) return false;
-		var values = ids.Select(id => id!.Value).ToArray();
-		var sourceIds = Providers.Select(provider => provider.ItemId).ToHashSet();
+		if (values.Length == 0) return false;
+		var sourceIds = Providers.SelectMany(provider => provider.MemberItemIds).ToHashSet();
 		var customSourceIds = Providers.Where(provider => provider.IsCustomModel)
-			.Select(provider => provider.ItemId).ToHashSet();
+			.SelectMany(provider => provider.MemberItemIds).ToHashSet();
 		var selectedSources = values.Where(sourceIds.Contains)
 			.Where(id => !customSourceIds.Contains(id))
 			.Distinct().ToArray();
@@ -860,10 +923,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public void ReleaseToAvailable(IReadOnlyList<string> keys)
 	{
 		if (!CanReleaseToAvailable(keys)) return;
-		var ids = keys.Select(key => uint.Parse(key, CultureInfo.InvariantCulture)).ToHashSet();
-		var sourceIds = Providers.Select(provider => provider.ItemId).ToHashSet();
+		var ids = keys
+			.SelectMany(key => FindDisplayedItem(key)?.MemberItemIds ?? [])
+			.ToHashSet();
+		var sourceIds = Providers.SelectMany(provider => provider.MemberItemIds).ToHashSet();
 		var customSourceIds = Providers.Where(provider => provider.IsCustomModel)
-			.Select(provider => provider.ItemId)
+			.SelectMany(provider => provider.MemberItemIds)
 			.ToHashSet();
 		var selectedSources = ids.Where(sourceIds.Contains)
 			.Where(id => !customSourceIds.Contains(id))
@@ -878,15 +943,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			var removed = Mappings.Where(mapping => selectedSources.Contains(mapping.Source.ItemId)).ToArray();
 			foreach (var mapping in removed) Mappings.Remove(mapping);
 			foreach (var sourceId in selectedSources) pendingProviderIds.Remove(sourceId);
-			if (selectedProviderId is { } detailSource && selectedSources.Contains(detailSource)) CloseProvider();
+			if (selectedProviderMemberIds.Any(selectedSources.Contains)) CloseProvider();
 		}
 		else
 		{
 			var removed = Mappings.Where(mapping => ids.Contains(mapping.Target.ItemId)).ToArray();
 			foreach (var mapping in removed) Mappings.Remove(mapping);
-			if (selectedProviderId is { } currentSource
-				&& !pendingProviderIds.Contains(currentSource)
-				&& !Mappings.Any(mapping => mapping.Source.ItemId == currentSource))
+			if (selectedProviderId is not null
+				&& selectedProviderMemberIds.All(currentSource =>
+					!pendingProviderIds.Contains(currentSource)
+					&& !Mappings.Any(mapping => mapping.Source.ItemId == currentSource)))
 				CloseProvider();
 		}
 		RebuildProjections();
@@ -903,34 +969,43 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var targetIds = Mappings.Select(mapping => mapping.Target.ItemId).ToHashSet();
 		var managedIds = sourceIds.Concat(targetIds).ToHashSet();
 
-		Providers.ReplaceWith(sourceIds
-			.Where(Choices.ContainsKey)
-			.Select(id => Choices[id])
+		Providers.ReplaceWith(BuildDisplayChoices(sourceIds)
 			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase),
 			ListTransitionKind.Replace);
-		AvailableArmors.ReplaceWith(Choices.Values
-			.Where(choice => !managedIds.Contains(choice.ItemId))
+		AvailableArmors.ReplaceWith(BuildDisplayChoices(Choices.Values
+				.Where(choice => !managedIds.Contains(choice.ItemId))
+				.Select(choice => choice.ItemId))
 			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase),
 			ListTransitionKind.Replace);
 
 		var detailItems = new List<RuntimeArmorChoiceViewModel>();
-		if (selectedProviderId is { } selected && Choices.TryGetValue(selected, out var provider))
+		if (selectedProviderId is not null && selectedProviderMemberIds.Count > 0)
 		{
-			foreach (var target in Mappings
-				.Where(mapping => mapping.Source.ItemId == selected)
-				.Select(mapping => mapping.Target)
+			var detailTargetIds = Mappings
+				.Where(mapping => selectedProviderMemberIds.Contains(mapping.Source.ItemId))
+				.Select(mapping => mapping.Target.ItemId)
+				.Distinct()
+				.ToArray();
+			foreach (var target in BuildDisplayChoices(detailTargetIds)
 				.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase))
 			{
-				target.SetRolePresentation("映射目标", null);
+				target.SetRolePresentation(target.IsCombined ? "组合映射目标" : target.KitKind == GameDataEquipmentKitKind.Helmet ? "仅头盔" : "仅护甲", null);
 				detailItems.Add(target);
 			}
 		}
 		ProviderDetailItems.ReplaceWith(detailItems, ListTransitionKind.Replace);
-		foreach (var item in AvailableArmors) item.SetRolePresentation(null, null);
+		foreach (var item in AvailableArmors)
+			item.SetRolePresentation(
+				item.KitKind == GameDataEquipmentKitKind.Helmet ? "头盔" : "护甲",
+				null);
 		foreach (var item in Providers)
 			item.SetRolePresentation(
-				item.IsCustomModel ? "自定义视觉来源" : "视觉来源",
-				Mappings.Count(mapping => mapping.Source.ItemId == item.ItemId));
+				item.IsCustomModel
+					? "自定义视觉来源"
+					: item.IsCombined
+						? "组合视觉来源"
+						: item.IsHelmet ? "头盔视觉来源" : "护甲视觉来源",
+				Mappings.Count(mapping => item.MemberItemIds.Contains(mapping.Source.ItemId)));
 
 		OnPropertyChanged(nameof(ProvidersSummary));
 		OnPropertyChanged(nameof(AvailableSummary));
@@ -940,12 +1015,54 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(HasMappings));
 	}
 
+	private RuntimeArmorChoiceViewModel? FindDisplayedItem(string selectionKey)
+		=> AvailableArmors.Concat(Providers).Concat(ProviderDetailItems)
+			.FirstOrDefault(item => string.Equals(item.SelectionKey, selectionKey, StringComparison.OrdinalIgnoreCase));
+
+	private IReadOnlyList<RuntimeArmorChoiceViewModel> BuildDisplayChoices(IEnumerable<uint> ids)
+	{
+		var members = ids
+			.Distinct()
+			.Where(Choices.ContainsKey)
+			.Select(id => Choices[id])
+			.ToArray();
+		if (availableArmorKindFilter != AvailableArmorKindFilter.AutomaticCombination)
+		{
+			var desired = availableArmorKindFilter == AvailableArmorKindFilter.HelmetOnly
+				? GameDataEquipmentKitKind.Helmet
+				: GameDataEquipmentKitKind.Armor;
+			return members
+				.Where(item => item.IsCustomModel || item.KitKind == desired)
+				.OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+				.ToArray();
+		}
+		var result = new List<RuntimeArmorChoiceViewModel>();
+		foreach (var group in members.GroupBy(item => item.CombinationKey, StringComparer.OrdinalIgnoreCase))
+		{
+			var armor = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Armor).ToArray();
+			var helmets = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Helmet).ToArray();
+			if (armor.Length == 1 && helmets.Length == 1)
+				result.Add(RuntimeArmorChoiceViewModel.Composite(armor[0], helmets[0]));
+			else
+				result.AddRange(group);
+		}
+		return result;
+	}
+
 	private bool FilterProvider(object item)
-		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, providersSearchText);
+		=> item is RuntimeArmorChoiceViewModel choice
+			&& MatchesKindFilter(choice)
+			&& MatchesSearch(choice, providersSearchText);
 
 	private bool FilterAvailableArmor(object item)
 	{
 		if (item is not RuntimeArmorChoiceViewModel choice || !MatchesSearch(choice, availableSearchText))
+			return false;
+		if (availableArmorKindFilter == AvailableArmorKindFilter.ArmorOnly
+			&& choice.KitKind != GameDataEquipmentKitKind.Armor)
+			return false;
+		if (availableArmorKindFilter == AvailableArmorKindFilter.HelmetOnly
+			&& choice.KitKind != GameDataEquipmentKitKind.Helmet)
 			return false;
 		return availableArmorUnitFilter switch
 		{
@@ -956,7 +1073,17 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	}
 
 	private bool FilterProviderDetailItem(object item)
-		=> item is RuntimeArmorChoiceViewModel choice && MatchesSearch(choice, providerDetailSearchText);
+		=> item is RuntimeArmorChoiceViewModel choice
+			&& MatchesKindFilter(choice)
+			&& MatchesSearch(choice, providerDetailSearchText);
+
+	private bool MatchesKindFilter(RuntimeArmorChoiceViewModel choice)
+		=> availableArmorKindFilter switch
+		{
+			AvailableArmorKindFilter.ArmorOnly => choice.IsCustomModel || choice.KitKind == GameDataEquipmentKitKind.Armor,
+			AvailableArmorKindFilter.HelmetOnly => choice.IsCustomModel || choice.KitKind == GameDataEquipmentKitKind.Helmet,
+			_ => true,
+		};
 
 	private static bool MatchesSearch(RuntimeArmorChoiceViewModel choice, string query)
 	{
@@ -1093,10 +1220,18 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			.DefaultIfEmpty(0u)
 			.Max() + 1;
 		var seed = ComponentEditorPieces.Count + 1;
-		ComponentEditorPieces.Add(CreateEditorPiece(
-			new RuntimeArmorRegistryModelPiece(0, NewGeneratedUnit(seed), NewComponentSlot, pieceType, 0, true, false)));
-		ComponentEditorPieces.Add(CreateEditorPiece(
-			new RuntimeArmorRegistryModelPiece(1, NewGeneratedUnit(seed + 1), NewComponentSlot, pieceType, 0, true, false)));
+		if (NewComponentSlot == 0)
+		{
+			ComponentEditorPieces.Add(CreateEditorPiece(
+				new RuntimeArmorRegistryModelPiece(3, NewGeneratedUnit(seed), NewComponentSlot, pieceType, 0, true, false)));
+		}
+		else
+		{
+			ComponentEditorPieces.Add(CreateEditorPiece(
+				new RuntimeArmorRegistryModelPiece(0, NewGeneratedUnit(seed), NewComponentSlot, pieceType, 0, true, false)));
+			ComponentEditorPieces.Add(CreateEditorPiece(
+				new RuntimeArmorRegistryModelPiece(1, NewGeneratedUnit(seed + 1), NewComponentSlot, pieceType, 0, true, false)));
+		}
 		RebuildComponentEditorGroups();
 		MarkComponentEditorDirty();
 	}
@@ -1137,6 +1272,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				var stocky = pieces.FirstOrDefault(piece => piece.Body == 0);
 				var slim = pieces.FirstOrDefault(piece => piece.Body == 1);
 				rows.Add(new RuntimeArmorComponentRowViewModel(
+					slotGroup.Key,
 					typeGroup.Key,
 					stocky,
 					slim,
@@ -1207,7 +1343,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	private static int SlotOrder(uint slot) => slot switch
 	{
-		1 => 0, 2 => 1, 6 => 2, 7 => 3, 3 => 4, 4 => 5, 5 => 6, _ => 100 + (int)slot
+		0 => 0, 2 => 1, 6 => 2, 7 => 3, 3 => 4, 4 => 5, 5 => 6, _ => 100 + (int)slot
 	};
 
 	private void MarkModelDefinitionsDirty()
@@ -1351,9 +1487,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			baselineMappings = GetMappingKeys();
 			HasChanges = false;
 			pendingProviderIds.Clear();
-			if (selectedProviderId is { } selected && !sourceIds.Contains(selected))
+			if (selectedProviderId is not null && !selectedProviderMemberIds.Any(sourceIds.Contains))
 			{
 				selectedProviderId = null;
+				selectedProviderMemberIds = [];
 				OnPropertyChanged(nameof(IsProviderDetailOpen));
 			}
 			RebuildProjections();
@@ -1371,28 +1508,61 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					throw new InvalidOperationException(deployment.Message ?? "活动配置部署失败。");
 			}
 			var runtimeReportedApply = RuntimeReportedRevision(snapshot, result.Document.Revision);
+			var runtimeLogSummary = await service.ReadRecentRuntimeLogSummaryAsync();
+			var skippedSummary = runtimeLogSummary
+				.Where(line => line.Contains("partial_apply:", StringComparison.Ordinal)
+					&& line.Contains(
+						"revision=" + result.Document.Revision.ToString(CultureInfo.InvariantCulture),
+						StringComparison.Ordinal))
+				.TakeLast(8)
+				.ToArray();
+			var runtimeErrorSummary = runtimeLogSummary
+				.Where(line => line.Contains("apply_error:", StringComparison.Ordinal)
+					&& line.Contains(
+						"revision=" + result.Document.Revision.ToString(CultureInfo.InvariantCulture),
+						StringComparison.Ordinal))
+				.TakeLast(4)
+				.ToArray();
 			if (runtimeReportedApply)
 			{
 				StatusTitle = "游戏已同步";
 				StatusDetail = $"运行时状态已报告 revision {result.Document.Revision}，当前为{GetRuntimeMode(snapshot)}。";
+				if (skippedSummary.Length > 0)
+				{
+					StatusTitle = "游戏已同步（部分目标跳过）";
+					StatusDetail += $" 本次有 {skippedSummary.Length} 条目标未应用，请查看日志。";
+					notifications.Show(
+						$"护甲注册已应用，但有 {skippedSummary.Length} 个目标被跳过。请查看运行时日志中的错误汇总。",
+						NotificationLevel.Warning,
+						TimeSpan.FromSeconds(10),
+						"护甲注册",
+						"armor-registry-apply");
+				}
+				else
+				{
 				notifications.Show(
 					$"护甲外观注册已在线应用：revision {result.Document.Revision}。",
 					NotificationLevel.Info,
 					TimeSpan.FromSeconds(6),
 					"护甲注册",
 					"armor-registry-apply");
+				}
 			}
 			else
 			{
 				UpdateStatus(snapshot);
 				if (snapshot.RuntimeProcessRunning)
 				{
+					var detail = runtimeErrorSummary.Length == 0
+						? "协议已保存，但游戏运行时尚未确认；请稍后刷新状态。"
+						: $"运行时报告了 {runtimeErrorSummary.Length} 条错误：{string.Join(" | ", runtimeErrorSummary)}";
 					notifications.Show(
-						"协议已保存，但游戏运行时尚未确认；请稍后刷新状态。",
-						NotificationLevel.Warning,
+						detail,
+						runtimeErrorSummary.Length == 0 ? NotificationLevel.Warning : NotificationLevel.Error,
 						TimeSpan.FromSeconds(8),
 						"护甲注册",
 						"armor-registry-apply");
+					StatusDetail = detail;
 				}
 				else if (gameRunning)
 				{
@@ -1525,6 +1695,7 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 {
 	private bool isSelected;
 	private ModListRowPresentation rowPresentation = ModListRowPresentation.Empty;
+	private readonly IReadOnlyList<uint> memberItemIds;
 
 	public RuntimeArmorChoiceViewModel(
 		uint itemId,
@@ -1534,7 +1705,11 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		bool? hasEffectiveUnitOverride = null,
 		bool isUnknown = false,
 		bool isCustomModel = false,
-		string? modelKey = null)
+		string? modelKey = null,
+		GameDataEquipmentKitKind kitKind = GameDataEquipmentKitKind.Armor,
+		IReadOnlyList<uint>? memberItemIds = null,
+		uint setId = 0,
+		uint dlcId = 0)
 	{
 		ItemId = itemId;
 		ArchiveId = archiveId;
@@ -1544,6 +1719,10 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		IsUnknown = isUnknown;
 		IsCustomModel = isCustomModel;
 		ModelKey = modelKey;
+		KitKind = kitKind;
+		SetId = setId;
+		DlcId = dlcId;
+		this.memberItemIds = memberItemIds is { Count: > 0 } ? memberItemIds : [itemId];
 	}
 
 	public uint ItemId { get; }
@@ -1554,8 +1733,20 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool IsUnknown { get; }
 	public bool IsCustomModel { get; }
 	public string? ModelKey { get; }
+	public GameDataEquipmentKitKind KitKind { get; }
+	public uint SetId { get; }
+	public uint DlcId { get; }
+	public string CombinationKey => SetId != 0
+		? $"{DlcId}:{SetId}"
+		: "archive:" + ArchiveId;
+	public bool IsHelmet => KitKind == GameDataEquipmentKitKind.Helmet;
+	public bool IsArmor => KitKind == GameDataEquipmentKitKind.Armor;
+	public IReadOnlyList<uint> MemberItemIds => memberItemIds;
+	public bool IsCombined => memberItemIds.Count > 1;
 	public string ListKey => SelectionKey;
-	public string SelectionKey => ItemId.ToString(CultureInfo.InvariantCulture);
+	public string SelectionKey => IsCombined
+		? "combo:" + string.Join("+", memberItemIds.OrderBy(id => id).Select(id => id.ToString(CultureInfo.InvariantCulture)))
+		: ItemId.ToString(CultureInfo.InvariantCulture);
 	public bool IsDecoration => false;
 	public string Display => $"{Name} · {ArchiveId}";
 	public string ItemIdText => ItemId.ToString(CultureInfo.InvariantCulture);
@@ -1564,11 +1755,22 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 
 	public void SetRolePresentation(string? role, int? count)
 	{
+		if (IsCombined && role is not null)
+			role = role.StartsWith("自定义", StringComparison.Ordinal)
+				? role
+				: "组合";
 		var summary = role switch
 		{
+			"组合" when count is { } value => value == 0 ? "组合 · 尚无映射目标" : $"组合 · {value} 个目标",
+			"组合视觉来源" when count is { } value => value == 0 ? "组合视觉来源 · 尚无映射目标" : $"组合视觉来源 · {value} 个目标",
+			"头盔视觉来源" when count is { } value => value == 0 ? "头盔视觉来源 · 尚无映射目标" : $"头盔视觉来源 · {value} 个目标",
+			"护甲视觉来源" when count is { } value => value == 0 ? "护甲视觉来源 · 尚无映射目标" : $"护甲视觉来源 · {value} 个目标",
 			"视觉来源" when count is { } value => value == 0 ? "视觉来源 · 尚无映射目标" : $"视觉来源 · {value} 个目标",
 			"自定义视觉来源" when count is { } value => value == 0 ? "自定义视觉来源 · 尚无映射目标" : $"自定义视觉来源 · {value} 个目标",
 			"映射目标" => "映射目标",
+			"组合映射目标" => "组合映射目标",
+			"仅头盔" => "仅头盔",
+			"仅护甲" => "仅护甲",
 			_ => null,
 		};
 		RowPresentation = new ModListRowPresentation(TypeLabel: role, TypeTone: ModListRowTone.Accent, Summary: summary);
@@ -1579,6 +1781,23 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 
 	public static RuntimeArmorChoiceViewModel CustomModel(uint itemId, string name, string key)
 		=> new(itemId, key, name, isCustomModel: true, modelKey: key);
+
+	public static RuntimeArmorChoiceViewModel Composite(
+		RuntimeArmorChoiceViewModel armor,
+		RuntimeArmorChoiceViewModel helmet)
+	{
+		var members = new[] { armor.ItemId, helmet.ItemId };
+		return new RuntimeArmorChoiceViewModel(
+			armor.ItemId,
+			armor.ArchiveId,
+			$"{armor.Name} + {helmet.Name}",
+			armor.ImagePath ?? helmet.ImagePath,
+			armor.HasEffectiveUnitOverride == true || helmet.HasEffectiveUnitOverride == true,
+			kitKind: GameDataEquipmentKitKind.Unknown,
+			memberItemIds: members,
+			setId: armor.SetId,
+			dlcId: armor.DlcId);
+	}
 }
 
 public sealed record RuntimeArmorMappingRowViewModel(
@@ -1706,7 +1925,7 @@ public sealed class RuntimeArmorModelPieceEditorViewModel : BaseViewModel
 	};
 	public string SlotLabel => Slot switch
 	{
-		1 => "头盔",
+		0 => "头盔",
 		2 => "胸部",
 		3 => "胯部",
 		4 => "左腿",
@@ -1762,6 +1981,7 @@ public sealed class RuntimeArmorComponentGroupViewModel
 public sealed class RuntimeArmorComponentRowViewModel
 {
 	public RuntimeArmorComponentRowViewModel(
+		uint slot,
 		uint pieceType,
 		RuntimeArmorModelPieceEditorViewModel? stocky,
 		RuntimeArmorModelPieceEditorViewModel? slim,
@@ -1776,11 +1996,12 @@ public sealed class RuntimeArmorComponentRowViewModel
 		Stocky = stocky;
 		Slim = slim;
 		Any = any;
-		MergeAnyCommand = new RelayCommand(mergeAny);
-		SplitCommand = new RelayCommand(split);
-		AddMissingStockyCommand = new RelayCommand(_ => addStocky());
-		AddMissingSlimCommand = new RelayCommand(_ => addSlim());
-		CanEditStructure = canEditStructure;
+		var canChangeStructure = canEditStructure && slot != 0;
+		MergeAnyCommand = new RelayCommand(_ => mergeAny(), _ => canChangeStructure);
+		SplitCommand = new RelayCommand(_ => split(), _ => canChangeStructure);
+		AddMissingStockyCommand = new RelayCommand(_ => addStocky(), _ => canChangeStructure);
+		AddMissingSlimCommand = new RelayCommand(_ => addSlim(), _ => canChangeStructure);
+		CanEditStructure = canChangeStructure;
 	}
 
 	public uint PieceType { get; }

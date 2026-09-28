@@ -57,7 +57,33 @@ public sealed record RuntimeArmorRegistryDocument(
 public sealed record RuntimeArmorCatalogEntry(
 	uint ItemId,
 	string ArchiveId,
-	string DisplayName);
+	string DisplayName,
+	GameDataEquipmentKitKind KitKind = GameDataEquipmentKitKind.Armor,
+	uint SetId = 0,
+	uint DlcId = 0);
+
+public readonly record struct RuntimeArmorProviderMember(
+	uint ItemId,
+	GameDataEquipmentKitKind KitKind,
+	bool IsCustomModel = false);
+
+public static class RuntimeArmorMappingPairing
+{
+	public static uint? FindUniqueSourceForTarget(
+		IReadOnlyList<RuntimeArmorProviderMember> sources,
+		GameDataEquipmentKitKind targetKind)
+	{
+		if (targetKind is not (GameDataEquipmentKitKind.Armor or GameDataEquipmentKitKind.Helmet))
+			return null;
+		var matches = sources
+			.Where(source => source.IsCustomModel || source.KitKind == targetKind)
+			.Select(source => source.ItemId)
+			.Distinct()
+			.Take(2)
+			.ToArray();
+		return matches.Length == 1 ? matches[0] : null;
+	}
+}
 
 public sealed record RuntimeArmorRegistrySnapshot(
 	string RegistryRoot,

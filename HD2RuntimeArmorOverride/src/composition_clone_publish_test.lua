@@ -60,7 +60,7 @@ local function build_clone(target_root,donor_root)
         for piece=0,count-1 do
             local slot=dword(pieces+piece*96+8)
             local weight=dword(pieces+piece*96+16)
-            if slot==1 then
+            if slot==0 then
                 if target_metadata_weight==nil then target_metadata_weight=weight end
                 if weight~=target_metadata_weight then
                     return nil,'mixed_target_metadata_weights'
@@ -110,7 +110,7 @@ local function build_clone(target_root,donor_root)
             ffi.cast('const void *',counts[i+1].source),piece_bytes)
         for piece=0,counts[i+1].count-1 do
             local piece_address=base+piece_at+piece*96
-            local weight=dword(piece_address+8)==1
+            local weight=dword(piece_address+8)==0
                 and target_metadata_weight or target_visible_weight
             put_dword(piece_address+16,weight)
         end
@@ -121,7 +121,7 @@ local function build_clone(target_root,donor_root)
     end
     for i=0,total-1 do
         local piece_address=base+64+body_count*24+i*96
-        local expected=dword(piece_address+8)==1
+        local expected=dword(piece_address+8)==0
             and target_metadata_weight or target_visible_weight
         if dword(piece_address+16)~=expected then
             return nil,'clone_weight_self_check_failed'

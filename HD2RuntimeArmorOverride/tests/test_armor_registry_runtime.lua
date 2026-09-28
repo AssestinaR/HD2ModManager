@@ -150,24 +150,26 @@ local buffer=m.active['1'].buffer
 local body=tonumber(ffi.cast('uint64_t *',buffer+48)[0])
 local piece=tonumber(ffi.cast('uint64_t *',body+8)[0])
 assert(C.unit(ffi.string(ffi.cast('void *',piece),8))=='9841b16544c8fbae')
--- Invalid custom composition fails normally, keeps active revision, no fallback.
+-- A target with invalid composition is skipped without blocking other work;
+-- an already-active clone remains published instead of being removed.
 write('schema=2\nrevision=6\nenabled=true\nmodel=custom,\n'..
     'model_piece=custom,0,9841b16544c8fbae,2,0,0,false\nmap_model=1,custom\n')
 for _=1,30 do env.update(0.1) end
-assert(m.status=='apply_error' and m.applied_revision==5)
-assert(#env.refresh_publications==5,'failed apply queued a refresh')
+assert(m.status=='ready' and m.applied_revision==6)
+assert(m.last_apply.skipped==1 and m.active_count==1)
+assert(#env.refresh_publications==6,'partial apply queued a refresh')
 local logs=#env.logs
 for _=1,30 do env.update(0.1) end
-assert(#env.logs==logs,'permanent failure should not spam/retry')
+assert(#env.logs==logs,'completed partial apply should not spam/retry')
 write('schema=bad\n')
 for _=1,30 do env.update(0.1) end
 logs=#env.logs
 for _=1,30 do env.update(0.1) end
-assert(#env.logs==logs and m.applied_revision==5)
+assert(#env.logs==logs and m.applied_revision==6)
 write('schema=2\nrevision=7\nenabled=false\n')
 settle(7)
 assert(m.active_count==0 and tonumber(ffi.cast('uint64_t *',index)[0])==roots[1])
-assert(env.refresh_publications[6].revision==7 and env.refresh_publications[6].changed['1'],
+assert(env.refresh_publications[7].revision==7 and env.refresh_publications[7].changed['1'],
     'removal failed to notify refresh queue')
 collectgarbage('collect')
 assert(m.transaction.retained_count>=4)

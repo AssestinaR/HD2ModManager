@@ -51,12 +51,16 @@ public sealed class CustomModelConversionService(StoragePaths paths, IModInforma
 		var targets = new List<EquipmentUnitPart>();
 		var layers = new Dictionary<(uint Slot, uint Body), uint>();
 		var usedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		foreach (var original in sources.SelectMany(source => source.Parts).Where(p => !p.IsCullingMesh)
-			.GroupBy(p => p.UnitAssetKey).Select(group => group.OrderByDescending(p => p.Confidence).First())
-			.OrderByDescending(p => p.StoredBytes).ThenBy(p => p.UnitAssetKey.FileId))
+		foreach (var (source, original) in sources
+			.SelectMany(source => source.Parts.Select(part => (source, part)))
+			.Where(item => !item.part.IsCullingMesh)
+			.GroupBy(item => item.part.UnitAssetKey)
+			.Select(group => group.OrderByDescending(item => item.part.Confidence).First())
+			.OrderByDescending(item => item.part.StoredBytes).ThenBy(item => item.part.UnitAssetKey.FileId))
 		{
-			var slot = SlotFor(original);
-			var body = original.BodyVariant switch
+			var isHelmetSource = source.Category.Equals("Helmet", StringComparison.OrdinalIgnoreCase);
+			var slot = isHelmetSource ? 0u : SlotFor(original);
+			var body = isHelmetSource ? 3u : original.BodyVariant switch
 			{
 				UnitMeshBodyVariant.Stocky => 0u, UnitMeshBodyVariant.Slim => 1u,
 				UnitMeshBodyVariant.Any => 3u,
@@ -95,7 +99,7 @@ public sealed class CustomModelConversionService(StoragePaths paths, IModInforma
 
 	private static uint SlotFor(EquipmentUnitPart part) => part.PartKind switch
 	{
-		UnitMeshPartKind.Head => 1,
+		UnitMeshPartKind.Head => 0,
 		UnitMeshPartKind.Torso => 2,
 		UnitMeshPartKind.Pelvis => 3,
 		UnitMeshPartKind.LeftLeg => 4,

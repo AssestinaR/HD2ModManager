@@ -27,6 +27,9 @@ end
 local function replace(data,offset,value)
     return data:sub(1,offset)..value..data:sub(offset+#value+1)
 end
+local function is_body_slot(slot)
+    return slot>=2 and slot<=9
+end
 function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode)
     composition_mode=composition_mode or 'full'
     assert(composition_mode=='full' or composition_mode=='existing_only',
@@ -106,9 +109,56 @@ function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode
     local weights=metadata.weight_index(facts)
     local rows={}
     if model then
+        -- A virtual model may contain both armor and helmet pieces.  A native
+        -- target kit is usually one or the other, so do not inject a helmet
+        -- Unit into a body kit (or body Units into a helmet kit).  A target
+        -- containing both slot families is treated as a combined kit.
+        local target_has_helmet,target_has_cape,target_has_body=false,false,false
+        for _,target_row in ipairs(target.rows) do
+            for _,piece in ipairs(target_row.pieces) do
+                local slot=C.u32(piece,8)
+                if slot==0 then
+                    target_has_helmet=true
+                elseif slot==1 then
+                    target_has_cape=true
+                elseif is_body_slot(slot) then
+                    target_has_body=true
+                end
+            end
+        end
         local grouped={}
-        for index,piece in ipairs(model.pieces) do
-            if piece.enabled~=false and enabled(piece.body,piece.unit,piece.slot,piece.piece_type) then
+        local model_pieces={}
+        for _,piece in ipairs(model.pieces) do
+            -- Helmet Any is expanded into the target's native body rows. This
+            -- avoids producing a synthetic body=3 helmet row whose weight
+            -- cannot be resolved when stocky/slim metadata differ.
+            if piece.body==3 and piece.slot==0 then
+                for _,target_row in ipairs(target.rows) do
+                    local has_helmet=false
+                    for _,target_piece in ipairs(target_row.pieces) do
+                        if C.u32(target_piece,8)==0 then
+                            has_helmet=true
+                            break
+                        end
+                    end
+                    if has_helmet then
+                        model_pieces[#model_pieces+1]={
+                            body=target_row.body,unit=piece.unit,slot=piece.slot,
+                            piece_type=piece.piece_type,tone=piece.tone,
+                            enabled=piece.enabled
+                        }
+                    end
+                end
+            else
+                model_pieces[#model_pieces+1]=piece
+            end
+        end
+        for index,piece in ipairs(model_pieces) do
+            local compatible=(piece.slot==0 and target_has_helmet)
+                or (piece.slot==1 and target_has_cape)
+                or (is_body_slot(piece.slot) and target_has_body)
+            if compatible and piece.enabled~=false
+                and enabled(piece.body,piece.unit,piece.slot,piece.piece_type) then
                 local row=grouped[piece.body]
                 if not row then
                     row={body=piece.body,header=C.pack(piece.body,4)..C.pack(0,4),pieces={}}
@@ -121,7 +171,7 @@ function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode
                     assert(donor,'missing diagnostic template')
                     assert(donor.body==piece.body and C.u32(donor.data,8)==piece.slot,
                         'diagnostic donor body/slot mismatch')
-                    assert(piece.slot~=0 and piece.slot~=1,'diagnostic B excludes helmets')
+                    assert(piece.slot~=0,'diagnostic B excludes helmets')
                     -- Preserve native type, tone, auxiliary hashes and padding.
                     -- Only Unit here and target weight below are changed.
                     data=replace(donor.data,0,unit_bytes(piece.unit))

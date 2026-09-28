@@ -86,7 +86,7 @@ function M.weight_index(pieces)
         meta.exact[exact_key]=meta.exact[exact_key] or {}
         add_weight(meta.exact[exact_key],piece.weight)
         local body_set,global_set
-        if piece.slot==1 then
+        if piece.slot==0 then
             body_set=meta.body_metadata
             global_set=meta.global_metadata
         else
@@ -104,7 +104,7 @@ function M.resolve_weight(meta,body,slot,piece_type)
     local exact=dominant_weight(meta.exact[body..':'..slot..':'..piece_type])
     if exact~=nil then return exact,'exact' end
     local by_body,global
-    if slot==1 then
+    if slot==0 then
         by_body=meta.body_metadata[body]
         global=meta.global_metadata
     else

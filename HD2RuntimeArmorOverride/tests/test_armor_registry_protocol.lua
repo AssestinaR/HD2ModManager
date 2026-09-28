@@ -40,6 +40,38 @@ assert(custom.models[1].source==nil and #custom.models[1].pieces==2
     and custom.models[1].pieces[2].enabled==false)
 local custom_roundtrip=protocol.parse(protocol.serialize(custom))
 assert(custom_roundtrip.models[1].pieces[2].enabled==false)
+local helmet=protocol.parse([[
+schema=2
+revision=43
+enabled=true
+model=custom/helmet,
+model_piece=custom/helmet,3,0011223344556677,0,0,0
+map_model=513033465,custom/helmet
+]])
+assert(helmet.models[1].pieces[1].body==3 and helmet.models[1].pieces[1].slot==0)
+local legacy_helmet=protocol.parse([[
+schema=2
+revision=44
+enabled=true
+model=custom/legacy,
+model_piece=custom/legacy,3,0011223344556677,1,0,0
+model_piece=custom/legacy,0,8899aabbccddeeff,1,0,0
+piece_override=43,3,0011223344556677,1,0,true
+map_model=513033465,custom/legacy
+]])
+assert(legacy_helmet.models[1].pieces[1].slot==0
+    and legacy_helmet.models[1].pieces[2].slot==1,
+    'legacy Any helmet migrates without changing concrete slot one')
+assert(legacy_helmet.piece_overrides[1].slot==1,
+    'native Piece overrides preserve their original slot')
+assert(not pcall(protocol.parse,[[
+schema=2
+revision=43
+enabled=true
+model=custom/bad,
+model_piece=custom/bad,0,0011223344556677,0,0,0
+map_model=513033465,custom/bad
+]]),'slot=0 accepted for concrete body')
 for _,flag in ipairs({'true','false'}) do
     local legacy='schema=2\nrevision=27\nenabled=true\nmodel=custom,\n'
         ..'model_piece=custom,0,044e0dee2a7b0002,2,0,0,true,'..flag..'\nmap_model=42,custom\n'
@@ -56,9 +88,9 @@ schema=2
 revision=1
 enabled=true
 model=custom/bad,
-model_piece=custom/bad,3,0011223344556677,0,0,0
+model_piece=custom/bad,0,0011223344556677,0,0,0
 map_model=488691438,custom/bad
-]]),'slot=0 protocol accepted')
+]]),'invalid slot=0 body accepted')
 assert(not pcall(protocol.parse,[[
 schema=2
 revision=1

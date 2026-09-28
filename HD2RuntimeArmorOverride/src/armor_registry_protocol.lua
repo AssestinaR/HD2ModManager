@@ -88,9 +88,12 @@ function M.parse(text)
                     if candidate.key==name then model=candidate end
                 end
                 assert(model,'model_piece references unknown model '..name)
-                local parsed_body=integer(body,'model body',0,0xffffffff)
-                local parsed_slot=integer(slot,'model slot',1,0xffffffff)
-                local parsed_piece_type=integer(piece_type,'model piece type',0,0xffffffff)
+				local parsed_body=integer(body,'model body',0,0xffffffff)
+				local parsed_slot=integer(slot,'model slot',0,0xffffffff)
+				if parsed_body==3 and parsed_slot==1 then parsed_slot=0 end
+				local parsed_piece_type=integer(piece_type,'model piece type',0,0xffffffff)
+                assert(parsed_slot~=0 or parsed_body==3,
+                    'model slot=0 requires Any body (standalone helmet)')
                 local piece_key=table.concat({parsed_body,parsed_slot,parsed_piece_type},':')
                 assert(not model.piece_keys[piece_key],
                     'duplicate model Piece body/slot/piece_type: '..piece_key)
@@ -148,11 +151,15 @@ function M.parse(text)
                     'piece_override must be item,body,unit,slot,piece_type,enabled')
                 assert(enabled=='true' or enabled=='false',
                     'piece_override enabled must be true or false')
+                local parsed_body=integer(body,'override body',0,0xffffffff)
+                local parsed_slot=integer(slot,'override slot',0,0xffffffff)
+                assert(parsed_slot~=0 or parsed_body==3,
+                    'override slot=0 requires Any body (standalone helmet)')
                 result.piece_overrides[#result.piece_overrides+1]={
                     owner=item_id(owner,'piece override owner'),
-                    body=integer(body,'override body',0,0xffffffff),
+                    body=parsed_body,
                     unit=hex_id(unit,'override unit'),
-                    slot=integer(slot,'override slot',1,0xffffffff),
+                    slot=parsed_slot,
                     piece_type=integer(piece_type,'override piece type',0,0xffffffff),
                     enabled=enabled=='true'}
             elseif key=='target_mode' then

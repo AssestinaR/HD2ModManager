@@ -134,6 +134,29 @@ assert(assert(C.plan(target,nil,model,yes,metadata)).pieces==1)
 local custom_existing=assert(C.plan(target,nil,model,yes,metadata,nil,'existing_only'))
 assert(custom_existing.replaced==1 and custom_existing.skipped_source==0)
 assert(C.unit(custom_existing.payload:sub(113,208))=='9841b16544c8fbae')
+-- A combined virtual model is projected by target kind: body targets do not
+-- receive the helmet slot, while helmet targets do not receive body slots.
+local combined_model={pieces={
+    {body=3,unit='1111111111111111',slot=0,piece_type=0,tone=0},
+    {body=3,unit='2222222222222222',slot=2,piece_type=0,tone=0},
+}}
+local body_only=assert(C.plan(target,nil,combined_model,yes,metadata))
+assert(body_only.pieces==1 and C.u32(body_only.payload,64+24+8)==2)
+local helmet_target={header=C.pack(9,4)..string.rep('\0',60),rows={
+    {body=0,header=C.pack(0,8),pieces={piece(8ULL,0,0)}}}}
+local helmet_only=assert(C.plan(helmet_target,nil,combined_model,yes,metadata))
+assert(helmet_only.pieces==1 and C.u32(helmet_only.payload,64+24+8)==0
+    and C.u32(helmet_only.payload,64)==0)
+-- Some native helmet Kits also contain a cape (slot 1) Piece. That slot must
+-- not make the target look like body armor and admit torso/limb Units.
+local helmet_with_cape={header=C.pack(10,4)..string.rep('\0',60),rows={
+    {body=3,header=C.pack(3,8),pieces={piece(10ULL,0,0),piece(11ULL,1,0)}}}}
+local helmet_with_cape_plan=assert(C.plan(
+    helmet_with_cape,nil,combined_model,yes,metadata))
+assert(helmet_with_cape_plan.pieces==1
+    and C.u32(helmet_with_cape_plan.payload,64+24+8)==0
+    and C.unit(helmet_with_cape_plan.payload:sub(89,184))=='1111111111111111',
+    'helmet with cape slot must not receive body Units')
 print('PASS: incremental no-op/delta/remove/reuse, retained GC roots, rollback, limits, exact Unit IDs and composition')
 -- Diagnostic B preserves every donor byte except Unit and target weight.
 local donor=piece(unit,2,2)

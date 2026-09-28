@@ -235,7 +235,7 @@ public static class CliArmorRegistryProtocol
 					var piece = new CliArmorRegistryModelPiece(
 						ParseUInt32(pieceParts[1], lineNumber, "model body"),
 						ParseUnitId(pieceParts[2], lineNumber),
-						ParseModelSlot(pieceParts[3], lineNumber),
+						ParseModelSlot(pieceParts[3], lineNumber, ParseUInt32(pieceParts[1], lineNumber, "model body")),
 						ParseUInt32(pieceParts[4], lineNumber, "model piece type"),
 						(byte)ParseInteger(pieceParts[5], "model tone", lineNumber, 0, 255),
 						pieceParts.Length == 6 || ParseBoolean(pieceParts[6], lineNumber, "model piece enabled"),
@@ -260,7 +260,7 @@ public static class CliArmorRegistryProtocol
 					var owner = ParseItemId(overrideParts[0], lineNumber, "组件覆盖对象");
 					var overrideBody = ParseUInt32(overrideParts[1], lineNumber, "override body");
 					var overrideUnit = ParseUnitId(overrideParts[2], lineNumber);
-					var overrideSlot = ParseModelSlot(overrideParts[3], lineNumber);
+					var overrideSlot = ParseOverrideSlot(overrideParts[3], lineNumber, overrideBody);
 					var overridePieceType = ParseUInt32(overrideParts[4], lineNumber, "override piece type");
 					var overrideEnabled = ParseBoolean(overrideParts[5], lineNumber, "piece_override enabled");
 					pieceOverrides.Add(new CliArmorRegistryPieceOverride(
@@ -665,10 +665,10 @@ public static class CliArmorRegistryProtocol
 			var pieceKeys = new HashSet<(uint Body, uint Slot, uint PieceType)>();
 			foreach (var piece in model.Pieces ?? Array.Empty<CliArmorRegistryModelPiece>())
 			{
-				if (piece.Slot == 0)
+				if (piece.Slot == 0 && piece.Body != 3)
 					throw new CliUserException(
 						"ArmorRegistryModelSlotInvalid",
-						$"模型 {model.Key} 使用了无效的 slot=0；护甲视觉槽位从 1 开始。");
+						$"模型 {model.Key} 的 slot=0 只能用于 body=3 的独立头盔 Piece。");
 				if (!pieceKeys.Add((piece.Body, piece.Slot, piece.PieceType)))
 					throw new CliUserException(
 						"ArmorRegistryModelPieceDuplicate",
@@ -724,12 +724,21 @@ public static class CliArmorRegistryProtocol
 			? parsed
 			: throw InvalidProtocol(line, $"{label} 不是 32 位无符号整数。");
 
-	private static uint ParseModelSlot(string value, int line)
+	private static uint ParseModelSlot(string value, int line, uint body)
 	{
 		var slot = ParseUInt32(value, line, "model slot");
-		return slot == 0
-			? throw InvalidProtocol(line, "model slot=0 不是有效的护甲视觉槽位；护甲槽位从 1 开始。")
-			: slot;
+		if (body == 3 && slot == 1) slot = 0;
+		if (slot == 0 && body != 3)
+			throw InvalidProtocol(line, "model slot=0 只能用于 body=3 的独立头盔 Piece。");
+		return slot;
+	}
+
+	private static uint ParseOverrideSlot(string value, int line, uint body)
+	{
+		var slot = ParseUInt32(value, line, "override slot");
+		if (slot == 0 && body != 3)
+			throw InvalidProtocol(line, "piece_override slot=0 只能用于 body=3 的独立头盔 Piece。");
+		return slot;
 	}
 
 	private static bool ParseBoolean(string value, int line, string label)

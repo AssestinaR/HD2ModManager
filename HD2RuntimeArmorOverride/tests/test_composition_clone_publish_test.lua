@@ -15,7 +15,7 @@ for i=0,2 do
     ffi.fill(ffi.cast('void *',donor_base+piece_at),counts[i+1]*96,0x30+i)
     for piece=0,counts[i+1]-1 do
         ffi.cast('uint32_t *',donor_base+piece_at+piece*96+8)[0]=
-            (i==2 and piece==0) and 1 or (piece+2)
+            (i==2 and piece==0) and 0 or (piece+2)
         ffi.cast('uint32_t *',donor_base+piece_at+piece*96+16)[0]=1
     end
     piece_at=piece_at+counts[i+1]*96
@@ -34,7 +34,7 @@ for i=0,2 do
     ffi.cast('uint64_t *',row+16)[0]=5
     for piece=0,4 do
         local address=target_base+target_piece_at+piece*96
-        ffi.cast('uint32_t *',address+8)[0]=(i==2 and piece==0) and 1 or (piece+2)
+        ffi.cast('uint32_t *',address+8)[0]=(i==2 and piece==0) and 0 or (piece+2)
         ffi.cast('uint32_t *',address+16)[0]=(i==2 and piece==0) and 1 or 0
     end
     target_piece_at=target_piece_at+5*96
@@ -69,7 +69,7 @@ for i=0,22 do
     local address=m.clone_base+64+72+i*96
     local slot=tonumber(ffi.cast('uint32_t *',address+8)[0])
     local weight=tonumber(ffi.cast('uint32_t *',address+16)[0])
-    assert(weight==(slot==1 and 1 or 0))
+    assert(weight==(slot==0 and 1 or 0))
 end
 assert(m.clear() and tonumber(index[target_index])==target_base)
 print('PASS: retained target header, donor 23-piece clone, publication, rollback')

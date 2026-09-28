@@ -121,10 +121,23 @@
             </DataTemplate.Triggers>
         </DataTemplate>
         <DataTemplate x:Key="AvailableArmorSearchActions">
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource AppHeaderTextButton}"
+                        Content="{Binding AvailableArmorKindFilterText}"
+                        ToolTip="循环筛选仅护甲、仅头盔或自动组合"
+                        Click="OnCycleAvailableArmorKindFilterClick"
+                        Margin="0,0,8,0"/>
+                <Button Style="{StaticResource AppHeaderTextButton}"
+                        Content="{Binding AvailableArmorUnitFilterText}"
+                        ToolTip="按当前活动配置中生效的 Unit 覆盖筛选；无法确认的护甲仅在“全部”中显示"
+                        Click="OnCycleAvailableArmorUnitFilterClick"/>
+            </StackPanel>
+        </DataTemplate>
+        <DataTemplate x:Key="ArmorKindSearchActions">
             <Button Style="{StaticResource AppHeaderTextButton}"
-                    Content="{Binding AvailableArmorUnitFilterText}"
-                    ToolTip="按当前活动配置中生效的 Unit 覆盖筛选；无法确认的护甲仅在“全部”中显示"
-                    Click="OnCycleAvailableArmorUnitFilterClick"/>
+                    Content="{Binding AvailableArmorKindFilterText}"
+                    ToolTip="循环筛选自动组合、仅护甲或仅头盔"
+                    Click="OnCycleAvailableArmorKindFilterClick"/>
         </DataTemplate>
     </UserControl.Resources>
     <Grid>
@@ -167,6 +180,7 @@
                                     HeaderTitle="视觉来源"
                                     HeaderSummary="{Binding ProvidersSummary}"
                                     SearchText="{Binding ProvidersSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                    SearchActionsTemplate="{StaticResource ArmorKindSearchActions}"
                                     EmptyMessage="将右侧一个护甲拖到这里，设为视觉来源。"
                                     SelectionPolicy="Multiple"
                                     RowActions="ArmorRelease, ArmorOpenDetails, ArmorEditComponents, ArmorDeleteCustomModel, ArmorRenameCustomModel"
@@ -194,6 +208,7 @@
                                         HeaderTitle="{Binding ProviderDetailHeaderTitle}"
                                         HeaderSummary="{Binding ProviderDetailSummary}"
                                         SearchText="{Binding ProviderDetailSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                        SearchActionsTemplate="{StaticResource ArmorKindSearchActions}"
                                         HeaderTitleClickable="True"
                                         EmptyMessage="此来源尚无目标；可从右侧添加护甲。"
                                         SelectionPolicy="Multiple"

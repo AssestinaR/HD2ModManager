@@ -728,7 +728,7 @@ local function audit_clone_weights(target_root,source_root)
             local slot,piece_type=dword(address+8),dword(address+12)
             local weight,level=resolve_weight(weights,body,slot,piece_type)
             if weight==nil then
-                local candidates=slot==1
+                local candidates=slot==0
                     and (weights.body_metadata[body] or weights.global_metadata)
                     or (weights.body_visible[body] or weights.global_visible)
                 if #ambiguous<32 then
@@ -923,6 +923,7 @@ local function prepare_document(document,checkpoint)
         return snapshots[item],entry
     end
     local requests={}
+    local skipped={}
     for _,mapping in ipairs(document.enabled and document.mappings or {}) do
         local target,entry=snapshot(mapping.target)
         local model,source,owner
@@ -953,16 +954,35 @@ local function prepare_document(document,checkpoint)
             end
         else source=snapshot(mapping.source);owner=mapping.source end
         if (document.target_modes or {})[mapping.target]==false then owner=mapping.target end
-        local plan,reason=ARMOR_REGISTRY_COMPOSITION.plan(target,source,model,
+        local okay,plan,reason=pcall(ARMOR_REGISTRY_COMPOSITION.plan,target,source,model,
             function(body,unit,slot,piece_type)
                 return piece_enabled(overrides,owner,body,unit,slot,piece_type)
             end,ARMOR_METADATA_PROBE_CORE,checkpoint,document.composition_mode)
-        if not plan then return nil,'target '..mapping.target..': '..tostring(reason) end
-        requests[#requests+1]={key=tostring(mapping.target),original=entry.address,
+        if not okay then
+            reason=plan
+            plan=nil
+        end
+        if not plan then
+            reason=tostring(reason or 'composition failed')
+            skipped[#skipped+1]={target=tostring(mapping.target),reason=reason}
+            log('skipped_target: target '..tostring(mapping.target)..' reason='..reason)
+        else
+            requests[#requests+1]={key=tostring(mapping.target),original=entry.address,
             slot=registry.index_base+entry.index*8,signature=plan.payload,bytes=plan.bytes,
             composition=plan,
             build=function()return allocate_plan(plan)end}
+        end
         checkpoint()
+    end
+    -- A target that failed composition may already be active from an older
+    -- revision. Retain that clone instead of interpreting the skip as a
+    -- removal; a later valid revision can replace it normally.
+    for _,item in ipairs(skipped) do
+        local active=transaction.active[item.target]
+        if active then
+            requests[#requests+1]={key=item.target,original=active.original,
+                slot=active.slot,signature=active.signature,retain_active=true}
+        end
     end
     -- Removal is a native publication too: never restore an unreadable/stale
     -- original root merely because its index still points at our current clone.
@@ -976,6 +996,8 @@ local function prepare_document(document,checkpoint)
     end
     local plan,reason=transaction.prepare(requests,checkpoint)
     if not plan then return nil,reason end
+    plan.stats.skipped=#skipped
+    plan.stats.skipped_targets=skipped
     plan.snapshots=snapshots
     return plan
 end
@@ -1102,6 +1124,13 @@ local function step_apply(elapsed)
                 mode_suffix=string.format(' mode=existing_only replaced=%d skipped_source=%d',
                     result.stats.replaced or 0,result.stats.skipped_source or 0)
             end
+            if result.stats and (result.stats.skipped or 0)>0 then
+                mode_suffix=mode_suffix..string.format(' skipped=%d',result.stats.skipped)
+                for _,item in ipairs(result.stats.skipped_targets or {}) do
+                    log('partial_apply: revision='..tostring(apply_document_pending.revision)
+                        ..' skipped_target='..item.target..' reason='..tostring(item.reason))
+                end
+            end
             set_status('ready',string.format('incremental applied: built=%d reused=%d removed=%d writes=%d%s',
                 result.stats.built,result.stats.reused,result.stats.removed,result.stats.writes,mode_suffix),
                 apply_document_pending.revision)
@@ -1113,6 +1142,8 @@ local function step_apply(elapsed)
             attempts=attempts+1;retry_at=elapsed+attempts*2
             local reason=okay and result.reason or tostring(result)
             if not reason:find('registry changed during preparation',1,true) then attempts=3 end
+            log('apply_error: revision='..tostring(apply_document_pending.revision)
+                ..' reason='..tostring(reason))
             set_status('apply_error',reason,M.applied_revision)
         end
     end

@@ -27,13 +27,29 @@ public sealed class RuntimeArmorRegistryServiceTests
 			INSERT INTO game_data_authority_pieces VALUES
 				(10, 0, 2, 101, 2, 0, 0),
 				(10, 1, 1, 102, 2, 0, 0),
-				(10, 3, 3, 103, 3, 0, 0);
+				(10, 3, 3, 103, 3, 0, 0),
+				(30, 3, 3, 104, 0, 0, 0);
 			""";
 		await command.ExecuteNonQueryAsync();
 		var pieces = await fixture.Service.ReadArmorPiecesAsync(10);
 		Assert.Equal(0u, pieces.Single(p => p.Unit == "0000000000000065").Body);
 		Assert.Equal(1u, pieces.Single(p => p.Unit == "0000000000000066").Body);
 		Assert.Equal(3u, pieces.Single(p => p.Unit == "0000000000000067").Body);
+		var helmet = Assert.Single(await fixture.Service.ReadArmorPiecesAsync(30));
+		Assert.Equal(0u, helmet.Slot);
+	}
+
+	[Fact]
+	public void LegacyAnyHelmetSlot_IsMigratedWithoutChangingConcreteSlotOne()
+	{
+		var document = RuntimeArmorRegistryService.ParseProtocol(
+			"schema=2\nrevision=1\nenabled=true\nmodel=custom,\n"
+			+ "model_piece=custom,3,0000000000000001,1,0,0\n"
+			+ "model_piece=custom,0,0000000000000002,1,0,0\n"
+			+ "piece_override=43,3,0000000000000003,1,0,true\nmap_model=42,custom\n");
+		Assert.Contains(document.ModelDefinitions[0].Pieces!, piece => piece.Body == 3 && piece.Slot == 0);
+		Assert.Contains(document.ModelDefinitions[0].Pieces!, piece => piece.Body == 0 && piece.Slot == 1);
+		Assert.Equal(1u, Assert.Single(document.PieceOverrideDefinitions).Slot);
 	}
 
 	[Fact]
@@ -142,6 +158,7 @@ public sealed class RuntimeArmorRegistryServiceTests
 			new("virtual", null, [
 				new(0, "fedcba9876543210", 2, 0),
 				new(1, "fedcba9876543211", 2, 0),
+				new(3, "fedcba9876543214", 1, 0),
 				new(3, "fedcba9876543212", 3, 7),
 				new(1, "fedcba9876543213", 3, 7, Enabled: false)
 			], "测试素体"),
@@ -152,13 +169,14 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal("custom-model:virtual", entry.ArchiveId);
 		Assert.Equal("virtual", entry.CustomModelKey);
 		Assert.Equal("测试素体", entry.DisplayName);
-		Assert.Equal(3, entry.Parts.Count);
+		Assert.Equal(4, entry.Parts.Count);
 		Assert.Equal(0xfedcba9876543210UL, entry.Parts[0].UnitAssetKey.FileId);
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Stocky, entry.Parts[0].BodyVariant);
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Slim, entry.Parts[1].BodyVariant);
-		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Pelvis, entry.Parts[2].PartKind);
-		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, entry.Parts[2].BodyVariant);
-		Assert.Equal("7", entry.Parts[2].PieceType);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Head, entry.Parts[2].PartKind);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Pelvis, entry.Parts[3].PartKind);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, entry.Parts[3].BodyVariant);
+		Assert.Equal("7", entry.Parts[3].PieceType);
 	}
 
 	[Fact]
@@ -278,15 +296,38 @@ public sealed class RuntimeArmorRegistryServiceTests
 	}
 
 	[Fact]
-	public async Task Catalog_ReturnsOnlyArmorEntriesInDisplayOrder()
+	public async Task Catalog_ReturnsArmorAndHelmetEntriesInDisplayOrder()
 	{
 		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
 
 		var entries = await fixture.Service.ReadArmorCatalogAsync();
 
-		Assert.Equal(2, entries.Count);
-		Assert.Equal(["Alpha", "Zulu"], entries.Select(entry => entry.DisplayName));
-		Assert.Equal([20u, 10u], entries.Select(entry => entry.ItemId));
+		Assert.Equal(3, entries.Count);
+		Assert.Equal(["Alpha", "Helmet", "Zulu"], entries.Select(entry => entry.DisplayName));
+		Assert.Equal([20u, 30u, 10u], entries.Select(entry => entry.ItemId));
+		Assert.Equal(
+			[GameDataEquipmentKitKind.Armor, GameDataEquipmentKitKind.Helmet, GameDataEquipmentKitKind.Armor],
+			entries.Select(entry => entry.KitKind));
+	}
+
+	[Fact]
+	public async Task Catalog_UsesAuthoritativeKitKindInsteadOfGuessingFromPieceSlots()
+	{
+		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
+		await using var connection = new SqliteConnection(
+			$"Data Source={new StoragePaths(Path.Combine(fixture.Root, "app")).DbPath};Pooling=False");
+		await connection.OpenAsync();
+		await using var command = connection.CreateCommand();
+		command.CommandText = """
+			CREATE TABLE game_data_authority_pieces (item_id INTEGER NOT NULL, slot INTEGER NOT NULL);
+			INSERT INTO game_data_authority_pieces VALUES (10, 1), (30, 0);
+			""";
+		await command.ExecuteNonQueryAsync();
+
+		var entries = await fixture.Service.ReadArmorCatalogAsync();
+
+		Assert.Equal(GameDataEquipmentKitKind.Armor, Assert.Single(entries, item => item.ItemId == 10).KitKind);
+		Assert.Equal(GameDataEquipmentKitKind.Helmet, Assert.Single(entries, item => item.ItemId == 30).KitKind);
 	}
 
 	[Fact]
