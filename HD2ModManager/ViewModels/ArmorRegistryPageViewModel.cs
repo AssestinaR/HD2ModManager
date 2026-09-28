@@ -642,6 +642,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var request = ++componentEditorRequest;
 		var model = CustomModels.FirstOrDefault(model =>
 			string.Equals(model.Key, source.ModelKey, StringComparison.Ordinal))?.ToDomain();
+		if (source.IsCustomModel && model is null) return;
 		var pieces = model?.Pieces;
 		if (pieces is null)
 			pieces = await service.ReadArmorPiecesAsync(source.ItemId);

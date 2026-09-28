@@ -115,10 +115,18 @@ CLI 仅原子替换 `armor-registry.protocol`，不会写 Lua 拥有的状态或
 `armor-registry status` 还会验证状态中的 PID 是否确为正在运行的游戏进程，
 并报告该进程是否已经确认当前协议 revision。
 
-管理器 GUI 可从“设置 → 游戏与资产 → 运行时护甲注册”进入。页面使用资产
-索引中的护甲名称选择目标与视觉来源，并显示 Lua 是否已确认当前 revision；
-用户不需要手工查询 Item ID 或编辑协议文件。GUI 与 CLI 使用同一把
-`.manager.lock`、同一份指纹漂移检查和原子写入流程。
+管理器顶栏的护甲映射页使用资产索引中的护甲名称选择目标与视觉来源，
+并显示 Lua 是否已确认当前 revision；用户不需要手工查询 Item ID。
+自定义素体及组件启用状态保存在当前 Mod 库的
+`.hd2modmanager/armor-registry.workspace.json`。点击“应用”时，管理器
+按实际部署的 Unit 编译运行时协议到上述 C 盘目录；Lua 只消费编译结果。
+GUI 与 CLI 使用同一把 `.manager.lock`、同一份指纹漂移检查和原子写入流程。
+
+`src/armor_registry_composition.lua` 的默认 `full` 模式可以按视觉来源重组
+目标的 Body/Piece；`existing_only` 仅用于军械库崩溃的隔离对照，
+保留目标原有槽位并只替换匹配位置的 Unit ID。它会跳过放不进目标槽位的
+来源组件，不能作为完整映射或修复方案。便携诊断工具位于
+`HD2ModCli`，不会随正式 Lua 入口执行；测试包与报告不属于正式部署资产。
 
 ## 测试与构建
 
@@ -152,8 +160,8 @@ map_model=651522724,base/re2310
 ```
 
 模型素体只能作为视觉来源，不能作为映射目标；目标护甲的名称、护甲值、
-被动技能、解锁状态和其他 gameplay metadata 始终保留。管理器自定义
-Body/Piece/Unit 组合的编辑器将在此协议基础上继续增加。
+被动技能、解锁状态和其他 gameplay metadata 始终保留。管理器已支持
+编辑自定义 Body/Piece/Unit 组合及来源、目标组件的启用状态。
 
 虚拟模型只提供视觉组合，不携带名称、护甲数值或被动技能。目标护甲始终
 保留自己的身份和 gameplay metadata。具体 v2 语义与发布条件见协议文档。

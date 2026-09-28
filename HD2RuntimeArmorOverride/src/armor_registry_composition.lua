@@ -43,15 +43,15 @@ function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode
     end
     if composition_mode=='existing_only' then
         local grouped={}
-        local function add(piece,body,unit,slot,kind)
+        local function add(body,unit,slot,kind)
             local key=table.concat({body,slot,kind},':')
             grouped[key]=grouped[key] or {}
-            grouped[key][#grouped[key]+1]={unit=unit,data=piece}
+            grouped[key][#grouped[key]+1]=unit
         end
         if model then
             for _,piece in ipairs(model.pieces) do
                 if piece.enabled~=false and enabled(piece.body,piece.unit,piece.slot,piece.piece_type) then
-                    add(nil,piece.body,piece.unit,piece.slot,piece.piece_type)
+                    add(piece.body,piece.unit,piece.slot,piece.piece_type)
                 end
             end
         else
@@ -61,16 +61,16 @@ function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode
                     local unit=C.unit(piece)
                     local slot,kind=C.u32(piece,8),C.u32(piece,12)
                     if enabled(source_row.body,unit,slot,kind) then
-                        add(piece,source_row.body,unit,slot,kind)
+                        add(source_row.body,unit,slot,kind)
                     end
                 end
             end
         end
         local rows,replaced,skipped={},0,0
-            for _,target_row in ipairs(target.rows) do
-                local row={body=target_row.body,header=target_row.header,pieces={}}
-                for _,original in ipairs(target_row.pieces) do
-                    local slot,kind=C.u32(original,8),C.u32(original,12)
+        for _,target_row in ipairs(target.rows) do
+            local row={body=target_row.body,header=target_row.header,pieces={}}
+            for _,original in ipairs(target_row.pieces) do
+                local slot,kind=C.u32(original,8),C.u32(original,12)
                 local queue=grouped[table.concat({target_row.body,slot,kind},':')]
                 -- Custom model pieces may be body=3 (Any).  They can fill
                 -- either native body variant, but are still consumed once.
@@ -79,7 +79,7 @@ function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode
                 end
                 local candidate=queue and table.remove(queue,1)
                 if candidate then
-                    row.pieces[#row.pieces+1]=replace(original,0,unit_bytes(candidate.unit))
+                    row.pieces[#row.pieces+1]=replace(original,0,unit_bytes(candidate))
                     replaced=replaced+1
                 else
                     row.pieces[#row.pieces+1]=original
