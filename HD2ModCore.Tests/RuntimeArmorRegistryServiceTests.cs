@@ -13,6 +13,30 @@ namespace HD2ModCore.Tests;
 public sealed class RuntimeArmorRegistryServiceTests
 {
 	[Fact]
+	public async Task ArmorPiecesUseRuntimeBodyEncodingNotCatalogEnum()
+	{
+		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
+		var paths = new StoragePaths(Path.Combine(fixture.Root, "app"));
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
+		await connection.OpenAsync();
+		await using var command = connection.CreateCommand();
+		command.CommandText = """
+			CREATE TABLE game_data_authority_pieces (
+				item_id INTEGER, raw_body_type INTEGER, body_variant INTEGER,
+				unit_file_id INTEGER, slot INTEGER, piece_type INTEGER, tone_variations INTEGER);
+			INSERT INTO game_data_authority_pieces VALUES
+				(10, 0, 2, 101, 2, 0, 0),
+				(10, 1, 1, 102, 2, 0, 0),
+				(10, 3, 3, 103, 3, 0, 0);
+			""";
+		await command.ExecuteNonQueryAsync();
+		var pieces = await fixture.Service.ReadArmorPiecesAsync(10);
+		Assert.Equal(0u, pieces.Single(p => p.Unit == "0000000000000065").Body);
+		Assert.Equal(1u, pieces.Single(p => p.Unit == "0000000000000066").Body);
+		Assert.Equal(3u, pieces.Single(p => p.Unit == "0000000000000067").Body);
+	}
+
+	[Fact]
 	public async Task EditorDefaultBase_RemainsInWorkspaceButNeverInRuntimeProtocol()
 	{
 		await using var fixture = await Fixture.CreateAsync();
@@ -62,6 +86,31 @@ public sealed class RuntimeArmorRegistryServiceTests
 		var catalog = Assert.Single(await fixture.Service.ReadCustomModelCatalogAsync());
 		Assert.Single(catalog.Parts);
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, catalog.Parts[0].BodyVariant);
+	}
+
+	[Fact]
+	public async Task Apply_PreservesWorkspaceCompositionMode()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.SaveWorkspaceAsync(initial.Document with
+		{
+			CompositionMode = "existing_only",
+		});
+
+		var beforeApply = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(
+			beforeApply.Fingerprint,
+			false,
+			beforeApply.Document.Mappings,
+			beforeApply.Document.ModelDefinitions,
+			beforeApply.Document.PieceOverrideDefinitions,
+			beforeApply.Document.TargetModeDefinitions);
+
+		var protocol = await File.ReadAllTextAsync(
+			Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName));
+		Assert.Contains("composition_mode=existing_only\n", protocol, StringComparison.Ordinal);
+		Assert.Equal("existing_only", (await fixture.Service.ReadSnapshotAsync()).Document.CompositionMode);
 	}
 
 	[Fact]

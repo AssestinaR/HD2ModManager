@@ -132,13 +132,14 @@ public static class ArmorDiagnosticEvidence
         catch { Save(directory, $"events-{stage}.json", new { state = "unavailable", absenceDoesNotExcludeCrash = true }); }
     }
 
-    public static async Task SampleStatusAsync(string directory, string stage, string registryRoot, CancellationToken stop)
+    public static async Task SampleStatusAsync(string directory, string stage, string registryRoot, CancellationToken stop,
+        int intervalMs = 2000, int maxSamples = 1800)
     {
         // File/process metadata only. No process-memory access, injection or
         // active Lua request; sampling remains useful while ReadLine waits.
         using var output = new FileStream(Path.Combine(directory, $"samples-{stage}.jsonl"),
             FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-        for (var i = 0; i < 1800 && !stop.IsCancellationRequested; i++)
+        for (var i = 0; i < maxSamples && !stop.IsCancellationRequested; i++)
         {
             object row;
             try
@@ -158,10 +159,42 @@ public static class ArmorDiagnosticEvidence
             }
             catch { row = new { utc = DateTimeOffset.UtcNow, state = "sample_unavailable" }; }
             output.Write(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(row) + "\n"));
-            output.Flush(true);
-            try { await Task.Delay(2000, stop); }
+            // The game can crash without killing this tool. Durable markers
+            // are flushed separately; batch high-frequency samples to avoid
+            // forcing a disk sync on every 100 ms tick.
+            if (intervalMs >= 1000 || i % 10 == 0) output.Flush(true);
+            try { await Task.Delay(intervalMs, stop); }
             catch (OperationCanceledException) { break; }
         }
+        output.Flush(true);
+    }
+
+    public static long CompositionLogOffset(string registryRoot)
+    {
+        var path = Path.Combine(Path.GetDirectoryName(registryRoot)!, "Logs", "ArmorRegistryRuntime.log");
+        return File.Exists(path) ? new FileInfo(path).Length : 0;
+    }
+
+    public static void CaptureCompositionLog(string directory, string stage, string registryRoot, long offset)
+    {
+        var path = Path.Combine(Path.GetDirectoryName(registryRoot)!, "Logs", "ArmorRegistryRuntime.log");
+        if (!File.Exists(path)) return;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (stream.Length < offset || stream.Length - offset > 1024 * 1024) return;
+        stream.Position = offset;
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var text = reader.ReadToEnd();
+        var matches = Regex.Matches(text,
+            @"composition mode=existing_only replaced=(\d+) skipped_source=(\d+)");
+        Save(directory, $"composition-{stage}.json", new
+        {
+            schema = 1, mode = stage,
+            reports = matches.Cast<Match>().Take(10).Select(match => new
+            {
+                replaced = ulong.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture),
+                skippedSource = ulong.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture)
+            }).ToArray()
+        });
     }
 
     // Explicit allowlist: backups, journal, full logs and workspace never enter ZIP.
@@ -170,11 +203,20 @@ public static class ArmorDiagnosticEvidence
         var zipPath = directory + "-report-" + DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6] + ".zip";
         using var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create);
         foreach (var name in new[] { "summary.json", "timeline.jsonl", "protocol-summary.json", "inventory.json",
-            "environment.json", "events-original.json", "events-disabled.json",
-            "samples-original.jsonl", "samples-disabled.jsonl", "recovery.json", "catalog-summary.json" })
+            "environment.json", "events-original.json", "events-disabled.json", "events-quick.json",
+            "events-matrix.json", "events-memory.json",
+            "events-composition.json",
+            "composition-full.json", "composition-existing_only.json",
+            "samples-original.jsonl", "samples-disabled.jsonl", "samples-quick.jsonl",
+            "samples-matrix.jsonl", "samples-memory.jsonl", "memory-clean.json",
+            "samples-composition.jsonl",
+            "recovery.json", "catalog-summary.json" })
         {
             var path = Path.Combine(directory, name);
-            if (File.Exists(path) && new FileInfo(path).Length <= 4 * 1024 * 1024) zip.CreateEntryFromFile(path, name);
+            var limit = name is "samples-quick.jsonl" or "samples-matrix.jsonl" or "samples-composition.jsonl"
+                or "samples-memory.jsonl"
+                ? 16 * 1024 * 1024 : 4 * 1024 * 1024;
+            if (File.Exists(path) && new FileInfo(path).Length <= limit) zip.CreateEntryFromFile(path, name);
         }
         return zipPath;
     }

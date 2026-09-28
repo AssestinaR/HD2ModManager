@@ -28,6 +28,11 @@ local function request(key,signature)
             return {buffer=buffer,bytes=96,base=1000+allocations*100}
         end}
 end
+local composition_stats_request=function(key,signature,composition)
+    local request_value=request(key,signature)
+    request_value.composition=composition
+    return request_value
+end
 local function apply(requests)
     local p=assert(tx.prepare(requests))
     assert(tx.commit(p))
@@ -55,6 +60,16 @@ assert(not tx.commit(assert(tx.prepare({request(1,'a')}))))
 memory[8]=before
 assert(apply({}).removed==1 and memory[8]==100)
 assert(tx.retained_count==5)
+local composition_stats=apply({
+    composition_stats_request(1,'composition-a',
+        {mode='existing_only',replaced=3,skipped_source=2}),
+    composition_stats_request(2,'composition-a',
+        {mode='existing_only',replaced=4,skipped_source=1})
+})
+assert(composition_stats.mode=='existing_only'
+    and composition_stats.structure_preserved
+    and composition_stats.replaced==7
+    and composition_stats.skipped_source==3)
 local limited=T.new({read=function()return 100 end,write=function()error('must not write')end},{bytes=1})
 assert(not limited.prepare({request(1,'x')}))
 local failed=request(1,'bad');failed.build=function()return nil,'expected validation failure'end
@@ -94,6 +109,19 @@ local filtered=assert(C.plan(target,source,nil,function(_,id)return id~='9841b16
 assert(filtered.pieces==2 and first.payload~=filtered.payload)
 assert(first.payload==assert(C.plan(target,source,nil,yes,metadata)).payload)
 assert(not C.plan(target,source,nil,function()return false end,metadata))
+-- Existing-only diagnostic mode preserves target structure and raw metadata.
+local existing=assert(C.plan(target,source,nil,yes,metadata,nil,'existing_only'))
+assert(existing.mode=='existing_only' and existing.structure_preserved)
+assert(existing.bodies==2 and existing.pieces==3 and existing.replaced==3 and existing.skipped_source==0)
+assert(C.u32(existing.payload,64+48+16)==0)
+assert(existing.payload:sub(1,48)==target.header:sub(1,48))
+assert(C.u32(existing.payload,56)==2)
+-- A source with an extra position is skipped instead of expanding the clone.
+local extra={header=source.header,rows={
+    {body=0,header=C.pack(0,8),pieces={piece(unit,2,2),piece(9ULL,99,2),piece(3ULL,6,2)}},
+    {body=1,header=C.pack(1,8),pieces={piece(4ULL,2,2)}}}}
+local limited=assert(C.plan(target,extra,nil,yes,metadata,nil,'existing_only'))
+assert(limited.pieces==3 and limited.replaced==3 and limited.skipped_source==1)
 local model={pieces={{body=3,unit='9841b16544c8fbae',slot=2,piece_type=0,tone=3},
     {body=0,unit='0000000000000003',slot=6,piece_type=0}}}
 local custom=assert(C.plan(target,nil,model,yes,metadata))
@@ -103,6 +131,9 @@ assert(C.unit(custom.payload:sub(113))=='9841b16544c8fbae')
 assert(custom.payload:byte(113+88)==3)
 model.pieces[2].enabled=false
 assert(assert(C.plan(target,nil,model,yes,metadata)).pieces==1)
+local custom_existing=assert(C.plan(target,nil,model,yes,metadata,nil,'existing_only'))
+assert(custom_existing.replaced==1 and custom_existing.skipped_source==0)
+assert(C.unit(custom_existing.payload:sub(113,208))=='9841b16544c8fbae')
 print('PASS: incremental no-op/delta/remove/reuse, retained GC roots, rollback, limits, exact Unit IDs and composition')
 -- Diagnostic B preserves every donor byte except Unit and target weight.
 local donor=piece(unit,2,2)

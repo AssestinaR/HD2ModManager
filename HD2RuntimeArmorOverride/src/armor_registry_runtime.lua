@@ -956,10 +956,11 @@ local function prepare_document(document,checkpoint)
         local plan,reason=ARMOR_REGISTRY_COMPOSITION.plan(target,source,model,
             function(body,unit,slot,piece_type)
                 return piece_enabled(overrides,owner,body,unit,slot,piece_type)
-            end,ARMOR_METADATA_PROBE_CORE,checkpoint)
+            end,ARMOR_METADATA_PROBE_CORE,checkpoint,document.composition_mode)
         if not plan then return nil,'target '..mapping.target..': '..tostring(reason) end
         requests[#requests+1]={key=tostring(mapping.target),original=entry.address,
             slot=registry.index_base+entry.index*8,signature=plan.payload,bytes=plan.bytes,
+            composition=plan,
             build=function()return allocate_plan(plan)end}
         checkpoint()
     end
@@ -1096,9 +1097,17 @@ local function step_apply(elapsed)
                     ..' located_after_ms='..tostring(M.located_after_ms)
                     ..' first_applied_after_ms='..M.first_applied_after_ms)
             end
-            set_status('ready',string.format('incremental applied: built=%d reused=%d removed=%d writes=%d',
-                result.stats.built,result.stats.reused,result.stats.removed,result.stats.writes),
+            local mode_suffix=''
+            if result.stats and result.stats.mode=='existing_only' then
+                mode_suffix=string.format(' mode=existing_only replaced=%d skipped_source=%d',
+                    result.stats.replaced or 0,result.stats.skipped_source or 0)
+            end
+            set_status('ready',string.format('incremental applied: built=%d reused=%d removed=%d writes=%d%s',
+                result.stats.built,result.stats.reused,result.stats.removed,result.stats.writes,mode_suffix),
                 apply_document_pending.revision)
+            if mode_suffix~='' then
+                log('composition'..mode_suffix)
+            end
             desired=nil
         else
             attempts=attempts+1;retry_at=elapsed+attempts*2

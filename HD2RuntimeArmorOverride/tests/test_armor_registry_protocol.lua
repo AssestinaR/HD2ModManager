@@ -4,12 +4,14 @@ local parsed=protocol.parse([[
 schema=2
 revision=42
 enabled=true
+composition_mode=existing_only
 map=488691438,820333399
 map=0xc72283a4,0x30e58857
 model=base/re2310,820333399
 map_model=651522724,base/re2310
 ]])
 assert(parsed.schema==2 and parsed.revision==42 and parsed.enabled)
+assert(parsed.composition_mode=='existing_only')
 assert(#parsed.mappings==3 and parsed.mappings[1].target==488691438)
 assert(#parsed.models==1 and parsed.models[1].key=='base/re2310')
 local roundtrip=protocol.parse(protocol.serialize(parsed))
@@ -18,7 +20,12 @@ for _,mapping in ipairs(roundtrip.mappings) do
     if mapping.model then model_mapping=mapping end
 end
 assert(roundtrip.revision==42 and #roundtrip.mappings==3
-    and model_mapping and model_mapping.model=='base/re2310')
+    and model_mapping and model_mapping.model=='base/re2310'
+    and roundtrip.composition_mode=='existing_only')
+local default_mode=protocol.parse('schema=2\nrevision=1\nenabled=false\n')
+assert(default_mode.composition_mode=='full')
+assert(not pcall(protocol.parse,
+    'schema=2\nrevision=1\nenabled=true\ncomposition_mode=bad\n'))
 local custom=protocol.parse([[
 schema=2
 revision=1

@@ -54,7 +54,8 @@ public sealed record CliArmorRegistryDocument(
 	IReadOnlyList<CliArmorRegistryMapping> Mappings,
 	IReadOnlyList<CliArmorRegistryModel>? Models = null,
 	IReadOnlyList<CliArmorRegistryPieceOverride>? PieceOverrides = null,
-	IReadOnlyList<CliArmorRegistryTargetMode>? TargetModes = null);
+	IReadOnlyList<CliArmorRegistryTargetMode>? TargetModes = null,
+	string CompositionMode = "full");
 
 public sealed record CliArmorRegistryPlan(
 	string Schema,
@@ -157,6 +158,7 @@ public static class CliArmorRegistryProtocol
 		int? schema = null;
 		int? revision = null;
 		bool? enabled = null;
+		var compositionMode = "full";
 		var mappings = new List<CliArmorRegistryMapping>();
 		var models = new List<CliArmorRegistryModel>();
 		var pieceOverrides = new List<CliArmorRegistryPieceOverride>();
@@ -192,6 +194,11 @@ public static class CliArmorRegistryProtocol
 						"false" => false,
 						_ => throw InvalidProtocol(lineNumber, "enabled 必须是 true 或 false。"),
 					};
+					break;
+				case "composition_mode":
+					if (value is not ("full" or "existing_only"))
+						throw InvalidProtocol(lineNumber, "composition_mode 必须是 full 或 existing_only。");
+					compositionMode = value;
 					break;
 				case "map":
 					var parts = value.Split(',');
@@ -284,7 +291,7 @@ public static class CliArmorRegistryProtocol
 		if (enabled is null) throw new CliUserException("ArmorRegistryProtocolInvalid", "护甲注册协议缺少 enabled。");
 		return new CliArmorRegistryDocument(schema.Value, revision.Value, enabled.Value,
 			NormalizeMappings(mappings), models.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray(),
-			pieceOverrides, targetModes);
+			pieceOverrides, targetModes, compositionMode);
 	}
 
 	public static string SerializeProtocol(CliArmorRegistryDocument document)
@@ -294,6 +301,8 @@ public static class CliArmorRegistryProtocol
 		builder.AppendLine("schema=2");
 		builder.Append("revision=").Append(document.Revision.ToString(CultureInfo.InvariantCulture)).Append('\n');
 		builder.Append("enabled=").Append(document.Enabled ? "true" : "false").Append('\n');
+		if (!string.Equals(document.CompositionMode, "full", StringComparison.Ordinal))
+			builder.Append("composition_mode=existing_only\n");
 		foreach (var model in (document.Models ?? Array.Empty<CliArmorRegistryModel>())
 			.OrderBy(model => model.Key, StringComparer.Ordinal))
 		{
@@ -356,7 +365,8 @@ public static class CliArmorRegistryProtocol
 			NormalizeMappings(specification.Mappings),
 			NormalizeModels(specification.Models ?? Array.Empty<CliArmorRegistryModel>()),
 			specification.PieceOverrides ?? Array.Empty<CliArmorRegistryPieceOverride>(),
-			specification.TargetModes ?? Array.Empty<CliArmorRegistryTargetMode>());
+			specification.TargetModes ?? Array.Empty<CliArmorRegistryTargetMode>(),
+			"full");
 		ValidateDocument(desired);
 		var fingerprint = await FingerprintProtocolAsync(registryRoot, cancellationToken).ConfigureAwait(false);
 		var unsigned = new CliArmorRegistryPlan(

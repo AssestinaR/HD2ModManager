@@ -45,6 +45,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private uint? selectedProviderId;
 	private uint? componentEditorOwnerId;
 	private bool componentEditorIsTarget;
+	private IReadOnlyList<RuntimeArmorRegistryModelPiece> componentEditorSourcePieces = [];
+	private uint? componentEditorSourceOverrideOwner;
+	private int componentEditorRequest;
 	private readonly HashSet<uint> pendingProviderIds = [];
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
@@ -166,6 +169,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public override void Dispose()
 	{
+		componentEditorRequest++;
 		selection.SelectionChanged -= OnGlobalSelectionChanged;
 		FlushWorkspaceSave();
 		base.Dispose();
@@ -207,7 +211,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public bool IsComponentEditorOpen => componentEditorOwnerId is not null;
 	public bool ComponentEditorIsTarget => componentEditorIsTarget;
 	public bool IsComponentEditorCustomModel
-		=> componentEditorOwnerId is { } id
+		=> !componentEditorIsTarget && componentEditorOwnerId is { } id
 			&& Choices.TryGetValue(id, out var choice)
 			&& choice.IsCustomModel;
 	public bool ComponentEditorFollowSource
@@ -216,6 +220,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		set
 		{
 			if (!SetField(ref componentEditorFollowSource, value)) return;
+			if (componentEditorIsTarget)
+				PopulateComponentEditor();
 			MarkComponentEditorDirty();
 			OnPropertyChanged(nameof(ComponentEditorEditable));
 			ConfirmAddComponentRowCommand.RaiseCanExecuteChanged();
@@ -627,32 +633,27 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public async Task OpenComponentEditorAsync(RuntimeArmorChoiceViewModel? item, bool isTarget)
 	{
 		if (item is null || IsBusy) return;
+		// The target owns overrides, never the component structure. Resolve its
+		// actual mapping rather than whichever provider happens to be selected.
+		var source = isTarget
+			? Mappings.FirstOrDefault(row => row.Target.ItemId == item.ItemId)?.Source
+			: item;
+		if (source is null) return;
+		var request = ++componentEditorRequest;
 		var model = CustomModels.FirstOrDefault(model =>
-			string.Equals(model.Key, item.ModelKey, StringComparison.Ordinal))?.ToDomain().Pieces;
-		var pieces = model;
+			string.Equals(model.Key, source.ModelKey, StringComparison.Ordinal))?.ToDomain();
+		var pieces = model?.Pieces;
 		if (pieces is null)
-			pieces = await service.ReadArmorPiecesAsync(item.ItemId);
+			pieces = await service.ReadArmorPiecesAsync(source.ItemId);
+		if (request != componentEditorRequest) return;
+		if (isTarget && !Mappings.Any(row => row.Target.ItemId == item.ItemId && row.Source.ItemId == source.ItemId))
+			return;
 		componentEditorOwnerId = item.ItemId;
 		componentEditorIsTarget = isTarget;
 		componentEditorFollowSource = targetModes.FirstOrDefault(mode => mode.TargetItemId == item.ItemId)?.FollowSource ?? true;
-		ComponentEditorPieces.Clear();
-		foreach (var piece in item.IsCustomModel ? RuntimeArmorModelStructure.Normalize(pieces) : pieces)
-		{
-			var normalizedPiece = piece with { IsDefaultBase = piece.IsDefaultBase || IsLegacyDefaultBasePiece(item, piece) };
-			var enabled = pieceOverrides
-				.FirstOrDefault(overrideItem => overrideItem.OwnerItemId == item.ItemId
-					&& overrideItem.Body == normalizedPiece.Body
-					&& overrideItem.Slot == normalizedPiece.Slot
-					&& overrideItem.PieceType == normalizedPiece.PieceType
-					&& string.Equals(overrideItem.Unit, normalizedPiece.Unit, StringComparison.OrdinalIgnoreCase))
-				?.Enabled ?? normalizedPiece.Enabled;
-			ComponentEditorPieces.Add(new RuntimeArmorModelPieceEditorViewModel(
-				normalizedPiece with { Enabled = enabled },
-				MarkComponentEditorDirty,
-				item.IsCustomModel,
-				RemoveComponentPiece));
-		}
-		RebuildComponentEditorGroups();
+		componentEditorSourcePieces = source.IsCustomModel ? RuntimeArmorModelStructure.Normalize(pieces) : pieces;
+		componentEditorSourceOverrideOwner = source.IsCustomModel ? model?.SourceItemId : source.ItemId;
+		PopulateComponentEditor();
 		OnPropertyChanged(nameof(IsComponentEditorOpen));
 		OnPropertyChanged(nameof(ComponentEditorIsTarget));
 		OnPropertyChanged(nameof(IsComponentEditorCustomModel));
@@ -664,6 +665,25 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		selection.Clear();
 	}
 
+	private void PopulateComponentEditor()
+	{
+		if (componentEditorOwnerId is not { } owner || !Choices.TryGetValue(owner, out var item)) return;
+		var pieces = RuntimeArmorComponentProjection.Project(componentEditorSourcePieces,
+			componentEditorSourceOverrideOwner, componentEditorIsTarget ? owner : null,
+			componentEditorFollowSource, pieceOverrides);
+		ComponentEditorPieces.Clear();
+		foreach (var piece in pieces)
+		{
+			var normalizedPiece = piece with { IsDefaultBase = piece.IsDefaultBase || IsLegacyDefaultBasePiece(item, piece) };
+			ComponentEditorPieces.Add(new RuntimeArmorModelPieceEditorViewModel(
+				normalizedPiece,
+				MarkComponentEditorDirty,
+				IsComponentEditorCustomModel,
+				RemoveComponentPiece));
+		}
+		RebuildComponentEditorGroups();
+	}
+
 	private static bool IsLegacyDefaultBasePiece(RuntimeArmorChoiceViewModel item, RuntimeArmorRegistryModelPiece piece)
 		=> item.IsCustomModel
 			&& piece.PieceType == 0
@@ -671,11 +691,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public void CloseComponentEditor()
 	{
+		componentEditorRequest++;
 		if (!IsComponentEditorOpen) return;
 		FlushWorkspaceSave();
 		componentEditorOwnerId = null;
 		componentEditorIsTarget = false;
 		componentEditorFollowSource = true;
+		componentEditorSourcePieces = [];
+		componentEditorSourceOverrideOwner = null;
 		ComponentEditorPieces.Clear();
 		ComponentEditorGroups.Clear();
 		ComponentEditorRows.Clear();
@@ -1040,15 +1063,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			RecomputeHasChanges();
 			return;
 		}
-		var overrides = pieceOverrides
-			.Where(item => item.OwnerItemId != owner)
-			.ToList();
-		foreach (var piece in ComponentEditorPieces)
+		// Following is a view of the source, not a target override snapshot.
+		// Preserve manual choices while temporarily following the source.
+		if (!componentEditorIsTarget || !componentEditorFollowSource)
 		{
-			overrides.Add(new RuntimeArmorRegistryPieceOverride(
-				owner, piece.Body, piece.Unit, piece.Slot, piece.PieceType, piece.Enabled));
+			var overrides = pieceOverrides.Where(item => item.OwnerItemId != owner).ToList();
+			foreach (var piece in ComponentEditorPieces)
+				overrides.Add(new RuntimeArmorRegistryPieceOverride(
+					owner, piece.Body, piece.Unit, piece.Slot, piece.PieceType, piece.Enabled));
+			pieceOverrides = overrides;
 		}
-		pieceOverrides = overrides;
 		var modes = targetModes.Where(item => item.TargetItemId != owner).ToList();
 		if (componentEditorIsTarget)
 			modes.Add(new RuntimeArmorRegistryTargetMode(owner, componentEditorFollowSource));

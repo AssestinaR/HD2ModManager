@@ -37,8 +37,14 @@ public static class CliApplication
 	{
 		var command = invocation.Command.Select(value => value.Trim().ToLowerInvariant()).ToArray();
 		if (command.Length == 3 && command[0] == "diagnostics" && command[1] == "armor"
-			&& command[2] is "wizard" or "recover")
+			&& command[2] is "wizard" or "recover" or "quick" or "matrix" or "composition" or "memory")
+		{
+			if (command[2] == "memory")
+				return await ArmorMemoryDiagnostic.RunAsync(invocation.Options).ConfigureAwait(false);
+			if (command[2] is "matrix" or "composition")
+				return await ArmorDiagnosticMatrix.RunAsync(invocation.Options, command[2] == "composition").ConfigureAwait(false);
 			return await ArmorDiagnosticWizard.RunAsync(invocation.Options, command[2]).ConfigureAwait(false);
+		}
 		var addToProfileSupported = (command.Length == 3 && command[0] == "import" && command[1] == "plan")
 			|| (command.Length >= 4 && command[0] == "import" && command[1] == "batch" && command[2] == "plan");
 		if (!string.IsNullOrWhiteSpace(invocation.Options.AddToProfile) && !addToProfileSupported)
@@ -5145,6 +5151,10 @@ HD2 Mod Manager 命令行
 
 用法：
 	  hd2mod diagnostics armor wizard [--manager-root <管理器目录>]
+	  hd2mod diagnostics armor quick [--manager-root <管理器目录>]
+	  hd2mod diagnostics armor memory [--manager-root <管理器目录>]
+	  hd2mod diagnostics armor matrix [--manager-root <管理器目录>]
+	  hd2mod diagnostics armor composition [--manager-root <管理器目录>]
 	  hd2mod diagnostics armor recover [--manager-root <管理器目录>]
 	  hd2mod capabilities --json
 	  hd2mod status --manager-root <管理器目录> --json

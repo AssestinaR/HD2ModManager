@@ -27,7 +27,10 @@ end
 local function replace(data,offset,value)
     return data:sub(1,offset)..value..data:sub(offset+#value+1)
 end
-function C.plan(target,source,model,enabled,metadata,checkpoint)
+function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode)
+    composition_mode=composition_mode or 'full'
+    assert(composition_mode=='full' or composition_mode=='existing_only',
+        'unsupported composition mode')
     local facts,by_position={},{}
     for _,row in ipairs(target.rows) do
         for index,piece in ipairs(row.pieces) do
@@ -37,6 +40,68 @@ function C.plan(target,source,model,enabled,metadata,checkpoint)
             facts[#facts+1]={body=row.body,slot=slot,piece_type=kind,weight=C.u32(piece,16)}
             if checkpoint and index%64==0 then checkpoint() end
         end
+    end
+    if composition_mode=='existing_only' then
+        local grouped={}
+        local function add(piece,body,unit,slot,kind)
+            local key=table.concat({body,slot,kind},':')
+            grouped[key]=grouped[key] or {}
+            grouped[key][#grouped[key]+1]={unit=unit,data=piece}
+        end
+        if model then
+            for _,piece in ipairs(model.pieces) do
+                if piece.enabled~=false and enabled(piece.body,piece.unit,piece.slot,piece.piece_type) then
+                    add(nil,piece.body,piece.unit,piece.slot,piece.piece_type)
+                end
+            end
+        else
+            assert(source,'missing source snapshot')
+            for _,source_row in ipairs(source.rows) do
+                for _,piece in ipairs(source_row.pieces) do
+                    local unit=C.unit(piece)
+                    local slot,kind=C.u32(piece,8),C.u32(piece,12)
+                    if enabled(source_row.body,unit,slot,kind) then
+                        add(piece,source_row.body,unit,slot,kind)
+                    end
+                end
+            end
+        end
+        local rows,replaced,skipped={},0,0
+            for _,target_row in ipairs(target.rows) do
+                local row={body=target_row.body,header=target_row.header,pieces={}}
+                for _,original in ipairs(target_row.pieces) do
+                    local slot,kind=C.u32(original,8),C.u32(original,12)
+                local queue=grouped[table.concat({target_row.body,slot,kind},':')]
+                -- Custom model pieces may be body=3 (Any).  They can fill
+                -- either native body variant, but are still consumed once.
+                if not queue and target_row.body~=3 then
+                    queue=grouped[table.concat({3,slot,kind},':')]
+                end
+                local candidate=queue and table.remove(queue,1)
+                if candidate then
+                    row.pieces[#row.pieces+1]=replace(original,0,unit_bytes(candidate.unit))
+                    replaced=replaced+1
+                else
+                    row.pieces[#row.pieces+1]=original
+                end
+            end
+            rows[#rows+1]=row
+        end
+        for _,queue in pairs(grouped) do skipped=skipped+#queue end
+        local body_rows,pieces,fixups={}, {}, {48}
+        local offset,total=64+#rows*24,0
+        for i,row in ipairs(rows) do
+            total=total+#row.pieces
+            body_rows[#body_rows+1]=row.header..C.pack(offset,8)..C.pack(#row.pieces,8)
+            fixups[#fixups+1]=64+(i-1)*24+8
+            for _,data in ipairs(row.pieces) do pieces[#pieces+1]=data end
+            offset=offset+#row.pieces*96
+        end
+        local payload=target.header:sub(1,48)..C.pack(64,8)..C.pack(#rows,8)
+            ..table.concat(body_rows)..table.concat(pieces)
+        assert(#payload==offset,'clone length self-check failed')
+        return {payload=payload,bytes=offset,bodies=#rows,pieces=total,fixups=fixups,
+            mode='existing_only',structure_preserved=true,replaced=replaced,skipped_source=skipped}
     end
     local weights=metadata.weight_index(facts)
     local rows={}

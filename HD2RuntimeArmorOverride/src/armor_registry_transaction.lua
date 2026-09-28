@@ -10,9 +10,17 @@ function T.new(io,limits)
     function self.prepare(requests,checkpoint)
         if self.faulted then return nil,'publication fault: restart the game' end
         local next_active,new={},{}
-        local stats={reused=0,built=0,removed=0,writes=0}
+        local stats={reused=0,built=0,removed=0,writes=0,
+            mode='full',replaced=0,skipped_source=0,structure_preserved=false}
         local bytes,count=self.retained_bytes,self.retained_count
         for _,request in ipairs(requests) do
+            local composition=request.composition
+            if composition and composition.mode=='existing_only' then
+                stats.mode='existing_only'
+                stats.structure_preserved=true
+                stats.replaced=stats.replaced+(composition.replaced or 0)
+                stats.skipped_source=stats.skipped_source+(composition.skipped_source or 0)
+            end
             local key=request.key
             if next_active[key] then return nil,'duplicate target '..key end
             local active=self.active[key]

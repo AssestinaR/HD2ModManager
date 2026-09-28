@@ -110,7 +110,7 @@ public sealed class RuntimeArmorRegistryService
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
 		command.CommandText = """
-			SELECT body_variant, unit_file_id, slot, piece_type, tone_variations
+			SELECT raw_body_type, unit_file_id, slot, piece_type, tone_variations
 			FROM game_data_authority_pieces
 			WHERE item_id = $item
 			ORDER BY slot, body_variant, piece_type, unit_file_id;
@@ -308,7 +308,8 @@ public sealed class RuntimeArmorRegistryService
 			NormalizeMappings(mappings),
 			NormalizeModels(models),
 			NormalizePieceOverrides(pieceOverrides),
-			NormalizeTargetModes(targetModes));
+			NormalizeTargetModes(targetModes),
+			current.CompositionMode);
 		var compiled = desired;
 		if (gameDataDirectory is not null && desired.ModelDefinitions.Any(model => model.SourceItemId is null))
 			compiled = RuntimeArmorResourceFilter.Compile(desired,
@@ -376,13 +377,16 @@ public sealed class RuntimeArmorRegistryService
 		}
 		if (workspace is null || workspace.Schema != 1)
 			throw new InvalidDataException("护甲注册源文件 schema 必须是 1。");
+		if (workspace.CompositionMode is not ("full" or "existing_only"))
+			throw new InvalidDataException("护甲注册源文件 compositionMode 必须是 full 或 existing_only。");
 		var document = new RuntimeArmorRegistryDocument(
 			workspace.Revision,
 			workspace.Enabled,
 			workspace.Mappings ?? Array.Empty<RuntimeArmorRegistryMapping>(),
 			workspace.Models ?? Array.Empty<RuntimeArmorRegistryModel>(),
 			workspace.PieceOverrides ?? Array.Empty<RuntimeArmorRegistryPieceOverride>(),
-			workspace.TargetModes ?? Array.Empty<RuntimeArmorRegistryTargetMode>());
+			workspace.TargetModes ?? Array.Empty<RuntimeArmorRegistryTargetMode>(),
+			workspace.CompositionMode);
 		ValidateMappings(document.Mappings);
 		ValidateModels(document.ModelDefinitions, document.Mappings);
 		ValidatePieceOverrides(document.PieceOverrideDefinitions);
@@ -407,7 +411,8 @@ public sealed class RuntimeArmorRegistryService
 			document.Mappings,
 			document.ModelDefinitions,
 			document.PieceOverrideDefinitions,
-			document.TargetModeDefinitions);
+			document.TargetModeDefinitions,
+			document.CompositionMode);
 		return JsonSerializer.Serialize(workspace, WorkspaceJsonOptions);
 	}
 
@@ -437,7 +442,8 @@ public sealed class RuntimeArmorRegistryService
 		IReadOnlyList<RuntimeArmorRegistryMapping>? Mappings,
 		IReadOnlyList<RuntimeArmorRegistryModel>? Models,
 		IReadOnlyList<RuntimeArmorRegistryPieceOverride>? PieceOverrides,
-		IReadOnlyList<RuntimeArmorRegistryTargetMode>? TargetModes);
+		IReadOnlyList<RuntimeArmorRegistryTargetMode>? TargetModes,
+		string CompositionMode = "full");
 
 	public static RuntimeArmorRegistryDocument ParseProtocol(string text)
 	{
@@ -447,6 +453,7 @@ public sealed class RuntimeArmorRegistryService
 		int? schema = null;
 		int? revision = null;
 		bool? enabled = null;
+		var compositionMode = "full";
 		var mappings = new List<RuntimeArmorRegistryMapping>();
 		var models = new List<RuntimeArmorRegistryModel>();
 		var modelKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -483,6 +490,11 @@ public sealed class RuntimeArmorRegistryService
 						"false" => false,
 						_ => throw InvalidLine(lineNumber, "enabled 必须是 true 或 false。"),
 					};
+					break;
+				case "composition_mode":
+					if (value is not ("full" or "existing_only"))
+						throw InvalidLine(lineNumber, "composition_mode 必须是 full 或 existing_only。");
+					compositionMode = value;
 					break;
 				case "map":
 					var parts = value.Split(',');
@@ -578,7 +590,7 @@ public sealed class RuntimeArmorRegistryService
 			.OrderBy(model => model.Key, StringComparer.Ordinal)
 			.ToArray();
 		return new RuntimeArmorRegistryDocument(revision.Value, enabled.Value,
-			NormalizeMappings(mappings), parsedModels, pieceOverrides, targetModes);
+			NormalizeMappings(mappings), parsedModels, pieceOverrides, targetModes, compositionMode);
 	}
 
 	public static string SerializeProtocol(RuntimeArmorRegistryDocument document)
@@ -590,6 +602,8 @@ public sealed class RuntimeArmorRegistryService
 			.Append("schema=2\n")
 			.Append("revision=").Append(document.Revision.ToString(CultureInfo.InvariantCulture)).Append('\n')
 			.Append("enabled=").Append(document.Enabled ? "true" : "false").Append('\n');
+		if (!string.Equals(document.CompositionMode, "full", StringComparison.Ordinal))
+			builder.Append("composition_mode=existing_only\n");
 		foreach (var model in document.ModelDefinitions.OrderBy(model => model.Key, StringComparer.Ordinal))
 		{
 			builder.Append("model=")

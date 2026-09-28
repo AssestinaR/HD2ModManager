@@ -43,7 +43,8 @@ public sealed record RuntimeArmorRegistryDocument(
 	IReadOnlyList<RuntimeArmorRegistryMapping> Mappings,
 	IReadOnlyList<RuntimeArmorRegistryModel>? Models = null,
 	IReadOnlyList<RuntimeArmorRegistryPieceOverride>? PieceOverrides = null,
-	IReadOnlyList<RuntimeArmorRegistryTargetMode>? TargetModes = null)
+	IReadOnlyList<RuntimeArmorRegistryTargetMode>? TargetModes = null,
+	string CompositionMode = "full")
 {
 	public IReadOnlyList<RuntimeArmorRegistryModel> ModelDefinitions { get; init; }
 		= Models ?? Array.Empty<RuntimeArmorRegistryModel>();

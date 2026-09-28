@@ -41,7 +41,7 @@ end
 function M.parse(text)
     assert(type(text)=='string','protocol text is required')
     assert(#text<=65536,'protocol exceeds 64 KiB')
-    local result={mappings={},models={},piece_overrides={},target_modes={}}
+    local result={mappings={},models={},piece_overrides={},target_modes={},composition_mode='full'}
     local seen={}
     local model_seen={}
     for raw in (text..'\n'):gmatch('(.-)\r?\n') do
@@ -56,6 +56,10 @@ function M.parse(text)
             elseif key=='enabled' then
                 assert(value=='true' or value=='false','enabled must be true or false')
                 result.enabled=value=='true'
+            elseif key=='composition_mode' then
+                assert(value=='full' or value=='existing_only',
+                    'composition_mode must be full or existing_only')
+                result.composition_mode=value
             elseif key=='model' then
                 local name,source=value:match('^([^,]+),([^,]*)$')
                 assert(name and source,'model must be key,source_item_or_empty')
@@ -194,6 +198,10 @@ function M.serialize(document)
     end
     local lines={'schema=2','revision='..tostring(document.revision or 0),
         'enabled='..tostring(document.enabled==true)}
+    if document.composition_mode and document.composition_mode~='full' then
+        assert(document.composition_mode=='existing_only','unsupported composition mode')
+        lines[#lines+1]='composition_mode=existing_only'
+    end
     local models={}
     for _,model in ipairs(document.models or {}) do
         models[#models+1]={key=model.key,source=model.source,pieces=model.pieces or {}}

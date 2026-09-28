@@ -1,41 +1,50 @@
-param()
+param([switch]$Composition,[switch]$Memory)
 $ErrorActionPreference='Stop'
+if($Composition -and $Memory){throw '只能选择一种诊断包。'}
 $repo=Split-Path -Parent $PSScriptRoot
-$build=Join-Path $repo 'HD2ModCLI\bin\Debug\net10.0'
-# Package only already-built Debug CLI artifacts; never build outside bin/obj.
-$package=Join-Path $build ('diagnostics-package-'+(Get-Date -Format yyyyMMdd-HHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,6))
-$folder=Join-Path $package 'Armor-Diagnostics'
+$project=Join-Path $repo 'HD2ModCli\HD2ModCli.csproj'
+$build=Join-Path $repo 'HD2ModCli\bin\Debug\net10.0\win-x64\diagnostics-publish'
+# Keep all generated output in the project's ignored bin directory.
+dotnet publish $project -c Debug -r win-x64 --self-contained true `
+    -p:PublishSingleFile=true -p:PublishTrimmed=false `
+    -p:IncludeNativeLibrariesForSelfExtract=true -o $build -v quiet
+if($LASTEXITCODE -ne 0){throw '自包含诊断程序构建失败。'}
+$prefix=if($Memory){'memory-package-'}elseif($Composition){'composition-package-'}else{'diagnostics-package-'}
+$name=if($Memory){'Armor-Memory-Check'}elseif($Composition){'Armor-Composition-Check'}else{'Armor-Diagnostics'}
+$package=Join-Path $repo 'HD2ModCli\bin\Debug' `
+    ($prefix+(Get-Date -Format yyyyMMdd-HHmmss)+'-'+[guid]::NewGuid().ToString('N').Substring(0,6))
+$folder=Join-Path $package $name
 New-Item -ItemType Directory -Path $folder -ErrorAction Stop|Out-Null
-foreach($required in @('hd2mod.exe','hd2mod.dll','hd2mod.deps.json','hd2mod.runtimeconfig.json')){
-    if(-not(Test-Path -LiteralPath (Join-Path $build $required))){throw '请先完成 CLI Debug 构建。'}
-}
-Get-ChildItem -LiteralPath $build -File |Where-Object {
-    $_.Extension -in @('.dll','.exe') -or $_.Name -in @('hd2mod.deps.json','hd2mod.runtimeconfig.json')
-}|ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination $folder}
-if(Test-Path -LiteralPath (Join-Path $build 'runtimes')){
-    Copy-Item -LiteralPath (Join-Path $build 'runtimes') -Destination $folder -Recurse
-}
+$exe=Join-Path $build 'hd2mod.exe'
+if(-not(Test-Path -LiteralPath $exe)){throw '未找到自包含可执行文件。'}
+$previousRoot=$env:DOTNET_ROOT
+try {
+    $env:DOTNET_ROOT='Z:\missing-runtime'
+    $smoke=& $exe --help
+    if($LASTEXITCODE -ne 0 -or -not($smoke -match 'diagnostics armor matrix') -or -not($smoke -match 'diagnostics armor memory')){
+        throw '自包含可执行文件启动校验失败。'
+    }
+} finally { $env:DOTNET_ROOT=$previousRoot }
+Copy-Item -LiteralPath $exe -Destination $folder
+$commandName=if($Memory){'memory'}elseif($Composition){'composition'}else{'matrix'}
 $launcher=@'
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
 if not exist "%~dp0..\settings.json" (
-  echo Place the whole Armor-Diagnostics folder inside your configured manager folder.
+  echo 请将整个诊断文件夹放进管理器目录，然后双击文件夹里的 Start.cmd。
   pause
   exit /b 2
 )
-if exist "%~dp0..\bin\dotnet\dotnet.exe" (
-  "%~dp0..\bin\dotnet\dotnet.exe" "%~dp0hd2mod.dll" diagnostics armor wizard --manager-root "%~dp0.."
-) else (
-  "%~dp0hd2mod.exe" diagnostics armor wizard --manager-root "%~dp0.."
-)
+"%~dp0hd2mod.exe" diagnostics armor __MODE__ --manager-root "%~dp0.."
 echo.
 pause
 '@
-[IO.File]::WriteAllText((Join-Path $folder 'Start.cmd'),$launcher.Replace("`n","`r`n"),[Text.UTF8Encoding]::new($false))
-Copy-Item -LiteralPath (Join-Path $repo 'HD2ModCLI\ARMOR-DIAGNOSTICS.md') -Destination (Join-Path $folder 'README.md')
-$zip=Join-Path $package 'Armor-Diagnostics-Debug.zip'
+[IO.File]::WriteAllText((Join-Path $folder 'Start.cmd'),$launcher.Replace('__MODE__',$commandName).Replace("`n","`r`n"),[Text.UTF8Encoding]::new($false))
+$readme=if($Memory){'ARMOR-MEMORY-CHECK.md'}elseif($Composition){'ARMOR-COMPOSITION-CHECK.md'}else{'ARMOR-DIAGNOSTICS.md'}
+Copy-Item -LiteralPath (Join-Path $repo 'HD2ModCli' $readme) -Destination (Join-Path $folder 'README.md')
+$zip=Join-Path $package $(if($Memory){'Armor-Memory-Check-win-x64.zip'}elseif($Composition){'Armor-Composition-Check-win-x64.zip'}else{'Armor-Diagnostics-SelfContained-win-x64.zip'})
 Compress-Archive -LiteralPath $folder -DestinationPath $zip
 $hash=(Get-FileHash -LiteralPath $zip).Hash
-Write-Host "诊断附件（不含第三方 Lua 注入器/模型/配置）：$zip"
+Write-Host "自包含诊断附件（不含第三方 Lua 注入器/模型/配置）：$zip"
 Write-Host "SHA256: $hash"

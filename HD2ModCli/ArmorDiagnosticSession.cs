@@ -8,7 +8,7 @@ namespace HD2ModCli;
 public sealed record ArmorDiagnosticJournal(
     int Schema, string Id, DateTimeOffset StartedUtc, string ProtocolPath,
     string OriginalBase64, string OriginalHash, string DisabledBase64, string DisabledHash,
-    string Stage, bool Completed);
+    string Stage, bool Completed, string? ComparisonBase64 = null, string? ComparisonHash = null);
 
 public sealed class ArmorDiagnosticSession
 {
@@ -57,6 +57,29 @@ public sealed class ArmorDiagnosticSession
         return session;
     }
 
+    public static ArmorDiagnosticSession CreateComposition(string directory, string protocolPath, Action ensureStopped)
+    {
+        var original = ReadProtocol(protocolPath);
+        var document = CliArmorRegistryProtocol.ParseProtocol(
+            new UTF8Encoding(false, true).GetString(original).TrimStart('\uFEFF'));
+        if (document.Revision > int.MaxValue - 2)
+            throw new InvalidOperationException("协议 revision 空间不足，无法进行两组对照。");
+        var full = Encoding.UTF8.GetBytes(CliArmorRegistryProtocol.SerializeProtocol(
+            document with { Revision = document.Revision + 1, CompositionMode = "full" }));
+        var existing = Encoding.UTF8.GetBytes(CliArmorRegistryProtocol.SerializeProtocol(
+            document with { Revision = document.Revision + 2, CompositionMode = "existing_only" }));
+        if (full.Length > 65536 || existing.Length > 65536)
+            throw new InvalidDataException("对照协议超过 64 KiB。");
+        var session = Create(directory, protocolPath, ensureStopped);
+        session.Journal = session.Journal with
+        {
+            DisabledBase64 = Convert.ToBase64String(full), DisabledHash = Hash(full),
+            ComparisonBase64 = Convert.ToBase64String(existing), ComparisonHash = Hash(existing)
+        };
+        session.Save();
+        return session;
+    }
+
     public static ArmorDiagnosticSession Open(string directory, string expectedProtocolPath, Action ensureStopped)
     {
         var file = Path.Combine(directory, "active.json");
@@ -68,13 +91,45 @@ public sealed class ArmorDiagnosticSession
             throw new InvalidDataException("诊断恢复目标不匹配。");
         var original = Convert.FromBase64String(j.OriginalBase64);
         var disabled = Convert.FromBase64String(j.DisabledBase64);
+        var comparison = j.ComparisonBase64 is null ? null : Convert.FromBase64String(j.ComparisonBase64);
         if (original.Length > 65536 || disabled.Length > 65536
-            || Hash(original) != j.OriginalHash || Hash(disabled) != j.DisabledHash)
+            || Hash(original) != j.OriginalHash || Hash(disabled) != j.DisabledHash
+            || (comparison is not null && (comparison.Length > 65536 || Hash(comparison) != j.ComparisonHash)))
             throw new InvalidDataException("诊断恢复备份校验失败。");
         _ = CliArmorRegistryProtocol.ParseProtocol(Encoding.UTF8.GetString(original).TrimStart('\uFEFF'));
         var control = CliArmorRegistryProtocol.ParseProtocol(Encoding.UTF8.GetString(disabled));
-        if (control.Enabled || control.Mappings.Count != 0) throw new InvalidDataException("无效的关闭映射对照协议。");
+        if (comparison is null)
+        {
+            if (control.Enabled || control.Mappings.Count != 0)
+                throw new InvalidDataException("无效的关闭映射对照协议。");
+        }
+        else
+        {
+            var alternate = CliArmorRegistryProtocol.ParseProtocol(Encoding.UTF8.GetString(comparison));
+            if (!control.Enabled || control.CompositionMode != "full"
+                || !alternate.Enabled || alternate.CompositionMode != "existing_only")
+                throw new InvalidDataException("无效的槽位结构对照协议。");
+        }
         return new ArmorDiagnosticSession(directory, j, ensureStopped);
+    }
+
+    public void SetCompositionStopped(bool existingOnly)
+    {
+        ensureStopped();
+        if (Journal.Completed || Journal.ComparisonBase64 is null || Journal.ComparisonHash is null)
+            throw new InvalidOperationException("不是有效的槽位结构对照会话。");
+        var desiredHash = existingOnly ? Journal.ComparisonHash : Journal.DisabledHash;
+        var current = Hash(ReadProtocol(Journal.ProtocolPath));
+        if (current == desiredHash) return;
+        if (current != Journal.OriginalHash && current != Journal.DisabledHash
+            && current != Journal.ComparisonHash)
+            throw new InvalidOperationException("诊断期间协议已被其他程序修改。");
+        Journal = Journal with { Stage = existingOnly ? "existing_only_pending" : "full_pending" };
+        Save();
+        var bytes = Convert.FromBase64String(existingOnly ? Journal.ComparisonBase64 : Journal.DisabledBase64);
+        ReplaceProtocol(bytes, current);
+        Journal = Journal with { Stage = existingOnly ? "existing_only" : "full" };
+        Save();
     }
 
     public void Disable()
@@ -88,15 +143,59 @@ public sealed class ArmorDiagnosticSession
         Save();
     }
 
+    public void SetStopped(bool enabled)
+    {
+        ensureStopped();
+        if (Journal.Completed) throw new InvalidOperationException("诊断已完成。");
+        var current = Hash(ReadProtocol(Journal.ProtocolPath));
+        var desired = enabled ? Journal.OriginalHash : Journal.DisabledHash;
+        if (current == desired) return;
+        var previous = enabled ? Journal.DisabledHash : Journal.OriginalHash;
+        if (current != previous) throw new InvalidOperationException("诊断期间协议已被其他程序修改。");
+        Journal = Journal with { Stage = enabled ? "cold_enable_pending" : "cold_disable_pending" };
+        Save();
+        ReplaceProtocol(enabled ? Convert.FromBase64String(Journal.OriginalBase64)
+            : Convert.FromBase64String(Journal.DisabledBase64), previous);
+        Journal = Journal with { Stage = enabled ? "cold_enabled" : "cold_disabled" };
+        Save();
+    }
+
+    /// <summary>
+    /// Switches the runtime protocol while the game is alive. This is
+    /// deliberately separate from Disable/Restore: the latter are recovery
+    /// operations and must still require a stopped game.
+    /// </summary>
+    public void DisableLive()
+    {
+        if (Journal.Completed) throw new InvalidOperationException("诊断已完成。");
+        EnsureCurrent(Journal.OriginalHash);
+        Journal = Journal with { Stage = "disable_live_pending" };
+        Save();
+        ReplaceProtocolLive(Convert.FromBase64String(Journal.DisabledBase64), Journal.OriginalHash);
+        Journal = Journal with { Stage = "disabled_live" };
+        Save();
+    }
+
+    public void EnableLive()
+    {
+        if (Journal.Completed) throw new InvalidOperationException("诊断已完成。");
+        EnsureCurrent(Journal.DisabledHash);
+        Journal = Journal with { Stage = "enable_live_pending" };
+        Save();
+        ReplaceProtocolLive(Convert.FromBase64String(Journal.OriginalBase64), Journal.DisabledHash);
+        Journal = Journal with { Stage = "enabled_live" };
+        Save();
+    }
+
     public void Restore()
     {
         ensureStopped();
         var hash = Hash(ReadProtocol(Journal.ProtocolPath));
-        if (hash != Journal.OriginalHash && hash != Journal.DisabledHash)
+        if (hash != Journal.OriginalHash && hash != Journal.DisabledHash && hash != Journal.ComparisonHash)
             throw new InvalidOperationException("协议已被其他操作修改，拒绝覆盖。原备份仍保留，请联系支持人员处理。");
         Journal = Journal with { Stage = "restore_pending" };
         Save();
-        if (hash == Journal.DisabledHash)
+        if (hash != Journal.OriginalHash)
             ReplaceProtocol(Convert.FromBase64String(Journal.OriginalBase64), hash);
         EnsureCurrent(Journal.OriginalHash);
         Journal = Journal with { Stage = "restored", Completed = true };
@@ -126,6 +225,15 @@ public sealed class ArmorDiagnosticSession
             FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         EnsureCurrent(expected);
         ensureStopped();
+        AtomicWrite(Journal.ProtocolPath, bytes);
+        EnsureCurrent(Hash(bytes));
+    }
+
+    private void ReplaceProtocolLive(byte[] bytes, string expected)
+    {
+        using var lease = new FileStream(Path.Combine(Path.GetDirectoryName(Journal.ProtocolPath)!, ".manager.lock"),
+            FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        EnsureCurrent(expected);
         AtomicWrite(Journal.ProtocolPath, bytes);
         EnsureCurrent(Hash(bytes));
     }

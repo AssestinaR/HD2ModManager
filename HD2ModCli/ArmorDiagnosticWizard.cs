@@ -10,6 +10,7 @@ public static class ArmorDiagnosticWizard
 {
     public static async Task<int> RunAsync(CliGlobalOptions options, string mode)
     {
+        if (mode == "quick") return await ArmorDiagnosticQuick.RunAsync(options);
         if (!OperatingSystem.IsWindows()) throw new CliUserException("WindowsRequired", "诊断向导仅支持 Windows。");
         if (options.Json || Console.IsInputRedirected)
             throw new CliUserException("InteractiveRequired", "请双击诊断入口，在交互窗口中运行。");
