@@ -96,6 +96,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		var optionPathConflicts = new List<OptionPathConflict>();
 		var importedNodeIds = new List<ModNodeId>();
 		var cacheInvalidationFailedNodeIds = new List<ModNodeId>();
+		var conflictRemappedNodeIds = new List<ModNodeId>();
 		foreach (var unit in units)
 		{
 			try
@@ -107,6 +108,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					: PlanManifestImport(rawTree, unit.Manifest);
 				if (planned.Tree.Nodes.Count == 0) continue;
 				planned = await RestoreExportedNodeIdsAsync(planned, unit.SourceRoot, cancellationToken).ConfigureAwait(false);
+				var currentBeforeImport = await _store.TryLoadAsync(cancellationToken).ConfigureAwait(false);
+				var remapped = RemapConflictingNodeIds(planned, currentBeforeImport?.Nodes.Keys ?? Array.Empty<ModNodeId>());
+				planned = remapped.Tree;
+				conflictRemappedNodeIds.AddRange(remapped.RemappedNodeIds);
 				optionPathConflicts.AddRange(planned.OptionPathConflicts);
 				var (storedTree, snapshot, invalidationFailures) = await CommitImportAsync(
 					planned,
@@ -151,6 +156,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				.ToArray(),
 			CacheInvalidationStatus = cacheInvalidationStatus,
 			CacheInvalidationFailedNodeIds = distinctCacheFailures,
+			ConflictRemappedNodeIds = conflictRemappedNodeIds.Distinct().ToArray(),
 		};
 	}
 
@@ -872,6 +878,73 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			for (var childIndex = 0; childIndex < (option.SubOptions?.Count ?? 0); childIndex++)
 				AddOption(option.SubOptions![childIndex], key, $"{key}/option:{childIndex}", childIndex);
 		}
+	}
+
+	private static (PlannedImportTree Tree, IReadOnlyList<ModNodeId> RemappedNodeIds) RemapConflictingNodeIds(
+		PlannedImportTree planned,
+		IEnumerable<ModNodeId> occupiedNodeIds)
+	{
+		var occupied = occupiedNodeIds.ToHashSet();
+		var replacements = new Dictionary<ModNodeId, ModNodeId>();
+		foreach (var node in planned.Tree.Nodes.Values)
+		{
+			if (!occupied.Contains(node.Id)) continue;
+			var replacement = ModNodeId.New();
+			while (occupied.Contains(replacement) || replacements.Values.Contains(replacement))
+				replacement = ModNodeId.New();
+			replacements[node.Id] = replacement;
+			occupied.Add(replacement);
+		}
+
+		if (replacements.Count == 0) return (planned, Array.Empty<ModNodeId>());
+
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+		foreach (var node in planned.Tree.Nodes.Values)
+		{
+			var id = replacements.GetValueOrDefault(node.Id, node.Id);
+			var children = node.Children
+				.Select(child => replacements.GetValueOrDefault(child, child))
+				.ToArray();
+			var metadata = node.Metadata;
+			if (metadata.HostModGuids is { Count: > 0 })
+			{
+				metadata = metadata with
+				{
+					HostModGuids = metadata.HostModGuids
+						.Select(raw => Guid.TryParse(raw, out var guid)
+							&& replacements.TryGetValue(new ModNodeId(guid), out var replacement)
+								? replacement.Value.ToString("N")
+								: raw)
+						.Distinct(StringComparer.OrdinalIgnoreCase)
+						.ToArray(),
+				};
+			}
+			nodes[id] = node with { Id = id, Children = children, Metadata = metadata };
+		}
+
+		var sourcePaths = planned.SourceRelativePaths.ToDictionary(
+			pair => replacements.GetValueOrDefault(pair.Key, pair.Key),
+			pair => pair.Value);
+		var conflicts = planned.OptionPathConflicts
+			.Select(conflict => conflict with
+			{
+				AffectedParentOptionIds = conflict.AffectedParentOptionIds
+					.Select(id => replacements.GetValueOrDefault(id, id))
+					.Distinct()
+					.ToArray(),
+			})
+			.ToArray();
+		var remappedTree = planned with
+		{
+			Tree = planned.Tree with
+			{
+				RootId = replacements.GetValueOrDefault(planned.Tree.RootId, planned.Tree.RootId),
+				Nodes = nodes,
+			},
+			SourceRelativePaths = sourcePaths,
+			OptionPathConflicts = conflicts,
+		};
+		return (remappedTree, replacements.Values.ToArray());
 	}
 
 	private static string? FindNodeGuid(StandardModManifest manifest, IReadOnlyList<string> paths)

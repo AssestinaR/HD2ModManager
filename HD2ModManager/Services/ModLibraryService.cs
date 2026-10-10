@@ -512,6 +512,19 @@ namespace HD2ModManager.Services
             }
 
             _snapshot = result.Snapshot;
+            // If a library-outside logical container carried a stale GUID that was
+            // already occupied, the synchronizer assigns a fresh node identity.
+            // Persist that repaired identity back to the marker so the next reload
+            // remains stable instead of generating another GUID.
+            foreach (var addedNodeId in result.AddedNodeIds)
+            {
+                if (!_snapshot.Nodes.TryGetValue(addedNodeId, out var addedNode)
+                    || !addedNode.Metadata.IsLogicalContainer)
+                    continue;
+                var directory = ResolveAbsolutePath(addedNode.RelativePath);
+                if (!Directory.Exists(directory)) continue;
+                ModNodeStorageProtocol.SynchronizeNodeMetadata(directory, addedNode, cancellationToken);
+            }
             await CoreServices.CreateModLibraryStore(_paths).SaveAsync(_snapshot, cancellationToken).ConfigureAwait(false);
 			foreach (var nodeId in result.ChangedNodeIds.Concat(result.MissingNodeIds))
 				await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);

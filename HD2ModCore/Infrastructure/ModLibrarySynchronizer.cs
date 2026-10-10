@@ -120,7 +120,15 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 				? plannedId
 				: directory.LogicalNodeId ?? ModNodeId.New();
 			if (nodes.ContainsKey(id))
-				throw new InvalidOperationException($"同步发现逻辑目录“{relativePath}”的节点 GUID 已被其他库节点占用：{id.Value:N}。请修复其 .hd2modmanager-logical.json 或重新导入该逻辑 Mod。");
+			{
+				// A stale logical marker can survive a deleted/re-imported Mod.  The
+				// directory is still valid storage and must be recoverable on reload;
+				// allocate a fresh library identity instead of aborting the whole scan.
+				// The physical marker is intentionally left untouched here because this
+				// reconciliation method is also used as a pure inspection operation.
+				id = ModNodeId.New();
+				while (nodes.ContainsKey(id)) id = ModNodeId.New();
+			}
 			nodes[id] = new ModNode(
 				id,
 				relativePath,

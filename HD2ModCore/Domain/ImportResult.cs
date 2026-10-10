@@ -42,4 +42,10 @@ public sealed record ImportResult(
 	public ImportCacheInvalidationStatus CacheInvalidationStatus { get; init; } = ImportCacheInvalidationStatus.Completed;
 
 	public IReadOnlyList<ModNodeId> CacheInvalidationFailedNodeIds { get; init; } = Array.Empty<ModNodeId>();
+
+	/// <summary>
+	/// Nodes whose exported/source identity conflicted with an existing library
+	/// node and was regenerated during import.
+	/// </summary>
+	public IReadOnlyList<ModNodeId> ConflictRemappedNodeIds { get; init; } = Array.Empty<ModNodeId>();
 }

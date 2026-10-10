@@ -94,6 +94,46 @@ public sealed class ModLibrarySynchronizerTests
 	}
 
 	[Fact]
+	public async Task SynchronizeAsync_DuplicateLogicalMarker_RecoversWithFreshNodeId()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var mods = Path.Combine(root, "mods");
+			var first = Path.Combine(mods, "first");
+			var second = Path.Combine(mods, "second");
+			Directory.CreateDirectory(first);
+			Directory.CreateDirectory(second);
+			var duplicateId = ModNodeId.New();
+			ModNodeStorageProtocol.WriteLogicalMarker(first, duplicateId);
+			ModNodeStorageProtocol.WriteLogicalMarker(second, duplicateId);
+			var snapshot = new LibrarySnapshot(
+				1,
+				DateTimeOffset.UtcNow,
+				new Dictionary<ModNodeId, ModNode>
+				{
+					[duplicateId] = new ModNode(
+						duplicateId,
+						"first",
+						new ModNodeMetadata("first", null, DateTimeOffset.UtcNow, null, ModNodeKind.Standard, IsLogicalContainer: true),
+						Array.Empty<PatchGroupKey>(),
+						Array.Empty<ModNodeId>()),
+				},
+				Array.Empty<Profile>());
+
+			var result = await new ModLibrarySynchronizer(new PatchFileNameParser()).SynchronizeAsync(snapshot, mods);
+
+			Assert.Equal(2, result.Snapshot.Nodes.Count);
+			Assert.Contains(result.AddedNodeIds, id => id != duplicateId);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
 	public async Task SynchronizeAsync_PendingDeletionPath_IsNotReintroducedAsExternalMod()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

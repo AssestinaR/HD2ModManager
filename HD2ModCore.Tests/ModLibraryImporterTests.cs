@@ -221,6 +221,59 @@ public sealed class ModLibraryImporterTests
 	}
 
 	[Fact]
+	public async Task ImportFolderAsync_RemapConflictingExportedNodeGuid_WithoutOverwritingExistingNode()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var source = Path.Combine(root, "source");
+		var conflictingId = Guid.NewGuid();
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(source);
+		File.WriteAllText(Path.Combine(source, "9ba626afa44a3aa3.patch_0"), "imported");
+		File.WriteAllText(Path.Combine(source, "manifest.json"), $$"""
+		{
+		  "version": 1,
+		  "nodes": [
+		    { "relativePath": "", "guid": "{{conflictingId:D}}" }
+		  ]
+		}
+		""");
+
+		try
+		{
+			var paths = new StoragePaths(appRoot);
+			var store = new JsonModLibraryStore(paths);
+			var existingDirectory = Path.Combine(paths.ModsDirectory, "existing");
+			Directory.CreateDirectory(existingDirectory);
+			File.WriteAllText(Path.Combine(existingDirectory, "9ba626afa44a3aa4.patch_0"), "existing");
+			var existing = new ModNode(
+				new ModNodeId(conflictingId),
+				"existing",
+				new ModNodeMetadata("Existing", null, DateTimeOffset.UtcNow, null, ModNodeKind.Standard),
+				[new PatchGroupKey("9ba626afa44a3aa4", 0)],
+				Array.Empty<ModNodeId>());
+			await store.SaveAsync(new LibrarySnapshot(
+				1,
+				DateTimeOffset.UtcNow,
+				new Dictionary<ModNodeId, ModNode> { [existing.Id] = existing },
+				new List<Profile>()));
+
+			var importer = new ModLibraryImporter(
+				paths,
+				new ObjectTreeImporter(new PatchFileNameParser()),
+				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+				store);
+			var result = await importer.ImportFolderAsync(source);
+
+			Assert.True(result.Snapshot.Nodes.ContainsKey(existing.Id));
+			Assert.Equal("existing", result.Snapshot.Nodes[existing.Id].RelativePath);
+			Assert.Equal(2, result.Snapshot.Nodes.Count);
+			Assert.Contains(result.ImportedNodeIds, id => id != existing.Id);
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
+	[Fact]
 	public async Task ImportFolderAsync_ReportsFailedCacheInvalidationWithoutRollingBackCommittedContent()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));

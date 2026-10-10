@@ -141,7 +141,10 @@ namespace HD2ModManager.Services
 						cancellationToken: ct).ConfigureAwait(false);
                 }
                 if (notifyLibraryChanged) _library.NotifyImportCompleted();
-                _onInfo?.Invoke($"Imported {result.SourceDisplayName}");
+                var identityNote = result.ConflictRemappedNodeIds.Count == 0
+                    ? string.Empty
+                    : $"；检测到 {result.ConflictRemappedNodeIds.Count} 个 GUID 冲突，已生成新的库 GUID";
+                _onInfo?.Invoke($"Imported {result.SourceDisplayName}{identityNote}");
                 return importedGuids.Where(g => _library.Get(g) != null).ToList();
             }
             catch (Exception ex)
