@@ -1,0 +1,41 @@
+<Project>
+
+  <!--
+    作用：所有子项目自动继承的公共构建设置，避免每个 .csproj 重复声明同一份配置。
+    Purpose: Shared build settings inherited by every project, so the same configuration is not repeated in each .csproj.
+
+    刻意**不**放在这里的（属于项目特有配置）：
+    Deliberately NOT placed here (these are project-specific):
+      - TargetFramework   ：net8.0 / net10.0 / net10.0-windows 各不相同。
+      - OutputType        ：WinExe / Exe / Library 各不相同。
+      - ProjectReference / PackageReference / EmbeddedResource：每个项目不同。
+
+    关于 TreatWarningsAsErrors：
+    当前**故意保持关闭**。仓库现存 11 条唯一警告，全部集中在两处：
+      - HD2ModCore.Tests：9 条（4 条 CS0067 未使用事件、4 条 xUnit2031、1 条 xUnit2029）
+      - HD2ModManager：2 条（CS0649 未赋值字段）
+    生产项目 HD2ModCore / HD2ModAdaptation / HD2ModCli / HD2GameItemAssets / Decryptor 目前是零警告的。
+    若现在就开启 TreatWarningsAsErrors，CI 会在第一次运行时就失败。正确顺序是：先把这 11 条清零，再开启。
+    About TreatWarningsAsErrors: deliberately left OFF. The repository currently has 11 unique warnings, all in
+    two places: HD2ModCore.Tests (9: four CS0067 unused events, four xUnit2031, one xUnit2029) and
+    HD2ModManager (2: CS0649 unassigned fields). The production projects HD2ModCore / HD2ModAdaptation /
+    HD2ModCli / HD2GameItemAssets / Decryptor are currently warning-free.
+    Enabling it now would fail CI on its first run. The correct order is: clear those 11 first, then enable it.
+  -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <!--
+    CI 构建时启用确定性构建路径：PDB 中记录的是仓库相对路径而不是本机绝对路径，
+    因此不同机器上的构建产物一致，堆栈跟踪也能在 CI 日志里正确对应到源码行。
+    On CI, switch on deterministic build paths: PDBs record repository-relative paths instead of machine-local
+    absolute paths, so artifacts match across machines and stack traces map back to source lines in CI logs.
+  -->
+  <PropertyGroup Condition="'$(CI)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>
