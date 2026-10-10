@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCli;
@@ -11,26 +10,11 @@ internal static class CliManagerProcessGuard
 {
 	public static void EnsureDesktopManagerIsClosed()
 	{
-		try
-		{
-			var processIds = Process.GetProcessesByName("HD2ModManager")
-				.Select(process =>
-				{
-					try { return process.Id; }
-					finally { process.Dispose(); }
-				})
-				.OrderBy(id => id)
-				.ToArray();
-			if (processIds.Length != 0)
-			{
-				throw new CliUserException("ManagerProcessRunning", $"检测到 HD2ModManager 正在运行（PID：{string.Join(", ", processIds)}）。请先关闭所有桌面端实例，再执行管理器数据写入。");
-			}
-		}
-		catch (CliUserException) { throw; }
-		catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
-		{
-			throw new CliUserException("ManagerProcessCheckFailed", $"无法可靠枚举 HD2ModManager 进程；为避免与桌面端并发写入，CLI 已拒绝本次写入：{exception.Message}");
-		}
+		var processIds = CliManagerProcessProbe.FindRunningManagerProcessIds();
+		if (processIds.Count == 0) return;
+		if (processIds.Contains(-1))
+			throw new CliUserException("ManagerProcessCheckFailed", "无法可靠枚举 HD2ModManager 进程；为避免与桌面端并发写入，CLI 已拒绝本次写入。");
+		throw new CliUserException("ManagerProcessRunning", $"检测到 HD2ModManager 正在运行（PID：{string.Join(", ", processIds)}）。请先关闭所有桌面端实例，再执行管理器数据写入。");
 	}
 }
 

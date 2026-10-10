@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
@@ -331,24 +330,7 @@ internal static class CliWriteTargetGuard
 	}
 
 	private static IReadOnlyList<int> FindRunningManagerProcessIds()
-	{
-		try
-		{
-			return Process.GetProcessesByName("HD2ModManager")
-				.Select(process =>
-				{
-					try { return process.Id; }
-					finally { process.Dispose(); }
-				})
-				.OrderBy(id => id)
-				.ToArray();
-		}
-		catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
-		{
-			// An uncertain process list must never be treated as a safe write window.
-			return [-1];
-		}
-	}
+		=> CliManagerProcessProbe.FindRunningManagerProcessIds();
 
 	private sealed record CliLibraryContentsInspection(
 		bool IsReadable,
