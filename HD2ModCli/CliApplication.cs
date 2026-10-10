@@ -89,6 +89,14 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateCapabilities(), () => "当前 CLI 支持安全导入，以及经显式确认的 Mod 元数据与 Option 管理。请使用 capabilities --json 获取完整机器可读能力清单。");
 			return 0;
 		}
+		if (Matches(command, "game", "locate"))
+		{
+			EnsureNoExplicitOutput(invocation.Options);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var location = CoreServices.CreateGameDataLocator().Locate();
+			Emit(invocation.Options, CliProjections.CreateGameLocate(workspace, location), () => FormatGameLocate(workspace, location));
+			return 0;
+		}
 		if (Matches(command, "status"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -3010,6 +3018,32 @@ public static class CliApplication
 			?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
 			?? "dev";
 
+	private static string FormatGameLocate(CliWorkspace workspace, GameDataLocation? location)
+	{
+		var lines = new List<string>();
+		if (location is null)
+		{
+			lines.Add("自动查找：未在本机的 Steam 库中找到《绝地潜兵 2》。");
+		}
+		else
+		{
+			lines.Add($"检测到的 GameData：{location.GameDataDirectory}");
+			lines.Add($"游戏目录：{location.GameDirectory}");
+			lines.Add($"命中的 Steam 库：{location.MatchedSteamLibrary}");
+			lines.Add($"已检查的 Steam 库：{location.ExaminedSteamLibraries.Count} 个");
+		}
+		lines.Add($"管理器当前配置：{workspace.GameDataRoot ?? "（未配置）"}");
+		if (location is not null && workspace.GameDataRoot is not null)
+		{
+			var configured = workspace.GameDataRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+			lines.Add(string.Equals(configured, location.GameDataDirectory, StringComparison.OrdinalIgnoreCase)
+				? "一致性：配置与检测结果一致。"
+				: "一致性：配置与检测结果不一致；如需采用检测结果，请在管理器设置页点击 GameData 的“重置”。");
+		}
+		if (workspace.Issues.Count > 0) lines.Add($"提示：{string.Join("；", workspace.Issues)}");
+		return string.Join(Environment.NewLine, lines);
+	}
+
 	private static string FormatStatus(CliWorkspace workspace)
 		=> string.Join(Environment.NewLine,
 		[
@@ -5158,6 +5192,7 @@ HD2 Mod Manager 命令行
 	  hd2mod diagnostics armor recover [--manager-root <管理器目录>]
 	  hd2mod capabilities --json
 	  hd2mod status --manager-root <管理器目录> --json
+	  hd2mod game locate [--manager-root <管理器目录>] --json
 	  hd2mod custom-model inspect <Mod GUID> --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --json
 	  hd2mod custom-model convert <Mod GUID> <来源Archive[,头盔Archive]> <素体名称> --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --output <输出根目录> --confirm --json
 	  hd2mod armor-registry status [--registry-root <协议目录>] --json

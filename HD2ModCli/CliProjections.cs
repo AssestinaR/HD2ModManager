@@ -18,6 +18,7 @@ public static class CliProjections
 				new { name = "version", safety = "read-only", description = "读取 CLI 与协议版本" },
 				new { name = "capabilities", safety = "read-only", description = "读取当前可用命令与安全边界" },
 				new { name = "status", safety = "read-only", description = "读取管理器、Mod 库与 GameData 路径状态" },
+				new { name = "game locate", safety = "read-only", description = "自动查找本机《绝地潜兵 2》的 data 目录（Steam 注册表 → libraryfolders.vdf → 常见 Steam 库根目录），并报告与管理器当前配置是否一致；不写任何文件" },
 				new { name = "armor-registry status", safety = "read-only", description = "读取外置护甲注册协议、Lua 运行状态和版本定位缓存；不写入文件" },
 				new { name = "custom-model inspect", safety = "read-only", description = "检测 Mod 中含独占 Unit 的可见护甲/头盔来源，不修改来源或游戏" },
 				new { name = "custom-model convert", safety = "explicit-confirm", description = "将来源 Archive 的可见 Unit 复制为新 ID，输出独立 Patch 并登记当前 Mod 库的自定义素体；不部署" },
@@ -384,6 +385,42 @@ public static class CliProjections
 			orphanedDecorationActivationIds = GetOrphanedActivationIds(state.DecorationActivations.Keys, state.Snapshot.Nodes),
 			issues = state.ReadIssues,
 		};
+	}
+
+	// 作用：投影"自动查找游戏目录"的结果，让 agent 能判断管理器当前配置是否与检测结果一致。
+	// Purpose: Projects the game-directory auto-detection result so an agent can tell whether the current
+	//          manager setting agrees with what was detected on this machine.
+	public static object CreateGameLocate(CliWorkspace workspace, GameDataLocation? location)
+	{
+		ArgumentNullException.ThrowIfNull(workspace);
+		var configured = NormalizeComparablePath(workspace.GameDataRoot);
+		return new
+		{
+			protocolVersion = ProtocolVersion,
+			mode = "read-only",
+			found = location is not null,
+			gameDataDirectory = location?.GameDataDirectory,
+			gameDirectory = location?.GameDirectory,
+			matchedSteamLibrary = location?.MatchedSteamLibrary,
+			examinedSteamLibraries = location?.ExaminedSteamLibraries ?? (IReadOnlyList<string>)Array.Empty<string>(),
+			configuredGameDataRoot = workspace.GameDataRoot,
+			configuredDirectoryExists = workspace.GameDataRoot is not null && Directory.Exists(workspace.GameDataRoot),
+			configuredMatchesDetected = location is not null && configured is not null
+				&& string.Equals(configured, location.GameDataDirectory, StringComparison.OrdinalIgnoreCase),
+		};
+	}
+
+	private static string? NormalizeComparablePath(string? path)
+	{
+		if (string.IsNullOrWhiteSpace(path)) return null;
+		try
+		{
+			return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		}
+		catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+		{
+			return null;
+		}
 	}
 
 	public static ModNode ResolveMod(IReadOnlyDictionary<ModNodeId, ModNode> nodes, string selector)
