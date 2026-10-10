@@ -1,0 +1,71 @@
+name: build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+# 同一分支上的新推送会取消仍在运行的旧构建，避免排队浪费时间。
+# A new push to the same branch cancels the still-running build for that branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build-and-test:
+    # 必须是 Windows：HD2ModManager 是 WPF（net10.0-windows），且 HD2ModCore 会读取 Steam 注册表。
+    # Must be Windows: HD2ModManager is WPF (net10.0-windows) and HD2ModCore reads the Steam registry.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 需要两个版本：大部分项目目标框架是 net8.0，而 CLI 与 GUI 是 net10.0 / net10.0-windows。
+      # 测试是真正被执行的，所以 8.0 运行时也必须安装，否则 net8.0 的测试无法启动。
+      # Both versions are required: most projects target net8.0 while the CLI and GUI target net10.0.
+      # The tests actually execute, so the 8.0 runtime must be present too.
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore WpfApp1.sln
+
+      # GitHub Actions 会自动设置 CI=true，Directory.Build.props 借此启用确定性构建路径。
+      # GitHub Actions sets CI=true automatically; Directory.Build.props uses it for deterministic build paths.
+      - name: Build
+        run: dotnet build WpfApp1.sln -c Release --no-restore
+
+      # 跑全部 4 个测试项目：Core / Adaptation / Cli / Decryptor。
+      # CLI 测试通过 CliManagerProcessProbe 中和了"桌面端正在运行"的检查，
+      # 因此 CI 机器上即使存在同名进程也不会产生误报。
+      # Runs all four test projects. The CLI tests neutralize the "desktop app is running" guard through
+      # CliManagerProcessProbe, so a same-named process on the CI machine cannot cause false failures.
+      - name: Test
+        run: dotnet test WpfApp1.sln -c Release --no-build --no-restore --logger "trx;LogFileName=results.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: '**/TestResults/*.trx'
+          if-no-files-found: ignore
