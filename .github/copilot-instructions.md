@@ -15,3 +15,9 @@
 ## Export Guidelines
 - Export should produce a zip with an embedded manifest containing portable names and notes only; legacy tags fields are ignored during import (asset tags are derived by scanning).
 - Export keeps original filenames, and the zip is named after the top-level/root object name.
+
+## 临时诊断工程规则
+- `_diagnostics/` 下的工程都是临时诊断/实验工程：不进入 `WpfApp1.sln`、不参与构建、不属于交付物。
+- 生产工程（`HD2ModManager`、`HD2ModCore`、`HD2ModAdaptation`、`HD2ModCli`、`HD2GameItemAssets`、`Decryptor`）不得通过 `ProjectReference`、`using` 或任何其他方式依赖 `_diagnostics/` 下的任何工程或类型。
+- 若某个诊断工程里的逻辑确有生产价值，必须先把该逻辑迁入正式工程并补齐测试，再由生产代码引用；禁止让生产代码直接依赖诊断工程。
+- 该规则由 `HD2ModCore.Tests/DiagnosticsIsolationArchitectureTests.cs` 强制校验。
