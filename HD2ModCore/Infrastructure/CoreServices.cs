@@ -9,7 +9,6 @@ namespace HD2ModCore.Infrastructure;
 public static class CoreServices
 {
 	public static IPatchFileNameParser CreatePatchFileNameParser() => new PatchFileNameParser();
-	public static IPatchTocFileCollector CreatePatchTocFileCollector() => new PatchTocFileCollector();
 	public static IModLibraryResidualCleanupService CreateModLibraryResidualCleanupService()
 		=> new ModLibraryResidualCleanupService(CreatePatchFileNameParser());
 	public static IPatchFileIndexBuilder CreatePatchFileIndexBuilder()
@@ -136,8 +135,8 @@ public static class CoreServices
 		=> new GameDataAuthorityProvider();
 	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)
 		=> new AdvancedEquipmentIndexService(paths);
-	public static IGameDataLocator CreateGameDataLocator(IGameDataSettings settings)
-		=> new GameDataLocator(settings);
+	public static IGameDataLocator CreateGameDataLocator()
+		=> new GameDataLocator();
 	public static IArchiveHashesProvider CreateFileSystemArchiveHashesProvider(StoragePaths paths)
 		=> new FileSystemArchiveHashesProvider(paths);
 	public static IAssetMetadataCatalogProvider CreateAssetMetadataCatalogProvider(StoragePaths paths)
@@ -224,8 +223,6 @@ public static class CoreServices
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser(), informationCenter: informationCenter);
 	public static IPatchResourceRepackagingService CreatePatchResourceRepackagingService()
 		=> new PatchResourceRepackagingService(CreatePatchFileNameParser());
-	public static IMaterialDependencyValidator CreateMaterialDependencyValidator()
-		=> new MaterialDependencyValidator(CreatePatchEntryPayloadReader(), new StingrayMaterialReferenceReader());
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths, IModInformationCenter informationCenter)
 	{
 		return new LibraryDerivedDataService(informationCenter, CreateModAssetSummaryProjector(paths));
@@ -343,6 +340,4 @@ public static class CoreServices
 		=> new ModLibrarySynchronizer(CreatePatchFileNameParser());
    public static IModExporter CreateModExporter(StoragePaths paths)
 		=> new ModExporter(paths);
-   public static IModManifestImporter CreateModManifestImporter(StoragePaths paths)
-		=> new ModManifestImporter(paths, CreateObjectTreeImporter(), CreateModLibraryStore(paths));
 }

@@ -1,11 +1,9 @@
 ﻿using System;
 using System.IO;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using HD2ModCore.Infrastructure;
-using Microsoft.Win32;
 
 namespace HD2ModManager.Services
 {
@@ -419,118 +417,16 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
-        // Try to detect Helldivers 2 installation via Steam library folders and set GameDataFolder
+        // 自动查找游戏 data 目录并写入设置；找不到时保留原有设置不动。
+        // Auto-detects the game data directory and persists it; keeps the existing setting when nothing is found.
         public static string TryDetectAndSetGameDataFolder()
         {
-            var detected = DetectGameDataFolderInternal();
+            var detected = CoreServices.CreateGameDataLocator().Locate()?.GameDataDirectory ?? string.Empty;
             if (!string.IsNullOrWhiteSpace(detected))
             {
                 SetGameDataFolder(detected);
             }
             return detected;
-        }
-
-        private static string DetectGameDataFolderInternal()
-        {
-            try
-            {
-                var libs = new System.Collections.Generic.List<string>();
-                var steamPath = GetSteamInstallPath();
-                if (!string.IsNullOrWhiteSpace(steamPath)) libs.Add(steamPath);
-                // libraryfolders.vdf
-                var vdf = Path.Combine(steamPath ?? string.Empty, "steamapps", "libraryfolders.vdf");
-                if (File.Exists(vdf))
-                {
-                    try
-                    {
-                        var text = File.ReadAllText(vdf);
-                        foreach (Match m in Regex.Matches(text, "\"path\"\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase))
-                        {
-                            var p = m.Groups[1].Value.Replace("\\\\", "\\");
-                            if (Directory.Exists(p)) libs.Add(p);
-                        }
-                    }
-                    catch { }
-                }
-                // common candidates if registry missing
-                var defaults = new[]
-                {
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam"),
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Steam"),
-                };
-                foreach (var d in defaults) if (Directory.Exists(d)) libs.Add(d);
-
-                // Registry-free fallback: probe only well-known Steam library roots on local fixed drives.
-                // Do not recurse through drives; startup discovery must remain bounded and predictable.
-                foreach (var drive in DriveInfo.GetDrives().Where(drive => drive.IsReady && drive.DriveType == DriveType.Fixed))
-                {
-                    var root = drive.RootDirectory.FullName;
-                    var candidates = new[]
-                    {
-                        Path.Combine(root, "Steam"),
-                        Path.Combine(root, "SteamLibrary"),
-                        Path.Combine(root, "SteamGames"),
-                        Path.Combine(root, "Games", "Steam"),
-                        Path.Combine(root, "Program Files (x86)", "Steam"),
-                        Path.Combine(root, "Program Files", "Steam"),
-                    };
-                    foreach (var candidate in candidates)
-                    {
-                        if (Directory.Exists(candidate)) libs.Add(candidate);
-                    }
-                }
-
-                // probe each lib for Helldivers 2
-                foreach (var lib in libs.Distinct(StringComparer.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        var common = Path.Combine(lib, "steamapps", "common");
-                        if (!Directory.Exists(common)) continue;
-                        var candidates = new[] { "Helldivers 2", "HELLDIVERS 2" };
-                        foreach (var name in candidates)
-                        {
-                            var game = Path.Combine(common, name);
-                            if (Directory.Exists(game))
-                            {
-                                var data = Path.Combine(game, "data");
-                                if (Directory.Exists(data)) return data;
-                                // fallback to return expected path even if not yet present
-                                return data;
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-            catch { }
-            return string.Empty;
-        }
-
-        private static string GetSteamInstallPath()
-        {
-            try
-            {
-                using var key = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam");
-                var v = key?.GetValue("SteamPath") as string;
-                if (!string.IsNullOrWhiteSpace(v)) return v;
-            }
-            catch { }
-            try
-            {
-                using var key = Registry.LocalMachine.OpenSubKey(@"Software\Valve\Steam");
-                var v = key?.GetValue("InstallPath") as string;
-                if (!string.IsNullOrWhiteSpace(v)) return v;
-            }
-            catch { }
-            try
-            {
-                using var key = Registry.LocalMachine.OpenSubKey(@"Software\WOW6432Node\Valve\Steam");
-                var v = key?.GetValue("InstallPath") as string;
-                if (!string.IsNullOrWhiteSpace(v)) return v;
-            }
-            catch { }
-            return string.Empty;
         }
     }
 }
