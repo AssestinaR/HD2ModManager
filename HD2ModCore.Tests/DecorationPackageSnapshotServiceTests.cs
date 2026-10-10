@@ -85,6 +85,9 @@ public sealed class DecorationPackageSnapshotServiceTests : IDisposable
     {
         public int ClearedOperationCount { get; private set; }
 
+        public ValueTask<ModInformationPropertyResult<T>> RequestAsync<T>(FactKey key, ModInformationReadRequest request, FactReadOperation<T> operation, CancellationToken cancellationToken = default) where T : class
+            => ValueTask.FromException<ModInformationPropertyResult<T>>(new NotSupportedException());
+
         public ValueTask<ModInformationPropertyResult<PatchWorkspaceIndex>> ReadPatchIndexAsync(ModInformationReadRequest request, CancellationToken cancellationToken = default)
         {
             var index = indexes[Path.GetFullPath(request.SourcePath)];

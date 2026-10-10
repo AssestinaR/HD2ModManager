@@ -38,50 +38,67 @@ public sealed class ModInformationReader : IModInformationReader, IModInformatio
 		_unitReader = unitReader ?? new PatchUnitMeshReader(_payloadReader);
 	}
 
-	public async ValueTask<ModInformationPropertyResult<PatchWorkspaceIndex>> ReadPatchIndexAsync(
+	public async ValueTask<ModInformationPropertyResult<T>> RequestAsync<T>(
+		FactKey key,
 		ModInformationReadRequest request,
-		CancellationToken cancellationToken = default)
+		FactReadOperation<T> operation,
+		CancellationToken cancellationToken = default) where T : class
 	{
-		Validate(request, ModInformationPropertyKind.PatchCatalog);
-		var path = FullPath(request.SourcePath);
+		ArgumentNullException.ThrowIfNull(request);
+		ArgumentNullException.ThrowIfNull(operation);
+		Validate(request, key.Kind);
+		var path = FullPath(operation.RevisionPath);
 		var revision = ResolveRevision(request, path);
-		var key = CreateKey(request, ModInformationPropertyKind.PatchCatalog, revision, path);
+		var cacheKey = CreateKey(key, request, revision, path, operation.ScopeSuffix);
 		var nodeEpoch = CaptureNodeEpoch(request.NodeId);
-		var cached = await TryGetCacheAsync<PatchWorkspaceIndex>(key, request, revision, cancellationToken).ConfigureAwait(false);
+		var cached = await TryGetCacheAsync<T>(cacheKey, request, revision, cancellationToken).ConfigureAwait(false);
 		if (cached is not null) return cached;
 
-		var (index, wasCoalesced) = await ReadCoalescedAsync(
-			key,
-			async token => await _workspaceReader.ReadIndexAsync(path, token).ConfigureAwait(false),
-			cancellationToken).ConfigureAwait(false);
-		return (await CompleteAsync(key, request, index, ModInformationPropertyKind.PatchCatalog, revision, Estimate(index), nodeEpoch, cancellationToken).ConfigureAwait(false))
+		var (outcome, wasCoalesced) = await ReadCoalescedAsync(cacheKey, operation.Produce, cancellationToken).ConfigureAwait(false);
+		return (await CompleteAsync(cacheKey, request, outcome.Data, key.Kind, revision, outcome.EstimatedBytes, nodeEpoch, cancellationToken, outcome.Status, outcome.Issues).ConfigureAwait(false))
 			with { WasCoalesced = wasCoalesced };
 	}
 
-	public async ValueTask<ModInformationPropertyResult<HD2ModCore.Domain.PatchEntryPayload>> ReadPatchPayloadAsync(
+	public ValueTask<ModInformationPropertyResult<PatchWorkspaceIndex>> ReadPatchIndexAsync(
+		ModInformationReadRequest request,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(request);
+		return RequestAsync(
+			FactKey.ForNode(request.NodeId, ModInformationPropertyKind.PatchCatalog),
+			request,
+			new FactReadOperation<PatchWorkspaceIndex>(
+				request.SourcePath,
+				async token =>
+				{
+					var index = await _workspaceReader.ReadIndexAsync(FullPath(request.SourcePath), token).ConfigureAwait(false);
+					return new FactReadOutcome<PatchWorkspaceIndex>(index, Estimate(index));
+				}),
+			cancellationToken);
+	}
+
+	public ValueTask<ModInformationPropertyResult<HD2ModCore.Domain.PatchEntryPayload>> ReadPatchPayloadAsync(
 		AdaptationPatchTocEntry entry,
 		ModInformationReadRequest request,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(entry);
-		Validate(request, ModInformationPropertyKind.PatchEntryPayload);
-		var revision = ResolveRevision(request, entry.SourceFilePath);
-		var selector = MergeEntrySelector(request.EffectiveSelector, entry.AssetKey);
-		var effectiveRequest = request with { Selector = selector };
-		var key = CreateKey(effectiveRequest, ModInformationPropertyKind.PatchEntryPayload, revision, entry.SourceFilePath);
-		var nodeEpoch = CaptureNodeEpoch(effectiveRequest.NodeId);
-		var cached = await TryGetCacheAsync<HD2ModCore.Domain.PatchEntryPayload>(key, effectiveRequest, revision, cancellationToken).ConfigureAwait(false);
-		if (cached is not null) return cached;
-
-		var (corePayload, wasCoalesced) = await ReadCoalescedAsync(
-			key,
-			async token => ToCorePayload(await _payloadReader.ReadPayloadAsync(entry, token).ConfigureAwait(false)),
-			cancellationToken).ConfigureAwait(false);
-		return (await CompleteAsync(key, effectiveRequest, corePayload, ModInformationPropertyKind.PatchEntryPayload, revision, Estimate(corePayload), nodeEpoch, cancellationToken).ConfigureAwait(false))
-			with { WasCoalesced = wasCoalesced };
+		ArgumentNullException.ThrowIfNull(request);
+		var effectiveRequest = request with { Selector = MergeEntrySelector(request.EffectiveSelector, entry.AssetKey) };
+		return RequestAsync(
+			FactKey.ForNode(effectiveRequest.NodeId, ModInformationPropertyKind.PatchEntryPayload),
+			effectiveRequest,
+			new FactReadOperation<HD2ModCore.Domain.PatchEntryPayload>(
+				entry.SourceFilePath,
+				async token =>
+				{
+					var payload = ToCorePayload(await _payloadReader.ReadPayloadAsync(entry, token).ConfigureAwait(false));
+					return new FactReadOutcome<HD2ModCore.Domain.PatchEntryPayload>(payload, Estimate(payload));
+				}),
+			cancellationToken);
 	}
 
-	public async ValueTask<ModInformationPropertyResult<PatchUnitMesh>> ReadUnitAsync(
+	public ValueTask<ModInformationPropertyResult<PatchUnitMesh>> ReadUnitAsync(
 		AdaptationPatchTocEntry entry,
 		IReadOnlyList<AdaptationPatchTocEntry>? patchEntries,
 		PatchUnitDependencyPolicy dependencyPolicy,
@@ -90,29 +107,26 @@ public sealed class ModInformationReader : IModInformationReader, IModInformatio
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(entry);
-		Validate(request, ModInformationPropertyKind.UnitStructure);
-		var entries = patchEntries ?? await ReadEntriesThroughIndexAsync(entry.SourceFilePath, request, cancellationToken).ConfigureAwait(false);
-		var revision = ResolveRevision(request, entry.SourceFilePath);
-		var selector = MergeEntrySelector(request.EffectiveSelector, entry.AssetKey);
-		var effectiveRequest = request with { Selector = selector };
-		var key = CreateKey(effectiveRequest, ModInformationPropertyKind.UnitStructure, revision, entry.SourceFilePath,
-			$"policy={dependencyPolicy};canonical={canonicalSource}");
-		var nodeEpoch = CaptureNodeEpoch(effectiveRequest.NodeId);
-		var cached = await TryGetCacheAsync<PatchUnitMesh>(key, effectiveRequest, revision, cancellationToken).ConfigureAwait(false);
-		if (cached is not null) return cached;
-
-		var (unit, wasCoalesced) = await ReadCoalescedAsync(
-			key,
-			async token => canonicalSource
-				? await _unitReader.ReadCanonicalSourceAsync(entry, entries, dependencyPolicy, token).ConfigureAwait(false)
-				: await _unitReader.ReadAsync(entry, entries, dependencyPolicy, token).ConfigureAwait(false),
-			cancellationToken).ConfigureAwait(false);
-		var bytes = Estimate(unit);
-		return (await CompleteAsync(key, effectiveRequest, unit, ModInformationPropertyKind.UnitStructure, revision, bytes, nodeEpoch, cancellationToken).ConfigureAwait(false))
-			with { WasCoalesced = wasCoalesced };
+		ArgumentNullException.ThrowIfNull(request);
+		var effectiveRequest = request with { Selector = MergeEntrySelector(request.EffectiveSelector, entry.AssetKey) };
+		return RequestAsync(
+			FactKey.ForNode(effectiveRequest.NodeId, ModInformationPropertyKind.UnitStructure),
+			effectiveRequest,
+			new FactReadOperation<PatchUnitMesh>(
+				entry.SourceFilePath,
+				async token =>
+				{
+					var entries = patchEntries ?? await ReadEntriesThroughIndexAsync(entry.SourceFilePath, request, token).ConfigureAwait(false);
+					var unit = canonicalSource
+						? await _unitReader.ReadCanonicalSourceAsync(entry, entries, dependencyPolicy, token).ConfigureAwait(false)
+						: await _unitReader.ReadAsync(entry, entries, dependencyPolicy, token).ConfigureAwait(false);
+					return new FactReadOutcome<PatchUnitMesh>(unit, Estimate(unit));
+				},
+				$"policy={dependencyPolicy};canonical={canonicalSource}"),
+			cancellationToken);
 	}
 
-	public async ValueTask<ModInformationPropertyResult<ModUnitStructureSummary>> ReadUnitSummaryAsync(
+	public ValueTask<ModInformationPropertyResult<ModUnitStructureSummary>> ReadUnitSummaryAsync(
 		AdaptationPatchTocEntry entry,
 		IReadOnlyList<AdaptationPatchTocEntry>? patchEntries,
 		PatchUnitDependencyPolicy dependencyPolicy,
@@ -120,62 +134,50 @@ public sealed class ModInformationReader : IModInformationReader, IModInformatio
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(entry);
-		Validate(request, ModInformationPropertyKind.UnitGeometrySummary);
-		var entries = patchEntries ?? await ReadEntriesThroughIndexAsync(entry.SourceFilePath, request, cancellationToken).ConfigureAwait(false);
-		var revision = ResolveRevision(request, entry.SourceFilePath);
-		var selector = MergeEntrySelector(request.EffectiveSelector, entry.AssetKey);
-		var effectiveRequest = request with { Selector = selector };
-		var key = CreateKey(effectiveRequest, ModInformationPropertyKind.UnitGeometrySummary, revision, entry.SourceFilePath,
-			$"policy={dependencyPolicy}");
-		var nodeEpoch = CaptureNodeEpoch(effectiveRequest.NodeId);
-		var cached = await TryGetCacheAsync<ModUnitStructureSummary>(key, effectiveRequest, revision, cancellationToken).ConfigureAwait(false);
-		if (cached is not null) return cached;
-
+		ArgumentNullException.ThrowIfNull(request);
+		var effectiveRequest = request with { Selector = MergeEntrySelector(request.EffectiveSelector, entry.AssetKey) };
 		// The summary route intentionally does not call ReadUnitAsync: retaining a
 		// complete decoded Unit in an operation cache defeats a planner's purpose.
-		var (summary, wasCoalesced) = await ReadCoalescedAsync(
-			key,
-			async token =>
-			{
-				var unit = await _unitReader.ReadCanonicalSourceAsync(entry, entries, dependencyPolicy, token).ConfigureAwait(false);
-				return ModUnitStructureSummary.Create(unit) with { EstimatedPayloadBytes = EstimateDeclaredPayload(entry, entries, unit.Dependencies) };
-			},
-			cancellationToken).ConfigureAwait(false);
-		return (await CompleteAsync(key, effectiveRequest, summary, ModInformationPropertyKind.UnitGeometrySummary, revision, Estimate(summary), nodeEpoch, cancellationToken).ConfigureAwait(false))
-			with { WasCoalesced = wasCoalesced };
+		return RequestAsync(
+			FactKey.ForNode(effectiveRequest.NodeId, ModInformationPropertyKind.UnitGeometrySummary),
+			effectiveRequest,
+			new FactReadOperation<ModUnitStructureSummary>(
+				entry.SourceFilePath,
+				async token =>
+				{
+					var entries = patchEntries ?? await ReadEntriesThroughIndexAsync(entry.SourceFilePath, request, token).ConfigureAwait(false);
+					var unit = await _unitReader.ReadCanonicalSourceAsync(entry, entries, dependencyPolicy, token).ConfigureAwait(false);
+					var summary = ModUnitStructureSummary.Create(unit) with { EstimatedPayloadBytes = EstimateDeclaredPayload(entry, entries, unit.Dependencies) };
+					return new FactReadOutcome<ModUnitStructureSummary>(summary, Estimate(summary));
+				},
+				$"policy={dependencyPolicy}"),
+			cancellationToken);
 	}
 
-	public async ValueTask<ModInformationPropertyResult<ModSourceUnitFactsSnapshot>> ReadSourceUnitFactsAsync(
+	public ValueTask<ModInformationPropertyResult<ModSourceUnitFactsSnapshot>> ReadSourceUnitFactsAsync(
 		PatchWorkspaceIndex index,
 		ModInformationReadRequest request,
 		PatchUnitDependencyPolicy dependencyPolicy = PatchUnitDependencyPolicy.RequirePatchLocalComposite,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(index);
-		Validate(request, ModInformationPropertyKind.UnitGeometrySummary);
-		var sourcePath = FullPath(index.SourcePatchTocPath);
-		var revision = ResolveRevision(request, sourcePath);
-		var key = CreateKey(request, ModInformationPropertyKind.UnitGeometrySummary, revision, sourcePath,
-			$"source-facts;policy={dependencyPolicy}");
-		var nodeEpoch = CaptureNodeEpoch(request.NodeId);
-		var cached = await TryGetCacheAsync<ModSourceUnitFactsSnapshot>(key, request, revision, cancellationToken).ConfigureAwait(false);
-		if (cached is not null) return cached;
-
-		var (sourceFacts, wasCoalesced) = await ReadCoalescedAsync(
-			key,
-			token => ReadSourceUnitFactsCoreAsync(index, sourcePath, request, dependencyPolicy, token),
-			cancellationToken).ConfigureAwait(false);
-		return (await CompleteAsync(
-			key,
+		ArgumentNullException.ThrowIfNull(request);
+		return RequestAsync(
+			FactKey.ForNode(request.NodeId, ModInformationPropertyKind.UnitGeometrySummary),
 			request,
-			sourceFacts.Snapshot,
-			ModInformationPropertyKind.UnitGeometrySummary,
-			revision,
-			Estimate(sourceFacts.Snapshot),
-			nodeEpoch,
-			cancellationToken,
-			sourceFacts.Issues.Count == 0 ? ModInformationPropertyStatus.Fresh : ModInformationPropertyStatus.Partial,
-			sourceFacts.Issues).ConfigureAwait(false)) with { WasCoalesced = wasCoalesced };
+			new FactReadOperation<ModSourceUnitFactsSnapshot>(
+				index.SourcePatchTocPath,
+				async token =>
+				{
+					var read = await ReadSourceUnitFactsCoreAsync(index, FullPath(index.SourcePatchTocPath), request, dependencyPolicy, token).ConfigureAwait(false);
+					return new FactReadOutcome<ModSourceUnitFactsSnapshot>(
+						read.Snapshot,
+						Estimate(read.Snapshot),
+						read.Issues.Count == 0 ? ModInformationPropertyStatus.Fresh : ModInformationPropertyStatus.Partial,
+						read.Issues);
+				},
+				$"source-facts;policy={dependencyPolicy}"),
+			cancellationToken);
 	}
 
 	public void ClearOperation(Guid operationId)
@@ -192,7 +194,7 @@ public sealed class ModInformationReader : IModInformationReader, IModInformatio
 			cache.RemoveNode(nodeId);
 		foreach (var cache in _sessionCaches.Values)
 			cache.RemoveNode(nodeId);
-		foreach (var key in _inFlight.Keys.Where(key => key.NodeId == nodeId).ToArray())
+		foreach (var key in _inFlight.Keys.Where(key => key.BelongsTo(nodeId)).ToArray())
 			_inFlight.TryRemove(key, out _);
 		try { NodeInvalidated?.Invoke(nodeId); }
 		catch { }
@@ -328,7 +330,7 @@ public sealed class ModInformationReader : IModInformationReader, IModInformatio
 		return cached is null
 			? null
 			: new ModInformationPropertyResult<T>(cached.Data,
-				new ModInformationPropertyState(key.Property, ModInformationPropertyStatus.Cached, CacheSource(request.EffectiveContext),
+				new ModInformationPropertyState(key.Key.Kind, ModInformationPropertyStatus.Cached, CacheSource(request.EffectiveContext),
 					revision, cached.CreatedUtc));
 	}
 
@@ -394,16 +396,18 @@ public sealed class ModInformationReader : IModInformationReader, IModInformatio
 	{
 		ArgumentNullException.ThrowIfNull(request);
 		request.Validate();
+		// 该属性是否允许持久化，由 ModInformationFactRegistry 单一声明，避免"新增 kind 时忘了改这里"。
+		// Whether a property may persist is declared once in ModInformationFactRegistry, so a new kind cannot silently bypass the rule.
 		if (request.EffectiveContext.CacheScope == ModInformationCacheScope.Persistent
-			&& expected is ModInformationPropertyKind.PatchEntryPayload or ModInformationPropertyKind.UnitStructure)
-			throw new ArgumentException($"Patch payload reader 不允许默认持久化属性：{expected}。请显式指定 Operation/Session/None。", nameof(request));
+			&& ModInformationFactRegistry.Describe(expected).CacheScope < ModInformationCacheScope.Persistent)
+			throw new ArgumentException($"读取器不允许把 {expected} 当作默认持久化属性。请显式指定 Operation/Session/None。", nameof(request));
 	}
 
-	private static ModInformationCacheKey CreateKey(ModInformationReadRequest request, ModInformationPropertyKind property, ModContentRevision revision, string path, string suffix = "")
+	private static ModInformationCacheKey CreateKey(FactKey key, ModInformationReadRequest request, ModContentRevision revision, string path, string suffix = "")
 	{
 		var selector = request.EffectiveSelector;
 		var selectorKey = selector.ToCacheKey() + $"|path={path.ToLowerInvariant()}|{suffix}";
-		return new ModInformationCacheKey(request.NodeId ?? new ModNodeId(Guid.Empty), property, revision.CacheKey, request.ContentView, selectorKey);
+		return new ModInformationCacheKey(key, revision.CacheKey, request.ContentView, selectorKey);
 	}
 
 	private static ModInformationSelector MergeEntrySelector(ModInformationSelector selector, AdaptationAssetKey key)

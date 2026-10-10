@@ -235,8 +235,7 @@ public sealed class ModInformationReaderContractsTests
 
 	private static ModInformationCacheKey CreateKey(string revision, ModInformationPropertyKind property)
 		=> ModInformationCacheKey.Create(
-			new ModNodeId(Guid.NewGuid()),
-			property,
+			FactKey.ForNode(new ModNodeId(Guid.NewGuid()), property),
 			ModContentRevision.Create(revision));
 
 	private sealed class CountingWorkspaceReader : IPatchWorkspaceReader

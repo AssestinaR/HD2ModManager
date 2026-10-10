@@ -89,7 +89,7 @@ public sealed class InMemoryModInformationOperationCache : IModInformationOperat
 		{
 			ThrowIfDisposed();
 			var removed = 0;
-			foreach (var key in _entries.Keys.Where(key => key.NodeId == nodeId).ToArray())
+			foreach (var key in _entries.Keys.Where(key => key.BelongsTo(nodeId)).ToArray())
 			{
 				if (!_entries.TryRemove(key, out var entry)) continue;
 				_usedBytes -= entry.EstimatedBytes;

@@ -193,6 +193,9 @@ public sealed class ModEquipmentSourceFactsReaderTests
 
 	private sealed class StubReader(PatchWorkspaceIndex index, ModSourceUnitFactsSnapshot sourceFacts) : IModInformationReader
 	{
+		public ValueTask<ModInformationPropertyResult<T>> RequestAsync<T>(FactKey key, ModInformationReadRequest request, FactReadOperation<T> operation, CancellationToken cancellationToken = default) where T : class
+			=> ValueTask.FromException<ModInformationPropertyResult<T>>(new NotSupportedException());
+
 		public ValueTask<ModInformationPropertyResult<PatchWorkspaceIndex>> ReadPatchIndexAsync(ModInformationReadRequest request, CancellationToken cancellationToken = default)
 			=> ValueTask.FromResult(new ModInformationPropertyResult<PatchWorkspaceIndex>(index, Fresh(ModInformationPropertyKind.PatchCatalog)));
 

@@ -21,13 +21,15 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly IModDataIndex? _modDataIndex;
 	private readonly IReferenceGraphIndexWriter? _referenceGraphIndexWriter;
 	private readonly IAsyncDisposable? _ownedInformationReader;
-	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<PatchFileIndex>>>> _fileTasks = new(StringComparer.Ordinal);
-	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<ModContentFacts>>>> _assetTasks = new(StringComparer.Ordinal);
-	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<ReferenceGraphFacts>>>> _referenceTasks = new(StringComparer.Ordinal);
-	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<MaintenanceAnalysisFacts>>>> _maintenanceTasks = new(StringComparer.Ordinal);
-	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<ModUnitVersionFacts>>>> _unitVersionTasks = new(StringComparer.Ordinal);
-	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<AdvancedUnitAnalysisFacts>>>> _advancedUnitAnalysisTasks = new(StringComparer.Ordinal);
-	private readonly ConcurrentDictionary<string, Lazy<Task<ModInformationResult<ModThumbnailFacts>>>> _thumbnailTasks = new(StringComparer.Ordinal);
+	// 作用：进行中的生产任务按"事实身份 + 输入指纹"登记，取代旧的 "{nodeId}|{kind}|{generation}" 字符串键。
+	// Purpose: In-flight production is registered by (FactKey, revision) instead of the old concatenated string key.
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<PatchFileIndex>>>> _fileTasks = new();
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModContentFacts>>>> _assetTasks = new();
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ReferenceGraphFacts>>>> _referenceTasks = new();
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<MaintenanceAnalysisFacts>>>> _maintenanceTasks = new();
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModUnitVersionFacts>>>> _unitVersionTasks = new();
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<AdvancedUnitAnalysisFacts>>>> _advancedUnitAnalysisTasks = new();
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModThumbnailFacts>>>> _thumbnailTasks = new();
 	private readonly ConcurrentDictionary<ModNodeId, byte> _invalidatedNodes = new();
 	private readonly ConcurrentDictionary<ModNodeId, CancellationTokenSource> _nodeCancellations = new();
 	private readonly CancellationTokenSource _shutdown = new();
@@ -61,9 +63,11 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		ArgumentNullException.ThrowIfNull(request);
 		if (request.Kind != ModInformationKind.FileFacts) throw new ArgumentException("Request kind must be FileFacts.", nameof(request));
 		var nodeStates = snapshot.Nodes.Keys.ToDictionary(nodeId => nodeId, GetNodeCancellation);
-		// Keep node IDs in a stable compact form so InvalidateNodeAsync can remove
-		// snapshot-wide in-flight requests that include a changed node.
-		var key = $"{request.Kind}|{request.Generation ?? "auto"}|{string.Join(',', snapshot.Nodes.Keys.OrderBy(id => id.Value).Select(id => id.Value.ToString("N")))}";
+		// 快照级事实的主体是"库 + 该快照覆盖的节点集合"，这样 InvalidateNodeAsync 仍能按节点精确命中。
+		// The snapshot fact's subject is the library plus the covered node set, so per-node invalidation still matches exactly.
+		var key = new FactRevisionKey(
+			new FactKey(FactSubject.LibrarySnapshot(snapshot.Nodes.Keys), ModInformationPropertyKind.PatchCatalog),
+			request.Generation ?? "auto");
 		var entry = new Lazy<Task<ModInformationResult<PatchFileIndex>>>(
 			() => ProduceFileFactsAndRemoveAsync(key, snapshot, modsRootDirectory, request, nodeStates),
 			LazyThreadSafetyMode.ExecutionAndPublication);
@@ -86,7 +90,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				? generationProvider.ComputeGeneration(node, modsRootDirectory)
 				: node.ContentFingerprint ?? ComputeNodeGeneration(node, modsRootDirectory));
 		var effectiveRequest = request with { Generation = generation };
-		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
+		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
 			try
@@ -122,7 +126,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var nodeCancellation = BeginNodeRequest(node.Id);
 		var generation = request.Generation ?? ComputeNodeGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
-		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
+		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
 			try
@@ -152,23 +156,25 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			_nodeCancellations.TryRemove(nodeId, out nodeCancellation);
 			nodeCancellation?.Cancel();
 		}
-		foreach (var pair in _assetTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
+		var subject = FactSubject.Node(nodeId);
+		foreach (var pair in _assetTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_assetTasks.TryRemove(pair.Key, out _);
 		// FileFacts is keyed by the complete snapshot rather than one node.  Drop
 		// any in-flight snapshot containing the changed node so a subsequent read
 		// cannot coalesce onto a task that started before the commit.
 		var nodeToken = nodeId.Value.ToString("N");
-		foreach (var pair in _fileTasks.Where(pair => pair.Key.Contains(nodeToken, StringComparison.OrdinalIgnoreCase)))
+		foreach (var pair in _fileTasks.Where(pair => pair.Key.Key.Subject.Kind == FactSubjectKind.Library
+			&& pair.Key.Key.Subject.Value.Contains(nodeToken, StringComparison.OrdinalIgnoreCase)))
 			_fileTasks.TryRemove(pair.Key, out _);
-		foreach (var pair in _referenceTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
+		foreach (var pair in _referenceTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_referenceTasks.TryRemove(pair.Key, out _);
-		foreach (var pair in _maintenanceTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
+		foreach (var pair in _maintenanceTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_maintenanceTasks.TryRemove(pair.Key, out _);
-		foreach (var pair in _unitVersionTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
+		foreach (var pair in _unitVersionTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_unitVersionTasks.TryRemove(pair.Key, out _);
-		foreach (var pair in _advancedUnitAnalysisTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
+		foreach (var pair in _advancedUnitAnalysisTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_advancedUnitAnalysisTasks.TryRemove(pair.Key, out _);
-		foreach (var pair in _thumbnailTasks.Where(pair => pair.Key.StartsWith($"{nodeId}|", StringComparison.Ordinal)))
+		foreach (var pair in _thumbnailTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_thumbnailTasks.TryRemove(pair.Key, out _);
 		// FileFacts is cached as a snapshot-wide product, so a node mutation must
 		// remove every persisted snapshot that contains this node as well.  Without
@@ -198,7 +204,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var nodeCancellation = BeginNodeRequest(node.Id);
 		var generation = request.Generation ?? AdvancedUnitAnalysisProducer.ComputeGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
-		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
+		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
 			try
@@ -223,7 +229,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var nodeCancellation = BeginNodeRequest(node.Id);
 		var generation = request.Generation ?? ComputeThumbnailGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
-		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
+		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
 			try
@@ -270,7 +276,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var nodeCancellation = BeginNodeRequest(node.Id);
 		var generation = request.Generation ?? ComputeNodeGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
-		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
+		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
 			try
@@ -295,7 +301,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var nodeCancellation = BeginNodeRequest(node.Id);
 		var generation = request.Generation ?? ComputeNodeGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
-		var key = $"{node.Id}|{effectiveRequest.Kind}|{generation}";
+		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
 		if (!effectiveRequest.RequireFresh && _informationCache is not null)
 		{
 			try
@@ -310,7 +316,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
 	}
 
-	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAndRemoveAsync(string key, LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates)
+	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAndRemoveAsync(FactRevisionKey key, LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates)
 	{
 		var started = DateTimeOffset.UtcNow;
 		ModInformationResult<PatchFileIndex>? completed = null;
@@ -322,13 +328,13 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		finally
 		{
 			RecordDiagnostic(completed is null
-				? new ModInformationDiagnostic(request.Source, request.Kind, null, request.Generation, started, DateTimeOffset.UtcNow, false, false, ModInformationStatus.Failed, []) { OperationKey = key }
-				: new ModInformationDiagnostic(request.Source, request.Kind, null, completed.Generation, started, DateTimeOffset.UtcNow, completed.CacheHit, completed.WasCoalesced, completed.Status, completed.Issues) { OperationKey = key });
+				? new ModInformationDiagnostic(request.Source, request.Kind, null, request.Generation, started, DateTimeOffset.UtcNow, false, false, ModInformationStatus.Failed, []) { OperationKey = key.ToString() }
+				: new ModInformationDiagnostic(request.Source, request.Kind, null, completed.Generation, started, DateTimeOffset.UtcNow, completed.CacheHit, completed.WasCoalesced, completed.Status, completed.Issues) { OperationKey = key.ToString() });
 			_fileTasks.TryRemove(key, out _);
 		}
 	}
 
-	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAsync(string key, LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates, CancellationToken cancellationToken, DateTimeOffset started)
+	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAsync(FactRevisionKey key, LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates, CancellationToken cancellationToken, DateTimeOffset started)
 	{
 		var generation = request.Generation ?? ComputeFileGeneration(snapshot, root);
 		if (!request.RequireFresh && _fileFactsCache is not null)
@@ -345,7 +351,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				_ = exception;
 			}
 		}
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, generation, started, key));
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, generation, started, key.ToString()));
 		try
 		{
 			var data = await _fileFactsProducer.ProduceAsync(snapshot, root, cancellationToken).ConfigureAwait(false);
@@ -426,10 +432,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{node.Id.Value:N}|{info.Name.ToLowerInvariant()}:{info.Length}:{info.LastWriteTimeUtc.Ticks}"))).ToLowerInvariant();
 	}
 
-	private async Task<ModInformationResult<ModContentFacts>> ProduceAssetInventoryAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
+	private async Task<ModInformationResult<ModContentFacts>> ProduceAssetInventoryAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<ModContentFacts>? completed = null;
 		try
 		{
@@ -474,10 +480,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		}
 	}
 
-	private async Task<ModInformationResult<ReferenceGraphFacts>> ProduceReferenceGraphAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
+	private async Task<ModInformationResult<ReferenceGraphFacts>> ProduceReferenceGraphAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<ReferenceGraphFacts>? completed = null;
 		ModInformationCacheEntry<ReferenceGraphFacts>? stale = null;
 		try
@@ -508,10 +514,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		}
 	}
 
-	private async Task<ModInformationResult<MaintenanceAnalysisFacts>> ProduceMaintenanceAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
+	private async Task<ModInformationResult<MaintenanceAnalysisFacts>> ProduceMaintenanceAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<MaintenanceAnalysisFacts>? completed = null;
 		ModInformationCacheEntry<MaintenanceAnalysisFacts>? stale = null;
 		try
@@ -546,10 +552,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		}
 	}
 
-	private async Task<ModInformationResult<ModUnitVersionFacts>> ProduceUnitVersionAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
+	private async Task<ModInformationResult<ModUnitVersionFacts>> ProduceUnitVersionAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<ModUnitVersionFacts>? completed = null;
 		ModInformationCacheEntry<ModUnitVersionFacts>? stale = null;
 		try
@@ -606,10 +612,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			await _ownedInformationReader.DisposeAsync().ConfigureAwait(false);
 	}
 
-	private async Task<ModInformationResult<ModThumbnailFacts>> ProduceThumbnailAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
+	private async Task<ModInformationResult<ModThumbnailFacts>> ProduceThumbnailAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<ModThumbnailFacts>? completed = null;
 		ModInformationCacheEntry<ModThumbnailFacts>? stale = null;
 		try
@@ -638,10 +644,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		}
 	}
 
-	private async Task<ModInformationResult<AdvancedUnitAnalysisFacts>> ProduceAdvancedUnitAnalysisAndRemoveAsync(string key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
+	private async Task<ModInformationResult<AdvancedUnitAnalysisFacts>> ProduceAdvancedUnitAnalysisAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{
 		var started = DateTimeOffset.UtcNow;
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key));
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<AdvancedUnitAnalysisFacts>? completed = null;
 		ModInformationCacheEntry<AdvancedUnitAnalysisFacts>? stale = null;
 		try
@@ -685,10 +691,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			? new ModInformationResult<T>(default, ModInformationStatus.Failed, kind, requestedGeneration, [issue], false, true)
 			: new ModInformationResult<T>(stale.Data, ModInformationStatus.Stale, kind, stale.Generation, [issue], false, true, true);
 
-	private static ModInformationDiagnostic CreateDiagnostic<T>(ModInformationRequest request, ModNodeId nodeId, string key, DateTimeOffset started, ModInformationResult<T>? result)
+	private static ModInformationDiagnostic CreateDiagnostic<T>(ModInformationRequest request, ModNodeId nodeId, FactRevisionKey key, DateTimeOffset started, ModInformationResult<T>? result)
 		=> result is null
-			? new ModInformationDiagnostic(request.Source, request.Kind, nodeId, request.Generation, started, DateTimeOffset.UtcNow, false, false, ModInformationStatus.Failed, []) { OperationKey = key }
-			: new ModInformationDiagnostic(request.Source, request.Kind, nodeId, result.Generation, started, DateTimeOffset.UtcNow, result.CacheHit, result.WasCoalesced, result.Status, result.Issues) { OperationKey = key };
+			? new ModInformationDiagnostic(request.Source, request.Kind, nodeId, request.Generation, started, DateTimeOffset.UtcNow, false, false, ModInformationStatus.Failed, []) { OperationKey = key.ToString() }
+			: new ModInformationDiagnostic(request.Source, request.Kind, nodeId, result.Generation, started, DateTimeOffset.UtcNow, result.CacheHit, result.WasCoalesced, result.Status, result.Issues) { OperationKey = key.ToString() };
 
 	private static CoreIssue CreateCacheSaveIssue(ModInformationKind kind, string generation, string path, Exception exception)
 		=> new(CoreIssueSeverity.Warning, "InformationCacheSaveFailed", $"内容已生成，但 {kind} 缓存保存失败（generation: {generation}）：{exception.Message}", path, ExceptionMessage: exception.ToString());

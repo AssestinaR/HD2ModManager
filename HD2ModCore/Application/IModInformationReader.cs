@@ -9,6 +9,14 @@ namespace HD2ModCore.Application;
 // Purpose: Provides one read boundary for Patch metadata, payloads, and Unit structures.
 public interface IModInformationReader : IAsyncDisposable
 {
+	// 作用：统一入口——按 FactKey 取得一个事实。下面 5 个具名读取方法全部转发到这里。
+	// Purpose: The single entry point — obtains a fact by FactKey. The five named reads below all forward here.
+	ValueTask<ModInformationPropertyResult<T>> RequestAsync<T>(
+		FactKey key,
+		ModInformationReadRequest request,
+		FactReadOperation<T> operation,
+		CancellationToken cancellationToken = default) where T : class;
+
 	ValueTask<ModInformationPropertyResult<PatchWorkspaceIndex>> ReadPatchIndexAsync(
 		ModInformationReadRequest request,
 		CancellationToken cancellationToken = default);
