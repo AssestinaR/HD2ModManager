@@ -10,6 +10,8 @@ public static class CoreServices
 {
 	public static IPatchFileNameParser CreatePatchFileNameParser() => new PatchFileNameParser();
 	public static IPatchTocFileCollector CreatePatchTocFileCollector() => new PatchTocFileCollector();
+	public static IModLibraryResidualCleanupService CreateModLibraryResidualCleanupService()
+		=> new ModLibraryResidualCleanupService(CreatePatchFileNameParser());
 	public static IPatchFileIndexBuilder CreatePatchFileIndexBuilder()
 		=> new PatchFileIndexBuilder(CreatePatchFileNameParser());
 	public static IModFileFactsProducer CreateModFileFactsProducer()

@@ -525,6 +525,14 @@ namespace HD2ModManager.Services
                 if (!Directory.Exists(directory)) continue;
                 ModNodeStorageProtocol.SynchronizeNodeMetadata(directory, addedNode, cancellationToken);
             }
+            // Residual cleanup runs against the post-synchronization snapshot, so a directory that
+            // synchronization has just claimed is never mistaken for an unreferenced leftover.
+            var residualCleanup = CoreServices.CreateModLibraryResidualCleanupService()
+                .Cleanup(_snapshot, _paths.ModsDirectory, cancellationToken);
+            if (residualCleanup.RemovedCount > 0)
+                LogService.Info($"模组库残留清理：已删除 {residualCleanup.RemovedCount} 个无 Patch、无有效外部资源且未被库引用的残留目录。");
+            foreach (var failure in residualCleanup.Failures)
+                LogService.Error($"模组库残留清理失败：{failure}");
             await CoreServices.CreateModLibraryStore(_paths).SaveAsync(_snapshot, cancellationToken).ConfigureAwait(false);
 			foreach (var nodeId in result.ChangedNodeIds.Concat(result.MissingNodeIds))
 				await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
