@@ -24,9 +24,9 @@
 
 ### ✅ 新管线已实现并实测（`tmp/rig-lab/hd2_style.py`，**取代旧 `T = H·S⁻¹`**）
 - **数学 = BatchTool 那套**：① **一个均匀缩放 + 一个平移**（围绕脚底缩放 ⇒ 源脚底精确落 HD2 脚底；**`TorsoScale=1.042` 是算出来的**）；② **HD2 骨的 head := 源映射骨的世界位置**（**逐骨只改位置，朝向与骨长仍是 HD2 自己的**）；③ **一张 30 骨常量局部旋转表**（A↔T，全是手臂+手；脊柱/颈/头/腿不参与）+ 20 条右侧骨轴 delta。**吸附发生在绑定之前 ⇒ 绑定态恒等、静止网格不变形** ⇒ 无身高膨胀/躯干对穿/长脖子。公式：`rot[b] = rot[p] @ inv(rest_hd2[p]) @ rest_hd2[b] @ D[b]`，`D[b] = D[p] · M_rest[b] · basis[b] · inv(M_rest[b])`。**HD2 独有骨的确定性补法**：`spine1=lerp(hips,spine2,.50)`、`chest=spine2`、`{side}_shoulder_twist=lerp(shoulder,elbow,.42)`、`{side}_hand_twist=wrist`、`{side}_shoulderarmour=lerp(clavicle,shoulder,.90)`、`{side}_toe=ball+(ball−ankle)*.35`、`head_tip=head+(head−neck)`。
-- **官方流程（BatchTool `README.md`）**：导 HD2 骨架转 T-pose → 人物摆 T-pose 对齐（**腿部无需对齐**）→ 选字典（`Spine→spine1`、`Chest→spine2`、`Upper Chest→chest`）→ 骨骼吸附 → 顶点组重命名+重绑 → **必须**点"转回初态+原始骨轴" → 持握骨 → 部位切分。**⇒ 最终 rest = HD2 的 A-pose（网格被烘焙成 A-pose）。**
+- **官方流程（BatchTool `README.md`）**：导 HD2 骨架转 T-pose → 人物摆 T-pose 对齐（**腿部无需对齐**）→ 选字典 → 骨骼吸附 → 顶点组重命名+重绑 → **必须**点"转回初态+原始骨轴" → 持握骨 → 部位切分。**⇒ 最终 rest = HD2 的 A-pose（网格被烘焙成 A-pose）。**
 - 5 模型（zoey/rochelle/coach/nick/ellis）**全部 edge_mean 0.9989、bad>25% ≤0.58%**，**零逐模型调参**（旧 swing 最优 bad 9.25%）。实现要点：① **缩放高度必须在 HD2 空间沿 +Z 量**，脚底点用**底部 1 cm 顶点片质心**；② **AXIS delta 与 head 搬移必须交错在同一父先子后循环**（否则"被搬走父骨"的**未映射子骨**会掉队）。
-- **模型自身瑕疵（非我们引入）+ 源骨架实测**：Nick/Ellis 的 `source_extra_*` 长袖 jiggle 骨链在 **bind pose 就朝 +Y 伸出 1.78 m / 1.04 m**（**源 T-pose 里就有**）⇒ "必须靠额外骨/物理驱动"的直接证据。源骨架：`Spine1≡Spine`、`Spine2≡Spine4` 且**零主导权重** ⇒ 有效躯干关节只 3 个；`Pelvis` 关节 0.8193 但网格质心 1.0820（**根骨不在髋**）；**T-pose 手臂严格水平**、**腿严格竖直**；`Head1` 1.5069 = **颅底**（非颅顶）。
+- **模型自身瑕疵（非我们引入）+ 源骨架**：Nick/Ellis 的 `source_extra_*` 长袖 jiggle 骨链在 **bind pose 就朝 +Y 伸出 1.78 m / 1.04 m**（**源 T-pose 里就有**）⇒ "必须靠额外骨/物理驱动"的直接证据。源骨架：`Spine1≡Spine`、`Spine2≡Spine4` 且**零主导权重** ⇒ 有效躯干关节只 3 个；`Pelvis` 关节 0.8193 但网格质心 1.0820（**根骨不在髋**）；**T-pose 手臂严格水平**、**腿严格竖直**；`Head1` 1.5069 = **颅底**（非颅顶）。
 
 ### 🔴 三个真 bug（2026-10-12 用参照 patch 反查；详见 findings §9）
 - **【方法论·最重要】bind 恒等会掩盖真问题。** `D` 在绑定态恒等 ⇒ **绑定态网格完全不变形** ⇒ 任何绑定态指标都漂亮，**哪怕对应表是错的**。游戏里做的是 `A[b]·inv(S[b])`；取 `A` = HD2 原生 rest 就是**玩家实际看到的那一帧**（`retarget` 的 `out_idle` = `rest_hd2 · inv(D·rest_sym) · out`）。**只有这个渲染能与参照 patch 直接对比。**
