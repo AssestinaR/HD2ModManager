@@ -25,16 +25,28 @@ public sealed class DeployedOverrideGraphService : IDeployedOverrideGraphService
 		var directory = Path.GetFullPath(gameDataDirectory);
 		var issues = new List<CoreIssue>();
 		ActivationState? state = null;
+		var stateLoadFailed = false;
 		try
 		{
 			state = await _activationStateStore.TryLoadAsync(directory, cancellationToken).ConfigureAwait(false);
 		}
 		catch (Exception exception) when (exception is not OperationCanceledException)
 		{
+			stateLoadFailed = true;
 			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "ActivationStateInvalid", exception.Message, Path.Combine(directory, JsonActivationStateStore.StateFileName), ExceptionMessage: exception.ToString()));
 		}
 
 		var dataFiles = EnumerateDataFiles(directory).ToList();
+
+		// 作用：先算"来源指纹"，命中就直接返回上一次的结果，跳过下面整套昂贵校验。
+		// 昂贵的是 ValidateFileAsync 里的 SHA-256（每个已部署文件对目标与源各算一次）与每个 base 的 TOC 扫描；
+		// 指纹本身只做 stat，代价可忽略。于是"部署没变时二次打开零重算"成为结构性的结果，而不是靠调用方自觉。
+		// Compute the source fingerprint first and return the previous result on a hit, skipping the expensive
+		// validation below. The costly part is the per-file SHA-256 pair and the TOC scans; the fingerprint is
+		// stat-only. "No recompute on a second open when the deployment is unchanged" then holds by construction.
+		var cacheKey = ComputeSourceCacheKey(directory, dataFiles, state, stateLoadFailed);
+		if (DeployedGraphFactCache.TryGet<DeployedOverrideGraph>(cacheKey, out var memoized)) return memoized;
+
 		var stateByTarget = (state?.Files ?? Array.Empty<ActivationStateFileEntry>())
 			.GroupBy(file => Path.GetFullPath(file.TargetPath), StringComparer.OrdinalIgnoreCase)
 			.ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
@@ -99,7 +111,9 @@ public sealed class DeployedOverrideGraphService : IDeployedOverrideGraphService
 			.ThenBy(chain => chain.AssetKey.FileId)
 			.ToList();
 		var generation = ComputeGeneration(dataFiles, state);
-		return new DeployedOverrideGraph(directory, generation, DateTimeOffset.UtcNow, state?.ProfileId, state?.ProfileRevision ?? 0, groups, chains, issues);
+		var graph = new DeployedOverrideGraph(directory, generation, DateTimeOffset.UtcNow, state?.ProfileId, state?.ProfileRevision ?? 0, groups, chains, issues);
+		DeployedGraphFactCache.Set(cacheKey, graph);
+		return graph;
 	}
 
 	private IEnumerable<(string Path, PatchFileNameInfo Info)> EnumerateDataFiles(string directory)
@@ -161,5 +175,70 @@ public sealed class DeployedOverrideGraphService : IDeployedOverrideGraphService
 			builder.Append(file.Name.ToLowerInvariant()).Append(':').Append(file.Length).Append(':').Append(file.LastWriteTimeUtc.Ticks).AppendLine();
 		}
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+	}
+
+	// 作用：把"这次构建会读到的每一样东西"压成一个指纹，作为记忆的键。只做 stat 与字符串拼接，不读文件内容。
+	// Purpose: Fingerprints everything a build reads, cheaply, so a memo hit can only happen when nothing it read changed.
+	//
+	// 为什么"源文件"必须进指纹：ValidateFileAsync 会读状态里记录的 SourcePath（存在性 + 长度 + SHA-256）。
+	// 如果只把已部署文件纳入指纹，那么"部署的 patch 没动、但它引用的源被改了"就不会让键变化，
+	// 缓存会把上一次的"一切正常"当成事实返回——那正是设计文档 §20.3 禁止的"缓存取代真实性"。
+	// Why the recorded sources are part of the key: validation reads them too. Keying on the deployed files alone
+	// would let "the source changed, the deployed patch did not" hit a stale entry and report the old verdict.
+	private static string ComputeSourceCacheKey(string directory, IReadOnlyList<(string Path, PatchFileNameInfo Info)> dataFiles, ActivationState? state, bool stateLoadFailed)
+	{
+		var builder = new StringBuilder()
+			.Append("deployed|").Append(directory.ToLowerInvariant())
+			.Append("|stateLoadFailed=").Append(stateLoadFailed ? '1' : '0')
+			.Append("|profile=").Append(state?.ProfileId?.Value.ToString("N"))
+			.Append("|revision=").Append(state?.ProfileRevision ?? 0)
+			.AppendLine();
+
+		// 已部署文件：文件名本身就带着 archive hex / 补丁索引 / sidecar 身份，所以 (名字, 长度, 修改时间) 足以表达它的身份与内容。
+		foreach (var item in dataFiles.OrderBy(item => item.Path, StringComparer.OrdinalIgnoreCase))
+		{
+			var (length, ticks) = StatOrMissing(item.Path);
+			builder.Append("data:").Append(Path.GetFileName(item.Path).ToLowerInvariant())
+				.Append(':').Append(length)
+				.Append(':').Append(ticks)
+				.AppendLine();
+		}
+
+		foreach (var entry in (state?.Files ?? Array.Empty<ActivationStateFileEntry>()).OrderBy(entry => entry.TargetPath, StringComparer.OrdinalIgnoreCase))
+		{
+			builder.Append("state:").Append(entry.TargetPath.ToLowerInvariant())
+				.Append(':').Append(entry.ArchiveHex16)
+				.Append(':').Append(entry.TargetPatchIndex)
+				.Append(':').Append(entry.SidecarKind)
+				.Append(':').Append(entry.Method)
+				.Append(':').Append(entry.Length)
+				.Append(':').Append(entry.ContentSha256)
+				.Append(':').Append(entry.NodeId?.Value.ToString("N"))
+				.AppendLine();
+			var (sourceLength, sourceTicks) = StatOrMissing(entry.SourcePath);
+			builder.Append("source:").Append(entry.SourcePath?.ToLowerInvariant())
+				.Append(':').Append(sourceLength)
+				.Append(':').Append(sourceTicks)
+				.AppendLine();
+		}
+
+		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+	}
+
+	// 作用：读一个文件的 (长度, 修改时间)；文件不在或读不到就返回 (-1, -1)。
+	// 之所以容错：Data 目录是活跃的，枚举之后、stat 之前文件可能已被删除；不该因为这种竞态让整次构建失败。
+	private static (long Length, long Ticks) StatOrMissing(string? path)
+	{
+		if (string.IsNullOrWhiteSpace(path)) return (-1, -1);
+		try
+		{
+			var file = new FileInfo(path);
+			return file.Exists ? (file.Length, file.LastWriteTimeUtc.Ticks) : (-1, -1);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			_ = exception;
+			return (-1, -1);
+		}
 	}
 }
