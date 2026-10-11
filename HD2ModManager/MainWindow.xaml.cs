@@ -107,7 +107,8 @@ namespace HD2ModManager
                     OverlayLeftPageHost,
                     OverlayRightPageHost,
                     PrewarmProfilePageHost,
-                    PrewarmLibraryPageHost));
+                    PrewarmLibraryPageHost,
+                    PrewarmArmorPageHost));
             Loaded += MainWindow_Loaded;
             DataContextChanged += MainWindow_DataContextChanged;
             Closed += MainWindow_Closed;

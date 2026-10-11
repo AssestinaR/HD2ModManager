@@ -57,6 +57,10 @@ namespace HD2ModManager.ViewModels
         private int _activeProfileProjectionRequested;
         private int _workspacePrewarmQueued;
         private int _disposed;
+        // 护甲映射页取数的闸门（见 InitializeLibraryAndRunStartupChecksAsync 的 finally）。
+        // 它是"库快照已加载 且 启动部署已落定"的替身：护甲页的显示事实（图标 + 覆盖）
+        // 只有在这两件事之后才算得对，而视觉预热会在窗口刚 Loaded 时就把这一页建出来。
+        private readonly TaskCompletionSource _armorDisplayFactsGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public PageViewModel? CurrentPage => LeftPage;
         public bool HasMaterialPackagingBottomBar => _materialPackagingBottomBarOperation is not null;
@@ -321,21 +325,55 @@ namespace HD2ModManager.ViewModels
                     _libraryWorkspacePage = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService);
                     RegisterLibraryActions(_libraryWorkspacePage);
                 }
-                LogService.Info("工作区页面预热完成：配置页与模组库 VM 已缓存。");
+                // 护甲映射页的 VM 也在这里建好。它的构造会给三个集合挂上 CollectionView，
+                // 而 CollectionView 绑定的是**创建它的那个 Dispatcher**——所以必须趁 UI 线程空闲时建，
+                // 不能等预热数据时再顺手 new。数据预热另见 QueueArmorRegistryPrewarm。
+                _ = CreateArmorRegistryPage();
+                LogService.Info("工作区页面预热完成：配置页、模组库与护甲映射页 VM 已缓存。");
             }), System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }
+
+        // 启动预热：把护甲映射页的数据（目录、快照、最贵的覆盖事实）也算好，
+        // 用户点开这一页时就是现成的，不会看到"先空一下再刷出来"。
+        //
+        // **必须在启动维护之后调用**，两个理由缺一不可：
+        // 1. 图标是对"覆盖者节点"的库内查找，库快照没加载时只会查到 null；
+        //    而那次结果会被当成"已加载"缓存下来，之后用户看到的将是永远没有图标的护甲列表。
+        // 2. 覆盖事实读的是游戏 Data 目录与激活状态。启动部署还没跑完就预热，
+        //    算出来的是**我们自己马上就要改掉**的那份部署，页面之后不会再读第二遍。
+        private void QueueArmorRegistryPrewarm()
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null) return;
+            _ = dispatcher.BeginInvoke(new Action(async () =>
+            {
+                if (Volatile.Read(ref _disposed) != 0) return;
+                try
+                {
+                    using var perf = UiPerformanceDiagnostics.Measure("ArmorRegistry.Prewarm", thresholdMilliseconds: 50);
+                    // 与用户首开共用同一次加载（ArmorRegistryPageViewModel.EnsureCatalogLoadedAsync），
+                    // 所以这里晚于用户操作也不会白做，先到的那一次为准。
+                    await CreateArmorRegistryPage().WarmUpAsync();
+                }
+                catch (Exception exception)
+                {
+                    // 预热失败不该影响启动：真正打开页面时会自己重试并给出可见的状态。
+                    LogService.Warn($"预热护甲映射页失败：{exception.Message}");
+                }
+            }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
 
         // MainWindow owns FrameworkElement lifetime, while the Shell owns the
         // reusable page VMs. This explicit bridge lets the window warm actual
         // Profile/Library views without performing a visible navigation.
-        internal (ProfilePageViewModel Profile, LibraryPageViewModel Library) GetOrCreateWorkspaceVisualPrewarmPages()
+        internal (ProfilePageViewModel Profile, LibraryPageViewModel Library, ArmorRegistryPageViewModel Armor) GetOrCreateWorkspaceVisualPrewarmPages()
         {
             var profile = CreateProfilePage();
             var library = CreateLibraryPage();
             // The hidden hosts mirror the split workspace so the library warms
             // its profile-companion projection as well as its visual tree.
             library.SetProfileCompanionVisible(true);
-            return (profile, library);
+            return (profile, library, CreateArmorRegistryPage());
         }
 
         private async Task InitializeLibraryAndRunStartupChecksAsync(string configDir, CancellationToken cancellationToken)
@@ -373,6 +411,14 @@ namespace HD2ModManager.ViewModels
                 LogService.Error($"启动模组库元数据加载失败：{exception}");
                 _ = System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
                     _notificationService.Show("已启动，但模组库元数据加载失败；可在库页刷新后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(8)));
+            }
+            finally
+            {
+                // 无论启动维护成功、失败还是被取消，都必须放行护甲页的取数闸门——
+                // 卡住它等于让用户打开护甲页后永远停在"尚未读取"。
+                // 放行之后立刻把这一页的数据也预热起来（此刻库快照与启动部署都已落定）。
+                _armorDisplayFactsGate.TrySetResult();
+                QueueArmorRegistryPrewarm();
             }
         }
 
@@ -2008,7 +2054,8 @@ namespace HD2ModManager.ViewModels
                 _libraryService,
                 _notificationService,
                 _deploymentCoordinator,
-                _selection);
+                _selection,
+                _armorDisplayFactsGate.Task);
 
         private LibraryPageViewModel CreateLibraryPage()
         {

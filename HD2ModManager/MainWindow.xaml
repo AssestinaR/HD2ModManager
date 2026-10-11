@@ -295,6 +295,13 @@
                     <ContentControl x:Name="PrewarmProfilePageHost" Grid.Column="0" Style="{StaticResource WorkspacePageHost}"/>
                     <ContentControl x:Name="PrewarmLibraryPageHost" Grid.Column="2" Style="{StaticResource WorkspacePageHost}"/>
                 </Grid>
+                <!--
+                    护甲映射页是整页布局（单页模式），所以给它单独一层、占满整个工作区：
+                    预热时量到的宽高与真正打开时一致，上排两张页面的测量尺寸也完全不受影响。
+                -->
+                <ContentControl x:Name="PrewarmArmorPageHost"
+                                Margin="{StaticResource LayoutGapThickness}"
+                                Style="{StaticResource WorkspacePageHost}"/>
             </Grid>
             <Grid Margin="{StaticResource LayoutGapThickness}">
                 <Grid.ColumnDefinitions>

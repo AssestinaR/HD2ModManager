@@ -35,6 +35,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private readonly IProfileDeploymentCoordinator deploymentCoordinator;
 	private readonly ModLibraryService library;
 	private readonly SelectionCoordinator selection;
+	private readonly Task? displayFactsReady;
 	private string fingerprint = "missing";
 	private bool enabled;
 	private bool isBusy;
@@ -66,6 +67,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes = [];
 	private bool componentEditorFollowSource = true;
 	private bool hasLoadedCatalog;
+	// 首次加载是"单飞"的：启动预热与用户首开共用同一个 Task。
+	// 没有它就有两个坑——预热与首开各读一遍；或者预热还在跑时用户点开页面，
+	// RefreshAsync 因 IsBusy 直接返回，页面停在空状态。
+	private readonly object catalogLoadGate = new();
+	private Task? catalogLoadTask;
 	private int workspaceRevision;
 	private CancellationTokenSource? workspaceSaveCancellation;
 	private readonly SemaphoreSlim workspaceSaveGate = new(1, 1);
@@ -77,13 +83,18 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		ModLibraryService library,
 		NotificationService notifications,
 		IProfileDeploymentCoordinator deploymentCoordinator,
-		SelectionCoordinator selection)
+		SelectionCoordinator selection,
+		Task? displayFactsReady = null)
 	{
 		Title = "运行时护甲注册";
 		this.library = library ?? throw new ArgumentNullException(nameof(library));
 		this.notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
 		this.deploymentCoordinator = deploymentCoordinator ?? throw new ArgumentNullException(nameof(deploymentCoordinator));
 		this.selection = selection ?? throw new ArgumentNullException(nameof(selection));
+		// 取数闸门：显示事实（图标 + 覆盖）只有在"库快照已加载 **且** 启动部署已落定"之后才算得对。
+		// 启动预热会在窗口刚 Loaded 时就把本页视图建出来并触发 OnLoaded，
+		// 那比上面两件事都早——所以这里必须等，不能靠"预热总是晚于它们"这种时序假设。
+		this.displayFactsReady = displayFactsReady;
 		this.selection.SelectionChanged += OnGlobalSelectionChanged;
 		ProvidersView = CollectionViewSource.GetDefaultView(Providers);
 		AvailableArmorsView = CollectionViewSource.GetDefaultView(AvailableArmors);
@@ -318,7 +329,33 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public RelayCommand AddComponentPieceCommand { get; }
 	public RelayCommand ConfirmAddComponentRowCommand { get; }
 
-	public Task InitializeAsync() => hasLoadedCatalog ? RefreshRuntimeStatusAsync() : RefreshAsync();
+	// 页面首次打开：目录、快照与覆盖事实都还没有，走一次完整加载。
+	// 加载是单飞的（见 EnsureCatalogLoadedAsync），所以它与启动预热**共用同一次**。
+	public Task InitializeAsync() => hasLoadedCatalog ? RefreshRuntimeStatusAsync() : EnsureCatalogLoadedAsync(isWarmUp: false);
+
+	// 启动预热：在用户还没点开护甲页时，先把目录、快照与最贵的覆盖事实算好。
+	// 谁先到谁发起，后来者等同一个 Task——预热与首开不会各读一遍，
+	// 也不会出现"预热在跑、首开被 IsBusy 挡回"的空页面。
+	public Task WarmUpAsync() => hasLoadedCatalog ? Task.CompletedTask : EnsureCatalogLoadedAsync(isWarmUp: true);
+
+	private Task EnsureCatalogLoadedAsync(bool isWarmUp)
+	{
+		lock (catalogLoadGate)
+			return catalogLoadTask ??= LoadCatalogOnceAsync(isWarmUp);
+	}
+
+	private async Task LoadCatalogOnceAsync(bool isWarmUp)
+	{
+		try
+		{
+			await RefreshAsync(isWarmUp).ConfigureAwait(true);
+		}
+		finally
+		{
+			// 失败时 hasLoadedCatalog 仍为 false，清掉账本让下一次打开能重试。
+			lock (catalogLoadGate) catalogLoadTask = null;
+		}
+	}
 
 	public async Task FlushWorkspaceAsync()
 	{
@@ -347,24 +384,23 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public void EndExternalWorkspaceEdit() => IsBusy = false;
 
-	private async Task RefreshAsync()
+	private async Task RefreshAsync(bool isWarmUp = false)
 	{
 		if (IsBusy) return;
 		IsBusy = true;
 		try
 		{
-			if (PendingWorkspaceSaves.TryGetValue(service.WorkspacePath, out var pending))
-				await pending;
-			var catalogTask = service.ReadArmorCatalogAsync().AsTask();
-			var snapshotTask = service.ReadSnapshotAsync().AsTask();
-			await Task.WhenAll(catalogTask, snapshotTask);
-			var snapshot = await snapshotTask;
-			var catalog = await catalogTask;
-			var armorDisplayFacts = await ReadArmorDisplayFactsAsync(catalog);
-			cachedCatalog = catalog;
-			cachedArmorDisplayFacts = armorDisplayFacts;
+			// 目录读取（SQLite）与快照读取都会在调用线程上同步跑完，覆盖事实更要读索引与全部已部署 patch。
+			// 预热发生在启动后的空闲时刻，绝不能把这些压到 UI 线程上——所以预热路径整体丢到线程池，
+			// 只有最后的 ApplySnapshot 回到 UI 线程（它要改绑定到视图的集合）。
+			var inputs = isWarmUp
+				? await Task.Run(LoadCatalogInputsAsync).ConfigureAwait(true)
+				: await LoadCatalogInputsAsync().ConfigureAwait(true);
+			if (inputs is not { } loaded) return;
+			cachedCatalog = loaded.Catalog;
+			cachedArmorDisplayFacts = loaded.ArmorDisplayFacts;
 			hasLoadedCatalog = true;
-			ApplySnapshot(snapshot, rebuildChoices: true, resetNavigation: true);
+			ApplySnapshot(loaded.Snapshot, rebuildChoices: true, resetNavigation: true);
 		}
 		catch (Exception exception) when (exception is IOException
 			or UnauthorizedAccessException
@@ -374,12 +410,35 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			StatusTitle = "读取失败";
 			StatusDetail = exception.Message;
-			notifications.Show($"读取运行时护甲注册失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(10), "护甲注册");
+			// 预热失败不该给"从没打开过这个页面"的用户弹错误——留一条日志即可。
+			// 状态栏仍然写失败原因，用户真打开时看到的是"读取失败"而不是假装没有护甲被覆盖。
+			if (isWarmUp) LogService.Warn($"预热运行时护甲注册失败：{exception.Message}");
+			else notifications.Show($"读取运行时护甲注册失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(10), "护甲注册");
 		}
 		finally
 		{
 			IsBusy = false;
 		}
+	}
+
+	// 读取目录、快照与覆盖事实：纯 IO + 纯投影，不触碰任何绑定到视图的集合，
+	// 因此可以安全地在任意线程上执行（预热时就是线程池）。
+	// 失败返回 null 而不是空值——"读不到"和"没有护甲"是两件事，调用方不该把后者当成前者。
+	private async Task<(RuntimeArmorRegistrySnapshot Snapshot, IReadOnlyList<RuntimeArmorCatalogEntry> Catalog, IReadOnlyDictionary<string, ArmorDisplayFacts> ArmorDisplayFacts)?> LoadCatalogInputsAsync()
+	{
+		// 先等取数闸门。它没放行时算出来的显示事实是错的：图标查不到（库快照还没加载），
+		// 覆盖也可能算在**马上就要被启动部署改掉**的那份部署上。
+		// 错数据一旦算完就会被标成"已加载"，用户之后打开页面看到的就是这一份。
+		if (displayFactsReady is not null) await displayFactsReady.ConfigureAwait(false);
+		if (PendingWorkspaceSaves.TryGetValue(service.WorkspacePath, out var pending))
+			await pending.ConfigureAwait(false);
+		var catalogTask = service.ReadArmorCatalogAsync().AsTask();
+		var snapshotTask = service.ReadSnapshotAsync().AsTask();
+		await Task.WhenAll(catalogTask, snapshotTask).ConfigureAwait(false);
+		var snapshot = await snapshotTask.ConfigureAwait(false);
+		var catalog = await catalogTask.ConfigureAwait(false);
+		var armorDisplayFacts = await ReadArmorDisplayFactsAsync(catalog).ConfigureAwait(false);
+		return (snapshot, catalog, armorDisplayFacts);
 	}
 
 	public async Task RefreshRuntimeStatusAsync()
@@ -521,10 +580,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			// 旧路径为了两个字段去构建整个浏览器，而那一步会为**每一个** Mod 请求一次资产清单
 			// （逐包解析 patch）——这正是护甲页首开卡顿的根因。
 			// 覆盖结论只取决于"已部署且有归属的资产"，与 Mod 库、激活配置都无关（设计文档 §4 #23、§23）。
+			// ConfigureAwait(false)：本方法只读库快照与内存字典，不需要回到 UI 线程；
+			// 让后面的逐护甲投影留在调用方所在的线程上（预热路径即线程池）。
 			var coverage = await library.InformationCenter.RequestArmorCoverageAsync(
 				gameData,
 				archiveIds,
-				new ModInformationRequest(ModInformationKind.ArmorCoverage, "ArmorRegistryPage"));
+				new ModInformationRequest(ModInformationKind.ArmorCoverage, "ArmorRegistryPage")).ConfigureAwait(false);
 			if (coverage.Data is null)
 			{
 				// 索引未建或生产失败都表现为 Data 为空。前者是正常状态，后者需要留下线索。

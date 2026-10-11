@@ -74,6 +74,74 @@ public sealed class ModInformationCenterArchitectureTests
 		Assert.Contains("RequestArmorCoverageAsync", source);
 	}
 
+	// 作用：§7 护栏 1 的**业务服务半边**——收口点不是"不许提到这些类型"，而是"整包读取只有一个正当来源"。
+	//
+	// 与文档原文的偏差（2026-10-11 实测，值得记下来）：
+	// 文档写的是"业务服务不得直调 BuildAsync / MapAsync / GetArchiveSummariesAsync"。
+	// 实测 `MapAsync` 在 Core 里另有 **7 个正当调用点**（分布在 6 个文件：资产角色、材质投递、
+	// 覆盖图、材质诊断……），它们要的就是映射事实本身，禁掉等于禁掉真实业务逻辑——那不是护栏，是误伤。
+	// 所以这条护栏按**方法**收口，并且只收口"整包事实、只应有一个正当来源"的那两个：
+	//   * `IAssetArchiveIndexService.GetArchiveSummariesAsync` —— 归档摘要是"游戏数据侧"的整包事实
+	//   * `IDeployedOverrideGraphService`（整个类型）—— 部署图是"部署侧"的整包事实
+	// 映射（`MapAsync`）的收口方式是 `IGameDataFactSource` 那道投影缝，见下一条用例。
+	[Fact]
+	public void WholePackageGameDataReadsAreConfinedToTheCompositionRootAndTheFactSourceAdapters()
+	{
+		var root = FindRepositoryRoot();
+		var coreRoot = Path.Combine(root, "HD2ModCore");
+		var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			Path.Combine("Application", "IAssetArchiveIndexService.cs"),
+			Path.Combine("Application", "IDeployedOverrideGraphService.cs"),
+			// 装配点：它必须认识这些类型才能把它们接起来。
+			Path.Combine("Infrastructure", "CoreServices.cs"),
+			// 中心自己：它把这三个 application 接口当作可选生产者直接持有（§22.5）。
+			Path.Combine("Infrastructure", "ModInformationCenter.cs"),
+			// 事实源的两个适配器：一个走中心，一个直问旁路服务。
+			Path.Combine("Infrastructure", "CenterGameDataFactSource.cs"),
+			Path.Combine("Infrastructure", "DirectGameDataFactSource.cs"),
+			// 实现自己当然会出现自己的名字。
+			Path.Combine("Infrastructure", "AssetArchiveIndexService.cs"),
+			Path.Combine("Infrastructure", "DeployedOverrideGraphService.cs"),
+		};
+
+		var violations = new List<string>();
+		foreach (var path in EnumerateProductionSources(coreRoot))
+		{
+			var relative = Path.GetRelativePath(coreRoot, path);
+			if (allowed.Contains(relative)) continue;
+			var text = File.ReadAllText(path);
+			if (text.Contains("GetArchiveSummariesAsync", StringComparison.Ordinal))
+				violations.Add($"{relative}: 调用了 GetArchiveSummariesAsync");
+			if (text.Contains("IDeployedOverrideGraphService", StringComparison.Ordinal))
+				violations.Add($"{relative}: 引用了 IDeployedOverrideGraphService");
+		}
+
+		Assert.Empty(violations);
+	}
+
+	// 作用：把"投影只认识事实源"这条缝钉死。
+	//
+	// 改造前 `GameDataArchiveBrowserService` 直调三个旁路服务；现在它只认识 `IGameDataFactSource`。
+	// 这条断言的价值不在今天，而在明天：只要有人为了省一层又把它接回旁路服务，这里立刻失败。
+	[Fact]
+	public void GameDataArchiveBrowserProjectsThroughTheFactSourceOnly()
+	{
+		var root = FindRepositoryRoot();
+		var browser = File.ReadAllText(Path.Combine(
+			root, "HD2ModCore", "Infrastructure", "GameDataArchiveBrowserService.cs"));
+
+		Assert.Contains("IGameDataFactSource", browser);
+		Assert.DoesNotContain("IAssetArchiveIndexService", browser);
+		Assert.DoesNotContain("IGameDataMappingFactsService", browser);
+		Assert.DoesNotContain("IDeployedOverrideGraphService", browser);
+
+		// 两个工厂也必须走事实源：中心版给 Manager，直读版给 CLI 只读检查。
+		var services = File.ReadAllText(Path.Combine(root, "HD2ModCore", "Infrastructure", "CoreServices.cs"));
+		Assert.Contains("new CenterGameDataFactSource(", services);
+		Assert.Contains("new DirectGameDataFactSource(", services);
+	}
+
 	private static string[] EnumerateProductionSources(string projectDirectory)
 		=> Directory.EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
 			.Where(path => !path.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))

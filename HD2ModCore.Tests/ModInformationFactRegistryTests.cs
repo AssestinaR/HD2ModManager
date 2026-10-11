@@ -117,6 +117,49 @@ public sealed class ModInformationFactRegistryTests
 		Assert.DoesNotContain(ModInformationPropertyKind.GameDataMapping, ModInformationFactRegistry.SourceRoots);
 	}
 
+	// #23 护甲覆盖由 #8/#9/#10/#11 组合而来，而**图标不在其中**——这是 §7 护栏 3 的结构半边。
+	//
+	// 把缩略图变成覆盖事实的依赖（哪怕只是间接依赖），"换个 Mod 图标"就会变成"覆盖事实重算"，
+	// 与护栏要的效果正好相反。图标是对赢家节点的库内查找（内存字典 + 父链），代价可忽略，
+	// 所以它留在页面里做，不进事实（§23.4）。
+	[Fact]
+	public void ArmorCoverageDependsOnItsThreeUpstreamsAndNeverOnThumbnails()
+	{
+		var dependencies = ModInformationFactRegistry.Describe(ModInformationPropertyKind.ArmorCoverage).Dependencies;
+
+		Assert.Contains(ModInformationPropertyKind.GameDataIndex, dependencies);
+		Assert.Contains(ModInformationPropertyKind.GameDataMapping, dependencies);
+		Assert.Contains(ModInformationPropertyKind.DeployedGraph, dependencies);
+
+		// 直接依赖与**传递闭包**都要检查：经由任何中间事实绕到 Thumbnail 一样会破坏护栏。
+		Assert.DoesNotContain(ModInformationPropertyKind.Thumbnail, dependencies);
+		Assert.DoesNotContain(
+			ModInformationPropertyKind.Thumbnail,
+			ModInformationFactRegistry.Graph.TransitiveDependencies(ModInformationPropertyKind.ArmorCoverage));
+	}
+
+	// 与上一条配套：覆盖事实的**生产代码**里也不得出现缩略图。
+	// 登记表管得住声明，管不住实现——有人完全可以在生产方法里顺手读一次缩略图，
+	// 依赖闭包测试不会发现。这里把这一段生产代码（含它委派的那两个方法）整体抠出来看。
+	[Fact]
+	public void ArmorCoverageProductionNeverTouchesThumbnails()
+	{
+		var center = ReadSource("HD2ModCore", "Infrastructure", "ModInformationCenter.cs");
+		var start = center.IndexOf("private async Task<ModInformationResult<object>> ProduceArmorCoverageAndRemoveAsync", StringComparison.Ordinal);
+		var end = center.IndexOf("private async Task<ModInformationResult<object>> ProduceDeployedGraphAndRemoveAsync", StringComparison.Ordinal);
+
+		Assert.True(start >= 0 && end > start, "无法定位护甲覆盖的生产代码。");
+		var body = center[start..end];
+
+		Assert.DoesNotContain("Thumbnail", body);
+		Assert.DoesNotContain("_thumbnailProducer", body);
+		// 反向锚点：确认抠出来的确实是那条生产链路，不是一段空壳。
+		Assert.Contains("RequestGameDataIndexAsync", body);
+		Assert.Contains("RequestDeployedGraphAsync", body);
+		Assert.Contains("RequestGameDataMappingAsync", body);
+		Assert.Contains("ArmorCoverageProjection.Project", body);
+	}
+
 	// ── 判据 6（阶段 2）：依赖边逐条声明，且依赖图是一张无环 DAG ────────────────
 
 	// 空依赖 ⟺ 显式登记为源事实。这样"新增 kind 却忘了写依赖"会立刻失败，

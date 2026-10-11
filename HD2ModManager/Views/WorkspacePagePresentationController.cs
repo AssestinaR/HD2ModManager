@@ -22,7 +22,8 @@ internal sealed record WorkspacePageHosts(
     ContentControl OverlayLeft,
     ContentControl OverlayRight,
     ContentControl PrewarmProfile,
-    ContentControl PrewarmLibrary);
+    ContentControl PrewarmLibrary,
+    ContentControl PrewarmArmor);
 
 internal sealed class WorkspacePagePresentationController : IDisposable
 {
@@ -147,6 +148,26 @@ internal sealed class WorkspacePagePresentationController : IDisposable
             PrewarmCorePageView(pages.Library, _hosts.PrewarmLibrary);
         }
 
+        // 护甲映射页是第三张、也是最后一张预热页。它的视觉树比前两张都大，
+        // 所以单独占一个空闲回合，不跟模组库页挤在同一次布局里。
+        _ = _owner.Dispatcher.BeginInvoke(
+            DispatcherPriority.ApplicationIdle,
+            new Action(ContinueWorkspaceVisualPrewarmArmor));
+    }
+
+    private void ContinueWorkspaceVisualPrewarmArmor()
+    {
+        if (_disposed || !_owner.IsLoaded || !_workspaceVisualPrewarmStarted || _owner.DataContext is not ShellViewModel shell) return;
+
+        var pages = shell.GetOrCreateWorkspaceVisualPrewarmPages();
+        using (UiPerformanceDiagnostics.Measure(
+                   "WorkspaceVisualPrewarm.Armor",
+                   thresholdMilliseconds: 30,
+                   details: () => "host=prewarm-armor"))
+        {
+            PrewarmCorePageView(pages.Armor, _hosts.PrewarmArmor);
+        }
+
         AwaitWorkspaceVisualPrewarmFrames();
     }
 
@@ -200,6 +221,7 @@ internal sealed class WorkspacePagePresentationController : IDisposable
         _workspaceVisualPrewarmFramesRemaining = 0;
         _hosts.PrewarmProfile.Content = null;
         _hosts.PrewarmLibrary.Content = null;
+        _hosts.PrewarmArmor.Content = null;
         _prewarmedCorePageViewCache.Clear();
     }
 
@@ -207,6 +229,7 @@ internal sealed class WorkspacePagePresentationController : IDisposable
     {
         if (ReferenceEquals(_hosts.PrewarmProfile.Content, view)) _hosts.PrewarmProfile.Content = null;
         if (ReferenceEquals(_hosts.PrewarmLibrary.Content, view)) _hosts.PrewarmLibrary.Content = null;
+        if (ReferenceEquals(_hosts.PrewarmArmor.Content, view)) _hosts.PrewarmArmor.Content = null;
     }
 
     // Decoration planning is a full-workspace tool page. Host its concrete view
