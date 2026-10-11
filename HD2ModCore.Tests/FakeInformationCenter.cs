@@ -57,6 +57,11 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 		return ValueTask.FromResult(new ModInformationResult<AdvancedUnitAnalysisFacts>(facts, facts is null ? ModInformationStatus.Failed : ModInformationStatus.Fresh, request.Kind, facts?.Generation, facts?.Issues ?? []));
 	}
 	public ValueTask<ModInformationResult<ModThumbnailFacts>> RequestThumbnailAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+	// 无节点事实（设计文档 §22）由 ModInformationCenterNodeLessFactTests 覆盖；这个替身只服务节点事实。
+	// Node-less facts are covered by ModInformationCenterNodeLessFactTests; this double only serves node facts.
+	public ValueTask<ModInformationResult<GameDataIndexFacts>> RequestGameDataIndexAsync(ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+	public ValueTask<ModInformationResult<GameDataMappingFacts>> RequestGameDataMappingAsync(IReadOnlySet<AssetKey> assetKeys, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+	public ValueTask<ModInformationResult<DeployedOverrideGraph>> RequestDeployedGraphAsync(string gameDataDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	       public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
 		       => ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0));
 	public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)

@@ -25,6 +25,18 @@ public readonly record struct FactSubject(FactSubjectKind Kind, string Value)
 
 	public static FactSubject GameData() => new(FactSubjectKind.GameData, "global");
 
+	// 作用：游戏数据侧"有作用域"的事实主体。无节点事实（设计文档 §22）没有 ModNode 可以挂靠，
+	// 但它们的输入并不唯一——索引是一件事，某个资产键集合的映射是另一件事，某个游戏目录的部署图又是第三件事。
+	// 把作用域写进主体（而不是只写进 Revision）才能让"作用域不同"在身份上就无法混同，
+	// 于是并发合并不会把两批不同资产的映射当成同一件事。
+	// Purpose: Subject of a scoped game-data fact. Node-less facts have no ModNode to hang off, and their
+	// inputs differ, so the scope belongs in the identity itself, not only in the revision.
+	public static FactSubject GameData(string scope)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+		return new FactSubject(FactSubjectKind.GameData, scope);
+	}
+
 	public static FactSubject Library() => new(FactSubjectKind.Library, "global");
 
 	// 作用：库快照事实的主体——仍是库，但快照覆盖的节点集合是身份的一部分，用于按节点精确失效。

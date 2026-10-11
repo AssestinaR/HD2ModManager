@@ -43,7 +43,12 @@ public static class CoreServices
 			CreateModThumbnailProducer(),
 			CreateModDataIndex(paths),
 			referenceIndex,
-			ownedInformationReader);
+			ownedInformationReader,
+			// 无节点事实（设计文档 §22）的生产者：资产索引、资产映射、实际部署图。
+			// 它们不挂在任何 Mod 节点上，身份是"游戏目录 + 来源指纹"，因此由中心直接持有。
+			CreateAssetArchiveIndexService(paths),
+			CreateGameDataMappingFactsService(paths),
+			CreateDeployedOverrideGraphService());
 	}
 	public static IModInformationReader CreateModInformationReader()
 		=> new ModInformationReader();
@@ -251,16 +256,19 @@ public static class CoreServices
 	public static IDeployedOverrideGraphService CreateDeployedOverrideGraphService()
 		=> new DeployedOverrideGraphService(CreateActivationStateStore(), CreatePatchFileNameParser());
 	public static IGameDataArchiveBrowserService CreateGameDataArchiveBrowserService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new GameDataArchiveBrowserService(CreateAssetArchiveIndexService(paths), informationCenter, CreateGameDataMappingFactsService(paths), CreateDeployedOverrideGraphService());
+		=> new GameDataArchiveBrowserService(
+			new CenterGameDataFactSource(informationCenter ?? throw new ArgumentNullException(nameof(informationCenter))),
+			informationCenter);
 	// A cache-free variant for headless inspections.  It deliberately avoids the
 	// Manager information center so `gamedata browser` remains a true read-only
 	// command and never writes derived Mod facts just to answer a query.
 	public static IGameDataArchiveBrowserService CreateDirectGameDataArchiveBrowserService(StoragePaths paths, IModInformationReader informationReader)
 		=> new GameDataArchiveBrowserService(
-			CreateAssetArchiveIndexService(paths),
-			CreateAssetInventoryProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader))),
-			CreateGameDataMappingFactsService(paths),
-			CreateDeployedOverrideGraphService());
+			new DirectGameDataFactSource(
+				CreateAssetArchiveIndexService(paths),
+				CreateGameDataMappingFactsService(paths),
+				CreateDeployedOverrideGraphService()),
+			CreateAssetInventoryProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader))));
 	public static IApplyExecutor CreateApplyExecutor()
 		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
 	public static OptionActivationStore CreateOptionActivationStore(StoragePaths paths)

@@ -51,6 +51,9 @@ public sealed class AdvancedModAnalysisServiceTests
 			return ValueTask.FromResult(new ModInformationResult<AdvancedUnitAnalysisFacts>(facts, ModInformationStatus.Cached, request.Kind, facts.Generation, facts.Issues, false, false, true));
 		}
 		public ValueTask<ModInformationResult<ModThumbnailFacts>> RequestThumbnailAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<GameDataIndexFacts>> RequestGameDataIndexAsync(ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<GameDataMappingFacts>> RequestGameDataMappingAsync(IReadOnlySet<AssetKey> assetKeys, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+		public ValueTask<ModInformationResult<DeployedOverrideGraph>> RequestDeployedGraphAsync(string gameDataDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 		public ValueTask DisposeAsync() => ValueTask.CompletedTask;

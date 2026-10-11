@@ -25,6 +25,9 @@ public sealed record ModInformationRequest(
 		ModInformationKind.AdvancedUnitAnalysis => ModInformationPropertyKind.UnitStructure,
 		ModInformationKind.MaintenanceAnalysis => ModInformationPropertyKind.Maintenance,
 		ModInformationKind.Thumbnail => ModInformationPropertyKind.Thumbnail,
+		ModInformationKind.GameDataIndex => ModInformationPropertyKind.GameDataIndex,
+		ModInformationKind.GameDataMapping => ModInformationPropertyKind.GameDataMapping,
+		ModInformationKind.DeployedGraph => ModInformationPropertyKind.DeployedGraph,
 		_ => ModInformationPropertyKind.Identity,
 	};
 

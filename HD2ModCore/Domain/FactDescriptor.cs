@@ -19,6 +19,9 @@ public enum FactProducerKind
 	// The game-data input producers: the SQLite asset index and the community metadata catalog.
 	GameDataIndexService,
 	AssetMetadataCatalogReader,
+	// 部署侧的生产者：读 Data 目录的 patch 文件与激活状态，得出实际部署图。
+	// The deployment-side producer: reads Data patch files and activation state to derive the actual graph.
+	DeployedOverrideGraphService,
 	// 由其它事实组合得出。
 	Composite,
 }

@@ -19,11 +19,14 @@ public sealed class GameDataArchiveBrowserServiceTests
 		[
 			new ModPatchGroupFact(new ModPatchGroupId(nodeId, "source", 4), 0, [], new HashSet<AssetKey> { key }, []),
 		], []);
+		// 投影只认识 IGameDataFactSource。这里直接复用真实的直读适配器，
+		// 顺带把 DirectGameDataFactSource 的指纹/摘要组合逻辑也纳入覆盖。
 		var service = new GameDataArchiveBrowserService(
-			new FakeIndexService(),
-			new FakeInformationCenter(content),
-			new FakeMappingService(key),
-			new FakeDeployedService(key, nodeId));
+			new DirectGameDataFactSource(
+				new FakeIndexService(),
+				new FakeMappingService(key),
+				new FakeDeployedService(key, nodeId)),
+			new FakeInformationCenter(content));
 
 		var browser = await service.BuildAsync(snapshot, "mods", "data");
 

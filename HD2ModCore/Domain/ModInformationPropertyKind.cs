@@ -30,6 +30,10 @@ public enum ModInformationPropertyKind
 	// Appended at the end so existing numeric values are preserved.
 	GameDataIndex,
 	AssetMetadata,
+	// 实际部署图（设计文档 §4 #11）。它读的是 Data 目录里的 patch 文件与激活状态，
+	// 两者都不在表内，所以它同样是源事实——但它**没有节点**：身份是"游戏目录 + 部署指纹"。
+	// Appended at the end for the same reason as the two above.
+	DeployedGraph,
 }
 
 // 作用：标识属性来自哪一层，便于 UI 和诊断区分缓存命中、生产和组合结果。

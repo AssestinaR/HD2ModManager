@@ -16,6 +16,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly IUnitVersionInformationProducer? _unitVersionProducer;
 	private readonly IAdvancedUnitAnalysisProducer? _advancedUnitAnalysisProducer;
 	private readonly IModThumbnailProducer? _thumbnailProducer;
+	// 作用：无节点事实（设计文档 §22）的生产者。三者都是可选的——只读场景下中心可以完全不配置它们，
+	// 请求会得到 Unavailable 而不是抛异常，与其它可选生产者的行为一致。
+	// Purpose: Producers of the node-less facts. All three are optional so a read-only host can omit them.
+	private readonly IAssetArchiveIndexService? _assetArchiveIndexService;
+	private readonly IGameDataMappingFactsService? _gameDataMappingFactsService;
+	private readonly IDeployedOverrideGraphService? _deployedOverrideGraphService;
 	private readonly IModFileFactsCache? _fileFactsCache;
 	private readonly IModInformationCache? _informationCache;
 	private readonly IModDataIndex? _modDataIndex;
@@ -30,6 +36,11 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModUnitVersionFacts>>>> _unitVersionTasks = new();
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<AdvancedUnitAnalysisFacts>>>> _advancedUnitAnalysisTasks = new();
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModThumbnailFacts>>>> _thumbnailTasks = new();
+	// 作用：无节点事实共用一本进行中任务账。因为 FactRevisionKey 里已经含属性，三类事实不会互相撞键，
+	// 所以不需要三本字典；代价只是取出时要按目标类型还原（Unwrap）。
+	// Purpose: One in-flight ledger for every node-less fact. The key already carries the property, so the three
+	// fact families cannot collide; the only cost is restoring the concrete type on the way out (Unwrap).
+	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<object>>>> _gameDataTasks = new();
 	private readonly ConcurrentDictionary<ModNodeId, byte> _invalidatedNodes = new();
 	private readonly ConcurrentDictionary<ModNodeId, CancellationTokenSource> _nodeCancellations = new();
 	private readonly CancellationTokenSource _shutdown = new();
@@ -37,7 +48,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
 	public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
 
-	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null)
+	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null, IAssetArchiveIndexService? assetArchiveIndexService = null, IGameDataMappingFactsService? gameDataMappingFactsService = null, IDeployedOverrideGraphService? deployedOverrideGraphService = null)
 	{
 		_fileFactsProducer = fileFactsProducer ?? throw new ArgumentNullException(nameof(fileFactsProducer));
 		_assetInventoryProducer = assetInventoryProducer ?? throw new ArgumentNullException(nameof(assetInventoryProducer));
@@ -51,6 +62,9 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		_modDataIndex = modDataIndex;
 		_referenceGraphIndexWriter = referenceGraphIndexWriter;
 		_ownedInformationReader = ownedInformationReader;
+		_assetArchiveIndexService = assetArchiveIndexService;
+		_gameDataMappingFactsService = gameDataMappingFactsService;
+		_deployedOverrideGraphService = deployedOverrideGraphService;
 	}
 
 	public ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(
@@ -176,6 +190,9 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			_advancedUnitAnalysisTasks.TryRemove(pair.Key, out _);
 		foreach (var pair in _thumbnailTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_thumbnailTasks.TryRemove(pair.Key, out _);
+		// 无节点事实（_gameDataTasks）刻意**不**在这里清理：它们的输入是游戏目录、激活状态与资产索引，
+		// 没有一项来自 Mod 目录，所以"某个 Mod 变了"不构成它们失效的理由。清掉只会让下一次请求白做一遍。
+		// Node-less facts are deliberately not touched here: none of their inputs come from a Mod directory.
 		// FileFacts is cached as a snapshot-wide product, so a node mutation must
 		// remove every persisted snapshot that contains this node as well.  Without
 		// this call a repair can replace Patch files while RequestFileFactsAsync
@@ -248,6 +265,196 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		=> _modDataIndex is null
 			? ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0))
 			: _modDataIndex.GetAssetRelationSummaryAsync(assetKeys, excludedNodeId, cancellationToken);
+
+	// ===== 无节点事实（设计文档 §22） =====
+	// 与节点事实的三点差别，都是"没有节点"直接推出来的，不是新策略：
+	//   1. 没有节点级取消令牌——用中心自己的关闭令牌，这样某个调用方取消不会连累同一批的其它合并方；
+	//   2. 不参与 InvalidateNodeAsync——它们的输入是游戏目录与激活状态，Mod 目录变了影响不到它们；
+	//   3. 不落盘——新鲜度由生产者自己的来源指纹保证（索引 source_fingerprint、部署图 DeployedGraphFactCache）。
+	// 共同点：仍然按 FactRevisionKey 合并进行中的任务，并发布与节点事实同形的诊断事件。
+
+	public async ValueTask<ModInformationResult<GameDataIndexFacts>> RequestGameDataIndexAsync(
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(request);
+		if (request.Kind != ModInformationKind.GameDataIndex) throw new ArgumentException("Request kind must be GameDataIndex.", nameof(request));
+		if (_assetArchiveIndexService is null)
+			return CreateUnavailable<GameDataIndexFacts>(ModInformationKind.GameDataIndex, "GameDataIndexUnavailable", "Asset archive index service is not configured.", request.Generation);
+		var key = new FactRevisionKey(new FactKey(FactSubject.GameData("index"), request.EffectiveProperty), request.Generation ?? "auto");
+		var entry = new Lazy<Task<ModInformationResult<object>>>(
+			() => ProduceGameDataIndexAndRemoveAsync(key, request),
+			LazyThreadSafetyMode.ExecutionAndPublication);
+		var existing = _gameDataTasks.GetOrAdd(key, entry);
+		return Unwrap<GameDataIndexFacts>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
+	}
+
+	public async ValueTask<ModInformationResult<GameDataMappingFacts>> RequestGameDataMappingAsync(
+		IReadOnlySet<AssetKey> assetKeys,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(assetKeys);
+		ArgumentNullException.ThrowIfNull(request);
+		if (request.Kind != ModInformationKind.GameDataMapping) throw new ArgumentException("Request kind must be GameDataMapping.", nameof(request));
+		if (_gameDataMappingFactsService is null)
+			return CreateUnavailable<GameDataMappingFacts>(ModInformationKind.GameDataMapping, "GameDataMappingUnavailable", "Game Data mapping service is not configured.", request.Generation);
+		// 作用域里带资产键集合的摘要：不同批次的资产是**不同的映射事实**，不能合并成同一次生产。
+		var key = new FactRevisionKey(new FactKey(FactSubject.GameData($"mapping:{ComputeAssetKeySetToken(assetKeys)}"), request.EffectiveProperty), request.Generation ?? "auto");
+		var entry = new Lazy<Task<ModInformationResult<object>>>(
+			() => ProduceGameDataMappingAndRemoveAsync(key, assetKeys, request),
+			LazyThreadSafetyMode.ExecutionAndPublication);
+		var existing = _gameDataTasks.GetOrAdd(key, entry);
+		return Unwrap<GameDataMappingFacts>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
+	}
+
+	public async ValueTask<ModInformationResult<DeployedOverrideGraph>> RequestDeployedGraphAsync(
+		string gameDataDirectory,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
+		ArgumentNullException.ThrowIfNull(request);
+		if (request.Kind != ModInformationKind.DeployedGraph) throw new ArgumentException("Request kind must be DeployedGraph.", nameof(request));
+		if (_deployedOverrideGraphService is null)
+			return CreateUnavailable<DeployedOverrideGraph>(ModInformationKind.DeployedGraph, "DeployedGraphUnavailable", "Deployed override graph service is not configured.", request.Generation);
+		var key = new FactRevisionKey(new FactKey(FactSubject.GameData($"deployed:{gameDataDirectory}"), request.EffectiveProperty), request.Generation ?? "auto");
+		var entry = new Lazy<Task<ModInformationResult<object>>>(
+			() => ProduceDeployedGraphAndRemoveAsync(key, gameDataDirectory, request),
+			LazyThreadSafetyMode.ExecutionAndPublication);
+		var existing = _gameDataTasks.GetOrAdd(key, entry);
+		return Unwrap<DeployedOverrideGraph>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
+	}
+
+	private async Task<ModInformationResult<object>> ProduceGameDataIndexAndRemoveAsync(FactRevisionKey key, ModInformationRequest request)
+	{
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, request.Generation, started, key.ToString()));
+		ModInformationResult<object>? completed = null;
+		try
+		{
+			completed = await ProduceGameDataIndexAsync(request, _shutdown.Token).ConfigureAwait(false);
+			return completed;
+		}
+		finally
+		{
+			RecordDiagnostic(CreateNodeLessDiagnostic(request, key, started, completed));
+			_gameDataTasks.TryRemove(key, out _);
+		}
+	}
+
+	private async Task<ModInformationResult<object>> ProduceGameDataIndexAsync(ModInformationRequest request, CancellationToken cancellationToken)
+	{
+		try
+		{
+			var fingerprint = await _assetArchiveIndexService!.GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
+			// 索引还没建好时返回 Unavailable 而不是失败：这不是错误，只是"还没有索引"。
+			// 直读版（DirectGameDataFactSource）此时返回 null，两者语义一致。
+			if (fingerprint is null)
+				return new ModInformationResult<object>(null, ModInformationStatus.Unavailable, ModInformationKind.GameDataIndex, request.Generation, []);
+			var archives = await _assetArchiveIndexService.GetArchiveSummariesAsync(cancellationToken).ConfigureAwait(false);
+			var facts = new GameDataIndexFacts(fingerprint, archives);
+			return new ModInformationResult<object>(facts, ModInformationStatus.Fresh, ModInformationKind.GameDataIndex, request.Generation ?? fingerprint.SourceFingerprint, []);
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.GameDataIndex, request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "GameDataIndexCanceled", "资产索引读取因信息中心关闭而取消。")], false, true);
+		}
+		catch (Exception exception)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.GameDataIndex, request.Generation, [new CoreIssue(CoreIssueSeverity.Error, "GameDataIndexProductionFailed", exception.Message, ExceptionMessage: exception.ToString())], false, true);
+		}
+	}
+
+	private async Task<ModInformationResult<object>> ProduceGameDataMappingAndRemoveAsync(FactRevisionKey key, IReadOnlySet<AssetKey> assetKeys, ModInformationRequest request)
+	{
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, request.Generation, started, key.ToString()));
+		ModInformationResult<object>? completed = null;
+		try
+		{
+			completed = await ProduceGameDataMappingAsync(assetKeys, request, _shutdown.Token).ConfigureAwait(false);
+			return completed;
+		}
+		finally
+		{
+			RecordDiagnostic(CreateNodeLessDiagnostic(request, key, started, completed));
+			_gameDataTasks.TryRemove(key, out _);
+		}
+	}
+
+	private async Task<ModInformationResult<object>> ProduceGameDataMappingAsync(IReadOnlySet<AssetKey> assetKeys, ModInformationRequest request, CancellationToken cancellationToken)
+	{
+		try
+		{
+			var facts = await _gameDataMappingFactsService!.MapAsync(assetKeys, cancellationToken).ConfigureAwait(false);
+			return new ModInformationResult<object>(facts, ModInformationStatus.Fresh, ModInformationKind.GameDataMapping, request.Generation ?? facts.MappingGeneration, facts.Issues);
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.GameDataMapping, request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "GameDataMappingCanceled", "资产映射因信息中心关闭而取消。")], false, true);
+		}
+		catch (Exception exception)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.GameDataMapping, request.Generation, [new CoreIssue(CoreIssueSeverity.Error, "GameDataMappingProductionFailed", exception.Message, ExceptionMessage: exception.ToString())], false, true);
+		}
+	}
+
+	private async Task<ModInformationResult<object>> ProduceDeployedGraphAndRemoveAsync(FactRevisionKey key, string gameDataDirectory, ModInformationRequest request)
+	{
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, request.Generation, started, key.ToString()));
+		ModInformationResult<object>? completed = null;
+		try
+		{
+			completed = await ProduceDeployedGraphAsync(gameDataDirectory, request, _shutdown.Token).ConfigureAwait(false);
+			return completed;
+		}
+		finally
+		{
+			RecordDiagnostic(CreateNodeLessDiagnostic(request, key, started, completed));
+			_gameDataTasks.TryRemove(key, out _);
+		}
+	}
+
+	private async Task<ModInformationResult<object>> ProduceDeployedGraphAsync(string gameDataDirectory, ModInformationRequest request, CancellationToken cancellationToken)
+	{
+		try
+		{
+			var graph = await _deployedOverrideGraphService!.BuildAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
+			return new ModInformationResult<object>(graph, ModInformationStatus.Fresh, ModInformationKind.DeployedGraph, request.Generation ?? graph.DeploymentGeneration, graph.Issues);
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.DeployedGraph, request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "DeployedGraphCanceled", "实际部署图因信息中心关闭而取消。", gameDataDirectory)], false, true);
+		}
+		catch (Exception exception)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.DeployedGraph, request.Generation, [new CoreIssue(CoreIssueSeverity.Error, "DeployedGraphProductionFailed", exception.Message, gameDataDirectory, null, exception.ToString())], false, true);
+		}
+	}
+
+	// 作用：把共用账本里的 object 结果还原成具体类型。Data 为 null 时保持 null（索引未建 / 生产失败）。
+	private static ModInformationResult<T> Unwrap<T>(ModInformationResult<object> result) where T : class
+		=> new(result.Data as T, result.Status, result.Kind, result.Generation, result.Issues, result.WasCoalesced, result.RefreshFailed, result.CacheHit);
+
+	private static ModInformationResult<T> CreateUnavailable<T>(ModInformationKind kind, string code, string message, string? generation)
+		=> new(default, ModInformationStatus.Unavailable, kind, generation, [new CoreIssue(CoreIssueSeverity.Warning, code, message)]);
+
+	private static ModInformationDiagnostic CreateNodeLessDiagnostic(ModInformationRequest request, FactRevisionKey key, DateTimeOffset started, ModInformationResult<object>? result)
+		=> result is null
+			? new ModInformationDiagnostic(request.Source, request.Kind, null, request.Generation, started, DateTimeOffset.UtcNow, false, false, ModInformationStatus.Failed, []) { OperationKey = key.ToString() }
+			: new ModInformationDiagnostic(request.Source, request.Kind, null, result.Generation, started, DateTimeOffset.UtcNow, result.CacheHit, result.WasCoalesced, result.Status, result.Issues) { OperationKey = key.ToString() };
+
+	// 作用：把一批资产键压成一个稳定的短令牌，作为"映射作用域"的一部分。
+	// 先排序再哈希，所以同一批资产无论以什么顺序传来都会落到同一个身份上——合并才有意义。
+	private static string ComputeAssetKeySetToken(IReadOnlySet<AssetKey> assetKeys)
+	{
+		var builder = new System.Text.StringBuilder();
+		foreach (var key in assetKeys.OrderBy(key => key.TypeId).ThenBy(key => key.FileId))
+			builder.Append(key.TypeId).Append(':').Append(key.FileId).Append(';');
+		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+	}
 
 	private CancellationTokenSource GetNodeCancellation(ModNodeId nodeId)
 		=> _nodeCancellations.GetOrAdd(nodeId, static _ => new CancellationTokenSource());
@@ -601,6 +808,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		_unitVersionTasks.Clear();
 		_advancedUnitAnalysisTasks.Clear();
 		_thumbnailTasks.Clear();
+		_gameDataTasks.Clear();
 		_invalidatedNodes.Clear();
 		foreach (var cancellation in _nodeCancellations.Values)
 		{

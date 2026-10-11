@@ -169,6 +169,17 @@ public static class ModInformationFactRegistry
 			ModInformationCacheScope.Persistent,
 			FactProducerKind.AssetMetadataCatalogReader),
 
+		// 依据：DeployedOverrideGraphService 枚举游戏 Data 目录里的 patch 文件、读激活状态（
+		// JsonActivationStateStore）、对每个文件与其源做 SHA-256 校验、再扫 base 的 TOC。
+		// 这些输入**全都不在表内**——Data 文件集与激活状态本身就是真相来源，所以它登记为源事实。
+		// 缓存范围取 Session：它的记忆是进程内的、按"来源指纹"键控的（DeployedGraphFactCache），
+		// 从不落盘，所以不能用 Persistent。
+		// 依据见设计文档 §4 #11 与 §21。
+		[ModInformationPropertyKind.DeployedGraph] = new(
+			FactSubjectKind.GameData,
+			ModInformationCacheScope.Session,
+			FactProducerKind.DeployedOverrideGraphService),
+
 		// 依据：UnitVersionInformationProducer 在 AnalyzeNodeAsync 的产物（资产清单）上做版本探测
 		// （UnitVersionProbe.ProbeAsync(analysis)）；设计文档 §4 #4 也把 UnitVersion 定为依赖 #2 AssetInventory。
 		[ModInformationPropertyKind.Compatibility] = new(
@@ -214,6 +225,7 @@ public static class ModInformationFactRegistry
 		ModInformationPropertyKind.PatchCatalog,
 		ModInformationPropertyKind.GameDataIndex,
 		ModInformationPropertyKind.AssetMetadata,
+		ModInformationPropertyKind.DeployedGraph,
 		ModInformationPropertyKind.Thumbnail,
 	];
 

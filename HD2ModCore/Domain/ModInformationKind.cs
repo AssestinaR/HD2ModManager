@@ -11,4 +11,11 @@ public enum ModInformationKind
 	AdvancedUnitAnalysis,
 	Thumbnail,
 	MaintenanceAnalysis,
+	// 无节点事实（设计文档 §22）：身份是"游戏目录 + 来源指纹"，不属于任何一个 Mod 节点。
+	// 追加在末尾以保持既有取值的数值不变。
+	// Node-less facts: their identity is the game directory plus a source fingerprint, not a Mod node.
+	// Appended at the end so existing numeric values are preserved.
+	GameDataIndex,
+	GameDataMapping,
+	DeployedGraph,
 }
