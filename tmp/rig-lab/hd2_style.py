@@ -189,6 +189,47 @@ def rot_angle_axis(R):
     return ang, (w / n if n > 1e-9 else np.zeros(3))
 
 
+def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name):
+    """Source bone index -> HD2 bone index, including a fallback for unmapped bones.
+
+    `distance` binds an unmapped bone to the *mapped* bone whose joint sits closest
+    to it; `parent` walks up the source chain instead.  This lives in one place on
+    purpose: the shoes (`source_extra_62/63`) are unmapped, and the stance pass used
+    to fall back to "carry along with the torso" for them -- which dragged the feet
+    15 cm forward together with the hips and cancelled out the very stance change it
+    was supposed to produce.  Both passes must give the same answer.
+    """
+    resolved, hops, by_dist = {}, {}, []
+    if fallback == 'distance':
+        cand = [(src_index_to_hd2[b['index']], ajoint(b))
+                for b in src if b['index'] in src_index_to_hd2]
+        for b in src:
+            i = b['index']
+            if i in src_index_to_hd2:
+                resolved[i], hops[i] = src_index_to_hd2[i], 0
+                continue
+            p = ajoint(b)
+            best, bd = None, 1e30
+            for hi, sp in cand:
+                d = float(((p - sp) ** 2).sum())
+                if d < bd:
+                    bd, best = d, hi
+            resolved[i], hops[i] = best, 0
+            by_dist.append((b['name'], by_idx_name.get(best), math.sqrt(bd)))
+    else:
+        for b in src:
+            i = b['index']
+            if i in src_index_to_hd2:
+                resolved[i], hops[i] = src_index_to_hd2[i], 0
+                continue
+            cur, n = b['parent'], 1
+            while cur >= 0 and cur not in src_index_to_hd2 and n <= 64:
+                cur = src[cur]['parent']
+                n += 1
+            resolved[i], hops[i] = src_index_to_hd2.get(cur), n
+    return resolved, hops, by_dist
+
+
 # ------------------------------------------------------------------ loader
 def drop_outlier_tris(pts, tris, factor=8.0, floor=0.06):
     """Display-only: drop triangles that are stretched far beyond the mesh's own scale.
@@ -242,7 +283,8 @@ def load_source(vpk, model):
 
 # ------------------------------------------------------------------ core
 def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.015,
-             align='kabsch', apose=True, spine_map='legacy', fallback='parent', verbose=True):
+             align='kabsch', apose=True, spine_map='legacy', fallback='parent',
+             leg_tilt=0.0, verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results."""
     def say(*a):
         if verbose:
@@ -255,6 +297,11 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     hby = {h['name']: h for h in hd2 if h['name']}
     by_idx_name = {h['index']: h['name'] for h in hd2}
     pairs = snap_pairs(spine_map)
+    src_index_to_hd2 = {}
+    for sn, hn in pairs + SNAP_TOES:
+        sb, hb = short.get(sn), hby.get(hn)
+        if sb is not None and hb is not None:
+            src_index_to_hd2[sb['index']] = hb['index']
 
     src_pts = np.array([[v['pos'][0] * E.IN2M, v['pos'][1] * E.IN2M, v['pos'][2] * E.IN2M]
                         for v in verts], dtype=np.float64)
@@ -351,6 +398,62 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     if missing:
         say('  no correspondence for: %s' % ', '.join('%s->%s' % p for p in missing))
 
+    # ---- 2b. optional stance: lean the legs forward about the ankle -------
+    # The source ships with strictly vertical legs; HD2 (and the reference patch)
+    # stand with the ankle ~10 cm BEHIND the hip.  Rotating everything ABOVE the
+    # ankle about the ankle -- and then carrying the torso along with the hip,
+    # rigidly, so the torso stays upright -- reproduces that stance without
+    # touching the mesh's own shape.  The foot itself stays planted.  Doing this
+    # per-bone by only moving the bone HEADS would shear the leg instead; that is
+    # the same mechanism that tears the arms apart in the "re-posed by HD2's
+    # rest" render, so the mesh is transformed too.
+    if abs(leg_tilt) > 1e-9 and 'hips' in new_head and 'l_foot' in new_head:
+        th = math.radians(leg_tilt)
+        c, s = math.cos(th), math.sin(th)
+        ankle = 0.5 * (new_head['l_foot'] + new_head['r_foot'])
+        Rl = trans(ankle) @ np.array([[1, 0, 0, 0], [0, c, s, 0],
+                                      [0, -s, c, 0], [0, 0, 0, 1]], float) @ trans(-ankle)
+        delta = (Rl @ np.append(new_head['hips'], 1.0))[:3] - new_head['hips']
+        turned = {'%s_%s' % (sd, j) for sd in ('l', 'r') for j in ('thigh', 'knee')}
+        planted = {'%s_%s' % (sd, j) for sd in ('l', 'r') for j in ('foot', 'ball', 'toe')}
+
+        def move(nm, p):
+            if nm in turned:
+                return (Rl @ np.append(p, 1.0))[:3]
+            if nm in planted:
+                return p
+            return p + delta
+
+        for nm in list(new_head):
+            new_head[nm] = move(nm, new_head[nm])
+
+        def ajoint(b):
+            return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
+        res_idx, _rh, _rd = resolve_bone_map(src, src_index_to_hd2, fallback, ajoint,
+                                             by_idx_name)
+        moved = np.empty_like(src1)
+        for k, v in enumerate(verts):
+            acc = np.zeros(3)
+            tot = 0.0
+            p4 = np.append(src1[k], 1.0)
+            for j in range(3):
+                w = v['w'][j]
+                if w <= 0:
+                    continue
+                nm = by_idx_name.get(res_idx.get(v['bones'][j]))
+                if nm in turned:
+                    T = Rl
+                elif nm in planted:
+                    T = np.eye(4)
+                else:
+                    T = trans(delta)
+                acc += w * (T @ p4)[:3]
+                tot += w
+            moved[k] = acc / tot if tot > 0 else src1[k]
+        src1 = moved
+        say('stance: legs %.2f deg forward about the ankle; torso carried %+.4f m '
+            'forward (upright); foot planted' % (leg_tilt, delta[1]))
+
     # ---- 3. HD2 rest: AXIS_SYMMETRIC + snapped heads, in ONE parent-first pass
     # The two operations must be interleaved: an HD2-only bone that is a child of a
     # snapped bone has to follow its moved parent, and doing the head moves in a
@@ -396,51 +499,20 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         rs = rest_sym[h['index']]
         D[h['index']] = Dp @ rs @ basis.get(h['name'], np.eye(4)) @ np.linalg.inv(rs)
 
-    # ---- skinning: source bone -> HD2 bone -> D --------------------------
-    src_index_to_hd2 = {}
-    for sn, hn in pairs + SNAP_TOES:
-        sb, hb = short.get(sn), hby.get(hn)
-        if sb is not None and hb is not None:
-            src_index_to_hd2[sb['index']] = hb['index']
+    # ---- skinning: source bone -> HD2 bone -------------------------------
 
     resolved, hops = {}, {}
     by_dist = []
-    if fallback == 'distance':
-        # A bone with no counterpart is bound to the mapped bone whose joint sits
-        # CLOSEST to it -- not to its parent.  The source file hangs the shoes off
-        # `L_Calf` (`source_extra_62/63`), so a parent-chain fallback binds the
-        # shoes to the KNEE and, because our rest knee sits 13.4 cm above HD2's,
-        # they sink that far below the floor the moment the leg is posed.  It is
-        # invisible in the bind pose -- which is exactly why the bind-pose metric
-        # looked perfect.
-        def ajoint(b):
-            return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
-        cand = [(src_index_to_hd2[b['index']], ajoint(b))
-                for b in src if b['index'] in src_index_to_hd2]
-        for b in src:
-            i = b['index']
-            if i in src_index_to_hd2:
-                resolved[i], hops[i] = src_index_to_hd2[i], 0
-                continue
-            p = ajoint(b)
-            best, bd = None, 1e30
-            for hi, sp in cand:
-                d = float(((p - sp) ** 2).sum())
-                if d < bd:
-                    bd, best = d, hi
-            resolved[i], hops[i] = best, 0
-            by_dist.append((b['name'], hby and by_idx_name.get(best), math.sqrt(bd)))
-    else:
-        for b in src:
-            i = b['index']
-            if i in src_index_to_hd2:
-                resolved[i], hops[i] = src_index_to_hd2[i], 0
-                continue
-            cur, n = b['parent'], 1
-            while cur >= 0 and cur not in src_index_to_hd2 and n <= 64:
-                cur = src[cur]['parent']
-                n += 1
-            resolved[i], hops[i] = src_index_to_hd2.get(cur), n
+    # A bone with no counterpart is bound to the mapped bone whose joint sits
+    # CLOSEST to it -- not to its parent.  The source file hangs the shoes off
+    # `L_Calf` (`source_extra_62/63`), so a parent-chain fallback binds the shoes
+    # to the KNEE and, because our rest knee sits 13.4 cm above HD2's, they sink
+    # that far below the floor the moment the leg is posed.  It is invisible in the
+    # bind pose -- which is exactly why the bind-pose metric looked perfect.
+    def ajoint(b):
+        return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
+    resolved, hops, by_dist = resolve_bone_map(src, src_index_to_hd2, fallback,
+                                               ajoint, by_idx_name)
     if by_dist:
         say('distance fallback for %d bones, e.g.: %s'
             % (len(by_dist), ', '.join('%s->%s(%.3fm)' % r for r in

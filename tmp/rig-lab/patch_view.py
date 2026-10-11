@@ -277,6 +277,9 @@ def main():
                     help='explicit uniform scale; 0 = auto (head JOINT to head joint)')
     ap.add_argument('--head-offset', type=float, default=-0.015,
                     help='how far the source head JOINT is placed from HD2 head joint')
+    ap.add_argument('--leg-tilt', type=float, default=0.0,
+                    help='degrees to lean the legs forward about the ankle; the torso '
+                         'is carried forward with the hip and stays upright')
     ap.add_argument('--fallback', default='parent')
     ap.add_argument('--crop', default='', help='minz,maxz -- zoom the vertical band')
     ap.add_argument('--rows', choices=('both', 'front', 'side'), default='both')
@@ -292,7 +295,8 @@ def main():
     # --- our pipeline -------------------------------------------------------
     r = H.retarget(a.vpk, a.model, a.toc, a.bonehash, a.pose_profile,
                    align=a.align, spine_map=a.spine_map, fallback=a.fallback,
-                   scale=a.scale, head_offset=a.head_offset, verbose=False)
+                   scale=a.scale, head_offset=a.head_offset,
+                   leg_tilt=a.leg_tilt, verbose=False)
     src_pts = [tuple(p) for p in np.asarray(r['src1'])]
     our_pts = [tuple(p) for p in np.asarray(r['out'])]
     idle_pts = [tuple(p) for p in np.asarray(r['out_idle'])]
