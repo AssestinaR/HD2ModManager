@@ -202,6 +202,18 @@
   - `HD2ModCli/skills/` 下有 28 个 `SKILL.md`，但导出/打包的是 **27** 个 ——
     少的是 `mod-management`（`CliSkillCatalog` 里 `IsLegacy: true`，被 `ListCapabilitySkills()` 过滤）。
     **27 是设计值**，不是漏打包。
+- **未做项的实地状态（2026-10-11 实测，动手前先看这条）**：
+  - `FactDescriptor.CacheScope` 全仓**只有一处**生产用途：`ModInformationReader.cs:402` 的防呆校验；
+    `FactDescriptor.Producer`（`FactProducerKind`，13 值）**读取处 0 个，连测试都不读**。
+    → "缓存放哪层"实际由调用方在 `ModInformationRequestContext.Create(scope)` 写死，与登记表声明**未连通**。
+  - 6 个直调 `MapAsync` 的服务**已经持有 `IModInformationCenter`**，其中几个已在用中心问别的事实
+    （`ProfileOverrideGraphService` 调 `RequestAssetInventoryAsync`）；中心入口 `RequestGameDataMappingAsync` 已存在。
+    唯一没接中心的是 `ModAssetSummaryProjector`。**缓存收益已拿到**（`GameDataFactCache` 是 static，6 家共享）。
+    走中心才拿得到：并发合并（`SourceFingerprintMemo` **无"正在算"的门**）、可观测性、尊重 scope
+    （`MapAsync` **无 scope 参数**）、取消跟随中心关闭。
+  - `GameDataMapping` 声明 `Persistent` 但只做进程内记忆——**不是 bug**（`CacheScope` 是"最多允许"的上限）；
+    要落盘等于新建持久层，撞"缓存不能取代真相"红线。
+  - §20.8 表里"页面收编"那一行**已过期**（§22.6 + §23.6 已完成）。
 - **【强制】用户授权范围内的改动直接做，不反复请示。**（2026-10-11 用户明确指令。）
 - 用户会先要求"只分析、不改代码"，确认后再实施；不要过早做低效/错误优化。
 - 源码改动前先考察相关链路（缓存、复用、生命周期）。
