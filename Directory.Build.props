@@ -11,21 +11,20 @@
       - ProjectReference / PackageReference / EmbeddedResource：每个项目不同。
 
     关于 TreatWarningsAsErrors：
-    当前**故意保持关闭**。仓库现存 11 条唯一警告，全部集中在两处：
-      - HD2ModCore.Tests：9 条（4 条 CS0067 未使用事件、4 条 xUnit2031、1 条 xUnit2029）
-      - HD2ModManager：2 条（CS0649 未赋值字段）
-    生产项目 HD2ModCore / HD2ModAdaptation / HD2ModCli / HD2GameItemAssets / Decryptor 目前是零警告的。
-    若现在就开启 TreatWarningsAsErrors，CI 会在第一次运行时就失败。正确顺序是：先把这 11 条清零，再开启。
-    About TreatWarningsAsErrors: deliberately left OFF. The repository currently has 11 unique warnings, all in
-    two places: HD2ModCore.Tests (9: four CS0067 unused events, four xUnit2031, one xUnit2029) and
-    HD2ModManager (2: CS0649 unassigned fields). The production projects HD2ModCore / HD2ModAdaptation /
-    HD2ModCli / HD2GameItemAssets / Decryptor are currently warning-free.
-    Enabling it now would fail CI on its first run. The correct order is: clear those 11 first, then enable it.
+    **已开启**（2026-10-11）。开启前提是仓库当时已是零警告——那 11 条唯一警告
+    （HD2ModCore.Tests 9 条：4 条 CS0067 未使用事件、4 条 xUnit2031、1 条 xUnit2029；
+    HD2ModManager 2 条：CS0649 未赋值字段）已全部清除，而不是被压制。
+    这条护栏的价值在于：它让"新增一条警告"无法悄悄溜进来。
+    About TreatWarningsAsErrors: now ON (2026-10-11). The prerequisite was a genuinely
+    warning-free tree: the 11 unique warnings (9 in HD2ModCore.Tests, 2 in HD2ModManager)
+    were cleared rather than suppressed. The point of the guardrail is that a new warning
+    can no longer slip in unnoticed.
   -->
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <!--
