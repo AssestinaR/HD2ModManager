@@ -50,6 +50,6 @@
 
 ## 其他（细节全在 `docs/`）
 - **大功能 A（已被 B 取代）**：引擎 = Stingray(Bitsquid)，**裁掉全部物理命名空间**；`Unit`/`Mesh` **零 `create_*` / 零顶点权重接口** ⇒ **纯运行时 Lua 改不了权重、加不了骨、造不出物理**。**改内存边界：改「数据」✅ / 改「代码」❌**。**【硬约束】只允许依赖游戏本体，不得依赖任何外部系统（尤其其他 mod）**；`HD2IAS` 只作反面参照物。
-- **信息中心（阶段 0–6 已完成）**：`ModInformationFactRegistry` = **25 kind** 单一真相，`RequestAsync<T>` = 唯一读取入口，`Validate()` 在 `CreateModInformationCenter` 开头跑（新增 kind 忘登记 `SourceRoots` = **启动期失败**）。铁律：**缓存不得取代真实性**（键全由来源指纹构成、不落盘、双向测试）；**「读不到」≠「没有覆盖」**；**图标不进事实**。护甲页预热：**单飞加载**、闸门 `displayFactsReady`、**不占 UI 线程**。
-- **护甲映射页 20261011 回归**（`docs/armor-registry-page-20261011-regression.md`，切点 `30a4f83`）：兜底已落实（`8d06fcb`/`5b79acc`），**根因未动**——**拿「升级必被摧毁的凭据」(`deployment`) 守护「升级必被保留的文件」(`protocol`) ⇒ 设计上不可能可靠**；崩溃三条件：①点过应用 ②库无 `workspace.json` ③`deployment` 不存在；方向 = 不 gate + 把缺失做成可见可操作状态。**回归 #2（破坏性，未动）**：`ModLibraryResidualCleanupService.Cleanup(...)` 会 `Directory.Delete(recursive: true)` 删库根"未被快照引用且空"的子目录，零迁移保护、不走回收站。
+- **信息中心（阶段 0–6 已完成）**：`ModInformationFactRegistry` = **25 kind** 单一真相，`RequestAsync<T>` = 唯一读取入口，`Validate()` 在 `CreateModInformationCenter` 开头跑（新增 kind 忘登记 `SourceRoots` = **启动期失败**）。铁律：**缓存不得取代真实性**（键全由来源指纹构成、不落盘、双向测试）；**「读不到」≠「没有覆盖」**；**图标不进事实**。
+- **护甲映射页 20261011 回归**（`docs/armor-registry-page-20261011-regression.md`）：兜底已落实（`8d06fcb`/`5b79acc`），**根因未动**——**拿「升级必被摧毁的凭据」(`deployment`) 守护「升级必被保留的文件」(`protocol`) ⇒ 设计上不可能可靠**；崩溃三条件：①点过应用 ②库无 `workspace.json` ③`deployment` 不存在。**回归 #2（破坏性，未动）**：`ModLibraryResidualCleanupService.Cleanup(...)` 会 `Directory.Delete(recursive: true)` 删库根"未被快照引用且空"的子目录。
 
