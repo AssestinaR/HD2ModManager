@@ -71,6 +71,22 @@ public interface IModInformationCenter : IAsyncDisposable
 		ModInformationRequest request,
 		CancellationToken cancellationToken = default);
 
+	// 作用：护甲覆盖视图（设计文档 §4 #23）。它是**派生记忆**：由上面三条无节点事实组合而来，
+	// 只对"被问到的那批归档"作答。
+	// Purpose: The armor coverage view. A derived memo composed of the three node-less facts above,
+	//          answering only for the archives it was asked about.
+	//
+	// 为什么要把它做成一次中心请求，而不是让页面自己组合三条事实：
+	//   1. 组合规则（谁算赢家、哪些归档算"存在"）只该有一份实现；
+	//   2. 页面若自己组合，就会去请求"全部 Mod 的资产键集合"来喂映射——那需要逐节点资产清单，
+	//      正是护甲页首开卡顿的根因。本方法内部只映射"已部署且有归属"的资产键。
+	// 返回 Data 为 null 表示"索引还没建"或"生产失败"，两种情况页面都按"未知"处理，与改造前一致。
+	ValueTask<ModInformationResult<ArmorCoverageFacts>> RequestArmorCoverageAsync(
+		string gameDataDirectory,
+		IReadOnlySet<string> archiveIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default);
+
 	ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(
 		       IReadOnlyCollection<AssetKey> assetKeys,
 		       ModNodeId? excludedNodeId = null,

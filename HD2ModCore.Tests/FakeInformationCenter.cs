@@ -62,6 +62,7 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 	public ValueTask<ModInformationResult<GameDataIndexFacts>> RequestGameDataIndexAsync(ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<GameDataMappingFacts>> RequestGameDataMappingAsync(IReadOnlySet<AssetKey> assetKeys, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<DeployedOverrideGraph>> RequestDeployedGraphAsync(string gameDataDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+	public ValueTask<ModInformationResult<ArmorCoverageFacts>> RequestArmorCoverageAsync(string gameDataDirectory, IReadOnlySet<string> archiveIds, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	       public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
 		       => ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0));
 	public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)

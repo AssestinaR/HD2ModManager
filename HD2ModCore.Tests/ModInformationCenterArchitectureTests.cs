@@ -56,6 +56,24 @@ public sealed class ModInformationCenterArchitectureTests
 		}
 	}
 
+	// 作用：§7 护栏 3 的落地——护甲页不得为了"是否被覆盖 + 覆盖者图标"整包构建 GameData 归档浏览器。
+	// Purpose: The armor page must not build the whole GameData archive browser just for coverage plus an icon.
+	//
+	// 改造前它每次打开都调 GameDataArchiveBrowserService.BuildAsync，而那一步会为**每一个** Mod
+	// 请求一次资产清单（逐包解析 patch）——护甲页首开卡顿的根因，也是当时唯一把这件事做全的调用点。
+	// 现在它只请求 ArmorCoverage（由已部署资产投影得出，与 Mod 库无关）。
+	// 这条断言把"不再回头"固定下来：一旦有人为了省一次请求又贴回 BuildAsync，这里立刻失败。
+	[Fact]
+	public void ArmorPageProjectsCoverageInsteadOfBuildingTheGameDataArchiveBrowser()
+	{
+		var root = FindRepositoryRoot();
+		var source = File.ReadAllText(Path.Combine(root, "HD2ModManager", "ViewModels", "ArmorRegistryPageViewModel.cs"));
+
+		Assert.DoesNotContain("CreateGameDataArchiveBrowserService", source);
+		Assert.DoesNotContain("BuildAsync", source);
+		Assert.Contains("RequestArmorCoverageAsync", source);
+	}
+
 	private static string[] EnumerateProductionSources(string projectDirectory)
 		=> Directory.EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
 			.Where(path => !path.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))

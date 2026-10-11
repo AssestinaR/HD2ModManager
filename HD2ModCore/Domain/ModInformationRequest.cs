@@ -28,6 +28,7 @@ public sealed record ModInformationRequest(
 		ModInformationKind.GameDataIndex => ModInformationPropertyKind.GameDataIndex,
 		ModInformationKind.GameDataMapping => ModInformationPropertyKind.GameDataMapping,
 		ModInformationKind.DeployedGraph => ModInformationPropertyKind.DeployedGraph,
+		ModInformationKind.ArmorCoverage => ModInformationPropertyKind.ArmorCoverage,
 		_ => ModInformationPropertyKind.Identity,
 	};
 

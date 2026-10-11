@@ -19,7 +19,7 @@ public sealed class ModInformationFactRegistryTests
 
 		var declared = Enum.GetValues<ModInformationPropertyKind>();
 
-		Assert.Equal(24, declared.Length);
+		Assert.Equal(25, declared.Length);
 		Assert.Equal(declared.Length, ModInformationFactRegistry.Count);
 		Assert.All(declared, kind => Assert.True(
 			ModInformationFactRegistry.IsRegistered(kind),
@@ -75,6 +75,8 @@ public sealed class ModInformationFactRegistryTests
 	// 其余事实都是按 Mod 节点命名的。
 	// 注意 DeployedGraph（#11）虽然在"部署侧"这条线上，但它的主体同样是 GameData——
 	// 它读的是游戏 Data 目录与激活状态，与某个 Mod 目录无关（§22.2）。
+	// ArmorCoverage（#23）是第四条 GameData 主体的事实：它由上面三条组合而来，同样不挂在任何节点上；
+	// "哪一批护甲"由主体里的作用域表达，而不是靠换个主体种类。
 	[Fact]
 	public void OnlyTheGameDataFactsUseTheGameDataSubject()
 	{
@@ -84,6 +86,7 @@ public sealed class ModInformationFactRegistryTests
 			ModInformationPropertyKind.AssetMetadata,
 			ModInformationPropertyKind.GameDataMapping,
 			ModInformationPropertyKind.DeployedGraph,
+			ModInformationPropertyKind.ArmorCoverage,
 		];
 
 		Assert.All(gameDataKinds, kind => Assert.Equal(

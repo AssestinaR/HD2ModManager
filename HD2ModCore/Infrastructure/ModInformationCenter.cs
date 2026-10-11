@@ -326,6 +326,35 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return Unwrap<DeployedOverrideGraph>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
 	}
 
+	// 作用：护甲覆盖视图（设计文档 §4 #23）。它自己不读任何外部输入——先把上游事实请求回来，再做纯投影。
+	// Purpose: The armor coverage view. It reads nothing itself: it requests its upstream facts, then projects.
+	//
+	// 关键点：喂给映射的资产键集合是"**已部署且有归属**的资产键"，而不是"全部 Mod 的资产键"。
+	// 后者需要为每个 Mod 请求一次资产清单（逐包解析 patch）——那正是护甲页首开卡顿的根因。
+	// 覆盖结论只可能来自已部署的资产，所以这个更小的键集合既够用又便宜。
+	public async ValueTask<ModInformationResult<ArmorCoverageFacts>> RequestArmorCoverageAsync(
+		string gameDataDirectory,
+		IReadOnlySet<string> archiveIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
+		ArgumentNullException.ThrowIfNull(archiveIds);
+		ArgumentNullException.ThrowIfNull(request);
+		if (request.Kind != ModInformationKind.ArmorCoverage) throw new ArgumentException("Request kind must be ArmorCoverage.", nameof(request));
+		if (_assetArchiveIndexService is null || _gameDataMappingFactsService is null || _deployedOverrideGraphService is null)
+			return CreateUnavailable<ArmorCoverageFacts>(ModInformationKind.ArmorCoverage, "ArmorCoverageUnavailable", "Game Data index, mapping or deployed graph service is not configured.", request.Generation);
+		// 作用域里带归档集合的摘要：不同批护甲是**不同的覆盖事实**，合并它们会让一页拿到另一页的归档集合。
+		var key = new FactRevisionKey(
+			new FactKey(FactSubject.GameData($"armor-cover:{ArmorCoverageProjection.ScopeToken(archiveIds)}"), request.EffectiveProperty),
+			request.Generation ?? "auto");
+		var entry = new Lazy<Task<ModInformationResult<object>>>(
+			() => ProduceArmorCoverageAndRemoveAsync(key, gameDataDirectory, archiveIds, request),
+			LazyThreadSafetyMode.ExecutionAndPublication);
+		var existing = _gameDataTasks.GetOrAdd(key, entry);
+		return Unwrap<ArmorCoverageFacts>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
+	}
+
 	private async Task<ModInformationResult<object>> ProduceGameDataIndexAndRemoveAsync(FactRevisionKey key, ModInformationRequest request)
 	{
 		var started = DateTimeOffset.UtcNow;
@@ -397,6 +426,69 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		catch (Exception exception)
 		{
 			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.GameDataMapping, request.Generation, [new CoreIssue(CoreIssueSeverity.Error, "GameDataMappingProductionFailed", exception.Message, ExceptionMessage: exception.ToString())], false, true);
+		}
+	}
+
+	private async Task<ModInformationResult<object>> ProduceArmorCoverageAndRemoveAsync(FactRevisionKey key, string gameDataDirectory, IReadOnlySet<string> archiveIds, ModInformationRequest request)
+	{
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, request.Generation, started, key.ToString()));
+		ModInformationResult<object>? completed = null;
+		try
+		{
+			completed = await ProduceArmorCoverageAsync(gameDataDirectory, archiveIds, request, _shutdown.Token).ConfigureAwait(false);
+			return completed;
+		}
+		finally
+		{
+			RecordDiagnostic(CreateNodeLessDiagnostic(request, key, started, completed));
+			_gameDataTasks.TryRemove(key, out _);
+		}
+	}
+
+	private async Task<ModInformationResult<object>> ProduceArmorCoverageAsync(string gameDataDirectory, IReadOnlySet<string> archiveIds, ModInformationRequest request, CancellationToken cancellationToken)
+	{
+		try
+		{
+			// 三条上游事实都通过中心自己的请求取得，于是它们与页面直接请求时共用同一本合并账：
+			// 浏览器页与护甲页同时打开时，索引/映射/部署图各自只会被生产一次。
+			var index = await RequestGameDataIndexAsync(
+				new ModInformationRequest(ModInformationKind.GameDataIndex, request.Source, request.Generation),
+				cancellationToken).ConfigureAwait(false);
+			// 索引没建好时整条覆盖事实都是"未知"。这与改造前 BuildAsync 返回 null 的行为一致：
+			// 拿不到索引就说"不知道"，而不是宣称"没有任何护甲被覆盖"。
+			if (index.Data is null)
+				return new ModInformationResult<object>(null, ModInformationStatus.Unavailable, ModInformationKind.ArmorCoverage, request.Generation, index.Issues);
+
+			var deployed = await RequestDeployedGraphAsync(
+				gameDataDirectory,
+				new ModInformationRequest(ModInformationKind.DeployedGraph, request.Source, request.Generation),
+				cancellationToken).ConfigureAwait(false);
+			if (deployed.Data is null)
+				return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.ArmorCoverage, request.Generation, deployed.Issues, false, true);
+
+			var winnerKeys = deployed.Data.AssetChains
+				.Where(chain => chain.Winner.NodeId is not null)
+				.Select(chain => chain.AssetKey)
+				.ToHashSet();
+			var mapping = await RequestGameDataMappingAsync(
+				winnerKeys,
+				new ModInformationRequest(ModInformationKind.GameDataMapping, request.Source, request.Generation),
+				cancellationToken).ConfigureAwait(false);
+			if (mapping.Data is null)
+				return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.ArmorCoverage, request.Generation, mapping.Issues, false, true);
+
+			var facts = ArmorCoverageProjection.Project(index.Data, mapping.Data, deployed.Data, archiveIds);
+			var issues = facts.Issues.Concat(deployed.Data.Issues).ToList();
+			return new ModInformationResult<object>(facts, ModInformationStatus.Fresh, ModInformationKind.ArmorCoverage, request.Generation ?? facts.CoverageGeneration, issues);
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.ArmorCoverage, request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "ArmorCoverageCanceled", "护甲覆盖视图因信息中心关闭而取消。", gameDataDirectory)], false, true);
+		}
+		catch (Exception exception)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.ArmorCoverage, request.Generation, [new CoreIssue(CoreIssueSeverity.Error, "ArmorCoverageProductionFailed", exception.Message, gameDataDirectory, null, exception.ToString())], false, true);
 		}
 	}
 

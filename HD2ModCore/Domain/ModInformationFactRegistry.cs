@@ -180,6 +180,18 @@ public static class ModInformationFactRegistry
 			ModInformationCacheScope.Session,
 			FactProducerKind.DeployedOverrideGraphService),
 
+		// 依据：ArmorCoverageProjection.Project 的入参恰好是这三条事实——
+		//   index 用来判断"被问到的归档是否真的存在"（不存在的归档要答"未知"而不是"未覆盖"），
+		//   mapping 把已部署资产落到具体归档，deployed 提供每个资产的赢家。
+		// 它是**派生记忆**（设计文档 §3.4 的 DerivedMemo）：由事实组合，禁止落盘，所以取 Session 而不是 Persistent。
+		// 主体种类取 GameData：它由游戏数据侧事实组合而来，与任何 Mod 节点无关；
+		// "哪一批护甲"由主体的作用域表达（见 FactSubject.GameData 与 §22 的身份口径）。
+		[ModInformationPropertyKind.ArmorCoverage] = new(
+			FactSubjectKind.GameData,
+			ModInformationCacheScope.Session,
+			FactProducerKind.Composite,
+			[ModInformationPropertyKind.GameDataIndex, ModInformationPropertyKind.GameDataMapping, ModInformationPropertyKind.DeployedGraph]),
+
 		// 依据：UnitVersionInformationProducer 在 AnalyzeNodeAsync 的产物（资产清单）上做版本探测
 		// （UnitVersionProbe.ProbeAsync(analysis)）；设计文档 §4 #4 也把 UnitVersion 定为依赖 #2 AssetInventory。
 		[ModInformationPropertyKind.Compatibility] = new(

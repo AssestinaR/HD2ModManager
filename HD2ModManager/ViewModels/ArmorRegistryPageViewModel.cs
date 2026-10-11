@@ -509,14 +509,29 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var gameData = SettingsService.GetGameDataFolder();
 		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
 			return result;
+		var archiveIds = catalog
+			.Select(item => item.ArchiveId)
+			.Where(id => !string.IsNullOrWhiteSpace(id))
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		if (archiveIds.Count == 0) return result;
 
 		try
 		{
-			var browser = CoreServices.CreateGameDataArchiveBrowserService(
-				SettingsService.CreateStoragePaths(),
-				library.InformationCenter);
-			var snapshot = await browser.BuildAsync(library.Snapshot, library.ModsRootDirectory, gameData);
-			if (snapshot is null) return result;
+			// 只问"这批护甲被谁覆盖"，不再整包构建 GameData 归档浏览器。
+			// 旧路径为了两个字段去构建整个浏览器，而那一步会为**每一个** Mod 请求一次资产清单
+			// （逐包解析 patch）——这正是护甲页首开卡顿的根因。
+			// 覆盖结论只取决于"已部署且有归属的资产"，与 Mod 库、激活配置都无关（设计文档 §4 #23、§23）。
+			var coverage = await library.InformationCenter.RequestArmorCoverageAsync(
+				gameData,
+				archiveIds,
+				new ModInformationRequest(ModInformationKind.ArmorCoverage, "ArmorRegistryPage"));
+			if (coverage.Data is null)
+			{
+				// 索引未建或生产失败都表现为 Data 为空。前者是正常状态，后者需要留下线索。
+				if (coverage.Status == ModInformationStatus.Failed)
+					LogService.Warn($"读取护甲覆盖事实失败：{string.Join("；", coverage.Issues.Select(issue => $"{issue.Code}: {issue.Message}"))}");
+				return result;
+			}
 
 			var parents = new Dictionary<Guid, IReadOnlyList<Guid>>();
 			var nodesById = library.Snapshot.Nodes;
@@ -549,34 +564,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 			foreach (var item in catalog)
 			{
-				var archive = snapshot.Archives.FirstOrDefault(candidate =>
-					string.Equals(candidate.Archive.PackageName, item.ArchiveId, StringComparison.OrdinalIgnoreCase));
-				if (archive is null) continue;
-
-				var hasEffectiveUnitOverride = archive.Overlay.EffectiveAssets.Any(asset =>
-					asset.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId
-					&& asset.WinnerNodeId is not null);
-				var unitWinners = archive.Overlay.EffectiveAssets
-					.Where(asset => asset.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId)
-					.Where(asset => asset.WinnerNodeId is not null)
-					.GroupBy(asset => asset.WinnerNodeId!.Value)
-					.OrderByDescending(group => group.Count())
-					.ThenByDescending(group => group.Max(asset => asset.TargetPatchIndex))
-					.ThenBy(group => group.Key.Value);
-				var unitWinner = unitWinners.FirstOrDefault()?.Key;
-
-				var directWinner = unitWinner ?? archive.Overlay.EffectiveAssets
-					.Where(asset => asset.WinnerNodeId is not null)
-					.GroupBy(asset => asset.WinnerNodeId!.Value)
-					.OrderByDescending(group => group.Count())
-					.ThenByDescending(group => group.Max(asset => asset.TargetPatchIndex))
-					.ThenBy(group => group.Key.Value)
-					.Select(group => (ModNodeId?)group.Key)
-					.FirstOrDefault();
-				var imagePath = directWinner is { } winner && nodesById.ContainsKey(winner)
+				// 只有索引里确实存在的归档才会出现在覆盖事实里；不在其中的保持"未知"而不是"未覆盖"。
+				// 图标仍在这里解析：它是对赢家节点的库内查找（内存字典 + 父链），代价可忽略，
+				// 而且放进事实会让"换个图标"变成"覆盖事实重算"——与设计文档 §7 护栏 3 正好相反。
+				if (!coverage.Data.Archives.TryGetValue(item.ArchiveId, out var entry)) continue;
+				var imagePath = entry.CoverWinnerNodeId is { } winner && nodesById.ContainsKey(winner)
 					? FindModIconInParentChain(winner.Value, parents)
 					: null;
-				result[item.ArchiveId] = new ArmorDisplayFacts(imagePath, hasEffectiveUnitOverride);
+				result[item.ArchiveId] = new ArmorDisplayFacts(imagePath, entry.HasEffectiveUnitOverride);
 			}
 		}
 		catch (Exception exception) when (exception is IOException

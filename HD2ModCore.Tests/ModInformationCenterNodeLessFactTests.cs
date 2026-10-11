@@ -105,6 +105,70 @@ public sealed class ModInformationCenterNodeLessFactTests
 	}
 
 	[Fact]
+	public async Task RequestArmorCoverageAsync_CoalescesTheSameArchiveSetButNotDifferentOnes()
+	{
+		var index = new StubIndexService { Block = true };
+		var center = CreateCenter(
+			indexService: index,
+			mappingService: new BlockingMappingService(),
+			deployedService: new BlockingDeployedService());
+		var produced = new List<ModInformationDiagnostic>();
+		center.DiagnosticRecorded += (_, diagnostic) =>
+		{
+			lock (produced) produced.Add(diagnostic);
+		};
+
+		var first = center.RequestArmorCoverageAsync("data", new HashSet<string> { "target" }, Request(ModInformationKind.ArmorCoverage)).AsTask();
+		await index.Started.Task;
+		var same = center.RequestArmorCoverageAsync("data", new HashSet<string> { "target" }, Request(ModInformationKind.ArmorCoverage)).AsTask();
+		var other = center.RequestArmorCoverageAsync("data", new HashSet<string> { "other" }, Request(ModInformationKind.ArmorCoverage)).AsTask();
+		index.Release();
+
+		var results = await Task.WhenAll(first, same, other);
+
+		// 判据用"覆盖事实被生产了几次"而不是"索引被读了几次"：覆盖事实内部还要请求三条上游事实，
+		// 它们各自也会合并，所以只有按 Kind 过滤才能看出这一层账本是否真的按归档集合分开。
+		Assert.Equal(2, produced.Count(diagnostic => diagnostic.Kind == ModInformationKind.ArmorCoverage));
+		Assert.Equal(1, results.Count(result => result.WasCoalesced));
+		Assert.All(results, result => Assert.NotNull(result.Data));
+		await center.DisposeAsync();
+	}
+
+	[Fact]
+	public async Task RequestArmorCoverageAsync_WhenTheIndexIsNotBuilt_ReportsUnavailableInsteadOfNoCoverage()
+	{
+		var center = CreateCenter(
+			indexService: new StubIndexService { Fingerprint = null },
+			mappingService: new BlockingMappingService(),
+			deployedService: new BlockingDeployedService());
+
+		var result = await center.RequestArmorCoverageAsync("data", new HashSet<string> { "target" }, Request(ModInformationKind.ArmorCoverage));
+
+		// 索引没建好时，正确的答案是"不知道"，而不是"没有任何护甲被覆盖"。
+		// 后者会让护甲页把每件护甲都标成"未命中 Unit 覆盖"——一个从缺失数据推出来的否定事实。
+		Assert.Equal(ModInformationStatus.Unavailable, result.Status);
+		Assert.Null(result.Data);
+		await center.DisposeAsync();
+	}
+
+	[Fact]
+	public async Task RequestArmorCoverageAsync_WhenTheDeploymentCannotBeRead_FailsInsteadOfReportingNoCoverage()
+	{
+		var center = CreateCenter(
+			indexService: new StubIndexService(),
+			mappingService: new BlockingMappingService(),
+			deployedService: new FailingDeployedService());
+
+		var result = await center.RequestArmorCoverageAsync("data", new HashSet<string> { "target" }, Request(ModInformationKind.ArmorCoverage));
+
+		// 部署图读不出来时同样不能宣称"没有覆盖"：那会把一次读取失败伪装成一个干净的空结果。
+		Assert.Equal(ModInformationStatus.Failed, result.Status);
+		Assert.Null(result.Data);
+		Assert.True(result.RefreshFailed);
+		await center.DisposeAsync();
+	}
+
+	[Fact]
 	public async Task NodeLessFacts_AreNotDisturbedByNodeInvalidation()
 	{
 		var index = new StubIndexService { Block = true };
@@ -133,13 +197,16 @@ public sealed class ModInformationCenterNodeLessFactTests
 		var index = await center.RequestGameDataIndexAsync(Request(ModInformationKind.GameDataIndex));
 		var mapping = await center.RequestGameDataMappingAsync(new HashSet<AssetKey> { new(1, 1) }, Request(ModInformationKind.GameDataMapping));
 		var deployed = await center.RequestDeployedGraphAsync("data", Request(ModInformationKind.DeployedGraph));
+		var coverage = await center.RequestArmorCoverageAsync("data", new HashSet<string> { "target" }, Request(ModInformationKind.ArmorCoverage));
 
 		Assert.Equal(ModInformationStatus.Unavailable, index.Status);
 		Assert.Equal(ModInformationStatus.Unavailable, mapping.Status);
 		Assert.Equal(ModInformationStatus.Unavailable, deployed.Status);
+		Assert.Equal(ModInformationStatus.Unavailable, coverage.Status);
 		Assert.Contains(index.Issues, issue => issue.Code == "GameDataIndexUnavailable");
 		Assert.Contains(mapping.Issues, issue => issue.Code == "GameDataMappingUnavailable");
 		Assert.Contains(deployed.Issues, issue => issue.Code == "DeployedGraphUnavailable");
+		Assert.Contains(coverage.Issues, issue => issue.Code == "ArmorCoverageUnavailable");
 		await center.DisposeAsync();
 	}
 
@@ -156,8 +223,18 @@ public sealed class ModInformationCenterNodeLessFactTests
 		await center.RequestGameDataIndexAsync(Request(ModInformationKind.GameDataIndex));
 		await center.RequestGameDataMappingAsync(new HashSet<AssetKey> { new(1, 1) }, Request(ModInformationKind.GameDataMapping));
 		await center.RequestDeployedGraphAsync("data", Request(ModInformationKind.DeployedGraph));
+		await center.RequestArmorCoverageAsync("data", new HashSet<string> { "target" }, Request(ModInformationKind.ArmorCoverage));
 
-		Assert.Equal(3, seen.Count);
+		// 覆盖事实内部会请求它的三条上游事实，所以诊断条数不是 4——判据是"每个 kind 都被记录过"。
+		ModInformationKind[] kinds =
+		[
+			ModInformationKind.GameDataIndex,
+			ModInformationKind.GameDataMapping,
+			ModInformationKind.DeployedGraph,
+			ModInformationKind.ArmorCoverage,
+		];
+		foreach (var kind in kinds)
+			Assert.Contains(seen, diagnostic => diagnostic.Kind == kind);
 		Assert.All(seen, diagnostic => Assert.Null(diagnostic.NodeId));
 		Assert.All(seen, diagnostic => Assert.Equal(ModInformationStatus.Fresh, diagnostic.Status));
 		Assert.All(seen, diagnostic => Assert.Equal("Test", diagnostic.Source));

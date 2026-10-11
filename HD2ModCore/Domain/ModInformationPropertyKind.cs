@@ -34,6 +34,10 @@ public enum ModInformationPropertyKind
 	// 两者都不在表内，所以它同样是源事实——但它**没有节点**：身份是"游戏目录 + 部署指纹"。
 	// Appended at the end for the same reason as the two above.
 	DeployedGraph,
+	// 护甲覆盖视图（设计文档 §4 #23）。它是**派生记忆**：由游戏数据侧三条事实组合而来，
+	// 只记忆、不落盘——落盘就会多出一个"会忘记失效"的缓存。
+	// Appended at the end for the same reason as the three above.
+	ArmorCoverage,
 }
 
 // 作用：标识属性来自哪一层，便于 UI 和诊断区分缓存命中、生产和组合结果。

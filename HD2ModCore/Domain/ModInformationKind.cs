@@ -18,4 +18,10 @@ public enum ModInformationKind
 	GameDataIndex,
 	GameDataMapping,
 	DeployedGraph,
+	// 护甲覆盖视图（设计文档 §4 #23）：由上面三条游戏数据事实组合出的聚合视图，
+	// 同样没有节点——身份是"要的是哪一批护甲归档"。
+	// 追加在末尾以保持既有取值的数值不变。
+	// The armor coverage view: an aggregate of the three game-data facts above, equally node-less.
+	// Appended at the end so existing numeric values are preserved.
+	ArmorCoverage,
 }
