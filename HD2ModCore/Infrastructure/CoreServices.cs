@@ -26,6 +26,9 @@ public static class CoreServices
 		IAsyncDisposable? ownedInformationReader)
 	{
 		ArgumentNullException.ThrowIfNull(informationReader);
+		// 启动期自检：登记表必须自洽（每个 kind 都登记、依赖边都指向已登记的 kind、依赖图无环）。
+		// Startup self-check: the fact registry must be self-consistent before any production request runs.
+		HD2ModCore.Domain.ModInformationFactRegistry.Validate();
 		var referenceIndex = new SqliteModFactsStore(paths);
 		var analysisProvider = new ModInformationPatchGroupAnalysisProvider(informationReader);
 		return new ModInformationCenter(

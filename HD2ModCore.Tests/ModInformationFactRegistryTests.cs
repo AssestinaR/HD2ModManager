@@ -83,6 +83,164 @@ public sealed class ModInformationFactRegistryTests
 			kind => Assert.Equal(FactSubjectKind.Node, ModInformationFactRegistry.Describe(kind).SubjectKind));
 	}
 
+	// ── 判据 6（阶段 2）：21 条依赖边逐条声明，且依赖图是一张无环 DAG ──────────────
+
+	// 空依赖 ⟺ 显式登记为源事实。这样"新增 kind 却忘了写依赖"会立刻失败，
+	// 而"确实没有上游事实"必须由人显式登记进 SourceRoots，不会被静默放过。
+	[Fact]
+	public void EveryKindEitherDeclaresDependenciesOrIsAReviewedSourceRoot()
+	{
+		foreach (var kind in ModInformationFactRegistry.RegisteredKinds)
+		{
+			var hasDependencies = ModInformationFactRegistry.Describe(kind).Dependencies.Count > 0;
+			var isDeclaredSource = ModInformationFactRegistry.SourceRoots.Contains(kind);
+
+			Assert.True(
+				hasDependencies != isDeclaredSource,
+				$"{kind} 的依赖声明与源事实登记不一致（依赖数 {ModInformationFactRegistry.Describe(kind).Dependencies.Count}，"
+				+ $"是否登记为源事实 {isDeclaredSource}）。");
+		}
+	}
+
+	// 逐条锁住"读代码坐实"的那批边——这些是 D3 的成果，改动它们必须是有意识的。
+	[Theory]
+	[InlineData(ModInformationPropertyKind.PatchEntryPayload, ModInformationPropertyKind.PatchCatalog)]
+	[InlineData(ModInformationPropertyKind.AssetInventory, ModInformationPropertyKind.PatchCatalog)]
+	[InlineData(ModInformationPropertyKind.UnitCatalog, ModInformationPropertyKind.AssetInventory)]
+	[InlineData(ModInformationPropertyKind.UnitGeometrySummary, ModInformationPropertyKind.UnitStructure)]
+	[InlineData(ModInformationPropertyKind.UnitStructure, ModInformationPropertyKind.PatchCatalog)]
+	[InlineData(ModInformationPropertyKind.UnitStructure, ModInformationPropertyKind.PatchEntryPayload)]
+	[InlineData(ModInformationPropertyKind.ReferenceEdges, ModInformationPropertyKind.PatchEntryPayload)]
+	[InlineData(ModInformationPropertyKind.ReferenceClosure, ModInformationPropertyKind.ReferenceEdges)]
+	[InlineData(ModInformationPropertyKind.MaterialDependencyClosure, ModInformationPropertyKind.ReferenceEdges)]
+	[InlineData(ModInformationPropertyKind.CompositeBoneDependencyClosure, ModInformationPropertyKind.ReferenceEdges)]
+	[InlineData(ModInformationPropertyKind.GpuPayload, ModInformationPropertyKind.PatchEntryPayload)]
+	[InlineData(ModInformationPropertyKind.StreamPayload, ModInformationPropertyKind.PatchEntryPayload)]
+	[InlineData(ModInformationPropertyKind.TocPayload, ModInformationPropertyKind.PatchEntryPayload)]
+	[InlineData(ModInformationPropertyKind.Compatibility, ModInformationPropertyKind.AssetInventory)]
+	[InlineData(ModInformationPropertyKind.Maintenance, ModInformationPropertyKind.AssetInventory)]
+	public void DeclaredDependencyEdgeExists(ModInformationPropertyKind kind, ModInformationPropertyKind dependency)
+		=> Assert.Contains(dependency, ModInformationFactRegistry.Describe(kind).Dependencies);
+
+	// Maintenance 是本表里唯一一条"中心内部真实按依赖顺序取上游"的边，单独锁住防止回退。
+	[Fact]
+	public void MaintenanceIsTheEdgeTheCenterActuallyRequestsThroughTheCenter()
+	{
+		var center = ReadSource("HD2ModCore", "Infrastructure", "ModInformationCenter.cs");
+
+		Assert.Contains("RequestAssetInventoryAsync(node, root, inventoryRequest", center);
+		Assert.Contains("_maintenanceProducer!.ProduceAsync(node, inventory.Data", center);
+	}
+
+	[Fact]
+	public void DependencyGraphIsAcyclic()
+	{
+		var graph = ModInformationFactRegistry.Graph;
+
+		Assert.True(graph.IsAcyclic, "登记表声明的依赖边形成了环。");
+		Assert.Equal(ModInformationFactRegistry.Count, graph.TopologicalOrder.Count);
+	}
+
+	// 拓扑序里"上游一定排在下游之前"，否则按序生产就会出现"用到还没算出来的东西"。
+	[Fact]
+	public void TopologicalOrderPlacesEveryDependencyBeforeItsDependent()
+	{
+		var graph = ModInformationFactRegistry.Graph;
+		var position = graph.TopologicalOrder
+			.Select((kind, index) => (kind, index))
+			.ToDictionary(item => item.kind, item => item.index);
+
+		foreach (var kind in graph.Nodes)
+		{
+			foreach (var dependency in graph.DirectDependencies(kind))
+				Assert.True(
+					position[dependency] < position[kind],
+					$"拓扑序把 {kind} 排在了它的上游 {dependency} 之前。");
+		}
+	}
+
+	[Fact]
+	public void TransitiveClosureCoversEveryIndirectUpstream()
+	{
+		var graph = ModInformationFactRegistry.Graph;
+
+		// UnitGeometrySummary → UnitStructure → {PatchCatalog, PatchEntryPayload} → PatchCatalog
+		var closure = graph.TransitiveDependencies(ModInformationPropertyKind.UnitGeometrySummary);
+
+		Assert.Contains(ModInformationPropertyKind.UnitStructure, closure);
+		Assert.Contains(ModInformationPropertyKind.PatchEntryPayload, closure);
+		Assert.Contains(ModInformationPropertyKind.PatchCatalog, closure);
+		Assert.DoesNotContain(ModInformationPropertyKind.UnitGeometrySummary, closure);
+
+		// 源事实的闭包必须是空的。
+		Assert.All(
+			ModInformationFactRegistry.SourceRoots,
+			kind => Assert.Empty(graph.TransitiveDependencies(kind)));
+	}
+
+	// 图的环检测本身要可靠：给它一张人为造的环，必须报出来而不是静默少节点。
+	[Fact]
+	public void GraphReportsCyclesInsteadOfSilentlyDroppingNodes()
+	{
+		var descriptors = new Dictionary<ModInformationPropertyKind, FactDescriptor>
+		{
+			[ModInformationPropertyKind.Identity] = new(
+				FactSubjectKind.Node, ModInformationCacheScope.Persistent, FactProducerKind.Source,
+				[ModInformationPropertyKind.ContentRevision]),
+			[ModInformationPropertyKind.ContentRevision] = new(
+				FactSubjectKind.Node, ModInformationCacheScope.Persistent, FactProducerKind.Source,
+				[ModInformationPropertyKind.Identity]),
+		};
+
+		var graph = ModInformationFactGraph.Build(descriptors);
+
+		Assert.False(graph.IsAcyclic);
+		Assert.Equal(2, graph.TopologicalOrder.Count);
+	}
+
+	[Fact]
+	public void GraphComputesClosureAndOrderOnASyntheticChain()
+	{
+		var descriptors = new Dictionary<ModInformationPropertyKind, FactDescriptor>
+		{
+			[ModInformationPropertyKind.Identity] = new(
+				FactSubjectKind.Node, ModInformationCacheScope.Persistent, FactProducerKind.Source,
+				[ModInformationPropertyKind.ContentRevision]),
+			[ModInformationPropertyKind.ContentRevision] = new(
+				FactSubjectKind.Node, ModInformationCacheScope.Persistent, FactProducerKind.Source,
+				[ModInformationPropertyKind.PatchCatalog]),
+			[ModInformationPropertyKind.PatchCatalog] = new(
+				FactSubjectKind.Node, ModInformationCacheScope.Persistent, FactProducerKind.PatchCatalogReader),
+		};
+
+		var graph = ModInformationFactGraph.Build(descriptors);
+
+		Assert.True(graph.IsAcyclic);
+		Assert.Equal(
+			[ModInformationPropertyKind.PatchCatalog, ModInformationPropertyKind.ContentRevision, ModInformationPropertyKind.Identity],
+			graph.TopologicalOrder);
+		Assert.Equal(
+			[ModInformationPropertyKind.ContentRevision, ModInformationPropertyKind.PatchCatalog],
+			graph.TransitiveDependencies(ModInformationPropertyKind.Identity));
+	}
+
+	// 依赖边指向未登记的 kind 时必须被剔除，而不是让图里出现悬空节点。
+	[Fact]
+	public void GraphIgnoresDependenciesThatAreNotRegistered()
+	{
+		var descriptors = new Dictionary<ModInformationPropertyKind, FactDescriptor>
+		{
+			[ModInformationPropertyKind.Identity] = new(
+				FactSubjectKind.Node, ModInformationCacheScope.Persistent, FactProducerKind.Source,
+				[(ModInformationPropertyKind)9999]),
+		};
+
+		var graph = ModInformationFactGraph.Build(descriptors);
+
+		Assert.Empty(graph.DirectDependencies(ModInformationPropertyKind.Identity));
+		Assert.Single(graph.Nodes);
+	}
+
 	// ── 身份类型本身的行为 ──────────────────────────────────────────────────────
 
 	[Fact]
