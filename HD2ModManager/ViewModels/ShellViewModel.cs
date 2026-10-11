@@ -16,6 +16,18 @@ namespace HD2ModManager.ViewModels
     public sealed class ShellViewModel : BaseViewModel, IAsyncDisposable
     {
         private enum ArmorRegistrySelectionAction { Promote, ReleaseProviders, ReleaseTargets }
+
+        // 作用：一次导航**之前**的页面组合，用于按 Esc 逐层返回。
+        // 只保存"重建这次组合所需的最小信息"：左右页面类型、右槽是否存在、
+        // 当时的 WorkspaceMode（UpdateModeFromSlots 对未识别的组合会保留旧值，所以必须一起记）、
+        // 以及两个会改变 CreatePage 结果的易变字段（SelectedModId / _editingDecorationId）。
+        private readonly record struct WorkspaceHistoryEntry(
+            WorkspacePageType LeftType,
+            WorkspacePageType RightType,
+            bool HasRightPage,
+            WorkspaceMode Mode,
+            string? SelectedModId,
+            string? EditingDecorationId);
         private readonly ProfileService _profileService;
         private readonly ModLibraryService _libraryService;
         private readonly ImportQueueService _importQueue;
@@ -47,6 +59,12 @@ namespace HD2ModManager.ViewModels
         private WorkspacePageType _rightPageType;
         private string? _selectedModId;
         private string? _editingDecorationId;
+        // Esc 返回队列。按**导航事件**计数（不是按时间），超过上限丢最旧的一条。
+        // 只活在本次会话里：不落盘、不跨会话，也不参与任何持久化。
+        private const int NavigationHistoryLimit = 20;
+        private readonly List<WorkspaceHistoryEntry> _navigationHistory = [];
+        private WorkspaceHistoryEntry? _lastWorkspaceEntry;
+        private bool _isRestoringWorkspace;
         private bool _isMessagePanelOpen;
         private bool _isMessagePreviewOpen;
         private readonly IModInformationCenter _informationCenter;
@@ -551,7 +569,83 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(CurrentMode));
             RaiseModeFlags();
             RaiseSlotFlags();
+            RecordWorkspaceEntry();
         }
+
+        // Esc 的第三级：按顺序返回上一次的页面组合。
+        // 返回 false 表示队列为空，调用方保持原有行为（回首页）。
+        // 语义是"不可反撤销"：这里只出栈、不再入栈；想回到更深的页面只能正向导航一次。
+        public bool TryGoBack()
+        {
+            if (_navigationHistory.Count == 0) return false;
+            var entry = _navigationHistory[^1];
+            _navigationHistory.RemoveAt(_navigationHistory.Count - 1);
+
+            // 整个回放过程都不记录：否则"回放失败 → 回首页"这一步会把自己压回队列，
+            // 让 Esc 在两页之间来回弹。
+            _isRestoringWorkspace = true;
+            try
+            {
+                if (!TryRestoreWorkspace(entry)) Navigate(WorkspaceMode.Home);
+            }
+            finally
+            {
+                _isRestoringWorkspace = false;
+            }
+
+            return true;
+        }
+
+        // 回放一条历史组合。有长期缓存的页面（Profile / Library / ArmorRegistry）由 CreatePage
+        // 内部直接复用实例，其余按类型重建。重建不了的组合返回 false。
+        private bool TryRestoreWorkspace(WorkspaceHistoryEntry entry)
+        {
+            // 存档浏览器与 Archive 详情是一对：只有 OpenGameDataBrowser 会把两者配好，
+            // CreatePage(GameDataArchiveDetails) 造出来的是无源宿主页。
+            if (entry.LeftType == WorkspacePageType.GameDataBrowser
+                && entry.HasRightPage
+                && entry.RightType == WorkspacePageType.GameDataArchiveDetails)
+            {
+                OpenGameDataBrowser();
+                return true;
+            }
+
+            if (!CanReopenPage(entry.LeftType)) return false;
+            if (entry.HasRightPage && !CanReopenPage(entry.RightType)) return false;
+
+            SelectedModId = entry.SelectedModId;
+            _editingDecorationId = entry.EditingDecorationId;
+            WorkspacePageType? rightType = entry.HasRightPage ? entry.RightType : null;
+            CommitNavigation(entry.LeftType, rightType, entry.Mode);
+            return true;
+        }
+
+        // 哪些页面类型无法从"页面类型 + Mod id"重建。
+        private static bool CanReopenPage(WorkspacePageType pageType)
+            => pageType switch
+            {
+                // CreatePage 对这两个直接抛异常：必须由调用方传入活实例。
+                WorkspacePageType.CrossArmorPlan => false,
+                WorkspacePageType.MaterialPackaging => false,
+                // 必须与左侧浏览器配对，见 OpenGameDataBrowser。
+                WorkspacePageType.GameDataArchiveDetails => false,
+                _ => true,
+            };
+
+        // 每次导航收尾时调用：把"上一个组合"压入队列，并把当前组合记为最新。
+        // 首次导航（构造函数里的 Navigate(Home)）只做播种，不入栈。
+        private void RecordWorkspaceEntry()
+        {
+            var current = CaptureWorkspaceEntry();
+            var previous = _lastWorkspaceEntry;
+            _lastWorkspaceEntry = current;
+            if (_isRestoringWorkspace || previous is null || previous.Value == current) return;
+            if (_navigationHistory.Count >= NavigationHistoryLimit) _navigationHistory.RemoveAt(0);
+            _navigationHistory.Add(previous.Value);
+        }
+
+        private WorkspaceHistoryEntry CaptureWorkspaceEntry()
+            => new(_leftPageType, _rightPageType, _rightPage is not null, _currentMode, _selectedModId, _editingDecorationId);
 
         public void OpenMessagePanel()
         {
@@ -2169,6 +2263,10 @@ namespace HD2ModManager.ViewModels
                 (WorkspacePageType.ArmorRegistry, WorkspacePageType.ArmorRegistry, false) => WorkspaceMode.ArmorRegistry,
                 _ => CurrentMode,
             };
+            // 这里是除 CommitNavigation 之外所有导航路径的共同收尾
+            // （OpenSinglePage / OpenPage / OpenGameDataBrowser / OpenCrossArmorPlan /
+            //  OpenSecondaryPage / CloseDeletedModDetails），所以返回队列的记录点挂在这里。
+            RecordWorkspaceEntry();
         }
 
         private static string GetPageTitle(WorkspacePageType pageType) => pageType switch

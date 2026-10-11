@@ -769,8 +769,9 @@ namespace HD2ModManager
                     {
                         shell.ClearTransientSelection();
                     }
-                    else
+                    else if (!shell.TryGoBack())
                     {
+                        // 返回队列为空时保持原有行为：回首页。
                         shell.Navigate(WorkspaceMode.Home);
                     }
                     e.Handled = true;
