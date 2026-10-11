@@ -333,6 +333,73 @@ U6 抖动骨 `params[9]` 内存里**有无运行时副本**；U7 两个枚举的
 - 实测：`extract list bones` = 3062（与全库直方图一致）；提取玩家 bones 资源 = 1484 字节，
   解析 `nameCount=90 / lodCount=6`，10 个关键骨名全部命中 → 与 `Decryptor` 路径逐字节一致。
 
+## 新方向（2026-10-11 用户拍板转向）：L4D2 模型整体移植到 HD2
+
+> 完整调研见 `docs/l4d2-to-hd2-physbone-migration.md`。**方案未定，纯调研 + 沟通，未改代码。**
+
+**转向原因**：用户判断"给老 HD2 mod 批量刷权重加物理"太难（需精确绑骨或通用自动刷权重），
+改为**把 L4D2 的动漫角色模型整体移植进来**——因为 L4D2 的动骨支持非常标准、社区资源丰富。
+自述上次失败（项目在 `E:\Data\source\repos\HD2AgentWorkbench`）原因是"当时没有 Lua 支持"、
+"T-pose 摆成 HD2 类 A-pose 太难"、"两游戏骨骼尺寸差距大"。
+
+**【决定性发现】L4D2 的动漫模型自带完整 jigglebone 物理参数，不用作者重做。**
+- 实测扫 **97 个 VPK / 6566 个 MDL** → **147 个带 jigglebone**（0 解析失败）。
+  命中的包括用户手头**整个 L4N 系列**（Lunalice / Serenade / Elise / Lilium_Sancta / MourningVeil）。
+- `Lunalice_Zoey.vpk` 主模型 `survivor_teenangst.mdl`：**127 骨 / 57 个 jiggle bone**。
+  父级分布：**`Head1` 15 根（头发）**、`Pelvis` 4 根（裙摆）、`Spine` 6、`Spine4` 4、
+  左右小腿各 2，**其余成链**（`Head1→72→73→74`）。**这正是"及腰长发"的骨骼结构。**
+- 每根参数完整可读：`length/tipMass/yawStiffness/yawDamping/pitchStiffness/pitchDamping/`
+  `alongStiffness/angleLimit/各类约束与摩擦`。样本：`len=30 mass=200 yawS=50 yawD=7 angLim=0.611`。
+- **这些骨的骨名读不到**（`sznameindex` 指向内嵌 SMD 文本），**但父级层级完全有效**
+  → 靠"层级 + bind pose 位置"即可重建，**不需要名字**。非 `ValveBiped` 命名骨 = **0 个**。
+
+**Source 侧机制（一手：Valve wiki + Source SDK `studio.h`/`jigglebones.cpp`）**：
+- QC `$jigglebone`（Source 2007+，L4D2 支持）；四组属性 `is_rigid`/`is_flexible`/
+  `has_base_spring`/`is_boing`；`stiffness` 1–1000、`damping` 0–10；仿真方向依赖骨的 **+Z 轴**。
+- MDL 侧 `STUDIO_PROC_JIGGLE = 5`（判定用 `mstudiobone_t.proctype`）；
+  **`procindex` 是相对该骨自身地址的字节偏移**（`pProcedure() = this + procindex`），
+  直接给出 `mstudiojigglebone_t*`（**120 字节**）。
+- `mstudiobone_t` v53 为 **216 字节/条**；字段偏移 `flags`(160) `proctype`(164) `procindex`(168)。
+- flags：`FLEXIBLE 0x01` `RIGID 0x02` `YAW_CON 0x04` `PITCH_CON 0x08` `ANGLE_CON 0x10`
+  `LENGTH_CON 0x20` `BASE_SPRING 0x40`。
+
+**旧项目 `HD2AgentWorkbench` 现状**：已能把 `Lunalice_Zoey.vpk` 静态转成 HD2 Patch
+（VPK/MDL/VVD/VTX 读取 + `source-rig-fit` 骨骼拟合 + Canonical 逐顶点预烘焙 + PatchValidator 回读）；
+**已读 `proctype`/`procindex`，但从未采集 `mstudiojigglebone_t` 本体**。
+残余问题：静置回放误差 5.7e-4 m、躯干映射选择、脚部 frame/pivot、手掌非均匀缩放。
+
+**【关键纠正】Lua 解决的不是用户自述的那三个问题**：T-pose→A-pose 与体型比例**都是离线数学问题**，
+Lua 帮不上忙（旧项目已用逐顶点预烘焙绕开）。**Lua 解决的是"让额外骨骼动起来"。**
+
+**推论出的三层分工（待验证）**：
+① **身体骨**（~20 根 ValveBiped）离线映射到 HD2 原生 90 骨 → **运行时由 HD2 自己的动画驱动**（免费）；
+② **额外骨**（头发/裙摆，本样本 57 根）**原样追加在 HD2 骨架末尾**（不改原有索引）
+   → **运行时由 Lua 按 Source 的 jigglebone 参数驱动**；
+③ **顶点**：身体区域重映射到 HD2 身体骨；**头发/裙摆区域直接指向额外骨**
+   —— **索引随骨一起平移，不需要重映射权重**。**真正需要映射的只有"身体骨"那一小部分。**
+
+**"运行时骨骼转译"其实不存在**：骨骼在离线输出 Patch 时已是 HD2 格式，
+运行时唯一职责是**按参数驱动那几十根额外骨**（`Unit.set_local_rotation`）。
+
+**关键未知（生死线，必须验证，不得当事实）**：
+X1 **HD2 能接受多少根骨？90→147 是否合法**（不接受则方案作废）；
+X2 追加骨骼后 **HD2 原有动画是否仍正确驱动前 90 骨**；
+X3 Lua 每帧驱动 57 骨 × 每玩家的成本；X4 无骨名的额外骨如何稳定标识；
+X5 Source 的 `is_flexible` 弹簧能否用二阶积分等价复现；
+X6 `set_local_rotation` 的局部/世界语义与 Source 的 +Z 轴约定是否一致；
+X7 目标 Unit 选择（RE-2310 Slim Torso 已知可用）。
+
+**待用户拍板**：① 第一阶段范围（单模型头发抖动 vs 先验 X1/X2）；
+② **是否接受"不转译 L4D2 动画"**（身体用 HD2 动画 + 额外骨物理驱动）；
+③ 额外骨驱动策略（忠实复现 Source 参数 vs 自己的简化弹簧）；
+④ 旧项目原地复活还是迁进 `WpfApp1`。
+
+**本轮新增可复用脚本**（在 `tmp/physbone-recon/`）：
+`scan_vpk_jiggle.py`（流式扫全部 VPK 的 jigglebone）、
+`analyze_jiggle_tree.py`（单模型层级 + 参数详情）。
+**踩坑记录**：VPK tree **没有 num_extensions 字段**（三层用空字符串终止），
+entry 后还要跳过 `preloadLength` 字节；内嵌数据偏移 = `headerSize + treeSize + entryOffset`。
+
 ## 工作约定
 - **【环境】Agent 的 PowerShell 工具里 `Remove-Item` 被 safe-delete 钩子接管，而这台机器上"删除到回收站"必定抛错。**
   两条后端都在**成功删除之后**报错，C 盘与 E 盘一样，且回收站策略并未被禁用
