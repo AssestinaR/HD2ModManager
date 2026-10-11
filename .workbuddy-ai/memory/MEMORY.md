@@ -219,6 +219,25 @@
   上游 Stingray 有这些（官方 Lua 参考共 3098 条签名），HD2 不要。
 - **`Mesh` 完全没有骨骼/蒙皮接口 → Lua 碰不到顶点权重。** 这是最硬的约束：
   改权重、加骨、建物理，**纯运行时 Lua 都做不到**。
+- **【决定性】运行时"附加临时骨骼"不可能**：逐条核对游戏内探测到的 `Unit` 全部 **119 个成员**，
+  **没有任何 `create_*`**（上游 Stingray 有 `create_actor`/`create_cloth`/`create_joint`/
+  `create_custom_joint`/`create_vehicle`，HD2 全砍）。`scene_graph_link(i, parent)` 只能
+  **改已有节点的父子关系**，不能新增节点；`num_scene_graph_items` 是只读属性。
+  上游 Stingray 同样**没有** `create_bone`/`add_scene_graph_item` → **任何版本的引擎都不允许 Lua 造骨**。
+  `Mesh` 仅 **24 个成员**（`get_geometry_stats`/材质/可见性/自身变换），**无顶点或权重接口**。
+- **运行时能做的只有"驱动已有的骨"**：`set_local_rotation` + `World.update_unit()`
+  （HD2IAS 就是这条路，它慢是因为驱动 256 根骨，不是因为有原生插件）。
+  → 所以"区域"**只能由骨骼本身决定**：只有某根骨**只被目标区域使用**时，驱动它才只让该区域动。
+- **骨架里确实有一批"专用骨"**（只服务某个挂载物/装饰，不服务身体）：
+  `backpack`、`attach_knife`、`attach_intelpad`、`attach_samplepouch`、`target_designator`、
+  `sling`、`support`、`support_mg`、`r_shoulderarmour`、`l_shoulderarmour`、`cape1..cape8`，
+  外加那 6 根原生抖动骨。**这是纯运行时方案唯一合法的"区域"来源。**
+- **另一条此前未记录的机制**：`Unit.num_meshes` / `Unit.mesh(i)` / `Mesh.set_local_rotation` ——
+  若某 mod 把头发/裙摆做成**独立 mesh 槽位**，它就是一个独立节点，可用**刚体弹簧**让它弹，
+  **完全不需要权重**。（"像纸片一样弹弹的"可能正对应这条。）
+- **"允许运行时生成缓存"能存什么**：能存 `bones()`/`scene_graph_parent`/`local_pose` 读得到的
+  静止姿态、层级、名字→索引映射、弹簧状态；**不能存权重**（Lua 读不到）。
+  缓存能**省时间**，不能**补能力**。
 - **HD2 自己加了上游没有的抖动骨 C 函数**：`Unit.update_jiggle_bone_data` /
   `Unit.update_jiggle_bone_orientation` / `Unit.debug_draw_jiggle_bone` /
   `Unit.debug_draw_all_jiggle_bones` / `Unit.debug_draw_all_constraint_bones`。
