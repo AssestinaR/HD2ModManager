@@ -399,6 +399,10 @@ public static class CliApplication
 				() => FormatGameDataIndexMaintenanceExecution(execution));
 			return execution.Success ? 0 : 2;
 		}
+		if (command.Length >= 2 && command[0] == "gamedata" && command[1] == "extract")
+		{
+			return await DispatchGameDataExtractAsync(invocation, command).ConfigureAwait(false);
+		}
 		if (Matches(command, "library", "sync", "inspect"))
 		{
 			EnsureLibrarySyncInspectOptions(invocation.Options);
@@ -2335,6 +2339,99 @@ public static class CliApplication
 		}
 	}
 
+	private static async Task<int> DispatchGameDataExtractAsync(CliInvocation invocation, string[] command)
+	{
+		var subcommand = command.Length >= 3 ? command[2] : string.Empty;
+		switch (subcommand)
+		{
+			case "list":
+			{
+				if (command.Length > 5)
+					throw new CliUserException("InvalidArguments", "gamedata extract list [<类型名|0x哈希|all>] [<归档ID>] [--limit <1-500>] [--cursor <cursor>] --json");
+				EnsureGameDataExtractReadOptions(invocation.Options, "gamedata extract list", allowPaging: true);
+				var typeSpec = command.Length >= 4 ? invocation.Command[3] : null;
+				var archiveId = command.Length == 5 ? invocation.Command[4] : null;
+				var inspection = await CliGameDataExtraction.ListAsync(CliWorkspace.Open(invocation.Options), typeSpec, archiveId).ConfigureAwait(false);
+				Emit(invocation.Options,
+					new { ok = inspection.IsReady, extraction = CreateGameDataExtractListProjection(inspection, invocation.Options) },
+					() => FormatGameDataExtractList(inspection));
+				return inspection.IsReady ? 0 : 2;
+			}
+			case "show":
+			{
+				if (command.Length is < 5 or > 6)
+					throw new CliUserException("InvalidArguments", "gamedata extract show <TypeID十六进制> <FileID十六进制> [<归档ID>] --json");
+				EnsureGameDataExtractReadOptions(invocation.Options, "gamedata extract show");
+				var key = CliGameDataInspection.ParseAssetKeyPair(invocation.Command[3], invocation.Command[4]);
+				var archiveId = command.Length == 6 ? invocation.Command[5] : null;
+				var inspection = await CliGameDataExtraction.ShowAsync(CliWorkspace.Open(invocation.Options), key, archiveId).ConfigureAwait(false);
+				Emit(invocation.Options,
+					new { ok = inspection.IsReady, asset = CreateGameDataExtractAssetProjection(inspection) },
+					() => FormatGameDataExtractAsset(inspection));
+				return inspection.IsReady ? 0 : 2;
+			}
+			case "asset":
+			{
+				if (command.Length is < 5 or > 6)
+					throw new CliUserException("InvalidArguments", "gamedata extract asset <TypeID十六进制> <FileID十六进制> [<归档ID>] --output <输出目录> [--overwrite] --json");
+				EnsureGameDataExtractWriteOptions(invocation.Options, "gamedata extract asset");
+				var output = RequireOutput(invocation.Options, "gamedata extract asset");
+				var key = CliGameDataInspection.ParseAssetKeyPair(invocation.Command[3], invocation.Command[4]);
+				var archiveId = command.Length == 6 ? invocation.Command[5] : null;
+				var inspection = await CliGameDataExtraction.ExtractAssetAsync(
+					CliWorkspace.Open(invocation.Options), key, archiveId, output, invocation.Options.Overwrite).ConfigureAwait(false);
+				Emit(invocation.Options,
+					new { ok = inspection.IsReady, asset = CreateGameDataExtractAssetProjection(inspection) },
+					() => FormatGameDataExtractAsset(inspection));
+				return inspection.IsReady ? 0 : 2;
+			}
+			case "archive":
+			{
+				if (command.Length != 4)
+					throw new CliUserException("InvalidArguments", "gamedata extract archive <归档ID> --output <输出目录> [--overwrite] --json");
+				EnsureGameDataExtractWriteOptions(invocation.Options, "gamedata extract archive");
+				var output = RequireOutput(invocation.Options, "gamedata extract archive");
+				var inspection = await CliGameDataExtraction.ExtractArchiveAsync(
+					CliWorkspace.Open(invocation.Options), invocation.Command[3], output, invocation.Options.Overwrite).ConfigureAwait(false);
+				Emit(invocation.Options,
+					new { ok = inspection.IsReady, archive = CreateGameDataExtractArchiveProjection(inspection) },
+					() => FormatGameDataExtractArchive(inspection));
+				return inspection.IsReady ? 0 : 2;
+			}
+			default:
+				throw new CliUserException("InvalidArguments", "gamedata extract 支持 list、show、asset、archive 四个子命令；详见 hd2mod help。");
+		}
+	}
+
+	private static void EnsureGameDataExtractReadOptions(CliGlobalOptions options, string command, bool allowPaging = false)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.ManagerRoot) || !string.IsNullOrWhiteSpace(options.Library))
+		{
+			throw new CliUserException("CommandOptionNotSupported",
+				$"{command} 只读，仅接受位置参数、--game-data 与 --json。 ");
+		}
+		if (!allowPaging && (options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor)))
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --limit 或 --cursor。 ");
+		if (options.WithEffective)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --with-effective。 ");
+		if (options.OnlyCompetition)
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 不接受 --only-competition。 ");
+	}
+
+	private static void EnsureGameDataExtractWriteOptions(CliGlobalOptions options, string command)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.ManagerRoot) || !string.IsNullOrWhiteSpace(options.Library)
+			|| options.Limit is not null || !string.IsNullOrWhiteSpace(options.Cursor) || options.WithEffective || options.OnlyCompetition)
+		{
+			throw new CliUserException("CommandOptionNotSupported",
+				$"{command} 仅接受位置参数、--game-data、--output、--overwrite 与 --json。 ");
+		}
+	}
+
 	private static void EnsureGameDataReadOnlyOptions(
 		CliGlobalOptions options,
 		string command,
@@ -4099,6 +4196,63 @@ public static class CliApplication
 	private static object CreateGameDataAssetKeyProjection(AssetKey key)
 		=> new { typeId = $"0x{key.TypeId:x16}", fileId = $"0x{key.FileId:x16}" };
 
+	private static object CreateGameDataExtractListProjection(CliGameDataExtractListInspection inspection, CliGlobalOptions options)
+	{
+		// 直读枚举没有索引代，用目标目录本身作为分页代；目录不变即视为同一代。
+		// Direct enumeration has no index generation, so the target directory itself is the generation.
+		var page = CliGameDataPaging.Slice(
+			inspection.Assets,
+			"extract-list",
+			$"extract:{inspection.GameDataDirectory}",
+			options.Limit,
+			options.Cursor);
+		return new
+		{
+			target = new { directory = inspection.GameDataDirectory, readability = inspection.TargetIsValid ? "readable" : "invalid" },
+			totalCount = page.TotalCount,
+			offset = page.Offset,
+			limit = page.Limit,
+			items = page.Items.Select(CreateGameDataExtractAssetEntryProjection).ToArray(),
+			page.NextCursor,
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+	}
+
+	private static object CreateGameDataExtractAssetProjection(CliGameDataExtractAssetInspection inspection)
+		=> new
+		{
+			target = new { directory = inspection.GameDataDirectory, readability = inspection.TargetIsValid ? "readable" : "invalid" },
+			asset = inspection.Asset is null ? null : CreateGameDataExtractAssetEntryProjection(inspection.Asset),
+			files = inspection.Files.Select(file => new { file.Part, file.Path, file.Size }).ToArray(),
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+
+	private static object CreateGameDataExtractArchiveProjection(CliGameDataExtractArchiveInspection inspection)
+		=> new
+		{
+			target = new { directory = inspection.GameDataDirectory, readability = inspection.TargetIsValid ? "readable" : "invalid" },
+			archiveId = inspection.RequestedArchiveId,
+			assetCount = inspection.AssetCount,
+			fileCount = inspection.FileCount,
+			totalBytes = inspection.TotalBytes,
+			outputDirectory = inspection.OutputDirectory,
+			manifestPath = inspection.ManifestPath,
+			diagnostics = CreateGameDataDiagnosticsProjection(inspection.Diagnostics),
+		};
+
+	private static object CreateGameDataExtractAssetEntryProjection(CliGameDataAssetEntry entry)
+		=> new
+		{
+			entry.ArchiveId,
+			entry.TypeId,
+			entry.TypeName,
+			entry.FileId,
+			entry.TotalSize,
+			entry.TocDataSize,
+			entry.StreamSize,
+			entry.GpuResourceSize,
+		};
+
 	private static object? CreateGameDataIndexFingerprintNullableProjection(GameDataIndexFingerprint? fingerprint)
 		=> fingerprint is null ? null : CreateGameDataIndexFingerprintProjection(fingerprint);
 
@@ -4987,6 +5141,60 @@ public static class CliApplication
 			: $"GameData AssetKey 查询未完全可用；请查看诊断。";
 	}
 
+	private static string FormatGameDataExtractList(CliGameDataExtractListInspection inspection)
+	{
+		if (!inspection.IsReady)
+			return $"未能直读游戏数据包；请查看诊断：{DescribeBlockingDiagnostics(inspection.Diagnostics)}";
+		var lines = new List<string>
+		{
+			$"游戏数据目录：{inspection.GameDataDirectory}",
+			$"匹配资产：{inspection.Assets.Count} 个（已按归档、类型、FileID 排序）",
+		};
+		const int previewLimit = 200;
+		lines.AddRange(inspection.Assets.Take(previewLimit).Select(asset =>
+			$"  {asset.TypeName}  type={asset.TypeId}  file={asset.FileId}  {asset.TotalSize} 字节  archive={asset.ArchiveId}"));
+		if (inspection.Assets.Count > previewLimit)
+			lines.Add($"  …… 其余 {inspection.Assets.Count - previewLimit} 条请使用 --limit/--cursor 分页或 --json 查看。");
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	private static string FormatGameDataExtractAsset(CliGameDataExtractAssetInspection inspection)
+	{
+		if (inspection.Asset is not { } asset)
+			return $"未能读取该资产；请查看诊断：{DescribeBlockingDiagnostics(inspection.Diagnostics)}";
+		var lines = new List<string>
+		{
+			$"资产：{asset.TypeName}  type={asset.TypeId}  file={asset.FileId}",
+			$"归档：{asset.ArchiveId}；总大小 {asset.TotalSize} 字节（toc {asset.TocDataSize} / stream {asset.StreamSize} / gpu {asset.GpuResourceSize}）",
+		};
+		if (inspection.Files.Count == 0)
+			lines.Add("未写出文件（show 只读取元数据；如需提取请使用 gamedata extract asset --output <目录>）。");
+		else
+			lines.AddRange(inspection.Files.Select(file => $"已写出 [{file.Part}] {file.Path}（{file.Size} 字节）"));
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	private static string FormatGameDataExtractArchive(CliGameDataExtractArchiveInspection inspection)
+	{
+		if (!inspection.IsReady)
+			return $"未能提取归档；请查看诊断：{DescribeBlockingDiagnostics(inspection.Diagnostics)}";
+		return string.Join(Environment.NewLine,
+		[
+			$"已提取归档：{inspection.RequestedArchiveId}",
+			$"输出目录：{inspection.OutputDirectory}",
+			$"资产 {inspection.AssetCount} 个；文件 {inspection.FileCount} 个；共 {inspection.TotalBytes} 字节。",
+			$"清单：{inspection.ManifestPath}",
+		]);
+	}
+
+	private static string DescribeBlockingDiagnostics(IReadOnlyList<CliGameDataDiagnostic> diagnostics)
+	{
+		var blocking = diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
+		return blocking.Length == 0
+			? "无阻断诊断。"
+			: string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"));
+	}
+
 	private static string FormatGameDataOverrideStatus(CliGameDataOverrideInspection inspection)
 	{
 		if (inspection.OverrideGraph is not { } graph) return "无法读取当前 GameData Data-Patch 覆盖图；请查看诊断。";
@@ -5217,6 +5425,10 @@ HD2 Mod Manager 命令行
 	  hd2mod gamedata index plan rebuild|units-all|units-missing --manager-root <管理器目录> --game-data <游戏data目录> --output gamedata-index-plan.json --json
 	  hd2mod gamedata index validate --plan gamedata-index-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod gamedata index apply --plan gamedata-index-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --confirm --json
+	  hd2mod gamedata extract list [<类型名|0x哈希|all>] [<归档ID>] --game-data <游戏data目录> [--limit <1-500>] [--cursor <cursor>] --json
+	  hd2mod gamedata extract show <TypeID十六进制> <FileID十六进制> [<归档ID>] --game-data <游戏data目录> --json
+	  hd2mod gamedata extract asset <TypeID十六进制> <FileID十六进制> [<归档ID>] --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
+	  hd2mod gamedata extract archive <归档ID> --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
 	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json

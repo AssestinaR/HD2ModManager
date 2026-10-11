@@ -69,4 +69,20 @@
                       Link="RuntimeArmorRegistry\armor_metadata_probe.lua" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      作用：把管理器资源目录里的资产类型哈希表（typehash.txt）内嵌进 Core，供 AssetTypeNameTable 解析
+      "unit / state_machine / cloth" 这类可读类型名。刻意引用管理器资源目录里的那一份，而不是另存一份：
+      类型哈希表只有一份真相，更新路径仍然是 assets metadata plan/apply 写 StoragePaths.TypeHashesPath，
+      内嵌副本只是"没有管理器安装时"的默认值，且只影响显示名，不影响提取结果的正确性。
+      Purpose: Embeds the manager resource directory's asset type hash table so AssetTypeNameTable can resolve
+      readable type names. It deliberately references the single existing copy instead of duplicating it: the
+      table keeps one source of truth (updated by assets metadata plan/apply into StoragePaths.TypeHashesPath),
+      and the embedded copy is only the default for machines with no manager install. A stale copy affects
+      display names only, never the correctness of an extraction.
+    -->
+    <EmbeddedResource Include="..\HD2ModManager\Resources\AssetMetadata\typehash.txt"
+                      Link="AssetMetadata\typehash.txt" />
+  </ItemGroup>
+
 </Project>

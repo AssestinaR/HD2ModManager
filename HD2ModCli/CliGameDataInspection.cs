@@ -370,7 +370,7 @@ internal static class CliGameDataInspection
 	internal static AssetKey ParseAssetKeyPair(string rawTypeId, string rawFileId)
 		=> new(ParseHexUInt64(rawTypeId, "TypeID"), ParseHexUInt64(rawFileId, "FileID"));
 
-	private static ulong ParseHexUInt64(string value, string label)
+	internal static ulong ParseHexUInt64(string value, string label)
 	{
 		var normalized = value.Trim();
 		if (normalized.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) normalized = normalized[2..];
@@ -386,7 +386,7 @@ internal static class CliGameDataInspection
 	// copied GameData sample as well as a live game installation.  Unlike a
 	// write-capable deployment, this path deliberately does not require a folder
 	// named "data", a sibling bin directory, or helldivers2.exe.
-	private static bool TryNormalizeReadOnlyDirectory(
+	internal static bool TryNormalizeReadOnlyDirectory(
 		string? value,
 		out string? directory,
 		ICollection<CliGameDataDiagnostic> diagnostics)
@@ -420,7 +420,7 @@ internal static class CliGameDataInspection
 		}
 	}
 
-	private static CliGameDataDiagnostic CreateDiagnostic(CoreIssue issue)
+	internal static CliGameDataDiagnostic CreateDiagnostic(CoreIssue issue)
 		=> new(
 			issue.Code,
 			issue.Severity == CoreIssueSeverity.Error ? "error" : "warning",
@@ -429,7 +429,7 @@ internal static class CliGameDataInspection
 			issue.FilePath,
 			issue.ExceptionMessage);
 
-	private static IReadOnlyList<CliGameDataDiagnostic> DistinctDiagnostics(IEnumerable<CliGameDataDiagnostic> diagnostics)
+	internal static IReadOnlyList<CliGameDataDiagnostic> DistinctDiagnostics(IEnumerable<CliGameDataDiagnostic> diagnostics)
 		=> diagnostics
 			.GroupBy(item => $"{item.Code}\u001f{item.Path}\u001f{item.Message}", StringComparer.Ordinal)
 			.Select(group => group.OrderByDescending(item => item.Blocking).First())

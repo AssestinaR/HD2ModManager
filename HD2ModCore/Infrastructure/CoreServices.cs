@@ -269,6 +269,15 @@ public static class CoreServices
 				CreateGameDataMappingFactsService(paths),
 				CreateDeployedOverrideGraphService()),
 			CreateAssetInventoryProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader))));
+	// 作用：为 CLI 与工具提供不依赖管理器安装、也不依赖 SQLite 索引的游戏数据直读目录服务。
+	//       它只读游戏包并回答"有哪些资产、字节是什么"，因此既不需要 --manager-root，
+	//       也不会写入任何派生缓存。
+	// Purpose: A direct game-data catalog for the CLI and tools that needs neither a manager
+	//          installation nor the SQLite index. It only reads the game packages and answers
+	//          "which assets exist and what are their bytes", so it needs no --manager-root and
+	//          never writes derived caches.
+	public static GameDataAssetCatalogService CreateGameDataAssetCatalogService(string gameDataDirectory)
+		=> new(gameDataDirectory ?? throw new ArgumentNullException(nameof(gameDataDirectory)));
 	public static IApplyExecutor CreateApplyExecutor()
 		=> new ApplyExecutor(CreatePatchStateScanner(), CreatePatchFileNameParser(), CreateActivationStateStore());
 	public static OptionActivationStore CreateOptionActivationStore(StoragePaths paths)

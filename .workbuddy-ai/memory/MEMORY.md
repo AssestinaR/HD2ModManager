@@ -172,6 +172,76 @@
   剩一件收尾：`RebuildProjections` 仍在 UI 线程用文化比较排序（未动，但已不再是首开的主要成本）。
 - 详见 `2026-10-10.md`。
 
+## 新大功能：护甲/素体动态骨（物理）（2026-10-11 调研，方案未定）
+
+> 完整调研见 `docs/hd2-armor-physics-research.md`；本轮只调研 + 提需求问题，**未写生产代码**。
+
+- **引擎 = Autodesk Stingray（原 Bitsquid）**，向 Lua 暴露完整场景图（`stingray.Unit/World/Quaternion/...`）。
+  本仓 `docs/HD2SDK-CommunityEdition-3.8.0/stingray/` 就是它的资源解析器。
+- **HD2IAS（HD2-Integrated-Armor-System）确实是"另起一套物理"**：每帧 Lua 读场景图姿态 →
+  `hd2ir_push_avatar_pose` → 原生 solver → `hd2ir_retarget_bound_unit_pose` → Lua 逐骨
+  `Unit.set_local_position/rotation` → **`World.update_unit()`**。自建格式 `HD2PHY1`
+  （chain/joint/collider/link-collision；单次 256 骨、8192 link collisions、65536 candidates）。
+- **本体唯一现成可借的物理 = 6 根原生"抖动骨"**（HD2 Modding Wiki《Jiggle Bones》原文）：
+  `support_mg`/`support`（父 Chest）、`attach_intelpad`/`attach_samplepouch`/`target_designator`（父 Spine1）、
+  `sling`（父 Spine2）。**SDK 不支持新增自定义抖动骨**；社区做法是**把顶点权重重画到这 6 根骨上**
+  （必须与锚点骨 `chest`/`spine1`/`head` 混合，不能 100%）。
+- **本体布娃娃借不了**：全身刚体、只在 `can_ragdoll`（被击倒/死亡）时激活；数据在动画状态机资源里
+  （`RagdollItem{bone_index, params[9], ...}`，见 SDK `state_machine.py`）。Lua 只能**触发**
+  （`RagdollOnCommand` 靠签名扫描找 `can_ragdoll`/`start_ragdoll`）。
+- **"上百具尸体堆叠不卡"是误导**：那些是**休眠刚体**，成本≈0，不能推出"引擎能跑上百活动刚体"。
+- **披风无可借物理**：护甲骨架（`hd2_skel.json`，~110 条）**没有披风骨**；HD2IAS 把披风当独立
+  "cape carrier / appearance group"；Wiki 有独立《Cape Modding》章节。
+- **【重要】我们自己已有"给 Unit 加骨 + 重写蒙皮"的能力，且在生产链路里**：
+  `CanonicalAppendBoneCompiler`（被 `CanonicalDecorationUnitAppender` 调用）、`CanonicalBoneRebuilder`、
+  `CanonicalLodBonePaletteCompiler`、`CanonicalInverseJointMatrixCompiler`、`CanonicalMeshSkinningRouter`、
+  `UnitMeshWriter.SerializeBoneInfo`；测试 `CanonicalAppendBoneCompilerTests`。
+- **`CanonicalAvatarRigReader` 读的就是 modding wiki 让作者导入的同一个 avatar 归档/Unit**
+  （`18235e0c9ec0e636` / `5556372446766824087`）→ 全局骨名与层级天然可得。
+- **现有"自定义素体"是 Unit 级逐字节复用 + 重新编号，不改骨骼/权重**
+  （`docs/custom-model-conversion-20260925.md`：载荷与来源逐字节一致、不做跨 Unit 几何合并）→
+  想加物理必须新增"改权重（必要时加骨）"的步骤。
+- **HD2IAS 多玩家"传染"根因 = shared body**：`hd2ir_shared_body_profile` / `shared_body_solves` /
+  `__hd2ir_shared_body_lifecycle`，多个 avatar 共用一个 solver 实例。**我们若做必须避免这个设计。**
+- **HD2IAS 刻意不碰本体布娃娃**（原生插件字符串原文
+  `Only custom Mod physics; native ragdolls are unchanged.`），且反过来**冻结**自己那套物理在尸体上运行
+  （`hd2ir_freeze_corpse_physics`）。
+- 用户下载目录里已备参考：`HD2PhysBone-ReferenceSource-main.zip`（C++ solver `spring_runtime.reference.hpp`
+  = VRM SpringBone 移植：stiffness/drag/gravity/collider/angle-limit；Lua 框架；全套 Python 工具链）、
+  `HD2IAS-1.0.4-update.zip`、`MMD2HD2 V1.1.341`、`HD2 Transmog (Foundation).zip`。
+  解包目录 `tmp/hd2ias/`、`tmp/pb-ref/`（`tmp/` 已 gitignore，**不要**放 `_diagnostics/`）。
+
+### 【第二轮权威取证，覆盖上面的推断】（详见调研文档 §10）
+
+- **HD2 把引擎的物理命名空间全部裁掉了**（我们自己的游戏内 Lua 探测坐实）：
+  `PhysicsWorld` / `Actor` / `Joint` / `Mover` / `Cloth` / `HumanIK` / `Vehicle` / `Raycast` / `NavigationMesh`
+  **在 HD2 里都不存在**；`Unit.create_actor` / `create_custom_joint` / `create_cloth` 同样不存在。
+  上游 Stingray 有这些（官方 Lua 参考共 3098 条签名），HD2 不要。
+- **`Mesh` 完全没有骨骼/蒙皮接口 → Lua 碰不到顶点权重。** 这是最硬的约束：
+  改权重、加骨、建物理，**纯运行时 Lua 都做不到**。
+- **HD2 自己加了上游没有的抖动骨 C 函数**：`Unit.update_jiggle_bone_data` /
+  `Unit.update_jiggle_bone_orientation` / `Unit.debug_draw_jiggle_bone` /
+  `Unit.debug_draw_all_jiggle_bones` / `Unit.debug_draw_all_constraint_bones`。
+  这是**唯一现成的运行时抖动接口**，且只能驱动**状态机里已存在的 6 根骨**（不能加第 7 根、不能改参数）。
+- **6 根抖动骨已用游戏本体数据逐一核对**（玩家状态机 `ragdoll_count = 6`，用 `bone_index` 反查骨名）：
+  26 `attach_intelpad`、68 `target_designator`、81 `support`、63 `sling`、71 `support_mg`、54 `attach_samplepouch`；
+  参数 `params[9]` **烘焙在状态机资源里**，Lua 不可写。
+- **玩家骨架 = 90 骨 / 6 LOD**（bones 资源 1484 字节）；含 `cape1..cape8` 但**无空余抖动骨槽位**。
+- **披风 = Havok Cloth**（`hkClothCollidable`），有独立 unit+bones+cloth；全库 `cloth` 资源**只有 3 个**。
+  **布娃娃 = Havok**（`ragdoll_profile` 82484 字节，23 具刚体 + `hkRagdollConstraint002`）。
+- 游戏自带 Lua 资产全库仅 **12 个**，**没有一个用 jiggle** → 抖动由原生 C++ 驱动。
+
+### 新增生产能力：CLI 直读/提取游戏数据（`hd2mod gamedata extract`）
+
+- 四条命令 **都不需要 `--manager-root`**、也不依赖 SQLite 索引，直读游戏包：
+  `extract list [<类型|all>] [<归档>]` / `extract show` / `extract asset --output` / `extract archive --output`。
+- 无 `--confirm`（属 `explicit-export`），改用两道输出护栏：**不得落在游戏 data 内**、**非空目录需 `--overwrite`**。
+- Core 侧：`AssetTypeNameTable`（内嵌 `typehash.txt`，与管理器同源）、
+  `GameDataAssetCatalogService`（直读枚举/三段读取）、`CoreServices.CreateGameDataAssetCatalogService`。
+- Agent 能力 Skill：`gamedata-extraction`。
+- 实测：`extract list bones` = 3062（与全库直方图一致）；提取玩家 bones 资源 = 1484 字节，
+  解析 `nameCount=90 / lodCount=6`，10 个关键骨名全部命中 → 与 `Decryptor` 路径逐字节一致。
+
 ## 工作约定
 - **【环境】Agent 的 PowerShell 工具里 `Remove-Item` 被 safe-delete 钩子接管，而这台机器上"删除到回收站"必定抛错。**
   两条后端都在**成功删除之后**报错，C 盘与 E 盘一样，且回收站策略并未被禁用

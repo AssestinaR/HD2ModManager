@@ -45,6 +45,7 @@ public static class CliSkillCatalog
 		new("cross-armor-transfer", "hd2mod-cross-armor-transfer", "审阅来源装备 Unit 与目标装备目录，并输出隔离的跨护甲验证候选。", "HD2ModCli.Skill.cross-armor-transfer"),
 		new("host-derived-overwrite", "hd2mod-host-derived-overwrite", "安全启停装饰或临时头盔合并，并重建主体的单一管理器 Overwrite。", "HD2ModCli.Skill.host-derived-overwrite"),
 		new("gamedata-inspection", "hd2mod-gamedata-inspection", "只读检查原版 Archive 索引、AssetKey 映射与当前 Data-Patch 覆盖赢家。", "HD2ModCli.Skill.gamedata-inspection"),
+		new("gamedata-extraction", "hd2mod-gamedata-extraction", "不依赖资产索引或管理器安装，直读游戏包枚举并提取任意资产的原始字节。", "HD2ModCli.Skill.gamedata-extraction"),
 		new("asset-metadata-management", "hd2mod-asset-metadata-management", "固定在线资产 hashlist 内容并安全提交到管理器缓存，供索引和高级 Patch 工具使用。", "HD2ModCli.Skill.asset-metadata-management"),
 		new("armor-registry", "hd2mod-armor-registry", "检查并安全热更新外置护甲视觉组合注册协议；不修改加密游戏注册表。", "HD2ModCli.Skill.armor-registry"),
 		new("gamedata-index-management", "hd2mod-gamedata-index-management", "计划化重建 Manager 的 GameData 基础索引或 Armor / Helmet Unit 部位事实。", "HD2ModCli.Skill.gamedata-index-management"),
