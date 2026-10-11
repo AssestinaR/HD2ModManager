@@ -25,6 +25,43 @@ public sealed class ModInformationCenterArchitectureTests
 		Assert.Empty(violations);
 	}
 
+	// 作用：§7 护栏测试 1 的 Manager 半边——Manager 不得绕过信息中心直接消费 game-data 旁路服务。
+	// Purpose: The Manager half of guardrail test 1 in §7 — the Manager must not consume the game-data
+	//          bypass services directly.
+	//
+	// 现状（2026-10-11 实测）：Manager 对这三个服务**零直调**，且完全不引用后两个接口。
+	// 本用例把这条边界固定下来——它是"护甲页/浏览器页最终改为向中心请求"（§6 阶段 2）之前必须守住的底线：
+	// 一旦 Manager 为了图快又贴一张膏药，这里立刻失败。
+	[Fact]
+	public void ManagerDoesNotConsumeTheGameDataBypassServicesDirectly()
+	{
+		var root = FindRepositoryRoot();
+		var managerFiles = EnumerateProductionSources(Path.Combine(root, "HD2ModManager"));
+
+		// 1) 唯一名为 GetArchiveSummariesAsync 的成员只存在于 IAssetArchiveIndexService，因此这个方法是精确判据。
+		var methodCallViolations = managerFiles
+			.Where(path => File.ReadAllText(path).Contains("GetArchiveSummariesAsync", StringComparison.Ordinal))
+			.Select(path => Path.GetRelativePath(root, path))
+			.ToArray();
+		Assert.Empty(methodCallViolations);
+
+		// 2) 后两个服务没有同名成员可依赖，改用类型引用判定——Manager 连类型都不该看到。
+		foreach (var forbiddenType in new[] { "IDeployedOverrideGraphService", "IGameDataMappingFactsService" })
+		{
+			var typeViolations = managerFiles
+				.Where(path => File.ReadAllText(path).Contains(forbiddenType, StringComparison.Ordinal))
+				.Select(path => Path.GetRelativePath(root, path))
+				.ToArray();
+			Assert.Empty(typeViolations);
+		}
+	}
+
+	private static string[] EnumerateProductionSources(string projectDirectory)
+		=> Directory.EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
+			.Where(path => !path.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+			.Where(path => !path.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+			.ToArray();
+
 	[Fact]
 	public void CanonicalToolOperationsUseTheSharedPatchOperationWorkspace()
 	{
