@@ -16,9 +16,9 @@
 - 信息读取统一走 `ModInformationCenter`（磁盘 JSON 缓存 + generation + `ModInformationCacheScope` + `RequireFresh` + 请求合并）。
 - **统一身份（阶段 1，2026-10-10 完成）**：全仓事实用同一把结构化键命名——
   `FactKey(FactSubject Subject, ModInformationPropertyKind Kind)`，缓存身份为 `FactRevisionKey(FactKey, Revision)`。
-  `ModInformationFactRegistry` 是 **23** 个 `ModInformationPropertyKind` 的**单一真相**（主体种类 / 缓存范围 / 生产者 / 静态依赖），
+  `ModInformationFactRegistry` 是 **25** 个 `ModInformationPropertyKind` 的**单一真相**（主体种类 / 缓存范围 / 生产者 / 静态依赖），
   读取器的"是否允许持久化"校验由它驱动，不再有硬编码 kind 清单。
-  （阶段 1 时为 21；阶段 2 之后新增 `GameDataIndex` / `AssetMetadata`，见下。）
+  （阶段 1 时为 21；阶段 2 新增 `GameDataIndex` / `AssetMetadata` → 23；§22 新增 `DeployedGraph` → 24；§23 新增 `ArmorCoverage` → 25。）
   `IModInformationReader.RequestAsync<T>(FactKey, request, FactReadOperation<T>, ct)` 是**唯一读取入口**，
   5 个具名读取方法（`ReadPatchIndexAsync` / `ReadPatchPayloadAsync` / `ReadUnitAsync` / `ReadUnitSummaryAsync` / `ReadSourceUnitFactsAsync`）
   都是它的单语句薄包装；L3 的 7 个进行中任务字典键已由 `"{nodeId}|{kind}|{generation}"` 字符串改为 `FactRevisionKey`。
@@ -85,6 +85,25 @@
   因为 `Project` 里已有一句 `continue` 把无主链挡在外面，**两处守卫各自冗余**（单独删任一处用例都仍通过，
   两处同删才失败）。发现冗余本身有价值；同时暴露原用例的弱点（"null 组赢了"也表现为"没被覆盖"），
   于是改成让无主链资产**更多**、断言有主的那条**仍然赢**，两种情形才在断言上可分。
+- **护甲页启动预热（2026-10-11，设计文档 §24）**：护甲页的 **VM / 数据 / 视图**各占一个空闲回合预热
+  （`ContextIdle` 建 VM → 启动维护后 `WarmUpAsync()` 取数 → 视觉预热链 profile→library→**armor**）。
+  三条硬要求，缺一条就是"静默错数据"：
+  1. **单飞加载**：`InitializeAsync` 与 `WarmUpAsync` 共用 `catalogLoadTask ??=`，
+     否则要么各读一遍，要么预热在跑时用户点开页面被 `RefreshAsync` 的 `if (IsBusy) return;` 挡回**空页面**。
+  2. **取数闸门 `displayFactsReady`**：视觉预热会在窗口刚 `Loaded` 时就建出护甲页视图并触发 `OnLoaded`，
+     那**早于**"库快照已加载"与"启动部署已落定"。此时算出的显示事实是错的（图标查不到、覆盖算在旧部署上），
+     而 `hasLoadedCatalog` 一旦置位就**不会自愈**。闸门由 `ShellViewModel` 在启动维护的 **`finally`** 里放行
+     （放 `try` 末尾的话，启动维护失败/取消时用户会永远停在"尚未读取"）。
+  3. **预热路径不占 UI 线程**：IO+投影拆成 `LoadCatalogInputsAsync`（可线程池）与 `ApplySnapshot`（**必须 UI 线程**，
+     因为 `BulkObservableCollection` 挂着 `CollectionView`）。预热失败**只记日志不弹提示**。
+  预热宿主 `PrewarmArmorPageHost` 是**单独一层占满工作区**（护甲页是整页布局），不与上排两张并排成三列。
+- **`ModInformationFactRegistry` 的 `Validate()` 有 5 项检查**，启动期在 `CoreServices.CreateModInformationCenter` 开头跑。
+  新增 kind 时若忘了写依赖或忘了登记 `SourceRoots`，启动就失败（不是测试失败）。
+- **护栏 1 的"业务服务半边"按文档原文会误伤 7 个正当调用点**（`MapAsync` 在 Core 里另有 7 处合法调用，
+  分布在 6 个文件：资产角色 / 材质投递 / 覆盖图 / 材质诊断……）。所以实际收口方式是：
+  按**方法**禁 `GetArchiveSummariesAsync` 与整个 `IDeployedOverrideGraphService`（只允许出现在装配点、
+  中心、两个事实源适配器与实现自己），映射则靠 `GameDataArchiveBrowserProjectsThroughTheFactSourceOnly` 那道投影缝。
+  设计文档 §25。
 
 ### 25 个 kind 的真实生产情况（D3 的重要副产品，别忘）
 **只有 9 个 kind 有真实生产者**（`ModInformationCenter` 内部），其余是声明占位 / 切片 / 请求判别位 / **中心之外生产**：
@@ -106,15 +125,21 @@
   （由 `ModInformationFactRegistryTests.OnlyTheGameDataFactsUseTheGameDataSubject` 强制）
 
 ### 信息中心重构进度（2026-10-11；详见设计文档 §6.1 总进度表）
-**阶段 0–4 已完成；阶段 5 与阶段 6 的业务服务半边未开始。**
+**阶段 0–4 与阶段 6 已完成；只剩阶段 5（缩略图双路合并）与量化验收。**
 - 阶段 0（设计）/ 1（统一身份）：✅ 完成
 - 阶段 2（收编 game-data 侧）：✅ 完成（登记表半边 + 页面半边：`GameDataArchiveBrowserService` 退化为纯投影）
 - 阶段 3（收编部署侧）：✅ 完成（缓存半边 + 登记半边：`DeployedGraph` 入表、经中心统一身份与合并）
 - 阶段 4（护甲页改造）：✅ 完成（改为请求 `ArmorCoverage`，不再 `BuildAsync`；结构护栏已加）
-  ——但**"首开耗时量化下降"尚未在真实机器上实测**，这是阶段 4 唯一未结的验收项
-- 阶段 5（合并缩略图双路）：❌ 未开始
-- 阶段 6（护栏测试）：🟡 Manager 半边 + 登记表完整性 + 运行时主体与登记表一致性 + 护甲页不得构建浏览器；
-  **业务服务半边架构测试尚未写**；§7 护栏 3 的"改图标 → ArmorCoverage 不重算"也还没有用例
+  ——**用户已在真实 Mod 库上实测"快了好几倍"**，但**没有留下可复现的数字**；
+  正式版若要写进发布说明，需一次带计时的实测
+- 阶段 5（合并缩略图双路）：❌ **本轮明确不做**，理由见设计文档 §26——
+  它要做成必须先把 `Generation` 搬进 `ModCardViewModel`（`GetExistingThumbnailPath` 是在**同步绑定**里调的），
+  而且 `DeleteCachedThumbnailsForSource` 会因换键而失效（generation 无法从路径反推），
+  等于引入**新的失效协议**，与它自己的验收口径"只剩一套"相反；发版前不动刚优化过的热路径。
+- 阶段 6（护栏测试）：✅ 完成（口径已澄清）——
+  Manager 半边 + 登记表完整性 + 运行时主体与登记表一致性 + 护甲页不得构建浏览器 +
+  整包读取收口与投影缝（§25.2）+ 图标不进覆盖事实（§25.3）+ 启动预热的正确性前提（§24.8）；
+  未写的两条（"改部署 → 覆盖重算但缩略图不重算"对拍、"关闭页面取消私有请求"）已在 §25.5 记明真正落点
 
 ## 已知性能热点（2026-10-10 分析）
 - 护甲映射页首开卡顿根因：`ArmorRegistryPageViewModel.RefreshAsync` →
@@ -124,11 +149,17 @@
   per-item 循环在 UI 线程且 O(catalog×archives)；`RebuildProjections` 在 UI 线程用文化比较排序。
 - ~~**仍未解决**：护甲页仍然为"每护甲两个字段"而全量构建整个 GameData 归档浏览器~~ →
   **✅ 2026-10-11 已修**（阶段 4）：改为请求 `ArmorCoverage`，不再走 `BuildAsync`（§23）。
-  剩两件收尾：① 首开耗时**尚未实测**；② `RebuildProjections` 仍在 UI 线程用文化比较排序（未动）。
+  **✅ 2026-10-11 用户实测确认**：打开护甲映射页"速度飞快，比之前快了好几倍"；
+  用户判断自己机器性能好、倍率偏低，较差机器上提升会更大。
+  并在启动预热阶段把这一页的 VM / 数据 / 视图一并预热（§24）。
+  剩一件收尾：`RebuildProjections` 仍在 UI 线程用文化比较排序（未动，但已不再是首开的主要成本）。
 - 详见 `2026-10-10.md`。
 
 ## 工作约定
 - **【强制】远端以后不再推送——助手只做本地提交，推送由用户手动执行。**（2026-10-11 用户明确指令，覆盖此前所有相关讨论。）
+- **发版计划（2026-10-11 用户决定）**：等这轮优化重构**彻底结束后**再发正式版给用户。
+  含义：发版前不做"引入新失效协议 / 动刚优化过的热路径"这类收益不明确、风险明确的改动（阶段 5 就是这么被推迟的，§26）。
+- **【强制】用户授权范围内的改动直接做，不反复请示。**（2026-10-11 用户明确指令。）
 - 用户会先要求"只分析、不改代码"，确认后再实施；不要过早做低效/错误优化。
 - 源码改动前先考察相关链路（缓存、复用、生命周期）。
 - **用户不是专业程序员。** 凡是要询问"某个东西要不要删 / 要做什么"时，**必须先用通俗语言说明它有什么作用、删了会丢什么**，再给建议；不能只给结论或代号。
@@ -161,5 +192,8 @@
 - **探测 NuGet 包内嵌的原生 SQLite 版本**（判断漏洞公告是否真实影响构建产物，别只看元数据）：
   解包 `sqlitepclraw.lib.e_sqlite3` → 用 managed python + `ctypes.CDLL(...).sqlite3_libversion()` 读真实 DLL。
   非 win-x64 架构的 DLL 会报 `WinError 193`，忽略即可。
-- 构建/测试耗时参考：全解决方案 `dotnet test` 约 7–8 分钟（Core 约 5.5 分、Cli 约 7 分，并行时以最慢者为准）；
+- 构建/测试耗时参考：全解决方案 `dotnet test` 约 6–7 分钟（Core 约 4.5 分、Cli 约 6 分，并行时以最慢者为准）；
   `dotnet build -t:Rebuild` 约 20 秒。
+- **测试计数的"增量对账"**：每次报总数时同时报每个工程的分项与增量，
+  并用"新增用例条数"核对增量（本轮：Core 538 → 546 = 登记表 2 + 架构 2 + 预热 4）。
+  只报总数的话，"某条用例被静默跳过"和"某条被误删"都看不出来。
