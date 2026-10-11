@@ -250,6 +250,61 @@
   **布娃娃 = Havok**（`ragdoll_profile` 82484 字节，23 具刚体 + `hkRagdollConstraint002`）。
 - 游戏自带 Lua 资产全库仅 **12 个**，**没有一个用 jiggle** → 抖动由原生 C++ 驱动。
 
+### 【第三轮权威取证：改内存 ≠ 改逻辑；HD2 其实把 ECS 全给了】（详见调研文档 §11）
+
+**先把"映射链路靠什么成事"说准（纠正关键误解）**：映射**不是**"能随便改内存"，而是"**拨开关**"：
+`armor_registry_runtime.lua` 用 **FFI + `WriteProcessMemory`** 只写 `manager + 0x995` 的 **1 个字节**
+pending 标志，让**游戏自己去重读** `ArmorRegistry` 目录 —— 真正的映射逻辑在游戏原生代码里。
+三条硬自律（脚本注释原文）：`Writable data only; do not change page protection or write code.`
+（只写可写数据段 `state==0x1000 && protection==4|8`、不改页保护、不写代码）。
+绑定构建：模块是 **`game.dll`**、PE 时间戳 `1790149348`、image size `60719104`；
+还用 **E8 site 解析**反推内部实现地址（`Unit.is_child` 4267568 / `Unit.world` 4224528 /
+`World.link_unit` 0x3eb860）→ **极其脆弱，游戏一更新全废**。
+→ **能力边界：改「数据」可行 ✅ / 改「代码」不可行 ❌。**
+
+**"改骨架驱动链路"五种含义的判定**：
+A 改**骨骼本地变换** ✅ 已可行（`Unit.set_local_rotation`，`i` 是场景图节点索引，HD2IAS 走这条）；
+B1 **新增骨骼** ❌（`Unit` 零 `create_*`，上游也无 `create_bone`）；
+B2 改**已有节点父子** ✅（`scene_graph_link(i, parent)`，`parent=nil` 解除）；
+C 改**蒙皮权重** ❌（`Mesh` 零顶点接口）；D 改**抖动骨参数** ⚠️ 原理可行但需定位；
+E 改**驱动逻辑** ❌ 不做。
+
+**本轮新发现（上一轮低估）—— HD2 把整套 ECS 暴露给了 Lua**：
+`EntityManager` **21 个成员全在**（`create`/`spawn`/`destroy`/`alive` + **13 个组件访问器**：
+`unit_component`/`scene_graph_component`/`animation_blender_component`/
+`animation_state_machine_component`/`mesh_component`/`transform_component`/`render_data_component`/
+`data_component`/`tag_component`/`script_component`/`flow_component`/`debug_name_component`/
+`shading_environment_blend_component`）。**但 `actor_component` 被砍**（上游有）
+→ **能造实体，造不出物理**。
+
+**三个不需改内存、不需绑构建的官方入口**：
+1. `Unit.set_animation_bone_mode(unit, mode)`，mode 含 `ignore`（官方原文 *"Bone animations are
+   ignored; they will not affect the unit's bone nodes."*）/ `transform`(默认) / `rotation` / …
+   → **可把骨骼从动画驱动里"摘出来"**。
+2. `Unit.set_bones_lod(unit, lod_level)` → 不在 LOD 里的骨**不被动画求值**，完全归我们。
+3. `AnimationBlenderComponent`（`EntityManager.animation_blender_component(world)`）——
+   `create`/`destroy`/`crossfade(entity, animation, layer, blend_time, loop)`/`set_time`/`set_speed`/
+   `bone_mode`/`root_mode`/`delta_transform`/`set_bones_lod`…；官方原文：*"Plays an animation directly
+   on the entity **without using an animation state machine**."* → **可绕过状态机直接叠动画层**。
+   `AnimationBlenderBoneMode` / `AnimationBlenderRootMode` **两个枚举在 HD2 里是暴露的表**。
+
+**两个易踩的坑**：
+- `is_child` / `world` 是 **HD2 独有**的 `Unit` 成员，但映射脚本**仍用 FFI 调它们的 RVA**
+  → **"在方法表里出现" ≠ "能直接调用"**。
+- `Unit.bones()` 官方说明是"**state machine** 里的骨名列表"，与 `num_scene_graph_items`
+  （场景图节点数）**不是同一套索引** → 后续工作必须先对齐"骨名 ↔ 场景图索引"。
+- `Application.can_get` 实测：**startup/sample_1/sample_2 返回 false，sample_3~6 才 true**
+  → 任何"上手就改"的方案都会**静默失败**。
+
+**结论**：**能改骨架驱动链路，但"改内存"不是那条路。** 我们大概率**不需要**走内存 ——
+`set_local_rotation` + `set_animation_bone_mode(ignore)` 已能实现"把一批骨从动画手里接管、
+逐帧写自己的弹簧结果"，这正是 HD2IAS 所做事情的**官方版本**；差别只在 HD2IAS 每帧驱动
+**全部**骨并调 `World.update_unit()`，我们只驱动**少数**目标骨。
+
+**未确认（不得当事实）**：U5 `update_jiggle_bone_data` 的**参数签名**（探测只调白名单
+`invokes_discovered_functions: "allowlisted_id_conversion_and_can_get_only"`，**没真的调用过**）；
+U6 抖动骨 `params[9]` 内存里**有无运行时副本**；U7 两个枚举的**实际值**；U8 `can_get` 何时变 true。
+
 ### 新增生产能力：CLI 直读/提取游戏数据（`hd2mod gamedata extract`）
 
 - 四条命令 **都不需要 `--manager-root`**、也不依赖 SQLite 索引，直读游戏包：
