@@ -4,22 +4,22 @@ namespace HD2SourceModel;
 /// 双精度 4x4 矩阵，采用<b>列向量</b>约定：点按 <c>v' = M · v</c> 变换，平移量位于第 4 列。
 /// <para>
 /// 之所以把约定写进类型名而不是留给读者，是因为两个引擎的存储方式不同，而且搞错不会报错：
+/// Source 的 <c>mstudiobone_t.poseToBone</c> 是 3x4，12 个 float 已经就是本约定
+/// （平移在平坦下标 3、7、11），可以原样载入。
 /// </para>
-/// <list type="bullet">
-/// <item>Source 的 <c>mstudiobone_t.poseToBone</c> 是 3x4，12 个 float 已经就是本约定
-/// （平移在平坦下标 3、7、11），可以原样载入。</item>
-/// <item>HD2 的 avatar 变换是<b>行向量</b>存储（平移在平坦下标 12、13、14），
-/// 恰好是本矩阵的转置；用 <see cref="ToHd2RowVectorValues"/> 转换。</item>
-/// </list>
 /// <para>
 /// 不转换的后果是静默的：每一段骨长都会被算成 0.0000，而不是抛异常。
+/// </para>
+/// <para>
+/// HD2 那边的存储是行向量（平移在平坦下标 12/13/14），转换刻意<b>不</b>放在这里——
+/// 本工程必须保持"不认识 HD2"，HD2 的存储细节属于 <c>HD2SourceMigration.Hd2RigReader</c>。
 /// </para>
 /// <para>
 /// Double-precision 4x4 in the <b>column-vector</b> convention, so a point maps as
 /// <c>v' = M · v</c> and the translation lives in the fourth column.  The convention is
 /// named in the type because getting it wrong does not throw: it silently reports every
-/// bone segment length as zero.  See <see cref="ToHd2RowVectorValues"/> for the bridge to
-/// HD2's row-vector storage.
+/// bone segment length as zero.  The bridge to HD2's row-vector storage deliberately lives
+/// outside this project, so that this layer stays ignorant of HD2.
 /// </para>
 /// </summary>
 public readonly struct Mat4(
@@ -69,22 +69,6 @@ public readonly struct Mat4(
 			values[8], values[9], values[10], values[11],
 			0, 0, 0, 1);
 	}
-
-	/// <summary>
-	/// 转成 HD2 的行向量存储顺序（16 个 float，平移落在下标 12/13/14）。
-	/// <para>
-	/// HD2 的行向量矩阵是本矩阵的转置，其"按行存储"等价于本矩阵"按列存储"，所以第 4 列的
-	/// 平移正好落到返回数组的 12/13/14 位置。
-	/// </para>
-	/// Converts to HD2's row-vector storage order (16 floats, translation at 12/13/14).
-	/// </summary>
-	public float[] ToHd2RowVectorValues() =>
-	[
-		(float)M11, (float)M21, (float)M31, (float)M41,
-		(float)M12, (float)M22, (float)M32, (float)M42,
-		(float)M13, (float)M23, (float)M33, (float)M43,
-		(float)M14, (float)M24, (float)M34, (float)M44,
-	];
 
 	public Mat4 Transposed() => new(
 		M11, M21, M31, M41,

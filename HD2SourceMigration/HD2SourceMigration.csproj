@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    作用：把"求生之路 2 / Source 引擎"的角色模型映射到 HD2 的骨架，并产出可安装的补丁。
+    Purpose: Maps a Left 4 Dead 2 / Source character model onto the HD2 skeleton and emits installable patches.
+
+    这一层是**唯一同时认识两侧**的地方：
+      * 向下引用 HD2SourceModel —— 纯 Source 文件格式读取层，它不认识 HD2；
+      * 向上引用 HD2ModAdaptation —— HD2 的 Unit 解析、变换表读取与 Canonical 编译器。
+    两个引用都必须在这里出现，而且只在这里出现。这就是"缝"的物理位置：
+    改动 Source 侧只碰 HD2SourceModel，改动 HD2 侧只碰 HD2ModAdaptation，
+    只有"两侧的对应关系"变了才需要动这个工程。
+    This is the only layer that knows both sides: it references the Source reading layer below it
+    and the HD2 Unit/patch layer above it.  Both references belong here and nowhere else, so a change
+    on one side cannot silently drag the other along.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HD2SourceModel\HD2SourceModel.csproj" />
+    <ProjectReference Include="..\HD2ModAdaptation\HD2ModAdaptation.csproj" />
+  </ItemGroup>
+
+</Project>
