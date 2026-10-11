@@ -21,7 +21,7 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 		var material = new AdaptationAssetKey(MaterialType, 2);
 		var analysis = Analysis([new AdaptationAssetKey(UnitType, 1)], [Reference(new AdaptationAssetKey(UnitType, 1), material, PatchReferenceKind.UnitMaterial)]);
 		var profile = ProfileFor(model);
-		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [model.Id] = [analysis] }), new EmptyMappingService(), null, new EmptyReferenceGraphQueryIndex());
+		var service = new ProfileMaterialDiagnosticsService(CenterWithEmptyMapping(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [model.Id] = [analysis] }), null, new EmptyReferenceGraphQueryIndex());
 
 		var result = await service.BuildAsync(profile, Snapshot(profile, model), "unused");
 
@@ -49,7 +49,7 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 			[red.Id] = [Analysis([material, redTexture], [Reference(material, redTexture, PatchReferenceKind.MaterialTexture)])],
 			[blue.Id] = [Analysis([material, blueTexture], [Reference(material, blueTexture, PatchReferenceKind.MaterialTexture)])],
 		};
-		var service = new ProfileMaterialDiagnosticsService(new FakeInformationCenter(data), new EmptyMappingService(), null, new EmptyReferenceGraphQueryIndex());
+		var service = new ProfileMaterialDiagnosticsService(CenterWithEmptyMapping(data), null, new EmptyReferenceGraphQueryIndex());
 
 		var result = await service.BuildAsync(profile, Snapshot(profile, model, red, blue), "unused");
 
@@ -66,9 +66,11 @@ public sealed class ProfileMaterialDiagnosticsServiceTests
 		=> new(new PatchGroupInput("unused.patch_0"), assets.Select(key => new PatchAssetFact(key, "unused.patch_0", 0, 0, 0, key.TypeId == UnitType, false, key.TypeId == MaterialType, key.TypeId == TextureType)).ToArray(), references, [], DateTimeOffset.UtcNow, "patch-group-v2");
 	private static PatchAssetReference Reference(AdaptationAssetKey source, AdaptationAssetKey target, PatchReferenceKind kind) => new(source, target, kind, 0);
 
-	private sealed class EmptyMappingService : IGameDataMappingFactsService
-	{
-		public ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<AssetKey> assetKeys, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult(new GameDataMappingFacts("test", "test", "test", DateTimeOffset.UtcNow, assetKeys.ToDictionary(key => key, key => new GameDataMappedAssetFact(key, key.FileId.ToString(), key.TypeId.ToString(), AssetTypeCategory.Unknown, [])), []));
-	}
+	// 映射事实现在由信息中心提供（设计文档 §28）。这个替身表达"游戏数据里什么都没映射到"。
+	private static FakeInformationCenter CenterWithEmptyMapping(IReadOnlyDictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> analyses)
+		=> new(analyses)
+		{
+			GameDataMapping = assetKeys => new GameDataMappingFacts("test", "test", "test", DateTimeOffset.UtcNow,
+				assetKeys.ToDictionary(key => key, key => new GameDataMappedAssetFact(key, key.FileId.ToString(), key.TypeId.ToString(), AssetTypeCategory.Unknown, [])), []),
+		};
 }

@@ -26,11 +26,11 @@ public sealed class ProfileOverrideGraphServiceTests
 			[firstId] = CreateFacts(first, "aaaaaaaaaaaaaaaa", assetKey, "gen-a"),
 			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", assetKey, "gen-b"),
 		};
-		var mapping = new FakeMappingFactsService(new GameDataMappedAssetFact(assetKey, "body", "unit", AssetTypeCategory.Model,
+		var mapping = new FakeMapping(new GameDataMappedAssetFact(assetKey, "body", "unit", AssetTypeCategory.Model,
 		[
 			new ArchiveMetadata("target-a", "Armor", "Armor A"),
 		]));
-		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping, new EmptyReferenceGraphQueryIndex());
+		var service = new ProfileOverrideGraphService(CenterWithMapping(content, mapping), new EmptyReferenceGraphQueryIndex());
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -64,10 +64,10 @@ public sealed class ProfileOverrideGraphServiceTests
 			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", secondKey, "gen-b"),
 		};
 		var target = new ArchiveMetadata("target-a", "Armor", "Armor A");
-		var mapping = new FakeMappingFactsService(
+		var mapping = new FakeMapping(
 			new GameDataMappedAssetFact(firstKey, "body", "unit", AssetTypeCategory.Model, [target]),
 			new GameDataMappedAssetFact(secondKey, "helmet", "unit", AssetTypeCategory.Model, [target]));
-		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), mapping, new EmptyReferenceGraphQueryIndex());
+		var service = new ProfileOverrideGraphService(CenterWithMapping(content, mapping), new EmptyReferenceGraphQueryIndex());
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -93,7 +93,7 @@ public sealed class ProfileOverrideGraphServiceTests
 			[firstId] = CreateFacts(first, "aaaaaaaaaaaaaaaa", material, "red"),
 			[secondId] = CreateFacts(second, "bbbbbbbbbbbbbbbb", material, "blue"),
 		};
-		var service = new ProfileOverrideGraphService(new FakeInformationCenter(content), new FakeMappingFactsService(), new EmptyReferenceGraphQueryIndex());
+		var service = new ProfileOverrideGraphService(CenterWithMapping(content, new FakeMapping()), new EmptyReferenceGraphQueryIndex());
 
 		var graph = await service.BuildAsync(profile, snapshot, "unused");
 
@@ -112,17 +112,17 @@ public sealed class ProfileOverrideGraphServiceTests
 		var assetKey = new AssetKey(10, 20);
 		var profile = new Profile(ProfileId.New(), "Profile", DateTimeOffset.UtcNow, null, [new ProfileEntry(nodeId, 0)], Revision: 1);
 		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, [profile]);
-		var mapping = new FakeMappingFactsService(new GameDataMappedAssetFact(assetKey, "body", "unit", AssetTypeCategory.Model, []));
-		var firstService = new ProfileOverrideGraphService(new FakeInformationCenter(new Dictionary<ModNodeId, ModContentFacts>
+		var mapping = new FakeMapping(new GameDataMappedAssetFact(assetKey, "body", "unit", AssetTypeCategory.Model, []));
+		var firstService = new ProfileOverrideGraphService(CenterWithMapping(new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[nodeId] = CreateFacts(node, "aaaaaaaaaaaaaaaa", assetKey, "gen-a"),
-		}), mapping, new EmptyReferenceGraphQueryIndex());
+		}, mapping), new EmptyReferenceGraphQueryIndex());
 		var first = await firstService.BuildAsync(profile, snapshot, "unused");
 		var revised = await firstService.BuildAsync(profile with { Revision = 2 }, snapshot, "unused");
-		var changedContentService = new ProfileOverrideGraphService(new FakeInformationCenter(new Dictionary<ModNodeId, ModContentFacts>
+		var changedContentService = new ProfileOverrideGraphService(CenterWithMapping(new Dictionary<ModNodeId, ModContentFacts>
 		{
 			[nodeId] = CreateFacts(node, "aaaaaaaaaaaaaaaa", assetKey, "gen-b"),
-		}), mapping, new EmptyReferenceGraphQueryIndex());
+		}, mapping), new EmptyReferenceGraphQueryIndex());
 		var changedContent = await changedContentService.BuildAsync(profile, snapshot, "unused");
 		mapping.Generation = "mapping-2";
 		var changedMapping = await firstService.BuildAsync(profile, snapshot, "unused");
@@ -142,12 +142,19 @@ public sealed class ProfileOverrideGraphServiceTests
 		return new ModContentFacts(node.Id, node.RelativePath, generation, DateTimeOffset.UtcNow, [group], []);
 	}
 
-	private sealed class FakeMappingFactsService : IGameDataMappingFactsService
+	// 映射事实现在由信息中心提供（设计文档 §28），所以这里不再实现 IGameDataMappingFactsService，
+	// 只留一个"键集合 → 事实"的纯函数，由 CenterWithMapping 注入替身中心。
+	// Generation 保持可变：BuildAsync_ChangesGenerationWithProfileContentOrMappingGeneration 靠它
+	// 证明"映射代一变，覆盖图代也要变"。
+	private sealed class FakeMapping
 	{
 		private readonly IReadOnlyDictionary<AssetKey, GameDataMappedAssetFact> _assets;
 		public string Generation { get; set; } = "mapping-1";
-		public FakeMappingFactsService(params GameDataMappedAssetFact[] assets) => _assets = assets.ToDictionary(asset => asset.AssetKey);
-		public ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<AssetKey> assetKeys, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult(new GameDataMappingFacts(Generation, "index", "metadata", DateTimeOffset.UtcNow, _assets.Where(pair => assetKeys.Contains(pair.Key)).ToDictionary(), []));
+		public FakeMapping(params GameDataMappedAssetFact[] assets) => _assets = assets.ToDictionary(asset => asset.AssetKey);
+		public GameDataMappingFacts Map(IReadOnlySet<AssetKey> assetKeys)
+			=> new(Generation, "index", "metadata", DateTimeOffset.UtcNow, _assets.Where(pair => assetKeys.Contains(pair.Key)).ToDictionary(), []);
 	}
+
+	private static FakeInformationCenter CenterWithMapping(IReadOnlyDictionary<ModNodeId, ModContentFacts> content, FakeMapping mapping)
+		=> new(content) { GameDataMapping = mapping.Map };
 }

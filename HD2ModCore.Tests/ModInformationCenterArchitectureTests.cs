@@ -78,12 +78,14 @@ public sealed class ModInformationCenterArchitectureTests
 	//
 	// 与文档原文的偏差（2026-10-11 实测，值得记下来）：
 	// 文档写的是"业务服务不得直调 BuildAsync / MapAsync / GetArchiveSummariesAsync"。
-	// 实测 `MapAsync` 在 Core 里另有 **7 个正当调用点**（分布在 6 个文件：资产角色、材质投递、
+	// 实测 `MapAsync` 曾另有 **7 个正当调用点**（分布在 6 个文件：资产角色、材质投递、
 	// 覆盖图、材质诊断……），它们要的就是映射事实本身，禁掉等于禁掉真实业务逻辑——那不是护栏，是误伤。
 	// 所以这条护栏按**方法**收口，并且只收口"整包事实、只应有一个正当来源"的那两个：
 	//   * `IAssetArchiveIndexService.GetArchiveSummariesAsync` —— 归档摘要是"游戏数据侧"的整包事实
 	//   * `IDeployedOverrideGraphService`（整个类型）—— 部署图是"部署侧"的整包事实
-	// 映射（`MapAsync`）的收口方式是 `IGameDataFactSource` 那道投影缝，见下一条用例。
+	//
+	// **2026-10-11 更新（设计文档 §28）**：那 7 个 `MapAsync` 调用点已**全部收口到中心**，
+	// 映射因此也能被同一条口径约束了——见下面的 `GameDataMappingIsRequestedThroughTheCenterOnly`。
 	[Fact]
 	public void WholePackageGameDataReadsAreConfinedToTheCompositionRootAndTheFactSourceAdapters()
 	{
@@ -115,6 +117,71 @@ public sealed class ModInformationCenterArchitectureTests
 				violations.Add($"{relative}: 调用了 GetArchiveSummariesAsync");
 			if (text.Contains("IDeployedOverrideGraphService", StringComparison.Ordinal))
 				violations.Add($"{relative}: 引用了 IDeployedOverrideGraphService");
+		}
+
+		Assert.Empty(violations);
+	}
+
+	// 作用：把"映射事实只能向中心要"这条缝钉死（设计文档 §28）。
+	//
+	// 改造前有 6 个业务服务各自持有 `IGameDataMappingFactsService` 并直调 `MapAsync`。
+	// 它们因此拿不到中心才有的三样东西：并发合并（同批资产同时只生产一次）、
+	// 按 FactKey 的生产诊断，以及"尊重调用方声明的缓存作用域"（`MapAsync` 根本没有 scope 参数）。
+	//
+	// 两条断言，缺一不可：
+	//   1. **直调**：生产代码里 `X.MapAsync(...)` 只允许出现在中心与直读适配器里；
+	//   2. **持有**：`IGameDataMappingFactsService` 这个类型只允许出现在定义、实现、装配点、
+	//      中心、以及两个事实源适配器里——业务服务连类型都不该看见。
+	//
+	// 为什么第 2 条不是多余的：只要某个服务重新持有该接口，"下次顺手直调一下"就只有一步之遥。
+	// 这两条都是**源码文本**断言，代价是"在注释里写出 `X.MapAsync(`"也会失败——
+	// 与本仓既有同类护栏口径一致（§25.2），可以接受：要绕过它必须明确改测试。
+	[Fact]
+	public void GameDataMappingIsRequestedThroughTheCenterOnly()
+	{
+		var root = FindRepositoryRoot();
+		var productionRoots = new[]
+		{
+			Path.Combine(root, "HD2ModCore"),
+			Path.Combine(root, "HD2ModManager"),
+			Path.Combine(root, "HD2ModCli"),
+			Path.Combine(root, "HD2ModAdaptation"),
+		};
+
+		// 允许出现 `X.MapAsync(...)` 的地方：中心是唯一请求入口；直读适配器存在的意义就是"绕过中心"（§25.2）。
+		var callAllowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			Path.Combine("HD2ModCore", "Infrastructure", "ModInformationCenter.cs"),
+			Path.Combine("HD2ModCore", "Infrastructure", "DirectGameDataFactSource.cs"),
+		};
+
+		// 允许出现 `IGameDataMappingFactsService` 这个类型名的地方。
+		var typeAllowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			Path.Combine("HD2ModCore", "Application", "IGameDataMappingFactsService.cs"),
+			Path.Combine("HD2ModCore", "Infrastructure", "GameDataMappingFactsService.cs"),
+			// 装配点：它必须认识这个类型才能把它接起来。
+			Path.Combine("HD2ModCore", "Infrastructure", "CoreServices.cs"),
+			Path.Combine("HD2ModCore", "Infrastructure", "ModInformationCenter.cs"),
+			// 事实源的两个适配器（中心版与直读版）都要向中心/旁路要映射。
+			Path.Combine("HD2ModCore", "Infrastructure", "CenterGameDataFactSource.cs"),
+			Path.Combine("HD2ModCore", "Infrastructure", "DirectGameDataFactSource.cs"),
+		};
+
+		// 判据用 `\.MapAsync\s*\(` 而不是裸 "MapAsync"：仓里还有 TryBuildChunkMapAsync 之类同名尾巴的方法。
+		var callPattern = new Regex(@"\.MapAsync\s*\(", RegexOptions.Compiled);
+		var violations = new List<string>();
+		foreach (var productionRoot in productionRoots)
+		{
+			foreach (var path in EnumerateProductionSources(productionRoot))
+			{
+				var relative = Path.GetRelativePath(root, path);
+				var text = File.ReadAllText(path);
+				if (callPattern.IsMatch(text) && !callAllowed.Contains(relative))
+					violations.Add($"{relative}: 直调了映射服务（应改为 informationCenter.RequestGameDataMappingAsync）");
+				if (text.Contains("IGameDataMappingFactsService", StringComparison.Ordinal) && !typeAllowed.Contains(relative))
+					violations.Add($"{relative}: 持有/引用了 IGameDataMappingFactsService");
+			}
 		}
 
 		Assert.Empty(violations);

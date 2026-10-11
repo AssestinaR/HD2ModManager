@@ -9,13 +9,11 @@ namespace HD2ModCore.Infrastructure;
 public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 {
 	private readonly IModInformationCenter _informationCenter;
-	private readonly IGameDataMappingFactsService _mappingFactsService;
 	private readonly IReferenceGraphQueryIndex _referenceIndex;
 
-	public ProfileOverrideGraphService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IReferenceGraphQueryIndex referenceIndex)
+	public ProfileOverrideGraphService(IModInformationCenter informationCenter, IReferenceGraphQueryIndex referenceIndex)
 	{
 		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
-		_mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
 		_referenceIndex = referenceIndex ?? throw new ArgumentNullException(nameof(referenceIndex));
 	}
 
@@ -29,7 +27,7 @@ public sealed class ProfileOverrideGraphService : IProfileOverrideGraphService
 		var nodeIds = orderedEntries.Select(entry => entry.NodeId).ToHashSet();
 		var contentByNode = await GetAssetInventoryAsync(orderedEntries, snapshot, modsRootDirectory, cancellationToken).ConfigureAwait(false);
 		var assetKeys = contentByNode.Values.SelectMany(facts => facts.PatchGroups).SelectMany(group => group.AssetKeys).ToHashSet();
-		var mapping = await _mappingFactsService.MapAsync(assetKeys, cancellationToken).ConfigureAwait(false);
+		var mapping = (await _informationCenter.RequestGameDataMappingAsync(assetKeys, new ModInformationRequest(ModInformationKind.GameDataMapping, "ProfileOverrideGraph"), cancellationToken).ConfigureAwait(false)).AsMappingFacts();
 		var issues = new List<CoreIssue>(contentByNode.Values.SelectMany(facts => facts.Issues));
 		issues.AddRange(mapping.Issues);
 		foreach (var entry in orderedEntries.Where(entry => !snapshot.Nodes.ContainsKey(entry.NodeId)))

@@ -77,13 +77,17 @@ public sealed class MaterialDeliveryFactsServiceTests
 	}
 
 	[Fact]
-	public async Task GetAsync_WithoutGameDataMapping_DoesNotRequireMappingServiceAndKeepsClassification()
+	public async Task GetAsync_WithoutGameDataMapping_DoesNotAskTheCenterAndKeepsClassification()
 	{
 		var node = CreateNode("EmbeddedWithoutMapping");
 		var facts = Entry(node, [Unit, Material, Texture], [new PatchAssetReference(Unit, Material, PatchReferenceKind.UnitMaterial, 0), new PatchAssetReference(Material, Texture, PatchReferenceKind.MaterialTexture, 0)]);
-		var center = new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [node.Id] = facts.Analyses });
+		var center = new FakeInformationCenter(new Dictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> { [node.Id] = facts.Analyses })
+		{
+			// 显式关掉映射时，这条路径一次都不该问中心——用一个"一被调用就抛"的委托把它坐实。
+			GameDataMapping = _ => throw new InvalidOperationException("Mapping should not be requested when mapping is disabled."),
+		};
 
-		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath()), new ThrowingMappingService())
+		var result = await new MaterialDeliveryFactsService(center, new StoragePaths(Path.GetTempPath()))
 			.GetAsync(node.Id, Snapshot(node), includeGameDataMapping: false);
 
 		Assert.Equal(MaterialDeliveryMode.EmbeddedComplete, result.Mode);
@@ -106,11 +110,4 @@ public sealed class MaterialDeliveryFactsServiceTests
 
 	private static ModNode CreateNode(string name) => new(ModNodeId.New(), name, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 	private static LibrarySnapshot Snapshot(params ModNode[] nodes) => new(1, DateTimeOffset.UtcNow, nodes.ToDictionary(node => node.Id), Array.Empty<Profile>());
-
-	private sealed class ThrowingMappingService : IGameDataMappingFactsService
-	{
-		public ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<HD2ModCore.Domain.AssetKey> assetKeys, CancellationToken cancellationToken = default)
-			=> throw new InvalidOperationException("Mapping service should not be called when mapping is disabled.");
-	}
-
 }

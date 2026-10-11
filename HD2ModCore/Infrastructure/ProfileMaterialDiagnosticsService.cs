@@ -13,14 +13,12 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 	private const ulong MaterialTypeId = 0xeac0b497876adedf;
 	private const ulong TextureTypeId = 0xcd4238c6a0c69e32;
 	private readonly IModInformationCenter informationCenter;
-	private readonly IGameDataMappingFactsService mappingFactsService;
 	private readonly IAssetArchiveIndexService? indexService;
 	private readonly IReferenceGraphQueryIndex referenceIndex;
 
-	public ProfileMaterialDiagnosticsService(IModInformationCenter informationCenter, IGameDataMappingFactsService mappingFactsService, IAssetArchiveIndexService? indexService, IReferenceGraphQueryIndex referenceIndex)
+	public ProfileMaterialDiagnosticsService(IModInformationCenter informationCenter, IAssetArchiveIndexService? indexService, IReferenceGraphQueryIndex referenceIndex)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
-		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
 		this.indexService = indexService;
 		this.referenceIndex = referenceIndex ?? throw new ArgumentNullException(nameof(referenceIndex));
 	}
@@ -63,7 +61,7 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 		var referencedMaterials = winners.Where(pair => pair.Key.TypeId == UnitTypeId).SelectMany(pair => pair.Value.References.Where(reference => reference.Kind == PatchReferenceKind.UnitMaterial).Select(reference => ToDomain(reference.TargetAssetKey))).ToHashSet();
 		var referencedTextures = winners.Where(pair => pair.Key.TypeId == MaterialTypeId).SelectMany(pair => pair.Value.References.Where(reference => reference.Kind == PatchReferenceKind.MaterialTexture).Select(reference => ToDomain(reference.TargetAssetKey))).ToHashSet();
 		var unresolvedByProfile = referencedMaterials.Concat(referencedTextures).Where(key => !winners.ContainsKey(key)).ToHashSet();
-		var mapping = await mappingFactsService.MapAsync(unresolvedByProfile, cancellationToken).ConfigureAwait(false);
+		var mapping = (await informationCenter.RequestGameDataMappingAsync(unresolvedByProfile, new ModInformationRequest(ModInformationKind.GameDataMapping, "ProfileMaterialDiagnostics"), cancellationToken).ConfigureAwait(false)).AsMappingFacts();
 		issues.AddRange(mapping.Issues);
 		var availableInGameData = mapping.Assets.Where(pair => pair.Value.TargetArchives.Count != 0).Select(pair => pair.Key).ToHashSet();
 
@@ -140,7 +138,7 @@ public sealed class ProfileMaterialDiagnosticsService : IProfileMaterialDiagnost
 		var unitMaterial = winnerRefs.Where(reference => reference.RelationKind == (int)PatchReferenceKind.UnitMaterial).ToArray();
 		var materialTexture = winnerRefs.Where(reference => reference.RelationKind == (int)PatchReferenceKind.MaterialTexture).ToArray();
 		var unresolved = unitMaterial.Select(reference => reference.TargetAssetKey).Concat(materialTexture.Select(reference => reference.TargetAssetKey)).Where(asset => !winners.ContainsKey(asset)).ToHashSet();
-		var mapped = await mappingFactsService.MapAsync(unresolved, cancellationToken).ConfigureAwait(false);
+		var mapped = (await informationCenter.RequestGameDataMappingAsync(unresolved, new ModInformationRequest(ModInformationKind.GameDataMapping, "ProfileMaterialDiagnostics"), cancellationToken).ConfigureAwait(false)).AsMappingFacts();
 		var availableGameData = mapped.Assets.Where(pair => pair.Value.TargetArchives.Count != 0).Select(pair => pair.Key).ToHashSet();
 		var textureTargets = materialTexture.GroupBy(reference => reference.SourceAssetKey).ToDictionary(group => group.Key, group => group.Select(reference => reference.TargetAssetKey).ToArray());
 		bool IsMaterialAvailable(AssetKey material)

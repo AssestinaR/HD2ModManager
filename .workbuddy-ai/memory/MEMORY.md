@@ -140,6 +140,8 @@
 
 ### 信息中心重构进度（2026-10-11；详见设计文档 §6.1 总进度表）
 **阶段 0–6 全部完成；只剩量化验收（用户已明确"先不急着测提升速度"）。**
+**另：§20.8 遗留的"6 个业务服务仍直调 `MapAsync`"也已在 2026-10-11 收口（设计文档 §28）**，
+详见下方"未做项的实地状态"。
 - 阶段 0（设计）/ 1（统一身份）：✅ 完成
 - 阶段 2（收编 game-data 侧）：✅ 完成（登记表半边 + 页面半边：`GameDataArchiveBrowserService` 退化为纯投影）
 - 阶段 3（收编部署侧）：✅ 完成（缓存半边 + 登记半边：`DeployedGraph` 入表、经中心统一身份与合并）
@@ -206,14 +208,23 @@
   - `FactDescriptor.CacheScope` 全仓**只有一处**生产用途：`ModInformationReader.cs:402` 的防呆校验；
     `FactDescriptor.Producer`（`FactProducerKind`，13 值）**读取处 0 个，连测试都不读**。
     → "缓存放哪层"实际由调用方在 `ModInformationRequestContext.Create(scope)` 写死，与登记表声明**未连通**。
-  - 6 个直调 `MapAsync` 的服务**已经持有 `IModInformationCenter`**，其中几个已在用中心问别的事实
-    （`ProfileOverrideGraphService` 调 `RequestAssetInventoryAsync`）；中心入口 `RequestGameDataMappingAsync` 已存在。
-    唯一没接中心的是 `ModAssetSummaryProjector`。**缓存收益已拿到**（`GameDataFactCache` 是 static，6 家共享）。
-    走中心才拿得到：并发合并（`SourceFingerprintMemo` **无"正在算"的门**）、可观测性、尊重 scope
-    （`MapAsync` **无 scope 参数**）、取消跟随中心关闭。
+  - ~~6 个直调 `MapAsync` 的服务~~ **已收口（2026-10-11，设计文档 §28）**：
+    `IGameDataMappingFactsService` 已从这 6 个服务的构造函数里**整个删掉**，改为只向
+    `IModInformationCenter.RequestGameDataMappingAsync` 要映射；新护栏
+    `GameDataMappingIsRequestedThroughTheCenterOnly` 钉住（直调点全仓**恰好 2 处**、
+    持有该接口的文件**恰好 6 个**）。收口拿到的不是"少算一次"（缓存早在 §20.3 就 static 共享了），
+    而是：并发合并（`SourceFingerprintMemo` **无"正在算"的门**）、按 FactKey 的生产诊断、
+    尊重调用方声明的缓存作用域（`MapAsync` **无 scope 参数**）、取消跟随中心关闭。
+    **新增硬约定**：中心返回的 `ModInformationResult<T>.Data` 可能为 null（索引未建/生产失败），
+    消费方一律用 `AsMappingFacts()`（`GameDataMappingResultExtensions`）收敛，不要各自判空。
   - `GameDataMapping` 声明 `Persistent` 但只做进程内记忆——**不是 bug**（`CacheScope` 是"最多允许"的上限）；
     要落盘等于新建持久层，撞"缓存不能取代真相"红线。
   - §20.8 表里"页面收编"那一行**已过期**（§22.6 + §23.6 已完成）。
+- **【环境】不要把临时脚本写进 `_diagnostics/`** —— 用 `tmp/`（两者都被 gitignore）。
+  `DiagnosticsPatchSampleTests` 是**条件测试**：`_diagnostics` 目录不存在就跳过；
+  一旦这个目录存在（哪怕**空的**）它们就会真跑，然后因拿不到真实样本而失败。
+  2026-10-11 实测踩过：写两个校验脚本时顺带创建了该目录 → 全量从 880 绿变成 878 通过 / 2 失败，
+  删掉空目录即复原。判断方法：`stat _diagnostics/` 看 **Birth** 时间。
 - **【强制】用户授权范围内的改动直接做，不反复请示。**（2026-10-11 用户明确指令。）
 - 用户会先要求"只分析、不改代码"，确认后再实施；不要过早做低效/错误优化。
 - 源码改动前先考察相关链路（缓存、复用、生命周期）。
@@ -250,5 +261,7 @@
 - 构建/测试耗时参考：全解决方案 `dotnet test` 约 6–7 分钟（Core 约 4.5 分、Cli 约 6 分，并行时以最慢者为准）；
   `dotnet build -t:Rebuild` 约 20 秒。
 - **测试计数的"增量对账"**：每次报总数时同时报每个工程的分项与增量，
-  并用"新增用例条数"核对增量（最近一轮：Core 546 → 556 = 缩略图指纹 6 + 缩略图架构 4；总数 870 → 880）。
+  并用"新增用例条数"核对增量（最近一轮：Core 556 → 557 = 映射收口护栏 1 条；总数 880 → 881）。
+  > 历史：Core 546 → 556 = 缩略图指纹 6 + 缩略图架构 4（总数 870 → 880）。
+  > **基线数会变，报数前先跑一遍**，别照抄这一行。
   只报总数的话，"某条用例被静默跳过"和"某条被误删"都看不出来。

@@ -146,8 +146,8 @@ public static class CoreServices
 		=> new FileSystemArchiveHashesProvider(paths);
 	public static IAssetMetadataCatalogProvider CreateAssetMetadataCatalogProvider(StoragePaths paths)
 		=> new FileSystemAssetMetadataCatalogProvider(paths);
-	public static ModAssetSummaryProjector CreateModAssetSummaryProjector(StoragePaths paths)
-		=> new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths), new RuntimeArmorRegistryService(paths));
+	public static ModAssetSummaryProjector CreateModAssetSummaryProjector(StoragePaths paths, IModInformationCenter informationCenter)
+		=> new ModAssetSummaryProjector(informationCenter, CreateAssetMetadataCatalogProvider(paths), new RuntimeArmorRegistryService(paths));
 	public static IAssetMetadataSyncService CreateAssetMetadataSyncService(StoragePaths paths)
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
 	public static IAssetInventoryProducer CreateAssetInventoryProducer(IPatchGroupAnalysisProvider analysisProvider)
@@ -169,7 +169,7 @@ public static class CoreServices
 	public static IReferenceGraphQueryIndex CreateReferenceGraphQueryIndex(StoragePaths paths)
 		=> new SqliteModFactsStore(paths);
 	public static IModAssetRoleFactsService CreateModAssetRoleFactsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ModAssetRoleFactsService(informationCenter, CreateReferenceGraphQueryIndex(paths), CreateGameDataMappingFactsService(paths));
+		=> new ModAssetRoleFactsService(informationCenter, CreateReferenceGraphQueryIndex(paths));
 	public static IMaintenanceAnalysisProducer CreateMaintenanceAnalysisProducer(StoragePaths paths)
 		=> new MaintenanceAnalysisProducer(CreateModCompatibilityAnalyzer(paths));
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths, IModInformationCenter informationCenter)
@@ -179,11 +179,11 @@ public static class CoreServices
 	public static IGameDataMappingFactsService CreateGameDataMappingFactsService(StoragePaths paths)
 		=> new GameDataMappingFactsService(CreateAssetArchiveIndexService(paths), CreateAssetMetadataCatalogProvider(paths), paths);
 	public static IProfileOverrideGraphService CreateProfileOverrideGraphService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ProfileOverrideGraphService(informationCenter, CreateGameDataMappingFactsService(paths), CreateReferenceGraphQueryIndex(paths));
+		=> new ProfileOverrideGraphService(informationCenter, CreateReferenceGraphQueryIndex(paths));
 	public static IProfileMaterialDiagnosticsService CreateProfileMaterialDiagnosticsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ProfileMaterialDiagnosticsService(informationCenter, CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths), CreateReferenceGraphQueryIndex(paths));
+		=> new ProfileMaterialDiagnosticsService(informationCenter, CreateAssetArchiveIndexService(paths), CreateReferenceGraphQueryIndex(paths));
 	public static IMaterialDeliveryFactsService CreateMaterialDeliveryFactsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new MaterialDeliveryFactsService(informationCenter, paths, CreateGameDataMappingFactsService(paths), CreateReferenceGraphQueryIndex(paths));
+		=> new MaterialDeliveryFactsService(informationCenter, paths, CreateReferenceGraphQueryIndex(paths));
 	public static IEquipmentUnitCatalogService CreateEquipmentUnitCatalogService(StoragePaths paths)
 		=> new EquipmentUnitCatalogService(paths);
 	public static RuntimeArmorRegistryService CreateRuntimeArmorRegistryService(StoragePaths paths, string? registryRoot = null)
@@ -209,7 +209,7 @@ public static class CoreServices
 			informationReader: informationReader);
 	}
 	public static IAdvancedModAssetQueryService CreateAdvancedModAssetQueryService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new AdvancedModAssetQueryService(informationCenter, paths, CreateReferenceGraphQueryIndex(paths), CreateGameDataMappingFactsService(paths), CreateAssetArchiveIndexService(paths));
+		=> new AdvancedModAssetQueryService(informationCenter, paths, CreateReferenceGraphQueryIndex(paths), CreateAssetArchiveIndexService(paths));
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService()
 		=> new MaterialPackagingApplicationService(CreatePatchFileNameParser());
 	public static IMaterialPackagingApplicationService CreateMaterialPackagingApplicationService(IModInformationCenter informationCenter)
@@ -218,7 +218,7 @@ public static class CoreServices
 		=> new PatchResourceRepackagingService(CreatePatchFileNameParser());
 	public static ILibraryDerivedDataService CreateLibraryDerivedDataService(StoragePaths paths, IModInformationCenter informationCenter)
 	{
-		return new LibraryDerivedDataService(informationCenter, CreateModAssetSummaryProjector(paths));
+		return new LibraryDerivedDataService(informationCenter, CreateModAssetSummaryProjector(paths, informationCenter));
 	}
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));

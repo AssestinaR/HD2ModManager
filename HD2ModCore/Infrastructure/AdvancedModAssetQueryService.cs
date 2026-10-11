@@ -10,15 +10,13 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 	private readonly IReferenceGraphQueryIndex referenceIndex;
 	private readonly IModInformationCenter informationCenter;
 	private readonly string modsRootDirectory;
-	private readonly IGameDataMappingFactsService mappingService;
 	private readonly IAssetArchiveIndexService indexService;
 
-	public AdvancedModAssetQueryService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IReferenceGraphQueryIndex referenceIndex, IGameDataMappingFactsService mappingService, IAssetArchiveIndexService indexService)
+	public AdvancedModAssetQueryService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IReferenceGraphQueryIndex referenceIndex, IAssetArchiveIndexService indexService)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		modsRootDirectory = (paths ?? throw new ArgumentNullException(nameof(paths))).ModsDirectory;
 		this.referenceIndex = referenceIndex ?? throw new ArgumentNullException(nameof(referenceIndex));
-		this.mappingService = mappingService ?? throw new ArgumentNullException(nameof(mappingService));
 		this.indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
 	}
 
@@ -48,7 +46,7 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 		var graphAssets = graph?.Analyses.SelectMany(analysis => analysis.Assets.Select(asset => (analysis, asset))).GroupBy(item => item.asset.AssetKey).ToDictionary(group => group.Key, group => group.ToArray())
 			?? new Dictionary<HD2ModAdaptation.PatchReconstruction.AssetKey, (PatchGroupAnalysis analysis, PatchAssetFact asset)[]>();
 		var domainKeys = assets.Select(group => group.Key).ToHashSet();
-		var mapping = await mappingService.MapAsync(domainKeys, cancellationToken).ConfigureAwait(false);
+		var mapping = (await informationCenter.RequestGameDataMappingAsync(domainKeys, new ModInformationRequest(ModInformationKind.GameDataMapping, "AdvancedAssetTable"), cancellationToken).ConfigureAwait(false)).AsMappingFacts();
 		var unitKeys = domainKeys.Where(key => key.TypeId == 0xe0a48d0be9a7453f).ToHashSet();
 		var partsByUnit = await indexService.GetUnitPartFactsAsync(unitKeys, cancellationToken).ConfigureAwait(false);
 		var rows = new List<AdvancedModAssetRow>(assets.Length);

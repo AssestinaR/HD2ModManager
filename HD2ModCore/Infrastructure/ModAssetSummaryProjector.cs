@@ -9,14 +9,14 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Produces readable Mod summaries solely from stable content facts and Game Data mapping projections.
 public sealed class ModAssetSummaryProjector
 {
-	private readonly IGameDataMappingFactsService mappingFactsService;
+	private readonly IModInformationCenter informationCenter;
 	private readonly IAssetMetadataCatalogProvider? fallbackCatalogProvider;
 	private readonly RuntimeArmorRegistryService? registry;
 
-	public ModAssetSummaryProjector(IGameDataMappingFactsService mappingFactsService, IAssetMetadataCatalogProvider? fallbackCatalogProvider = null,
+	public ModAssetSummaryProjector(IModInformationCenter informationCenter, IAssetMetadataCatalogProvider? fallbackCatalogProvider = null,
 		RuntimeArmorRegistryService? registry = null)
 	{
-		this.mappingFactsService = mappingFactsService ?? throw new ArgumentNullException(nameof(mappingFactsService));
+		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		this.fallbackCatalogProvider = fallbackCatalogProvider;
 		this.registry = registry;
 	}
@@ -26,7 +26,7 @@ public sealed class ModAssetSummaryProjector
 		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(facts);
 		var sourceByKey = BuildSourceByKey(facts);
-		var mapping = await MapAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var mapping = await BuildMappingAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
 		return Project(node, sourceByKey, mapping, await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false));
 	}
 
@@ -34,7 +34,7 @@ public sealed class ModAssetSummaryProjector
 	{
 		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(facts);
-		var mapping = await MapAsync(facts.Structure.Assets.Select(asset => asset.AssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var mapping = await BuildMappingAsync(facts.Structure.Assets.Select(asset => asset.AssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
 		return ProjectStructure(facts.Structure, mapping);
 	}
 
@@ -44,7 +44,7 @@ public sealed class ModAssetSummaryProjector
 	public async ValueTask<ModAssetSummaryProjection> ProjectManyWithGenerationAsync(IReadOnlyDictionary<ModNode, ModContentFacts> factsByNode, CancellationToken cancellationToken = default)
 	{
 		var sourceByNode = factsByNode.ToDictionary(pair => pair.Key, pair => BuildSourceByKey(pair.Value));
-		var mapping = await MapAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var mapping = await BuildMappingAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
 		var catalog = await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false);
 		var summaries = sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog));
 		var structures = factsByNode.ToDictionary(pair => pair.Key.Id, pair => ProjectStructure(pair.Value.Structure, mapping));
@@ -52,11 +52,18 @@ public sealed class ModAssetSummaryProjector
 	}
 
 	public async ValueTask<string> GetMappingGenerationAsync(CancellationToken cancellationToken = default)
-		=> (await MapAsync(new HashSet<AssetKey>(), cancellationToken).ConfigureAwait(false)).MappingGeneration;
+		=> (await BuildMappingAsync(new HashSet<AssetKey>(), cancellationToken).ConfigureAwait(false)).MappingGeneration;
 
-	private async ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<AssetKey> keys, CancellationToken token)
+	// 作用：取回映射事实，再把"运行时护甲注册表里的 Unit 标签"叠加上去。
+	// Purpose: Fetches mapping facts, then overlays the Unit labels from the runtime armor registry.
+	//
+	// 注意这里**不是**直调映射服务：统一身份、并发合并、诊断事件只在信息中心实现（设计文档 §28）。
+	private async ValueTask<GameDataMappingFacts> BuildMappingAsync(IReadOnlySet<AssetKey> keys, CancellationToken token)
 	{
-		var mapping = await mappingFactsService.MapAsync(keys, token).ConfigureAwait(false);
+		var mapping = (await informationCenter.RequestGameDataMappingAsync(
+			keys,
+			new ModInformationRequest(ModInformationKind.GameDataMapping, "ModAssetSummary"),
+			token).ConfigureAwait(false)).AsMappingFacts();
 		var models = registry is null ? Array.Empty<RuntimeArmorRegistryModel>()
 			: await registry.ReadWorkspaceModelsAsync(token).ConfigureAwait(false);
 		// Include reserved/disabled IDs: these still identify physical resources in a Patch.

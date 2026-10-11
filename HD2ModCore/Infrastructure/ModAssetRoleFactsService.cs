@@ -8,16 +8,13 @@ public sealed class ModAssetRoleFactsService : IModAssetRoleFactsService
 {
 	private readonly IModInformationCenter informationCenter;
 	private readonly IReferenceGraphQueryIndex referenceIndex;
-	private readonly IGameDataMappingFactsService mappingService;
 
 	public ModAssetRoleFactsService(
 		IModInformationCenter informationCenter,
-		IReferenceGraphQueryIndex referenceIndex,
-		IGameDataMappingFactsService mappingService)
+		IReferenceGraphQueryIndex referenceIndex)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		this.referenceIndex = referenceIndex ?? throw new ArgumentNullException(nameof(referenceIndex));
-		this.mappingService = mappingService ?? throw new ArgumentNullException(nameof(mappingService));
 	}
 
 	public async ValueTask<ModAssetRoleFacts> GetAsync(ModNode node, string modsRootDirectory, CancellationToken cancellationToken = default)
@@ -49,7 +46,7 @@ public sealed class ModAssetRoleFactsService : IModAssetRoleFactsService
 			var mappingKeys = assets
 				.Select(asset => new AssetKey(asset.TypeId, asset.FileId))
 				.ToHashSet();
-			var mappings = await mappingService.MapAsync(mappingKeys, cancellationToken).ConfigureAwait(false);
+			var mappings = (await informationCenter.RequestGameDataMappingAsync(mappingKeys, new ModInformationRequest(ModInformationKind.GameDataMapping, "ModAssetRoleFacts"), cancellationToken).ConfigureAwait(false)).AsMappingFacts();
 			mappedCount = mappings.Assets.Values.Count(asset => asset.TargetArchives.Count != 0);
 			issues.AddRange(mappings.Issues);
 		}

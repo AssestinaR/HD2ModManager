@@ -1,6 +1,9 @@
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
+// 本文件（历史原因）没有 namespace 声明，类型落在全局命名空间里，
+// 所以要显式引入 Infrastructure 才能看到 AsMappingFacts 这个扩展方法。
+using HD2ModCore.Infrastructure;
 using AssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 
 // Purpose: Classifies material delivery from persisted Patch graph facts and identifies complete single-Mod providers.
@@ -11,14 +14,12 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 	private const ulong TextureTypeId = 0xcd4238c6a0c69e32;
 	private readonly IModInformationCenter informationCenter;
 	private readonly string modsRootDirectory;
-	private readonly IGameDataMappingFactsService? mappingService;
 	private readonly IReferenceGraphQueryIndex? referenceIndex;
 
-	public MaterialDeliveryFactsService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IGameDataMappingFactsService? mappingService = null, IReferenceGraphQueryIndex? referenceIndex = null)
+	public MaterialDeliveryFactsService(IModInformationCenter informationCenter, HD2ModCore.Infrastructure.StoragePaths paths, IReferenceGraphQueryIndex? referenceIndex = null)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		modsRootDirectory = (paths ?? throw new ArgumentNullException(nameof(paths))).ModsDirectory;
-		this.mappingService = mappingService;
 		this.referenceIndex = referenceIndex;
 	}
 
@@ -32,9 +33,12 @@ public sealed class MaterialDeliveryFactsService : IMaterialDeliveryFactsService
 		}
 
 		var sourceGraph = BuildGraph(source);
-		var mappedOriginalMaterials = !includeGameDataMapping || mappingService is null
+		var mappedOriginalMaterials = !includeGameDataMapping
 			? new HashSet<AssetKey>()
-			: (await mappingService.MapAsync(sourceGraph.Materials.Select(key => new HD2ModCore.Domain.AssetKey(key.TypeId, key.FileId)).ToHashSet(), cancellationToken).ConfigureAwait(false)).Assets
+			: (await informationCenter.RequestGameDataMappingAsync(
+					sourceGraph.Materials.Select(key => new HD2ModCore.Domain.AssetKey(key.TypeId, key.FileId)).ToHashSet(),
+					new ModInformationRequest(ModInformationKind.GameDataMapping, "MaterialDeliveryFacts"),
+					cancellationToken).ConfigureAwait(false)).AsMappingFacts().Assets
 				.Where(pair => pair.Value.TargetArchives.Count != 0)
 				.Select(pair => new AssetKey(pair.Key.TypeId, pair.Key.FileId))
 				.ToHashSet();

@@ -10,6 +10,15 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 	private readonly IReadOnlyDictionary<ModNodeId, AdvancedUnitAnalysisFacts> _advancedFacts = new Dictionary<ModNodeId, AdvancedUnitAnalysisFacts>();
 	private readonly IReadOnlyDictionary<ModNodeId, ReferenceGraphFacts> _referenceFacts = new Dictionary<ModNodeId, ReferenceGraphFacts>();
 	public List<ModNodeId> InvalidatedNodeIds { get; } = [];
+
+	// 作用：用例可注入"资产键集合 → 映射事实"来替代过去的假 IGameDataMappingFactsService。
+	// Purpose: Lets a case inject key-set → mapping facts, replacing the former fake mapping services.
+	//
+	// 为什么要有"未注入"这一档：生产中心在"索引还没建 / 生产失败"时返回 Data = null，
+	// 调用方必须能容忍。未注入即代表这一档，所以默认返回 Data = null 而不是抛异常
+	// （MaterialDeliveryFactsServiceTests 用"注入一个必抛的委托"来表达"这条路径不该被走到"）。
+	public Func<IReadOnlySet<AssetKey>, GameDataMappingFacts>? GameDataMapping { get; set; }
+
 	public FakeInformationCenter(IReadOnlyDictionary<ModNodeId, ModContentFacts> facts) => _facts = facts;
 	public FakeInformationCenter(ModContentFacts facts) : this(new Dictionary<ModNodeId, ModContentFacts> { [facts.NodeId] = facts }) { }
 	public FakeInformationCenter(AdvancedUnitAnalysisFacts facts)
@@ -57,10 +66,17 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 		return ValueTask.FromResult(new ModInformationResult<AdvancedUnitAnalysisFacts>(facts, facts is null ? ModInformationStatus.Failed : ModInformationStatus.Fresh, request.Kind, facts?.Generation, facts?.Issues ?? []));
 	}
 	public ValueTask<ModInformationResult<ModThumbnailFacts>> RequestThumbnailAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-	// 无节点事实（设计文档 §22）由 ModInformationCenterNodeLessFactTests 覆盖；这个替身只服务节点事实。
-	// Node-less facts are covered by ModInformationCenterNodeLessFactTests; this double only serves node facts.
+	// 无节点事实（设计文档 §22）里只有"映射"这一条被业务服务消费，所以这里实现它；
+	// 其余无节点事实由 ModInformationCenterNodeLessFactTests 覆盖，本替身仍按未实现处理。
+	// Node-less facts are covered by ModInformationCenterNodeLessFactTests; this double only serves the mapping one.
+	public ValueTask<ModInformationResult<GameDataMappingFacts>> RequestGameDataMappingAsync(IReadOnlySet<AssetKey> assetKeys, ModInformationRequest request, CancellationToken cancellationToken = default)
+	{
+		if (GameDataMapping is null)
+			return ValueTask.FromResult(new ModInformationResult<GameDataMappingFacts>(null, ModInformationStatus.Failed, request.Kind, null, []));
+		var facts = GameDataMapping(assetKeys);
+		return ValueTask.FromResult(new ModInformationResult<GameDataMappingFacts>(facts, ModInformationStatus.Fresh, request.Kind, facts.MappingGeneration, facts.Issues));
+	}
 	public ValueTask<ModInformationResult<GameDataIndexFacts>> RequestGameDataIndexAsync(ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-	public ValueTask<ModInformationResult<GameDataMappingFacts>> RequestGameDataMappingAsync(IReadOnlySet<AssetKey> assetKeys, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<DeployedOverrideGraph>> RequestDeployedGraphAsync(string gameDataDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<ArmorCoverageFacts>> RequestArmorCoverageAsync(string gameDataDirectory, IReadOnlySet<string> archiveIds, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	       public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)

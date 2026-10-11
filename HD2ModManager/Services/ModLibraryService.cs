@@ -410,7 +410,7 @@ namespace HD2ModManager.Services
             _helmetToArmorMerge = CoreServices.CreateHelmetToArmorMergeService(_paths, _informationCenter, _informationReader);
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
-		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths);
+		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths, _informationCenter);
             _decorationActivations = CoreServices.CreateDecorationActivationStore(_paths);
             _optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
             _relationshipMutations = CoreServices.CreateModRelationshipMutationService(_paths, _optionActivations);

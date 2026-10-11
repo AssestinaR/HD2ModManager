@@ -24,7 +24,7 @@ public sealed class ModAssetSummaryProjectorTests
 			var document = new RuntimeArmorRegistryDocument(0, false, [], [new("custom-test", null,
 				[new(3, unit.FileId.ToString("x16"), 2, 0, Enabled: false)], "Custom outfit")]);
 			await registry.SaveWorkspaceAsync(document);
-			var projector = new ModAssetSummaryProjector(new DependencyMappingService(material, nativeUnit), new SourceCatalogProvider(), registry);
+			var projector = new ModAssetSummaryProjector(CenterFor(DependencyMapping(material, nativeUnit)), new SourceCatalogProvider(), registry);
 			var summary = await projector.ProjectAsync(node, Facts(unit, material));
 			Assert.Equal("CustomModel", Assert.Single(summary.TargetGroups).Category);
 			Assert.Contains("Custom outfit", summary.DerivedTags);
@@ -46,14 +46,11 @@ public sealed class ModAssetSummaryProjectorTests
 		finally { Directory.Delete(root, true); }
 	}
 
-	private sealed class DependencyMappingService(AssetKey material, AssetKey nativeUnit) : IGameDataMappingFactsService
-	{
-		public ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<AssetKey> assetKeys, CancellationToken cancellationToken = default)
-			=> ValueTask.FromResult(new GameDataMappingFacts("mapping", "index", "metadata", DateTimeOffset.UtcNow,
-				assetKeys.ToDictionary(key => key, key => new GameDataMappedAssetFact(key, "asset",
-					key == material ? "Material" : "Unit", AssetTypeCategory.Model,
-					key == material || key == nativeUnit ? [new("0123456789abcdef", "Armor", "Source armor")] : [])), []));
-	}
+	private static Func<IReadOnlySet<AssetKey>, GameDataMappingFacts> DependencyMapping(AssetKey material, AssetKey nativeUnit)
+		=> assetKeys => new GameDataMappingFacts("mapping", "index", "metadata", DateTimeOffset.UtcNow,
+			assetKeys.ToDictionary(key => key, key => new GameDataMappedAssetFact(key, "asset",
+				key == material ? "Material" : "Unit", AssetTypeCategory.Model,
+				key == material || key == nativeUnit ? [new("0123456789abcdef", "Armor", "Source armor")] : [])), []);
 
 	private sealed class SourceCatalogProvider : IAssetMetadataCatalogProvider
 	{
@@ -71,7 +68,7 @@ public sealed class ModAssetSummaryProjectorTests
 		var key = new AssetKey(0xe0a48d0be9a7453f, 100);
 		var group = new ModPatchGroupFact(new ModPatchGroupId(node.Id, "0123456789abcdef", 0), 0, [], new HashSet<AssetKey> { key }, []);
 		var facts = new ModContentFacts(node.Id, node.RelativePath, "facts", DateTimeOffset.UtcNow, [group], []);
-		var projector = new ModAssetSummaryProjector(new MappingService(key), new EmptyCatalogProvider());
+		var projector = new ModAssetSummaryProjector(CenterFor(Mapping(key)), new EmptyCatalogProvider());
 
 		var summary = await projector.ProjectAsync(node, facts);
 
@@ -82,16 +79,18 @@ public sealed class ModAssetSummaryProjectorTests
 		Assert.Contains("model", summary.DerivedTags);
 	}
 
-	private sealed class MappingService(AssetKey key) : IGameDataMappingFactsService
-	{
-		public ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<AssetKey> assetKeys, CancellationToken cancellationToken = default)
+	private static Func<IReadOnlySet<AssetKey>, GameDataMappingFacts> Mapping(AssetKey key)
+		=> assetKeys =>
 		{
 			var assets = assetKeys.ToDictionary(asset => asset, asset => asset == key
 				? new GameDataMappedAssetFact(asset, "body", "Unit", AssetTypeCategory.Model, [new ArchiveMetadata("armor", "Armor", "B-08 Light Gunner")])
 				: new GameDataMappedAssetFact(asset, $"0x{asset.FileId:x16}", "Unknown", AssetTypeCategory.Unknown, []));
-			return ValueTask.FromResult(new GameDataMappingFacts("mapping", "index", "metadata", DateTimeOffset.UtcNow, assets, []));
-		}
-	}
+			return new GameDataMappingFacts("mapping", "index", "metadata", DateTimeOffset.UtcNow, assets, []);
+		};
+
+	// 投影器现在只认识信息中心（设计文档 §28），所以用例通过替身中心的映射注入点来喂映射事实。
+	private static FakeInformationCenter CenterFor(Func<IReadOnlySet<AssetKey>, GameDataMappingFacts> mapping)
+		=> new(new Dictionary<ModNodeId, ModContentFacts>()) { GameDataMapping = mapping };
 
 	private sealed class EmptyCatalogProvider : IAssetMetadataCatalogProvider
 	{
