@@ -171,6 +171,19 @@
 - 详见 `2026-10-10.md`。
 
 ## 工作约定
+- **【环境】Agent 的 PowerShell 工具里 `Remove-Item` 被 safe-delete 钩子接管，而这台机器上"删除到回收站"必定抛错。**
+  两条后端都在**成功删除之后**报错，C 盘与 E 盘一样，且回收站策略并未被禁用
+  （`NoRecycleFiles` 不存在、`E:\$Recycle.Bin` 正常）：
+  * `genie-trash` 二进制（`%GENIE_TRASH_DIR%\win32-x64.exe`）：exit code 1，
+    `ERROR <path>: Error during a trash operation: Unknown { description: "Some operations were aborted" }`；
+  * 钩子的内置回退 `[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(..., SendToRecycleBin)`：
+    `调用"DeleteFile"时发生异常:"无法找到指定文件。"`。
+  实测 `exists after = False` —— 目标**确实被删掉了**，只是报错。
+  后果：**任何在 Agent shell 里做删除的脚本都会失败**（钩子 fail-closed + 脚本 `$ErrorActionPreference='Stop'`），
+  典型受害者是 `publish.ps1`（第一次 `Remove-PublishOwnedPath` 就中止；2026-10-11 复现两次）。
+  应对：**让用户在他自己的 PowerShell 窗口跑**（钩子只存在于 Agent shell 里，不在普通窗口），
+  或经用户明确授权后在本次调用里中和钩子的删除路径。
+  **不要**用 `[System.IO.File]::Delete` 之类静默绕过——那等于把"删到回收站"降级成永久删除。
 - **【强制】远端以后不再推送——助手只做本地提交，推送由用户手动执行。**（2026-10-11 用户明确指令，覆盖此前所有相关讨论。）
 - **发版计划（2026-10-11 用户决定）**：等这轮优化重构**彻底结束后**再发正式版给用户。
   含义：发版前不做"引入新失效协议 / 动刚优化过的热路径"这类收益不明确、风险明确的改动。
