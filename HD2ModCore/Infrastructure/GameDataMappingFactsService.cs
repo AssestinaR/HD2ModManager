@@ -22,10 +22,17 @@ public sealed class GameDataMappingFactsService : IGameDataMappingFactsService
 	public async ValueTask<GameDataMappingFacts> MapAsync(IReadOnlySet<AssetKey> assetKeys, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(assetKeys);
-		var issues = new List<CoreIssue>();
 		var fingerprint = await _indexService.GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
 		var indexGeneration = fingerprint?.SourceFingerprint ?? "missing";
 		var metadataGeneration = ComputeMetadataGeneration();
+		var mappingGeneration = Hash($"{indexGeneration}\n{metadataGeneration}");
+		// 键 = 数据目录 + 索引代 + 元数据代 + 选择器指纹。
+		// 前三段保证"游戏数据一变就重算"（这是本服务此前完全没有缓存、每次都要逐键查库的原因）；
+		// 第四段把"要的是哪批资产"也放进身份，避免不同页面互相拿到对方的子集。
+		var cacheKey = BuildCacheKey(mappingGeneration, assetKeys);
+		if (GameDataFactCache.TryGet(cacheKey, out GameDataMappingFacts cached)) return cached;
+
+		var issues = new List<CoreIssue>();
 		var catalog = assetKeys.Count == 0
 			? AssetMetadataCatalog.Empty
 			: await _catalogProvider.LoadAsync(cancellationToken).ConfigureAwait(false);
@@ -63,8 +70,22 @@ public sealed class GameDataMappingFactsService : IGameDataMappingFactsService
 				targets);
 		}
 
-		var mappingGeneration = Hash($"{indexGeneration}\n{metadataGeneration}");
-		return new GameDataMappingFacts(mappingGeneration, indexGeneration, metadataGeneration, DateTimeOffset.UtcNow, mapped, issues, catalog);
+		var result = new GameDataMappingFacts(mappingGeneration, indexGeneration, metadataGeneration, DateTimeOffset.UtcNow, mapped, issues, catalog);
+		GameDataFactCache.Set(cacheKey, result);
+		return result;
+	}
+
+	// 作用：把选择器（要哪批资产）压成一个定长指纹，作为缓存身份的一部分。
+	// Purpose: Compresses the selector (which assets are wanted) into a fixed-length fingerprint.
+	private string BuildCacheKey(string mappingGeneration, IReadOnlySet<AssetKey> assetKeys)
+	{
+		var selector = new StringBuilder();
+		foreach (var key in assetKeys.OrderBy(key => key.TypeId).ThenBy(key => key.FileId))
+		{
+			selector.Append(key.TypeId.ToString("x16")).Append(':').Append(key.FileId.ToString("x16")).Append(',');
+		}
+
+		return $"gamedata-mapping|{_paths.DataDirectory.ToLowerInvariant()}|{mappingGeneration}|{Hash(selector.ToString())}";
 	}
 
 	private string ComputeMetadataGeneration()

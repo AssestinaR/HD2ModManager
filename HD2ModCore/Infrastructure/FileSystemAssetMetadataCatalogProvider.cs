@@ -18,6 +18,20 @@ public sealed class FileSystemAssetMetadataCatalogProvider : IAssetMetadataCatal
 
 	public async ValueTask<AssetMetadataCatalog> LoadAsync(CancellationToken cancellationToken = default)
 	{
+		// 这个目录与"请求了哪些资产"无关——同一份文件内容只该被解析一次，供所有消费者复用。
+		// 键取自三个文件的（路径 + 长度 + 修改时间）：任一文件一变就换键，从而强制重新读取磁盘。
+		// The catalog is selector-independent, so one parse serves every consumer. The key is the three
+		// files' (path, length, mtime), so any change to them forces a genuine re-read.
+		var cacheKey = ComputeSourceCacheKey();
+		if (GameDataFactCache.TryGet(cacheKey, out AssetMetadataCatalog cached)) return cached;
+
+		var catalog = await LoadCoreAsync(cancellationToken).ConfigureAwait(false);
+		GameDataFactCache.Set(cacheKey, catalog);
+		return catalog;
+	}
+
+	private async ValueTask<AssetMetadataCatalog> LoadCoreAsync(CancellationToken cancellationToken)
+	{
 		var archives = File.Exists(_paths.ArchiveHashesPath)
 			? await LoadArchivesAsync(_paths.ArchiveHashesPath, cancellationToken).ConfigureAwait(false)
 			: new Dictionary<string, ArchiveMetadata>(StringComparer.OrdinalIgnoreCase);
@@ -29,6 +43,30 @@ public sealed class FileSystemAssetMetadataCatalogProvider : IAssetMetadataCatal
 			: new Dictionary<ulong, TypeMetadata>();
 
 		return new AssetMetadataCatalog(archives, files, types);
+	}
+
+	// 作用：三个元数据文件的来源指纹。不读取文件内容，只做三次 stat，成本远低于重新解析。
+	// Purpose: Source fingerprint of the three metadata files: three stat calls, no content read.
+	private string ComputeSourceCacheKey()
+	{
+		var builder = new System.Text.StringBuilder("asset-metadata|");
+		foreach (var path in new[] { _paths.ArchiveHashesPath, _paths.FriendlyNamesPath, _paths.TypeHashesPath })
+		{
+			builder.Append(path.ToLowerInvariant()).Append('|');
+			if (File.Exists(path))
+			{
+				var info = new FileInfo(path);
+				builder.Append(info.Length).Append('|').Append(info.LastWriteTimeUtc.Ticks);
+			}
+			else
+			{
+				builder.Append("missing");
+			}
+
+			builder.AppendLine();
+		}
+
+		return builder.ToString();
 	}
 
 	private static async Task<IReadOnlyDictionary<string, ArchiveMetadata>> LoadArchivesAsync(string path, CancellationToken cancellationToken)
