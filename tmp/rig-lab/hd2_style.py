@@ -284,7 +284,7 @@ def load_source(vpk, model):
 # ------------------------------------------------------------------ core
 def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.015,
              align='kabsch', apose=True, spine_map='legacy', fallback='parent',
-             leg_tilt=0.0, verbose=True):
+             leg_tilt=0.0, leg_splay=0.0, verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results."""
     def say(*a):
         if verbose:
@@ -453,6 +453,73 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         src1 = moved
         say('stance: legs %.2f deg forward about the ankle; torso carried %+.4f m '
             'forward (upright); foot planted' % (leg_tilt, delta[1]))
+
+    # ---- 2c. optional stance: splay the legs outward in the FRONT view -----
+    # HD2's own rig stands with each ankle 7.07 deg outboard of its hip (ankle
+    # span 0.382 m against a hip span of 0.174 m) and the shipped reference
+    # patch keeps that rig bit-identical, so its front view reads as a relaxed
+    # "at ease" stance.  The L4D2 source is a strict T-pose with vertical legs,
+    # which is why our front view looks stiff.
+    #
+    # The motion is the front-view twin of step 2b: rotate the leg about its
+    # ROOT (the thigh head) by +theta on the left and -theta on the right, then
+    # counter-rotate the foot about its ankle by -theta so the sole stays flat.
+    # Because the ankle rides rigidly on the leg, that counter-rotation collapses
+    # to a pure translation of the foot by (ankle_new - ankle_old) -- which is
+    # exactly the "then shift each foot out by half a foot" step, except it comes
+    # out of the geometry for free instead of being a magic number.
+    if abs(leg_splay) > 1e-9 and 'l_thigh' in new_head and 'r_thigh' in new_head:
+        th = math.radians(leg_splay)
+        Tsp = {}
+        span_before = abs(new_head['r_foot'][0] - new_head['l_foot'][0])
+        foot_shift = 0.0
+        for sd, sgn in (('l', +1.0), ('r', -1.0)):
+            root = new_head['%s_thigh' % sd]
+            a = sgn * th
+            ca, sa = math.cos(a), math.sin(a)
+            Rsp = (trans(root)
+                   @ np.array([[ca, 0, sa, 0], [0, 1, 0, 0],
+                               [-sa, 0, ca, 0], [0, 0, 0, 1]], float)
+                   @ trans(-root))
+            for j in ('thigh', 'knee'):
+                Tsp['%s_%s' % (sd, j)] = Rsp
+            ank = new_head['%s_foot' % sd]
+            ank_new = (Rsp @ np.append(ank, 1.0))[:3]
+            Tsp['%s_foot' % sd] = trans(ank_new - ank)
+            foot_shift = max(foot_shift, abs(ank_new[0] - ank[0]))
+            for j in ('ball', 'toe'):
+                nm = '%s_%s' % (sd, j)
+                if nm in new_head:
+                    Tsp[nm] = Tsp['%s_foot' % sd]
+        for nm in list(new_head):
+            if nm in Tsp:
+                new_head[nm] = (Tsp[nm] @ np.append(new_head[nm], 1.0))[:3]
+
+        def ajoint2(b):
+            return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
+        res2, _h2, _d2 = resolve_bone_map(src, src_index_to_hd2, fallback, ajoint2,
+                                          by_idx_name)
+        moved = np.empty_like(src1)
+        for k, v in enumerate(verts):
+            acc = np.zeros(3)
+            tot = 0.0
+            p4 = np.append(src1[k], 1.0)
+            for j in range(3):
+                w = v['w'][j]
+                if w <= 0:
+                    continue
+                nm = by_idx_name.get(res2.get(v['bones'][j]))
+                M = Tsp.get(nm)
+                if M is None:
+                    M = np.eye(4)
+                acc += w * (M @ p4)[:3]
+                tot += w
+            moved[k] = acc / tot if tot > 0 else src1[k]
+        src1 = moved
+        say('stance: legs splayed %.2f deg outward about the hip; foot carried out '
+            '%.4f m and kept flat; ankle span %.4f -> %.4f m'
+            % (leg_splay, foot_shift, span_before,
+               abs(new_head['r_foot'][0] - new_head['l_foot'][0])))
 
     # ---- 3. HD2 rest: AXIS_SYMMETRIC + snapped heads, in ONE parent-first pass
     # The two operations must be interleaved: an HD2-only bone that is a child of a

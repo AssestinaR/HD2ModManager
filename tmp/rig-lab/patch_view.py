@@ -280,6 +280,9 @@ def main():
     ap.add_argument('--leg-tilt', type=float, default=0.0,
                     help='degrees to lean the legs forward about the ankle; the torso '
                          'is carried forward with the hip and stays upright')
+    ap.add_argument('--leg-splay', type=float, default=0.0,
+                    help='degrees to splay each leg OUTWARD in the front view, about '
+                         'the thigh head, with the foot counter-rotated flat at the ankle')
     ap.add_argument('--fallback', default='parent')
     ap.add_argument('--crop', default='', help='minz,maxz -- zoom the vertical band')
     ap.add_argument('--rows', choices=('both', 'front', 'side'), default='both')
@@ -296,7 +299,7 @@ def main():
     r = H.retarget(a.vpk, a.model, a.toc, a.bonehash, a.pose_profile,
                    align=a.align, spine_map=a.spine_map, fallback=a.fallback,
                    scale=a.scale, head_offset=a.head_offset,
-                   leg_tilt=a.leg_tilt, verbose=False)
+                   leg_tilt=a.leg_tilt, leg_splay=a.leg_splay, verbose=False)
     src_pts = [tuple(p) for p in np.asarray(r['src1'])]
     our_pts = [tuple(p) for p in np.asarray(r['out'])]
     idle_pts = [tuple(p) for p in np.asarray(r['out_idle'])]
