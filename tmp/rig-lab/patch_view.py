@@ -283,6 +283,20 @@ def main():
     ap.add_argument('--leg-splay', type=float, default=0.0,
                     help='degrees to splay each leg OUTWARD in the front view, about '
                          'the thigh head, with the foot counter-rotated flat at the ankle')
+    ap.add_argument('--no-axis-deltas', action='store_true',
+                    help="keep HD2's ORIGINAL bone axes instead of baking the pose "
+                         "profile's symmetric axis deltas into our rest.  The "
+                         "BatchTool's last step is 'back to the initial state + "
+                         "original bone axes', and the deltas are all ~180 deg "
+                         "flips for the right arm/hand -- leaving them in rotates "
+                         "the right arm mesh by 180 deg about each bone.")
+    ap.add_argument('--legacy-axis', action='store_true',
+                    help="skip the BatchTool's final axes conversion and the T-pose "
+                         "half of the bake.  That leaves basis_i and the symmetric "
+                         "axis deltas baked into the shipped rig's bone "
+                         "orientations (45 of 107 bones up to 180 deg off HD2's "
+                         "native rig), which is what the reference patch does NOT "
+                         "have.  Only useful for A/B comparison.")
     ap.add_argument('--fallback', default='parent')
     ap.add_argument('--crop', default='', help='minz,maxz -- zoom the vertical band')
     ap.add_argument('--rows', choices=('both', 'front', 'side'), default='both')
@@ -299,7 +313,9 @@ def main():
     r = H.retarget(a.vpk, a.model, a.toc, a.bonehash, a.pose_profile,
                    align=a.align, spine_map=a.spine_map, fallback=a.fallback,
                    scale=a.scale, head_offset=a.head_offset,
-                   leg_tilt=a.leg_tilt, leg_splay=a.leg_splay, verbose=False)
+                   leg_tilt=a.leg_tilt, leg_splay=a.leg_splay,
+                   axis_deltas=not a.no_axis_deltas,
+                   axis_roundtrip=not a.legacy_axis, verbose=False)
     src_pts = [tuple(p) for p in np.asarray(r['src1'])]
     our_pts = [tuple(p) for p in np.asarray(r['out'])]
     idle_pts = [tuple(p) for p in np.asarray(r['out_idle'])]

@@ -284,7 +284,8 @@ def load_source(vpk, model):
 # ------------------------------------------------------------------ core
 def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.015,
              align='kabsch', apose=True, spine_map='legacy', fallback='parent',
-             leg_tilt=0.0, leg_splay=0.0, verbose=True):
+             leg_tilt=0.0, leg_splay=0.0, axis_deltas=True, axis_roundtrip=True,
+             verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results."""
     def say(*a):
         if verbose:
@@ -538,18 +539,41 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         return by_idx[p]
 
     order = sorted(hd2, key=lambda h: h['index'])   # TocData is parent-first
+    # The BatchTool's WORKING rest is not the one it ships.  It converts the bone
+    # axes to SYMMETRIC, bakes `tpose_basis_rotations_wxyz` into the rest (that is
+    # the T-pose the source character is aligned against), later bakes
+    # `initial_basis_rotations_from_baked_tpose_wxyz` back on top -- and only then
+    # converts the axes back to ORIGINAL ("转回初态 + 原始骨轴").  Those two bakes
+    # are exact inverses, so they CANCEL on the rig's local rotations and the
+    # shipped rig ends up bit-identical to HD2's native one, which is exactly what
+    # the reference patch has.  If we skip the first bake we leave basis_i baked
+    # into the shipped bone orientations (34-49 deg on the arms, 180 deg on the
+    # right clavicle); if we skip the final axes conversion we leave Dd in as well.
+    basis_t = ({n: q_wxyz_to_m(q)
+                for n, q in prof['tpose_basis_rotations_wxyz'].items()}
+               if axis_roundtrip else {})
+
+    def axis_delta(h):
+        return (q_wxyz_to_m(deltas[h['name']])
+                if (axis_deltas and h['name'] in body_names and h['name'] in deltas)
+                else np.eye(4))
+
     rest_sym = {}
     for h in order:
         p = parent_of(h)
-        Dd = (q_wxyz_to_m(deltas[h['name']])
-              if (h['name'] in body_names and h['name'] in deltas) else np.eye(4))
+        Dd = axis_delta(h)
         base = (rest_hd2[h['index']] @ Dd if p is None else
                 rest_sym[p['index']] @ np.linalg.inv(rest_hd2[p['index']])
                 @ rest_hd2[h['index']] @ Dd)
+        base = base @ basis_t.get(h['name'], np.eye(4))
         tgt = new_head.get(h['name'])
         if tgt is not None:
             base = trans(tgt - origin_np(base)) @ base
         rest_sym[h['index']] = base
+    if not axis_deltas:
+        say('axis deltas: DISABLED (HD2\'s original bone axes are kept, which is '
+            'what the BatchTool\'s final "back to the initial state + original '
+            'bone axes" step does)')
 
     # ---- 4. T-pose -> A-pose, then the per-vertex transform ---------------
     basis = {}
@@ -565,6 +589,28 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         Dp = D[p['index']] if p is not None else np.eye(4)
         rs = rest_sym[h['index']]
         D[h['index']] = Dp @ rs @ basis.get(h['name'], np.eye(4)) @ np.linalg.inv(rs)
+
+    # ---- 4b. the rig we actually SHIP: SYMMETRIC axes -> ORIGINAL axes -----
+    # `S_A = D . rest_sym` is the new rest produced by baking the A-pose, and it
+    # still carries the SYMMETRIC axes (each local rotation has Dd post-multiplied
+    # in).  The BatchTool's very last step converts them back, which is a pure
+    # re-parameterisation: each bone's own frame is rotated by Dd^-1 and its HEAD
+    # is left exactly where it was (convert_body_axis_space sets
+    # Matrix.LocRotScale(bone.head_local, new_rot, 1) and raises if the head drifts
+    # by more than 1e-5).  After this the rig's orientations are HD2's native ones
+    # -- so the game's own animations drive it correctly -- while the joint
+    # POSITIONS are still the retargeted ones.
+    rest_shipped = {}
+    for h in order:
+        i = h['index']
+        p = parent_of(h)
+        sa = D[i] @ rest_sym[i]
+        L = sa if p is None else (
+            np.linalg.inv(D[p['index']] @ rest_sym[p['index']]) @ sa)
+        if axis_roundtrip:
+            L = L @ np.linalg.inv(axis_delta(h))
+        chain = L if p is None else rest_shipped[p['index']] @ L
+        rest_shipped[i] = trans(sa[:3, 3] - origin_np(chain)) @ chain
 
     # ---- skinning: source bone -> HD2 bone -------------------------------
 
@@ -610,7 +656,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # displayed.  This is the only render that can be compared against a
     # reference patch mod, and it is where a bad correspondence shows up: a
     # landmark pair with the wrong *semantics* stretches the mesh between them.
-    idle = {h['index']: rest_hd2[h['index']] @ np.linalg.inv(D[h['index']] @ rest_sym[h['index']])
+    idle = {h['index']: rest_hd2[h['index']] @ np.linalg.inv(rest_shipped[h['index']])
             for h in hd2}
     out_idle = np.empty_like(out)
     for k, v in enumerate(verts):
@@ -646,6 +692,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     return dict(
         mdl_path=mdl_path, mdl=mdl, verts=verts, tris=tris, src=src,
         src_pts=src_pts, src1=src1, out=out, out_idle=out_idle, rest=rest_sym, D=D,
+        rest_shipped=rest_shipped,
         hd2=hd2, rest_hd2=rest_hd2, resolved=resolved, src_index_to_hd2=src_index_to_hd2,
         scale=s, sole=sole, head_src=head_src_v, head_hd2=head_hd2,
         new_head=new_head, missing=missing, hops=hh,
@@ -685,12 +732,23 @@ def main():
                          'CLOSEST (distance).  The shoes need distance.')
     ap.add_argument('--no-apose', action='store_true',
                     help='stop after alignment+snap (still a T-pose)')
+    ap.add_argument('--leg-tilt', type=float, default=0.0,
+                    help='degrees to lean the legs forward about the ankle, so the '
+                         'ankle sits behind the hip the way HD2\'s rig has it')
+    ap.add_argument('--leg-splay', type=float, default=0.0,
+                    help='degrees to splay each leg outward in the front view about '
+                         'the thigh head, foot kept flat (4.0 matches the reference)')
+    ap.add_argument('--legacy-axis', action='store_true',
+                    help='skip the BatchTool\'s final axes conversion; leaves '
+                         'basis_i and the symmetric deltas in the shipped rig')
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
     r = retarget(a.vpk, a.model, a.toc, a.bonehash, a.pose_profile,
                  scale=a.scale, head_offset=a.head_offset, align=a.align,
-                 apose=not a.no_apose, spine_map=a.spine_map, fallback=a.fallback)
+                 apose=not a.no_apose, spine_map=a.spine_map, fallback=a.fallback,
+                 leg_tilt=a.leg_tilt, leg_splay=a.leg_splay,
+                 axis_roundtrip=not a.legacy_axis)
 
     os.makedirs(a.outdir, exist_ok=True)
     png = os.path.join(a.outdir, a.out)

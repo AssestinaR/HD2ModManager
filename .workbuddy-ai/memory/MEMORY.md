@@ -28,6 +28,15 @@
 - 5 模型（zoey/rochelle/coach/nick/ellis）**全部 edge_mean 0.9989、bad>25% ≤0.58%**，**零逐模型调参**（旧 swing 最优 bad 9.25%）。实现要点：① **缩放高度必须在 HD2 空间沿 +Z 量**，脚底点用**底部 1 cm 顶点片质心**；② **AXIS delta 与 head 搬移必须交错在同一父先子后循环**（否则"被搬走父骨"的**未映射子骨**会掉队）。
 - **模型自身瑕疵（非我们引入）+ 源骨架**：Nick/Ellis 的 `source_extra_*` 长袖 jiggle 骨链在 **bind pose 就朝 +Y 伸出 1.78 m / 1.04 m**（**源 T-pose 里就有**）⇒ "必须靠额外骨/物理驱动"的直接证据。源骨架：`Spine1≡Spine`、`Spine2≡Spine4` 且**零主导权重** ⇒ 有效躯干关节只 3 个；`Pelvis` 关节 0.8193 但网格质心 1.0820（**根骨不在髋**）；**T-pose 手臂严格水平**、**腿严格竖直**；`Head1` = **颅底**。
 
+### 🔴🔴 第 37 轮（2026-10-12）：**头号问题 = 我们发布的骨架骨轴是错的**（详见 findings §12）
+> **排在「手臂链短 10 cm」之前**：`--leg-tilt/splay` 修**关节位置**，这条修**骨头坐标系朝向**。朝向错了，游戏里**任何**动画都会把每根骨转到错误的绝对朝向（不只是静止帧）。
+- **实测**：我们发的骨架 vs HD2 原生朝向 = mean **43.90°** / max **180.00°**，**45/107 根骨 >5°**；走完 BatchTool 往返后 = **0.02° / 0.05°，0/107**。参照 patch = 逐位一致。idle 帧网格位移 max **0.568 m → 0.183 m**（nick 3.65→0.207）。5 模型**零调参**；`edge_mean` 不变或略好；发布的**网格本身**只动 mean 6 mm。
+- **根因**：BatchTool 的「工作骨架」≠「发布骨架」。`rigging.py:_convert_pose_space` 是两个状态机：`POSE_SPACE`(INITIAL↔TPOSE) × `BODY_AXIS_SPACE`(INITIAL↔SYMMETRIC)。工作态 = `SYMMETRIC`轴+T-pose（吸附在这里做）；发布态 = `INITIAL`轴+A-pose（第 6 步「转回初态+原始骨轴」）。**两套 basis 表互为逆元**（实测 30 条全满足 `initial ≈ inv(tpose)`，≤2e-5）⇒ 两次烘焙在**骨架局部旋转上抵消**（`L_0·Dd·basis_t·basis_i·Dd⁻¹ = L_0`），而**网格被烘焙两次**（T-pose→A-pose）。**⇒ 发出去的骨架 = HD2 原生（朝向不动），网格 = 源模型的 A-pose。**
+- **我们错在**：只做后半段 —— `rest_sym` 用 HD2 **初态朝向**（不是 T-pose 朝向）+ 源 T-pose 关节位置，只烘焙一次 `basis_i`，且**从不把骨轴转回 `INITIAL`**。⇒ 多出 `basis_i`（`l_shoulder` 34.32°、`l_elbow` 47.36°、`l_hand` 49.24°）+ 累积 `Dd`（`r_clavicle` **180°**、`r_shoulder` 179.04°、`r_elbow` 145.89°）。
+- **修法**（`hd2_style.py` 新增 `axis_roundtrip=True`，默认开）：① 步骤 3 的 `rest_sym` 局部再乘 `basis_t`（`tpose_basis_rotations_wxyz`）⇒ 真正的 T-pose 工作静止姿态；② 步骤 4 照旧烘焙 `basis_i`；③ **新增步骤 4b** 把 `S_A = D·rest_sym` 的骨轴 `SYMMETRIC→INITIAL`：局部 `L ← L·inv(Dd)`，**且 head 必须回填**（Blender 的 `convert_body_axis_space` 只转骨自身坐标系、head 原地不动，漂移 >1e-5 就抛异常；第一版没回填 ⇒ 右肩/肘/手被推到 0.25/0.81/1.27 m 外，回填后降到 0.18 m）；④ idle 帧改用 `rest_shipped`。**`axis_roundtrip=False` 时与旧行为逐位相同**（`out` 差 `0.00000 m`）。CLI：`--legacy-axis`。
+- **⚠️ 更正**：上一轮「20 条对称轴 delta 里 18 条是 180° 翻转」是**把四元数按 `xyzw` 读了**；`..._wxyz` 是 `w` 在前。**只有 2 条 180°**（`r_clavicle` 绕 +Z、`r_shoulderarmour`），其余 1.0–98.8°。⇒ **`--no-axis-deltas` 不是正确修法**（会破坏与 `basis_i` 的配对，把右肘/右手关节推到 0.44/0.69 m 外）。
+- 探针：`probe_rest_gap.py`（三方 head/旋转/head_slip/idle 位移）、`probe_roundtrip.py`（**不改管线**、纯用 `retarget()` 返回值重建往返验证假说）、`rigfix_overlay.py`（三列对比图，**每列都叠骨架**）、`run_rigfix_all.py`（5 模型回归）、`probe_out_diff.py`。
+
 ### 🔴 三个真 bug（2026-10-12 用参照 patch 反查；详见 findings §9）
 - **【方法论·最重要】bind 恒等会掩盖真问题。** `D` 在绑定态恒等 ⇒ **绑定态网格完全不变形** ⇒ 任何绑定态指标都漂亮，**哪怕对应表是错的**。游戏里做的是 `A[b]·inv(S[b])`；取 `A` = HD2 原生 rest 就是**玩家实际看到的那一帧**（`retarget` 的 `out_idle`）。**只有这个渲染能与参照 patch 直接对比。**
 - **① `--align kabsch` 把身体转歪 2.8°** ⇒ 脖子跑到髋**前** 1.75 cm（HD2 是**后** 2.22 cm）＝ "身体前倾"；根因 = 两侧 20 关节集**不全等**（源 `Pelvis` 在髋下 12 cm、HD2 `hips` 就在髋上）⇒ 用 `--align yaw`（误差 3.97→1.37 cm）。**② `Spine→spine1` 让躯干每帧拉伸 26.5 cm**（HD2 `spine1` 与 `hips` **完全重合**）⇒ **`--spine-map mesh` 必须。** **③ 鞋被绑到膝盖 ⇒ 穿地 13.5 cm**（源鞋父级 `Bip01_L_Calf`）⇒ **`--fallback distance`**（最低 z −0.138→+0.024）。
