@@ -44,6 +44,25 @@
   原因：`Microsoft.Data.Sqlite 8.0.13` 传递引入 2.1.6，其 `e_sqlite3.dll` 内嵌 **SQLite 3.41.2**，
   命中 GHSA-2m69-gcr7-jv3q（CVE-2025-6965，要求 ≥ 3.50.2）。2.1.12 → 3.53.3。
   **光升 `Microsoft.Data.Sqlite` 修不了**（10.0.0 仍依赖 2.1.11，仍受影响），必须 pin SQLitePCLRaw。
+- **"按来源指纹键控的进程内记忆"是通用手法**：`SourceFingerprintMemo`（有界、整体清空、类型校验）
+  + 每族事实一个持有者，**各拿独立预算**（`GameDataFactCache`=16、`DeployedGraphFactCache`=4）。
+  共用一个字典会让体积大的一族把另一族挤出去，也让"命中记忆"类断言变得不确定。
+  **必须做成 static**：这些服务（`CreateGameDataMappingFactsService` / `CreateDeployedOverrideGraphService`）
+  **每次调用都 new 实例**，实例级缓存等于零共享。
+- **部署侧事实**：`DeployedOverrideGraphService.BuildAsync` 已改为"先算来源指纹、命中即返回"，
+  跳过对每个已部署文件与其源文件的**双份 SHA-256** 与每个 base 的 TOC 扫描（§6 阶段 3 缓存半边，设计文档 §21）。
+  键 = 激活状态内容 + 已部署文件 (名字,长度,mtime) + **源文件 (存在性,长度,mtime)**。
+  源文件必须在键里，否则"部署没动、源被改了"会命中陈旧结论。
+  注意：`DerivedStateCoordinator` 里 `deployed` 是被**主动置空**的（页面打开时不扫 GameData），
+  所以**生产路径上唯一调用者就是 `GameDataArchiveBrowserService.BuildAsync`**。
+- **`ApplyExecutor` 只支持硬链接与符号链接**（`"Only hard-link and symbolic-link deployment are supported."`）。
+  因此测试里用 `ApplyExecutor` 铺出来的部署，"目标"与"源"是**同一个文件**，改一个必然改另一个。
+  要构造"目标与源分离"的场景，必须用 `DeploymentMethod.Copy` 手写激活状态。
+- **贯穿信息中心重构的前置障碍**：中心今天**所有**请求都挂在 `ModNode` 上
+  （`RequestXxxAsync(ModNode, ...)` + 每节点一个任务表 + `InvalidateNodeAsync`），
+  而 **game-data 侧与部署侧的事实没有节点**（身份是"游戏目录 + 来源指纹"）。
+  所以"阶段 2 页面收编"与"阶段 3 登记半边"**共用一个新形态**：为无节点事实设计请求与失效。
+  这才是它们一直没做的真正原因，不是补几个方法。
 
 ### 23 个 kind 的真实生产情况（D3 的重要副产品，别忘）
 **只有 8 个 kind 有真实生产者**（`ModInformationCenter` 内部），其余是声明占位 / 切片 / 请求判别位 / **中心之外生产**：
@@ -59,11 +78,23 @@
 - **源事实 `SourceRoots`（6）**：`Identity`、`ContentRevision`、`PatchCatalog`、`GameDataIndex`、`AssetMetadata`、`Thumbnail`
   （E1 把 `GameDataMapping` 移出，换成它的两个真实上游）
 
+### 信息中心重构进度（2026-10-11；详见设计文档 §6.1 总进度表）
+**尚未全面重构完毕。**
+- 阶段 0（设计）/ 1（统一身份）：✅ 完成
+- 阶段 2（收编 game-data 侧）：🟡 **只完成登记表半边**（`GameDataIndex`/`AssetMetadata` 入表 + 补上缺失的缓存）；**页面半边未做**
+- 阶段 3（收编部署侧）：🟡 **只完成缓存半边**（部署图按来源指纹记忆）；**登记半边未做**
+- 阶段 4（护甲页改造）/ 阶段 5（合并缩略图双路）：❌ 未开始
+- 阶段 6（护栏测试）：🟡 只完成 Manager 半边 + 登记表完整性；**业务服务半边**要等阶段 2 页面收编做完
+
 ## 已知性能热点（2026-10-10 分析）
 - 护甲映射页首开卡顿根因：`ArmorRegistryPageViewModel.RefreshAsync` →
   `ReadArmorDisplayFactsAsync` 为每护甲取 2 个字段却全量构建 GameData 归档浏览器；
-  `DeployedOverrideGraphService.BuildAsync` **无缓存**且对全部已部署 patch 做 SHA-256 校验；
+  ~~`DeployedOverrideGraphService.BuildAsync` 无缓存且对全部已部署 patch 做 SHA-256 校验~~
+  → **✅ 2026-10-11 已修**（按来源指纹记忆，见上"部署侧事实"）；
   per-item 循环在 UI 线程且 O(catalog×archives)；`RebuildProjections` 在 UI 线程用文化比较排序。
+- **仍未解决**：护甲页仍然为"每护甲两个字段"而**全量构建整个 GameData 归档浏览器**
+  （`GameDataArchiveBrowserService.BuildAsync`），这才是首开卡顿的主因 →
+  对应阶段 4（护甲页改造），未开始。
 - 详见 `2026-10-10.md`。
 
 ## 工作约定
@@ -72,8 +103,14 @@
 - 源码改动前先考察相关链路（缓存、复用、生命周期）。
 - **用户不是专业程序员。** 凡是要询问"某个东西要不要删 / 要做什么"时，**必须先用通俗语言说明它有什么作用、删了会丢什么**，再给建议；不能只给结论或代号。
 - **`TreatWarningsAsErrors` 已开启**（`Directory.Build.props`，2026-10-11）。前提是树已**真正零警告**（11 条被清除而非压制）。
-  它同时把 NuGet 审计警告 **NU1901–NU1904 升级为错误**（包括漏洞警告 NU1903）——刻意如此。
-  将来某公告碍事时的正确出口是**定点 `WarningsNotAsErrors` + 公告链接注释**，不是关掉开关。
+  同时用 `<WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>` 把 **NuGet 审计警告排除在"错误"之外**：
+  用户明确表示"本应用不担心被攻击，这种警告类漏洞无关紧要"（单机 Mod 管理器，不对外服务、不处理不可信输入）。
+  **只降级不静默**——警告照常打印，只是不再挡住构建。改这一行前先确认用户意图。
+  > 反直觉事实：**NuGet 只对 net9.0+ 目标审计传递包**。所以 NU1903 只出现在 net10.0 的 Cli/Manager 上，
+  > net8.0 的 `HD2ModCore` 从来不报（尽管 `dotnet list package --vulnerable --include-transitive` 能列出漏洞）。
+- **写完"应该能抓住某个 bug"的用例后，主动把被保护的那一行破坏掉再跑一次。**
+  如果它仍然通过，说明这条用例是假的。（2026-10-11 实测：第一版"只改源"的用例因为
+  `ApplyExecutor` 只支持硬链接/符号链接、目标与源是同一个文件而**假通过**，靠探针才发现。）
 - 删除类改动**必须同时改造其测试**（改判据形态），不能连测试一起删——否则等于把判据删了。
 - `_diagnostics/` 下的工程一律是临时诊断工程，**从未被 git 跟踪**（untracked + gitignored）；
   生产代码不得依赖它们，该纪律由 `DiagnosticsIsolationArchitectureTests` 强制。
