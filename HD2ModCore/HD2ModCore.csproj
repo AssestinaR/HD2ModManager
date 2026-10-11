@@ -18,6 +18,26 @@
   <ItemGroup>
 	<PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.13" />
+    <!--
+      作用：把内嵌的 SQLite 原生引擎固定在 2.1.12，绕开 GHSA-2m69-gcr7-jv3q。
+      背景：Microsoft.Data.Sqlite 8.0.13 传递引入 SQLitePCLRaw.bundle_e_sqlite3 2.1.6，
+      其原生库 e_sqlite3.dll 里内嵌的 SQLite 实测为 3.41.2（更早的 2.1.11 是 3.49.1），
+      都低于该公告要求的 3.50.2，属于已知的高危内存破坏缺陷（CVE-2025-6965）。
+      2.1.12 正是上游针对这条公告发布的维护版（发布说明：把原生库升到 SQLite 3.53.3）；
+      2.1.13 的原生二进制与 2.1.12 逐字节相同，故取有公开说明的 2.1.12。
+      这里只换原生引擎，托管 API（Microsoft.Data.Sqlite 8.0.13 + SQLitePCLRaw 2.1.x）保持不变，
+      对归档索引的读写行为没有影响。
+
+      Pins the bundled SQLite native engine to 2.1.12 to clear GHSA-2m69-gcr7-jv3q.
+      Microsoft.Data.Sqlite 8.0.13 transitively pulls SQLitePCLRaw.bundle_e_sqlite3 2.1.6, whose
+      native e_sqlite3.dll embeds SQLite 3.41.2 (and 2.1.11 embeds 3.49.1) — both below the 3.50.2
+      the advisory requires, i.e. CVE-2025-6965, a high-severity memory-corruption bug.
+      2.1.12 is the upstream maintenance release published for exactly that advisory (its note:
+      bump the native lib to SQLite 3.53.3); 2.1.13's native binaries are byte-identical to 2.1.12's,
+      so the documented 2.1.12 wins. Only the native engine moves; the managed API stays put, so
+      archive-index reads and writes behave exactly as before.
+    -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
   </ItemGroup>
 
   <ItemGroup>
