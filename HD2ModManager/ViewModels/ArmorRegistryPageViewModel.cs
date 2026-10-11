@@ -1744,6 +1744,30 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					: "映射已停用，托管运行时会在部署时从游戏 Data 中移除。"
 				: "拖入视觉来源并添加映射后将创建外置协议。";
 		}
+
+		// 追加"我们这边算得准不准"的说明。上面几段讲的是**游戏那边**的状态，
+		// 下面两条讲的是**页面本身**可能显示不完整的原因——只追加、不覆盖，
+		// 而且绝不因为这些问题就少显示映射：映射是用户自己攒出来的资产，看不见比看见得不全更糟。
+		//
+		// 为什么需要说：工作区在模组库里、协议在用户目录里，两者生命周期不同（回归文档 §13）。
+		// 用户换了一个解压目录之后，本库没有工作区，页面只能显示协议副本——那是他映射的最后一份存留。
+		// 显示它是对的，但不告诉他"这不是本库的工作区"，他会以为映射本来就这么少。
+		var advisories = new List<string>();
+		if (snapshot.DocumentSource is RuntimeArmorRegistryDocumentSource.ProtocolFallback)
+		{
+			var owner = string.IsNullOrWhiteSpace(snapshot.ProtocolOwnerWorkspace)
+				? "未知（该协议由更早的版本应用，没有留下归属记录）"
+				: snapshot.ProtocolOwnerWorkspace;
+			advisories.Add($"当前模组库没有工作区文件，正在显示协议副本；该协议上次由 {owner} 应用。"
+				+ "如果这不是你要用的模组库，请到设置页确认模组库地址。");
+		}
+		if (hasLoadedCatalog && cachedCatalog.Count == 0)
+		{
+			advisories.Add("资产索引缺失或为空，护甲名称无法解析（映射会显示为“未知护甲”）；"
+				+ "请到设置页建立资产索引。");
+		}
+		if (advisories.Count > 0)
+			StatusDetail = $"{StatusDetail} {string.Join(" ", advisories)}";
 	}
 
 	private void RaiseCommandStates()

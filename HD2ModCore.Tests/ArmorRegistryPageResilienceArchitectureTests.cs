@@ -98,6 +98,28 @@ public sealed class ArmorRegistryPageResilienceArchitectureTests
 	// 与 StartupPrewarmArchitectureTests 的同名辅助同构，但**同时**以 public 成员为右边界：
 	// LoadCatalogOnceAsync 之后紧跟的就是 `public async Task FlushWorkspaceAsync()`，
 	// 只认 `\n\tprivate ` 会把整个 RefreshAsync 也吞进来（那里有 hasLoadedCatalog = true，会误判）。
+	// 第三道防线：把"页面为什么可能显示得比预期少"说出来。
+	// 这两条都不是"要不要显示映射"的问题——映射永远照显示；
+	// 它们回答的是"为什么名字变成了未知护甲"和"这份协议可能不是本库的"。
+	// 少了它们，用户会把"索引没建"误当成"我的映射丢了"。
+	[Fact]
+	public void ThePageSaysWhyItMightBeShowingLessThanExpected()
+	{
+		var root = FindRepositoryRoot();
+		var page = File.ReadAllText(Path.Combine(root, "HD2ModManager", "ViewModels", "ArmorRegistryPageViewModel.cs"));
+		var status = ExtractMember(page, "private void UpdateStatus(");
+
+		Assert.True(status.Length > 0, "无法定位 UpdateStatus。");
+		// 工作区缺失 → 退回协议副本时必须说清楚。
+		Assert.Contains("RuntimeArmorRegistryDocumentSource.ProtocolFallback", status);
+		Assert.Contains("请到设置页确认模组库地址", status);
+		// 目录 0 条 → 名字解析不了，要指路而不是静默显示未知护甲。
+		Assert.Contains("cachedCatalog.Count == 0", status);
+		Assert.Contains("请到设置页建立资产索引", status);
+		// 只追加、不覆盖：这些说明不能把运行时状态那段挤掉。
+		Assert.Contains("StatusDetail", status);
+	}
+
 	private static string ExtractMember(string source, string signatureStart)
 	{
 		var start = source.IndexOf(signatureStart, StringComparison.Ordinal);

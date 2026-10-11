@@ -20,6 +20,13 @@ public sealed class RuntimeArmorRegistryService
 	public const string DeploymentStateFileName = "runtime-armor-registry.deployment";
 	public const string WorkspaceFileName = "armor-registry.workspace.json";
 	public const string AppliedSourceFileName = "armor-registry.applied.json";
+	// 协议旁边记录"这份协议属于哪个模组库"。
+	// 为什么必须有：判断协议归属的旧凭据（DeploymentStateFileName）在程序目录下，**换目录解压就会丢**，
+	// 而协议本身在用户目录里、换目录仍在——用"升级必被摧毁的凭据"守护"升级必被保留的文件"，
+	// 守卫必然退化成"没有凭据 ⇒ 一律相信"（见 docs/armor-registry-page-20261011-regression.md §13）。
+	// 把归属写在与协议同目录、同生命周期的地方，凭据才与被守护的对象同生共死。
+	// 读取时优先本文件，回退旧的部署状态文件；两者都没有时**不拒绝**，只是无法判断归属（见 ReadSnapshotAsync）。
+	public const string OwnerFileName = "armor-registry.owner";
 
 	private const int MaximumProtocolBytes = 65536;
 	private readonly StoragePaths paths;
@@ -236,9 +243,24 @@ public sealed class RuntimeArmorRegistryService
 				Path.GetFullPath(deployedWorkspace),
 				Path.GetFullPath(WorkspacePath),
 				StringComparison.OrdinalIgnoreCase);
-		var document = File.Exists(WorkspacePath)
-			? await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false)
+		var workspaceExists = File.Exists(WorkspacePath);
+		// 归属回退链：协议旁边的 owner（新，与协议同生命周期）→ 程序目录的部署状态（旧，换目录即丢）→ 无从判断。
+		// 注意这里**只用于展示**，不参与"要不要采用协议"的决定——采用与否仍然只看上面那条 workspaceBelongsToCurrentLibrary，
+		// 因为把回退收紧会让换过目录的老用户直接看不到自己的映射（用户已明确否决该方向）。
+		var owner = await ReadKeyValueFileAsync(Path.Combine(registryRoot, OwnerFileName), cancellationToken).ConfigureAwait(false);
+		string? protocolOwnerWorkspace = null;
+		if (owner.Values.TryGetValue("workspace", out var ownedWorkspace) && !string.IsNullOrWhiteSpace(ownedWorkspace))
+			protocolOwnerWorkspace = ownedWorkspace;
+		else if (deployment.Values.TryGetValue("workspace", out var deployedOwner) && !string.IsNullOrWhiteSpace(deployedOwner))
+			protocolOwnerWorkspace = deployedOwner;
+		var documentSource = workspaceExists
+			? RuntimeArmorRegistryDocumentSource.Workspace
 			: protocolExists && workspaceBelongsToCurrentLibrary
+				? RuntimeArmorRegistryDocumentSource.ProtocolFallback
+				: RuntimeArmorRegistryDocumentSource.Empty;
+		var document = workspaceExists
+			? await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false)
+			: documentSource is RuntimeArmorRegistryDocumentSource.ProtocolFallback
 				? ParseProtocol(await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false))
 				: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
 		var fingerprint = await FingerprintProtocolAsync(cancellationToken).ConfigureAwait(false);
@@ -252,7 +274,7 @@ public sealed class RuntimeArmorRegistryService
 			&& int.TryParse(rawRevision, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision)
 			&& revision == document.Revision;
 		var appliedSourcePath = Path.Combine(WorkspaceRoot, AppliedSourceFileName);
-		var pendingChanges = !File.Exists(WorkspacePath) && !protocolExists ? false : File.Exists(appliedSourcePath)
+		var pendingChanges = !workspaceExists && !protocolExists ? false : File.Exists(appliedSourcePath)
 			? !string.Equals(await File.ReadAllTextAsync(appliedSourcePath, cancellationToken).ConfigureAwait(false),
 				SerializeWorkspace(document), StringComparison.Ordinal)
 			: !protocolExists || !string.Equals(
@@ -277,7 +299,12 @@ public sealed class RuntimeArmorRegistryService
 			acknowledged,
 			runtime.Values,
 			cache.Exists,
-			cache.Values) { HasUnappliedChanges = pendingChanges };
+			cache.Values)
+		{
+			HasUnappliedChanges = pendingChanges,
+			DocumentSource = documentSource,
+			ProtocolOwnerWorkspace = protocolOwnerWorkspace,
+		};
 	}
 
 	public async ValueTask<RuntimeArmorRegistryApplyResult> ApplyAsync(
@@ -375,6 +402,15 @@ public sealed class RuntimeArmorRegistryService
 			(enabled ? "enabled=true\n" : "enabled=false\n")
 				+ "workspace=" + WorkspacePath + "\n",
 			new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+			cancellationToken).ConfigureAwait(false);
+		// 归属标记写在**协议旁边**，不是程序目录里：这样它与协议同生命周期，
+		// 换目录解压后仍然存在，页面才能告诉用户"这份协议来自哪个库"。
+		// 程序目录里的 DeploymentStatePath 仍然照写——它是给"同一安装内的库切换"用的旧凭据，不删。
+		await WriteAtomicTextAsync(
+			Path.Combine(registryRoot, OwnerFileName),
+			"schema=1\n"
+				+ "workspace=" + WorkspacePath + "\n"
+				+ "revision=" + desired.Revision.ToString(CultureInfo.InvariantCulture) + "\n",
 			cancellationToken).ConfigureAwait(false);
 		var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
 		return new RuntimeArmorRegistryApplyResult(

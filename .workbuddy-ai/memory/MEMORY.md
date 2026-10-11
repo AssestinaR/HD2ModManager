@@ -18,15 +18,15 @@
 - `Directory.Build.props`：`ImplicitUsings`/`Nullable`/`Deterministic` 开，**`TreatWarningsAsErrors=true`**（`WarningsNotAsErrors=NU1901..1904` 排除 NuGet 审计；NuGet 只对 net9.0+ 目标审计传递包）。TargetFramework/OutputType/引用**刻意不在此文件**。
 - 耗时：全解决方案 `dotnet test` 约 6–7 分钟；`dotnet build -t:Rebuild` 约 20 秒。**报测试计数要分项 + 增量；基线会变，报数前先跑一遍。**
 - 发布：**轻量标签**；溯源靠包内 `cliVersion`（`1.0.0+<git 全哈希>`）；校验产物**别用 PowerShell `Add-Type`**（被拦），用 Python `zipfile`。
+- **【数据归属·硬约束】自定义数据一律存**模组库**；设置页的简单设置存 `settings.json`；**能从游戏 data 重算的纯缓存**才放管理器目录。目标：**换管理器 = 无痛继承模组库；迁移模组库 = 只改库地址即可。** ⚠️ **2026-10-11 护甲页崩溃的根因就是违反了这条**——归属凭据写在**安装级** `data\`（换目录即丢），却用它守护**用户级**协议。**新增持久化文件前先问：属于库、属于设置、还是纯缓存？**
 - `git commit` 提交**整个索引**，与 `git add` 传了哪些路径无关。
 
-## 护甲映射页 20261011 回归（分析 + P0 兜底已落实）
-> 详见 `docs/armor-registry-page-20261011-regression.md`（切点 `30a4f83`，区间 43 提交）。
-- **"护甲页卡"已修好**：只请求 `ArmorCoverage` 而非整包构建（960→230ms）。
-- **一个根因、两种症状，判据 = 工作区有没有 `map_model`**：**有** → **启动即崩溃** `KeyNotFoundException`（`ApplySnapshot` 抛 → `OnLoaded` 的 `async void` 无 try/catch → 全局）；抛错后 `fingerprint` 未赋值 → 下次 `RefreshRuntimeStatusAsync` 再炸 → **不重启无法恢复**。**无**（全 `map=`）→ 优雅显示 `未知护甲 {id}`。机制：首循环跳过模型映射（`SourceItemId` 恒 null）→ `TargetItemId` 永不补 `Unknown`，次循环却用直接索引器；`未知护甲 {id}` 唯一来源 = `Choices` 缺该 `ItemId` ← SQLite `game_data_authority_kits`（**文件不存在直接返回空数组**）；`RefreshAsync` 不检查目录条数（:402 无条件置 `hasLoadedCatalog=true`），**无复位路径**。**缺陷本区间未改**，改的只是"什么时候炸"（视图改为启动即创建 `PrewarmArmorPageHost`）。**最快判别：日志 `Unhandled UI exception` 括号里的数字 = 缺失 `ItemId`。**
+## 护甲映射页 20261011 回归（分析 + 兜底已落实）
+> 详见 `docs/armor-registry-page-20261011-regression.md`（切点 `30a4f83`）。
+- **一个根因、两种症状，判据 = 工作区有没有 `map_model`**：**有** → **启动即崩溃** `KeyNotFoundException`（`ApplySnapshot` 抛 → `OnLoaded` 的 `async void` 无 try/catch → 全局）；抛错后 `fingerprint` 未赋值 → 下次 `RefreshRuntimeStatusAsync` 再炸 → **不重启无法恢复**。**无**（全 `map=`）→ 优雅显示 `未知护甲 {id}`（唯一来源 = `Choices` 缺该 `ItemId` ← SQLite `game_data_authority_kits`，**文件不存在返回空数组**）。机制：首循环跳过模型映射（`SourceItemId` 恒 null）→ `TargetItemId` 永不补 `Unknown`，次循环却用直接索引器。`RefreshAsync` 不检查目录条数（:402 无条件置 `hasLoadedCatalog=true`），**无复位路径**。**判别：日志 `Unhandled UI exception` 括号里的数字 = 缺失 `ItemId`。**
 - **回归 #2（破坏性）**：`ModLibraryResidualCleanupService.Cleanup(...)` 对库根直接子目录若"未被快照引用"且"空/全是元数据" → **`Directory.Delete(recursive: true)`**，零迁移保护、不走回收站。= 截图 A `模型包部署失败，尚未编译护甲注册。`（:1523）头号嫌疑。
-- **P0 兜底已落实 ✅（22:5x，+35/−4，`8d06fcb`）**：`ApplySnapshot` 对 `Choices` 的读取一律走 `ResolveChoice`（`TryGetValue`+`Unknown`+WARN，写入不动）；`LoadCatalogOnceAsync` 加 `catch` → Error 日志 + 页面状态 + `finally` 复位单飞账本。新增 `HD2ModCore.Tests/ArmorRegistryPageResilienceArchitectureTests.cs`（3 条）。**根因未动**（§12/§13）。**隐患**：`RefreshRuntimeStatusAsync` 检查 `IsBusy` 但从不设置；两个 `settings.json`（`<exe>\` / `<exe>\data\`）。
-- **根因的"形状"（§13，已本机实测坐实）**：护甲数据住**三处、生命周期不同** —— ① 协议在 `%LocalAppData%`（**跟用户走**）；② `settings.json`/`data\`（含归属凭据 `deployment`、资产索引）在 **exe 旁**（**跟安装走**，换目录全丢；发布包不含）；③ `workspace.json`/`applied.json` 在 `<模组库>\.hd2modmanager\`（跟库走）。⇒ **守卫拿"升级必被摧毁的凭据"(`deployment`) 守护"升级必被保留的文件"(`protocol`) ⇒ 设计上就不可能可靠。** **崩溃三条件**：①点过应用 ②当前库无 `workspace.json` ③`deployment` 不存在。**"收紧守卫"已被用户否决**；替代 = 改用**同库** `applied.json` 当凭据 + 不 gate 而把"索引缺失"做成**可见可操作**状态。**连带**：`ModLibraryFolder` 也是安装级的 ⇒ 游戏目录探测失败会级联成"模组库被静默换成空目录"。
+- **已落实的兜底 ✅（`8d06fcb`，+35/−4）**：`ApplySnapshot` 对 `Choices` 的读取一律走 `ResolveChoice`（`TryGetValue`+`Unknown`+WARN，写入不动）；`LoadCatalogOnceAsync` 加 `catch` → Error 日志 + 页面状态 + `finally` 复位账本。新增 `ArmorRegistryPageResilienceArchitectureTests`（3 条）。**根因未动**。**隐患**：`RefreshRuntimeStatusAsync` 检查 `IsBusy` 但从不设置；两个 `settings.json`（`<exe>\` / `<exe>\data\`）。
+- **根因的"形状"（§13，已实测坐实）**：护甲数据住**三处、生命周期不同** —— 协议在 `%LocalAppData%`（跟用户走）/ `settings.json`+`data\`（含归属凭据 `deployment`、资产索引）在 **exe 旁**（跟安装走，换目录全丢）/ `workspace.json`+`applied.json` 在模组库（跟库走）。⇒ **守卫拿"升级必被摧毁的凭据"守护"升级必被保留的文件" ⇒ 设计上不可能可靠。** 崩溃三条件：①点过应用 ②当前库无 `workspace.json` ③`deployment` 不存在。⚠️ **`applied.json` 不能当归属凭据**（与 `workspace.json` 同时写 ⇒ 回退分支永不触发 = 变相隐藏映射）。**方向 = 不 gate（永不隐藏）+ 把"索引/工作区缺失"做成可见可操作状态。** 连带：`ModLibraryFolder` 也是安装级的 ⇒ 游戏探测失败会级联成"库被静默换成空目录"。
 
 ## 大功能 B（当前方向）：L4D2 模型整体移植到 HD2
 > 详见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`。
@@ -64,5 +64,5 @@
 
 ## 背景功能（细节全在 `docs/`）
 - **【硬约束】只允许依赖游戏本体，不得依赖任何外部系统（尤其其他 mod）。** `HD2IAS` 只作反面参照物。
-- **大功能 A（已被 B 取代）**：引擎 = **Autodesk Stingray（原 Bitsquid）**，**裁掉全部物理命名空间**；`Unit` 119 成员**零 `create_*`**、`Mesh` 24 成员**零顶点/权重接口** → **纯运行时 Lua 改不了权重、加不了骨、造不出物理**。**改内存边界：改「数据」✅ / 改「代码」❌**。官方入口 `set_animation_bone_mode('ignore')` / `set_bones_lod` / `crossfade`；**HD2 抖动骨 API 只能驱动状态机里已有的 6 根骨**。详见 `docs/hd2-armor-physics-research.md`。
+- **大功能 A（已被 B 取代）**：引擎 = Stingray(Bitsquid)，**裁掉全部物理命名空间**；`Unit`/`Mesh` **零 `create_*` / 零顶点权重接口** → **纯运行时 Lua 改不了权重、加不了骨、造不出物理**。**改内存边界：改「数据」✅ / 改「代码」❌**。详见 `docs/hd2-armor-physics-research.md`。
 - **信息中心（阶段 0–6 已完成）**：`ModInformationFactRegistry` = **25 kind** 单一真相，`RequestAsync<T>` = **唯一读取入口**，`Validate()` 在 `CreateModInformationCenter` 开头跑（新增 kind 忘登记 `SourceRoots` = **启动期失败**）。硬约束：**缓存不得取代真实性**（键全由来源指纹构成、不落盘、双向测试）。铁律：**"读不到" ≠ "没有覆盖"**；**图标不进事实**；缩略图**磁盘键必须含内容**。护甲页预热三要求：**单飞加载**、**取数闸门 `displayFactsReady`**、**不占 UI 线程**。`ApplyExecutor` **只支持硬链接与符号链接**。

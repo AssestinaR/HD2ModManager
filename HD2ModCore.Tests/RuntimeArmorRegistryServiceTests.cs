@@ -468,6 +468,76 @@ public sealed class RuntimeArmorRegistryServiceTests
 		return archive;
 	}
 
+	// 作用：把"本库没有工作区时，退回协议副本"这件事**标记出来**，而不是悄悄发生。
+	//
+	// 为什么这是正确性要求而不是诊断：工作区在模组库里（跟库走），协议在用户目录里（跟用户走），
+	// 两者生命周期不同。用户把新版解压到另一个目录后，本库没有工作区，页面只能显示协议副本——
+	// 那是他映射的最后一份存留。**显示它是对的**（看不见比看见得不全更糟），
+	// 但必须能说出"这不是本库的工作区"，否则用户会以为映射本来就这么少。
+	[Fact]
+	public async Task MissingWorkspace_FallsBackToTheProtocolAndRecordsThatItDid()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await File.WriteAllTextAsync(
+			Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName),
+			"schema=2\nrevision=92\nenabled=true\nmap=42,43\n");
+
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
+		// 回退必须真的发生——映射不能被"藏起来"。
+		Assert.Single(snapshot.Document.Mappings);
+		// 旧版本写的协议没有归属记录，要如实说"无从判断"，而不是假装它是本库的。
+		Assert.Null(snapshot.ProtocolOwnerWorkspace);
+	}
+
+	// 作用：钉住"归属凭据与被守护的文件同生共死"。
+	//
+	// 旧凭据（程序目录下的 runtime-armor-registry.deployment）**换一次解压目录就没了**，
+	// 而协议还在——用"升级必被摧毁的凭据"守护"升级必被保留的文件"，
+	// 守卫必然退化成"没有凭据 ⇒ 一律相信"。这正是 20261011 崩溃的形状。
+	[Fact]
+	public async Task ProtocolOwnership_IsRecordedNextToTheProtocolSoItSurvivesANewInstallDirectory()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var first = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(first.Fingerprint, true, [new(42u, 43u)]);
+
+		// 归属标记必须写在**协议旁边**（用户级），不能只在程序目录里。
+		var ownerPath = Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.OwnerFileName);
+		Assert.True(File.Exists(ownerPath), "应用后应在协议旁边写下归属标记。");
+		Assert.Contains(fixture.Service.WorkspacePath, await File.ReadAllTextAsync(ownerPath));
+
+		// 忠实模拟"把新版解压到新目录 + 指向了另一个模组库"：
+		// 程序目录全新（data/ 与 settings.json 都没了），用户目录（协议 + 归属标记）照旧。
+		var freshPaths = new StoragePaths(
+			Path.Combine(fixture.Root, "app-fresh"),
+			Path.Combine(fixture.Root, "another-library"));
+		var fresh = new RuntimeArmorRegistryService(freshPaths, fixture.RegistryRoot);
+
+		var snapshot = await fresh.ReadSnapshotAsync();
+
+		// 仍然是回退（不隐藏映射），但现在**能说清楚这份协议属于谁**——页面据此提示用户确认库地址。
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
+		Assert.Equal(fixture.Service.WorkspacePath, snapshot.ProtocolOwnerWorkspace);
+	}
+
+	// 作用：旧版本应用过的用户不能被新逻辑弄丢——他们只有程序目录里的部署记录。
+	[Fact]
+	public async Task ProtocolOwnership_FallsBackToTheOldInstallLevelRecordWhenTheNewMarkerIsAbsent()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var first = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(first.Fingerprint, true, [new(42u, 43u)]);
+
+		// 模拟"这份协议是旧版本写的"：协议旁边的归属标记不存在，只有程序目录里的部署记录。
+		File.Delete(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.OwnerFileName));
+
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+
+		Assert.Equal(fixture.Service.WorkspacePath, snapshot.ProtocolOwnerWorkspace);
+	}
+
 	private sealed class Fixture : IAsyncDisposable
 	{
 		private Fixture(string root, string registryRoot, RuntimeArmorRegistryService service)
