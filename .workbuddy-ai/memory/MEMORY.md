@@ -72,13 +72,28 @@
   `GameDataArchiveBrowserService` 两个构造重载只收 `IGameDataFactSource`，**不再出现任何旁路服务名**。
   失败语义：中心把失败表达成 `Data=null + Issues`，适配器把它**还原成 `InvalidOperationException`**
   ——静默成空结果会让 UI 显示错误结论，比报错更难查。
+- **`ArmorCoverage` 是无节点形态上的第四条事实（2026-10-11，设计文档 §23）**：
+  护甲页此前为"是否被 Unit 覆盖 + 覆盖者图标"两个字段**整包构建** GameData 浏览器，
+  而那一步会**对每个 Mod 请求一次资产清单**——首开卡顿的根因。
+  现在只请求 `RequestArmorCoverageAsync(游戏目录, 护甲归档集合, …)`，
+  中心内部按 `GameDataIndex → DeployedGraph → GameDataMapping` 顺序自己取上游（因此与页面直接请求共用同一本合并账）。
+  **喂给映射的键刻意只是"已部署且有归属"的资产键**，不是"全部 Mod 资产键"——后者正是要摆脱的那一步。
+  两条铁律：① **图标不进事实**（否则"换图标"会触发覆盖重算，与 §7 护栏 3 相反；图标是库内查找，留在页面）；
+  ② **"读不到" ≠ "没有覆盖"**——不在索引里的归档必须**缺席**（页面显示"未知"），索引未建必须 `Unavailable`，
+  只有"索引里有、但没被部署覆盖"才给确定的 `false`。
+- **"先证伪自己"的方法论在 §23 又抓到一次**：探针 D（移除赢家排序里的无主过滤）**没有失败**——
+  因为 `Project` 里已有一句 `continue` 把无主链挡在外面，**两处守卫各自冗余**（单独删任一处用例都仍通过，
+  两处同删才失败）。发现冗余本身有价值；同时暴露原用例的弱点（"null 组赢了"也表现为"没被覆盖"），
+  于是改成让无主链资产**更多**、断言有主的那条**仍然赢**，两种情形才在断言上可分。
 
-### 24 个 kind 的真实生产情况（D3 的重要副产品，别忘）
-**只有 8 个 kind 有真实生产者**（`ModInformationCenter` 内部），其余是声明占位 / 切片 / 请求判别位 / **中心之外生产**：
+### 25 个 kind 的真实生产情况（D3 的重要副产品，别忘）
+**只有 9 个 kind 有真实生产者**（`ModInformationCenter` 内部），其余是声明占位 / 切片 / 请求判别位 / **中心之外生产**：
 - L1 读取器真实生产 **4**：`PatchCatalog` / `PatchEntryPayload` / `UnitStructure` / `UnitGeometrySummary`
-- L3 中心生产者真实生产 **7**（含 2 处重名）：`PatchCatalog`(FileFacts) / `AssetInventory` / `ReferenceClosure` /
-  `Compatibility` / `UnitStructure`(AdvancedUnitAnalysis) / `Maintenance` / `Thumbnail`
-- **声明了但中心内无任何生产者 14**：`Identity`、`ContentRevision`、`UnitCatalog`、`UnitPartMapping`、
+- L3 中心生产者真实生产 **8**（含 2 处重名）：`PatchCatalog`(FileFacts) / `AssetInventory` / `ReferenceClosure` /
+  `Compatibility` / `UnitStructure`(AdvancedUnitAnalysis) / `Maintenance` / `Thumbnail` / **`ArmorCoverage`**
+  （后四条无节点事实里，只有 `ArmorCoverage` 是**组合**生产者——它自己不读外部输入，
+  而是先请求 `GameDataIndex`/`DeployedGraph`/`GameDataMapping` 再投影）
+- **声明了但中心内无任何生产者 15**：`Identity`、`ContentRevision`、`UnitCatalog`、`UnitPartMapping`、
   `MaterialDependencyClosure`、`CompositeBoneDependencyClosure`、`ReferenceEdges`、`GpuPayload`、`StreamPayload`、
   `TocPayload`、`GameDataMapping`、`DecorationDefinition`，以及 **`GameDataIndex`、`AssetMetadata`**
   （后两个由中心**之外**的 `AssetArchiveIndexService` / `FileSystemAssetMetadataCatalogProvider` 生产——正是 E1 还没收编的那部分）
@@ -87,17 +102,19 @@
 - **源事实 `SourceRoots`（7）**：`Identity`、`ContentRevision`、`PatchCatalog`、`GameDataIndex`、`AssetMetadata`、
   **`DeployedGraph`**、`Thumbnail`
   （E1 把 `GameDataMapping` 移出，换成它的两个真实上游；§22 把 `DeployedGraph` 加入）
-- **用 `GameData` 主体的 4 个 kind**：`GameDataIndex`、`AssetMetadata`、`GameDataMapping`、`DeployedGraph`
+- **用 `GameData` 主体的 5 个 kind**：`GameDataIndex`、`AssetMetadata`、`GameDataMapping`、`DeployedGraph`、`ArmorCoverage`
   （由 `ModInformationFactRegistryTests.OnlyTheGameDataFactsUseTheGameDataSubject` 强制）
 
 ### 信息中心重构进度（2026-10-11；详见设计文档 §6.1 总进度表）
-**阶段 0–3 已全部完成；阶段 4/5 与阶段 6 的业务服务半边未开始。**
+**阶段 0–4 已完成；阶段 5 与阶段 6 的业务服务半边未开始。**
 - 阶段 0（设计）/ 1（统一身份）：✅ 完成
 - 阶段 2（收编 game-data 侧）：✅ 完成（登记表半边 + 页面半边：`GameDataArchiveBrowserService` 退化为纯投影）
 - 阶段 3（收编部署侧）：✅ 完成（缓存半边 + 登记半边：`DeployedGraph` 入表、经中心统一身份与合并）
-- 阶段 4（护甲页改造）：❌ 未开始 —— **仍是护甲页首开卡顿的主因**
+- 阶段 4（护甲页改造）：✅ 完成（改为请求 `ArmorCoverage`，不再 `BuildAsync`；结构护栏已加）
+  ——但**"首开耗时量化下降"尚未在真实机器上实测**，这是阶段 4 唯一未结的验收项
 - 阶段 5（合并缩略图双路）：❌ 未开始
-- 阶段 6（护栏测试）：🟡 Manager 半边 + 登记表完整性 + 运行时主体与登记表一致性；**业务服务半边架构测试尚未写**
+- 阶段 6（护栏测试）：🟡 Manager 半边 + 登记表完整性 + 运行时主体与登记表一致性 + 护甲页不得构建浏览器；
+  **业务服务半边架构测试尚未写**；§7 护栏 3 的"改图标 → ArmorCoverage 不重算"也还没有用例
 
 ## 已知性能热点（2026-10-10 分析）
 - 护甲映射页首开卡顿根因：`ArmorRegistryPageViewModel.RefreshAsync` →
@@ -105,9 +122,9 @@
   ~~`DeployedOverrideGraphService.BuildAsync` 无缓存且对全部已部署 patch 做 SHA-256 校验~~
   → **✅ 2026-10-11 已修**（按来源指纹记忆，见上"部署侧事实"）；
   per-item 循环在 UI 线程且 O(catalog×archives)；`RebuildProjections` 在 UI 线程用文化比较排序。
-- **仍未解决**：护甲页仍然为"每护甲两个字段"而**全量构建整个 GameData 归档浏览器**
-  （`GameDataArchiveBrowserService.BuildAsync`），这才是首开卡顿的主因 →
-  对应阶段 4（护甲页改造），未开始。
+- ~~**仍未解决**：护甲页仍然为"每护甲两个字段"而全量构建整个 GameData 归档浏览器~~ →
+  **✅ 2026-10-11 已修**（阶段 4）：改为请求 `ArmorCoverage`，不再走 `BuildAsync`（§23）。
+  剩两件收尾：① 首开耗时**尚未实测**；② `RebuildProjections` 仍在 UI 线程用文化比较排序（未动）。
 - 详见 `2026-10-10.md`。
 
 ## 工作约定
