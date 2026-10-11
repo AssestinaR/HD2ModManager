@@ -350,6 +350,18 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			await RefreshAsync(isWarmUp).ConfigureAwait(true);
 		}
+		catch (Exception exception)
+		{
+			// 取数是三条入口（OnLoaded / WarmUpAsync / ShellViewModel 直接 InitializeAsync）共用的唯一出口。
+			// RefreshAsync 只把它认识的那几类异常转成状态文本；能落到这里的是它没预料到的
+			// （最典型：ApplySnapshot 对缺失护甲抛 KeyNotFoundException）。
+			// 让异常从这里逃出去，就是从一个 async void 的 UI 事件处理器逃到全局 ——
+			// 用户看到的是"管理器遇到未处理错误"整个弹窗，而页面本身其实完全有状态可以显示。
+			// 所以这里**兜住但不当没发生**：记 Error 日志 + 把失败写进页面状态。
+			LogService.Error($"护甲映射页取数失败：{exception}");
+			StatusTitle = "读取失败";
+			StatusDetail = exception.Message;
+		}
 		finally
 		{
 			// 失败时 hasLoadedCatalog 仍为 false，清掉账本让下一次打开能重试。
@@ -461,6 +473,25 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 	}
 
+	// 作用：把"映射引用的护甲 id"解析成可显示的选项，**永不抛**。
+	//
+	// 为什么必须有这个兜底：映射的目标 id 来自工作区/协议文件，而它能不能解析取决于
+	// 当前这台机器上的资产索引 —— 索引缺失、过期、或工作区来自另一台机器/另一个模组库时，
+	// 目标就可能不在 `Choices` 里。上面那条 `map=` 循环已经为这种目标补了 `Unknown`，
+	// 但模型映射（`map_model`）的 `SourceItemId` 恒为 null，会被那条循环跳过，
+	// 于是模型映射的目标**从来没有得到过兜底**，直接用索引器就是 KeyNotFoundException。
+	//
+	// 兜底不等于静默：缺一次记一条 WARN（同一个 id 只会记一次，因为下面会把它补进 `Choices`），
+	// 页面上则照实显示"未知护甲 {id}"。
+	private RuntimeArmorChoiceViewModel ResolveChoice(uint itemId)
+	{
+		if (Choices.TryGetValue(itemId, out var choice)) return choice;
+		LogService.Warn($"护甲映射引用了当前资产索引中不存在的护甲 {itemId}，已按“未知护甲”显示。");
+		choice = RuntimeArmorChoiceViewModel.Unknown(itemId);
+		Choices[itemId] = choice;
+		return choice;
+	}
+
 	private void ApplySnapshot(
 		RuntimeArmorRegistrySnapshot snapshot,
 		bool rebuildChoices,
@@ -517,15 +548,15 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					string.Equals(item.Key, mapping.ModelKey, StringComparison.Ordinal));
 				if (model is null) continue;
 				Mappings.Add(new RuntimeArmorMappingRowViewModel(
-					Choices[mapping.TargetItemId],
-					Choices[SyntheticModelItemId(model.Key)],
+					ResolveChoice(mapping.TargetItemId),
+					ResolveChoice(SyntheticModelItemId(model.Key)),
 					model.Key));
 				continue;
 			}
 			if (mapping.SourceItemId is not { } sourceItemId) continue;
 			Mappings.Add(new RuntimeArmorMappingRowViewModel(
-				Choices[mapping.TargetItemId],
-				Choices[sourceItemId]));
+				ResolveChoice(mapping.TargetItemId),
+				ResolveChoice(sourceItemId)));
 		}
 		if (resetNavigation)
 		{

@@ -27,7 +27,7 @@
 - `未知护甲 {id}` 唯一来源 = `Choices` 缺该 `ItemId` ← SQLite `game_data_authority_kits`（**文件不存在直接返回空数组**）。`data/` 随 `BaseDirectory` 走 → **新版解压到新目录**是"目录读到 0 条"最可能成因。`RefreshAsync` 不检查目录条数（:402 无条件置 `hasLoadedCatalog=true`），**无复位路径**。
 - **回归 #2（破坏性）**：`ModLibraryResidualCleanupService.Cleanup(...)` 对库根直接子目录若"未被快照引用"且"空/全是元数据" → **`Directory.Delete(recursive: true)`**，零迁移保护、不走回收站。= 截图 A `模型包部署失败，尚未编译护甲注册。`（:1523）头号嫌疑。
 - **未解决**：现场"目录为什么是空的"（候选 A 整体 0 条 / **候选 B 目录正常但某 `map_model` 的 target 不在索引里**）。**最快判别：日志 `Unhandled UI exception` 括号里的数字 = 缺失 `ItemId`。**
-- **P0 修复（与根因无关，必须修）**：`ApplySnapshot` 不许对 `Choices` 用直接索引器（改 `TryGetValue` + `Unknown` 兜底）；`OnLoaded` 的 `async void` 必须包 try/catch。**两处隐患**：① `RefreshRuntimeStatusAsync` **检查** `IsBusy` 但**从不设置**；② `settings.json` 有两个，locale 从"从不被写"的那个读。
+- **P0 兜底已落实 ✅（2026-10-11 22:5x，+35/−4）**：`ApplySnapshot` 里对 `Choices` 的**读取**一律走新私有方法 `ResolveChoice`（`TryGetValue` + `Unknown` + `LogService.Warn` + 补进 `Choices`；**写入 3 处不动**）；`LoadCatalogOnceAsync` 加 `catch (Exception)` → Error 日志 + 页面状态，`finally` 复位单飞账本。新增 `HD2ModCore.Tests/ArmorRegistryPageResilienceArchitectureTests.cs`（3 条）。**根因（归属守卫）未动**——它会改"谁能看到自己的映射"的产品语义（老用户升级后可能看到空列表），留待拍板；详见 `docs/armor-registry-page-20261011-regression.md` §12。**两处隐患**：① `RefreshRuntimeStatusAsync` **检查** `IsBusy` 但**从不设置**；② `settings.json` 有两个，locale 从"从不被写"的那个读。
 
 ## 大功能 B（当前方向）：L4D2 模型整体移植到 HD2
 > 详见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`。
