@@ -1,0 +1,14 @@
+{
+  "schema": "hd2mod.armor-registry-spec",
+  "enabled": true,
+  "mappings": [
+    {
+      "targetItemId": 4259903063,
+      "sourceItemId": 820333399
+    },
+    {
+      "targetItemId": 513033465,
+      "sourceItemId": 1745464610
+    }
+  ]
+}
