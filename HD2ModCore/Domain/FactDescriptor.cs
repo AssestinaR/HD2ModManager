@@ -15,6 +15,10 @@ public enum FactProducerKind
 	MaintenanceAnalysisService,
 	ThumbnailService,
 	GameDataMappingService,
+	// 游戏数据侧的输入生产者：SQLite 资产索引与社区元数据目录。
+	// The game-data input producers: the SQLite asset index and the community metadata catalog.
+	GameDataIndexService,
+	AssetMetadataCatalogReader,
 	// 由其它事实组合得出。
 	Composite,
 }

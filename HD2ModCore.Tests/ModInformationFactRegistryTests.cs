@@ -10,7 +10,7 @@ namespace HD2ModCore.Tests;
 // Purpose: Pins the Stage 1 "unified identity" completion criteria: complete registry, one reader entry point, no hand-built string keys in the center.
 public sealed class ModInformationFactRegistryTests
 {
-	// ── 判据 1：21 个属性全部登记 ────────────────────────────────────────────────
+	// ── 判据 1：全部属性都登记 ──────────────────────────────────────────────────
 
 	[Fact]
 	public void EveryPropertyKindIsRegistered()
@@ -19,7 +19,7 @@ public sealed class ModInformationFactRegistryTests
 
 		var declared = Enum.GetValues<ModInformationPropertyKind>();
 
-		Assert.Equal(21, declared.Length);
+		Assert.Equal(23, declared.Length);
 		Assert.Equal(declared.Length, ModInformationFactRegistry.Count);
 		Assert.All(declared, kind => Assert.True(
 			ModInformationFactRegistry.IsRegistered(kind),
@@ -71,19 +71,47 @@ public sealed class ModInformationFactRegistryTests
 		}
 	}
 
+	// 游戏数据侧的三条事实（设计文档 §4 #8/#9/#10）都以 GameData 为主体，
+	// 其余事实都是按 Mod 节点命名的。
 	[Fact]
-	public void GameDataMappingIsTheOnlyGameDataScopedFact()
+	public void OnlyTheGameDataFactsUseTheGameDataSubject()
 	{
-		Assert.Equal(
+		ModInformationPropertyKind[] gameDataKinds =
+		[
+			ModInformationPropertyKind.GameDataIndex,
+			ModInformationPropertyKind.AssetMetadata,
+			ModInformationPropertyKind.GameDataMapping,
+		];
+
+		Assert.All(gameDataKinds, kind => Assert.Equal(
 			FactSubjectKind.GameData,
-			ModInformationFactRegistry.Describe(ModInformationPropertyKind.GameDataMapping).SubjectKind);
+			ModInformationFactRegistry.Describe(kind).SubjectKind));
 
 		Assert.All(
-			ModInformationFactRegistry.RegisteredKinds.Where(kind => kind != ModInformationPropertyKind.GameDataMapping),
+			ModInformationFactRegistry.RegisteredKinds.Where(kind => !gameDataKinds.Contains(kind)),
 			kind => Assert.Equal(FactSubjectKind.Node, ModInformationFactRegistry.Describe(kind).SubjectKind));
 	}
 
-	// ── 判据 6（阶段 2）：21 条依赖边逐条声明，且依赖图是一张无环 DAG ──────────────
+	// #10 由 #8 与 #9 拼出：去掉任一条边，映射就无法定位 archive 或拿到显示名。
+	[Fact]
+	public void GameDataMappingDependsOnBothGameDataInputs()
+	{
+		var dependencies = ModInformationFactRegistry.Describe(ModInformationPropertyKind.GameDataMapping).Dependencies;
+
+		Assert.Contains(ModInformationPropertyKind.GameDataIndex, dependencies);
+		Assert.Contains(ModInformationPropertyKind.AssetMetadata, dependencies);
+	}
+
+	// 两个游戏数据输入事实直接来自游戏目录/元数据文件，必须被登记为源事实。
+	[Fact]
+	public void GameDataInputsAreDeclaredAsSourceFacts()
+	{
+		Assert.Contains(ModInformationPropertyKind.GameDataIndex, ModInformationFactRegistry.SourceRoots);
+		Assert.Contains(ModInformationPropertyKind.AssetMetadata, ModInformationFactRegistry.SourceRoots);
+		Assert.DoesNotContain(ModInformationPropertyKind.GameDataMapping, ModInformationFactRegistry.SourceRoots);
+	}
+
+	// ── 判据 6（阶段 2）：依赖边逐条声明，且依赖图是一张无环 DAG ────────────────
 
 	// 空依赖 ⟺ 显式登记为源事实。这样"新增 kind 却忘了写依赖"会立刻失败，
 	// 而"确实没有上游事实"必须由人显式登记进 SourceRoots，不会被静默放过。
@@ -119,6 +147,8 @@ public sealed class ModInformationFactRegistryTests
 	[InlineData(ModInformationPropertyKind.TocPayload, ModInformationPropertyKind.PatchEntryPayload)]
 	[InlineData(ModInformationPropertyKind.Compatibility, ModInformationPropertyKind.AssetInventory)]
 	[InlineData(ModInformationPropertyKind.Maintenance, ModInformationPropertyKind.AssetInventory)]
+	[InlineData(ModInformationPropertyKind.GameDataMapping, ModInformationPropertyKind.GameDataIndex)]
+	[InlineData(ModInformationPropertyKind.GameDataMapping, ModInformationPropertyKind.AssetMetadata)]
 	public void DeclaredDependencyEdgeExists(ModInformationPropertyKind kind, ModInformationPropertyKind dependency)
 		=> Assert.Contains(dependency, ModInformationFactRegistry.Describe(kind).Dependencies);
 

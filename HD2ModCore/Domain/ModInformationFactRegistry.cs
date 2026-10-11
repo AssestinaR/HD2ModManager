@@ -1,7 +1,8 @@
 namespace HD2ModCore.Domain;
 
-// 作用：把 21 个细粒度属性显式登记成一张表，取代"靠人记住 kind 与主体/缓存范围的对应关系"。
-// Purpose: Registers all 21 fine-grained properties as an explicit table instead of relying on memory.
+// 作用：把全部细粒度属性显式登记成一张表，取代"靠人记住 kind 与主体/缓存范围的对应关系"。
+// Purpose: Registers every fine-grained property as an explicit table instead of relying on memory.
+// 当前条目数由 Count 给出，并由 Validate() 与枚举取值数强制对齐（新增 kind 漏登记会直接失败）。
 //
 // 登记规则（与现有 L1 行为一致，不引入新策略）：
 //   - PatchEntryPayload / UnitStructure / GpuPayload / StreamPayload / TocPayload 是大对象或按需切片，
@@ -142,13 +143,31 @@ public static class ModInformationFactRegistry
 			FactProducerKind.PatchEntryPayloadReader,
 			[ModInformationPropertyKind.PatchEntryPayload]),
 
-		// 依据：GameDataMappingFactsService 的上游是 AssetArchiveIndexService（游戏数据索引）
-		// 与 AssetMetadataCatalogProvider（metadata 目录），二者都是游戏目录侧的廉价直读，
-		// 不是本表内的 kind —— 所以本 kind 在表内没有上游边（它是 GameData 作用域的源事实）。
+		// 依据：GameDataMappingFactsService.MapAsync 的产物由两个上游拼出——
+		//   FindAssetArchivesAsync（来自 GameDataIndex 的 SQLite 索引）与
+		//   AssetMetadataCatalogProvider.LoadAsync（即 AssetMetadata）。
+		// 二者都是游戏目录侧的输入事实，现在已作为独立 kind 登记在表内（见下方两条），
+		// 于是这条依赖不再是"表外直读"，而是设计文档 §4 #10 依赖 #8+#9 的落地形态。
 		[ModInformationPropertyKind.GameDataMapping] = new(
 			FactSubjectKind.GameData,
 			ModInformationCacheScope.Persistent,
-			FactProducerKind.GameDataMappingService),
+			FactProducerKind.GameDataMappingService,
+			[ModInformationPropertyKind.GameDataIndex, ModInformationPropertyKind.AssetMetadata]),
+
+		// 依据：AssetArchiveIndexService 直接从安装好的游戏 data 目录与 authority（加密注册表/实体百科）
+		// 构建 SQLite 索引，其身份由 source_fingerprint + built_utc 表达（ComputeSourceFingerprintAsync）。
+		// 它没有任何表内上游——游戏文件本身就是真相来源，所以登记为源事实。
+		[ModInformationPropertyKind.GameDataIndex] = new(
+			FactSubjectKind.GameData,
+			ModInformationCacheScope.Persistent,
+			FactProducerKind.GameDataIndexService),
+
+		// 依据：FileSystemAssetMetadataCatalogProvider 只读三个社区元数据文件
+		// （archivehashes.json / friendlynames.txt / typehash.txt），不依赖任何表内事实。
+		[ModInformationPropertyKind.AssetMetadata] = new(
+			FactSubjectKind.GameData,
+			ModInformationCacheScope.Persistent,
+			FactProducerKind.AssetMetadataCatalogReader),
 
 		// 依据：UnitVersionInformationProducer 在 AnalyzeNodeAsync 的产物（资产清单）上做版本探测
 		// （UnitVersionProbe.ProbeAsync(analysis)）；设计文档 §4 #4 也把 UnitVersion 定为依赖 #2 AssetInventory。
@@ -193,7 +212,8 @@ public static class ModInformationFactRegistry
 		ModInformationPropertyKind.Identity,
 		ModInformationPropertyKind.ContentRevision,
 		ModInformationPropertyKind.PatchCatalog,
-		ModInformationPropertyKind.GameDataMapping,
+		ModInformationPropertyKind.GameDataIndex,
+		ModInformationPropertyKind.AssetMetadata,
 		ModInformationPropertyKind.Thumbnail,
 	];
 
