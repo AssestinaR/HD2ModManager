@@ -128,7 +128,8 @@
   `rig_gap_report.py`（段长比表 + 关节角表 + 三种映射模型残差 + 结论）。
   **零游戏启动即可量化"差多少、差在哪"。**
 - **关键未知（生死线，不得当事实）**：
-  X1 **HD2 能接受多少根骨？90→147 是否合法**（不接受则方案作废）；X2 追加骨后 HD2 原有动画是否仍正确驱动前 90 骨；
+  X1 **两张表分别能长到多大？** transform 表 **107→164**、蒙皮调色板 **90→147** 是否合法
+  （不接受则方案作废）；X2 追加骨后 HD2 原有动画是否仍正确驱动前 90 骨；
   X3 Lua 每帧驱动 57 骨 × 每玩家的成本；X4 无骨名的额外骨如何稳定标识；
   X5 Source `is_flexible` 弹簧能否用二阶积分等价复现；X6 `set_local_rotation` 的局部/世界语义与 Source 的 +Z 约定是否一致；
   X7 目标 Unit 选择（RE-2310 Slim Torso 已知可用）。
@@ -136,8 +137,55 @@
   ② 额外骨（头发/裙摆，本样本 57 根）**原样追加在骨架末尾**（不改原有索引）→ **运行时由 Lua 按 Source 参数驱动**；
   ③ 顶点：身体区域重映射到身体骨，头发/裙摆区域**直接指向额外骨**（索引随骨一起平移，**不需要重映射权重**）。
 - **"运行时骨骼转译"其实不存在**：骨骼在离线输出 Patch 时已是 HD2 格式。
-- **待用户拍板**：① 第一阶段范围（单模型头发抖动 vs 先验 X1/X2）；② **是否接受"不转译 L4D2 动画"**；
-  ③ 额外骨驱动策略（忠实复现 Source 参数 vs 自己的简化弹簧）；④ 旧项目原地复活还是迁进 `WpfApp1`。
+- **【用户已拍板，2026-10-11】**
+  ① **接受不转译 L4D2 动画**（原话："不然就算走路没问题，武器等动画都会出现问题"）。
+  ② 额外骨驱动 = **Lua 复现 Source 风格参数**，但**硬约束：必须维持游戏本体物理的低消耗，
+     绝不能引入 HD2IAS 类似的卡顿**。
+  ③ **第一阶段先做 A1~A3**（离线数学做扎实），"即使动骨没法加，也能算阶段性胜利"。
+  ④ 旧项目可以改；多阶段目标 = 旧项目负责 **VPK 转化**（生产带 L4D2 风味动骨的 legacy 适配模型）
+     ＋ WpfApp1 提供 **Lua 插件动骨支持**。**用户倾向两者分开**（怕耦合变屎山）。
+
+### 架构边界（2026-10-11 定，详见 `docs/l4d2-hd2-boundary.md`）
+- **同意分开，但"缝"必须落在「版本化文件格式」上，不是目录上。**
+  反例就在眼前：旧项目 `HD2AssetKit.csproj` 用**绝对路径**引用 WpfApp1 的 `HD2ModAdaptation.csproj`
+  → **两个仓库却已被焊死**（换机器/clone 都构建不了）。**证明隔离来自接口，不来自目录。**
+- **唯一判据**：改动一边时另一边要不要跟着改？要 → 缝没切对。
+- **缝 = 一个版本化的「动骨声明文件」**（`schema` 必填；只有转换器写、运行时读、**永不回写**）。
+  三角色：① **转换器**（旧项目，全仓唯一懂 VPK/ValveBiped/jigglebone）
+  ② **管理器**（只装/校验/展示，不认识 Source）③ **Lua 运行时**（只读声明，不认识 Source）。
+  Lua 运行时与护甲映射 **同仓但独立成 mod**（独立目录/协议/锁），避免互相打断。
+- **性能反向设计**（逐条对 HD2IAS 的三个慢因）：只驱动声明里列的额外骨（身体骨交给 HD2 动画＝零成本）／
+  纯 Lua 二阶积分无原生调用／**每 Unit 一份独立状态**（结构上不可能多玩家传染）。
+  另加：静置休眠、LOD 剔除、每 Unit 每帧只调一次 `World.update_unit()`。
+- **建议顺手修掉屎山种子**：把绝对路径改成相对探测 + 找不到时响亮报错（比本地 nupkg 便宜得多）。
+
+### 【A1 已完成并通过验收 ✅ 2026-10-11】
+- 做法（**零生产代码改动**）：复用已发布的 `hd2mod gamedata extract asset` 取玩家 avatar Unit 的
+  TocData（**21504 字节**），按 `UnitMeshReader.ReadTransformInfoFromUnitToc` 同一布局用 Python 解析。
+  布局：`u32@0x34` = transformInfoOffset；`u32@tio` = count；`tio+16` 起每条 64 字节
+  （9f 旋转 | 3f 位置@+36 | 3f 缩放@+48 | 1f pad@+60）；随后 count×64 矩阵、count×4 条目
+  （u16 increment | u16 parentIndex）、count×4 名字哈希。
+- **结果**：transform 条目 **107**；名字解析 97/107；与 `hd2_skel.json` 可比 **64** 骨；
+  **最大误差 0.000262 m（0.262 mm）** ✅（验收 < 1 mm，余量 4 倍）；平均 0.000004 m；
+  **误差 > 1e-7 m 的只有 1 根**（`r_shoulder_twist`），其余 63 根在 float32 噪声级。
+- **`Matrices[i]` 布局确定 = row-major，平移在 `m[12..14]`**（另两个候选错 1.69 m / 1.70 m）。
+  → **骨架来源从"外部常量"换成"游戏本体"**；参考插件警告的"共享常量可能来自某个 mod 私有
+  mesh 空间"陷阱从此不成立。
+- **顺带挖出**：
+  1. **骨架分两张表**：transform 表 **107** vs 蒙皮调色板 **90**（`bones` 资源 `nameCount=90, lodCount=6`）。
+     → 加 57 骨 = transform 107→164、调色板 90→147。**X1 要分别验这两张表能否长大。**
+  2. **基础 avatar 本来就有一大批专用骨**（实测，此前只是推断）：`cape1..cape8`、`attach_intelpad`、
+     `attach_knife`、`attach_samplepouch`、`attach_hand_l/r`、`attach_weapon`、`attach_cam_1`、
+     `backpack`、`sling`、`support`、`support_mg`、`target_designator`、`l/r_shoulderarmour`、
+     `pistol`、`aim_weapon`、`weapon_aim`、`head_aim`、`boss_aim`、`head_cam`、`head_tip`、
+     `climb_ref`、`collision`、`g_body`、`c_culling`。
+  3. **`hd2_skel.json` 不是基础 avatar**，而是"某个 mod 的视图"：有 **39 个键**我们表里没有
+     （`grp_*`、`g_*_LOD1/LOD2/shadow`、7 个 `*_culling`）；共有 64 骨精确吻合。
+  4. **10 个未解析哈希**（不在 `bonehash.txt`）：`0xc89b0fd3`（索引 2）、`0x75275fac`、`0x43997e6e`、
+     `0xc15d6a74`、`0xf9963256`、`0xb7d14251`、`0xa5c8115b`、`0x7c74e51c`、`0xa420b088`、`0xb9162207`。
+- **下一步 A2**：逐骨相似解（保留 Source 骨长 × 逐骨系数、取 HD2 关节方向），
+  验收 = 逐骨残差 < 1 mm **且骨长不变**。A3 = 离线重定向出 OBJ 用眼睛看。
+- 工具：`tmp/rig-lab/avatar_rig_probe.py`；`tmp/physbone-recon/{skeleton_probe,plot_skeleton,rig_gap_report}.py`。
 - **VPK 踩坑**：tree **没有 `num_extensions` 字段**（ext/dir/filename 三层各用空字符串终止）；
   entry 18 字节后还要跳 `preloadLength` 字节；内嵌数据偏移 = `headerSize + treeSize + entryOffset`。
 
