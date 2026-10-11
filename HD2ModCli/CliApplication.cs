@@ -3,6 +3,7 @@ using System.Text.Json;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2SourceModel;
 
 namespace HD2ModCli;
 
@@ -1734,6 +1735,31 @@ public static class CliApplication
 			return 0;
 		}
 
+		if (command.Length is 3 or 4 && command[0] == "source" && command[1] == "inspect")
+		{
+			var vpkPath = invocation.Command[2];
+			if (!File.Exists(vpkPath))
+				throw new CliUserException("VpkNotFound", $"找不到 VPK 文件：{vpkPath}");
+
+			var stem = command.Length == 4 ? invocation.Command[3] : null;
+			var inspection = SourceModelInspector.Inspect(vpkPath, stem);
+			if (string.IsNullOrWhiteSpace(invocation.Options.Output))
+			{
+				Emit(invocation.Options, new { ok = true, inspection }, () => FormatSourceModelInspection(inspection));
+			}
+			else
+			{
+				var output = Path.GetFullPath(invocation.Options.Output);
+				await CliOutput.WriteExplicitFileAsync(
+					output,
+					CliOutput.ToJson(new { ok = true, inspection }),
+					invocation.Options.Overwrite).ConfigureAwait(false);
+				Emit(invocation.Options, new { ok = true, output, inspection },
+					() => FormatSourceModelInspection(inspection) + Environment.NewLine + $"已写出 JSON 报告：{output}");
+			}
+			return 0;
+		}
+
 		throw new CliUserException("UnknownCommand", $"不支持的命令：{string.Join(' ', invocation.Command)}。请运行 hd2mod help。");
 	}
 
@@ -3086,6 +3112,33 @@ public static class CliApplication
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("BatchRepairPlanRequired", "请通过 --plan <批量 Patch 修复计划.json> 提供计划文件。 ");
 		return options.Plan;
+	}
+
+	private static string FormatSourceModelInspection(SourceModelInspection inspection)
+	{
+		var lines = new List<string>
+		{
+			$"源模型：{inspection.ModelPath}（MDL v{inspection.Version}，{inspection.ModelName}）",
+			$"  顶点文件：{inspection.VertexPath}",
+			$"  索引文件：{inspection.IndexPath}（strip group 步长 {(inspection.UsedV7IndexStride ? "v7 / 33 字节" : "v6 / 25 字节")}）",
+			$"  骨骼：{inspection.BoneCount} 根（有名字 {inspection.NamedBoneCount} 根），jiggle 骨 {inspection.JiggleBoneCount} 根",
+			$"  bodypart：{inspection.BodyPartCount} 个，材质：{inspection.MaterialCount} 个",
+			$"  几何：LOD0 顶点 {inspection.Lod0VertexCount}，装配后顶点 {inspection.GeometryVertexCount}，三角形 {inspection.TriangleCount}",
+		};
+
+		if (inspection.JiggleParents.Count > 0)
+		{
+			lines.Add("  jiggle 骨的父骨分布：");
+			lines.AddRange(inspection.JiggleParents.Select(parent => $"    {parent.ParentName} × {parent.Count}"));
+		}
+
+		if (inspection.Diagnostics.Count > 0)
+		{
+			lines.Add($"  诊断 {inspection.Diagnostics.Count} 条：");
+			lines.AddRange(inspection.Diagnostics.Select(item => $"    [{item.Code}] {item.Message}"));
+		}
+
+		return string.Join(Environment.NewLine, lines);
 	}
 
 	private static string RequireHostDerivedPlan(CliGlobalOptions options)
@@ -5535,6 +5588,7 @@ HD2 Mod Manager 命令行
 	  hd2mod import validate --plan import-plan.json --manager-root <管理器目录> --json
 	  hd2mod import apply --plan import-plan.json --manager-root <管理器目录> --confirm --json
 	  hd2mod context export --library <Mod库目录> --output context.json
+	  hd2mod source inspect <VPK文件> [<模型名片段>] [--output source-model-report.json] [--overwrite] --json
 	  hd2mod agent skills list --json
 	  hd2mod agent skills export [能力名称] --output <Skill父目录>
 	  hd2mod agent skill export <能力名称> --output SKILL.md

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    作用：读取"求生之路 2 / Source 引擎"的模型文件（VPK 归档、MDL、VVD、VTX、jigglebone 参数）。
+    Purpose: Reads Left 4 Dead 2 / Source engine model files (VPK archives, MDL, VVD, VTX, jigglebone parameters).
+
+    这个工程刻意**没有任何引用**（零 PackageReference、零 ProjectReference）。
+    它只认识 Source 的文件格式，完全不认识 HD2：不引用 HD2ModAdaptation、不认识 Unit、不认识 Patch。
+    这条边界不是靠目录约定，而是靠编译器强制——一旦有人在这里 using 一个 HD2 类型，构建就会失败。
+    This project deliberately has NO references at all (no PackageReference, no ProjectReference).
+    It knows Source file formats and nothing about HD2: it cannot see Unit or Patch types.
+    The boundary is enforced by the compiler rather than by folder discipline, so a stray
+    `using` of an HD2 type fails the build instead of quietly welding the two layers together.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>

@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
+    <!-- 源模型（求生之路 2 / Source 引擎）只读解析层：纯文件格式，不认识 HD2。 -->
+    <ProjectReference Include="..\HD2SourceModel\HD2SourceModel.csproj" />
   </ItemGroup>
 
   <ItemGroup>
