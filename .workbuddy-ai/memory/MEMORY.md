@@ -176,6 +176,12 @@
 
 > 完整调研见 `docs/hd2-armor-physics-research.md`；本轮只调研 + 提需求问题，**未写生产代码**。
 
+- **【硬约束】本功能只允许依赖游戏本体，不得依赖任何外部系统（尤其其他 mod）。**
+  用户明确："我的插件不应当依赖任何外部系统（尤其是其他mod），而是只依赖游戏本体的内容。"
+  → 唯一合法的依赖来源：游戏安装目录里的 `game.dll`、游戏自带资源包、游戏自己的 Lua 环境。
+  → `HD2IAS` 在调研中**只作反面参照物**（① 证明"另起一套物理"会卡、卡在哪；② 说明多玩家
+  传染来自它的共享素体设计），**一行代码、一个文件都不会进我们的东西**。
+  → 这也是"FFI 改内存"被排在最后的原因：它要绑游戏版本指纹，本身就是最脆的依赖。
 - **引擎 = Autodesk Stingray（原 Bitsquid）**，向 Lua 暴露完整场景图（`stingray.Unit/World/Quaternion/...`）。
   本仓 `docs/HD2SDK-CommunityEdition-3.8.0/stingray/` 就是它的资源解析器。
 - **HD2IAS（HD2-Integrated-Armor-System）确实是"另起一套物理"**：每帧 Lua 读场景图姿态 →
