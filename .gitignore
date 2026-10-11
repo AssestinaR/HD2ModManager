@@ -378,7 +378,11 @@ Desktop.ini
 *.lnk
 docs/
 _diagnostics/
-tmp/
+tmp/*
+*/tmp/
+!tmp/rig-lab/
+tmp/rig-lab/*
+!tmp/rig-lab/*.py
 ._cache_py.exe
 _codex_build/
 _buildverify/
