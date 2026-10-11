@@ -19,12 +19,28 @@
     warning-free tree: the 11 unique warnings (9 in HD2ModCore.Tests, 2 in HD2ModManager)
     were cleared rather than suppressed. The point of the guardrail is that a new warning
     can no longer slip in unnoticed.
+
+    关于 WarningsNotAsErrors（NU1901–NU1904）：
+    这条护栏**只管编译警告，不管依赖漏洞**。NuGet 的审计警告默认会一起被升级为错误，
+    但本项目是本地运行的单机 Mod 管理器，不对外提供服务、不处理不可信输入，
+    因此"某个传递依赖存在已知漏洞"不构成需要中断构建的理由。
+    把它排除在"错误"之外，是为了让**编译期**的零警告护栏保持锋利，同时不让
+    **依赖公告**这种需要人判断的事情去挡构建。注意：排除的是"升级为错误"，
+    警告本身仍会照常打印——只是不再让人没法构建。
+    About WarningsNotAsErrors (NU1901-NU1904): the guardrail covers compiler warnings only,
+    not dependency advisories. NuGet audit warnings would otherwise be escalated to errors too,
+    but this is a local single-user mod manager that serves no network clients and takes no
+    untrusted input, so a known CVE in a transitive dependency is not a reason to stop the build.
+    Excluding them keeps the compile-time zero-warning guardrail sharp without letting advisory
+    judgement calls block the build. They are demoted from errors, not silenced: the warnings
+    still print.
   -->
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Deterministic>true</Deterministic>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
   </PropertyGroup>
 
   <!--
