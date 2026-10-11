@@ -58,13 +58,22 @@
 - **`ApplyExecutor` 只支持硬链接与符号链接**（`"Only hard-link and symbolic-link deployment are supported."`）。
   因此测试里用 `ApplyExecutor` 铺出来的部署，"目标"与"源"是**同一个文件**，改一个必然改另一个。
   要构造"目标与源分离"的场景，必须用 `DeploymentMethod.Copy` 手写激活状态。
-- **贯穿信息中心重构的前置障碍**：中心今天**所有**请求都挂在 `ModNode` 上
-  （`RequestXxxAsync(ModNode, ...)` + 每节点一个任务表 + `InvalidateNodeAsync`），
-  而 **game-data 侧与部署侧的事实没有节点**（身份是"游戏目录 + 来源指纹"）。
-  所以"阶段 2 页面收编"与"阶段 3 登记半边"**共用一个新形态**：为无节点事实设计请求与失效。
-  这才是它们一直没做的真正原因，不是补几个方法。
+- **无节点事实的形态（2026-10-11 已落地，设计文档 §22）**：中心现在有第四种主体 `FactSubjectKind.GameData`。
+  要点：① 作用域（资产键集合、游戏目录）写进 **`FactSubject.GameData(scope)`**，不写进 `Revision`
+  ——"哪一件事"归 Subject，"同一件事的输入指纹"归 Revision；② 三类事实**共用一本**
+  `ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<object>>>> _gameDataTasks`，
+  取出时用 `Unwrap<T>` 还原类型（键里已含 Kind，不会撞）；③ 无节点事实**刻意不参与 `InvalidateNodeAsync`**
+  ——它们的输入不含 Mod 目录，清掉只会白做；④ 三个生产者依赖**可选**，缺失时返回 `Unavailable` 而非抛异常。
+- **`CacheScope` ≠ 作用域**：`ModInformationCacheScope`（None/Operation/Session/Persistent）是**生命周期阶梯**，
+  不是主体维度。设计文档早期写的 `Scope=Deployment` 指的是**主体作用域**，代码里由 `FactSubject` 表达；
+  登记表的 `CacheScope` 取 `Session`（部署图的记忆是进程内、按指纹键控、从不落盘）。
+- **`IGameDataFactSource` 是投影与旁路服务之间的唯一缝**：`CenterGameDataFactSource`（走中心，Manager 用）
+  与 `DirectGameDataFactSource`（直问旁路服务、**刻意不建/不刷任何中心缓存**，CLI 只读用）。
+  `GameDataArchiveBrowserService` 两个构造重载只收 `IGameDataFactSource`，**不再出现任何旁路服务名**。
+  失败语义：中心把失败表达成 `Data=null + Issues`，适配器把它**还原成 `InvalidOperationException`**
+  ——静默成空结果会让 UI 显示错误结论，比报错更难查。
 
-### 23 个 kind 的真实生产情况（D3 的重要副产品，别忘）
+### 24 个 kind 的真实生产情况（D3 的重要副产品，别忘）
 **只有 8 个 kind 有真实生产者**（`ModInformationCenter` 内部），其余是声明占位 / 切片 / 请求判别位 / **中心之外生产**：
 - L1 读取器真实生产 **4**：`PatchCatalog` / `PatchEntryPayload` / `UnitStructure` / `UnitGeometrySummary`
 - L3 中心生产者真实生产 **7**（含 2 处重名）：`PatchCatalog`(FileFacts) / `AssetInventory` / `ReferenceClosure` /
@@ -75,16 +84,20 @@
   （后两个由中心**之外**的 `AssetArchiveIndexService` / `FileSystemAssetMetadataCatalogProvider` 生产——正是 E1 还没收编的那部分）
 - 唯一一条"中心内部真按依赖顺序取上游"的边：**`Maintenance → AssetInventory`**
   （`ProduceMaintenanceAndRemoveAsync` 先 `RequestAssetInventoryAsync` 再喂给生产者）
-- **源事实 `SourceRoots`（6）**：`Identity`、`ContentRevision`、`PatchCatalog`、`GameDataIndex`、`AssetMetadata`、`Thumbnail`
-  （E1 把 `GameDataMapping` 移出，换成它的两个真实上游）
+- **源事实 `SourceRoots`（7）**：`Identity`、`ContentRevision`、`PatchCatalog`、`GameDataIndex`、`AssetMetadata`、
+  **`DeployedGraph`**、`Thumbnail`
+  （E1 把 `GameDataMapping` 移出，换成它的两个真实上游；§22 把 `DeployedGraph` 加入）
+- **用 `GameData` 主体的 4 个 kind**：`GameDataIndex`、`AssetMetadata`、`GameDataMapping`、`DeployedGraph`
+  （由 `ModInformationFactRegistryTests.OnlyTheGameDataFactsUseTheGameDataSubject` 强制）
 
 ### 信息中心重构进度（2026-10-11；详见设计文档 §6.1 总进度表）
-**尚未全面重构完毕。**
+**阶段 0–3 已全部完成；阶段 4/5 与阶段 6 的业务服务半边未开始。**
 - 阶段 0（设计）/ 1（统一身份）：✅ 完成
-- 阶段 2（收编 game-data 侧）：🟡 **只完成登记表半边**（`GameDataIndex`/`AssetMetadata` 入表 + 补上缺失的缓存）；**页面半边未做**
-- 阶段 3（收编部署侧）：🟡 **只完成缓存半边**（部署图按来源指纹记忆）；**登记半边未做**
-- 阶段 4（护甲页改造）/ 阶段 5（合并缩略图双路）：❌ 未开始
-- 阶段 6（护栏测试）：🟡 只完成 Manager 半边 + 登记表完整性；**业务服务半边**要等阶段 2 页面收编做完
+- 阶段 2（收编 game-data 侧）：✅ 完成（登记表半边 + 页面半边：`GameDataArchiveBrowserService` 退化为纯投影）
+- 阶段 3（收编部署侧）：✅ 完成（缓存半边 + 登记半边：`DeployedGraph` 入表、经中心统一身份与合并）
+- 阶段 4（护甲页改造）：❌ 未开始 —— **仍是护甲页首开卡顿的主因**
+- 阶段 5（合并缩略图双路）：❌ 未开始
+- 阶段 6（护栏测试）：🟡 Manager 半边 + 登记表完整性 + 运行时主体与登记表一致性；**业务服务半边架构测试尚未写**
 
 ## 已知性能热点（2026-10-10 分析）
 - 护甲映射页首开卡顿根因：`ArmorRegistryPageViewModel.RefreshAsync` →
