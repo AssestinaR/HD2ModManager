@@ -76,7 +76,7 @@ public sealed class ModRepairBatchServiceTests
         Assert.Equal(result.RequestedModCount, result.RepairedModCount + result.SkippedModCount + result.FailedModCount + result.CanceledModCount + result.NotStartedModCount);
         foreach (var child in events.Where(e => e.Kind == OperationKind.RepairBatchItem).GroupBy(e => e.OperationId))
         {
-            Assert.Single(child.Where(e => e.IsTerminal));
+            Assert.Single(child, e => e.IsTerminal);
             Assert.All(child, e => Assert.Equal(events.IndexOf(e), events.OrderBy(x => x.Sequence).ToList().IndexOf(e)));
             Assert.All(child, e => Assert.Equal(result.OperationId, e.ParentOperationId));
         }
@@ -198,7 +198,7 @@ public sealed class ModRepairBatchServiceTests
         Assert.Contains("提交失败", item.Detail);
         Assert.Contains("恢复失败", item.Detail);
         Assert.Equal(1, result.FailedModCount);
-        var parentTerminal = Assert.Single(events.Where(e => e.Kind == OperationKind.RepairBatch && e.IsTerminal));
+        var parentTerminal = Assert.Single(events, e => e.Kind == OperationKind.RepairBatch && e.IsTerminal);
         Assert.Equal(result.OperationId, parentTerminal.OperationId);
         Assert.Equal(OperationState.Failed, parentTerminal.State);
         Assert.Equal(OperationStage.Failed, parentTerminal.Stage);
@@ -229,7 +229,7 @@ public sealed class ModRepairBatchServiceTests
         Assert.Equal(2, result.NotStartedModCount);
         Assert.All(result.Mods, item => Assert.Equal(ModRepairBatchModStatus.NotStarted, item.Status));
         Assert.Equal(result.RequestedModCount, result.RepairedModCount + result.SkippedModCount + result.FailedModCount + result.CanceledModCount + result.NotStartedModCount);
-        Assert.Single(events.Where(e => e.Kind == OperationKind.RepairBatch && e.IsTerminal));
+        Assert.Single(events, e => e.Kind == OperationKind.RepairBatch && e.IsTerminal);
         Assert.Equal(OperationState.Failed, events.Last(e => e.Kind == OperationKind.RepairBatch && e.IsTerminal).State);
         Assert.Equal(2, events.Count(e => e.Kind == OperationKind.RepairBatchItem && e.IsTerminal));
         Assert.All(events.Where(e => e.Kind == OperationKind.RepairBatchItem), child => Assert.Equal(result.OperationId, child.ParentOperationId));
@@ -283,7 +283,7 @@ public sealed class ModRepairBatchServiceTests
         Assert.Equal(ModRepairBatchModStatus.Repaired, item.Status);
         Assert.Equal("new", File.ReadAllText(Path.Combine(fixture.ModsRoot, "callback-failure", "unit.patch")));
         Assert.False(item.RestoreAttempted);
-        Assert.Single(progress.Events.Where(e => e.Kind == OperationKind.RepairBatchItem && e.IsTerminal));
+        Assert.Single(progress.Events, e => e.Kind == OperationKind.RepairBatchItem && e.IsTerminal);
         AssertManifest(result);
     }
 

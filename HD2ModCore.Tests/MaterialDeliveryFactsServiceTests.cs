@@ -90,7 +90,9 @@ public sealed class MaterialDeliveryFactsServiceTests
 		Assert.Empty(result.GameDataMappedMaterialKeys!);
 	}
 
-	private static PatchGroupAnalysisCacheEntry Entry(ModNode node, IReadOnlyCollection<AssetKey> assets, IReadOnlyCollection<PatchAssetReference> references)
+	// 只构造测试真正需要的东西：节点身份 + 该节点的分析结果。
+	// 这里曾经包一层已废弃的 PatchGroupAnalysisCacheEntry，那个类型没有任何生产者。
+	private static (ModNodeId NodeId, IReadOnlyList<PatchGroupAnalysis> Analyses) Entry(ModNode node, IReadOnlyCollection<AssetKey> assets, IReadOnlyCollection<PatchAssetReference> references)
 	{
 		var analysis = new PatchGroupAnalysis(
 			new PatchGroupInput($"{node.Metadata.Name}.patch_0"),
@@ -99,10 +101,8 @@ public sealed class MaterialDeliveryFactsServiceTests
 			Array.Empty<PatchAnalysisIssue>(),
 			DateTimeOffset.UtcNow,
 			"test");
-		return new PatchGroupAnalysisCacheEntry(3, node.Id, node.RelativePath, Array.Empty<PatchAssetSourceFileFingerprint>(), DateTimeOffset.UtcNow, [analysis]);
+		return (node.Id, [analysis]);
 	}
-	private static ReferenceGraphFacts ReferenceFacts(PatchGroupAnalysisCacheEntry entry)
-		=> new(entry.NodeId, entry.RelativePath, "test", DateTimeOffset.UtcNow, entry.Analyses, []);
 
 	private static ModNode CreateNode(string name) => new(ModNodeId.New(), name, new ModNodeMetadata(name, null, DateTimeOffset.UtcNow, null), Array.Empty<PatchGroupKey>(), Array.Empty<ModNodeId>());
 	private static LibrarySnapshot Snapshot(params ModNode[] nodes) => new(1, DateTimeOffset.UtcNow, nodes.ToDictionary(node => node.Id), Array.Empty<Profile>());

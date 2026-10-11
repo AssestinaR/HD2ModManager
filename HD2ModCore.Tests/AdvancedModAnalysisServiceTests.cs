@@ -37,8 +37,9 @@ public sealed class AdvancedModAnalysisServiceTests
 	private sealed class RecordingInformationCenter(HD2ModCore.Application.AdvancedUnitAnalysisFacts facts) : IModInformationCenter
 	{
 		public ModInformationRequest? LastRequest { get; private set; }
-		public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
-		public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
+		// 与 FakeInformationCenter 同理：契约要求事件存在，但这个替身从不发布它们。
+		event EventHandler<ModInformationDiagnostic>? IModInformationCenter.DiagnosticRecorded { add { } remove { } }
+		event EventHandler<ModInformationProductionStarted>? IModInformationCenter.ProductionStarted { add { } remove { } }
 		public ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask<ModInformationResult<ModContentFacts>> RequestAssetInventoryAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask<ModInformationResult<ReferenceGraphFacts>> RequestReferenceGraphAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();

@@ -103,7 +103,6 @@ public static class CoreServices
 	public static IModDataIndex CreateModDataIndex() => new ModDataIndex();
 	public static IPatchStateScanner CreatePatchStateScanner()
 		=> new PatchStateScanner(CreatePatchFileNameParser());
-	public static IPatchTocScanner CreatePatchTocScanner() => new PatchTocScanner();
  	public static IPatchEntryPayloadReader CreatePatchEntryPayloadReader()
 		=> new PatchEntryPayloadReader();
 	public static IModSameKeyReconstructionService CreateModSameKeyReconstructionService(
@@ -134,8 +133,6 @@ public static class CoreServices
 	}
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
 		=> new AssetArchiveIndexService(paths);
-	public static IGameDataAuthorityProvider CreateGameDataAuthorityProvider()
-		=> new GameDataAuthorityProvider();
 	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)
 		=> new AdvancedEquipmentIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator()
@@ -148,10 +145,6 @@ public static class CoreServices
 		=> new ModAssetSummaryProjector(CreateGameDataMappingFactsService(paths), CreateAssetMetadataCatalogProvider(paths), new RuntimeArmorRegistryService(paths));
 	public static IAssetMetadataSyncService CreateAssetMetadataSyncService(StoragePaths paths)
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
-	public static IPatchGroupAnalysisProvider CreatePatchGroupAnalysisProvider(IModInformationReader informationReader)
-		=> new ModInformationPatchGroupAnalysisProvider(
-			informationReader ?? throw new ArgumentNullException(nameof(informationReader)),
-			depth: PatchAnalysisDepth.DependencyGraph);
 	public static IAssetInventoryProducer CreateAssetInventoryProducer(IPatchGroupAnalysisProvider analysisProvider)
 		=> new ModContentFactsService(CreatePatchFileNameParser(), analysisProvider);
 	public static IAssetInventoryProducer CreateAssetInventoryProducer(IModInformationReader informationReader)
@@ -176,14 +169,6 @@ public static class CoreServices
 		=> new MaintenanceAnalysisProducer(CreateModCompatibilityAnalyzer(paths));
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new AdvancedModAnalysisService(informationCenter);
-	public static IPatchGroupAnalysisProvider CreateDependencyGraphAnalysisProvider(IModInformationReader informationReader)
-		=> new ModInformationPatchGroupAnalysisProvider(
-			informationReader ?? throw new ArgumentNullException(nameof(informationReader)),
-			depth: HD2ModAdaptation.Analysis.PatchAnalysisDepth.DependencyGraph);
-	public static IPatchGroupAnalysisProvider CreateFullPatchAnalysisProvider(IModInformationReader informationReader)
-		=> new ModInformationPatchGroupAnalysisProvider(
-			informationReader ?? throw new ArgumentNullException(nameof(informationReader)),
-			depth: HD2ModAdaptation.Analysis.PatchAnalysisDepth.Full);
 	public static IPatchGraphDiagnosticsService CreatePatchGraphDiagnosticsService(IModInformationReader informationReader)
 		=> new PatchGraphDiagnosticsService(informationReader);
 	public static IGameDataMappingFactsService CreateGameDataMappingFactsService(StoragePaths paths)

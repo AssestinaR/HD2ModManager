@@ -34,8 +34,10 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 	}
 	public FakeInformationCenter(ModContentFacts facts, IReadOnlyDictionary<ModNodeId, IReadOnlyList<PatchGroupAnalysis>> referenceFacts)
 		: this(new Dictionary<ModNodeId, ModContentFacts> { [facts.NodeId] = facts }, referenceFacts) { }
-	public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
-	public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
+	// 接口要求这两个事件存在，但这个测试替身从不发布它们。
+	// 显式实现 + 空访问器既满足契约，又不会触发 CS0067（"声明了却从不使用"）。
+	event EventHandler<ModInformationDiagnostic>? IModInformationCenter.DiagnosticRecorded { add { } remove { } }
+	event EventHandler<ModInformationProductionStarted>? IModInformationCenter.ProductionStarted { add { } remove { } }
 	public ValueTask<ModInformationResult<PatchFileIndex>> RequestFileFactsAsync(LibrarySnapshot snapshot, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<ModContentFacts>> RequestAssetInventoryAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default)
 	{

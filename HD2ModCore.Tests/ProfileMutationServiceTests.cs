@@ -82,7 +82,7 @@ public sealed class ProfileMutationServiceTests
 		var deleted = service.DeleteProfile(snapshot, active.Id);
 
 		Assert.Equal(ProfileMutationStatus.Applied, deleted.Status);
-		Assert.Empty(deleted.Snapshot.Profiles.Where(profile => profile.Id == active.Id));
+		Assert.DoesNotContain(deleted.Snapshot.Profiles, profile => profile.Id == active.Id);
 		Assert.Single(deleted.Snapshot.Profiles, profile => profile.Id == retained.Id);
 		Assert.Null(deleted.Snapshot.ActiveProfileId);
 

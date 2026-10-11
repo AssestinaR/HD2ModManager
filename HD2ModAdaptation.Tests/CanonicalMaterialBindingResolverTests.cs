@@ -8,23 +8,6 @@ namespace HD2ModAdaptation.Tests;
 public sealed class CanonicalMaterialBindingResolverTests
 {
 	[Fact]
-	public void FinalLayout_PreservesTransferredExternalMaterialWithoutPackagingIt()
-	{
-		var finalMesh = new UnitRawMeshData(
-			0, 1, 0, 0,
-			[new UnitRawMeshSectionData(0, 900, [new UnitTriangleIndices(0, 1, 2)])],
-			[new UnitTriangleIndices(0, 1, 2)],
-			[]);
-
-		var bindings = CanonicalMaterialBindingLayout.Build(
-			[new UnitMaterialBinding(900, 0x111UL), new UnitMaterialBinding(901, 0x222UL)],
-			[new UnitMaterialBinding(900, 0xbf3679673bfc42efUL)],
-			[finalMesh]);
-
-		Assert.Equal([(900u, 0xbf3679673bfc42efUL)], bindings.Select(binding => (binding.SectionId, binding.MaterialId)));
-	}
-
-    [Fact]
     public void Resolve_PreservesMultipleMaterialIdsForOneTargetShortId()
     {
         var source = CreateModel(

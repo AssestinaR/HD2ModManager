@@ -465,8 +465,6 @@ namespace HD2ModManager.ViewModels
 
         private string? _selectedProfileKey;
         private string _renameText = string.Empty;
-        private ProfileSwitchActionViewModel? _switchAction;
-        private ProfileRenameActionViewModel? _renameAction;
         public string? SelectedProfileKey
         {
             get => _selectedProfileKey;
@@ -698,8 +696,6 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ItemCountText));
             OnPropertyChanged(nameof(HeaderSummary));
             OnPropertyChanged(nameof(EmptyMessage));
-            _switchAction?.SyncFromPage();
-            _renameAction?.SyncFromPage();
 
             var profile = _profiles.SelectedProfile;
             if (profile == null)
@@ -965,8 +961,6 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ActiveProfileText));
             OnPropertyChanged(nameof(SelectedProfileState));
             OnPropertyChanged(nameof(HeaderSummary));
-            _switchAction?.SyncFromPage();
-            _renameAction?.SyncFromPage();
         }
 
         private void RefreshVisibleThumbnails(IReadOnlyCollection<string> refreshedIds)

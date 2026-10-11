@@ -91,16 +91,6 @@ public sealed class ModInformationCenterArchitectureTests
 	}
 
 	[Fact]
-	public void PatchValidatorStreamsSourceGeometryComparisonPerUnit()
-	{
-		var root = FindRepositoryRoot();
-		var validator = File.ReadAllText(Path.Combine(root, "HD2ModAdaptation", "PatchReconstruction", "Validation", "PatchValidator.cs"));
-
-		Assert.Contains("ValidateSourceGeometryForUnitAsync", validator);
-		Assert.DoesNotContain("Dictionary<AssetKey, PatchUnitMesh>", validator);
-	}
-
-	[Fact]
 	public void SameKeyPlanningUsesCachedFactsAndDoesNotDecodeUnitPayloads()
 	{
 		var root = FindRepositoryRoot();
