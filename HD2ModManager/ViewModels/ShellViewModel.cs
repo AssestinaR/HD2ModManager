@@ -401,6 +401,10 @@ namespace HD2ModManager.ViewModels
                 }
                 await RunStartupChecksAsync(configDir, cancellationToken).ConfigureAwait(false);
 				LogStartupCheckpoint("启动维护完成", startupClock);
+                // 缩略图磁盘缓存的一次性收敛：旧键改名 + 无主文件清扫（设计文档 §27.5）。
+                // fire-and-forget：它与库页缩略图刷新幂等且与顺序无关，抢不到先后也不影响正确性；
+                // 放在这里是为了让"旧键改名"有机会抢在库页刷新之前完成，升级首启因此不必重生成整库缩略图。
+                _ = Task.Run(() => SweepThumbnailCacheAsync(cancellationToken), CancellationToken.None);
             }
             catch (OperationCanceledException)
             {
@@ -419,6 +423,28 @@ namespace HD2ModManager.ViewModels
                 // 放行之后立刻把这一页的数据也预热起来（此刻库快照与启动部署都已落定）。
                 _armorDisplayFactsGate.TrySetResult();
                 QueueArmorRegistryPrewarm();
+            }
+        }
+
+        // 缩略图磁盘缓存的一次性收敛（设计文档 §27.5）。失败不影响功能：它只回收磁盘，
+        // 最坏结果是多留几个无人引用的缩略图文件，下次启动再扫一遍。
+        private async Task SweepThumbnailCacheAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                var result = await _libraryService.SweepThumbnailCacheAsync(cancellationToken).ConfigureAwait(false);
+                if (result.Migrated > 0 || result.Removed > 0)
+                {
+                    LogService.Info($"缩略图缓存收敛完成：复用旧键={result.Migrated}，清理无主文件={result.Removed}。");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // 退出时取消，属正常路径。
+            }
+            catch (Exception exception)
+            {
+                LogService.Warn($"缩略图缓存收敛失败：{exception.Message}");
             }
         }
 
@@ -1874,7 +1900,6 @@ namespace HD2ModManager.ViewModels
             task.MarkRunning("正在删除");
             try
             {
-                ThumbnailService.CancelPendingGeneration();
                 var deletion = await _libraryService.RemoveManyAsync(targets, task.CancellationToken);
                 if (deletion.RemovedNodeIds.Count == 0 && deletion.HasFailures)
                 {

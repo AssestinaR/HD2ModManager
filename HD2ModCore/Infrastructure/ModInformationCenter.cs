@@ -723,13 +723,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
 	}
 
+	// 缩略图事实的新鲜度只看源图像本身，与 Mod 目录里其它文件无关，
+	// 所以这里用的是"节点级缩略图指纹"而不是 ComputeNodeGeneration（设计文档 §27.3）。
 	private static string ComputeThumbnailGeneration(ModNode node, string root)
-	{
-		var source = ModIconLocator.TryResolve(Path.Combine(root, node.RelativePath));
-		if (source is null) return ComputeNodeGeneration(node, root);
-		var info = new FileInfo(source);
-		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{node.Id.Value:N}|{info.Name.ToLowerInvariant()}:{info.Length}:{info.LastWriteTimeUtc.Ticks}"))).ToLowerInvariant();
-	}
+		=> ThumbnailFingerprint.OfNode(node.Id, ModIconLocator.TryResolve(Path.Combine(root, node.RelativePath)));
 
 	private async Task<ModInformationResult<ModContentFacts>> ProduceAssetInventoryAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
 	{

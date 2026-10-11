@@ -864,7 +864,8 @@ namespace HD2ModManager.Services
                 try
                 {
 					await InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
-                    ThumbnailService.DeleteCachedThumbnailsForSource(GetDerivedData(nodeId.Value.ToString("N"))?.IconPath);
+                    // 缩略图缓存不再在这里手工删除：磁盘键已含源图像的内容指纹（设计文档 §27.4），
+                    // 换了内容 ⇒ 指纹变 ⇒ 新键指向另一个文件，旧文件自然失效。
                     await RefreshCommittedContentAsync(
                         new[] { nodeId },
                         ModContentChangeKind.Changed,
@@ -943,10 +944,9 @@ namespace HD2ModManager.Services
                 if (nodeIds.Length == 0)
                     return new ModLibraryDeletionResult(_snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>());
 
-                // Cancel our own information/thumbnail work before asking Windows to move or
-                // remove the directory. Cancellation is intentionally best-effort: a failed
-                // cache invalidation must not hide the actual filesystem error from the user.
-                ThumbnailService.CancelPendingGeneration();
+                // Cancel our own information work before asking Windows to move or remove the
+                // directory. Cancellation is intentionally best-effort: a failed cache
+                // invalidation must not hide the actual filesystem error from the user.
                 // Cache invalidation is independent per node. Use a small bounded
                 // batch instead of serially awaiting every node, while retaining
                 // the information center's generation/invalidation boundary.
@@ -976,8 +976,6 @@ namespace HD2ModManager.Services
                         cancellationToken).ConfigureAwait(false);
                 }
 
-                var thumbnailPaths = requestedNodes
-                    .ToDictionary(pair => pair.Key, pair => GetDerivedData(pair.Key.Value.ToString("N"))?.IconPath);
                 var deletion = await _manager.DeleteNodesWithResultAsync(nodeIds, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
                 var removedIds = deletion.RemovedNodeIds.ToHashSet();
                 _snapshot = deletion.Snapshot;
@@ -1036,8 +1034,6 @@ namespace HD2ModManager.Services
                     deletedDecorationHosts,
                     cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _stateVersion);
-                foreach (var thumbnailPath in removedIds.Select(nodeId => thumbnailPaths.GetValueOrDefault(nodeId)))
-                    ThumbnailService.DeleteCachedThumbnailsForSource(thumbnailPath);
 
                 var nodes = _derivedData.Nodes.ToDictionary(pair => pair.Key, pair => pair.Value);
                 foreach (var nodeId in removedIds) nodes.Remove(nodeId);
@@ -1648,6 +1644,11 @@ namespace HD2ModManager.Services
                 new ModInformationRequest(ModInformationKind.Thumbnail, source, RequireFresh: requireFresh),
                 cancellationToken);
         }
+
+        // 缩略图磁盘缓存的唯一垃圾回收入口：把 cache/thumbs 收敛成"当前库 × 当前内容指纹"应有的文件
+        // （旧键迁移 + 无主清扫，设计文档 §27.4 / §27.5）。库快照落定后调用一次即可，且可重复调用。
+        public Task<ThumbnailSweepResult> SweepThumbnailCacheAsync(CancellationToken cancellationToken = default)
+            => ThumbnailService.SweepAsync(All().Select(mod => mod.Image), ThumbnailService.KnownSizes, cancellationToken);
 
         public void ReplaceSnapshot(LibrarySnapshot snapshot, bool buildDerivedData = false)
         {

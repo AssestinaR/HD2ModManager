@@ -300,7 +300,7 @@ namespace HD2ModManager.ViewModels
                         _ = _derivedState.InformationCenter.InvalidateNodeAsync(updatedNode.Id);
                     Refresh();
                     _notifications?.Show($"已更新图像：{updatedMod.Name}");
-                    _ = RegenerateThumbnailAsync(destination);
+                    _ = RenderThumbnailAfterImageChangeAsync();
                 });
             }
             catch (Exception exception)
@@ -309,7 +309,9 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private async Task RegenerateThumbnailAsync(string imagePath)
+        // 换了图像之后补渲染缩略图。不需要传路径：磁盘键由源图内容指纹决定（设计文档 §27），
+        // 事实里已经带着新的源路径，键自然指向一个新文件，渲染即生效。
+        private async Task RenderThumbnailAfterImageChangeAsync()
         {
             try
             {
@@ -1734,7 +1736,6 @@ namespace HD2ModManager.ViewModels
                 [Mod.Guid],
                 $"确定删除 Mod“{name}”？\n这会同时删除库中的已存储文件。");
             if (targets is null) return;
-            ThumbnailService.CancelPendingGeneration();
             var deletion = await _library.RemoveManyAsync(targets).ConfigureAwait(true);
             _notifications?.Show(
                 ModLibraryService.DescribeDeletionResult(deletion),

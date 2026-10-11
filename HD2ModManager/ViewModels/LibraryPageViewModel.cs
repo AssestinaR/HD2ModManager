@@ -546,7 +546,6 @@ namespace HD2ModManager.ViewModels
             if (targets is null) return;
             try
             {
-                ThumbnailService.CancelPendingGeneration();
                 var deletion = await _library.RemoveManyAsync(targets);
                 _notifications?.Show(
                     ModLibraryService.DescribeDeletionResult(deletion),
