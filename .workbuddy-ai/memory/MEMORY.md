@@ -186,6 +186,35 @@
 - **下一步 A2**：逐骨相似解（保留 Source 骨长 × 逐骨系数、取 HD2 关节方向），
   验收 = 逐骨残差 < 1 mm **且骨长不变**。A3 = 离线重定向出 OBJ 用眼睛看。
 - 工具：`tmp/rig-lab/avatar_rig_probe.py`；`tmp/physbone-recon/{skeleton_probe,plot_skeleton,rig_gap_report}.py`。
+
+### 【A2 已完成并通过验收 ✅ 2026-10-11】
+- `tmp/rig-lab/rig_map.py`（**独立实现**，不依赖任何 C# 工程编译）。
+  公式 `T_i = H_σ(i) · S_i^-1`（S 先 ×0.0254 换成米）。对应表 **50 对**（20 身体骨 + 30 手指），**0 缺失**。
+- 结果：① 外部校验（HD2 节点 vs `hd2_skel.json`）64 节点 **最大 0.000262 m** ✅；
+  ② 映射后段长 vs HD2 段长 **最大误差 0.000000000 m** ✅；③ 映射刚性（T 奇异值偏离 (1,1,1) 3.9e-07）✅。
+  覆盖：127 源骨 → 50 直接映射 / 77 回退最近映射祖先。
+- **②的副产品才是真正的"网格拉伸"数字**（HD2/Source 段长）：骨盆→胸 **0.9258**、胸→颈 **0.8678**、
+  颈→头 2.6154（关节语义不同）、臂 **1.0352**、腿（髋→踝）**0.9092**。
+- ⚠️ **陷阱 1（会静默出错）：两侧矩阵存储约定不同，必须转置。**
+  Source（`poseToBone`）= row-major **列向量**（平移 flat **3,7,11**）；
+  HD2（avatar transform 表）= row-major **行向量**（平移 flat **12,13,14**）。
+  不转置 → 段长全算成 **0.0000**。A1 只用平移所以没暴露，A2 要完整 4×4 才炸。
+- ⚠️ **陷阱 2：脚部落点改变腿拉伸比 10%**：`L_Foot→l_foot` 得 **0.909**，`→l_ball` 得 **1.006**。
+  即旧项目 HANDOFF 的未解决项"脚部 frame/pivot"，现已量化为可比较的数字。留给 A3 用眼睛定。
+- 产出：`tmp/rig-lab/rig-map.json`（66 KB：127 源骨 + 107 HD2 节点 + 50 对映射的 4×4）。
+
+### 【旧项目现状：绝对路径已修，但它当前编译不过 2026-10-11】
+- **绝对路径已修 ✅**（便宜办法）：`HD2AssetKit.csproj` 改为按序探测三个常规位置 ＋
+  `-p:HD2ModAdaptationProject=` / `HD2_MOD_ADAPTATION_PROJECT` 覆盖 ＋
+  解析失败时由 `EnsureHD2ModAdaptationResolved` 目标抛带修复指引的错误（码 **HD2AW001**）。已验证生效。
+- **但它编译不过（预先存在，非本轮引入）**：5 个错误全是引用了 WpfApp1 里**已被删除**的类型——
+  `HD2ModAdaptation.PatchReconstruction.Validation`（命名空间）、`CanonicalDependencyClosure`、
+  `CanonicalDependencyClosureRequest`、`CanonicalDependencyDiagnostic`、`CanonicalDependencyClosureResult`。
+  **不是改名，是整个依赖闭包校验子系统被移除**（现存只有枚举 `CanonicalDependencyClosureValidation`
+  与 `CanonicalPlanDiagnostic`）。旧项目最后提交 **2026-09-03**。
+- → **这是架构结论的活证据**：两仓库看着分开，实际被（a）绝对路径（b）对私有类型名的直接依赖**焊死**；
+  改 WpfApp1 会**静默**打断旧项目，直到有人构建才发现。
+- **待用户拍板**：修那 5 处继续用，还是按新架构重写转换器。**不影响 A1/A2**（独立 Python 实现）。
 - **VPK 踩坑**：tree **没有 `num_extensions` 字段**（ext/dir/filename 三层各用空字符串终止）；
   entry 18 字节后还要跳 `preloadLength` 字节；内嵌数据偏移 = `headerSize + treeSize + entryOffset`。
 
