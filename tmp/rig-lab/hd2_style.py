@@ -1093,14 +1093,53 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             # bone origin, and let the twist/stretch transition run along the
             # bone", which is how the user (a machinist/3D modeller) describes
             # the operation.
-            if arm_rot_mode == 'axis':
+            if arm_rot_mode in ('axis', 'rigid'):
                 W = a[0] + a[1] + a[2]
-                m = np.clip(W / float(os.environ.get("HD2_ARM_MASK", "0.5")), 0.0, 1.0)
-                mask = m * m * (3.0 - 2.0 * m)
+                if arm_rot_mode == 'rigid':
+                    # Round 45e.  TWO things were still bending the forearm, and
+                    # both live in the mask / the ramp -- not in the angles:
+                    #
+                    # (1) `W`, the sum of a vertex's arm-bone LBS weights, is
+                    #     NOT monotonic along the arm, because the model is a
+                    #     stack of shells and each shell carries its own weights
+                    #     (probe: the hand weight reads 0.02 -> 0.67 -> 0.43 ->
+                    #     1.00).  Feeding that through smoothstep keeps CHANGING
+                    #     the rotation even after the ramp has reached 1, so the
+                    #     "segment" is never rigid.  A BINARY mask only answers
+                    #     "is this vertex part of the arm at all", which is the
+                    #     only question it should answer.
+                    # (2) A few rings of dilation (`HD2_ARM_MASK_GROW`) cover the
+                    #     joint transition band, so the binary edge cannot tear.
+                    m = W > float(os.environ.get("HD2_ARM_MASK", "0.5"))
+                    grow = int(os.environ.get("HD2_ARM_MASK_GROW", "2"))
+                    if grow > 0:
+                        T2 = np.asarray([q[:3] for q in tris], dtype=np.int64)
+                        e2 = np.concatenate([T2[:, [0, 1]], T2[:, [1, 2]],
+                                             T2[:, [2, 0]]])
+                        s2 = np.concatenate([e2[:, 0], e2[:, 1]])
+                        d2 = np.concatenate([e2[:, 1], e2[:, 0]])
+                        for _ in range(grow):
+                            hit = np.zeros(len(out), dtype=bool)
+                            np.logical_or.at(hit, s2, m[d2])
+                            m = m | hit
+                    mask = m.astype(np.float64)
+                else:
+                    mm = np.clip(W / float(os.environ.get("HD2_ARM_MASK", "0.5")),
+                                 0.0, 1.0)
+                    mask = mm * mm * (3.0 - 2.0 * mm)
                 u = np.asarray(J[2], float) - np.asarray(J[0], float)
                 u = u / max(float(np.linalg.norm(u)), 1e-9)
                 tt = (out - np.asarray(J[0], float)) @ u
-                band = float(os.environ.get('HD2_ARM_BAND', '0.090'))
+                # `rigid` uses a 1.5 cm joint transition, `axis` the old 18 cm
+                # one.  18 cm is 65% of a 27 cm forearm, so the "segment" was
+                # continuously bent along its WHOLE length instead of turning as
+                # a rigid body -- that is the S-shaped forearm.  With a 1.5 cm
+                # band the rotation is constant in the middle of every segment
+                # (a true rigid body) and only the joint neighbourhood blends.
+                if arm_rot_mode == 'rigid':
+                    band = float(os.environ.get('HD2_ARM_GAP', '0.015'))
+                else:
+                    band = float(os.environ.get('HD2_ARM_BAND', '0.090'))
 
                 def ramp(c):
                     x = np.clip((tt - (c - band)) / (2.0 * band), 0.0, 1.0)
@@ -1156,21 +1195,37 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             # spiral on the forearm, the torn tiger mouth and the detached
             # wristband the user found.  Here each level applies ONE rotation
             # with a smooth scalar weight, so all it can do is pinch.
+            angle_space = (arm_rot_mode == 'rigid')
             for k in (2, 1, 0):
                 if float(arm_rot[k]) == 0.0:
                     continue
-                c, s = np.cos(th[k]), np.sin(th[k])
                 v = out - np.asarray(J[k], float)
-                rp = np.stack([v[:, 0] * c + v[:, 2] * s, v[:, 1],
-                               -v[:, 0] * s + v[:, 2] * c], 1)
-                out = out + g[k][:, None] * (rp - v)
+                if angle_space:
+                    # RIGID for ANY g: rotate by g*theta, i.e. exp(g*theta*A).
+                    # `out + g*(R v - v)` mixes the IDENTITY and R with weights
+                    # (1-g, g); that linear map is not orthogonal -- it pinches
+                    # by cos((1-g)*theta/2) and shears by sin((1-g)*theta/2) --
+                    # which is a residual twist on top of the bend.  Scaling the
+                    # ANGLE instead keeps every step a pure rotation, so the
+                    # composition of the three levels is rigid too.
+                    ang = g[k] * th[k]
+                    ca, sa = np.cos(ang), np.sin(ang)
+                    rp = np.stack([v[:, 0] * ca + v[:, 2] * sa, v[:, 1],
+                                   -v[:, 0] * sa + v[:, 2] * ca], 1)
+                    out = np.asarray(J[k], float) + rp
+                else:
+                    c, s = np.cos(th[k]), np.sin(th[k])
+                    rp = np.stack([v[:, 0] * c + v[:, 2] * s, v[:, 1],
+                                   -v[:, 0] * s + v[:, 2] * c], 1)
+                    out = out + g[k][:, None] * (rp - v)
 
         say('arm orientation: shoulder %+.1f / elbow %+.1f / wrist %+.1f deg about '
             'the world Y axis, MESH only, pivots = the original bone origins, '
-            'nested innermost-first (%s), weighted by the arm bones\' own LBS '
-            'weights (%d smoothing passes)'
+            'nested innermost-first, mode %s (mask %s, band %.4f m)'
             % (arm_rot[0], arm_rot[1], arm_rot[2], arm_rot_mode,
-               int(arm_rot_smooth)))
+               'binary' if arm_rot_mode == 'rigid' else
+               ('axis ramp' if arm_rot_mode == 'axis' else 'LBS weights'),
+               band if arm_rot_mode in ('axis', 'rigid') else 0.0))
 
     # ---- 4c. MESH-ONLY translation ----------------------------------------
     # The rig must not move -- `S_bind == rest_hd2` is the whole reason the idle
@@ -1368,16 +1423,18 @@ def main():
                          'over a few edges.  The LBS weights jump across one edge '
                          'at the elbow and the wrist, and a 26 deg wrist rotation '
                          'over a 1 cm edge stretches it ~5x.')
-    ap.add_argument('--arm-rot-mode', choices=('axis', 'seq', 'blend'),
-                    default='axis',
-                    help="'axis' (default): each arm segment is rotated RIGIDLY "
-                         "about its own original bone origin; the 0->1 transition "
-                         "at the elbow and the wrist is a ramp along the ARM AXIS, "
-                         "so every shell of the garment at the same place moves by "
-                         "the same amount (no cracks).  'seq': same rotations, but "
-                         "weighted by the source's LBS weights -- the shells come "
-                         "apart.  'blend': round 45c's ROOT->TIP version.  Both "
-                         "kept for A/B only.")
+    ap.add_argument('--arm-rot-mode', choices=('rigid', 'axis', 'seq', 'blend'),
+                    default='rigid',
+                    help="'rigid' (default, round 45e): each arm segment turns as "
+                         "a RIGID BODY -- a BINARY arm mask, a 1.5 cm transition "
+                         "band at the joints (HD2_ARM_GAP) and the rotation angle "
+                         "scaled by g (J + R(g*theta)(v-J)), which stays a pure "
+                         "rotation for any g.  'axis' (round 45d): same rotations, "
+                         "but a CONTINUOUS smoothstep(W) mask and an 18 cm band, so "
+                         "the segment is continuously bent and the forearm comes "
+                         "out S-shaped.  'seq': weighted by the source's LBS "
+                         "weights -- the shells come apart.  'blend': round 45c's "
+                         "ROOT->TIP version.  The last three are kept for A/B only.")
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
