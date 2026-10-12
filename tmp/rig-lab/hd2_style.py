@@ -152,6 +152,76 @@ def is_arm_bone(name):
         k in name for k in ARM_BONE_KEYS)
 
 
+def arm_vertex_partition(verts, src_nm, side, prefix):
+    """Split vertices into (upper-arm, distal, arm) for ONE side.
+
+    Ownership is decided by the vertex's PRIMARY bone -- the largest of its
+    three weights -- never by "any weight above zero".  A shoulder vertex can
+    carry 0.9994 UpperArm and 0.0006 Forearm, and counting that trace as
+    "distal" forced f = 1 on the upper-arm ROOT, which made the displacement
+    jump 3.7 cm across a single edge (`tmp/rig-lab/_dbg_3b_jump.py`).  With the
+    primary bone every vertex gets exactly one side and one group.
+    """
+    SD = side.upper()
+    nv = len(verts)
+    up = np.zeros(nv, dtype=bool)
+    far = np.zeros(nv, dtype=bool)
+    arm = np.zeros(nv, dtype=bool)
+    for k, v in enumerate(verts):
+        w = v['w']
+        j = 0 if (w[0] >= w[1] and w[0] >= w[2]) else (1 if w[1] >= w[2] else 2)
+        if w[j] <= 0.0:
+            continue
+        bi = int(v['bones'][j])
+        if bi < 0 or bi >= len(src_nm):
+            continue
+        nm = src_nm[bi]
+        if nm.startswith(prefix):
+            nm = nm[len(prefix):]
+        if not nm.startswith(SD + '_'):
+            continue
+        tail = nm[len(SD) + 1:]
+        if tail.startswith('UpperArm'):
+            up[k] = True
+            arm[k] = True
+        elif (tail.startswith('Forearm') or tail.startswith('Hand')
+              or tail.startswith('Finger')):
+            far[k] = True
+            arm[k] = True
+        elif tail.startswith('Clavicle') or tail.startswith('Shoulder'):
+            arm[k] = True
+    return up, far, arm
+
+
+def arm_stretch_field(P, verts, src_nm, side, prefix, SH, EL):
+    """The section-3b displacement ramp `f` for ONE side.
+
+        s = dot(v - SH, u)         u = (EL - SH)/|EL - SH|,  L = |EL - SH|
+        f = clamp(s / L, 0, 1)     LINEAR ramp -> uniform axial stretch
+        f[distal] = 1              forearm/hand/fingers: rigid translation
+        f[body side of joint] = 0  only what is INBOARD of the shoulder joint
+
+    The last line is deliberately "inboard of the joint", not "everything the
+    partition did not claim": `source_extra_78` is a helper bone hung off the
+    HAND, so its vertices sit on the arm but the primary-bone partition cannot
+    name them.  Pinning those left them behind while their neighbours moved a
+    full gain and the shell tore open (5 cm jump, `_dbg_3b_jump.py`).
+    """
+    SH = np.asarray(SH, float)
+    EL = np.asarray(EL, float)
+    d = EL - SH
+    L = float(np.linalg.norm(d))
+    up, far, arm = arm_vertex_partition(verts, src_nm, side, prefix)
+    if L < 1e-9:
+        return np.zeros(len(P)), up, far, arm
+    u = d / L
+    s = (P - SH) @ u
+    f = np.clip(s / L, 0.0, 1.0)
+    f[far] = 1.0
+    f[(~arm) & (s <= 0.0)] = 0.0
+    return f, up, far, arm
+
+
 def q_wxyz_to_m(q):
     """Quaternion (w,x,y,z) -> 4x4 rotation, column-vector convention."""
     w, x, y, z = q
@@ -216,6 +286,31 @@ def rot_angle_axis(R):
     w = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
     n = np.linalg.norm(w)
     return ang, (w / n if n > 1e-9 else np.zeros(3))
+
+
+def rot_axis_angle(axis, ang):
+    """Axis + angle -> 3x3 rotation (Rodrigues), column-vector convention."""
+    x, y, z = axis
+    c, s = math.cos(ang), math.sin(ang)
+    C = 1.0 - c
+    return np.array([
+        [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, c + z * z * C]], dtype=np.float64)
+
+
+def min_arc_rotation(a, b):
+    """The shortest rotation taking direction `a` onto direction `b`."""
+    a = np.asarray(a, float)
+    b = np.asarray(b, float)
+    a = a / max(float(np.linalg.norm(a)), 1e-12)
+    b = b / max(float(np.linalg.norm(b)), 1e-12)
+    ax = np.cross(a, b)
+    s = float(np.linalg.norm(ax))
+    c = float(a @ b)
+    if s < 1e-9:
+        return np.eye(3) if c > 0.0 else -np.eye(3)
+    return rot_axis_angle(ax / s, math.atan2(s, c))
 
 
 def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name,
@@ -411,7 +506,11 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              skeleton='native', mesh_shift=(0.0, 0.0, 0.0), upper_scale=1.0,
              upper_pivot_z=None, upper_blend=0.20, arm_fit=1.0, arm_perp=0.0,
              arm_up=0.55, arm_smooth=8, arm_taper=(-0.05, 0.22), arm_rot=None,
-             arm_rot_smooth=8, arm_rot_mode='axis', verbose=True):
+             arm_rot_smooth=8, arm_rot_mode='rigid',
+             arm_scratch=True, arm_scratch_deg=None, arm_scratch_elbow=True,
+             arm_elbow_open=0.0, arm_hand_tilt=0.0,
+             arm_scratch_upper_gain=0.0, head_scale=1.0,
+             verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
 
     The MESH is ALWAYS baked around the SNAPPED rest (`rest_sym`, whose heads are
@@ -470,6 +569,17 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     prof = json.load(open(pose_profile, encoding='utf-8'))
     deltas = prof['symmetric_axis_deltas_wxyz']
     body_names = set(prof['body_bones'])
+    if arm_scratch:
+        # Round 46.  BatchTool's profile ships exactly three tables, and ALL
+        # THREE only ever touch the arm chain -- verified by dumping the file:
+        # tpose_basis(30 bones) / initial_basis(30) / symmetric_axis_deltas(20)
+        # are 100% l|r clavicle, shoulder, elbow, hand + fingers, with ZERO
+        # torso, leg or head bones.  So "stop letting BatchTool pose the arm" is
+        # exactly "drop all three", and by construction it cannot affect anything
+        # outside the arm.
+        deltas = {}
+        say('arm: BatchTool arm tables DISABLED '
+            '(tpose_basis / initial_basis / axis_deltas are arm-only)')
     rest_hd2 = {h['index']: m_to_np(h['world']) for h in hd2}
     by_idx = {h['index']: h for h in hd2}
     order = sorted(hd2, key=lambda h: h['index'])   # TocData is parent-first
@@ -499,7 +609,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
 
     basis_t = ({n: q_wxyz_to_m(q)
                 for n, q in prof['tpose_basis_rotations_wxyz'].items()}
-               if axis_roundtrip else {})
+               if (axis_roundtrip and not arm_scratch) else {})
     rest_t = {}
     for h in order:
         p = parent_of(h)
@@ -624,10 +734,16 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # rest" render, so the mesh is transformed too.
     if abs(leg_tilt) > 1e-9 and 'hips' in new_head and 'l_foot' in new_head:
         th = math.radians(leg_tilt)
-        c, s = math.cos(th), math.sin(th)
+        # NB: `ct`/`st`, NOT `c`/`s`.  `s` is the closure's uniform SCALE, and
+        # `align_pts` reads it; rebinding it here silently shrank every `joint()`
+        # call made afterwards (the arm block's "pivot = source shoulder" log
+        # printed (-0.0107, 0.0501, 0.1461) instead of (-0.1154, 0.0532, 1.5701)
+        # -- a point at ankle height).  The mesh survived only because those
+        # joints are used for DIRECTIONS, and min_arc_rotation normalises.
+        ct, st = math.cos(th), math.sin(th)
         ankle = 0.5 * (new_head['l_foot'] + new_head['r_foot'])
-        Rl = trans(ankle) @ np.array([[1, 0, 0, 0], [0, c, s, 0],
-                                      [0, -s, c, 0], [0, 0, 0, 1]], float) @ trans(-ankle)
+        Rl = trans(ankle) @ np.array([[1, 0, 0, 0], [0, ct, st, 0],
+                                      [0, -st, ct, 0], [0, 0, 0, 1]], float) @ trans(-ankle)
         delta = (Rl @ np.append(new_head['hips'], 1.0))[:3] - new_head['hips']
         turned = {'%s_%s' % (sd, j) for sd in ('l', 'r') for j in ('thigh', 'knee')}
         planted = {'%s_%s' % (sd, j) for sd in ('l', 'r') for j in ('foot', 'ball', 'toe')}
@@ -770,9 +886,240 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             'what the BatchTool\'s final "back to the initial state + original '
             'bone axes" step does)')
 
+    # ---- 3b. UPPER-ARM LENGTHENING (MESH-LEVEL AXIAL STRETCH) --------------
+    # Goal: make the upper arm genuinely LONGER on the MESH, with no step at the
+    # elbow.  See `docs/arm-retarget-lessons.md` and
+    # `tmp/rig-lab/ARM_ELBOW_ARTIFACT_BRIEF.md` (independent review).
+    #
+    # The first implementation only TRANSLATED THE WORKING PIVOTS
+    # (`rest_sym[l_elbow]`, `rest_sym[l_hand]`).  That cannot lengthen anything:
+    #     D[b] = D[parent] . rest_sym[b] . basis[b] . inv(rest_sym[b])
+    # recurses PARENT-FIRST, so `D[l_shoulder]` -- the matrix every upper-arm
+    # vertex uses -- does not depend on `rest_sym[l_elbow]` at all.  The upper
+    # arm therefore stayed exactly where it was, the forearm was carried out by
+    # the elbow's new pivot, and the difference had to be absorbed by the
+    # elbow's weight transition band: a sideways STEP at the elbow, not a longer
+    # arm.  (The independent review measured it on the real model: `src1` moved
+    # by 0 m; the distal rigid region moved 33.9 mm, and only because the elbow
+    # is rotated 39.6 deg -- with that rotation switched off the final mesh
+    # difference was 1e-15 m.)
+    #
+    # The fix deforms the MESH ITSELF, in the T-POSE, along the SOURCE upper-arm
+    # axis, and carries the working pivots with it:
+    #
+    #     s(v) = dot(v - S, u)              # metres along shoulder->elbow
+    #     f(v) = clamp(s(v)/L, 0, 1)        # LINEAR ramp: uniform axial stretch
+    #     v   += u * gain * f(v)
+    #
+    #   * shoulder end (f = 0)    -> pinned, the shoulder seam does not move;
+    #   * inside the upper arm    -> an AFFINE axial scale of 1 + gain/L, the
+    #                                cross-section is untouched;
+    #   * elbow and beyond (f=1)  -> a RIGID translation by `gain * u`, so the
+    #                                forearm keeps its length to the millimetre.
+    #
+    # Two details the review insisted on:
+    #   (a) PARTITION BY SOURCE BONE OWNERSHIP, never by the axis projection.  A
+    #       cuff or finger vertex can project back to s < L, and clamping it
+    #       there would locally squash the distal shell.  Every vertex that
+    #       belongs to `Forearm` / `Hand` / `Finger*` is forced to f = 1.
+    #   (b) The WHOLE SUBTREE below the elbow moves with the pivots (hand,
+    #       fingers, twist/armour helpers), not just the elbow and the wrist.
+    #       Otherwise the identity  C_(E+d)(v+d) = C_E(v) + d  would not hold
+    #       and the hand would later rotate about a stale pivot.
+    #
+    # `src1` and `rest_sym` are the only things touched.  Under
+    # `skeleton='native'` the shipped rig is `rest_hd2` verbatim (4b below), so
+    # the bones the game animates do not move by a micron.
+    if arm_scratch and arm_scratch_upper_gain != 0.0:
+        gain = float(arm_scratch_upper_gain)
+        src_nm = [b['name'] for b in src]
+        for side in ('l', 'r'):
+            SD = side.upper()
+            n_sh, n_el = '%s_shoulder' % side, '%s_elbow' % side
+            if n_sh not in hby or n_el not in hby:
+                say('arm %s: upper-arm gain skipped (joints missing)' % side)
+                continue
+            i_sh, i_el = hby[n_sh]['index'], hby[n_el]['index']
+            SH = origin_np(rest_sym[i_sh])
+            EL = origin_np(rest_sym[i_el])
+            u = EL - SH
+            L = float(np.linalg.norm(u))
+            if L < 1e-9:
+                say('arm %s: upper-arm gain skipped (degenerate axis)' % side)
+                continue
+            u = u / L
+
+            # (a)+(b) the partition and the displacement ramp.  The partition is
+            #     BINARY (by the vertex's PRIMARY bone) and the magnitude comes
+            #     from the geometric ramp alone -- the review was explicit that
+            #     the stretch must NOT be multiplied by the LBS weights.
+            f, up_v, far_v, arm_v = arm_stretch_field(
+                src1, verts, src_nm, side, SRC_PREFIX, SH, EL)
+            src1 = src1 + u[None, :] * (gain * f)[:, None]
+
+            # (c) carry the working pivots: the elbow's WHOLE subtree
+            moved = [i_el]
+            stack = list(hd2_children.get(i_el, ()))
+            while stack:
+                c = stack.pop()
+                moved.append(c)
+                stack.extend(hd2_children.get(c, ()))
+            shift4 = trans(u * gain)
+            for i in moved:
+                if i in rest_sym:
+                    rest_sym[i] = shift4 @ rest_sym[i]
+
+            say('arm %s: UPPER ARM stretched on the MESH by %+.4f m along the '
+                'SOURCE T-pose shoulder->elbow axis (%.3f, %.3f, %.3f); upper '
+                'arm %.4f -> %.4f m; %d upper-arm + %d distal + %d arm vertices; '
+                '%d working pivots below the elbow carried with the mesh; the '
+                'shipped rig is untouched'
+                % (side, gain, u[0], u[1], u[2], L, L + gain,
+                   int(up_v.sum()), int(far_v.sum()), int(arm_v.sum()),
+                   len(moved)))
+
     # ---- 4. T-pose -> A-pose, then the per-vertex transform ---------------
     basis = {}
-    if apose:
+    if arm_scratch:
+        # OUR OWN shoulder rotation, injected at the `D` layer -- never on
+        # vertices.
+        #
+        # Why the D layer: `D[b] = D[parent] . rest[b] . basis[b] . inv(rest[b])`
+        # recurses PARENT-FIRST, so one rotation on `l_shoulder` is inherited by
+        # the forearm, the hand and every finger.  The limb therefore turns as a
+        # single rigid body and the elbow is welded by construction, while the
+        # LBS weights blend it smoothly into the chest on their own.  Rotating
+        # vertices instead cannot do that -- it would move the upper-arm shell
+        # and leave the forearm shell behind, which is exactly the crack we have
+        # been chasing.
+        #
+        # The pivot is the bone's own head: conjugating by `rest[b]` turns
+        # `basis[b]` into a rotation about `rest[b]`'s ORIGIN, i.e. about the
+        # SNAPPED shoulder joint -- the source model's own shoulder, as asked.
+        for side in ('l', 'r'):
+            SD = side.upper()
+            s_up, s_fo, s_ha = ('%s_UpperArm' % SD, '%s_Forearm' % SD,
+                                '%s_Hand' % SD)
+            h_sh, h_el, h_ha = ('%s_shoulder' % side, '%s_elbow' % side,
+                                '%s_hand' % side)
+            if (s_up not in short or s_fo not in short
+                    or h_sh not in hby or h_el not in hby):
+                say('arm %s: shoulder/elbow missing -- skipped' % side)
+                continue
+            p_sh, p_el = joint(s_up), joint(s_fo)
+            d_up_src = p_el - p_sh
+            d_up_tgt = (origin_np(rest_hd2[hby[h_el]['index']])
+                        - origin_np(rest_hd2[hby[h_sh]['index']]))
+            if arm_scratch_deg is not None:
+                # a plain front-view tilt about world +Y, kept for A/B.
+                # +Y is FORWARD and the left arm sits at -X, so "tilt down" is a
+                # NEGATIVE angle on the left and a positive one on the right.
+                sgn = -1.0 if side == 'l' else 1.0
+                R_sh = rot_axis_angle(np.array([0.0, 1.0, 0.0]),
+                                      math.radians(sgn * float(arm_scratch_deg)))
+                how = 'fixed %.2f deg down about +Y' % float(arm_scratch_deg)
+            else:
+                R_sh = min_arc_rotation(d_up_src, d_up_tgt)
+                how = 'min-arc onto HD2 native %s_shoulder->%s_elbow' % (side, side)
+            ang, ax = rot_angle_axis(R_sh)
+            # `D[b] = rest[b] . basis[b] . inv(rest[b])`, and with `basis` a PURE
+            # rotation `Rb` that expands to `T(ts) . (Rs . Rb . Rs^-1) . T(-ts)`
+            # -- a rotation about the bone's head.  So rotating by `R` about a
+            # WORLD axis needs `Rb = Rs^-1 . R . Rs`.  Passing the full 4x4
+            # `rest` instead cancels the translation and spins the arm about the
+            # WORLD ORIGIN, which throws the hand a metre out to the side.
+            Rs = rest_sym[hby[h_sh]['index']][:3, :3]
+            B4 = np.eye(4)
+            B4[:3, :3] = np.linalg.inv(Rs) @ R_sh @ Rs
+            basis[h_sh] = B4
+            say('arm %s: shoulder %s -> %.2f deg about (%.3f, %.3f, %.3f); pivot = '
+                'source shoulder (%.4f, %.4f, %.4f)'
+                % (side, how, ang, ax[0], ax[1], ax[2],
+                   p_sh[0], p_sh[1], p_sh[2]))
+
+            # ---- the ELBOW: exactly the same idea, one level further out ----
+            # The shoulder rotation above is inherited by every descendant, so
+            # after it the forearm already points along the UPPER-ARM bone.  What
+            # is still wrong is the elbow's own hinge: HD2's forearm does NOT
+            # continue the upper arm, it swings FORWARD (top view 46.5 deg
+            # against the upper arm's 3.3 deg).
+            #
+            # `D[el] = D[sh] . rest[el] . basis[el] . inv(rest[el])`, so anything
+            # injected here is composed AFTER the shoulder.  The rotation the
+            # forearm actually needs is therefore the one that takes the SOURCE
+            # forearm direction onto `inv(R_sh) . target` -- if the shoulder had
+            # already fixed the forearm this comes out as the identity.
+            #
+            # `arm_elbow_open` (round 52): the user measured a 6.5 deg residual on
+            # the FOREARM in the top view and asked for it to be added on top.
+            # It can be, and it is nothing exotic: the axis of `R_el` IS the
+            # normal of the (upper-arm, forearm) plane -- `inv(R_sh) . cross(
+            # d_up_tgt, d_fo_tgt)` reproduces `rot_angle_axis(R_el)[1]` to
+            # machine precision (probe: |dot| = 1.00000, angle 0.000 deg) -- i.e.
+            # the elbow's true hinge.  So "open the elbow by X deg" is just
+            # "swing the target forearm direction X deg inside that plane",
+            # which is a pure re-solve of the same min-arc.  Positive = STRAIGHTER
+            # (bend angle drops by exactly that many degrees); negative = more bent.
+            if arm_scratch_elbow and s_ha in short and h_ha in hby:
+                d_fo_src = joint(s_ha) - p_el
+                d_fo_tgt = (origin_np(rest_hd2[hby[h_ha]['index']])
+                            - origin_np(rest_hd2[hby[h_el]['index']]))
+                if abs(arm_elbow_open) > 1e-9:
+                    n_w = np.cross(d_up_tgt, d_fo_tgt)
+                    nn = float(np.linalg.norm(n_w))
+                    if nn > 1e-9:
+                        d_fo_tgt = rot_axis_angle(
+                            n_w / nn, -math.radians(float(arm_elbow_open))) @ d_fo_tgt
+                R_el = min_arc_rotation(d_fo_src, R_sh.T @ d_fo_tgt)
+                ae, axe = rot_angle_axis(R_el)
+                Rse = rest_sym[hby[h_el]['index']][:3, :3]
+                B4e = np.eye(4)
+                B4e[:3, :3] = np.linalg.inv(Rse) @ R_el @ Rse
+                basis[h_el] = B4e
+                say('arm %s: elbow    min-arc onto HD2 native %s_elbow->%s_hand '
+                    '%s -> %.2f deg about (%.3f, %.3f, %.3f); pivot = source elbow '
+                    '(%.4f, %.4f, %.4f); hand/fingers follow through D'
+                    % (side, side, side,
+                       ('[elbow opened %+.2f deg]' % arm_elbow_open)
+                       if abs(arm_elbow_open) > 1e-9 else '',
+                       ae, axe[0], axe[1], axe[2],
+                       p_el[0], p_el[1], p_el[2]))
+
+            # ---- the HAND: a plain world-axis tilt about the wrist ----------
+            # Round 53.  The user's model of the arm: in the T-pose it is a
+            # steel pipe whose AXIS is z, and the thumb -- spread -- always points
+            # along the pipe's SURFACE NORMAL, which is x; y is whatever is left.
+            # Measured straight off the source T-pose (`_probe_hand_tpose.py`),
+            # and it comes out exactly on the world axes:
+            #     z  elbow->wrist = (-1, 0, 0)  = -X      (the pipe)
+            #     x  thumb        = ( 0, 1, 0)  = +Y      <- the rotation axis
+            #     y  z x x        = ( 0, 0,-1)  = -Z      (left; +Z on the right)
+            # Both thumbs point +Y, i.e. both palms are pronated (face DOWN), so
+            # the BACK of the hand is +Z on the left and -Z on the right.  Tilting
+            # the hand's long axis toward the back of the hand -- "手掌翘起",
+            # wrist EXTENSION, the reverse of the way the fingers curl -- is
+            # therefore +arm_hand_tilt about +Y on the left and the NEGATIVE of it
+            # on the right: one mirrored number, exactly like the shoulder.
+            #
+            # No min-arc here, no plane, no fitting: the axis the user named IS a
+            # world axis in the frame we are told to work in.  Injected at
+            # `l_hand`, so it lands AFTER the shoulder and the elbow in the D
+            # recursion and the fingers ride along rigidly.
+            if abs(arm_hand_tilt) > 1e-9 and h_ha in hby:
+                sgn_h = 1.0 if side == 'l' else -1.0
+                R_ha = rot_axis_angle(np.array([0.0, 1.0, 0.0]),
+                                      math.radians(sgn_h * float(arm_hand_tilt)))
+                Rsha = rest_sym[hby[h_ha]['index']][:3, :3]
+                B4h = np.eye(4)
+                B4h[:3, :3] = np.linalg.inv(Rsha) @ R_ha @ Rsha
+                basis[h_ha] = B4h
+                p_wr = origin_np(rest_sym[hby[h_ha]['index']])
+                say('arm %s: hand     tilt %+.2f deg about world +Y (the T-pose '
+                    'thumb = the pipe surface normal) at the wrist; pivot = '
+                    '(%.4f, %.4f, %.4f); fingers follow through D'
+                    % (side, sgn_h * float(arm_hand_tilt),
+                       p_wr[0], p_wr[1], p_wr[2]))
+    elif apose:
         for name, q in prof['initial_basis_rotations_from_baked_tpose_wxyz'].items():
             basis[name] = q_wxyz_to_m(q)
     else:
@@ -871,7 +1218,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     #
     # It runs BEFORE the mesh-only shift/scale (4c/4d) so the residual is applied
     # in the same space the two rests are expressed in.
-    if arm_fit != 0.0:
+    if arm_fit != 0.0 and not arm_scratch:
         Z = np.array([0.0, 0.0, 1.0])
         T = np.asarray([t[:3] for t in tris], dtype=np.int64)
         e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
@@ -998,7 +1345,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # spread it shrinks by cos(8.6) = 0.989 and shears by sin(8.6) = 0.15.  That
     # is the "candy wrapper" spiral on the forearm, the torn tiger mouth and the
     # detached wristband.  `arm_rot_mode='blend'` keeps the old behaviour for A/B.
-    if arm_fit != 0.0 and arm_rot is not None and any(arm_rot):
+    if arm_fit != 0.0 and arm_rot is not None and any(arm_rot) and not arm_scratch:
         idx = {h['name']: h['index'] for h in hd2}
 
         def group(nm, side):
@@ -1262,6 +1609,37 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             'over +/- %.3f m on the MESH only' % (upper_scale, piv[2], piv[1],
                                                   upper_blend))
 
+    # ---- 4e. MESH-ONLY head scale -----------------------------------------
+    # The rig stays, as always.  The source head is simply too small: its top
+    # sits 0.2876 m above HD2's `head` joint while the reference's sits
+    # 0.3677 m above it.  Scale about the neck/head seam -- halfway between the
+    # two joints -- and scale UNIFORMLY, so the skull does not go pointy.  The
+    # long hair is weighted to `head` too, so it grows with the skull for free.
+    # Round 51.
+    if abs(head_scale - 1.0) > 1e-9 and 'head' in hby and 'neck' in hby:
+        sub = set()
+        st = [hby['head']['index']]
+        while st:
+            c = st.pop()
+            if c in sub:
+                continue
+            sub.add(c)
+            st.extend(hd2_children.get(c, ()))
+        piv = 0.5 * (np.asarray(origin_np(rest_shipped[hby['neck']['index']]), float)
+                     + np.asarray(origin_np(rest_shipped[hby['head']['index']]), float))
+        sel = np.zeros(len(out), bool)
+        for k, v in enumerate(verts):
+            best, bw = -1, -1.0
+            for q in range(3):
+                if v['w'][q] > bw:
+                    best, bw = int(v['bones'][q]), v['w'][q]
+            if best >= 0 and resolved.get(best) in sub:
+                sel[k] = True
+        out[sel] = piv[None, :] + (out[sel] - piv[None, :]) * head_scale
+        say('head scale: x%.4f about the neck/head seam (z %+.4f) on the MESH '
+            'only; %d vertices = skull + everything hanging off it'
+            % (head_scale, piv[2], int(sel.sum())))
+
     # ---- 5. the pose the GAME actually shows ------------------------------
     # The shipped rest is  S_A = D * rest_sym  (rest_sym is the T-pose rest; D is
     # the T->A conversion, so S_A is the A-pose rest that the shipped mesh `out`
@@ -1366,6 +1744,25 @@ def main():
                     help='metres to drop the MESH (the rig never moves)')
     ap.add_argument('--mesh-back', type=float, default=0.0,
                     help='metres to push the MESH backwards (+Y is forward)')
+    ap.add_argument('--head-scale', type=float, default=1.0,
+                    help='uniformly scale the MESH of the head (skull + every '
+                         'part hanging off it, hair included) about the '
+                         'neck/head seam; the rig never moves')
+    ap.add_argument('--arm-elbow-open', type=float, default=0.0, metavar='DEG',
+                    help='swing the FOREARM inside the (upper-arm, forearm) '
+                         'plane by DEG degrees.  Positive = STRAIGHTER (the '
+                         'elbow bend drops by exactly DEG); negative = more '
+                         'bent.  The axis is the elbow\'s own hinge, so this is '
+                         'literally "the same elbow, 6.5 deg less bent".  The '
+                         'hand and fingers follow rigidly; the rig never moves.')
+    ap.add_argument('--arm-hand-tilt', type=float, default=0.0, metavar='DEG',
+                    help='tilt the HAND about the wrist by DEG, about the world '
+                         '+Y axis of the SOURCE T-POSE frame -- which is exactly '
+                         'the thumb, i.e. the pipe\'s surface normal in the '
+                         'user\'s model.  Positive = wrist EXTENSION (the hand '
+                         'tips toward the back of the hand, "palm up"), '
+                         'mirrored automatically between the two arms.  The '
+                         'fingers ride along rigidly; the rig never moves.')
     ap.add_argument('--upper-scale', type=float, default=1.0,
                     help='scale the MESH above the hips (torso/arms/head); the '
                          'rig never moves')
@@ -1445,7 +1842,10 @@ def main():
                  axis_roundtrip=not a.legacy_axis, skeleton=a.skeleton,
                  mesh_shift=(0.0, -a.mesh_back, -a.mesh_down),
                  upper_scale=a.upper_scale, upper_pivot_z=a.upper_pivot_z,
-                 upper_blend=a.upper_blend, arm_fit=a.arm_fit,
+                 upper_blend=a.upper_blend, head_scale=a.head_scale,
+                 arm_elbow_open=a.arm_elbow_open,
+                 arm_hand_tilt=a.arm_hand_tilt,
+                 arm_fit=a.arm_fit,
                  arm_perp=a.arm_perp, arm_up=a.arm_up, arm_smooth=a.arm_smooth,
                  arm_taper=(None if a.arm_taper is None else tuple(a.arm_taper)),
                  arm_rot=(None if a.arm_rot is None else tuple(a.arm_rot)),

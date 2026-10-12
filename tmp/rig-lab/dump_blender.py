@@ -33,6 +33,34 @@ VPK = ('D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/'
        'Lunalice_Zoey.vpk')
 OUT = 'out/blender'
 MODEL = 'survivor_teenangst'
+# ONE source of truth for the global mesh shift (x, y, z).  Round 51: 3 cm more
+# drop than the original 6 cm, so the knee AND the shoulder come down together.
+MESH_SHIFT = (0.0, -0.100, -0.090)
+# Round 51: the source head is too small.  Scale the skull (and everything
+# weighted to it -- the long hair included) UNIFORMLY about the neck/head seam.
+# 8/7 = 1.1429 is the user's read off Blender: head height 35 -> 40.
+HEAD_SCALE = 8.0 / 7.0
+# Round 52: the forearm is 6.5 deg too far forward in the TOP view.  The fix is
+# the elbow's own hinge, so it is a single number on the bone-level min-arc --
+# see hd2_style.retarget(arm_elbow_open=...).  Measured: our forearm sits at
+# +45.96 deg forward of -X and the reference patch at +39.43; opening the elbow
+# by 6.5 puts us at +39.48, i.e. 0.96 deg off instead of 6.49.
+ARM_ELBOW_OPEN = 6.5
+# Round 49/52: the upper-arm lengthening, in metres.  It was only ever reaching
+# the pipeline through main()'s argv default -- pin it down.
+ARM_UPPER_GAIN = 0.05
+# Round 53: tilt the HAND about the wrist, about the T-pose THUMB axis (which is
+# exactly world +Y in that frame -- see _probe_hand_tpose.py).  Positive =
+# EXTENSION: the hand tips toward the back of the hand, i.e. "手掌翘起".
+# This is the user's VISUAL read off Blender ("微调 10 度"), not a fitted number.
+# Be honest about the mesh-level evidence, which does NOT back it up: the
+# palm-slab plane normal is already only 3.50 deg off the reference at tilt 0,
+# and tilting makes it worse (6.67 at -7, 8.92 at +7, 9.40 at -10, 11.77 at +10).
+# Nearest-neighbour overlap says the same thing.  So this knob is currently
+# fighting the metrics -- if the hands still do not line up, suspect that what
+# the eye is seeing is a TRANSLATION (or the fingers), not a wrist roll.
+# One signed number; 0 disables.  `_diag_hand_tilt2.py` draws all three.
+ARM_HAND_TILT = 10.0
 
 
 def tri3(t):
@@ -140,12 +168,23 @@ def bone_table(r):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    # Round 49: the CURRENT model version is the one with the 5 cm upper-arm
+    # lengthening (scheme A -- the elbow, and the wrist with it, moved out along
+    # the source shoulder->elbow axis; the forearm keeps its length and the
+    # shipped rig is untouched).
+    gain = float(sys.argv[1]) if len(sys.argv) > 1 else ARM_UPPER_GAIN
     r = H.retarget(VPK, MODEL, TOC, BH, PP,
                    align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
-                   mesh_shift=(0.0, -0.100, -0.060),
+                   mesh_shift=MESH_SHIFT,
                    upper_scale=1.12, upper_pivot_z=1.15, upper_blend=0.45,
+                   arm_scratch_upper_gain=gain, head_scale=HEAD_SCALE,
+                   arm_elbow_open=ARM_ELBOW_OPEN,
+                   arm_hand_tilt=ARM_HAND_TILT,
                    verbose=True)
+    print('[dump] upper-arm gain = %+.4f m   elbow open = %+.2f deg   '
+          'hand tilt = %+.2f deg'
+          % (gain, ARM_ELBOW_OPEN, ARM_HAND_TILT))
 
     tris = np.asarray([tri3(t) for t in r['tris']], dtype=np.int32)
     nv = len(r['verts'])
@@ -212,9 +251,12 @@ def main():
                    params=dict(align='yaw', spine_map='mesh',
                                fallback='region', leg_tilt=5.7,
                                leg_splay=4.0, skeleton='native',
-                               mesh_shift=[0.0, -0.100, -0.060],
+                               mesh_shift=list(MESH_SHIFT),
                                upper_scale=1.12, upper_pivot_z=1.15,
-                               upper_blend=0.45),
+                               upper_blend=0.45, head_scale=HEAD_SCALE,
+                               arm_upper_gain=gain,
+                               arm_elbow_open=ARM_ELBOW_OPEN,
+                               arm_hand_tilt=ARM_HAND_TILT),
                    metrics=plain(r['metrics'])),
               open(os.path.join(OUT, 'meta.json'), 'w', encoding='utf-8'),
               indent=1, ensure_ascii=False)

@@ -33,7 +33,7 @@ PALETTE = [(255, 90, 90), (90, 220, 255), (255, 215, 80), (140, 255, 140),
 
 def run(**kw):
     base = dict(align='yaw', spine_map='mesh', fallback='region', leg_tilt=5.7,
-                leg_splay=4.0, mesh_shift=(0.0, -0.100, -0.060),
+                leg_splay=4.0, mesh_shift=(0.0, -0.100, -0.090),
                 upper_scale=1.12, upper_pivot_z=1.15, upper_blend=0.45,
                 verbose=False)
     base.update(kw)
