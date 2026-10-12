@@ -6,7 +6,8 @@
 - 保护 bug 的测试必须做破坏关键行的负对照；删除代码同时改造测试。dead-code 检查仅词匹配，需比较两个方向。提交会包含整个索引。
 - 用户自定义数据属于模组库；简单配置属于 settings.json；能由游戏数据重算的缓存才属于管理器目录。
 - Directory.Build.props 开 Nullable/ImplicitUsings/Deterministic、警告当错误（排除 NU1901..1904）。全测试约6–7分钟，计数须先实跑并分项报告。发布轻量标签；包内 cliVersion 带完整提交哈希。
-- Python 隔离环境 C:/Users/Administrator/.workbuddy-ai/binaries/python/envs/default/Scripts/python.exe（numpy/Pillow，无scipy）。Blender D:/SteamLibrary/steamapps/common/Blender/blender.exe。Bash heredoc 易被拦，写 tmp/*.py。删除钩子拒绝不得绕过。
+- Python 隔离环境 C:/Users/Administrator/.workbuddy-ai/binaries/python/envs/default/Scripts/python.exe（numpy/Pillow/**scipy 1.18.1**，cKDTree 可用；参考工具链需要）。Blender D:/SteamLibrary/steamapps/common/Blender/blender.exe。Bash heredoc 易被拦，写 tmp/*.py。删除钩子拒绝不得绕过。
+- rig-lab 脚本的 CWD 是 tmp/rig-lab/，`OUT='out/blender'` 是相对路径 ⇒ 产物在 **tmp/rig-lab/out/**，不在仓库根 out/。
 
 ## 工程
 - 管理器 WPF/net10，CLI net10，Core/Adaptation/GameItemAssets/SourceModel/SourceMigration net8；ManagedMain 过时。CoreServices 唯一装配点。
@@ -30,10 +31,23 @@
 - 绘图函数必须传实际投影轴，否则三视图都成XY。**画线也必须过屏幕变换 `f()`**：直接用投影后数据坐标画线会跑到画布外，只剩点可见（第55轮骨链连线就这样消失）。blender_render.py 必须传 .blend；所有输出用绝对路径。
 - 手部选区：`dominant bone ∈ 手部骨` = 3933 顶点但半径 0.204m，**吞掉前臂**；改用前臂轴投影 `(P−wrist)·(wrist−elbow) > −0.03` 切割。
 
+## 权重（第56轮调研，专家交接 WEIGHT_TRANSFER_BRIEF.md）
+- 我们的权重来源：导出阶段用 `snap_body()`/`resolve()` 按**名字/区域**表把源骨改名成 HD2 骨名；`spine_map='mesh'`（Spine→spine2，因源关节在区域底部、HD2 在中心），fallback=region+肢体测试。
+- **我们权重无硬伤**：121704 顶点、归一 min=p50=max=1.000000、影响数 `[0,49403,43705,28596,0]`、均值1.829、用骨49/107、**真硬缝0条**（274577 边中主导骨变化 4686=1.71%，但无一共享<1/3影响）。
+- **🔴 半精度闭合（我第一版判据错了）**：`round(w*2048)` 当 half 代理是**错的**（[0.25,0.5) 步长2^-12）。真实判据 = SDK `sdk-raw/hd2_system_skin_weights.py::normalize_half4`：要求 `math.fsum(half(w))==1` **精确成立**。实测 **49.417% 顶点不成立**（max偏差3.662e-4），SDK 助手可全修（最大单权重改动3.624e-4<1/1024）。量级 0.24mm ⇒ 不是视觉问题，是引擎接受/护甲裂缝问题。**C# 侧同样缺**：`CanonicalMeshPreparation.TryNormalizeSkinning` 只 float 归一后直接 `HalfToUInt16Bits`。
+- **🔴 hips vs spine1**：实测 `boss`/`hips`/`spine1` head 完全相同 (0,−0.0215,+0.9735)，`hips` 与 `spine1` 是 boss 下**兄弟**，分别驱动**腿链**与**躯干链**。我们**从不用 spine1**，参考躯干用39.9%/髋18.1%，差异 22317 顶点(18.3%)。**静止重合 ⇒ 所有静态检查都瞎，只在骨盆/脊柱相对转动时显形。** 离线判不了，已列专家问题 Q2。
+- 参考骨表**有 spine1、无 clavicle**；我们**有 clavicle(686顶点)、无 spine1**。差异几乎全是相邻骨差一格（head→neck 19.4%、hips→spine1 16.7%、spine2→spine1 1.6%…），唯一跨远的是 head→hips 546个(d50 66.6mm，双马尾下端)。主导骨一致率 53.7%（5mm 内 63.9%）。
+- 几何吻合：我们→参考 **p50 7.8 / p90 20.8 / p99 56.3 / max 141.8 mm**，5mm 内29.8%、20mm 内89.3%。约 10% 顶点 >20mm ⇒ 最近点转移会选错表面；参考自己设了 `--max-residual 0.05` 整块拒绝门槛。
+- 参考的 `weight_transfer.py` **对我们不可直接用**（是"他们自己的源 blend→mod"，依赖 DEFAULT_GLB/MOD=None 的自有工程）；走照搬得自己写转移。
+- 双马尾：`source_extra_74/77` 各~245 顶点在 z0.759–1.042，head 主导 868 顶点（z<1.40）邻居 108 次检查 100% 也是 head ⇒ **连通的双马尾下端**，非采样错误；离 head 关节 1.011m，头转30°摆动约0.5m。
+- Slim/Stocky 变体几何完全相同（同名 tag 下 p50/p90 一致到 0.1mm）⇒ 不存在比错体型的系统偏移（虽然我们混着取）。
+- 探针：`_probe_weightaudit.py` / `_probe_halfclosure.py` / `_probe_refweights.py` / `_probe_refpalette.py` / `_probe_refalign.py` / `_probe_weightcompare.py` / `_probe_headdom.py` / `_probe_variants.py`。
+- **度量口径**：判断"影响距离"要用**到骨头（关节枢轴）**的距离，**不能用骨段**（HD2 子节点侧向，child-direction deviation p95=91.45°，会把正确的骨报成150mm）。到关节 p50 238.6mm 这类数字**不是缺陷**（LBS 本就允许远骨，如整腿挂 hips）。
+
 ## 坐标、参照与数据
 - HD2 +X角色右、+Y前、+Z上；左肢在-X。单位米。原生踝不在脚心。
 - 参照 E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310；9ba626afa44a3aa3.patch_0 + gpu_resources，无manifest。E为测试库，D Steam为在用。
-- out/patchdump：左右臂unit 91eb7be84016ceab / 7336c6b662522f0e；上衣cae35ee15168145f、Hip17da843a4908511e、头盔af431352d9b95e83（脸猫耳长发）。完整高约2.113m。
+- out/patchdump：左右臂unit 91eb7be84016ceab(LeftArm_Undergarment_Slim_lod3) / 7336c6b662522f0e(RightArm_..._Slim)；上衣cae35ee15168145f(Torso_..._Slim)、Hip17da843a4908511e(Hip_..._Stocky)、af431352d9b95e83(**Torso_Undergarment_Slim_lod3**，z0.911..2.059 质心1.769，是上半身/头发外壳，**不是头盔**；仅2骨 neck83.9%+chest16.1%，不含head)。完整高约2.113m。
 - Unit矩阵行向量（平移flat12..14），read_hd2_rig已转置；前9骨为场景节点，空骨名按hash解码。骨轴Source/HD2局部+X，Blender+Y；末骨无子节点不能用下一骨头推轴。
 - tmp/rig-lab/ 一次性旧脚本已归档 _archive/；找旧探针先查此处。详细历史留每日日志和 docs/hd2-batchtool-sdk-findings.md 等，不把旧猜测当现状。
 
