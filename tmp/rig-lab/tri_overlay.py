@@ -8,7 +8,7 @@ Each ROW gets its own scale so the top view (a ~0.7 m footprint) is not a speck
 next to the 2.1 m front view, but the two COLUMNS of a row always share one
 scale, so within a row the two meshes are directly comparable.
 
-usage: tri_overlay.py [out.png] [WxH] [down_m] [back_m]
+usage: tri_overlay.py [out.png] [WxH] [down_m] [back_m] [up_scale] [up_pivot_z] [up_blend]
 """
 import json
 import os
@@ -34,6 +34,9 @@ PW, PH = ([int(x) for x in sys.argv[2].split('x')] if len(sys.argv) > 2
           else [330, 470])
 DOWN = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 BACK = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
+UPSCALE = float(sys.argv[5]) if len(sys.argv) > 5 else 1.0
+UPPIV = float(sys.argv[6]) if len(sys.argv) > 6 else 1.15
+UPBLEND = float(sys.argv[7]) if len(sys.argv) > 7 else 0.45
 TILT, SPLAY = 5.7, 4.0
 
 # (label, horizontal axis, vertical axis, depth axis, mirror-horizontal)
@@ -49,7 +52,9 @@ def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
                    align='yaw', spine_map='mesh', fallback='distance',
                    leg_tilt=TILT, leg_splay=SPLAY, skeleton='native',
-                   mesh_shift=(0.0, -BACK, -DOWN), verbose=False)
+                   mesh_shift=(0.0, -BACK, -DOWN),
+                   upper_scale=UPSCALE, upper_pivot_z=UPPIV,
+                   upper_blend=UPBLEND, verbose=False)
     ours = [tuple(x) for x in r['out']]
     tris, _lim = H.drop_outlier_tris(r['src_pts'], r['tris'])
 
@@ -68,8 +73,8 @@ def main():
     skel = {k: v for k, v in PV.hd2_rig_heads(TOC, BH).items()
             if k in PV.BONE_PARENT}
 
-    COLS = [('OURS  (mesh shifted down %.3f / back %.3f m)' % (DOWN, BACK),
-             ours, tris),
+    COLS = [('OURS  (mesh down %.3f / back %.3f m, upper x%.3f about z %.2f)'
+             % (DOWN, BACK, UPSCALE, UPPIV), ours, tris),
             ('REFERENCE patch', rp, rtris)]
 
     GAP, TOP, PAD = 30, 96, 12
@@ -125,10 +130,14 @@ def main():
     rigd = max(float(np.linalg.norm(r['rest_shipped'][i][:3, 3]
                                     - r['rest_hd2'][i][:3, 3]))
                for i in r['rest_shipped'])
-    print('mesh shift down %.4f back %.4f m | our zmin %.4f | ref zmin %.4f | '
+    print('mesh down %.4f back %.4f | upper scale x%.3f pivot z %.3f blend %.2f | '
+          'our zmin %.4f height %.4f | ref zmin %.4f height %.4f | '
           'idle vs bind %.2e m | shipped rig vs HD2 %.2e m'
-          % (DOWN, BACK, np.asarray(ours)[:, 2].min(),
-             min(p[2] for p in rp), idle, rigd))
+          % (DOWN, BACK, UPSCALE, UPPIV, UPBLEND,
+             np.asarray(ours)[:, 2].min(),
+             float(np.asarray(ours)[:, 2].max() - np.asarray(ours)[:, 2].min()),
+             min(p[2] for p in rp),
+             max(p[2] for p in rp) - min(p[2] for p in rp), idle, rigd))
 
 
 if __name__ == '__main__':

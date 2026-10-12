@@ -318,7 +318,8 @@ def load_source(vpk, model):
 def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.015,
              align='kabsch', apose=True, spine_map='legacy', fallback='parent',
              leg_tilt=0.0, leg_splay=0.0, axis_deltas=True, axis_roundtrip=True,
-             skeleton='native', mesh_shift=(0.0, 0.0, 0.0), verbose=True):
+             skeleton='native', mesh_shift=(0.0, 0.0, 0.0), upper_scale=1.0,
+             upper_pivot_z=None, upper_blend=0.20, verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
 
     The MESH is ALWAYS baked around the SNAPPED rest (`rest_sym`, whose heads are
@@ -747,6 +748,30 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         say('mesh shift: (%+.4f, %+.4f, %+.4f) m on the MESH only; the rig stays '
             'where HD2 has it' % tuple(mesh_shift))
 
+    # ---- 4d. MESH-ONLY upper-body scale -----------------------------------
+    # Same reasoning as 4c: the rig must not move, so "make the torso the right
+    # size" can only mean "resize the mesh".  That is what the reference patch
+    # does -- its skeleton is bit-identical to HD2's while its upper garment is
+    # modelled bigger.  Measured over the waist..chest band (probe_torso3.py):
+    #   width  ref/ours = 1.14     depth ref/ours = 1.10
+    # so a roughly uniform scale about the hips is what closes the gap.  The
+    # bottom edge is ramped with a smoothstep so the hip/thigh seam does not
+    # snap; round 3 replaces that ramp with a proper feather.
+    if upper_scale != 1.0:
+        hips = next(h for h in hd2 if h['name'] == 'hips')
+        piv = rest_hd2[hips['index']][:3, 3].astype(np.float64).copy()
+        if upper_pivot_z is not None:
+            piv[2] = float(upper_pivot_z)
+        z0 = piv[2] - upper_blend
+        z1 = piv[2] + upper_blend
+        tt = np.clip((out[:, 2] - z0) / max(z1 - z0, 1e-9), 0.0, 1.0)
+        w = tt * tt * (3.0 - 2.0 * tt)                      # smoothstep
+        s = (1.0 + (upper_scale - 1.0) * w)[:, None]
+        out = piv + (out - piv) * s
+        say('upper-body scale: x%.4f about the hips (z %.4f, y %+.4f), smoothstep '
+            'over +/- %.3f m on the MESH only' % (upper_scale, piv[2], piv[1],
+                                                  upper_blend))
+
     # ---- 5. the pose the GAME actually shows ------------------------------
     # The shipped rest is  S_A = D * rest_sym  (rest_sym is the T-pose rest; D is
     # the T->A conversion, so S_A is the A-pose rest that the shipped mesh `out`
@@ -848,6 +873,15 @@ def main():
                     help='metres to drop the MESH (the rig never moves)')
     ap.add_argument('--mesh-back', type=float, default=0.0,
                     help='metres to push the MESH backwards (+Y is forward)')
+    ap.add_argument('--upper-scale', type=float, default=1.0,
+                    help='scale the MESH above the hips (torso/arms/head); the '
+                         'rig never moves')
+    ap.add_argument('--upper-pivot-z', type=float, default=None,
+                    help='height the --upper-scale pivots about (default: the '
+                         'hips joint z)')
+    ap.add_argument('--upper-blend', type=float, default=0.20,
+                    help='half-width in metres of the smoothstep ramp at the hip '
+                         'seam used by --upper-scale')
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
@@ -856,7 +890,9 @@ def main():
                  apose=not a.no_apose, spine_map=a.spine_map, fallback=a.fallback,
                  leg_tilt=a.leg_tilt, leg_splay=a.leg_splay,
                  axis_roundtrip=not a.legacy_axis, skeleton=a.skeleton,
-                 mesh_shift=(0.0, -a.mesh_back, -a.mesh_down))
+                 mesh_shift=(0.0, -a.mesh_back, -a.mesh_down),
+                 upper_scale=a.upper_scale, upper_pivot_z=a.upper_pivot_z,
+                 upper_blend=a.upper_blend)
 
     os.makedirs(a.outdir, exist_ok=True)
     png = os.path.join(a.outdir, a.out)
