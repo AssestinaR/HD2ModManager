@@ -33,7 +33,7 @@ WATCH = ['hips', 'spine1', 'spine2', 'chest', 'neck', 'head', 'head_tip',
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                   spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                   spine_map='mesh', fallback='region', leg_tilt=5.7,
                    leg_splay=4.0, verbose=False)
     hd2 = PV.hd2_rig_heads(TOC, BH)
     by_name = {h['name']: h['index'] for h in r['hd2'] if h['name']}

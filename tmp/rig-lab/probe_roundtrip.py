@@ -43,7 +43,7 @@ def rot_ang(A, B):
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                   spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                   spine_map='mesh', fallback='region', leg_tilt=5.7,
                    leg_splay=4.0, axis_deltas=True, verbose=False)
     prof = json.load(open(PP, encoding='utf-8'))
     deltas = prof['symmetric_axis_deltas_wxyz']

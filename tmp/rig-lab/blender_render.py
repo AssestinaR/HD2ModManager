@@ -73,11 +73,16 @@ def shot(name, loc, rot):
 FRONT = ((0.0, 3.6, 1.05), (math.radians(90), 0, math.radians(180)))
 SIDE = ((3.6, 0.0, 1.05), (math.radians(90), 0, math.radians(90)))
 BACK = ((0.0, -3.6, 1.05), (math.radians(90), 0, 0))
+# close-ups: the round-2.5 damage is the twintails / head ribbon seen from behind
+HEAD_BACK = ((0.0, -1.30, 1.60), (math.radians(90), 0, 0))
+HEAD_FRONT = ((0.0, 1.30, 1.60), (math.radians(90), 0, math.radians(180)))
 
 set_vis(ours=True)
 shot('blend-ours-front', *FRONT)
 shot('blend-ours-side', *SIDE)
 shot('blend-ours-back', *BACK)
+shot('blend-ours-head-back', *HEAD_BACK)
+shot('blend-ours-head-front', *HEAD_FRONT)
 
 set_vis(ours=True, ref=True)
 shot('blend-compare-front', *FRONT)

@@ -31,7 +31,7 @@ def main():
     for tag, pf in (('with deltas (profile as shipped)', PP),
                     ('deltas emptied', FLAT)):
         r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, pf, align='yaw',
-                       spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                       spine_map='mesh', fallback='region', leg_tilt=5.7,
                        leg_splay=4.0, skeleton='native', verbose=False)
         out = np.asarray(r['out'])
         h = float(out[:, 2].max() - out[:, 2].min())

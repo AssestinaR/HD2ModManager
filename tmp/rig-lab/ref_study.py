@@ -46,7 +46,7 @@ def main():
     runs = {}
     for tl in (0.0, 5.7):
         runs[tl] = H.retarget(VPK, MODEL, TOC, BH, PP, align='yaw', spine_map='mesh',
-                              fallback='distance', leg_tilt=tl, verbose=False)
+                              fallback='region', leg_tilt=tl, verbose=False)
 
     meta = json.load(open('out/patchdump/units.json', encoding='utf-8'))
     names = PV.read_bone_names(BH)

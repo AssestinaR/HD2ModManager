@@ -40,7 +40,7 @@ def main():
     runs = []
     for tl in TILTS:
         r = H.retarget(VPK, MODEL, TOC, BH, PP, align='yaw', spine_map='mesh',
-                       fallback='distance', leg_tilt=tl, verbose=False)
+                       fallback='region', leg_tilt=tl, verbose=False)
         runs.append((tl, r))
         print('tilt %.1f -> bind z[%.4f,%.4f]' % (tl, np.asarray(r['out'])[:, 2].min(),
                                                   np.asarray(r['out'])[:, 2].max()))

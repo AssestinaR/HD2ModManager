@@ -43,7 +43,7 @@ def main():
                                              'head d', 'hip over foot'))
     for tilt in (0.0, 3.0, 5.0, 6.5, 8.0, 10.0):
         r = H.retarget(VPK, MODEL, TOC, BH, PP, align='yaw', spine_map='mesh',
-                       fallback='distance', leg_tilt=tilt, verbose=False)
+                       fallback='region', leg_tilt=tilt, verbose=False)
         nh = r['new_head']
         hip = nh['l_thigh']
         P = np.asarray(r['out'])

@@ -31,7 +31,7 @@ REF = ['af431352d9b95e83', 'cae35ee15168145f', '17da843a4908511e',
 
 def load():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
                    mesh_shift=(0.0, -0.100, -0.060), verbose=False)
     ours = np.asarray(r['out'], dtype=np.float64)
@@ -133,7 +133,7 @@ _last = {}
 def load2():
     _last.update(dict(zip(('out', 'ref', 'rig'), (None, None, None))))
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
                    mesh_shift=(0.0, -0.100, -0.060), verbose=False)
     _last.update(r)

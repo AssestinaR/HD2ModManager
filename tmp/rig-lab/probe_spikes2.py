@@ -40,7 +40,7 @@ def main():
     for vpk, model, tag in MODELS:
         path = os.path.join(ADDONS, vpk)
         r = H.retarget(path, model, TOC, BH, PP, align='yaw', spine_map='mesh',
-                       fallback='distance', leg_tilt=5.7, leg_splay=4.0,
+                       fallback='region', leg_tilt=5.7, leg_splay=4.0,
                        skeleton='native', verbose=False)
         tris = r['tris']
         a = maxedge(r['src_pts'], tris).max()

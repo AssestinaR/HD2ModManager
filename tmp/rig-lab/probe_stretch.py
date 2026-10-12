@@ -17,7 +17,7 @@ VPK = ('D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/'
 def main():
     for mode in ('snap', 'native'):
         r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                       spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                       spine_map='mesh', fallback='region', leg_tilt=5.7,
                        leg_splay=4.0, skeleton=mode, verbose=False)
         src1 = np.asarray(r['src1'])
         out = np.asarray(r['out'])

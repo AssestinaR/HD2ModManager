@@ -189,32 +189,93 @@ def rot_angle_axis(R):
     return ang, (w / n if n > 1e-9 else np.zeros(3))
 
 
-def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name):
+def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name,
+                     hd2_children=None, hd2_parents=None):
     """Source bone index -> HD2 bone index, including a fallback for unmapped bones.
 
-    `distance` binds an unmapped bone to the *mapped* bone whose joint sits closest
-    to it; `parent` walks up the source chain instead.  This lives in one place on
-    purpose: the shoes (`source_extra_62/63`) are unmapped, and the stance pass used
-    to fall back to "carry along with the torso" for them -- which dragged the feet
-    15 cm forward together with the hips and cancelled out the very stance change it
-    was supposed to produce.  Both passes must give the same answer.
+    `parent`   walks up the source chain to the nearest mapped ANCESTOR.
+    `distance` binds to the mapped bone whose joint sits CLOSEST to it.
+    `region`   is `distance` restricted to bones that live in the SAME LIMB as
+               that ancestor.  The limb is read off HD2's own hierarchy -- a bone
+               belongs to `l_arm`/`r_arm`/`l_leg`/`r_leg`/`head`/`torso` according
+               to which of `l_clavicle`, `r_clavicle`, `l_thigh`, `r_thigh`, `neck`
+               it passes through on the way up.  This is what keeps the source
+               skeleton's structure: `source_extra_73/76/85` are hair and
+               hair-ribbon bones that hang beside the shoulder, their ancestor is
+               `Bip01_Head1`, so they may only land on the head -- raw `distance`
+               handed them to `l_shoulder`/`r_shoulder`, and the A-pose bake then
+               swung the hair down and inward with the arm.
+
+               A plain "ancestor's subtree" rule does NOT work here, because HD2
+               hangs `hips` and `spine1` off `boss` as SIBLINGS: the subtree of
+               `hips` is the legs alone, which would throw the skirt onto the
+               thighs.  The limb test keeps the pelvis a torso part.
+
+    This lives in one place on purpose: the shoes (`source_extra_62/63`) are
+    unmapped, and the stance pass used to fall back to "carry along with the
+    torso" for them -- which dragged the feet 15 cm forward together with the
+    hips and cancelled out the very stance change it was supposed to produce.
+    Both passes must give the same answer.
     """
     resolved, hops, by_dist = {}, {}, []
-    if fallback == 'distance':
+    if fallback in ('distance', 'region'):
         cand = [(src_index_to_hd2[b['index']], ajoint(b))
                 for b in src if b['index'] in src_index_to_hd2]
+        sub, lim = {}, {}
+        MARK = {'l_clavicle': 'l_arm', 'r_clavicle': 'r_arm',
+                'l_thigh': 'l_leg', 'r_thigh': 'r_leg', 'neck': 'head'}
+
+        def subtree(root):
+            if root not in sub:
+                seen, stack = set(), [root]
+                while stack:
+                    n = stack.pop()
+                    if n in seen:
+                        continue
+                    seen.add(n)
+                    stack.extend((hd2_children or {}).get(n, ()))
+                sub[root] = seen
+            return sub[root]
+
+        def limb(h):
+            if h not in lim:
+                cur, n, got = h, 0, 'torso'
+                while cur is not None and n < 64:
+                    nmv = by_idx_name.get(cur)
+                    if nmv in MARK:
+                        got = MARK[nmv]
+                        break
+                    cur = (hd2_parents or {}).get(cur)
+                    n += 1
+                lim[h] = got
+            return lim[h]
+
         for b in src:
             i = b['index']
             if i in src_index_to_hd2:
                 resolved[i], hops[i] = src_index_to_hd2[i], 0
                 continue
+            cur, n = b['parent'], 1
+            while cur >= 0 and cur not in src_index_to_hd2 and n <= 64:
+                cur = src[cur]['parent']
+                n += 1
+            pool = cand
+            if (fallback == 'region' and hd2_children and hd2_parents
+                    and cur >= 0 and cur in src_index_to_hd2):
+                root = src_index_to_hd2[cur]
+                allow = subtree(root)
+                lk = limb(root)
+                pool = [c for c in cand if c[0] in allow and limb(c[0]) == lk]
+                if not pool:
+                    pool = cand
             p = ajoint(b)
             best, bd = None, 1e30
-            for hi, sp in cand:
+            for hi, sp in pool:
                 d = float(((p - sp) ** 2).sum())
                 if d < bd:
                     bd, best = d, hi
-            resolved[i], hops[i] = best, 0
+            resolved[i] = best
+            hops[i] = 0 if fallback == 'distance' else n
             by_dist.append((b['name'], by_idx_name.get(best), math.sqrt(bd)))
     else:
         for b in src:
@@ -316,7 +377,7 @@ def load_source(vpk, model):
 
 # ------------------------------------------------------------------ core
 def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.015,
-             align='kabsch', apose=True, spine_map='legacy', fallback='parent',
+             align='kabsch', apose=True, spine_map='legacy', fallback='region',
              leg_tilt=0.0, leg_splay=0.0, axis_deltas=True, axis_roundtrip=True,
              skeleton='native', mesh_shift=(0.0, 0.0, 0.0), upper_scale=1.0,
              upper_pivot_z=None, upper_blend=0.20, verbose=True):
@@ -380,6 +441,18 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         if p is None or p == h['index'] or p not in by_idx:
             return None
         return by_idx[p]
+
+    # HD2's child/parent lists -- needed by the `region` fallback, which may only
+    # bind an orphan source bone inside the same LIMB as its nearest mapped
+    # ancestor.  Note HD2 hangs `hips` and `spine1` off `boss` as siblings, so the
+    # subtree of `hips` is the legs alone; the limb test (not the subtree test) is
+    # what keeps the skirt a torso part.
+    hd2_children, hd2_parents = {}, {}
+    for h in hd2:
+        p = parent_of(h)
+        if p is not None:
+            hd2_children.setdefault(p['index'], []).append(h['index'])
+            hd2_parents[h['index']] = p['index']
 
     def axis_delta(h):
         return (q_wxyz_to_m(deltas[h['name']])
@@ -534,7 +607,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         def ajoint(b):
             return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
         res_idx, _rh, _rd = resolve_bone_map(src, src_index_to_hd2, fallback, ajoint,
-                                             by_idx_name)
+                                             by_idx_name, hd2_children, hd2_parents)
         moved = np.empty_like(src1)
         for k, v in enumerate(verts):
             acc = np.zeros(3)
@@ -602,7 +675,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         def ajoint2(b):
             return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
         res2, _h2, _d2 = resolve_bone_map(src, src_index_to_hd2, fallback, ajoint2,
-                                          by_idx_name)
+                                          by_idx_name, hd2_children, hd2_parents)
         moved = np.empty_like(src1)
         for k, v in enumerate(verts):
             acc = np.zeros(3)
@@ -706,20 +779,25 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
 
     resolved, hops = {}, {}
     by_dist = []
-    # A bone with no counterpart is bound to the mapped bone whose joint sits
-    # CLOSEST to it -- not to its parent.  The source file hangs the shoes off
-    # `L_Calf` (`source_extra_62/63`), so a parent-chain fallback binds the shoes
-    # to the KNEE and, because our rest knee sits 13.4 cm above HD2's, they sink
-    # that far below the floor the moment the leg is posed.  It is invisible in the
-    # bind pose -- which is exactly why the bind-pose metric looked perfect.
+    # A bone with no counterpart is bound to a mapped bone whose joint sits CLOSEST
+    # to it -- not to its parent.  The source file hangs the shoes off `L_Calf`
+    # (`source_extra_62/63`), so a parent-chain fallback binds the shoes to the KNEE
+    # and, because our rest knee sits 13.4 cm above HD2's, they sink that far below
+    # the floor the moment the leg is posed.  It is invisible in the bind pose --
+    # which is exactly why the bind-pose metric looked perfect.
+    #
+    # `region` keeps that, but confines the search to the subtree of the nearest
+    # mapped ancestor.  Plain `distance` also handed the hair/ribbon bones
+    # (`source_extra_73/76/85/71/69`, ~700 verts, ancestors = `Bip01_Head1`) to the
+    # shoulders, so the A-pose bake swung them down and inward with the arms.
     def ajoint(b):
         return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
     resolved, hops, by_dist = resolve_bone_map(src, src_index_to_hd2, fallback,
-                                               ajoint, by_idx_name)
+                                               ajoint, by_idx_name, hd2_children, hd2_parents)
     if by_dist:
-        say('distance fallback for %d bones, e.g.: %s'
-            % (len(by_dist), ', '.join('%s->%s(%.3fm)' % r for r in
-                                       sorted(by_dist, key=lambda r: -r[2])[:6])))
+        say('%s fallback for %d bones, e.g.: %s'
+            % (fallback, len(by_dist), ', '.join('%s->%s(%.3fm)' % r for r in
+                                                 sorted(by_dist, key=lambda r: -r[2])[:6])))
 
     out = np.empty_like(src1)
     for k, v in enumerate(verts):
@@ -851,10 +929,13 @@ def main():
     ap.add_argument('--head-offset', type=float, default=-0.015)
     ap.add_argument('--align', choices=('kabsch', 'yaw', 'rotz180', 'identity'), default='kabsch')
     ap.add_argument('--spine-map', choices=('legacy', 'mesh'), default='legacy')
-    ap.add_argument('--fallback', choices=('parent', 'distance'), default='parent',
-                    help='how a source bone with no counterpart is bound: to its nearest '
-                         'mapped ANCESTOR (parent) or to the mapped bone whose joint is '
-                         'CLOSEST (distance).  The shoes need distance.')
+    ap.add_argument('--fallback', choices=('parent', 'distance', 'region'),
+                    default='region',
+                    help='how a source bone with no counterpart is bound: to its '
+                         'nearest mapped ANCESTOR (parent), to the mapped bone whose '
+                         'joint is CLOSEST (distance), or to the closest bone INSIDE '
+                         'the subtree of that ancestor (region, default -- distance '
+                         'alone hands the hair bones to the shoulders).')
     ap.add_argument('--no-apose', action='store_true',
                     help='stop after alignment+snap (still a T-pose)')
     ap.add_argument('--leg-tilt', type=float, default=0.0,

@@ -141,7 +141,7 @@ def bone_table(r):
 def main():
     os.makedirs(OUT, exist_ok=True)
     r = H.retarget(VPK, MODEL, TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
                    mesh_shift=(0.0, -0.100, -0.060),
                    upper_scale=1.12, upper_pivot_z=1.15, upper_blend=0.45,
@@ -210,7 +210,7 @@ def main():
     np.savez(os.path.join(OUT, 'model.npz'), **arrays)
     json.dump(dict(model=MODEL, bones=names, refs=refs,
                    params=dict(align='yaw', spine_map='mesh',
-                               fallback='distance', leg_tilt=5.7,
+                               fallback='region', leg_tilt=5.7,
                                leg_splay=4.0, skeleton='native',
                                mesh_shift=[0.0, -0.100, -0.060],
                                upper_scale=1.12, upper_pivot_z=1.15,

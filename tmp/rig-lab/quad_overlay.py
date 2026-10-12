@@ -64,7 +64,7 @@ ROWS = [('bind -- front (X-Z)', 0, 2, 1, False),
 
 
 def main():
-    kw = dict(align='yaw', spine_map='mesh', fallback='distance',
+    kw = dict(align='yaw', spine_map='mesh', fallback='region',
               leg_tilt=TILT, leg_splay=SPLAY, verbose=False)
     new = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
                      skeleton='native', **kw)

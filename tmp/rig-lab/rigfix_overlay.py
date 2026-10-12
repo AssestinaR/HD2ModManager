@@ -61,7 +61,7 @@ REFCOL, REFD = (140, 220, 255), (200, 236, 255)
 
 def run(rt):
     return H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                      spine_map='mesh', fallback='distance', leg_tilt=TILT,
+                      spine_map='mesh', fallback='region', leg_tilt=TILT,
                       leg_splay=SPLAY, axis_roundtrip=rt, verbose=False)
 
 

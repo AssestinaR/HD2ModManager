@@ -16,7 +16,7 @@ VPK = ('D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/'
 
 def run(rt, tilt, splay):
     return H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                      spine_map='mesh', fallback='distance', leg_tilt=tilt,
+                      spine_map='mesh', fallback='region', leg_tilt=tilt,
                       leg_splay=splay, axis_roundtrip=rt, verbose=False)
 
 

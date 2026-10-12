@@ -45,7 +45,7 @@ def solo(pts, tris, box, ah, av, ad, flip, sc):
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
                    mesh_shift=(0.0, -BACK, -DOWN), verbose=False)
     ours = [tuple(x) for x in r['out']]

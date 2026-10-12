@@ -22,7 +22,7 @@ def rot_ang(A, B):
 def main():
     for mode in ('snap', 'native'):
         r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                       spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                       spine_map='mesh', fallback='region', leg_tilt=5.7,
                        leg_splay=4.0, skeleton=mode, verbose=False)
         S, rh = r['rest_shipped'], r['rest_hd2']
         dr = max(rot_ang(S[i], rh[i]) for i in S)

@@ -35,7 +35,7 @@ def main():
     runs = []
     for sp in SPLAY:
         r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                       spine_map='mesh', fallback='distance', leg_tilt=TILT,
+                       spine_map='mesh', fallback='region', leg_tilt=TILT,
                        leg_splay=sp, verbose=False)
         runs.append((sp, r))
 

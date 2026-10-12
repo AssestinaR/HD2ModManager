@@ -35,7 +35,7 @@ SYNTH = {'spine1', 'chest', 'l_shoulder_twist', 'r_shoulder_twist',
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                   spine_map='mesh', fallback='distance', leg_tilt=TILT,
+                   spine_map='mesh', fallback='region', leg_tilt=TILT,
                    leg_splay=SPLAY, verbose=False)
     # the rest the mesh `out` is actually bound to: D * rest_sym.  The bare
     # `rest_sym` still has the source's T-posed head positions, so measuring

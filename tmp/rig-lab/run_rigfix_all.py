@@ -36,7 +36,7 @@ def main():
         for mode in ('snap', 'native'):
             try:
                 r = H.retarget(os.path.join(ADD, vpk), model, TOC, BH, PP,
-                               align='yaw', spine_map='mesh', fallback='distance',
+                               align='yaw', spine_map='mesh', fallback='region',
                                leg_tilt=5.7, leg_splay=4.0, skeleton=mode,
                                verbose=False)
             except Exception as exc:                                  # noqa: BLE001

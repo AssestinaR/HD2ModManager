@@ -56,7 +56,7 @@ NATIVE = (255, 190, 60)     # amber -- HD2's own rest
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                   spine_map='mesh', fallback='distance', leg_tilt=TILT,
+                   spine_map='mesh', fallback='region', leg_tilt=TILT,
                    leg_splay=SPLAY, verbose=False)
     ours_mesh = np.asarray(r['out'])
     hd2 = PV.hd2_rig_heads(TOC, BH)

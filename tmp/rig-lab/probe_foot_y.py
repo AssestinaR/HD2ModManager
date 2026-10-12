@@ -38,7 +38,7 @@ def main():
     hd2 = PV.hd2_rig_heads(TOC, BH)
     ank = hd2['l_foot'][1]
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native', verbose=False)
     report('OURS', r['out'], ank)
 

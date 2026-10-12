@@ -24,7 +24,7 @@ HAND_BONES = ('l_hand', 'r_hand')
 
 def run(scale, blend):
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
                    mesh_shift=(0.0, -0.100, -0.060),
                    upper_scale=scale, upper_blend=blend, verbose=False)

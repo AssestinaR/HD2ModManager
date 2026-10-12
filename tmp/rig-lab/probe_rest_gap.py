@@ -37,7 +37,7 @@ def rot_ang(A, B):
 
 def run(axis_deltas, axis_roundtrip=True):
     return H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                      spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                      spine_map='mesh', fallback='region', leg_tilt=5.7,
                       leg_splay=4.0, axis_deltas=axis_deltas,
                       axis_roundtrip=axis_roundtrip, verbose=False)
 

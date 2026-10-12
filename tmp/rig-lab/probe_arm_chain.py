@@ -29,7 +29,7 @@ CHAIN = ['l_clavicle', 'l_shoulder', 'l_shoulder_twist', 'l_shoulderarmour',
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                   spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                   spine_map='mesh', fallback='region', leg_tilt=5.7,
                    leg_splay=4.0, verbose=False)
     hd2 = PV.hd2_rig_heads(TOC, BH)
     ours = {h['name']: np.asarray((r['D'][h['index']] @ r['rest'][h['index']])[:3, 3])

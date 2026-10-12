@@ -53,7 +53,7 @@ def skin(P, verts, boneM):
 
 def main():
     r = H.retarget(VPK, MODEL, TOC, BH, PP, align='yaw', spine_map='mesh',
-                   fallback='distance', verbose=False)
+                   fallback='region', verbose=False)
     hd2, rest_hd2, resolved = r['hd2'], r['rest_hd2'], r['resolved']
     verts, rest_sym, D = r['verts'], r['rest'], r['D']
     out, out_idle = np.asarray(r['out']), np.asarray(r['out_idle'])

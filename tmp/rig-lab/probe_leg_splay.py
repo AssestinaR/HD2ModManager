@@ -103,7 +103,7 @@ def main():
                    'Lunalice_Zoey.vpk', 'survivor_teenangst',
                    'avatar/unit_0x4d1c334d294dfa97.toc', BH,
                    '../pb-ref/HD2-BatchTool-main/assets/body_pose_profile.json',
-                   align='yaw', spine_map='mesh', fallback='distance', verbose=False)
+                   align='yaw', spine_map='mesh', fallback='region', verbose=False)
     chain('OURS (leg-tilt 0)', r['new_head'], np.asarray(r['out']))
 
 

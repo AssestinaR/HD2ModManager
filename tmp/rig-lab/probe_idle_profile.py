@@ -70,7 +70,7 @@ def main():
     runs = {}
     for align in ('kabsch', 'yaw'):
         r = H.retarget(VPK, MODEL, TOC, BONEHASH, POSE,
-                       align=align, spine_map='mesh', fallback='distance',
+                       align=align, spine_map='mesh', fallback='region',
                        verbose=False)
         runs[align] = r
         print('[%s] edge mean %.4f max %.2f bad %.2f%%  height %.3f'

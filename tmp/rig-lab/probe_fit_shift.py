@@ -49,7 +49,7 @@ def fit(ours, ref, dys, dzs):
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native', verbose=False)
     ours = np.asarray(r['out'])
     meta = json.load(open('out/patchdump/units.json', encoding='utf-8'))

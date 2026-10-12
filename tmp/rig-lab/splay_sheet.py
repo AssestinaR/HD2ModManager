@@ -46,7 +46,7 @@ def main():
     runs = []
     for sp in SPLAY:
         r = H.retarget(VPK, MODEL, TOC, BH, PP, align='yaw', spine_map='mesh',
-                       fallback='distance', leg_tilt=TILT, leg_splay=sp, verbose=False)
+                       fallback='region', leg_tilt=TILT, leg_splay=sp, verbose=False)
         runs.append((sp, r))
         P = np.asarray(r['out'])
         lo = P[:, 2].min()

@@ -50,7 +50,7 @@ SKELD = (255, 226, 140)
 
 def main():
     r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP,
-                   align='yaw', spine_map='mesh', fallback='distance',
+                   align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=TILT, leg_splay=SPLAY, skeleton='native',
                    mesh_shift=(0.0, -BACK, -DOWN),
                    upper_scale=UPSCALE, upper_pivot_z=UPPIV,

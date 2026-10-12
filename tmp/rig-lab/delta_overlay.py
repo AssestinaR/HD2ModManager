@@ -70,7 +70,7 @@ REFCOL = (140, 220, 255)    # pale blue -- the reference's own rig
 
 def run(axis_deltas):
     return H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                      spine_map='mesh', fallback='distance', leg_tilt=TILT,
+                      spine_map='mesh', fallback='region', leg_tilt=TILT,
                       leg_splay=SPLAY, axis_deltas=axis_deltas, verbose=False)
 
 

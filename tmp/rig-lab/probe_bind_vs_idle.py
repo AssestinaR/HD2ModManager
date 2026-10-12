@@ -30,7 +30,7 @@ def foot(P, band=0.08, side=-1):
 
 def main():
     rs = {a: H.retarget(VPK, MODEL, TOC, BH, PP, align=a, spine_map='mesh',
-                        fallback='distance', verbose=False)
+                        fallback='region', verbose=False)
           for a in ('kabsch', 'yaw')}
 
     print('\n-- out_idle: does the alignment even matter? --')

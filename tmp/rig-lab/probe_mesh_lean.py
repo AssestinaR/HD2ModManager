@@ -57,7 +57,7 @@ def main():
                    'Lunalice_Zoey.vpk', 'survivor_teenangst',
                    'avatar/unit_0x4d1c334d294dfa97.toc', BH,
                    '../pb-ref/HD2-BatchTool-main/assets/body_pose_profile.json',
-                   align='yaw', spine_map='mesh', fallback='distance', verbose=False)
+                   align='yaw', spine_map='mesh', fallback='region', verbose=False)
     ours = np.asarray(r['out'])
     print('OURS             (height %.3f)' % (ours[:, 2].max() - ours[:, 2].min()))
     zs2 = np.arange(0.05, 0.90, 0.05) * (ours[:, 2].max() - ours[:, 2].min()) / \

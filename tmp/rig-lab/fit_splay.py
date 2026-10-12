@@ -59,7 +59,7 @@ def main():
     print('\n splay |   RMS    | mean signed err | sole x/h | calf@0.23h/h')
     for sp in np.arange(0.0, 8.01, 0.5):
         r = H.retarget(VPK, 'survivor_teenangst', TOC, BH, PP, align='yaw',
-                       spine_map='mesh', fallback='distance', leg_tilt=5.7,
+                       spine_map='mesh', fallback='region', leg_tilt=5.7,
                        leg_splay=float(sp), verbose=False)
         P = np.asarray(r['out'])
         lo = P[:, 2].min()

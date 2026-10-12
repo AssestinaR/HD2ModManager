@@ -40,7 +40,7 @@ def sole(P, band=0.01, side=-1):
 
 def main():
     r = H.retarget(VPK, MODEL, TOC, BH, PP, align='yaw', spine_map='mesh',
-                   fallback='distance', verbose=False)
+                   fallback='region', verbose=False)
     src1 = np.asarray(r['src1'])
     out = np.asarray(r['out'])
 

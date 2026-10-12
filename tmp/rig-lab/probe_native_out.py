@@ -18,7 +18,7 @@ PP = '../pb-ref/HD2-BatchTool-main/assets/body_pose_profile.json'
 TOC = 'avatar/unit_0x4d1c334d294dfa97.toc'
 VPK = ('D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/'
        'Lunalice_Zoey.vpk')
-kw = dict(align='yaw', spine_map='mesh', fallback='distance',
+kw = dict(align='yaw', spine_map='mesh', fallback='region',
           leg_tilt=5.7, leg_splay=4.0, verbose=False)
 
 
