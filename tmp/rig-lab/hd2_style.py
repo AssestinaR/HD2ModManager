@@ -123,6 +123,16 @@ def snap_pairs(spine_map='legacy'):
 
 
 # ------------------------------------------------------------------ maths
+ARM_BONE_KEYS = ('clavicle', 'shoulder', 'elbow', 'hand', 'finger')
+
+
+def is_arm_bone(name):
+    """True for the left/right ARM chain, fingers included; False for everything
+    else (legs, spine, head).  `l_shoulderarmour` and `l_hand_twist` count."""
+    return bool(name) and name[:2] in ('l_', 'r_') and any(
+        k in name for k in ARM_BONE_KEYS)
+
+
 def q_wxyz_to_m(q):
     """Quaternion (w,x,y,z) -> 4x4 rotation, column-vector convention."""
     w, x, y, z = q
@@ -380,7 +390,8 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              align='kabsch', apose=True, spine_map='legacy', fallback='region',
              leg_tilt=0.0, leg_splay=0.0, axis_deltas=True, axis_roundtrip=True,
              skeleton='native', mesh_shift=(0.0, 0.0, 0.0), upper_scale=1.0,
-             upper_pivot_z=None, upper_blend=0.20, verbose=True):
+             upper_pivot_z=None, upper_blend=0.20, arm_fit=1.0, arm_perp=0.0,
+             arm_smooth=8, verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
 
     The MESH is ALWAYS baked around the SNAPPED rest (`rest_sym`, whose heads are
@@ -815,6 +826,90 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             tot += w
         out[k] = acc / tot if tot > 0 else src1[k]
 
+    # ---- 4e. MESH-ONLY arm re-fit -----------------------------------------
+    # The shipped rig is HD2's own, but the mesh was baked about `rest_sym`, whose
+    # heads are the SOURCE's joints.  Where a source joint sits away from HD2's --
+    # here the shoulder is ~9 cm inboard and ~9 cm high measured along the arm
+    # axis, and the elbow ~9.6 cm inboard -- the mesh's arm lands inboard of the
+    # bones and the limb reads as "bowed" in the front view, even though every
+    # segment's LENGTH is right (probe_arm_seg.py: our elbow boundary sits at
+    # t=0.197 along HD2's shoulder->hand axis, HD2's elbow bone at t=0.286).
+    #
+    # Displacing each vertex by the weight-blended joint residual
+    # (`shipped head - working head`, and ZERO for every non-arm bone) puts each
+    # arm joint back onto HD2's bone and ramps smoothly through the shoulder, so
+    # the torso stays exactly where it was and nothing tears.  This is the standard
+    # translation retarget, and it is derived from the pipeline's own data -- no
+    # per-model constants.
+    #
+    # It runs BEFORE the mesh-only shift/scale (4c/4d) so the residual is applied
+    # in the same space the two rests are expressed in.
+    if arm_fit != 0.0:
+        dvec = {}
+        for side in ('l', 'r'):
+            # the axis the user asked to "slide the forearm out along"
+            a = rest_shipped.get(next(h['index'] for h in hd2
+                                      if h['name'] == '%s_shoulder' % side))
+            b = rest_shipped.get(next(h['index'] for h in hd2
+                                      if h['name'] == '%s_hand' % side))
+            if a is None or b is None:
+                continue
+            u = origin_np(b) - origin_np(a)
+            u = u / max(float(np.linalg.norm(u)), 1e-9)
+            for h in hd2:
+                if not is_arm_bone(h['name']) or not h['name'].startswith(side + '_'):
+                    continue
+                i = h['index']
+                if i not in rest_sym or i not in rest_shipped:
+                    continue
+                d = origin_np(rest_shipped[i]) - origin_np(D[i] @ rest_sym[i])
+                # `arm_perp` blends the perpendicular part in.  The mesh has ALREADY
+                # been pushed back/down by the global `mesh_shift` (which was fitted
+                # against the reference), so the residual's perpendicular component
+                # double-counts it -- with arm_perp=1 the arm ends up ~13 cm behind
+                # the reference's.  The along-axis part is the part that is genuinely
+                # missing (the source's shoulder is inboard of HD2's).
+                dvec[i] = u * float(d @ u) + arm_perp * (d - u * float(d @ u))
+        if dvec:
+            delta = np.zeros_like(out)
+            for k, v in enumerate(verts):
+                acc = np.zeros(3)
+                for j in range(3):
+                    w = v['w'][j]
+                    if w <= 0:
+                        continue
+                    d = dvec.get(resolved.get(v['bones'][j]))
+                    if d is not None:
+                        acc += w * d
+                delta[k] = acc
+            # The raw field follows the LBS weights, and at the chest/clavicle
+            # boundary those change fast: a vertex on `chest` gets 0 while its
+            # neighbour on `l_clavicle` gets 0.115 m, so a 1 cm edge is stretched
+            # ~11x (probe_arm_stretch.py).  A few Laplacian passes over the mesh
+            # graph spread that jump over centimetres instead of one edge, which
+            # is what makes the shoulder read as a bend rather than a tear.
+            if arm_smooth > 0:
+                T = np.asarray([t[:3] for t in tris], dtype=np.int64)
+                e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+                a_src = np.concatenate([e[:, 0], e[:, 1]])
+                a_dst = np.concatenate([e[:, 1], e[:, 0]])
+                deg = np.bincount(a_src, minlength=len(delta)).astype(np.float64)
+                deg[deg == 0] = 1.0
+                inv_deg = (1.0 / deg)[:, None]
+                for _ in range(int(arm_smooth)):
+                    acc = np.zeros_like(delta)
+                    np.add.at(acc, a_src, delta[a_dst])
+                    delta = 0.5 * delta + 0.5 * (acc * inv_deg)
+            if arm_fit != 1.0:
+                delta *= arm_fit
+            out = out + delta
+            say('arm re-fit: weight-blended joint residual on the MESH only '
+                '(x%.2f, %d bones, %d smoothing passes) -- max |d| %.4f m, '
+                'mean |d| %.4f m'
+                % (arm_fit, len(dvec), int(arm_smooth),
+                   float(np.linalg.norm(delta, axis=1).max()),
+                   float(np.linalg.norm(delta, axis=1).mean())))
+
     # ---- 4c. MESH-ONLY translation ----------------------------------------
     # The rig must not move -- `S_bind == rest_hd2` is the whole reason the idle
     # frame is the identity -- so "put the character somewhere else" can only
@@ -963,6 +1058,22 @@ def main():
     ap.add_argument('--upper-blend', type=float, default=0.20,
                     help='half-width in metres of the smoothstep ramp at the hip '
                          'seam used by --upper-scale')
+    ap.add_argument('--arm-fit', type=float, default=1.0,
+                    help='0..1 strength of the MESH-only arm re-fit: displaces each '
+                         'vertex by the weight-blended arm joint residual '
+                         '(`shipped head - working head`), so the arm joints land on '
+                         "HD2's bones instead of the source's.  0 = off.")
+    ap.add_argument('--no-arm-fit', dest='arm_fit', action='store_const', const=0.0,
+                    help='same as --arm-fit 0')
+    ap.add_argument('--arm-smooth', type=int, default=8,
+                    help='Laplacian passes over the mesh that spread the arm '
+                         'displacement field; without them the chest/clavicle weight '
+                         'jump stretches a few 1 cm triangles ~11x')
+    ap.add_argument('--arm-perp', type=float, default=0.0,
+                    help='how much of the arm residual PERPENDICULAR to the arm axis '
+                         'to apply (0 = slide along the arm only, 1 = full 3D).  The '
+                         'global --mesh-back/--mesh-down already handle the '
+                         'perpendicular part, so 1 double-counts it.')
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
@@ -973,7 +1084,8 @@ def main():
                  axis_roundtrip=not a.legacy_axis, skeleton=a.skeleton,
                  mesh_shift=(0.0, -a.mesh_back, -a.mesh_down),
                  upper_scale=a.upper_scale, upper_pivot_z=a.upper_pivot_z,
-                 upper_blend=a.upper_blend)
+                 upper_blend=a.upper_blend, arm_fit=a.arm_fit,
+                 arm_perp=a.arm_perp, arm_smooth=a.arm_smooth)
 
     os.makedirs(a.outdir, exist_ok=True)
     png = os.path.join(a.outdir, a.out)

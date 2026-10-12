@@ -76,6 +76,12 @@ BACK = ((0.0, -3.6, 1.05), (math.radians(90), 0, 0))
 # close-ups: the round-2.5 damage is the twintails / head ribbon seen from behind
 HEAD_BACK = ((0.0, -1.30, 1.60), (math.radians(90), 0, 0))
 HEAD_FRONT = ((0.0, 1.30, 1.60), (math.radians(90), 0, math.radians(180)))
+# round 45: the arm chain -- a straight-down top view shows the Y (forward)
+# offset of the whole arm, which is what "the arm looks crooked" really was.
+ARM_TOP = ((0.0, 0.15, 5.00), (0.0, 0.0, 0.0))
+# close-ups of the character's LEFT arm (-X side); 50 mm lens at ~0.9 m
+ARM_FRONT_L = ((-0.50, 1.05, 1.35), (math.radians(90), 0, math.radians(180)))
+ARM_TOP_L = ((-0.50, 0.15, 2.60), (0.0, 0.0, 0.0))
 
 set_vis(ours=True)
 shot('blend-ours-front', *FRONT)
@@ -83,7 +89,12 @@ shot('blend-ours-side', *SIDE)
 shot('blend-ours-back', *BACK)
 shot('blend-ours-head-back', *HEAD_BACK)
 shot('blend-ours-head-front', *HEAD_FRONT)
+shot('blend-ours-arm-top', *ARM_TOP)
+shot('blend-ours-arm-front-l', *ARM_FRONT_L)
+shot('blend-ours-arm-top-l', *ARM_TOP_L)
 
 set_vis(ours=True, ref=True)
 shot('blend-compare-front', *FRONT)
 shot('blend-compare-side', *SIDE)
+shot('blend-compare-arm-top', *ARM_TOP)
+shot('blend-compare-arm-top-l', *ARM_TOP_L)
