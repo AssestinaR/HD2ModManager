@@ -23,6 +23,7 @@ PP = '../pb-ref/HD2-BatchTool-main/assets/body_pose_profile.json'
 TOC = 'avatar/unit_0x4d1c334d294dfa97.toc'
 VPK = ('D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/'
        'Lunalice_Zoey.vpk')
+ARM_ROT = (9.90, -17.25, 21.50)
 
 
 def run(**kw):
@@ -36,11 +37,13 @@ def run(**kw):
 
 def main():
     off = run(arm_fit=0.0)
-    old = run(arm_fit=1.0, arm_up=0.0, arm_perp=0.0, arm_taper=None)
-    new = run(arm_fit=1.0)
+    old = run(arm_fit=1.0, arm_up=0.0, arm_perp=0.0, arm_taper=None, arm_rot=None)
+    new = run(arm_fit=1.0, arm_rot=None)
+    cur = run(arm_fit=1.0, arm_rot=ARM_ROT)
     P0 = np.asarray(off['out'], float)
     Pold = np.asarray(old['out'], float)
     Pnew = np.asarray(new['out'], float)
+    Pcur = np.asarray(cur['out'], float)
 
     by_name = {h['index']: h['name'] for h in off['hd2'] if h['name']}
     res = off['resolved']
@@ -68,7 +71,8 @@ def main():
     print('%-34s %8s %8s %8s %8s' %
           ('', 'n(>2cm)', 'n(>5cm)', 'max(m)', 'mean(m)'))
     for label, P in (('round-45  (no taper)', Pold),
-                     ('round-45b (taper+arm_up)', Pnew)):
+                     ('round-45b (taper+arm_up)', Pnew),
+                     ('round-45c (taper+arm_rot)', Pcur)):
         d = np.linalg.norm(P - P0, axis=1)
         for tag, sel in (('ALL torso-dominant verts', torso),
                          ('  ... AND t < +0.05 (shoulder band)', torso & (t < 0.05)),
