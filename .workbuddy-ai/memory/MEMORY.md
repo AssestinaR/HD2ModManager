@@ -20,7 +20,7 @@
 - **【环境】** ① Python 用隔离 venv `...\python\envs\default\Scripts\python.exe`（有 numpy+Pillow；**系统 python 无 PIL**）；② `git clone`/`curl` 打 GitHub 常失败 → 让用户下 zip；③ **Bash heredoc 调 Python/PowerShell 被拦** → 写成 `tmp/*.py` 再执行；④ **`Edit` 对含大量反引号/emoji 的长中文行会匹配失败** → 用 Python `str.replace`/`append` 并回读校验；⑤ **`Remove-Item` 被 safe-delete 钩子接管** → 让用户自己跑，**不要**用 `[System.IO.File]::Delete` 绕过；⑥ Blender 在 `D:\SteamLibrary\steamapps\common\Blender\blender.exe`（根 exe = **4.3.2**）。
 
 ## 大功能 B（当前方向）：L4D2 模型整体移植到 HD2
-> 细节见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`、**`docs/hd2-batchtool-sdk-findings.md`**（§7 源码逐函数核对；§8 新管线；§9 三个真 bug；§10 参照 patch；§11 站姿；§12 骨轴往返；§13 发布骨架；§14 mesh 枢轴解耦；§15 网格平移；§16 模型完整性；§17 躯干缩放；§18 区域兜底；§19 手臂重拟合）。
+> 细节见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`、**`docs/hd2-batchtool-sdk-findings.md`**（§7 源码逐函数核对；§8 新管线；§9 三个真 bug；§10 参照 patch；§11 站姿；§12 骨轴往返；§13 发布骨架；§14 mesh 枢轴解耦；§15 网格平移；§16 模型完整性；§17 躯干缩放；§18 区域兜底；§19 手臂重拟合；§20 手臂复审 —— 腋窝被撕开 + 小臂/手掌偏高）。
 
 ### 用户界定的目标（第 39 轮，最高优先级）
 - **不是"一键转换"黑盒，而是"录一个人工操作流的宏"**：① 把源 T-pose 模型摆成参照的站姿/比例（**纯数学变换**，只借 BatchTool 的变换部分）；② 按参照的权重风格重刷权重；③ 全自动 legacy 流程。
@@ -29,7 +29,7 @@
 - **【渲染判据·最重要】bind 恒等会掩盖真问题**：`D` 在绑定态恒等 ⇒ 绑定态网格永不变形，指标全漂亮，**哪怕对应表是错的**。只有 `A[b]·inv(S_bind[b])` 的渲染（`out_idle`）能与参照 patch 直接对比。
 
 ### 当前管线（`tmp/rig-lab/hd2_style.py`）—— 必用组合
-`--align yaw --spine-map mesh --fallback region --leg-tilt 5.7 --leg-splay 4.0 --mesh-down 0.060 --mesh-back 0.100 --upper-scale 1.12 --upper-pivot-z 1.15 --upper-blend 0.45 --arm-fit 1.0 --arm-perp 0.0 --arm-smooth 8`
+`--align yaw --spine-map mesh --fallback region --leg-tilt 5.7 --leg-splay 4.0 --mesh-down 0.060 --mesh-back 0.100 --upper-scale 1.12 --upper-pivot-z 1.15 --upper-blend 0.45 --arm-fit 1.0 --arm-up 0.55 --arm-perp 0.0 --arm-smooth 8 --arm-taper -0.05 0.22`
 
 **机制（每条都已实测，勿回退）**
 - **§8 基础数学** = BatchTool 那套：**一个均匀缩放 + 一个平移**（围绕脚底 ⇒ 源脚底精确落 HD2 脚底；`TorsoScale=1.042` 是算出来的）；**HD2 骨的 head := 源映射骨的世界位置**（**只改位置**，朝向/骨长仍是 HD2 自己的）；**30 骨常量局部旋转表**（A↔T，全是手臂+手）+ **20 条右侧骨轴 delta**；**吸附在绑定之前 ⇒ 绑定态恒等**。5 模型 **edge_mean 0.9989、bad>25% ≤0.58%**，**零逐模型调参**。要点：① 缩放高度必须在 HD2 空间沿 **+Z** 量，脚底点用**底部 1 cm 顶点片质心**；② **AXIS delta 与 head 搬移必须交错在同一"父先子后"循环**（否则被搬走父骨的**未映射子骨**会掉队）。
@@ -38,7 +38,7 @@
 - **§15 mesh 平移**：`mesh_shift=(dx,dy,dz)` **只平移烘焙后的 `out`**，骨架绝不移动。当前 **下移 6.0 / 后移 10.0 cm**（拟合：dy −0.100 / dz −0.060，中位残差 44 mm）。
 - **§17 mesh 上半身缩放**：`upper_scale`/`upper_pivot_z`（默认 None = `hips` 的 z）/`upper_blend`。`z0/z1 = piv ± blend`；`w = smoothstep((z−z0)/(z1−z0))`；`s = 1+(scale−1)·w`；`out = piv+(out−piv)·s`。**只动网格**。当前 **1.12 / 1.15 / 0.45**。
 - **§18 兜底 `fallback='region'`（默认）**：源骨里没有 HD2 对应物的（`source_extra_*` = jiggle/头发/丝带/裙摆）**不能只按骨关节最近**（会把一条源骨链拆到不同肢体）。改为**距离 + 同肢体约束**：沿 HD2 层级上溯，遇 `l/r_clavicle`→`l/r_arm`、`l/r_thigh`→`l/r_leg`、`neck`→`head`，否则 `torso`；`pool = {c∈cand : limb(c)==limb(ancestor)}`，空则退回全部候选。`resolve_bone_map(...)` 新增 `hd2_children`/`hd2_parents`。**⚠️ 不能用「祖先的子树」当约束**：HD2 的 `hips` 与 `spine1` 是 `boss` 下的**兄弟**，`subtree(hips)` 只有腿（12 根）⇒ 裙子会被砍到大腿。`distance` 保留供对照。
-- **§19 `arm_fit`（默认 1.0）/`arm_perp`（0.0）/`arm_smooth`（8）—— 手臂重拟合**：逐骨残差 `d[b] = 发布头(rest_shipped[b]) − 工作头(D[b]·rest_sym[b])`（**非手臂骨置零**；实测 `l_shoulder` 0.182 / `l_elbow` 0.183 / `l_hand` 0.167 m）；顶点位移 = **按 LBS 权重混合残差**，**只作用在网格**（骨架绝不移动），再 **Laplacian 平滑 `arm_smooth` 遍**；`arm_perp=0` 只取**沿臂轴分量**（`u·(d·u)`）—— 因为 `mesh_shift` 已承担垂直部分，全 3D 残差会**重复计算**（arm_perp=1 时手臂比参照后移 13 cm）。**不加平滑则 `edge max` 2.15→12.43**（胸口/锁骨 14 个 >5x 极小三角，权重跳变）⇒ 平滑 8 遍后降到 6.90（arm_perp=0 时 **3.15**、bad>25% **1.00%**）。根因是**工作关节（源关节）≠ HD2 关节**（肘靠内 8.6 cm、指尖 5.5 cm、整臂后移 ~9 cm），**不是"弯"**；每段长度本来就对。A/B：肘 **0.194→0.282**（骨 0.286，差 3 mm）、指尖 **0.642→0.729**。**纯数学、不碰骨架、不做骨骼对齐**。
+- **§19/§20 `arm_fit`（1.0）/`arm_up`（0.55）/`arm_perp`（0.0）/`arm_smooth`（8）/`arm_taper`（−0.05,0.22）—— 手臂重拟合**：逐骨残差 `d[b] = 发布头(rest_shipped[b]) − 工作头(D[b]·rest_sym[b])`（**非手臂骨置零**；`l_shoulder` 0.182 / `l_elbow` 0.183 / `l_hand` 0.167 m）；顶点位移 = **按 LBS 权重混合残差**，**只作用在网格**（骨架绝不移动）+ **Laplacian 平滑**。根因 = **工作关节（源关节）≠ HD2 关节**（肘靠内 8.6 cm、指尖 5.5 cm、整臂后移 ~9 cm），**不是"弯"**；每段长度本来就对。**残差按正交三分量分别给系数**：沿轴 1:1；**竖直 `w_up` 用 `arm_up`**（小臂/手掌相对骨头高 2.5–3 cm，只有它能修，且 `w_up ⊥ w_fwd` ⇒ 不动前后）；**前后 `w_fwd` 用 `arm_perp`（默认 0）** —— 残差的垂直分量**几乎全在前后方向**（`l_elbow` 垂直分量主导 −Y 14.3 cm），全量应用会把手臂推到参照**后面 12 cm**。**⚠️ `arm_taper` 必须开**：`l_shoulder` 主骨点云沿臂轴跑 **t∈[−0.085,+0.301]**（**比肩关节还向内 8.5 cm** —— 那是**上胸/腋窝**被绑给了肩骨；参照从 t=+0.036 才开始，near% 我们 62.4% / 参照 99.8%），不设斜坡就会把胸口推 3 cm+ ⇒ **腋窝裂开**、肩甲（`l_shoulderarmour` 残差 0.1525）被推离 ⇒ **大臂"断裂"**。开 taper 后 **零个三角形被拉过 2 倍**（旧参数 7 个 >2x、max 3.46）。A/B：肘 **0.200→0.287**（骨 0.286，差 **1.4 mm**）、指尖 0.643→0.733。5 模型零调参；**nick 过冲**（+0.090→+0.189）。**代价**：`bad(>25%)` 1.28%→2.29%（taper 把拉伸摊到上臂），但 max 3.46→1.47。**纯数学、不碰骨架、不做骨骼对齐**。
 - **`--leg-tilt <deg>`**：绕踝 `0.5*(l_foot+r_foot)` 转 thigh/knee +θ；其他骨整体平移（**躯干竖直不旋转**）；foot/ball/toe **钉住**；网格同步混合变形。⚠️ 腿倾段的网格变换**必须**用 `resolve_bone_map(...)` 与主管线共用同一份骨映射。tilt≈5.6° 精确复现 HD2/参照站姿（踝在髋后 9.86 cm）。
 - **`--leg-splay <deg>`**：绕腿根 `{l,r}_thigh` 绕 +Y 转 ±θ；thigh/knee 拿旋转、foot/ball/toe 拿**反向旋转**（塌缩成纯平移）。**侧视逐点不变（max|Δy|=0）**。选 4.0°；⚠️ 归一化用全身高；⚠️ 命名别用 `R`（会遮蔽外层对齐矩阵）。
 
@@ -53,7 +53,8 @@
 ```
 mesh down 0.0600 back 0.1000 | upper scale x1.120 pivot z 1.150 blend 0.45
 our zmin -0.0612 height 2.0731 | ref zmin -0.0542 height 2.1127
-idle vs bind 6.76e-16 m | shipped rig vs HD2 7.22e-16 m
+idle vs bind 6.38e-16 m | shipped rig vs HD2 7.22e-16 m
+edge mean 1.0744 p99 1.4403 max 2.99 bad>25% 2.29%
 ```
 
 ### Blender 观察工具（第 43 轮，全在 `tmp/rig-lab/`）
@@ -62,10 +63,10 @@ idle vs bind 6.76e-16 m | shipped rig vs HD2 7.22e-16 m
 - `.blend` 集合 `OURS`（bind 蓝 + game 绿隐藏 + 骨架）/`SOURCE`/`REFERENCE`（**只放实际对比的 5 个 unit**）/`REFERENCE_alt`（隐藏，⚠️ **patch 同时含 Slim+Stocky 两套体型**）。骨 0–8 = 场景图/辅助节点（`boss` = 髋部根运动骨）+ 10 根无名骨。⚠️ Blender 把相对 `render.filepath` 解析到 **`C:\out\`** ⇒ 传绝对路径；`me.validate()` 丢 8 个退化三角形。
 
 ### 待办（网格变换；**用户要求一步一步来**）
-1. ✅ 整体平移（下移 6.0 / 后移 10.0 cm）；**1.5 ✅ 模型完整性**；**2. ✅ 上半身放大**（1.12/1.15/0.45，残差 0.0178 m）；**2.5 ✅ 区域兜底**（`fallback='region'`）；**4. ◐ 手臂**（第 45 轮，`arm_fit` 已实现并回归，待用户验收）；3. **⏸ 接缝渐变缩放（用户 2026-10-12 拍板：暂缓）** —— 用户看过 Blender 后确认「接缝处已经非常好了」，**先不做**；等①进游戏实测 ②多来源模型按同一数学变换转换后，若暴露接缝问题再回来做（第 42 轮 smoothstep 是雏形）；5. **头部比例**（参照二次元大号头，我们小 ~20%）；6. **下半身放大**。
+1. ✅ 整体平移（下移 6.0 / 后移 10.0 cm）；**1.5 ✅ 模型完整性**；**2. ✅ 上半身放大**（1.12/1.15/0.45，残差 0.0178 m）；**2.5 ✅ 区域兜底**（`fallback='region'`）；**4. ◐ 手臂**（第 45 轮 `arm_fit` → 第 45b 轮加 `arm_up`+`arm_taper`；用户第 2 次验收中）；3. **⏸ 接缝渐变缩放（用户 2026-10-12 拍板：暂缓）** —— 用户看过 Blender 后确认「接缝处已经非常好了」，**先不做**；等①进游戏实测 ②多来源模型按同一数学变换转换后，若暴露接缝问题再回来做（第 42 轮 smoothstep 是雏形）；5. **头部比例**（参照二次元大号头，我们小 ~20%）；6. **下半身放大**。
 > **分工**：用户**空间感强、善于发现问题**但**对距离/数值不敏感**；我**视觉空间判断弱**但**数值/拟合可靠** ⇒ 用户负责"指出哪里不对"，我负责"用数值定出多少"。
 - 后续：提取干净网格 → 按参照风格重刷权重 → 上 C#（`HD2SourceMigration`）→ 产出离线 legacy 版 patch 包 → 进游戏实测（用户负责）。**动态物理骨骼仍要支持**（L4D2 风味 `jiggle_data.lua`，添头）；**硬要求：没有 Lua 支持 legacy 包也必须能跑**；**不依赖 `HD2IRG1` 的动态骨骼**。
-- ⚠️ **nick 过冲（待用户拍板）**：`arm_fit` 是全局的（零逐模型调参），nick 是唯一"本来超长"的模型，肘 +0.090→**+0.191**、指尖 +0.126→+0.251。zoey/rochelle 肘 **+0.0055**、coach +0.026、ellis L+0.074/R−0.007，均改善。
+- ⚠️ **两个未决项**：① **nick 过冲**（唯一"本来超长"的模型，肘 +0.090→**+0.189**；`arm_fit` 全局零调参）；② **若用户第 2 次验收仍看到腋窝接缝**，下一个嫌疑是 **A-pose 烘焙在肩部的旋转**（`basis_i` 绕肩关节转手臂网格 ⇒ 手臂岛从躯干岛分离），修法 = 给烘焙加 **shoulder blend**。
 
 ## 坐标约定 & 参照 patch
 - **HD2 坐标：+Y = 前，+Z = 上，+X = 角色的「右」**（左侧在 −X）。⚠️ 早期笔记"+X = 左"是**笔误**；实测 `l_foot` x = **−0.1908**、`r_foot` = **+0.1908**。**`l_foot` 关节不在脚心**：HD2 原生 踝在髋后 9.60 cm / 源 ≈ 同 ⇒ **本来就一致**。

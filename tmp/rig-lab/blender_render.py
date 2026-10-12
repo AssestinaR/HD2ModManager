@@ -61,9 +61,26 @@ def set_vis(ours=True, ref=False, src=False):
             o.hide_render = not ours
 
 
-def shot(name, loc, rot):
+def shot(name, loc, rot, res=None):
     cam.location = loc
     cam.rotation_euler = rot
+    if res:
+        sc.render.resolution_x, sc.render.resolution_y = res
+    sc.render.filepath = os.path.join(OUT, name)
+    bpy.ops.render.render(write_still=True)
+    print('[render] %s -> %s.png' % (name, os.path.join(OUT, name)))
+
+
+def shot_at(name, loc, target, res=None, lens=None):
+    """Place the camera at `loc` and aim it at `target` (world space)."""
+    import mathutils
+    if lens:
+        cam_data.lens = lens
+    cam.location = loc
+    d = mathutils.Vector(target) - cam.location
+    cam.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
+    if res:
+        sc.render.resolution_x, sc.render.resolution_y = res
     sc.render.filepath = os.path.join(OUT, name)
     bpy.ops.render.render(write_still=True)
     print('[render] %s -> %s.png' % (name, os.path.join(OUT, name)))
@@ -98,3 +115,13 @@ shot('blend-compare-front', *FRONT)
 shot('blend-compare-side', *SIDE)
 shot('blend-compare-arm-top', *ARM_TOP)
 shot('blend-compare-arm-top-l', *ARM_TOP_L)
+
+# round 45b: the seam the user reported is at the ARMPIT, so give it a proper
+# close-up from the front-outside, ours and reference.
+ARMPIT = (-0.20, 0.02, 1.34)
+set_vis(ours=True)
+shot_at('blend-ours-armpit-l', (-0.30, 0.90, 1.66), ARMPIT, res=(700, 700))
+set_vis(ours=True, ref=True)
+shot_at('blend-compare-armpit-l', (-0.30, 0.90, 1.66), ARMPIT, res=(700, 700))
+set_vis(ours=True, ref=True)
+shot_at('blend-compare-armpit-l-top', (-0.22, 0.10, 2.40), ARMPIT, res=(700, 700))

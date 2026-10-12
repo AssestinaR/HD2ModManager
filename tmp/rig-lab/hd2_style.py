@@ -391,7 +391,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              leg_tilt=0.0, leg_splay=0.0, axis_deltas=True, axis_roundtrip=True,
              skeleton='native', mesh_shift=(0.0, 0.0, 0.0), upper_scale=1.0,
              upper_pivot_z=None, upper_blend=0.20, arm_fit=1.0, arm_perp=0.0,
-             arm_smooth=8, verbose=True):
+             arm_up=0.55, arm_smooth=8, arm_taper=(-0.05, 0.22), verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
 
     The MESH is ALWAYS baked around the SNAPPED rest (`rest_sym`, whose heads are
@@ -845,7 +845,16 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # It runs BEFORE the mesh-only shift/scale (4c/4d) so the residual is applied
     # in the same space the two rests are expressed in.
     if arm_fit != 0.0:
-        dvec = {}
+        Z = np.array([0.0, 0.0, 1.0])
+        T = np.asarray([t[:3] for t in tris], dtype=np.int64)
+        e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+        a_src = np.concatenate([e[:, 0], e[:, 1]])
+        a_dst = np.concatenate([e[:, 1], e[:, 0]])
+        deg = np.bincount(a_src, minlength=len(out)).astype(np.float64)
+        deg[deg == 0] = 1.0
+        inv_deg = (1.0 / deg)[:, None]
+        delta = np.zeros_like(out)
+        nbone = 0
         for side in ('l', 'r'):
             # the axis the user asked to "slide the forearm out along"
             a = rest_shipped.get(next(h['index'] for h in hd2
@@ -854,8 +863,25 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                                       if h['name'] == '%s_hand' % side))
             if a is None or b is None:
                 continue
-            u = origin_np(b) - origin_np(a)
+            p0 = origin_np(a)
+            u = origin_np(b) - p0
             u = u / max(float(np.linalg.norm(u)), 1e-9)
+            # The residual is split into three orthogonal parts and each is
+            # dialled separately, because they are NOT equally trustworthy:
+            #   along u  -- the source's shoulder joint really is inboard of
+            #               HD2's, so this part is genuinely missing.  Kept 1:1.
+            #   w_up     -- the vertical part.  The mesh's forearm/palm sit a few
+            #               cm too HIGH relative to the bones (probe_arm_dir.py:
+            #               d_up +3.3 cm vs the reference's +0.8 cm), and this is
+            #               the only term that fixes it.
+            #   w_fwd    -- the fore/aft part.  `mesh_shift` was already fitted
+            #               against the reference, so this DOUBLE-COUNTS it: at
+            #               full strength the arm lands 12 cm behind the
+            #               reference's (d_fwd -11.6 cm vs +1.1 cm).  Default 0.
+            w_up = Z - u * float(u @ Z)
+            w_up = w_up / max(float(np.linalg.norm(w_up)), 1e-9)
+            w_fwd = np.cross(u, w_up)
+            dvec = {}
             for h in hd2:
                 if not is_arm_bone(h['name']) or not h['name'].startswith(side + '_'):
                     continue
@@ -863,15 +889,14 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 if i not in rest_sym or i not in rest_shipped:
                     continue
                 d = origin_np(rest_shipped[i]) - origin_np(D[i] @ rest_sym[i])
-                # `arm_perp` blends the perpendicular part in.  The mesh has ALREADY
-                # been pushed back/down by the global `mesh_shift` (which was fitted
-                # against the reference), so the residual's perpendicular component
-                # double-counts it -- with arm_perp=1 the arm ends up ~13 cm behind
-                # the reference's.  The along-axis part is the part that is genuinely
-                # missing (the source's shoulder is inboard of HD2's).
-                dvec[i] = u * float(d @ u) + arm_perp * (d - u * float(d @ u))
-        if dvec:
-            delta = np.zeros_like(out)
+                along = float(d @ u)
+                perp = d - u * along
+                dvec[i] = (u * along + w_up * (arm_up * float(perp @ w_up)) +
+                           w_fwd * (arm_perp * float(perp @ w_fwd)))
+            if not dvec:
+                continue
+            nbone += len(dvec)
+            d_side = np.zeros_like(out)
             for k, v in enumerate(verts):
                 acc = np.zeros(3)
                 for j in range(3):
@@ -881,32 +906,38 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                     d = dvec.get(resolved.get(v['bones'][j]))
                     if d is not None:
                         acc += w * d
-                delta[k] = acc
+                d_side[k] = acc
             # The raw field follows the LBS weights, and at the chest/clavicle
             # boundary those change fast: a vertex on `chest` gets 0 while its
             # neighbour on `l_clavicle` gets 0.115 m, so a 1 cm edge is stretched
             # ~11x (probe_arm_stretch.py).  A few Laplacian passes over the mesh
-            # graph spread that jump over centimetres instead of one edge, which
-            # is what makes the shoulder read as a bend rather than a tear.
-            if arm_smooth > 0:
-                T = np.asarray([t[:3] for t in tris], dtype=np.int64)
-                e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
-                a_src = np.concatenate([e[:, 0], e[:, 1]])
-                a_dst = np.concatenate([e[:, 1], e[:, 0]])
-                deg = np.bincount(a_src, minlength=len(delta)).astype(np.float64)
-                deg[deg == 0] = 1.0
-                inv_deg = (1.0 / deg)[:, None]
-                for _ in range(int(arm_smooth)):
-                    acc = np.zeros_like(delta)
-                    np.add.at(acc, a_src, delta[a_dst])
-                    delta = 0.5 * delta + 0.5 * (acc * inv_deg)
+            # graph spread that jump over centimetres instead of one edge.
+            for _ in range(int(arm_smooth)):
+                acc = np.zeros_like(d_side)
+                np.add.at(acc, a_src, d_side[a_dst])
+                d_side = 0.5 * d_side + 0.5 * (acc * inv_deg)
+            # TAPER, by position along THIS side's arm axis.  The arm-weighted
+            # cloud reaches 8.5 cm INBOARD of the shoulder joint (t_lo -0.085
+            # against the reference's +0.036) -- that is chest/armpit geometry
+            # that the source's weights hand to `l_shoulder`.  Displacing it by
+            # 18 cm slides it out of the torso and opens a real gap
+            # (probe_arm_disp.py: the red >3 cm region reaches into the chest).
+            # Ramps the displacement in from 0 at t0 to full at t1, so the
+            # junction stays welded and only the arm itself slides out.
+            if arm_taper is not None:
+                t0, t1 = arm_taper
+                tt = np.clip(((out - p0) @ u - t0) / max(t1 - t0, 1e-9), 0.0, 1.0)
+                d_side *= (tt * tt * (3.0 - 2.0 * tt))[:, None]
+            delta += d_side
+        if nbone:
             if arm_fit != 1.0:
                 delta *= arm_fit
             out = out + delta
             say('arm re-fit: weight-blended joint residual on the MESH only '
-                '(x%.2f, %d bones, %d smoothing passes) -- max |d| %.4f m, '
-                'mean |d| %.4f m'
-                % (arm_fit, len(dvec), int(arm_smooth),
+                '(x%.2f, %d bones, %d smoothing passes, along 1.00 / up %.2f / '
+                'fwd %.2f, taper %s) -- max |d| %.4f m, mean |d| %.4f m'
+                % (arm_fit, nbone, int(arm_smooth), arm_up, arm_perp,
+                   ('off' if arm_taper is None else '%.3f..%.3f' % arm_taper),
                    float(np.linalg.norm(delta, axis=1).max()),
                    float(np.linalg.norm(delta, axis=1).mean())))
 
@@ -1071,9 +1102,25 @@ def main():
                          'jump stretches a few 1 cm triangles ~11x')
     ap.add_argument('--arm-perp', type=float, default=0.0,
                     help='how much of the arm residual PERPENDICULAR to the arm axis '
-                         'to apply (0 = slide along the arm only, 1 = full 3D).  The '
-                         'global --mesh-back/--mesh-down already handle the '
-                         'perpendicular part, so 1 double-counts it.')
+                         'and along the FORE/AFT direction to apply (0 = none, 1 = '
+                         'full).  The global --mesh-back already handles that part, '
+                         'so 1 double-counts it (the arm lands 12 cm behind the '
+                         'reference).')
+    ap.add_argument('--arm-up', type=float, default=0.55,
+                    help='how much of the arm residual along the VERTICAL direction '
+                         '(perpendicular to the arm axis) to apply.  The mesh forearm '
+                         'and palm sit ~2.5 cm too high relative to the bones, and '
+                         'this is the only term that corrects it without moving the '
+                         'arm fore/aft.')
+    ap.add_argument('--arm-taper', type=float, nargs=2, default=[-0.05, 0.22],
+                    metavar=('T0', 'T1'),
+                    help='ramp the arm displacement in from 0 at T0 to full at T1, '
+                         'measured in metres along the shoulder->hand axis.  The '
+                         'arm-weighted cloud reaches 8.5 cm inboard of the shoulder '
+                         'joint (chest/armpit geometry), and sliding THAT out opens a '
+                         'gap; the taper keeps the junction welded.')
+    ap.add_argument('--no-arm-taper', dest='arm_taper', action='store_const',
+                    const=None, help='disable the taper (old behaviour)')
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
@@ -1085,7 +1132,8 @@ def main():
                  mesh_shift=(0.0, -a.mesh_back, -a.mesh_down),
                  upper_scale=a.upper_scale, upper_pivot_z=a.upper_pivot_z,
                  upper_blend=a.upper_blend, arm_fit=a.arm_fit,
-                 arm_perp=a.arm_perp, arm_smooth=a.arm_smooth)
+                 arm_perp=a.arm_perp, arm_up=a.arm_up, arm_smooth=a.arm_smooth,
+                 arm_taper=(None if a.arm_taper is None else tuple(a.arm_taper)))
 
     os.makedirs(a.outdir, exist_ok=True)
     png = os.path.join(a.outdir, a.out)
