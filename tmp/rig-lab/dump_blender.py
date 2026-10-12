@@ -60,7 +60,23 @@ ARM_UPPER_GAIN = 0.05
 # fighting the metrics -- if the hands still do not line up, suspect that what
 # the eye is seeing is a TRANSLATION (or the fingers), not a wrist roll.
 # One signed number; 0 disables.  `_diag_hand_tilt2.py` draws all three.
-ARM_HAND_TILT = 10.0
+#
+# Round 55b: the user asked for this to come DOWN again, from what they called
+# "the 7 deg" to 3 deg.  The value actually shipped in round 53/54 was 10.0 --
+# the file `zoey-before-hand7.blend` is misleadingly named (its content is the
+# 10 deg build).  The user's target is absolute ("change to 3 deg"), so this is
+# 3.0, not 10-4.
+ARM_HAND_TILT = 3.0
+# Round 55: the FINGER residual pose (expert brief 10.4-10.7).  The source hand
+# is a flat T-pose (its ten chains measure 0.00 deg of bend) while HD2's native
+# hand is a relaxed A-pose, so without this the fingers stay flat and land
+# ~45 deg off HD2's phalanges -- and HD2's distal finger joints sit 35-48 mm
+# OUTSIDE our fingers, so the game would hinge them about thin air.  This pass
+# rotates each chain onto HD2's own bone directions on the FINAL mesh, so the
+# accepted palm/wrist/roots are untouched.  `_probe_fingerpose1.py` checks the
+# expert's gates; `_diag_fingerpose.py` draws it.  A list of stems poses only
+# those ('middle'), True poses all ten, None disables.
+ARM_FINGER_POSE = True
 
 
 def tri3(t):
@@ -181,10 +197,11 @@ def main():
                    arm_scratch_upper_gain=gain, head_scale=HEAD_SCALE,
                    arm_elbow_open=ARM_ELBOW_OPEN,
                    arm_hand_tilt=ARM_HAND_TILT,
+                   arm_finger_pose=ARM_FINGER_POSE,
                    verbose=True)
     print('[dump] upper-arm gain = %+.4f m   elbow open = %+.2f deg   '
-          'hand tilt = %+.2f deg'
-          % (gain, ARM_ELBOW_OPEN, ARM_HAND_TILT))
+          'hand tilt = %+.2f deg   finger pose = %s'
+          % (gain, ARM_ELBOW_OPEN, ARM_HAND_TILT, ARM_FINGER_POSE))
 
     tris = np.asarray([tri3(t) for t in r['tris']], dtype=np.int32)
     nv = len(r['verts'])
@@ -256,7 +273,8 @@ def main():
                                upper_blend=0.45, head_scale=HEAD_SCALE,
                                arm_upper_gain=gain,
                                arm_elbow_open=ARM_ELBOW_OPEN,
-                               arm_hand_tilt=ARM_HAND_TILT),
+                               arm_hand_tilt=ARM_HAND_TILT,
+                               arm_finger_pose=ARM_FINGER_POSE),
                    metrics=plain(r['metrics'])),
               open(os.path.join(OUT, 'meta.json'), 'w', encoding='utf-8'),
               indent=1, ensure_ascii=False)

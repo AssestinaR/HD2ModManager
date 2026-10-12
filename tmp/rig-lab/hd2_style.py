@@ -300,7 +300,15 @@ def rot_axis_angle(axis, ang):
 
 
 def min_arc_rotation(a, b):
-    """The shortest rotation taking direction `a` onto direction `b`."""
+    """The shortest rotation taking direction `a` onto direction `b`.
+
+    ⚠️ Round 54: the anti-parallel branch used to `return -np.eye(3)`.  That
+    matrix has det = -1 -- it is a MIRROR, not a rotation -- and anything that
+    then composes it with real rotations (or checks `det(R) == +1`) inherits a
+    flipped frame.  The real finger chains never hit it, but a copied-and-
+    automated version of this function would.  A true 180 deg turn needs an
+    axis perpendicular to `a`; pick the most stable one.
+    """
     a = np.asarray(a, float)
     b = np.asarray(b, float)
     a = a / max(float(np.linalg.norm(a)), 1e-12)
@@ -309,8 +317,170 @@ def min_arc_rotation(a, b):
     s = float(np.linalg.norm(ax))
     c = float(a @ b)
     if s < 1e-9:
-        return np.eye(3) if c > 0.0 else -np.eye(3)
+        if c > 0.0:
+            return np.eye(3)
+        helper = np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9 \
+            else np.array([0.0, 1.0, 0.0])
+        axis = np.cross(a, helper)
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+        return rot_axis_angle(axis, math.pi)
     return rot_axis_angle(ax / s, math.atan2(s, c))
+
+
+# ------------------------------------------------------------------ fingers
+# Round 54.  The source model is a T-pose hand with the fingers laid out FLAT
+# and straight (measured bend 0.00 deg on all ten chains); HD2's native hand is
+# a relaxed A-pose hand with the fingers curled forward-down (21-28 deg at the
+# first joint).  The pipeline carries the hand as a rigid extension of the
+# forearm, so our fingers inherit the flat pose and end up ~45 deg off HD2's
+# finger bones -- and, worse, HD2's distal finger joints land 35-48 mm OUTSIDE
+# our fingers, so at runtime the game would hinge them about thin air.
+#
+# The fix is a finger-only residual pose applied to the FINAL mesh (see
+# `apply_finger_pose`), so the already-accepted palm, wrist and roots stay put.
+FINGER_STEMS = (('thumb', 'Finger0'), ('index', 'Finger1'),
+                ('middle', 'Finger2'), ('ring', 'Finger3'), ('pinky', 'Finger4'))
+
+
+def finger_bone_pairs(side, short, hby):
+    """[(finger, [3 hd2 bone names], [3 source bone names])] for one side.
+
+    Both trees are 5 fingers x 3 phalanges and isomorphic:
+        source  L_Finger2 / L_Finger21 / L_Finger22      (middle)
+        HD2     l_middle_finger1 / _2 / _3
+    """
+    got = []
+    for stem, sfx in FINGER_STEMS:
+        hs = ['%s_%s_finger%d' % (side, stem, k) for k in (1, 2, 3)]
+        ss = ['%s_%s%s' % (side.upper(), sfx, s) for s in ('', '1', '2')]
+        if all(n in hby for n in hs) and all(n in short for n in ss):
+            got.append((stem, hs, ss))
+    return got
+
+
+def slerp_dir(a, b, t):
+    """Blend two unit directions along the short arc (t=0 -> a, t=1 -> b)."""
+    d = float(np.clip(a @ b, -1.0, 1.0))
+    th = math.acos(d)
+    if th < 1e-9:
+        return a
+    k = math.sin(th)
+    if abs(k) < 1e-12:
+        return a
+    return (math.sin((1.0 - t) * th) / k) * a + (math.sin(t * th) / k) * b
+
+
+def apply_finger_pose(P0, verts, resolved, D, rest_sym, rest_hd2, hby, short,
+                      post, amount, say, only=None):
+    """Put the fingers onto HD2's native finger directions.  Mesh-only.
+
+    Expert-reviewed (round 54, §10.5).  Per finger, root to tip, forward
+    kinematics driven by the TARGET chain:
+
+        Q  = Gp[:3, :3]
+        Rl = min_arc(s[k], Q.T @ t[k])          <- the Q pair is the whole point
+        Gk = Gp @ T(J[k]) @ R4(Rl) @ T(-J[k])
+        Gp = Gk
+
+    * `J[k]` are the joints of the UNBENT input P0.  The parent transform moves
+      them; pre-moving them and putting them on the right of `Gp` would move the
+      pivot twice.
+    * `s[k]` are the FROZEN segment directions of P0 and `t[k]` the targets.
+      The rotation must be conjugated by `Q` because the min-arc solved in world
+      space is not a local rotation -- dropping that pair leaves the phalanges
+      up to 14 deg off (the expert measured 11.3-14.3 deg on real chains).
+    * The palm/wrist/root are already accepted, so `Gp` starts at the identity:
+      this is a RESIDUAL pose, not a re-pose of the hand.
+    * Lengths are preserved (rotations only) and the roots do not move, so the
+      mesh goes back through the ORIGINAL three-weight skinning with no
+      re-normalisation and no hard split at the root.
+
+    `only` restricts the pass to a subset, for the expert's one-finger-first
+    acceptance test (§10.7.1).  It accepts stems ('middle'), or side+stem
+    ('l_middle', 'r_pinky'), case-insensitive; None means every finger.
+    """
+    P0 = np.asarray(P0, float)
+    want = None
+    if only:
+        want = {str(x).strip().lower() for x in np.atleast_1d(only)}
+    G, rows = {}, []
+    for side in ('l', 'r'):
+        for stem, hs, ss in finger_bone_pairs(side, short, hby):
+            if want is not None and stem.lower() not in want \
+                    and ('%s_%s' % (side, stem)).lower() not in want:
+                continue
+            bidx = [hby[n]['index'] for n in hs]
+            # our current joints: the source joint carried by the pipeline's own
+            # deform matrix, then through the same mesh-only post-processing the
+            # final `out` got (shift + upper-body scale).  NOT rest_sym: that is
+            # the pre-post space.
+            J = post(np.asarray([(D[b] @ np.append(rest_sym[b][:3, 3], 1.0))[:3]
+                                 for b in bidx], float))
+            # the source chain is straight (measured 0.00 deg on all ten), so the
+            # terminal segment continues the middle one; the source bend is
+            # printed so a future model that is NOT straight cannot slip past.
+            sp = np.asarray([rest_sym[b][:3, 3] for b in bidx], float)
+            u0 = sp[1] - sp[0]
+            u1 = sp[2] - sp[1]
+            src_bend = math.degrees(math.acos(max(-1.0, min(1.0, float(
+                (u0 / max(np.linalg.norm(u0), 1e-12)) @
+                (u1 / max(np.linalg.norm(u1), 1e-12)))))))
+            s = [J[1] - J[0], J[2] - J[1], J[2] - J[1]]
+            s = [v / max(float(np.linalg.norm(v)), 1e-12) for v in s]
+            # targets: HD2's native finger chain.  The last phalanx has no child,
+            # so its direction is the bone's own +X axis.
+            T = np.asarray([rest_hd2[b][:3, 3] for b in bidx], float)
+            t = [T[1] - T[0], T[2] - T[1]]
+            t = [v / max(float(np.linalg.norm(v)), 1e-12) for v in t]
+            ax = np.asarray(rest_hd2[bidx[2]][:3, 0], float)
+            t.append(ax / max(float(np.linalg.norm(ax)), 1e-12))
+            if amount < 1.0:
+                t = [slerp_dir(sv, tv, amount) for sv, tv in zip(s, t)]
+            Gp = np.eye(4)
+            angs = []
+            for k in range(3):
+                Q = Gp[:3, :3]
+                Rl = min_arc_rotation(s[k], Q.T @ t[k])
+                a_k, _ax_k = rot_angle_axis(Rl)
+                angs.append(a_k)
+                Tp = np.eye(4)
+                Tp[:3, 3] = J[k]
+                Tm = np.eye(4)
+                Tm[:3, 3] = -J[k]
+                R4 = np.eye(4)
+                R4[:3, :3] = Rl
+                Gp = Gp @ Tp @ R4 @ Tm
+                G[bidx[k]] = Gp
+            # residual: what the chain still misses after the pose
+            err = []
+            for k in range(3):
+                got = G[bidx[k]][:3, :3] @ s[k]
+                err.append(math.degrees(math.acos(max(-1.0, min(1.0, float(
+                    (got / max(np.linalg.norm(got), 1e-12)) @ t[k]))))))
+            rows.append(dict(side=side, stem=stem, hd2=hs, src=ss, bidx=bidx,
+                             joints=J, angles_deg=angs, residual_deg=err,
+                             source_bend_deg=src_bend))
+            say('finger %s_%-6s target bends %5.2f %5.2f %5.2f deg -> applied '
+                '%5.2f %5.2f %5.2f deg; residual %5.3f %5.3f %5.3f deg '
+                '(source chain bend %.3f deg)'
+                % (side, stem, *[math.degrees(math.acos(max(-1.0, min(1.0, float(
+                    (s[k] / max(np.linalg.norm(s[k]), 1e-12)) @ t[k])))))
+                    for k in range(3)], *angs, *err, src_bend))
+
+    p4 = np.hstack([P0, np.ones((len(P0), 1))])
+    new = np.empty_like(P0)
+    for k, v in enumerate(verts):
+        acc = np.zeros(3)
+        tot = 0.0
+        for j in range(3):
+            w = v['w'][j]
+            if w <= 0.0:
+                continue
+            M = G.get(resolved.get(v['bones'][j]))
+            acc += w * (P0[k] if M is None else (M @ p4[k])[:3])
+            tot += w
+        new[k] = acc / tot if tot > 0 else P0[k]
+    return new, rows, G
 
 
 def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name,
@@ -509,6 +679,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              arm_rot_smooth=8, arm_rot_mode='rigid',
              arm_scratch=True, arm_scratch_deg=None, arm_scratch_elbow=True,
              arm_elbow_open=0.0, arm_hand_tilt=0.0,
+             arm_finger_pose=None, arm_finger_pose_amount=1.0,
              arm_scratch_upper_gain=0.0, head_scale=1.0,
              verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
@@ -1640,6 +1811,61 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             'only; %d vertices = skull + everything hanging off it'
             % (head_scale, piv[2], int(sel.sum())))
 
+    # ---- 4f. MESH-ONLY finger residual pose --------------------------------
+    # Round 54, expert-reviewed.  The source model's hand is a FLAT T-pose (its
+    # ten chains measure 0.00 deg of bend) while HD2's native hand is a relaxed
+    # A-pose (first joint 21-28 deg).  The pipeline carries the hand as a rigid
+    # extension of the forearm, so the fingers inherit the flat pose and land
+    # ~45 deg off HD2's phalanges -- and, worse, HD2's distal finger joints sit
+    # 35-48 mm OUTSIDE our fingers, so the game would hinge them about thin air.
+    #
+    # The expert's fix (§10.4-10.5) is a finger-only residual pose on the FINAL
+    # mesh: rotate each chain onto HD2's own bone directions, one phalanx at a
+    # time, root to tip, using the frozen input joints as pivots.  Because it
+    # runs after 4c/4d/4e and only touches bones that hang off the fingers, the
+    # already-accepted palm, wrist and roots stay bit-identical.
+    #
+    # `arm_finger_pose` is off by default; `arm_finger_pose` may name a subset
+    # ('middle', 'l_index', ...) so the one-finger acceptance test can run first.
+    if arm_finger_pose:
+        shift_v = np.asarray(mesh_shift, dtype=np.float64)
+
+        def post(Q):
+            """Map points from the pre-4c mesh space to the final `out` space.
+
+            The pipeline moved the MESH (never the rig) in 4c/4d, so the finger
+            pivots have to go through exactly the same two steps.  Using the
+            raw `rest_sym` here would put every pivot in the wrong space -- the
+            expert flagged this explicitly.  The head scale (4e) only touches
+            the skull subtree, so the fingers never see it.
+            """
+            Q = np.asarray(Q, float).reshape(-1, 3).copy()
+            if any(mesh_shift):
+                Q = Q + shift_v
+            if upper_scale != 1.0:
+                hips = next(h for h in hd2 if h['name'] == 'hips')
+                piv = rest_hd2[hips['index']][:3, 3].astype(np.float64).copy()
+                if upper_pivot_z is not None:
+                    piv[2] = float(upper_pivot_z)
+                z0 = piv[2] - upper_blend
+                z1 = piv[2] + upper_blend
+                tt = np.clip((Q[:, 2] - z0) / max(z1 - z0, 1e-9), 0.0, 1.0)
+                w = tt * tt * (3.0 - 2.0 * tt)                  # same smoothstep
+                Q = piv + (Q - piv) * (1.0 + (upper_scale - 1.0) * w)[:, None]
+            return Q
+
+        only = None if arm_finger_pose is True else arm_finger_pose
+        out, finger_rows, finger_frames = apply_finger_pose(
+            out, verts, resolved, D, rest_sym, rest_hd2, hby, short,
+            post, float(arm_finger_pose_amount), say, only=only)
+        say('finger residual pose: %d chain(s) posed%s (amount %.3f); the palm, '
+            'wrist and roots are untouched'
+            % (len(finger_rows),
+               '' if only is None else ' [only %s]' % only,
+               float(arm_finger_pose_amount)))
+    else:
+        finger_rows, finger_frames = [], {}
+
     # ---- 5. the pose the GAME actually shows ------------------------------
     # The shipped rest is  S_A = D * rest_sym  (rest_sym is the T-pose rest; D is
     # the T->A conversion, so S_A is the A-pose rest that the shipped mesh `out`
@@ -1687,6 +1913,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         src_pts=src_pts, src1=src1, out=out, out_idle=out_idle, rest=rest_sym, D=D,
         rest_shipped=rest_shipped,
         hd2=hd2, rest_hd2=rest_hd2, resolved=resolved, src_index_to_hd2=src_index_to_hd2,
+        finger_rows=finger_rows, finger_frames=finger_frames,
         scale=s, sole=sole, head_src=head_src_v, head_hd2=head_hd2,
         new_head=new_head, missing=missing, hops=hh,
         metrics=dict(scale=s, source_height=src_h, sole_z=float(sole[2]),
@@ -1701,6 +1928,20 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                      missing=['%s->%s' % p for p in missing],
                      hops={str(k): v for k, v in sorted(hh.items())}),
     )
+
+
+def _finger_pose_arg(a):
+    """Turn the CLI finger flags into `retarget`'s `arm_finger_pose` value.
+
+    None  -> skip the pass entirely
+    True  -> every finger
+    [...] -> just the named stems, e.g. ['middle'] or ['l_index', 'r_pinky']
+    """
+    if a.arm_finger_pose_only:
+        only = [s.strip() for s in a.arm_finger_pose_only.split(',') if s.strip()]
+        if only:
+            return only
+    return True if a.arm_finger_pose else None
 
 
 def main():
@@ -1763,6 +2004,25 @@ def main():
                          'tips toward the back of the hand, "palm up"), '
                          'mirrored automatically between the two arms.  The '
                          'fingers ride along rigidly; the rig never moves.')
+    ap.add_argument('--arm-finger-pose', action='store_true',
+                    help='apply the expert-reviewed FINGER residual pose: rotate '
+                         'each finger chain onto HD2\'s own phalange directions '
+                         'on the final mesh, root to tip, so the fingers curl '
+                         'into a relaxed HD2 grip instead of staying flat.  Runs '
+                         'after every body/head/wrist step, so the accepted '
+                         'palm, wrist and roots stay bit-identical; the rig '
+                         'never moves.  Off by default.')
+    ap.add_argument('--arm-finger-pose-only', default=None, metavar='WHICH',
+                    help='with --arm-finger-pose, restrict the pass to a comma '
+                         'list of fingers -- stems like "middle" or side+stem '
+                         'like "l_index,r_pinky" -- for the one-finger-first '
+                         'acceptance test.  Implies --arm-finger-pose.')
+    ap.add_argument('--arm-finger-pose-amount', type=float, default=1.0,
+                    metavar='0..1',
+                    help='blend the finger residual pose: 0 = off, 1 = fully '
+                         'onto HD2\'s directions (default 1).  Intermediate '
+                         'values slerp the target directions, for A/B and for '
+                         'checking that the unposed fingers are untouched.')
     ap.add_argument('--upper-scale', type=float, default=1.0,
                     help='scale the MESH above the hips (torso/arms/head); the '
                          'rig never moves')
@@ -1845,6 +2105,8 @@ def main():
                  upper_blend=a.upper_blend, head_scale=a.head_scale,
                  arm_elbow_open=a.arm_elbow_open,
                  arm_hand_tilt=a.arm_hand_tilt,
+                 arm_finger_pose=_finger_pose_arg(a),
+                 arm_finger_pose_amount=a.arm_finger_pose_amount,
                  arm_fit=a.arm_fit,
                  arm_perp=a.arm_perp, arm_up=a.arm_up, arm_smooth=a.arm_smooth,
                  arm_taper=(None if a.arm_taper is None else tuple(a.arm_taper)),

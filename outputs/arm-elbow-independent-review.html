@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>手臂变换独立复核</title><style>body{margin:0;background:#10141c;color:#e7edf8;font:16px/1.8 system-ui,"Microsoft YaHei",sans-serif}main{max-width:1000px;margin:auto;padding:48px 28px 80px}h1{font-size:32px;line-height:1.35}h2{margin-top:38px;font-size:22px}h3{font-size:18px;color:#a9ccff}p{color:#ced7e8}strong{color:#fff}.tag{font-size:13px;letter-spacing:.08em;color:#8fa9c9}.box{background:#192231;border:1px solid #33445d;border-radius:14px;padding:22px;margin:24px 0}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.num{font-size:29px;color:#9dc8ff;display:block}.small{font-size:13px;color:#a9b8cb}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:12px;border-bottom:1px solid #334055}th{color:#a9ccff}code{color:#9ee0d2}pre{background:#0c111a;padding:20px;overflow:auto;border-radius:10px;line-height:1.7}li{margin:10px 0}svg{width:100%;height:auto}a{color:#9dc8ff}@media(max-width:680px){.stats{grid-template-columns:1fr}main{padding:24px 18px}h1{font-size:26px}}</style></head><body><main>
+<div class="tag">独立代码复核 · 真实模型消融 · 2026-10-12</div><h1>主线程移动了旋转中心，<br>却没有真正拉长上臂。</h1>
+<p>你的目标是把标准 T-pose 模型按固定数学步骤摆到参考 A-pose 变体。已满意的躯干、头和腿应保持稳定；手臂应通过少量可解释的伸长、转动和随动操作逐步完成。</p>
+<div class="box"><strong>结论已写回交接文档第 10 节。</strong><p>建议采用“先变形 T-pose 顶点、同步更新工作枢轴、再统一摆姿”的方案 A。诊断的核心方向成立，但原文对前臂位移的推导错误；最小候选方案的数值效果已验证，生产掩码和完整肘部视觉仍需主线程验收。</p></div>
+<div class="stats"><div class="box"><span class="num">0 mm</span>T-pose 顶点实际伸长<br><span class="small">旧实现，枢轴移动 50 mm</span></div><div class="box"><span class="num">33.91 mm</span>前臂实际偏移<br><span class="small">其中 Y 方向为 −31.29 mm</span></div><div class="box"><span class="num">≈ 0</span>关闭肘旋转后的影响<br><span class="small">最终网格差约 1.1 × 10⁻¹⁵ m</span></div></div>
+<h2>混淆发生在三个对象之间</h2>
+<svg viewBox="0 0 960 190" role="img" aria-label="发布骨架、工作枢轴、网格顶点三个对象的区别"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#8db5eb"/></marker></defs><rect x="5" y="18" width="270" height="145" rx="12" fill="#202a3b" stroke="#4a5b75"/><text x="25" y="53" fill="#edf4ff" font-size="20">发布骨架</text><text x="25" y="88" fill="#b9c7da" font-size="16">rest_hd2 / rest_shipped</text><text x="25" y="126" fill="#b9c7da" font-size="16">保持 HD2 原生</text><rect x="340" y="18" width="270" height="145" rx="12" fill="#202a3b" stroke="#4a5b75"/><text x="360" y="53" fill="#edf4ff" font-size="20">离线工作枢轴</text><text x="360" y="88" fill="#b9c7da" font-size="16">rest_sym / new_head</text><text x="360" y="126" fill="#b9c7da" font-size="16">规定围绕哪里转</text><rect x="675" y="18" width="280" height="145" rx="12" fill="#1c3537" stroke="#578b89"/><text x="695" y="53" fill="#edf4ff" font-size="20">实际网格顶点</text><text x="695" y="88" fill="#b9c7da" font-size="16">src1 → out → out_idle</text><text x="695" y="126" fill="#b9c7da" font-size="16">真正改变、测量和验收</text><line x1="615" y1="90" x2="665" y2="90" stroke="#8db5eb" stroke-width="2" marker-end="url(#arrow)"/></svg>
+<p>此前探针看到工作枢轴的肩肘距离增加，就把它当成上臂网格变长。辅助点证明的是辅助点自己移动了，无法证明实际顶点完成了轴向拉伸。</p>
+<h2>正确的因果公式</h2>
+<p>肘的旧位置为 E，位移为 d，肘相对旋转为 R，父链旋转为 Q。只改枢轴时：</p>
+<pre><code>C_E(v) = E + R(v − E)
+C_(E+d)(v) − C_E(v) = (I − R)d
+最终前臂偏移 = Q(I − R)d</code></pre>
+<p>所以前臂不会必然沿上臂轴移动 5 cm。它的错误位移取决于肘角；肘不转，位移就为零。这与真实模型消融一致，公式与实际矩阵的分量误差小于 4 × 10⁻¹⁶ m。</p>
+<h2>最小修法，以及它没有保证的事情</h2>
+<p>冻结原 T-pose 肩 S、肘 E、单位上臂轴 u、上臂长度 L。对确认属于同侧手臂的顶点使用：</p>
+<pre><code>s = dot(v − S, u)
+v_new = v + δ · u · clamp(s / L, 0, 1)</code></pre>
+<ul><li><strong>上臂内部：</strong>沿轴均匀拉长，横截面保持。线性斜坡已足够；全段 smoothstep 会变成不均匀拉伸。</li><li><strong>前臂、手掌、手指：</strong>完整远端分区整体平移 d；同步更新肘、腕、手指及辅助工作枢轴。投影到 s&lt;L 的远端顶点需显式分区，不能只信投影。</li><li><strong>多层壳：</strong>共同几何变换可避免连续蒙皮权重造成不同幅度，但掩码边界和肘过渡仍需逐层检查，不能声称自动无缝。</li></ul>
+<p>当顶点与肘枢轴一起移 d 时，<code>C_(E+d)(v+d) = C_E(v)+d</code>。因此前臂随动不会被计算两次。真实模型最小候选在固定前臂集合上验证了这一点，D 后平移误差小于 1.3 × 10⁻¹⁵ m。该实验掩码仅用于因果验证，不作为生产实现。</p>
+<h2>主线程需要修正的测量与流程问题</h2>
+<table><thead><tr><th>问题</th><th>证据与后果</th></tr></thead><tbody>
+<tr><td>缩放变量被覆盖</td><td>真实对齐尺度 1.0703339223；返回值却是 121704×1 的逐顶点上身缩放数组，首项 1.12。探针还对已缩放骨长再次乘缩放。</td></tr>
+<tr><td>小臂骨长不是最终形状</td><td>独立重算工作骨长差约 1.09 mm 确实成立，但不足以证明最终网格保长度或接近参照。</td></tr>
+<tr><td>后处理再次改变前臂</td><td>D 后精确平移的固定小臂集合，在最终渐变缩放后，位移相对平均值最大偏离约 2.44 mm；此量不是刚体拟合残差，最终形状需另验。</td></tr>
+<tr><td>手指工作枢轴遗留</td><td>旧实现 gain=5 cm 时，食指首节工作枢轴位移为 0。今后增加指节旋转会使用过期中心。</td></tr>
+<tr><td>关闭旋转开关未生效</td><td>scratch 分支优先于 apose；仅 apose=False 不会关闭肩肘摆姿。旧 arm_fit 消融在 scratch 下也无效。</td></tr>
+</tbody></table>
+<h2>交给主线程的执行顺序</h2>
+<ol><li>冻结当前身体结果和手臂参数，5 cm 先当实验幅度，不当最佳拟合值。</li><li>输出三个阶段：拉伸前后的 T-pose、D 摆姿后、最终 out_idle。</li><li>只实现网格拉长和工作枢轴同步，包含完整远端链。</li><li>先验上臂轴向仿射、前臂统一平移、身体非目标顶点不变。</li><li>再验最终阶段，并用固定壳层、固定视角对照零增益、旧实现、候选、参照。</li><li>做删除关键变形行的负对照；运行当前参数的回归检查。长度和肘形通过后，再做掌向、twist 与手指。</li></ol>
+<div class="box"><strong>已完成：诊断与指导；未宣称：生产修复或最终视觉通过。</strong><p>没有修改主管线代码。交接文档已补入完整公式、Q1–Q5 回答、实现边界和验收条件。独立诊断脚本及原始数值保留在项目内，供主线程复核。</p><p class="small">交接：tmp/rig-lab/ARM_ELBOW_ARTIFACT_BRIEF.md §10<br>实验：tmp/rig-lab/review_elbow_math.py<br>数值：tmp/rig-lab/out/elbow-independent-review.json<br>顶点：tmp/rig-lab/out/elbow-independent-review.npz</p></div>
+</main></body></html>
