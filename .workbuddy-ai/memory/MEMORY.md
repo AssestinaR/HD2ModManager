@@ -20,55 +20,59 @@
 - **【环境】** ① Python 用隔离 venv `...\python\envs\default\Scripts\python.exe`（有 numpy+Pillow；**系统 python 无 PIL**）；② **`git clone`/`curl` 打 GitHub 常失败** → 让用户下 zip；③ **Bash heredoc 调 Python/PowerShell 被拦** → 写成 `tmp/*.py` 再执行；④ **`Edit` 对含大量反引号/emoji 的长中文行会匹配失败** → 用 Python `str.replace` 并回读校验；⑤ **`Remove-Item` 被 safe-delete 钩子接管 → "删到回收站"必抛错**，让用户自己跑，**不要**用 `[System.IO.File]::Delete` 绕过。
 
 ## 大功能 B（当前方向）：L4D2 模型整体移植到 HD2
-> 细节见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`、**`docs/hd2-batchtool-sdk-findings.md`（§7 源码逐函数核对；§8 新管线；§9 三个真 bug；**§10 参照 patch 做法**；**§11 正视站姿**；**§12 骨轴往返**；**§13 发布骨架=HD2原生、网格去适应**）**；数字全在 `.workbuddy-ai/memory/*.md`。
+> 细节见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`、**`docs/hd2-batchtool-sdk-findings.md`（§7 源码逐函数核对；§8 新管线；§9 三个真 bug；§10 参照 patch 做法；§11 正视站姿；§12 骨轴往返；§13 发布骨架=HD2原生；§14 mesh 枢轴与发布骨架解耦）**；数字全在 `.workbuddy-ai/memory/*.md`。
 
-### ✅ 新管线已实现并实测（`tmp/rig-lab/hd2_style.py`，**取代旧 `T = H·S⁻¹`**）
-- **数学 = BatchTool 那套**：① **一个均匀缩放 + 一个平移**（围绕脚底 ⇒ 源脚底精确落 HD2 脚底；**`TorsoScale=1.042` 是算出来的**）；② **HD2 骨的 head := 源映射骨的世界位置**（**只改位置，朝向与骨长仍是 HD2 自己的**）；③ **30 骨常量局部旋转表**（A↔T，全是手臂+手；脊柱/颈/头/腿不参与）+ 20 条右侧骨轴 delta。**吸附在绑定之前 ⇒ 绑定态恒等、静止网格不变形**。公式 `rot[b]=rot[p]·inv(rest_hd2[p])·rest_hd2[b]·D[b]`、`D[b]=D[p]·M_rest[b]·basis[b]·inv(M_rest[b])`。**HD2 独有骨补法**：`spine1=lerp(hips,spine2,.5)`、`chest=spine2`、`{s}_shoulder_twist=lerp(shoulder,elbow,.42)`、`{s}_hand_twist=wrist`、`{s}_shoulderarmour=lerp(clavicle,shoulder,.9)`、`{s}_toe=ball+(ball−ankle)*.35`、`head_tip=head+(head−neck)`。
-- **官方流程（BatchTool `README.md`）**：导 HD2 骨架转 T-pose → 人物摆 T-pose 对齐（**腿部无需对齐**）→ 选字典 → 骨骼吸附 → 顶点组重命名+重绑 → **必须**点"转回初态+原始骨轴" → 持握骨 → 部位切分。**⇒ 最终 rest = HD2 的 A-pose（网格被烘焙成 A-pose）。**
-- 5 模型（zoey/rochelle/coach/nick/ellis）**全部 edge_mean 0.9989、bad>25% ≤0.58%**，**零逐模型调参**（旧 swing 最优 bad 9.25%）。实现要点：① **缩放高度必须在 HD2 空间沿 +Z 量**，脚底点用**底部 1 cm 顶点片质心**；② **AXIS delta 与 head 搬移必须交错在同一父先子后循环**（否则"被搬走父骨"的**未映射子骨**会掉队）。
-- **模型自身瑕疵（非我们引入）+ 源骨架**：Nick/Ellis 的 `source_extra_*` 长袖 jiggle 骨链在 **bind pose 就朝 +Y 伸出 1.78 m / 1.04 m**（**源 T-pose 里就有**）⇒ "必须靠额外骨/物理驱动"的直接证据。源骨架：`Spine1≡Spine`、`Spine2≡Spine4` 且**零主导权重** ⇒ 有效躯干关节只 3 个；`Pelvis` 关节 0.8193 但网格质心 1.0820（**根骨不在髋**）；**T-pose 手臂严格水平**、**腿严格竖直**；`Head1` = **颅底**。
+### 用户界定的目标（第 39 轮，最高优先级，写在所有"好看"之前）
+- **我们做的不是"一键转换"黑盒，而是"录一个人工操作流的宏"**：① 把源 T-pose 模型摆成参照的站姿/比例（**纯数学变换**，只借 BatchTool 的变换部分，其余逻辑与我们无关，且可以继续优化它）；② 按参照的权重风格重刷权重；③ 全自动 legacy 流程。
+- **骨架与模型没有直接联系，骨架只和权重有关（间接影响模型）。** 参照 patch 的骨架**一根骨没动**（= HD2 原生），"比例优化"全在**网格层**。HD2 标准骨架/游戏帧模拟图**只是对照手段**，不是目标。
+- **本轮只要一件事：把网格摆好**（摆成参照的形状/结构/比例）。摆好后**提取干净网格、丢掉一切源骨/源权重**，再拿干净的 HD2 原生骨架按参照风格上权重。
+- **无权重时游戏帧必须 == 绑定帧**（"任何动画都驱动不了角色，模型恒定保持变体 A-pose"）。
 
-### 🔴🔴🔴 第 38 轮（2026-10-12）：**发布骨架 = HD2 原生一字不改，让「网格」去适应它**（详见 findings §13）
-> 用户原话：「参考模型的骨架没有要求网格一定要和他重合，而是**骨架完全在原始位置不变**，允许模型错位，以保证模型观感」「我们要确保**我们在外面摆什么样，进游戏也摆什么样**，动画只是驱动它们原始 HD2 骨架的轴点进行移动 —— **即使这些轴点不在模型网格的内部**」。**这条排在所有"外面摆得好看"之前**：不修它，一进游戏网格就被骨架拽走，外面白摆。
-- **机制**：运行时 `v_world = Σ_b w_b·A[b]·inv(S_bind[b])·v_bind`；idle 时 `A[b] = rest_hd2[b]` ⇒ **只有 `S_bind[b] == rest_hd2[b]` 时恒等**。旧 `skeleton='snap'`（把 HD2 关节吸附到源关节）⇒ `S_bind ≠ rest_hd2` ⇒ **每帧被拽** = 用户看到的「鞋跟没了 / 脚踝小腿断裂 / 脖子拉长 / 裙子拆成两片」。第 37 轮把骨轴修对只把撕裂 0.568→0.183 m，**没归零**。
-- **修法 `skeleton='native'`（现默认）**：`rt[b] = rt[p]·inv(rest_hd2[p])·rest_hd2[b]·Dd[b]·basis_t[b]`（HD2 自己的 T-pose 工作静止姿态，**无任何吸附**）→ `D[b] = D[p]·rt[b]·basis_i[b]·inv(rt[b])` 只烘**网格** → **`S_bind[b] = rest_hd2[b]` 一字不改**。`src1` 的拟合目标从「HD2 的 **A-pose** 关节」改成「HD2 的 **T-pose** 关节」（源模型是 T-pose）。native 下 `--leg-tilt/--leg-splay` **只动网格**。**验证：`max|A·inv(S_bind)−I| = 8.67e-16`；5 模型 idle 网格差全 = 0.00e+00 m。** `snap` 保留供 A/B。
-- **出图**：`quad_overlay.py` = **4 行 × 3 列**（bind 正 / bind 侧 / GAME 正 / GAME 侧 × native / snap / 参照），每列叠骨架 ⇒ 列 A 的 1≡3、2≡4 **完全重合**。旧的 `rigfix_overlay.py` 是「行1=bind正 / 行2=idle侧」**同时变状态和视角**，看不出问题在哪 —— 已弃用其出图结构。
-- **量化了「网格该做的变换」**（`probe_mesh_vs_rig.py`）：① 网格最低点 z 我们 **+0.0057**（正好 = HD2 `l_toe` 的 z）/ 参照 **−0.0542** ⇒ **需下移 ~6.0 cm**；② 网格高 我们 **1.9644** / 参照 **2.1127** ⇒ **比值 1.0755**；③ 手掌够不到：`l_hand` 偏 **0.15 m** / `r_hand` 偏 **0.69 m**；④ **归一化关节位置（÷自身身高）我们与参照结构完全一致** ⇒ 「下移 6 cm + X 缩放」**等效于把网格适配到 2.113 m 的身高**（= HD2 原生比例，因参照作者一根骨没动）。
-- **⚠️ native 的代价**：`edge_max` 从 2.5–5.8 涨到 **70–127**（`bad%` 0.4–1.2 → 3.4–6.8），根因 = 源模型**手臂/手指朝向**与 HD2 T-pose 不一致，**全局刚体拟合修不了** ⇒ 正是下面「网格变换」要解决的。`probe_delta_effect.py` 证明**轴 delta 是放大器不是根因**（清空后 `r_hand` 0.69→0.24 m，但 `l_hand` 略差）。
-- **下一轮（网格变换，用户已给完整方案，等拍板）**：① 整体**下移 ~6 cm**（脚尖对齐骨架最低点，肩线随之抬到胸部上方）；② **上半身放大**（目标手掌够到 HD2 手掌骨；用户指出**参照的上衣连衣裙与我们是同一模型**，可用特征点求缩放比；整体高比 1.0755 是起点）；③ 缩放要在躯干/大腿接缝处**渐变**（PS 羽化式），防接缝弯折；④ **手臂少弯**（参照作者让肘部几乎在肘尖，用"两点之间直线最短"把短手臂模拟成长手臂）⇒ 做法是**降低 `basis_i` 里手臂的旋转量**，**不是拉长手臂**；⑤ **头部比例**（参照是二次元大号头，既匀称又掩盖肩宽）。用户原话：「**我知道这变换很难做，如果你没有把握，我们可以继续沟通交流，先停下来不直接改也行，不要贪功冒进**」。
+### 🔴🔴🔴 第 39 轮（2026-10-12）：**mesh 烘焙枢轴 与 发布骨架 必须解耦**（详见 findings §14）
+- **症状**：上一轮 `skeleton='native'` 让 idle 恒等了，但**绑定态网格本身**就坏了（左手像"伞/细长鬼爪"，被甩到身前 3 个头远；左臂撕裂、右臂基本正常）。
+- **根因（一句话）**：A-pose 烘焙是 `D[b] = D[p]·rs[b]·basis_i[b]·inv(rs[b])` —— 它**绕骨 b 的关节旋转网格**。所以**枢轴必须在网格内部**。`skeleton='native'` 把 `rs` 从 `rest_sym`（吸附到**源**关节，在网格内）换成了 `rest_t`（**HD2** 自己的关节，HD2 骨架比源网格宽得多 ⇒ 枢轴在网格**外**）⇒ 旋转把网格甩飞。
+- **修法**：**只把「发布哪套骨架」和「绕哪套 rest 烘网格」拆开**。
+  - 网格烘焙**永远**用吸附后的 `rest_sym`（= 第 2 列 snap 的行为，视觉正确的那套）；
+  - `skeleton='native'` 只改**步骤 4b**：`S_bind[b] = rest_hd2[b]` 一字不改。
+  - ⇒ `rest_hd2·inv(S_bind) = I` ⇒ **游戏帧 = 绑定帧**，且绑定帧 = snap 的好看网格。
+- **实测**：`A bind vs B bind max diff 0.00e+00 m`；`A idle==bind 6.59e-16 m`；**5 模型 `edge_mean/edge_max/bad%` 与 snap 逐位相同**（`edge_max` 1.88–5.83，**不再是上一轮的 70–127**），`rig head = 0`、`idle max = 0.0000`。**零逐模型调参。**
+- **出图**：`quad_overlay.py` = **4 行 × 3 列**（bind 正 / bind 侧 / GAME 正 / GAME 侧 × **A=native** / B=snap / C=参照），每列叠骨架 ⇒ 列 A 的 **1≡3、2≡4 完全重合**。裁图 `crop_cols.py`、`crop_colA.py`。
+- **教训**：**改一个开关不要同时动两件独立的事**；"idle 恒等"和"绑定态好看"是**两个独立条件**，各自有各自的自由度（前者 = 发布骨架，后者 = 烘焙枢轴）。
 
-### 🔴🔴 第 37 轮（2026-10-12）：**头号问题 = 我们发布的骨架骨轴是错的**（详见 findings §12）
-> **排在「手臂链短 10 cm」之前**：`--leg-tilt/splay` 修**关节位置**，这条修**骨头坐标系朝向**。朝向错了，游戏里**任何**动画都会把每根骨转到错误的绝对朝向（不只是静止帧）。
-- **实测**：我们发的骨架 vs HD2 原生朝向 = mean **43.90°** / max **180.00°**，**45/107 根骨 >5°**；走完 BatchTool 往返后 = **0.02° / 0.05°，0/107**。参照 patch = 逐位一致。idle 帧网格位移 max **0.568 m → 0.183 m**（nick 3.65→0.207）。5 模型**零调参**；`edge_mean` 不变或略好；发布的**网格本身**只动 mean 6 mm。
-- **根因**：BatchTool 的「工作骨架」≠「发布骨架」。`rigging.py:_convert_pose_space` 是两个状态机：`POSE_SPACE`(INITIAL↔TPOSE) × `BODY_AXIS_SPACE`(INITIAL↔SYMMETRIC)。工作态 = `SYMMETRIC`轴+T-pose（吸附在这里做）；发布态 = `INITIAL`轴+A-pose（第 6 步「转回初态+原始骨轴」）。**两套 basis 表互为逆元**（实测 30 条全满足 `initial ≈ inv(tpose)`，≤2e-5）⇒ 两次烘焙在**骨架局部旋转上抵消**（`L_0·Dd·basis_t·basis_i·Dd⁻¹ = L_0`），而**网格被烘焙两次**（T-pose→A-pose）。**⇒ 发出去的骨架 = HD2 原生（朝向不动），网格 = 源模型的 A-pose。**
-- **我们错在**：只做后半段 —— `rest_sym` 用 HD2 **初态朝向**（不是 T-pose 朝向）+ 源 T-pose 关节位置，只烘焙一次 `basis_i`，且**从不把骨轴转回 `INITIAL`**。⇒ 多出 `basis_i`（`l_shoulder` 34.32°、`l_elbow` 47.36°、`l_hand` 49.24°）+ 累积 `Dd`（`r_clavicle` **180°**、`r_shoulder` 179.04°、`r_elbow` 145.89°）。
-- **修法**（`hd2_style.py` 新增 `axis_roundtrip=True`，默认开）：① 步骤 3 的 `rest_sym` 局部再乘 `basis_t`（`tpose_basis_rotations_wxyz`）⇒ 真正的 T-pose 工作静止姿态；② 步骤 4 照旧烘焙 `basis_i`；③ **新增步骤 4b** 把 `S_A = D·rest_sym` 的骨轴 `SYMMETRIC→INITIAL`：局部 `L ← L·inv(Dd)`，**且 head 必须回填**（Blender 的 `convert_body_axis_space` 只转骨自身坐标系、head 原地不动，漂移 >1e-5 就抛异常；第一版没回填 ⇒ 右肩/肘/手被推到 0.25/0.81/1.27 m 外，回填后降到 0.18 m）；④ idle 帧改用 `rest_shipped`。**`axis_roundtrip=False` 时与旧行为逐位相同**（`out` 差 `0.00000 m`）。CLI：`--legacy-axis`。
-- **⚠️ 更正**：上一轮「20 条对称轴 delta 里 18 条是 180° 翻转」是**把四元数按 `xyzw` 读了**；`..._wxyz` 是 `w` 在前。**只有 2 条 180°**（`r_clavicle` 绕 +Z、`r_shoulderarmour`），其余 1.0–98.8°。⇒ **`--no-axis-deltas` 不是正确修法**（会破坏与 `basis_i` 的配对，把右肘/右手关节推到 0.44/0.69 m 外）。
-- 探针：`probe_rest_gap.py`（三方 head/旋转/head_slip/idle 位移）、`probe_roundtrip.py`（**不改管线**、纯用 `retarget()` 返回值重建往返验证假说）、`rigfix_overlay.py`（三列对比图，**每列都叠骨架**）、`run_rigfix_all.py`（5 模型回归）、`probe_out_diff.py`。
+### 🔴🔴 第 38 轮：**发布骨架 = HD2 原生一字不改**（详见 findings §13）
+- **机制**：运行时 `v_world = Σ w_b·A[b]·inv(S_bind[b])·v_bind`；idle 时 `A[b]=rest_hd2[b]` ⇒ **只有 `S_bind==rest_hd2` 时恒等**。旧 `skeleton='snap'`（把 HD2 关节吸附到源关节）⇒ 每帧被拽 = 「鞋跟没了 / 脚踝小腿断裂 / 脖子拉长 / 裙子拆成两片」（第 37 轮只把撕裂 0.568→0.183 m，**没归零**）。
+- **量化「网格该做的变换」**（`probe_mesh_vs_rig.py`）：① 网格最低点 z 我们 **+0.0057** / 参照 **−0.0542** ⇒ **需下移 ~6.0 cm**；② 网格高 我们 **1.9644** / 参照 **2.1127** ⇒ **比值 1.0755**；③ 手掌够不到：`l_hand` 偏 **0.15 m** / `r_hand` 偏 **0.69 m**；④ **归一化关节位置（÷自身身高）我们与参照结构完全一致** ⇒「下移 6 cm + X 缩放」**等效于把网格适配到 2.113 m 的身高**。
 
-### 🔴 三个真 bug（2026-10-12 用参照 patch 反查；详见 findings §9）
-- **【方法论·最重要】bind 恒等会掩盖真问题。** `D` 在绑定态恒等 ⇒ **绑定态网格完全不变形** ⇒ 任何绑定态指标都漂亮，**哪怕对应表是错的**。游戏里做的是 `A[b]·inv(S[b])`；取 `A` = HD2 原生 rest 就是**玩家实际看到的那一帧**（`retarget` 的 `out_idle`）。**只有这个渲染能与参照 patch 直接对比。**
-- **① `--align kabsch` 把身体转歪 2.8°** ⇒ 脖子跑到髋**前** 1.75 cm（HD2 是**后** 2.22 cm）＝ "身体前倾"；根因 = 两侧 20 关节集**不全等**（源 `Pelvis` 在髋下 12 cm、HD2 `hips` 就在髋上）⇒ 用 `--align yaw`（误差 3.97→1.37 cm）。**② `Spine→spine1` 让躯干每帧拉伸 26.5 cm**（HD2 `spine1` 与 `hips` **完全重合**）⇒ **`--spine-map mesh` 必须。** **③ 鞋被绑到膝盖 ⇒ 穿地 13.5 cm**（源鞋父级 `Bip01_L_Calf`）⇒ **`--fallback distance`**（最低 z −0.138→+0.024）。
-- **⚠️ 头/尺寸（已降级）**：源 `Head1` 是**颅底**、HD2 `head` 是**颅顶** ⇒ **语义差**；但参照用同样"几何骑在关节上"的办法解决（见下）⇒ **降级为"可选微调（头部放大 15–20%）"，非阻塞**。
+### 🔴🔴 第 37 轮：**发布的骨架骨轴曾是错的**（详见 findings §12）
+- BatchTool 的「工作骨架」≠「发布骨架」：`rigging.py:_convert_pose_space` 是 `POSE_SPACE`(INITIAL↔TPOSE) × `BODY_AXIS_SPACE`(INITIAL↔SYMMETRIC) 两个状态机；**两套 basis 表互为逆元**（30 条 `initial ≈ inv(tpose)`，≤2e-5）⇒ 两次烘焙在**骨架局部旋转上抵消**、在**网格上叠加** ⇒ **发布的骨架 = HD2 原生，网格 = 源模型的 A-pose**。
+- 修法 `axis_roundtrip=True`（默认）：`rest_sym` 局部再乘 `basis_t`；**新增步骤 4b** 把 `S_A=D·rest_sym` 的骨轴 `SYMMETRIC→INITIAL`（`L←L·inv(Dd)`，**head 必须回填**，否则右肩/肘/手被推到 0.25/0.81/1.27 m 外）。效果：朝向差 **43.90°/180° → 0.02°/0.05°**，`>5°` 骨 **45/107 → 0/107**。
+- **⚠️ 更正**：`*_wxyz` 是 **w 在前**；20 条 delta 里**只有 2 条 180°**（`r_clavicle` 绕 +Z、`r_shoulderarmour`）。**`--no-axis-deltas` 不是正确修法**。
 
-### 🔴 第 34 轮（2026-10-12）：撤回"正确姿态" + 参照 patch 做法查清（详见 findings §10）
-- **用户否决 `out_idle` 发布方案**（LBS 下把 HD2 rest 直接套到我们网格 ⇒ 臂/肩骨与网格不匹配 ⇒ 撕裂，**我已看图确认**）⇒ **撤回**。**第二列（绑定姿态 `out`）才是需求**：已解决身体前倾。
-- **`--leg-tilt <deg>` 已实现且已修好**：绕踝 `0.5*(l_foot+r_foot)` 转 thigh/knee +θ；其他骨整体平移 `delta = Rl(hips)−hips`（**躯干竖直不旋转**）；foot/ball/toe **钉住**；**网格同步混合变形**。⚠️ **首版是坏的**（腿倾段的网格变换用 `src_index_to_hd2` 查骨名 ⇒ 鞋骨不在表里 ⇒ 鞋跟着躯干平移，抵消了髋前移）⇒ 抽成 **`hd2_style.resolve_bone_map(...)`** 让两段共用同一份答案。**tilt ≈ 5.6° 精确复现 HD2/参照腿部站姿**（踝在髋后 9.86 cm）。
-- **【第四列的真面目】** ① **RE-2310 头盔 = `0xaf431352d9b95e83`**（标签是 `Torso_Undergarment_Slim_lod3`，几何是"脸+猫耳+长发"；容器里**没有 unit 叫 helmet**）⇒ **不要从游戏本体取头盔**；加上它完整参照 **z[−0.054,+2.059]、总高 2.113 m**。② 更正上轮：参照含头 **2.113 > 我们 1.987**，我们**矮 12.6 cm**。③ **参照骨架与 HD2 原生逐位一致（13 根骨 delta 全 0）⇒ 作者一根骨都没动。** ④ 做法 = **网格围着骨架做**：同一个 `head` 关节，参照头部几何在其上 **0.368 m**、我们 **0.293 m** ⇒ **同一件事，我们小 ~20%**；袖口超出手关节 8.9 cm、裙摆 0.756×0.759 m 同理。
-- **【新增·第 4 个真 bug】脚落点整体前移 ~6 cm**：管线 `t` **只锁头关节**（文档却写 "locking the visible foot sole"；实际只有 Z 成立）⇒ 脚底贴片质心 我们 `y +0.0427` / 参照 `−0.0198`（**前移 6.25 cm**），`x −0.1138` / 参照 `−0.1576`（**内收 4.4 cm**）。参照作者是**把脚对齐到 HD2 的脚**的。**修法 = XY 锚点从"头关节"改成"脚底贴片"（Z 仍锁头关节）。未改，待用户拍板。** ⚠️ **X 那一半已被 `--leg-splay` 顺手修掉**（splay 4.0 ⇒ 我们鞋底 0.0746 h / 参照 0.0741 h，残差 ~1 mm）；**Y 那一半仍未动**。
-- **【第 36 轮】正视「稍息」站姿 = `--leg-splay <deg>`**（绕腿根 `{l,r}_thigh` 绕 +Y 转 ±θ；thigh/knee 拿旋转、foot/ball/toe 拿**反向旋转** —— 因踝刚性跟随，**恰好塌缩成纯平移** `trans(ankle_new−ankle_old)`，即"从脚踝反向转回来"，"脚掌额外平移半个脚掌"是**几何自动给出的**；网格同步混合）。**实测鞋底法向/倾角/朝向/侧视逐点全不变（max|Δy|=0）⇒ 纯正视操作。** **关键：参照的骨与网格是两套角度** —— 骨架 = HD2 原生 **7.07°**（踝骨 ±0.1908），网格鞋底只有 **±0.1566**（**网格比骨内收 3.4 cm**，等效 **4.0°**）⇒ "骨不重合网格"是**骨张得更多**。**我们网格刚性跟骨 ⇒ 二选一**：**4.0° = 对齐网格**（拟合 RMS 最小、鞋底与参照精确相等）、**5.57° = 对齐骨**（踝跨 0.357 vs HD2 折算 0.358）。5 模型 sp=4.0 鞋底全落 0.072–0.076 h、零调参。⚠️ 归一化**必须用全身高**；⚠️ 命名 `R` 会**遮蔽** `retarget` 外层的对齐矩阵 ⇒ 用 `Rsp`。
-- **暂缓项**：用 Lua 把 HD2 骨架比例（臂长/肩宽）模拟到接近 L4D2 —— **先了解，暂且不做**。
+### 🔴 管线参数与三个真 bug（2026-10-12 用参照 patch 反查；详见 findings §9）
+- **必用组合**：`--align yaw --spine-map mesh --fallback distance --leg-tilt 5.7 --leg-splay 4.0`。
+  - `--align kabsch` 把身体转歪 2.8° ⇒ 脖子跑到髋**前** 1.75 cm（HD2 是**后** 2.22 cm）；根因 = 两侧 20 关节集**不全等**（源 `Pelvis` 在髋下 12 cm）。
+  - `Spine→spine1` 让躯干每帧拉伸 26.5 cm（HD2 `spine1` 与 `hips` **完全重合**）。
+  - 鞋被绑到膝盖 ⇒ 穿地 13.5 cm（源鞋父级 `Bip01_L_Calf`）。
+- **【方法论·最重要】bind 恒等会掩盖真问题。** `D` 在绑定态恒等 ⇒ 绑定态指标全漂亮，**哪怕对应表是错的**。只有 `A[b]·inv(S_bind[b])` 的渲染能与参照 patch 直接对比。
+- **`--leg-tilt`**：绕踝转 thigh/knee +θ；其他骨整体平移；foot/ball/toe **钉住**；网格同步混合变形。⚠️ 腿倾段的网格变换**必须**用 `resolve_bone_map(...)` 与主管线共用同一份骨映射（首版各查各的 ⇒ 鞋跟着躯干平移，抵消了髋前移）。tilt≈5.6° 复现 HD2 腿部站姿（踝在髋后 9.86 cm）。
+- **`--leg-splay`**：绕腿根 `{l,r}_thigh` 绕 +Y 转 ±θ；thigh/knee 拿旋转、foot/ball/toe 拿**反向旋转**（踝刚性跟随 ⇒ **恰好塌缩成纯平移**）。**实测侧视逐点不变（max|Δy|=0）⇒ 纯正视操作。** 参照骨架 7.07° / 网格 4.0° 是两套角度 ⇒ **选 4.0°（沿用作者"少掰"的做法）**；⚠️ 归一化必须用全身高；⚠️ 命名别用 `R`（会遮蔽外层对齐矩阵）。
+- **【第 4 个真 bug·未修】脚落点整体前移 ~6 cm**：管线 `t` **只锁头关节** ⇒ 脚底贴片质心 我们 `y +0.0427` / 参照 `−0.0198`。X 那一半已被 `--leg-splay` 顺手修掉；**Y 那一半仍未动**。修法 = XY 锚点改成"脚底贴片"（Z 仍锁头关节）。
+- **头/尺寸（已降级）**：源 `Head1` 是**颅底**、HD2 `head` 是**颅顶** ⇒ 语义差；参照用"几何骑在关节上"解决（同一 `head` 关节，参照头部几何在其上 0.368 m、我们 0.293 m ⇒ **我们小 ~20%**）⇒ 降级为"可选微调"。
 
-### 🔵 坐标约定 & 参照 patch
+### 待办（第 39 轮的下一步 = 网格变换，用户已给完整方案）
+> 用户原话：「**我知道这变换很难做，如果你没有把握，我们可以继续沟通交流，先停下来不直接改也行，不要贪功冒进**」。
+1. **整体下移 ~6 cm**（脚尖对齐骨架最低点，肩线随之抬到胸部上方）；2. **上半身放大**（目标手掌够到 HD2 手掌骨；用户指出**参照的上衣连衣裙与我们是同一模型**，可用特征点求缩放比；整体高比 1.0755 是起点）；3. **接缝渐变缩放**（躯干/大腿接缝，PS 羽化式）；4. **手臂少弯**（降低 `basis_i` 里手臂的旋转量，尤其肘部；**不是拉长手臂**）；5. **头部比例**（参照二次元大号头）。
+- 后续：提取干净网格 → 按参照风格重刷权重 → 上 C#（`HD2SourceMigration`）→ 产出离线 legacy 版 patch 包 → 进游戏实测（用户负责）。**动态物理骨骼仍要支持**（L4D2 风味 `jiggle_data.lua`，添头）；**硬要求：没有 Lua 支持 legacy 包也必须能跑**；**不依赖 `HD2IRG1` 的动态骨骼**。
+
+## 坐标约定 & 参照 patch
 - **HD2 坐标：+Y = 前，+X = 左，+Z = 上**（判据：补丁脚部网格左脚在 −X、脚趾朝 +Y，脚长 0.264 m）。**`l_foot` 关节不在脚心**：HD2 原生 踝在髋后 9.86 cm / 源 9.75 cm ⇒ **本来就一致**。
-- 参照 patch = `E:\mod\【4.28】Chiffon-LUNALICE替换RE-2310`（E 盘 = 用户**测试**库，可随便操作；D 盘 steam = **实际在用**）。容器 `9ba626afa44a3aa3.patch_0`(216 KB)+`.gpu_resources`(219 MB)+`.stream`(0 B)，**无 manifest.json**；**35 条目**（23 Unit+2 Bone+10 未知），**只 9 个 Unit 有几何**；**渲染选 `cae35ee15168145f,17da843a4908511e,91eb7be84016ceab,7336c6b662522f0e` + 头 `af431352d9b95e83`**。
-- **【关键判据】补丁骨架与 HD2 原生逐位一致**，只多出 `*_culling`/`*_twist` 辅助骨 ⇒ **"比例优化"全在网格层，骨骼照抄 HD2。** **读取三坑**：① **Unit 骨矩阵是行向量约定（平移 flat 12,13,14）**，与 `E.read_hd2_rig`（已转置）相反 —— 读错**不报错**；② bone 列表**前 9 项是场景图节点**，真骨从 `skeleton` 起，`boss` 是髋部根运动骨；③ **Unit 骨名是空的**，靠 32-bit hash 查 `bonehash`。
+- 参照 patch = `E:\mod\【4.28】Chiffon-LUNALICE替换RE-2310`（E 盘 = 用户**测试**库，可随便操作；D 盘 steam = **实际在用**）。容器 `9ba626afa44a3aa3.patch_0`(216 KB)+`.gpu_resources`(219 MB)+`.stream`(0 B)，**无 manifest.json**；**35 条目**（23 Unit+2 Bone+10 未知），**只 9 个 Unit 有几何**；**渲染选 `cae35ee15168145f,17da843a4908511e,91eb7be84016ceab,7336c6b662522f0e` + 头 `af431352d9b95e83`**（RE-2310 头盔 = 该 id，标签是 `Torso_Undergarment_Slim_lod3`，几何是"脸+猫耳+长发"；容器里**没有 unit 叫 helmet** ⇒ **不要从游戏本体取头盔**）。加上它完整参照 **z[−0.054,+2.059]、总高 2.113 m**。
+- **【关键判据】补丁骨架与 HD2 原生逐位一致**（13 根骨 delta 全 0），只多出 `*_culling`/`*_twist` 辅助骨 ⇒ **"比例优化"全在网格层，骨骼照抄 HD2。** **读取三坑**：① **Unit 骨矩阵是行向量约定（平移 flat 12,13,14）**，与 `E.read_hd2_rig`（已转置）相反 —— 读错**不报错**；② bone 列表**前 9 项是场景图节点**，真骨从 `skeleton` 起，`boss` 是髋部根运动骨；③ **Unit 骨名是空的**，靠 32-bit hash 查 `bonehash`。
 
-### 旧项目 / 新工具（WpfApp1 内重写，进行中）
-- **旧项目编译不过（预先存在）**，最后提交 **2026-09-03**；**用户已拍板：在 WpfApp1 内重写，不修旧项目。** 方案：**`HD2SourceModel`**（net8，**零引用**，编译期强制不认识 HD2）✅ + **`HD2SourceMigration`**（**唯一同时引两侧**）✅骨架（待换新数学）+ `HD2ModCli` 薄子命令 + 各自 `*.Tests`。HD2 侧复用 `UnitMeshReader.ReadTransformInfoFromUnitToc` + `UnitBoneNamesReader`；`HD2ModAdaptation/.../Canonical/` 有 **31 个 `Canonical*` 编译器**（"给 Unit 加骨 + 重写蒙皮"能力现成）；矩阵统一 `System.Numerics.Matrix4x4`（float、行向量）。**Source 格式权威在 `HD2SourceModel/*.cs` 注释。** ⚠️ **实测三次证伪规范**（合成样本测不出，只有真实文件能证伪）：① **VPK 条目步长与版本号无关**（97/97 = "版本号 1 + 18 B 条目"）；② **MDL 骨步长 216 B 对 v44/48/49/53 全成立**；③ **bodypart/model 名是 UTF-8**（如 `裙Dress_Skirt`）。
+## 旧项目 / 新工具（WpfApp1 内重写，进行中）
+- **旧项目编译不过（预先存在）**，最后提交 **2026-09-03**；**用户已拍板：在 WpfApp1 内重写，不修旧项目。** 方案：**`HD2SourceModel`**（net8，**零引用**，编译期强制不认识 HD2）✅ + **`HD2SourceMigration`**（**唯一同时引两侧**）✅骨架（待换新数学）+ `HD2ModCli` 薄子命令 + 各自 `*.Tests`。HD2 侧复用 `UnitMeshReader.ReadTransformInfoFromUnitToc` + `UnitBoneNamesReader`；`HD2ModAdaptation/.../Canonical/` 有 **31 个 `Canonical*` 编译器**（"给 Unit 加骨 + 重写蒙皮"能力现成）；矩阵统一 `System.Numerics.Matrix4x4`（float、行向量）。**Source 格式权威在 `HD2SourceModel/*.cs` 注释。** ⚠️ **实测三次证伪规范**（合成样本测不出，只有真实文件能证伪）：① **VPK 条目步长与版本号无关**（97/97）；② **MDL 骨步长 216 B 对 v44/48/49/53 全成立**；③ **bodypart/model 名是 UTF-8**（如 `裙Dress_Skirt`）。
 
 ## 其他（细节全在 `docs/`）
 - **大功能 A（已被 B 取代）**：引擎 = Stingray(Bitsquid)，**裁掉全部物理命名空间**；`Unit`/`Mesh` **零 `create_*` / 零顶点权重接口** ⇒ **纯运行时 Lua 改不了权重、加不了骨、造不出物理**。**改内存边界：改「数据」✅ / 改「代码」❌**。**【硬约束】只允许依赖游戏本体，不得依赖任何外部系统（尤其其他 mod）**。
 - **信息中心（阶段 0–6 已完成）**：`ModInformationFactRegistry` = **25 kind** 单一真相，`RequestAsync<T>` = 唯一读取入口，`Validate()` 在 `CreateModInformationCenter` 开头跑（新增 kind 忘登记 `SourceRoots` = **启动期失败**）。铁律：**缓存不得取代真实性**（键全由来源指纹构成、不落盘、双向测试）；**「读不到」≠「没有覆盖」**；**图标不进事实**。
 - **护甲映射页 20261011 回归**（`docs/armor-registry-page-20261011-regression.md`）：兜底已落实（`8d06fcb`/`5b79acc`），**根因未动** —— **拿「升级必被摧毁的凭据」(`deployment`) 守护「升级必被保留的文件」(`protocol`) ⇒ 设计上不可能可靠**；崩溃三条件：①点过应用 ②库无 `workspace.json` ③`deployment` 不存在。**回归 #2（破坏性，未动）**：`ModLibraryResidualCleanupService.Cleanup(...)` 会 `Directory.Delete(recursive: true)` 删库根"未被快照引用且空"的子目录。
-

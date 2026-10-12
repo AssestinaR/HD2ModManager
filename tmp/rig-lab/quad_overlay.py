@@ -99,7 +99,7 @@ def main():
     tris = clean
     new_idle = new['out_idle']
 
-    COLS = [('A  NEW: rig = HD2 native, mesh posed',
+    COLS = [('A  NEW: snap mesh + HD2 native rig',
              [tuple(x) for x in new['out']], [tuple(x) for x in new_idle],
              new_heads, 'idle == bind to 1e-16'),
             ('B  TODAY: HD2 joints snapped to source',
@@ -165,8 +165,11 @@ def main():
 
     img.save(OUT)
     print('[written] %s' % OUT)
-    print('new idle==bind max diff %.2e m'
+    print('A idle==bind   max diff %.2e m'
           % float(np.linalg.norm(np.asarray(new_idle) - np.asarray(new['out']),
+                                 axis=1).max()))
+    print('A bind vs B bind max diff %.2e m'
+          % float(np.linalg.norm(np.asarray(new['out']) - np.asarray(cur['out']),
                                  axis=1).max()))
 
 
