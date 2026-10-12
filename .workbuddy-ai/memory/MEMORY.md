@@ -4,7 +4,7 @@
 
 ## 项目定位
 - 仓库 `WpfApp1`：《绝地潜兵 2》Mod 管理器与补丁适配工具集，GPLv3。`ManagedMain` 已过时。生产工程：`HD2ModManager`(WPF/net10)、`HD2ModCli`(net10，`hd2mod`)、`HD2ModCore`(net8)、`HD2ModAdaptation`(net8)、`Decryptor`、`HD2GameItemAssets` + `*.Tests`；依赖链 `Cli → Core → {Adaptation, GameItemAssets, Decryptor}`。
-- `HD2RuntimeArmorOverride` = 护甲运行时映射的 Lua mod 源码（非 csproj），lua 被 `HD2ModCore.csproj` 内嵌。`CoreServices` 是**唯一装配点**（判"某服务是否被生产使用"看 `CoreServices.CreateXxx(` 调用点是否为 0）。
+- `HD2RuntimeArmorOverride` = 护甲运行时映射的 Lua mod 源码（非 csproj），lua 被 `HD2ModCore.csproj` 内嵌。`CoreServices` 是**唯一装配点**（`CoreServices.CreateXxx(` 调用点为 0 = 该服务没被生产使用）。
 
 ## 工作约定（硬约束）
 - **【强制】只做本地提交，不推送远程**（用户手动推送）。**授权范围内的改动直接做，不反复请示。**
@@ -33,9 +33,9 @@
 --align yaw --spine-map mesh --fallback region --leg-tilt 5.7 --leg-splay 4.0
 --mesh-down 0.060 --mesh-back 0.100 --upper-scale 1.12 --upper-pivot-z 1.15
 --upper-blend 0.45 --arm-fit 1.0 --arm-up 0.55 --arm-perp 0.0 --arm-smooth 8
---arm-taper -0.05 0.22 --arm-rot 9.90 -17.25 21.50 --arm-rot-smooth 8
+--arm-taper -0.05 0.22 --arm-rot 10.46 -18.55 29.63 --arm-rot-mode axis
 ```
-实验室环境变量 `HD2_ARM_ROT` / `HD2_ARM_ROT_SMOOTH` 可让**所有**写死参数的探针一起切换（探针显式传 `arm_rot` 时以探针为准）。
+实验室环境变量 `HD2_ARM_ROT` / `HD2_ARM_ROT_SMOOTH` 可让**所有**写死参数的探针一起切换（探针显式传 `arm_rot` 时以探针为准）；`arm_rot_mode` 只有三个值：**`axis`（默认）/ `seq` / `blend`**，后两个只留作 A/B。
 
 **机制（全部已实测，勿回退；推导与数字见 findings 对应 §）**
 - **§8** 一个均匀缩放 + 一个平移（围绕脚底）+ **HD2 骨的 head := 源映射骨的世界位置**（只改位置）+ 30 骨常量旋转表 + 20 条右侧骨轴 delta。**吸附在绑定之前 ⇒ 绑定态恒等。** ⚠️ 缩放高度沿 HD2 **+Z** 量（脚底 = 底部 1 cm 顶点片质心）；**AXIS delta 与 head 搬移必须交错在同一"父先子后"循环**。
@@ -43,8 +43,8 @@
 - **§13/§14** `skeleton='native'`（默认）：`S_bind[b] = rest_hd2[b]` 一字不改 ⇒ **idle 网格差 0**。**枢轴必须解耦**：网格烘焙永远用吸附后的 `rest_sym`，`native` 只改步骤 4b。
 - **§15/§17** `mesh_shift` 只平移烘焙后的 `out`（−6.0 cm / −10.0 cm）；`upper_scale/pivot_z/blend`(1.12/1.15/0.45) = 只动网格的 smoothstep 缩放。**骨架绝不移动。**
 - **§18** `fallback='region'`：`source_extra_*`（jiggle/头发/丝带/裙摆）不能只按骨关节最近 ⇒ **距离 + 同肢体约束**（上溯到 `l/r_clavicle`→`arm`、`l/r_thigh`→`leg`、`neck`→`head`，否则 `torso`）。**⚠️ 不能用「祖先的子树」**：`hips` 与 `spine1` 是 `boss` 下的**兄弟**。
-- **§19/§20** `arm_fit`(1.0)/`arm_up`(0.55)/`arm_perp`(0)/`arm_smooth`(8)/`arm_taper`(−0.05,0.22)：逐骨残差（非手臂骨置零）**按 LBS 权重混合**、只作用在网格 + Laplacian 平滑。根因 = **工作关节（源关节）≠ HD2 关节**，**不是"弯"**。**`arm_taper` 必须开**：`l_shoulder` 点云沿臂轴跑到 **t=−0.085**（上胸/腋窝被绑给了肩骨）⇒ 否则**腋窝裂开 / 大臂"断裂"**。`arm_perp` 默认 0（全量会把手臂推到参照**后面 12 cm**）。
-- **§21** `arm_rot`(9.90/−17.25/21.50)/`arm_rot_smooth`(8)：**平移修位置、旋转修方向**。**俯视 X-Y 本来就对上、正视 X-Z 不对 ⇒ 修正轴 = 绕世界 Y**。三段嵌套、**ROOT→TIP**（每段转完把**子关节**一起搬走，否则肘偏 5.5 cm）、正=抬高、只加在 `out` 上。**权重必须用源模型自己的 LBS 权重**（0 肩/1 肘/2 腕三组）—— 自造"沿臂轴位置斜坡"会**静默地把腿卷进来**（`u` 指向斜下方，脚在 `t=+0.6` > 腕 0.555）。正视折角 21.5°→**5.2°**（参照 3.6）；边长指标不劣于旋转前；腋窝未复发。剩余：**俯视漂 2–4°**、肘折角 3D 29.42 vs 24.96。
+- **§19/§20 手臂位置**：`arm_fit`(1.0)/`arm_up`(0.55)/`arm_perp`(0)/`arm_smooth`(8)/`arm_taper`(−0.05,0.22) —— 逐骨残差（非手臂骨置零）**按 LBS 权重混合**、只动网格 + Laplacian。根因 = **工作关节（源关节）≠ HD2 关节**，不是"弯"。**`arm_taper` 必须开**（`l_shoulder` 点云沿臂轴跑到 t=−0.085 ⇒ 否则腋窝裂开）；`arm_perp` 默认 0（全量把手臂推到参照后面 12 cm）。
+- **§21/§22 手臂方向**：`arm_rot`(**10.46/−18.55/29.63**) + `arm_rot_mode='axis'`(默认)。**平移修位置、旋转修方向**；俯视 X-Y 本来对上、正视 X-Z 不对 ⇒ **修正轴 = 绕世界 Y**。三段嵌套、**最内层（腕）先做**、每层用**原始骨点**当枢轴、只加在 `out` 上、正=抬高。**g 必须用「沿臂轴位置斜坡 × 手臂掩码」，不能用 LBS 权重** —— 模型是**一叠壳**（裸臂/袖子/腕口/肘荷叶边）各有各的权重，按权重转会把壳撕开（**非连通近邻对最大分离 29.2 mm / 270 对 >10 mm** → `axis` 后 **4.8 mm / 0 对**）。`band=0.090`；**肩部也要 `ramp(0)`**（否则颈根 t=−0.24 吃到肩旋转 → 最差边 5.65x）。大臂误差 **+0.20°**。剩余：**俯视漂 2–4°**、肘折角 3D 29.0 vs 25.0。**`seq`/`blend` 只留 A/B**（45c 的 ROOT→TIP + LBS 权重版）。
 - **`--leg-tilt`**(5.7) 绕踝转 thigh/knee、foot/ball/toe 钉住；**`--leg-splay`**(4.0) 绕腿根绕 +Y 转 ±θ、末端反向（**侧视逐点不变**）。⚠️ 腿倾段网格变换**必须**用 `resolve_bone_map(...)` 共用同一份骨映射；命名别用 `R`。
 
 **历史 bug（勿回退）**
@@ -52,35 +52,35 @@
 - **§16 完整性**：旧阈值 0.0600 m 正好切在三角形边长 **p99** ⇒ **误删 510 顶点** ⇒ 已改为半径规则 `cut = 0.85 × height`。**教训：「数据里没有」≠「图里看不到」。**
 - **【第 4 个真 bug·未修】脚落点前移 ~6 cm**：管线 `t` 只锁头关节。**X 那一半已被 `--leg-splay` 顺手修掉**；**Y 那一半仍未动**。修法 = XY 锚点改成"脚底贴片"。
 - **头/尺寸（已降级）**：源 `Head1` 是颅底、HD2 `head` 是颅顶；参照头部几何在 `head` **上** 0.368 m、我们 0.293 m ⇒ 我们小 ~20%（非阻塞）。
-- **⚠️ 探针踩坑**：① 改网格的变换**作用于枢轴以上所有顶点**，只对"躯干权重顶点"应用会得到**假结果**；② **bind 恒等会掩盖真问题**；③ 分段窗口若按当前几何重算，参数改变会把顶点挪过窗口边界 ⇒ 数字乱跳/变号；④ **"沿某条轴的位置"要先问这条轴指向哪、还有谁会投影到它上面**。
+- **⚠️ 探针踩坑**：① 改网格的变换**作用于枢轴以上所有顶点**，只对"躯干权重顶点"应用会得到**假结果**；② **bind 恒等会掩盖真问题**；③ 分段窗口若按当前几何重算，参数改变会把顶点挪过窗口边界 ⇒ 数字乱跳/变号；④ **"沿某条轴的位置"要先问这条轴指向哪、还有谁会投影到它上面**；⑤ **改动"按蒙皮权重"的旋转后，必须跑壳分离度量**（`tmp/rig-lab/_dbg_crack.py`）—— 边长比 / 半径剖面 / 绑定态网格差**都看不见"壳与壳错开"**；⑥ `blender_render.py` 用法是 `blender.exe --background out/blender/zoey.blend --python blender_render.py -- out/blender`，**漏了 `.blend` 会静默渲出空场景**（4 秒跑完、图全是背景色）。
 
 **不变量（每次改完必跑 `probe_invariants.py`，全部不得回退）**
 ```
 mesh down 0.0600 back 0.1000 | upper scale x1.120 pivot z 1.150 blend 0.45
 our zmin -0.0612 height 2.0731 | ref zmin -0.0542 height 2.1127
 idle vs bind 6.76e-16 m | shipped rig vs HD2 7.22e-16 m
-edge mean 1.0733 p99 1.4368 max 2.93 bad>25% 2.29%
+edge mean 1.0752 p99 1.4399 max 2.96 bad>25% 2.32%   (45d axis; 45c 为 1.0732/1.4379/2.94/2.31%)
 ```
 
 ### Blender 观察工具（第 43 轮，全在 `tmp/rig-lab/`）
-- 链：`dump_blender.py`（venv python）→ `out/blender/model.npz`+`meta.json`；`blender_build.py`（`blender.exe --background --factory-startup`）→ `zoey.blend`+`zoey.glb`；`blender_render.py`（Cycles CPU，**约 8 分钟**）。**每次重建前先备份到 `out/blender/before-<本轮>/`**。
-- **骨轴**：两引擎骨都沿局部 **+X**，**Blender 沿 +Y** ⇒ `head=rest_hd2[:3,3]`、`tail=head+L·rest_hd2[:3,0]`、`align_roll(rest_hd2[:3,2])`。所得骨系与 HD2 差一个**所有骨共用的固定旋转 M** ⇒ **在 `A·inv(S)` 里抵消 ⇒ 变形与游戏等价**。**骨长不在数据里** ⇒ 用子骨 head 的投影推导 ⇒ head/轴向精确，tail 仅供参考。
+- 链：`dump_blender.py`（venv python）→ `out/blender/model.npz`+`meta.json`；`blender_build.py`（`blender.exe --background --factory-startup`）→ `zoey.blend`+`zoey.glb`；`blender_render.py`（见「探针踩坑」⑥ 的调用格式）。**每次重建前先备份到 `out/blender/before-<本轮>/`**。
+- **骨轴**：两引擎骨都沿局部 **+X**，**Blender 沿 +Y** ⇒ `head=rest_hd2[:3,3]`、`tail=head+L·rest_hd2[:3,0]`、`align_roll(rest_hd2[:3,2])`。所得骨系与 HD2 差一个**所有骨共用的固定旋转 M** ⇒ **在 `A·inv(S)` 里抵消 ⇒ 变形与游戏等价**。**骨长不在数据里** ⇒ 用子骨 head 的投影推导（head/轴向精确，tail 仅供参考）。
 - 集合 `OURS`（bind 蓝 + game 绿隐藏 + 骨架）/`SOURCE`/`REFERENCE`（只放实际对比的 5 个 unit）/`REFERENCE_alt`（隐藏，⚠️ **patch 同时含 Slim+Stocky 两套体型**）。骨 0–8 = 场景图/辅助节点（`boss` = 髋部根运动骨）+ 10 根无名骨。⚠️ Blender 把相对 `render.filepath` 解析到 **`C:\out\`** ⇒ 传绝对路径。
 
 ### 待办（网格变换；**用户要求一步一步来**）
-1. ✅ 整体平移；**1.5 ✅ 完整性**；**2. ✅ 上半身放大**；**2.5 ✅ 区域兜底**；**4. ◐ 手臂**（45 轮 `arm_fit` → 45b `arm_up`+`arm_taper` → **45c `arm_rot` 角度**；**用户第 3 次验收中**）；3. **⏸ 接缝渐变缩放（用户 2026-10-12 拍板：暂缓）**；5. **头部比例**；6. **下半身放大**。
+1. ✅ 整体平移；**1.5 ✅ 完整性**；**2. ✅ 上半身放大**；**2.5 ✅ 区域兜底**；**4. ◐ 手臂**（45 `arm_fit` → 45b `arm_up`+`arm_taper` → 45c `arm_rot` 角度 → **45d `arm_rot_mode=axis` 修裂缝**；**用户第 4 次验收中**）；3. **⏸ 接缝渐变缩放（用户 2026-10-12 拍板：暂缓）**；5. **头部比例**；6. **下半身放大**。
 > **分工**：用户**空间感强、善于发现问题**但**对距离/数值不敏感**；我**视觉空间判断弱**但**数值/拟合可靠** ⇒ 用户"指出哪里不对"，我"用数值定出多少"。
 - 后续：提取干净网格 → 按参照风格重刷权重 → 上 C#（`HD2SourceMigration`）→ 出离线 legacy 版 patch 包 → 进游戏实测（用户负责）。**动态物理骨骼仍要支持**（L4D2 风味 `jiggle_data.lua`）；**硬要求：没有 Lua 支持 legacy 包也必须能跑**；**不依赖 `HD2IRG1` 的动态骨骼**。
-- ⚠️ **三个未决项**：① **nick 过冲**（唯一"本来超长"的模型，+0.189）；② **俯视图漂 2–4°**（要两全需**每段自己的旋转轴** = 3 个"轴+角"常量；用户若说俯视仍 OK 就不做）；③ 若腋窝缝再现，下一个嫌疑是 **A-pose 烘焙在肩部的旋转**（加 shoulder blend）。
+- ⚠️ **三个未决项**：① **nick 过冲**（唯一"本来超长"的模型，+0.189）；② **俯视图漂 2–4°**（要两全需**每段自己的旋转轴** = 3 个"轴+角"常量；用户若说俯视仍 OK 就不做）；③ 若腋窝缝再现，下一个嫌疑是 **A-pose 烘焙在肩部的旋转**（加 shoulder blend）；④ **手臂 twist（绕骨轴 ≤90°）+ 段内均匀拉伸** —— 用户第 45d 轮提出，**尚未实现**（先等他验收 `axis`）。
 
 ## 坐标约定 & 参照 patch
 - **HD2 坐标：+Y = 前，+Z = 上，+X = 角色的「右」**（左侧在 −X）。⚠️ 早期笔记"+X = 左"是**笔误**；实测 `l_foot` x = **−0.1908**。**`l_foot` 关节不在脚心**：HD2 原生踝在髋后 9.60 cm / 源 ≈ 同。
 - 关键关节（`rest_hd2`，与参照 patch 逐位一致）：`hips` z **0.9735**；`spine2` 1.1633；`chest` 1.3437；`neck` **1.5500**；`head` 1.6908；`l_shoulder` x −0.2101 z 1.4745；`l_elbow` x −0.4723 z 1.3236；`l_hand` x −0.6566 z 1.2189。`l_shoulder→l_hand` 骨长 **0.5553 m**（沿轴 t：elbow 0.286 / hand 0.555 / index_finger3 0.680 / middle_finger3 0.697）。
-- 参照 patch = `E:\mod\【4.28】Chiffon-LUNALICE替换RE-2310`（E 盘 = 用户**测试**库；D 盘 steam = **实际在用**）。容器 `9ba626afa44a3aa3.patch_0`(216 KB)+`.gpu_resources`(219 MB)，**无 manifest.json**；**35 条目**，**只 9 个 Unit 有几何**。实际对比只用 5 个：`cae35ee15168145f` 躯干上衣、`17da843a4908511e` Hip、`91eb7be84016ceab`/`7336c6b662522f0e` 左右臂、`af431352d9b95e83` **RE-2310 头盔 = 脸+猫耳+长发**(z 到 **2.059**；容器里**没有 unit 叫 helmet** ⇒ 不要从游戏本体取头盔)。加头后完整参照 **z[−0.054,+2.059]、总高 2.113 m**。
-- **【关键判据】补丁骨架与 HD2 原生逐位一致**（13 根骨 delta 全 0），只多 `*_culling`/`*_twist` 辅助骨 ⇒ **"比例优化"全在网格层。** **读取三坑**：① **Unit 骨矩阵是行向量约定（平移 flat 12,13,14）**，与 `E.read_hd2_rig`（已转置）相反 —— 读错**不报错**；② bone 列表**前 9 项是场景图节点**，真骨从 `skeleton` 起，`boss` 是髋部根运动骨；③ **Unit 骨名是空的**，靠 32-bit hash 查 `bonehash`。
+- 参照 patch = `E:\mod\【4.28】Chiffon-LUNALICE替换RE-2310`（E 盘 = 用户**测试**库；D 盘 steam = **实际在用**）。容器 `9ba626afa44a3aa3.patch_0` + `.gpu_resources`，**无 manifest.json**；35 条目、**只 9 个 Unit 有几何**。实际对比 5 个：`cae35ee15168145f` 上衣、`17da843a4908511e` Hip、`91eb7be84016ceab`/`7336c6b662522f0e` 左右臂、`af431352d9b95e83` **RE-2310 头盔 = 脸+猫耳+长发**（容器里**没有 unit 叫 helmet** ⇒ 别从游戏本体取头盔）。加头后完整参照 **z[−0.054,+2.059]、总高 2.113 m**。
+- **【关键判据】补丁骨架与 HD2 原生逐位一致**（13 根骨 delta 全 0），只多 `*_culling`/`*_twist` 辅助骨 ⇒ **"比例优化"全在网格层。** **读取三坑**：① **Unit 骨矩阵是行向量约定（平移 flat 12,13,14）**，与 `E.read_hd2_rig`（已转置）相反，读错**不报错**；② bone 列表**前 9 项是场景图节点**，真骨从 `skeleton` 起；③ **Unit 骨名是空的**，靠 32-bit hash 查 `bonehash`。
 
 ## 旧项目 / 新工具 / 其他（细节全在 `docs/`）
-- **旧项目编译不过（预先存在）**，最后提交 **2026-09-03**；**用户已拍板：在 WpfApp1 内重写，不修旧项目。** 方案：`HD2SourceModel`（net8，**零引用**）✅ + `HD2SourceMigration`（**唯一同时引两侧**）✅骨架 + `HD2ModCli` 薄子命令 + 各自 `*.Tests`。HD2 侧复用 `UnitMeshReader.ReadTransformInfoFromUnitToc` + `UnitBoneNamesReader`；`HD2ModAdaptation/.../Canonical/` 有 **31 个 `Canonical*` 编译器**；矩阵统一 `System.Numerics.Matrix4x4`（float、行向量）。**Source 格式权威在 `HD2SourceModel/*.cs` 注释。** ⚠️ **实测三次证伪规范**：① VPK 条目步长与版本号无关；② MDL 骨步长 216 B 对 v44/48/49/53 全成立；③ bodypart/model 名是 UTF-8。
+- **旧项目编译不过（预先存在）**，最后提交 **2026-09-03**；**用户已拍板：在 WpfApp1 内重写，不修旧项目。** 方案：`HD2SourceModel`（net8，**零引用**）✅ + `HD2SourceMigration`（**唯一同时引两侧**）✅ + `HD2ModCli` 薄子命令 + `*.Tests`；HD2 侧复用 `UnitMeshReader.ReadTransformInfoFromUnitToc` + `UnitBoneNamesReader`；`Canonical/` 有 **31 个 `Canonical*` 编译器**；矩阵统一 `System.Numerics.Matrix4x4`（float、行向量）。**Source 格式权威在 `HD2SourceModel/*.cs` 注释。** ⚠️ **实测三次证伪规范**：VPK 条目步长与版本号无关；MDL 骨步长 216 B 对 v44/48/49/53 全成立；bodypart/model 名是 UTF-8。
 - **大功能 A（已被 B 取代）**：引擎 = Stingray(Bitsquid)，裁掉全部物理命名空间；`Unit`/`Mesh` **零 `create_*` / 零顶点权重接口** ⇒ **纯运行时 Lua 改不了权重、加不了骨、造不出物理**。**改内存边界：改「数据」✅ / 改「代码」❌**。**【硬约束】只允许依赖游戏本体，不得依赖任何外部系统（尤其其他 mod）**。
 - **信息中心（阶段 0–6 已完成）**：`ModInformationFactRegistry` = **25 kind** 单一真相，`RequestAsync<T>` = 唯一读取入口，`Validate()` 在 `CreateModInformationCenter` 开头跑（新增 kind 忘登记 `SourceRoots` = **启动期失败**）。铁律：**缓存不得取代真实性**；**「读不到」≠「没有覆盖」**。
-- **护甲映射页 20261011 回归**（`docs/armor-registry-page-20261011-regression.md`）：兜底已落实（`8d06fcb`/`5b79acc`），**根因未动**（拿「升级必被摧毁的凭据」`deployment` 守护「升级必被保留的文件」`protocol`）；崩溃三条件：①点过应用 ②库无 `workspace.json` ③`deployment` 不存在。**回归 #2（破坏性，未动）**：`ModLibraryResidualCleanupService.Cleanup(...)` 会 `Directory.Delete(recursive: true)` 删库根"未被快照引用且空"的子目录。
+- **护甲映射页 20261011 回归**（`docs/armor-registry-page-20261011-regression.md`）：兜底已落实，**根因未动**（拿「升级必被摧毁的凭据」`deployment` 守护「升级必被保留的文件」`protocol`）；崩溃三条件：①点过应用 ②库无 `workspace.json` ③`deployment` 不存在。**回归 #2（破坏性，未动）**：`ModLibraryResidualCleanupService.Cleanup(...)` 会 `Directory.Delete(recursive: true)` 删库根空子目录。

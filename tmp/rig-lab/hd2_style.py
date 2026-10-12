@@ -411,7 +411,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              skeleton='native', mesh_shift=(0.0, 0.0, 0.0), upper_scale=1.0,
              upper_pivot_z=None, upper_blend=0.20, arm_fit=1.0, arm_perp=0.0,
              arm_up=0.55, arm_smooth=8, arm_taper=(-0.05, 0.22), arm_rot=None,
-             arm_rot_smooth=8, verbose=True):
+             arm_rot_smooth=8, arm_rot_mode='axis', verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
 
     The MESH is ALWAYS baked around the SNAPPED rest (`rest_sym`, whose heads are
@@ -979,18 +979,27 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # steeply.  The TOP view (X-Y) already matches (13.7/41.6 vs 13.6/39.4 deg),
     # so the correction is a rotation about the FORE/AFT (world Y) axis.
     #
-    # Three nested rotations, one per joint, ROOT -> TIP so each child inherits
-    # its parent's rotation exactly:
-    #   arm_rot = (shoulder, elbow, wrist) in degrees, RELATIVE to the parent.
-    # Positive = raise (about +Y on the left; the right side is mirrored).
-    # Fitted once against the reference (probe_arm_angle.py / _fit_armrot.py); it
-    # is a constant of the transform model, exactly like TorsoScale.
+    # The pivot is the ORIGINAL bone origin of each joint, and the rotation is a
+    # RIGID one -- that is the whole point of this block (round 45d):
+    #   * segment 0 (upper arm) is rotated about the shoulder origin,
+    #   * segment 1 (forearm) is CARRIED by the shoulder rotation and then bent
+    #     about the elbow origin, i.e. T1 = R(th0,J0) o R(th1,J1),
+    #   * segment 2 (hand) is T2 = T1 o R(th2,J2).
+    # Composing rotations about parallel axes gives one rotation about one pivot,
+    # so each segment has an exact (angle, pivot) pair.  A vertex then gets the
+    # weighted average of the ANGLES and of the PIVOTS -- still a rigid rotation,
+    # so the surface cannot shear.
+    #
+    # Round 45c did the opposite and that was the bug the user found ("the
+    # forearm is twisted into a weird shape"): it moved each vertex by
+    # g0*(R0 v - v) + g1*(R1 v - v) + g2*(R2 v - v), i.e. it averaged the moved
+    # POINTS of three rotations about three DIFFERENT pivots.  The linear part of
+    # that is (g0 R0 + g1 R1 + g2 R2), which is not orthogonal: for a 17 deg
+    # spread it shrinks by cos(8.6) = 0.989 and shears by sin(8.6) = 0.15.  That
+    # is the "candy wrapper" spiral on the forearm, the torn tiger mouth and the
+    # detached wristband.  `arm_rot_mode='blend'` keeps the old behaviour for A/B.
     if arm_fit != 0.0 and arm_rot is not None and any(arm_rot):
         idx = {h['name']: h['index'] for h in hd2}
-
-        def ramp(x):
-            tt = np.clip(x, 0.0, 1.0)
-            return tt * tt * (3.0 - 2.0 * tt)
 
         def group(nm, side):
             """0 shoulder / 1 elbow / 2 wrist: which joint this bone rides.
@@ -1011,9 +1020,9 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             if any(n not in idx for n in nms):
                 continue
             J = [origin_np(rest_shipped[idx[n]]) for n in nms]
-            u = J[2] - J[0]
-            u = u / max(float(np.linalg.norm(u)), 1e-9)
-            t = (out - J[0]) @ u
+            sgn = 1.0 if side == 'l' else -1.0
+            th = [np.radians(sgn * float(arm_rot[k])) for k in range(3)]
+
             # WHICH VERTICES MAY ROTATE.  A positional ramp alone is NOT enough
             # here, and that is not a detail: `t` is the projection onto the
             # shoulder->hand axis, which points DOWNWARD, so the legs project
@@ -1022,15 +1031,14 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             # -- the first version of this block dropped the mesh 19 cm and
             # stretched edges 14x.  The source's own LBS weights already say
             # which bones a vertex belongs to, so use them: sum the weights of
-            # the bones that ride each joint (a bone of group g rides joints
-            # 0..g).  The blend across the elbow/wrist then comes from the
-            # weights themselves, and the torso/legs get exactly zero.
+            # the bones of each segment.  The blend across the elbow/wrist then
+            # comes from the weights themselves, and the torso/legs get zero.
             gidx = {}
             for h in hd2:
                 gg = group(h['name'], side)
                 if gg is not None:
                     gidx[h['index']] = gg
-            g = [np.zeros(len(out)) for _ in range(3)]
+            a = [np.zeros(len(out)) for _ in range(3)]
             for j, v in enumerate(verts):
                 s = [0.0, 0.0, 0.0]
                 for q in range(3):
@@ -1040,17 +1048,14 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                     gg = gidx.get(resolved.get(v['bones'][q], -1))
                     if gg is not None:
                         s[gg] += wq
-                g[0][j] = s[0] + s[1] + s[2]
-                g[1][j] = s[1] + s[2]
-                g[2][j] = s[2]
+                for k in range(3):
+                    a[k][j] = s[k]
 
-            sgn = 1.0 if side == 'l' else -1.0
             # The weights jump across a single edge at the elbow and the wrist
-            # (probe_arm_stretch.py: that is how LBS itself is built), and a 26
-            # deg wrist rotation over one 1 cm edge stretches it ~5x.  Spread the
-            # blend over a few edges first, exactly like `arm_smooth` does for
-            # the residual in 4e.
-            if arm_rot_smooth > 0:
+            # (probe_arm_stretch.py: that is how LBS itself is built), so spread
+            # the blend over a few edges first, exactly like `arm_smooth` does
+            # for the residual in 4e.
+            if arm_rot_mode != 'axis' and arm_rot_smooth > 0:
                 T2 = np.asarray([q[:3] for q in tris], dtype=np.int64)
                 e2 = np.concatenate([T2[:, [0, 1]], T2[:, [1, 2]], T2[:, [2, 0]]])
                 s2 = np.concatenate([e2[:, 0], e2[:, 1]])
@@ -1060,28 +1065,112 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 for _ in range(int(arm_rot_smooth)):
                     for k in range(3):
                         acc = np.zeros(len(out))
-                        np.add.at(acc, s2, g[k][d2])
-                        g[k] = 0.5 * g[k] + 0.5 * (acc / dg)
-            for k in (0, 1, 2):
-                deg = float(arm_rot[k])
-                if deg == 0.0:
+                        np.add.at(acc, s2, a[k][d2])
+                        a[k] = 0.5 * a[k] + 0.5 * (acc / dg)
+
+            # g[k] = how much of rotation k a vertex takes.
+            #
+            # Two ways to build it, and the difference is the whole round-45d
+            # story.  `weights` uses the source's own LBS weights (round 45c);
+            # `axis` uses the POSITION along the arm axis instead.
+            #
+            # The source model is NOT one surface: it is a stack of overlapping
+            # shells (bare arm, sleeve, wrist cuff, elbow frill, ...) and each
+            # shell carries its OWN skin weights.  probe: a2 (the hand weight)
+            # along the arm reads 0.02 -> 0.16 -> 0.39 -> 0.67 (t=0.42) -> 0.43
+            # (t=0.52) -> 1.00, i.e. it is NOT monotonic -- the cuff at t~0.5 is
+            # weighted mostly to the ELBOW while the sleeve 10 cm away is
+            # weighted to the HAND.  Rotating by those weights therefore moves
+            # the shells by different amounts and they come apart: that is the
+            # "crack along the forearm", the torn tiger mouth and the detached
+            # wristband the user sees.
+            #
+            # A ramp along the AXIS is the same for every shell at the same
+            # place, so the shells move together; the arm MASK keeps the legs and
+            # torso out (a plain ramp rotated the whole lower body ~19 deg in the
+            # first version of this block -- a foot projects to t = +0.6, "past
+            # the wrist").  This is exactly "rotate the segment about its own
+            # bone origin, and let the twist/stretch transition run along the
+            # bone", which is how the user (a machinist/3D modeller) describes
+            # the operation.
+            if arm_rot_mode == 'axis':
+                W = a[0] + a[1] + a[2]
+                m = np.clip(W / float(os.environ.get("HD2_ARM_MASK", "0.5")), 0.0, 1.0)
+                mask = m * m * (3.0 - 2.0 * m)
+                u = np.asarray(J[2], float) - np.asarray(J[0], float)
+                u = u / max(float(np.linalg.norm(u)), 1e-9)
+                tt = (out - np.asarray(J[0], float)) @ u
+                band = float(os.environ.get('HD2_ARM_BAND', '0.090'))
+
+                def ramp(c):
+                    x = np.clip((tt - (c - band)) / (2.0 * band), 0.0, 1.0)
+                    return x * x * (3.0 - 2.0 * x)
+
+                te = float((np.asarray(J[1], float) - np.asarray(J[0], float)) @ u)
+                tw = float((np.asarray(J[2], float) - np.asarray(J[0], float)) @ u)
+                # The SHOULDER rotation needs the same ramp as the others, and
+                # that is not cosmetic: the mask alone lets the trapezius / base
+                # of the neck (t = -0.24 along the arm axis) keep a little arm
+                # weight, and 10 deg about the shoulder is a 24 mm move out
+                # there -- it tore the worst edge in the whole mesh (ratio 5.65
+                # on a 4 mm edge).  With the ramp the inboard side gets exactly
+                # zero and the deltoid fades in.
+                g = [mask * ramp(0.0), mask * ramp(te), mask * ramp(tw)]
+            else:
+                g = [a[0] + a[1] + a[2], a[1] + a[2], a[2]]
+
+            if arm_rot_mode == 'blend':
+                # --- round 45c behaviour, kept for A/B only ------------------
+                # ROOT -> TIP, moving each child joint along with its parent.
+                Jm = [np.asarray(q, float).copy() for q in J]
+                for k in (0, 1, 2):
+                    if float(arm_rot[k]) == 0.0:
+                        continue
+                    c, s = np.cos(th[k]), np.sin(th[k])
+                    v = out - Jm[k]
+                    rp = np.stack([v[:, 0] * c + v[:, 2] * s, v[:, 1],
+                                   -v[:, 0] * s + v[:, 2] * c], 1)
+                    out = out + g[k][:, None] * (rp - v)
+                    for m in (k + 1, k + 2):
+                        if m > 2:
+                            continue
+                        vm = Jm[m] - Jm[k]
+                        Jm[m] = Jm[k] + np.array([vm[0] * c + vm[2] * s, vm[1],
+                                                  -vm[0] * s + vm[2] * c])
+                continue
+
+            # --- nested rotations, applied INNERMOST (wrist) FIRST -----------
+            # The arm chain is  T = R(th0,J0) o R(th1,J1) o R(th2,J2),  i.e. the
+            # hand is rotated about the wrist, that assembly about the elbow, and
+            # the whole thing about the shoulder.  Applying the INNERMOST first
+            # lets every level use its ORIGINAL bone origin J[k] -- no composed
+            # pivot is needed, and the composition comes out exactly right.
+            #
+            # Round 45c did this ROOT -> TIP and moved the child joints along the
+            # way, which is algebraically the same T but applies THREE rotations
+            # to a vertex that sits between two joints, e.g. the elbow band gets
+            # g0*(R0 v - v) + g1*(R1 v - v) + ...  Averaging the moved POINTS of
+            # two DIFFERENT rotations is not a rotation: the linear part
+            # (g0 R0 + g1 R1) shrinks by cos(dth/2) and shears by sin(dth/2)
+            # (17 deg -> 1.1% shrink, 15% shear).  That is the "candy wrapper"
+            # spiral on the forearm, the torn tiger mouth and the detached
+            # wristband the user found.  Here each level applies ONE rotation
+            # with a smooth scalar weight, so all it can do is pinch.
+            for k in (2, 1, 0):
+                if float(arm_rot[k]) == 0.0:
                     continue
-                th = np.radians(sgn * deg)
-                c, s = np.cos(th), np.sin(th)
-                v = out - J[k]
+                c, s = np.cos(th[k]), np.sin(th[k])
+                v = out - np.asarray(J[k], float)
                 rp = np.stack([v[:, 0] * c + v[:, 2] * s, v[:, 1],
                                -v[:, 0] * s + v[:, 2] * c], 1)
                 out = out + g[k][:, None] * (rp - v)
-                for m in (k + 1, k + 2):
-                    if m > 2:
-                        continue
-                    vm = J[m] - J[k]
-                    J[m] = J[k] + np.array([vm[0] * c + vm[2] * s, vm[1],
-                                            -vm[0] * s + vm[2] * c])
+
         say('arm orientation: shoulder %+.1f / elbow %+.1f / wrist %+.1f deg about '
-            'the world Y axis, MESH only, weighted by the arm bones\' own LBS '
-            'weights (%d smoothing passes)' % (arm_rot[0], arm_rot[1], arm_rot[2],
-                                               int(arm_rot_smooth)))
+            'the world Y axis, MESH only, pivots = the original bone origins, '
+            'nested innermost-first (%s), weighted by the arm bones\' own LBS '
+            'weights (%d smoothing passes)'
+            % (arm_rot[0], arm_rot[1], arm_rot[2], arm_rot_mode,
+               int(arm_rot_smooth)))
 
     # ---- 4c. MESH-ONLY translation ----------------------------------------
     # The rig must not move -- `S_bind == rest_hd2` is the whole reason the idle
@@ -1279,6 +1368,16 @@ def main():
                          'over a few edges.  The LBS weights jump across one edge '
                          'at the elbow and the wrist, and a 26 deg wrist rotation '
                          'over a 1 cm edge stretches it ~5x.')
+    ap.add_argument('--arm-rot-mode', choices=('axis', 'seq', 'blend'),
+                    default='axis',
+                    help="'axis' (default): each arm segment is rotated RIGIDLY "
+                         "about its own original bone origin; the 0->1 transition "
+                         "at the elbow and the wrist is a ramp along the ARM AXIS, "
+                         "so every shell of the garment at the same place moves by "
+                         "the same amount (no cracks).  'seq': same rotations, but "
+                         "weighted by the source's LBS weights -- the shells come "
+                         "apart.  'blend': round 45c's ROOT->TIP version.  Both "
+                         "kept for A/B only.")
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
@@ -1293,7 +1392,7 @@ def main():
                  arm_perp=a.arm_perp, arm_up=a.arm_up, arm_smooth=a.arm_smooth,
                  arm_taper=(None if a.arm_taper is None else tuple(a.arm_taper)),
                  arm_rot=(None if a.arm_rot is None else tuple(a.arm_rot)),
-                 arm_rot_smooth=a.arm_rot_smooth)
+                 arm_rot_smooth=a.arm_rot_smooth, arm_rot_mode=a.arm_rot_mode)
 
     os.makedirs(a.outdir, exist_ok=True)
     png = os.path.join(a.outdir, a.out)
