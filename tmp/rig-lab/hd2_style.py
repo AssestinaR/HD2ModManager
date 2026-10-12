@@ -231,28 +231,61 @@ def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name):
 
 
 # ------------------------------------------------------------------ loader
-def drop_outlier_tris(pts, tris, factor=8.0, floor=0.06):
-    """Display-only: drop triangles that are stretched far beyond the mesh's own scale.
+def drop_outlier_tris(pts, tris, radius_frac=0.85):
+    """Display-only: hide geometry that sits far outside the BODY.
 
-    Several of these L4D2 mods ship a stray spike (Nick has one 1.8 m out in +Y
-    weighted to `source_extra_101`, Ellis one 1.0 m out).  It is present in the
-    source bind pose as well, so it is the model's own artefact and NOT something
-    the retarget introduces -- but it wrecks the auto-framing of the render.
+    Why this is no longer an edge-length rule
+    -----------------------------------------
+    It used to drop "any triangle with an edge longer than
+    max(8 x median, 0.06 m)", on the theory that these L4D2 mods ship a stray
+    spike held on by absurdly long triangles.  Measuring all five models showed
+    BOTH halves of that theory were wrong:
 
-    A spike is attached to the body by a handful of absurdly long triangles, so the
-    criterion is edge length: these meshes have 100 k+ vertices, i.e. millimetre
-    edges, and anything `factor` times the median is an artefact.
+      * there is no 1.8 m / 1.0 m triangle anywhere.  The largest edge is 0.19 m
+        (Zoey/Rochelle), 0.12 m (Coach), 0.34 m (Nick), 0.13 m (Ellis) -- in the
+        raw source mesh, in the aligned mesh AND in the retargeted mesh;
+      * the far geometry is a COMPACT BLOB, not a fan.  On Nick it is the
+        ``LongSleeve`` body part (a sleeve sheet whose bind pose reaches y 1.78,
+        held on by only 19 triangles); on Ellis it is the ``Tail`` part.
+
+    So the old rule never actually removed the blob, while it DID delete real,
+    named model geometry.  On Zoey it removed 510 vertices: the ponytail
+    (``Base``, z 0.96-1.60, weighted to the hair bones ``source_extra_72..77``
+    plus ``Bip01_Head1``) and the platform-shoe heel (``platform shoes``, z
+    -0.062-0.008).  That is what made the figure look like a short-haired model
+    with flat shoes.
+
+    The rule that matches the real geometry is a radius measured against the
+    mesh's OWN scale, so it needs no per-model constant: take the median vertex
+    as the body centre, and hide any triangle that touches a vertex farther than
+    ``radius_frac * height`` from it.  The per-body-part radii show why 0.85 is
+    the right value (max radius, metres):
+
+        part                     zoey    coach    nick    ellis
+        shoe / boot              1.26     1.38    1.39     1.43
+        Base (incl. hair)        1.19     1.36    1.34     1.37
+        LongSleeve                  -        -    1.85       -
+        Tail                        -        -       -     1.67
+        -> cut = 0.85 * height   1.58     1.49    1.58     1.56
+
+    So nothing at all is hidden on Zoey or Coach (ponytail and shoe heel are
+    back), while Nick's far sleeve and Ellis's tail are hidden.  Both of those
+    are source bind-pose artefacts: the sleeve is a jiggle-driven sheet lying
+    1.78 m out in +Y, and the tail is a jiggle chain sticking forward -- in game
+    the physics bones pull them into place.
+
+    This is a DISPLAY filter only: the exported mesh keeps every triangle.
     """
     P = np.asarray(pts, dtype=np.float64)
-    lens = []
-    for a, b, c, _m in tris:
-        lens.append(max(np.linalg.norm(P[a] - P[b]), np.linalg.norm(P[b] - P[c]),
-                        np.linalg.norm(P[c] - P[a])))
-    med = float(np.median(lens)) if lens else 0.0
-    lim = max(med * factor, floor)
-    return [t for t in tris if max(np.linalg.norm(P[t[0]] - P[t[1]]),
-                                   np.linalg.norm(P[t[1]] - P[t[2]]),
-                                   np.linalg.norm(P[t[2]] - P[t[0]])) <= lim], lim
+    if not len(tris) or not len(P):
+        return list(tris), (0, 0.0)
+    centre = np.median(P, axis=0)
+    d = np.linalg.norm(P - centre, axis=1)
+    height = float(P[:, 2].max() - P[:, 2].min())
+    cut = radius_frac * height
+    far = d > cut
+    kept = [t for t in tris if not (far[t[0]] or far[t[1]] or far[t[2]])]
+    return kept, (len(tris) - len(kept), cut)
 
 
 def load_source(vpk, model):
