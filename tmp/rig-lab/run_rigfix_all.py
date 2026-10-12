@@ -30,14 +30,14 @@ def rot_ang(A, B):
 
 def main():
     print('%-9s %-9s %10s %9s %7s %8s %8s %9s' %
-          ('model', 'mode', 'edge_mean', 'edge_max', 'bad%', 'height', 'rot>5d',
-           'idle max'))
+          ('model', 'skeleton', 'edge_mean', 'edge_max', 'bad%', 'height',
+           'rig head', 'idle max'))
     for vpk, model, tag in MODELS:
-        for mode, rt in (('legacy', False), ('roundtrip', True)):
+        for mode in ('snap', 'native'):
             try:
                 r = H.retarget(os.path.join(ADD, vpk), model, TOC, BH, PP,
                                align='yaw', spine_map='mesh', fallback='distance',
-                               leg_tilt=5.7, leg_splay=4.0, axis_roundtrip=rt,
+                               leg_tilt=5.7, leg_splay=4.0, skeleton=mode,
                                verbose=False)
             except Exception as exc:                                  # noqa: BLE001
                 print('%-9s %-9s FAILED %s' % (tag, mode, exc))
@@ -45,12 +45,12 @@ def main():
                 continue
             m = r['metrics']
             S, rh = r['rest_shipped'], r['rest_hd2']
-            n = sum(1 for i in S if rot_ang(S[i], rh[i]) > 5)
+            hd = max(float(np.linalg.norm(S[i][:3, 3] - rh[i][:3, 3])) for i in S)
             d = np.linalg.norm(np.asarray(r['out_idle']) - np.asarray(r['out']),
                                axis=1)
-            print('%-9s %-9s %10.4f %9.2f %6.2f%% %8.3f %5d/%-3d %9.4f'
+            print('%-9s %-9s %10.4f %9.2f %6.2f%% %8.3f %8.1e %9.4f'
                   % (tag, mode, m['edge_mean'], m['edge_max'], 100 * m['bad'],
-                     m['height_after'], n, len(S), d.max()))
+                     m['height_after'], hd, d.max()))
 
 
 if __name__ == '__main__':

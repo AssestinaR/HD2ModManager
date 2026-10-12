@@ -285,8 +285,16 @@ def load_source(vpk, model):
 def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.015,
              align='kabsch', apose=True, spine_map='legacy', fallback='parent',
              leg_tilt=0.0, leg_splay=0.0, axis_deltas=True, axis_roundtrip=True,
-             verbose=True):
-    """Run the whole BatchTool-style pipeline.  Returns a dict of results."""
+             skeleton='native', verbose=True):
+    """Run the whole BatchTool-style pipeline.  Returns a dict of results.
+
+    `skeleton='native'` ships HD2's own rest verbatim and poses only the MESH.
+    That is what the reference patch does, and it is the only setting under which
+    the game's idle frame reproduces our pose exactly: the runtime deforms by
+    `rest_hd2[b] . inv(S_bind[b])`, which is the identity iff `S_bind == rest_hd2`.
+    `skeleton='snap'` is the old behaviour -- HD2's joints snapped onto the
+    source's -- kept for A/B.
+    """
     def say(*a):
         if verbose:
             print(*a)
@@ -304,13 +312,58 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         if sb is not None and hb is not None:
             src_index_to_hd2[sb['index']] = hb['index']
 
+    # ---- 0. HD2's OWN T-pose working rest ---------------------------------
+    # `skeleton='native'` ships HD2's rest VERBATIM (step 4b).  That is the only
+    # way the idle frame can be the identity -- the runtime deforms by
+    # `rest_hd2[b] . inv(S_bind[b])`, so if `S_bind` is HD2's own rest the mesh
+    # comes back untouched and "what we pose offline is what the game shows".
+    # The reference patch does exactly this: its rig is bit-identical to HD2's
+    # native one, and its mesh simply sits wherever it needs to for looks.
+    #
+    # HD2's own T-pose rest is then the thing the source mesh gets aligned ONTO,
+    # so the T-pose -> A-pose bake moves the MESH and never the rig.
+    prof = json.load(open(pose_profile, encoding='utf-8'))
+    deltas = prof['symmetric_axis_deltas_wxyz']
+    body_names = set(prof['body_bones'])
+    rest_hd2 = {h['index']: m_to_np(h['world']) for h in hd2}
+    by_idx = {h['index']: h for h in hd2}
+    order = sorted(hd2, key=lambda h: h['index'])   # TocData is parent-first
+
+    def parent_of(h):
+        p = h.get('parent')
+        if p is None or p == h['index'] or p not in by_idx:
+            return None
+        return by_idx[p]
+
+    def axis_delta(h):
+        return (q_wxyz_to_m(deltas[h['name']])
+                if (axis_deltas and h['name'] in body_names and h['name'] in deltas)
+                else np.eye(4))
+
+    basis_t = ({n: q_wxyz_to_m(q)
+                for n, q in prof['tpose_basis_rotations_wxyz'].items()}
+               if axis_roundtrip else {})
+    rest_t = {}
+    for h in order:
+        p = parent_of(h)
+        L = (rest_hd2[h['index']] if p is None else
+             np.linalg.inv(rest_hd2[p['index']]) @ rest_hd2[h['index']])
+        L = L @ axis_delta(h) @ basis_t.get(h['name'], np.eye(4))
+        rest_t[h['index']] = L if p is None else rest_t[p['index']] @ L
+
+    native = skeleton == 'native'
+    if native:
+        say('skeleton: NATIVE -- HD2\'s own rig ships unchanged, so the idle frame '
+            'is the identity and the mesh is the only thing posed')
+
     src_pts = np.array([[v['pos'][0] * E.IN2M, v['pos'][1] * E.IN2M, v['pos'][2] * E.IN2M]
                         for v in verts], dtype=np.float64)
 
     # ---- 1a. the alignment rotation (source left is +X, HD2 left is -X) ----
     body = snap_body(spine_map)
     A = np.array([origin_np(m_to_np(short[n]['world_m'])) for n, _h in body])
-    B = np.array([origin_np(m_to_np(hby[h]['world'])) for _n, h in body])
+    B = np.array([origin_np(m_to_np(hby[h]['world'])) if not native
+                  else rest_t[hby[h]['index']][:3, 3] for _n, h in body])
     if align == 'kabsch':
         R, _ca, _cb = kabsch(A, B)
         ang, ax = rot_angle_axis(R)
@@ -340,7 +393,8 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     lo = float(src_pts[:, 2].min())
     sole = src_pts[src_pts[:, 2] < lo + 0.01].mean(0)      # the visible sole patch
     head_src_v = origin_np(m_to_np(short['Head1']['world_m']))
-    head_hd2 = origin_np(m_to_np(hby['head']['world']))
+    head_hd2 = (rest_t[hby['head']['index']][:3, 3] if native
+                else origin_np(m_to_np(hby['head']['world'])))
     ref_ground_z = 0.0                                     # HD2's own sole is at z = 0
     src_h = float(rot_only(head_src_v.reshape(1, 3))[0][2]
                   - rot_only(sole.reshape(1, 3))[0][2])
@@ -368,33 +422,45 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         return align_pts(origin_np(m_to_np(short[sname]['world_m'])).reshape(1, 3))[0] + t
 
     new_head = {}
-    for sn, hn in pairs + SNAP_TOES:
-        if sn in short and hn in hby:
-            new_head[hn] = joint(sn)
-    missing = [(sn, hn) for sn, hn in pairs if sn not in short or hn not in hby]
+    if native:
+        # NO snapping at all: every HD2 bone keeps the joint HD2's own T-pose
+        # gives it.  The source mesh was fitted onto those joints above; it is
+        # the mesh that is allowed to sit off the rig.
+        new_head = {h['name']: rest_t[h['index']][:3, 3].copy()
+                    for h in hd2 if h['name']}
+        missing = []
+    else:
+        for sn, hn in pairs + SNAP_TOES:
+            if sn in short and hn in hby:
+                new_head[hn] = joint(sn)
+        missing = [(sn, hn) for sn, hn in pairs if sn not in short or hn not in hby]
 
     def lerp(p, q, f):
         return p + (q - p) * f
 
-    # deterministic fills for HD2-only bones (mirrors build_snap_heads)
-    if 'spine1' not in new_head and 'spine2' in new_head:
-        new_head['spine1'] = lerp(new_head['hips'], new_head['spine2'], 0.50)
-    if 'spine2' not in new_head:
-        new_head['spine2'] = lerp(new_head['spine1'], new_head['neck'], 0.50)
-    new_head.setdefault('chest', new_head['spine2'].copy())
-    for sd in ('l', 'r'):
-        sh = new_head['%s_shoulder' % sd]
-        el = new_head['%s_elbow' % sd]
-        wr = new_head['%s_hand' % sd]
-        new_head.setdefault('%s_shoulder_twist' % sd, lerp(sh, el, 0.42))
-        new_head.setdefault('%s_hand_twist' % sd, wr.copy())
-        if '%s_shoulderarmour' % sd in hby:
-            new_head['%s_shoulderarmour' % sd] = lerp(new_head['%s_clavicle' % sd], sh, 0.90)
-        ball = new_head.get('%s_ball' % sd)
-        if ball is not None and '%s_toe' % sd in hby:
-            new_head['%s_toe' % sd] = ball + (ball - new_head['%s_foot' % sd]) * 0.35
-    if 'head_tip' in hby:
-        new_head['head_tip'] = new_head['head'] + (new_head['head'] - new_head['neck'])
+    # deterministic fills for HD2-only bones (mirrors build_snap_heads).
+    # Under `native` every HD2 bone already has its own T-pose joint, so nothing
+    # is invented and nothing is overwritten.
+    if not native:
+        if 'spine1' not in new_head and 'spine2' in new_head:
+            new_head['spine1'] = lerp(new_head['hips'], new_head['spine2'], 0.50)
+        if 'spine2' not in new_head:
+            new_head['spine2'] = lerp(new_head['spine1'], new_head['neck'], 0.50)
+        new_head.setdefault('chest', new_head['spine2'].copy())
+        for sd in ('l', 'r'):
+            sh = new_head['%s_shoulder' % sd]
+            el = new_head['%s_elbow' % sd]
+            wr = new_head['%s_hand' % sd]
+            new_head.setdefault('%s_shoulder_twist' % sd, lerp(sh, el, 0.42))
+            new_head.setdefault('%s_hand_twist' % sd, wr.copy())
+            if '%s_shoulderarmour' % sd in hby:
+                new_head['%s_shoulderarmour' % sd] = lerp(
+                    new_head['%s_clavicle' % sd], sh, 0.90)
+            ball = new_head.get('%s_ball' % sd)
+            if ball is not None and '%s_toe' % sd in hby:
+                new_head['%s_toe' % sd] = ball + (ball - new_head['%s_foot' % sd]) * 0.35
+        if 'head_tip' in hby:
+            new_head['head_tip'] = new_head['head'] + (new_head['head'] - new_head['neck'])
     say('snap: %d HD2 bone heads set (of %d transforms)' % (len(new_head), len(hd2)))
     if missing:
         say('  no correspondence for: %s' % ', '.join('%s->%s' % p for p in missing))
@@ -425,8 +491,9 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 return p
             return p + delta
 
-        for nm in list(new_head):
-            new_head[nm] = move(nm, new_head[nm])
+        if not native:
+            for nm in list(new_head):
+                new_head[nm] = move(nm, new_head[nm])
 
         def ajoint(b):
             return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
@@ -492,9 +559,10 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 nm = '%s_%s' % (sd, j)
                 if nm in new_head:
                     Tsp[nm] = Tsp['%s_foot' % sd]
-        for nm in list(new_head):
-            if nm in Tsp:
-                new_head[nm] = (Tsp[nm] @ np.append(new_head[nm], 1.0))[:3]
+        if not native:
+            for nm in list(new_head):
+                if nm in Tsp:
+                    new_head[nm] = (Tsp[nm] @ np.append(new_head[nm], 1.0))[:3]
 
         def ajoint2(b):
             return align_pts(origin_np(m_to_np(b['world_m'])).reshape(1, 3))[0] + t
@@ -522,23 +590,11 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             % (leg_splay, foot_shift, span_before,
                abs(new_head['r_foot'][0] - new_head['l_foot'][0])))
 
-    # ---- 3. HD2 rest: AXIS_SYMMETRIC + snapped heads, in ONE parent-first pass
+    # ---- 3. HD2 rest: AXIS_SYMMETRIC + working heads, ONE parent-first pass
     # The two operations must be interleaved: an HD2-only bone that is a child of a
-    # snapped bone has to follow its moved parent, and doing the head moves in a
+    # moved bone has to follow its moved parent, and doing the head moves in a
     # second pass would leave it behind.
-    prof = json.load(open(pose_profile, encoding='utf-8'))
-    deltas = prof['symmetric_axis_deltas_wxyz']
-    body_names = set(prof['body_bones'])
-    rest_hd2 = {h['index']: m_to_np(h['world']) for h in hd2}
-    by_idx = {h['index']: h for h in hd2}
-
-    def parent_of(h):
-        p = h.get('parent')
-        if p is None or p == h['index'] or p not in by_idx:
-            return None
-        return by_idx[p]
-
-    order = sorted(hd2, key=lambda h: h['index'])   # TocData is parent-first
+    #
     # The BatchTool's WORKING rest is not the one it ships.  It converts the bone
     # axes to SYMMETRIC, bakes `tpose_basis_rotations_wxyz` into the rest (that is
     # the T-pose the source character is aligned against), later bakes
@@ -549,15 +605,8 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # the reference patch has.  If we skip the first bake we leave basis_i baked
     # into the shipped bone orientations (34-49 deg on the arms, 180 deg on the
     # right clavicle); if we skip the final axes conversion we leave Dd in as well.
-    basis_t = ({n: q_wxyz_to_m(q)
-                for n, q in prof['tpose_basis_rotations_wxyz'].items()}
-               if axis_roundtrip else {})
-
-    def axis_delta(h):
-        return (q_wxyz_to_m(deltas[h['name']])
-                if (axis_deltas and h['name'] in body_names and h['name'] in deltas)
-                else np.eye(4))
-
+    # `rest_t` above is that working rest; under `skeleton='native'` the working
+    # heads ARE `rest_t`'s own, so this pass reproduces `rest_t` exactly.
     rest_sym = {}
     for h in order:
         p = parent_of(h)
@@ -601,16 +650,22 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # -- so the game's own animations drive it correctly -- while the joint
     # POSITIONS are still the retargeted ones.
     rest_shipped = {}
-    for h in order:
-        i = h['index']
-        p = parent_of(h)
-        sa = D[i] @ rest_sym[i]
-        L = sa if p is None else (
-            np.linalg.inv(D[p['index']] @ rest_sym[p['index']]) @ sa)
-        if axis_roundtrip:
-            L = L @ np.linalg.inv(axis_delta(h))
-        chain = L if p is None else rest_shipped[p['index']] @ L
-        rest_shipped[i] = trans(sa[:3, 3] - origin_np(chain)) @ chain
+    if native:
+        # Ship HD2's OWN rest, verbatim.  Nothing to compute: the runtime's idle
+        # deform `rest_hd2[b] . inv(S_bind[b])` is then the exact identity, so the
+        # mesh the player sees is the mesh we posed here, joint for joint.
+        rest_shipped = {i: rest_hd2[i].copy() for i in rest_hd2}
+    else:
+        for h in order:
+            i = h['index']
+            p = parent_of(h)
+            sa = D[i] @ rest_sym[i]
+            L = sa if p is None else (
+                np.linalg.inv(D[p['index']] @ rest_sym[p['index']]) @ sa)
+            if axis_roundtrip:
+                L = L @ np.linalg.inv(axis_delta(h))
+            chain = L if p is None else rest_shipped[p['index']] @ L
+            rest_shipped[i] = trans(sa[:3, 3] - origin_np(chain)) @ chain
 
     # ---- skinning: source bone -> HD2 bone -------------------------------
 
@@ -741,6 +796,8 @@ def main():
     ap.add_argument('--legacy-axis', action='store_true',
                     help='skip the BatchTool\'s final axes conversion; leaves '
                          'basis_i and the symmetric deltas in the shipped rig')
+    ap.add_argument('--skeleton', choices=('native', 'snap'), default='native',
+                    help='native = ship HD2\'s rest verbatim, pose only the mesh')
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
@@ -748,7 +805,7 @@ def main():
                  scale=a.scale, head_offset=a.head_offset, align=a.align,
                  apose=not a.no_apose, spine_map=a.spine_map, fallback=a.fallback,
                  leg_tilt=a.leg_tilt, leg_splay=a.leg_splay,
-                 axis_roundtrip=not a.legacy_axis)
+                 axis_roundtrip=not a.legacy_axis, skeleton=a.skeleton)
 
     os.makedirs(a.outdir, exist_ok=True)
     png = os.path.join(a.outdir, a.out)

@@ -290,6 +290,11 @@ def main():
                          "original bone axes', and the deltas are all ~180 deg "
                          "flips for the right arm/hand -- leaving them in rotates "
                          "the right arm mesh by 180 deg about each bone.")
+    ap.add_argument('--skeleton', choices=('native', 'snap'), default='native',
+                    help="native = ship HD2's own rest verbatim and pose only the "
+                         "mesh (what the reference patch does; the game's idle frame "
+                         "then reproduces our pose exactly).  snap = the old "
+                         "behaviour, HD2's joints dragged onto the source's.")
     ap.add_argument('--legacy-axis', action='store_true',
                     help="skip the BatchTool's final axes conversion and the T-pose "
                          "half of the bake.  That leaves basis_i and the symmetric "
@@ -315,7 +320,8 @@ def main():
                    scale=a.scale, head_offset=a.head_offset,
                    leg_tilt=a.leg_tilt, leg_splay=a.leg_splay,
                    axis_deltas=not a.no_axis_deltas,
-                   axis_roundtrip=not a.legacy_axis, verbose=False)
+                   axis_roundtrip=not a.legacy_axis, skeleton=a.skeleton,
+                   verbose=False)
     src_pts = [tuple(p) for p in np.asarray(r['src1'])]
     our_pts = [tuple(p) for p in np.asarray(r['out'])]
     idle_pts = [tuple(p) for p in np.asarray(r['out_idle'])]

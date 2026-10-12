@@ -20,13 +20,22 @@
 - **【环境】** ① Python 用隔离 venv `...\python\envs\default\Scripts\python.exe`（有 numpy+Pillow；**系统 python 无 PIL**）；② **`git clone`/`curl` 打 GitHub 常失败** → 让用户下 zip；③ **Bash heredoc 调 Python/PowerShell 被拦** → 写成 `tmp/*.py` 再执行；④ **`Edit` 对含大量反引号/emoji 的长中文行会匹配失败** → 用 Python `str.replace` 并回读校验；⑤ **`Remove-Item` 被 safe-delete 钩子接管 → "删到回收站"必抛错**，让用户自己跑，**不要**用 `[System.IO.File]::Delete` 绕过。
 
 ## 大功能 B（当前方向）：L4D2 模型整体移植到 HD2
-> 细节见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`、**`docs/hd2-batchtool-sdk-findings.md`（§7 源码逐函数核对；§8 新管线；§9 三个真 bug；**§10 参照 patch 做法**；**§11 正视站姿**）**；数字全在 `.workbuddy-ai/memory/*.md`。
+> 细节见 `docs/l4d2-to-hd2-physbone-migration.md`、`docs/l4d2-hd2-boundary.md`、**`docs/hd2-batchtool-sdk-findings.md`（§7 源码逐函数核对；§8 新管线；§9 三个真 bug；**§10 参照 patch 做法**；**§11 正视站姿**；**§12 骨轴往返**；**§13 发布骨架=HD2原生、网格去适应**）**；数字全在 `.workbuddy-ai/memory/*.md`。
 
 ### ✅ 新管线已实现并实测（`tmp/rig-lab/hd2_style.py`，**取代旧 `T = H·S⁻¹`**）
 - **数学 = BatchTool 那套**：① **一个均匀缩放 + 一个平移**（围绕脚底 ⇒ 源脚底精确落 HD2 脚底；**`TorsoScale=1.042` 是算出来的**）；② **HD2 骨的 head := 源映射骨的世界位置**（**只改位置，朝向与骨长仍是 HD2 自己的**）；③ **30 骨常量局部旋转表**（A↔T，全是手臂+手；脊柱/颈/头/腿不参与）+ 20 条右侧骨轴 delta。**吸附在绑定之前 ⇒ 绑定态恒等、静止网格不变形**。公式 `rot[b]=rot[p]·inv(rest_hd2[p])·rest_hd2[b]·D[b]`、`D[b]=D[p]·M_rest[b]·basis[b]·inv(M_rest[b])`。**HD2 独有骨补法**：`spine1=lerp(hips,spine2,.5)`、`chest=spine2`、`{s}_shoulder_twist=lerp(shoulder,elbow,.42)`、`{s}_hand_twist=wrist`、`{s}_shoulderarmour=lerp(clavicle,shoulder,.9)`、`{s}_toe=ball+(ball−ankle)*.35`、`head_tip=head+(head−neck)`。
 - **官方流程（BatchTool `README.md`）**：导 HD2 骨架转 T-pose → 人物摆 T-pose 对齐（**腿部无需对齐**）→ 选字典 → 骨骼吸附 → 顶点组重命名+重绑 → **必须**点"转回初态+原始骨轴" → 持握骨 → 部位切分。**⇒ 最终 rest = HD2 的 A-pose（网格被烘焙成 A-pose）。**
 - 5 模型（zoey/rochelle/coach/nick/ellis）**全部 edge_mean 0.9989、bad>25% ≤0.58%**，**零逐模型调参**（旧 swing 最优 bad 9.25%）。实现要点：① **缩放高度必须在 HD2 空间沿 +Z 量**，脚底点用**底部 1 cm 顶点片质心**；② **AXIS delta 与 head 搬移必须交错在同一父先子后循环**（否则"被搬走父骨"的**未映射子骨**会掉队）。
 - **模型自身瑕疵（非我们引入）+ 源骨架**：Nick/Ellis 的 `source_extra_*` 长袖 jiggle 骨链在 **bind pose 就朝 +Y 伸出 1.78 m / 1.04 m**（**源 T-pose 里就有**）⇒ "必须靠额外骨/物理驱动"的直接证据。源骨架：`Spine1≡Spine`、`Spine2≡Spine4` 且**零主导权重** ⇒ 有效躯干关节只 3 个；`Pelvis` 关节 0.8193 但网格质心 1.0820（**根骨不在髋**）；**T-pose 手臂严格水平**、**腿严格竖直**；`Head1` = **颅底**。
+
+### 🔴🔴🔴 第 38 轮（2026-10-12）：**发布骨架 = HD2 原生一字不改，让「网格」去适应它**（详见 findings §13）
+> 用户原话：「参考模型的骨架没有要求网格一定要和他重合，而是**骨架完全在原始位置不变**，允许模型错位，以保证模型观感」「我们要确保**我们在外面摆什么样，进游戏也摆什么样**，动画只是驱动它们原始 HD2 骨架的轴点进行移动 —— **即使这些轴点不在模型网格的内部**」。**这条排在所有"外面摆得好看"之前**：不修它，一进游戏网格就被骨架拽走，外面白摆。
+- **机制**：运行时 `v_world = Σ_b w_b·A[b]·inv(S_bind[b])·v_bind`；idle 时 `A[b] = rest_hd2[b]` ⇒ **只有 `S_bind[b] == rest_hd2[b]` 时恒等**。旧 `skeleton='snap'`（把 HD2 关节吸附到源关节）⇒ `S_bind ≠ rest_hd2` ⇒ **每帧被拽** = 用户看到的「鞋跟没了 / 脚踝小腿断裂 / 脖子拉长 / 裙子拆成两片」。第 37 轮把骨轴修对只把撕裂 0.568→0.183 m，**没归零**。
+- **修法 `skeleton='native'`（现默认）**：`rt[b] = rt[p]·inv(rest_hd2[p])·rest_hd2[b]·Dd[b]·basis_t[b]`（HD2 自己的 T-pose 工作静止姿态，**无任何吸附**）→ `D[b] = D[p]·rt[b]·basis_i[b]·inv(rt[b])` 只烘**网格** → **`S_bind[b] = rest_hd2[b]` 一字不改**。`src1` 的拟合目标从「HD2 的 **A-pose** 关节」改成「HD2 的 **T-pose** 关节」（源模型是 T-pose）。native 下 `--leg-tilt/--leg-splay` **只动网格**。**验证：`max|A·inv(S_bind)−I| = 8.67e-16`；5 模型 idle 网格差全 = 0.00e+00 m。** `snap` 保留供 A/B。
+- **出图**：`quad_overlay.py` = **4 行 × 3 列**（bind 正 / bind 侧 / GAME 正 / GAME 侧 × native / snap / 参照），每列叠骨架 ⇒ 列 A 的 1≡3、2≡4 **完全重合**。旧的 `rigfix_overlay.py` 是「行1=bind正 / 行2=idle侧」**同时变状态和视角**，看不出问题在哪 —— 已弃用其出图结构。
+- **量化了「网格该做的变换」**（`probe_mesh_vs_rig.py`）：① 网格最低点 z 我们 **+0.0057**（正好 = HD2 `l_toe` 的 z）/ 参照 **−0.0542** ⇒ **需下移 ~6.0 cm**；② 网格高 我们 **1.9644** / 参照 **2.1127** ⇒ **比值 1.0755**；③ 手掌够不到：`l_hand` 偏 **0.15 m** / `r_hand` 偏 **0.69 m**；④ **归一化关节位置（÷自身身高）我们与参照结构完全一致** ⇒ 「下移 6 cm + X 缩放」**等效于把网格适配到 2.113 m 的身高**（= HD2 原生比例，因参照作者一根骨没动）。
+- **⚠️ native 的代价**：`edge_max` 从 2.5–5.8 涨到 **70–127**（`bad%` 0.4–1.2 → 3.4–6.8），根因 = 源模型**手臂/手指朝向**与 HD2 T-pose 不一致，**全局刚体拟合修不了** ⇒ 正是下面「网格变换」要解决的。`probe_delta_effect.py` 证明**轴 delta 是放大器不是根因**（清空后 `r_hand` 0.69→0.24 m，但 `l_hand` 略差）。
+- **下一轮（网格变换，用户已给完整方案，等拍板）**：① 整体**下移 ~6 cm**（脚尖对齐骨架最低点，肩线随之抬到胸部上方）；② **上半身放大**（目标手掌够到 HD2 手掌骨；用户指出**参照的上衣连衣裙与我们是同一模型**，可用特征点求缩放比；整体高比 1.0755 是起点）；③ 缩放要在躯干/大腿接缝处**渐变**（PS 羽化式），防接缝弯折；④ **手臂少弯**（参照作者让肘部几乎在肘尖，用"两点之间直线最短"把短手臂模拟成长手臂）⇒ 做法是**降低 `basis_i` 里手臂的旋转量**，**不是拉长手臂**；⑤ **头部比例**（参照是二次元大号头，既匀称又掩盖肩宽）。用户原话：「**我知道这变换很难做，如果你没有把握，我们可以继续沟通交流，先停下来不直接改也行，不要贪功冒进**」。
 
 ### 🔴🔴 第 37 轮（2026-10-12）：**头号问题 = 我们发布的骨架骨轴是错的**（详见 findings §12）
 > **排在「手臂链短 10 cm」之前**：`--leg-tilt/splay` 修**关节位置**，这条修**骨头坐标系朝向**。朝向错了，游戏里**任何**动画都会把每根骨转到错误的绝对朝向（不只是静止帧）。
