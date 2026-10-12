@@ -285,7 +285,7 @@ def load_source(vpk, model):
 def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.015,
              align='kabsch', apose=True, spine_map='legacy', fallback='parent',
              leg_tilt=0.0, leg_splay=0.0, axis_deltas=True, axis_roundtrip=True,
-             skeleton='native', verbose=True):
+             skeleton='native', mesh_shift=(0.0, 0.0, 0.0), verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
 
     The MESH is ALWAYS baked around the SNAPPED rest (`rest_sym`, whose heads are
@@ -703,6 +703,17 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             tot += w
         out[k] = acc / tot if tot > 0 else src1[k]
 
+    # ---- 4c. MESH-ONLY translation ----------------------------------------
+    # The rig must not move -- `S_bind == rest_hd2` is the whole reason the idle
+    # frame is the identity -- so "put the character somewhere else" can only
+    # mean "move the mesh".  This is exactly what the reference patch does: its
+    # skeleton is bit-identical to HD2's and its mesh simply sits where it looks
+    # right.  `out_idle` is derived from `out`, so it follows automatically.
+    if any(mesh_shift):
+        out = out + np.asarray(mesh_shift, dtype=np.float64)
+        say('mesh shift: (%+.4f, %+.4f, %+.4f) m on the MESH only; the rig stays '
+            'where HD2 has it' % tuple(mesh_shift))
+
     # ---- 5. the pose the GAME actually shows ------------------------------
     # The shipped rest is  S_A = D * rest_sym  (rest_sym is the T-pose rest; D is
     # the T->A conversion, so S_A is the A-pose rest that the shipped mesh `out`
@@ -800,6 +811,10 @@ def main():
     ap.add_argument('--skeleton', choices=('native', 'snap'), default='native',
                     help='which rig to ship: native = HD2\'s rest verbatim (idle '
                          'frame is the identity); snap = the snapped rest (old)')
+    ap.add_argument('--mesh-down', type=float, default=0.0,
+                    help='metres to drop the MESH (the rig never moves)')
+    ap.add_argument('--mesh-back', type=float, default=0.0,
+                    help='metres to push the MESH backwards (+Y is forward)')
     ap.add_argument('--json-out', default='')
     a = ap.parse_args()
 
@@ -807,7 +822,8 @@ def main():
                  scale=a.scale, head_offset=a.head_offset, align=a.align,
                  apose=not a.no_apose, spine_map=a.spine_map, fallback=a.fallback,
                  leg_tilt=a.leg_tilt, leg_splay=a.leg_splay,
-                 axis_roundtrip=not a.legacy_axis, skeleton=a.skeleton)
+                 axis_roundtrip=not a.legacy_axis, skeleton=a.skeleton,
+                 mesh_shift=(0.0, -a.mesh_back, -a.mesh_down))
 
     os.makedirs(a.outdir, exist_ok=True)
     png = os.path.join(a.outdir, a.out)
