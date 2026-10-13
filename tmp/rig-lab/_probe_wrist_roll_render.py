@@ -48,7 +48,7 @@ def rodrigues(axis, a):
     return np.eye(3) + np.sin(a) * K + (1.0 - np.cos(a)) * K @ K
 
 
-def load(patch, side):
+def load(patch, side, with_twist=False):
     entries, _ = P.scan_entries(patch)
     e = next(x for x in entries if x['type_id'] == U.UNIT_ID and x['file_id'] == UNIT)
     pl = P.entry_payload(e, patch)
@@ -83,6 +83,16 @@ def load(patch, side):
     for j in range(4):
         hit = np.isin(bidx[:, j], np.asarray(hand_slots))
         wh[hit] += wgt[hit, j]
+
+    if with_twist:
+        # l_hand_twist is a child of the elbow, so it is not in the hand subtree.
+        # Under the "the game drives both" hypothesis it rolls by the same amount,
+        # so the moving weight is simply wh + w(l_hand_twist).
+        tw_slot = slot_of.get(el.replace('elbow', 'hand_twist'))
+        if tw_slot is not None:
+            for j in range(4):
+                hit = bidx[:, j] == tw_slot
+                wh[hit] += wgt[hit, j]
 
     E, W = heads[slot_of[el]], heads[slot_of[hd]]
     axis = W - E
@@ -163,6 +173,8 @@ def main():
     ap.add_argument('--angles', default='0,90,180')
     ap.add_argument('--side', default='left')
     ap.add_argument('--stripes', type=float, default=8.0)
+    ap.add_argument('--twist', action='store_true',
+                    help='count l_hand_twist as rolling too (hypothesis B)')
     args = ap.parse_args()
 
     angles = [float(x) for x in args.angles.split(',')]
@@ -170,7 +182,7 @@ def main():
 
     rows = []
     for patch, label in zip(args.patches, labels):
-        pos, tris, wh, E, W, axis, keep = load(patch, args.side)
+        pos, tris, wh, E, W, axis, keep = load(patch, args.side, args.twist)
         N_ = np.cross(axis, [0.0, 0.0, 1.0])
         N_ /= np.linalg.norm(N_)
         V_ = np.cross(N_, axis)
