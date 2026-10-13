@@ -26,16 +26,24 @@ import sys
 PATCH_NAME = '9ba626afa44a3aa3.patch_0'
 GAME_DATA = r'D:\SteamLibrary\steamapps\common\Helldivers 2\data'
 REVERT_NOTE = r'E:\tmp\deploy-revert-note.txt'
-BUSY = ('Helldivers2.exe', 'HD2ModManager.exe', 'hd2mod.exe')
+# Blocking: the game may hold the package open while we swap the link.
+GAME_BUSY = ('Helldivers2.exe',)
+# Advisory only.  `HD2ModCore/Infrastructure/ApplyExecutor.cs` is the *only*
+# place the manager creates symlinks, and it runs on an explicit Apply/Deploy --
+# never on start-up or shutdown.  So a running manager does not fight this
+# script; but the user must not press Apply while a candidate is being tested,
+# because that would relink the package back to the manager's own library node.
+MANAGER_BUSY = ('HD2ModManager.exe', 'hd2mod.exe')
 
 
-def busy():
+def running(names):
     try:
         out = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'],
                              capture_output=True, text=True).stdout
     except OSError:
         return []
-    return [p for p in BUSY if p.lower() in out.lower()]
+    low = out.lower()
+    return [p for p in names if p.lower() in low]
 
 
 def log(m=''):
@@ -54,10 +62,16 @@ def main():
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
 
-    running = busy()
-    if running:
-        log('refusing to deploy: still running -> %s' % ', '.join(running))
+    game = running(GAME_BUSY)
+    if game:
+        log('refusing to deploy: still running -> %s' % ', '.join(game))
         return 2
+    mgr = running(MANAGER_BUSY)
+    if mgr:
+        log('note: %s is running. That is fine (it only relinks on an explicit '
+            'Apply), but do NOT press Apply while this candidate is deployed -- '
+            'that would relink the package back to the manager\'s own node.'
+            % ', '.join(mgr))
 
     src = os.path.join(args.cand, PATCH_NAME)
     src_gpu = src + '.gpu_resources'

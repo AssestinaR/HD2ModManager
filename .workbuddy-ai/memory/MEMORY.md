@@ -72,6 +72,16 @@
 - `_probe_matchain.py` 按模板区分**自有槽位**（advanced=2/3/5），非自有槽报 `external`，只有自有槽未解析才算断链。
 - 排错坑：PIL 对 **alpha=0 的 RGBA 做缩放会预乘**，看起来全黑；判断贴图内容要用全分辨率统计。
 
+## 贴图映射调查（第60轮 M4W/M5）
+- **UV 没坏**：源模型材质 6 `shinano_hair_ear` UV 包围盒 `u .7969-.9970 v .0071-.1821`（0.200×0.175），与发货包**逐位相同**；整体 `-21.06..22.98/-2.74..3.87` 也一致。贴图我方 crop 与源 VTF crop 逐像素一致；14 张贴图在 7 个 VPK 里各只有一份（无变体歧义）。
+- **没有 V 翻转问题**：HD2 约定 = `row = v*H`（verbatim）。判据 = 参照模组（游戏内正常）带贴图渲染 + UV 空间三角覆盖，verbatim 下领口/面部/躯干对得上，V 翻转版领口变白、腿出墙砖纹。VTF→DDS 是直通（`hd2_texpack` 无翻转），`$basetexturetransform` 在 VMT 注释里，双方 mipCount 都=1。
+- **section→材质**：sec0 face / **sec1 `white`=主体头发（UV 铺满发丝拼版）** / sec4 body / **sec5 `shinano_hair_ear`=猫耳（岛仅 0.2×0.175）** / sec6 headdress(u平铺3.05) / sec7 lace(u平铺44) / sec8-13 服装鞋。
+- `_probe_uvrange.py` 的「0.98×0.98」是**包围盒**不是覆盖密度；判形状必须用 UV 三角覆盖图（`_probe_uvplot.py`）。
+- ★ **uv1/uv2 通道**：参照模组 uv0=真实UV、**uv1=uv2=常量(0,1)**；我方 `pack_mesh_vertices` 把同一套源UV灌进三个通道。`set_uv12.py` 改成常量，TOC sha256 不变、字节差异只在 uv1/uv2。M5 已部署。
+- **alpha 不是普适规则**：参照模组 `advanced` 材质 slot5 alpha≈0（与我方一致），`original` 模板材质 slot5 alpha≈255。故不统一置零。
+- 原版单位只有 `.toc`（`E:/tmp/hd2-mgroot/re2310-full/unit/`），无 GPU 顶点数据，读不到原版 UV 通道；「原版」结论来自参照模组。
+- 新增长期工具：`_probe_sourceuv.py`、`_probe_refrender.py`、`_probe_uvplot.py`、`_probe_secmap.py`、`_probe_texrender.py`、`set_uv12.py`。
+
 ## 数据与历史
 - 参照E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310；af431352为上身/头发外壳，仅neck/chest，非头盔。E为测试库、D Steam在用。
 - 旧探针先查tmp/rig-lab/_archive；细节留每日日志及ARM_ELBOW_ARTIFACT_BRIEF、FINGER_RETARGET_BRIEF、WEIGHT_TRANSFER_BRIEF、UNIT_TRANSFORM_BRIEF，不把早期猜测当现状。
