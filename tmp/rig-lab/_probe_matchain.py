@@ -70,6 +70,14 @@ def vanilla_materials(path):
     return out
 
 
+# Which texture slots each template OWNS -- i.e. which ones this build fills
+# from the package.  Every other slot keeps the pristine SDK template's id and
+# must resolve against the *base game*, exactly as the shipping reference mod
+# does (its `advanced` material also leaves 8 slots external).  Only an owned
+# slot that fails to resolve is a defect.
+OWNED_SLOTS = {'basic': (0, 1, 2), 'basic+': (0, 1, 2), 'advanced': (2, 3, 5)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('patch')
@@ -87,6 +95,7 @@ def main():
 
     units = chains = 0
     broken, vanilla_backed, unknown = [], [], set()
+    external_total = [0]
     for e in entries:
         if e['type_id'] != U.UNIT_ID:
             continue
@@ -121,10 +130,21 @@ def main():
                 if list(sdk.TexUnks) != list(ours.tex_unks) or \
                         list(sdk.TexIDs) != list(ours.tex_ids):
                     broken.append((e['file_id'], 'SDK/our reader disagree on 0x%016x' % asset))
-                miss = [i for i in sdk.TexIDs if i not in textures]
-                if miss:
-                    broken.append((e['file_id'], 'material 0x%016x -> %d unresolved texture(s)'
-                                   % (asset, len(miss))))
+                owned = OWNED_SLOTS.get(ours.parent_name)
+                if owned is None:
+                    # a foreign template (original / armorlut / a hash): we did
+                    # not build it, so nothing about its slots is our contract
+                    external_total[0] += len(sdk.TexIDs)
+                    continue
+                for i, tid in enumerate(sdk.TexIDs):
+                    if tid in textures:
+                        continue
+                    if i in owned:
+                        broken.append((e['file_id'],
+                                       'material 0x%016x OWNED slot %d -> unresolved 0x%016x'
+                                       % (asset, i, tid)))
+                    else:
+                        external_total[0] += 1
 
     carried_chains = 0
     carried_broken = [b for b in broken if b[0] in carried]
@@ -136,6 +156,8 @@ def main():
           % (len(vanilla_backed), len({a for _u, a in vanilla_backed})))
     print('dangling refs that are neither in-package nor vanilla : %d  %s'
           % (len(unknown), ['0x%016x' % a for a in sorted(unknown)]))
+    print('external (non-owned) template slots, expected to resolve in the base '
+          'game : %d' % external_total[0])
     print('broken links on carried units: %d' % len(carried_broken))
     for b in carried_broken[:20]:
         print('   0x%016x  %s' % b)

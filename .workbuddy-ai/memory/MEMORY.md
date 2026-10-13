@@ -64,6 +64,14 @@
 - **小臂根因**：皮肤 hand 权重是肘→腕单调斜坡 0.077→1.000，无刚性段。**不能按 hand≥0.95 排除**（与皮肤同连通块comp276/277、半径重叠，会撕皮肤）。规则=ROI距轴<10cm；连通块ROI内t跨度<60mm为刚性块取附着点单一比例；其余 hand 驱动到 smoothstep(0.78L,0.92L)，差值只在手骨子树↔同侧肘骨间搬运。30°腕转中段位移 52.1mm→0.0mm。只改unit GPU 0.244%字节，两条模型流都要改（`vertex_buffer_offset` 绝对基址，勿用流内偏移）。
 - 待实机：①M1 颜色/军械库 ②切W1 测小臂+腕部扭转(twist骨未用，旋前旋后集中在腕缝)。
 
+## 材质（第60轮 M4 起）
+- **护甲必须用 `advanced` 模板**，不能用 `basic`。SDK 说明：basic = "Sourced from a trash bag prop"；advanced = "...renders in the UI"。参照模组【4.28】Chiffon-LUNALICE 的护甲 unit（正是我们替换的 cae35ee1…/9841b165…）用 advanced + original。
+- **槽位键零重合**：护甲家族 = `0f5ff78d a17b45a8 81d4c49d c2eb8d6e 30e2d136 d2f99d38 05a27dd5 b281e5f2 37831285 7e662968 6834aa9b`（armorlut 对上 10/11）；basic = `756f6fa6 ac652e43 caed6cd6`。键不对 ⇒ 贴图永远绑不上 ⇒ 全黑，且修 ID 位置毫无效果（M1 实测零变化）。
+- **advanced 自有三槽**：2=Normal/AO/Roughness、3=Metallic、5=Color/Emission Mask（SDK TextureTypeLookup 只标这三个，其余 8 槽留模板自带的游戏贴图 id，参照模组同形状）。槽5 的 **alpha 必须=0**（=关闭发光遮罩）；参照模组实测底色 (209,197,199, **0**)。
+- `fix_materials.py`：`TEMPLATE_SLOTS={basic/basic+:(0,1,2), advanced:(3,5,2)}`（顺序=共享/底色/法线），`--metallic`、`--alpha-zero`（advanced 默认开）。改 basic 行为前先用"同输入重建 == 已部署 M1 逐字节"做回归。
+- `_probe_matchain.py` 按模板区分**自有槽位**（advanced=2/3/5），非自有槽报 `external`，只有自有槽未解析才算断链。
+- 排错坑：PIL 对 **alpha=0 的 RGBA 做缩放会预乘**，看起来全黑；判断贴图内容要用全分辨率统计。
+
 ## 数据与历史
 - 参照E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310；af431352为上身/头发外壳，仅neck/chest，非头盔。E为测试库、D Steam在用。
 - 旧探针先查tmp/rig-lab/_archive；细节留每日日志及ARM_ELBOW_ARTIFACT_BRIEF、FINGER_RETARGET_BRIEF、WEIGHT_TRANSFER_BRIEF、UNIT_TRANSFORM_BRIEF，不把早期猜测当现状。
