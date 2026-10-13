@@ -14,17 +14,18 @@
 - SDK `docs/HD2SDK-CommunityEdition-3.8.0`（texconv 在 `deps/`）；游戏 data `D:/SteamLibrary/steamapps/common/Helldivers 2/data`；源素材 `D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/`（`备份/` 下有八人包等 7z）；原版抽取 `E:/tmp/hd2-mgroot/`；mod 库 `E:/mod/`（`library.json` 在**库根** `E:/mod/library.json`）。
 - CLI `HD2ModCli/bin/Debug/net10.0/hd2mod.exe`；管理器索引库 `E:/tmp/hd2-mgroot/data/indexes/asset-index.sqlite`。
 
-## 🔴 当前状态（Lilium 交付）
-- **`E:/mod/Lilium-Sancta-RE2310/`**（第 70 轮 · **实验版**：接 twist 骨、手+手指纳入分配）
-  - patch 562176 B sha256 `5e4e045c3e1cbc7c…`（**第 66~70 轮逐字节相同** —— 权重只在 GPU 侧载荷，patch 容器不动）；gpu 84229248 B sha256 **`1ca095d56687089dadaf60bded2827e97b506c1aded6089a3ae918289f9edff3`**。
+## 🔴 当前状态（Lilium 交付）= 第 69 轮
+- **`E:/mod/Lilium-Sancta-RE2310/`**（第 69 轮 · 定稿）
+  - patch 562176 B sha256 `5e4e045c3e1cbc7c…`（**第 66~70 轮逐字节相同** —— 权重只在 GPU 侧载荷，patch 容器不动）；gpu 84229248 B sha256 **`e9b0bb91ca0b1383503caa959658471ec313211ca7adf7dc531668a6caa667f2`**。
   - 64 条目 = 22 unit(2 承载 + 20 隐藏) + 2 bone + 11 material + 29 texture。审计 `_verify_normalized.py` **27 项 26 通过 / 1 已知**（唯一已知 = 管理器隐藏占位 unit 丢零索引段的材质短 id，见下「直接替换原生护甲」）。
-  - **用户明确说第 70 轮"不好就回退"** ⇒ **秒级回退**：`cp E:/tmp/round69-backup-deliver/{9ba626afa44a3aa3.patch_0,9ba626afa44a3aa3.patch_0.gpu_resources} E:/mod/Lilium-Sancta-RE2310/`（第 69 轮 = gpu `e9b0bb91…`，完整包在该目录，规整产物 `E:/tmp/round69-an-out-backup/`）。
-  - 历史 gpu：69 `e9b0bb91…` / 68 `de5f5dd1…`（`round68-an-out-backup/`+`round68-final/`）/ 67 `bb6e3008…`（`round67-an-out-full/`）/ 66 `a8854ba3…`（`round66-fingers-only-archive/`）；65 patch `52d131c5…`+gpu `6587ac4f…`（`round65-lilium-archive/`）；64 `729c4a65…`+`1f20c9cd…`（`round64-lilium-archive/`）。
+  - **第 70 轮（twist 实验版）已实测无效并回退**（详见下方手臂权重节）。⚠️ **秒级回退点**：`E:/tmp/round69-backup-deliver/`（第 69 轮完整交付包，gpu `e9b0bb91…`）。回退命令 `cp E:/tmp/round69-backup-deliver/{9ba626afa44a3aa3.patch_0,9ba626afa44a3aa3.patch_0.gpu_resources} E:/mod/Lilium-Sancta-RE2310/`，回退后须跑一次 `library sync` 刷新库节点 `9ff82517`。
+  - 历史 gpu：70 `1ca095d5…`（`round70-final/` gpu `cddeb5df…` + `round69-an-out-backup/` 被 70 覆盖前的 `lilium-an-out/`；**已弃用**）/ 69 `e9b0bb91…` / 68 `de5f5dd1…`（`round68-an-out-backup/`+`round68-final/`）/ 67 `bb6e3008…`（`round67-an-out-full/`）/ 66 `a8854ba3…`（`round66-fingers-only-archive/`）；65 patch `52d131c5…`+gpu `6587ac4f…`（`round65-lilium-archive/`）；64 `729c4a65…`+`1f20c9cd…`（`round64-lilium-archive/`）。
+  - ⚠️ `E:/tmp/round69-an-out-backup/` 现存的到底是 69 还是 70 的规整产物需用 sha256 现查（70 轮曾把它当第 69 轮输入的代称）。
   - 中间产物 `E:/mod/Lilium-Sancta-Native-RE2310/`（**勿启用**）。库节点 `9ff82517`(成品) / `a74a1022`(中间)。`library.json` 备份 `E:/tmp/library.json.bak-20261013-r66`。
-  - `preview/`：70 轮新增 `wrist_follow_round66_69_70.png`（跟随比例曲线，69 与 70 重合）与 `wrist_roll_round66_69_70.png`；`wrist_roll_round66_vs_69.png` 仍在。
+  - `preview/`：`wrist_follow_round66_69_70.png`（跟随比例曲线，69 与 70 重合）与 `wrist_roll_round66_69_70.png`（留作第 70 轮记录）；`wrist_roll_round66_vs_69.png` 仍在。
   - **Lilium 其余 7 个角色未转**（只转了 `Lilium_Sancta_Zoey.vpk`）。
 
-## 🔴 手臂权重：第 66~70 轮这条线（同一根旋钮）
+## 🔴 手臂权重：第 66~70 轮这条线（同一根旋钮）—— **第 69 轮定稿，第 70 轮已回退**
 「小臂从纯肘骨过渡到纯手骨的这段权重带有多宽 / 挂在哪根骨上」= 唯一在动的参数。
 
 | 轮 | 参数 | 带宽 | 180° 拧转最差边 | 备注 |
@@ -32,17 +33,17 @@
 | 66 | `smoothstep(0.22L, 0.82L)`，全挂 `l_hand` | 0.22–0.82 | 41.3 mm（纯几何） | 手感"橡皮筋"（软） |
 | 67 | `smoothstep(0.78L, 0.92L)`（**仅 40 mm**） | 40 mm | **83.2 / 100.0 mm 真撕裂** | 网格边 32.8 mm 横跨整条带 ⇒ bug |
 | 68 | `smoothstep(0.50L, 1.00L)` | 144 mm | 37.8 mm（几何地板） | 撕裂从手腕移到小臂中段 |
-| 69 | `smoothstep(0.22L, 1.00L)`，全挂 `l_hand` | 63–287 mm | 37.8 mm（几何地板） | 用户要的"66 起点 + 68 终点"；基本可用 |
-| **70** | 同 69，但远端 **50/50 分给 `l_hand` / `l_hand_twist`**，ROI 扩到手+手指 | 同 69 | A 54.2/46.6 · **B 37.8/37.8** · C 29.4/25.2 | 实验版 |
+| **69** | `smoothstep(0.22L, 1.00L)`，全挂 `l_hand`（`--twist-frac 0`） | 63–287 mm | 37.8 mm（几何地板） | **定稿**：66 起点 + 68 终点；用户"基本可用" |
+| 70 | 同 69，但远端 **50/50 分给 `l_hand` / `l_hand_twist`**，ROI 扩到手+手指 | 同 69 | A 54.2/46.6 · B 37.8/37.8 · C 29.4/25.2 | **实验版，实机"手指变差"⇒ 已回退** |
 
+- **🔴🔴 第 70 轮实机结论（这条线到此为止）**：用户实测反馈「**手指弯曲似乎变差了一点，小臂几乎一样**」⇒ 落在**假设 A**（游戏**只转 `l_hand`，`l_hand_twist` 转速更低/几乎不动**）。原因：远端一半权重挂到一根**不转**的骨上 ⇒ 手指/手腕跟随量减半 ⇒ 手指弯曲变差；小臂远端本来只受一半影响 ⇒ 看不出来。**⇒ twist 骨对本模型无收益，第 69 轮（`--twist-frac 0.0`）为定稿，此方向不再尝试。**
 - **🔴 几何地板 37.8 mm（改不掉）**：180° 拧转下即使一条边两端权重**完全相同**，长度也会变 `2 × 垂直分量`。本模型最差等权边（`comp 3772`，半径 47/28 mm，`w 1.000/1.000`）= 37.8 mm ⇒ **任何权重方案的下界**。所以"又硬又不裂"在只改权重的范围内做不到，根治要**加密腕部网格**。
 - **🔴 HD2 骨架有 twist 骨**（第 68 轮实测；第 67 轮"没有 twist 骨"的结论**已作废**）：`l/r_hand_twist`（slot 64/70）、`l/r_shoulder_twist`、`l/r_forearm_twist`、`l_wrist_twist`。`l_hand_twist` parent = `l_elbow`、head 与 `l_hand` 完全重合、叶子骨，**我们导出 unit 里权重 0**（所以按"带权骨"过滤时看不见）。
-- **原版用 twist 骨的铁证**：原版左臂护甲 `unit_0x4a213e0ae8acf74b.toc`（归档 `aaebfbedc571fd7a`）`l_hand_twist` **权重 74.5**；原版手臂皮肤 `g_torso_arm_l_male`（unit `0x586e33e020cbf80f`，归档 `00cf0ef7df912a6e`，LOD0 2448 v，palette 25）里 `l_hand_twist` 65.2 / `l_hand` 61.8。**原版没有 `l_forearm_twist`。**
+- **原版用 twist 骨的铁证**：原版左臂护甲 `unit_0x4a213e0ae8acf74b.toc`（归档 `aaebfbedc571fd7a`）`l_hand_twist` **权重 74.5**；原版手臂皮肤 `g_torso_arm_l_male`（unit `0x586e33e020cbf80f`，归档 `00cf0ef7df912a6e`，LOD0 2448 v，palette 25）里 `l_hand_twist` 65.2 / `l_hand` 61.8。**原版没有 `l_forearm_twist`。** ⚠️ **但"原版这么用"≠"游戏会照原版那样驱动"—— 本模型上实测 twist 骨几乎不动（见第 70 轮实机结论）。**
   - 原版手部剖面（沿 `elbow→hand`，L=287.4 mm）：腕部 t/L 0.93~1.08 **hand 与 twist 同时有权重**（twist 0.34~0.53 / hand 0.18~0.39）；**指尖 t/L>1.3 是 ~100% 手指骨、twist ≈ 0**。⇒ **"手和手指一起纳入分配"必须理解成"只重分配非手指部分，手指留 100% 手指骨"。**
   - ⚠️ 该 unit 的 `bone_index` **就是 palette slot**（`names[slot]=hashlist[real_indices[slot]]` 正确）；但 `ti.matrices[ti_idx]` 的 head 与该 slot 主导顶点质心**对不上**（slot0=`boss` 质心却在肩膀）⇒ **原版 unit 的 matrices 语义与我们的导出 unit 不同**，读原版权重别用 head 做几何判据。
-- **三种"游戏怎么驱动"假设（`_probe_twist_roll.py`，180°）**：**A 只转 `l_hand` 54.2/46.6 mm；B 两根都转 37.8/37.8 mm（= 第 69 轮）；C 只转 twist 29.4/25.2 mm**。⇒ **若游戏把两根骨转得一样，70 与 69 数值上完全相同**；差别只在"两根骨转得不一样"时出现。**推断**：原版护甲腕口用 twist 骨（74.5）而不用手骨，正是为了让腕口**不跟着手腕弯** ⇒ 最可能是「twist 骨管拧转、`l_hand` 管弯折+拧转」。
-- **用户第 70 轮实机请重点看**：① 中段/腕口有没有比第 69 轮更好；② 是否因"只跟一半弯折"变硬；③ 手指弯曲是否正常。**若"看不出区别"⇒ 游戏把两根骨转得一样 ⇒ twist 骨对本模型无用，保持第 69 轮。**
-- 工具：`reweight_arm_twist.py`（第 70 轮，`--a/--b/--twist-frac/--radius/--hand-limit`，`--no-hand` 退回旧行为）、`reweight_forearm_twist.py`（第 68 轮）、`reweight_forearm.py`（第 67 轮）、`_probe_twist_roll.py`、`_probe_wrist_roll*.py`、`_plot_wrist_follow.py`、`_probe_vanilla_wrist.py`/`_probe_vanilla_hand.py`、`_probe_forearm_action.py`。
+- **三种"游戏怎么驱动"假设（`_probe_twist_roll.py`，180°）**：**A 只转 `l_hand` 54.2/46.6 mm；B 两根都转 37.8/37.8 mm（= 第 69 轮）；C 只转 twist 29.4/25.2 mm**。**✅ 实机已判定 = A**（手指变差 ⇒ twist 骨转得少）。⇒ 结论：**只挂 `l_hand`（第 69 轮）是对 A/B 都安全、代价为零的选择。**
+- 工具：`reweight_arm_twist.py`（第 70 轮，`--a/--b/--twist-frac/--radius/--hand-limit`，`--no-hand` 退回旧行为）、`reweight_forearm_twist.py`（第 68/69 轮定稿工具）、`reweight_forearm.py`（第 67 轮）、`_probe_twist_roll.py`、`_probe_wrist_roll*.py`、`_plot_wrist_follow.py`、`_probe_vanilla_wrist.py`/`_probe_vanilla_hand.py`、`_probe_forearm_action.py`。
 - **🔴 `_probe_forearm_action.py` 的盲点**：只测**腕部弯折**（绕 `cross(axis,[0,0,1])` 30°），**从未测拧转/旋前** ⇒ 第 67 轮的"0.0 mm 全绿"掩盖了拧转撕裂。**以后验收必须加拧转项。**
 - **🔴 `_probe_vanilla_wrist.py` 的关键突破**：CLI 的 `GameDataPackageResolver.GetPackageResourceAsync` 对 bundled 归档**所有分区都用基名找包**，但 `bundles.nxa` 里一个归档其实是**三个包**：`<id>`(TOC) / `<id>.gpu_resources` / `<id>.stream`。后果：`gamedata extract asset` 抽原版 unit **只写出 `.toc`**（GPU 文件不出），`GameDataUnitMeshReader` 也拿不到原版 GPU。**未改产品代码**，探针自己实现 DSAR chunk walk + `bundles.nxa` 包表绕开。
 - **权重只改 GPU 侧**：`_probe_weightdiff.py` 逐字节比对（第 70 轮 vs 第 66 轮）= **63542/16917432 = 0.376% PASS**，只落 `bone_weight`+`bone_index`，两流各 31771，8394 顶点，**声明字段之外 0 字节**。
