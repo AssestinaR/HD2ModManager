@@ -39,6 +39,15 @@
 - **蕾丝普查**：7 组真半透明（源侧全 `$translucent` 无 `$alphatest`），但 `alphaclip` 只能硬裁切、`translucent` 无底色槽 ⇒ 带纹理护甲**无法软透明**，0.5 阈值是近似。
 - **材质开关 31 个 VPK 未实现**：仅 1 个可整组表达，29 个 PARTIAL。路①拆 Unit 材质表（根治、动已验收结构）②UV 遮罩涂黑（装饰件 38 槽共用 1×1 贴图，不可行）。
 
+## 源侧组件开关（第 62 轮，L4N）
+- **L4N 的「部件切换」= Source 原生 `$BodyGroup`**（不是贴图伪装）。权威：游戏根 `readme_l4n.txt` + `left4dead2/neko/mdl_extension.qc`（作者示例）。`$BodyGroup "名" { studio "a.smd" blank }`，**N 选一、`blank` 是隐藏项**；`$TextureGroup "skinfamilies"` = 材质预设；`$KeyValues { "left4neko" {...} }` 只管显示名/足 IK/默认缩放（非必需）。平台是客户端 DLL 注入（dxgi.dll），主菜单 `\`。
+- **`l4n_survivor` 是另一条线**（八人包→以玩家为单位的模型池，自带 `to_l4n_survivor.exe`），与部件开关无关，别混。
+- **源模型实测**（`_probe_bodygroups.py` 解析 studiohdr）：Lunalice 主模型 **32 bodygroup = 30 可切换 + 2 固定（head/Base）**，中英双语名，顶点 121511，**顶点区间两两不相交（0/31 重叠）⇒ 按 bodygroup 拆分干净**。三个 mdl 全 `numskinfamilies=1`（无材质预设）；模型 KeyValues 无 `left4neko` 块。
+- **31 个 `XXX关` VPK = 每个 bodygroup 的材质层降级方案**（给没装 L4N 的玩家），名字与 bodygroup 一一对应；因材质槽被多部件共用（`Ornament_metal_Underwear` 被 38 槽引用）必然连带隐藏 ⇒ 这就是 29/32 PARTIAL 的根因。**bodygroup 精确、材质泄漏。**
+- **HD2 侧映射已成立**：`armor-registry.applied.json` 的 `models[].pieces[]` = `(body,unit,slot,pieceType,tone,enabled,…)`，`RuntimeArmorComponentProjection` 按 piece 求 enabled ⇒ **按 unit 逐个开关是现成能力**。`CustomModelConversionService.BuildPlan` 已是「一来源 Unit → 一 Unit ID + 一 piece」；`SlotFor`：Head 0 / Torso·Shoulder·Accessory 2 / Pelvis 3 / LeftLeg 4 / RightLeg 5 / LeftArm 6 / RightArm 7；`pieceType` = 同 (slot,body) 层号自增。现存 Asmodeus 自定义模型 = 19 piece 实机可用。
+- **唯一未知数 = piece 数量上限**：原生 RE-2310 = 23、RE-1861 = 15、自定义 = 19；「expanded 19 piece」曾启动崩溃但未定因（数量/层号/自定义字段共变）；文档明言「40-piece 解析夹具只验证解码器，不能证明引擎能生成 40 个」。⇒ 拆 32 个属未测区间，**先拆 4~6 个实机验证再逐步加**。
+- 详见 `tmp/rig-lab/L4N_COMPONENT_ANALYSIS.md`。
+
 ## 交付与部署
 - 链路：`hd2mod library sync` 注册新包（只动节点，先备份 library.json）→ `armor-normalize`。`armor-normalize` **只认原生 Unit id**（改名 id 一律 armors:[]）。
 - **符号链接铁律**：`New-Item -ItemType SymbolicLink` 本机失败（无权限）且先删后建 ⇒ 一律 `MSYS=winsymlinks:nativestrict ln -s`，先建后删（写 .tmp 再 `mv -f`）。
