@@ -105,6 +105,17 @@
 - **M6 结果**：TOC **逐字节相同**（sha256 `c7ba606b…2a44`，与 M5 一致 ⇒ 材质/网格/权重/uv 全未动）；GPU 37032980 字节不同，**100% 在 14 张底色贴图区间内、区间外 0**。gpu sha256 `84a519ce…cbf6`（M5 为 `303a0034…`）。
 - 长期工具新增：`_probe_mipviz.py`、`_probe_vtflayout.py`、`_probe_verifylayout.py`、`_probe_m6diff.py`、`_probe_patchtex.py`、`_probe_alphargb.py`、`_probe_m5m6one.py`、**`fix_textures.py`**。
 
+## 透明/镂空（第60轮 M7 · 🔴 根因是材质父类，不是贴图）
+- **HD2 的透明是"材质父类"属性，不是贴图 alpha 属性**。SDK 权威表 `docs/HD2SDK-CommunityEdition-3.8.0/__init__.py :: Global_Materials`（= SDK 选材质的下拉框）：`advanced` 明写 **"No transparency"**（槽5 是 Color/**Emission** Mask）；**`alphaclip` = "supports an alpha mask"**（3 槽 = Normal/AO/Roughness + **Alpha Mask** + BaseColor/Metallic，变量 `OpacityThreshold`=0.5）；`translucent` 能软透明但**无底色贴图槽**；**`armorlut`（原版护甲用的）没有任何 alpha 槽 ⇒ 原版护甲本身不支持透明**，带蕾丝的护甲模组必须换父类。`original` 系（老 Nexus 默认）有 `SclarFieldOpacity` 槽 + `OpacitySharpness`/`OpacityOffset`。
+- **遮罩存在 RGB 灰度里，不在 alpha 通道里**（第一版普查看错通道，白忙）。`SclarFieldOpacity`/`OpacityClipMap` 都是纯灰度（gray≈0）、自身 alpha=255。判据用 `_probe_maskcensus.py`（同时报亮度与 alpha）。
+- **极性**：白=可见、黑=透明。官方 Wiki（HD2-Modding-Wiki dev/materials/alphaclip）原话 "The White of the mask is visible and the black will be transparent"，且 "no capabilities for partial transparency"（只能硬镂空）。公式近似 `alpha = saturate((mask + OpacityOffset) * OpacitySharpness)`；`alphaclip` 用 `OpacityThreshold`。
+- **L4D2 侧**：透明在 **VTF alpha**（DXT5），白=有布/黑=洞；VMT 用 `$translucent 1` 才读它；绿色 RGB 只是 alpha=0 区的无关底色。14 个源材质里真正生效的只有 **5 个**：headdress_white01_catears / lace_white01_catears / bra_white01_bra_inner / shoes_white01_highheels / shoes_02。dress / glove / lower_white01 的 VMT 两行被 `//` 注释 ⇒ L4D2 里就是不透明（贴图有 alpha 但引擎不用）。ornament 是 `$alphatest 1` 但贴图 1×1。
+- **参照模组 Chiffon-LUNALICE**：只 2 个材质；第 2 个父类 `0x8f669f365f24594e`（槽位布局与 `original` **逐字节相同**），`OpacitySharpness=64 / OpacityOffset=−0.5`，`SclarFieldOpacity` 槽（键 `479fb1ef`）挂 **1024² 纯灰度蕾丝图案**（黑40%/白42%/中间18%）。⇒ 灰度遮罩+阈值裁切；没用 `alphaclip` 只因早期模板是 `original`。
+- **`fix_alphaclip.py`（M7 构建器）**：只重建 5 个材质为 `alphaclip`（槽0←4×4 平面法线 `0xba1a40900756a7f3`；槽1←新遮罩；槽2←原底色 id 不变），**新增 5 张 2048² BC7_UNORM 灰度遮罩**（源 VTF alpha，新 id = `make_id(0xB,'tex/mask/<stem>')`），其余 verbatim。校验：条目 54→59、49 条 verbatim 且 gpu 偏移未动、材质回读确认父类/三槽、遮罩回读 mean|Δ|≤0.115/255。
+- **阈值 0.5 经覆盖率验证**：裁后保留面积与 L4D2 alpha 混合平均覆盖率差 < 4 个百分点。单一旋钮：洞太小→0.35，掉太多→0.65。
+- **🔴 部署踩坑**：`New-Item -ItemType SymbolicLink` 在本机失败（无 SeCreateSymbolicLinkPrivilege）且**先删后建** ⇒ 一度删掉 patch_0 链接。**以后一律 `MSYS=winsymlinks:nativestrict ln -s <target> <link>`**，并先建后删。
+- M7 = `E:/mod/Lunalice-RE2310-M7/`（patch 573744 B sha256 `693cc6be…b320`，gpu 88963520 B sha256 `3d3172b3…4485`），回退目标 M6。细节见 `tmp/rig-lab/TRANSPARENCY_BRIEF.md`。
+
 ## 数据与历史
 - 参照E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310；af431352为上身/头发外壳，仅neck/chest，非头盔。E为测试库、D Steam在用。
 - 旧探针先查tmp/rig-lab/_archive；细节留每日日志及ARM_ELBOW_ARTIFACT_BRIEF、FINGER_RETARGET_BRIEF、WEIGHT_TRANSFER_BRIEF、UNIT_TRANSFORM_BRIEF，不把早期猜测当现状。
