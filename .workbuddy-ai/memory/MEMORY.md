@@ -75,3 +75,29 @@
 - 当前：**M8 已部署**（`E:/mod/Lunalice-RE2310-M8/`，patch 573384 B、gpu 101546624 B），回退目标 M7；回退记录 `E:/tmp/deploy-revert-note.txt`。候选源 `E:/tmp/rig-lab/cand-m8/`。
 - 长期工具：`fix_appearance.py`(M8 构建)、`fix_materials.py`、`fix_textures.py`(外科替换范式)、`_probe_matfix/_probe_matchain/_probe_canddiff/_probe_weightdiff`、`_probe_pkg8*/_probe_lace`。
 - 待办（暂不做）：军械库渲染模式支持 alphaclip；管理器直接导入 VPK 作一等公民（翻译成 overwrite 里的 patch）。细节见 `tmp/rig-lab/*.md` 与每日日志。
+
+## 直接替换原生护甲（第 59 轮建立，第 64 轮用于 Lilium）
+- **「CLI 替换护甲工具」= `hd2mod equipment armor-normalize`**（**不是** cross-armor）。它按
+  `ArmorNormalizationService.cs`「The archive is the visibility boundary」**自动把目标护甲 archive 里
+  除承载位以外的全部 unit 换成隐藏占位**（`CanonicalPlaceholderMinifier`：3 顶点、0.0001 m 三角形、保留 culling 壳）。
+  链：`library sync` 登记来源包 → `armor-normalize inspect|plan|validate|apply`。**只认原生 Unit id**。
+- **`build_patch.py --unit-mode native --native-unit 0x…[可重复] --native-dir <游戏 unit toc 目录>`**
+  把整模型写进**真游戏 unit id**，每个 id 带自己的 240 B `customization_data`（`load_native_units`）。
+  `pieces` 在 native 模式下硬编码成 (3,0,0) 且 protocol 写 `enabled=false` —— 都只是记录，不生效。
+- **`--unit-mode` 四选一**：`fresh`(自造 id，需 Lua) / `native`(真 id，游戏自己解析) /
+  `same-key`(9 个真身体 id，整模型会**画 9 份**) / `both`。单 mesh 模型要用 `native` + 只落一个部位。
+- **RE-2310「荣誉卫队」结构**（`d923906f8b815987`）：**22 个 unit** = 8 身体（Torso/Pelvis/LeftArm/RightArm
+  × Slim/Stocky，即 `cae35ee15168145f`/`9841b16544c8fbae`/`17da843a4908511e`/`45d79d84b8933a7f`/
+  `91eb7be84016ceab`/`9a5e6dc74cdb08a3`/`7336c6b662522f0e`/`4f7bce4ca49ccda8`）+ 14 其他部位。
+  完整替换包 = 22 + 1 个**借来的 Head id** `af431352d9b95e83`（**不在** RE-2310 资产里）= 23 条目。
+  `SelectPair` 约束：单 unit 只能落 `BodyVariant==Any`；RE-2310 躯干只有 Slim/Stocky ⇒ **必须一次给两个身形**。
+- **已知瑕疵（管理器侧，非我们代码）**：CLI 的隐藏占位 unit 会丢掉「零索引 section」的材质短 id
+  （`num_indices==0` ⇒ 不绘制、功能惰性；原版本身也有同类悬空引用如 `0x093fc934`）⇒ 不阻断。
+- 第 64 轮工具：`_probe_nativeids.py`(fresh vs native 载荷比对，证明「纯换 id、几何零改动」)、
+  `_probe_dangling.py`(证明悬空短 id 都在零索引段)、`_probe_render_patchunit.py`
+  (**从出货 patch 字节里**渲染 unit，不再只画 npz；`ti.matrices` 行主序 `p'=[p,1]@M`，可见 LOD 是单位阵)、
+  `assemble_re2310.py`(组装交付目录，哈希现算)。
+- **当前 Lilium 交付**：`E:/mod/Lilium-Sancta-RE2310/`（patch 562176 B sha256 `729c4a652145106c…`、
+  gpu 84229248 B sha256 `1f20c9cd3d1587de…`，64 条目 = 22 unit(2 承载+20 隐藏)+2 bone+11 material+29 texture）。
+  中间产物 `E:/mod/Lilium-Sancta-Native-RE2310/`（**勿启用**）。库节点：`9ff82517`(成品) / `a74a1022`(中间)。
+  审计 26/27 通过。library.json 备份 `E:/tmp/library.json.bak-20261013-lilium`。
