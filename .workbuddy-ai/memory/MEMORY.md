@@ -82,6 +82,29 @@
 - 原版单位只有 `.toc`（`E:/tmp/hd2-mgroot/re2310-full/unit/`），无 GPU 顶点数据，读不到原版 UV 通道；「原版」结论来自参照模组。
 - 新增长期工具：`_probe_sourceuv.py`、`_probe_refrender.py`、`_probe_uvplot.py`、`_probe_secmap.py`、`_probe_texrender.py`、`set_uv12.py`。
 
+## 贴图映射调查（第60轮 M6 · uvplot 红线错位专项）
+- **M5 实机负证据**：uv1/uv2 置常量(0,1) 后贴图**完全没变** ⇒ 游戏采样的是 **uv0**，uv1/uv2 不是原因。
+- **uvplot 位置计算没错**：`_probe_uvplot_check.py` 合成自检，512² 画 uv(.25,.25)/(.75,.25)/(.75,.75) 落在 x128..384/y128..384 OK；uv(0,0)→像素左上、uv(1,1)→右下；先画线后 thumbnail 无相对位移。
+- **但老 uvplot 有真实缺陷 = 逐顶点 `uv%1`**：跨 0/1 接缝的三角形被画成横贯整图的长条假线。逐 section 统计：sec6 headdress 70 条、sec7 lace 1051 条（15%）、sec9 glove 16 条；**sec1 头发 / sec5 猫耳 = 0 ⇒ 这两块红线可信**。修复 = `_probe_uvplot2.py` 按**三角形整体**取整数偏移 + u/v 刻度尺 + TILED 标记。
+- **UV/贴图/材质链忠实（独立复核）**：`_probe_matvars.py` 导出的 42 个 shader 变量与参照模组 `advanced` 材质**逐字段相同**；材质槽位结构（slots 2/3/5 指包内、其余指原版）与参照**一致**；4 个 LOD 的 UV 完全相同；贴图 toc 头同构。`_4`、`ornament_metal_underwear` 在**源 VPK 里本来就是 1×1**（不是 bug）；`shinano_hair_ear` 源 VTF 2048²，我方同。
+- ★ **（已被 M6 真正根因取代，降级为「若 M6 仍不对」的下一候选）与「游戏内正常」参照模组的唯一结构性差异 = UV 平铺**：参照 9 个单位**全部顶点 UV 在 0..1，越界 0 个**；我方 5 个 section 越界（源模型本来如此，L4D2 靠 wrap）：sec6 headdress u×3.05、sec7 lace u×44、sec9 glove u×1.47、sec11 underwear v×6.61、sec12 highheels v×1.29。**假设（未证）**：HD2 护甲材质若 clamp 而非 wrap，这 5 块会显示成「贴图最边一条被拉长铺满」。验证方案 = 把这 5 块 UV 归一化进 0..1 + 对应贴图预平铺 N 次再打包。
+- **头发的「放大感」可能本来就正常**：游戏截图浅色大叶片与发丝图集 `white` 大花瓣区（u .30–.72, v .62–.99）视觉一致，每片约 200px（2048 的 0.1）；截图是头部局部特写，若覆盖头发 UV 约 0.4 尺寸正好吻合。待用户确认截图拍的是头发/猫耳/头饰。
+- 长期工具新增：`_probe_uvplot_check.py`、`_probe_uvplot2.py`、`_probe_uvsec.py`、`_probe_matvars.py`；`_probe_uvalign.py`（岛边界距离，信号弱）、`_probe_shotlocate.py`（模板匹配，投影失真）**未作为判据**。
+
+## 贴图映射调查（第60轮 M6 续 · 🔴 真正根因：VTF mip 链读取顺序）
+- **现象**（用户描述，极准）：正方形贴图右上角顶点不在最右上像素；只有**左下角约 60%** 是正确图像；上方图像**被压扁、完整重复非常多份、每层宽度是下一层的 1/2**。⇒ 这是 **mip 金字塔**特征，不是 UV 问题。
+- **根因**：`hd2_vtf.VTF.read` 从 `header_size` 起**按 largest-first** 切 mip。真实布局是
+  **`[16×16 低清缩略图 128B][mip N-1]…[mip 1][mip 0]`** —— 缩略图在**链首**，mip 链 **smallest-first**，**mip0 在图像块尾部**。
+  把整链当一张图解码 ⇒ 小 mip 被重解释为行 ⇒ 重复/压扁/减半，只有下方 1398104/2097152 = **66.7%** 是真图（对上用户「60%」）。
+- **尺寸账**（14 张全对，trailing=0）：`header_size + lowres + Σmips == 文件长度`。white: `128+699048+2097152 = 2796328`。
+- **判据（要复用）**：① 把 `data[0:128]` 当 16×16 DXT1 解码，能看出是图集缩略图 ⇒ 缩略图在链首；② 16×16 缩略图 vs mip0 下采样的 Pearson r（`_probe_verifylayout.py`，13/14 新顺序胜）；③ 肉眼看三栏图（`_probe_mipviz.py`）。
+- **反例（别再用）**：`_probe_miporder2.py` 的「box2(mip_m) vs mip_{m+1}」自洽判据被 BC1 重压缩噪声污染（white/face 误判为 largest-first）；`_probe_vtfmiporder.py` 的行跳变判据不够锐利（正确版仍有 7–12 条残差）。
+- **修复**：`VTF.read` 先算全部 mip 尺寸，`chain_start = header_size + lowres`、`chain_end = chain_start + Σsizes`，从尾部逐个剥出；`lowres = data[header_size:header_size+lo]`。下游只用 `v.mips[0]`（`hd2_texpack.vtf_to_dds`）。
+- **`fix_textures.py`（外科替换范式，值得复用）**：不重跑整链（管理器 armor-normalize 是 GUI 步骤），只在既有候选上替换目标条目的 GPU 像素；**内建反证** = 用旧配方重算一遍必须与既有字节逐字节相同（14/14 通过），否则说明源/配方找错，立即中止。容器校验照抄 `fix_materials.py`。
+- **`zero_alpha` 安全**：BC7 解码→alpha 置 0→重编码，RGB mean|Δ| 0.48–1.24/255（p99 ≤ 8），长度不变。参照模组 slot5 alpha 本来就=0。
+- **M6 结果**：TOC **逐字节相同**（sha256 `c7ba606b…2a44`，与 M5 一致 ⇒ 材质/网格/权重/uv 全未动）；GPU 37032980 字节不同，**100% 在 14 张底色贴图区间内、区间外 0**。gpu sha256 `84a519ce…cbf6`（M5 为 `303a0034…`）。
+- 长期工具新增：`_probe_mipviz.py`、`_probe_vtflayout.py`、`_probe_verifylayout.py`、`_probe_m6diff.py`、`_probe_patchtex.py`、`_probe_alphargb.py`、`_probe_m5m6one.py`、**`fix_textures.py`**。
+
 ## 数据与历史
 - 参照E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310；af431352为上身/头发外壳，仅neck/chest，非头盔。E为测试库、D Steam在用。
 - 旧探针先查tmp/rig-lab/_archive；细节留每日日志及ARM_ELBOW_ARTIFACT_BRIEF、FINGER_RETARGET_BRIEF、WEIGHT_TRANSFER_BRIEF、UNIT_TRANSFORM_BRIEF，不把早期猜测当现状。

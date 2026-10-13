@@ -20,12 +20,22 @@ Verified layouts (measured on the Lunalice packs):
 (offsets measured; note reflectivity starts at 32, not 28, and highResFormat at
 52, not 48 -- 4 bytes sit between firstFrame and reflectivity.)
 
-The image data begins exactly at `headerSize` and the mip chain is *sequential*
-with no resource directory in between (checked by exact size arithmetic on
-2048x2048/10-mip, 1024x1024/1-mip, 1x1 RGB888 and 512x512 mask files).  The
-low-res thumbnail sits after the chain; its size is
-`lowresWidth*lowresHeight*bytesPerPixel(lowResFormat)` (block formats use the
-block size).
+The image block begins exactly at `headerSize` and contains, in this order:
+
+    [ low-res thumbnail ][ mip N-1 ] ... [ mip 1 ][ mip 0 ]
+
+with NO resource directory in between (checked by exact size arithmetic on
+2048x2048/10-mip, 1024x1024/1-mip, 1x1 RGB888 and 512x512 mask files, all of
+which come out with zero trailing bytes).  Two things are easy to get wrong:
+
+  * the low-res thumbnail comes FIRST, not last;
+  * the high-res chain runs SMALLEST FIRST, so mip0 is the *tail* of the block.
+
+Its size is `lowresWidth*lowresHeight*bytesPerPixel(lowResFormat)` (block
+formats use the block size).
+
+Getting the order wrong does not raise -- it silently produces a "mip pyramid"
+picture (see `VTF.read`), which is what corrupted the first texture batch.
 """
 import struct
 
@@ -121,21 +131,39 @@ class VTF:
         if v.mip_count == 0:
             v.mip_count = 1
 
-        off = v.header_size
+        # -- image block layout -------------------------------------------------
+        # Measured on the Lunalice packs (verified by decoding the slices):
+        #
+        #     [ low-res thumbnail ][ mip N-1 ][ mip N-2 ] ... [ mip 1 ][ mip 0 ]
+        #
+        # The thumbnail sits at the FRONT and the high-res chain runs SMALLEST
+        # FIRST, so the true full-resolution picture is the LAST
+        # `mip_size(width, height)` bytes of the block -- not the first.
+        #
+        # Reading the chain front-to-back (largest first) instead produces a
+        # "mip pyramid": the small levels get reinterpreted as scanlines, so the
+        # artwork shows up several times, squashed, each band half the width of
+        # the one below, with the genuine image only in the lower part.  That is
+        # exactly the artefact that made the first shipped textures look wrong.
+        sizes = []
         for m in range(v.mip_count):
             w = max(1, v.width >> m)
             h = max(1, v.height >> m)
-            sz = mip_size(w, h, v.hi_format) * v.frames * v.depth
-            if off + sz > len(data):
-                raise ValueError('VTF mip %d runs past EOF (%d+%d > %d)'
-                                 % (m, off, sz, len(data)))
-            v.mips.append(data[off:off + sz])
-            off += sz
-        if v.lo_width and v.lo_height:
-            sz = mip_size(v.lo_width, v.lo_height, v.lo_format)
-            v.lowres = data[off:off + sz]
-            off += sz
-        v.trailing = len(data) - off
+            sizes.append(mip_size(w, h, v.hi_format) * v.frames * v.depth)
+        lo_size = (mip_size(v.lo_width, v.lo_height, v.lo_format)
+                   if (v.lo_width and v.lo_height) else 0)
+        chain_start = v.header_size + lo_size
+        chain_end = chain_start + sum(sizes)
+        if chain_end > len(data):
+            raise ValueError('VTF image block runs past EOF (%d > %d)'
+                             % (chain_end, len(data)))
+        v.lowres = data[v.header_size:v.header_size + lo_size]
+        v.mips = [b''] * v.mip_count
+        off = chain_end
+        for m in range(v.mip_count):          # m = 0 first: peel off the tail
+            off -= sizes[m]
+            v.mips[m] = data[off:off + sizes[m]]
+        v.trailing = len(data) - chain_end
         return v
 
     def mip0_size(self):
