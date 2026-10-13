@@ -510,8 +510,32 @@ def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name,
     torso" for them -- which dragged the feet 15 cm forward together with the
     hips and cancelled out the very stance change it was supposed to produce.
     Both passes must give the same answer.
+
+    THE CHAIN RULE (round 65).  A RUN of unmapped bones hanging off one mapped
+    ancestor is ONE piece, not a set of independent bones: every bone in the run
+    must land on the SAME HD2 bone, or the piece tears in half the first time a
+    joint below it moves.  The run's ROOT -- the bone whose own parent is
+    mapped -- decides, because that is the bone actually touching the skeleton,
+    so its nearest HD2 joint IS the attachment point.
+
+    This is not hypothetical, it is the whole of round 65.  Lilium's outfit has
+    two 1.8 m ribbon/sleeve chains, `L_UpperArm -> 93 -> 94 -> 97 -> 98 -> 99 ->
+    100 -> 101` and its right-hand mirror.  Resolved bone by bone, the ratio
+    `d_best / d_ancestor` climbs smoothly 0.25 -> 0.48 -> 0.85 -> 0.90 -> 0.92
+    -> 0.95 -> 0.96, so ANY distance threshold cuts the chain somewhere in the
+    middle: `97` stays on the elbow while `98` goes to `l_pinky_finger1`.  The
+    measured damage was 1430 ribbon vertices riding the pinky at up to 1.9 m
+    from the bone (1301 mm of travel for 40 deg of pinky bend), plus a 0.39 m
+    tear at the elbow.  Collapsing the run onto its root's answer removes both:
+    the whole ribbon becomes one rigid piece on `l_elbow`, where it is attached.
+
+    NOTE the rule is deliberately NOT "one bone per ancestor": Lunalice's skirt
+    hangs 8 INDEPENDENT orphans off the spine (`source_extra_119..126`, parents
+    `7`/`123`/`125`) and they legitimately split between `chest` and `spine2`.
+    Only a parent-child run is collapsed.
     """
     resolved, hops, by_dist = {}, {}, []
+    by_index = {b['index']: b for b in src}
     if fallback in ('distance', 'region'):
         cand = [(src_index_to_hd2[b['index']], ajoint(b))
                 for b in src if b['index'] in src_index_to_hd2]
@@ -544,6 +568,7 @@ def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name,
                 lim[h] = got
             return lim[h]
 
+        chain = set()
         for b in src:
             i = b['index']
             if i in src_index_to_hd2:
@@ -553,6 +578,11 @@ def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name,
             while cur >= 0 and cur not in src_index_to_hd2 and n <= 64:
                 cur = src[cur]['parent']
                 n += 1
+            hops[i] = 0 if fallback == 'distance' else n
+            # a bone INSIDE a run: its answer is the run root's, resolved below
+            if b['parent'] >= 0 and b['parent'] not in src_index_to_hd2:
+                chain.add(i)
+                continue
             pool = cand
             if (fallback == 'region' and hd2_children and hd2_parents
                     and cur >= 0 and cur in src_index_to_hd2):
@@ -569,8 +599,27 @@ def resolve_bone_map(src, src_index_to_hd2, fallback, ajoint, by_idx_name,
                 if d < bd:
                     bd, best = d, hi
             resolved[i] = best
-            hops[i] = 0 if fallback == 'distance' else n
             by_dist.append((b['name'], by_idx_name.get(best), math.sqrt(bd)))
+
+        # propagate each run from its root down.  Swept rather than recursed so
+        # the answer does not depend on `src` happening to be parent-first.
+        for _ in range(len(src) + 1):
+            left = [i for i in chain if i not in resolved]
+            if not left:
+                break
+            for i in left:
+                p = by_index[i]['parent']
+                if p in resolved:
+                    resolved[i] = resolved[p]
+        # a run whose parent never resolved (cycle / truncated file) keeps the
+        # plain ancestor answer rather than staying unbound
+        for i in chain:
+            if i in resolved:
+                continue
+            cur = by_index[i]['parent']
+            while cur >= 0 and cur not in src_index_to_hd2:
+                cur = by_index[cur]['parent']
+            resolved[i] = src_index_to_hd2.get(cur)
     else:
         for b in src:
             i = b['index']
