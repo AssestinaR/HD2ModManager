@@ -135,6 +135,18 @@
 - **`_probe_forearm_action.py` 的盲点（已记录）**：只测**腕部弯折**（绕 `cross(axis,[0,0,1])` 30°），**从未测过拧转/旋前**（绕小臂长轴）⇒ 第 67 轮的"0.0 mm 全绿"掩盖了拧转撕裂。**以后验收必须加拧转项。**
 - 交流文档 `tmp/rig-lab/ROUND68_WRIST_ROLL.md`；工具 `reweight_forearm_twist.py`（`--twist-frac` 可拆 twist/hand 两份，默认 0）、`_probe_wrist_roll*.py`、`_probe_vanilla_wrist.py`。
 
+## 第 69 轮 · 用户实机反馈后：带宽取"第66轮起点 + 第68轮终点"
+- **用户第 68 轮实机反馈**：撕裂**从手腕移到了小臂中间**；明确要求「撤掉第 67 轮的窄带、回到第 66 轮的橡皮筋宽带，再用第 68 轮的思路修」。**用户着急进游戏，要求直接出包、不要先自己分析。**
+- **改法（一句话）**：`--a 0.22 --b 1.00`（= 第 66 轮起点 0.22L + 第 68 轮终点 1.00L），`twist_frac 0`。带宽 **63→287 mm（整条小臂）**，是本模型**最平缓**的带。
+- **为什么这样能同时消掉两处缝**：带宽越宽 ⇒ 每条网格边分摊的权重差越小 ⇒ 中段那条"缝"也没了。实测最差**权重驱动**边只有 **35.4 mm**（两端 0.965/0.929，差 0.036）；MAX **37.8 mm** 全是几何地板（`comp 3772`，`w 1.000/1.000`）。
+- **剖面（左臂 hand 权重 vs t/L）**：0.22→0.000、0.42→0.120、0.52→0.336、0.62→0.531、0.72→0.747、0.82→0.892、0.92→0.973、0.97→0.996。**中段比第 66 轮更低**（66 轮 0.62 处 0.699）⇒ 反而比 66 轮**更硬一点**，而腕口同样满权重。
+- **twist 骨仍不接（`--twist-frac 0`）**：脚本 ROI 只覆盖小臂（t<L），手部顶点权重不变；若小臂远端挂一半 twist，腕口会出现 0.5 权重断层（180° 下 ≈63 mm 新缝）。要正确接 twist 骨必须把**手+手指**一起纳入分配 —— 独立改动，未做。
+- **改动量**：`_probe_weightdiff.py` **26674/16917432 = 0.158% PASS**（`bone_weight` 17918 + `bone_index` 8756，两流各 13337，4492 顶点）；2246 顶点被重绑，half4 closed worst 0.000e+00。
+- **交付**：`E:/mod/Lilium-Sancta-RE2310/` patch 562176 B `5e4e045c…`（**仍与第 66/67/68 轮逐字节相同**）、gpu 84229248 B `e9b0bb91ca0b1383503caa959658471ec313211ca7adf7dc531668a6caa667f2`。归档：第 68 轮 → `E:/tmp/round68-an-out-backup/`（规整产物）+ `E:/tmp/round68-final/`（规整前）。
+- **🔴 CLI 用法纠错（本轮实测）**：`equipment armor-normalize` 只有 `inspect <GUID>` / `plan <GUID>` 带 GUID；`validate --plan` / `apply --plan --library --output --confirm` **不带 GUID**。`apply` 的输出目录必须不存在。带空格的 `--game-data` 在 bash 里要用数组/引号，否则会被拆词。
+- **🔴 `assemble_re2310.py` 会覆盖 `preview/`**：它从 `Lilium-Sancta-Native-RE2310/preview/`（只有 8 张 mask/metal）`rmtree+copytree` ⇒ 每次组装都会把 `wrist_roll_*.png` 等删掉。**对策：把要留的图同时放进 Native 包的 preview/**。
+- **待用户实机验收**：① 中段还有没有缝；② 腕口；③ 手感是否太软；④ 手指。
+
 ## Lua 运行时动态切换盔甲 unit（第 63 轮分析，只记录不写码）
 - **能力已完整存在，不需要新协议字段/新 Lua 接口**。= 「重写协议文档 + revision 自增」，Lua 每秒轮询全文、重新规划、**只重建签名变了的那一个目标**。缺的只是管理器 UI/工作流。
 - 协议键：`model_piece=<model>,<body>,<unit>,<slot>,<piece_type>,<tone>[,<enabled>]`（第 7 字段 `false` = 不参与合成）、`piece_override=<owner>,<body>,<unit>,<slot>,<piece_type>,<enabled>`、`target_mode=<item>,follow|manual`、`composition_mode=full|existing_only`。
@@ -171,13 +183,13 @@
   `_probe_dangling.py`(证明悬空短 id 都在零索引段)、`_probe_render_patchunit.py`
   (**从出货 patch 字节里**渲染 unit，不再只画 npz；`ti.matrices` 行主序 `p'=[p,1]@M`，可见 LOD 是单位阵)、
   `assemble_re2310.py`(组装交付目录，哈希现算)。
-- **当前 Lilium 交付**（**第 68 轮 · 腕缝拧转撕裂修复版**）：`E:/mod/Lilium-Sancta-RE2310/`（patch 562176 B sha256 `5e4e045c3e1cbc7c…`、
-  gpu 84229248 B sha256 `de5f5dd1725fe878c953c5f09f3029ad7e2e8554af8c493a5811d93d814f6c69`，64 条目 = 22 unit(2 承载+20 隐藏)+2 bone+11 material+29 texture）。
-  **历史版本**：第 67 轮 = patch `5e4e045c…`（同上）/ gpu `bb6e3008ac176ca5…`（归档 `E:/tmp/round67-an-out-full/`）；
-  第 66 轮（手指版）= patch `5e4e045c…` / gpu `a8854ba3a84f4a59…`（归档 `E:/tmp/round66-fingers-only-archive/`）；
+- **当前 Lilium 交付**（**第 69 轮 · 带宽 0.22L→1.00L 版**）：`E:/mod/Lilium-Sancta-RE2310/`（patch 562176 B sha256 `5e4e045c3e1cbc7c…`、
+  gpu 84229248 B sha256 `e9b0bb91ca0b1383503caa959658471ec313211ca7adf7dc531668a6caa667f2`，64 条目 = 22 unit(2 承载+20 隐藏)+2 bone+11 material+29 texture）。
+  **历史版本**：第 68 轮 = gpu `de5f5dd1…`（归档 `E:/tmp/round68-an-out-backup/` + `E:/tmp/round68-final/`）；
+  第 67 轮 = gpu `bb6e3008ac176ca5…`（归档 `E:/tmp/round67-an-out-full/`）；
+  第 66 轮（手指版）= gpu `a8854ba3a84f4a59…`（归档 `E:/tmp/round66-fingers-only-archive/`）；
   第 65 轮 = patch `52d131c5…` / gpu `6587ac4f…`（归档 `E:/tmp/round65-lilium-archive/`）；
   第 64 轮 = patch `729c4a65…` / gpu `1f20c9cd…`（归档 `E:/tmp/round64-lilium-archive/`）。
   中间产物 `E:/mod/Lilium-Sancta-Native-RE2310/`（**勿启用**）。库节点：`9ff82517`(成品) / `a74a1022`(中间)。
   审计 26/27 通过（唯一已知项 = 隐藏占位 unit 丢零索引段的材质短 id，见上「已知瑕疵」）。library.json 备份 `E:/tmp/library.json.bak-20261013-r66`。
-  `preview/` 新增 `wrist_roll_round67_vs_round68.png`（第 67 轮硬褶 vs 第 68 轮均匀螺旋）；
-  `unit_from_shipped_patch.png` 已用第 68 轮字节重渲（1840x794 / 118014 v / 154066 t）；`model_views.png`/`source_vs_converted.png` 自第 65 轮起就不在包里（README 已更正）。
+  `preview/` 第 69 轮新增 `wrist_roll_round66_vs_69.png`（66/69/68 三行 × 0/90/180°）；`unit_from_shipped_patch.png` 与第 68 轮的对比图**已被 assemble 覆盖**（见第 69 轮节的 🔴 对策）。
