@@ -59,7 +59,16 @@
 - **Lilium 交付**：`E:/mod/Lilium-Sancta-RigTest/`（patch 95080 B sha256 `f92587be…`、gpu 84027008 B sha256 `c0a94e72…`、unit `d1c87292a57dc45f`、11 材质 = 4 alphaclip + 4 matcap + 3 advanced）。源：118014v/154066t/124骨（Lunalice 121704/159363/127，**骨骼是严格子集，只少 3 个未用 `source_extra_*`**）。详见 `tmp/rig-lab/LILIUM_CONVERSION_TEST.md`。
 - **Lilium 的透明比 Lunalice 更准**：源侧 4 个透明组**全是 `$alphatest`**（二值裁切，参考阈值正是 0.5）⇒ 遮罩精确；Lunalice 那 7 组是 `$translucent` ⇒ 只能近似。`gray`/`gray1`/`ribbon_1` 是 1×1 占位贴图，观感 100% 来自 matcap（同 Lunalice 的 `Ornament_metal_Underwear`）。
 - **待办**：贴图 id 只取 basename（`tex/base/<basename>`，材质 id 含目录故安全）⇒ 跨包同名贴图会撞车。要加「包族命名空间」，但**必须保留同族内同名覆盖**（第 61 轮 7 个 MAT 变体包靠它工作）且不能改既有 id。
-- **待实机**：摆姿常量（`HEAD_SCALE=8/7`、`ARM_UPPER_GAIN=0.05`、`ARM_ELBOW_OPEN=6.5°`、`ARM_HAND_TILT=3°`、`MESH_SHIFT=(0,-0.100,-0.090)`、`upper_scale=1.12`）是对着 Lunalice 调的，Lilium 原样沿用；Lilium 的 `fallback hops` 最深 7 跳（Lunalice 3），绑定姿态看不出问题，**动起来才可能暴露**。
+- **待实机**：摆姿常量（`HEAD_SCALE=8/7`、`ARM_UPPER_GAIN=0.05`、`ARM_ELBOW_OPEN=6.5°`、`ARM_HAND_TILT=3°`、`MESH_SHIFT=(0,-0.100,-0.090)`、`upper_scale=1.12`）是对着 Lunalice 调的，Lilium 原样沿用；Lilium 的 `fallback hops` 最深 7 跳（Lunalice 3），绑定姿态看不出问题，**动起来才可能暴露**。→ **第 65 轮实机证实：正是它。**
+
+## 第 65 轮：Lilium「手指问题」的真凶 = 飘袖绑到小指
+- 实机反馈：网格/材质/动作都正常，**只有手指部分有问题**。用户假设「Lilium 胳膊比 Lunalice 短」。
+- **用户假设成立但非主因**：对齐后臂总长 574.09 → 537.44 mm（**−36.65，ratio 0.936**），手位差 40.54 mm，手指关节差 37~46 mm；手指本身只差 0.2~6.0 mm。最优 `arm_scratch_upper_gain ≈ 0.0895`（现状 0.05）只把残差从 中位 13.5/最差 24.0 改善到 **10.2/17.5 mm**，**到不了 5 mm**（肩本身差 9.71 mm + 拇指朝向差 16 mm）。
+- **真凶**：Lilium 源模型 `source_extra_93..106` 是挂在 `L_UpperArm`/`R_UpperArm` 下的**飘袖专属骨**（hops 3~7），HD2 无对应骨 ⇒ `region` 兜底把候选池取成「祖先整棵子树（含 15 根手指）+ 同肢体」，再按**到关节的距离**取最近 ⇒ 飘袖伸到 1.6 m，比任何关节都远 ⇒ 落到链最外端的 `*_pinky_finger1`（8 根）/`*_elbow`（2 根）。**对照 Lunalice 77 根兜底骨最远仅 0.432 m（头发→head），无一根落手指。**
+- 出货网格：`l_pinky_finger1` 1530 顶点（1430 个离骨 >80 mm、最大臂长 1.902 m）、`r_pinky_finger1` 1681（1586）；**袖子渗漏合计 3016，Lunalice 为 0**。**小指弯 40° 最大位移 1301 mm / 中位 876 mm。**
+- **修法顺序**：先给 `region` 加约束（候选池只取祖先那一级「肩/肘/腕」，或加距离上限退回绑祖先）→ 必须回归验证鞋子 `…62/63`、头发 `…69/71/73/74/76/77`、裙子 `…98~118` 三个既有正确案例；**再**按模型自动算 `arm_scratch_upper_gain`。
+- **🔴 坐标系纠错（别再踩）**：源侧 `short[nm]['world_m']` **已经是米**（顶点 `v['pos']` 才是英寸）；源轴 **X = 左右（+ = 角色左）、Z = 上**。跨模型比较**必须**用管线自己的 `align_pts` + `t`，不要自己猜轴。另：HD2 rest 是 **A-pose**、源模型是 **T-pose** ⇒ **不能拿 T-pose 源关节直接减 HD2 关节**（会得到 400~570 mm 的假误差）。
+- 探针（全部只读）：`_probe_hops.py`（复现 `resolve_bone_map`，逐骨 hops/目标/距离/顶点数）、`_probe_fingerbleed.py`、`_probe_zoom_arm.py`、`_probe_out_bleed.py`、`_probe_armfit.py`。简报 `tmp/rig-lab/ROUND65_ARM_AND_SLEEVE.md`。
 
 ## Lua 运行时动态切换盔甲 unit（第 63 轮分析，只记录不写码）
 - **能力已完整存在，不需要新协议字段/新 Lua 接口**。= 「重写协议文档 + revision 自增」，Lua 每秒轮询全文、重新规划、**只重建签名变了的那一个目标**。缺的只是管理器 UI/工作流。
