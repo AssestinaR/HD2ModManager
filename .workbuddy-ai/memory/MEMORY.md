@@ -48,6 +48,14 @@
 - 独立审计 `tmp/rig-lab/_verify_normalized.py` 27项，RE-2310 包 26过/1已知：CLI 隐藏占位 unit 丢零索引 section 的材质短 id（3处，num_indices==0 惰性），原版同类悬空引用亦存在（culling 引 0x093fc934）⇒ 倾向不阻断，未改管理器。
 - 部署：data/9ba626afa44a3aa3.patch_0[.gpu_resources] symlink → E:/mod/Lunalice-RE2310-Test/；回退目标 E:/tmp/deploy-revert-note.txt（→ Lunalice-RigTest）。待用户实机验收。
 
+## 第60轮实机结果（以ROUND60_ISSUES_BRIEF为准）
+- **第59轮修复已被实机验收**：模型/走路/绝大多数动作表情/影子/Blender 骨骼全正常。TransformInfo、LOD布局、culling壳、隐藏unit、部署链路均通过。
+- 剩两个问题，**只收集未修**（用户要求交专家裁定）：
+  - **小臂橡皮筋**：权重问题，非几何/骨架/编码。上臂过渡带仅~6.6cm；小臂过渡带被摊平到整条（s≈0.05→0.29）且腕端非单调（s=0.232–0.285 共1681点回到 elbow≈.51–.61/hand≈.39–.49）；l_elbow 主导的1701点平均 l_hand=0.344 ⇒ 手骨吞小臂。已排除：half4未归一化、twist骨、非avatar节点带权、骨层级、几何拉长。⇒ 只改权重。
+  - **材质全黑+局部金属光泽+军械库看不见**：`build_patch.py` 用 SDK `materials/basic.material`，SDK `__init__.py:202-212` 自标 basic="Sourced from a trash bag prop"，**只有 advanced/basic+ 标注 renders in the UI**。参考模组（同护甲正常显示）用 advanced（11贴图/42变量含TintMaskColor）；原版护甲自定义parent（11贴图/25变量含PaletteSlot=1）。材质二进制与 stingray/material.py 逐项一致；贴图不黑（底色均亮155–228）；法线/绕序/顶点色均排除。候选 H1缺调色板通道>H2 PBR-B当AO>H3回退默认材质。
+  - 顶点ABI差异（供裁定）：我们 4流/stride56/rgba8顶点色/uv vec2_float/bone_index×1(4影响) vs 原版护甲 3流/stride60/无顶点色/uv vec2_half/bone_index×3(12影响)。照抄Chiffon donor，合法但与护甲渲染路径期望不同。
+- 修复方向（**未实施**）：小臂重绑"刚性段+两个窄过渡带"（腕端 l_hand≥0.85）；材质换 advanced > basic+ > armorlut。等专家在 BRIEF §6 回填后动手。
+
 ## 数据与历史
 - 参照E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310；af431352为上身/头发外壳，仅neck/chest，非头盔。E为测试库、D Steam在用。
 - 旧探针先查tmp/rig-lab/_archive；细节留每日日志及ARM_ELBOW_ARTIFACT_BRIEF、FINGER_RETARGET_BRIEF、WEIGHT_TRANSFER_BRIEF、UNIT_TRANSFORM_BRIEF，不把早期猜测当现状。
