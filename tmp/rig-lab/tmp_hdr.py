@@ -1,13 +1,18 @@
-import struct, sys
-P = r"E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310/9ba626afa44a3aa3.patch_0"
-d = open(P,'rb').read()
-print("size", len(d))
-for o in range(0, 0x120, 16):
-    row = d[o:o+16]
-    hx = ' '.join('%02x'%b for b in row)
-    asc = ''.join(chr(b) if 32<=b<127 else '.' for b in row)
-    print('%04x  %-47s  %s' % (o, hx, asc))
-print()
-print("u32[0..8]:", [struct.unpack_from('<I',d,4*i)[0] for i in range(9)])
-print("magic", struct.unpack_from('<I',d,0)[0])
-print("numTypes", struct.unpack_from('<I',d,4)[0], "numFiles", struct.unpack_from('<I',d,8)[0])
+import os, sys, struct
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hd2_asset as A, hd2_patch as HP
+src = r'E:/mod/Lunalice-RE2310-M6/9ba626afa44a3aa3.patch_0'
+entries, _ = HP.scan_entries(src)
+for tid in (0xbbd058dd84a87e8c, 0xb8a1ba9aed375bed, 0xba1a40900756a7f3):
+    e = [x for x in entries if x['file_id'] == tid]
+    if not e: print('%016x MISSING' % tid); continue
+    pl = HP.entry_payload(e[0], src)
+    t = A.Texture.read(pl['toc'], pl['gpu'])
+    h = t.dds_header
+    print('%016x  %dx%d mips=%d fmt=%s  flags=%08x pitch=%d linearsize=%d caps=%08x caps2=%08x'
+          % (tid, t.width, t.height, t.mip_count, t.format_name,
+             struct.unpack_from('<I', h, 8)[0], struct.unpack_from('<I', h, 20)[0],
+             struct.unpack_from('<I', h, 24)[0], struct.unpack_from('<I', h, 108)[0],
+             struct.unpack_from('<I', h, 112)[0]))
+    print('     hdr[0:8]=%s  hdr[84:88]=%s  dxgi=%d array=%d' % (h[0:8].hex(), h[84:88], t.dxgi_format, t.array_size))
