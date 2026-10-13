@@ -16,11 +16,21 @@ Material TocData
     12B  undat5
     u32  VariableDataSize
     12B  undat6
-    NumTextures * (u32 TexUnk + u64 TexID)
+    NumTextures * u32 TexUnk           <- slot keys, contiguous (136 .. 136+4*N)
+    NumTextures * u64 TexID            <- texture ids, contiguous (136+4*N .. 136+12*N)
     NumVariables * (u32 klass, u32 elements, u32 ID, u32 offset, u32 elementStride)
     <remaining bytes = the shader-variable value area>
     then each variable's value is read at (value-area start + variable.offset),
     `klass+1` float32s.
+
+    NOTE the texture table is TWO contiguous arrays, not N interleaved
+    (u32, u64) records.  `stingray/material.py:32-33` is the authority:
+        self.TexUnks = [f.uint32(x) for x in self.TexUnks]
+        self.TexIDs  = [f.uint64(x) for x in self.TexIDs]
+    and the manager agrees (`StingrayMaterialReferenceReader.cs`:
+    `textureIdsOffset = 136 + numTextures * 4`).  Reading it as interleaved
+    (u32,u64) pairs shifts every id except the last one -- a bug that a
+    self-consistent read/write roundtrip cannot detect.
 
 Texture TocData (340 bytes)
     u32 UnkID, u32 Unk1(0), u32 Unk2(0xFFFFFFFF)
@@ -118,12 +128,11 @@ class Material:
         m.undat5 = data[p:p + 12]; p += 12
         m.variable_data_size, = struct.unpack_from('<I', data, p); p += 4
         m.undat6 = data[p:p + 12]; p += 12
-        for _ in range(ntex):
-            tu, = struct.unpack_from('<I', data, p)
-            tid, = struct.unpack_from('<Q', data, p + 4)
-            m.tex_unks.append(tu)
-            m.tex_ids.append(tid)
-            p += 12
+        # Two contiguous arrays: N slot keys (u32), then N texture ids (u64).
+        m.tex_unks = [struct.unpack_from('<I', data, p + 4 * i)[0] for i in range(ntex)]
+        p += 4 * ntex
+        m.tex_ids = [struct.unpack_from('<Q', data, p + 8 * i)[0] for i in range(ntex)]
+        p += 8 * ntex
         for _ in range(nvar):
             klass, elems, vid, off, stride = struct.unpack_from('<5I', data, p)
             v = ShaderVariable()
@@ -149,8 +158,14 @@ class Material:
         out += self.undat5
         out += struct.pack('<I', self.variable_data_size)
         out += self.undat6
-        for tu, tid in zip(self.tex_unks, self.tex_ids):
-            out += struct.pack('<I', tu) + struct.pack('<Q', tid)
+        # Same two-array layout on the way out: all keys, then all ids.
+        if len(self.tex_unks) != len(self.tex_ids):
+            raise ValueError('tex_unks (%d) and tex_ids (%d) must be parallel'
+                             % (len(self.tex_unks), len(self.tex_ids)))
+        for tu in self.tex_unks:
+            out += struct.pack('<I', tu)
+        for tid in self.tex_ids:
+            out += struct.pack('<Q', tid)
         for v in self.variables:
             out += struct.pack('<5I', v.klass, v.elements, v.id, v.offset, v.element_stride)
         # rebuild the value area, keeping every variable's offset byte-identical
@@ -173,9 +188,16 @@ class Material:
         return bytes(out)
 
     def set_texture(self, index, tex_id):
-        while len(self.tex_ids) <= index:
-            self.tex_unks.append(0)
-            self.tex_ids.append(0)
+        """Replace the texture id of an EXISTING slot.
+
+        Deliberately strict: the slot keys belong to the template's shader
+        contract, so inventing a slot (appending a zero key) would produce a
+        material the game cannot resolve.  Pick a template whose slot table
+        already has the slot you need instead.
+        """
+        if not 0 <= index < len(self.tex_ids):
+            raise IndexError('slot %d is outside the template\'s %d slots (%s)'
+                             % (index, len(self.tex_ids), self.parent_name))
         self.tex_ids[index] = tex_id
 
     def find_variable(self, name):

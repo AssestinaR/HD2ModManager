@@ -130,12 +130,28 @@ PIECE_POSITIONS = [(3, 0, 0),      # Head          (Any body)
                    (0, 2, 1),      # Torso         Slim
                    (0, 3, 1)]      # Pelvis        Slim
 
-# HD2 material templates
-BASIC_TEMPLATE = os.path.join(SDK, 'materials', 'basic.material')
+# HD2 material templates.
+#
+# `basic` and `basic+` share the SAME slot keys (756f6fa6 / ac652e43 / caed6cd6)
+# and the same slot semantics (PBR / Base Color / Normal), so switching between
+# them is a pure shader-contract swap.  The SDK's own `Global_Materials` table
+# marks only `advanced` and `basic+` as "renders in the UI"; `basic` is the
+# "trash bag prop" template.  Round-60 candidates:
+#   M1 = template basic   (only the texture-table bug fixed)
+#   M2 = template basic   + PBR.B = 255
+#   M3 = template basic+  + PBR.B = 255
+#   M4 = template advanced (needs a different slot table -- not wired yet)
+TEMPLATE_DIR = os.path.join(SDK, 'materials')
+TEMPLATE_FILE = {'basic': 'basic.material',
+                 'basic+': 'basic+.material',
+                 'advanced': 'advanced.material'}
+# template -> (slot index of PBR/Base Color/Normal) for the 3-slot family
+TEMPLATE_SLOTS = {'basic': (0, 1, 2), 'basic+': (0, 1, 2)}
 # `basic` texture slots, in order (stingray `TextureTypeLookup`)
 BASIC_SLOTS = ('PBR', 'Base Color', 'Normal')
 
-PBR_ROUGHNESS = 0.62        # `basic` slot 0: R = metallic, G = roughness
+PBR_ROUGHNESS = 0.62        # slot 0: R = metallic, G = roughness, B = AO (unused by the SDK preview)
+DEFAULT_PBR_B = 0           # round-59 value; the round-60 M2/M3 control sets 255
 FLAT_NORMAL_RGBA = (128, 128, 255, 255)
 TEX_ID_PREFIX = 0xB
 MAT_ID_PREFIX = 0xA
@@ -201,7 +217,8 @@ def load_source(pos, tris):
     return mdl, src_pos, src_nrm, uv, tris4
 
 
-def build_materials(mdl, tris4, packs, mode, max_tex, normal_maps):
+def build_materials(mdl, tris4, packs, mode, max_tex, normal_maps,
+                    pbr_b=DEFAULT_PBR_B):
     """-> (groups, textures, slot_to_group)
 
     groups   : list of dicts(name, material_id, short_id, texture_ids)
@@ -268,10 +285,14 @@ def build_materials(mdl, tris4, packs, mode, max_tex, normal_maps):
             textures[name] = dict(name=name, file_id=fid, asset=asset, gpu=px)
         return textures[name]['file_id']
 
+    pbr_rgba = (0, int(PBR_ROUGHNESS * 255), pbr_b & 0xFF, 255)
+    # the id stays `shared_pbr` across the AO control -- the slot identity is
+    # "the shared PBR map", only its pixels change; the manifest records the
+    # actual rgba so a package can always be told apart
     shared_pbr = texture(
         'shared_pbr',
         lambda fid: as_asset(TP.solid_texture(
-            4, 4, (0, int(PBR_ROUGHNESS * 255), 0, 255), dxgi=TP.DXGI_BC7_UNORM)))
+            4, 4, pbr_rgba, dxgi=TP.DXGI_BC7_UNORM)))
     shared_nrm = texture(
         'shared_flat_normal',
         lambda fid: as_asset(TP.solid_texture(
@@ -610,7 +631,7 @@ def rewrite_lod_group_list(ref, ref_cull, boxes):
 
 def build_patch_files(mesh, groups, textures, ref, ref_cull, bones, avatar, mesh_ids,
                       out_dir, mode='same-key', targets=None, cull_policy='target',
-                      native=None):
+                      native=None, template='basic'):
     unit_id = make_id(UNIT_ID_PREFIX, 'unit/lunalice-rigtest')
     u = UB.build_unit(mesh, [(g['material_id'], g['short_id']) for g in groups],
                       ref, avatar, mesh_ids)
@@ -671,10 +692,12 @@ def build_patch_files(mesh, groups, textures, ref, ref_cull, bones, avatar, mesh
 
     entries = list(units)
     entries += bones
+    tpl = _template_bytes(template)
     for g in groups:
         entries.append(PW.Entry(A.MATERIAL_TYPE_ID, g['material_id'],
-                                _material_bytes(g), b'', b'',
-                                note='material:' + os.path.basename(g['name'])))
+                                _material_bytes(g, tpl), b'', b'',
+                                note='material:%s/%s'
+                                     % (template, os.path.basename(g['name']))))
     for t in textures:
         entries.append(PW.Entry(A.TEXTURE_TYPE_ID, t['file_id'],
                                 t['asset'].write_toc(), b'', t['gpu'],
@@ -683,10 +706,30 @@ def build_patch_files(mesh, groups, textures, ref, ref_cull, bones, avatar, mesh
     return unit_id, pieces, res, len(toc), len(gpu), units
 
 
-def _material_bytes(group):
-    m = A.Material.read(open(BASIC_TEMPLATE, 'rb').read())
-    for i, tid in enumerate(group['texture_ids']):
-        m.set_texture(i, tid)
+_TEMPLATE_CACHE = {}
+
+
+def _template_bytes(key):
+    """Raw bytes of a clean SDK template.  Always start from the pristine
+    template -- never from an already-built material, which may carry the
+    round-60 texture-table corruption."""
+    if key not in _TEMPLATE_CACHE:
+        path = os.path.join(TEMPLATE_DIR, TEMPLATE_FILE[key])
+        _TEMPLATE_CACHE[key] = open(path, 'rb').read()
+    return _TEMPLATE_CACHE[key]
+
+
+def _material_bytes(group, template):
+    """Rebuild one material from the pristine template with the group's own
+    texture ids in the template's slot order."""
+    m = A.Material.read(template)
+    slots = TEMPLATE_SLOTS.get('basic')          # basic and basic+ share 0/1/2
+    ids = group['texture_ids']
+    if len(slots) != len(ids):
+        raise AssertionError('template exposes %d slots, group carries %d ids'
+                             % (len(slots), len(ids)))
+    for slot, tid in zip(slots, ids):
+        m.set_texture(slot, tid)
     return m.write()
 
 
@@ -719,6 +762,16 @@ def main():
     ap.add_argument('--out', default=DEFAULT_OUT)
     ap.add_argument('--name', default='lunalice-rigtest')
     ap.add_argument('--materials', choices=('basic', 'flat'), default='basic')
+    ap.add_argument('--template', choices=('basic', 'basic+', 'advanced'),
+                    default='basic',
+                    help='which clean SDK .material to clone per material. '
+                         'basic = the round-59 "trash bag prop" template; '
+                         'basic+ = same slot contract, SDK-marked UI-capable '
+                         '(round-60 M3); advanced is not wired up yet')
+    ap.add_argument('--pbr-b', type=int, default=DEFAULT_PBR_B,
+                    help='B channel of the shared 4x4 PBR texture (R=metallic, '
+                         'G=roughness). 0 = round-59 value, 255 = round-60 M2 '
+                         'AO control')
     ap.add_argument('--normal-maps', action='store_true',
                     help='(reserved) bake the VMT bump maps into the normal slot')
     ap.add_argument('--max-tex', type=int, default=0)
@@ -766,7 +819,10 @@ def main():
     log('-' * 78)
     packs = S.Packs()
     groups, textures, slot_to_group = build_materials(
-        mdl, tris4, packs, args.materials, args.max_tex, args.normal_maps)
+        mdl, tris4, packs, args.materials, args.max_tex, args.normal_maps,
+        pbr_b=args.pbr_b)
+    log('template : %s   PBR rgba = (0, %d, %d, 255)'
+        % (args.template, int(PBR_ROUGHNESS * 255), args.pbr_b & 0xFF))
 
     log('-' * 78)
     mesh, nrm = build_mesh(pos, tris, wb, wv, src_pos, src_nrm, uv, tris4,
@@ -790,7 +846,7 @@ def main():
     unit_id, pieces, res, toc_len, gpu_len, units = build_patch_files(
         mesh, groups, textures, ref, ref_cull, bones, avatar, mesh_ids, args.out,
         mode=args.unit_mode, targets=targets, cull_policy=args.cull_policy,
-        native=native)
+        native=native, template=args.template)
 
     if args.unit_mode == 'native':
         # A native id needs no runtime mapping at all, so the protocol is
@@ -814,6 +870,8 @@ def main():
         modelKey=MODEL_KEY,
         unitMode=args.unit_mode,
         cullPolicy=args.cull_policy,
+        materialTemplate=args.template,
+        pbrRGBA=[0, int(PBR_ROUGHNESS * 255), args.pbr_b & 0xFF, 255],
         unitId='%016x' % unit_id,
         nativeUnits=([dict(id='%016x' % e['id'], customizationBytes=len(e['customization']),
                            source=e['source']) for e in native] if native else []),

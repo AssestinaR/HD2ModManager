@@ -14,7 +14,7 @@
 - legacy包需无Lua可用。运行时没有创建网格/改权重接口，迁移离线做。
 
 ## 模型与诊断
-- 2026-10-13：摆姿已全部验收；58轮实机包失败，59轮已改结构但未实机闭环。保持最终网格，摆姿源权重与后续运行时权重分离。
+- 2026-10-13：摆姿已全部验收；第60轮确认59轮修复后的模型/骨骼/影子正常，剩小臂动作与材质。保持最终网格，摆姿源权重与后续运行时权重分离。
 - 参数以dump_blender.py为准：hand_tilt=3、finger_pose=True；详细参数/证据见当日日志和FINGER_RETARGET_BRIEF §10。
 - 手指在最终网格逐节残余摆姿：Rl=min_arc(s,Q.T@t)，Q父链旋转；枢轴须经过post，末节取HD2局部+X轴。发布rest_hd2不变；rest_sym是工作枢轴。arm_scratch下旧开关可能无效。
 - mesh-deform-diagnosis：局部标量/绑定恒等不证明形状；固定顶点选区、同视角、先分壳并校准参照、单项消融。手指弯曲不要求整指Kabsch为0；out_idle不是实际游戏帧。
@@ -48,13 +48,21 @@
 - 独立审计 `tmp/rig-lab/_verify_normalized.py` 27项，RE-2310 包 26过/1已知：CLI 隐藏占位 unit 丢零索引 section 的材质短 id（3处，num_indices==0 惰性），原版同类悬空引用亦存在（culling 引 0x093fc934）⇒ 倾向不阻断，未改管理器。
 - 部署：data/9ba626afa44a3aa3.patch_0[.gpu_resources] symlink → E:/mod/Lunalice-RE2310-Test/；回退目标 E:/tmp/deploy-revert-note.txt（→ Lunalice-RigTest）。待用户实机验收。
 
-## 第60轮实机结果（以ROUND60_ISSUES_BRIEF为准）
-- **第59轮修复已被实机验收**：模型/走路/绝大多数动作表情/影子/Blender 骨骼全正常。TransformInfo、LOD布局、culling壳、隐藏unit、部署链路均通过。
-- 剩两个问题，**只收集未修**（用户要求交专家裁定）：
-  - **小臂橡皮筋**：权重问题，非几何/骨架/编码。上臂过渡带仅~6.6cm；小臂过渡带被摊平到整条（s≈0.05→0.29）且腕端非单调（s=0.232–0.285 共1681点回到 elbow≈.51–.61/hand≈.39–.49）；l_elbow 主导的1701点平均 l_hand=0.344 ⇒ 手骨吞小臂。已排除：half4未归一化、twist骨、非avatar节点带权、骨层级、几何拉长。⇒ 只改权重。
-  - **材质全黑+局部金属光泽+军械库看不见**：`build_patch.py` 用 SDK `materials/basic.material`，SDK `__init__.py:202-212` 自标 basic="Sourced from a trash bag prop"，**只有 advanced/basic+ 标注 renders in the UI**。参考模组（同护甲正常显示）用 advanced（11贴图/42变量含TintMaskColor）；原版护甲自定义parent（11贴图/25变量含PaletteSlot=1）。材质二进制与 stingray/material.py 逐项一致；贴图不黑（底色均亮155–228）；法线/绕序/顶点色均排除。候选 H1缺调色板通道>H2 PBR-B当AO>H3回退默认材质。
-  - 顶点ABI差异（供裁定）：我们 4流/stride56/rgba8顶点色/uv vec2_float/bone_index×1(4影响) vs 原版护甲 3流/stride60/无顶点色/uv vec2_half/bone_index×3(12影响)。照抄Chiffon donor，合法但与护甲渲染路径期望不同。
-- 修复方向（**未实施**）：小臂重绑"刚性段+两个窄过渡带"（腕端 l_hand≥0.85）；材质换 advanced > basic+ > armorlut。等专家在 BRIEF §6 回填后动手。
+## 第60轮专家复核（以ROUND60_ISSUES_BRIEF §6为准）
+- 用户实机确认模型/多数动作/影子/Blender骨架正常；只剩小臂发软与材质黑/UI缺失。当前包SHA前缀9c0cd8518278；本轮只诊断指导，未改生产/部署。
+- **确定材质打包bug**：hd2_asset.py:121/152交错读写(key,id)，SDK实际136起N个u32键再N个u64 ID。14材质/16贴图中28底色/PBR引用错误，14法线正确。三ID正确偏移148/156/164，旧140/152/164；自读自写掩盖。C# StingrayMaterialReferenceReader正确。探针review_round60_contract.py直接调SDK，14份内存修复和旧写法负对照均通过，证据out/round60-independent-review.json。
+- 材质路线：修表basic对照→PBR.B白AO→完整basic+（同三槽且明确UI支持）→必要时advanced。缺PaletteSlot乘零无证据；basic来源不证明不支持UI。advanced槽2=NAR(RG法线/B AO/A粗糙度)、3金属度、5底色/A发光，其余8槽依赖须查；不得只换parent。56B布局保留，多组bone_index不证明12影响。
+- Slim主流0顶点/语义权重与冻结NPZ完全相同；源权重→骨映射→量化路径没有参考表面权重转移，摆姿空间裁切不改变runtime权重。
+- 小臂10cm轴柱混壳，腕端hand≥.85一刀切撤回。443点壳左1968/右1975中段hand=.630269、腕端hand=1；总表腕端低值混附件。合成腕横轴30°中段位移中位52.03/52.10mm；固定中段手子树质量转elbow消融后0，旧权重最大63mm。非游戏帧、非发布修复。
+- 局部主体elbow+肘腕真实缝渐变、附件分层、掌指保留；冻结几何另存runtime权重。twist未用只排除误绑，不能排除缺扭转支持；验收屈伸/侧偏/轴扭/组合动作及分壳形状。报告outputs/round60-independent-review.html。
+
+## 第60轮下半（材质P0已修+已部署M1；小臂W1离线就绪）
+- **材质P0根因**：`hd2_asset.Material` 贴图表读成 N 条交错 (u32 key,u64 id)。权威=SDK `stingray/material.py:32-33`（N×u32键后接N×u64 ID）+ `StingrayMaterialReferenceReader.cs:23`（ID起点 136+4N）。三槽应 148/156/164，旧读 140/152/164 ⇒ 只有法线对 ⇒ 底色/PBR坏 ⇒ 黑+金属光泽。**自读自写检不出**，负对照必须用冻结旧实现（`_legacy_matwriter.py`）。
+- 已改：hd2_asset read/write 两段式；set_texture 严格（越界抛错，不追加零键）；build_patch 新增 `--template basic|basic+|advanced`、`--pbr-b`，材质一律从干净SDK模板重建。
+- 校验工具（长期保留）：`_probe_matfix.py`(SDK权威)、`_probe_matchain.py`(Unit section→材质→贴图端到端)、`_probe_canddiff.py`、`_probe_weightdiff.py`(逐字节只允许权重字段)、`_probe_forearm_roi.py`/`_probe_forearm_profile2.py`(分壳层剖面)、`_probe_handrigid.py`、`_probe_forearm_action.py`(30°腕转位移)、`fix_materials.py`、`reweight_forearm.py`、`deploy_candidate.py`。
+- 候选：M1(修表,basic,B=0) / M2(+PBR.B=255) / M3(+basic+模板)；均 SDK闭合0失败、端到端PASS、27项审计1失败(=基线已知项)。**M1 已部署** → `E:/mod/Lunalice-RE2310-M1/`，sha256 fdcd6c7c…，563900/67992000B，回退记录 E:/tmp/deploy-revert-note.txt。
+- **小臂根因**：皮肤 hand 权重是肘→腕单调斜坡 0.077→1.000，无刚性段。**不能按 hand≥0.95 排除**（与皮肤同连通块comp276/277、半径重叠，会撕皮肤）。规则=ROI距轴<10cm；连通块ROI内t跨度<60mm为刚性块取附着点单一比例；其余 hand 驱动到 smoothstep(0.78L,0.92L)，差值只在手骨子树↔同侧肘骨间搬运。30°腕转中段位移 52.1mm→0.0mm。只改unit GPU 0.244%字节，两条模型流都要改（`vertex_buffer_offset` 绝对基址，勿用流内偏移）。
+- 待实机：①M1 颜色/军械库 ②切W1 测小臂+腕部扭转(twist骨未用，旋前旋后集中在腕缝)。
 
 ## 数据与历史
 - 参照E:/mod/【4.28】Chiffon-LUNALICE替换RE-2310；af431352为上身/头发外壳，仅neck/chest，非头盔。E为测试库、D Steam在用。

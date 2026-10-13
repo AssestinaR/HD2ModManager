@@ -17,11 +17,13 @@ import hd2_patch as P
 
 SDK = 'E:/Data/source/repos/WpfApp1/docs/HD2SDK-CommunityEdition-3.8.0'
 TEXCONV = os.path.join(SDK, 'deps', 'texconv.exe')
-OURS = 'E:/mod/Lunalice-RE2310-Test/9ba626afa44a3aa3.patch_0'
+OURS = sys.argv[1] if len(sys.argv) > 1 else \
+    'E:/mod/Lunalice-RE2310-Test/9ba626afa44a3aa3.patch_0'
 
 # file ids we care about, from _probe_matcompare.py
 LABEL = {
-    0xb4948ba8ac86844a: 'shared PBR  (slot 0)',
+    0xb4948ba8ac86844a: 'shared PBR  (slot 0, B=0)',
+    0xbd60d3e909ea3ba8: 'shared PBR  (slot 0, B=255)',
     0xba1a40900756a7f3: 'shared flat normal (slot 2)',
     0xb9f84331454d8282: 'base colour A',
     0xbe569f23c33c3083: 'base colour B',
