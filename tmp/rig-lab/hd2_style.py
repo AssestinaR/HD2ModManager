@@ -729,7 +729,8 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              arm_scratch=True, arm_scratch_deg=None, arm_scratch_elbow=True,
              arm_elbow_open=0.0, arm_hand_tilt=0.0,
              arm_finger_pose=None, arm_finger_pose_amount=1.0,
-             arm_scratch_upper_gain=0.0, head_scale=1.0,
+             arm_scratch_upper_gain=0.0, arm_scratch_upper_shift=(0.0, 0.0, 0.0),
+             head_scale=1.0,
              verbose=True):
     """Run the whole BatchTool-style pipeline.  Returns a dict of results.
 
@@ -1150,7 +1151,9 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # `src1` and `rest_sym` are the only things touched.  Under
     # `skeleton='native'` the shipped rig is `rest_hd2` verbatim (4b below), so
     # the bones the game animates do not move by a micron.
-    if arm_scratch and arm_scratch_upper_gain != 0.0:
+    shift_l = np.asarray(arm_scratch_upper_shift, np.float64).reshape(3)
+    if arm_scratch and (arm_scratch_upper_gain != 0.0
+                        or float(np.abs(shift_l).max()) > 0.0):
         gain = float(arm_scratch_upper_gain)
         src_nm = [b['name'] for b in src]
         for side in ('l', 'r'):
@@ -1169,13 +1172,36 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 continue
             u = u / L
 
+            # The displacement actually applied to the elbow-and-below subtree:
+            #
+            #     delta = u * gain  +  shift
+            #
+            # `u * gain` is the LENGTH fix (round 49) -- a pure axial stretch of
+            # the upper arm.  `shift` (round 66) is a free 3-vector, given for
+            # the LEFT arm and MIRRORED IN X for the right (HD2 is +X = the
+            # character's right, so the left limb lives at -X).
+            #
+            # Why a scalar alone is not enough.  Measured on the SHIPPED mesh
+            # (`_probe_gainfit.py`), Lilium's hand+finger cloud sits 32.5 mm
+            # away from Lunalice's, and that decomposes into
+            #     * -31.4 mm ALONG the arm axis  -> what `gain` fixes, and
+            #     *   5.4 mm PERPENDICULAR to it -> what `gain` CANNOT fix.
+            # The perpendicular part is not a modelling difference: both source
+            # rigs are aligned by the SAME recipe (yaw + one uniform scale +
+            # translate), and that recipe pins the HEAD HEIGHT, so two models
+            # whose shoulder sits differently relative to the skull land on
+            # different Y/Z.  A scalar gain would leave those 5.4 mm in place.
+            shift = shift_l * np.array(
+                [1.0 if side == 'l' else -1.0, 1.0, 1.0], np.float64)
+            delta = u * gain + shift
+
             # (a)+(b) the partition and the displacement ramp.  The partition is
             #     BINARY (by the vertex's PRIMARY bone) and the magnitude comes
             #     from the geometric ramp alone -- the review was explicit that
             #     the stretch must NOT be multiplied by the LBS weights.
             f, up_v, far_v, arm_v = arm_stretch_field(
                 src1, verts, src_nm, side, SRC_PREFIX, SH, EL)
-            src1 = src1 + u[None, :] * (gain * f)[:, None]
+            src1 = src1 + delta[None, :] * f[:, None]
 
             # (c) carry the working pivots: the elbow's WHOLE subtree
             moved = [i_el]
@@ -1184,17 +1210,20 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 c = stack.pop()
                 moved.append(c)
                 stack.extend(hd2_children.get(c, ()))
-            shift4 = trans(u * gain)
+            shift4 = trans(delta)
             for i in moved:
                 if i in rest_sym:
                     rest_sym[i] = shift4 @ rest_sym[i]
 
-            say('arm %s: UPPER ARM stretched on the MESH by %+.4f m along the '
-                'SOURCE T-pose shoulder->elbow axis (%.3f, %.3f, %.3f); upper '
-                'arm %.4f -> %.4f m; %d upper-arm + %d distal + %d arm vertices; '
+            newL = float(np.linalg.norm((EL + delta) - SH))
+            say('arm %s: UPPER ARM moved on the MESH by (%.4f, %.4f, %.4f) m '
+                '= %+.4f m along the SOURCE T-pose shoulder->elbow axis '
+                '(%.3f, %.3f, %.3f) + shift (%.4f, %.4f, %.4f); upper arm '
+                '%.4f -> %.4f m; %d upper-arm + %d distal + %d arm vertices; '
                 '%d working pivots below the elbow carried with the mesh; the '
                 'shipped rig is untouched'
-                % (side, gain, u[0], u[1], u[2], L, L + gain,
+                % (side, delta[0], delta[1], delta[2], gain, u[0], u[1], u[2],
+                   shift[0], shift[1], shift[2], L, newL,
                    int(up_v.sum()), int(far_v.sum()), int(arm_v.sum()),
                    len(moved)))
 

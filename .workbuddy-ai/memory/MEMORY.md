@@ -5,6 +5,7 @@
 - 临时脚本放 tmp/rig-lab/（gitignore 只放行 *.py），不放 _diagnostics/。docs/ 忽略，改前备份 docs/_backup/。不删 .workbuddy-ai。故障包与依赖留版本+hash，候选另存目录，不覆盖唯一证据。一律绝对路径。
 - 修 bug 必做"破坏关键行"负对照；删代码同步改测试。子代理 = 用户另开线程 + 交流文档（*.md 放 tmp/rig-lab/），不用 Agent 工具。
 - 路线：Python 快循环 → 离线 legacy patch 包 → 用户实机 → 确认后上 C#。只借 BatchTool 变换；不依赖 HD2IRG1 动态骨骼；无 Lua 也必须能跑。发图前自己先肉眼看过。
+- **tmp/ 暂时保留**（用户第 66 轮拍板）：等所有功能移进正式 C# 类库后再清理。⇒ 目前 rig-lab 里的论证链不必急着搬，但新写的东西仍按上面约定放 `tmp/rig-lab/`。
 
 ## 环境
 - Python `C:/Users/Administrator/.workbuddy-ai/binaries/python/envs/default/Scripts/python.exe`（numpy/Pillow/scipy）；Blender `D:/SteamLibrary/steamapps/common/Blender/blender.exe`；7z `"/c/Program Files/7-Zip/7z.exe"`。
@@ -61,7 +62,7 @@
 - **Lilium 交付**：`E:/mod/Lilium-Sancta-RigTest/`（patch 95080 B sha256 `f92587be…`、gpu 84027008 B sha256 `c0a94e72…`、unit `d1c87292a57dc45f`、11 材质 = 4 alphaclip + 4 matcap + 3 advanced）。源：118014v/154066t/124骨（Lunalice 121704/159363/127，**骨骼是严格子集，只少 3 个未用 `source_extra_*`**）。详见 `tmp/rig-lab/LILIUM_CONVERSION_TEST.md`。
 - **Lilium 的透明比 Lunalice 更准**：源侧 4 个透明组**全是 `$alphatest`**（二值裁切，参考阈值正是 0.5）⇒ 遮罩精确；Lunalice 那 7 组是 `$translucent` ⇒ 只能近似。`gray`/`gray1`/`ribbon_1` 是 1×1 占位贴图，观感 100% 来自 matcap（同 Lunalice 的 `Ornament_metal_Underwear`）。
 - **待办**：贴图 id 只取 basename（`tex/base/<basename>`，材质 id 含目录故安全）⇒ 跨包同名贴图会撞车。要加「包族命名空间」，但**必须保留同族内同名覆盖**（第 61 轮 7 个 MAT 变体包靠它工作）且不能改既有 id。
-- **待实机**：摆姿常量（`HEAD_SCALE=8/7`、`ARM_UPPER_GAIN=0.05`、`ARM_ELBOW_OPEN=6.5°`、`ARM_HAND_TILT=3°`、`MESH_SHIFT=(0,-0.100,-0.090)`、`upper_scale=1.12`）是对着 Lunalice 调的，Lilium 原样沿用；Lilium 的 `fallback hops` 最深 7 跳（Lunalice 3），绑定姿态看不出问题，**动起来才可能暴露**。→ **第 65 轮实机证实：正是它。**
+- **待实机**：摆姿常量（`HEAD_SCALE=8/7`、`ARM_UPPER_GAIN=0.05`、`ARM_ELBOW_OPEN=6.5°`、`ARM_HAND_TILT=3°`、`MESH_SHIFT=(0,-0.100,-0.090)`、`upper_scale=1.12`）是对着 Lunalice 调的，Lilium 原样沿用；Lilium 的 `fallback hops` 最深 7 跳（Lunalice 3），绑定姿态看不出问题，**动起来才可能暴露**。→ **第 65 轮实机证实：正是它（飘袖绑到小指）**；**第 66 轮已把 `ARM_UPPER_GAIN` / 新增的 `ARM_UPPER_SHIFT` 改成按模型拟合**（见「第 66 轮」节），其余常量仍是对着 Lunalice 调的。
 
 ## 第 65 轮：Lilium「手指问题」的真凶 = 飘袖绑到小指
 - 实机反馈：网格/材质/动作都正常，**只有手指部分有问题**。用户假设「Lilium 胳膊比 Lunalice 短」。
@@ -75,9 +76,33 @@
   - **效果**：只有 4 根骨变化 `l_pinky_finger1 1530→100`、`r_pinky_finger1 1681→95`、`l_elbow 6896→8326`、`r_elbow 7427→9013`（进出精确对账）；渗漏 **3016→0**；飘带 3789 顶点全为**单骨权重** ⇒ 零撕裂；`hops` 直方图不变。
   - **负对照**：Lunalice 重跑 `model.npz` **逐字节相同**；把链规则行改成 `if False and …` 重跑，输出与修正前**逐字节相同**（`734b7ac4…`）。
   - **副作用**：飘带静止姿态偏转最多 **329 mm**（不再继承手腕 3° + 手指摆姿），位移只落在那 3789 个顶点上。
-- **本轮产物哈希与 npz 目录**：交付目录见下方「直接替换原生护甲」节。patch 562176 B `52d131c5…`、gpu 84229248 B `6587ac4f…`。第 64 轮字节归档 `E:/tmp/round64-lilium-archive/`。npz：`out/lilium`=修正版 `a7f22301…`、`out/lilium-before-chainrule`=`734b7ac4…`、`out/lilium-negctl-no-chainrule`（负对照，同 `734b7ac4…`）、`out/blender/`=Lunalice `990f588d…`（未变）。
-- **`library.json` 在库根 `E:/mod/library.json`**（不在 `hd2-mgroot` 里）。`armor-normalize` 用法：`plan` 要 `--output <文件>`，`validate/apply` 用 `--plan <文件>`，`apply` 还要 `--confirm`。
-- 探针（全部只读）：`_probe_hops.py`（复现 `resolve_bone_map`，逐骨 hops/目标/距离/顶点数）、`_probe_fingerbleed.py`、`_probe_zoom_arm.py`、`_probe_out_bleed.py`、`_probe_armfit.py`、`_probe_fallback_rule.py`、`_probe_round65_render.py`。简报 `tmp/rig-lab/ROUND65_ARM_AND_SLEEVE.md`。
+- **本轮产物哈希与 npz 目录**（第 66 轮 = 当前）：交付目录见下方「直接替换原生护甲」节。
+  patch 562176 B `5e4e045c…`、gpu 84229248 B `a8854ba3…`。第 65 轮字节归档 `E:/tmp/round65-lilium-archive/`、
+  第 64 轮 `E:/tmp/round64-lilium-archive/`。npz：`out/lilium`=本版(方案B) `8070eacd…`、
+  `out/lilium-g05`=第65轮交付版 `a7f22301…`、`out/lilium-g0814`=只调增益的中间态、
+  `out/lilium-before-chainrule`=`734b7ac4…`、`out/lun-negctl-shift0`=负对照(=Lunalice `990f588d…`)、
+  `out/blender`=Lunalice `990f588d…`。
+- **`library.json` 在库根 `E:/mod/library.json`**（不在 `hd2-mgroot` 里）。`armor-normalize` 用法：`plan` 要 `--output <文件>`，`validate/apply` 用 `--plan <文件>`，`apply` 还要 `--confirm`。`library sync` 同样是 `inspect|plan|validate|apply` 四段，`apply` 要 `--confirm`；**写入命令会被 `ManagerProcessRunning` 拦**（检测到桌面端在跑）—— 先确认那个 PID 是否真的还在，再重试。
+- 探针（全部只读）：`_probe_hops.py`（复现 `resolve_bone_map`，逐骨 hops/目标/距离/顶点数）、`_probe_fingerbleed.py`、`_probe_zoom_arm.py`、`_probe_out_bleed.py`、`_probe_armfit.py`、`_probe_fallback_rule.py`、`_probe_round65_render.py`、`_probe_armtarget.py`、`_probe_gainfit.py`（**出货网格逐骨位移分解，方案B 的定标工具**）、`_probe_hand_zoom.py`（手部特写+HD2 骨骼叠加，目视验收）。简报 `tmp/rig-lab/ROUND65_ARM_AND_SLEEVE.md`。
+
+## 第 66 轮 · 方案 B：按模型自动拟合手臂位移（手指对齐）
+- 实机确认飘袖已修好；**手指仍不正常** ⇒ 执行方案 B。用户拍板 **tmp/ 暂留**，等移进 C# 类库后再清。
+- **🔴 上轮的拟合基准是错的**：`_probe_armfit.py` 的 `resid(g)=|b+u*g−a|` 拿 Lunalice 的**未加 gain** 关节当参考，
+  正确是 `resid'(g)=resid(g−0.05)` ⇒ 最优 `g = 0.03965+0.05 = 0.08965`。简报里的 0.0895 才是对的，
+  探针打印的 `gain=0.08665→48.3 mm` 是错读数。**教训：拟合函数必须拿"出货量"当参考，不要拿中间量。**
+- **🔴 基准只能在出货网格上量**：`rest_hd2` 是 A-pose、源模型是 T-pose，关节直接相减是假误差
+  （实测 Lunalice 的手离 HD2 `l_hand` "396.72 mm"，全是姿态差）。两款模型 `b_head` 逐字节相同 ⇒ 顶点云质心差 = 肉眼看到的差。
+- **实测（`_probe_gainfit.py`，参考 = `out/blender`）**：Lilium 手+指质心偏 **32.5 mm**（中位）= **31.4 mm 沿臂轴**（手臂短）+ **9.7 mm 沿世界 +Y（前）**。
+  那 9.7 mm **不是模型缺陷**：两款走**同一套对齐**（绕竖轴旋转 + 一个统一缩放 + 一个平移），而这套对齐**钉的是"头顶高度"** ⇒ 肩相对头骨位置不同，手臂就落在不同的 Y 上。
+  HD2 自己 `rest_hd2`：肩→肘 302.85 / 肘→手 287.36 / 肩→手 555.26 mm（A-pose 斜线距）；对齐后 Lunalice 285.64/288.45/574.09、Lilium 265.20/272.24/537.44。
+- **✅ 机制**：`hd2_style.retarget` 新增 `arm_scratch_upper_shift=(0,0,0)`，把原来只能沿臂轴推的标量扩成
+  **`delta = u * gain + shift`**（`u` = T-pose 肩→肘单位向量，由 `rest_sym` 取；`shift` 按**左臂**给、右臂 X 取反）。
+  两者走**同一套 ramp**（`arm_stretch_field`，肩端 0、肘以下强制 1）⇒ 肩缝仍钉住，**不引入新撕裂风险**；`shift` 默认 0 ⇒ 老行为**逐字节不变**。
+- **拟合值**（全部由出货网格反解，非目视）：`gain = 0.0814 m`（原写死 0.05）、`shift = (0.0014, 0.0097, 0.0005) m`。
+- **效果**：总位移 中位 **32.5 → 5.2 mm**；沿臂轴 −31.7 → −0.7 mm；垂直 5.3 → 4.6 mm。
+  逐指（本版 |位移|）：食指 1.9~4.8 ✓ / 中指 3.0~4.8 ✓ / 无名指 4.0~5.7 / 小指 5.5~7.5 / **拇指 3.9~12.2**。
+- **负对照**：`shift` 默认 0 重跑 Lunalice ⇒ `model.npz` 与已验收版**逐字节相同**（`990f588d…`），指纹 geometry `05e8f5f876a2c32e` / weights `ae49cfeeb8329340` 与基线一致。
+- **遗留（下一轮候选）**：**拇指末节 12.2 mm、食指 ~4.8 mm 是形状差不是位置差** —— 源侧拇指 0→02 段长 64.71(Lunalice) vs 58.68(Lilium) = **短 9.3%**，食指短 8.5%，而中指/无名指/小指 ±2.5% 内。刚性平移修不了"某几根手指短"，要修得按指做**沿指轴的缩放**（新机制，需单独验收）。等实机反馈再定。
 
 ## Lua 运行时动态切换盔甲 unit（第 63 轮分析，只记录不写码）
 - **能力已完整存在，不需要新协议字段/新 Lua 接口**。= 「重写协议文档 + revision 自增」，Lua 每秒轮询全文、重新规划、**只重建签名变了的那一个目标**。缺的只是管理器 UI/工作流。
@@ -115,8 +140,9 @@
   `_probe_dangling.py`(证明悬空短 id 都在零索引段)、`_probe_render_patchunit.py`
   (**从出货 patch 字节里**渲染 unit，不再只画 npz；`ti.matrices` 行主序 `p'=[p,1]@M`，可见 LOD 是单位阵)、
   `assemble_re2310.py`(组装交付目录，哈希现算)。
-- **当前 Lilium 交付**（**第 65 轮重传**，旧哈希见下行）：`E:/mod/Lilium-Sancta-RE2310/`（patch 562176 B sha256 `52d131c53cc28bb5…`、
-  gpu 84229248 B sha256 `6587ac4f050f8898…`，64 条目 = 22 unit(2 承载+20 隐藏)+2 bone+11 material+29 texture）。
-  **第 64 轮**旧字节 = patch `729c4a652145106c…` / gpu `1f20c9cd3d1587de…`，已整体归档到 `E:/tmp/round64-lilium-archive/`。
+- **当前 Lilium 交付**（**第 66 轮 · 方案 B 版**）：`E:/mod/Lilium-Sancta-RE2310/`（patch 562176 B sha256 `5e4e045c3e1cbc7c…`、
+  gpu 84229248 B sha256 `a8854ba3a84f4a59…`，64 条目 = 22 unit(2 承载+20 隐藏)+2 bone+11 material+29 texture）。
+  **历史版本**：第 65 轮 = patch `52d131c5…` / gpu `6587ac4f…`（归档 `E:/tmp/round65-lilium-archive/`）；
+  第 64 轮 = patch `729c4a65…` / gpu `1f20c9cd…`（归档 `E:/tmp/round64-lilium-archive/`）。
   中间产物 `E:/mod/Lilium-Sancta-Native-RE2310/`（**勿启用**）。库节点：`9ff82517`(成品) / `a74a1022`(中间)。
-  审计 26/27 通过（唯一已知项 = 隐藏占位 unit 丢零索引段的材质短 id，见上「已知瑕疵」）。library.json 备份 `E:/tmp/library.json.bak-20261013-232441-round65`。
+  审计 26/27 通过（唯一已知项 = 隐藏占位 unit 丢零索引段的材质短 id，见上「已知瑕疵」）。library.json 备份 `E:/tmp/library.json.bak-20261013-r66`。

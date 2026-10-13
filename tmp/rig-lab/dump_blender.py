@@ -62,6 +62,29 @@ ARM_ELBOW_OPEN = 6.5
 # Round 49/52: the upper-arm lengthening, in metres.  It was only ever reaching
 # the pipeline through main()'s argv default -- pin it down.
 ARM_UPPER_GAIN = 0.05
+# Round 66 (方案 B): the SAME knob, but fitted PER SOURCE MODEL instead of
+# hand-tuned once for Lunalice.
+#
+# `ARM_UPPER_GAIN` alone cannot do the job, because the two things that are
+# wrong need two different directions.  Measured on the SHIPPED mesh
+# (`_probe_gainfit.py`, reference = out/blender, target = out/lilium):
+#
+#   Lilium's hand+finger cloud sits 32.5 mm away from Lunalice's, made of
+#     -31.4 mm ALONG the arm axis   <- the arm is short; `gain` fixes this
+#     + 9.7 mm FORWARD (world +Y)   <- `gain` CANNOT fix this at all
+#
+# The forward part is not a modelling defect: both rigs go through the SAME
+# alignment (yaw + one uniform scale + one translate) and that recipe pins the
+# HEAD HEIGHT, so two models whose shoulder sits differently under the skull
+# land on different Y.  `ARM_UPPER_SHIFT` is that residual, given for the LEFT
+# arm (the right arm gets X negated, since HD2 is +X = the character's right).
+#
+# Both numbers come out of the fit, not out of the air:
+#     gain  = ARM_UPPER_GAIN_LUNALICE + (parallel component)   = 0.05 + 0.0314
+#     shift = -(perpendicular component)                       = (0.0014, 0.0097, 0.0005)
+# Reproduce with:
+#     python _probe_gainfit.py out/blender out/lilium-g0814
+ARM_UPPER_SHIFT = (0.0, 0.0, 0.0)
 # Round 53: tilt the HAND about the wrist, about the T-pose THUMB axis (which is
 # exactly world +Y in that frame -- see _probe_hand_tpose.py).  Positive =
 # EXTENSION: the hand tips toward the back of the hand, i.e. "手掌翘起".
@@ -225,6 +248,10 @@ def parse_args(argv=None):
     # shipped rig is untouched).
     ap.add_argument('--gain', type=float, default=ARM_UPPER_GAIN,
                     help='upper-arm lengthening in metres (round 49)')
+    ap.add_argument('--shift', type=float, nargs=3, default=list(ARM_UPPER_SHIFT),
+                    metavar=('SX', 'SY', 'SZ'),
+                    help='extra 3-vector arm displacement in metres, LEFT arm '
+                         '(round 66, 方案 B; right arm gets X negated)')
     ap.add_argument('--head-scale', type=float, default=HEAD_SCALE,
                     help='uniform skull scale about the neck seam (round 51)')
     ap.add_argument('--elbow-open', type=float, default=ARM_ELBOW_OPEN,
@@ -242,6 +269,7 @@ def main(argv=None):
     out_dir = args.out
     os.makedirs(out_dir, exist_ok=True)
     gain = args.gain
+    shift = tuple(float(v) for v in args.shift)
     finger_pose = _finger_pose_arg(args.finger_pose)
     print('[dump] vpk   = %s' % args.vpk)
     print('[dump] model = %s' % args.model)
@@ -251,14 +279,17 @@ def main(argv=None):
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
                    mesh_shift=MESH_SHIFT,
                    upper_scale=1.12, upper_pivot_z=1.15, upper_blend=0.45,
-                   arm_scratch_upper_gain=gain, head_scale=args.head_scale,
+                   arm_scratch_upper_gain=gain,
+                   arm_scratch_upper_shift=shift,
+                   head_scale=args.head_scale,
                    arm_elbow_open=args.elbow_open,
                    arm_hand_tilt=args.hand_tilt,
                    arm_finger_pose=finger_pose,
                    verbose=True)
-    print('[dump] upper-arm gain = %+.4f m   elbow open = %+.2f deg   '
-          'hand tilt = %+.2f deg   finger pose = %s'
-          % (gain, args.elbow_open, args.hand_tilt, finger_pose))
+    print('[dump] upper-arm gain = %+.4f m   shift = (%+.4f, %+.4f, %+.4f) m   '
+          'elbow open = %+.2f deg   hand tilt = %+.2f deg   finger pose = %s'
+          % (gain, shift[0], shift[1], shift[2], args.elbow_open,
+             args.hand_tilt, finger_pose))
 
     tris = np.asarray([tri3(t) for t in r['tris']], dtype=np.int32)
     nv = len(r['verts'])
@@ -411,6 +442,7 @@ def main(argv=None):
                                upper_scale=1.12, upper_pivot_z=1.15,
                                upper_blend=0.45, head_scale=args.head_scale,
                                arm_upper_gain=gain,
+                               arm_upper_shift=list(shift),
                                arm_elbow_open=args.elbow_open,
                                arm_hand_tilt=args.hand_tilt,
                                arm_finger_pose=finger_pose,
