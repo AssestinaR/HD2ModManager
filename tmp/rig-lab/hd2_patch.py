@@ -120,11 +120,8 @@ def read_transform_info(toc):
         raise ValueError('transform info runs past the payload (n=%d)' % n)
     matrices = []
     for i in range(n):
-        raw = list(struct.unpack_from('<16f', toc, mo + i * 64))
-        matrices.append([raw[0], raw[4], raw[8], raw[12],
-                         raw[1], raw[5], raw[9], raw[13],
-                         raw[2], raw[6], raw[10], raw[14],
-                         raw[3], raw[7], raw[11], raw[15]])
+        # ROW-MAJOR 4x4, translation at flat 12..14 ("row vector" convention).
+        matrices.append(list(struct.unpack_from('<16f', toc, mo + i * 64)))
     parents = [struct.unpack_from('<H', toc, eo + i * 4 + 2)[0] for i in range(n)]
     hashes = [_u32(toc, ho + i * 4) for i in range(n)]
     return dict(count=n, matrices=matrices, parents=parents, hashes=hashes,
@@ -135,7 +132,12 @@ def read_transform_info(toc):
 
 
 def origin(m):
-    return (m[3], m[7], m[11])
+    """Translation of a ROW-MAJOR 4x4 (row-vector convention: p' = p @ M).
+
+    The matrices produced by `read_transform_info` / `hd2_unit` are stored exactly
+    as HD2 writes them, i.e. translation lives in flat 12..14 (NOT 3/7/11).
+    """
+    return (m[12], m[13], m[14])
 
 
 def bone_hash_file(path):

@@ -58,8 +58,14 @@ def oct_encode(nrm):
     l1 = np.where(l1 == 0.0, 1.0, l1)
     p = n / l1
     neg = p[:, 2] < 0.0
-    x = np.where(neg, (1.0 - np.abs(p[:, 1])) * np.sign(p[:, 0]), p[:, 0])
-    y = np.where(neg, (1.0 - np.abs(p[:, 0])) * np.sign(p[:, 1]), p[:, 1])
+    # The SDK's octahedral fold uses `sign()`, and `sign(0) == +1` there.  NumPy's
+    # `np.sign(0)` is `0`, which collapses the fold for a component that is
+    # exactly zero: `(0, 0, -1)` would come back as `(0, 0, +1)`.  Measured on our
+    # own mesh, the naive version missed the round-trip by up to 89 degrees.
+    sx = np.where(p[:, 0] >= 0.0, 1.0, -1.0)
+    sy = np.where(p[:, 1] >= 0.0, 1.0, -1.0)
+    x = np.where(neg, (1.0 - np.abs(p[:, 1])) * sx, p[:, 0])
+    y = np.where(neg, (1.0 - np.abs(p[:, 0])) * sy, p[:, 1])
     r = ((x + 1.0) * (1023.0 / 2.0)).astype(np.uint32)
     g = ((y + 1.0) * (1023.0 / 2.0)).astype(np.uint32)
     return (r | (g << 10)).astype(np.uint32)
@@ -134,6 +140,57 @@ def pack_cull_vertices(verts, raw_normals, uv):
         off += n
     assert off == CULL_STRIDE
     return buf.tobytes()
+
+
+# ------------------------------------------------------------- mesh bounds
+def mesh_bounds(verts, sections):
+    """-> (min3, max3, radius) for the vertices this mesh's sections draw.
+
+    This is the rule the shipping units obey, measured three ways in
+    `_probe_bounds_rule.py` / `_probe_unk2tail.py`:
+
+    * the three leading pairs are the bbox of the mesh's **own section vertex
+      ranges**, not of the whole stream.  The donor's four LOD meshes each store
+      a different box even though they share one stream, and each box matches
+      exactly its own `vertex_offset .. +num_vertices` window.
+    * the seventh float is `max(|v|)` over the same set.  The sphere is centred
+      on the origin of the mesh's local space, not on the box centre: the donor
+      stores 1.719567 for a mesh whose `max|v|` is 1.717979, while a
+      box-centred radius would have been 0.51.
+    * everything is in the mesh's **local** space -- before its
+      `MeshInfo.TransformIndex` matrix is applied.  Both culling meshes carry a
+      bone world matrix as their transform yet store their raw vertex bbox
+      verbatim (deviation 0.000000), and the DS-10 carrier's visible mesh stores
+      a 0.27x0.16x0.35 box although the same geometry sits around z=1.3 in
+      character space.
+
+    Round-59 note: our previous build copied the donor's 32-byte block wholesale
+    (`hd2_unitbuild.py:402/419`), which left a torso-sized box on a whole-body
+    mesh -- 66290 of 121704 vertices outside their own declared bounds.
+    """
+    v = np.asarray(verts, np.float64)
+    if not sections:
+        return v.min(axis=0), v.max(axis=0), float(np.linalg.norm(v, axis=1).max())
+    lo_idx = min(int(s.vertex_offset) for s in sections)
+    hi_idx = max(int(s.vertex_offset) + int(s.num_vertices) for s in sections)
+    assert 0 <= lo_idx < hi_idx <= len(v), \
+        'sections reference vertices [%d,%d) but the stream holds %d' % (lo_idx, hi_idx, len(v))
+    sub = v[lo_idx:hi_idx]
+    return sub.min(axis=0), sub.max(axis=0), float(np.linalg.norm(sub, axis=1).max())
+
+
+def pack_mesh_unk2(bounds, tail):
+    """32-byte `MeshInfo.unk2` = 7 floats (min3, max3, radius) + 4 unknown bytes.
+
+    The trailing four bytes are still unidentified, so they are carried over
+    from the donor instead of guessed.  They are per-mesh constants: the donor
+    and the vanilla DS-10 carrier independently store `02 00 00 00` for LOD3 and
+    `09 00 00 00` for LOD2/1/0, and zero for every culling mesh.
+    """
+    mn, mx, radius = bounds
+    assert len(tail) == 4, 'the unknown 4-byte tail must be preserved verbatim'
+    return struct.pack('<7f', float(mn[0]), float(mn[1]), float(mn[2]),
+                       float(mx[0]), float(mx[1]), float(mx[2]), float(radius)) + bytes(tail)
 
 
 # ---------------------------------------------------------------- unit build
@@ -384,6 +441,18 @@ def build_unit(mesh, groups, ref, avatar, mesh_ids=None, verbose=True):
                                        mesh['cull_uv']),
                     pack_cull_vertices(mesh['cull_a_verts'], mesh['cull_a_normals'],
                                        mesh['cull_uv'])]
+    # `target` policy: the reference's culling payload is reproduced byte for
+    # byte rather than re-packed.  `pack_cull_vertices` can only rebuild what it
+    # is given, and the reference's culling meshes carry three UV channels whose
+    # second and third we have no values for -- re-packing them would be a silent
+    # change to a shell the manager's own rebuilder keeps untouched.
+    for i, tag in ((2, 'cull_b'), (3, 'cull_a')):
+        raw = mesh.get(tag + '_raw')
+        if raw is not None:
+            assert len(raw) == len(u.gpu_vertex[i]), \
+                '%s raw payload is %d B, re-packed is %d B' % (tag, len(raw),
+                                                               len(u.gpu_vertex[i]))
+            u.gpu_vertex[i] = raw
     u.gpu_index = [mesh_ib, mesh_ib,
                    np.asarray(mesh['cull_b_indices'], np.uint16).tobytes(),
                    np.asarray(mesh['cull_a_indices'], np.uint16).tobytes()]
@@ -395,11 +464,10 @@ def build_unit(mesh, groups, ref, avatar, mesh_ids=None, verbose=True):
     # vertices once.  `unk3` mirrors `transform_index` exactly as the donor does.
     sections = mesh['sections']
     u.mesh_infos = []
-    for lod in (3, 2, 1, 0):
+    for slot, lod in enumerate((3, 2, 1, 0)):
         tf_idx = lod_tf[lod]
         mi = U.MeshInfo()
         mi.unk1 = 0
-        mi.unk2 = ref.mesh_infos[0].unk2          # 32 B, first 7 floats + tail
         mi.mesh_id = u.transform_info.hashes[tf_idx]
         mi.unk3 = tf_idx
         mi.transform_index = tf_idx
@@ -411,12 +479,17 @@ def build_unit(mesh, groups, ref, avatar, mesh_ids=None, verbose=True):
         mi.unk8 = 0
         mi.material_ids = [g[1] for g in groups]
         mi.sections = [_mk_section(s) for s in sections]
+        # 32 B: our own min/max/radius (see `mesh_bounds`) + the donor's 4
+        # unknown bytes for this same LOD slot.
+        mi.unk2 = pack_mesh_unk2(mesh_bounds(mesh['pos'], mi.sections),
+                                 ref.mesh_infos[slot].unk2[28:32])
         u.mesh_infos.append(mi)
-    for name, stream, sid in (('cull_a', 3, 'cull_a'), ('cull_b', 2, 'cull_b')):
+    for name, stream, sid, ref_slot in (('cull_a', 3, 'cull_a', 4),
+                                        ('cull_b', 2, 'cull_b', 5)):
         tf_idx = cull_tf[stream]
+        cull_verts = mesh['cull_a_verts'] if name == 'cull_a' else mesh['cull_b_verts']
         mi = U.MeshInfo()
         mi.unk1 = 0
-        mi.unk2 = ref.mesh_infos[4].unk2
         mi.mesh_id = u.transform_info.hashes[tf_idx]
         mi.unk3 = tf_idx
         mi.transform_index = tf_idx
@@ -430,13 +503,14 @@ def build_unit(mesh, groups, ref, avatar, mesh_ids=None, verbose=True):
         sec = U.MeshSectionInfo()
         sec.material_index = 0
         sec.vertex_offset = 0
-        sec.num_vertices = (len(mesh['cull_a_verts']) if name == 'cull_a'
-                            else len(mesh['cull_b_verts']))
+        sec.num_vertices = len(cull_verts)
         sec.index_offset = 0
         sec.num_indices = (len(mesh['cull_a_indices']) if name == 'cull_a'
                            else len(mesh['cull_b_indices']))
         sec.group_index = 0
         mi.sections = [sec]
+        mi.unk2 = pack_mesh_unk2(mesh_bounds(cull_verts, mi.sections),
+                                 ref.mesh_infos[ref_slot].unk2[28:32])
         u.mesh_infos.append(mi)
 
     # ---- the unit's material table ----------------------------------------
@@ -470,6 +544,22 @@ def check_unit(u, mesh, avatar):
             ('MeshInfo(lod=%d) MeshID 0x%08x is not the hash 0x%08x of its '
              'transform node %d' % (mi.lod_index, mi.mesh_id,
                                     ti.hashes[mi.transform_index], mi.transform_index))
+
+    # the declared bounds must describe the mesh's OWN geometry: no vertex may
+    # sit outside the box it publishes, and the radius must be the farthest one
+    # (round 59: the donor's stale box left 66290/121704 vertices outside)
+    for mi in u.mesh_infos:
+        verts = (mesh['cull_a_verts'] if mi.lod_index < 0 and mi.stream_index == 3
+                 else mesh['cull_b_verts'] if mi.lod_index < 0
+                 else mesh['pos'])
+        mn, mx, rad = mesh_bounds(verts, mi.sections)
+        stored = struct.unpack_from('<7f', mi.unk2, 0)
+        assert np.allclose(stored[0:3], mn, atol=1e-6) and \
+            np.allclose(stored[3:6], mx, atol=1e-6) and abs(stored[6] - rad) < 1e-5, \
+            ('MeshInfo(lod=%d) publishes %s..%s r=%.6f but its sections draw '
+             '%s..%s r=%.6f' % (mi.lod_index, np.round(stored[0:3], 4),
+                                np.round(stored[3:6], 4), stored[6],
+                                np.round(mn, 4), np.round(mx, 4), rad))
 
     # every LOD mesh transform must be identity, else the mesh is displaced
     for mi in u.mesh_infos:

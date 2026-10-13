@@ -317,6 +317,56 @@ def read_mdl_geometry(mdl):
     return parts
 
 
+TEXTURE_STRIDE = 64
+MESH_STRIDE = MESH_SIZE_V53
+
+
+def read_mdl_materials(mdl, raw=False):
+    """-> (texture_names, cdtextures, skin_families) from a v53 studiohdr.
+
+    studiohdr offsets used here (all u32/i32):
+        204 numtextures   208 textureindex   -> numtextures * 64-byte mstudiotexture_t
+        212 numcdtextures 216 cdtextureindex -> numcdtextures * i32 string offsets
+        220 numskinref    224 numskinfamilies 228 skinindex
+                                               -> families * numskinref * i16
+    mstudiotexture_t: +0 sznameindex, +16 material, ... (64 bytes total)
+    A mesh's `material` is an index into a skin family; the skin family entry is
+    an index into the texture array.
+
+    NOTE: skinindex entries are **int16**, not int32 (measured on
+    Lunalice_Zoey.vpk: int16 -> 92/92 valid and an identity 0..91 mapping,
+    int32 -> only 8/92 valid).  Pass raw=True to get the raw int rows.
+    """
+    nt, = struct.unpack_from('<i', mdl, 204)
+    to, = struct.unpack_from('<i', mdl, 208)
+    nc, = struct.unpack_from('<i', mdl, 212)
+    co, = struct.unpack_from('<i', mdl, 216)
+    nsr, = struct.unpack_from('<i', mdl, 220)
+    nsf, = struct.unpack_from('<i', mdl, 224)
+    so, = struct.unpack_from('<i', mdl, 228)
+
+    cds = [cstr(mdl, struct.unpack_from('<i', mdl, co + i * 4)[0]) for i in range(nc)]
+
+    names = []
+    for i in range(nt):
+        e = to + i * TEXTURE_STRIDE
+        ni, = struct.unpack_from('<i', mdl, e)
+        names.append(cstr(mdl, e + ni))
+
+    skins = []
+    for f in range(nsf):
+        row = [struct.unpack_from('<h', mdl, so + (f * nsr + k) * 2)[0] for k in range(nsr)]
+        skins.append(row)
+
+    if raw:
+        return names, cds, skins
+
+    resolved = []
+    for row in skins:
+        resolved.append([names[i] if 0 <= i < len(names) else None for i in row])
+    return names, cds, resolved
+
+
 def read_vvd(data):
     if data[0:4] != b'IDSV':
         raise ValueError('bad VVD magic')
@@ -332,7 +382,8 @@ def read_vvd(data):
                         bones=(data[o + 12], data[o + 13], data[o + 14]),
                         boneCount=data[o + 15],
                         pos=struct.unpack_from('<3f', data, o + 16),
-                        nrm=struct.unpack_from('<3f', data, o + 28)))
+                        nrm=struct.unpack_from('<3f', data, o + 28),
+                        uv=struct.unpack_from('<2f', data, o + 40)))
     if fix_count == 0:
         return raw, lod_count, lod_verts[0]
     out = [None] * lod_verts[0]

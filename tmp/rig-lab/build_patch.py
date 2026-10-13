@@ -83,6 +83,7 @@ SDK = 'E:/Data/source/repos/WpfApp1/docs/HD2SDK-CommunityEdition-3.8.0'
 STRUCTURE_PATCH = r'E:\mod\Lunalice-Visible-Virtual-Model\9ba626afa44a3aa3.patch_0'
 STRUCTURE_UNIT = 0xD841B16544C8FBAE          # Stocky torso, a working HD2 unit
 DEFAULT_OUT = r'E:\mod\Lunalice-RigTest'
+NATIVE_DIR = r'E:\tmp\hd2-mgroot\orig'
 MODEL_KEY = 'custom/lunalice-rigtest'
 PATCH_NAME = '9ba626afa44a3aa3.patch_0'
 
@@ -395,54 +396,75 @@ def load_avatar():
     return ti
 
 
-def culling_boxes(mesh, ref, ref_verts):
-    """Both culling volumes are made to cover the WHOLE model.
+def culling_boxes(mesh, ref, ref_verts, policy='target'):
+    """Both culling volumes, plus the box each one publishes in `MeshInfo`.
 
-    The reference unit's volumes are torso-sized and head-sized because it *is*
-    a torso; ours is a full body, and an under-sized volume would let the engine
-    cull geometry that is still on screen.  Over-covering only costs a little
-    overdraw, so that is the safe direction.
+    `policy='target'` (default) reuses the reference unit's shells **verbatim**.
 
-    Each volume record stores, in this order, `min`, `max`, `radius` where
-    (measured on the donor, exactly):
-      * `min`/`max` are the culling mesh's own local vertex bbox -- the donor's
-        record 1 holds +/-0.314074/0.233464/0.236239 and its stream-3 mesh has
-        bit-for-bit that bbox; record 2 likewise matches stream 2.
-      * `radius` is the *norm of those vertices*, not the box half-diagonal:
-        every one of the donor's 24 culling vertices lies on a sphere
-        (|v| = 0.457118 for stream 3, 0.243766 for stream 2), so the stored value
-        is that constant.  We keep the topology and take max|v|, which is the
-        conservative choice once the box is rescaled non-uniformly.
+    Why this is the safe default, and why round 59 was wrong to rescale them:
+      * the repository's own `CanonicalAutoLodMappingExpander.cs:36` calls these
+        "optional cutouts, not interchangeable display LODs", and
+        `SameKeyCanonicalUnitRebuilder.cs:114` says a culling mesh with no
+        explicit source counterpart "must retain the target cutout".  They are
+        therefore *not* ordinary visibility bounds, so "bigger is safer" does
+        not hold -- a cutout covering the whole body masks the whole body.
+      * the shells are shared, standard assets: the vanilla DS-10 torso and the
+        Chiffon donor carry the *same* culling mesh id `0xa620a54c` with the same
+        box `+/-0.314074/0.233464/0.236239`, radius `0.457118`.  A shipped
+        whole-body mod unit keeps that torso-sized shell, so keeping it is the
+        configuration with field evidence behind it.
+
+    `policy='whole-body'` rescales both shells to wrap the entire model.  It is
+    kept only so an independent control can be produced without rewriting code;
+    it is not the default and is not evidence of anything.
+
+    Both policies report the box they actually produced, and `MeshInfo` is
+    written from those numbers (`hd2_unitbuild.mesh_bounds`), never copied.
     """
-    p = mesh['pos']
-    lo, hi = p.min(axis=0), p.max(axis=0)
+    out = {}
+    lo, hi = mesh['pos'].min(axis=0), mesh['pos'].max(axis=0)
     log('bounds   : min %s  max %s  (size %s)'
         % (np.round(lo, 4), np.round(hi, 4), np.round(hi - lo, 4)))
-    out = {}
     for tag, si, tf_idx in (('a', 3, 17), ('b', 2, 22)):
         tf = ref.transform_info.matrices[tf_idx]
-        v, mn, mx = UB.make_culling_box(ref_verts[tag], ref.stream_infos[si],
-                                        lo, hi, tf)
-        rad = float(np.linalg.norm(v, axis=1).max())
+        if policy == 'target':
+            v = np.asarray(ref_verts[tag], np.float64)
+            mn, mx = v.min(axis=0), v.max(axis=0)
+            rad = float(np.linalg.norm(v, axis=1).max())
+        else:
+            v, mn, mx = UB.make_culling_box(ref_verts[tag], ref.stream_infos[si],
+                                            lo, hi, tf)
+            rad = float(np.linalg.norm(v, axis=1).max())
         out['cull_%s_verts' % tag] = v
         out['cull_%s_indices' % tag] = ref_verts[tag + '_idx']
         out['cull_%s_normals' % tag] = ref_verts[tag + '_nrm']
         out['cull_%s_box' % tag] = (mn, mx, rad)
-        log('  culling %s: mesh tf=%d parent tf=%d -> local box min %s max %s '
-            'radius %.6f' % (tag.upper(), tf_idx, ref.transform_info.entries[tf_idx][1],
+        if policy == 'target':
+            out['cull_%s_raw' % tag] = ref_verts[tag + '_raw']
+        log('  culling %s (%s): mesh tf=%d parent tf=%d -> local box min %s max %s '
+            'radius %.6f' % (tag.upper(), policy, tf_idx,
+                             ref.transform_info.entries[tf_idx][1],
                              np.round(mn, 4), np.round(mx, 4), rad))
     out['cull_uv'] = ref_verts['uv']
     return out
 
 
 def reference_culling_geometry(ref):
-    """Decode the reference's two culling meshes (24 verts / 36 indices each)."""
+    """Decode the reference's two culling meshes (24 verts / 36 indices each).
+
+    Also hands back the raw vertex bytes: under the `target` policy we ship them
+    verbatim, because the reference carries three UV channels and we only know
+    the first one -- re-packing would silently alter a shell the manager's own
+    rebuilder deliberately leaves alone.
+    """
     out = {}
     for tag, si in (('a', 3), ('b', 2)):
         vs = ref.decode_vertices(si)
         out[tag] = np.asarray([v['position'] for v in vs], np.float64)
         out[tag + '_nrm'] = [v['normal'] for v in vs]
         out[tag + '_idx'] = ref.index_list(si)
+        n = ref.stream_infos[si].num_vertices * ref.stream_infos[si].vertex_stride
+        out[tag + '_raw'] = bytes(ref.gpu_vertex[si][:n])
     out['uv'] = np.asarray([[v['uv0'][0], v['uv0'][1]]
                             for v in ref.decode_vertices(2)], np.float32)
     return out
@@ -520,6 +542,41 @@ def pair_pieces(targets):
     return out
 
 
+def load_native_units(ids, directory):
+    """-> [{id, name, customization, unknown1, unknown2, source}]
+
+    `directory` holds the game's own Unit TOCs, as written by
+    `hd2mod gamedata extract asset e0a48d0be9a7453f <id> --output <directory>`.
+
+    We take the framework unit's 240-byte `customization_data` verbatim so the
+    replacement describes itself exactly like the unit it stands in for (body
+    type / slot / weight / piece type).  Round 59 wrote the Chiffon donor's blob
+    -- "Torso, Stocky, Undergarment, Medium" -- even under a different id, which
+    at best mislabels the unit and at worst places it in the wrong slot.
+
+    The two opaque entry fields stay 0: they are per-slot constants we have not
+    decoded, and inventing them would be worse than leaving the container
+    defaults.  A native id needs neither them nor the Lua registry.
+    """
+    out = []
+    for raw in ids:
+        key = int(raw, 16) if isinstance(raw, str) else int(raw)
+        path = os.path.join(directory, 'unit_0x%016x.toc' % key)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                'no framework unit at %s -- extract it with:\n'
+                '  hd2mod gamedata extract asset e0a48d0be9a7453f %016x '
+                '--game-data <游戏data目录> --output %s' % (path, key, directory))
+        u = U.Unit.read(open(path, 'rb').read(), b'')
+        out.append(dict(id=key, name=os.path.basename(path),
+                        customization=u.customization_data or b'',
+                        unknown1=0, unknown2=0, source=path))
+        log('  native unit 0x%016x: version 0x%08x, %d streams / %d meshes, '
+            'customization %d B' % (key, u.version, len(u.stream_infos),
+                                    len(u.mesh_infos), len(u.customization_data or b'')))
+    return out
+
+
 def rewrite_lod_group_list(ref, ref_cull, boxes):
     """Point the donor's two volume records at our model.
 
@@ -552,19 +609,43 @@ def rewrite_lod_group_list(ref, ref_cull, boxes):
 
 
 def build_patch_files(mesh, groups, textures, ref, ref_cull, bones, avatar, mesh_ids,
-                      out_dir, mode='same-key', targets=None):
+                      out_dir, mode='same-key', targets=None, cull_policy='target',
+                      native=None):
     unit_id = make_id(UNIT_ID_PREFIX, 'unit/lunalice-rigtest')
     u = UB.build_unit(mesh, [(g['material_id'], g['short_id']) for g in groups],
                       ref, avatar, mesh_ids)
     UB.check_unit(u, mesh, avatar)
 
-    u.lod_group_list_data = rewrite_lod_group_list(
-        ref, ref_cull, {'a': mesh['cull_a_box'], 'b': mesh['cull_b_box']})
+    if cull_policy == 'target':
+        # the donor's LOD group list already describes exactly these shells
+        log('lodgroup : kept verbatim (culling shells are the donor\'s own)')
+    else:
+        u.lod_group_list_data = rewrite_lod_group_list(
+            ref, ref_cull, {'a': mesh['cull_a_box'], 'b': mesh['cull_b_box']})
 
     gpu = UB.UW.serialize_gpu(u)          # fills the stream offsets first
     toc = UB.UW.serialize_unit(u)         # every unit below reuses this payload
 
-    if mode == 'fresh':
+    if mode == 'native':
+        # One unit, under a **real game** unit id, carrying that unit's own
+        # 240-byte `customization_data`.  The game resolves it by itself: no Lua
+        # registry, no manager configuration, and the manager CLI can label the
+        # mod as equipment because the id belongs to a known armour archive.
+        if not native:
+            raise ValueError('native mode needs at least one --native-unit')
+        units, pieces = [], []
+        for entry in native:
+            v = copy.copy(u)
+            if entry['customization']:
+                v.customization_data = entry['customization']
+            units.append(PW.Entry(U.UNIT_ID, entry['id'], UB.UW.serialize_unit(v),
+                                  b'', gpu, entry['unknown1'], entry['unknown2'],
+                                  note='unit:native 0x%016x (%s)'
+                                       % (entry['id'], entry['name'])))
+            pieces.append((3, 0, 0, entry['id']))
+        log('native   : %d unit id(s) from %s'
+            % (len(units), os.path.dirname(native[0]['source'])))
+    elif mode == 'fresh':
         units = [PW.Entry(U.UNIT_ID, unit_id, toc, b'', gpu, note='unit')]
         pieces = [(b, s, p, unit_id) for b, s, p in PIECE_POSITIONS]
     else:
@@ -609,17 +690,17 @@ def _material_bytes(group):
     return m.write()
 
 
-def write_protocol(out_dir, name, pieces, map_model):
-    lines = ['schema=2', 'revision=1', 'enabled=true',
+def write_protocol(out_dir, name, pieces, map_model, enabled=True, note=None):
+    lines = ['schema=2', 'revision=1', 'enabled=%s' % ('true' if enabled else 'false'),
              'model=%s,' % MODEL_KEY]
     for body, slot, ptype, uid in pieces:
         lines.append('model_piece=%s,%d,%016x,%d,%d,0'
                      % (MODEL_KEY, body, uid, slot, ptype))
     if map_model:
         lines.append('map_model=%s,%s' % (map_model, MODEL_KEY))
-    else:
-        lines.append('# map_model lines are intentionally omitted; add a real '
-                     'target Item ID after installing the Patch.')
+    if note:
+        for line in note.splitlines():
+            lines.append('# ' + line)
     path = os.path.join(out_dir, name + '.protocol')
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(lines) + '\n')
@@ -642,12 +723,26 @@ def main():
                     help='(reserved) bake the VMT bump maps into the normal slot')
     ap.add_argument('--max-tex', type=int, default=0)
     ap.add_argument('--map-model', default='')
-    ap.add_argument('--unit-mode', choices=('fresh', 'same-key', 'both'),
+    ap.add_argument('--unit-mode', choices=('fresh', 'same-key', 'both', 'native'),
                     default='fresh',
                     help='fresh: ONE unit holding the whole model, addressed by '
                          'the protocol (default, needs the Lua registry); '
                          'same-key: the same payload under the nine real game '
-                         'unit ids, so no registry is needed; both: emit both')
+                         'unit ids, so no registry is needed; both: emit both; '
+                         'native: ONE unit under a real game id you name with '
+                         '--native-unit, so the game resolves it itself')
+    ap.add_argument('--native-unit', action='append', default=[], metavar='0xID',
+                    help='real game Unit id to write the whole model under '
+                         '(repeatable; --unit-mode native)')
+    ap.add_argument('--native-dir', default=NATIVE_DIR,
+                    help='directory holding the game\'s own unit_0x<id>.toc '
+                         'files (see load_native_units)')
+    ap.add_argument('--cull-policy', choices=('target', 'whole-body'),
+                    default='target',
+                    help='target (default): reuse the reference unit\'s culling '
+                         'shells verbatim, as the manager\'s own rebuilder does; '
+                         'whole-body: rescale them to wrap the whole model '
+                         '(round-59 behaviour, kept only as a control)')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
 
@@ -661,7 +756,12 @@ def main():
     ref, bones = load_reference()
     avatar = load_avatar()
     ref_cull = reference_culling_geometry(ref)
-    targets = None if args.unit_mode == 'fresh' else load_same_key_targets()
+    targets = None if args.unit_mode in ('fresh', 'native') else load_same_key_targets()
+    native = (load_native_units(args.native_unit, args.native_dir)
+              if args.unit_mode == 'native' else None)
+    if args.unit_mode == 'native' and not native:
+        log('error: --unit-mode native needs at least one --native-unit 0x<id>')
+        return 2
 
     log('-' * 78)
     packs = S.Packs()
@@ -671,7 +771,7 @@ def main():
     log('-' * 78)
     mesh, nrm = build_mesh(pos, tris, wb, wv, src_pos, src_nrm, uv, tris4,
                            slot_to_group)
-    mesh.update(culling_boxes(mesh, ref, ref_cull))
+    mesh.update(culling_boxes(mesh, ref, ref_cull, args.cull_policy))
 
     mesh_ids = {k: H.murmur32_hash(('lunalice/%s/%s' % (args.name, k)).encode('utf-8'))
                 for k in ('lod0', 'lod1', 'lod2', 'lod3', 'cull_a', 'cull_b')}
@@ -689,9 +789,23 @@ def main():
                 os.remove(os.path.join(args.out, f))
     unit_id, pieces, res, toc_len, gpu_len, units = build_patch_files(
         mesh, groups, textures, ref, ref_cull, bones, avatar, mesh_ids, args.out,
-        mode=args.unit_mode, targets=targets)
+        mode=args.unit_mode, targets=targets, cull_policy=args.cull_policy,
+        native=native)
 
-    proto = write_protocol(args.out, args.name, pieces, args.map_model)
+    if args.unit_mode == 'native':
+        # A native id needs no runtime mapping at all, so the protocol is
+        # written disabled: it stays as a record of what was built without
+        # asking the Lua registry to remap anything.
+        proto = write_protocol(
+            args.out, args.name, pieces, '', enabled=False,
+            note='native replacement: the game resolves unit 0x%016x itself.\n'
+                 'No runtime mapping is required or wanted; this file is a '
+                 'record only.' % native[0]['id'])
+    else:
+        proto = write_protocol(args.out, args.name, pieces, args.map_model,
+                               note=None if args.map_model else
+                               'map_model lines are intentionally omitted; add a '
+                               'real target Item ID after installing the Patch.')
     info = dict(
         schema='hd2mod.rig-lab-build',
         generatedAt=time.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -699,7 +813,10 @@ def main():
         outputPatch=res['toc'],
         modelKey=MODEL_KEY,
         unitMode=args.unit_mode,
+        cullPolicy=args.cull_policy,
         unitId='%016x' % unit_id,
+        nativeUnits=([dict(id='%016x' % e['id'], customizationBytes=len(e['customization']),
+                           source=e['source']) for e in native] if native else []),
         unitCount=len(units),
         unitIds=sorted('%016x' % e.file_id for e in units),
         pieceCount=len(pieces),
