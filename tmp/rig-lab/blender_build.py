@@ -126,6 +126,17 @@ def dedupe(names):
 
 
 def skin(ob, arm, names, w_bone, w_val, nb):
+    """Write the vertex groups EXACTLY as they arrive.
+
+    Round 57: this used to do `np.round(w, 3)`.  Rounding each influence on its
+    own does not preserve the sum (0.333333 x3 -> 0.999), and the SDK addon's
+    export path then has to renormalise in float, after which the cast to
+    vec4_half no longer lands on an exact decoded sum (measured: 60074 of 121704
+    vertices, worst 3.662e-04).  dump_blender now snaps every influence onto the
+    1/2048 grid and merges duplicate bones first, so the values that arrive here
+    are already exact: their float32 sum is 1.0 and so is their float16 sum.
+    Re-rounding them would throw that away.
+    """
     vgs = [ob.vertex_groups.new(name=nm) for nm in names]
     for slot in range(w_bone.shape[1]):
         b = w_bone[:, slot]
@@ -134,8 +145,10 @@ def skin(ob, arm, names, w_bone, w_val, nb):
             continue
         bidx = b[m].astype(np.int64)
         widx = np.nonzero(m)[0]
-        wgt = np.round(w_val[:, slot][m].astype(np.float64), 3)
-        key = bidx * 2001 + np.round(wgt * 1000.0).astype(np.int64)
+        wgt = w_val[:, slot][m].astype(np.float64)
+        # every weight is k/2048, so this key is exact, not a rounding of one
+        units = np.round(wgt * 2048.0).astype(np.int64)
+        key = bidx * 2049 + units
         order = np.argsort(key, kind='stable')
         key, widx = key[order], widx[order]
         cut = np.nonzero(np.diff(key))[0] + 1
@@ -143,7 +156,8 @@ def skin(ob, arm, names, w_bone, w_val, nb):
         ends = np.concatenate((cut, [len(key)]))
         for s, e in zip(starts, ends):
             u = int(key[s])
-            b_i, w = int(u // 2001), (u % 2001) / 1000.0
+            b_i, k = int(u // 2049), int(u % 2049)
+            w = k / 2048.0
             if 0 <= b_i < nb and w > 0.0:
                 vgs[b_i].add(widx[s:e].tolist(), float(w), 'REPLACE')
     ob.parent = arm

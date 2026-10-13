@@ -16,6 +16,7 @@ What goes in:
 
 usage: dump_blender.py
 """
+import hashlib
 import json
 import os
 import sys
@@ -25,6 +26,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hd2_style as H
 import patch_view as PV
+import weight_half4 as W48
 
 BH = '../pb-ref/HD2PhysBone-ReferenceSource-main/kit/tools/bonehash.txt'
 PP = '../pb-ref/HD2-BatchTool-main/assets/body_pose_profile.json'
@@ -207,12 +209,28 @@ def main():
     nv = len(r['verts'])
     print('mesh: %d verts / %d tris' % (nv, len(tris)))
 
+    names, heads, axes, rolls, lengths, parents = bone_table(r)
+
     # ---- weights: source bone index -> HD2 bone index ----------------------
+    # Round 57: this is where the weights the game will actually read are
+    # decided, so the SDK's encoding contract is applied HERE, once.  Two
+    # distinct source bones routinely resolve onto one HD2 bone, and the
+    # .blend writer adds each slot with REPLACE -- so duplicates must be
+    # summed before anything is written.  After that every influence is snapped
+    # to k/2048, which makes the float32 sum exactly 1 (so Blender's export-time
+    # normalise is a no-op) and the float16 sum exactly 1 as well.
     pos = {h['index']: i for i, h in enumerate(r['hd2'])}
+    name_to_idx = {nm: i for i, nm in enumerate(names)}
     wb = np.full((nv, 3), -1, dtype=np.int32)
     wv = np.zeros((nv, 3), dtype=np.float32)
     orphan = 0
+    merged_v = 0
+    zero_v = 0
+    dropped = []
+    worst_move = 0.0
+    worst_v = -1
     for k, v in enumerate(r['verts']):
+        raw_w, raw_k = [], []
         for j in range(3):
             w = float(v['w'][j])
             if w <= 0.0:
@@ -221,12 +239,40 @@ def main():
             if h is None or h not in pos:
                 orphan += 1
                 continue
-            wb[k, j] = pos[h]
-            wv[k, j] = w
-    print('weight slots: %d filled, %d unresolved'
-          % (int((wb >= 0).sum()), orphan))
-
-    names, heads, axes, rolls, lengths, parents = bone_table(r)
+            raw_w.append(w)
+            raw_k.append(names[pos[h]])
+        if not raw_w:
+            zero_v += 1
+            continue
+        if len(set(raw_k)) < len(raw_k):
+            merged_v += 1
+        before = {}
+        for w, nm in zip(raw_w, raw_k):
+            before[nm] = before.get(nm, 0.0) + w
+        q, qk, dr = W48.quantize_half4(raw_w, raw_k, max_influences=3)
+        if not W48.verify_half_closed(list(q) + [0.0]):
+            raise AssertionError('vertex %d did not close: %s' % (k, q))
+        for j in range(3):
+            if q[j] <= 0.0:
+                continue
+            wb[k, j] = name_to_idx[qk[j]]
+            wv[k, j] = q[j]
+            d = abs(q[j] - before[qk[j]])
+            if d > worst_move:
+                worst_move, worst_v = d, k
+        dropped.extend(dr)
+    print('weight slots: %d filled, %d unresolved' % (int((wb >= 0).sum()), orphan))
+    print('half4 encoding: %d vertices had a duplicate HD2 bone merged, '
+          '%d unweighted, %d influences dropped, worst single-weight move '
+          '%.10f (v%d)' % (merged_v, zero_v, len(dropped), worst_move, worst_v))
+    if dropped:
+        raise AssertionError('the 3-slot layout dropped %d influence(s) with '
+                             'total mass %.6g; widen it to 4 before shipping'
+                             % (len(dropped), sum(w for _k, w in dropped)))
+    if zero_v:
+        raise AssertionError('%d vertices ended up with no influence at all; '
+                             'an unweighted rigid part needs an explicit anchor'
+                             % zero_v)
 
     arrays = dict(
         ours_bind=np.asarray(r['out'], dtype=np.float32),
@@ -264,7 +310,45 @@ def main():
           % (len(refs), base, len(rt)))
 
     np.savez(os.path.join(OUT, 'model.npz'), **arrays)
+    # Round 57 (expert WEIGHT_TRANSFER_BRIEF.md §10.8 step 1): freeze the inputs
+    # this build was made from, so a later weight change cannot be confused with
+    # a geometry change.
+    def sha256_file(p):
+        h = hashlib.sha256()
+        with open(p, 'rb') as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def rest_bytes(rest):
+        """`rest` is {hd2 bone index: 4x4}, so hash it key-sorted and dense."""
+        if isinstance(rest, dict):
+            items = sorted(rest.items())
+            blob = np.concatenate([np.asarray(v, np.float64).ravel()
+                                   for _k, v in items])
+            keys = np.asarray([k for k, _v in items], np.int64)
+        else:
+            blob = np.asarray(rest, np.float64).ravel()
+            keys = np.zeros(0, np.int64)
+        return np.ascontiguousarray(keys).tobytes() + blob.tobytes()
+
+    fingerprint = dict(
+        geometry=hashlib.sha256(np.ascontiguousarray(
+            arrays['ours_bind'], dtype=np.float32).tobytes()).hexdigest(),
+        vertices=int(nv), triangles=int(len(tris)),
+        bone_count=len(names),
+        rest_shipped=hashlib.sha256(rest_bytes(r['rest_shipped'])).hexdigest(),
+        weights=hashlib.sha256(
+            np.ascontiguousarray(wb).tobytes()
+            + np.ascontiguousarray(wv).tobytes()).hexdigest(),
+        scripts={f: sha256_file(os.path.join(here, f))
+                 for f in ('hd2_style.py', 'dump_blender.py', 'blender_build.py',
+                           'weight_half4.py')},
+    )
     json.dump(dict(model=MODEL, bones=names, refs=refs,
+                   fingerprint=fingerprint,
                    params=dict(align='yaw', spine_map='mesh',
                                fallback='region', leg_tilt=5.7,
                                leg_splay=4.0, skeleton='native',
@@ -274,13 +358,16 @@ def main():
                                arm_upper_gain=gain,
                                arm_elbow_open=ARM_ELBOW_OPEN,
                                arm_hand_tilt=ARM_HAND_TILT,
-                               arm_finger_pose=ARM_FINGER_POSE),
+                               arm_finger_pose=ARM_FINGER_POSE,
+                               weight_encoding='half4-1/2048-largest-remainder'),
                    metrics=plain(r['metrics'])),
               open(os.path.join(OUT, 'meta.json'), 'w', encoding='utf-8'),
               indent=1, ensure_ascii=False)
     for f in ('model.npz', 'meta.json'):
         p = os.path.join(OUT, f)
         print('  [written] %s  (%.1f MB)' % (p, os.path.getsize(p) / 1e6))
+    print('  [frozen] geometry %s' % fingerprint['geometry'][:16])
+    print('  [frozen] weights  %s' % fingerprint['weights'][:16])
 
 
 if __name__ == '__main__':

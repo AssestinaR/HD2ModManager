@@ -16,7 +16,7 @@
 
 ## 模型迁移目标与当前状态
 - 固定数学操作流：源 T-pose 几何摆成参照 A-pose 变体 → 后续重刷权重 → legacy 包 → 用户进游戏验收。
-- 2026-10-13 用户确认手臂问题已解决、手掌与参照基本重叠、各指根已对齐；当前只剩手指自动蜷曲，目标放松半虚握，拇指自然握持。保持已验收身体/手掌不动。专家交接 tmp/rig-lab/FINGER_RETARGET_BRIEF.md §10。
+- 2026-10-13 用户确认全部摆姿结束，进入权重阶段，尚未进游戏。冻结最终几何；摆姿使用的源权重与后续运行时权重分开，避免新权重重跑摆姿移动已验收手部。专家权重指导见 WEIGHT_TRANSFER_BRIEF.md §10。
 - 参数以 dump_blender.py 为准：yaw、spine_map=mesh、fallback=region、leg_tilt=5.7、leg_splay=4、mesh_shift=(0,-.100,-.090)、upper_scale=1.12/pivot_z=1.15/blend=.45、head_scale=8/7、upper_gain=.05、elbow_open=6.5、**hand_tilt=3**（第55轮用户要求；他说"7度改3度"但实际 ship 的是10度，`zoey-before-hand7.blend` 命名有歧义内容是10度——用户目标绝对值，故取3）、**finger_pose=True**。旧局部指标不是否决依据。
 - 手指残余摆姿（第55轮，hd2_style §4f，专家§10.4-10.7）：源手是摊平T-pose（十链实测0.00°弯曲），HD2 原生手是放松A-pose；管线把手当前臂刚性延长件 ⇒ 手指继承摊平且 HD2 指端关节在我们网格外 42-48mm。修法=在**最终网格**上逐指逐节旋转到 HD2 骨向，`Rl=min_arc(s[k], Q.T@t[k])`，`Q=Gp[:3,:3]`（**漏掉 Q 共轭错 11.3-14.3°**）；`J` 必须过 mesh_shift+上身缩放的 `post`，不能用裸 `rest_sym`；末节无子骨取 `rest_hd2[last][:3,0]`。实测：未触及顶点 max|d|=4.4e-16、指根不动、段长差≤1e-14、残差0.00°、纯单骨 Kabsch 0.00000mm、指端关节距 42-48→1.1-5.0mm。**已验收的 palm/wrist/root 逐位不动。**
 - arm_scratch=True 时旧 arm_fit/arm_up/arm_rot 等分支跳过；apose=False 未必关闭 scratch。消融须核对实际分支。
@@ -33,16 +33,22 @@
 
 ## 权重（第56轮调研，专家交接 WEIGHT_TRANSFER_BRIEF.md）
 - 我们的权重来源：导出阶段用 `snap_body()`/`resolve()` 按**名字/区域**表把源骨改名成 HD2 骨名；`spine_map='mesh'`（Spine→spine2，因源关节在区域底部、HD2 在中心），fallback=region+肢体测试。
-- **我们权重无硬伤**：121704 顶点、归一 min=p50=max=1.000000、影响数 `[0,49403,43705,28596,0]`、均值1.829、用骨49/107、**真硬缝0条**（274577 边中主导骨变化 4686=1.71%，但无一共享<1/3影响）。
-- **🔴 半精度闭合（我第一版判据错了）**：`round(w*2048)` 当 half 代理是**错的**（[0.25,0.5) 步长2^-12）。真实判据 = SDK `sdk-raw/hd2_system_skin_weights.py::normalize_half4`：要求 `math.fsum(half(w))==1` **精确成立**。实测 **49.417% 顶点不成立**（max偏差3.662e-4），SDK 助手可全修（最大单权重改动3.624e-4<1/1024）。量级 0.24mm ⇒ 不是视觉问题，是引擎接受/护甲裂缝问题。**C# 侧同样缺**：`CanonicalMeshPreparation.TryNormalizeSkinning` 只 float 归一后直接 `HalfToUInt16Bits`。
-- **🔴 hips vs spine1**：实测 `boss`/`hips`/`spine1` head 完全相同 (0,−0.0215,+0.9735)，`hips` 与 `spine1` 是 boss 下**兄弟**，分别驱动**腿链**与**躯干链**。我们**从不用 spine1**，参考躯干用39.9%/髋18.1%，差异 22317 顶点(18.3%)。**静止重合 ⇒ 所有静态检查都瞎，只在骨盆/脊柱相对转动时显形。** 离线判不了，已列专家问题 Q2。
+- 121704顶点，float归一通过，用骨49/107；旧“真硬缝0/权重无硬伤”结论无效：探针仅计共享骨集合，不看比例或跨壳拆点。独立边权重L1 p99=.615/max1.855，974边>1仅作动作复查线索，不等于裂缝。
+- **🔴 半精度闭合（我第一版判据错了）**：`round(w*2048)` 当 half 代理是**错的**（[0.25,0.5) 步长2^-12）。真实判据 = SDK `sdk-raw/hd2_system_skin_weights.py::normalize_half4`：要求 `math.fsum(half(w))==1` **精确成立**。实测 **49.417% 顶点不成立**（max偏差3.662e-4），SDK 助手可全修（最大单权重改动3.624e-4<1/1024）。此为工具输出契约，尚无证据证明不闭合会被引擎拒绝或必致裂缝。**C# 侧同样缺**：`CanonicalMeshPreparation.TryNormalizeSkinning` 只 float 归一后直接 `HalfToUInt16Bits`。
+- **🔴 hips vs spine1**：实测 `boss`/`hips`/`spine1` head 完全相同 (0,−0.0215,+0.9735)，`hips` 与 `spine1` 是 boss 下**兄弟**，分别驱动**腿链**与**躯干链**。我们**从不用 spine1**，参考躯干用39.9%/髋18.1%，差异 22317 顶点(18.3%)。真实动画行为尚未知，可离线解码动画比较 `G_b(t)@inv(B_b)`；body_pose_profile不含两骨。out_idle实际为绑定矩阵代入，不是真实待机。禁止整片下半身hips→spine1。
 - 参考骨表**有 spine1、无 clavicle**；我们**有 clavicle(686顶点)、无 spine1**。差异几乎全是相邻骨差一格（head→neck 19.4%、hips→spine1 16.7%、spine2→spine1 1.6%…），唯一跨远的是 head→hips 546个(d50 66.6mm，双马尾下端)。主导骨一致率 53.7%（5mm 内 63.9%）。
-- 几何吻合：我们→参考 **p50 7.8 / p90 20.8 / p99 56.3 / max 141.8 mm**，5mm 内29.8%、20mm 内89.3%。约 10% 顶点 >20mm ⇒ 最近点转移会选错表面；参考自己设了 `--max-residual 0.05` 整块拒绝门槛。
+- 几何吻合：我们→参考 **p50 7.8 / p90 20.8 / p99 56.3 / max 141.8 mm**，5mm 内29.8%、20mm 内89.3%。距离分布不是误配率；近邻也能跨指/跨壳配错。参考5cm门槛不是通用标准。
 - 参考的 `weight_transfer.py` **对我们不可直接用**（是"他们自己的源 blend→mod"，依赖 DEFAULT_GLB/MOD=None 的自有工程）；走照搬得自己写转移。
-- 双马尾：`source_extra_74/77` 各~245 顶点在 z0.759–1.042，head 主导 868 顶点（z<1.40）邻居 108 次检查 100% 也是 head ⇒ **连通的双马尾下端**，非采样错误；离 head 关节 1.011m，头转30°摆动约0.5m。
-- Slim/Stocky 变体几何完全相同（同名 tag 下 p50/p90 一致到 0.1mm）⇒ 不存在比错体型的系统偏移（虽然我们混着取）。
+- 双马尾低垂head主导868点；一环邻居同head不能证明整束连通。转头位移应按到旋转轴垂距；竖轴30°刚性估算p50=177.7/max245.6mm，非游戏实测。23664个head→neck差异中z<1.40为0，不能全标成长发。
+- Slim/Stocky只有距离分位数一致，不能据此证明几何相同或排除变体偏差。
+- 专家推荐六区+附件身份+同侧/同指三角面重心转移+置信度回退；区域交界留渐变，不凭骨更近判对。长发单独识别再显式混head/neck/躯干，首版legacy三档比较，不承诺碰撞。先腰腹局部、附件，再手部动作、尽早实机。简单2048最大余数half方案经121704行+10000随机验证；C#示例在§10.7，未编译接入，非SDK逐位等价。
 - 探针：`_probe_weightaudit.py` / `_probe_halfclosure.py` / `_probe_refweights.py` / `_probe_refpalette.py` / `_probe_refalign.py` / `_probe_weightcompare.py` / `_probe_headdom.py` / `_probe_variants.py`。
 - **度量口径**：判断"影响距离"要用**到骨头（关节枢轴）**的距离，**不能用骨段**（HD2 子节点侧向，child-direction deviation p95=91.45°，会把正确的骨报成150mm）。到关节 p50 238.6mm 这类数字**不是缺陷**（LBS 本就允许远骨，如整腿挂 hips）。
+- **专家路线 D（§10）**：六区域 `body_region` + 附件身份 `attachment_class` 双层软掩码；转移用**最近三角面+重心插值**（非最近顶点）、置信度回退 `W=(1-c)*Wbase+c*Wref`、同骨先合并再top4；不做全局ICP。**拒绝全量最近点照搬**。顺序：冻结hash→**编码合法性**→分区预览→腰腹局部→长发三档(a_tip 1.0/0.7/0.4)+袖子→手部动作→实机；**不要等完美系统才第一次进游戏**。
+- **专家纠正**：距离分位数**不是**误配率（要量到三角面）；共享骨名≠平滑（按骨身份合并后边L1 p99=.6150/max1.8546，974条>1 只是复查线索）；**`head→neck` 23664 点里 z<1.40 的数目=0**（我"全是双马尾"错了）；`out_idle` 不是真实待机帧（hd2_style.py:1878 用 `rest_hd2@inv(rest_shipped)`）；长发摆动看到旋转轴**垂距**（868点转头30°刚性中位177.7/max245.6mm）；半精度闭合是**工具契约**不是已证实的引擎拒收条件；相同p50/p90不能证明Slim/Stocky几何相同；一环邻居不证明发束连通。
+- **🔴 打包路径**：= **Blender + HD2SDK 插件** `docs/HD2SDK-CommunityEdition-3.8.0`（`helldiver2.export_patch`）。BatchTool 无导出器。SDK `stingray/unit.py::GetMeshData` 调 `vertex_group_normalize_all`+`limit_total(4)` 后原样写 weight，**无 half4 闭合**；且要求 **材质名必须是整数**（`int(material.name)`，否则抛错）。**`zoey.blend` 是诊断场景不是可导出场景**（12 个材质全非数字名、无UV/顶点色/贴图、无 `Z_ObjectID`/`MeshInfoIndex`/`BoneInfoIndex`/`matslot<N>`）。lab 管线**只带几何+权重，不带 UV/材质/贴图**。
+- **🔴 权重编码已修好（第57轮）**：`weight_half4.py`（`merge_duplicate_bones`+`quantize_half4` 1/2048 最大余数+`verify_half_closed`）接进 `dump_blender.py`；`blender_build.py` 去掉 `np.round(w,3)`。**关键**：k/2048 在 half 里精确可表示 ⇒ float32 和精确=1 ⇒ SDK 的 `vertex_group_normalize_all` 变空操作 ⇒ half 和精确=1，**不必改 SDK 插件**。实测：合并重复骨 29635（24.35%，其中 **5761 顶点还带另一根骨 ⇒ 原 REPLACE 静默改比例**）、最坏单权重改动 0.0003252174、新增影响 0；.blend 端到端 **121704/121704 half 和精确=1**、重复骨 0、非格点 0。几何逐位未变（hash `05e8f5f876a2c32e`）。`meta.json` 新增 `fingerprint`（geometry/weights/rest/scripts 的 sha256）。
+- **探针新增**：`weight_half4.py` / `_probe_exportchain.py` / `_verify_blendweights.py`（Blender 里读 .blend 顶点组）/ `_inspect_blend.py`。
 
 ## 坐标、参照与数据
 - HD2 +X角色右、+Y前、+Z上；左肢在-X。单位米。原生踝不在脚心。
