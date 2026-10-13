@@ -87,6 +87,20 @@ NATIVE_DIR = r'E:\tmp\hd2-mgroot\orig'
 MODEL_KEY = 'custom/lunalice-rigtest'
 PATCH_NAME = '9ba626afa44a3aa3.patch_0'
 
+# ---- source side (round 63: parameterised so a second pack can be run) -------
+# Everything below is a DEFAULT.  `--source-vpk` / `--source-model` / `--addons`
+# / `--pack` / `--model-vpk` override them, so the same script converts any
+# L4D2 addon model.  Nothing here is inferred from the pack's *name*: the
+# material-group letters differ between packs (Lunalice D=发色/E=瞳色/F=描边,
+# Lilium D=描边/E=发色/F=瞳色) and the tool must not care.
+SOURCE_VPK = S.ADDONS + S.MODEL_VPK
+SOURCE_MODEL = 'survivor_teenangst'
+SOURCE_ADDONS = S.ADDONS
+SOURCE_MODEL_VPK = S.MODEL_VPK
+# `mesh_ids` namespace.  Only affects the three LOD + two culling mesh hashes,
+# which are per-unit-private, so it just has to be unique per model.
+MESH_NAMESPACE = 'lunalice'
+
 # ------------------------------------------------------------------ same-key
 # The nine **real game** unit ids behind the visible pieces of the armour.
 #
@@ -178,13 +192,16 @@ def _sizes(path):
 
 
 # ------------------------------------------------------------------ pipeline
-def load_pipeline():
-    d = np.load(NPZ)
-    meta = json.load(open(META, encoding='utf-8'))
+def load_pipeline(npz=None, meta_path=None):
+    npz = npz or NPZ
+    if meta_path is None:
+        meta_path = os.path.join(os.path.dirname(npz), 'meta.json')
+    d = np.load(npz)
+    meta = json.load(open(meta_path, encoding='utf-8'))
     need = ('ours_bind', 'tris', 'w_bone', 'w_val')
     for k in need:
         if k not in d:
-            raise KeyError('%s is missing %r' % (NPZ, k))
+            raise KeyError('%s is missing %r' % (npz, k))
     pos = np.ascontiguousarray(d['ours_bind'], np.float32)
     tris = np.ascontiguousarray(d['tris'], np.int64)
     wb = np.ascontiguousarray(d['w_bone'], np.int32)
@@ -194,10 +211,11 @@ def load_pipeline():
     return pos, tris, wb, wv, meta
 
 
-def load_source(pos, tris):
+def load_source(pos, tris, vpk=None, model=None):
     """Source VVD data: authored normals, UVs and per-triangle material index."""
-    vpk = S.ADDONS + S.MODEL_VPK
-    mdl_path, mdl, verts, tris4, _src, _short = ST.load_source(vpk, 'survivor_teenangst')
+    vpk = vpk or SOURCE_VPK
+    model = model or SOURCE_MODEL
+    mdl_path, mdl, verts, tris4, _src, _short = ST.load_source(vpk, model)
     tris4 = np.asarray(tris4, np.int64)
     if tris4.shape[1] < 4:
         raise RuntimeError('source triangles carry no material index')
@@ -631,8 +649,13 @@ def rewrite_lod_group_list(ref, ref_cull, boxes):
 
 def build_patch_files(mesh, groups, textures, ref, ref_cull, bones, avatar, mesh_ids,
                       out_dir, mode='same-key', targets=None, cull_policy='target',
-                      native=None, template='basic'):
-    unit_id = make_id(UNIT_ID_PREFIX, 'unit/lunalice-rigtest')
+                      native=None, template='basic', unit_name='lunalice-rigtest'):
+    # The Unit id MUST be derived from this build's own name.  It used to be the
+    # literal `unit/lunalice-rigtest`, which meant every build -- whatever the
+    # source pack -- landed on the SAME unit id, so two installed packs would
+    # silently overwrite each other (same asset key, later patch wins) and both
+    # models would render whichever payload survived.
+    unit_id = make_id(UNIT_ID_PREFIX, 'unit/' + unit_name)
     u = UB.build_unit(mesh, [(g['material_id'], g['short_id']) for g in groups],
                       ref, avatar, mesh_ids)
     UB.check_unit(u, mesh, avatar)
@@ -733,14 +756,16 @@ def _material_bytes(group, template):
     return m.write()
 
 
-def write_protocol(out_dir, name, pieces, map_model, enabled=True, note=None):
+def write_protocol(out_dir, name, pieces, map_model, enabled=True, note=None,
+                   model_key=None):
+    model_key = model_key or MODEL_KEY
     lines = ['schema=2', 'revision=1', 'enabled=%s' % ('true' if enabled else 'false'),
-             'model=%s,' % MODEL_KEY]
+             'model=%s,' % model_key]
     for body, slot, ptype, uid in pieces:
         lines.append('model_piece=%s,%d,%016x,%d,%d,0'
-                     % (MODEL_KEY, body, uid, slot, ptype))
+                     % (model_key, body, uid, slot, ptype))
     if map_model:
-        lines.append('map_model=%s,%s' % (map_model, MODEL_KEY))
+        lines.append('map_model=%s,%s' % (map_model, model_key))
     if note:
         for line in note.splitlines():
             lines.append('# ' + line)
@@ -761,6 +786,30 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default=DEFAULT_OUT)
     ap.add_argument('--name', default='lunalice-rigtest')
+    # ---- pipeline input (round 63: lets a second source pack be converted) --
+    ap.add_argument('--npz', default=NPZ,
+                    help='the dump_blender.py output to package '
+                         '(default: out/blender/model.npz)')
+    ap.add_argument('--meta', default=None,
+                    help='its meta.json (default: <npz dir>/meta.json)')
+    ap.add_argument('--source-vpk', default=SOURCE_VPK,
+                    help='L4D2 model VPK whose VVD/VTX/MDL supply normals, UVs and '
+                         'the per-triangle material index (default: Lunalice_Zoey)')
+    ap.add_argument('--source-model', default=SOURCE_MODEL,
+                    help='model stem inside --source-vpk (default: survivor_teenangst)')
+    ap.add_argument('--addons', default=SOURCE_ADDONS,
+                    help='directory holding the L4D2 addon VPKs')
+    ap.add_argument('--pack', action='append', default=None, metavar='NAME.vpk',
+                    help='a VPK (relative to --addons) that may supply a VMT or VTF. '
+                         'Repeatable; later packs override earlier ones by path, '
+                         'which is exactly how the colour/tint variants work. '
+                         'Default: the Lunalice base set.')
+    ap.add_argument('--model-vpk', default=SOURCE_MODEL_VPK,
+                    help='which of --pack is the model itself (default: Lunalice_Zoey)')
+    ap.add_argument('--model-key', default=MODEL_KEY,
+                    help='the protocol model key (default: custom/lunalice-rigtest)')
+    ap.add_argument('--mesh-ns', default=MESH_NAMESPACE,
+                    help='namespace for the LOD/culling mesh hashes')
     ap.add_argument('--materials', choices=('basic', 'flat'), default='basic')
     ap.add_argument('--template', choices=('basic', 'basic+', 'advanced'),
                     default='basic',
@@ -801,11 +850,12 @@ def main():
 
     t0 = time.time()
     log('=' * 78)
-    log('build_patch.py -- %s -> %s' % (os.path.basename(NPZ), args.out))
+    log('build_patch.py -- %s -> %s' % (os.path.basename(args.npz), args.out))
     log('=' * 78)
 
-    pos, tris, wb, wv, meta = load_pipeline()
-    mdl, src_pos, src_nrm, uv, tris4 = load_source(pos, tris)
+    pos, tris, wb, wv, meta = load_pipeline(args.npz, args.meta)
+    mdl, src_pos, src_nrm, uv, tris4 = load_source(
+        pos, tris, args.source_vpk, args.source_model)
     ref, bones = load_reference()
     avatar = load_avatar()
     ref_cull = reference_culling_geometry(ref)
@@ -817,7 +867,9 @@ def main():
         return 2
 
     log('-' * 78)
-    packs = S.Packs()
+    packs = S.Packs(addons=args.addons, packs=args.pack, model_vpk=args.model_vpk)
+    log('source   : %s :: %s' % (os.path.basename(args.source_vpk), args.source_model))
+    log('packs    : %d VPK(s) under %s' % (len(args.pack or S.PACK_VPKS), args.addons))
     groups, textures, slot_to_group = build_materials(
         mdl, tris4, packs, args.materials, args.max_tex, args.normal_maps,
         pbr_b=args.pbr_b)
@@ -829,7 +881,7 @@ def main():
                            slot_to_group)
     mesh.update(culling_boxes(mesh, ref, ref_cull, args.cull_policy))
 
-    mesh_ids = {k: H.murmur32_hash(('lunalice/%s/%s' % (args.name, k)).encode('utf-8'))
+    mesh_ids = {k: H.murmur32_hash(('%s/%s/%s' % (args.mesh_ns, args.name, k)).encode('utf-8'))
                 for k in ('lod0', 'lod1', 'lod2', 'lod3', 'cull_a', 'cull_b')}
     if len(set(mesh_ids.values())) != 6:
         raise AssertionError('mesh id collision: %s' % mesh_ids)
@@ -846,7 +898,7 @@ def main():
     unit_id, pieces, res, toc_len, gpu_len, units = build_patch_files(
         mesh, groups, textures, ref, ref_cull, bones, avatar, mesh_ids, args.out,
         mode=args.unit_mode, targets=targets, cull_policy=args.cull_policy,
-        native=native, template=args.template)
+        native=native, template=args.template, unit_name=args.name)
 
     if args.unit_mode == 'native':
         # A native id needs no runtime mapping at all, so the protocol is
@@ -856,18 +908,21 @@ def main():
             args.out, args.name, pieces, '', enabled=False,
             note='native replacement: the game resolves unit 0x%016x itself.\n'
                  'No runtime mapping is required or wanted; this file is a '
-                 'record only.' % native[0]['id'])
+                 'record only.' % native[0]['id'], model_key=args.model_key)
     else:
         proto = write_protocol(args.out, args.name, pieces, args.map_model,
                                note=None if args.map_model else
                                'map_model lines are intentionally omitted; add a '
-                               'real target Item ID after installing the Patch.')
+                               'real target Item ID after installing the Patch.',
+                               model_key=args.model_key)
     info = dict(
         schema='hd2mod.rig-lab-build',
         generatedAt=time.strftime('%Y-%m-%dT%H:%M:%S'),
         sourcePatch=STRUCTURE_PATCH,
         outputPatch=res['toc'],
-        modelKey=MODEL_KEY,
+        modelKey=args.model_key,
+        sourceVpk=args.source_vpk,
+        sourceModel=args.source_model,
         unitMode=args.unit_mode,
         cullPolicy=args.cull_policy,
         materialTemplate=args.template,

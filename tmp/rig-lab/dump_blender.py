@@ -14,8 +14,15 @@ What goes in:
   REF_*      the reference patch units, straight from out/patchdump/*.obj
   armature   HD2 native rest: head / bone axis / roll axis / parent / length
 
-usage: dump_blender.py
+usage:
+    dump_blender.py [--vpk PATH] [--model STEM] [--out DIR] [--gain M]
+                    [--head-scale F] [--elbow-open DEG] [--hand-tilt DEG]
+                    [--finger-pose {all,none,list}]
+
+Every flag defaults to the value that produced the shipped Lunalice build, so
+a bare `dump_blender.py` reproduces it byte for byte.
 """
+import argparse
 import hashlib
 import json
 import os
@@ -31,10 +38,14 @@ import weight_half4 as W48
 BH = '../pb-ref/HD2PhysBone-ReferenceSource-main/kit/tools/bonehash.txt'
 PP = '../pb-ref/HD2-BatchTool-main/assets/body_pose_profile.json'
 TOC = 'avatar/unit_0x4d1c334d294dfa97.toc'
-VPK = ('D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/'
-       'Lunalice_Zoey.vpk')
-OUT = 'out/blender'
-MODEL = 'survivor_teenangst'
+# Defaults only -- every one of these is overridable from the command line so
+# the SAME script turns any L4D2 addon model into `model.npz`.  Round 63 added
+# the CLI precisely so a second source pack (Lilium_Sancta) could be run through
+# the identical pipeline without editing this file.
+DEFAULT_VPK = ('D:/SteamLibrary/steamapps/common/Left 4 Dead 2/left4dead2/addons/'
+               'Lunalice_Zoey.vpk')
+DEFAULT_OUT = 'out/blender'
+DEFAULT_MODEL = 'survivor_teenangst'
 # ONE source of truth for the global mesh shift (x, y, z).  Round 51: 3 cm more
 # drop than the original 6 cm, so the knee AND the shoulder come down together.
 MESH_SHIFT = (0.0, -0.100, -0.090)
@@ -184,26 +195,70 @@ def bone_table(r):
     return names, heads, axes, rolls, lengths, parents
 
 
-def main():
-    os.makedirs(OUT, exist_ok=True)
+def _finger_pose_arg(a):
+    """CLI string -> `retarget`'s `arm_finger_pose` value.
+
+    'none' / '' / '0' / 'false' -> None (skip the pass)
+    'all' / '1' / 'true'        -> True (every finger)
+    anything else               -> the comma list, e.g. 'middle' or 'l_index,r_pinky'
+    """
+    s = str(a).strip().lower()
+    if s in ('none', '', '0', 'false', 'no'):
+        return None
+    if s in ('all', '1', 'true', 'yes'):
+        return True
+    only = [p.strip() for p in str(a).split(',') if p.strip()]
+    return only or True
+
+
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--vpk', default=DEFAULT_VPK,
+                    help='L4D2 addon VPK holding the model (default: Lunalice_Zoey)')
+    ap.add_argument('--model', default=DEFAULT_MODEL,
+                    help='model stem inside the VPK (default: survivor_teenangst)')
+    ap.add_argument('--out', default=DEFAULT_OUT,
+                    help='directory for model.npz + meta.json (default: out/blender)')
     # Round 49: the CURRENT model version is the one with the 5 cm upper-arm
     # lengthening (scheme A -- the elbow, and the wrist with it, moved out along
     # the source shoulder->elbow axis; the forearm keeps its length and the
     # shipped rig is untouched).
-    gain = float(sys.argv[1]) if len(sys.argv) > 1 else ARM_UPPER_GAIN
-    r = H.retarget(VPK, MODEL, TOC, BH, PP,
+    ap.add_argument('--gain', type=float, default=ARM_UPPER_GAIN,
+                    help='upper-arm lengthening in metres (round 49)')
+    ap.add_argument('--head-scale', type=float, default=HEAD_SCALE,
+                    help='uniform skull scale about the neck seam (round 51)')
+    ap.add_argument('--elbow-open', type=float, default=ARM_ELBOW_OPEN,
+                    help='elbow hinge opening in degrees (round 52)')
+    ap.add_argument('--hand-tilt', type=float, default=ARM_HAND_TILT,
+                    help='wrist tilt about the T-pose thumb axis, degrees (round 55b)')
+    ap.add_argument('--finger-pose', default=str(ARM_FINGER_POSE),
+                    help="residual finger pose: 'all' (True), 'none' (False), "
+                         "or a comma list of stems e.g. 'middle' (round 55)")
+    return ap.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    out_dir = args.out
+    os.makedirs(out_dir, exist_ok=True)
+    gain = args.gain
+    finger_pose = _finger_pose_arg(args.finger_pose)
+    print('[dump] vpk   = %s' % args.vpk)
+    print('[dump] model = %s' % args.model)
+    print('[dump] out   = %s' % out_dir)
+    r = H.retarget(args.vpk, args.model, TOC, BH, PP,
                    align='yaw', spine_map='mesh', fallback='region',
                    leg_tilt=5.7, leg_splay=4.0, skeleton='native',
                    mesh_shift=MESH_SHIFT,
                    upper_scale=1.12, upper_pivot_z=1.15, upper_blend=0.45,
-                   arm_scratch_upper_gain=gain, head_scale=HEAD_SCALE,
-                   arm_elbow_open=ARM_ELBOW_OPEN,
-                   arm_hand_tilt=ARM_HAND_TILT,
-                   arm_finger_pose=ARM_FINGER_POSE,
+                   arm_scratch_upper_gain=gain, head_scale=args.head_scale,
+                   arm_elbow_open=args.elbow_open,
+                   arm_hand_tilt=args.hand_tilt,
+                   arm_finger_pose=finger_pose,
                    verbose=True)
     print('[dump] upper-arm gain = %+.4f m   elbow open = %+.2f deg   '
           'hand tilt = %+.2f deg   finger pose = %s'
-          % (gain, ARM_ELBOW_OPEN, ARM_HAND_TILT, ARM_FINGER_POSE))
+          % (gain, args.elbow_open, args.hand_tilt, finger_pose))
 
     tris = np.asarray([tri3(t) for t in r['tris']], dtype=np.int32)
     nv = len(r['verts'])
@@ -309,7 +364,7 @@ def main():
     print('reference units: %d (%d verts / %d tris)'
           % (len(refs), base, len(rt)))
 
-    np.savez(os.path.join(OUT, 'model.npz'), **arrays)
+    np.savez(os.path.join(out_dir, 'model.npz'), **arrays)
     # Round 57 (expert WEIGHT_TRANSFER_BRIEF.md §10.8 step 1): freeze the inputs
     # this build was made from, so a later weight change cannot be confused with
     # a geometry change.
@@ -347,24 +402,24 @@ def main():
                  for f in ('hd2_style.py', 'dump_blender.py', 'blender_build.py',
                            'weight_half4.py')},
     )
-    json.dump(dict(model=MODEL, bones=names, refs=refs,
+    json.dump(dict(model=args.model, bones=names, refs=refs,
                    fingerprint=fingerprint,
                    params=dict(align='yaw', spine_map='mesh',
                                fallback='region', leg_tilt=5.7,
                                leg_splay=4.0, skeleton='native',
                                mesh_shift=list(MESH_SHIFT),
                                upper_scale=1.12, upper_pivot_z=1.15,
-                               upper_blend=0.45, head_scale=HEAD_SCALE,
+                               upper_blend=0.45, head_scale=args.head_scale,
                                arm_upper_gain=gain,
-                               arm_elbow_open=ARM_ELBOW_OPEN,
-                               arm_hand_tilt=ARM_HAND_TILT,
-                               arm_finger_pose=ARM_FINGER_POSE,
+                               arm_elbow_open=args.elbow_open,
+                               arm_hand_tilt=args.hand_tilt,
+                               arm_finger_pose=finger_pose,
                                weight_encoding='half4-1/2048-largest-remainder'),
                    metrics=plain(r['metrics'])),
-              open(os.path.join(OUT, 'meta.json'), 'w', encoding='utf-8'),
+              open(os.path.join(out_dir, 'meta.json'), 'w', encoding='utf-8'),
               indent=1, ensure_ascii=False)
     for f in ('model.npz', 'meta.json'):
-        p = os.path.join(OUT, f)
+        p = os.path.join(out_dir, f)
         print('  [written] %s  (%.1f MB)' % (p, os.path.getsize(p) / 1e6))
     print('  [frozen] geometry %s' % fingerprint['geometry'][:16])
     print('  [frozen] weights  %s' % fingerprint['weights'][:16])

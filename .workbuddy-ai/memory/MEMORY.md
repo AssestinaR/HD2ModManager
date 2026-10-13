@@ -48,6 +48,26 @@
 - **唯一未知数 = piece 数量上限**：原生 RE-2310 = 23、RE-1861 = 15、自定义 = 19；「expanded 19 piece」曾启动崩溃但未定因（数量/层号/自定义字段共变）；文档明言「40-piece 解析夹具只验证解码器，不能证明引擎能生成 40 个」。⇒ 拆 32 个属未测区间，**先拆 4~6 个实机验证再逐步加**。
 - 详见 `tmp/rig-lab/L4N_COMPONENT_ANALYSIS.md`。
 
+## 通用转化链路（第 63 轮，Lilium_Sancta 验证）
+- **三段链**（每个源包都走这三步，全部 CLI 驱动、默认值 = 原 Lunalice 值）：
+  1. `dump_blender.py --vpk <模型VPK> --model survivor_teenangst --out <dir>` → `model.npz` + `meta.json`（纯 Python，不需要 Blender；Blender 只用于目视 `.blend`）。
+  2. `build_patch.py --npz <npz> --source-vpk <模型VPK> --source-model <stem> --addons <VPK目录> --model-vpk <模型VPK> --pack <每个材质VPK，可重复> --out <目录> --name <名> --model-key <key> --mesh-ns <ns>` → basic 模板 patch（**结构与几何验证用**）。
+  3. `fix_materials.py --src <patch> --manifest <manifest> --template advanced --alpha-zero` → advanced；再 `fix_appearance.py --src <advanced patch> --out <目录> --name <名> --source-vpk/--addons/--pack …` → 加透明 + matcap（= M8 级外观）。
+- **`--pack` 顺序即覆盖顺序**（后者胜），字母语义（A1/B/C/D/E/F 各是什么）**工具完全不知道**，只按列表读。Lunalice：D发色/E瞳色/F描边；**Lilium：D描边/E发色/F瞳色** —— 同一套参数化照跑。
+- **🔴 已修 bug**：`build_patch.py` 的 unit id 曾是字面量 `'unit/lunalice-rigtest'` ⇒ 任何源包都得到同一个 Unit id，两包同装会静默互相覆盖。现为 `'unit/' + args.name`。**新包必须给不同 `--name`**。
+- **反证基线**（改动后必须复现）：`dump_blender.py` 默认 → geometry `05e8f5f876a2c32e` / weights `ae49cfeeb8329340` / 121704v·159363t·107骨 / rest `7bb46590ac416116`；`build_patch.py` 默认 → patch `7d5209d3fb733c43…`；`fix_appearance.py --src M6` → 与 M8 逐字节相同。
+- **Lilium 交付**：`E:/mod/Lilium-Sancta-RigTest/`（patch 95080 B sha256 `f92587be…`、gpu 84027008 B sha256 `c0a94e72…`、unit `d1c87292a57dc45f`、11 材质 = 4 alphaclip + 4 matcap + 3 advanced）。源：118014v/154066t/124骨（Lunalice 121704/159363/127，**骨骼是严格子集，只少 3 个未用 `source_extra_*`**）。详见 `tmp/rig-lab/LILIUM_CONVERSION_TEST.md`。
+- **Lilium 的透明比 Lunalice 更准**：源侧 4 个透明组**全是 `$alphatest`**（二值裁切，参考阈值正是 0.5）⇒ 遮罩精确；Lunalice 那 7 组是 `$translucent` ⇒ 只能近似。`gray`/`gray1`/`ribbon_1` 是 1×1 占位贴图，观感 100% 来自 matcap（同 Lunalice 的 `Ornament_metal_Underwear`）。
+- **待办**：贴图 id 只取 basename（`tex/base/<basename>`，材质 id 含目录故安全）⇒ 跨包同名贴图会撞车。要加「包族命名空间」，但**必须保留同族内同名覆盖**（第 61 轮 7 个 MAT 变体包靠它工作）且不能改既有 id。
+- **待实机**：摆姿常量（`HEAD_SCALE=8/7`、`ARM_UPPER_GAIN=0.05`、`ARM_ELBOW_OPEN=6.5°`、`ARM_HAND_TILT=3°`、`MESH_SHIFT=(0,-0.100,-0.090)`、`upper_scale=1.12`）是对着 Lunalice 调的，Lilium 原样沿用；Lilium 的 `fallback hops` 最深 7 跳（Lunalice 3），绑定姿态看不出问题，**动起来才可能暴露**。
+
+## Lua 运行时动态切换盔甲 unit（第 63 轮分析，只记录不写码）
+- **能力已完整存在，不需要新协议字段/新 Lua 接口**。= 「重写协议文档 + revision 自增」，Lua 每秒轮询全文、重新规划、**只重建签名变了的那一个目标**。缺的只是管理器 UI/工作流。
+- 协议键：`model_piece=<model>,<body>,<unit>,<slot>,<piece_type>,<tone>[,<enabled>]`（第 7 字段 `false` = 不参与合成）、`piece_override=<owner>,<body>,<unit>,<slot>,<piece_type>,<enabled>`、`target_mode=<item>,follow|manual`、`composition_mode=full|existing_only`。
+- **位置唯一性**：同一 `(body,slot,piece_type)` 只能一个 Unit ⇒ N 个可独立开关的部件需要 N 个不同 `piece_type`（层号）。合成时 `piece.enabled` 与 `piece_override` **两个开关串联**；护栏 `#rows 1..16`、`total≤4096`、每行≥1 piece；**新 piece 的 aux hash 取自目标在该位置原有的 piece** ⇒ piece 必须落在目标已有位置上。
+- **签名 = 规范载荷，不含 revision** ⇒ 只改 revision 不重建；**已发布 buffer 永不释放**（32 MiB / 8192 上限）⇒ 反复切换会累积内存。
+- 待做 P0~P4（P0 = 先测「游戏能扛多少 piece」，4~6 起步，20~32 未测）见 `tmp/rig-lab/LUA_UNIT_SWITCH_TODO.md`。
+
 ## 交付与部署
 - 链路：`hd2mod library sync` 注册新包（只动节点，先备份 library.json）→ `armor-normalize`。`armor-normalize` **只认原生 Unit id**（改名 id 一律 armors:[]）。
 - **符号链接铁律**：`New-Item -ItemType SymbolicLink` 本机失败（无权限）且先删后建 ⇒ 一律 `MSYS=winsymlinks:nativestrict ln -s`，先建后删（写 .tmp 再 `mv -f`）。

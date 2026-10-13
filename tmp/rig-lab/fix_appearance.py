@@ -306,6 +306,19 @@ def main():
     ap.add_argument('--src', default=r'E:\mod\Lunalice-RE2310-M6\9ba626afa44a3aa3.patch_0')
     ap.add_argument('--out', required=True)
     ap.add_argument('--name', default='lunalice-m8')
+    # ---- source side (round 63) --------------------------------------------
+    ap.add_argument('--source-vpk', default=S.ADDONS + S.MODEL_VPK,
+                    help='L4D2 model VPK (default: Lunalice_Zoey)')
+    ap.add_argument('--source-model', default='survivor_teenangst',
+                    help='model stem inside --source-vpk')
+    ap.add_argument('--addons', default=S.ADDONS,
+                    help='directory holding the L4D2 addon VPKs')
+    ap.add_argument('--pack', action='append', default=None, metavar='NAME.vpk',
+                    help='a VPK (relative to --addons) that may supply a VMT or VTF; '
+                         'repeatable, later packs override earlier ones. '
+                         'Default: the Lunalice base set.')
+    ap.add_argument('--model-vpk', default=S.MODEL_VPK,
+                    help='which of --pack is the model itself')
     ap.add_argument('--metallic', type=int, default=191,
                     help='slot 3 value for a matcap-driven group (0..255)')
     ap.add_argument('--roughness', type=int, default=89,
@@ -327,11 +340,12 @@ def main():
     mat_entries = {e['file_id']: e for e in entries if e['type_id'] == A.MATERIAL_TYPE_ID}
 
     # ---- the model's own slot table ---------------------------------------
-    vpk = S.ADDONS + S.MODEL_VPK
-    _md, mdl, _v, tris4, _s, _sh = ST.load_source(vpk, 'survivor_teenangst')
+    # Round 63: source is parameterised so the same appearance pass runs on any
+    # L4D2 pack.  Defaults reproduce the Lunalice M8 build exactly.
+    _md, mdl, _v, tris4, _s, _sh = ST.load_source(args.source_vpk, args.source_model)
     tris4 = np.asarray(tris4, np.int64)
     names, cds, _row = S.load_material_slots(mdl)
-    packs = S.Packs()
+    packs = S.Packs(addons=args.addons, packs=args.pack, model_vpk=args.model_vpk)
     log('  model: %d slots referenced, cdtextures %s' % (len(np.unique(tris4[:, 3])), cds))
 
     groups = analyse(tris4, names, packs)
