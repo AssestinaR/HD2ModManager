@@ -56,6 +56,8 @@
 	<EmbeddedResource Include="skills\gamedata-index-management\SKILL.md" LogicalName="HD2ModCli.Skill.gamedata-index-management" />
 	<EmbeddedResource Include="skills\batch-patch-repair\SKILL.md" LogicalName="HD2ModCli.Skill.batch-patch-repair" />
 	<EmbeddedResource Include="skills\same-key-reconstruction\SKILL.md" LogicalName="HD2ModCli.Skill.same-key-reconstruction" />
+	<EmbeddedResource Include="skills\patch-primitives\SKILL.md" LogicalName="HD2ModCli.Skill.patch-primitives" />
+	<EmbeddedResource Include="skills\equipment-facts\SKILL.md" LogicalName="HD2ModCli.Skill.equipment-facts" />
   </ItemGroup>
 
   <!-- Lets the Manager copy the exact artifacts from this build, including

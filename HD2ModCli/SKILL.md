@@ -33,5 +33,7 @@ Use `agent skills export --output <directory>` to export all capability Skills. 
 - Review and explicitly confirm in-place repairs for outdated library Mods: `batch-patch-repair`.
 - Manage a host Mod's generated Overwrite: `host-derived-overwrite`.
 - Produce a standalone Patch: `patch-resource-repackaging`, `helmet-to-armor-merge`, `cross-armor-transfer`, or `same-key-reconstruction`.
+- Operate on a bare Patch file with entry-level primitives (enumerate / export / compose / edit / hide Units) without registering a Mod: `patch-primitives`.
+- Ask which AssetKeys are armor, helmets, or capes using the game's own authority table: `equipment-facts`.
 
 Use `--json` for Agent-facing calls. IDs are explicit GUIDs or unique prefixes; never guess an ambiguous selector. Plan export writes only its named output, validation is read-only, and every mutating `apply` requires explicit `--confirm`. Only `deploy apply` writes GameData; both `safe-deployment` and `generated-patch-integration` may invoke it after explicit confirmation. The standalone Patch Skills output fresh external directories and do not import, enable, or deploy their results. `mod-management` is a retired aggregate pointer and is not exportable as an installable Skill.

@@ -1,6 +1,7 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Text.Json;
 using HD2ModCore.Application;
+using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2SourceModel;
@@ -1177,6 +1178,139 @@ public static class CliApplication
 				new { ok = execution.Success, execution = CreatePatchResourceRepackagingExecutionProjection(execution) },
 				() => FormatPatchResourceRepackagingExecution(execution));
 			return execution.Success ? 0 : 2;
+		}
+		if (command.Length >= 3 && command[0] == "patch" && command[1] == "entries" && command[2] == "list")
+		{
+			EnsurePatchPrimitiveReadOptions(invocation.Options, "patch entries list");
+			if (command.Length != 4)
+				throw new CliUserException("InvalidArguments", "patch entries list <patch.toc 路径> [--json]");
+			var summary = await CliPatchPrimitives.DescribeAsync(invocation.Command[3], withEntries: true).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, patch = summary },
+				() => FormatPatchEntries(summary));
+			return 0;
+		}
+		if (command.Length >= 3 && command[0] == "patch" && command[1] == "entry" && command[2] == "show")
+		{
+			EnsurePatchPrimitiveReadOptions(invocation.Options, "patch entry show");
+			if (command.Length != 6)
+				throw new CliUserException("InvalidArguments", "patch entry show <patch.toc 路径> <0xtypeid> <0xfileid> [--json]");
+			var key = CliPatchPrimitives.ParseAssetKey(invocation.Command[4], invocation.Command[5]);
+			var entry = await CliPatchPrimitives.RequireEntryAsync(invocation.Command[3], key).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, entry = ProjectPatchEntry(entry) },
+				() => $"0x{key.TypeId:x16}/0x{key.FileId:x16}  {CliPatchPrimitives.DescribeKind(key.TypeId)}  toc={entry.TocDataSize} stream={entry.StreamSize} gpu={entry.GpuResourceSize}");
+			return 0;
+		}
+		if (command.Length >= 3 && command[0] == "patch" && command[1] == "entry" && command[2] == "export")
+		{
+			EnsurePatchPrimitiveExportOptions(invocation.Options, "patch entry export");
+			if (command.Length != 6)
+				throw new CliUserException("InvalidArguments", "patch entry export <patch.toc 路径> <0xtypeid> <0xfileid> --output <目录> [--overwrite] [--json]");
+			var key = CliPatchPrimitives.ParseAssetKey(invocation.Command[4], invocation.Command[5]);
+			var exported = await CliPatchPrimitives.ExportEntryAsync(
+				invocation.Command[3], key,
+				RequireOutput(invocation.Options, "patch entry export"),
+				invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, export = exported },
+				() => $"已导出 0x{key.TypeId:x16}/0x{key.FileId:x16} 的三段裸载荷到：{exported.KeyDirectory}");
+			return 0;
+		}
+		if (command.Length >= 2 && command[0] == "patch" && command[1] == "compose")
+		{
+			EnsurePatchPrimitiveExportOptions(invocation.Options, "patch compose");
+			if (string.IsNullOrWhiteSpace(invocation.Options.Header))
+				throw new CliUserException("PatchComposeHeaderRequired", "patch compose 需要 --header <patch.toc> 指定头部模板（决定 TOC 头与类型表）。");
+			var selections = ResolveComposeSelections(invocation.Options.Picks, "patch compose");
+			var composed = await CliPatchPrimitives.ComposeAsync(
+				invocation.Options.Header,
+				selections,
+				RequireOutput(invocation.Options, "patch compose"),
+				invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = composed.Success, compose = composed },
+				() => $"已合并 {composed.AffectedEntryCount} 个条目到新 Patch：{composed.OutputDirectory}");
+			return composed.Success ? 0 : 2;
+		}
+		if (command.Length >= 2 && command[0] == "patch" && command[1] == "edit")
+		{
+			EnsurePatchPrimitiveExportOptions(invocation.Options, "patch edit");
+			var source = invocation.Command.Count >= 3
+				? invocation.Command[2]
+				: throw new CliUserException("InvalidArguments", "patch edit <源 patch.toc> (--keys <要隐藏的 unit> | --remove-key <key> | --add-key <key>) --output <目录> [--overwrite] [--json]");
+			var hideKeys = string.IsNullOrWhiteSpace(invocation.Options.Keys)
+				? Array.Empty<AdaptationAssetKey>()
+				: CliPatchPrimitives.ResolveKeys(invocation.Options.Keys, "patch edit --keys");
+			var removeKeys = string.IsNullOrWhiteSpace(invocation.Options.RemoveKeys)
+				? Array.Empty<AdaptationAssetKey>()
+				: CliPatchPrimitives.ResolveKeys(invocation.Options.RemoveKeys, "patch edit --remove-key");
+			var addKeys = string.IsNullOrWhiteSpace(invocation.Options.AddKeys)
+				? Array.Empty<AdaptationAssetKey>()
+				: CliPatchPrimitives.ResolveKeys(invocation.Options.AddKeys, "patch edit --add-key");
+			var edited = await CliPatchPrimitives.EditAsync(
+				source, addKeys, removeKeys, hideKeys,
+				RequireOutput(invocation.Options, "patch edit"),
+				invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = edited.Success, edit = edited },
+				() => $"已对 {edited.AffectedEntryCount} 个条目执行条目级修改，输出：{edited.OutputDirectory}");
+			return edited.Success ? 0 : 2;
+		}
+		if (command.Length >= 2 && command[0] == "patch" && command[1] == "hide-unit")
+		{
+			EnsurePatchPrimitiveExportOptions(invocation.Options, "patch hide-unit");
+			var source = invocation.Command.Count >= 3
+				? invocation.Command[2]
+				: throw new CliUserException("InvalidArguments", "patch hide-unit <源 patch.toc> --keys <要隐藏的 unit 列表> --output <目录> [--overwrite] [--json]");
+			var keys = CliPatchPrimitives.ResolveKeys(invocation.Options.Keys, "patch hide-unit --keys");
+			var hidden = await CliPatchPrimitives.HideUnitsAsync(
+				source, keys,
+				RequireOutput(invocation.Options, "patch hide-unit"),
+				invocation.Options.Overwrite).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = hidden.Success, hideUnit = hidden },
+				() => $"已生成 {hidden.AffectedEntryCount} 个隐藏 Unit 的新 Patch：{hidden.OutputDirectory}");
+			return hidden.Success ? 0 : 2;
+		}
+		if (command.Length >= 3 && command[0] == "gamedata" && command[1] == "equipment" && command[2] == "list")
+		{
+			EnsureEquipmentFactsOptions(invocation.Options, "gamedata equipment list");
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var gameData = workspace.GameDataRoot
+				?? throw new CliUserException("GameDataRequired", "读取装备权威表需要 --game-data <游戏 data 目录>（或已在 settings.json 中配置）。");
+			var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+			var filter = CliEquipmentFacts.ParseKind(invocation.Options.Kind);
+			var result = CliEquipmentFacts.Project(snapshot, filter, invocation.Options.ArchiveId);
+			Emit(invocation.Options,
+				new
+				{
+					ok = true,
+					equipment = new
+					{
+						result.SourcePath,
+						result.SourceFingerprint,
+						result.PreferredLocale,
+						result.KitCount,
+						kind = invocation.Options.Kind ?? "all",
+						result.Kits,
+						keys = CliEquipmentFacts.DistinctUnitKeys(result).Select(key => new { typeId = key.TypeId, fileId = key.FileId }),
+					},
+				},
+				() => FormatEquipmentFacts(result, invocation.Options.Kind));
+			return 0;
+		}
+		if (command.Length >= 3 && command[0] == "gamedata" && command[1] == "equipment" && command[2] == "show")
+		{
+			EnsureEquipmentFactsOptions(invocation.Options, "gamedata equipment show");
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var gameData = workspace.GameDataRoot
+				?? throw new CliUserException("GameDataRequired", "读取装备权威表需要 --game-data <游戏 data 目录>（或已在 settings.json 中配置）。");
+			var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+			var filter = CliEquipmentFacts.ParseKind(invocation.Options.Kind);
+			var result = CliEquipmentFacts.Project(snapshot, filter, invocation.Options.ArchiveId);
+			Emit(invocation.Options, new { ok = true, equipment = result }, () => FormatEquipmentFactsDetail(result));
+			return 0;
 		}
 		if (command.Length >= 4 && command[0] == "equipment" && command[1] == "helmet-merge" && command[2] == "inspect")
 		{
@@ -2989,6 +3123,103 @@ public static class CliApplication
 		return options.Output;
 	}
 
+	// --- 底座命令（Patch 原语 / 装备权威表）的选项校验与格式化 ---------------
+
+	private static void EnsurePatchPrimitiveReadOptions(CliGlobalOptions options, string command)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.Header) || !string.IsNullOrWhiteSpace(options.Keys)
+			|| !string.IsNullOrWhiteSpace(options.AddKeys) || !string.IsNullOrWhiteSpace(options.RemoveKeys)
+			|| options.Picks.Count != 0)
+		{
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 是只读命令，仅接受 <patch 路径> 与 --json。");
+		}
+	}
+
+	private static void EnsurePatchPrimitiveExportOptions(CliGlobalOptions options, string command)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{command} 是纯转换命令：只接受来源路径、--output、--overwrite、--keys/--header/--pick 与 --json；它不写 Mod 库，因此不接受 --plan、--confirm 或 --host。 ");
+		}
+	}
+
+	private static void EnsureEquipmentFactsOptions(CliGlobalOptions options, string command)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.Keys) || !string.IsNullOrWhiteSpace(options.Header)
+			|| !string.IsNullOrWhiteSpace(options.AddKeys) || !string.IsNullOrWhiteSpace(options.RemoveKeys) || options.Picks.Count != 0)
+		{
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 是只读命令，仅接受 --game-data、--kind、--archive-id 与 --json。");
+		}
+	}
+
+	private static IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchSubsetSelection> ResolveComposeSelections(IReadOnlyList<string> picks, string command)
+	{		if (picks.Count == 0)
+			throw new CliUserException("PatchComposeSelectionRequired", $"{command} 需要至少一个 --pick <patch.toc> <0xtypeid> <0xfileid>（可重复，允许多来源）。");
+		if (picks.Count % 3 != 0)
+			throw new CliUserException("PatchComposeSelectionInvalid", $"{command} 的每个 --pick 必须是三个值：<patch.toc> <0xtypeid> <0xfileid>。");
+		var selections = new List<HD2ModAdaptation.PatchReconstruction.PatchSubsetSelection>(picks.Count / 3);
+		for (var index = 0; index < picks.Count; index += 3)
+		{
+			var tocPath = CliPatchPrimitives.RequireExistingPatchToc(picks[index], command);
+			var key = CliPatchPrimitives.ParseAssetKey(picks[index + 1], picks[index + 2]);
+			selections.Add(new HD2ModAdaptation.PatchReconstruction.PatchSubsetSelection(tocPath, key));
+		}
+		return selections;
+	}
+
+	private static object ProjectPatchEntry(HD2ModAdaptation.PatchReconstruction.PatchTocEntry entry)
+		=> new
+		{
+			typeId = $"0x{entry.AssetKey.TypeId:x16}",
+			fileId = $"0x{entry.AssetKey.FileId:x16}",
+			kind = CliPatchPrimitives.DescribeKind(entry.AssetKey.TypeId),
+			entryIndex = entry.EntryIndex,
+			source = entry.SourceFilePath,
+			tocDataSize = entry.TocDataSize,
+			streamSize = entry.StreamSize,
+			gpuResourceSize = entry.GpuResourceSize,
+		};
+
+	private static string FormatPatchEntries(CliPatchArchiveSummary summary)
+	{
+		var lines = new List<string>
+		{
+			$"Patch：{summary.TocPath}",
+			$"条目数：{summary.EntryCount}（toc {summary.TocFileSize} B / stream {summary.StreamFileSize} B / gpu {summary.GpuResourceFileSize} B）",
+		};
+		foreach (var entry in summary.Entries)
+		{
+			lines.Add($"  {entry.Kind,-14} {entry.TypeId}  {entry.FileId}  toc={entry.TocDataSize} stream={entry.StreamSize} gpu={entry.GpuResourceSize}");
+		}
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	private static string FormatEquipmentFacts(CliEquipmentFactResult result, string? kind)
+	{
+		var lines = new List<string>
+		{
+			$"装备权威表：{result.SourcePath}（locale={result.PreferredLocale}，kind={kind ?? "all"}）",
+			$"命中 {result.KitCount} 个套装，去重后 {CliEquipmentFacts.DistinctUnitKeys(result).Count} 个 Unit AssetKey：",
+		};
+		foreach (var kit in result.Kits)
+		{
+			lines.Add($"  [{kit.Category}] {kit.DisplayName}  archive={kit.ArchiveId}  units={kit.Units.Count}");
+			foreach (var unit in kit.Units)
+				lines.Add($"      {unit.TypeId}  {unit.FileId}  {unit.PartKind}/{unit.BodyVariant}");
+		}
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	private static string FormatEquipmentFactsDetail(CliEquipmentFactResult result)
+		=> CliOutput.ToJson(new { ok = true, equipment = result });
+
 	private static string RequirePlan(CliGlobalOptions options)
 	{
 		if (string.IsNullOrWhiteSpace(options.Plan))
@@ -3150,7 +3381,6 @@ public static class CliApplication
 
 	private static bool Matches(IReadOnlyList<string> actual, params string[] expected)
 		=> actual.Count == expected.Length && actual.SequenceEqual(expected, StringComparer.Ordinal);
-
 	private static void Emit(CliGlobalOptions options, object json, Func<string> human)
 	{
 		if (options.Json) CliOutput.WriteJson(json);
@@ -5579,6 +5809,18 @@ HD2 Mod Manager 命令行
 	  hd2mod patch repair plan <Mod GUID或前缀> <base.patch_N> --manager-root <管理器目录> --game-data <游戏data目录> --output same-key-plan.json --json
 	  hd2mod patch repair validate --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --json
 	  hd2mod patch repair apply --plan same-key-plan.json --manager-root <管理器目录> --game-data <游戏data目录> --output <新的库外目录> --confirm --json
+
+Patch 底座原语（文件进、文件出；作用于任意 Patch 路径，不要求已登记进库，不取库租约，只写新目录）：
+	  hd2mod patch entries list <patch_0 路径> --json
+	  hd2mod patch entry show <patch_0 路径> <0xtypeid> <0xfileid> --json
+	  hd2mod patch entry export <patch_0 路径> <0xtypeid> <0xfileid> --output <新目录> [--overwrite] --json
+	  hd2mod patch compose --header <头部模板 patch_0> --pick <来源patch_0> <0xtypeid> <0xfileid> [--pick ...] --output <新目录> [--overwrite] --json
+	  hd2mod patch edit <patch_0 路径> (--keys <要隐藏的unit> | --remove-key <key> | --add-key <key>) --output <新目录> [--overwrite] --json
+	  hd2mod patch hide-unit <patch_0 路径> --keys <@keys.json 或 0xtypeid:0xfileid,...> --output <新目录> [--overwrite] --json
+
+装备权威表（只读；直接读游戏 generated_customization_armor_sets）：
+	  hd2mod gamedata equipment list --game-data <游戏data目录> [--kind cape|armor|helmet|all] [--archive-id <归档ID>] --json
+	  hd2mod gamedata equipment show --game-data <游戏data目录> [--kind cape|armor|helmet|all] [--archive-id <归档ID>] --json
 	  hd2mod import batch inspect <文件夹、压缩包或文件> [...] --json
 	  hd2mod import batch plan <文件夹、压缩包或文件> [...] [--add-to-profile <名称|GUID|active>] --manager-root <管理器目录> --output batch-import-plan.json --json
 	  hd2mod import batch validate --plan batch-import-plan.json --manager-root <管理器目录> --json

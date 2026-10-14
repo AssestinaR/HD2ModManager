@@ -9,6 +9,13 @@ public sealed record CliGlobalOptions(
 	string? Plan,
 	string? Host,
 	string? AddToProfile,
+	string? Keys,
+	string? AddKeys,
+	string? RemoveKeys,
+	string? ArchiveId,
+	string? Kind,
+	string? Header,
+	IReadOnlyList<string> Picks,
 	int? Position,
 	int? Limit,
 	string? Cursor,
@@ -36,6 +43,13 @@ public static class CliArgumentParser
 		string? plan = null;
 		string? host = null;
 		string? addToProfile = null;
+		string? keys = null;
+		string? addKeys = null;
+		string? removeKeys = null;
+		string? archiveId = null;
+		string? kind = null;
+		string? header = null;
+		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
 		string? cursor = null;
@@ -77,6 +91,30 @@ public static class CliArgumentParser
 					break;
 				case "--add-to-profile":
 					addToProfile = ReadValue(args, ref index, argument);
+					break;
+				case "--keys":
+					keys = ReadValue(args, ref index, argument);
+					break;
+				case "--add-key":
+					addKeys = ReadValue(args, ref index, argument);
+					break;
+				case "--remove-key":
+					removeKeys = ReadValue(args, ref index, argument);
+					break;
+				case "--archive-id":
+					archiveId = ReadValue(args, ref index, argument);
+					break;
+				case "--kind":
+					kind = ReadValue(args, ref index, argument);
+					break;
+				case "--header":
+					header = ReadValue(args, ref index, argument);
+					break;
+				case "--pick":
+					// Positional triple: <patch.toc> <0xtypeid> <0xfileid>. Repeated.
+					picks.Add(ReadValue(args, ref index, argument));
+					picks.Add(ReadValue(args, ref index, argument));
+					picks.Add(ReadValue(args, ref index, argument));
 					break;
 				case "--position":
 					var rawPosition = ReadValue(args, ref index, argument);
@@ -133,7 +171,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

@@ -51,6 +51,8 @@ public static class CliSkillCatalog
 		new("gamedata-index-management", "hd2mod-gamedata-index-management", "计划化重建 Manager 的 GameData 基础索引或 Armor / Helmet Unit 部位事实。", "HD2ModCli.Skill.gamedata-index-management"),
 		new("batch-patch-repair", "hd2mod-batch-patch-repair", "审阅并显式确认多个过时 Mod 的 Canonical 原地 Patch 修复、备份与派生 Overwrite 回建。", "HD2ModCli.Skill.batch-patch-repair"),
 		new("same-key-reconstruction", "hd2mod-same-key-reconstruction", "固定一个来源 Patch，审阅并输出 Same-key Canonical 重构候选。", "HD2ModCli.Skill.same-key-reconstruction"),
+		new("patch-primitives", "hd2mod-patch-primitives", "文件进/文件出的 Patch 底座：枚举、导出、合并、条目级增删改与就地隐藏 Unit，作用于任意 Patch 路径且不要求登记进库。", "HD2ModCli.Skill.patch-primitives"),
+		new("equipment-facts", "hd2mod-equipment-facts", "只读读取游戏装备/披风权威表，回答哪些 AssetKey 属于护甲、头盔或披风。", "HD2ModCli.Skill.equipment-facts"),
 		new("mod-management", "hd2mod-mod-management", "兼容聚合 Skill：请优先使用更窄的 mod-metadata、option-management 或 safe-library-deletion。", "HD2ModCli.Skill.mod-management", IsLegacy: true),
 	];
 

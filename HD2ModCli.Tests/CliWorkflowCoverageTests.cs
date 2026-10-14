@@ -45,6 +45,10 @@ public sealed class CliWorkflowCoverageTests
 			"gamedata extract list", "gamedata extract show", "gamedata extract asset", "gamedata extract archive");
 		AssertWorkflowCoverage(capabilities, "库目录与 library.json 对账",
 			"library sync inspect", "library sync plan", "library sync apply");
+		AssertWorkflowCoverage(capabilities, "Patch 底座原语（文件进、文件出）",
+			"patch entries list", "patch entry show", "patch entry export", "patch compose", "patch edit", "patch hide-unit");
+		AssertWorkflowCoverage(capabilities, "游戏装备权威表",
+			"gamedata equipment list", "gamedata equipment show");
 	}
 
 	[Fact]
@@ -61,6 +65,7 @@ public sealed class CliWorkflowCoverageTests
 		AssertWorkflowCoverage(skills, "Patch 重构", "same-key-reconstruction", "batch-patch-repair");
 		AssertWorkflowCoverage(skills, "装备与装饰", "cross-armor-transfer", "decoration-package", "decoration-edit", "helmet-to-armor-merge", "host-derived-overwrite");
 		AssertWorkflowCoverage(skills, "GameData 与资产元数据", "gamedata-inspection", "gamedata-extraction", "gamedata-index-management", "asset-metadata-management");
+		AssertWorkflowCoverage(skills, "Patch 底座原语与装备权威表", "patch-primitives", "equipment-facts");
 	}
 
 	private static HashSet<string> ReadCapabilityNames()
