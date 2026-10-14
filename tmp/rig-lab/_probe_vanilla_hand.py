@@ -48,6 +48,8 @@ def main():
     ap.add_argument('--out', default='E:/tmp/round70-van')
     ap.add_argument('--side', default='left', choices=('left', 'right'))
     ap.add_argument('--radius', type=float, default=0.30)
+    ap.add_argument('--no-write', action='store_true',
+                    help='inspect bundled payload without overwriting extracted evidence')
     args = ap.parse_args()
 
     fid = int(args.file_id, 16)
@@ -64,12 +66,13 @@ def main():
     if toc is None or gpu is None:
         print('FAILED to reconstruct payload')
         return 1
-    os.makedirs(args.out, exist_ok=True)
-    base = os.path.join(args.out, 'unit_0x%016x' % fid)
-    with open(base + '.toc', 'wb') as f:
-        f.write(toc)
-    with open(base + '.gpu_resources', 'wb') as f:
-        f.write(gpu)
+    if not args.no_write:
+        os.makedirs(args.out, exist_ok=True)
+        base = os.path.join(args.out, 'unit_0x%016x' % fid)
+        with open(base + '.toc', 'wb') as f:
+            f.write(toc)
+        with open(base + '.gpu_resources', 'wb') as f:
+            f.write(gpu)
 
     bones = H.load_bonehash(SDK + '/hashlists/bonehash.txt')
     unit = U.Unit.read(toc, gpu)
@@ -93,9 +96,40 @@ def main():
         bw_keys = sorted(k for k in verts[0] if k.startswith('bone_weight'))
         bidx = cols(verts, bi_keys, np.int64)
         wgt = cols(verts, bw_keys, np.float64)
-        ncol = min(bidx.shape[1], wgt.shape[1])
-        bidx, wgt = bidx[:, :ncol], wgt[:, :ncol]
+        if bi_keys != ['bone_index0'] or bidx.shape != wgt.shape:
+            raise ValueError('probe supports one matching index/weight group only; do not truncate native multi-group data')
+        mesh_matrix = np.asarray(ti.matrices[mi.transform_index]).reshape(4, 4)
+        if not np.allclose(mesh_matrix, np.eye(4), atol=1e-6, rtol=0):
+            raise ValueError('probe requires identity mesh transform; convert spaces before profiling')
+        ncol = wgt.shape[1]
+        # Vanilla bone_index values are *material-local* indices, NOT bi slots.
+        # SDK import resolves remaps[material][raw_index] -> bi.real_indices.
+        mat_of = np.full(len(verts), -1, dtype=np.int32)
+        indices = np.asarray(unit.index_list(mi.stream_index), dtype=np.int64)
+        for section in mi.sections:
+            section_verts = np.unique(indices[section.index_offset:
+                                              section.index_offset + section.num_indices])
+            conflict = (mat_of[section_verts] >= 0) & (mat_of[section_verts] != section.material_index)
+            if conflict.any():
+                raise ValueError('vertices shared across different material remaps')
+            mat_of[section_verts] = section.material_index
+        if (mat_of < 0).any():
+            raise ValueError('unreferenced vertices: material remap is unknown')
+        original_indices = bidx.copy()
+        decoded = np.zeros_like(bidx)
+        for material in np.unique(mat_of):
+            if material >= len(bi.remaps):
+                raise ValueError('material remap out of range')
+            which = mat_of == material
+            remap = np.asarray(bi.remaps[material], dtype=np.int64)
+            active = wgt[which] > 1e-6
+            if (bidx[which][active] >= len(remap)).any():
+                raise ValueError('positive weight references missing remap index')
+            decoded[which] = remap[np.minimum(bidx[which], len(remap) - 1)]
+        bidx = decoded
         pos = np.asarray([v['position'] for v in verts], np.float64)
+        print('  material remaps: %s; positive raw indices changed: %d'
+              % (list(map(len, bi.remaps)), int(((bidx != original_indices) & (wgt > 1e-6)).sum())))
         print()
         print('mesh lod0 stream=%d verts=%d  bidx%s wgt%s'
               % (mi.stream_index, len(pos), bidx.shape, wgt.shape))
@@ -128,11 +162,11 @@ def main():
         rad = np.linalg.norm(rel - np.outer(t, axis), axis=1)
 
         def wmask(slots):
-            m = np.zeros(len(pos))
-            if slots:
-                hit = np.isin(bidx, list(slots)).any(axis=1)
-                m[hit] = wgt[hit].sum(axis=1)
-            return m
+            # Match each weight COLUMN to its corresponding palette-index column.
+            # Selecting whole rows would incorrectly count every bone on that row.
+            if not slots:
+                return np.zeros(len(pos))
+            return np.where(np.isin(bidx, list(slots)), wgt, 0.0).sum(axis=1)
 
         m_el, m_hd = wmask([slot_of[el]]), wmask([slot_of[hd]])
         m_tw, m_ft, m_wt = wmask([tw]), wmask([ft]), wmask([wt])

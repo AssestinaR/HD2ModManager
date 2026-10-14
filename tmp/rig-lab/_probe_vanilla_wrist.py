@@ -239,8 +239,8 @@ def main():
         print('FAILED to reconstruct bundled payload')
         return 1
 
-    os.makedirs(args.out, exist_ok=True)
     if not args.no_write:
+        os.makedirs(args.out, exist_ok=True)
         base = os.path.join(args.out, 'unit_0x%016x' % fid)
         with open(base + '.toc', 'wb') as f:
             f.write(toc)
@@ -277,6 +277,31 @@ def main():
 
         bidx = cols(bi_keys, np.int64)
         wgt = cols(bw_keys, np.float64)
+        if bi_keys != ['bone_index0'] or bidx.shape != wgt.shape:
+            raise ValueError('probe supports one matching index/weight group only; multi-group data needs a dedicated decoder')
+        mesh_matrix = np.asarray(ti.matrices[mi.transform_index]).reshape(4, 4)
+        if not np.allclose(mesh_matrix, np.eye(4), atol=1e-6, rtol=0):
+            raise ValueError('probe requires identity mesh transform; convert spaces before profiling')
+        # Native indices are material-local: resolve remap[material][raw] to BoneInfo slot.
+        raw = bidx.copy()
+        mat_of = np.full(len(verts), -1, np.int32)
+        indices = np.asarray(unit.index_list(mi.stream_index), np.int64)
+        for section in mi.sections:
+            used = np.unique(indices[section.index_offset:section.index_offset + section.num_indices])
+            if np.any((mat_of[used] >= 0) & (mat_of[used] != section.material_index)):
+                raise ValueError('vertex has conflicting material remaps')
+            mat_of[used] = section.material_index
+        if np.any(mat_of < 0):
+            raise ValueError('unreferenced vertices have unknown remap')
+        bi_info = unit.bone_infos[mi.lod_index]
+        for mat_idx in np.unique(mat_of):
+            remap = np.asarray(bi_info.remaps[mat_idx], np.int64)
+            mask = mat_of == mat_idx
+            if np.any(raw[mask][wgt[mask] > 1e-6] >= len(remap)):
+                raise ValueError('positive weight references missing remap index')
+            bidx[mask] = remap[np.minimum(raw[mask], len(remap) - 1)]
+        print('  material remaps %s, positive raw indices changed %d' %
+              (list(map(len, bi_info.remaps)), int(np.count_nonzero((bidx != raw) & (wgt > 1e-6)))))
         pos = np.asarray([v['position'] for v in verts], np.float64)
         mass = np.zeros(max(len(names), int(bidx.max()) + 1))
         for j in range(bidx.shape[1]):
@@ -320,7 +345,7 @@ def main():
                         return 0.0
                     m = np.zeros(len(pos))
                     hit = bidx == slot
-                    m[np.any(hit, axis=1)] = wgt[np.any(hit, axis=1)].sum(axis=1)
+                    m = np.where(hit, wgt, 0.0).sum(axis=1)
                     return float(m[sel].mean())
 
                 el_w, hd_w = w_of(slot_of[el_name]), w_of(slot_of[hd_name])
