@@ -105,7 +105,8 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     if '--pair' in sys.argv:
         out = sys.argv[sys.argv.index('--pair') + 1]
-        imgs = [sheet(p, os.path.basename(os.path.dirname(p)) or p) for p in args]
+        npzs = [a for a in sys.argv[1:] if not a.startswith('--') and a != out]
+        imgs = [sheet(p, os.path.basename(os.path.dirname(p)) or p) for p in npzs]
         wmax = max(i.width for i in imgs)
         canvas = Image.new('RGB', (wmax, sum(i.height for i in imgs)),
                            (16, 17, 20))
