@@ -165,7 +165,11 @@ def main():
     stats = []
     for side, el, hd, tw in SIDES:
         hand_slots = set(subtree_slots(ti, bi, slot_of[hd]))
-        arm_names = set(names[s] for s in hand_slots) | {el, tw}
+        # Only the three bones of the elbow -> twist -> hand chain take part in
+        # the redistribution.  The rest of the hand subtree (the fingers) must
+        # be left alone: the ROI now reaches past the wrist, and treating the
+        # whole subtree as "ours" would wipe the finger weights there.
+        arm_names = {el, hd, tw}
         E, W = heads[slot_of[el]], heads[slot_of[hd]]
         axis = W - E
         L = float(np.linalg.norm(axis))
@@ -173,7 +177,12 @@ def main():
         rel = pos - E
         t = rel @ axis
         rad = np.linalg.norm(rel - np.outer(t, axis), axis=1)
-        roi = (rad < args.radius) & (t > 0.0) & (t < L)
+        # The handover ramp (hand_start..hand_end) straddles the wrist at t/L=1,
+        # so the ROI has to reach past it.  With the old `t < L` bound the ramp
+        # was truncated mid-way and left a step at the wrist (round 74: the
+        # "stem at 2 o'clock, tip at 3 o'clock" mismatch).
+        t_end = max(L, args.hand_end * L)
+        roi = (rad < args.radius) & (t > 0.0) & (t < t_end)
         a, b = args.a * L, args.b * L
         s = smoothstep(a, b, t)
         # Third stage: near the wrist the twist share hands over to l_hand.
@@ -204,7 +213,10 @@ def main():
                 keep.append((tw, t_w))
             if h_w > 0.0:
                 keep.append((hd, h_w))
-            if keep != infl[i]:
+            # compare order-insensitively: widening the ROI makes us revisit
+            # vertices we now leave numerically identical, and a mere reorder
+            # must not count as a change (it would break the no-op guarantee).
+            if sorted(keep) != sorted(infl[i]):
                 infl[i] = keep
                 changed[i] = True
                 n += 1

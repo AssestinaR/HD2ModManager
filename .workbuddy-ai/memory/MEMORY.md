@@ -14,7 +14,7 @@
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
 - **Lilium-Sancta-RE2310**：第69轮可用包仍在 `E:/mod/Lilium-Sancta-RE2310/`；patch sha256 `5e4e045c3e1cbc7c…`，GPU sha256 `e9b0bb91ca0b1383…`。回退点 `E:/tmp/round69-final-rollback/`，不要删。
-- **MourningVeil-RE2310**：第73轮已改为「原版匹配」小臂权重；patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 未动），GPU sha256 `bc14e0a26ec8efa5cac8f5fd2dacd334ada2232852f676eceb79258cc3d4e07c`（原 `2432fc5e…`）。回退点 `E:/tmp/r73-ship-rollback/`（第72轮出货字节）与 `E:/tmp/r72-ship-rollback/`，都不要删。
+- **MourningVeil-RE2310**：第74轮已修「交接档被 ROI 截断」bug；patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 始终未动），GPU sha256 `fbac8d425140bffa5865f92b30c53c0c11355539f8e5178da674688fe0c566cf`（r73 `bc14e0a2…` → r72 `2432fc5e…`）。回退点 `E:/tmp/r74-ship-rollback/`（r73 字节）、`E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。⚠️ 第74轮的 `library sync apply` 因管理器在运行被拒，**同步未完成**。
 
 ## 🔴🔴 第73轮：小臂橡皮筋根因已确定（真实动作矩阵已取到）
 - **玩家骨架 `0x4d1c334d294dfa97`（90 根）**；玩家动画**全在归档 `18235e0c9ec0e636`**（2222 个 `bone_count=90`）。资源 file_id = `murmur64_hash(ASCII 路径)`。
@@ -61,3 +61,36 @@
 ## 未完成但不得冒充完成
 - 未获取真实游戏动作的 `l_elbow/l_hand/l_hand_twist` 矩阵时间序列；未完成原版多索引护甲正确解码。
 - 未生成或部署第72轮新候选包；未完成分壳形状/接缝验收；未把小臂指标迁入 C#。
+
+## 🔴🔴 第74轮：手腕错位 = 第73轮自己引入的 ROI 截断 bug（已修）
+- `reweight_forearm_twist.py` 的 ROI 是 `(rad<radius)&(t>0)&(t<L)`，**`t` 从【肘】算起**（`rel = pos - E`）。
+- 第73轮新增的交接档 `--hand-start 0.90 --hand-end 1.12` **按 t/L 跨过腕（=1.0）**，被 ROI **在腕处硬切**：
+  t/L 0.98 twist 0.688 → **t/L 1.02 twist 0.000（断崖）**。原版是 0.750 → 0.290 → 0.049 的平滑过渡。
+- **后果**：同一轴向位置的两条壳转角不同（扭转 60°，twist 骨 0.78 同转，腕带 |t|<45mm）：
+  `mat 0`（41 顶点，w_twist 0.816）转 **47.8°**；`mat 1`（1680 顶点，w_twist 0.337）转 **60.0°** ⇒ **差 12.2°**（θ=150° 时约 20°）。即用户报的"针柄在2点、针尖在3点"。
+- **修正三处**：① `t_end = max(L, hand_end*L)`；② `arm_names` 收窄为 `{elbow, hand, twist}`（原为**整个手部子树**，ROI 过腕会抹掉手指权重）；③ 改动判定改为**与顺序无关**。
+- **修正后剖面**：0.94→0.906 / 0.98→0.688 / 1.02→0.421 / 1.06→0.207 / 1.10→0.025（原版 0.915/0.750/0.290/0.049/0.008）。台阶消失。
+- **验证**：字节负对照 22728/16332696（0.139%），全在 `bone_weight`+`bone_index`，字段外 0 字节，两 stream 对称，TOC 未动。用 r72 参数重跑，ROI 加长只动**每侧 10 个顶点**（t/L 1.02~1.12 手根残留肘权重）⇒ 修正非回归。
+- ⚠️ 因此**「旧参数重跑 = 逐字节相同」这条负对照不再成立**（算法改动，非参数默认值问题）。
+- ⚠️ **本 unit 的 `remaps` 是恒等**（8 材质 × 107 全 identity）⇒ `reweight_forearm_twist.py` 不 remap 读 `bone_index` 对我们是安全的；**换 unit 前必须补 remap**。
+
+## 🔴 第74轮：探针/格式的既有缺陷与真相（会污染旧结论）
+- `_probe_wrist_roll_render.py` 的 `wh` 有**两个 bug**：① 没按材质 `remaps` 解码 `bone_index`；② 没过滤"只被 LOD0 索引缓冲引用的顶点"。⇒ 第73轮 `preview/forearm_bend_before_after.png` 的**手骨权重着色是错的**（形变结论仍成立，因为靠骨名统计）。**待修。**
+- `ti.entries[i][1]` 是**父骨的 ti 索引**（不是 slot 索引）；`bi.real_indices` 是 slot→ti。
+- unit 的 mesh transform 是**行主序、平移在最后一行**：`pos @ M[:3,:3] + M[3,:3]`。
+- **只有被 LOD0 索引缓冲引用的顶点才有意义**；其余属别的 LOD，`bone_index` 未经 remap。
+- 几何对照（`_probe_wrist_center.py`）：截面质心离骨骼轴 t=-60 我们 29.4 / 原版 13.5 mm；腕环(|t|≤20) 我们 19.97 / 原版 15.36 mm ⇒ 我们的网格相对骨骼**确实比原版偏得多**（与用户"纯角度摆放"判断方向一致，但不能单独定论）。权重过渡带已与原版一致（t=-20 都是 0.231）。
+- 手腕处**仍有**一个星形褶皱，但在"两骨同 θ"与"手 θ + twist 0.78θ"下**完全一样** ⇒ **不是扭转比例造成的**，未定位。
+
+## 🔴 重定向的**结构性**缺陷（用户判断成立）+ 工具调研结论
+- 我们的 `retarget` 是 **yaw 拟合 R + 统一缩放 s + 平移 t（锚头顶）**，即**整具模型一次刚体变换**，**没有关节级对齐**。源模型 T-pose 与 HD2 A-pose 的手臂角度/骨长比例一有差，误差全堆到关节，手腕最敏感。
+- **建议**：升级为「**分段刚体 + 平滑混合**」= 一次 LBS 重定向：① 源骨↔HD2 骨映射（C# 侧 `HD2SourceMigration` 已有雏形）；② 每骨求"源骨 rest → HD2 骨 rest"的刚体变换；③ 用"顶点到骨段距离"混合（类 bone heat）；④ 应用。
+- **可借的开源工具/思路**（详见 `tmp/rig-lab/ROUND74_POSE_MATCHING_TOOLS.md`）：
+  - **gret `Mesh: Retarget`**（github.com/greisane/gret，RBF；**网格要求源/目标同拓扑**，骨架可用）
+  - **AutoTPose**（github.com/4onstudios/AutoTPose，几何启发式识别上臂/前臂对齐 T-pose，有 headless CLI）
+  - **LM_SwapRestPose**（github.com/luca-malisan/LM_SwapRestPose，rest pose 互换）
+  - **pycpd**（CPD 非刚性点集配准，纯 numpy）
+  - **Blender 内置**：`Data Transfer`（Vertex Groups → Nearest Face Interpolated，**权重迁移**）、`Surface Deform`/`Mesh Deform`/`Shrinkwrap`、`Automatic Weights`、`Copy Transforms` + `Apply Pose as Rest Pose`
+  - **UniRig**（SIGGRAPH 2025，github.com/VAST-AI-Research/UniRig）、**RigNet**（SIGGRAPH 2020）
+  - **BodySlide / Outfit Studio**（上古卷轴/辐射社区，开源的"服装适配不同体型/骨架"标准工具）
+  - 学术：Deformation Transfer (Sumner 2004)、Non-rigid ICP (Amberg 2007)、CPD (Myronenko 2010)、ARAP (Sorkine 2007)、Mesh Contraction (Au 2008)
