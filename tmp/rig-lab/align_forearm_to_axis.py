@@ -189,6 +189,18 @@ def circle_fit_2d(x, y):
     return cx, cy, r, float(np.sqrt(((d - d.mean()) ** 2).mean()))
 
 
+def rodrigues(w):
+    """Rotation matrix (column-vector convention) from a rotation vector."""
+    th = float(np.linalg.norm(w))
+    if th < 1e-12:
+        return np.eye(3)
+    k = np.asarray(w, np.float64) / th
+    K = np.array([[0.0, -k[2], k[1]],
+                  [k[2], 0.0, -k[0]],
+                  [-k[1], k[0], 0.0]])
+    return np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * (K @ K)
+
+
 def fit_offset_profile(x2, y2, t, rad, mask, L, slab, step, fit_radius,
                        min_n=10, max_rms=0.004):
     """-> (stations_t_over_L, cx, cy, n, rms) for the clean stations only."""
@@ -303,6 +315,19 @@ def main():
                          'elbow subtree (the hand moves with the wrist).  forearm: '
                          'only l_elbow + l_hand_twist, so the hand and fingers are '
                          'never displaced (the wrist then gets a partial correction).')
+    ap.add_argument('--mode', default='offset', choices=('offset', 'rotate'),
+                    help='offset (round 75/75b): displace each station by its own '
+                         'measured offset, so the WHOLE forearm lands on the bone '
+                         'axis -- the elbow end moves ~44 mm and creases.  '
+                         'rotate (round 76): keep the elbow joint as a fixed pivot '
+                         'and rotate the whole forearm rigidly about it so the WRIST '
+                         'lands on the bone axis.  Displacement is 0 at the elbow and '
+                         'grows linearly to the wrist, so no new bend and no elbow crease.')
+    ap.add_argument('--pivot-lo', type=float, default=0.86,
+                    help='rotate mode: lower t/L bound of the window whose offsets the '
+                         'rotation is fitted to cancel (the wrist band)')
+    ap.add_argument('--pivot-hi', type=float, default=1.06,
+                    help='rotate mode: upper t/L bound of that window')
     ap.add_argument('--report-edges', action='store_true',
                     help='print the worst edge-length changes (tear check)')
     ap.add_argument('--dry-run', action='store_true')
@@ -376,8 +401,38 @@ def main():
                    float(np.hypot(cxs_s[k], cys_s[k])) * 1000,
                    rmss[k] * 1000, 'yes' if good[k] else 'no'))
 
+        # ---- the pivot rotation ------------------------------------------------
+        # We want a rotation R about E such that R * (C(t) - E) is parallel to the
+        # bone axis for every station t of the chosen window.  C(t) - E = t*axis +
+        # e(t) with e(t) perpendicular to axis, so for a small rotation vector
+        # omega (perpendicular to axis) the perpendicular residual is
+        #     e(t) + t * (w_N * V_ - w_V * N_)
+        # (the frame is right-handed with axis x V_ = N_, so N_ x axis = V_ and
+        #  V_ x axis = -N_) -- linear in omega, hence a closed-form 2x2 fit.
+        sel = (ts >= args.pivot_lo) & (ts <= args.pivot_hi)
+        if not sel.any():
+            raise SystemExit('%s: pivot window %.2f..%.2f holds no station'
+                             % (side, args.pivot_lo, args.pivot_hi))
+        tt = ts[sel] * L
+        den = float((tt * tt).sum())
+        w_v = +float((tt * cxs_s[sel]).sum()) / den
+        w_n = -float((tt * cys_s[sel]).sum()) / den
+        omega = w_n * N_ + w_v * V_
+        R_rot = rodrigues(omega)
+        ang_deg = float(np.degrees(np.linalg.norm(omega)))
+
+        log()
+        log('  pivot rotation about %s_elbow  (window t/L %.2f..%.2f, %d stations)'
+            % (pre, args.pivot_lo, args.pivot_hi, int(sel.sum())))
+        log('    angle  %6.2f deg   axis(n_unit) %s'
+            % (ang_deg, np.array2string(np.asarray(omega) / max(
+                np.linalg.norm(omega), 1e-12), precision=3)))
+        log('    the elbow stays put (|p-E| = 0 there); the wrist band moves by '
+            'about %.1f mm' % (np.linalg.norm(omega) * L * 1000))
+
         plans[side] = dict(pre=pre, E=E, W=W, axis=axis, N_=N_, V_=V_, L=L,
-                           ts=ts, cxs=cxs_s, cys=cys_s)
+                           ts=ts, cxs=cxs_s, cys=cys_s,
+                           Rrot=R_rot, omega=omega, rot_deg=ang_deg)
 
     if args.measure_only:
         log()
@@ -450,32 +505,47 @@ def main():
                 keep[inf['live']] = True
                 w[~keep] = 0.0
 
-            d2 = -w[:, None] * np.stack([ex, ey], axis=1)
-            mag = np.linalg.norm(d2, axis=1)
-            over = mag > args.max_move
-            if over.any():
-                d2[over] *= (args.max_move / mag[over])[:, None]
-            d3_unit = d2[:, 0:1] * N_ + d2[:, 1:2] * V_
+            if args.mode == 'rotate':
+                # rigid rotation of the forearm about the elbow joint
+                rel_u = inf['pos'] - p['E']
+                d3_unit = w[:, None] * (rel_u @ p['Rrot'].T - rel_u)
+                mag = np.linalg.norm(d3_unit, axis=1)
+                over = mag > args.max_move
+                if over.any():
+                    d3_unit[over] *= (args.max_move / mag[over])[:, None]
+            else:
+                d2 = -w[:, None] * np.stack([ex, ey], axis=1)
+                mag = np.linalg.norm(d2, axis=1)
+                over = mag > args.max_move
+                if over.any():
+                    d2[over] *= (args.max_move / mag[over])[:, None]
+                d3_unit = d2[:, 0:1] * N_ + d2[:, 1:2] * V_
             dmax = max(dmax, float(np.linalg.norm(d3_unit, axis=1).max()))
-
-            # derivative of the displacement along t, for the normal correction
-            dt = 0.0005
-            ex1 = np.interp(tl + dt / L, p['ts'], p['cxs'])
-            ey1 = np.interp(tl + dt / L, p['ts'], p['cys'])
-            al1 = fade_alpha(tl + dt / L, args.t0, args.t1, args.fade)
-            d2b = -(args.strength * al1 * limbw)[:, None] * np.stack([ex1, ey1], axis=1)
-            d3b = d2b[:, 0:1] * N_ + d2b[:, 1:2] * V_
-            uvec = (d3b - d3_unit) / dt
 
             d_local = d3_unit @ Rinv
             new_pos += d_local
             moved |= w > 0.0
 
             if not args.no_normals:
-                u_loc = uvec @ Rinv
-                a_loc = axis @ Rinv
-                dot = (nrm_local * u_loc).sum(axis=1)
-                nn = nrm_local - a_loc[None, :] * dot[:, None]
+                if args.mode == 'rotate':
+                    # a pure rotation carries normals with it; the weight blend
+                    # then mixes rotation and identity (exact to first order)
+                    Rloc = Rinv @ p['Rrot'] @ R
+                    ww = np.clip(w, 0.0, 1.0)[:, None]
+                    nn = (1.0 - ww) * nrm_local + ww * (nrm_local @ Rloc.T)
+                else:
+                    # derivative of the displacement along t
+                    dt = 0.0005
+                    ex1 = np.interp(tl + dt / L, p['ts'], p['cxs'])
+                    ey1 = np.interp(tl + dt / L, p['ts'], p['cys'])
+                    al1 = fade_alpha(tl + dt / L, args.t0, args.t1, args.fade)
+                    d2b = -(args.strength * al1 * limbw)[:, None] * np.stack([ex1, ey1], axis=1)
+                    d3b = d2b[:, 0:1] * N_ + d2b[:, 1:2] * V_
+                    uvec = (d3b - d3_unit) / dt
+                    u_loc = uvec @ Rinv
+                    a_loc = axis @ Rinv
+                    dot = (nrm_local * u_loc).sum(axis=1)
+                    nn = nrm_local - a_loc[None, :] * dot[:, None]
                 ln = np.linalg.norm(nn, axis=1, keepdims=True)
                 nn = nn / np.maximum(ln, 1e-30)
                 sel = w > 0.0
@@ -524,11 +594,13 @@ def main():
 
     meta = dict(schema='hd2mod.rig-lab-forearm-align', sourcePatch=args.src,
                 units=['%016x' % x for x in units], sides=list(plans),
-                params=dict(strength=args.strength, t0=args.t0, t1=args.t1,
-                            fade=args.fade, fit_slab=args.fit_slab,
+                params=dict(mode=args.mode, strength=args.strength, t0=args.t0,
+                            t1=args.t1, fade=args.fade, fit_slab=args.fit_slab,
                             fit_step=args.fit_step, fit_radius_m=args.fit_radius,
                             gate_radius_m=args.gate_radius,
                             max_move_m=args.max_move,
+                            pivot_lo=args.pivot_lo, pivot_hi=args.pivot_hi,
+                            rot_deg={s: plans[s]['rot_deg'] for s in plans},
                             normals=not args.no_normals),
                 report=report, outputPatch=res['toc'], tocBytes=res['toc_size'],
                 gpuBytes=res['gpu_size'])
