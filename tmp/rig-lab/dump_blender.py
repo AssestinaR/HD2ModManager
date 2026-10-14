@@ -261,6 +261,24 @@ def parse_args(argv=None):
     ap.add_argument('--finger-pose', default=str(ARM_FINGER_POSE),
                     help="residual finger pose: 'all' (True), 'none' (False), "
                          "or a comma list of stems e.g. 'middle' (round 55)")
+    # Round 77: opt-in only.  Runs the mesh-only arm re-fit (step 4e) on the
+    # `arm_scratch` path, i.e. puts the arm's joints back onto HD2's bones by a
+    # weight-blended joint residual (no per-model constants).  OFF by default so
+    # the existing byte stream is untouched.
+    ap.add_argument('--arm-refit-scratch', action='store_true',
+                    help='also run the mesh-only arm re-fit under arm_scratch '
+                         '(round 77 experiment; default off)')
+    # Round 77: the re-fit's own split factors.  `dvec = u*along + w_up*arm_up*
+    # (perp.w_up) + w_fwd*arm_perp*(perp.w_fwd)`, so arm_up = arm_perp = 1.0
+    # applies the FULL per-bone residual (the textbook translation retarget);
+    # the legacy defaults (0.55 / 0.00) were fitted against the reference patch
+    # on the non-arm_scratch path.
+    ap.add_argument('--arm-fit', type=float, default=1.0)
+    ap.add_argument('--arm-up', type=float, default=0.55)
+    ap.add_argument('--arm-perp', type=float, default=0.0)
+    ap.add_argument('--arm-smooth', type=int, default=8)
+    ap.add_argument('--arm-taper', type=float, nargs=2, default=[-0.05, 0.22],
+                    metavar=('T0', 'T1'))
     return ap.parse_args(argv)
 
 
@@ -285,6 +303,10 @@ def main(argv=None):
                    arm_elbow_open=args.elbow_open,
                    arm_hand_tilt=args.hand_tilt,
                    arm_finger_pose=finger_pose,
+                   arm_refit_scratch=args.arm_refit_scratch,
+                   arm_fit=args.arm_fit, arm_up=args.arm_up,
+                   arm_perp=args.arm_perp, arm_smooth=args.arm_smooth,
+                   arm_taper=tuple(args.arm_taper),
                    verbose=True)
     print('[dump] upper-arm gain = %+.4f m   shift = (%+.4f, %+.4f, %+.4f) m   '
           'elbow open = %+.2f deg   hand tilt = %+.2f deg   finger pose = %s'
@@ -446,6 +468,12 @@ def main(argv=None):
                                arm_elbow_open=args.elbow_open,
                                arm_hand_tilt=args.hand_tilt,
                                arm_finger_pose=finger_pose,
+                               arm_refit_scratch=bool(args.arm_refit_scratch),
+                               arm_refit_fit=args.arm_fit,
+                               arm_refit_up=args.arm_up,
+                               arm_refit_perp=args.arm_perp,
+                               arm_refit_smooth=int(args.arm_smooth),
+                               arm_refit_taper=list(args.arm_taper),
                                weight_encoding='half4-1/2048-largest-remainder'),
                    metrics=plain(r['metrics'])),
               open(os.path.join(out_dir, 'meta.json'), 'w', encoding='utf-8'),

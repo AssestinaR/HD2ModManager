@@ -727,6 +727,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              arm_up=0.55, arm_smooth=8, arm_taper=(-0.05, 0.22), arm_rot=None,
              arm_rot_smooth=8, arm_rot_mode='rigid',
              arm_scratch=True, arm_scratch_deg=None, arm_scratch_elbow=True,
+             arm_refit_scratch=False,
              arm_elbow_open=0.0, arm_hand_tilt=0.0,
              arm_finger_pose=None, arm_finger_pose_amount=1.0,
              arm_scratch_upper_gain=0.0, arm_scratch_upper_shift=(0.0, 0.0, 0.0),
@@ -1467,7 +1468,16 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     #
     # It runs BEFORE the mesh-only shift/scale (4c/4d) so the residual is applied
     # in the same space the two rests are expressed in.
-    if arm_fit != 0.0 and not arm_scratch:
+    #
+    # Round 77 (`arm_refit_scratch`): allow this pass to run on the `arm_scratch`
+    # path too.  Under `arm_scratch` the arm is posed by rotating the SOURCE
+    # skeleton about the SOURCE joints, so the mesh's arm root still sits where
+    # the source's shoulder/elbow are -- measured on MourningVeil, the elbow ends
+    # up 112.9 mm from HD2's elbow (-97.1 mm along the HD2 upper arm, +57.7 mm
+    # perpendicular) and only the hand-set `arm_scratch_upper_gain` (5 cm) is
+    # compensating.  This flag is DEFAULT OFF, so the shipped byte stream is
+    # unchanged unless it is asked for.  Probe: `_probe_arm_aim_geometry.py`.
+    if arm_fit != 0.0 and (not arm_scratch or arm_refit_scratch):
         Z = np.array([0.0, 0.0, 1.0])
         T = np.asarray([t[:3] for t in tris], dtype=np.int64)
         e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
@@ -1478,6 +1488,8 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
         inv_deg = (1.0 / deg)[:, None]
         delta = np.zeros_like(out)
         nbone = 0
+        _dump = os.environ.get('HD2_ARM_REFIT_DUMP')
+        _rows = []
         for side in ('l', 'r'):
             # the axis the user asked to "slide the forearm out along"
             a = rest_shipped.get(next(h['index'] for h in hd2
@@ -1516,6 +1528,17 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 perp = d - u * along
                 dvec[i] = (u * along + w_up * (arm_up * float(perp @ w_up)) +
                            w_fwd * (arm_perp * float(perp @ w_fwd)))
+                if _dump:
+                    _rows.append(dict(
+                        side=side, name=h['name'],
+                        working=[float(x) for x in origin_np(D[i] @ rest_sym[i])],
+                        shipped=[float(x) for x in origin_np(rest_shipped[i])],
+                        rest_sym=[float(x) for x in origin_np(rest_sym[i])],
+                        d=[float(x) for x in d], d_mm=1000.0 * float(np.linalg.norm(d)),
+                        along_mm=1000.0 * along,
+                        perp_mm=1000.0 * float(np.linalg.norm(perp)),
+                        dvec=[float(x) for x in dvec[i]],
+                        dvec_mm=1000.0 * float(np.linalg.norm(dvec[i]))))
             if not dvec:
                 continue
             nbone += len(dvec)
@@ -1552,6 +1575,22 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 tt = np.clip(((out - p0) @ u - t0) / max(t1 - t0, 1e-9), 0.0, 1.0)
                 d_side *= (tt * tt * (3.0 - 2.0 * tt))[:, None]
             delta += d_side
+        if _dump and _rows:
+            _hdr = dict(
+                scale=float(s), t=[float(x) for x in t],
+                sole=[float(x) for x in sole],
+                R=[[float(x) for x in row] for row in np.asarray(R, float)],
+                head_hd2=[float(x) for x in head_hd2],
+                head_src_aligned=[float(x) for x in align_pts(head_src_v.reshape(1, 3))[0]],
+                new_head={k: [float(x) for x in v] for k, v in new_head.items()},
+                rest_shipped={by_idx_name.get(i, str(i)): [float(x) for x in origin_np(rest_shipped[i])]
+                              for i in rest_shipped},
+                arm_up=float(arm_up), arm_perp=float(arm_perp),
+                arm_taper=None if arm_taper is None else [float(x) for x in arm_taper],
+                arm_smooth=int(arm_smooth), arm_fit=float(arm_fit))
+            json.dump(dict(fit=_hdr, bones=_rows), open(_dump, 'w', encoding='utf-8'),
+                      indent=1)
+            say('arm re-fit dump -> %s (%d bones)' % (_dump, len(_rows)))
         if nbone:
             if arm_fit != 1.0:
                 delta *= arm_fit

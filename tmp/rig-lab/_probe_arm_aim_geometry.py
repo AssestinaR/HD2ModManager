@@ -95,15 +95,39 @@ def main():
     def joint(sname):
         return align_pts(ST.origin_np(ST.m_to_np(short[sname]['world_m'])).reshape(1, 3))[0] + t
 
+    # ---- 1c. LEG TILT (hd2_style.py:957-981) ------------------------------
+    # Rotates the whole rig about the ANKLES by `leg_tilt` and then translates
+    # every bone that is not a leg bone by `delta = Rl(hips) - hips`.  The arm
+    # joints ARE translated by it, so a probe that stops at `joint()` lands
+    # 9.5 cm out in Y.  (Round 77: this is what made the first aim probe wrong.)
+    LEG_TILT = 5.7
+    _ankle = 0.5 * (joint('L_Foot') + joint('R_Foot'))
+    _th = math.radians(LEG_TILT)
+    _ct, _st = math.cos(_th), math.sin(_th)
+    _Rl = (ST.trans(_ankle)
+           @ np.array([[1, 0, 0, 0], [0, _ct, _st, 0],
+                       [0, -_st, _ct, 0], [0, 0, 0, 1]], float)
+           @ ST.trans(-_ankle))
+    _hips = joint('Pelvis')
+    leg_delta = (_Rl @ np.append(_hips, 1.0))[:3] - _hips
+    print('  leg tilt %.2f deg about the ankles -> whole-rig delta %s'
+          % (LEG_TILT, fmt(leg_delta)))
+
+    def ajoint(sname):
+        return joint(sname) + leg_delta
+
     print('=== initial rigid fit ===')
     print('  yaw %.4f deg   scale %.6f   translate %s' % (yaw_ang, s, fmt(t)))
+    print('  sole %s   raw L_UpperArm %s   raw Head1 %s'
+          % (fmt(sole), fmt(ST.origin_np(ST.m_to_np(short['L_UpperArm']['world_m']))),
+             fmt(head_src_v)))
 
     out = dict(yawDeg=yaw_ang, scale=s, translate=[float(x) for x in t], arms={})
 
     for side, SD in (('l', 'L'), ('r', 'R')):
-        S_s = joint('%s_UpperArm' % SD)
-        E_s = joint('%s_Forearm' % SD)
-        W_s = joint('%s_Hand' % SD)
+        S_s = ajoint('%s_UpperArm' % SD)
+        E_s = ajoint('%s_Forearm' % SD)
+        W_s = ajoint('%s_Hand' % SD)
         S_h = ST.origin_np(rest_hd2[hby['%s_shoulder' % side]['index']])
         E_h = ST.origin_np(rest_hd2[hby['%s_elbow' % side]['index']])
         W_h = ST.origin_np(rest_hd2[hby['%s_hand' % side]['index']])
