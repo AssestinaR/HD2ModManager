@@ -6,10 +6,25 @@
 - 路线：Python 探针/离线 patch → 用户实机 → 通过后再迁 C#。无 Lua 的 legacy 包必须可运行。交付目录 patch/gpu 改动后要执行 `library sync` 四段流程。
 - rig-lab 负责 L4D2→HD2 转换；CLI 线程只负责把已有 C# mod 能力暴露成基层命令，不替 rig-lab 编写转换算法。
 
+## 🔴🔴 判断权归用户（第 77b 轮用户明确要求，长期有效）
+- **外观好不好只能由用户肉眼判断。** 涉及外观的实验**必须输出可视文件**（多视角渲染图 / `.blend` /
+  游戏包）交用户看；**禁止**用标量指标（离轴距离、rms、倾斜角、柱形图）替用户下"好/坏"结论，
+  也禁止据此否决一个方案。指标只作定位线索。
+- 用户原话：「好不好不是表格、柱形图能表示的，我的最终目的是观感……哪怕它偏离了骨骼特别特别多，
+  多又怎么样？你确定了它就一定不好吗？……ai 无法承担责任」。
+- 现成工具：`tmp/rig-lab/_render_arm_npz_views.py`（npz → 手臂 5 视角 × N 变体同相机拼图）、
+  `tmp/rig-lab/blender_build_variants.py`（多变体并排进一个 .blend，带 HD2 骨名顶点组 + 骨链红线）、
+  `tmp/rig-lab/_probe_render_npz.py --pair`（全身四视图两两对比）。
+
 ## 环境
 - Python：`C:/Users/Administrator/.workbuddy-ai/binaries/python/envs/default/Scripts/python.exe`；Blender：`D:/SteamLibrary/steamapps/common/Blender/blender.exe`。
 - SDK：`docs/HD2SDK-CommunityEdition-3.8.0`；游戏 data：`D:/SteamLibrary/steamapps/common/Helldivers 2/data`；原版抽取：`E:/tmp/hd2-mgroot/`；mod 库：`E:/mod/`。
 - L4D2 源目录使用 Lunalice 以外的包时，必须显式传 `addons=`/`packs=`/`model_vpk=`。
+- ⚠️ 游戏 `data/` 里：`patch_0` → 基础护甲 mod；**`patch_1` → `E:/mod/MourningVeil-RE2310/`（我们的包）**；
+  `patch_2` → `.runtime/lua/…`。`deploy_candidate.py` 只改 `patch_0`（硬编码）⇒ 部署我们的包要另做。
+- ⚠️ MourningVeil 的 `build_patch.py` / `fix_materials.py` / `fix_appearance.py` 确切命令行**未留档**
+  （脚本默认常量指向 Lunalice）⇒ 要整链复现必须先反推参数、并用 OFF npz 验证 Native 包逐字节一致。
+- ⚠️ 环境**没有 matplotlib**（有 numpy / scipy / Pillow 12）⇒ 画图用 PIL，或直接用 `show_widget`。
 
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
@@ -244,7 +259,8 @@
 - **修正后的真值**（左臂；右臂镜像）：源肩 vs HD2 肩 **187.4 mm**、源肘 vs HD2 肘 **281.0 mm**、源腕 vs HD2 腕 **360.8 mm**。加 gain + 肩转后**工作肘仍离 HD2 肘 167.7 mm**（沿 HD2 大臂 **−90.0** + 垂直 **141.4**）。`|HD2腕 − 我们肘| = 316.6 mm`，我们小臂 **288.5 mm**（HD2 287.4，长度本来对）。
 - **两目标方向夹角 31.77°**（不是 17°）。落点：现行 **167.8 mm**；现行+6.5° open **136.0 mm**；**用户瞄准 28.1 mm**（= 恰好是小臂长度差 316.6−288.5）⇒ **用户的方案其实好得多**。
 - 取舍：瞄准 HD2 腕 ⇒ 腕位准（28 mm）但小臂管**偏离 twist 轴 31.77°**；对齐 HD2 方向 ⇒ 管在轴上但腕偏 167.8 mm。**两者不可兼得，除非把肘挪过去**（= 选项 1）。
-- **选项 1 实测（本轮）：失败**。`--arm-refit-scratch`（默认关）+ 四种分解系数（默认 .55/0、1.0/1.0、1.0/0、.55/1.0）全部让小臂更差：小臂管离 HD2 轴从 45/24 mm 涨到 60~140 mm，直线度 rms 5.06 → 8.4~15 mm；大臂倾斜 1.0/1.0 与 .55/1.0 反而崩到 22~24°。原因：逐骨残差（肩 187.4 / 肘 167.7 / 手 136.0，垂直分量 173.5/162.9/132.9）**方向不一致**，作为平移场施加会把手臂剪歪。
+- **选项 1 实测（本轮）：指标全面变差 —— ⚠️ 但指标不等于观感，最终判断权在用户**（见上方「判断权归用户」）。`--arm_refit_scratch`（默认关）+ 四种分解系数（默认 .55/0、1.0/1.0、1.0/0、.55/1.0）同口径（npz 中轴线 `--radius 0.30`，左臂）：小臂管离 HD2 轴 OFF `46.5` → ON `56.6` / A `143.6` / B `83.4` / C `128.7` mm；直线度 rms OFF `5.06` → `8.74 / 5.25 / 8.39 / 3.35`；大臂倾斜 OFF `8.55°` → ON `6.29°`、B `12.16°`、C `22.85°`、A `24.38°`。机制上逐骨残差（肩 187.4 / 肘 167.7 / 手 136.0，垂直分量 173.5/162.9/132.9）**方向不一致**，作为平移场施加会剪歪手臂。**已输出可视文件交用户判断**（`preview/r77b_arm_views_left.png` / `_right.png`、`preview/r77b_fullbody_off_vs_on.png`、`E:/tmp/r77b-variants.blend`）。
+- **🔴 ON 与 OFF 的 npz 只差顶点位置**：`ours_bind`/`ours_game` 有 54893 顶点不同（max **75.85 mm**）；`w_bone`/`w_val`、骨骼、`tris` **逐位相同** ⇒ 下游材质与权重步骤无需重算，只有位置相关的 `align_forearm_to_axis` 要重跑。
 - **负对照**：开关关时 `model.npz` 全部数组与出货 npz **逐位一致**（几何指纹 `978d9d8ccc98d43d`），`arm re-fit` 行不出现 ⇒ 改动默认完全惰性。
 - 新增/改动（**未动任何交付字节**）：`hd2_style.py`（+`arm_refit_scratch` 参数、`+HD2_ARM_REFIT_DUMP` 诊断转储）、`dump_blender.py`（+`--arm-refit-scratch`、`--arm-fit/--arm-up/--arm-perp/--arm-smooth/--arm-taper`）、新探针 `_probe_arm_aim_geometry.py`（已修）、`_probe_arm_npz_centerline.py`。
 - 回退点：`E:/tmp/r77-ship-rollback/`（r76b 字节）、`E:/tmp/r77-src-rollback/`（hd2_style/dump_blender/build_patch 原样）。
