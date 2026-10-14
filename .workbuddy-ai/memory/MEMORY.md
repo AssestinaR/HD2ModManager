@@ -14,11 +14,25 @@
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
 - **Lilium-Sancta-RE2310**：第69轮可用包仍在 `E:/mod/Lilium-Sancta-RE2310/`；patch sha256 `5e4e045c3e1cbc7c…`，GPU sha256 `e9b0bb91ca0b1383…`。回退点 `E:/tmp/round69-final-rollback/`，不要删。
-- **MourningVeil-RE2310**：第72轮第6步补跑后的包已 sync；patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`，GPU sha256 `2432fc5e946a6b6694e58b5848297a64fc719b89d0539223e217e7ae0d748bff`。回退点 `E:/tmp/r72-ship-rollback/`，不要删。
+- **MourningVeil-RE2310**：第73轮已改为「原版匹配」小臂权重；patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 未动），GPU sha256 `bc14e0a26ec8efa5cac8f5fd2dacd334ada2232852f676eceb79258cc3d4e07c`（原 `2432fc5e…`）。回退点 `E:/tmp/r73-ship-rollback/`（第72轮出货字节）与 `E:/tmp/r72-ship-rollback/`，都不要删。
+
+## 🔴🔴 第73轮：小臂橡皮筋根因已确定（真实动作矩阵已取到）
+- **玩家骨架 `0x4d1c334d294dfa97`（90 根）**；玩家动画**全在归档 `18235e0c9ec0e636`**（2222 个 `bone_count=90`）。资源 file_id = `murmur64_hash(ASCII 路径)`。
+- **`l_hand` 与 `l_hand_twist` 是 `l_elbow` 的并列子骨、头部重合**（局部平移都是 `[0.28718,0,0]`；`l_elbow` 是 `[0.30274,0,0]`=上臂）。**`l_hand_twist` 的局部旋转永远是 `[x,0,0,w]` ⇒ 单自由度纯扭转骨**，`l_hand` 是三自由度。
+- **游戏确实在驱动 `l_hand_twist`**：300 个真实动画里它与 `l_hand` 的扭转**相关系数 median 0.98、全部 ≥0.95**，角度比 **median 0.78**；它的 swing 恒 0（反向验证小臂轴 = 肘局部 +X，长 287.18 mm）。
+- **原版规则（决定性对照，原版左臂皮肤 unit `0x4a213e0ae8acf74b`，小臂 L=287.4 mm）**：`l_elbow → l_hand_twist → l_hand`；**`l_hand` 在整条小臂上权重恒 ≤0.013**，只在 t/L>0.93 才接管。**原版 RE-2310 护甲 unit 只有 8 槽、无手臂骨**（HD2 手臂是独立皮肤 unit）。
+- **我们的包**（第72轮）小臂中段 t/L 0.62 有 **`l_hand` 0.53 / `l_hand_twist` 0.00**，四个 twist 骨全 0 ⇒ **根因：`l_hand` 旋转原点在手腕（离小臂中段 11 cm），屈腕即把中段绕腕摆出 = 橡皮筋**。
+- **推翻第68/70轮否定 twist 的两条依据**：① 前提「游戏只转 l_hand」是错的；② 旧 `--twist` 负对照给两骨**同一个旋转矩阵**，两骨 head 重合 ⇒ 位移只取决于权重之和 ⇒「三档结果一样」是**无效对照**。正确模型：**swing 只由 `l_hand` 携带**。
+- **第73轮参数**：`--a 0.47 --b 0.88 --twist-frac 1.0 --hand-start 0.90 --hand-end 1.12 --radius 0.10`（`--hand-start/--hand-end` 是新增第三档，默认 1.01/1.21 = no-op，已用「旧参数重跑 = gpu 逐字节相同」验证）。中段 `l_hand` 权重 0.235→0.000。
+- **探针（全只读）**：`hd2_gamedata.py`（Python bundled 读取器，与 CLI 逐字节一致）、`_probe_anim_tracks.py`（动画解码，布局 `[clip][u32 len][clip][u32 len]` 双 clip）、`_probe_wrist_rest/split/dump/action.py`、`_probe_forearm_weights.py`、`_probe_vanilla_arm_profile.py`、`_probe_wrist_bend_render.py`、`_probe_wrist_twist_strain.py`。
+- ⚠️ **解码坑**：swing/twist 分解的符号必须取「`tw[3]` 翻正之后」的 `tw[0..2]·axis`，否则四元数双覆盖 `q→-q` 造成 252° 假跳变、相关系数变负。
+- ⚠️ **`library sync plan` 必须给 `--output <file>`；`apply` 必须给 `--confirm`**（只给 `--plan` 会报 `LibrarySyncTargetChanged`）。
+- **仍未做**：`l_shoulder_twist` 同样被归零（原版上臂有 0.113~0.218）；第6步仍未进主链；原版曲线不是 smoothstep。
+
+## 第72轮小臂结论（已写回 `tmp/rig-lab/ROUND72_FOREARM_BRIEF.md` §11、§12、§13）
 - RE-2310 头盔是独立 `Helmet` archive，不受 `armor-normalize` 的 `Armor` archive 隐藏边界影响。用户已有隐藏头盔 mod；部署顺序为替换护甲包在前、隐藏头盔 mod 在后。
 - 材质规则：材质 ID 使用 `$basetexture` 全路径；底色贴图 ID 只取 basename。同 basename 且内容不同会互相覆盖；同一皮肤被多个材质引用时必须共享 basename/ID。
-
-## 第72轮小臂结论（已写回 `tmp/rig-lab/ROUND72_FOREARM_BRIEF.md` §11）
+- ⚠️ **本节的以下四条已被第73轮推翻/修正**（保留供追溯）：
 - “17 根远端后代骨分别拉动小臂”是错误因果：当前小臂窗口的手指骨权重为 0；父子层级不会反向把子骨动画传给父骨。问题应拆为权重带宽、真实腕部动作矩阵、网格壳/接缝三部分。
 - 原版旧读数 `65.2/61.8`、`0.234/0.340` 作废：原版 `bone_index` 必须按材质 remap 解码，且多索引护甲不能用单组探针截断。修正探针已对多组/非单位变换显式拒绝；最新拒绝是预期负对照，不是故障。
 - 正确原版皮肤剖面显示肘→腕前 `hand_twist`→掌侧 `hand` 的空间分工，但不能推出固定 40:60、不能证明游戏动作中 twist 与 hand 的矩阵关系，也不能据此直接改包。第70轮只否定具体的“50:50 + 扩大 ROI”实验，不否定 twist 机制。

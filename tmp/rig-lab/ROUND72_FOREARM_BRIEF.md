@@ -557,3 +557,210 @@ _probe_forearm_shells.py <patch> --unit cae35ee15168145f \
 `tmp/rig-lab/review_forearm_candidate_scan.py` 与 `_probe_forearm_shells.py` 保持只读。
 
 
+
+
+---
+
+## 13. 主线程执行记录（第 73 轮，2026-10-14）· 已取到真实动作矩阵 ⇒ 根因确定并已改包
+
+> 本节回答 §12.5 的阻塞项，并**推翻 §12.4「不改交付包」这一结论**。
+> 结论：小臂橡皮筋的根因**不是**「过渡带位置/形状」调参问题，而是
+> **小臂中段被绑在了旋转原点位于手腕的 3 自由度骨 `l_hand` 上**；
+> 原版 HD2 的规则是 `l_elbow → l_hand_twist → l_hand`，`l_hand` 在整条小臂上恒 ≤0.013。
+
+### 13.1 数据链（怎么把玩家动画解出来的）
+
+1. `typehash.txt`：`animation=931e336d7646cc26`、`bones=18dead01056b72e9`。
+2. `murmur64_hash(ASCII 路径) == friendlynames.txt 的 uint64`（3 例 MATCH）⇒ 资源 file_id 可算。
+3. 新建 **`tmp/rig-lab/hd2_gamedata.py`**：Python 版 slim/bundled 读取器（移植
+   `GameDataPackageResolver.cs`，DSAR chunk + `bundles.nxa` 包表 + LZ4）。
+   与 CLI **逐字节一致**（9715 个包；读 `792b2a2ba11ae85d` 的动画 sha256 MATCH）。
+4. 玩家骨架 = **`0x4d1c334d294dfa97`（90 根）**；人类骨架 `0x7a3637cd33a54e4c`（88 根）。
+5. 玩家动画**全部**在归档 **`18235e0c9ec0e636`**（全库 36659 个动画中 `bone_count=90` 共 2222 个，全在此）。
+6. 新建 **`_probe_anim_tracks.py`**（移植 SDK `stingray/animation.py`，该模块 import bpy 不能用）
+   ⇒ 解出动画布局 `[clip][u32 len][clip][u32 len]`（**双 clip**，两段内容不同），
+   逐骨 pos/rot/scale 轨道 + `initial` 初始骨状态。动画**无骨名表**，骨身份按索引绑定。
+
+### 13.2 骨架真相（这是根因的一半）
+
+用 12 个动画的 `initial` 状态（新建 **`_probe_wrist_rest.py`**）：
+
+| 骨 | 局部平移 | 含义 |
+|---|---|---|
+| `l_elbow` | `[0.30274, 0, 0]` | 上臂 30.3 cm（其头部在肘） |
+| `l_hand` | `[0.28718, 0, 0]` | 小臂 28.7 cm（其头部在**腕**） |
+| `l_hand_twist` | `[0.28718, 0, 0]` | **与 `l_hand` 逐位相同** |
+
+* **`pos(l_hand) == pos(l_hand_twist)` 在 12/12 个动画成立** ⇒ 二者是 `l_elbow` 的
+  **并列子骨**，头部完全重合（不是父子）。
+* **`l_hand_twist` 的 `rot` 永远是 `[x, 0, 0, w]`**（Y/Z 分量精确为 0，12/12）
+  ⇒ 它是**单自由度纯扭转骨**，只能绕自身长轴转；`l_hand` 是三自由度。
+* 小臂方向在肘局部系里就是 **+X**，长度 **287.18 mm**。
+* 另注：`l_elbow` 的父骨是 `l_shoulder`（`pos=[0.30274,0,0]`），即
+  **`l_shoulder`=上臂、`l_elbow`=小臂**，骨架里没有单独的 `l_forearm`。
+
+### 13.3 真实动作实测（`_probe_wrist_split.py` / `_probe_wrist_dump.py`）
+
+对 `18235e0c9ec0e636` 的前 300 个 `bone_count=90` 动画，把每根骨的局部旋转相对
+**小臂轴**做 swing/twist 分解（轴取自该动画自己的 `initial[l_hand]` 局部平移）：
+
+| 指标 | median | p90 | max | n |
+|---|---|---|---|---|
+| `l_hand` twist 范围 | 24.13° | 119.65° | 252.08° | 290 |
+| **`l_hand_twist` twist 范围** | **16.32°** | **88.72°** | **149.97°** | 290 |
+| `l_hand` swing 范围 | 19.89° | 71.00° | 100.89° | 290 |
+| **`l_hand_twist` swing 范围** | **0.00°** | **0.00°** | **0.01°** | 290 |
+| `l_elbow` 自身旋转峰值 | 24.56° | 77.39° | 109.29° | 290 |
+
+* **`l_hand_twist` 的 swing 恒为 0**（max 0.01°）——这**反向验证了轴是对的**：
+  如果轴错了，纯扭转骨不可能一直零 swing。
+* **twist 骨与 `l_hand` 的扭转时间序列相关系数 median 0.98/0.99，全部 ≥0.95**（162/166 个左臂活跃 clip）。
+* **角度比 `twist_bone / l_hand`：median 0.78（左）/ 0.82（右），p90 0.96 / 1.09。**
+* 166/290 个左臂 clip 的 `l_hand` 扭转范围 > 20°。
+⇒ **`l_hand_twist` 是游戏在用的扭转辅助骨，不是摆设。**
+（`_probe_wrist_action.py` 是首版探针；`_probe_wrist_split.py` 是加了相关系数/比值的版本。）
+
+> **⚠️ 一个必须先修的解码坑**：`signed_twist = copysign(ang, d)` 里的 `d` 必须在
+> 「把 `tw[3]` 翻正」**之后**再取（`d = tw[0..2]·axis`）。否则四元数双覆盖 `q → -q`
+> （同一姿态）会让符号翻转，产生 **252° 的假跳变**、把 `l_hand` 的扭转范围从 172°
+> 虚报成 268°，并让相关系数变成 -0.98。三个探针都已修正。
+
+### 13.4 原版 HD2 的权重剖面（决定性对照）
+
+`_probe_vanilla_arm_profile.py` 读原版**左臂皮肤 unit `0x4a213e0ae8acf74b`**
+（`E:/tmp/round68-van-arm/`；22 个槽位含 `l_hand_twist`/`l_shoulder_twist`；
+**小臂 L=287.4 mm，与我们的包完全相同**）：
+
+| t/L | elbow | hand | **hand_twist** |
+|---|---|---|---|
+| 0.12 | 0.875 | 0.000 | 0.000 |
+| 0.28 | 1.000 | 0.000 | 0.000 |
+| 0.47 | 0.998 | 0.001 | 0.001 |
+| 0.53 | 0.829 | 0.009 | **0.161** |
+| 0.62 | 0.632 | 0.013 | **0.352** |
+| 0.73 | 0.416 | 0.007 | **0.576** |
+| 0.83 | 0.087 | 0.002 | **0.911** |
+| 0.88 | 0.000 | 0.008 | **0.991** |
+| 0.98 | 0.009 | 0.230 | 0.750 |
+| 1.08 | 0.004 | 0.719 | 0.049 |
+
+⇒ **原版规则 = `l_elbow` → `l_hand_twist` → `l_hand`；
+`l_hand` 在整条小臂（t/L ≤ 0.93）上权重恒 ≤0.013，只在越过手腕后才接管。**
+
+**另一个结构性事实**：原版 RE-2310 **护甲** unit（`0xcae35ee15168145f`，`E:/tmp/round68-van-u/`）
+只有 **8 个槽位**（chest / spine1 / spine2 / neck / head / hips / l_thigh / r_thigh），
+**根本没有手臂骨** —— HD2 的手臂是**独立的皮肤 unit**。
+我们把整具身体（含手臂）塞进护甲槽，所以**手臂权重必须自己给**，而这一步一直给错了。
+
+### 13.5 我们的包的剖面与根因（`_probe_forearm_weights.py`）
+
+交付包（第 72 轮，参数 `a=0.22, b=1.00, twist_frac=0.0`）左小臂：
+
+| t/L | elbow | hand+ | **twist** |
+|---|---|---|---|
+| 0.33 | 1.00 | 0.00 | **0.00** |
+| 0.47 | 0.75 | 0.25 | **0.00** |
+| 0.62 | 0.47 | **0.53** | **0.00** |
+| 0.83 | 0.12 | 0.88 | **0.00** |
+| 0.98 | 0.00 | 1.00 | **0.00** |
+
+全模型总权重质量：`l_elbow 371.94 / l_hand 2113.07 / l_hand_twist 0.00`
+（`r_*` 同）。**四个 twist 骨（`l/r_hand_twist`、`l/r_shoulder_twist`）全部为 0。**
+
+**根因（机制级）**：
+`l_hand` 的旋转原点在**手腕**。小臂中段（t/L 0.47~0.62）有 **25%~53%** 挂在它上面，
+离手腕 **11 cm**。**手腕一屈伸（swing），小臂中段就绕手腕摆出去** ⇒ 橡皮筋。
+而 `l_hand_twist` 原点虽同在手腕，却**只绕小臂长轴**，对小臂中段是安全的。
+⇒ 这解释了「为什么只有小臂」：小臂是唯一一段**原版把过渡走 twist 骨、而我们把 twist 骨归零**的节段。
+
+### 13.6 推翻第 68/70 轮否定 `--twist-frac` 的两条依据
+
+1. **前提错**：当时写「**游戏只转 `l_hand`**」。§13.3 实测：游戏**确实在转 `l_hand_twist`**
+   （相关系数 0.95~1.00、角度比 0.78），且 §13.4 原版正是这么做的。
+2. **负对照无效**：旧渲染脚本的 `--twist` 开关给 `l_hand` 与 `l_hand_twist`
+   施加**同一个旋转矩阵**。两骨**头部重合** ⇒ 顶点位移
+   `= (w_hand + w_twist)·(R−I)(p−W)`，**只取决于权重之和，与怎么分配无关**
+   —— 这正是当时观察到「三档结果完全一样」的原因。**那个对照证明不了任何事。**
+   正确的合成模型是：**屈伸（swing）只由 `l_hand` 携带，`l_hand_twist` 完全不携带 swing**，
+   所以 twist 骨加权顶点在屈腕时**不动**。
+
+### 13.7 修正与验证
+
+`reweight_forearm_twist.py` 新增第三档 `--hand-start/--hand-end`（默认 1.01/1.21 ⇒ **no-op**，
+已用「旧参数重跑 = gpu 逐字节相同」验证），并按下式：
+
+```
+s = smoothstep(a, b, t/L)                      # 肘 -> 远端
+h = smoothstep(hand_start, hand_end, t/L)      # twist -> hand
+elbow = arm_total * (1 - s)
+twist = arm_total * s * twist_frac * (1 - h)
+hand  = arm_total * s * ((1 - twist_frac) + twist_frac * h)
+```
+
+本轮参数：**`--a 0.47 --b 0.88 --twist-frac 1.0 --hand-start 0.90 --hand-end 1.12 --radius 0.10`**
+
+新剖面 vs 原版：
+
+| t/L | 新包 elbow / twist / hand | 原版 elbow / twist / hand |
+|---|---|---|
+| 0.53 | 0.97 / 0.03 / 0.00 | 0.829 / 0.161 / 0.009 |
+| 0.62 | 0.68 / 0.32 / 0.00 | 0.632 / 0.352 / 0.013 |
+| 0.73 | 0.31 / 0.69 / 0.00 | 0.416 / 0.576 / 0.007 |
+| 0.83 | 0.04 / 0.96 / 0.00 | 0.087 / 0.911 / 0.002 |
+| 0.88 | 0.00 / 1.00 / 0.00 | 0.000 / 0.991 / 0.008 |
+| 0.98 | 0.00 / 0.71 / 0.29 | 0.009 / 0.750 / 0.230 |
+
+**小臂中段（0.25~0.70 t/L）的 `l_hand` 权重：0.235 → 0.000。**
+
+验证（全部 PASS）：
+
+1. **向后兼容负对照**：旧参数 + 新参数默认 ⇒ gpu sha256 `2432fc5e…`
+   **与旧包逐字节相同** ⇒ 新参数在默认值下是真 no-op（同时证明脚本对已重权包幂等）。
+2. **字节负对照**（`_probe_weightdiff.py`）：改动 **17882 / 16332696 字节（0.109%）**，
+   全部落在 `bone_weight`(14074) + `bone_index`(3808)，**声明字段之外 0 字节**；
+   **TOC 一字节未动**（patch sha256 仍 `e4ed9d01…`）。
+3. **屈腕视觉对照**（新探针 **`_probe_wrist_bend_render.py`**，已肉眼确认）：
+   屈腕 30°/60°，旧包**整条小臂像香蕉一样跟着弯**；新包**小臂保持笔直**，
+   只有腕/手区域在动 —— 与原版「小臂 `l_hand` ≈ 0」一致。
+   （旧渲染脚本的 `--twist` 逻辑已在 §13.6 判为无效；`preview/` 里两张 roll 图已改名
+     `superseded_*` 以免误导。）
+4. **真实扭转应变**（新探针 **`_probe_wrist_twist_strain.py`**，`k=0.78` 表示 twist 骨按实测比例同转）：
+
+   | patch | k | θ=90° p99 | max |
+   |---|---|---|---|
+   | 旧包 | 0.78 | 7.58 mm | 12.83 mm |
+   | 旧包 | 0.00 | 7.58 mm | 12.83 mm |（包内 twist 权重为 0 ⇒ k 无影响，自洽）|
+   | **新包** | **0.78** | **9.65 mm** | 16.74 mm |
+   | 新包 | 0.00 | **45.94 mm** | 55.71 mm | ← **游戏不会出现该状态** |
+
+   ⇒ 第 72 轮看到的「twist 骨会撕开小臂（58 mm）」**完全来自那个不会发生的假设**；
+     真实扭转下新包只比旧包高 **27%**（同量级）。
+
+### 13.8 交付与回退
+
+* 新 gpu 已落 `E:/mod/MourningVeil-RE2310/`：
+  patch `e4ed9d01…`（**未变**）/ gpu **`bc14e0a2…`**（原 `2432fc5e…`）。
+* 回退点 **`E:/tmp/r73-ship-rollback/`**（旧 patch + 旧 gpu，sha 已核），**不要删**。
+* README.txt 追加「第 73 轮」整节；manifest 更新 `forearmReweight`（含 `vanillaReference`）
+  与 `gpuResourceSha256`，并保留 `previousGpuResourceSha256`；新增预览
+  `preview/forearm_bend_before_after.png`。
+* **`library sync` 四段全部通过**（inspect 0/1/0 → plan → validate → apply `--confirm`），
+  复查 0/0/0、`可写快照变更：否`。
+* 本轮新增探针：`hd2_gamedata.py`、`_probe_anim_tracks.py`、`_probe_wrist_action.py`、
+  `_probe_wrist_split.py`、`_probe_wrist_dump.py`、`_probe_wrist_rest.py`、
+  `_probe_forearm_weights.py`、`_probe_vanilla_arm_profile.py`、
+  `_probe_wrist_bend_render.py`、`_probe_wrist_twist_strain.py`（全部只读）。
+
+### 13.9 仍未解决 / 想请专家看的问题
+
+1. **`l_shoulder_twist` 同样被本管线归零**（原版在上臂 t/L 0.03~0.08 有 0.113~0.218）。
+   上臂近肘处可能存在同性质的轻微问题；本轮**未改**，因为还没有上臂的真实动作统计。
+2. **第 6 步仍未进主链**：`reweight_forearm_twist.py` 靠人工补跑，已漏过一次。
+   迁 C# 时必须是链路一等公民。
+3. **原版剖面的曲线形状不是 smoothstep**（中段更接近线性，末端更陡）。
+   本轮用 `smoothstep(0.47, 0.88)` 拟合，误差最大约 0.12。
+   是否值得改成「直接查原版测量表插值」？
+4. **`l_hand_twist` 的旋转原点在手腕**，所以小臂中段绑它会沿半径 ≈3 cm 的圆走
+   （而不是 11 cm 的杠杆）。这是原版做法，但**不是**真正的中段扭转分布骨；
+   若实机仍有残留感，下一步应看 HD2 是否有 `l_forearm_twist` 之类的**中段**骨
+   （§13.4 的原版手臂 unit 里没见到，但需在**其他**皮肤 unit 上确认）。

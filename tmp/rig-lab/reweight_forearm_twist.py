@@ -125,6 +125,11 @@ def main():
                     help='distal ramp end (s reaches 1 here)')
     ap.add_argument('--twist-frac', type=float, default=1.0,
                     help='share of the distal follow routed to l_hand_twist')
+    ap.add_argument('--hand-start', type=float, default=1.01,
+                    help='t/L where the twist share starts handing over to l_hand '
+                         '(default 1.01 = never inside the ROI, so no behaviour change)')
+    ap.add_argument('--hand-end', type=float, default=1.21,
+                    help='t/L where l_hand owns the whole distal share')
     ap.add_argument('--radius', type=float, default=0.10)
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
@@ -171,6 +176,10 @@ def main():
         roi = (rad < args.radius) & (t > 0.0) & (t < L)
         a, b = args.a * L, args.b * L
         s = smoothstep(a, b, t)
+        # Third stage: near the wrist the twist share hands over to l_hand.
+        # Vanilla does exactly this (see _probe_vanilla_arm_profile.py): l_hand
+        # stays ~0 for the whole forearm and only takes over past t/L ~0.9.
+        h = smoothstep(args.hand_start * L, args.hand_end * L, t)
 
         n = 0
         for i in np.nonzero(roi)[0]:
@@ -184,9 +193,11 @@ def main():
             if arm_total <= 0.0:
                 continue
             si_ = float(s[i])
+            hi_ = float(h[i])
             e_w = arm_total * (1.0 - si_)
-            t_w = arm_total * si_ * args.twist_frac
-            h_w = arm_total * si_ * (1.0 - args.twist_frac)
+            t_w = arm_total * si_ * args.twist_frac * (1.0 - hi_)
+            h_w = arm_total * si_ * ((1.0 - args.twist_frac)
+                                     + args.twist_frac * hi_)
             if e_w > 0.0:
                 keep.append((el, e_w))
             if t_w > 0.0:
@@ -267,6 +278,7 @@ def main():
     meta = dict(schema='hd2mod.rig-lab-forearm-twist', sourcePatch=args.src,
                 units=['%016x' % x for x in units], streams=streams,
                 params=dict(a=args.a, b=args.b, twist_frac=args.twist_frac,
+                            hand_start=args.hand_start, hand_end=args.hand_end,
                             radius_m=args.radius),
                 changedVertices=int(changed.sum()), stats=stats,
                 half4Closed=ok, worstDeviation=worst,
