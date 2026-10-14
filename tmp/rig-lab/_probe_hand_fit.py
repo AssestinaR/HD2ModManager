@@ -36,6 +36,11 @@ SDK = 'E:/Data/source/repos/WpfApp1/docs/HD2SDK-CommunityEdition-3.8.0'
 BONES = H.load_bonehash(os.path.join(SDK, 'hashlists', 'bonehash.txt'))
 SLIM = 0xcae35ee15168145f
 
+# Bones that live under *_hand but carry no hand geometry (the right hand has
+# `weapon_aim`, 1.9 m away).  They are excluded from the "is the hand on its
+# bones" statistics or they drown the real fingers.
+HELPER_TOKENS = ('weapon', 'ik_', 'helper', 'target', 'aim')
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -44,6 +49,8 @@ def main():
     ap.add_argument('--unit', default='0x%016x' % SLIM)
     ap.add_argument('--side', default='left')
     ap.add_argument('--label', default=None)
+    ap.add_argument('--keep-helpers', action='store_true',
+                    help='do not drop helper bones (weapon_aim / ik_ / target ...)')
     args = ap.parse_args()
 
     if args.local:
@@ -102,6 +109,14 @@ def main():
             cur = ti.entries[cur][1]
     w_hand = (np.isin(decoded, list(hand_slots)) * wgt).sum(axis=1)
 
+    geo_slots, dropped = set(), []
+    for s in hand_slots:
+        nm = names.get(s, '')
+        if not args.keep_helpers and any(t in nm for t in HELPER_TOKENS):
+            dropped.append(nm)
+            continue
+        geo_slots.add(s)
+
     E = heads[slot_of[pre + '_elbow']]
     W = heads[slot_of[pre + '_hand']]
     ax = (W - E) / np.linalg.norm(W - E)
@@ -113,13 +128,14 @@ def main():
 
     sel = w_hand > 0.5
     Cm = pos[sel].mean(axis=0)
-    bp = np.stack([heads[s] for s in sorted(hand_slots) if s in heads])
+    bp = np.stack([heads[s] for s in sorted(geo_slots) if s in heads])
     Cb = bp.mean(axis=0)
     d = Cm - Cb
     print()
     print('=' * 96)
-    print('%s   [%s]   hand mesh verts %d, hand bones %d'
-          % (label, args.side, int(sel.sum()), len(bp)))
+    print('%s   [%s]   hand mesh verts %d, hand bones %d (helper bones dropped: %s)'
+          % (label, args.side, int(sel.sum()), len(bp),
+             ', '.join(dropped) if dropped else 'none'))
     print('=' * 96)
     print('  centroid gap |mesh - bones| = %6.1f mm   '
           '(along N_ %+.1f, along V_ %+.1f, along the arm %+.1f)'
@@ -128,7 +144,7 @@ def main():
     # how far is each hand bone head from the nearest hand-mesh vertex?
     P_ = pos[sel]
     dist = []
-    for s in sorted(hand_slots):
+    for s in sorted(geo_slots):
         if s not in heads:
             continue
         dd = np.linalg.norm(P_ - heads[s], axis=1).min()

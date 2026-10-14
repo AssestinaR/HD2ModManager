@@ -14,15 +14,16 @@
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
 - **Lilium-Sancta-RE2310**：第69轮可用包仍在 `E:/mod/Lilium-Sancta-RE2310/`；patch sha256 `5e4e045c3e1cbc7c…`，GPU sha256 `e9b0bb91ca0b1383…`。回退点 `E:/tmp/round69-final-rollback/`，不要删。
-- **MourningVeil-RE2310**：**当前交付 = 第76轮**（第74轮权重 + 第76轮左小臂**绕肘刚体旋转**校正）。
+- **MourningVeil-RE2310**：**当前交付 = 第76b轮**（第74轮权重 + 第76轮左小臂 / 第76b轮右小臂的**绕肘刚体旋转**校正，双臂齐了）。
   patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 始终未动，从 r72 起未变），
-  GPU sha256 **`736132acd9aadefbb81c9946a5479f9bf7f07fa49b172de031af313105eb8664`**
-  （r75b `28bf6b55…` → r75a `aa6f6259…` → r74 `fbac8d42…` → r73 `bc14e0a2…` → r72 `2432fc5e…`）。
-  回退点：`E:/tmp/r76-ship-rollback/`（r75b 字节）、`E:/tmp/r75b-ship-rollback/`（r75a 字节）、
+  GPU sha256 **`85b29d243fc2523a27d8fb40703599190a9149cf1ac790a5d1e61552b8950602`**
+  （r76 `736132ac…` → r75b `28bf6b55…` → r75a `aa6f6259…` → r74 `fbac8d42…` → r73 `bc14e0a2…` → r72 `2432fc5e…`）。
+  回退点：`E:/tmp/r76b-ship-rollback/`（r76 只有左臂的字节）、`E:/tmp/r76-ship-rollback/`（r75b 字节）、
+  `E:/tmp/r75b-ship-rollback/`（r75a 字节）、
   `E:/tmp/r75-pre-align-rollback/`（r74 字节）、`E:/tmp/r74-ship-rollback/`（r73）、
   `E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。
-  第76轮 `library sync` 四段**已完成**（`changedNodeIds=[185f279d…]` → 复查 added/changed/missing 全空；
-  library.json 节点 `contentFingerprint = 801558ff…`，前值 `00b0e1f4…`，再前值 `8cbec9b2…`）。
+  第76b轮 `library sync` 四段**已完成**（`changedNodeIds=[185f279d…]` → 复查 added/changed/missing 全空；
+  library.json 节点 `contentFingerprint = 0a389ede…`，前值 `801558ff…`，再前值 `00b0e1f4…`）。
 
 ## 🔴🔴 第73轮：小臂橡皮筋根因已确定（真实动作矩阵已取到）
 - **玩家骨架 `0x4d1c334d294dfa97`（90 根）**；玩家动画**全在归档 `18235e0c9ec0e636`**（2222 个 `bone_count=90`）。资源 file_id = `murmur64_hash(ASCII 路径)`。
@@ -235,3 +236,27 @@
   `--center-on elbow|wrist --half` 出放大图）、`_compose_arm_strip.py`（带标题网格拼图）。
 - **仍未做**：**只做左侧**；**网格 V 张开 3°** 待实机判断；腕→手过渡带形变（max 1.404）待实机看皱褶；
   重定向本身仍是整体刚体（yaw + 统一缩放 + 平移），关节级对齐未做。
+
+## 🔴🔴 第76b轮：同一套"绕肘旋转"应用到右臂（已部署并验证）
+- **用户反馈**：第76轮"很好，本次的问题看起来修复的不错，现在需要优化右臂"。
+- **结论**：右臂**不需要新算法**。基线本就与左臂镜像一致（tilt 5.68 vs 5.85、肘偏 44.3 vs 44.1），
+  同参数换 `--side right` 直接给出等价解：**ψ 5.65°**（左 5.56）、移动 **3465** 顶点（左 3442）、
+  最大位移 **26.3 mm**（左 25.9）、max 拉伸 **1.402** / min 0.688 / p99 1.321（与左镜像一致）。
+  命令：`align_forearm_to_axis.py --side right --mode rotate --limb-bones forearm --t0 -2.0 --t1 2.0 --fade 0.02 --strength 1.0 --report-edges`。
+- **实测**（t/L 0.07/0.19/0.31/0.51/0.73/0.83/0.93/0.95/0.97/0.99）：改前 41.8/40.0/37.0/33.8/28.0/25.2/26.7/22.5/23.6
+  → 改后 **42.0**/38.1/25.8/18.2/7.2/1.7/**5.7/5.9/6.9**。肘部**一点没动** ✔；腕带修好 ✔；
+  手部 6.3/16.1 → **6.1/11.4** ✔；网格 V 146.59 → 149.72（与左 149.49 同量级）。
+- **隔离验证（本轮新增的决定性检查）**：`_probe_side_isolation.py`（只读）对 3465 个移动顶点统计
+  左/右臂子树权重 ⇒ **左臂 min/max 全 0.000**、右臂 0.001–1.000、**两侧都非零的顶点 0 个** ⇒
+  "isolated to one side"（改右臂不会漏到左臂）。
+- ⚠️ **右臂没有原版参照**：原版抽取单元 `0x4a213e0ae8acf74b` 只有左臂骨，
+  `_probe_hand_fit.py --local <原版> --side right` 报 `KeyError: 'r_hand'` ⇒ 右臂只能自己 before/after + 与左镜像比对。
+- **左臂回归**：中轴线/V 角/手部与第76轮**逐项相同** ⇒ 没碰左臂。
+- **逐字节**：TOC 不变、GPU 大小不变、改 **66180/16332696（0.4052%）**，全在 `position`(26927×2)+`normal`(6163×2)，
+  **缓冲区外 0 字节**，两 stream 对称。
+- **部署**：回退点 `E:/tmp/r76b-ship-rollback/`（= 第76轮只有左臂的字节，gpu `736132ac…`）；
+  交付 gpu `736132ac…` → **`85b29d24…`**，patch `e4ed9d01…` 未变；`library sync` 四段已跑，
+  节点 `185f279d…` 指纹 `801558ff…` → **`0a389ede…`**，复查全空。
+- **新增工具**（只读）：`_probe_side_isolation.py`（单侧隔离验证）、`_make_r76b_sheet.py`（右臂证据图）。
+- **仍未做**：**网格 V 张开约 3°（双臂）** 待实机判断；腕→手过渡带形变（max 1.402）待实机看皱褶；
+  重定向本身仍是整体刚体，关节级对齐未做。
