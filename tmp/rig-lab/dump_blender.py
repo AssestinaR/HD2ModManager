@@ -279,6 +279,11 @@ def parse_args(argv=None):
     ap.add_argument('--arm-smooth', type=int, default=8)
     ap.add_argument('--arm-taper', type=float, nargs=2, default=[-0.05, 0.22],
                     metavar=('T0', 'T1'))
+    # Round 78: the user's rule.  Aim the forearm at HD2's wrist measured from
+    # OUR elbow instead of at HD2's own elbow->wrist.  Default OFF.
+    ap.add_argument('--arm-aim-wrist', action='store_true',
+                    help='round 78: pivot stays our elbow, target becomes '
+                         '"our elbow -> HD2 wrist" (default off)')
     return ap.parse_args(argv)
 
 
@@ -302,6 +307,7 @@ def main(argv=None):
                    head_scale=args.head_scale,
                    arm_elbow_open=args.elbow_open,
                    arm_hand_tilt=args.hand_tilt,
+                   arm_aim_wrist=args.arm_aim_wrist,
                    arm_finger_pose=finger_pose,
                    arm_refit_scratch=args.arm_refit_scratch,
                    arm_fit=args.arm_fit, arm_up=args.arm_up,
@@ -467,6 +473,7 @@ def main(argv=None):
                                arm_upper_shift=list(shift),
                                arm_elbow_open=args.elbow_open,
                                arm_hand_tilt=args.hand_tilt,
+                               arm_aim_wrist=bool(args.arm_aim_wrist),
                                arm_finger_pose=finger_pose,
                                arm_refit_scratch=bool(args.arm_refit_scratch),
                                arm_refit_fit=args.arm_fit,

@@ -728,7 +728,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
              arm_rot_smooth=8, arm_rot_mode='rigid',
              arm_scratch=True, arm_scratch_deg=None, arm_scratch_elbow=True,
              arm_refit_scratch=False,
-             arm_elbow_open=0.0, arm_hand_tilt=0.0,
+             arm_elbow_open=0.0, arm_hand_tilt=0.0, arm_aim_wrist=False,
              arm_finger_pose=None, arm_finger_pose_amount=1.0,
              arm_scratch_upper_gain=0.0, arm_scratch_upper_shift=(0.0, 0.0, 0.0),
              head_scale=1.0,
@@ -1312,8 +1312,38 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             # (bend angle drops by exactly that many degrees); negative = more bent.
             if arm_scratch_elbow and s_ha in short and h_ha in hby:
                 d_fo_src = joint(s_ha) - p_el
-                d_fo_tgt = (origin_np(rest_hd2[hby[h_ha]['index']])
-                            - origin_np(rest_hd2[hby[h_el]['index']]))
+                if arm_aim_wrist:
+                    # ---- ROUND 78: the user's rule, verbatim -----------------
+                    # "pivot on OUR elbow, and aim OUR elbow -> HD2's wrist."
+                    #
+                    # The pivot the forearm actually turns about is the SOURCE
+                    # elbow AS IT STANDS AT THIS MOMENT: after the leg stance
+                    # (`new_head`), after the upper-arm gain (which translated
+                    # `rest_sym[l_elbow]` together with its whole subtree) and
+                    # after the shoulder rotation above (which carries it as
+                    # `S + R_sh . (E - S)`).  Measuring the aim from the T-pose
+                    # elbow instead would be wrong by the whole ~9.6 cm the
+                    # shoulder move puts between the two.
+                    #
+                    # This is also EXACTLY the user's "project HD2's wrist onto
+                    # the plane normal to the arm axis, then swing inside the
+                    # plane that line and the arm axis span".  The rotation that
+                    # carries `d_fo_src` onto `d_fo_aim` has axis
+                    # `cross(d_fo_src, d_fo_aim)`; the source T-pose arm is
+                    # straight, so `d_fo_src` is parallel to `d_up_src` and that
+                    # axis is perpendicular to the upper-arm axis -- i.e. it IS
+                    # the elbow's own hinge, and the swing stays inside the one
+                    # plane that contains both the upper arm and HD2's wrist.
+                    # Projecting first gives the identical axis: it is a way of
+                    # SEEING the construction, not a second processing step.
+                    S_s = origin_np(rest_sym[hby[h_sh]['index']])
+                    E_g = origin_np(rest_sym[hby[h_el]['index']])
+                    W_h = origin_np(rest_hd2[hby[h_ha]['index']])
+                    E_now = S_s + R_sh @ (E_g - S_s)
+                    d_fo_tgt = W_h - E_now
+                else:
+                    d_fo_tgt = (origin_np(rest_hd2[hby[h_ha]['index']])
+                                - origin_np(rest_hd2[hby[h_el]['index']]))
                 if abs(arm_elbow_open) > 1e-9:
                     n_w = np.cross(d_up_tgt, d_fo_tgt)
                     nn = float(np.linalg.norm(n_w))
@@ -1326,14 +1356,41 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 B4e = np.eye(4)
                 B4e[:3, :3] = np.linalg.inv(Rse) @ R_el @ Rse
                 basis[h_el] = B4e
-                say('arm %s: elbow    min-arc onto HD2 native %s_elbow->%s_hand '
+                if os.environ.get('HD2_ARM_AIM_DUMP'):
+                    _W_h = origin_np(rest_hd2[hby[h_ha]['index']])
+                    _E_s2 = (origin_np(rest_sym[hby[h_sh]['index']])
+                             + R_sh @ (origin_np(rest_sym[hby[h_el]['index']])
+                                       - origin_np(rest_sym[hby[h_sh]['index']])))
+                    _wr = _E_s2 + d_fo_tgt
+                    say('   [aim-dump %s] our elbow  %s' % (side, np.array2string(_E_s2, precision=4)))
+                    say('   [aim-dump %s] our wrist  %s   HD2 wrist %s   |delta| %.1f mm'
+                        % (side, np.array2string(_wr, precision=4),
+                           np.array2string(_W_h, precision=4),
+                           1000.0 * float(np.linalg.norm(_wr - _W_h))))
+                    say('   [aim-dump %s] our wrist from T-pose elbow %s'
+                        % (side, np.array2string(p_el + d_fo_tgt, precision=4)))
+                if arm_aim_wrist:
+                    _d_hd2 = (origin_np(rest_hd2[hby[h_ha]['index']])
+                              - origin_np(rest_hd2[hby[h_el]['index']]))
+                    _cos = float(d_fo_tgt @ _d_hd2) / max(
+                        float(np.linalg.norm(d_fo_tgt))
+                        * float(np.linalg.norm(_d_hd2)), 1e-12)
+                    _off = float(np.degrees(math.acos(max(-1.0, min(1.0, _cos)))))
+                    _how = ('min-arc onto OUR elbow->HD2 %s_hand  [aim = %.1f mm '
+                            'from our elbow, %.2f deg off HD2\'s own direction]'
+                            % (side, 1000.0 * float(np.linalg.norm(d_fo_tgt)), _off))
+                    _pv = E_now
+                else:
+                    _how = 'min-arc onto HD2 native %s_elbow->%s_hand' % (side, side)
+                    _pv = p_el
+                say('arm %s: elbow    %s '
                     '%s -> %.2f deg about (%.3f, %.3f, %.3f); pivot = source elbow '
                     '(%.4f, %.4f, %.4f); hand/fingers follow through D'
-                    % (side, side, side,
+                    % (side, _how,
                        ('[elbow opened %+.2f deg]' % arm_elbow_open)
                        if abs(arm_elbow_open) > 1e-9 else '',
                        ae, axe[0], axe[1], axe[2],
-                       p_el[0], p_el[1], p_el[2]))
+                       _pv[0], _pv[1], _pv[2]))
 
             # ---- the HAND: a plain world-axis tilt about the wrist ----------
             # Round 53.  The user's model of the arm: in the T-pose it is a
@@ -2113,6 +2170,18 @@ def main():
                          'bent.  The axis is the elbow\'s own hinge, so this is '
                          'literally "the same elbow, 6.5 deg less bent".  The '
                          'hand and fingers follow rigidly; the rig never moves.')
+    ap.add_argument('--arm-aim-wrist', action='store_true',
+                    help='ROUND 78.  Replace the forearm target: instead of '
+                         'aiming the forearm at HD2\'s own elbow->wrist, aim it '
+                         'at HD2\'s WRIST measured from OUR elbow (the source '
+                         'T-pose elbow, carried along by the leg stance, the '
+                         'upper-arm gain and the shoulder rotation).  Pivot is '
+                         'unchanged (our elbow), and because the source arm is '
+                         'straight the resulting axis is still the elbow\'s own '
+                         'hinge -- which is what the user\'s "project HD2\'s '
+                         'wrist onto the plane normal to the arm axis" '
+                         'constructs.  Off by default: the shipped byte stream '
+                         'is untouched.')
     ap.add_argument('--arm-hand-tilt', type=float, default=0.0, metavar='DEG',
                     help='tilt the HAND about the wrist by DEG, about the world '
                          '+Y axis of the SOURCE T-POSE frame -- which is exactly '
@@ -2222,6 +2291,7 @@ def main():
                  upper_blend=a.upper_blend, head_scale=a.head_scale,
                  arm_elbow_open=a.arm_elbow_open,
                  arm_hand_tilt=a.arm_hand_tilt,
+                 arm_aim_wrist=a.arm_aim_wrist,
                  arm_finger_pose=_finger_pose_arg(a),
                  arm_finger_pose_amount=a.arm_finger_pose_amount,
                  arm_fit=a.arm_fit,

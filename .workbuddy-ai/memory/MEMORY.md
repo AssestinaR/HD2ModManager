@@ -336,3 +336,40 @@ align_forearm_to_axis.py --src <D3> --out <D4> --side right --mode rotate --limb
   **目标不再落在（大臂,小臂）平面内 ⇒ `min_arc` 的轴不再是肘铰链轴**——用户自己提的
   "先投影到垂直大臂的平面"正是为此。流程：默认关闭 + 破坏关键行负对照 + 回退点 +
   **可视文件（多视角渲染 / `.blend` / 游戏包）交用户肉眼判断**。
+
+## 🔴🔴 第78轮：实现了用户的规则，**实测推翻了它的前提**
+- 实现：`hd2_style.py:731` `arm_aim_wrist=False`；`:1315-1343` 目标 = `W_h - E_now`
+  （`E_now = S_s + R_sh@(E_g - S_s)`，`S_s/E_g` 取自 `rest_sym`，`W_h` 取自 `rest_hd2`）。
+  `dump_blender.py --arm-aim-wrist`。**负对照通过**：默认关闭的 npz 与 `r77-arm-off3` sha256 相同。
+  日志：`aim = 316.6 mm, 31.77 deg off HD2's own direction`；`our wrist = HD2 wrist, |delta| 0.0 mm`。
+- **🔴 决定性实测（`_probe_elbow_pivot_empirical.py`，两个独立对照）**：把只被小臂骨支配、
+  两版间真动了的顶点做 Kabsch → 解螺旋轴 → 报点到轴距离。
+
+| 对照 | Δ角 | 残差 | 离 HD2 `l_elbow` | 离日志那个"起源肘" |
+|---|---|---|---|---|
+| open +6.5 → open 0 | 6.52° | **0.44 mm** | **52.5 mm** | 112.4 mm |
+| open 0 → R78 aim | 32.25° | 2.29 mm | **48.7 mm** | 119.0 mm |
+
+  ⇒ **网格小臂刚性绕 HD2 的 `l_elbow` 转**（48–52 mm ≈ 网格自身偏心 43 mm）。
+  日志里的 pivot 是 `rest_sym`（内部工作骨架）的肘；**交付网格是蒙在 HD2 骨上的**，所以
+  网格实际绕 HD2 的肘转。**"以起源肘为轴心"对源方向成立，对网格不成立。**
+- **后果**：手臂平面内（原点 = HD2 `l_elbow`，mm）：HD2 shoulder (-233.3,+189.0)、
+  HD2 hand (+287.3,0)、**起源/工作肘 (+18.2,+166.7)**（167.7 mm 外，几乎整根垂直小臂）。
+  网格小臂中线拟合：**交付版 `u=-0.0885t+32.6`**（t=287 时 **+7.1 mm**，方向差 **-5.06°**）；
+  **R78 `u=-0.6017t+32.1`**（t=287 时 **-140.8 mm**，方向差 **-31.04°**）。
+  ⇒ **按用户规则做出来，小臂末端离 HD2 的腕 141 mm；交付版只有 7 mm。** 手壳质心到 HD2
+  `l_hand` head：交付 **21.0 mm** / R78 **124.0 mm**。
+  ⇒ **交付版其实已经指着 HD2 的腕（差 5°/7 mm）**；剩下的可测缺陷是**偏心**（肘端 ~33 mm
+  vs 原版 ~15 mm），正是 `align_forearm_to_axis.py` 的靶子。`--elbow-open` 敏感度：+6.5→5.33°，0→**1.72°**。
+- **不跑 `align_forearm_to_axis.py` 到 R78 上**：它要把管子拉回 **HD2 肘→腕轴**，
+  而 R78 下管子离轴 141 mm（远超 `--gate-radius 0.16`/`--max-move 0.06`），会跟 AIM 打架。
+- 产物：候选 `E:/mod/MourningVeil-RE2310-r78aim/`（patch `e4ed9d01…` **= 交付逐字节相同**，
+  gpu `e6b9ea40…`）。**交付包字节未动**（gpu `85b29d24…`）。`patch_1` 符号链接已回退到交付包。
+  可视 `preview/r78_arm_vs_aim_left.png`（4 视角 + 全套 HD2 骨架连线）、`E:/tmp/r78-compare.blend`
+  （真 HD2 Armature + 顶点组 + 修改器）。⚠️ `r78_wrist_vs_aim_left.png` 两行取景不一致，别做 A/B。
+- ⚠️ **坑1**：`dump_blender.py` 必须显式 `--vpk E:/tmp/mourning/MourningVeil_Zoey.vpk`
+  （默认 Lunalice ⇒ 顶点数 121704 而非 114213，几何全错）。
+- ⚠️ **坑2**：**第 4e 步 mesh-only arm re-fit 在我们的 dump 里没跑**：`arm_fit` 默认 1.0，
+  但守卫 `if arm_fit != 0.0 and (not arm_scratch or arm_refit_scratch)`，而 `arm_scratch=True`、
+  `arm_refit_scratch=False`（默认）⇒ 跳过。它的作用正是**把手臂关节搬回 HD2 骨上**，
+  可能是偏心问题的正解（`--arm-refit-scratch`）。
