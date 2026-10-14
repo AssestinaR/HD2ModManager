@@ -25,12 +25,15 @@
 - 历史 gpu：71 各档 mul 0.78/0.55/0.40、compress、gamma（`E:/tmp/r71-dark*/`，**已否定**）/ 70 twist `1ca095d5…`（已弃）/ 68 `de5f5dd1…` / 67 `bb6e3008…` / 66 `a8854ba3…`；65 patch `52d131c5…`+gpu `6587ac4f…` / 64 `729c4a65…`+`1f20c9cd…`。
 - **Lilium 其余 7 个角色未转**（只转了 `Lilium_Sancta_Zoey.vpk`）。
 
-### MourningVeil-RE2310（第 72 轮 · **待 sync**）
-- **`E:/mod/MourningVeil-RE2310/`**：patch 581484 B sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`；gpu 117215104 B sha256 `4880a06654bce149608c85a80bb2d1972c67a883e9be399d555d553476d7477f`。
+### MourningVeil-RE2310（第 72 轮 · ✅ **已 sync**）
+- **`E:/mod/MourningVeil-RE2310/`**：patch 581484 B sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（**第 6 步前后不变**，权重在 GPU 侧）；gpu 117215104 B sha256 **`2432fc5e946a6b6694e58b5848297a64fc719b89d0539223e217e7ae0d748bff`**（第 6 步补跑后；补跑前 `4880a066…`）。
 - **82 条目 / 22 unit = 2 承载（`cae35ee15168145f` Slim + `9841b16544c8fbae` Stocky）+ 20 隐藏**。审计 27/26+1 已知。
 - 源 `E:/mod/MourningVeil-Native-RE2310/`(62 条目/2 unit，GUID `5eeb135a-f6bb-4a87-b106-7061dede1f3b`)；apply 输出 `E:/tmp/mourning-an-out/`；plan `E:/tmp/r72-an-plan.json`。
-- 预览 `preview/ship_overview.png`（**已肉眼确认**）。README.txt 已写。
-- 新工具 `tmp/rig-lab/assemble_mourning.py`（参数化版，取代 Lilium 硬编码常量）、`tmp/rig-lab/_make_r72_preview.py`。
+- 预览 `preview/ship_overview.png` + `forearm_roll_before_after.png`(90°) + `forearm_roll_before_after_180.png`（**均已肉眼确认**）。README.txt 已写（含第 6 步与 twist_frac 三档）。
+- 新工具 `tmp/rig-lab/assemble_mourning.py`（参数化版，取代 Lilium 硬编码常量）、`tmp/rig-lab/_make_r72_preview.py`、`_probe_mv_profile.py`、`_probe_roll_whole.py`。
+- **🔴 秒级回退点 `E:/tmp/r72-ship-rollback/`**（第 6 步之前的两文件，sha 已核）。**不要删。**
+- 库节点 **`185f279d-0ca0-4acd-a87d-6f2aa115e7b0`**，contentFingerprint `1aa64bbd…`。
+- 用户实机：**「结果相当好」**，但第 66 轮小臂问题复现 ⇒ 已补跑第 6 步（见「手臂权重」节）。
 - **仅转 Zoey 一个角色**（八人包其余 7 个未转）。
 
 ## 🔴 头盔 = 独立 archive（第 72 轮查清，解决历史矛盾）
@@ -65,13 +68,38 @@
 | **69** | `smoothstep(0.22L, 1.00L)`，全挂 `l_hand`（`--twist-frac 0`） | 63–287 mm | 37.8 mm | **定稿**：66 起点 + 68 终点 |
 | 70 | 同 69，远端 50/50 分给 `l_hand`/`l_hand_twist` | 同 69 | A 54.2/46.6 | **实机"手指变差"⇒ 已回退** |
 
+**🔴 第 72 轮：第 6 步不在主链里（重大流程缺陷）**
+- **五步主链** `dump_blender.py → build_patch → fix_materials → fix_appearance → armor-normalize`
+  **没有调用 `reweight_forearm_twist.py`**（`grep -rln "reweight_forearm" --include=*.py` 全空）。
+  它是**独立后处理步骤**，第 68/69 轮是给 Lilium **单独补跑**的。
+  ⇒ **MourningVeil 首版从源头漏了**，出货的是「源模型 L4D2 的 LBS 权重经 `resolve()` 原样映射」
+  （Valve 把小臂整片挂 `L_Forearm` ⇒ 映射后整片挂 `l_elbow`）。用户实机复现第 66 轮的手感。
+- **MourningVeil 首版实测剖面**（L=287.4 mm）：交界带落在 **t/L 0.1~0.4（非常靠肘）**，
+  远端 0.8~0.9 已是 `hand 0.995`。补跑 69 参数后交界带推到 **0.3~0.9**；左右各 1107/1113 = **2220 顶点**。
+- **⚠️ 迁 C# 时小臂权重必须是链路一等公民**，不能靠人的记忆补。
+
+**🔴 `--twist-frac` 三档实测（第 72 轮，决定性数值证据）**
+180° 拧转、**整条小臂**（`_probe_roll_whole.py`，旧 `_probe_wrist_roll.py` 只看 `t>0.75L`、对小臂中段是盲的）：
+
+| twist_frac | med | p99 | MAX |
+|---|---|---|---|
+| **0.00** | 7.09 mm | **29.23 mm** | 42.0 mm ← 定稿 |
+| 0.35 | 5.49 mm | 36.15 mm | 44.1 mm |
+| 0.60 | 3.80 mm | **58.23 mm** | 64.5 mm ← 明显更差 |
+
+⇒ **远端权重分给 `l_hand_twist` 在「游戏只转 `l_hand`」前提下会制造新撕裂**（不转的骨上权重"卡住",
+与手骨撕开一道缝）⇒ **这就是第 70 轮实机"手指变差"的数值解释**。
+（`--twist` 模拟「twist 骨也转」，三档结果完全一致 ⇒ `l_hand_twist` head 与 `l_hand` 重合、无法区分。）
+
 - **🔴 第 70 轮实机结论**：落在**假设 A**（游戏**只转 `l_hand`**，`l_hand_twist` 几乎不动）⇒ **twist 骨对本模型无收益，`--twist-frac 0.0` 为定稿，此方向不再尝试。**
 - **🔴 几何地板 37.8 mm（改不掉）**：180° 拧转下即使边两端权重完全相同，长度也变 `2 × 垂直分量`。最差等权边（`comp 3772`，半径 47/28 mm）= 37.8 mm ⇒ **任何权重方案的下界**。根治要**加密腕部网格**（新机制，未做）。
 - **🔴 HD2 骨架有 twist 骨**：`l/r_hand_twist`（slot 64/70）、`l/r_shoulder_twist`、`l/r_forearm_twist`、`l_wrist_twist`。`l_hand_twist` parent = `l_elbow`、head 与 `l_hand` 重合、叶子骨，**我们导出 unit 里权重 0**。
 - **原版用 twist 骨**：原版左臂护甲 `unit_0x4a213e0ae8acf74b.toc`（归档 `aaebfbedc571fd7a`）`l_hand_twist` 权重 74.5；原版手臂皮肤 `g_torso_arm_l_male`（`0x586e33e020cbf80f`）`l_hand_twist` 65.2 / `l_hand` 61.8。**原版没有 `l_forearm_twist`。** 原版手部剖面：腕部 t/L 0.93~1.08 hand 与 twist 同时有权重；指尖 t/L>1.3 是 ~100% 手指骨 ⇒ **"手和手指一起纳入"必须理解成"只重分配非手指部分"**。
 - ⚠️ 原版 unit 的 `ti.matrices[ti_idx]` head 与主导顶点质心**对不上** ⇒ **原版 unit 的 matrices 语义与我们的导出 unit 不同**，读原版权重别用 head 做几何判据。
-- 工具：`reweight_forearm_twist.py`(68/69)、`reweight_arm_twist.py`(70)、`reweight_forearm.py`(67)、`_probe_twist_roll.py`、`_probe_wrist_roll*.py`、`_plot_wrist_follow.py`、`_probe_vanilla_wrist.py`/`_probe_vanilla_hand.py`、`_probe_forearm_action.py`。
+- 工具：`reweight_forearm_twist.py`(68/69/72)、`reweight_arm_twist.py`(70)、`reweight_forearm.py`(67)、`_probe_twist_roll.py`、`_probe_wrist_roll*.py`、**`_probe_roll_whole.py`(72 整条小臂)**、`_probe_mv_profile.py`(72)、`_plot_wrist_follow.py`、`_probe_vanilla_wrist.py`/`_probe_vanilla_hand.py`、`_probe_forearm_action.py`。
 - **🔴 `_probe_forearm_action.py` 盲点**：只测腕部弯折，**从未测拧转/旋前** ⇒ 第 67 轮"0.0 mm 全绿"掩盖了拧转撕裂。**以后验收必须加拧转项。**
+- **🔴 `_probe_wrist_roll.py` 盲点（第 72 轮补）**：选区是 `t > 0.75L`，**对小臂中段的撕裂完全看不见**。已由 `_probe_roll_whole.py`（`0.05L < t < 1.05L`）补上。**渲染图里"拧成一条线"可能是均匀变形的视觉假象，必须配 p99/MAX 数值才能判"撕裂 vs 均匀"。**
+
 - **🔴 `_probe_vanilla_wrist.py` 突破**：CLI 的 `GameDataPackageResolver.GetPackageResourceAsync` 对 bundled 归档**所有分区都用基名找包**，但 `bundles.nxa` 里一个归档是**三个包**：`<id>`(TOC) / `<id>.gpu_resources` / `<id>.stream`。后果：`gamedata extract asset` 抽原版 unit **只写出 `.toc`**。**未改产品代码**，探针自己实现 DSAR chunk walk + `bundles.nxa` 包表绕开。
 - **权重只改 GPU 侧**：`_probe_weightdiff.py` = **63542/16917432 = 0.376% PASS**，只落 `bone_weight`+`bone_index`，声明字段之外 0 字节。
 - **⚠️ 每轮重绑通用前提**：只重分配「本来挂在 `l_elbow`/`l_hand`/`l_hand_twist` 上的权重」，**手指骨权重一字节不动**。**不能按 `hand≥0.95` 排除**（手部皮肤与手指是**同一连通块**）。
@@ -135,6 +163,7 @@
 ## 交付与部署
 - **CLI 用法（实测）**：`library sync` 与 `equipment armor-normalize` 都是 `inspect|plan|validate|apply` 四段；**只有 `inspect <GUID>` / `plan <GUID>` 带 GUID**，`validate --plan` / `apply --plan … --output <目录> --confirm` **不带 GUID**；`apply` 的输出目录**必须不存在**。带空格的 `--game-data` 在 bash 里要加引号。写入命令会被 `ManagerProcessRunning` 拦（需关闭桌面端）。`plan` 输出文件已存在要加 `--overwrite`。
 - **🔴 库节点 GUID ↔ sync plan 临时 id 不同**：`library sync inspect` 报的是**临时 id**，后续命令要用 `mod list` 里的**真实 GUID**。
+- **🔴 `library sync` 四段参数（第 72 轮踩坑修正）**：`inspect` / `plan` / **`validate`** / **`apply`** —— **后两者也必须带 `--manager-root` + `--library`**，只给 `--plan` 会报 `LibrarySyncTargetChanged`（`recomputedInputFingerprint: null`）。且 plan 里固化的**目标指纹与 CLI 参数绑定**，跨次调用要**重新 plan 再 validate**。`validate` 成功标志 `ok/isValid: true`；`apply` 成功标志 `execution.success: true`（正常时 `physicalFiles/profiles/activationState: not-modified`，只更新库索引事实）。
 - `gamedata extract asset|archive|show|list`（unit TypeID = `0xe0a48d0be9a7453f`）。**查 64 位 id 要转有符号 64 位**（SQLite 存的是 int64）。
 - **符号链接铁律**：`New-Item -ItemType SymbolicLink` 本机失败 ⇒ 一律 `MSYS=winsymlinks:nativestrict ln -s`，先建后删（写 .tmp 再 `mv -f`）。
 - **覆盖语义**：patch 序号大的后加载，覆盖同 AssetKey 的较小者。
