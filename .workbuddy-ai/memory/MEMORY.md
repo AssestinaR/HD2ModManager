@@ -373,3 +373,40 @@ align_forearm_to_axis.py --src <D3> --out <D4> --side right --mode rotate --limb
   但守卫 `if arm_fit != 0.0 and (not arm_scratch or arm_refit_scratch)`，而 `arm_scratch=True`、
   `arm_refit_scratch=False`（默认）⇒ 跳过。它的作用正是**把手臂关节搬回 HD2 骨上**，
   可能是偏心问题的正解（`--arm-refit-scratch`）。
+
+## 🔴🔴🔴 第78轮纠错（用户实测 R78 更差后自己抓出来的）：167.7 mm 是**空间错**
+- **上面那条「源肘在 HD2 肘外 167.7 mm、照字面实现反而更远」的结论作废。** 用户的规则是对的。
+- **根因**：日志里的 pivot `E_now` 在 **`post()` 之前**的空间（`rest_sym`）；
+  HD2 的 `b_head` 在 **`post()` 之后**的空间。`hd2_style.py:414-415` 注释自己写着
+  「final `out` got (shift + upper-body scale). **NOT rest_sym**」⇒
+  `post`（`MESH_SHIFT=(0,-0.100,-0.090)` + `upper_scale 1.12 / pivot_z 1.15 / blend 0.45`）
+  **只作用在网格 `out` 上**。把 `post` 补回去：**167.7 → 74.5 → ~55 mm**。
+- **与实测吻合**：Kabsch 转动轴离 HD2 `l_elbow` **48.7 mm**；网格小臂根部 t≈0、离 HD2 骨轴 **32 mm**。
+  ⇒ **起源肘确实在网格肘内部（离 HD2 肘约 50 mm）。我拿两个空间的坐标相减，得出了假的 167.7 mm。**
+- **R78 更差的真正原因 = 同一个空间 bug**：`d_fo_tgt = W_h − E_now` 是「**后空间 − 前空间**」，
+  整个 `post` 漏进方向里。量级核对：漏掉的 `(0,+0.100,+0.090)` = 134.5 mm 加在 316.6 mm 目标上
+  最多偏 25°；实测网格小臂 **−31.55°**，正确应约 **−10.6°** ⇒ 偏约 21°，吻合。
+- **修法（一行）**：`d_fo_tgt = W_h − post(E_now)` —— **两头必须在同一空间相减**。
+  OFF 路径用 `rest_hd2[hand] − rest_hd2[elbow]`，同空间、平移抵消，所以一直干净。
+- **预期**：修好后网格腕关节落在 HD2 腕 **几 mm** 内（|起源肘→HD2腕| ≈ √(287.36²+55²) ≈ 292.6，
+  源小臂 288.5 ⇒ 差 ≈ **4 mm**）。
+- **教训**：`rest_sym`（工作骨架，pre-`post`）与 `rest_hd2`/`rest_shipped`（交付骨架，post-`post`）
+  **绝不能直接相减**；只有**差值**才是安全的（平移抵消），一旦要"从一个空间的点指向另一个空间的点"，
+  必须先把点过一遍 `post()`。另外：量**方向**（角度）≠ 量**网格腕关节的位置**，我先前混为一谈。
+
+## ✅ 第79轮：空间 bug 已修，**网格腕关节落在 HD2 腕骨 0.4 mm 内**（已部署）
+- 修法（一行）：`hd2_style.py` `d_fo_tgt = W_h - post(E_now)[0]`；并把 `post()`/`shift_v`
+  从 `if arm_finger_pose:` 里**上提到第 4 节之前**，成为唯一一份定义。
+- **负对照两条都通过**：① OFF 路径 `model.npz` 与 `r77-arm-off3`、`r78-off-check`
+  **全部数组逐字节相同**；② 把 `post(E_now)[0]` 换回 `E_now` ⇒ 输出与 `r78-arm-aim`
+  **逐字节相同**（`r79-negctl`）⇒ 证明这一行是唯一变量。
+- **结果**：我们的（起源）肘在最终空间 `(-0.4430,-0.0215,1.3272)`，**离 HD2 `l_elbow` 43.8 mm**
+  ⇒ 起源肘在网格肘内部，用户判断正确。**网格腕关节落在 HD2 腕骨 0.4 mm 内**（左 .4 / 右 .5 mm）；
+  `aim = 288.9 mm from our elbow, 8.71 deg off HD2's own`。网格侧：手壳离 HD2 `l_hand`
+  **6.7 mm**（交付 21.0）、小臂中线 t=280 偏 **10.9 mm**（交付 25.8）、方向差 **7.40°**（交付 5.33）。
+- ⚠️ **`align_forearm_to_axis.py` 跳过**：`--mode rotate` 对齐的是"**骨轴**"（会再转 2.82°、
+  把腕带推离 14.2 mm），而目标是"**腕关节那个点**"，两者冲突，会把 0.4 mm 抵消掉。
+- 候选 `E:/mod/MourningVeil-RE2310-r79aim/`：patch `e4ed9d01…`（= 交付逐字节相同），
+  gpu **`24a3db1636ed2150…`**（交付 `85b29d243fc2523a…`）。**交付包字节未动**。
+- **已部署**：游戏 `data/9ba626afa44a3aa3.patch_1{,.gpu_resources}` 符号链接 → R79 候选。
+  回退：`ln -sfn /e/mod/MourningVeil-RE2310/9ba626afa44a3aa3.patch_0 "<data>/9ba626afa44a3aa3.patch_1"`（gpu 同理）。

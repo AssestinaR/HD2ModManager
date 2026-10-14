@@ -1229,6 +1229,40 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                    len(moved)))
 
     # ---- 4. T-pose -> A-pose, then the per-vertex transform ---------------
+    # `post` maps a point from the PRE-`post` space (everything built on
+    # `rest_sym`, i.e. the working skeleton) to the FINAL `out` space (the mesh
+    # the game sees, which the pipeline moved in 4c/4d).  `rest_hd2` /
+    # `rest_shipped` -- and therefore every `b_head` we ship -- already live in
+    # the final space.  Anything that forms a VECTOR between a working-skeleton
+    # point and a shipped point MUST put the working point through this first,
+    # otherwise the whole (mesh shift + upper-body scale) leaks into the
+    # direction.  A plain difference of two same-space points is safe (the shift
+    # cancels), which is why the OFF arm path never needed it.
+    shift_v = np.asarray(mesh_shift, dtype=np.float64)
+
+    def post(Q):
+        """Map points from the pre-4c mesh space to the final `out` space.
+
+        The pipeline moved the MESH (never the rig) in 4c/4d.  Using the raw
+        `rest_sym` where the final space is meant puts the point in the wrong
+        space -- the expert flagged this explicitly for the finger pivots, and
+        round 79 hit the same trap in the elbow aim.
+        """
+        Q = np.asarray(Q, float).reshape(-1, 3).copy()
+        if any(mesh_shift):
+            Q = Q + shift_v
+        if upper_scale != 1.0:
+            hips = next(h for h in hd2 if h['name'] == 'hips')
+            piv = rest_hd2[hips['index']][:3, 3].astype(np.float64).copy()
+            if upper_pivot_z is not None:
+                piv[2] = float(upper_pivot_z)
+            z0 = piv[2] - upper_blend
+            z1 = piv[2] + upper_blend
+            tt = np.clip((Q[:, 2] - z0) / max(z1 - z0, 1e-9), 0.0, 1.0)
+            w = tt * tt * (3.0 - 2.0 * tt)                  # same smoothstep
+            Q = piv + (Q - piv) * (1.0 + (upper_scale - 1.0) * w)[:, None]
+        return Q
+
     basis = {}
     if arm_scratch:
         # OUR OWN shoulder rotation, injected at the `D` layer -- never on
@@ -1313,7 +1347,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
             if arm_scratch_elbow and s_ha in short and h_ha in hby:
                 d_fo_src = joint(s_ha) - p_el
                 if arm_aim_wrist:
-                    # ---- ROUND 78: the user's rule, verbatim -----------------
+                    # ---- ROUND 78/79: the user's rule, verbatim ---------------
                     # "pivot on OUR elbow, and aim OUR elbow -> HD2's wrist."
                     #
                     # The pivot the forearm actually turns about is the SOURCE
@@ -1322,8 +1356,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                     # `rest_sym[l_elbow]` together with its whole subtree) and
                     # after the shoulder rotation above (which carries it as
                     # `S + R_sh . (E - S)`).  Measuring the aim from the T-pose
-                    # elbow instead would be wrong by the whole ~9.6 cm the
-                    # shoulder move puts between the two.
+                    # elbow instead would be wrong by the whole shoulder move.
                     #
                     # This is also EXACTLY the user's "project HD2's wrist onto
                     # the plane normal to the arm axis, then swing inside the
@@ -1336,11 +1369,23 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                     # plane that contains both the upper arm and HD2's wrist.
                     # Projecting first gives the identical axis: it is a way of
                     # SEEING the construction, not a second processing step.
+                    #
+                    # ROUND 79 FIX -- THE SPACE BUG.  `E_now` is built from
+                    # `rest_sym`, the WORKING skeleton, which lives in the
+                    # PRE-`post` space; `W_h` comes from `rest_hd2`, the
+                    # SHIPPED rig, which lives in the FINAL space.  Subtracting
+                    # them directly leaks the whole `post` transform (mesh shift
+                    # `(0, -0.100, -0.090)` + upper-body scale 1.12) into the
+                    # direction.  Measured on MourningVeil that turned the aim
+                    # by ~21 deg and threw the mesh wrist 141 mm off HD2's --
+                    # which is exactly the "worse" the user saw in game.  Put
+                    # the pivot through the same two steps the mesh gets, THEN
+                    # subtract; a vector between two same-space points is safe.
                     S_s = origin_np(rest_sym[hby[h_sh]['index']])
                     E_g = origin_np(rest_sym[hby[h_el]['index']])
                     W_h = origin_np(rest_hd2[hby[h_ha]['index']])
                     E_now = S_s + R_sh @ (E_g - S_s)
-                    d_fo_tgt = W_h - E_now
+                    d_fo_tgt = W_h - post(E_now)[0]
                 else:
                     d_fo_tgt = (origin_np(rest_hd2[hby[h_ha]['index']])
                                 - origin_np(rest_hd2[hby[h_el]['index']]))
@@ -1357,18 +1402,21 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                 B4e[:3, :3] = np.linalg.inv(Rse) @ R_el @ Rse
                 basis[h_el] = B4e
                 if os.environ.get('HD2_ARM_AIM_DUMP'):
+                    # everything here in the FINAL space, so the printed
+                    # |delta| is a real distance, not a space-mismatch artefact.
                     _W_h = origin_np(rest_hd2[hby[h_ha]['index']])
-                    _E_s2 = (origin_np(rest_sym[hby[h_sh]['index']])
-                             + R_sh @ (origin_np(rest_sym[hby[h_el]['index']])
-                                       - origin_np(rest_sym[hby[h_sh]['index']])))
-                    _wr = _E_s2 + d_fo_tgt
-                    say('   [aim-dump %s] our elbow  %s' % (side, np.array2string(_E_s2, precision=4)))
-                    say('   [aim-dump %s] our wrist  %s   HD2 wrist %s   |delta| %.1f mm'
+                    _E_s2 = post(E_now)[0]
+                    _u = d_fo_tgt / max(float(np.linalg.norm(d_fo_tgt)), 1e-12)
+                    _Lf = float(np.linalg.norm(d_fo_src))       # source forearm
+                    _wr = _E_s2 + _u * _Lf
+                    say('   [aim-dump %s] our elbow (final) %s'
+                        % (side, np.array2string(_E_s2, precision=4)))
+                    say('   [aim-dump %s] our wrist (final) %s   HD2 wrist %s   '
+                        '|delta| %.1f mm   [source forearm %.1f mm, ray %.1f mm]'
                         % (side, np.array2string(_wr, precision=4),
                            np.array2string(_W_h, precision=4),
-                           1000.0 * float(np.linalg.norm(_wr - _W_h))))
-                    say('   [aim-dump %s] our wrist from T-pose elbow %s'
-                        % (side, np.array2string(p_el + d_fo_tgt, precision=4)))
+                           1000.0 * float(np.linalg.norm(_wr - _W_h)),
+                           1000.0 * _Lf, 1000.0 * float(np.linalg.norm(d_fo_tgt))))
                 if arm_aim_wrist:
                     _d_hd2 = (origin_np(rest_hd2[hby[h_ha]['index']])
                               - origin_np(rest_hd2[hby[h_el]['index']]))
@@ -1379,7 +1427,7 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
                     _how = ('min-arc onto OUR elbow->HD2 %s_hand  [aim = %.1f mm '
                             'from our elbow, %.2f deg off HD2\'s own direction]'
                             % (side, 1000.0 * float(np.linalg.norm(d_fo_tgt)), _off))
-                    _pv = E_now
+                    _pv = post(E_now)[0]      # final space -- comparable to HD2's bones
                 else:
                     _how = 'min-arc onto HD2 native %s_elbow->%s_hand' % (side, side)
                     _pv = p_el
@@ -2002,32 +2050,8 @@ def retarget(vpk, model, toc, bonehash, pose_profile, scale=0.0, head_offset=-0.
     # `arm_finger_pose` is off by default; `arm_finger_pose` may name a subset
     # ('middle', 'l_index', ...) so the one-finger acceptance test can run first.
     if arm_finger_pose:
-        shift_v = np.asarray(mesh_shift, dtype=np.float64)
-
-        def post(Q):
-            """Map points from the pre-4c mesh space to the final `out` space.
-
-            The pipeline moved the MESH (never the rig) in 4c/4d, so the finger
-            pivots have to go through exactly the same two steps.  Using the
-            raw `rest_sym` here would put every pivot in the wrong space -- the
-            expert flagged this explicitly.  The head scale (4e) only touches
-            the skull subtree, so the fingers never see it.
-            """
-            Q = np.asarray(Q, float).reshape(-1, 3).copy()
-            if any(mesh_shift):
-                Q = Q + shift_v
-            if upper_scale != 1.0:
-                hips = next(h for h in hd2 if h['name'] == 'hips')
-                piv = rest_hd2[hips['index']][:3, 3].astype(np.float64).copy()
-                if upper_pivot_z is not None:
-                    piv[2] = float(upper_pivot_z)
-                z0 = piv[2] - upper_blend
-                z1 = piv[2] + upper_blend
-                tt = np.clip((Q[:, 2] - z0) / max(z1 - z0, 1e-9), 0.0, 1.0)
-                w = tt * tt * (3.0 - 2.0 * tt)                  # same smoothstep
-                Q = piv + (Q - piv) * (1.0 + (upper_scale - 1.0) * w)[:, None]
-            return Q
-
+        # `post` (and `shift_v`) are defined above, before the arm block -- the
+        # elbow aim needs them too.  Keep ONE definition so the two cannot drift.
         only = None if arm_finger_pose is True else arm_finger_pose
         out, finger_rows, finger_frames = apply_finger_pose(
             out, verts, resolved, D, rest_sym, rest_hd2, hby, short,
