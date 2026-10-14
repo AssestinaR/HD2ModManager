@@ -83,6 +83,14 @@
 - 一个 HD2 材质只能一个底色 ⇒ 组内多 matcap 只能加权平均；Unit 材质表 14 项已实机验证，**不能改数量**。
 - VTF 布局：`[16×16 缩略图 128B][mip N-1]…[mip 0]`，缩略图在链首、mip0 在尾部；`hd2_vtf.VTF.read` 从尾部剥。
 - UV：HD2 约定 `row = v*H`（无 V 翻转），游戏采样 **uv0**（uv1/uv2 无关）。判形状必须用 UV 三角覆盖图（`_probe_uvplot2.py` 按三角形整体取整数偏移），包围盒不算。
+- **🔴🔴 第 71 轮：「起源→HD2 发灰发白」的根因 = shader 不同，不是我们的 bug**（用户提问，只诊断未改）。
+  - **底色链路逐像素忠实**：`_probe_colorgamma.py` 源 VTF 的 sRGB 包装 vs 我们用的 linear 包装，**DXT1/DXT5 比值全 = 1.000**（只有 `_n` 法线图 ~0.67，那是**正确的**，法线是线性数据不该 sRGB 解码）。`_probe_color_faithful.py` 源色 vs 出货色逐组对照：皮肤/衣服 6 组比值 **0.999~1.001**；只有 4 组 matcap 注入组（gray/gray1/mat_diamond_b/ribbon_1）被我们**主动**加亮（比值 1.46~10.5），是 M8 规则 B，不是 bug。视差图 `E:/tmp/r71-color/src_vs_shipped.png` 已肉眼确认。
+  - **真凶 = L4D2 NekoToon 把 albedo 乘一个 ≤0.30 的系数**：全部 46 个 VMT 是 NekoToon，公式 `final = albedo × lightwarp(lighting) × $lightingscale(0.8) + matcap × $matcaptint(.31)`。**实测 `lightwarp` 上限只有 ~0.30**（facewarp/basewarp 76/255、skinwarp 64/255，全曲线只在 55~76 之间）。⇒ L4D2 里 albedo 被压进 0~0.30 ⇒ 白不过曝、黑不发灰、暗处也看得清。
+  - **HD2 `advanced` 是标准 PBR**：baseColor 直接当 albedo、全场光照、**无 0.30 天花板、无 per-material `$lightingscale`**。同一纹素：皮肤中间调 L4D2 亮 70 vs HD2 亮 245；白布 79 vs 255（饱和）；近黑布 30 vs 32（几乎不变）。示意图 `E:/tmp/r71-color/why_washed.png` 已肉眼确认，与用户描述完全吻合。
+  - ⚠️「黑色变淡灰」不是被乘亮，是 **HD2 环境光/曝光把暗部抬起来**（L4D2 暗部被 0.30 压住）。
+  - **原版 HD2 贴图全是线性 `_UNORM`，从无 `_SRGB`**（RE-2310 27 张：R8G8B8A8_UNORM×9 / R16G16B16A16_FLOAT×8 / BC7_UNORM×7 / BC1/BC5/BC3 各 1）。我们用 `BC7_UNORM_SRGB(99)` 标签**不一定错**（采样时转线性，理论等价），但**与原版不同，备查**。
+  - 工具：`_probe_colorgamma.py`、`_probe_color_faithful.py`、`_probe_skin_color.py`、`_probe_washedout_math.py`、`_probe_why_figure.py`、`_probe_vanilla_tex3.py`；输出 `E:/tmp/r71-color/`。
+  - **可选对策（未做，待拍板）**：① albedo 乘 0.3~0.5 压暗（最直接，牺牲 PBR 张力）② 降底色亮度/提高 roughness ③ 补 HD2 侧 AO/暗部解决"黑变灰"。**不要改 gamma 标签**（已证明无 bug）。
 
 ## 通用转化链路（第 63 轮，Lilium 验证）
 - **三段链**（全部 CLI 驱动、默认值 = 原 Lunalice 值）：
