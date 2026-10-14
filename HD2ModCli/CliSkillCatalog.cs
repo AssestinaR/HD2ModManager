@@ -53,6 +53,7 @@ public static class CliSkillCatalog
 		new("same-key-reconstruction", "hd2mod-same-key-reconstruction", "固定一个来源 Patch，审阅并输出 Same-key Canonical 重构候选。", "HD2ModCli.Skill.same-key-reconstruction"),
 		new("patch-primitives", "hd2mod-patch-primitives", "文件进/文件出的 Patch 底座：枚举、导出、合并、条目级增删改与就地隐藏 Unit，作用于任意 Patch 路径且不要求登记进库。", "HD2ModCli.Skill.patch-primitives"),
 		new("equipment-facts", "hd2mod-equipment-facts", "只读读取游戏装备/披风权威表，回答哪些 AssetKey 属于护甲、头盔或披风。", "HD2ModCli.Skill.equipment-facts"),
+		new("unit-inspection", "hd2mod-unit-inspection", "只读解析任意 Patch 内 Unit 的网格/流/顶点分量/几何事实/骨骼表，不要求登记进库。", "HD2ModCli.Skill.unit-inspection"),
 		new("mod-management", "hd2mod-mod-management", "兼容聚合 Skill：请优先使用更窄的 mod-metadata、option-management 或 safe-library-deletion。", "HD2ModCli.Skill.mod-management", IsLegacy: true),
 	];
 

@@ -58,6 +58,7 @@
 	<EmbeddedResource Include="skills\same-key-reconstruction\SKILL.md" LogicalName="HD2ModCli.Skill.same-key-reconstruction" />
 	<EmbeddedResource Include="skills\patch-primitives\SKILL.md" LogicalName="HD2ModCli.Skill.patch-primitives" />
 	<EmbeddedResource Include="skills\equipment-facts\SKILL.md" LogicalName="HD2ModCli.Skill.equipment-facts" />
+	<EmbeddedResource Include="skills\unit-inspection\SKILL.md" LogicalName="HD2ModCli.Skill.unit-inspection" />
   </ItemGroup>
 
   <!-- Lets the Manager copy the exact artifacts from this build, including

@@ -1273,6 +1273,30 @@ public static class CliApplication
 				() => $"已生成 {hidden.AffectedEntryCount} 个隐藏 Unit 的新 Patch：{hidden.OutputDirectory}");
 			return hidden.Success ? 0 : 2;
 		}
+		if (command.Length >= 3 && command[0] == "unit" && command[1] == "show")
+		{
+			EnsureUnitReadOptions(invocation.Options, "unit show");
+			var keys = CliPatchPrimitives.ResolveKeys(invocation.Options.Keys, "unit show --keys");
+			var units = await CliUnitInspection.ShowAsync(invocation.Command[2], keys).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = true, units }, () => FormatUnitStructures(units));
+			return 0;
+		}
+		if (command.Length >= 3 && command[0] == "unit" && command[1] == "geometry")
+		{
+			EnsureUnitReadOptions(invocation.Options, "unit geometry");
+			var keys = CliPatchPrimitives.ResolveKeys(invocation.Options.Keys, "unit geometry --keys");
+			var units = await CliUnitInspection.GeometryAsync(invocation.Command[2], keys).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = true, units }, () => FormatUnitGeometry(units));
+			return 0;
+		}
+		if (command.Length >= 3 && command[0] == "unit" && command[1] == "bones")
+		{
+			EnsureUnitReadOptions(invocation.Options, "unit bones");
+			var keys = CliPatchPrimitives.ResolveKeys(invocation.Options.Keys, "unit bones --keys");
+			var units = await CliUnitInspection.BonesAsync(invocation.Command[2], keys).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = true, units }, () => FormatUnitBones(units));
+			return 0;
+		}
 		if (command.Length >= 3 && command[0] == "gamedata" && command[1] == "equipment" && command[2] == "list")
 		{
 			EnsureEquipmentFactsOptions(invocation.Options, "gamedata equipment list");
@@ -3137,6 +3161,19 @@ public static class CliApplication
 		}
 	}
 
+	// unit 只读命令：接受 --keys（定位 unit）与 --json，其余写参数一律拒绝。
+	private static void EnsureUnitReadOptions(CliGlobalOptions options, string command)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.Header) || !string.IsNullOrWhiteSpace(options.ArchiveId) || !string.IsNullOrWhiteSpace(options.Kind)
+			|| !string.IsNullOrWhiteSpace(options.AddKeys) || !string.IsNullOrWhiteSpace(options.RemoveKeys)
+			|| options.Picks.Count != 0)
+		{
+			throw new CliUserException("CommandOptionNotSupported", $"{command} 是只读命令，仅接受 <patch 路径>、--keys 与 --json。");
+		}
+	}
+
 	private static void EnsurePatchPrimitiveExportOptions(CliGlobalOptions options, string command)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
@@ -3219,6 +3256,59 @@ public static class CliApplication
 
 	private static string FormatEquipmentFactsDetail(CliEquipmentFactResult result)
 		=> CliOutput.ToJson(new { ok = true, equipment = result });
+
+	private static string FormatUnitStructures(IReadOnlyList<CliUnitStructureSummary> units)
+	{
+		var lines = new List<string>();
+		foreach (var unit in units)
+		{
+			lines.Add($"Unit {unit.UnitKey}（{unit.Kind}）version={unit.Version} nameHash={unit.NameHash}");
+			lines.Add($"  骨骼组 {unit.BoneGroupCount} 个（共 {unit.TotalBones} 根）  bonesRef={unit.BonesRef}  已从 Patch 解析={unit.BonesResolvedFromPatch}");
+			lines.Add($"  自定义：body={unit.Customization.BodyType} slot={unit.Customization.Slot} weight={unit.Customization.Weight} piece={unit.Customization.PieceType}");
+			lines.Add($"  流 {unit.Streams.Count} 个，材质绑定 {unit.MaterialBindingCount} 条，mesh {unit.Meshes.Count} 个：");
+			foreach (var stream in unit.Streams)
+				lines.Add($"    流#{stream.Index}  顶点={stream.NumVertices}  stride={stream.VertexStride}  索引={stream.NumIndices}  分量=[{string.Join(", ", stream.Components)}]");
+			foreach (var mesh in unit.Meshes)
+				lines.Add($"    mesh#{mesh.Index}  id=0x{mesh.MeshId:x8}  lod={mesh.LodIndex}  stream={mesh.StreamIndex}  材质={mesh.NumMaterials}  截面={mesh.NumSections}  可见={mesh.IsVisual}  剔除={mesh.IsCulling}  {DescribeUnitMeshSemantic(mesh)}");
+		}
+		return lines.Count == 0 ? "没有匹配的 Unit。" : string.Join(Environment.NewLine, lines);
+	}
+
+	private static string DescribeUnitMeshSemantic(CliUnitMeshSummary mesh)
+	{
+		var parts = new List<string>();
+		if (!string.IsNullOrEmpty(mesh.SemanticName)) parts.Add($"name={mesh.SemanticName}");
+		if (!string.IsNullOrEmpty(mesh.Slot)) parts.Add($"slot={mesh.Slot}");
+		if (!string.IsNullOrEmpty(mesh.PieceType)) parts.Add($"piece={mesh.PieceType}");
+		if (!string.IsNullOrEmpty(mesh.BodyType)) parts.Add($"body={mesh.BodyType}");
+		return parts.Count == 0 ? string.Empty : "语义{" + string.Join(" ", parts) + "}";
+	}
+
+	private static string FormatUnitGeometry(IReadOnlyList<CliUnitGeometrySummary> units)
+	{
+		var lines = new List<string>();
+		foreach (var unit in units)
+		{
+			lines.Add($"Unit {unit.UnitKey}  几何事实：mesh {unit.MeshCount} 个，可见 {unit.VisibleMeshCount} 个；可渲染={unit.HasRenderableVisibleGeometry}  完全隐藏={unit.IsFullyHidden}");
+			foreach (var mesh in unit.Meshes)
+				lines.Add($"    mesh#{mesh.MeshInfoIndex}  lod={mesh.LodIndex}  顶点={mesh.VertexCount}  三角形={mesh.TriangleCount}  可见={mesh.IsVisualMesh}  剔除={mesh.IsCullingMesh}  质量={mesh.Quality}");
+		}
+		return lines.Count == 0 ? "没有匹配的 Unit。" : string.Join(Environment.NewLine, lines);
+	}
+
+	private static string FormatUnitBones(IReadOnlyList<CliUnitBonesSummary> units)
+	{
+		var lines = new List<string>();
+		foreach (var unit in units)
+		{
+			lines.Add($"Unit {unit.UnitKey}  骨骼组 {unit.BoneGroupCount} 个（共 {unit.TotalBones} 根）  名字表 {unit.BoneNameCount} 条");
+			foreach (var group in unit.Groups)
+				lines.Add($"    组#{group.Index}  numBones={group.NumBones}  重映射={group.RemapCount}  realIndices=[{string.Join(", ", group.RealIndices.Take(12))}{(group.RealIndices.Count > 12 ? ", ..." : string.Empty)}]");
+			if (unit.BoneNames.Count > 0)
+				lines.Add($"    骨骼名：{string.Join(", ", unit.BoneNames.Take(24))}{(unit.BoneNames.Count > 24 ? ", ..." : string.Empty)}");
+		}
+		return lines.Count == 0 ? "没有匹配的 Unit。" : string.Join(Environment.NewLine, lines);
+	}
 
 	private static string RequirePlan(CliGlobalOptions options)
 	{
@@ -5821,6 +5911,12 @@ Patch 底座原语（文件进、文件出；作用于任意 Patch 路径，不�
 装备权威表（只读；直接读游戏 generated_customization_armor_sets）：
 	  hd2mod gamedata equipment list --game-data <游戏data目录> [--kind cape|armor|helmet|all] [--archive-id <归档ID>] --json
 	  hd2mod gamedata equipment show --game-data <游戏data目录> [--kind cape|armor|helmet|all] [--archive-id <归档ID>] --json
+
+Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，不要求已登记进库）：
+	  hd2mod unit show <patch_0 路径> --keys <@keys.json 或 0xtypeid:0xfileid,...> --json
+	  hd2mod unit geometry <patch_0 路径> --keys <...> --json
+	  hd2mod unit bones <patch_0 路径> --keys <...> --json
+
 	  hd2mod import batch inspect <文件夹、压缩包或文件> [...] --json
 	  hd2mod import batch plan <文件夹、压缩包或文件> [...] [--add-to-profile <名称|GUID|active>] --manager-root <管理器目录> --output batch-import-plan.json --json
 	  hd2mod import batch validate --plan batch-import-plan.json --manager-root <管理器目录> --json

@@ -198,6 +198,18 @@ public sealed class CliSkillExporterTests
 	}
 
 	[Fact]
+	public void UnitInspectionSkill_DescribesTheReadOnlyUnitDataView()
+	{
+		var content = CliSkillCatalog.GetContent("unit-inspection");
+
+		Assert.Contains("unit show", content, StringComparison.Ordinal);
+		Assert.Contains("unit geometry", content, StringComparison.Ordinal);
+		Assert.Contains("unit bones", content, StringComparison.Ordinal);
+		Assert.Contains("RenderableLod0", content, StringComparison.Ordinal);
+		Assert.Contains("read-only", content, StringComparison.Ordinal);
+	}
+
+	[Fact]
 	public async Task ExportSafeDeployment_WritesSkillAndManifestWithDeploymentWorkflow()
 	{
 		var outputDirectory = Path.Combine(Path.GetTempPath(), "hd2mod-cli-skills-" + Guid.NewGuid().ToString("N"));

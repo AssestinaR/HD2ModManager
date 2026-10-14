@@ -334,3 +334,41 @@ inspect  →  plan  →  validate  →  apply --confirm
 **契约同步**：`capabilities --json` 从 140 → **148** 条；新增 2 个 Agent Skill（`patch-primitives`、`equipment-facts`），可导出 Skill 从 28 → **30**；`--help` 与 capability 覆盖测试双向补断言。新增测试 `PatchPrimitiveCliTests`（7 条，含负对照），CLI 测试全量 **154 通过 / 0 失败**。
 
 > 仍未做（依赖 core 侧新能力，非本轮范围）：`--add-key` 目前只能引用**同一 patch 内已有条目**，尚未支持"从外部 patch 复制条目进来"。原语层已具备（`PatchArchiveAdditionalEntry` 可带任意字节），只需在命令层接一个 `--add-from <src> <key>` 参数。
+
+---
+
+## 10. 补记（2026-10-14 二次增补）：Unit 数据视图 + bundled 归档读取修复
+
+本轮聚焦"**C# 底座里早就写好、但 CLI 一条命令都没暴露**"的基层能力——外部脚本被迫用 Python 重实现 HD2 格式解析。分两块：
+
+### 10.1 P0：bundled 归档三段读取修复（Core）
+
+`GameDataAssetCatalogService.ReadPartAsync` 对 bundled 归档（`bundles.nxa`）**只按基名取包**，而 bundled 把三段存成**三个独立包条目**：`<id>` = TOC、`<id>.gpu_resources`、`<id>.stream`。后果是只有 TOC 能命中，GPU/Stream 段因 offset 越界被静默丢弃。
+
+- **复现**：`gamedata extract asset 0xe0a48d0be9a7453f 0x586e33e020cbf80f 00cf0ef7df912a6e` 输出 `gpuResourceSize: 268864`，但 `files` 只有 `.toc`（14800 B）。
+- **修复**：按 `GameDataAssetPart` 拼分区后缀。
+- **修复后**：写出 `.toc` 14800 B + `.gpu_resources` **268864 B**。
+- **负对照**：`git stash push -- GameDataAssetCatalogService.cs` → 2 个 bundled 测试失败、legacy 1 个通过；`stash pop` 后 3/3 通过。
+- **旁证**：`GameDataUnitMeshReader.cs:194-196` 本来就正确拼后缀，说明 `ReadPartAsync` 是唯一漏点，修完后两者一致。
+- 新增 `HD2ModCore.Tests/GameDataAssetCatalogBundledPartTests.cs`（3 条，含 legacy 负对照）。
+
+### 10.2 P1：Unit 数据视图（只读）
+
+新增 3 条**只读**命令，直接解析任意 Patch 内 Unit 的网格结构，不要求登记进库、不写任何文件（拒绝 `--output`/`--overwrite`/`--plan`/`--confirm`）：
+
+| 命令 | safety | 底座（C# 已有） | 作用 |
+|---|---|---|---|
+| `unit show <patch_0> --keys <...>` | read-only | `PatchUnitMeshReader` + `UnitMeshModel` | 版本 / 名称哈希 / 骨骼组 / 自定义信息 / **每个流的顶点数、stride、顶点分量表** / 每个网格的 id、LOD、材质与语义 |
+| `unit geometry <patch_0> --keys <...>` | read-only | `UnitGeometryFactsBuilder` | 逐网格顶点数、三角形数、是否可见/剔除网格，几何质量分类 `Unreadable`/`Placeholder`/`CullingOnly`/`Renderable`/`RenderableLod0` |
+| `unit bones <patch_0> --keys <...>` | read-only | `UnitMeshModel.BoneInfos` + `UnitBoneNamesReader` | 逐骨骼组真实索引与 remap 数；同 Patch 带 Bones 资源时附骨骼名表 |
+
+**关键点**：这些能力在 `HD2ModAdaptation` 里**早已存在**（`PatchUnitMeshReader`/`UnitGeometryFactsBuilder`/`UnitBoneNamesReader`），但此前 CLI 引用数为 0。按"只读纯解析允许直连生产端"的准则，`CliUnitInspection.cs` **直接引用 Adaptation 的只读解析器**，不新增 Core 转发层。
+
+**实测验证**（Lilium 包，真实数据）：
+- `unit show`：**428 根骨 / 4 骨骼组 / 4 个流 / 6 个网格**；流分量含 `bone_weight#0:vec4_half` + `bone_index#0:vec4_uint8`（正是另一线程在 Python 里手写的部分）；顶点数 **118014**、stride 56，与 rig-lab `ROUND72` 文档**完全一致**。
+- `unit geometry`：mesh#0-3 = 118014 顶点 / **154066 三角形** / `Renderable(lod3,2,1)` + `RenderableLod0(lod0)`；mesh#4/5 = 24 顶点 / 12 三角形。
+- `unit bones`：4 组各 107 根骨；名字表 15 条（`StingrayEntityRoot`、`grp_legs_hips_female`、`hips`、`l_thigh`、`hips_culling`…）。
+
+**契约同步**：`capabilities --json` 从 148 → **151** 条；新增 1 个 Agent Skill（`unit-inspection`），可导出 Skill 从 30 → **31**；`--help` 与 capability 覆盖测试双向补断言。新增 `HD2ModCli.Tests/UnitInspectionCliTests.cs`（9 条，含负对照：非 Unit 类型键在触盘前拒绝、缺 `--keys`、拒写选项、capabilities 注册）。
+
+> 仍未做：`unit vertices`（逐顶点分量导出，只写 `--output`）尚未实现，故 Skill 文档里未提及；`patch diff` / `patch audit`（`PatchWorkspace` 9 个类已就绪，CLI 引用数 = 0）与 `patch material-conflicts` 待后续。

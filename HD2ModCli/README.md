@@ -27,3 +27,15 @@ hd2mod gamedata equipment list --game-data "<data>" --kind cape --json
 
 `--keys` 接受内联 `0xtype:0xfile,...`、`@file.json` 或内联 JSON。典型组合见 [skills/patch-primitives](skills/patch-primitives) 与 [skills/equipment-facts](skills/equipment-facts)。
 
+## Unit 数据视图（只读网格解析）
+
+同一底座上还有一组**只读**命令，直接解析任意 Patch 内某个 Unit 的网格结构，不要求登记进库，也不写任何文件（拒绝 `--output` / `--plan` / `--confirm`）：
+
+```powershell
+hd2mod unit show     "<patch_0>" --keys 0xe0a48d0be9a7453f:0x<file> --json   # 版本/骨骼组/流/顶点分量/网格
+hd2mod unit geometry "<patch_0>" --keys 0xe0a48d0be9a7453f:0x<file> --json   # 逐网格顶点数、三角形数、几何质量
+hd2mod unit bones    "<patch_0>" --keys 0xe0a48d0be9a7453f:0x<file> --json   # 骨骼组真实索引与骨骼名表
+```
+
+`unit geometry` 会把每个网格归入 `Unreadable` / `Placeholder` / `CullingOnly` / `Renderable` / `RenderableLod0`，可用来区分"故意隐藏的占位 Unit"与"仍带可见模型的 Unit"。典型组合见 [skills/unit-inspection](skills/unit-inspection)。
+

@@ -156,7 +156,19 @@ public sealed class GameDataAssetCatalogService
 
 		if (asset.UsesBundledStorage)
 		{
-			return await _resolver.GetPackageResourceAsync(asset.ArchiveId, offset, size, cancellationToken).ConfigureAwait(false);
+			// Bundled 归档（bundles.nxa）把三段存成三个**独立包条目**：基名承载 TOC，
+			// `<基名>.gpu_resources` / `<基名>.stream` 承载另两段。必须按分区拼后缀，
+			// 否则只有 TOC 能命中，GPU/Stream 会因 offset 越界被静默丢弃。
+			// A bundled archive stores its three parts as separate package entries: the bare name
+			// carries the TOC, the suffixed names carry GPU and stream. The suffix must be appended
+			// per part, otherwise only the TOC matches and GPU/Stream are dropped as out-of-range.
+			var bundledPackageName = part switch
+			{
+				GameDataAssetPart.TocData => asset.ArchiveId,
+				GameDataAssetPart.Stream => asset.ArchiveId + ".stream",
+				_ => asset.ArchiveId + ".gpu_resources",
+			};
+			return await _resolver.GetPackageResourceAsync(bundledPackageName, offset, size, cancellationToken).ConfigureAwait(false);
 		}
 
 		// Legacy 布局把三段放在三个并列文件里；DSAR/Bundled 才把它们拼进同一个归档。
