@@ -57,6 +57,10 @@ def main():
     ap.add_argument('--tmin', type=float, default=-0.60)
     ap.add_argument('--tmax', type=float, default=0.16)
     ap.add_argument('--radius', type=float, default=0.17)
+    ap.add_argument('--view', default='side', choices=('side', 'front'),
+                    help='side: screen axes (axis, V_) -- the ordinary side view. '
+                         'front: screen axes (axis, N_) -- looks straight at the '
+                         'bone-to-mesh offset, which is what we need here.')
     args = ap.parse_args()
 
     u, label = load(args)
@@ -78,17 +82,22 @@ def main():
     N_ = np.cross(axis, tmp); N_ /= np.linalg.norm(N_)
     V_ = np.cross(N_, axis); V_ /= np.linalg.norm(V_)
 
+    if args.view == 'front':
+        SX, SY, SD = axis, N_, V_      # look along V_; the offset direction is on screen
+    else:
+        SX, SY, SD = axis, V_, N_
+
     rel = pos - W
     t = rel @ axis
     rad = np.linalg.norm(rel - np.outer(t, axis), axis=1)
     keep = (rad < args.radius) & (t > args.tmin) & (t < args.tmax)
     tris = tri[keep[tri].all(axis=1)]
     sel = np.nonzero(keep)[0]
-    box = (float((pos[sel] @ axis).min()), float((pos[sel] @ V_).min()),
-           float((pos[sel] @ axis).max()), float((pos[sel] @ V_).max()))
-    print('%s  verts %d  tris %d' % (label, len(sel), len(tris)))
+    box = (float((pos[sel] @ SX).min()), float((pos[sel] @ SY).min()),
+           float((pos[sel] @ SX).max()), float((pos[sel] @ SY).max()))
+    print('%s  verts %d  tris %d  view=%s' % (label, len(sel), len(tris), args.view))
 
-    img = R.render_tile(pos, tris, np.zeros(len(pos)), axis, V_, N_, box)
+    img = R.render_tile(pos, tris, np.zeros(len(pos)), SX, SY, SD, box)
     im = Image.fromarray(img.astype(np.uint8))
     dr = ImageDraw.Draw(im)
 
@@ -97,7 +106,7 @@ def main():
     oy = (TILE_H - (box[3] - box[1]) * scale) / 2
 
     def to_screen(p):
-        px, py = float(p @ axis), float(p @ V_)
+        px, py = float(p @ SX), float(p @ SY)
         return ((px - box[0]) * scale + ox, TILE_H - ((py - box[1]) * scale + oy))
 
     pts = [heads[slot_of[nm]] for nm in CHAIN if nm in slot_of]
@@ -111,8 +120,9 @@ def main():
         dr.ellipse([x - 5, y - 5, x + 5, y + 5], outline=(255, 210, 90), width=2)
         dr.text((x + 7, y - 6), nm, fill=(255, 210, 90))
 
-    dr.text((8, 6), '%s   %s side   red = arm bone chain (shoulder -> elbow -> wrist -> hand)'
-            % (label, args.side), fill=(236, 240, 248))
+    dr.text((8, 6), '%s   %s side   view=%s   red = arm bone chain '
+            '(shoulder -> elbow -> wrist -> hand)' % (label, args.side, args.view),
+            fill=(236, 240, 248))
     dr.text((8, 22), 'if the red line runs along the EDGE of the arm instead of through '
             'its middle, the mesh is off the bone', fill=(176, 184, 196))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

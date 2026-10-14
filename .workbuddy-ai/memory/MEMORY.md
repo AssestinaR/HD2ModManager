@@ -14,7 +14,14 @@
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
 - **Lilium-Sancta-RE2310**：第69轮可用包仍在 `E:/mod/Lilium-Sancta-RE2310/`；patch sha256 `5e4e045c3e1cbc7c…`，GPU sha256 `e9b0bb91ca0b1383…`。回退点 `E:/tmp/round69-final-rollback/`，不要删。
-- **MourningVeil-RE2310**：第74轮已修「交接档被 ROI 截断」bug；patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 始终未动），GPU sha256 `fbac8d425140bffa5865f92b30c53c0c11355539f8e5178da674688fe0c566cf`（r73 `bc14e0a2…` → r72 `2432fc5e…`）。回退点 `E:/tmp/r74-ship-rollback/`（r73 字节）、`E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。第74轮 `library sync` 四段**已完成**（apply 新增0/更新1 → 复查 0/0/0；library.json 节点 `contentFingerprint = 4cbb4127…`）。
+- **MourningVeil-RE2310**：**当前交付 = 第75轮**（第74轮权重 + 第75轮左小臂几何校正）。
+  patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 始终未动，从 r72 起未变），
+  GPU sha256 **`aa6f62594e04def0476a94d0fa87ef8243b2e4c2e0c935a1445ad6597ac47e90`**
+  （r74 `fbac8d42…` → r73 `bc14e0a2…` → r72 `2432fc5e…`）。
+  回退点：`E:/tmp/r75-pre-align-rollback/`（r74 字节）、`E:/tmp/r74-ship-rollback/`（r73）、
+  `E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。
+  第75轮 `library sync` 四段**已完成**（`changedNodeIds=[185f279d…]` → 复查 added/changed/missing 全空；
+  library.json 节点 `contentFingerprint = 8cbec9b2…`，前值 `4cbb4127…`）。
 
 ## 🔴🔴 第73轮：小臂橡皮筋根因已确定（真实动作矩阵已取到）
 - **玩家骨架 `0x4d1c334d294dfa97`（90 根）**；玩家动画**全在归档 `18235e0c9ec0e636`**（2222 个 `bone_count=90`）。资源 file_id = `murmur64_hash(ASCII 路径)`。
@@ -121,10 +128,37 @@
   ② 本轮修法用不上 Blender（Surface Deform 会把外形也改成原版，用户明确"不动外形"），
   只需一个**顶点位置平滑校正位移场**，与 `reweight_forearm_twist.py` 同层。
 - **新增只读探针**：`_probe_twist_lag.py`、`_probe_arm_axis.py`、`_probe_arm_sections.py`、
-  `_probe_arm_overlay.py`、`_probe_arm_bone_overlay.py`。文档 `tmp/rig-lab/ROUND75_WRIST_ALIGNMENT.md`。
-- **本轮未改任何交付字节 ⇒ 不需要 `library sync`。** 交付包仍是第74轮（patch `e4ed9d01…` / gpu `fbac8d42…`）。
-- **下一步**：最小实验只做**左小臂**——逐站测网格中轴相对骨轴的偏移，构造平滑校正位移场搬回骨轴，
-  肘/腕两端渐隐到 0；同一批探针复测（小臂带必须"跨过 0"）→ 换包 + `library sync` → 实机。
-  风险：小臂会往外/后搬 20~40 mm，外形会变；肩部若裂开就要连 `clavicle→elbow` 一起做。
-  备选（不建议）：改 unit 里 `l_hand`/`l_hand_twist` 的 head——不动网格但改共享骨架，风险高。
-- **未定论**：小臂网格是"完整管"还是"半开壳"（两者投影结果都"只落单侧"），校正前先判方位角覆盖。
+  `_probe_arm_overlay.py`、`_probe_arm_bone_overlay.py`、`_probe_arm_coverage.py`、
+  `_probe_twist_orbit.py`、`_probe_arm_components.py`、`_probe_hand_axis.py`、
+  `_probe_field_diff.py`、`_probe_normals_check.py`、`_probe_patch_units.py`。
+  文档 `tmp/rig-lab/ROUND75_WRIST_ALIGNMENT.md`。
+
+### ✅ 第75轮下半场：左小臂校正位移场**已实现、已验收、已部署**
+- 脚本 **`tmp/rig-lab/align_forearm_to_axis.py`**：
+  `d(v) = -strength * alpha(t/L) * limbWeight(v) * e(t)`。`e(t)` = 逐站最小二乘圆拟合的
+  管轴偏移（slab .04 / step .02 / radius .12，只留 n≥10 且 rms≤4 mm）；`alpha` 余弦渐隐
+  （`t0 .34` 为 0、`.62` 为 1、`t1 1.30` 回 0 ⇒ **肘与整条上臂完全不动**）；
+  `limbWeight` = 顶点在 **`l_elbow + l_hand_twist`** 上的权重和（`--limb-bones forearm`）
+  ⇒ **手/手指零位移**；法线用局部形变逆转置（化简为 `n' = normalize(n - axis*(d'(t)·n))`）。
+- **关键经验：小臂偏移 44 mm 而网格边长只有 14 mm ⇒ 需要 ≥100 mm 的渐变距离才不撕裂。**
+  第一版（`t0 .06 fade .16`，46 mm 渐变）在肘部把 14 mm 边拉到 24 mm（**1.72×**），作废。
+- **三档对比（θ=90° 拧腕质心公转 mm；腕带 t/L .90-1.00）**：
+  A（肘子树权重，`t0 .06 t1 .98 fade .16`）腕带 25.8 / 拉伸 1.722 / 手不动；
+  D（肘子树，`t0 .22 t1 1.25 fade .30`）腕带 **2.4** / 1.304 / **手被搬 ≤25 mm**；
+  **G 定稿**（肘+扭转骨，`t0 .34 t1 1.30 fade .28`）腕带 **3.6**（原版 15.2）/ 1.366 / **手不动**。
+- **验收**：偏心量 t/L .60-.84 由 24~36 → **0.4~2.7 mm**（原版 5.7~12.7）；腕环 22.1 → **10.8**
+  （原版 12.3）。公转 .50-.65 7.4→1.1 / .65-.80 23.2→0.3 / .80-.90 28.0→17.5（残余）/
+  **.90-1.00 29.7→3.6** / 1.00-1.10 22.4→12.0。**右臂逐项完全相同。**
+- **逐字节**：TOC 逐字节相同；GPU 大小不变；改 **46794/16332696（0.2865%）**，全在
+  `position`(19022×2)+`normal`(4375×2)；**缓冲区外 0 字节**；两 stream 对称。
+  法线：被移动 2157 顶点"存储 vs 几何"夹角 9.07°→9.55°（几乎不变）。
+- **已部署**：回退点 **`E:/tmp/r75-pre-align-rollback/`**（第74轮字节）。
+  交付目录 patch `e4ed9d01…`（**未变**）/ gpu **`aa6f6259…`**。
+  `library sync` 四段已跑，节点 `185f279d…` 指纹 `4cbb4127…` → `8cbec9b2…`，复查全空。
+  manifest 加 `forearmAlign` 段；README 加「第75轮」整节 + `preview/` 6 张新图。
+- ⚠️ **踩坑**：`_probe_twist_orbit.py` 第一版 `t` 从**腕**算起 ⇒ `t/L>0.2` 选中的其实是
+  **手部**几何（f 恒 1.000），误判"没生效"。**必须从肘算起。**
+- **仍未做**：**只做了左臂**（右小臂未做）；校正把小臂往身体外侧+前方搬最多 **33 mm** ⇒
+  **外形会变**，待实机验收；`t/L .80-.90` 残余 17.5 mm 公转；重定向本身仍是整体刚体。
+- **已定论**：小臂是**带缺口的大半环**（24 格方位桶占 10~22 格、最大缺口 30~120°；需 ≥100 mm
+  切片才有足够顶点）；**小臂→腕→手是一条连通曲面**（硬切在腕会撕开，必须用权重渐变）。
