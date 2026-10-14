@@ -12,9 +12,12 @@
   也禁止据此否决一个方案。指标只作定位线索。
 - 用户原话：「好不好不是表格、柱形图能表示的，我的最终目的是观感……哪怕它偏离了骨骼特别特别多，
   多又怎么样？你确定了它就一定不好吗？……ai 无法承担责任」。
-- 现成工具：`tmp/rig-lab/_render_arm_npz_views.py`（npz → 手臂 5 视角 × N 变体同相机拼图）、
+- 现成工具：`tmp/rig-lab/_render_arm_npz_views.py`（npz → 手臂 5 视角 × N 变体同相机拼图；
+  `--focus whole|upper|fore|wrist` 可局部放大）、
   `tmp/rig-lab/blender_build_variants.py`（多变体并排进一个 .blend，带 HD2 骨名顶点组 + 骨链红线）、
   `tmp/rig-lab/_probe_render_npz.py --pair`（全身四视图两两对比）。
+- **讲参数必须落到"物理上是什么、会看到什么"**。用户是业余用户，只说系数名/数值等于没说。
+  例：`arm_up=0.55` 要讲成"把袖子往上/下修正，只修一半，因为网格比骨头偏高几厘米"。
 
 ## 环境
 - Python：`C:/Users/Administrator/.workbuddy-ai/binaries/python/envs/default/Scripts/python.exe`；Blender：`D:/SteamLibrary/steamapps/common/Blender/blender.exe`。
