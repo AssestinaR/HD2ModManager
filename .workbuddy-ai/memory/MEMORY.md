@@ -21,10 +21,26 @@
 - SDK：`docs/HD2SDK-CommunityEdition-3.8.0`；游戏 data：`D:/SteamLibrary/steamapps/common/Helldivers 2/data`；原版抽取：`E:/tmp/hd2-mgroot/`；mod 库：`E:/mod/`。
 - L4D2 源目录使用 Lunalice 以外的包时，必须显式传 `addons=`/`packs=`/`model_vpk=`。
 - ⚠️ 游戏 `data/` 里：`patch_0` → 基础护甲 mod；**`patch_1` → `E:/mod/MourningVeil-RE2310/`（我们的包）**；
-  `patch_2` → `.runtime/lua/…`。`deploy_candidate.py` 只改 `patch_0`（硬编码）⇒ 部署我们的包要另做。
-- ⚠️ MourningVeil 的 `build_patch.py` / `fix_materials.py` / `fix_appearance.py` 确切命令行**未留档**
-  （脚本默认常量指向 Lunalice）⇒ 要整链复现必须先反推参数、并用 OFF npz 验证 Native 包逐字节一致。
+  `patch_2` → `.runtime/lua/…`。要换游戏里跑的版本，**改 `patch_1` + `patch_1.gpu_resources` 两个符号链接**即可
+  （`deploy_candidate.py` 硬编码只改 `patch_0`，不适合我们）。
 - ⚠️ 环境**没有 matplotlib**（有 numpy / scipy / Pillow 12）⇒ 画图用 PIL，或直接用 `show_widget`。
+
+## 🔴 MourningVeil 的**忠实重打包链**（第 77b 轮已逐字节复现，负对照通过）
+`armor-normalize` 输出的 unit，其模型 stream（114213 顶点）与 `model.npz['ours_bind']`
+**一一对应、逐位相同**（变换=恒等）⇒ 换一版 retarget 结果**只需换位置**：
+```
+set_unit_positions.py --src E:/tmp/mourning-an-out/9ba626afa44a3aa3.patch_0 --out <D1> --npz <npz>
+reweight_forearm_twist.py --src <D1> --out <D2> --a 0.47 --b 0.88 --twist-frac 1.0 \
+        --hand-start 0.90 --hand-end 1.12 --radius 0.10
+align_forearm_to_axis.py --src <D2> --out <D3> --side left  --mode rotate --limb-bones forearm \
+        --t0 -2.0 --t1 2.0 --fade 0.02 --strength 1.0
+align_forearm_to_axis.py --src <D3> --out <D4> --side right --mode rotate --limb-bones forearm \
+        --t0 -2.0 --t1 2.0 --fade 0.02 --strength 1.0
+```
+用 **OFF** npz 跑：gpu `4880a066…`(an-out) → `fbac8d42…`(r74) → `736132ac…`(r76 左) →
+**`85b29d24…` = 交付包逐字节一致** ✔（patch 全程 `e4ed9d01…`）。**先跑这条负对照再信新结果。**
+- 已用 ON npz 跑出候选：`E:/mod/MourningVeil-RE2310-r77bON/`（gpu `8e4214db…`），
+  并已把游戏 `patch_1` 两个符号链接指向它；回退说明 `E:/tmp/r77b-deploy-revert-note.txt`。
 
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
