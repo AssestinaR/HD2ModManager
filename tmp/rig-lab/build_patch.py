@@ -315,10 +315,41 @@ def build_materials(mdl, tris4, packs, mode, max_tex, normal_maps,
         'shared_flat_normal',
         lambda fid: as_asset(TP.solid_texture(
             4, 4, FLAT_NORMAL_RGBA, dxgi=TP.DXGI_BC7_UNORM)))
+    # `white` is the fallback for a slot whose base VTF is missing.  It used to
+    # be built only in `flat` mode, so the `else` branch's "no VTF -> flat white"
+    # path raised UnboundLocalError.  Build it lazily for both modes; the id is
+    # stable so packages stay byte-comparable.
+    white = [None]
+
+    def flat_white():
+        if white[0] is None:
+            white[0] = texture('flat_white',
+                               lambda fid: as_asset(TP.solid_texture(
+                                   4, 4, (255, 255, 255, 255), dxgi=TP.DXGI_BC7_SRGB)))
+        return white[0]
+
     if mode == 'flat':
-        white = texture('flat_white',
-                        lambda fid: as_asset(TP.solid_texture(
-                            4, 4, (255, 255, 255, 255), dxgi=TP.DXGI_BC7_SRGB)))
+        flat_white()
+
+    # Valve's built-in solid textures live in the engine, not in any VPK, and
+    # third-party VMTs use them freely (`$basetexture "black"`).  When we meet
+    # one we synthesise our own solid, keyed by the built-in's name so the
+    # material name (and therefore the id) still says what it was.
+    BUILTIN_SOLID = {
+        'black': (0, 0, 0, 255),
+        'white': (255, 255, 255, 255),
+        'gray': (128, 128, 128, 255),
+        'grey': (128, 128, 128, 255),
+        'dev/graygrid': (128, 128, 128, 255),
+    }
+
+    def builtin_solid(name):
+        if name not in BUILTIN_SOLID:
+            return None
+        rgba = BUILTIN_SOLID[name]
+        return texture('solid/' + name,
+                       lambda fid: as_asset(TP.solid_texture(
+                           4, 4, rgba, dxgi=TP.DXGI_BC7_SRGB)))
 
     slot_to_group = {}
     out_groups = []
@@ -326,17 +357,27 @@ def build_materials(mdl, tris4, packs, mode, max_tex, normal_maps,
         slots = groups[k]['slots']
         base = k[0]
         if mode == 'flat':
-            base_id = white
+            base_id = flat_white()
         else:
             raw = packs.vtf_bytes(base) if base else None
-            if raw is None:
-                log('  [warn] slot group %r has no VTF; using flat white' % (base,))
-                base_id = white
-            else:
+            if raw is not None:
                 base_id = texture(
                     'base/' + os.path.basename(base),
                     lambda fid, raw=raw, base=base: TP.build_texture(
                         raw, TP.DXGI_BC7_SRGB, fid, ref=None, tag=os.path.basename(base)))
+            else:
+                # No VTF in any pack.  Two reasons:
+                #   (a) an engine built-in (`$basetexture "black"`): synthesise it
+                #   (b) a genuinely missing asset (third-party pack hole): flat white
+                bname = (base or '').replace('\\', '/').split('/')[-1].lower()
+                solid = builtin_solid(bname)
+                if solid is not None:
+                    log('  [note] slot group %r is a built-in solid; using %s'
+                        % (base, bname))
+                    base_id = solid
+                else:
+                    log('  [warn] slot group %r has no VTF; using flat white' % (base,))
+                    base_id = flat_white()
         name = 'flat' if mode == 'flat' else (base or 'untextured')
         mat_id = make_id(MAT_ID_PREFIX, 'mat/' + name)
         short = H.murmur32_hash(('lunalice-matslot/%s' % name).encode('utf-8'))

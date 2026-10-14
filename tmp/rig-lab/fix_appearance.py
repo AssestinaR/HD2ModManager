@@ -282,22 +282,40 @@ def matcap_average(g, packs, tmpdir, tag):
     the area-weighted average of the surfaces it covers -- and the group's
     matcaps are exactly the surfaces.  (For the ornament trim the dominant
     matcap already covers 82% of the triangles, so the average is within 7% of
-    it; the weighting matters for the general case, not this one.)"""
-    total = sum(e['tris'] for e in g['matcaps'].values())
-    if total <= 0:
-        raise RuntimeError('matcap group has no triangles')
-    acc = np.zeros(3, np.float64)
-    parts = []
+    it; the weighting matters for the general case, not this one.)
+
+    Third-party packs reference matcaps that are simply not shipped (dangling
+    `$matcaptexture`); those are skipped -- with a loud note -- and the weights
+    renormalised over whatever is actually present.  If nothing decodes we
+    still fail, because then there is no colour to fall back on."""
+    usable = []
+    missing = []
     for e in g['matcaps'].values():
         arr, _v = decode_vtf(packs, e['tex'], tmpdir, tag + '_' + os.path.basename(e['tex']))
         if arr is None:
-            raise RuntimeError('cannot decode matcap %r' % e['tex'])
+            missing.append(e)
+            continue
+        usable.append((e, arr))
+    for e in missing:
+        log('  [note] matcap %r is not shipped by any pack (%d slots) -- skipped'
+            % (os.path.basename(e['tex']), len(e['slots'])))
+    total = sum(e['tris'] for e, _a in usable)
+    if total <= 0 or not usable:
+        raise RuntimeError('matcap group has no decodable matcap (missing: %s)'
+                           % ', '.join(os.path.basename(e['tex']) for e in missing))
+    acc = np.zeros(3, np.float64)
+    parts = []
+    for e, arr in usable:
         mean = arr[:, :, :3].reshape(-1, 3).mean(axis=0)
         w = e['tris'] / float(total)
         acc += mean * w
         parts.append(dict(tex=os.path.basename(e['tex']), tris=e['tris'],
                           weight=round(w, 4), tint=[round(x, 3) for x in e['tint']],
                           meanRgb=[round(float(x), 1) for x in mean]))
+    for e in missing:
+        parts.append(dict(tex=os.path.basename(e['tex']), tris=e['tris'],
+                          weight=0.0, tint=[round(x, 3) for x in e['tint']],
+                          meanRgb=None, missing=True))
     return acc, parts
 
 
@@ -635,6 +653,15 @@ def main():
             if d['matcapDominant']:
                 e = by_key[(A.TEXTURE_TYPE_ID, int(d['albedoId'], 16))]
                 got, _t = decode_patch_texture(res['toc'], e, tmp2, 'va_' + stem)
+                if arr is None:
+                    # The source base colour is an engine built-in (`black`) or
+                    # otherwise undecodable; there is no "expected lift" to
+                    # compare against, so just check the emission mask is clear.
+                    log('  verify albedo %-30s skipped (source base colour '
+                        'undecodable; built-in?)' % stem)
+                    if got[:, :, 3].max() > 8:
+                        raise AssertionError('albedo for %s kept a non-zero emission mask' % stem)
+                    continue
                 want = np.clip(arr[:, :, :3].astype(np.int32) + np.asarray(d['albedoLift'], np.int32),
                                0, 255).astype(np.int32)
                 dd = np.abs(got[:, :, :3].astype(np.int32) - want)

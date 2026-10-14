@@ -123,6 +123,20 @@ def build_expected(manifest, pbr_b, metallic):
         stem = m['name'].replace('\\', '/').rsplit('/', 1)[-1]
         key = 'base/' + stem
         if key not in tex_by_name:
+            # Two fallbacks build_patch.py may have taken when a slot's VTF is
+            # absent from every pack:
+            #   * engine built-in (`$basetexture "black"`) -> texture `solid/<n>`
+            #   * genuinely missing                    -> texture `flat_white`
+            alt = None
+            if 'solid/' + stem in tex_by_name:
+                alt = tex_by_name['solid/' + stem]
+            elif 'flat_white' in tex_by_name:
+                alt = tex_by_name['flat_white']
+            if alt is not None:
+                log('  [note] material %r -> fallback texture (no source VTF)' % m['name'])
+                out[int(m['id'], 16)] = [shared_id, alt, base_nrm]
+                bases[alt] = stem
+                continue
             raise KeyError('manifest has no texture %r for material %r'
                            % (key, m['name']))
         out[int(m['id'], 16)] = [shared_id, tex_by_name[key], base_nrm]
