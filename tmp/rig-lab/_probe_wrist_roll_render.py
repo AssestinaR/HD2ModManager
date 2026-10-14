@@ -63,10 +63,37 @@ def load(patch, side, with_twist=False):
 
     mi = max((m for m in u.mesh_infos if m.lod_index == 0), key=lambda m: m.num_sections)
     verts = u.decode_vertices(mi.stream_index)
+    n = len(verts)
     pos = np.asarray([v['position'] for v in verts], np.float64)
     bidx = np.asarray([v['bone_index0'] for v in verts], np.int64)
     wgt = np.asarray([v['bone_weight'] for v in verts], np.float64)
-    idx = np.frombuffer(u.gpu_index[mi.stream_index], np.uint32).astype(np.int64).reshape(-1, 3)
+    idx = np.asarray(u.index_list(mi.stream_index), np.int64).reshape(-1, 3)
+
+    # round-74 fix: the raw bone_index is MATERIAL-LOCAL and has to go through
+    # bi.remaps[material] before it means anything as a slot index, and only the
+    # vertices a LOD0 triangle actually references are drawn (the rest carry
+    # indices belonging to another LOD and are pure noise).
+    mat_of = np.full(n, -1, np.int32)
+    flat = np.asarray(u.index_list(mi.stream_index), np.int64)
+    for s in mi.sections:
+        sv = np.unique(flat[s.index_offset:s.index_offset + s.num_indices])
+        mat_of[sv] = s.material_index
+    decoded = bidx.copy()
+    for material in np.unique(mat_of[mat_of >= 0]):
+        which = mat_of == material
+        remap = np.asarray(bi.remaps[material], np.int64)
+        decoded[which] = remap[np.minimum(bidx[which], len(remap) - 1)]
+
+    # mesh-local -> unit space; the transform is row-major, translation last row.
+    M = np.asarray(ti.matrices[mi.transform_index], np.float64).reshape(4, 4)
+    pos = pos @ M[:3, :3] + M[3, :3]
+
+    live = mat_of >= 0
+    new_of = np.full(n, -1, np.int64)
+    new_of[live] = np.arange(int(live.sum()))
+    pos, wgt, decoded = pos[live], wgt[live], decoded[live]
+    idx = new_of[idx]
+    idx = idx[(idx >= 0).all(axis=1)]
 
     el, hd = SIDES[side]
     root_ti = bi.real_indices[slot_of[hd]]
@@ -81,7 +108,7 @@ def load(patch, side, with_twist=False):
             cur = ti.entries[cur][1]
     wh = np.zeros(len(pos))
     for j in range(4):
-        hit = np.isin(bidx[:, j], np.asarray(hand_slots))
+        hit = np.isin(decoded[:, j], np.asarray(hand_slots))
         wh[hit] += wgt[hit, j]
 
     if with_twist:
@@ -91,7 +118,7 @@ def load(patch, side, with_twist=False):
         tw_slot = slot_of.get(el.replace('elbow', 'hand_twist'))
         if tw_slot is not None:
             for j in range(4):
-                hit = bidx[:, j] == tw_slot
+                hit = decoded[:, j] == tw_slot
                 wh[hit] += wgt[hit, j]
 
     E, W = heads[slot_of[el]], heads[slot_of[hd]]

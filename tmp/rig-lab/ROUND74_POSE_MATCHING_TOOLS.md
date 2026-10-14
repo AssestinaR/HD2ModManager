@@ -30,7 +30,7 @@
 > `bi.remaps[material]`；而且**只有被 LOD0 索引缓冲引用的顶点**才有意义（其余顶点属别的
 > LOD，索引未经 remap）。`_probe_wrist_roll_render.py` 里的 `wh` 没做这两步，
 > 所以第 73 轮 `preview/forearm_bend_before_after.png` 的**手骨权重着色是错的**
-> （形变结论仍成立，因为它靠的是骨名统计而非那套着色）。**待修。**
+> （形变结论仍成立，因为它靠的是骨名统计而非那套着色）。**已修**（见 §8）。
 
 ### 1.2 几何：我们的网格相对骨骼**确实比原版偏得多**
 
@@ -171,7 +171,8 @@
 
 1. **验证手腕褶皱的来源**：按壳（皮肤 / `mat_glove` / `mat_metal` 腕环）测纯扭转下的
    实际转角与位移，确认是不是"刚性腕环 vs 皮肤"错开。**这决定第 74 轮要不要改包。**
-2. **修 `_probe_wrist_roll_render.py` 的 `wh`**（补 remap + LOD0 过滤），重出 bend 对照图。
+2. ~~修 `_probe_wrist_roll_render.py` 的 `wh`（补 remap + LOD0 过滤），重出 bend 对照图。~~
+   **已完成，见 §8。**
 3. **设计"分段刚体重定向"的最小实验**：先只做左臂三骨（上臂 / 小臂 / 手），
    看手腕是否对齐，再推广。
 4. 决定是"自己写分段刚体"还是"接一个现成工具（gret / AutoTPose / Blender 流程）"。
@@ -181,7 +182,7 @@
 ## 6. 本轮新增/改动文件
 
 - **新增只读探针**：`_probe_wrist_center.py`、`_probe_wrist_twist_render.py`
-- **待修**：`_probe_wrist_roll_render.py`（`wh` 缺 remap 与 LOD0 过滤）
+- **已修**：`_probe_wrist_roll_render.py`（`wh` 补 remap + LOD0 过滤；`_probe_wrist_bend_render.py` 复用同一 `load()`，一并修好）
 - **渲染产物**：`E:/tmp/r74-twist-ours.png`、`E:/tmp/r74-twist-vanilla.png`
 
 ---
@@ -250,3 +251,50 @@ roi = (rad < args.radius) & (t > 0.0) & (t < L)     # t 从【肘】算起，L =
 §1.2 的几何偏差（我们的截面质心偏移是原版 2 倍）**仍然存在**，
 是"手腕总对不齐"的**结构性**来源；本轮的 ROI bug 是**叠加**在它上面的
 一个独立缺陷。两者都要处理——前者靠 §4 的分段刚体重定向，后者已修。
+
+---
+
+## 8. 收尾（同轮）
+
+### 8.1 `library sync` 四段补完
+
+第 73 轮结束时 `apply` 因 `HD2ModManager`（PID 31960）在运行被拒
+（`[ManagerProcessRunning]`）。本轮用户关闭管理器后补完：
+
+```
+inspect  新增 0；更新 1；缺失 0；可写快照变更：是
+plan     已存在（validate 通过）
+validate 库对账验证通过。无诊断。
+apply    库对账完成：新增 0；更新 1。只更新了 library.json 节点记录。
+inspect  新增 0；更新 0；缺失 0；可写快照变更：否   ← 0/0/0
+```
+
+`E:/mod/library.json` 的 MourningVeil-RE2310 节点 `modifiedUtc` 更新为
+`2026-10-14T09:32:53Z`，`contentFingerprint = 4cbb4127…`。
+
+### 8.2 修 `_probe_wrist_roll_render.py` 的 `wh`
+
+`load()` 三处修正（与 `_probe_wrist_center.py` 对齐）：
+
+1. `bone_index` 按材质 remap（`bi.remaps[material]`）；
+2. 只保留被 LOD0 索引缓冲引用的顶点（`mat_of >= 0`），三角形索引同步重映射；
+3. 补上 mesh-local → unit 的变换（行主序、平移在最后一行）。
+
+`_probe_wrist_bend_render.py` 直接 `import _probe_wrist_roll_render as R`
+并复用 `R.load()`，**一并修好**。
+
+### 8.3 重出 `preview/forearm_bend_before_after.png`
+
+原图（第 73 轮）手骨着色是错的。按 **R72 → R74** 重出，肉眼确认：
+
+- **R72（旧）**：屈腕 30°/60° 时整条小臂像香蕉一样跟着弯；
+- **R74（新）**：小臂保持笔直，只有腕/手区域在动。
+
+与 README 描述一致。`preview/` 不参与 `library.json` 指纹（重出后
+inspect 仍为 0/0/0）。
+
+### 8.4 仍未做
+
+1. **腕部星形褶皱**（§7.5）——需按壳测纯扭转位移场。
+2. **分段刚体重定向**（§4）——结构性缺陷，用户已认可方向。
+3. `l_shoulder_twist` 仍被归零；第 6 步仍未进主链。

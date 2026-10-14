@@ -14,7 +14,7 @@
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
 - **Lilium-Sancta-RE2310**：第69轮可用包仍在 `E:/mod/Lilium-Sancta-RE2310/`；patch sha256 `5e4e045c3e1cbc7c…`，GPU sha256 `e9b0bb91ca0b1383…`。回退点 `E:/tmp/round69-final-rollback/`，不要删。
-- **MourningVeil-RE2310**：第74轮已修「交接档被 ROI 截断」bug；patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 始终未动），GPU sha256 `fbac8d425140bffa5865f92b30c53c0c11355539f8e5178da674688fe0c566cf`（r73 `bc14e0a2…` → r72 `2432fc5e…`）。回退点 `E:/tmp/r74-ship-rollback/`（r73 字节）、`E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。⚠️ 第74轮的 `library sync apply` 因管理器在运行被拒，**同步未完成**。
+- **MourningVeil-RE2310**：第74轮已修「交接档被 ROI 截断」bug；patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 始终未动），GPU sha256 `fbac8d425140bffa5865f92b30c53c0c11355539f8e5178da674688fe0c566cf`（r73 `bc14e0a2…` → r72 `2432fc5e…`）。回退点 `E:/tmp/r74-ship-rollback/`（r73 字节）、`E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。第74轮 `library sync` 四段**已完成**（apply 新增0/更新1 → 复查 0/0/0；library.json 节点 `contentFingerprint = 4cbb4127…`）。
 
 ## 🔴🔴 第73轮：小臂橡皮筋根因已确定（真实动作矩阵已取到）
 - **玩家骨架 `0x4d1c334d294dfa97`（90 根）**；玩家动画**全在归档 `18235e0c9ec0e636`**（2222 个 `bone_count=90`）。资源 file_id = `murmur64_hash(ASCII 路径)`。
@@ -75,7 +75,7 @@
 - ⚠️ **本 unit 的 `remaps` 是恒等**（8 材质 × 107 全 identity）⇒ `reweight_forearm_twist.py` 不 remap 读 `bone_index` 对我们是安全的；**换 unit 前必须补 remap**。
 
 ## 🔴 第74轮：探针/格式的既有缺陷与真相（会污染旧结论）
-- `_probe_wrist_roll_render.py` 的 `wh` 有**两个 bug**：① 没按材质 `remaps` 解码 `bone_index`；② 没过滤"只被 LOD0 索引缓冲引用的顶点"。⇒ 第73轮 `preview/forearm_bend_before_after.png` 的**手骨权重着色是错的**（形变结论仍成立，因为靠骨名统计）。**待修。**
+- `_probe_wrist_roll_render.py` 的 `wh` 有**两个 bug**：① 没按材质 `remaps` 解码 `bone_index`；② 没过滤"只被 LOD0 索引缓冲引用的顶点"。⇒ 第73轮 `preview/forearm_bend_before_after.png` 的**手骨权重着色是错的**（形变结论仍成立，因为靠骨名统计）。**第74轮收尾已修**（另补 mesh→unit 变换：行主序、平移在最后一行；`_probe_wrist_bend_render.py` 复用同一 `load()` 一并修好），图已按 R72→R74 重出。`preview/` 不参与 library.json 指纹。
 - `ti.entries[i][1]` 是**父骨的 ti 索引**（不是 slot 索引）；`bi.real_indices` 是 slot→ti。
 - unit 的 mesh transform 是**行主序、平移在最后一行**：`pos @ M[:3,:3] + M[3,:3]`。
 - **只有被 LOD0 索引缓冲引用的顶点才有意义**；其余属别的 LOD，`bone_index` 未经 remap。
