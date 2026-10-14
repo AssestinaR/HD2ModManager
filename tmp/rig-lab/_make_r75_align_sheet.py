@@ -30,15 +30,18 @@ FONT_T = _font(17)
 FONT_S = _font(15)
 
 ROWS = [
-    ('中段截面 (t/L ~0.69)   橙=我们  蓝=原版  红十字=骨轴',
+    ('中段截面 (腕上 150 mm)   橙=我们  蓝=原版  红十字=骨轴',
      'forearm_align_xsection_mid_before.png',
      'forearm_align_xsection_mid_after.png'),
-    ('腕部截面 (t/L ~0.99)',
+    ('腕部截面 (t=0)',
      'forearm_align_xsection_wrist_before.png',
      'forearm_align_xsection_wrist_after.png'),
-    ('正视渲染 + 手臂骨链红线',
+    ('正视渲染 + 手臂骨链红线（红线应穿过小臂中央）',
      'forearm_align_front_before.png',
      'forearm_align_front_after.png'),
+    ('肘部放大（唯一形变处：肘部整体外移约 42 mm）',
+     'forearm_elbow_before.png',
+     'forearm_elbow_after.png'),
 ]
 HEAD = 26
 W = 620
@@ -68,8 +71,9 @@ def main():
         sheet.paste(ai, (PAD + W + PAD, y))
         y += h + PAD
     dr.text((PAD + 4, total_h - 22),
-            '左小臂网格校正位移场：d(v) = -alpha(t/L) * limbWeight(v) * e(t)   '
-            '（手/手指零位移，肘与上臂不动）', fill=(150, 160, 175), font=FONT_S)
+            '左小臂刚性校正：d(v) = -limbWeight(v) * [ tau + (R(psi) - I)(p - E) ]   '
+            '整条小臂刚体移动，不会弯；手不动，肘部外移约 42 mm', fill=(150, 160, 175),
+            font=FONT_S)
     sheet.save(OUT)
     print('wrote %s (%dx%d)' % (OUT, total_w, total_h))
     return 0

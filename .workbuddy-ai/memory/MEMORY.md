@@ -14,14 +14,14 @@
 ## rig-lab 当前状态
 - 模型摆姿、骨架、单承载 Unit、显示和阴影问题已解决；当前剩余重点是小臂动作手感与材质观感。
 - **Lilium-Sancta-RE2310**：第69轮可用包仍在 `E:/mod/Lilium-Sancta-RE2310/`；patch sha256 `5e4e045c3e1cbc7c…`，GPU sha256 `e9b0bb91ca0b1383…`。回退点 `E:/tmp/round69-final-rollback/`，不要删。
-- **MourningVeil-RE2310**：**当前交付 = 第75轮**（第74轮权重 + 第75轮左小臂几何校正）。
+- **MourningVeil-RE2310**：**当前交付 = 第75b轮**（第74轮权重 + 第75b轮左小臂**刚体平移**校正）。
   patch sha256 `e4ed9d01765e13ad180f7ab6af86a99b2bc8703bd43c4c35e95d369a59c23cb8`（TOC 始终未动，从 r72 起未变），
-  GPU sha256 **`aa6f62594e04def0476a94d0fa87ef8243b2e4c2e0c935a1445ad6597ac47e90`**
-  （r74 `fbac8d42…` → r73 `bc14e0a2…` → r72 `2432fc5e…`）。
-  回退点：`E:/tmp/r75-pre-align-rollback/`（r74 字节）、`E:/tmp/r74-ship-rollback/`（r73）、
-  `E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。
-  第75轮 `library sync` 四段**已完成**（`changedNodeIds=[185f279d…]` → 复查 added/changed/missing 全空；
-  library.json 节点 `contentFingerprint = 8cbec9b2…`，前值 `4cbb4127…`）。
+  GPU sha256 **`28bf6b55d6d2ffa06b0b223526960d2faab464720f6d7902bc411081eeeda5de`**
+  （r75a `aa6f6259…` → r74 `fbac8d42…` → r73 `bc14e0a2…` → r72 `2432fc5e…`）。
+  回退点：`E:/tmp/r75b-ship-rollback/`（r75a 字节）、`E:/tmp/r75-pre-align-rollback/`（r74 字节）、
+  `E:/tmp/r74-ship-rollback/`（r73）、`E:/tmp/r73-ship-rollback/`（r72）、`E:/tmp/r72-ship-rollback/`，都不要删。
+  第75b轮 `library sync` 四段**已完成**（`changedNodeIds=[185f279d…]` → 复查 added/changed/missing 全空；
+  library.json 节点 `contentFingerprint = 00b0e1f4…`，前值 `8cbec9b2…`，再前值 `4cbb4127…`）。
 
 ## 🔴🔴 第73轮：小臂橡皮筋根因已确定（真实动作矩阵已取到）
 - **玩家骨架 `0x4d1c334d294dfa97`（90 根）**；玩家动画**全在归档 `18235e0c9ec0e636`**（2222 个 `bone_count=90`）。资源 file_id = `murmur64_hash(ASCII 路径)`。
@@ -156,9 +156,46 @@
   交付目录 patch `e4ed9d01…`（**未变**）/ gpu **`aa6f6259…`**。
   `library sync` 四段已跑，节点 `185f279d…` 指纹 `4cbb4127…` → `8cbec9b2…`，复查全空。
   manifest 加 `forearmAlign` 段；README 加「第75轮」整节 + `preview/` 6 张新图。
+  ⚠️ **本节做法已被第75b轮取代**（见下方第75b轮节）：第75轮的位移场带中段 alpha 渐变，把小臂弄弯成字母 W。
 - ⚠️ **踩坑**：`_probe_twist_orbit.py` 第一版 `t` 从**腕**算起 ⇒ `t/L>0.2` 选中的其实是
   **手部**几何（f 恒 1.000），误判"没生效"。**必须从肘算起。**
 - **仍未做**：**只做了左臂**（右小臂未做）；校正把小臂往身体外侧+前方搬最多 **33 mm** ⇒
   **外形会变**，待实机验收；`t/L .80-.90` 残余 17.5 mm 公转；重定向本身仍是整体刚体。
 - **已定论**：小臂是**带缺口的大半环**（24 格方位桶占 10~22 格、最大缺口 30~120°；需 ≥100 mm
   切片才有足够顶点）；**小臂→腕→手是一条连通曲面**（硬切在腕会撕开，必须用权重渐变）。
+
+## 🔴🔴 第75b轮：第75轮那个位移场把小臂弄弯了 —— 改成刚体平移（已部署）
+- **用户实机反馈**：搬动小臂不是"延长大臂"（内角 120° 的 **V**，延长大臂则肘部外移一点、V 保持完好），
+  而是**从小臂一半位置往外搬** ⇒ 手臂变成 **W**。用户在白线（他画的手臂中心线）上看到中段折角。
+- **数字确认（新探针 `_probe_arm_centerline.py`：逐站最小二乘圆拟合求网格中轴线 + SVD 直线拟合）**：
+  小臂中轴线直线残差 原版 **2.90** / 改前 **3.90**（是直的）/ 改后 **7.69**（弯了）；
+  倾斜 2.12 / 4.96 / **12.90°**；肘部偏移 11.9 / 43.1 / 50.2 mm。逐站剖面：t/L 0.02–0.38 偏移原封不动，
+  到 0.62 砸到 0.4 mm ⇒ **折点 = alpha 渐变带（0.34→0.62）**。
+- **🔴 关键洞察**：`limbW = w_elbow + w_hand_twist` 在小臂上**恒等于 1.000**（实测 t/L 0.36→1.20 全 1.000）
+  ⇒ 只要**去掉 alpha 渐变**，位移在小臂上就是**常量 ⇒ 纯平移 ⇒ 数学上不可能弯**；过渡自动落到
+  肘（权重 0→1）与腕（twist→hand 交接）两个关节。
+- **🔴 手不能搬（决定性判据）**：用用户约定"手指骨必须落在网格里"——手骨→最近网格顶点距离
+  原版 11.4/22.8 mm、**我们改前 6.1/16.6（比原版还好）**、整块含手一起搬 17.2/39.6（小指骨被甩出网格）
+  ⇒ **手本来就摆得对**。方案 `align_forearm_rigid.py`（平移+绕肘旋转刚体）**否决**，记入 `rejectedCandidates`。
+- **🔴 偏移方向（`_probe_arm_offset_dir.py`）**：原版平均偏移 9.9 mm（沿大臂方向仅 −3.3）；我们 31.2 mm
+  （沿大臂方向 **−23.7**）⇒ 多出的部分落在大臂延长线上且远离肩膀 ⇒ 修正 = **肘部外移、V 保持不变**，
+  与用户描述完全一致。
+- **定稿（候选 K）**：`align_forearm_to_axis.py --side left --limb-bones forearm --t0 -2.0 --t1 2.0
+  --fade 0.02 --strength 1.0`（即 alpha 全程 = 1，去掉中段渐变；`--limb-bones forearm` = 只含
+  `l_elbow + l_hand_twist`，手完全不动）。⚠️ `--t1` 必须比整条手臂长（曾切 1.40 切在手上 ⇒ 手指 x7.3 撕裂）。
+- **实测效果**：小臂中轴线 **倾斜 0.48°、肘部偏 0.8 mm、直线残差 2.13 mm**（均优于原版 2.12°/11.9/2.90）；
+  逐站残余 0.2–8.3 mm；截面质心中段 36.2→**2.7 mm**（原版 14.9）、腕部 35.5→25.9（原版 29.1，打平）；
+  mesh V 内角 139.34° vs 骨 140.36°（改前 146.76°）；手部 6.1/16.6→**5.9/12.4**。
+- **逐字节**：TOC 逐字节相同；GPU 大小不变；改 **58264/16332696（0.3567%）**，全在
+  `position`(54854)+`normal`(3410)；**缓冲区外 0 字节**；两 stream 对称；右臂逐项完全相同。
+- **撕裂自检**：max 1.791 / min 0.625 / p99 1.421，最差边**全在肘部**（limbW 0.26↔0.81 相邻跳变，
+  是权重图本身性质）。**代价：肘部整体外移约 40 mm，形变集中在那里。**
+- **已部署**：回退点 **`E:/tmp/r75b-ship-rollback/`**（r75a 字节：patch `e4ed9d01…` / gpu `aa6f6259…`）。
+  交付目录 gpu `aa6f6259…` → **`28bf6b55…`**，patch 未变。`library sync` 四段已跑，复查全空，
+  节点 `185f279d…` 指纹 `8cbec9b2…` → **`00b0e1f4…`**。
+- **新增文件**：探针 `_probe_arm_centerline.py`、`_probe_arm_offset_dir.py`、`_probe_hand_fit.py`、
+  `_probe_limb_bones.py`；探索脚本 `align_forearm_rigid.py`（未采用）；改 `_make_r75_align_sheet.py`（加 CJK 字体）；
+  文档 `ROUND75_WRIST_ALIGNMENT.md` §10；manifest 加 `forearmRigidAlign` 段 + `forearmAlign` 标 `supersededBy`；
+  README 加「第75b轮」整节。证据图 `preview/forearm_align_before_after.png`（★总图 4 行）+ 前后对照多张。
+- **仍未做**：**只做左侧**（右臂 tilt 5.04°、偏 43.4 mm，同参数应等价但未验证）；肘部台阶待实机验收
+  （不可接受可试 `--strength 0.7`：残差 10.5 mm / max 拉伸 1.325）；`l_shoulder_twist` 仍被归零；第6步仍未进主链。
