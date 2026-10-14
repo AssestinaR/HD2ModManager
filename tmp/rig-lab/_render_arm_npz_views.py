@@ -115,6 +115,9 @@ def main():
     ap.add_argument('--radius', type=float, default=0.26,
                     help='keep mesh within this distance of the arm bone chain')
     ap.add_argument('--margin', type=float, default=0.055)
+    ap.add_argument('--focus', default='whole',
+                    choices=('whole', 'upper', 'fore', 'wrist'),
+                    help='which part of the arm the camera frames')
     args = ap.parse_args()
 
     pre = 'l' if args.side == 'left' else 'r'
@@ -152,21 +155,39 @@ def main():
     q /= np.linalg.norm(q)
     qy = np.cross(SDn, q)
     qy /= np.linalg.norm(qy)
+
+    # ---- camera framing points, per focus ---------------------------------
+    d_f = (W - E) / max(float(np.linalg.norm(W - E)), 1e-9)
+    d_u = (E - S) / max(float(np.linalg.norm(E - S)), 1e-9)
+    FOCUS = {
+        'whole': ([S, E, W, W + d_f * 0.10], args.margin),
+        'upper': ([S - d_u * 0.04, E + d_u * 0.04], args.margin * 0.6),
+        'fore':  ([E - d_f * 0.05, W + d_f * 0.07], args.margin * 0.6),
+        'wrist': ([W - d_f * 0.10, W + d_f * 0.07], args.margin * 0.6),
+    }
+    focus = args.focus
+    bp, marg = FOCUS[focus]
+
     VIEWS = [
         ('弯折平面（正对肘 V）', SX, SY, SDn),
-        ('弯折平面·侧看', SY, SDn, SX),
         ('正面 (+Y 看)', right, up, -fwd),
         ('俯视 (+Z 看)', right, fwd, up),
         ('3/4 视角', q, qy, SDn),
     ]
+    if focus == 'whole':
+        VIEWS = [('弯折平面（正对肘 V）', SX, SY, SDn),
+                 ('弯折平面·侧看', SY, SDn, SX),
+                 ('正面 (+Y 看)', right, up, -fwd),
+                 ('俯视 (+Z 看)', right, fwd, up),
+                 ('3/4 视角', q, qy, SDn)]
 
-    # common camera box: from bone chain + margin, in each view's own 2D frame
+    # common camera box: from the focus's bone points + margin, in each view's frame
     boxes = []
-    bp = np.stack([S, E, W, W + (W - E) / np.linalg.norm(W - E) * 0.10])
+    bp = np.stack(bp)
     for _t, U_, V_, N_ in VIEWS:
         px, py = bp @ U_, bp @ V_
-        boxes.append((float(px.min()) - args.margin, float(py.min()) - args.margin,
-                      float(px.max()) + args.margin, float(py.max()) + args.margin))
+        boxes.append((float(px.min()) - marg, float(py.min()) - marg,
+                      float(px.max()) + marg, float(py.max()) + marg))
 
     # ---- per-variant arm mesh (tube around the bone chain) -----------------
     rows = []
