@@ -127,4 +127,66 @@ public sealed class RealSegmentationTests
 			Assert.Equal(group.TriangleIndices.OrderBy(value => value), group.TriangleIndices);
 		}
 	}
+
+	/// <summary>
+	/// 配件并进本体之后仍然是"不重不漏"，而且<b>只出七份本体</b>。
+	/// <para>
+	/// 这是 <c>source convert</c> 的默认路径（<c>--components merge</c>），也是当前唯一在用的路径：
+	/// 几十个 Unit 的注册与开关还没验证通过，先把配件融进本体，让模型是完整的，
+	/// 才能把"材质对不对"和"Unit 注册对不对"分开查。
+	/// </para>
+	/// <para>
+	/// 并进来之后两份配件如果落到同一个部位，它们必须各自完整地进去——
+	/// 所以这里既查总数，也查每份本体的三角形数<b>不少于</b>它原本体部分的数量。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void RealData_MergedComponentsStillCoverEveryTriangleExactlyOnce()
+	{
+		var split = Split(out _, out var geometry);
+		if (split is null)
+			return;
+
+		var merged = SourceSegmentation.MergeComponentsIntoBodyParts(geometry, split.Groups);
+
+		Assert.All(merged, group => Assert.Equal(MeshGroupKind.BodyPart, group.Kind));
+		Assert.Equal(split.BodyParts.Count(), merged.Count);
+
+		var owner = new Dictionary<int, string>();
+		var overlaps = new List<string>();
+		foreach (var group in merged)
+		{
+			foreach (var index in group.TriangleIndices)
+			{
+				if (!owner.TryAdd(index, group.Name))
+					overlaps.Add($"三角形 {index} 同时属于 {owner[index]} 与 {group.Name}");
+			}
+		}
+
+		Assert.Empty(overlaps.Take(5));
+		Assert.Equal(geometry.Triangles.Count, owner.Count);
+
+		// 每份本体的三角形必须"只增不减"，且顶点表与三角形表一致（并进来的配件顶点也要在里面）。
+		foreach (var group in merged)
+		{
+			var original = split.BodyParts.Single(part => part.Region == group.Region);
+			Assert.True(group.TriangleCount >= original.TriangleCount,
+				$"{group.Name} 合并后反而少了三角形");
+			Assert.Equal(group.TriangleIndices.OrderBy(value => value), group.TriangleIndices);
+			Assert.Equal(group.VertexIndices.OrderBy(value => value), group.VertexIndices);
+
+			var declared = group.VertexIndices.ToHashSet();
+			foreach (var index in group.TriangleIndices)
+			{
+				var triangle = geometry.Triangles[index];
+				Assert.Contains(triangle.A, declared);
+				Assert.Contains(triangle.B, declared);
+				Assert.Contains(triangle.C, declared);
+			}
+		}
+
+		// 至少有一份真的并进了东西，否则这条测试是空转的。
+		Assert.True(merged.Any(group => group.TriangleCount > split.BodyParts.Single(
+			part => part.Region == group.Region).TriangleCount), "没有任何配件被并进来");
+	}
 }

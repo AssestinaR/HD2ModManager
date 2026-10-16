@@ -39,9 +39,10 @@ public sealed record MaterialSynthesisResult(
 /// 的那个值——在那之前它一直是外壳护甲的材质。
 /// </para>
 /// <para>
-/// <b>本轮只做底色。</b>模板固定 <c>advanced</c>，只填槽 5（<c>AlbedoEmissive</c>）。
-/// 法线/金属/粗糙/alpha 遮罩与 alphaclip 模板切换都还没做——
-/// 这些是"外观修正"那一步的事，且都必须有对应贴图才谈得上。
+/// <b>底色、alpha 遮罩与模板切换。</b>模板在 <c>advanced</c> 与 <c>alphaclip</c> 之间选：
+/// 判据是"VMT 声明要透明（<c>$translucent</c>/<c>$alphatest</c>）<b>且</b>贴图 alpha 真的在表达镂空"
+/// 两条同时成立。HD2 的 <c>advanced</c> 模板<b>没有 alpha 槽</b>，做不到镂空；
+/// <c>alphaclip</c> 的槽 1 就是 <c>OpacityClipMap</c>（白=可见、黑=透明）。
 /// </para>
 /// <para>
 /// <b>⚠️ 底色 alpha 必须清零。</b>实测参考模组的槽 5 是 <c>(209,197,199,0)</c>；
@@ -56,6 +57,8 @@ public sealed class SourceMaterialConverter
 	public const int AdvancedAlbedoSlot = 5;
 
 	/// <summary><c>alphaclip</c> 模板的三个槽（<c>fix_alphaclip.py:194</c> 断言过这三个键）。</summary>
+	public const int AlphaClipNormalSlot = 0;
+
 	public const int AlphaClipOpacitySlot = 1;
 
 	public const int AlphaClipBaseColorSlot = 2;
@@ -251,6 +254,18 @@ public sealed class SourceMaterialConverter
 			if (material.TextureIds.Count <= AlphaClipBaseColorSlot)
 				return MaterialSynthesisResult.Failed(
 					$"alphaclip 模板只有 {material.TextureIds.Count} 个槽，放不下下标 {AlphaClipBaseColorSlot} 的底色");
+
+			// 槽 0 是 NormalXyAoRoughMap，语义与 advanced 的槽 2 相同（RGB 法线 / A 粗糙度）。
+			// **必须填**：模板文件里这个槽是空的（SDK 的模板只带着色器契约，不带贴图 id），
+			// 留空就是"没有法线图"。用与 advanced 那条路**同一张**全局共享平面法线——
+			// 名字相同 → id 相同 → 装配器按 id 去重会并成一条，不会把包撑大。
+			if (material.TextureIds.Count > AlphaClipNormalSlot)
+			{
+				var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+				material.SetTexture(AlphaClipNormalSlot, flatNormal.Id);
+				textures.Add(flatNormal);
+			}
+
 			material.SetTexture(AlphaClipOpacitySlot, opacityMask.Id);
 			material.SetTexture(AlphaClipBaseColorSlot, texture.Id);
 			textures.Add(opacityMask);
@@ -310,15 +325,41 @@ public sealed class SourceMaterialConverter
 		// 加后缀让 id 分开：合并消失，两个材质各自存活。
 		// 这也让"加发光"变成纯增量 —— 不必再和合并逻辑纠缠。
 		// （`emissionTexture` 已在上面声明——那里靠近 matcap 判定，所以两边都看得到。）
-		var identity = string.IsNullOrWhiteSpace(emissionTexture)
-			? baseTexture
-			: baseTexture + "|emission";
+		//
+		// ⚠️ **模板也必须进身份，理由同上、后果更难看。**
+		// NekoToon 这套模型里大量材质共用同一张"贴图表"底色，而蕾丝与非蕾丝是**两个材质**：
+		// 实测 `lower_white01_underwear` 一张底色被 11 个材质用（7 个蕾丝 + 4 个普通），
+		// `bra_white01_bra_inner` 被 7 个用。身份不含模板时它们撞成同一个 id，
+		// 装配器去重"先到先得"——**每一处冲突都是 advanced 赢**，
+		// 于是蕾丝的 alphaclip 模板被静默丢掉、镂空消失（用户报的"镂空材质忘了做"就是这个）。
+		// 反过来如果 alphaclip 赢了，普通件会被蕾丝的遮罩**穿出洞**，同样错。
+		// 两者本来就是两个材质（一个镂空、一个不透明），所以身份里必须分开。
+		var identity = BuildMaterialIdentity(baseTexture, emissionTexture, useAlphaClip);
 		var materialId = Hd2AssetId.Material(identity);
 
 		return new MaterialSynthesisResult(
 			new SynthesizedMaterial(materialId, material.Write(), templateName, baseTexture, material.TextureIds),
 			textures,
 			[]);
+	}
+
+	/// <summary>
+	/// 材质身份串：<c>$basetexture</c> 全路径，外加所有<b>会改变材质行为</b>的后缀。
+	/// <para>
+	/// 后缀不是装饰，每一个都对应一次实测过的静默合并：
+	/// </para>
+	/// <list type="bullet">
+	/// <item><c>|emission</c>：自发光变体与本体共用底色，不加就丢掉发光那层。</item>
+	/// <item><c>|alphaclip</c>：镂空与非镂空共用底色，不加就丢掉镂空（或者反过来给普通件穿洞）。</item>
+	/// </list>
+	/// <para>
+	/// 顺序固定（emission 在前），因为 id 是哈希，串变了 id 就变——顺序必须稳定可复现。
+	/// </para>
+	/// </summary>
+	public static string BuildMaterialIdentity(string baseTexture, string? emissionTexture, bool useAlphaClip)
+	{
+		var identity = string.IsNullOrWhiteSpace(emissionTexture) ? baseTexture : baseTexture + "|emission";
+		return useAlphaClip ? identity + "|alphaclip" : identity;
 	}
 
 	/// <summary>底色 + （可选）alpha 遮罩的产出。</summary>

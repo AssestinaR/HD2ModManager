@@ -1946,14 +1946,28 @@ public static class CliApplication
 			var split = SourceSegmentation.Split(
 				inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), retarget.Resolved);
 
-			// 配件筛选：默认只要七份本体（piece 数量上限未验证，先给最保守的一份）。
+			// 配件处理。**默认 merge**：把配件并进它主导部位的那份本体，仍然出七份 Unit，
+			// 但模型是完整的。
+			//
+			// 为什么默认不是"丢掉"：丢掉会让模型缺件，于是"材质对不对"和"Unit 注册对不对"
+			// 两件事缠在一起，一件都查不了。默认 merge 先把材质这条路验干净。
+			// 为什么默认也不是 all：几十个 Unit 要求游戏侧能正确注册并开关，那一层还没验证通过，
+			// 而它的失败现象是"整件身体不见了"——那种失败会把材质的问题一起遮住。
 			var wanted = invocation.Options.Components;
-			IEnumerable<Segmentation.MeshGroup> selected = split.Groups;
-			if (string.IsNullOrWhiteSpace(wanted) || wanted.Equals("none", StringComparison.OrdinalIgnoreCase))
+			IEnumerable<Segmentation.MeshGroup> selected;
+			if (string.IsNullOrWhiteSpace(wanted) || wanted.Equals("merge", StringComparison.OrdinalIgnoreCase))
+			{
+				selected = SourceSegmentation.MergeComponentsIntoBodyParts(inputs.Geometry, split.Groups);
+			}
+			else if (wanted.Equals("none", StringComparison.OrdinalIgnoreCase))
 			{
 				selected = split.Groups.Where(group => group.Kind == MeshGroupKind.BodyPart);
 			}
-			else if (!wanted.Equals("all", StringComparison.OrdinalIgnoreCase))
+			else if (wanted.Equals("all", StringComparison.OrdinalIgnoreCase))
+			{
+				selected = split.Groups;
+			}
+			else
 			{
 				var names = wanted.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
 					.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -6215,11 +6229,17 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	  hd2mod context export --library <Mod库目录> --output context.json
 	  hd2mod source inspect <VPK文件> [<模型名片段>] [--output source-model-report.json] [--overwrite] --json
 	  hd2mod source retarget <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> [--bone-hash <hash→名字表>] --output <输出目录> [--overwrite] --json
-	  hd2mod source convert <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> --game-data <游戏data目录> --output <输出目录> [--components all|<名字,名字>] [--overwrite] --json
+	  hd2mod source convert <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> --game-data <游戏data目录> --output <输出目录> [--components merge|all|none|<名字,名字>] [--overwrite] --json
 	    把 VPK 切成 7 大身体部位 + 每个可切换 bodygroup 一个额外 Unit，各写成一个新 Unit 的 Patch。
 	    外壳 Unit 从游戏本体护甲里按部位发现；带的是原版护甲的材质，所以形状对、贴图是原版护甲的。
 	  hd2mod source convert 追加说明：
-	    --components <all|none|名字,名字>   要带哪些配件（默认只出七份本体）
+	    --components <merge|all|none|名字,名字>   配件怎么处理
+	        merge（默认）  并进它主导部位的那份本体，仍然出七份 Unit，但模型完整。
+	                      在"几十个 Unit 能不能被游戏正确注册/开关"验证通过之前用这个：
+	                      先把材质验干净，否则材质的问题会被 Unit 的问题遮住。
+	        none           丢掉配件，只出七份本体（模型会缺件，只适合排查"本体本身"）。
+	        all            每个配件各成一份 Unit（37 份），给管理器逐个开关用。
+	        名字,名字       只把列出的配件各成一份，其余丢掉。
 	    --material-source <分号分隔的 VPK 或目录>
 	        材质来源。给了它，每个 Unit 的每一段都指向**自己新造的**材质，
 	        Material + Texture 会写进**独立的材质包**（同存档的下一个 patch 序号，

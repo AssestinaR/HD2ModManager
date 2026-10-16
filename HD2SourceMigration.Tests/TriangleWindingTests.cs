@@ -46,6 +46,28 @@ public sealed class TriangleWindingTests
 		return null;
 	}
 
+	/// <summary>包内所有 Unit 的 LOD0（三角形数, 顶点数）。各 Unit 的顶点区间互不相交，所以可以相加。</summary>
+	private static async Task<(int Triangles, int Vertices)> AllUnitsAsync(string patchPath)
+	{
+		if (!File.Exists(patchPath))
+			return (0, 0);
+		var entries = new PatchTocScanner().ScanEntries(File.ReadAllBytes(patchPath), patchPath, usesSlimEntryOffset: true);
+		var reader = new PatchUnitMeshReader();
+		var triangles = 0;
+		var vertices = 0;
+		foreach (var entry in entries.Where(item => item.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
+		{
+			var unit = await reader.ReadAsync(entry, entries);
+			foreach (var raw in unit.Model.RawMeshData.Where(item => item.LodIndex == 0))
+			{
+				triangles += raw.Triangles.Count;
+				vertices += raw.Vertices.Count;
+			}
+		}
+
+		return (triangles, vertices);
+	}
+
 	private static (float X, float Y, float Z)? ReadVector(UnitVertexComponentValue? component)
 	{
 		if (component?.FloatValues is not { Length: >= 3 } values)
@@ -196,35 +218,28 @@ public sealed class TriangleWindingTests
 	/// 整片网格看起来全是锯齿。
 	/// </para>
 	/// <para>
-	/// 判据：闭合网格的平均共用数应当在 <b>5~6</b> 附近（三角网格的欧拉关系）。
-	/// 若接近 <b>1~2</b>，说明顶点已经被拆开。
+	/// <b>口径是整包、不是某一个 Unit。</b>源模型本身（121704 顶点 / 159363 三角形）的
+	/// 平均共用数就是 <b>3.93</b>——这套模型 UV 缝与硬边很多，本来就不高。
+	/// 逐 Unit 看会随着"那份里缝多不多"在 3.6~5.0 之间跳（合并配件之后 Head 3.78、Hips 3.64），
+	/// 拿一个固定阈值卡单个 Unit 会在边上抖。整包口径才是这条测试真正想说的那句话：
+	/// <b>我们没有把顶点拆开</b>。实测整包 159363 三角形 / 122030 顶点 = 3.92，与源一致。
+	/// </para>
+	/// <para>
+	/// 判据取 3.5：失败形态是"每个三角形各占一份拷贝"，那时平均值是 <b>1~2</b>，
+	/// 离 3.5 很远；而 3.5 又低于任何正常模型的实测值。两边都有余量。
 	/// </para>
 	/// </summary>
 	[Fact]
 	public async Task ReportHowManyTrianglesShareEachVertex()
 	{
-		var model = await FirstUnitAsync(M3Path);
-		if (model is null)
+		var (triangles, vertices) = await AllUnitsAsync(M3Path);
+		if (triangles == 0 || vertices == 0)
 			return;
 
-		var raw = model.RawMeshData.First(item => item.LodIndex == 0);
-		var uses = new Dictionary<uint, int>();
-		foreach (var triangle in raw.Triangles)
-		{
-			foreach (var corner in new[] { triangle.A, triangle.B, triangle.C })
-				uses[corner] = uses.GetValueOrDefault(corner) + 1;
-		}
+		var average = (double)triangles * 3 / vertices;
 
-		Assert.NotEmpty(uses);
-		var average = (double)raw.Triangles.Count * 3 / uses.Count;
-		var singleUse = uses.Values.Count(count => count == 1);
-		var singleUseRatio = (double)singleUse / uses.Count;
-
-		// 判据：**顶点没有被拆开**。三角网格里平均共用数应当在 5~6 附近；
-		// 接近 1~2 就说明每个三角形各占一份顶点拷贝，法线平均会退化成逐面法线。
-		Assert.True(average >= 4.0,
-			$"顶点 {uses.Count} 个、三角形 {raw.Triangles.Count} 条，平均每个顶点被 {average:F2} 个三角形共用；"
-			+ $"只被 1 个三角形用到的顶点占 {singleUseRatio:P1}"
-			+ " —— 低于 4 说明顶点被拆开了，法线无法平滑（会表现为整片锯齿）");
+		Assert.True(average >= 3.5,
+			$"整包 {vertices} 个顶点、{triangles} 条三角形，平均每个顶点被 {average:F2} 个三角形共用"
+			+ " —— 低于 3.5 说明顶点被拆开了，法线无法平滑（会表现为整片锯齿）");
 	}
 }

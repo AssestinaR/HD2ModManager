@@ -238,4 +238,54 @@ public static class SourceSegmentation
 		result.Sort();
 		return result;
 	}
+
+	/// <summary>
+	/// 把每个配件并进它<b>主导部位</b>的那份本体，得到"只有七份本体"的切分。
+	/// <para>
+	/// <b>为什么需要这条路。</b>配件各成一份 Unit 是最终形态，但它要求游戏侧能正确注册并开关
+	/// 几十个 Unit；在那一层还没验证通过之前，把配件融进本体能让<b>模型是完整的</b>，
+	/// 从而把"材质对不对"和"Unit 注册对不对"这两件事分开查——否则一件都测不了。
+	/// </para>
+	/// <para>
+	/// 归属用的是 <see cref="MeshGroup.Region"/>，也就是配件<b>语义上</b>落在哪个部位
+	/// （<see cref="DominantRegion"/> 按多数顶点推出来的）。这个字段本来就是为选槽位算的，
+	/// 这里复用同一个判据，不另立一套。
+	/// </para>
+	/// <para>
+	/// ⚠️ 并进来之后那份本体的 <see cref="MeshGroup.SourceBodyPartIndex"/> 仍然是本体自己的，
+	/// 因为"这份 Unit 由哪个 bodypart 切出来"这句话对合并后的网格已经不再成立——
+	/// 保留本体的值比编一个假值更不容易误导下游。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyList<MeshGroup> MergeComponentsIntoBodyParts(
+		SourceGeometry geometry, IReadOnlyList<MeshGroup> groups)
+	{
+		ArgumentNullException.ThrowIfNull(geometry);
+		ArgumentNullException.ThrowIfNull(groups);
+
+		var bodyParts = groups.Where(group => group.Kind == MeshGroupKind.BodyPart).ToArray();
+		var merged = bodyParts.ToDictionary(
+			group => group.Region,
+			group => new List<int>(group.TriangleIndices));
+		foreach (var component in groups.Where(group => group.Kind == MeshGroupKind.Component))
+		{
+			// 没有对应本体（该部位一个三角形都没有）时只能丢掉：没有可以挂上去的 Unit。
+			if (merged.TryGetValue(component.Region, out var target))
+				target.AddRange(component.TriangleIndices);
+		}
+
+		var result = new List<MeshGroup>(bodyParts.Length);
+		foreach (var group in bodyParts)
+		{
+			var triangles = merged[group.Region];
+			triangles.Sort();
+			result.Add(group with
+			{
+				TriangleIndices = triangles,
+				VertexIndices = CollectVertices(geometry, triangles),
+			});
+		}
+
+		return result;
+	}
 }
