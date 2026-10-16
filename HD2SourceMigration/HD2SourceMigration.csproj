@@ -23,4 +23,18 @@
     <ProjectReference Include="..\HD2ModAdaptation\HD2ModAdaptation.csproj" />
   </ItemGroup>
 
+  <!--
+    HD2 的姿态参考表。重定向需要三张表（T-pose basis / initial basis / 轴对称 delta），
+    它们描述的是**游戏自己的骨架**，不是任何第三方模型的属性，所以随本工程内置，
+    转换流程因此不依赖任何外置文件。
+    来源：HD2-BatchTool `assets/body_pose_profile.json`（`"source": "bundled_hd2_reference_profile"`）。
+    sha256 = 0E6CD5CC2B9BED1BF39622F02AE733003E09725592457BA93BD2D512E7678F53
+    The HD2 pose reference tables.  They describe the game's own skeleton rather than any
+    third-party model's property, so they ship inside this project and the conversion needs
+    no external file.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Retarget\body_pose_profile.json" />
+  </ItemGroup>
+
 </Project>

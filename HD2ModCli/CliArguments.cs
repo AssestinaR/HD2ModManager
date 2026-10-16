@@ -26,7 +26,21 @@ public sealed record CliGlobalOptions(
 	bool Overwrite,
 	bool Confirm,
 	bool Json,
-	bool AllowUnsafeLua = false);
+	bool AllowUnsafeLua = false,
+	// 重定向对拍用的显式输入：HD2 avatar Unit 的 TocData 与 Bones 资源的 hash→名字表。
+	// 生产路径应当从 `--game-data` 读（CanonicalAvatarRigReader + UnitBoneNamesReader）；
+	// 这两个开关存在的唯一理由是"让 C# 与 Python 实验线吃同一份输入"，对拍才有意义。
+	// 追加在末尾并带默认值，是为了不让已有的位置构造调用点被迫改动。
+	string? AvatarToc = null,
+	string? BoneHash = null,
+	// `source convert` 要带哪些配件：`all` = 全部、`none`/空 = 只要七份本体、否则逗号分隔的 bodygroup 名。
+	string? Components = null,
+	// source convert 生成的素体显示名。
+	string? Name = null,
+	// source convert 的材质来源：分号分隔的 VPK 文件或目录。材质在**别的** VPK 里（见 docs 第 3 轮）。
+	string? MaterialSource = null,
+	// source convert 的底色压暗系数（0..1）。不给就不压。
+	double? AlbedoFactor = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -49,6 +63,12 @@ public static class CliArgumentParser
 		string? archiveId = null;
 		string? kind = null;
 		string? header = null;
+		string? avatarToc = null;
+		string? boneHash = null;
+		string? components = null;
+		string? name = null;
+		string? materialSource = null;
+		double? albedoFactor = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -109,6 +129,33 @@ public static class CliArgumentParser
 					break;
 				case "--header":
 					header = ReadValue(args, ref index, argument);
+					break;
+				case "--avatar-toc":
+					avatarToc = ReadValue(args, ref index, argument);
+					break;
+				case "--bone-hash":
+					boneHash = ReadValue(args, ref index, argument);
+					break;
+				case "--components":
+					components = ReadValue(args, ref index, argument);
+					break;
+				case "--name":
+					name = ReadValue(args, ref index, argument);
+					break;
+				case "--material-source":
+					materialSource = ReadValue(args, ref index, argument);
+					break;
+				case "--albedo-factor":
+					var rawAlbedoFactor = ReadValue(args, ref index, argument);
+					if (!double.TryParse(rawAlbedoFactor, System.Globalization.NumberStyles.Float,
+							System.Globalization.CultureInfo.InvariantCulture, out var parsedAlbedoFactor)
+						|| parsedAlbedoFactor <= 0 || parsedAlbedoFactor > 4)
+					{
+						throw new CliUserException("InvalidOption",
+							$"--albedo-factor 需要一个 (0, 4] 的数（底色压暗倍数），实际是 '{rawAlbedoFactor}'。");
+					}
+
+					albedoFactor = parsedAlbedoFactor;
 					break;
 				case "--pick":
 					// Positional triple: <patch.toc> <0xtypeid> <0xfileid>. Repeated.
@@ -171,7 +218,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

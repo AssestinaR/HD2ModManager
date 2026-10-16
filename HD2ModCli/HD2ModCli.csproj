@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -11,6 +11,8 @@
     <ProjectReference Include="..\HD2ModCore\HD2ModCore.csproj" />
     <!-- 源模型（求生之路 2 / Source 引擎）只读解析层：纯文件格式，不认识 HD2。 -->
     <ProjectReference Include="..\HD2SourceModel\HD2SourceModel.csproj" />
+    <!-- 源模型 → HD2 骨架的重定向层：唯一同时认识两侧的地方。 -->
+    <ProjectReference Include="..\HD2SourceMigration\HD2SourceMigration.csproj" />
   </ItemGroup>
 
   <ItemGroup>

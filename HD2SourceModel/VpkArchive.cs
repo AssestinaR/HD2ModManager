@@ -241,9 +241,15 @@ public sealed class VpkArchive : IDisposable
 			}
 			else
 			{
+				// 分卷名要去掉目录文件名的 `_dir` 后缀：`pak01_dir.vpk` 的数据在
+				// `pak01_000.vpk` 里，不是 `pak01_dir_000.vpk`。不去掉的话分卷永远找不到，
+				// 表现为所有非内联条目都读不出来（L4D2 原版模型贴图全是这种情况）。
+				var stem = Path.GetFileNameWithoutExtension(_path);
+				if (stem.EndsWith("_dir", StringComparison.OrdinalIgnoreCase))
+					stem = stem[..^4];
 				var volume = Path.Combine(
 					Path.GetDirectoryName(_path) ?? string.Empty,
-					$"{Path.GetFileNameWithoutExtension(_path)}_{entry.ArchiveIndex:D3}.vpk");
+					$"{stem}_{entry.ArchiveIndex:D3}.vpk");
 				if (!File.Exists(volume))
 				{
 					data = [];

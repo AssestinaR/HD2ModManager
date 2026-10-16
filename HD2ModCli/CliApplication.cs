@@ -1,10 +1,14 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Text.Json;
 using HD2ModCore.Application;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2SourceModel;
+using HD2SourceMigration.Retarget;
+using HD2SourceMigration.Segmentation;
+using HD2SourceMigration.VpkConversion;
+using Segmentation = HD2SourceMigration.Segmentation;
 
 namespace HD2ModCli;
 
@@ -1915,6 +1919,289 @@ public static class CliApplication
 				Emit(invocation.Options, new { ok = true, output, inspection },
 					() => FormatSourceModelInspection(inspection) + Environment.NewLine + $"已写出 JSON 报告：{output}");
 			}
+			return 0;
+		}
+
+		if (command.Length is 3 or 4 && command[0] == "source" && command[1] == "convert")
+		{
+			// M2 交付：VPK → 自定义素体。切成 7 大部位 + 每个可切换 bodygroup 一个额外 Unit，
+			// 每个 Unit 用**游戏本体**的一个护甲 Unit 当结构外壳（不依赖任何第三方 mod）。
+			var vpkPath = invocation.Command[2];
+			if (!File.Exists(vpkPath))
+				throw new CliUserException("VpkNotFound", $"找不到 VPK 文件：{vpkPath}");
+			if (string.IsNullOrWhiteSpace(invocation.Options.AvatarToc) || !File.Exists(invocation.Options.AvatarToc))
+				throw new CliUserException("AvatarTocRequired", "请用 --avatar-toc 指定 HD2 avatar Unit 的 TocData 文件。");
+			var output = RequireOutput(invocation.Options, "source convert");
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var gameData = workspace.GameDataRoot
+				?? throw new CliUserException("GameDataRequired", "转换需要 --game-data <游戏 data 目录>：外壳 Unit 从游戏本体读。");
+			var stem = command.Length == 4 ? invocation.Command[3] : null;
+
+			var inputs = SourceRetargetPipeline.LoadSource(vpkPath, stem);
+			var rig = SourceRetargetPipeline.LoadRig(invocation.Options.AvatarToc, invocation.Options.BoneHash);
+			var retarget = SourceRetargetPipeline.Run(inputs, rig);
+			var avatar = HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshReader.ReadTransformInfoFromUnitToc(
+				File.ReadAllBytes(invocation.Options.AvatarToc));
+
+			var split = SourceSegmentation.Split(
+				inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), retarget.Resolved);
+
+			// 配件筛选：默认只要七份本体（piece 数量上限未验证，先给最保守的一份）。
+			var wanted = invocation.Options.Components;
+			IEnumerable<Segmentation.MeshGroup> selected = split.Groups;
+			if (string.IsNullOrWhiteSpace(wanted) || wanted.Equals("none", StringComparison.OrdinalIgnoreCase))
+			{
+				selected = split.Groups.Where(group => group.Kind == MeshGroupKind.BodyPart);
+			}
+			else if (!wanted.Equals("all", StringComparison.OrdinalIgnoreCase))
+			{
+				var names = wanted.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+					.ToHashSet(StringComparer.OrdinalIgnoreCase);
+				selected = split.Groups.Where(group =>
+					group.Kind == MeshGroupKind.BodyPart || names.Contains(group.Name));
+			}
+
+			var selectedGroups = selected.ToArray();
+
+			var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+			var facts = CliEquipmentFacts.Project(snapshot, null, null);
+			var (donorCandidates, missing) = CliSourceConvert.SelectDonors(facts.Kits);
+			if (missing.Count != 0)
+				throw new CliUserException("DonorMissing", $"游戏装备表里找不到这些部位的外壳 Unit：{string.Join("、", missing)}。");
+
+			var (donors, donorFailures) = await CliSourceConvert.LoadDonorsAsync(gameData, donorCandidates, default).ConfigureAwait(false);
+			if (donorFailures.Count != 0)
+				throw new CliUserException("DonorUnusable", $"这些部位找不到可用的外壳 Unit（需要带槽位记录）：{string.Join("、", donorFailures)}。");
+
+			var plans = selectedGroups.Select(group =>
+			{
+				var donor = donors[group.Region];
+				return new VpkUnitPlan(
+					group,
+					donor,
+					CliSourceConvert.SlotNames[group.Region],
+					group.Kind == MeshGroupKind.BodyPart ? "Undergarment" : "Armor");
+			}).ToArray();
+
+			var headerTemplate = (await new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameData)
+				.GetPackageTocAsync(donorCandidates.Values.First()[0].ArchiveId).ConfigureAwait(false))?.Data;
+
+			Directory.CreateDirectory(Path.GetFullPath(output));
+			// 素体 Key 由调用方生成：它要同时出现在 Patch 的 Unit 归属与工作区的素体定义里。
+			// 输出目录里已经有 `custom-model.json` 时**复用它**（model key + unit id 基）。
+			//
+			// 为什么：重跑同一个目录应当是**原地替换**，而不是新建一个模型。
+			// 否则 unit id 会重新随机 —— 工作区里那些映射全部失效，得重新映射；
+			// 而且工作区会多出一条重复的模型记录。
+			//
+			// unit id 的生成是 `seed + index`（index 从 1 起），所以最小那个 id 减 1 就是 seed。
+			string? reusedModelKey = null;
+			ulong? reusedUnitIdSeed = null;
+			var existingModelPath = Path.Combine(Path.GetFullPath(output), "custom-model.json");
+			if (File.Exists(existingModelPath))
+			{
+				using var existingDocument = System.Text.Json.JsonDocument.Parse(File.ReadAllText(existingModelPath));
+				if (existingDocument.RootElement.TryGetProperty("key", out var existingKeyElement))
+					reusedModelKey = existingKeyElement.GetString();
+				if (existingDocument.RootElement.TryGetProperty("pieces", out var existingPiecesElement))
+				{
+					var smallest = ulong.MaxValue;
+					foreach (var pieceElement in existingPiecesElement.EnumerateArray())
+					{
+						if (pieceElement.TryGetProperty("unit", out var unitElement)
+							&& ulong.TryParse(unitElement.GetString(),
+								System.Globalization.NumberStyles.HexNumber,
+								System.Globalization.CultureInfo.InvariantCulture, out var existingUnitId)
+							&& existingUnitId < smallest)
+						{
+							smallest = existingUnitId;
+						}
+					}
+
+					if (smallest != ulong.MaxValue)
+						reusedUnitIdSeed = (smallest - 1) & 0x7fffffffffff0000UL;
+				}
+			}
+
+			var modelKey = reusedModelKey ?? "custom-" + Guid.NewGuid().ToString("N");
+			var displayName = string.IsNullOrWhiteSpace(invocation.Options.Name)
+				? Path.GetFileNameWithoutExtension(vpkPath)
+				: invocation.Options.Name.Trim();
+			// 材质来源是可选的：不给就只能沿用外壳护甲的材质（形状对、贴图是别人的）。
+			// 给了就把每个 Unit 的每段都指向**自己新造的**材质，并把 Material + Texture
+			// 写进**独立的材质包**（约定：一个 VPK 一个 patch，材质来自别的 VPK）。
+			SourceMaterialConverter? materialConverter = null;
+			if (!string.IsNullOrWhiteSpace(invocation.Options.MaterialSource))
+			{
+				var entries = invocation.Options.MaterialSource
+					.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+					.ToArray();
+				var directories = entries.Where(Directory.Exists).ToArray();
+				var files = entries.Where(File.Exists).ToArray();
+				var materialSource = directories.Length != 0
+					? SourceMaterialSource.OpenDirectories(directories)
+					: SourceMaterialSource.Open(files);
+				if (materialSource.VmtCount == 0)
+					throw new CliUserException("MaterialSourceEmpty",
+						$"材质来源里一个 .vmt 都没有（扫了 {materialSource.VpkPaths.Count} 个包）。请确认 --material-source 指向 L4D2 游戏目录与 addons 目录。");
+				var encoderPath = Bc7Encoder.Locate(Environment.GetEnvironmentVariable("HD2_TEXCONV"));
+				var templates = Hd2MaterialTemplateLibrary.Locate();
+				if (encoderPath is null || templates is null)
+					throw new CliUserException("MaterialToolchainMissing",
+						$"缺少材质工具链：texconv={(encoderPath is null ? "未找到" : "OK")}，材质模板={(templates is null ? "未找到" : "OK")}。");
+				var encoder = new Bc7Encoder(encoderPath);
+				// matcap 平均色要按**三角形面积加权**算，所以需要几何——在这里一次算好，
+				// 而不是让转换器按材质名去猜（它看不到整个模型的三角形）。
+				// 只有真的命中 matcap 规则（tint ≥ 0.9）的材质才会被解码。
+				var matcapMeans = SourceMaterialConverter.ComputeMatCapMeans(
+					materialSource, inputs.Geometry, inputs.Model.MaterialPaths, encoder);
+				materialConverter = new SourceMaterialConverter(materialSource, encoder, templates,
+					// 压暗默认关闭：它改的是**观感**而不是正确性，不擅自打开。
+					invocation.Options.AlbedoFactor is { } factor
+						? new AlbedoAdjustment(AlbedoDarkenMode.Multiply, factor)
+						: null,
+					matcapMeans);
+			}
+
+			var package = await new VpkPatchAssembler().AssembleAsync(
+				plans, retarget, inputs.Geometry, avatar, headerTemplate,
+				Path.GetFullPath(output), "9ba626afa44a3aa3.patch_0", modelKey,
+				cancellationToken: default,
+				sourceMaterialNames: inputs.Model.MaterialPaths,
+				materialConverter: materialConverter,
+				unitIdSeed: reusedUnitIdSeed).ConfigureAwait(false);
+
+			// 登记素体。**只写工作区**（`<mod库>/.hd2modmanager/armor-registry.workspace.json`），
+			// 由管理器自己把它编译成 `armor-registry.protocol`——直接改协议文件会被下一次应用覆盖。
+			string? registryError = null;
+			if (package.IsValid && workspace.ManagerRoot is not null && workspace.LibraryRoot is not null)
+			{
+				try
+				{
+					var registry = new RuntimeArmorRegistryService(
+						new StoragePaths(workspace.ManagerRoot, workspace.LibraryRoot),
+						invocation.Options.RegistryRoot);
+					var model = new RuntimeArmorRegistryModel(
+						modelKey,
+						null,
+						package.Units.Where(unit => unit.IsValid)
+							.SelectMany(unit => unit.RegistryPieces.Select(piece =>
+								new RuntimeArmorRegistryModelPiece(
+									piece.Body, unit.UnitId, piece.Slot, piece.PieceType, IsDefaultBase: piece.IsDefaultBase)))
+							.ToArray(),
+						displayName);
+					await File.WriteAllTextAsync(
+						Path.Combine(Path.GetFullPath(output), "custom-model.json"),
+						JsonSerializer.Serialize(model, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }))
+						.ConfigureAwait(false);
+					var latest = await registry.ReadSnapshotAsync(default).ConfigureAwait(false);
+					// 同 key 已存在就**替换**，否则追加。
+					// 追加会让"重跑同一个目录"在工作区里堆出重复的模型记录。
+					var existingDefinitions = latest.Document.ModelDefinitions;
+					var replaced = false;
+					var merged = new RuntimeArmorRegistryModel[existingDefinitions.Count];
+					for (var i = 0; i < existingDefinitions.Count; i++)
+					{
+						if (string.Equals(existingDefinitions[i].Key, model.Key, StringComparison.Ordinal))
+						{
+							merged[i] = model;
+							replaced = true;
+						}
+						else
+						{
+							merged[i] = existingDefinitions[i];
+						}
+					}
+
+					await registry.SaveWorkspaceAsync(
+						latest.Document with
+						{
+							ModelDefinitions = replaced ? merged : [.. existingDefinitions, model],
+						},
+						default).ConfigureAwait(false);
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+				{
+					registryError = exception.Message;
+				}
+			}
+			else if (package.IsValid)
+			{
+				registryError = "缺少 --manager-root 或 --library，无法写入素体工作区。";
+			}
+
+			var summary = new
+			{
+				ok = package.IsValid && registryError is null,
+				vpk = Path.GetFullPath(vpkPath),
+				mdl = inputs.MdlPath,
+				output = Path.GetFullPath(output),
+				modelKey,
+				modelName = displayName,
+				groups = split.Groups.Count,
+				selected = selectedGroups.Length,
+				units = package.Units,
+				donors = donors.ToDictionary(pair => pair.Key.Name(), pair => new
+				{
+					archive = pair.Value.ArchiveName,
+					unit = $"0x{pair.Value.FileId:x16}",
+					slot = pair.Value.Model.CustomizationInfo.Slot,
+				}),
+				diagnostics = package.Diagnostics,
+				materialPack = package.MaterialPackPath is null ? null : Path.GetFileName(package.MaterialPackPath),
+				materialCount = package.MaterialCount,
+				textureCount = package.TextureCount,
+				// 源材质 → HD2 材质 id 的对照表。诊断"某部位贴图不对"时按它定位：
+				// 材质 id 是从 $basetexture 哈希出来的，看 id 认不出是谁。
+				// `mergedInto` 非 null 表示这个源材质被并进了那个源序号的材质
+				// ——**必须报出来**，否则发光变体这类"安静丢掉一层"的情况永远发现不了。
+				materials = package.Materials.Select(item => new
+				{
+					index = item.SourceMaterialIndex,
+					source = item.SourceMaterialName,
+					baseTexture = item.BaseTexture,
+					material = $"0x{item.MaterialId:x16}",
+					template = item.TemplateName,
+					mergedInto = item.MergedIntoSourceIndex,
+				}),
+				mergedMaterialCount = package.Materials.Count(item => item.MergedIntoSourceIndex is not null),
+				registryError,
+			};
+			Emit(invocation.Options, summary, () => CliSourceConvert.Format(
+				inputs.MdlPath, Path.GetFullPath(output), split.Groups.Count, selectedGroups.Length,
+				package, modelKey, displayName, registryError));
+			return summary.ok ? 0 : 2;
+		}
+
+		if (command.Length is 3 or 4 && command[0] == "source" && command[1] == "retarget")
+		{
+			// M1 验收工具：把 VPK + HD2 骨架跑一遍重定向，把顶点位置写成 npz，供与 Python 实验线逐点对拍。
+			// 它刻意不写任何 Patch：M1 只验证数学，落包是 M2 之后的事。
+			var vpkPath = invocation.Command[2];
+			if (!File.Exists(vpkPath))
+				throw new CliUserException("VpkNotFound", $"找不到 VPK 文件：{vpkPath}");
+			if (string.IsNullOrWhiteSpace(invocation.Options.AvatarToc) || !File.Exists(invocation.Options.AvatarToc))
+				throw new CliUserException("AvatarTocRequired", "请用 --avatar-toc 指定 HD2 avatar Unit 的 TocData 文件。");
+			var output = RequireOutput(invocation.Options, "source retarget");
+			var stem = command.Length == 4 ? invocation.Command[3] : null;
+
+			var inputs = SourceRetargetPipeline.LoadSource(vpkPath, stem);
+			var rig = SourceRetargetPipeline.LoadRig(invocation.Options.AvatarToc, invocation.Options.BoneHash);
+			var result = SourceRetargetPipeline.Run(inputs, rig);
+
+			var arrays = new Dictionary<string, Array>(StringComparer.Ordinal)
+			{
+				["ours_bind"] = RetargetResult.ToArray(result.Output),
+				["ours_game"] = RetargetResult.ToArray(result.IdleOutput),
+				["src_tpose"] = RetargetResult.ToArray(result.SourcePoints),
+				["snapped"] = RetargetResult.ToArray(result.Aligned),
+			};
+			NpzFile.Write(Path.Combine(output, "model.npz"), arrays);
+			var summary = CliSourceRetarget.Project(inputs, rig, result) with
+			{
+				OutputDirectory = Path.GetFullPath(output),
+			};
+			Emit(invocation.Options, new { ok = true, retarget = summary }, () => CliSourceRetarget.Format(summary));
 			return 0;
 		}
 
@@ -5927,6 +6214,25 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	  hd2mod import apply --plan import-plan.json --manager-root <管理器目录> --confirm --json
 	  hd2mod context export --library <Mod库目录> --output context.json
 	  hd2mod source inspect <VPK文件> [<模型名片段>] [--output source-model-report.json] [--overwrite] --json
+	  hd2mod source retarget <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> [--bone-hash <hash→名字表>] --output <输出目录> [--overwrite] --json
+	  hd2mod source convert <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> --game-data <游戏data目录> --output <输出目录> [--components all|<名字,名字>] [--overwrite] --json
+	    把 VPK 切成 7 大身体部位 + 每个可切换 bodygroup 一个额外 Unit，各写成一个新 Unit 的 Patch。
+	    外壳 Unit 从游戏本体护甲里按部位发现；带的是原版护甲的材质，所以形状对、贴图是原版护甲的。
+	  hd2mod source convert 追加说明：
+	    --components <all|none|名字,名字>   要带哪些配件（默认只出七份本体）
+	    --material-source <分号分隔的 VPK 或目录>
+	        材质来源。给了它，每个 Unit 的每一段都指向**自己新造的**材质，
+	        Material + Texture 会写进**独立的材质包**（同存档的下一个 patch 序号，
+	        例如 9ba626afa44a3aa3.patch_1），与 Unit patch 同目录，管理器会把两者当作同一个 mod。
+	        不给就只能沿用外壳护甲的材质——形状对、贴图是原版护甲的。
+	        典型用法：--material-source "<L4D2根目录>;<L4D2根目录>\addons"
+	        （模型的材质常由人物 addon 自带，只给游戏 pak01 会一个都找不到）。
+	    --albedo-factor <(0,4] 的数>
+	        底色压暗倍数（例如 0.4）。**默认不压。**
+	        L4D2 的 NekoToon 会把 albedo 乘上一个 ≤0.30 的 lightwarp，HD2 的 PBR 没有这层上限，
+	        所以直接搬过来会整体发白、皮肤尤其明显。压暗是最直接的补偿。
+	        它改的是**观感**而不是正确性，没有实机对照就别定值——所以默认关闭。
+	        只压底色，不碰法线/金属/粗糙；小图（<64px 的占位图）会跳过。
 	  hd2mod agent skills list --json
 	  hd2mod agent skills export [能力名称] --output <Skill父目录>
 	  hd2mod agent skill export <能力名称> --output SKILL.md

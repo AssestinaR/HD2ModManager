@@ -340,7 +340,18 @@ public sealed class CanonicalMeshPreparation
 		var y = values[1] / length;
 		if (values[2] < 0)
 		{
-			(x, y) = ((1 - MathF.Abs(y)) * MathF.Sign(x), (1 - MathF.Abs(x)) * MathF.Sign(y));
+			// ⚠️ **`sign(0)` 必须是 `+1`，不能用 `MathF.Sign`。**
+			//
+			// SDK 的八面体折叠用的是 `sign()`，那里 `sign(0) == +1`；
+			// 而 `MathF.Sign(0)` 返回 **0**，会把"分量恰好为 0"的情况折叠塌掉：
+			// `(0, 0, -1)` 会还原成 `(0, 0, +1)`。
+			//
+			// Python 侧实测（`hd2_unitbuild.py:70-74`）：**朴素实现来回误差最大到 89 度**。
+			// 这表现为"关节附近着色全是锯齿"——因为那里法线方向杂乱，出现恰好为 0 的分量最多；
+			// 而脸、脚这类规整区域几乎不受影响。
+			var signX = x >= 0 ? 1f : -1f;
+			var signY = y >= 0 ? 1f : -1f;
+			(x, y) = ((1 - MathF.Abs(y)) * signX, (1 - MathF.Abs(x)) * signY);
 		}
 		var packedX = (uint)Math.Clamp((int)MathF.Round((x + 1) * 511.5f), 0, 1023);
 		var packedY = (uint)Math.Clamp((int)MathF.Round((y + 1) * 511.5f), 0, 1023);

@@ -42,6 +42,11 @@ public sealed class CanonicalTransformInfoExpander
 			if (!avatarByHash.TryGetValue(hash, out var avatarIndex)) throw new InvalidDataException($"Canonical Avatar TransformInfo does not contain required bone hash 0x{hash:x8}.");
 			if (!visiting.Add(hash)) throw new InvalidDataException($"Canonical Avatar TransformInfo contains a parent cycle at bone hash 0x{hash:x8}.");
 			var avatarEntry = avatar.Entries[avatarIndex];
+			// NOTE(2026-10-16): a self-parented avatar root keeps `avatarIndex` here, which is
+			// only correct when the target stores that bone at the same index. Rewriting it to the
+			// expanded index looks tempting, but it was tried and it broke 5 existing CLI tests, and
+			// it did NOT change the one FK mismatch that motivated the attempt (a donor-side
+			// decorative node whose local/parent pair was already inconsistent). Left as-is.
 			var parentIndex = avatarIndex;
 			if (avatarEntry.ParentIndex != avatarIndex)
 			{
