@@ -493,8 +493,8 @@ public sealed class RealRetargetTests
 
 	private static double Dot(Vec3 a, Vec3 b) => (a.X * b.X) + (a.Y * b.Y) + (a.Z * b.Z);
 
-	private static (double Worst, int WorstIndex, int Over, int Allowed) Compare(
-		NpyArray expected, IReadOnlyList<Vec3> actual, bool[]? allowed = null)
+	private static (double Worst, int WorstIndex, int Over, int Exempted) Compare(
+		NpyArray expected, IReadOnlyList<Vec3> actual, bool[]? exempt = null)
 	{
 		var matrix = expected.AsDoubleMatrix();
 		Assert.Equal(matrix.GetLength(0), actual.Count);
@@ -507,7 +507,7 @@ public sealed class RealRetargetTests
 			// 允许分歧的顶点整点跳过：它们既不进最差值，也不进超差计数。
 			// 为什么不是"放宽容差"：容差一放宽，同一批顶点上的<b>新</b>错误也会被吞掉；
 			// 按顶点豁免则只放过已知的那一族，别处仍然是 1e-6 m。
-			if (allowed is not null && allowed[i])
+			if (exempt is not null && exempt[i])
 			{
 				skipped++;
 				continue;

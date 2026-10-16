@@ -27,21 +27,14 @@ public sealed partial class Retargeter
 		{
 			if (!TryPrimarySourceBone(k, out var boneIndex))
 				continue;
-			switch (ClassifyArmBone(boneIndex, side))
-			{
-				case SourceArmPart.Upper:
-					upper[k] = true;
-					arm[k] = true;
-					break;
-				case SourceArmPart.Forearm:
-				case SourceArmPart.Hand:
-					distal[k] = true;
-					arm[k] = true;
-					break;
-				case SourceArmPart.Shoulder:
-					arm[k] = true;
-					break;
-			}
+			var part = ClassifyArmBone(boneIndex, side);
+			if (!SourceArmBones.IsArm(part))
+				continue;
+			arm[k] = true;
+			if (part == SourceArmPart.Upper)
+				upper[k] = true;
+			else if (SourceArmBones.IsDistal(part))
+				distal[k] = true;
 		}
 
 		return (upper, distal, arm);
