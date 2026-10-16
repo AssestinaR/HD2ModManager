@@ -101,13 +101,15 @@ public sealed class ForearmReweightTests
 		Assert.True(weights.ContainsKey(480431462u), "重分配之后肘部应当拿到权重");
 
 		// 期望值按实现的定义手算：
-		//   s = smoothstep(A=0.47, B=0.88, t/L=0.7)
-		//     = u²(3-2u)，u = (0.7-0.47)/(0.88-0.47) = 0.56098
-		//     = 0.31470 * 1.87805 = 0.59093
-		//   肘 = 1 * (1 - s) = 0.40907
-		// 实测 0.409 —— 逐位吻合。这里写成断言，把"斜坡参数"钉住：
-		// 改 A/B 会让这条红，提醒改的人那是**出货参数**（`_r79_assemble.py:60`）。
-		Assert.Equal(0.409, weights[480431462u], 3);
+		//   s = smoothstep(A=0.15, B=1.00, t/L=0.7)
+		//     = u²(3-2u)，u = (0.7-0.15)/(1.00-0.15) = 0.64706
+		//     = 0.41869 * 1.70588 = 0.71421
+		//   肘 = 1 * (1 - s) = 0.28579
+		//
+		// A/B 是**实测驱动的出货参数**（见 ForearmWeightReweight.A 的说明：
+		// 加宽是为了压低"单条边承担的权重变化"）。改它们会让这条红 —— 那是提醒，
+		// 不是障碍：改完请用 `_probe_edge_weight_step.py` 重新量一遍再更新这里。
+		Assert.Equal(0.286, weights[480431462u], 3);
 		Assert.True(weights.GetValueOrDefault(1544317139u) < 0.5, "手部权重应当降下来");
 	}
 

@@ -63,11 +63,28 @@ public static class ForearmWeightReweight
 	//   reweight_forearm_twist.py --a 0.47 --b 0.88 --twist-frac 1.0
 	// 其余取脚本默认值。
 
-	/// <summary>肘→手混合斜坡的起点（沿臂轴的比例）。</summary>
-	public const double A = 0.47;
+	/// <summary>
+	/// 肘→手混合斜坡的起点（沿臂轴的比例）。
+	/// <para>
+	/// ⚠️ <b>这里从出货值 0.47 放宽到 0.15，是实测驱动的。</b>
+	/// </para>
+	/// <para>
+	/// 判据不是"带在哪里"，而是<b>单条网格边承担多少权重变化</b>。
+	/// 用 <c>_probe_edge_weight_step.py</c> 量出货配置得到：
+	/// 一条 <b>74mm</b> 的边从 t/L 0.503 跨到 0.761，占整条斜坡（0.47..0.88）的 63%，
+	/// 于是<b>一条边承担 0.778 的权重变化</b> —— 手腕滚转 90° 时两端分离约 34mm，
+	/// 看起来就是"一个一个三角形折进去"。
+	/// </para>
+	/// <para>
+	/// 放宽斜坡直接降低每条边承担的变化量。注意<b>这不会把"橡皮筋"带回来</b>：
+	/// 小臂跟不跟着手腕<b>弯曲</b>是由 <see cref="HandStart"/>/<see cref="HandEnd"/>
+	/// （扭转→手的交接）控制的，而远端份额仍然走<b>不弯曲</b>的扭转骨。
+	/// </para>
+	/// </summary>
+	public const double A = 0.15;
 
-	/// <summary>肘→手混合斜坡的终点。</summary>
-	public const double B = 0.88;
+	/// <summary>肘→手混合斜坡的终点。出货值 0.88 放宽到 1.00。</summary>
+	public const double B = 1.00;
 
 	/// <summary>远端份额里给扭转骨的比例；1.0 = 全部给扭转骨（弯曲保持刚性）。</summary>
 	public const double TwistFraction = 1.0;
@@ -88,7 +105,13 @@ public static class ForearmWeightReweight
 	/// </summary>
 	public const double HandStart = 0.9;
 
-	/// <summary>交还完成的终点。出货值是 1.12（脚本默认 1.21）。</summary>
+	/// <summary>
+	/// 交还完成的终点。出货值是 1.12。
+	/// <para>
+	/// <b>试过放宽到 1.25，实测没有帮助</b>（腕区 max |dw| 从 0.450 变成 0.485，反而略差），
+	/// 说明腕部那个最大值<b>不来自这条斜坡</b>。所以退回出货值 —— 只保留经测量证实有效的改动。
+	/// </para>
+	/// </summary>
 	public const double HandEnd = 1.12;
 
 	/// <summary>ROI 半径（米）。</summary>

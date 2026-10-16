@@ -12,42 +12,43 @@ public sealed partial class Retargeter
 	/// 让上臂<b>根部</b>的 <c>f = 1</c>，位移在一条边上跳 3.7 cm。用主骨，每个顶点就恰好属于
 	/// 一侧、一组。
 	/// </para>
+	/// <para>
+	/// 名字认不出来时由 <see cref="SourceArmBones.Classify"/> 沿源骨架上溯——为什么这一条必需，
+	/// 以及 <c>source_extra_78</c> 折腕的完整测量，都写在那个类上。
+	/// </para>
 	/// </summary>
 	private (bool[] Upper, bool[] Distal, bool[] Arm) ArmVertexPartition(string side)
 	{
-		var prefix = side.ToUpperInvariant() + "_";
 		var count = _sourcePoints.Length;
 		var upper = new bool[count];
 		var distal = new bool[count];
 		var arm = new bool[count];
 		for (var k = 0; k < count; k++)
 		{
-			if (!TryPrimarySourceName(k, out var name))
+			if (!TryPrimarySourceBone(k, out var boneIndex))
 				continue;
-			if (!name.StartsWith(prefix, StringComparison.Ordinal))
-				continue;
-			var tail = name[prefix.Length..];
-			if (tail.StartsWith("UpperArm", StringComparison.Ordinal))
+			switch (ClassifyArmBone(boneIndex, side))
 			{
-				upper[k] = true;
-				arm[k] = true;
-			}
-			else if (tail.StartsWith("Forearm", StringComparison.Ordinal)
-				|| tail.StartsWith("Hand", StringComparison.Ordinal)
-				|| tail.StartsWith("Finger", StringComparison.Ordinal))
-			{
-				distal[k] = true;
-				arm[k] = true;
-			}
-			else if (tail.StartsWith("Clavicle", StringComparison.Ordinal)
-				|| tail.StartsWith("Shoulder", StringComparison.Ordinal))
-			{
-				arm[k] = true;
+				case SourceArmPart.Upper:
+					upper[k] = true;
+					arm[k] = true;
+					break;
+				case SourceArmPart.Forearm:
+				case SourceArmPart.Hand:
+					distal[k] = true;
+					arm[k] = true;
+					break;
+				case SourceArmPart.Shoulder:
+					arm[k] = true;
+					break;
 			}
 		}
 
 		return (upper, distal, arm);
 	}
+
+	private SourceArmPart ClassifyArmBone(int boneIndex, string side) =>
+		SourceArmBones.Classify(side, _sourceNames, _sourceParents, boneIndex);
 
 	/// <summary>
 	/// 主骨是<b>手</b>或<b>手指</b>的顶点。
@@ -60,18 +61,15 @@ public sealed partial class Retargeter
 	/// </summary>
 	private bool[] HandFingerMask(string side)
 	{
-		var prefix = side.ToUpperInvariant() + "_";
 		var count = _sourcePoints.Length;
 		var result = new bool[count];
 		for (var k = 0; k < count; k++)
 		{
-			if (!TryPrimarySourceName(k, out var name))
+			if (!TryPrimarySourceBone(k, out var boneIndex))
 				continue;
-			if (!name.StartsWith(prefix, StringComparison.Ordinal))
-				continue;
-			var tail = name[prefix.Length..];
-			if (tail.StartsWith("Hand", StringComparison.Ordinal)
-				|| tail.StartsWith("Finger", StringComparison.Ordinal))
+			// 与 ArmVertexPartition 同一套上溯规则：挂在手上的辅助骨也算手，
+			// 否则圆管闸的"手/指豁免"漏掉它们，远端指节仍会被拦腰切开。
+			if (SourceArmBones.IsHand(ClassifyArmBone(boneIndex, side)))
 				result[k] = true;
 		}
 
@@ -115,29 +113,26 @@ public sealed partial class Retargeter
 		return (field, upper, distal, arm);
 	}
 
-	/// <summary>顶点的主骨名（权重最大者），剥离 <c>ValveBiped.Bip01_</c> 前缀。权重全为零或下标越界时返回 false。</summary>
-	private bool TryPrimarySourceName(int vertexIndex, out string name)
+	/// <summary>
+	/// 顶点的<b>主骨</b>下标（三组权重里最大的那个）。权重全为零或下标越界时返回 false。
+	/// <para>
+	/// 返回的是<b>下标</b>而不是名字，因为调用方需要沿 <c>_sourceParents</c> 上溯；
+	/// 名字在上溯的每一跳上单独剥前缀（见 <see cref="ClassifyArmBone"/>）。
+	/// </para>
+	/// </summary>
+	private bool TryPrimarySourceBone(int vertexIndex, out int boneIndex)
 	{
 		var weights = _weights[vertexIndex];
 		var bones = _boneIndices[vertexIndex];
 		var best = weights[0] >= weights[1] && weights[0] >= weights[2] ? 0 : weights[1] >= weights[2] ? 1 : 2;
 		if (weights[best] <= 0.0)
 		{
-			name = string.Empty;
+			boneIndex = -1;
 			return false;
 		}
 
-		var index = bones[best];
-		if (index < 0 || index >= _sourceNames.Length)
-		{
-			name = string.Empty;
-			return false;
-		}
-
-		name = _sourceNames[index];
-		if (name.StartsWith(RetargetConstants.SourceBonePrefix, StringComparison.Ordinal))
-			name = name[RetargetConstants.SourceBonePrefix.Length..];
-		return true;
+		boneIndex = bones[best];
+		return boneIndex >= 0 && boneIndex < _sourceNames.Length;
 	}
 
 	/// <summary>点到线段的距离。</summary>

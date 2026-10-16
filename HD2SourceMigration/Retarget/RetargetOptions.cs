@@ -240,6 +240,16 @@ public static class RetargetConstants
 	/// <summary>手/指影响判定的权重阈值。</summary>
 	public const double HandInfluenceWeight = 0.20;
 
+	/// <summary>
+	/// 沿源骨架上溯找"这根辅助骨其实挂在哪一段肢体上"时允许的最大跳数。
+	/// <para>
+	/// 取 64 是因为模型的辅助骨链最长只有几跳（<c>source_extra_78</c> 一跳就到 <c>L_Hand</c>），
+	/// 而 64 远小于任何真实骨架深度，所以它只在源骨架的 parent 数组自环或损坏时兜底——
+	/// 那种情况下宁可判成"不是手臂"（不动），也不能顺着环一直走下去。
+	/// </para>
+	/// </summary>
+	public const int MaxSourceAncestorHops = 64;
+
 	/// <summary>手掌转正的搜索步长（度）。</summary>
 	public const double HandReorientStepDegrees = 0.5;
 }
