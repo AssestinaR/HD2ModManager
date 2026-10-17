@@ -88,3 +88,40 @@ addon zip 转换成 patch 归档。
    `HD2ModCore` 里已有读写实现）
 
 **建议走 2**：不动 GUI、可重复、可进 CI。
+
+## 路 2 的具体做法（已查到 API，2026-10-17）
+
+`HD2ModAdaptation/PatchReconstruction/PatchArchiveWriter.cs:24`：
+
+```csharp
+public async ValueTask<PatchArchiveFileWriteResult> WriteAsync(
+    string sourcePatchTocPath,                    // 拿一个已有 patch 当模板
+    string outputDirectoryPath,                   // 输出目录（必须与源目录不同）
+    IReadOnlyCollection<PatchUnitMeshEditResult> edits,
+    IReadOnlyCollection<PatchArchiveAdditionalEntry>? additionalEntries = null,  // ← 加新文件
+    IReadOnlyCollection<PatchTocEntry>? removedEntries = null,                   // ← 删旧文件
+    bool overwriteExisting = false,
+    bool preserveOriginalStream = true,
+    byte[]? headerTemplateTocData = null,
+    CancellationToken cancellationToken = default)
+```
+
+关键点：**`additionalEntries` 就是"往 patch 归档里加新文件"的入口**，
+`removedEntries` 是"删"。所以做法是：
+
+1. 拿 `E:\mod\前置Bingus-Shared-Loader-v15-data\9ba626afa44a3aa3.patch_0`（18 KB）当模板
+2. 用 `PatchArchiveAdditionalEntry` 把 `armor_registry.generated.lua` 以
+   `mods/codex/runtime_armor_registry` 这个逻辑路径塞进去
+3. 输出到临时目录，再连同 `manifest.json` / `option.json` 放进 `E:\mod`
+4. 往 `E:\mod\profiles.json` 的 active 配置加一条 entry
+5. `hd2mod deploy plan active` + `deploy apply --confirm`
+
+`PatchArchiveAdditionalEntry` 的字段还没读，是下一步第一件事。
+
+## 已排除的路
+
+* `hd2mod` 没有任何导入命令：`library import` / `library add` / `mod import` /
+  `mod install` / `import` 全部返回 `UnknownCommand`
+* 明文搜索 `runtime_armor_registry` 和 `armor-registry.protocol` 在
+  `data\` 与 `E:\mod` 的小文件里**零命中** —— 确认 Lua 是**压缩**在 patch 归档里的，
+  无法直接替换字节
