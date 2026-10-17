@@ -43,7 +43,14 @@ public sealed record CliGlobalOptions(
 	double? AlbedoFactor = null,
 	// matcap 怎么处理：`bake`（默认，把平均色烘进底色）或 `albedo`（直接拿 matcap 当底色）。
 	// `albedo` 让"只换 matcap"的包（C1/C2 那种）变成真正可换的 patch，代价是观感需要实机对照。
-	string? Matcap = null);
+	string? Matcap = null,
+	// 强制指定每个部位用哪个 Unit 当**外壳**：`Head=0x…,Chest=0x…`。
+	//
+	// 为什么需要它：外壳决定 Unit 内部**网格表的排法**（lod0 落在第几格）。原版护甲件的 Piece
+	// 会指定"用这个 Unit 的第几个网格"——Armor/头盔要索引 4、Undergarment 要索引 5。
+	// 随便挑外壳时排法对不上，写进同键位置后就会出现"只有头、没有身体"。
+	// 指定成目标护甲自己的 Unit，排法就天然一致。
+	string? Donor = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -73,6 +80,7 @@ public static class CliArgumentParser
 		string? materialSource = null;
 		double? albedoFactor = null;
 		string? matcap = null;
+		string? donor = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -161,6 +169,9 @@ public static class CliArgumentParser
 
 					albedoFactor = parsedAlbedoFactor;
 					break;
+				case "--donor":
+					donor = ReadValue(args, ref index, argument);
+					break;
 				case "--matcap":
 					var rawMatcap = ReadValue(args, ref index, argument);
 					if (!rawMatcap.Equals("bake", StringComparison.OrdinalIgnoreCase)
@@ -234,7 +245,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

@@ -2498,7 +2498,8 @@ public static class CliApplication
 
 		var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
 		var facts = CliEquipmentFacts.Project(snapshot, null, null);
-		var (donorCandidates, missing) = CliSourceConvert.SelectDonors(facts.Kits);
+		var (donorCandidates, missing) = CliSourceConvert.SelectDonors(
+			facts.Kits, CliSourceConvert.ParseExplicitDonors(options.Donor));
 		if (missing.Count != 0)
 			throw new CliUserException("DonorMissing", $"游戏装备表里找不到这些部位的外壳 Unit：{string.Join("、", missing)}。");
 

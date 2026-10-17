@@ -42,7 +42,8 @@ internal static class CliSourceConvert
 	/// 挑不到的部位<b>不猜</b>：直接报出来。
 	/// </summary>
 	internal static (IReadOnlyDictionary<BodyRegion, IReadOnlyList<DonorSelection>> Candidates, IReadOnlyList<string> Missing) SelectDonors(
-		IReadOnlyList<CliEquipmentFactKit> kits)
+		IReadOnlyList<CliEquipmentFactKit> kits,
+		IReadOnlyDictionary<BodyRegion, ulong>? explicitDonors = null)
 	{
 		var byPartKind = kits
 			.SelectMany(kit => kit.Units.Select(unit => (kit, unit)))
@@ -76,7 +77,76 @@ internal static class CliSourceConvert
 			candidates[region] = ordered;
 		}
 
+		// 强制指定的外壳**覆盖**自动挑选的结果：只留那一个候选，其它一律不用。
+		//
+		// 存档 id 不能沿用自动挑选那个——不同 Unit 可能在不同的包里（实测 RE-2310 的护甲与头盔
+		// 就分属两个包）。所以按 fileId 回查装备表里它到底属于哪个包。
+		if (explicitDonors is { Count: > 0 })
+		{
+			foreach (var (region, fileId) in explicitDonors)
+			{
+				var owner = kits
+					.SelectMany(kit => kit.Units.Select(unit => (Kit: kit, Unit: unit)))
+					.FirstOrDefault(item => ParseFileId(item.Unit.FileId) == fileId);
+				if (owner.Kit is null)
+					throw new CliUserException("DonorNotFoundInEquipmentTable",
+						$"--donor 指定的 {region.Name()} 外壳 0x{fileId:x16} 不在游戏装备表里；" +
+						"请确认它是游戏内真实存在的 Unit。");
+
+				candidates[region] = [new DonorSelection(PartKinds[region], owner.Kit.ArchiveId, fileId, "Any", 0)];
+				missing.RemoveAll(item => item.StartsWith(region.Name(), StringComparison.Ordinal));
+			}
+		}
+
 		return (candidates, missing);
+	}
+
+	private static ulong? ParseFileId(string raw)
+	{
+		var hex = raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? raw[2..] : raw;
+		return ulong.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var value)
+			? value
+			: null;
+	}
+
+	/// <summary>
+	/// 解析 <c>--donor "Head=0x…,Chest=0x…"</c>。
+	/// <para>
+	/// 用它的场合只有一个：要**同键替换某件护甲**时，外壳必须是**那件护甲自己的 Unit**。
+	/// 因为外壳决定 Unit 内部网格表的排法（lod0 落在第几格），而原版 Piece 会指定
+	/// "用第几个网格"——Armor/头盔要 4、Undergarment 要 5。随便挑外壳排法就对不上，
+	/// 结果是"只有头、没有身体"。
+	/// </para>
+	/// </summary>
+	internal static IReadOnlyDictionary<BodyRegion, ulong> ParseExplicitDonors(string? raw)
+	{
+		var result = new Dictionary<BodyRegion, ulong>();
+		if (string.IsNullOrWhiteSpace(raw))
+			return result;
+
+		foreach (var entry in raw.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+		{
+			var separator = entry.IndexOf('=');
+			if (separator <= 0 || separator == entry.Length - 1)
+				throw new CliUserException("DonorInvalid", $"--donor 的每一项要写成 部位=0x单元id，实际是 '{entry}'。");
+
+			var name = entry[..separator].Trim();
+			var hex = entry[(separator + 1)..].Trim();
+			if (hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+				hex = hex[2..];
+
+			var region = BodyRegions.Parse(name);
+			if (region is null)
+				throw new CliUserException("DonorInvalid",
+					$"--donor 里的部位 '{name}' 不认识。可用：{string.Join("、", BodyRegions.All.Select(r => r.Name()))}。");
+
+			if (!ulong.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var fileId))
+				throw new CliUserException("DonorInvalid", $"--donor 里 '{name}' 的单元 id 不是十六进制：'{hex}'。");
+
+			result[region.Value] = fileId;
+		}
+
+		return result;
 	}
 
 	/// <summary>身形偏好：Any 最好（与身形无关），其次 Stocky，最后其它。</summary>
