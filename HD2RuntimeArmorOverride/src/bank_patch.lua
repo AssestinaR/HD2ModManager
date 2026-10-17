@@ -118,11 +118,14 @@ local function build_trampoline(ffi, cave_rva, buffer)
     u64(buffer)              -- 缓冲地址
 
     -- 回填 jbe（相对短跳，必须 <= 127）
-    local short = store_at - (jump_at + 1)
-    if short > 127 then return nil, 'jbe 距离超出 rel8' end
-    code[jump_at + 1] = string.char(short)
-    -- 回填 mov r10 的 rip 位移
-    local disp = data_at - (disp_at + 6)
+    -- Lua 索引是 1-based：jbe 从 jump_at 开始、长 2 字节，所以下一条在 jump_at+2，
+    -- 目标 store_at 也是 1-based，故相对距离 = store_at - (jump_at + 2)。
+    local short = store_at - (jump_at + 2)
+    if short > 127 or short < -128 then return nil, 'jbe 距离超出 rel8' end
+    code[jump_at + 1] = string.char(short < 0 and short + 256 or short)
+    -- 回填 mov r10 的 rip 位移：指令从 disp_at 开始、长 7 字节，
+    -- 下一条在 disp_at+7，数据在 data_at，故位移 = data_at - (disp_at + 7)。
+    local disp = data_at - (disp_at + 7)
     local d = disp < 0 and disp + 0x100000000 or disp
     code[disp_at + 3] = string.char(d % 256); d = math.floor(d / 256)
     code[disp_at + 4] = string.char(d % 256); d = math.floor(d / 256)
@@ -265,6 +268,27 @@ function M.read_bank(state, record, extra)
     local out = {}
     for slot = 0, 9 do out[slot + 1] = tonumber(pointer[slot]) end
     return out
+end
+
+-- ============================================================================
+-- 独立 mod 入口
+--
+-- 这个文件**只作为独立测试 mod 使用**，不参与护甲映射运行时（
+-- HD2ModCore 不再嵌入它）。原因：实验代码不能污染生产运行时，否则
+-- "补丁是不是问题源头"无法干净判定。
+--
+-- 加载即执行：安装补丁 → 把结果写进 bank-patch.status。
+-- 想撤掉只要在管理器里禁用这个 mod。
+-- ============================================================================
+if not M.auto_ran then
+    M.auto_ran = true
+    local ok, state_or_error = pcall(M.install)
+    if ok and type(state_or_error) == 'table' then
+        trace(('entry: installed ok, buffer=0x%x, trampoline=%d bytes')
+              :format(state_or_error.buffer, state_or_error.trampolineBytes))
+    else
+        trace('entry: install failed - ' .. tostring(state_or_error))
+    end
 end
 
 return M
