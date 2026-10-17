@@ -32,6 +32,17 @@
     判读：先跑 S 阶梯，**遇到第一个身体消失的那一级就停**，记下 N。
     如果 S8（9 个挤在一槽、总数只有 21）仍然正常，再跑 M 阶梯找总数阈值。
 
+    K1..K5  深度固定（每槽 4 个 = 超 1 个），只改**有几个槽超容量**。K5 就是 M3。
+    X6      单变量验证"溢出到下一个槽"：M3 但 slot 6 压回 3 个。若右臂回来即证实。
+
+    实机已测（2026-10-16）：
+        S4..S8（1 个槽超容量，最多塞 9 个）  -> **身体从不消失**  => "每槽几个"不是触发点
+        M2（0 个槽超容量）                   -> 正常
+        M3（5 个槽各超 1 个）                -> **掉右臂（slot 7，它自己没超）**
+        M4（5 个槽各超 2 个）                -> +掉左臂、胯、双腿
+        M5（5 个槽各超 3 个）                -> +掉胸
+    所以变量是"超容量的槽有几个"，而且被打掉的不是超容量的那些 —— 像是溢出到下一个槽。
+
 用法
 ----
     python use_armor_piece_config.py --config C1 [--dry-run]
@@ -74,6 +85,21 @@ def select(pieces, config):
         depth = int(config[1:])
         return [p for p in pieces
                 if p['pieceType'] == 0 or (p['slot'] in (2, 3, 4, 5, 6) and p['pieceType'] <= depth)]
+    if config.startswith('K'):
+        # "超容量槽个数"阶梯：slot 2..(1+N) 各 type<=3（也就是每槽 4 个 = 超 1 个），
+        # 深度固定、只改**有几个槽超容量**。总数 10..22，把"几个槽超"和"总数多少"尽量分开。
+        # K5 就是 M3（实测掉右臂）。
+        count = int(config[1:])
+        slots = set(range(2, 2 + count))
+        return [p for p in pieces
+                if p['pieceType'] == 0 or (p['slot'] in slots and p['pieceType'] <= 3)]
+    if config == 'X6':
+        # 单变量验证"溢出到下一个槽"：M3（slot 2..6 各 type<=3）但把 **slot 6 压回 type<=2**。
+        # 其余一字不改。若右臂（slot 7）回来，就说明是 slot 6 的溢出打掉了 slot 7。
+        return [p for p in pieces
+                if p['pieceType'] == 0
+                or (p['slot'] in (2, 3, 4, 5) and p['pieceType'] <= 3)
+                or (p['slot'] == 6 and p['pieceType'] <= 2)]
     raise SystemExit('unknown config %r' % config)
 
 
@@ -118,7 +144,8 @@ def main():
     ap.add_argument('--config', required=True,
                     choices=['C1', 'C2', 'C3',
                              'S3', 'S4', 'S5', 'S6', 'S7', 'S8',
-                             'M2', 'M3', 'M4', 'M5'])
+                             'M2', 'M3', 'M4', 'M5',
+                             'K1', 'K2', 'K3', 'K4', 'K5', 'X6'])
     ap.add_argument('--disable', action='append', default=[], metavar='SLOT:TYPE',
                     help='在预设基础上再关掉某个 Piece，例如 --disable 4:8。可重复。')
     ap.add_argument('--model', default=r'E:\mod\M3-verify-Unaligned\custom-model.json')
