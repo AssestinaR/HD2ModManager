@@ -3,6 +3,29 @@ using HD2SourceModel;
 
 namespace HD2SourceMigration.VpkConversion;
 
+/// <summary>材质身份串里的 matcap 后缀要不要加，以及底色到底用哪张图。</summary>
+public enum MatCapMode
+{
+	/// <summary>
+	/// 把 matcap 的<b>面积加权平均色</b>烘进源底色。这是 M3 实机验证过的做法。
+	/// <para>
+	/// 代价：matcap 的<b>内容</b>跨 VPK 参与了烘焙，于是"金还是银"在转换时就固定了——
+	/// C1/C2 这类"只换 matcap"的 VPK 没法成为独立 patch。
+	/// </para>
+	/// </summary>
+	Bake = 0,
+
+	/// <summary>
+	/// 直接把 <b>matcap 本身当底色</b>（贴图 id = <c>hash(matcap 名)</c>），不烘焙。
+	/// <para>
+	/// 好处：matcap 由哪个 VPK 提供就归哪个 patch，于是 C1/C2 变成真正可换的 patch，
+	/// 「一个 VPK 一个 patch」这条约定在金属色上也成立。
+	/// 代价：观感从"平色金属"变成"整张 matcap 图当 albedo"——需要实机对照。
+	/// </para>
+	/// </summary>
+	Albedo = 1,
+}
+
 /// <summary>一个自造贴图的产物：新 id + 可直接进包的 TocData 与 GPU 侧车字节。</summary>
 public sealed record SynthesizedTexture(
 	ulong Id,
@@ -153,14 +176,19 @@ public sealed class SourceMaterialConverter
 		Bc7Encoder encoder,
 		Hd2MaterialTemplateLibrary templates,
 		AlbedoAdjustment? albedoAdjustment = null,
-		IReadOnlyDictionary<string, double[]>? matcapMeans = null)
+		IReadOnlyDictionary<string, double[]>? matcapMeans = null,
+		MatCapMode matcapMode = MatCapMode.Bake)
 	{
 		this.source = source;
 		this.encoder = encoder;
 		this.templates = templates;
 		this.albedoAdjustment = albedoAdjustment;
 		this.matcapMeans = matcapMeans;
+		this.matcapMode = matcapMode;
 	}
+
+	/// <summary>matcap 怎么处理：烘进底色，还是直接当底色。见 <see cref="MatCapMode"/>。</summary>
+	private readonly MatCapMode matcapMode;
 
 	/// <summary>材质裸名 → 该材质上 matcap 贴图的面积加权平均色（<see cref="MatCapSampler"/> 算出来的）。</summary>
 	private readonly IReadOnlyDictionary<string, double[]>? matcapMeans;
@@ -275,7 +303,8 @@ public sealed class SourceMaterialConverter
 		double EmissionTint,
 		double[]? MatcapMean,
 		double MatcapTint,
-		string? MatcapTextureName)
+		string? MatcapTextureName,
+		bool MatcapIsSurface)
 	{
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
@@ -326,7 +355,6 @@ public sealed class SourceMaterialConverter
 			return MaterialSynthesisResult.Failed(failure);
 
 		var stem = loaded.Stem;
-		var matcapMean = loaded.MatcapMean;
 		var material = templates.Load(loaded.TemplateName);
 		var textureName = loaded.TextureName;
 
@@ -377,10 +405,10 @@ public sealed class SourceMaterialConverter
 			// 不是每材质各一张：普通件的法线与金属度本来就不随材质变，各写一张只会把包撑大。
 			// 名字固定 → id 固定 → 装配器按 id 去重会并成一条 ✓
 			//
-			// ⚠️ 默认金属是**近黑 (6,6,6)**；191 属于 matcap 那条路（金属光泽烘进底色之后
+			// ⚠️ 默认金属是**近黑 (6,6,6)**；191 属于 matcap 那条路（观感来自 matcap 时
 			// 才需要把金属度顶上去）。两者语义不同，不能混。
-			// 烘了 matcap 时这里让位，由下面的 matcap 分支写自己的值。
-			if (matcapMean is null
+			// matcap 承载表面时这里让位，由下面的 matcap 分支写自己的值。
+			if (!loaded.MatcapIsSurface
 				&& material.TextureIds.Count > AdvancedNarSlot
 				&& material.TextureIds.Count > AdvancedMetallicSlot)
 			{
@@ -392,10 +420,13 @@ public sealed class SourceMaterialConverter
 				textures.Add(sharedPbr);
 			}
 
-			// 烘了 matcap 的金属件还要补两个标量槽，否则金属光泽仍然出不来：
+			// 观感来自 matcap 的金属件还要补两个标量槽，否则金属光泽仍然出不来：
 			//   槽 3 = 金属度（纯色 191）；槽 2 = 平面法线 + alpha 粗糙度 89。
 			// 这两个值是照参考模组实测定的（MaterialAppearance.MetallicValue / RoughnessValue）。
-			if (matcapMean is not null)
+			//
+			// ⚠️ 判据是 `MatcapIsSurface`（**VMT 说了算**），不是"有没有烘平均色"。
+			// Albedo 模式不烘，但金属度/粗糙度照样要写——否则整片金属会变成哑光塑料。
+			if (loaded.MatcapIsSurface)
 			{
 				var metallic = BuildSolidTexture(textureName, "_metallic", MaterialAppearance.MetallicValue, MaterialAppearance.MetallicValue, MaterialAppearance.MetallicValue, 255);
 				var normalRoughness = BuildSolidTexture(textureName, "_nar", 128, 128, 255, MaterialAppearance.RoughnessValue);
@@ -473,18 +504,42 @@ public sealed class SourceMaterialConverter
 			return LoadOutcome.Failed;
 		}
 
-		// matcap 规则：源侧整片底色近黑、观感全来自 matcap（tint ≥ 0.9），要烘进底色。
-		// 拿不到平均色就**不烘**——烘一个错的值比不烘更糟。
+		// matcap 规则：源侧整片底色近黑、观感全来自 matcap（tint ≥ 0.9）。
 		var verdict = MaterialAppearance.Evaluate(vmt);
+		var matcapIsSurface = verdict.MatCapIsTheSurface;
 		double[]? matcapMean = null;
-		if (verdict.MatCapIsTheSurface && matcapMeans is not null)
-			matcapMeans.TryGetValue(stem, out matcapMean);
 
 		// matcap 贴图名要留到身份里：**它的内容可能来自别的 VPK**，而 id 只由名字决定。
 		// 装配器据此报警——否则"换个 patch 就能换金属色"是个假承诺。
 		var matcapTextureName = string.IsNullOrWhiteSpace(vmt.MatCapTexture)
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.MatCapTexture));
+
+		if (matcapIsSurface && matcapMode == MatCapMode.Albedo)
+		{
+			// matcap 当底色：真正决定观感的是 matcap 那张图，不是底色
+			// （实测 A1 的 `Ornament_metal_Underwear.vtf` 是 1×1 占位图）。
+			// 贴图 id 于是变成 `hash(matcap 名)` —— 它由**哪个 VPK 提供**就归哪个 patch，
+			// C1/C2 这类"只换 matcap"的包成了真正可换的 patch。
+			if (string.IsNullOrWhiteSpace(matcapTextureName))
+			{
+				reason = $"{stem}：判定 matcap 承载表面，但 VMT 里没有 $matcaptexture";
+				return LoadOutcome.Failed;
+			}
+
+			if (!source.TryReadVtf(matcapTextureName, out vtfBytes))
+			{
+				reason = $"{stem}：matcap 贴图来源里找不到 {matcapTextureName}.vtf";
+				return LoadOutcome.Failed;
+			}
+
+			textureName = matcapTextureName;
+		}
+		else if (matcapIsSurface && matcapMeans is not null)
+		{
+			// Bake 模式：拿平均色烘进底色。拿不到就**不烘**——烘一个错的值比不烘更糟。
+			matcapMeans.TryGetValue(stem, out matcapMean);
+		}
 
 		// 发光声明。它既参与底色构造，又参与材质身份判定
 		// （`$emissiontexture` 存在时身份要带 `|emission`，否则发光变体会被合并掉）。
@@ -499,10 +554,20 @@ public sealed class SourceMaterialConverter
 			vtf = VtfFile.Read(vtfBytes);
 			// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
 			rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
-			var stats = TextureAlpha.Measure(rgba);
 			// 模板选择：**VMT 开关 ∧ 贴图真有 alpha** 才切 alphaclip。
 			// 只看开关会误判——装饰件常写 `$alphatest 1` 但贴图是 1×1 无 alpha（M7 就漏了 3 组）。
-			useAlphaClip = vmt.WantsTransparency && stats.IsMeaningful;
+			//
+			// ⚠️ **Albedo 模式下不切 alphaclip，理由有两条，都指向同一个结论：**
+			//
+			// 1. 语义上：源侧这些材质写着 `$alphatest 1`，但镂空信息在**底色的 alpha** 里，
+			//    而它们的底色是 1×1 不透明占位图（实测 `Ornament_metal_Underwear.vtf` 91 字节）
+			//    —— 也就是说源侧**实际什么都没裁掉**。matcap 是光泽图，不是遮罩。
+			//    照抄"没裁"才是忠实的；拿 matcap 的 alpha 当遮罩会把金属件穿出洞。
+			// 2. 不变量上：金 / 银两版的 `11.vtf` 内容不同。模板判定一旦依赖内容，
+			//    两版就会得到不同的 TOC —— 而它们必须同号互换。
+			useAlphaClip = matcapIsSurface && matcapMode == MatCapMode.Albedo
+				? false
+				: vmt.WantsTransparency && TextureAlpha.Measure(rgba).IsMeaningful;
 		}
 		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
 		{
@@ -541,7 +606,7 @@ public sealed class SourceMaterialConverter
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
 			identity, Hd2AssetId.Material(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
-			matcapTextureName);
+			matcapTextureName, matcapIsSurface);
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
 	}

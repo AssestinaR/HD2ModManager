@@ -40,7 +40,10 @@ public sealed record CliGlobalOptions(
 	// source convert 的材质来源：分号分隔的 VPK 文件或目录。材质在**别的** VPK 里（见 docs 第 3 轮）。
 	string? MaterialSource = null,
 	// source convert 的底色压暗系数（0..1）。不给就不压。
-	double? AlbedoFactor = null);
+	double? AlbedoFactor = null,
+	// matcap 怎么处理：`bake`（默认，把平均色烘进底色）或 `albedo`（直接拿 matcap 当底色）。
+	// `albedo` 让"只换 matcap"的包（C1/C2 那种）变成真正可换的 patch，代价是观感需要实机对照。
+	string? Matcap = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -69,6 +72,7 @@ public static class CliArgumentParser
 		string? name = null;
 		string? materialSource = null;
 		double? albedoFactor = null;
+		string? matcap = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -157,6 +161,18 @@ public static class CliArgumentParser
 
 					albedoFactor = parsedAlbedoFactor;
 					break;
+				case "--matcap":
+					var rawMatcap = ReadValue(args, ref index, argument);
+					if (!rawMatcap.Equals("bake", StringComparison.OrdinalIgnoreCase)
+						&& !rawMatcap.Equals("albedo", StringComparison.OrdinalIgnoreCase))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--matcap 只接受 bake 或 albedo，实际是 '{rawMatcap}'。" +
+							"bake = 把 matcap 的平均色烘进底色（旧行为）；albedo = 直接拿 matcap 当底色。");
+					}
+
+					matcap = rawMatcap.ToLowerInvariant();
+					break;
 				case "--pick":
 					// Positional triple: <patch.toc> <0xtypeid> <0xfileid>. Repeated.
 					picks.Add(ReadValue(args, ref index, argument));
@@ -218,7 +234,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

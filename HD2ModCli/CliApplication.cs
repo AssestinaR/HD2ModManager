@@ -2428,7 +2428,11 @@ public static class CliApplication
 			materialConverter = new SourceMaterialConverter(materialSource, encoder, templates,
 				// 压暗默认关闭：它改的是**观感**而不是正确性，不擅自打开。
 				options.AlbedoFactor is { } factor ? new AlbedoAdjustment(AlbedoDarkenMode.Multiply, factor) : null,
-				matcapMeans);
+				matcapMeans,
+				// matcap 怎么处理。`albedo` 让"只换 matcap"的包（C1/C2 那种）成为真正可换的 patch。
+				options.Matcap is not null && options.Matcap.Equals("albedo", StringComparison.OrdinalIgnoreCase)
+					? MatCapMode.Albedo
+					: MatCapMode.Bake);
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──
@@ -6873,6 +6877,12 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	    整批构成**解析集合**：材质 VPK 从队列里找模型（算 matcap 平均色要几何），
 	    模型 VPK 从队列里找材质（Unit 必须引用正确的材质 id）。谁也不替谁多带东西。
 	    产出在 <输出根目录>/<VPK 名>/ 下，文件名形如 9ba626afa44a3aa3.patch_0。
+	    --matcap bake|albedo   matcap 怎么处理（默认 bake）
+	        bake    把 matcap 的面积加权平均色烘进底色（M3 实机验证过的做法）。
+	                代价：matcap 的内容在**转换时**就固定了，"只换 matcap"的包（C1/C2 那种）
+	                没法成为独立 patch——换 patch 换不掉颜色。
+	        albedo  直接拿 matcap 当底色（贴图 id = hash(matcap 名)）。于是它由哪个 VPK
+	                提供就归哪个 patch，C1/C2 成了真正可换的 patch。观感需要实机对照。
 	    **这是管理器导入流程该走的路径。** 下面是 `source convert`（旧路径）的说明。
 	  hd2mod source convert <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> --game-data <游戏data目录> --output <输出目录> [--components merge|all|none|<名字,名字>] [--overwrite] --json
 	    ⚠️ 旧路径：模型专用，把用到的材质**全部合并**进一个材质包（patch_1）。保留它只为 M1/M2 对拍。

@@ -116,6 +116,57 @@ C1/C2 各自只带一个 `11.vtf`。实测它<b>不是任何材质的 `$basetext
 **代价**：`|matcap:<贴图>` 必须进材质身份（见 8.3），否则 40 个金属件与 `jewel`
 （同一张底色、matcap 是 `6`）会撞成一个材质，宝石和金属同色。
 
+### 8.1b 新增 `--matcap albedo`：让 C 成为真正的 patch（2026-10-17 晚）
+
+上面那条结论只在 `bake` 模式下成立。加一个开关就能把 C 救回来：
+
+**`--matcap albedo`**：命中「matcap 就是表面」时，**直接把 matcap 当底色**，
+贴图 id = `hash(matcap 名)`，不烘焙。
+
+于是：
+- A1 的金属件材质引用 `11`（它自己**不**写这张贴图）；
+- C1/C2 各自提供 `11` → 成了真正可换的选项；
+- `jewel` 的 matcap 是 `6`（A1 自己带）→ A1 写 `6`。
+
+实现上三个要点：
+
+1. **模板判定必须内容无关。** 金/银两版的 `11.vtf` 内容不同，若 `useAlphaClip` 依赖
+   贴图 alpha，两版会得到不同的 TOC —— 而它们必须能同号互换。所以 albedo 模式下
+   matcap 承载表面的材质**一律不切 alphaclip**。这也更忠实：源侧这些材质写着 `$alphatest 1`，
+   但镂空信息在底色的 alpha 里，而底色是 1×1 不透明占位图 —— 源侧**实际什么都没裁掉**。
+2. **金属度/粗糙度照样要写。** 判据从「有没有烘平均色」改成 `MatcapIsSurface`（VMT 说了算），
+   否则 albedo 模式下金属会变成哑光塑料。
+3. **`|matcap:` 后缀保留。** 金/银两版的 id 完全一致（只由名字派生），换选项只换像素。
+
+默认仍是 `bake`（M3 实机验证过的观感）。`albedo` 是给实机对照用的；观感差别是
+「保留 matcap 的纹理起伏」vs「平色」。
+
+### 8.1c 组合包结构：一个 host + 若干选项
+
+实测 `ModLibraryImporter.PlanHeuristicImport` 已经实现了需要的语义，**不需要 manifest.json**：
+
+- 根目录里那个带 patch 的节点 → `ModNodeKind.Standard`（host）；
+- 其余每个含 patch 的子目录 → `ModNodeKind.Option`，`HostModGuids = [父节点]`，
+  `OptionOrder` = 同级按路径字典序；
+- 子目录里**不需要**预写 `option.json`（那是导入后管理器自己落盘的协议文件）。
+
+于是交付形状是：
+
+```
+Lunalice-RE2310\                           ← 导入这一个文件夹
+  9ba626afa44a3aa3.patch_0 (+gpu)          host：unit
+  Lunalice基础材质A1主体\patch_0 (+gpu)     option
+  …（B1/B2、C1/C2、D1..D4、E1..E3，共 12 个）
+```
+
+每个选项目录里都叫 `patch_0`：`PatchFileNormalizer` 只**按目录**规整编号，
+部署时 `ApplyPlanner` 再按 hex 全局重排成连续序号。所以同号不冲突。
+
+**同类选项靠覆盖同一批资产 id 生效**，全开时由加载顺序靠后的赢，看到的永远是某一套完整配色。
+发布脚本会断言每组同类的 **TOC 键集合完全相同**（只比较 `(type_id, file_id)`，不比较字节——
+像素不同，偏移与长度本来就会不一样），这是"关一个换一个"能成立的前提。
+
+
 **未采纳的方案**：把 matcap 本身当底色（id = `hash(贴图名)`），这样 C 就能成为真 patch。
 它更"可组合"，但把观感从"平色金属"改成"整张 matcap 图当 albedo"——**需要实机对照**才能定，
 不在这一轮擅自改。
