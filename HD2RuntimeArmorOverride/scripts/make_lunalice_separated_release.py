@@ -25,6 +25,9 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 ARCHIVE_HEX = "9ba626afa44a3aa3"
 
+# 导入用的那个文件夹叫什么。管理器会把它当 mod 的显示名，所以不能叫 "Release"。
+RELEASE_DIR_NAME = "Lunalice-RE2310"
+
 # 源 VPK 名（小写，与 vpk2patch 的产出目录一致）→ (patch 序号, 说明)
 DEFAULT_COMBO = [
     ("lunalice_zoey", "patch_0", "unit（模型本体：7 个 Unit，零材质零贴图）"),
@@ -205,8 +208,8 @@ def build_readme(path, facts, gold):
         "",
         "怎么装",
         "------",
-        "把 Release\\ 整个文件夹当【一个 mod】导入管理器——它就是一个 mod：同存档 hex 的 5 个 patch。",
-        "想换配色，就把 Variants\\<某个>\\ 里的文件覆盖到 Release\\ 里的同名文件，再导入。",
+        f"把 {RELEASE_DIR_NAME}\\ 整个文件夹当【一个 mod】导入管理器——它就是一个 mod：同存档 hex 的 5 个 patch。",
+        f"想换配色，就把 Variants\\<某个>\\ 里的文件覆盖到 {RELEASE_DIR_NAME}\\ 里的同名文件，再导入。",
         "",
         "为什么是这样拆的",
         "----------------",
@@ -319,7 +322,7 @@ def main():
     print(f"   主动丢掉 {dropped_count} 张 HD2 用不到的贴图（法线 / 光照映射 / matcap）。")
 
     output = os.path.abspath(args.output)
-    release = os.path.join(output, "Release")
+    release = os.path.join(output, RELEASE_DIR_NAME)
     variants_root = os.path.join(output, "Variants")
     if os.path.isdir(output):
         if not args.overwrite:
