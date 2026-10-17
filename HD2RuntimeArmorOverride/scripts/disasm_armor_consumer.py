@@ -53,26 +53,56 @@ def main():
     ap.add_argument('--start', default='0x81f470')
     ap.add_argument('--length', type=lambda x: int(x, 0), default=0x0e00)
     ap.add_argument('--head', type=int, default=60, help='开头打印多少条指令')
+    ap.add_argument('--image', help='capture_game_image.py 写出的**镜像布局**文件'
+                                    '（RVA==文件偏移）；给了它就不用盘上那份壳')
+    ap.add_argument('--full', action='store_true', help='打印区间内的每一条指令')
+    ap.add_argument('--save', help='把完整清单写到这个文件')
     args = ap.parse_args()
 
-    data = open(GAME_DLL, 'rb').read()
-    secs = sections(data)
-    print('game.dll %d B；section：%s' % (len(data), ', '.join('%s@0x%x' % (s[0], s[1]) for s in secs)))
+    if args.image:
+        data = open(args.image, 'rb').read()
+        secs = sections(data)
+        print('镜像 %s %d B（RVA==偏移）；section：%s'
+              % (args.image, len(data),
+                 ', '.join('%s@0x%x+0x%x' % (s[0] or '<unnamed>', s[1], s[2]) for s in secs)))
+        start = int(args.start, 0)
+        off = start
+        if start >= len(data):
+            raise SystemExit('RVA 0x%x 超出镜像长度 0x%x' % (start, len(data)))
+    else:
+        data = open(GAME_DLL, 'rb').read()
+        secs = sections(data)
+        print('game.dll %d B；section：%s'
+              % (len(data), ', '.join('%s@0x%x' % (s[0] or '<unnamed>', s[1]) for s in secs)))
+        if len(data) < max(s[1] + s[2] for s in secs):
+            print('  ⚠ 盘上文件比 section 表要求的还小：这份是壳，RVA 不可信。'
+                  '请用 capture_game_image.py --output 抓镜像后加 --image。')
+        start = int(args.start, 0)
+        off = rva_to_offset(secs, start)
 
-    start = int(args.start, 0)
-    off = rva_to_offset(secs, start)
     code = data[off:off + args.length]
     md = Cs(CS_ARCH_X86, CS_MODE_64)
     md.detail = True
     insns = list(md.disasm(code, start))
-    print('从 RVA 0x%x（文件偏移 0x%x）解出 %d 条指令，覆盖到 0x%x'
-          % (start, off, len(insns), start + sum(i.size for i in insns)))
+    summary = ('从 RVA 0x%x（文件偏移 0x%x）解出 %d 条指令，覆盖到 0x%x'
+               % (start, off, len(insns), start + sum(i.size for i in insns)))
+    print(summary)
 
+    def fmt(insn):
+        return '  %08x: %-32s %s %s' % (insn.address, insn.bytes.hex(),
+                                        insn.mnemonic, insn.op_str)
+
+    head = [fmt(i) for i in insns[:args.head]]
     print('\n--- 开头 %d 条 ---' % args.head)
-    for insn in insns[:args.head]:
-        print('  %08x: %-32s %s %s' % (insn.address, insn.bytes.hex(), insn.mnemonic, insn.op_str))
+    print('\n'.join(head))
+
+    if args.full:
+        print('\n--- 全部指令 ---')
+        for insn in insns:
+            print(fmt(insn))
 
     print('\n--- 有信息量的行（辅助字段偏移 / 常量 3、10、0x60 / 乘 3 或 10）---')
+    interesting = []
     for insn in insns:
         text = insn.op_str
         hit = []
@@ -85,8 +115,21 @@ def main():
                 (', ' + c) in text for c in ('3', '0xa', '0x60')):
             hit.append('index')
         if hit:
-            print('  %08x: %-32s %s %s    <- %s'
-                  % (insn.address, insn.bytes.hex(), insn.mnemonic, insn.op_str, ','.join(hit)))
+            line = ('  %08x: %-32s %s %s    <- %s'
+                    % (insn.address, insn.bytes.hex(), insn.mnemonic, insn.op_str, ','.join(hit)))
+            print(line)
+            interesting.append(line)
+
+    if args.save:
+        with open(args.save, 'w', encoding='utf-8') as fh:
+            fh.write(summary + '\n\n--- 开头 %d 条 ---\n' % args.head
+                     + '\n'.join(head) + '\n\n--- 有信息量的行 ---\n'
+                     + '\n'.join(interesting) + '\n')
+            if args.full:
+                fh.write('\n--- 全部指令 ---\n')
+                for insn in insns:
+                    fh.write(fmt(insn) + '\n')
+        print('\n清单已写到 %s' % args.save)
     return 0
 
 
