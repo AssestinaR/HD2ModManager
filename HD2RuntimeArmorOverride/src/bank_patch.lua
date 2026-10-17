@@ -25,6 +25,21 @@
 
 local M = {}
 
+-- 诊断日志：install() 的任何一步失败都必须留下痕迹，否则补丁"静默不生效"时
+-- 完全无法区分是"没被调用"、"ffi 不可用"、"VirtualProtect 被拦"还是"指令校验失败"。
+-- 用 os.getenv 拿不到路径就静默跳过（不能让日志本身把插件搞挂）。
+local function trace(message)
+    local root = os and os.getenv and os.getenv('LOCALAPPDATA')
+    if not root then return end
+    local path = root .. '\\CowboyBingus\\Helldivers2\\ArmorRegistry\\bank-patch.status'
+    local handle = io and io.open and io.open(path, 'a')
+    if not handle then return end
+    pcall(handle.write, handle, tostring(message) .. '\n')
+    pcall(handle.close, handle)
+end
+
+M.trace = trace
+
 local DISPATCH_RVA = 0x82024e   -- mov rcx,[rsp+0x68]（type>=2 分支入口）
 local RESUME_RVA   = 0x820256   -- trampoline 结束后跳回
 local CAVE_RVA     = 0x1af7673  -- 93 字节 0xCC 填充洞
@@ -136,12 +151,21 @@ end
 
 --- 安装补丁。返回状态表（含原始字节，供 revert 使用），失败返回 nil,原因。
 function M.install()
+    trace('install: start')
     local kernel, reason = load_kernel()
-    if not kernel then return nil, reason end
+    if not kernel then
+        trace('install: load_kernel failed - ' .. tostring(reason))
+        return nil, reason
+    end
+    trace('install: ffi/kernel32 ok')
     local ffi = require('ffi')
 
     local base, why = module_base(kernel, ffi)
-    if not base then return nil, why end
+    if not base then
+        trace('install: module_base failed - ' .. tostring(why))
+        return nil, why
+    end
+    trace(('install: game.dll base=0x%x'):format(base))
 
     local dispatch = base + DISPATCH_RVA
     local cave = base + CAVE_RVA
