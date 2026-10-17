@@ -125,3 +125,36 @@ public async ValueTask<PatchArchiveFileWriteResult> WriteAsync(
 * 明文搜索 `runtime_armor_registry` 和 `armor-registry.protocol` 在
   `data\` 与 `E:\mod` 的小文件里**零命中** —— 确认 Lua 是**压缩**在 patch 归档里的，
   无法直接替换字节
+
+## 构造 addition 的现成范例（`PatchSubsetWriter.cs:60-90`）
+
+这是全仓库唯一演示"往 patch 里加条目"的地方，照抄它的形状就行：
+
+```csharp
+var payload = await payloadReader.ReadPayloadAsync(entry, cancellationToken);
+additions.Add(new PatchArchiveAdditionalEntry(
+    entry.AssetKey, payload.TocData, payload.StreamData, payload.GpuResourceData,
+    entry.Unknown1, entry.Unknown2, entry.Unknown3, entry.Unknown4));
+
+var headerTemplate = await File.ReadAllBytesAsync(headerTemplatePath, ct);
+var removedEntries = await scanner.ScanEntriesAsync(headerTemplatePath, ct);
+return await archiveWriter.WriteAsync(
+    headerTemplatePath, outputDirectoryPath,
+    Array.Empty<PatchUnitMeshEditResult>(),   // 不做网格编辑
+    additions,                                // 只加条目
+    removedEntries,                           // 把模板原有条目全删掉
+    ...);
+```
+
+也就是说 **`PatchSubsetWriter` 本身就是"用一个 patch 当骨架、只保留我选的条目"的工具**。
+我们的需求是同构的：拿加载器的 patch_0 当骨架、清空它的条目、
+换成一条指向 `armor_registry.generated.lua` 的新条目。
+
+**还差的一步**：新条目的 `TocData` 要自己构造（96 字节的 TOC 记录）。
+`PatchArchiveWriter.NewType` 给出了类型记录的写法
+（`Write64(data,8,typeId)` / `Write64(data,16,0)` / `Write32(data,24,16)` / `Write32(data,28,64)`），
+但条目记录（含 offset/size）的字段布局还要读 `PatchTocEntry` 与
+`PatchEntryPayloadReader` 才能确定。这是下一轮第一件事。
+
+> 注意：`actualPatchCount` 已从 29 降到 **5**，说明管理器在我操作期间 Purge 过一次，
+> 部署状态不是稳定的。动手前要重新 `deploy plan`。
