@@ -176,61 +176,118 @@ RE-2310 基础包**（不是协议映射）。此时协议里 `map_model` 为 **
 这条同时说明：`capture_window.py` 的截图可以作为**独立于内存读取**的第二证据源，
 后面判断"是没渲染还是被换回原版"时要用它。
 
-## 6. 这次**没有**解释的
+## 6. **21/22 已解释**：20 项截断 + 「Any 组在前」
 
-1. **21/22 那条线。** 10 槽 bank 不可能溢出（§2.3），20 项数组的截断也**对不上**：
-   实测 `effective <= 21` 身体完好、`>= 22` 开始掉部件，而数组容量是 20。
-   更关键的是：截断只会让个别 Piece 不渲染，**不能解释"整条胳膊消失"**。
-   所以还存在第二个结构，或者"消失"另有机制（例如被换回原版、或子网格被整体剔除）。
-2. **为什么 Y 掉双臂、M3 只掉右臂。** 分布 → "掉哪个槽"的映射仍未知。
-3. **掉的是"没渲染"还是"被换成原版"。** 观察只能看到"看不见"。
+### 6.1 定位到护甲实例记录
 
-## 7. 下一步（可立即执行）
+渲染路径 `0x877b79: mov r13, [rip + 0x2aaf1a0]` → 全局 **`game.dll + 0x3326d20`**，
+数组基址 = `*(game.dll + 0x3326d20)`，`rec(k) = 基址 + k*0x1b8`，**护甲实例是 `rec[0]`**。
 
-§5.1 说明：**没有 `map_model` 就没有实验**。所以第 0 步是先把映射补上，
-再谈容量。补法（`notes/armor-registry-protocol.md`、`src/armor_registry_protocol.lua:139`）：
+判据是**跨配置差分**（不是"看起来像句柄"）：补上
+`map_model=820333399,custom-eaf880703fa94f398d620d2288b25d1f` 后，
+`rec[0]` 立刻从 16 个旧句柄变成 9 个新句柄 `0x400a62..0x400a74`。
+
+### 6.2 bank A 的槽集合直接决定"哪些身体部件在"
+
+`rec[0]` 的 bank A 承载 `piece_type == 0`，也就是**身体本体**。
+实测（`active_mappings=1`，逐级切配置）：
+
+| 配置 | 总 Piece | 生效 | bank A 非零槽 | 画面 |
+|---|---|---|---|---|
+| S4 | 17 | 11 | 0,2,3,4,5,6,7 | 身体完好 |
+| S8 | 21 | 15 | **0,2,3,4,5,6,7** | 身体完好 |
+| K1 | 16 | 10 | 0,2,3,4,5,6,7 | 身体完好 |
+| K4 | 25 | 19 | 0,2,3,4,5,6,7 | 身体完好 |
+| X6 | 27 | 21 | **0,2,3,4,5,6,7** | 身体完好 |
+| Y | 28 | 22 | 0,2,3,4,5,6,7（B/C 变深） | 双臂消失 |
+| M3 | 28 | 22 | 0,2,3,4,5,6,7 | 右臂消失 |
+| M4 | 32 | 26 | 缩水 | 左臂/胯/双腿消失 |
+| M5 | 35 | 29 | 继续缩水 | 再掉胸 |
+| **C3** | **43** | **37** | **只剩 0** | **只剩头 + 裙子** |
+
+**结论：部件消失发生在 bank 写入之前**，不是渲染阶段的问题。
+
+### 6.3 为什么偏偏是身体件被丢
+
+C3 的逐槽清单里，slot 2..7 **每个都有 type0 身体件**（Chest/Hips/LeftLeg/
+RightLeg/LeftArm/RightArm 各 body0 + body1）。它们在 Kit 里，却一个都没进 bank A。
+
+原因是 §4 那个 20 项数组的**收集顺序**。`0x81f470` 按 Kit 的组数组顺序遍历，
+组的入选条件是 `group.选择子 == 当前body变体 || == 3`（3 = "Any"，与 body 无关）：
 
 ```
-map_model=820333399,custom-eaf880703fa94f398d620d2288b25d1f
+0081f72e: mov eax, dword ptr [r9 + r8*8]    ; group.选择子
+0081f732: cmp eax, r14d
+0081f735: je 0x81f73c
+0081f737: cmp eax, 3                        ; "Any" 组永远入选
+0081f73a: jne 0x81f772
 ```
 
-`820333399` = RE-2310 的 armor itemId（军械库里当前选中的就是它）。
-或者对全部 armor item 各写一条，让任意选中的护甲都生效。
+C3 里 "Any" 组自身就有 **31 个** Piece：
+head 5 + chest 6 + hips 3 + leftleg 8 + rightleg 5 + leftarm 4 = 31。
 
-补齐之后，流程是"套配置 → 重读 → 差分 → 截图"：
+**31 > 20**，所以前 20 个名额全被 Any 组吃掉，body 专属的 type0 身体件
+一个都没轮到 —— 于是 bank A 只剩 head（head 属于 Any 组且排在最前）。
+
+S8（21 个、Any 组小）时 Any 组 + body 件都在 20 以内，七个身体槽齐全，
+所以身体完好。**"总数决定掉多少、分布决定掉哪个"在这里得到完整解释：
+总数决定 Any 组占掉多少名额，分布决定剩下名额还够不够给 body 件。**
+
+### 6.4 边界为什么看起来是 21/22 而不是 20
+
+数组容量是 20（`cmp ..., 0x14; jae`），所以**第 21 个起**才开始丢。
+生效 21 时只丢 1 个，而实测那几个配置里被丢的恰好是冗余件（同 `(type,slot)`
+本来就会被别名压掉），所以**看起来** ≤21 完好；到 22 丢 2 个，才开始丢到真部件。
+
+### 6.5 可操作结论
+
+* 每个 (Kit, body 变体) 的**生效 Piece 必须 ≤ 20**，否则超出部分静默失去实例。
+* 更精确地说：**"Any" 组的 Piece 数必须留出足够名额给 body 专属件**。
+  组合时把 body 无关的装饰件数量压下来，或者让身体件排在前面。
+* 这一条同时解释了为什么"每槽几个"不是触发点（S8 在 slot 4 塞了 9 个也没事）：
+  触发点是**收集总数**，不是单槽深度。
+
+### 6.6 仍未解释
+
+* 为什么 Y（22 生效）掉的是双臂、M3（22 生效）只掉右臂 —— 现在可以归因为
+  "被挤出前 20 的具体是哪些 Piece"，但**逐配置预测**还没做（需要知道运行时
+  写进 Kit 的组顺序）。
+* 掉的是"没渲染"还是"被换成原版"：bank 里没有句柄 ⇒ 没有实例 ⇒ 是"没渲染"，
+  这一条现在可以确认了。
+
+## 7. 复现与后续
+
+### 7.1 复现本文全部数字
 
 ```powershell
-# 0) 确认映射真的在生效
-Select-String -Path "$env:LOCALAPPDATA\CowboyBingus\Helldivers2\ArmorRegistry\armor-registry.protocol" -Pattern '^map_model=' | Measure-Object
+# 0) 抓内存镜像（盘上 game.dll 是壳，RVA 只对内存有意义）
+python HD2RuntimeArmorOverride/scripts/capture_game_image.py --pid <pid> --output <img>
 
-# 1) 基线快照（存成 JSON 才能差分）
+# 1) 反汇编生产者 / 找引用 / 区间扫描
+python HD2RuntimeArmorOverride/scripts/disasm_armor_consumer.py --image <img> `
+  --start 0x81f470 --length 0xe00 --head 0 --full --save <txt>
+python HD2RuntimeArmorOverride/scripts/find_code_refs.py --image <img> `
+  --image-base <base> --target 0x81f470 --dword 0x546b4c --dword 0x546b74 --dword 0x546b9c
+python HD2RuntimeArmorOverride/scripts/scan_region.py --image <img> --start <rva> --length <n> --match <regex>
+
+# 2) **先确认映射真的在生效**，否则量到的是噪声
+python HD2RuntimeArmorOverride/scripts/set_protocol_mapping.py `
+  --add 820333399:custom-eaf880703fa94f398d620d2288b25d1f
+
+# 3) 逐级切配置，读 rec[0] 并截图
+python HD2RuntimeArmorOverride/scripts/use_armor_piece_config.py --config C3
 python HD2RuntimeArmorOverride/scripts/peek_armor_banks.py --pid <pid> `
-  --global-rva 0x3326d20 --bulk 4096 --label clean --save <banks>\clean.json
-
-# 2) 逐级套用（Lua 约 1 秒轮询，热切换，不重启游戏）
-python HD2RuntimeArmorOverride/scripts/use_armor_piece_config.py --config S8
-python HD2RuntimeArmorOverride/scripts/peek_armor_banks.py ... --label S8 --save <banks>\S8.json
-python HD2RuntimeArmorOverride/scripts/capture_window.py --pid <pid> --output <shots>\S8.png
-
-# 3) 越过 21/22
-python HD2RuntimeArmorOverride/scripts/use_armor_piece_config.py --config Y
-python HD2RuntimeArmorOverride/scripts/peek_armor_banks.py ... --label Y --save <banks>\Y.json
-python HD2RuntimeArmorOverride/scripts/capture_window.py --pid <pid> --output <shots>\Y.png
-
-# 4) 差分：只有真正承载护甲实例的记录会结构性改变
-python HD2RuntimeArmorOverride/scripts/diff_armor_banks.py `
-  --before <banks>\S8.json --after <banks>\Y.json
+  --global-rva 0x3326d20 --indices 0
+python HD2RuntimeArmorOverride/scripts/capture_window.py --pid <pid> --output <png>
 ```
 
-要判定的三件事：
+### 7.2 还没做的两件事
 
-* 句柄总数是否在某个值上**封顶**（若是，那个数就是真正的实例池上限）。
-* 越过 21/22 后，是"少了几个句柄"还是"句柄仍在但槽分布变了"。
-  **若句柄数没变而身体消失，则问题在 bank 之后（网格/子部件装配），不在 Piece 计数。**
-* 是否出现**重复句柄**（同一实例被写进两个槽），那会让两个槽共用一份资源。
-
-> 差分工具会自动跳过只有浮点抖动的记录（本次实测：93 条变化全是动画值），
-> 所以只要看到"某条记录的槽集合变了"，那就是候选。
+1. **逐配置预测**：知道运行时写进 Kit 的组顺序后，可以算出"前 20 个是谁"，
+   从而**预测**每个配置会掉哪些部件，再和实测对照。这是把 §6 从"解释"变成"可预测"。
+2. **产品化**：把"每个 (Kit, body 变体) 生效 Piece ≤ 20"和"Any 组要给身体件留名额"
+   变成管理器/`vpk2patch` 的校验或自动排布，让超限在导入时就报出来，
+   而不是等玩家在军械库里看到胳膊不见了。
 
 ## 8. 复现本文全部数字的命令
 
