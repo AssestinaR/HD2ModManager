@@ -27,6 +27,19 @@
 | 写入必须配一次重载 | 写入后画面不变；换装再换回来 → 胸部消失（`notes/runtime-toc-write-has-no-effect-20261017.md`） |
 | 重载通道已存在 | `armor_refresh_route_probe.lua` 的 `auto_refresh.published(revision, changed)` |
 
+重载通道的当前状态（`%LOCALAPPDATA%\CowboyBingus\Helldivers2\ArmorRegistry\refresh-auto.config`）：
+
+```
+schema=2
+enabled=true
+scope=local_equipped_body
+confirm=single_player_ship_armory_closed
+```
+
+即：自动刷新**已启用**，作用域「本地已装备身体」，触发条件「单人 / 飞船内 / 军械库关闭」。
+`refresh-auto.status` 显示 `state=auto_refresh_baseline revision=123`，说明它在等
+revision 变化。所以**我们已有的协议 revision 机制本身就是重载触发器**。
+
 ## 为什么这个方案满足全部约束
 
 | 约束 | 满足方式 |
