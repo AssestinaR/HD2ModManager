@@ -196,8 +196,9 @@ def main():
                 continue
             found += 1
             print('\n  rec[%2d] 0x%016x  非零槽 %d' % (index, rec, nonzero))
-            for label, offset, bank in zip(('A(type0)', 'B(type1)', 'C(type>=2)'),
-                                           bank_offsets, banks):
+            for offset, bank in zip(bank_offsets, banks):
+                label = {0x546b4c: 'A(type0)', 0x546b74: 'B(type1)',
+                         0x546b9c: 'C(type>=2)'}.get(offset, 'bank?')
                 if bank is None:
                     print('    %-11s +0x%06x  读不到' % (label, offset))
                     continue
