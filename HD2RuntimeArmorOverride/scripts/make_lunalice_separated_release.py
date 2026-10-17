@@ -347,7 +347,7 @@ def verify(report):
     return problems, facts
 
 
-def build_readme(path, facts):
+def build_readme(path, facts, host_mode):
     model = facts["model"]
     stems = facts["stems"]
     lines = [
@@ -394,17 +394,40 @@ def build_readme(path, facts):
         lines.append(f"  · {title}")
         lines.append(f"      {reason}")
 
+    if host_mode == "same-key":
+        lines += [
+            "",
+            "这是一个**同键替换 RE-2310** 的包，不是自定义素体",
+            "----------------------------------------------",
+            "  host 的 patch 把那件护甲的 23 个 Unit 键全部占住：",
+            "    11 个写我们的模型（槽 2/3/6/7 的 body=0 与 body=1 各写同一份 payload，",
+            "       否则另一种体型会看到空槽；槽 4/5 只有 body=3 一份；头盔一个）；",
+            "    12 个写隐藏占位（每槽的 type=0 / type=2、以及 slot 8/9 的 MaterialLut/PatternLut），",
+            "       否则原版几何会和我们的模型打架。",
+            "  共用披风 3c33cf10a26cbb3e 被 101 个 Kit 共用，**没有碰**（脚本会断言）。",
+            "  因为不新建 Unit，所以**不需要**运行时注册表、也不需要 custom-model.json。",
+            "",
+            "  ⚠️ 已知缺陷：原版护甲件的 Piece 会指定「用这个 Unit 的第几个网格」——",
+            "     Undergarment 要索引 5、Armor/头盔要索引 4。我们的 Unit 只有 5 个网格",
+            "     （索引 0..4），且 lod0 的位置跟着外壳 Unit 走（Torso 在索引 3、头盔在 4）。",
+            "     结果就是：头盔能显示（要 4，有），身体不显示（要 5，没有）。",
+            "     要修得让 Unit 的网格表按护甲件约定排版，不是换键能解决的。",
+        ]
+    else:
+        lines += [
+            "",
+            "host 用的是**自定义素体**（Unit 是全新 id）",
+            "----------------------------------------",
+            "  管理器靠运行时注册表把每个 Unit 映射到 body/slot/piece_type，",
+            "  网格索引也由注册表那条路自己挑 —— 所以实机上身体是完整的。",
+            "  ⚠️ 因此这个包**依赖管理器的护甲注册表**：",
+            "     · 素体定义要一起导入（<转换目录>\\lunalice_zoey\\custom-model.json）；",
+            "     · 到「护甲映射」页应用一次，由管理器编译成注册协议。",
+            "  想要纯 patch、不依赖注册表的版本，用 --host-mode same-key；",
+            "  但那版目前身体会缺（见上一段的网格索引问题）。",
+        ]
+
     lines += [
-        "",
-        "这是一个**同键替换 RE-2310** 的包，不是自定义素体",
-        "----------------------------------------------",
-        "  host 的 patch 把那件护甲的 23 个 Unit 键全部占住：",
-        "    11 个写我们的模型（槽 2/3/6/7 的 body=0 与 body=1 各写同一份 payload，",
-        "       否则另一种体型会看到空槽；槽 4/5 只有 body=3 一份；头盔一个）；",
-        "    12 个写隐藏占位（每槽的 type=0 / type=2、以及 slot 8/9 的 MaterialLut/PatternLut），",
-        "       否则原版几何会和我们的模型打架。",
-        "  共用披风 3c33cf10a26cbb3e 被 101 个 Kit 共用，**没有碰**（脚本会断言）。",
-        "  因为不新建 Unit，所以**不需要**运行时注册表、也不需要 custom-model.json。",
         "",
         "本次转换用的 matcap 策略：albedo",
         "--------------------------------",
@@ -435,6 +458,11 @@ def main():
     parser.add_argument("--json", required=True, help="vpk2patch --json 报告（--matcap albedo）")
     parser.add_argument("--output", required=True, help="组合包根目录")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--host-mode", choices=("custom-model", "same-key"), default="custom-model",
+        help="host 怎么出：custom-model = 原样用 vpk2patch 的 Unit（新 id，靠运行时注册表映射，"
+             "实机能看到身体）；same-key = 重写到 RE-2310 的 23 个键上（纯 patch 覆盖，"
+             "但当前 Unit 的网格表索引与原版护甲件约定不一致，身体会缺）。")
     args = parser.parse_args()
 
     report = load_report(args.json)
@@ -476,22 +504,22 @@ def main():
             shutil.copy2(path, target)
             written.append(target)
 
-    # host：同键替换 RE-2310（把自定义素体的 Unit 重写到那 23 个键上）。
-    host_source = base_toc(facts["model"])
-    print("\n   host：重写到 RE-2310 的 23 个 Unit 键")
-    rekey_host_to_re2310(host_source, mod_root)
-    written.extend(
-        os.path.join(mod_root, name)
-        for name in os.listdir(mod_root)
-        if ".patch_" in name
-    )
+    if args.host_mode == "same-key":
+        print("\n   host：重写到 RE-2310 的 23 个 Unit 键")
+        rekey_host_to_re2310(base_toc(facts["model"]), mod_root)
+        written.extend(
+            os.path.join(mod_root, name) for name in os.listdir(mod_root) if ".patch_" in name
+        )
+    else:
+        print("\n   host：原样用 vpk2patch 的 Unit（自定义素体，靠运行时注册表映射）")
+        copy_into(facts["model"], mod_root)
 
     for stem, label in OPTIONS:
         item = facts["stems"].get(stem)
         if item is None:
             continue
         copy_into(item, os.path.join(mod_root, label))
-    build_readme(os.path.join(output, "README.txt"), facts)
+    build_readme(os.path.join(output, "README.txt"), facts, args.host_mode)
 
     print(f"\n✅ 已生成组合包：{output}")
     total = 0
