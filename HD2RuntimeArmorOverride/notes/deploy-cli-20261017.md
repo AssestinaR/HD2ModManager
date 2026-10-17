@@ -50,3 +50,41 @@ hd2mod deploy apply --plan deploy.json --confirm --json
 `generatedTargetPaths`，说明管理器会把 Lua 插件**物化成一个生成的 patch 文件**
 再写进 `data\`。所以插件不是散落的 `.lua`，而是打进 patch 归档——
 这和"游戏目录里没有任何 `.lua` 文件"的观察一致。
+
+## 库内 Mod 的真实结构（2026-10-17 查清）
+
+一个 Lua Mod 在 `E:\mod` 里是**两个目录**：
+
+```
+前置Bingus-Shared-Loader-v15\          <- 根目录：manifest.json + 图标
+   manifest.json  { Version, Guid, Name, Description,
+                    Options[{Name, Include:["data"], Image, ...}] }
+前置Bingus-Shared-Loader-v15-data\     <- 载荷目录：patch 归档
+   9ba626afa44a3aa3.patch_0             <- 18432 字节，Lua 就打包在这里
+   9ba626afa44a3aa3.patch_0.gpu_resources
+   option.json  { version, kind:"Option", hostModGuids:[...],
+                  sourcePackageGuid, sourcePath:"option:0", optionOrder }
+```
+
+**Lua 不是散落的 `.lua`，而是装在 patch 归档里。** 管理器在 import 时把
+addon zip 转换成 patch 归档。
+
+## 当前卡点：没有 CLI 能做 zip → patch 归档 的导入
+
+* `hd2mod mod create <名称>` 只建一个空 Mod，**没有"往 Mod 里加文件"的命令**
+* `hd2mod library sync inspect|plan|validate|apply` 只同步库清单，不负责转换
+* `hd2mod mod list --library E:\mod` 共 **137 个 Mod，其中没有
+  `HD2-Runtime-Armor-Registry`** —— 说明护甲注册表 addon 从来没被导入过库
+* 所以当前正在跑的运行时是从别处加载的（历史遗留），不在库里
+
+要落地，只有三条路：
+
+1. **用管理器 GUI 导入** `HD2RuntimeArmorOverride/dist/HD2-Runtime-Armor-Registry.zip`
+   —— 最直接，但要人工点一次
+2. **写一个 C# 小工具**复用 `HD2ModCore` 的 patch 归档写入器，把
+   `armor_registry.generated.lua` 打成 `9ba626afa44a3aa3.patch_0`，
+   再手写根目录 `manifest.json` 与 `-data/option.json`
+3. 逆向 `9ba626afa44a3aa3.patch_0` 的容器格式（看起来就是 HD2 的 patch 归档格式，
+   `HD2ModCore` 里已有读写实现）
+
+**建议走 2**：不动 GUI、可重复、可进 CI。
