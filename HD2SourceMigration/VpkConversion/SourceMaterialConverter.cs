@@ -21,6 +21,37 @@ public sealed record SynthesizedMaterial(
 	string BaseTexture,
 	IReadOnlyList<ulong> TextureIds);
 
+/// <summary>
+/// 材质的<b>身份</b>——不编码任何贴图就能得到的那部分。
+/// <para>
+/// 单独拿出来的用途：模型 patch 必须让 Unit 引用<b>正确的</b>材质 id，
+/// 但那些材质与贴图归材质 patch 所有，不该被写进模型 patch。
+/// </para>
+/// </summary>
+public sealed record MaterialIdentity(
+	ulong Id,
+	string TemplateName,
+	string BaseTexture,
+	bool UseAlphaClip,
+	string? MatcapTexture,
+	bool MatcapBaked)
+{
+	/// <summary>
+	/// matcap 的<b>内容</b>会跨 VPK 参与烘焙，而材质 id 只由名字决定。
+	/// <para>
+	/// 这是整条链上<b>唯一</b>打破"patch 之间互不依赖"的地方：`$matcaptint ≥ 0.9` 时
+	/// 底色是"源底色 + matcap 的面积加权平均色"，而那张 matcap 可能在<b>另一个</b> VPK 里
+	/// （实测：A1 的 40 个金属装饰件都指向 C1/C2 的 <c>11.vtf</c>）。
+	/// 于是"选金色还是银色"在<b>转换时</b>就被固定了，光换 patch 换不掉。
+	/// </para>
+	/// <para>
+	/// 调用方（装配器）应当据此报警，而不是让用户以为换个 patch 就能换颜色。
+	/// </para>
+	/// </summary>
+	public bool MatcapComesFromAnotherVpk(Func<string, bool> ownsTexture)
+		=> MatcapBaked && MatcapTexture is not null && !ownsTexture(MatcapTexture);
+}
+
 public sealed record MaterialSynthesisResult(
 	SynthesizedMaterial? Material,
 	IReadOnlyList<SynthesizedTexture> Textures,
@@ -28,8 +59,40 @@ public sealed record MaterialSynthesisResult(
 {
 	public bool IsValid => Material is not null && Diagnostics.Count == 0;
 
+	/// <summary>
+	/// 这个源材质<b>不该被转换</b>（不是"转换失败"）的理由。非 <c>null</c> 时 <see cref="Material"/> 为 null。
+	/// <para>
+	/// 目前唯一的来源是 <c>$no_draw 1</c>：L4D2 用它把整个材质藏起来，源侧根本不绘制。
+	/// 把它当失败处理会让整个 patch 写不出来；当成功处理又会造出一个"看得见"的材质——
+	/// 两者都错。所以单列一类。
+	/// </para>
+	/// </summary>
+	public string? SkipReason { get; init; }
+
+	public bool IsSkipped => SkipReason is not null;
+
+	/// <summary>这个材质的身份（id / 模板 / 底色名 / matcap 来源）。转换成功时非 null。</summary>
+	public MaterialIdentity? Identity { get; init; }
+
 	public static MaterialSynthesisResult Failed(string reason) => new(null, [], [reason]);
+
+	public static MaterialSynthesisResult Skipped(string reason) => new(null, [], []) { SkipReason = reason };
 }
+
+/// <summary>一次"只解析身份、不编码贴图"的结果。</summary>
+public enum MaterialResolveOutcome
+{
+	/// <summary>拿到了 id。</summary>
+	Resolved = 0,
+
+	/// <summary>这个材质不该转换（见 <see cref="MaterialSynthesisResult.SkipReason"/>）。</summary>
+	Skipped = 1,
+
+	/// <summary>解析失败——读不到 VMT/VTF，或 VMT 缺少必要声明。</summary>
+	Failed = 2,
+}
+
+public sealed record MaterialResolveReport(MaterialResolveOutcome Outcome, MaterialIdentity? Identity, string Reason);
 
 /// <summary>
 /// 源材质（VMT + VTF）→ HD2 <c>Material</c> + <c>Texture</c>。
@@ -190,64 +253,96 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	private readonly AlbedoAdjustment? albedoAdjustment;
 
+	/// <summary>
+	/// 一个源材质读齐之后的状态：<b>模板判定已经做完，但还没有编码任何贴图</b>。
+	/// <para>
+	/// 拆出这一层，是因为"只为了拿到材质 id"和"真的要把贴图写进包"是两种不同的需求。
+	/// 模型 patch 只需要前者（它的贴图归材质 patch 所有），而编码一张 2048² 的 BC7
+	/// 要一两秒——几十个材质乘上去就是几分钟的纯浪费。
+	/// </para>
+	/// </summary>
+	private sealed record LoadedMaterial(
+		string Stem,
+		string BaseTexture,
+		string TextureName,
+		VtfFile Vtf,
+		byte[] Rgba,
+		bool UseAlphaClip,
+		string TemplateName,
+		string Identity,
+		ulong MaterialId,
+		string? EmissionTexture,
+		double EmissionTint,
+		double[]? MatcapMean,
+		double MatcapTint,
+		string? MatcapTextureName)
+	{
+		public MaterialIdentity ToIdentity() => new(
+			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
+	}
+
+	/// <summary>
+	/// 只解析材质身份（id + 模板 + 底色名），<b>不编码任何贴图</b>。
+	/// <para>
+	/// 用在"这个材质不属于本 patch、但 Unit 必须引用它的 id"的场合。id 只由
+	/// <c>$basetexture</c> 与两个行为后缀决定，其中 <c>|alphaclip</c> 需要量贴图 alpha，
+	/// 所以这里仍然要<b>解码</b>——但<b>不重新编码</b>，省掉的正是最贵的那一步。
+	/// </para>
+	/// </summary>
+	public bool TryResolveIdentity(string materialName, out MaterialIdentity identity, out string failure)
+	{
+		var report = Resolve(materialName);
+		identity = report.Identity!;
+		failure = report.Reason;
+		return report.Outcome == MaterialResolveOutcome.Resolved;
+	}
+
+	/// <summary>
+	/// 只解析材质身份，并把"跳过"与"失败"分开报出来。
+	/// <para>
+	/// 调用方需要这个区分：<b>跳过</b>是源侧本来的意思（<c>$no_draw</c>），不是问题；
+	/// <b>失败</b>会让 Unit 退回外壳护甲的材质，是真问题。
+	/// </para>
+	/// </summary>
+	public MaterialResolveReport Resolve(string materialName)
+	{
+		var outcome = TryLoad(materialName, out var loaded, out var reason);
+		return outcome switch
+		{
+			LoadOutcome.Loaded => new(MaterialResolveOutcome.Resolved, loaded.ToIdentity(), string.Empty),
+			LoadOutcome.Skipped => new(MaterialResolveOutcome.Skipped, null, reason),
+			_ => new(MaterialResolveOutcome.Failed, null, reason),
+		};
+	}
+
 	/// <summary>把一个源材质转成 HD2 材质 + 它的贴图。</summary>
 	/// <param name="materialName">源材质的裸名（MDL 材质表里那个）。</param>
 	public MaterialSynthesisResult Convert(string materialName)
 	{
-		ArgumentException.ThrowIfNullOrWhiteSpace(materialName);
+		var outcome = TryLoad(materialName, out var loaded, out var failure);
+		if (outcome == LoadOutcome.Skipped)
+			return MaterialSynthesisResult.Skipped(failure);
+		if (outcome == LoadOutcome.Failed)
+			return MaterialSynthesisResult.Failed(failure);
 
-		var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(materialName));
-		if (!source.TryReadVmt(stem, out var vmtBytes))
-			return MaterialSynthesisResult.Failed($"{stem}：材质来源里找不到 .vmt");
-		var vmt = VmtDocument.Parse(vmtBytes);
-		var baseTexture = vmt.BaseTexture;
-		if (string.IsNullOrWhiteSpace(baseTexture))
-			return MaterialSynthesisResult.Failed($"{stem}：VMT 里没有 $basetexture");
-
-		var textureName = Path.GetFileNameWithoutExtension(baseTexture);
-		if (!source.TryReadVtf(textureName, out var vtfBytes))
-			return MaterialSynthesisResult.Failed($"{stem}：贴图来源里找不到 {textureName}.vtf");
-
-		// matcap 规则：源侧整片底色近黑、观感全来自 matcap（tint ≥ 0.9），要烘进底色。
-		// 拿不到平均色就**不烘**——烘一个错的值比不烘更糟。
-		// 声明在 try **外面**：下面补金属/粗糙槽时还要用这两个值。
-		var verdict = MaterialAppearance.Evaluate(vmt);
-		double[]? matcapMean = null;
-		if (verdict.MatCapIsTheSurface && matcapMeans is not null)
-			matcapMeans.TryGetValue(stem, out matcapMean);
-
-		// 发光声明。**必须在 try 之前读**：它既参与下面的底色构造，又参与材质身份判定
-		// （第 36 轮：`$emissiontexture` 存在时身份要带 `|emission`，否则发光变体会被合并掉）。
-		// 上一轮我把这段写进了 `BuildBaseColorTexture`，那里看不到 `stem`/`vmt` —— 作用域错了。
-		var emissionTexture = vmt.Value("$emissiontexture");
-		var emissionTint = MaterialAppearance.ParseTint(vmt.Value("$emissiontint"));
+		var stem = loaded.Stem;
+		var matcapMean = loaded.MatcapMean;
+		var material = templates.Load(loaded.TemplateName);
+		var textureName = loaded.TextureName;
 
 		SynthesizedTexture texture;
-		SynthesizedTexture? opacityMask = null;
-		bool useAlphaClip;
+		SynthesizedTexture? opacityMask;
 		try
 		{
-			var built = BuildBaseColorTexture(
-				textureName, vtfBytes, wantAlphaClip: vmt.WantsTransparency,
-				matcapMean, verdict.Tint, emissionTexture, emissionTint);
-			texture = built.BaseColor;
-			opacityMask = built.OpacityMask;
-			useAlphaClip = built.UseAlphaClip;
+			(texture, opacityMask) = BuildBaseColorTexture(loaded);
 		}
 		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：贴图 {textureName} 转换失败——{exception.Message}");
 		}
 
-		// 模板选择：**VMT 开关 ∧ 贴图真有 alpha** 才切 alphaclip。
-		// 只看开关会误判——装饰件常写 `$alphatest 1` 但贴图是 1×1 无 alpha（M7 就漏了 3 组）。
-		var templateName = useAlphaClip ? "alphaclip" : "advanced";
-		if (!templates.Contains(templateName))
-			return MaterialSynthesisResult.Failed($"材质模板库缺少 {templateName}，无法造材质");
-
-		var material = templates.Load(templateName);
 		var textures = new List<SynthesizedTexture> { texture };
-		if (useAlphaClip)
+		if (loaded.UseAlphaClip)
 		{
 			if (opacityMask is null)
 				return MaterialSynthesisResult.Failed($"{stem}：判定要切 alphaclip，但没有产出遮罩贴图");
@@ -313,6 +408,115 @@ public sealed class SourceMaterialConverter
 			}
 		}
 
+		return new MaterialSynthesisResult(
+			new SynthesizedMaterial(loaded.MaterialId, material.Write(), loaded.TemplateName, loaded.BaseTexture, material.TextureIds),
+			textures,
+			[])
+		{ Identity = loaded.ToIdentity() };
+	}
+
+	/// <summary>
+	/// 把"名字 → 材质身份"这条链走完：读 VMT、读 VTF、解码、量 alpha 定模板、算 id。
+	/// <para>
+	/// <b>读 VMT/VTF 走的是 <c>source</c> 这个作用域视图</b>（自身优先、整批兜底）。
+	/// 所以同一个材质在"它自己那个 VPK 的 patch"里读到的是自己的那份，
+	/// 在别的 patch 里读到的是整批里最先出现的那个——但两者算出的 id 一定相同，
+	/// 因为 id 只由名字决定。
+	/// </para>
+	/// </summary>
+	/// <summary>加载的三个结果。**"跳过"与"失败"必须分开**——见 <see cref="MaterialResolveOutcome"/>。</summary>
+	private enum LoadOutcome
+	{
+		Loaded = 0,
+		Skipped = 1,
+		Failed = 2,
+	}
+
+	private LoadOutcome TryLoad(string materialName, out LoadedMaterial loaded, out string reason)
+	{
+		loaded = default!;
+		if (string.IsNullOrWhiteSpace(materialName))
+		{
+			reason = "材质名是空的";
+			return LoadOutcome.Failed;
+		}
+
+		var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(materialName));
+		if (!source.TryReadVmt(stem, out var vmtBytes))
+		{
+			reason = $"{stem}：材质来源里找不到 .vmt";
+			return LoadOutcome.Failed;
+		}
+
+		var vmt = VmtDocument.Parse(vmtBytes);
+
+		// `$no_draw 1`：源侧根本不绘制这个材质（L4D2 用它隐藏部位）。
+		// HD2 没有对应概念，所以**不硬造**——把它当"跳过"报出去。
+		// 硬造两种结果都是错的：当失败会让整个 patch 写不出来；当成功会造出一个看得见的材质。
+		if (!string.IsNullOrWhiteSpace(vmt.Value("$no_draw")))
+		{
+			reason = $"{stem}：源材质声明 $no_draw（源侧不绘制），跳过";
+			return LoadOutcome.Skipped;
+		}
+
+		var baseTexture = vmt.BaseTexture;
+		if (string.IsNullOrWhiteSpace(baseTexture))
+		{
+			reason = $"{stem}：VMT 里没有 $basetexture";
+			return LoadOutcome.Failed;
+		}
+
+		var textureName = Path.GetFileNameWithoutExtension(baseTexture);
+		if (!source.TryReadVtf(textureName, out var vtfBytes))
+		{
+			reason = $"{stem}：贴图来源里找不到 {textureName}.vtf";
+			return LoadOutcome.Failed;
+		}
+
+		// matcap 规则：源侧整片底色近黑、观感全来自 matcap（tint ≥ 0.9），要烘进底色。
+		// 拿不到平均色就**不烘**——烘一个错的值比不烘更糟。
+		var verdict = MaterialAppearance.Evaluate(vmt);
+		double[]? matcapMean = null;
+		if (verdict.MatCapIsTheSurface && matcapMeans is not null)
+			matcapMeans.TryGetValue(stem, out matcapMean);
+
+		// matcap 贴图名要留到身份里：**它的内容可能来自别的 VPK**，而 id 只由名字决定。
+		// 装配器据此报警——否则"换个 patch 就能换金属色"是个假承诺。
+		var matcapTextureName = string.IsNullOrWhiteSpace(vmt.MatCapTexture)
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.MatCapTexture));
+
+		// 发光声明。它既参与底色构造，又参与材质身份判定
+		// （`$emissiontexture` 存在时身份要带 `|emission`，否则发光变体会被合并掉）。
+		var emissionTexture = vmt.Value("$emissiontexture");
+		var emissionTint = MaterialAppearance.ParseTint(vmt.Value("$emissiontint"));
+
+		VtfFile vtf;
+		byte[] rgba;
+		bool useAlphaClip;
+		try
+		{
+			vtf = VtfFile.Read(vtfBytes);
+			// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
+			rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+			var stats = TextureAlpha.Measure(rgba);
+			// 模板选择：**VMT 开关 ∧ 贴图真有 alpha** 才切 alphaclip。
+			// 只看开关会误判——装饰件常写 `$alphatest 1` 但贴图是 1×1 无 alpha（M7 就漏了 3 组）。
+			useAlphaClip = vmt.WantsTransparency && stats.IsMeaningful;
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			reason = $"{stem}：贴图 {textureName} 读不出来——{exception.Message}";
+			return LoadOutcome.Failed;
+		}
+
+		var templateName = useAlphaClip ? "alphaclip" : "advanced";
+		if (!templates.Contains(templateName))
+		{
+			reason = $"材质模板库缺少 {templateName}，无法造材质";
+			return LoadOutcome.Failed;
+		}
+
 		// 材质 id 用 $basetexture 的全路径（与 Python 侧一致；贴图 id 只用 basename）。
 		// 这个不对称是已知隐患，见 Hd2AssetId 的注释。
 		//
@@ -322,9 +526,6 @@ public sealed class SourceMaterialConverter
 		// 两者指向同一个 id → 被去重合并 → **发光那层静默丢失**，不报错、不警告。
 		//
 		// 它们**本来就是两个不同的材质**（一个自发光、一个不发光），所以身份必须包含这一点。
-		// 加后缀让 id 分开：合并消失，两个材质各自存活。
-		// 这也让"加发光"变成纯增量 —— 不必再和合并逻辑纠缠。
-		// （`emissionTexture` 已在上面声明——那里靠近 matcap 判定，所以两边都看得到。）
 		//
 		// ⚠️ **模板也必须进身份，理由同上、后果更难看。**
 		// NekoToon 这套模型里大量材质共用同一张"贴图表"底色，而蕾丝与非蕾丝是**两个材质**：
@@ -333,14 +534,16 @@ public sealed class SourceMaterialConverter
 		// 装配器去重"先到先得"——**每一处冲突都是 advanced 赢**，
 		// 于是蕾丝的 alphaclip 模板被静默丢掉、镂空消失（用户报的"镂空材质忘了做"就是这个）。
 		// 反过来如果 alphaclip 赢了，普通件会被蕾丝的遮罩**穿出洞**，同样错。
-		// 两者本来就是两个材质（一个镂空、一个不透明），所以身份里必须分开。
-		var identity = BuildMaterialIdentity(baseTexture, emissionTexture, useAlphaClip);
-		var materialId = Hd2AssetId.Material(identity);
+		var identity = BuildMaterialIdentity(
+			baseTexture, emissionTexture, useAlphaClip,
+			verdict.MatCapIsTheSurface ? vmt.MatCapTexture : null);
 
-		return new MaterialSynthesisResult(
-			new SynthesizedMaterial(materialId, material.Write(), templateName, baseTexture, material.TextureIds),
-			textures,
-			[]);
+		loaded = new LoadedMaterial(
+			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
+			identity, Hd2AssetId.Material(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
+			matcapTextureName);
+		reason = string.Empty;
+		return LoadOutcome.Loaded;
 	}
 
 	/// <summary>
@@ -351,53 +554,59 @@ public sealed class SourceMaterialConverter
 	/// <list type="bullet">
 	/// <item><c>|emission</c>：自发光变体与本体共用底色，不加就丢掉发光那层。</item>
 	/// <item><c>|alphaclip</c>：镂空与非镂空共用底色，不加就丢掉镂空（或者反过来给普通件穿洞）。</item>
+	/// <item><c>|matcap:&lt;贴图&gt;</c>：matcap 烘进底色时，<b>不同的 matcap 就是不同的底色</b>。
+	/// 实测 A1 的 40 个金属装饰件与 <c>jewel</c> 共用同一张 <c>Ornament_metal_Underwear</c> 底色，
+	/// 但前者指向 <c>11</c>（金/银）、后者指向 <c>6</c>（宝石）——不分开就会并成一个材质，
+	/// 于是宝石和金属同色。</item>
 	/// </list>
 	/// <para>
-	/// 顺序固定（emission 在前），因为 id 是哈希，串变了 id 就变——顺序必须稳定可复现。
+	/// 顺序固定（emission → alphaclip → matcap），因为 id 是哈希，串变了 id 就变——顺序必须稳定可复现。
+	/// </para>
+	/// <para>
+	/// ⚠️ <c>|matcap:</c> 只在<b>真的会烘</b>（<c>$matcaptint ≥ 0.9</c>）时加，而那个判定<b>只看 VMT</b>，
+	/// 不看"队列里有没有模型能算平均色"。否则同一个 VMT 在不同队列里会算出不同的 id——
+	/// 那会让 patch 之间再也对不上。
 	/// </para>
 	/// </summary>
-	public static string BuildMaterialIdentity(string baseTexture, string? emissionTexture, bool useAlphaClip)
+	public static string BuildMaterialIdentity(
+		string baseTexture, string? emissionTexture, bool useAlphaClip, string? matcapTexture = null)
 	{
 		var identity = string.IsNullOrWhiteSpace(emissionTexture) ? baseTexture : baseTexture + "|emission";
-		return useAlphaClip ? identity + "|alphaclip" : identity;
+		if (useAlphaClip)
+			identity += "|alphaclip";
+		if (!string.IsNullOrWhiteSpace(matcapTexture))
+			identity += "|matcap:" + matcapTexture;
+		return identity;
 	}
 
-	/// <summary>底色 + （可选）alpha 遮罩的产出。</summary>
-	private sealed record BaseColorBuild(SynthesizedTexture BaseColor, SynthesizedTexture? OpacityMask, bool UseAlphaClip);
-
 	/// <summary>
-	/// VTF 的 mip0 → 底色贴图（+ 需要时一张 alpha 遮罩）→ HD2 <c>Texture</c>。
+	/// 已解码的底色（+ 需要时一张 alpha 遮罩）→ HD2 <c>Texture</c>。
+	/// <para>
+	/// <b>入参是 <see cref="LoadedMaterial"/>，不是 VTF 字节</b>：解码已经在 <c>TryLoad</c> 里做过一次
+	/// （量 alpha 定模板需要它），这里再解一次就是白烧一次 texconv。
+	/// </para>
 	/// <para>
 	/// <b>alpha 必须在清零之前量。</b>清 alpha 是为了"底色不触发自发光"，但同一片 alpha
 	/// 正是镂空信息的载体——顺序反了就只能看到一片全零的 alpha，永远切不到 alphaclip。
+	/// 量的那一步在 <c>TryLoad</c>，所以这里的顺序天然是对的。
 	/// </para>
 	/// </summary>
-	/// <param name="wantAlphaClip">VMT 是否声明要透明（<c>$translucent</c>/<c>$alphatest</c>）。</param>
-	private BaseColorBuild BuildBaseColorTexture(
-		string textureName, byte[] vtfBytes, bool wantAlphaClip, double[]? matcapMean, double matcapTint,
-		string? emissionTexture, double emissionTint)
+	private (SynthesizedTexture BaseColor, SynthesizedTexture? OpacityMask) BuildBaseColorTexture(LoadedMaterial loaded)
 	{
-		var vtf = VtfFile.Read(vtfBytes);
+		var vtf = loaded.Vtf;
+		var rgba = loaded.Rgba;
+		var textureName = loaded.TextureName;
 
-		// 把源 mip0 包成一份带 DX10 头的 DDS——texconv 只吃 DDS。
-		// 压缩格式直接搬运；非压缩格式要先扩成 R8G8B8A8_UNORM（texconv 不认 RGB888 这种
-		// 没有 DXGI 对应的布局），否则整条路会卡在"这张贴图是未压缩的"。
-		var sourceDds = BuildSourceDds(vtf);
-
-		// 两步：解成未压缩 RGBA → 量 alpha → （按需做遮罩）→ 抹掉 alpha → 编回 BC7(sRGB)。
-		var rgba = encoder.DecodeToRgba(sourceDds);
-
-		// ⚠️ 量 alpha 必须在清零之前。
-		var stats = TextureAlpha.Measure(rgba);
-		var useAlphaClip = wantAlphaClip && stats.IsMeaningful;
-		var opacityMask = useAlphaClip ? BuildOpacityMask(textureName, rgba, vtf.Width, vtf.Height) : null;
+		var opacityMask = loaded.UseAlphaClip
+			? BuildOpacityMask(textureName, rgba, vtf.Width, vtf.Height)
+			: null;
 
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
 		// 前者是因为 alpha 的用途不同（镂空走遮罩贴图），后者是因为
 		// 压暗要作用在 sRGB 编码的像素上（见 AlbedoAdjustment 的注释）。
 		// matcap 烘焙也必须在清零 alpha 之前（它只改 RGB，但顺序上这里最自然）。
-		if (matcapMean is not null)
-			MaterialAppearance.BakeMatCap(rgba, matcapMean, matcapTint);
+		if (loaded.MatcapMean is not null)
+			MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint);
 
 		albedoAdjustment?.Apply(rgba, vtf.Width, vtf.Height);
 
@@ -408,11 +617,11 @@ public sealed class SourceMaterialConverter
 		//
 		// ⚠️ 尺寸必须一致才逐像素写。不一致就**明确失败**，不重采样、更不静默取一角
 		// ——静默取一角会产出一张"看起来有发光、位置全错"的图，比不支持更难查。
-		if (!string.IsNullOrWhiteSpace(emissionTexture))
+		if (!string.IsNullOrWhiteSpace(loaded.EmissionTexture))
 		{
-			var emissionStem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(emissionTexture));
+			var emissionStem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(loaded.EmissionTexture));
 			if (!source.TryReadVtf(emissionStem, out var emissionBytes))
-				throw new InvalidDataException($"声明了 $emissiontexture={emissionTexture}，但材质来源里找不到它");
+				throw new InvalidDataException($"声明了 $emissiontexture={loaded.EmissionTexture}，但材质来源里找不到它");
 
 			var emissionVtf = VtfFile.Read(emissionBytes);
 			var emissionRgba = encoder.DecodeToRgba(BuildSourceDds(emissionVtf));
@@ -425,7 +634,7 @@ public sealed class SourceMaterialConverter
 			// 也不能直接失败（那会让整个材质造不出来，上面实测就撞到了这一条）。
 			// 最近邻在放大时是块状，但发光图本身低频、且这里只取亮度，观感上够用；
 			// 双线性会更好，代价是要处理边界权重——留待有实机对照之后再换。
-			var tint = emissionTint > 0 ? emissionTint : 1;
+			var tint = loaded.EmissionTint > 0 ? loaded.EmissionTint : 1;
 			for (var y = 0; y < vtf.Height; y++)
 			{
 				var sourceY = Math.Min(emissionVtf.Height - 1, y * emissionVtf.Height / vtf.Height);
@@ -442,20 +651,13 @@ public sealed class SourceMaterialConverter
 			}
 		}
 
-		// ⚠️ 发光尚未实现。`advanced` 槽 5 的 **alpha 就是 emission**，所以实现方式很清楚：
-		// 按 `$emissiontexture` 把亮度写回这个 alpha。**但两张贴图的尺寸不一定相同**，
-		// 不同就得重采样 —— 那是我还没做、也没验证过的部分。
-		//
-		// 第 36 轮已经把"发光变体"做成了独立材质（身份含 `|emission`），所以加发光是**纯增量**：
-		// 只要在这里对 `Convert` 里那个 emissionTexture 非空的材质写 alpha 即可，
-		// 不必再动合并逻辑——把它作为参数传进来的那一步尚未完成。
 		// DecodeToRgba 返回的是**裸像素**，编码前要重新包一层 DDS——texconv 只吃 DDS。
 		var bc7 = encoder.EncodeToBc7(
 			Hd2TextureAsset.BuildDds(vtf.Width, vtf.Height, Rgba8Unorm, [rgba]), srgb: true);
 
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
-		return new BaseColorBuild(
+		return (
 			new SynthesizedTexture(
 				Hd2AssetId.Texture(textureName),
 				texture.WriteToc(),
@@ -464,8 +666,51 @@ public sealed class SourceMaterialConverter
 				texture.FormatName,
 				texture.Width,
 				texture.Height),
-			opacityMask,
-			useAlphaClip);
+			opacityMask);
+	}
+
+	/// <summary>
+	/// 把<b>一张单独的 VTF</b> 转成 HD2 底色贴图，<b>不涉及任何材质</b>。
+	/// <para>
+	/// 用在"这个 VPK 只带贴图、不带 VMT"的情形（Lunalice 的 C/D/E/F 四组就是纯换色贴图包）。
+	/// 产出的 id 与材质那条路对同一张贴图算出来的<b>完全一致</b>（都只由 basename 派生），
+	/// 所以材质 patch 引用的底色能被贴图 patch 满足。
+	/// </para>
+	/// <para>
+	/// 走的是同一条编码路径（解 DDS → 抹 alpha → BC7 sRGB），所以两边像素也一致。
+	/// 唯一刻意不做的是 matcap 烘焙与发光写入——那两件事是<b>材质</b>的语义，贴图包里没有材质。
+	/// </para>
+	/// </summary>
+	public bool TryConvertTexture(string textureName, out SynthesizedTexture texture, out string failure)
+	{
+		texture = default!;
+		var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(textureName));
+		if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVtf(stem, out var vtfBytes))
+		{
+			failure = $"{stem}：贴图来源里找不到 .vtf";
+			return false;
+		}
+
+		try
+		{
+			var vtf = VtfFile.Read(vtfBytes);
+			var rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+			ZeroAlpha(rgba);
+			var bc7 = encoder.EncodeToBc7(
+				Hd2TextureAsset.BuildDds(vtf.Width, vtf.Height, Rgba8Unorm, [rgba]), srgb: true);
+			var asset = new Hd2TextureAsset();
+			asset.FromDds(bc7);
+			texture = new SynthesizedTexture(
+				Hd2AssetId.Texture(stem), asset.WriteToc(), asset.Pixels, stem,
+				asset.FormatName, asset.Width, asset.Height);
+			failure = string.Empty;
+			return true;
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			failure = $"{stem}：贴图转换失败——{exception.Message}";
+			return false;
+		}
 	}
 
 	/// <summary>

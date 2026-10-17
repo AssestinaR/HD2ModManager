@@ -204,6 +204,47 @@ public sealed class SourceMaterialConverterTests
 	}
 
 	/// <summary>
+	/// matcap 烘进底色时，<b>不同的 matcap 就是不同的底色</b>，身份必须分开。
+	/// <para>
+	/// 实测的形状：A1 里 40 个金属装饰件与 <c>jewel</c> 共用同一张
+	/// <c>Ornament_metal_Underwear</c> 底色，但前者 <c>$matcaptexture</c> 指向 <c>11</c>（金/银）、
+	/// 后者指向 <c>6</c>（宝石）。身份不含 matcap 时它们撞成同一个 id，
+	/// 装配器去重"先到先得"——宝石和金属变成同一个颜色。
+	/// </para>
+	/// <para>
+	/// ⚠️ 加不加这个后缀，判据是 <b>VMT 里的 <c>$matcaptint ≥ 0.9</c></b>，不是"队列里有没有模型
+	/// 能算出平均色"。否则同一个 VMT 在不同队列里会得到不同的 id，patch 之间就再也对不上。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void MaterialIdentitySeparatesDifferentMatcaps()
+	{
+		const string texture = "matchacheese/lunalice/ornament_metal_underwear";
+
+		var plain = SourceMaterialConverter.BuildMaterialIdentity(texture, null, useAlphaClip: false);
+		var gold = SourceMaterialConverter.BuildMaterialIdentity(
+			texture, null, useAlphaClip: false, matcapTexture: @"matchacheese\Lunalice\11");
+		var jewel = SourceMaterialConverter.BuildMaterialIdentity(
+			texture, null, useAlphaClip: false, matcapTexture: @"matchacheese\Lunalice\6");
+
+		Assert.NotEqual(plain, gold);
+		Assert.NotEqual(gold, jewel);
+		Assert.NotEqual(plain, jewel);
+
+		// 同一个 matcap 必须永远得到同一个串——金色 / 银色的 A1 patch 要能同号互换，
+		// 靠的就是"id 只由名字决定"，与队列里放了哪个 C 无关。
+		Assert.Equal(
+			gold,
+			SourceMaterialConverter.BuildMaterialIdentity(
+				texture, null, useAlphaClip: false, matcapTexture: @"matchacheese\Lunalice\11"));
+
+		// 后缀叠在 alphaclip 之后，顺序固定。
+		var clippedGold = SourceMaterialConverter.BuildMaterialIdentity(
+			texture, null, useAlphaClip: true, matcapTexture: "m");
+		Assert.EndsWith("|alphaclip|matcap:m", clippedGold, StringComparison.Ordinal);
+	}
+
+	/// <summary>
 	/// 真实数据上的回归闸门：<b>同一张底色同时被"要镂空"和"不要镂空"的材质使用时，
 	/// 必须产出两个不同的 HD2 材质</b>，而不是撞成一个。
 	/// <para>
