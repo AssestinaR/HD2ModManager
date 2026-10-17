@@ -184,6 +184,25 @@ function C.plan(target,source,model,enabled,metadata,checkpoint,composition_mode
             end
             if checkpoint and index%64==0 then checkpoint() end
         end
+        -- Row order decides who gets the native 20-piece budget.
+        --
+        -- The native consumer at game.dll+0x81f470 walks the row array in order
+        -- and collects piece pointers into a fixed 20-entry stack array
+        -- (`cmp ..., 0x14; jae`). A row qualifies when `row.body == current
+        -- body variant` or `row.body == 3` ("Any"). Once those 20 slots fill,
+        -- the rest are dropped silently: the piece never gets an instance
+        -- handle, so the body part simply does not render.
+        --
+        -- "Any" must precede Stocky (tests/test_armor_registry_incremental.lua
+        -- asserts it, and native kits store body 3 first), so the Any row --
+        -- the big one, up to 31 pieces in a full composition -- always spends
+        -- the budget first. That is why a 43-piece composition rendered nothing
+        -- but the head: the body-specific type0 pieces were never reached.
+        --
+        -- The cap itself cannot be raised: the three 20-entry arrays end
+        -- exactly on each other and on the stack cookie, so there is no slack
+        -- for a larger count. Any real fix has to change *what is in which
+        -- row*, not the order or the constant.
         local rank={[3]=1,[0]=2,[1]=3}
         table.sort(rows,function(a,b)return (rank[a.body] or 1000+a.body)<(rank[b.body] or 1000+b.body)end)
     else
