@@ -292,10 +292,13 @@ def verify(report):
         problems.append(f"host 的 Unit 数是 {model['units']}，应当是 7。")
 
     # ② 每个选项都必须真的产出一个 patch。
+    #
+    # ⚠️ 但"这个 VPK 没进队列"不算错：裸体版只出 7 份本体，用不到服装材质，
+    # 所以 B1/B2 可以不转换。缺的选项直接跳过并在 human 输出里点出来。
     for stem, label in OPTIONS:
         item = stems.get(stem)
         if item is None:
-            problems.append(f"选项 {label} 没有转换记录（{stem}）。")
+            print(f"   · 跳过选项 {label}：这次队列里没有它")
             continue
         if base_toc(item) is None:
             problems.append(f"选项 {label} 一个 patch 都没产出。")
@@ -357,7 +360,7 @@ def verify(report):
         for stem in members:
             path = toc_by_stem.get(stem)
             if path is None:
-                problems.append(f"{group_name} 组里的 {stem} 没有 TOC。")
+                # 这个选项这次没转换（裸体版用不到服装），不算问题。
                 continue
             key_sets[stem] = read_toc_keys(path)
         if len(set(frozenset(keys) for keys in key_sets.values())) > 1:
