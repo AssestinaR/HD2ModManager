@@ -100,6 +100,18 @@ def select(pieces, config):
                 if p['pieceType'] == 0
                 or (p['slot'] in (2, 3, 4, 5) and p['pieceType'] <= 3)
                 or (p['slot'] == 6 and p['pieceType'] <= 2)]
+    if config == 'Y':
+        # 把"超容量的槽有几个"和"总数多少"分开的那一格。
+        #
+        # 组成：本体 + slot 2/3/5/6 各 type<=2（C1 那批）+ slot 4 挖深到 type 8。
+        # 于是 **只有 slot 4 一个槽超容量**，但总数 29、生效 23 ——
+        # 正好压过 M3（总数 28、生效 22、5 个槽超容量）那条线。
+        #
+        # 判读：Y 正常 -> 触发点是"几个槽超容量"（1 个随便深都行）；
+        #       Y 也坏 -> 触发点是总数，与几个槽超容量无关。
+        return [p for p in pieces
+                if (p['pieceType'] <= 2 and p['slot'] != 0)
+                or (p['slot'] == 4 and p['pieceType'] <= 8)]
     raise SystemExit('unknown config %r' % config)
 
 
@@ -145,7 +157,7 @@ def main():
                     choices=['C1', 'C2', 'C3',
                              'S3', 'S4', 'S5', 'S6', 'S7', 'S8',
                              'M2', 'M3', 'M4', 'M5',
-                             'K1', 'K2', 'K3', 'K4', 'K5', 'X6'])
+                             'K1', 'K2', 'K3', 'K4', 'K5', 'X6', 'Y'])
     ap.add_argument('--disable', action='append', default=[], metavar='SLOT:TYPE',
                     help='在预设基础上再关掉某个 Piece，例如 --disable 4:8。可重复。')
     ap.add_argument('--model', default=r'E:\mod\M3-verify-Unaligned\custom-model.json')
