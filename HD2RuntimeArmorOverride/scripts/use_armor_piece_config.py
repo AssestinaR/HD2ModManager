@@ -18,12 +18,19 @@
 
 预设
 ----
-    C1  只留 pieceType<=2          -> 25 个 Piece，0 别名（预期：全部正常）
-    C2  本体 + 左腿 type 1/2/3      -> 10 个 Piece，1 个别名组（比 C1 少，只多一个 type=3）
-    C3  全部 43 个                  -> 复现故障
+    C1      只留 pieceType<=2          -> 25 个 Piece，0 别名（预期：全部正常）
+    C2      本体 + 左腿 type 1/2/3      -> 16 个 Piece，1 个别名组（= 阶梯的 N=3）
+    C3      全部 43 个                  -> 复现故障
 
-C1 与 C2 只差"有没有一个 pieceType>=3 的 Piece"，而且 C2 的 Piece 数还**更少**，
-所以"总数太多"这个解释被排除掉了。
+    S3..S8  单变量阶梯：**只有本体 + slot 4 的配件**，把 slot 4 的 pieceType 上限抬到 N。
+            总数 16..21，全部远低于原版上限 29 —— 于是"总数太多"被排除，
+            量出来的纯粹是"一个槽能装几个"。S3 就是 C2（实测身体正常）。
+    M2..M5  互补的"总数阶梯"：本体 + slot 2/3/4/5/6 各 type<=N。
+            每槽 3..6 个，总数 19..37。用来在"每槽几个"之外单独量"总数多少"。
+            M2 就是 C1（实测身体正常），M5 的有效 Piece 数正好等于 C3。
+
+    判读：先跑 S 阶梯，**遇到第一个身体消失的那一级就停**，记下 N。
+    如果 S8（9 个挤在一槽、总数只有 21）仍然正常，再跑 M 阶梯找总数阈值。
 
 用法
 ----
@@ -51,6 +58,22 @@ def select(pieces, config):
                 if p['pieceType'] == 0 or (p['slot'] == 4 and p['pieceType'] <= 3)]
     if config == 'C3':
         return list(pieces)
+    if config.startswith('S'):
+        # 单变量阶梯：**只有本体 + slot 4 的配件**，把 slot 4 的 pieceType 上限抬到 N。
+        # 规则与 C2 完全相同，所以 S3 就是 C2（实测身体正常）。
+        #
+        # 为什么不用"其他槽也带 type<=2"那种写法：那样总数会到 29..31，正好撞上原版
+        # 每 Kit 的观测上限 29，于是"每槽几个"和"总数多少"两个变量缠在一起。
+        # 现在总数只有 16..21，**远低于 29**，量出来的就纯粹是"一个槽能装几个"。
+        depth = int(config[1:])
+        return [p for p in pieces
+                if p['pieceType'] == 0 or (p['slot'] == 4 and p['pieceType'] <= depth)]
+    if config.startswith('M'):
+        # 互补的"总数阶梯"：本体 + slot 2/3/4/5/6 各 type<=N。
+        # 每槽个数从 3 抬到 6，总数从 19 抬到 37 —— 用来在"每槽几个"之外单独量"总数多少"。
+        depth = int(config[1:])
+        return [p for p in pieces
+                if p['pieceType'] == 0 or (p['slot'] in (2, 3, 4, 5, 6) and p['pieceType'] <= depth)]
     raise SystemExit('unknown config %r' % config)
 
 
@@ -59,13 +82,17 @@ def analyze(pieces):
     for body in (0, 1):
         active = [p for p in pieces if p['body'] in (body, 3)]
         banks = defaultdict(list)
+        per_slot = defaultdict(int)
         for p in active:
+            per_slot[p['slot']] += 1
             if 1 <= p['slot'] <= 9:
                 banks[(p['slot'], bank_of(p['pieceType']))].append(p)
         groups = {k: v for k, v in banks.items() if len(v) > 1}
         held = sum(len(v) for v in groups.values())
-        print('  body=%d：生效 %d 个 Piece，别名组 %d 个，被压住 %d 个'
-              % (body, len(active), len(groups), held))
+        worst_slot = max(per_slot, key=lambda s: per_slot[s]) if per_slot else None
+        print('  body=%d：生效 %d 个 Piece，最大每槽 %d 个（%s），别名组 %d 个，被压住 %d 个'
+              % (body, len(active), per_slot[worst_slot] if worst_slot is not None else 0,
+                 SLOT_NAMES.get(worst_slot, '?'), len(groups), held))
         for (slot, bank), entries in sorted(groups.items()):
             types = ','.join(str(p['pieceType']) for p in sorted(entries, key=lambda x: x['pieceType']))
             print('      %-9s slot=%d bank=%s  挤了 %d 个，pieceType=[%s]'
@@ -88,7 +115,10 @@ def list_slots(pieces):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--config', required=True, choices=['C1', 'C2', 'C3'])
+    ap.add_argument('--config', required=True,
+                    choices=['C1', 'C2', 'C3',
+                             'S3', 'S4', 'S5', 'S6', 'S7', 'S8',
+                             'M2', 'M3', 'M4', 'M5'])
     ap.add_argument('--disable', action='append', default=[], metavar='SLOT:TYPE',
                     help='在预设基础上再关掉某个 Piece，例如 --disable 4:8。可重复。')
     ap.add_argument('--model', default=r'E:\mod\M3-verify-Unaligned\custom-model.json')
