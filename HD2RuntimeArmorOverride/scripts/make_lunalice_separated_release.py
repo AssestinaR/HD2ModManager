@@ -249,7 +249,9 @@ def rekey_host_to_re2310(unit_patch, destination, replace=None, hide_keys=None):
                                 src["unknown4"]))
     print(f"   隐藏 {len(hide_keys)} 个：{' '.join(k[-4:] for k in RE2310_HIDE_KEYS)}")
 
-    if len(entries) != 23:
+    # 正式交付必须是 23 个（RE-2310 的 23 个 Piece）。做**探针**时只写一两个键，那是故意的，
+    # 所以只在用默认映射时检查。
+    if len(entries) != 23 and (replace is RE2310_REPLACE or replace is RE2310_REPLACE_ARMOR):
         raise SystemExit(f"条目数 {len(entries)} != 23（RE-2310 的 23 个 Piece）")
 
     os.makedirs(destination, exist_ok=True)
