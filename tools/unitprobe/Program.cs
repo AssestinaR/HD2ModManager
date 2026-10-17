@@ -44,9 +44,31 @@ var dumpSections = args.Contains("--sections", StringComparer.Ordinal);
 var manifestPath = ArgValue(args, "--manifest");
 var emitMapPath = ArgValue(args, "--emit-map");
 var groupsPath = ArgValue(args, "--groups");
+var onlyFileId = ArgValue(args, "--only");
+var patchFileId = ArgValue(args, "--patch-numindices");
+var patchValue = ArgInt(args, "--patch-value", 0);
 
 const int SectionRecordSize = 24;
 const int NumIndicesOffsetInSection = 16;
+
+// Field offsets inside a 24-byte section record (UnitMeshReader.cs:679-686).
+var patchFieldName = (ArgValue(args, "--patch-field") ?? "numindices").ToLowerInvariant();
+var patchFieldOffset = patchFieldName switch
+{
+	"materialindex" => 0,
+	"vertexoffset" => 4,
+	"numvertices" => 8,
+	"indexoffset" => 12,
+	"numindices" => 16,
+	"groupindex" => 20,
+	_ => -1,
+};
+if (patchFieldOffset < 0)
+{
+	Console.Error.WriteLine($"unknown --patch-field '{patchFieldName}'; expected materialindex|vertexoffset|numvertices|indexoffset|numindices|groupindex");
+	return 2;
+}
+
 var jsonOptions = new JsonSerializerOptions
 {
 	WriteIndented = true,
@@ -79,6 +101,15 @@ foreach (var entry in entries)
 		continue;
 	}
 
+	if (onlyFileId is not null)
+	{
+		var wanted = onlyFileId.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? onlyFileId[2..] : onlyFileId;
+		if (!entry.AssetKey.FileId.ToString("x16").Equals(wanted, StringComparison.OrdinalIgnoreCase))
+		{
+			continue;
+		}
+	}
+
 	if (units >= maxUnits)
 	{
 		Console.WriteLine($"... stop after {maxUnits} units");
@@ -106,6 +137,7 @@ foreach (var entry in entries)
 	Console.WriteLine();
 	Console.WriteLine($"UNIT {entry.EntryIndex} fileId=0x{entry.AssetKey.FileId:x16}");
 	Console.WriteLine($"  toc={payload.TocData.Length} gpu={payload.GpuResourceData.Length} stream={payload.StreamData.Length} ver=0x{model.Version:x8} meshes={model.Meshes.Count} streams={model.Streams.Count} materials={model.Materials.Count} boneInfos={model.BoneInfos.Count} transforms={model.TransformInfo.Entries.Count}");
+	Console.WriteLine($"  compositeRef=0x{model.CompositeRef:x16} compositePayload={(unit.CompositePayload is not null)} bonesRef=0x{model.BonesRef:x16} lodGroupList={model.UnreversedLodGroupListData.Length}B streamInfoOffset=0x{model.StreamInfoOffset:x} meshInfoOffset=0x{model.MeshInfoOffset:x}");
 
 	foreach (var stream in model.Streams)
 	{
@@ -202,6 +234,116 @@ if (emitMapPath is not null)
 	var (verified, mismatched) = VerifySectionMap(map, tocByFileId);
 	await File.WriteAllTextAsync(fullMapPath, JsonSerializer.Serialize(map, jsonOptions));
 	Console.WriteLine($"map written {fullMapPath} units={map.Units.Count} decorations={map.Decorations.Count} offsetsVerified={verified} mismatched={mismatched}");
+}
+
+// In-place edit of section NumIndices values inside the patch file.
+//
+// Patch TOC payloads are stored raw (PatchEntryPayloadReader reads them straight
+// from TocDataOffset with no decompression), so a section's draw count is a plain
+// dword we can rewrite without rebuilding the archive. The absolute file offset is
+// TocDataOffset + section.Offset + 16.
+//
+// Spec is <fileId>:<lod>:<sectionIndex> where lod and sectionIndex accept "*".
+// Use "*:*" for the decisive experiment: if zeroing every section of every LOD
+// still renders, the renderer simply does not read this field.
+if (patchFileId is not null)
+{
+	var parts = patchFileId.Split(':');
+	if (parts.Length != 3)
+	{
+		Console.Error.WriteLine("--patch-numindices expects <fileId>:<lod>:<sectionIndex> (lod and sectionIndex accept *)");
+		return 2;
+	}
+
+	var allLods = parts[1] == "*";
+	var allSections = parts[2] == "*";
+	var sectionRange = ParseSectionRange(parts[2]);
+	if (!allLods && !int.TryParse(parts[1], out _))
+	{
+		Console.Error.WriteLine("--patch-numindices expects numeric lod or *");
+		return 2;
+	}
+
+	if (!allSections && sectionRange is null)
+	{
+		Console.Error.WriteLine("--patch-numindices expects numeric section, a-b range, or *");
+		return 2;
+	}
+
+	var patchLod = allLods ? 0 : int.Parse(parts[1]);
+	var patchSectionIndex = allSections ? 0 : sectionRange?.From ?? 0;
+
+	var normalized = parts[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? parts[0][2..] : parts[0];
+	var allUnits = normalized == "*";
+	var matchedEntries = entries
+		.Where(candidate => candidate.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId
+			&& (allUnits || candidate.AssetKey.FileId.ToString("x16").Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+		.ToArray();
+	if (matchedEntries.Length == 0)
+	{
+		Console.Error.WriteLine($"no unit entry with fileId {parts[0]}");
+		return 1;
+	}
+
+	var patchBytes = File.ReadAllBytes(path);
+	var backupPath = path + ".bak";
+	if (!File.Exists(backupPath))
+	{
+		File.Copy(path, backupPath);
+		Console.WriteLine($"backup written {backupPath}");
+	}
+
+	var patched = 0;
+	foreach (var target in matchedEntries)
+	{
+		var patchedUnit = await reader.ReadAsync(target, entries);
+		var targets = new List<(UnitMeshInfo Mesh, int SectionIndex, UnitMeshSectionInfo Section)>();
+		foreach (var mesh in patchedUnit.Model.Meshes)
+		{
+			if (allLods || mesh.LodIndex == patchLod)
+			{
+				for (var index = 0; index < mesh.Sections.Count; index++)
+				{
+					if (allSections
+						|| (sectionRange is { } range && index >= range.From && index <= range.To))
+					{
+						targets.Add((mesh, index, mesh.Sections[index]));
+					}
+				}
+			}
+		}
+
+		if (targets.Count == 0)
+		{
+			continue;
+		}
+
+		var unitPatched = 0;
+		foreach (var (mesh, sectionIndex, section) in targets)
+		{
+			var absolute = (long)target.TocDataOffset + section.Offset + patchFieldOffset;
+			if (absolute + 4 > patchBytes.Length)
+			{
+				Console.Error.WriteLine($"offset 0x{absolute:x} is past the end of {path}");
+				continue;
+			}
+
+			var previous = BitConverter.ToUInt32(patchBytes, (int)absolute);
+			BitConverter.GetBytes((uint)patchValue).CopyTo(patchBytes, absolute);
+			patched++;
+			unitPatched++;
+			if (matchedEntries.Length == 1)
+			{
+				Console.WriteLine($"  lod={mesh.LodIndex,-2} section={sectionIndex,-2} record=0x{section.Offset:x6} field=0x{absolute:x8} numIndices {previous} -> {patchValue}");
+			}
+		}
+
+		Console.WriteLine($"  unit 0x{target.AssetKey.FileId:x16} tocOffset=0x{target.TocDataOffset:x} fields={unitPatched}");
+	}
+
+	File.WriteAllBytes(path, patchBytes);
+	Console.WriteLine($"patched {path}");
+	Console.WriteLine($"  units={matchedEntries.Length} fields={patched}");
 }
 
 return 0;
@@ -454,6 +596,25 @@ static IReadOnlyList<DecorationMap> ApplyGrouping(
 	}
 
 	return result;
+}
+
+static (int From, int To)? ParseSectionRange(string text)
+{
+	if (text == "*")
+	{
+		return null;
+	}
+
+	var dash = text.IndexOf('-', StringComparison.Ordinal);
+	if (dash > 0
+		&& int.TryParse(text[..dash], out var from)
+		&& int.TryParse(text[(dash + 1)..], out var to)
+		&& to >= from)
+	{
+		return (from, to);
+	}
+
+	return int.TryParse(text, out var single) ? (single, single) : null;
 }
 
 static string Sha256(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
