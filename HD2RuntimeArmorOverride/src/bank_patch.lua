@@ -72,7 +72,14 @@ local function load_kernel()
 end
 
 local function module_base(kernel, ffi)
-    local handle = kernel.GetModuleHandleW(ffi.cast('const wchar_t *', 'game.dll'))
+    -- 必须构造真正的 UTF-16 宽字符串。`ffi.cast('const wchar_t*', 'game.dll')`
+    -- 只是把 Lua 字符串的 ASCII 字节当成宽字符指针传，名字是乱码，
+    -- GetModuleHandleW 必然找不到（实测日志：install: module_base failed）。
+    local name = 'game.dll'
+    local wide = ffi.new('wchar_t[?]', #name + 1)
+    for index = 1, #name do wide[index - 1] = name:byte(index) end
+    wide[#name] = 0
+    local handle = kernel.GetModuleHandleW(wide)
     if handle == nil then return nil, 'GetModuleHandleW 找不到 game.dll' end
     return tonumber(ffi.cast('uintptr_t', handle))
 end
