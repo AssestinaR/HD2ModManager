@@ -1,16 +1,39 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 
-// Offline read-only probe: dump every Unit entry of a patch archive together
-// with its stream descriptors, so we can tell whether vertex buffers are
-// addressed per entry (offset relative to the entry's own .gpu_resources
-// slice) or through an archive-global identifier.
+// Offline read-only probe for HD2 patch Unit resources.
 //
-// usage: unitprobe <patch toc file> [--max-units N] [--meshes N]
+// Two jobs:
+//   1. dump every Unit entry with its stream descriptors, per-mesh section
+//      counts and semantics, so we can reason about how geometry is laid out;
+//   2. emit a section map (--emit-map) that tells a runtime which TOC dwords
+//      control the visibility of each decoration.
+//
+// Why the map exists: a Unit's sections are material batches inside one
+// shared vertex pool. When several decorations share a material they also
+// share nothing else, so the section boundary is the only usable toggle
+// point, and it cannot be recovered from the built asset alone. The build
+// side (vpk2patch's manifest) knows the grouping, so this tool re-derives it
+// and freezes it into a sidecar file.
+//
+// Section record layout (24 bytes, verified against UnitMeshReader.cs:679-686
+// and the composite path at :415-422):
+//   +0  materialIndex (u32)
+//   +4  vertexOffset  (u32)
+//   +8  numVertices   (u32)
+//   +12 indexOffset   (u32)
+//   +16 numIndices    (u32)   <- the draw count we toggle
+//   +20 groupIndex    (u32)
+//
+// usage: unitprobe <patch toc file> [--max-units N] [--meshes N] [--sections]
+//                                 [--manifest <manifest.json>] [--emit-map <out.json>]
 
 if (args.Length < 1)
 {
-	Console.Error.WriteLine("usage: unitprobe <patch toc file> [--max-units N] [--meshes N]");
+	Console.Error.WriteLine("usage: unitprobe <patch toc file> [--max-units N] [--meshes N] [--sections] [--manifest <json>] [--emit-map <json>]");
 	return 2;
 }
 
@@ -18,17 +41,36 @@ var path = Path.GetFullPath(args[0]);
 var maxUnits = ArgInt(args, "--max-units", 12);
 var maxMeshes = ArgInt(args, "--meshes", 4);
 var dumpSections = args.Contains("--sections", StringComparer.Ordinal);
+var manifestPath = ArgValue(args, "--manifest");
+var emitMapPath = ArgValue(args, "--emit-map");
+var groupsPath = ArgValue(args, "--groups");
+
+const int SectionRecordSize = 24;
+const int NumIndicesOffsetInSection = 16;
+var jsonOptions = new JsonSerializerOptions
+{
+	WriteIndented = true,
+	DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+};
 
 var scanner = new PatchTocScanner();
 var entries = await scanner.ScanEntriesAsync(path);
 Console.WriteLine($"file     {path}");
 Console.WriteLine($"entries  {entries.Count}");
 
+var manifest = manifestPath is null ? null : ReadManifest(manifestPath);
+if (manifest is not null)
+{
+	Console.WriteLine($"manifest {manifestPath} groups={manifest.Groups.Count}");
+}
+
 var reader = new PatchUnitMeshReader();
 var units = 0;
 var failures = 0;
 var vertexIds = new Dictionary<ulong, List<string>>();
 var indexIds = new Dictionary<ulong, List<string>>();
+var collected = new List<UnitMap>();
+var tocByFileId = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
 
 foreach (var entry in entries)
 {
@@ -58,6 +100,9 @@ foreach (var entry in entries)
 	units++;
 	var model = unit.Model;
 	var payload = unit.Payload;
+	var head = model.Meshes.FirstOrDefault(mesh => mesh.LodIndex == 0) ?? model.Meshes.FirstOrDefault();
+	var semantic = head?.SemanticInfo ?? UnitMeshSemanticInfo.Empty(0, 0);
+
 	Console.WriteLine();
 	Console.WriteLine($"UNIT {entry.EntryIndex} fileId=0x{entry.AssetKey.FileId:x16}");
 	Console.WriteLine($"  toc={payload.TocData.Length} gpu={payload.GpuResourceData.Length} stream={payload.StreamData.Length} ver=0x{model.Version:x8} meshes={model.Meshes.Count} streams={model.Streams.Count} materials={model.Materials.Count} boneInfos={model.BoneInfos.Count} transforms={model.TransformInfo.Entries.Count}");
@@ -71,8 +116,8 @@ foreach (var entry in entries)
 
 	foreach (var mesh in model.Meshes.Take(maxMeshes))
 	{
-		var semantic = mesh.SemanticInfo;
-		Console.WriteLine($"  m{mesh.Index} meshId={mesh.MeshId} lod={mesh.LodIndex} xf={mesh.TransformIndex} st={mesh.StreamIndex} nsec={mesh.NumSections} secOff={mesh.SectionsOffset} nmat={mesh.NumMaterials} matOff={mesh.MaterialOffset} sem=[slot={semantic.Slot} type={semantic.PieceType} body={semantic.BodyType} weight={semantic.Weight} name={semantic.Name}]");
+		var info = mesh.SemanticInfo;
+		Console.WriteLine($"  m{mesh.Index} meshId={mesh.MeshId} lod={mesh.LodIndex} xf={mesh.TransformIndex} st={mesh.StreamIndex} nsec={mesh.NumSections} secOff={mesh.SectionsOffset} nmat={mesh.NumMaterials} matOff={mesh.MaterialOffset} sem=[slot={info.Slot} type={info.PieceType} body={info.BodyType} weight={info.Weight} name={info.Name}]");
 	}
 
 	if (model.Meshes.Count > maxMeshes)
@@ -80,29 +125,340 @@ foreach (var entry in entries)
 		Console.WriteLine($"  ... {model.Meshes.Count - maxMeshes} more meshes");
 	}
 
-	if (dumpSections)
+	var materialBySlot = model.Materials
+		.GroupBy(binding => binding.SectionId)
+		.ToDictionary(group => group.Key, group => group.First().MaterialId);
+
+	var meshMaps = new List<MeshMap>();
+	foreach (var mesh in model.Meshes
+		.OrderBy(mesh => mesh.LodIndex == 0 ? 0 : 1)
+		.ThenBy(mesh => mesh.LodIndex))
 	{
-		var lod0 = model.Meshes.FirstOrDefault(mesh => mesh.LodIndex == 0) ?? model.Meshes.FirstOrDefault();
-		if (lod0 is not null)
+		var sectionMaps = mesh.Sections.Select((section, index) => new SectionMap(
+			index,
+			Hex(section.Offset),
+			Hex(section.Offset + NumIndicesOffsetInSection),
+			section.NumIndices,
+			section.NumIndices / 3,
+			section.MaterialIndex,
+			section.MaterialSlotId,
+			"0x" + (materialBySlot.TryGetValue(section.MaterialSlotId, out var materialId) ? materialId.ToString("x16") : "0"),
+			section.GroupIndex,
+			section.VertexOffset,
+			section.NumVertices,
+			section.IndexOffset)).ToArray();
+
+		meshMaps.Add(new MeshMap(mesh.Index, mesh.LodIndex, mesh.MeshId, sectionMaps));
+
+		if (dumpSections && mesh.LodIndex == 0)
 		{
-			Console.WriteLine($"  SECTIONS of mesh {lod0.Index} (lod={lod0.LodIndex}) count={lod0.Sections.Count}");
-			var bySlot = model.Materials
-				.GroupBy(binding => binding.SectionId)
-				.ToDictionary(group => group.Key, group => group.First().MaterialId);
-			foreach (var section in lod0.Sections)
+			Console.WriteLine($"  SECTIONS of mesh {mesh.Index} (lod={mesh.LodIndex}) count={sectionMaps.Length}");
+			foreach (var section in sectionMaps)
 			{
-				bySlot.TryGetValue(section.MaterialSlotId, out var materialId);
-				Console.WriteLine($"    sec{section.Offset:x8} idxOff={section.IndexOffset,9} nIdx={section.NumIndices,7} vtxOff={section.VertexOffset,9} nVtx={section.NumVertices,7} matIdx={section.MaterialIndex,4} matSlot={section.MaterialSlotId,5} group={section.GroupIndex,4} matId=0x{materialId:x16}");
+				Console.WriteLine($"    sec{section.TocOffset} idxOff={section.IndexOffset,9} nIdx={section.NumIndices,7} vtxOff={section.VertexOffset,9} nVtx={section.NumVertices,7} matIdx={section.MaterialIndex,4} matSlot={section.MaterialSlotId,5} group={section.GroupIndex,4} matId={section.MaterialId}");
 			}
 		}
 	}
+
+	collected.Add(new UnitMap(
+		(int)entry.EntryIndex,
+		"0x" + entry.AssetKey.TypeId.ToString("x16"),
+		"0x" + entry.AssetKey.FileId.ToString("x16"),
+		payload.TocData.Length,
+		payload.GpuResourceData.Length,
+		semantic.Slot,
+		semantic.PieceType,
+		semantic.BodyType,
+		semantic.Weight,
+		meshMaps));
+
+	tocByFileId["0x" + entry.AssetKey.FileId.ToString("x16")] = payload.TocData;
 }
 
 Console.WriteLine();
 Console.WriteLine($"units={units} failures={failures}");
 ReportDuplicates("VertexBufferId", vertexIds);
 ReportDuplicates("IndexBufferId", indexIds);
+
+if (emitMapPath is not null)
+{
+	var map = BuildSectionMap(path, collected, manifest, manifestPath);
+	if (groupsPath is not null && map.Decorations.Count > 0)
+	{
+		var grouped = ApplyGrouping(map.Decorations, ReadGrouping(groupsPath));
+		if (grouped.Count > 0)
+		{
+			map = map with { Decorations = grouped };
+			Console.WriteLine($"grouping applied from {groupsPath}: {grouped.Count} decorations");
+		}
+	}
+	var fullMapPath = Path.GetFullPath(emitMapPath);
+	var directory = Path.GetDirectoryName(fullMapPath);
+	if (!string.IsNullOrEmpty(directory))
+	{
+		Directory.CreateDirectory(directory);
+	}
+
+	var (verified, mismatched) = VerifySectionMap(map, tocByFileId);
+	await File.WriteAllTextAsync(fullMapPath, JsonSerializer.Serialize(map, jsonOptions));
+	Console.WriteLine($"map written {fullMapPath} units={map.Units.Count} decorations={map.Decorations.Count} offsetsVerified={verified} mismatched={mismatched}");
+}
+
 return 0;
+
+static SectionMapFile BuildSectionMap(
+	string patchPath,
+	IReadOnlyList<UnitMap> units,
+	Manifest? manifest,
+	string? manifestPath)
+{
+	var tocBytes = File.ReadAllBytes(patchPath);
+	var gpuPath = patchPath + ".gpu_resources";
+	var decorations = new List<DecorationMap>();
+
+	if (manifest is not null)
+	{
+		// The manifest lists one group per decoration in draw order. Verify that
+		// claim against every unit's LOD0 triangle counts before trusting it:
+		// a silent mismatch would attach names to the wrong geometry.
+		foreach (var unit in units)
+		{
+			var lod0 = Lod0(unit);
+			if (lod0 is null || lod0.Sections.Count != manifest.Groups.Count)
+			{
+				Console.Error.WriteLine($"warning: unit {unit.FileId} has {lod0?.Sections.Count ?? 0} LOD0 sections but manifest has {manifest.Groups.Count} groups; names skipped for this unit");
+				continue;
+			}
+
+			for (var index = 0; index < lod0.Sections.Count; index++)
+			{
+				var section = lod0.Sections[index];
+				var group = manifest.Groups[index];
+				if (section.Triangles != group.Triangles)
+				{
+					Console.Error.WriteLine($"warning: unit {unit.FileId} section {index} has {section.Triangles} triangles, manifest group '{group.Name}' has {group.Triangles}");
+				}
+			}
+		}
+
+		foreach (var group in manifest.Groups)
+		{
+			var targets = new List<DecorationTarget>();
+			foreach (var unit in units)
+			{
+				var lod0 = Lod0(unit);
+				if (lod0 is null || lod0.Sections.Count != manifest.Groups.Count)
+				{
+					continue;
+				}
+
+				var toggles = new List<SectionToggle>();
+				foreach (var mesh in unit.Meshes)
+				{
+					// Only the real LOD family carries the decoration's sections. The
+					// extra lod=-1 meshes are separate single-section statics and would
+					// otherwise be mistaken for section 0 of the first decoration.
+					if (mesh.Lod < 0 || mesh.Sections.Count != lod0.Sections.Count)
+					{
+						continue;
+					}
+
+					if (group.Order >= mesh.Sections.Count)
+					{
+						continue;
+					}
+
+					var section = mesh.Sections[group.Order];
+					toggles.Add(new SectionToggle(mesh.Lod, mesh.MeshIndex, section.Index, section.NumIndicesOffset, section.NumIndices));
+				}
+
+				targets.Add(new DecorationTarget(unit.FileId, unit.Slot, unit.PieceType, unit.BodyType, toggles));
+			}
+
+			decorations.Add(new DecorationMap(group.Name, "manifest", group.MaterialId, group.Triangles, targets));
+		}
+	}
+
+	return new SectionMapFile(
+		"hd2mod.unit-section-map/1",
+		new PatchInfo(patchPath, Sha256(tocBytes), tocBytes.LongLength,
+			File.Exists(gpuPath) ? Sha256(File.ReadAllBytes(gpuPath)) : null),
+		manifest is null ? null : new ManifestInfo(manifestPath!, Sha256(File.ReadAllBytes(manifestPath!)), manifest.Groups.Count),
+		SectionRecordSize,
+		NumIndicesOffsetInSection,
+		"tocRelative",
+		units,
+		decorations);
+}
+
+// Reads every recorded NumIndices offset back out of the owning entry's TOC
+// slice. Section offsets are relative to that slice (UnitMeshReader resolves
+// them as itemStart + relativeOffset inside the entry's TocData), not to the
+// patch file, so the runtime must add the in-memory TOC base of the unit.
+static (int Checked, int Mismatched) VerifySectionMap(
+	SectionMapFile map,
+	IReadOnlyDictionary<string, byte[]> tocByFileId)
+{
+	var checkedCount = 0;
+	var mismatched = 0;
+	foreach (var decoration in map.Decorations)
+	{
+		foreach (var target in decoration.Targets)
+		{
+			if (!tocByFileId.TryGetValue(target.FileId, out var tocBytes))
+			{
+				Console.Error.WriteLine($"verify: no TOC captured for unit {target.FileId}");
+				mismatched += target.Sections.Count;
+				continue;
+			}
+
+			foreach (var toggle in target.Sections)
+			{
+				var offset = Convert.ToUInt32(toggle.NumIndicesOffset["0x".Length..], 16);
+				checkedCount++;
+				if (offset + 4 > tocBytes.Length)
+				{
+					Console.Error.WriteLine($"verify: {decoration.Name} offset {toggle.NumIndicesOffset} is past the TOC end ({tocBytes.Length} bytes)");
+					mismatched++;
+					continue;
+				}
+
+				var actual = BitConverter.ToUInt32(tocBytes, (int)offset);
+				if (actual != toggle.NumIndices)
+				{
+					Console.Error.WriteLine($"verify: {decoration.Name} offset {toggle.NumIndicesOffset} holds {actual}, map says {toggle.NumIndices}");
+					mismatched++;
+				}
+			}
+		}
+	}
+
+	return (checkedCount, mismatched);
+}
+
+static MeshMap? Lod0(UnitMap unit)
+	=> unit.Meshes.FirstOrDefault(mesh => mesh.Lod == 0) ?? unit.Meshes.FirstOrDefault();
+
+static GroupingSpec ReadGrouping(string groupingPath)
+{
+	using var document = JsonDocument.Parse(File.ReadAllBytes(groupingPath));
+	var entries = new List<GroupingEntry>();
+	if (document.RootElement.TryGetProperty("decorations", out var decorations)
+		&& decorations.ValueKind == JsonValueKind.Array)
+	{
+		foreach (var decoration in decorations.EnumerateArray())
+		{
+			var name = decoration.TryGetProperty("name", out var nameElement) ? nameElement.GetString() ?? string.Empty : string.Empty;
+			var members = new List<string>();
+			if (decoration.TryGetProperty("members", out var membersElement) && membersElement.ValueKind == JsonValueKind.Array)
+			{
+				foreach (var member in membersElement.EnumerateArray())
+				{
+					var value = member.GetString();
+					if (!string.IsNullOrEmpty(value))
+					{
+						members.Add(value);
+					}
+				}
+			}
+
+			if (name.Length > 0 && members.Count > 0)
+			{
+				entries.Add(new GroupingEntry(name, members));
+			}
+		}
+	}
+
+	return new GroupingSpec(entries);
+}
+
+static Manifest? ReadManifest(string manifestPath)
+{
+	using var document = JsonDocument.Parse(File.ReadAllBytes(manifestPath));
+	if (!document.RootElement.TryGetProperty("groups", out var groups) || groups.ValueKind != JsonValueKind.Array)
+	{
+		return null;
+	}
+
+	var list = new List<ManifestGroup>();
+	var order = 0;
+	foreach (var group in groups.EnumerateArray())
+	{
+		var name = group.TryGetProperty("group", out var nameElement) ? nameElement.GetString() ?? string.Empty : string.Empty;
+		var materialId = group.TryGetProperty("material", out var materialElement) ? materialElement.GetString() ?? string.Empty : string.Empty;
+		var triangles = group.TryGetProperty("triangles", out var triangleElement) && triangleElement.TryGetInt32(out var value) ? value : 0;
+		list.Add(new ManifestGroup(order++, name, materialId, triangles));
+	}
+
+	return new Manifest(manifestPath, list);
+}
+
+// Applies an author-supplied grouping on top of the per-material decorations.
+//
+// The manifest splits geometry by material, which is not always the unit a
+// player thinks in: a ribbon and the metal studs on it are two materials but
+// one decoration, while a glove and a sleeve may share nothing yet be two.
+// Only a human (or the source model's bodygroup structure) can decide that, so
+// the grouping is an explicit input rather than something we guess.
+//
+// Input:  { "decorations": [ { "name": "ribbon", "members": ["ribbon_1", "mat_ornament_pearl"] } ] }
+// A member that does not exist is reported and skipped.
+static IReadOnlyList<DecorationMap> ApplyGrouping(
+	IReadOnlyList<DecorationMap> baseDecorations,
+	GroupingSpec grouping)
+{
+	var byName = baseDecorations.ToDictionary(decoration => decoration.Name, StringComparer.OrdinalIgnoreCase);
+	var result = new List<DecorationMap>();
+	foreach (var entry in grouping.Decorations)
+	{
+		var members = new List<DecorationMap>();
+		foreach (var name in entry.Members)
+		{
+			if (byName.TryGetValue(name, out var member))
+			{
+				members.Add(member);
+			}
+			else
+			{
+				Console.Error.WriteLine($"grouping: decoration '{entry.Name}' references unknown member '{name}'");
+			}
+		}
+
+		if (members.Count == 0)
+		{
+			continue;
+		}
+
+		var targets = members
+			.SelectMany(member => member.Targets)
+			.GroupBy(target => target.FileId, StringComparer.OrdinalIgnoreCase)
+			.Select(group => new DecorationTarget(
+				group.Key,
+				group.First().Slot,
+				group.First().PieceType,
+				group.First().BodyType,
+				group.SelectMany(target => target.Sections)
+					.OrderBy(toggle => toggle.Lod)
+					.ThenBy(toggle => toggle.MeshIndex)
+					.ThenBy(toggle => toggle.SectionIndex)
+					.ToArray()))
+			.ToArray();
+
+		result.Add(new DecorationMap(
+			entry.Name,
+			"grouping",
+			string.Join(",", members.Select(member => member.MaterialId)),
+			members.Sum(member => member.Triangles),
+			targets,
+			members.Select(member => member.Name).ToArray()));
+	}
+
+	return result;
+}
+
+static string Sha256(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+
+static string Hex(uint value) => "0x" + value.ToString("x8");
 
 static void Track(Dictionary<ulong, List<string>> map, ulong id, string where)
 {
@@ -125,6 +481,19 @@ static void ReportDuplicates(string label, Dictionary<ulong, List<string>> map)
 	}
 }
 
+static string? ArgValue(string[] argv, string name)
+{
+	for (var i = 0; i < argv.Length - 1; i++)
+	{
+		if (string.Equals(argv[i], name, StringComparison.Ordinal))
+		{
+			return argv[i + 1];
+		}
+	}
+
+	return null;
+}
+
 static int ArgInt(string[] argv, string name, int fallback)
 {
 	for (var i = 0; i < argv.Length - 1; i++)
@@ -138,3 +507,86 @@ static int ArgInt(string[] argv, string name, int fallback)
 
 	return fallback;
 }
+
+internal sealed record PatchInfo(
+	[property: JsonPropertyName("path")] string Path,
+	[property: JsonPropertyName("sha256")] string Sha256,
+	[property: JsonPropertyName("size")] long Size,
+	[property: JsonPropertyName("gpuResourcesSha256")] string? GpuResourcesSha256);
+
+internal sealed record ManifestInfo(
+	[property: JsonPropertyName("path")] string Path,
+	[property: JsonPropertyName("sha256")] string Sha256,
+	[property: JsonPropertyName("groupCount")] int GroupCount);
+
+internal sealed record SectionMap(
+	[property: JsonPropertyName("index")] int Index,
+	[property: JsonPropertyName("tocOffset")] string TocOffset,
+	[property: JsonPropertyName("numIndicesOffset")] string NumIndicesOffset,
+	[property: JsonPropertyName("numIndices")] uint NumIndices,
+	[property: JsonPropertyName("triangles")] uint Triangles,
+	[property: JsonPropertyName("materialIndex")] uint MaterialIndex,
+	[property: JsonPropertyName("materialSlotId")] uint MaterialSlotId,
+	[property: JsonPropertyName("materialId")] string MaterialId,
+	[property: JsonPropertyName("groupIndex")] uint GroupIndex,
+	[property: JsonPropertyName("vertexOffset")] uint VertexOffset,
+	[property: JsonPropertyName("numVertices")] uint NumVertices,
+	[property: JsonPropertyName("indexOffset")] uint IndexOffset);
+
+internal sealed record MeshMap(
+	[property: JsonPropertyName("meshIndex")] int MeshIndex,
+	[property: JsonPropertyName("lod")] int Lod,
+	[property: JsonPropertyName("meshId")] uint MeshId,
+	[property: JsonPropertyName("sections")] IReadOnlyList<SectionMap> Sections);
+
+internal sealed record UnitMap(
+	[property: JsonPropertyName("entryIndex")] int EntryIndex,
+	[property: JsonPropertyName("typeId")] string TypeId,
+	[property: JsonPropertyName("fileId")] string FileId,
+	[property: JsonPropertyName("tocSize")] int TocSize,
+	[property: JsonPropertyName("gpuSize")] int GpuSize,
+	[property: JsonPropertyName("slot")] string Slot,
+	[property: JsonPropertyName("pieceType")] string PieceType,
+	[property: JsonPropertyName("bodyType")] string BodyType,
+	[property: JsonPropertyName("weight")] string Weight,
+	[property: JsonPropertyName("meshes")] IReadOnlyList<MeshMap> Meshes);
+
+internal sealed record SectionToggle(
+	[property: JsonPropertyName("lod")] int Lod,
+	[property: JsonPropertyName("meshIndex")] int MeshIndex,
+	[property: JsonPropertyName("sectionIndex")] int SectionIndex,
+	[property: JsonPropertyName("numIndicesOffset")] string NumIndicesOffset,
+	[property: JsonPropertyName("numIndices")] uint NumIndices);
+
+internal sealed record DecorationTarget(
+	[property: JsonPropertyName("fileId")] string FileId,
+	[property: JsonPropertyName("slot")] string Slot,
+	[property: JsonPropertyName("pieceType")] string PieceType,
+	[property: JsonPropertyName("bodyType")] string BodyType,
+	[property: JsonPropertyName("sections")] IReadOnlyList<SectionToggle> Sections);
+
+internal sealed record DecorationMap(
+	[property: JsonPropertyName("name")] string Name,
+	[property: JsonPropertyName("source")] string Source,
+	[property: JsonPropertyName("materialId")] string MaterialId,
+	[property: JsonPropertyName("triangles")] int Triangles,
+	[property: JsonPropertyName("targets")] IReadOnlyList<DecorationTarget> Targets,
+	[property: JsonPropertyName("members")] IReadOnlyList<string>? Members = null);
+
+internal sealed record GroupingSpec(IReadOnlyList<GroupingEntry> Decorations);
+
+internal sealed record GroupingEntry(string Name, IReadOnlyList<string> Members);
+
+internal sealed record SectionMapFile(
+	[property: JsonPropertyName("schema")] string Schema,
+	[property: JsonPropertyName("patch")] PatchInfo Patch,
+	[property: JsonPropertyName("manifest")] ManifestInfo? Manifest,
+	[property: JsonPropertyName("sectionRecordSize")] int SectionRecordSize,
+	[property: JsonPropertyName("numIndicesOffsetInSection")] int NumIndicesOffsetInSection,
+	[property: JsonPropertyName("offsets")] string Offsets,
+	[property: JsonPropertyName("units")] IReadOnlyList<UnitMap> Units,
+	[property: JsonPropertyName("decorations")] IReadOnlyList<DecorationMap> Decorations);
+
+internal sealed record Manifest(string Path, IReadOnlyList<ManifestGroup> Groups);
+
+internal sealed record ManifestGroup(int Order, string Name, string MaterialId, int Triangles);
