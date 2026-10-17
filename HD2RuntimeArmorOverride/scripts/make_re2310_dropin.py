@@ -44,19 +44,23 @@ import hd2_patch as HP
 import hd2_patchw as PW
 import hd2_unit as U
 
-OURS = r'E:\mod\M3-verify-Unaligned\9ba626afa44a3aa3.patch_0'
+OURS = r'E:\tmp\lunalice-merged\9ba626afa44a3aa3.patch_0'
 HIDE = os.path.join(REPO, 'HD2RuntimeArmorOverride', 'evidence',
                     'vanilla-hide-ab-20260928', 'patch', '9ba626afa44a3aa3.patch_5')
 
-# 我们的 payload（合并版七份本体）-> 目标键
+# 我们的 payload（合并版七份本体）-> 目标键。
+#
+# 用 **槽位序号** 而不是硬编码 id：`source convert` 的 unit id 是 `seed + index`（index 从 1 起），
+# 而 seed 每次重建都会变。序号与槽位的对应关系是固定的（BodyRegions.All 的顺序）：
+#   1 Head / 2 Chest / 3 Hips / 4 LeftLeg / 5 RightLeg / 6 LeftArm / 7 RightArm
 REPLACE = {
-    '46b0ed34887b0001': ['af431352d9b95e83'],                                  # Head -> RE-2310 头盔
-    '46b0ed34887b0002': ['cae35ee15168145f', '9841b16544c8fbae'],              # Chest  body1/body0
-    '46b0ed34887b0003': ['17da843a4908511e', '45d79d84b8933a7f'],              # Hips
-    '46b0ed34887b0004': ['c9904983657e9fc8'],                                  # LeftLeg  body3
-    '46b0ed34887b0005': ['9eb91a5581707ef1'],                                  # RightLeg body3
-    '46b0ed34887b0006': ['91eb7be84016ceab', '9a5e6dc74cdb08a3'],              # LeftArm
-    '46b0ed34887b0007': ['7336c6b662522f0e', '4f7bce4ca49ccda8'],              # RightArm
+    1: ['af431352d9b95e83'],                       # Head -> RE-2310 头盔（itemId 1745464610）
+    2: ['cae35ee15168145f', '9841b16544c8fbae'],   # Chest   body1 / body0
+    3: ['17da843a4908511e', '45d79d84b8933a7f'],   # Hips
+    4: ['c9904983657e9fc8'],                       # LeftLeg  body3
+    5: ['9eb91a5581707ef1'],                       # RightLeg body3
+    6: ['91eb7be84016ceab', '9a5e6dc74cdb08a3'],   # LeftArm
+    7: ['7336c6b662522f0e', '4f7bce4ca49ccda8'],   # RightArm
 }
 
 HIDE_KEYS = [
@@ -89,9 +93,12 @@ def main():
     hide = load(HIDE)
     print('我方包 Unit %d 个；隐藏包 Unit %d 个' % (len(ours), len(hide)))
 
-    missing = [k for k in REPLACE if int(k, 16) not in ours]
+    # unit id = seed + index（index 从 1 起，按 BodyRegions.All 的槽位顺序）
+    seed = min(ours) - 1
+    by_index = {index: seed + index for index in REPLACE}
+    missing = [index for index, unit in by_index.items() if unit not in ours]
     if missing:
-        raise SystemExit('我方包缺 Unit：%s' % missing)
+        raise SystemExit('我方包缺 Unit（按序号推导 seed=0x%016x）：%s' % (seed, missing))
     missing = [k for k in HIDE_KEYS if int(k, 16) not in hide]
     if missing:
         raise SystemExit('隐藏包缺占位：%s' % missing)
@@ -100,14 +107,15 @@ def main():
 
     entries = []
     replaced_keys = []
-    for source, targets in REPLACE.items():
-        toc, stream, gpu, src = ours[int(source, 16)]
+    for index, targets in REPLACE.items():
+        source = by_index[index]
+        toc, stream, gpu, src = ours[source]
         for target in targets:
             entries.append(PW.Entry(U.UNIT_ID, int(target, 16), toc, stream, gpu,
                                     src['unknown1'], src['unknown2'], src['unknown3'],
-                                    src['unknown4'], note='replace:%s->%s' % (source[-4:], target[-4:])))
+                                    src['unknown4'], note='replace:%04x->%s' % (source & 0xffff, target[-4:])))
             replaced_keys.append(target)
-        print('  %-16s -> %s' % (source, ' '.join(targets)))
+        print('  槽 %d  0x%016x -> %s' % (index, source, ' '.join(targets)))
 
     for key in HIDE_KEYS:
         toc, stream, gpu, src = hide[int(key, 16)]
@@ -139,8 +147,9 @@ def main():
     back = load(result['toc'])
     if len(back) != 23:
         raise SystemExit('读回 %d 个 Unit，期望 23' % len(back))
-    for source, targets in REPLACE.items():
-        want = ours[int(source, 16)][0]
+    for index, targets in REPLACE.items():
+        source = by_index[index]
+        want = ours[source][0]
         for target in targets:
             got = back[int(target, 16)][0]
             if got != want:
