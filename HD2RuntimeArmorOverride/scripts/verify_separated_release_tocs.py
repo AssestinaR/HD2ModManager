@@ -76,8 +76,9 @@ def main():
 
     host = counts(read_keys(only_patch(root)))
     print(f"  host: unit={host.get('unit', 0)} material={host.get('material', 0)} texture={host.get('texture', 0)}")
-    if host != {"unit": 7}:
-        problems.append(f"host 不是纯 unit（7 个 Unit）：{host}")
+    # 同键替换 RE-2310：23 个 Unit 键（11 替换 + 12 隐藏占位），零材质零贴图。
+    if host != {"unit": 23}:
+        problems.append(f"host 不是 RE-2310 的 23 个 Unit 键：{host}")
 
     material_ids, texture_ids = set(), set()
     for name, expected in EXPECTED_OPTIONS.items():

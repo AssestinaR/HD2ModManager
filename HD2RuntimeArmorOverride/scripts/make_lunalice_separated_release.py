@@ -33,6 +33,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 ARCHIVE_HEX = "9ba626afa44a3aa3"
 MOD_DIR_NAME = "Lunalice-RE2310"
 UNIT_PATCH_NAME = "patch_0"
+REPO_ROOT = r"E:\Data\source\repos\WpfApp1"
 
 # 源 VPK 名（小写，与 vpk2patch 的产出目录一致）→ 选项显示名。
 # 顺序 = 同级字典序，也就是管理器里 OptionOrder 的次序。
@@ -68,6 +69,50 @@ NO_EQUIVALENT = [
      "而且源侧那两张 VTF 本身是截断的（头写 512x512 BC4，实际只有 16x16 缩略图）。"
      "「描边开 / 关」在 HD2 里没有对应物，所以不出选项。"),
 ]
+
+# ── 同键替换 RE-2310 ──────────────────────────────────────────────────────
+#
+# `vpk2patch` 产出的是**自定义素体**：Unit 拿的是全新的随机 id，要靠运行时注册表把
+# 它映射到某个槽位。而"替换某件护甲"是另一件事：**把我们做的 Unit 写到那件护甲的
+# Unit 键上**，它剩下的 Unit 用隐藏占位盖掉，否则原版几何会和我们的模型打架。
+#
+# ⚠️ CLI 的三个 `equipment`/`patch repair` 命令都做不了这件事：它们的来源必须是
+# **已经存在于游戏里的** Unit id（`cross-armor` 的 `sourceCandidates` 因此为空，
+# `armor-normalize` 的 `armors` 为空，`patch repair` 的 `replacementUnitCount` 为 0）。
+# 自定义素体的 Unit 是新资产，没有任何游戏 Unit 与它同键，所以只能自己重写键。
+#
+# RE-2310 是一个两件套（setId 628829860）：
+#   护甲 itemId 820333399   23 个 Piece / 23 个 Unit / 3 行（body 3/0/1 = 7/8/8）
+#   头盔 itemId 1745464610   1 个 Piece / 1 个 Unit（af431352d9b95e83）
+#
+#   替换 11 个 —— 槽 2/3/6/7 的 type=1 各有 body=0 与 body=1 两份，必须两个键写同一份
+#                payload，否则另一种体型的玩家会看到空槽；槽 4/5 只有 body=3 一份；头盔一个。
+#   隐藏 12 个 —— 每槽的 type=0 / type=2、以及 slot 8/9（MaterialLut/PatternLut）。
+#   不动  1 个 —— 3c33cf10a26cbb3e（body=3 slot=1 type=0，全库唯一零辅助字节的 piece），
+#                被 101 个 Kit 共用，碰它会让 101 件护甲一起变。
+RE2310_REPLACE = {
+    1: ["af431352d9b95e83"],                        # Head      -> RE-2310 头盔
+    2: ["cae35ee15168145f", "9841b16544c8fbae"],    # Chest     body1 / body0
+    3: ["17da843a4908511e", "45d79d84b8933a7f"],    # Hips
+    4: ["c9904983657e9fc8"],                        # LeftLeg   body3
+    5: ["9eb91a5581707ef1"],                        # RightLeg  body3
+    6: ["91eb7be84016ceab", "9a5e6dc74cdb08a3"],    # LeftArm
+    7: ["7336c6b662522f0e", "4f7bce4ca49ccda8"],    # RightArm
+}
+
+RE2310_HIDE_KEYS = [
+    "9a7b05af54f6722f", "226dfb2e738ae56e", "b22e65e604a6ef18", "7cfd3805e70ea7bd",
+    "914e7539788418fc", "5de0cf947d0e6520", "7b355519dcfb3085", "3a91f5a56da3201e",
+    "3692b4d3a0b8d5d3", "3c09e08493ee44b8", "144d95c1500b73bc", "6533a416930570a5",
+]
+
+# 共用披风：只用于断言"没被碰"。
+RE2310_SHARED_CAPE = "3c33cf10a26cbb3e"
+
+# 隐藏占位的来源：那次"隐藏全部原版护甲 Unit"实验的产物，按原键有 1939 个正确占位。
+RE2310_HIDE_TEMPLATE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "evidence", "vanilla-hide-ab-20260928", "patch", "9ba626afa44a3aa3.patch_5")
 
 
 def load_report(path):
@@ -118,6 +163,86 @@ def read_toc_keys(path):
         file_id, type_id = struct.unpack_from("<QQ", data, table + index * 80)
         keys.add((type_id, file_id))
     return keys
+
+
+def rekey_host_to_re2310(unit_patch, destination):
+    """把自定义素体的 Unit 重写到 RE-2310 的 23 个键上，返回写出的 host patch 路径。
+
+    为什么必须重写键而不是"注册一下就行"：运行时注册表把新 Unit 映射到槽位，那是
+    **自定义素体**的做法——原版那件护甲的 Unit 仍然在，两套几何会打架。同键替换是
+    "占住那 23 个键"：11 个写我们的，12 个写隐藏占位。
+    """
+    sys.path.insert(0, os.path.join(REPO_ROOT, "tmp", "rig-lab"))
+    import hd2_patch as HP          # noqa: PLC0415  （实验线工具，延迟导入）
+    import hd2_patchw as PW         # noqa: PLC0415
+    import hd2_unit as U            # noqa: PLC0415
+
+    def load(path):
+        entries, _ = HP.scan_entries(path)
+        found = {}
+        for entry in entries:
+            if entry["type_id"] != U.UNIT_ID:
+                continue
+            payload = HP.entry_payload(entry, path)
+            found[entry["file_id"]] = (payload["toc"], payload["stream"], payload["gpu"], entry)
+        return found
+
+    ours = load(unit_patch)
+    hide = load(RE2310_HIDE_TEMPLATE)
+    print(f"   我方 Unit {len(ours)} 个；隐藏模板 Unit {len(hide)} 个")
+
+    # Unit id = seed + index（index 从 1 起，按 BodyRegions.All 的槽位顺序）。
+    seed = min(ours) - 1
+    by_index = {index: seed + index for index in RE2310_REPLACE}
+    missing = [index for index, unit in by_index.items() if unit not in ours]
+    if missing:
+        raise SystemExit(f"我方包缺 Unit（按序号推导 seed=0x{seed:016x}）：{missing}")
+
+    missing = [key for key in RE2310_HIDE_KEYS if int(key, 16) not in hide]
+    if missing:
+        raise SystemExit(f"隐藏模板缺占位：{missing}")
+
+    entries = []
+    replaced = []
+    for index, targets in RE2310_REPLACE.items():
+        source = by_index[index]
+        toc, stream, gpu, src = ours[source]
+        for target in targets:
+            entries.append(PW.Entry(U.UNIT_ID, int(target, 16), toc, stream, gpu,
+                                    src["unknown1"], src["unknown2"], src["unknown3"],
+                                    src["unknown4"]))
+            replaced.append(target)
+        print(f"   槽 {index}  0x{source:016x} -> {' '.join(targets)}")
+
+    for key in RE2310_HIDE_KEYS:
+        toc, stream, gpu, src = hide[int(key, 16)]
+        entries.append(PW.Entry(U.UNIT_ID, int(key, 16), toc, stream, gpu,
+                                src["unknown1"], src["unknown2"], src["unknown3"],
+                                src["unknown4"]))
+    print(f"   隐藏 {len(RE2310_HIDE_KEYS)} 个：{' '.join(k[-4:] for k in RE2310_HIDE_KEYS)}")
+
+    if len(entries) != 23:
+        raise SystemExit(f"条目数 {len(entries)} != 23（RE-2310 的 23 个 Piece）")
+
+    os.makedirs(destination, exist_ok=True)
+    result = PW.write_patch(entries, unit_patch, destination, f"{ARCHIVE_HEX}.{UNIT_PATCH_NAME}")
+
+    # ---- 读回来验：替换键的 payload 必须与源逐字节一致，隐藏占位必须与模板一致 ----
+    back = load(result["toc"])
+    if len(back) != 23:
+        raise SystemExit(f"读回 {len(back)} 个 Unit，期望 23")
+    for index, targets in RE2310_REPLACE.items():
+        want = ours[by_index[index]][0]
+        for target in targets:
+            if back[int(target, 16)][0] != want:
+                raise SystemExit(f"{target} 的 payload 与源不一致")
+    for key in RE2310_HIDE_KEYS:
+        if back[int(key, 16)][0] != hide[int(key, 16)][0]:
+            raise SystemExit(f"{key} 的隐藏占位与模板不一致")
+    if int(RE2310_SHARED_CAPE, 16) in back:
+        raise SystemExit(f"共用披风 {RE2310_SHARED_CAPE} 被写进了包 —— 绝不允许")
+    print("   验证通过：23 个 Unit、替换键 payload 与源逐字节一致、隐藏占位一致、共用披风未出现")
+    return result["toc"]
 
 
 def verify(report):
@@ -238,7 +363,7 @@ def build_readme(path, facts):
         "",
         "结构",
         "----",
-        f"  {MOD_DIR_NAME}\\{ARCHIVE_HEX}.{UNIT_PATCH_NAME}      host：7 个 Unit，零材质零贴图",
+        f"  {MOD_DIR_NAME}\\{ARCHIVE_HEX}.{UNIT_PATCH_NAME}      host：RE-2310 的 23 个 Unit 键（11 替换 + 12 隐藏），零材质零贴图",
     ]
     for stem, label in OPTIONS:
         item = stems.get(stem)
@@ -271,6 +396,16 @@ def build_readme(path, facts):
 
     lines += [
         "",
+        "这是一个**同键替换 RE-2310** 的包，不是自定义素体",
+        "----------------------------------------------",
+        "  host 的 patch 把那件护甲的 23 个 Unit 键全部占住：",
+        "    11 个写我们的模型（槽 2/3/6/7 的 body=0 与 body=1 各写同一份 payload，",
+        "       否则另一种体型会看到空槽；槽 4/5 只有 body=3 一份；头盔一个）；",
+        "    12 个写隐藏占位（每槽的 type=0 / type=2、以及 slot 8/9 的 MaterialLut/PatternLut），",
+        "       否则原版几何会和我们的模型打架。",
+        "  共用披风 3c33cf10a26cbb3e 被 101 个 Kit 共用，**没有碰**（脚本会断言）。",
+        "  因为不新建 Unit，所以**不需要**运行时注册表、也不需要 custom-model.json。",
+        "",
         "本次转换用的 matcap 策略：albedo",
         "--------------------------------",
         "  金属/宝石件在源侧是「matcap 就是表面」（$matcaptint = 1）。这一版直接把 matcap 当底色",
@@ -282,7 +417,7 @@ def build_readme(path, facts):
         "",
         "核对结果",
         "--------",
-        f"  · host：{model['units']} 个 Unit、{model['materials']} 个材质、{model['textures']} 张贴图。",
+        f"  · host：RE-2310 的 23 个 Unit 键（11 个写我们的模型 + 12 个隐藏占位），0 材质 0 贴图。",
         f"  · 模型引用 {len(facts['referenced'])} 个材质 id，全部由选项提供。",
         f"  · 选项共提供 {len(facts['providedMaterials'])} 个材质、"
         f"{len(facts['providedTextures'])} 张贴图。",
@@ -341,13 +476,21 @@ def main():
             shutil.copy2(path, target)
             written.append(target)
 
-    copy_into(facts["model"], mod_root)
+    # host：同键替换 RE-2310（把自定义素体的 Unit 重写到那 23 个键上）。
+    host_source = base_toc(facts["model"])
+    print("\n   host：重写到 RE-2310 的 23 个 Unit 键")
+    rekey_host_to_re2310(host_source, mod_root)
+    written.extend(
+        os.path.join(mod_root, name)
+        for name in os.listdir(mod_root)
+        if ".patch_" in name
+    )
+
     for stem, label in OPTIONS:
         item = facts["stems"].get(stem)
         if item is None:
             continue
         copy_into(item, os.path.join(mod_root, label))
-
     build_readme(os.path.join(output, "README.txt"), facts)
 
     print(f"\n✅ 已生成组合包：{output}")
