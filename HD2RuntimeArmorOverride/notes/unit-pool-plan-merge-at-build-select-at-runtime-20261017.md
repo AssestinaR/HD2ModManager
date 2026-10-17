@@ -96,6 +96,50 @@ stream ABI 契约、section 布局…… 在 LuaJIT 里重写等于把几千行�
 4. 成立后：注册表把 7 个槽位指向 7 个 union unit，Lua 负责按玩家开关改
    `NumSections`。
 
+## 用户的新提议：管理器外部合并 + Lua 接收器热替换
+
+用户给的参照物是 `MDL - Mod Dynamic Loader 1.4.2`（GUID `761188b2-…`）。
+实测拆包后它的能力边界写在自己的 README 里：
+
+```
+SCRIPT - LIVE                        script addons you can start and stop right here
+SCRIPT / MIXED / RESOURCE - LAUNCH ONLY
+                                     mods the game loads only when it starts
+```
+
+**所以"动态加载 mod"只对 Lua 脚本成立，资源（patch 归档）是 LAUNCH ONLY。**
+它的 patch 里 Lua 是 LuaJIT 字节码，字符串能看到 `loadstring`、`lua resource lookup`、
+`can_get`、`ffi` + `kernel32.CreateDirectoryA`——它是**接管游戏的 Lua 资源查找、
+从内存喂字符串**，所以能热加载脚本。它没有任何挂载归档的能力。
+
+### 因此用户提议的三段，两段成立、一段不成立
+
+| 环节 | 判断 |
+|---|---|
+| 管理器配一个超快合并器，改外观后立刻重合并 | ✅ **已经存在**：`CanonicalDecorationUnitAppender` + `DecorationHostRebuildService` |
+| 通知我们的 Lua 接收器（运行中） | ✅ 可行。MDL 已证明 Lua 能热加载/热重载，接收器甚至可以做成 MDL live mod 方便调试 |
+| **Lua 指定读取外部文件去覆盖 patch 进去的外观** | ❌ **不行**。归档只在启动时挂载，Lua 没有挂载能力 |
+
+### 但只需要换掉最后一段，整体架构就成立
+
+不换归档，改**换内存里的 unit 描述表**：
+
+1. 装 mod 时（一次性）随 patch 发一个 **union unit**：该槽位所有候选 mesh 都在里面，
+   GPU 缓冲在启动时全部上传完。
+2. 管理器合并器额外产出一张**开关表**：`mesh 序号 → NumSections 字段在 blob 里的字节偏移`。
+   这张表很小（几十个条目），随 mod 一起发。
+3. 运行期：管理器把玩家的选择写成一个文件；Lua 读它，按开关表把对应 mesh 的
+   `NumSections` 写成 0 或原值。
+
+这样"外部合并"确实在外部（用户担心的重启问题因此不存在——合并结果随 mod 一次装好，
+之后切换只是内存里改 dword），而运行期不需要挂载任何东西。
+
+### 为什么不能直接热替换整块 unit blob
+
+unit 的 `StreamInfo` 用 `VertexBufferId` / `IndexBufferId` 引用外置 GPU 缓冲。
+换一整块 blob 意味着新 mesh 的缓冲必须已经在显存里——只有 union unit 全量加载
+才满足这个前提。所以"外部重合并整块推入"不如"预载全量 + 运行期切描述表"稳。
+
 ## 需要用户确认的一点
 
 这个方案里**合并是离线的**（union unit 随 mod 一起装），**只有选择是运行期的**。
