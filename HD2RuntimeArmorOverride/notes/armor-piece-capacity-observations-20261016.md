@@ -92,6 +92,15 @@ engine_capacity_proven=false
 
 ## 6. 下一步：从代码里取权威链路
 
+> **先决条件（已确认）**：**盘上的 `game.dll` 不能直接反汇编。**
+> `SizeOfImage = 74727424`（0x4744000），与 `runtime.status` 里的 `game_image_size`
+> 完全一致；而盘上文件只有 15522408 B（0xECDA68）—— 小 4.8 倍，说明是压缩/加密的，
+> RVA 只对**运行中的进程内存**有意义。之前那批 `game.dll-*.asm.txt` 正是用
+> `scripts/Capture-ArmoryMemory.ps1` 从进程内存抓的，这条流程要复用。
+> `scripts/disasm_armor_consumer.py`（capstone）已经能按 RVA 反汇编并挑出
+> 带 +0x18/+0x20/... 偏移、常量 3/10/0x60、以及乘 3/10 的指令，喂它一份**未加密的镜像**
+> 即可。
+
 1. **反汇编 `game.dll+0x81f470`**（bank 选择在 `0x8201f5`）。
    已知它会读 Piece 的 `+0x18/+0x20/+0x28/+0x48/+0x30/+0x40/+0x50`，
    并在七个全零时于 `0x81faa0..0x81fad6` 跳过辅助逻辑；它还会"清掉三个 bank 的旧实例句柄，
