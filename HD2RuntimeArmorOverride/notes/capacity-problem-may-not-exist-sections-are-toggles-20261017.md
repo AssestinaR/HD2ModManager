@@ -107,7 +107,63 @@ sec idxOff= 29628 nIdx= 17484 vtxOff=0 nVtx=25344 matSlot=2002760751 group=2
 bodygroup / mesh 结构）里。要恢复它，必须在转换时记录"每个源网格贡献了哪些
 三角形/顶点"，而不是事后从产物反推。
 
+## 结果五：材质不构成划分，必须显式标记
+
+把每个 section 的 `MaterialSlotId` 通过 `UnitMaterialBinding(SectionId, MaterialId)`
+解析成 64 位材质 ID（`unitprobe --sections`）：
+
+```
+matId=0xa810ff3628961b39 -> matIdx 4, 9, 14, 20
+matId=0xad7911554fbb151f -> matIdx 7, 12, 18
+matId=0xa2c36ab8b34fa73f -> matIdx 8, 13, 19
+matId=0xa8a8c8c946b13cf2 -> matIdx 11, 15, 21
+matId=0xae334bffabcbe65c -> matIdx 10, 16
+其余 7 个各出现 1 次
+```
+
+**22 个 section 只有 12 个不同材质。** 所以「section → 材质 → 装饰」这条链不成立，
+一个材质跨了 3–4 个 section。
+
+但重复出现的位置近乎等距（4/9/14/20、7/12/18、8/13/19、11/15/21），
+说明 section 是**按装饰分块、块内按材质切**：`section = (装饰 × 材质)` 对，
+装饰之间连续。而连续两件装饰共用同一材质时，边界**不可判定**。
+
+结论：**装饰边界必须显式记录，不能从产物反推。**
+
+构建侧其实已经知道：vpk2patch 的 manifest 里有 `groups[]`，每个 group 带
+`material`（互不相同）、`slots`、`triangles`。例如 `lilium-sancta-re2310.manifest.json`
+11 个 group / 11 个不同材质，`lunalice-m8.manifest.json` 14 个 group / 14 个不同材质。
+**但 group 是按整模型分的，不是按 unit 分的，而且 group 数（14）和 unit 的 section 数
+（22/25/…）对不上**，所以还需要一步"group → 目标 unit 的 section 区间"的映射。
+
+## 标记能插在哪、Lua 能不能读到
+
+| 位置 | 能写吗 | 会进内存吗 | Lua 能读吗 |
+|---|---|---|---|
+| patch TOC 里新增一条自定义 `AssetKey` 条目 | ✅ `PatchArchiveAdditionalEntry` 支持任意 key | ❌ **不会**——游戏只加载被引用的资源 | 只能从**磁盘**读 patch，等价于读 sidecar |
+| TOC 条目的 `Unknown1..4` 备用字段 | ✅ 我们自己的写入器 | ❌ 同上（条目级，不是 section 级） | 同上 |
+| **unit 内部 `section.GroupIndex`** | ✅ | ✅ 就在 TOC 里，随 unit 进内存 | ✅ `ReadProcessMemory` 直接读 |
+| 独立 sidecar 映射文件 | ✅ | — | ✅ Lua 本来就在读 `%LOCALAPPDATA%` 下的协议文件 |
+
+**关键点：写进 patch 但没人引用的条目不会进内存**，所以它只能从磁盘读，
+和 sidecar 没有本质区别，只是换了存放位置。
+
+**唯一真正"随资源进内存、可被 Lua 直接读"的标记位是 `section.GroupIndex`。**
+现在它等于 `MaterialIndex`（0..N），如果渲染器只是把它当绘制组序号用，
+我们可以把它改成"装饰序号"——同一装饰的所有 section 写同一个值。
+那样 unit 就自带装饰分组，不需要 sidecar。
+
+**风险**：它当前恒等于材质序号，说明很可能是材质分组的一部分，改动可能破坏材质绑定。
+必须先测。
+
+### 建议的组合
+
+1. **先用 sidecar 映射**（零风险，立刻可用）：构建期产出
+   `装饰 → [(section 字节偏移, 原 NumIndices)]`，Lua 读它。
+2. **同时验证 `GroupIndex`** 能否当自描述标记；能的话再把 sidecar 降级为校验用。
+
 ## 两条可行的设计，代价不同
+
 
 前提都一样：**装饰身份必须由构建期从源模型记录下来**，产物里没有。
 
