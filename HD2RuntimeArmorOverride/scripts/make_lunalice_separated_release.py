@@ -109,6 +109,31 @@ RE2310_HIDE_KEYS = [
 # 共用披风：只用于断言"没被碰"。
 RE2310_SHARED_CAPE = "3c33cf10a26cbb3e"
 
+# ── 换层变体：把身体写到 **Armor** 层，而不是 Undergarment 层 ──────────────
+#
+# 为什么值得试：头盔（Armor 层）能显示、身体（Undergarment 层）不能 —— 那么"可见的那层"
+# 很可能就是 Armor。这个变体把我们 6 个身体部件写到 12 个 Armor 键里的 8 个（Torso×2、
+# Pelvis×2、四肢各 1），肩膀的 4 个 Armor 键直接隐藏（肩膀本来就在手臂网格里，写进去会重叠渲染）。
+# 于是 9 个替换 + 14 个隐藏 = 23，与原来一一对应。
+RE2310_REPLACE_ARMOR = {
+    1: ["af431352d9b95e83"],                        # Head      -> 头盔（Armor 层，本来就能显示）
+    2: ["3c09e08493ee44b8", "5de0cf947d0e6520"],    # Chest     -> Torso Armor Slim / Stocky
+    3: ["3692b4d3a0b8d5d3", "914e7539788418fc"],    # Hips      -> Pelvis Armor Slim / Stocky
+    4: ["b22e65e604a6ef18"],                        # LeftLeg   -> LeftLeg Armor Any
+    5: ["226dfb2e738ae56e"],                        # RightLeg  -> RightLeg Armor Any
+    6: ["7cfd3805e70ea7bd"],                        # LeftArm   -> LeftArm Armor Any
+    7: ["9a7b05af54f6722f"],                        # RightArm  -> RightArm Armor Any
+}
+
+RE2310_HIDE_KEYS_ARMOR = [
+    # 10 个 Undergarment 键
+    "cae35ee15168145f", "9841b16544c8fbae", "17da843a4908511e", "45d79d84b8933a7f",
+    "c9904983657e9fc8", "9eb91a5581707ef1", "91eb7be84016ceab", "9a5e6dc74cdb08a3",
+    "4f7bce4ca49ccda8", "7336c6b662522f0e",
+    # 4 个肩膀 Armor 键（肩膀在手臂网格里，写进去会重叠渲染）
+    "144d95c1500b73bc", "7b355519dcfb3085", "3a91f5a56da3201e", "6533a416930570a5",
+]
+
 # 隐藏占位的来源：那次"隐藏全部原版护甲 Unit"实验的产物，按原键有 1939 个正确占位。
 RE2310_HIDE_TEMPLATE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -165,7 +190,7 @@ def read_toc_keys(path):
     return keys
 
 
-def rekey_host_to_re2310(unit_patch, destination):
+def rekey_host_to_re2310(unit_patch, destination, replace=None, hide_keys=None):
     """把自定义素体的 Unit 重写到 RE-2310 的 23 个键上，返回写出的 host patch 路径。
 
     为什么必须重写键而不是"注册一下就行"：运行时注册表把新 Unit 映射到槽位，那是
@@ -176,6 +201,9 @@ def rekey_host_to_re2310(unit_patch, destination):
     import hd2_patch as HP          # noqa: PLC0415  （实验线工具，延迟导入）
     import hd2_patchw as PW         # noqa: PLC0415
     import hd2_unit as U            # noqa: PLC0415
+
+    replace = replace if replace is not None else RE2310_REPLACE
+    hide_keys = hide_keys if hide_keys is not None else RE2310_HIDE_KEYS
 
     def load(path):
         entries, _ = HP.scan_entries(path)
@@ -198,13 +226,13 @@ def rekey_host_to_re2310(unit_patch, destination):
     if missing:
         raise SystemExit(f"我方包缺 Unit（按序号推导 seed=0x{seed:016x}）：{missing}")
 
-    missing = [key for key in RE2310_HIDE_KEYS if int(key, 16) not in hide]
+    missing = [key for key in hide_keys if int(key, 16) not in hide]
     if missing:
         raise SystemExit(f"隐藏模板缺占位：{missing}")
 
     entries = []
     replaced = []
-    for index, targets in RE2310_REPLACE.items():
+    for index, targets in replace.items():
         source = by_index[index]
         toc, stream, gpu, src = ours[source]
         for target in targets:
@@ -214,12 +242,12 @@ def rekey_host_to_re2310(unit_patch, destination):
             replaced.append(target)
         print(f"   槽 {index}  0x{source:016x} -> {' '.join(targets)}")
 
-    for key in RE2310_HIDE_KEYS:
+    for key in hide_keys:
         toc, stream, gpu, src = hide[int(key, 16)]
         entries.append(PW.Entry(U.UNIT_ID, int(key, 16), toc, stream, gpu,
                                 src["unknown1"], src["unknown2"], src["unknown3"],
                                 src["unknown4"]))
-    print(f"   隐藏 {len(RE2310_HIDE_KEYS)} 个：{' '.join(k[-4:] for k in RE2310_HIDE_KEYS)}")
+    print(f"   隐藏 {len(hide_keys)} 个：{' '.join(k[-4:] for k in RE2310_HIDE_KEYS)}")
 
     if len(entries) != 23:
         raise SystemExit(f"条目数 {len(entries)} != 23（RE-2310 的 23 个 Piece）")
@@ -231,12 +259,12 @@ def rekey_host_to_re2310(unit_patch, destination):
     back = load(result["toc"])
     if len(back) != 23:
         raise SystemExit(f"读回 {len(back)} 个 Unit，期望 23")
-    for index, targets in RE2310_REPLACE.items():
+    for index, targets in replace.items():
         want = ours[by_index[index]][0]
         for target in targets:
             if back[int(target, 16)][0] != want:
                 raise SystemExit(f"{target} 的 payload 与源不一致")
-    for key in RE2310_HIDE_KEYS:
+    for key in hide_keys:
         if back[int(key, 16)][0] != hide[int(key, 16)][0]:
             raise SystemExit(f"{key} 的隐藏占位与模板不一致")
     if int(RE2310_SHARED_CAPE, 16) in back:
@@ -459,6 +487,9 @@ def main():
     parser.add_argument("--output", required=True, help="组合包根目录")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
+        "--same-key-layer", choices=("undergarment", "armor"), default="undergarment",
+        help="同键替换时我们的身体占哪一层。头盔两版都是 Armor。")
+    parser.add_argument(
         "--host-mode", choices=("custom-model", "same-key"), default="custom-model",
         help="host 怎么出：custom-model = 原样用 vpk2patch 的 Unit（新 id，靠运行时注册表映射，"
              "实机能看到身体）；same-key = 重写到 RE-2310 的 23 个键上（纯 patch 覆盖，"
@@ -506,7 +537,11 @@ def main():
 
     if args.host_mode == "same-key":
         print("\n   host：重写到 RE-2310 的 23 个 Unit 键")
-        rekey_host_to_re2310(base_toc(facts["model"]), mod_root)
+        if args.same_key_layer == "armor":
+            rekey_host_to_re2310(base_toc(facts["model"]), mod_root,
+                                 RE2310_REPLACE_ARMOR, RE2310_HIDE_KEYS_ARMOR)
+        else:
+            rekey_host_to_re2310(base_toc(facts["model"]), mod_root)
         written.extend(
             os.path.join(mod_root, name) for name in os.listdir(mod_root) if ".patch_" in name
         )
