@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -67,6 +67,11 @@
                       Link="RuntimeArmorRegistry\armor_metadata_probe_core.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe.lua"
                       Link="RuntimeArmorRegistry\armor_metadata_probe.lua" />
+    <!-- 护甲 bank 扩容补丁：在插件自己的进程内用 LuaJIT FFI 改 game.dll 代码段。
+         为什么必须是插件内：外部进程对 game.dll 做 VirtualProtectEx +
+         WriteProcessMemory 会被反作弊判为"可疑程序"（已实测）。 -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\bank_patch.lua"
+                      Link="RuntimeArmorRegistry\bank_patch.lua" />
   </ItemGroup>
 
   <ItemGroup>
