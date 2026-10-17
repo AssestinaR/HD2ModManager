@@ -72,9 +72,25 @@ def analyze(pieces):
                   % (SLOT_NAMES.get(slot, '?'), slot, 'ABC'[bank], len(entries), types))
 
 
+def list_slots(pieces):
+    """逐槽列出会生效的 Piece（body=3 与本体都算），方便对照"应该看到什么"。"""
+    by_slot = defaultdict(list)
+    for p in pieces:
+        by_slot[p['slot']].append(p)
+    print('  逐槽清单（body=3 的 Piece 两个原生变体都生效）：')
+    for slot in sorted(by_slot):
+        entries = sorted(by_slot[slot], key=lambda x: (x['pieceType'], x['body']))
+        desc = '  '.join('%s/type%d/%s' % (SLOT_NAMES.get(slot, '?'), p['pieceType'],
+                                           'Any' if p['body'] == 3 else 'body%d' % p['body'])
+                         for p in entries)
+        print('    slot %-9s %s' % (slot, desc))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', required=True, choices=['C1', 'C2', 'C3'])
+    ap.add_argument('--disable', action='append', default=[], metavar='SLOT:TYPE',
+                    help='在预设基础上再关掉某个 Piece，例如 --disable 4:8。可重复。')
     ap.add_argument('--model', default=r'E:\mod\M3-verify-Unaligned\custom-model.json')
     ap.add_argument('--registry-root',
                     default=os.path.join(os.environ.get('LOCALAPPDATA', ''),
@@ -93,6 +109,17 @@ def main():
     key = model['key']
     all_pieces = model['pieces']
     chosen = select(all_pieces, args.config)
+
+    # 在预设基础上再关掉单个 Piece —— 这是"关掉一个反而多显示一个"那条症状的直接对照。
+    for item in args.disable:
+        try:
+            slot, piece_type = (int(part) for part in item.split(':'))
+        except ValueError:
+            raise SystemExit('--disable 的格式是 SLOT:TYPE，例如 4:8；收到 %r' % item)
+        before = len(chosen)
+        chosen = [p for p in chosen if not (p['slot'] == slot and p['pieceType'] == piece_type)]
+        if len(chosen) == before:
+            print('  ⚠️ --disable %s 没有匹配到任何 Piece' % item)
 
     # 映射行原样保留（293 条 map_model），只换 model_piece。
     revision = 0
@@ -117,6 +144,7 @@ def main():
     print('配置 %s：%d 个 Piece（原 %d 个），revision %d -> %d，映射 %d 条'
           % (args.config, len(chosen), len(all_pieces), revision, new_revision, len(mapping_lines)))
     analyze(chosen)
+    list_slots(chosen)
 
     if args.dry_run:
         print('（--dry-run：没有写文件）')
