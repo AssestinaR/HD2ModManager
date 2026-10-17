@@ -18,6 +18,9 @@ def build(project: Path, output: Path) -> None:
     resource_probe = (project / "src/armor_refresh_resources.lua").read_text(encoding="utf-8")
     component_probe = (project / "src/armor_refresh_component.lua").read_text(encoding="utf-8")
     multisite_probe = (project / "src/armor_refresh_multisite.lua").read_text(encoding="utf-8")
+    # 插件内 FFI 补丁模块：把护甲 bank 从 3 扩到 8。必须在 __hd2_runtime 之前
+    # 定义，这样运行时的闭包能把它当 upvalue 捕获。
+    bank_patch = (project / "src/bank_patch.lua").read_text(encoding="utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         f"local ARMOR_REGISTRY_PROTOCOL=(function()\n{protocol}\nend)()\n"
@@ -32,7 +35,19 @@ def build(project: Path, output: Path) -> None:
         f"local ARMOR_REFRESH_RESOURCES=(function()\n{resource_probe}\nend)()\n"
         f"local ARMOR_REFRESH_COMPONENT=(function()\n{component_probe}\nend)()\n"
         f"local ARMOR_REFRESH_MULTISITE=(function()\n{multisite_probe}\nend)()\n"
+        f"local ARMOR_BANK_PATCH=(function()\n{bank_patch}\nend)()\n"
         f"local __hd2_runtime=(function()\n{runtime}\nend)()\n"
+        # 补丁在运行时初始化之后、探针之前安装。用 pcall 包住：失败只记录，
+        # 绝不让整个插件加载失败（否则玩家会连原版护甲都没有）。
+        "local __hd2_bank_patch_state=nil\n"
+        "do\n"
+        "  local ok,state_or_err=pcall(ARMOR_BANK_PATCH.install)\n"
+        "  if ok and type(state_or_err)=='table' then\n"
+        "    __hd2_bank_patch_state=state_or_err\n"
+        "  else\n"
+        "    __hd2_bank_patch_error=tostring(state_or_err)\n"
+        "  end\n"
+        "end\n"
         f"{probe}",
         encoding="utf-8",
     )
