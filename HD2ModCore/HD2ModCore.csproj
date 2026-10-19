@@ -93,6 +93,8 @@
     -->
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_locate.lua"
                       Link="RuntimeArmorRegistry\armor_section_locate.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_publish.lua"
+                      Link="RuntimeArmorRegistry\armor_section_publish.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
                       Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe_core.lua"

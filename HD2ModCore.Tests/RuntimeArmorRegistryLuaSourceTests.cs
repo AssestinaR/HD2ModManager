@@ -18,6 +18,7 @@ public sealed class RuntimeArmorRegistryLuaSourceTests
 		var layout = source.IndexOf("local ARMOR_SECTION_LAYOUT=", StringComparison.Ordinal);
 		var apply = source.IndexOf("local ARMOR_SECTION_APPLY=", StringComparison.Ordinal);
 		var locate = source.IndexOf("local ARMOR_SECTION_LOCATE=", StringComparison.Ordinal);
+		var publish = source.IndexOf("local ARMOR_SECTION_PUBLISH=", StringComparison.Ordinal);
 		var entry = source.IndexOf("local __hd2_runtime=", StringComparison.Ordinal);
 		Assert.True(transaction >= 0 && composition > transaction && entry > composition);
 		// 掩码解析器与 TOC 走查器都必须排在入口点之前：入口点的 tick 里要用它们，
@@ -26,6 +27,7 @@ public sealed class RuntimeArmorRegistryLuaSourceTests
 		Assert.True(layout > wardrobe && layout < entry);
 		Assert.True(apply > layout && apply < entry);
 		Assert.True(locate > apply && locate < entry);
+		Assert.True(publish > locate && publish < entry);
 		Assert.Contains("wardrobe.masks exceeds 1 MiB", source);
 		Assert.Contains("function M.lookup(document,target)", source);
 		Assert.Contains("function M.section_fingerprint", source);
