@@ -93,11 +93,18 @@ materialId  = 16 位小写 hex（不带 0x），section 的 MaterialId
 triangles   = section.NumIndices / 3，十进制
 ```
 
-材质缺失（`materialIndex` 越界 / 该槽位无材质）时写成 `none`：
+材质缺失（`materialIndex` 越界 / 该槽位无材质 / `MaterialId` 解析出来是 0）时写成 `none`：
 
 ```
 fingerprint = none-<triangles>
 ```
+
+> 实测：`E:\tmp\vanilla-unit-test\unit_0x143a0d93d14d6587.toc` 这个原版 unit，
+> 每个 mesh 的 `materialSlotIds[0]` 都是 **0**，拿 0 去查材质绑定表查不到，
+> 所以原版 unit 上大量 section 的指纹会是 `none-<triangles>`。
+> 这不影响掩码——掩码只作用在我们自己构建的 unit 上，那些 slot 是解析得出来的
+> （`cae35ee15168145f` 的 11 个 section 全部拿到了材质 ID）。
+> 但**指纹必须允许退化**，不能因为材质缺失就拒绝整份文件。
 
 **为什么不哈希**：这个值的作用是"检测 section 内容漂移"，不是安全边界。
 直接写可读原文的好处是——三份语言（C# / Lua / Python）都不需要实现同一个哈希，
@@ -227,3 +234,43 @@ mask_mode[T] == override  →  只用 ③（T 名下的条目）
 `wardrobe.masks` **不记录偏移**。偏移是构建产物，属于 `sections.json`；
 掩码只记录语义身份，两者靠 `(unit, sectionIndex, fingerprint)` 对齐。
 这样重建 mod 后掩码要么继续有效（section 内容没变），要么安全失效（指纹变了）。
+
+---
+
+## 12. 运行时怎么拿到偏移（阶段 3 的地基，已离线验证）
+
+掩码里没有偏移，运行时必须自己从内存里的 unit TOC 走出结构。
+**不需要 `sections.json`**——这决定了阶段 2 的产物只服务于编辑器和 CLI，
+不必部署到运行时能读到的地方。
+
+TOC 布局（取自权威读取器 `UnitMeshReader.cs`，不是猜的）：
+
+```
+toc  + 0x5c   StreamInfoOffset
+toc  + 0x64   MeshInfoOffset        → u32 数量，随后 数量×u32 相对偏移
+toc  + 0x70   MaterialsOffset       → u32 数量，随后 数量×u32 sectionId，随后 数量×u64 materialId
+
+mesh = toc + MeshInfoOffset + 相对偏移
+mesh + 56     lod (int32)
+mesh + 104    numMaterials
+mesh + 120    numSections
+mesh + 124    sectionsOffset        节记录相对 mesh 起点
+mesh + 132    materialSlotIds[numMaterials]
+section 记录（24 字节，绝对位置 = mesh + sectionsOffset）
+  +0 materialIndex  +4 vertexOffset  +8 numVertices
+  +12 indexOffset   +16 numIndices   +20 groupIndex
+```
+
+**离线验证**：对 `E:\tmp\vanilla-unit-test\unit_0x143a0d93d14d6587.toc` 用纯字节读取
+（`tmp/walk_unit_toc.py`，不引用任何 C# 代码）走出 5 个 mesh，
+lod 依次 `-1,3,2,1,0`、每个 1 个 section，节记录地址单调递增且全部落在 5696 字节内。
+结构对得上，说明这条路可行。
+
+**两个已知边界**：
+
+1. **composite-backed unit**（`compositeRef != 0` / `StreamInfoOffset == 0`）的材质与 mesh
+   数据在 composite 载荷里，上面这套偏移不适用。阶段 3 先只支持非 composite，
+   遇到 composite 就跳过并计数。
+2. **内存副本的头部是否与文件一致尚未实测**。交接文档 §3.3 记录的是"99.19% 相同，
+   差异只在头部"——`0x5c / 0x64 / 0x70` 恰好都在头部。**这是阶段 3 第一个要测的东西**：
+   在内存副本里读这三个偏移，与 `sections.json` 里的值比对，一致才能继续。
