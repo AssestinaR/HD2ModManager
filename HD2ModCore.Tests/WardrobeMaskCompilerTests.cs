@@ -23,6 +23,10 @@ public sealed class WardrobeMaskCompilerTests
 
 	private static WardrobeSectionMapDocument Map => WardrobeSectionMapTests.CreateMap();
 
+	// Validate 接受索引：一个护甲的 unit 可能由多个 mod 提供，所以校验也按合并后的视图回答。
+	private static WardrobeSectionIndex IndexOf(WardrobeSectionMapDocument document)
+		=> WardrobeSectionIndex.Create(new[] { document });
+
 	private static WardrobeMaskSpec Spec(
 		IReadOnlyList<WardrobeMaskSpecSet>? sets = null,
 		IReadOnlyList<WardrobeMaskSpecTarget>? targets = null,
@@ -212,7 +216,7 @@ public sealed class WardrobeMaskCompilerTests
 				new WardrobeMaskSpecSet(1, new[] { new WardrobeMaskSpecSection(UnitA, 0), new WardrobeMaskSpecSection(UnitA, 1) }),
 			}),
 			Map);
-		var validation = WardrobeMaskCompiler.Validate(compiled.Document, Map);
+		var validation = WardrobeMaskCompiler.Validate(compiled.Document, IndexOf(Map));
 		Assert.True(validation.IsValid);
 		Assert.Empty(validation.Diagnostics);
 		Assert.Equal(2, validation.EntryCount);
@@ -245,7 +249,7 @@ public sealed class WardrobeMaskCompilerTests
 					: unit)
 				.ToArray(),
 		};
-		var validation = WardrobeMaskCompiler.Validate(compiled.Document, rebuilt);
+		var validation = WardrobeMaskCompiler.Validate(compiled.Document, IndexOf(rebuilt));
 		Assert.False(validation.IsValid);
 		var error = Assert.Single(validation.Diagnostics);
 		Assert.Equal("fingerprint_mismatch", error.Code);
@@ -257,7 +261,7 @@ public sealed class WardrobeMaskCompilerTests
 	{
 		var compiled = WardrobeMaskCompiler.Compile(Spec(), Map);
 		var withoutUnitA = Map with { Units = Map.Units.Where(unit => unit.FileId != UnitA).ToArray() };
-		var validation = WardrobeMaskCompiler.Validate(compiled.Document, withoutUnitA);
+		var validation = WardrobeMaskCompiler.Validate(compiled.Document, IndexOf(withoutUnitA));
 		Assert.False(validation.IsValid);
 		var error = Assert.Single(validation.Diagnostics);
 		Assert.Equal("unit_not_in_patch", error.Code);
@@ -269,7 +273,7 @@ public sealed class WardrobeMaskCompilerTests
 		var compiled = WardrobeMaskCompiler.Compile(
 			Spec(sets: new[] { new WardrobeMaskSpecSet(1, new[] { new WardrobeMaskSpecSection(UnitB, 0) }) }),
 			Map);
-		var validation = WardrobeMaskCompiler.Validate(compiled.Document, Map);
+		var validation = WardrobeMaskCompiler.Validate(compiled.Document, IndexOf(Map));
 		Assert.True(validation.IsValid);
 		var target = Assert.Single(validation.Targets);
 		Assert.Equal(1, target.HiddenSections);
@@ -282,7 +286,7 @@ public sealed class WardrobeMaskCompilerTests
 		var compiled = WardrobeMaskCompiler.Compile(
 			Spec(new[] { new WardrobeMaskSpecSet(4) }, new[] { new WardrobeMaskSpecTarget(Target, 4) }),
 			Map);
-		var validation = WardrobeMaskCompiler.Validate(compiled.Document, Map);
+		var validation = WardrobeMaskCompiler.Validate(compiled.Document, IndexOf(Map));
 		Assert.True(validation.IsValid);
 		var warning = Assert.Single(validation.Diagnostics);
 		Assert.Equal("target_set_empty", warning.Code);
@@ -302,7 +306,7 @@ public sealed class WardrobeMaskCompilerTests
 				new WardrobeMaskEntry(2, UnitB, 0, FingerprintB0),
 			},
 			new Dictionary<uint, uint> { [Target] = 1 });
-		var validation = WardrobeMaskCompiler.Validate(document, Map);
+		var validation = WardrobeMaskCompiler.Validate(document, IndexOf(Map));
 		Assert.True(validation.IsValid);
 		var warning = Assert.Single(validation.Diagnostics);
 		Assert.Equal("set_unreferenced", warning.Code);
@@ -311,7 +315,7 @@ public sealed class WardrobeMaskCompilerTests
 	[Fact]
 	public void Validate_EmptyMaskIsValid()
 	{
-		var validation = WardrobeMaskCompiler.Validate(WardrobeMaskDocument.Empty, Map);
+		var validation = WardrobeMaskCompiler.Validate(WardrobeMaskDocument.Empty, IndexOf(Map));
 		Assert.True(validation.IsValid);
 		Assert.Empty(validation.Diagnostics);
 		Assert.Equal(0, validation.EntryCount);

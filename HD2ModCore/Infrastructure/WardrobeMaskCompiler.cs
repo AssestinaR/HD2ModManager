@@ -251,10 +251,11 @@ public static class WardrobeMaskCompiler
 	}
 
 	/// <summary>
-	/// 掩码 + 映射表 → 校验结果。这是"重建之后这份掩码还能用吗"的答案。
+	/// 掩码 + 映射表索引 → 校验结果。这是"重建之后这份掩码还能用吗"的答案。
 	/// 指纹不符不是错误地跳过，而是**必须报出来**：那意味着同一个下标现在指向别的几何。
+	/// 接受索引而不是单份文档，是因为一个护甲的 unit 可能由多个 mod 提供（§11 映射表随 mod 走）。
 	/// </summary>
-	public static WardrobeMaskValidationResult Validate(WardrobeMaskDocument masks, WardrobeSectionMapDocument sections)
+	public static WardrobeMaskValidationResult Validate(WardrobeMaskDocument masks, WardrobeSectionIndex sections)
 	{
 		ArgumentNullException.ThrowIfNull(masks);
 		ArgumentNullException.ThrowIfNull(sections);

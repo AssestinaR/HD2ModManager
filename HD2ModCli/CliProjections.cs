@@ -29,6 +29,7 @@ public static class CliProjections
 				new { name = "wardrobe sections", safety = "explicit-export", description = "从一个 Patch 现算构建期 section 映射表（身份、指纹、各级 LOD 落点）；只读 Patch，只写指定输出文件" },
 				new { name = "wardrobe compile", safety = "explicit-export", description = "把衣柜规格编译成运行时读取的 wardrobe.masks；指纹一律取自 section 映射表，patch/gpu 指纹不符时拒绝写出" },
 				new { name = "wardrobe validate", safety = "read-only", description = "校验一份 wardrobe.masks 是否仍与当前构建产物一致；指纹漂移判为失效，不会静默沿用" },
+				new { name = "wardrobe project", safety = "explicit-export", description = "把权威工作区（按护甲索引、与 mod 无关）按注册协议投影成 wardrobe.masks；继承者指向来源的同一个掩码集" },
 				new { name = "assets metadata inspect", safety = "read-only", description = "读取设置页使用的在线资产元数据缓存、manifest 与有效远端来源" },
 				new { name = "assets metadata plan", safety = "explicit-export-network", description = "下载并验证在线资产元数据到计划旁暂存区，导出固定内容哈希的提交计划" },
 				new { name = "assets metadata validate", safety = "read-only", description = "验证管理器设置、本地缓存与计划旁暂存的远端内容均未漂移；不会联网" },

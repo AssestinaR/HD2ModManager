@@ -223,4 +223,104 @@ public sealed class WardrobeCliTests
 		Assert.Equal(2, capture.ExitCode);
 		Assert.Contains("InvalidArguments", capture.StandardOutput, StringComparison.Ordinal);
 	}
+
+	[Fact]
+	public async Task Project_TurnsTheWorkspaceIntoAMaskThroughTheProtocol()
+	{
+		var root = Directory.CreateTempSubdirectory("hd2mod-wardrobe-project-").FullName;
+		try
+		{
+			var library = Path.Combine(root, "library");
+			var registry = Path.Combine(root, "registry");
+			Directory.CreateDirectory(Path.Combine(library, ".hd2modmanager"));
+			Directory.CreateDirectory(registry);
+			// sections.json 放在 mod 库里，--sections 缺省就递归找它（映射表随 mod 走）。
+			WriteSections(library);
+			File.WriteAllText(
+				Path.Combine(library, ".hd2modmanager", WardrobeWorkspaceFile.FileName),
+				"""
+				{
+				  "schema": "hd2mod.wardrobe/1",
+				  "revision": 9,
+				  "armours": [
+				    { "itemId": 820333399, "mode": "own", "units": [ { "unit": "af431352d9b95e83", "off": [0] } ] }
+				  ]
+				}
+				""");
+			File.WriteAllText(
+				Path.Combine(registry, CliArmorRegistryProtocol.ProtocolFileName),
+				"schema=2\nrevision=5\nenabled=true\nmap=1745464610,820333399\nmap=530315896,820333399\n");
+			var maskPath = Path.Combine(root, WardrobeMaskFile.FileName);
+
+			var capture = await CliTestConsole.RunCapturedAsync(
+				"wardrobe", "project",
+				"--library", library,
+				"--registry-root", registry,
+				"--output", maskPath,
+				"--json");
+			Assert.Equal(0, capture.ExitCode);
+			// 两个目标指向同一个 set id —— 继承就是这么表达的。
+			Assert.Equal(
+				"schema=2\nrevision=9\nenabled=true\n"
+				+ "off=1," + UnitA + ",0," + FingerprintA0 + "\n"
+				+ "target=530315896,1\n"
+				+ "target=1745464610,1\n",
+				await File.ReadAllTextAsync(maskPath));
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
+	public async Task Project_RequiresTheModLibrary()
+	{
+		var capture = await CliTestConsole.RunCapturedAsync("wardrobe", "project", "--output", "x.masks", "--json");
+		Assert.Equal(2, capture.ExitCode);
+		Assert.Contains("WardrobeLibraryRequired", capture.StandardOutput, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task Project_RejectsABrokenWorkspace()
+	{
+		var root = Directory.CreateTempSubdirectory("hd2mod-wardrobe-project-").FullName;
+		try
+		{
+			var library = Path.Combine(root, "library");
+			var registry = Path.Combine(root, "registry");
+			Directory.CreateDirectory(Path.Combine(library, ".hd2modmanager"));
+			Directory.CreateDirectory(registry);
+			WriteSections(library);
+			// mode=inherit 却又写了条目：语义矛盾，必须拒绝而不是猜一个。
+			File.WriteAllText(
+				Path.Combine(library, ".hd2modmanager", WardrobeWorkspaceFile.FileName),
+				"""
+				{
+				  "schema": "hd2mod.wardrobe/1",
+				  "revision": 9,
+				  "armours": [
+				    { "itemId": 820333399, "mode": "inherit", "units": [ { "unit": "af431352d9b95e83", "off": [0] } ] }
+				  ]
+				}
+				""");
+			File.WriteAllText(
+				Path.Combine(registry, CliArmorRegistryProtocol.ProtocolFileName),
+				"schema=2\nrevision=5\nenabled=true\nmap=1745464610,820333399\n");
+
+			var capture = await CliTestConsole.RunCapturedAsync(
+				"wardrobe", "project",
+				"--library", library,
+				"--registry-root", registry,
+				"--output", Path.Combine(root, WardrobeMaskFile.FileName),
+				"--json");
+			Assert.Equal(2, capture.ExitCode);
+			Assert.Contains("WardrobeWorkspaceInvalid", capture.StandardOutput, StringComparison.Ordinal);
+			Assert.Contains("armour_mode_contradiction", capture.StandardOutput, StringComparison.Ordinal);
+		}
+		finally
+		{
+			Directory.Delete(root, recursive: true);
+		}
+	}
 }

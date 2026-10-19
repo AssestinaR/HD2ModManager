@@ -70,11 +70,11 @@ public static class CliApplication
 				"--limit、--cursor、--with-effective 与 --only-competition 仅适用于 gamedata 只读查询。 ");
 		}
 		if (!string.IsNullOrWhiteSpace(invocation.Options.RegistryRoot)
-			&& (command.Length == 0 || command[0] != "armor-registry"))
+			&& (command.Length == 0 || command[0] is not ("armor-registry" or "wardrobe")))
 		{
 			throw new CliUserException(
 				"CommandOptionNotSupported",
-				"--registry-root 仅适用于 armor-registry 命令。");
+				"--registry-root 仅适用于 armor-registry 与 wardrobe 命令。");
 		}
 		if (Matches(command, "help"))
 		{
@@ -156,11 +156,14 @@ public static class CliApplication
 				return await CliWardrobe.RunCompileAsync(invocation, CancellationToken.None).ConfigureAwait(false);
 			if (command.Length == 2 && command[1] == "validate")
 				return await CliWardrobe.RunValidateAsync(invocation, CancellationToken.None).ConfigureAwait(false);
+			if (command.Length == 2 && command[1] == "project")
+				return await CliWardrobe.RunProjectAsync(invocation, CancellationToken.None).ConfigureAwait(false);
 			throw new CliUserException(
 				"InvalidArguments",
 				"wardrobe 子命令：wardrobe sections <patch> --output <sections.json>；" +
 				"wardrobe compile <spec.json> --output <wardrobe.masks>；" +
-				"wardrobe validate --file <wardrobe.masks> --sections <sections.json>。");
+				"wardrobe validate --file <wardrobe.masks> --sections <sections.json>；" +
+				"wardrobe project --library <mod库> --output <wardrobe.masks>。");
 		}
 		if (Matches(command, "armor-registry", "status"))
 		{
@@ -6748,6 +6751,7 @@ HD2 Mod Manager 命令行
 	  hd2mod wardrobe sections <patch_0> --output sections.json [--overwrite] --json
 	  hd2mod wardrobe compile wardrobe-spec.json --output wardrobe.masks [--sections sections.json] [--overwrite] --json
 	  hd2mod wardrobe validate --file wardrobe.masks --sections sections.json --json
+	  hd2mod wardrobe project --library <Mod库目录> [--registry-root <协议目录>] [--sections <文件或目录>] --output wardrobe.masks --json
 	  hd2mod assets metadata inspect --manager-root <管理器目录> --json
 	  hd2mod assets metadata plan [https://raw.githubusercontent.com/.../branch] --manager-root <管理器目录> --output asset-metadata-plan.json --json
 	  hd2mod assets metadata validate --plan asset-metadata-plan.json --manager-root <管理器目录> --json

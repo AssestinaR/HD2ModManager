@@ -295,4 +295,40 @@ public static class WardrobeSectionMapFile
 				File.Delete(temporaryPath);
 		}
 	}
+
+	// --- 多份映射表 ---------------------------------------------------------
+
+	/// <summary>
+	/// 把 <c>--sections</c> 的取值展开成一组文件：给文件就用文件，给目录就递归找
+	/// <c>sections.json</c>。映射表随 mod 走（§11），所以"指向 mod 库"是最常用的用法，
+	/// 用户不该为此记住每个 mod 的子目录名。
+	/// </summary>
+	public static IReadOnlyList<string> ResolvePaths(string path)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(path);
+		var fullPath = Path.GetFullPath(path);
+		if (File.Exists(fullPath))
+			return new[] { fullPath };
+		if (!Directory.Exists(fullPath))
+			throw new FileNotFoundException($"找不到 section 映射表，也不是目录：{fullPath}", fullPath);
+		var found = Directory
+			.EnumerateFiles(fullPath, FileName, SearchOption.AllDirectories)
+			.OrderBy(candidate => candidate, StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		if (found.Length == 0)
+			throw new FileNotFoundException($"目录下没有任何 {FileName}：{fullPath}", fullPath);
+		return found;
+	}
+
+	/// <summary>按路径批量读取（文件或目录）。</summary>
+	public static async ValueTask<IReadOnlyList<WardrobeSectionMapDocument>> ReadManyAsync(
+		string path,
+		CancellationToken cancellationToken = default)
+	{
+		var paths = ResolvePaths(path);
+		var documents = new List<WardrobeSectionMapDocument>(paths.Count);
+		foreach (var item in paths)
+			documents.Add(await ReadAsync(item, cancellationToken).ConfigureAwait(false));
+		return documents;
+	}
 }

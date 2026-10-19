@@ -352,6 +352,9 @@ hd2mod wardrobe compile wardrobe-spec.json --output wardrobe.masks --json
 
 # 3. 重建之后必跑：这份掩码还跟这份构建产物对得上吗
 hd2mod wardrobe validate --file wardrobe.masks --sections sections.json --json
+
+# 4. 正式流程：权威工作区 + 注册协议 → 掩码（跨 mod 也行）
+hd2mod wardrobe project --library <mod库> --output wardrobe.masks --json
 ```
 
 ### 13.1 规格文件 `hd2mod.wardrobe-spec/1`
@@ -475,11 +478,48 @@ hd2mod wardrobe validate --file wardrobe.masks --sections sections.json --json
 **继承不需要新机制**：两个 target 指向同一个 set id 就是继承。这也是为什么编译产物
 里必须是"目标 → 掩码集"的扁平投影，而不是"全局一份来源掩码"。
 
-### 14.4 已实现 / 未实现
+### 14.4 投影：工作区 → `wardrobe.masks`（已实现并实测）
 
-- **已实现**：格式、解析、校验（一次报全）、规范化排序、原子写、
-  `IsDisabled`/`DisabledCount` 唯一判定入口。20 项用例在
-  `HD2ModCore.Tests/WardrobeWorkspaceTests.cs`。
-- **未实现**：从工作区 + `armor-registry.protocol` 编译成 `wardrobe.masks`（含 set id
-  分配与多份 `sections.json` 的合并），以及 CLI 侧的 `wardrobe source` 读写命令。
-  这两件是下一步。
+```powershell
+hd2mod wardrobe project --library <mod库> [--registry-root <协议目录>] [--sections <文件或目录>] --output wardrobe.masks --json
+```
+
+* `--library`：工作区在 `<mod库>/.hd2modmanager/wardrobe.workspace.json`。
+* `--registry-root`：注册协议在 `<协议目录>/armor-registry.protocol`，取其中的 `map=目标,来源`。
+* `--sections`：**文件或目录**。缺省等于 `--library`，递归找所有 `sections.json`
+  （映射表随 mod 走，用户不该为此记住每个 mod 的子目录名）。
+  多份表按 unit 合并；同一 unit 在两份表里内容不一致时**拒绝**——那说明两份表来自不同的
+  构建，按哪一份都会关错几何。
+
+**set id 分配**：需要 set 的所有者（有禁用内容的来源 + 显式独立设置的目标）按 itemId
+升序编号。同一份输入必须产出同一份字节，否则"内容没变"会被误判成"变了"，白白触发一次重载。
+
+**两条刻意的取舍**：
+
+1. **解析不到的条目只警告、不报错**。工作区是惰性、与 mod 无关的，可能引用当前没部署的
+   mod 的 unit。为此让整次编译失败，等于"换一次 mod 就再也编不出掩码"。
+2. **空集目标照样写 `target=` 行**。那是"覆盖掉继承、一块都不关"的唯一表达方式。
+
+**生效时机**：运行时只在**协议被应用**时读掩码（`armor_registry_runtime.lua` 的
+`prepare_section_masks` 在 apply 协程里）。所以改完掩码要再触发一次协议应用——
+单改 `wardrobe.masks` 不会触发重载。`project` 的输出里会提示这一点。
+
+**实测（2026-10-19，真实注册协议 + 部署包的映射表）**：
+
+```
+掩码集 1 ← 护甲 820333399（视觉来源，2 条）；继承者：530315896, 3106805633, 3544585106
+off=1,af431352d9b95e83,0,a47787804c45e1a9-8852
+off=1,af431352d9b95e83,1,a648fd251c740b12-1024
+target=530315896,1
+target=3106805633,1
+target=3544585106,1
+```
+
+三个目标指向同一个 set id —— 继承。`validate` 对这份产物通过，`2/2` 可解析，
+三个目标各隐藏 2 个 section。
+
+**与 `wardrobe compile` 的关系**：`compile` 读手写的规格文件，是阶段 4 前期的过渡路径；
+`project` 读权威工作区，是正式路径。两者产出同一种文件，`validate` 一视同仁。
+
+**用例**：`HD2ModCore.Tests/WardrobeWorkspaceTests.cs`（20 项）、
+`WardrobeMaskProjectionTests.cs`（15 项）、`HD2ModCli.Tests/WardrobeCliTests.cs`（11 项）。

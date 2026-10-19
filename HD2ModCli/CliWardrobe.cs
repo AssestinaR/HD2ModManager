@@ -25,6 +25,7 @@ internal static class CliWardrobe
 	internal const string SectionsCommand = "wardrobe sections";
 	internal const string CompileCommand = "wardrobe compile";
 	internal const string ValidateCommand = "wardrobe validate";
+	internal const string ProjectCommand = "wardrobe project";
 
 	/// <summary>`wardrobe sections &lt;patch&gt; --output &lt;sections.json&gt;`。</summary>
 	internal static async Task<int> RunSectionsAsync(CliInvocation invocation, CancellationToken cancellationToken)
@@ -81,7 +82,7 @@ internal static class CliWardrobe
 
 		var spec = WardrobeMaskCompiler.Parse(await File.ReadAllTextAsync(specPath, Encoding.UTF8, cancellationToken).ConfigureAwait(false));
 		var sectionsPath = ResolveSectionsPath(options.Sections, spec.Sections, specPath);
-		var sections = await WardrobeSectionMapFile.ReadAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
+		var sections = await ReadSingleMapAsync(sectionsPath, CompileCommand, cancellationToken).ConfigureAwait(false);
 		var result = WardrobeMaskCompiler.Compile(spec, sections);
 		if (result.IsValid)
 		{
@@ -135,8 +136,8 @@ internal static class CliWardrobe
 		// 掩码文件不存在时按"空文档"处理，与运行时的语义一致：不存在 = 全启用。
 		// 这样"刚部署还没配过"的状态能通过校验，而不是报一个找不到文件的错。
 		var masks = WardrobeMaskFile.Read(maskPath);
-		var sections = await WardrobeSectionMapFile.ReadAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
-		var validation = WardrobeMaskCompiler.Validate(masks, sections);
+		var index = await ReadSectionIndexAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
+		var validation = WardrobeMaskCompiler.Validate(masks, index);
 		Emit(
 			options,
 			new
@@ -146,6 +147,8 @@ internal static class CliWardrobe
 				{
 					maskPath,
 					sectionsPath,
+					sectionMapCount = index.SourcePaths.Count,
+					sectionMapPaths = index.SourcePaths,
 					maskExists = File.Exists(maskPath),
 					isValid = validation.IsValid,
 					revision = masks.Revision,
@@ -162,7 +165,7 @@ internal static class CliWardrobe
 			{
 				var builder = new StringBuilder();
 				builder.Append($"掩码：{maskPath}{(File.Exists(maskPath) ? string.Empty : "（不存在，视为全启用）")}\n");
-				builder.Append($"  映射表：{sectionsPath}\n");
+				builder.Append($"  映射表：{index.SourcePaths.Count} 份（{sectionsPath}）\n");
 				builder.Append($"  revision={masks.Revision} enabled={(masks.Enabled ? "true" : "false")}");
 				builder.Append($" 条目 {validation.ResolvedEntryCount}/{validation.EntryCount} 条可解析");
 				builder.Append($" 掩码集 {validation.SetCount} / 目标 {validation.TargetCount}\n");
@@ -185,6 +188,160 @@ internal static class CliWardrobe
 	}
 
 	// --- 选项处理 -----------------------------------------------------------
+
+	/// <summary>`wardrobe project --library &lt;mod库&gt; [--registry-root &lt;协议目录&gt;] --output &lt;wardrobe.masks&gt;`。</summary>
+	internal static async Task<int> RunProjectAsync(CliInvocation invocation, CancellationToken cancellationToken)
+	{
+		var options = invocation.Options;
+		EnsureOptions(options, ProjectCommand, "--library", "--registry-root", "--output", "--overwrite", "--sections");
+		var output = RequireOutput(options, ProjectCommand);
+		if (string.IsNullOrWhiteSpace(options.Library))
+		{
+			throw new CliUserException(
+				"WardrobeLibraryRequired",
+				"请通过 --library <Mod库目录> 指定 mod 库；权威数据在 <mod库>/.hd2modmanager/wardrobe.workspace.json。");
+		}
+
+		var workspacePath = WardrobeWorkspaceFile.ResolvePath(options.Library);
+		WardrobeWorkspaceDocument workspace;
+		try
+		{
+			workspace = WardrobeWorkspaceFile.Read(workspacePath);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException)
+		{
+			throw new CliUserException("WardrobeWorkspaceInvalid", exception.Message);
+		}
+		var registryRoot = CliArmorRegistryProtocol.ResolveRegistryRoot(options.RegistryRoot);
+		var protocol = await CliArmorRegistryProtocol.ReadProtocolAsync(registryRoot, allowMissing: false).ConfigureAwait(false);
+		// 只有"真映射"参与：模型映射（换模型而不是换视觉来源）不提供 section 语义。
+		var mappings = protocol.Mappings
+			.Where(mapping => !mapping.IsModelMapping && mapping.SourceItemId is not null)
+			.Select(mapping => new WardrobeMapping(mapping.TargetItemId, mapping.SourceItemId!.Value))
+			.ToArray();
+
+		// 缺省就在 mod 库里递归找 sections.json：映射表随 mod 走（§11），
+		// 用户不该为此记住每个 mod 的子目录名。
+		var sectionsPath = string.IsNullOrWhiteSpace(options.Sections)
+			? Path.GetFullPath(options.Library)
+			: Path.GetFullPath(options.Sections);
+		var index = await ReadSectionIndexAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
+		var result = WardrobeMaskProjection.Project(workspace, mappings, index);
+		if (result.IsValid)
+		{
+			await CliOutput.WriteExplicitFileAsync(output, WardrobeMaskFile.Serialize(result.Document), options.Overwrite, cancellationToken)
+				.ConfigureAwait(false);
+		}
+
+		var fullPath = Path.GetFullPath(output);
+		var projection = new
+		{
+			output = fullPath,
+			workspacePath,
+			workspaceExists = File.Exists(workspacePath),
+			workspaceRevision = workspace.Revision,
+			protocolPath = Path.Combine(registryRoot, CliArmorRegistryProtocol.ProtocolFileName),
+			mappingCount = mappings.Length,
+			sectionMapCount = index.SourcePaths.Count,
+			sectionMapPaths = index.SourcePaths,
+			revision = result.Document.Revision,
+			enabled = result.Document.Enabled,
+			setCount = result.Sets.Count,
+			entryCount = result.Document.Entries.Count,
+			targetCount = result.Document.TargetSets.Count,
+			skippedEntryCount = result.SkippedEntryCount,
+			sets = result.Sets,
+			diagnostics = result.Diagnostics,
+		};
+		Emit(
+			options,
+			new { ok = result.IsValid, projected = projection },
+			() =>
+			{
+				if (!result.IsValid)
+					return $"投影失败，未写出文件：\n{WardrobeMaskCompiler.Describe(result.Diagnostics)}";
+				var builder = new StringBuilder();
+				builder.Append($"已生成衣柜掩码：{fullPath}\n");
+				builder.Append($"  revision={result.Document.Revision} enabled={(result.Document.Enabled ? "true" : "false")}");
+				builder.Append($" 掩码集 {result.Sets.Count} / 条目 {result.Document.Entries.Count} / 目标 {result.Document.TargetSets.Count}\n");
+				builder.Append($"  依据：{workspacePath}{(File.Exists(workspacePath) ? string.Empty : "（不存在，视为全部继承）")}，");
+				builder.Append($"{mappings.Length} 条映射，{index.SourcePaths.Count} 份 section 映射表\n");
+				foreach (var set in result.Sets)
+				{
+					builder.Append($"  掩码集 {set.SetId} ← 护甲 {set.OwnerItemId}（");
+					builder.Append(set.Origin == WardrobeSetOrigin.Source ? "视觉来源" : "独立设置");
+					builder.Append($"，{set.EntryCount} 条）");
+					if (set.InheritorItemIds.Count > 0)
+						builder.Append($"；继承者：{string.Join(", ", set.InheritorItemIds)}");
+					builder.Append('\n');
+				}
+
+				if (result.SkippedEntryCount > 0)
+					builder.Append($"  跳过 {result.SkippedEntryCount} 条（见下方警告）\n");
+				// 这一步很重要：掩码只在**协议被重新应用**时才会被运行时读取，
+				// 单改掩码不会触发重载（见 armor_registry_runtime.lua 的 prepare_section_masks）。
+				builder.Append("  注意：运行时只在协议应用时读取掩码，改完掩码需要再触发一次协议应用才生效。");
+				if (result.Diagnostics.Count > 0)
+					builder.Append('\n').Append(WardrobeMaskCompiler.Describe(result.Diagnostics));
+				return builder.ToString();
+			});
+		return result.IsValid ? 0 : 2;
+	}
+
+	// --- 选项处理 -----------------------------------------------------------
+
+	/// <summary>
+	/// 读单份映射表。<c>--sections</c> 允许给目录，但这条链路需要**恰好一份**：
+	/// 规格里钉死了 patch 指纹，校验也按"一份构建产物"回答，多份就没有唯一答案。
+	/// </summary>
+	private static async ValueTask<WardrobeSectionMapDocument> ReadSingleMapAsync(
+		string path,
+		string command,
+		CancellationToken cancellationToken)
+	{
+		IReadOnlyList<string> paths;
+		try
+		{
+			paths = WardrobeSectionMapFile.ResolvePaths(path);
+		}
+		catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException or InvalidDataException)
+		{
+			throw new CliUserException("WardrobeSectionMapInvalid", exception.Message);
+		}
+
+		if (paths.Count != 1)
+		{
+			throw new CliUserException(
+				"WardrobeSectionMapAmbiguous",
+				$"{command} 需要恰好一份 sections.json，{path} 下找到了 {paths.Count} 份：" +
+				$"{string.Join("、", paths)}。跨 mod 的场景请改用 wardrobe project（它按 unit 合并多份表）。");
+		}
+
+		try
+		{
+			return await WardrobeSectionMapFile.ReadAsync(paths[0], cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException)
+		{
+			throw new CliUserException("WardrobeSectionMapInvalid", exception.Message);
+		}
+	}
+
+	/// <summary>读一份或多份映射表并合并成索引（文件或目录都行）。</summary>
+	private static async ValueTask<WardrobeSectionIndex> ReadSectionIndexAsync(string path, CancellationToken cancellationToken)
+	{
+		IReadOnlyList<WardrobeSectionMapDocument> documents;
+		try
+		{
+			documents = await WardrobeSectionMapFile.ReadManyAsync(path, cancellationToken).ConfigureAwait(false);
+			return WardrobeSectionIndex.Create(documents);
+		}
+		catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException or InvalidDataException or IOException)
+		{
+			// 输入路径问题不该显示成 UnhandledError：用户少传一个 --sections 不是程序崩溃。
+			throw new CliUserException("WardrobeSectionMapInvalid", exception.Message);
+		}
+	}
 
 	private static string RequirePositional(CliInvocation invocation, string command)
 	{
