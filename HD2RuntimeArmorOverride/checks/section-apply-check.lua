@@ -55,7 +55,7 @@ local canonical=assert(L.canonical_mesh(layout))
 local ids=assert(L.section_identities(layout))
 ok(#ids==22,'identity count 22')
 local target_fp=ids[1].fingerprint
-ok(target_fp=='a648fd251c740b12-8852','section 0 fingerprint '..tostring(target_fp))
+ok(target_fp=='a47787804c45e1a9-8852','section 0 fingerprint '..tostring(target_fp))
 
 -- ① 什么都不关：计划里每条 desired 都等于 original，应用时一条都不写
 local none=A.plan(layout,canonical,function() return false end)

@@ -85,7 +85,7 @@ local canonical=assert(L.canonical_mesh(layout))
 local ids=assert(L.section_identities(layout))
 local fp0=ids[1].fingerprint
 local fp1=ids[2].fingerprint
-ok(fp0=='a648fd251c740b12-8852','section 0 fingerprint')
+ok(fp0=='a47787804c45e1a9-8852','section 0 fingerprint')
 
 local function publisher()
     return P.new({read=read,write=write,regions=regions_iter,layout=L,apply=A,locate=LOC,masks=M})

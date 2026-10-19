@@ -88,7 +88,10 @@ function M.parse(read,base)
 
         local slots={}
         if num_materials>0 then
-            local slot_data=read(mesh_base+132,num_materials*4)
+            -- 槽位数组从 +128 开始：ReadMesh 读完 sectionsOffset 后只 cursor+=4，
+            -- 而 128 + numMaterials*4 == sectionsOffset（实测 128+88=216）。
+            -- 之前写成 +132 会让整个数组偏一位，材质 ID 全错但两边一致时看不出。
+            local slot_data=read(mesh_base+128,num_materials*4)
             if not slot_data then return nil,'material_slots_unreadable' end
             for slot_index=0,num_materials-1 do slots[slot_index+1]=u32(slot_data,slot_index*4) end
         end

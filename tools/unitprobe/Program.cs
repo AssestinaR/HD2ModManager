@@ -43,6 +43,7 @@ var maxMeshes = ArgInt(args, "--meshes", 4);
 var dumpSections = args.Contains("--sections", StringComparer.Ordinal);
 var manifestPath = ArgValue(args, "--manifest");
 var emitMapPath = ArgValue(args, "--emit-map");
+var emitSectionsPath = ArgValue(args, "--emit-sections");
 var groupsPath = ArgValue(args, "--groups");
 var onlyFileId = ArgValue(args, "--only");
 var patchFileId = ArgValue(args, "--patch-numindices");
@@ -234,6 +235,20 @@ if (emitMapPath is not null)
 	var (verified, mismatched) = VerifySectionMap(map, tocByFileId);
 	await File.WriteAllTextAsync(fullMapPath, JsonSerializer.Serialize(map, jsonOptions));
 	Console.WriteLine($"map written {fullMapPath} units={map.Units.Count} decorations={map.Decorations.Count} offsetsVerified={verified} mismatched={mismatched}");
+}
+
+if (emitSectionsPath is not null)
+{
+	var document = BuildSectionDocument(path, collected);
+	var fullSectionPath = Path.GetFullPath(emitSectionsPath);
+	var sectionDirectory = Path.GetDirectoryName(fullSectionPath);
+	if (!string.IsNullOrEmpty(sectionDirectory))
+	{
+		Directory.CreateDirectory(sectionDirectory);
+	}
+
+	await File.WriteAllTextAsync(fullSectionPath, JsonSerializer.Serialize(document, jsonOptions));
+	Console.WriteLine($"section map written {fullSectionPath} units={document.Units.Count} sections={document.Units.Sum(unit => unit.Sections.Count)} lodConsistent={document.Units.Count(unit => unit.LodConsistent)}");
 }
 
 // In-place edit of section NumIndices values inside the patch file.
@@ -617,6 +632,91 @@ static (int From, int To)? ParseSectionRange(string text)
 	return int.TryParse(text, out var single) ? (single, single) : null;
 }
 
+// 构建期 section 映射表（v2）：编辑器与 CLI 的输入，运行时不需要它。
+// 与 --emit-map 的 v1 区别：以「unit + LOD0 section 下标」为身份，附内容指纹，
+// 并把每个 section 在各级 LOD 上的落点列全——编辑器据此画树、CLI 据此校验。
+static SectionDocument BuildSectionDocument(string patchPath, IReadOnlyList<UnitMap> units)
+{
+	var tocBytes = File.ReadAllBytes(patchPath);
+	var gpuPath = patchPath + ".gpu_resources";
+	var list = new List<SectionUnit>();
+	foreach (var unit in units)
+	{
+		// 只有 lod>=0 的 mesh 属于 LOD 家族；lod=-1 的那些是独立的单节静态件。
+		var family = unit.Meshes.Where(mesh => mesh.Lod >= 0).OrderBy(mesh => mesh.Lod).ToArray();
+		if (family.Length == 0)
+		{
+			continue;
+		}
+
+		// 基准 mesh = 0 级 LOD 里 section 最多的那个，与运行时的 canonical_mesh 规则一致。
+		var canonical = family.Where(mesh => mesh.Lod == 0)
+			.OrderByDescending(mesh => mesh.Sections.Count)
+			.FirstOrDefault();
+		if (canonical is null)
+		{
+			continue;
+		}
+
+		var count = canonical.Sections.Count;
+		var consistent = family.All(mesh => mesh.Sections.Count == count);
+		var sections = new List<SectionEntry>(count);
+		for (var index = 0; index < count; index++)
+		{
+			var section = canonical.Sections[index];
+			var toggles = new List<SectionToggle>();
+			// 只收数量与基准相等的 LOD：数量不等说明节序不可对齐，按同一下标写会关错几何。
+			foreach (var mesh in family.Where(mesh => mesh.Sections.Count == count))
+			{
+				var target = mesh.Sections[index];
+				toggles.Add(new SectionToggle(mesh.Lod, mesh.MeshIndex, target.Index,
+					target.NumIndicesOffset, target.NumIndices));
+			}
+
+			sections.Add(new SectionEntry(
+				index,
+				NormalizeMaterialId(section.MaterialId),
+				section.Triangles,
+				SectionFingerprint(section.MaterialId, section.Triangles),
+				toggles));
+		}
+
+		list.Add(new SectionUnit(unit.FileId, unit.Slot, unit.PieceType, unit.BodyType, unit.Weight,
+			count, consistent, sections));
+	}
+
+	return new SectionDocument(
+		"hd2mod.section-map/2",
+		new PatchInfo(patchPath, Sha256(tocBytes), tocBytes.LongLength,
+			File.Exists(gpuPath) ? Sha256(File.ReadAllBytes(gpuPath)) : null),
+		SectionRecordSize,
+		NumIndicesOffsetInSection,
+		"tocRelative",
+		list);
+}
+
+// 材质 ID 统一成 16 位小写 hex、不带 0x；解析不出来（全零）时写成 none。
+static string NormalizeMaterialId(string? materialId)
+{
+	var text = (materialId ?? string.Empty).Trim().ToLowerInvariant();
+	if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+	{
+		text = text[2..];
+	}
+
+	if (text.Length != 16 || text.All(character => character == '0'))
+	{
+		return "none";
+	}
+
+	return text;
+}
+
+// 指纹 = 材质 ID + 三角形数，按字符串拼接。绝不做数值运算：
+// MaterialId 是 64 位，一旦经手浮点就会丢掉低位（Lua 侧已实测踩过）。
+static string SectionFingerprint(string? materialId, uint triangles)
+	=> NormalizeMaterialId(materialId) + "-" + triangles.ToString();
+
 static string Sha256(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
 
 static string Hex(uint value) => "0x" + value.ToString("x8");
@@ -747,6 +847,31 @@ internal sealed record SectionMapFile(
 	[property: JsonPropertyName("offsets")] string Offsets,
 	[property: JsonPropertyName("units")] IReadOnlyList<UnitMap> Units,
 	[property: JsonPropertyName("decorations")] IReadOnlyList<DecorationMap> Decorations);
+
+internal sealed record SectionDocument(
+	[property: JsonPropertyName("schema")] string Schema,
+	[property: JsonPropertyName("patch")] PatchInfo Patch,
+	[property: JsonPropertyName("sectionRecordSize")] int SectionRecordSize,
+	[property: JsonPropertyName("numIndicesOffsetInSection")] int NumIndicesOffsetInSection,
+	[property: JsonPropertyName("offsets")] string Offsets,
+	[property: JsonPropertyName("units")] IReadOnlyList<SectionUnit> Units);
+
+internal sealed record SectionUnit(
+	[property: JsonPropertyName("fileId")] string FileId,
+	[property: JsonPropertyName("slot")] string Slot,
+	[property: JsonPropertyName("pieceType")] string PieceType,
+	[property: JsonPropertyName("bodyType")] string BodyType,
+	[property: JsonPropertyName("weight")] string Weight,
+	[property: JsonPropertyName("sectionCount")] int SectionCount,
+	[property: JsonPropertyName("lodConsistent")] bool LodConsistent,
+	[property: JsonPropertyName("sections")] IReadOnlyList<SectionEntry> Sections);
+
+internal sealed record SectionEntry(
+	[property: JsonPropertyName("index")] int Index,
+	[property: JsonPropertyName("materialId")] string MaterialId,
+	[property: JsonPropertyName("triangles")] uint Triangles,
+	[property: JsonPropertyName("fingerprint")] string Fingerprint,
+	[property: JsonPropertyName("toggles")] IReadOnlyList<SectionToggle> Toggles);
 
 internal sealed record Manifest(string Path, IReadOnlyList<ManifestGroup> Groups);
 
