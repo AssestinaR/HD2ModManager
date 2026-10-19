@@ -93,16 +93,34 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			viewModel.CycleAvailableArmorUnitFilter();
 	}
 
-	// 双击展开/收起，树上没有小三角。点在开关上不算双击展开——
-	// 否则"连点两下开关"会顺手把子树展开，看起来像界面自己乱动。
+	// 双击展开/收起，树上没有小三角。两个坑都在这里挡住：
+	// 1. MouseDoubleClick 会沿祖先链一路冒泡，不判断"最内层"的话，双击子行会把顶层也收起；
+	// 2. 点在开关上不算双击展开，否则连点两下开关会顺手展开子树。
 	private void OnWardrobeTreeItemDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
 	{
-		if (e.OriginalSource is System.Windows.DependencyObject source && FindAncestorCheckBox(source) is not null)
-			return;
 		if (sender is not TreeViewItem item)
+			return;
+		if (e.OriginalSource is not System.Windows.DependencyObject source)
+			return;
+		var innermost = FindAncestorTreeViewItem(source);
+		if (!ReferenceEquals(innermost, item))
+			return;
+		if (FindAncestorCheckBox(source) is not null)
 			return;
 		item.IsExpanded = !item.IsExpanded;
 		e.Handled = true;
+	}
+
+	private static TreeViewItem? FindAncestorTreeViewItem(System.Windows.DependencyObject source)
+	{
+		// 要的是**最内层**那个：从命中点往上走，遇到的第一个就是子行自己。
+		// 取最外层的话，双击子行会被判成"命中的是顶层"，于是顶层被收起。
+		for (var current = source; current is not null; current = System.Windows.Media.VisualTreeHelper.GetParent(current))
+		{
+			if (current is TreeViewItem item)
+				return item;
+		}
+		return null;
 	}
 
 	private static CheckBox? FindAncestorCheckBox(System.Windows.DependencyObject source)

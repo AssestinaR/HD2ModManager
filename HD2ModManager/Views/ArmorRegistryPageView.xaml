@@ -79,16 +79,32 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="TreeViewItem">
                         <StackPanel>
-                            <Border x:Name="RowBack" Background="Transparent" CornerRadius="4" Padding="6,2">
+                            <!--
+                                边框粗细恒为 1、默认透明：选中时只换画刷不换粗细，
+                                否则内容会被挤动 1px，文字看起来往下跳一下。
+                            -->
+                            <Border x:Name="RowBack" Background="Transparent"
+                                    BorderBrush="Transparent" BorderThickness="1"
+                                    CornerRadius="4" Padding="6,2">
                                 <ContentPresenter x:Name="PART_Header"
                                                   ContentSource="Header"
                                                   HorizontalAlignment="Stretch"/>
                             </Border>
-                            <ItemsPresenter x:Name="ItemsHost" Margin="16,0,0,0"/>
+                            <!--
+                                层级线：每一层在子块左侧画一条竖线。只靠缩进的话，
+                                层级一深就分不清某一行属于哪个父节点；竖线能把归属连起来。
+                            -->
+                            <Border x:Name="ChildHost"
+                                    Margin="8,0,0,0"
+                                    Padding="8,0,0,0"
+                                    BorderBrush="{StaticResource StrokeSubtle}"
+                                    BorderThickness="1,0,0,0">
+                                <ItemsPresenter x:Name="ItemsHost"/>
+                            </Border>
                         </StackPanel>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsExpanded" Value="False">
-                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed"/>
+                                <Setter TargetName="ChildHost" Property="Visibility" Value="Collapsed"/>
                             </Trigger>
                             <!-- 隔行底色：奇偶交替，一眼能分清每行。 -->
                             <Trigger Property="ItemsControl.AlternationIndex" Value="1">
@@ -100,7 +116,6 @@
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
                                 <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
-                                <Setter TargetName="RowBack" Property="BorderThickness" Value="1"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -375,7 +390,9 @@
                             <Grid Grid.Row="1" Margin="0,10,0,0">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <Border Grid.Row="0" Margin="14,0,14,10"
                                         IsEnabled="{Binding ComponentEditorEditable}"
@@ -405,79 +422,86 @@
                                                 Margin="10,0,0,0"/>
                                     </Grid>
                                 </Border>
-                                <ScrollViewer Grid.Row="1"
-                                              HorizontalScrollBarVisibility="Disabled"
-                                              VerticalScrollBarVisibility="Auto">
-                                    <StackPanel Margin="6,0,6,12">
-                                        <!--
-                                            显隐的继承/独立。刻意不叫「跟随视觉来源」：
-                                            卡片上原来那个同名开关是**组件结构**的轴（进协议的 target_mode），
-                                            这个是 section 显隐的轴，两个概念同名会让人以为改一个另一个也变。
-                                        -->
-                                        <Grid Margin="8,0,8,6"
-                                              Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                                <TextBlock Text="显隐跟随视觉来源"
-                                                           Foreground="{StaticResource TextPrimary}"/>
-                                                <TextBlock Text="关闭后这件护甲用自己的 section 设置，不再跟随来源"
-                                                           Foreground="{StaticResource TextSecondary}"
-                                                           FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                            </StackPanel>
-                                            <CheckBox Grid.Column="1"
-                                                      Margin="12,0,0,0"
-                                                      VerticalAlignment="Center"
-                                                      IsChecked="{Binding Wardrobe.FollowSource, Mode=TwoWay}"
-                                                      Style="{StaticResource AppToggleSwitch}"
-                                                      AutomationProperties.Name="显隐跟随视觉来源"/>
-                                        </Grid>
-                                        <TextBlock Text="{Binding Wardrobe.StatusMessage}"
-                                                   Margin="8,0,8,6"
-                                                   TextWrapping="Wrap"
-                                                   Foreground="{StaticResource TextSecondary}"
-                                                   FontSize="11"
-                                                   Visibility="{Binding Wardrobe.HasStatus, Converter={StaticResource BoolToVis}}"/>
-                                        <TreeView ItemsSource="{Binding Wardrobe.Roots}"
-                                                  ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
-                                                  ItemContainerStyle="{StaticResource WardrobeTreeItemStyle}"
-                                                  AlternationCount="2"
-                                                  Margin="0,2,0,0"
-                                                  BorderThickness="0"
-                                                  Background="Transparent"
-                                                  MaxHeight="440"
-                                                  IsEnabled="{Binding Wardrobe.IsEditable}"
-                                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                                  Visibility="{Binding Wardrobe.HasRoots, Converter={StaticResource BoolToVis}}"/>
-                                        <!--
-                                            组件结构（哪些 unit 组成这件护甲）是另一条轴，只有自定义素体可编辑。
-                                            树取代的是"只读地看有哪些 unit"，不是取代这个编辑能力。
-                                        -->
-                                        <StackPanel Visibility="{Binding IsComponentEditorCustomModel, Converter={StaticResource BoolToVis}}">
-                                            <Border BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,1,0,0" Margin="8,10,8,0"/>
-                                            <TextBlock Text="组件结构" Margin="8,10,8,4"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{StaticResource TextSecondary}"/>
-                                            <ItemsControl ItemsSource="{Binding ComponentEditorRows}"
-                                                          ItemTemplate="{StaticResource ArmorComponentRowTemplate}">
-                                                <ItemsControl.Style>
-                                                    <Style TargetType="ItemsControl">
-                                                        <Setter Property="IsEnabled" Value="True"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding ComponentEditorEditable}" Value="False">
-                                                                <Setter Property="IsEnabled" Value="False"/>
-                                                                <Setter Property="Opacity" Value="0.5"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </ItemsControl.Style>
-                                            </ItemsControl>
+                                <!--
+                                    显隐的继承/独立。刻意不叫「跟随视觉来源」：
+                                    卡片上原来那个同名开关是**组件结构**的轴（进协议的 target_mode），
+                                    这个是 section 显隐的轴，两个概念同名会让人以为改一个另一个也变。
+                                -->
+                                <StackPanel Grid.Row="1" Margin="14,0,14,6">
+                                    <Grid Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <TextBlock Text="显隐跟随视觉来源"
+                                                       Foreground="{StaticResource TextPrimary}"/>
+                                            <TextBlock Text="关闭后这件护甲用自己的 section 设置，不再跟随来源"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap"/>
                                         </StackPanel>
-                                    </StackPanel>
-                                </ScrollViewer>
+                                        <CheckBox Grid.Column="1"
+                                                  Margin="12,0,0,0"
+                                                  VerticalAlignment="Center"
+                                                  IsChecked="{Binding Wardrobe.FollowSource, Mode=TwoWay}"
+                                                  Style="{StaticResource AppToggleSwitch}"
+                                                  AutomationProperties.Name="显隐跟随视觉来源"/>
+                                    </Grid>
+                                    <TextBlock Text="{Binding Wardrobe.StatusMessage}"
+                                               Margin="0,4,0,0"
+                                               TextWrapping="Wrap"
+                                               Foreground="{StaticResource TextSecondary}"
+                                               FontSize="11"
+                                               Visibility="{Binding Wardrobe.HasStatus, Converter={StaticResource BoolToVis}}"/>
+                                </StackPanel>
+                                <!--
+                                    树占满卡片剩下的高度（之前给了 MaxHeight，底部就空出一截）。
+                                    它自己滚动，外层不再套 ScrollViewer——两层滚动条只会互相抢滚轮。
+                                -->
+                                <TreeView Grid.Row="2"
+                                          ItemsSource="{Binding Wardrobe.Roots}"
+                                          ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
+                                          ItemContainerStyle="{StaticResource WardrobeTreeItemStyle}"
+                                          AlternationCount="2"
+                                          Margin="6,0,6,0"
+                                          Padding="0,2,6,6"
+                                          BorderThickness="0"
+                                          Background="Transparent"
+                                          IsEnabled="{Binding Wardrobe.IsEditable}"
+                                          ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                          Visibility="{Binding Wardrobe.HasRoots, Converter={StaticResource BoolToVis}}"/>
+                                <!--
+                                    组件结构（哪些 unit 组成这件护甲）是另一条轴，只有自定义素体可编辑。
+                                    树取代的是"只读地看有哪些 unit"，不是取代这个编辑能力。
+                                    它自己限高并滚动，不能把树挤掉。
+                                -->
+                                <StackPanel Grid.Row="3"
+                                            Visibility="{Binding IsComponentEditorCustomModel, Converter={StaticResource BoolToVis}}">
+                                    <Border BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,1,0,0" Margin="14,8,14,0"/>
+                                    <TextBlock Text="组件结构" Margin="14,8,14,4"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextSecondary}"/>
+                                    <ScrollViewer MaxHeight="220"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsControl ItemsSource="{Binding ComponentEditorRows}"
+                                                      Margin="6,0,6,10"
+                                                      ItemTemplate="{StaticResource ArmorComponentRowTemplate}">
+                                            <ItemsControl.Style>
+                                                <Style TargetType="ItemsControl">
+                                                    <Setter Property="IsEnabled" Value="True"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding ComponentEditorEditable}" Value="False">
+                                                            <Setter Property="IsEnabled" Value="False"/>
+                                                            <Setter Property="Opacity" Value="0.5"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ItemsControl.Style>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </StackPanel>
                             </Grid>
                         </Grid>
                     </Border>
