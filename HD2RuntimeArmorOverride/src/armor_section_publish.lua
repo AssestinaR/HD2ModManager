@@ -109,6 +109,26 @@ function P.new(env)
     return self
 end
 
+-- 从注册表快照里取出该护甲用到的 unit 列表（去重、排序）。
+-- 快照形状（运行时既有结构）：{ rows = { { body = n, pieces = {...} }, ... } }
+-- 单个 piece 的 unit 由 composition 模块解出——掩码文件里的 unit 就是它。
+-- 抽成纯函数是为了能离线测：真实快照只能在游戏里拿到。
+function P.units_from_snapshot(snapshot,composition)
+    local seen,list={},{}
+    for _,row in ipairs(snapshot and snapshot.rows or {}) do
+        for _,piece in ipairs(row.pieces or {}) do
+            local unit=composition and composition.unit and composition.unit(piece) or nil
+            -- 只收 16 位 hex：composition.unit 对畸形 piece 可能返回空串或垃圾，
+            -- 而空串在 Lua 里是真值——放进去会变成"一个不存在的 unit"，只在游戏里才炸。
+            if type(unit)=='string' and #unit==16 and not seen[unit] then
+                seen[unit]=true
+                list[#list+1]=unit
+            end
+        end
+    end
+    table.sort(list)
+    return list
+end
 function P.summary(stats)
     if not stats then return 'stats=nil' end
     return string.format('targets=%d units=%d hidden=%d writes=%d missing=%d',
