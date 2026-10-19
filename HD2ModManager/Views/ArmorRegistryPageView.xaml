@@ -1,9 +1,44 @@
 <UserControl x:Class="HD2ModManager.Views.ArmorRegistryPageView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:HD2ModManager.ViewModels"
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!--
+            section 树的一个节点。勾选框固定在最右侧（§4.3 的交互约定），
+            点条目本身不改变显隐——避免"想看详情结果改掉了设置"。
+            锁链标记只在 bodyType=Any 的 unit 上出现：它同时挂在纤细和健壮两支下，
+            两处切换天然同步，因为状态按 (unit, section 下标) 存、不按节点存。
+        -->
+        <HierarchicalDataTemplate x:Key="WardrobeTreeNodeTemplate"
+                                  DataType="{x:Type vm:WardrobeTreeNodeViewModel}"
+                                  ItemsSource="{Binding Children}">
+            <Grid MinHeight="24" Margin="0,1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Label}"
+                               Foreground="{StaticResource TextPrimary}"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="⛓"
+                               Margin="6,0,0,0"
+                               FontSize="11"
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource TextSecondary}"
+                               ToolTip="该 unit 同时用于两种身形，两处切换会同步"
+                               Visibility="{Binding SharedAcrossBodies, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+                <CheckBox Grid.Column="1"
+                          Margin="12,0,4,0"
+                          VerticalAlignment="Center"
+                          IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          AutomationProperties.Name="{Binding Label}"/>
+            </Grid>
+        </HierarchicalDataTemplate>
         <DataTemplate x:Key="ArmorPieceEditorTemplate">
             <Grid Margin="12,8" MinHeight="42">
                 <Grid.RowDefinitions>
@@ -305,20 +340,73 @@
                                 <ScrollViewer Grid.Row="1"
                                               HorizontalScrollBarVisibility="Disabled"
                                               VerticalScrollBarVisibility="Auto">
-                                    <ItemsControl ItemsSource="{Binding ComponentEditorRows}" Margin="6,0,6,12"
-                                                  ItemTemplate="{StaticResource ArmorComponentRowTemplate}">
-                                        <ItemsControl.Style>
-                                            <Style TargetType="ItemsControl">
-                                                <Setter Property="IsEnabled" Value="True"/>
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding ComponentEditorEditable}" Value="False">
-                                                        <Setter Property="IsEnabled" Value="False"/>
-                                                        <Setter Property="Opacity" Value="0.5"/>
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </ItemsControl.Style>
-                                    </ItemsControl>
+                                    <StackPanel Margin="6,0,6,12">
+                                        <!--
+                                            显隐的继承/独立。刻意不叫「跟随视觉来源」：
+                                            卡片上原来那个同名开关是**组件结构**的轴（进协议的 target_mode），
+                                            这个是 section 显隐的轴，两个概念同名会让人以为改一个另一个也变。
+                                        -->
+                                        <Grid Margin="8,0,8,6"
+                                              Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                <TextBlock Text="显隐跟随视觉来源"
+                                                           Foreground="{StaticResource TextPrimary}"/>
+                                                <TextBlock Text="关闭后这件护甲用自己的 section 设置，不再跟随来源"
+                                                           Foreground="{StaticResource TextSecondary}"
+                                                           FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                            </StackPanel>
+                                            <CheckBox Grid.Column="1"
+                                                      Margin="12,0,0,0"
+                                                      VerticalAlignment="Center"
+                                                      IsChecked="{Binding Wardrobe.FollowSource, Mode=TwoWay}"
+                                                      Style="{StaticResource AppToggleSwitch}"
+                                                      AutomationProperties.Name="显隐跟随视觉来源"/>
+                                        </Grid>
+                                        <TextBlock Text="{Binding Wardrobe.StatusMessage}"
+                                                   Margin="8,0,8,6"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   FontSize="11"
+                                                   Visibility="{Binding Wardrobe.HasStatus, Converter={StaticResource BoolToVis}}"/>
+                                        <TreeView ItemsSource="{Binding Wardrobe.Roots}"
+                                                  ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
+                                                  Margin="0,2,0,0"
+                                                  BorderThickness="0"
+                                                  Background="Transparent"
+                                                  MaxHeight="420"
+                                                  IsEnabled="{Binding Wardrobe.IsEditable}"
+                                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                  Visibility="{Binding Wardrobe.HasRoots, Converter={StaticResource BoolToVis}}"/>
+                                        <!--
+                                            组件结构（哪些 unit 组成这件护甲）是另一条轴，只有自定义素体可编辑。
+                                            树取代的是"只读地看有哪些 unit"，不是取代这个编辑能力。
+                                        -->
+                                        <StackPanel Visibility="{Binding IsComponentEditorCustomModel, Converter={StaticResource BoolToVis}}">
+                                            <Border BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,1,0,0" Margin="8,10,8,0"/>
+                                            <TextBlock Text="组件结构" Margin="8,10,8,4"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextSecondary}"/>
+                                            <ItemsControl ItemsSource="{Binding ComponentEditorRows}"
+                                                          ItemTemplate="{StaticResource ArmorComponentRowTemplate}">
+                                                <ItemsControl.Style>
+                                                    <Style TargetType="ItemsControl">
+                                                        <Setter Property="IsEnabled" Value="True"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding ComponentEditorEditable}" Value="False">
+                                                                <Setter Property="IsEnabled" Value="False"/>
+                                                                <Setter Property="Opacity" Value="0.5"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </ItemsControl.Style>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </StackPanel>
                                 </ScrollViewer>
                             </Grid>
                         </Grid>

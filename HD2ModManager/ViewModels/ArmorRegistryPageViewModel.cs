@@ -103,6 +103,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		AvailableArmorsView.Filter = FilterAvailableArmor;
 		ProviderDetailItemsView.Filter = FilterProviderDetailItem;
 		service = CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths());
+		// 衣柜的权威数据在工作区，和护甲注册工作区同一个目录（见 wardrobe-schema-v2 笔记 §14）。
+		Wardrobe = new WardrobeTreeViewModel(
+			WardrobeWorkspaceFile.ResolvePath(SettingsService.CreateStoragePaths().ModsDirectory));
 		RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !IsBusy && !HasChanges);
 		ApplyCommand = new AsyncRelayCommand(_ => ApplyAsync(), _ => !IsBusy && HasChanges);
 		OpenRegistryFolderCommand = new RelayCommand(OpenRegistryFolder);
@@ -127,6 +130,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public BulkObservableCollection<RuntimeArmorChoiceViewModel> ProviderDetailItems { get; } = [];
 	public BulkObservableCollection<RuntimeArmorModelEditorViewModel> CustomModels { get; } = [];
 	public ObservableCollection<RuntimeArmorModelPieceEditorViewModel> ComponentEditorPieces { get; } = [];
+	/// <summary>「视觉组件」卡片里的 section 树（无 3D）。与将来的 3D 窗口共用同一份核心树。</summary>
+	public WardrobeTreeViewModel Wardrobe { get; }
 	public ObservableCollection<RuntimeArmorComponentGroupViewModel> ComponentEditorGroups { get; } = [];
 	public ObservableCollection<RuntimeArmorComponentRowViewModel> ComponentEditorRows { get; } = [];
 	public ICollectionView AvailableArmorsView { get; }
@@ -787,6 +792,15 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		componentEditorSourcePieces = source.IsCustomModel ? RuntimeArmorModelStructure.Normalize(pieces) : pieces;
 		componentEditorSourceOverrideOwner = source.IsCustomModel ? model?.SourceItemId : source.ItemId;
 		PopulateComponentEditor();
+		// 树的 section 数据从**当前部署的 patch** 现算，所以编辑器看到的就是游戏实际加载的几何。
+		// 它和组件结构是两条独立的轴：组件结构决定"用哪些 unit"，树决定"这些 unit 的哪些 section 不可见"。
+		await Wardrobe.LoadAsync(
+			item.ItemId,
+			source.ItemId,
+			isTarget,
+			componentEditorSourcePieces.Select(piece => piece.Unit).ToArray(),
+			SettingsService.GetGameDataFolder()).ConfigureAwait(true);
+		if (request != componentEditorRequest) return;
 		OnPropertyChanged(nameof(IsComponentEditorOpen));
 		OnPropertyChanged(nameof(ComponentEditorIsTarget));
 		OnPropertyChanged(nameof(IsComponentEditorCustomModel));
@@ -835,6 +849,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		ComponentEditorPieces.Clear();
 		ComponentEditorGroups.Clear();
 		ComponentEditorRows.Clear();
+		Wardrobe.Clear();
 		OnPropertyChanged(nameof(IsComponentEditorOpen));
 		OnPropertyChanged(nameof(ComponentEditorIsTarget));
 		OnPropertyChanged(nameof(IsComponentEditorCustomModel));
