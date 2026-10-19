@@ -46,7 +46,7 @@ end
 -- 指纹是**用实际读到的 section 内容**去查掩码的，所以"掩码里的指纹对不上"自然
 -- 表现为"查不到 → 保持可见"，不需要额外分支。这正是把"关错部件"降级成
 -- "设置静默失效"的落点。
-function A.plan(layout,canonical,disabled)
+function A.plan(layout,canonical,disabled,originals)
     assert(type(disabled)=='function','disabled predicate is required')
     if not canonical then return nil,'no_lod0_mesh' end
     local writes={}
@@ -62,8 +62,10 @@ function A.plan(layout,canonical,disabled)
                 unit_section=index-1,
                 lod=toggle.lod,
                 address_offset=toggle.offset+NUM_INDICES_OFFSET,
-                original=toggle.num_indices,
-                desired=hide and 0 or toggle.num_indices,
+                -- 原值优先取缓存：section 被写成 0 之后内存里就没有原值了，
+                -- 而"取消勾选"必须把它写回去。缓存是唯一还有原值的地方。
+                original=(originals and originals[toggle.offset+NUM_INDICES_OFFSET]) or toggle.num_indices,
+                desired=hide and 0 or ((originals and originals[toggle.offset+NUM_INDICES_OFFSET]) or toggle.num_indices),
             }
         end
     end

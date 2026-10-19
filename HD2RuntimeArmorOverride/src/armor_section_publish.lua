@@ -20,7 +20,9 @@ function P.new(env)
     assert(env.layout and env.apply and env.locate and env.masks,'modules required')
 
     local locator=env.locate.new(env.read,env.regions,env.layout)
-    local self={}
+    -- originals: 绝对地址 -> NumIndices 原值。section 被写成 0 后内存里就没有原值了，
+    -- 这份缓存是取消勾选时唯一能写回去的依据；touched 记录我们动过哪些 unit。
+    local self={originals={},touched={}}
 
     -- 换装/重载后基址会变，缓存必须整体失效。
     function self.invalidate(unit_id)
@@ -31,10 +33,10 @@ function P.new(env)
     -- units_by_target: { [target_id] = { "unithex", ... } }
     -- 返回 ok, stats 或 nil, reason
     function self.apply_document(masks,units_by_target,checkpoint)
-        local stats={targets=0,units=0,missing=0,writes=0,hidden_sections=0}
+        local stats={targets=0,units=0,missing=0,writes=0,hidden_sections=0,restored=0}
         if not masks or masks.enabled==false then return true,stats end
 
-        local merged={}       -- address_offset -> write
+        local merged={}
         local order={}
         local function merge(write)
             local existing=merged[write.address_offset]
@@ -55,11 +57,13 @@ function P.new(env)
         for target in pairs(units_by_target or {}) do target_ids[#target_ids+1]=target end
         table.sort(target_ids)
 
+        local covered={}
         for _,target in ipairs(target_ids) do
             local units=units_by_target[target]
             if units and #units>0 then
                 stats.targets=stats.targets+1
                 for _,unit_id in ipairs(units) do
+                    covered[unit_id]=true
                     local base,parsed=locator.locate(unit_id,checkpoint)
                     if not base then
                         -- 没加载/没找到不是致命错误：换装前后目标不同，跳过并计数。
@@ -71,7 +75,8 @@ function P.new(env)
                         -- 在这里补上 unit，别把两个顺序搞混（搞混了 fp 会变成 nil）。
                         local lookup=env.masks.lookup(masks,target)
                         local plan,reason=env.apply.plan(parsed,canonical,
-                            function(index,fp) return lookup(unit_id,index,fp) end)
+                            function(index,fp) return lookup(unit_id,index,fp) end,
+                            self.originals)
                         if not plan then
                             stats.missing=stats.missing+1
                             if env.log then
@@ -80,6 +85,7 @@ function P.new(env)
                         else
                             stats.units=stats.units+1
                             stats.hidden_sections=stats.hidden_sections+plan.hidden_sections
+                            if plan.hidden_sections>0 then self.touched[unit_id]=true end
                             for _,write in ipairs(plan.writes) do
                                 local okay,conflict=merge(write)
                                 if not okay then return nil,conflict end
@@ -89,6 +95,31 @@ function P.new(env)
                     if checkpoint then checkpoint() end
                 end
             end
+        end
+
+        -- 恢复：曾被我们写过、但当前掩码不再覆盖的 unit，必须把原值写回去。
+        -- 少了这一步，"取消勾选"永远不会生效——那时内存里已经是 0，而掩码里根本没有它，
+        -- 于是计划里一条写入都不会有。原值只存在于 self.originals。
+        local restore_units,restored_ok={},{}
+        for unit_id in pairs(self.touched) do
+            if not covered[unit_id] then restore_units[#restore_units+1]=unit_id end
+        end
+        table.sort(restore_units)
+        for _,unit_id in ipairs(restore_units) do
+            local base,parsed=locator.locate(unit_id,checkpoint)
+            if base then
+                local canonical=env.layout.canonical_mesh(parsed)
+                local plan=env.apply.plan(parsed,canonical,function() return false end,self.originals)
+                if plan then
+                    for _,write in ipairs(plan.writes) do
+                        local okay,conflict=merge(write)
+                        if not okay then return nil,conflict end
+                    end
+                    restored_ok[#restored_ok+1]=unit_id
+                    stats.restored=stats.restored+1
+                end
+            end
+            if checkpoint then checkpoint() end
         end
 
         if #order==0 then return true,stats end
@@ -103,10 +134,17 @@ function P.new(env)
         local okay,applied=env.apply.apply({read=read_dword,write=env.write},order)
         if not okay then return nil,applied end
         stats.writes=#applied
-        stats.applied=applied
+
+        -- 记录原值：这是以后"写回原值"的唯一来源。必须在写入之后记，
+        -- 因为写之前的读取才是原值——apply 内部已经保存了 previous，这里只补缓存。
+        for _,write in ipairs(order) do
+            if self.originals[write.address_offset]==nil then
+                self.originals[write.address_offset]=write.original
+            end
+        end
+        for _,unit_id in ipairs(restored_ok) do self.touched[unit_id]=nil end
         return true,stats
     end
-
     return self
 end
 

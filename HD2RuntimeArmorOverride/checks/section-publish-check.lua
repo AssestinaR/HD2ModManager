@@ -190,6 +190,19 @@ ok(next(P.units_for_masks(nil))==nil,'nil masks yield no units')
 local disabled_doc=M.parse(table.concat({'schema=2','revision=1','enabled=false',
     'off=1,'..UNIT_A..',0,'..fp0,'target=7,1'},'\n')..'\n')
 ok(next(P.units_for_masks(disabled_doc))==nil,'disabled masks yield no units')
+-- ⑨ 取消勾选必须能恢复：同一个 publisher 先隐藏、再用空掩码恢复
+reset()
+local p9=publisher()
+local hide=mask_doc({'schema=2','revision=1','enabled=true','off=1,'..UNIT_A..',0,'..fp0,'target=7,1'})
+local ok9a=p9.apply_document(hide,{[7]={UNIT_A}})
+ok(ok9a==true,'hide applies for restore test')
+ok(u32_at(regions[1],BASE_A+canonical.sections[1].offset+16)==0,'section 0 zeroed before restore')
+local empty=mask_doc({'schema=2','revision=2','enabled=true'})
+local ok9b,s9b=p9.apply_document(empty,{})
+ok(ok9b==true,'empty mask applies')
+ok(s9b and s9b.restored==1,'restored=1 got '..tostring(s9b and s9b.restored))
+ok(u32_at(regions[1],BASE_A+canonical.sections[1].offset+16)==canonical.sections[1].num_indices,
+    'section 0 restored to its original numIndices')
 print(string.format('checks=%d failures=%d',checks,failures))
 if failures>0 then os.exit(1) end
 print('PUBLISH_OK')
