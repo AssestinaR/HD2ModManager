@@ -99,12 +99,14 @@ triangles   = section.NumIndices / 3，十进制
 fingerprint = none-<triangles>
 ```
 
-> 实测：`E:\tmp\vanilla-unit-test\unit_0x143a0d93d14d6587.toc` 这个原版 unit，
-> 每个 mesh 的 `materialSlotIds[0]` 都是 **0**，拿 0 去查材质绑定表查不到，
-> 所以原版 unit 上大量 section 的指纹会是 `none-<triangles>`。
-> 这不影响掩码——掩码只作用在我们自己构建的 unit 上，那些 slot 是解析得出来的
-> （`cae35ee15168145f` 的 11 个 section 全部拿到了材质 ID）。
-> 但**指纹必须允许退化**，不能因为材质缺失就拒绝整份文件。
+> 实测：`E:\tmp\vanilla-unit-test\unit_0x143a0d93d14d6587.toc` 这个 unit，
+> 5 个 mesh 的 `materialSlotIds[0]` 全是 **0**，拿 0 去查材质绑定表查不到
+> （表里确实有 3 条绑定，sectionId 是 `0x93fc934` / `0x5e0858a6` / `0x69adc318`），
+> 所以它的指纹会退化成 `none-<triangles>`。
+> 我们自己构建的 unit 没有这个问题：`cae35ee15168145f` 的 11 个 section
+> 全部拿到了材质 ID（`3210307590` → `aa6b1bd624443008`）。
+> 结论：**指纹必须允许退化**，不能因为材质缺失就拒绝整份文件；
+> 退化后的指纹仍然能检测"三角形数变了"这一半。
 
 **为什么不哈希**：这个值的作用是"检测 section 内容漂移"，不是安全边界。
 直接写可读原文的好处是——三份语言（C# / Lua / Python）都不需要实现同一个哈希，
@@ -272,5 +274,28 @@ lod 依次 `-1,3,2,1,0`、每个 1 个 section，节记录地址单调递增且�
    数据在 composite 载荷里，上面这套偏移不适用。阶段 3 先只支持非 composite，
    遇到 composite 就跳过并计数。
 2. **内存副本的头部是否与文件一致尚未实测**。交接文档 §3.3 记录的是"99.19% 相同，
-   差异只在头部"——`0x5c / 0x64 / 0x70` 恰好都在头部。**这是阶段 3 第一个要测的东西**：
-   在内存副本里读这三个偏移，与 `sections.json` 里的值比对，一致才能继续。
+   差异只在头部"——`0x5c / 0x64 / 0x70` 恰好都在头部。**这是阶段 3 第一个要测的东西**。
+
+### 12.1 待跑的实测（只读探针已就位）
+
+探针：`%LOCALAPPDATA%\MDL\Helldivers2\Mods\section_layout_probe\mod.lua`
+（源码副本在 `HD2RuntimeArmorOverride/probes/section_layout_probe.lua`）。
+它**不写内存**，只定位 TOC 副本、打印结构头、走一遍 mesh 表，结果写到
+`ArmorRegistry\section-layout.status`。
+
+用 `E:\tmp\lilium-final` 那份 patch 的离线值作为预期（`sections.json` 与 unitprobe 一致）：
+
+| 字段 | 预期 |
+|---|---|
+| `streamInfoOffset` | `0xfcd0` |
+| `meshInfoOffset` | `0x10400` |
+| `materials` | 46 |
+| `meshes` | 6 |
+| m0..m3 | `lod=3,2,1,0`，`nsec=11`，`secOff=172` |
+| m4, m5 | `lod=-1`，`nsec=1` |
+| mesh#0 首节 | `materialIndex=0`，`numIndices=27870`，`groupIndex=0` |
+
+**判定**：结构头三个偏移与上表一致 ⇒ 运行时自己走 TOC 这条路成立，阶段 3 可以开工；
+不一致 ⇒ 退回"运行时读 `sections.json`"的方案（那时阶段 2 就必须把映射表部署到
+运行时读得到的位置，架构要改）。探针同时打印前 128 字节的 hex，不一致时用它和
+文件头逐字节比对，能直接看出差异落在哪几个字段上。
