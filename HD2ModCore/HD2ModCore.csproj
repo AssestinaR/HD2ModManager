@@ -69,6 +69,14 @@
     -->
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_wardrobe_masks.lua"
                       Link="RuntimeArmorRegistry\armor_wardrobe_masks.lua" />
+    <!--
+      unit TOC 的只读结构解析：运行时据此自己算出 section 偏移，不必读构建期的映射表。
+      实测依据见 notes/section-toc-memory-header-differs-only-in-unit-id-20261019.md。
+      Read-only unit TOC walker: lets the runtime derive section offsets itself instead of
+      reading a build-time map. Evidence in the note referenced above.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_layout.lua"
+                      Link="RuntimeArmorRegistry\armor_section_layout.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
                       Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe_core.lua"

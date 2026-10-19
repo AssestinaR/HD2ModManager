@@ -74,11 +74,15 @@ local function i32(data,at)
     return value
 end
 
-local function u64(data,at)
-    local low=u32(data,at)
-    local high=u32(data,at+4)
-    if not low or not high then return nil end
-    return low+high*4294967296
+-- 64 位材质 ID 必须按字节拼 hex，**不能**先拼成 Lua number。
+-- Lua 5.1/LuaJIT 的 number 是 double，只有 53 位精度：
+-- high*2^32 一过 2^53，低位就被悄悄截断（实测 0xa648fd251c740b12 会打印成 ...0b00）。
+-- 这个坑不会报错，只会让"指纹对不上"变成一个查不出原因的谜。
+local function hex64(data,at)
+    if not data or at<0 or at+8>#data then return nil end
+    local out={}
+    for index=8,1,-1 do out[#out+1]=string.format('%02x',data:byte(at+index)) end
+    return table.concat(out)
 end
 
 local function hex(bytes)
@@ -170,8 +174,8 @@ local function describe(base,header)
         local values=read(base+materials_offset+4+material_count*4,material_count*8)
         if ids and values then
             for index=0,math.min(material_count,3)-1 do
-                log(string.format('  mat%d sectionId=%d materialId=0x%016x',
-                    index,u32(ids,index*4) or 0,u64(values,index*8) or 0))
+                log(string.format('  mat%d sectionId=%d materialId=0x%s',
+                    index,u32(ids,index*4) or 0,hex64(values,index*8) or '?' ))
             end
         else
             log('  material table unreadable')

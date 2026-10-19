@@ -308,5 +308,17 @@ python HD2RuntimeArmorOverride\scripts\make_section_layout_probe.py `
   能直接看出差异落在哪几个字段上。
 * `NOT_FOUND` ⇒ 签名没命中（多半是当前部署换了包，重新生成探针即可）。
 
-若最终判定"内存副本的结构头不可用"，阶段 3 退回"运行时读 `sections.json`"的方案，
+**2026-10-19 已实测：`VERDICT=PASS`。** 详见
+`notes/section-toc-memory-header-differs-only-in-unit-id-20261019.md`。要点：
+
+* 内存副本与文件在前 128 字节里**只差 8 个字节**，就是 `+0` 处的 unit FileId
+  （文件那里是 0）。`0x5c / 0x64 / 0x70` 两处完全相等。
+* 因此定位一个 unit 的副本不再需要"节记录签名"（那个与构建绑定，换包就失效），
+  只要找 **`FileId(8 字节) + 8 个零字节`**，再做结构校验即可。
+* 走查器 `armor_section_layout.lua` 已按这套偏移实现，并在**离线**状态下用文件读取
+  复现了游戏内探针的同一组数字（5 个 mesh、lod `4..0`、22 个 section、
+  首节 `numIndices=26556`、`materials=110`、section 0 指纹
+  `a648fd251c740b12-8852`），27 项检查全过。
+
+**若这条结论被后续样本推翻**，阶段 3 退回"运行时读 `sections.json`"的方案，
 那时阶段 2 就必须把映射表部署到运行时读得到的位置，架构要改。

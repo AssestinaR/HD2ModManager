@@ -15,12 +15,17 @@ public sealed class RuntimeArmorRegistryLuaSourceTests
 		var transaction = source.IndexOf("local ARMOR_REGISTRY_TRANSACTION=", StringComparison.Ordinal);
 		var composition = source.IndexOf("local ARMOR_REGISTRY_COMPOSITION=", StringComparison.Ordinal);
 		var wardrobe = source.IndexOf("local ARMOR_WARDROBE_MASKS=", StringComparison.Ordinal);
+		var layout = source.IndexOf("local ARMOR_SECTION_LAYOUT=", StringComparison.Ordinal);
 		var entry = source.IndexOf("local __hd2_runtime=", StringComparison.Ordinal);
 		Assert.True(transaction >= 0 && composition > transaction && entry > composition);
-		// 掩码解析器必须排在入口点之前：入口点的 tick 里要用它，晚于它加载就是 nil。
+		// 掩码解析器与 TOC 走查器都必须排在入口点之前：入口点的 tick 里要用它们，
+		// 晚于入口点加载就是 nil，而且只在游戏里才会炸。
 		Assert.True(wardrobe > composition && wardrobe < entry);
+		Assert.True(layout > wardrobe && layout < entry);
 		Assert.Contains("wardrobe.masks exceeds 1 MiB", source);
 		Assert.Contains("function M.lookup(document,target)", source);
+		Assert.Contains("function M.section_fingerprint", source);
+		Assert.Contains("mesh_info_offset_invalid", source);
 		Assert.Contains("published buffer limit reached", source);
 		Assert.Contains("local function publish_document", source);
 		Assert.Contains("incremental applied: built=", source);
