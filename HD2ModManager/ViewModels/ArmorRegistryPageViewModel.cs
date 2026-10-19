@@ -799,6 +799,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			source.ItemId,
 			isTarget,
 			item.Name,
+			item.ArchiveId,
 			componentEditorSourcePieces.Select(piece => piece.Unit).ToArray(),
 			SettingsService.GetGameDataFolder()).ConfigureAwait(true);
 		if (request != componentEditorRequest) return;

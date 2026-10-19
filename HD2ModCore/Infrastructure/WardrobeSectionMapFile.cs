@@ -125,7 +125,12 @@ public static class WardrobeSectionMapFile
 		return new WardrobeSectionMapBuildResult(document, skipped);
 	}
 
-	private static WardrobeSectionMapUnit? BuildUnit(string fileId, UnitMeshModel model)
+	/// <summary>
+	/// 从一个已解析的 unit 模型算出映射表条目。`internal` 是为了让
+	/// <see cref="WardrobeSectionSource"/> 复用同一套规则——两边各写一份，
+	/// 迟早会出现"编辑器看到的 section 数和 CLI 算出来的不一样"。
+	/// </summary>
+	internal static WardrobeSectionMapUnit? BuildUnit(string fileId, UnitMeshModel model)
 	{
 		// 只有 lod >= 0 的 mesh 属于 LOD 家族；lod = -1 的那些是独立的单节静态件。
 		var family = model.Meshes.Where(mesh => mesh.LodIndex >= 0).OrderBy(mesh => mesh.LodIndex).ToArray();

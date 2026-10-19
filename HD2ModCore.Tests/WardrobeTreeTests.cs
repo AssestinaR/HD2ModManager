@@ -115,6 +115,28 @@ public sealed class WardrobeTreeTests
 	}
 
 	[Fact]
+	public void Build_PropagatesTheLinkedFlagUpWhenEveryUnitIsAny()
+	{
+		var root = Build(
+			Unit(TorsoUnderAny, "Torso", "Undergarment", "Any", 2),
+			Unit(HelmetUnderAny, "Helmet", "Undergarment", "Any", 1));
+		// 所有子级别都链接 ⇒ 父级也链接。
+		Assert.True(root.SharedAcrossBodies);
+		foreach (var node in root.Descendants().Where(node => node.Kind != WardrobeTreeNodeKind.Section))
+			Assert.True(node.SharedAcrossBodies, node.Key);
+	}
+
+	[Fact]
+	public void Build_DoesNotPropagateWhenOneUnitBelongsToASingleBody()
+	{
+		// 默认 fixture 里 TorsoArmorSlim 只属于纤细，所以「胸部」这一支不能标链接。
+		var root = Build();
+		Assert.False(root.SharedAcrossBodies);
+		Assert.True(Find(root, "armour/body:Slim/slot:Helmet").SharedAcrossBodies);
+		Assert.False(Find(root, "armour/body:Slim/slot:Torso").SharedAcrossBodies);
+	}
+
+	[Fact]
 	public void Build_KeysAreUniqueAcrossTheWholeTree()
 	{
 		var root = Build();

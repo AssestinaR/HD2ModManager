@@ -213,6 +213,7 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 		uint? sourceItemId,
 		bool isTarget,
 		string armourLabel,
+		string? archiveId,
 		IReadOnlyList<string> unitIds,
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default)
@@ -245,7 +246,7 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 			OnPropertyChanged(nameof(FollowSource));
 
 			var resolution = await WardrobeSectionSource
-				.ResolveAsync(gameDataDirectory, unitIds, cancellationToken)
+				.ResolveAsync(gameDataDirectory, unitIds, archiveId, cancellationToken)
 				.ConfigureAwait(true);
 			if (resolution.Units.Count == 0)
 			{

@@ -54,8 +54,9 @@ public sealed record WardrobeTreeNode(
 	IReadOnlyList<WardrobeTreeNode> Children)
 {
 	/// <summary>
-	/// 该 unit 的 <c>bodyType</c> 是 <c>Any</c>，所以它同时挂在健壮和纤细两支下。
-	/// 界面据此加锁链图标；两处切换天然同步，因为状态按 (unit, 下标) 存，不按节点存。
+	/// 该节点下的 unit **全部**同时用于两种身形（`bodyType = Any`），所以这个节点本身
+	/// 也是"链接"的：改它等于同时改两支。父级由子级推出来——全是链接才算链接，
+	/// 只要有一个只属于单一身形，父级就不标，因为那时两支的内容并不相同。
 	/// </summary>
 	public bool SharedAcrossBodies { get; init; }
 
@@ -181,13 +182,31 @@ public static class WardrobeTree
 				slotNodes));
 		}
 
-		return new WardrobeTreeNode(
+		return PropagateLinked(new WardrobeTreeNode(
 			WardrobeTreeNodeKind.Armour,
 			rootKey,
 			armourLabel,
 			Unit: null,
 			SectionIndex: null,
-			bodyNodes);
+			bodyNodes));
+	}
+
+	/// <summary>
+	/// 自底向上推"链接"标记：一个节点的所有子节点都链接时，它自己也链接。
+	/// 必须在整棵树建完之后做——父级的标记依赖子级，而子级是逐个建出来的。
+	/// </summary>
+	private static WardrobeTreeNode PropagateLinked(WardrobeTreeNode node)
+	{
+		if (node.Children.Count == 0)
+			return node;
+		var children = node.Children.Select(PropagateLinked).ToArray();
+		var allLinked = children.All(child => child.SharedAcrossBodies);
+		return node with
+		{
+			Children = children,
+			// Unit 节点自己的 bodyType 已经决定了它是否链接；其余节点由子级推出来。
+			SharedAcrossBodies = node.Kind == WardrobeTreeNodeKind.Unit ? node.SharedAcrossBodies : allLinked,
+		};
 	}
 
 	private static WardrobeTreeNode BuildUnitNode(

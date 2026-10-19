@@ -87,4 +87,25 @@ public sealed class WardrobeSectionSourceTests
 		Assert.True(unit.LodConsistent);
 		Assert.Equal("a47787804c45e1a9-8852", unit.Sections[0].Fingerprint);
 	}
+
+	/// <summary>
+	/// 没有来源 mod 时也要能识别：unit 只存在于游戏自己的 archive 里。
+	/// 没有这一级，一件原版护甲打开编辑器就是空树。
+	/// </summary>
+	[Fact]
+	public async Task ResolveAsync_FallsBackToTheVanillaArchives()
+	{
+		var gameData = Environment.GetEnvironmentVariable(GameDataVariable);
+		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
+			return;
+
+		// 一个只存在于原版数据包、不在任何部署 patch 里的 unit。
+		const string vanillaUnit = "143a0d93d14d6587";
+		var resolution = await WardrobeSectionSource.ResolveAsync(gameData, [vanillaUnit]);
+		Assert.Empty(resolution.MissingUnitIds);
+		var unit = Assert.Single(resolution.Units);
+		Assert.Equal(vanillaUnit, unit.FileId);
+		Assert.True(unit.SectionCount > 0);
+		Assert.NotEmpty(unit.Sections[0].Fingerprint);
+	}
 }
