@@ -102,7 +102,8 @@ function P.new(env)
         end
         local okay,applied=env.apply.apply({read=read_dword,write=env.write},order)
         if not okay then return nil,applied end
-        stats.writes=applied
+        stats.writes=#applied
+        stats.applied=applied
         return true,stats
     end
 

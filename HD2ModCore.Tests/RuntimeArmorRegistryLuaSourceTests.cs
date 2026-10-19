@@ -34,6 +34,10 @@ public sealed class RuntimeArmorRegistryLuaSourceTests
 		Assert.Contains("mesh_info_offset_invalid", source);
 		Assert.Contains("precheck_failed", source);
 		Assert.Contains("function M.pattern", source);
+		// 掩码必须在 blob 提交之前落盘，失败要整体撤回：这两句就是那个顺序的锚点。
+		Assert.Contains("prepare_section_masks", source);
+		Assert.Contains("section mask failed", source);
+		Assert.Contains("restore_section_masks", source);
 		Assert.Contains("rolled back", source);
 		Assert.Contains("published buffer limit reached", source);
 		Assert.Contains("local function publish_document", source);

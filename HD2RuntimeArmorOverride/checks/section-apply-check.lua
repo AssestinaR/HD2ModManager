@@ -64,7 +64,7 @@ ok(none and #none.writes==22*5,'writes=22 sections x 5 lods got '..(none and #no
 buffer=ORIGINAL
 local io1=make_io()
 local okay1,count1=A.apply(io1,none.writes)
-ok(okay1==true and count1==0,'nothing to write when nothing is hidden')
+ok(okay1==true and #count1==0,'nothing to write when nothing is hidden')
 ok(io1.count()==0,'no write calls issued')
 
 -- ② 关掉 section 0 与 3：每级 LOD 的 +16 都变 0，其余不变
@@ -75,7 +75,7 @@ buffer=ORIGINAL
 local io2=make_io()
 local okay2,count2=A.apply(io2,plan.writes)
 ok(okay2==true,'apply ok: '..tostring(count2))
-ok(count2==10,'wrote 2 sections x 5 lods = 10 got '..tostring(count2))
+ok(#count2==10,'wrote 2 sections x 5 lods = 10 got '..tostring(count2 and #count2))
 local zeroed=0
 for _,write in ipairs(plan.writes) do
     if u32_at(buffer,write.address_offset)==0 then zeroed=zeroed+1 end

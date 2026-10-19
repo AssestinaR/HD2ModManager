@@ -111,7 +111,8 @@ function A.apply(io,writes)
             applied[#applied+1]=write
         end
     end
-    return true,#applied
+    -- 返回已写列表而不是数量：主事务若在之后失败，需要拿它整体撤回。
+    return true,applied
 end
 
 -- 把已写的值恢复成写入前的样子。恢复同样逐条校验，避免覆盖别人的写入。

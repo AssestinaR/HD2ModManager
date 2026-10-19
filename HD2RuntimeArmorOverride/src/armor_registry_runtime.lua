@@ -161,6 +161,7 @@ log('deployment_mode='..M.deployment_mode)
 local protocol_path=registry_directory..'/armor-registry.protocol'
 local status_path=registry_directory..'/runtime.status'
 local cache_path=registry_directory..'/locator.cache'
+local wardrobe_masks_path=registry_directory..'/wardrobe.masks'
 local weight_audit_request_path=registry_directory..'/weight-audit.request'
 local weight_audit_report_path=registry_directory..'/weight-audit.report'
 
@@ -1027,6 +1028,120 @@ local function publish_document(plan,document)
     return true,stats
 end
 
+
+-- ---- 衣柜 section 掩码 -------------------------------------------------------
+-- 顺序是刻意的：section 写入便宜且可回滚，先做；blob 提交失败时再把它撤回。
+-- 反过来（先提交 blob 再写 section）一旦 section 失败，就会出现"映射生效了、
+-- 掩码没生效"的中间态，而用户看到的是"勾了没反应"，最难查。
+local section_publisher
+local function section_write_dword(address,value,expected)
+    -- 只碰已可写的页：这是交接文档定的边界，不改保护属性。
+    if not slot_writable(address) then return false end
+    local buffer=ffi.new('uint32_t[1]',value)
+    local written=ffi.new('size_t[1]')
+    if kernel.WriteProcessMemory(process,ffi.cast('void *',address),buffer,4,written)==0 then
+        return false
+    end
+    if tonumber(written[0])~=4 then return false end
+    return dword(address)==value
+end
+local function section_io()
+    return {read=function(address)return dword(address)end,write=section_write_dword}
+end
+local section_region_cache
+local function section_regions()
+    -- 只扫私有堆：TOC 副本落在那里；映像区/显卡映射扫了也没用，还会拖慢。
+    -- 一次应用里枚举一遍就够：7 个 unit 各枚举一次全地址空间是不可接受的。
+    if not section_region_cache then
+        local filtered={}
+        for _,region in ipairs(memory_regions()) do
+            if region.kind==0x20000 and region.size>=0x4000 and region.size<=0x4000000 then
+                filtered[#filtered+1]=region
+            end
+        end
+        section_region_cache=filtered
+    end
+    local list=section_region_cache
+    local index=0
+    return function()
+        index=index+1
+        return list[index]
+    end
+end
+local function section_publisher_instance()
+    if section_publisher then return section_publisher end
+    if not (ARMOR_SECTION_LAYOUT and ARMOR_SECTION_APPLY and ARMOR_SECTION_LOCATE
+        and ARMOR_SECTION_PUBLISH and ARMOR_WARDROBE_MASKS) then return nil end
+    section_publisher=ARMOR_SECTION_PUBLISH.new({read=read,write=section_write_dword,
+        regions=section_regions,layout=ARMOR_SECTION_LAYOUT,apply=ARMOR_SECTION_APPLY,
+        locate=ARMOR_SECTION_LOCATE,masks=ARMOR_WARDROBE_MASKS,log=log})
+    return section_publisher
+end
+
+-- 算出每个映射目标用到的 unit 列表。
+-- owner 的判定必须与 prepare_document 保持一致，否则会把掩码套到别的护甲上。
+local function section_units(document,plan)
+    local models={}
+    for _,model in ipairs(document.models or {}) do models[model.key]=model end
+    local units_by_target={}
+    for _,mapping in ipairs(document.mappings or {}) do
+        local units
+        local model=mapping.model and models[mapping.model] or nil
+        if model and #(model.pieces or {})>0 then
+            -- 编辑器定义的模型：unit 直接写在 Piece 里，没有快照可查。
+            local seen={}
+            units={}
+            for _,piece in ipairs(model.pieces) do
+                if type(piece.unit)=='string' and #piece.unit==16 and not seen[piece.unit] then
+                    seen[piece.unit]=true
+                    units[#units+1]=piece.unit
+                end
+            end
+            table.sort(units)
+        else
+            local owner=model and model.source or mapping.source
+            if (document.target_modes or {})[mapping.target]==false then owner=mapping.target end
+            local snapshot=owner and plan.snapshots and plan.snapshots[owner]
+            if snapshot then
+                units=ARMOR_SECTION_PUBLISH.units_from_snapshot(snapshot,ARMOR_REGISTRY_COMPOSITION)
+            end
+        end
+        if units and #units>0 then units_by_target[mapping.target]=units end
+    end
+    return units_by_target
+end
+
+local function prepare_section_masks(plan,document,checkpoint)
+    -- 每次应用重新枚举：重载后基址会变，旧区域表不能用。
+    section_region_cache=nil
+    local text=read_file(wardrobe_masks_path,1024*1024)
+    if not text then return {skipped=true} end   -- 没有文件 = 全部可见，旧库不受影响
+    local parsed,masks=pcall(ARMOR_WARDROBE_MASKS.parse,text)
+    if not parsed then
+        -- 整份拒绝，不做部分接受：半懂的掩码比没有掩码更危险。
+        return nil,'wardrobe.masks invalid: '..tostring(masks)
+    end
+    if masks.enabled==false then return {skipped=true} end
+    local publisher=section_publisher_instance()
+    if not publisher then return {skipped=true} end
+    return {masks=masks,units_by_target=section_units(document,plan),publisher=publisher}
+end
+
+local function apply_section_masks(prepared,checkpoint)
+    if not prepared or prepared.skipped then return true,nil end
+    local okay,stats=prepared.publisher.apply_document(prepared.masks,
+        prepared.units_by_target,checkpoint)
+    if not okay then return false,stats end
+    return true,stats
+end
+
+local function restore_section_masks(stats)
+    if not stats or not stats.applied or #stats.applied==0 then return true end
+    local okay=ARMOR_SECTION_APPLY.rollback(section_io(),stats.applied)
+    log(okay and 'section masks rolled back' or 'section mask rollback FAILED')
+    return okay
+end
+
 local desired,last_protocol_text
 local audit_worker
 local audit_poll_elapsed,audit_poll_at=0,0
@@ -1097,9 +1212,24 @@ local function step_apply(elapsed)
             if read_file(protocol_path,65536)~=protocol_text then
                 return {superseded=true}
             end
+            local prepared_sections,section_reason=prepare_section_masks(plan,document,checkpoint)
+            if not prepared_sections then return {okay=false,reason=section_reason} end
+            local section_okay,section_stats=apply_section_masks(prepared_sections,checkpoint)
+            if not section_okay then
+                return {okay=false,reason='section mask failed: '..tostring(section_stats)}
+            end
             local prepared=clock()
             local okay,stats=publish_document(plan,document)
-            if not okay then return {okay=false,reason=stats} end
+            if not okay then
+                -- blob 没提交成功：section 写入必须撤回，否则几何被藏了、映射却没生效。
+                restore_section_masks(section_stats)
+                return {okay=false,reason=stats}
+            end
+            if section_stats then
+                stats.section_writes=section_stats.writes
+                stats.section_hidden=section_stats.hidden_sections
+                stats.section_missing=section_stats.missing
+            end
             stats.prepare_ms=math.floor((prepared-started)*1000+0.5)
             stats.publish_ms=math.floor((clock()-prepared)*1000+0.5)
             return {okay=true,stats=stats}
@@ -1130,6 +1260,10 @@ local function step_apply(elapsed)
                     log('partial_apply: revision='..tostring(apply_document_pending.revision)
                         ..' skipped_target='..item.target..' reason='..tostring(item.reason))
                 end
+            end
+            if result.stats and result.stats.section_writes then
+                mode_suffix=mode_suffix..string.format(' sections=%d hidden=%d',
+                    result.stats.section_writes,result.stats.section_hidden or 0)
             end
             set_status('ready',string.format('incremental applied: built=%d reused=%d removed=%d writes=%d%s',
                 result.stats.built,result.stats.reused,result.stats.removed,result.stats.writes,mode_suffix),
