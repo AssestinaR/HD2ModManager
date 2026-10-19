@@ -77,6 +77,14 @@
     -->
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_layout.lua"
                       Link="RuntimeArmorRegistry\armor_section_layout.lua" />
+    <!--
+      把掩码翻译成 NumIndices 写入并保证可回滚。与走查器分开：这一层只做"算计划/执行"，
+      所以能离线用可变字节缓冲测出恢复与回滚，不必进游戏。
+      Turns masks into NumIndices writes with rollback. Kept apart from the walker so the
+      restore and rollback paths can be verified offline against a mutable byte buffer.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_apply.lua"
+                      Link="RuntimeArmorRegistry\armor_section_apply.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
                       Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe_core.lua"
