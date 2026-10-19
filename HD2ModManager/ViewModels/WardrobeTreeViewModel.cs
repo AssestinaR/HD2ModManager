@@ -31,6 +31,7 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 {
 	private readonly WardrobeTreeViewModel owner;
 	private bool isExpanded;
+	private bool isOddRow;
 
 	public WardrobeTreeNodeViewModel(WardrobeTreeViewModel owner, WardrobeTreeNode node)
 	{
@@ -68,7 +69,24 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 	public bool IsExpanded
 	{
 		get => isExpanded;
-		set => SetField(ref isExpanded, value);
+		set
+		{
+			if (!SetField(ref isExpanded, value))
+				return;
+			// 隔行底色按**可见行**均匀编号，所以展开/收起之后必须重算；
+			// 否则收起一棵奇数行的子树，它下面那一行会和上一行同色，正好是用户看到的问题。
+			owner.RecomputeRowStripes();
+		}
+	}
+
+	/// <summary>
+	/// 这一行在**当前可见行**里是不是奇数行。界面的隔行底色用它，
+	/// 而不是每个父节点各数一遍——那样每个子集都会从白色重新开始，相邻两行常常同色。
+	/// </summary>
+	public bool IsOddRow
+	{
+		get => isOddRow;
+		internal set => SetField(ref isOddRow, value);
 	}
 
 	/// <summary>
@@ -241,6 +259,7 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 				string.IsNullOrWhiteSpace(armourLabel) ? $"护甲 {armourItemId}" : armourLabel,
 				resolution.Units);
 			roots = new[] { new WardrobeTreeNodeViewModel(this, built) };
+			RecomputeRowStripes();
 			IsEditable = !isTarget || !followSource;
 			StatusMessage = resolution.MissingUnitIds.Count == 0
 				? string.Empty
@@ -305,6 +324,28 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 			node.RaiseCheckedChanged();
 			foreach (var child in node.Children)
 				RaiseRecursive(child);
+		}
+	}
+
+	/// <summary>
+	/// 按**当前可见行**重新给隔行底色编号：只往下走已展开的节点，
+	/// 这样"相邻两行一定不同色"这件事与展开状态无关。
+	/// 收起一棵奇数行的子树时如果不重算，它下面那一行会和上一行同色——
+	/// 那正是按父节点各数一遍会看到的问题，只是换了个触发时机。
+	/// </summary>
+	internal void RecomputeRowStripes()
+	{
+		var index = 0;
+		foreach (var root in roots)
+			Walk(root);
+
+		void Walk(WardrobeTreeNodeViewModel node)
+		{
+			node.IsOddRow = (index++ & 1) == 1;
+			if (!node.IsExpanded)
+				return;
+			foreach (var child in node.Children)
+				Walk(child);
 		}
 	}
 

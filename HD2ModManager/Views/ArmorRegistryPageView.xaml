@@ -15,54 +15,80 @@
         <HierarchicalDataTemplate x:Key="WardrobeTreeNodeTemplate"
                                   DataType="{x:Type vm:WardrobeTreeNodeViewModel}"
                                   ItemsSource="{Binding Children}">
-            <Grid MinHeight="26" Margin="0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding Label}"
-                               Foreground="{StaticResource TextPrimary}"
+            <!--
+                底色画在模板里而不是容器上：隔行、悬停、选中三者必须按顺序覆盖，
+                分在两层里就会出现"选中被隔行盖掉"这类看不清的优先级问题。
+                边框粗细恒为 1、默认透明：选中时只换画刷，内容不会被挤动。
+            -->
+            <Border x:Name="RowBack"
+                    MinHeight="26"
+                    Background="Transparent"
+                    BorderBrush="Transparent"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="6,2">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Label}"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <Border Margin="8,0,0,0"
+                                Padding="5,1"
+                                CornerRadius="3"
+                                VerticalAlignment="Center"
+                                Background="{StaticResource SurfaceCard}"
+                                Visibility="{Binding HasPieceTypeLabel, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding PieceTypeLabel}"
+                                       FontSize="10"
+                                       Foreground="{StaticResource TextSecondary}"/>
+                        </Border>
+                        <Path Width="13" Height="13"
+                              Margin="8,0,0,0"
+                              VerticalAlignment="Center"
+                              Stretch="Uniform"
+                              Stroke="{StaticResource TextSecondary}"
+                              StrokeThickness="1.3"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Data="M6.5,3.5 L5.5,3.5 A2.6,2.6 0 0 0 5.5,8.7 L6.5,8.7 M9.5,3.5 L10.5,3.5 A2.6,2.6 0 0 1 10.5,8.7 L9.5,8.7 M5.9,6.1 L10.1,6.1"
+                              ToolTip="该 unit 同时用于两种身形，两处切换会同步"
+                              Visibility="{Binding SharedAcrossBodies, Converter={StaticResource BoolToVis}}"/>
+                    </StackPanel>
+                    <TextBlock Grid.Column="1"
+                               Text="部分"
+                               Margin="8,0,0,0"
                                VerticalAlignment="Center"
-                               TextTrimming="CharacterEllipsis"/>
-                    <Border Margin="8,0,0,0"
-                            Padding="5,1"
-                            CornerRadius="3"
-                            VerticalAlignment="Center"
-                            Background="{StaticResource SurfaceMuted}"
-                            Visibility="{Binding HasPieceTypeLabel, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="{Binding PieceTypeLabel}"
-                                   FontSize="10"
-                                   Foreground="{StaticResource TextSecondary}"/>
-                    </Border>
-                    <Path Width="13" Height="13"
-                          Margin="8,0,0,0"
-                          VerticalAlignment="Center"
-                          Stretch="Uniform"
-                          Stroke="{StaticResource TextSecondary}"
-                          StrokeThickness="1.3"
-                          StrokeStartLineCap="Round"
-                          StrokeEndLineCap="Round"
-                          Data="M6.5,3.5 L5.5,3.5 A2.6,2.6 0 0 0 5.5,8.7 L6.5,8.7 M9.5,3.5 L10.5,3.5 A2.6,2.6 0 0 1 10.5,8.7 L9.5,8.7 M5.9,6.1 L10.1,6.1"
-                          ToolTip="该 unit 同时用于两种身形，两处切换会同步"
-                          Visibility="{Binding SharedAcrossBodies, Converter={StaticResource BoolToVis}}"/>
-                </StackPanel>
-                <TextBlock Grid.Column="1"
-                           Text="部分"
-                           Margin="8,0,0,0"
-                           VerticalAlignment="Center"
-                           FontSize="11"
-                           Foreground="{StaticResource TextSecondary}"
-                           ToolTip="该节点下只有一部分 section 被关闭"
-                           Visibility="{Binding IsMixed, Converter={StaticResource BoolToVis}}"/>
-                <CheckBox Grid.Column="2"
-                          Margin="12,0,2,0"
-                          VerticalAlignment="Center"
-                          Style="{StaticResource AppToggleSwitch}"
-                          IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                          AutomationProperties.Name="{Binding Label}"/>
-            </Grid>
+                               FontSize="11"
+                               Foreground="{StaticResource TextSecondary}"
+                               ToolTip="该节点下只有一部分 section 被关闭"
+                               Visibility="{Binding IsMixed, Converter={StaticResource BoolToVis}}"/>
+                    <CheckBox Grid.Column="2"
+                              Margin="12,0,2,0"
+                              VerticalAlignment="Center"
+                              Style="{StaticResource AppToggleSwitch}"
+                              IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              AutomationProperties.Name="{Binding Label}"/>
+                </Grid>
+            </Border>
+            <HierarchicalDataTemplate.Triggers>
+                <!-- 隔行底色：按当前可见行均匀编号，相邻两行一定不同色。 -->
+                <DataTrigger Binding="{Binding IsOddRow}" Value="True">
+                    <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                </DataTrigger>
+                <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
+                    <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
+                </Trigger>
+                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=TreeViewItem}}" Value="True">
+                    <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
+                    <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
+                </DataTrigger>
+            </HierarchicalDataTemplate.Triggers>
         </HierarchicalDataTemplate>
         <!--
             行容器：没有小三角（双击展开），整行拉伸，隔行底色 + 悬停 + 选中。
@@ -70,7 +96,6 @@
         -->
         <Style x:Key="WardrobeTreeItemStyle" TargetType="TreeViewItem">
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
-            <Setter Property="AlternationCount" Value="2"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Margin" Value="0,1,0,0"/>
@@ -79,17 +104,9 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="TreeViewItem">
                         <StackPanel>
-                            <!--
-                                边框粗细恒为 1、默认透明：选中时只换画刷不换粗细，
-                                否则内容会被挤动 1px，文字看起来往下跳一下。
-                            -->
-                            <Border x:Name="RowBack" Background="Transparent"
-                                    BorderBrush="Transparent" BorderThickness="1"
-                                    CornerRadius="4" Padding="6,2">
-                                <ContentPresenter x:Name="PART_Header"
-                                                  ContentSource="Header"
-                                                  HorizontalAlignment="Stretch"/>
-                            </Border>
+                            <ContentPresenter x:Name="PART_Header"
+                                              ContentSource="Header"
+                                              HorizontalAlignment="Stretch"/>
                             <!--
                                 层级线：每一层在子块左侧画一条竖线。只靠缩进的话，
                                 层级一深就分不清某一行属于哪个父节点；竖线能把归属连起来。
@@ -105,17 +122,6 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsExpanded" Value="False">
                                 <Setter TargetName="ChildHost" Property="Visibility" Value="Collapsed"/>
-                            </Trigger>
-                            <!-- 隔行底色：奇偶交替，一眼能分清每行。 -->
-                            <Trigger Property="ItemsControl.AlternationIndex" Value="1">
-                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceMuted}"/>
-                            </Trigger>
-                            <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
-                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
-                            </Trigger>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
-                                <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -390,44 +396,19 @@
                             <Grid Grid.Row="1" Margin="0,10,0,0">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="*"/>
-                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
-                                <Border Grid.Row="0" Margin="14,0,14,10"
-                                        IsEnabled="{Binding ComponentEditorEditable}"
-                                        Visibility="{Binding IsComponentEditorCustomModel, Converter={StaticResource BoolToVis}}">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Text="新增组件" VerticalAlignment="Center"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource TextPrimary}"
-                                                   Margin="0,0,12,0"/>
-                                        <ComboBox Grid.Column="1"
-                                                  Style="{StaticResource AppComboBox}"
-                                                  ItemsSource="{Binding ComponentSlotOptions}"
-                                                  SelectedValue="{Binding NewComponentSlot, Mode=TwoWay}"
-                                                  DisplayMemberPath="Name"
-                                                  SelectedValuePath="Slot"
-                                                  MinWidth="140"/>
-                                        <Button Grid.Column="2"
-                                                Content="添加"
-                                                Command="{Binding ConfirmAddComponentRowCommand}"
-                                                Style="{StaticResource AppSecondaryButton}"
-                                                Padding="12,5"
-                                                Margin="10,0,0,0"/>
-                                    </Grid>
-                                </Border>
+                                <!--
+                                    组件结构块与「新增组件」行已移除：树本身已经把"用哪些 unit"
+                                    和"哪些 section 不可见"放在同一处描述，再摆一份平铺的组件表
+                                    只会让同一件事有两个入口。
+                                -->
                                 <!--
                                     显隐的继承/独立。刻意不叫「跟随视觉来源」：
                                     卡片上原来那个同名开关是**组件结构**的轴（进协议的 target_mode），
                                     这个是 section 显隐的轴，两个概念同名会让人以为改一个另一个也变。
                                 -->
-                                <StackPanel Grid.Row="1" Margin="14,0,14,6">
+                                <StackPanel Grid.Row="0" Margin="14,0,14,6">
                                     <Grid Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
@@ -458,11 +439,10 @@
                                     树占满卡片剩下的高度（之前给了 MaxHeight，底部就空出一截）。
                                     它自己滚动，外层不再套 ScrollViewer——两层滚动条只会互相抢滚轮。
                                 -->
-                                <TreeView Grid.Row="2"
+                                <TreeView Grid.Row="1"
                                           ItemsSource="{Binding Wardrobe.Roots}"
                                           ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
                                           ItemContainerStyle="{StaticResource WardrobeTreeItemStyle}"
-                                          AlternationCount="2"
                                           Margin="6,0,6,0"
                                           Padding="0,2,6,6"
                                           BorderThickness="0"
@@ -471,37 +451,6 @@
                                           ScrollViewer.VerticalScrollBarVisibility="Auto"
                                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                           Visibility="{Binding Wardrobe.HasRoots, Converter={StaticResource BoolToVis}}"/>
-                                <!--
-                                    组件结构（哪些 unit 组成这件护甲）是另一条轴，只有自定义素体可编辑。
-                                    树取代的是"只读地看有哪些 unit"，不是取代这个编辑能力。
-                                    它自己限高并滚动，不能把树挤掉。
-                                -->
-                                <StackPanel Grid.Row="3"
-                                            Visibility="{Binding IsComponentEditorCustomModel, Converter={StaticResource BoolToVis}}">
-                                    <Border BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,1,0,0" Margin="14,8,14,0"/>
-                                    <TextBlock Text="组件结构" Margin="14,8,14,4"
-                                               FontWeight="SemiBold"
-                                               Foreground="{StaticResource TextSecondary}"/>
-                                    <ScrollViewer MaxHeight="220"
-                                                  HorizontalScrollBarVisibility="Disabled"
-                                                  VerticalScrollBarVisibility="Auto">
-                                        <ItemsControl ItemsSource="{Binding ComponentEditorRows}"
-                                                      Margin="6,0,6,10"
-                                                      ItemTemplate="{StaticResource ArmorComponentRowTemplate}">
-                                            <ItemsControl.Style>
-                                                <Style TargetType="ItemsControl">
-                                                    <Setter Property="IsEnabled" Value="True"/>
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding ComponentEditorEditable}" Value="False">
-                                                            <Setter Property="IsEnabled" Value="False"/>
-                                                            <Setter Property="Opacity" Value="0.5"/>
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </ItemsControl.Style>
-                                        </ItemsControl>
-                                    </ScrollViewer>
-                                </StackPanel>
                             </Grid>
                         </Grid>
                     </Border>
