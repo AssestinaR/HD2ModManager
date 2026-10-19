@@ -6,17 +6,19 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <!--
-            section 树的一个节点。勾选框固定在最右侧（§4.3 的交互约定），
+            section 树的一个节点。层级：护甲 → 身形 → 槽位 → Unit → section。
+            勾选框统一在最右侧、行宽拉伸到卡片右缘（§4.3 的交互约定）；
             点条目本身不改变显隐——避免"想看详情结果改掉了设置"。
-            锁链标记只在 bodyType=Any 的 unit 上出现：它同时挂在纤细和健壮两支下，
+            锁链是矢量图，只在 bodyType=Any 的 unit 上出现：它同时挂在健壮和纤细两支下，
             两处切换天然同步，因为状态按 (unit, section 下标) 存、不按节点存。
         -->
         <HierarchicalDataTemplate x:Key="WardrobeTreeNodeTemplate"
                                   DataType="{x:Type vm:WardrobeTreeNodeViewModel}"
                                   ItemsSource="{Binding Children}">
-            <Grid MinHeight="24" Margin="0,1">
+            <Grid MinHeight="26" Margin="0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
@@ -24,21 +26,87 @@
                                Foreground="{StaticResource TextPrimary}"
                                VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Text="⛓"
-                               Margin="6,0,0,0"
-                               FontSize="11"
-                               VerticalAlignment="Center"
-                               Foreground="{StaticResource TextSecondary}"
-                               ToolTip="该 unit 同时用于两种身形，两处切换会同步"
-                               Visibility="{Binding SharedAcrossBodies, Converter={StaticResource BoolToVis}}"/>
-                </StackPanel>
-                <CheckBox Grid.Column="1"
-                          Margin="12,0,4,0"
+                    <Border Margin="8,0,0,0"
+                            Padding="5,1"
+                            CornerRadius="3"
+                            VerticalAlignment="Center"
+                            Background="{StaticResource SurfaceMuted}"
+                            Visibility="{Binding HasPieceTypeLabel, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding PieceTypeLabel}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource TextSecondary}"/>
+                    </Border>
+                    <Path Width="13" Height="13"
+                          Margin="8,0,0,0"
                           VerticalAlignment="Center"
+                          Stretch="Uniform"
+                          Stroke="{StaticResource TextSecondary}"
+                          StrokeThickness="1.3"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"
+                          Data="M6.5,3.5 L5.5,3.5 A2.6,2.6 0 0 0 5.5,8.7 L6.5,8.7 M9.5,3.5 L10.5,3.5 A2.6,2.6 0 0 1 10.5,8.7 L9.5,8.7 M5.9,6.1 L10.1,6.1"
+                          ToolTip="该 unit 同时用于两种身形，两处切换会同步"
+                          Visibility="{Binding SharedAcrossBodies, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1"
+                           Text="部分"
+                           Margin="8,0,0,0"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Foreground="{StaticResource TextSecondary}"
+                           ToolTip="该节点下只有一部分 section 被关闭"
+                           Visibility="{Binding IsMixed, Converter={StaticResource BoolToVis}}"/>
+                <CheckBox Grid.Column="2"
+                          Margin="12,0,2,0"
+                          VerticalAlignment="Center"
+                          Style="{StaticResource AppToggleSwitch}"
                           IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                           AutomationProperties.Name="{Binding Label}"/>
             </Grid>
         </HierarchicalDataTemplate>
+        <!--
+            行容器：没有小三角（双击展开），整行拉伸，隔行底色 + 悬停 + 选中。
+            底色放在容器上而不是模板里，这样悬停/选中/隔行三者只需要在一个地方排优先级。
+        -->
+        <Style x:Key="WardrobeTreeItemStyle" TargetType="TreeViewItem">
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+            <Setter Property="AlternationCount" Value="2"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,1,0,0"/>
+            <EventSetter Event="MouseDoubleClick" Handler="OnWardrobeTreeItemDoubleClick"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TreeViewItem">
+                        <StackPanel>
+                            <Border x:Name="RowBack" Background="Transparent" CornerRadius="4" Padding="6,2">
+                                <ContentPresenter x:Name="PART_Header"
+                                                  ContentSource="Header"
+                                                  HorizontalAlignment="Stretch"/>
+                            </Border>
+                            <ItemsPresenter x:Name="ItemsHost" Margin="16,0,0,0"/>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="False">
+                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed"/>
+                            </Trigger>
+                            <!-- 隔行底色：奇偶交替，一眼能分清每行。 -->
+                            <Trigger Property="ItemsControl.AlternationIndex" Value="1">
+                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                            </Trigger>
+                            <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
+                                <Setter TargetName="RowBack" Property="BorderThickness" Value="1"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <DataTemplate x:Key="ArmorPieceEditorTemplate">
             <Grid Margin="12,8" MinHeight="42">
                 <Grid.RowDefinitions>
@@ -374,10 +442,12 @@
                                                    Visibility="{Binding Wardrobe.HasStatus, Converter={StaticResource BoolToVis}}"/>
                                         <TreeView ItemsSource="{Binding Wardrobe.Roots}"
                                                   ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
+                                                  ItemContainerStyle="{StaticResource WardrobeTreeItemStyle}"
+                                                  AlternationCount="2"
                                                   Margin="0,2,0,0"
                                                   BorderThickness="0"
                                                   Background="Transparent"
-                                                  MaxHeight="420"
+                                                  MaxHeight="440"
                                                   IsEnabled="{Binding Wardrobe.IsEditable}"
                                                   ScrollViewer.VerticalScrollBarVisibility="Auto"
                                                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"

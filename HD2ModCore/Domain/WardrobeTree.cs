@@ -25,17 +25,17 @@ namespace HD2ModCore.Domain;
 /// <summary>树节点类型。</summary>
 public enum WardrobeTreeNodeKind
 {
-	/// <summary>套组：护甲 / 内衣。</summary>
-	PieceType,
+	/// <summary>根：这件护甲本身。</summary>
+	Armour,
 
-	/// <summary>身形变体：纤细 / 健壮。</summary>
+	/// <summary>身形变体：健壮 / 纤细。</summary>
 	BodyType,
 
-	/// <summary>槽位：头盔 / 躯干 / 左臂……</summary>
+	/// <summary>槽位：头盔 / 胸部 / 胯部……</summary>
 	Slot,
 
-	/// <summary>装饰（可开关的一件东西）。当前恒为「默认」。</summary>
-	Decoration,
+	/// <summary>一个 unit。它既是"一件可开关的东西"，也是 section 的容器。</summary>
+	Unit,
 
 	/// <summary>section：真正的最小单位。</summary>
 	Section,
@@ -43,7 +43,7 @@ public enum WardrobeTreeNodeKind
 
 /// <summary>
 /// 树节点。<c>Key</c> 稳定且唯一，用于界面上的展开/选中状态；
-/// <c>Unit</c> 与 <c>SectionIndex</c> 只有 Decoration/Section 节点有。
+/// <c>Unit</c> 与 <c>SectionIndex</c> 只有 Unit/Section 节点有。
 /// </summary>
 public sealed record WardrobeTreeNode(
 	WardrobeTreeNodeKind Kind,
@@ -54,10 +54,16 @@ public sealed record WardrobeTreeNode(
 	IReadOnlyList<WardrobeTreeNode> Children)
 {
 	/// <summary>
-	/// 该 unit 的 <c>bodyType</c> 是 <c>Any</c>，所以它同时挂在纤细和健壮两支下。
+	/// 该 unit 的 <c>bodyType</c> 是 <c>Any</c>，所以它同时挂在健壮和纤细两支下。
 	/// 界面据此加锁链图标；两处切换天然同步，因为状态按 (unit, 下标) 存，不按节点存。
 	/// </summary>
 	public bool SharedAcrossBodies { get; init; }
+
+	/// <summary>
+	/// Unit 节点上是"护甲 / 内衣"。树上不再为它单开一层（同一件护甲的槽位里可能两种都有），
+	/// 但丢了这条信息就没法分辨同一个槽位下的两个 unit，所以挂在行上做小标记。
+	/// </summary>
+	public string PieceTypeLabel { get; init; } = string.Empty;
 
 	/// <summary>section 节点的三角形数，界面用来判断"这块到底多大"。</summary>
 	public uint Triangles { get; init; }
@@ -103,8 +109,8 @@ public static class WardrobeTree
 	private const string AnyBodyType = "Any";
 
 	// 固定顺序：界面每次打开都长一样，不随字典顺序漂移。
-	private static readonly string[] PieceTypeOrder = ["Armor", "Undergarment"];
-	private static readonly string[] BodyTypeOrder = ["Slim", "Stocky"];
+	// 身形按"健壮 → 纤细"排：这是游戏里更常见的那支在前，也是用户给的参考顺序。
+	private static readonly string[] BodyTypeOrder = ["Stocky", "Slim"];
 	private static readonly string[] SlotOrder =
 	[
 		"Helmet", "Torso", "Hip",
@@ -113,73 +119,85 @@ public static class WardrobeTree
 	];
 
 	/// <summary>
-	/// 用一件护甲的赢家 unit 表构建树。
-	/// `Any` 身形会被展开到纤细和健壮两支下——是同一个身份，不是两份数据。
+	/// 用一件护甲的赢家 unit 表构建树。根是这件护甲本身。
+	/// `Any` 身形会被展开到健壮和纤细两支下——是同一个身份，不是两份数据。
 	/// </summary>
-	public static IReadOnlyList<WardrobeTreeNode> Build(IReadOnlyList<WardrobeSectionMapUnit> units)
+	public static WardrobeTreeNode Build(string armourLabel, IReadOnlyList<WardrobeSectionMapUnit> units)
 	{
 		ArgumentNullException.ThrowIfNull(units);
-		var roots = new List<WardrobeTreeNode>();
-		foreach (var pieceGroup in units
-			.GroupBy(unit => Normalize(unit.PieceType, UnknownPieceType))
-			.OrderBy(group => OrderOf(group.Key, PieceTypeOrder))
+		var rootKey = "armour";
+		// Unit 的序号按**槽位**在整个 unit 集合上算，而不是在每个身形分支里各算一遍：
+		// 否则 Any 的 unit 在健壮和纤细两支下会得到不同编号，看起来像两个不同的 unit。
+		var ordinals = units
+			.GroupBy(unit => Normalize(unit.Slot, UnknownSlot))
+			.ToDictionary(
+				group => group.Key,
+				group => group
+					.OrderBy(unit => unit.FileId, StringComparer.Ordinal)
+					.Select((unit, ordinal) => (unit.FileId, ordinal))
+					.ToDictionary(pair => pair.FileId, pair => pair.ordinal, StringComparer.Ordinal),
+				StringComparer.Ordinal);
+		var bodyNodes = new List<WardrobeTreeNode>();
+		foreach (var bodyGroup in units
+			.SelectMany(unit => ExpandBodies(unit))
+			.GroupBy(pair => pair.Body)
+			.OrderBy(group => OrderOf(group.Key, BodyTypeOrder))
 			.ThenBy(group => group.Key, StringComparer.Ordinal))
 		{
-			var bodyNodes = new List<WardrobeTreeNode>();
-			foreach (var bodyGroup in pieceGroup
-				.SelectMany(unit => ExpandBodies(unit))
-				.GroupBy(pair => pair.Body)
-				.OrderBy(group => OrderOf(group.Key, BodyTypeOrder))
+			var slotNodes = new List<WardrobeTreeNode>();
+			foreach (var slotGroup in bodyGroup
+				.GroupBy(pair => Normalize(pair.Unit.Slot, UnknownSlot))
+				.OrderBy(group => OrderOf(group.Key, SlotOrder))
 				.ThenBy(group => group.Key, StringComparer.Ordinal))
 			{
-				var slotNodes = new List<WardrobeTreeNode>();
-				foreach (var slotGroup in bodyGroup
-					.GroupBy(pair => Normalize(pair.Unit.Slot, UnknownSlot))
-					.OrderBy(group => OrderOf(group.Key, SlotOrder))
-					.ThenBy(group => group.Key, StringComparer.Ordinal))
-				{
-					var decorations = slotGroup
-						.OrderBy(pair => pair.Unit.FileId, StringComparer.Ordinal)
-						.Select(pair => BuildDecoration(pieceGroup.Key, bodyGroup.Key, slotGroup.Key, pair))
-						.ToArray();
-					slotNodes.Add(new WardrobeTreeNode(
-						WardrobeTreeNodeKind.Slot,
-						$"piece:{pieceGroup.Key}/body:{bodyGroup.Key}/slot:{slotGroup.Key}",
-						SlotLabel(slotGroup.Key),
-						Unit: null,
-						SectionIndex: null,
-						decorations));
-				}
-
-				bodyNodes.Add(new WardrobeTreeNode(
-					WardrobeTreeNodeKind.BodyType,
-					$"piece:{pieceGroup.Key}/body:{bodyGroup.Key}",
-					BodyLabel(bodyGroup.Key),
+				// Unit 的序号在整个槽位上算（不是在每个身形分支里各算一遍），
+				// 这样 Any 的 unit 在健壮和纤细两支下是同一个编号——否则看起来像两个不同的 unit。
+				var slotKey = Normalize(slotGroup.First().Unit.Slot, UnknownSlot);
+				var unitNodes = slotGroup
+					.Select(pair => pair.Unit)
+					.OrderBy(unit => unit.FileId, StringComparer.Ordinal)
+					.Select(unit => BuildUnitNode(
+						rootKey,
+						bodyGroup.Key,
+						slotKey,
+						unit,
+						ordinals[slotKey][unit.FileId]))
+					.ToArray();
+				slotNodes.Add(new WardrobeTreeNode(
+					WardrobeTreeNodeKind.Slot,
+					$"{rootKey}/body:{bodyGroup.Key}/slot:{slotKey}",
+					SlotLabel(slotKey),
 					Unit: null,
 					SectionIndex: null,
-					slotNodes));
+					unitNodes));
 			}
 
-			roots.Add(new WardrobeTreeNode(
-				WardrobeTreeNodeKind.PieceType,
-				$"piece:{pieceGroup.Key}",
-				PieceTypeLabel(pieceGroup.Key),
+			bodyNodes.Add(new WardrobeTreeNode(
+				WardrobeTreeNodeKind.BodyType,
+				$"{rootKey}/body:{bodyGroup.Key}",
+				BodyLabel(bodyGroup.Key),
 				Unit: null,
 				SectionIndex: null,
-				bodyNodes));
+				slotNodes));
 		}
 
-		return roots;
+		return new WardrobeTreeNode(
+			WardrobeTreeNodeKind.Armour,
+			rootKey,
+			armourLabel,
+			Unit: null,
+			SectionIndex: null,
+			bodyNodes);
 	}
 
-	private static WardrobeTreeNode BuildDecoration(
-		string pieceType,
+	private static WardrobeTreeNode BuildUnitNode(
+		string rootKey,
 		string bodyType,
 		string slot,
-		(WardrobeSectionMapUnit Unit, string Body) pair)
+		WardrobeSectionMapUnit unit,
+		int ordinal)
 	{
-		var unit = pair.Unit;
-		var unitKey = $"piece:{pieceType}/body:{bodyType}/slot:{slot}/unit:{unit.FileId}";
+		var unitKey = $"{rootKey}/body:{bodyType}/slot:{slot}/unit:{unit.FileId}";
 		var sections = unit.Sections
 			.OrderBy(section => section.Index)
 			.Select(section => new WardrobeTreeNode(
@@ -194,14 +212,15 @@ public static class WardrobeTree
 			})
 			.ToArray();
 		return new WardrobeTreeNode(
-			WardrobeTreeNodeKind.Decoration,
+			WardrobeTreeNodeKind.Unit,
 			unitKey,
-			"默认",
+			$"Unit {ordinal.ToString(CultureInfo.InvariantCulture)} {unit.FileId}",
 			unit.FileId,
 			SectionIndex: null,
 			sections)
 		{
 			SharedAcrossBodies = string.Equals(Normalize(unit.BodyType, UnknownBodyType), AnyBodyType, StringComparison.Ordinal),
+			PieceTypeLabel = PieceTypeLabel(Normalize(unit.PieceType, UnknownPieceType)),
 		};
 	}
 
@@ -371,7 +390,7 @@ public static class WardrobeTree
 	public static string SlotLabel(string slot) => slot switch
 	{
 		"Helmet" => "头盔",
-		"Torso" => "躯干",
+		"Torso" => "胸部",
 		"Hip" => "胯部",
 		"LeftShoulder" => "左肩",
 		"RightShoulder" => "右肩",

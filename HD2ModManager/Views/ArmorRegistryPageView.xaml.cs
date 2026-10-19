@@ -93,6 +93,28 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			viewModel.CycleAvailableArmorUnitFilter();
 	}
 
+	// 双击展开/收起，树上没有小三角。点在开关上不算双击展开——
+	// 否则"连点两下开关"会顺手把子树展开，看起来像界面自己乱动。
+	private void OnWardrobeTreeItemDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+	{
+		if (e.OriginalSource is System.Windows.DependencyObject source && FindAncestorCheckBox(source) is not null)
+			return;
+		if (sender is not TreeViewItem item)
+			return;
+		item.IsExpanded = !item.IsExpanded;
+		e.Handled = true;
+	}
+
+	private static CheckBox? FindAncestorCheckBox(System.Windows.DependencyObject source)
+	{
+		for (var current = source; current is not null; current = System.Windows.Media.VisualTreeHelper.GetParent(current))
+		{
+			if (current is CheckBox checkBox)
+				return checkBox;
+		}
+		return null;
+	}
+
 	private void OnCycleAvailableArmorKindFilterClick(object sender, RoutedEventArgs e)
 	{
 		if (DataContext is ArmorRegistryPageViewModel viewModel)

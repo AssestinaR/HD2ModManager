@@ -39,9 +39,9 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 		Children = node.Children
 			.Select(child => new WardrobeTreeNodeViewModel(owner, child))
 			.ToArray();
-		// 默认展开到"能看到 section"的上层；section 自己不需要展开。
-		isExpanded = node.Kind is WardrobeTreeNodeKind.PieceType or WardrobeTreeNodeKind.BodyType or WardrobeTreeNodeKind.Slot;
-		ToggleCommand = new RelayCommand(_ => IsChecked = !(IsChecked ?? false));
+		// 打开时只展开到"能看到槽位"：一件护甲几十个 section 全摊开会一眼看不到结构。
+		isExpanded = node.Kind is WardrobeTreeNodeKind.Armour or WardrobeTreeNodeKind.BodyType;
+		ToggleCommand = new RelayCommand(_ => IsChecked = !IsChecked);
 	}
 
 	public WardrobeTreeNode Node { get; }
@@ -57,6 +57,14 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 	/// <summary>该 unit 的 bodyType 是 Any，界面据此加锁链图标（两处切换天然同步）。</summary>
 	public bool SharedAcrossBodies => Node.SharedAcrossBodies;
 
+	/// <summary>Unit 行上的"护甲 / 内衣"小标记；其他节点为空。</summary>
+	public string PieceTypeLabel => Node.PieceTypeLabel;
+
+	public bool HasPieceTypeLabel => !string.IsNullOrEmpty(Node.PieceTypeLabel);
+
+	/// <summary>该节点只关了一部分 section。界面上用文字标出来——开关本身表达不了三态。</summary>
+	public bool IsMixed => owner.IsMixed(Node);
+
 	public bool IsExpanded
 	{
 		get => isExpanded;
@@ -64,24 +72,29 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 	}
 
 	/// <summary>
-	/// 三态：全禁用 = 未勾选、全启用 = 已勾选、混合 = 半选。
-	/// 写入时忽略 null（三态里的"不确定"不是一个可提交的状态）。
+	/// 开关状态：**只要不是"全关"就是开**。
+	/// 开关表达不了三态，所以混合状态显示为开，另用「部分」文字标出来；
+	/// 这样点一下的含义始终是"全关"，再点一下"全开"，不会出现点一次毫无反应的情况。
 	/// </summary>
-	public bool? IsChecked
+	public bool IsChecked
 	{
-		get => owner.ReadChecked(Node);
+		get => !owner.ReadAllDisabled(Node);
 		set
 		{
-			if (value is null || !owner.IsEditable)
+			if (!owner.IsEditable || value == IsChecked)
 				return;
-			owner.ApplyToggle(Node, value.Value);
+			owner.ApplyToggle(Node, value);
 		}
 	}
 
 	public RelayCommand ToggleCommand { get; }
 
 	/// <summary>勾选状态变了（可能是被兄弟节点带着变的），通知界面重画。</summary>
-	internal void RaiseCheckedChanged() => OnPropertyChanged(nameof(IsChecked));
+	internal void RaiseCheckedChanged()
+	{
+		OnPropertyChanged(nameof(IsChecked));
+		OnPropertyChanged(nameof(IsMixed));
+	}
 }
 
 /// <summary>
@@ -181,6 +194,7 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 		uint armourItemId,
 		uint? sourceItemId,
 		bool isTarget,
+		string armourLabel,
 		IReadOnlyList<string> unitIds,
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default)
@@ -223,8 +237,10 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 				return;
 			}
 
-			var built = WardrobeTree.Build(resolution.Units);
-			roots = built.Select(node => new WardrobeTreeNodeViewModel(this, node)).ToArray();
+			var built = WardrobeTree.Build(
+				string.IsNullOrWhiteSpace(armourLabel) ? $"护甲 {armourItemId}" : armourLabel,
+				resolution.Units);
+			roots = new[] { new WardrobeTreeNodeViewModel(this, built) };
 			IsEditable = !isTarget || !followSource;
 			StatusMessage = resolution.MissingUnitIds.Count == 0
 				? string.Empty
@@ -242,15 +258,11 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 		}
 	}
 
-	internal bool? ReadChecked(WardrobeTreeNode node)
-	{
-		var counts = WardrobeTree.Counts(node, ArmourItemId, workspace);
-		if (counts.SectionCount == 0)
-			return true;
-		if (counts.AllDisabled)
-			return false;
-		return counts.AllEnabled ? true : null;
-	}
+	internal bool ReadAllDisabled(WardrobeTreeNode node)
+		=> WardrobeTree.Counts(node, ArmourItemId, workspace) is { SectionCount: > 0 } counts && counts.AllDisabled;
+
+	internal bool IsMixed(WardrobeTreeNode node)
+		=> WardrobeTree.Counts(node, ArmourItemId, workspace).IsMixed;
 
 	internal void ApplyToggle(WardrobeTreeNode node, bool enabled)
 	{
