@@ -177,6 +177,19 @@ ok(#units==2,'units deduplicated: '..tostring(#units))
 ok(units[1]==UNIT_B and units[2]==UNIT_A,'units sorted and empty dropped')
 ok(#P.units_from_snapshot(nil,composition)==0,'nil snapshot yields no units')
 ok(#P.units_from_snapshot({rows={{pieces={}}}},composition)==0,'empty rows yield no units')
+-- ⑧ 从掩码文档自身推出 target → units（原地替换没有 map 行也能工作）
+local derived=M.parse(table.concat({'schema=2','revision=1','enabled=true',
+    'off=1,'..UNIT_A..',0,'..fp0,
+    'off=1,'..UNIT_A..',1,'..fp1,
+    'off=2,'..UNIT_B..',2,'..ids[3].fingerprint,
+    'target=7,1','target=8,2'},'\n')..'\n')
+local map=P.units_for_masks(derived)
+ok(map[7] and #map[7]==1 and map[7][1]==UNIT_A,'target 7 units from set 1')
+ok(map[8] and #map[8]==1 and map[8][1]==UNIT_B,'target 8 units from set 2')
+ok(next(P.units_for_masks(nil))==nil,'nil masks yield no units')
+local disabled_doc=M.parse(table.concat({'schema=2','revision=1','enabled=false',
+    'off=1,'..UNIT_A..',0,'..fp0,'target=7,1'},'\n')..'\n')
+ok(next(P.units_for_masks(disabled_doc))==nil,'disabled masks yield no units')
 print(string.format('checks=%d failures=%d',checks,failures))
 if failures>0 then os.exit(1) end
 print('PUBLISH_OK')

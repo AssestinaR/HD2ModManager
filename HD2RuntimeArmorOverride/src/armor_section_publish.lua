@@ -130,6 +130,39 @@ function P.units_from_snapshot(snapshot,composition)
     table.sort(list)
     return list
 end
+-- 从掩码文档自身推出"每个目标涉及哪些 unit"。
+--
+-- 为什么不再从注册表映射反推：这个产品的常见形态是**原地替换**——patch 直接换掉
+-- 那件护甲自己的 unit，玩家穿的还是同一个护甲 item，协议里根本没有 map 行。
+-- 按映射反推的话，原地替换的情形一个目标都算不出来，掩码就永远不会生效。
+--
+-- 掩码条目里已经写明了 unit，所以这里只做一次分组：target → 它那个集合里的 unit 列表。
+-- 这同时让"目标没被穿在身上"变得无害：它的 unit 没加载，定位会失败并计入 missing。
+function P.units_for_masks(masks)
+    local by_target={}
+    if not masks or masks.enabled==false then return by_target end
+    -- 解析后的文档按集合存放，键是 "unit:sectionIndex:fingerprint"（见 armor_wardrobe_masks.key）。
+    -- unit 恒为前 16 个字符，所以取前缀即可，不需要再拆整串。
+    local units_by_set={}
+    for set,bucket in pairs(masks.sets or {}) do
+        local units={}
+        for key in pairs(bucket) do
+            local unit=key:sub(1,16)
+            if #unit==16 then units[unit]=true end
+        end
+        units_by_set[set]=units
+    end
+    for target,set in pairs(masks.targets or {}) do
+        local bucket=units_by_set[set]
+        if bucket then
+            local list={}
+            for unit in pairs(bucket) do list[#list+1]=unit end
+            table.sort(list)
+            by_target[target]=list
+        end
+    end
+    return by_target
+end
 function P.summary(stats)
     if not stats then return 'stats=nil' end
     return string.format('targets=%d units=%d hidden=%d writes=%d missing=%d',
