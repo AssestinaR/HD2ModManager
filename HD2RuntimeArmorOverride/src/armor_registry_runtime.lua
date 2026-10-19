@@ -1035,8 +1035,23 @@ end
 -- 掩码没生效"的中间态，而用户看到的是"勾了没反应"，最难查。
 local section_publisher
 local function section_write_dword(address,value,expected)
-    -- 只碰已可写的页：这是交接文档定的边界，不改保护属性。
-    if not slot_writable(address) then return false end
+    -- 不能复用 slot_writable：它要求 8 字节对齐（那是注册表索引槽的约束）。
+    -- 节记录的 NumIndices 在 sectionsAt + index*24 + 16，实测落在 2 字节对齐的
+    -- 地址上（lod0 的 sectionsAt=0x5da2 → 字段 0x5db2）。WriteProcessMemory 按
+    -- 字节写、本身不要求对齐，所以这里只校验"页已提交 + 可写 + 4 字节在区间内"。
+    if not address or address<65536 then return false end
+    local mbi=ffi.new('uint8_t[48]')
+    if kernel.VirtualQuery(ffi.cast('void *',address),mbi,48)==0 then return false end
+    local base=tonumber(ffi.cast('uintptr_t *',mbi)[0])
+    local size=tonumber(ffi.cast('size_t *',mbi+24)[0]) or 0
+    local state=tonumber(ffi.cast('uint32_t *',mbi+32)[0]) or 0
+    local protection=tonumber(ffi.cast('uint32_t *',mbi+36)[0]) or 0
+    local p=protection%256
+    if not (state==0x1000 and math.floor(protection/256)%2==0
+        and (p==4 or p==8 or p==64 or p==128) and address+4<=base+size) then
+        return false
+    end
+    if dword(address)~=expected then return false end
     local buffer=ffi.new('uint32_t[1]',value)
     local written=ffi.new('size_t[1]')
     if kernel.WriteProcessMemory(process,ffi.cast('void *',address),buffer,4,written)==0 then
