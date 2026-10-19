@@ -11,6 +11,7 @@ namespace HD2ModCore.Tests;
 public sealed class WardrobeMaskFileTests
 {
 	private const string SlimUnit = "cae35ee15168145f";
+	private const string StockyUnit = "9841b16544c8fbae";
 	private const string FaceFingerprint = "aa6b1bd624443008-9290";
 	private const string RibbonFingerprint = "aadf05da56ef08cb-822";
 
@@ -32,80 +33,76 @@ public sealed class WardrobeMaskFileTests
 	public void Parse_AcceptsTheDocumentedGrammar()
 	{
 		var document = WardrobeMaskFile.Parse(Document(
-			"schema=1",
+			"schema=2",
 			"revision=7",
 			"enabled=true",
 			"# 注释行必须被忽略",
-			"off=" + SlimUnit + ",0," + FaceFingerprint,
-			"off_target=1234," + SlimUnit + ",3," + RibbonFingerprint,
-			"mask_mode=1234,override"));
+			"off=1," + SlimUnit + ",0," + FaceFingerprint,
+			"off=1," + StockyUnit + ",0," + FaceFingerprint,
+			"target=1234,1"));
 
 		Assert.Equal(7, document.Revision);
 		Assert.True(document.Enabled);
-		Assert.Single(document.SourceMasks);
-		Assert.Single(document.TargetMasks);
-		Assert.Equal(WardrobeMaskMode.Override, document.TargetModes[1234]);
+		Assert.Equal(2, document.Entries.Count);
+		Assert.Equal(1u, document.TargetSets[1234]);
 	}
 
 	[Fact]
 	public void Parse_RejectsUnknownKey()
 	{
 		var exception = Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true", "off_source=" + SlimUnit + ",0," + FaceFingerprint)));
+			"schema=2", "revision=1", "enabled=true", "off_target=1," + SlimUnit + ",0," + FaceFingerprint)));
 		Assert.Contains("未知字段", exception.Message, StringComparison.Ordinal);
 		Assert.Contains("第 4 行", exception.Message, StringComparison.Ordinal);
 	}
 
 	[Fact]
-	public void Parse_RejectsDuplicateSourceEntry()
+	public void Parse_RejectsDuplicateEntry()
 	{
 		var exception = Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true",
-			"off=" + SlimUnit + ",0," + FaceFingerprint,
-			"off=" + SlimUnit + ",0," + FaceFingerprint)));
+			"schema=2", "revision=1", "enabled=true",
+			"off=1," + SlimUnit + ",0," + FaceFingerprint,
+			"off=1," + SlimUnit + ",0," + FaceFingerprint)));
 		Assert.Contains("重复", exception.Message, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void Parse_RejectsDuplicateTargetSet()
+	{
+		var exception = Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document(
+			"schema=2", "revision=1", "enabled=true",
+			"target=9,1", "target=9,2")));
+		Assert.Contains("掩码集重复", exception.Message, StringComparison.Ordinal);
 	}
 
 	[Fact]
 	public void Parse_RejectsMalformedFingerprint()
 	{
 		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true", "off=" + SlimUnit + ",0,aa6b1bd624443008")));
+			"schema=2", "revision=1", "enabled=true", "off=1," + SlimUnit + ",0,aa6b1bd624443008")));
 		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true", "off=" + SlimUnit + ",0,aa6b-9290-extra")));
+			"schema=2", "revision=1", "enabled=true", "off=1," + SlimUnit + ",0,aa6b-9290-extra")));
 	}
 
 	[Fact]
 	public void Parse_RejectsMissingRequiredKeys()
 	{
 		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document("revision=1", "enabled=true")));
-		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document("schema=1", "enabled=true")));
-		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document("schema=1", "revision=1")));
+		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document("schema=2", "enabled=true")));
+		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document("schema=2", "revision=1")));
+		// schema=1 是上一版格式（含 inherit/override），必须明确拒绝而不是半解析。
+		Assert.Throws<InvalidDataException>(() => WardrobeMaskFile.Parse(Document(
+			"schema=1", "revision=1", "enabled=true")));
 	}
 
 	[Fact]
 	public void Parse_NormalizesUnitPrefixAndCase()
 	{
 		var document = WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true",
-			"off=0xCAE35EE15168145F,0,AA6B1BD624443008-9290"));
-		Assert.Equal(SlimUnit, document.SourceMasks[0].Unit);
-		Assert.Equal(FaceFingerprint, document.SourceMasks[0].Fingerprint);
-	}
-
-	[Fact]
-	public void Parse_DropsExplicitInheritModeSoSerializationIsStable()
-	{
-		var text = Document(
-			"schema=1", "revision=1", "enabled=true",
-			"mask_mode=9,inherit",
-			"off=" + SlimUnit + ",0," + FaceFingerprint);
-		var document = WardrobeMaskFile.Parse(text);
-		Assert.Empty(document.TargetModes);
-		var first = WardrobeMaskFile.Serialize(document);
-		var second = WardrobeMaskFile.Serialize(WardrobeMaskFile.Parse(first));
-		Assert.Equal(first, second);
-		Assert.DoesNotContain("inherit", first, StringComparison.Ordinal);
+			"schema=2", "revision=1", "enabled=true",
+			"off=1,0xCAE35EE15168145F,0,AA6B1BD624443008-9290"));
+		Assert.Equal(SlimUnit, document.Entries[0].Unit);
+		Assert.Equal(FaceFingerprint, document.Entries[0].Fingerprint);
 	}
 
 	[Fact]
@@ -116,94 +113,110 @@ public sealed class WardrobeMaskFileTests
 			true,
 			new[]
 			{
-				new WardrobeSourceMaskEntry("9841b16544c8fbae", 3, RibbonFingerprint),
-				new WardrobeSourceMaskEntry(SlimUnit, 2, RibbonFingerprint),
-				new WardrobeSourceMaskEntry(SlimUnit, 0, FaceFingerprint),
+				new WardrobeMaskEntry(2, StockyUnit, 3, RibbonFingerprint),
+				new WardrobeMaskEntry(1, SlimUnit, 2, RibbonFingerprint),
+				new WardrobeMaskEntry(1, SlimUnit, 0, FaceFingerprint),
 			},
-			new[]
-			{
-				new WardrobeTargetMaskEntry(9, SlimUnit, 1, FaceFingerprint),
-				new WardrobeTargetMaskEntry(7, SlimUnit, 1, FaceFingerprint),
-			},
-			new Dictionary<uint, WardrobeMaskMode> { [9] = WardrobeMaskMode.Override });
+			new Dictionary<uint, uint> { [9] = 2, [7] = 1 });
 
 		var first = WardrobeMaskFile.Serialize(unsorted);
 		var second = WardrobeMaskFile.Serialize(WardrobeMaskFile.Parse(first));
 		Assert.Equal(first, second);
-		var lines = first.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 		Assert.Equal(
 			new[]
 			{
-				"schema=1",
+				"schema=2",
 				"revision=3",
 				"enabled=true",
-				"off=9841b16544c8fbae,3," + RibbonFingerprint,
-				"off=" + SlimUnit + ",0," + FaceFingerprint,
-				"off=" + SlimUnit + ",2," + RibbonFingerprint,
-				"off_target=7," + SlimUnit + ",1," + FaceFingerprint,
-				"off_target=9," + SlimUnit + ",1," + FaceFingerprint,
-				"mask_mode=9,override",
+				"off=1," + SlimUnit + ",0," + FaceFingerprint,
+				"off=1," + SlimUnit + ",2," + RibbonFingerprint,
+				"off=2," + StockyUnit + ",3," + RibbonFingerprint,
+				"target=7,1",
+				"target=9,2",
 			},
-			lines);
+			first.Split('\n', StringSplitOptions.RemoveEmptyEntries));
 	}
 
 	[Fact]
-	public void View_InheritModeFollowsTheSourceMask()
+	public void View_TargetWithoutSetHidesNothing()
 	{
 		var document = WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true",
-			"off=" + SlimUnit + ",0," + FaceFingerprint));
+			"schema=2", "revision=1", "enabled=true",
+			"off=1," + SlimUnit + ",0," + FaceFingerprint));
 		var view = WardrobeMaskView.Create(document);
-		Assert.Equal(WardrobeMaskMode.Inherit, view.ModeOf(1234));
+		Assert.Null(view.SetOf(1234));
+		Assert.False(view.IsDisabled(1234, SlimUnit, 0, FaceFingerprint));
+		// 掩码集本身仍然存在，只是没有目标指向它。
+		Assert.True(view.IsDisabledInSet(1, SlimUnit, 0, FaceFingerprint));
+	}
+
+	[Fact]
+	public void View_EmptySetHidesNothing()
+	{
+		// "声明自己是例外、但一条都不关"必须和"没有声明"区分开：
+		// 前者在源文件里是一份显式数据，编译后落成"目标指向一个空集"。
+		var document = WardrobeMaskFile.Parse(Document(
+			"schema=2", "revision=1", "enabled=true",
+			"off=1," + SlimUnit + ",0," + FaceFingerprint,
+			"target=1234,2"));
+		var view = WardrobeMaskView.Create(document);
+		Assert.Equal(2u, view.SetOf(1234));
+		Assert.False(view.IsDisabled(1234, SlimUnit, 0, FaceFingerprint));
+	}
+
+	[Fact]
+	public void View_TwoTargetsCanFollowDifferentSources()
+	{
+		// 多个视觉来源：目标 7 跟来源 A 的掩码集，目标 9 跟来源 B 的。
+		// 这正是"全局只有一份来源掩码"表达不了的情形。
+		var document = WardrobeMaskFile.Parse(Document(
+			"schema=2", "revision=1", "enabled=true",
+			"off=1," + SlimUnit + ",0," + FaceFingerprint,
+			"off=2," + SlimUnit + ",3," + RibbonFingerprint,
+			"target=7,1",
+			"target=9,2"));
+		var view = WardrobeMaskView.Create(document);
+		Assert.True(view.IsDisabled(7, SlimUnit, 0, FaceFingerprint));
+		Assert.False(view.IsDisabled(7, SlimUnit, 3, RibbonFingerprint));
+		Assert.True(view.IsDisabled(9, SlimUnit, 3, RibbonFingerprint));
+		Assert.False(view.IsDisabled(9, SlimUnit, 0, FaceFingerprint));
+	}
+
+	[Fact]
+	public void View_FingerprintMismatchLeavesSectionVisible()
+	{
+		var document = WardrobeMaskFile.Parse(Document(
+			"schema=2", "revision=1", "enabled=true",
+			"off=1," + SlimUnit + ",0," + FaceFingerprint,
+			"target=1234,1"));
+		var view = WardrobeMaskView.Create(document);
 		Assert.True(view.IsDisabled(1234, SlimUnit, 0, FaceFingerprint));
 		// 指纹对不上就是"设置静默失效"，不能把别的 section 一起关掉。
 		Assert.False(view.IsDisabled(1234, SlimUnit, 0, RibbonFingerprint));
-	}
-
-	[Fact]
-	public void View_OverrideModeDoesNotInheritTheSourceMask()
-	{
-		var document = WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true",
-			"off=" + SlimUnit + ",0," + FaceFingerprint,
-			"mask_mode=1234,override"));
-		var view = WardrobeMaskView.Create(document);
-		// override 是"不继承"，不是"叠加"：来源关了也不影响这个目标。
-		Assert.False(view.IsDisabled(1234, SlimUnit, 0, FaceFingerprint));
-		Assert.True(view.IsSourceDisabled(SlimUnit, 0, FaceFingerprint));
-	}
-
-	[Fact]
-	public void View_OverrideTargetOnlySeesItsOwnEntries()
-	{
-		var document = WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true",
-			"off_target=1234," + SlimUnit + ",3," + RibbonFingerprint,
-			"mask_mode=1234,override"));
-		var view = WardrobeMaskView.Create(document);
-		Assert.True(view.IsDisabled(1234, SlimUnit, 3, RibbonFingerprint));
-		Assert.False(view.IsDisabled(9999, SlimUnit, 3, RibbonFingerprint));
+		Assert.False(view.IsDisabled(1234, SlimUnit, 1, FaceFingerprint));
 	}
 
 	[Fact]
 	public void View_DisabledDocumentKeepsContentButHidesNothing()
 	{
 		var document = WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=false",
-			"off=" + SlimUnit + ",0," + FaceFingerprint));
+			"schema=2", "revision=1", "enabled=false",
+			"off=1," + SlimUnit + ",0," + FaceFingerprint,
+			"target=1234,1"));
 		var view = WardrobeMaskView.Create(document);
-		Assert.Single(document.SourceMasks);
+		Assert.Single(document.Entries);
 		Assert.False(view.IsDisabled(1234, SlimUnit, 0, FaceFingerprint));
-		Assert.False(view.IsSourceDisabled(SlimUnit, 0, FaceFingerprint));
+		Assert.False(view.IsDisabledInSet(1, SlimUnit, 0, FaceFingerprint));
 	}
 
 	[Fact]
 	public void View_UnitFullyDisabledRequiresEverySection()
 	{
 		var document = WardrobeMaskFile.Parse(Document(
-			"schema=1", "revision=1", "enabled=true",
-			"off=" + SlimUnit + ",0," + FaceFingerprint,
-			"off=" + SlimUnit + ",1," + RibbonFingerprint));
+			"schema=2", "revision=1", "enabled=true",
+			"off=1," + SlimUnit + ",0," + FaceFingerprint,
+			"off=1," + SlimUnit + ",1," + RibbonFingerprint,
+			"target=1234,1"));
 		var view = WardrobeMaskView.Create(document);
 		var all = new[]
 		{
@@ -242,8 +255,9 @@ public sealed class WardrobeMaskFileTests
 		{
 			var path = Path.Combine(directory, WardrobeMaskFile.FileName);
 			var document = WardrobeMaskFile.Parse(Document(
-				"schema=1", "revision=5", "enabled=true",
-				"off=" + SlimUnit + ",0," + FaceFingerprint));
+				"schema=2", "revision=5", "enabled=true",
+				"off=1," + SlimUnit + ",0," + FaceFingerprint,
+				"target=1234,1"));
 			WardrobeMaskFile.Write(path, document);
 			Assert.True(File.Exists(path));
 			// 临时文件不能留在目录里：它会被下次扫描当成垃圾，也让目录变脏。

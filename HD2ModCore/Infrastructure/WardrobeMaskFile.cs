@@ -8,26 +8,30 @@ namespace HD2ModCore.Infrastructure;
 /// <c>wardrobe.masks</c> 的行格式读写。规格见
 /// <c>HD2RuntimeArmorOverride/notes/wardrobe-schema-v2-20261017.md</c>。
 ///
-/// 为什么掩码不写进 <c>armor-registry.protocol</c>：协议有 64 KiB 上限，而且有
-/// 三份独立解析器；掩码在满配情况下约 17 KiB，塞进去会把三份实现同时顶到墙上。
-/// 这个文件只有两份实现（本类写/读、运行时 Lua 只读）。
+/// 这是**编译产物**，不是权威数据：权威数据在 mod 库内的未编译源文件里，由管理器
+/// 编辑即保存。这份文件丢了没关系，管理器重新应用一次就会再生成。
+/// 因此它只保留运行时需要的东西——没有继承关系、没有编辑器结构。
 ///
-/// Why the mask lives in its own file instead of the registry protocol: the protocol is
-/// capped at 64 KiB and has three independent parsers. A fully populated mask is ~17 KiB,
-/// which would squeeze all three at once. This file has exactly two implementations.
+/// 为什么掩码不写进 <c>armor-registry.protocol</c>：协议有 64 KiB 上限，而且有
+/// 三份独立解析器；掩码在满配情况下可达上百 KiB，塞进去会把三份实现同时顶到墙上。
+///
+/// This is a compiled artefact, not the authoritative store: that lives in the mod
+/// library's uncompiled source and is saved by the manager on every edit. Losing this
+/// file costs one re-apply. It therefore carries only what the runtime needs.
 /// </summary>
 public static class WardrobeMaskFile
 {
 	/// <summary>注册表目录下的文件名。</summary>
 	public const string FileName = "wardrobe.masks";
 
-	/// <summary>单列上限。协议是 64 KiB，掩码宽松四倍仍远小于一次读盘的成本。</summary>
+	/// <summary>单列上限。协议是 64 KiB，掩码宽松十六倍仍远小于一次读盘的成本。</summary>
 	public const int MaximumBytes = 1024 * 1024;
 
 	private const int MaximumSectionIndex = 65535;
 	private const int MaximumRevision = int.MaxValue;
+	private const uint MaximumSetId = 0xFFFF;
 
-	/// <summary>解析失败时抛出，消息里一定带行号——否则用户面对一份 280 行的文件无从下手。</summary>
+	/// <summary>解析失败时抛出，消息里一定带行号——否则用户面对一份几千行的文件无从下手。</summary>
 	public static WardrobeMaskDocument Parse(string text)
 	{
 		ArgumentNullException.ThrowIfNull(text);
@@ -37,11 +41,9 @@ public static class WardrobeMaskFile
 		int? schema = null;
 		int? revision = null;
 		bool? enabled = null;
-		var sourceMasks = new List<WardrobeSourceMaskEntry>();
-		var targetMasks = new List<WardrobeTargetMaskEntry>();
-		var targetModes = new Dictionary<uint, WardrobeMaskMode>();
-		var sourceSeen = new HashSet<(string, int, string)>();
-		var targetSeen = new HashSet<(uint, string, int, string)>();
+		var entries = new List<WardrobeMaskEntry>();
+		var targetSets = new Dictionary<uint, uint>();
+		var entrySeen = new HashSet<(uint, string, int, string)>();
 		var lineNumber = 0;
 		foreach (var rawLine in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
 		{
@@ -59,7 +61,7 @@ public static class WardrobeMaskFile
 				case "schema":
 					if (schema is not null)
 						throw Invalid(lineNumber, "schema 重复。");
-					schema = ParseInteger(value, lineNumber, "schema", 1, 1);
+					schema = ParseInteger(value, lineNumber, "schema", 2, 2);
 					break;
 				case "revision":
 					if (revision is not null)
@@ -79,44 +81,26 @@ public static class WardrobeMaskFile
 				case "off":
 					{
 						var parts = Split(value);
-						if (parts.Length != 3)
-							throw Invalid(lineNumber, "off 必须是 unit,sectionIndex,fingerprint。");
-						var unit = ParseUnit(parts[0], lineNumber);
-						var index = ParseInteger(parts[1], lineNumber, "section 下标", 0, MaximumSectionIndex);
-						var fingerprint = ParseFingerprint(parts[2], lineNumber);
-						if (!sourceSeen.Add((unit, index, fingerprint)))
-							throw Invalid(lineNumber, "重复的掩码条目。");
-						sourceMasks.Add(new WardrobeSourceMaskEntry(unit, index, fingerprint));
-						break;
-					}
-				case "off_target":
-					{
-						var parts = Split(value);
 						if (parts.Length != 4)
-							throw Invalid(lineNumber, "off_target 必须是 targetItemId,unit,sectionIndex,fingerprint。");
-						var target = ParseItemId(parts[0], lineNumber);
+							throw Invalid(lineNumber, "off 必须是 setId,unit,sectionIndex,fingerprint。");
+						var setId = ParseInteger(parts[0], lineNumber, "掩码集 ID", 0, (int)MaximumSetId);
 						var unit = ParseUnit(parts[1], lineNumber);
 						var index = ParseInteger(parts[2], lineNumber, "section 下标", 0, MaximumSectionIndex);
 						var fingerprint = ParseFingerprint(parts[3], lineNumber);
-						if (!targetSeen.Add((target, unit, index, fingerprint)))
+						if (!entrySeen.Add(((uint)setId, unit, index, fingerprint)))
 							throw Invalid(lineNumber, "重复的掩码条目。");
-						targetMasks.Add(new WardrobeTargetMaskEntry(target, unit, index, fingerprint));
+						entries.Add(new WardrobeMaskEntry((uint)setId, unit, index, fingerprint));
 						break;
 					}
-				case "mask_mode":
+				case "target":
 					{
 						var parts = Split(value);
 						if (parts.Length != 2)
-							throw Invalid(lineNumber, "mask_mode 必须是 targetItemId,inherit|override。");
+							throw Invalid(lineNumber, "target 必须是 targetItemId,setId。");
 						var target = ParseItemId(parts[0], lineNumber);
-						var mode = parts[1] switch
-						{
-							"inherit" => WardrobeMaskMode.Inherit,
-							"override" => WardrobeMaskMode.Override,
-							_ => throw Invalid(lineNumber, "mask_mode 必须是 inherit 或 override。"),
-						};
-						if (!targetModes.TryAdd(target, mode))
-							throw Invalid(lineNumber, $"目标护甲 {target} 的掩码模式重复。");
+						var setId = ParseInteger(parts[1], lineNumber, "掩码集 ID", 0, (int)MaximumSetId);
+						if (!targetSets.TryAdd(target, (uint)setId))
+							throw Invalid(lineNumber, $"目标护甲 {target} 的掩码集重复。");
 						break;
 					}
 				default:
@@ -125,69 +109,52 @@ public static class WardrobeMaskFile
 		}
 
 		if (schema is null)
-			throw new InvalidDataException("wardrobe.masks 必须包含 schema=1。");
+			throw new InvalidDataException("wardrobe.masks 必须包含 schema=2。");
 		if (revision is null)
 			throw new InvalidDataException("wardrobe.masks 缺少 revision。");
 		if (enabled is null)
 			throw new InvalidDataException("wardrobe.masks 缺少 enabled。");
 
-		return Normalize(new WardrobeMaskDocument(
-			revision.Value,
-			enabled.Value,
-			sourceMasks,
-			targetMasks,
-			targetModes));
+		return Normalize(new WardrobeMaskDocument(revision.Value, enabled.Value, entries, targetSets));
 	}
 
 	/// <summary>
-	/// 规范化：排序 + 丢掉显式 inherit（缺省就是 inherit，写出来只是噪音）。
-	/// 序列化也走这里，保证"读进来再写出去"逐字节稳定。
+	/// 规范化：排序。序列化也走这里，保证"读进来再写出去"逐字节稳定——
+	/// 否则"内容没变"会被误判成"变了"，白白触发一次重载。
 	/// </summary>
 	public static WardrobeMaskDocument Normalize(WardrobeMaskDocument document)
 	{
 		ArgumentNullException.ThrowIfNull(document);
-		var source = document.SourceMasks
-			.OrderBy(entry => entry.Unit, StringComparer.Ordinal)
-			.ThenBy(entry => entry.SectionIndex)
-			.ThenBy(entry => entry.Fingerprint, StringComparer.Ordinal)
-			.ToArray();
-		var targets = document.TargetMasks
-			.OrderBy(entry => entry.TargetItemId)
+		var entries = document.Entries
+			.OrderBy(entry => entry.SetId)
 			.ThenBy(entry => entry.Unit, StringComparer.Ordinal)
 			.ThenBy(entry => entry.SectionIndex)
 			.ThenBy(entry => entry.Fingerprint, StringComparer.Ordinal)
 			.ToArray();
-		var modes = document.TargetModes
-			.Where(pair => pair.Value == WardrobeMaskMode.Override)
+		var targets = document.TargetSets
 			.OrderBy(pair => pair.Key)
 			.ToDictionary(pair => pair.Key, pair => pair.Value);
-		return new WardrobeMaskDocument(document.Revision, document.Enabled, source, targets, modes);
+		return new WardrobeMaskDocument(document.Revision, document.Enabled, entries, targets);
 	}
 
 	public static string Serialize(WardrobeMaskDocument document)
 	{
 		var normalized = Normalize(document);
 		var builder = new StringBuilder();
-		builder.Append("schema=1\n");
+		builder.Append("schema=2\n");
 		builder.Append("revision=").Append(normalized.Revision.ToString(CultureInfo.InvariantCulture)).Append('\n');
 		builder.Append("enabled=").Append(normalized.Enabled ? "true" : "false").Append('\n');
-		foreach (var entry in normalized.SourceMasks)
+		foreach (var entry in normalized.Entries)
 		{
-			builder.Append("off=").Append(entry.Unit).Append(',')
-				.Append(entry.SectionIndex.ToString(CultureInfo.InvariantCulture)).Append(',')
-				.Append(entry.Fingerprint).Append('\n');
-		}
-		foreach (var entry in normalized.TargetMasks)
-		{
-			builder.Append("off_target=").Append(entry.TargetItemId.ToString(CultureInfo.InvariantCulture)).Append(',')
+			builder.Append("off=").Append(entry.SetId.ToString(CultureInfo.InvariantCulture)).Append(',')
 				.Append(entry.Unit).Append(',')
 				.Append(entry.SectionIndex.ToString(CultureInfo.InvariantCulture)).Append(',')
 				.Append(entry.Fingerprint).Append('\n');
 		}
-		foreach (var pair in normalized.TargetModes)
+		foreach (var pair in normalized.TargetSets)
 		{
-			builder.Append("mask_mode=").Append(pair.Key.ToString(CultureInfo.InvariantCulture))
-				.Append(",override\n");
+			builder.Append("target=").Append(pair.Key.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(pair.Value.ToString(CultureInfo.InvariantCulture)).Append('\n');
 		}
 		return builder.ToString();
 	}

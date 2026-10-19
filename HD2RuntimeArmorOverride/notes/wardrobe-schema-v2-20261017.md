@@ -1,4 +1,4 @@
-# 衣柜掩码 schema v2：定稿（2026-10-17）
+# 衣柜掩码 schema v2：定稿（2026-10-17，2026-10-19 修订）
 
 > 阶段 1 的产物。这份文档是**契约**：CLI、管理器编辑器、运行时 Lua 三方都按它实现。
 > 已在本机真实数据上验证的部分标了「实测」；仍未定的标了「待拍板」。
@@ -7,33 +7,51 @@
 
 ## 1. 一句话
 
-把"哪些 section 要隐藏"从**协议**里拆出来，放进注册表目录下的
-`wardrobe.masks`，只存"禁用"、按 `(unit, section 下标, 内容指纹)` 寻址，
-分「档案级来源掩码」和「映射目标独立掩码」两层，目标默认实时继承来源。
+把"哪些 section 要隐藏"从**协议**里拆出来，放进注册表目录下的 `wardrobe.masks`，
+只存"禁用"、按 `(掩码集, unit, section 下标, 内容指纹)` 寻址，
+**编译成扁平投影**：每个映射目标直接指向一个掩码集，运行时不做任何继承判断。
 
 ---
 
-## 2. 为什么单独成文件，而不是塞进 `armor-registry.protocol`
+## 2. 两份数据，不要混淆
+
+这是整个设计的地基。衣柜数据有**两份**，生命周期完全不同：
+
+| | ① 未编译源文件 | ② `wardrobe.masks` |
+|---|---|---|
+| 位置 | **mod 库内**，随库走 | 注册表目录，随用户走 |
+| 谁写 | 管理器（编辑即保存） | 管理器/CLI 在"应用"时编译生成 |
+| 内容 | 视觉来源的禁用状态 + 每个目标"是否声明为例外" + 例外自己的禁用状态 | 只有运行时需要的东西：目标 → 掩码集 → 要隐藏的 section |
+| 丢失后果 | 数据真的丢了 | 无所谓，重新应用一次即可再生成 |
+| 需要继承关系 | **需要**（来源改了，继承它的目标立刻跟着变） | **不需要**，已解析成扁平投影 |
+
+**关键点：编译产物里没有 inherit/override。** 继承是源文件里的活关系，属于管理器；
+运行时只做两次查表。这样做的直接原因是**多个视觉来源**——不同目标可以映射到
+不同的来源，全局一份"来源掩码"根本表达不了。
+
+---
+
+## 3. 为什么单独成文件，而不是塞进 `armor-registry.protocol`
 
 协议是 `key=value` 行格式，有 **64 KiB 硬上限**，而且有**三份独立实现**
 （`armor_registry_protocol.lua`、`HD2ModCli/CliArmorRegistryProtocol.cs`、
 `HD2ModCore/Infrastructure/RuntimeArmorRegistryService.cs`）。
 把掩码塞进去意味着三份解析器同时改、同时受 64 KiB 挤压。
 
-掩码的规模不是小数目：7 个槽位 × 每 unit 11~40 个 section，
-全关就是 280 行、约 17 KiB；再乘"目标独立掩码"就顶到上限了。
+掩码的规模不是小数目：7 个槽位 × 每 unit 11~40 个 section，全关就是几百行；
+多个来源、多个目标再乘上去就顶到上限了。
 
 **所以**：协议保持原样，只当"权威 + 重载触发器"；掩码另开一个文件，
 **只有两份实现**（C# 写入/读取、Lua 只读），上限单列 1 MiB。
 
 ---
 
-## 3. 位置与写入时序
+## 4. 位置与写入时序
 
 ```
 %LOCALAPPDATA%\CowboyBingus\Helldivers2\ArmorRegistry\
   ├─ armor-registry.protocol      协议（不变）
-  └─ wardrobe.masks               ← 本文件新增
+  └─ wardrobe.masks               ← 本文件（编译产物）
 ```
 
 **时序是硬约束**（实测依据：`auto_refresh.published(revision,changed)`
@@ -50,42 +68,49 @@
 
 ---
 
-## 4. 文法
+## 5. 文法
 
 行格式，`#` 开头是注释，空行忽略。键名区分大小写，值为 `,` 分隔。
 
 ```
-schema=1
+schema=2
 revision=<0..2147483647>
 enabled=true|false
 
-# ① 档案级（来源）掩码：只记录"禁用"
-off=<unit>,<sectionIndex>,<fingerprint>
+# 掩码集里的一条：某个集合要隐藏的某个 section
+off=<setId>,<unit>,<sectionIndex>,<fingerprint>
 
-# ③ 映射目标独立掩码：只记录"禁用"
-off_target=<targetItemId>,<unit>,<sectionIndex>,<fingerprint>
-
-# 目标掩码模式；缺省 inherit
-mask_mode=<targetItemId>,inherit|override
+# 目标 → 掩码集
+target=<targetItemId>,<setId>
 ```
 
 字段定义：
 
 | 字段 | 形式 | 说明 |
 |---|---|---|
+| `setId` | 十进制 0..65535 | 掩码集编号，由编译方分配，只要求文件内自洽 |
 | `unit` | 16 位小写 hex，**不带 `0x`** | unit 资源的 FileId，如 `cae35ee15168145f` |
 | `sectionIndex` | 十进制 0..65535 | **该 unit LOD0 mesh 的 section 列表下标**（0 起） |
-| `fingerprint` | `<materialId>-<triangles>` | 见 §5 |
+| `fingerprint` | `<materialId>-<triangles>` | 见 §6 |
 | `targetItemId` | 十进制 uint32 | 映射目标护甲 item id |
 
-**确定性输出**：`off` 按 `(unit, sectionIndex, fingerprint)` 排序，
-`off_target` 按 `(targetItemId, unit, sectionIndex, fingerprint)` 排序，
-`mask_mode` 按 `targetItemId` 排序。同样的语义必须产出逐字节相同的文件——
-否则"内容没变"会被误判成"变了"。
+**语义**：
+
+* `target=T,set=S`：目标 T 隐藏掩码集 S 里的 section。
+* **没有 `target` 行** = 该目标不隐藏任何 section。
+* `target=T,set=S` 但 S 里一条 `off` 都没有 = **显式例外，且一条都不关**。
+
+后两种情况运行结果相同（都不隐藏），但在源文件里是**不同的数据**：
+用户可能为视觉来源关了一些件，却希望某个护甲全部可见。若把"没关"当成"没声明"，
+这种意图就丢了。所以编译产物必须能表达"指向一个空集"。
+
+**确定性输出**：`off` 按 `(setId, unit, sectionIndex, fingerprint)` 排序，
+`target` 按 `targetItemId` 排序。同样的语义必须产出逐字节相同的文件——
+否则"内容没变"会被误判成"变了"，白白触发一次重载。
 
 ---
 
-## 5. 指纹
+## 6. 指纹
 
 ```
 fingerprint = <materialId> "-" <triangles>
@@ -124,30 +149,6 @@ fingerprint = none-<triangles>
 
 ---
 
-## 6. 三层掩码与生效规则
-
-```
-① 档案级来源掩码      off=...           惰性、与 mod 无关、换 mod 后仍保留
-② 映射目标：默认继承    （不落盘）        实时继承 ①，来源改了目标立刻跟着变
-③ 映射目标：独立掩码    off_target=...    生效时**不再**继承 ①
-```
-
-对某个映射目标 `T`：
-
-```
-mask_mode[T] == override  →  只用 ③（T 名下的条目）
-否则                       →  只用 ①
-```
-
-**只存"禁用"**：缺失 = 启用。新出现的 section 自动可见，
-不会被一条旧掩码连坐。
-
-**切到 override 时必须物化**：把切换瞬间的继承结果写进 ③。
-否则一按"独立"就等于"全部启用"，用户看到的是所有件突然出现。
-这条由编辑器负责，文件格式不表达它。
-
----
-
 ## 7. 应用规则
 
 1. **LOD 一致性前提**。掩码的 section 下标取自 LOD0 mesh。
@@ -158,6 +159,11 @@ mask_mode[T] == override  →  只用 ③（T 名下的条目）
    > 顺序一致（`cae35ee15168145f` / `9841b16544c8fbae`）。
    > 但**原版 unit 不是这样**：`E:\tmp\orig-patch` 里同一个 Torso，
    > lod3 只有 1 个 section、lod2 有 2 个。所以这条前提不能省。
+   >
+   > 2026-10-19 补测：当前部署的那份 mod（`E:\mod\1061927f…`）是**作者原包风格**，
+   > 5 级 LOD（4/3/2/1/0）× 22 个 section，各级数量一致。
+   > 也就是说"数量一致"在作者包上也可能成立，但 22 个 section 对 12 个材质，
+   > **装饰边界不可判定**——开关能用，但"哪几个 section 是一件装饰"只能靠人给。
 
 2. **指纹不符就跳过该条**，不报错、不中断应用。
    作用：换 mod 后把"关错部件"降级为"设置静默失效"。
@@ -178,13 +184,13 @@ mask_mode[T] == override  →  只用 ③（T 名下的条目）
 |---|---|
 | 文件 > 1 MiB | `wardrobe.masks 超过 1 MiB 上限` |
 | 缺 `schema` / `revision` / `enabled` | 分别报缺 |
-| `schema` 不是 1 | 不支持 |
+| `schema` 不是 2 | 不支持（schema=1 是上一版，明确拒绝而不是半解析） |
 | 未知键 | `未知字段：<key>` |
 | `unit` 不是 16 位 hex | `unit ID 无效` |
 | `sectionIndex` 越界 | `section 下标越界` |
 | `fingerprint` 不匹配 `^([0-9a-f]{16}\|none)-\d+$` | `指纹格式无效` |
-| 同键重复 | `重复的掩码条目` |
-| `mask_mode` 重复 | `目标的掩码模式重复` |
+| 同 `(set, unit, index, fingerprint)` 重复 | `重复的掩码条目` |
+| 同一 `target` 重复 | `目标的掩码集重复` |
 
 应用期（跳过而非拒绝）：
 
@@ -209,18 +215,16 @@ mask_mode[T] == override  →  只用 ③（T 名下的条目）
 
 ## 10. 待拍板
 
-1. **在"继承模式"的目标上编辑，写哪里？**
-   - A：自动把该目标切成 override 并物化（推荐：不污染来源，但用户会看到模式变了）
-   - B：直接改档案级 ①（共享，影响所有继承该来源的目标）
-   两种都实现得了，但 UX 差别很大。
-
-2. **档案级掩码是否要按护甲 item 分桶？**
-   现在按 `(unit, sectionIndex, fp)` 全局寻址，前提是"不同护甲不会共用同一个 unit"。
-   实测里成立，但没在整库上验证过。若出现共用，两个护甲会共享掩码。
-
-3. **`sectionIndex` 以 LOD0 为锚**是否会踩到"一个 unit 每级 LOD 有多个 mesh"的情况。
-   现有样本（含原版）都是每级 1 个视觉 mesh。若真出现多 mesh，需要把
+1. **`sectionIndex` 以 LOD0 为锚**是否会踩到"一个 unit 每级 LOD 有多个 mesh"的情况。
+   现有样本（含原版、含作者包）都是每级 1 个视觉 mesh。若真出现多 mesh，需要把
    mesh 序数也编进键里——那会让键变长，值得先确认有没有这种 unit。
+
+> 已定（2026-10-19）：
+> * "继承模式下编辑写哪里"——**不落进编译产物**。继承是源文件里的活关系，
+>   由管理器维护；编译时解析成扁平投影。编辑器在继承模式下改动时，是否顺手把
+>   该目标切成"显式例外"，是编辑器交互问题，不影响本文件的格式。
+> * "档案级掩码按什么分桶"——源文件里按**护甲**（视觉来源自己一份，每个例外自己一份）；
+>   编译产物里按**掩码集**，天然支持多个来源，不存在共用 unit 导致串味的问题。
 
 ---
 
@@ -228,8 +232,9 @@ mask_mode[T] == override  →  只用 ③（T 名下的条目）
 
 | 文件 | 角色 | 谁写 |
 |---|---|---|
+| mod 库内的源文件 | **权威**衣柜数据（含继承关系与编辑器结构） | 管理器（编辑即保存） |
 | `armor-registry.protocol` | 映射关系、模型、Piece 覆盖、target_mode、revision | CLI / 管理器 |
-| `wardrobe.masks` | section 显隐（本文件） | CLI / 管理器 |
+| `wardrobe.masks` | 编译产物：目标 → 掩码集 → 要隐藏的 section | CLI / 管理器 |
 | `<mod>/sections.json` | 构建期 section 映射表（偏移、原值、材质、三角形） | 构建管线 |
 | `runtime.status` | 运行时状态 | 运行时 Lua |
 
@@ -263,10 +268,18 @@ section 记录（24 字节，绝对位置 = mesh + sectionsOffset）
   +12 indexOffset   +16 numIndices   +20 groupIndex
 ```
 
-**离线验证**：对 `E:\tmp\vanilla-unit-test\unit_0x143a0d93d14d6587.toc` 用纯字节读取
-（`tmp/walk_unit_toc.py`，不引用任何 C# 代码）走出 5 个 mesh，
-lod 依次 `-1,3,2,1,0`、每个 1 个 section，节记录地址单调递增且全部落在 5696 字节内。
-结构对得上，说明这条路可行。
+**离线验证（两处，都不是推断）**：
+
+1. 对 `E:\tmp\vanilla-unit-test\unit_0x143a0d93d14d6587.toc` 用纯字节读取
+   （`tmp/walk_unit_toc.py`，不引用任何 C# 代码）走出 5 个 mesh，
+   lod 依次 `-1,3,2,1,0`、每个 1 个 section，节记录地址单调递增且全部落在 5696 字节内。
+2. 对当前部署的 `E:\mod\1061927f…\9ba626afa44a3aa3.patch_0` 走同一套偏移，
+   得到 unit `0xaf431352d9b95e83`、`streamInfo=0x4bbe`、`meshInfo=0x50fe`、
+   `materials=0x5fb2`、5 个 mesh（lod `4,3,2,1,0`）各 22 个 section、`secOff=216`。
+   算术自洽：每个 mesh 记录 = 216（节表之前的字段）+ 22×24（节表）= 744 字节。
+   m0 起点 `0x512a`、节表 `0x5202`；m1 起点 `0x5412 = 0x512a + 744`、节表
+   `0x54ea = 0x5412 + 216`；依此类推到最后一张 `0x5da2`，全部落在 592887 字节的
+   patch 内、节表不重叠。偏移错一个字段就会立刻表现为节表越界或 lod 乱值。
 
 **两个已知边界**：
 
@@ -278,24 +291,22 @@ lod 依次 `-1,3,2,1,0`、每个 1 个 section，节记录地址单调递增且�
 
 ### 12.1 待跑的实测（只读探针已就位）
 
-探针：`%LOCALAPPDATA%\MDL\Helldivers2\Mods\section_layout_probe\mod.lua`
-（源码副本在 `HD2RuntimeArmorOverride/probes/section_layout_probe.lua`）。
-它**不写内存**，只定位 TOC 副本、打印结构头、走一遍 mesh 表，结果写到
-`ArmorRegistry\section-layout.status`。
+探针由脚本从**当前部署的 patch 现算**，不硬编码：
 
-用 `E:\tmp\lilium-final` 那份 patch 的离线值作为预期（`sections.json` 与 unitprobe 一致）：
+```powershell
+python HD2RuntimeArmorOverride\scripts\make_section_layout_probe.py `
+  --patch <当前部署的 patch_0> `
+  --install "%LOCALAPPDATA%\MDL\Helldivers2\Mods\section_layout_probe\mod.lua"
+```
 
-| 字段 | 预期 |
-|---|---|
-| `streamInfoOffset` | `0xfcd0` |
-| `meshInfoOffset` | `0x10400` |
-| `materials` | 46 |
-| `meshes` | 6 |
-| m0..m3 | `lod=3,2,1,0`，`nsec=11`，`secOff=172` |
-| m4, m5 | `lod=-1`，`nsec=1` |
-| mesh#0 首节 | `materialIndex=0`，`numIndices=27870`，`groupIndex=0` |
+它**不写内存**，只定位 TOC 副本、校验结构头、走一遍 mesh 表，把结论写到
+`ArmorRegistry\section-layout.status`，末行是 `VERDICT=PASS|FAIL|NOT_FOUND`。
 
-**判定**：结构头三个偏移与上表一致 ⇒ 运行时自己走 TOC 这条路成立，阶段 3 可以开工；
-不一致 ⇒ 退回"运行时读 `sections.json`"的方案（那时阶段 2 就必须把映射表部署到
-运行时读得到的位置，架构要改）。探针同时打印前 128 字节的 hex，不一致时用它和
-文件头逐字节比对，能直接看出差异落在哪几个字段上。
+判定：
+* `PASS` ⇒ 运行时自己走 TOC 这条路成立，阶段 3 可以开工。
+* `FAIL` ⇒ 结构头与文件不一致，但探针会打印候选基址处的真实值与前 128 字节 hex，
+  能直接看出差异落在哪几个字段上。
+* `NOT_FOUND` ⇒ 签名没命中（多半是当前部署换了包，重新生成探针即可）。
+
+若最终判定"内存副本的结构头不可用"，阶段 3 退回"运行时读 `sections.json`"的方案，
+那时阶段 2 就必须把映射表部署到运行时读得到的位置，架构要改。

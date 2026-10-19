@@ -4,18 +4,22 @@ using System.Text.RegularExpressions;
 namespace HD2ModCore.Domain;
 
 // 衣柜 section 掩码的领域模型（交接文档 §4.1 的"三层掩码"）。
-// 这里只表达"哪个 section 被禁用"，不表达"怎么写到内存"——后者是运行时的职责。
-// Wardrobe section mask domain model (the three-layer mask from the handoff, §4.1).
-// It expresses *which* section is disabled, never *how* to write memory; that is the runtime's job.
-
-/// <summary>
-/// 目标的掩码模式。inherit = 实时继承档案级来源掩码；override = 只用自己的独立掩码。
-/// </summary>
-public enum WardrobeMaskMode
-{
-	Inherit,
-	Override,
-}
+//
+// 关键取舍：编译产物里**不做继承**。
+// 管理器里的权威数据是 mod 库内的未编译源文件——视觉来源保存自己的禁用状态，
+// 映射目标除非被编辑器显式声明为"例外"，否则复用视觉来源。那份数据里"继承"是
+// 一个活的关系（来源改了目标立刻跟着变），只有管理器需要知道。
+//
+// 编译产物是给 Lua 读的**扁平投影**：一个目标对应一个掩码集，掩码集里就是
+// 最终要隐藏的那些 section。这样做的原因是"多个视觉来源"——不同目标可以映射到
+// 不同的来源，全局只有一份来源掩码根本表达不了。运行时因此也不需要任何
+// inherit/override 判断，只有两次查表。
+//
+// The compiled artefact does no inheritance. The authoritative data lives in the mod
+// library's uncompiled source, where "inherit the visual source" is a live relation the
+// manager maintains. What ships to Lua is a flat projection: target -> mask set. That is
+// what makes multiple visual sources expressible at all, and it leaves the runtime with
+// two table lookups and no inheritance rules to get wrong.
 
 /// <summary>
 /// 一个 section 的语义身份：unit + LOD0 mesh 里的 section 下标 + 内容指纹。
@@ -23,14 +27,8 @@ public enum WardrobeMaskMode
 /// </summary>
 public readonly record struct WardrobeSectionIdentity(string Unit, int SectionIndex, string Fingerprint);
 
-/// <summary>档案级（来源）掩码条目。只记录"禁用"。</summary>
-public sealed record WardrobeSourceMaskEntry(string Unit, int SectionIndex, string Fingerprint)
-{
-	public WardrobeSectionIdentity Identity => new(Unit, SectionIndex, Fingerprint);
-}
-
-/// <summary>映射目标独立掩码条目。只记录"禁用"。</summary>
-public sealed record WardrobeTargetMaskEntry(uint TargetItemId, string Unit, int SectionIndex, string Fingerprint)
+/// <summary>掩码集里的一条：某个集合要隐藏的某个 section。</summary>
+public sealed record WardrobeMaskEntry(uint SetId, string Unit, int SectionIndex, string Fingerprint)
 {
 	public WardrobeSectionIdentity Identity => new(Unit, SectionIndex, Fingerprint);
 }
@@ -41,19 +39,17 @@ public sealed record WardrobeTargetMaskEntry(uint TargetItemId, string Unit, int
 public sealed record WardrobeMaskDocument(
 	int Revision,
 	bool Enabled,
-	IReadOnlyList<WardrobeSourceMaskEntry> SourceMasks,
-	IReadOnlyList<WardrobeTargetMaskEntry> TargetMasks,
-	IReadOnlyDictionary<uint, WardrobeMaskMode> TargetModes)
+	IReadOnlyList<WardrobeMaskEntry> Entries,
+	IReadOnlyDictionary<uint, uint> TargetSets)
 {
-	/// <summary>文件不存在时的等价物：全启用、无条目。</summary>
+	/// <summary>文件不存在时的等价物：全启用、无条目、无目标关联。</summary>
 	public static WardrobeMaskDocument Empty { get; } = new(
 		0,
 		true,
-		Array.Empty<WardrobeSourceMaskEntry>(),
-		Array.Empty<WardrobeTargetMaskEntry>(),
-		new Dictionary<uint, WardrobeMaskMode>());
+		Array.Empty<WardrobeMaskEntry>(),
+		new Dictionary<uint, uint>());
 
-	public bool IsEmpty => SourceMasks.Count == 0 && TargetMasks.Count == 0 && TargetModes.Count == 0;
+	public bool IsEmpty => Entries.Count == 0 && TargetSets.Count == 0;
 }
 
 /// <summary>
@@ -66,9 +62,7 @@ public static partial class WardrobeSectionFingerprint
 	/// <summary>材质缺失时的占位符。</summary>
 	public const string MissingMaterial = "none";
 
-	private const string UnitPattern = "^[0-9a-f]{16}$";
-
-	[GeneratedRegex(UnitPattern, RegexOptions.CultureInvariant)]
+	[GeneratedRegex("^[0-9a-f]{16}$", RegexOptions.CultureInvariant)]
 	private static partial Regex UnitRegex();
 
 	[GeneratedRegex("^(none|[0-9a-f]{16})-(\\d{1,10})$", RegexOptions.CultureInvariant)]
@@ -128,20 +122,17 @@ public static partial class WardrobeSectionFingerprint
 /// </summary>
 public sealed class WardrobeMaskView
 {
-	private readonly HashSet<(string Unit, int SectionIndex, string Fingerprint)> source;
-	private readonly Dictionary<uint, HashSet<(string Unit, int SectionIndex, string Fingerprint)>> targets;
-	private readonly Dictionary<uint, WardrobeMaskMode> modes;
+	private readonly Dictionary<uint, HashSet<(string Unit, int SectionIndex, string Fingerprint)>> sets;
+	private readonly Dictionary<uint, uint> targetSets;
 
 	private WardrobeMaskView(
 		bool enabled,
-		HashSet<(string, int, string)> source,
-		Dictionary<uint, HashSet<(string, int, string)>> targets,
-		Dictionary<uint, WardrobeMaskMode> modes)
+		Dictionary<uint, HashSet<(string, int, string)>> sets,
+		Dictionary<uint, uint> targetSets)
 	{
 		Enabled = enabled;
-		this.source = source;
-		this.targets = targets;
-		this.modes = modes;
+		this.sets = sets;
+		this.targetSets = targetSets;
 	}
 
 	/// <summary>掩码总开关。关闭时一切视为启用，但内容保留。</summary>
@@ -150,43 +141,39 @@ public sealed class WardrobeMaskView
 	public static WardrobeMaskView Create(WardrobeMaskDocument document)
 	{
 		ArgumentNullException.ThrowIfNull(document);
-		var source = new HashSet<(string, int, string)>();
-		foreach (var entry in document.SourceMasks)
-			source.Add((entry.Unit, entry.SectionIndex, entry.Fingerprint));
-		var targets = new Dictionary<uint, HashSet<(string, int, string)>>();
-		foreach (var entry in document.TargetMasks)
+		var sets = new Dictionary<uint, HashSet<(string, int, string)>>();
+		foreach (var entry in document.Entries)
 		{
-			if (!targets.TryGetValue(entry.TargetItemId, out var set))
+			if (!sets.TryGetValue(entry.SetId, out var bucket))
 			{
-				set = new HashSet<(string, int, string)>();
-				targets.Add(entry.TargetItemId, set);
+				bucket = new HashSet<(string, int, string)>();
+				sets.Add(entry.SetId, bucket);
 			}
-			set.Add((entry.Unit, entry.SectionIndex, entry.Fingerprint));
+			bucket.Add((entry.Unit, entry.SectionIndex, entry.Fingerprint));
 		}
-		var modes = new Dictionary<uint, WardrobeMaskMode>(document.TargetModes);
-		return new WardrobeMaskView(document.Enabled, source, targets, modes);
+		return new WardrobeMaskView(document.Enabled, sets, new Dictionary<uint, uint>(document.TargetSets));
 	}
 
-	/// <summary>目标的掩码模式；未声明时为 inherit。</summary>
-	public WardrobeMaskMode ModeOf(uint targetItemId)
-		=> modes.TryGetValue(targetItemId, out var mode) ? mode : WardrobeMaskMode.Inherit;
+	/// <summary>目标关联的掩码集；未关联时返回 null（= 不隐藏任何 section）。</summary>
+	public uint? SetOf(uint targetItemId)
+		=> targetSets.TryGetValue(targetItemId, out var setId) ? setId : null;
 
-	/// <summary>档案级掩码是否禁用了该 section。</summary>
-	public bool IsSourceDisabled(string unit, int sectionIndex, string fingerprint)
-		=> Enabled && source.Contains((unit, sectionIndex, fingerprint));
+	/// <summary>某个掩码集是否隐藏了该 section。空集恒为 false。</summary>
+	public bool IsDisabledInSet(uint setId, string unit, int sectionIndex, string fingerprint)
+		=> Enabled
+			&& sets.TryGetValue(setId, out var bucket)
+			&& bucket.Contains((unit, sectionIndex, fingerprint));
 
 	/// <summary>
 	/// 对某个映射目标，该 section 是否被禁用。
-	/// override 时**不再**继承来源掩码——这是交接文档 §4.1 的明确规则，不是叠加。
+	/// 目标没有关联掩码集时一律可见——这正是"显式声明了例外但一条都没关"的落点。
 	/// </summary>
 	public bool IsDisabled(uint targetItemId, string unit, int sectionIndex, string fingerprint)
 	{
 		if (!Enabled)
 			return false;
-		if (ModeOf(targetItemId) == WardrobeMaskMode.Override)
-			return targets.TryGetValue(targetItemId, out var set)
-				&& set.Contains((unit, sectionIndex, fingerprint));
-		return source.Contains((unit, sectionIndex, fingerprint));
+		var setId = SetOf(targetItemId);
+		return setId is not null && IsDisabledInSet(setId.Value, unit, sectionIndex, fingerprint);
 	}
 
 	/// <summary>

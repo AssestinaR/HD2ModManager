@@ -3,12 +3,17 @@
 --
 -- 只解析、只查表，**不写文件**：写方永远是 C# 那一侧。运行时多做一件事就多一处
 -- 可能和编辑器不一致的地方，而这份文件的语义必须两边完全一致。
--- Read-only parser for wardrobe.masks. Writing is the C# side's job only; the runtime
--- must not have a second opinion about what this file means.
+--
+-- 文件里没有继承关系：每个目标直接指向一个掩码集，掩码集里就是最终要隐藏的 section。
+-- 之所以不在运行时做 inherit/override，是因为不同目标可以映射到不同的视觉来源，
+-- 全局一份"来源掩码"表达不了；而把继承解析成扁平投影之后，运行时只剩两次查表。
+-- Read-only parser. Writing is the C# side's job only. The file carries no inheritance:
+-- each target points at one mask set, so the runtime needs two lookups and no rules.
 local M={}
 
 local MAX_BYTES=1024*1024
 local MAX_SECTION_INDEX=65535
+local MAX_SET_ID=65535
 
 local function trim(value)
     return (value:gsub('^%s+',''):gsub('%s+$',''))
@@ -69,8 +74,8 @@ function M.fingerprint(material_id,triangles)
 end
 
 function M.empty()
-    return {schema=1,revision=0,enabled=true,source={},targets={},modes={},
-        source_count=0,target_count=0}
+    return {schema=2,revision=0,enabled=true,sets={},targets={},
+        entry_count=0,target_count=0}
 end
 
 function M.parse(text)
@@ -78,7 +83,7 @@ function M.parse(text)
     assert(#text<=MAX_BYTES,'wardrobe.masks exceeds 1 MiB')
     local result=M.empty()
     local seen_schema,seen_revision,seen_enabled=false,false,false
-    local source_seen,target_seen,mode_seen={},{},{}
+    local entry_seen,target_seen={},{}
     local line_number=0
     for raw in (text..'\n'):gmatch('(.-)\r?\n') do
         line_number=line_number+1
@@ -89,7 +94,7 @@ function M.parse(text)
             if key=='schema' then
                 assert(not seen_schema,'schema is duplicated')
                 seen_schema=true
-                result.schema=integer(value,'schema',1,1)
+                result.schema=integer(value,'schema',2,2)
             elseif key=='revision' then
                 assert(not seen_revision,'revision is duplicated')
                 seen_revision=true
@@ -100,51 +105,43 @@ function M.parse(text)
                 assert(value=='true' or value=='false','enabled must be true or false')
                 result.enabled=value=='true'
             elseif key=='off' then
-                local unit,index,fp=value:match('^([^,]+),([^,]+),([^,]+)$')
-                assert(unit,'off must be unit,sectionIndex,fingerprint')
+                local set,unit,index,fp=value:match('^([^,]+),([^,]+),([^,]+),([^,]+)$')
+                assert(set,'off must be setId,unit,sectionIndex,fingerprint')
+                local set_id=integer(set,'mask set id',0,MAX_SET_ID)
                 local key_text=M.key(unit_id(unit,'off unit'),
                     integer(index,'section index',0,MAX_SECTION_INDEX),
                     fingerprint(fp,'off fingerprint'))
-                assert(not source_seen[key_text],'duplicate mask entry at line '..line_number)
-                source_seen[key_text]=true
-                result.source[key_text]=true
-                result.source_count=result.source_count+1
-            elseif key=='off_target' then
-                local target,unit,index,fp=value:match('^([^,]+),([^,]+),([^,]+),([^,]+)$')
-                assert(target,'off_target must be targetItemId,unit,sectionIndex,fingerprint')
-                local target_id=item_id(target,'off_target item')
-                local key_text=M.key(unit_id(unit,'off_target unit'),
-                    integer(index,'section index',0,MAX_SECTION_INDEX),
-                    fingerprint(fp,'off_target fingerprint'))
-                local bucket=result.targets[target_id]
-                if not bucket then bucket={};result.targets[target_id]=bucket end
-                assert(not target_seen[target_id..'/'..key_text],
+                local bucket=result.sets[set_id]
+                if not bucket then bucket={};result.sets[set_id]=bucket end
+                assert(not entry_seen[set_id..'/'..key_text],
                     'duplicate mask entry at line '..line_number)
-                target_seen[target_id..'/'..key_text]=true
+                entry_seen[set_id..'/'..key_text]=true
                 bucket[key_text]=true
+                result.entry_count=result.entry_count+1
+            elseif key=='target' then
+                local target,set=value:match('^([^,]+),([^,]+)$')
+                assert(target,'target must be targetItemId,setId')
+                local target_id=item_id(target,'target item')
+                local set_id=integer(set,'mask set id',0,MAX_SET_ID)
+                assert(not target_seen[target_id],
+                    'duplicate mask set for target '..tostring(target_id))
+                target_seen[target_id]=true
+                result.targets[target_id]=set_id
                 result.target_count=result.target_count+1
-            elseif key=='mask_mode' then
-                local target,mode=value:match('^([^,]+),([^,]+)$')
-                assert(target,'mask_mode must be targetItemId,inherit|override')
-                assert(mode=='inherit' or mode=='override','mask_mode must be inherit or override')
-                local target_id=item_id(target,'mask_mode item')
-                assert(not mode_seen[target_id],'duplicate mask_mode for target '..tostring(target_id))
-                mode_seen[target_id]=true
-                -- 缺省就是 inherit，所以显式 inherit 不落进表里，保持规范化。
-                if mode=='override' then result.modes[target_id]='override' end
             else
                 error('unknown wardrobe.masks key: '..key)
             end
         end
     end
-    assert(seen_schema,'schema=1 is required')
+    assert(seen_schema,'schema=2 is required')
     assert(seen_revision,'revision is required')
     assert(seen_enabled,'enabled is required')
     return result
 end
 
-function M.mode_of(document,target)
-    return (document.modes or {})[target] or 'inherit'
+-- 目标关联的掩码集；没有关联返回 nil（= 不隐藏任何 section）。
+function M.set_of(document,target)
+    return (document.targets or {})[target]
 end
 
 -- 返回一个查询函数，供运行时逐 section 判断。闭包只捕获一次 document，
@@ -153,12 +150,9 @@ function M.lookup(document,target)
     if not document or document.enabled==false then
         return function() return false end
     end
-    local bucket
-    if M.mode_of(document,target)=='override' then
-        bucket=document.targets[target]
-    else
-        bucket=document.source
-    end
+    local set_id=M.set_of(document,target)
+    if set_id==nil then return function() return false end end
+    local bucket=document.sets[set_id]
     if not bucket then return function() return false end end
     return function(unit,section_index,fp)
         return bucket[M.key(unit,section_index,fp)]==true
