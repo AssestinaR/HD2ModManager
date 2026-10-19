@@ -50,7 +50,12 @@ public sealed record CliGlobalOptions(
 	// 会指定"用这个 Unit 的第几个网格"——Armor/头盔要索引 4、Undergarment 要索引 5。
 	// 随便挑外壳时排法对不上，写进同键位置后就会出现"只有头、没有身体"。
 	// 指定成目标护甲自己的 Unit，排法就天然一致。
-	string? Donor = null);
+	string? Donor = null,
+	// `wardrobe validate` 要校验的掩码文件（`wardrobe.masks`）。
+	// 单独给一个开关而不是复用 --plan：掩码不是计划，它是部署产物，误把计划文件传进来必须报错。
+	string? File = null,
+	// 构建期 section 映射表（`sections.json`）。`wardrobe compile` 缺省时退回规格里的相对路径。
+	string? Sections = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -81,6 +86,8 @@ public static class CliArgumentParser
 		double? albedoFactor = null;
 		string? matcap = null;
 		string? donor = null;
+		string? file = null;
+		string? sections = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -172,6 +179,12 @@ public static class CliArgumentParser
 				case "--donor":
 					donor = ReadValue(args, ref index, argument);
 					break;
+				case "--file":
+					file = ReadValue(args, ref index, argument);
+					break;
+				case "--sections":
+					sections = ReadValue(args, ref index, argument);
+					break;
 				case "--matcap":
 					var rawMatcap = ReadValue(args, ref index, argument);
 					if (!rawMatcap.Equals("bake", StringComparison.OrdinalIgnoreCase)
@@ -245,7 +258,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

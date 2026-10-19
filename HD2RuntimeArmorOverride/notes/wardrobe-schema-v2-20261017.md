@@ -266,11 +266,16 @@ mesh + 56     lod (int32)
 mesh + 104    numMaterials
 mesh + 120    numSections
 mesh + 124    sectionsOffset        节记录相对 mesh 起点
-mesh + 132    materialSlotIds[numMaterials]
+mesh + 128    materialSlotIds[numMaterials]
 section 记录（24 字节，绝对位置 = mesh + sectionsOffset）
   +0 materialIndex  +4 vertexOffset  +8 numVertices
   +12 indexOffset   +16 numIndices   +20 groupIndex
 ```
+
+> **勘误（2026-10-19 实测）**：`materialSlotIds` 的起点是 `mesh + 128`，不是 `+132`。
+> 自洽检查：`128 + numMaterials × 4 == sectionsOffset`（部署包上 `128 + 22×4 = 216`，
+> 正是实测的 `secOff`）。按 `+132` 读会让每个 section 的材质都错位一格，
+> 指纹随之全错——表现为"掩码里的指纹在运行时一条都匹配不上"。
 
 **离线验证（两处，都不是推断）**：
 
@@ -321,8 +326,88 @@ python HD2RuntimeArmorOverride\scripts\make_section_layout_probe.py `
   只要找 **`FileId(8 字节) + 8 个零字节`**，再做结构校验即可。
 * 走查器 `armor_section_layout.lua` 已按这套偏移实现，并在**离线**状态下用文件读取
   复现了游戏内探针的同一组数字（5 个 mesh、lod `4..0`、22 个 section、
-  首节 `numIndices=26556`、`materials=110`、section 0 指纹
-  `a648fd251c740b12-8852`），27 项检查全过。
+  首节 `numIndices=26556`、`materials=110`），27 项检查全过。
+* **本节早先写的 section 0 指纹 `a648fd251c740b12-8852` 是错的**（那是"section 1 的材质 +
+  section 0 的三角形数"拼出来的，正是 `+132` 那个错位造成的）。按 `+128` 重算，
+  unit `af431352d9b95e83` 的真实身份是：
+  section 0 = `a47787804c45e1a9-8852`，section 1 = `a648fd251c740b12-1024`。
+  构建期（`sections.json`）与运行时（Lua 走查器）现在对这两条**完全一致**，
+  并且这份掩码已在游戏内实测生效。
 
 **若这条结论被后续样本推翻**，阶段 3 退回"运行时读 `sections.json`"的方案，
 那时阶段 2 就必须把映射表部署到运行时读得到的位置，架构要改。
+
+---
+
+## 13. 构建期工具链（阶段 4，已实现并实测）
+
+三条命令，一条链：**编辑 → 编译 → 校验**。
+
+```powershell
+# 1. 从 patch 现算映射表（身份 + 指纹 + 各级 LOD 落点）
+hd2mod wardrobe sections <patch_0> --output sections.json --json
+
+# 2. 规格 → 掩码（指纹一律取自映射表）
+hd2mod wardrobe compile wardrobe-spec.json --output wardrobe.masks --json
+
+# 3. 重建之后必跑：这份掩码还跟这份构建产物对得上吗
+hd2mod wardrobe validate --file wardrobe.masks --sections sections.json --json
+```
+
+### 13.1 规格文件 `hd2mod.wardrobe-spec/1`
+
+规格是**人写的**，掩码是**机器写的**。分开的理由只有一个：指纹是内容哈希，
+人写不出来，也不该写。规格里用 `(unit, section 下标)` 说"关掉哪几块"，
+编译器去映射表里查指纹——所以指纹**不可能**凭空写错。
+
+```json
+{
+  "schema": "hd2mod.wardrobe-spec/1",
+  "revision": 3,
+  "enabled": true,
+  "sections": "sections.json",
+  "patch": {
+    "sha256": "280dc065f3c667f2…",
+    "gpuResourcesSha256": "5b496331115ed76d…"
+  },
+  "sets": [
+    { "id": 1, "off": [
+      { "unit": "af431352d9b95e83", "section": 0 },
+      { "unit": "af431352d9b95e83", "section": 1 }
+    ] }
+  ],
+  "targets": [ { "itemId": 1745464610, "set": 1 } ]
+}
+```
+
+* `sections` 相对**规格文件所在目录**解析（规格和映射表通常一起放在 mod 目录里）；
+  `--sections` 可以覆盖它，相对当前目录。
+* `patch` 可选。**写了就必须对得上**，否则拒绝编译——这是"这份掩码照着哪份 patch 做的"
+  唯一机器可验证的形式。
+* `off` 省略 = 空集。空集 + 有目标引用 = **显式例外**：目标声明了掩码集，但一块都不关。
+  这是正常语义，不是错误。
+* 未映射的字段**直接报错**（`JsonUnmappedMemberHandling.Disallow`）。把 `sections`
+* 打成 `section` 会被默认行为静默忽略，然后编译出一份"看起来对、其实一条都没关"的掩码。
+* 有 error 时**不写文件**。半份掩码会让运行时关错几何。
+
+### 13.2 三条不变式
+
+1. **指纹只有一个来源**：映射表。规格里就算写了也不采纳。
+2. **一次报全**：编译/校验都把问题收集完再返回，不是一次只报一个。
+3. **布局常量不符就拒绝读**：`sectionRecordSize=24`、`numIndicesOffsetInSection=16`、
+   `offsets=tocRelative`。它们是运行时硬编码的假设，放过去就会写到别的字段上。
+
+### 13.3 2026-10-19 实测（阶段 4 验收）
+
+| 检查 | 结果 |
+|---|---|
+| `wardrobe sections` 对部署包 | 23 unit / 160 section，1 个 unit 节数不一致，0 跳过 |
+| 与 `tools/unitprobe --emit-sections` 逐字段对比 | 23 unit × 160 section × 全部 toggles，**0 处差异** |
+| `wardrobe compile` 用 `(unit, 下标)` 规格 | 产出与**当前游戏内生效**的 `wardrobe.masks` **逐字节相同**（仅行尾 CRLF/LF 不同） |
+| `wardrobe validate` 对当前掩码 | 通过，`2/2` 条可解析，目标 1745464610 隐藏 2 个 section |
+| 负向：篡改一个指纹 | `fingerprint_mismatch`，退出码 2，`1/2` 可解析 |
+| 负向：规格 patch sha 写错 | `patch_sha256_mismatch`，退出码 2，**不写出文件** |
+| 负向：引用不存在的 section | `section_not_in_unit`，退出码 2，**不写出文件** |
+
+离线用例：`HD2ModCore.Tests/WardrobeSectionMapTests.cs`（11 项）、
+`WardrobeMaskCompilerTests.cs`（20 项）。

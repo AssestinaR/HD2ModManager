@@ -145,6 +145,23 @@ public static class CliApplication
 			}
 			return 0;
 		}
+		if (command.Length >= 1 && command[0] == "wardrobe")
+		{
+			// 衣柜 section 掩码的三条构建期命令。刻意走独立文件（CliWardrobe）：
+			// 这条链有自己的数据格式（sections.json / wardrobe.masks）和独立的校验规则，
+			// 塞进这个已经七千行的派发表只会让两边都更难读。
+			if (command.Length == 3 && command[1] == "sections")
+				return await CliWardrobe.RunSectionsAsync(invocation, CancellationToken.None).ConfigureAwait(false);
+			if (command.Length == 3 && command[1] == "compile")
+				return await CliWardrobe.RunCompileAsync(invocation, CancellationToken.None).ConfigureAwait(false);
+			if (command.Length == 2 && command[1] == "validate")
+				return await CliWardrobe.RunValidateAsync(invocation, CancellationToken.None).ConfigureAwait(false);
+			throw new CliUserException(
+				"InvalidArguments",
+				"wardrobe 子命令：wardrobe sections <patch> --output <sections.json>；" +
+				"wardrobe compile <spec.json> --output <wardrobe.masks>；" +
+				"wardrobe validate --file <wardrobe.masks> --sections <sections.json>。");
+		}
 		if (Matches(command, "armor-registry", "status"))
 		{
 			EnsureArmorRegistryReadOptions(invocation.Options, "armor-registry status");
@@ -2938,6 +2955,8 @@ public static class CliApplication
 	private static bool HasUnrelatedArmorRegistryOptions(CliGlobalOptions options)
 		=> !string.IsNullOrWhiteSpace(options.Host)
 			|| !string.IsNullOrWhiteSpace(options.AddToProfile)
+			|| !string.IsNullOrWhiteSpace(options.File)
+			|| !string.IsNullOrWhiteSpace(options.Sections)
 			|| options.Position is not null
 			|| options.Limit is not null
 			|| !string.IsNullOrWhiteSpace(options.Cursor)
@@ -2955,6 +2974,7 @@ public static class CliApplication
 	private static void EnsureNoExplicitOutput(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.File) || !string.IsNullOrWhiteSpace(options.Sections)
 			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
 			throw new CliUserException("CommandOptionNotSupported", "此命令不接受写入确认、导出、宿主、排序或删除范围参数。");
 	}
@@ -6725,6 +6745,9 @@ HD2 Mod Manager 命令行
 	  hd2mod armor-registry plan armor-registry-spec.json [--registry-root <协议目录>] --output armor-registry-plan.json --json
 	  hd2mod armor-registry validate --plan armor-registry-plan.json [--registry-root <协议目录>] --json
 	  hd2mod armor-registry apply --plan armor-registry-plan.json [--registry-root <协议目录>] --confirm --json
+	  hd2mod wardrobe sections <patch_0> --output sections.json [--overwrite] --json
+	  hd2mod wardrobe compile wardrobe-spec.json --output wardrobe.masks [--sections sections.json] [--overwrite] --json
+	  hd2mod wardrobe validate --file wardrobe.masks --sections sections.json --json
 	  hd2mod assets metadata inspect --manager-root <管理器目录> --json
 	  hd2mod assets metadata plan [https://raw.githubusercontent.com/.../branch] --manager-root <管理器目录> --output asset-metadata-plan.json --json
 	  hd2mod assets metadata validate --plan asset-metadata-plan.json --manager-root <管理器目录> --json
