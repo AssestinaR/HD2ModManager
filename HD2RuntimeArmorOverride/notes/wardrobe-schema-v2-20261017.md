@@ -411,3 +411,75 @@ hd2mod wardrobe validate --file wardrobe.masks --sections sections.json --json
 
 离线用例：`HD2ModCore.Tests/WardrobeSectionMapTests.cs`（11 项）、
 `WardrobeMaskCompilerTests.cs`（20 项）。
+
+---
+
+## 14. 权威数据：`wardrobe.workspace.json`（阶段 4 后半，已实现存储层）
+
+### 14.1 位置与身份
+
+| | |
+|---|---|
+| 路径 | `<mod库>/.hd2modmanager/wardrobe.workspace.json` |
+| 键 | **护甲 itemId**（不是 mod、不是 unit） |
+| 写者 | 管理器（编辑即保存）/ CLI |
+| 消费者 | 编译成 `<ArmorRegistry>/wardrobe.masks` |
+
+与 `armor-registry.workspace.json` 同一个先例：权威数据在工作区，编译产物在运行时目录，
+直接改编译产物会被下一次应用覆盖。
+
+**为什么不放在 mod 目录里**：用户勾掉的是"这件护甲上第 N 块几何不该出现"，
+这个意图与哪个 mod 提供模型无关。换 mod 之后它仍然成立——哪怕新 mod 的第 N 块
+恰好是别的东西。这是用户明示接受的风险（"释放视觉来源即可全部清除"）。
+
+**为什么这里不存指纹**：指纹是构建产物的属性。存进来就把权威数据绑死在一次构建上，
+"换 mod 后仍保留"立刻失效。指纹只在编译时从当时的 `sections.json` 现查。
+
+### 14.2 格式 `hd2mod.wardrobe/1`
+
+```json
+{
+  "schema": "hd2mod.wardrobe/1",
+  "revision": 4,
+  "armours": [
+    {
+      "itemId": 820333399,
+      "mode": "own",
+      "units": [ { "unit": "af431352d9b95e83", "off": [0, 1] } ]
+    },
+    { "itemId": 1745464610, "mode": "inherit", "units": [] }
+  ]
+}
+```
+
+* **只存禁用**：`off` 里没有的 = 启用。新出现的 section 自动可见，不必逐个补写。
+* **`mode` 必须显式**，不能靠"有没有条目"推断。原因：用户可能把某个目标**全部取消勾选**
+  来表达"一块都不关、别继承来源"。那时条目是空的，而"没有条目"的含义是继承——
+  两者必须能区分开。这个空集在编译产物里就是 `target=T,set=S` 配一个没有任何 `off`
+  的集合（§7 的"显式例外"）。
+* `mode = inherit` 与 `units` 里有条目同时出现是**错误**：继承的含义就是没有自己的数据。
+  放过去会变成"编辑器显示一份、编译用另一份"。
+* 未映射的字段直接报错（`JsonUnmappedMemberHandling.Disallow`）。`"offs"` 这类手误默认
+  会被静默忽略，然后整份设置变成"什么都没关"。
+* **树结构不落盘**。它是按当前赢家 unit 临时构建的视图，保存后立刻丢弃；
+  落盘的只有"某 unit 的第 N 个 section 是禁用"。
+
+### 14.3 三种角色怎么落到编译产物上
+
+| 用户的设置 | 工作区 | `wardrobe.masks` |
+|---|---|---|
+| 护甲是**视觉来源** | 自己的条目，`mode=own` | 自己的 set，`off=` 来自它 |
+| 护甲是**映射目标**，未独立编辑 | 没有条目 | `target=T,set=<来源的 set>` ← 同一个 set id = 继承 |
+| 护甲是**映射目标**，独立编辑过 | 自己的条目，`mode=own` | 自己的 set，不再指向来源的 set |
+
+**继承不需要新机制**：两个 target 指向同一个 set id 就是继承。这也是为什么编译产物
+里必须是"目标 → 掩码集"的扁平投影，而不是"全局一份来源掩码"。
+
+### 14.4 已实现 / 未实现
+
+- **已实现**：格式、解析、校验（一次报全）、规范化排序、原子写、
+  `IsDisabled`/`DisabledCount` 唯一判定入口。20 项用例在
+  `HD2ModCore.Tests/WardrobeWorkspaceTests.cs`。
+- **未实现**：从工作区 + `armor-registry.protocol` 编译成 `wardrobe.masks`（含 set id
+  分配与多份 `sections.json` 的合并），以及 CLI 侧的 `wardrobe source` 读写命令。
+  这两件是下一步。
