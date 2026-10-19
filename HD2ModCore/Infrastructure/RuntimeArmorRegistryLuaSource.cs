@@ -17,6 +17,7 @@ internal static class RuntimeArmorRegistryLuaSource
 		var wardrobe = Read(assembly, "armor_wardrobe_masks.lua");
 		var sectionLayout = Read(assembly, "armor_section_layout.lua");
 		var sectionApply = Read(assembly, "armor_section_apply.lua");
+		var sectionLocate = Read(assembly, "armor_section_locate.lua");
 		var refreshProbe = Read(assembly, "armor_refresh_probe.lua");
 		var worldProbe = Read(assembly, "armor_refresh_world_probe.lua");
 		var codeProbe = Read(assembly, "armor_refresh_code_probe.lua");
@@ -32,6 +33,7 @@ internal static class RuntimeArmorRegistryLuaSource
 			+ $"local ARMOR_WARDROBE_MASKS=(function()\n{wardrobe}\nend)()\n"
 			+ $"local ARMOR_SECTION_LAYOUT=(function()\n{sectionLayout}\nend)()\n"
 			+ $"local ARMOR_SECTION_APPLY=(function()\n{sectionApply}\nend)()\n"
+			+ $"local ARMOR_SECTION_LOCATE=(function()\n{sectionLocate}\nend)()\n"
 			+ $"local ARMOR_REFRESH_PROBE=(function()\n{refreshProbe}\nend)()\n"
 			+ $"local ARMOR_REFRESH_WORLD_PROBE=(function()\n{worldProbe}\nend)()\n"
 			+ $"local ARMOR_REFRESH_CODE_PROBE=(function()\n{codeProbe}\nend)()\n"

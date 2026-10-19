@@ -85,6 +85,14 @@
     -->
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_apply.lua"
                       Link="RuntimeArmorRegistry\armor_section_apply.lua" />
+    <!--
+      在进程内存里按 FileId+8 个零字节定位 unit 的 TOC 副本，命中后用结构走查验证。
+      与走查器分开是为了能用"假内存"离线测误命中、坏副本、缓存失效。
+      Locates a unit's TOC copy by its FileId and validates it structurally; kept apart so
+      false hits, broken copies and cache invalidation can be exercised against fake memory.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_locate.lua"
+                      Link="RuntimeArmorRegistry\armor_section_locate.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
                       Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe_core.lua"
