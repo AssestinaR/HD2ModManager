@@ -215,7 +215,11 @@ fingerprint = none-<triangles>
 
 ## 10. 待拍板
 
-1. **`sectionIndex` 以 LOD0 为锚**是否会踩到"一个 unit 每级 LOD 有多个 mesh"的情况。
+1. ~~**`sectionIndex` 以 LOD0 为锚**是否会踩到"一个 unit 每级 LOD 有多个 mesh"的情况。~~
+   **已定（2026-10-19，用户确认）：来源 mod 的多级 LOD 模型完全一致**——
+   每级一个视觉 mesh、section 数量与顺序相同。所以键里不带 mesh 序数，
+   实现按单 mesh 处理；万一遇到数量不一致的 LOD 会跳过并计数（见 §7.1）。
+   原问题描述：
    现有样本（含原版、含作者包）都是每级 1 个视觉 mesh。若真出现多 mesh，需要把
    mesh 序数也编进键里——那会让键变长，值得先确认有没有这种 unit。
 

@@ -1111,11 +1111,24 @@ local function section_units(document,plan)
     return units_by_target
 end
 
+local section_units_logged=false
 local function prepare_section_masks(plan,document,checkpoint)
     -- 每次应用重新枚举：重载后基址会变，旧区域表不能用。
     section_region_cache=nil
     local text=read_file(wardrobe_masks_path,1024*1024)
-    if not text then return {skipped=true} end   -- 没有文件 = 全部可见，旧库不受影响
+    if not text then
+        -- 没有掩码文件时也要把"目标 → unit"记一次：这是第一次实测唯一能拿到的输入。
+        -- 有了真实的目标 item id 与 unit id，才能写出第一份正确的 wardrobe.masks；
+        -- 否则只能靠猜，而猜错的表现是"没反应"，看不出是数据错还是链路错。
+        if not section_units_logged then
+            section_units_logged=true
+            local units_by_target=section_units(document,plan)
+            for target,units in pairs(units_by_target) do
+                log('section_units: target='..tostring(target)..' units='..table.concat(units,','))
+            end
+        end
+        return {skipped=true}   -- 没有文件 = 全部可见，旧库不受影响
+    end
     local parsed,masks=pcall(ARMOR_WARDROBE_MASKS.parse,text)
     if not parsed then
         -- 整份拒绝，不做部分接受：半懂的掩码比没有掩码更危险。
@@ -1126,7 +1139,6 @@ local function prepare_section_masks(plan,document,checkpoint)
     if not publisher then return {skipped=true} end
     return {masks=masks,units_by_target=section_units(document,plan),publisher=publisher}
 end
-
 local function apply_section_masks(prepared,checkpoint)
     if not prepared or prepared.skipped then return true,nil end
     local okay,stats=prepared.publisher.apply_document(prepared.masks,
