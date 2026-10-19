@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -61,6 +61,14 @@
                       Link="RuntimeArmorRegistry\armor_registry_composition.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_protocol.lua"
                       Link="RuntimeArmorRegistry\armor_registry_protocol.lua" />
+    <!--
+      衣柜 section 掩码的只读解析器。必须和协议一样内嵌：运行时没有磁盘上的 src 目录可读，
+      拼接顺序由 RuntimeArmorRegistryLuaSource 决定，这个文件排在入口点之前。
+      Read-only wardrobe mask parser. Embedded for the same reason as the protocol: the runtime has no
+      src directory on disk, and RuntimeArmorRegistryLuaSource controls the concatenation order.
+    -->
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_wardrobe_masks.lua"
+                      Link="RuntimeArmorRegistry\armor_wardrobe_masks.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
                       Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe_core.lua"

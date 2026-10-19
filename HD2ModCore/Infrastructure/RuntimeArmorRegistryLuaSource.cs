@@ -14,6 +14,7 @@ internal static class RuntimeArmorRegistryLuaSource
 		var probe = Read(assembly, "armor_metadata_probe.lua");
 		var transaction = Read(assembly, "armor_registry_transaction.lua");
 		var composition = Read(assembly, "armor_registry_composition.lua");
+		var wardrobe = Read(assembly, "armor_wardrobe_masks.lua");
 		var refreshProbe = Read(assembly, "armor_refresh_probe.lua");
 		var worldProbe = Read(assembly, "armor_refresh_world_probe.lua");
 		var codeProbe = Read(assembly, "armor_refresh_code_probe.lua");
@@ -26,6 +27,7 @@ internal static class RuntimeArmorRegistryLuaSource
 			+ $"local ARMOR_METADATA_PROBE_CORE=(function()\n{probeCore}\nend)()\n"
 			+ $"local ARMOR_REGISTRY_TRANSACTION=(function()\n{transaction}\nend)()\n"
 			+ $"local ARMOR_REGISTRY_COMPOSITION=(function()\n{composition}\nend)()\n"
+			+ $"local ARMOR_WARDROBE_MASKS=(function()\n{wardrobe}\nend)()\n"
 			+ $"local ARMOR_REFRESH_PROBE=(function()\n{refreshProbe}\nend)()\n"
 			+ $"local ARMOR_REFRESH_WORLD_PROBE=(function()\n{worldProbe}\nend)()\n"
 			+ $"local ARMOR_REFRESH_CODE_PROBE=(function()\n{codeProbe}\nend)()\n"
