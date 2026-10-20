@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -792,16 +792,25 @@ VALUES($item,$dlc,$set,$kind,$archive,$name);";
 
 		await using var pieceCommand = connection.CreateCommand();
 		pieceCommand.Transaction = transaction;
+		// 注册文件里现在会出现**完全重复**的 piece 行（八列全同，只有 tone_variations 等
+		// 非键列可能不同）。加宽唯一键挡不住这种情况——实测加宽之后依旧撞 UNIQUE。
+		// 所以改为"冲突时复用已有行"：RETURNING 把已有 piece_id 交回来，
+		// 资源仍然挂到正确的那一行上，而不是像 INSERT OR IGNORE 那样拿到上一次的 rowid。
 		pieceCommand.CommandText = @"
 INSERT INTO game_data_authority_pieces(item_id,archive_id,kit_kind,raw_body_type,body_variant,slot,part_kind,piece_type,weight,tone_variations,unit_type_id,unit_file_id)
-VALUES($item,$archive,$kind,$rawBody,$body,$slot,$part,$piece,$weight,$tone,$unitType,$unitFile);";
+VALUES($item,$archive,$kind,$rawBody,$body,$slot,$part,$piece,$weight,$tone,$unitType,$unitFile)
+ON CONFLICT(item_id,raw_body_type,body_variant,slot,piece_type,weight,unit_type_id,unit_file_id)
+DO UPDATE SET item_id=item_id
+RETURNING piece_id;";
 		foreach (var name in new[] { "$item", "$kind", "$rawBody", "$body", "$slot", "$part", "$piece", "$weight", "$tone", "$unitType", "$unitFile" }) pieceCommand.Parameters.Add(name, SqliteType.Integer);
 		pieceCommand.Parameters.Add("$archive", SqliteType.Text);
 		pieceCommand.Prepare();
 
 		await using var resourceCommand = connection.CreateCommand();
 		resourceCommand.Transaction = transaction;
-		resourceCommand.CommandText = "INSERT INTO game_data_authority_resources(piece_id,role,file_id) VALUES($pieceId,$role,$file);";
+		// 同一份资源可能被多条（现已去重的）piece 行重复给出；
+		// 主键就是 (piece_id, role, file_id)，重复即等价，忽略即可。
+		resourceCommand.CommandText = "INSERT OR IGNORE INTO game_data_authority_resources(piece_id,role,file_id) VALUES($pieceId,$role,$file);";
 		resourceCommand.Parameters.Add("$pieceId", SqliteType.Integer);
 		resourceCommand.Parameters.Add("$role", SqliteType.Text);
 		resourceCommand.Parameters.Add("$file", SqliteType.Integer);
@@ -902,8 +911,11 @@ VALUES($entity,$unitType,$unitFile,$exact,$weapon,$equipmentType,$components,$na
 				pieceCommand.Parameters["$tone"].Value = piece.ToneVariations;
 				pieceCommand.Parameters["$unitType"].Value = unchecked((long)piece.UnitAssetKey.TypeId);
 				pieceCommand.Parameters["$unitFile"].Value = unchecked((long)piece.UnitAssetKey.FileId);
-				await pieceCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-				var pieceId = Convert.ToInt64(await pieceIdCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+				// RETURNING 直接给出 piece_id：新插入时是新行，冲突时是已有行——
+				// 两种情况下资源都挂到正确的那一行。
+				var pieceId = Convert.ToInt64(
+					await pieceCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+					CultureInfo.InvariantCulture);
 
 				foreach (var resource in piece.Resources)
 				{
