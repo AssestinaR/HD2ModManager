@@ -19,7 +19,7 @@ public sealed class ModInformationFactRegistryTests
 
 		var declared = Enum.GetValues<ModInformationPropertyKind>();
 
-		Assert.Equal(25, declared.Length);
+		Assert.Equal(26, declared.Length);
 		Assert.Equal(declared.Length, ModInformationFactRegistry.Count);
 		Assert.All(declared, kind => Assert.True(
 			ModInformationFactRegistry.IsRegistered(kind),
@@ -87,6 +87,7 @@ public sealed class ModInformationFactRegistryTests
 			ModInformationPropertyKind.GameDataMapping,
 			ModInformationPropertyKind.DeployedGraph,
 			ModInformationPropertyKind.ArmorCoverage,
+			ModInformationPropertyKind.UnitSectionStructure,
 		];
 
 		Assert.All(gameDataKinds, kind => Assert.Equal(

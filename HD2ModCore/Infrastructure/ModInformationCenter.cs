@@ -355,6 +355,121 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return Unwrap<ArmorCoverageFacts>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
 	}
 
+	// 一批 unit 的 section 结构。与护甲覆盖同一套做法：无节点事实、按"请求的那批 unit"分作用域、
+	// 用中心自己的任务账合并并发请求——于是编辑器、CLI、以及将来任何需求方
+	// 问同一批 unit 时只会解析一次。
+	//
+	// 为什么由中心来生产而不是让调用方自己算：谁都能自己扫一遍 patch，但那样每个需求方
+	// 都会造一套自己的轮子，而且各自缓存互不可见。放进信息中心之后，"这里可能有你想要的"
+	// 这件事对后来者是可见的——这正是信息中心存在的意义。
+	public async ValueTask<ModInformationResult<UnitSectionStructureFacts>> RequestUnitSectionStructureAsync(
+		string gameDataDirectory,
+		IReadOnlySet<string> unitIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
+		ArgumentNullException.ThrowIfNull(unitIds);
+		ArgumentNullException.ThrowIfNull(request);
+		if (request.Kind != ModInformationKind.UnitSectionStructure)
+			throw new ArgumentException("Request kind must be UnitSectionStructure.", nameof(request));
+		// 作用域里带 unit 集合的摘要：不同批 unit 是**不同的结构事实**，
+		// 合并它们会让一件护甲拿到另一件护甲的 section 数。
+		var key = new FactRevisionKey(
+			new FactKey(FactSubject.GameData($"unit-sections:{UnitSectionStructureScope(unitIds)}"), request.EffectiveProperty),
+			request.Generation ?? "auto");
+		var entry = new Lazy<Task<ModInformationResult<object>>>(
+			() => ProduceUnitSectionStructureAndRemoveAsync(key, gameDataDirectory, unitIds, request),
+			LazyThreadSafetyMode.ExecutionAndPublication);
+		var existing = _gameDataTasks.GetOrAdd(key, entry);
+		return Unwrap<UnitSectionStructureFacts>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
+	}
+
+	/// <summary>作用域 token：排过序的 unit 键，保证"同一批 unit"永远得到同一个作用域。</summary>
+	internal static string UnitSectionStructureScope(IReadOnlySet<string> unitIds)
+	{
+		ArgumentNullException.ThrowIfNull(unitIds);
+		var normalized = new List<string>(unitIds.Count);
+		foreach (var unit in unitIds)
+		{
+			if (WardrobeSectionFingerprint.TryNormalizeUnit(unit, out var value))
+				normalized.Add(value);
+			else if (!string.IsNullOrWhiteSpace(unit))
+				normalized.Add(unit.Trim().ToLowerInvariant());
+		}
+		normalized.Sort(StringComparer.Ordinal);
+		return string.Join(',', normalized);
+	}
+
+	private async Task<ModInformationResult<object>> ProduceUnitSectionStructureAndRemoveAsync(
+		FactRevisionKey key,
+		string gameDataDirectory,
+		IReadOnlySet<string> unitIds,
+		ModInformationRequest request)
+	{
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, request.Generation, started, key.ToString()));
+		ModInformationResult<object>? completed = null;
+		try
+		{
+			completed = await ProduceUnitSectionStructureAsync(gameDataDirectory, unitIds, request, _shutdown.Token).ConfigureAwait(false);
+			return completed;
+		}
+		finally
+		{
+			RecordDiagnostic(CreateNodeLessDiagnostic(request, key, started, completed));
+			_gameDataTasks.TryRemove(key, out _);
+		}
+	}
+
+	private static async Task<ModInformationResult<object>> ProduceUnitSectionStructureAsync(
+		string gameDataDirectory,
+		IReadOnlySet<string> unitIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			var resolution = await WardrobeSectionSource
+				.ResolveAsync(gameDataDirectory, unitIds, archiveHint: null, cancellationToken)
+				.ConfigureAwait(false);
+			var issues = new List<CoreIssue>();
+			if (resolution.MissingUnitIds.Count > 0)
+			{
+				// 缺 unit 必须是**可见的诊断**，不能静默少几行——用户看到的是"树少了东西"，
+				// 却没有任何地方告诉他为什么。
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Warning,
+					"UnitSectionStructureMissingUnits",
+					$"有 {resolution.MissingUnitIds.Count} 个 unit 在部署的 patch 与原版数据包里都没找到：{string.Join(", ", resolution.MissingUnitIds)}",
+					gameDataDirectory));
+			}
+
+			var units = resolution.Units.ToDictionary(
+				unit => unit.FileId,
+				UnitSectionStructureFact.From,
+				StringComparer.Ordinal);
+			var generation = $"{units.Count}:{UnitSectionStructureScope(unitIds)}:{string.Join('|', resolution.ScannedPatches)}";
+			var facts = new UnitSectionStructureFacts(generation, units, resolution.MissingUnitIds, issues);
+			return new ModInformationResult<object>(
+				facts,
+				ModInformationStatus.Fresh,
+				ModInformationKind.UnitSectionStructure,
+				request.Generation ?? generation,
+				issues);
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.UnitSectionStructure, request.Generation,
+				[new CoreIssue(CoreIssueSeverity.Warning, "UnitSectionStructureCanceled", "section 结构因信息中心关闭而取消。", gameDataDirectory)], false, true);
+		}
+		catch (Exception exception)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.UnitSectionStructure, request.Generation,
+				[new CoreIssue(CoreIssueSeverity.Error, "UnitSectionStructureProductionFailed", exception.Message, gameDataDirectory, null, exception.ToString())], false, true);
+		}
+	}
+
 	private async Task<ModInformationResult<object>> ProduceGameDataIndexAndRemoveAsync(FactRevisionKey key, ModInformationRequest request)
 	{
 		var started = DateTimeOffset.UtcNow;

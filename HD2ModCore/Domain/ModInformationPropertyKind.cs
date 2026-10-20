@@ -38,6 +38,11 @@ public enum ModInformationPropertyKind
 	// 只记忆、不落盘——落盘就会多出一个"会忘记失效"的缓存。
 	// Appended at the end for the same reason as the three above.
 	ArmorCoverage,
+	// 一批 unit 的 section 结构。与 ArmorCoverage 一样是**派生记忆**：
+	// 由部署的 patch 与原版 archive 现算而来，只记忆、不落盘。
+	// 衣柜编辑器与 section 映射表都通过它取数，于是"这个 unit 有几个 section"全应用只有一个答案。
+	// Appended at the end for the same reason as the four above.
+	UnitSectionStructure,
 }
 
 // 作用：标识属性来自哪一层，便于 UI 和诊断区分缓存命中、生产和组合结果。

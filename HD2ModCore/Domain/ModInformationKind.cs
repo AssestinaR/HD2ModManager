@@ -24,4 +24,9 @@ public enum ModInformationKind
 	// The armor coverage view: an aggregate of the three game-data facts above, equally node-less.
 	// Appended at the end so existing numeric values are preserved.
 	ArmorCoverage,
+	// 一批 unit 的 section 结构（衣柜编辑器与 section 映射表的共同来源）。
+	// 同样无节点：section 结构属于资产，可能来自某个 Mod 的 patch，也可能只存在于原版 archive。
+	// 追加在末尾以保持既有取值的数值不变。
+	// Section structure for a batch of units; node-less for the same reason as ArmorCoverage.
+	UnitSectionStructure,
 }

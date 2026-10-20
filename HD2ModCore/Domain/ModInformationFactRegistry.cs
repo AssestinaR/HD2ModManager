@@ -192,6 +192,15 @@ public static class ModInformationFactRegistry
 			FactProducerKind.Composite,
 			[ModInformationPropertyKind.GameDataIndex, ModInformationPropertyKind.GameDataMapping, ModInformationPropertyKind.DeployedGraph]),
 
+		// 依据：section 结构由 WardrobeSectionSource 从**部署的 patch 与原版 archive**现算，
+		// 两者都是游戏数据侧的东西，与任何 Mod 节点无关；"哪一批 unit"由主体作用域表达。
+		// 它是派生记忆（DerivedMemo）：读的是磁盘上的包，但结果不落盘——
+		// 落盘就会多出一个"会忘记失效"的缓存，而这份数据本来就是毫秒级现算的。
+		[ModInformationPropertyKind.UnitSectionStructure] = new(
+			FactSubjectKind.GameData,
+			ModInformationCacheScope.Session,
+			FactProducerKind.Source),
+
 		// 依据：UnitVersionInformationProducer 在 AnalyzeNodeAsync 的产物（资产清单）上做版本探测
 		// （UnitVersionProbe.ProbeAsync(analysis)）；设计文档 §4 #4 也把 UnitVersion 定为依赖 #2 AssetInventory。
 		[ModInformationPropertyKind.Compatibility] = new(
@@ -239,6 +248,9 @@ public static class ModInformationFactRegistry
 		ModInformationPropertyKind.AssetMetadata,
 		ModInformationPropertyKind.DeployedGraph,
 		ModInformationPropertyKind.Thumbnail,
+		// section 结构直接读部署的 patch 与原版 archive，没有上游事实可言——
+		// 它与 DeployedGraph 同类：都是"读磁盘上的包"得出的源事实。
+		ModInformationPropertyKind.UnitSectionStructure,
 	];
 
 	private static readonly Lazy<ModInformationFactGraph> GraphLazy = new(() => ModInformationFactGraph.Build(Descriptors));
