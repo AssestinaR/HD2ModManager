@@ -50,6 +50,9 @@ public sealed class LuaPatchComposerTests
 			var bytes = await File.ReadAllBytesAsync(output);
 			Assert.Equal((uint)(bytes.Length - 0xC0), BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0xB8, 4)));
 			Assert.Equal((ulong)(bytes.Length - 0xC0 + 8), BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(0xA0, 8)));
+			// The template still carries the legacy source version, but what we emit
+			// must always be the bytecode version the current game accepts.
+			Assert.Equal(LuaResourceFormat.BytecodeVersion, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0xBC, 4)));
 		}
 		finally
 		{
@@ -73,6 +76,42 @@ public sealed class LuaPatchComposerTests
 			var second = await inspector.InspectAsync(secondPath);
 
 			Assert.Throws<LuaPatchFormatException>(() => new LuaPatchComposer().Compose([first, second]));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	// A post-update boot patch carries a compiled chunk. It cannot be spliced into
+	// a text merge, so the composer has to replay it whole -- including when it is
+	// the only input, which is the common case for a single Lua mod.
+	[Fact]
+	public async Task Inspect_BytecodePayload_IsReplayedInsteadOfBeingRejected()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-lua-tests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var path = Path.Combine(root, "bytecode.patch_0");
+			var chunk = Lua51WrapperChunk.Build("print('from bytecode')");
+			await File.WriteAllBytesAsync(path, BuildPatchFromPayload(chunk, LuaResourceFormat.BytecodeVersion));
+
+			var inspector = new LuaPatchInspector();
+			var document = await inspector.InspectAsync(path);
+			Assert.Equal(LuaPatchWrapperKind.Bytecode, document.WrapperKind);
+			Assert.Equal(chunk, document.BootBytecode);
+			Assert.Empty(document.Blocks);
+
+			var composition = new LuaPatchComposer().ComposeOpaque([document]);
+			Assert.Contains("local BC = \"", composition.SourceText, StringComparison.Ordinal);
+			Assert.Contains("if chunk then boot_ok, boot_ret = pcall(chunk) end", composition.SourceText, StringComparison.Ordinal);
+			Assert.EndsWith("return __hd2_opaque_runner_1(...)" + Environment.NewLine, composition.SourceText, StringComparison.Ordinal);
+
+			// A truncated chunk must be rejected rather than replayed.
+			var truncated = Path.Combine(root, "truncated.patch_0");
+			await File.WriteAllBytesAsync(truncated, BuildPatchFromPayload(chunk[..^4], LuaResourceFormat.BytecodeVersion));
+			await Assert.ThrowsAsync<LuaPatchFormatException>(() => inspector.InspectAsync(truncated).AsTask());
 		}
 		finally
 		{
@@ -149,7 +188,11 @@ public sealed class LuaPatchComposerTests
 			+ "boot_ok, boot_ret = pcall(chunk)\n"
 			+ body + "\n"
 			+ "return boot_ret\n";
-		var payload = Encoding.UTF8.GetBytes(source);
+		return BuildPatchFromPayload(Encoding.UTF8.GetBytes(source), LuaResourceFormat.LegacySourceVersion);
+	}
+
+	private static byte[] BuildPatchFromPayload(byte[] payload, uint version)
+	{
 		var header = new byte[0xC0];
 		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0, 4), 0xF0000011);
 		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(4, 4), 1);
@@ -169,7 +212,7 @@ public sealed class LuaPatchComposerTests
 		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(entryOffset + 76, 4), 1);
 		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(0xA0, 8), checked((ulong)payload.Length + 8));
 		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0xB8, 4), checked((uint)payload.Length));
-		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0xBC, 4), 2);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0xBC, 4), version);
 		return header.Concat(payload).ToArray();
 	}
 }

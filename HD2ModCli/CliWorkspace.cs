@@ -9,7 +9,15 @@ public sealed record CliManagerSettings(
 	string? ModLibraryFolder,
 	string? GameDataFolder,
 	string? AssetMetadataRepository = null,
-	DateTime? LastAssetMetadataCheckUtc = null);
+	DateTime? LastAssetMetadataCheckUtc = null)
+{
+	/// <summary>
+	/// 与 GUI 的"独占映射 Lua（自动安装）"开关对应。缺省为 true，和
+	/// <c>SettingsService</c> 的默认值保持一致：老 settings.json 里没有这个键时，
+	/// CLI 不能凭空把 Lua 关掉，否则 plan/apply 的结果会和 GUI 不一致。
+	/// </summary>
+	public bool DeployLuaMods { get; init; } = true;
+}
 
 public sealed record CliLibraryState(
 	LibrarySnapshot Snapshot,
@@ -80,6 +88,10 @@ public sealed class CliWorkspace
 
 		var libraryRoot = ResolveLibraryRoot(options.Library, managerRoot, settings, issues);
 		var gameDataRoot = ResolveStoredPath(options.GameData ?? settings?.GameDataFolder, managerRoot);
+		// The GUI arms this switch at startup, so the CLI has to read the same file
+		// before planning; otherwise `deploy plan` would silently drop the Lua patch
+		// that the GUI would have produced for the identical profile.
+		LuaDeploymentService.DeploymentEnabled = settings?.DeployLuaMods ?? true;
 		return new CliWorkspace(managerRoot, settingsPath, settings, libraryRoot, gameDataRoot, issues);
 	}
 

@@ -414,6 +414,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 		}
 
+		// A compiled chunk cannot be spliced into a text merge. Replaying it whole is
+		// the only lossless option, and it is what the manager already does with the
+		// game's own boot resource, so one such input switches the whole merge to the
+		// replay wrapper.
+		var requiresReplay = documents.Any(document => document.Document.WrapperKind == LuaPatchWrapperKind.Bytecode);
+
 		GeneratedPatchGroup generated;
 		string? fingerprint = null;
 		try
@@ -424,14 +430,18 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				.ThenBy(item => item.Group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
 				.Select(item => item.Document)
 				.ToArray();
-			var composition = opaqueDocuments.Length == 0
+			var composition = opaqueDocuments.Length == 0 && !requiresReplay
 				? _luaComposer.Compose(orderedDocuments)
 				: _luaComposer.ComposeOpaque(orderedDocuments);
+			// The game now only accepts a compiled chunk. Wrapping the merged source
+			// in one fixed prototype keeps every merge, ledger and validation path
+			// operating on readable Lua while the bytes on disk become bytecode.
+			composition = composition with { CompiledPayload = Lua51WrapperChunk.Build(composition.SourceText) };
 			var gameRoot = Directory.GetParent(Path.GetFullPath(gameDataDirectory))?.FullName;
 			if (validationMode is not null && !string.IsNullOrWhiteSpace(gameRoot))
 			{
 				var luaLibraryPath = Path.Combine(gameRoot, "bin", "lua51.dll");
-				var effectiveValidationMode = opaqueDocuments.Length > 0
+				var effectiveValidationMode = opaqueDocuments.Length > 0 || requiresReplay
 					? LuaDeploymentValidationMode.CompileOnly
 					: validationMode;
 				var validation = effectiveValidationMode == LuaDeploymentValidationMode.CompileOnly
@@ -663,10 +673,18 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			?? throw new InvalidDataException("无法读取游戏原始 Lua 启动资源。");
 		if (boot.Length < 9)
 			throw new InvalidDataException("游戏原始 Lua 启动资源过短。");
+		// The game's own boot resource is the shape we have to reproduce: an
+		// eight-byte prefix and then the chunk. Version 1 means the chunk is Lua
+		// bytecode, version 2 was the source-text format used before the
+		// 2026-10-20 update. Both are accepted here because the payload is embedded
+		// as opaque bytes and replayed with load(), which does not care.
 		var declaredBootLength = BinaryPrimitives.ReadUInt32LittleEndian(boot.AsSpan(0, 4));
-		var bootKind = BinaryPrimitives.ReadUInt32LittleEndian(boot.AsSpan(4, 4));
-		if (bootKind != 2 || declaredBootLength != boot.Length - 8)
-			throw new InvalidDataException("游戏原始 Lua 启动资源的封装格式不受支持。");
+		var bootVersion = BinaryPrimitives.ReadUInt32LittleEndian(boot.AsSpan(4, 4));
+		if (declaredBootLength != boot.Length - 8)
+			throw new InvalidDataException("游戏原始 Lua 启动资源的封装长度与实际长度不一致。");
+		if (bootVersion is not (LuaResourceFormat.BytecodeVersion
+			or LuaResourceFormat.LegacySourceVersion))
+			throw new InvalidDataException($"游戏原始 Lua 启动资源的封装版本 {bootVersion} 不受支持。");
 		boot = boot.AsSpan(8).ToArray();
 
 		var header = CreateLuaHeaderTemplate();
@@ -717,7 +735,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(entryOffset + 8), LuaAssetKeys.LuaTypeId);
 		BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(entryOffset + 16), 0xB8);
 		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(entryOffset + 76), 1);
-		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0xBC), 2);
+		BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0xBC), LuaResourceFormat.BytecodeVersion);
 		return header;
 	}
 
@@ -816,7 +834,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				.Append(':').Append(source.ProfileLoadOrder)
 				.Append(':').Append(source.Group.ArchiveHex16)
 				.Append(':').Append(source.Group.SourcePatchIndex)
-				.Append(':').Append(LuaHashFor(source.Document.BootBytecode));
+				.Append(':').Append(LuaHashFor(source.Document.BootBytecode))
+				// The emitted resource format is part of the identity: a format change
+				// must produce a new output directory instead of reusing old bytes.
+				.Append(":v").Append(LuaResourceFormat.BytecodeVersion);
 			foreach (var block in source.Document.Blocks) builder.Append(':').Append(block.BodySha256).Append(':').Append(block.HeadSha256);
 			builder.AppendLine();
 		}

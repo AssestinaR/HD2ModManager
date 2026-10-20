@@ -14,7 +14,29 @@ public static class LuaAssetKeys
 	public static bool IsLuaEntry(PatchTocEntry entry) => entry is not null && IsBoot(entry.AssetKey);
 }
 
-public enum LuaPatchWrapperKind { Single, LegacyHd2PbMarkerMerge, LegacyHd2PbMerge, Hd2LuaMergeV1, Opaque }
+// Bytecode is a first-class document kind: since the 2026-10-20 update a boot
+// patch may carry a compiled chunk instead of text, and such a chunk cannot be
+// merged by concatenation. It is replayed whole, exactly like the game's own
+// boot resource, so it needs its own wrapper kind rather than being mistaken for
+// an unparsable Patch.
+public enum LuaPatchWrapperKind { Single, LegacyHd2PbMarkerMerge, LegacyHd2PbMerge, Hd2LuaMergeV1, Opaque, Bytecode }
+
+// Every Lua resource starts with an eight-byte prefix: the payload length and a
+// format version. The 2026-10-20 game update switched the version from 2 to 1
+// and started shipping PUC-Lua 5.1 bytecode instead of source text; a version-2
+// source resource is what now makes the game crash on startup, so the manager
+// must emit version 1 with a compiled chunk.
+public static class LuaResourceFormat
+{
+	public const int PrefixLength = 8;
+
+	/// <summary>Current format: an eight-byte prefix followed by Lua 5.1 bytecode.</summary>
+	public const uint BytecodeVersion = 1;
+
+	/// <summary>Pre-update format: an eight-byte prefix followed by UTF-8 source text.</summary>
+	public const uint LegacySourceVersion = 2;
+}
+
 
 public sealed class LuaPatchFormatException(string message) : Exception(message);
 
@@ -93,7 +115,14 @@ public sealed record LuaPatchDocument(
 
 public sealed record LuaPatchComposition(byte[] HeaderTemplate, byte[] BootBytecode, string SourceText, IReadOnlyList<LuaPatchBlock> Blocks, LuaMergeLedger Ledger)
 {
-	public byte[] PayloadBytes => Encoding.UTF8.GetBytes(SourceText);
+	/// <summary>
+	/// Compiled chunk emitted in place of the UTF-8 source. The source text is
+	/// still kept because it is what the merge ledger, the runtime validator and
+	/// every diagnostic talk about; only the bytes written to the Patch change.
+	/// </summary>
+	public byte[]? CompiledPayload { get; init; }
+
+	public byte[] PayloadBytes => CompiledPayload ?? Encoding.UTF8.GetBytes(SourceText);
 }
 
 internal static class LuaHash

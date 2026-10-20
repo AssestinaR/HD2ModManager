@@ -3,7 +3,10 @@ using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using AdaptationLuaAssetKeys = HD2ModAdaptation.PatchReconstruction.Lua.LuaAssetKeys;
+using AdaptationLua51Bytecode = HD2ModAdaptation.PatchReconstruction.Lua.Lua51Bytecode;
 using AdaptationLuaPatchInspector = HD2ModAdaptation.PatchReconstruction.Lua.LuaPatchInspector;
+using AdaptationLuaPatchWrapperKind = HD2ModAdaptation.PatchReconstruction.Lua.LuaPatchWrapperKind;
+using AdaptationLuaResourceFormat = HD2ModAdaptation.PatchReconstruction.Lua.LuaResourceFormat;
 using AdaptationPatchEntryPayloadReader = HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader;
 using AdaptationPatchTocScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using Microsoft.Data.Sqlite;
@@ -437,10 +440,20 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
 		var group = Assert.Single(result.GeneratedPatchGroups);
 		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+		var bytes = await File.ReadAllBytesAsync(patch.FilePath);
+		// The deployed resource has to look like the game's own boot resource: the
+		// current format version and a compiled Lua 5.1 chunk, never source text.
+		Assert.Equal(AdaptationLuaResourceFormat.BytecodeVersion, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0xBC, 4)));
+		var payload = bytes.AsSpan(0xC0).ToArray();
+		var chunk = AdaptationLua51Bytecode.Read(payload);
+		var embedded = System.Text.Encoding.UTF8.GetString(chunk.Main.Constants[1].Text!);
+		Assert.Contains("local BC = ", embedded, StringComparison.Ordinal);
+		Assert.Contains("@mods/codex/runtime_armor_registry", embedded, StringComparison.Ordinal);
+		// The manager must still be able to read back what it wrote, because a later
+		// deployment merges whatever is already deployed.
 		var document = await new AdaptationLuaPatchInspector().InspectAsync(patch.FilePath);
-		Assert.Equal(bootBytecode, document.BootBytecode);
-		var runtimeBlock = Assert.Single(document.Blocks, block => block.Name == "HD2 Runtime Armor Registry");
-		Assert.Contains("@mods/codex/runtime_armor_registry", runtimeBlock.Body, StringComparison.Ordinal);
+		Assert.Equal(AdaptationLuaPatchWrapperKind.Bytecode, document.WrapperKind);
+		Assert.Equal(payload, document.BootBytecode);
 	}
 
 	private static byte[] CreateGameBootArchive(byte[] bootBytecode)

@@ -523,3 +523,112 @@ target=3544585106,1
 
 **用例**：`HD2ModCore.Tests/WardrobeWorkspaceTests.cs`（20 项）、
 `WardrobeMaskProjectionTests.cs`（15 项）、`HD2ModCli.Tests/WardrobeCliTests.cs`（11 项）。
+
+---
+
+## 15. 2026-10-20 更新后的 Lua 资源格式（已实测并适配）
+
+这一节是**独立于衣柜**的底层事实：运行时护甲注册靠独占 `boot.lua` 部署，所以
+"新格式长什么样"决定了整个护甲映射能不能装进游戏。
+
+### 15.1 新的封装：8 字节前缀 + 字节码
+
+游戏自己的 `boot.lua`（`0xf476df93691895fa`，archive `9ba626afa44a3aa3`）现在是：
+
+```
+f5 01 00 00 | 01 00 00 00 | 1b 4c 75 61 51 00 01 04 04 04 08 00 ...
+  长度=501   |  version=1  | \x1bLua 5.1 头
+```
+
+| 偏移 | 内容 |
+|---|---|
+| `+0` u32 | 载荷长度 = 资源总长 − 8 |
+| `+4` u32 | **格式版本**：`1` = 字节码（当前），`2` = 源码文本（更新前） |
+| `+8` … | 载荷本体 |
+
+载荷是**标准 PUC Lua 5.1 字节码**，不是 LuaJIT：
+
+| 字节 | 含义 |
+|---|---|
+| `1b 4c 75 61` | `\x1bLua` |
+| `51` | 版本 5.1 |
+| `00` | 格式 |
+| `01` | 小端 |
+| `04 04 04 08` | `int` / `size_t` / `Instruction` / `lua_Number` 宽度 |
+| `00` | 非整数数值 |
+
+LuaJIT 的字节码是 `\x1bLJ`，**加载不了**这种块；所以本机那个 `luajit.exe` 在这里
+是有害的编译器，不能用它产出载荷。
+
+### 15.2 原版 `boot.lua` 到底做了什么
+
+反汇编（`tmp/LuaInspect`）出来的逻辑只有四行：
+
+```lua
+stingray.Application.init = function() end
+stingray.Application.shutdown = function() end
+stingray.Application.update = function(...) end
+stingray.Application.render = function() end
+if stingray.Application.build() ~= "release" then require("debug") end
+local jit = rawget(_G, "jit")
+if jit then jit.off() end
+```
+
+**它不加载任何 mod**。也就是说 Lua mod 一直靠"替换这个入口"生效，而不是靠游戏自己
+去扫描目录。这也解释了为什么更新后**所有**旧 Lua mod 一起失效：入口的封装换了，
+旧 mod 塞进去的是 version 2 + 源码文本。
+
+### 15.3 管理器现在产出什么
+
+载荷 = **Lua 5.1 字节码**，版本 = `1`。合并后的源码文本（带 `--@@HD2LUA-` 标记和
+ledger，仍可读、仍可校验）被包进**一个固定原型**，等价于：
+
+```lua
+local f = load(<合并后的源码>)
+if f then return f() end
+return
+```
+
+八条指令：`GETGLOBAL / LOADK / CALL / TEST / JMP / CALL / RETURN / RETURN`，
+`maxstacksize=2`、`vararg=2`、常量表 `{"load", 源码}`、无行信息——和原版一样是
+strip 过的块（原版的 `source` 也是 NULL，所以错误信息里的 `?` 行为一致）。
+
+**为什么不直接写源码**：`luaL_loadbuffer` 对文本块也能用，但游戏现在既然只发字节码，
+就按它的样子发。这是唯一能保证"和游戏自己那份同类"的做法。
+
+**为什么不用外部编译器**：没有 `lua51.dll`、没有 `luac`，而且上面说过 LuaJIT 不行。
+所以写了个只覆盖"读—写"的 Lua 5.1 字节码编解码器
+（`HD2ModAdaptation/PatchReconstruction/Lua/Lua51Bytecode.cs`），它**能把游戏自己那份
+资源逐字节往返**——这就是它正确性的证据，而不是"照文档写的"。
+
+### 15.4 验收证据（2026-10-20）
+
+| 检查 | 结果 |
+|---|---|
+| 读 `boot.lua` 资源 → 再写回 | 501 字节**逐字节相同** |
+| 读另一份 Lua 资源（6653 字节）→ 再写回 | **逐字节相同** |
+| 用真实护甲注册运行时（281752 字节源码）跑完整管线 | 产物 **993424** 字节，与 `deploy plan` 里记录的 `sourceLength` **完全一致** |
+| 产物 `+0xBC` | `1` |
+| 产物载荷前 12 字节 | `1B 4C 75 61 51 00 01 04 04 04 08 00`（与原版一致） |
+| 载荷再解析 | 通过，且往返一致 |
+| `deploy plan` | `isReady: true`，`diagnostics: []`，Lua 合成 1 份 |
+
+### 15.5 顺带修掉的两处
+
+1. **检查器认字节码**。以前载荷必须是严格 UTF-8，否则报"不受支持"。现在以
+   `\x1bLua 5.1` 开头就当作 `LuaPatchWrapperKind.Bytecode`：整块保留、整块重放
+   （`load(BC)` + `pcall`），因为字节码**不能**像文本那样拼接。一份这样的输入
+   会把整次合并切到重放包装——这正是管理器对原版 `boot.lua` 一直在做的事。
+   这也让"我们自己部署出去的 patch 还能被下一次部署读回来"成立。
+2. **CLI 读 GUI 的 Lua 开关**。`deploy plan/validate/apply` 以前完全忽略
+   `settings.json` 里的 `DeployLuaMods`，于是同一个配置在 GUI 里会装 Lua、在 CLI 里
+   不装。现在 `CliWorkspace.Open` 同步这个静态开关，缺省 `true`（和 `SettingsService`
+   一致）。
+
+### 15.6 还没验证的那一步
+
+**游戏是否接受这份资源，只能在游戏里验证。** 本地能证明的到"格式与游戏自己那份同类"
+为止。如果部署后仍然崩溃，剩下的可能就是"载荷必须是字节码且容器版本必须是 1"之外的
+第三种要求（例如 TOC 里还有别的字段），那时第一件事是把崩溃日志和 `patch_3` 的实际
+字节一起看。
+
