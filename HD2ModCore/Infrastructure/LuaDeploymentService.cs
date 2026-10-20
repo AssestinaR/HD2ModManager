@@ -21,6 +21,16 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
 	private const string BingusLoaderPackageGuid = "612eaf70-d682-43c7-9efd-16dcc695f977";
 
+	/// <summary>
+	/// 全局 Lua 部署开关。**默认关闭**。
+	///
+	/// 2026-10-20 的游戏更新改变了 Lua mod 的使用方式，已有的全部 Lua mod 会失效并导致
+	/// 游戏崩溃——包括我们自己的护甲注册运行时。在确认新的加载方式之前，管理器不能
+	/// 再往游戏里塞任何 Lua mod；崩溃比少一个功能严重得多。
+	/// 关掉时 <see cref="PlanAsync"/> 不产生任何 Lua 派生 patch，部署计划里也就没有 Lua 项。
+	/// </summary>
+	public static bool DeploymentEnabled { get; set; }
+
 	public LuaDeploymentService(
 		LuaPatchInspector? luaInspector = null,
 		LuaPatchComposer? luaComposer = null,
@@ -45,6 +55,25 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		CancellationToken cancellationToken = default,
 		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
 	{
+		if (!DeploymentEnabled)
+		{
+			// 明确返回"没有 Lua 要部署"，而不是假装成功：
+			// 计划里不出现 Lua 项，用户就能看见"这次部署没有带 Lua"。
+			return new LuaDeploymentPlan(
+				patchIndex,
+				Array.Empty<GeneratedPatchGroup>(),
+				Array.Empty<ExternalFileMapping>(),
+				[
+					new CoreIssue(
+						CoreIssueSeverity.Warning,
+						"LuaDeploymentDisabled",
+						"Lua 部署已在设置中关闭（游戏更新后 Lua mod 会失效并导致崩溃）。本次部署不会包含任何 Lua mod。"),
+				],
+				RequiresMaterialization: false,
+				CompositionFingerprint: null,
+				InputCount: 0);
+		}
+
 		var result = await BuildAsync(
 			profile,
 			snapshot,

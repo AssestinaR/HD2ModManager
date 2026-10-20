@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -29,6 +29,9 @@ namespace HD2ModManager.Services
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
             public bool AllowUnsafeLuaMerge { get; set; } = false;
+        // 游戏更新后 Lua mod 的使用方式变了，旧式 Lua 注入会让游戏崩溃。
+        // 默认关闭：崩溃比少一个功能严重得多，用户要自己确认过才打开。
+        public bool DeployLuaMods { get; set; } = false;
             public string? DefaultExportPath { get; set; }
         }
 
@@ -180,6 +183,20 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
+        public static bool GetDeployLuaMods()
+        {
+            var value = LoadAll()?.DeployLuaMods ?? false;
+            // 静态开关与设置保持同步：计划阶段只读它，不读磁盘。
+            LuaDeploymentService.DeploymentEnabled = value;
+            return value;
+        }
+
+        public static bool SetDeployLuaMods(bool enabled)
+        {
+            LuaDeploymentService.DeploymentEnabled = enabled;
+            try { Update(model => model.DeployLuaMods = enabled); return true; }
+            catch { return false; }
+        }
         public static string GetAssetMetadataRepository()
         {
             try

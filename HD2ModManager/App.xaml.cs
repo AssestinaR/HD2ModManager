@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Windows;
 using HD2ModManager.Services;
 
@@ -11,6 +11,9 @@ namespace HD2ModManager
     {
         protected override void OnStartup(StartupEventArgs e)
         {
+            // 启动时把设置里的 Lua 部署开关同步到静态开关：计划阶段读它，不读磁盘。
+            // 默认关闭——游戏更新后 Lua mod 会让游戏崩溃，崩溃比少一个功能严重得多。
+            _ = Services.SettingsService.GetDeployLuaMods();
             // Do not auto-compile a temporary diagnostic protocol or overwrite
             // user state while a recovery journal is pending.
             var recovery = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,

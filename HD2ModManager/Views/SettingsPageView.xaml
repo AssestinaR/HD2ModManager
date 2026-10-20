@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="HD2ModManager.Views.SettingsPageView"
+<UserControl x:Class="HD2ModManager.Views.SettingsPageView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views"
@@ -18,6 +18,9 @@
                     <CheckBox Style="{StaticResource AppToggleSwitch}" Content="允许不安全 Lua 合并部署" IsChecked="{Binding AllowUnsafeLuaMerge, Mode=TwoWay}" Margin="0,12,0,0"
                               ToolTip="允许将无法进行结构化分析的完整 Lua 与其他 Lua 合并。该行为不是沙箱，可能发生全局状态、模块缓存、执行顺序或游戏内兼容性问题。默认关闭。"/>
                     <TextBlock Text="允许不安全 Lua 与其他 Lua 合并；这不是沙箱，可能发生全局状态、模块缓存、执行顺序或游戏内兼容性问题。" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                            <CheckBox Style="{StaticResource AppToggleSwitch}" Content="部署 Lua 模组（护甲映射运行时）" IsChecked="{Binding DeployLuaMods, Mode=TwoWay}" Margin="0,16,0,0"
+                                      ToolTip="关闭后管理器不再把任何 Lua 模组写进游戏，护甲映射因此不会生效，但也不会因 Lua 失效而崩溃。"/>
+                            <TextBlock Text="游戏更新后 Lua 模组的加载方式发生变化，旧式 Lua 会让游戏崩溃。默认关闭：关闭后管理器不往游戏里写任何 Lua 模组，护甲映射随之失效。确认新方式可用后再打开。" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                     <Grid Margin="0,14,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="150"/>

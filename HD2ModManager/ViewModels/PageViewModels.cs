@@ -1492,7 +1492,19 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        public bool AutoUpdateAssetMetadata
+        // 游戏更新后 Lua mod 会失效并导致崩溃，所以给一个能立刻关掉的开关。
+    // 默认关闭；打开后需要重新部署才生效（会重新生成部署计划）。
+    public bool DeployLuaMods
+    {
+        get => SettingsService.GetDeployLuaMods();
+        set
+        {
+            if (SettingsService.SetDeployLuaMods(value))
+                _profiles.RequestActiveProfileDeployment();
+            OnPropertyChanged(nameof(DeployLuaMods));
+        }
+    }
+    public bool AutoUpdateAssetMetadata
         {
             get => SettingsService.GetAutoUpdateAssetMetadata();
             set

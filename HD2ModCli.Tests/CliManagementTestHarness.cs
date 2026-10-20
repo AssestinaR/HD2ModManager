@@ -18,6 +18,9 @@ internal static class CliTestConsole
 	public static async Task<CliCommandCapture> RunCapturedAsync(params string[] args)
 	{
 		await Gate.WaitAsync().ConfigureAwait(false);
+		// CLI 测试跑的是完整管线；Lua 部署默认关闭是给用户的保护（游戏更新后 Lua 会崩），
+		// 但断言 Lua 行为的用例需要它开着。这里显式打开，让"默认值"与"测试"互不干扰。
+		HD2ModCore.Infrastructure.LuaDeploymentService.DeploymentEnabled = true;
 		var originalOut = Console.Out;
 		var originalError = Console.Error;
 		using var output = new StringWriter();
