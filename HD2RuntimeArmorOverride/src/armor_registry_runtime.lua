@@ -495,6 +495,11 @@ local cache_matches=tonumber(cache.schema)==1
     and tonumber(cache.game_timestamp)==fingerprint.timestamp
     and tonumber(cache.game_image_size)==fingerprint.image_size
 
+-- 重载由谁触发：auto_refresh = 加载器/路由探针在场；passive = 没有触发者，
+-- 写进去的 numIndices 要等游戏自己重新解析该 unit（换装 / 进关卡 / 重开）才生效。
+-- 独占模式下这是**预期**状态，不是错误——所以写进状态文件，方便进游戏后一眼确认。
+local reload_trigger='passive'
+
 local function status_text(state,message,applied_revision)
     local registry=M.registry
     local lines={
@@ -506,7 +511,8 @@ local function status_text(state,message,applied_revision)
         'game_timestamp='..tostring(fingerprint.timestamp),
         'game_image_size='..tostring(fingerprint.image_size),
         'revision='..tostring(applied_revision or -1),
-        'active_mappings='..tostring(M.active_count or 0)
+        'active_mappings='..tostring(M.active_count or 0),
+        'reload_trigger='..reload_trigger
     }
     lines[#lines+1]='retained_clone_count='..transaction.retained_count
     lines[#lines+1]='retained_clone_bytes='..transaction.retained_bytes
@@ -1319,6 +1325,10 @@ if ARMOR_REFRESH_ROUTE_PROBE then
         end,
         pulse_write=refresh_pending_write,emit=report,
         flush=function()if file then file:flush()end end})
+    -- 路由探针在场时由它触发重载；不在场（独占模式）就退化为 passive：
+    -- 写入仍然发生，但要等游戏自己重新解析该 unit 才看得见。这不是错误，是预期。
+    reload_trigger = (auto_refresh and type(auto_refresh.published)=='function')
+        and 'auto_refresh' or 'passive'
 end
 
 local previous=rawget(_G,'update')
