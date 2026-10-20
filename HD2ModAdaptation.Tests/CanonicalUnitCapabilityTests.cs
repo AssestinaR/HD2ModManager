@@ -67,6 +67,48 @@ public sealed class CanonicalUnitCapabilityTests
 		Assert.Contains("结构指纹", capability.Reason, StringComparison.Ordinal);
 	}
 
+	// 回归：髋部下装这类 Unit 的网格名是 "Hip_Undergarment_*"，既不含 "hips" 也不含
+	// 旧词表里的任何装备词，于是被当成非玩家装备 → 跳过 Avatar 骨架扩展 → 同键重建
+	// 找不到 chest/spine2 而失败。自定义槽位枚举才是权威信号。
+	[Fact]
+	public void Analyze_TreatsCustomizationSlotAsPlayerEquipment()
+	{
+		var model = Model(compositeRef: 0, streamInfoOffset: 128, semanticName: "Hip_Undergarment_Any_lod0") with
+		{
+			CustomizationInfo = new UnitCustomizationInfo(
+				"HelldiverCustomizationSlot_Hip",
+				"HelldiverCustomizationPieceType_Undergarment",
+				"HelldiverCustomizationBodyType_Any",
+				"HelldiverCustomizationWeight_Heavy"),
+			Streams =
+			[
+				new UnitStreamInfo(0, 128, 0, 1, 0, 4, 12, 0, 3, 0, 0, 0, 0, 0,
+				[
+					new UnitStreamComponentInfo(0, "position", 2, "vec3_float", 0, 0, 12),
+					new UnitStreamComponentInfo(6, "bone_indices", 4, "vec4_uint8", 12, 0, 4),
+					new UnitStreamComponentInfo(7, "bone_weights", 4, "vec4_uint8", 16, 0, 4)
+				])
+			]
+		};
+
+		var capability = CanonicalUnitCapabilityDetector.Analyze(model);
+
+		Assert.True(capability.HasSkinning);
+		Assert.True(capability.IsLikelyPlayerEquipment);
+		Assert.True(capability.RequiresAvatarRigExpansion);
+	}
+
+	[Fact]
+	public void Analyze_KeepsNonCustomizationUnitWithoutEquipmentTokensAsNpc()
+	{
+		var model = Model(compositeRef: 0, streamInfoOffset: 128, semanticName: "npc_body");
+
+		var capability = CanonicalUnitCapabilityDetector.Analyze(model);
+
+		Assert.False(capability.IsLikelyPlayerEquipment);
+		Assert.False(capability.RequiresAvatarRigExpansion);
+	}
+
 	private static UnitMeshModel Model(ulong compositeRef, uint streamInfoOffset, string semanticName)
 	{
 		var mesh = new UnitMeshInfo(

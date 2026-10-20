@@ -103,6 +103,13 @@ public static class CanonicalUnitCapabilityDetector
 
 	private static bool IsLikelyPlayerEquipment(UnitMeshModel model)
 	{
+		// 自定义槽位枚举是权威信号：一个 Unit 只要填了 HelldiverCustomizationSlot_*
+		// 或 HelldiverCustomizationPieceType_*，它按定义就是玩家装备。之前只靠网格
+		// 名字做子串匹配，而 "Hip" 既不含 "hips"、"Undergarment" 也不在词表里，
+		// 于是髋部下装被判定成非装备 → RequiresAvatarRigExpansion=false →
+		// 同键重建跳过 Avatar 骨架扩展 → 目标 Unit 只有 17 根骨头，
+		// 而模组网格用到 chest/spine2，最后以 MissingTargetBone 失败。
+		if (HasCustomizationIdentity(model.CustomizationInfo)) return true;
 		var text = string.Join(' ', model.Meshes.SelectMany(mesh => new[]
 		{
 			mesh.SemanticInfo.Name,
@@ -111,11 +118,15 @@ public static class CanonicalUnitCapabilityDetector
 			mesh.SemanticInfo.BodyType,
 			mesh.SemanticInfo.Weight
 		})).ToLowerInvariant();
-		if (Contains(text, "torso", "chest", "pelvis", "hips", "helmet", "armor", "armour", "shoulder", "leftarm", "rightarm", "leftleg", "rightleg"))
+		if (Contains(text, "torso", "chest", "pelvis", "hips", "helmet", "armor", "armour", "shoulder", "leftarm", "rightarm", "leftleg", "rightleg", "undergarment"))
 			return true;
 		return Contains(model.CustomizationInfo.Slot, "armor", "helmet", "torso", "pelvis", "hips")
 			|| Contains(model.CustomizationInfo.PieceType, "armor", "helmet", "torso", "pelvis");
 	}
+
+	private static bool HasCustomizationIdentity(UnitCustomizationInfo info)
+		=> info.Slot.StartsWith("HelldiverCustomizationSlot_", StringComparison.OrdinalIgnoreCase)
+			|| info.PieceType.StartsWith("HelldiverCustomizationPieceType_", StringComparison.OrdinalIgnoreCase);
 
 	private static bool Contains(string? value, params string[] tokens)
 	{
