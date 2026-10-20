@@ -29,9 +29,9 @@ namespace HD2ModManager.Services
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
             public bool AllowUnsafeLuaMerge { get; set; } = false;
-        // 游戏更新后 Lua mod 的使用方式变了，旧式 Lua 注入会让游戏崩溃。
-        // 默认关闭：崩溃比少一个功能严重得多，用户要自己确认过才打开。
-        public bool DeployLuaMods { get; set; } = false;
+        // 独占模式的护甲映射 Lua：以我们自己的 patch 形式部署，不经第三方加载器。
+        // 默认开启（用户确认：默认自动装）。关掉后不会写游戏，只留手动安装的路子。
+        public bool DeployLuaMods { get; set; } = true;
             public string? DefaultExportPath { get; set; }
         }
 
@@ -185,7 +185,7 @@ namespace HD2ModManager.Services
 
         public static bool GetDeployLuaMods()
         {
-            var value = LoadAll()?.DeployLuaMods ?? false;
+            var value = LoadAll()?.DeployLuaMods ?? true;
             // 静态开关与设置保持同步：计划阶段只读它，不读磁盘。
             LuaDeploymentService.DeploymentEnabled = value;
             return value;
