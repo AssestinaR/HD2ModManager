@@ -29,6 +29,10 @@ public sealed record ModInformationRequest(
 		ModInformationKind.GameDataMapping => ModInformationPropertyKind.GameDataMapping,
 		ModInformationKind.DeployedGraph => ModInformationPropertyKind.DeployedGraph,
 		ModInformationKind.ArmorCoverage => ModInformationPropertyKind.ArmorCoverage,
+		// 这两条必须显式映射：漏掉就会落到下面的 Identity，
+		// 于是两种完全不同的事实共用同一个属性身份，缓存会互相串味。
+		ModInformationKind.UnitSectionStructure => ModInformationPropertyKind.UnitSectionStructure,
+		ModInformationKind.ArmourUnitTable => ModInformationPropertyKind.ArmourUnitTable,
 		_ => ModInformationPropertyKind.Identity,
 	};
 

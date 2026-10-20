@@ -87,6 +87,20 @@ public interface IModInformationCenter : IAsyncDisposable
 		ModInformationRequest request,
 		CancellationToken cancellationToken = default);
 
+	/// <summary>一批 unit 的 section 结构（衣柜编辑器与 section 映射表的共同来源）。</summary>
+	ValueTask<ModInformationResult<UnitSectionStructureFacts>> RequestUnitSectionStructureAsync(
+		string gameDataDirectory,
+		IReadOnlySet<string> unitIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default);
+
+	/// <summary>一批护甲条目的 unit 表（来源：游戏注册文件）。</summary>
+	ValueTask<ModInformationResult<ArmourUnitTableFacts>> RequestArmourUnitTableAsync(
+		string gameDataDirectory,
+		IReadOnlySet<uint> itemIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default);
+
 	ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(
 		       IReadOnlyCollection<AssetKey> assetKeys,
 		       ModNodeId? excludedNodeId = null,

@@ -56,7 +56,23 @@ public sealed class AdvancedModAnalysisServiceTests
 		public ValueTask<ModInformationResult<DeployedOverrideGraph>> RequestDeployedGraphAsync(string gameDataDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask<ModInformationResult<ArmorCoverageFacts>> RequestArmorCoverageAsync(string gameDataDirectory, IReadOnlySet<string> archiveIds, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 		public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-		public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+		public ValueTask<ModInformationResult<UnitSectionStructureFacts>> RequestUnitSectionStructureAsync(
+		string gameDataDirectory,
+		IReadOnlySet<string> unitIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+		=> ValueTask.FromResult(new ModInformationResult<UnitSectionStructureFacts>(
+			null, ModInformationStatus.Unavailable, ModInformationKind.UnitSectionStructure, request.Generation, []));
+
+	public ValueTask<ModInformationResult<ArmourUnitTableFacts>> RequestArmourUnitTableAsync(
+		string gameDataDirectory,
+		IReadOnlySet<uint> itemIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+		=> ValueTask.FromResult(new ModInformationResult<ArmourUnitTableFacts>(
+			null, ModInformationStatus.Unavailable, ModInformationKind.ArmourUnitTable, request.Generation, []));
+
+	public ValueTask InvalidateNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 		public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 	}
 }

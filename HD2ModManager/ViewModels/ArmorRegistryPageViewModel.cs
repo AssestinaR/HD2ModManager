@@ -820,6 +820,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		// 后者不走 game_data_authority_pieces 那张派生表——实测那张表会丢行
 		// （RE-2310 头盔套 0 行、护甲套缺一个槽位），而注册文件是它的源头。
 		IReadOnlyList<string> treeUnitIds;
+		IReadOnlyList<uint> missingArmourItems = Array.Empty<uint>();
+		var gameData = SettingsService.GetGameDataFolder();
 		if (model is not null)
 		{
 			treeUnitIds = (model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
@@ -827,27 +829,54 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				.Where(unit => !string.IsNullOrWhiteSpace(unit))
 				.ToArray();
 		}
-		else
+		else if (!string.IsNullOrWhiteSpace(gameData) && Directory.Exists(gameData))
 		{
-			treeUnitIds = await ReadAuthorityUnitIdsAsync(SettingsService.GetGameDataFolder(), members).ConfigureAwait(true);
+			// 走信息中心而不是直接读注册文件：编辑器和将来的 3D 窗口问同一批条目时只会算一次。
+			var table = await library.InformationCenter
+				.RequestArmourUnitTableAsync(
+					gameData,
+					members.ToHashSet(),
+					new ModInformationRequest(ModInformationKind.ArmourUnitTable, "ArmorRegistryPage"))
+				.ConfigureAwait(true);
+			treeUnitIds = table.Data?.ForItems(members) ?? Array.Empty<string>();
+			missingArmourItems = table.Data?.MissingItems ?? Array.Empty<uint>();
 			if (treeUnitIds.Count == 0)
 			{
 				// 注册文件读不到时退回件表：宁可少 unit，也不能整棵树空掉。
 				treeUnitIds = componentEditorSourcePieces.Select(piece => piece.Unit).ToArray();
 			}
 		}
+		else
+		{
+			treeUnitIds = componentEditorSourcePieces.Select(piece => piece.Unit).ToArray();
+		}
+
+		// section 结构同样走信息中心：它按"一批 unit 键"记忆，与 section 映射表共用一份描述。
+		IReadOnlyList<WardrobeSectionMapUnit> treeUnits = Array.Empty<WardrobeSectionMapUnit>();
+		IReadOnlyList<string> missingUnitIds = Array.Empty<string>();
+		if (treeUnitIds.Count > 0 && !string.IsNullOrWhiteSpace(gameData) && Directory.Exists(gameData))
+		{
+			var structure = await library.InformationCenter
+				.RequestUnitSectionStructureAsync(
+					gameData,
+					treeUnitIds.ToHashSet(StringComparer.Ordinal),
+					new ModInformationRequest(ModInformationKind.UnitSectionStructure, "ArmorRegistryPage"))
+				.ConfigureAwait(true);
+			treeUnits = structure.Data?.ToMapUnits() ?? Array.Empty<WardrobeSectionMapUnit>();
+			missingUnitIds = structure.Data?.MissingUnitIds ?? Array.Empty<string>();
+		}
 
 		if (request != componentEditorRequest) return;
-		// 树的 section 数据从**当前部署的 patch** 现算，所以编辑器看到的就是游戏实际加载的几何。
+		// 树的 section 数据来自当前部署的 patch 与原版数据包，所以编辑器看到的就是游戏实际加载的几何。
 		// 它和组件结构是两条独立的轴：组件结构决定"用哪些 unit"，树决定"这些 unit 的哪些 section 不可见"。
-		await Wardrobe.LoadAsync(
+		Wardrobe.Load(
 			item.ItemId,
 			source.ItemId,
 			isTarget,
 			item.Name,
-			item.ArchiveId,
-			treeUnitIds,
-			SettingsService.GetGameDataFolder()).ConfigureAwait(true);
+			treeUnits,
+			missingUnitIds,
+			missingArmourItems);
 		if (request != componentEditorRequest) return;
 		OnPropertyChanged(nameof(IsComponentEditorOpen));
 		OnPropertyChanged(nameof(ComponentEditorIsTarget));
@@ -877,27 +906,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				RemoveComponentPiece));
 		}
 		RebuildComponentEditorGroups();
-	}
-
-	// 从**游戏注册文件**取这件护甲的全部 unit 键。读不到就返回空，由调用方决定怎么退。
-	// 走这条路而不是 game_data_authority_pieces：后者是注册文件的派生缓存，实测会丢行。
-	private static async Task<IReadOnlyList<string>> ReadAuthorityUnitIdsAsync(
-		string? gameDataDirectory,
-		IReadOnlyCollection<uint> itemIds)
-	{
-		if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
-			return Array.Empty<string>();
-		try
-		{
-			var snapshot = await new GameDataAuthorityProvider()
-				.LoadAsync(gameDataDirectory)
-				.ConfigureAwait(true);
-			return ArmourUnitTableSource.ReadUnitIds(snapshot, itemIds);
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException or ArgumentException)
-		{
-			return Array.Empty<string>();
-		}
 	}
 
 	private static bool IsLegacyDefaultBasePiece(RuntimeArmorChoiceViewModel item, RuntimeArmorRegistryModelPiece piece)

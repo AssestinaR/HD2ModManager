@@ -208,15 +208,14 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 	/// <paramref name="unitIds"/> 是这件护甲的赢家 unit（来自权威件表）；
 	/// <paramref name="gameDataDirectory"/> 用来从**当前部署的 patch** 现算 section 表。
 	/// </summary>
-	public async Task LoadAsync(
+	public void Load(
 		uint armourItemId,
 		uint? sourceItemId,
 		bool isTarget,
 		string armourLabel,
-		string? archiveId,
-		IReadOnlyList<string> unitIds,
-		string gameDataDirectory,
-		CancellationToken cancellationToken = default)
+		IReadOnlyList<WardrobeSectionMapUnit> units,
+		IReadOnlyList<string> missingUnitIds,
+		IReadOnlyList<uint>? missingArmourItems = null)
 	{
 		ArmourItemId = armourItemId;
 		SourceItemId = sourceItemId;
@@ -225,7 +224,6 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 		OnPropertyChanged(nameof(Roots));
 		OnPropertyChanged(nameof(HasRoots));
 		StatusMessage = string.Empty;
-		IsLoading = true;
 		try
 		{
 			workspace = WardrobeWorkspaceFile.Read(workspacePath);
@@ -245,26 +243,34 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 
 			OnPropertyChanged(nameof(FollowSource));
 
-			var resolution = await WardrobeSectionSource
-				.ResolveAsync(gameDataDirectory, unitIds, archiveId, cancellationToken)
-				.ConfigureAwait(true);
-			if (resolution.Units.Count == 0)
+			if (units.Count == 0)
 			{
-				StatusMessage = unitIds.Count == 0
-					? "这件护甲没有可解析的 unit。"
-					: "在已部署的 patch 里没有找到这件护甲的 unit，无法列出 section。";
+				StatusMessage = "这件护甲没有可解析的 unit。";
 				return;
 			}
 
 			var built = WardrobeTree.Build(
 				string.IsNullOrWhiteSpace(armourLabel) ? $"护甲 {armourItemId}" : armourLabel,
-				resolution.Units);
+				units);
 			roots = new[] { new WardrobeTreeNodeViewModel(this, built) };
 			RecomputeRowStripes();
 			IsEditable = !isTarget || !followSource;
-			StatusMessage = resolution.MissingUnitIds.Count == 0
-				? string.Empty
-				: $"有 {resolution.MissingUnitIds.Count} 个 unit 在已部署的 patch 里没找到：{string.Join(", ", resolution.MissingUnitIds)}";
+			var notes = new List<string>();
+			// 两种缺法必须分开说：unit 没找到（部署与原版都没有）与护甲条目在注册文件里
+			// 根本没有 kit（数据缺失）。合成一句话会让人分不清该查哪一层。
+			if (missingArmourItems is { Count: > 0 })
+			{
+				notes.Add($"这件护甲在游戏注册文件里缺少 {missingArmourItems.Count} 个条目："
+					+ string.Join(", ", missingArmourItems));
+			}
+
+			if (missingUnitIds.Count > 0)
+			{
+				notes.Add($"有 {missingUnitIds.Count} 个 unit 在已部署的 patch 与原版数据包里都没找到："
+					+ string.Join(", ", missingUnitIds));
+			}
+
+			StatusMessage = string.Join("；", notes);
 		}
 		catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
 		{
@@ -272,7 +278,6 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 		}
 		finally
 		{
-			IsLoading = false;
 			OnPropertyChanged(nameof(Roots));
 			OnPropertyChanged(nameof(HasRoots));
 		}
