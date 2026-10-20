@@ -780,13 +780,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var model = CustomModels.FirstOrDefault(model =>
 			string.Equals(model.Key, source.ModelKey, StringComparison.Ordinal))?.ToDomain();
 		if (source.IsCustomModel && model is null) return;
+		// 组合护甲（头盔 + 护甲成套）的 unit 分散在**多个 item** 上，只查 ItemId 会漏掉
+		// 除第一件之外的全部 unit——这正是"树上少了很多 unit"的来源。
+		var members = source.MemberItemIds.Count > 0 ? source.MemberItemIds : [source.ItemId];
 		var pieces = model?.Pieces;
 		if (pieces is null)
 		{
-			// 组合护甲（头盔 + 护甲成套）的 unit 分散在**多个 item** 上，只查 ItemId 会漏掉
-			// 除第一件之外的全部 unit——这正是"树上少了很多 unit"的来源。
-			// 所以按 MemberItemIds 逐个查再按 unit 合并；单件护甲就是只查一次。
-			var members = source.MemberItemIds.Count > 0 ? source.MemberItemIds : [source.ItemId];
 			if (members.Count == 1)
 			{
 				pieces = await service.ReadArmorPiecesAsync(members[0]);
@@ -815,6 +814,30 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		componentEditorSourcePieces = source.IsCustomModel ? RuntimeArmorModelStructure.Normalize(pieces) : pieces;
 		componentEditorSourceOverrideOwner = source.IsCustomModel ? model?.SourceItemId : source.ItemId;
 		PopulateComponentEditor();
+		// 树要的 unit 表与"组件结构编辑器"要的不是一回事：
+		//   · 自定义素体：它自己就是权威，unit 表来自注册工作区的 models[].pieces；
+		//   · 普通护甲：来自**游戏注册文件**（generated_customization_armor_sets）。
+		// 后者不走 game_data_authority_pieces 那张派生表——实测那张表会丢行
+		// （RE-2310 头盔套 0 行、护甲套缺一个槽位），而注册文件是它的源头。
+		IReadOnlyList<string> treeUnitIds;
+		if (model is not null)
+		{
+			treeUnitIds = (model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+				.Select(piece => piece.Unit)
+				.Where(unit => !string.IsNullOrWhiteSpace(unit))
+				.ToArray();
+		}
+		else
+		{
+			treeUnitIds = await ReadAuthorityUnitIdsAsync(SettingsService.GetGameDataFolder(), members).ConfigureAwait(true);
+			if (treeUnitIds.Count == 0)
+			{
+				// 注册文件读不到时退回件表：宁可少 unit，也不能整棵树空掉。
+				treeUnitIds = componentEditorSourcePieces.Select(piece => piece.Unit).ToArray();
+			}
+		}
+
+		if (request != componentEditorRequest) return;
 		// 树的 section 数据从**当前部署的 patch** 现算，所以编辑器看到的就是游戏实际加载的几何。
 		// 它和组件结构是两条独立的轴：组件结构决定"用哪些 unit"，树决定"这些 unit 的哪些 section 不可见"。
 		await Wardrobe.LoadAsync(
@@ -823,7 +846,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			isTarget,
 			item.Name,
 			item.ArchiveId,
-			componentEditorSourcePieces.Select(piece => piece.Unit).ToArray(),
+			treeUnitIds,
 			SettingsService.GetGameDataFolder()).ConfigureAwait(true);
 		if (request != componentEditorRequest) return;
 		OnPropertyChanged(nameof(IsComponentEditorOpen));
@@ -854,6 +877,27 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				RemoveComponentPiece));
 		}
 		RebuildComponentEditorGroups();
+	}
+
+	// 从**游戏注册文件**取这件护甲的全部 unit 键。读不到就返回空，由调用方决定怎么退。
+	// 走这条路而不是 game_data_authority_pieces：后者是注册文件的派生缓存，实测会丢行。
+	private static async Task<IReadOnlyList<string>> ReadAuthorityUnitIdsAsync(
+		string? gameDataDirectory,
+		IReadOnlyCollection<uint> itemIds)
+	{
+		if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
+			return Array.Empty<string>();
+		try
+		{
+			var snapshot = await new GameDataAuthorityProvider()
+				.LoadAsync(gameDataDirectory)
+				.ConfigureAwait(true);
+			return ArmourUnitTableSource.ReadUnitIds(snapshot, itemIds);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException or ArgumentException)
+		{
+			return Array.Empty<string>();
+		}
 	}
 
 	private static bool IsLegacyDefaultBasePiece(RuntimeArmorChoiceViewModel item, RuntimeArmorRegistryModelPiece piece)
