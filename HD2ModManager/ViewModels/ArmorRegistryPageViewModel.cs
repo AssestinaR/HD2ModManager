@@ -782,7 +782,30 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		if (source.IsCustomModel && model is null) return;
 		var pieces = model?.Pieces;
 		if (pieces is null)
-			pieces = await service.ReadArmorPiecesAsync(source.ItemId);
+		{
+			// 组合护甲（头盔 + 护甲成套）的 unit 分散在**多个 item** 上，只查 ItemId 会漏掉
+			// 除第一件之外的全部 unit——这正是"树上少了很多 unit"的来源。
+			// 所以按 MemberItemIds 逐个查再按 unit 合并；单件护甲就是只查一次。
+			var members = source.MemberItemIds.Count > 0 ? source.MemberItemIds : [source.ItemId];
+			if (members.Count == 1)
+			{
+				pieces = await service.ReadArmorPiecesAsync(members[0]);
+			}
+			else
+			{
+				var merged = new List<RuntimeArmorRegistryModelPiece>();
+				var seen = new HashSet<(uint, string, uint)>();
+				foreach (var member in members)
+				{
+					foreach (var piece in await service.ReadArmorPiecesAsync(member))
+					{
+						if (seen.Add((piece.Body, piece.Unit, piece.Slot)))
+							merged.Add(piece);
+					}
+				}
+				pieces = merged;
+			}
+		}
 		if (request != componentEditorRequest) return;
 		if (isTarget && !Mappings.Any(row => row.Target.ItemId == item.ItemId && row.Source.ItemId == source.ItemId))
 			return;
