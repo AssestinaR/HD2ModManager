@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 
 namespace HD2ModCore.Infrastructure.Sqlite;
 
@@ -16,6 +16,12 @@ internal static class SqliteSchema
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
+		// 权威件表的唯一键在 v2 里加宽了（见下面的 UNIQUE）。`CREATE TABLE IF NOT EXISTS`
+		// 不会改动已存在的表，所以旧库必须**显式丢弃**这几张表再重建——它们是可重建的派生缓存，
+		// 丢掉的代价只是下次重建索引，而留着旧约束的代价是索引永远建不起来。
+		// 用一个独立的 meta 键做标记，不依赖别处是否写过 schema_version。
+		await DropStaleAuthorityTablesAsync(connection, cancellationToken).ConfigureAwait(false);
+
 		await using (var cmd = connection.CreateCommand())
 		{
 			cmd.CommandText = @"
@@ -177,7 +183,10 @@ CREATE TABLE IF NOT EXISTS game_data_authority_pieces (
 	tone_variations INTEGER NOT NULL,
 	unit_type_id INTEGER NOT NULL,
 	unit_file_id INTEGER NOT NULL,
-	UNIQUE(item_id, raw_body_type, slot, piece_type, unit_type_id, unit_file_id),
+	-- body_variant 与 weight 是 piece 身份的一部分：2026-10-20 的游戏更新里出现了
+	-- 「同 (条目, 原始身形, 槽位, 层, unit) 但身形变体/重量不同」的合法重复行，
+	-- 旧唯一键不含这两列，于是插入直接撞 UNIQUE 约束、整次索引构建失败。
+	UNIQUE(item_id, raw_body_type, body_variant, slot, piece_type, weight, unit_type_id, unit_file_id),
 	FOREIGN KEY(item_id) REFERENCES game_data_authority_kits(item_id)
 );
 
@@ -260,6 +269,43 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
 		cmd.Parameters.AddWithValue("$key", key);
 		var obj = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 		return obj?.ToString();
+	}
+
+	/// <summary>权威件表的结构版本。加宽唯一键时把它 +1。</summary>
+	private const string AuthoritySchemaMetaKey = "authority_pieces_schema";
+	private const string AuthoritySchemaVersion = "2";
+
+	/// <summary>
+	/// 结构版本不符时丢弃权威件表（含依赖它的两张表），让随后的 CREATE 重新建出来。
+	/// 只丢这三张：它们全部由注册文件重建，丢掉不损失任何权威数据。
+	/// </summary>
+	private static async Task DropStaleAuthorityTablesAsync(SqliteConnection connection, CancellationToken cancellationToken)
+	{
+		string? version;
+		try
+		{
+			version = await GetMetaAsync(connection, AuthoritySchemaMetaKey, cancellationToken).ConfigureAwait(false);
+		}
+		catch (SqliteException)
+		{
+			// meta 表还不存在：全新库，什么都不用丢。
+			return;
+		}
+
+		if (string.Equals(version, AuthoritySchemaVersion, StringComparison.Ordinal))
+			return;
+
+		await using (var drop = connection.CreateCommand())
+		{
+			drop.CommandText = @"
+DROP TABLE IF EXISTS game_data_authority_resources;
+DROP TABLE IF EXISTS game_data_authority_pieces;
+DROP TABLE IF EXISTS game_data_authority_kits;
+";
+			await drop.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		}
+
+		await SetMetaAsync(connection, AuthoritySchemaMetaKey, AuthoritySchemaVersion, cancellationToken).ConfigureAwait(false);
 	}
 
 	public static async Task ClearIndexDataAsync(SqliteConnection connection, CancellationToken cancellationToken)
