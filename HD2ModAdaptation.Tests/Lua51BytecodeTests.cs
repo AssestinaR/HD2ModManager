@@ -31,13 +31,16 @@ public sealed class Lua51BytecodeTests
 
 		var parsed = Lua51Bytecode.Read(chunk);
 		Assert.Equal(chunk, Lua51Bytecode.Write(parsed));
-		Assert.Equal(2, parsed.Main.MaxStackSize);
+		Assert.Equal(4, parsed.Main.MaxStackSize);
 		Assert.Equal(2, parsed.Main.IsVararg);
 		Assert.Equal(0, parsed.Main.ParameterCount);
 		Assert.Empty(parsed.Main.Prototypes);
-		Assert.Equal(2, parsed.Main.Constants.Count);
-		Assert.Equal("load", Encoding.UTF8.GetString(parsed.Main.Constants[0].Text!));
-		Assert.Equal("print('hello')", Encoding.UTF8.GetString(parsed.Main.Constants[1].Text!));
+		Assert.Equal(5, parsed.Main.Constants.Count);
+		Assert.Equal("rawget", Encoding.UTF8.GetString(parsed.Main.Constants[0].Text!));
+		Assert.Equal("_G", Encoding.UTF8.GetString(parsed.Main.Constants[1].Text!));
+		Assert.Equal("loadstring", Encoding.UTF8.GetString(parsed.Main.Constants[2].Text!));
+		Assert.Equal("load", Encoding.UTF8.GetString(parsed.Main.Constants[3].Text!));
+		Assert.Equal("print('hello')", Encoding.UTF8.GetString(parsed.Main.Constants[4].Text!));
 	}
 
 	[Fact]
@@ -46,30 +49,54 @@ public sealed class Lua51BytecodeTests
 		var parsed = Lua51Bytecode.Read(Lua51WrapperChunk.Build("return 1"));
 		var code = parsed.Main.Code;
 
-		// local f = load(source); if f then return f() end; return
-		Assert.Equal(8, code.Count);
+		// local f = rawget(_G, "loadstring") or rawget(_G, "load")
+		// if f then return f(source)() end
+		// return
+		Assert.Equal(16, code.Count);
 		Assert.Equal(OpGetGlobal, Opcode(code[0]));
-		Assert.Equal(0, ArgA(code[0]));
 		Assert.Equal(0, ArgBx(code[0]));
-		Assert.Equal(OpLoadK, Opcode(code[1]));
-		Assert.Equal(1, ArgA(code[1]));
+		Assert.Equal(OpGetGlobal, Opcode(code[1]));
 		Assert.Equal(1, ArgBx(code[1]));
-		Assert.Equal(OpCall, Opcode(code[2]));
-		Assert.Equal(2, ArgB(code[2]));
-		Assert.Equal(2, ArgC(code[2]));
-		// TEST falls through when R0 is truthy and takes the following JMP when it
-		// is falsy, so the JMP has to land on the final plain return.
-		Assert.Equal(OpTest, Opcode(code[3]));
-		Assert.Equal(0, ArgC(code[3]));
-		Assert.Equal(OpJump, Opcode(code[4]));
-		Assert.Equal(7, 5 + ArgSBx(code[4]));
-		Assert.Equal(OpCall, Opcode(code[5]));
-		Assert.Equal(1, ArgB(code[5]));
-		Assert.Equal(0, ArgC(code[5]));
-		Assert.Equal(OpReturn, Opcode(code[6]));
-		Assert.Equal(0, ArgB(code[6]));
-		Assert.Equal(OpReturn, Opcode(code[7]));
-		Assert.Equal(1, ArgB(code[7]));
+		Assert.Equal(OpLoadK, Opcode(code[2]));
+		Assert.Equal(2, ArgBx(code[2]));
+		Assert.Equal(OpCall, Opcode(code[3]));
+		Assert.Equal(3, ArgB(code[3]));
+		Assert.Equal(2, ArgC(code[3]));
+
+		// TEST with C=1 jumps when the value is truthy: a present loadstring skips
+		// the `load` fallback, so the jump has to land on the LOADK that follows it.
+		Assert.Equal(OpTest, Opcode(code[4]));
+		Assert.Equal(1, ArgC(code[4]));
+		Assert.Equal(OpJump, Opcode(code[5]));
+		Assert.Equal(9, 6 + ArgSBx(code[5]));
+
+		// `load` fallback: same shape, and it skips the call when it is nil too.
+		Assert.Equal(OpGetGlobal, Opcode(code[6]));
+		Assert.Equal(3, ArgBx(code[6]));
+		Assert.Equal(OpTest, Opcode(code[7]));
+		Assert.Equal(1, ArgC(code[7]));
+		Assert.Equal(OpJump, Opcode(code[8]));
+		Assert.Equal(11, 9 + ArgSBx(code[8]));
+
+		Assert.Equal(OpLoadK, Opcode(code[9]));
+		Assert.Equal(1, ArgA(code[9]));
+		Assert.Equal(4, ArgBx(code[9]));
+		Assert.Equal(OpCall, Opcode(code[10]));
+		Assert.Equal(2, ArgB(code[10]));
+		Assert.Equal(2, ArgC(code[10]));
+
+		Assert.Equal(OpTest, Opcode(code[11]));
+		Assert.Equal(0, ArgC(code[11]));
+		Assert.Equal(OpJump, Opcode(code[12]));
+		Assert.Equal(15, 13 + ArgSBx(code[12]));
+
+		Assert.Equal(OpCall, Opcode(code[13]));
+		Assert.Equal(1, ArgB(code[13]));
+		Assert.Equal(0, ArgC(code[13]));
+		Assert.Equal(OpReturn, Opcode(code[14]));
+		Assert.Equal(0, ArgB(code[14]));
+		Assert.Equal(OpReturn, Opcode(code[15]));
+		Assert.Equal(1, ArgB(code[15]));
 	}
 
 	[Fact]

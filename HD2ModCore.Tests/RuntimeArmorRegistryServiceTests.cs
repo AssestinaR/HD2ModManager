@@ -446,7 +446,13 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(AdaptationLuaResourceFormat.BytecodeVersion, BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0xBC, 4)));
 		var payload = bytes.AsSpan(0xC0).ToArray();
 		var chunk = AdaptationLua51Bytecode.Read(payload);
-		var embedded = System.Text.Encoding.UTF8.GetString(chunk.Main.Constants[1].Text!);
+		// The merged source is the largest string constant; the others are the loader
+		// lookup names (rawget / _G / loadstring / load).
+		var embedded = System.Text.Encoding.UTF8.GetString(
+			chunk.Main.Constants
+				.Where(constant => constant.Text is not null)
+				.OrderByDescending(constant => constant.Text!.Length)
+				.First().Text!);
 		Assert.Contains("local BC = ", embedded, StringComparison.Ordinal);
 		Assert.Contains("@mods/codex/runtime_armor_registry", embedded, StringComparison.Ordinal);
 		// The manager must still be able to read back what it wrote, because a later

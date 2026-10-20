@@ -351,11 +351,15 @@ public static class Lua51Bytecode
 // Builds the single chunk the manager now emits. Instead of a whole compiler this
 // is one fixed, provably correct prototype equivalent to
 //
-//     local f = load(<source>)
-//     if f then return f() end
+//     local f = rawget(_G, "loadstring") or rawget(_G, "load")
+//     if f then return f(<source>)() end
 //     return
 //
-// so the merged source text keeps working while the payload becomes bytecode.
+// The loader must be resolved through rawget: since the 2026-10-20 update the
+// game's Lua sandbox no longer provides the `load` global, and a boot chunk that
+// calls a nil global makes the engine fault instead of reporting a Lua error.
+// `loadstring` is still available, so it is tried first and `load` stays as a
+// fallback for builds that expose only that one.
 public static class Lua51WrapperChunk
 {
 	private const int OpTest = 26;
@@ -371,14 +375,26 @@ public static class Lua51WrapperChunk
 	{
 		ArgumentNullException.ThrowIfNull(sourceText);
 		var source = Encoding.UTF8.GetBytes(sourceText);
-		var loaderName = Lua51Constant.FromString("load");
 
-		// R0 = load, R1 = source text; both fit in two stack slots.
 		var code = new[]
 		{
+			// R0 = rawget(_G, "loadstring")
 			EncodeABx(OpGetGlobal, 0, 0),
-			EncodeABx(OpLoadK, 1, 1),
+			EncodeABx(OpGetGlobal, 1, 1),
+			EncodeABx(OpLoadK, 2, 2),
+			EncodeABC(OpCall, 0, 3, 2),
+			// TEST jumps when the value is truthy, so a present loadstring skips the
+			// `load` fallback entirely.
+			EncodeABC(OpTest, 0, 0, 1),
+			EncodeASBx(OpJump, 0, 3),
+			// R0 = load
+			EncodeABx(OpGetGlobal, 0, 3),
+			EncodeABC(OpTest, 0, 0, 1),
+			EncodeASBx(OpJump, 0, 2),
+			// R0 = f(<source>)
+			EncodeABx(OpLoadK, 1, 4),
 			EncodeABC(OpCall, 0, 2, 2),
+			// if R0 then return R0() end
 			EncodeABC(OpTest, 0, 0, 0),
 			EncodeASBx(OpJump, 0, 2),
 			EncodeABC(OpCall, 0, 1, 0),
@@ -394,9 +410,16 @@ public static class Lua51WrapperChunk
 			UpvalueCount = 0,
 			ParameterCount = 0,
 			IsVararg = VarargIsVararg,
-			MaxStackSize = 2,
+			MaxStackSize = 4,
 			Code = code,
-			Constants = [loaderName, Lua51Constant.FromString(source)],
+			Constants =
+			[
+				Lua51Constant.FromString("rawget"),
+				Lua51Constant.FromString("_G"),
+				Lua51Constant.FromString("loadstring"),
+				Lua51Constant.FromString("load"),
+				Lua51Constant.FromString(source),
+			],
 		};
 
 		var header = new byte[Lua51Bytecode.HeaderLength];
