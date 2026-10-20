@@ -88,7 +88,7 @@ public static class WardrobeSectionMapFile
 			PatchUnitMesh unit;
 			try
 			{
-				unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
+				unit = await reader.ReadStructureOnlyAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
 					.ConfigureAwait(false);
 			}
 			catch (Exception exception) when (exception is InvalidDataException or NotSupportedException or ArgumentException or OverflowException)

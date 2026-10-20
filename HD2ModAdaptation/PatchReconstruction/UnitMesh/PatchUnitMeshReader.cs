@@ -44,6 +44,17 @@ public sealed class PatchUnitMeshReader
 		CancellationToken cancellationToken = default)
 		=> await ReadCoreAsync(entry, patchEntries, dependencyPolicy, UnitMeshReadOptions.CanonicalSource, retainPayloads: false, cancellationToken).ConfigureAwait(false);
 
+	// 只要结构：mesh / section / material 的 TOC 事实，完全不解顶点。
+	// 只问"有几个 section、每个多少索引"的调用方（section 映射表、衣柜编辑器）走这条，
+	// 12 万顶点的头盔 unit 从秒级降到几十毫秒。
+	// Structure only: TOC facts (meshes/sections/materials) with no vertex decode at all.
+	public async ValueTask<PatchUnitMesh> ReadStructureOnlyAsync(
+		PatchTocEntry entry,
+		IReadOnlyList<PatchTocEntry> patchEntries,
+		PatchUnitDependencyPolicy dependencyPolicy = PatchUnitDependencyPolicy.RequirePatchLocalComposite,
+		CancellationToken cancellationToken = default)
+		=> await ReadCoreAsync(entry, patchEntries, dependencyPolicy, UnitMeshReadOptions.StructureOnly, retainPayloads: false, cancellationToken).ConfigureAwait(false);
+
 	private async ValueTask<PatchUnitMesh> ReadCoreAsync(
 		PatchTocEntry entry,
 		IReadOnlyList<PatchTocEntry> patchEntries,

@@ -6,12 +6,25 @@ namespace HD2ModAdaptation.PatchReconstruction.UnitMesh;
 public sealed record UnitMeshReadOptions(
 	bool PreserveVertexData = true,
 	bool PreserveComponentRawData = true,
-	bool BuildTriangleMirror = true)
+	bool BuildTriangleMirror = true,
+	// 只读结构（mesh / section / material）时可以完全跳过原始网格数据。
+	// 这一步会逐顶点解码分量：一个头盔 unit 有 12 万个顶点，光这一步就是秒级；
+	// 而"某 mesh 有几个 section、每个 section 多少索引"全在 TOC 里，根本不需要它。
+	// Skipping raw mesh data is safe whenever only the structural facts are wanted: the
+	// per-vertex decode is seconds on a 120k-vertex helmet, while section counts live in the TOC.
+	bool BuildRawMeshData = true)
 {
 	public static UnitMeshReadOptions CanonicalSource { get; } = new(
 		PreserveVertexData: false,
 		PreserveComponentRawData: false,
 		BuildTriangleMirror: false);
+
+	/// <summary>只要结构：不解顶点、不建三角形镜像、不留原始字节。</summary>
+	public static UnitMeshReadOptions StructureOnly { get; } = new(
+		PreserveVertexData: false,
+		PreserveComponentRawData: false,
+		BuildTriangleMirror: false,
+		BuildRawMeshData: false);
 }
 
 // 浣滅敤锛氱Щ妞?HD2SDK StingrayMeshFile 鐨勫彧璇荤粨鏋勮В鏋愰儴鍒嗭紝璇诲彇 Unit mesh/stream/material 鎽樿銆?
@@ -96,7 +109,9 @@ public sealed class UnitMeshReader
 			? Array.Empty<UnitMaterialBinding>()
 			: ReadMaterials(tocData, materialsOffset);
 		var rawMeshes = BuildRawMeshSummaries(meshes, streams, effectiveGpuData.Length);
-		var rawMeshData = ReadRawMeshData(meshes, streams, effectiveGpuData, options);
+		var rawMeshData = options.BuildRawMeshData
+			? ReadRawMeshData(meshes, streams, effectiveGpuData, options)
+			: Array.Empty<UnitRawMeshData>();
 		meshes = ApplySdkMeshClassification(meshes, rawMeshData, materials);
 		var transformInfo = transformInfoOffset == UnsupportedOffset
 			? UnitTransformInfo.Empty

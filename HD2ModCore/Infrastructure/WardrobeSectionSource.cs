@@ -133,7 +133,7 @@ public static class WardrobeSectionSource
 				try
 				{
 					// 只解命中的这一条：整份 patch 全解一遍是之前慢的原因。
-					var unit = await reader.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
+					var unit = await reader.ReadStructureOnlyAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
 						.ConfigureAwait(false);
 					var built = WardrobeSectionMapFile.BuildUnit(fileId, unit.Model);
 					if (built is not null)
