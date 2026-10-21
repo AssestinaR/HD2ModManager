@@ -133,15 +133,17 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		IsVpkMod = true;
 		OnPropertyChanged(nameof(IsVpkMod));
 		OnPropertyChanged(nameof(ShowPatchSettingsCard));
-		_ = LoadVpkAsync(directory, node.Metadata.Name);
+		// 带上当前的详情请求代号：用户在异步加载途中切走时，旧结果不能盖掉新页面。
+		_ = LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration);
 	}
 
-	private async Task LoadVpkAsync(string directory, string modName)
+	private async Task LoadVpkAsync(string directory, string modName, int generation)
 	{
 		try
 		{
 			var file = await VpkModWardrobeService.ReadAsync(directory).ConfigureAwait(true);
 			var map = await VpkModWardrobeService.ReadSectionMapAsync(directory).ConfigureAwait(true);
+			if (generation != _detailRequestGeneration) return;
 			_vpkFile = file;
 			OnPropertyChanged(nameof(EnableVpkComponentTree));
 			if (map is not null)
@@ -228,7 +230,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
 			// 换甲后 section 表是新的，树必须重画。
-			await LoadVpkAsync(directory, node.Metadata.Name).ConfigureAwait(true);
+			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
 		{
