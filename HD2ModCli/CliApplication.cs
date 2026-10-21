@@ -2069,6 +2069,30 @@ public static class CliApplication
 			return exitCode;
 		}
 
+		if (command.Length >= 2 && command[0] == "vpk" && command[1] == "rekey")
+		{
+			// 把 vpk2patch 产出的 7 个 Unit 换到某件护甲自己的 Unit 键上，
+			// 并把该护甲其余槽位用隐藏 Unit 顶掉。产物写进 Overwrite/（来源不动）。
+			if (command.Length < 3)
+				throw new CliUserException("ModRequired",
+					"用法：hd2mod vpk rekey <Mod GUID 或前缀> [--archive-id <护甲归档>[,<头盔归档>]] "
+					+ "[--output <临时目录>] --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏 data 目录> --json");
+			var rekeyWorkspace = CliWorkspace.Open(invocation.Options);
+			var rekeyTargets = string.IsNullOrWhiteSpace(invocation.Options.ArchiveId)
+				? CliVpkRekey.DefaultTargetArchiveIds
+				: invocation.Options.ArchiveId
+					.Split([',', ';', '|'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+					.ToArray();
+			var rekeyResult = await CliVpkRekey.RunAsync(
+				rekeyWorkspace,
+				invocation.Command[2],
+				rekeyTargets,
+				invocation.Options.Output,
+				default).ConfigureAwait(false);
+			Emit(invocation.Options, CliVpkRekey.Project(rekeyResult), () => CliVpkRekey.Format(rekeyResult));
+			return 0;
+		}
+
 		if (command.Length is 3 or 4 && command[0] == "source" && command[1] == "convert")
 		{
 			// ⚠️ 这是**旧路径**：模型专用，把用到的材质全部合并进一个材质包。
