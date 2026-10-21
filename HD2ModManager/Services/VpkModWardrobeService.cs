@@ -12,9 +12,19 @@ namespace HD2ModManager.Services;
 /// 模组有意义。分两个文件会出现"卡片开了但勾选丢了"这种半截状态。
 /// </para>
 /// </summary>
-public sealed record VpkWardrobeFile(bool ComponentTreeEnabled, VpkWardrobeState State)
+public sealed record VpkWardrobeFile(
+	bool ComponentTreeEnabled,
+	VpkWardrobeState State,
+	string? TargetArmorArchiveId = null,
+	string? TargetArmorName = null)
 {
 	public static VpkWardrobeFile Default { get; } = new(false, VpkWardrobeState.Empty);
+
+	/// <summary>树的根标题：<c>VPK &lt;模组名&gt; 替换 &lt;目标护甲&gt;</c>。</summary>
+	public string BuildTreeLabel(string modName)
+		=> string.IsNullOrWhiteSpace(TargetArmorName)
+			? $"VPK {modName}（尚未指向具体护甲）"
+			: $"VPK {modName} 替换 {TargetArmorName}";
 }
 
 /// <summary>
@@ -85,6 +95,8 @@ public sealed class VpkModWardrobeService
 			using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
 			var root = document.RootElement;
 			var enabled = root.TryGetProperty("componentTreeEnabled", out var flag) && flag.ValueKind == JsonValueKind.True;
+			var targetArchiveId = root.TryGetProperty("targetArmorArchiveId", out var archive) ? archive.GetString() : null;
+			var targetName = root.TryGetProperty("targetArmorName", out var armorName) ? armorName.GetString() : null;
 			var disabled = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.Ordinal);
 			if (root.TryGetProperty("disabled", out var map) && map.ValueKind == JsonValueKind.Object)
 			{
@@ -99,7 +111,7 @@ public sealed class VpkModWardrobeService
 				}
 			}
 
-			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled));
+			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName);
 		}
 		catch (Exception exception) when (exception is IOException or JsonException)
 		{
@@ -115,6 +127,8 @@ public sealed class VpkModWardrobeService
 		{
 			schema = Schema,
 			componentTreeEnabled = file.ComponentTreeEnabled,
+			targetArmorArchiveId = file.TargetArmorArchiveId,
+			targetArmorName = file.TargetArmorName,
 			disabled = file.State.Disabled.ToDictionary(
 				pair => pair.Key,
 				pair => pair.Value.Order().ToArray(),
@@ -160,7 +174,14 @@ public sealed class VpkModWardrobeService
 			.FirstOrDefault();
 	}
 
-	/// <summary>这个 Mod 是不是 VPK 版（有 <c>vpk2patch/</c> 载荷）。</summary>
+	/// <summary>
+	/// 这个 Mod 是不是"VPK 版"——判据是<b>有 sections.json</b>，不是"有 vpk2patch 目录"。
+	/// <para>
+	/// 材质 VPK 也会产出 <c>vpk2patch/</c>，但它里面没有 Unit，换甲与组件树都无从谈起；
+	/// 按目录判断会让材质包也长出一张"目标护甲"卡片，点下去只会得到"这里没有 Unit patch"。
+	/// 只有含 Unit 的转换产物才会带 <c>sections.json</c>，所以用它当判据。
+	/// </para>
+	/// </summary>
 	public static bool IsVpkMod(string modDirectory)
-		=> Directory.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName));
+		=> ResolveEffectivePatchDirectory(modDirectory) is not null;
 }

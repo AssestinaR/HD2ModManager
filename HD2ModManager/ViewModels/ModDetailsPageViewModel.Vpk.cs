@@ -146,7 +146,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			OnPropertyChanged(nameof(EnableVpkComponentTree));
 			if (map is not null)
 			{
-				var label = BuildVpkTreeLabel(modName, directory);
+				var label = file.BuildTreeLabel(string.IsNullOrWhiteSpace(modName) ? Path.GetFileName(directory) : modName);
 				var root = VpkModWardrobeService.BuildTree(label, map);
 				var tree = new WardrobeTreeViewModel(this);
 				tree.LoadFromTree(root, editable: true);
@@ -164,14 +164,6 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		{
 			VpkComponentStatus = "读取 VPK 组件信息失败：" + exception.Message;
 		}
-	}
-
-	/// <summary>树的根标题：<c>VPK &lt;模组名&gt; 替换 &lt;目标护甲&gt;</c>。</summary>
-	private static string BuildVpkTreeLabel(string modName, string directory)
-	{
-		var name = string.IsNullOrWhiteSpace(modName) ? Path.GetFileName(directory) : modName;
-		var overwrite = Path.Combine(directory, ModNodePayloadLayout.OverwriteDirectoryName);
-		return Directory.Exists(overwrite) ? $"VPK {name}（已换到目标护甲）" : $"VPK {name}（自定义素体）";
 	}
 
 	/// <summary>
@@ -228,6 +220,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			}
 
 			VpkComponentStatus = $"已换到 {target.DisplayName}：替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。";
+			// 记住这次指向了哪件护甲：树的根标题要用它，重新打开页面时也不必再猜。
+			_vpkFile = _vpkFile with { TargetArmorArchiveId = target.ArchiveId, TargetArmorName = target.DisplayName };
+			await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
 			_notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(10));
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
