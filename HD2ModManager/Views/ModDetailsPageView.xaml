@@ -3,9 +3,15 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
+        <ResourceDictionary>
+        <ResourceDictionary.MergedDictionaries>
+            <!-- 组件树的外观与护甲映射页共用一份，避免两处长歪。 -->
+            <ResourceDictionary Source="WardrobeTreeResources.xaml"/>
+        </ResourceDictionary.MergedDictionaries>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
         <local:AttachmentListMaxHeightConverter x:Key="AttachmentListMaxHeight"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
     </UserControl.Resources>
     <Grid>
     <ScrollViewer x:Name="DetailsScrollViewer" Background="Transparent" local:SmoothScrollBehavior.IsEnabled="True">
@@ -37,6 +43,12 @@
                 </StackPanel>
             </Border>
 
+            <!--
+                这张卡本身对所有 Mod 都显示（打开文件夹 / 改图像 / 改名 / 改备注是通用操作）；
+                只有 patch 级的那几行对 VPK 版 Mod 隐藏——VPK 的 patch 是转换产物，
+                在它上面做 patch 级编辑会被下一次转换覆盖。用户真要编辑，
+                把 vpk2patch/ 里的 patch 拿出来当普通 Mod 导入即可。
+            -->
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <Grid>
                     <Grid.RowDefinitions>
@@ -59,7 +71,7 @@
                             <Button Style="{StaticResource AppSecondaryButton}" Content="修改备注" Click="OnEditDescriptionClick" Padding="14,6" Margin="8,0,0,0"/>
                         </StackPanel>
                     </Grid>
-                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}">
+                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding ShowPatchSettingsCard, Converter={StaticResource BoolToVis}}">
                         <Button Style="{StaticResource AppSecondaryButton}" Content="修复 patch" Command="{Binding RebuildSameKeyCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="生成替换其他护甲的模组" Command="{Binding PlanCrossArmorTransferCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="规整护甲patch包" Command="{Binding NormalizeArmorCommand}" Margin="0,0,8,0"/>
@@ -73,14 +85,79 @@
                         <Button Style="{StaticResource AppSecondaryButton}" Content="批量生成装饰（以主体 Mod）" Command="{Binding PlanBatchDecorationCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="生成装饰 Mod（以来源 Mod）" Command="{Binding PlanDecorationCommand}"/>
                     </WrapPanel>
-                    <WrapPanel Grid.Row="3" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}">
+                    <WrapPanel Grid.Row="3" HorizontalAlignment="Right" Margin="0,10,0,0" Visibility="{Binding ShowPatchSettingsCard, Converter={StaticResource BoolToVis}}">
                         <Button Style="{StaticResource AppSecondaryButton}" Content="头盔合并到盔甲并输出" Command="{Binding PlanHelmetToArmorMergeCommand}" Margin="0,0,8,0"/>
                         <Button Style="{StaticResource AppSecondaryButton}" Content="{Binding HelmetMergeToggleText}" Command="{Binding ToggleHelmetToArmorMergeCommand}"/>
                     </WrapPanel>
                     <Button Grid.Row="4" HorizontalAlignment="Right" Margin="0,10,0,0" Style="{StaticResource AppSecondaryButton}"
                             Content="一键转为自定义素体" Command="{Binding ConvertToCustomModelCommand}"
-                            Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}"/>
+                            Visibility="{Binding ShowPatchSettingsCard, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
+            </Border>
+
+            <!--
+                VPK 动作卡：换目标护甲 + 是否启用衣物装饰组件切换。
+                VPK 版 Mod 的 patch 是转换产物，所以这张卡代替了 patch 版设置卡。
+            -->
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsVpkMod, Converter={StaticResource BoolToVis}}">
+                <StackPanel>
+                    <TextBlock Text="VPK 动作" Style="{StaticResource SectionTitle}"/>
+                    <Grid Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="目标护甲" Foreground="{StaticResource TextSecondary}"
+                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
+                        <ComboBox Grid.Column="1" ItemsSource="{Binding VpkTargetArmors}"
+                                  SelectedItem="{Binding SelectedVpkTargetArmor, Mode=TwoWay}"
+                                  DisplayMemberPath="DisplayName" MinWidth="200" VerticalAlignment="Center"/>
+                        <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="切换"
+                                Command="{Binding ApplyVpkTargetArmorCommand}" Margin="12,0,0,0" Padding="14,6"/>
+                    </Grid>
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="启用 L4N 支持的衣物装饰组件切换"
+                                   Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
+                                  IsChecked="{Binding EnableVpkComponentTree, Mode=TwoWay}"
+                                  VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    </Grid>
+                    <TextBlock Text="{Binding VpkComponentStatus}" Foreground="{StaticResource TextSecondary}"
+                               TextWrapping="Wrap" Margin="0,8,0,0"
+                               Visibility="{Binding HasVpkComponentStatus, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+            </Border>
+
+            <!--
+                衣物装饰组件卡：标题行 + 右侧"应用" + 树。
+                树的外观与护甲映射页完全同一份（WardrobeTreeResources.xaml）。
+                勾选只改内存状态，点"应用"才烘进 patch——烘焙要写 30 MB 的 TOC，不该跟着每次点击走。
+            -->
+            <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding ShowVpkComponentCard, Converter={StaticResource BoolToVis}}">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="衣物装饰组件" Style="{StaticResource SectionTitle}" VerticalAlignment="Center"/>
+                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="应用"
+                                Command="{Binding ApplyVpkComponentsCommand}" Padding="16,6"/>
+                    </Grid>
+                    <TextBlock Text="关掉的 section 不再绘制。改动在点「应用」后烘进 patch。"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                    <TreeView ItemsSource="{Binding VpkTree.Roots}"
+                              ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
+                              ItemContainerStyle="{StaticResource WardrobeTreeItemStyleBase}"
+                              Background="Transparent" BorderThickness="0"
+                              Margin="0,8,0,0" MaxHeight="420"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                </StackPanel>
             </Border>
 
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}" Visibility="{Binding IsDecoration, Converter={StaticResource BoolToVis}}">

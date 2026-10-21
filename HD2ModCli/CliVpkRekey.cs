@@ -61,6 +61,12 @@ internal static class CliVpkRekey
 		if (string.IsNullOrWhiteSpace(workspace.LibraryRoot))
 			throw new CliUserException("LibraryNotConfigured", "vpk rekey 需要 --library（或带 settings.json 的 --manager-root）。");
 		var paths = new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot);
+
+		// 只给一个归档时，按 setId 把配套的另一半（护甲 ↔ 头盔）补上。
+		// 为什么必须补：护甲与头盔在游戏里是两个归档、两个 kit，只换一半会让玩家的头还是原版的。
+		if (targets.Count == 1 && !string.IsNullOrWhiteSpace(workspace.GameDataRoot))
+			targets = await ExpandTargetKitAsync(workspace.GameDataRoot!, targets[0], cancellationToken).ConfigureAwait(false);
+
 		var modDirectory = Path.Combine(paths.ModsDirectory, node.RelativePath);
 		if (!Directory.Exists(modDirectory))
 			throw new CliUserException("ModDirectoryMissing", $"Mod 目录不存在：{modDirectory}");
@@ -169,6 +175,36 @@ internal static class CliVpkRekey
 					+ $" ← 0x{mapping.Source!.UnitAssetKey.FileId:x16} → 0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}")
 				.ToArray(),
 		};
+	}
+
+	/// <summary>
+	/// 把一个归档 id 扩成"这套装备的完整目标"：同 setId 的护甲 + 头盔。
+	/// <para>
+	/// 用户在下拉里选的是"哪套护甲"，而游戏里护甲与头盔是两个归档、两个 kit。
+	/// 只换护甲会让头还是原版的——那种"身体换了、头没换"的结果比不换更难解释。
+	/// </para>
+	/// </summary>
+	private static async ValueTask<IReadOnlyList<string>> ExpandTargetKitAsync(
+		string gameData,
+		string archiveId,
+		CancellationToken cancellationToken)
+	{
+		var snapshot = await CliEquipmentFacts.LoadAsync(gameData, cancellationToken).ConfigureAwait(false);
+		var facts = CliEquipmentFacts.Project(snapshot, null, null);
+		var self = facts.Kits.FirstOrDefault(kit =>
+			kit.ArchiveId.Equals(archiveId, StringComparison.OrdinalIgnoreCase));
+		if (self is null)
+			return [archiveId];
+
+		var siblings = facts.Kits
+			.Where(kit => kit.SetId == self.SetId
+				&& !kit.ArchiveId.Equals(archiveId, StringComparison.OrdinalIgnoreCase)
+				&& (kit.Category.Equals("Armor", StringComparison.OrdinalIgnoreCase)
+					|| kit.Category.Equals("Helmet", StringComparison.OrdinalIgnoreCase)))
+			.Select(kit => kit.ArchiveId)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		return [archiveId, .. siblings];
 	}
 
 	/// <summary>

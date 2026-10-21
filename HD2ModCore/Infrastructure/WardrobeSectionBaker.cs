@@ -1,4 +1,7 @@
 using System.Buffers.Binary;
+using System.Globalization;
+using HD2ModAdaptation.PatchReconstruction;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
@@ -27,6 +30,12 @@ public sealed record WardrobeSectionBakeResult(
 /// 在产物上落地：patch 就是状态，部署下去即生效。
 /// </para>
 /// <para>
+/// <b>偏移是相对谁的。</b>相对<b>该 unit 自己的 TocData</b>，不是相对整个 patch 文件——
+/// <c>sections.json</c> 里的 <c>tocRelative</c> 就是这个意思（当年的 Lua 也是拿 unit 的
+/// TocData 去套）。所以这里必须先按 TOC 找到每个 unit 的 payload 落点，再在那一小段里写。
+/// 把偏移当文件绝对偏移用，写下去的是别人的字段，而结果"看起来仍然像一份正常的 patch"。
+/// </para>
+/// <para>
 /// <b>为什么可逆而不用备份。</b><c>sections.json</c> 里每个 section 的每级 LOD 都记着
 /// 它<b>原本的</b> <c>numIndices</c>（<see cref="WardrobeSectionToggle.NumIndices"/>）。
 /// 隐藏写 0，显示写回那个值——两边都能从同一份表算出来，不需要复制一份几十 MB 的原始 payload。
@@ -36,8 +45,7 @@ public sealed record WardrobeSectionBakeResult(
 /// 这里<b>不校验</b> <c>sections.json</c> 里记的 patch sha256——第一次烘焙之后 sha 必然变，
 /// 拿它当闸门会让第二次编辑永远失败。取而代之的是一条更强的检查：
 /// <b>每个要写的 dword 当前必须要么是 0、要么是它原本的值</b>。任何别的值都说明这份
-/// <c>sections.json</c> 与这份 patch 不是一套（比如重新转换过），此时拒绝写入并报错，
-/// 而不是把偏移写到别的字段上——那会产出"看起来正常、几何却错位"的 patch。
+/// <c>sections.json</c> 与这份 patch 不是一套（比如重新转换过），此时拒绝写入并报错。
 /// </para>
 /// </summary>
 public static class WardrobeSectionBaker
@@ -60,29 +68,51 @@ public static class WardrobeSectionBaker
 		if (!File.Exists(path))
 			throw new FileNotFoundException($"找不到 patch 文件：{path}", path);
 
-		var disabled = NormalizeDisabled(disabledByUnit);
 		var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+		var slices = ScanUnitSlices(bytes, path);
+		var result = Bake(bytes, slices, map, disabledByUnit, cancellationToken);
+		if (result.DwordsWritten != 0)
+			await WriteAtomicAsync(path, bytes, cancellationToken).ConfigureAwait(false);
+		return result;
+	}
+
+	/// <summary>
+	/// 纯核心：在给定的字节缓冲上按 unit 切片写 dword。
+	/// <paramref name="unitSlices"/> 是"unit FileId → (payload 起点, 长度)"。
+	/// 抽出来是为了让合成数据的测试不必造一份完整的 patch TOC。
+	/// </summary>
+	internal static WardrobeSectionBakeResult Bake(
+		byte[] bytes,
+		IReadOnlyDictionary<string, (int Offset, int Size)> unitSlices,
+		WardrobeSectionMapDocument map,
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>> disabledByUnit,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(bytes);
+		ArgumentNullException.ThrowIfNull(unitSlices);
+		ArgumentNullException.ThrowIfNull(map);
+		ArgumentNullException.ThrowIfNull(disabledByUnit);
+
+		var disabled = NormalizeDisabled(disabledByUnit);
 		var warnings = new List<string>();
 
 		// ① 先全量校验再动手。写到一半才发现对不上，留下的是半烘状态，比不写更难查。
 		foreach (var unit in map.Units)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			if (!unitSlices.TryGetValue(unit.FileId, out var slice))
+			{
+				warnings.Add($"patch 里找不到 unit {unit.FileId} 的 payload；它的 section 无法烘焙。");
+				continue;
+			}
+
 			IReadOnlyCollection<int> off = disabled.TryGetValue(unit.FileId, out var indices) ? indices : Array.Empty<int>();
 			foreach (var section in unit.Sections)
 			{
-				var target = off.Contains(section.Index) ? 0u : (uint?)null;
 				foreach (var toggle in section.Toggles)
 				{
-					var offset = ParseOffset(toggle.NumIndicesOffset, unit.FileId, section.Index);
-					if (offset + sizeof(uint) > bytes.Length)
-					{
-						throw new InvalidDataException(
-							$"sections.json 与这份 patch 对不上：unit {unit.FileId} 第 {section.Index} 个 section 的 "
-							+ $"LOD{toggle.Lod} 落点 0x{offset:x} 超出了 patch 长度 {bytes.Length}。请重新转换。");
-					}
-
-					var current = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(offset, sizeof(uint)));
+					var absolute = ResolveOffset(slice, toggle, unit.FileId, section.Index, bytes.Length);
+					var current = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(absolute, sizeof(uint)));
 					if (current != 0 && current != toggle.NumIndices)
 					{
 						throw new InvalidDataException(
@@ -100,6 +130,9 @@ public static class WardrobeSectionBaker
 		foreach (var unit in map.Units)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			if (!unitSlices.TryGetValue(unit.FileId, out var slice))
+				continue;
+
 			IReadOnlyCollection<int> off = disabled.TryGetValue(unit.FileId, out var indices) ? indices : Array.Empty<int>();
 			foreach (var section in unit.Sections)
 			{
@@ -108,12 +141,12 @@ public static class WardrobeSectionBaker
 				else enabledCount++;
 				foreach (var toggle in section.Toggles)
 				{
-					var offset = ParseOffset(toggle.NumIndicesOffset, unit.FileId, section.Index);
+					var absolute = ResolveOffset(slice, toggle, unit.FileId, section.Index, bytes.Length);
 					var target = hide ? 0u : toggle.NumIndices;
-					var current = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(offset, sizeof(uint)));
+					var current = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(absolute, sizeof(uint)));
 					if (current == target)
 						continue;
-					BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(offset, sizeof(uint)), target);
+					BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(absolute, sizeof(uint)), target);
 					written++;
 				}
 			}
@@ -137,11 +170,6 @@ public static class WardrobeSectionBaker
 			}
 		}
 
-		if (written != 0)
-		{
-			await WriteAtomicAsync(path, bytes, cancellationToken).ConfigureAwait(false);
-		}
-
 		return new WardrobeSectionBakeResult(written, disabledCount, enabledCount, warnings);
 	}
 
@@ -158,9 +186,20 @@ public static class WardrobeSectionBaker
 		ArgumentNullException.ThrowIfNull(map);
 		var path = Path.GetFullPath(patchTocPath);
 		var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+		var slices = ScanUnitSlices(bytes, path);
+		return ReadBaked(bytes, slices, map);
+	}
+
+	internal static IReadOnlyDictionary<string, IReadOnlyCollection<int>> ReadBaked(
+		byte[] bytes,
+		IReadOnlyDictionary<string, (int Offset, int Size)> unitSlices,
+		WardrobeSectionMapDocument map)
+	{
 		var result = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.Ordinal);
 		foreach (var unit in map.Units)
 		{
+			if (!unitSlices.TryGetValue(unit.FileId, out var slice))
+				continue;
 			var disabled = new List<int>();
 			foreach (var section in unit.Sections)
 			{
@@ -169,10 +208,8 @@ public static class WardrobeSectionBaker
 				var toggle = section.Toggles.FirstOrDefault(candidate => candidate.Lod == 0) ?? section.Toggles.FirstOrDefault();
 				if (toggle is null)
 					continue;
-				var offset = ParseOffset(toggle.NumIndicesOffset, unit.FileId, section.Index);
-				if (offset + sizeof(uint) > bytes.Length)
-					continue;
-				if (BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(offset, sizeof(uint))) == 0
+				var absolute = ResolveOffset(slice, toggle, unit.FileId, section.Index, bytes.Length);
+				if (BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(absolute, sizeof(uint))) == 0
 					&& toggle.NumIndices != 0)
 				{
 					disabled.Add(section.Index);
@@ -184,6 +221,48 @@ public static class WardrobeSectionBaker
 		}
 
 		return result;
+	}
+
+	/// <summary>把 patch 里每个 Unit 条目的 payload 落点列出来（FileId → 文件内偏移 + 长度）。</summary>
+	internal static IReadOnlyDictionary<string, (int Offset, int Size)> ScanUnitSlices(byte[] bytes, string patchName)
+	{
+		var entries = new PatchTocScanner().ScanEntries(bytes, patchName);
+		var slices = new Dictionary<string, (int Offset, int Size)>(StringComparer.Ordinal);
+		foreach (var entry in entries)
+		{
+			if (entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
+				continue;
+			var fileId = entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
+			slices[fileId] = (checked((int)entry.TocDataOffset), checked((int)entry.TocDataSize));
+		}
+
+		return slices;
+	}
+
+	/// <summary>把"相对该 unit payload 的偏移"换算成文件内绝对偏移，并做边界检查。</summary>
+	private static int ResolveOffset(
+		(int Offset, int Size) slice,
+		WardrobeSectionToggle toggle,
+		string unitId,
+		int sectionIndex,
+		int fileLength)
+	{
+		var relative = ParseOffset(toggle.NumIndicesOffset, unitId, sectionIndex);
+		if (relative + sizeof(uint) > slice.Size)
+		{
+			throw new InvalidDataException(
+				$"sections.json 与这份 patch 对不上：unit {unitId} 第 {sectionIndex} 个 section 的 "
+				+ $"LOD{toggle.Lod} 落点 0x{relative:x} 超出了该 unit 的 payload（{slice.Size} 字节）。请重新转换。");
+		}
+
+		var absolute = slice.Offset + relative;
+		if (absolute + sizeof(uint) > fileLength)
+		{
+			throw new InvalidDataException(
+				$"unit {unitId} 的 payload 落点超出了 patch 长度 {fileLength}。请重新转换。");
+		}
+
+		return absolute;
 	}
 
 	private static Dictionary<string, HashSet<int>> NormalizeDisabled(
@@ -217,8 +296,7 @@ public static class WardrobeSectionBaker
 		var text = raw.Trim();
 		if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
 			text = text[2..];
-		if (!int.TryParse(text, System.Globalization.NumberStyles.HexNumber,
-			System.Globalization.CultureInfo.InvariantCulture, out var offset) || offset < 0)
+		if (!int.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var offset) || offset < 0)
 		{
 			throw new InvalidDataException(
 				$"sections.json 里 unit {unit} 第 {sectionIndex} 个 section 的偏移 '{raw}' 不是合法的十六进制。");

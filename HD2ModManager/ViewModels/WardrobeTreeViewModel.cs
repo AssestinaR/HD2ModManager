@@ -116,12 +116,31 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 }
 
 /// <summary>
+/// 树的开关状态来源。
+/// <para>
+/// 为什么把它抽出来：同一个树要服务两种数据源——衣柜的护甲掩码（按护甲 itemId 存）
+/// 和 VPK 模组的组件开关（按模组自己的 <c>wardrobe.json</c> 存）。两者语义不同，
+/// 但"点一下要改哪几个 section""当前是不是全关"完全一样。抽出来之后树的外观与交互
+/// 只有一份，两边不会长歪。
+/// </para>
+/// </summary>
+public interface IWardrobeTreeToggleStore
+{
+	bool ReadAllDisabled(WardrobeTreeNode node);
+
+	bool IsMixed(WardrobeTreeNode node);
+
+	void ApplyToggle(WardrobeTreeNode node, bool enabled);
+}
+
+/// <summary>
 /// 一件护甲的 section 树 + 它的权威掩码。
 /// 编辑即保存：每次勾选都写一次 <c>wardrobe.workspace.json</c>（原子写，几 KB）。
 /// </summary>
 public sealed class WardrobeTreeViewModel : BaseViewModel
 {
 	private readonly string workspacePath;
+	private readonly IWardrobeTreeToggleStore? toggleStore;
 	private WardrobeWorkspaceDocument workspace = WardrobeWorkspaceDocument.Empty;
 	private IReadOnlyList<WardrobeTreeNodeViewModel> roots = Array.Empty<WardrobeTreeNodeViewModel>();
 	private string statusMessage = string.Empty;
@@ -133,6 +152,43 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
 		this.workspacePath = workspacePath;
+	}
+
+	/// <summary>用外部的开关状态来源建树（VPK 模组的组件卡走这条）。</summary>
+	public WardrobeTreeViewModel(IWardrobeTreeToggleStore toggleStore)
+	{
+		this.toggleStore = toggleStore ?? throw new ArgumentNullException(nameof(toggleStore));
+		workspacePath = string.Empty;
+	}
+
+	/// <summary>
+	/// 用一棵**现成的**树填充视图。
+	/// <para>
+	/// VPK 模组没有"护甲 itemId"，它的 section 表来自自己 patch 的 <c>sections.json</c>，
+	/// 所以不走 <see cref="Load"/>（那条路要读衣柜工作区、算继承关系）。
+	/// </para>
+	/// </summary>
+	public void LoadFromTree(WardrobeTreeNode root, bool editable, bool expandRoot = true)
+	{
+		ArgumentNullException.ThrowIfNull(root);
+		IsEditable = editable;
+		followSource = false;
+		StatusMessage = string.Empty;
+		roots = [new WardrobeTreeNodeViewModel(this, root)];
+		OnPropertyChanged(nameof(Roots));
+		OnPropertyChanged(nameof(HasRoots));
+		OnPropertyChanged(nameof(FollowSource));
+		if (expandRoot)
+		{
+			foreach (var child in roots)
+			{
+				child.IsExpanded = true;
+				foreach (var body in child.Children)
+					body.IsExpanded = true;
+			}
+		}
+
+		RecomputeRowStripes();
 	}
 
 	public IReadOnlyList<WardrobeTreeNodeViewModel> Roots => roots;
@@ -284,13 +340,25 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 	}
 
 	internal bool ReadAllDisabled(WardrobeTreeNode node)
-		=> WardrobeTree.Counts(node, ArmourItemId, workspace) is { SectionCount: > 0 } counts && counts.AllDisabled;
+		=> toggleStore is not null
+			? toggleStore.ReadAllDisabled(node)
+			: WardrobeTree.Counts(node, ArmourItemId, workspace) is { SectionCount: > 0 } counts && counts.AllDisabled;
 
 	internal bool IsMixed(WardrobeTreeNode node)
-		=> WardrobeTree.Counts(node, ArmourItemId, workspace).IsMixed;
+		=> toggleStore is not null
+			? toggleStore.IsMixed(node)
+			: WardrobeTree.Counts(node, ArmourItemId, workspace).IsMixed;
 
 	internal void ApplyToggle(WardrobeTreeNode node, bool enabled)
 	{
+		if (toggleStore is not null)
+		{
+			// 外部来源（VPK 组件卡）只改内存状态：真正落盘要等用户点"应用"。
+			toggleStore.ApplyToggle(node, enabled);
+			Refresh();
+			return;
+		}
+
 		try
 		{
 			workspace = WardrobeTree.SetEnabled(workspace, ArmourItemId, node, enabled);

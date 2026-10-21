@@ -6,6 +6,18 @@ using HD2ModCore.Infrastructure;
 namespace HD2ModManager.Services;
 
 /// <summary>
+/// <c>mods/&lt;VPK&gt;/wardrobe.json</c> 的内容：这个 VPK 模组的组件开关。
+/// <para>
+/// <b>为什么把"卡片是否启用"也放这里</b>：它和勾选状态是同一件事的两半——都只对这一个
+/// 模组有意义。分两个文件会出现"卡片开了但勾选丢了"这种半截状态。
+/// </para>
+/// </summary>
+public sealed record VpkWardrobeFile(bool ComponentTreeEnabled, VpkWardrobeState State)
+{
+	public static VpkWardrobeFile Default { get; } = new(false, VpkWardrobeState.Empty);
+}
+
+/// <summary>
 /// VPK 模组的组件树与烘焙。
 /// <para>
 /// <b>为什么状态文件放在 Mod 目录而不是注册表</b>：这份开关只对<b>这一个</b> Mod 有意义，
@@ -63,43 +75,47 @@ public sealed class VpkModWardrobeService
 		}
 	}
 
-	public static async Task<VpkWardrobeState> ReadStateAsync(string modDirectory, CancellationToken cancellationToken = default)
+	public static async Task<VpkWardrobeFile> ReadAsync(string modDirectory, CancellationToken cancellationToken = default)
 	{
 		var path = GetStatePath(modDirectory);
-		if (!File.Exists(path)) return VpkWardrobeState.Empty;
+		if (!File.Exists(path)) return VpkWardrobeFile.Default;
 		try
 		{
 			await using var stream = File.OpenRead(path);
 			using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-			if (!document.RootElement.TryGetProperty("disabled", out var disabled) || disabled.ValueKind != JsonValueKind.Object)
-				return VpkWardrobeState.Empty;
-			var result = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.Ordinal);
-			foreach (var unit in disabled.EnumerateObject())
+			var root = document.RootElement;
+			var enabled = root.TryGetProperty("componentTreeEnabled", out var flag) && flag.ValueKind == JsonValueKind.True;
+			var disabled = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.Ordinal);
+			if (root.TryGetProperty("disabled", out var map) && map.ValueKind == JsonValueKind.Object)
 			{
-				var indices = unit.Value.EnumerateArray()
-					.Select(item => item.TryGetInt32(out var value) ? value : -1)
-					.Where(value => value >= 0)
-					.Order()
-					.ToArray();
-				if (indices.Length != 0) result[unit.Name] = indices;
+				foreach (var unit in map.EnumerateObject())
+				{
+					var indices = unit.Value.EnumerateArray()
+						.Select(item => item.TryGetInt32(out var value) ? value : -1)
+						.Where(value => value >= 0)
+						.Order()
+						.ToArray();
+					if (indices.Length != 0) disabled[unit.Name] = indices;
+				}
 			}
 
-			return new VpkWardrobeState(result);
+			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled));
 		}
 		catch (Exception exception) when (exception is IOException or JsonException)
 		{
-			return VpkWardrobeState.Empty;
+			return VpkWardrobeFile.Default;
 		}
 	}
 
-	public static async Task WriteStateAsync(string modDirectory, VpkWardrobeState state, CancellationToken cancellationToken = default)
+	public static async Task WriteAsync(string modDirectory, VpkWardrobeFile file, CancellationToken cancellationToken = default)
 	{
-		ArgumentNullException.ThrowIfNull(state);
+		ArgumentNullException.ThrowIfNull(file);
 		var path = GetStatePath(modDirectory);
 		var payload = new
 		{
 			schema = Schema,
-			disabled = state.Disabled.ToDictionary(
+			componentTreeEnabled = file.ComponentTreeEnabled,
+			disabled = file.State.Disabled.ToDictionary(
 				pair => pair.Key,
 				pair => pair.Value.Order().ToArray(),
 				StringComparer.Ordinal),
@@ -128,14 +144,20 @@ public sealed class VpkModWardrobeService
 			?? throw new InvalidOperationException("这个 Mod 里没有可烘焙的 patch（缺 sections.json）。");
 		var map = await ReadSectionMapAsync(modDirectory, cancellationToken).ConfigureAwait(false)
 			?? throw new InvalidOperationException("sections.json 读不出来，无法烘焙。");
-		var patch = Directory.EnumerateFiles(directory, "*.patch_*", SearchOption.TopDirectoryOnly)
-			.Where(path => !path.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase)
-				&& !path.EndsWith(".stream", StringComparison.OrdinalIgnoreCase))
-			.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-			.FirstOrDefault()
+		var patch = FindPatchFile(directory)
 			?? throw new InvalidOperationException("patch 目录里没有 patch 文件。");
 
 		return await WardrobeSectionBaker.BakeAsync(patch, map, state.Disabled, cancellationToken).ConfigureAwait(false);
+	}
+
+	public static string? FindPatchFile(string directory)
+	{
+		if (!Directory.Exists(directory)) return null;
+		return Directory.EnumerateFiles(directory, "*.patch_*", SearchOption.TopDirectoryOnly)
+			.Where(path => !path.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase)
+				&& !path.EndsWith(".stream", StringComparison.OrdinalIgnoreCase))
+			.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+			.FirstOrDefault();
 	}
 
 	/// <summary>这个 Mod 是不是 VPK 版（有 <c>vpk2patch/</c> 载荷）。</summary>

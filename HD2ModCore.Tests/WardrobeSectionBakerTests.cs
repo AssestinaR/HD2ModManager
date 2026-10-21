@@ -17,14 +17,26 @@ namespace HD2ModCore.Tests;
 /// <c>sections.json</c> 与这份 patch 不是一套。此时写下去会改到别的字段上，
 /// 产出"看起来正常、几何却错位"的 patch，比直接报错难查得多。</item>
 /// </list>
+/// <para>
+/// 偏移是**相对每个 unit 自己的 payload** 的，所以这里给每个 unit 一段切片；
+/// 真实 patch 里的切片由 <c>PatchTocScanner</c> 算（见 real-data 那条用例）。
+/// </para>
 /// </summary>
 public sealed class WardrobeSectionBakerTests
 {
-	private const int TocLength = 0x4000;
+	private const int BufferLength = 0x4000;
 
-	private static string CreateToc(WardrobeSectionMapDocument map)
+	/// <summary>两个 unit 的 payload 都从缓冲区起点算，偏移互不重叠，够用。</summary>
+	private static IReadOnlyDictionary<string, (int Offset, int Size)> Slices()
+		=> new Dictionary<string, (int, int)>(StringComparer.Ordinal)
+		{
+			["af431352d9b95e83"] = (0, BufferLength),
+			["cae35ee15168145f"] = (0, BufferLength),
+		};
+
+	private static byte[] CreateBuffer(WardrobeSectionMapDocument map)
 	{
-		var bytes = new byte[TocLength];
+		var bytes = new byte[BufferLength];
 		// 先铺成"未烘焙"：每个落点都写成记录里的原始 numIndices。
 		foreach (var unit in map.Units)
 		{
@@ -38,134 +50,124 @@ public sealed class WardrobeSectionBakerTests
 			}
 		}
 
-		var path = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N") + ".patch_0");
-		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-		File.WriteAllBytes(path, bytes);
-		return path;
+		return bytes;
 	}
 
-	private static uint Read(string path, string hexOffset)
-		=> BinaryPrimitives.ReadUInt32LittleEndian(
-			File.ReadAllBytes(path).AsSpan(Convert.ToInt32(hexOffset[2..], 16), 4));
+	private static uint Read(byte[] bytes, string hexOffset)
+		=> BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(Convert.ToInt32(hexOffset[2..], 16), 4));
 
 	[Fact]
-	public async Task Bake_DisablesOnlyTheRequestedSections_AndRestoresExactly()
+	public void Bake_DisablesOnlyTheRequestedSections_AndRestoresExactly()
 	{
 		var map = WardrobeSectionMapTests.CreateMap();
-		var path = CreateToc(map);
-		var original = await File.ReadAllBytesAsync(path);
-		try
-		{
-			// UnitA 的第 0 个 section 有两级 LOD，两级都必须清零——只写一级，
-			// 玩家在对应距离档位上就会看到"关不掉"。
-			var result = await WardrobeSectionBaker.BakeAsync(path, map,
-				new Dictionary<string, IReadOnlyCollection<int>> { ["af431352d9b95e83"] = [0] });
+		var bytes = CreateBuffer(map);
+		var original = (byte[])bytes.Clone();
 
-			Assert.Equal(2, result.DwordsWritten);
-			Assert.Equal(0u, Read(path, "0x00002010"));
-			Assert.Equal(0u, Read(path, "0x00002800"));
-			// 别的 section 一个字节都不该动。
-			Assert.Equal(3072u, Read(path, "0x00002020"));
-			Assert.Equal(2466u, Read(path, "0x00003010"));
+		// UnitA 的第 0 个 section 有两级 LOD，两级都必须清零——只写一级，
+		// 玩家在对应距离档位上就会看到"关不掉"。
+		var result = WardrobeSectionBaker.Bake(bytes, Slices(), map,
+			new Dictionary<string, IReadOnlyCollection<int>> { ["af431352d9b95e83"] = [0] });
 
-			// 再打开：必须逐字节回到原样。
-			var restored = await WardrobeSectionBaker.BakeAsync(path, map,
-				new Dictionary<string, IReadOnlyCollection<int>>());
-			Assert.Equal(2, restored.DwordsWritten);
-			Assert.Equal(original, await File.ReadAllBytesAsync(path));
-		}
-		finally
-		{
-			try { File.Delete(path); } catch (IOException) { }
-		}
+		Assert.Equal(2, result.DwordsWritten);
+		Assert.Equal(0u, Read(bytes, "0x00002010"));
+		Assert.Equal(0u, Read(bytes, "0x00002800"));
+		// 别的 section 一个字节都不该动。
+		Assert.Equal(3072u, Read(bytes, "0x00002020"));
+		Assert.Equal(2466u, Read(bytes, "0x00003010"));
+
+		// 再打开：必须逐字节回到原样。
+		var restored = WardrobeSectionBaker.Bake(bytes, Slices(), map,
+			new Dictionary<string, IReadOnlyCollection<int>>());
+		Assert.Equal(2, restored.DwordsWritten);
+		Assert.Equal(original, bytes);
 	}
 
 	[Fact]
-	public async Task Bake_IsIdempotent()
+	public void Bake_IsIdempotent()
 	{
 		var map = WardrobeSectionMapTests.CreateMap();
-		var path = CreateToc(map);
-		try
-		{
-			var disabled = new Dictionary<string, IReadOnlyCollection<int>> { ["cae35ee15168145f"] = [0] };
-			var first = await WardrobeSectionBaker.BakeAsync(path, map, disabled);
-			var second = await WardrobeSectionBaker.BakeAsync(path, map, disabled);
+		var bytes = CreateBuffer(map);
+		var disabled = new Dictionary<string, IReadOnlyCollection<int>> { ["cae35ee15168145f"] = [0] };
 
-			Assert.Equal(1, first.DwordsWritten);
-			Assert.Equal(0, second.DwordsWritten);
-			Assert.False(second.Changed);
-		}
-		finally
-		{
-			try { File.Delete(path); } catch (IOException) { }
-		}
+		var first = WardrobeSectionBaker.Bake(bytes, Slices(), map, disabled);
+		var second = WardrobeSectionBaker.Bake(bytes, Slices(), map, disabled);
+
+		Assert.Equal(1, first.DwordsWritten);
+		Assert.Equal(0, second.DwordsWritten);
+		Assert.False(second.Changed);
 	}
 
 	[Fact]
-	public async Task Bake_RejectsAPatchThatDoesNotMatchTheMap()
+	public void Bake_RejectsAPatchThatDoesNotMatchTheMap()
 	{
 		var map = WardrobeSectionMapTests.CreateMap();
-		var path = CreateToc(map);
-		try
-		{
-			// 有人重新转换过：同一个落点上现在是别的值。
-			var bytes = await File.ReadAllBytesAsync(path);
-			BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0x2010, 4), 12345);
-			await File.WriteAllBytesAsync(path, bytes);
+		var bytes = CreateBuffer(map);
+		// 有人重新转换过：同一个落点上现在是别的值。
+		BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(0x2010, 4), 12345);
 
-			var exception = await Assert.ThrowsAsync<InvalidDataException>(()
-				=> WardrobeSectionBaker.BakeAsync(path, map,
-					new Dictionary<string, IReadOnlyCollection<int>> { ["af431352d9b95e83"] = [0] }));
-			Assert.Contains("对不上", exception.Message, StringComparison.Ordinal);
-		}
-		finally
-		{
-			try { File.Delete(path); } catch (IOException) { }
-		}
+		var exception = Assert.Throws<InvalidDataException>(() =>
+			WardrobeSectionBaker.Bake(bytes, Slices(), map,
+				new Dictionary<string, IReadOnlyCollection<int>> { ["af431352d9b95e83"] = [0] }));
+		Assert.Contains("对不上", exception.Message, StringComparison.Ordinal);
 	}
 
 	[Fact]
-	public async Task ReadBaked_ReportsWhatThePatchActuallyHides()
+	public void Bake_RejectsAnOffsetOutsideTheUnitPayload()
 	{
 		var map = WardrobeSectionMapTests.CreateMap();
-		var path = CreateToc(map);
-		try
-		{
-			await WardrobeSectionBaker.BakeAsync(path, map,
-				new Dictionary<string, IReadOnlyCollection<int>> { ["af431352d9b95e83"] = [1] });
+		var bytes = CreateBuffer(map);
+		// 这个 unit 的 payload 只有 0x100 字节，而记录里的落点在 0x2010。
+		var tiny = new Dictionary<string, (int, int)>(StringComparer.Ordinal) { ["af431352d9b95e83"] = (0, 0x100) };
 
-			var baked = await WardrobeSectionBaker.ReadBakedAsync(path, map);
-
-			Assert.Equal(new[] { 1 }, baked["af431352d9b95e83"]);
-			Assert.DoesNotContain("cae35ee15168145f", baked.Keys);
-		}
-		finally
-		{
-			try { File.Delete(path); } catch (IOException) { }
-		}
+		var exception = Assert.Throws<InvalidDataException>(() =>
+			WardrobeSectionBaker.Bake(bytes, tiny, map,
+				new Dictionary<string, IReadOnlyCollection<int>> { ["af431352d9b95e83"] = [0] }));
+		Assert.Contains("超出了该 unit 的 payload", exception.Message, StringComparison.Ordinal);
 	}
 
 	[Fact]
-	public async Task Bake_WarnsAboutUnitsAndSectionsThatDoNotExist()
+	public void ReadBaked_ReportsWhatThePatchActuallyHides()
 	{
 		var map = WardrobeSectionMapTests.CreateMap();
-		var path = CreateToc(map);
-		try
-		{
-			var result = await WardrobeSectionBaker.BakeAsync(path, map,
-				new Dictionary<string, IReadOnlyCollection<int>>
-				{
-					["ffffffffffffffff"] = [0],
-					["cae35ee15168145f"] = [7],
-				});
+		var bytes = CreateBuffer(map);
 
-			Assert.Equal(2, result.Warnings.Count);
-			Assert.Contains(result.Warnings, warning => warning.Contains("ffffffffffffffff", StringComparison.Ordinal));
-			Assert.Contains(result.Warnings, warning => warning.Contains("第 7 个", StringComparison.Ordinal));
-		}
-		finally
-		{
-			try { File.Delete(path); } catch (IOException) { }
-		}
+		WardrobeSectionBaker.Bake(bytes, Slices(), map,
+			new Dictionary<string, IReadOnlyCollection<int>> { ["af431352d9b95e83"] = [1] });
+		var baked = WardrobeSectionBaker.ReadBaked(bytes, Slices(), map);
+
+		Assert.Equal(new[] { 1 }, baked["af431352d9b95e83"]);
+		Assert.DoesNotContain("cae35ee15168145f", baked.Keys);
+	}
+
+	[Fact]
+	public void Bake_WarnsAboutUnitsAndSectionsThatDoNotExist()
+	{
+		var map = WardrobeSectionMapTests.CreateMap();
+		var bytes = CreateBuffer(map);
+
+		var result = WardrobeSectionBaker.Bake(bytes, Slices(), map,
+			new Dictionary<string, IReadOnlyCollection<int>>
+			{
+				["ffffffffffffffff"] = [0],
+				["cae35ee15168145f"] = [7],
+			});
+
+		Assert.Equal(2, result.Warnings.Count);
+		Assert.Contains(result.Warnings, warning => warning.Contains("ffffffffffffffff", StringComparison.Ordinal));
+		Assert.Contains(result.Warnings, warning => warning.Contains("第 7 个", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void Bake_SkipsAUnitMissingFromThePatchButKeepsTheRest()
+	{
+		var map = WardrobeSectionMapTests.CreateMap();
+		var bytes = CreateBuffer(map);
+		var onlyOne = new Dictionary<string, (int, int)>(StringComparer.Ordinal) { ["cae35ee15168145f"] = (0, BufferLength) };
+
+		var result = WardrobeSectionBaker.Bake(bytes, onlyOne, map,
+			new Dictionary<string, IReadOnlyCollection<int>> { ["cae35ee15168145f"] = [0] });
+
+		Assert.Equal(1, result.DwordsWritten);
+		Assert.Contains(result.Warnings, warning => warning.Contains("af431352d9b95e83", StringComparison.Ordinal));
 	}
 }

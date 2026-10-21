@@ -768,6 +768,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(PatchSummary));
             RefreshDerivedStatus();
             RefreshHostDecorations();
+            RefreshVpk();
             OnPropertyChanged(nameof(ProfileStatus));
             OnPropertyChanged(nameof(FileIntegritySummary));
             OnPropertyChanged(nameof(ConflictSummary));
