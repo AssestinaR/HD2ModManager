@@ -155,7 +155,9 @@
                               ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
                               ItemContainerStyle="{StaticResource WardrobeTreeItemStyleBase}"
                               Background="Transparent" BorderThickness="0"
-                              Margin="0,8,0,0" MaxHeight="420"
+                              Margin="0,8,0,0"
+                              MaxHeight="{Binding ActualHeight, ElementName=DetailsScrollViewer, Converter={StaticResource AttachmentListMaxHeight}}"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto"
                               ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
                 </StackPanel>
             </Border>

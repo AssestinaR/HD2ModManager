@@ -72,6 +72,13 @@
       <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).deps.json" Condition="Exists('$(TargetDir)$(AssemblyName).deps.json')" />
       <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).runtimeconfig.json" Condition="Exists('$(TargetDir)$(AssemblyName).runtimeconfig.json')" />
       <Hd2ModCliArtifact Include="$(TargetDir)$(AssemblyName).pdb" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
+      <!--
+        CLI 的运行时依赖。少了它们，复制到管理器旁边的 hd2mod.exe 会在加载
+        HD2SourceMigration / HD2SourceModel 时抛 "Could not load file or assembly"——
+        管理器自己不引用这两个（只有 CLI 引用），所以必须由这里带过去。
+        vpk2patch 与 vpk rekey 都在 HD2SourceMigration 里，缺了它们整条 VPK 链路是死的。
+      -->
+      <Hd2ModCliArtifact Include="$(TargetDir)*.dll" Condition="Exists('$(TargetDir)')" />
     </ItemGroup>
   </Target>
 
