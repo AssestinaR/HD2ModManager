@@ -2606,6 +2606,30 @@ public static class CliApplication
 			unitIdSeed: reusedUnitIdSeed,
 			materialScope: scope).ConfigureAwait(false);
 
+		// 顺手产出 `sections.json`：这个 patch 里每个 unit 的每个 section 落在 TOC 的哪个偏移、
+		// 原本的 numIndices 是多少。管理器的"衣物装饰组件"树靠它画，烘焙靠它写回原值。
+		//
+		// 为什么由转换器产出而不是管理器现算：偏移是**这次构建**的产物，重转一次就全变；
+		// 让产物自己带着这份表，两边才不会各算一份然后对不上。
+		if (package.IsValid && package.TocPath is not null)
+		{
+			try
+			{
+				var built = await HD2ModCore.Infrastructure.WardrobeSectionMapFile
+					.BuildAsync(package.TocPath, cancellationToken).ConfigureAwait(false);
+				await HD2ModCore.Infrastructure.WardrobeSectionMapFile
+					.WriteAsync(
+						Path.Combine(Path.GetDirectoryName(package.TocPath)!, HD2ModCore.Infrastructure.WardrobeSectionMapFile.FileName),
+						built.Document,
+						cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+			{
+				// 这张表是**可选的增强**：产不出来不该让整次转换失败，但要让人看得见。
+				Console.Error.WriteLine($"⚠️ 没能产出 sections.json（衣物装饰组件树将不可用）：{exception.Message}");
+			}
+		}
+
 		// 登记素体。**只写工作区**（`<mod库>/.hd2modmanager/armor-registry.workspace.json`），
 		// 由管理器自己把它编译成 `armor-registry.protocol`——直接改协议文件会被下一次应用覆盖。
 		string? registryError = null;

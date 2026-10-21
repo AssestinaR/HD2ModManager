@@ -263,15 +263,26 @@ public static class WardrobeTree
 		uint armourItemId,
 		WardrobeWorkspaceDocument workspace)
 	{
-		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(workspace);
+		return Counts(node, (unit, index) => workspace.IsDisabled(armourItemId, unit, index));
+	}
+
+	/// <summary>
+	/// 同 <see cref="Counts(WardrobeTreeNode, uint, WardrobeWorkspaceDocument)"/>，
+	/// 但禁用集合由调用方给。VPK 模组的组件树没有"护甲 itemId"这个概念——
+	/// 它的禁用集合存在自己的源文件里，烘进自己的 patch，和衣柜工作区不是同一份数据。
+	/// </summary>
+	public static WardrobeTreeCounts Counts(WardrobeTreeNode node, Func<string, int, bool> isDisabled)
+	{
+		ArgumentNullException.ThrowIfNull(node);
+		ArgumentNullException.ThrowIfNull(isDisabled);
 		var sections = node.Kind == WardrobeTreeNodeKind.Section
 			? new[] { node }
 			: node.Sections().ToArray();
 		var disabled = sections.Count(section =>
 			section.Unit is not null
 			&& section.SectionIndex is not null
-			&& workspace.IsDisabled(armourItemId, section.Unit, section.SectionIndex.Value));
+			&& isDisabled(section.Unit, section.SectionIndex.Value));
 		return new WardrobeTreeCounts(sections.Length, disabled);
 	}
 
