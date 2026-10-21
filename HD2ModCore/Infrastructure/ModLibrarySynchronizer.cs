@@ -186,10 +186,12 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 		return ApplyInspection(snapshot, inspection);
 	}
 
+	// 载荷目录包含 `vpk2patch/`（见 ModNodePayloadLayout）。少了它，一个"patch 全在
+	// vpk2patch 里"的 Mod 在重新载入库时会被当成空目录而丢失。
 	private IReadOnlyList<PatchGroupKey> DiscoverPatchGroups(string directory, CancellationToken cancellationToken)
 	{
 		var groups = new HashSet<PatchGroupKey>();
-		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
+		foreach (var path in ModNodePayloadLayout.EnumeratePayloadFiles(directory))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			if (_fileNameParser.TryParse(Path.GetFileName(path), out var info)
@@ -202,13 +204,14 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 	private string ComputeFingerprint(string directory, CancellationToken cancellationToken)
 	{
 		var builder = new StringBuilder();
-		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+		foreach (var path in ModNodePayloadLayout.EnumeratePayloadFiles(directory)
 			.Where(path => _fileNameParser.TryParse(Path.GetFileName(path), out _))
 			.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var info = new FileInfo(path);
-			builder.Append(info.Name.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
+			var relative = Path.GetRelativePath(directory, path).Replace('\\', '/');
+			builder.Append(relative.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
 		}
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
 	}

@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Application;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -310,6 +310,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 					: Path.Combine(sourceRoot, sourceRelativePath.Replace('/', Path.DirectorySeparatorChar));
 				if (!Directory.Exists(sourceNodeDir)) continue;
 				CopyTopLevelFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
+				CopyVpkPatchPayload(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
 				CopyExternalInstallFiles(sourceNodeDir, destDir, preferHardLinks, cancellationToken);
 			}
 			CopyResolvedIcon(sourceRoot, destDir, node, manifest, cancellationToken);
@@ -1061,6 +1062,48 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		{
 			SetReadOnlyRecursive(Path.Combine(_paths.ModsDirectory, node.RelativePath));
 		}
+	}
+
+	/// <summary>
+	/// 把来源目录里的 <c>vpk2patch/</c> 一起搬进库。
+	/// <para>
+	/// <b>为什么只搬顶层文件不够。</b>VPK 转换产物的家就在这个子目录里（见
+	/// <see cref="ModNodePayloadLayout"/>）：节点根上本来就没有 patch。只复制根目录的文件，
+	/// 结果就是「导入成功、库里这个 Mod 一个 patch 都没有」。
+	/// </para>
+	/// </summary>
+	private static void CopyVpkPatchPayload(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)
+	{
+		var source = ModNodePayloadLayout.GetVpkPatchDirectory(sourceDir);
+		if (!Directory.Exists(source)) return;
+		var destination = ModNodePayloadLayout.GetVpkPatchDirectory(destDir);
+		Directory.CreateDirectory(destination);
+		foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.TopDirectoryOnly))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var target = Path.Combine(destination, Path.GetFileName(file));
+			if (File.Exists(target))
+			{
+				if (FilesAreByteIdentical(file, target)) continue;
+				throw new InvalidDataException($"同一个逻辑选项的多个 Include 包含同名但内容不同的 vpk2patch 产物：{Path.GetFileName(file)}。");
+			}
+
+			CopyFile(file, target, preferHardLinks);
+		}
+	}
+
+	private static void CopyFile(string source, string destination, bool preferHardLinks)
+	{
+		if (preferHardLinks)
+		{
+			try
+			{
+				if (CreateHardLink(destination, source, IntPtr.Zero)) return;
+			}
+			catch (IOException) { }
+			catch (UnauthorizedAccessException) { }
+		}
+		File.Copy(source, destination, overwrite: false);
 	}
 
 	private static void CopyTopLevelFiles(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)

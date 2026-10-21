@@ -1970,6 +1970,24 @@ public static class CliApplication
 					vpkPaths.Add(Path.GetFullPath(path));
 			}
 
+			// `--dry-run`：只算"哪些能转、哪些跳过、哪些是同一个模型"。
+			// 管理器必须先知道这件事才能画进度、才能解释"为什么只导入了一部分"。
+			if (invocation.Options.DryRun)
+			{
+				var plan = VpkImportPlanner.Plan(vpkPaths);
+				Emit(invocation.Options,
+					new
+					{
+						ok = true,
+						dryRun = true,
+						queue = vpkPaths,
+						convertible = plan.Convertible.Select(ProjectVpkImportCandidate).ToArray(),
+						skipped = plan.Skipped.Select(ProjectVpkImportCandidate).ToArray(),
+					},
+					() => FormatVpkImportPlan(plan));
+				return 0;
+			}
+
 			// `--material-source` 只**扩大解析集合**（比如指到 L4D2 的 addons 目录去找贴图），
 			// 不改变"每个 VPK 各出一个 patch"这件事。
 			var extraPaths = new List<string>();
@@ -2470,17 +2488,15 @@ public static class CliApplication
 		}
 
 		// ── 模型包：出 Unit（+ 可选合并材质包，只有旧路径会给 materialScope = null） ──
-		if (string.IsNullOrWhiteSpace(options.AvatarToc) || !File.Exists(options.AvatarToc))
-			throw new CliUserException("AvatarTocRequired", "请用 --avatar-toc 指定 HD2 avatar Unit 的 TocData 文件。");
 		var workspace = CliWorkspace.Open(options);
 		var gameData = workspace.GameDataRoot
-			?? throw new CliUserException("GameDataRequired", "转换需要 --game-data <游戏 data 目录>：外壳 Unit 从游戏本体读。");
+			?? throw new CliUserException("GameDataRequired",
+				"转换需要 --game-data <游戏 data 目录>：外壳 Unit 与 avatar 骨架都从游戏本体读。");
 
 		var inputs = SourceRetargetPipeline.LoadSource(full, modelStem);
-		var rig = SourceRetargetPipeline.LoadRig(options.AvatarToc, ResolveBoneHashPath(options, workspace));
+		var avatar = await ResolveAvatarTransformInfoAsync(options, gameData).ConfigureAwait(false);
+		var rig = SourceRetargetPipeline.LoadRigFromTransformInfo(avatar, ResolveBoneHashPath(options, workspace));
 		var retarget = SourceRetargetPipeline.Run(inputs, rig);
-		var avatar = HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshReader.ReadTransformInfoFromUnitToc(
-			File.ReadAllBytes(options.AvatarToc));
 
 		var split = SourceSegmentation.Split(
 			inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), retarget.Resolved);
@@ -2654,6 +2670,45 @@ public static class CliApplication
 	}
 
 	/// <summary>
+	/// 取 HD2 avatar Unit 的骨架变换（重定向的目标骨架）。
+	/// <para>
+	/// <b>顺序：显式 <c>--avatar-toc</c> → 游戏自己的 avatar 归档。</b>
+	/// 显式文件存在的唯一理由是"让 C# 与 Python 实验线吃同一份输入"，对拍才有意义；
+	/// 生产路径（尤其是管理器导入）不该要求用户先导出一个 TocData——GUI 里没有这种操作。
+	/// </para>
+	/// <para>
+	/// avatar 是游戏资源，归档 <c>18235e0c9ec0e636</c>、Unit <c>0x4d1c334d294dfa97</c>。
+	/// 从 <c>--game-data</c> 直接读，读到什么就是什么，不做任何兜底猜测。
+	/// </para>
+	/// </summary>
+	private static async ValueTask<HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitTransformInfo> ResolveAvatarTransformInfoAsync(
+		CliGlobalOptions options,
+		string gameData)
+	{
+		if (!string.IsNullOrWhiteSpace(options.AvatarToc))
+		{
+			if (!File.Exists(options.AvatarToc))
+				throw new CliUserException("AvatarTocNotFound", $"找不到 --avatar-toc 指定的文件：{options.AvatarToc}");
+			return HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshReader.ReadTransformInfoFromUnitToc(
+				File.ReadAllBytes(options.AvatarToc));
+		}
+
+		try
+		{
+			var reader = new HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical.CanonicalAvatarRigReader(
+				new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameData));
+			return await reader.ReadTransformInfoAsync(cancellationToken: default).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException
+			or FileNotFoundException or KeyNotFoundException or UnauthorizedAccessException)
+		{
+			throw new CliUserException("AvatarTocRequired",
+				"找不到 avatar 骨架：可以用 --avatar-toc 显式指定，或确认 --game-data 指向完整的游戏 data 目录。"
+				+ $"（{exception.Message}）");
+		}
+	}
+
+	/// <summary>
 	/// 骨名哈希表（`hash name` 逐行）。重定向**必须**有它——骨架里只有哈希、没有名字，
 	/// 而"按名字找骨"是这个算法的全部依据。
 	/// <para>
@@ -2714,6 +2769,48 @@ public static class CliApplication
 		{
 			return null;
 		}
+	}
+
+	/// <summary>规划结果里的一条（JSON 形状）。</summary>
+	private static object ProjectVpkImportCandidate(VpkImportCandidate candidate) => new
+	{
+		vpk = candidate.VpkPath,
+		name = Path.GetFileName(candidate.VpkPath),
+		kind = candidate.Kind switch
+		{
+			VpkImportKind.CharacterModel => "model",
+			VpkImportKind.Material => "material",
+			_ => "unsupported",
+		},
+		convertible = candidate.IsConvertible,
+		signature = candidate.Signature is null
+			? null
+			: new
+			{
+				materials = candidate.Signature.MaterialCount,
+				vertices = candidate.Signature.Lod0VertexCount,
+				triangles = candidate.Signature.TriangleCount,
+			},
+		duplicateOf = candidate.DuplicateOfVpkPath,
+		reason = candidate.SkipReason,
+	};
+
+	/// <summary>人类可读的规划：先说要转什么，再逐条说为什么跳过。</summary>
+	private static string FormatVpkImportPlan(VpkImportPlan plan)
+	{
+		var lines = new List<string>
+		{
+			$"vpk2patch 规划：{plan.Candidates.Count} 个 VPK → 转换 {plan.Convertible.Count} 个，跳过 {plan.Skipped.Count} 个。",
+		};
+		foreach (var candidate in plan.Convertible)
+		{
+			var kind = candidate.Kind == VpkImportKind.CharacterModel ? "模型" : "材质";
+			var signature = candidate.Signature is null ? string.Empty : $"（{candidate.Signature}）";
+			lines.Add($"  ✔ {Path.GetFileName(candidate.VpkPath)}  {kind}{signature}");
+		}
+		foreach (var candidate in plan.Skipped)
+			lines.Add($"  ✘ {Path.GetFileName(candidate.VpkPath)}  {candidate.SkipReason}");
+		return string.Join(Environment.NewLine, lines);
 	}
 
 	/// <summary>把一次产出投影成 JSON 友好的形状（**只放"能核对"的字段**）。</summary>

@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Application;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using System.Text.Json;
 
@@ -114,12 +114,14 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		catch (IOException) { return null; }
 	}
 
+	// 载荷目录 = 节点根 + （存在时的）`vpk2patch/`。后者是 vpk2patch 转换产物的家：
+	// 那些 patch 本来就不在根上，所以必须算进这个节点的内容，否则「导入了但一个 patch 都没有」。
 	private List<PatchGroupKey> CollectPatchGroups(DirectoryInfo dir)
 	{
 		var patchGroups = new HashSet<PatchGroupKey>();
-		foreach (var file in SafeEnumerateFiles(dir))
+		foreach (var file in ModNodePayloadLayout.EnumeratePayloadFiles(dir.FullName))
 		{
-			if (!_fileNameParser.TryParse(file.Name, out var info) || info is null)
+			if (!_fileNameParser.TryParse(Path.GetFileName(file), out var info) || info is null)
 			{
 				continue;
 			}
@@ -135,6 +137,9 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		foreach (var child in SafeEnumerateDirectories(root))
 		{
 			if (IsReparsePoint(child)) continue;
+			// `vpk2patch/` 不是一个独立选项，它是父节点自己的载荷（见 ModNodePayloadLayout）。
+			// 把它的 patch 再拆成一个节点，会让同一批 patch 被部署两次。
+			if (ModNodePayloadLayout.IsVpkPatchDirectoryName(child.Name)) continue;
 			foreach (var nested in EnumerateDirectoriesDepthFirst(child))
 			{
 				yield return nested;
@@ -151,18 +156,6 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 
 		var parts = relativePath.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
 		return string.Join('-', new[] { sourceName }.Concat(parts));
-	}
-
-	private static IEnumerable<FileInfo> SafeEnumerateFiles(DirectoryInfo dir)
-	{
-		try
-		{
-			return dir.EnumerateFiles();
-		}
-		catch
-		{
-			return Array.Empty<FileInfo>();
-		}
 	}
 
 	private static IEnumerable<DirectoryInfo> SafeEnumerateDirectories(DirectoryInfo dir)

@@ -25,6 +25,12 @@ namespace HD2ModManager.Services
         public IReadOnlyList<ModNodeId> LastAffectedNodeIds { get; private set; } = Array.Empty<ModNodeId>();
 		public bool LastImportHasOptionPathConflicts { get; private set; }
 
+        /// <summary>
+        /// 这次导入如果是 VPK 来源，这里就是转换报告（每个 VPK 转了/跳过了/为什么）。
+        /// <c>null</c> 表示这次导入与 VPK 无关。
+        /// </summary>
+        public VpkImportReport? LastVpkImportReport { get; private set; }
+
         public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null, IModInformationCenter? informationCenter = null)
         {
             _library = library;
@@ -54,6 +60,12 @@ namespace HD2ModManager.Services
             bool notifyLibraryChanged = true,
             bool refreshDerivedData = true)
         {
+            // VPK 来源走自己的路：一个 VPK = 一个 Mod 文件夹，文件夹里的 vpk2patch/ 放实际生效的 patch。
+            // 判定失败（不是 VPK 来源）就原样往下走，行为与以前完全一致。
+            var vpkSource = await TryPrepareVpkSourceAsync(path, ct).ConfigureAwait(false);
+            if (vpkSource is not null)
+                return await ImportVpkSourceAsync(vpkSource, ct, notifyLibraryChanged, refreshDerivedData).ConfigureAwait(false);
+
             try
             {
 				UiPerformanceDiagnostics.RecordBurst(
@@ -151,6 +163,92 @@ namespace HD2ModManager.Services
             {
                 _onError?.Invoke(ex.Message);
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// 这个来源里有没有 VPK。有就摊开到临时目录并返回；没有返回 <c>null</c>。
+        /// <para>
+        /// 注意：<b>不能</b>只看扩展名。用户的包通常是"一个压缩包，里面 8 个模型 VPK + 一堆材质 VPK"，
+        /// 所以压缩包要先看一眼目录区（<c>7z l</c>，不解压）。
+        /// </para>
+        /// </summary>
+        private async Task<VpkImportSource?> TryPrepareVpkSourceAsync(string path, CancellationToken ct)
+        {
+            try
+            {
+                var service = new VpkImportService(_paths, SettingsService.GetGameDataFolder());
+                return await service.TryPrepareAsync(path, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                // 摊不开就当普通来源处理：原来的导入路径会给出更贴合的错误。
+                _onError?.Invoke(exception.Message);
+                return null;
+            }
+        }
+
+        private async Task<List<string>> ImportVpkSourceAsync(
+            VpkImportSource source,
+            CancellationToken ct,
+            bool notifyLibraryChanged,
+            bool refreshDerivedData)
+        {
+            try
+            {
+                var service = new VpkImportService(_paths, SettingsService.GetGameDataFolder());
+                var (report, produced) = await service
+                    .ConvertAsync(source, stage => _onInfo?.Invoke(stage), ct)
+                    .ConfigureAwait(false);
+                LastVpkImportReport = report;
+                _onInfo?.Invoke(report.ToSummary());
+                LogService.Info(report.ToDetail());
+
+                if (produced.Count == 0)
+                {
+                    if (notifyLibraryChanged) _library.NotifyImportCompleted();
+                    return new List<string>();
+                }
+
+                // 每个 VPK 一个文件夹，逐个走常规导入。派生数据在整批之后再算一次，
+                // 否则每个 VPK 都要重算一遍全库内容事实。
+                var guids = new List<string>();
+                var affected = new List<ModNodeId>();
+                var conflicts = false;
+                foreach (var directory in produced)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var imported = await ImportPathAsync(
+                        directory,
+                        ct,
+                        notifyLibraryChanged: false,
+                        refreshDerivedData: false).ConfigureAwait(false);
+                    guids.AddRange(imported);
+                    affected.AddRange(LastAffectedNodeIds);
+                    conflicts |= LastImportHasOptionPathConflicts;
+                }
+
+                LastAffectedNodeIds = affected.Distinct().ToArray();
+                LastImportHasOptionPathConflicts = conflicts;
+                if (refreshDerivedData && LastAffectedNodeIds.Count != 0)
+                {
+                    await _library.RefreshCommittedContentAsync(
+                        LastAffectedNodeIds,
+                        ModContentChangeKind.Changed,
+                        alreadyInvalidated: true,
+                        cancellationToken: ct).ConfigureAwait(false);
+                }
+
+                if (notifyLibraryChanged) _library.NotifyImportCompleted();
+                return guids.Where(guid => _library.Get(guid) != null).ToList();
+            }
+            finally
+            {
+                source.Dispose();
             }
         }
 

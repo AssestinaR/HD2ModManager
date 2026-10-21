@@ -55,7 +55,10 @@ public sealed record CliGlobalOptions(
 	// 单独给一个开关而不是复用 --plan：掩码不是计划，它是部署产物，误把计划文件传进来必须报错。
 	string? File = null,
 	// 构建期 section 映射表（`sections.json`）。`wardrobe compile` 缺省时退回规格里的相对路径。
-	string? Sections = null);
+	string? Sections = null,
+	// `vpk2patch --dry-run`：只算"哪些能转、哪些跳过、哪些是同一个模型"，不真的转换。
+	// 管理器导入时要先知道结果才能决定进度条与提示，所以这一步必须能单独跑。
+	bool DryRun = false);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -100,6 +103,7 @@ public static class CliArgumentParser
 		var confirm = false;
 		var allowUnsafeLua = false;
 		var json = false;
+		var dryRun = false;
 		var command = new List<string>();
 
 		for (var index = 0; index < args.Length; index++)
@@ -239,6 +243,9 @@ public static class CliArgumentParser
 				case "--allow-unsafe-lua":
 					allowUnsafeLua = true;
 					break;
+				case "--dry-run":
+					dryRun = true;
+					break;
 				case "--json":
 					json = true;
 					break;
@@ -258,7 +265,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

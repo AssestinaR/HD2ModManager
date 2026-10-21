@@ -45,7 +45,28 @@ public static class SourceRetargetPipeline
 	{
 		ArgumentNullException.ThrowIfNull(avatarTocPath);
 		var toc = File.ReadAllBytes(avatarTocPath);
-		var transforms = UnitMeshReader.ReadTransformInfoFromUnitToc(toc);
+		return LoadRigFromTocBytes(toc, boneHashPath);
+	}
+
+	/// <summary>
+	/// 同 <see cref="LoadRig(string, string?)"/>，但直接吃 TocData 字节。
+	/// <para>
+	/// <b>为什么需要它。</b>avatar Unit 是<b>游戏自己的资源</b>，就在游戏 data 的
+	/// <c>18235e0c9ec0e636</c> 包里。生产路径应当从 <c>--game-data</c> 读出来直接用，
+	/// 而不是要求用户先把那段 TocData 导成一个文件——GUI 里根本没有"导出一个 TocData"
+	/// 这种操作，要求它等于要求用户去命令行手抄。
+	/// </para>
+	/// </summary>
+	public static Hd2Rig LoadRigFromTocBytes(ReadOnlySpan<byte> avatarToc, string? boneHashPath = null)
+	{
+		var transforms = UnitMeshReader.ReadTransformInfoFromUnitToc(avatarToc);
+		return LoadRigFromTransformInfo(transforms, boneHashPath);
+	}
+
+	/// <summary>同 <see cref="LoadRigFromTocBytes"/>，但直接吃已经解析好的骨架变换。</summary>
+	public static Hd2Rig LoadRigFromTransformInfo(UnitTransformInfo transforms, string? boneHashPath = null)
+	{
+		ArgumentNullException.ThrowIfNull(transforms);
 		var names = boneHashPath is null ? null : ReadBoneHash(boneHashPath);
 		return Hd2RigReader.FromTransformInfo(transforms, names);
 	}

@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Application;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
@@ -31,8 +31,10 @@ public sealed class ModFileResolver : IModFileResolver
 			return ValueTask.FromResult<IReadOnlyList<string>>(Array.Empty<string>());
 		}
 
+		// 载荷目录 = 节点根 + （存在时的）`vpk2patch/`，同名以后者为准
+		// （转换产物就是这个节点的内容，见 ModNodePayloadLayout）。
 		var files = new List<string>();
-		foreach (var filePath in Directory.EnumerateFiles(nodeDir))
+		foreach (var filePath in ModNodePayloadLayout.EnumeratePayloadFilesByName(nodeDir).Values)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var name = Path.GetFileName(filePath);
@@ -45,7 +47,7 @@ public sealed class ModFileResolver : IModFileResolver
 		// Generated decoration output is an in-place replacement for a host patch, not
 		// an extra patch layer. Only a same-named, structurally recognizable TOC may
 		// override the root file; unrelated files in Overwrite are never deployed.
-		var overwriteDirectory = Path.Combine(nodeDir, "Overwrite");
+		var overwriteDirectory = ModNodePayloadLayout.GetOverwriteDirectory(nodeDir);
 		if (Directory.Exists(overwriteDirectory))
 		{
 			var overridden = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

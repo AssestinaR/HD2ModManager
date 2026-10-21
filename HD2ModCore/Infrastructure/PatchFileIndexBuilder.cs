@@ -38,9 +38,9 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 				continue;
 			}
 
-			var rootFiles = Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly).ToArray();
-			var selectedByName = rootFiles.ToDictionary(path => Path.GetFileName(path)!, StringComparer.OrdinalIgnoreCase);
-			var overwriteDir = Path.Combine(nodeDir, "Overwrite");
+			// 载荷目录 = 节点根 + （存在时的）`vpk2patch/`，同名以后者为准。
+			var selectedByName = ModNodePayloadLayout.EnumeratePayloadFilesByName(nodeDir);
+			var overwriteDir = ModNodePayloadLayout.GetOverwriteDirectory(nodeDir);
 			if (Directory.Exists(overwriteDir))
 			{
 				foreach (var overwriteBase in Directory.EnumerateFiles(overwriteDir, "*", SearchOption.TopDirectoryOnly)

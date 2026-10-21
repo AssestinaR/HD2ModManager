@@ -158,10 +158,20 @@ internal static class CliSourceConvert
 		_ => 3,
 	};
 
+	/// <summary>
+	/// 一条候选 → 外壳选择。<b>fileId 为 0 的 Unit 一律不算候选。</b>
+	/// <para>
+	/// 为什么必须显式排掉：装备表里大量 Unit 的 <c>fileId</c> 是 <c>0x0000000000000000</c>
+	/// （实测 Head 有 1353/2344 条），而候选是按 fileId 的<b>字符串序</b>排序的，
+	/// 于是"0x0000…"永远排第一 —— 自动挑选必然选中它，然后读包时抛
+	/// <c>Asset 0xe0a48d0be9a7453f/0x0000000000000000 was not found</c>。
+	/// 一个 fileId 为 0 的 Unit 根本不是一个可读的 Unit，它只是装备表里的一行占位。
+	/// </para>
+	/// </summary>
 	private static DonorSelection? ToSelection(BodyRegion region, CliEquipmentFactKit kit, CliEquipmentFactUnit unit)
 	{
 		var fileId = unit.FileId.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? unit.FileId[2..] : unit.FileId;
-		return ulong.TryParse(fileId, System.Globalization.NumberStyles.HexNumber, null, out var parsed)
+		return ulong.TryParse(fileId, System.Globalization.NumberStyles.HexNumber, null, out var parsed) && parsed != 0
 			? new DonorSelection(PartKinds[region], kit.ArchiveId, parsed, unit.BodyVariant, unit.Slot)
 			: null;
 	}
@@ -209,7 +219,8 @@ internal static class CliSourceConvert
 						mesh.Payload.Entry.Unknown4);
 					break;
 				}
-				catch (Exception exception) when (exception is IOException or InvalidDataException or FileNotFoundException)
+				catch (Exception exception) when (exception is IOException or InvalidDataException
+					or FileNotFoundException or KeyNotFoundException)
 				{
 					reasons.Add($"0x{selection.FileId:x16} 读取失败：{exception.Message}");
 				}

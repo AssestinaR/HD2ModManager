@@ -470,6 +470,105 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		}
 	}
 
+	// 一批护甲条目的 unit 表。与 section 结构同一套做法：无节点、按"请求的那批条目"分作用域、
+	// 用中心自己的任务账合并并发请求。来源是游戏注册文件，读一次就能服务整页。
+	public async ValueTask<ModInformationResult<ArmourUnitTableFacts>> RequestArmourUnitTableAsync(
+		string gameDataDirectory,
+		IReadOnlySet<uint> itemIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
+		ArgumentNullException.ThrowIfNull(itemIds);
+		ArgumentNullException.ThrowIfNull(request);
+		if (request.Kind != ModInformationKind.ArmourUnitTable)
+			throw new ArgumentException("Request kind must be ArmourUnitTable.", nameof(request));
+		var key = new FactRevisionKey(
+			new FactKey(FactSubject.GameData($"armour-units:{ArmourUnitTableScope(itemIds)}"), request.EffectiveProperty),
+			request.Generation ?? "auto");
+		var entry = new Lazy<Task<ModInformationResult<object>>>(
+			() => ProduceArmourUnitTableAndRemoveAsync(key, gameDataDirectory, itemIds, request),
+			LazyThreadSafetyMode.ExecutionAndPublication);
+		var existing = _gameDataTasks.GetOrAdd(key, entry);
+		return Unwrap<ArmourUnitTableFacts>(await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false));
+	}
+
+	/// <summary>作用域 token：排过序的护甲条目 id，保证"同一批条目"永远得到同一个作用域。</summary>
+	internal static string ArmourUnitTableScope(IReadOnlySet<uint> itemIds)
+	{
+		ArgumentNullException.ThrowIfNull(itemIds);
+		return string.Join(',', itemIds.Order().Select(id => id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+	}
+
+	private async Task<ModInformationResult<object>> ProduceArmourUnitTableAndRemoveAsync(
+		FactRevisionKey key,
+		string gameDataDirectory,
+		IReadOnlySet<uint> itemIds,
+		ModInformationRequest request)
+	{
+		var started = DateTimeOffset.UtcNow;
+		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, null, request.Generation, started, key.ToString()));
+		ModInformationResult<object>? completed = null;
+		try
+		{
+			completed = await ProduceArmourUnitTableAsync(gameDataDirectory, itemIds, request, _shutdown.Token).ConfigureAwait(false);
+			return completed;
+		}
+		finally
+		{
+			RecordDiagnostic(CreateNodeLessDiagnostic(request, key, started, completed));
+			_gameDataTasks.TryRemove(key, out _);
+		}
+	}
+
+	private static async Task<ModInformationResult<object>> ProduceArmourUnitTableAsync(
+		string gameDataDirectory,
+		IReadOnlySet<uint> itemIds,
+		ModInformationRequest request,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			var snapshot = await new GameDataAuthorityProvider()
+				.LoadAsync(gameDataDirectory, cancellationToken)
+				.ConfigureAwait(false);
+			if (!snapshot.IsAvailable)
+			{
+				// 读不到注册文件就说"不知道"，不要宣称"这件护甲没有 unit"。
+				return new ModInformationResult<object>(null, ModInformationStatus.Unavailable, ModInformationKind.ArmourUnitTable,
+					request.Generation, snapshot.Issues);
+			}
+
+			var unitsByItem = itemIds.ToDictionary(
+				id => id,
+				id => ArmourUnitTableSource.ReadUnitIds(snapshot, [id]));
+			var missing = ArmourUnitTableSource.FindMissingItems(snapshot, itemIds);
+			var issues = new List<CoreIssue>(snapshot.Issues);
+			if (missing.Count > 0)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Warning,
+					"ArmourUnitTableMissingKits",
+					$"这些护甲条目在游戏注册文件里没有 kit：{string.Join(", ", missing)}。",
+					gameDataDirectory));
+			}
+
+			var generation = $"{snapshot.SourceFingerprint}:{ArmourUnitTableScope(itemIds)}";
+			var facts = new ArmourUnitTableFacts(generation, unitsByItem, missing, issues);
+			return new ModInformationResult<object>(facts, ModInformationStatus.Fresh, ModInformationKind.ArmourUnitTable, request.Generation ?? generation, issues);
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.ArmourUnitTable, request.Generation,
+				[new CoreIssue(CoreIssueSeverity.Warning, "ArmourUnitTableCanceled", "护甲 unit 表因信息中心关闭而取消。", gameDataDirectory)], false, true);
+		}
+		catch (Exception exception)
+		{
+			return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.ArmourUnitTable, request.Generation,
+				[new CoreIssue(CoreIssueSeverity.Error, "ArmourUnitTableProductionFailed", exception.Message, gameDataDirectory, null, exception.ToString())], false, true);
+		}
+	}
+
 	private async Task<ModInformationResult<object>> ProduceGameDataIndexAndRemoveAsync(FactRevisionKey key, ModInformationRequest request)
 	{
 		var started = DateTimeOffset.UtcNow;
@@ -811,9 +910,9 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			var directory = Path.Combine(root, node.RelativePath);
 			builder.Append(node.Id.Value.ToString("N")).Append(':').Append(node.RelativePath).AppendLine();
 			if (!Directory.Exists(directory)) continue;
-			var paths = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
-				.Concat(Directory.Exists(Path.Combine(directory, "Overwrite"))
-					? Directory.EnumerateFiles(Path.Combine(directory, "Overwrite"), "*", SearchOption.TopDirectoryOnly)
+			var paths = ModNodePayloadLayout.EnumeratePayloadFiles(directory)
+				.Concat(Directory.Exists(ModNodePayloadLayout.GetOverwriteDirectory(directory))
+					? Directory.EnumerateFiles(ModNodePayloadLayout.GetOverwriteDirectory(directory), "*", SearchOption.TopDirectoryOnly)
 					: Array.Empty<string>());
 			foreach (var path in paths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 			{
@@ -830,10 +929,11 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var directory = Path.Combine(root, node.RelativePath);
 		if (!Directory.Exists(directory)) return string.Empty;
 		var builder = new System.Text.StringBuilder();
-		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+		foreach (var path in ModNodePayloadLayout.EnumeratePayloadFiles(directory).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 		{
 			var info = new FileInfo(path);
-			builder.Append(info.Name.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
+			var relative = Path.GetRelativePath(directory, path).Replace('\\', '/');
+			builder.Append(relative.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
 		}
 		return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
 	}
