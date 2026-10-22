@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Application;
+using HD2ModCore.Application;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
 
@@ -72,7 +72,7 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 
 		if (_informationReader is not null)
 		{
-			foreach (var filePath in Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly)
+			foreach (var filePath in ModNodePayloadLayout.EnumerateEffectiveFilesByName(nodeDir).Values
 				.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 			{
 				cancellationToken.ThrowIfCancellationRequested();
@@ -101,7 +101,7 @@ public sealed class AssetKeySetProvider : IAssetKeySetProvider
 			return result;
 		}
 
-		foreach (var filePath in Directory.EnumerateFiles(nodeDir, "*", SearchOption.TopDirectoryOnly))
+		foreach (var filePath in ModNodePayloadLayout.EnumerateEffectiveFilesByName(nodeDir).Values)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var name = Path.GetFileName(filePath);

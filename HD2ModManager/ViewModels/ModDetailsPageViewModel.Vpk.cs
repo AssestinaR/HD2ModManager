@@ -213,6 +213,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		{
 			var outcome = await VpkRekeyService.RunAsync(
 				node.Id.Value.ToString("N"),
+				directory,
 				[target.ArchiveId],
 				stage => VpkComponentStatus = stage).ConfigureAwait(true);
 			if (!outcome.Ok)
@@ -222,9 +223,6 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			}
 
 			VpkComponentStatus = $"已换到 {target.DisplayName}：替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。";
-			// 记住这次指向了哪件护甲：树的根标题要用它，重新打开页面时也不必再猜。
-			_vpkFile = _vpkFile with { TargetArmorArchiveId = target.ArchiveId, TargetArmorName = target.DisplayName };
-			await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
 			_notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(10));
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,

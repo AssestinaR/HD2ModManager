@@ -38,26 +38,8 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 				continue;
 			}
 
-			// 载荷目录 = 节点根 + （存在时的）`vpk2patch/`，同名以后者为准。
-			var selectedByName = ModNodePayloadLayout.EnumeratePayloadFilesByName(nodeDir);
-			var overwriteDir = ModNodePayloadLayout.GetOverwriteDirectory(nodeDir);
-			if (Directory.Exists(overwriteDir))
-			{
-				foreach (var overwriteBase in Directory.EnumerateFiles(overwriteDir, "*", SearchOption.TopDirectoryOnly)
-					.Where(path => TryParse(path)?.SidecarKind == PatchSidecarKind.Base && IsPatchToc(path)))
-				{
-					var name = Path.GetFileName(overwriteBase);
-					// An Overwrite patch is a replacement, never an additional deployment patch.
-					if (!selectedByName.ContainsKey(name)) continue;
-					selectedByName[name] = overwriteBase;
-					foreach (var suffix in new[] { ".stream", ".gpu_resources" })
-					{
-						var sidecarName = name + suffix;
-						var sidecar = Path.Combine(overwriteDir, sidecarName);
-						if (File.Exists(sidecar) && selectedByName.ContainsKey(sidecarName)) selectedByName[sidecarName] = sidecar;
-					}
-				}
-			}
+			// 载荷（根 + vpk2patch/）+ Overwrite 顶替，全部由 ModNodePayloadLayout 定义。
+			var selectedByName = ModNodePayloadLayout.EnumerateEffectiveFilesByName(nodeDir);
 
 			var parsed = selectedByName.Values
 				.Select(path => (Path: path, Name: Path.GetFileName(path), Info: TryParse(path)))

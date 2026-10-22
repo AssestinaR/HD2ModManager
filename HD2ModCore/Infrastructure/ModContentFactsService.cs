@@ -216,7 +216,9 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 
 	private IReadOnlyList<DiscoveredPatchGroup> DiscoverGroups(ModNode node, string directory, ICollection<CoreIssue> issues, CancellationToken cancellationToken)
 	{
-		var parsed = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+		// 载荷（根 + vpk2patch/）+ Overwrite 顶替：详情表格要显示的是**实际生效**的那一份，
+		// 与部署解析共用同一个定义，否则会出现"详情页看得见、部署时没有"。
+		var parsed = ModNodePayloadLayout.EnumerateEffectiveFilesByName(directory).Values
 			.Select(path => (Path: path, Info: TryParse(path)))
 			.Where(item => item.Info is not null)
 			.Select(item => (item.Path, Info: item.Info!))
@@ -263,7 +265,7 @@ public sealed class ModContentFactsService : IAssetInventoryProducer, IAssetInve
 	{
 		var directory = Path.Combine(modsRootDirectory, node.RelativePath);
 		if (!Directory.Exists(directory)) return ComputeGeneration(Array.Empty<ModPatchGroupFileFact>());
-		var files = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+		var files = ModNodePayloadLayout.EnumerateEffectiveFilesByName(directory).Values
 			.Select(path => new FileInfo(path))
 			.Select(info => (_fileNameParser.TryParse(info.Name, out var parsed), info, parsed))
 			.Where(item => item.Item1)

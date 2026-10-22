@@ -99,6 +99,73 @@ public static class ModNodePayloadLayout
 		return selected;
 	}
 
+	/// <summary>
+	/// 这个节点<b>实际生效</b>的文件：载荷（根 + <c>vpk2patch/</c>，同名后者赢），
+	/// 再让 <c>Overwrite/</c> 顶掉同名的那几个。
+	/// <para>
+	/// <b>为什么三处（部署解析、部署索引、内容事实）必须共用这一个函数。</b>
+	/// 它们回答的问题不同，但都建立在"哪些文件算这个 Mod 的"之上。各写一遍，
+	/// 迟早出现"详情页看得见、部署时没有"或者反过来——那种不一致只能靠人肉比对才能发现。
+	/// </para>
+	/// <para>
+	/// <c>Overwrite/</c> 里的文件只有在<b>同名载荷存在</b>且<b>本身是一份能读的 patch TOC</b>
+	/// 时才顶替：前者是"替换层"的定义，后者防的是把残留文件当成一次额外部署。
+	/// </para>
+	/// </summary>
+	public static Dictionary<string, string> EnumerateEffectiveFilesByName(string nodeDirectory)
+	{
+		var selected = EnumeratePayloadFilesByName(nodeDirectory);
+		var overwrite = GetOverwriteDirectory(nodeDirectory);
+		if (!Directory.Exists(overwrite))
+			return selected;
+
+		// ① 先定 base：必须是一份能读的 patch TOC 才顶替。
+		var accepted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var path in EnumerateFiles(overwrite))
+		{
+			var name = Path.GetFileName(path);
+			if (IsSidecarName(name)) continue;
+			if (!selected.ContainsKey(name)) continue;
+			if (!IsPatchToc(path)) continue;
+			selected[name] = path;
+			accepted.Add(name);
+		}
+
+		// ② sidecar 跟着它的 base 走：base 没被顶替时，孤立的 sidecar 也不参与。
+		//    为什么不逐个做 TOC 校验：sidecar 本来就不是 TOC，拿 TOC 魔数去判它必然失败。
+		foreach (var path in EnumerateFiles(overwrite))
+		{
+			var name = Path.GetFileName(path);
+			if (!IsSidecarName(name)) continue;
+			if (!selected.ContainsKey(name)) continue;
+			var baseName = name[..name.LastIndexOf('.')];
+			if (!accepted.Contains(baseName)) continue;
+			selected[name] = path;
+		}
+
+		return selected;
+	}
+
+	private static bool IsSidecarName(string name)
+		=> name.EndsWith(".stream", StringComparison.OrdinalIgnoreCase)
+			|| name.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// 这个文件是不是一份 patch TOC（首 4 字节是固定魔数）。
+	/// <para>读不出来一律当"不是"——宁可少顶替一个，也不要把半截文件当 patch 部署。</para>
+	/// </summary>
+	public static bool IsPatchToc(string path)
+	{
+		try
+		{
+			using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+			Span<byte> header = stackalloc byte[sizeof(uint)];
+			return stream.Read(header) == header.Length && BitConverter.ToUInt32(header) == 4026531857;
+		}
+		catch (IOException) { return false; }
+		catch (UnauthorizedAccessException) { return false; }
+	}
+
 	private static IEnumerable<string> EnumerateFiles(string directory)
 	{
 		try

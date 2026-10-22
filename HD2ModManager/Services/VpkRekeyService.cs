@@ -11,9 +11,11 @@ public sealed record VpkRekeyOutcome(
 	string? Error,
 	IReadOnlyList<string> Mappings,
 	int ReplacedUnits,
-	int HiddenMeshes)
+	int HiddenMeshes,
+	IReadOnlyList<string> TargetArchiveIds,
+	IReadOnlyList<string> TargetNames)
 {
-	public static VpkRekeyOutcome Failed(string error) => new(false, error, [], 0, 0);
+	public static VpkRekeyOutcome Failed(string error) => new(false, error, [], 0, 0, [], []);
 }
 
 /// <summary>
@@ -26,8 +28,13 @@ public sealed record VpkRekeyOutcome(
 /// </summary>
 public static class VpkRekeyService
 {
+	/// <summary>
+	/// 执行一次换甲。<paramref name="modDirectory"/> 给出时，成功后会把"指向哪件护甲"
+	/// 记进 <c>wardrobe.json</c>——组件树的根标题要用它，重开页面时也不必再猜。
+	/// </summary>
 	public static async Task<VpkRekeyOutcome> RunAsync(
 		string modSelector,
+		string? modDirectory,
 		IReadOnlyList<string> targetArchiveIds,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default)
@@ -68,21 +75,38 @@ public static class VpkRekeyService
 				return VpkRekeyOutcome.Failed(message ?? "换甲失败。");
 			}
 
-			var mappings = root.TryGetProperty("mappings", out var list) && list.ValueKind == JsonValueKind.Array
-				? list.EnumerateArray().Select(item => item.GetString() ?? string.Empty).Where(text => text.Length != 0).ToArray()
-				: [];
-			return new VpkRekeyOutcome(
+			var outcome = new VpkRekeyOutcome(
 				root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True,
 				null,
-				mappings,
+				ReadStrings(root, "mappings"),
 				ReadInt(root, "replacedUnits"),
-				ReadInt(root, "hiddenMeshes"));
+				ReadInt(root, "hiddenMeshes"),
+				ReadStrings(root, "targets"),
+				ReadStrings(root, "targetNames"));
+
+			// 记住这次指向了哪件护甲：组件树的根标题要用它，重开页面时也不必再猜。
+			if (outcome.Ok && !string.IsNullOrWhiteSpace(modDirectory) && Directory.Exists(modDirectory))
+			{
+				var file = await VpkModWardrobeService.ReadAsync(modDirectory, cancellationToken).ConfigureAwait(false);
+				await VpkModWardrobeService.WriteAsync(modDirectory, file with
+				{
+					TargetArmorArchiveId = outcome.TargetArchiveIds.FirstOrDefault(),
+					TargetArmorName = outcome.TargetNames.FirstOrDefault(),
+				}, cancellationToken).ConfigureAwait(false);
+			}
+
+			return outcome;
 		}
 		catch (JsonException exception)
 		{
 			return VpkRekeyOutcome.Failed($"换甲输出无法解析：{exception.Message}");
 		}
 	}
+
+	private static IReadOnlyList<string> ReadStrings(JsonElement element, string name)
+		=> element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array
+			? value.EnumerateArray().Select(item => item.GetString() ?? string.Empty).Where(text => text.Length != 0).ToArray()
+			: [];
 
 	private static int ReadInt(JsonElement element, string name)
 		=> element.TryGetProperty(name, out var value) && value.TryGetInt32(out var parsed) ? parsed : 0;

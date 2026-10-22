@@ -19,6 +19,9 @@ internal sealed record VpkRekeyResult(
 {
 	/// <summary>逐条映射（部位/层/身形 ← 来源 Unit → 目标 Unit），验收时直接看这里。</summary>
 	public IReadOnlyList<string> Mappings { get; init; } = [];
+
+	/// <summary>目标护甲的显示名（与 <see cref="TargetArchiveIds"/> 一一对应）。</summary>
+	public IReadOnlyList<string> TargetNames { get; init; } = [];
 }
 
 /// <summary>
@@ -174,6 +177,7 @@ internal static class CliVpkRekey
 					$"{mapping.Target.PartKind}/{mapping.Target.Layer}/{mapping.Target.BodyVariant}"
 					+ $" ← 0x{mapping.Source!.UnitAssetKey.FileId:x16} → 0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}")
 				.ToArray(),
+			TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
 		};
 	}
 
@@ -395,6 +399,7 @@ internal static class CliVpkRekey
 		sourcePatch = result.SourcePatch,
 		outputPatch = result.OutputPatch,
 		targets = result.TargetArchiveIds,
+		targetNames = result.TargetNames,
 		replacedUnits = result.ReplacedUnits,
 		hiddenMeshes = result.HiddenUnits,
 		mappings = result.Mappings,

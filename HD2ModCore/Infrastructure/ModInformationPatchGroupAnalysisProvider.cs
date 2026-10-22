@@ -94,8 +94,11 @@ public sealed class ModInformationPatchGroupAnalysisProvider : IPatchGroupAnalys
 			return Array.Empty<PatchGroupAnalysis>();
 		}
 
+		// 载荷（根 + vpk2patch/）+ Overwrite 顶替：部署计划要靠这里的分析结果判断
+		// "这个 patch 能不能用"。只枚举顶层的话，VPK 版 Mod 的分析结果是空的，
+		// 部署会被 PatchAnalysisMissing 拦下——表现是"装进游戏什么都没变"。
 		var results = new List<PatchGroupAnalysis>();
-		foreach (var path in Directory.EnumerateFiles(nodeDirectory, "*", SearchOption.TopDirectoryOnly)
+		foreach (var path in ModNodePayloadLayout.EnumerateEffectiveFilesByName(nodeDirectory).Values
 			.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 		{
 			cancellationToken.ThrowIfCancellationRequested();

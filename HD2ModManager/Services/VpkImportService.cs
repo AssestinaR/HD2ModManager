@@ -226,6 +226,16 @@ public sealed class VpkImportService
 				var payload = Path.Combine(target, ModNodePayloadLayout.VpkPatchDirectoryName);
 				Directory.CreateDirectory(target);
 				Directory.Move(result.PatchDirectory, payload);
+
+				// 把来源 VPK 原件留在 Mod 文件夹根上。
+				//
+				// 为什么必须留：patch 是**转换产物**。换过目标护甲、烘过 section 之后，
+				// vpk2patch/ 里那份已经不是最初转换出来的东西了；没有原件，用户想回到
+				// "原始转换"或者换个参数重转，就只能重新去下载一遍来源包。
+				// 这也正是这套目录约定：根 = 来源，vpk2patch/ = 转换产物，
+				// Overwrite/ = 在产物上再改出来的变体。
+				File.Copy(candidate.VpkPath, Path.Combine(target, Path.GetFileName(candidate.VpkPath)), overwrite: true);
+
 				await File.WriteAllTextAsync(Path.Combine(target, "vpk2patch.json"), result.ReportJson, cancellationToken)
 					.ConfigureAwait(false);
 

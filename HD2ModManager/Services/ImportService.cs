@@ -230,6 +230,16 @@ namespace HD2ModManager.Services
                     guids.AddRange(imported);
                     affected.AddRange(LastAffectedNodeIds);
                     conflicts |= LastImportHasOptionPathConflicts;
+
+                    // 含 Unit 的转换产物**立刻**换到默认目标护甲（RE-2310）。
+                    //
+                    // 为什么默认就换：vpk2patch 产出的是"新 Unit id 的自定义素体"，它不替换
+                    // 任何原版护甲——不换甲的话，用户装进游戏什么都不会变（实测反馈）。
+                    // 默认目标写在 CLI 里（vpk rekey 的缺省值），这里不重复定义。
+                    foreach (var guid in imported)
+                    {
+                        await TryAutoRekeyAsync(guid, ct).ConfigureAwait(false);
+                    }
                 }
 
                 LastAffectedNodeIds = affected.Distinct().ToArray();
@@ -249,6 +259,54 @@ namespace HD2ModManager.Services
             finally
             {
                 source.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// 导入之后立刻把这个 Mod 换到默认目标护甲上。
+        /// <para>
+        /// <b>为什么是导入时而不是"用户点了才换"</b>：vpk2patch 的产物是<b>新 Unit id</b> 的
+        /// 自定义素体，游戏里没有任何护甲引用它——不换甲就等于装了个看不见的 Mod。
+        /// 用户要的是"装完就能用"，切换只是可选项。
+        /// </para>
+        /// <para>
+        /// 失败**不算导入失败**：换甲依赖游戏装备表与资产索引，缺它们时用户仍应拿到
+        /// 转换好的 Mod，只是它还没指向具体护甲——这一点写进日志与报告。
+        /// </para>
+        /// </summary>
+        private async Task TryAutoRekeyAsync(string guid, CancellationToken ct)
+        {
+            try
+            {
+                if (!Guid.TryParse(guid, out var id)
+                    || !_library.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node))
+                    return;
+                var modDirectory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
+                if (!File.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, "sections.json")))
+                    return;
+
+                _onInfo?.Invoke($"正在把 {node.Metadata.Name} 换到默认目标护甲…");
+                // 空目标 = 用 CLI 的缺省值（RE-2310）。默认只在一处定义，管理器不重复一遍。
+                var outcome = await VpkRekeyService
+                    .RunAsync(guid, modDirectory, Array.Empty<string>(), stage => _onInfo?.Invoke(stage), ct)
+                    .ConfigureAwait(false);
+                if (outcome.Ok)
+                {
+                    LogService.Info($"已换到默认目标护甲：{node.Metadata.Name}（{outcome.TargetNames.FirstOrDefault()}），"
+                        + $"替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。");
+                    return;
+                }
+
+                LogService.Info($"换甲未完成：{node.Metadata.Name}：{outcome.Error}。"
+                    + "这个 Mod 目前是自定义素体版，需要到详情页选择目标护甲。");
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
+            {
+                LogService.Info($"换甲未完成：{exception.Message}");
             }
         }
 
