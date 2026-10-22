@@ -93,4 +93,32 @@ public sealed class PatchFileIndexBuilderTests
 		}
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
+
+	[Fact]
+	public async Task BuildAsync_WarnsWhenTheBasePatchAndItsSidecarComeFromDifferentDirectories()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var modsRoot = Path.Combine(root, "mods");
+		var modDir = Path.Combine(modsRoot, "mod");
+		var payload = Path.Combine(modDir, "vpk2patch");
+		var overwrite = Path.Combine(modDir, "Overwrite");
+		Directory.CreateDirectory(payload);
+		Directory.CreateDirectory(overwrite);
+		try
+		{
+			var name = "9ba626afa44a3aa3.patch_0";
+			File.WriteAllText(Path.Combine(payload, name), "payload toc");
+			File.WriteAllText(Path.Combine(payload, name + ".gpu_resources"), "payload gpu");
+			// 变体只顶替了 base：sidecar 还留在载荷目录里——这正是那次"进游戏什么都没变"的形状。
+			await File.WriteAllBytesAsync(Path.Combine(overwrite, name), BitConverter.GetBytes(4026531857u));
+			var nodeId = ModNodeId.New();
+			var node = new ModNode(nodeId, "mod", new ModNodeMetadata("mod", null, DateTimeOffset.UtcNow, null), [], []);
+			var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode> { [nodeId] = node }, []);
+
+			var index = await new PatchFileIndexBuilder(new PatchFileNameParser()).BuildAsync(snapshot, modsRoot);
+
+			Assert.Contains(index.Issues, issue => issue.Code == "PatchSidecarFromAnotherDirectory");
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
 }

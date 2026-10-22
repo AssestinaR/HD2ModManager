@@ -48,6 +48,30 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 				.ToList();
 
 			var files = new List<IndexedPatchFile>();
+
+			// base 与 sidecar 必须来自同一个目录。
+			//
+			// 为什么：patch 的 TOC 里写的是 GPU 段在 sidecar 里的**偏移与长度**。拿 A 的 TOC 配 B 的
+			// gpu_resources，游戏读到的是越界/错位的数据——它不会报错，只会"什么都不显示"。
+			// 实测踩过一次：换甲变体只顶替了 base、sidecar 还留在 vpk2patch/，进游戏后 RE-2310 没变。
+			// 这条检查把它变成一条看得见的警告，而不是一次靠猜的实机排查。
+			foreach (var basePatch in parsed.Where(x => x.Info.SidecarKind == PatchSidecarKind.Base))
+			{
+				var baseDirectory = Path.GetDirectoryName(basePatch.Path)!;
+				foreach (var suffix in new[] { ".gpu_resources", ".stream" })
+				{
+					var sidecarName = basePatch.Name + suffix;
+					if (!selectedByName.TryGetValue(sidecarName, out var sidecarPath))
+						continue;
+					if (string.Equals(Path.GetDirectoryName(sidecarPath), baseDirectory, StringComparison.OrdinalIgnoreCase))
+						continue;
+					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "PatchSidecarFromAnotherDirectory",
+						$"patch 与它的 {suffix} 来自不同目录（{baseDirectory} / {Path.GetDirectoryName(sidecarPath)}）；"
+						+ "部署后游戏读到的会是错位的数据。",
+						sidecarPath, node.Id));
+				}
+			}
+
 			foreach (var group in parsed.GroupBy(x => x.Info.ArchiveHex16, StringComparer.OrdinalIgnoreCase))
 			{
 				var baseOrder = group
