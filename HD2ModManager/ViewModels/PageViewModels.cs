@@ -11,6 +11,7 @@ using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Services;
+using HD2ModManager.Controls.EmptyState;
 
 namespace HD2ModManager.ViewModels
 {
@@ -442,7 +443,13 @@ namespace HD2ModManager.ViewModels
         public string CurrentProfileTitle => _profiles.SelectedKey ?? "未选择配置";
         public string ItemCountText => $"显示 {_list.VisibleCount} / {_profiles.SelectedProfile?.Entries.Count ?? 0} 个 Mod";
         public string HeaderSummary => $"{ItemCountText} · {ActiveProfileText} · {SelectedProfileState}";
-        public string EmptyMessage => "当前配置中没有 Mod。可以从模组库添加；若右侧为空，则所有 Mod 都已加入此配置。";
+        // 配置页的空状态：不提供命令（切页由壳层管），只给一句能照做的说明。
+        public EmptyStatePresentation? EmptyState => _list.VisibleCount > 0
+            ? null
+            : new EmptyStatePresentation(
+                "这个配置里还没有 Mod",
+                "把左侧模组库里的 Mod 拖进来；或在库页选中它们，点底栏的「加入配置」。",
+                Icon: EmptyStateIcon.Inbox);
         private bool _showOnlyOutdated;
         public bool ShowOnlyOutdated
         {
@@ -695,7 +702,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(SelectedProfileState));
             OnPropertyChanged(nameof(ItemCountText));
             OnPropertyChanged(nameof(HeaderSummary));
-            OnPropertyChanged(nameof(EmptyMessage));
+            OnPropertyChanged(nameof(EmptyState));
 
             var profile = _profiles.SelectedProfile;
             if (profile == null)
@@ -1149,7 +1156,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(ItemCountText));
             OnPropertyChanged(nameof(HeaderSummary));
-            OnPropertyChanged(nameof(EmptyMessage));
+            OnPropertyChanged(nameof(EmptyState));
         }
 
         public override void Dispose()
@@ -1443,6 +1450,9 @@ namespace HD2ModManager.ViewModels
         }
     }
 
+    /// <summary>设置页「映射模式」下拉框的一项。</summary>
+    public sealed record ArmorMappingModeOption(ArmorMappingMode Value, string DisplayName, string Description);
+
     public class SettingsPageViewModel : PageViewModel
     {
 		private readonly ProfileService _profiles;
@@ -1492,16 +1502,54 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        // 游戏更新后 Lua mod 会失效并导致崩溃，所以给一个能立刻关掉的开关。
-    // 默认关闭；打开后需要重新部署才生效（会重新生成部署计划）。
-    public bool DeployLuaMods
-    {
-        get => SettingsService.GetDeployLuaMods();
-        set
+        /// <summary>设置页「映射模式」下拉框的选项。</summary>
+        public IReadOnlyList<ArmorMappingModeOption> ArmorMappingModeOptions { get; } =
+            Enum.GetValues<ArmorMappingMode>()
+                .Select(mode => new ArmorMappingModeOption(mode, mode.DisplayName(), mode.Description()))
+                .ToArray();
+
+        /// <summary>
+        /// 护甲映射模式。兼容模式走运行时覆盖表、可热切换；真映射模式改写注册表数据，
+        /// 改动需要重启游戏才生效。
+        /// </summary>
+        public ArmorMappingMode ArmorMappingMode
         {
-            if (SettingsService.SetDeployLuaMods(value))
-                _profiles.RequestActiveProfileDeployment();
-            OnPropertyChanged(nameof(DeployLuaMods));
+            get => SettingsService.GetArmorMappingMode();
+            set
+            {
+                if (SettingsService.SetArmorMappingMode(value))
+                    _profiles.RequestActiveProfileDeployment();
+                OnPropertyChanged(nameof(ArmorMappingMode));
+                OnPropertyChanged(nameof(ArmorMappingModeDescription));
+                OnPropertyChanged(nameof(ArmorMappingModeHotSwitchNote));
+            }
+        }
+
+        /// <summary>当前模式的一句话说明，绑定到设置页的说明文字。</summary>
+        public string ArmorMappingModeDescription => ArmorMappingMode.Description();
+
+        /// <summary>热切换提示：只有兼容模式可以运行中改映射。</summary>
+        public string ArmorMappingModeHotSwitchNote => ArmorMappingMode.AllowsHotSwitch()
+            ? "该模式支持游戏运行中切换映射，不需要重启。"
+            : "该模式把外观写进注册表数据，改动映射后必须重启游戏才生效。";
+
+    /// <summary>
+    /// 关闭独占模式时把运行时脚本导出到「默认导出路径\wardrobe-lua」并打开该文件夹，
+    /// 让用户可以直接把它丢给第三方加载器。导出失败不影响设置本身已保存。
+    /// </summary>
+    private static void RevealRuntimeScriptForExternalLoader()
+    {
+        try
+        {
+            var folder = Path.Combine(SettingsService.GetResolvedDefaultExportPath(), "wardrobe-lua");
+            ArmorRuntimeScriptExport.Export(folder);
+            OpenFolder(folder);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+            // 导出失败不应让设置保存失败。
         }
     }
     public bool AutoUpdateAssetMetadata
@@ -1620,6 +1668,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand UpdateAssetMetadataCommand { get; }
         public RelayCommand RefreshAssetIndexStatusCommand { get; }
         public RelayCommand BuildAssetIndexCommand { get; }
+        /// <summary>兜底：调用 Steam 校验游戏文件完整性，完成后重置真映射的原始备份基准。</summary>
+        public RelayCommand VerifyWithSteamCommand { get; }
         private bool _isLoadingGameDataIndex;
         public bool IsLoadingGameDataIndex { get => _isLoadingGameDataIndex; private set => SetField(ref _isLoadingGameDataIndex, value); }
 
@@ -1645,7 +1695,132 @@ namespace HD2ModManager.ViewModels
             UpdateAssetMetadataCommand = new RelayCommand(UpdateAssetMetadata);
             RefreshAssetIndexStatusCommand = new RelayCommand(_ => _ = RefreshAssetIndexStatusAsync(), _ => !IsRefreshingAssetIndexStatus && !IsBuildingAssetIndex);
             BuildAssetIndexCommand = new RelayCommand(_ => _ = BuildAssetIndexAsync(), _ => !IsBuildingAssetIndex);
+            VerifyWithSteamCommand = new RelayCommand(
+                _ => _ = VerifyWithSteamAsync(),
+                _ => !IsVerifyingWithSteam && !string.IsNullOrWhiteSpace(GameDataFolder));
         }
+
+        bool isVerifyingWithSteam;
+        public bool IsVerifyingWithSteam
+        {
+            get => isVerifyingWithSteam;
+            private set
+            {
+                if (isVerifyingWithSteam == value) return;
+                isVerifyingWithSteam = value;
+                OnPropertyChanged(nameof(IsVerifyingWithSteam));
+                VerifyWithSteamCommand?.RaiseCanExecuteChanged();
+            }
+        }
+
+        /// <summary>
+        /// 兜底修复：让 Steam 校验完整性，把游戏文件恢复成官方版本；完成后丢弃真映射记录
+        /// 的原始备份，让恢复出来的文件成为新基准。
+        ///
+        /// 这是"无论改乱成什么样都能恢复"的最后一条路：真映射改的是游戏安装目录，只有
+        /// Steam 能权威地把它还原。
+        /// </summary>
+        private async Task VerifyWithSteamAsync()
+        {
+            if (IsVerifyingWithSteam) return;
+            var gameData = GameDataFolder;
+            if (string.IsNullOrWhiteSpace(gameData)) return;
+            IsVerifyingWithSteam = true;
+            // 底栏**立刻**出现：用户此刻就等在电脑前，Steam 一校验完他就能自己点「刷新状态」，
+            // 不必等我们先探测到校验结束。120 秒只是"没点按钮时"的兜底。
+            ShowSteamRefreshPrompt();
+            try
+            {
+                var completed = await SteamIntegrityService.VerifyAsync(gameData).ConfigureAwait(true);
+                // 校验完成是整条链路里**唯一可信的时刻**：此刻游戏文件一定是官方版本。
+                // 旧备份与旧状态一律不可信，直接整个换掉，用当前位置的文件重建一份新备份。
+                if (completed) await ArmorRegistryDataMapper.ResetBaselineAsync(gameData).ConfigureAwait(true);
+                AssetIndexHint = completed
+                    ? "Steam 校验已完成，已用官方文件重建原始备份。请重新应用一次护甲映射。"
+                    : "已请求 Steam 校验，但未确认完成；请确认后再重新应用映射。";
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidOperationException
+                or System.ComponentModel.Win32Exception)
+            {
+                AssetIndexHint = $"调用 Steam 校验失败：{exception.Message}";
+                DismissSteamVerifyBar();
+            }
+            finally
+            {
+                IsVerifyingWithSteam = false;
+            }
+        }
+
+        SteamVerifyBottomBarViewModel? _steamVerifyBar;
+
+        const string SteamVerifySourceId = "steam-verify";
+
+        /// <summary>点击按钮的瞬间就显示：Steam 正在校验，用户可随时点「刷新状态」继续。</summary>
+        private void ShowSteamRefreshPrompt()
+        {
+            ShowSteamVerifyBar(new SteamVerifyBottomBarViewModel(
+                "Steam 正在校验游戏文件，校验完成后点「刷新状态」继续。",
+                "刷新状态",
+                () => _ = RefreshAfterSteamVerifyAsync()));
+            // 120 秒是"用户没去点按钮"时的兜底，给慢机器留足时间。
+            _steamVerifyBar!.StartCountdown(120, () => _ = RefreshAfterSteamVerifyAsync());
+        }
+
+        /// <summary>刷新完成：仍然过期才询问是否重建，10 秒后自动重建。</summary>
+        private async Task RefreshAfterSteamVerifyAsync()
+        {
+            if (_steamVerifyBar is null) return;
+            _steamVerifyBar.Stop();
+            // 这里**不能**清基准：Steam 可能还没把文件恢复完，此时清掉备份就失去了唯一的
+            // 原件副本，下次应用会拿"被改过的文件"当基准重新播种。基准只在确认校验结束后
+            // （后台探测返回 completed）才清。
+            await RefreshAssetIndexStatusAsync().ConfigureAwait(true);
+            if (_steamVerifyBar is null) return;
+            if (!IsAssetIndexReportedStale)
+            {
+                DismissSteamVerifyBar();
+                AssetIndexHint = "Steam 校验后资产索引状态正常，无需重建。";
+                return;
+            }
+            ShowSteamVerifyBar(new SteamVerifyBottomBarViewModel(
+                "校验后资产索引状态过期，是否重建？",
+                "重建",
+                () => _ = RebuildAfterSteamVerifyAsync(),
+                "取消",
+                DismissSteamVerifyBar));
+            _steamVerifyBar!.StartCountdown(10, () => _ = RebuildAfterSteamVerifyAsync());
+        }
+
+        private async Task RebuildAfterSteamVerifyAsync()
+        {
+            if (_steamVerifyBar is null) return;
+            DismissSteamVerifyBar();
+            await BuildAssetIndexAsync().ConfigureAwait(true);
+        }
+
+        private void ShowSteamVerifyBar(SteamVerifyBottomBarViewModel bar)
+        {
+            DismissSteamVerifyBar();
+            _steamVerifyBar = bar;
+            _bottomBar.UpdateSurfaceSource(new BottomBarRegistrationRequest(
+                SteamVerifySourceId,
+                [new BottomBarRowDefinition("main", bar)]));
+        }
+
+        private void DismissSteamVerifyBar()
+        {
+            _steamVerifyBar?.Stop();
+            _steamVerifyBar = null;
+            _bottomBar.RemoveSurfaceSource(SteamVerifySourceId);
+        }
+
+        /// <summary>索引状态文字里是否包含"过期/过时"。状态文案由 <c>GameDataIndexState</c> 决定。</summary>
+        private bool IsAssetIndexReportedStale
+            => AssetIndexState is { } state
+                && (state.Contains("过期", StringComparison.Ordinal)
+                    || state.Contains("过时", StringComparison.Ordinal));
 
         public void Refresh()
         {

@@ -6,6 +6,14 @@ public sealed record RuntimeArmorRegistryModel(
 	IReadOnlyList<RuntimeArmorRegistryModelPiece>? Pieces = null,
 	string? Name = null);
 
+/// <summary>
+/// 一条视觉组件 = 护甲结构里的一个 (body, slot, pieceType) → unit。
+/// <para>
+/// <c>Body</c> 是**原始编码**（0=Stocky、1=Slim、3=Any），不是 <c>UnitMeshBodyVariant</c>；
+/// 两者在 0 上错位，转换只能走 <see cref="ArmorStructure.ToBodyVariant"/>。
+/// <c>PieceType</c> 是该部位的第几个 unit 槽（0/1/2），不是部位编号。结构全貌见 <see cref="ArmorStructure"/>。
+/// </para>
+/// </summary>
 public sealed record RuntimeArmorRegistryModelPiece(
 	uint Body,
 	string Unit,

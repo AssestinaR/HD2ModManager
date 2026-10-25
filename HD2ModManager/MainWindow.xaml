@@ -4,6 +4,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:views="clr-namespace:HD2ModManager.Views"
+        xmlns:nav="clr-namespace:HD2ModManager.Controls.Nav"
         xmlns:localVM="clr-namespace:HD2ModManager.ViewModels"
         xmlns:localViews="clr-namespace:HD2ModManager.Views"
         WindowStyle="None"
@@ -83,6 +84,12 @@
         <DataTemplate DataType="{x:Type localVM:ArmorRegistryPageViewModel}">
             <views:ArmorRegistryPageView/>
         </DataTemplate>
+
+        <!--
+            顶栏 4 个导航按钮的外观已移入 Controls/Nav/NavBarHost.xaml。
+            消息按钮刻意保留在这里：它和导航不是同一类东西（功能入口 vs 通知），
+            后续可能换成系统通知，届时整块删除即可。
+        -->
         <Style x:Key="TopNavButton" TargetType="Button">
             <Setter Property="Height" Value="32"/>
             <Setter Property="Padding" Value="16,0"/>
@@ -110,15 +117,6 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
-        </Style>
-
-        <Style x:Key="CapsulePartButton" TargetType="Button" BasedOn="{StaticResource TopNavButton}">
-        </Style>
-
-        <Style x:Key="CapsuleRoundButton" TargetType="Button" BasedOn="{StaticResource CapsulePartButton}">
-            <Setter Property="Width" Value="32"/>
-            <Setter Property="MinWidth" Value="32"/>
-            <Setter Property="Padding" Value="0"/>
         </Style>
 
         <Style x:Key="CaptionButtonGreyHover" TargetType="Button">
@@ -201,57 +199,27 @@
                 </Button>
             </Grid>
 
-            <Grid x:Name="WorkspaceNavigationHost" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Canvas IsHitTestVisible="False">
-                    <Border x:Name="WorkspaceNavigationIndicator" Height="32" Background="{StaticResource Accent}" CornerRadius="16"/>
-                </Canvas>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Center">
-                <Button x:Name="HomeNavigationButton" Command="{Binding ShowHomeCommand}">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <Path Width="15" Height="15" Margin="0,0,6,0" Data="M2,7 L8,2 L14,7 L14,14 L10,14 L10,10 L6,10 L6,14 L2,14 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-                        <TextBlock Text="首页" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <Button.Style>
-                        <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
-                            <Style.Triggers><DataTrigger Binding="{Binding IsHomeActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
-                        </Style>
-                    </Button.Style>
-                </Button>
-                <localViews:CapsuleButtonGroup x:Name="WorkspaceCapsuleGroup" Width="168" Height="40" Margin="10,0"
-                                               MiddleContent="配置页  |  模组库"
-                                               LeftToolTip="只打开配置页" MiddleToolTip="合并为左右双页" RightToolTip="只打开模组库"
-                                               LeftCommand="{Binding ShowProfileCommand}"
-                                               MiddleCommand="{Binding ShowSplitCommand}"
-                                               RightCommand="{Binding ShowLibraryCommand}"
-                                               LeftIsActive="{Binding IsProfileActive}"
-                                             MiddleIsActive="{Binding IsSplitActive}"
-                                             RightIsActive="{Binding IsLibraryActive}"/>
-                <Button x:Name="ArmorRegistryNavigationButton" Command="{Binding ShowArmorRegistryCommand}" Margin="0,8,0,8" Padding="12,0">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <Path Width="15" Height="15" Margin="0,0,6,0"
-                              Data="M3,2.5 L13,2.5 L13,13.5 L3,13.5 Z M5,5 L11,5 M5,8 L11,8 M5,11 L9,11"
-                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                              StrokeThickness="1.3" StrokeLineJoin="Round" StrokeStartLineCap="Round"/>
-                        <TextBlock Text="护甲映射" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <Button.Style>
-                        <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
-                            <Style.Triggers><DataTrigger Binding="{Binding IsArmorRegistryActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
-                        </Style>
-                    </Button.Style>
-                </Button>
-                <Button x:Name="SettingsNavigationButton" Command="{Binding ShowSettingsCommand}">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <Path Width="15" Height="15" Margin="0,0,6,0" Data="M8,4.5 A3.5,3.5 0 1 0 8,11.5 A3.5,3.5 0 1 0 8,4.5 M8,1.5 L8,3 M8,13 L8,14.5 M1.5,8 L3,8 M13,8 L14.5,8 M3.4,3.4 L4.5,4.5 M11.5,11.5 L12.6,12.6 M12.6,3.4 L11.5,4.5 M4.5,11.5 L3.4,12.6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round"/>
-                        <TextBlock Text="设置" VerticalAlignment="Center"/>
-                    </StackPanel>
-                    <Button.Style>
-                        <Style TargetType="Button" BasedOn="{StaticResource TopNavButton}">
-                            <Style.Triggers><DataTrigger Binding="{Binding IsSettingsActive}" Value="True"><Setter Property="Tag" Value="Active"/></DataTrigger></Style.Triggers>
-                        </Style>
-                    </Button.Style>
-                </Button>
-                </StackPanel>
+            <!--
+                顶栏按钮由 ShellViewModel 声明（LeadingNavItems / TrailingNavItems），
+                外观、激活块滑动、增删重排、窄窗口横向滚动都在 NavBarHost 里。
+                中间的胶囊是工作区视图开关，作为固定内容插在两个集合之间。
+            -->
+            <Grid x:Name="WorkspaceNavigationHost" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+                <nav:NavBarHost x:Name="WorkspaceNavHost"
+                                LeadingItems="{Binding LeadingNavItems}"
+                                TrailingItems="{Binding TrailingNavItems}">
+                    <nav:NavBarHost.CenterContent>
+                        <localViews:CapsuleButtonGroup Width="168" Height="40" Margin="10,0"
+                                                       MiddleContent="配置页  |  模组库"
+                                                       LeftToolTip="只打开配置页" MiddleToolTip="合并为左右双页" RightToolTip="只打开模组库"
+                                                       LeftCommand="{Binding ShowProfileCommand}"
+                                                       MiddleCommand="{Binding ShowSplitCommand}"
+                                                       RightCommand="{Binding ShowLibraryCommand}"
+                                                       LeftIsActive="{Binding IsProfileActive}"
+                                                       MiddleIsActive="{Binding IsSplitActive}"
+                                                       RightIsActive="{Binding IsLibraryActive}"/>
+                    </nav:NavBarHost.CenterContent>
+                </nav:NavBarHost>
             </Grid>
 
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">

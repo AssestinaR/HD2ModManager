@@ -64,6 +64,12 @@ It does not yet establish the accepted argument types or source/target
 direction of `set_resource_override` in this HD2 build. Do not guess these in
 a multi-Unit experiment.
 
+> Answered on 2026-10-23: see `resource-override-confirmed-20261023.md`. The call
+> is `set_resource_override('unit', target_id, donor_id)` with `IdString64`
+> arguments from `IdString64.from_hex`; no resource names are needed, the redirect
+> takes effect the next time the game instantiates the resource (opening the
+> armoury is enough), and `clear_resource_override('unit', target_id)` reverts it.
+
 ## Lua visibility boundary
 
 Only a small set of ordinary Lua modules was loaded during the two-minute

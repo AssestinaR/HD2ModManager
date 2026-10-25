@@ -4,7 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
 
-namespace HD2ModManager.Views;
+namespace HD2ModManager.Controls.Scrolling;
 
 // Purpose: Adds wheel-only smooth scrolling to an explicit ScrollViewer while preserving nested-scroll boundaries.
 public static class SmoothScrollBehavior
@@ -60,6 +60,8 @@ public static class SmoothScrollBehavior
 	private static void OnPreviewMouseWheel(object sender, MouseWheelEventArgs e)
 	{
 		if (e.Handled || sender is not ScrollViewer viewer || e.Delta == 0) return;
+		// 有控件在认领滚轮（例如下拉展开的 ComboBox），页面让位。
+		if (WheelScroll.IsClaimedByAncestor(e.OriginalSource as DependencyObject)) return;
 		var direction = Math.Sign(-e.Delta);
 		var nested = FindNearestEnabledViewer(e.OriginalSource as DependencyObject);
 		if (nested is not null && !ReferenceEquals(nested, viewer) && CanScroll(nested, direction)) return;

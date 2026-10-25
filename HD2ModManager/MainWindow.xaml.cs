@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows.Interop;
@@ -169,7 +169,6 @@ namespace HD2ModManager
             BottomBarSurface.ContentSizeReady += BottomBarSurface_ContentSizeReady;
             InitializeBottomBarLayers();
             _workspacePages.ShowInitialPages(shell);
-            Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
             _workspacePages.QueueVisualPrewarm();
         }
 
@@ -434,16 +433,6 @@ namespace HD2ModManager
             {
                 _workspacePages.QueuePageTransitions();
             }
-            else if (e.PropertyName is nameof(ShellViewModel.CurrentMode)
-                or nameof(ShellViewModel.IsHomeActive)
-                or nameof(ShellViewModel.IsProfileActive)
-                or nameof(ShellViewModel.IsLibraryActive)
-                or nameof(ShellViewModel.IsSplitActive)
-                or nameof(ShellViewModel.IsSettingsActive)
-                or nameof(ShellViewModel.IsArmorRegistryActive))
-            {
-                Dispatcher.BeginInvoke(UpdateWorkspaceNavigationIndicator, System.Windows.Threading.DispatcherPriority.Loaded);
-            }
         }
 
         private void AnimateMessagePanel(FrameworkElement panel, bool isOpen, double offset, Func<bool> isStillOpen)
@@ -517,64 +506,6 @@ namespace HD2ModManager
         {
             if (listBox.Items.Count == 0) return;
             listBox.Dispatcher.BeginInvoke(() => listBox.ScrollIntoView(listBox.Items[listBox.Items.Count - 1]), System.Windows.Threading.DispatcherPriority.Background);
-        }
-
-        private void UpdateWorkspaceNavigationIndicator()
-        {
-            if (DataContext is not ShellViewModel shell || !WorkspaceNavigationHost.IsLoaded) return;
-
-            FrameworkElement? target = shell.CurrentMode switch
-            {
-                WorkspaceMode.Home => HomeNavigationButton,
-                WorkspaceMode.Settings => SettingsNavigationButton,
-                WorkspaceMode.ArmorRegistry => ArmorRegistryNavigationButton,
-                WorkspaceMode.ProfileOnly or WorkspaceMode.LibraryOnly or WorkspaceMode.ProfileLibrarySplit => WorkspaceCapsuleGroup.GetActiveButton(),
-                _ => null
-            };
-            if (target is null || target.ActualWidth <= 0 || target.ActualHeight <= 0) return;
-
-            var targetPoint = target.TransformToAncestor(WorkspaceNavigationHost).Transform(new Point(0, 0));
-            var targetHeight = target.ActualHeight;
-            var targetRadius = targetHeight / 2d;
-            var isInitialPlacement = WorkspaceNavigationIndicator.ActualWidth <= 0;
-
-            var currentPoint = WorkspaceNavigationIndicator.TransformToAncestor(WorkspaceNavigationHost).Transform(new Point(0, 0));
-            var currentWidth = WorkspaceNavigationIndicator.ActualWidth;
-            var currentHeight = WorkspaceNavigationIndicator.ActualHeight;
-
-            WorkspaceNavigationIndicator.BeginAnimation(WidthProperty, null);
-            WorkspaceNavigationIndicator.BeginAnimation(HeightProperty, null);
-            WorkspaceNavigationIndicator.BeginAnimation(Canvas.LeftProperty, null);
-            WorkspaceNavigationIndicator.BeginAnimation(Canvas.TopProperty, null);
-            WorkspaceNavigationIndicator.BeginAnimation(OpacityProperty, null);
-
-            if (!isInitialPlacement)
-            {
-                WorkspaceNavigationIndicator.Width = currentWidth;
-                WorkspaceNavigationIndicator.Height = currentHeight;
-                Canvas.SetLeft(WorkspaceNavigationIndicator, currentPoint.X);
-                Canvas.SetTop(WorkspaceNavigationIndicator, currentPoint.Y);
-            }
-
-            if (isInitialPlacement)
-            {
-                WorkspaceNavigationIndicator.Width = target.ActualWidth;
-                WorkspaceNavigationIndicator.Height = targetHeight;
-                WorkspaceNavigationIndicator.CornerRadius = new CornerRadius(targetRadius);
-                Canvas.SetLeft(WorkspaceNavigationIndicator, targetPoint.X);
-                Canvas.SetTop(WorkspaceNavigationIndicator, targetPoint.Y);
-                WorkspaceNavigationIndicator.Opacity = 1;
-                return;
-            }
-
-            var duration = TimeSpan.FromMilliseconds(240);
-            var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
-            WorkspaceNavigationIndicator.BeginAnimation(Canvas.LeftProperty, new DoubleAnimation(targetPoint.X, duration) { EasingFunction = easing });
-            WorkspaceNavigationIndicator.BeginAnimation(Canvas.TopProperty, new DoubleAnimation(targetPoint.Y, duration) { EasingFunction = easing });
-            WorkspaceNavigationIndicator.BeginAnimation(WidthProperty, new DoubleAnimation(target.ActualWidth, duration) { EasingFunction = easing });
-            WorkspaceNavigationIndicator.BeginAnimation(HeightProperty, new DoubleAnimation(targetHeight, duration) { EasingFunction = easing });
-            WorkspaceNavigationIndicator.CornerRadius = new CornerRadius(targetRadius);
-            WorkspaceNavigationIndicator.Opacity = 1;
         }
 
         private static VisualMetrics CaptureVisualMetrics(DependencyObject root)

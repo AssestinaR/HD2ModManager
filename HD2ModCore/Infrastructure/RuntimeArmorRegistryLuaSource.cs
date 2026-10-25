@@ -5,46 +5,24 @@ namespace HD2ModCore.Infrastructure;
 
 internal static class RuntimeArmorRegistryLuaSource
 {
+	/// <summary>
+	/// 返回要部署进游戏的 Lua 载荷。
+	///
+	/// 2026-10-23 起只保留<b>资源覆盖运行时</b>。此前的链路是 ffi 内存修补
+	/// （<c>armor_registry_runtime</c> + transaction + composition + metadata probe），
+	/// 它在 26088801 上第一件事就是 <c>require('ffi')</c>，而该模块在这版引擎里不存在，
+	/// 于是整条链在加载时就退出——那段代码已经不可能生效，留着只会误导后来人。
+	///
+	/// section 关闭功能（<c>wardrobe.masks</c> 及其 apply/layout/locate/publish）同样依赖 ffi
+	/// 写 unit TOC，本版一并摘除；等它的替代实现就绪后再接回来。
+	///
+	/// The ffi memory-patching chain and the section-mask feature are both gone: on 26088801
+	/// `require('ffi')` fails, so neither can run. Only the resource-override runtime remains.
+	/// </summary>
 	public static string Load()
 	{
 		var assembly = typeof(RuntimeArmorRegistryLuaSource).Assembly;
-		var protocol = Read(assembly, "armor_registry_protocol.lua");
-		var probeCore = Read(assembly, "armor_metadata_probe_core.lua");
-		var runtime = Read(assembly, "armor_registry_runtime.lua");
-		var probe = Read(assembly, "armor_metadata_probe.lua");
-		var transaction = Read(assembly, "armor_registry_transaction.lua");
-		var composition = Read(assembly, "armor_registry_composition.lua");
-		var wardrobe = Read(assembly, "armor_wardrobe_masks.lua");
-		var sectionLayout = Read(assembly, "armor_section_layout.lua");
-		var sectionApply = Read(assembly, "armor_section_apply.lua");
-		var sectionLocate = Read(assembly, "armor_section_locate.lua");
-		var sectionPublish = Read(assembly, "armor_section_publish.lua");
-		var refreshProbe = Read(assembly, "armor_refresh_probe.lua");
-		var worldProbe = Read(assembly, "armor_refresh_world_probe.lua");
-		var codeProbe = Read(assembly, "armor_refresh_code_probe.lua");
-		var routeProbe = Read(assembly, "armor_refresh_route_probe.lua");
-		var hotkeyProbe = Read(assembly, "armor_refresh_hotkey.lua");
-		var resourceProbe = Read(assembly, "armor_refresh_resources.lua");
-		var componentProbe = Read(assembly, "armor_refresh_component.lua");
-		var multisiteProbe = Read(assembly, "armor_refresh_multisite.lua");
-		return $"local ARMOR_REGISTRY_PROTOCOL=(function()\n{protocol}\nend)()\n"
-			+ $"local ARMOR_METADATA_PROBE_CORE=(function()\n{probeCore}\nend)()\n"
-			+ $"local ARMOR_REGISTRY_TRANSACTION=(function()\n{transaction}\nend)()\n"
-			+ $"local ARMOR_REGISTRY_COMPOSITION=(function()\n{composition}\nend)()\n"
-			+ $"local ARMOR_WARDROBE_MASKS=(function()\n{wardrobe}\nend)()\n"
-			+ $"local ARMOR_SECTION_LAYOUT=(function()\n{sectionLayout}\nend)()\n"
-			+ $"local ARMOR_SECTION_APPLY=(function()\n{sectionApply}\nend)()\n"
-			+ $"local ARMOR_SECTION_LOCATE=(function()\n{sectionLocate}\nend)()\n"
-			+ $"local ARMOR_SECTION_PUBLISH=(function()\n{sectionPublish}\nend)()\n"
-			+ $"local ARMOR_REFRESH_PROBE=(function()\n{refreshProbe}\nend)()\n"
-			+ $"local ARMOR_REFRESH_WORLD_PROBE=(function()\n{worldProbe}\nend)()\n"
-			+ $"local ARMOR_REFRESH_CODE_PROBE=(function()\n{codeProbe}\nend)()\n"
-			+ $"local ARMOR_REFRESH_ROUTE_PROBE=(function()\n{routeProbe}\nend)()\n"
-			+ $"local ARMOR_REFRESH_HOTKEY=(function()\n{hotkeyProbe}\nend)()\n"
-			+ $"local ARMOR_REFRESH_RESOURCES=(function()\n{resourceProbe}\nend)()\n"
-			+ $"local ARMOR_REFRESH_COMPONENT=(function()\n{componentProbe}\nend)()\n"
-			+ $"local ARMOR_REFRESH_MULTISITE=(function()\n{multisiteProbe}\nend)()\n"
-			+ $"local __hd2_runtime=(function()\n{runtime}\nend)()\n{probe}";
+		return Read(assembly, "armor_override_runtime.lua");
 	}
 
 	private static string Read(Assembly assembly, string suffix)
@@ -52,9 +30,9 @@ internal static class RuntimeArmorRegistryLuaSource
 		var name = assembly.GetManifestResourceNames()
 			.SingleOrDefault(candidate => candidate.EndsWith(suffix, StringComparison.Ordinal));
 		if (name is null)
-			throw new InvalidOperationException($"内置护甲注册运行时资源缺失：{suffix}");
+			throw new InvalidOperationException($"内置护甲运行时资源缺失：{suffix}");
 		using var stream = assembly.GetManifestResourceStream(name)
-			?? throw new InvalidOperationException($"无法读取内置护甲注册运行时资源：{suffix}");
+			?? throw new InvalidOperationException($"无法读取内置护甲运行时资源：{suffix}");
 		using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
 		return reader.ReadToEnd();
 	}

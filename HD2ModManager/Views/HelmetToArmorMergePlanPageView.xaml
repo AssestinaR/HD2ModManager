@@ -1,7 +1,7 @@
 <UserControl x:Class="HD2ModManager.Views.HelmetToArmorMergePlanPageView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:HD2ModManager.Views">
+             xmlns:local="clr-namespace:HD2ModManager.Views" xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling">
     <UserControl.Resources>
         <Style x:Key="HelmetMergeModelSetRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
@@ -20,7 +20,7 @@
         <ScrollViewer Grid.Column="0"
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled"
-                      local:SmoothScrollBehavior.IsEnabled="True">
+                      scroll:SmoothScrollBehavior.IsEnabled="True">
             <StackPanel>
                 <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                     <StackPanel>

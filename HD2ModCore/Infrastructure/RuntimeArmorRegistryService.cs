@@ -93,6 +93,27 @@ public sealed class RuntimeArmorRegistryService
 			&& string.Equals(enabled, "true", StringComparison.Ordinal);
 	}
 
+	/// <summary>
+	/// 把真映射模式写进注册表的数据还原成原版。只在确实改过（存在状态文件）时动作。
+	///
+	/// 离开真映射模式时必须调用：数据层的改动没有任何运行时能撤销，留着它再叠加
+	/// 运行时覆盖，等于把外观映射了两次。
+	/// </summary>
+	public async ValueTask<ArmorRegistryDataMappingResult> RestoreDataMappingAsync(
+		string gameDataDirectory,
+		CancellationToken cancellationToken = default)
+	{
+		if (string.IsNullOrWhiteSpace(gameDataDirectory)) return ArmorRegistryDataMappingResult.Nothing;
+		var backupDirectory = Path.Combine(registryRoot, "backup");
+		if (!File.Exists(Path.Combine(backupDirectory, ArmorRegistryDataMapper.StateFileName)))
+			return ArmorRegistryDataMappingResult.Nothing;
+		return await new ArmorRegistryDataMapper().ApplyAsync(
+			gameDataDirectory,
+			Array.Empty<ArmorRegistryDataMapping>(),
+			backupDirectory,
+			cancellationToken).ConfigureAwait(false);
+	}
+
 	public static string ResolveRegistryRoot(string? overridePath = null)
 	{
 		var path = string.IsNullOrWhiteSpace(overridePath)
@@ -105,6 +126,15 @@ public sealed class RuntimeArmorRegistryService
 		return Path.GetFullPath(path);
 	}
 
+	/// <summary>素体件表里的 unit 是 16 位十六进制字符串；解析失败表示这条件不可用。</summary>
+	static bool TryParseUnitHex(string? text, out ulong unit)
+	{
+		unit = 0;
+		if (string.IsNullOrWhiteSpace(text)) return false;
+		var trimmed = text.Trim();
+		if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) trimmed = trimmed[2..];
+		return ulong.TryParse(trimmed, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out unit);
+	}
 	public async ValueTask<IReadOnlyList<RuntimeArmorCatalogEntry>> ReadArmorCatalogAsync(
 		CancellationToken cancellationToken = default)
 	{
@@ -393,8 +423,81 @@ public sealed class RuntimeArmorRegistryService
 		{
 			if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
 		}
-		await WriteWorkspaceAsync(desired, cancellationToken).ConfigureAwait(false);
-		await WriteAtomicTextAsync(Path.Combine(WorkspaceRoot, AppliedSourceFileName),
+		// 运行时真正执行的是 unit 对列表（wardrobe.links）；协议本身只是管理器的意图记录。
+		// 没有游戏数据目录或编译失败时**不写文件**——留上一版映射，比写一份空映射安全。
+		if (gameDataDirectory is not null && Directory.Exists(gameDataDirectory))
+		{
+			try
+			{
+				var authority = await new GameDataAuthorityProvider()
+					.LoadAsync(gameDataDirectory, cancellationToken)
+					.ConfigureAwait(false);
+				var links = WardrobeLinkCompiler.Compile(
+					authority, compiled.Mappings, compiled.Revision, compiled.Enabled, compiled.ModelDefinitions);
+				if (links.LinkCount > 0)
+				{
+					await WriteAtomicTextAsync(
+						Path.Combine(registryRoot, WardrobeLinkCompiler.FileName),
+						links.Text,
+						cancellationToken).ConfigureAwait(false);
+				}
+
+				// 无论当前是哪个模式都要走一遍：离开真映射模式时必须把注册表还原，
+				// 否则数据层改动会一直留着，再叠加运行时覆盖就等于把外观映射了两次。
+				var inTrueMapping = LuaDeploymentService.MappingMode == ArmorMappingMode.TrueMapping;
+				{
+					var modelsByKey = compiled.ModelDefinitions
+						.Where(model => !string.IsNullOrWhiteSpace(model.Key))
+						.GroupBy(model => model.Key, StringComparer.Ordinal)
+						.ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+					var dataMappings = new List<ArmorRegistryDataMapping>();
+					foreach (var mapping in inTrueMapping && enabled ? compiled.Mappings : Array.Empty<RuntimeArmorRegistryMapping>())
+					{
+						if (mapping.IsModelMapping)
+						{
+							if (!modelsByKey.TryGetValue(mapping.ModelKey!, out var model)) continue;
+							var pieces = new List<ArmorRegistryDataSourcePiece>();
+							foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+							{
+								if (!piece.Enabled) continue;
+								if (!TryParseUnitHex(piece.Unit, out var unit)) continue;
+								pieces.Add(new ArmorRegistryDataSourcePiece(piece.Body, piece.Slot, piece.PieceType, unit));
+							}
+							if (pieces.Count > 0)
+								dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, null, pieces));
+							else if (model.SourceItemId is uint templateId)
+								// 素体没有显式件表时，它的件来自被当作模板的那套真实护甲。
+								dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, templateId));
+							continue;
+						}
+						if (mapping.SourceItemId is uint sourceId)
+							dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, sourceId));
+					}
+					// 真映射模式下按映射重建；其它模式（以及关闭映射时）用空列表调用，
+					// 走还原路径。只有确实改过（存在状态文件）才需要还原，避免无谓的
+					// 解密与备份播种。
+					var backupDirectory = Path.Combine(registryRoot, "backup");
+					var everModified = File.Exists(
+						Path.Combine(backupDirectory, ArmorRegistryDataMapper.StateFileName));
+					if (inTrueMapping || everModified)
+					{
+						await new ArmorRegistryDataMapper().ApplyAsync(
+							gameDataDirectory,
+							dataMappings,
+							backupDirectory,
+							cancellationToken).ConfigureAwait(false);
+					}
+				}
+			}
+			catch (Exception exception) when (exception is IOException
+				or InvalidDataException
+				or InvalidOperationException
+				or UnauthorizedAccessException)
+			{
+				// 链接编译失败不应让已经写好的协议作废；运行时保留上一版映射。
+			}
+		}
+		await WriteWorkspaceAsync(desired, cancellationToken).ConfigureAwait(false);		await WriteAtomicTextAsync(Path.Combine(WorkspaceRoot, AppliedSourceFileName),
 			SerializeWorkspace(desired), cancellationToken).ConfigureAwait(false);
 		Directory.CreateDirectory(paths.DataDirectory);
 		await File.WriteAllTextAsync(

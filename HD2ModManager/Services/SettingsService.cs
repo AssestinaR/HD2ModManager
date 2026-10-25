@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModManager.Services
@@ -29,9 +30,10 @@ namespace HD2ModManager.Services
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
             public bool AllowUnsafeLuaMerge { get; set; } = false;
-        // 独占模式的护甲映射 Lua：以我们自己的 patch 形式部署，不经第三方加载器。
-        // 默认开启（用户确认：默认自动装）。关掉后不会写游戏，只留手动安装的路子。
+        // 旧的二态开关。保留字段只为读取历史设置并迁移，新代码一律读写 ArmorMappingMode。
         public bool DeployLuaMods { get; set; } = true;
+        // 护甲映射模式（ArmorMappingMode 的整数值）。null 表示尚未迁移。
+        public int? ArmorMappingMode { get; set; }
             public string? DefaultExportPath { get; set; }
         }
 
@@ -183,18 +185,44 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
-        public static bool GetDeployLuaMods()
+        /// <summary>
+        /// 读取护甲映射模式，并同步到 <see cref="LuaDeploymentService.MappingMode"/>——
+        /// 计划阶段只读静态字段，不读磁盘。
+        /// </summary>
+        public static ArmorMappingMode GetArmorMappingMode()
         {
-            var value = LoadAll()?.DeployLuaMods ?? true;
-            // 静态开关与设置保持同步：计划阶段只读它，不读磁盘。
-            LuaDeploymentService.DeploymentEnabled = value;
-            return value;
+            ArmorMappingMode mode;
+            try
+            {
+                var model = LoadAll();
+                mode = model?.ArmorMappingMode is int stored
+                    ? ArmorMappingModes.Normalize(stored)
+                    // 迁移：旧开关关闭时是把脚本交给外置加载器，对应外置入口模式。
+                    : model?.DeployLuaMods == false
+                        ? ArmorMappingMode.ExternalLuaEntry
+                        : ArmorMappingModes.Default;
+            }
+            catch
+            {
+                mode = ArmorMappingModes.Default;
+            }
+            LuaDeploymentService.MappingMode = mode;
+            return mode;
         }
 
-        public static bool SetDeployLuaMods(bool enabled)
+        public static bool SetArmorMappingMode(ArmorMappingMode mode)
         {
-            LuaDeploymentService.DeploymentEnabled = enabled;
-            try { Update(model => model.DeployLuaMods = enabled); return true; }
+            LuaDeploymentService.MappingMode = mode;
+            try
+            {
+                Update(model =>
+                {
+                    model.ArmorMappingMode = (int)mode;
+                    // 同步旧字段，便于回退到旧版本时行为不突变。
+                    model.DeployLuaMods = mode.UsesRuntimeLua();
+                });
+                return true;
+            }
             catch { return false; }
         }
         public static string GetAssetMetadataRepository()

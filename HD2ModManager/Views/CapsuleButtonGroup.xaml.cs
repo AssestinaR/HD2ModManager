@@ -32,9 +32,16 @@ namespace HD2ModManager.Views
         public static readonly DependencyProperty LeftToolTipProperty = DependencyProperty.Register(nameof(LeftToolTip), typeof(object), typeof(CapsuleButtonGroup));
         public static readonly DependencyProperty MiddleToolTipProperty = DependencyProperty.Register(nameof(MiddleToolTip), typeof(object), typeof(CapsuleButtonGroup));
         public static readonly DependencyProperty RightToolTipProperty = DependencyProperty.Register(nameof(RightToolTip), typeof(object), typeof(CapsuleButtonGroup));
-        public static readonly DependencyProperty LeftIsActiveProperty = DependencyProperty.Register(nameof(LeftIsActive), typeof(bool), typeof(CapsuleButtonGroup), new PropertyMetadata(false));
-        public static readonly DependencyProperty MiddleIsActiveProperty = DependencyProperty.Register(nameof(MiddleIsActive), typeof(bool), typeof(CapsuleButtonGroup), new PropertyMetadata(false));
-        public static readonly DependencyProperty RightIsActiveProperty = DependencyProperty.Register(nameof(RightIsActive), typeof(bool), typeof(CapsuleButtonGroup), new PropertyMetadata(false));
+        public static readonly DependencyProperty LeftIsActiveProperty = DependencyProperty.Register(nameof(LeftIsActive), typeof(bool), typeof(CapsuleButtonGroup), new PropertyMetadata(false, OnActiveZoneChanged));
+        public static readonly DependencyProperty MiddleIsActiveProperty = DependencyProperty.Register(nameof(MiddleIsActive), typeof(bool), typeof(CapsuleButtonGroup), new PropertyMetadata(false, OnActiveZoneChanged));
+        public static readonly DependencyProperty RightIsActiveProperty = DependencyProperty.Register(nameof(RightIsActive), typeof(bool), typeof(CapsuleButtonGroup), new PropertyMetadata(false, OnActiveZoneChanged));
+
+        // 胶囊的激活分区会变；宿主靠它把高亮块移过去。
+        // 没有这个事件，宿主只能靠 DP 轮询或布局回调，既贵又容易漏。
+        public event EventHandler? ActiveZoneChanged;
+
+        private static void OnActiveZoneChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+            => ((CapsuleButtonGroup)d).ActiveZoneChanged?.Invoke(d, EventArgs.Empty);
 
         public CapsuleButtonGroup()
         {

@@ -1,4 +1,4 @@
-﻿<Application x:Class="HD2ModManager.App"
+<Application x:Class="HD2ModManager.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
@@ -9,6 +9,7 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/Controls.xaml"/>
                 <ResourceDictionary Source="Themes/DataTables.xaml"/>
+                <ResourceDictionary Source="Themes/CardTemplates.xaml"/>
             </ResourceDictionary.MergedDictionaries>
             <sys:Double x:Key="LayoutGap">12</sys:Double>
             <Thickness x:Key="LayoutGapThickness">12</Thickness>

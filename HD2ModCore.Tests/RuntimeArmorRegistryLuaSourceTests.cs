@@ -3,60 +3,69 @@ using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
 
+/// <summary>
+/// 锁住部署进游戏的 Lua 载荷的**契约**，而不是它的内部结构。
+///
+/// 2026-10-23 起载荷只剩资源覆盖运行时：旧的 ffi 内存修补链与 section 掩码都摘掉了，
+/// 因为 26088801 上 <c>require('ffi')</c> 不存在，它们加载即退出。这里守三件事：
+/// 载荷能被引擎当引导脚本用（四个全局钩子）、只走公开 API、且**从不释放覆盖表项**
+/// （释放会让已实例化的护甲悬空，几秒后崩溃）。
+/// </summary>
 public sealed class RuntimeArmorRegistryLuaSourceTests
 {
-	[Fact]
-	public void EmbeddedRuntimeIncludesIncrementalModulesBeforeEntryPoint()
+	private static string Load()
 	{
 		var assembly = typeof(RuntimeArmorRegistryService).Assembly;
 		var type = assembly.GetType("HD2ModCore.Infrastructure.RuntimeArmorRegistryLuaSource", throwOnError: true)!;
-		var source = (string)type.GetMethod("Load", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, null)!;
-		Assert.Contains("version='0.2.0'", source);
-		var transaction = source.IndexOf("local ARMOR_REGISTRY_TRANSACTION=", StringComparison.Ordinal);
-		var composition = source.IndexOf("local ARMOR_REGISTRY_COMPOSITION=", StringComparison.Ordinal);
-		var wardrobe = source.IndexOf("local ARMOR_WARDROBE_MASKS=", StringComparison.Ordinal);
-		var layout = source.IndexOf("local ARMOR_SECTION_LAYOUT=", StringComparison.Ordinal);
-		var apply = source.IndexOf("local ARMOR_SECTION_APPLY=", StringComparison.Ordinal);
-		var locate = source.IndexOf("local ARMOR_SECTION_LOCATE=", StringComparison.Ordinal);
-		var publish = source.IndexOf("local ARMOR_SECTION_PUBLISH=", StringComparison.Ordinal);
-		var entry = source.IndexOf("local __hd2_runtime=", StringComparison.Ordinal);
-		Assert.True(transaction >= 0 && composition > transaction && entry > composition);
-		// 掩码解析器与 TOC 走查器都必须排在入口点之前：入口点的 tick 里要用它们，
-		// 晚于入口点加载就是 nil，而且只在游戏里才会炸。
-		Assert.True(wardrobe > composition && wardrobe < entry);
-		Assert.True(layout > wardrobe && layout < entry);
-		Assert.True(apply > layout && apply < entry);
-		Assert.True(locate > apply && locate < entry);
-		Assert.True(publish > locate && publish < entry);
-		Assert.Contains("wardrobe.masks exceeds 1 MiB", source);
-		Assert.Contains("function M.lookup(document,target)", source);
-		Assert.Contains("function M.section_fingerprint", source);
-		Assert.Contains("mesh_info_offset_invalid", source);
-		Assert.Contains("precheck_failed", source);
-		Assert.Contains("function M.pattern", source);
-		// 掩码必须在 blob 提交之前落盘，失败要整体撤回：这两句就是那个顺序的锚点。
-		Assert.Contains("prepare_section_masks", source);
-		Assert.Contains("section mask failed", source);
-		Assert.Contains("restore_section_masks", source);
-		Assert.Contains("rolled back", source);
-		Assert.Contains("published buffer limit reached", source);
-		Assert.Contains("local function publish_document", source);
-		Assert.Contains("incremental applied: built=", source);
-		Assert.Contains("metadata-probe.request", source);
-		Assert.Contains("local ARMOR_REFRESH_PROBE=", source);
-		Assert.Contains("local ARMOR_REFRESH_WORLD_PROBE=", source);
-		Assert.Contains("refresh-probe.request", source);
-		Assert.Contains("probe_version=10", source);
-		Assert.Contains("local ARMOR_REFRESH_CODE_PROBE=", source);
-		Assert.Contains("local ARMOR_REFRESH_ROUTE_PROBE=", source);
-		Assert.Contains("local ARMOR_REFRESH_HOTKEY=", source);
-		Assert.Contains("refresh-hotkey.request", source);
-		Assert.Contains("hotkey_version=4", source);
-		Assert.Contains("local ARMOR_REFRESH_MULTISITE=", source);
-		Assert.Contains("local ARMOR_REFRESH_COMPONENT=", source);
-		Assert.Contains("local ARMOR_REFRESH_RESOURCES=", source);
-		Assert.Contains("native_owner_trace", source);
-		Assert.Contains("World.link_unit", source);
-		Assert.DoesNotContain("local function apply_document(document)", source);
+		return (string)type.GetMethod("Load", BindingFlags.Public | BindingFlags.Static)!.Invoke(null, null)!;
+	}
+
+	[Fact]
+	public void EmbeddedPayloadIsTheResourceOverrideRuntime()
+	{
+		var source = Load();
+		Assert.Contains("wardrobe.links", source);
+		Assert.Contains("set_resource_override", source);
+		Assert.Contains("queue drained", source);
+	}
+
+	[Fact]
+	public void EmbeddedPayloadDefinesTheEngineHooks()
+	{
+		var source = Load();
+		// 引擎不 pcall 这些钩子：任何一个缺失或抛错都会直接结束进程。
+		Assert.Contains("init = noop", source);
+		Assert.Contains("shutdown = noop", source);
+		Assert.Contains("render = noop", source);
+		Assert.Contains("update = function()", source);
+	}
+
+	[Fact]
+	public void EmbeddedPayloadNeverReleasesAnOverride()
+	{
+		var source = Load();
+		// 释放表项会让通过覆盖创建的实例悬空，军械库重建时崩溃。契约上永不调用。
+		Assert.DoesNotContain("clear_resource_override", source);
+		Assert.Contains("stay active until the game restarts", source);
+	}
+
+	[Fact]
+	public void EmbeddedPayloadHasNoFfiOrSectionMachinery()
+	{
+		var source = Load();
+		Assert.DoesNotContain("require('ffi')", source);
+		Assert.DoesNotContain("ARMOR_WARDROBE_MASKS", source);
+		Assert.DoesNotContain("ARMOR_SECTION_APPLY", source);
+		Assert.DoesNotContain("ARMOR_REGISTRY_COMPOSITION", source);
+		Assert.DoesNotContain("armor-registry.protocol", source);
+	}
+
+	[Fact]
+	public void EmbeddedPayloadStartsWithACommentAndHasNoBom()
+	{
+		var source = Load();
+		// Lua 5.1 不跳过 BOM：带 BOM 的引导脚本会编译失败，而引擎不 pcall 它，进程直接退出。
+		Assert.StartsWith("--", source);
+		Assert.False(source.Length > 0 && source[0] == '\uFEFF');
 	}
 }

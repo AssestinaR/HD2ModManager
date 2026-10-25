@@ -29,4 +29,9 @@ public enum ModInformationKind
 	// 追加在末尾以保持既有取值的数值不变。
 	// Section structure for a batch of units; node-less for the same reason as ArmorCoverage.
 	UnitSectionStructure,
+	// 一批护甲条目的 unit 表（来源：游戏注册文件 generated_customization_armor_sets）。
+	// 同样无节点：注册文件描述的是游戏数据，谁提供这个 unit 由部署图决定。
+	// 追加在末尾以保持既有取值的数值不变。
+	// The unit table of a batch of armour items, sourced from the game's registration file.
+	ArmourUnitTable,
 }

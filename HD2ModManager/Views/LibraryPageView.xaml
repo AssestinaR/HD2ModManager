@@ -30,7 +30,7 @@
         <local:ModListPanel x:Name="LibraryModList" ItemsSource="{Binding Items}"
                             HeaderTitle="模组库"
                             HeaderSummary="{Binding ItemCountText}"
-                            EmptyMessage="{Binding EmptyMessage}"
+                            EmptyState="{Binding EmptyState}"
                             SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                             SearchActionsTemplate="{StaticResource LibrarySearchActions}"
                             RowActions="Rename, Details, AddToProfile, ToggleDecoration, OpenFolder, DeleteFromLibrary"

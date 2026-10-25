@@ -25,38 +25,6 @@ namespace HD2ModManager.Views
             };
         }
 
-        /// <summary>
-        /// 下拉打开时把滚轮劫下来。
-        /// <para>
-        /// 为什么需要：外层是整页的 <c>ScrollViewer</c>，而下拉的 <c>Popup</c> 是独立窗口。
-        /// 指针停在展开的列表上时滚轮本来归列表；但停在"下拉框本身"上时事件会一路隧道到
-        /// 页面，表现成"列表没动、整页在滚"。这里在打开状态把事件吃掉并转给列表，
-        /// 页面就不会跟着滚。
-        /// </para>
-        /// </summary>
-        private void OnVpkTargetArmorPreviewMouseWheel(object sender, MouseWheelEventArgs e)
-        {
-            if (sender is not ComboBox combo || !combo.IsDropDownOpen)
-                return;
-            e.Handled = true;
-            if (combo.Template.FindName("PART_Popup", combo) is not Popup { Child: DependencyObject child })
-                return;
-            var viewer = FindDescendant<ScrollViewer>(child);
-            viewer?.ScrollToVerticalOffset(viewer.VerticalOffset - Math.Sign(e.Delta) * 48d);
-        }
-
-        private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
-        {
-            var count = VisualTreeHelper.GetChildrenCount(root);
-            for (var index = 0; index < count; index++)
-            {
-                var child = VisualTreeHelper.GetChild(root, index);
-                if (child is T match) return match;
-                if (FindDescendant<T>(child) is { } nested) return nested;
-            }
-
-            return null;
-        }
 
         private void OnSelectImageClick(object sender, RoutedEventArgs e)
         {

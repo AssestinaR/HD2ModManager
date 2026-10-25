@@ -386,3 +386,6 @@ tmp/rig-lab/*
 ._cache_py.exe
 _codex_build/
 _buildverify/
+# MSVC 链接产物（探针工程留下的，不是源码）
+*.exp
+probe_*.lib

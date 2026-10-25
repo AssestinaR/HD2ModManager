@@ -201,6 +201,13 @@ public static class ModInformationFactRegistry
 			ModInformationCacheScope.Session,
 			FactProducerKind.Source),
 
+		// 依据：unit 表来自游戏注册文件（generated_customization_armor_sets），
+		// 同样是直接读游戏数据得出的源事实，与任何 Mod 节点无关。
+		[ModInformationPropertyKind.ArmourUnitTable] = new(
+			FactSubjectKind.GameData,
+			ModInformationCacheScope.Session,
+			FactProducerKind.Source),
+
 		// 依据：UnitVersionInformationProducer 在 AnalyzeNodeAsync 的产物（资产清单）上做版本探测
 		// （UnitVersionProbe.ProbeAsync(analysis)）；设计文档 §4 #4 也把 UnitVersion 定为依赖 #2 AssetInventory。
 		[ModInformationPropertyKind.Compatibility] = new(
@@ -251,6 +258,7 @@ public static class ModInformationFactRegistry
 		// section 结构直接读部署的 patch 与原版 archive，没有上游事实可言——
 		// 它与 DeployedGraph 同类：都是"读磁盘上的包"得出的源事实。
 		ModInformationPropertyKind.UnitSectionStructure,
+		ModInformationPropertyKind.ArmourUnitTable,
 	];
 
 	private static readonly Lazy<ModInformationFactGraph> GraphLazy = new(() => ModInformationFactGraph.Build(Descriptors));

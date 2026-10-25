@@ -3,9 +3,11 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views"
+             xmlns:empty="clr-namespace:HD2ModManager.Controls.EmptyState"
              PreviewKeyDown="OnPreviewKeyDown">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <empty:NullOrEmptyToCollapsedConverter x:Key="VisibleWhenText"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
         <local:RowActionVisibilityConverter x:Key="RowActionVisibility"/>
         <local:CustomArmorRowActionVisibilityConverter x:Key="CustomArmorRowActionVisibility"/>
@@ -300,8 +302,8 @@
                         </Grid>
                         <DataTemplate.Triggers>
                             <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
-                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
-                                <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
+                                <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceRowHover}"/>
+                                <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeRowHover}"/>
                             </Trigger>
                             <MultiDataTrigger>
                                 <MultiDataTrigger.Conditions>
@@ -336,8 +338,28 @@
                     <Style TargetType="ListBox" BasedOn="{StaticResource ModListBox}"/>
                 </ListBox.Style>
             </ListBox>
+            <!--
+                空状态有两种来源：宿主给了 EmptyState（图标 + 标题 + 解释 + 可选动作）就渲染它；
+                只给了 EmptyMessage 的老页面仍然显示一行文字，颜色从 #888 提到 TextSecondary
+                （3.54:1 → 5.38:1）。
+            -->
+            <empty:EmptyStateView State="{Binding EmptyState, ElementName=Root}"
+                                  Panel.ZIndex="5">
+                <empty:EmptyStateView.Style>
+                    <Style TargetType="empty:EmptyStateView">
+                        <Setter Property="Visibility"
+                                Value="{Binding EmptyState, ElementName=Root, Converter={StaticResource VisibleWhenText}}"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasPresentedItems, ElementName=Root}" Value="True">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </empty:EmptyStateView.Style>
+            </empty:EmptyStateView>
+
             <TextBlock Text="{Binding EmptyMessage, ElementName=Root}"
-                       Foreground="#888"
+                       Foreground="{StaticResource TextSecondary}"
                        Margin="16"
                        Panel.ZIndex="5"
                        IsHitTestVisible="False">
@@ -345,9 +367,13 @@
                     <Style TargetType="TextBlock">
                         <Setter Property="Visibility" Value="Collapsed"/>
                         <Style.Triggers>
-                            <DataTrigger Binding="{Binding HasPresentedItems, ElementName=Root}" Value="False">
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding HasPresentedItems, ElementName=Root}" Value="False"/>
+                                    <Condition Binding="{Binding EmptyState, ElementName=Root}" Value="{x:Null}"/>
+                                </MultiDataTrigger.Conditions>
                                 <Setter Property="Visibility" Value="Visible"/>
-                            </DataTrigger>
+                            </MultiDataTrigger>
                         </Style.Triggers>
                     </Style>
                 </TextBlock.Style>
@@ -371,7 +397,7 @@
                          IsTabStop="False"
                          ScrollViewer.VerticalScrollBarVisibility="{Binding VerticalScrollBarVisibility, ElementName=Root}"/>
                 <TextBlock Text="{Binding EmptyMessage, ElementName=Root}"
-                           Foreground="#888"
+                           Foreground="{StaticResource TextSecondary}"
                            Margin="16"
                            Panel.ZIndex="5"
                            IsHitTestVisible="False">

@@ -13,7 +13,7 @@ using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels
 {
-    public sealed class ShellViewModel : BaseViewModel, IAsyncDisposable
+    public sealed partial class ShellViewModel : BaseViewModel, IAsyncDisposable
     {
         private enum ArmorRegistrySelectionAction { Promote, ReleaseProviders, ReleaseTargets }
 
@@ -340,7 +340,7 @@ namespace HD2ModManager.ViewModels
                 _profileWorkspacePage ??= new ProfilePageViewModel(_profileService, _libraryService, _derivedState, _selection, _bottomBar);
                 if (_libraryWorkspacePage is null)
                 {
-                    _libraryWorkspacePage = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService);
+                    _libraryWorkspacePage = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService, importCommand: ImportCommand);
                     RegisterLibraryActions(_libraryWorkspacePage);
                 }
                 // 护甲映射页的 VM 也在这里建好。它的构造会给三个集合挂上 CollectionView，
@@ -2181,7 +2181,7 @@ namespace HD2ModManager.ViewModels
             var hideSelectedProfileMembers = LeftPageType == WorkspacePageType.Profile || RightPageType == WorkspacePageType.Profile;
             if (_libraryWorkspacePage is null)
             {
-                _libraryWorkspacePage = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService, hideSelectedProfileMembers);
+                _libraryWorkspacePage = new LibraryPageViewModel(_libraryService, _derivedState, _selection, _profileService, _notificationService, hideSelectedProfileMembers, ImportCommand);
                 RegisterLibraryActions(_libraryWorkspacePage);
             }
             else

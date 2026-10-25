@@ -9,10 +9,20 @@ public static class CustomizationArmorSetsReader
 {
 	public const uint ArmorCustomizationTypeId = 0xd9a55aa0;
 	private const int SubdataHeaderSize = 24;
-	private const int KitSize = 64;
-	private const int BodySize = 24;
-	private const int PieceSize = 96;
-
+	// Record sizes are public so fixtures and writers share one source of truth: the
+	// 2026-10-20 stride change broke every consumer that had its own copy of 96.
+	public const int KitSize = 64;
+	public const int BodySize = 24;
+	// 2026-10-20 的更新把 piece 记录从 96 字节改成 112 字节，字段偏移不变，多出的 16 字节
+	// 追加在尾部。步长仍是 96 时每行的第一件读对、其余按 16 字节递减错位，表现为槽位越界、
+	// weight 变成天文数字、unit 落到 0/1/0xFFFF —— 实测 RE-2310(820333399) 与
+	// RE-824(4259903063) 两个 kit：23 件 × 112 + 3 行 × 24 + 64 = 2712 字节，正好等于
+	// payload 长度；改成 112 后两个 kit 的 44 个 unit 哈希全部解析正确。
+	// The 2026-10-20 update widened the piece record from 96 to 112 bytes with unchanged
+	// field offsets and 16 new trailing bytes. Keeping 96 read the first piece of each body
+	// row correctly and every later one 16 bytes early, which produced out-of-range slots,
+	// absurd weights and unit ids of 0/1/0xFFFF.
+	public const int PieceSize = 112;
 	public static GameItemAssetCatalog Read(
 		string path,
 		IReadOnlyDictionary<uint, string>? localization = null)

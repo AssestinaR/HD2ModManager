@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using HD2ModAdaptation.PatchReconstruction.Lua;
+// 只引入构建双条目补丁需要的三个类型：整个命名空间会与 HD2ModCore.Domain.AssetKey 撞名。
+using PatchArchiveAdditionalEntry = HD2ModAdaptation.PatchReconstruction.PatchArchiveAdditionalEntry;
+using PatchArchiveWriter = HD2ModAdaptation.PatchReconstruction.PatchArchiveWriter;
+using PatchUnitMeshEditResult = HD2ModAdaptation.PatchReconstruction.PatchUnitMeshEditResult;
+using PatchAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 
@@ -22,14 +27,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private const string BingusLoaderPackageGuid = "612eaf70-d682-43c7-9efd-16dcc695f977";
 
 	/// <summary>
-	/// 全局 Lua 部署开关。**默认关闭**。
+	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingMode.ExclusiveLuaEntry"/>。
 	///
-	/// 2026-10-20 的游戏更新改变了 Lua mod 的使用方式，已有的全部 Lua mod 会失效并导致
-	/// 游戏崩溃——包括我们自己的护甲注册运行时。在确认新的加载方式之前，管理器不能
-	/// 再往游戏里塞任何 Lua mod；崩溃比少一个功能严重得多。
-	/// 关掉时 <see cref="PlanAsync"/> 不产生任何 Lua 派生 patch，部署计划里也就没有 Lua 项。
+	/// 只有需要运行时 Lua 的模式才会投放护甲映射补丁：独占入口写 boot，
+	/// 外置入口走独立补丁；真映射模式完全不投放 Lua，改由注册表数据承载。
 	/// </summary>
-	public static bool DeploymentEnabled { get; set; }
+	public static ArmorMappingMode MappingMode { get; set; } = ArmorMappingModes.Default;
 
 	public LuaDeploymentService(
 		LuaPatchInspector? luaInspector = null,
@@ -55,24 +58,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		CancellationToken cancellationToken = default,
 		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
 	{
-		if (!DeploymentEnabled)
-		{
-			// 明确返回"没有 Lua 要部署"，而不是假装成功：
-			// 计划里不出现 Lua 项，用户就能看见"这次部署没有带 Lua"。
-			return new LuaDeploymentPlan(
-				patchIndex,
-				Array.Empty<GeneratedPatchGroup>(),
-				Array.Empty<ExternalFileMapping>(),
-				[
-					new CoreIssue(
-						CoreIssueSeverity.Warning,
-						"LuaDeploymentDisabled",
-						"Lua 部署已在设置中关闭（游戏更新后 Lua mod 会失效并导致崩溃）。本次部署不会包含任何 Lua mod。"),
-				],
-				RequiresMaterialization: false,
-				CompositionFingerprint: null,
-				InputCount: 0);
-		}
+		// 关闭"独占映射 Lua"时**不改变标准部署流程**：其它 mod 的 Lua 照常按配置表部署，
+		// 只是不再额外投放护甲映射运行时那个补丁（见 BuildAsync 里对 DeploymentEnabled 的
+		// 判断）。运行时脚本会由设置页导出到一个文件夹，用户可以交给 MDL / Bingus 之类的
+		// 第三方加载器自行加载。
 
 		var result = await BuildAsync(
 			profile,
@@ -351,15 +340,41 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		GeneratedPatchGroup? armorAddon = null;
 		if (_armorRegistry is not null)
 		{
+			// 不在真映射模式时，把数据层曾经写进去的改动还原。切换模式会触发一次部署，
+			// 所以这里覆盖了"切走模式但没重新点应用"的情况。
+			if (MappingMode != ArmorMappingMode.TrueMapping
+				&& !string.IsNullOrWhiteSpace(gameDataDirectory)
+				&& Directory.Exists(gameDataDirectory))
+			{
+				try
+				{
+					await _armorRegistry.RestoreDataMappingAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
+				}
+				catch (Exception exception) when (exception is IOException
+					or UnauthorizedAccessException
+					or InvalidDataException
+					or InvalidOperationException)
+				{
+					issues.Add(new CoreIssue(
+						CoreIssueSeverity.Warning,
+						"ArmorRegistryDataRestoreFailed",
+						$"无法还原真映射模式写入的注册表数据：{exception.Message}",
+						ExceptionMessage: exception.ToString()));
+				}
+			}
 			try
 			{
 				var registrySnapshot = await _armorRegistry.ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
-				armorRuntimeEnabled = registrySnapshot.Document.Enabled
+				var mappingsEnabled = registrySnapshot.Document.Enabled
 					&& await _armorRegistry.IsManagedDeploymentEnabledAsync(cancellationToken).ConfigureAwait(false);
-				if (armorRuntimeEnabled)
+				// 真映射模式不投放任何 Lua：外观由注册表数据承载，这里连隐藏 unit 补丁都不需要
+				// （件表直接写成目标件集，没有"来源缺槽"的问题）。
+				if (mappingsEnabled && MappingMode.UsesRuntimeLua())
 				{
-					if (HasActiveBingusLoader(orderedEntries, snapshot))
+					armorRuntimeEnabled = true;
+					if (MappingMode == ArmorMappingMode.ExternalLuaEntry)
 					{
+						// 外置入口：运行时 + 隐藏 unit 打包成一个独立补丁，管理器不碰 boot。
 						armorAddon = await CreateArmorRegistryAddonAsync(
 							modsRootDirectory,
 							materialize,
@@ -367,6 +382,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					}
 					else
 					{
+						// 独占入口：管理器自己占用 boot，由游戏自身的 Lua VM 加载运行时。
 						var runtimeDocument = await CreateArmorRegistryDocumentAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
 						documents.Add(new LuaDocumentSource(
 							ArmorRegistryNodeId,
@@ -543,7 +559,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private static async ValueTask<GeneratedPatchGroup> CreateArmorRegistryAddonAsync(
 		string modsRootDirectory,
 		bool materialize,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		bool includeRuntime = true)
 	{
 		var source = RuntimeArmorRegistryLuaSource.Load();
 		var fingerprint = ArmorRegistrySourceFingerprint();
@@ -553,42 +570,95 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			"armor-registry-addon",
 			fingerprint);
 		var outputPath = Path.Combine(outputDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
-		var archive = BuildArmorRegistryAddonArchive(source);
-		GeneratedPatchFile[] files;
-		if (materialize)
+
+		// 一个 patch 两个条目：Lua 资源 + 空 unit。
+		//
+		// 空 unit 必须真实存在于游戏里：运行时把"来源缺的槽位"指向它，指向不存在的 id 会让
+		// 引擎记住加载失败，之后军械库整页空白并崩溃。归档布局交给 PatchArchiveWriter，
+		// 以嵌入的空 unit 补丁为模板追加 Lua 条目——不自己拼字节，避免出现第二套布局逻辑。
+		var scratch = Path.Combine(Path.GetTempPath(), "hd2mod-armor-addon-" + Guid.NewGuid().ToString("N"));
+		var templateDirectory = Path.Combine(scratch, "template");
+		var buildDirectory = Path.Combine(scratch, "build");
+		Directory.CreateDirectory(templateDirectory);
+		try
 		{
-			Directory.CreateDirectory(outputDirectory);
-			await File.WriteAllBytesAsync(outputPath, archive, cancellationToken).ConfigureAwait(false);
-			await File.WriteAllBytesAsync(outputPath + ".stream", [], cancellationToken).ConfigureAwait(false);
-			await File.WriteAllBytesAsync(outputPath + ".gpu_resources", [], cancellationToken).ConfigureAwait(false);
-			files =
-			[
-				CreateGeneratedFile(outputPath, PatchSidecarKind.Base),
-				CreateGeneratedFile(outputPath + ".stream", PatchSidecarKind.Stream),
-				CreateGeneratedFile(outputPath + ".gpu_resources", PatchSidecarKind.GpuResources),
-			];
+			var templatePath = Path.Combine(templateDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
+			await File.WriteAllBytesAsync(templatePath, WardrobeHiddenUnitTemplate.ReadPatch(), cancellationToken).ConfigureAwait(false);
+			await File.WriteAllBytesAsync(templatePath + ".gpu_resources", WardrobeHiddenUnitTemplate.ReadGpu(), cancellationToken).ConfigureAwait(false);
+			await File.WriteAllBytesAsync(templatePath + ".stream", [], cancellationToken).ConfigureAwait(false);
+
+			// includeRuntime=false 时只投放那个 unit：用户关掉"独占映射 lua"后，引导脚本
+			// 交回给游戏/加载器，映射本身（如果有别的链路在用）仍然需要这个 unit 存在。
+			PatchArchiveAdditionalEntry[] additions = includeRuntime
+				?
+				[
+					new PatchArchiveAdditionalEntry(
+						new PatchAssetKey(LuaAssetKeys.LuaTypeId, StingrayHash(ArmorAddonResourceName)),
+						BuildLuaResource(source),
+						[],
+						[]),
+				]
+				: [];
+			var written = await new PatchArchiveWriter().WriteAsync(
+				templatePath,
+				buildDirectory,
+				Array.Empty<PatchUnitMeshEditResult>(),
+				additions,
+				removedEntries: null,
+				overwriteExisting: true,
+				preserveOriginalStream: true,
+				headerTemplateTocData: null,
+				cancellationToken).ConfigureAwait(false);
+
+			if (materialize)
+			{
+				Directory.CreateDirectory(outputDirectory);
+				File.Copy(written.TocFilePath, outputPath, overwrite: true);
+				File.Copy(written.GpuResourceFilePath, outputPath + ".gpu_resources", overwrite: true);
+				await File.WriteAllBytesAsync(outputPath + ".stream", [], cancellationToken).ConfigureAwait(false);
+			}
+
+			GeneratedPatchFile[] files = materialize
+				?
+				[
+					CreateGeneratedFile(outputPath, PatchSidecarKind.Base),
+					CreateGeneratedFile(outputPath + ".stream", PatchSidecarKind.Stream),
+					CreateGeneratedFile(outputPath + ".gpu_resources", PatchSidecarKind.GpuResources),
+				]
+				:
+				[
+					new GeneratedPatchFile(PatchSidecarKind.Base, outputPath, Path.GetFileName(outputPath), written.TocFileSize, DateTimeOffset.MinValue),
+					new GeneratedPatchFile(PatchSidecarKind.Stream, outputPath + ".stream", Path.GetFileName(outputPath) + ".stream", 0, DateTimeOffset.MinValue),
+					new GeneratedPatchFile(PatchSidecarKind.GpuResources, outputPath + ".gpu_resources", Path.GetFileName(outputPath) + ".gpu_resources", written.GpuResourceFileSize, DateTimeOffset.MinValue),
+				];
+			return new GeneratedPatchGroup(
+				$"{LuaAssetKeys.BootArchiveId:x16}",
+				0,
+				files,
+				"HD2 Runtime Armor Registry managed addon",
+				PlacementOrder: int.MaxValue);
 		}
-		else
+		finally
 		{
-			files =
-			[
-				new GeneratedPatchFile(PatchSidecarKind.Base, outputPath, Path.GetFileName(outputPath), archive.LongLength, DateTimeOffset.MinValue),
-				new GeneratedPatchFile(PatchSidecarKind.Stream, outputPath + ".stream", Path.GetFileName(outputPath) + ".stream", 0, DateTimeOffset.MinValue),
-				new GeneratedPatchFile(PatchSidecarKind.GpuResources, outputPath + ".gpu_resources", Path.GetFileName(outputPath) + ".gpu_resources", 0, DateTimeOffset.MinValue),
-			];
+			try { if (Directory.Exists(scratch)) Directory.Delete(scratch, recursive: true); }
+			catch (IOException) { }
+			catch (UnauthorizedAccessException) { }
 		}
-		return new GeneratedPatchGroup(
-			$"{LuaAssetKeys.BootArchiveId:x16}",
-			0,
-			files,
-			"HD2 Runtime Armor Registry managed addon",
-			PlacementOrder: int.MaxValue);
 	}
 
-	private static byte[] BuildArmorRegistryAddonArchive(string source)
+	/// <summary>
+	/// 管理器的 Lua 运行时在补丁里的资源名。它的哈希就是引擎加载引导脚本用的 id
+	/// （不是 <c>LuaAssetKeys.BootFileId</c>——那个是游戏自身引导脚本的 id）。
+	/// </summary>
+	private const string ArmorAddonResourceName = "mods/codex/runtime_armor_registry";
+
+	/// <summary>
+	/// Lua 资源的载荷：<c>u32 长度 + u32 版本(2) + 源码</c>。版本 2 表示载荷是源码文本，
+	/// 这版引擎接受它，省掉一次字节码编译。
+	/// </summary>
+	private static byte[] BuildLuaResource(string source)
 	{
-		const string resourceName = "mods/codex/runtime_armor_registry";
-		var declaration = $"-- HD2-Addon: {resourceName}\n";
+		var declaration = $"-- HD2-Addon: {ArmorAddonResourceName}\n";
 		var body = Encoding.UTF8.GetBytes(
 			source.StartsWith("-- HD2-Addon:", StringComparison.Ordinal)
 				? source
@@ -597,28 +667,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(0), checked((uint)body.Length));
 		BinaryPrimitives.WriteUInt32LittleEndian(resource.AsSpan(4), 2);
 		body.CopyTo(resource.AsSpan(8));
-
-		const int headerLength = 104;
-		const int entryLength = 80;
-		var payloadOffset = Align16(headerLength + entryLength);
-		var archiveLength = Align16(payloadOffset + resource.Length);
-		var archive = new byte[archiveLength];
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(0), 0xF0000011);
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(4), 1);
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(8), 1);
-		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(32), checked((ulong)archiveLength));
-		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(72 + 8), LuaAssetKeys.LuaTypeId);
-		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(72 + 16), 1);
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(72 + 24), 16);
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(72 + 28), 16);
-		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(104), StingrayHash(resourceName));
-		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(112), LuaAssetKeys.LuaTypeId);
-		BinaryPrimitives.WriteUInt64LittleEndian(archive.AsSpan(120), checked((ulong)payloadOffset));
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(160), checked((uint)resource.Length));
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(172), 16);
-		BinaryPrimitives.WriteUInt32LittleEndian(archive.AsSpan(176), 16);
-		resource.CopyTo(archive.AsSpan(payloadOffset));
-		return archive;
+		return resource;
 	}
 
 	private static int Align16(int value) => checked((value + 15) & ~15);
@@ -649,8 +698,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		return hash ^ (hash >> 47);
 	}
 
-	private static string ArmorRegistrySourceFingerprint()
-		=> Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(RuntimeArmorRegistryLuaSource.Load())))
+	private static string ArmorRegistrySourceFingerprint()		=> Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(RuntimeArmorRegistryLuaSource.Load())))
 			.ToLowerInvariant();
 
 	private static async ValueTask<LuaPatchDocument> CreateArmorRegistryDocumentAsync(

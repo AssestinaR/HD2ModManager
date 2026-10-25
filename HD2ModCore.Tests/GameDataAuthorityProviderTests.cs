@@ -104,9 +104,9 @@ public sealed class GameDataAuthorityProviderTests
 		uint kitType,
 		IReadOnlyList<(uint bodyType, uint slot, ulong unitId)> bodies)
 	{
-		const int kitSize = 64;
-		const int bodySize = 24;
-		const int pieceSize = 96;
+		const int kitSize = CustomizationArmorSetsReader.KitSize;
+		const int bodySize = CustomizationArmorSetsReader.BodySize;
+		const int pieceSize = CustomizationArmorSetsReader.PieceSize;
 		var bodyOffset = kitSize;
 		var pieceOffset = bodyOffset + bodySize * bodies.Count;
 		var buffer = new byte[pieceOffset + pieceSize * bodies.Count];

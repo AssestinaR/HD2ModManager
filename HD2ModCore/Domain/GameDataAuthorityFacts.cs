@@ -31,6 +31,11 @@ public enum GameDataEquipmentKitKind : uint
 public sealed record GameDataAuthorityResourceReference(string Role, ulong FileId);
 
 // Purpose: An explicit installed-game relationship from a customization kit to one Unit and its resource references.
+//
+// 这是**件级**事实：一件 = (body, slot, piece_type) 上的一个 unit。
+// 四元组 (itemId, body, slot, piece_type) 才唯一确定一个 unit，见 ArmorStructure.cs。
+// Slot 用的是 CustomizationKitSlot 的数字编号；unit 自己 CustomizationInfo 里的 Slot 是字符串，
+// 两者在 5/6/7 档不一致，不要互换。PieceType 是该部位的第几个 unit 槽（0/1/2），不是部位编号。
 public sealed record GameDataAuthorityPiece(
 	uint RawBodyType,
 	UnitMeshBodyVariant BodyVariant,

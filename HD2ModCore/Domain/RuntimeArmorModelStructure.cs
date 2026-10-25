@@ -1,6 +1,13 @@
 namespace HD2ModCore.Domain;
 
-/// <summary>Workspace-only structural state. Reserved IDs never become runtime slots.</summary>
+/// <summary>
+/// Workspace-only structural state. Reserved IDs never become runtime slots.
+/// <para>
+/// 这里实现的是护甲结构里"Any 与 Stocky/Slim 互斥"那条规则：同一个
+/// <c>(Slot, PieceType)</c> 要么一个 Any 件，要么一对 Stocky+Slim 件，两者不能同时生效。
+/// 结构全貌见 <see cref="ArmorStructure"/>。
+/// </para>
+/// </summary>
 public static class RuntimeArmorModelStructure
 {
 	public static IReadOnlyList<RuntimeArmorRegistryModelPiece> Normalize(IEnumerable<RuntimeArmorRegistryModelPiece> pieces)

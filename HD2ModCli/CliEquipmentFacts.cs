@@ -10,13 +10,21 @@ namespace HD2ModCli;
 // helmet, or cape; exposing it lets a script answer questions like "which
 // AssetKeys are capes?" without any guesswork from unit structure.
 
+// 件级事实。字段顺序刻意对齐护甲结构的四元组：
+//   (itemId → kit, BodyVariant, Slot, PieceType) → Unit
+// PieceType 是**该部位的第几个 unit 槽**（0/1/2），不是部位编号。少了它，同一个
+// slot 下的两个 unit（例如 slot=4 的内层与护甲）在输出里完全无法区分。
+// 结构全貌见 HD2ModCore/Domain/ArmorStructure.cs。
 internal sealed record CliEquipmentFactUnit(
 	string TypeId,
 	string FileId,
 	string PartKind,
 	string BodyVariant,
 	uint Slot,
-	uint Weight);
+	uint Weight,
+	uint PieceType,
+	uint RawBodyType,
+	byte Tone);
 
 internal sealed record CliEquipmentFactKit(
 	uint ItemId,
@@ -93,7 +101,10 @@ internal static class CliEquipmentFacts
 					piece.PartKind.ToString(),
 					piece.BodyVariant.ToString(),
 					piece.Slot,
-					piece.Weight)).ToArray()))
+					piece.Weight,
+					piece.PieceType,
+					piece.RawBodyType,
+					piece.ToneVariations)).ToArray()))
 			.ToArray();
 
 		return new CliEquipmentFactResult(

@@ -12,11 +12,16 @@ public sealed record CliManagerSettings(
 	DateTime? LastAssetMetadataCheckUtc = null)
 {
 	/// <summary>
-	/// 与 GUI 的"独占映射 Lua（自动安装）"开关对应。缺省为 true，和
-	/// <c>SettingsService</c> 的默认值保持一致：老 settings.json 里没有这个键时，
-	/// CLI 不能凭空把 Lua 关掉，否则 plan/apply 的结果会和 GUI 不一致。
+	/// 旧的二态开关，只为读取历史 settings.json 并迁移保留。新代码一律使用
+	/// <see cref="ArmorMappingMode"/>。
 	/// </summary>
 	public bool DeployLuaMods { get; init; } = true;
+
+	/// <summary>
+	/// 护甲映射模式（<see cref="Domain.ArmorMappingMode"/> 的整数值）。null 表示尚未迁移，
+	/// 此时按旧开关推导，保证 CLI 与 GUI 对同一份设置得出相同结论。
+	/// </summary>
+	public int? ArmorMappingMode { get; init; }
 }
 
 public sealed record CliLibraryState(
@@ -91,7 +96,11 @@ public sealed class CliWorkspace
 		// The GUI arms this switch at startup, so the CLI has to read the same file
 		// before planning; otherwise `deploy plan` would silently drop the Lua patch
 		// that the GUI would have produced for the identical profile.
-		LuaDeploymentService.DeploymentEnabled = settings?.DeployLuaMods ?? true;
+		LuaDeploymentService.MappingMode = settings?.ArmorMappingMode is int storedMode
+			? HD2ModCore.Domain.ArmorMappingModes.Normalize(storedMode)
+			: settings?.DeployLuaMods == false
+				? HD2ModCore.Domain.ArmorMappingMode.ExternalLuaEntry
+				: HD2ModCore.Domain.ArmorMappingModes.Default;
 		return new CliWorkspace(managerRoot, settingsPath, settings, libraryRoot, gameDataRoot, issues);
 	}
 

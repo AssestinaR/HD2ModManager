@@ -15,6 +15,10 @@ namespace HD2ModCore.Tests;
 
 public sealed class RuntimeArmorRegistryServiceTests
 {
+	// LuaDeploymentService.MappingMode 对应设置页的「护甲映射模式」。它是静态字段，
+	// 这里的部署用例覆盖"需要运行时 Lua"的产品路径，所以显式指定独占入口模式。
+	public RuntimeArmorRegistryServiceTests() => LuaDeploymentService.MappingMode = ArmorMappingModes.Default;
+
 	[Fact]
 	public async Task ArmorPiecesUseRuntimeBodyEncodingNotCatalogEnum()
 	{
@@ -333,9 +337,12 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(GameDataEquipmentKitKind.Helmet, Assert.Single(entries, item => item.ItemId == 30).KitKind);
 	}
 
+	// 外置入口模式：运行时作为独立补丁投放，交给外置加载器加载，管理器不碰 boot；
+	// 同时把历史遗留的手动导入 addon 迁移掉。是否投放补丁由模式决定，不再看加载器。
 	[Fact]
-	public async Task LuaDeployment_WithActiveBingus_MaterializesManagedAddonAndMigratesLegacyPackage()
+	public async Task LuaDeployment_ExternalLuaEntry_MaterializesManagedAddonAndMigratesLegacyPackage()
 	{
+		LuaDeploymentService.MappingMode = ArmorMappingMode.ExternalLuaEntry;
 		await using var fixture = await Fixture.CreateAsync();
 		var initial = await fixture.Service.ReadSnapshotAsync();
 		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
@@ -403,11 +410,21 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
 		var group = Assert.Single(result.GeneratedPatchGroups);
 		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
-		var entry = Assert.Single(await new AdaptationPatchTocScanner().ScanEntriesAsync(patch.FilePath));
-		Assert.Equal(AdaptationLuaAssetKeys.LuaTypeId, entry.AssetKey.TypeId);
+		// 一个补丁两个条目：Lua 运行时 + 那个"什么都不画"的隐藏 unit。它们必须在同一个
+		// patch 里，否则管理器的运行时就要额外占用一个 patch 序号。
+		var entries = await new AdaptationPatchTocScanner().ScanEntriesAsync(patch.FilePath);
+		Assert.Equal(2, entries.Count);
+		var entry = Assert.Single(entries, candidate => candidate.AssetKey.TypeId == AdaptationLuaAssetKeys.LuaTypeId);
 		Assert.Equal(0x0A2E0E3386517D4CUL, entry.AssetKey.FileId);
 		var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(entry);
 		Assert.StartsWith("-- HD2-Addon: mods/codex/runtime_armor_registry\n", System.Text.Encoding.UTF8.GetString(payload.TocData.AsSpan(8)));
+
+		var hidden = Assert.Single(entries, candidate => candidate.AssetKey.TypeId == 0xE0A48D0BE9A7453FUL);
+		Assert.Equal(0xDEF7DC54E86D6054UL, hidden.AssetKey.FileId);
+		var hiddenPayload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(hidden);
+		// 精确尺寸：这份载荷是 2026-09-28 实验里引擎接受过的隐藏占位，逐字节复用，不允许被改。
+		Assert.Equal(4240, hiddenPayload.TocData.Length);
+		Assert.Equal(418, hiddenPayload.GpuResourceData.Length);
 		Assert.Empty(result.PatchIndex.FilesByNode[legacyId]);
 	}
 

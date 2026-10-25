@@ -54,6 +54,10 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		var gameRoot = Path.Combine(dataRoot, "game");
 		var plaintextPath = Path.Combine(gameRoot, GeneratedLibraryName);
 		var encryptedPath = Path.Combine(gameRoot, EncryptedLibraryName);
+		// 真映射模式会改写这份文件。权威数据一律读**原件**：索引内容、指纹、以及兼容模式
+		// 的 link 编译都基于官方数据，我们的改动对它们完全不可见。否则按被改过的件表重建
+		// 索引后，link 编译会判定"目标已等于来源"而静默失效。
+		encryptedPath = ArmorDataFileIdentity.GetUnmodifiedSealedPath(encryptedPath);
 		var entitiesPath = Path.Combine(gameRoot, GeneratedEntitiesName);
 		var issues = new List<CoreIssue>();
 
@@ -178,10 +182,18 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 				File.Exists(entitiesPath) ? entitiesPath : (File.Exists(plaintextPath) ? plaintextPath : encryptedPath)));
 		}
 
+		// 索引指纹**不再包含注册表文件**。管理器管理下的用户可能用任何办法改过它，
+		// 拿它做判据只会产生误报。注册表的正确性由"备份是唯一可信原件"保证，
+		// 而不是靠指纹去检测。游戏版本与其它文件的变化由 AssetArchiveIndexService 负责。
 		return new GameDataAuthoritySnapshot(
 			sourceKind,
 			sourcePath,
-			ComputeFingerprint(sourceKind, authoritativeBytes ?? Array.Empty<byte>(), localized.SourceFingerprint, supplemental.SourceFingerprint, entities.SourceFingerprint),
+			ComputeFingerprint(
+				sourceKind,
+				Array.Empty<byte>(),
+				localized.SourceFingerprint,
+				supplemental.SourceFingerprint,
+				entities.SourceFingerprint),
 			DateTimeOffset.UtcNow,
 			kits,
 			issues)
@@ -894,8 +906,8 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		AppendFingerprintValue(hash, "game-data-localized-names-v1");
 		var languageSettings = Path.Combine(gameDataDirectory, "game", LanguageSettingsName);
 		AppendFileFingerprint(hash, languageSettings);
-		AppendFileFingerprint(hash, Path.Combine(gameDataDirectory, "game", GeneratedLibraryName));
-		AppendFileFingerprint(hash, Path.Combine(gameDataDirectory, "game", EncryptedLibraryName));
+		// 注册表文件不参与指纹（它可能被用户以任何方式改过）。其余文件照常。
+		AppendFileFingerprint(hash, languageSettings);
 		try
 		{
 			var resolver = new GameDataPackageResolver(gameDataDirectory);

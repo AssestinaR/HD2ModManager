@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Diagnostics;
 using System.Threading;
@@ -8,6 +8,7 @@ using HD2ModCore.Infrastructure;
 using HD2ModCore.Domain;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
+using HD2ModManager.Controls.EmptyState;
 
 namespace HD2ModManager.ViewModels
 {
@@ -20,6 +21,8 @@ namespace HD2ModManager.ViewModels
         private readonly ProfileService? _profiles;
         private readonly NotificationService? _notifications;
         private readonly SelectionCoordinator? _selection;
+        // 空状态里的"导入 Mod"按钮要用壳层的导入命令；页面自己不该复制一份导入逻辑。
+        private readonly ICommand? _importCommand;
         private readonly ModListStateController<LibraryModListState, ModCardViewModel> _list;
         private bool _hideSelectedProfileMembers;
         private bool _canDragToProfile;
@@ -55,7 +58,46 @@ namespace HD2ModManager.ViewModels
             }
         }
         public string ItemCountText => $"显示 {_list.VisibleCount} / {_library.All().Count()} 个 Mod";
-        public string EmptyMessage => _hideSelectedProfileMembers && _profiles?.SelectedProfile is not null ? "所有 Mod 都已加入此配置。" : "模组库中没有可显示的 Mod。";
+
+        // 空状态按原因分三种：库为空 / 搜索无结果 / 全部已加入配置。
+        // 逻辑层只给内容，外观由 EmptyStateView 决定。
+        public EmptyStatePresentation? EmptyState
+        {
+            get
+            {
+                if (_list.VisibleCount > 0) return null;
+
+                // 搜索优先：用户刚输入过关键词时，先说"没匹配到"，
+                // 而不是说"所有 Mod 都已加入此配置"——后者答非所问。
+                if (!string.IsNullOrWhiteSpace(_query))
+                {
+                    return new EmptyStatePresentation(
+                        "没有匹配的 Mod",
+                        "试试更短的关键词，或清除搜索回到全部 Mod。",
+                        "清除搜索",
+                        ClearSearchCommand,
+                        EmptyStateIcon.Search);
+                }
+
+                if (_hideSelectedProfileMembers && _profiles?.SelectedProfile is not null)
+                {
+                    return new EmptyStatePresentation(
+                        "所有 Mod 都已加入此配置",
+                        "这里没有可添加的内容了。换一个配置，或先导入新的 Mod。",
+                        Icon: EmptyStateIcon.Filter);
+                }
+
+                return new EmptyStatePresentation(
+                    "模组库是空的",
+                    "把 Mod 压缩包或文件夹拖进窗口，或用右下角菜单里的「导入 Mod」。",
+                    "导入 Mod",
+                    _importCommand,
+                    EmptyStateIcon.Inbox);
+            }
+        }
+
+        private RelayCommand? _clearSearchCommand;
+        public RelayCommand ClearSearchCommand => _clearSearchCommand ??= new RelayCommand(() => Query = string.Empty);
         private bool _showOnlyOutdated;
         private bool _showDecorations;
         private bool _showOptions;
@@ -105,7 +147,7 @@ namespace HD2ModManager.ViewModels
         private bool _isCompact = true;
         public bool IsCompact { get => _isCompact; set { _isCompact = value; OnPropertyChanged(nameof(IsCompact)); } }
 
-        public LibraryPageViewModel(ModLibraryService library, DerivedStateCoordinator? derivedState = null, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null, bool hideSelectedProfileMembers = false)
+        public LibraryPageViewModel(ModLibraryService library, DerivedStateCoordinator? derivedState = null, SelectionCoordinator? selection = null, ProfileService? profiles = null, NotificationService? notifications = null, bool hideSelectedProfileMembers = false, ICommand? importCommand = null)
         {
             Title = "模组库";
             _library = library;
@@ -114,6 +156,7 @@ namespace HD2ModManager.ViewModels
             _notifications = notifications;
             _selection = selection;
             _hideSelectedProfileMembers = hideSelectedProfileMembers;
+            _importCommand = importCommand;
             _list = new ModListStateController<LibraryModListState, ModCardViewModel>(
                 state => state.Guid,
                 state => state.PresentationVersion,
@@ -277,7 +320,7 @@ namespace HD2ModManager.ViewModels
                 commitImmediately: !_hasSubmittedInitialProjection);
             _hasSubmittedInitialProjection = true;
             OnPropertyChanged(nameof(HasItems));
-            OnPropertyChanged(nameof(EmptyMessage));
+            OnPropertyChanged(nameof(EmptyState));
             OnPropertyChanged(nameof(ItemCountText));
         }
 
@@ -710,7 +753,7 @@ namespace HD2ModManager.ViewModels
         {
             if (_disposed) return;
             OnPropertyChanged(nameof(HasItems));
-            OnPropertyChanged(nameof(EmptyMessage));
+            OnPropertyChanged(nameof(EmptyState));
             OnPropertyChanged(nameof(ItemCountText));
         }
 

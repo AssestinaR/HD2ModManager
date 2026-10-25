@@ -6,6 +6,12 @@
     <SolidColorBrush x:Key="SurfaceMuted" Color="#F4F6F9"/>
     <SolidColorBrush x:Key="SurfaceSelected" Color="#EAF1FF"/>
     <SolidColorBrush x:Key="SurfaceInteractiveHover" Color="#EEF4FF"/>
+    <!--
+        行级悬停单独一组 token：列表行是高频、低承诺的表面，悬停不该借用
+        强调色，否则会和"选中"抢同一个视觉通道。选中仍用 SurfaceSelected +
+        Accent 描边 + 左侧 4px 条，三者叠加保证灰度下也能分辨。
+    -->
+    <SolidColorBrush x:Key="SurfaceRowHover" Color="#F7F9FC"/>    <SolidColorBrush x:Key="StrokeRowHover" Color="#DFE5EE"/>
     <SolidColorBrush x:Key="SurfaceElevated" Color="#FFFFFF"/>
     <SolidColorBrush x:Key="TextPrimary" Color="#20242C"/>
     <SolidColorBrush x:Key="TextSecondary" Color="#626B7A"/>
@@ -414,4 +420,20 @@
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!--
+        顶栏图标几何。放在应用级资源里，NavBarHost 用 NavIconGeometryConverter 按
+        NavIconKey 取值——这样"加一个图标"是加一条几何 + 一个枚举值，不用在模板里
+        再写一组 DataTrigger，也不用把同一段路径抄两遍（激活态/非激活态各一份）。
+    -->
+    <Geometry x:Key="NavIcon.Home">M2,7 L8,2 L14,7 L14,14 L10,14 L10,10 L6,10 L6,14 L2,14 Z</Geometry>
+    <Geometry x:Key="NavIcon.ArmorRegistry">M3,2.5 L13,2.5 L13,13.5 L3,13.5 Z M5,5 L11,5 M5,8 L11,8 M5,11 L9,11</Geometry>
+    <Geometry x:Key="NavIcon.Settings">M8,4.5 A3.5,3.5 0 1 0 8,11.5 A3.5,3.5 0 1 0 8,4.5 M8,1.5 L8,3 M8,13 L8,14.5 M1.5,8 L3,8 M13,8 L14.5,8 M3.4,3.4 L4.5,4.5 M11.5,11.5 L12.6,12.6 M12.6,3.4 L11.5,4.5 M4.5,11.5 L3.4,12.6</Geometry>
+    <Geometry x:Key="NavIcon.Profile">M3,2.5 L12,2.5 L14,5 L14,13.5 L2,13.5 L2,5 Z M5,7 L11,7 M5,10 L9,10</Geometry>
+    <Geometry x:Key="NavIcon.Library">M2,4 L14,4 L14,13 L2,13 Z M2,7 L14,7 M6,4 L6,13</Geometry>
+
+    <!-- 空状态图标。与顶栏图标同一套约定：几何在应用级资源里，控件按枚举取。 -->
+    <Geometry x:Key="EmptyIcon.Inbox">M2,4 L14,4 L14,13 L2,13 Z M2,7 L14,7 M6,4 L6,13</Geometry>
+    <Geometry x:Key="EmptyIcon.Search">M9.5,8.5 L13.5,12.5 M11,6 A5,5 0 1 1 1,6 A5,5 0 1 1 11,6</Geometry>
+    <Geometry x:Key="EmptyIcon.Filter">M1.5,3 L14.5,3 L9.5,8.5 L9.5,13 L6.5,14.5 L6.5,8.5 Z</Geometry>
 </ResourceDictionary>

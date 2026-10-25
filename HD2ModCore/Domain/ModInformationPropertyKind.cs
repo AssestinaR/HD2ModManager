@@ -43,6 +43,8 @@ public enum ModInformationPropertyKind
 	// 衣柜编辑器与 section 映射表都通过它取数，于是"这个 unit 有几个 section"全应用只有一个答案。
 	// Appended at the end for the same reason as the four above.
 	UnitSectionStructure,
+	// 一批护甲条目的 unit 表；与 UnitSectionStructure 同源不同层。
+	ArmourUnitTable,
 }
 
 // 作用：标识属性来自哪一层，便于 UI 和诊断区分缓存命中、生产和组合结果。

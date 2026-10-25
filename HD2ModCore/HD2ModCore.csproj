@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -19,18 +19,18 @@
 	<PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.13" />
     <!--
-      作用：把内嵌的 SQLite 原生引擎固定在 2.1.12，绕开 GHSA-2m69-gcr7-jv3q。
-      背景：Microsoft.Data.Sqlite 8.0.13 传递引入 SQLitePCLRaw.bundle_e_sqlite3 2.1.6，
-      其原生库 e_sqlite3.dll 里内嵌的 SQLite 实测为 3.41.2（更早的 2.1.11 是 3.49.1），
-      都低于该公告要求的 3.50.2，属于已知的高危内存破坏缺陷（CVE-2025-6965）。
-      2.1.12 正是上游针对这条公告发布的维护版（发布说明：把原生库升到 SQLite 3.53.3）；
-      2.1.13 的原生二进制与 2.1.12 逐字节相同，故取有公开说明的 2.1.12。
-      这里只换原生引擎，托管 API（Microsoft.Data.Sqlite 8.0.13 + SQLitePCLRaw 2.1.x）保持不变，
-      对归档索引的读写行为没有影响。
+      浣滅敤锛氭妸鍐呭祵鐨?SQLite 鍘熺敓寮曟搸鍥哄畾鍦?2.1.12锛岀粫寮€ GHSA-2m69-gcr7-jv3q銆?
+      鑳屾櫙锛歁icrosoft.Data.Sqlite 8.0.13 浼犻€掑紩鍏?SQLitePCLRaw.bundle_e_sqlite3 2.1.6锛?
+      鍏跺師鐢熷簱 e_sqlite3.dll 閲屽唴宓岀殑 SQLite 瀹炴祴涓?3.41.2锛堟洿鏃╃殑 2.1.11 鏄?3.49.1锛夛紝
+      閮戒綆浜庤鍏憡瑕佹眰鐨?3.50.2锛屽睘浜庡凡鐭ョ殑楂樺嵄鍐呭瓨鐮村潖缂洪櫡锛圕VE-2025-6965锛夈€?
+      2.1.12 姝ｆ槸涓婃父閽堝杩欐潯鍏憡鍙戝竷鐨勭淮鎶ょ増锛堝彂甯冭鏄庯細鎶婂師鐢熷簱鍗囧埌 SQLite 3.53.3锛夛紱
+      2.1.13 鐨勫師鐢熶簩杩涘埗涓?2.1.12 閫愬瓧鑺傜浉鍚岋紝鏁呭彇鏈夊叕寮€璇存槑鐨?2.1.12銆?
+      杩欓噷鍙崲鍘熺敓寮曟搸锛屾墭绠?API锛圡icrosoft.Data.Sqlite 8.0.13 + SQLitePCLRaw 2.1.x锛変繚鎸佷笉鍙橈紝
+      瀵瑰綊妗ｇ储寮曠殑璇诲啓琛屼负娌℃湁褰卞搷銆?
 
       Pins the bundled SQLite native engine to 2.1.12 to clear GHSA-2m69-gcr7-jv3q.
       Microsoft.Data.Sqlite 8.0.13 transitively pulls SQLitePCLRaw.bundle_e_sqlite3 2.1.6, whose
-      native e_sqlite3.dll embeds SQLite 3.41.2 (and 2.1.11 embeds 3.49.1) — both below the 3.50.2
+      native e_sqlite3.dll embeds SQLite 3.41.2 (and 2.1.11 embeds 3.49.1) 鈥?both below the 3.50.2
       the advisory requires, i.e. CVE-2025-6965, a high-severity memory-corruption bug.
       2.1.12 is the upstream maintenance release published for exactly that advisory (its note:
       bump the native lib to SQLite 3.53.3); 2.1.13's native binaries are byte-identical to 2.1.12's,
@@ -55,6 +55,12 @@
                       Link="RuntimeArmorRegistry\armor_refresh_world_probe.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_refresh_probe.lua"
                       Link="RuntimeArmorRegistry\armor_refresh_probe.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\resources\wardrobe_hidden_unit.patch"
+                      Link="RuntimeArmorRegistry\wardrobe_hidden_unit.patch" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\resources\wardrobe_hidden_unit.patch.gpu_resources"
+                      Link="RuntimeArmorRegistry\wardrobe_hidden_unit.patch.gpu_resources" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_override_runtime.lua"
+                      Link="RuntimeArmorRegistry\armor_override_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_transaction.lua"
                       Link="RuntimeArmorRegistry\armor_registry_transaction.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_composition.lua"
@@ -62,32 +68,32 @@
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_protocol.lua"
                       Link="RuntimeArmorRegistry\armor_registry_protocol.lua" />
     <!--
-      衣柜 section 掩码的只读解析器。必须和协议一样内嵌：运行时没有磁盘上的 src 目录可读，
-      拼接顺序由 RuntimeArmorRegistryLuaSource 决定，这个文件排在入口点之前。
+      琛ｆ煖 section 鎺╃爜鐨勫彧璇昏В鏋愬櫒銆傚繀椤诲拰鍗忚涓€鏍峰唴宓岋細杩愯鏃舵病鏈夌鐩樹笂鐨?src 鐩綍鍙锛?
+      鎷兼帴椤哄簭鐢?RuntimeArmorRegistryLuaSource 鍐冲畾锛岃繖涓枃浠舵帓鍦ㄥ叆鍙ｇ偣涔嬪墠銆?
       Read-only wardrobe mask parser. Embedded for the same reason as the protocol: the runtime has no
       src directory on disk, and RuntimeArmorRegistryLuaSource controls the concatenation order.
     -->
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_wardrobe_masks.lua"
                       Link="RuntimeArmorRegistry\armor_wardrobe_masks.lua" />
     <!--
-      unit TOC 的只读结构解析：运行时据此自己算出 section 偏移，不必读构建期的映射表。
-      实测依据见 notes/section-toc-memory-header-differs-only-in-unit-id-20261019.md。
+      unit TOC 鐨勫彧璇荤粨鏋勮В鏋愶細杩愯鏃舵嵁姝よ嚜宸辩畻鍑?section 鍋忕Щ锛屼笉蹇呰鏋勫缓鏈熺殑鏄犲皠琛ㄣ€?
+      瀹炴祴渚濇嵁瑙?notes/section-toc-memory-header-differs-only-in-unit-id-20261019.md銆?
       Read-only unit TOC walker: lets the runtime derive section offsets itself instead of
       reading a build-time map. Evidence in the note referenced above.
     -->
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_layout.lua"
                       Link="RuntimeArmorRegistry\armor_section_layout.lua" />
     <!--
-      把掩码翻译成 NumIndices 写入并保证可回滚。与走查器分开：这一层只做"算计划/执行"，
-      所以能离线用可变字节缓冲测出恢复与回滚，不必进游戏。
+      鎶婃帺鐮佺炕璇戞垚 NumIndices 鍐欏叆骞朵繚璇佸彲鍥炴粴銆備笌璧版煡鍣ㄥ垎寮€锛氳繖涓€灞傚彧鍋?绠楄鍒?鎵ц"锛?
+      鎵€浠ヨ兘绂荤嚎鐢ㄥ彲鍙樺瓧鑺傜紦鍐叉祴鍑烘仮澶嶄笌鍥炴粴锛屼笉蹇呰繘娓告垙銆?
       Turns masks into NumIndices writes with rollback. Kept apart from the walker so the
       restore and rollback paths can be verified offline against a mutable byte buffer.
     -->
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_apply.lua"
                       Link="RuntimeArmorRegistry\armor_section_apply.lua" />
     <!--
-      在进程内存里按 FileId+8 个零字节定位 unit 的 TOC 副本，命中后用结构走查验证。
-      与走查器分开是为了能用"假内存"离线测误命中、坏副本、缓存失效。
+      鍦ㄨ繘绋嬪唴瀛橀噷鎸?FileId+8 涓浂瀛楄妭瀹氫綅 unit 鐨?TOC 鍓湰锛屽懡涓悗鐢ㄧ粨鏋勮蛋鏌ラ獙璇併€?
+      涓庤蛋鏌ュ櫒鍒嗗紑鏄负浜嗚兘鐢?鍋囧唴瀛?绂荤嚎娴嬭鍛戒腑銆佸潖鍓湰銆佺紦瀛樺け鏁堛€?
       Locates a unit's TOC copy by its FileId and validates it structurally; kept apart so
       false hits, broken copies and cache invalidation can be exercised against fake memory.
     -->
@@ -105,10 +111,10 @@
 
   <ItemGroup>
     <!--
-      作用：把管理器资源目录里的资产类型哈希表（typehash.txt）内嵌进 Core，供 AssetTypeNameTable 解析
-      "unit / state_machine / cloth" 这类可读类型名。刻意引用管理器资源目录里的那一份，而不是另存一份：
-      类型哈希表只有一份真相，更新路径仍然是 assets metadata plan/apply 写 StoragePaths.TypeHashesPath，
-      内嵌副本只是"没有管理器安装时"的默认值，且只影响显示名，不影响提取结果的正确性。
+      浣滅敤锛氭妸绠＄悊鍣ㄨ祫婧愮洰褰曢噷鐨勮祫浜х被鍨嬪搱甯岃〃锛坱ypehash.txt锛夊唴宓岃繘 Core锛屼緵 AssetTypeNameTable 瑙ｆ瀽
+      "unit / state_machine / cloth" 杩欑被鍙绫诲瀷鍚嶃€傚埢鎰忓紩鐢ㄧ鐞嗗櫒璧勬簮鐩綍閲岀殑閭ｄ竴浠斤紝鑰屼笉鏄彟瀛樹竴浠斤細
+      绫诲瀷鍝堝笇琛ㄥ彧鏈変竴浠界湡鐩革紝鏇存柊璺緞浠嶇劧鏄?assets metadata plan/apply 鍐?StoragePaths.TypeHashesPath锛?
+      鍐呭祵鍓湰鍙槸"娌℃湁绠＄悊鍣ㄥ畨瑁呮椂"鐨勯粯璁ゅ€硷紝涓斿彧褰卞搷鏄剧ず鍚嶏紝涓嶅奖鍝嶆彁鍙栫粨鏋滅殑姝ｇ‘鎬с€?
       Purpose: Embeds the manager resource directory's asset type hash table so AssetTypeNameTable can resolve
       readable type names. It deliberately references the single existing copy instead of duplicating it: the
       table keeps one source of truth (updated by assets metadata plan/apply into StoragePaths.TypeHashesPath),
@@ -120,3 +126,4 @@
   </ItemGroup>
 
 </Project>
+

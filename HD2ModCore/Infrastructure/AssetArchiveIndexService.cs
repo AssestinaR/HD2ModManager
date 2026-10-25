@@ -633,6 +633,12 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		AppendFingerprintValue(hash, authority.SourceFingerprint);
 		AppendFingerprintValue(hash, authority.PreferredLocale);
 
+		// 游戏版本号：只在这里体现"游戏更新了"。注册表文件本身不参与指纹——
+		// 管理器管理下的用户可能用任何方式改过它，拿它做判据只会误报。
+		var buildId = SteamAppManifest
+			.TryRead(SteamAppManifest.ResolveManifestPath(gameDataDirectory))?.TrustedBuildId;
+		AppendFingerprintValue(hash, "game-build:" + (buildId ?? "unknown"));
+
 		foreach (var path in Directory.EnumerateFiles(gameDataDirectory, "*", SearchOption.TopDirectoryOnly)
 			.Where(IsGameDataSourceFile)
 			.OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))

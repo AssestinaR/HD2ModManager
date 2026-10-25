@@ -7,6 +7,18 @@ public static class CustomizationKitType
 	public const uint Cape = 2;
 }
 
+/// <summary>
+/// 件记录里的部位编号。**这是游戏自己的编号，全项目只有这一份**。
+/// <para>
+/// 身体套装的核心 6 个区域是 <c>2..7</c>（躯干、胯、左腿、右腿、左臂、右臂）；
+/// <c>0</c> 只出现在头盔 kit，<c>1</c>（披风）与 <c>8/9</c>（双肩）是独立部位、不是每套都有。
+/// </para>
+/// <para>
+/// 它和 unit 自己 <c>CustomizationInfo.Slot</c> 里的**字符串**是两套编号，5/6/7 档并不一致，
+/// 不能互相替代。护甲的完整结构（四元组寻址、身形编码、件记录布局）见
+/// <c>HD2ModCore/Domain/ArmorStructure.cs</c> 顶部的说明。
+/// </para>
+/// </summary>
 public static class CustomizationKitSlot
 {
 	public const uint Helmet = 0;

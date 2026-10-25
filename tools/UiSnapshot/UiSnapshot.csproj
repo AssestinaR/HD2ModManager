@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    作用：离屏渲染 HD2ModManager 的真实视图，输出 PNG 供 UI 审查与改动前后对比。
+    它不启动主窗口、不加载 Mod 库、不接触游戏目录，只复用真实 XAML + 真实资源字典。
+
+    为什么需要它：本机的图形会话在首帧后不再合成新帧，截屏与 PrintWindow 都只能拿到
+    旧画面。RenderTargetBitmap 直接光栅化视觉树，不依赖 DWM，因此可以稳定出图。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <StartupObject>UiSnapshot.Program</StartupObject>
+    <AssemblyName>UiSnapshot</AssemblyName>
+    <RootNamespace>UiSnapshot</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\HD2ModManager\HD2ModManager.csproj" />
+  </ItemGroup>
+
+</Project>

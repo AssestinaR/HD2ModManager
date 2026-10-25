@@ -25,7 +25,7 @@
     <local:ModListPanel x:Name="ProfileModList" ItemsSource="{Binding Items}"
                         HeaderTitle="{Binding CurrentProfileTitle}"
                         HeaderSummary="{Binding HeaderSummary}"
-                        EmptyMessage="{Binding EmptyMessage}"
+                        EmptyState="{Binding EmptyState}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource ProfileSearchActions}"
                         RowActions="Details, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"

@@ -107,7 +107,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		Wardrobe = new WardrobeTreeViewModel(
 			WardrobeWorkspaceFile.ResolvePath(SettingsService.CreateStoragePaths().ModsDirectory));
 		RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !IsBusy && !HasChanges);
-		ApplyCommand = new AsyncRelayCommand(_ => ApplyAsync(), _ => !IsBusy && HasChanges);
+		// 应用按钮**始终可点**：没有改动时点它等于把当前协议重投一次——这在
+		// "Steam 校验完整性" 之后是必须的（注册表被还原了，映射得重新应用一次）。
+		// 10 秒冷却只用于防止连点产生一串 revision。
+		ApplyCommand = new AsyncRelayCommand(
+			_ => ApplyAsync(),
+			_ => !IsBusy && !applyCooldownActive);
 		OpenRegistryFolderCommand = new RelayCommand(OpenRegistryFolder);
 		AddCustomModelCommand = new RelayCommand(_ => AddCustomModel(), _ => !IsBusy);
 		RemoveCustomModelCommand = new RelayCommand(
@@ -254,6 +259,28 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			ApplyCommand.RaiseCanExecuteChanged();
 			RefreshCommand.RaiseCanExecuteChanged();
 		}
+	}
+
+	// 应用成功后有 10 秒冷却，纯粹防连点（避免产生一串 revision）。冷却结束后按钮恢复可点，
+	// 与"有没有改动"无关。
+	private bool applyCooldownActive;
+
+	private void ApplyCanExecuteChanged() => ApplyCommand.RaiseCanExecuteChanged();
+
+	private async Task RunApplyCooldownAsync()
+	{
+		applyCooldownActive = true;
+		ApplyCanExecuteChanged();
+		try
+		{
+			await Task.Delay(TimeSpan.FromSeconds(10));
+		}
+		catch (TaskCanceledException)
+		{
+			// 页面关闭时取消：冷却状态无所谓，下次应用会重新开始。
+		}
+		applyCooldownActive = false;
+		ApplyCanExecuteChanged();
 	}
 
 	public bool IsProviderDetailOpen => selectedProviderId is not null;
@@ -1620,7 +1647,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	private async Task ApplyAsync()
 	{
-		if (IsBusy || !HasChanges) return;
+		// 与 CanExecute 保持一致：冷却中或正在忙时不可点；没有改动也允许重投。
+		if (IsBusy || applyCooldownActive) return;
 		IsBusy = true;
 		try
 		{
@@ -1772,6 +1800,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		finally
 		{
 			IsBusy = false;
+			// 应用结束进入 10 秒冷却；冷却结束后按钮重新可用（即便没有新的改动）。
+			_ = RunApplyCooldownAsync();
 		}
 	}
 

@@ -4361,7 +4361,7 @@ public static class CliApplication
 		{
 			lines.Add($"  [{kit.Category}] {kit.DisplayName}  archive={kit.ArchiveId}  units={kit.Units.Count}");
 			foreach (var unit in kit.Units)
-				lines.Add($"      {unit.TypeId}  {unit.FileId}  {unit.PartKind}/{unit.BodyVariant}");
+				lines.Add($"      {unit.TypeId}  {unit.FileId}  slot={unit.Slot} pt={unit.PieceType} {unit.PartKind}/{unit.BodyVariant} weight={unit.Weight} tone={unit.Tone}");
 		}
 		return string.Join(Environment.NewLine, lines);
 	}

@@ -1,0 +1,59 @@
+<UserControl x:Class="HD2ModManager.Controls.EmptyState.EmptyStateView"
+             x:Name="Root"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:empty="clr-namespace:HD2ModManager.Controls.EmptyState"
+             Focusable="False"
+             IsTabStop="False">
+    <!--
+        作用：统一的空状态。图标 + 标题 + 一句解释 + 可选主操作，居中显示。
+        逻辑层只递交 EmptyStatePresentation；这里决定长什么样。
+    -->
+    <UserControl.Resources>
+        <empty:EmptyStateIconConverter x:Key="EmptyIcon"/>
+        <empty:NullOrEmptyToCollapsedConverter x:Key="VisibleWhenText"/>
+    </UserControl.Resources>
+
+    <Grid DataContext="{Binding State, ElementName=Root}"
+          HorizontalAlignment="Center"
+          VerticalAlignment="Center"
+          MaxWidth="380"
+          Margin="24">
+        <StackPanel>
+            <Path Width="28" Height="28"
+                  Margin="0,0,0,12"
+                  HorizontalAlignment="Center"
+                  Stretch="Uniform"
+                  Data="{Binding Icon, Converter={StaticResource EmptyIcon}}"
+                  Stroke="{StaticResource TextTertiary}"
+                  StrokeThickness="1.4"
+                  StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round"
+                  StrokeLineJoin="Round"/>
+
+            <TextBlock Text="{Binding Title}"
+                       FontSize="15"
+                       FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimary}"
+                       TextWrapping="Wrap"
+                       TextAlignment="Center"
+                       HorizontalAlignment="Center"/>
+
+            <TextBlock Text="{Binding Detail}"
+                       Margin="0,6,0,0"
+                       FontSize="12"
+                       Foreground="{StaticResource TextSecondary}"
+                       TextWrapping="Wrap"
+                       TextAlignment="Center"
+                       HorizontalAlignment="Center"
+                       Visibility="{Binding Detail, Converter={StaticResource VisibleWhenText}}"/>
+
+            <Button Content="{Binding ActionText}"
+                    Command="{Binding ActionCommand}"
+                    Style="{StaticResource AppPrimaryButton}"
+                    HorizontalAlignment="Center"
+                    Margin="0,14,0,0"
+                    Visibility="{Binding ActionText, Converter={StaticResource VisibleWhenText}}"/>
+        </StackPanel>
+    </Grid>
+</UserControl>
