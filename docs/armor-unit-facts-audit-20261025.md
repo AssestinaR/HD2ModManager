@@ -526,6 +526,41 @@ CLI 无法区分"这条来自游戏注册文件"还是"这条来自 unit 结构�
 
 ---
 
+## 10. 本轮已修（提交 2fe05ac）
+
+命名全部收敛到 `HD2ModCore.Domain.ArmorStructure`，以游戏注册表为准。
+
+| 编号 | 状态 | 说明 |
+|---|---|---|
+| N3 | ✅ 已修 | `RuntimeArmorRegistryService.ToPartKind` 删除，改走目录；披风(1)与双肩(8/9)不再落 Unknown |
+| N4 | ✅ 已修 | `CustomModelConversionService.SlotFor` 改走目录；肩甲回到 8/9，不再折成躯干 |
+| N5 | ✅ 已修 | 组件下拉从 7 项变 10 项；`SlotOrder` / `SlotLabel` 改走目录 |
+| N6 | ✅ 已修 | 中文名只有一份：头盔 / 胸部 / 胯部 / 左肩…；"头部""胸口""内部"全部消失 |
+| N7 | ✅ 已修 | 两份逐字复制的 `DescribeParts` 四件套合并 |
+| N8 | ✅ 已修 | `CreateUnitPartInsertCommand` / `InsertUnitPartAsync` 删除 |
+| N9 | ✅ 已修 | `IN ('armor','helmet')` → `LIKE`，与其余 9 处一致 |
+| N10 | ✅ 已修 | `UnitMeshPartKind` 新增 `Cape = 11`，披风不再混进 `Accessory` |
+| N11 | ✅ 部分 | `ToBodyVariant` / `ToRawBody` / `ParseBody` 只有一份；`UnitMeshBodyVariant` 枚举本身未改名 |
+| N12 | ⬜ 未修 | 骨名覆盖 `CustomizationInfo` 仍在（需要先定"骨名该不该参与部位判定"） |
+| N13 | ⬜ 未修 | `SemanticName` 仍是 mesh 级调试串；规范名 `CanonicalName` 已就位但还没接到界面 |
+| N14 | ⬜ 未修 | 一个 unit 多 mesh 仍会多行（1052/2002 个 unit） |
+| N15 | ⬜ 未修 | `re824_to_re2310_override.lua` 的 22 条手写部位名仍在构建里 |
+| N19 | ⬜ 未修 | `Origin` 仍未透出到 GUI |
+| N20 | ⬜ 未修 | 搜索别名表独立于目录（"头部"作为搜索词保留） |
+| — | ✅ 已修 | 权威角色的层推断方向反了（pieceType==1 判成内层），改成 0=内层、1/2=护甲 |
+| — | ✅ 已修 | 共享 unit 的多个归属写进 detail，不再用一句 `Ambiguous` 抹掉 |
+
+**顺带统一的枚举**：`UnitMeshPartKind.Head → Helmet`、`.Pelvis → Hips`（数值显式写出，
+按值存进 SQLite 的旧数据不受影响）。
+
+**实测 CLI 变化**：`slot=1 pt=0 Accessory/Any` → `Cape/Any`；`slot=3 Pelvis` → `Hips`。
+
+**仍未做**：N12 / N13 / N14 都要动"显示什么"的语义，需要先定规则再改；
+C6（`gamedata index inspect` 因为 `game_data_stream_layouts` 为空而永远报"缺失或过期"）没动，
+它是一行 SQL 的事但会改变状态显示，留到下一轮单独做。
+
+---
+
 ## 9. 第二轮反向追溯：GUI 各页 + CLI 全命令（2026-10-25）
 
 ### 9.1 GUI 逐页核对
