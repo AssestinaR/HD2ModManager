@@ -389,3 +389,6 @@ _buildverify/
 # MSVC 链接产物（探针工程留下的，不是源码）
 *.exp
 probe_*.lib
+
+# 本地 AI 工具的记忆目录，不属于项目内容
+.workbuddy-ai/
