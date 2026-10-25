@@ -304,11 +304,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 	}
 	public bool ComponentEditorEditable => !IsBusy && (!ComponentEditorIsTarget || !ComponentEditorFollowSource);
+	/// <summary>可选部位：直接来自 ArmorStructure，10 个部位一个不少（含披风与双肩）。</summary>
 	public IReadOnlyList<ArmorComponentSlotOption> ComponentSlotOptions { get; } =
-	[
-		new(0, "头盔"), new(2, "胸部"), new(6, "左臂"), new(7, "右臂"),
-		new(3, "胯部"), new(4, "左腿"), new(5, "右腿")
-	];
+		ArmorStructure.All
+			.Select(part => new ArmorComponentSlotOption(
+				ArmorStructure.SlotOf(part) ?? 0,
+				ArmorStructure.Display(part)))
+			.ToArray();
 	private uint newComponentSlot = 2;
 	public uint NewComponentSlot
 	{
@@ -1547,10 +1549,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private RuntimeArmorModelPieceEditorViewModel CreateEditorPiece(RuntimeArmorRegistryModelPiece piece)
 		=> new(piece, MarkComponentEditorDirty, IsComponentEditorCustomModel, RemoveComponentPiece);
 
-	private static int SlotOrder(uint slot) => slot switch
-	{
-		0 => 0, 2 => 1, 6 => 2, 7 => 3, 3 => 4, 4 => 5, 5 => 6, _ => 100 + (int)slot
-	};
+	private static int SlotOrder(uint slot) => ArmorStructure.Order(slot);
 
 	private void MarkModelDefinitionsDirty()
 	{
@@ -2149,24 +2148,25 @@ public sealed class RuntimeArmorModelPieceEditorViewModel : BaseViewModel
 	public uint Slot { get; }
 	public uint PieceType { get; }
 	public byte Tone { get; }
-	public string BodyLabel => Body switch
+	public string BodyLabel
 	{
-		3 => "Any",
-		0 => "Stocky",
-		1 => "Slim",
-		_ => Body.ToString(CultureInfo.InvariantCulture),
-	};
-	public string SlotLabel => Slot switch
+		get
+		{
+			var body = ArmorStructure.ToBodyVariant(Body);
+			return body == HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Other
+				? Body.ToString(CultureInfo.InvariantCulture)
+				: ArmorStructure.DisplayBody(body);
+		}
+	}
+
+	public string SlotLabel
 	{
-		0 => "头盔",
-		2 => "胸部",
-		3 => "胯部",
-		4 => "左腿",
-		5 => "右腿",
-		6 => "左臂",
-		7 => "右臂",
-		_ => $"槽位 {Slot}",
-	};
+		get
+		{
+			var part = ArmorStructure.FromSlot(Slot);
+			return part == ArmorPart.Unknown ? $"槽位 {Slot}" : ArmorStructure.Display(part);
+		}
+	}
 	public bool Enabled
 	{
 		get => enabled;
@@ -2243,7 +2243,7 @@ public sealed class RuntimeArmorComponentRowViewModel
 	public RuntimeArmorModelPieceEditorViewModel? Any { get; }
 	public bool IsAny => Any is not null;
 	public string SlotLabel => (Any ?? Stocky ?? Slim)?.SlotLabel ?? "组件";
-	public string LayerLabel => $"层级 {PieceType}";
+	public string LayerLabel => ArmorStructure.DescribePieceSlot(PieceType);
 	public string StructureActionLabel => IsAny ? "拆分为双身形" : "合并为 Any";
 	public RelayCommand MergeAnyCommand { get; }
 	public RelayCommand SplitCommand { get; }

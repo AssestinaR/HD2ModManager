@@ -272,7 +272,7 @@ internal static class CliVpkRekey
 				// 如果按部位一股脑映射，玩家会看到"身体上又长出一层护甲"；正确做法是
 				// 让它们走隐藏路径——这也正是 AutoHideUnmappedTargetUnits 的用途。
 				var inBaseSlots = part.Layer == UnitMeshPartLayer.Undergarment
-					|| part.PartKind == UnitMeshPartKind.Head;
+					|| part.PartKind == UnitMeshPartKind.Helmet;
 				if (!inBaseSlots)
 					continue;
 				var matched = source.Parts.FirstOrDefault(candidate => candidate.PartKind == part.PartKind);
@@ -304,20 +304,10 @@ internal static class CliVpkRekey
 			Issues: []), notes);
 	}
 
-	private static UnitMeshPartKind PartKindOf(string slot) => slot switch
-	{
-		"Helmet" or "Head" => UnitMeshPartKind.Head,
-		"Torso" or "Chest" => UnitMeshPartKind.Torso,
-		"Hip" or "Pelvis" => UnitMeshPartKind.Pelvis,
-		"LeftLeg" => UnitMeshPartKind.LeftLeg,
-		"RightLeg" => UnitMeshPartKind.RightLeg,
-		"LeftArm" => UnitMeshPartKind.LeftArm,
-		"RightArm" => UnitMeshPartKind.RightArm,
-		"LeftShoulder" => UnitMeshPartKind.LeftShoulder,
-		"RightShoulder" => UnitMeshPartKind.RightShoulder,
-		"Accessory" => UnitMeshPartKind.Accessory,
-		_ => UnitMeshPartKind.Unknown,
-	};
+	// 部位名解析统一走 ArmorStructure（Hip / Pelvis / Head 这些旧写法都在它的别名表里），
+	// 这里不再维护第二份 switch。
+	private static UnitMeshPartKind PartKindOf(string slot)
+		=> ArmorStructure.ToPartKind(ArmorStructure.TryParse(slot) ?? ArmorPart.Unknown);
 
 	private static UnitMeshPartLayer LayerOf(string pieceType) => pieceType switch
 	{
@@ -326,12 +316,10 @@ internal static class CliVpkRekey
 		_ => UnitMeshPartLayer.Undergarment,
 	};
 
-	private static UnitMeshBodyVariant BodyVariantOf(string bodyType) => bodyType switch
-	{
-		"Slim" => UnitMeshBodyVariant.Slim,
-		"Stocky" => UnitMeshBodyVariant.Stocky,
-		_ => UnitMeshBodyVariant.Any,
-	};
+	private static UnitMeshBodyVariant BodyVariantOf(string bodyType)
+		=> ArmorStructure.ParseBody(bodyType) is var body && body != UnitMeshBodyVariant.Other
+			? body
+			: UnitMeshBodyVariant.Any;
 
 	private static string? FindUnitPatch(string directory)
 	{

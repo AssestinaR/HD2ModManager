@@ -22,7 +22,7 @@ public sealed class ArmourUnitTableSourceTests
 			RawBodyType: 0,
 			BodyVariant: UnitMeshBodyVariant.Any,
 			Slot: slot,
-			PartKind: UnitMeshPartKind.Head,
+			PartKind: UnitMeshPartKind.Helmet,
 			PieceType: 0,
 			Weight: 0,
 			ToneVariations: 0,
@@ -57,7 +57,7 @@ public sealed class ArmourUnitTableSourceTests
 	public void ReadUnitIds_IgnoresNonUnitAssets()
 	{
 		var material = new GameDataAuthorityPiece(
-			0, UnitMeshBodyVariant.Any, 1, UnitMeshPartKind.Head, 0, 0, 0,
+			0, UnitMeshBodyVariant.Any, 1, UnitMeshPartKind.Helmet, 0, 0, 0,
 			new AssetKey(0x1111111111111111, 0x2222222222222222),
 			Array.Empty<GameDataAuthorityResourceReference>());
 		var snapshot = Snapshot(Kit(Armour, Piece("3c09e08493ee44b8"), material));

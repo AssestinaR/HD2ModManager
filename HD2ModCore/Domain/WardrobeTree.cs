@@ -110,14 +110,7 @@ public static class WardrobeTree
 	private const string AnyBodyType = "Any";
 
 	// 固定顺序：界面每次打开都长一样，不随字典顺序漂移。
-	// 身形按"健壮 → 纤细"排：这是游戏里更常见的那支在前，也是用户给的参考顺序。
-	private static readonly string[] BodyTypeOrder = ["Stocky", "Slim"];
-	private static readonly string[] SlotOrder =
-	[
-		"Helmet", "Torso", "Hip",
-		"LeftShoulder", "RightShoulder", "LeftArm", "RightArm",
-		"LeftLeg", "RightLeg",
-	];
+	// 顺序与显示名都取自 ArmorStructure——树、表格、卡片必须用同一套。
 
 	/// <summary>
 	/// 用一件护甲的赢家 unit 表构建树。根是这件护甲本身。
@@ -142,13 +135,13 @@ public static class WardrobeTree
 		foreach (var bodyGroup in units
 			.SelectMany(unit => ExpandBodies(unit))
 			.GroupBy(pair => pair.Body)
-			.OrderBy(group => OrderOf(group.Key, BodyTypeOrder))
+			.OrderBy(group => ArmorStructure.OrderBody(ArmorStructure.ParseBody(group.Key)))
 			.ThenBy(group => group.Key, StringComparer.Ordinal))
 		{
 			var slotNodes = new List<WardrobeTreeNode>();
 			foreach (var slotGroup in bodyGroup
 				.GroupBy(pair => Normalize(pair.Unit.Slot, UnknownSlot))
-				.OrderBy(group => OrderOf(group.Key, SlotOrder))
+				.OrderBy(group => ArmorStructure.Order(ArmorStructure.TryParse(group.Key) ?? ArmorPart.Unknown))
 				.ThenBy(group => group.Key, StringComparer.Ordinal))
 			{
 				// Unit 的序号在整个槽位上算（不是在每个身形分支里各算一遍），
@@ -386,49 +379,21 @@ public static class WardrobeTree
 	private static string Normalize(string? value, string fallback)
 		=> string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
-	private static int OrderOf(string value, IReadOnlyList<string> order)
-	{
-		for (var index = 0; index < order.Count; index++)
-		{
-			if (string.Equals(order[index], value, StringComparison.Ordinal))
-				return index;
-		}
-		// 未知值排在已知之后，但仍按名字稳定排序。
-		return order.Count + 1;
-	}
-
 	/// <summary>套组显示名。未知值原样显示，不要吞掉——那会让人以为数据丢了。</summary>
-	public static string PieceTypeLabel(string pieceType) => pieceType switch
-	{
-		"Armor" => "护甲",
-		"Undergarment" => "内衣",
-		UnknownPieceType => "未标注套组",
-		_ => pieceType,
-	};
+	public static string PieceTypeLabel(string pieceType)
+		=> string.Equals(pieceType, UnknownPieceType, StringComparison.Ordinal)
+			? "未标注套组"
+			: ArmorStructure.DisplayPieceType(pieceType);
 
-	/// <summary>身形显示名。</summary>
-	public static string BodyLabel(string bodyType) => bodyType switch
-	{
-		"Slim" => "纤细",
-		"Stocky" => "健壮",
-		AnyBodyType => "通用",
-		UnknownBodyType => "未标注身形",
-		_ => bodyType,
-	};
+	/// <summary>身形显示名。唯一的中文名在 ArmorStructure 里。</summary>
+	public static string BodyLabel(string bodyType)
+		=> string.Equals(bodyType, UnknownBodyType, StringComparison.Ordinal)
+			? "未标注身形"
+			: ArmorStructure.DisplayBody(ArmorStructure.ParseBody(bodyType));
 
-	/// <summary>槽位显示名。</summary>
-	public static string SlotLabel(string slot) => slot switch
-	{
-		"Helmet" => "头盔",
-		"Torso" => "胸部",
-		"Hip" => "胯部",
-		"LeftShoulder" => "左肩",
-		"RightShoulder" => "右肩",
-		"LeftArm" => "左臂",
-		"RightArm" => "右臂",
-		"LeftLeg" => "左腿",
-		"RightLeg" => "右腿",
-		UnknownSlot => "未标注槽位",
-		_ => slot,
-	};
+	/// <summary>槽位显示名。unit 自带的字符串（Hip / Pelvis / Torso…）由 ArmorStructure 归一。</summary>
+	public static string SlotLabel(string slot)
+		=> string.Equals(slot, UnknownSlot, StringComparison.Ordinal)
+			? "未标注槽位"
+			: ArmorStructure.Display(ArmorStructure.TryParse(slot) ?? ArmorPart.Unknown);
 }

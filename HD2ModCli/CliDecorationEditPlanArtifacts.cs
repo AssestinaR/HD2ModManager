@@ -157,10 +157,18 @@ internal sealed record CliDecorationEditValidationResult(
 
 internal static class CliDecorationEditPlanArtifacts
 {
-	private static readonly IReadOnlySet<string> SupportedTargetParts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-	{
-		"Head", "Torso", "Hips", "LeftArm", "RightArm", "LeftLeg", "RightLeg",
-	};
+	// 接受的部位写法：ArmorStructure 的规范名（helmet / left_arm）、紧凑写法（leftarm）、
+	// 中文显示名，外加旧规格文件里出现过的 Head / Pelvis / Hip。新写的规格请用规范名。
+	private static readonly IReadOnlySet<string> SupportedTargetParts = new HashSet<string>(
+		ArmorStructure.All
+			.SelectMany(part => new[]
+			{
+				ArmorStructure.Name(part),
+				ArmorStructure.Name(part).Replace("_", string.Empty, StringComparison.Ordinal),
+				ArmorStructure.Display(part),
+			})
+			.Concat(["Head", "Pelvis", "Hip", "Accessory"]),
+		StringComparer.OrdinalIgnoreCase);
 
 	private static readonly IReadOnlySet<string> SupportedTargetBodyVariants = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{

@@ -1,3 +1,4 @@
+using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2SourceMigration.Segmentation;
 using HD2SourceMigration.VpkConversion;
@@ -9,19 +10,26 @@ namespace HD2ModCli;
 // Purpose: discovers structural donors from the game's own equipment authority table.
 internal static class CliSourceConvert
 {
-	/// <summary>部位 → 游戏装备表里的 partKind。与 <c>UnitMeshPartKind</c> 的枚举名一致。</summary>
+	/// <summary>
+	/// 部位 → 装备表里的 partKind 文本。用枚举名拼出来，改枚举时不会静默失配
+	/// （历史上这里写死过 "Head" / "Pelvis"，枚举改名后就会全部"找不到来源"）。
+	/// </summary>
 	internal static readonly IReadOnlyDictionary<BodyRegion, string> PartKinds = new Dictionary<BodyRegion, string>
 	{
-		[BodyRegion.Head] = "Head",
-		[BodyRegion.Chest] = "Torso",
-		[BodyRegion.Hips] = "Pelvis",
-		[BodyRegion.LeftLeg] = "LeftLeg",
-		[BodyRegion.RightLeg] = "RightLeg",
-		[BodyRegion.LeftArm] = "LeftArm",
-		[BodyRegion.RightArm] = "RightArm",
+		[BodyRegion.Head] = UnitMeshPartKind.Helmet.ToString(),
+		[BodyRegion.Chest] = UnitMeshPartKind.Torso.ToString(),
+		[BodyRegion.Hips] = UnitMeshPartKind.Hips.ToString(),
+		[BodyRegion.LeftLeg] = UnitMeshPartKind.LeftLeg.ToString(),
+		[BodyRegion.RightLeg] = UnitMeshPartKind.RightLeg.ToString(),
+		[BodyRegion.LeftArm] = UnitMeshPartKind.LeftArm.ToString(),
+		[BodyRegion.RightArm] = UnitMeshPartKind.RightArm.ToString(),
 	};
 
-	/// <summary>部位 → 写进 Unit 的槽位名（<c>HelldiverCustomizationSlot_</c> 之后的部分）。</summary>
+	/// <summary>
+	/// 部位 → 写进 Unit 的槽位名（<c>HelldiverCustomizationSlot_</c> 之后的部分）。
+	/// 这些是**游戏侧的字符串**，不是显示名：游戏自己的字符串是 <c>Hip</c> 而不是 <c>Hips</c>，
+	/// 所以这里刻意不套 <see cref="HD2ModCore.Domain.ArmorStructure.Name"/>。
+	/// </summary>
 	internal static readonly IReadOnlyDictionary<BodyRegion, string> SlotNames = new Dictionary<BodyRegion, string>
 	{
 		[BodyRegion.Head] = "Helmet",

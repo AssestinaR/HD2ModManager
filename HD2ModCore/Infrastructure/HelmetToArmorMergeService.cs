@@ -693,7 +693,7 @@ public sealed class HelmetToArmorMergeService : IHelmetToArmorMergeService
 
 	private static EquipmentUnitPart? SelectHelmetPart(IReadOnlyList<EquipmentUnitPart> parts)
 		=> parts
-			.Where(part => part.PartKind == UnitMeshPartKind.Head
+			.Where(part => part.PartKind == UnitMeshPartKind.Helmet
 				&& part.BodyVariant == UnitMeshBodyVariant.Any
 				&& !part.IsCullingMesh
 				&& part.HasRenderableGeometry)

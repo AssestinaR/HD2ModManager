@@ -36,22 +36,20 @@ namespace HD2ModCore.Domain;
 //      任何 `(UnitMeshBodyVariant)rawBody` 强转都会把 Stocky 变成 Unknown，而 Slim/Any
 //      又恰好正确——这种 bug 只在部分护甲上发作。必须走 ToBodyVariant。
 //
-// 3. 部位 slot（区域）—— 编号 0..9
-//    0 头盔、1 披风、2 躯干、3 胯、4 左腿、5 右腿、6 左臂、7 右臂、8 左肩、9 右肩
+// 3. 部位 slot（区域）—— 编号 0..9，名字以游戏的注册表为准
+//    0 头盔 Helmet、1 披风 Cape、2 躯干 Torso、3 胯 Hips、4 左腿 LeftLeg、5 右腿 RightLeg、
+//    6 左臂 LeftArm、7 右臂 RightArm、8 左肩 LeftShoulder、9 右肩 RightShoulder
 //    身体套装的**核心 6 个区域**是 2..7：躯干、胯、左腿、右腿、左臂、右臂。
 //    实测：138 个身体 kit **每一个都带 slot 1（披风）和 2..7 全部 6 个核心区域**；
 //    双肩（8/9）只有 125/138 有，13 套完全没有，2 套只有左肩、4 套只有右肩。
 //    头盔（slot 0）只出现在头盔 kit 里（实测 161 个头盔 kit 各有 1 件 0/0）。
 //    所以"一套护甲有 6 个区域"说的是核心 6 个，披风与双肩是另外两类部位。
 //
-//    ⚠ 展示用的 UnitMeshPartKind 枚举**数值顺序与这里不同**：
-//        UnitMeshPartKind = Unknown, Head, Torso, Pelvis, LeftArm, RightArm, LeftLeg, RightLeg, …
-//        CustomizationKitSlot = 0 Helmet, 1 Cape, 2 Torso, 3 Hips, 4 LeftLeg, 5 RightLeg, 6 LeftArm, 7 RightArm
-//      也就是说 slot 4 是 LeftLeg，而枚举 4 是 LeftArm。`(UnitMeshPartKind)slot` 会
-//      静默把腿和臂对调——编译通过、数值看起来合理、只有玩家能看出来。必须走显式映射
-//      （正确的参照实现：GameDataAuthorityProvider.ToPartKind；RuntimeArmorRegistryService
-//      里那份漏了披风与双肩，需要收编）。
-//      同理 `(UnitMeshBodyVariant)rawBody` 会把 Stocky 变成 Unknown（见第 2 条）。
+//    ⚠ 胯部的唯一名字是 **Hips**。注册表字段叫 Hips、枚举叫 Hips、显示叫"胯部"。
+//      "Pelvis"、"Hip" 只作为**输入别名**存在于 TryParse，不允许再出现在输出里。
+//
+//    ⚠ 展示用的 UnitMeshPartKind 枚举与这里**同名同义**（Helmet/Cape/Torso/Hips/…），
+//      但它是按值序列化进 SQLite 的，数值一旦发布就不能改。转换只走 ToPartKind。
 //
 // 4. 层 pieceType（= 该部位的第几个 unit 槽）—— 实测只有 0/1/2
 //    每个部位最多挂 **3 个 unit 槽**，pieceType 就是槽序号（不是部位编号）。
@@ -116,8 +114,26 @@ namespace HD2ModCore.Domain;
 // =============================================================================
 
 /// <summary>
-/// 护甲结构的常量与语义。<b>这是全项目关于"unit 属于哪件护甲的哪个部位"的唯一权威出处</b>；
-/// 别处再出现一套 slot 编号、身形编码或部位名，都是需要收编的重复实现。
+/// 护甲部位的**唯一枚举**。名字与游戏的注册表一致（<see cref="CustomizationKitSlot"/>），
+/// 中文显示名也由这里统一给出，别处不许再自己写一套。
+/// </summary>
+public enum ArmorPart
+{
+	Unknown = 0,
+	Helmet,
+	Cape,
+	Torso,
+	Hips,
+	LeftLeg,
+	RightLeg,
+	LeftArm,
+	RightArm,
+	LeftShoulder,
+	RightShoulder,
+}
+
+/// <summary>
+/// 护甲结构的常量、映射与显示名。<b>这是全项目关于"unit 属于哪件护甲的哪个部位"的唯一权威出处。</b>
 /// </summary>
 /// <remarks>
 /// 寻址是四元组 <c>(itemId, body, slot, pieceType)</c>。缺一维就不唯一。
@@ -143,18 +159,153 @@ public static class ArmorStructure
 	/// <summary>每个 kit 都恰好有几行 body（实测：Stocky / Slim / Any）。</summary>
 	public const int BodyRowsPerKit = 3;
 
-	/// <summary>头盔只出现在头盔 kit 的 slot 0 上。</summary>
-	public static bool IsHelmetSlot(uint slot) => slot == CustomizationKitSlot.Helmet;
+	// --- 部位表：唯一的 slot ↔ 部位 ↔ 名字 对照 -------------------------------
 
-	/// <summary>身体套装的核心 6 个区域：躯干、胯、左腿、右腿、左臂、右臂。每个身体 kit 都有。</summary>
-	public static bool IsCoreBodyRegion(uint slot)
-		=> slot is CustomizationKitSlot.Torso or CustomizationKitSlot.Hips
-			or CustomizationKitSlot.LeftLeg or CustomizationKitSlot.RightLeg
-			or CustomizationKitSlot.LeftArm or CustomizationKitSlot.RightArm;
+	private sealed record PartRow(
+		uint Slot,
+		ArmorPart Part,
+		string Name,
+		string Display,
+		UnitMeshPartKind Kind,
+		string[] Aliases);
 
-	/// <summary>肩甲与披风：独立部位。披风每个身体 kit 都有，双肩只有 125/138 有。</summary>
-	public static bool IsOptionalRegion(uint slot)
-		=> slot is CustomizationKitSlot.Cape or CustomizationKitSlot.LeftShoulder or CustomizationKitSlot.RightShoulder;
+	// 顺序即显示顺序：头盔 → 披风 → 躯干 → 胯 → 左右腿 → 左右臂 → 双肩。
+	// Aliases 只用于**解析**（unit 自己的 CustomizationInfo 字符串、旧数据、搜索），
+	// 绝不用来输出。输出一律用 Name / Display。
+	private static readonly PartRow[] Rows =
+	[
+		new(CustomizationKitSlot.Helmet, ArmorPart.Helmet, "helmet", "头盔", UnitMeshPartKind.Helmet,
+			["helmet", "head"]),
+		new(CustomizationKitSlot.Cape, ArmorPart.Cape, "cape", "披风", UnitMeshPartKind.Cape,
+			["cape"]),
+		new(CustomizationKitSlot.Torso, ArmorPart.Torso, "torso", "胸部", UnitMeshPartKind.Torso,
+			["torso", "chest"]),
+		new(CustomizationKitSlot.Hips, ArmorPart.Hips, "hips", "胯部", UnitMeshPartKind.Hips,
+			["hips", "hip", "pelvis", "legs_hips"]),
+		new(CustomizationKitSlot.LeftLeg, ArmorPart.LeftLeg, "left_leg", "左腿", UnitMeshPartKind.LeftLeg,
+			["leftleg", "left_leg", "l_leg", "leg_l", "leg_left", "lft_leg", "g_leg_l"]),
+		new(CustomizationKitSlot.RightLeg, ArmorPart.RightLeg, "right_leg", "右腿", UnitMeshPartKind.RightLeg,
+			["rightleg", "right_leg", "r_leg", "leg_r", "leg_right", "rgt_leg", "g_leg_r"]),
+		new(CustomizationKitSlot.LeftArm, ArmorPart.LeftArm, "left_arm", "左臂", UnitMeshPartKind.LeftArm,
+			["leftarm", "left_arm", "l_arm", "arm_l", "arm_left", "lft_arm", "torso_arm_l"]),
+		new(CustomizationKitSlot.RightArm, ArmorPart.RightArm, "right_arm", "右臂", UnitMeshPartKind.RightArm,
+			["rightarm", "right_arm", "r_arm", "arm_r", "arm_right", "rgt_arm", "torso_arm_r"]),
+		new(CustomizationKitSlot.LeftShoulder, ArmorPart.LeftShoulder, "left_shoulder", "左肩", UnitMeshPartKind.LeftShoulder,
+			["leftshoulder", "left_shoulder", "l_shoulder", "shoulder_l", "shoulder_left"]),
+		new(CustomizationKitSlot.RightShoulder, ArmorPart.RightShoulder, "right_shoulder", "右肩", UnitMeshPartKind.RightShoulder,
+			["rightshoulder", "right_shoulder", "r_shoulder", "shoulder_r", "shoulder_right"]),
+	];
+
+	/// <summary>全部部位，按显示顺序。</summary>
+	public static IReadOnlyList<ArmorPart> All { get; } = Rows.Select(row => row.Part).ToArray();
+
+	/// <summary>槽位编号 → 部位。未知编号返回 <see cref="ArmorPart.Unknown"/>，不猜。</summary>
+	public static ArmorPart FromSlot(uint slot)
+	{
+		foreach (var row in Rows)
+		{
+			if (row.Slot == slot)
+				return row.Part;
+		}
+
+		return ArmorPart.Unknown;
+	}
+
+	/// <summary>部位 → 槽位编号。未知部位返回 <c>null</c>。</summary>
+	public static uint? SlotOf(ArmorPart part)
+	{
+		foreach (var row in Rows)
+		{
+			if (row.Part == part)
+				return row.Slot;
+		}
+
+		return null;
+	}
+
+	/// <summary>规范英文名（小写、下划线），用于键、文件名、Lua 标识符。</summary>
+	public static string Name(ArmorPart part)
+		=> Rows.FirstOrDefault(row => row.Part == part)?.Name ?? "unknown";
+
+	/// <summary>唯一的中文显示名。别处不要再写 switch。</summary>
+	public static string Display(ArmorPart part)
+		=> Rows.FirstOrDefault(row => row.Part == part)?.Display ?? "未标注部位";
+
+	/// <summary>显示顺序（越小越靠前）。未知部位排在最后。</summary>
+	public static int Order(ArmorPart part)
+	{
+		for (var index = 0; index < Rows.Length; index++)
+		{
+			if (Rows[index].Part == part)
+				return index;
+		}
+
+		return Rows.Length + 1;
+	}
+
+	/// <summary>显示顺序（按槽位编号）。未知槽位排在最后，仍按编号稳定排序。</summary>
+	public static int Order(uint slot) => Order(FromSlot(slot));
+
+	/// <summary>
+	/// 从任意文本里认出部位。<c>null</c> 表示认不出。
+	/// 会剥掉游戏的前缀（<c>HelldiverCustomizationSlot_</c>）和 <c>g_</c> 骨名前缀，
+	/// 然后按别名做**整词**匹配（不做子串匹配——子串匹配正是"hip 命中 hips"这类误判的根源）。
+	/// </summary>
+	public static ArmorPart? TryParse(string? text)
+	{
+		if (string.IsNullOrWhiteSpace(text))
+			return null;
+
+		var value = text.Trim();
+		foreach (var prefix in new[] { "HelldiverCustomizationSlot_", "HelldiverCustomizationPieceType_", "HelldiverCustomizationBodyType_", "g_" })
+		{
+			if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+				value = value[prefix.Length..];
+		}
+
+		// 骨名形如 g_torso_arm_l / g_leg_undergarment_l：先试整串，再试前两段、前三段。
+		var segments = value.Split('_', StringSplitOptions.RemoveEmptyEntries);
+		var candidates = new List<string> { value };
+		for (var take = Math.Min(3, segments.Length); take >= 1; take--)
+			candidates.Add(string.Join('_', segments.Take(take)));
+
+		foreach (var candidate in candidates)
+		{
+			foreach (var row in Rows)
+			{
+				foreach (var alias in row.Aliases)
+				{
+					if (string.Equals(candidate, alias, StringComparison.OrdinalIgnoreCase))
+						return row.Part;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	// --- 部位 ↔ UnitMeshPartKind ---------------------------------------------
+
+	/// <summary>部位 → 展示用枚举。**唯一允许的转换方向**，不要强转数值。</summary>
+	public static UnitMeshPartKind ToPartKind(ArmorPart part)
+		=> Rows.FirstOrDefault(row => row.Part == part)?.Kind ?? UnitMeshPartKind.Unknown;
+
+	/// <summary>槽位编号 → 展示用枚举。</summary>
+	public static UnitMeshPartKind ToPartKind(uint slot) => ToPartKind(FromSlot(slot));
+
+	/// <summary>展示用枚举 → 部位。</summary>
+	public static ArmorPart FromPartKind(UnitMeshPartKind kind)
+	{
+		foreach (var row in Rows)
+		{
+			if (row.Kind == kind)
+				return row.Part;
+		}
+
+		return ArmorPart.Unknown;
+	}
+
+	// --- 身形 ----------------------------------------------------------------
 
 	/// <summary>
 	/// 原始身形编码（0/1/3）→ 公开枚举。<b>这是唯一允许做这个转换的地方</b>；
@@ -167,4 +318,130 @@ public static class ArmorStructure
 		RawBodyAny => UnitMeshBodyVariant.Any,
 		_ => UnitMeshBodyVariant.Other,
 	};
+
+	/// <summary>公开枚举 → 原始身形编码。未知/其他返回 <c>null</c>，调用方自己决定怎么处理。</summary>
+	public static uint? ToRawBody(UnitMeshBodyVariant body) => body switch
+	{
+		UnitMeshBodyVariant.Stocky => 0,
+		UnitMeshBodyVariant.Slim => 1,
+		UnitMeshBodyVariant.Any => RawBodyAny,
+		_ => null,
+	};
+
+	/// <summary>规范英文身形名：stocky / slim / any。</summary>
+	public static string BodyName(UnitMeshBodyVariant body) => body switch
+	{
+		UnitMeshBodyVariant.Stocky => "stocky",
+		UnitMeshBodyVariant.Slim => "slim",
+		UnitMeshBodyVariant.Any => "any",
+		UnitMeshBodyVariant.Other => "other",
+		_ => "unknown",
+	};
+
+	/// <summary>唯一的中文身形名。</summary>
+	public static string DisplayBody(UnitMeshBodyVariant body) => body switch
+	{
+		UnitMeshBodyVariant.Stocky => "健壮",
+		UnitMeshBodyVariant.Slim => "纤细",
+		UnitMeshBodyVariant.Any => "通用",
+		UnitMeshBodyVariant.Other => "其他体型",
+		_ => "未标注身形",
+	};
+
+	/// <summary>身形显示顺序：健壮 → 纤细 → 通用 → 其他。别处不要再排一次。</summary>
+	public static int OrderBody(UnitMeshBodyVariant body) => body switch
+	{
+		UnitMeshBodyVariant.Stocky => 0,
+		UnitMeshBodyVariant.Slim => 1,
+		UnitMeshBodyVariant.Any => 2,
+		UnitMeshBodyVariant.Other => 3,
+		_ => 4,
+	};
+
+	/// <summary>从 unit 自己的 CustomizationInfo 字符串认出身形（Slim / Stocky / Any）。</summary>
+	public static UnitMeshBodyVariant ParseBody(string? text)
+	{
+		if (string.IsNullOrWhiteSpace(text))
+			return UnitMeshBodyVariant.Unknown;
+		var value = text.Trim();
+		if (value.StartsWith("HelldiverCustomizationBodyType_", StringComparison.OrdinalIgnoreCase))
+			value = value["HelldiverCustomizationBodyType_".Length..];
+		return value.ToLowerInvariant() switch
+		{
+			"slim" or "female" => UnitMeshBodyVariant.Slim,
+			"stocky" or "male" => UnitMeshBodyVariant.Stocky,
+			"any" => UnitMeshBodyVariant.Any,
+			_ => UnitMeshBodyVariant.Other,
+		};
+	}
+
+	// --- 层 ----------------------------------------------------------------
+
+	/// <summary>
+	/// pieceType（部位内的第几个 unit 槽）的显示名。
+	/// 0 = 内层、1 = 护甲、2 = 装饰；其余编号老实显示编号，不假装知道含义。
+	/// </summary>
+	public static string DisplayPieceSlot(uint pieceType) => pieceType switch
+	{
+		0 => "内层",
+		1 => "护甲",
+		2 => "装饰",
+		_ => $"第 {pieceType} 槽",
+	};
+
+	/// <summary>组件卡/表格里用的一行完整描述：<c>第 0 槽 · 内层</c>。</summary>
+	public static string DescribePieceSlot(uint pieceType)
+		=> $"第 {pieceType} 槽 · {DisplayPieceSlot(pieceType)}";
+
+	/// <summary>唯一的中文层级名。</summary>
+	public static string DisplayLayer(UnitMeshPartLayer layer) => layer switch
+	{
+		UnitMeshPartLayer.Undergarment => "内衣",
+		UnitMeshPartLayer.Armor => "护甲",
+		UnitMeshPartLayer.Accessory => "附件",
+		UnitMeshPartLayer.Culling => "隐藏壳",
+		UnitMeshPartLayer.Static => "静态",
+		_ => "未分类",
+	};
+
+	/// <summary>件级 PieceType 字符串（Undergarment / Armor）的中文名。</summary>
+	public static string DisplayPieceType(string? pieceType)
+	{
+		if (string.IsNullOrWhiteSpace(pieceType))
+			return "未标注套组";
+		var value = pieceType.Trim();
+		if (value.StartsWith("HelldiverCustomizationPieceType_", StringComparison.OrdinalIgnoreCase))
+			value = value["HelldiverCustomizationPieceType_".Length..];
+		return value.ToLowerInvariant() switch
+		{
+			"undergarment" => "内衣",
+			"armor" or "armour" => "护甲",
+			"accessory" => "附件",
+			_ => pieceType,
+		};
+	}
+
+	// --- 规范名 -------------------------------------------------------------
+
+	/// <summary>
+	/// <c>{part}_{pieceType}_{body}</c>，例如 <c>torso_1_slim</c>。
+	/// unit 级身份与 LOD 无关，所以名字里不带 lod。
+	/// </summary>
+	public static string CanonicalName(ArmorPart part, uint pieceType, UnitMeshBodyVariant body)
+		=> $"{Name(part)}_{pieceType}_{BodyName(body)}";
+
+	// --- 结构判定 -----------------------------------------------------------
+
+	/// <summary>头盔只出现在头盔 kit 的 slot 0 上。</summary>
+	public static bool IsHelmetSlot(uint slot) => slot == CustomizationKitSlot.Helmet;
+
+	/// <summary>身体套装的核心 6 个区域：躯干、胯、左腿、右腿、左臂、右臂。每个身体 kit 都有。</summary>
+	public static bool IsCoreBodyRegion(uint slot)
+		=> slot is CustomizationKitSlot.Torso or CustomizationKitSlot.Hips
+			or CustomizationKitSlot.LeftLeg or CustomizationKitSlot.RightLeg
+			or CustomizationKitSlot.LeftArm or CustomizationKitSlot.RightArm;
+
+	/// <summary>肩甲与披风：独立部位。披风每个身体 kit 都有，双肩只有 125/138 有。</summary>
+	public static bool IsOptionalRegion(uint slot)
+		=> slot is CustomizationKitSlot.Cape or CustomizationKitSlot.LeftShoulder or CustomizationKitSlot.RightShoulder;
 }

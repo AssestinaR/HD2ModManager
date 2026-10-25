@@ -72,7 +72,7 @@ public sealed class AdvancedModAssetQueryServiceTests
 			center.GameDataMapping = StubMapping();
 			var rows = await new AdvancedModAssetQueryService(center, paths, index, new StubIndexService([part])).QueryAsync(node.Id, library, null, null);
 
-			Assert.Contains(rows, row => row.AssetKey == new HD2ModCore.Domain.AssetKey(UnitType, 1) && row.PartSummary == "胸口－护甲－健壮");
+			Assert.Contains(rows, row => row.AssetKey == new HD2ModCore.Domain.AssetKey(UnitType, 1) && row.PartSummary == "胸部－护甲－健壮");
 		}
 		finally
 		{

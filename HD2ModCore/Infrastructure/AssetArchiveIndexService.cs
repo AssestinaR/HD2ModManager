@@ -1049,70 +1049,17 @@ VALUES($a,$i,$t,$f,1,$td,$so,$go,$ts,$ss,$gs,$u1,$u2,$u3,$u4)";
 		return cmd;
 	}
 
-	private static SqliteCommand CreateUnitPartInsertCommand(SqliteConnection connection)
-	{
-		var command = connection.CreateCommand();
-		command.CommandText = @"INSERT INTO game_data_unit_parts
-(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason)
-VALUES($archive,$type,$file,$mesh,$meshId,$kind,$layer,$variant,$name,$piece,$confidence,$visual,$lod,$vertices,$triangles,$quality,$origin,$reason)";
-		foreach (var name in new[] { "$archive", "$name", "$piece", "$reason" }) command.Parameters.Add(name, SqliteType.Text);
-		foreach (var name in new[] { "$type", "$file", "$mesh", "$meshId", "$kind", "$layer", "$variant", "$confidence", "$visual", "$lod", "$vertices", "$triangles", "$quality", "$origin" }) command.Parameters.Add(name, SqliteType.Integer);
-		command.Prepare();
-		return command;
-	}
-
-	private static async Task InsertUnitPartAsync(SqliteCommand command, GameDataUnitPartFact part, CancellationToken cancellationToken)
-	{
-		command.Parameters["$archive"].Value = part.ArchiveId;
-		command.Parameters["$type"].Value = unchecked((long)part.UnitAssetKey.TypeId);
-		command.Parameters["$file"].Value = unchecked((long)part.UnitAssetKey.FileId);
-		command.Parameters["$mesh"].Value = part.MeshInfoIndex;
-		command.Parameters["$meshId"].Value = part.MeshId;
-		command.Parameters["$kind"].Value = (int)part.PartKind;
-		command.Parameters["$layer"].Value = (int)part.Layer;
-		command.Parameters["$variant"].Value = (int)part.BodyVariant;
-		command.Parameters["$name"].Value = part.SemanticName;
-		command.Parameters["$piece"].Value = part.PieceType;
-		command.Parameters["$confidence"].Value = part.Confidence;
-		command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0;
-		command.Parameters["$lod"].Value = part.IsLod ? 1 : 0;
-		command.Parameters["$vertices"].Value = part.VertexCount;
-		command.Parameters["$triangles"].Value = part.TriangleCount;
-		command.Parameters["$quality"].Value = (int)part.GeometryQuality;
-		command.Parameters["$origin"].Value = (int)part.Origin;
-		command.Parameters["$reason"].Value = part.Reason;
-		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-	}
-
+	// 这里曾经有一份 CreateUnitPartInsertCommand / InsertUnitPartAsync，没有任何调用方。
+	// 写 game_data_unit_parts 的唯一活路径是 AdvancedEquipmentIndexService——保留第二份
+	// 只会让人以为两条路径都在写、以为两份逻辑一致。
 	private static string DescribeParts(IEnumerable<GameDataUnitPartFact> parts)
 	{
+		// 显示名只有 ArmorStructure 一份，这里不再自己写 switch。
 		var summaries = parts.Where(part => part.IsVisualMesh && !part.IsLod && part.PartKind != UnitMeshPartKind.Unknown)
-			.Select(part => $"{PartName(part.PartKind)}－{LayerName(part.Layer)}－{BodyVariantName(part.BodyVariant)}")
+			.Select(part => $"{ArmorStructure.Display(ArmorStructure.FromPartKind(part.PartKind))}－{ArmorStructure.DisplayLayer(part.Layer)}－{ArmorStructure.DisplayBody(part.BodyVariant)}")
 			.Distinct(StringComparer.Ordinal).ToArray();
 		return summaries.Length == 0 ? "—" : string.Join("，", summaries);
 	}
-
-	private static string PartName(UnitMeshPartKind kind) => kind switch
-	{
-		UnitMeshPartKind.Head => "头部", UnitMeshPartKind.Torso => "胸口", UnitMeshPartKind.Pelvis => "胯部",
-		UnitMeshPartKind.LeftArm => "左臂", UnitMeshPartKind.RightArm => "右臂", UnitMeshPartKind.LeftLeg => "左腿", UnitMeshPartKind.RightLeg => "右腿",
-		UnitMeshPartKind.LeftShoulder => "左肩甲", UnitMeshPartKind.RightShoulder => "右肩甲", UnitMeshPartKind.Accessory => "附件", _ => "未知"
-	};
-
-	private static string LayerName(UnitMeshPartLayer layer) => layer switch
-	{
-		UnitMeshPartLayer.Undergarment => "内部", UnitMeshPartLayer.Armor => "护甲", UnitMeshPartLayer.Accessory => "附件",
-		UnitMeshPartLayer.Culling => "隐藏壳", UnitMeshPartLayer.Static => "静态", _ => "未分类"
-	};
-
-	private static string BodyVariantName(UnitMeshBodyVariant variant) => variant switch
-	{
-		UnitMeshBodyVariant.Slim => "纤细",
-		UnitMeshBodyVariant.Stocky => "健壮",
-		UnitMeshBodyVariant.Any => "通用",
-		UnitMeshBodyVariant.Other => "其他体型",
-		_ => "体型未知"
-	};
 
 	private static async Task InsertArchiveIssueAsync(SqliteCommand cmd, string archiveId, PatchAnalysisIssue issue, CancellationToken cancellationToken)
 	{

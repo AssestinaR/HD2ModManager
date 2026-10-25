@@ -502,7 +502,7 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
 
     private static bool PartMatches(UnitMeshPartKind part, string requested)
         => string.Equals(part.ToString(), requested, StringComparison.OrdinalIgnoreCase)
-            || part == UnitMeshPartKind.Pelvis && string.Equals(requested, "Hips", StringComparison.OrdinalIgnoreCase);
+            || part == UnitMeshPartKind.Hips && string.Equals(requested, "Hips", StringComparison.OrdinalIgnoreCase);
 
     private sealed record DecorationHostCandidate(string ArchiveId, EquipmentUnitPart Part)
     {

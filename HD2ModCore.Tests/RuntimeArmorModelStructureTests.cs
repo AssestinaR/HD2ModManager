@@ -83,7 +83,7 @@ public sealed class RuntimeArmorModelStructureTests
 		EquipmentUnitPart Part(ulong id, UnitMeshPartKind kind) => new(new(1, id), 0, 1, kind,
 			UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any, kind.ToString(), 100, []);
 		var armor = new EquipmentUnitCatalogEntry("a", "Armor", "Body", [Part(1, UnitMeshPartKind.Torso)]);
-		var helmet = new EquipmentUnitCatalogEntry("h", "Helmet", "Head", [Part(2, UnitMeshPartKind.Head)]);
+		var helmet = new EquipmentUnitCatalogEntry("h", "Helmet", "Head", [Part(2, UnitMeshPartKind.Helmet)]);
 		var id = 100UL;
 		var plan = CustomModelConversionService.BuildPlan([armor, helmet], "Outfit", "test", () => (++id).ToString("x16"));
 		Assert.Equal(2, plan.Model.Pieces!.Count);

@@ -10,7 +10,7 @@ public sealed class UnitMeshPartClassifierTests
 {
 	[Theory]
 	[InlineData("Torso_Armor_Slim_lod0", UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor)]
-	[InlineData("g_legs_hips_undergarment_male", UnitMeshPartKind.Pelvis, UnitMeshPartLayer.Undergarment)]
+	[InlineData("g_legs_hips_undergarment_male", UnitMeshPartKind.Hips, UnitMeshPartLayer.Undergarment)]
 	[InlineData("RightLeg_Undergarment_Any_lod0", UnitMeshPartKind.RightLeg, UnitMeshPartLayer.Undergarment)]
 	[InlineData("g_leg_undergarment_r", UnitMeshPartKind.RightLeg, UnitMeshPartLayer.Undergarment)]
 	[InlineData("g_leg_undergarment_l", UnitMeshPartKind.LeftLeg, UnitMeshPartLayer.Undergarment)]
@@ -51,7 +51,7 @@ public sealed class UnitMeshPartClassifierTests
 
 		var part = Assert.Single(new UnitMeshPartClassifier().Classify(new AssetKey(0xe0a48d0be9a7453f, 1), model));
 
-		Assert.Equal(UnitMeshPartKind.Pelvis, part.PartKind);
+		Assert.Equal(UnitMeshPartKind.Hips, part.PartKind);
 		Assert.Equal(UnitMeshPartLayer.Culling, part.Layer);
 		Assert.False(part.IsVisualMesh);
 	}

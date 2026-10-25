@@ -66,11 +66,11 @@ SELECT a.archive_id,a.category,a.display_name,
 									 AND e.file_id=p.unit_file_id), 0) AS stored_bytes
 FROM archives a
 JOIN game_data_unit_parts p ON p.archive_id=a.archive_id
-WHERE lower(a.category) IN ('armor','helmet')
+WHERE (lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%')
   AND p.is_visual=1 AND p.is_lod=0
   AND EXISTS(SELECT 1 FROM archive_entries e WHERE e.archive_id=a.archive_id AND e.type_id=p.unit_type_id AND e.file_id=p.unit_file_id)
 	  AND ($unitIds IS NULL OR p.unit_file_id IN (SELECT value FROM json_each($unitIds)))
-ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.archive_id,p.unit_file_id,p.mesh_info_index;";
+ORDER BY CASE WHEN lower(a.category) LIKE '%armor%' THEN 0 ELSE 1 END,a.display_name,a.archive_id,p.unit_file_id,p.mesh_info_index;";
 		command.Parameters.AddWithValue("$unitIds", unitIds is null ? DBNull.Value : JsonSerializer.Serialize(unitIds));
 
 		var rawParts = new List<(string archiveId, string category, string name, EquipmentUnitPart part)>();
@@ -221,10 +221,10 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 
 				// Head is deliberately independent from the body state machine: one archive
 				// receives its largest visible Head Unit, and nothing else competes with it.
-				var headProfile = sourceProfiles.FirstOrDefault(profile => profile.PartKind == UnitMeshPartKind.Head);
+				var headProfile = sourceProfiles.FirstOrDefault(profile => profile.PartKind == UnitMeshPartKind.Helmet);
 				if (headProfile is not null)
 				{
-					var target = archiveTargets.Where(target => target.Representative.Part.PartKind == UnitMeshPartKind.Head)
+					var target = archiveTargets.Where(target => target.Representative.Part.PartKind == UnitMeshPartKind.Helmet)
 						.ApplyGeometryOrder(target => target.Representative.Part)
 						.FirstOrDefault();
 					var headSource = SelectSourceForTarget(headProfile, target, usedSourceUnits, bodyVariantPreference, selectedSourceBodyVariant);
@@ -238,7 +238,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				}
 
 				var provisionalBodyTargets = new List<(SourceBodyProfile Profile, TargetUnitGroup Target)>();
-				foreach (var profile in sourceProfiles.Where(profile => profile.PartKind != UnitMeshPartKind.Head))
+				foreach (var profile in sourceProfiles.Where(profile => profile.PartKind != UnitMeshPartKind.Helmet))
 				{
 					var coverage = ReadArchiveTargetCoverage(allArchiveTargets, archive, profile, assignments);
 					if (coverage.IsComplete)
@@ -281,7 +281,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 				// Deferred regions use the largest two distinct target body variants as the
 				// final coverage fallback. This is intentionally after normal selection so
 				// fallback never steals a better same-layer or Any target.
-				foreach (var profile in sourceProfiles.Where(profile => profile.PartKind != UnitMeshPartKind.Head))
+				foreach (var profile in sourceProfiles.Where(profile => profile.PartKind != UnitMeshPartKind.Helmet))
 				{
 					// A shared Unit selected by an earlier archive is still coverage for this
 					// archive. Do not let the fallback path reintroduce an Armor/Any Unit
@@ -1029,7 +1029,7 @@ ORDER BY CASE lower(a.category) WHEN 'armor' THEN 0 ELSE 1 END,a.display_name,a.
 SELECT p.unit_type_id,p.unit_file_id,p.archive_id
 FROM game_data_unit_parts p
 JOIN archives a ON a.archive_id=p.archive_id
-WHERE lower(a.category) IN ('armor','helmet')
+WHERE (lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%')
   AND p.unit_type_id=$unitType
   AND p.unit_file_id IN (SELECT value FROM json_each($unitIds))
 GROUP BY p.unit_type_id,p.unit_file_id,p.archive_id

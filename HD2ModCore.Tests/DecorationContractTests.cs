@@ -52,14 +52,14 @@ public sealed class DecorationContractTests
             new AssetKey(1, 2), 0, 0, UnitMeshPartKind.LeftArm, UnitMeshPartLayer.Armor,
             UnitMeshBodyVariant.Stocky, "arm", 1, []);
         var head = new EquipmentUnitPart(
-            new AssetKey(1, 3), 0, 0, UnitMeshPartKind.Head, UnitMeshPartLayer.Armor,
+            new AssetKey(1, 3), 0, 0, UnitMeshPartKind.Helmet, UnitMeshPartLayer.Armor,
             UnitMeshBodyVariant.Any, "head", 1, []);
 
         Assert.Equal("Torso", DecorationPlanningDefaults.ResolveTargetPart([torso, head]));
         Assert.Equal("双身形", DecorationPlanningDefaults.ResolveTargetBodyVariant([torso, head]));
         Assert.True(DecorationPlanningDefaults.MatchesPartLayer(
-            [DecorationPlanningDefaults.ToPartLayerKey(UnitMeshPartKind.Head, UnitMeshPartLayer.Armor)],
-            UnitMeshPartKind.Head,
+            [DecorationPlanningDefaults.ToPartLayerKey(UnitMeshPartKind.Helmet, UnitMeshPartLayer.Armor)],
+            UnitMeshPartKind.Helmet,
             UnitMeshPartLayer.Armor));
     }
 }

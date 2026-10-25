@@ -571,7 +571,7 @@ public sealed class EquipmentUnitCatalogServiceTests
 	public async Task CustomTargets_MissingOrSuppressedComponentsBlockOutput(bool suppressed)
 	{
 		var source = Part(SourceUnit, 1, "source");
-		var target = Part(TargetUnit, 0, "virtual") with { PartKind = suppressed ? source.PartKind : UnitMeshPartKind.Head };
+		var target = Part(TargetUnit, 0, "virtual") with { PartKind = suppressed ? source.PartKind : UnitMeshPartKind.Helmet };
 		var custom = Entry("custom-model:test", target) with { CustomModelKey = "test" };
 		var plan = await CreateService().CreatePlanAsync([Entry("source", source)], [custom], "source", null,
 			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, [custom.ArchiveId],

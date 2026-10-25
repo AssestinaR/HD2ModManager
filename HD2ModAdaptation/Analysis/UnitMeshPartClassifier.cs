@@ -53,7 +53,7 @@ public sealed class UnitMeshPartClassifier
 			: Contains(text, "undergarment", "inner", "body") ? UnitMeshPartLayer.Undergarment
 			: Contains(text, "armor", "armour", "plate") ? UnitMeshPartLayer.Armor
 			: kind is UnitMeshPartKind.LeftShoulder or UnitMeshPartKind.RightShoulder or UnitMeshPartKind.Accessory ? UnitMeshPartLayer.Accessory
-			: kind is UnitMeshPartKind.Torso or UnitMeshPartKind.LeftArm or UnitMeshPartKind.RightArm or UnitMeshPartKind.Pelvis or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg ? UnitMeshPartLayer.Armor
+			: kind is UnitMeshPartKind.Torso or UnitMeshPartKind.LeftArm or UnitMeshPartKind.RightArm or UnitMeshPartKind.Hips or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg ? UnitMeshPartLayer.Armor
 			: UnitMeshPartLayer.Unknown;
 		var confidence = evidence switch
 		{
@@ -93,9 +93,9 @@ public sealed class UnitMeshPartClassifier
 		if (Contains(text, "rightarm", "r_arm", "arm_r", "torso_arm_r", "arm_right", "rgt_arm")) return UnitMeshPartKind.RightArm;
 		if (Contains(text, "leftleg", "l_leg", "leg_l", "leg_left", "lft_leg", "g_leg_l_", "g_leg_undergarment_l")) return UnitMeshPartKind.LeftLeg;
 		if (Contains(text, "rightleg", "r_leg", "leg_r", "leg_right", "rgt_leg", "g_leg_r_", "g_leg_undergarment_r")) return UnitMeshPartKind.RightLeg;
-		if (Contains(text, "pelvis", "hip", "hips", "legs_hips")) return UnitMeshPartKind.Pelvis;
+		if (Contains(text, "pelvis", "hip", "hips", "legs_hips")) return UnitMeshPartKind.Hips;
 		if (Contains(text, "torso", "chest")) return UnitMeshPartKind.Torso;
-		if (Contains(text, "head", "helmet")) return UnitMeshPartKind.Head;
+		if (Contains(text, "head", "helmet")) return UnitMeshPartKind.Helmet;
 		return Contains(text, "plate", "pad", "pouch", "accessory", "cape") ? UnitMeshPartKind.Accessory : UnitMeshPartKind.Unknown;
 	}
 

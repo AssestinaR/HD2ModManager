@@ -215,16 +215,16 @@ public sealed class ArmorNormalizationService : IArmorNormalizationService
     private static readonly string[] Roles = ["Head", "Torso", "LeftArm", "RightArm", "Pelvis"];
     private static bool RoleMatches(string role, UnitMeshPartKind kind) => role switch
     {
-        "Head" => kind == UnitMeshPartKind.Head,
+        "Head" => kind == UnitMeshPartKind.Helmet,
         "Torso" => kind == UnitMeshPartKind.Torso,
         "LeftArm" => kind == UnitMeshPartKind.LeftArm,
         "RightArm" => kind == UnitMeshPartKind.RightArm,
-        "Pelvis" => kind is UnitMeshPartKind.Pelvis or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg,
+        "Pelvis" => kind is UnitMeshPartKind.Hips or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg,
         _ => false
     };
     private static string RoleName(UnitMeshPartKind kind) => kind switch
     {
-        UnitMeshPartKind.Head => "Head", UnitMeshPartKind.Torso => "Torso", UnitMeshPartKind.LeftArm => "LeftArm", UnitMeshPartKind.RightArm => "RightArm", UnitMeshPartKind.Pelvis or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg => "Pelvis", _ => "Other"
+        UnitMeshPartKind.Helmet => "Head", UnitMeshPartKind.Torso => "Torso", UnitMeshPartKind.LeftArm => "LeftArm", UnitMeshPartKind.RightArm => "RightArm", UnitMeshPartKind.Hips or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg => "Pelvis", _ => "Other"
     };
     private static string Coverage(UnitMeshBodyVariant v) => v switch { UnitMeshBodyVariant.Any => "Slim+Stocky", UnitMeshBodyVariant.Slim => "Slim", UnitMeshBodyVariant.Stocky => "Stocky", _ => "Unknown" };
     private static string Format(CoreAssetKey key) => $"0x{key.TypeId:x16}/0x{key.FileId:x16}";

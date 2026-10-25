@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using HD2GameItemAssets;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
@@ -97,21 +98,30 @@ public sealed class CustomModelConversionService(StoragePaths paths, IModInforma
 			throw new InvalidDataException("请选择一份护甲、一份头盔或两者各一份。");
 	}
 
-	private static uint SlotFor(EquipmentUnitPart part) => part.PartKind switch
+	/// <summary>
+	/// 部位 → 注册表槽位。映射只有 <see cref="ArmorStructure"/> 一份。
+	/// 双肩是独立部位（8/9）、披风是 1，都不再折成躯干——折了之后运行时按
+	/// (body, slot, piece_type) 匹配就会把肩甲当躯干件，挤占躯干的 unit 槽。
+	/// </summary>
+	private static uint SlotFor(EquipmentUnitPart part)
 	{
-		UnitMeshPartKind.Head => 0,
-		UnitMeshPartKind.Torso => 2,
-		UnitMeshPartKind.Pelvis => 3,
-		UnitMeshPartKind.LeftLeg => 4,
-		UnitMeshPartKind.RightLeg => 5,
-		UnitMeshPartKind.LeftArm => 6,
-		UnitMeshPartKind.RightArm => 7,
-		UnitMeshPartKind.LeftShoulder or UnitMeshPartKind.RightShoulder => 2,
-		_ when new[] { "pelvis", "hip", "leg", "thigh", "lower", "skirt" }
-			.Any(word => part.SemanticName.Contains(word, StringComparison.OrdinalIgnoreCase)) => 3,
-		UnitMeshPartKind.Accessory => 2,
-		_ => throw new InvalidDataException($"无法确认 Unit {part.UnitAssetKey.FileId:x16} 的上/下半身归属。")
-	};
+		if (ArmorStructure.SlotOf(ArmorStructure.FromPartKind(part.PartKind)) is { } slot)
+			return slot;
+
+		// 认不出部位时，从语义名里再认一次（覆盖旧数据里的 Hip / Pelvis 等写法）。
+		if (ArmorStructure.TryParse(part.SemanticName) is { } parsed
+			&& ArmorStructure.SlotOf(parsed) is { } byName)
+		{
+			return byName;
+		}
+
+		// 真正的配件（plate / pad / pouch）没有独立槽位，只能挂在躯干上。
+		// 这是唯一允许的折中，写在这里是为了让它显眼、可追踪。
+		if (part.PartKind is UnitMeshPartKind.Accessory)
+			return CustomizationKitSlot.Torso;
+
+		throw new InvalidDataException($"无法确认 Unit {part.UnitAssetKey.FileId:x16} 的部位归属。");
+	}
 
 	public Task<CustomModelConversionResult> GenerateAsync(ModEquipmentSourceFacts facts, string archiveId,
 		string name, string outputRoot, string gameData, CancellationToken token = default)

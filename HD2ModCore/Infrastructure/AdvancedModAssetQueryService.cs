@@ -147,47 +147,14 @@ public sealed class AdvancedModAssetQueryService : IAdvancedModAssetQueryService
 
 		private static string DescribeParts(IEnumerable<GameDataUnitPartFact> parts)
 		{
+			// 显示名只有 ArmorStructure 一份，这里不再自己写 switch。
 			var visibleParts = parts
 				.Where(part => part.IsVisualMesh && !part.IsLod && part.PartKind != UnitMeshPartKind.Unknown)
-				.Select(part => $"{PartName(part.PartKind)}－{LayerName(part.Layer)}－{BodyVariantName(part.BodyVariant)}")
+				.Select(part => $"{ArmorStructure.Display(ArmorStructure.FromPartKind(part.PartKind))}－{ArmorStructure.DisplayLayer(part.Layer)}－{ArmorStructure.DisplayBody(part.BodyVariant)}")
 				.Distinct(StringComparer.Ordinal)
 				.ToArray();
 			return visibleParts.Length == 0 ? "—" : string.Join("，", visibleParts);
 		}
-
-		private static string PartName(UnitMeshPartKind kind) => kind switch
-		{
-			UnitMeshPartKind.Head => "头部",
-			UnitMeshPartKind.Torso => "胸口",
-			UnitMeshPartKind.Pelvis => "胯部",
-			UnitMeshPartKind.LeftArm => "左臂",
-			UnitMeshPartKind.RightArm => "右臂",
-			UnitMeshPartKind.LeftLeg => "左腿",
-			UnitMeshPartKind.RightLeg => "右腿",
-			UnitMeshPartKind.LeftShoulder => "左肩甲",
-			UnitMeshPartKind.RightShoulder => "右肩甲",
-			UnitMeshPartKind.Accessory => "附件",
-			_ => "未知"
-		};
-
-		private static string LayerName(UnitMeshPartLayer layer) => layer switch
-		{
-			UnitMeshPartLayer.Undergarment => "内部",
-			UnitMeshPartLayer.Armor => "护甲",
-			UnitMeshPartLayer.Accessory => "附件",
-			UnitMeshPartLayer.Culling => "隐藏壳",
-			UnitMeshPartLayer.Static => "静态",
-			_ => "未分类"
-		};
-
-		private static string BodyVariantName(UnitMeshBodyVariant variant) => variant switch
-		{
-			UnitMeshBodyVariant.Slim => "纤细",
-			UnitMeshBodyVariant.Stocky => "健壮",
-			UnitMeshBodyVariant.Any => "通用",
-			UnitMeshBodyVariant.Other => "其他体型",
-			_ => "体型未知"
-		};
 
 	private static string TypeName(ulong typeId) => typeId switch
 	{

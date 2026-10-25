@@ -1002,31 +1002,12 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 			_ => GameDataEquipmentKitKind.Unknown,
 		};
 
-	// Confirmed against the installed generated library and the current Unit customization facts.
+	// 身形/部位的唯一换算在 ArmorStructure 里，这里只做转发——不要再写第二份 switch。
 	private static UnitMeshBodyVariant ToBodyVariant(uint rawBodyType)
-		=> rawBodyType switch
-		{
-			0 => UnitMeshBodyVariant.Stocky,
-			1 => UnitMeshBodyVariant.Slim,
-			3 => UnitMeshBodyVariant.Any,
-			_ => UnitMeshBodyVariant.Other,
-		};
+		=> ArmorStructure.ToBodyVariant(rawBodyType);
 
 	private static UnitMeshPartKind ToPartKind(uint slot)
-		=> slot switch
-		{
-			CustomizationKitSlot.Helmet => UnitMeshPartKind.Head,
-			CustomizationKitSlot.Torso => UnitMeshPartKind.Torso,
-			CustomizationKitSlot.Hips => UnitMeshPartKind.Pelvis,
-			CustomizationKitSlot.LeftLeg => UnitMeshPartKind.LeftLeg,
-			CustomizationKitSlot.RightLeg => UnitMeshPartKind.RightLeg,
-			CustomizationKitSlot.LeftArm => UnitMeshPartKind.LeftArm,
-			CustomizationKitSlot.RightArm => UnitMeshPartKind.RightArm,
-			CustomizationKitSlot.LeftShoulder => UnitMeshPartKind.LeftShoulder,
-			CustomizationKitSlot.RightShoulder => UnitMeshPartKind.RightShoulder,
-			CustomizationKitSlot.Cape => UnitMeshPartKind.Accessory,
-			_ => UnitMeshPartKind.Unknown,
-		};
+		=> ArmorStructure.ToPartKind(slot);
 
 	private static string ComputeFingerprint(
 		GameDataAuthoritySourceKind sourceKind,

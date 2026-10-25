@@ -26,7 +26,7 @@ public static class DecorationPlanningDefaults
         var sourceParts = parts.Select(part => part.PartKind).ToHashSet();
         if (sourceParts.Any(IsTorsoMapped)) return "Torso";
         if (sourceParts.Any(IsHipsMapped)) return "Hips";
-        return sourceParts.Contains(UnitMeshPartKind.Head) ? "Head" : "Torso";
+        return sourceParts.Contains(UnitMeshPartKind.Helmet) ? "Head" : "Torso";
     }
 
     public static string ResolveTargetBodyVariant(IEnumerable<EquipmentUnitPart> parts)
@@ -52,5 +52,5 @@ public static class DecorationPlanningDefaults
         => kind is UnitMeshPartKind.Torso or UnitMeshPartKind.LeftArm or UnitMeshPartKind.RightArm or UnitMeshPartKind.LeftShoulder or UnitMeshPartKind.RightShoulder;
 
     private static bool IsHipsMapped(UnitMeshPartKind kind)
-        => kind is UnitMeshPartKind.Pelvis or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg;
+        => kind is UnitMeshPartKind.Hips or UnitMeshPartKind.LeftLeg or UnitMeshPartKind.RightLeg;
 }

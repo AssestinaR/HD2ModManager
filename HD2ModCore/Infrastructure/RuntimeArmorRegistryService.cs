@@ -225,15 +225,9 @@ public sealed class RuntimeArmorRegistryService
 							ulong.Parse(piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture)),
 						0,
 						0,
-						ToPartKind(piece.Slot),
+						ArmorStructure.ToPartKind(piece.Slot),
 						UnitMeshPartLayer.Armor,
-						piece.Body switch
-						{
-							0 => UnitMeshBodyVariant.Stocky,
-							1 => UnitMeshBodyVariant.Slim,
-							3 => UnitMeshBodyVariant.Any,
-							_ => UnitMeshBodyVariant.Other
-						},
+						ArmorStructure.ToBodyVariant(piece.Body),
 						$"custom_{model.Key}_{piece.Slot}_{piece.PieceType}",
 						100,
 						Array.Empty<string>())
@@ -244,19 +238,6 @@ public sealed class RuntimeArmorRegistryService
 					.ToArray()) { CustomModelKey = model.Key })
 			.ToArray();
 	}
-
-	private static HD2ModAdaptation.Analysis.UnitMeshPartKind ToPartKind(uint slot)
-		=> slot switch
-		{
-			0 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Head,
-			2 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Torso,
-			3 => HD2ModAdaptation.Analysis.UnitMeshPartKind.Pelvis,
-			4 => HD2ModAdaptation.Analysis.UnitMeshPartKind.LeftLeg,
-			5 => HD2ModAdaptation.Analysis.UnitMeshPartKind.RightLeg,
-			6 => HD2ModAdaptation.Analysis.UnitMeshPartKind.LeftArm,
-			7 => HD2ModAdaptation.Analysis.UnitMeshPartKind.RightArm,
-			_ => HD2ModAdaptation.Analysis.UnitMeshPartKind.Unknown
-		};
 
 	public async ValueTask<RuntimeArmorRegistrySnapshot> ReadSnapshotAsync(
 		CancellationToken cancellationToken = default)

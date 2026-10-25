@@ -506,11 +506,18 @@ SELECT CASE WHEN
 				|| variants.Contains(UnitMeshBodyVariant.Slim) && variants.Contains(UnitMeshBodyVariant.Stocky)
 					? UnitMeshBodyVariant.Any
 					: variants.Length == 1 ? variants[0] : null;
+			// pieceType 是"部位内的第几个 unit 槽"：0 = 内层、1 = 护甲、2 = 装饰。
+			// 只有一个槽时才能据此判层；混着多个槽就不知道这一件到底属于哪层，宁可不判。
+			// （旧实现把 ==1 判成"内层"，方向是反的。）
 			var pieceTypes = inputs.Select(input => input.PieceType).Distinct().OrderBy(value => value).ToArray();
-			UnitMeshPartLayer? fallbackLayer = pieceTypes.Length != 0 && pieceTypes.All(value => value == 1)
-				? UnitMeshPartLayer.Undergarment
-				: pieceTypes.Length != 0 ? UnitMeshPartLayer.Armor : null;
-			var detail = $"Authoritative GameData equipment relation: Part={partKind?.ToString() ?? "Ambiguous"}; Body={bodyVariant?.ToString() ?? "Ambiguous"}; PieceType={string.Join(',', pieceTypes)}";
+			UnitMeshPartLayer? fallbackLayer = pieceTypes.Length == 1
+				? pieceTypes[0] == 0 ? UnitMeshPartLayer.Undergarment : UnitMeshPartLayer.Armor
+				: null;
+			// 一个 unit 被多个部位引用是**事实**，不是数据缺陷：把全部归属都写进 detail，
+			// 不要用一句 "Ambiguous" 把它抹掉（共享 unit 属于所有引用它的护甲）。
+			var partText = partKind?.ToString()
+				?? (partKinds.Length > 1 ? string.Join('|', partKinds) : "Ambiguous");
+			var detail = $"Authoritative GameData equipment relation: Part={partText}; Body={bodyVariant?.ToString() ?? "Ambiguous"}; PieceType={string.Join(',', pieceTypes)}";
 			return new AuthorityUnitRole(partKind, bodyVariant, fallbackLayer, detail);
 		}
 	}

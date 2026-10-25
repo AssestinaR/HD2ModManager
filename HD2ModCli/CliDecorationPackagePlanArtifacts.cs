@@ -327,8 +327,11 @@ internal static class CliDecorationPackagePlanArtifacts
 			diagnostics.Add(new CliDecorationPackageDiagnostic("DecorationPackageHostInvalid", "error", true, "目标主体列表不能为空且不能包含重复 ID。"));
 		if (hosts.Any(host => host.Id == source.Id))
 			diagnostics.Add(new CliDecorationPackageDiagnostic("DecorationPackageHostEqualsSource", "error", true, "装饰来源不能同时作为目标主体。"));
-		if (!new[] { "Head", "Torso", "Hips" }.Contains(attachment.TargetPart, StringComparer.OrdinalIgnoreCase))
-			diagnostics.Add(new CliDecorationPackageDiagnostic("DecorationPackageTargetPartInvalid", "error", true, "TargetPart 只能是 Head、Torso 或 Hips。"));
+		// 装饰只能挂在头/躯干/胯上。部位写法走 ArmorStructure，新名（helmet/hips）与
+		// 旧规格里的写法（Head/Pelvis/Hip）都认。
+		if (ArmorStructure.TryParse(attachment.TargetPart) is not { } targetPart
+			|| targetPart is not (ArmorPart.Helmet or ArmorPart.Torso or ArmorPart.Hips))
+			diagnostics.Add(new CliDecorationPackageDiagnostic("DecorationPackageTargetPartInvalid", "error", true, "TargetPart 只能是头盔（helmet）、躯干（torso）或胯（hips）。"));
 		if (!new[] { "Dual", "Stocky", "Slim" }.Contains(attachment.TargetBodyVariant, StringComparer.OrdinalIgnoreCase))
 			diagnostics.Add(new CliDecorationPackageDiagnostic("DecorationPackageTargetBodyVariantInvalid", "error", true, "TargetBodyVariant 只能是 Dual、Stocky 或 Slim。"));
 		if (!new[] { "AutoAssign", "ApplyAllToBoth" }.Contains(attachment.DualVariantMode, StringComparer.OrdinalIgnoreCase))

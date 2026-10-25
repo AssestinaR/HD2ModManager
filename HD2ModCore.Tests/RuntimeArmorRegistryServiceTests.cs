@@ -180,8 +180,8 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(0xfedcba9876543210UL, entry.Parts[0].UnitAssetKey.FileId);
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Stocky, entry.Parts[0].BodyVariant);
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Slim, entry.Parts[1].BodyVariant);
-		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Head, entry.Parts[2].PartKind);
-		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Pelvis, entry.Parts[3].PartKind);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Helmet, entry.Parts[2].PartKind);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Hips, entry.Parts[3].PartKind);
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, entry.Parts[3].BodyVariant);
 		Assert.Equal("7", entry.Parts[3].PieceType);
 	}

@@ -18,8 +18,8 @@ public sealed class ModEquipmentSourceFactsReaderTests
 	public void HelmetMergeSharedArmorWarning_DoesNotBlockExecution()
 	{
 		var armor = Part(Key(0x501), UnitMeshPartKind.Torso);
-		var helmetA = Part(Key(0x601), UnitMeshPartKind.Head);
-		var helmetB = Part(Key(0x602), UnitMeshPartKind.Head);
+		var helmetA = Part(Key(0x601), UnitMeshPartKind.Helmet);
+		var helmetB = Part(Key(0x602), UnitMeshPartKind.Helmet);
 		var candidates = new[]
 		{
 			new HelmetToArmorMergeCandidate("patch|armor|helmet-a", "patch_0", "armor", "helmet-a", "Set", [armor], helmetA),
@@ -103,7 +103,7 @@ public sealed class ModEquipmentSourceFactsReaderTests
 		=> new(archiveId, "Armor", displayName, [Part(unit, UnitMeshPartKind.Torso)]);
 
 	private static EquipmentUnitCatalogEntry Helmet(string displayName, string archiveId, CoreAssetKey unit)
-		=> new(archiveId, "Helmet", displayName, [Part(unit, UnitMeshPartKind.Head)]);
+		=> new(archiveId, "Helmet", displayName, [Part(unit, UnitMeshPartKind.Helmet)]);
 
 	private static EquipmentUnitPart Part(CoreAssetKey unit, UnitMeshPartKind kind)
 		=> new(unit, 0, 1, kind, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any, kind.ToString(), 100, [])
