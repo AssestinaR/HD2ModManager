@@ -13,7 +13,43 @@ public static class GameDataHashLookupReader
 	private const int MaximumEmptyParentCountMarkers = 32;
 	private const uint EndMarker = 0xDEADBEE7;
 
+	/// <summary>
+	/// 载荷前面可能带一段未公开的头部。实测 <c>hash_lookup 0x7056bc19c69f0f07</c>
+	/// 的 TocData 前 3792 字节是头部，真正的载荷是它的后缀——直接解析会读到底部的
+	/// 0 而不是结束标记。载荷必须正好在缓冲区末尾结束，所以向后找起点不会误判。
+	/// </summary>
+	private const int MaximumPayloadHeaderScan = 64 * 1024;
+
+	/// <summary>
+	/// 读 path-hash → Archive 映射。先按"载荷就是整个缓冲区"解析；失败时再向后找真正的载荷起点，
+	/// 这样游戏换个头部大小也不会让整块映射静默消失。
+	/// </summary>
 	public static IReadOnlyDictionary<ulong, ulong> ReadArchiveByPath(ReadOnlySpan<byte> data)
+	{
+		try
+		{
+			return ParseArchiveByPath(data);
+		}
+		catch (InvalidDataException) when (data.Length > 1)
+		{
+			var limit = Math.Min(data.Length, MaximumPayloadHeaderScan);
+			for (var start = 1; start < limit; start++)
+			{
+				try
+				{
+					return ParseArchiveByPath(data[start..]);
+				}
+				catch (InvalidDataException)
+				{
+					// 这个起点不是载荷开头，继续往后找。
+				}
+			}
+
+			throw;
+		}
+	}
+
+	private static IReadOnlyDictionary<ulong, ulong> ParseArchiveByPath(ReadOnlySpan<byte> data)
 	{
 		var reader = new BinaryReaderCursor(data);
 
