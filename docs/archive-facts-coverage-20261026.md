@@ -169,6 +169,72 @@ System.IO.InvalidDataException:
 
 ---
 
+## 3.1 已完成（2026-10-26，提交 `003250e` + `4c037f5`）
+
+### 第 1 条：实体百科解析器修好了
+
+根因不是文件坏了，是**三张表的表长变了**。用内嵌 GameData 密钥解出 47 MB 明文后实测：
+
+| 表 | 索引项 | 组件数 | 组件长 | 旧值 |
+|---|---:|---:|---:|---|
+| EncyclopediaEntryComponentData | 1350 | 675 | 56 | 1314 / 657 |
+| UnitComponentData | 3438 | 1720 | 136 | 3334 / 1668 |
+| EquipmentComponentData | 702 | 352 | 232 | 674 / 338 |
+
+`EntitySettingsHashmap` 仍是 4096×32（改成 5120 会有 1024 条越界）。
+
+**分段正确性的决定性证据**：每个实体的 `componentIndex` 唯一占一个组件槽，
+实测覆盖 675/675、1719/1720、351/352——1:1 且只差空槽。这种吻合不可能是巧合。
+
+顺带把"硬编码表长"改成**可推导**：常量对不上时，`DeriveLayout` 从数据自己推
+（索引项形状 `eid(u64)|ci(u32)|0(u32)`，先扫到第一个形状不符的位置，再往回找
+让组件区整除且通过校验的长度），推导成功会在 `catalog.DerivedLayouts` 留痕。
+下次游戏更新不会再让整块事实静默消失。
+
+### 第 2、3、4 条：内容域推断
+
+`ArchiveContentProfiler` 从 `friendlynames.txt` 的内容路径推域：
+`content/<key>/<subject>/…` 投票决定域与主题。三条边界：
+
+1. 只填空——权威与社区结论一律不覆盖；
+2. 纯资源名不参与分类（`GL-21 Grenade Launcher` 是名字不是域）；
+3. 构成兜底的名字（`unit×9`、`贴图包`）不唯一 → 只记分类，不改显示名。
+
+新增 `archive_domains(archive_id,domain,subject,source,confidence)`，可多值、带来源。
+
+### 前后对比（同一份数据）
+
+| 指标 | 修前 | 修后 |
+|---|---:|---:|
+| 有真实名字 | 779（21.8%） | **2009（56.3%）** |
+| 仅哈希 | 2788 | 1558 |
+| `category='Other'` | 3054（85.6%） | **0** |
+| 分类种类 | 5 | 17 |
+| `archive_domains` 覆盖 | — | **3567（100%）** |
+| `game_data_authority_entities` | 0 | 665 |
+| `game_data_authority_issues` | 1（错误） | 0 |
+
+分类分布：UnitBundle 863、Environment 754、Weapon 357、TexturePack 262、Data 221、
+MaterialPack 220、Helmet 161、Armor 137、Cape 123、Empty 107、Objective 105、
+Facility 90、LevelSettings 70、SharedArt 55、Audio 33、Planet 8、Level 1。
+
+### 还剩什么
+
+**1558 个 archive 仍只显示哈希。** 它们确实没有任何名字来源：
+`friendlynames.txt` 里没有它们的内容路径，实体百科也没引用它们。
+但每一个都有分类和 unit 计数，资源树可以显示成「9 unit · 0x0214…」而不是裸哈希。
+
+另外 `friendlynames.txt` 本身有数据质量问题：存在 `ortifications/banner_02`
+（丢了首字母 f）、`y_detained_prisoners_02` 这类截断条目，所以不能用它当资源名，
+只能取其中的 `content/` 路径做分类。
+
+**社区 42 类还没全量导入**（第 2 条只做了一半）：现在 675 个社区覆盖的 archive
+已经有分类，但社区的多值分类（一个 archive 既是 `Terminid` 又是 `NPC`）
+还没有进 `archive_domains`。这是下一步。
+
+
+---
+
 ## 4. 对下一轮编辑器的影响
 
 资源树需要每个节点有：**身份（哈希）、名字、分类、归属、内容摘要**。
