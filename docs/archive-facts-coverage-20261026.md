@@ -244,3 +244,58 @@ Facility 90、LevelSettings 70、SharedArt 55、Audio 33、Planet 8、Level 1。
 
 所以顺序必须是：**先补事实（本轮四件事）→ 再做树**。
 否则树做出来只是把"一堆哈希"换了个更好看的摆法。
+
+---
+
+## 3.2 后续三轮修复（`a9e0a8b` + `1f699e6`）
+
+### 名字的来源：确认在游戏数据里
+
+上一节说"第 3 条用 friendlynames 补名字"，但**装备名根本不需要 friendlynames**：
+
+| 来源 | 文件 | 条数 |
+|---|---|---:|
+| 武器配件/弹药名（明文可读） | `generated_weapon_customization_settings.dl_bin` | 248 |
+| 载具/皮肤名（明文可读，带 `nui_*` 本地化键） | `generated_unit_customization_settings.dl_bin` | 171 |
+| 实体百科名（15 语言） | `generated_entities.dl_bin` | 665 |
+| 护甲/头盔/披风名（15 语言） | `generated_customization_armor_sets` + strings | 389 archive |
+
+### 修掉的两个"静默丢数据"
+
+**① hash_lookup 载荷带头部**（`a9e0a8b`）
+`0x7056bc19c69f0f07` 的 TocData 前 3792 字节是头部，真正的载荷是后缀。
+`ReadArchiveByPath` 读到底部的 0 而不是结束标记 `0xDEADBEE7` → `ArchiveByPath` 为空 →
+`LoadSupplementalArchiveNamesAsync` 在 `Count == 0` 处**直接返回空**，248 + 171 条名字全丢，
+**一条警告都不报**。修法：解析失败时向后扫描载荷起点（必须正好在缓冲区末尾结束，不会误判）。
+
+**② string id 被当成名字**（`1f699e6`）
+32 个 kit 的 `upper`/`cased`/`desc` 三个 id 全都不在 15 张语言表里（未发布装备）。
+`GameItemAssetCatalog` 把查不到的 id 渲染成 `0x<id>`，而 `BuildMetadataByPackage` 的
+else 分支没走可读性检查，于是 `0xd8bce5f1` 成了显示名。
+
+### 最终覆盖率
+
+| 类别 | archive | 有游戏名 | 比例 |
+|---|---:|---:|---:|
+| **Weapon** | 597 | 597 | **100%** |
+| Armor | 137 | 130 | 94.9% |
+| Helmet | 161 | 141 | 87.6% |
+| Cape | 123 | 118 | 95.9% |
+| **装备类** | **1018** | **986** | **96.9%** |
+| 全库 | 3567 | 2110 | 59.1% |
+
+无名的 1334 个：UnitBundle 685、Data 221、TexturePack 174、MaterialPack 123、Empty 107、
+装备类未发布 24。这些游戏确实不给名字。
+
+### 路径层：确认无法脱离社区
+
+逐文件搜过：`strings` 归档 325,135 条（0 条路径）、5 个 `hash_lookup`、`geleta` 18 MB、
+`dl_typelib`、`game.dll` 49 MB、`bundles.nxa` + `bundle_database.data`、
+strings 归档里的 6 个 lua + 2 个 config、55 个 `generated_*.dl_bin`——
+**全部没有 asset path 字符串**。游戏发行版剥掉了路径，`friendlynames.txt` 无游戏内替代。
+
+### `generated_stratagem_settings` 不能用来命名 archive
+
+结构已完整解出（12 条记录、153 个条目、条目 400 字节、名字在 `+0x10`、本地化键在 `+0x20`），
+但**表里没有任何 archive 路径引用**——440 条路径映射的键在整个 82 KB 文件里只命中 2 个（噪声）。
+它命名的是战略配备本身，不是 archive。
