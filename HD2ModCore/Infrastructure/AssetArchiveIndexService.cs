@@ -740,9 +740,12 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 			}
 			else
 			{
+				// 注册表里有 32 个 kit 的 upper/cased/desc 三个 string id 全都不在 15 张语言表里
+				// （未发布/被砍掉的装备）。GameItemAssetCatalog 会把它们渲染成 "0x<id>"——
+				// 那是字符串 id，不是名字，不能当显示名写进去，否则列表里会出现 0xd8bce5f1 这种"名字"。
 				result[authority.ArchiveId] = new GameDataArchiveMetadata(
 					authority.ArchiveId,
-					authority.DisplayName,
+					IsReadableAuthorityDisplayName(authority.DisplayName) ? authority.DisplayName : null,
 					authority.Category);
 			}
 		}
@@ -750,15 +753,8 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		return result;
 	}
 
-	private static bool IsOpaqueDisplayName(string? value)
-		=> string.IsNullOrWhiteSpace(value)
-			|| value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-			|| value.Equals("—", StringComparison.Ordinal);
-
-	private static bool IsReadableAuthorityDisplayName(string? value)
-		=> value is not null
-			&& !IsOpaqueDisplayName(value)
-			&& !value.StartsWith("hash-", StringComparison.OrdinalIgnoreCase);
+	// 判定逻辑在 ArchiveDisplayNames 里，方便单测钉住"字符串 id 不算名字"这条。
+	private static bool IsReadableAuthorityDisplayName(string? value) => ArchiveDisplayNames.IsReadable(value);
 
 	private static GameDataArchiveIndex ApplyArchiveMetadata(
 		GameDataArchiveIndex index,
@@ -843,13 +839,22 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		IReadOnlyDictionary<ulong, string> friendlyNames)
 	{
 		var profiles = new Dictionary<string, ArchiveContentProfile>(StringComparer.OrdinalIgnoreCase);
-		if (friendlyNames.Count == 0)
-		{
-			return profiles;
-		}
-
 		foreach (var archive in facts.Archives)
 		{
+			// 装备类但拿不到任何可读名字：注册表里有这件装备，游戏却没给它本地化字符串
+			// （实测 32 个 kit 的 upper/cased/desc 三个 id 全都不在 15 张语言表里）。
+			// 这不是"我们没解析出来"，是它确实没有——如实标成未发布，别让用户以为漏了。
+			if (IsEquipmentCategory(archive.Category) && IsPlaceholderName(archive.DisplayName, archive.PackageName))
+			{
+				profiles[archive.PackageName] = new ArchiveContentProfile(
+					"Unreleased",
+					"no-localized-name",
+					"未发布（游戏无本地化名）",
+					ArchiveContentProfiler.DerivedConfidence,
+					FromContentPath: false);
+				continue;
+			}
+
 			if (ArchiveContentProfiler.Profile(archive.Entries, friendlyNames) is { } profile)
 			{
 				profiles[archive.PackageName] = profile;
@@ -858,6 +863,9 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 
 		return profiles;
 	}
+
+	private static bool IsEquipmentCategory(string? category)
+		=> category is "Armor" or "Helmet" or "Cape" or "Weapon";
 
 	private static GameDataArchiveIndex ApplyContentProfiles(
 		GameDataArchiveIndex facts,
@@ -889,8 +897,7 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 	}
 
 	private static bool IsPlaceholderName(string? displayName, string packageName)
-		=> string.IsNullOrWhiteSpace(displayName)
-			|| displayName.Equals(packageName, StringComparison.OrdinalIgnoreCase);
+		=> ArchiveDisplayNames.IsPlaceholder(displayName, packageName);
 
 	private static SqliteCommand CreateArchiveDomainInsertCommand(SqliteConnection connection)
 	{
