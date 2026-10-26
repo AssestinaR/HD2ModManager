@@ -72,6 +72,12 @@ public sealed record GeneratedEntityEncyclopediaCatalog(
 	IReadOnlyList<GeneratedEntityEncyclopediaEntry> Entries,
 	IReadOnlyList<uint> InstanceVersions)
 {
+	/// <summary>
+	/// 这一轮是用**推导出来的**布局读的表（而不是命中验证过的常量），格式
+	/// <c>表名 I=… C=… (payload …)</c>。空表示全部命中常量。
+	/// 出现非空值说明游戏更新改了表长——数据仍然可用，但应该把常量同步过来。
+	/// </summary>
+	public IReadOnlyList<string> DerivedLayouts { get; init; } = Array.Empty<string>();
 	public IReadOnlyDictionary<ulong, IReadOnlyList<GeneratedEntityEncyclopediaEntry>> ByUnitPath
 		=> Entries
 			.GroupBy(entry => entry.UnitPath)
@@ -94,20 +100,30 @@ public static class GeneratedEntityEncyclopediaReader
 	public const string ParserVersion = "generated-entities-encyclopedia-v1";
 
 	private const int InstanceHeaderSize = 28;
-	private const int EntitySettingsEntrySize = 32;
-	private const int EntitySettingsEntryCount = 4096;
-	private const int ComponentIndexDataSize = 16;
-	private const int EncyclopediaIndexCount = 1314;
-	private const int EncyclopediaComponentCount = 657;
-	private const int EncyclopediaComponentSize = 56;
-	private const int UnitIndexCount = 3334;
-	private const int UnitComponentCount = 1668;
-	private const int UnitComponentSize = 136;
-	private const int EquipmentIndexCount = 674;
-	private const int EquipmentComponentCount = 338;
-	private const int EquipmentComponentSize = 232;
-	private const int EquipmentTypeOffset = 128;
-	private const int EncyclopediaNameFieldCount = 11;
+
+	// 下面这组是**验证过的当前布局**。公开出来是为了让测试夹具与解析器共用一份数字——
+	// 上一次"每个消费者各存一份 96"就是这么把件表解析搞坏的。
+	// 游戏更新后这里对不上时，ResolveLayout 会从数据自己推导并校验，不会整块失效。
+	public const int EntitySettingsEntrySize = 32;
+	// 实测 2026-10-22 的 generated_entities.dl_bin：表长仍是 4096，列表区正好收在 payload 末尾
+	// （4096×32 + 列表 = 185172）。改成 5120 会有 1024 条记录的 offset/count 越界。
+	public const int EntitySettingsEntryCount = 4096;
+	public const int ComponentIndexDataSize = 16;
+	// 2026-10-22 更新的实测值（旧值 1314/657、3334/1668、674/338）。
+	// 分段判据：索引项是 eid(u64)|componentIndex(u32)|0(u32)，组件区从 IndexCount×16 开始。
+	// 实测每个实体的 componentIndex 唯一占一个组件槽：675/675、1719/1720、351/352，
+	// 这种 1:1 覆盖是分段正确的决定性证据。
+	public const int EncyclopediaIndexCount = 1350;
+	public const int EncyclopediaComponentCount = 675;
+	public const int EncyclopediaComponentSize = 56;
+	public const int UnitIndexCount = 3438;
+	public const int UnitComponentCount = 1720;
+	public const int UnitComponentSize = 136;
+	public const int EquipmentIndexCount = 702;
+	public const int EquipmentComponentCount = 352;
+	public const int EquipmentComponentSize = 232;
+	public const int EquipmentTypeOffset = 128;
+	public const int EncyclopediaNameFieldCount = 11;
 	private const uint MaximumInstanceCount = 32_768;
 
 	public static GeneratedEntityEncyclopediaCatalog Read(string path)
@@ -132,33 +148,33 @@ public static class GeneratedEntityEncyclopediaReader
 						: throw new InvalidDataException($"Generated entity component index {group.Key} maps to multiple types.");
 				});
 
-		var entitySettings = FindRequiredPayload(
-			instances,
-			GeneratedEntityTypeIds.EntitySettingsHashmap,
-			payload => payload.Length >= EntitySettingsEntryCount * EntitySettingsEntrySize,
-			"EntitySettingsHashmap");
-		var encyclopedia = FindRequiredPayload(
-			instances,
-			GeneratedEntityTypeIds.EncyclopediaEntryComponentData,
-			payload => payload.Length == EncyclopediaIndexCount * ComponentIndexDataSize + EncyclopediaComponentCount * EncyclopediaComponentSize,
-			"EncyclopediaEntryComponentData");
-		var units = FindRequiredPayload(
-			instances,
-			GeneratedEntityTypeIds.UnitComponentData,
-			payload => payload.Length == UnitIndexCount * ComponentIndexDataSize + UnitComponentCount * UnitComponentSize,
-			"UnitComponentData");
-		var equipment = FindOptionalPayload(
-			instances,
-			GeneratedEntityTypeIds.EquipmentComponentData,
-			payload => payload.Length == EquipmentIndexCount * ComponentIndexDataSize + EquipmentComponentCount * EquipmentComponentSize,
-			"EquipmentComponentData");
+		var entitySettings = FindPayload(instances, GeneratedEntityTypeIds.EntitySettingsHashmap, "EntitySettingsHashmap")
+			?? throw new InvalidDataException("EntitySettingsHashmap instance was not found.");
+		if (entitySettings.Length < EntitySettingsEntryCount * EntitySettingsEntrySize)
+		{
+			throw new InvalidDataException($"EntitySettingsHashmap payload is truncated: expected at least {EntitySettingsEntryCount * EntitySettingsEntrySize} bytes, got {entitySettings.Length}.");
+		}
+
+		var derivedLayouts = new List<string>();
+		var encyclopediaPayload = FindPayload(instances, GeneratedEntityTypeIds.EncyclopediaEntryComponentData, "EncyclopediaEntryComponentData")
+			?? throw new InvalidDataException("EncyclopediaEntryComponentData instance was not found.");
+		var encyclopediaLayout = ResolveLayout(encyclopediaPayload, EncyclopediaIndexCount, EncyclopediaComponentCount, EncyclopediaComponentSize, "EncyclopediaEntryComponentData", derivedLayouts);
+
+		var unitPayload = FindPayload(instances, GeneratedEntityTypeIds.UnitComponentData, "UnitComponentData")
+			?? throw new InvalidDataException("UnitComponentData instance was not found.");
+		var unitLayout = ResolveLayout(unitPayload, UnitIndexCount, UnitComponentCount, UnitComponentSize, "UnitComponentData", derivedLayouts);
+
+		var equipmentPayload = FindPayload(instances, GeneratedEntityTypeIds.EquipmentComponentData, "EquipmentComponentData");
+		TableLayout? equipmentLayout = equipmentPayload is null
+			? null
+			: ResolveLayout(equipmentPayload, EquipmentIndexCount, EquipmentComponentCount, EquipmentComponentSize, "EquipmentComponentData", derivedLayouts);
 
 		var entityComponentTypes = ReadEntityComponentTypes(entitySettings, componentTypes);
-		var entityToUnit = ReadUnitPaths(units);
-		var names = ReadEncyclopediaNames(encyclopedia);
-		var equipmentTypes = equipment is null
+		var entityToUnit = ReadUnitPaths(unitPayload, unitLayout);
+		var names = ReadEncyclopediaNames(encyclopediaPayload, encyclopediaLayout);
+		var equipmentTypes = equipmentPayload is null || equipmentLayout is not { } equipmentResolved
 			? new Dictionary<ulong, uint>()
-			: ReadEquipmentTypes(equipment);
+			: ReadEquipmentTypes(equipmentPayload, equipmentResolved);
 
 		var entries = new List<GeneratedEntityEncyclopediaEntry>(names.Count);
 		foreach (var (entityId, nameStringIds) in names)
@@ -180,7 +196,10 @@ public static class GeneratedEntityEncyclopediaReader
 
 		return new GeneratedEntityEncyclopediaCatalog(
 			entries,
-			instances.Select(instance => instance.Version).Distinct().Order().ToArray());
+			instances.Select(instance => instance.Version).Distinct().Order().ToArray())
+		{
+			DerivedLayouts = derivedLayouts,
+		};
 	}
 
 	private static Dictionary<ulong, IReadOnlyList<uint>> ReadEntityComponentTypes(
@@ -235,45 +254,134 @@ public static class GeneratedEntityEncyclopediaReader
 		return result;
 	}
 
-	private static ReadOnlySpan<byte> FindRequiredPayload(
-		IReadOnlyList<Instance> instances,
-		uint typeId,
-		Func<byte[], bool> accepted,
-		string description)
-	{
-		var payload = FindOptionalPayload(instances, typeId, accepted, description);
-		return payload ?? throw new InvalidDataException($"{description} instance was not found with a recognized layout.");
-	}
-
-	private static byte[]? FindOptionalPayload(
-		IReadOnlyList<Instance> instances,
-		uint typeId,
-		Func<byte[], bool> accepted,
-		string description)
+	/// <summary>
+	/// 按 typeId 取唯一实例的 payload；同一 typeId 出现多次时拒绝，不猜。
+	/// 空 payload 的实例是组件登记用的占位（EntitySettingsHashmap 里靠 index 引用它们），
+	/// 不是表，所以这里跳过——真正的表不可能是 0 字节。
+	/// </summary>
+	private static byte[]? FindPayload(IReadOnlyList<Instance> instances, uint typeId, string description)
 	{
 		var matches = instances
-			.Where(instance => instance.Type == typeId && accepted(instance.Payload))
+			.Where(instance => instance.Type == typeId && instance.Payload.Length != 0)
 			.Select(instance => instance.Payload)
 			.ToArray();
 		return matches.Length switch
 		{
 			0 => null,
 			1 => matches[0],
-			_ => throw new InvalidDataException($"{description} has {matches.Length} matching instances; the data layout is ambiguous.")
+			_ => throw new InvalidDataException($"{description} has {matches.Length} instances; the data layout is ambiguous."),
 		};
 	}
 
-	private static Dictionary<ulong, ulong> ReadUnitPaths(ReadOnlySpan<byte> payload)
+	/// <summary>表布局：索引区 <c>IndexCount</c> 项 × 16 字节，其后是 <c>ComponentCount</c> 个组件。</summary>
+	private readonly record struct TableLayout(int IndexCount, int ComponentCount);
+
+	/// <summary>
+	/// 先按验证过的常量算期望长度；对上就用常量，对不上就自己推导并校验。
+	/// 推导失败才抛——这样游戏更新不会让整块事实静默消失。
+	/// </summary>
+	private static TableLayout ResolveLayout(
+		byte[] payload,
+		int indexCount,
+		int componentCount,
+		int componentSize,
+		string description,
+		List<string> derivedLayouts)
 	{
-		var expectedSize = checked(UnitIndexCount * ComponentIndexDataSize + UnitComponentCount * UnitComponentSize);
-		if (payload.Length != expectedSize)
+		var expected = checked(indexCount * ComponentIndexDataSize + componentCount * componentSize);
+		if (payload.Length == expected)
 		{
-			throw new InvalidDataException($"UnitComponentData payload size {payload.Length} does not match the validated current layout {expectedSize}.");
+			return new TableLayout(indexCount, componentCount);
 		}
 
+		var derived = DeriveLayout(payload, componentSize)
+			?? throw new InvalidDataException(
+				$"{description} payload size {payload.Length} does not match the validated layout {expected}, and no alternative split could be derived.");
+		derivedLayouts.Add($"{description} I={derived.IndexCount} C={derived.ComponentCount} (payload {payload.Length}, expected {expected})");
+		return derived;
+	}
+
+	/// <summary>
+	/// 从数据本身推出 (索引项数, 组件数)。
+	/// 索引项形状是 <c>eid(u64) | componentIndex(u32) | 0(u32)</c>，组件区紧接其后。
+	/// 先从 0 往前扫到第一个形状不符的项，再从那里往回退，找第一个让组件区整除且通过
+	/// <see cref="IsValidLayout"/> 的长度。
+	/// </summary>
+	private static TableLayout? DeriveLayout(byte[] payload, int componentSize)
+	{
+		var boundary = 0;
+		while (checked((boundary + 1) * ComponentIndexDataSize) <= payload.Length)
+		{
+			var offset = boundary * ComponentIndexDataSize;
+			var entityId = ReadUInt64(payload, offset);
+			var componentIndex = ReadUInt32(payload, offset + 8);
+			if (ReadUInt32(payload, offset + 12) != 0 || (entityId == 0 && componentIndex != 0))
+			{
+				break;
+			}
+
+			boundary++;
+		}
+
+		for (var indexCount = boundary; indexCount > 0; indexCount--)
+		{
+			var remaining = payload.Length - indexCount * ComponentIndexDataSize;
+			if (remaining <= 0 || remaining % componentSize != 0)
+			{
+				continue;
+			}
+
+			var componentCount = remaining / componentSize;
+			if (IsValidLayout(payload, indexCount, componentCount))
+			{
+				return new TableLayout(indexCount, componentCount);
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// 布局自洽性校验：索引项填充为 0、componentIndex 落在组件区内、且**不被两个实体共用**。
+	/// 最后一条是实测出来的强判据——每个实体唯一占一个组件槽，用掉的槽数等于实体数。
+	/// </summary>
+	private static bool IsValidLayout(byte[] payload, int indexCount, int componentCount)
+	{
+		var used = new HashSet<uint>();
+		for (var index = 0; index < indexCount; index++)
+		{
+			var offset = index * ComponentIndexDataSize;
+			var entityId = ReadUInt64(payload, offset);
+			var componentIndex = ReadUInt32(payload, offset + 8);
+			if (ReadUInt32(payload, offset + 12) != 0)
+			{
+				return false;
+			}
+
+			if (entityId == 0)
+			{
+				if (componentIndex != 0)
+				{
+					return false;
+				}
+
+				continue;
+			}
+
+			if (componentIndex >= (uint)componentCount || !used.Add(componentIndex))
+			{
+				return false;
+			}
+		}
+
+		return used.Count != 0 && componentCount - used.Count <= 1;
+	}
+
+	private static Dictionary<ulong, ulong> ReadUnitPaths(byte[] payload, TableLayout layout)
+	{
 		var result = new Dictionary<ulong, ulong>();
-		var componentsOffset = checked(UnitIndexCount * ComponentIndexDataSize);
-		for (var index = 0; index < UnitIndexCount; index++)
+		var componentsOffset = checked(layout.IndexCount * ComponentIndexDataSize);
+		for (var index = 0; index < layout.IndexCount; index++)
 		{
 			var indexOffset = checked(index * ComponentIndexDataSize);
 			var entityId = ReadUInt64(payload, indexOffset);
@@ -283,7 +391,7 @@ public static class GeneratedEntityEncyclopediaReader
 			}
 
 			var componentIndex = ReadUInt32(payload, indexOffset + 8);
-			if (componentIndex >= UnitComponentCount)
+			if (componentIndex >= layout.ComponentCount)
 			{
 				throw new InvalidDataException($"Unit component index {componentIndex} is outside the component array.");
 			}
@@ -305,17 +413,11 @@ public static class GeneratedEntityEncyclopediaReader
 		return result;
 	}
 
-	private static Dictionary<ulong, uint> ReadEquipmentTypes(ReadOnlySpan<byte> payload)
+	private static Dictionary<ulong, uint> ReadEquipmentTypes(byte[] payload, TableLayout layout)
 	{
-		var expectedSize = checked(EquipmentIndexCount * ComponentIndexDataSize + EquipmentComponentCount * EquipmentComponentSize);
-		if (payload.Length != expectedSize)
-		{
-			throw new InvalidDataException($"EquipmentComponentData payload size {payload.Length} does not match the validated current layout {expectedSize}.");
-		}
-
 		var result = new Dictionary<ulong, uint>();
-		var componentsOffset = checked(EquipmentIndexCount * ComponentIndexDataSize);
-		for (var index = 0; index < EquipmentIndexCount; index++)
+		var componentsOffset = checked(layout.IndexCount * ComponentIndexDataSize);
+		for (var index = 0; index < layout.IndexCount; index++)
 		{
 			var indexOffset = checked(index * ComponentIndexDataSize);
 			var entityId = ReadUInt64(payload, indexOffset);
@@ -325,7 +427,7 @@ public static class GeneratedEntityEncyclopediaReader
 			}
 
 			var componentIndex = ReadUInt32(payload, indexOffset + 8);
-			if (componentIndex >= EquipmentComponentCount)
+			if (componentIndex >= layout.ComponentCount)
 			{
 				throw new InvalidDataException($"Equipment component index {componentIndex} is outside the component array.");
 			}
@@ -342,17 +444,11 @@ public static class GeneratedEntityEncyclopediaReader
 		return result;
 	}
 
-	private static Dictionary<ulong, IReadOnlyList<uint>> ReadEncyclopediaNames(ReadOnlySpan<byte> payload)
+	private static Dictionary<ulong, IReadOnlyList<uint>> ReadEncyclopediaNames(byte[] payload, TableLayout layout)
 	{
-		var expectedSize = checked(EncyclopediaIndexCount * ComponentIndexDataSize + EncyclopediaComponentCount * EncyclopediaComponentSize);
-		if (payload.Length != expectedSize)
-		{
-			throw new InvalidDataException($"EncyclopediaEntryComponentData payload size {payload.Length} does not match the validated current layout {expectedSize}.");
-		}
-
 		var result = new Dictionary<ulong, IReadOnlyList<uint>>();
-		var componentsOffset = checked(EncyclopediaIndexCount * ComponentIndexDataSize);
-		for (var index = 0; index < EncyclopediaIndexCount; index++)
+		var componentsOffset = checked(layout.IndexCount * ComponentIndexDataSize);
+		for (var index = 0; index < layout.IndexCount; index++)
 		{
 			var indexOffset = checked(index * ComponentIndexDataSize);
 			var entityId = ReadUInt64(payload, indexOffset);
@@ -362,7 +458,7 @@ public static class GeneratedEntityEncyclopediaReader
 			}
 
 			var componentIndex = ReadUInt32(payload, indexOffset + 8);
-			if (componentIndex >= EncyclopediaComponentCount)
+			if (componentIndex >= layout.ComponentCount)
 			{
 				throw new InvalidDataException($"Encyclopedia component index {componentIndex} is outside the component array.");
 			}
