@@ -155,6 +155,20 @@ CREATE TABLE IF NOT EXISTS game_data_archive_names (
 
 CREATE INDEX IF NOT EXISTS ix_game_data_archive_names_archive_locale ON game_data_archive_names(archive_id, locale);
 
+-- 内容域：从 archive 自己的内容反推出的「这是什么」（环境 / 目标点 / 设施 / 音效…）。
+-- 与 archives.category 的区别：category 只有一个值、优先放权威结论；这张表可以多值，
+-- 并且带 source/confidence，资源树按域聚合时读它。
+CREATE TABLE IF NOT EXISTS archive_domains (
+	archive_id TEXT NOT NULL,
+	domain TEXT NOT NULL,
+	subject TEXT NOT NULL,
+	source TEXT NOT NULL,
+	confidence INTEGER NOT NULL,
+	PRIMARY KEY(archive_id, domain, subject)
+);
+
+CREATE INDEX IF NOT EXISTS ix_archive_domains_domain ON archive_domains(domain, subject);
+
 CREATE TABLE IF NOT EXISTS game_data_authority_entities (
 	entity_id INTEGER PRIMARY KEY,
 	unit_type_id INTEGER NOT NULL,
@@ -320,6 +334,7 @@ DELETE FROM game_data_authority_resources;
 DELETE FROM game_data_authority_pieces;
 DELETE FROM game_data_authority_kits;
 DELETE FROM game_data_archive_names;
+DELETE FROM archive_domains;
 DELETE FROM game_data_authority_entities;
 DELETE FROM game_data_authority_issues;
 DELETE FROM archive_issues;

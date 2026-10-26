@@ -323,6 +323,12 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		facts = ApplyArchiveMetadata(facts, BuildMetadataByPackage(archives, authority.BuildArchiveMetadata()));
 		facts = ApplySemanticArchiveCategories(facts, authority);
 
+		// 权威（注册表）与实体百科都覆盖不到的 archive，用内容路径补一个域和名字。
+		// 只填空，不覆盖任何已有结论。
+		var friendlyNames = await LoadFriendlyNamesAsync(cancellationToken).ConfigureAwait(false);
+		var contentProfiles = BuildContentProfiles(facts, friendlyNames);
+		facts = ApplyContentProfiles(facts, contentProfiles);
+
 		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Pooling=False");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.EnsureCreatedAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -340,6 +346,8 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await using var archiveCommand = CreateArchiveInsertCommand(connection);
 		await using var issueCommand = CreateArchiveIssueInsertCommand(connection);
 		await using var entryCommand = CreateArchiveEntryInsertCommand(connection);
+		await using var domainCommand = CreateArchiveDomainInsertCommand(connection);
+		await using var derivedNameCommand = CreateDerivedNameInsertCommand(connection);
 
 		foreach (var archive in facts.Archives)
 		{
@@ -348,6 +356,15 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 			progress?.Report(new IndexBuildProgress(current, total, archive.PackageName));
 
 			await InsertArchiveAsync(archiveCommand, archive, cancellationToken).ConfigureAwait(false);
+			if (contentProfiles.TryGetValue(archive.PackageName, out var contentProfile))
+			{
+				await InsertArchiveDomainAsync(domainCommand, archive.PackageName, contentProfile, cancellationToken).ConfigureAwait(false);
+				// 只有"这个名字确实被采用了"才记进名字表，避免派生名抢走权威名的位置。
+				if (string.Equals(archive.DisplayName, contentProfile.DerivedName, StringComparison.Ordinal))
+				{
+					await InsertDerivedNameAsync(derivedNameCommand, archive.PackageName, contentProfile, cancellationToken).ConfigureAwait(false);
+				}
+			}
 			foreach (var issue in archive.Issues)
 				await InsertArchiveIssueAsync(issueCommand, archive.PackageName, issue, cancellationToken).ConfigureAwait(false);
 
@@ -779,6 +796,138 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 			})
 			.ToArray();
 		return index with { Archives = archives };
+	}
+
+	// --- 内容域（从 archive 自己的内容反推"这是什么"） -----------------------
+
+	private async Task<IReadOnlyDictionary<ulong, string>> LoadFriendlyNamesAsync(CancellationToken cancellationToken)
+	{
+		var result = new Dictionary<ulong, string>();
+		if (!File.Exists(_paths.FriendlyNamesPath))
+		{
+			return result;
+		}
+
+		// friendlynames.txt：`<十进制哈希><空白><名字或内容路径>`，实测 4036 行。
+		// 路径形如 content/env_super_earth/habs/…；也有纯名字（GL-21 Grenade Launcher）。
+		foreach (var line in await File.ReadAllLinesAsync(_paths.FriendlyNamesPath, cancellationToken).ConfigureAwait(false))
+		{
+			if (string.IsNullOrWhiteSpace(line))
+			{
+				continue;
+			}
+
+			var separator = line.IndexOfAny([' ', '\t']);
+			if (separator <= 0)
+			{
+				continue;
+			}
+
+			if (!ulong.TryParse(line.AsSpan(0, separator), out var hash))
+			{
+				continue;
+			}
+
+			var value = line[(separator + 1)..].Trim();
+			if (value.Length != 0)
+			{
+				result[hash] = value;
+			}
+		}
+
+		return result;
+	}
+
+	private static Dictionary<string, ArchiveContentProfile> BuildContentProfiles(
+		GameDataArchiveIndex facts,
+		IReadOnlyDictionary<ulong, string> friendlyNames)
+	{
+		var profiles = new Dictionary<string, ArchiveContentProfile>(StringComparer.OrdinalIgnoreCase);
+		if (friendlyNames.Count == 0)
+		{
+			return profiles;
+		}
+
+		foreach (var archive in facts.Archives)
+		{
+			if (ArchiveContentProfiler.Profile(archive.Entries, friendlyNames) is { } profile)
+			{
+				profiles[archive.PackageName] = profile;
+			}
+		}
+
+		return profiles;
+	}
+
+	private static GameDataArchiveIndex ApplyContentProfiles(
+		GameDataArchiveIndex facts,
+		IReadOnlyDictionary<string, ArchiveContentProfile> profiles)
+	{
+		if (profiles.Count == 0)
+		{
+			return facts;
+		}
+
+		var archives = facts.Archives.Select(archive =>
+		{
+			if (!profiles.TryGetValue(archive.PackageName, out var profile))
+			{
+				return archive;
+			}
+
+			// 只填空：Armor / Helmet / Cape / Weapon 与社区结论一律不动。
+			var category = string.IsNullOrWhiteSpace(archive.Category) || archive.Category == "Other"
+				? profile.Domain
+				: archive.Category;
+			// 名字只在"从内容路径推出来的"时候采用；按构成兜底的名字不唯一，用了反而更难读。
+			var displayName = profile.HasUsableName && IsPlaceholderName(archive.DisplayName, archive.PackageName)
+				? profile.DerivedName
+				: archive.DisplayName;
+			return archive with { Category = category, DisplayName = displayName };
+		}).ToArray();
+		return facts with { Archives = archives };
+	}
+
+	private static bool IsPlaceholderName(string? displayName, string packageName)
+		=> string.IsNullOrWhiteSpace(displayName)
+			|| displayName.Equals(packageName, StringComparison.OrdinalIgnoreCase);
+
+	private static SqliteCommand CreateArchiveDomainInsertCommand(SqliteConnection connection)
+	{
+		var cmd = connection.CreateCommand();
+		cmd.CommandText = "INSERT OR REPLACE INTO archive_domains(archive_id,domain,subject,source,confidence) VALUES($a,$d,$s,$src,$c)";
+		foreach (var name in new[] { "$a", "$d", "$s", "$src" }) cmd.Parameters.Add(name, SqliteType.Text);
+		cmd.Parameters.Add("$c", SqliteType.Integer);
+		cmd.Prepare();
+		return cmd;
+	}
+
+	private static async Task InsertArchiveDomainAsync(SqliteCommand cmd, string archiveId, ArchiveContentProfile profile, CancellationToken cancellationToken)
+	{
+		cmd.Parameters["$a"].Value = archiveId;
+		cmd.Parameters["$d"].Value = profile.Domain;
+		cmd.Parameters["$s"].Value = profile.Subject;
+		cmd.Parameters["$src"].Value = "derived:content-path";
+		cmd.Parameters["$c"].Value = profile.Confidence;
+		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	private static SqliteCommand CreateDerivedNameInsertCommand(SqliteConnection connection)
+	{
+		var cmd = connection.CreateCommand();
+		cmd.CommandText = "INSERT OR REPLACE INTO game_data_archive_names(archive_id,locale,display_name,source,confidence,item_id) VALUES($a,'und',$n,'derived:content-path',$c,0)";
+		foreach (var name in new[] { "$a", "$n" }) cmd.Parameters.Add(name, SqliteType.Text);
+		cmd.Parameters.Add("$c", SqliteType.Integer);
+		cmd.Prepare();
+		return cmd;
+	}
+
+	private static async Task InsertDerivedNameAsync(SqliteCommand cmd, string archiveId, ArchiveContentProfile profile, CancellationToken cancellationToken)
+	{
+		cmd.Parameters["$a"].Value = archiveId;
+		cmd.Parameters["$n"].Value = profile.DerivedName;
+		cmd.Parameters["$c"].Value = profile.Confidence;
+		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	private static async Task SaveAuthoritySnapshotAsync(
