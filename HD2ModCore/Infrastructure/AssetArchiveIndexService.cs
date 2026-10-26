@@ -326,7 +326,7 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		// 权威（注册表）与实体百科都覆盖不到的 archive，用内容路径补一个域和名字。
 		// 只填空，不覆盖任何已有结论。
 		var friendlyNames = await LoadFriendlyNamesAsync(cancellationToken).ConfigureAwait(false);
-		var contentProfiles = BuildContentProfiles(facts, friendlyNames);
+		var contentProfiles = BuildContentProfiles(facts, friendlyNames, BuildVehicleSkinArchives(authority));
 		facts = ApplyContentProfiles(facts, contentProfiles);
 
 		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Pooling=False");
@@ -834,13 +834,37 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 		return result;
 	}
 
+	/// <summary>
+	/// 由 <c>generated_unit_customization_settings</c> 命名的 archive 是**载具涂装**，
+	/// 不是普通贴图包。实测 75 个，名字全是颜色（FOREST CAMO / FIRE ORANGE / TRUTH BLACK…）。
+	/// 它们的名字只有英文兜底——游戏没有为这些 id 发行本地化字符串（见 ArchiveContentProfiler 注释）。
+	/// </summary>
+	private static HashSet<string> BuildVehicleSkinArchives(GameDataAuthoritySnapshot authority)
+		=> authority.ArchiveNames
+			.Where(name => name.Source.Contains("unit_customization_settings", StringComparison.OrdinalIgnoreCase))
+			.Select(name => name.ArchiveId)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
 	private static Dictionary<string, ArchiveContentProfile> BuildContentProfiles(
 		GameDataArchiveIndex facts,
-		IReadOnlyDictionary<ulong, string> friendlyNames)
+		IReadOnlyDictionary<ulong, string> friendlyNames,
+		IReadOnlySet<string> vehicleSkinArchives)
 	{
 		var profiles = new Dictionary<string, ArchiveContentProfile>(StringComparer.OrdinalIgnoreCase);
 		foreach (var archive in facts.Archives)
 		{
+			// 载具涂装优先于通用"贴图包"——名字已经证明了它是什么。
+			if (vehicleSkinArchives.Contains(archive.PackageName))
+			{
+				profiles[archive.PackageName] = new ArchiveContentProfile(
+					"VehicleSkin",
+					"vehicle-skin",
+					"载具涂装",
+					ArchiveContentProfiler.DerivedConfidence,
+					FromContentPath: false);
+				continue;
+			}
+
 			// 装备类但拿不到任何可读名字：注册表里有这件装备，游戏却没给它本地化字符串
 			// （实测 32 个 kit 的 upper/cased/desc 三个 id 全都不在 15 张语言表里）。
 			// 这不是"我们没解析出来"，是它确实没有——如实标成未发布，别让用户以为漏了。
