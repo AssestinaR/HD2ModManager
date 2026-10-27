@@ -17,9 +17,21 @@ namespace HD2ModManager.ViewModels
         private readonly CrossArmorTransferPlanWindowViewModel _plan;
         private readonly NotificationService _notifications;
         private readonly BackgroundTaskService _backgroundTasks;
+        private readonly ModLibraryService _library;
         private string _outputDirectory = SettingsService.GetResolvedDefaultExportPath();
         private bool _isGenerating;
+        private bool _autoImport = true;
         private string _state = "先在左侧确认计划；候选将写入输出目录下自动命名的子文件夹。";
+
+        /// <summary>
+        /// 生成完成后把候选作为新 Mod 导入模组库（与补丁重打包、材质打包、Same-key 重建同一套做法）。
+        /// 只导入，不启用、不部署。
+        /// </summary>
+        public bool AutoImport
+        {
+            get => _autoImport;
+            set => SetField(ref _autoImport, value);
+        }
 
         public string OutputDirectory
         {
@@ -36,12 +48,13 @@ namespace HD2ModManager.ViewModels
         public bool CanGenerate => !IsGenerating && _plan.CanGenerateCandidate && !string.IsNullOrWhiteSpace(OutputDirectory);
         public RelayCommand GenerateCommand { get; }
 
-        public CrossArmorCandidateOutputPageViewModel(CrossArmorTransferPlanWindowViewModel plan, NotificationService notifications, BackgroundTaskService backgroundTasks)
+        public CrossArmorCandidateOutputPageViewModel(CrossArmorTransferPlanWindowViewModel plan, NotificationService notifications, BackgroundTaskService backgroundTasks, ModLibraryService library)
         {
             Title = "验证候选输出";
             _plan = plan;
             _notifications = notifications;
             _backgroundTasks = backgroundTasks;
+            _library = library ?? throw new ArgumentNullException(nameof(library));
             GenerateCommand = new RelayCommand(async _ => await GenerateAsync(), _ => CanGenerate);
             _plan.PropertyChanged += (_, _) =>
             {
@@ -143,6 +156,26 @@ namespace HD2ModManager.ViewModels
                     ? $"{routeName}已提交，但报告不完整/有告警：{candidateDirectory}。Unit {result.OutputUnitCount}；报告：{result.ReportPath ?? "未生成"}"
                     : $"{routeName}已生成到：{candidateDirectory}。Unit {result.OutputUnitCount}；替换 mesh {result.ReplacementMeshCount}；极小化 mesh {result.MinifiedMeshCount}。报告：{result.ReportPath}";
                 LogService.Info($"替换护甲生成完成：输出={candidateDirectory}，Unit={result.OutputUnitCount}，替换Mesh={result.ReplacementMeshCount}，极小化Mesh={result.MinifiedMeshCount}，报告={result.ReportPath}。");
+
+                if (AutoImport && !string.IsNullOrWhiteSpace(result.OutputDirectory))
+                {
+                    State = "候选已生成，正在导入模组库…";
+                    try
+                    {
+                        var importer = new ImportService(_library, informationCenter: _library.InformationCenter);
+                        var imported = await importer.ImportPathAsync(result.OutputDirectory, task.CancellationToken).ConfigureAwait(true);
+                        LogService.Info($"替换护甲候选已导入模组库：条目={imported.Count}，来源={result.OutputDirectory}。");
+                        State = $"{State} 已导入模组库 {imported.Count} 个条目（未启用、未部署）。";
+                        _notifications?.Show($"替换护甲候选已导入模组库：{imported.Count} 个条目。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                    }
+                    catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
+                    {
+                        // 导入失败不该抹掉"候选已经生成好了"这个事实：产物在磁盘上，用户可以直接去拖。
+                        LogService.Error($"替换护甲候选导入模组库失败：{exception}");
+                        State = $"{State} 但导入模组库失败：{exception.Message}。产物仍在：{result.OutputDirectory}";
+                        _notifications?.Show($"候选已生成，但导入模组库失败：{exception.Message}", NotificationLevel.Warning, TimeSpan.FromSeconds(10));
+                    }
+                }
             }
             catch (OperationCanceledException)
             {

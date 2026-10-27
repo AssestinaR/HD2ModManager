@@ -781,7 +781,7 @@ namespace HD2ModManager.ViewModels
             LeftPageType = WorkspacePageType.CrossArmorPlan;
             RightPageType = WorkspacePageType.CrossArmorPlan;
             LeftPage = plan;
-            plan.AttachCandidateOutput(new CrossArmorCandidateOutputPageViewModel(plan, _notificationService, _backgroundTasks));
+            plan.AttachCandidateOutput(new CrossArmorCandidateOutputPageViewModel(plan, _notificationService, _backgroundTasks, _libraryService));
             RightPage = null;
             UpdateModeFromSlots();
             RaiseSlotFlags();
