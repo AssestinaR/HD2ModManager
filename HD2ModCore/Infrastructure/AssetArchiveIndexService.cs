@@ -1182,7 +1182,7 @@ VALUES($severity,$code,$message,$path,$exception);";
 		command.CommandText = @"
 DROP TABLE IF EXISTS temp.preserved_game_data_unit_parts;
 CREATE TEMP TABLE preserved_game_data_unit_parts AS
-SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason
+SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,authority_slot,authority_piece_type,reason
 FROM game_data_unit_parts;";
 		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
@@ -1192,8 +1192,8 @@ FROM game_data_unit_parts;";
 		await using var command = connection.CreateCommand();
 		command.Transaction = transaction;
 		command.CommandText = @"
-INSERT OR IGNORE INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason)
-SELECT p.archive_id,p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.is_visual,p.is_lod,p.vertex_count,p.triangle_count,p.geometry_quality,p.fact_origin,p.reason
+INSERT OR IGNORE INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,authority_slot,authority_piece_type,reason)
+SELECT p.archive_id,p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.is_visual,p.is_lod,p.vertex_count,p.triangle_count,p.geometry_quality,p.fact_origin,p.authority_slot,p.authority_piece_type,p.reason
 FROM preserved_game_data_unit_parts p
 JOIN archives a ON a.archive_id=p.archive_id
 JOIN archive_entries e ON e.archive_id=p.archive_id AND e.type_id=p.unit_type_id AND e.file_id=p.unit_file_id

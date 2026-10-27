@@ -402,7 +402,7 @@ SELECT CASE WHEN
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
-		SELECT unit_type_id,unit_file_id,body_variant,part_kind,piece_type
+		SELECT unit_type_id,unit_file_id,body_variant,part_kind,piece_type,slot
 		FROM game_data_authority_pieces
 		WHERE kit_kind IN ($armor,$helmet)
 	  AND unit_type_id=$unitType
@@ -421,7 +421,8 @@ SELECT CASE WHEN
 			values.Add(new AuthorityRoleInput(
 				(UnitMeshBodyVariant)reader.GetInt32(2),
 				(UnitMeshPartKind)reader.GetInt32(3),
-				unchecked((uint)reader.GetInt64(4))));
+				unchecked((uint)reader.GetInt64(4)),
+				unchecked((uint)reader.GetInt64(5))));
 		}
 
 		return grouped.ToDictionary(pair => pair.Key, pair => AuthorityUnitRole.Create(pair.Value));
@@ -435,16 +436,16 @@ SELECT CASE WHEN
 	private static SqliteCommand CreatePartCommand(SqliteConnection connection, SqliteTransaction transaction)
 	{
 		var command = connection.CreateCommand(); command.Transaction = transaction;
-		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$piece,$c,$visual,$lod,$vertices,$triangles,$quality,$origin,$r)";
+		command.CommandText = "INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,authority_slot,authority_piece_type,reason) VALUES($a,$t,$f,$m,$id,$k,$l,$v,$n,$piece,$c,$visual,$lod,$vertices,$triangles,$quality,$origin,$aslot,$apt,$r)";
 		foreach (var name in new[] { "$a", "$n", "$piece", "$r" }) command.Parameters.Add(name, SqliteType.Text);
-		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod", "$vertices", "$triangles", "$quality", "$origin" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
+		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod", "$vertices", "$triangles", "$quality", "$origin", "$aslot", "$apt" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
 	}
 
 	private sealed record EquipmentUnitWorkItem(string ArchiveId, CoreAssetKey AssetKey, bool HasPartFacts);
 
 	private static async ValueTask InsertPartAsync(SqliteCommand command, GameDataUnitPartFact part, CancellationToken cancellationToken)
 	{
-		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$piece"].Value = part.PieceType; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$vertices"].Value = part.VertexCount; command.Parameters["$triangles"].Value = part.TriangleCount; command.Parameters["$quality"].Value = (int)part.GeometryQuality; command.Parameters["$origin"].Value = (int)part.Origin; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		command.Parameters["$a"].Value = part.ArchiveId; command.Parameters["$t"].Value = unchecked((long)part.UnitAssetKey.TypeId); command.Parameters["$f"].Value = unchecked((long)part.UnitAssetKey.FileId); command.Parameters["$m"].Value = part.MeshInfoIndex; command.Parameters["$id"].Value = part.MeshId; command.Parameters["$k"].Value = (int)part.PartKind; command.Parameters["$l"].Value = (int)part.Layer; command.Parameters["$v"].Value = (int)part.BodyVariant; command.Parameters["$n"].Value = part.SemanticName; command.Parameters["$piece"].Value = part.PieceType; command.Parameters["$c"].Value = part.Confidence; command.Parameters["$visual"].Value = part.IsVisualMesh ? 1 : 0; command.Parameters["$lod"].Value = part.IsLod ? 1 : 0; command.Parameters["$vertices"].Value = part.VertexCount; command.Parameters["$triangles"].Value = part.TriangleCount; command.Parameters["$quality"].Value = (int)part.GeometryQuality; command.Parameters["$origin"].Value = (int)part.Origin; command.Parameters["$aslot"].Value = part.Cell.IsKnown ? part.Cell.Slot : ArmorCell.UnknownCoordinate; command.Parameters["$apt"].Value = part.Cell.IsKnown ? part.Cell.Layer : ArmorCell.UnknownCoordinate; command.Parameters["$r"].Value = part.Reason; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	private IReadOnlyList<GameDataUnitPartFact> CreatePartFacts(
@@ -474,6 +475,7 @@ SELECT CASE WHEN
 			{
 				Origin = hasAuthorityIdentity ? GameDataFactOrigin.AuthoritativeGameData : GameDataFactOrigin.DerivedUnitStructure,
 				PieceType = part.PieceType,
+				Cell = authorityRole?.Cell ?? ArmorCell.Unknown,
 				VertexCount = geometry?.VertexCount ?? 0,
 				TriangleCount = geometry?.TriangleCount ?? 0,
 				GeometryQuality = geometry?.Quality ?? UnitMeshGeometryQuality.Unreadable
@@ -481,12 +483,13 @@ SELECT CASE WHEN
 		}).ToArray();
 	}
 
-	private sealed record AuthorityRoleInput(UnitMeshBodyVariant BodyVariant, UnitMeshPartKind PartKind, uint PieceType);
+	private sealed record AuthorityRoleInput(UnitMeshBodyVariant BodyVariant, UnitMeshPartKind PartKind, uint PieceType, uint Slot);
 
 	private sealed record AuthorityUnitRole(
 		UnitMeshPartKind? PartKind,
 		UnitMeshBodyVariant? BodyVariant,
 		UnitMeshPartLayer? FallbackLayer,
+		ArmorCell Cell,
 		string Detail)
 	{
 		public bool HasIdentity => PartKind is not null || BodyVariant is not null;
@@ -513,12 +516,19 @@ SELECT CASE WHEN
 			UnitMeshPartLayer? fallbackLayer = pieceTypes.Length == 1
 				? pieceTypes[0] == 0 ? UnitMeshPartLayer.Undergarment : UnitMeshPartLayer.Armor
 				: null;
+			// 权威格子：部位槽 × 层。实测一个 unit 全局只属于一个格子（2006 个 unit 零冲突），
+			// 所以这里正常只有一种取值；不一致说明数据真的矛盾，那就老实报"不知道"，
+			// 不要把两个不同的格子折成一个——折了以后下游无法区分躯干内层和躯干护甲。
+			var slots = inputs.Select(input => input.Slot).Distinct().ToArray();
+			var cell = slots.Length == 1 && pieceTypes.Length == 1
+				? new ArmorCell(unchecked((int)slots[0]), unchecked((int)pieceTypes[0]))
+				: ArmorCell.Unknown;
 			// 一个 unit 被多个部位引用是**事实**，不是数据缺陷：把全部归属都写进 detail，
 			// 不要用一句 "Ambiguous" 把它抹掉（共享 unit 属于所有引用它的护甲）。
 			var partText = partKind?.ToString()
 				?? (partKinds.Length > 1 ? string.Join('|', partKinds) : "Ambiguous");
-			var detail = $"Authoritative GameData equipment relation: Part={partText}; Body={bodyVariant?.ToString() ?? "Ambiguous"}; PieceType={string.Join(',', pieceTypes)}";
-			return new AuthorityUnitRole(partKind, bodyVariant, fallbackLayer, detail);
+			var detail = $"Authoritative GameData equipment relation: Part={partText}; Body={bodyVariant?.ToString() ?? "Ambiguous"}; PieceType={string.Join(',', pieceTypes)}; Slot={string.Join(',', slots)}";
+			return new AuthorityUnitRole(partKind, bodyVariant, fallbackLayer, cell, detail);
 		}
 	}
 

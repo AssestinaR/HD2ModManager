@@ -59,6 +59,7 @@ public sealed class EquipmentUnitCatalogService : IEquipmentUnitCatalogService
 		command.CommandText = @"
 SELECT a.archive_id,a.category,a.display_name,
 			 p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.vertex_count,p.triangle_count,p.geometry_quality,
+			 p.authority_slot,p.authority_piece_type,
 			 COALESCE((SELECT MAX(e.toc_data_size + e.stream_size + e.gpu_resource_size)
 								 FROM archive_entries e
 								 WHERE e.archive_id=a.archive_id
@@ -93,7 +94,8 @@ ORDER BY CASE WHEN lower(a.category) LIKE '%armor%' THEN 0 ELSE 1 END,a.display_
 						VertexCount = reader.GetInt32(13),
 						TriangleCount = reader.GetInt32(14),
 						GeometryQuality = (UnitMeshGeometryQuality)reader.GetInt32(15),
-						StoredBytes = reader.GetInt64(16)
+						Cell = new ArmorCell(reader.GetInt32(16), reader.GetInt32(17)),
+						StoredBytes = reader.GetInt64(18)
 					}));
 		}
 

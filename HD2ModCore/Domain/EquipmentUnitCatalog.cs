@@ -29,6 +29,12 @@ public sealed record EquipmentUnitPart(
 	IReadOnlyList<string> SharedArchiveIds)
 {
 	public string PieceType { get; init; } = string.Empty;
+	/// <summary>
+	/// 注册表给出的权威格子（部位槽 × 层）。<see cref="ArmorCell.Unknown"/> = 这个 unit 在原版注册表里查不到归属。
+	/// 规划器的"一一对应"判断只认这个，不认 <see cref="PartKind"/>/<see cref="Layer"/>——
+	/// 后两者是从网格名推的，躯干的内层和护甲网格名都是 <c>Torso_Armor_*</c>，内容上分不出来。
+	/// </summary>
+	public ArmorCell Cell { get; init; } = ArmorCell.Unknown;
 	// Culling geometry changes what the player can see, but must be written back to
 	// a culling MeshInfo rather than treated as an ordinary display LOD.
 	public bool IsCullingMesh { get; init; }

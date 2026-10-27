@@ -107,6 +107,12 @@ CREATE TABLE IF NOT EXISTS game_data_unit_parts (
 	triangle_count INTEGER NOT NULL DEFAULT 0,
 	geometry_quality INTEGER NOT NULL DEFAULT 0,
 	fact_origin INTEGER NOT NULL DEFAULT 2,
+	-- 注册表给出的权威格子：部位槽（CustomizationKitSlot 0..9）× 层（piece_type 0..2）。
+	-- -1 = 这个 unit 在注册表里查不到归属。
+	-- 为什么必须落库：part_layer 是由网格名猜出来的，实测与原版注册表有 97% 不一致
+	-- （躯干的内层和护甲网格名都叫 Torso_Armor_*，内容上分不出来）。见 docs/armor-cell-plan。
+	authority_slot INTEGER NOT NULL DEFAULT -1,
+	authority_piece_type INTEGER NOT NULL DEFAULT -1,
 	reason TEXT NOT NULL,
 	PRIMARY KEY(archive_id, unit_type_id, unit_file_id, mesh_info_index),
 	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
@@ -241,6 +247,8 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "triangle_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "geometry_quality", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "fact_origin", "INTEGER NOT NULL DEFAULT 2", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "authority_slot", "INTEGER NOT NULL DEFAULT -1", cancellationToken).ConfigureAwait(false);
+		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "authority_piece_type", "INTEGER NOT NULL DEFAULT -1", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_authority_entities", "localized_designations_json", "TEXT NOT NULL DEFAULT '{}'", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
