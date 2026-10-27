@@ -78,6 +78,9 @@ public sealed class ModStorageDeletionService : IModStorageDeletionService
 
 			// A handle can prevent a same-volume move as well as deletion. Persist the tombstone
 			// before asking Windows to delete at restart so synchronization can never resurrect it.
+			// TryMoveToQuarantineAsync 在移动之前就建好了事务目录；移动失败时它是空的，
+			// 不删掉的话每次失败都会在 .hd2modmanager-trash 里留下一个空目录。
+			TryDeleteEmptyDirectory(transactionDirectory);
 			var originalEntry = new PendingDeletionEntry(
 				Guid.NewGuid().ToString("N"),
 				normalizedRelativePath,
@@ -238,7 +241,29 @@ public sealed class ModStorageDeletionService : IModStorageDeletionService
 				last = exception;
 			}
 		}
-		return last ?? new IOException("无法删除 Mod 目录。");
+
+		// Directory.Delete(recursive:true) 不是原子的：它会先删掉能删的文件，只在被占用的那一个上
+		// 失败并抛出，于是磁盘上留下"空目录"或"目录 + 少量残余文件"。把剩余数量写进错误信息，
+		// 否则调用方（以及用户）只看到一句 "Access is denied"，无从判断还剩什么。
+		// The recursive delete is not atomic: it removes everything it can and only fails on the
+		// locked entry, leaving an empty directory or a directory with a few leftovers behind.
+		var remaining = CountRemainingEntries(directory);
+		var message = last is null ? "无法删除 Mod 目录。" : DescribeException(last);
+		return new IOException(remaining > 0 ? $"{message}（目录仍存在，剩余 {remaining} 项）" : message, last);
+	}
+
+	private static int CountRemainingEntries(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory)
+				? Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories).Count()
+				: 0;
+		}
+		catch (Exception exception) when (IsDeleteOperationException(exception))
+		{
+			return -1;
+		}
 	}
 
 	private async ValueTask<Exception?> TryDeleteFileAsync(string path, CancellationToken cancellationToken)

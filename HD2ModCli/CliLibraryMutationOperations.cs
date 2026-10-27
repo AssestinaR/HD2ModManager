@@ -178,6 +178,12 @@ internal static class CliLibraryMutationOperations
 			await session.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
 			var optionCleanup = await CleanupOptionActivationsAsync(optionActivations, appliedPlan, cancellationToken).ConfigureAwait(false);
 			var decorationCleanup = await CleanupDecorationActivationsAsync(decorationActivations, appliedPlan, cancellationToken).ConfigureAwait(false);
+			// CLI 删除没有信息中心，也就没有任何逐节点缓存失效；这里以"库里还剩哪些节点"为准回收一次，
+			// 否则被删节点的派生缓存会永久留在 data/indexes 下。
+			// A CLI deletion has no information center and therefore no per-node invalidation. Sweeping
+			// against the surviving node set is the only thing that keeps derived caches from lingering.
+			await CoreServices.CreateModIndexGarbageCollector(session.Paths)
+				.CollectAsync(persisted.Nodes.Keys.ToArray(), cancellationToken).ConfigureAwait(false);
 			return new CliModDeletionExecutionResult(
 				CliModDeletionStatus.Completed,
 				plan,

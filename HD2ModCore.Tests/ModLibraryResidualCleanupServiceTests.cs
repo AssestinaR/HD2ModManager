@@ -119,15 +119,19 @@ public sealed class ModLibraryResidualCleanupServiceTests
 		finally { TryDelete(root); }
 	}
 
+	// 边界仍然存在：无法识别的二进制载荷必须保留。纯文本/元数据目录不再受保护——
+	// 那正是"文件夹还在、patch 已删、只剩几个 json/文本"这种残留的形状。
+	// The boundary still exists for unrecognized binary payload. Text/metadata-only directories are no
+	// longer protected, because that is exactly the residue shape users hit.
 	[Fact]
-	public void Cleanup_UnrecognizedFile_IsKept()
+	public void Cleanup_UnrecognizedBinaryFile_IsKept()
 	{
 		var root = CreateRoot();
 		try
 		{
 			var directory = Path.Combine(root, "unknown");
 			Directory.CreateDirectory(directory);
-			File.WriteAllText(Path.Combine(directory, "readme.txt"), "not manager metadata");
+			File.WriteAllText(Path.Combine(directory, "payload.bin"), "not manager metadata");
 
 			var result = Cleanup(root, SnapshotWith());
 
@@ -220,6 +224,52 @@ public sealed class ModLibraryResidualCleanupServiceTests
 
 			Assert.Equal(0, result.RemovedCount);
 			Assert.Empty(result.Failures);
+		}
+		finally { TryDelete(root); }
+	}
+
+	// 用户实际遇到的残留形状：文件夹还在，patch 已经被删掉，只剩几个 json / 文本文件。
+	// The shape the user actually saw: the folder survives with only a few json/text files left.
+	[Fact]
+	public void Cleanup_UnreferencedDirectoryWithOnlyAuthorNotes_IsRemoved()
+	{
+		var root = CreateRoot();
+		try
+		{
+			var directory = Path.Combine(root, "leftover");
+			Directory.CreateDirectory(directory);
+			File.WriteAllText(Path.Combine(directory, "mod.json"), "{\"name\":\"x\"}");
+			File.WriteAllText(Path.Combine(directory, "readme.txt"), "notes");
+			File.WriteAllText(Path.Combine(directory, "crash.log"), "log");
+
+			var result = Cleanup(root, SnapshotWith());
+
+			Assert.Equal(1, result.RemovedCount);
+			Assert.False(Directory.Exists(directory));
+			Assert.Single(result.Removals);
+			Assert.Equal("leftover", result.Removals[0].RelativePath);
+			Assert.Contains("mod.json", result.Removals[0].FileNames);
+		}
+		finally { TryDelete(root); }
+	}
+
+	// 安全边界：任何仍然带载荷或外部资源的目录都必须保留，否则"清扫"会变成"删 Mod"。
+	// Safety boundary: anything still carrying payload or external resources must survive.
+	[Fact]
+	public void Cleanup_UnreferencedDirectoryWithVpk_IsKept()
+	{
+		var root = CreateRoot();
+		try
+		{
+			var directory = Path.Combine(root, "keep-vpk");
+			Directory.CreateDirectory(directory);
+			File.WriteAllText(Path.Combine(directory, "mod.json"), "{\"name\":\"x\"}");
+			File.WriteAllText(Path.Combine(directory, "unit.vpk"), "payload");
+
+			var result = Cleanup(root, SnapshotWith());
+
+			Assert.Equal(0, result.RemovedCount);
+			Assert.True(Directory.Exists(directory));
 		}
 		finally { TryDelete(root); }
 	}

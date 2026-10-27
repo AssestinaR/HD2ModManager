@@ -1,4 +1,4 @@
-﻿using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using System.Net.Http;
 
@@ -11,6 +11,10 @@ public static class CoreServices
 	public static IPatchFileNameParser CreatePatchFileNameParser() => new PatchFileNameParser();
 	public static IModLibraryResidualCleanupService CreateModLibraryResidualCleanupService()
 		=> new ModLibraryResidualCleanupService(CreatePatchFileNameParser());
+	// 作用：以当前库快照为准回收派生索引里属于已删除节点的残留（它们全是可重建的缓存）。
+	// Purpose: Reclaims derived-index residue for nodes absent from the library (all rebuildable caches).
+	public static IModIndexGarbageCollector CreateModIndexGarbageCollector(StoragePaths paths)
+		=> new ModIndexGarbageCollector(paths ?? throw new ArgumentNullException(nameof(paths)));
 	public static IPatchFileIndexBuilder CreatePatchFileIndexBuilder()
 		=> new PatchFileIndexBuilder(CreatePatchFileNameParser());
 	public static IModFileFactsProducer CreateModFileFactsProducer()

@@ -29,6 +29,7 @@ public sealed class ModLibraryResidualCleanupService : IModLibraryResidualCleanu
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var removed = 0;
 		var failures = new List<string>();
+		var removals = new List<ModLibraryResidualRemoval>();
 		foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
@@ -37,24 +38,31 @@ public sealed class ModLibraryResidualCleanupService : IModLibraryResidualCleanu
 				|| referenced.Contains(relative)
 				|| referenced.Any(path => path.StartsWith(relative + "/", StringComparison.OrdinalIgnoreCase)))
 				continue;
-			if (!IsSafeResidual(directory, cancellationToken)) continue;
+			if (!TryClassifyResidual(directory, out var fileNames, cancellationToken)) continue;
 			try
 			{
 				ClearAttributes(directory);
 				Directory.Delete(directory, recursive: true);
 				removed++;
+				removals.Add(new ModLibraryResidualRemoval(relative, fileNames));
 			}
 			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
 			{
 				failures.Add($"{relative}: {exception.Message}");
 			}
 		}
-		return new(removed, failures);
+		return new(removed, failures) { Removals = removals };
 	}
 
-	private bool IsSafeResidual(string directory, CancellationToken cancellationToken)
+	// 判定一个未被库引用的目录是否"纯粹是残留"。
+	// A directory is residual when the library does not reference it and nothing inside it can be used by
+	// the manager: no patch payload (including sidecars), no recognized external-install file, no logical
+	// node marker. Everything else — including a folder holding only a mod author's json/text files —
+	// qualifies, because the manager can never load such a folder as a Mod anyway.
+	private bool TryClassifyResidual(string directory, out IReadOnlyList<string> fileNames, CancellationToken cancellationToken)
 	{
 		var files = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).ToArray();
+		fileNames = files.Select(Path.GetFileName).Where(name => name is not null).Select(name => name!).ToArray();
 		if (files.Length == 0) return true;
 		if (ModNodeStorageProtocol.TryReadLogicalNodeId(directory, out _)) return false;
 		if (ExternalInstallFileFactsService.HasRecognizedFiles(directory)) return false;
@@ -63,17 +71,34 @@ public sealed class ModLibraryResidualCleanupService : IModLibraryResidualCleanu
 			cancellationToken.ThrowIfCancellationRequested();
 			var name = Path.GetFileName(file);
 			if (_patchFileNameParser.TryParse(name, out _)) return false;
-			if (!IsManagerMetadata(name)) return false;
+			if (!IsHarmlessResidualFile(name)) return false;
 		}
 		return true;
 	}
 
-	private static bool IsManagerMetadata(string name)
-		=> string.Equals(name, ModNodeStorageProtocol.LogicalMarkerFileName, StringComparison.OrdinalIgnoreCase)
+	// 管理器自身写下的元数据，以及 Mod 作者随包附带、管理器从不消费的说明/元数据文件。
+	// Manager-written metadata plus author-supplied notes/metadata the manager never consumes.
+	private static bool IsHarmlessResidualFile(string name)
+	{
+		if (string.Equals(name, ModNodeStorageProtocol.LogicalMarkerFileName, StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(name, ModNodeStorageProtocol.OptionRelationFileName, StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(name, "manifest.json", StringComparison.OrdinalIgnoreCase)
 			|| name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
-			|| name.StartsWith("icon.", StringComparison.OrdinalIgnoreCase);
+			|| name.StartsWith("icon.", StringComparison.OrdinalIgnoreCase))
+			return true;
+
+		var extension = Path.GetExtension(name);
+		return extension.Length > 1 && HarmlessResidualExtensions.Contains(extension);
+	}
+
+	// 只放"管理器完全不读、删掉也不影响任何 Mod 加载"的扩展名。刻意不含 .vpk / .ini / .lua /
+	// .patch_N / .gpu_resources / .stream：那些要么是载荷，要么已被上游判定覆盖。
+	// Extensions the manager never reads. Deliberately excludes payload and recognized-install formats.
+	private static readonly HashSet<string> HarmlessResidualExtensions = new(StringComparer.OrdinalIgnoreCase)
+	{
+		".json", ".txt", ".log", ".md", ".nfo", ".url",
+		".png", ".jpg", ".jpeg", ".webp", ".bmp",
+	};
 
 	private static void ClearAttributes(string directory)
 	{

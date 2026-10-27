@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -100,10 +100,23 @@ namespace HD2ModManager.Services
 		// Single invalidation boundary for every library content mutation.  The
 		// information center clears durable derived facts; the reader clears any
 		// session/operation payloads that may still retain the previous Patch.
+		// 缓存失效是"尽力而为"：它失败不应该让一次已经成功的库变更（尤其是删除）半途而废，
+		// 否则磁盘上会留下无人回收的派生数据。失败写进日志，残留由启动期索引回收兜底。
 		public async ValueTask InvalidateContentNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
 		{
 			_informationReader.InvalidateNode(nodeId);
-			await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+			try
+			{
+				await _informationCenter.InvalidateNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+			}
+			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+			{
+				throw;
+			}
+			catch (Exception exception)
+			{
+				LogService.Error($"信息缓存失效未完全成功：节点={nodeId.Value:N}，错误={exception.Message}");
+			}
 		}
 
         public async Task<DecorationActivationSummary> ToggleDecorationForAllAvailableHostsAsync(string decorationId, CancellationToken cancellationToken = default)
@@ -503,9 +516,44 @@ namespace HD2ModManager.Services
                 synchronizationExclusions,
                 cancellationToken).ConfigureAwait(false);
 			LastSynchronizationResult = result;
+            // 清扫必须排在 FilesystemChanged 早退**之前**：一个无主的残留目录既不会产生
+            // added/changed，也不会产生 missing，所以它永远不可能让 FilesystemChanged 变成 true；
+            // 把它放在早退之后等于这段逻辑永不执行（这正是空目录一直堆到用户手动清理的原因）。
+            // 同时仍然要求"同步期间没有用户操作抢先提交"——否则可能拿过期快照去判定谁是无主的。
+            // Housekeeping must run BEFORE the FilesystemChanged early return (an unreferenced leftover
+            // never sets it), but still only when no user mutation raced ahead of this sync, so a stale
+            // snapshot is never used to decide what is unreferenced.
+            var synchronizationIsCurrent = synchronizeVersion == Volatile.Read(ref _stateVersion);
+            if (synchronizationIsCurrent)
+            {
+                var residualCleanup = CoreServices.CreateModLibraryResidualCleanupService()
+                    .Cleanup(result.Snapshot, _paths.ModsDirectory, cancellationToken);
+                if (residualCleanup.RemovedCount > 0)
+                {
+                    var detail = string.Join("；", residualCleanup.Removals.Take(10).Select(removal =>
+                        removal.FileNames.Count == 0
+                            ? removal.RelativePath
+                            : $"{removal.RelativePath}（{string.Join(", ", removal.FileNames.Take(5))}）"));
+                    LogService.Info($"模组库残留清理：已删除 {residualCleanup.RemovedCount} 个无 Patch、无有效外部资源且未被库引用的残留目录。{detail}");
+                }
+                foreach (var failure in residualCleanup.Failures)
+                    LogService.Error($"模组库残留清理失败：{failure}");
+
+                // 派生索引回收：缓存失效是逐节点、尽力而为的，CLI 删除更是完全不碰信息中心。
+                // 以"当前库里还有哪些节点"为准回收一次，是唯一能兜住这些漏网数据的路径。
+                // Derived-index reclaim: invalidation is per node and best effort, and CLI deletions
+                // never touch the information center at all.
+                var indexGc = await CoreServices.CreateModIndexGarbageCollector(_paths)
+                    .CollectAsync(result.Snapshot.Nodes.Keys.ToArray(), cancellationToken).ConfigureAwait(false);
+                if (!indexGc.IsEmpty)
+                    LogService.Info($"索引回收：缓存文件={indexGc.RemovedCacheFiles}，索引节点={indexGc.RemovedIndexNodes}，事实行={indexGc.RemovedFactRows}，替换备份={indexGc.RemovedBackupDirectories}，临时文件={indexGc.RemovedTemporaryFiles}。");
+                foreach (var failure in indexGc.Failures)
+                    LogService.Error($"索引回收失败：{failure}");
+            }
+
             if (!result.FilesystemChanged) return false;
 
-            if (synchronizeVersion != Volatile.Read(ref _stateVersion))
+            if (!synchronizationIsCurrent)
             {
                 LogService.Info("跳过过期的后台模组库同步结果：用户操作已先行提交。");
                 return false;
@@ -525,14 +573,6 @@ namespace HD2ModManager.Services
                 if (!Directory.Exists(directory)) continue;
                 ModNodeStorageProtocol.SynchronizeNodeMetadata(directory, addedNode, cancellationToken);
             }
-            // Residual cleanup runs against the post-synchronization snapshot, so a directory that
-            // synchronization has just claimed is never mistaken for an unreferenced leftover.
-            var residualCleanup = CoreServices.CreateModLibraryResidualCleanupService()
-                .Cleanup(_snapshot, _paths.ModsDirectory, cancellationToken);
-            if (residualCleanup.RemovedCount > 0)
-                LogService.Info($"模组库残留清理：已删除 {residualCleanup.RemovedCount} 个无 Patch、无有效外部资源且未被库引用的残留目录。");
-            foreach (var failure in residualCleanup.Failures)
-                LogService.Error($"模组库残留清理失败：{failure}");
             await CoreServices.CreateModLibraryStore(_paths).SaveAsync(_snapshot, cancellationToken).ConfigureAwait(false);
 			foreach (var nodeId in result.ChangedNodeIds.Concat(result.MissingNodeIds))
 				await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
@@ -767,8 +807,18 @@ namespace HD2ModManager.Services
             ArgumentNullException.ThrowIfNull(result);
             var messages = new List<string>();
             if (result.RemovedNodeIds.Count > 0) messages.Add($"已从模组库移除 {result.RemovedNodeIds.Count} 个 Mod。");
-            if (result.PendingRestartCount > 0) messages.Add($"其中 {result.PendingRestartCount} 个目录已登记为系统重启后清理。");
-            if (result.PendingCleanupCount > 0) messages.Add($"其中 {result.PendingCleanupCount} 个目录已移入受管理回收区，将在后续启动继续清理。");
+            if (result.PendingRestartCount > 0)
+            {
+                // 这一条以前只说"已登记为系统重启后清理"，用户看不出文件夹其实还在原地。
+                // 目录被占用时库节点已经移除，但物理目录会留到重启，必须说清楚。
+                var names = JoinNames(result, ModStorageDeletionState.PendingRestart);
+                messages.Add($"{result.PendingRestartCount} 个目录当时被占用，仍留在模组库目录里（{names}），已登记为系统重启后清理；重启前它们会继续占用磁盘。");
+            }
+            if (result.PendingCleanupCount > 0)
+            {
+                var names = JoinNames(result, ModStorageDeletionState.PendingCleanup);
+                messages.Add($"{result.PendingCleanupCount} 个目录已移入受管理回收区但未能立即删除（{names}），将在后续启动继续清理。");
+            }
             if (result.HasFailures)
             {
                 var details = result.Failures
@@ -777,6 +827,17 @@ namespace HD2ModManager.Services
                 messages.Add($"{result.FailedNodeIds.Count} 个 Mod 未删除：{string.Join("；", details)}");
             }
             return messages.Count == 0 ? "没有找到可删除的 Mod。" : string.Join(" ", messages);
+        }
+
+        private static string JoinNames(ModLibraryDeletionResult result, ModStorageDeletionState state)
+        {
+            var names = result.StorageResults
+                .Where(item => item.State == state)
+                .Select(item => Path.GetFileName(item.RelativePath.TrimEnd('/', '\\')))
+                .Where(name => !string.IsNullOrEmpty(name))
+                .Take(3)
+                .ToArray();
+            return names.Length == 0 ? "…" : string.Join("、", names) + (result.StorageResults.Count(item => item.State == state) > 3 ? " 等" : string.Empty);
         }
 
         public bool Rename(string guid, string newName)
@@ -947,17 +1008,17 @@ namespace HD2ModManager.Services
                 // Cancel our own information work before asking Windows to move or remove the
                 // directory. Cancellation is intentionally best-effort: a failed cache
                 // invalidation must not hide the actual filesystem error from the user.
-                // Cache invalidation is independent per node. Use a small bounded
-                // batch instead of serially awaiting every node, while retaining
-                // the information center's generation/invalidation boundary.
-                foreach (var batch in nodeIds.Chunk(4))
+                //
+                // 逐个失效，不再 Chunk(4) 并发。旧实现里每个节点的失效都要把整个 mod-information
+                // 目录解析一遍，4 路并发只是把同一批文件重复打开 4 次（实测 20 个节点 = 612 MB
+                // JSON），而并发删除同一批文件正是 UnauthorizedAccessException 的来源。现在单节点
+                // 失效已经是 O(1)，串行更快、更确定，也不会再有共享文件竞争。
+                // Invalidate sequentially: per-node invalidation is now O(1), and the previous 4-way
+                // concurrency only re-opened the same files while racing on their deletion.
+                foreach (var nodeId in nodeIds)
                 {
-                    var invalidations = batch.Select(async nodeId =>
-                    {
-                        try { await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false); }
-                        catch (Exception exception) { LogService.Error($"删除 Mod 前取消信息读取失败：节点={nodeId.Value:N}，错误={exception}"); }
-                    });
-                    await Task.WhenAll(invalidations).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
                 }
 
                 var requestedNodes = nodeIds.ToDictionary(nodeId => nodeId, nodeId => _snapshot.Nodes[nodeId]);

@@ -50,4 +50,59 @@ public sealed class JsonModFileFactsCacheTests
 			if (Directory.Exists(root)) Directory.Delete(root, true);
 		}
 	}
+
+	[Fact]
+	public async Task DeleteNodeAsync_LeavesGenerationsThatCoverOnlyOtherNodes()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-file-facts-cache-isolate-" + Guid.NewGuid().ToString("N"));
+		var paths = new HD2ModCore.Infrastructure.StoragePaths(root);
+		var cache = new HD2ModCore.Infrastructure.JsonModFileFactsCache(paths);
+		var first = ModNodeId.New();
+		var second = ModNodeId.New();
+		try
+		{
+			await cache.SaveAsync("genfirst", Facts(first));
+			await cache.SaveAsync("gensecond", Facts(second));
+
+			await cache.DeleteNodeAsync(first);
+
+			var info = Path.Combine(paths.IndexDirectory, "mod-information");
+			Assert.False(File.Exists(Path.Combine(info, "genfirst.json")));
+			Assert.True(File.Exists(Path.Combine(info, "gensecond.json")));
+			Assert.Null(await cache.TryLoadAsync("genfirst"));
+			Assert.NotNull(await cache.TryLoadAsync("gensecond"));
+		}
+		finally
+		{
+			if (Directory.Exists(root)) Directory.Delete(root, true);
+		}
+	}
+
+	[Fact]
+	public async Task DeleteNodeAsync_WithoutOwnershipIndex_FallsBackToScanningOnceAndRebuildsIt()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-file-facts-cache-legacy-" + Guid.NewGuid().ToString("N"));
+		var paths = new HD2ModCore.Infrastructure.StoragePaths(root);
+		var cache = new HD2ModCore.Infrastructure.JsonModFileFactsCache(paths);
+		var nodeId = ModNodeId.New();
+		try
+		{
+			await cache.SaveAsync("gen-legacy", Facts(nodeId));
+			var info = Path.Combine(paths.IndexDirectory, "mod-information");
+			// 模拟旧版本留下的缓存：没有 owners.index，只能靠全量扫描。
+			// Simulate a legacy cache: no ownership index, so the fallback scan is the only option.
+			File.Delete(Path.Combine(info, "owners.index"));
+
+			await cache.DeleteNodeAsync(nodeId);
+
+			Assert.False(File.Exists(Path.Combine(info, "gen-legacy.json")));
+		}
+		finally
+		{
+			if (Directory.Exists(root)) Directory.Delete(root, true);
+		}
+	}
+
+	private static PatchFileIndex Facts(ModNodeId nodeId)
+		=> new(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>> { [nodeId] = [] }, []);
 }

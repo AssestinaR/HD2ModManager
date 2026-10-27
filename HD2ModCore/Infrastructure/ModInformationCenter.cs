@@ -193,21 +193,56 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		// 无节点事实（_gameDataTasks）刻意**不**在这里清理：它们的输入是游戏目录、激活状态与资产索引，
 		// 没有一项来自 Mod 目录，所以"某个 Mod 变了"不构成它们失效的理由。清掉只会让下一次请求白做一遍。
 		// Node-less facts are deliberately not touched here: none of their inputs come from a Mod directory.
-		// FileFacts is cached as a snapshot-wide product, so a node mutation must
-		// remove every persisted snapshot that contains this node as well.  Without
-		// this call a repair can replace Patch files while RequestFileFactsAsync
-		// continues returning the old snapshot under the same generation.
-		if (_fileFactsCache is not null)
-			await _fileFactsCache.DeleteNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
-		if (_informationCache is not null)
-			await _informationCache.DeleteNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
-		if (_modDataIndex is not null)
-			await _modDataIndex.RemoveNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
-		if (_referenceGraphIndexWriter is not null)
-			await _referenceGraphIndexWriter.DeleteNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
-		if (nodeCancellation is not null)
+		//
+		// 每个持久化缓存必须**独立**失效。以前它们是顺序 await 的，任何一处抛异常（例如某个缓存文件
+		// 被另一个线程占用时 File.Delete 抛 UnauthorizedAccessException）都会让后面的缓存整片漏掉，
+		// 删除 Mod 后磁盘上留下永久残留。现在逐个尝试、逐个收集，最后一次性汇报。
+		// Each persisted cache must be invalidated **independently**: a failure in one used to skip
+		// every later cache and leave permanent residue on disk after a Mod deletion.
+		var failures = new List<Exception>(4);
+		try
 		{
-			nodeCancellation.Dispose();
+			// FileFacts is cached as a snapshot-wide product, so a node mutation must
+			// remove every persisted snapshot that contains this node as well.  Without
+			// this call a repair can replace Patch files while RequestFileFactsAsync
+			// continues returning the old snapshot under the same generation.
+			await TryInvalidateAsync(
+				() => _fileFactsCache?.DeleteNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
+				failures).ConfigureAwait(false);
+			await TryInvalidateAsync(
+				() => _informationCache?.DeleteNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
+				failures).ConfigureAwait(false);
+			await TryInvalidateAsync(
+				() => _modDataIndex?.RemoveNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
+				failures).ConfigureAwait(false);
+			await TryInvalidateAsync(
+				() => _referenceGraphIndexWriter?.DeleteNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
+				failures).ConfigureAwait(false);
+		}
+		finally
+		{
+			nodeCancellation?.Dispose();
+		}
+
+		if (failures.Count != 0)
+		{
+			throw failures.Count == 1
+				? failures[0]
+				: new AggregateException($"节点 {nodeId.Value:N} 的信息缓存失效未全部成功。", failures);
+		}
+	}
+
+	private static async ValueTask TryInvalidateAsync(Func<ValueTask> invalidate, List<Exception> failures)
+	{
+		try
+		{
+			await invalidate().ConfigureAwait(false);
+		}
+		catch (Exception exception)
+		{
+			// 失效是"尽力而为但必须逐个尝试"：单个缓存的失败不能掩盖其它缓存尚未失效的事实。
+			// Best effort, but every cache must still be attempted.
+			failures.Add(exception);
 		}
 	}
 

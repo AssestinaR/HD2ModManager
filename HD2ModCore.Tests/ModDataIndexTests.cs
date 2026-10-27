@@ -100,6 +100,81 @@ public sealed class ModDataIndexTests
 		}
 	}
 
+	[Fact]
+	public async Task RemoveNodeAsync_DeletesOnlyThatNodesPersistedFile()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-data-index-pernode-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			var paths = new StoragePaths(root);
+			var kept = new ModNodeId(Guid.NewGuid());
+			var removed = new ModNodeId(Guid.NewGuid());
+			var first = new ModDataIndex(paths);
+			first.Update(CreateInventory(kept, new AssetKey(3, 4), "kept"));
+			first.Update(CreateInventory(removed, new AssetKey(5, 6), "removed"));
+
+			var nodesDirectory = Path.Combine(paths.IndexDirectory, "mod-data-index");
+			Assert.True(File.Exists(Path.Combine(nodesDirectory, kept.Value.ToString("N") + ".json")));
+			Assert.True(File.Exists(Path.Combine(nodesDirectory, removed.Value.ToString("N") + ".json")));
+
+			await first.RemoveNodeAsync(removed);
+
+			Assert.True(File.Exists(Path.Combine(nodesDirectory, kept.Value.ToString("N") + ".json")));
+			Assert.False(File.Exists(Path.Combine(nodesDirectory, removed.Value.ToString("N") + ".json")));
+
+			var restored = new ModDataIndex(paths);
+			Assert.Single(await restored.FindProvidersAsync(new AssetKey(3, 4)));
+			Assert.Empty(await restored.FindProvidersAsync(new AssetKey(5, 6)));
+		}
+		finally
+		{
+			if (Directory.Exists(root)) Directory.Delete(root, true);
+		}
+	}
+
+	[Fact]
+	public async Task Constructor_MigratesLegacySingleFileLayout()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-data-index-migrate-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			var paths = new StoragePaths(root);
+			Directory.CreateDirectory(paths.IndexDirectory);
+			var nodeId = new ModNodeId(Guid.NewGuid());
+			var legacy = new
+			{
+				schemaVersion = 1,
+				builtUtc = DateTimeOffset.UtcNow,
+				entries = new[]
+				{
+					new
+					{
+						nodeId = new { value = nodeId.Value },
+						relativePath = "legacy",
+						sourceArchiveHex = "9ba626afa44a3aa3",
+						patchIndex = 0,
+						assetKey = new { typeId = 7UL, fileId = 8UL },
+						relation = "Provider",
+					},
+				},
+			};
+			var legacyPath = Path.Combine(paths.IndexDirectory, "mod-data-index.json");
+			File.WriteAllText(legacyPath, System.Text.Json.JsonSerializer.Serialize(
+				legacy,
+				new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)));
+
+			var index = new ModDataIndex(paths);
+
+			Assert.False(File.Exists(legacyPath));
+			Assert.True(File.Exists(Path.Combine(paths.IndexDirectory, "mod-data-index", nodeId.Value.ToString("N") + ".json")));
+			Assert.Single(await index.FindProvidersAsync(new AssetKey(7, 8)));
+		}
+		finally
+		{
+			if (Directory.Exists(root)) Directory.Delete(root, true);
+		}
+	}
+
 	private static ModContentFacts CreateInventory(ModNodeId nodeId, AssetKey asset, string path)
 		=> new(nodeId, path, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow,
 			[new ModPatchGroupFact(new ModPatchGroupId(nodeId, path, 0), 0, [], new HashSet<AssetKey> { asset }, [])], []);

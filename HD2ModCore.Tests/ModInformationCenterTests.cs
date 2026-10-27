@@ -197,6 +197,34 @@ public sealed class ModInformationCenterTests
 		await center.DisposeAsync();
 	}
 
+	// 一个缓存失效失败不能吞掉其余缓存：以前它们是顺序 await 的，FileFacts 抛异常就跳过了
+	// 信息缓存 / 数据索引 / 引用图索引，删除 Mod 后这些数据永久留在磁盘上。
+	// One failing cache must not swallow the others: they used to be awaited in sequence, so a
+	// FileFacts failure skipped the remaining three and left their data on disk forever.
+	[Fact]
+	public async Task InvalidateNodeAsync_WhenOneCacheThrows_StillInvalidatesTheOthers()
+	{
+		var node = CreateNode();
+		var information = new RecordingInformationCache();
+		var index = new RecordingModDataIndex();
+		var writer = new RecordingReferenceGraphIndexWriter();
+		var center = new HD2ModCore.Infrastructure.ModInformationCenter(
+			new FailingFileFactsProducer(),
+			new ThrowingAssetInventoryProducer(),
+			fileFactsCache: new ThrowingFileFactsCache(),
+			informationCache: information,
+			modDataIndex: index,
+			referenceGraphIndexWriter: writer);
+
+		var failure = await Assert.ThrowsAsync<UnauthorizedAccessException>(async () => await center.InvalidateNodeAsync(node.Id));
+
+		Assert.NotNull(failure);
+		Assert.Equal(node.Id, Assert.Single(information.Deleted));
+		Assert.Equal(node.Id, Assert.Single(index.Removed));
+		Assert.Equal(node.Id, Assert.Single(writer.Deleted));
+		await center.DisposeAsync();
+	}
+
 	private static ModNode CreateNode()
 	{
 		return new ModNode(new ModNodeId(Guid.NewGuid()), "mod", new ModNodeMetadata("Test", "", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), [], []);
@@ -258,6 +286,7 @@ public sealed class ModInformationCenterTests
 	private sealed class RecordingInformationCache : IModInformationCache
 	{
 		public List<string> SavedGenerations { get; } = [];
+		public List<ModNodeId> Deleted { get; } = [];
 		private readonly Dictionary<(ModInformationKind Kind, ModNodeId NodeId, string Generation), object> _values = [];
 		public ValueTask<T?> TryLoadAsync<T>(ModInformationKind kind, ModNodeId nodeId, string generation, CancellationToken cancellationToken = default)
 			=> ValueTask.FromResult(_values.TryGetValue((kind, nodeId, generation), out var value) ? (T?)value : default);
@@ -268,7 +297,7 @@ public sealed class ModInformationCenterTests
 			_values[(kind, nodeId, generation)] = data!;
 			return ValueTask.CompletedTask;
 		}
-		public ValueTask DeleteNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+		public ValueTask DeleteNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) { Deleted.Add(nodeId); return ValueTask.CompletedTask; }
 	}
 
 	private sealed class BlockingInformationCache(ModContentFacts cached) : IModInformationCache
@@ -294,13 +323,24 @@ public sealed class ModInformationCenterTests
 	private sealed class RecordingModDataIndex : HD2ModCore.Application.IModDataIndex
 	{
 		public List<ModNodeId> UpdatedNodeIds { get; } = [];
+		public List<ModNodeId> Removed { get; } = [];
 		public ValueTask<IReadOnlyList<ModDataIndexEntry>> FindProvidersAsync(AssetKey assetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<ModDataIndexEntry>>([]);
 		public ValueTask<IReadOnlyList<ModDataIndexEntry>> FindConsumersAsync(AssetKey assetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<ModDataIndexEntry>>([]);
 		public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default) => ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0));
 		public ValueTask<ModDataIndexEntry?> ResolveFinalProviderAsync(AssetKey assetKey, Profile profile, CancellationToken cancellationToken = default) => ValueTask.FromResult<ModDataIndexEntry?>(null);
-		public ValueTask RemoveNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+		public ValueTask RemoveNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) { Removed.Add(nodeId); return ValueTask.CompletedTask; }
 		public void Update(ModContentFacts inventory) => UpdatedNodeIds.Add(inventory.NodeId);
 		public void Update(ReferenceGraphFacts graph) { }
+	}
+
+	private sealed class ThrowingFileFactsCache : HD2ModCore.Application.IModFileFactsCache
+	{
+		public ValueTask<PatchFileIndex?> TryLoadAsync(string generation, CancellationToken cancellationToken = default)
+			=> ValueTask.FromResult<PatchFileIndex?>(null);
+		public ValueTask SaveAsync(string generation, PatchFileIndex facts, CancellationToken cancellationToken = default)
+			=> ValueTask.CompletedTask;
+		public ValueTask DeleteNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default)
+			=> throw new UnauthorizedAccessException("cache file is locked");
 	}
 
 	private sealed class LatestOnlyInformationCache(ModContentFacts stale) : IModInformationCache
