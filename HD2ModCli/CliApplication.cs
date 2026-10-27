@@ -1325,8 +1325,7 @@ public static class CliApplication
 		{
 			EnsureEquipmentFactsOptions(invocation.Options, "gamedata equipment list");
 			var workspace = CliWorkspace.Open(invocation.Options);
-			var gameData = workspace.GameDataRoot
-				?? throw new CliUserException("GameDataRequired", "读取装备权威表需要 --game-data <游戏 data 目录>（或已在 settings.json 中配置）。");
+			// 装备权威表现在来自索引数据库，不再需要 --game-data。
 			var snapshot = await CliEquipmentFacts.LoadAsync(
 				new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot), default).ConfigureAwait(false);
 			var filter = CliEquipmentFacts.ParseKind(invocation.Options.Kind);
@@ -1353,8 +1352,7 @@ public static class CliApplication
 		{
 			EnsureEquipmentFactsOptions(invocation.Options, "gamedata equipment show");
 			var workspace = CliWorkspace.Open(invocation.Options);
-			var gameData = workspace.GameDataRoot
-				?? throw new CliUserException("GameDataRequired", "读取装备权威表需要 --game-data <游戏 data 目录>（或已在 settings.json 中配置）。");
+			// 装备权威表现在来自索引数据库，不再需要 --game-data。
 			var snapshot = await CliEquipmentFacts.LoadAsync(
 				new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot), default).ConfigureAwait(false);
 			var filter = CliEquipmentFacts.ParseKind(invocation.Options.Kind);

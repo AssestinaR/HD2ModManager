@@ -76,6 +76,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	// 没有它就有两个坑——预热与首开各读一遍；或者预热还在跑时用户点开页面，
 	// RefreshAsync 因 IsBusy 直接返回，页面停在空状态。
 	private readonly object catalogLoadGate = new();
+
+	// 取数排队用的闸门：宁可等，也不要"忙就直接丢"——丢掉一次，页面就永远停在"正在读取"。
+	private readonly SemaphoreSlim loadGate = new(1, 1);
+
+	/// <summary>第一段渲染用的空显示事实：列表先出来，图标与覆盖标记第二段再补。</summary>
+	private static readonly IReadOnlyDictionary<string, ArmorDisplayFacts> EmptyDisplayFacts
+		= new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>目录为空时的真正原因（null 表示"不是空的"）。绝不再说"所有护甲都已分配"。</summary>
+	private string? catalogEmptyReason;
 	private Task? catalogLoadTask;
 	private int workspaceRevision;
 	private CancellationTokenSource? workspaceSaveCancellation;
@@ -348,10 +358,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	}
 	public string ProvidersEmptyMessage => isLoadingCatalog
 		? "正在读取护甲目录…"
-		: "将右侧一个护甲拖到这里，设为视觉来源。";
+		: catalogEmptyReason ?? "将右侧一个护甲拖到这里，设为视觉来源。";
 	public string AvailableEmptyMessage => isLoadingCatalog
 		? "正在读取护甲目录…"
-		: "所有护甲都已分配为视觉来源或映射目标。";
+		: catalogEmptyReason ?? "所有护甲都已分配为视觉来源或映射目标。";
 	public string RegistryPath => service.RegistryRoot;
 	public string WorkspacePath => service.WorkspacePath;
 	public string ProvidersSummary => providersSearchText.Length == 0
@@ -454,20 +464,31 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	private async Task RefreshAsync(bool isWarmUp = false)
 	{
-		if (IsBusy) return;
+		// 取数改成**排队**而不是"忙就直接丢"：以前 IsBusy 为真时直接 return，既不设
+		// IsLoadingCatalog = false 也不重试，页面就永远停在"正在读取护甲目录…"。
+		await loadGate.WaitAsync().ConfigureAwait(true);
 		IsBusy = true;
 		try
 		{
-			// 目录读取（SQLite）、快照读取与覆盖事实（要读索引与全部已部署 patch）都是重活。
-			// 以前只有**预热**路径丢线程池，用户真正打开的那次反而在 UI 线程上起跑——
-			// 那正是最不该冻的一刻。两条路径现在一样：整体丢线程池，只有最后的
-			// ApplySnapshot 回到 UI 线程（它要改绑定到视图的集合）。
-			var inputs = await Task.Run(LoadCatalogInputsAsync).ConfigureAwait(true);
-			if (inputs is not { } loaded) return;
+			var core = await Task.Run(LoadCatalogCoreAsync).ConfigureAwait(true);
+			if (core is not { } loaded) return;
+
+			// 第一段：先把护甲列表画出来。图标与"已被覆盖"标记要等闸门和覆盖事实，
+			// 那是第二段的事——它们不该挡住列表本身。
 			cachedCatalog = loaded.Catalog;
-			cachedArmorDisplayFacts = loaded.ArmorDisplayFacts;
+			cachedArmorDisplayFacts = EmptyDisplayFacts;
 			hasLoadedCatalog = true;
+			catalogEmptyReason = loaded.Catalog.Count == 0
+				? "护甲目录是空的：索引数据库里没有装备关系表。请到「设置与资产」建立 / 重建资产索引。"
+				: null;
 			ApplySnapshot(loaded.Snapshot, rebuildChoices: true, resetNavigation: true);
+			IsLoadingCatalog = false;
+			RaiseEmptyMessages();
+
+			// 第二段：等闸门（库快照 + 启动部署落定）再算显示事实，然后原地回填。
+			var facts = await Task.Run(() => ReadArmorDisplayFactsAsync(loaded.Catalog)).ConfigureAwait(true);
+			cachedArmorDisplayFacts = facts;
+			ApplySnapshot(loaded.Snapshot, rebuildChoices: true, resetNavigation: false);
 		}
 		catch (Exception exception) when (exception is IOException
 			or UnauthorizedAccessException
@@ -486,29 +507,27 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			IsBusy = false;
 			// 取数结束（成功、失败或没拿到数据）之后，空列表就不再是"还在读"了。
-			// 失败时 StatusTitle 已经是"读取失败"，用户能自己连起来。
 			IsLoadingCatalog = false;
+			loadGate.Release();
 		}
 	}
 
-	// 读取目录、快照与覆盖事实：纯 IO + 纯投影，不触碰任何绑定到视图的集合，
-	// 因此可以安全地在任意线程上执行（预热时就是线程池）。
-	// 失败返回 null 而不是空值——"读不到"和"没有护甲"是两件事，调用方不该把后者当成前者。
-	private async Task<(RuntimeArmorRegistrySnapshot Snapshot, IReadOnlyList<RuntimeArmorCatalogEntry> Catalog, IReadOnlyDictionary<string, ArmorDisplayFacts> ArmorDisplayFacts)?> LoadCatalogInputsAsync()
+	private void RaiseEmptyMessages()
 	{
-		// 先等取数闸门。它没放行时算出来的显示事实是错的：图标查不到（库快照还没加载），
-		// 覆盖也可能算在**马上就要被启动部署改掉**的那份部署上。
-		// 错数据一旦算完就会被标成"已加载"，用户之后打开页面看到的就是这一份。
-		if (displayFactsReady is not null) await displayFactsReady.ConfigureAwait(false);
+		OnPropertyChanged(nameof(ProvidersEmptyMessage));
+		OnPropertyChanged(nameof(AvailableEmptyMessage));
+	}
+
+	// 读取目录与快照：纯 IO + 纯投影，不触碰任何绑定到视图的集合，因此可以在线程池上执行。
+	// 这一段**不等闸门**——列表本身不需要库快照与部署状态，只有显示事实需要。
+	private async Task<(RuntimeArmorRegistrySnapshot Snapshot, IReadOnlyList<RuntimeArmorCatalogEntry> Catalog)?> LoadCatalogCoreAsync()
+	{
 		if (PendingWorkspaceSaves.TryGetValue(service.WorkspacePath, out var pending))
 			await pending.ConfigureAwait(false);
 		var catalogTask = service.ReadArmorCatalogAsync().AsTask();
 		var snapshotTask = service.ReadSnapshotAsync().AsTask();
 		await Task.WhenAll(catalogTask, snapshotTask).ConfigureAwait(false);
-		var snapshot = await snapshotTask.ConfigureAwait(false);
-		var catalog = await catalogTask.ConfigureAwait(false);
-		var armorDisplayFacts = await ReadArmorDisplayFactsAsync(catalog).ConfigureAwait(false);
-		return (snapshot, catalog, armorDisplayFacts);
+		return (await snapshotTask.ConfigureAwait(false), await catalogTask.ConfigureAwait(false));
 	}
 
 	public async Task RefreshRuntimeStatusAsync()
@@ -653,6 +672,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private async Task<IReadOnlyDictionary<string, ArmorDisplayFacts>> ReadArmorDisplayFactsAsync(
 		IReadOnlyList<RuntimeArmorCatalogEntry> catalog)
 	{
+		// 这一段才需要闸门：它没放行时算出来的显示事实是错的——图标查不到（库快照还没加载），
+		// 覆盖也可能算在**马上就要被启动部署改掉**的那份部署上。
+		// 列表本身不等闸门（见 RefreshAsync 的第一段）。
+		if (displayFactsReady is not null) await displayFactsReady.ConfigureAwait(false);
 		var result = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
 		var gameData = SettingsService.GetGameDataFolder();
 		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
