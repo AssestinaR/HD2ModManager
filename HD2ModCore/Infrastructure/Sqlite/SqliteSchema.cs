@@ -333,14 +333,12 @@ DROP TABLE IF EXISTS game_data_authority_kits;
 	public static async Task ClearIndexDataAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
 		await using var cmd = connection.CreateCommand();
+		// 装备关系表（resources / pieces / kits）**不在这里清**：见 ClearAuthorityTablesAsync。
 		cmd.CommandText = @"
 DELETE FROM asset_archives;
 DELETE FROM assets;
 DELETE FROM game_data_stream_layouts;
 DELETE FROM game_data_unit_parts;
-DELETE FROM game_data_authority_resources;
-DELETE FROM game_data_authority_pieces;
-DELETE FROM game_data_authority_kits;
 DELETE FROM game_data_archive_names;
 DELETE FROM archive_domains;
 DELETE FROM game_data_authority_entities;
@@ -348,6 +346,25 @@ DELETE FROM game_data_authority_issues;
 DELETE FROM archive_issues;
 DELETE FROM archive_entries;
 DELETE FROM archives;
+";
+		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// 清空装备关系表（护甲/头盔/披风的 kit、件与资源）。
+	/// <para>
+	/// <b>只能在"确实拿到了新的装备关系数据"时调用。</b>装备关系表是护甲列表、替换护甲、
+	/// 装备事实的唯一数据源；某次索引构建读不到游戏注册表时，权威快照会是空的，
+	/// 这时清空等于把已经正确的数据删掉——重建索引不该有这种副作用。
+	/// </para>
+	/// </summary>
+	public static async Task ClearAuthorityTablesAsync(SqliteConnection connection, CancellationToken cancellationToken)
+	{
+		await using var cmd = connection.CreateCommand();
+		cmd.CommandText = @"
+DELETE FROM game_data_authority_resources;
+DELETE FROM game_data_authority_pieces;
+DELETE FROM game_data_authority_kits;
 ";
 		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}

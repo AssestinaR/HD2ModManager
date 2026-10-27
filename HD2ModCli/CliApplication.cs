@@ -1327,7 +1327,8 @@ public static class CliApplication
 			var workspace = CliWorkspace.Open(invocation.Options);
 			var gameData = workspace.GameDataRoot
 				?? throw new CliUserException("GameDataRequired", "读取装备权威表需要 --game-data <游戏 data 目录>（或已在 settings.json 中配置）。");
-			var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+			var snapshot = await CliEquipmentFacts.LoadAsync(
+				new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot), default).ConfigureAwait(false);
 			var filter = CliEquipmentFacts.ParseKind(invocation.Options.Kind);
 			var result = CliEquipmentFacts.Project(snapshot, filter, invocation.Options.ArchiveId);
 			Emit(invocation.Options,
@@ -1354,7 +1355,8 @@ public static class CliApplication
 			var workspace = CliWorkspace.Open(invocation.Options);
 			var gameData = workspace.GameDataRoot
 				?? throw new CliUserException("GameDataRequired", "读取装备权威表需要 --game-data <游戏 data 目录>（或已在 settings.json 中配置）。");
-			var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+			var snapshot = await CliEquipmentFacts.LoadAsync(
+				new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot), default).ConfigureAwait(false);
 			var filter = CliEquipmentFacts.ParseKind(invocation.Options.Kind);
 			var result = CliEquipmentFacts.Project(snapshot, filter, invocation.Options.ArchiveId);
 			Emit(invocation.Options, new { ok = true, equipment = result }, () => FormatEquipmentFactsDetail(result));
@@ -2161,7 +2163,8 @@ public static class CliApplication
 
 			var selectedGroups = selected.ToArray();
 
-			var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+			var snapshot = await CliEquipmentFacts.LoadAsync(
+				new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot), default).ConfigureAwait(false);
 			var facts = CliEquipmentFacts.Project(snapshot, null, null);
 			var (donorCandidates, missing) = CliSourceConvert.SelectDonors(facts.Kits);
 			if (missing.Count != 0)
@@ -2565,7 +2568,8 @@ public static class CliApplication
 
 		var selectedGroups = selected.ToArray();
 
-		var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+		var snapshot = await CliEquipmentFacts.LoadAsync(
+				new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot), default).ConfigureAwait(false);
 		var facts = CliEquipmentFacts.Project(snapshot, null, null);
 		var (donorCandidates, missing) = CliSourceConvert.SelectDonors(
 			facts.Kits, CliSourceConvert.ParseExplicitDonors(options.Donor));
@@ -2808,12 +2812,14 @@ public static class CliApplication
 	/// </summary>
 	private static async ValueTask<byte[]?> LoadPatchHeaderTemplateAsync(CliGlobalOptions options)
 	{
-		var gameData = CliWorkspace.Open(options).GameDataRoot;
+		var workspace = CliWorkspace.Open(options);
+		var gameData = workspace.GameDataRoot;
 		if (string.IsNullOrWhiteSpace(gameData))
 			return null;
 		try
 		{
-			var snapshot = await CliEquipmentFacts.LoadAsync(gameData, default).ConfigureAwait(false);
+			var snapshot = await CliEquipmentFacts.LoadAsync(
+				new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot), default).ConfigureAwait(false);
 			var (candidates, _) = CliSourceConvert.SelectDonors(CliEquipmentFacts.Project(snapshot, null, null).Kits);
 			if (candidates.Count == 0)
 				return null;

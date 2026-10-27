@@ -8,6 +8,15 @@ public enum GameDataAuthoritySourceKind
 	Unavailable,
 	PlaintextDataLibrary,
 	DecryptedDataLibrary,
+
+	/// <summary>
+	/// 来自索引数据库（<c>asset-index.sqlite</c>），而不是当场解析游戏注册表。
+	/// <para>
+	/// 除索引构建之外的**所有**读者都应当是这一种：真映射会改写注册表文件，
+	/// 直接读它可能读到被我们改过的内容（替换护甲因此会换到错误的护甲上）。
+	/// </para>
+	/// </summary>
+	IndexDatabase,
 }
 
 // Purpose: Keeps explicit game facts separate from Unit-structure-derived fallback facts.

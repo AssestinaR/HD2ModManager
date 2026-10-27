@@ -372,6 +372,11 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await using var tx = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 		await PreserveUnitPartFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.ClearIndexDataAsync(connection, cancellationToken).ConfigureAwait(false);
+		// 装备关系表只在**确实拿到新数据**时才重建。读不到游戏注册表（游戏更新换了格式、
+		// 文件被改过、权限不足）时权威快照是空的；那一刻清空这张表，等于把已经正确的
+		// 护甲列表、替换护甲的目标表一起删掉——而索引本身看起来还是"构建成功"。
+		if (authority.Kits.Count != 0)
+			await SqliteSchema.ClearAuthorityTablesAsync(connection, cancellationToken).ConfigureAwait(false);
 
 		var total = facts.Archives.Count;
 		var current = 0;

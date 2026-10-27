@@ -68,7 +68,7 @@ internal static class CliVpkRekey
 		// 只给一个归档时，按 setId 把配套的另一半（护甲 ↔ 头盔）补上。
 		// 为什么必须补：护甲与头盔在游戏里是两个归档、两个 kit，只换一半会让玩家的头还是原版的。
 		if (targets.Count == 1 && !string.IsNullOrWhiteSpace(workspace.GameDataRoot))
-			targets = await ExpandTargetKitAsync(workspace.GameDataRoot!, targets[0], cancellationToken).ConfigureAwait(false);
+			targets = await ExpandTargetKitAsync(paths, targets[0], cancellationToken).ConfigureAwait(false);
 
 		var modDirectory = Path.Combine(paths.ModsDirectory, node.RelativePath);
 		if (!Directory.Exists(modDirectory))
@@ -189,11 +189,11 @@ internal static class CliVpkRekey
 	/// </para>
 	/// </summary>
 	private static async ValueTask<IReadOnlyList<string>> ExpandTargetKitAsync(
-		string gameData,
+		StoragePaths paths,
 		string archiveId,
 		CancellationToken cancellationToken)
 	{
-		var snapshot = await CliEquipmentFacts.LoadAsync(gameData, cancellationToken).ConfigureAwait(false);
+		var snapshot = await CliEquipmentFacts.LoadAsync(paths, cancellationToken).ConfigureAwait(false);
 		var facts = CliEquipmentFacts.Project(snapshot, null, null);
 		var self = facts.Kits.FirstOrDefault(kit =>
 			kit.ArchiveId.Equals(archiveId, StringComparison.OrdinalIgnoreCase));

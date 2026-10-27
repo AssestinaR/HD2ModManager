@@ -44,24 +44,35 @@ internal sealed record CliEquipmentFactResult(
 
 internal static class CliEquipmentFacts
 {
-	public static async ValueTask<GameDataAuthoritySnapshot> LoadAsync(string gameDataDirectory, CancellationToken cancellationToken)
+	/// <summary>
+	/// 读装备权威表。**数据源是索引数据库，不是游戏注册表文件。**
+	/// <para>
+	/// 真映射会改写 <c>generated_customization_armor_sets.dl_bin</c>；读文件就会读到被改过的内容，
+	/// 替换护甲于是换到错误的护甲上（而且不报错）。索引构建是唯一读原件/备份的地方，
+	/// 它把结论写进数据库，这里只查数据库。
+	/// </para>
+	/// <para>数据库里没有这张表时直接报错——"读不到"必须让用户看见，不允许绕回读文件。</para>
+	/// </summary>
+	public static async ValueTask<GameDataAuthoritySnapshot> LoadAsync(StoragePaths paths, CancellationToken cancellationToken)
 	{
-		if (string.IsNullOrWhiteSpace(gameDataDirectory))
-			throw new CliUserException("GameDataRequired", "读取装备权威表需要 --game-data <游戏 data 目录>（或已在 settings.json 中配置）。");
-		if (!Directory.Exists(gameDataDirectory))
-			throw new CliUserException("GameDataNotFound", $"GameData 目录不存在：{gameDataDirectory}");
+		ArgumentNullException.ThrowIfNull(paths);
 		try
 		{
-			IGameDataAuthorityProvider provider = new GameDataAuthorityProvider();
-			return await provider.LoadAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
+			return await ArmorAuthorityIndexReader.TryReadAsync(paths, cancellationToken).ConfigureAwait(false)
+				?? throw new CliUserException(
+					"ArmorIndexUnavailable",
+					"索引数据库里没有装备关系表（护甲列表、替换护甲的数据源）。"
+					+ "请先在管理器「设置与资产」里建立 / 重建资产索引。"
+					+ $"数据库：{paths.DbPath}");
 		}
 		catch (Exception exception) when (exception is IOException
 			or UnauthorizedAccessException
 			or InvalidDataException
 			or FileNotFoundException
-			or DirectoryNotFoundException)
+			or DirectoryNotFoundException
+			or Microsoft.Data.Sqlite.SqliteException)
 		{
-			throw new CliUserException("GameDataAuthorityUnreadable", $"无法读取游戏装备权威表：{exception.Message}");
+			throw new CliUserException("ArmorIndexUnreadable", $"无法读取索引数据库里的装备关系表：{exception.Message}");
 		}
 	}
 
