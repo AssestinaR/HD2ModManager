@@ -26,9 +26,16 @@ public sealed class Bc7Encoder
 	/// <summary>社区工具链里的相对路径。仓库里两个位置字节相同，随便哪个都行。</summary>
 	private static readonly string[] RelativeCandidates =
 	[
+		// 发布包布局：third_party\hd2sdk\deps\texconv.exe。
+		// 管理器根与 bin\hd2mod.exe 都靠"向上逐级查找"命中这里。
+		Path.Combine("third_party", "hd2sdk", "deps", "texconv.exe"),
 		Path.Combine("tools", "ref", "HD2SDK-CommunityEdition", "deps", "texconv.exe"),
 		Path.Combine("docs", "HD2SDK-CommunityEdition-3.8.0", "deps", "texconv.exe"),
 	];
+
+	/// <summary>找不到时给支持人员看的"找过哪些位置"。</summary>
+	public static string DescribeSearchLocations()
+		=> string.Join("、", RelativeCandidates);
 
 	public Bc7Encoder(string texConvPath)
 	{

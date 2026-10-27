@@ -2247,7 +2247,10 @@ public static class CliApplication
 				var templates = Hd2MaterialTemplateLibrary.Locate();
 				if (encoderPath is null || templates is null)
 					throw new CliUserException("MaterialToolchainMissing",
-						$"缺少材质工具链：texconv={(encoderPath is null ? "未找到" : "OK")}，材质模板={(templates is null ? "未找到" : "OK")}。");
+						"缺少材质工具链："
+						+ $"texconv={(encoderPath is null ? $"未找到（找过 {Bc7Encoder.DescribeSearchLocations()}）" : "OK")}，"
+						+ $"材质模板={(templates is null ? $"未找到（找过 {Hd2MaterialTemplateLibrary.DescribeSearchLocations()}）" : "OK")}。"
+						+ "这是发布包缺文件，不是这个包本身的问题。");
 				var encoder = new Bc7Encoder(encoderPath);
 				// matcap 平均色要按**三角形面积加权**算，所以需要几何——在这里一次算好，
 				// 而不是让转换器按材质名去猜（它看不到整个模型的三角形）。
@@ -2826,8 +2829,10 @@ public static class CliApplication
 				.GetPackageTocAsync(archiveId).ConfigureAwait(false))?.Data;
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException
-			or InvalidOperationException or UnauthorizedAccessException)
+			or InvalidOperationException or UnauthorizedAccessException or CliUserException)
 		{
+			// 头部模板是**可选**的：没有它就用 SDK 布局，转换照常进行。
+			// 索引数据库缺失（ArmorIndexUnavailable）也属于"拿不到"，不能让它把整批转换打断。
 			return null;
 		}
 	}

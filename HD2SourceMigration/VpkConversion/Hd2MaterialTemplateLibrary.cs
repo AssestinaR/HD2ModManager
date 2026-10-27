@@ -22,9 +22,15 @@ public sealed class Hd2MaterialTemplateLibrary
 {
 	private static readonly string[] RelativeCandidates =
 	[
+		// 发布包布局：third_party\hd2sdk\materials\*.material。
+		Path.Combine("third_party", "hd2sdk", "materials"),
 		Path.Combine("docs", "HD2SDK-CommunityEdition-3.8.0", "materials"),
 		Path.Combine("tools", "ref", "HD2SDK-CommunityEdition", "materials"),
 	];
+
+	/// <summary>找不到时给支持人员看的"找过哪些位置"。</summary>
+	public static string DescribeSearchLocations()
+		=> string.Join("、", RelativeCandidates);
 
 	private readonly Dictionary<string, string> paths;
 

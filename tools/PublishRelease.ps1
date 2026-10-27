@@ -209,6 +209,25 @@ exit /b %ERRORLEVEL%
     [System.IO.File]::WriteAllText((Join-Path $PackageDirectory 'hd2mod.cmd'), $content.TrimEnd() + [Environment]::NewLine, $encoding)
 }
 
+function Copy-MaterialToolchain {
+    param([string] $PackageDirectory)
+
+    # VPK material conversion needs texconv (VTF -> BC7) and the HD2 SDK .material templates.
+    # They used to live only in the development tree, so every released build converted
+    # nothing and only said "missing material toolchain". Ship them under third_party\hd2sdk;
+    # both the manager root and bin\hd2mod.exe find them by walking up parent directories.
+    $source = Join-Path $repoRoot 'tools\ref\HD2SDK-CommunityEdition'
+    $texconv = Join-Path $source 'deps\texconv.exe'
+    $materials = Join-Path $source 'materials'
+    if (-not (Test-Path -LiteralPath $texconv)) { throw "Material toolchain is missing: $texconv" }
+    if (-not (Test-Path -LiteralPath $materials)) { throw "Material templates are missing: $materials" }
+
+    $target = Join-Path $PackageDirectory 'third_party\hd2sdk'
+    New-Item -ItemType Directory -Path (Join-Path $target 'deps') -Force | Out-Null
+    Copy-Item -LiteralPath $texconv -Destination (Join-Path $target 'deps\texconv.exe') -Force
+    Copy-Item -LiteralPath $materials -Destination $target -Recurse -Force
+}
+
 function Assert-ReleaseLayout {
     param(
         [string] $PackageDirectory,
@@ -228,6 +247,10 @@ function Assert-ReleaseLayout {
         'data\resources\typehash.txt',
         'third_party\7zip\7z.exe',
         'third_party\7zip\7z.dll',
+        # 材质转换（VTF → BC7）要 texconv 与 HD2 SDK 的 .material 模板。少了它们，
+        # 每个用户的 VPK 导入都会"转换 0 个"，而理由只有一行"缺少材质工具链"。
+        'third_party\hd2sdk\deps\texconv.exe',
+        'third_party\hd2sdk\materials\basic.material',
         'bin\hd2mod.exe',
         'bin\third_party\7zip\7z.exe',
         'bin\third_party\7zip\7z.dll',
@@ -405,6 +428,7 @@ function Publish-ReleaseVariant {
 
     Write-RootReadme -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout -CompatibilityMode $CompatibilityMode
     Write-CliLauncher -PackageDirectory $stageDirectory
+    Copy-MaterialToolchain -PackageDirectory $stageDirectory
     Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'Armor-Diagnostics.cmd') -Destination $stageDirectory -Force
     Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'ARMOR-DIAGNOSTICS.md') -Destination $documentationDirectory -Force
     Assert-ReleaseLayout -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout
