@@ -395,7 +395,10 @@ function Publish-ReleaseVariant {
 
     $publishedCli = Join-Path $cliDirectory 'hd2mod.exe'
     $documentationSkillsDirectory = Join-Path $documentationDirectory 'skills'
-    & $publishedCli 'agent' 'skills' 'export' '--output' $documentationSkillsDirectory '--overwrite'
+    # Same rule as Invoke-DotNet: keep the CLI's export summary visible without letting it become
+    # part of this function's return value. Otherwise the archive path comes back as an array and
+    # the final "Complete package:" line is prefixed by the CLI output instead of naming the zip.
+    & $publishedCli 'agent' 'skills' 'export' '--output' $documentationSkillsDirectory '--overwrite' | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "The published CLI could not export its Agent Skills (exit code $LASTEXITCODE)."
     }
