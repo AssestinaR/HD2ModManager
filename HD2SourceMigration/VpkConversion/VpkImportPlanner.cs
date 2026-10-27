@@ -130,6 +130,10 @@ public static class VpkImportPlanner
 		}
 
 		// ③ 材质包：必须被角色模型引用（直接名字或经 VMT 里的贴图键间接引用）。
+		//    这一批里一个角色模型都没有时，理由要指向"少导入了模型包"这个真正的原因——
+		//    否则用户看到"没有被任何角色模型引用"只会以为这个材质包没用。
+		var hasCharacterModel = candidates.Any(candidate =>
+			candidate.Kind == VpkImportKind.CharacterModel && candidate.DuplicateOfVpkPath is null);
 		var referenced = CollectReferencedNames(candidates, paths);
 		for (var index = 0; index < candidates.Count; index++)
 		{
@@ -140,7 +144,9 @@ public static class VpkImportPlanner
 				continue;
 			candidates[index] = candidate with
 			{
-				SkipReason = "它带的材质/贴图没有被任何角色模型引用（多半是给别的角色或道具用的）。",
+				SkipReason = hasCharacterModel
+					? "它带的材质/贴图没有被任何角色模型引用（多半是给别的角色或道具用的）。"
+					: "这批里没有可转换的角色模型：材质包要跟引用它的模型包一起导入才有意义。",
 			};
 		}
 

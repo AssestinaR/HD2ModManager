@@ -82,6 +82,20 @@ public sealed class VpkImportPlannerTests : IDisposable
 			&& item.SkipReason.Contains("13617", StringComparison.Ordinal));
 	}
 
+	[Fact]
+	public void Plan_MaterialPackWithoutAnyModel_SaysToImportItTogetherWithTheModel()
+	{
+		// 单独导入一个"基础材质"包是常见用法，而材质必须被模型引用才有意义。
+		// 这时的理由必须指向"少了模型包"，而不是含糊地说"没人引用"。
+		var material = WriteVpk(("white.vmt", "materials/lunalice", Encoding.UTF8.GetBytes("LightmappedGeneric")));
+
+		var plan = VpkImportPlanner.Plan([material]);
+
+		var candidate = Assert.Single(plan.Candidates);
+		Assert.False(candidate.IsConvertible);
+		Assert.Contains("一起导入", candidate.SkipReason, StringComparison.Ordinal);
+	}
+
 	/// <summary>一个只有头部的 MDL：magic + 版本号 + 补零，够 408 字节的门槛。</summary>
 	private static byte[] BuildMdl(int version)
 	{
