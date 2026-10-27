@@ -142,8 +142,8 @@ public static class CoreServices
 			informationCenter: informationCenter,
 			informationReader: informationReader);
 	}
-   public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths)
-		=> new AssetArchiveIndexService(paths);
+   public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths, string? registryRoot = null)
+		=> new AssetArchiveIndexService(paths, registryRoot: registryRoot);
 	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)
 		=> new AdvancedEquipmentIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator()

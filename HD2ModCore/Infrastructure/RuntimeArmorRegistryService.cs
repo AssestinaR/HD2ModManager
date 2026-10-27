@@ -410,18 +410,23 @@ public sealed class RuntimeArmorRegistryService
 		{
 			try
 			{
-				var authority = await new GameDataAuthorityProvider()
-					.LoadAsync(gameDataDirectory, cancellationToken)
-					.ConfigureAwait(false);
-				var links = WardrobeLinkCompiler.Compile(
-					authority, compiled.Mappings, compiled.Revision, compiled.Enabled, compiled.ModelDefinitions);
-				if (links.LinkCount > 0)
+				// 数据源是索引数据库，**不是**游戏注册表文件：真映射会改写后者，
+				// 读它会把"目标护甲有哪些 unit"算成被我们改过之后的样子。
+				var authority = await ArmorAuthorityIndexReader.TryReadAsync(paths, cancellationToken).ConfigureAwait(false);
+				if (authority is not null)
 				{
-					await WriteAtomicTextAsync(
-						Path.Combine(registryRoot, WardrobeLinkCompiler.FileName),
-						links.Text,
-						cancellationToken).ConfigureAwait(false);
+					var links = WardrobeLinkCompiler.Compile(
+						authority, compiled.Mappings, compiled.Revision, compiled.Enabled, compiled.ModelDefinitions);
+					if (links.LinkCount > 0)
+					{
+						await WriteAtomicTextAsync(
+							Path.Combine(registryRoot, WardrobeLinkCompiler.FileName),
+							links.Text,
+							cancellationToken).ConfigureAwait(false);
+					}
 				}
+				// authority 为 null 表示索引数据库里没有装备关系表：这时**不写** wardrobe.links
+				// （留上一版），但下面的真映射落地 / 还原照常进行——它不需要权威表。
 
 				// 无论当前是哪个模式都要走一遍：离开真映射模式时必须把注册表还原，
 				// 否则数据层改动会一直留着，再叠加运行时覆盖就等于把外观映射了两次。

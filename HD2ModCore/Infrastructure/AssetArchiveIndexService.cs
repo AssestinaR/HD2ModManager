@@ -25,11 +25,16 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 	public AssetArchiveIndexService(
 		StoragePaths paths,
 		IGameDataArchiveIndexer? archiveIndexer = null,
-		IGameDataAuthorityProvider? authorityProvider = null)
+		IGameDataAuthorityProvider? authorityProvider = null,
+		string? registryRoot = null)
 	{
 		_paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		_archiveIndexer = archiveIndexer ?? new GameDataArchiveIndexer();
-		_authorityProvider = authorityProvider ?? new GameDataAuthorityProvider(ReadConfiguredPreferredLocale(paths));
+		// 建索引是**唯一**允许读游戏注册表原件（及其备份）的地方，所以"备份在哪里"
+		// 必须在这里显式给定：靠默认解析一旦和护甲映射服务用的根不一致，就会静默
+		// 读到被真映射改过的文件，并把错误数据固化进数据库。
+		_authorityProvider = authorityProvider
+			?? new GameDataAuthorityProvider(ReadConfiguredPreferredLocale(paths), registryRoot);
 	}
 
 	private static string? ReadConfiguredPreferredLocale(StoragePaths paths)

@@ -37,11 +37,18 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 	private static readonly ConcurrentDictionary<string, GeneratedEntityCacheEntry> GeneratedEntityCache = new(StringComparer.OrdinalIgnoreCase);
 	private readonly string _preferredLocale;
 
-	public GameDataAuthorityProvider(string? preferredLocale = null)
+	/// <summary>
+	/// 护甲注册表备份（"唯一可信原件"）所在的位置。为 null 时按默认位置解析；
+	/// 建索引时必须显式传入，否则和护甲映射服务用的根不一致时会静默读到被改过的文件。
+	/// </summary>
+	private readonly string? _registryRoot;
+
+	public GameDataAuthorityProvider(string? preferredLocale = null, string? registryRoot = null)
 	{
 		_preferredLocale = NormalizeLocale(preferredLocale)
 			?? NormalizeLocale(CultureInfo.CurrentUICulture.Name)
 			?? "en-US";
+		_registryRoot = registryRoot;
 	}
 
 	public async ValueTask<GameDataAuthoritySnapshot> LoadAsync(
@@ -57,7 +64,7 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		// 真映射模式会改写这份文件。权威数据一律读**原件**：索引内容、指纹、以及兼容模式
 		// 的 link 编译都基于官方数据，我们的改动对它们完全不可见。否则按被改过的件表重建
 		// 索引后，link 编译会判定"目标已等于来源"而静默失效。
-		encryptedPath = ArmorDataFileIdentity.GetUnmodifiedSealedPath(encryptedPath);
+		encryptedPath = ArmorDataFileIdentity.GetUnmodifiedSealedPath(encryptedPath, _registryRoot);
 		var entitiesPath = Path.Combine(gameRoot, GeneratedEntitiesName);
 		var issues = new List<CoreIssue>();
 
