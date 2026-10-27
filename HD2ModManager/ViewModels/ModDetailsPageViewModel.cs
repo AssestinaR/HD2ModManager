@@ -1461,10 +1461,10 @@ namespace HD2ModManager.ViewModels
                 }
 
 				var operationId = Guid.NewGuid();
-				var sourceFacts = await _equipmentSourceFactsReader.ReadAsync(
-					source,
-					_library.ModsRootDirectory,
-					new ModInformationRequest(
+				// 清单级读取：只拿来源 Patch 路径、TOC、装备目录和"这个 mod 带了哪些 unit"。
+				// 逐个 unit 解析网格判断可见性是秒级的重活，放到页面打开之后再做——
+				// 那正是"打开替换护甲页要等好几秒"的来源。
+				var request = new ModInformationRequest(
 						ModInformationKind.AssetInventory,
 						"CrossArmorPlan",
 						Context: ModInformationRequestContext.Create(
@@ -1473,23 +1473,18 @@ namespace HD2ModManager.ViewModels
 							operationName: "CrossArmorPlan"))
 					{
 						Property = ModInformationPropertyKind.UnitPartMapping
-					},
+					};
+				var sourceFacts = await _equipmentSourceFactsReader.ReadAsync(
+					source,
+					_library.ModsRootDirectory,
+					request,
+					includeUnitGeometry: false,
 					CancellationToken.None).ConfigureAwait(false);
 				var sourcePatchPaths = sourceFacts.SourcePatchTocPaths.ToArray();
-				var sourceCandidates = sourceFacts.SourceCandidates;
 				IReadOnlyList<EquipmentUnitCatalogEntry> allCandidates = sourceFacts.TargetCandidates
 					.Concat(await CoreServices.CreateRuntimeArmorRegistryService(_paths).ReadCustomModelCatalogAsync()).ToArray();
-				var transferableSourceUnitKeys = sourceCandidates
-					.SelectMany(entry => entry.Parts)
-					.Select(part => part.UnitAssetKey)
-					.ToHashSet();
 				var catalogPartCount = allCandidates.Sum(entry => entry.Parts.Count);
-				var matchedPartCount = sourceCandidates.Sum(entry => entry.Parts.Count);
-				var readableUnitCount = sourceFacts.Units.Count(unit => unit.IsReadable);
-				var hiddenUnitCount = sourceFacts.Units.Count(unit => unit.IsHidden);
-				var failedUnitCount = sourceFacts.Units.Count(unit => !unit.IsReadable);
-				LogService.Info($"替换护甲计划阶段：统一来源读取完成，耗时={preparationTimer.ElapsedMilliseconds}ms，源Patch={sourcePatchPaths.Length}，扫描Unit={sourceFacts.Units.Count}，可读={readableUnitCount}，隐藏={hiddenUnitCount}，失败={failedUnitCount}。");
-				LogService.Info($"替换护甲来源诊断：Mod={source.Metadata.Name}，模式=统一读取器，源Patch={sourcePatchPaths.Length}，可转移Unit={transferableSourceUnitKeys.Count}，GameData部件={catalogPartCount}，保留部件={matchedPartCount}，Unit目录={allCandidates.Count}。");
+				LogService.Info($"替换护甲计划阶段：清单级读取完成，耗时={preparationTimer.ElapsedMilliseconds}ms，源Patch={sourcePatchPaths.Length}，来源Unit={sourceFacts.SourceUnitKeys.Count}，Unit目录={allCandidates.Count}，GameData部件={catalogPartCount}。");
 				if (sourceFacts.Issues.Count != 0)
 					LogService.Info($"替换护甲来源读取诊断：{string.Join(" | ", sourceFacts.Issues.Take(6).Select(issue => $"{issue.Code}: {issue.Message}"))}");
 				if (sourcePatchPaths.Length == 0)
@@ -1505,10 +1500,10 @@ namespace HD2ModManager.ViewModels
 					_notifications?.Show(message, NotificationLevel.Error, TimeSpan.FromSeconds(10));
 					return;
 				}
-                if (sourceCandidates.Count == 0)
+                if (sourceFacts.SourceUnitKeys.Count == 0)
                 {
-                    LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，没有可转移的真实 Unit 几何。");
-                    _notifications?.Show("当前 Mod 没有可转移的真实 Unit 几何：索引未匹配、Unit 无法读取或所有匹配 mesh 均已极小化。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                    LogService.Info($"替换护甲计划结束：Mod={source.Metadata.Name}，Patch 里没有 Unit。");
+                    _notifications?.Show("当前 Mod 的 Patch 里没有 Unit：可能没有替换任何装备模型。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
                     return;
                 }
                 if (sourcePatchPaths.Length != 1)
@@ -1519,14 +1514,22 @@ namespace HD2ModManager.ViewModels
                 }
                 var browser = CoreServices.CreateGameDataArchiveBrowserService(_paths, _derivedState.InformationCenter);
                 var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(
-                    _equipmentUnitCatalog, sourceCandidates, allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(),
+                    _equipmentUnitCatalog, Array.Empty<EquipmentUnitCatalogEntry>(), allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(),
 					sourceFacts.GetPreparedEntries(sourcePatchPaths[0]), _paths, null,
 					cancellationToken => browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), cancellationToken).AsTask(),
-					_library.InformationReader);
+					_library.InformationReader,
+					sourceUnitKeys: sourceFacts.SourceUnitKeys,
+					// 页面已经在屏幕上之后才跑这一趟：解析来源 Unit 的网格，判断可转移/极小化。
+					sourceScan: cancellationToken => _equipmentSourceFactsReader.ReadAsync(
+						source,
+						_library.ModsRootDirectory,
+						request,
+						includeUnitGeometry: true,
+						cancellationToken).AsTask());
                 await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
 				preparationTimer.Stop();
-                LogService.Info($"替换护甲计划完成：Mod={source.Metadata.Name}，源候选={sourceCandidates.Count}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}。");
-                _notifications?.Show("替换护甲：映射计划已准备完成，请确认目标部件后生成候选。", NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                LogService.Info($"替换护甲计划已打开：Mod={source.Metadata.Name}，来源Unit={sourceFacts.SourceUnitKeys.Count}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}，打开耗时={preparationTimer.ElapsedMilliseconds}ms（网格解析在页面内后台进行）。");
+                _notifications?.Show("替换护甲：映射计划已打开，正在后台计算来源可见部件。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
             {

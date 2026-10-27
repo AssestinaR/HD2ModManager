@@ -48,6 +48,19 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 		string modsRootDirectory,
 		ModInformationRequest request,
 		CancellationToken cancellationToken = default)
+		=> await ReadAsync(source, modsRootDirectory, request, includeUnitGeometry: true, cancellationToken).ConfigureAwait(false);
+
+	/// <param name="includeUnitGeometry">
+	/// false = 只读"清单级"事实：来源 Patch 路径、TOC、装备目录、以及 Patch 里的全部 Unit 键，
+	/// **不解析任何网格**。这一步是页面能瞬间打开的前提。
+	/// true = 再逐个解析来源 Unit 的网格，判断可转移/极小化，并绑定到装备目录（旧行为）。
+	/// </param>
+	public async ValueTask<ModEquipmentSourceFacts> ReadAsync(
+		ModNode source,
+		string modsRootDirectory,
+		ModInformationRequest request,
+		bool includeUnitGeometry,
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(source);
 		ArgumentException.ThrowIfNullOrWhiteSpace(modsRootDirectory);
@@ -142,6 +155,8 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 			.ToHashSet();
 		var preparedEntries = new Dictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>(StringComparer.OrdinalIgnoreCase);
 		var unitFacts = new List<ModSourceUnitFacts>();
+		var allSourceUnitKeys = new List<AssetKey>();
+		var seenSourceUnitKeys = new HashSet<AssetKey>();
 		var readerContext = ToReaderContext(request.EffectiveContext);
 		var revision = ModContentRevision.FromLegacyGeneration(inventoryGeneration ?? inventoryData.ContentGeneration);
 
@@ -175,6 +190,10 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 					.Select(entry => new AssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId))
 					.Distinct()
 					.ToArray();
+				foreach (var key in patchUnitKeys)
+					if (seenSourceUnitKeys.Add(key)) allSourceUnitKeys.Add(key);
+				// 清单级读取到此为止：不解析网格，页面就能立刻列出"这个 mod 带了哪些 unit"。
+				if (!includeUnitGeometry) continue;
 				var requestedUnitKeys = request.EffectiveSelector.SelectedAssetKeys;
 				var selectedUnitKeys = requestedUnitKeys.Count != 0
 					? patchUnitKeys.Where(requestedUnitKeys.Contains).ToArray()
@@ -212,7 +231,9 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 			}
 		}
 
-		var sourceCandidates = EquipmentUnitSourcePartBinder.Bind(targetCandidates, unitFacts);
+		var sourceCandidates = includeUnitGeometry
+			? EquipmentUnitSourcePartBinder.Bind(targetCandidates, unitFacts)
+			: Array.Empty<EquipmentUnitCatalogEntry>();
 		return new ModEquipmentSourceFacts(
 			source.Id,
 			inventoryGeneration ?? inventoryData.ContentGeneration,
@@ -221,7 +242,10 @@ public sealed class ModEquipmentSourceFactsReader : IModEquipmentSourceFactsRead
 			targetCandidates,
 			preparedEntries,
 			unitFacts,
-			issues);
+			issues)
+		{
+			SourceUnitKeys = allSourceUnitKeys,
+		};
 	}
 
 	public void ClearOperation(Guid operationId) => reader.ClearOperation(operationId);

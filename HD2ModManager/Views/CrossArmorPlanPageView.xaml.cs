@@ -17,6 +17,17 @@ namespace HD2ModManager.Views
             if (dialog.ShowDialog() == true && DataContext is CrossArmorTransferPlanWindowViewModel { CandidateOutput: { } output }) output.SetOutputDirectory(dialog.FolderName);
         }
 
+        // 「作为来源」列用文本而不是勾选框：勾选框的默认尺寸会把行高顶变。
+        // 于是切换手势落在这里——点一下换一次，并把新选择立刻送进规划器。
+        private void OnSourceUnitToggleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not CrossArmorSourceUnitRow row) return;
+            e.Handled = true;
+            if (!row.CanToggle) return;
+            row.Toggle();
+            if (DataContext is CrossArmorTransferPlanWindowViewModel viewModel) viewModel.RefreshPlanAfterSourceToggle();
+        }
+
         private void OnTargetMappingContextMenuOpening(object sender, ContextMenuEventArgs e)
         {
             if (sender is not DataGrid grid || DataContext is not CrossArmorTransferPlanWindowViewModel viewModel) return;

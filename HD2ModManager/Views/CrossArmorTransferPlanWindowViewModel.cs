@@ -39,10 +39,25 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private bool autoSelectMatchingHelmet = true;
 	private bool applyingTargetSelection;
 
-	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceArmorChoices { get; }
-	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceHelmetChoices { get; }
+	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceArmorChoices => sourceArmorChoices ??= BuildSourceChoices("Armor");
+	public IReadOnlyList<CrossArmorTransferEquipmentRow> SourceHelmetChoices => sourceHelmetChoices ??= BuildSourceChoices("Helmet");
 	public CrossArmorCandidateOutputPageViewModel? CandidateOutput { get => candidateOutput; private set { if (ReferenceEquals(candidateOutput, value)) return; candidateOutput = value; OnPropertyChanged(); } }
 	public IReadOnlyList<CrossArmorTransferEquipmentRow> TargetChoices { get; }
+	/// <summary>左下角"来源部件"表：来源 Patch 里的全部 unit，不等网格解析。</summary>
+	public BulkObservableCollection<CrossArmorSourceUnitRow> SourceUnitRows { get; } = new();
+	public bool IsScanningSourceUnits
+	{
+		get => isScanningSourceUnits;
+		private set
+		{
+			if (!SetField(ref isScanningSourceUnits, value)) return;
+			OnPropertyChanged(nameof(CanRescanSourceUnits));
+			RescanSourceUnitsCommand.RaiseCanExecuteChanged();
+		}
+	}
+	public string SourceScanState { get => sourceScanState; private set => SetField(ref sourceScanState, value); }
+	public bool CanRescanSourceUnits => !isScanningSourceUnits && sourceScan is not null;
+	public RelayCommand RescanSourceUnitsCommand { get; }
 	public bool AutoSelectSharedParts
 	{
 		get => autoSelectSharedParts;
@@ -235,11 +250,17 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	public string Issues => plan is null ? string.Empty : string.Join(Environment.NewLine, plan.Issues.Select(issue => $"{issue.Severity}: {issue.Message}"));
 
 	private readonly IEquipmentUnitCatalogService catalogService;
-	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates;
+	private IReadOnlyList<EquipmentUnitCatalogEntry> sourceCandidates;
 	private readonly IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates;
 	private readonly IModInformationReader informationReader;
 	private bool targetReplacementFactsAvailable;
 	private readonly Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>>? targetReplacementLoader;
+	// 清单级事实已经把全部 unit 键给我们了；网格解析（判断可转移/极小化）可以晚一步做。
+	private readonly Func<CancellationToken, Task<ModEquipmentSourceFacts>>? sourceScan;
+	private IReadOnlyList<CrossArmorTransferEquipmentRow>? sourceArmorChoices;
+	private IReadOnlyList<CrossArmorTransferEquipmentRow>? sourceHelmetChoices;
+	private bool isScanningSourceUnits;
+	private string sourceScanState = "待计算可见部件";
 
 	public CrossArmorTransferPlanWindowViewModel(
 		IEquipmentUnitCatalogService catalogService,
@@ -251,7 +272,9 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		StoragePaths paths,
 		GameDataArchiveBrowserSnapshot? targetReplacementSnapshot = null,
 		Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>>? targetReplacementLoader = null,
-		IModInformationReader? informationReader = null)
+		IModInformationReader? informationReader = null,
+		IReadOnlyList<AssetKey>? sourceUnitKeys = null,
+		Func<CancellationToken, Task<ModEquipmentSourceFacts>>? sourceScan = null)
 	{
 		this.catalogService = catalogService;
 		this.sourceCandidates = sourceCandidates;
@@ -260,13 +283,12 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		// The plan may lazily request the source TOC. Keep that read behind the
 		// library's shared invalidation and diagnostics boundary.
 		this.informationReader = informationReader ?? throw new ArgumentNullException(nameof(informationReader));
+		this.sourceScan = sourceScan;
 		Title = "跨护甲计划";
 		SourcePatchTocPath = sourcePatchTocPath;
 		GameDataDirectory = gameDataDirectory;
 		Paths = paths ?? throw new ArgumentNullException(nameof(paths));
 		PreparedSourceEntries = preparedSourceEntries ?? throw new ArgumentNullException(nameof(preparedSourceEntries));
-		SourceArmorChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Armor", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
-		SourceHelmetChoices = sourceCandidates.Where(entry => string.Equals(entry.Category, "Helmet", StringComparison.OrdinalIgnoreCase)).Select(entry => new CrossArmorTransferEquipmentRow(entry)).ToArray();
 		var overlays = targetReplacementSnapshot is not null && !targetReplacementSnapshot.Issues.Any(issue => issue.Severity == CoreIssueSeverity.Error)
 			? targetReplacementSnapshot.Archives
 			.ToDictionary(item => item.Archive.PackageName, item => item.Overlay, StringComparer.OrdinalIgnoreCase)
@@ -281,10 +303,141 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		SelectAllTargetsCommand = new RelayCommand(_ => SetAllTargetsSelected(true));
 		InvertTargetSelectionCommand = new RelayCommand(_ => SetAllTargetsSelected(null));
 		SelectAllUnreplacedTargetsCommand = new RelayCommand(_ => SelectAllUnreplacedTargets(), _ => CanSelectAllUnreplacedTargets);
+		RescanSourceUnitsCommand = new RelayCommand(_ => _ = ScanSourceUnitsAsync(), _ => CanRescanSourceUnits);
+		BuildSourceUnitRows(sourceUnitKeys ?? sourceCandidates.SelectMany(entry => entry.Parts).Select(part => part.UnitAssetKey).Distinct().ToArray());
 		SelectedSourceArmor = SourceArmorChoices.FirstOrDefault()?.Entry;
 		SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault()?.Entry;
 		if (targetReplacementSnapshot is null && targetReplacementLoader is not null)
 			_ = LoadTargetReplacementFactsAsync();
+		// 清单级打开时还没有任何来源候选（网格没解析），立刻在后台补一次。
+		if (this.sourceScan is not null && sourceCandidates.Count == 0)
+			_ = ScanSourceUnitsAsync();
+	}
+
+	/// <summary>
+	/// 用"来源 Patch 的全部 Unit 键"建表。部位/层/身形来自注册表格子（查库即得），
+	/// 可见性留空等后台补——这一步不解析任何网格，所以页面能瞬间打开。
+	/// </summary>
+	private void BuildSourceUnitRows(IReadOnlyList<AssetKey> unitKeys)
+	{
+		// 全量装备目录里有每个 unit 的格子；不在其中的就是"未定位"。
+		var byUnit = new Dictionary<AssetKey, EquipmentUnitPart>();
+		foreach (var entry in targetCandidates)
+		{
+			foreach (var part in entry.Parts)
+			{
+				if (!byUnit.TryGetValue(part.UnitAssetKey, out var existing)
+					|| (part.Cell.IsKnown && !existing.Cell.IsKnown))
+					byUnit[part.UnitAssetKey] = part;
+			}
+		}
+
+		// 已经知道可转移的 unit（清单级打开时通常为空；重测后会有值）。
+		var transferable = sourceCandidates
+			.SelectMany(entry => entry.Parts)
+			.Select(part => part.UnitAssetKey)
+			.ToHashSet();
+
+		var rows = unitKeys
+			.Select(key => byUnit.TryGetValue(key, out var part)
+				? new CrossArmorSourceUnitRow(key, part.Cell, part.BodyVariant)
+				: new CrossArmorSourceUnitRow(key, ArmorCell.Unknown, UnitMeshBodyVariant.Unknown))
+			.OrderBy(row => row.Cell.IsKnown ? row.Cell.Slot : int.MaxValue)
+			.ThenBy(row => row.Cell.IsKnown ? row.Cell.Layer : int.MaxValue)
+			.ThenBy(row => row.UnitAssetKey.FileId)
+			.ToArray();
+
+		foreach (var row in rows)
+		{
+			if (row.IsCape) row.MarkUnscanned("披风不参与");
+			else if (row.IsUnplaced) row.MarkUnscanned("注册表里没有这个 unit");
+			else if (transferable.Contains(row.UnitAssetKey)) row.ApplyScan(true, "可转移");
+			else if (sourceCandidates.Count != 0) row.ApplyScan(false, "极小化占位");
+		}
+
+		SourceUnitRows.ReplaceWith(rows, ListTransitionKind.Replace);
+		UpdateSourceScanState();
+	}
+
+	/// <summary>
+	/// 重测一次可见部件：解析来源 Unit 的网格，判断哪些是真几何、哪些是极小化占位。
+	/// 这是这条链路上唯一的重活（实测 2.5 秒），所以它不在页面打开的路径上。
+	/// </summary>
+	public async Task ScanSourceUnitsAsync()
+	{
+		if (sourceScan is null || IsScanningSourceUnits) return;
+		IsScanningSourceUnits = true;
+		SourceScanState = "正在计算可见部件…";
+		foreach (var row in SourceUnitRows) row.BeginScan();
+		try
+		{
+			// 整体丢线程池：这一步要解析来源 Unit 的网格（实测 2.5 秒），绝不能压在 UI 线程上。
+			var facts = await Task.Run(() => sourceScan(CancellationToken.None)).ConfigureAwait(true);
+			sourceCandidates = facts.SourceCandidates;
+			// 来源候选变了，护甲/头盔下拉也要重建，并尽量保留用户原来的选择。
+			var armorArchive = SelectedSourceArmor?.ArchiveId;
+			var helmetArchive = SelectedSourceHelmet?.ArchiveId;
+			sourceArmorChoices = null;
+			sourceHelmetChoices = null;
+			OnPropertyChanged(nameof(SourceArmorChoices));
+			OnPropertyChanged(nameof(SourceHelmetChoices));
+			SelectedSourceArmor = SourceArmorChoices.FirstOrDefault(row => string.Equals(row.Entry.ArchiveId, armorArchive, StringComparison.OrdinalIgnoreCase))?.Entry
+				?? SourceArmorChoices.FirstOrDefault()?.Entry;
+			SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault(row => string.Equals(row.Entry.ArchiveId, helmetArchive, StringComparison.OrdinalIgnoreCase))?.Entry
+				?? SourceHelmetChoices.FirstOrDefault()?.Entry;
+			BuildSourceUnitRows(facts.SourceUnitKeys.Count != 0
+				? facts.SourceUnitKeys
+				: SourceUnitRows.Select(row => row.UnitAssetKey).ToArray());
+			QueueRefreshPlan();
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
+		{
+			LogService.Error($"替换护甲：计算来源可见部件失败：{exception}");
+			SourceScanState = $"计算失败：{exception.Message}";
+			foreach (var row in SourceUnitRows) row.MarkUnscanned("计算失败");
+		}
+		finally
+		{
+			IsScanningSourceUnits = false;
+			UpdateSourceScanState();
+		}
+	}
+
+	private void UpdateSourceScanState()
+	{
+		if (IsScanningSourceUnits) return;
+		var enabled = SourceUnitRows.Count(row => row.IsEnabled);
+		var total = SourceUnitRows.Count;
+		SourceScanState = total == 0
+			? "来源 Patch 里没有 unit"
+			: $"{enabled} / {total} 个 unit 作为来源";
+	}
+
+	/// <summary>用户在「作为来源」列点了一下之后重算计划。纯内存操作，不需要重新扫网格。</summary>
+	public void RefreshPlanAfterSourceToggle()
+	{
+		UpdateSourceScanState();
+		QueueRefreshPlan();
+	}
+
+	private IReadOnlyList<CrossArmorTransferEquipmentRow> BuildSourceChoices(string category)
+		=> sourceCandidates
+			.Where(entry => string.Equals(entry.Category, category, StringComparison.OrdinalIgnoreCase))
+			.Select(entry => new CrossArmorTransferEquipmentRow(entry))
+			.ToArray();
+
+	/// <summary>
+	/// 只把"作为来源"打开的那些 unit 交给规划器。用户关掉的部件不参与自动装箱，
+	/// 但它们仍然在表格里——这是用户唯一能精确控制"哪些部件要出现"的手段。
+	/// </summary>
+	private IReadOnlyList<EquipmentUnitCatalogEntry> EnabledSourceCandidates()
+	{
+		var enabled = SourceUnitRows.Where(row => row.IsEnabled).Select(row => row.UnitAssetKey).ToHashSet();
+		if (enabled.Count == 0) return [];
+		return sourceCandidates
+			.Select(entry => entry with { Parts = entry.Parts.Where(part => enabled.Contains(part.UnitAssetKey)).ToArray() })
+			.Where(entry => entry.Parts.Count != 0)
+			.ToArray();
 	}
 
 	private async Task LoadTargetReplacementFactsAsync()
@@ -553,7 +706,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		try
 		{
 			var additionalSources = new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null && !ReferenceEquals(source, SelectedSource)).Select(source => source!.ArchiveId).ToArray();
-			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(sourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, writePlannerDebugLog: true, plannerKind: CrossArmorPlannerKind.Cells, cancellationToken: cancellationToken).AsTask(), cancellationToken);
+			var enabledSourceCandidates = EnabledSourceCandidates();
+			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(enabledSourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, writePlannerDebugLog: true, plannerKind: CrossArmorPlannerKind.Cells, cancellationToken: cancellationToken).AsTask(), cancellationToken);
 			if (!ReferenceEquals(planCancellation, currentCancellation) || cancellationToken.IsCancellationRequested || generation != planGeneration) return;
 			plan = nextPlan;
 			PlanState = "计划已更新。";

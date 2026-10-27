@@ -50,13 +50,35 @@
                 <Border Grid.Row="2" Style="{StaticResource DataTableCard}">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                        <TextBlock Text="来源可见部件" FontWeight="SemiBold" Margin="12,10"/>
-                        <DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding SourceParts}">
+                        <Border Grid.Row="0" Style="{StaticResource DataTableToolbar}">
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Style="{StaticResource AppSecondaryButton}"
+                                        Content="重新计算可见部件"
+                                        Command="{Binding RescanSourceUnitsCommand}"
+                                        ToolTip="重新解析来源 Unit 的网格，判断哪些是真几何、哪些是极小化占位。计算中不可点击。"/>
+                                <TextBlock Text="{Binding SourceScanState}" Style="{StaticResource AppSupportingText}"
+                                           VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="来源部件" FontWeight="SemiBold" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                            </DockPanel>
+                        </Border>
+                        <DataGrid Grid.Row="1" Style="{StaticResource DataTableGrid}" ItemsSource="{Binding SourceUnitRows}"
+                                  IsReadOnly="True" SelectionMode="Single"
+                                  ToolTip="这里列出来源 Patch 里的**全部** unit。部位/层/身形来自注册表；「作为来源」点一下即可切换。">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="部位" Binding="{Binding PartKind}" Width="0.8*"/>
-                                <DataGridTextColumn Header="身形" Binding="{Binding BodyVariant}" Width="0.8*"/>
-                                <DataGridTextColumn Header="语义" Binding="{Binding SemanticName}" Width="1.4*"/>
-                                <DataGridTextColumn Header="ID" Binding="{Binding UnitAssetKey.FileId, StringFormat=0x{0:x16}}" Width="1.2*"/>
+                                <DataGridTextColumn Header="部位" Binding="{Binding PartText}" Width="0.9*"/>
+                                <DataGridTextColumn Header="层" Binding="{Binding LayerText}" Width="0.7*"/>
+                                <DataGridTextColumn Header="身形" Binding="{Binding BodyText}" Width="0.7*"/>
+                                <DataGridTextColumn Header="ID" Binding="{Binding IdText}" Width="1.2*"/>
+                                <DataGridTemplateColumn Header="作为来源" Width="0.8*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <!-- 用文本而不是勾选框：勾选框的默认尺寸会把行高顶变。 -->
+                                            <TextBlock Text="{Binding EnabledText}" VerticalAlignment="Center"
+                                                       Cursor="Hand" MouseLeftButtonUp="OnSourceUnitToggleClick"
+                                                       ToolTip="{Binding StatusText}"/>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                             </DataGrid.Columns>
                         </DataGrid>
                     </Grid>

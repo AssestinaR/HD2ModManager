@@ -12,5 +12,16 @@ public interface IModEquipmentSourceFactsReader
 		ModInformationRequest request,
 		CancellationToken cancellationToken = default);
 
+	/// <param name="includeUnitGeometry">
+	/// false = 只读清单级事实（来源 Patch 路径、TOC、装备目录、Patch 里的全部 Unit 键），不解析网格。
+	/// 页面靠这一步瞬间打开；true 才逐个解析 Unit 判断可转移性。
+	/// </param>
+	ValueTask<ModEquipmentSourceFacts> ReadAsync(
+		ModNode source,
+		string modsRootDirectory,
+		ModInformationRequest request,
+		bool includeUnitGeometry,
+		CancellationToken cancellationToken = default);
+
 	void ClearOperation(Guid operationId);
 }
