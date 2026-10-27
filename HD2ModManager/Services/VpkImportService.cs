@@ -210,6 +210,11 @@ public sealed class VpkImportService
 
 		// 解析集合：整批都交出去，这样材质包才能借到模型 VPK 里的几何与贴图。
 		var materialSource = string.Join(';', source.VpkPaths);
+		// 同一个压缩包里可能出现同名（或只差大小写）的 VPK——实测一个八人包里就有一份重复的
+		// "手套Gloves关"。它们会算到同一个产出目录，第二个在 Move 时抛
+		// "a file or directory with the same name already exists"，那一个包就丢了。
+		// 加后缀区分：宁可多出一个 Mod，也不要静默丢一个。
+		var usedDirectoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var index = 0;
 		foreach (var candidate in plan.Convertible)
 		{
@@ -229,7 +234,9 @@ public sealed class VpkImportService
 					continue;
 				}
 
-				var directoryName = SafeDirectoryName(Path.GetFileNameWithoutExtension(candidate.VpkPath));
+				var directoryName = MakeUniqueDirectoryName(
+					SafeDirectoryName(Path.GetFileNameWithoutExtension(candidate.VpkPath)),
+					usedDirectoryNames);
 				var target = Path.Combine(source.StagingRoot, "pkg", directoryName);
 				var payload = Path.Combine(target, ModNodePayloadLayout.VpkPatchDirectoryName);
 				Directory.CreateDirectory(target);
@@ -499,6 +506,17 @@ public sealed class VpkImportService
 		var sanitized = string.IsNullOrWhiteSpace(name) ? "VPK" : name.Trim();
 		foreach (var ch in Path.GetInvalidFileNameChars()) sanitized = sanitized.Replace(ch, '_');
 		return string.IsNullOrWhiteSpace(sanitized) ? "VPK" : sanitized;
+	}
+
+	/// <summary>在本批里取一个没被用过的产出目录名：撞名时依次追加 <c> (2)</c>、<c> (3)</c>……</summary>
+	private static string MakeUniqueDirectoryName(string name, HashSet<string> used)
+	{
+		if (used.Add(name)) return name;
+		for (var suffix = 2; ; suffix++)
+		{
+			var candidate = $"{name} ({suffix.ToString(CultureInfo.InvariantCulture)})";
+			if (used.Add(candidate)) return candidate;
+		}
 	}
 }
 
