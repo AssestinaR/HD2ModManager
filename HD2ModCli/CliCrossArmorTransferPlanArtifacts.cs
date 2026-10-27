@@ -112,7 +112,11 @@ public sealed record CliCrossArmorMapping(
 	bool IsManual,
 	bool IsSuppressed,
 	IReadOnlyList<string> UsedByArchiveIds,
-	IReadOnlyList<string> UsedByDisplayNames);
+	IReadOnlyList<string> UsedByDisplayNames)
+{
+	/// <summary>除 Source 之外还要合并进同一个输出 Unit 的来源部件（装箱时目标格子不够用）。</summary>
+	public IReadOnlyList<CliCrossArmorUnitPart> ExtraSources { get; init; } = [];
+}
 
 public sealed record CliCrossArmorImpact(
 	string ArchiveId,
@@ -389,6 +393,8 @@ internal static class CliCrossArmorTransferPlanArtifacts
 					request.ManualMode,
 					resolution.AdditionalSourceArchiveIds,
 					writePlannerDebugLog: false,
+					// CLI 是 A/B 对比的入口：它显式走装箱规划器，与桌面端一致。
+					plannerKind: CrossArmorPlannerKind.Cells,
 					cancellationToken: cancellationToken).ConfigureAwait(false);
 				diagnostics.AddRange(corePlan.Issues.Select(CreateDiagnostic));
 			}
@@ -664,7 +670,10 @@ internal static class CliCrossArmorTransferPlanArtifacts
 				mapping.IsManual,
 				mapping.IsSuppressed,
 				mapping.UsedByArchiveIds,
-				mapping.UsedByDisplayNames)).OrderBy(mapping => mapping.PhysicalTargetAssetKey, StringComparer.Ordinal).ToArray(),
+				mapping.UsedByDisplayNames)
+			{
+				ExtraSources = mapping.ExtraSources.Select(CreateUnitPart).ToArray(),
+			}).OrderBy(mapping => mapping.PhysicalTargetAssetKey, StringComparer.Ordinal).ToArray(),
 			plan.Impacts.Select(impact => new CliCrossArmorImpact(impact.ArchiveId, impact.DisplayName, FormatAssetKey(impact.SharedUnitAssetKey), impact.PartKind.ToString(), impact.Layer.ToString()))
 				.OrderBy(impact => impact.ArchiveId, StringComparer.OrdinalIgnoreCase).ThenBy(impact => impact.SharedUnitAssetKey, StringComparer.Ordinal).ToArray(),
 			plan.Issues.Select(CreateDiagnostic).ToArray());

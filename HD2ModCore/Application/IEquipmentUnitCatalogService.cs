@@ -32,5 +32,6 @@ public interface IEquipmentUnitCatalogService
 		bool manualMode = false,
 		IReadOnlyCollection<string>? additionalSourceArchiveIds = null,
 		bool writePlannerDebugLog = true,
+		CrossArmorPlannerKind plannerKind = CrossArmorPlannerKind.Legacy,
 		CancellationToken cancellationToken = default);
 }

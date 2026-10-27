@@ -124,6 +124,9 @@ ORDER BY CASE WHEN lower(a.category) LIKE '%armor%' THEN 0 ELSE 1 END,a.display_
 		bool manualMode = false,
 		IReadOnlyCollection<string>? additionalSourceArchiveIds = null,
 		bool writePlannerDebugLog = true,
+		// 默认仍是旧启发式：它在 EquipmentUnitCatalogServiceTests 里有一整套行为基线。
+		// 新装箱规划器由 GUI 与 CLI 显式选择，A/B 通过后再把默认值翻过来并迁移那些用例。
+		CrossArmorPlannerKind plannerKind = CrossArmorPlannerKind.Legacy,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(sourceCandidates);
@@ -189,6 +192,34 @@ ORDER BY CASE WHEN lower(a.category) LIKE '%armor%' THEN 0 ELSE 1 END,a.display_
 			.ToArray();
 		var manualByTarget = (manualMappings ?? Array.Empty<CrossArmorManualMapping>()).ToDictionary(mapping => mapping.Target.UnitAssetKey);
 		var suppressedTargets = (manualSuppressions ?? Array.Empty<CrossArmorManualSuppression>()).Select(suppression => suppression.Target.UnitAssetKey).ToHashSet();
+
+		// 单元格装箱：按注册表权威格子把来源部件放进目标格子。
+		// 与旧启发式产出同一种 CrossArmorTransferMapping，所以生产端一行都不用改。
+		if (plannerKind == CrossArmorPlannerKind.Cells)
+		{
+			var cellPlan = CellCrossArmorPlanProjection.Build(
+				sourceParts,
+				targets,
+				bodyVariantPreference,
+				// 计划阶段永远列全：未命中的目标显示成"隐藏"，是否真的写占位由生产端的
+				// AutoHideUnmappedTargetUnits 决定。这样计划表能诚实展示"哪些不会被替换"。
+				autoHideUnmapped: true,
+				manualMappings ?? Array.Empty<CrossArmorManualMapping>(),
+				manualSuppressions ?? Array.Empty<CrossArmorManualSuppression>(),
+				manualMode,
+				plannerDebug);
+			issues.AddRange(cellPlan.Issues);
+			var cellMappings = cellPlan.Mappings.ToList();
+			var cellImpacts = cellPlan.Impacts.ToList();
+			AppendCustomModelMappings(cellMappings, targetCandidates, targets, sourceParts, bodyVariantPreference, manualMappings, manualSuppressions, manualMode, issues);
+			if (cellMappings.Count == 0)
+				issues.Add(new CoreIssue(CoreIssueSeverity.Error, "NoTargetParts", "所选目标没有可识别的可见非 LOD 部件。"));
+			plannerDebug.Add($"[RESULT] Mappings={cellMappings.Count} Hits={cellMappings.Count(mapping => mapping.WillReplace)} Hidden={cellMappings.Count(mapping => !mapping.WillReplace)} Merged={cellMappings.Count(mapping => mapping.RequiresMerge)}");
+			if (writePlannerDebugLog) WritePlannerDebugLog(plannerDebug);
+			return ValueTask.FromResult(new CrossArmorTransferPlan(
+				sourceCandidates, source, targets, cellMappings, cellImpacts.Distinct().ToArray(), issues));
+		}
+
 		var assignments = new Dictionary<AssetKey, (EquipmentUnitPart? Source, bool IsManual, bool IsSuppressed, int HitCount)>();
 		foreach (var target in targetsByUnit)
 		{
@@ -378,24 +409,40 @@ ORDER BY CASE WHEN lower(a.category) LIKE '%armor%' THEN 0 ELSE 1 END,a.display_
 				if (impacted is not null) impacts.Add(new CrossArmorTransferImpact(impacted.ArchiveId, impacted.DisplayName, targetPart.UnitAssetKey, targetPart.PartKind, targetPart.Layer));
 			}
 		}
-		var customTargets = targets.Where(target => target.IsCustomModel).ToArray();
-		var customParts = customTargets.SelectMany(target => target.Parts).ToArray();
-		var realKeys = targetCandidates.Where(target => !target.IsCustomModel).SelectMany(target => target.Parts).Select(part => part.UnitAssetKey).ToHashSet();
-		if (customParts.GroupBy(part => part.UnitAssetKey).Any(group => group.Count() > 1)
-			|| customParts.Any(part => realKeys.Contains(part.UnitAssetKey) || part.UnitAssetKey.FileId == 0
-				|| part.PartKind == UnitMeshPartKind.Unknown || part.BodyVariant is not (UnitMeshBodyVariant.Any or UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)))
-			issues.Add(new(CoreIssueSeverity.Error, "CustomModelTargetInvalid", "自定义组件 ID 重复、与原版冲突或部位/身形不受支持；请修正素体定义。"));
-		if (customTargets.Any(target => targetCandidates.Any(other => other.IsCustomModel
-			&& other.CustomModelKey != target.CustomModelKey
-			&& other.Parts.Any(part => target.Parts.Any(selected => selected.UnitAssetKey == part.UnitAssetKey)))))
-			issues.Add(new(CoreIssueSeverity.Error, "CustomModelOwnershipConflict", "自定义组件 ID 同时被其他素体使用；请先解决 ID 归属冲突，避免互相覆盖。"));
-		mappings.AddRange(CustomModelTransferPlanner.Build(customTargets, sourceParts, bodyVariantPreference,
-			manualMappings, manualSuppressions, manualMode, issues));
+		AppendCustomModelMappings(mappings, targetCandidates, targets, sourceParts, bodyVariantPreference, manualMappings, manualSuppressions, manualMode, issues);
 		if (mappings.Count == 0) issues.Add(new CoreIssue(CoreIssueSeverity.Error, "NoTargetParts", "所选目标没有可识别的可见非 LOD 部件。"));
 		plannerDebug.Add($"[RESULT] Mappings={mappings.Count} Hits={mappings.Count(mapping => mapping.WillReplace)} Hidden={mappings.Count(mapping => !mapping.WillReplace)}");
 		if (writePlannerDebugLog)
 			WritePlannerDebugLog(plannerDebug);
 		return ValueTask.FromResult(new CrossArmorTransferPlan(sourceCandidates, source, targets, mappings, impacts.Distinct().ToArray(), issues));
+	}
+
+	// 自定义素体两条规划器共用：它们没有注册表格子，只能走 CustomModelTransferPlanner 的显式映射。
+	private static void AppendCustomModelMappings(
+		List<CrossArmorTransferMapping> mappings,
+		IReadOnlyList<EquipmentUnitCatalogEntry> targetCandidates,
+		IReadOnlyList<EquipmentUnitCatalogEntry> targets,
+		IReadOnlyList<EquipmentUnitPart> sourceParts,
+		CrossArmorBodyVariantPreference bodyVariantPreference,
+		IReadOnlyList<CrossArmorManualMapping>? manualMappings,
+		IReadOnlyList<CrossArmorManualSuppression>? manualSuppressions,
+		bool manualMode,
+		List<CoreIssue> issues)
+	{
+		var customTargets = targets.Where(target => target.IsCustomModel).ToArray();
+		if (customTargets.Length == 0) return;
+		var customParts = customTargets.SelectMany(target => target.Parts).ToArray();
+		var realKeys = targetCandidates.Where(target => !target.IsCustomModel).SelectMany(target => target.Parts).Select(part => part.UnitAssetKey).ToHashSet();
+		if (customParts.GroupBy(part => part.UnitAssetKey).Any(group => group.Count() > 1)
+			|| customParts.Any(part => realKeys.Contains(part.UnitAssetKey) || part.UnitAssetKey.FileId == 0
+				|| part.PartKind == UnitMeshPartKind.Unknown || part.BodyVariant is not (UnitMeshBodyVariant.Any or UnitMeshBodyVariant.Slim or UnitMeshBodyVariant.Stocky)))
+			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "CustomModelTargetInvalid", "自定义组件 ID 重复、与原版冲突或部位/身形不受支持；请修正素体定义。"));
+		if (customTargets.Any(target => targetCandidates.Any(other => other.IsCustomModel
+			&& other.CustomModelKey != target.CustomModelKey
+			&& other.Parts.Any(part => target.Parts.Any(selected => selected.UnitAssetKey == part.UnitAssetKey)))))
+			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "CustomModelOwnershipConflict", "自定义组件 ID 同时被其他素体使用；请先解决 ID 归属冲突，避免互相覆盖。"));
+		mappings.AddRange(CustomModelTransferPlanner.Build(customTargets, sourceParts, bodyVariantPreference,
+			manualMappings, manualSuppressions, manualMode, issues));
 	}
 
 	private static void MarkSourceUnitUsed(TargetUnitGroup target, AssetKey sourceUnitKey, IDictionary<string, HashSet<AssetKey>> usedByArchive)

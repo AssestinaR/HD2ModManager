@@ -120,7 +120,11 @@ public static class CellAssignmentPlanner
 			var universal = cellSources.FirstOrDefault(part => part.BodyVariant == UnitMeshBodyVariant.Any);
 			if (universal is not null)
 			{
-				foreach (var bucket in buckets) bucket.Assign([universal], CellAssignmentKind.Broadcast);
+				// 目标这个格子只有一个 Any 桶时，"通用网格填通用桶"其实是一对一，别标成广播。
+				var kind = buckets.Length == 1 && buckets[0].Body == UnitMeshBodyVariant.Any
+					? CellAssignmentKind.Natural
+					: CellAssignmentKind.Broadcast;
+				foreach (var bucket in buckets) bucket.Assign([universal], kind);
 				used.Add(universal.UnitAssetKey);
 				continue;
 			}

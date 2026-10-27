@@ -54,6 +54,16 @@ public sealed record EquipmentUnitPart(
 // Purpose: Selects the preferred source body shape only when an exact target-shape match cannot decide the assignment.
 public enum CrossArmorBodyVariantPreference { Slim, Stocky }
 
+/// <summary>
+/// 替换护甲用哪个规划器。
+/// </summary>
+/// <remarks>
+/// <see cref="Legacy"/> 是按网格名 + 几何大小猜部位的旧启发式（P1~P5 五层特例）；
+/// <see cref="Cells"/> 是按注册表权威格子装箱的新方案。
+/// 旧的暂时保留，用来在 CLI 上做 A/B 对比；对比通过后删除。
+/// </remarks>
+public enum CrossArmorPlannerKind { Legacy, Cells }
+
 // Purpose: Selects the preferred layer only when a same-layer candidate is unavailable.
 public enum CrossArmorLayerPreference { Armor, Undergarment, Accessory }
 
@@ -91,6 +101,21 @@ public sealed record CrossArmorTransferMapping(
 	bool IsSuppressed)
 {
 	public int HitCount { get; init; }
+
+	/// <summary>
+	/// 除 <see cref="Source"/> 之外还要合并进这个目标 Unit 的来源部件。
+	/// </summary>
+	/// <remarks>
+	/// 装箱时一个目标 Unit 可以收多个来源部件（目标格子比来源少，多余的部件只能合并）。
+	/// 空 = 普通的一对一替换；非空 = 生产端要把这些部件的网格一起写进同一个输出 Unit。
+	/// 顺序有意义：<see cref="Source"/> 是宿主，其余按顺序追加。
+	/// </remarks>
+	public IReadOnlyList<EquipmentUnitPart> ExtraSources { get; init; } = [];
+
+	/// <summary>这个目标 Unit 上要写入的来源部件总数（含 <see cref="Source"/>）。</summary>
+	public int SourceCount => (Source is null ? 0 : 1) + ExtraSources.Count;
+
+	public bool RequiresMerge => ExtraSources.Count != 0;
 }
 
 // Purpose: Explains another indexed equipment archive affected because it shares a Unit that will be written.

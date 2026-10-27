@@ -138,13 +138,48 @@ authority_piece_type INTEGER NOT NULL DEFAULT -1   -- 0=内层 1=护甲 2=装饰
 
 ---
 
+## 5.4 A/B：接进 CreatePlanAsync
+
+`CreatePlanAsync` 增加 `plannerKind`，默认仍是 `Legacy`（`EquipmentUnitCatalogServiceTests` 有一整套旧行为基线）；
+**GUI 与 CLI 显式传 `Cells`**。新增 `CellCrossArmorPlanProjection` 把装箱结果投影成同样的
+`CrossArmorTransferMapping`，生产端一行没改。合并用 `ExtraSources` 表达（`Source` 是宿主，其余按顺序追加）。
+
+A/B 用真实数据跑：来源 `lunalice_l4d2替换RE2310`，目标 BFM-16 / BFM-220 / BFM-77 的护甲+头盔（6 个目标）。
+
+| | 旧启发式 | 单元格装箱 |
+|---|---|---|
+| 映射总数 | 70 | 70 |
+| 替换 | 30 | **33** |
+| 隐藏 | 40 | 37 |
+| 问题 | 0 | 0 |
+| 每个护甲目标的替换数 | 9 | **10** |
+
+- **旧方案替换的 30 个 unit 一个没丢**（only-old = 0），新的多出 3 个。
+- 多出来的 3 个都是 **Torso/Undergarment/Stocky**：来源同时有 Slim 和 Stocky 两个躯干内层，
+  旧方案只命中了 Slim 那个，Stocky 那个被"覆盖完备性"状态机漏掉了。
+- 所有命中都是 `Natural`，没有发生合并——这套数据里来源和目标结构本来就对得上。
+
+### A/B 抓到的一个真 bug
+
+第一版把所有目标 unit 摊成一张表，结果**头盔目标吞下了 8 个身体部件**
+（胯/腿/臂的内层全被合并进那个唯一的头盔 unit）。原因：护甲 kit 的格子是槽 1..9，
+头盔 kit 只有一个槽 0；不按装备族拆分来源，头盔那个唯一的桶就会把剩余部件全部吸收。
+
+修法：来源按 `IsSameFamily` 拆成 护甲/头盔 两张表，按目标归档的 category 取用。
+`CellCrossArmorPlanProjectionTests` 里留了三条护栏，其中第一条就是这个现场。
+
+**这个 bug 只有跑真实数据才会暴露**——纯单测里我一直用的是同一族的部件。
+
+
+---
+
 ## 6. 还没做
 
 | 项 | 说明 |
 |---|---|
-| 接进 `CreatePlanAsync` | 用 `CellAssignmentPlanner` 的产出替换旧启发式，产出同样的 `CrossArmorTransferMapping` |
-| P4 接 `TryAppendLodFamily` | cell 分到 2+ part 时走 canonical 重建；1 个 part 仍走「快速复用来源 Unit」 |
+| P4 接 `TryAppendLodFamily` | cell 分到 2+ part 时走 canonical 重建；1 个 part 仍走「快速复用来源 Unit」。**注意**：`CanonicalCrossArmorOrchestrator` 的直通路径目前要求"目标的所有命中 Mesh 来自同一个来源 Unit"，遇到 `ExtraSources` 非空会报 `DirectReuseMultipleSourceUnits`。生产端还没接合并，所以现在**规划阶段可能出现合并，生成阶段会拒绝**——下一轮必须先补这一段 |
 | P5 接 `CanonicalHiddenUnitBuilder` | 复用 `ArmorNormalizationService` 的做法 |
 | 来源部件表改造 | 两段式加载（TOC 立即列出全部 unit → 后台算可见性）+「作为来源」列 + 披风标「不参与」 |
 | 自动导入 Mod 库 | `AutoImport` 复选框 + `new ImportService(_library, informationCenter: _library.InformationCenter).ImportPathAsync(output, ct)`；替换当前 Mod 用 `_library.ReplaceStoredFilesAsync(nodeId, dir, ct)` |
-| 删旧规划器 | 等 A/B 对比通过 |
+| 删旧规划器 | A/B 已通过（旧结果全保留 + 多 3 个），可以开始迁移 `EquipmentUnitCatalogServiceTests` 并翻转默认值 |
+| 计划表显示新原因 | 计划表目前只认识「命中 / 强制命中 / 隐藏 / 强制隐藏」四种 `Reason`；新增的「广播 / 改挂 / 合并」需要补颜色规则 |
