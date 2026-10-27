@@ -114,6 +114,24 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			await SqliteSchema.GetMetaAsync(connection, "source_fingerprint", cancellationToken).ConfigureAwait(false) ?? string.Empty);
 	}
 
+	// 作用：摘要缓存（按"索引库路径"键控，指纹判新鲜，重建时显式作废）。
+	//
+	// 为什么必须有：这条查询是 archives LEFT JOIN archive_entries（35 万行）的 GROUP BY，
+	// 外加每个归档一次 archive_issues 的 EXISTS。实测 ~215ms，而且**每次**打开护甲页
+	// 都会跑一遍——信息中心的无节点事实账本只做并发合并、做完就移除（见
+	// docs/armor-registry-page-perf-20261027.md §1 A2/A3）。
+	//
+	// 为什么可以缓存：摘要只取决于索引库本身的内容，而索引库由 source_fingerprint
+	// 唯一标识。指纹不变，聚合结果就不可能变。
+	//
+	// 但**只**看指纹不够：展示名与分类来自 friendlynames / archivehashes，
+	// 它们不在指纹里。只换了命名数据的一次重建会得到完全相同的指纹，
+	// 于是重建路径必须无条件作废（见 BuildOrRebuildAsync 里的 TryRemove）。
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ArchiveSummaryCacheEntry> SummaryCache =
+		new(StringComparer.OrdinalIgnoreCase);
+
+	private readonly record struct ArchiveSummaryCacheEntry(string Fingerprint, IReadOnlyList<GameDataArchiveSummary> Summaries);
+
 	public async ValueTask<IReadOnlyList<GameDataArchiveSummary>> GetArchiveSummariesAsync(CancellationToken cancellationToken = default)
 	{
 		if (!File.Exists(_paths.DbPath))
@@ -121,6 +139,24 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 			return Array.Empty<GameDataArchiveSummary>();
 		}
 
+		// 指纹是 5 次 meta 单行读，比下面那条聚合便宜两个数量级。
+		// 拿不到指纹（索引半成品）时不做缓存，直接读——那种状态下"能读到什么"本身就不确定。
+		var fingerprint = await GetFingerprintAsync(cancellationToken).ConfigureAwait(false);
+		if (fingerprint is not null
+			&& SummaryCache.TryGetValue(_paths.DbPath, out var cached)
+			&& string.Equals(cached.Fingerprint, fingerprint.SourceFingerprint, StringComparison.OrdinalIgnoreCase))
+		{
+			return cached.Summaries;
+		}
+
+		var summaries = await ReadArchiveSummariesAsync(cancellationToken).ConfigureAwait(false);
+		if (fingerprint is not null)
+			SummaryCache[_paths.DbPath] = new ArchiveSummaryCacheEntry(fingerprint.SourceFingerprint, summaries);
+		return summaries;
+	}
+
+	private async ValueTask<IReadOnlyList<GameDataArchiveSummary>> ReadArchiveSummariesAsync(CancellationToken cancellationToken)
+	{
 		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
@@ -424,6 +460,10 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		// Readers use pooled shared-cache connections. Purge their pre-rebuild pages so
 		// in-process catalog queries observe the committed index without requiring restart.
 		SqliteConnection.ClearAllPools();
+		// 摘要缓存按指纹判新鲜，但**展示名与分类**来自 friendlynames / archivehashes，
+		// 它们不在 source_fingerprint 里。所以重建之后必须无条件作废，
+		// 否则"只换了命名数据、游戏文件没变"的一次重建会一直读到旧名字。
+		SummaryCache.TryRemove(_paths.DbPath, out _);
 
 		progress?.Report(new IndexBuildProgress(total, Math.Max(total, 1), "基础资产索引已完成；跨护甲高级数据按需建立。"));
 	}

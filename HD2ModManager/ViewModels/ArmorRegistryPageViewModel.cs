@@ -43,8 +43,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private bool modelDefinitionsDirty;
 	private bool baselineEnabled;
 	private HashSet<(uint Target, uint Source)> baselineMappings = [];
-	private string statusTitle = "尚未读取";
-	private string statusDetail = "正在等待读取运行时护甲注册状态。";
+	private string statusTitle = "正在读取";
+	private string statusDetail = "正在等待模组库快照与启动部署落定，随后读取护甲目录与覆盖事实。";
 	private string revisionText = "revision —";
 	private string providersSearchText = string.Empty;
 	private string availableSearchText = string.Empty;
@@ -67,6 +67,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes = [];
 	private bool componentEditorFollowSource = true;
 	private bool hasLoadedCatalog;
+	// 取数还没结束（含"在等启动维护的闸门"）。
+	// 存在的理由只有一个：空列表必须能区分"还没读到"和"真的没有"。
+	// 以前两者在界面上长得一模一样，空状态还写着"所有护甲都已分配为视觉来源或映射目标"——
+	// 用户看到的是一个错误结论（见 docs/armor-registry-page-perf-20261027.md §1 A6）。
+	private bool isLoadingCatalog = true;
 	// 首次加载是"单飞"的：启动预热与用户首开共用同一个 Task。
 	// 没有它就有两个坑——预热与首开各读一遍；或者预热还在跑时用户点开页面，
 	// RefreshAsync 因 IsBusy 直接返回，页面停在空状态。
@@ -330,6 +335,23 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public string StatusTitle { get => statusTitle; private set => SetField(ref statusTitle, value); }
 	public string StatusDetail { get => statusDetail; private set => SetField(ref statusDetail, value); }
 	public string RevisionText { get => revisionText; private set => SetField(ref revisionText, value); }
+	/// <summary>取数是否还没结束。空列表据此显示"正在读取"而不是"已经没有了"。</summary>
+	public bool IsLoadingCatalog
+	{
+		get => isLoadingCatalog;
+		private set
+		{
+			if (!SetField(ref isLoadingCatalog, value)) return;
+			OnPropertyChanged(nameof(ProvidersEmptyMessage));
+			OnPropertyChanged(nameof(AvailableEmptyMessage));
+		}
+	}
+	public string ProvidersEmptyMessage => isLoadingCatalog
+		? "正在读取护甲目录…"
+		: "将右侧一个护甲拖到这里，设为视觉来源。";
+	public string AvailableEmptyMessage => isLoadingCatalog
+		? "正在读取护甲目录…"
+		: "所有护甲都已分配为视觉来源或映射目标。";
 	public string RegistryPath => service.RegistryRoot;
 	public string WorkspacePath => service.WorkspacePath;
 	public string ProvidersSummary => providersSearchText.Length == 0
@@ -436,12 +458,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		IsBusy = true;
 		try
 		{
-			// 目录读取（SQLite）与快照读取都会在调用线程上同步跑完，覆盖事实更要读索引与全部已部署 patch。
-			// 预热发生在启动后的空闲时刻，绝不能把这些压到 UI 线程上——所以预热路径整体丢到线程池，
-			// 只有最后的 ApplySnapshot 回到 UI 线程（它要改绑定到视图的集合）。
-			var inputs = isWarmUp
-				? await Task.Run(LoadCatalogInputsAsync).ConfigureAwait(true)
-				: await LoadCatalogInputsAsync().ConfigureAwait(true);
+			// 目录读取（SQLite）、快照读取与覆盖事实（要读索引与全部已部署 patch）都是重活。
+			// 以前只有**预热**路径丢线程池，用户真正打开的那次反而在 UI 线程上起跑——
+			// 那正是最不该冻的一刻。两条路径现在一样：整体丢线程池，只有最后的
+			// ApplySnapshot 回到 UI 线程（它要改绑定到视图的集合）。
+			var inputs = await Task.Run(LoadCatalogInputsAsync).ConfigureAwait(true);
 			if (inputs is not { } loaded) return;
 			cachedCatalog = loaded.Catalog;
 			cachedArmorDisplayFacts = loaded.ArmorDisplayFacts;
@@ -464,6 +485,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		finally
 		{
 			IsBusy = false;
+			// 取数结束（成功、失败或没拿到数据）之后，空列表就不再是"还在读"了。
+			// 失败时 StatusTitle 已经是"读取失败"，用户能自己连起来。
+			IsLoadingCatalog = false;
 		}
 	}
 
@@ -722,7 +746,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			var mod = library.Get(current.ToString("N"));
 			var icon = new[] { mod?.Image, mod?.IconPath, mod?.ThumbImage }
 				.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
-			if (icon is not null) return icon;
+			// 原始 icon.png 可能是 1024×1024，而列表格只有 36×36。
+			// 模组库页与配置页早就在读 ThumbnailService 的 72px 磁盘缓存，只有护甲页
+			// （和另外四个工具页）直接把原图交给转换器去解码——实测 15~44ms/张，全在 UI 线程。
+			// 缓存还没生成时退回原图：宁可慢一次，也不要显示空白。
+			if (icon is not null) return ThumbnailService.GetExistingThumbnailPath(icon, 72) ?? icon;
 			if (parents.TryGetValue(current, out var parentIds))
 			{
 				foreach (var parentId in parentIds) queue.Enqueue(parentId);
@@ -733,17 +761,24 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public void ApplyProviderSelection(IReadOnlyList<string> selectedKeys)
 	{
-		ApplyMutuallyExclusiveSelection("ArmorRegistry:Providers", Providers, selectedKeys);
+		ApplyMutuallyExclusiveSelection(ArmorRegistryScopes.Providers, Providers, selectedKeys);
 	}
 
 	public void ApplyDetailSelection(IReadOnlyList<string> selectedKeys)
 	{
-		ApplyMutuallyExclusiveSelection("ArmorRegistry:Targets", ProviderDetailItems, selectedKeys);
+		ApplyMutuallyExclusiveSelection(ArmorRegistryScopes.Targets, ProviderDetailItems, selectedKeys);
 	}
 
+	// 作用域要跟着"左侧现在是什么"走，不能恒为 Available。
+	// 底栏的动作完全由作用域推导：Available → 「转为视觉对象」，
+	// AvailableAsTarget → 「注册为映射目标」。以前两者共用 Available，
+	// 于是多选永远只会变成视觉来源（见 docs/armor-registry-page-perf-20261027.md §4）。
 	public void ApplyAvailableSelection(IReadOnlyList<string> selectedKeys)
 	{
-		ApplyMutuallyExclusiveSelection("ArmorRegistry:Available", AvailableArmors, selectedKeys);
+		ApplyMutuallyExclusiveSelection(
+			IsProviderDetailOpen ? ArmorRegistryScopes.AvailableAsTarget : ArmorRegistryScopes.Available,
+			AvailableArmors,
+			selectedKeys);
 	}
 
 	private void ApplyMutuallyExclusiveSelection(
@@ -1087,17 +1122,34 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					sourceChoice.IsCustomModel);
 			})
 			.ToArray();
+		var unpaired = 0;
 		foreach (var id in ids)
 		{
 			if (!Choices.TryGetValue(id, out var targetChoice)
 				|| Mappings.Any(mapping => mapping.Target.ItemId == id)
 				|| Providers.Any(provider => provider.MemberItemIds.Contains(id))) continue;
 			var sourceId = RuntimeArmorMappingPairing.FindUniqueSourceForTarget(sourceMembers, targetChoice.KitKind);
-			if (sourceId is null || sourceId == id || !Choices.TryGetValue(sourceId.Value, out var sourceChoice)) continue;
+			if (sourceId is null || sourceId == id || !Choices.TryGetValue(sourceId.Value, out var sourceChoice))
+			{
+				unpaired++;
+				continue;
+			}
 			Mappings.Add(new RuntimeArmorMappingRowViewModel(
 				targetChoice,
 				sourceChoice,
 				sourceChoice.IsCustomModel ? sourceChoice.ModelKey : null));
+		}
+		// 配对失败以前是纯静默：点了"注册到该视觉对象"，界面毫无反应，也没有任何解释。
+		// 配对规则是"来源里同类型的候选必须恰好一个"（RuntimeArmorMappingPairing），
+		// 不满足就不建映射——这是对的，但用户必须知道为什么没反应。
+		if (unpaired > 0)
+		{
+			notifications.Show(
+				$"{unpaired} 个护甲没能配到该视觉来源：来源里同类型（护甲 / 头盔）的候选不是恰好一个。"
+				+ "请先把来源拆成单个护甲，再逐个添加。",
+				NotificationLevel.Warning,
+				TimeSpan.FromSeconds(8),
+				"护甲映射");
 		}
 		foreach (var sourceId in sourceIds)
 			if (ids.Any(id => Mappings.Any(mapping => mapping.Source.ItemId == sourceId && mapping.Target.ItemId == id)))

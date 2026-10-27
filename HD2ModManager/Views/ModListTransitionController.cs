@@ -23,6 +23,10 @@ internal sealed class ModListTransitionController : IDisposable
     private readonly FrameworkElement _outgoingPresentationLayer;
     private readonly bool _supportsDualPresentation;
     private readonly DispatcherTimer _animationTimer = new();
+    // AwaitingLayout 的看门狗。见 OnLayoutWatchdogTick：过渡在"列表被折叠/移除"
+    // 这类情况下永远等不到布局，而卡在 AwaitingLayout 的代价是列表永久不可点
+    // （ModListPanel 把 IsHitTestVisible 绑在过渡状态上），bulk 过渡时还永久全透明。
+    private readonly DispatcherTimer _layoutWatchdog = new() { Interval = TimeSpan.FromMilliseconds(LayoutWatchdogMilliseconds) };
     private IEnumerable? _observedSource;
     private IModListProjectionSource? _projectionSource;
     private INotifyCollectionChanged? _observedItems;
@@ -45,6 +49,9 @@ internal sealed class ModListTransitionController : IDisposable
     private static TimeSpan Duration(double milliseconds)
         => TimeSpan.FromMilliseconds(milliseconds);
 
+    // 布局落定的上限。正常一轮是 40~150ms（实测），600ms 之后还没落定就是等不到了。
+    private const double LayoutWatchdogMilliseconds = 600;
+
     public ModListTransitionController(
         FrameworkElement owner,
         ItemsControl itemsList,
@@ -66,6 +73,7 @@ internal sealed class ModListTransitionController : IDisposable
         PresentedItems = presentedItems;
         OutgoingPresentedItems = outgoingPresentedItems;
         _animationTimer.Tick += OnAnimationTimerTick;
+        _layoutWatchdog.Tick += OnLayoutWatchdogTick;
     }
 
     // Rich plan pages reuse the controller's row-level FLIP path but do not
@@ -146,6 +154,8 @@ internal sealed class ModListTransitionController : IDisposable
         if (_disposed) return;
         _disposed = true;
         Detach();
+        _layoutWatchdog.Stop();
+        _layoutWatchdog.Tick -= OnLayoutWatchdogTick;
         _animationTimer.Tick -= OnAnimationTimerTick;
     }
 
@@ -176,6 +186,16 @@ internal sealed class ModListTransitionController : IDisposable
             "ModList.SourceChanged",
             $"action={action}; phase={_phase}; desired={desired.Count}",
             threshold: 12);
+
+        // 不可见的列表没有布局可等。以前这条路径照样走 BeginTransition，
+        // 于是 phase 停在 AwaitingLayout、IsHitTestVisible 停在 false，
+        // 要等用户切走再切回来（Suspend → Cancel）才恢复 —— 用户看到的就是
+        // "列表是空的/点不动，过一会儿又好了"。折叠面板必须直接落定。
+        if (!CanAnimate)
+        {
+            SettleImmediately(desired);
+            return;
+        }
 
         if (_phase == TransitionPhase.Playing)
         {
@@ -208,8 +228,64 @@ internal sealed class ModListTransitionController : IDisposable
         BeginTransition(desired);
     }
 
+    // 能不能排动画：既要在树上，也要真的可见。
+    // 折叠（Visibility=Collapsed 的祖先）与"已从宿主移除但还没重新插入"都不满足。
+    private bool CanAnimate => _owner.IsLoaded && _owner.IsVisible;
+
+    // 不播动画，直接把目标状态落定。三条早退路径（不可见、布局等不到、未加载）共用。
+    private void SettleImmediately(IReadOnlyList<object> desired)
+    {
+        if (_phase != TransitionPhase.Idle || _transitionPending) Cancel();
+        if (HasStructuralDifference(PresentedItems, desired))
+            ReplacePresentedInitial(desired);
+        else
+            SynchronizePresentedItems(desired);
+    }
+
+    // 把状态机收回到 Idle，不播动画。调用方已经改完 PresentedItems 的场合直接调；
+    // 如果还压着一份没应用的 _pendingDesired，这里必须补上——否则用户会看到更旧的内容。
+    private void SettleWithoutAnimation()
+    {
+        var pending = _pendingDesiredDirty ? _pendingDesired : null;
+        _transitionPending = false;
+        _pendingDesired = null;
+        _pendingDesiredDirty = false;
+        _layoutDirty = false;
+        _layoutWatchdog.Stop();
+        _itemsList.LayoutUpdated -= OnLayoutUpdated;
+        _before.Clear();
+        _bulkVisualTransition = null;
+        if (pending is not null)
+        {
+            if (HasStructuralDifference(PresentedItems, pending))
+                ReplacePresentedInitial(pending);
+            else
+                SynchronizePresentedItems(pending);
+        }
+        FinishRound();
+    }
+
+    private void OnLayoutWatchdogTick(object? sender, EventArgs e)
+    {
+        _layoutWatchdog.Stop();
+        if (_disposed || _phase != TransitionPhase.AwaitingLayout) return;
+        // 布局在预算内没落定。最常见的原因是列表在过渡途中被折叠或移出了宿主。
+        // 放弃这一轮动画，比让列表永久不可点要好得多。留一条日志：这是异常路径，
+        // 下一次用户报"卡住"时它就是确凿证据。
+        LogService.Warn(
+            $"[UIPerf] mod-list-layout-watchdog; pending={_transitionPending}; items={_itemsList.Items.Count}; "
+            + $"ownerLoaded={_owner.IsLoaded}; ownerVisible={_owner.IsVisible}; bulk={_bulkVisualTransition is not null}.");
+        SettleWithoutAnimation();
+    }
+
     private void BeginTransition(IReadOnlyList<object> desired)
     {
+        if (!CanAnimate)
+        {
+            SettleImmediately(desired);
+            return;
+        }
+
         if (!_transitionPending)
         {
             var useBulkVisualTransition = ShouldUseBulkVisualTransition(desired);
@@ -232,6 +308,8 @@ internal sealed class ModListTransitionController : IDisposable
         _layoutDirty = true;
         _itemsList.LayoutUpdated -= OnLayoutUpdated;
         _itemsList.LayoutUpdated += OnLayoutUpdated;
+        _layoutWatchdog.Stop();
+        _layoutWatchdog.Start();
     }
 
     private void OnLayoutUpdated(object? sender, EventArgs e)
@@ -266,7 +344,18 @@ internal sealed class ModListTransitionController : IDisposable
 
     private void PlayPending()
     {
-        if (_disposed || !_transitionPending || !_owner.IsLoaded) return;
+        if (_disposed || !_transitionPending) return;
+        _layoutWatchdog.Stop();
+        if (!_owner.IsLoaded)
+        {
+            // 没有布局就不会有容器可动。以前这里直接 return，把 _transitionPending
+            // 与 phase 留在 AwaitingLayout —— 下一次 BeginTransition 会跳过
+            // PrepareBulkVisualTransition，复用上一轮残留的 _before / _bulkVisualTransition，
+            // 动画于是从错误的位置开始。现在按"这一轮作废"处理，状态机照常收口。
+            SettleWithoutAnimation();
+            return;
+        }
+
         UiPerformanceDiagnostics.RecordElapsed(
             "ModList.TransitionLayoutWait",
             _layoutWaitStartedTimestamp,
@@ -604,6 +693,7 @@ internal sealed class ModListTransitionController : IDisposable
             _pendingAnimationStartHandler = null;
         }
         _animationTimer.Stop();
+        _layoutWatchdog.Stop();
         _itemsList.LayoutUpdated -= OnLayoutUpdated;
         CompleteBulkVisualTransition();
         _overlay.Children.Clear();

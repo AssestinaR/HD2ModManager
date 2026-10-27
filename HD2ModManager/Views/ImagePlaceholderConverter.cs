@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
@@ -51,15 +51,38 @@ namespace HD2ModManager.Views
         private static int ParseDecodePixelWidth(object parameter)
             => parameter is not null && int.TryParse(parameter.ToString(), out var width) ? width : 0;
 
+        // 缓存键里带 mtime，是为了"图标被换掉"时能自然失效。但 mtime 的代价是
+        // **每次** Convert 两次文件系统调用（File.Exists + GetLastWriteTimeUtc），
+        // 而 Convert 跑在 UI 线程上，且列表每次 Reset 都会把可见行重新绑一遍
+        // （见 docs/armor-registry-page-perf-20261027.md §5 E2）。
+        //
+        // 于是把 mtime 探针本身缓存一个很短的窗口：同一批重建里的重复绑定不再摸盘，
+        // 而图标真的被替换时最多 2 秒就能看到新图。图标不是需要毫秒级新鲜度的数据。
+        private const long MtimeProbeTtlTicks = TimeSpan.TicksPerSecond * 2;
+        private static readonly ConcurrentDictionary<string, MtimeProbe> MtimeProbes = new(StringComparer.OrdinalIgnoreCase);
+
+        private readonly record struct MtimeProbe(long Ticks, long SampledAtTicks);
+
         private static string BuildCacheKey(string path, int decodePixelWidth)
         {
-            long writeTicks = 0;
+            var writeTicks = SampleWriteTicks(path);
+            return $"{path}\u001f{decodePixelWidth}\u001f{writeTicks}";
+        }
+
+        private static long SampleWriteTicks(string path)
+        {
+            var now = DateTime.UtcNow.Ticks;
+            if (MtimeProbes.TryGetValue(path, out var probe) && now - probe.SampledAtTicks < MtimeProbeTtlTicks)
+                return probe.Ticks;
+
+            long ticks = 0;
             try
             {
-                if (File.Exists(path)) writeTicks = File.GetLastWriteTimeUtc(path).Ticks;
+                if (File.Exists(path)) ticks = File.GetLastWriteTimeUtc(path).Ticks;
             }
             catch { }
-            return $"{path}\u001f{decodePixelWidth}\u001f{writeTicks}";
+            MtimeProbes[path] = new MtimeProbe(ticks, now);
+            return ticks;
         }
 
         private static BitmapSource? LoadPlaceholderImage()

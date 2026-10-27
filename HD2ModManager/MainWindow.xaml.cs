@@ -300,6 +300,7 @@ namespace HD2ModManager
                 shell.AttachSelectedDecorationsCommand,
                 shell.RemoveSelectedOptionsFromHostCommand,
                 shell.PromoteArmorProvidersCommand,
+                shell.RegisterArmorTargetsCommand,
                 shell.ReleaseArmorProvidersCommand,
                 shell.ReleaseArmorTargetsCommand,
                 shell.CancelSelectionCommand);

@@ -67,9 +67,10 @@ namespace HD2ModManager.ViewModels
         public bool IsLibrarySelection => HasSelection && string.Equals(_selection.Scope, "Library", StringComparison.OrdinalIgnoreCase);
         public bool IsProfileSelection => HasSelection && string.Equals(_selection.Scope, "Profile", StringComparison.OrdinalIgnoreCase);
         public bool IsDecorationHostSelection => HasSelection && _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true;
-        public bool IsArmorRegistryAvailableSelection => HasSelection && string.Equals(_selection.Scope, "ArmorRegistry:Available", StringComparison.Ordinal);
-        public bool IsArmorRegistryProviderSelection => HasSelection && string.Equals(_selection.Scope, "ArmorRegistry:Providers", StringComparison.Ordinal);
-        public bool IsArmorRegistryTargetSelection => HasSelection && string.Equals(_selection.Scope, "ArmorRegistry:Targets", StringComparison.Ordinal);
+        public bool IsArmorRegistryAvailableSelection => HasSelection && string.Equals(_selection.Scope, ArmorRegistryScopes.Available, StringComparison.Ordinal);
+        public bool IsArmorRegistryAvailableTargetSelection => HasSelection && string.Equals(_selection.Scope, ArmorRegistryScopes.AvailableAsTarget, StringComparison.Ordinal);
+        public bool IsArmorRegistryProviderSelection => HasSelection && string.Equals(_selection.Scope, ArmorRegistryScopes.Providers, StringComparison.Ordinal);
+        public bool IsArmorRegistryTargetSelection => HasSelection && string.Equals(_selection.Scope, ArmorRegistryScopes.Targets, StringComparison.Ordinal);
         public bool IsRelationshipSourceSelection => IsLibrarySelection || IsProfileSelection;
         public string? RelationshipHostId => _relationshipHostId;
         public string RelationshipHostName => _relationshipHostName ?? "当前 Mod";
@@ -97,9 +98,16 @@ namespace HD2ModManager.ViewModels
         public string SetAsOptionText => $"设为“{RelationshipHostName}”的选项";
         public string AttachDecorationsToHostText => $"附加到“{RelationshipHostName}”";
         public bool ShowPromoteArmorProviders => IsArmorRegistryAvailableSelection;
+        public bool ShowRegisterArmorTargets => IsArmorRegistryAvailableTargetSelection;
         public bool ShowReleaseArmorProviders => IsArmorRegistryProviderSelection;
         public bool ShowReleaseArmorTargets => IsArmorRegistryTargetSelection;
-        public string SelectionSummary => IsArmorRegistryAvailableSelection || IsArmorRegistryProviderSelection || IsArmorRegistryTargetSelection
+        // 护甲映射页的四种选择：右侧未管理护甲（左侧是来源列表）、右侧未管理护甲
+        // （左侧停在某个来源的目标列表）、左侧来源、左侧目标。
+        public bool IsArmorRegistrySelection => HasSelection
+            && (ArmorRegistryScopes.IsAvailable(_selection.Scope)
+                || string.Equals(_selection.Scope, ArmorRegistryScopes.Providers, StringComparison.Ordinal)
+                || string.Equals(_selection.Scope, ArmorRegistryScopes.Targets, StringComparison.Ordinal));
+        public string SelectionSummary => IsArmorRegistrySelection
             ? $"已选择 {_selection.SelectedIds.Count} 个目标"
             : _selection.Summary;
         public string EditLabel => IsPositionEditor ? string.Empty
@@ -501,6 +509,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsProfileSelection));
             OnPropertyChanged(nameof(IsDecorationHostSelection));
             OnPropertyChanged(nameof(IsArmorRegistryAvailableSelection));
+            OnPropertyChanged(nameof(IsArmorRegistryAvailableTargetSelection));
             OnPropertyChanged(nameof(IsArmorRegistryProviderSelection));
             OnPropertyChanged(nameof(IsArmorRegistryTargetSelection));
             OnPropertyChanged(nameof(IsRelationshipSourceSelection));
@@ -518,6 +527,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowMove));
             OnPropertyChanged(nameof(ShowInsert));
             OnPropertyChanged(nameof(ShowPromoteArmorProviders));
+            OnPropertyChanged(nameof(ShowRegisterArmorTargets));
+            OnPropertyChanged(nameof(IsArmorRegistrySelection));
             OnPropertyChanged(nameof(ShowReleaseArmorProviders));
             OnPropertyChanged(nameof(ShowReleaseArmorTargets));
             OnPropertyChanged(nameof(MoveButtonText));

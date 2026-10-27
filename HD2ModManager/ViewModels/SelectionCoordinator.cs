@@ -39,6 +39,23 @@ namespace HD2ModManager.ViewModels
         }
     }
 
+    // 护甲映射页的选择作用域。集中在这里是因为**底栏的动作由它决定**：
+    // 同一批右侧选中的护甲，"来源列表里"是「转为视觉对象」，
+    // "某个来源的目标列表里"是「注册为映射目标」——这是两种完全不同的操作，
+    // 以前它们共用一个作用域，于是多选永远只会变成视觉来源（见
+    // docs/armor-registry-page-perf-20261027.md §4 D1）。
+    internal static class ArmorRegistryScopes
+    {
+        public const string Available = "ArmorRegistry:Available";
+        public const string AvailableAsTarget = "ArmorRegistry:AvailableAsTarget";
+        public const string Providers = "ArmorRegistry:Providers";
+        public const string Targets = "ArmorRegistry:Targets";
+
+        public static bool IsAvailable(string? scope)
+            => string.Equals(scope, Available, StringComparison.Ordinal)
+                || string.Equals(scope, AvailableAsTarget, StringComparison.Ordinal);
+    }
+
     // 作用：维护跨页面唯一的临时选择上下文，供底部悬浮操作栏使用。
     public sealed class SelectionCoordinator : BaseViewModel
     {

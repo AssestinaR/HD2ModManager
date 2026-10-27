@@ -15,7 +15,7 @@ namespace HD2ModManager.ViewModels
 {
     public sealed partial class ShellViewModel : BaseViewModel, IAsyncDisposable
     {
-        private enum ArmorRegistrySelectionAction { Promote, ReleaseProviders, ReleaseTargets }
+        private enum ArmorRegistrySelectionAction { Promote, RegisterTargets, ReleaseProviders, ReleaseTargets }
 
         // 作用：一次导航**之前**的页面组合，用于按 Esc 逐层返回。
         // 只保存"重建这次组合所需的最小信息"：左右页面类型、右槽是否存在、
@@ -149,6 +149,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand AttachSelectedDecorationsCommand { get; }
         public RelayCommand RemoveSelectedOptionsFromHostCommand { get; }
         public RelayCommand PromoteArmorProvidersCommand { get; }
+        public RelayCommand RegisterArmorTargetsCommand { get; }
         public RelayCommand ReleaseArmorProvidersCommand { get; }
         public RelayCommand ReleaseArmorTargetsCommand { get; }
         public RelayCommand EnableSelectedDecorationsCommand { get; }
@@ -305,6 +306,7 @@ namespace HD2ModManager.ViewModels
             AttachSelectedDecorationsCommand = new RelayCommand(async _ => await AttachSelectedDecorationsAsync());
             RemoveSelectedOptionsFromHostCommand = new RelayCommand(async _ => await RemoveSelectedOptionsFromHostAsync());
             PromoteArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.Promote));
+            RegisterArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.RegisterTargets));
             ReleaseArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseProviders));
             ReleaseArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseTargets));
             EnableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(true));
@@ -760,6 +762,9 @@ namespace HD2ModManager.ViewModels
             {
                 case ArmorRegistrySelectionAction.Promote:
                     page.PromoteAvailableAsProviders(ids);
+                    break;
+                case ArmorRegistrySelectionAction.RegisterTargets:
+                    page.AssignFromAvailable(ids);
                     break;
                 case ArmorRegistrySelectionAction.ReleaseProviders:
                     page.ReleaseProviderSelection(ids);

@@ -20,6 +20,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         ICommand attachSelectedDecorationsCommand,
         ICommand removeSelectedOptionsFromHostCommand,
         ICommand promoteArmorProvidersCommand,
+        ICommand registerArmorTargetsCommand,
         ICommand releaseArmorProvidersCommand,
         ICommand releaseArmorTargetsCommand,
         ICommand cancelSelectionCommand)
@@ -34,6 +35,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         AttachSelectedDecorationsCommand = attachSelectedDecorationsCommand;
         RemoveSelectedOptionsFromHostCommand = removeSelectedOptionsFromHostCommand;
         PromoteArmorProvidersCommand = promoteArmorProvidersCommand;
+        RegisterArmorTargetsCommand = registerArmorTargetsCommand;
         ReleaseArmorProvidersCommand = releaseArmorProvidersCommand;
         ReleaseArmorTargetsCommand = releaseArmorTargetsCommand;
         CancelSelectionCommand = cancelSelectionCommand;
@@ -58,6 +60,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public string AttachDecorationsToHostText => _bottomBar.AttachDecorationsToHostText;
     public bool ShowRemoveOptionsFromHost => _bottomBar.ShowRemoveOptionsFromHost;
     public bool ShowPromoteArmorProviders => _bottomBar.ShowPromoteArmorProviders;
+    public bool ShowRegisterArmorTargets => _bottomBar.ShowRegisterArmorTargets;
     public bool ShowReleaseArmorProviders => _bottomBar.ShowReleaseArmorProviders;
     public bool ShowReleaseArmorTargets => _bottomBar.ShowReleaseArmorTargets;
     public ICommand BeginMoveCommand { get; }
@@ -71,6 +74,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public ICommand AttachSelectedDecorationsCommand { get; }
     public ICommand RemoveSelectedOptionsFromHostCommand { get; }
     public ICommand PromoteArmorProvidersCommand { get; }
+    public ICommand RegisterArmorTargetsCommand { get; }
     public ICommand ReleaseArmorProvidersCommand { get; }
     public ICommand ReleaseArmorTargetsCommand { get; }
     public ICommand CancelSelectionCommand { get; }

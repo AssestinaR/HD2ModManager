@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
@@ -47,6 +47,99 @@ public sealed class AssetArchiveIndexServiceTests
 			Assert.NotNull(details);
 			Assert.Equal("Installed authoritative name", details.Summary.DisplayName);
 			Assert.Equal("Armor", details.Summary.Category);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	// 作用：钉住归档摘要缓存的失效条件。
+	//
+	// 为什么这条必须有：摘要查询是 archives LEFT JOIN archive_entries（35 万行）的 GROUP BY，
+	// 实测 ~215ms，而护甲页每打开一次就会问一次（见 docs/armor-registry-page-perf-20261027.md
+	// §1 A2/A3）。所以它被缓存了。但缓存键是 source_fingerprint，而**展示名与分类来自
+	// friendlynames / archivehashes**，两者都不在指纹里 —— 只换命名数据的一次重建会
+	// 得到完全相同的指纹。如果失效只看指纹，用户改完名字重建后会一直看到旧名字。
+	//
+	// 这条用例刻意让两次构建的指纹完全相同，于是"第二次读到新名字"只可能来自显式失效。
+	[Fact]
+	public async Task Rebuild_WithUnchangedGameData_InvalidatesTheArchiveSummaryCache()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc([new AssetKey(20, 200)]));
+			// 权威快照里刻意不带归档名，让社区命名成为唯一来源。
+			var authority = new GameDataAuthoritySnapshot(
+				GameDataAuthoritySourceKind.PlaintextDataLibrary,
+				"installed-game-data",
+				"authority-fingerprint",
+				DateTimeOffset.UtcNow,
+				Array.Empty<GameDataAuthorityKit>(),
+				Array.Empty<CoreIssue>())
+			{
+				ArchiveNames = []
+			};
+			var paths = new StoragePaths(appRoot);
+
+			var first = new AssetArchiveIndexService(paths, authorityProvider: new FixedAuthorityProvider(authority));
+			await first.BuildOrRebuildAsync(gameData, CommunityName(archive, "First name"));
+			var firstFingerprint = await first.GetFingerprintAsync();
+			Assert.Equal("First name", Assert.Single(await first.GetArchiveSummariesAsync()).DisplayName);
+
+			// 第二次构建用**另一个实例**：顺带钉住"缓存是进程级的，重建会作废它"。
+			var second = new AssetArchiveIndexService(paths, authorityProvider: new FixedAuthorityProvider(authority));
+			await second.BuildOrRebuildAsync(gameData, CommunityName(archive, "Second name"));
+			var secondFingerprint = await second.GetFingerprintAsync();
+
+			// 游戏文件一个字节都没动，指纹必须相同——否则这条用例就证明不了失效逻辑。
+			Assert.NotNull(firstFingerprint);
+			Assert.NotNull(secondFingerprint);
+			Assert.Equal(firstFingerprint.SourceFingerprint, secondFingerprint.SourceFingerprint);
+
+			Assert.Equal("Second name", Assert.Single(await second.GetArchiveSummariesAsync()).DisplayName);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	private static string CommunityName(string archive, string name)
+		=> JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>>
+		{
+			["Armor"] = new() { [archive] = name }
+		});
+
+	// 作用：钉住"重复读摘要不再摸那 35 万行"这件事本身。
+	// 指纹与库内容都没变时，第二次必须直接返回同一份结果（同一个实例）——
+	// 只要它重新查了一次库，这条断言就会失败。
+	[Fact]
+	public async Task GetArchiveSummariesAsync_ServesRepeatCallsFromTheFingerprintKeyedCache()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc([new AssetKey(20, 200)]));
+			var service = new AssetArchiveIndexService(new StoragePaths(appRoot));
+			await service.BuildOrRebuildAsync(gameData, "{}");
+
+			var first = await service.GetArchiveSummariesAsync();
+			var second = await service.GetArchiveSummariesAsync();
+
+			Assert.Single(first);
+			Assert.Same(first, second);
 		}
 		finally
 		{

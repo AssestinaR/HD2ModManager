@@ -13,6 +13,11 @@
         <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding AttachDecorationsToHostText}" Command="{Binding AttachSelectedDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowAttachDecorationsToHost, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppSecondaryButton}" Content="从当前 Mod 移除选项" Command="{Binding RemoveSelectedOptionsFromHostCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRemoveOptionsFromHost, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="转为视觉对象" Command="{Binding PromoteArmorProvidersCommand}" Margin="0,0,8,0" Visibility="{Binding ShowPromoteArmorProviders, Converter={StaticResource BoolToVis}}"/>
+        <!--
+            左侧停在"某个视觉来源的目标列表"时，右侧选中的护甲应该变成**映射目标**，
+            而不是又一个视觉来源。两颗按钮互斥显示，语义与单行按钮的提示保持一致。
+        -->
+        <Button Style="{StaticResource AppPrimaryButton}" Content="注册为映射目标" Command="{Binding RegisterArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRegisterArmorTargets, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppSecondaryButton}" Content="解除视觉对象" Command="{Binding ReleaseArmorProvidersCommand}" Margin="0,0,8,0" Visibility="{Binding ShowReleaseArmorProviders, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppSecondaryButton}" Content="解除映射目标" Command="{Binding ReleaseArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowReleaseArmorTargets, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="启用" Command="{Binding EnableDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowEnableDecorations, Converter={StaticResource BoolToVis}}"/>
