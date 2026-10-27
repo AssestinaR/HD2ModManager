@@ -458,8 +458,88 @@ public sealed class CanonicalCrossArmorOrchestrator
 						.Select(mapping => new AdaptationAssetKey(mapping.Source!.UnitAssetKey.TypeId, mapping.Source.UnitAssetKey.FileId))
 						.Distinct()
 						.ToArray();
-					if (directSourceKeys.Length != 1)
-						return Failure(issues, "DirectReuseMultipleSourceUnits", $"快速复用要求目标 Unit 0x{targetUnit.Key.FileId:x16} 的所有命中 Mesh 来自同一个来源 Unit；当前为 {directSourceKeys.Length} 个来源。请调整来源/目标映射后重试；通用 Canonical 重构不再作为替换护甲生产入口。");
+					if (directSourceKeys.Length > 1)
+					{
+						// 装箱时目标格子比来源少 → 多个来源部件要合进同一个输出 Unit。
+						// 走与装饰合并、头盔合并、护甲归一化同一条链路：unit 级 Blender Join。
+						currentCanonicalPhase = "MergeSourceUnits";
+						var hostKey = directSourceKeys[0];
+						var hostUnit = sourceUnits.TryGetValue(hostKey, out var cachedHost)
+							? cachedHost
+							: await ReadSourceUnitAsync(sourceByKey[hostKey], sourceEntries, sourceReadRequest, cancellationToken).ConfigureAwait(false);
+						sourceUnits[hostKey] = hostUnit;
+						var anchor = UnitLodFamilySource.ResolveAnchor(hostUnit.Model);
+						if (anchor is null)
+							return Failure(issues, "MergeHostHasNoVisibleMesh", $"合并宿主 Unit 0x{hostKey.FileId:x16} 没有可读的可见网格。");
+
+						var extras = new List<(AdaptationAssetKey Key, PatchUnitMesh Unit)>();
+						foreach (var extraKey in directSourceKeys.Skip(1))
+						{
+							var extraUnit = sourceUnits.TryGetValue(extraKey, out var cachedExtra)
+								? cachedExtra
+								: await ReadSourceUnitAsync(sourceByKey[extraKey], sourceEntries, sourceReadRequest, cancellationToken).ConfigureAwait(false);
+							sourceUnits[extraKey] = extraUnit;
+							extras.Add((extraKey, extraUnit));
+						}
+
+						var inputsByTargetMesh = new Dictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>>();
+						foreach (var lodTarget in UnitLodFamilySource.ResolveVisibleLodFamily(hostUnit.Model, anchor.Value.Mesh))
+						{
+							var inputs = new List<CanonicalDecorationAppendInput>();
+							foreach (var (extraKey, extraUnit) in extras)
+							{
+								// 按 LOD 序号取，不校验部位族——不同部位的 SemanticInfo 本来就不同。
+								var extraMesh = UnitLodFamilySource.ResolveVisibleMeshAtLod(extraUnit.Model, lodTarget.Raw.LodIndex);
+								if (extraMesh is null) continue;
+								inputs.Add(new CanonicalDecorationAppendInput(
+									UnitLodFamilySource.CreateFragment(extraUnit, extraMesh.Value.Mesh, extraMesh.Value.Raw),
+									MaterialNamespace(extraKey)));
+							}
+							if (inputs.Count != 0) inputsByTargetMesh[lodTarget.Mesh.Index] = inputs;
+						}
+						if (inputsByTargetMesh.Count == 0)
+							return Failure(issues, "MergeNoCommonLod", $"目标 Unit 0x{targetUnit.Key.FileId:x16} 的来源之间没有共同可见 LOD，无法合并。");
+
+						// 合并要把两个来源的骨骼/变换对齐，需要真实头像骨架；直通路径默认不读它。
+						var mergeAvatar = await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(request.GameDataDirectory))
+							.ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+						var merged = new CanonicalDecorationUnitAppender().TryAppendLodFamily(hostUnit, inputsByTargetMesh, mergeAvatar);
+						if (!merged.IsValid || merged.Edit is null)
+							return Failure(issues, merged.Diagnostics);
+
+						// 输出 Unit 自己拥有重建后的 TOC/GPU，但 stream sidecar 仍复用宿主的不可变区间
+						// ——与头盔合并、装饰宿主重建完全一致的做法。
+						var hostEntry = sourceByKey[hostKey];
+						var mergedEntry = new CanonicalPatchSessionEntry(
+							targetUnit.Key,
+							CanonicalPatchEntryOwnership.TargetOutput,
+							merged.Edit.TocData,
+							merged.Edit.GpuResourceData,
+							hostEntry.StreamSize == 0 ? Array.Empty<byte>() : null,
+							hostEntry.Unknown1,
+							hostEntry.Unknown2,
+							hostEntry.Unknown3,
+							hostEntry.Unknown4)
+						{
+							StreamDataSource = hostEntry.StreamSize == 0
+								? null
+								: new CanonicalPayloadSourceRange(hostEntry.SourceFilePath + ".stream", hostEntry.StreamOffset, hostEntry.StreamSize)
+						};
+						mergedEntry = operationWorkspace.Stage(mergedEntry);
+						outputEntries.Add(mergedEntry);
+						workspaceJobs.Add(PatchWorkspaceJobResult.Unit(mergedEntry, $"0x{targetUnit.Key.FileId:x16}"));
+						replacementCount += directMappings.Length;
+						outputUnitCount++;
+						unitTelemetry.Add(CreateUnitJobTelemetryRow(
+							targetIndex + 1, targetUnit.Key, usedHiddenCache: false, hasPlannedReplacement,
+							meshCount: 0, vertexCount: 0, triangleCount: 0,
+							TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+							TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+							unitStopwatch.Elapsed, allocationBefore, gen0Before, gen1Before, gen2Before));
+						Log($"[UNIT-MERGE] Target=0x{targetUnit.Key.FileId:x16} Host=0x{hostKey.FileId:x16} Merged={directSourceKeys.Length} Lods={inputsByTargetMesh.Count} GpuBytes={merged.Edit.GpuResourceData.Length}");
+						ReportProgress(request, "MergeSourceUnits", $"合并来源 Unit {targetIndex + 1}/{targetUnits.Length} 当前Unit=0x{targetUnit.Key.FileId:x16}", targetIndex + 1, Math.Max(targetUnits.Length, 1), totalStopwatch);
+						continue;
+					}
 
 					var directSourceKey = directSourceKeys[0];
 					var directSourceEntry = sourceByKey[directSourceKey];
@@ -963,6 +1043,15 @@ public sealed class CanonicalCrossArmorOrchestrator
 			? $"无法读取来源资源 0x{entry.AssetKey.FileId:x16}。"
 			: string.Join("; ", result.State.Diagnostics.Select(issue => issue.Message));
 		throw new InvalidDataException(message);
+	}
+
+	// 合并时每个来源 Unit 的材质需要一个稳定的命名空间，避免两个来源的同名材质槽互相覆盖。
+	// 与头盔合并、装饰宿主重建用的是同一个口径。
+	private static ulong MaterialNamespace(AdaptationAssetKey key)
+	{
+		var hash = System.Security.Cryptography.SHA256.HashData(
+			System.Text.Encoding.UTF8.GetBytes($"0x{key.TypeId:x16}/0x{key.FileId:x16}"));
+		return BitConverter.ToUInt64(hash, 0);
 	}
 
 	private async ValueTask<PatchUnitMesh> ReadSourceUnitAsync(

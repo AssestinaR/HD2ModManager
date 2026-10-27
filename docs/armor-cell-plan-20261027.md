@@ -177,9 +177,23 @@ A/B 用真实数据跑：来源 `lunalice_l4d2替换RE2310`，目标 BFM-16 / BF
 
 | 项 | 说明 |
 |---|---|
-| P4 接 `TryAppendLodFamily` | cell 分到 2+ part 时走 canonical 重建；1 个 part 仍走「快速复用来源 Unit」。**注意**：`CanonicalCrossArmorOrchestrator` 的直通路径目前要求"目标的所有命中 Mesh 来自同一个来源 Unit"，遇到 `ExtraSources` 非空会报 `DirectReuseMultipleSourceUnits`。生产端还没接合并，所以现在**规划阶段可能出现合并，生成阶段会拒绝**——下一轮必须先补这一段 |
-| P5 接 `CanonicalHiddenUnitBuilder` | 复用 `ArmorNormalizationService` 的做法 |
+| P4 接 `TryAppendLodFamily` | **已接**。目标 Unit 命中多个来源 Unit 时走 unit 级 Blender Join（`CanonicalDecorationUnitAppender.TryAppendLodFamily`，`replaceTargetGeometry: false`），stream sidecar 复用宿主的不可变区间。**但这套数据里触发不到**——见下 |
+| P5 接 `CanonicalHiddenUnitBuilder` | 复用 `ArmorNormalizationService` 的做法（直通路径已经在用它做隐藏 Unit） |
 | 来源部件表改造 | 两段式加载（TOC 立即列出全部 unit → 后台算可见性）+「作为来源」列 + 披风标「不参与」 |
 | 自动导入 Mod 库 | `AutoImport` 复选框 + `new ImportService(_library, informationCenter: _library.InformationCenter).ImportPathAsync(output, ct)`；替换当前 Mod 用 `_library.ReplaceStoredFilesAsync(nodeId, dir, ct)` |
 | 删旧规划器 | A/B 已通过（旧结果全保留 + 多 3 个），可以开始迁移 `EquipmentUnitCatalogServiceTests` 并翻转默认值 |
 | 计划表显示新原因 | 计划表目前只认识「命中 / 强制命中 / 隐藏 / 强制隐藏」四种 `Reason`；新增的「广播 / 改挂 / 合并」需要补颜色规则 |
+
+### 合并生产：已接，但当前数据触发不到
+
+`CanonicalCrossArmorOrchestrator` 的直通路径原本要求"目标的所有来源 Mesh 来自同一个来源 Unit"，
+遇到多个来源会报 `DirectReuseMultipleSourceUnits`。现在多来源会走合并分支。
+
+**但实测这个 mod 触发不到合并**：它只提供 11 个可转移 unit，比任何目标护甲的容量都小。
+把全部 298 个目标一起规划（2016 条映射 / 836 个替换）也是 **0 个合并**，
+只有 2 次广播和 2 次改挂。早先算出的"45% 配对需要合并"假设的是 mod 提供来源 kit 的**全部**
+unit（RE-2310 有 14 个格子），而真实 mod 只提供其中一部分。
+
+所以合并分支目前只有代码路径、没有真实数据验证。它复用的是三个现役服务同一条链路
+（`TryAppendLodFamily` + `HostEntry` 的 stream range），但**下一次遇到富来源/穷目标的组合时要先验证**。
+

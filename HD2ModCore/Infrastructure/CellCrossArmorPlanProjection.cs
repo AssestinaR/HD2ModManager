@@ -193,19 +193,6 @@ internal static class CellCrossArmorPlanProjection
 			.Select(group => group.First())
 			.ToList();
 
-		// 生成端（CanonicalCrossArmorOrchestrator 的直通路径）目前要求"目标的所有来源 Mesh 来自同一个
-		// 来源 Unit"。装箱已经能产出合并方案，但生产还没接，所以先在这里显式告诉用户，
-		// 而不是等生成时才报 DirectReuseMultipleSourceUnits。
-		var mergeCount = mappings.Count(mapping => mapping.RequiresMerge);
-		if (mergeCount > 0)
-		{
-			distinctIssues.Add(new CoreIssue(
-				CoreIssueSeverity.Warning,
-				"CellAssignmentMergeNotProducible",
-				$"{mergeCount} 个目标 Unit 需要合并多个来源部件（目标格子比来源少）；生成端暂不支持合并，"
-				+ "这些目标会在生成阶段失败。请减少目标或改用其他来源，或等合并生产接上。"));
-		}
-
 		plannerDebug.Add($"[CELL-RESULT] Mappings={mappings.Count} Replace={mappings.Count(m => m.WillReplace)} Merged={mappings.Count(m => m.RequiresMerge)} Hidden={mappings.Count(m => !m.WillReplace)}");
 		return new CellCrossArmorPlanResult(mappings, impacts, distinctIssues, assignments.Values.ToArray());
 	}
