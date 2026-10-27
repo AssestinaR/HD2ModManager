@@ -177,12 +177,12 @@ A/B 用真实数据跑：来源 `lunalice_l4d2替换RE2310`，目标 BFM-16 / BF
 
 | 项 | 说明 |
 |---|---|
-| P4 接 `TryAppendLodFamily` | **已接**。目标 Unit 命中多个来源 Unit 时走 unit 级 Blender Join（`CanonicalDecorationUnitAppender.TryAppendLodFamily`，`replaceTargetGeometry: false`），stream sidecar 复用宿主的不可变区间。**但这套数据里触发不到**——见下 |
-| P5 接 `CanonicalHiddenUnitBuilder` | 复用 `ArmorNormalizationService` 的做法（直通路径已经在用它做隐藏 Unit） |
-| 来源部件表改造 | 两段式加载（TOC 立即列出全部 unit → 后台算可见性）+「作为来源」列 + 披风标「不参与」 |
-| 自动导入 Mod 库 | `AutoImport` 复选框 + `new ImportService(_library, informationCenter: _library.InformationCenter).ImportPathAsync(output, ct)`；替换当前 Mod 用 `_library.ReplaceStoredFilesAsync(nodeId, dir, ct)` |
-| 删旧规划器 | A/B 已通过（旧结果全保留 + 多 3 个），可以开始迁移 `EquipmentUnitCatalogServiceTests` 并翻转默认值 |
-| 计划表显示新原因 | 计划表目前只认识「命中 / 强制命中 / 隐藏 / 强制隐藏」四种 `Reason`；新增的「广播 / 改挂 / 合并」需要补颜色规则 |
+| P4 接 `TryAppendLodFamily` | **已接**。目标 Unit 命中多个来源 Unit 时走 unit 级 Blender Join（`replaceTargetGeometry: false`），stream sidecar 复用宿主的不可变区间。**但这套数据里触发不到**——见下 |
+| P5 隐藏未命中的目标 Unit | **本来就已经在生产链路里**：`AutoHideUnmappedTargetUnits` 决定未命中的目标 Unit 是否进入重建列表，Canonical 路径用 `hiddenUnitGenerator` 生成占位并写进 `hiddenUnitCache`。不需要新代码 |
+| 来源部件表改造 | **已做**：两段式加载（清单级 → 网格级）+ 部位/层/身形/ID/作为来源 五列 + 表头「重新计算可见部件」按钮 + 披风与未定位的显式标记 |
+| 自动导入 Mod 库 | **已做**：`AutoImport`（默认开）+ `ImportService.ImportPathAsync`，只导入不启用不部署 |
+| 计划表显示新原因 | **已做**：广播（青）/ 改挂（琥珀）/ 合并（紫）三种颜色规则 |
+| 删旧规划器 | A/B 已通过（旧结果全保留 + 多 3 个），可以开始迁移 `EquipmentUnitCatalogServiceTests` 并翻转 `plannerKind` 默认值 |
 
 ### 合并生产：已接，但当前数据触发不到
 
