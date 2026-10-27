@@ -52,7 +52,9 @@ public static class CoreServices
 			// 它们不挂在任何 Mod 节点上，身份是"游戏目录 + 来源指纹"，因此由中心直接持有。
 			CreateAssetArchiveIndexService(paths),
 			CreateGameDataMappingFactsService(paths),
-			CreateDeployedOverrideGraphService());
+			CreateDeployedOverrideGraphService(),
+			// 护甲→unit 这类权威事实只从索引数据库读（真映射会改写游戏注册表文件）。
+			storagePaths: paths);
 	}
 	public static IModInformationReader CreateModInformationReader()
 		=> new ModInformationReader();

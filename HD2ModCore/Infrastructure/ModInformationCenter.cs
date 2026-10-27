@@ -48,8 +48,12 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	public event EventHandler<ModInformationDiagnostic>? DiagnosticRecorded;
 	public event EventHandler<ModInformationProductionStarted>? ProductionStarted;
 
-	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null, IAssetArchiveIndexService? assetArchiveIndexService = null, IGameDataMappingFactsService? gameDataMappingFactsService = null, IDeployedOverrideGraphService? deployedOverrideGraphService = null)
+	/// <summary>索引数据库的位置：护甲→unit 这类权威事实一律从这里读，不读游戏注册表文件。</summary>
+	private readonly StoragePaths? _storagePaths;
+
+	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null, IAssetArchiveIndexService? assetArchiveIndexService = null, IGameDataMappingFactsService? gameDataMappingFactsService = null, IDeployedOverrideGraphService? deployedOverrideGraphService = null, StoragePaths? storagePaths = null)
 	{
+		_storagePaths = storagePaths;
 		_fileFactsProducer = fileFactsProducer ?? throw new ArgumentNullException(nameof(fileFactsProducer));
 		_assetInventoryProducer = assetInventoryProducer ?? throw new ArgumentNullException(nameof(assetInventoryProducer));
 		_fileFactsCache = fileFactsCache;
@@ -556,7 +560,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		}
 	}
 
-	private static async Task<ModInformationResult<object>> ProduceArmourUnitTableAsync(
+	private async Task<ModInformationResult<object>> ProduceArmourUnitTableAsync(
 		string gameDataDirectory,
 		IReadOnlySet<uint> itemIds,
 		ModInformationRequest request,
@@ -564,9 +568,27 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	{
 		try
 		{
-			var snapshot = await new GameDataAuthorityProvider()
-				.LoadAsync(gameDataDirectory, cancellationToken)
-				.ConfigureAwait(false);
+			// 数据源是索引数据库，**不是**游戏注册表文件：真映射会改写后者，读它可能拿到
+			// 被我们改过的护甲→unit 关系（替换护甲因此会换到错误的护甲上）。索引构建是
+			// 唯一允许读原件/备份的地方，它把结论写进数据库，这里只查数据库。
+			if (_storagePaths is null)
+			{
+				return new ModInformationResult<object>(null, ModInformationStatus.Unavailable, ModInformationKind.ArmourUnitTable,
+					request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "ArmourUnitTableIndexUnavailable",
+						"信息中心没有拿到索引数据库路径，无法读取护甲→unit 表。", gameDataDirectory)]);
+			}
+
+			var snapshot = await ArmorAuthorityIndexReader.TryReadAsync(_storagePaths, cancellationToken).ConfigureAwait(false);
+			if (snapshot is null)
+			{
+				// 数据库里没有装备关系表：如实说"不知道"，既不要宣称"这件护甲没有 unit"，
+				// 也不要退回读注册表。
+				return new ModInformationResult<object>(null, ModInformationStatus.Unavailable, ModInformationKind.ArmourUnitTable,
+					request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "ArmourUnitTableIndexEmpty",
+						"索引数据库里没有装备关系表（护甲→unit 的数据源）。请先在管理器「设置与资产」里建立 / 重建资产索引。",
+						_storagePaths.DbPath)]);
+			}
+
 			if (!snapshot.IsAvailable)
 			{
 				// 读不到注册文件就说"不知道"，不要宣称"这件护甲没有 unit"。
