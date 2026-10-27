@@ -34,6 +34,11 @@ public static class CliApplication
 		}
 		catch (Exception exception)
 		{
+			// 未处理错误默认只给一句话；设了 HD2MOD_DEBUG=1 时把完整堆栈也打到 stderr。
+			// 没有它，"The given key 'spine1' was not present in the dictionary" 这种
+			// 与业务毫无关系的错只能靠猜是哪一行。
+			if (Environment.GetEnvironmentVariable("HD2MOD_DEBUG") is { Length: > 0 })
+				Console.Error.WriteLine(exception.ToString());
 			WriteError(invocation?.Options.Json == true || args.Any(argument => string.Equals(argument, "--json", StringComparison.OrdinalIgnoreCase)), "UnhandledError", exception.Message);
 			return 1;
 		}
@@ -2017,7 +2022,8 @@ public static class CliApplication
 					break;
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException
-					or InvalidOperationException or NotSupportedException or UnauthorizedAccessException)
+					or InvalidOperationException or NotSupportedException or UnauthorizedAccessException
+					or KeyNotFoundException or ArgumentException or IndexOutOfRangeException)
 				{
 					Console.Error.WriteLine($"⚠️ matcap 几何来源跳过 {Path.GetFileName(path)}：{exception.Message}");
 				}
@@ -2055,7 +2061,8 @@ public static class CliApplication
 					throw;
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException
-					or InvalidOperationException or NotSupportedException or UnauthorizedAccessException)
+					or InvalidOperationException or NotSupportedException or UnauthorizedAccessException
+					or KeyNotFoundException or ArgumentException or IndexOutOfRangeException)
 				{
 					// 单个 VPK 失败**不拖垮整批**——这是契约里明确要求的。
 					failures.Add(new { vpk = path, error = exception.Message });
