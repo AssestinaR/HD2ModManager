@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using HD2ModCore.Infrastructure;
 
 namespace HD2ModManager.Services;
 
@@ -45,9 +46,12 @@ public static class VpkRekeyService
 			return VpkRekeyOutcome.Failed("没有配置游戏 data 目录：换甲要读目标护甲与隐藏 Unit。");
 
 		var paths = SettingsService.CreateStoragePaths();
-		var executable = Path.Combine(AppContext.BaseDirectory, "hd2mod.exe");
-		if (!File.Exists(executable))
-			return VpkRekeyOutcome.Failed("找不到 hd2mod.exe：换甲依赖它（发布包自带）。");
+		// 位置随布局而变（开发构建在旁边、发布包在 bin\ 下），见 Hd2ModCliLocator。
+		var executable = Hd2ModCliLocator.TryResolve();
+		if (executable is null)
+			return VpkRekeyOutcome.Failed(
+				"找不到 hd2mod.exe：换甲依赖它（发布包自带）。"
+				+ $"已查找：{Hd2ModCliLocator.DescribeSearchedLocations()}");
 
 		onStage?.Invoke("正在读取目标护甲的 Unit 表");
 		var arguments = new List<string>

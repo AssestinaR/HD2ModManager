@@ -47,6 +47,12 @@ namespace HD2ModManager
                 MessageBox.Show($"管理器遇到未处理错误，详情已写入 logs：{args.Exception.Message}", "HD2 Mod Manager", MessageBoxButton.OK, MessageBoxImage.Error);
                 args.Handled = true;
             };
+            // 命令行程序的位置随布局而变（开发构建在管理器旁边、发布包在 bin\ 下）。
+            // 启动时记一条：VPK 导入或换甲失败时，日志里能直接看出当时找的是哪个位置。
+            var cli = HD2ModCore.Infrastructure.Hd2ModCliLocator.TryResolve();
+            LogService.Info(cli is null
+                ? $"命令行程序未找到；已查找：{HD2ModCore.Infrastructure.Hd2ModCliLocator.DescribeSearchedLocations()}"
+                : $"命令行程序：{cli}");
             UiPerformanceDiagnostics.Start();
             // App.xaml uses StartupUri, so the base implementation creates the
             // first window. Start diagnostics before it so the initial page load

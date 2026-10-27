@@ -426,13 +426,18 @@ public sealed class VpkImportService
 		return (process.ExitCode, await outputTask.ConfigureAwait(false), await errorTask.ConfigureAwait(false));
 	}
 
-	/// <summary>转换器就放在管理器旁边（构建时由 <c>CopyHd2ModCliArtifacts</c> 复制过去）。</summary>
+	/// <summary>
+	/// 转换器的位置随布局而变：开发构建把它复制到管理器旁边（<c>CopyHd2ModCliArtifacts</c>），
+	/// 发布包把它放在 <c>bin\</c> 下。见 <see cref="Hd2ModCliLocator"/>。
+	/// </summary>
 	private static string ResolveCliExecutable()
 	{
-		var path = Path.Combine(AppContext.BaseDirectory, "hd2mod.exe");
-		if (File.Exists(path)) return path;
+		var resolved = Hd2ModCliLocator.TryResolve();
+		if (resolved is not null) return resolved;
 		throw new FileNotFoundException(
-			"找不到 hd2mod.exe：VPK 转换依赖它。请确认管理器目录里有 hd2mod.exe（发布包自带）。", path);
+			"找不到 hd2mod.exe：VPK 转换依赖它。请确认管理器目录（或其中的 bin 子目录）里有 hd2mod.exe（发布包自带）。"
+			+ $"已查找：{Hd2ModCliLocator.DescribeSearchedLocations()}",
+			Hd2ModCliLocator.GetCandidatePaths()[0]);
 	}
 
 	/// <summary>

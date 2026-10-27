@@ -190,8 +190,18 @@ function Write-RootReadme {
 function Write-CliLauncher {
     param([string] $PackageDirectory)
 
+    # 发布包把 CLI 放在 bin\ 下；开发布局把它放在管理器旁边。启动器两种都认，
+    # 这样即使以后把 CLI 挪回根目录也不会失效。
+    # The release package keeps the CLI under bin\; a development layout keeps it beside the
+    # manager. Accept both so the launcher cannot rot when the layout moves.
+    # 注意：不能用 if (...) 块里的 %ERRORLEVEL%——它在块被解析时就展开了，会丢掉真实退出码。
+    # Note: %ERRORLEVEL% inside a parenthesised block expands at parse time, so use labels.
     $content = @'
 @echo off
+if exist "%~dp0bin\hd2mod.exe" goto :inbin
+"%~dp0hd2mod.exe" %*
+exit /b %ERRORLEVEL%
+:inbin
 "%~dp0bin\hd2mod.exe" %*
 exit /b %ERRORLEVEL%
 '@
