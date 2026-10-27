@@ -11,18 +11,23 @@ namespace HD2ModCore.Tests;
 public sealed class StartupPrewarmArchitectureTests
 {
 	[Fact]
-	public void ArmorPageWaitsForItsDisplayFactsGateBeforeReadingAnything()
+	public void ArmorPageWaitsForItsDisplayFactsGateBeforeComputingFacts()
 	{
 		var root = FindRepositoryRoot();
 		var page = File.ReadAllText(Path.Combine(root, "HD2ModManager", "ViewModels", "ArmorRegistryPageViewModel.cs"));
-		var load = ExtractMember(page, "private async Task<(RuntimeArmorRegistrySnapshot Snapshot");
 
-		Assert.True(load.Length > 0, "无法定位护甲页的取数方法（LoadCatalogInputsAsync）。");
-		// 闸门必须是取数方法里的**第一步**：读目录、读快照、请求覆盖事实都排在它后面。
-		Assert.Contains("await displayFactsReady", load);
-		var gate = load.IndexOf("await displayFactsReady", StringComparison.Ordinal);
-		var firstRead = load.IndexOf("service.Read", StringComparison.Ordinal);
-		Assert.True(firstRead > gate, "取数闸门必须排在第一次读盘之前。");
+		// 显示事实（图标、"已被覆盖"标记）必须在闸门放行之后才算：闸门没放行时算出来的
+		// 都是错的，而且一旦算完就被标成"已加载"，用户之后看到的就是这份错数据。
+		var facts = ExtractMember(page, "private async Task<IReadOnlyDictionary<string, ArmorDisplayFacts>> ReadArmorDisplayFactsAsync(");
+		Assert.True(facts.Length > 0, "无法定位护甲页的显示事实读取方法（ReadArmorDisplayFactsAsync）。");
+		Assert.Contains("await displayFactsReady", facts);
+
+		// 列表本身**不能**等闸门：等它就又变成"打开页面先空一会儿"——而那正是用户报的
+		// "护甲库总是不显示"。目录与快照只依赖数据库，与库快照/部署状态无关。
+		var core = ExtractMember(page, "private async Task<(RuntimeArmorRegistrySnapshot Snapshot");
+		Assert.True(core.Length > 0, "无法定位护甲页的目录读取方法（LoadCatalogCoreAsync）。");
+		Assert.DoesNotContain("displayFactsReady", core);
+		Assert.Contains("service.ReadArmorCatalogAsync", core);
 	}
 
 	// 预热与首开必须共用同一次加载。少了这条，会出现两种坏结果：
