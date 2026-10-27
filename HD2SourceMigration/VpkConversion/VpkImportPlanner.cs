@@ -208,6 +208,21 @@ public static class VpkImportPlanner
 		return referenced;
 	}
 
+	/// <summary>
+	/// 单个 VPK 探测失败时，哪些异常该降级成"跳过"而不是让整批失败。
+	/// <para>
+	/// <b>为什么这个集合必须够宽。</b>探测的职责是<b>分类</b>，不是保证数据合法：用户丢进来的是
+	/// 一整包（实测 60 个 VPK），其中任何<b>一个</b>坏文件都不该让另外 59 个导不进来。
+	/// 二进制解析遇到畸形数据时抛什么是实现细节——<see cref="NotSupportedException"/>（版本不认识）、
+	/// <see cref="IndexOutOfRangeException"/>（偏移越界）、<see cref="OverflowException"/>（长度字段离谱）
+	/// 都是"这个文件不对"，不是"程序有 bug"。理由里带上异常类型，真有 bug 时仍然看得见。
+	/// </para>
+	/// </summary>
+	private static bool IsProbeFailure(Exception exception) => exception is
+		IOException or InvalidDataException or NotSupportedException or InvalidOperationException
+		or UnauthorizedAccessException or KeyNotFoundException or ArgumentException
+		or IndexOutOfRangeException or OverflowException or FormatException;
+
 	private static VpkImportCandidate Probe(string path)
 	{
 		try
@@ -245,10 +260,10 @@ public static class VpkImportPlanner
 
 			return new VpkImportCandidate(path, VpkImportKind.Material, null, null, null, materials, textures);
 		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+		catch (Exception exception) when (IsProbeFailure(exception))
 		{
 			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
-				$"打不开：{exception.Message}", null,
+				$"打不开（{exception.GetType().Name}）：{exception.Message}", null,
 				Array.Empty<string>(), Array.Empty<string>());
 		}
 	}
@@ -260,18 +275,30 @@ public static class VpkImportPlanner
 		HashSet<string> textures)
 	{
 		SourceModelFiles files;
-		SourceModelDocument model;
 		VpkEntry mdl;
 		try
 		{
 			files = SourceModelLocator.Resolve(archive, null);
 			mdl = files.Mdl;
-			model = SourceModelReader.Read(archive.Read(mdl));
 		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or KeyNotFoundException)
+		catch (Exception exception) when (IsProbeFailure(exception))
 		{
 			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
-				$"模型读不出来：{exception.Message}", null, materials, textures);
+				$"模型读不出来（{exception.GetType().Name}）：{exception.Message}", null, materials, textures);
+		}
+
+		SourceModelDocument model;
+		try
+		{
+			model = SourceModelReader.Read(archive.Read(mdl));
+		}
+		catch (Exception exception) when (IsProbeFailure(exception))
+		{
+			// 版本号不认识时 SourceModelReader 抛 NotSupportedException。这是"这个模型不属于
+			// L4D2 / Source 2013 那一档"，不是程序出错：必须降级成"跳过这一个包"。
+			// 之前它逃到 CLI 的兜底处理器，整批导入直接变成 UnhandledError（实测用户反馈）。
+			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
+				$"模型 {mdl.Path} 读不出来（{exception.GetType().Name}）：{exception.Message}", null, materials, textures);
 		}
 
 		if (!IsCharacterRig(model))
@@ -292,10 +319,10 @@ public static class VpkImportPlanner
 				? 0
 				: model.Lods[0].Meshes.Sum(mesh => mesh.Groups.Sum(group => group.Indices.Count)))) / 3;
 		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or KeyNotFoundException)
+		catch (Exception exception) when (IsProbeFailure(exception))
 		{
 			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
-				$"几何读不出来：{exception.Message}", null, materials, textures);
+				$"几何读不出来（{exception.GetType().Name}）：{exception.Message}", null, materials, textures);
 		}
 
 		var signature = new VpkModelSignature(model.MaterialPaths.Count, lod0Vertices, triangles);

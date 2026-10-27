@@ -2003,15 +2003,24 @@ public static class CliApplication
 			foreach (var failure in batch.Failures)
 				Console.Error.WriteLine($"⚠️ 解析集合里这个包打不开：{failure}");
 
-			// matcap 的几何来源：队列里第一个模型 VPK。没有就不烘（`$matcaptint ≥ 0.9` 的材质会缺观感）。
+			// matcap 的几何来源：队列里第一个**读得出来**的模型 VPK。没有就不烘（`$matcaptint ≥ 0.9`
+			// 的材质会缺观感）。读不出来就换下一个：这里只是可选的观感来源，一个坏模型不该让整批转换失败。
 			RetargetInputs? matcapModel = null;
 			foreach (var path in vpkPaths)
 			{
-				using var probe = VpkArchive.Open(path);
-				if (!probe.WithExtension("mdl").Any())
-					continue;
-				matcapModel = SourceRetargetPipeline.LoadSource(path, null);
-				break;
+				try
+				{
+					using var probe = VpkArchive.Open(path);
+					if (!probe.WithExtension("mdl").Any())
+						continue;
+					matcapModel = SourceRetargetPipeline.LoadSource(path, null);
+					break;
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException
+					or InvalidOperationException or NotSupportedException or UnauthorizedAccessException)
+				{
+					Console.Error.WriteLine($"⚠️ matcap 几何来源跳过 {Path.GetFileName(path)}：{exception.Message}");
+				}
 			}
 
 			// 所有 patch 共用同一个头部模板：类型顺序一致，包之间不会因为顺序不同而难以比对。

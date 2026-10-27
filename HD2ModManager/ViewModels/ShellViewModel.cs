@@ -1014,6 +1014,22 @@ namespace HD2ModManager.ViewModels
                             task.CancellationToken,
                             notifyLibraryChanged: false,
                             refreshDerivedData: false);
+                        if (created.Count == 0)
+                        {
+                            // 一个 Mod 都没建出来时，任务条不能只写"完成"——用户会以为导入成功了。
+                            // VPK 来源最常见：整批被判成不可转换，而理由此前只写进日志，界面上什么都没有。
+                            var vpkReport = import.LastVpkImportReport;
+                            var detail = vpkReport is null
+                                ? "这个来源里没有识别到 patch 或装饰包。"
+                                : vpkReport.ToSummary() + " " + string.Join("；",
+                                    vpkReport.Items
+                                        .Where(entry => entry.Outcome != VpkImportOutcome.Converted)
+                                        .Take(3)
+                                        .Select(entry => $"{System.IO.Path.GetFileName(entry.VpkPath)}：{entry.Reason}"));
+                            task.UpdateStage("没有可导入的内容");
+                            LogService.Warn($"导入没有产生 Mod：来源={item.Path}；{detail}");
+                            _notificationService.Show($"没有导入任何 Mod。{detail}", NotificationLevel.Warning, TimeSpan.FromSeconds(12));
+                        }
                         foreach (var nodeId in import.LastAffectedNodeIds)
                             affectedNodeIds.Add(nodeId);
                         libraryChanged = true;

@@ -58,13 +58,20 @@ namespace HD2ModManager.Services
             string path,
             CancellationToken ct,
             bool notifyLibraryChanged = true,
-            bool refreshDerivedData = true)
+            bool refreshDerivedData = true,
+            bool allowVpkConversion = true)
         {
             // VPK 来源走自己的路：一个 VPK = 一个 Mod 文件夹，文件夹里的 vpk2patch/ 放实际生效的 patch。
             // 判定失败（不是 VPK 来源）就原样往下走，行为与以前完全一致。
-            var vpkSource = await TryPrepareVpkSourceAsync(path, ct).ConfigureAwait(false);
-            if (vpkSource is not null)
-                return await ImportVpkSourceAsync(vpkSource, ct, notifyLibraryChanged, refreshDerivedData).ConfigureAwait(false);
+            //
+            // 转换产出的目录必须传 allowVpkConversion: false：它根上有来源 VPK 原件，
+            // 不挡住就会"产出目录 → 再当来源转换 → 又产出"，永远建不出 Mod。
+            if (allowVpkConversion)
+            {
+                var vpkSource = await TryPrepareVpkSourceAsync(path, ct).ConfigureAwait(false);
+                if (vpkSource is not null)
+                    return await ImportVpkSourceAsync(vpkSource, ct, notifyLibraryChanged, refreshDerivedData).ConfigureAwait(false);
+            }
 
             try
             {
@@ -226,7 +233,9 @@ namespace HD2ModManager.Services
                         directory,
                         ct,
                         notifyLibraryChanged: false,
-                        refreshDerivedData: false).ConfigureAwait(false);
+                        refreshDerivedData: false,
+                        // 这是转换产出，不是待转换的来源：见 ImportPathAsync 里的说明。
+                        allowVpkConversion: false).ConfigureAwait(false);
                     guids.AddRange(imported);
                     affected.AddRange(LastAffectedNodeIds);
                     conflicts |= LastImportHasOptionPathConflicts;

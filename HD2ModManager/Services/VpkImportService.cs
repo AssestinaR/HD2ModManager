@@ -94,6 +94,9 @@ public sealed class VpkImportService
 {
 	private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
 
+	/// <summary>转换产出的报告文件名。它和 <c>vpk2patch/</c> 一起构成"这是产出目录"的标记。</summary>
+	private const string PackageReportFileName = "vpk2patch.json";
+
 	private readonly StoragePaths _paths;
 	private readonly string _gameDataDirectory;
 	private readonly string _managerRoot;
@@ -120,6 +123,11 @@ public sealed class VpkImportService
 
 		if (Directory.Exists(path))
 		{
+			// 转换产出的 Mod 文件夹根上留着来源 VPK 原件（为了能重转），所以它**看起来**像 VPK 来源。
+			// 但它已经是产物：再按来源处理就是"转换 → 产出 → 再按来源转换 → 又产出"的无限递归，
+			// 结果是转换报告一路显示成功、一个 Mod 都建不出来。这里直接交回普通导入。
+			if (IsConvertedPackage(path)) return null;
+
 			var vpks = EnumerateVpkFiles(path);
 			return vpks.Count == 0 ? null : new VpkImportSource(path, CreateStaging(), vpks, ownsStaging: true);
 		}
@@ -236,7 +244,7 @@ public sealed class VpkImportService
 				// Overwrite/ = 在产物上再改出来的变体。
 				File.Copy(candidate.VpkPath, Path.Combine(target, Path.GetFileName(candidate.VpkPath)), overwrite: true);
 
-				await File.WriteAllTextAsync(Path.Combine(target, "vpk2patch.json"), result.ReportJson, cancellationToken)
+				await File.WriteAllTextAsync(Path.Combine(target, PackageReportFileName), result.ReportJson, cancellationToken)
 					.ConfigureAwait(false);
 
 				produced.Add(target);
@@ -461,6 +469,16 @@ public sealed class VpkImportService
 			&& stem[^4] == '_'
 			&& stem[^3..].All(char.IsAsciiDigit);
 	}
+
+	/// <summary>
+	/// 这个目录是不是<b>已经转换过</b>的 VPK 版 Mod（根上有 <c>vpk2patch/</c> 或 <c>vpk2patch.json</c>）。
+	/// <para>
+	/// 判据只看转换器自己写的这两样东西：它们只有 <c>vpk2patch</c> 会产出，用户的源包不会有。
+	/// </para>
+	/// </summary>
+	private static bool IsConvertedPackage(string directory)
+		=> File.Exists(Path.Combine(directory, PackageReportFileName))
+			|| Directory.Exists(ModNodePayloadLayout.GetVpkPatchDirectory(directory));
 
 	private string CreateStaging()
 	{
