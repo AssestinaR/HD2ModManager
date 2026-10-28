@@ -5,12 +5,13 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </UserControl.Resources>
     <Grid>
-        <!-- 第一行：目标路径 + 浏览 + 导出 -->
+        <!-- 第一行：目标路径 + 浏览 + 取消 + 导出 -->
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Visibility="{Binding IsTarget, Converter={StaticResource BoolToVis}}">
             <TextBlock Text="{Binding Operation.RootName, StringFormat=导出“{0}”：}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <TextBox Style="{StaticResource AppTextBox}" Width="420" VerticalAlignment="Center"
                      Text="{Binding Operation.TargetPath, UpdateSourceTrigger=PropertyChanged}"/>
             <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Command="{Binding Operation.BrowseCommand}" Margin="8,0,0,0"/>
+            <Button Style="{StaticResource AppSecondaryButton}" Content="取消" Command="{Binding Operation.CancelCommand}" Margin="8,0,0,0"/>
             <Button Style="{StaticResource AppPrimaryButton}" Content="导出" Command="{Binding Operation.ExportCommand}" Margin="8,0,0,0"
                     IsEnabled="{Binding Operation.IsIdle}"/>
         </StackPanel>
@@ -21,11 +22,10 @@
                       IsChecked="{Binding Operation.IncludeOverwrite}"
                       ToolTip="勾选后：有 Overwrite 的节点只输出 Overwrite 版 patch（VPK 版 Mod 尤其明显）。"/>
             <TextBlock Text="{Binding Operation.StatusText}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"
-                       MaxWidth="420" TextTrimming="CharacterEllipsis"
+                       MaxWidth="460" TextTrimming="CharacterEllipsis"
                        Visibility="{Binding Operation.HasStatus, Converter={StaticResource BoolToVis}}"/>
             <Button Style="{StaticResource AppSecondaryButton}" Content="打开所在文件夹" Command="{Binding Operation.OpenFolderCommand}" Margin="12,0,0,0"
                     Visibility="{Binding Operation.HasStatus, Converter={StaticResource BoolToVis}}"/>
-            <Button Style="{StaticResource AppSecondaryButton}" Content="关闭" Command="{Binding Operation.CancelCommand}" Margin="8,0,0,0"/>
         </StackPanel>
     </Grid>
 </UserControl>

@@ -80,6 +80,9 @@ public partial class ProfilePageView : UserControl
             case ModListRowAction.MoveDown:
                 vm.MoveDownCommand.Execute(item.Guid);
                 break;
+            case ModListRowAction.ExportMod:
+                shell?.BeginModExport(item.Guid, item.Name);
+                break;
             case ModListRowAction.RemoveFromProfile:
                 vm.RemoveModCommand.Execute(item.Guid);
                 break;

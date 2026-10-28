@@ -70,6 +70,9 @@ namespace HD2ModManager.Views
                 case ModListRowAction.ToggleDecoration:
                     await details.ToggleDecorationForCurrentHostAsync(card);
                     break;
+                case ModListRowAction.ExportMod:
+                    shell?.BeginModExport(card.Mod.Guid, card.Mod.Name);
+                    break;
                 case ModListRowAction.OpenFolder:
                     details.OpenModFolder(card.Mod.Guid);
                     break;

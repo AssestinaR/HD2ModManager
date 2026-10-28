@@ -28,7 +28,7 @@
                         EmptyState="{Binding EmptyState}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource ProfileSearchActions}"
-                        RowActions="Details, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
+                        RowActions="Details, ExportMod, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
                          RowActionInvoked="OnRowActionInvoked"
                          SelectionPolicy="Multiple"
                          RelationshipDragOperation="SetAsOption"
