@@ -261,6 +261,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	private IReadOnlyList<CrossArmorTransferEquipmentRow>? sourceHelmetChoices;
 	private bool isScanningSourceUnits;
 	private string sourceScanState = "待计算可见部件";
+	/// <summary>最近一次重测的失败原因；有值时汇总条显示失败，而不是"0 / N"。</summary>
+	private string? sourceScanFailure;
 
 	public CrossArmorTransferPlanWindowViewModel(
 		IEquipmentUnitCatalogService catalogService,
@@ -356,6 +358,11 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		}
 
 		SourceUnitRows.ReplaceWith(rows, ListTransitionKind.Replace);
+		// 全部"未定位"是这条链路上最容易让人以为"算坏了"的状态：它不是计算失败，而是
+		// 这些 unit 在注册表里没有权威部位。留一条日志，用户报障时能立刻区分两者。
+		var unplaced = rows.Count(row => row.IsUnplaced);
+		if (unplaced != 0)
+			LogService.Info($"替换护甲来源部件：共 {rows.Length} 个 unit，其中 {unplaced} 个在注册表里查不到部位归属（不能作为来源）。");
 		UpdateSourceScanState();
 	}
 
@@ -367,33 +374,44 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	{
 		if (sourceScan is null || IsScanningSourceUnits) return;
 		IsScanningSourceUnits = true;
+		sourceScanFailure = null;
 		SourceScanState = "正在计算可见部件…";
 		foreach (var row in SourceUnitRows) row.BeginScan();
 		try
 		{
 			// 整体丢线程池：这一步要解析来源 Unit 的网格（实测 2.5 秒），绝不能压在 UI 线程上。
-			var facts = await Task.Run(() => sourceScan(CancellationToken.None)).ConfigureAwait(true);
-			sourceCandidates = facts.SourceCandidates;
-			// 来源候选变了，护甲/头盔下拉也要重建，并尽量保留用户原来的选择。
-			var armorArchive = SelectedSourceArmor?.ArchiveId;
-			var helmetArchive = SelectedSourceHelmet?.ArchiveId;
-			sourceArmorChoices = null;
-			sourceHelmetChoices = null;
-			OnPropertyChanged(nameof(SourceArmorChoices));
-			OnPropertyChanged(nameof(SourceHelmetChoices));
-			SelectedSourceArmor = SourceArmorChoices.FirstOrDefault(row => string.Equals(row.Entry.ArchiveId, armorArchive, StringComparison.OrdinalIgnoreCase))?.Entry
-				?? SourceArmorChoices.FirstOrDefault()?.Entry;
-			SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault(row => string.Equals(row.Entry.ArchiveId, helmetArchive, StringComparison.OrdinalIgnoreCase))?.Entry
-				?? SourceHelmetChoices.FirstOrDefault()?.Entry;
-			BuildSourceUnitRows(facts.SourceUnitKeys.Count != 0
-				? facts.SourceUnitKeys
-				: SourceUnitRows.Select(row => row.UnitAssetKey).ToArray());
-			QueueRefreshPlan();
+			// 续体不能靠 ConfigureAwait(true) 回 UI 线程——构造点一旦在后台线程上就没有
+			// 同步上下文可回，改绑定集合会抛 CollectionView 线程异常。所以显式送回去。
+			var facts = await Task.Run(() => sourceScan(CancellationToken.None)).ConfigureAwait(false);
+			await ApplyOnUiThreadAsync(() =>
+			{
+				sourceCandidates = facts.SourceCandidates;
+				// 来源候选变了，护甲/头盔下拉也要重建，并尽量保留用户原来的选择。
+				var armorArchive = SelectedSourceArmor?.ArchiveId;
+				var helmetArchive = SelectedSourceHelmet?.ArchiveId;
+				sourceArmorChoices = null;
+				sourceHelmetChoices = null;
+				OnPropertyChanged(nameof(SourceArmorChoices));
+				OnPropertyChanged(nameof(SourceHelmetChoices));
+				SelectedSourceArmor = SourceArmorChoices.FirstOrDefault(row => string.Equals(row.Entry.ArchiveId, armorArchive, StringComparison.OrdinalIgnoreCase))?.Entry
+					?? SourceArmorChoices.FirstOrDefault()?.Entry;
+				SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault(row => string.Equals(row.Entry.ArchiveId, helmetArchive, StringComparison.OrdinalIgnoreCase))?.Entry
+					?? SourceHelmetChoices.FirstOrDefault()?.Entry;
+				BuildSourceUnitRows(facts.SourceUnitKeys.Count != 0
+					? facts.SourceUnitKeys
+					: SourceUnitRows.Select(row => row.UnitAssetKey).ToArray());
+				QueueRefreshPlan();
+			}).ConfigureAwait(false);
 		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
+		// 这里是整条链路上唯一的重活，任何异常都必须留下痕迹：以前只接 IO/数据异常，
+		// 线程异常会从 fire-and-forget 的任务里逸出成"未观察任务异常"，用户看到的是
+		// 表格永远停在"待计算"、一句提示都没有。
+		catch (Exception exception)
 		{
 			LogService.Error($"替换护甲：计算来源可见部件失败：{exception}");
-			SourceScanState = $"计算失败：{exception.Message}";
+			// 只记在字段里，让 finally 的汇总去渲染——否则这里写的"计算失败"会被
+			// UpdateSourceScanState 立刻覆盖掉，用户永远看不到失败原因。
+			sourceScanFailure = exception.Message;
 			foreach (var row in SourceUnitRows) row.MarkUnscanned("计算失败");
 		}
 		finally
@@ -403,14 +421,38 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		}
 	}
 
+	/// <summary>
+	/// 汇总条：多少 unit 作为来源，以及"为什么一个都选不了"。
+	/// </summary>
+	/// <remarks>
+	/// 表格里的 unit 全部"未定位"时，只写"0 / N"等于什么都不解释——用户会以为算坏了。
+	/// 真正的原因是这些 unit 在注册表里查不到权威部位（自定义素体 / 新增 unit 没有
+	/// GameData 归属），而按格子装箱的规划器只认权威部位，所以它们不能作为来源。
+	/// </remarks>
 	private void UpdateSourceScanState()
 	{
 		if (IsScanningSourceUnits) return;
+		if (sourceScanFailure is { Length: > 0 } failure)
+		{
+			SourceScanState = $"计算失败：{failure}";
+			return;
+		}
+
 		var enabled = SourceUnitRows.Count(row => row.IsEnabled);
 		var total = SourceUnitRows.Count;
-		SourceScanState = total == 0
-			? "来源 Patch 里没有 unit"
-			: $"{enabled} / {total} 个 unit 作为来源";
+		if (total == 0)
+		{
+			SourceScanState = "来源 Patch 里没有 unit";
+			return;
+		}
+
+		var unplaced = SourceUnitRows.Count(row => row.IsUnplaced);
+		var summary = $"{enabled} / {total} 个 unit 作为来源";
+		SourceScanState = unplaced == 0
+			? summary
+			: unplaced == total
+				? $"{summary} · 这 {total} 个 unit 在注册表里查不到部位归属，不能作为来源"
+				: $"{summary}（{unplaced} 个查不到部位归属，不能作为来源）";
 	}
 
 	/// <summary>用户在「作为来源」列点了一下之后重算计划。纯内存操作，不需要重新扫网格。</summary>
@@ -691,6 +733,31 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		_ = RefreshPlanAsync();
 	}
 
+	/// <summary>
+	/// 把"改绑定集合"的那段收尾送回 UI 线程执行。
+	/// </summary>
+	/// <remarks>
+	/// <see cref="SourceUnitRows"/> 与 <see cref="TargetArchiveFilters"/> 直接绑在
+	/// DataGrid / ComboBox 上，而 WPF 的 CollectionView 只允许在**创建它的** Dispatcher
+	/// 线程上收到 CollectionChanged；换个线程改就抛 <see cref="NotSupportedException"/>，
+	/// 消息是"该类型的 CollectionView 不支持从调度程序线程以外的线程对其 SourceCollection
+	/// 进行的更改"。这条链路的入口是后台线程（见
+	/// <c>ModDetailsPageViewModel.PlanCrossArmorTransferAsync</c>），所以这里显式兜一道：
+	/// 只要构造点或调用点再被挪到后台，页面也不会静默失效。
+	/// 没有 Application 时（单元测试、CLI 宿主）直接就地执行。
+	/// </remarks>
+	private static Task ApplyOnUiThreadAsync(Action apply)
+	{
+		ArgumentNullException.ThrowIfNull(apply);
+		var dispatcher = System.Windows.Application.Current?.Dispatcher;
+		if (dispatcher is null || dispatcher.CheckAccess())
+		{
+			apply();
+			return Task.CompletedTask;
+		}
+		return dispatcher.InvokeAsync(apply).Task;
+	}
+
 	private async Task RefreshPlanAsync()
 	{
 		planCancellation?.Cancel();
@@ -707,20 +774,24 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		{
 			var additionalSources = new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null && !ReferenceEquals(source, SelectedSource)).Select(source => source!.ArchiveId).ToArray();
 			var enabledSourceCandidates = EnabledSourceCandidates();
-			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(enabledSourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, writePlannerDebugLog: true, plannerKind: CrossArmorPlannerKind.Cells, cancellationToken: cancellationToken).AsTask(), cancellationToken);
-			if (!ReferenceEquals(planCancellation, currentCancellation) || cancellationToken.IsCancellationRequested || generation != planGeneration) return;
-			plan = nextPlan;
-			PlanState = "计划已更新。";
-			OnPropertyChanged(nameof(SourceParts));
-			OnPropertyChanged(nameof(TargetMappings));
-			RefreshTargetArchiveFilters();
-			OnPropertyChanged(nameof(FilteredTargetMappings));
-			OnPropertyChanged(nameof(Impacts));
-			OnPropertyChanged(nameof(Summary));
-			OnPropertyChanged(nameof(Issues));
-			OnPropertyChanged(nameof(CanGenerateCandidate));
-			OnPropertyChanged(nameof(ManualSourceChoices));
-			RaiseManualMappingCommandStates();
+			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(enabledSourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, writePlannerDebugLog: true, plannerKind: CrossArmorPlannerKind.Cells, cancellationToken: cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
+			await ApplyOnUiThreadAsync(() =>
+			{
+				// 代次检查必须在 UI 线程上重做一次：规划在池线程跑完之后，用户可能已经又点了一次。
+				if (!ReferenceEquals(planCancellation, currentCancellation) || cancellationToken.IsCancellationRequested || generation != planGeneration) return;
+				plan = nextPlan;
+				PlanState = "计划已更新。";
+				OnPropertyChanged(nameof(SourceParts));
+				OnPropertyChanged(nameof(TargetMappings));
+				RefreshTargetArchiveFilters();
+				OnPropertyChanged(nameof(FilteredTargetMappings));
+				OnPropertyChanged(nameof(Impacts));
+				OnPropertyChanged(nameof(Summary));
+				OnPropertyChanged(nameof(Issues));
+				OnPropertyChanged(nameof(CanGenerateCandidate));
+				OnPropertyChanged(nameof(ManualSourceChoices));
+				RaiseManualMappingCommandStates();
+			}).ConfigureAwait(false);
 		}
 		catch (OperationCanceledException) { }
 		catch (Exception exception)
@@ -729,6 +800,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			{
 				plan = null;
 				PlanState = $"计划读取失败：{exception.Message}";
+				LogService.Error($"替换护甲计划：重新规划失败。原因={exception}");
 			}
 		}
 		finally

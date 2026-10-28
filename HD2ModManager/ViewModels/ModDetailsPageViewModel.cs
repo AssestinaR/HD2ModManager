@@ -1513,20 +1513,29 @@ namespace HD2ModManager.ViewModels
                     return;
                 }
                 var browser = CoreServices.CreateGameDataArchiveBrowserService(_paths, _derivedState.InformationCenter);
-                var viewModel = new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(
-                    _equipmentUnitCatalog, Array.Empty<EquipmentUnitCatalogEntry>(), allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(),
-					sourceFacts.GetPreparedEntries(sourcePatchPaths[0]), _paths, null,
-					cancellationToken => browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), cancellationToken).AsTask(),
+				var preparedEntries = sourceFacts.GetPreparedEntries(sourcePatchPaths[0]);
+				var sourceUnitKeys = sourceFacts.SourceUnitKeys;
+				Func<CancellationToken, Task<GameDataArchiveBrowserSnapshot?>> targetReplacementLoader =
+					cancellationToken => browser.BuildAsync(_library.Snapshot, _library.ModsRootDirectory, SettingsService.GetGameDataFolder(), cancellationToken).AsTask();
+				// 页面已经在屏幕上之后才跑这一趟：解析来源 Unit 的网格，判断可转移/极小化。
+				Func<CancellationToken, Task<ModEquipmentSourceFacts>> sourceScan = cancellationToken => _equipmentSourceFactsReader.ReadAsync(
+					source,
+					_library.ModsRootDirectory,
+					request,
+					includeUnitGeometry: true,
+					cancellationToken).AsTask();
+				// 这个 VM 的集合直接绑在 ItemsControl 上，而 CollectionView 只允许在创建它的
+				// Dispatcher 线程上收到 CollectionChanged。本方法一路 ConfigureAwait(false) 跑在
+				// 线程池上，所以**必须把构造动作本身送进 UI 线程**——否则 VM 里那些 await 的续体
+				// 也会落在池线程上，改集合就抛"该类型的 CollectionView 不支持从调度程序线程以外
+				// 的线程对其 SourceCollection 进行的更改"，页面表现为"计划读取失败"+来源部件空白。
+				await OpenCrossArmorPlanOnUiThreadAsync(() => new HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel(
+					_equipmentUnitCatalog, Array.Empty<EquipmentUnitCatalogEntry>(), allCandidates, sourcePatchPaths[0], SettingsService.GetGameDataFolder(),
+					preparedEntries, _paths, null,
+					targetReplacementLoader,
 					_library.InformationReader,
-					sourceUnitKeys: sourceFacts.SourceUnitKeys,
-					// 页面已经在屏幕上之后才跑这一趟：解析来源 Unit 的网格，判断可转移/极小化。
-					sourceScan: cancellationToken => _equipmentSourceFactsReader.ReadAsync(
-						source,
-						_library.ModsRootDirectory,
-						request,
-						includeUnitGeometry: true,
-						cancellationToken).AsTask());
-                await OpenCrossArmorPlanOnUiThreadAsync(viewModel).ConfigureAwait(false);
+					sourceUnitKeys: sourceUnitKeys,
+					sourceScan: sourceScan)).ConfigureAwait(false);
 				preparationTimer.Stop();
                 LogService.Info($"替换护甲计划已打开：Mod={source.Metadata.Name}，来源Unit={sourceFacts.SourceUnitKeys.Count}，目标候选={allCandidates.Count}，源Patch={sourcePatchPaths[0]}，打开耗时={preparationTimer.ElapsedMilliseconds}ms（网格解析在页面内后台进行）。");
                 _notifications?.Show("替换护甲：映射计划已打开，正在后台计算来源可见部件。", NotificationLevel.Info, TimeSpan.FromSeconds(8));
@@ -1538,18 +1547,23 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private static async Task OpenCrossArmorPlanOnUiThreadAsync(HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel viewModel)
+        // 构造与挂载必须在同一个 Dispatcher 线程上完成：VM 一建好就会启动后台规划与
+        // 来源网格解析，那些 await 的续体会回到**构造时**的同步上下文去改绑定集合。
+        private static async Task OpenCrossArmorPlanOnUiThreadAsync(Func<HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel> create)
         {
+            ArgumentNullException.ThrowIfNull(create);
             var dispatcher = System.Windows.Application.Current?.Dispatcher;
             if (dispatcher is null || dispatcher.CheckAccess())
             {
-                if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
+                Show(create());
                 return;
             }
-            await dispatcher.InvokeAsync(() =>
+            await dispatcher.InvokeAsync(() => Show(create())).Task.ConfigureAwait(false);
+
+            static void Show(HD2ModManager.Views.CrossArmorTransferPlanWindowViewModel viewModel)
             {
                 if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell) shell.OpenCrossArmorPlan(viewModel);
-            }).Task.ConfigureAwait(false);
+            }
         }
 
         private string[] FindBasePatchPaths(ModNode source)
