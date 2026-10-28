@@ -1,0 +1,31 @@
+<UserControl x:Class="HD2ModManager.Views.ModExportBottomBarContent"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <Grid>
+        <!-- 第一行：目标路径 + 浏览 + 导出 -->
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Visibility="{Binding IsTarget, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="{Binding Operation.RootName, StringFormat=导出“{0}”：}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <TextBox Style="{StaticResource AppTextBox}" Width="420" VerticalAlignment="Center"
+                     Text="{Binding Operation.TargetPath, UpdateSourceTrigger=PropertyChanged}"/>
+            <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Command="{Binding Operation.BrowseCommand}" Margin="8,0,0,0"/>
+            <Button Style="{StaticResource AppPrimaryButton}" Content="导出" Command="{Binding Operation.ExportCommand}" Margin="8,0,0,0"
+                    IsEnabled="{Binding Operation.IsIdle}"/>
+        </StackPanel>
+
+        <!-- 第二行：Overwrite 开关 + 状态 + 收尾动作 -->
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}">
+            <CheckBox Style="{StaticResource AppCheckBox}" Content="导出 Overwrite 版" Margin="0,0,16,0"
+                      IsChecked="{Binding Operation.IncludeOverwrite}"
+                      ToolTip="勾选后：有 Overwrite 的节点只输出 Overwrite 版 patch（VPK 版 Mod 尤其明显）。"/>
+            <TextBlock Text="{Binding Operation.StatusText}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"
+                       MaxWidth="420" TextTrimming="CharacterEllipsis"
+                       Visibility="{Binding Operation.HasStatus, Converter={StaticResource BoolToVis}}"/>
+            <Button Style="{StaticResource AppSecondaryButton}" Content="打开所在文件夹" Command="{Binding Operation.OpenFolderCommand}" Margin="12,0,0,0"
+                    Visibility="{Binding Operation.HasStatus, Converter={StaticResource BoolToVis}}"/>
+            <Button Style="{StaticResource AppSecondaryButton}" Content="关闭" Command="{Binding Operation.CancelCommand}" Margin="8,0,0,0"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

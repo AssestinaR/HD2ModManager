@@ -33,7 +33,7 @@
                             EmptyState="{Binding EmptyState}"
                             SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                             SearchActionsTemplate="{StaticResource LibrarySearchActions}"
-                            RowActions="Rename, Details, AddToProfile, ToggleDecoration, OpenFolder, DeleteFromLibrary"
+                            RowActions="Rename, Details, AddToProfile, ToggleDecoration, ExportMod, OpenFolder, DeleteFromLibrary"
                             RowActionInvoked="OnRowActionInvoked"
                             SelectionPolicy="Multiple"
                             RelationshipDragOperation="SetAsOption"

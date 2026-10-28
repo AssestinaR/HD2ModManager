@@ -351,4 +351,8 @@ public static class CoreServices
 		=> new ModLibrarySynchronizer(CreatePatchFileNameParser());
    public static IModExporter CreateModExporter(StoragePaths paths)
 		=> new ModExporter(paths);
+
+	/// <summary>把主体 + 选项树导出成"无 manifest 的文件夹结构 zip"（给人看 / 给别的工具用）。</summary>
+	public static IModFolderTreeExporter CreateModFolderTreeExporter(StoragePaths paths)
+		=> new ModFolderTreeExporter(paths);
 }

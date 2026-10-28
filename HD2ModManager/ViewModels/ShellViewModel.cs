@@ -43,6 +43,9 @@ namespace HD2ModManager.ViewModels
         private readonly BottomBarCoordinator _bottomBar;
         private readonly List<IDisposable> _materialPackagingBottomBarRegistrations = [];
         private MaterialPackagingPageViewModel? _materialPackagingBottomBarOperation;
+        private readonly System.Collections.Generic.List<BottomBarRegistrationToken> _modExportBottomBarRegistrations = [];
+        private ModExportBottomBarViewModel? _modExportBottomBarOperation;
+        public bool HasModExportBottomBar => _modExportBottomBarOperation is not null;
         private readonly List<IDisposable> _sameKeyRebuildBottomBarRegistrations = [];
         private SameKeyRebuildBottomBarViewModel? _sameKeyRebuildBottomBarOperation;
         private readonly SemaphoreSlim _importProcessGate = new(1, 1);
@@ -883,6 +886,64 @@ namespace HD2ModManager.ViewModels
         {
             ClearMaterialPackagingBottomBar();
             ClearSameKeyRebuildBottomBar();
+            ClearModExportBottomBar();
+        }
+
+        /// <summary>
+        /// 点某个 Mod 的"导出"胶囊按钮：把该 Mod 锁定为导出主体，并在底栏注册两行
+        /// （目标路径 + 是否导出 Overwrite 版）。导出内容由
+        /// <see cref="HD2ModCore.Application.IModFolderTreeExporter"/> 负责——
+        /// 没有 manifest.json，选项就是同名文件夹。
+        /// </summary>
+        public void BeginModExport(string modId, string modName)
+        {
+            if (string.IsNullOrWhiteSpace(modId)) return;
+            if (!Guid.TryParse(modId, out var guid))
+            {
+                LogService.Warn($"导出失败：无法解析 Mod 标识 '{modId}'。");
+                return;
+            }
+
+            DismissToolBottomBars();
+            var rootNodeId = new ModNodeId(guid);
+            if (!_libraryService.Snapshot.Nodes.TryGetValue(rootNodeId, out var node))
+            {
+                LogService.Warn($"导出失败：库里找不到 Mod '{modName}'（{modId}）。");
+                _notificationService.Show($"导出失败：库里找不到“{modName}”。", NotificationLevel.Error, TimeSpan.FromSeconds(8));
+                return;
+            }
+
+            ClearTransientSelection();
+            SelectedModId = modId;
+
+            _modExportBottomBarOperation = new ModExportBottomBarViewModel(
+                CoreServices.CreateModFolderTreeExporter(SettingsService.CreateStoragePaths()),
+                _libraryService.Snapshot,
+                rootNodeId,
+                node.Metadata.Name ?? modName,
+                _notificationService,
+                ClearModExportBottomBar);
+
+            RegisterModExportRow("mod-export-target", ModExportBottomBarRowKind.Target, insertAtRow: 1);
+            RegisterModExportRow("mod-export-options", ModExportBottomBarRowKind.Options);
+        }
+
+        private void RegisterModExportRow(string sourceId, ModExportBottomBarRowKind kind, int? insertAtRow = null)
+        {
+            if (_modExportBottomBarOperation is null) return;
+            var row = new ModExportBottomBarRowViewModel(_modExportBottomBarOperation, kind);
+            _modExportBottomBarRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                sourceId,
+                [new BottomBarRowDefinition("main", row)],
+                insertAtRow)));
+        }
+
+        private void ClearModExportBottomBar()
+        {
+            foreach (var registration in _modExportBottomBarRegistrations) registration.Dispose();
+            _modExportBottomBarRegistrations.Clear();
+            _modExportBottomBarOperation = null;
+            OnPropertyChanged(nameof(HasModExportBottomBar));
         }
 
         public void OpenCustomModelConversion(CustomModelConversionBottomBarViewModel operation)

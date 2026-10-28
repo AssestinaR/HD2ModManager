@@ -1060,6 +1060,7 @@ public enum ModListRowAction
     ArmorEditComponents = 1 << 12,
     ArmorDeleteCustomModel = 1 << 13,
     ArmorRenameCustomModel = 1 << 14,
+    ExportMod = 1 << 15,
 }
 
 public sealed class ModListRowActionEventArgs(object item, ModListRowAction action) : EventArgs

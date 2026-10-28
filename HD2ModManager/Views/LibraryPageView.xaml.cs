@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -70,6 +70,9 @@ namespace HD2ModManager.Views
                     break;
                 case ModListRowAction.ToggleDecoration:
                     VM.ToggleDecorationCommand.Execute(card);
+                    break;
+                case ModListRowAction.ExportMod:
+                    shell?.BeginModExport(card.Mod.Guid, card.Mod.Name);
                     break;
                 case ModListRowAction.OpenFolder:
                     VM.OpenFolderCommand.Execute(card);
