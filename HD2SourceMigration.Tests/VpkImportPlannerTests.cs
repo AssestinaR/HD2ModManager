@@ -96,6 +96,42 @@ public sealed class VpkImportPlannerTests : IDisposable
 		Assert.Contains("一起导入", candidate.SkipReason, StringComparison.Ordinal);
 	}
 
+	/// <summary>
+	/// <c>.vvd</c>/<c>.vtx</c> 是 28 字节占位文件时，理由必须说"几何是占位、去用基础组件包"，
+	/// 而不是把 <c>VVD magic 不是 IDSV</c> 甩给用户——magic 其实是对的，是文件里没有顶点。
+	/// <para>
+	/// 实测：<c>【少女前线2：追放】夏安</c> 一包 20 个 VPK 里有 9 个 survivor 包是这种形状，
+	/// 日志上就是 9 行看不懂的 "VVD magic 不是 IDSV"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void Plan_PlaceholderVvd_SaysTheGeometryIsAStubInsteadOfComplainingAboutTheMagic()
+	{
+		var vpk = WriteVpk(
+			("survivor.mdl", "models/survivors", BuildMdl(version: 49)),
+			("survivor.vvd", "models/survivors", BuildPlaceholderVvd()),
+			("survivor.dx90.vtx", "models/survivors", new byte[28]));
+
+		var plan = VpkImportPlanner.Plan([vpk]);
+
+		var candidate = Assert.Single(plan.Candidates);
+		Assert.False(candidate.IsConvertible);
+		Assert.Contains("占位", candidate.SkipReason, StringComparison.Ordinal);
+		Assert.Contains("28 字节", candidate.SkipReason, StringComparison.Ordinal);
+		Assert.DoesNotContain("IDSV", candidate.SkipReason, StringComparison.Ordinal);
+	}
+
+	/// <summary>实测的占位 .vvd：IDSV + 版本 4 + 与 mdl 对得上的校验和 + lodCount=1，共 28 字节。</summary>
+	private static byte[] BuildPlaceholderVvd()
+	{
+		var vvd = new byte[28];
+		Encoding.ASCII.GetBytes("IDSV").CopyTo(vvd, 0);
+		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(4), 4);
+		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(8), 0x7537E69A);
+		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(12), 1);
+		return vvd;
+	}
+
 	/// <summary>一个只有头部的 MDL：magic + 版本号 + 补零，够 408 字节的门槛。</summary>
 	private static byte[] BuildMdl(int version)
 	{

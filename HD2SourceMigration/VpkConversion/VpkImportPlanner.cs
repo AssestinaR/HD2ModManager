@@ -91,6 +91,17 @@ public static class VpkImportPlanner
 	/// <summary>判定"这是角色骨架"至少要有的骨（短名，已剥前缀）。</summary>
 	private static readonly string[] RequiredBones = ["Pelvis", "Spine", "Head1", "L_Thigh", "L_UpperArm"];
 
+	/// <summary>
+	/// 一个真正带顶点数据的 <c>.vvd</c> 至少要有 64 字节头（<see cref="SourceVertexReader"/> 的门槛）。
+	/// <para>
+	/// 实测有一类中文模组包把 <c>.vvd</c>/<c>.vtx</c> 打成 <b>28 字节的占位文件</b>：里面只有
+	/// <c>IDSV</c> + 版本 + 与 mdl 对得上的校验和 + <c>lodCount=1</c>，一个顶点都没有。
+	/// 真正的几何在配套的「基础组件」包里。这种包报"VVD magic 不是 IDSV"纯属误导
+	/// （magic 其实是对的，是文件本身没有内容），所以在这里先认出来、给一句能看懂的理由。
+	/// </para>
+	/// </summary>
+	private const int MinimumVertexDataBytes = 64;
+
 	public static VpkImportPlan Plan(IReadOnlyList<string> vpkPaths)
 	{
 		ArgumentNullException.ThrowIfNull(vpkPaths);
@@ -291,6 +302,16 @@ public static class VpkImportPlanner
 		{
 			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
 				$"模型读不出来（{exception.GetType().Name}）：{exception.Message}", null, materials, textures);
+		}
+
+		// 占位几何：先认出"这个包的 .vvd 只有个头"，否则下面会抛
+		// "VVD magic 不是 IDSV" —— magic 其实是对的，是文件本身没有顶点数据。
+		if (files.Vvd.Length < MinimumVertexDataBytes)
+		{
+			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
+				$"模型几何是占位文件：{files.Vvd.Path} 只有 {files.Vvd.Length} 字节"
+				+ $"（.vtx {files.Vtx.Length} 字节），不含顶点数据。这类包通常只带材质和菜单图，"
+				+ "真正的模型在配套的「基础组件」包里；单独导入它不会出模型。", null, materials, textures);
 		}
 
 		SourceModelDocument model;
