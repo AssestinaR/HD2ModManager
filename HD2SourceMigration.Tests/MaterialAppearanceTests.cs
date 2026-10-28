@@ -93,6 +93,59 @@ public sealed class MaterialAppearanceTests
 		Assert.Equal(89, MaterialAppearance.RoughnessValue);
 		Assert.Equal(0.9, MaterialAppearance.MatCapMinTint);
 	}
+
+	/// <summary>
+	/// <c>IsContentFreeBase</c>：只有"底色没有自己的外观"时 matcap 才算承载表面。
+	/// <para>
+	/// 这条钉住 Lilium_Sancta 花瓣的坏法：花瓣材质的底色是 <c>Mat_Ornament_Pearl</c>
+	/// 真图（alpha 里就是花瓣形状），但 VMT 写着 <c>$matcaptint "[1 1 1 1]"</c>。
+	/// 只看 tint 会把它们判成"matcap 就是表面"，连带把 alphaclip 关掉——
+	/// 结果花瓣变成不透明白方块（"白色渐变"）+ 金属色。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void ContentFreeBaseMeansTinyNearBlackOrFlatColor()
+	{
+		// 1×1 占位图：实测 gray / gray1 都是 1×1。
+		Assert.True(MaterialAppearance.IsContentFreeBase(1, 1, [85, 85, 85, 255]));
+
+		// 大片但整片近黑（实测 (15,15,15)）：观感全来自 matcap。
+		Assert.True(MaterialAppearance.IsContentFreeBase(64, 64, Solid(64, 15)));
+		// 大片但整片同色（纯灰）：没有细节，观感同样来自 matcap。
+		Assert.True(MaterialAppearance.IsContentFreeBase(64, 64, Solid(64, 150)));
+
+		// 有细节的真贴图：不能判成"没有内容"，否则花瓣 / 衣服会被 matcap 顶掉。
+		Assert.False(MaterialAppearance.IsContentFreeBase(64, 64, Checker(64)));
+	}
+
+	private static byte[] Solid(int size, byte value)
+	{
+		var rgba = new byte[size * size * 4];
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			rgba[offset] = value;
+			rgba[offset + 1] = value;
+			rgba[offset + 2] = value;
+			rgba[offset + 3] = 255;
+		}
+
+		return rgba;
+	}
+
+	private static byte[] Checker(int size)
+	{
+		var rgba = new byte[size * size * 4];
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			var value = (byte)((offset / 4) % 2 == 0 ? 240 : 40);
+			rgba[offset] = value;
+			rgba[offset + 1] = value;
+			rgba[offset + 2] = value;
+			rgba[offset + 3] = 255;
+		}
+
+		return rgba;
+	}
 }
 
 /// <summary>测试里用的单表达式管道，省一个局部变量。</summary>

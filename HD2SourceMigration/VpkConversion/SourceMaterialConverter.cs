@@ -517,16 +517,44 @@ public sealed class SourceMaterialConverter
 			return LoadOutcome.Failed;
 		}
 
-		// matcap 规则：源侧整片底色近黑、观感全来自 matcap（tint ≥ 0.9）。
 		var verdict = MaterialAppearance.Evaluate(vmt);
-		var matcapIsSurface = verdict.MatCapIsTheSurface;
-		double[]? matcapMean = null;
 
 		// matcap 贴图名要留到身份里：**它的内容可能来自别的 VPK**，而 id 只由名字决定。
 		// 装配器据此报警——否则"换个 patch 就能换金属色"是个假承诺。
 		var matcapTextureName = string.IsNullOrWhiteSpace(vmt.MatCapTexture)
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.MatCapTexture));
+
+		// 先解**底色**：既要它的像素（铸进 patch），也要它的 alpha 与亮度来判定
+		// "matcap 是不是这个表面本身"。判定必须看内容，不能只看 tint —— 见下面的注释。
+		VtfFile vtf;
+		byte[] rgba;
+		AlphaStats baseAlpha;
+		try
+		{
+			vtf = VtfFile.Read(vtfBytes);
+			// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
+			rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+			baseAlpha = TextureAlpha.Measure(rgba);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			reason = $"{stem}：贴图 {textureName} 读不出来——{exception.Message}";
+			return LoadOutcome.Failed;
+		}
+
+		// matcap 承载表面 = **tint 高 ∧ 底色没有自己的外观 ∧ alpha 不承担形状**。
+		//
+		// 后两条缺一不可。原来只有 tint ≥ 0.9 一条，于是装饰件（花瓣、蕾丝、宝石）
+		// 被大面积误判：它们普遍写 `$matcaptint "[1 1 1 1]"`（= 全强度叠加），
+		// 但底色是一张真图、alpha 里就是花瓣的形状。误判的后果是两件事同时发生：
+		//   ① 底色被 matcap 顶掉 → 花瓣渲染成 matcap 的金属/菱形渐变；
+		//   ② alphaclip 被强制关掉 → 花瓣的镂空变成不透明白方块（"白色渐变"）。
+		// 实测就是 Lilium_Sancta 的花瓣材质报的那两条现象。
+		var matcapIsSurface = verdict.MatCapIsTheSurface
+			&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)
+			&& !baseAlpha.IsMeaningful;
+		double[]? matcapMean = null;
 
 		if (matcapIsSurface && matcapMode == MatCapMode.Albedo)
 		{
@@ -546,6 +574,18 @@ public sealed class SourceMaterialConverter
 				return LoadOutcome.Failed;
 			}
 
+			try
+			{
+				vtf = VtfFile.Read(vtfBytes);
+				rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+				baseAlpha = TextureAlpha.Measure(rgba);
+			}
+			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+			{
+				reason = $"{stem}：matcap 贴图 {matcapTextureName} 读不出来——{exception.Message}";
+				return LoadOutcome.Failed;
+			}
+
 			textureName = matcapTextureName;
 		}
 		else if (matcapIsSurface && matcapMeans is not null)
@@ -559,14 +599,8 @@ public sealed class SourceMaterialConverter
 		var emissionTexture = vmt.Value("$emissiontexture");
 		var emissionTint = MaterialAppearance.ParseTint(vmt.Value("$emissiontint"));
 
-		VtfFile vtf;
-		byte[] rgba;
 		bool useAlphaClip;
-		try
 		{
-			vtf = VtfFile.Read(vtfBytes);
-			// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
-			rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
 			// 模板选择：**VMT 开关 ∧ 贴图真有 alpha** 才切 alphaclip。
 			// 只看开关会误判——装饰件常写 `$alphatest 1` 但贴图是 1×1 无 alpha（M7 就漏了 3 组）。
 			//
@@ -580,12 +614,7 @@ public sealed class SourceMaterialConverter
 			//    两版就会得到不同的 TOC —— 而它们必须同号互换。
 			useAlphaClip = matcapIsSurface && matcapMode == MatCapMode.Albedo
 				? false
-				: vmt.WantsTransparency && TextureAlpha.Measure(rgba).IsMeaningful;
-		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
-		{
-			reason = $"{stem}：贴图 {textureName} 读不出来——{exception.Message}";
-			return LoadOutcome.Failed;
+				: vmt.WantsTransparency && baseAlpha.IsMeaningful;
 		}
 
 		var templateName = useAlphaClip ? "alphaclip" : "advanced";

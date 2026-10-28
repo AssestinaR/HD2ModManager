@@ -34,6 +34,65 @@ public static class MaterialAppearance
 	/// <summary>tint 到这个值以上就认为 matcap 承载了整个表面。</summary>
 	public const double MatCapMinTint = 0.9;
 
+	/// <summary>
+	/// 底色"没有内容"的尺寸判据：长宽都不超过它就算占位图。
+	/// <para>实测 <c>Ornament_metal_Underwear.vtf</c> 是一张 1×1、91 字节的占位图。</para>
+	/// </summary>
+	public const int PlaceholderMaxDimension = 4;
+
+	/// <summary>
+	/// 底色"没有内容"的亮度判据：平均亮度低于它就当整片近黑。
+	/// <para>实测那些"观感全来自 matcap"的金属件，底色是 <c>(15,15,15)</c>。</para>
+	/// </summary>
+	public const double NearBlackMeanLuminance = 40;
+
+	/// <summary>
+	/// 底色"没有内容"的平坦度判据：亮度标准差低于它就当整片同色。
+	/// <para>
+	/// 需要这一条是因为金属装饰件的底色常常是一张**纯色灰图**（实测 <c>gray1</c> / <c>gray</c>），
+	/// 既不近黑也不是 1×1，但它确实没有细节——观感全来自 matcap 与 PBR。
+	/// 真照片/真贴图的标准差远大于此值，不会误伤。
+	/// </para>
+	/// </summary>
+	public const double FlatLuminanceStdDev = 6;
+
+	/// <summary>
+	/// 底色是不是**没有自己的外观**（占位图、整片近黑、或整片同色）。
+	/// <para>
+	/// <b>为什么光有 <c>tint ≥ 0.9</c> 不够。</b>那一条的原始依据是"底色近黑、观感全来自 matcap"，
+	/// 但 <c>tint</c> 高本身并不说明底色没内容——装饰件写 <c>$matcaptint "[1 1 1 1]"</c> 是常态，
+	/// 意思是"按全强度叠加 matcap"，底色照样可能是一张真图。
+	/// 只看 tint 就会把这类材质误判成"matcap 就是表面"：
+	/// 底色被 matcap 顶掉、alphaclip 被关掉，于是**镂空的花瓣变成不透明白方块 + 金属色**
+	/// （Lilium_Sancta 的花瓣材质就是这么坏的）。
+	/// </para>
+	/// </summary>
+	public static bool IsContentFreeBase(int width, int height, ReadOnlySpan<byte> rgba)
+	{
+		if (width <= PlaceholderMaxDimension && height <= PlaceholderMaxDimension)
+			return true;
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			return false;
+
+		// 平均亮度与标准差（Rec.601 权重）。一趟遍历算完。
+		var pixels = rgba.Length / 4;
+		double sum = 0;
+		double sumSquares = 0;
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			var luminance = (0.299 * rgba[offset]) + (0.587 * rgba[offset + 1]) + (0.114 * rgba[offset + 2]);
+			sum += luminance;
+			sumSquares += luminance * luminance;
+		}
+
+		var mean = sum / pixels;
+		if (mean < NearBlackMeanLuminance)
+			return true;
+		var variance = Math.Max(0, (sumSquares / pixels) - (mean * mean));
+		return Math.Sqrt(variance) < FlatLuminanceStdDev;
+	}
+
+
 	/// <summary>烘 matcap 时写进 <c>advanced</c> 槽 3（<c>IlluminateData</c> = 金属度）的值。</summary>
 	public const byte MetallicValue = 191;
 
