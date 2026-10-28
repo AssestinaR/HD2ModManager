@@ -28,6 +28,31 @@ public sealed class RuntimeArmorRegistryService
 	// 读取时优先本文件，回退旧的部署状态文件；两者都没有时**不拒绝**，只是无法判断归属（见 ReadSnapshotAsync）。
 	public const string OwnerFileName = "armor-registry.owner";
 
+	/// <summary>
+	/// 自定义素体在"护甲归档 id"这个位置上的写法。它不是一个游戏归档，只是为了让
+	/// "目标护甲"这一个下拉能同时装下游戏护甲和注册素体，于是给它一个带前缀的伪 id。
+	/// <b>拼这个前缀只许走 <see cref="CustomModelArchiveId"/>，解析只许走 <see cref="TryReadCustomModelKey"/>。</b>
+	/// </summary>
+	public const string CustomModelArchiveIdPrefix = "custom-model:";
+
+	public static string CustomModelArchiveId(string modelKey)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(modelKey);
+		return CustomModelArchiveIdPrefix + modelKey;
+	}
+
+	/// <summary>认出一个自定义素体伪 id 并取出它的 key；不是这个形状就返回 false。</summary>
+	public static bool TryReadCustomModelKey(string? archiveId, out string modelKey)
+	{
+		modelKey = string.Empty;
+		if (string.IsNullOrWhiteSpace(archiveId)) return false;
+		if (!archiveId.StartsWith(CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)) return false;
+		var key = archiveId[CustomModelArchiveIdPrefix.Length..].Trim();
+		if (key.Length == 0) return false;
+		modelKey = key;
+		return true;
+	}
+
 	private const int MaximumProtocolBytes = 65536;
 	private readonly StoragePaths paths;
 	private readonly string registryRoot;
@@ -215,7 +240,7 @@ public sealed class RuntimeArmorRegistryService
 		return snapshot.Document.ModelDefinitions
 			.Where(model => model.Pieces is { Count: > 0 })
 			.Select(model => new EquipmentUnitCatalogEntry(
-				"custom-model:" + model.Key,
+				CustomModelArchiveId(model.Key),
 				"CustomModel",
 				string.IsNullOrWhiteSpace(model.Name) ? model.Key : model.Name!,
 				RuntimeArmorModelStructure.Active(model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
@@ -226,7 +251,12 @@ public sealed class RuntimeArmorRegistryService
 						0,
 						0,
 						ArmorStructure.ToPartKind(piece.Slot),
-						UnitMeshPartLayer.Armor,
+						// 层级由 pieceType 决定（0 内层 / 1 护甲 / 2 装饰），不能一律写 Armor：
+						// 下游按"层 == Undergarment 或 部位 == 头盔"来挑基础 7 槽，写错会让
+						// 自定义素体的身体件全部落进"护甲层"，于是被当成附件隐藏掉。
+						// Layer follows pieceType; hardcoding Armor pushed every body piece of a
+						// custom model into the armor layer and made the base-7 filter drop it.
+						ArmorStructure.ToLayer(piece.PieceType),
 						ArmorStructure.ToBodyVariant(piece.Body),
 						$"custom_{model.Key}_{piece.Slot}_{piece.PieceType}",
 						100,

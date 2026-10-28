@@ -161,8 +161,19 @@ public sealed class CanonicalCrossArmorOrchestrator
 			return Failure(issues, "CanonicalPlanNotReady", "Canonical 链路要求现有 CrossArmorTransferPlan 已通过校验。");
 		var customParts = request.Plan.SelectedTargets.Where(target => target.IsCustomModel).SelectMany(target => target.Parts).ToArray();
 		var customKeys = customParts.Select(part => part.UnitAssetKey).ToHashSet();
+		// 判据只能是"每个启用件都有来源"，不能是"件数 == 去重后的 unit 数"：
+		// 同一个 unit 服务两个身形（body 0/1 指向同一个 unit）是"通用件"的合法写法——
+		// 护甲注册里"合并为 Any"之前就是这个形状，一具 7 槽素体通常只有 7 个 unit 却覆盖
+		// 13 个 (部位, 身形) 组合。旧判据把这种正常素体判成"残缺"，于是"把模型挂到已注册
+		// 素体上"这条路根本走不通。
+		// One unit serving two body variants is the legal pre-"merge to Any" registry shape,
+		// so piece count must never be compared against the distinct-unit count.
+		var distinctCustomPieces = customParts
+			.Select(part => (part.UnitAssetKey, part.BodyVariant, part.PartKind))
+			.Distinct()
+			.Count();
 		if (customKeys.Count > 0 && (!request.DirectSourceUnitReuse
-			|| customKeys.Count != customParts.Length
+			|| distinctCustomPieces != customParts.Length
 			|| customParts.Any(part => !request.Plan.Mappings.Any(mapping => mapping.PhysicalTarget.UnitAssetKey == part.UnitAssetKey && mapping.WillReplace && mapping.Source is not null))))
 			return Failure(issues, "CustomModelOutputIncomplete", "自定义素体必须通过完整来源 Unit 复用生成，每个启用组件都必须有来源；不支持读取原版目标或自动隐藏缺失组件。");
 		if (!File.Exists(request.SourcePatchTocPath))

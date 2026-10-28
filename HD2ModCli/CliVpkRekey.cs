@@ -65,10 +65,25 @@ internal static class CliVpkRekey
 			throw new CliUserException("LibraryNotConfigured", "vpk rekey 需要 --library（或带 settings.json 的 --manager-root）。");
 		var paths = new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot);
 
+		// 目标分成两类，不能混着处理：
+		//   · 游戏护甲归档 —— 有 setId、有配套头盔，可以按 setId 补齐；
+		//   · 已注册的自定义素体 —— 不是游戏归档，没有 setId、没有配套头盔，unit 组来自
+		//     armor-registry 工作区。把它丢给 ExpandTargetKitAsync 只会去装备表里查一个
+		//     永远查不到的 id，然后静默退化成"就这一个归档"。
+		var customModelKeys = targets
+			.Select(target => RuntimeArmorRegistryService.TryReadCustomModelKey(target, out var key) ? key : null)
+			.Where(key => key is not null)
+			.Select(key => key!)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		var archiveTargets = targets
+			.Where(target => !RuntimeArmorRegistryService.TryReadCustomModelKey(target, out _))
+			.ToArray();
+
 		// 只给一个归档时，按 setId 把配套的另一半（护甲 ↔ 头盔）补上。
 		// 为什么必须补：护甲与头盔在游戏里是两个归档、两个 kit，只换一半会让玩家的头还是原版的。
-		if (targets.Count == 1 && !string.IsNullOrWhiteSpace(workspace.GameDataRoot))
-			targets = await ExpandTargetKitAsync(paths, targets[0], cancellationToken).ConfigureAwait(false);
+		if (archiveTargets.Length == 1 && customModelKeys.Length == 0 && !string.IsNullOrWhiteSpace(workspace.GameDataRoot))
+			archiveTargets = (await ExpandTargetKitAsync(paths, archiveTargets[0], cancellationToken).ConfigureAwait(false)).ToArray();
 
 		var modDirectory = Path.Combine(paths.ModsDirectory, node.RelativePath);
 		if (!Directory.Exists(modDirectory))
@@ -88,14 +103,24 @@ internal static class CliVpkRekey
 
 		// 目标护甲的 Unit 元数据（partKind / bodyVariant / meshInfoIndex）只能从装备表读：
 		// 这些字段决定"哪块几何落到哪个目标 Unit 上"，猜一个就会写错网格表位置。
-		var catalog = new EquipmentUnitCatalogService(paths);
-		var entries = await catalog.GetEntriesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-		var selected = entries
-			.Where(entry => targets.Contains(entry.ArchiveId, StringComparer.OrdinalIgnoreCase))
-			.ToArray();
-		if (selected.Length == 0)
-			throw new CliUserException("TargetArmorNotFound",
-				$"游戏装备表里找不到这些归档：{string.Join("、", targets)}。");
+		// 自定义素体的件表由护甲注册提供，形状与装备表条目一致，直接拼进同一份候选。
+		var selected = new List<EquipmentUnitCatalogEntry>();
+		if (archiveTargets.Length > 0)
+		{
+			var catalog = new EquipmentUnitCatalogService(paths);
+			var entries = await catalog.GetEntriesAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+			var matched = entries
+				.Where(entry => archiveTargets.Contains(entry.ArchiveId, StringComparer.OrdinalIgnoreCase))
+				.ToArray();
+			if (matched.Length == 0)
+				throw new CliUserException("TargetArmorNotFound",
+					$"游戏装备表里找不到这些归档：{string.Join("、", archiveTargets)}。");
+			selected.AddRange(matched);
+		}
+		if (customModelKeys.Length > 0)
+			selected.AddRange(await ResolveCustomModelTargetsAsync(paths, customModelKeys, cancellationToken).ConfigureAwait(false));
+		if (selected.Count == 0)
+			throw new CliUserException("TargetArmorNotFound", $"找不到任何目标：{string.Join("、", targets)}。");
 
 		var (plan, mappingNotes) = BuildPlan(source, selected);
 		if (!plan.CanContinue)
@@ -212,6 +237,39 @@ internal static class CliVpkRekey
 	}
 
 	/// <summary>
+	/// 把 <c>custom-model:&lt;key&gt;</c> 解析成护甲注册里的自定义素体件表。
+	/// <para>
+	/// 为什么要在这里抛而不是悄悄跳过：用户在下拉里选了"某个素体"，结果什么都没换，
+	/// 比直接报"找不到这个素体"更难排查。三种失败各自说清：没注册过 / 没启用件 / 键为空。
+	/// </para>
+	/// </summary>
+	private static async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> ResolveCustomModelTargetsAsync(
+		StoragePaths paths,
+		IReadOnlyList<string> modelKeys,
+		CancellationToken cancellationToken)
+	{
+		var catalog = await CoreServices.CreateRuntimeArmorRegistryService(paths)
+			.ReadCustomModelCatalogAsync(cancellationToken)
+			.ConfigureAwait(false);
+		var byKey = catalog
+			.Where(entry => !string.IsNullOrWhiteSpace(entry.CustomModelKey))
+			.ToDictionary(entry => entry.CustomModelKey!, StringComparer.OrdinalIgnoreCase);
+
+		var result = new List<EquipmentUnitCatalogEntry>(modelKeys.Count);
+		foreach (var key in modelKeys)
+		{
+			if (!byKey.TryGetValue(key, out var entry))
+				throw new CliUserException("TargetCustomModelNotFound",
+					$"护甲注册里找不到自定义素体“{key}”。请先在护甲映射页注册它并应用一次。");
+			if (entry.Parts.Count == 0)
+				throw new CliUserException("TargetCustomModelEmpty",
+					$"自定义素体“{entry.DisplayName}”没有启用的组件，不能作为换甲目标。");
+			result.Add(entry);
+		}
+		return result;
+	}
+
+	/// <summary>
 	/// 从 <c>sections.json</c> 造一份"来源装备条目"。
 	/// <para>
 	/// 跨护甲链路要的元数据是 partKind / layer / bodyVariant / meshInfoIndex。
@@ -264,6 +322,11 @@ internal static class CliVpkRekey
 		var notes = new List<string>();
 		foreach (var target in targets)
 		{
+			// 映射的单位是 **unit**，不是 (部位, 身形) 组合。注册素体里同一个 unit 常常同时
+			// 挂在 body 0 和 body 1 上（"合并为 Any"之前的形状），按件遍历就会给同一个目标
+			// unit 生成两条映射，计划校验直接以 DuplicateTargetMapping 拒掉整份计划。
+			// A unit is the unit of work: two pieces sharing one unit must map once.
+			var mappedUnits = new HashSet<AssetKey>();
 			foreach (var part in target.Parts)
 			{
 				// 只映射"基础 7 槽"：undergarment 层 + 头盔。
@@ -275,10 +338,13 @@ internal static class CliVpkRekey
 					|| part.PartKind == UnitMeshPartKind.Helmet;
 				if (!inBaseSlots)
 					continue;
+				if (!mappedUnits.Add(part.UnitAssetKey))
+					continue;
 				var matched = source.Parts.FirstOrDefault(candidate => candidate.PartKind == part.PartKind);
 				if (matched is null)
 				{
-					notes.Add($"{part.PartKind}/{part.Layer}/{part.BodyVariant} 没有对应来源 Unit，将走隐藏。");
+					var note = $"{part.PartKind}/{part.Layer}/{part.BodyVariant} 没有对应来源 Unit，将走隐藏。";
+					if (!notes.Contains(note)) notes.Add(note);
 					continue;
 				}
 

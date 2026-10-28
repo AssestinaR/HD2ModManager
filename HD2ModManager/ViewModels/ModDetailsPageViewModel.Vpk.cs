@@ -5,8 +5,20 @@ using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels;
 
-/// <summary>下拉里的一个目标护甲。<c>ArchiveIds</c> 是这一套装备要替换的全部归档（护甲 + 头盔）。</summary>
-public sealed record VpkTargetArmorOption(string ArchiveId, string DisplayName)
+/// <summary>下拉里的一个目标。<c>ArchiveId</c> 是这一套装备要替换的全部归档（护甲 + 头盔），或者自定义素体的伪 id。</summary>
+public enum VpkTargetArmorKind
+{
+	/// <summary>游戏里真实存在的护甲归档（按 setId 会再补上配套头盔）。</summary>
+	GameArmor = 0,
+
+	/// <summary>护甲映射页里注册的自定义素体：<c>custom-model:&lt;key&gt;</c>，没有游戏归档。</summary>
+	CustomModel = 1,
+}
+
+public sealed record VpkTargetArmorOption(
+	string ArchiveId,
+	string DisplayName,
+	VpkTargetArmorKind Kind = VpkTargetArmorKind.GameArmor)
 {
 	public override string ToString() => DisplayName;
 }
@@ -169,7 +181,17 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 	/// <summary>
-	/// 目标护甲下拉的候选。只列护甲：头盔会按 setId 自动补齐，让用户选两遍没有意义。
+	/// 目标下拉的候选：游戏护甲 + 已注册的自定义素体。
+	/// <para>
+	/// <b>为什么必须带上自定义素体。</b>VPK 转换出来的是"自带 unit id 的自定义素体"，
+	/// 用户的另一条出路是把它挂到自己已经注册好的素体上——那套 unit 组只存在于
+	/// <c>armor-registry.workspace.json</c> 里，游戏装备表里永远查不到。以前这里只查装备表，
+	/// 于是"已注册的素体一个都不出现"。
+	/// </para>
+	/// <para>
+	/// 头盔不单列：游戏护甲会按 setId 自动补齐，让用户选两遍没有意义。自定义素体没有
+	/// setId 也没有配套头盔，它本身就是完整的目标。
+	/// </para>
 	/// </summary>
 	private async Task EnsureVpkTargetArmorsAsync()
 	{
@@ -179,12 +201,34 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		{
 			var catalog = new EquipmentUnitCatalogService(_paths);
 			var entries = await catalog.GetEntriesAsync().ConfigureAwait(true);
-			var options = entries
+			var gameArmors = entries
 				.Where(entry => entry.Category.Equals("Armor", StringComparison.OrdinalIgnoreCase))
 				.GroupBy(entry => entry.ArchiveId, StringComparer.OrdinalIgnoreCase)
 				.Select(group => new VpkTargetArmorOption(group.Key, group.First().DisplayName))
-				.OrderBy(option => option.DisplayName, StringComparer.CurrentCulture)
-				.ToArray();
+				.OrderBy(option => option.DisplayName, StringComparer.CurrentCulture);
+
+			// 注册表坏了不能连带把游戏护甲列表一起废掉：两者独立取，谁失败谁说明。
+			IReadOnlyList<VpkTargetArmorOption> customModels;
+			try
+			{
+				var registry = CoreServices.CreateRuntimeArmorRegistryService(_paths);
+				var customCatalog = await registry.ReadCustomModelCatalogAsync().ConfigureAwait(true);
+				customModels = customCatalog
+					.Where(entry => entry.Parts.Count != 0)
+					.Select(entry => new VpkTargetArmorOption(
+						entry.ArchiveId,
+						entry.DisplayName + "（自定义素体）",
+						VpkTargetArmorKind.CustomModel))
+					.OrderBy(option => option.DisplayName, StringComparer.CurrentCulture)
+					.ToArray();
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+			{
+				customModels = [];
+				VpkComponentStatus = "读取已注册的自定义素体失败：" + exception.Message;
+			}
+
+			var options = gameArmors.Concat(customModels).ToArray();
 			VpkTargetArmors = options;
 			SelectedVpkTargetArmor = options.FirstOrDefault(option =>
 				option.ArchiveId.Equals(DefaultTargetArmorArchiveId, StringComparison.OrdinalIgnoreCase))

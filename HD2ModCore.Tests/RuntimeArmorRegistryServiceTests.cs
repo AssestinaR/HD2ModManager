@@ -574,6 +574,50 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(fixture.Service.WorkspacePath, snapshot.ProtocolOwnerWorkspace);
 	}
 
+	// 自定义素体的"层"必须跟着 pieceType 走：0 内层 / 1 护甲 / 2 装饰。
+	// 以前这里一律写 Armor，于是下游按"层 == Undergarment 或 部位 == 头盔"挑基础 7 槽时，
+	// 素体的身体件全部被当成护甲层，最后整具模型都走了隐藏路径。
+	// Layer must follow pieceType, otherwise every body piece of a custom model gets hidden.
+	[Fact]
+	public async Task CustomCatalog_MapsPieceTypeToLayer()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await fixture.Service.SaveWorkspaceAsync(new(0, false, [],
+		[
+			new("layers", null,
+			[
+				new(3, "aaaa000000000001", 2, 0),
+				new(3, "aaaa000000000002", 2, 1),
+				new(3, "aaaa000000000003", 2, 2),
+				new(3, "aaaa000000000004", 2, 7),
+			])
+		]));
+
+		var entry = Assert.Single(await fixture.Service.ReadCustomModelCatalogAsync());
+
+		Assert.Equal(4, entry.Parts.Count);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Undergarment, entry.Parts[0].Layer);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Armor, entry.Parts[1].Layer);
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Accessory, entry.Parts[2].Layer);
+		// 未知编号不假装知道含义：按附件处理，绝不冒充内层顶掉身体。
+		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartLayer.Accessory, entry.Parts[3].Layer);
+	}
+
+	// 自定义素体的伪归档 id 是"目标护甲"下拉与 CLI 之间的契约，只有一处拼、一处拆。
+	[Fact]
+	public void CustomModelArchiveId_RoundTripsAndRejectsForeignIds()
+	{
+		var id = RuntimeArmorRegistryService.CustomModelArchiveId("lunalice-bill");
+		Assert.Equal("custom-model:lunalice-bill", id);
+		Assert.True(RuntimeArmorRegistryService.TryReadCustomModelKey(id, out var key));
+		Assert.Equal("lunalice-bill", key);
+
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey("d923906f8b815987", out _));
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey("custom-model:", out _));
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey("custom-model:   ", out _));
+		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey(null, out _));
+	}
+
 	private sealed class Fixture : IAsyncDisposable
 	{
 		private Fixture(string root, string registryRoot, RuntimeArmorRegistryService service)

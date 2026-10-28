@@ -393,6 +393,22 @@ public static class ArmorStructure
 	public static string DescribePieceSlot(uint pieceType)
 		=> $"第 {pieceType} 槽 · {DisplayPieceSlot(pieceType)}";
 
+	/// <summary>
+	/// pieceType（部位内的第几个 unit 槽）→ 层级。<b>这是唯一允许做这个转换的地方。</b>
+	/// <para>
+	/// 0 = 内层（Undergarment）、1 = 护甲（Armor）、2 = 装饰（Accessory）。
+	/// 未知编号按"装饰"处理：它不在基础 7 槽里，宁可当附件隐藏，也不要被当成内层
+	/// 顶替掉身体——后者直接毁模型，前者最多少一件饰品。
+	/// </para>
+	/// </summary>
+	public static UnitMeshPartLayer ToLayer(uint pieceType) => pieceType switch
+	{
+		0 => UnitMeshPartLayer.Undergarment,
+		1 => UnitMeshPartLayer.Armor,
+		2 => UnitMeshPartLayer.Accessory,
+		_ => UnitMeshPartLayer.Accessory,
+	};
+
 	/// <summary>唯一的中文层级名。</summary>
 	public static string DisplayLayer(UnitMeshPartLayer layer) => layer switch
 	{
