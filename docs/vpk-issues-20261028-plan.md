@@ -80,16 +80,29 @@
 👉 用户需要做的：用新构建重导一遍这两个包再看游戏。若描边仍闪，再查
 `SourceMaterialConverter.BuildMaterialIdentity` 的 `|alphaclip` / `|emission` / `|matcap:` 拆解。
 
-### C. 老鼠干（`老鼠干\`）
+### C. 老鼠干（`老鼠干\`）—— 转换侧没复现，塌陷发生在游戏里或旧构建
 
 样本：`【VRM】橘雪莉 人物MOD.zip` —— 里面是 **21 个 .vpk + 2 个嵌套 .zip**（不是 .vrm！）。
+结构跟 GF2 那几批一样：`原版\` + `L4N\` 各一套「基础组件 + 8 个 survivor 包」，`组件材质\` 两个开关包。
+
 现象："老鼠干" = 模型塌成一团（典型**重定向失败**：骨名没对上 → 全部顶点收缩）。
 
-**下一步**：先按 A 把 VPK 解析/几何搞定（如果这些包也 VVD 失败，那 C 和 A 同源）；
-再跑 `hd2mod legacy inspect` / 现有 `SourceRetargetPipeline` 看 `Diagnostics` 里有没有
-`MissingBones` / `NonInvertibleBindMatrix`。注意 `Retargeter.FillHd2OnlyHeads` 里的
-`_newHead["spine1"]` 会在源骨架缺 spine1/spine2 时抛（上一轮已把异常降级成"该包失败"，
-但**根因没修**）——"老鼠干"很可能就是这个：骨对不上但没抛，于是姿态全塌。
+**本轮实测（用新构建跑 `原版\【VRM】橘雪莉 基础组件.vpk`）**：
+- 骨架正常：`3.mdl` 127 根骨，`Pelvis/Spine/Spine1/Spine2/Spine4/Neck1/Head1/L|R_Thigh…` 全在，
+  不是"骨名对不上"那一类；`1.mdl` 只有 59 根骨（无腿无头），是个辅助小模型。
+- 转换成功：7 个 Unit，左右手 18417 / 18564 顶点（对称）、腿 7315 / 3614，
+  11 个材质 / 13 张贴图，`diagnostics` 空，`warnings` 只有 `vmt_base` 模板本身那条。
+- **也就是说：转换产物在结构上看不出塌陷。** 塌陷要么发生在进游戏之后，要么用户当时用的是旧构建。
+
+**下一步**：
+1. `RetargetMetrics` 里已经有 `Scale` / `HeightBefore` / `HeightAfter` / `FootSpreadSource→Output` /
+   `MissingPairs`——这些正是"塌没塌"的量，但 **vpk2patch 的报告里没把它们透出来**（
+   只有 `hd2mod source retarget` 那条命令会打）。第一步应该把它们加进 patch 的 JSON/警告，
+   这样不进游戏就能判"老鼠干"。判据：`HeightAfter` 应接近 HD2 骨架身高，`FootSpreadOutput`
+   突然变大就是腿被张开，`MissingPairs` 多说明回退链长。
+2. `Retargeter.FillHd2OnlyHeads` 里 `_newHead["spine1"]` 在源骨架缺 spine1/spine2 时会抛
+   （上一轮只是把异常降级成"该包失败"）——这个包不缺 spine1，所以与它无关，但仍是隐患。
+3. 让用户用新构建重导一次并截图；若仍塌，把他实际选中的那个 Mod 的 `vpk2patch.json` 要过来。
 
 ### D. 解压时间过长（`解压时间过长（十几分钟仍未完成\`）
 
@@ -155,10 +168,14 @@ HD2ModCli\bin\Debug\net10.0\hd2mod.exe vpk2patch <某个.vpk> --output <临时�
 
 1. **A 的"缺一条手臂"**：秋桦 shader 包的 Unit 顶点分布明显异常（Chest 71281 / LeftArm 447 /
    RightArm 2326），先查分部位判定，用 `秋桦 人物MOD.zip` 里 `原版版本\… 基础组件.vpk` 做对照。
-2. **C 老鼠干**：`Retargeter.FillHd2OnlyHeads` 里 `_newHead["spine1"]` 在源骨架缺 spine1/spine2
-   时会抛，目前只是降级成"该包失败"，根因没修。先确认 `【VRM】橘雪莉` 那 21 个 .vpk 能否转换（A 修完
-   之后可能已经不同），再看重定向 Diagnostics。
+2. **C 老鼠干**：转换侧没复现（见上）。第一步是把 `RetargetMetrics` 透进 vpk2patch 报告，
+   再让用户用新构建重导一次。
 3. **D 解压慢**：日志里最长 `Import.ProcessQueue` 只有 100.5 s，没有"十几分钟"那次；
    要么向用户要时间点，要么直接量 `求生之路-Urara公式服8人包.zip`（样本里有）。
 4. 用户回归：用新构建重导 A/B 两批包，确认"没材质"消失；同时观察是否还缺手臂。
+
+## 本轮测试结果（全绿）
+
+SourceModel 51 / SourceMigration 148（+1 条原有的跳过）/ Core 820 / Adaptation 185 / Cli 175。
+管理器构建要重定向输出（`-p:BaseOutputPath=…\tmp\mgrbuild\`），因为它正在运行、DLL 被占。
 
