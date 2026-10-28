@@ -21,8 +21,16 @@ namespace HD2ModManager.Controls.Scrolling;
 // 启用之后：光标停在内层上滚动 → 内层先滚；内层到底后 → 页面接手
 // （由 SmoothScrollBehavior 的"最近启用者"判定完成，这里只负责把它启用）。
 //
-// ComboBox 是特例：它的滚动区在 Popup 里，是独立视觉树。下拉展开期间由它"认领"滚轮，
-// SmoothScrollBehavior 看到认领就让位，随后本行为把滚轮转给弹层里的 ScrollViewer。
+// ComboBox 是特例：它的滚动区在 Popup 里，是**独立的可视树、独立的窗口**。
+// 这件事带来两个必须分开处理的方向，缺一个就会看到"两个滚动区互相抢"：
+//
+//   1) 光标在弹层列表上 → 滚轮必须只滚列表，到顶到底也不外泄。
+//      不能指望弹层里的 ScrollViewer 自己接住：弹层是分层窗口，WM_MOUSEWHEEL 有时被
+//      投递给**主窗口**而不是弹层，事件根本没进弹层那棵树。所以在主窗口上也挂一份，
+//      用 viewer.IsMouseOver 判断"指针其实在弹层里"，把滚轮转进去。
+//
+//   2) 光标在页面别处（含页面滚动条）→ 滚轮必须只滚页面。
+//      所以"认领"必须按指针位置算，不能是"下拉展开期间整个页面都让位"。
 public static class WheelScroll
 {
     private static readonly ConditionalWeakTable<ComboBox, ComboSubscription> ComboSubscriptions = new();
@@ -108,9 +116,7 @@ public static class WheelScroll
 
         if (control is ComboBox combo && ComboSubscriptions.TryGetValue(combo, out var subscription))
         {
-            combo.DropDownOpened -= subscription.Opened;
-            combo.DropDownClosed -= subscription.Closed;
-            combo.RemoveHandler(UIElement.PreviewMouseWheelEvent, subscription.Wheel);
+            subscription.Detach();
             ComboSubscriptions.Remove(combo);
             combo.ClearValue(ClaimsWheelProperty);
         }
@@ -119,28 +125,24 @@ public static class WheelScroll
     private static void AttachCombo(ComboBox combo)
     {
         if (ComboSubscriptions.TryGetValue(combo, out _)) return;
-
-        var subscription = new ComboSubscription
-        {
-            Opened = (_, _) => combo.SetValue(ClaimsWheelProperty, true),
-            Closed = (_, _) => combo.SetValue(ClaimsWheelProperty, false),
-            Wheel = (_, e) => RouteWheelToPopup(combo, e)
-        };
-
-        combo.DropDownOpened += subscription.Opened;
-        combo.DropDownClosed += subscription.Closed;
-        combo.AddHandler(UIElement.PreviewMouseWheelEvent, subscription.Wheel, handledEventsToo: false);
-        ComboSubscriptions.Add(combo, subscription);
+        ComboSubscriptions.Add(combo, new ComboSubscription(combo));
     }
 
-    // 指针停在下拉框本体上时，把滚轮转给弹层里的列表。
-    private static void RouteWheelToPopup(ComboBox combo, MouseWheelEventArgs e)
+    /// <summary>
+    /// 光标停在弹层列表上时，滚轮只滚列表；到顶到底也不放行。
+    /// 放行的后果就是"滚列表把外层页面滚了"——事件会一路冒泡到页面的滚动区。
+    /// </summary>
+    private static void OnPopupWheel(object? sender, MouseWheelEventArgs e)
     {
-        if (!combo.IsDropDownOpen || e.Handled || e.Delta == 0) return;
-        if (combo.Template.FindName("PART_Popup", combo) is not Popup { Child: DependencyObject child }) return;
-        if (FindDescendant<ScrollViewer>(child) is not { } viewer) return;
+        if (e.Handled || e.Delta == 0) return;
+        if (sender is not ScrollViewer viewer) return;
+        ScrollPopup(viewer, e);
+    }
 
+    private static void ScrollPopup(ScrollViewer viewer, MouseWheelEventArgs e)
+    {
         viewer.ScrollToVerticalOffset(viewer.VerticalOffset - Math.Sign(e.Delta) * 48d);
+        // 无条件吃掉：即使已经在顶/底，也不能让事件继续走——那正是页面被滚的原因。
         e.Handled = true;
     }
 
@@ -156,10 +158,82 @@ public static class WheelScroll
         return null;
     }
 
+    // 一个 ComboBox 的滚轮订阅。弹层是在展开那一刻才生成的，所以"找到弹层滚动区、
+    // 挂/摘监听"都发生在 Opened / Closed 里，而不是 Attach 里。
     private sealed class ComboSubscription
     {
-        public required EventHandler Opened { get; init; }
-        public required EventHandler Closed { get; init; }
-        public required MouseWheelEventHandler Wheel { get; init; }
+        private readonly ComboBox _combo;
+
+        public ComboSubscription(ComboBox combo)
+        {
+            _combo = combo;
+            _combo.DropDownOpened += OnOpened;
+            _combo.DropDownClosed += OnClosed;
+            // 指针停在下拉框本体上时，把滚轮转给弹层里的列表。
+            _combo.AddHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler(OnComboWheel), handledEventsToo: false);
+        }
+
+        private ScrollViewer? PopupViewer { get; set; }
+        private Window? HostWindow { get; set; }
+
+        public void Detach()
+        {
+            _combo.DropDownOpened -= OnOpened;
+            _combo.DropDownClosed -= OnClosed;
+            _combo.RemoveHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler(OnComboWheel));
+            DetachPopup();
+        }
+
+        private void OnOpened(object? sender, EventArgs e)
+        {
+            _combo.SetValue(ClaimsWheelProperty, true);
+            _combo.ApplyTemplate();
+            if (_combo.Template.FindName("PART_Popup", _combo) is not Popup { Child: DependencyObject child }) return;
+            if (FindDescendant<ScrollViewer>(child) is not { } viewer) return;
+
+            PopupViewer = viewer;
+            viewer.AddHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler(OnPopupWheel), handledEventsToo: false);
+
+            // 弹层是独立窗口：WM_MOUSEWHEEL 可能被投递给主窗口，此时弹层那棵树收不到事件。
+            // 挂在主窗口上按"指针是否在弹层里"转投，才能保证"光标在列表上就滚列表"。
+            if (Window.GetWindow(_combo) is { } window)
+            {
+                HostWindow = window;
+                window.AddHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler(OnWindowWheel), handledEventsToo: true);
+            }
+        }
+
+        private void OnClosed(object? sender, EventArgs e) => DetachPopup();
+
+        private void DetachPopup()
+        {
+            _combo.ClearValue(ClaimsWheelProperty);
+
+            if (PopupViewer is { } viewer)
+                viewer.RemoveHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler(OnPopupWheel));
+            PopupViewer = null;
+
+            if (HostWindow is { } window)
+                window.RemoveHandler(UIElement.PreviewMouseWheelEvent, new MouseWheelEventHandler(OnWindowWheel));
+            HostWindow = null;
+        }
+
+        private void OnComboWheel(object? sender, MouseWheelEventArgs e)
+        {
+            if (!_combo.IsDropDownOpen || e.Handled || e.Delta == 0) return;
+            // 只认"指针就在这个下拉框上"：以前不看指针，展开期间经过下拉框的滚轮都会被转走。
+            if (!_combo.IsMouseOver) return;
+            if (PopupViewer is not { } viewer) return;
+            ScrollPopup(viewer, e);
+        }
+
+        private void OnWindowWheel(object? sender, MouseWheelEventArgs e)
+        {
+            if (e.Handled || e.Delta == 0 || !_combo.IsDropDownOpen) return;
+            if (PopupViewer is not { } viewer) return;
+            // 指针不在弹层里（例如停在页面滚动条或页面空白处）→ 什么都不做，让页面正常滚。
+            if (!viewer.IsMouseOver) return;
+            ScrollPopup(viewer, e);
+        }
     }
 }
