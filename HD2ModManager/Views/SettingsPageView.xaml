@@ -15,9 +15,6 @@
                 <StackPanel>
                     <TextBlock Text="通用" Style="{StaticResource AppCardTitle}"/>
                     <CheckBox Style="{StaticResource AppToggleSwitch}" Content="导入 Mod 后自动加入活动配置并部署" IsChecked="{Binding AutoImportToActiveProfile, Mode=TwoWay}" Margin="0,12,0,0"/>
-                    <CheckBox Style="{StaticResource AppToggleSwitch}" Content="允许不安全 Lua 合并部署" IsChecked="{Binding AllowUnsafeLuaMerge, Mode=TwoWay}" Margin="0,12,0,0"
-                              ToolTip="允许将无法进行结构化分析的完整 Lua 与其他 Lua 合并。该行为不是沙箱，可能发生全局状态、模块缓存、执行顺序或游戏内兼容性问题。默认关闭。"/>
-                    <TextBlock Text="允许不安全 Lua 与其他 Lua 合并；这不是沙箱，可能发生全局状态、模块缓存、执行顺序或游戏内兼容性问题。" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
                     <Grid Margin="0,14,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="150"/>

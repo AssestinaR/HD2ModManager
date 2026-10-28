@@ -34,37 +34,6 @@ public sealed class ProfileDeploymentCoordinatorTests
 	}
 
 	[Fact]
-	public async Task NotifyActiveProfileChanged_UsesCurrentLuaPermission()
-	{
-		var root = Path.Combine(Path.GetTempPath(), "hd2-deployment-coordinator-" + Guid.NewGuid().ToString("N"));
-		Directory.CreateDirectory(root);
-		try
-		{
-			var profile = new Profile(ProfileId.New(), "Active", DateTimeOffset.UtcNow, null, Array.Empty<ProfileEntry>(), Revision: 1);
-			var library = new FakeLibraryManager(new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id));
-			var apply = new RecordingApplyService();
-			var executor = new RecordingExecutor();
-			await using var coordinator = new ProfileDeploymentCoordinator(
-				library,
-				apply,
-				executor,
-				new StoragePaths(root),
-				() => root,
-				bufferDuration: TimeSpan.Zero,
-				luaPermissionProvider: () => LuaDeploymentPermission.AllowOpaque);
-
-			coordinator.NotifyActiveProfileChanged();
-			await apply.WaitForCallAsync();
-
-			Assert.Equal(LuaDeploymentPermission.AllowOpaque, apply.LastLuaPermission);
-		}
-		finally
-		{
-			try { Directory.Delete(root, recursive: true); } catch { }
-		}
-	}
-
-	[Fact]
 	public async Task FlushAsync_SkipsPendingStabilityWindow_AndWaitsForDeployment()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2-deployment-coordinator-" + Guid.NewGuid().ToString("N"));
@@ -176,12 +145,10 @@ public sealed class ProfileDeploymentCoordinatorTests
 		private readonly TaskCompletionSource _called = new(TaskCreationOptions.RunContinuationsAsynchronously);
 		public int CallCount { get; private set; }
 		public Profile? LastProfile { get; private set; }
-		public LuaDeploymentPermission LastLuaPermission { get; private set; }
-		public ValueTask<ApplyResult> ApplyAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, string gameDataDirectory, CancellationToken cancellationToken = default, LuaDeploymentPermission luaPermission = LuaDeploymentPermission.DenyOpaque)
+		public ValueTask<ApplyResult> ApplyAsync(Profile profile, LibrarySnapshot snapshot, string modsRootDirectory, string gameDataDirectory, CancellationToken cancellationToken = default)
 		{
 			CallCount++;
 			LastProfile = profile;
-			LastLuaPermission = luaPermission;
 			_called.TrySetResult();
 			return ValueTask.FromResult(new ApplyResult(true, [], null, []));
 		}

@@ -19,8 +19,7 @@ public interface ILuaDeploymentService
 		string modsRootDirectory,
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
-		CancellationToken cancellationToken = default,
-		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque);
+		CancellationToken cancellationToken = default);
 
 	ValueTask<LuaDeploymentPreparation> PrepareAsync(
 		Profile profile,
@@ -29,8 +28,7 @@ public interface ILuaDeploymentService
 		string modsRootDirectory,
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
-		CancellationToken cancellationToken = default,
-		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque);
+		CancellationToken cancellationToken = default);
 
 	/// <summary>
 	/// Materializes a planned Lua merge after the caller has acquired its write
@@ -44,14 +42,7 @@ public interface ILuaDeploymentService
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
 		LuaDeploymentValidationMode validationMode,
-		CancellationToken cancellationToken = default,
-		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque);
-}
-
-public enum LuaDeploymentPermission
-{
-	DenyOpaque,
-	AllowOpaque,
+		CancellationToken cancellationToken = default);
 }
 
 public enum LuaDeploymentValidationMode

@@ -121,11 +121,13 @@ public sealed class DeploymentCliTests
 		Assert.All(state.Files, file => Assert.True(File.Exists(file.TargetPath)));
 	}
 
+	// 管理器不再合并第三方 Lua：两个都替换 boot 的补丁会被**原样**分别部署
+	// （引擎只会执行序号最大的那份，这一点由计划里的 LuaBootEntryOverlap 警告告知用户）。
 	[Fact]
-	public async Task DeployPlanApply_TwoLuaPatches_MaterializesOneGeneratedPatchWithoutExecutingLua()
+	public async Task DeployPlanApply_TwoLuaPatches_DeploysBothAsIsWithoutGeneratingAMerge()
 	{
 		await using var fixture = await DeploymentFixture.CreateAsync(luaPatchCount: 2);
-		var planPath = Path.Combine(fixture.RootDirectory, "merged-lua-deployment-plan.json");
+		var planPath = Path.Combine(fixture.RootDirectory, "two-lua-deployment-plan.json");
 
 		var planExit = await CliApplication.RunAsync(
 		[
@@ -149,8 +151,9 @@ public sealed class DeploymentCliTests
 		Assert.Equal(0, planExit);
 		Assert.Equal(0, applyExit);
 		Assert.NotNull(state);
-		Assert.Equal(3, state!.Files.Count);
-		Assert.All(state.Files, file => Assert.Contains(Path.Combine(".runtime", "lua"), file.SourcePath, StringComparison.OrdinalIgnoreCase));
+		// 两个补丁各带 base / stream / gpu_resources 三个文件，全部来自 mod 自己。
+		Assert.Equal(6, state!.Files.Count);
+		Assert.All(state.Files, file => Assert.DoesNotContain(Path.Combine(".runtime", "lua"), file.SourcePath, StringComparison.OrdinalIgnoreCase));
 	}
 
 	[Fact]
@@ -342,12 +345,9 @@ public sealed class DeploymentCliTests
 				new AdaptationPatchEntryPayload(entry, [], [], []),
 				header,
 				[0x1b, 0x4c, 0x4a],
-				[new LuaPatchBlock("fixture", string.Empty, "local fixture = true", false)],
-				LuaPatchWrapperKind.Single,
-				null,
-				string.Empty);
+				[new LuaPatchBlock("fixture", "local fixture = true")]);
 			var composer = new LuaPatchComposer();
-			var composition = composer.Compose([document]);
+			var composition = composer.Wrap(document);
 			await composer.WriteAsync(patchPath, composition);
 		}
 

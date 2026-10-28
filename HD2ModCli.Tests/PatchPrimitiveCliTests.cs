@@ -242,12 +242,9 @@ public sealed class PatchPrimitiveCliTests
 				new PatchEntryPayload(entry, [], [], []),
 				header,
 				[0x1b, 0x4c, 0x4a],
-				[new LuaPatchBlock("fixture", string.Empty, "local fixture = true", false)],
-				LuaPatchWrapperKind.Single,
-				null,
-				string.Empty);
+				[new LuaPatchBlock("fixture", "local fixture = true")]);
 			var composer = new LuaPatchComposer();
-			await composer.WriteAsync(patchPath, composer.Compose([document]));
+			await composer.WriteAsync(patchPath, composer.Wrap(document));
 		}
 
 		private static byte[] BuildFakeTocData(AssetKey key)

@@ -17,14 +17,12 @@ namespace HD2ModCore.Infrastructure;
 // It deliberately does not execute or mutate the game directory.
 public sealed class LuaDeploymentService : ILuaDeploymentService
 {
-	private readonly LuaPatchInspector _luaInspector;
 	private readonly LuaPatchComposer _luaComposer;
 	private readonly LuaPatchRuntimeValidator _luaRuntimeValidator;
 	private readonly IExternalInstallFileFactsService _externalFiles;
 	private readonly RuntimeArmorRegistryService? _armorRegistry;
 	private static readonly ModNodeId ArmorRegistryNodeId = new(Guid.Parse("6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"));
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
-	private const string BingusLoaderPackageGuid = "612eaf70-d682-43c7-9efd-16dcc695f977";
 
 	/// <summary>
 	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingMode.ExclusiveLuaEntry"/>。
@@ -35,13 +33,11 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	public static ArmorMappingMode MappingMode { get; set; } = ArmorMappingModes.Default;
 
 	public LuaDeploymentService(
-		LuaPatchInspector? luaInspector = null,
 		LuaPatchComposer? luaComposer = null,
 		LuaPatchRuntimeValidator? luaRuntimeValidator = null,
 		IExternalInstallFileFactsService? externalFiles = null,
 		RuntimeArmorRegistryService? armorRegistry = null)
 	{
-		_luaInspector = luaInspector ?? new LuaPatchInspector();
 		_luaComposer = luaComposer ?? new LuaPatchComposer();
 		_luaRuntimeValidator = luaRuntimeValidator ?? new LuaPatchRuntimeValidator();
 		_externalFiles = externalFiles ?? new ExternalInstallFileFactsService();
@@ -55,13 +51,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		string modsRootDirectory,
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
-		CancellationToken cancellationToken = default,
-		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
+		CancellationToken cancellationToken = default)
 	{
 		// 关闭"独占映射 Lua"时**不改变标准部署流程**：其它 mod 的 Lua 照常按配置表部署，
-		// 只是不再额外投放护甲映射运行时那个补丁（见 BuildAsync 里对 DeploymentEnabled 的
-		// 判断）。运行时脚本会由设置页导出到一个文件夹，用户可以交给 MDL / Bingus 之类的
-		// 第三方加载器自行加载。
+		// 只是不再额外投放护甲映射运行时那个补丁（见 BuildAsync 里对
+		// IsManagedDeploymentEnabledAsync 的判断）。运行时脚本会由设置页导出到一个文件夹，
+		// 用户可以交给 MDL / Bingus 之类的第三方加载器自行加载。
 
 		var result = await BuildAsync(
 			profile,
@@ -72,7 +67,6 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			contentFacts,
 			materialize: false,
 			validationMode: null,
-			permission: permission,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 		return new LuaDeploymentPlan(
 			result.PatchIndex,
@@ -91,8 +85,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		string modsRootDirectory,
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
-		CancellationToken cancellationToken = default,
-		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
+		CancellationToken cancellationToken = default)
 		=> await MaterializeAsync(
 			profile,
 			snapshot,
@@ -101,8 +94,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			gameDataDirectory,
 			contentFacts,
 			LuaDeploymentValidationMode.CompileAndSmoke,
-			cancellationToken,
-			permission).ConfigureAwait(false);
+			cancellationToken).ConfigureAwait(false);
 
 	public async ValueTask<LuaDeploymentPreparation> MaterializeAsync(
 		Profile profile,
@@ -112,8 +104,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		string gameDataDirectory,
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
 		LuaDeploymentValidationMode validationMode,
-		CancellationToken cancellationToken = default,
-		LuaDeploymentPermission permission = LuaDeploymentPermission.DenyOpaque)
+		CancellationToken cancellationToken = default)
 	{
 		var result = await BuildAsync(
 			profile,
@@ -124,7 +115,6 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			contentFacts,
 			materialize: true,
 			validationMode: validationMode,
-			permission: permission,
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 		return new LuaDeploymentPreparation(result.PatchIndex, result.GeneratedPatchGroups, result.ExternalFiles, result.Issues);
 	}
@@ -138,7 +128,6 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
 		bool materialize,
 		LuaDeploymentValidationMode? validationMode,
-		LuaDeploymentPermission permission,
 		CancellationToken cancellationToken)
 	{
 		ArgumentNullException.ThrowIfNull(profile);
@@ -150,7 +139,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 
 		var issues = new List<CoreIssue>();
 		var documents = new List<LuaDocumentSource>();
-		var removedGroups = new HashSet<PatchGroupIdentity>();
+		// 只登记"谁提供了 boot"，解析推迟到确认必须合并之后再做（见下方 mergeRequired）。
+		var bootProviders = new List<LuaBootProvider>();
 		var managedRemovedGroups = new HashSet<PatchGroupIdentity>();
 		var orderedEntries = profile.Entries
 			.OrderBy(entry => entry.LoadOrder)
@@ -180,7 +170,6 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				{
 					// Migrate the old manually imported addon into the hidden
 					// manager-owned component without deleting the user's library node.
-					removedGroups.Add(group.Key);
 					managedRemovedGroups.Add(group.Key);
 					continue;
 				}
@@ -192,7 +181,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					string.Equals(candidate.Id.SourceArchiveHex, group.Key.ArchiveHex16, StringComparison.OrdinalIgnoreCase)
 					&& candidate.Id.SourcePatchIndex == group.Key.SourcePatchIndex
 					&& candidate.NormalizedOrder == group.Key.NormalizedOrder);
-				var luaKeys = factGroup?.AssetKeys.Where(IsLuaAssetKey).Distinct().ToArray() ?? Array.Empty<AssetKey>();
+				var luaKeys = factGroup?.AssetKeys.Where(IsLuaBootAssetKey).Distinct().ToArray() ?? Array.Empty<AssetKey>();
 				// A lightweight AssetInventory may exist but still be incomplete for
 				// a legacy or freshly generated boot archive. Do not silently deploy
 				// such a Patch as ordinary content: the boot archive has one exact
@@ -201,23 +190,29 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					factGroup = null;
 				HD2ModAdaptation.PatchReconstruction.PatchTocEntry? knownLuaEntry = null;
 				IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>? entries = null;
+				var assetCount = factGroup?.AssetKeys.Count ?? 1;
 				if (factGroup is not null)
 				{
 					if (luaKeys.Length == 0) continue;
-					if (luaKeys.Length != 1 || factGroup.AssetKeys.Count != 1)
+					if (luaKeys.Length > 1)
 					{
+						// 清单把同一个 boot 资源列了两次。这是清单本身坏了，不是某种 mod
+						// 形态；按它合并只能是猜。
 						issues.Add(new CoreIssue(
 							CoreIssueSeverity.Error,
 							"LuaPatchMultipleEntrypointsUnsupported",
-							"A patch group contains multiple Lua boot AssetKeys and cannot be merged safely.",
+							"A patch group declares the boot Lua resource more than once and cannot be deployed safely.",
 							baseFile.FilePath,
 							profileEntry.NodeId));
 						continue;
 					}
-					knownLuaEntry = new HD2ModAdaptation.PatchReconstruction.PatchTocEntry(
-						new HD2ModAdaptation.PatchReconstruction.AssetKey(luaKeys[0].TypeId, luaKeys[0].FileId),
-						baseFile.FilePath,
-						baseFile.FileName);
+					if (assetCount == 1)
+					{
+						knownLuaEntry = new HD2ModAdaptation.PatchReconstruction.PatchTocEntry(
+							new HD2ModAdaptation.PatchReconstruction.AssetKey(luaKeys[0].TypeId, luaKeys[0].FileId),
+							baseFile.FilePath,
+							baseFile.FileName);
+					}
 				}
 				else
 				{
@@ -244,86 +239,29 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 
 					var luaEntries = entries.Where(entry => LuaAssetKeys.IsBoot(entry.AssetKey)).ToArray();
 					if (luaEntries.Length == 0) continue;
-					if (entries.Count != 1 || luaEntries.Length != 1)
+					if (luaEntries.Length > 1)
 					{
 						issues.Add(new CoreIssue(
 							CoreIssueSeverity.Error,
-							"LuaPatchMixedResourcesUnsupported",
-							"A Lua patch that also contains non-Lua resources cannot be merged automatically.",
+							"LuaPatchMultipleEntrypointsUnsupported",
+							"A patch group declares the boot Lua resource more than once and cannot be deployed safely.",
 							baseFile.FilePath,
 							profileEntry.NodeId));
 						continue;
 					}
 					knownLuaEntry = luaEntries[0];
+					assetCount = entries.Count;
 				}
 
 				if (knownLuaEntry is null) continue;
-				if (entries is not null && entries.Count != 1)
-				{
-					issues.Add(new CoreIssue(
-						CoreIssueSeverity.Error,
-						"LuaPatchMixedResourcesUnsupported",
-						"A Lua patch that also contains non-Lua resources cannot be merged automatically.",
-						baseFile.FilePath,
-						profileEntry.NodeId));
-					continue;
-				}
-
-				if (group.Any(file => file.SidecarKind != PatchSidecarKind.Base && file.Length > 0))
-				{
-					issues.Add(new CoreIssue(
-						CoreIssueSeverity.Error,
-						"LuaPatchSidecarUnsupported",
-						"Lua patches with non-empty Stream or GPU sidecars are not supported by the safe merge path.",
-						baseFile.FilePath,
-						profileEntry.NodeId));
-					continue;
-				}
-
-				try
-				{
-					var document = await _luaInspector.InspectAsync(baseFile.FilePath, knownLuaEntry, cancellationToken).ConfigureAwait(false);
-					var patchGroupName = $"{baseFile.ArchiveHex16}.patch_{baseFile.SourcePatchIndex}";
-					var blocks = document.Blocks
-						.Select(block => block with
-						{
-							SourceModId = profileEntry.NodeId.Value.ToString("N"),
-							SourcePatchGroup = patchGroupName,
-						})
-						.ToArray();
-					document = document with { Blocks = blocks };
-					documents.Add(new LuaDocumentSource(profileEntry.NodeId, profileEntry.LoadOrder, group.Key, document));
-					removedGroups.Add(group.Key);
-				}
-				catch (Exception exception) when (exception is LuaPatchFormatException or IOException or UnauthorizedAccessException)
-				{
-					if (exception is LuaPatchFormatException)
-					{
-						try
-						{
-							var opaque = await _luaInspector.InspectOpaqueAsync(baseFile.FilePath, knownLuaEntry, cancellationToken).ConfigureAwait(false);
-							var patchGroupName = $"{baseFile.ArchiveHex16}.patch_{baseFile.SourcePatchIndex}";
-							var opaqueBlocks = opaque.Blocks
-								.Select(block => block with { SourceModId = profileEntry.NodeId.Value.ToString("N"), SourcePatchGroup = patchGroupName })
-							.ToArray();
-							opaque = opaque with { Blocks = opaqueBlocks };
-							documents.Add(new LuaDocumentSource(profileEntry.NodeId, profileEntry.LoadOrder, group.Key, opaque));
-							removedGroups.Add(group.Key);
-							continue;
-						}
-						catch (LuaPatchFormatException)
-						{
-							// Fall through to the original structural error below.
-						}
-					}
-					issues.Add(new CoreIssue(
-						CoreIssueSeverity.Error,
-						"LuaPatchUnsupportedFormat",
-						$"The Lua Patch was detected but could not be safely parsed: {exception.Message}",
-						baseFile.FilePath,
-						profileEntry.NodeId,
-						ExceptionMessage: exception.ToString()));
-				}
+				// 一个 patch 里除了 boot 还带别的资源，是加载器类 mod 的正常形态
+				// （引导桩 + 自己的核心模块 + 材质/gpu）。管理器只登记"这个组提供了
+				// boot"这一件事，既不解析载荷，也不打算动它——它会被原样部署。
+				bootProviders.Add(new LuaBootProvider(
+					profileEntry.NodeId,
+					profileEntry.LoadOrder,
+					group.Key,
+					baseFile));
 			}
 		}
 
@@ -336,8 +274,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			issues,
 			cancellationToken).ConfigureAwait(false);
 
-		var armorRuntimeEnabled = false;
 		GeneratedPatchGroup? armorAddon = null;
+		// 独占入口时运行时的 Lua 文档。先建好但**不**立刻塞进 documents：
+		// 只有确认"必须生成合并补丁"之后它才有用，否则那个文档会被丢弃。
+		LuaDocumentSource? armorBootDocument = null;
 		if (_armorRegistry is not null)
 		{
 			// 不在真映射模式时，把数据层曾经写进去的改动还原。切换模式会触发一次部署，
@@ -371,7 +311,6 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				// （件表直接写成目标件集，没有"来源缺槽"的问题）。
 				if (mappingsEnabled && MappingMode.UsesRuntimeLua())
 				{
-					armorRuntimeEnabled = true;
 					if (MappingMode == ArmorMappingMode.ExternalLuaEntry)
 					{
 						// 外置入口：运行时 + 隐藏 unit 打包成一个独立补丁，管理器不碰 boot。
@@ -384,11 +323,11 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					{
 						// 独占入口：管理器自己占用 boot，由游戏自身的 Lua VM 加载运行时。
 						var runtimeDocument = await CreateArmorRegistryDocumentAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
-						documents.Add(new LuaDocumentSource(
+						armorBootDocument = new LuaDocumentSource(
 							ArmorRegistryNodeId,
 							int.MaxValue,
 							new PatchGroupIdentity(ArmorRegistryNodeId, $"{LuaAssetKeys.BootArchiveId:x16}", 0, int.MaxValue),
-							runtimeDocument));
+							runtimeDocument);
 					}
 				}
 			}
@@ -408,9 +347,21 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 
-		var filteredIndex = FilterPatchIndex(patchIndex, removedGroups);
-		if (documents.Count < 2 && (!armorRuntimeEnabled || armorAddon is not null))
+		// 管理器不再合并任何第三方 Lua。
+		//
+		// 合并唯一买到的能力是"没有加载器时，让替换 boot 的第三方 mod 和我们的运行时
+		// 共存"。代价是一整套第三方 boot 解析器、merge ledger、opaque 回退，以及一个
+		// "允许不安全 Lua 合并"的用户开关；而且每出现一种新的 mod 形态就会撞墙
+		// （2026-10-28 撞的是加载器包：引导桩 + 自身模块 + gpu 在同一个 patch 里）。
+		// 让多个第三方 Lua mod 共存是**加载器**的职责，不是管理器的职责。
+		//
+		// 现在的规则只有两条：
+		//   1. 第三方 Lua patch 一律原样部署，管理器不解析、不合并、不改一个字节；
+		//   2. 独占模式下运行时必须独占 boot，别人也占就明确报错，让用户自己选。
+		if (armorBootDocument is null)
 		{
+			// 外置 / 真映射：管理器自己不占 boot，只把别人的争用情况说清楚。
+			ReportBootEntryContention(bootProviders, issues, ownerIsManager: false);
 			var addonGroups = armorAddon is null ? Array.Empty<GeneratedPatchGroup>() : new[] { armorAddon };
 			return new LuaBuildResult(
 				FilterPatchIndex(patchIndex, managedRemovedGroups),
@@ -419,63 +370,53 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				issues,
 				armorAddon is not null,
 				armorAddon is null ? null : ArmorRegistrySourceFingerprint(),
-				documents.Count);
+				0);
 		}
 
-		var opaqueDocuments = documents.Where(document => document.Document.IsOpaque).ToArray();
-		if (opaqueDocuments.Length > 0 && permission != LuaDeploymentPermission.AllowOpaque)
+		if (bootProviders.Count > 0)
 		{
-			var names = string.Join("、", opaqueDocuments.Select(document => Path.GetFileName(document.Document.SourcePatchPath)));
-			issues.Add(new CoreIssue(CoreIssueSeverity.Error, "LuaOpaqueMergeDisabled", $"检测到需要合并的不安全 Lua：{names}。请在设置页打开“允许不安全 Lua 合并部署”后重试。"));
-			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
+			// 运行时独占 boot，但别的 mod 也要它：引擎只执行一个 Lua 启动脚本，
+			// 两者不可能同时生效，必须让用户二选一。
+			ReportBootEntryContention(bootProviders, issues, ownerIsManager: true);
+			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, 0);
 		}
 
-		// A compiled chunk cannot be spliced into a text merge. Replaying it whole is
-		// the only lossless option, and it is what the manager already does with the
-		// game's own boot resource, so one such input switches the whole merge to the
-		// replay wrapper.
-		var requiresReplay = documents.Any(document => document.Document.WrapperKind == LuaPatchWrapperKind.Bytecode);
+		documents.Add(armorBootDocument);
+		var filteredIndex = patchIndex;
 
 		GeneratedPatchGroup generated;
 		string? fingerprint = null;
 		try
 		{
-			var orderedDocuments = documents
-				.OrderBy(item => item.ProfileLoadOrder)
-				.ThenBy(item => item.Group.NormalizedOrder)
-				.ThenBy(item => item.Group.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
-				.Select(item => item.Document)
-				.ToArray();
-			var composition = opaqueDocuments.Length == 0 && !requiresReplay
-				? _luaComposer.Compose(orderedDocuments)
-				: _luaComposer.ComposeOpaque(orderedDocuments);
-			// The game now only accepts a compiled chunk. Wrapping the merged source
-			// in one fixed prototype keeps every merge, ledger and validation path
-			// operating on readable Lua while the bytes on disk become bytecode.
+			// 只有一个文档：管理器自己的运行时。它由"重放游戏原始 boot 字节码 + 用
+			// loadstring 跑运行时源码"封装而成——这正是任何加载器用的同一个套路，
+			// 只是这里的派发者是我们自己。
+			var composition = _luaComposer.Wrap(armorBootDocument.Document);
+			// The game now only accepts a compiled chunk. Wrapping the source in one
+			// fixed prototype keeps the bytes on disk in the same shape as the game's
+			// own boot resource while the readable source stays available for
+			// diagnostics and validation.
 			composition = composition with { CompiledPayload = Lua51WrapperChunk.Build(composition.SourceText) };
 			var gameRoot = Directory.GetParent(Path.GetFullPath(gameDataDirectory))?.FullName;
 			if (validationMode is not null && !string.IsNullOrWhiteSpace(gameRoot))
 			{
 				var luaLibraryPath = Path.Combine(gameRoot, "bin", "lua51.dll");
-				var effectiveValidationMode = opaqueDocuments.Length > 0 || requiresReplay
-					? LuaDeploymentValidationMode.CompileOnly
-					: validationMode;
-				var validation = effectiveValidationMode == LuaDeploymentValidationMode.CompileOnly
+				var validation = validationMode == LuaDeploymentValidationMode.CompileOnly
 					? await _luaRuntimeValidator.ValidateCompilationAsync(composition.SourceText, luaLibraryPath, cancellationToken).ConfigureAwait(false)
 					: await _luaRuntimeValidator.ValidateAsync(composition.SourceText, luaLibraryPath, cancellationToken).ConfigureAwait(false);
 				if (!validation.Available)
 				{
-					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "LuaRuntimeValidationUnavailable", validation.Message ?? "The game's Lua runtime was unavailable; merged Lua was only structurally validated."));
+					issues.Add(new CoreIssue(CoreIssueSeverity.Warning, "LuaRuntimeValidationUnavailable", validation.Message ?? "The game's Lua runtime was unavailable; the generated Lua was only structurally validated."));
 				}
 				else if (!validation.CompileSucceeded)
 				{
-					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "LuaRuntimeCompileFailed", validation.Message ?? "The merged Lua chunk failed to compile."));
+					issues.Add(new CoreIssue(CoreIssueSeverity.Error, "LuaRuntimeCompileFailed", validation.Message ?? "The generated Lua chunk failed to compile."));
 					return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 				}
-				else if (effectiveValidationMode == LuaDeploymentValidationMode.CompileAndSmoke && !validation.RuntimeSucceeded)
+				else if (validationMode == LuaDeploymentValidationMode.CompileAndSmoke && !validation.RuntimeSucceeded)
 				{
 					var severity = validation.EnvironmentLimited ? CoreIssueSeverity.Warning : CoreIssueSeverity.Error;
-					issues.Add(new CoreIssue(severity, "LuaRuntimeSmokeTestFailed", validation.Message ?? "The merged Lua chunk failed its smoke test."));
+					issues.Add(new CoreIssue(severity, "LuaRuntimeSmokeTestFailed", validation.Message ?? "The generated Lua chunk failed its smoke test."));
 					if (severity == CoreIssueSeverity.Error)
 					return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 				}
@@ -523,21 +464,47 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		return new LuaBuildResult(filteredIndex, generatedGroups, externalMappings, issues, true, fingerprint, documents.Count);
 	}
 
-	private static bool IsLuaAssetKey(AssetKey key)
+	// 注意：这判断的是"**引导脚本**这一个资源"，不是"任何 Lua 资源"。
+	// 加载器类 mod 的 patch 里还有它自己的 Lua 模块，那些不该被当成入口。
+	private static bool IsLuaBootAssetKey(AssetKey key)
 		=> key.TypeId == LuaAssetKeys.LuaTypeId && key.FileId == LuaAssetKeys.BootFileId;
+
+	/// <summary>
+	/// 报告"Lua 启动入口被多个提供者争用"。
+	///
+	/// 引擎只执行 <c>data/settings.ini</c> 里 <c>boot_script</c> 指定的那一个 Lua 资源
+	/// （实测见 <c>HD2RuntimeArmorOverride/notes/lua-entry-capacity-investigation-20261028.md</c>），
+	/// 所以这里不存在"合并一下让它们都跑"的解法——只能让用户自己选。
+	/// 管理器不再解析或合并第三方 Lua，因此这条诊断是唯一能防止"某个 mod 静默不生效"的东西。
+	/// </summary>
+	private static void ReportBootEntryContention(
+		IReadOnlyList<LuaBootProvider> providers,
+		ICollection<CoreIssue> issues,
+		bool ownerIsManager)
+	{
+		if (providers.Count == 0) return;
+		var names = string.Join("、", providers.Select(provider => Path.GetFileName(provider.BaseFile.FilePath)));
+		if (ownerIsManager)
+		{
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Error,
+				"LuaBootEntryConflict",
+				$"独占模式下管理器要独占 Lua 启动入口 boot，但这些已启用的 mod 也提供了它：{names}。"
+				+ "引擎只会执行一个 Lua 启动脚本，两者无法同时生效。请二选一："
+				+ "把护甲映射模式改成“外置 lua 入口兼容”（由加载器统一派发），或禁用上面这些 mod。"));
+			return;
+		}
+
+		if (providers.Count < 2) return;
+		issues.Add(new CoreIssue(
+			CoreIssueSeverity.Warning,
+			"LuaBootEntryOverlap",
+			$"以下已启用的 mod 都替换了 Lua 启动入口 boot：{names}。引擎只会执行补丁序号最大的那一份，其余不会生效。"
+			+ "如需它们同时工作，请安装 Lua 加载器（MDL / boot-mod-loader 等）并把护甲映射模式设为“外置 lua 入口兼容”。"));
+	}
 
 	private static bool IsLuaBootArchive(string archiveHex16)
 		=> string.Equals(archiveHex16, $"{LuaAssetKeys.BootArchiveId:x16}", StringComparison.OrdinalIgnoreCase);
-
-	private static bool HasActiveBingusLoader(
-		IReadOnlyList<ProfileEntry> entries,
-		LibrarySnapshot snapshot)
-		=> entries.Any(entry =>
-			snapshot.Nodes.TryGetValue(entry.NodeId, out var node)
-			&& string.Equals(
-				node.Metadata.SourcePackageGuid,
-				BingusLoaderPackageGuid,
-				StringComparison.OrdinalIgnoreCase));
 
 	private static PatchFileIndex FilterPatchIndex(
 		PatchFileIndex patchIndex,
@@ -753,18 +720,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			header,
 			boot,
 			[
-				new LuaPatchBlock(
-					"HD2 Runtime Armor Registry",
-					string.Empty,
-					body,
-					WrapBootReturn: false,
-					IsManagedBlock: true,
-					SourceModId: ArmorRegistryNodeId.Value.ToString("N"),
-					SourcePatchGroup: "manager/runtime-armor-registry")
-			],
-			LuaPatchWrapperKind.Single,
-			null,
-			string.Empty);
+				new LuaPatchBlock("HD2 Runtime Armor Registry", body)
+			]);
 	}
 
 	private static byte[] CreateLuaHeaderTemplate()
@@ -886,7 +843,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				// The emitted resource format is part of the identity: a format change
 				// must produce a new output directory instead of reusing old bytes.
 				.Append(":v").Append(LuaResourceFormat.BytecodeVersion);
-			foreach (var block in source.Document.Blocks) builder.Append(':').Append(block.BodySha256).Append(':').Append(block.HeadSha256);
+			foreach (var block in source.Document.Blocks) builder.Append(':').Append(LuaHashFor(Encoding.UTF8.GetBytes(block.Body)));
 			builder.AppendLine();
 		}
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
@@ -905,6 +862,14 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		=> exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException;
 
 	private sealed record LuaDocumentSource(ModNodeId NodeId, int ProfileLoadOrder, PatchGroupIdentity Group, LuaPatchDocument Document);
+	// 一个"提供 boot 的 patch 组"。管理器只用它做一件事：判断 Lua 启动入口是否被争用。
+	// 引擎只执行一个 Lua 启动脚本（settings.ini 的 boot_script），所以这个列表长度
+	// 超过 1（或与运行时并存）就意味着有 mod 不会生效，必须告诉用户。
+	private sealed record LuaBootProvider(
+		ModNodeId NodeId,
+		int LoadOrder,
+		PatchGroupIdentity Group,
+		IndexedPatchFile BaseFile);
 	private readonly record struct PatchGroupIdentity(ModNodeId NodeId, string ArchiveHex16, int SourcePatchIndex, int NormalizedOrder);
 	private sealed record LuaBuildResult(
 		PatchFileIndex PatchIndex,

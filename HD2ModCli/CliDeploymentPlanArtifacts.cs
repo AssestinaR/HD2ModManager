@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HD2ModCore.Application;
@@ -124,20 +124,18 @@ internal static class CliDeploymentPlanArtifacts
 	public static async ValueTask<CliDeploymentBuildResult> BuildAsync(
 		CliWorkspace workspace,
 		string? profileSelector,
-		CancellationToken cancellationToken = default,
-		bool allowUnsafeLua = false)
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
 		var state = await workspace.LoadLibraryAsync(cancellationToken).ConfigureAwait(false);
-		return await BuildAsync(workspace, state, profileSelector, cancellationToken, allowUnsafeLua).ConfigureAwait(false);
+		return await BuildAsync(workspace, state, profileSelector, cancellationToken).ConfigureAwait(false);
 	}
 
 	public static async ValueTask<CliDeploymentBuildResult> BuildAsync(
 		CliWorkspace workspace,
 		CliLibraryState libraryState,
 		string? profileSelector,
-		CancellationToken cancellationToken = default,
-		bool allowUnsafeLua = false)
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
 		ArgumentNullException.ThrowIfNull(libraryState);
@@ -215,7 +213,7 @@ internal static class CliDeploymentPlanArtifacts
 			originalIndex.Issues.Where(issue => issue.NodeId is null || activeNodeIds.Contains(issue.NodeId.Value)).ToArray());
 		var deploymentPaths = new StoragePaths(workspace.ManagerRoot ?? Directory.GetCurrentDirectory(), workspace.LibraryRoot);
 		var luaPlan = await CoreServices.CreateLuaDeploymentService(deploymentPaths)
-			.PlanAsync(effective, libraryState.Snapshot, filteredIndex, workspace.LibraryRoot, targetValidation.GameDataDirectory!, contentFacts, cancellationToken, allowUnsafeLua ? LuaDeploymentPermission.AllowOpaque : LuaDeploymentPermission.DenyOpaque)
+			.PlanAsync(effective, libraryState.Snapshot, filteredIndex, workspace.LibraryRoot, targetValidation.GameDataDirectory!, contentFacts, cancellationToken)
 			.ConfigureAwait(false);
 		AddCoreIssues(diagnostics, luaPlan.Issues, "lua");
 
@@ -316,8 +314,7 @@ internal static class CliDeploymentPlanArtifacts
 		CliDeploymentPlanDocument document,
 		CliWorkspace workspace,
 		bool includeProcessCheck,
-		CancellationToken cancellationToken = default,
-		bool allowUnsafeLua = false)
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(document);
 		ArgumentNullException.ThrowIfNull(workspace);
@@ -325,7 +322,7 @@ internal static class CliDeploymentPlanArtifacts
 		CliDeploymentBuildResult? current = null;
 		try
 		{
-			current = await BuildAsync(workspace, document.Profile.Id, cancellationToken, allowUnsafeLua).ConfigureAwait(false);
+			current = await BuildAsync(workspace, document.Profile.Id, cancellationToken).ConfigureAwait(false);
 			diagnostics.AddRange(current.Document.Diagnostics);
 			if (!PathsEqual(document.Target.ManagerRoot, current.Document.Target.ManagerRoot)
 				|| !PathsEqual(document.Target.LibraryRoot, current.Document.Target.LibraryRoot)
@@ -369,8 +366,7 @@ internal static class CliDeploymentPlanArtifacts
 
 	public static async ValueTask<CliDeploymentMaterializedPlan> MaterializeAsync(
 		CliDeploymentBuildResult current,
-		CancellationToken cancellationToken = default,
-		bool allowUnsafeLua = false)
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(current);
 		var diagnostics = new List<CliDeploymentDiagnostic>();
@@ -397,8 +393,7 @@ internal static class CliDeploymentPlanArtifacts
 				current.Document.Target.GameDataDirectory,
 				current.ContentFacts,
 				LuaDeploymentValidationMode.CompileOnly,
-				cancellationToken,
-				allowUnsafeLua ? LuaDeploymentPermission.AllowOpaque : LuaDeploymentPermission.DenyOpaque)
+				cancellationToken)
 			.ConfigureAwait(false);
 		AddCoreIssues(diagnostics, preparation.Issues, "lua-materialize");
 		if (preparation.HasErrors)

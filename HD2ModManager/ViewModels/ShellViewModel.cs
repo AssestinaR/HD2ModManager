@@ -242,10 +242,7 @@ namespace HD2ModManager.ViewModels
                 storagePaths,
                 SettingsService.GetGameDataFolder,
                 informationCenter,
-                optionActivations: optionActivations,
-                luaPermissionProvider: () => SettingsService.GetAllowUnsafeLuaMerge()
-                    ? HD2ModCore.Application.LuaDeploymentPermission.AllowOpaque
-                    : HD2ModCore.Application.LuaDeploymentPermission.DenyOpaque);
+                optionActivations: optionActivations);
             _deploymentCoordinator.StatusChanged += OnDeploymentStatusChanged;
             _profileService.ActiveProfileDeploymentRequired += (_, _) => _deploymentCoordinator.NotifyActiveProfileChanged();
             _profileService.ActiveProfileDeactivationRequired += (_, _) => _ = _deploymentCoordinator.DeactivateAsync();

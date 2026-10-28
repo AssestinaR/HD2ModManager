@@ -26,7 +26,6 @@ public sealed record CliGlobalOptions(
 	bool Overwrite,
 	bool Confirm,
 	bool Json,
-	bool AllowUnsafeLua = false,
 	// 重定向对拍用的显式输入：HD2 avatar Unit 的 TocData 与 Bones 资源的 hash→名字表。
 	// 生产路径应当从 `--game-data` 读（CanonicalAvatarRigReader + UnitBoneNamesReader）；
 	// 这两个开关存在的唯一理由是"让 C# 与 Python 实验线吃同一份输入"，对拍才有意义。
@@ -101,7 +100,6 @@ public static class CliArgumentParser
 		var onlyCompetition = false;
 		var overwrite = false;
 		var confirm = false;
-		var allowUnsafeLua = false;
 		var json = false;
 		var dryRun = false;
 		var command = new List<string>();
@@ -240,9 +238,6 @@ public static class CliArgumentParser
 				case "--confirm":
 					confirm = true;
 					break;
-				case "--allow-unsafe-lua":
-					allowUnsafeLua = true;
-					break;
 				case "--dry-run":
 					dryRun = true;
 					break;
@@ -265,7 +260,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, allowUnsafeLua, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

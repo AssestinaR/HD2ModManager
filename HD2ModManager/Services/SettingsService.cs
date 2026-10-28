@@ -29,7 +29,6 @@ namespace HD2ModManager.Services
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
-            public bool AllowUnsafeLuaMerge { get; set; } = false;
         // 旧的二态开关。保留字段只为读取历史设置并迁移，新代码一律读写 ArmorMappingMode。
         public bool DeployLuaMods { get; set; } = true;
         // 护甲映射模式（ArmorMappingMode 的整数值）。null 表示尚未迁移。
@@ -174,14 +173,6 @@ namespace HD2ModManager.Services
         public static bool SetAutoImportToActiveProfile(bool enabled)
         {
             try { Update(model => model.AutoImportToActiveProfile = enabled); return true; }
-            catch { return false; }
-        }
-
-        public static bool GetAllowUnsafeLuaMerge() => LoadAll()?.AllowUnsafeLuaMerge ?? false;
-
-        public static bool SetAllowUnsafeLuaMerge(bool enabled)
-        {
-            try { Update(model => model.AllowUnsafeLuaMerge = enabled); return true; }
             catch { return false; }
         }
 

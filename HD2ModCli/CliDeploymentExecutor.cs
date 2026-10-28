@@ -1,4 +1,4 @@
-using HD2ModCore.Application;
+﻿using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
@@ -20,12 +20,11 @@ internal static class CliDeploymentExecutor
 	public static async ValueTask<CliDeploymentExecutionResult> ApplyAsync(
 		CliDeploymentPlanDocument document,
 		CliWorkspace workspace,
-		CancellationToken cancellationToken = default,
-		bool allowUnsafeLua = false)
+		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(document);
 		ArgumentNullException.ThrowIfNull(workspace);
-		var firstValidation = await CliDeploymentPlanArtifacts.ValidateAsync(document, workspace, includeProcessCheck: true, cancellationToken, allowUnsafeLua).ConfigureAwait(false);
+		var firstValidation = await CliDeploymentPlanArtifacts.ValidateAsync(document, workspace, includeProcessCheck: true, cancellationToken).ConfigureAwait(false);
 		if (!firstValidation.IsValid)
 			return new CliDeploymentExecutionResult(false, null, null, firstValidation.Diagnostics);
 
@@ -43,7 +42,7 @@ internal static class CliDeploymentExecutor
 				.ConfigureAwait(false);
 			await librarySession.VerifyReadyForMutationAsync(cancellationToken).ConfigureAwait(false);
 
-			var lockedValidation = await CliDeploymentPlanArtifacts.ValidateAsync(document, workspace, includeProcessCheck: true, cancellationToken, allowUnsafeLua).ConfigureAwait(false);
+			var lockedValidation = await CliDeploymentPlanArtifacts.ValidateAsync(document, workspace, includeProcessCheck: true, cancellationToken).ConfigureAwait(false);
 			if (!lockedValidation.IsValid || lockedValidation.Current is null)
 				return new CliDeploymentExecutionResult(false, null, null, lockedValidation.Diagnostics);
 			var current = lockedValidation.Current;
@@ -56,7 +55,7 @@ internal static class CliDeploymentExecutor
 				return new CliDeploymentExecutionResult(false, null, null, diagnostics);
 			}
 
-			var materialized = await CliDeploymentPlanArtifacts.MaterializeAsync(current, cancellationToken, allowUnsafeLua).ConfigureAwait(false);
+			var materialized = await CliDeploymentPlanArtifacts.MaterializeAsync(current, cancellationToken).ConfigureAwait(false);
 			if (!materialized.IsReady)
 				return new CliDeploymentExecutionResult(false, null, null, lockedValidation.Diagnostics.Concat(materialized.Diagnostics).ToArray());
 			if (!CliDeploymentPlanArtifacts.MatchesMaterializedPlan(document, materialized))

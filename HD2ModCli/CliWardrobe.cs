@@ -414,7 +414,6 @@ internal static class CliWardrobe
 		if (options.OnlyCompetition) used.Add("--only-competition");
 		if (options.Overwrite) used.Add("--overwrite");
 		if (options.Confirm) used.Add("--confirm");
-		if (options.AllowUnsafeLua) used.Add("--allow-unsafe-lua");
 
 		foreach (var name in used)
 		{

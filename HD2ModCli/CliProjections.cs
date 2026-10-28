@@ -1,4 +1,4 @@
-using HD2ModCore.Domain;
+﻿using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCli;
@@ -110,9 +110,9 @@ public static class CliProjections
 				new { name = "profile align plan", safety = "explicit-export", description = "导出冻结目标 Profile 版本、成员顺序、活动状态与参与 Mod 身份的对齐计划" },
 				new { name = "profile align validate", safety = "read-only", description = "重新核验 Profile 对齐计划，区分可写、已对齐和漂移状态" },
 				new { name = "profile align apply", safety = "explicit-confirm", description = "在库写租约内二次验证后仅更新 profiles.json 的完整成员顺序和可审阅活动状态" },
-				new { name = "deploy plan", safety = "explicit-export", description = "只读重建配置、选项、Patch、Lua 和外部文件映射，并导出可审计部署计划；不受控 Lua 需显式 --allow-unsafe-lua" },
-				new { name = "deploy validate", safety = "read-only", description = "重建部署计划并检查目标、归属、来源漂移和游戏进程，不写入任何文件；不受控 Lua 需显式 --allow-unsafe-lua" },
-				new { name = "deploy apply", safety = "explicit-confirm", description = "在库与 GameData 双租约内重验计划、仅编译校验不受控 Lua、精确替换已证明归属的 Patch；需 --confirm，风险 Lua 另需 --allow-unsafe-lua" },
+				new { name = "deploy plan", safety = "explicit-export", description = "只读重建配置、选项、Patch、Lua 和外部文件映射，并导出可审计部署计划" },
+				new { name = "deploy validate", safety = "read-only", description = "重建部署计划并检查目标、归属、来源漂移和游戏进程，不写入任何文件" },
+				new { name = "deploy apply", safety = "explicit-confirm", description = "在库与 GameData 双租约内重验计划、仅编译校验不受控 Lua、精确替换已证明归属的 Patch；需 --confirm" },
 				new { name = "deploy deactivate plan", safety = "explicit-export", description = "导出仅清理当前 activation-state 完整证明归属的 Patch 和外部文件的停用计划" },
 				new { name = "deploy deactivate validate", safety = "read-only", description = "重新验证停用计划、文件归属和游戏进程，不写入任何文件" },
 				new { name = "deploy deactivate apply", safety = "explicit-confirm", description = "在双租约内精确停用已管理部署；不会改动活动配置或未登记 Patch" },

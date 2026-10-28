@@ -316,7 +316,7 @@ public static class CoreServices
 	public static DeploymentCapabilityService CreateDeploymentCapabilityService() => new();
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
 		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations, CreateLuaDeploymentService(paths));
-	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IModInformationCenter informationCenter, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null, OptionActivationStore? optionActivations = null, Func<LuaDeploymentPermission>? luaPermissionProvider = null)
+	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IModInformationCenter informationCenter, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null, OptionActivationStore? optionActivations = null)
 		=> new ProfileDeploymentCoordinator(
 			CreateModLibraryManager(paths),
 			CreateProfileApplyService(paths, informationCenter, optionActivations),
@@ -324,8 +324,7 @@ public static class CoreServices
 			paths,
 			gameDataDirectoryProvider,
 			delay,
-			bufferDuration,
-			luaPermissionProvider);
+			bufferDuration);
 	public static IAssetKeySetProvider CreateAssetKeySetProvider(IModInformationReader informationReader)
 		=> new AssetKeySetProvider(informationReader);
 	public static IConflictDetector CreateConflictDetector(IModInformationReader informationReader)

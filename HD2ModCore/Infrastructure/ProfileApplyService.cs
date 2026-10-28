@@ -36,8 +36,7 @@ public sealed class ProfileApplyService : IProfileApplyService
 		LibrarySnapshot snapshot,
 		string modsRootDirectory,
 		string gameDataDirectory,
-		CancellationToken cancellationToken = default,
-		LuaDeploymentPermission luaPermission = LuaDeploymentPermission.DenyOpaque)
+		CancellationToken cancellationToken = default)
 	{
 		var capability = _capabilityService.Probe(modsRootDirectory, gameDataDirectory);
 		if (!capability.IsAvailable || capability.Method is null)
@@ -82,8 +81,7 @@ public sealed class ProfileApplyService : IProfileApplyService
 			modsRootDirectory,
 			gameDataDirectory,
 			contentFacts,
-			cancellationToken,
-			luaPermission).ConfigureAwait(false);
+			cancellationToken).ConfigureAwait(false);
 		if (preparation.HasErrors)
 			return new ApplyResult(false, Array.Empty<ApplyOperationResult>(), null, preparation.Issues);
 

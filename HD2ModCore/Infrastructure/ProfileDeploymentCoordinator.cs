@@ -13,7 +13,6 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 	private readonly Func<string?> _gameDataDirectoryProvider;
 	private readonly IDeploymentDelay _delay;
 	private readonly TimeSpan _bufferDuration;
-	private readonly Func<LuaDeploymentPermission> _luaPermissionProvider;
 	private readonly SemaphoreSlim _lane = new(1, 1);
 	private readonly object _sync = new();
 	private Task? _worker;
@@ -22,7 +21,6 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 	private bool _deploymentRequestedDuringDeactivation;
 	private long _requestedRevision;
 	private long _handledRevision;
-	private LuaDeploymentPermission _luaPermission = LuaDeploymentPermission.DenyOpaque;
 	private DateTimeOffset? _bufferStartedUtc;
 	private DateTimeOffset? _bufferEndsUtc;
 	private ProfileDeploymentStatus _status = ProfileDeploymentStatus.Idle;
@@ -34,8 +32,7 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		StoragePaths paths,
 		Func<string?> gameDataDirectoryProvider,
 		IDeploymentDelay? delay = null,
-		TimeSpan? bufferDuration = null,
-		Func<LuaDeploymentPermission>? luaPermissionProvider = null)
+		TimeSpan? bufferDuration = null)
 	{
 		_libraryManager = libraryManager ?? throw new ArgumentNullException(nameof(libraryManager));
 		_profileApplyService = profileApplyService ?? throw new ArgumentNullException(nameof(profileApplyService));
@@ -44,7 +41,6 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		_gameDataDirectoryProvider = gameDataDirectoryProvider ?? throw new ArgumentNullException(nameof(gameDataDirectoryProvider));
 		_delay = delay ?? new SystemDeploymentDelay();
 		_bufferDuration = bufferDuration ?? TimeSpan.FromSeconds(2);
-		_luaPermissionProvider = luaPermissionProvider ?? (() => LuaDeploymentPermission.DenyOpaque);
 		if (_bufferDuration < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(bufferDuration));
 	}
 
@@ -56,7 +52,6 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		ProfileDeploymentStatus? waitingStatus = null;
 		lock (_sync)
 		{
-			_luaPermission = _luaPermissionProvider();
 			_requestedRevision++;
 			if (_deactivationRequested)
 			{
@@ -69,7 +64,7 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 		if (waitingStatus is not null) SetStatus(waitingStatus);
 	}
 
-	public async Task<ProfileDeploymentStatus> FlushAsync(CancellationToken cancellationToken = default, LuaDeploymentPermission? luaPermission = null)
+	public async Task<ProfileDeploymentStatus> FlushAsync(CancellationToken cancellationToken = default)
 	{
 		Task worker;
 		lock (_sync)
@@ -80,7 +75,6 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 				throw new InvalidOperationException("正在停用活动配置，无法立即部署。");
 			}
 			_requestedRevision++;
-			_luaPermission = luaPermission ?? _luaPermissionProvider();
 			CancelStabilityWindowLocked();
 			EnsureWorkerLocked();
 			worker = _worker!;
@@ -224,8 +218,7 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 			snapshot,
 			_paths.ModsDirectory,
 			gameData,
-			CancellationToken.None,
-			_luaPermission).ConfigureAwait(false);
+			CancellationToken.None).ConfigureAwait(false);
 		if (!IsFileFactsInvalidated(result)) return result;
 
 		// A content commit can invalidate a snapshot-wide FileFacts production
@@ -241,8 +234,7 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 			latest,
 			_paths.ModsDirectory,
 			gameData,
-			CancellationToken.None,
-			_luaPermission).ConfigureAwait(false);
+			CancellationToken.None).ConfigureAwait(false);
 	}
 
 	private static bool IsFileFactsInvalidated(ApplyResult result)

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using HD2ModCore.Infrastructure;
@@ -15,7 +15,7 @@ public static class ArmorDiagnosticWizard
         if (options.Json || Console.IsInputRedirected)
             throw new CliUserException("InteractiveRequired", "请双击诊断入口，在交互窗口中运行。");
         if (options.Output is not null || options.Plan is not null || options.Host is not null
-            || options.AddToProfile is not null || options.Overwrite || options.AllowUnsafeLua
+            || options.AddToProfile is not null || options.Overwrite
             || options.Position is not null || options.Limit is not null || options.Cursor is not null
             || options.SetActive || options.WithUnsharedOptions || options.WithEffective || options.OnlyCompetition)
             throw new CliUserException("UnsupportedOption", "诊断向导不接受计划、导出路径或不安全 Lua 参数。");
