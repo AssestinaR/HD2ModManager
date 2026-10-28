@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Domain;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
@@ -314,6 +314,72 @@ public sealed class ModLibraryManagerTests
 			var logicalDirectory = Path.Combine(paths.ModsDirectory, logicalOnly.RelativePath);
 			Assert.True(File.Exists(ModNodeStorageProtocol.LogicalMarkerPath(logicalDirectory)));
 			Assert.False(File.Exists(ModNodeStorageProtocol.OptionRelationPath(logicalDirectory)));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	// 直接删一个选项（宿主还在）必须是可行且干净的：选项节点和它的目录一起消失，
+	// 宿主节点的元数据、patch 组和 sidecar 一律不动——所有权存在子节点上，父节点
+	// 从来没有"我有哪些选项"的清单，所以删子节点不需要回写父节点。
+	// Deleting an Option while its host survives must work and must not touch the host.
+	[Fact]
+	public async Task DeleteNodesWithResultAsync_RemovingOption_KeepsHostUntouched()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+
+		try
+		{
+			var paths = new StoragePaths(root);
+			var store = new JsonModLibraryStore(paths);
+			var manager = new ModLibraryManager(paths, store);
+			var now = DateTimeOffset.UtcNow;
+			var host = CreateNode(ModNodeId.New(), "host") with
+			{
+				PatchGroups = [new PatchGroupKey("4444444444444444", 0)],
+			};
+			var option = new ModNode(
+				ModNodeId.New(),
+				"host-option",
+				new ModNodeMetadata(
+					"宿主选项", null, now, now, ModNodeKind.Option,
+					[host.Id.Value.ToString("N")],
+					OptionOrder: 0),
+				[new PatchGroupKey("5555555555555555", 0)],
+				[]);
+			foreach (var node in new[] { host, option })
+			{
+				var directory = Path.Combine(paths.ModsDirectory, node.RelativePath);
+				Directory.CreateDirectory(directory);
+				foreach (var patch in node.PatchGroups)
+					await File.WriteAllBytesAsync(Path.Combine(directory, $"{patch.ArchiveHex16}.patch_{patch.PatchIndex}"), [0x02]);
+				ModNodeStorageProtocol.SynchronizeNodeMetadata(directory, node);
+			}
+			await store.SaveAsync(new LibrarySnapshot(
+				1,
+				now,
+				new Dictionary<ModNodeId, ModNode>
+				{
+					[host.Id] = host,
+					[option.Id] = option,
+				},
+				Array.Empty<Profile>()));
+
+			var result = await manager.DeleteNodesWithResultAsync([option.Id], deleteStoredFiles: true);
+
+			Assert.Equal([option.Id], result.RemovedNodeIds);
+			Assert.False(result.HasFailures);
+			Assert.DoesNotContain(option.Id, result.Snapshot.Nodes.Keys);
+			Assert.False(Directory.Exists(Path.Combine(paths.ModsDirectory, option.RelativePath)));
+
+			var survivingHost = result.Snapshot.Nodes[host.Id];
+			Assert.Equal(ModNodeKind.Standard, survivingHost.Metadata.Kind);
+			Assert.Null(survivingHost.Metadata.HostModGuids);
+			Assert.Equal([new PatchGroupKey("4444444444444444", 0)], survivingHost.PatchGroups);
+			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, host.RelativePath, "4444444444444444.patch_0")));
 		}
 		finally
 		{

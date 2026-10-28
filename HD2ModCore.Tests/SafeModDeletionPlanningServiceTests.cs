@@ -167,6 +167,64 @@ public sealed class SafeModDeletionPlanningServiceTests
 		Assert.Single(plan.LibraryNodeRemovals);
 	}
 
+	// 直接请求删除一个仍被存活主体引用的 Option：必须可删（不产生 Blocking），
+	// 但要留一条警告，让确认流程能告诉用户"删掉之后主体还在、只是少了这个选项"。
+	// A directly requested Option with a surviving host must be removable, with a warning.
+	[Fact]
+	public void DirectlyRequestedOption_WithSurvivingHost_IsRemovable_AndReportedAsWarning()
+	{
+		var host = Node("Host", "host", ModNodeKind.Standard);
+		var option = Node("Option", "option", ModNodeKind.Option, [host.Id]);
+		var snapshot = Snapshot(null, host, option);
+
+		var plan = Service.Plan(snapshot, [option.Id], SafeModDeletionScope.Selected, SafeModDeletionSafetySnapshot.EmptyKnown);
+
+		Assert.False(plan.IsBlocked);
+		Assert.Equal([option.Id], plan.LibraryNodeRemovals.Select(item => item.NodeId).ToArray());
+		var warning = Assert.Single(plan.Blockers, item => item.Code == "OptionSharedAcrossHosts");
+		Assert.Equal(SafeModDeletionBlockerSeverity.Warning, warning.Severity);
+		Assert.Contains(option.Id, warning.RelatedNodeIds);
+		Assert.Contains(host.Id, warning.RelatedNodeIds);
+		// 宿主没有任何需要回写的"子节点清单"，所以不存在残留关系要剥。
+		Assert.Empty(plan.SurvivingOptionHostRelationsToStrip);
+	}
+
+	// 孤儿选项（父级早就不在了，只剩一条野引用）以前会因为 InvalidOptionHostReference
+	// 被判 Blocking，于是永远删不掉。它自己就要消失，坏元数据跟着一起消失，不该拦。
+	// An orphaned Option carrying a dangling host reference must still be deletable.
+	[Fact]
+	public void DirectlyRequestedOption_WithDanglingHostReference_IsNotBlocked()
+	{
+		var host = Node("Host", "host", ModNodeKind.Standard);
+		var orphan = Node("Orphan", "orphan", ModNodeKind.Option, [host.Id]);
+		orphan = orphan with { Metadata = orphan.Metadata with { HostModGuids = [Key(ModNodeId.New())] } };
+		var snapshot = Snapshot(null, host, orphan);
+
+		var plan = Service.Plan(snapshot, [orphan.Id], SafeModDeletionScope.Selected, SafeModDeletionSafetySnapshot.EmptyKnown);
+
+		Assert.False(plan.IsBlocked);
+		Assert.DoesNotContain(plan.Blockers, item => item.Code == "InvalidOptionHostReference");
+		Assert.Equal([orphan.Id], plan.LibraryNodeRemovals.Select(item => item.NodeId).ToArray());
+	}
+
+	// 反过来：留下来的 Option 带着坏引用时必须继续拦，那是真的需要人工修。
+	// （可达性由"子节点指向父节点"的关系决定，所以这里的坏引用只能是一条合法的宿主
+	// 加一条垃圾值；纯野引用的选项根本不可达，也就不会被卷进这次删除。）
+	// A surviving Option with a malformed host reference must still block.
+	[Fact]
+	public void SurvivingOption_WithMalformedHostReference_StillBlocks()
+	{
+		var host = Node("Host", "host", ModNodeKind.Standard);
+		var broken = Node("Broken", "broken", ModNodeKind.Option, [host.Id]);
+		broken = broken with { Metadata = broken.Metadata with { HostModGuids = [Key(host.Id), "not-a-guid"] } };
+		var snapshot = Snapshot(null, host, broken);
+
+		var plan = Service.Plan(snapshot, [host.Id], SafeModDeletionScope.WithUnsharedOptions, SafeModDeletionSafetySnapshot.EmptyKnown);
+
+		Assert.True(plan.IsBlocked);
+		Assert.Contains(plan.Blockers, item => item.Code == "InvalidOptionHostReference" && item.RelatedNodeIds.Contains(broken.Id));
+	}
+
 	private static SafeModDeletionPlanningService Service { get; } = new();
 
 	private static LibrarySnapshot Snapshot(Profile? profile, params ModNode[] nodes)

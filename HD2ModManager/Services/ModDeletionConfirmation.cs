@@ -19,14 +19,14 @@ public static class ModDeletionConfirmation
             .ToList();
         if (targets.Count == 0) return Array.Empty<string>();
 
+        var selected = targets.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var confirm = System.Windows.MessageBox.Show(
-            primaryPrompt,
+            primaryPrompt + BuildOptionReferenceNote(library, targets, selected),
             primaryTitle,
             System.Windows.MessageBoxButton.YesNo,
             System.Windows.MessageBoxImage.Warning);
         if (confirm != System.Windows.MessageBoxResult.Yes) return null;
 
-        var selected = targets.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var attachedOptions = targets
             .Select(library.Get)
             .Where(mod => mod is { IsDecoration: false, IsReShade: false })
@@ -49,5 +49,35 @@ public static class ModDeletionConfirmation
                     .ToList();
             }
         return targets;
+    }
+
+    // 删一个选项是合法操作，但它可能仍被若干主体引用：删掉之后主体还在，只是少了一个选项。
+    // 用户必须在确认框里看到这件事，否则"点了删除"和"什么都没发生"在体感上没有区别。
+    // Deleting an Option is legal; the surviving hosts simply lose it. Say so up front.
+    private static string BuildOptionReferenceNote(
+        ModLibraryService library,
+        IReadOnlyList<string> targets,
+        IReadOnlySet<string> selected)
+    {
+        var notes = new List<string>();
+        foreach (var id in targets)
+        {
+            var option = library.Get(id);
+            if (option is not { IsOption: true }) continue;
+            var hostNames = (option.HostModGuids ?? Array.Empty<string>())
+                .Where(hostId => !selected.Contains(hostId))
+                .Select(library.Get)
+                .Where(host => host is not null)
+                .Select(host => host!.Name)
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (hostNames.Length == 0) continue;
+            var shown = string.Join("、", hostNames.Take(3));
+            var rest = hostNames.Length > 3 ? $" 等 {hostNames.Length} 个主体" : string.Empty;
+            notes.Add($"“{option.Name}”仍被 {shown}{rest} 引用，删除后它们会失去这个选项（主体本身保留）。");
+        }
+
+        return notes.Count == 0 ? string.Empty : "\n\n" + string.Join("\n", notes);
     }
 }

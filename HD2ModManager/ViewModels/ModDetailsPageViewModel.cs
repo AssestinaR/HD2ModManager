@@ -1740,7 +1740,19 @@ namespace HD2ModManager.ViewModels
                 [Mod.Guid],
                 $"确定删除 Mod“{name}”？\n这会同时删除库中的已存储文件。");
             if (targets is null) return;
-            var deletion = await _library.RemoveManyAsync(targets).ConfigureAwait(true);
+            // DeleteCommand 是 AsyncRelayCommand，它是 async void 且不吞异常（见 RelayCommand.cs），
+            // 这里不接住的话异常会直接逸出到 Dispatcher，用户看到的就是"按钮点了没反应"。
+            // AsyncRelayCommand.Execute is async void; an unhandled throw here is invisible.
+            ModLibraryDeletionResult deletion;
+            try
+            {
+                deletion = await _library.RemoveManyAsync(targets).ConfigureAwait(true);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _notifications?.Show($"删除失败：{exception.Message}", NotificationLevel.Error);
+                return;
+            }
             _notifications?.Show(
                 ModLibraryService.DescribeDeletionResult(deletion),
                 deletion.HasFailures ? NotificationLevel.Warning : NotificationLevel.Info);

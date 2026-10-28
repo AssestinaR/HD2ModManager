@@ -71,7 +71,18 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 				cycle);
 		}
 
-		var malformedHosts = FindMalformedHostReferences(snapshot, traversal.ReachableOptionIds, cancellationToken);
+		// 被直接请求删除的 Option 自己就要消失，它身上那些坏掉的 HostModGuids 会随节点
+		// 一起被删掉，不构成阻止理由。只有"留下来"的 Option 才需要人工修复主机引用；
+		// 以前这里不分对象一律 Blocking，于是"父级已删、只剩一条野引用"的孤儿选项
+		// 永远删不掉——用户看到的就是"点了删除什么也没发生"。
+		// An Option that is itself requested for removal takes its broken host references
+		// with it, so those cannot be a reason to block. Only surviving Options need repair.
+		var requestedOptionsBeingRemoved = requestedExisting
+			.Where(nodeId => snapshot.Nodes[nodeId].Metadata.Kind == ModNodeKind.Option)
+			.ToHashSet();
+		var malformedHosts = FindMalformedHostReferences(snapshot, traversal.ReachableOptionIds, cancellationToken)
+			.Where(item => !requestedOptionsBeingRemoved.Contains(item.OptionId))
+			.ToArray();
 		foreach (var malformed in malformedHosts)
 		{
 			blockers.Add(
@@ -129,6 +140,10 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 			.ToArray();
 
 		var relationRemovals = BuildSurvivingOptionHostRelationRemovals(snapshot, graph, removalIds, cancellationToken);
+		// 直接删一个 Option 是合法操作：所有权存在子节点上，父级只需要"不再引用它"，
+		// 而父级的引用清单本身不存在（它就在子节点的 option.json 里），所以删子节点
+		// 不需要回写任何父节点。这里只把"它还被谁引用"作为警告报出去，交给确认流程说明。
+		ApplyDirectOptionDeletionSafety(snapshot, graph, requestedExisting, removalIds, blockers, cancellationToken);
 		var retainedShared = scope == SafeModDeletionScope.WithUnsharedOptions
 			? BuildSharedOptionRetentions(snapshot, relationRemovals)
 			: Array.Empty<SafeModDeletionSharedOptionRetention>();
@@ -315,6 +330,47 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 			.Where(item => item.SurvivingHostIds.Count > 0)
 			.OrderBy(item => item.OptionId.Value)
 			.ToArray();
+	}
+
+	/// <summary>
+	/// 直接请求删除 Option 时的安全说明：它可能仍被若干存活主体引用。
+	/// 这不是阻断条件（删子节点不会破坏父节点），但调用方必须能把它讲给用户听，
+	/// 否则"删掉这个选项"和"删掉这个选项附带的效果"对用户就是同一件事。
+	/// </summary>
+	private static void ApplyDirectOptionDeletionSafety(
+		LibrarySnapshot snapshot,
+		OptionRelationshipGraph graph,
+		IReadOnlySet<ModNodeId> requestedIds,
+		IReadOnlySet<ModNodeId> removalIds,
+		BlockerCollector blockers,
+		CancellationToken cancellationToken)
+	{
+		foreach (var optionId in requestedIds.OrderBy(id => id.Value))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (!removalIds.Contains(optionId)) continue;
+			if (!snapshot.Nodes.TryGetValue(optionId, out var option) || option.Metadata.Kind != ModNodeKind.Option) continue;
+
+			var survivingHosts = graph.GetParents(optionId)
+				.Where(hostId => !removalIds.Contains(hostId))
+				.OrderBy(id => id.Value)
+				.ToArray();
+			if (survivingHosts.Length == 0) continue;
+
+			var hostNames = survivingHosts
+				.Select(hostId => snapshot.Nodes.TryGetValue(hostId, out var host) && !string.IsNullOrWhiteSpace(host.Metadata.Name)
+					? host.Metadata.Name
+					: ToKey(hostId))
+				.ToArray();
+			var related = new List<ModNodeId> { optionId };
+			related.AddRange(survivingHosts);
+			blockers.Add(
+				"OptionSharedAcrossHosts",
+				SafeModDeletionBlockerSeverity.Warning,
+				$"Option '{option.Metadata.Name}' is still referenced by {survivingHosts.Length} surviving host(s): {string.Join(", ", hostNames)}. "
+					+ "Deleting it only removes the option; the hosts stay and simply lose it.",
+				related);
+		}
 	}
 
 	private static IReadOnlyList<SafeModDeletionProfileEntryCleanup> BuildProfileCleanups(

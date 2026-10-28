@@ -972,19 +972,20 @@ namespace HD2ModManager.Services
                 if (nodeIds.Length == 0)
                     return new ModLibraryDeletionResult(_snapshot, Array.Empty<ModNodeId>(), Array.Empty<ModNodeId>(), Array.Empty<ModStorageDeletionResult>());
 
-                var requestedSet = nodeIds.ToHashSet();
-                var directlySelectedSharedOptions = nodeIds
-                    .Where(nodeId => _snapshot.Nodes[nodeId].Metadata.Kind == ModNodeKind.Option)
-                    .Where(nodeId => (_snapshot.Nodes[nodeId].Metadata.HostModGuids ?? Array.Empty<string>())
-                        .Select(hostId => Guid.TryParse(hostId, out var hostGuid) ? new ModNodeId(hostGuid) : (ModNodeId?)null)
-                        .Any(hostId => hostId.HasValue && !requestedSet.Contains(hostId.Value) && _snapshot.Nodes.ContainsKey(hostId.Value)))
-                    .ToArray();
-                if (directlySelectedSharedOptions.Length > 0)
-                {
-                    throw new InvalidOperationException(
-                        $"删除计划包含仍被存活父级引用的 Option：{string.Join(", ", directlySelectedSharedOptions.Select(id => id.Value.ToString("N")))}。请通过主体删除确认流程重新计算安全删除范围。");
-                }
-
+                // 以前这里有一道硬闸：只要被选中的 Option 还有一个"活着且不在本次删除范围"的主体，
+                // 就直接抛异常，提示用户"请通过主体删除确认流程重新计算安全删除范围"。
+                //
+                // 这道闸是错的，而且是"选项怎么删都删不掉"的直接原因：
+                //   · 所有权存在子节点上（Option 的 option.json 记 hostModGuids），父节点没有任何
+                //     "我有哪些子节点"的清单，所以删子节点不需要回写父节点；
+                //   · 安全删除规划器（SafeModDeletionPlanningService）本来就把请求里的 Option
+                //     原样纳入 LibraryNodeRemovals，只在"仍被存活主体引用"时给一条**警告**；
+                //   · 结果就是规划器说可以删、调用方却在更早的一行把它挡掉了，而且挡掉的异常
+                //     在多条入口上只被记进后台任务，用户看到的就是"删不掉，也不报错"。
+                // 现在把判断交还给规划器，警告由确认流程讲给用户听。
+                // The old hard guard here threw whenever a directly selected Option still had a
+                // surviving host. Option ownership lives on the child, so removing a child never
+                // requires rewriting a parent; the planner already models this as a warning.
                 var deletionPlan = _safeDeletionPlanner.Plan(
                     _snapshot,
                     nodeIds,

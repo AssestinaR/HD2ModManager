@@ -2035,7 +2035,11 @@ namespace HD2ModManager.ViewModels
             }
             catch (Exception exception)
             {
+                // 只把后台任务标成失败是不够的：用户根本看不到那个窗口，体感就是"点了没反应"。
+                // 删除失败必须和删除成功一样有一条可见反馈。
+                // Marking the background task failed is invisible unless that window is open.
                 task.MarkFailed(exception.Message);
+                _notificationService.Show($"删除失败：{exception.Message}", NotificationLevel.Error);
             }
         }
 
