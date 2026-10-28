@@ -378,7 +378,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					Choices.TryGetValue(memberId, out var member) ? member.Name : $"未知护甲 {memberId}"))
 				: Choices.TryGetValue(id, out var choice) ? choice.Name : $"未知护甲 {id}")
 		: "视觉映射目标";
-	public string ProviderDetailHeaderTitle => $"←  {ProviderDetailTitle}";
+	// 标题把"这是谁的映射目标"直接写在卡上：左槽在两张卡之间切换，卡片标题是唯一
+	// 能让用户确认"我现在配的是哪个来源"的东西，所以它必须带角色名 + 来源名。
+	// The card title is the only thing that says whose targets these are; keep both halves.
+	public string ProviderDetailHeaderTitle => $"←  映射目标 · {ProviderDetailTitle}";
 	public string AvailableRowActionToolTip => IsProviderDetailOpen ? "注册到该视觉对象" : "转为视觉对象";
 	public string ProviderDetailSummary => selectedProviderId is not null
 		? providerDetailSearchText.Length == 0
@@ -644,10 +647,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 		else
 		{
+			// 以前这里会因为"这个来源当前没有映射"就把用户踢回视觉来源卡：打开一个刚建的、
+			// 还没配目标的来源，一次后台快照刷新就把卡关掉，用户根本来不及在里面选目标。
+			// 卡片只在**来源本身消失**时才该关；没有目标就显示空状态，让用户在里面加。
+			// Never close the target card just because the source has no targets yet: an empty
+			// card with a back button is honest, a card that closes itself is a trap.
+			var keepProvider = selectedProviderId is { } openProviderId && ProviderStillExists(openProviderId);
 			pendingProviderIds.Clear();
-			if (selectedProviderId is not null
-				&& !selectedProviderMemberIds.Any(memberId =>
-					snapshot.Document.Mappings.Any(mapping => mapping.SourceItemId == memberId)))
+			if (!keepProvider)
 			{
 				selectedProviderId = null;
 				selectedProviderMemberIds = [];
@@ -655,8 +662,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			}
 		}
 
-		selection.Clear();
+		// 快照刷新不能顺手把用户的选择清掉：底栏的动作完全由作用域推导，清掉作用域就等于
+		// 把「解除映射目标 / 注册为映射目标」这两颗按钮从底栏上抹掉——用户看到的是
+		// "多选里没有这两个按钮"，其实按钮一直在，只是那一刻没有作用域。
+		// Keep the armour selection across snapshot refreshes; only drop keys that vanished.
 		RebuildProjections();
+		PruneSelectionAfterRebuild();
 		enabled = snapshot.Document.Enabled;
 		OnPropertyChanged(nameof(Enabled));
 		baselineEnabled = enabled;
@@ -1021,6 +1032,60 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(ComponentEditorEditable));
 		OnPropertyChanged(nameof(ComponentEditorTitle));
 		OnPropertyChanged(nameof(ComponentEditorName));
+	}
+
+	// 这个来源还在不在？三种存在形式：待建（pending）、已有映射、或本身就是注册素体。
+	// 判据里刻意不看"有没有映射"——没有映射的待建来源同样必须留在列表里。
+	private bool ProviderStillExists(uint providerItemId)
+		=> pendingProviderIds.Contains(providerItemId)
+			|| Mappings.Any(mapping => mapping.Source.ItemId == providerItemId)
+			|| CustomModels.Any(model => SyntheticModelItemId(model.Key) == providerItemId);
+
+	// 重建投影之后，把"已经不在当前列表里的选中项"从作用域里剔掉；一个都没少就原样保留。
+	// 作用域是底栏按钮的唯一来源（见 BottomBarCoordinator.ShowReleaseArmorTargets），
+	// 所以这里只能"按可见性修剪"，不能无脑 Clear。
+	private void PruneSelectionAfterRebuild()
+	{
+		if (selection.Scope is not { } scope || !scope.StartsWith("ArmorRegistry:", StringComparison.Ordinal)) return;
+		var selected = selection.SelectedIds;
+		if (selected.Count == 0) return;
+		var visible = AvailableArmors.Concat(Providers).Concat(ProviderDetailItems)
+			.Select(item => item.SelectionKey)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		if (selected.All(visible.Contains)) return;
+		var survivors = selected.Where(visible.Contains).ToArray();
+		if (survivors.Length == 0) selection.Clear();
+		else selection.Replace(scope, survivors);
+	}
+
+	/// <summary>
+	/// 只解除映射、保留视觉来源本身：选中几个来源，把它们名下的映射目标全部清掉。
+	/// <para>
+	/// 为什么需要它：「解除视觉对象」会把来源整条删掉，和"我配错了目标、想重配"是两件事。
+	/// 以前前者有、后者没有，用户只能先删来源再重新建，代价是把已配好的目标也一起丢了。
+	/// </para>
+	/// </summary>
+	public bool CanClearTargetsForProviders(IReadOnlyList<string> keys)
+		=> !IsBusy
+			&& keys.Count != 0
+			&& keys.All(key => Providers.Any(provider => string.Equals(provider.SelectionKey, key, StringComparison.OrdinalIgnoreCase)));
+
+	public void ClearTargetsForProviders(IReadOnlyList<string> keys)
+	{
+		if (!CanClearTargetsForProviders(keys)) return;
+		var memberIds = keys
+			.SelectMany(key => Providers.First(provider => string.Equals(provider.SelectionKey, key, StringComparison.OrdinalIgnoreCase)).MemberItemIds)
+			.ToHashSet();
+		var removed = Mappings.Where(row => memberIds.Contains(row.Source.ItemId)).ToArray();
+		if (removed.Length == 0)
+		{
+			selection.Clear();
+			return;
+		}
+		foreach (var row in removed) Mappings.Remove(row);
+		RebuildProjections();
+		RecomputeHasChanges();
+		selection.Clear();
 	}
 
 	public void PromoteAvailableAsProviders(IReadOnlyList<string> keys)

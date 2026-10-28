@@ -303,6 +303,7 @@ namespace HD2ModManager
                 shell.RegisterArmorTargetsCommand,
                 shell.ReleaseArmorProvidersCommand,
                 shell.ReleaseArmorTargetsCommand,
+                shell.ClearArmorTargetsCommand,
                 shell.CancelSelectionCommand);
             _temporaryEditorPresentation ??= new TemporaryEditorBarPresentation(shell.BottomBar);
 

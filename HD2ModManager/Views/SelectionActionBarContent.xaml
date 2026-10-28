@@ -19,6 +19,11 @@
         -->
         <Button Style="{StaticResource AppPrimaryButton}" Content="注册为映射目标" Command="{Binding RegisterArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRegisterArmorTargets, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppSecondaryButton}" Content="解除视觉对象" Command="{Binding ReleaseArmorProvidersCommand}" Margin="0,0,8,0" Visibility="{Binding ShowReleaseArmorProviders, Converter={StaticResource BoolToVis}}"/>
+        <!--
+            来源多选时的两颗"解除"是不同的动作：解除视觉对象会把来源整条删掉，
+            解除映射目标只清掉它名下的映射、来源留着。以前只有前者，配错了就只能连来源一起删。
+        -->
+        <Button Style="{StaticResource AppSecondaryButton}" Content="解除映射目标" Command="{Binding ClearArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowClearArmorTargets, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppSecondaryButton}" Content="解除映射目标" Command="{Binding ReleaseArmorTargetsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowReleaseArmorTargets, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="启用" Command="{Binding EnableDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowEnableDecorations, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppSecondaryButton}" Content="禁用" Command="{Binding DisableDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowDisableDecorations, Converter={StaticResource BoolToVis}}"/>

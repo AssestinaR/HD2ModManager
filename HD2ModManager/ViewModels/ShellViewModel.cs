@@ -15,7 +15,7 @@ namespace HD2ModManager.ViewModels
 {
     public sealed partial class ShellViewModel : BaseViewModel, IAsyncDisposable
     {
-        private enum ArmorRegistrySelectionAction { Promote, RegisterTargets, ReleaseProviders, ReleaseTargets }
+        private enum ArmorRegistrySelectionAction { Promote, RegisterTargets, ReleaseProviders, ReleaseTargets, ClearTargets }
 
         // 作用：一次导航**之前**的页面组合，用于按 Esc 逐层返回。
         // 只保存"重建这次组合所需的最小信息"：左右页面类型、右槽是否存在、
@@ -152,6 +152,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand RegisterArmorTargetsCommand { get; }
         public RelayCommand ReleaseArmorProvidersCommand { get; }
         public RelayCommand ReleaseArmorTargetsCommand { get; }
+        public RelayCommand ClearArmorTargetsCommand { get; }
         public RelayCommand EnableSelectedDecorationsCommand { get; }
         public RelayCommand DisableSelectedDecorationsCommand { get; }
         public RelayCommand ToggleMessagePanelCommand { get; }
@@ -309,6 +310,7 @@ namespace HD2ModManager.ViewModels
             RegisterArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.RegisterTargets));
             ReleaseArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseProviders));
             ReleaseArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseTargets));
+            ClearArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ClearTargets));
             EnableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(true));
             DisableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(false));
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
@@ -771,6 +773,9 @@ namespace HD2ModManager.ViewModels
                     break;
                 case ArmorRegistrySelectionAction.ReleaseTargets:
                     page.ReleaseTargetSelection(ids);
+                    break;
+                case ArmorRegistrySelectionAction.ClearTargets:
+                    page.ClearTargetsForProviders(ids);
                     break;
             }
             _selection.Clear();

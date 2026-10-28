@@ -101,6 +101,10 @@ namespace HD2ModManager.ViewModels
         public bool ShowRegisterArmorTargets => IsArmorRegistryAvailableTargetSelection;
         public bool ShowReleaseArmorProviders => IsArmorRegistryProviderSelection;
         public bool ShowReleaseArmorTargets => IsArmorRegistryTargetSelection;
+        // 视觉来源多选时同时给「解除映射目标」：只清掉这些来源名下的映射，来源本身留着。
+        // 和「解除视觉对象」（连来源一起删）是两件事，以前只有后者，于是"配错了想重配"
+        // 只能先删来源再重建，代价是把已经配好的目标一起丢了。
+        public bool ShowClearArmorTargets => IsArmorRegistryProviderSelection;
         // 护甲映射页的四种选择：右侧未管理护甲（左侧是来源列表）、右侧未管理护甲
         // （左侧停在某个来源的目标列表）、左侧来源、左侧目标。
         public bool IsArmorRegistrySelection => HasSelection
@@ -531,6 +535,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(IsArmorRegistrySelection));
             OnPropertyChanged(nameof(ShowReleaseArmorProviders));
             OnPropertyChanged(nameof(ShowReleaseArmorTargets));
+            OnPropertyChanged(nameof(ShowClearArmorTargets));
             OnPropertyChanged(nameof(MoveButtonText));
             OnPropertyChanged(nameof(SetAsOptionText));
             OnPropertyChanged(nameof(AttachDecorationsToHostText));

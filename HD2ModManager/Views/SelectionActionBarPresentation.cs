@@ -23,6 +23,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         ICommand registerArmorTargetsCommand,
         ICommand releaseArmorProvidersCommand,
         ICommand releaseArmorTargetsCommand,
+        ICommand clearArmorTargetsCommand,
         ICommand cancelSelectionCommand)
     {
         _bottomBar = bottomBar;
@@ -38,6 +39,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         RegisterArmorTargetsCommand = registerArmorTargetsCommand;
         ReleaseArmorProvidersCommand = releaseArmorProvidersCommand;
         ReleaseArmorTargetsCommand = releaseArmorTargetsCommand;
+        ClearArmorTargetsCommand = clearArmorTargetsCommand;
         CancelSelectionCommand = cancelSelectionCommand;
         BeginMoveCommand = bottomBar.BeginMoveCommand;
         BeginInsertCommand = bottomBar.BeginInsertCommand;
@@ -63,6 +65,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public bool ShowRegisterArmorTargets => _bottomBar.ShowRegisterArmorTargets;
     public bool ShowReleaseArmorProviders => _bottomBar.ShowReleaseArmorProviders;
     public bool ShowReleaseArmorTargets => _bottomBar.ShowReleaseArmorTargets;
+    public bool ShowClearArmorTargets => _bottomBar.ShowClearArmorTargets;
     public ICommand BeginMoveCommand { get; }
     public ICommand BeginInsertCommand { get; }
     public ICommand SelectionPrimaryCommand { get; }
@@ -77,5 +80,6 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public ICommand RegisterArmorTargetsCommand { get; }
     public ICommand ReleaseArmorProvidersCommand { get; }
     public ICommand ReleaseArmorTargetsCommand { get; }
+    public ICommand ClearArmorTargetsCommand { get; }
     public ICommand CancelSelectionCommand { get; }
 }
