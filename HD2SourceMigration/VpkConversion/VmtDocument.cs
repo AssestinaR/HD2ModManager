@@ -155,11 +155,16 @@ public sealed class VmtDocument
 			}
 		}
 
-		// insert：只补缺（源语义）；replace：覆盖。
+		// insert 与 replace 都是"覆盖"语义。
+		// 这一条是**样本逼出来的**，别按字面"补缺"理解：GF2 的 33 份子材质全部用 insert 写真正的
+		// 底色，而 include 的 shader/vmt_base.vmt 里把 `$basetexture` 写成占位值 "basetexture"
+		// 并注释"由 patch VMT 替换"。若 insert 不覆盖，这整套材质在源引擎里就找不到底色贴图，
+		// 作者不可能没发现。早期实现按"insert 只补缺"处理，结果整包 34 份材质全部合成失败，
+		// 游戏里就是"模型进来但没材质"。
 		if (root.Children.TryGetValue("insert", out var insert))
 		{
 			foreach (var pair in insert.Values)
-				merged.TryAdd(pair.Key, pair.Value);
+				merged[pair.Key] = pair.Value;
 		}
 
 		if (root.Children.TryGetValue("replace", out var replace))

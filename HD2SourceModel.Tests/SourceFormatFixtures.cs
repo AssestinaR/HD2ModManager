@@ -374,10 +374,24 @@ internal static class SourceFormatFixtures
 	public sealed record VpkFileSpec(string Extension, string Directory, string FileName, byte[] Preload, byte[] Payload);
 
 	/// <summary>
+	/// 名字按**原始字节**给：目录树里的名字不一定是 UTF-8（中文模组常用 GBK），
+	/// 要造这种样本就只能绕开字符串。
+	/// </summary>
+	public sealed record RawVpkFileSpec(byte[] Extension, byte[] Directory, byte[] FileName, byte[] Preload, byte[] Payload);
+
+	/// <summary>
 	/// <paramref name="entrySize"/> 单独给出，因为实测文件里"版本号"与"条目步长"并不一致：
 	/// 全部 97 个求生之路 2 的 VPK 都是版本 1 + 18 字节条目。
 	/// </summary>
 	public static byte[] BuildVpk(int version, int entrySize, VpkFileSpec[] files)
+		=> BuildVpkFromRawNames(version, entrySize, [.. files.Select(file => new RawVpkFileSpec(
+			Encoding.UTF8.GetBytes(file.Extension),
+			Encoding.UTF8.GetBytes(file.Directory),
+			Encoding.UTF8.GetBytes(file.FileName),
+			file.Preload,
+			file.Payload))]);
+
+	public static byte[] BuildVpkFromRawNames(int version, int entrySize, RawVpkFileSpec[] files)
 	{
 		var headerSize = version == 1 ? 12 : 28;
 
@@ -391,15 +405,15 @@ internal static class SourceFormatFixtures
 		}
 
 		var tree = new List<byte>();
-		foreach (var extensionGroup in files.Select((file, index) => (file, index)).GroupBy(pair => pair.file.Extension))
+		foreach (var extensionGroup in files.Select((file, index) => (file, index)).GroupBy(pair => Convert.ToHexString(pair.file.Extension)))
 		{
-			WriteString(tree, extensionGroup.Key);
-			foreach (var directoryGroup in extensionGroup.GroupBy(pair => pair.file.Directory))
+			WriteRawString(tree, extensionGroup.First().file.Extension);
+			foreach (var directoryGroup in extensionGroup.GroupBy(pair => Convert.ToHexString(pair.file.Directory)))
 			{
-				WriteString(tree, directoryGroup.Key);
+				WriteRawString(tree, directoryGroup.First().file.Directory);
 				foreach (var (file, index) in directoryGroup)
 				{
-					WriteString(tree, file.FileName);
+					WriteRawString(tree, file.FileName);
 
 					var header = new byte[entrySize];
 					BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0), 0);
@@ -414,13 +428,13 @@ internal static class SourceFormatFixtures
 					tree.AddRange(file.Preload);
 				}
 
-				WriteString(tree, string.Empty);
+				WriteRawString(tree, []);
 			}
 
-			WriteString(tree, string.Empty);
+			WriteRawString(tree, []);
 		}
 
-		WriteString(tree, string.Empty);
+		WriteRawString(tree, []);
 
 		var result = new byte[headerSize + tree.Count + payloads.Count];
 		BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(0), 0x55AA1234);
@@ -431,18 +445,18 @@ internal static class SourceFormatFixtures
 		return result;
 	}
 
+	private static void WriteRawString(List<byte> buffer, byte[] value)
+	{
+		buffer.AddRange(value);
+		buffer.Add(0);
+	}
+
 	/// <summary>把字节流写进一个临时文件，返回路径；调用方负责删除。</summary>
 	public static string WriteTempFile(string extension, byte[] content)
 	{
 		var path = Path.Combine(Path.GetTempPath(), $"hd2src-{Guid.NewGuid():N}{extension}");
 		File.WriteAllBytes(path, content);
 		return path;
-	}
-
-	private static void WriteString(List<byte> buffer, string value)
-	{
-		buffer.AddRange(Encoding.UTF8.GetBytes(value));
-		buffer.Add(0);
 	}
 
 	private static void WriteFixedString(byte[] buffer, int offset, int length, string value)

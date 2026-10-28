@@ -160,9 +160,56 @@ public sealed class VmtDocumentTests
 		Assert.Equal("materials/a/b/base.vmt", vmt.IncludePath);
 		Assert.Equal("VertexLitGeneric", vmt.Shader);          // 继承自 include
 		Assert.Equal("a/b/coat", vmt.BaseTexture);             // replace 覆盖
-		Assert.Equal("a/b/norm", vmt.BumpMap);                 // insert 补缺
-		Assert.Equal("1", vmt.Value("$phong"));                // insert 不覆盖已存在的键
-		Assert.Equal("50", vmt.Value("$phongexponent"));
+		Assert.Equal("a/b/norm", vmt.BumpMap);                 // insert 新增
+		Assert.Equal("0", vmt.Value("$phong"));                // insert 也覆盖已存在的键
+		Assert.Equal("50", vmt.Value("$phongexponent"));        // 没写就保留 include 的值
+	}
+
+	/// <summary>
+	/// 真实模组形状：基础材质把 <c>$basetexture</c> 写成占位值，子材质用 <c>insert</c> 顶掉它。
+	/// <para>
+	/// 2026-10-28 用户反馈的"模型进游戏但完全没材质"就是这条被打破了：34 份材质全部因为
+	/// <c>$basetexture</c> 还是占位值而合成失败。证据（两个不同作者的包都是同一形状）：
+	/// </para>
+	/// <code>
+	/// materials/&lt;mod&gt;/shader/vmt_base.vmt   "VertexLitGeneric" { "$basetexture" "basetexture" }
+	/// materials/&lt;mod&gt;/c_xxx_uber.vmt        patch { include "…/shader/vmt_base.vmt"
+	///                                            insert { "$basetexture" "&lt;mod&gt;/…_d" } }
+	/// </code>
+	/// <para>
+	/// 33 份子材质里 <c>replace</c> 出现 0 次，全部靠 <c>insert</c> 覆盖。若 <c>insert</c> 只补缺，
+	/// 这些包在源引擎里根本找不到底色贴图，作者不可能没发现。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void Parse_PatchInsertOverridesAPlaceholderFromTheIncludedMaterial()
+	{
+		var baseVmt = Encoding.UTF8.GetBytes("""
+			"VertexLitGeneric"
+			{
+				"$basetexture" "basetexture"   // 基础贴图路径，由 patch VMT 替换
+				"$phong" "1"
+			}
+			""");
+		var patch = Encoding.UTF8.GetBytes("""
+			patch
+			{
+				include	"materials/diyu2026/GF2Exilium/Cheyanne/MaidenDebut/shader/vmt_base.vmt"
+				insert
+				{
+					$basetexture	"diyu2026/GF2Exilium/Cheyanne/MaidenDebut/c_CheyanneSSR0101_slg_p1_body_uber_d"
+					$phongboost	"1.245"
+				}
+			}
+			""");
+
+		var vmt = VmtDocument.Parse(patch, name => name.Equals("vmt_base", StringComparison.OrdinalIgnoreCase) ? baseVmt : null);
+
+		Assert.Equal(
+			"diyu2026/gf2exilium/cheyanne/maidendebut/c_cheyannessr0101_slg_p1_body_uber_d",
+			vmt.BaseTexture);
+		Assert.Equal("1", vmt.Value("$phong"));         // 只写了 insert 的键之外，include 的仍然保留
+		Assert.Equal("1.245", vmt.Value("$phongboost"));
 	}
 
 	[Fact]

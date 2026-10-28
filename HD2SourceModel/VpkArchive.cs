@@ -66,6 +66,61 @@ public sealed class VpkArchive : IDisposable
 	/// <summary>v2 规范的条目步长（含 2 字节终止符）；实测文件实际使用。</summary>
 	private const int EntrySizeV2 = 18;
 
+	/// <summary>
+	/// 目录树里的名字**不一定是 UTF-8**。同一个包里可以混着写：中文模组常用 GBK（CP936）存
+	/// <c>头部</c> / <c>大腿</c> 这类 vgui 图名。按 UTF-8 硬解会把它们变成一串 U+FFFD，
+	/// 于是 <c>大腿</c> 与 <c>倒地</c> 解出来一模一样、被当成重复路径，整棵树判失败
+	/// （2026-10-28 用户样本 <c>秋桦 仁心仁术 shader 基础组件.vpk</c> 就是 201 个条目全部正确、
+	/// 只因这两个名字撞车而整包打不开）。GBK 是兜底解码器，不是首选。
+	/// </summary>
+	private static readonly Encoding FallbackNameEncoding = CreateFallbackNameEncoding();
+
+	private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+	private static Encoding CreateFallbackNameEncoding()
+	{
+		try
+		{
+			Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+			return Encoding.GetEncoding(936);
+		}
+		catch (Exception)
+		{
+			// 拿不到 CP936 时退回单字节直通：路径会变成乱码，但至少不会把整棵树判死。
+			return Encoding.Latin1;
+		}
+	}
+
+	/// <summary>先按严格 UTF-8 解，失败再按 GBK 解。两种都解不了才用替换字符（不会抛）。</summary>
+	private static string DecodeName(ReadOnlySpan<byte> raw)
+	{
+		if (raw.Length == 0)
+			return string.Empty;
+
+		if (IsAscii(raw))
+			return Encoding.ASCII.GetString(raw);
+
+		try
+		{
+			return StrictUtf8.GetString(raw);
+		}
+		catch (DecoderFallbackException)
+		{
+			return FallbackNameEncoding.GetString(raw);
+		}
+	}
+
+	private static bool IsAscii(ReadOnlySpan<byte> raw)
+	{
+		foreach (var value in raw)
+		{
+			if (value >= 0x80)
+				return false;
+		}
+
+		return true;
+	}
+
 	private readonly string _path;
 	private readonly Dictionary<string, VpkEntry> _byPath;
 	private FileStream? _stream;
@@ -80,6 +135,12 @@ public sealed class VpkArchive : IDisposable
 	}
 
 	public int Version { get; }
+
+	/// <summary>
+	/// 目录树里"同一路径出现两次"的条目数。正常打包器不会产生这种条目；
+	/// 出现即说明包本身有问题（本类保留先出现的那条，不因此拒绝打开整包）。
+	/// </summary>
+	public int DuplicateEntryCount { get; private init; }
 
 	/// <summary>文件内归档数据的起始偏移（<c>headerSize + treeSize</c>）。</summary>
 	public long DataOffset { get; }
@@ -108,62 +169,89 @@ public sealed class VpkArchive : IDisposable
 		if (tree.Length != treeSize)
 			throw new InvalidDataException($"VPK 目录树被截断：{full}");
 
-		// 先按实测通用的 18 字节试，再退回规范里的 16 字节。
-		if (TryParseTree(tree, EntrySizeV2, full, out var byPath)
-			|| TryParseTree(tree, EntrySizeV1, full, out byPath))
+		// 目录树里没有条目数量字段，步长只能靠"正好吃完整棵树"判定，两种步长都试。
+		// 重复路径不再直接判死（见 DecodeName 的注释：名字解码差异会制造假重复），
+		// 只在两种步长都能吃完树时用来挑更干净的那个。
+		var candidates = new List<(int EntrySize, Dictionary<string, VpkEntry> ByPath, int Duplicates)>();
+		foreach (var entrySize in new[] { EntrySizeV2, EntrySizeV1 })
 		{
-			return new VpkArchive(full, version, headerSize + treeSize, byPath);
+			if (TryParseTree(tree, entrySize, full, out var byPath, out var duplicates))
+				candidates.Add((entrySize, byPath, duplicates));
+		}
+
+		if (candidates.Count > 0)
+		{
+			var best = candidates
+				.OrderBy(candidate => candidate.Duplicates)
+				.ThenBy(candidate => candidate.EntrySize == EntrySizeV2 ? 0 : 1)
+				.First();
+			// 有重复条目时优先用"没有重复"的那种步长；两种都有重复就取重复少的那个，把数量报出去。
+			return new VpkArchive(full, version, headerSize + treeSize, best.ByPath)
+			{
+				DuplicateEntryCount = best.Duplicates,
+			};
 		}
 
 		throw new InvalidDataException($"VPK 目录树无法解析（16 与 18 字节条目都试过）：{full}");
 	}
 
 	/// <summary>
-	/// 解析目录树；返回 <c>false</c> 表示这个条目步长读不通（越界、重复路径、或没有正好吃掉整棵树），
+	/// 解析目录树；返回 <c>false</c> 表示这个条目步长读不通（越界、字符串没有终止符、或没有正好吃掉整棵树），
 	/// 调用方应当换另一种步长再试。返回 <c>true</c> 时 <paramref name="byPath"/> 一定已填充完整。
+	/// <para>
+	/// <paramref name="duplicates"/> 是"同一路径出现两次"的次数：<b>不再</b>因为重复而判失败
+	/// （保留先出现的那条），但要报给调用方，好让上层在两种步长都通时挑干净的那个。
+	/// </para>
 	/// </summary>
 	private static bool TryParseTree(
-		byte[] tree, int entrySize, string source, out Dictionary<string, VpkEntry> byPath)
+		byte[] tree, int entrySize, string source, out Dictionary<string, VpkEntry> byPath, out int duplicates)
 	{
 		byPath = new Dictionary<string, VpkEntry>(StringComparer.OrdinalIgnoreCase);
+		duplicates = 0;
 		var position = 0;
 
-		// 返回 null 表示"没有终止符"——树被读歪了，不是"这里确实没有名字"。
-		string? ReadString()
+		// 返回 false 表示"没有终止符"——树被读歪了，不是"这里确实没有名字"。
+		bool TryReadString(out ReadOnlySpan<byte> value)
 		{
 			var start = position;
 			while (position < tree.Length && tree[position] != 0)
 				position++;
 
 			if (position >= tree.Length)
-				return null;
+			{
+				value = default;
+				return false;
+			}
 
-			var value = Encoding.UTF8.GetString(tree, start, position - start);
+			value = tree.AsSpan(start, position - start);
 			position++;
-			return value;
+			return true;
 		}
 
 		while (true)
 		{
-			var extension = ReadString();
-			if (extension is null)
+			if (!TryReadString(out var extensionBytes))
 				return false;
+
+			var extension = DecodeName(extensionBytes);
 			if (extension.Length == 0)
 				break;
 
 			while (true)
 			{
-				var directory = ReadString();
-				if (directory is null)
+				if (!TryReadString(out var directoryBytes))
 					return false;
+
+				var directory = DecodeName(directoryBytes);
 				if (directory.Length == 0)
 					break;
 
 				while (true)
 				{
-					var fileName = ReadString();
-					if (fileName is null)
+					if (!TryReadString(out var fileNameBytes))
 						return false;
+
+					var fileName = DecodeName(fileNameBytes);
 					if (fileName.Length == 0)
 						break;
 
@@ -192,9 +280,8 @@ public sealed class VpkArchive : IDisposable
 						relative.TrimStart('/'), extension, directory, fileName,
 						archiveIndex, offset, length, preload);
 
-					// 同一路径出现两次说明步长选错了。
 					if (!byPath.TryAdd(entry.Path, entry))
-						return false;
+						duplicates++;
 				}
 			}
 		}

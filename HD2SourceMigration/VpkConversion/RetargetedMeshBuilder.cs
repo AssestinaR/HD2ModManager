@@ -236,15 +236,14 @@ public static class RetargetedMeshBuilder
 				if (area <= 0)
 					continue;
 
-				foreach (var corner in stackalloc[] { a, b, c })
-				{
-					var normal = sourceNormals[corner];
-					var rotated = (finalEdge * Dot(sourceEdge, normal))
-						+ (finalUnitFace * Dot(sourceFace, normal))
-						+ (finalThird * Dot(sourceThird, normal));
-					accumulated[corner] += rotated * area;
-					weights[corner] += area;
-				}
+				// ⚠️ 这里**不能**写 `foreach (var corner in stackalloc[] { a, b, c })`：
+				// 循环体里的 stackalloc 每一轮都会再占一份栈，直到方法返回才回收。
+				// 19 万个三角形 × 12 字节就是 2.3 MB，默认 1 MB 栈直接 Stack overflow
+				// （2026-10-28 用户样本 `秋桦 仁心仁术 shader 基础组件.vpk`：201 个条目、
+				// 129558 顶点 / 190530 三角形，转换进程当场崩掉，整包转换失败）。
+				AccumulateCorner(accumulated, weights, sourceNormals, a, sourceEdge, sourceFace, sourceThird, finalEdge, finalUnitFace, finalThird, area);
+				AccumulateCorner(accumulated, weights, sourceNormals, b, sourceEdge, sourceFace, sourceThird, finalEdge, finalUnitFace, finalThird, area);
+				AccumulateCorner(accumulated, weights, sourceNormals, c, sourceEdge, sourceFace, sourceThird, finalEdge, finalUnitFace, finalThird, area);
 			}
 		}
 
@@ -262,6 +261,28 @@ public static class RetargetedMeshBuilder
 		(a.Y * b.Z) - (a.Z * b.Y),
 		(a.Z * b.X) - (a.X * b.Z),
 		(a.X * b.Y) - (a.Y * b.X));
+
+	/// <summary>把一个三角形角上的源法线按面积加权累加进最终法线（见 <see cref="ComputeFinalNormals"/>）。</summary>
+	private static void AccumulateCorner(
+		Vec3[] accumulated,
+		double[] weights,
+		Vec3[] sourceNormals,
+		int corner,
+		Vec3 sourceEdge,
+		Vec3 sourceFace,
+		Vec3 sourceThird,
+		Vec3 finalEdge,
+		Vec3 finalUnitFace,
+		Vec3 finalThird,
+		double area)
+	{
+		var normal = sourceNormals[corner];
+		var rotated = (finalEdge * Dot(sourceEdge, normal))
+			+ (finalUnitFace * Dot(sourceFace, normal))
+			+ (finalThird * Dot(sourceThird, normal));
+		accumulated[corner] += rotated * area;
+		weights[corner] += area;
+	}
 
 	private static double Dot(Vec3 a, Vec3 b) => (a.X * b.X) + (a.Y * b.Y) + (a.Z * b.Z);
 

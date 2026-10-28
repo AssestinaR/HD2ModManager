@@ -1,3 +1,4 @@
+using System.Text;
 using static HD2SourceModel.Tests.SourceFormatFixtures;
 
 namespace HD2SourceModel.Tests;
@@ -168,9 +169,11 @@ public sealed class VpkArchiveTests
 	}
 
 	[Fact]
-	public void Open_RejectsDuplicatePaths()
+	public void Open_KeepsTheFirstEntryAndReportsDuplicatePaths()
 	{
-		// 同一路径出现两次说明步长选错了；静默保留一条只会让后面的读取莫名其妙。
+		// 同一路径出现两次时**不再**拒绝整包，只把数量报出来并保留先出现的那条。
+		// 原因：名字解码差异会制造假重复（2026-10-28 样本里 GBK 的 "大腿"/"倒地" 按 UTF-8 解
+		// 会变成同一个 U+FFFD 串），旧实现因此把 201 个条目全部正确的包判成"目录树无法解析"。
 		var vpk = BuildVpk(1, 18,
 		[
 			new VpkFileSpec("mdl", "models", "bar", [], [1]),
@@ -180,7 +183,48 @@ public sealed class VpkArchiveTests
 		var path = WriteTempFile(".vpk", vpk);
 		try
 		{
-			Assert.Throws<InvalidDataException>(() => VpkArchive.Open(path));
+			using var archive = VpkArchive.Open(path);
+			Assert.Equal(1, archive.DuplicateEntryCount);
+			Assert.Single(archive.Entries);
+
+			var entry = archive.Find("models/bar.mdl")!;
+			Assert.True(archive.TryRead(entry, out var data));
+			Assert.Equal(new byte[] { 1 }, data);
+		}
+		finally
+		{
+			File.Delete(path);
+		}
+	}
+
+	/// <summary>
+	/// 目录树里的名字不一定是 UTF-8：中文模组常用 GBK 存 <c>头部</c> / <c>大腿</c> 这类 vgui 图名。
+	/// 按 UTF-8 硬解会得到一串 U+FFFD，两个不同的名字因此变成同一个路径。
+	/// </summary>
+	[Fact]
+	public void Open_DecodesGbkEntryNamesInsteadOfCollapsingThemToReplacementCharacters()
+	{
+		// 中文模组的目录树常用 GBK（CP936）存 vgui 图名。按 UTF-8 硬解会得到一串 U+FFFD，
+		// 于是"大腿"和"倒地"变成同一个路径，201 个条目全部正确的包被判成"目录树无法解析"。
+		Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+		var gbk = Encoding.GetEncoding(936);
+
+		var vpk = BuildVpkFromRawNames(1, 18,
+		[
+			new RawVpkFileSpec(gbk.GetBytes("vtf"), gbk.GetBytes("materials/vgui"), gbk.GetBytes("头部"), [], [1]),
+			new RawVpkFileSpec(gbk.GetBytes("vtf"), gbk.GetBytes("materials/vgui"), gbk.GetBytes("大腿"), [], [2]),
+			new RawVpkFileSpec(gbk.GetBytes("vtf"), gbk.GetBytes("materials/vgui"), gbk.GetBytes("倒地"), [], [3]),
+		]);
+
+		var path = WriteTempFile(".vpk", vpk);
+		try
+		{
+			using var archive = VpkArchive.Open(path);
+			Assert.Equal(0, archive.DuplicateEntryCount);
+			Assert.Equal(3, archive.Entries.Count);
+			Assert.NotNull(archive.Find("materials/vgui/头部.vtf"));
+			Assert.NotNull(archive.Find("materials/vgui/大腿.vtf"));
+			Assert.NotNull(archive.Find("materials/vgui/倒地.vtf"));
 		}
 		finally
 		{
