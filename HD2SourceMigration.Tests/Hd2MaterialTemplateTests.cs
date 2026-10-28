@@ -15,6 +15,39 @@ public sealed class Hd2MaterialTemplateTests
 {
 	private static Hd2MaterialTemplateLibrary? Locate() => Hd2MaterialTemplateLibrary.Locate();
 
+	/// <summary>
+	/// 磁盘上找不到模板目录时必须用**程序集内置副本**，而不是返回 null。
+	/// <para>
+	/// 这条钉住一次真实事故：发布包里既没有 texconv 也没有 <c>*.material</c>，
+	/// 所有用户的 VPK 材质转换都变成"转换 0 个"，而开发机上一切正常。
+	/// 现在模板随程序集内置，转换不依赖任何外置目录。
+	/// </para>
+	/// <para>
+	/// 测试从一个临时目录出发（它的祖先链里没有任何 HD2SDK materials），从而真正走到内嵌分支。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void EmbeddedTemplatesAreUsedWhenNoSdkDirectoryExists()
+	{
+		var empty = Path.Combine(Path.GetTempPath(), "hd2-no-templates-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(empty);
+		try
+		{
+			var library = Hd2MaterialTemplateLibrary.Locate(explicitDirectory: null, startDirectory: empty);
+
+			Assert.Equal("embedded", library.Source);
+			Assert.Contains("advanced", library.Names);
+			Assert.Contains("alphaclip", library.Names);
+			// 内置副本也必须是能解析的真模板，不是占位空文件。
+			Assert.True(library.LoadBytes("advanced").Length > 0);
+			Assert.NotNull(library.Load("advanced"));
+		}
+		finally
+		{
+			try { Directory.Delete(empty, true); } catch (IOException) { }
+		}
+	}
+
 	[Fact]
 	public void EverySdkTemplateRoundTripsByteIdentically()
 	{

@@ -37,4 +37,19 @@
     <EmbeddedResource Include="Retarget\body_pose_profile.json" />
   </ItemGroup>
 
+  <!--
+    HD2 的材质模板（10 份 .material，二进制 Stingray 资源，合计约 7 KB）。
+    它们是**HD2 自己的材质定义**，不是第三方模型的属性，因此和内嵌的姿态参考表一样
+    随本工程内置：转换流程不再依赖 HD2SDK 的安装目录。
+    目录查找仍然优先（开发期改模板不必重编），找不到才用内嵌副本。
+    The ten HD2 .material templates (~7 KB total) ship inside this assembly for the same
+    reason as the pose profile: they describe HD2's own materials, not the third-party model.
+    Disk lookup still wins so a developer can tweak a template without rebuilding.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\tools\ref\HD2SDK-CommunityEdition\materials\*.material">
+      <LogicalName>HD2MaterialTemplates.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>

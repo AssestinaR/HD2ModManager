@@ -119,6 +119,83 @@ public sealed class VmtDocumentTests
 		Assert.Equal(expected, Parse(text).IsEnabled("$translucent"));
 	}
 
+	/// <summary>
+	/// <c>patch</c> 材质：<c>include</c> 指向的基础材质 + 自己的 <c>insert</c>/<c>replace</c>。
+	/// <para>
+	/// 这是 L4D2 模组里最常见的写法（实测一个 34 份 VMT 的包里 29 份是 patch）。
+	/// 旧解析器把嵌套块一律跳过，于是这些材质连 <c>$basetexture</c> 都读不出来，
+	/// 整包材质静默消失——用户看到的是"材质包导入成功，游戏里没变"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void Parse_PatchMaterialMergesIncludeInsertAndReplace()
+	{
+		var baseVmt = Encoding.UTF8.GetBytes("""
+			VertexLitGeneric
+			{
+				"$basetexture" "placeholder/base"
+				"$phong" "1"
+				"$phongexponent" "50"
+			}
+			""");
+		var patch = Encoding.UTF8.GetBytes("""
+			patch
+			{
+				include "materials/a/b/base.vmt"
+				insert
+				{
+					"$bumpmap" "a/b/norm"
+					"$phong" "0"
+				}
+				replace
+				{
+					"$basetexture" "a/b/coat"
+				}
+			}
+			""");
+
+		var vmt = VmtDocument.Parse(patch, name => name.Equals("base", StringComparison.OrdinalIgnoreCase) ? baseVmt : null);
+
+		Assert.True(vmt.IsPatch);
+		Assert.Equal("materials/a/b/base.vmt", vmt.IncludePath);
+		Assert.Equal("VertexLitGeneric", vmt.Shader);          // 继承自 include
+		Assert.Equal("a/b/coat", vmt.BaseTexture);             // replace 覆盖
+		Assert.Equal("a/b/norm", vmt.BumpMap);                 // insert 补缺
+		Assert.Equal("1", vmt.Value("$phong"));                // insert 不覆盖已存在的键
+		Assert.Equal("50", vmt.Value("$phongexponent"));
+	}
+
+	[Fact]
+	public void Parse_PatchWithoutItsIncludeStillAppliesReplace()
+	{
+		// 被包含的材质不在这一批里时不能整份丢掉：replace 里的键仍然有效，
+		// 上层据此还能判断底色。
+		var patch = Encoding.UTF8.GetBytes("""
+			patch
+			{
+				include "materials/missing.vmt"
+				replace { "$basetexture" "x/y" }
+			}
+			""");
+
+		var vmt = VmtDocument.Parse(patch, _ => null);
+		Assert.True(vmt.IsPatch);
+		Assert.Equal("x/y", vmt.BaseTexture);
+	}
+
+	[Fact]
+	public void Parse_PatchIncludeCycleDoesNotRecurseForever()
+	{
+		// 坏模组里可能出现 A include B、B include A。挡不住就是栈溢出。
+		var a = Encoding.UTF8.GetBytes("""patch { include "b.vmt" insert { "$basetexture" "a/t" } }""");
+		var b = Encoding.UTF8.GetBytes("""patch { include "a.vmt" insert { "$phong" "1" } }""");
+
+		var vmt = VmtDocument.Parse(a, name => name.Equals("b", StringComparison.OrdinalIgnoreCase) ? b : a);
+
+		Assert.True(vmt.IsPatch);
+		Assert.Equal("a/t", vmt.BaseTexture);
+	}
+
 	[Fact]
 	public void Parse_OfEmptyOrGarbageInputYieldsAnEmptyDocumentRatherThanThrowing()
 	{

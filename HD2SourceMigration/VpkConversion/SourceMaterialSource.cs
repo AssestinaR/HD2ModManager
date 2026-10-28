@@ -225,6 +225,13 @@ public sealed class SourceMaterialSource
 	public bool TryReadVtf(string textureName, out byte[] bytes)
 		=> TryRead(vtfs, Stem(textureName), out bytes);
 
+	/// <summary>
+	/// 供 <see cref="VmtDocument.Parse(ReadOnlySpan{byte}, Func{string, byte[]})"/> 展开
+	/// <c>patch</c> 材质的 <c>include</c> 链：输入材质短名，返回它的 .vmt 字节或 null。
+	/// </summary>
+	public Func<string, byte[]?> CreateIncludeReader()
+		=> materialName => TryReadVmt(materialName, out var bytes) ? bytes : null;
+
 	/// <summary>这个材质名最终由哪个 VPK 提供（自身优先、整批兜底之后的答案）。</summary>
 	public bool TryGetVmtSource(string materialName, out string vpkPath, out string entryPath)
 		=> vmts.TryGetValue(Stem(materialName), out var location)

@@ -225,7 +225,7 @@ public sealed class SourceMaterialConverter
 			if (!source.TryReadVmt(stem, out var vmtBytes))
 				continue;
 
-			var vmt = VmtDocument.Parse(vmtBytes);
+			var vmt = VmtDocument.Parse(vmtBytes, source.CreateIncludeReader());
 			if (!MaterialAppearance.Evaluate(vmt).MatCapIsTheSurface)
 				continue;
 
@@ -479,7 +479,7 @@ public sealed class SourceMaterialConverter
 			return LoadOutcome.Failed;
 		}
 
-		var vmt = VmtDocument.Parse(vmtBytes);
+		var vmt = VmtDocument.Parse(vmtBytes, source.CreateIncludeReader());
 
 		// `$no_draw 1`：源侧根本不绘制这个材质（L4D2 用它隐藏部位）。
 		// HD2 没有对应概念，所以**不硬造**——把它当"跳过"报出去。
@@ -491,9 +491,22 @@ public sealed class SourceMaterialConverter
 		}
 
 		var baseTexture = vmt.BaseTexture;
+		// 占位值："$basetexture" "basetexture" 是模组作者的"这里没有底色"写法——
+		// 这类材质（玻璃、纯 phong、着色器覆盖）的观感全来自 envmap / phong / matcap。
+		// HD2 的材质模板没有这些槽，所以它们**注定转不出来**；理由必须说清是"源侧没有底色"，
+		// 而不是让我们看起来像"找不到文件"。
+		if (!string.IsNullOrWhiteSpace(baseTexture) && baseTexture is "basetexture" or "base")
+		{
+			reason = $"{stem}：$basetexture 是占位值（{baseTexture}），这份材质没有自己的底色贴图"
+				+ "（观感来自 envmap / phong），HD2 材质模板没有对应槽";
+			return LoadOutcome.Failed;
+		}
+
 		if (string.IsNullOrWhiteSpace(baseTexture))
 		{
-			reason = $"{stem}：VMT 里没有 $basetexture";
+			reason = vmt.IsPatch
+				? $"{stem}：patch 材质展开后仍然没有 $basetexture（include={vmt.IncludePath ?? "缺失"}）"
+				: $"{stem}：VMT 里没有 $basetexture";
 			return LoadOutcome.Failed;
 		}
 

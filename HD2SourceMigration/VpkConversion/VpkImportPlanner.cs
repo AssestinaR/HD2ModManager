@@ -191,7 +191,7 @@ public static class VpkImportPlanner
 			VmtDocument document;
 			try
 			{
-				document = VmtDocument.Parse(bytes);
+				document = VmtDocument.Parse(bytes, source.CreateIncludeReader());
 			}
 			catch (InvalidDataException)
 			{

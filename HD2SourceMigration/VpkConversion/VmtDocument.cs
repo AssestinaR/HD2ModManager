@@ -5,8 +5,14 @@ namespace HD2SourceMigration.VpkConversion;
 /// <summary>
 /// Source 材质文件（<c>.vmt</c>，Valve KeyValues 文本）的解析结果。
 /// <para>
-/// 只做<b>扁平的顶层键值表</b>：VMT 里嵌套块（<c>Proxies</c>、<c>Patch</c>）对本管线没用，
-/// 一律跳过。移植自 <c>tmp/rig-lab/build_patch.py</c> 里与 VMT 相关的判定。
+/// <b>支持 <c>patch</c> 材质</b>（<c>include</c> + <c>insert</c> + <c>replace</c>）。
+/// 这类 VMT 在 L4D2 模组里非常常见：整套服装/发型/部件用一份公共基础材质，各自只写
+/// "我要换掉哪几个键"。实测一个 34 份 VMT 的模组包里 29 份是 <c>patch</c>；
+/// 不解析它们就等于整套材质凭空消失（表现为"材质包导入成功但游戏里没变"）。
+/// </para>
+/// <para>
+/// <b>解析是扁平的</b>：只保留顶层键值（含 patch 展开后的结果）。<c>Proxies</c> 之类的
+/// 子块仍然跳过——本管线用不到。
 /// </para>
 /// <para>
 /// <b>哪些键真的被用到</b>（照 Python 侧现状，不替它加戏）：
@@ -23,20 +29,36 @@ namespace HD2SourceMigration.VpkConversion;
 /// </summary>
 public sealed class VmtDocument
 {
+	/// <summary>include 链的深度上限。模组里正常只有一层；设上限是为了防环形引用。</summary>
+	private const int MaxIncludeDepth = 8;
+
 	private readonly Dictionary<string, string> values;
 
-	private VmtDocument(string shader, Dictionary<string, string> values)
+	private VmtDocument(
+		string shader,
+		Dictionary<string, string> values,
+		bool isPatch = false,
+		string? includePath = null)
 	{
 		Shader = shader;
 		this.values = values;
+		IsPatch = isPatch;
+		IncludePath = includePath;
 	}
 
-	/// <summary>着色器名（第一个 token），例如 <c>VertexLitGeneric</c>。</summary>
+	/// <summary>着色器名（第一个 token），例如 <c>VertexLitGeneric</c>。patch 材质是展开后继承到的那个。</summary>
 	public string Shader { get; }
 
+	/// <summary>这份 VMT 是不是 <c>patch</c> 型（include + insert/replace）。</summary>
+	public bool IsPatch { get; }
+
+	/// <summary>patch 材质的 <c>include</c> 目标（已规范化），否则为 <c>null</c>。</summary>
+	public string? IncludePath { get; }
+
+	/// <summary>展开后的键值表（patch 已合并 include 目标 + insert + replace）。</summary>
 	public IReadOnlyDictionary<string, string> Values => values;
 
-	/// <summary><c>$basetexture</c>，路径一律规范成小写正斜杠。没有则为 <c>null</c>。</summary>
+	/// <summary><c>$basetexture</c>，路径一律规范成小写正斜杠。没有（或是占位值）则为 <c>null</c>。</summary>
 	public string? BaseTexture => Value("$basetexture");
 
 	/// <summary><c>$bumpmap</c>。Python 侧解析了但没用上。</summary>
@@ -73,10 +95,26 @@ public sealed class VmtDocument
 	}
 
 	/// <summary>
-	/// 解析一份 VMT。容错优先：VMT 是手写的，缺引号、多注释、有 BOM 都常见，
-	/// 这里不因为格式小瑕疵就整份丢掉——丢掉的代价是"这组材质没有底色"，比报错更难查。
+	/// 解析一份 VMT（不解析 patch 的 include：拿不到被包含的材质时，patch 型只能得到空表）。
+	/// 需要展开 patch 时用带 <c>includeReader</c> 的重载。
 	/// </summary>
-	public static VmtDocument Parse(ReadOnlySpan<byte> bytes)
+	public static VmtDocument Parse(ReadOnlySpan<byte> bytes) => Parse(bytes, null);
+
+	/// <summary>
+	/// 解析一份 VMT，并用 <paramref name="includeReader"/> 展开 <c>patch</c> 材质。
+	/// <para>
+	/// <paramref name="includeReader"/> 收的是**材质短名**（无目录、无扩展名），返回它的字节或 null。
+	/// 传 null 时 patch 材质退化成"只有自己的 insert/replace"，通常拿不到 <c>$basetexture</c>。
+	/// </para>
+	/// </summary>
+	public static VmtDocument Parse(ReadOnlySpan<byte> bytes, Func<string, byte[]?>? includeReader)
+		=> ParseCore(bytes, includeReader, 0, null);
+
+	private static VmtDocument ParseCore(
+		ReadOnlySpan<byte> bytes,
+		Func<string, byte[]?>? includeReader,
+		int depth,
+		HashSet<string>? visited)
 	{
 		var text = DecodeText(bytes);
 		var tokens = Tokenize(text);
@@ -84,59 +122,113 @@ public sealed class VmtDocument
 			return new VmtDocument(string.Empty, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
 
 		var shader = tokens[0];
-		var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-		// 顶层块：shader 之后的第一个 '{' 到配对的 '}'。深度 > 1 的键值一律不进表。
 		var index = 1;
 		while (index < tokens.Count && tokens[index] != "{")
 			index++;
 		index++;
-		var depth = 1;
-		while (index < tokens.Count && depth > 0)
+		var root = ParseBlock(tokens, ref index);
+
+		if (!shader.Equals("patch", StringComparison.OrdinalIgnoreCase))
+			return new VmtDocument(shader, Normalize(root.Values));
+
+		var includePath = root.Values.GetValueOrDefault("include");
+		var merged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		var resolvedShader = string.Empty;
+
+		if (includeReader is not null
+			&& !string.IsNullOrWhiteSpace(includePath)
+			&& depth < MaxIncludeDepth)
+		{
+			visited ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var key = NormalizePath(includePath);
+			// 环形 include 只可能出现在坏模组里，但一旦成环就是栈溢出，必须挡。
+			if (visited.Add(key))
+			{
+				var includedBytes = includeReader(Path.GetFileNameWithoutExtension(key));
+				if (includedBytes is not null)
+				{
+					var included = ParseCore(includedBytes, includeReader, depth + 1, visited);
+					foreach (var pair in included.values)
+						merged[pair.Key] = pair.Value;
+					resolvedShader = included.Shader;
+				}
+			}
+		}
+
+		// insert：只补缺（源语义）；replace：覆盖。
+		if (root.Children.TryGetValue("insert", out var insert))
+		{
+			foreach (var pair in insert.Values)
+				merged.TryAdd(pair.Key, pair.Value);
+		}
+
+		if (root.Children.TryGetValue("replace", out var replace))
+		{
+			foreach (var pair in replace.Values)
+				merged[pair.Key] = pair.Value;
+		}
+
+		return new VmtDocument(
+			string.IsNullOrEmpty(resolvedShader) ? shader : resolvedShader,
+			Normalize(merged),
+			isPatch: true,
+			includePath: includePath);
+	}
+
+	private sealed class Block
+	{
+		public Dictionary<string, string> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
+		public Dictionary<string, Block> Children { get; } = new(StringComparer.OrdinalIgnoreCase);
+	}
+
+	/// <summary>解析一个 <c>{</c> … <c>}</c> 块；子块进 <see cref="Block.Children"/>，其余进键值表。</summary>
+	private static Block ParseBlock(List<string> tokens, ref int index)
+	{
+		var block = new Block();
+		while (index < tokens.Count)
 		{
 			var token = tokens[index];
-			if (token == "{")
-			{
-				depth++;
-				index++;
-				continue;
-			}
-
 			if (token == "}")
 			{
-				depth--;
 				index++;
-				continue;
+				break;
 			}
 
-			if (depth != 1)
+			// 容错的 '{'：缺了键名的块直接进（VMT 是手写的，不因为格式瑕疵整份丢掉）。
+			if (token == "{")
 			{
 				index++;
 				continue;
 			}
 
-			// 顶层键：下一个 token 是值；若它直接是 '{'，说明是嵌套块，跳过。
 			var key = token.ToLowerInvariant();
 			index++;
 			if (index >= tokens.Count)
 				break;
+
 			if (tokens[index] == "{")
 			{
-				values.TryAdd(key, string.Empty);
+				index++;
+				block.Children[key] = ParseBlock(tokens, ref index);
 				continue;
 			}
 
-			values[key] = tokens[index];
+			block.Values[key] = tokens[index];
 			index++;
 		}
 
-		foreach (var pair in values.ToArray())
+		return block;
+	}
+
+	private static Dictionary<string, string> Normalize(Dictionary<string, string> source)
+	{
+		foreach (var pair in source.ToArray())
 		{
-			if (pair.Key is "$basetexture" or "$bumpmap" or "$matcaptexture")
-				values[pair.Key] = NormalizePath(pair.Value);
+			if (pair.Key is "$basetexture" or "$bumpmap" or "$matcaptexture" or "$emissiontexture")
+				source[pair.Key] = NormalizePath(pair.Value);
 		}
 
-		return new VmtDocument(shader, values);
+		return source;
 	}
 
 	/// <summary>材质路径规范：反斜杠转正斜杠、合并重复斜杠、去掉 <c>materials/</c> 前缀、转小写。</summary>

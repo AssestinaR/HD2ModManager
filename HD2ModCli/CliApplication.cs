@@ -2251,12 +2251,12 @@ public static class CliApplication
 					throw new CliUserException("MaterialSourceEmpty",
 						$"材质来源里一个 .vmt 都没有（扫了 {materialSource.VpkPaths.Count} 个包）。请确认 --material-source 指向 L4D2 游戏目录与 addons 目录。");
 				var encoderPath = Bc7Encoder.Locate(Environment.GetEnvironmentVariable("HD2_TEXCONV"));
+				// 材质模板已随程序集内置，不会缺；这里只挡 texconv。
 				var templates = Hd2MaterialTemplateLibrary.Locate();
-				if (encoderPath is null || templates is null)
+				if (encoderPath is null)
 					throw new CliUserException("MaterialToolchainMissing",
 						"缺少材质工具链："
-						+ $"texconv={(encoderPath is null ? $"未找到（找过 {Bc7Encoder.DescribeSearchLocations()}）" : "OK")}，"
-						+ $"材质模板={(templates is null ? $"未找到（找过 {Hd2MaterialTemplateLibrary.DescribeSearchLocations()}）" : "OK")}。"
+						+ $"texconv 未找到（找过 {Bc7Encoder.DescribeSearchLocations()}）。"
 						+ "这是发布包缺文件，不是这个包本身的问题。");
 				var encoder = new Bc7Encoder(encoderPath);
 				// matcap 平均色要按**三角形面积加权**算，所以需要几何——在这里一次算好，
@@ -2489,10 +2489,12 @@ public static class CliApplication
 		if (materialSource.VmtCount != 0 || (scope is not null && scope.OwnedVtfNames.Count != 0))
 		{
 			var encoderPath = Bc7Encoder.Locate(Environment.GetEnvironmentVariable("HD2_TEXCONV"));
+			// 材质模板已随程序集内置，不会缺；这里只挡 texconv。
 			var templates = Hd2MaterialTemplateLibrary.Locate();
-			if (encoderPath is null || templates is null)
+			if (encoderPath is null)
 				throw new CliUserException("MaterialToolchainMissing",
-					$"缺少材质工具链：texconv={(encoderPath is null ? "未找到" : "OK")}，材质模板={(templates is null ? "未找到" : "OK")}。");
+					$"缺少材质工具链：texconv 未找到（找过 {Bc7Encoder.DescribeSearchLocations()}）。"
+					+ "这是发布包缺文件，不是这个包本身的问题。");
 			var encoder = new Bc7Encoder(encoderPath);
 
 			// matcap 平均色要按**三角形面积加权**算，所以需要几何——用队列里那个模型的。
@@ -2969,6 +2971,18 @@ public static class CliApplication
 		if (allOutlineMasks)
 			return "它只带描边遮罩（`$outlinetexture`），而 HD2 的材质模板没有描边槽——" +
 				"「描边开 / 描边无」在 HD2 里没有对应物。";
+
+		// 纯着色器覆盖：包里每个 VMT 都只是改渲染参数（$phong / $rimlight / $halflambert…），
+		// 展开 include 之后仍然没有 $basetexture。实测这类包（"默认着色器 / nekotoon 着色器"）
+		// 一个材质都写不出来，而理由必须说清是"HD2 没有对应的着色参数"，
+		// 不是"我们找不到东西"。
+		var warnings = outcome.Package.Warnings;
+		var onlyMissingBase = warnings.Count != 0
+			&& warnings.All(warning => warning.Contains("$basetexture", StringComparison.Ordinal));
+		if (onlyMissingBase && names.Length == 0)
+			return "它是纯着色器覆盖：包里的材质只改渲染参数（$phong / $rimlight / $halflambert 之类），"
+				+ "没有自己的底色贴图。HD2 的材质模板没有这些参数的位置，所以「换着色器」在 HD2 里没有对应物。";
+
 		return names.Length == 0 ? string.Empty : $"涉及的贴图：{string.Join("、", names)}。";
 	}
 
