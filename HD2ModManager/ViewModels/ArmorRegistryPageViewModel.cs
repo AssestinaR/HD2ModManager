@@ -759,7 +759,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				// 图标仍在这里解析：它是对赢家节点的库内查找（内存字典 + 父链），代价可忽略，
 				// 而且放进事实会让"换个图标"变成"覆盖事实重算"——与设计文档 §7 护栏 3 正好相反。
 				if (!coverage.Data.Archives.TryGetValue(item.ArchiveId, out var entry)) continue;
-				var imagePath = entry.CoverWinnerNodeId is { } winner && nodesById.ContainsKey(winner)
+				// 图标规则（用户定的，别再改回 CoverWinnerNodeId）：
+				//   1) 只有"已命中"（这件护甲的 Unit 真被某个 Mod 换掉）才允许有图标；
+				//   2) 图标用**换掉它的那个 Mod**（UnitWinnerNodeId）的图标，不是"任意资产赢家"
+				//      ——后者会把只改了材质的 Mod 也算进来，显示出一个没换模型的图标；
+				//   3) 那个 Mod 自己没有图标时，沿父链向上找（FindModIconInParentChain）。
+				var imagePath = entry.HasEffectiveUnitOverride && entry.UnitWinnerNodeId is { } winner && nodesById.ContainsKey(winner)
 					? FindModIconInParentChain(winner.Value, parents)
 					: null;
 				result[item.ArchiveId] = new ArmorDisplayFacts(imagePath, entry.HasEffectiveUnitOverride);
