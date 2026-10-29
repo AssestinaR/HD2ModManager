@@ -2,6 +2,7 @@ using System.Text.Json;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Sqlite;
 using Microsoft.Data.Sqlite;
 
 namespace HD2ModCore.Tests;
@@ -487,7 +488,41 @@ public sealed class AssetArchiveIndexServiceTests
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
 
-	// 作用：「已命中」的多数判定要有分母——这套护甲一共有几个 Unit。
+	// 作用：「已命中」的多数判定要有分母——这套护甲一共有几个 Unit。只数 Unit 类型，
+	// 同归档里的其它资产不算，也不能因为"读不出几何"就把 Unit 排除（那会把分母变小）。
+	// 直接写 archive_entries 而不是走 TOC 夹具：这条要测的是那条 GROUP BY，不是索引器；
+	// 夹具的多条目行为另有一套用例在管，混在一起会让失败原因说不清。
+	[Fact]
+	public async Task GetUnitCountsAsync_CountsUnitEntriesOnly()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		Directory.CreateDirectory(appRoot);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			var paths = new StoragePaths(appRoot);
+			Directory.CreateDirectory(paths.IndexDirectory);
+			var unitTypeId = unchecked((long)PatchUnitMeshReader.UnitTypeId);
+			await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+			{
+				await connection.OpenAsync();
+				await SqliteSchema.EnsureCreatedAsync(connection, CancellationToken.None);
+				await ExecuteSqlAsync(connection, $"INSERT INTO archives(archive_id,category,display_name,status) VALUES('{archive}','Armor','Armor A','Indexed');");
+				for (var index = 0; index < 3; index++)
+				{
+					var typeId = index < 2 ? unitTypeId : 20;
+					await ExecuteSqlAsync(connection, $"INSERT INTO archive_entries(archive_id,entry_index,type_id,file_id,df,toc_data_offset,stream_offset,gpu_resource_offset,toc_data_size,stream_size,gpu_resource_size,unknown1,unknown2,unknown3,unknown4) VALUES('{archive}',{index},{typeId},{0x1234 + index},1,0,0,0,0,0,0,0,0,0,0);");
+				}
+			}
+
+			var counts = await new AssetArchiveIndexService(paths).GetUnitCountsAsync([archive]);
+
+			Assert.Equal(2, counts[archive]);
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
 	// 权威格子必须从注册表 JOIN 出来。以前这条读法自己写 SELECT 且**不读** authority_*
 	// 两列，于是经它拿到的 Cell 恒为"未定位"，而同一个库经目录读出来是有格子的——
 	// 同一张表两个答案。现在两条路径共用 UnitPartFactQuery，这条用例钉住其中一条。
