@@ -1,6 +1,8 @@
 using System.Text.Json;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using Microsoft.Data.Sqlite;
 
 namespace HD2ModCore.Tests;
 
@@ -484,6 +486,72 @@ public sealed class AssetArchiveIndexServiceTests
 		}
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
+
+	// 基础索引重建会清空整库，而 `game_data_unit_parts` 与 `game_data_stream_layouts`
+	// 只有高级装备索引会写——基础索引自己一行都不产生。所以这两张表必须原样搬过重建。
+	// 以前只搬了部位表：布局表被删掉之后 `IsCurrentAsync` 永远为假，用户点"补齐缺失"
+	// 每次都在全量重算（本机实测布局表 0 行就是这么来的）。这条用例把两张表一起钉住。
+	[Fact]
+	public async Task Rebuild_PreservesUnitPartsAndStreamLayoutsThatTheBaseBuildCannotReproduce()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			const long unitFileId = 0x1234;
+			var unitKey = new AssetKey(PatchUnitMeshReader.UnitTypeId, unitFileId);
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc([unitKey]));
+			var json = JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>> { ["Armor"] = new() { [archive] = "Armor A" } });
+			var paths = new StoragePaths(appRoot);
+			var service = new AssetArchiveIndexService(paths);
+			await service.BuildOrRebuildAsync(gameData, json);
+
+			var unitTypeId = unchecked((long)unitKey.TypeId);
+			await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+			{
+				await connection.OpenAsync();
+				// 分类必须真的是 Armor，否则恢复时的 `category LIKE '%armor%'` 会（正确地）
+				// 丢掉这两行，用例就变成了在验证别的东西。
+				Assert.Equal("Armor", await ScalarTextAsync(connection, $"SELECT category FROM archives WHERE archive_id='{archive}'"));
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,piece_type,reason) VALUES('{archive}',{unitTypeId},{unitFileId},0,1,1,1,1,'Torso',100,1,0,3,1,1,1,'2','test');");
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_stream_layouts(archive_id,unit_type_id,unit_file_id,stream_index,component_info_id,unit_version,vertex_stride,components_json,layout_signature,is_skinned) VALUES('{archive}',{unitTypeId},{unitFileId},0,1,1,32,'[]','test-layout',1);");
+			}
+
+			await service.BuildOrRebuildAsync(gameData, json);
+
+			await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+			{
+				await connection.OpenAsync();
+				Assert.Equal(1L, await CountAsync(connection, "game_data_unit_parts"));
+				Assert.Equal(1L, await CountAsync(connection, "game_data_stream_layouts"));
+			}
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
+	private static async Task ExecuteSqlAsync(SqliteConnection connection, string sql)
+	{
+		await using var command = connection.CreateCommand();
+		command.CommandText = sql;
+		await command.ExecuteNonQueryAsync();
+	}
+
+	private static async Task<object?> ScalarAsync(SqliteConnection connection, string sql)
+	{
+		await using var command = connection.CreateCommand();
+		command.CommandText = sql;
+		return await command.ExecuteScalarAsync();
+	}
+
+	private static async Task<string?> ScalarTextAsync(SqliteConnection connection, string sql)
+		=> (string?)await ScalarAsync(connection, sql);
+
+	private static async Task<long> CountAsync(SqliteConnection connection, string table)
+		=> Convert.ToInt64(await ScalarAsync(connection, $"SELECT count(*) FROM {table};"), System.Globalization.CultureInfo.InvariantCulture);
 
 	[Fact]
 	public async Task GetIndexStatusAsync_DetectsCurrentStaleAndMissingIndex()

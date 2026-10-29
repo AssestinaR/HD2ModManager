@@ -375,7 +375,7 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 		await SqliteSchema.EnsureCreatedAsync(connection, cancellationToken).ConfigureAwait(false);
 
 		await using var tx = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-		await PreserveUnitPartFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
+		await PreserveDerivedEquipmentFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.ClearIndexDataAsync(connection, cancellationToken).ConfigureAwait(false);
 		// 装备关系表只在**确实拿到新数据**时才重建。读不到游戏注册表（游戏更新换了格式、
 		// 文件被改过、权限不足）时权威快照是空的；那一刻清空这张表，等于把已经正确的
@@ -451,7 +451,7 @@ ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
 
 		await SaveAuthoritySnapshotAsync(connection, tx, authority, cancellationToken).ConfigureAwait(false);
 
-		await RestoreUnitPartFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
+		await RestoreDerivedEquipmentFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 
 		await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1185,7 +1185,20 @@ VALUES($severity,$code,$message,$path,$exception);";
 		}
 	}
 
-	private static async Task PreserveUnitPartFactsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+	// 基础索引重建会清空整库（`ClearIndexDataAsync`），而它自己**不产生**这两张表：
+	// 部位事实与 stream 布局只有 `AdvancedEquipmentIndexService` 会写。所以重建前后必须
+	// 原样搬过去，否则一次"重建资产索引"就会把上千个 unit 的解析结果丢掉。
+	//
+	// 为什么两张都要保：以前只保了部位表，布局表照样被删。结果是
+	// `HasCompleteEquipmentFactsAsync` 永远查不到布局行 → `IsCurrentAsync` 永远为假 →
+	// 用户点"补齐缺失"其实每次都是全量重算（`effectiveRebuildAll = rebuildAll || !IsCurrent`）。
+	// 保住了贵的、丢了便宜的，最后贵的照样得重算——本机实测布局表 0 行就是这么来的。
+	//
+	// Why both tables: the base build clears the whole index but only the advanced equipment
+	// index ever writes parts and stream layouts. Preserving just the parts left the layouts
+	// empty, which made the freshness gate permanently false and turned every incremental
+	// "fill the gaps" run into a full re-parse.
+	private static async Task PreserveDerivedEquipmentFactsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
 	{
 		await using var command = connection.CreateCommand();
 		command.Transaction = transaction;
@@ -1193,14 +1206,20 @@ VALUES($severity,$code,$message,$path,$exception);";
 DROP TABLE IF EXISTS temp.preserved_game_data_unit_parts;
 CREATE TEMP TABLE preserved_game_data_unit_parts AS
 SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,authority_slot,authority_piece_type,reason
-FROM game_data_unit_parts;";
+FROM game_data_unit_parts;
+DROP TABLE IF EXISTS temp.preserved_game_data_stream_layouts;
+CREATE TEMP TABLE preserved_game_data_stream_layouts AS
+SELECT archive_id,unit_type_id,unit_file_id,stream_index,component_info_id,unit_version,vertex_stride,components_json,layout_signature,is_skinned
+FROM game_data_stream_layouts;";
 		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async Task RestoreUnitPartFactsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+	private static async Task RestoreDerivedEquipmentFactsAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
 	{
 		await using var command = connection.CreateCommand();
 		command.Transaction = transaction;
+		// 两条 JOIN 都是必要的：重建后仍然存在的 unit 才允许恢复，否则会留下指向
+		// 已经不存在的 archive/entry 的孤儿行（布局表对 archives 有外键）。
 		command.CommandText = @"
 INSERT OR IGNORE INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,authority_slot,authority_piece_type,reason)
 SELECT p.archive_id,p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.is_visual,p.is_lod,p.vertex_count,p.triangle_count,p.geometry_quality,p.fact_origin,p.authority_slot,p.authority_piece_type,p.reason
@@ -1208,7 +1227,14 @@ FROM preserved_game_data_unit_parts p
 JOIN archives a ON a.archive_id=p.archive_id
 JOIN archive_entries e ON e.archive_id=p.archive_id AND e.type_id=p.unit_type_id AND e.file_id=p.unit_file_id
 WHERE lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%';
-DROP TABLE preserved_game_data_unit_parts;";
+DROP TABLE preserved_game_data_unit_parts;
+INSERT OR IGNORE INTO game_data_stream_layouts(archive_id,unit_type_id,unit_file_id,stream_index,component_info_id,unit_version,vertex_stride,components_json,layout_signature,is_skinned)
+SELECT s.archive_id,s.unit_type_id,s.unit_file_id,s.stream_index,s.component_info_id,s.unit_version,s.vertex_stride,s.components_json,s.layout_signature,s.is_skinned
+FROM preserved_game_data_stream_layouts s
+JOIN archives a ON a.archive_id=s.archive_id
+JOIN archive_entries e ON e.archive_id=s.archive_id AND e.type_id=s.unit_type_id AND e.file_id=s.unit_file_id
+WHERE lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%';
+DROP TABLE preserved_game_data_stream_layouts;";
 		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
