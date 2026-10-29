@@ -13,24 +13,27 @@ using AdaptationStreamComponentFact = HD2ModAdaptation.Analysis.GameDataStreamCo
 namespace HD2ModCore.Infrastructure;
 
 // Purpose: Builds optional incremental Armor Unit mesh facts for cross-armor transfer.
+//
+// 这是 `game_data_unit_parts` 与 `game_data_stream_layouts` 的**唯一**写入方。
+// 曾经还有一条 `BuildOrRefreshAsync` 平行路径：它自己再跑一遍 `GameDataArchiveIndexer`
+// 去拿 stream 布局，等于把基础索引的活干第二遍。它没有任何调用方（GUI 与 CLI 都走
+// RebuildAll/BuildMissing），却让"两张表谁写"变成两个答案，所以整条路径连同
+// SaveAsync / ClearEquipmentFactsAsync / ReadAnalyzedUnitsAsync 一起删掉了。
 public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexService
 {
 	private const string Version = "equipment-v6-authoritative-equipment-facts";
 	private const string SourceFingerprintMetaKey = "advanced_equipment_index_source_fingerprint";
 	private readonly StoragePaths paths;
-	private readonly IGameDataArchiveIndexer archiveIndexer;
 	private readonly UnitMeshPartClassifier classifier = new();
 	private readonly ICanonicalHiddenUnitOutputCache hiddenUnitCache;
 	private readonly CanonicalHiddenUnitBuilder hiddenUnitBuilder;
 
 	public AdvancedEquipmentIndexService(
 		StoragePaths paths,
-		IGameDataArchiveIndexer? archiveIndexer = null,
 		ICanonicalHiddenUnitOutputCache? hiddenUnitCache = null,
 		CanonicalHiddenUnitBuilder? hiddenUnitBuilder = null)
 	{
 		this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
-		this.archiveIndexer = archiveIndexer ?? new GameDataArchiveIndexer();
 		this.hiddenUnitCache = hiddenUnitCache ?? new CanonicalHiddenUnitOutputCache(Path.Combine(paths.DataDirectory, "hidden-unit-cache"));
 		this.hiddenUnitBuilder = hiddenUnitBuilder ?? new CanonicalHiddenUnitBuilder();
 	}
@@ -61,52 +64,6 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 			// write path will migrate it through EnsureSchemaAsync.
 			return false;
 		}
-	}
-
-	public async ValueTask BuildOrRefreshAsync(string gameDataDirectory, IProgress<IndexBuildProgress>? progress = null, CancellationToken cancellationToken = default)
-	{
-		if (string.IsNullOrWhiteSpace(gameDataDirectory)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(gameDataDirectory));
-		var directory = Path.GetFullPath(gameDataDirectory);
-		if (!Directory.Exists(directory)) throw new DirectoryNotFoundException($"GameData directory does not exist: {directory}");
-		if (!File.Exists(paths.DbPath)) throw new InvalidOperationException("请先建立基础 Game Data 资产索引。");
-		await EnsureSchemaAsync(cancellationToken).ConfigureAwait(false);
-
-		var archives = await ReadArchivesAsync(cancellationToken).ConfigureAwait(false);
-		if (archives.Count == 0) throw new InvalidDataException("基础索引中没有可用 Archive。");
-		var equipmentArchiveIds = archives.Where(item => IsEquipmentCategory(item.Category)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-		if (equipmentArchiveIds.Count == 0) throw new InvalidDataException("基础索引中没有可用的 armor 或 helmet Archive。");
-		var metadata = archives.ToDictionary(item => item.Id, item => new GameDataArchiveMetadata(item.Hex, item.Name, item.Category), StringComparer.OrdinalIgnoreCase);
-		var baseFingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
-			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
-		var rebuildEquipmentFacts = !await IsCurrentAsync(cancellationToken).ConfigureAwait(false);
-		var adapterProgress = new Progress<GameDataArchiveIndexProgress>(item => progress?.Report(new IndexBuildProgress(item.Current, Math.Max(item.Total, 1), $"{item.Stage}：{item.Item}")));
-		var index = await archiveIndexer.BuildAsync(new GameDataArchiveInput(directory, archives.Select(item => item.Id).ToArray(), metadata, IncludeStreamLayouts: true), adapterProgress, cancellationToken).ConfigureAwait(false);
-		var authorityRoles = await ReadAuthorityRolesAsync(cancellationToken).ConfigureAwait(false);
-		if (rebuildEquipmentFacts)
-		{
-			await ClearEquipmentFactsAsync(cancellationToken).ConfigureAwait(false);
-		}
-		var units = index.Archives.Where(archive => equipmentArchiveIds.Contains(archive.PackageName)).SelectMany(archive => archive.Entries.Where(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId).Select(entry => (archive.PackageName, entry))).ToArray();
-		var analyzedUnits = await ReadAnalyzedUnitsAsync(cancellationToken).ConfigureAwait(false);
-		var unitsToAnalyze = units.Where(item => !analyzedUnits.Contains((item.PackageName, new CoreAssetKey(item.entry.AssetKey.TypeId, item.entry.AssetKey.FileId)))).ToArray();
-		var parts = new List<GameDataUnitPartFact>();
-		var resolver = new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(directory);
-		var reader = new GameDataUnitMeshReader(resolver);
-		var current = 0;
-		foreach (var (archiveId, entry) in unitsToAnalyze)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			progress?.Report(new IndexBuildProgress(++current, Math.Max(units.Length, 1), $"分析装备 Unit：{archiveId}"));
-			try
-			{
-				var unit = await reader.ReadAsync(archiveId, entry.AssetKey, allowGlobalDependencySearch: true, cancellationToken: cancellationToken).ConfigureAwait(false);
-				authorityRoles.TryGetValue(new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), out var authorityRole);
-				parts.AddRange(CreatePartFacts(archiveId, new CoreAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId), entry.AssetKey, unit.Model, authorityRole));
-			}
-			catch (Exception exception) when (exception is IOException or InvalidDataException or EndOfStreamException or UnauthorizedAccessException or OverflowException or KeyNotFoundException) { }
-		}
-
-		await SaveAsync(parts, index.StreamLayouts, baseFingerprint.SourceFingerprint, cancellationToken).ConfigureAwait(false);
 	}
 
 	public ValueTask RebuildAllUnitPartFactsAsync(string gameDataDirectory, IProgress<IndexBuildProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -214,19 +171,6 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		=> category.Contains("armor", StringComparison.OrdinalIgnoreCase)
 			|| category.Contains("helmet", StringComparison.OrdinalIgnoreCase);
 
-	private async ValueTask<HashSet<(string ArchiveId, CoreAssetKey UnitAssetKey)>> ReadAnalyzedUnitsAsync(CancellationToken cancellationToken)
-	{
-		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
-		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "SELECT DISTINCT p.archive_id,p.unit_type_id,p.unit_file_id FROM game_data_unit_parts p JOIN archives a ON a.archive_id=p.archive_id WHERE lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%'";
-		var result = new HashSet<(string, CoreAssetKey)>();
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-			result.Add((reader.GetString(0), new CoreAssetKey(unchecked((ulong)reader.GetInt64(1)), unchecked((ulong)reader.GetInt64(2)))));
-		return result;
-	}
-
 	private async ValueTask<IReadOnlyList<EquipmentUnitWorkItem>> ReadEquipmentUnitsAsync(IReadOnlySet<string> archiveIds, CancellationToken cancellationToken)
 	{
 		if (archiveIds.Count == 0) return Array.Empty<EquipmentUnitWorkItem>();
@@ -252,15 +196,6 @@ ORDER BY a.archive_id,e.file_id;";
 				reader.GetBoolean(3)));
 		}
 		return result;
-	}
-
-	private async ValueTask ClearEquipmentFactsAsync(CancellationToken cancellationToken)
-	{
-		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
-		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "DELETE FROM game_data_unit_parts WHERE archive_id IN (SELECT archive_id FROM archives WHERE lower(category) LIKE '%armor%' OR lower(category) LIKE '%helmet%');";
-		await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 	}
 
 	private async ValueTask SaveUnitPartFactsAsync(
@@ -318,23 +253,6 @@ ORDER BY a.archive_id,e.file_id;";
 		foreach (var part in parts) await InsertPartAsync(insert, part, cancellationToken).ConfigureAwait(false);
 		await using var layoutInsert = CreateLayoutCommand(connection, transaction);
 		foreach (var layout in layouts) await InsertLayoutAsync(layoutInsert, layout, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
-		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-	}
-
-	private async ValueTask SaveAsync(IReadOnlyList<GameDataUnitPartFact> parts, IReadOnlyList<AdaptationStreamLayoutFact> layouts, string sourceFingerprint, CancellationToken cancellationToken)
-	{
-		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False");
-		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-		await ExecuteAsync(connection, transaction, "DELETE FROM game_data_unit_parts WHERE archive_id NOT IN (SELECT archive_id FROM archives WHERE lower(category) LIKE '%armor%' OR lower(category) LIKE '%helmet%');", cancellationToken).ConfigureAwait(false);
-		await ExecuteAsync(connection, transaction, "DELETE FROM game_data_unit_parts WHERE NOT EXISTS (SELECT 1 FROM archive_entries e WHERE e.archive_id=game_data_unit_parts.archive_id AND e.type_id=game_data_unit_parts.unit_type_id AND e.file_id=game_data_unit_parts.unit_file_id);", cancellationToken).ConfigureAwait(false);
-		await ExecuteAsync(connection, transaction, "DELETE FROM game_data_stream_layouts;", cancellationToken).ConfigureAwait(false);
-		await using var partsCommand = CreatePartCommand(connection, transaction);
-		foreach (var part in parts) await InsertPartAsync(partsCommand, part, cancellationToken).ConfigureAwait(false);
-		await using var layoutsCommand = CreateLayoutCommand(connection, transaction);
-		foreach (var layout in layouts) await InsertLayoutAsync(layoutsCommand, layout, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
 		await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
