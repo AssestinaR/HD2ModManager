@@ -487,6 +487,7 @@ public sealed class AssetArchiveIndexServiceTests
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
 
+	// 作用：「已命中」的多数判定要有分母——这套护甲一共有几个 Unit。
 	// 权威格子必须从注册表 JOIN 出来。以前这条读法自己写 SELECT 且**不读** authority_*
 	// 两列，于是经它拿到的 Cell 恒为"未定位"，而同一个库经目录读出来是有格子的——
 	// 同一张表两个答案。现在两条路径共用 UnitPartFactQuery，这条用例钉住其中一条。

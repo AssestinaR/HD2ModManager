@@ -292,6 +292,39 @@ ORDER BY p.unit_file_id,p.archive_id,p.confidence DESC,p.mesh_info_index;";
 		return result.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<GameDataUnitPartFact>)pair.Value);
 	}
 
+	/// <summary>
+	/// 每个归档里有多少个 Unit 条目（含不可读的）。
+	/// </summary>
+	/// <remarks>
+	/// "已命中"的多数判定需要分母：覆盖事实只说得清"哪些 unit 被换了"，说不清"一共有几个"，
+	/// 于是换一个也算命中，轻微污染会被当成整套被替换。分母只能从索引里数。
+	/// 只统计 Unit 类型；不可读的 Unit 也算——它们是这套护甲真实拥有、只是我们解析不了的部件，
+	/// 把它们排除会让分母变小、把"换了 2 个"错算成多数。
+	/// </remarks>
+	public async ValueTask<IReadOnlyDictionary<string, int>> GetUnitCountsAsync(
+		IReadOnlyCollection<string> archiveIds,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(archiveIds);
+		if (archiveIds.Count == 0 || !File.Exists(_paths.DbPath))
+			return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+		await using var command = connection.CreateCommand();
+		command.CommandText = @"
+SELECT e.archive_id,count(*)
+FROM archive_entries e
+WHERE e.type_id=$unitType AND e.archive_id IN (SELECT value FROM json_each($archiveIds))
+GROUP BY e.archive_id;";
+		command.Parameters.AddWithValue("$unitType", unchecked((long)HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId));
+		command.Parameters.AddWithValue("$archiveIds", JsonSerializer.Serialize(archiveIds));
+		var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+			result[reader.GetString(0)] = reader.GetInt32(1);
+		return result;
+	}
+
 	public async ValueTask BuildOrRebuildAsync(
 		string gameDataDirectory,
 		string archiveHashesJson,
