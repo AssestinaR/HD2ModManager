@@ -268,24 +268,14 @@ public sealed class RuntimeArmorRegistryService
 					{
 						PieceType = piece.PieceType.ToString(CultureInfo.InvariantCulture),
 						GeometryQuality = UnitMeshGeometryQuality.Unreadable,
-						Cell = ToPieceCell(piece)
+						// 组件声明的 (slot, pieceType) 就是格子的两个坐标。越界时
+						// ArmorCell.FromRegistryCoordinates 会返回 Unknown：宁可显示"未定位"，
+						// 也不要造出一个查不到部位、却因为坐标非负而被当成"已定位"的格子。
+						Cell = ArmorCell.FromRegistryCoordinates((int)piece.Slot, (int)piece.PieceType)
 					})
 					.ToArray()) { CustomModelKey = model.Key })
 			.ToArray();
 	}
-
-	/// <summary>
-	/// 组件声明的 <c>(slot, pieceType)</c> → 权威格子。
-	/// </summary>
-	/// <remarks>
-	/// 只认 <see cref="ArmorStructure"/> 真的认识的槽位、以及合法层号。越界时保留
-	/// <see cref="ArmorCell.Unknown"/>：宁可显示"未定位"，也不要造出一个查不到部位、
-	/// 却因为坐标非负而被当成"已定位"的格子——那种半懂状态会被装箱规划器当成真格子用。
-	/// </remarks>
-	private static ArmorCell ToPieceCell(RuntimeArmorRegistryModelPiece piece)
-		=> ArmorStructure.FromSlot(piece.Slot) != ArmorPart.Unknown && piece.PieceType <= ArmorStructure.MaxPieceType
-			? new ArmorCell((int)piece.Slot, (int)piece.PieceType)
-			: ArmorCell.Unknown;
 
 	public async ValueTask<RuntimeArmorRegistrySnapshot> ReadSnapshotAsync(
 		CancellationToken cancellationToken = default)

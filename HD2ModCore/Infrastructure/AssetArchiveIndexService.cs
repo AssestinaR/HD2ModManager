@@ -268,38 +268,20 @@ ORDER BY type_id, file_id;";
 		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
-		command.CommandText = @"
-SELECT archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason
-FROM game_data_unit_parts
-
-WHERE unit_type_id=$unitType AND unit_file_id IN (SELECT value FROM json_each($fileIds))
-ORDER BY unit_file_id,confidence DESC,mesh_info_index;";
+		// 列与行映射走 UnitPartFactQuery：权威格子在那里从注册表 JOIN 出来。以前这里自己写
+		// SELECT 且**没读** authority_slot/authority_piece_type，于是经这条路径拿到的
+		// Cell 恒为"未定位"——同一张表两个读法，一个有格子一个没有。
+		command.CommandText = $@"
+SELECT p.archive_id,{UnitPartFactQuery.Columns}{UnitPartFactQuery.From}
+WHERE p.unit_type_id=$unitType AND p.unit_file_id IN (SELECT value FROM json_each($fileIds))
+ORDER BY p.unit_file_id,p.archive_id,p.confidence DESC,p.mesh_info_index;";
 		command.Parameters.AddWithValue("$unitType", unchecked((long)HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId));
 		command.Parameters.AddWithValue("$fileIds", JsonSerializer.Serialize(unitAssetKeys.Where(key => key.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId).Select(key => unchecked((long)key.FileId))));
 		var result = new Dictionary<CoreAssetKey, List<GameDataUnitPartFact>>();
 		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
 		{
-			var fact = new GameDataUnitPartFact(
-				reader.GetString(0),
-				new CoreAssetKey(unchecked((ulong)reader.GetInt64(1)), unchecked((ulong)reader.GetInt64(2))),
-				reader.GetInt32(3),
-				unchecked((uint)reader.GetInt64(4)),
-				(UnitMeshPartKind)reader.GetInt32(5),
-				(UnitMeshPartLayer)reader.GetInt32(6),
-				(UnitMeshBodyVariant)reader.GetInt32(7),
-				reader.GetString(8),
-				reader.GetInt32(10),
-				reader.GetInt32(11) != 0,
-				reader.GetInt32(12) != 0,
-				reader.GetString(17))
-			{
-				PieceType = reader.GetString(9),
-				VertexCount = reader.GetInt32(13),
-				TriangleCount = reader.GetInt32(14),
-				GeometryQuality = (UnitMeshGeometryQuality)reader.GetInt32(15),
-				Origin = (GameDataFactOrigin)reader.GetInt32(16)
-			};
+			var fact = UnitPartFactQuery.ReadFact(reader, 1, reader.GetString(0));
 			if (!result.TryGetValue(fact.UnitAssetKey, out var parts))
 			{
 				parts = new List<GameDataUnitPartFact>();

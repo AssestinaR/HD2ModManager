@@ -487,6 +487,84 @@ public sealed class AssetArchiveIndexServiceTests
 		finally { try { Directory.Delete(root, recursive: true); } catch { } }
 	}
 
+	// 权威格子必须从注册表 JOIN 出来。以前这条读法自己写 SELECT 且**不读** authority_*
+	// 两列，于是经它拿到的 Cell 恒为"未定位"，而同一个库经目录读出来是有格子的——
+	// 同一张表两个答案。现在两条路径共用 UnitPartFactQuery，这条用例钉住其中一条。
+	[Fact]
+	public async Task GetUnitPartFactsAsync_DerivesTheCellFromTheRegistry()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			const long unitFileId = 0x1234;
+			var unitKey = new AssetKey(PatchUnitMeshReader.UnitTypeId, unitFileId);
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc([unitKey]));
+			var json = JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>> { ["Armor"] = new() { [archive] = "Armor A" } });
+			var paths = new StoragePaths(appRoot);
+			var service = new AssetArchiveIndexService(paths);
+			await service.BuildOrRebuildAsync(gameData, json);
+
+			var unitTypeId = unchecked((long)unitKey.TypeId);
+			await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+			{
+				await connection.OpenAsync();
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_authority_kits(item_id,dlc_id,set_id,kit_kind,archive_id,display_name) VALUES(7,0,0,0,'{archive}','Test Kit');");
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_authority_pieces(item_id,archive_id,kit_kind,raw_body_type,body_variant,slot,part_kind,piece_type,weight,tone_variations,unit_type_id,unit_file_id) VALUES(7,'{archive}',0,3,3,2,2,1,0,0,{unitTypeId},{unitFileId});");
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason) VALUES('{archive}',{unitTypeId},{unitFileId},0,1,2,2,3,'torso',1,100,1,0,3,1,2,1,'test');");
+			}
+
+			var parts = await service.GetUnitPartFactsAsync(new HashSet<AssetKey> { unitKey });
+
+			var fact = Assert.Single(Assert.Single(parts).Value);
+			Assert.Equal(new ArmorCell(2, 1), fact.Cell);
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
+	// 注册表自相矛盾（同一 unit 挂在两个槽位）时宁可说"不知道"，也不要把两个格子折成一个：
+	// 折了以后下游无法区分躯干内层和躯干护甲。
+	[Fact]
+	public async Task GetUnitPartFactsAsync_LeavesTheCellUnknownWhenTheRegistryDisagrees()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+		var appRoot = Path.Combine(root, "app");
+		var gameData = Path.Combine(root, "game", "data");
+		Directory.CreateDirectory(appRoot);
+		Directory.CreateDirectory(gameData);
+		try
+		{
+			const string archive = "aaaaaaaaaaaaaaaa";
+			const long unitFileId = 0x1234;
+			var unitKey = new AssetKey(PatchUnitMeshReader.UnitTypeId, unitFileId);
+			File.WriteAllBytes(Path.Combine(gameData, archive), BuildToc([unitKey]));
+			var json = JsonSerializer.Serialize(new Dictionary<string, Dictionary<string, string>> { ["Armor"] = new() { [archive] = "Armor A" } });
+			var paths = new StoragePaths(appRoot);
+			var service = new AssetArchiveIndexService(paths);
+			await service.BuildOrRebuildAsync(gameData, json);
+
+			var unitTypeId = unchecked((long)unitKey.TypeId);
+			await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+			{
+				await connection.OpenAsync();
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_authority_kits(item_id,dlc_id,set_id,kit_kind,archive_id,display_name) VALUES(7,0,0,0,'{archive}','Kit A');");
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_authority_kits(item_id,dlc_id,set_id,kit_kind,archive_id,display_name) VALUES(8,0,0,0,'{archive}','Kit B');");
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_authority_pieces(item_id,archive_id,kit_kind,raw_body_type,body_variant,slot,part_kind,piece_type,weight,tone_variations,unit_type_id,unit_file_id) VALUES(7,'{archive}',0,3,3,2,2,1,0,0,{unitTypeId},{unitFileId});");
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_authority_pieces(item_id,archive_id,kit_kind,raw_body_type,body_variant,slot,part_kind,piece_type,weight,tone_variations,unit_type_id,unit_file_id) VALUES(8,'{archive}',0,3,3,3,3,0,0,0,{unitTypeId},{unitFileId});");
+				await ExecuteSqlAsync(connection, $"INSERT INTO game_data_unit_parts(archive_id,unit_type_id,unit_file_id,mesh_info_index,mesh_id,part_kind,part_layer,body_variant,semantic_name,piece_type,confidence,is_visual,is_lod,vertex_count,triangle_count,geometry_quality,fact_origin,reason) VALUES('{archive}',{unitTypeId},{unitFileId},0,1,2,2,3,'torso',1,100,1,0,3,1,2,1,'test');");
+			}
+
+			var parts = await service.GetUnitPartFactsAsync(new HashSet<AssetKey> { unitKey });
+
+			Assert.False(Assert.Single(Assert.Single(parts).Value).Cell.IsKnown);
+		}
+		finally { try { Directory.Delete(root, recursive: true); } catch { } }
+	}
+
 	// 基础索引重建会清空整库，而 `game_data_unit_parts` 与 `game_data_stream_layouts`
 	// 只有高级装备索引会写——基础索引自己一行都不产生。所以这两张表必须原样搬过重建。
 	// 以前只搬了部位表：布局表被删掉之后 `IsCurrentAsync` 永远为假，用户点"补齐缺失"

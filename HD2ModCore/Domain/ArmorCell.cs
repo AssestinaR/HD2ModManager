@@ -24,6 +24,23 @@ public readonly record struct ArmorCell(int Slot, int Layer)
 
 	public bool IsKnown => Slot >= 0 && Layer >= 0;
 
+	/// <summary>
+	/// 从注册表给的 <c>(slot, piece_type)</c> 构造格子；坐标不合法时返回 <see cref="Unknown"/>。
+	/// </summary>
+	/// <remarks>
+	/// 为什么不直接 <c>new ArmorCell(slot, pieceType)</c>：<see cref="IsKnown"/> 只判非负，
+	/// 越界的坐标也会被当成"已定位"，而 <see cref="Part"/> 又查不到部位——这种半懂状态会被
+	/// 装箱规划器当成真格子用。合法性因此收在这一处：槽位必须被 <see cref="ArmorStructure"/>
+	/// 认识，层号必须在 <c>0..MaxPieceType</c>。
+	/// </remarks>
+	public static ArmorCell FromRegistryCoordinates(int slot, int pieceType)
+		=> slot >= 0
+			&& pieceType >= 0
+			&& pieceType <= ArmorStructure.MaxPieceType
+			&& ArmorStructure.FromSlot((uint)slot) != ArmorPart.Unknown
+			? new ArmorCell(slot, pieceType)
+			: Unknown;
+
 	public ArmorPart Part => IsKnown ? ArmorStructure.FromSlot((uint)Slot) : ArmorPart.Unknown;
 
 	/// <summary>

@@ -2,6 +2,7 @@ using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.Sqlite;
 using Microsoft.Data.Sqlite;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using AdaptationPatchUnitMeshReader = HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader;
@@ -56,17 +57,18 @@ public sealed class EquipmentUnitCatalogService : IEquipmentUnitCatalogService
 			.ToArray();
 		if (unitAssetKeys is not null && unitIds is { Length: 0 }) return Array.Empty<EquipmentUnitCatalogEntry>();
 		await using var command = connection.CreateCommand();
-		command.CommandText = @"
-SELECT a.archive_id,a.category,a.display_name,
-			 p.unit_type_id,p.unit_file_id,p.mesh_info_index,p.mesh_id,p.part_kind,p.part_layer,p.body_variant,p.semantic_name,p.piece_type,p.confidence,p.vertex_count,p.triangle_count,p.geometry_quality,
-			 p.authority_slot,p.authority_piece_type,
+		// 列与行映射走 UnitPartFactQuery：权威格子在那里从注册表 JOIN 出来。以前这里读的是
+		// 部位表里那份**副本**（authority_slot/authority_piece_type），而 GetUnitPartFactsAsync
+		// 根本不读它——同一张表两个读法，一个有一格没有。
+		command.CommandText = $@"
+SELECT a.archive_id,a.category,a.display_name,{UnitPartFactQuery.Columns},
 			 COALESCE((SELECT MAX(e.toc_data_size + e.stream_size + e.gpu_resource_size)
 								 FROM archive_entries e
 								 WHERE e.archive_id=a.archive_id
 									 AND e.type_id=p.unit_type_id
 									 AND e.file_id=p.unit_file_id), 0) AS stored_bytes
-FROM archives a
-JOIN game_data_unit_parts p ON p.archive_id=a.archive_id
+{UnitPartFactQuery.From}
+JOIN archives a ON a.archive_id=p.archive_id
 WHERE (lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%')
   AND p.is_visual=1 AND p.is_lod=0
   AND EXISTS(SELECT 1 FROM archive_entries e WHERE e.archive_id=a.archive_id AND e.type_id=p.unit_type_id AND e.file_id=p.unit_file_id)
@@ -78,25 +80,27 @@ ORDER BY CASE WHEN lower(a.category) LIKE '%armor%' THEN 0 ELSE 1 END,a.display_
 		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
 		{
-			var unitKey = new AssetKey(unchecked((ulong)reader.GetInt64(3)), unchecked((ulong)reader.GetInt64(4)));
+			var fact = UnitPartFactQuery.ReadFact(reader, 3, reader.GetString(0));
 			rawParts.Add((
 				reader.GetString(0), reader.GetString(1), reader.GetString(2),
 				new EquipmentUnitPart(
-					unitKey,
-					reader.GetInt32(5),
-					unchecked((uint)reader.GetInt64(6)),
-					(UnitMeshPartKind)reader.GetInt32(7),
-					(UnitMeshPartLayer)reader.GetInt32(8),
-					(UnitMeshBodyVariant)reader.GetInt32(9),
-					reader.GetString(10), reader.GetInt32(12), Array.Empty<string>())
-					{
-						PieceType = reader.GetString(11),
-						VertexCount = reader.GetInt32(13),
-						TriangleCount = reader.GetInt32(14),
-						GeometryQuality = (UnitMeshGeometryQuality)reader.GetInt32(15),
-						Cell = new ArmorCell(reader.GetInt32(16), reader.GetInt32(17)),
-						StoredBytes = reader.GetInt64(18)
-					}));
+					fact.UnitAssetKey,
+					fact.MeshInfoIndex,
+					fact.MeshId,
+					fact.PartKind,
+					fact.Layer,
+					fact.BodyVariant,
+					fact.SemanticName,
+					fact.Confidence,
+					Array.Empty<string>())
+				{
+					PieceType = fact.PieceType,
+					VertexCount = fact.VertexCount,
+					TriangleCount = fact.TriangleCount,
+					GeometryQuality = fact.GeometryQuality,
+					Cell = fact.Cell,
+					StoredBytes = reader.GetInt64(3 + UnitPartFactQuery.ColumnCount)
+				}));
 		}
 
 		var unitKeys = rawParts.Select(item => item.part.UnitAssetKey).Distinct().ToArray();
