@@ -7,18 +7,25 @@ namespace HD2ModCore.Infrastructure;
 /// 「这件护甲包含哪些 unit」的权威来源：游戏的注册文件（<c>generated_customization_armor_sets</c>）。
 ///
 /// 为什么不读 <c>game_data_authority_pieces</c> 那张表：它是注册文件的**派生缓存**，
-/// 而派生这一步会丢行——实测 RE-2310 的头盔套（item 1745464610）在那张表里是 0 行，
-/// 护甲套还缺一个槽位。读源头就没有"缓存和源头不一致"这一类问题。
+/// 而缓存和源头是两件事——源头永远对，缓存要靠一次派生步骤维持正确。
+/// 读源头就没有「缓存和源头不一致」这一类问题。
+///
+/// ⚠ 这条理由最初是靠「实测那张表会丢行」支撑的（RE-2310 的头盔套 0 行、护甲套缺一个槽位）。
+/// <b>那个症状现在不复现</b>：`authority_pieces_schema = 2` 把插入改成
+/// `ON CONFLICT … RETURNING` 之后，实测 422 个 kit 里 0 个丢行、RE-2310 有 1 行、
+/// 138 个护甲套全部齐 2..7 六槽。所以这里是「按原则读源头」，不是「因为缓存有 bug」——
+/// 评估这条路径的代价时别按「缓存会丢行」来估。
 ///
 /// 只取 unit **键**，不取槽位/身形：那些从 unit 自己的 <c>CustomizationInfo</c> 取更准。
 /// 实测件表里的 <c>slot</c> 编号与 unit 自身语义在 5/6/7 三个档位上不一致，
 /// 两套编号本来就不是一回事，混用必然错位。
 ///
 /// The authoritative "which units does this armour have" comes from the game's registration
-/// file, not from game_data_authority_pieces — that table is a derived cache and we measured it
-/// dropping rows (RE-2310's helmet kit has zero rows). Only unit keys are taken from here;
-/// slot/body come from each unit's own CustomizationInfo, because the piece table's slot
-/// numbering disagrees with the unit's own semantics.
+/// file, not from game_data_authority_pieces — that table is a derived cache, and the source
+/// of truth is the source. Only unit keys are taken from here; slot/body come from each unit's
+/// own CustomizationInfo, because the piece table's slot numbering disagrees with the unit's
+/// own semantics. NOTE: the "the cache drops rows" symptom that originally motivated this is
+/// gone since authority_pieces_schema = 2 (measured: 0 of 422 kits lose rows).
 /// </summary>
 public static class ArmourUnitTableSource
 {

@@ -3,8 +3,10 @@ namespace HD2ModCore.Domain;
 // 「这些护甲条目包含哪些 unit」的事实（信息中心的无节点事实）。
 //
 // 来源是游戏注册文件（generated_customization_armor_sets），不是
-// game_data_authority_pieces 那张派生表——实测那张表会丢行
-// （RE-2310 头盔套 0 行、护甲套缺一个槽位），而注册文件是它的源头。
+// game_data_authority_pieces 那张派生表——后者是缓存，源头永远比缓存可信。
+// 注意：当初支撑这条选择的症状（RE-2310 头盔套 0 行、护甲套缺一个槽位）在
+// authority_pieces_schema = 2 之后已经不复现（实测 0/422 个 kit 丢行），
+// 所以别再用「那张表会丢行」当理由，也别据此认为两条路径会给出不同答案。
 //
 // 为什么无节点：注册文件描述的是**游戏数据**，与哪个 Mod 提供模型无关；
 // 谁提供这个 unit 由部署图（DeployedGraph）决定。身份因此是"游戏目录 + 这一批护甲条目"，
