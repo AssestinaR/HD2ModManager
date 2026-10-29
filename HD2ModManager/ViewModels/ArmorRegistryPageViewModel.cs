@@ -123,7 +123,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		// 衣柜的权威数据在工作区，和护甲注册工作区同一个目录（见 wardrobe-schema-v2 笔记 §14）。
 		Wardrobe = new WardrobeTreeViewModel(
 			WardrobeWorkspaceFile.ResolvePath(SettingsService.CreateStoragePaths().ModsDirectory));
-		RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !IsBusy && !HasChanges);
+		// 刷新是**逃生口**：它从磁盘重读，不该被"有未保存改动"挡住。
+		// 以前条件是 `!IsBusy && !HasChanges`，于是只要 HasChanges 一开始就是真
+		// （基线没对齐、或某个编辑路径忘了回滚），这颗按钮就永远灰着——用户看到的是
+		// "半透明、点不动"，而且没有任何办法让它重新可用。
+		// 工作区的改动本来就是自动落盘的（ScheduleWorkspaceSave），刷新不会丢东西。
+		RefreshCommand = new AsyncRelayCommand(_ => RefreshAsync(), _ => !IsBusy);
 		// 应用按钮**始终可点**：没有改动时点它等于把当前协议重投一次——这在
 		// "Steam 校验完整性" 之后是必须的（注册表被还原了，映射得重新应用一次）。
 		// 10 秒冷却只用于防止连点产生一串 revision。
