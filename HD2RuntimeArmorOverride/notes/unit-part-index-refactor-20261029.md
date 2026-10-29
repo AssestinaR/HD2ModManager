@@ -102,6 +102,14 @@
 
 ### 4.2 `part_layer` / `piece_type` —— 缺陷在输入，不在列
 
+> **输入已修**：`UnitMeshReader.BuildSemanticInfo` 不再用骨骼名的 token 覆盖
+> `CustomizationInfo` 的 slot/pieceType/bodyType，骨骼名只保留为网格名字。
+> 重建一次部位索引后，`piece_type` 列里的 `leg`/`torso`/`arm`/`shoulder` 片段
+> （实测 2911 行）应当消失，只剩 `Armor`/`Undergarment`/`Accessory`。
+> **`part_layer` 列本身仍未动**：装饰管线（`DecorationHostRebuildService`、`CliVpkRekey`、
+> `DecorationHostTargetBinder`）还拿它当筛选键，要改成从 `Cell.Layer` 派生或从
+> CustomizationInfo 的 PieceType 派生，得单独验一轮装饰选件。
+
 - `part_layer` 是第三套「层」：按 `pt=0→内层 / pt=1→护甲` 的约定，16569 行里只有
   **12.8%** 自洽（984 + 1138）。装箱路径已经全走 `Cell.Layer`（=piece_type），但
   **装饰管线仍在用它当筛选键**（`DecorationHostRebuildService`、`CliVpkRekey`、

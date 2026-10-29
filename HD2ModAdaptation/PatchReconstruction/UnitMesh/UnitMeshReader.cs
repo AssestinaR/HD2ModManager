@@ -791,17 +791,13 @@ public sealed class UnitMeshReader
 		var weight = StripPrefix(customizationInfo.Weight, "HelldiverCustomizationWeight_");
 		var suffix = lodIndex == -1 ? $"_mesh{meshInfoIndex}" : $"_lod{lodIndex}";
 		var name = $"{slot}_{pieceType}_{bodyType}{suffix}";
-		if (boneName is not null)
-		{
-			name = boneName;
-			var inferred = InferSemanticFromName(boneName);
-			if (inferred is not null)
-			{
-				slot = inferred.Slot;
-				pieceType = inferred.PieceType;
-				bodyType = inferred.BodyType;
-			}
-		}
+		// 骨骼名只用来当**名字**，不再拿它的三个 token 覆盖 CustomizationInfo。
+		// 以前只要有骨骼名就覆盖 slot/pieceType/bodyType，等于把唯一可靠的输入盖掉：
+		// piece_type 列里因此混进了 'leg'/'torso'/'arm'/'shoulder' 这类骨骼片段
+		// （实测 16569 行里 2911 行是这种值），而 ArmorStructure §4 明确写着
+		// 「要判断这一件是内层还是外层，看 unit 自己 CustomizationInfo 里的 PieceType
+		// 字符串，不要看 pieceType 的数字」。名字仍然取骨骼名——它是网格的可读标识。
+		if (boneName is not null) name = boneName;
 		return new UnitMeshSemanticInfo(name, slot, pieceType, bodyType, weight, lodIndex, meshInfoIndex, false, false, lodIndex is not 0 and not -1);
 	}
 
