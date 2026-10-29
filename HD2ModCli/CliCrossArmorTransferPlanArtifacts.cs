@@ -393,8 +393,6 @@ internal static class CliCrossArmorTransferPlanArtifacts
 					request.ManualMode,
 					resolution.AdditionalSourceArchiveIds,
 					writePlannerDebugLog: false,
-					// CLI 是 A/B 对比的入口：它显式走装箱规划器，与桌面端一致。
-					plannerKind: CrossArmorPlannerKind.Cells,
 					cancellationToken: cancellationToken).ConfigureAwait(false);
 				diagnostics.AddRange(corePlan.Issues.Select(CreateDiagnostic));
 			}

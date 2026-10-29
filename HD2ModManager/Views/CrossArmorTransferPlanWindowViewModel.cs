@@ -788,7 +788,7 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		{
 			var additionalSources = new[] { SelectedSourceArmor, SelectedSourceHelmet }.Where(source => source is not null && !ReferenceEquals(source, SelectedSource)).Select(source => source!.ArchiveId).ToArray();
 			var enabledSourceCandidates = EnabledSourceCandidates();
-			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(enabledSourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, writePlannerDebugLog: true, plannerKind: CrossArmorPlannerKind.Cells, cancellationToken: cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
+			var nextPlan = await Task.Run(() => catalogService.CreatePlanAsync(enabledSourceCandidates, targetCandidates, SelectedSource?.ArchiveId, SelectedSourceBodyVariant, BodyVariantPreference, LayerPreference, targetIds, manualMappings.Values.ToArray(), suppressedTargets.Select(target => new CrossArmorManualSuppression(target)).ToArray(), AllowManualMappings, additionalSources, writePlannerDebugLog: true, cancellationToken: cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
 			await ApplyOnUiThreadAsync(() =>
 			{
 				// 代次检查必须在 UI 线程上重做一次：规划在池线程跑完之后，用户可能已经又点了一次。

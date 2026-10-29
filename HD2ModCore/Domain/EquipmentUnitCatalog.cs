@@ -54,16 +54,6 @@ public sealed record EquipmentUnitPart(
 // Purpose: Selects the preferred source body shape only when an exact target-shape match cannot decide the assignment.
 public enum CrossArmorBodyVariantPreference { Slim, Stocky }
 
-/// <summary>
-/// 替换护甲用哪个规划器。
-/// </summary>
-/// <remarks>
-/// <see cref="Legacy"/> 是按网格名 + 几何大小猜部位的旧启发式（P1~P5 五层特例）；
-/// <see cref="Cells"/> 是按注册表权威格子装箱的新方案。
-/// 旧的暂时保留，用来在 CLI 上做 A/B 对比；对比通过后删除。
-/// </remarks>
-public enum CrossArmorPlannerKind { Legacy, Cells }
-
 // Purpose: Selects the preferred layer only when a same-layer candidate is unavailable.
 public enum CrossArmorLayerPreference { Armor, Undergarment, Accessory }
 
