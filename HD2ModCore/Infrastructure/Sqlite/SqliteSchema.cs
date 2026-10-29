@@ -6,13 +6,15 @@ namespace HD2ModCore.Infrastructure.Sqlite;
 // Purpose: Defines and applies the persisted GameData facts and asset->archive reverse index schema.
 internal static class SqliteSchema
 {
+	// Version 11 把注册表给的权威格子从 game_data_unit_parts 里拿掉了：格子属于 unit，
+	// 读取时 JOIN game_data_authority_pieces 就有，存一份副本只会过期（见 UnitPartFactQuery）。
 	// Version 9 adds generated-entity encyclopedia facts alongside the
 	// installed-game weapon and vehicle customization names.
 	// Version 8 added installed-game weapon and vehicle customization names to
 	// the persisted authority snapshot. Bumping the source identity ensures an
 	// existing index is rebuilt rather than silently retaining the old display
 	// metadata.
-	public const int SchemaVersion = 10;
+	public const int SchemaVersion = 11;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -107,12 +109,6 @@ CREATE TABLE IF NOT EXISTS game_data_unit_parts (
 	triangle_count INTEGER NOT NULL DEFAULT 0,
 	geometry_quality INTEGER NOT NULL DEFAULT 0,
 	fact_origin INTEGER NOT NULL DEFAULT 2,
-	-- 注册表给出的权威格子：部位槽（CustomizationKitSlot 0..9）× 层（piece_type 0..2）。
-	-- -1 = 这个 unit 在注册表里查不到归属。
-	-- 为什么必须落库：part_layer 是由网格名猜出来的，实测与原版注册表有 97% 不一致
-	-- （躯干的内层和护甲网格名都叫 Torso_Armor_*，内容上分不出来）。见 docs/armor-cell-plan。
-	authority_slot INTEGER NOT NULL DEFAULT -1,
-	authority_piece_type INTEGER NOT NULL DEFAULT -1,
 	reason TEXT NOT NULL,
 	PRIMARY KEY(archive_id, unit_type_id, unit_file_id, mesh_info_index),
 	FOREIGN KEY(archive_id) REFERENCES archives(archive_id)
@@ -247,8 +243,10 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "triangle_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "geometry_quality", "INTEGER NOT NULL DEFAULT 0", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "fact_origin", "INTEGER NOT NULL DEFAULT 2", cancellationToken).ConfigureAwait(false);
-		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "authority_slot", "INTEGER NOT NULL DEFAULT -1", cancellationToken).ConfigureAwait(false);
-		await AddColumnIfMissingAsync(connection, "game_data_unit_parts", "authority_piece_type", "INTEGER NOT NULL DEFAULT -1", cancellationToken).ConfigureAwait(false);
+		// 权威格子改由读取时 JOIN 得出（UnitPartFactQuery），部位表里那两列副本退役。
+		// 旧库里它们还留着，值全是 -1，删掉不影响任何数据。
+		await DropColumnIfPresentAsync(connection, "game_data_unit_parts", "authority_slot", cancellationToken).ConfigureAwait(false);
+		await DropColumnIfPresentAsync(connection, "game_data_unit_parts", "authority_piece_type", cancellationToken).ConfigureAwait(false);
 		await AddColumnIfMissingAsync(connection, "game_data_authority_entities", "localized_designations_json", "TEXT NOT NULL DEFAULT '{}'", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
@@ -272,6 +270,38 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		await using var alter = connection.CreateCommand();
 		alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinition}";
 		await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// 删掉一列（退役的派生列）。SQLite 3.35+ 支持 <c>DROP COLUMN</c>，本仓把原生引擎固定在 3.53。
+	/// </summary>
+	/// <remarks>
+	/// 失败时**不**抛出：多留一列死数据不影响任何正确性，不值得让整次索引构建失败。
+	/// </remarks>
+	private static async Task DropColumnIfPresentAsync(
+		SqliteConnection connection,
+		string tableName,
+		string columnName,
+		CancellationToken cancellationToken)
+	{
+		await using var check = connection.CreateCommand();
+		check.CommandText = $"SELECT 1 FROM pragma_table_info('{tableName}') WHERE name=$name LIMIT 1";
+		check.Parameters.AddWithValue("$name", columnName);
+		if (await check.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+		{
+			return;
+		}
+
+		try
+		{
+			await using var alter = connection.CreateCommand();
+			alter.CommandText = $"ALTER TABLE {tableName} DROP COLUMN {columnName}";
+			await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+		}
+		catch (SqliteException)
+		{
+			// 见方法注释：留着这一列是无害的。
+		}
 	}
 
 	public static async Task SetMetaAsync(SqliteConnection connection, string key, string value, CancellationToken cancellationToken)
