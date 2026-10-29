@@ -21,7 +21,9 @@ namespace HD2ModCore.Infrastructure;
 // SaveAsync / ClearEquipmentFactsAsync / ReadAnalyzedUnitsAsync 一起删掉了。
 public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexService
 {
-	private const string Version = "equipment-v6-authoritative-equipment-facts";
+	// internal 而不是 private：用例要拿它去写 meta，否则那份"版本号字符串"会被复制到测试里，
+	// 以后改版本号时测试会悄悄验证一个过期的值。
+	internal const string Version = "equipment-v7-registry-unit-enumeration";
 	private const string SourceFingerprintMetaKey = "advanced_equipment_index_source_fingerprint";
 	private readonly StoragePaths paths;
 	private readonly UnitMeshPartClassifier classifier = new();
@@ -53,10 +55,17 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 
 			var currentBaseFingerprint = await SqliteSchema.GetMetaAsync(connection, "source_fingerprint", cancellationToken).ConfigureAwait(false);
 			var advancedSourceFingerprint = await SqliteSchema.GetMetaAsync(connection, SourceFingerprintMetaKey, cancellationToken).ConfigureAwait(false);
-			return !string.IsNullOrWhiteSpace(currentBaseFingerprint)
-				&& string.Equals(advancedSourceFingerprint, currentBaseFingerprint, StringComparison.OrdinalIgnoreCase)
-				&& string.Equals(await SqliteSchema.GetMetaAsync(connection, "advanced_equipment_index_version", cancellationToken).ConfigureAwait(false), Version, StringComparison.Ordinal)
-				&& await HasCompleteEquipmentFactsAsync(connection, cancellationToken).ConfigureAwait(false);
+			if (string.IsNullOrWhiteSpace(currentBaseFingerprint)
+				|| !string.Equals(advancedSourceFingerprint, currentBaseFingerprint, StringComparison.OrdinalIgnoreCase)
+				|| !string.Equals(await SqliteSchema.GetMetaAsync(connection, "advanced_equipment_index_version", cancellationToken).ConfigureAwait(false), Version, StringComparison.Ordinal))
+			{
+				return false;
+			}
+
+			// 完整性判据与"要分析哪些 unit"共用同一个查询：两边各写一份 SQL 时，只要有一边
+			// 的集合定义漂了（以前一边按 archive 分类、一边按注册表），这个门就永远为假。
+			var units = await ReadEquipmentUnitsAsync(cancellationToken).ConfigureAwait(false);
+			return units.Count != 0 && units.All(unit => unit.HasPartFacts && unit.HasStreamLayouts);
 		}
 		catch (SqliteException exception) when (IsMissingSchemaObject(exception))
 		{
@@ -79,12 +88,10 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		if (!File.Exists(paths.DbPath)) throw new InvalidOperationException("请先建立基础 Game Data 资产索引。");
 		await EnsureSchemaAsync(cancellationToken).ConfigureAwait(false);
 
-		var archives = await ReadArchivesAsync(cancellationToken).ConfigureAwait(false);
-		var equipmentArchiveIds = archives.Where(item => IsEquipmentCategory(item.Category)).Select(item => item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var fingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
 			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
 		var effectiveRebuildAll = rebuildAll || !await IsCurrentAsync(cancellationToken).ConfigureAwait(false);
-		var allUnits = await ReadEquipmentUnitsAsync(equipmentArchiveIds, cancellationToken).ConfigureAwait(false);
+		var allUnits = await ReadEquipmentUnitsAsync(cancellationToken).ConfigureAwait(false);
 		var units = effectiveRebuildAll
 			? allUnits
 			: allUnits.Where(unit => !unit.HasPartFacts).ToArray();
@@ -155,36 +162,55 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		await SqliteSchema.EnsureCreatedAsync(connection, cancellationToken).ConfigureAwait(false);
 	}
 
-	private async ValueTask<IReadOnlyList<(string Id, string Category, string Name, string? Hex)>> ReadArchivesAsync(CancellationToken cancellationToken)
+	/// <summary>
+	/// 「哪些 unit 需要部位事实」的**唯一定义**：以注册表为准，archive 只是它被放在哪。
+	/// </summary>
+	/// <remarks>
+	/// 以前这里是按 `archives.category LIKE '%armor%'/'%helmet%'` 扫 archive_entries。注册表里
+	/// 2006 个 unit 中有 2 个（披风槽）被护甲套引用、实体却存在一个 Weapon 分类的 archive 里，
+	/// 于是永远进不了部位表——任何护甲的披风槽都没有部件事实。判据反过来就没有这个洞：
+	/// unit 的归属由注册表给，archive 只决定"从哪个文件解析"。
+	///
+	/// 一个 unit 可能同时存在于多个 archive（实测 429 个）。此时优先取分类是装备的那一份，
+	/// 因为 `EquipmentUnitCatalogService` 只读装备分类的 archive——取别的副本等于白解析一遍。
+	/// 这只是**平手时的取舍**，不是判据：只有在所有副本都不是装备分类时（披风就是这种情况）
+	/// 才退回到任意副本。
+	///
+	/// 返回 HasPartFacts / HasStreamLayouts 而不是另写一份"完整性"SQL：两边各写一份时，
+	/// 只要集合定义漂了，`IsCurrentAsync` 就会永远为假（本机就是这么坏掉的）。
+	/// </remarks>
+	internal async ValueTask<IReadOnlyList<EquipmentUnitWorkItem>> ReadEquipmentUnitsAsync(CancellationToken cancellationToken)
 	{
-		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
-		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "SELECT archive_id,category,display_name,archive_hex FROM archives WHERE status='Indexed' ORDER BY archive_id;";
-		var result = new List<(string, string, string, string?)>();
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.IsDBNull(3) ? null : reader.GetString(3)));
-		return result;
-	}
-
-	private static bool IsEquipmentCategory(string category)
-		=> category.Contains("armor", StringComparison.OrdinalIgnoreCase)
-			|| category.Contains("helmet", StringComparison.OrdinalIgnoreCase);
-
-	private async ValueTask<IReadOnlyList<EquipmentUnitWorkItem>> ReadEquipmentUnitsAsync(IReadOnlySet<string> archiveIds, CancellationToken cancellationToken)
-	{
-		if (archiveIds.Count == 0) return Array.Empty<EquipmentUnitWorkItem>();
 		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 		await using var command = connection.CreateCommand();
 		command.CommandText = @"
-SELECT a.archive_id,e.type_id,e.file_id,
-       EXISTS(SELECT 1 FROM game_data_unit_parts p WHERE p.archive_id=a.archive_id AND p.unit_type_id=e.type_id AND p.unit_file_id=e.file_id)
-FROM archives a
-JOIN archive_entries e ON e.archive_id=a.archive_id
-WHERE (lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%')
-  AND e.type_id=$unitType
-ORDER BY a.archive_id,e.file_id;";
+WITH registry_units AS
+(
+    SELECT DISTINCT unit_type_id, unit_file_id
+    FROM game_data_authority_pieces
+    WHERE kit_kind IN ($armor,$helmet) AND unit_type_id=$unitType AND unit_file_id<>0
+),
+candidates AS
+(
+    SELECT e.archive_id, e.type_id, e.file_id,
+           CASE WHEN lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%' THEN 0 ELSE 1 END AS preference
+    FROM registry_units r
+    JOIN archive_entries e ON e.type_id=r.unit_type_id AND e.file_id=r.unit_file_id
+    JOIN archives a ON a.archive_id=e.archive_id AND a.status='Indexed'
+),
+preferred AS
+(
+    SELECT file_id, MIN(preference) AS best FROM candidates GROUP BY file_id
+)
+SELECT c.archive_id, c.type_id, c.file_id,
+       EXISTS(SELECT 1 FROM game_data_unit_parts p WHERE p.archive_id=c.archive_id AND p.unit_type_id=c.type_id AND p.unit_file_id=c.file_id),
+       EXISTS(SELECT 1 FROM game_data_stream_layouts s WHERE s.archive_id=c.archive_id AND s.unit_type_id=c.type_id AND s.unit_file_id=c.file_id)
+FROM candidates c
+JOIN preferred p ON p.file_id=c.file_id AND p.best=c.preference
+ORDER BY c.archive_id, c.file_id;";
+		command.Parameters.AddWithValue("$armor", (int)GameDataEquipmentKitKind.Armor);
+		command.Parameters.AddWithValue("$helmet", (int)GameDataEquipmentKitKind.Helmet);
 		command.Parameters.AddWithValue("$unitType", unchecked((long)PatchUnitMeshReader.UnitTypeId));
 		var result = new List<EquipmentUnitWorkItem>();
 		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -193,7 +219,8 @@ ORDER BY a.archive_id,e.file_id;";
 			result.Add(new EquipmentUnitWorkItem(
 				reader.GetString(0),
 				new CoreAssetKey(unchecked((ulong)reader.GetInt64(1)), unchecked((ulong)reader.GetInt64(2))),
-				reader.GetBoolean(3)));
+				reader.GetBoolean(3),
+				reader.GetBoolean(4)));
 		}
 		return result;
 	}
@@ -258,52 +285,6 @@ ORDER BY a.archive_id,e.file_id;";
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 
-	private static async ValueTask<bool> HasCompleteEquipmentFactsAsync(SqliteConnection connection, CancellationToken cancellationToken)
-	{
-		await using var command = connection.CreateCommand();
-		command.CommandText = @"
-WITH equipment_units AS
-(
-    SELECT a.archive_id, e.type_id, e.file_id
-    FROM archives a
-    JOIN archive_entries e ON e.archive_id = a.archive_id
-    WHERE a.status = 'Indexed'
-      AND (lower(a.category) LIKE '%armor%' OR lower(a.category) LIKE '%helmet%')
-      AND e.type_id = $unitType
-)
-SELECT CASE WHEN
-    EXISTS (SELECT 1 FROM equipment_units)
-    AND NOT EXISTS
-    (
-        SELECT 1
-        FROM equipment_units u
-        WHERE NOT EXISTS
-        (
-            SELECT 1
-            FROM game_data_unit_parts p
-            WHERE p.archive_id = u.archive_id
-              AND p.unit_type_id = u.type_id
-              AND p.unit_file_id = u.file_id
-        )
-    )
-    AND NOT EXISTS
-    (
-        SELECT 1
-        FROM equipment_units u
-        WHERE NOT EXISTS
-        (
-            SELECT 1
-            FROM game_data_stream_layouts s
-            WHERE s.archive_id = u.archive_id
-              AND s.unit_type_id = u.type_id
-              AND s.unit_file_id = u.file_id
-        )
-    )
-    THEN 1 ELSE 0 END;";
-		command.Parameters.AddWithValue("$unitType", unchecked((long)PatchUnitMeshReader.UnitTypeId));
-		return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 0;
-	}
-
 	private static bool IsMissingSchemaObject(SqliteException exception)
 		=> exception.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase)
 			|| exception.Message.Contains("no such column", StringComparison.OrdinalIgnoreCase)
@@ -359,7 +340,8 @@ SELECT CASE WHEN
 		foreach (var name in new[] { "$t", "$f", "$m", "$id", "$k", "$l", "$v", "$c", "$visual", "$lod", "$vertices", "$triangles", "$quality", "$origin", "$aslot", "$apt" }) command.Parameters.Add(name, SqliteType.Integer); command.Prepare(); return command;
 	}
 
-	private sealed record EquipmentUnitWorkItem(string ArchiveId, CoreAssetKey AssetKey, bool HasPartFacts);
+	// internal 是为了让用例能直接钉住"枚举源是注册表"：真跑一遍要解析真实 unit 二进制。
+	internal sealed record EquipmentUnitWorkItem(string ArchiveId, CoreAssetKey AssetKey, bool HasPartFacts, bool HasStreamLayouts);
 
 	private static async ValueTask InsertPartAsync(SqliteCommand command, GameDataUnitPartFact part, CancellationToken cancellationToken)
 	{
