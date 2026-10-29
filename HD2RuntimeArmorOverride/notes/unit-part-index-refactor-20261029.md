@@ -58,16 +58,34 @@
 
 ## 4. 没做，以及为什么
 
-### 4.1 删 Legacy 规划器 —— 需要先迁移 24 个用例，不是删代码
+### 4.1 删 Legacy 规划器 —— 需要先迁移用例，且会真的丢掉四族行为
 
 `CrossArmorPlannerKind.Legacy` 在生产里已经不可达：GUI（`CrossArmorTransferPlanWindowViewModel`）
 与 CLI（`CliCrossArmorTransferPlanArtifacts`）都显式传 `Cells`，只剩默认参数。
 
-但把默认值翻成 `Cells` 之后，`EquipmentUnitCatalogServiceTests` **24/34 失败**。原因不是
-规划器有 bug，而是那 34 个用例喂的是**没有格子的合成部件**（`Part(...)` 助手只给
-`PartKind`/`Layer`，`Cell` 恒为 Unknown），Cells 规划器于是找不到可装箱的格子。
-要删 Legacy，得先给这些用例补格子、再逐个判断 Cells 下的期望结果——那是 24 处需要
-设计判断的迁移，不该顺手做。
+把默认值翻成 `Cells` 之后 `EquipmentUnitCatalogServiceTests` **21/34 失败**（先把合成部件的
+格子补齐是 21，不补是 24）。逐个看下来，失败分两类：
+
+**一类只是用例的机械问题**（不是行为差异）：用例用**记录相等**比较部件
+（`Assert.Equal(larger, mapping.Source)`），而 `Entry(...)` 里补上的 `Cell` 让计划里的部件
+与用例本地变量不再相等。这类补上格子 + 改成按 (UnitAssetKey, MeshInfoIndex) 比较即可。
+顺带确认：`StoredBytes` **不是** Legacy 独有的，`ArmorCellTable` / `CellCrossArmorPlanProjection`
+把它当几何排序之后的平手判据（`ArmorCellTable.cs:130`、`CellCrossArmorPlanProjection.cs:267`），
+所以「选最大的来源」在 Cells 下仍然成立，只是优先级排在几何之后。
+
+**另一类是真的只存在于 Legacy**，删掉就是删功能：
+
+| 行为 | 只有 Legacy 有的证据 |
+| --- | --- |
+| 层偏好（`CrossArmorLayerPreference`） | `layerPreference` 只出现在 Legacy 的 `SelectBodyTargets` / `ToPartLayer` 里；`CellCrossArmorPlanProjection.Build` 根本不收这个参数 —— 也就是说 GUI 上那个下拉框**现在就是空的** |
+| 语义族匹配（`SemanticFamily` / `SemanticFamilyKey`） | 只被 `BuildSourceBodyProfiles` / `SelectSourceForTarget` 等 Legacy 助手使用 |
+| 共享/固定 archive 的变体策略（`ApplySharedArchiveVariantStrategies` / `ApplyFixedArchiveVariantStrategies` / `ReconcileSharedTargetFallbackVariants`） | 同上，Legacy 专有 |
+| 一个来源 mesh 复用到多个目标（`SourceMeshCanBeReusedForEveryCompatibleTarget`） | Cells 是「一个格子放一个来源」，复用在装箱模型里没有位置 |
+
+对应要处理/删除的用例：层偏好 3 条、语义族 1 条、共享变体 2 条、来源复用 1 条，
+其余 14 条是机械问题。**这四族要不要保留是产品决定**，不是清理：
+其中「层偏好」在 GUI 上还留着一个无效的下拉框，删 Legacy 时必须一并处理，否则就是
+「界面上有个控件，点了没反应」。
 
 ### 4.2 `part_layer` / `piece_type` —— 缺陷在输入，不在列
 
