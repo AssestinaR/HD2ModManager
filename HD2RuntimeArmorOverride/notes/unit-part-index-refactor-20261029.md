@@ -58,7 +58,14 @@
 
 ## 4. 没做，以及为什么
 
-### 4.1 删 Legacy 规划器 —— 需要先迁移用例，且会真的丢掉四族行为
+### 4.1 删 Legacy 规划器 —— **已完成（`6b82001`）**
+
+结果：`CrossArmorPlannerKind` / `plannerKind` 删除，`EquipmentUnitCatalogService` 从 1112 行
+降到 315 行，13 条断言 Legacy 专有行为的用例一并删除，合成部件补上格子。
+遗留：`CrossArmorLayerPreference` 参数与 GUI 的「层偏好」下拉框现在没有读者，需要单独决定
+（删控件，或把偏好实现进 Cells——后者会改装箱结果）。
+
+以下是当初评估代价的记录，保留以备回溯。
 
 `CrossArmorPlannerKind.Legacy` 在生产里已经不可达：GUI（`CrossArmorTransferPlanWindowViewModel`）
 与 CLI（`CliCrossArmorTransferPlanArtifacts`）都显式传 `Cells`，只剩默认参数。
