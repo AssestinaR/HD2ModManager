@@ -320,7 +320,12 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	/// 用"来源 Patch 的全部 Unit 键"建表。部位/层/身形来自注册表格子（查库即得），
 	/// 可见性留空等后台补——这一步不解析任何网格，所以页面能瞬间打开。
 	/// </summary>
-	private void BuildSourceUnitRows(IReadOnlyList<AssetKey> unitKeys)
+	/// <param name="unreadableUnits">
+	/// 这次重测里"读不出几何"的 unit 键。<c>null</c> = 还没扫过，行保持"待计算"；
+	/// 非 <c>null</c> = 已经扫过，好让"读不出几何"和"极小化占位"分开显示——
+	/// 两者对用户的意义完全不同：前者是数据/Patch 依赖问题，后者是自动生成时的正常取舍。
+	/// </param>
+	private void BuildSourceUnitRows(IReadOnlyList<AssetKey> unitKeys, IReadOnlySet<AssetKey>? unreadableUnits = null)
 	{
 		// 全量装备目录里有每个 unit 的格子；不在其中的就是"未定位"。
 		var byUnit = new Dictionary<AssetKey, EquipmentUnitPart>();
@@ -354,7 +359,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 			if (row.IsCape) row.MarkUnscanned("披风不参与");
 			else if (row.IsUnplaced) row.MarkUnscanned("注册表里没有这个 unit");
 			else if (transferable.Contains(row.UnitAssetKey)) row.ApplyScan(true, "可转移");
-			else if (sourceCandidates.Count != 0) row.ApplyScan(false, "极小化占位");
+			else if (unreadableUnits is not null)
+				row.ApplyScan(false, unreadableUnits.Contains(row.UnitAssetKey) ? "读不出几何" : "极小化占位");
 		}
 
 		SourceUnitRows.ReplaceWith(rows, ListTransitionKind.Replace);
@@ -397,9 +403,11 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 					?? SourceArmorChoices.FirstOrDefault()?.Entry;
 				SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault(row => string.Equals(row.Entry.ArchiveId, helmetArchive, StringComparison.OrdinalIgnoreCase))?.Entry
 					?? SourceHelmetChoices.FirstOrDefault()?.Entry;
-				BuildSourceUnitRows(facts.SourceUnitKeys.Count != 0
-					? facts.SourceUnitKeys
-					: SourceUnitRows.Select(row => row.UnitAssetKey).ToArray());
+				BuildSourceUnitRows(
+					facts.SourceUnitKeys.Count != 0
+						? facts.SourceUnitKeys
+						: SourceUnitRows.Select(row => row.UnitAssetKey).ToArray(),
+					facts.Units.Where(unit => !unit.IsReadable).Select(unit => unit.UnitAssetKey).ToHashSet());
 				QueueRefreshPlan();
 			}).ConfigureAwait(false);
 		}
@@ -425,9 +433,10 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	/// 汇总条：多少 unit 作为来源，以及"为什么一个都选不了"。
 	/// </summary>
 	/// <remarks>
-	/// 表格里的 unit 全部"未定位"时，只写"0 / N"等于什么都不解释——用户会以为算坏了。
-	/// 真正的原因是这些 unit 在注册表里查不到权威部位（自定义素体 / 新增 unit 没有
-	/// GameData 归属），而按格子装箱的规划器只认权威部位，所以它们不能作为来源。
+	/// 表格里的 unit 全部选不了时，只写"0 / N"等于什么都不解释——用户会以为算坏了。
+	/// 实际有两种原因，界面必须分开说：注册表里查不到权威部位（新 unit / 未部署的虚拟 unit），
+	/// 或者有部位但这次读不出可转移几何（极小化占位、来源 Patch 缺 Composite 依赖）。
+	/// 按格子装箱的规划器只认权威部位，前者一定不能当来源；后者是数据问题，可能能修。
 	/// </remarks>
 	private void UpdateSourceScanState()
 	{
@@ -448,11 +457,16 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 
 		var unplaced = SourceUnitRows.Count(row => row.IsUnplaced);
 		var summary = $"{enabled} / {total} 个 unit 作为来源";
-		SourceScanState = unplaced == 0
-			? summary
-			: unplaced == total
-				? $"{summary} · 这 {total} 个 unit 在注册表里查不到部位归属，不能作为来源"
-				: $"{summary}（{unplaced} 个查不到部位归属，不能作为来源）";
+		// 一个都选不了时要说清是哪一种"选不了"：没归属（注册表查不到部位）和
+		// 有归属但不可转移（极小化占位 / 读不出几何）是两条完全不同的排查路径。
+		var decided = SourceUnitRows.Count(row => row.IsScanned || row.IsUnplaced || row.IsCape);
+		SourceScanState = unplaced == total
+			? $"{summary} · 这 {total} 个 unit 在注册表里查不到部位归属，不能作为来源"
+			: unplaced != 0
+				? $"{summary}（{unplaced} 个查不到部位归属，不能作为来源）"
+				: enabled == 0 && decided != 0
+					? $"{summary} · 这些 unit 都不可转移：极小化占位，或来源 Patch 里读不出几何"
+					: summary;
 	}
 
 	/// <summary>用户在「作为来源」列点了一下之后重算计划。纯内存操作，不需要重新扫网格。</summary>

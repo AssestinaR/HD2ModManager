@@ -182,6 +182,16 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshPartKind.Hips, entry.Parts[3].PartKind);
 		Assert.Equal(HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any, entry.Parts[3].BodyVariant);
 		Assert.Equal("7", entry.Parts[3].PieceType);
+		// 组件自己声明的 (slot, pieceType) 就是权威格子：自定义素体没有 GameData 归档，
+		// 但它的部件必须"已定位"，否则既不能当替换护甲的来源，也不参与装箱。
+		var torsoSlot = ArmorStructure.SlotOf(ArmorPart.Torso)!.Value;
+		var helmetSlot = ArmorStructure.SlotOf(ArmorPart.Helmet)!.Value;
+		Assert.Equal(new ArmorCell((int)torsoSlot, 0), entry.Parts[0].Cell);
+		Assert.Equal(new ArmorCell((int)torsoSlot, 0), entry.Parts[1].Cell);
+		Assert.Equal(new ArmorCell((int)helmetSlot, 0), entry.Parts[2].Cell);
+		// piece_type=7 不是合法层号：宁可"未定位"，也不要造出一个查不到部位、
+		// 却因为坐标非负被当成真格子用的坐标。
+		Assert.False(entry.Parts[3].Cell.IsKnown);
 	}
 
 	[Fact]

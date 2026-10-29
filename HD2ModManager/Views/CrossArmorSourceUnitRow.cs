@@ -71,6 +71,9 @@ public sealed class CrossArmorSourceUnitRow : BaseViewModel
 
 	public string StatusText { get => statusText; private set => SetField(ref statusText, value); }
 
+	/// <summary>这一行有没有拿到结论（不论结论是"可转移"还是"不可转移"）。</summary>
+	public bool IsScanned => isScanned;
+
 	/// <summary>
 	/// 这一格的显示文字。全部是单字符或两字短词，避免不同状态宽度不同把行高顶变。
 	/// </summary>

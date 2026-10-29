@@ -228,10 +228,14 @@ public sealed class RuntimeArmorRegistryService
 	}
 
 	/// <summary>
-	/// Projects the manager-owned virtual model bases into the same catalog shape
-	/// consumed by the cross-armor planner.  These entries intentionally have no
-	/// GameData archive; their Unit IDs are output-only targets.
+	/// 把管理器自己持有的虚拟素体投影成跨护甲规划器消费的同一种目录形状。
 	/// </summary>
+	/// <remarks>
+	/// 这些条目**没有 GameData 归档**，但它们的格子不是"未知"：素体的每个组件都显式声明了
+	/// <c>(slot, pieceType)</c>，那正好就是 <see cref="ArmorCell"/> 的两个坐标，与注册表给
+	/// 原版 unit 的权威格子同构。以前这里留成 <see cref="ArmorCell.Unknown"/>，代价是虚拟
+	/// unit 在替换护甲页一律"未定位"、既不能当来源也不参与装箱。
+	/// </remarks>
 	public async ValueTask<IReadOnlyList<EquipmentUnitCatalogEntry>> ReadCustomModelCatalogAsync(
 		CancellationToken cancellationToken = default)
 	{
@@ -263,11 +267,25 @@ public sealed class RuntimeArmorRegistryService
 						Array.Empty<string>())
 					{
 						PieceType = piece.PieceType.ToString(CultureInfo.InvariantCulture),
-						GeometryQuality = UnitMeshGeometryQuality.Unreadable
+						GeometryQuality = UnitMeshGeometryQuality.Unreadable,
+						Cell = ToPieceCell(piece)
 					})
 					.ToArray()) { CustomModelKey = model.Key })
 			.ToArray();
 	}
+
+	/// <summary>
+	/// 组件声明的 <c>(slot, pieceType)</c> → 权威格子。
+	/// </summary>
+	/// <remarks>
+	/// 只认 <see cref="ArmorStructure"/> 真的认识的槽位、以及合法层号。越界时保留
+	/// <see cref="ArmorCell.Unknown"/>：宁可显示"未定位"，也不要造出一个查不到部位、
+	/// 却因为坐标非负而被当成"已定位"的格子——那种半懂状态会被装箱规划器当成真格子用。
+	/// </remarks>
+	private static ArmorCell ToPieceCell(RuntimeArmorRegistryModelPiece piece)
+		=> ArmorStructure.FromSlot(piece.Slot) != ArmorPart.Unknown && piece.PieceType <= ArmorStructure.MaxPieceType
+			? new ArmorCell((int)piece.Slot, (int)piece.PieceType)
+			: ArmorCell.Unknown;
 
 	public async ValueTask<RuntimeArmorRegistrySnapshot> ReadSnapshotAsync(
 		CancellationToken cancellationToken = default)

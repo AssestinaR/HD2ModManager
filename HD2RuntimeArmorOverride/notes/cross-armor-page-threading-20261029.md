@@ -67,31 +67,71 @@
 这个组合只有一个来源：**catalog 里查到了这个 unit 的 part，但 `part.Cell` 是 `ArmorCell.Unknown`**。
 
 `Cell` 来自 `game_data_unit_parts.authority_slot / authority_piece_type`，也就是注册表给的
-权威格子。实测本机索引：**2002 个原版可视 unit，零个缺权威格子**（
-`select count(*) from game_data_unit_parts where is_visual=1 and is_lod=0 and authority_slot<0` = 0）。
-所以"缺格子"的 unit 一定是**非原版**的：
+权威格子。实测本机索引：**2002 个原版可视 unit，零个缺权威格子**
+（`select count(*) from game_data_unit_parts where is_visual=1 and is_lod=0 and authority_slot<0` = 0）。
+所以"缺格子"的 part 只可能来自**非原版**来源：
 
-* 自定义素体 / 新增 unit（`RuntimeArmorRegistryService.ReadCustomModelCatalogAsync` 造的
-  part 明确**不写** `Cell`，注释写着 "output-only targets"）；
+* 自定义素体：`RuntimeArmorRegistryService.ReadCustomModelCatalogAsync` 造的 part
+  **没有写** `Cell`（旧注释写着 "output-only targets"）；
 * 或者索引陈旧（`authority_*` 两列是后加的，`AddColumnIfMissingAsync` 的默认值就是 `-1`）。
 
-判定方法：截图里的 ID 都是 `0x09c3…` `0x1f8f…` `0x8d59…` 这种**小正数**，而原版 unit 的
-file id 全部 ≥ `0x801b97ed5e51e9f4`。所以那 23 个 unit 是注册表分配的**虚拟 unit**，
-不是原版 unit——它们本来就没有 GameData 归属，按格子装箱的规划器用不了它们，不能作为来源。
+判定方法：截图里的 ID 是 `0x09c3…` `0x1f8f…` `0x8d59…` 这种**小正数**，而原版 unit 的
+file id 全部 ≥ `0x801b97ed5e51e9f4`。它们是注册表分配的**虚拟 unit**（高 48 位随机前缀 +
+低 16 位组件序号，例如本机 `0x5293a817200a0001`）。
 
-这条不是 bug，是设计边界；但界面原来只写"0 / 23"，等于不解释。现在：
+### 已修：自定义素体的 part 现在带格子
 
-* 汇总条补一句"这 N 个 unit 在注册表里查不到部位归属，不能作为来源"（部分缺时只报数量）；
-* 每次重建表格时记一条日志：`替换护甲来源部件：共 N 个 unit，其中 M 个在注册表里查不到部位归属`。
-  用户再报"全都未定位"时，日志能立刻区分"索引陈旧"和"虚拟 unit"。
+`ToPieceCell(piece)` 把组件自己声明的 `(slot, pieceType)` 直接当作权威格子。这不是猜——
+素体定义里那两个数就是 `ArmorCell` 的两个坐标。只认 `ArmorStructure` 真的认识的槽位和
+合法层号（`piece_type <= 2`），越界时保留 `Unknown`：宁可显示"未定位"，也不要造出一个
+查不到部位、却因为坐标非负被装箱规划器当成真格子用的坐标。
 
-## 5. 没做 / 待定
+于是替换护甲页左边那张表现在会显示 `胸部 · 内层` 这种真实部位，而不是一片"未定位"。
 
-* **没有给自定义素体的 part 补 `Cell`**。`ReadCustomModelCatalogAsync` 里
-  `piece.Slot` / `piece.PieceType` 本来就有，`new ArmorCell(piece.Slot, piece.PieceType)`
-  一行就能让虚拟 unit 变成"已定位"，从而可以当来源。但那段注释明确写着
-  "output-only targets"——虚拟 unit 只在来源 mod 已部署时存在，拿它当新候选的来源是个
-  依赖关系问题，不是补个字段就完事。**这属于产品取舍，先不动。**
-* 没有加自动化回归。`HD2ModManager` 至今没有测试工程，而这条 bug 的可观测行为依赖真实
-  `CollectionView`（无 WPF 宿主时同一个错误路径不会抛）。要覆盖它得新开一个
+## 5. 但虚拟 unit 仍然不能当来源（实测结论，别被 `Cell` 骗了）
+
+补上 `Cell` 之后我试着让虚拟 unit 真的能被选为来源，加了"把自定义素体当虚拟候选传进
+`IModEquipmentSourceFactsReader`"的管道，然后做了端到端实测（把
+`…\vpk2patch\9ba626afa44a3aa3.patch_0` 复制成独立 mod，跑真实 reader）：
+
+```
+patchPaths=9ba626afa44a3aa3.patch_0
+sourceUnitKeys=7   virtualKeysInPatch=7   sourceCandidates=0
+  virtual unit 0x5293a817200a0001 readable=False hidden=False meshes=0 transferable=0
+  …（7 个全部一样）
+issues=SourceUnitReadFailed × 7
+```
+
+7 个虚拟 unit 都在 Patch 的 TOC 里，但**一个都读不出来**。原因是
+`PatchUnitDependencyPolicy.RequirePatchLocalComposite`：unit 引用的 Composite 资源
+（`PatchUnitMeshReader.ReadCompositePayloadAsync`）不在同一个 Patch 里就直接抛
+`InvalidDataException("Unit references Composite asset 0x…, but that entry is absent from this patch.")`。
+
+这是**有意的安全策略**：复用来源 unit 的几何要求它的 Composite 也在 Patch 内，否则产出的
+Patch 依赖游戏外部资源。候选生成器写出的虚拟 unit 复用了原 unit 的 payload，Composite 仍指向
+游戏里的那份，于是永远过不了这条策略。
+
+所以那条管道**已回滚**：它买不到任何东西，只多出 7 次必然失败的 unit 解析和 7 条
+`SourceUnitReadFailed` 警告。要让虚拟 unit 当来源，得先决定"候选 Patch 要不要把 Composite
+一起带上"——那是生产格式的问题，不是读路径的开关。
+
+## 6. 顺手修掉的显示问题
+
+`BuildSourceUnitRows` 原来把"有部位但没绑上几何"一律写成 **极小化占位**，而 `sourceCandidates`
+为空时干脆什么都不写（行永远停在"待计算"、作为来源列一直是 `…`）。现在：
+
+* 构造函数里 `unreadableUnits: null` → 行保持"待计算"（还没扫，别下结论）；
+* 重测完成后传入 `facts.Units.Where(unit => !unit.IsReadable)` → 读不出来的写
+  "读不出几何"，其余没绑上几何的写"极小化占位"；
+* 汇总条三分支：全部没归属 / 部分没归属 / 有归属但一个都不可转移。
+
+## 7. 没做 / 待定
+
+* **候选 Patch 要不要带 Composite**：决定虚拟 unit 能不能当来源。属于生产格式，需要单独定。
+* **没有加自动化回归**。`HD2ModManager` 至今没有测试工程，而线程那条 bug 的可观测行为依赖
+  真实 `CollectionView`（无 WPF 宿主时同一个错误路径不会抛）。要覆盖它得新开一个
   `net10.0-windows` + STA 的测试工程，先记在这里。
+* `Cell` 与"自定义素体可装箱"这两条有单测覆盖（`RuntimeArmorRegistryServiceTests`、
+  `EquipmentUnitCatalogServiceTests`）；读路径那条（虚拟 unit 读不出来）没有单测，
+  因为它依赖真实 Patch 里的 Composite 缺失，只能靠上面的实测记录。
+

@@ -609,6 +609,44 @@ public sealed class EquipmentUnitCatalogServiceTests
 		Assert.True(mapped.IsManual);
 		Assert.Equal(AdditionalSourceUnit, mapped.Source!.UnitAssetKey);
 	}
+	[Fact]
+	public async Task CustomSource_PiecesCarryTheirDeclaredCellAndCanBePacked()
+	{
+		// 自定义素体没有 GameData 归档，但它的组件声明了 (部位, 层)——那正是权威格子。
+		// 补上 Cell 之后它必须能进 SourceTableFor 的护甲族、有格子可装箱。
+		// 注意：这是规划器层面的不变量；虚拟 unit 能不能真的从 Patch 里读出几何，
+		// 还取决于 PatchUnitDependencyPolicy（Composite 必须在同一个 Patch 里）。
+		var torsoSlot = ArmorStructure.SlotOf(ArmorPart.Torso)!.Value;
+		var undergarment = Part(new(SourceUnit.TypeId, 0x301), 0, "custom_torso_0") with
+		{
+			PartKind = UnitMeshPartKind.Torso,
+			Layer = UnitMeshPartLayer.Undergarment,
+			Cell = new ArmorCell((int)torsoSlot, 0),
+		};
+		var armor = undergarment with
+		{
+			UnitAssetKey = new(SourceUnit.TypeId, 0x302),
+			MeshInfoIndex = 1,
+			Layer = UnitMeshPartLayer.Armor,
+			Cell = new ArmorCell((int)torsoSlot, 1),
+		};
+		var source = Entry("custom-model:test", undergarment, armor) with { CustomModelKey = "test", Category = "CustomModel" };
+		var target = Entry("target", Part(TargetUnit, 0, "target_torso") with
+		{
+			PartKind = UnitMeshPartKind.Torso,
+			Layer = UnitMeshPartLayer.Armor,
+			Cell = new ArmorCell((int)torsoSlot, 1),
+		});
+
+		var plan = await CreateService().CreatePlanAsync([source], [target], source.ArchiveId, null,
+			CrossArmorBodyVariantPreference.Slim, CrossArmorLayerPreference.Armor, [target.ArchiveId], writePlannerDebugLog: false);
+
+		Assert.True(plan.CanContinue);
+		var mapping = Assert.Single(plan.Mappings);
+		Assert.Equal(armor.UnitAssetKey, mapping.Source!.UnitAssetKey);
+		Assert.True(mapping.WillReplace);
+	}
+
 	private static EquipmentUnitCatalogEntry Entry(string id, params EquipmentUnitPart[] parts) => new(id, "Armor", id, parts);
 	private static EquipmentUnitPart Part(AssetKey unit, int mesh, string name)
 		=> new(unit, mesh, checked((uint)mesh), UnitMeshPartKind.RightLeg, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Slim, name, 100, Array.Empty<string>());
