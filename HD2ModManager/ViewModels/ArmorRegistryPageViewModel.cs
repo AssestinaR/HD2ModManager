@@ -1392,15 +1392,28 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				.ToArray();
 		}
 		var result = new List<RuntimeArmorChoiceViewModel>();
-		foreach (var group in members.GroupBy(item => item.CombinationKey, StringComparer.OrdinalIgnoreCase))
+		var unpaired = new List<RuntimeArmorChoiceViewModel>(members);
+		// 两轮配对，顺序不能反：
+		//   1) 注册表的 (dlc, set_id) —— 最精确，先把能按件表配上的都配掉；
+		//   2) 同一 dlc 下同名 —— 注册表里同一套的护甲 kit 与头盔 kit 经常带**不同的 set_id**：
+		//      CM-09 护甲 set=3094076875 / 头盔 set=3551829063，DS-191 护甲 4179032602 / 头盔
+		//      2449475234，DS-42、FS-34、O-44 全是这一类。只按 (dlc,set) 分组时它们永远配不上，
+		//      而 display_name 对同一套是一致的。
+		// 两轮都要求恰好 1 护甲 + 1 头盔：同名但 2 护甲 7 头盔（FS-05）、1 护甲 2 头盔（SC-30）
+		// 这种有歧义的情况宁可平铺，也不要随便配一个。
+		foreach (var keySelector in new Func<RuntimeArmorChoiceViewModel, string>[] { item => item.CombinationKey, item => item.NameKey })
 		{
-			var armor = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Armor).ToArray();
-			var helmets = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Helmet).ToArray();
-			if (armor.Length == 1 && helmets.Length == 1)
+			foreach (var group in unpaired.GroupBy(keySelector, StringComparer.OrdinalIgnoreCase).ToArray())
+			{
+				var armor = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Armor).ToArray();
+				var helmets = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Helmet).ToArray();
+				if (armor.Length != 1 || helmets.Length != 1) continue;
 				result.Add(RuntimeArmorChoiceViewModel.Composite(armor[0], helmets[0]));
-			else
-				result.AddRange(group);
+				unpaired.Remove(armor[0]);
+				unpaired.Remove(helmets[0]);
+			}
 		}
+		result.AddRange(unpaired);
 		return result;
 	}
 
@@ -2123,6 +2136,12 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public string CombinationKey => SetId != 0
 		? $"{DlcId}:{SetId}"
 		: "archive:" + ArchiveId;
+	/// <summary>
+	/// 同一 dlc 下的同名件，作为 <see cref="CombinationKey"/> 配不上时的兜底键。
+	/// 注册表里同一套的护甲 kit 与头盔 kit 经常带不同的 <c>set_id</c>（见 BuildDisplayChoices 的注释），
+	/// 但 <c>display_name</c> 对同一套是一致的。
+	/// </summary>
+	public string NameKey => $"{DlcId}:{Name.Trim().ToUpperInvariant()}";
 	public bool IsHelmet => KitKind == GameDataEquipmentKitKind.Helmet;
 	public bool IsArmor => KitKind == GameDataEquipmentKitKind.Armor;
 	public IReadOnlyList<uint> MemberItemIds => memberItemIds;
