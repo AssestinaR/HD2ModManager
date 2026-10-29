@@ -14,6 +14,70 @@ public sealed class ArmorCoverageProjectionTests
 	private static readonly ulong UnitType = AdaptationUnitMesh.UnitTypeId;
 	private const ulong OtherType = 0x1234;
 
+	// 判据：**超过一半**的 Unit 被替换才算命中。只换掉一两个属于轻微污染——把它算成命中会让
+	// 「已命中」筛选失去意义，图标也会显示成一个其实没换模型的 Mod。
+	// 恰好一半**不算**：2 个里换 1 个不是"多数"。
+	[Fact]
+	public void HalfTheUnitsReplacedIsNotAHit()
+	{
+		var winner = ModNodeId.New();
+		var key = new AssetKey(UnitType, 1);
+
+		var facts = ArmorCoverageProjection.Project(
+			Index("armor-1"),
+			Mapping((key, "armor-1")),
+			Deployed((key, winner, 0)),
+			new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "armor-1" },
+			new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["armor-1"] = 2 });
+
+		var entry = facts.Archives["armor-1"];
+		Assert.False(entry.HasEffectiveUnitOverride);
+		Assert.Equal(1, entry.UnitsReplaced);
+		Assert.Equal(2, entry.UnitsTotal);
+		// 赢家仍然记下来：它确实换了一个 Unit，只是没换够多数。
+		Assert.Equal(winner, entry.UnitWinnerNodeId);
+	}
+
+	[Fact]
+	public void MoreThanHalfTheUnitsReplacedIsAHit()
+	{
+		var winner = ModNodeId.New();
+		var first = new AssetKey(UnitType, 1);
+		var second = new AssetKey(UnitType, 2);
+
+		var facts = ArmorCoverageProjection.Project(
+			Index("armor-1"),
+			Mapping((first, "armor-1"), (second, "armor-1")),
+			Deployed((first, winner, 0), (second, winner, 0)),
+			new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "armor-1" },
+			new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["armor-1"] = 3 });
+
+		var entry = facts.Archives["armor-1"];
+		Assert.True(entry.HasEffectiveUnitOverride);
+		Assert.Equal(2, entry.UnitsReplaced);
+		Assert.Equal(3, entry.UnitsTotal);
+	}
+
+	// 拿不到分母（索引不可用）时退回旧判据：有一个 Unit 赢家就算命中。
+	// 宁可宽松，也不要把"分母未知"当成"未命中"——那会让整页护甲突然全部变成未命中。
+	[Fact]
+	public void AnUnknownDenominatorFallsBackToAnyUnitWinner()
+	{
+		var winner = ModNodeId.New();
+		var key = new AssetKey(UnitType, 1);
+
+		var facts = ArmorCoverageProjection.Project(
+			Index("armor-1"),
+			Mapping((key, "armor-1")),
+			Deployed((key, winner, 0)),
+			new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "armor-1" });
+
+		var entry = facts.Archives["armor-1"];
+		Assert.True(entry.HasEffectiveUnitOverride);
+		Assert.Equal(0, entry.UnitsTotal);
+		Assert.Equal(1, entry.UnitsReplaced);
+	}
+
 	[Fact]
 	public void ADeployedUnitMakesTheArchiveCoveredByItsWinner()
 	{

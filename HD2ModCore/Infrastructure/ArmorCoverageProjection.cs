@@ -37,7 +37,10 @@ internal static class ArmorCoverageProjection
 		GameDataIndexFacts index,
 		GameDataMappingFacts mapping,
 		DeployedOverrideGraph deployed,
-		IReadOnlySet<string> archiveIds)
+		IReadOnlySet<string> archiveIds,
+		// 每个归档里有多少个 Unit（分母）。缺省 null 表示调用方拿不到索引——那时退回旧判据
+		// 「有一个 Unit 赢家就算命中」，宁可宽松，也不要把"分母未知"当成"未命中"。
+		IReadOnlyDictionary<string, int>? unitTotals = null)
 	{
 		ArgumentNullException.ThrowIfNull(index);
 		ArgumentNullException.ThrowIfNull(mapping);
@@ -71,9 +74,28 @@ internal static class ArmorCoverageProjection
 		{
 			byArchive.TryGetValue(archiveId, out var assets);
 			assets ??= [];
-			var unitWinner = RankWinners(assets.Where(asset => asset.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId));
+			var unitAssets = assets
+				.Where(asset => asset.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId)
+				.ToArray();
+			var unitWinner = RankWinners(unitAssets);
 			var coverWinner = unitWinner ?? RankWinners(assets);
-			entries[archiveId] = new ArmorCoverageEntry(unitWinner is not null, unitWinner, coverWinner);
+			// 判据：**超过一半**的 Unit 被替换才算命中。只换掉一两个属于"轻微污染"，
+			// 把它算成命中会让"已命中"筛选失去意义（也会让图标显示成一个其实没换模型的 Mod）。
+			// 分母来自索引（GetUnitCountsAsync）；拿不到分母时退回"有赢家就算命中"。
+			var replacedUnits = unitAssets
+				.Where(asset => asset.WinnerNodeId is not null)
+				.Select(asset => asset.AssetKey)
+				.Distinct()
+				.Count();
+			var totalUnits = unitTotals?.GetValueOrDefault(archiveId) ?? 0;
+			var hasEffectiveUnitOverride = totalUnits > 0
+				? replacedUnits * 2 > totalUnits
+				: unitWinner is not null;
+			entries[archiveId] = new ArmorCoverageEntry(hasEffectiveUnitOverride, unitWinner, coverWinner)
+			{
+				UnitsTotal = totalUnits,
+				UnitsReplaced = replacedUnits
+			};
 		}
 
 		var generation = ComputeGeneration(index.Fingerprint.SourceFingerprint, mapping.MappingGeneration, deployed.DeploymentGeneration, archiveIds);

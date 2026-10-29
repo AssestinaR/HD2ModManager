@@ -11,7 +11,19 @@ namespace HD2ModCore.Domain;
 public sealed record ArmorCoverageEntry(
 	bool HasEffectiveUnitOverride,
 	ModNodeId? UnitWinnerNodeId,
-	ModNodeId? CoverWinnerNodeId);
+	ModNodeId? CoverWinnerNodeId)
+{
+	/// <summary>这套护甲一共有几个 Unit（判定的分母）。0 表示分母未知——没有索引可查。</summary>
+	public int UnitsTotal { get; init; }
+
+	/// <summary>其中有多少个真的被某个 Mod 换掉了（判定的分子）。</summary>
+	public int UnitsReplaced { get; init; }
+
+	/// <summary>给界面用的一句话：<c>3 / 8 个 Unit 被替换</c>；分母未知时是 <c>3 个 Unit 被替换</c>。</summary>
+	public string UnitOverrideSummary => UnitsTotal > 0
+		? $"{UnitsReplaced} / {UnitsTotal} 个 Unit 被替换"
+		: $"{UnitsReplaced} 个 Unit 被替换";
+}
 
 // 作用：一批护甲的覆盖事实（设计文档 §4 #23 的 ArmorCoverage 视图）。
 // Purpose: Coverage facts for a batch of armor archives (the ArmorCoverage view of design section 4 #23).

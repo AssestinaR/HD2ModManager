@@ -749,7 +749,22 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			if (mapping.Data is null)
 				return new ModInformationResult<object>(null, ModInformationStatus.Failed, ModInformationKind.ArmorCoverage, request.Generation, mapping.Issues, false, true);
 
-			var facts = ArmorCoverageProjection.Project(index.Data, mapping.Data, deployed.Data, archiveIds);
+			// 「已命中」要按**超过一半的 Unit 被替换**判定，所以必须把分母一起取来。
+			// 取不到（索引不可用）时传 null，投影会退回"有赢家就算命中"。
+			IReadOnlyDictionary<string, int>? unitTotals;
+			var indexService = _assetArchiveIndexService;
+			try
+			{
+				unitTotals = indexService is null
+					? null
+					: await indexService.GetUnitCountsAsync(archiveIds, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+			{
+				// 分母只是"严格程度"，读不到不该让整个覆盖视图失败。
+				unitTotals = null;
+			}
+			var facts = ArmorCoverageProjection.Project(index.Data, mapping.Data, deployed.Data, archiveIds, unitTotals);
 			var issues = facts.Issues.Concat(deployed.Data.Issues).ToList();
 			return new ModInformationResult<object>(facts, ModInformationStatus.Fresh, ModInformationKind.ArmorCoverage, request.Generation ?? facts.CoverageGeneration, issues);
 		}
