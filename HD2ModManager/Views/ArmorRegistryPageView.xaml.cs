@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Animation;
+using HD2ModManager.Controls.Lists;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
@@ -15,7 +16,8 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 		Unloaded += (_, _) =>
 		{
 			ModRelationshipDragCoordinator.UnregisterTarget(this);
-			ResetDropOverlays();
+			ProviderDropOverlay.HideImmediately();
+			AvailableDropOverlay.HideImmediately();
 		};
 		Unloaded += async (_, _) =>
 		{
@@ -151,6 +153,17 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			viewModel.CloseComponentEditor();
 	}
 
+	// 这一页的拖放区是"列"，不是"列表"：左列同时承载来源列表和组件编辑器，
+	// 叠层必须盖在编辑器之上（旧实现是页面级 ZIndex 20）。所以本页继续做页面级
+	// 目标，但叠层、淡入淡出、命中判定全部交给 DropHintOverlay。
+	private DropHintOverlay? OverlayFor(ModRelationshipDragPayload? payload)
+		=> payload?.Operation switch
+		{
+			ModRelationshipDragOperation.ArmorRegistryAssign => ProviderDropOverlay,
+			ModRelationshipDragOperation.ArmorRegistryRelease => AvailableDropOverlay,
+			_ => null,
+		};
+
 	bool IModRelationshipDropTarget.CanAcceptRelationshipDrop(ModRelationshipDragPayload payload)
 	{
 		if (!IsLoaded || !IsVisible || DataContext is not ArmorRegistryPageViewModel viewModel)
@@ -165,64 +178,23 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 	}
 
 	bool IModRelationshipDropTarget.ContainsScreenPoint(Point screenPoint)
-	{
-		if (!IsLoaded || DataContext is not ArmorRegistryPageViewModel viewModel) return false;
-		var payload = ModRelationshipDragCoordinator.CurrentPayload;
-		if (payload is null) return false;
-
-		var overlay = payload.Operation == ModRelationshipDragOperation.ArmorRegistryAssign
-			? DropLeftOverlay
-			: DropRightOverlay;
-		if (overlay.Visibility != Visibility.Visible || overlay.ActualWidth <= 0 || overlay.ActualHeight <= 0)
-			return false;
-		try
-		{
-			var local = overlay.PointFromScreen(screenPoint);
-			return local.X >= 0 && local.Y >= 0
-				&& local.X <= overlay.ActualWidth
-				&& local.Y <= overlay.ActualHeight;
-		}
-		catch (InvalidOperationException)
-		{
-			return false;
-		}
-	}
+		=> OverlayFor(ModRelationshipDragCoordinator.CurrentPayload)?.ContainsPoint(screenPoint) ?? false;
 
 	bool IModRelationshipDropTarget.ContainsElement(DependencyObject element)
 		=> false;
 
 	void IModRelationshipDropTarget.SetRelationshipDropOverlay(ModRelationshipDragPayload payload, bool visible)
 	{
-		var overlay = payload.Operation == ModRelationshipDragOperation.ArmorRegistryAssign
-			? DropLeftOverlay
-			: DropRightOverlay;
+		var overlay = OverlayFor(payload);
+		if (overlay is null) return;
+
 		if (visible)
 		{
-			if (payload.Operation == ModRelationshipDragOperation.ArmorRegistryAssign)
-			{
-				DropLeftTitle.Text = DataContext is ArmorRegistryPageViewModel { IsProviderDetailOpen: true }
-					? "释放以添加映射目标"
-					: "释放以设为视觉来源";
-				DropLeftDetail.Text = DataContext is ArmorRegistryPageViewModel { IsProviderDetailOpen: true }
-					? $"添加 {payload.SelectedKeys.Count} 个未管理护甲"
-					: payload.SelectedKeys.Count == 1
-						? "将此护甲设为视觉对象"
-						: $"将 {payload.SelectedKeys.Count} 个护甲分别设为视觉对象";
-			}
-			else
-			{
-				DropRightTitle.Text = "释放以解除管理";
-				DropRightDetail.Text = "移除视觉来源会同时释放它的全部目标";
-			}
-			overlay.Visibility = Visibility.Visible;
-			overlay.BeginAnimation(OpacityProperty, null);
-			overlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0.94, TimeSpan.FromMilliseconds(120)));
+			overlay.Show(DescribeRelationshipDrop(payload));
 			return;
 		}
 
-		overlay.BeginAnimation(OpacityProperty, null);
-		overlay.Visibility = Visibility.Collapsed;
-		overlay.Opacity = 0;
+		overlay.Hide();
 	}
 
 	void IModRelationshipDropTarget.RaiseRelationshipDropRequested(ModRelationshipDragPayload payload)
@@ -234,13 +206,16 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			viewModel.ReleaseToAvailable(payload.SelectedKeys);
 	}
 
-	private void ResetDropOverlays()
+	private ModListDropHint DescribeRelationshipDrop(ModRelationshipDragPayload payload)
 	{
-		foreach (var overlay in new[] { DropLeftOverlay, DropRightOverlay })
-		{
-			overlay.BeginAnimation(OpacityProperty, null);
-			overlay.Visibility = Visibility.Collapsed;
-			overlay.Opacity = 0;
-		}
+		if (payload.Operation != ModRelationshipDragOperation.ArmorRegistryAssign)
+			return new ModListDropHint("释放以解除管理", "移除视觉来源会同时释放它的全部目标");
+
+		if (DataContext is ArmorRegistryPageViewModel { IsProviderDetailOpen: true })
+			return new ModListDropHint("释放以添加映射目标", $"添加 {payload.SelectedKeys.Count} 个未管理护甲");
+
+		return payload.SelectedKeys.Count == 1
+			? new ModListDropHint("释放以设为视觉来源", "将此护甲设为视觉对象")
+			: new ModListDropHint("释放以设为视觉来源", $"将 {payload.SelectedKeys.Count} 个护甲分别设为视觉对象");
 	}
 }

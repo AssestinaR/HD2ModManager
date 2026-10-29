@@ -9,6 +9,7 @@ using HD2ModCore.Domain;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
 using HD2ModManager.Controls.EmptyState;
+using HD2ModManager.Controls.Lists;
 
 namespace HD2ModManager.ViewModels
 {
@@ -842,7 +843,7 @@ namespace HD2ModManager.ViewModels
             => string.Join('\u001f', contentVersion, isSelected);
     }
 
-    public class ModCardViewModel : BaseViewModel, IModListSelectable, IModListInternalReorderable
+    public class ModCardViewModel : BaseViewModel, IModListSelectable, IModListInternalReorderable, IModListRowActionFilter
     {
         private HD2ModManager.Models.ModEntity _mod;
         private ModAssetSummary? _assetSummary;
@@ -861,6 +862,12 @@ namespace HD2ModManager.ViewModels
         public bool IsAttachable => Mod.IsDecoration || Mod.IsOption;
         public bool CanInternalReorder => Mod.IsOption;
         public bool CanJoinProfile => Mod.Capabilities.CanJoinProfile;
+        // 行级动作抑制：不能加入配置的 Mod 不该出现"加入配置"，既不是装饰也不是
+        // 选项的 Mod 不该出现"启用装饰"。这条规则以前写在面板 XAML 的转换器里，
+        // 靠属性名去猜；现在由行自己回答。
+        public ModListRowAction HiddenActions
+            => (CanJoinProfile ? ModListRowAction.None : ModListRowAction.AddToProfile)
+             | (IsAttachable ? ModListRowAction.None : ModListRowAction.ToggleDecoration);
         private string? _thumbnailSourcePath;
         private string? _imagePath;
         private int _thumbnailRevision;

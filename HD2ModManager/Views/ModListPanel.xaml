@@ -3,15 +3,14 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views"
+             xmlns:lists="clr-namespace:HD2ModManager.Controls.Lists"
              xmlns:empty="clr-namespace:HD2ModManager.Controls.EmptyState"
              PreviewKeyDown="OnPreviewKeyDown">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <empty:NullOrEmptyToCollapsedConverter x:Key="VisibleWhenText"/>
         <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
-        <local:RowActionVisibilityConverter x:Key="RowActionVisibility"/>
-        <local:CustomArmorRowActionVisibilityConverter x:Key="CustomArmorRowActionVisibility"/>
-        <local:DecorationRowActionVisibilityConverter x:Key="DecorationRowActionVisibility"/>
+        <lists:RowActionListConverter x:Key="RowActionList"/>
         <local:ModListRowToneBrushConverter x:Key="RowToneBrush"/>
         <DropShadowEffect x:Key="RowActionPillShadow" BlurRadius="8" ShadowDepth="2" Opacity="0.16" Color="#243042"/>
         <Style x:Key="ModListHeaderTitle" TargetType="TextBlock" BasedOn="{StaticResource AppCardTitle}">
@@ -188,100 +187,51 @@
                                         Background="{StaticResource SurfaceCard}" Opacity="0" IsHitTestVisible="False"
                                         Effect="{StaticResource RowActionPillShadow}"
                                         Visibility="{Binding HasRowActions, ElementName=Root, Converter={StaticResource BoolToVis}}">
-                                    <StackPanel Orientation="Horizontal">
-                                        <Button Tag="{x:Static local:ModListRowAction.Rename}" ToolTip="重命名" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.Rename}}">
-                                            <Path Width="16" Height="16" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.Details}" ToolTip="查看详情" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.Details}}">
-                                            <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ArmorAssign}" ToolTip="{Binding ArmorAssignToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorAssign}}">
-                                            <Path Width="16" Height="16" Data="M13,8 L3,8 M3,8 L7,4 M3,8 L7,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ArmorRelease}" ToolTip="{Binding ArmorReleaseToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                >
-                                            <Button.Visibility>
-                                                <MultiBinding Converter="{StaticResource CustomArmorRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ArmorRelease}">
-                                                    <Binding Path="RowActions" ElementName="Root"/>
-                                                    <Binding Path="IsCustomModel"/>
-                                                </MultiBinding>
-                                            </Button.Visibility>
-                                            <Path Width="16" Height="16" Data="M3,8 L13,8 M13,8 L9,4 M13,8 L9,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ArmorDeleteCustomModel}" ToolTip="删除自定义素体" Style="{StaticResource RowIconButton}" Margin="0" Foreground="{StaticResource StatusDanger}" Click="OnRowActionClick">
-                                            <Button.Visibility>
-                                                <MultiBinding Converter="{StaticResource CustomArmorRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ArmorDeleteCustomModel}">
-                                                    <Binding Path="RowActions" ElementName="Root"/>
-                                                    <Binding Path="IsCustomModel"/>
-                                                </MultiBinding>
-                                            </Button.Visibility>
-                                            <Path Width="16" Height="16" Data="M3,4 L13,4 M6,4 L6,2 L10,2 L10,4 M5,6 L5.5,13 L10.5,13 L11,6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ArmorRenameCustomModel}" ToolTip="重命名自定义素体" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick">
-                                            <Button.Visibility>
-                                                <MultiBinding Converter="{StaticResource CustomArmorRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ArmorRenameCustomModel}">
-                                                    <Binding Path="RowActions" ElementName="Root"/>
-                                                    <Binding Path="IsCustomModel"/>
-                                                </MultiBinding>
-                                            </Button.Visibility>
-                                            <Path Width="16" Height="16" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ArmorOpenDetails}" ToolTip="{Binding ArmorOpenDetailsToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorOpenDetails}}">
-                                            <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ArmorEditComponents}" ToolTip="{Binding ArmorEditComponentsToolTip, ElementName=Root}" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ArmorEditComponents}}">
-                                            <Path Width="16" Height="16" Data="M6.8,1.5 L9.2,1.5 L9.7,3.1 A5.2,5.2 0 0 1 11.1,3.9 L12.7,3.3 L14.4,5 L13.6,6.5 A5.3,5.3 0 0 1 13.8,8 L15,9 L14.1,11.2 L12.4,11 A5.4,5.4 0 0 1 11.2,12.1 L11.3,13.8 L9,14.5 L8,13 A5.3,5.3 0 0 1 6.4,13 L5.3,14.2 L3.1,13 L3.7,11.4 A5.2,5.2 0 0 1 2.8,10.2 L1.4,9.6 L1.8,7.2 L3.4,6.8 A5.2,5.2 0 0 1 3.8,5.2 L3,3.8 L4.9,2.4 L6.1,3.2 Z M8,5.2 A2.8,2.8 0 1 0 8,10.8 A2.8,2.8 0 1 0 8,5.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.1" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.AddToProfile}" ToolTip="加入正在编辑的配置" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                >
-                                            <Button.Visibility>
-                                                <MultiBinding Converter="{StaticResource DecorationRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.AddToProfile}">
-                                                    <Binding Path="RowActions" ElementName="Root"/>
-                                                    <Binding Path="CanJoinProfile"/>
-                                                </MultiBinding>
-                                            </Button.Visibility>
-                                            <Path Width="16" Height="16" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ToggleDecoration}" ToolTip="启用或禁用装饰" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                >
-                                            <Button.Visibility>
-                                                <MultiBinding Converter="{StaticResource DecorationRowActionVisibility}" ConverterParameter="{x:Static local:ModListRowAction.ToggleDecoration}">
-                                                    <Binding Path="RowActions" ElementName="Root"/>
-                                                    <Binding Path="IsAttachable"/>
-                                                </MultiBinding>
-                                            </Button.Visibility>
-                                            <Path Width="16" Height="16" Data="M8,1.5 L8,8 M4,3.5 A6,6 0 1 0 12,3.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.ExportMod}" ToolTip="导出为文件夹结构 zip" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.ExportMod}}">
-                                            <Path Width="16" Height="16" Data="M8,12.5 L8,3.5 M4.5,7 L8,3.5 L11.5,7 M2.5,11.5 L2.5,13.5 L13.5,13.5 L13.5,11.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.OpenFolder}" ToolTip="打开文件夹" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.OpenFolder}}">
-                                            <Path Width="16" Height="16" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.MoveUp}" ToolTip="上移" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.MoveUp}}">
-                                            <Path Width="16" Height="16" Data="M8,13 L8,3 M3.5,7.5 L8,3 L12.5,7.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.MoveDown}" ToolTip="下移" Style="{StaticResource RowIconButton}" Margin="0" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.MoveDown}}">
-                                            <Path Width="16" Height="16" Data="M8,3 L8,13 M3.5,8.5 L8,13 L12.5,8.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.RemoveFromProfile}" ToolTip="从配置移除" Style="{StaticResource RowIconButton}" Margin="0" Foreground="{StaticResource StatusDanger}" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.RemoveFromProfile}}">
-                                            <Path Width="16" Height="16" Data="M3,8 L13,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.8" StrokeStartLineCap="Round"/>
-                                        </Button>
-                                        <Button Tag="{x:Static local:ModListRowAction.DeleteFromLibrary}" ToolTip="从模组库彻底删除" Style="{StaticResource RowIconButton}" Margin="0" Foreground="{StaticResource StatusDanger}" Click="OnRowActionClick"
-                                                Visibility="{Binding RowActions, ElementName=Root, Converter={StaticResource RowActionVisibility}, ConverterParameter={x:Static local:ModListRowAction.DeleteFromLibrary}}">
-                                            <Path Width="16" Height="16" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5 M7,7.5 L7,11.5 M9,7.5 L9,11.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-                                        </Button>
-                                    </StackPanel>
+                                    <!--
+                                        行内动作完全由声明生成：宿主给 flags，行给抑制集合，
+                                        ModListRowActionCatalog 给图标/文案/线宽/危险色。
+                                        加一个动作 = 枚举 + catalog 一行 + RowIcon.* 几何，
+                                        这里一行都不用改。
+                                    -->
+                                    <ItemsControl Focusable="False">
+                                        <ItemsControl.ItemsSource>
+                                            <MultiBinding Converter="{StaticResource RowActionList}">
+                                                <Binding Path="RowActions" ElementName="Root"/>
+                                                <Binding/>
+                                                <Binding ElementName="Root"/>
+                                            </MultiBinding>
+                                        </ItemsControl.ItemsSource>
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal"/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button Tag="{Binding}"
+                                                        ToolTip="{Binding ToolTip}"
+                                                        Margin="0"
+                                                        Click="OnRowActionClick">
+                                                    <Button.Style>
+                                                        <Style TargetType="Button" BasedOn="{StaticResource RowIconButton}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsDestructive}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{StaticResource StatusDanger}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Button.Style>
+                                                    <Path Width="16" Height="16"
+                                                          Data="{Binding Icon}"
+                                                          StrokeThickness="{Binding StrokeThickness}"
+                                                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                                          StrokeStartLineCap="Round"
+                                                          StrokeEndLineCap="Round"
+                                                          StrokeLineJoin="Round"/>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                 </Border>
                             </Grid>
                         </Border>
@@ -347,12 +297,12 @@
                 只给了 EmptyMessage 的老页面仍然显示一行文字，颜色从 #888 提到 TextSecondary
                 （3.54:1 → 5.38:1）。
             -->
-            <empty:EmptyStateView State="{Binding EmptyState, ElementName=Root}"
+            <empty:EmptyStateView State="{Binding EffectiveEmptyState, ElementName=Root}"
                                   Panel.ZIndex="5">
                 <empty:EmptyStateView.Style>
                     <Style TargetType="empty:EmptyStateView">
                         <Setter Property="Visibility"
-                                Value="{Binding EmptyState, ElementName=Root, Converter={StaticResource VisibleWhenText}}"/>
+                                Value="{Binding EffectiveEmptyState, ElementName=Root, Converter={StaticResource VisibleWhenText}}"/>
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding HasPresentedItems, ElementName=Root}" Value="True">
                                 <Setter Property="Visibility" Value="Collapsed"/>
@@ -374,7 +324,7 @@
                             <MultiDataTrigger>
                                 <MultiDataTrigger.Conditions>
                                     <Condition Binding="{Binding HasPresentedItems, ElementName=Root}" Value="False"/>
-                                    <Condition Binding="{Binding EmptyState, ElementName=Root}" Value="{x:Null}"/>
+                                    <Condition Binding="{Binding EffectiveEmptyState, ElementName=Root}" Value="{x:Null}"/>
                                 </MultiDataTrigger.Conditions>
                                 <Setter Property="Visibility" Value="Visible"/>
                             </MultiDataTrigger>
@@ -387,6 +337,11 @@
                 Bulk filters keep the old viewport as a real, virtualized ListBox
                 while the active ListBox prepares the next projection underneath.
                 This avoids bitmap snapshots and lets both sides genuinely fade.
+
+                这一层故意不渲染空态：它只在整批替换（removed + inserted >= 16）
+                时出现，承载的是**旧**投影。旧投影为空就等于没有东西要淡出，
+                此时画任何文案都只能是新状态的文案，属于谎报；留空、让新投影
+                自己淡入才是对的。
             -->
             <Grid x:Name="OutgoingPresentationLayer"
                   Visibility="Collapsed"
@@ -400,36 +355,20 @@
                          Focusable="False"
                          IsTabStop="False"
                          ScrollViewer.VerticalScrollBarVisibility="{Binding VerticalScrollBarVisibility, ElementName=Root}"/>
-                <TextBlock Text="{Binding EmptyMessage, ElementName=Root}"
-                           Foreground="{StaticResource TextSecondary}"
-                           Margin="16"
-                           Panel.ZIndex="5"
-                           IsHitTestVisible="False">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Visibility" Value="Collapsed"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding HasOutgoingPresentedItems, ElementName=Root}" Value="False">
-                                    <Setter Property="Visibility" Value="Visible"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
             </Grid>
             <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="20"/>
             <Canvas x:Name="DropOverlay" IsHitTestVisible="False" Panel.ZIndex="30">
                 <Border x:Name="DropInsertionIndicator" Height="2" Background="{StaticResource Accent}"
                         Visibility="Collapsed" IsHitTestVisible="False"/>
             </Canvas>
-            <Border x:Name="ExternalProfileDropOverlay" Panel.ZIndex="40" Visibility="Collapsed"
-                    Background="#D9FFFFFF" BorderBrush="{StaticResource Accent}" BorderThickness="1" CornerRadius="{StaticResource RadiusCard}"
-                    IsHitTestVisible="False" Opacity="0">
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding ExternalDropTitle, ElementName=Root}" Foreground="{StaticResource TextPrimary}" FontWeight="SemiBold" FontSize="15" HorizontalAlignment="Center"/>
-                    <TextBlock Text="{Binding ExternalDropDetail, ElementName=Root}" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,5,0,0" HorizontalAlignment="Center"/>
-                </StackPanel>
-            </Border>
+            <!--
+                两种拖入叠层都由 DropHintOverlay 渲染，宿主只给文案：
+                - ExternalDropOverlay：配置页方向（从库拖到配置 / 从配置拖回库）。
+                - RelationshipDropOverlay：关系拖放方向（设为选项 / 护甲映射），
+                  由 AcceptsRelationshipDrop 声明参与哪种操作。
+            -->
+            <lists:DropHintOverlay x:Name="ExternalDropOverlay" Panel.ZIndex="40"/>
+            <lists:DropHintOverlay x:Name="RelationshipDropOverlay" Panel.ZIndex="45"/>
             </Grid>
         </Border>
     </DockPanel>

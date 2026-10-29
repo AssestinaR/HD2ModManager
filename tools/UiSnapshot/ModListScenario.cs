@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HD2ModManager.Controls.EmptyState;
+using HD2ModManager.Controls.Lists;
 using HD2ModManager.ViewModels;
 using HD2ModManager.Views;
 
@@ -22,12 +23,13 @@ internal static class ModListScenario
         Checkbox,
         Empty,
         EmptyState,
-        EmptySearch
+        EmptySearch,
+        EmptySearchDerived
     }
 
     public static Scenario Build(string name, Variant variant)
     {
-        var rows = variant is Variant.Empty or Variant.EmptyState or Variant.EmptySearch
+        var rows = variant is Variant.Empty or Variant.EmptyState or Variant.EmptySearch or Variant.EmptySearchDerived
             ? new List<FakeRow>()
             : FakeRow.Sample();
         if (variant == Variant.Selected)
@@ -42,7 +44,7 @@ internal static class ModListScenario
             HeaderTitle = profileLike ? "配置文件（放在这边的mod才会启用）" : "模组库",
             HeaderSummary = profileLike
                 ? "显示 6 / 6 个 Mod · 活动配置：配置文件（放在这边的mod才会启用） · 正在编辑活动配置"
-                : variant == Variant.EmptySearch ? "显示 0 / 33 个 Mod" : "显示 12 / 33 个 Mod",
+                : variant is Variant.EmptySearch or Variant.EmptySearchDerived ? "显示 0 / 33 个 Mod" : "显示 12 / 33 个 Mod",
             EmptyMessage = "没有可显示的 Mod。",
             ItemsSource = rows,
             SelectionPolicy = ModListSelectionPolicy.Multiple,
@@ -74,6 +76,12 @@ internal static class ModListScenario
                 new AlwaysCommand(),
                 EmptyStateIcon.Search);
         }
+        else if (variant == Variant.EmptySearchDerived)
+        {
+            // 宿主没有给 EmptyState：面板应当自己派生"没有匹配"态，
+            // 因为搜索框是它自己的控件，它知道自己正被使用。
+            panel.SearchText = "zzz";
+        }
 
         return new Scenario
         {
@@ -83,6 +91,147 @@ internal static class ModListScenario
             {
                 Variant.Hover => root => ApplyHover(root, 2),
                 _ => null
+            }
+        };
+    }
+
+    // 探针：行内动作从"声明"回到"事件"这条链必须是活的——按钮在 ItemsControl 里，
+    // 它的 DataContext 是动作项，行对象只能从容器上取。这里真的点一次按钮，把
+    // 事件里拿到的行类型、动作、按钮数写进表头，让截图自己证明。
+    public static Scenario BuildRowActionProbe(string name)
+    {
+        var rows = FakeRow.Sample();
+        var panel = new ModListPanel
+        {
+            HeaderTitle = "行内动作探针",
+            HeaderSummary = "PROBE: not run",
+            ItemsSource = rows,
+            SelectionPolicy = ModListSelectionPolicy.Multiple,
+            RowActions = ModListRowAction.Rename | ModListRowAction.Details | ModListRowAction.ArmorAssign |
+                         ModListRowAction.AddToProfile |
+                         ModListRowAction.ToggleDecoration | ModListRowAction.OpenFolder | ModListRowAction.DeleteFromLibrary,
+            // 宿主覆盖文案这条链也要证明：护甲映射页就是靠它把"解除"改成"解除视觉对象"。
+            ArmorAssignToolTip = "覆盖文案-加入视觉来源",
+        };
+
+        string? received = null;
+        panel.RowActionInvoked += (_, e) => received = $"{e.Item?.GetType().Name}/{e.Action}";
+
+        return new Scenario
+        {
+            Name = name,
+            Build = () => Wrap(panel),
+            Settle = host =>
+            {
+                host.Pump(2);
+                var actionPanel = VisualTree.All<Border>(host.Content)
+                    .FirstOrDefault(border => border.Name == "ActionPanel");
+                var buttons = actionPanel is null
+                    ? new List<Button>()
+                    : VisualTree.All<Button>(actionPanel).ToList();
+                buttons.FirstOrDefault()?.RaiseEvent(
+                    new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                host.Pump(2);
+
+                // 第二段：搜索不变式。查询非空 → 搜索框展开且派生出空态；
+                // 点一下搜索开关收起 → 查询必须同时被清空，不能留下"看不见的过滤"。
+                panel.SearchText = "zzz";
+                host.Pump(2);
+                var searchBox = VisualTree.Named<TextBox>(host.Content, "HeaderSearchBox");
+                var openedOnDemand = searchBox?.Visibility == Visibility.Visible;
+                var derivedState = panel.EffectiveEmptyState is EmptyStatePresentation derived
+                    ? derived.Title
+                    : "null";
+
+                var headerCard = VisualTree.Named<Border>(host.Content, "HeaderCard");
+                var toggle = headerCard is null ? null : VisualTree.All<Button>(headerCard).FirstOrDefault();
+                toggle?.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                host.Pump(2);
+                var clearedOnHide = string.IsNullOrEmpty(panel.SearchText)
+                    && panel.EffectiveEmptyState is null;
+
+                panel.HeaderTitle = "行内动作探针 · " + string.Join(" | ", buttons.Select(button => button.ToolTip));
+                panel.HeaderSummary =
+                    $"PROBE: {received ?? "no click received"} · buttons={buttons.Count} " +
+                    $"· searchAutoOpen={openedOnDemand} · derived='{derivedState}' · clearedOnHide={clearedOnHide}";
+            }
+        };
+    }
+
+    // 探针：关系拖放整条链。面板自己就是目标，所以"声明参与哪种操作 → 显示叠层 →
+    // 命中判定 → 放下事件"可以在离屏环境里逐项断言，不需要真的拖动鼠标。
+    public static Scenario BuildRelationshipDropProbe(string name)
+    {
+        var sourcePanel = new ModListPanel
+        {
+            HeaderTitle = "源（拖出）",
+            HeaderSummary = "RelationshipDragOperation = SetAsOption",
+            ItemsSource = FakeRow.Sample(),
+            SelectionPolicy = ModListSelectionPolicy.Multiple,
+            RelationshipDragOperation = ModRelationshipDragOperation.SetAsOption,
+        };
+
+        var targetPanel = new ModListPanel
+        {
+            HeaderTitle = "目标（拖入）",
+            HeaderSummary = "PROBE: not run",
+            ItemsSource = FakeRow.Sample(),
+            SelectionPolicy = ModListSelectionPolicy.Multiple,
+            AcceptsRelationshipDrop = ModRelationshipDragOperation.SetAsOption,
+            RelationshipDropHintFactory = payload => new ModListDropHint(
+                "探针：释放以设为选项",
+                $"共 {payload.SelectedKeys.Count} 项"),
+        };
+
+        string? dropped = null;
+        targetPanel.RelationshipDropRequested += (_, e) => dropped = $"{e.Operation}/{e.SelectedKeys.Count}";
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        grid.Children.Add(sourcePanel);
+        Grid.SetColumn(targetPanel, 1);
+        grid.Children.Add(targetPanel);
+
+        return new Scenario
+        {
+            Name = name,
+            Build = () => Wrap(grid),
+            Settle = host =>
+            {
+                host.Pump(2);
+                var payload = new ModRelationshipDragPayload(
+                    ModRelationshipDragOperation.SetAsOption,
+                    ["row-00", "row-01"],
+                    null);
+                var target = (IModRelationshipDropTarget)targetPanel;
+
+                var accepted = target.CanAcceptRelationshipDrop(payload);
+                target.SetRelationshipDropOverlay(payload, true);
+                // 叠层是淡入的，离屏渲染必须真的把动画时钟推过去，否则截到的是 Opacity≈0。
+                host.PumpFor(260);
+
+                var overlay = VisualTree.All<DropHintOverlay>(targetPanel)
+                    .FirstOrDefault(candidate => candidate.Visibility == Visibility.Visible);
+                var hint = overlay?.Hint as ModListDropHint;
+
+                var insidePoint = targetPanel.PointToScreen(
+                    new Point(targetPanel.ActualWidth / 2, targetPanel.ActualHeight / 2));
+                var outsidePoint = sourcePanel.PointToScreen(
+                    new Point(sourcePanel.ActualWidth / 2, sourcePanel.ActualHeight / 2));
+                var hitsInside = target.ContainsScreenPoint(insidePoint);
+                var hitsOutside = target.ContainsScreenPoint(outsidePoint);
+
+                target.RaiseRelationshipDropRequested(payload);
+
+                // 源和目标可以是同一个面板（库页拖自己的行去建关系）。这时必须把自己
+                // 排除掉，否则会在自己身上弹叠层、松手还会真的执行。
+                var selfExcluded = ((IModRelationshipDropTarget)targetPanel).ContainsElement(targetPanel);
+
+                targetPanel.HeaderTitle = "目标（拖入）· " + (hint?.Title ?? "no hint");
+                targetPanel.HeaderSummary =
+                    $"PROBE: accepted={accepted} · hitsInside={hitsInside} · hitsOutside={hitsOutside} " +
+                    $"· selfExcluded={selfExcluded} · dropped={dropped ?? "none"} · detail='{hint?.Detail}'";
             }
         };
     }
@@ -127,7 +276,7 @@ internal static class ModListScenario
 // Minimal stand-in for the real row view models: only the presentation contract
 // the shared panel binds to, plus the optional capability flags the template
 // checks per row.
-internal sealed class FakeRow : IModListSelectable, IModListInternalReorderable, INotifyPropertyChanged
+internal sealed class FakeRow : IModListSelectable, IModListInternalReorderable, IModListRowActionFilter, INotifyPropertyChanged
 {
     private bool _isSelected;
 
@@ -138,9 +287,7 @@ internal sealed class FakeRow : IModListSelectable, IModListInternalReorderable,
     public bool CanInternalReorder { get; init; }
     public string Name { get; init; } = string.Empty;
     public string? ImagePath { get; init; }
-    public bool IsCustomModel => false;
-    public bool CanJoinProfile => false;
-    public bool IsAttachable => false;
+    public ModListRowAction HiddenActions { get; init; } = ModListRowAction.None;
 
     public bool IsSelected
     {
@@ -161,7 +308,7 @@ internal sealed class FakeRow : IModListSelectable, IModListInternalReorderable,
         var rows = new List<FakeRow>();
         var index = 0;
 
-        FakeRow Add(string name, ModListRowPresentation presentation, bool decoration = false, bool reorderable = false)
+        FakeRow Add(string name, ModListRowPresentation presentation, bool decoration = false, bool reorderable = false, ModListRowAction hidden = ModListRowAction.None)
         {
             var row = new FakeRow
             {
@@ -170,6 +317,7 @@ internal sealed class FakeRow : IModListSelectable, IModListInternalReorderable,
                 ImagePath = images.Count > 0 ? images[index % images.Count] : null,
                 IsDecoration = decoration,
                 CanInternalReorder = reorderable,
+                HiddenActions = hidden,
                 RowPresentation = presentation
             };
             index++;
@@ -177,9 +325,11 @@ internal sealed class FakeRow : IModListSelectable, IModListInternalReorderable,
             return row;
         }
 
+        // 前两行分别演示两种行级抑制：不能加入配置 / 不是可附加对象。
         Add("【4.28】Chiffon-LUNALICE替换RE-2310",
             new ModListRowPresentation(ActivationLabel: "仅存储", ActivationTone: ModListRowTone.Muted,
-                Note: "替换 RE-2310 全甲"));
+                Note: "替换 RE-2310 全甲"),
+            hidden: ModListRowAction.AddToProfile);
 
         Add("lunalice基础材质a1主体",
             new ModListRowPresentation(ActivationLabel: "已启用", ActivationTone: ModListRowTone.Success,
@@ -188,7 +338,8 @@ internal sealed class FakeRow : IModListSelectable, IModListInternalReorderable,
 
         Add("Bingus Shared Loader - v15",
             new ModListRowPresentation(ActivationLabel: "仅存储", ActivationTone: ModListRowTone.Muted,
-                Summary: "包含 1 个选项", Note: "必须放在列表最底部"));
+                Summary: "包含 1 个选项", Note: "必须放在列表最底部"),
+            hidden: ModListRowAction.ToggleDecoration);
 
         Add("RE-2310 头盔替换 · 猩红",
             new ModListRowPresentation(ActivationLabel: "仅存储", ActivationTone: ModListRowTone.Muted,

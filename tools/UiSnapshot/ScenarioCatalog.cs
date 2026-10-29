@@ -32,6 +32,9 @@ internal static class ScenarioCatalog
         ["modlist-empty"] = () => ModListScenario.Build("modlist-empty", ModListScenario.Variant.Empty),
         ["modlist-empty-state"] = () => ModListScenario.Build("modlist-empty-state", ModListScenario.Variant.EmptyState),
         ["modlist-empty-search"] = () => ModListScenario.Build("modlist-empty-search", ModListScenario.Variant.EmptySearch),
+        ["modlist-empty-search-derived"] = () => ModListScenario.Build("modlist-empty-search-derived", ModListScenario.Variant.EmptySearchDerived),
+        ["rowaction-probe"] = () => ModListScenario.BuildRowActionProbe("rowaction-probe"),
+        ["relationship-drop-probe"] = () => ModListScenario.BuildRelationshipDropProbe("relationship-drop-probe"),
         ["cards"] = () => CardScenario.Build("cards", midInsert: false),
         ["cards-insert"] = () => CardScenario.Build("cards-insert", midInsert: true),
         ["cards-hide"] = () => CardScenario.BuildHide("cards-hide"),
@@ -45,6 +48,12 @@ internal static class ScenarioCatalog
         ["wheel-probe-fixed"] = () => WheelProbeScenario.Build("wheel-probe-fixed", wheelScrollEnabled: true),
         ["empty-mock"] = () => EmptyStateScenario.Build("empty-mock"),
         ["capsule-mock"] = () => CapsuleMockScenario.Build("capsule-mock"),
+        ["cluster"] = () => ClusterScenario.Build("cluster", expanded: false),
+        ["cluster-expanded"] = () => ClusterScenario.Build("cluster-expanded", expanded: true),
+        ["cluster-many"] = () => ClusterScenario.Build("cluster-many", expanded: true, many: true),
+        ["cluster-many-focus"] = () => ClusterScenario.Build("cluster-many-focus", expanded: true, many: true, focus: 3),
+        ["cluster-labels"] = () => ClusterScenario.BuildLabelLengths("cluster-labels", "生成替换"),
+        ["cluster-labels-max"] = () => ClusterScenario.BuildLabelLengths("cluster-labels-max", "批量生成"),
     };
 
     public static IEnumerable<string> Names => Factories.Keys;

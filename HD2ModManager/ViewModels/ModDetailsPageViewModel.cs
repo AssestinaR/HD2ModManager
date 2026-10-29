@@ -224,6 +224,7 @@ namespace HD2ModManager.ViewModels
             Refresh();
             if (IsDecoration) RefreshDecorationSummary();
             if (CanUsePatchTools) _ = RefreshInformationProductsAsync();
+            RegisterPageActions();
         }
 
         private async Task RefreshInformationProductsAsync()

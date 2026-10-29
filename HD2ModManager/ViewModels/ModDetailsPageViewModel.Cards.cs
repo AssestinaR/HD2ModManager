@@ -27,7 +27,6 @@ public static class ModDetailsCardLayout
 {
     public const string HeaderCardId = "mod-header";
     public const string DescriptionCardId = "mod-description";
-    public const string ActionsCardId = "mod-actions";
     public const string VpkActionsCardId = "vpk-actions";
     public const string VpkComponentsCardId = "vpk-components";
     public const string DecorationCardId = "decoration-details";
@@ -43,7 +42,6 @@ public static class ModDetailsCardLayout
         {
             new CardDescriptor(HeaderCardId, CardKind.ModHeader, data) { Order = 10 },
             new CardDescriptor(DescriptionCardId, CardKind.ModDescription, data) { Order = 20, Title = "备注" },
-            new CardDescriptor(ActionsCardId, CardKind.ModActions, data) { Order = 30 },
             new CardDescriptor(VpkActionsCardId, CardKind.VpkActions, data) { Order = 40, Title = "VPK 动作" },
             new CardDescriptor(VpkComponentsCardId, CardKind.VpkComponents, data)
             {
@@ -70,7 +68,6 @@ public static class ModDetailsCardLayout
             {
                 HeaderCardId => true,
                 DescriptionCardId => state.HasDescription,
-                ActionsCardId => true,
                 VpkActionsCardId => state.IsVpkMod,
                 VpkComponentsCardId => state.ShowVpkComponentCard,
                 DecorationCardId => state.IsDecoration,

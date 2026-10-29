@@ -11,6 +11,7 @@ using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Services;
+using HD2ModManager.Controls.Actions;
 using HD2ModManager.Controls.EmptyState;
 
 namespace HD2ModManager.ViewModels
@@ -534,12 +535,12 @@ namespace HD2ModManager.ViewModels
             MoveUpCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, -1));
             MoveDownCommand = new RelayCommand(async parameter => await MoveModAsync(parameter, 1));
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
-            PageActions.Add(new PageActionViewModel("＋", "新建配置", CreateProfileCommand, order: 10, kind: "CreateProfile"));
-            PageActions.Add(new PageActionViewModel("⇄", "切换当前配置", new RelayCommand(_ => _bottomBar?.BeginSwitchProfile()), order: 12, kind: "SwitchProfile"));
-            PageActions.Add(new PageActionViewModel("▶", "设为活动配置", ActivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(26, 127, 75)), order: 15, kind: "ActivateProfile"));
-            PageActions.Add(new PageActionViewModel("■", "停用活动配置", DeactivateProfileCommand, background: new SolidColorBrush(Color.FromRgb(94, 100, 112)), order: 16, kind: "DeactivateProfile"));
-            PageActions.Add(new PageActionViewModel("✎", "重命名配置", new RelayCommand(_ => _bottomBar?.BeginRenameProfile()), background: new SolidColorBrush(Color.FromRgb(30, 99, 214)), order: 20, kind: "RenameProfile"));
-            PageActions.Add(new PageActionViewModel("🗑", "删除当前配置", RemoveSelectedProfileCommand, background: new SolidColorBrush(Color.FromRgb(179, 38, 30)), order: 30, kind: "RemoveProfile"));
+            PageActions.Add(new PageActionViewModel(PageActionKind.CreateProfile, "新建配置", CreateProfileCommand, tone: PageActionTone.Primary, order: 10));
+            PageActions.Add(new PageActionViewModel(PageActionKind.SwitchProfile, "切换当前配置", new RelayCommand(_ => _bottomBar?.BeginSwitchProfile()), order: 12));
+            PageActions.Add(new PageActionViewModel(PageActionKind.ActivateProfile, "设为活动配置", ActivateProfileCommand, tone: PageActionTone.Primary, order: 15));
+            PageActions.Add(new PageActionViewModel(PageActionKind.DeactivateProfile, "停用活动配置", DeactivateProfileCommand, order: 16));
+            PageActions.Add(new PageActionViewModel(PageActionKind.RenameProfile, "重命名配置", new RelayCommand(_ => _bottomBar?.BeginRenameProfile()), order: 20));
+            PageActions.Add(new PageActionViewModel(PageActionKind.RemoveProfile, "删除当前配置", RemoveSelectedProfileCommand, tone: PageActionTone.Danger, order: 30));
             Refresh();
             QueueStatusRefresh();
             QueueThumbnailWarmup();

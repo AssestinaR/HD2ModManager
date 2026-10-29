@@ -3,21 +3,6 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
-        <DataTemplate x:Key="DetailsIcon">
-            <Path Width="16" Height="16" Data="M8,1 A7,7 0 1 0 8,15 A7,7 0 1 0 8,1 M8,6 L8,11 M8,4 L8,4.2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round"/>
-        </DataTemplate>
-        <DataTemplate x:Key="RenameIcon">
-            <Path Width="16" Height="16" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-        </DataTemplate>
-        <DataTemplate x:Key="AddIcon">
-            <Path Width="16" Height="16" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round"/>
-        </DataTemplate>
-        <DataTemplate x:Key="FolderIcon">
-            <Path Width="16" Height="16" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-        </DataTemplate>
-        <DataTemplate x:Key="DeleteIcon">
-            <Path Width="16" Height="16" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5 M7,7.5 L7,11.5 M9,7.5 L9,11.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round"/>
-        </DataTemplate>
         <DataTemplate x:Key="LibrarySearchActions">
             <StackPanel Orientation="Horizontal">
                 <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
@@ -26,48 +11,29 @@
             </StackPanel>
         </DataTemplate>
     </UserControl.Resources>
-    <Grid>
-        <local:ModListPanel x:Name="LibraryModList" ItemsSource="{Binding Items}"
-                            HeaderTitle="模组库"
-                            HeaderSummary="{Binding ItemCountText}"
-                            EmptyState="{Binding EmptyState}"
-                            SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
-                            SearchActionsTemplate="{StaticResource LibrarySearchActions}"
-                            RowActions="Rename, Details, AddToProfile, ToggleDecoration, ExportMod, OpenFolder, DeleteFromLibrary"
-                            RowActionInvoked="OnRowActionInvoked"
-                            SelectionPolicy="Multiple"
-                            RelationshipDragOperation="SetAsOption"
-                            AllowExternalProfileDrag="{Binding CanDragToProfile}"
-                            AllowExternalProfileRemovalDrop="{Binding CanDragToProfile}"
-                            ExternalDropTitle="拖到这里释放以从配置移除"
-                            ExternalDropDetail="仅从当前配置移除，不会删除模组文件"
-                            ExternalProfileRemovalRequested="OnExternalProfileRemovalRequested"
-                            SelectionRequested="OnSelectionRequested"
-                            KeyboardCommandRequested="OnKeyboardCommandRequested"
-                            RowRightClicked="OnOpenDetailsOnRightClick"
-                            BackgroundClicked="OnListBackgroundClick"/>
-        <Border x:Name="RelationshipDropOverlay"
-                Panel.ZIndex="20"
-                Margin="{StaticResource CardStackMargin}"
-                Background="#E8FFFFFF"
-                BorderBrush="{StaticResource Accent}"
-                BorderThickness="1.5"
-                CornerRadius="{StaticResource RadiusCard}"
-                Visibility="Collapsed"
-                Opacity="0"
-                IsHitTestVisible="False">
-            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                <TextBlock x:Name="RelationshipDropTitle"
-                           Foreground="{StaticResource TextPrimary}"
-                           FontWeight="SemiBold"
-                           FontSize="15"
-                           HorizontalAlignment="Center"/>
-                <TextBlock x:Name="RelationshipDropDetail"
-                           Foreground="{StaticResource TextSecondary}"
-                           FontSize="12"
-                           Margin="0,5,0,0"
-                           HorizontalAlignment="Center"/>
-            </StackPanel>
-        </Border>
-    </Grid>
+    <!--
+        拖放叠层不再由本页绘制：面板自己就是关系拖放的目标，
+        这里只声明"参与解除选项关系"并处理放下。
+    -->
+    <local:ModListPanel x:Name="LibraryModList" ItemsSource="{Binding Items}"
+                        HeaderTitle="模组库"
+                        HeaderSummary="{Binding ItemCountText}"
+                        EmptyState="{Binding EmptyState}"
+                        SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
+                        SearchActionsTemplate="{StaticResource LibrarySearchActions}"
+                        RowActions="Rename, Details, AddToProfile, ToggleDecoration, ExportMod, OpenFolder, DeleteFromLibrary"
+                        RowActionInvoked="OnRowActionInvoked"
+                        SelectionPolicy="Multiple"
+                        RelationshipDragOperation="SetAsOption"
+                        AcceptsRelationshipDrop="RemoveOptionParent"
+                        RelationshipDropRequested="OnRelationshipDropRequested"
+                        AllowExternalProfileDrag="{Binding CanDragToProfile}"
+                        AllowExternalProfileRemovalDrop="{Binding CanDragToProfile}"
+                        ExternalDropTitle="拖到这里释放以从配置移除"
+                        ExternalDropDetail="仅从当前配置移除，不会删除模组文件"
+                        ExternalProfileRemovalRequested="OnExternalProfileRemovalRequested"
+                        SelectionRequested="OnSelectionRequested"
+                        KeyboardCommandRequested="OnKeyboardCommandRequested"
+                        RowRightClicked="OnOpenDetailsOnRightClick"
+                        BackgroundClicked="OnListBackgroundClick"/>
 </UserControl>

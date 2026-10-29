@@ -16,10 +16,9 @@ public enum CardKind
     Notice,
     KeyValueList,
 
-    // Mod 详情页
+    // Mod 详情页（动作已迁到浮动操作簇，不再是一张卡）
     ModHeader,
     ModDescription,
-    ModActions,
     VpkActions,
     VpkComponents,
     DecorationDetails,

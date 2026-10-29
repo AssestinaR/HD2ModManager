@@ -1,0 +1,41 @@
+<UserControl x:Class="HD2ModManager.Controls.Lists.DropHintOverlay"
+             x:Name="Root"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:empty="clr-namespace:HD2ModManager.Controls.EmptyState"
+             Focusable="False"
+             IsTabStop="False"
+             IsHitTestVisible="False"
+             Visibility="Collapsed"
+             Opacity="0">
+    <!--
+        拖放叠层。项目里曾经有 5 份手写的同形 Border（2 种不透明度、3 组淡入参数、
+        2 种标题字号），现在统一成这一个控件：视觉、淡入淡出、命中区都在这里，
+        宿主只递交一句 ModListDropHint。
+    -->
+    <UserControl.Resources>
+        <empty:NullOrEmptyToCollapsedConverter x:Key="VisibleWhenText"/>
+    </UserControl.Resources>
+
+    <Border Background="#D9FFFFFF"
+            BorderBrush="{StaticResource Accent}"
+            BorderThickness="1"
+            CornerRadius="{StaticResource RadiusCard}"
+            DataContext="{Binding Hint, ElementName=Root}">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24">
+            <TextBlock Text="{Binding Title}"
+                       FontSize="15"
+                       FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimary}"
+                       TextAlignment="Center"
+                       HorizontalAlignment="Center"/>
+            <TextBlock Text="{Binding Detail}"
+                       FontSize="12"
+                       Foreground="{StaticResource TextSecondary}"
+                       Margin="0,5,0,0"
+                       TextAlignment="Center"
+                       HorizontalAlignment="Center"
+                       Visibility="{Binding Detail, Converter={StaticResource VisibleWhenText}}"/>
+        </StackPanel>
+    </Border>
+</UserControl>

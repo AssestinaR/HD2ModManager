@@ -2,6 +2,7 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views" xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling"
+             xmlns:lists="clr-namespace:HD2ModManager.Controls.Lists"
              xmlns:cards="clr-namespace:HD2ModManager.Controls.Cards">
     <UserControl.Resources>
         <ResourceDictionary>
@@ -58,65 +59,6 @@
                 只有 patch 级的那几行对 VPK 版 Mod 隐藏——VPK 的 patch 是转换产物，
                 在它上面做 patch 级编辑会被下一次转换覆盖。
             -->
-            <DataTemplate x:Key="CardTemplate.ModActions">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <Button Grid.Column="0" Style="{StaticResource AppSecondaryButton}" Content="详情表格"
-                                ToolTip="查看 Patch、AssetKey 与诊断信息"
-                                Command="{Binding OpenAdvancedDetailsCommand}" Padding="14,6"
-                                Visibility="{Binding CanUsePatchTools, Converter={StaticResource BoolToVis}}"/>
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Style="{StaticResource AppSecondaryButton}" Content="打开文件夹" Command="{Binding OpenFolderCommand}" Padding="14,6"/>
-                            <Button Style="{StaticResource AppSecondaryButton}" Content="修改图像" Click="OnSelectImageClick" Padding="14,6" Margin="8,0,0,0"/>
-                            <Button Style="{StaticResource AppSecondaryButton}" Content="修改名称" Click="OnEditNameClick" Padding="14,6" Margin="8,0,0,0"/>
-                            <Button Style="{StaticResource AppSecondaryButton}" Content="修改备注" Click="OnEditDescriptionClick" Padding="14,6" Margin="8,0,0,0"/>
-                        </StackPanel>
-                    </Grid>
-
-                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0"
-                               Visibility="{Binding ShowPatchSettingsCard, Converter={StaticResource BoolToVis}}">
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="修复 patch" Command="{Binding RebuildSameKeyCommand}" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="生成替换其他护甲的模组" Command="{Binding PlanCrossArmorTransferCommand}" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="规整护甲patch包" Command="{Binding NormalizeArmorCommand}" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="Patch 资源重打包" Command="{Binding PatchResourceRepackagingCommand}"/>
-                    </WrapPanel>
-
-                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right" Margin="0,10,0,0"
-                               Visibility="{Binding IsDecoration, Converter={StaticResource BoolToVis}}">
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="重构 patch" Command="{Binding RebuildSameKeyCommand}" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="编辑装饰 Mod" Command="{Binding EditDecorationCommand}"/>
-                    </WrapPanel>
-
-                    <WrapPanel Grid.Row="2" HorizontalAlignment="Right" Margin="0,10,0,0"
-                               Visibility="{Binding CanShowDecorationPlan, Converter={StaticResource BoolToVis}}">
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="批量生成装饰（以主体 Mod）" Command="{Binding PlanBatchDecorationCommand}" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="生成装饰 Mod（以来源 Mod）" Command="{Binding PlanDecorationCommand}"/>
-                    </WrapPanel>
-
-                    <WrapPanel Grid.Row="3" HorizontalAlignment="Right" Margin="0,10,0,0"
-                               Visibility="{Binding ShowPatchSettingsCard, Converter={StaticResource BoolToVis}}">
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="头盔合并到盔甲并输出" Command="{Binding PlanHelmetToArmorMergeCommand}" Margin="0,0,8,0"/>
-                        <Button Style="{StaticResource AppSecondaryButton}" Content="{Binding HelmetMergeToggleText}" Command="{Binding ToggleHelmetToArmorMergeCommand}"/>
-                    </WrapPanel>
-
-                    <Button Grid.Row="4" HorizontalAlignment="Right" Margin="0,10,0,0" Style="{StaticResource AppSecondaryButton}"
-                            Content="一键转为自定义素体" Command="{Binding ConvertToCustomModelCommand}"
-                            Visibility="{Binding ShowPatchSettingsCard, Converter={StaticResource BoolToVis}}"/>
-                </Grid>
-            </DataTemplate>
-
             <DataTemplate x:Key="CardTemplate.VpkActions">
                 <StackPanel>
                     <Grid>
@@ -263,28 +205,9 @@
             </StackPanel>
         </ScrollViewer>
 
-        <Border x:Name="RelationshipDropOverlay"
-                Panel.ZIndex="30"
-                Margin="{StaticResource CardStackMargin}"
-                Background="#E8FFFFFF"
-                BorderBrush="{StaticResource Accent}"
-                BorderThickness="1.5"
-                CornerRadius="{StaticResource RadiusCard}"
-                Visibility="Collapsed"
-                Opacity="0"
-                IsHitTestVisible="False">
-            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                <TextBlock x:Name="RelationshipDropTitle"
-                           Foreground="{StaticResource TextPrimary}"
-                           FontWeight="SemiBold"
-                           FontSize="16"
-                           HorizontalAlignment="Center"/>
-                <TextBlock x:Name="RelationshipDropDetail"
-                           Foreground="{StaticResource TextSecondary}"
-                           FontSize="12"
-                           Margin="0,5,0,0"
-                           HorizontalAlignment="Center"/>
-            </StackPanel>
-        </Border>
+        <!-- 拖放叠层与列表页共用同一个控件；这里只决定它盖住整个详情页。 -->
+        <lists:DropHintOverlay x:Name="RelationshipDropOverlay"
+                               Panel.ZIndex="30"
+                               Margin="{StaticResource CardStackMargin}"/>
     </Grid>
 </UserControl>

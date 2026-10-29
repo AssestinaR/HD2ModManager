@@ -11,6 +11,8 @@ using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
+using HD2ModManager.Controls.Actions;
+using HD2ModManager.Controls.Lists;
 
 namespace HD2ModManager.ViewModels;
 
@@ -137,12 +139,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			_ => IsComponentEditorCustomModel && !IsBusy);
 		ConfirmAddComponentRowCommand = new RelayCommand(_ => AddComponentRow(),
 			_ => IsComponentEditorCustomModel && ComponentEditorEditable && !IsBusy);
-		PageActions.Add(new PageActionViewModel("＋", "新增自定义素体", AddCustomModelCommand,
-			order: 10, kind: "ArmorCreateModel"));
-		PageActions.Add(new PageActionViewModel("□", "打开运行时目录", OpenRegistryFolderCommand,
-			order: 20, kind: "OpenFolder"));
-		PageActions.Add(new PageActionViewModel("↻", "刷新", RefreshCommand,
-			order: 30, kind: "Refresh"));
+		PageActions.Add(new PageActionViewModel(PageActionKind.ArmorCreateModel, "新增自定义素体", AddCustomModelCommand,
+			tone: PageActionTone.Primary, order: 10));
+		PageActions.Add(new PageActionViewModel(PageActionKind.OpenFolder, "打开运行时目录", OpenRegistryFolderCommand,
+			order: 20));
+		PageActions.Add(new PageActionViewModel(PageActionKind.Refresh, "刷新", RefreshCommand,
+			order: 30));
 	}
 
 	public BulkObservableCollection<RuntimeArmorChoiceViewModel> AvailableArmors { get; } = [];
@@ -2063,7 +2065,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	}
 }
 
-public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelectable
+public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelectable, IModListRowActionFilter
 {
 	private bool isSelected;
 	private ModListRowPresentation rowPresentation = ModListRowPresentation.Empty;
@@ -2104,6 +2106,11 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool? HasEffectiveUnitOverride { get; }
 	public bool IsUnknown { get; }
 	public bool IsCustomModel { get; }
+	// 自定义素体没有"解除"（它本来就不在映射里），普通护甲没有自定义素体的
+	// 删除/重命名。这条规则以前散在面板 XAML 的转换器里。
+	public ModListRowAction HiddenActions => IsCustomModel
+		? ModListRowAction.ArmorRelease
+		: ModListRowAction.ArmorDeleteCustomModel | ModListRowAction.ArmorRenameCustomModel;
 	public string? ModelKey { get; }
 	public GameDataEquipmentKitKind KitKind { get; }
 	public uint SetId { get; }

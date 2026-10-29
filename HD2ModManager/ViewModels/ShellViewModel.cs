@@ -8,6 +8,7 @@ using System.Windows.Media;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModManager.Controls.Actions;
 using HD2ModManager.Enums;
 using HD2ModManager.Services;
 
@@ -2301,10 +2302,10 @@ namespace HD2ModManager.ViewModels
 
         private void RegisterLibraryActions(PageViewModel page)
         {
-            page.PageActions.Add(new PageActionViewModel("□", "新建逻辑 Mod", CreateLogicalModCommand, order: 10, kind: "CreateLogicalMod"));
-            page.PageActions.Add(new PageActionViewModel("＋", "导入 Mod", ImportCommand, order: 20, kind: "Import"));
-            page.PageActions.Add(new PageActionViewModel("▶", "立即重新部署", ApplyChangesCommand, background: new SolidColorBrush(Color.FromRgb(46, 125, 50)), order: 30, kind: "ScheduleDeployment"));
-            page.PageActions.Add(new PageActionViewModel("✓", "校验 Mod 库", ValidateModLibraryCommand, order: 40, kind: "ValidateLibrary"));
+            page.PageActions.Add(new PageActionViewModel(PageActionKind.CreateLogicalMod, "新建逻辑 Mod", CreateLogicalModCommand, order: 10));
+            page.PageActions.Add(new PageActionViewModel(PageActionKind.Import, "导入 Mod", ImportCommand, tone: PageActionTone.Primary, order: 20));
+            page.PageActions.Add(new PageActionViewModel(PageActionKind.ScheduleDeployment, "立即重新部署", ApplyChangesCommand, tone: PageActionTone.Primary, order: 30));
+            page.PageActions.Add(new PageActionViewModel(PageActionKind.ValidateLibrary, "校验 Mod 库", ValidateModLibraryCommand, order: 40));
         }
 
 		private async void ValidateModLibrary()

@@ -7,13 +7,15 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using HD2ModManager.Controls.EmptyState;
+using HD2ModManager.Controls.Lists;
 using HD2ModManager.Controls.Scrolling;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views;
 
 // Shared visual shell. Host pages retain all Mod-specific commands and transactions.
-public partial class ModListPanel : UserControl
+public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRelationshipDropTarget
 {
     private readonly Dictionary<Border, SelectionIndicatorSubscription> _selectionIndicatorSubscriptions = new();
     private readonly BulkObservableCollection<object> _presentedItems = new();
@@ -39,10 +41,14 @@ public partial class ModListPanel : UserControl
     private Cursor? _previousOverrideCursor;
     private DateTime _dragWheelCooldownUntilUtc;
     private bool _dropIndicatorRefreshQueued;
+    private readonly ICommand _clearSearchCommand;
+    private bool _registeredRelationshipDropTarget;
 
     public ModListPanel()
     {
         InitializeComponent();
+        _clearSearchCommand = new RelayCommand(ClearSearch);
+        UpdateEffectiveEmptyState();
         _transitionController = new ModListTransitionController(
             this,
             ItemsList,
@@ -53,7 +59,6 @@ public partial class ModListPanel : UserControl
             _presentedItems,
             _outgoingPresentedItems);
         _transitionController.PresentedItems.CollectionChanged += OnPresentedItemsChanged;
-        _transitionController.OutgoingPresentedItems.CollectionChanged += OnOutgoingPresentedItemsChanged;
         _transitionController.TransitionStateChanged += OnTransitionStateChanged;
         ItemsList.Loaded += (_, _) => ConfigureInternalSmoothScroll(UseInternalScroll);
         _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
@@ -61,6 +66,9 @@ public partial class ModListPanel : UserControl
         {
             _transitionController.Attach(ItemsSource);
             ConfigureInternalSmoothScroll(UseInternalScroll);
+            // 回到一个带着查询的页面时，搜索框必须已经展开，否则过滤结果无法解释。
+            if (!string.IsNullOrWhiteSpace(SearchText)) ShowSearch(focus: false);
+            SyncRelationshipDropRegistration();
         };
         Unloaded += (_, _) =>
         {
@@ -74,6 +82,12 @@ public partial class ModListPanel : UserControl
             EndExternalProfileDrag(commit: false);
             StopDragAutoScroll();
 			ConfigureInternalSmoothScroll(false);
+            if (_registeredRelationshipDropTarget)
+            {
+                ModRelationshipDragCoordinator.UnregisterTarget(this);
+                _registeredRelationshipDropTarget = false;
+            }
+            RelationshipDropOverlay.HideImmediately();
         };
     }
 
@@ -82,7 +96,7 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty HeaderSummaryProperty = DependencyProperty.Register(nameof(HeaderSummary), typeof(string), typeof(ModListPanel), new PropertyMetadata(string.Empty));
     public static readonly DependencyProperty EmptyMessageProperty = DependencyProperty.Register(nameof(EmptyMessage), typeof(string), typeof(ModListPanel), new PropertyMetadata("没有可显示的 Mod。"));
     // 富空状态：给了它就渲染图标 + 标题 + 解释 + 可选动作，否则回落到 EmptyMessage。
-    public static readonly DependencyProperty EmptyStateProperty = DependencyProperty.Register(nameof(EmptyState), typeof(object), typeof(ModListPanel), new PropertyMetadata(null));
+    public static readonly DependencyProperty EmptyStateProperty = DependencyProperty.Register(nameof(EmptyState), typeof(object), typeof(ModListPanel), new PropertyMetadata(null, OnEmptyStateChanged));
     public static readonly DependencyProperty ShowHeaderProperty = DependencyProperty.Register(nameof(ShowHeader), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true));
     public static readonly DependencyProperty ShowSelectionCheckboxProperty = DependencyProperty.Register(nameof(ShowSelectionCheckbox), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SelectionPolicyProperty = DependencyProperty.Register(nameof(SelectionPolicy), typeof(ModListSelectionPolicy), typeof(ModListPanel), new PropertyMetadata(ModListSelectionPolicy.None));
@@ -95,7 +109,12 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty RelationshipDragSourceHostIdProperty = DependencyProperty.Register(nameof(RelationshipDragSourceHostId), typeof(string), typeof(ModListPanel), new PropertyMetadata(null));
     public static readonly DependencyProperty ExternalDropTitleProperty = DependencyProperty.Register(nameof(ExternalDropTitle), typeof(string), typeof(ModListPanel), new PropertyMetadata("拖到这里释放以加入配置"));
     public static readonly DependencyProperty ExternalDropDetailProperty = DependencyProperty.Register(nameof(ExternalDropDetail), typeof(string), typeof(ModListPanel), new PropertyMetadata("不会改变当前配置中的排列顺序"));
-    public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
+    // 这个面板参与哪一种跨列表关系拖放。None = 不参与：不注册、不显示叠层、不命中。
+    public static readonly DependencyProperty AcceptsRelationshipDropProperty = DependencyProperty.Register(nameof(AcceptsRelationshipDrop), typeof(ModRelationshipDragOperation), typeof(ModListPanel), new PropertyMetadata(ModRelationshipDragOperation.None, OnAcceptsRelationshipDropChanged));
+    // 搜索框的展开状态由面板持有，但 SearchText 由宿主 VM 持有。宿主在
+    // 页面重建后可能带着非空查询回来；没有这条同步就会出现"列表已被过滤，
+    // 但搜索框收着、也看不到清除入口"的状态。
+    public static readonly DependencyProperty SearchTextProperty = DependencyProperty.Register(nameof(SearchText), typeof(string), typeof(ModListPanel), new FrameworkPropertyMetadata(string.Empty, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault, OnSearchTextChanged));
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty = DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ModListPanel), new PropertyMetadata(ScrollBarVisibility.Auto));
     public static readonly DependencyProperty UseInternalScrollProperty = DependencyProperty.Register(nameof(UseInternalScroll), typeof(bool), typeof(ModListPanel), new PropertyMetadata(true, OnUseInternalScrollChanged));
     public static readonly DependencyProperty RowActionsProperty = DependencyProperty.Register(nameof(RowActions), typeof(ModListRowAction), typeof(ModListPanel), new PropertyMetadata(ModListRowAction.None, OnRowActionsChanged));
@@ -108,8 +127,8 @@ public partial class ModListPanel : UserControl
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasPresentedItemsProperty = HasPresentedItemsPropertyKey.DependencyProperty;
-    private static readonly DependencyPropertyKey HasOutgoingPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasOutgoingPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
-    public static readonly DependencyProperty HasOutgoingPresentedItemsProperty = HasOutgoingPresentedItemsPropertyKey.DependencyProperty;
+    private static readonly DependencyPropertyKey EffectiveEmptyStatePropertyKey = DependencyProperty.RegisterReadOnly(nameof(EffectiveEmptyState), typeof(object), typeof(ModListPanel), new PropertyMetadata(null));
+    public static readonly DependencyProperty EffectiveEmptyStateProperty = EffectiveEmptyStatePropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey HasRowActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasRowActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasRowActionsProperty = HasRowActionsPropertyKey.DependencyProperty;
     private static readonly DependencyPropertyKey HasSearchActionsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasSearchActions), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
@@ -134,6 +153,12 @@ public partial class ModListPanel : UserControl
     public string? RelationshipDragSourceHostId { get => (string?)GetValue(RelationshipDragSourceHostIdProperty); set => SetValue(RelationshipDragSourceHostIdProperty, value); }
     public string ExternalDropTitle { get => (string)GetValue(ExternalDropTitleProperty); set => SetValue(ExternalDropTitleProperty, value); }
     public string ExternalDropDetail { get => (string)GetValue(ExternalDropDetailProperty); set => SetValue(ExternalDropDetailProperty, value); }
+    public ModRelationshipDragOperation AcceptsRelationshipDrop { get => (ModRelationshipDragOperation)GetValue(AcceptsRelationshipDropProperty); set => SetValue(AcceptsRelationshipDropProperty, value); }
+
+    // 域判定（可选）。面板不猜"这个宿主现在能不能收"，只负责问；不设就等于恒真。
+    public Func<ModRelationshipDragPayload, bool>? RelationshipDropFilter { get; set; }
+    // 叠层文案（可选）。不给就按操作类型给通用文案。
+    public Func<ModRelationshipDragPayload, ModListDropHint>? RelationshipDropHintFactory { get; set; }
     public string SearchText { get => (string)GetValue(SearchTextProperty); set => SetValue(SearchTextProperty, value); }
     public ScrollBarVisibility VerticalScrollBarVisibility { get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty); set => SetValue(VerticalScrollBarVisibilityProperty, value); }
     public bool UseInternalScroll { get => (bool)GetValue(UseInternalScrollProperty); set => SetValue(UseInternalScrollProperty, value); }
@@ -145,10 +170,22 @@ public partial class ModListPanel : UserControl
     public string ArmorEditComponentsToolTip { get => (string)GetValue(ArmorEditComponentsToolTipProperty); set => SetValue(ArmorEditComponentsToolTipProperty, value); }
     public bool AllowKeyboardRename { get => (bool)GetValue(AllowKeyboardRenameProperty); set => SetValue(AllowKeyboardRenameProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
+
+    // 同一动作在不同列表里意思不同（"解除视觉对象" vs "解除映射目标"），
+    // 所以这四个文案由宿主覆盖；其余动作直接用 catalog 的默认文案。
+    string? IRowActionToolTipSource.GetRowActionToolTip(ModListRowAction action) => action switch
+    {
+        ModListRowAction.ArmorAssign => ArmorAssignToolTip,
+        ModListRowAction.ArmorRelease => ArmorReleaseToolTip,
+        ModListRowAction.ArmorOpenDetails => ArmorOpenDetailsToolTip,
+        ModListRowAction.ArmorEditComponents => ArmorEditComponentsToolTip,
+        _ => null,
+    };
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);
     public bool HasSearchActions => (bool)GetValue(HasSearchActionsProperty);
     public bool HasPresentedItems => (bool)GetValue(HasPresentedItemsProperty);
-    public bool HasOutgoingPresentedItems => (bool)GetValue(HasOutgoingPresentedItemsProperty);
+    // 最终真正渲染的空状态：宿主给的优先，否则查询非空时由面板派生。
+    public object? EffectiveEmptyState => GetValue(EffectiveEmptyStateProperty);
 
     public event EventHandler<ModListRowEventArgs>? RowClicked;
     public event EventHandler<ModListRowEventArgs>? RowRightClicked;
@@ -160,13 +197,11 @@ public partial class ModListPanel : UserControl
     public event EventHandler<ModListInternalReorderEventArgs>? InternalReorderRequested;
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileDropRequested;
     public event EventHandler<ModListExternalProfileDropEventArgs>? ExternalProfileRemovalRequested;
+    public event EventHandler<ModListRelationshipDropEventArgs>? RelationshipDropRequested;
     public event EventHandler? BackgroundClicked;
 
     private void OnPresentedItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
         => SetValue(HasPresentedItemsPropertyKey, _transitionController.PresentedItems.Count != 0);
-
-    private void OnOutgoingPresentedItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
-        => SetValue(HasOutgoingPresentedItemsPropertyKey, _transitionController.OutgoingPresentedItems.Count != 0);
 
     private void OnTransitionStateChanged(bool isTransitionActive)
     {
@@ -192,10 +227,72 @@ public partial class ModListPanel : UserControl
         e.Handled = true;
     }
 
-    private void ShowSearchAndFocus()
+    private static void OnSearchTextChanged(DependencyObject sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is not ModListPanel panel) return;
+        // 只负责"从收起变为展开"。清空查询时不收起搜索框——用户可能正在退格重输，
+        // 把输入框从脚下撤掉是最糟的反馈。
+        if (panel.IsLoaded && !string.IsNullOrWhiteSpace(e.NewValue as string))
+            panel.ShowSearch(focus: false);
+        panel.UpdateEffectiveEmptyState();
+    }
+
+    private static void OnEmptyStateChanged(DependencyObject sender, DependencyPropertyChangedEventArgs e)
+        => (sender as ModListPanel)?.UpdateEffectiveEmptyState();
+
+    private static void OnAcceptsRelationshipDropChanged(DependencyObject sender, DependencyPropertyChangedEventArgs e)
+        => (sender as ModListPanel)?.SyncRelationshipDropRegistration();
+
+    private void SyncRelationshipDropRegistration()
+    {
+        var participates = AcceptsRelationshipDrop != ModRelationshipDragOperation.None && IsLoaded;
+        if (participates == _registeredRelationshipDropTarget) return;
+
+        if (participates)
+        {
+            ModRelationshipDragCoordinator.RegisterTarget(this);
+            _registeredRelationshipDropTarget = true;
+            return;
+        }
+
+        ModRelationshipDragCoordinator.UnregisterTarget(this);
+        _registeredRelationshipDropTarget = false;
+        RelationshipDropOverlay.HideImmediately();
+    }
+
+    // 面板自己就知道"有查询、但投影为空"，所以这件事不该由每个宿主 VM 各写一遍
+    // （库页写了三分支、护甲页写了两个属性）。宿主给了 EmptyState 就用宿主的——
+    // 页面文案永远比通用文案具体；没给而查询非空，就派生一个通用"没有匹配"态，
+    // 并且由面板自己负责清除查询，不需要宿主提供命令。
+    private void UpdateEffectiveEmptyState()
+    {
+        var state = EmptyState as EmptyStatePresentation;
+        if (state is null && !string.IsNullOrWhiteSpace(SearchText))
+        {
+            state = new EmptyStatePresentation(
+                "没有匹配的条目",
+                "试试更短的关键词，或清除搜索回到全部内容。",
+                "清除搜索",
+                _clearSearchCommand,
+                EmptyStateIcon.Search);
+        }
+
+        SetValue(EffectiveEmptyStatePropertyKey, state);
+    }
+
+    private void ClearSearch()
+    {
+        SearchText = string.Empty;
+        ShowSearchAndFocus();
+    }
+
+    private void ShowSearchAndFocus() => ShowSearch(focus: true);
+
+    private void ShowSearch(bool focus)
     {
         if (HeaderSearchBox.Visibility == Visibility.Visible)
         {
+            if (!focus) return;
             HeaderSearchBox.Focus();
             HeaderSearchBox.SelectAll();
             return;
@@ -214,11 +311,16 @@ public partial class ModListPanel : UserControl
             }
         HeaderSearchBox.Visibility = Visibility.Visible;
         HeaderSearchBox.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
-        HeaderSearchBox.Focus();
+        if (focus) HeaderSearchBox.Focus();
     }
 
     private void HideSearch()
     {
+        // 收起搜索框必须同时放弃过滤。否则列表还停在"筛过的结果"上，而解释这个
+        // 结果的控件已经不见了——用户会以为自己的 Mod 丢了，而且没有任何线索。
+        // 这条和 OnSearchTextChanged 里的自动展开合起来维持一个不变量：
+        // 查询非空 ⟺ 搜索框可见。
+        if (!string.IsNullOrWhiteSpace(SearchText)) SearchText = string.Empty;
         var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(140));
         fadeOut.Completed += (_, _) =>
         {
@@ -390,8 +492,11 @@ public partial class ModListPanel : UserControl
 
     private void OnRowActionClick(object sender, RoutedEventArgs e)
     {
-        if (sender is not FrameworkElement { DataContext: { } item, Tag: ModListRowAction action }) return;
-        RowActionInvoked?.Invoke(this, new ModListRowActionEventArgs(item, action));
+        // 按钮在行模板里的 ItemsControl 中，所以按钮的 DataContext 是动作项而不是
+        // 行对象；行对象必须从容器上取回来。
+        if (sender is not FrameworkElement { Tag: ModListRowActionItem actionItem }) return;
+        if (FindAncestor<ListBoxItem>(sender as DependencyObject)?.DataContext is not { } rowItem) return;
+        RowActionInvoked?.Invoke(this, new ModListRowActionEventArgs(rowItem, actionItem.Action));
         e.Handled = true;
     }
 
@@ -688,15 +793,63 @@ public partial class ModListPanel : UserControl
     {
         if (visible)
         {
-            ExternalProfileDropOverlay.Visibility = Visibility.Visible;
-            ExternalProfileDropOverlay.BeginAnimation(OpacityProperty, new DoubleAnimation(0.92, TimeSpan.FromMilliseconds(140)));
+            ExternalDropOverlay.Show(new ModListDropHint(ExternalDropTitle, ExternalDropDetail));
             return;
         }
 
-        if (ExternalProfileDropOverlay.Visibility != Visibility.Visible) return;
-        var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
-        fadeOut.Completed += (_, _) => ExternalProfileDropOverlay.Visibility = Visibility.Collapsed;
-        ExternalProfileDropOverlay.BeginAnimation(OpacityProperty, fadeOut);
+        ExternalDropOverlay.Hide();
+    }
+
+    // ---- IModRelationshipDropTarget ----
+    // 面板自己就是关系拖放的目标：叠层、命中、淡入淡出、注册生命周期都在这里。
+    // 宿主只回答三件事：参与哪种操作（AcceptsRelationshipDrop）、现在能不能收
+    // （RelationshipDropFilter，可选）、放下之后做什么（RelationshipDropRequested）。
+
+    bool IModRelationshipDropTarget.CanAcceptRelationshipDrop(ModRelationshipDragPayload payload)
+    {
+        if (!IsLoaded || !IsVisible) return false;
+        if (AcceptsRelationshipDrop == ModRelationshipDragOperation.None) return false;
+        if (payload.Operation != AcceptsRelationshipDrop) return false;
+        if (payload.SelectedKeys.Count == 0) return false;
+        if (!ModRelationshipDragCoordinator.IsVisuallyActive(this)) return false;
+        return RelationshipDropFilter?.Invoke(payload) ?? true;
+    }
+
+    bool IModRelationshipDropTarget.ContainsScreenPoint(Point screenPoint)
+        => IsLoaded && RelationshipDropOverlay.ContainsPoint(screenPoint);
+
+    // 源和目标是同一个面板时必须把自己排除掉——否则拖自己的行会在自己身上
+    // 弹出"释放以解除关系"，松手还会真的执行。IsAncestorOf 对自身返回 false，
+    // 所以这里要先比引用。
+    bool IModRelationshipDropTarget.ContainsElement(DependencyObject element)
+        => ReferenceEquals(element, this) || IsAncestorOf(element);
+
+    void IModRelationshipDropTarget.SetRelationshipDropOverlay(ModRelationshipDragPayload payload, bool visible)
+    {
+        if (visible)
+        {
+            RelationshipDropOverlay.Show(
+                RelationshipDropHintFactory?.Invoke(payload) ?? DefaultRelationshipDropHint(payload));
+            return;
+        }
+
+        RelationshipDropOverlay.Hide();
+    }
+
+    void IModRelationshipDropTarget.RaiseRelationshipDropRequested(ModRelationshipDragPayload payload)
+        => RelationshipDropRequested?.Invoke(this, new ModListRelationshipDropEventArgs(payload));
+
+    private static ModListDropHint DefaultRelationshipDropHint(ModRelationshipDragPayload payload)
+    {
+        var count = payload.SelectedKeys.Count;
+        return payload.Operation switch
+        {
+            ModRelationshipDragOperation.SetAsOption => new("释放以设为选项", $"将 {count} 个 Mod 挂载到该主体下"),
+            ModRelationshipDragOperation.RemoveOptionParent => new("释放以解除选项关系", $"将 {count} 个选项移出该主体"),
+            ModRelationshipDragOperation.ArmorRegistryAssign => new("释放以设为视觉来源", $"将 {count} 个护甲设为视觉对象"),
+            ModRelationshipDragOperation.ArmorRegistryRelease => new("释放以解除管理", "移除视觉来源会同时释放它的全部目标"),
+            _ => new("释放以应用", null),
+        };
     }
 
     internal void RaiseExternalProfileDropRequested(IReadOnlyList<string> selectedKeys)
@@ -1041,28 +1194,6 @@ public sealed class ModListRowEventArgs(object? item, ModifierKeys modifiers) : 
     public ModifierKeys Modifiers { get; } = modifiers;
 }
 
-[Flags]
-public enum ModListRowAction
-{
-    None = 0,
-    Rename = 1 << 0,
-    Details = 1 << 1,
-    AddToProfile = 1 << 2,
-    OpenFolder = 1 << 3,
-    MoveUp = 1 << 4,
-    MoveDown = 1 << 5,
-    RemoveFromProfile = 1 << 6,
-    DeleteFromLibrary = 1 << 7,
-    ToggleDecoration = 1 << 8,
-    ArmorAssign = 1 << 9,
-    ArmorRelease = 1 << 10,
-    ArmorOpenDetails = 1 << 11,
-    ArmorEditComponents = 1 << 12,
-    ArmorDeleteCustomModel = 1 << 13,
-    ArmorRenameCustomModel = 1 << 14,
-    ExportMod = 1 << 15,
-}
-
 public sealed class ModListRowActionEventArgs(object item, ModListRowAction action) : EventArgs
 {
     public object Item { get; } = item;
@@ -1107,56 +1238,14 @@ public sealed class ModListExternalProfileDropEventArgs(IReadOnlyList<string> se
     public IReadOnlyList<string> SelectedKeys { get; } = selectedKeys;
 }
 
-public sealed class RowActionVisibilityConverter : System.Windows.Data.IValueConverter
+// 关系拖放的放下事件。宿主拿到的就是协调器构造的 payload，
+// 不需要再从控件状态里反推"刚才拖的是什么"。
+public sealed class ModListRelationshipDropEventArgs(ModRelationshipDragPayload payload) : EventArgs
 {
-    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
-        => value is ModListRowAction actions && parameter is ModListRowAction action && actions.HasFlag(action)
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-
-    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
-        => throw new NotSupportedException();
-}
-
-public sealed class DecorationRowActionVisibilityConverter : System.Windows.Data.IMultiValueConverter
-{
-    public object Convert(object[] values, Type targetType, object parameter, System.Globalization.CultureInfo culture)
-    {
-        if (values.Length < 2 || values[0] is not ModListRowAction available || parameter is not ModListRowAction requested || !available.HasFlag(requested))
-            return Visibility.Collapsed;
-        var isAllowed = values[1] is true;
-        return requested switch
-        {
-            ModListRowAction.AddToProfile when !isAllowed => Visibility.Collapsed,
-            ModListRowAction.ToggleDecoration when !isAllowed => Visibility.Collapsed,
-            _ => Visibility.Visible
-        };
-    }
-
-    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture)
-        => throw new NotSupportedException();
-}
-
-public sealed class CustomArmorRowActionVisibilityConverter : System.Windows.Data.IMultiValueConverter
-{
-    public object Convert(object[] values, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
-    {
-        if (values.Length < 2
-            || values[0] is not ModListRowAction actions
-            || parameter is not ModListRowAction requested)
-            return Visibility.Collapsed;
-        var isCustom = values[1] is true;
-        if (!actions.HasFlag(requested)) return Visibility.Collapsed;
-        if (requested == ModListRowAction.ArmorRelease && isCustom)
-            return Visibility.Collapsed;
-        if ((requested == ModListRowAction.ArmorDeleteCustomModel
-                || requested == ModListRowAction.ArmorRenameCustomModel) && !isCustom)
-            return Visibility.Collapsed;
-        return Visibility.Visible;
-    }
-
-    public object[] ConvertBack(object value, Type[] targetTypes, object? parameter, System.Globalization.CultureInfo culture)
-        => throw new NotSupportedException();
+    public ModRelationshipDragOperation Operation { get; } = payload.Operation;
+    public IReadOnlyList<string> SelectedKeys { get; } = payload.SelectedKeys;
+    public string? SourceHostId { get; } = payload.SourceHostId;
+    public ModRelationshipDragPayload Payload { get; } = payload;
 }
 
 public sealed class ModListRowToneBrushConverter : System.Windows.Data.IValueConverter

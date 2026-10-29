@@ -2,35 +2,48 @@
              x:Name="Root"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:HD2ModManager.Views"
+             xmlns:actions="clr-namespace:HD2ModManager.Controls.Actions"
              xmlns:vm="clr-namespace:HD2ModManager.ViewModels">
     <UserControl.Resources>
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <actions:PageActionIconConverter x:Key="ActionIcon"/>
+        <actions:PageActionToneBrushConverter x:Key="ToneBrush"/>
+        <actions:CapsuleCornerRadiusConverter x:Key="CapsuleRadius"/>
 
-        <Style x:Key="ClusterRoundButton" TargetType="Button">
+        <!--
+            动作胶囊。高度由代码按"占用高度"设置（焦点项=外观高度，其余被压缩），
+            而按钮本身永远是满尺寸并居中溢出——这就是"挤压=叠住"的来源。
+        -->
+        <Style x:Key="ClusterActionButton" TargetType="Button">
             <Setter Property="Width" Value="{Binding ButtonDiameter, ElementName=Root}"/>
             <Setter Property="Height" Value="{Binding ButtonDiameter, ElementName=Root}"/>
-            <Setter Property="MinWidth" Value="{Binding ButtonDiameter, ElementName=Root}"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Background" Value="{StaticResource Accent}"/>
-            <Setter Property="Foreground" Value="White"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="Background" Value="{Binding Tone, Converter={StaticResource ToneBrush}, ConverterParameter=Background}"/>
+            <Setter Property="Foreground" Value="{Binding Tone, Converter={StaticResource ToneBrush}, ConverterParameter=Foreground}"/>
+            <Setter Property="BorderBrush" Value="{Binding Tone, Converter={StaticResource ToneBrush}, ConverterParameter=Border}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="Bd"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="{Binding ButtonCornerRadius, ElementName=Root}">
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{Binding ActualHeight, RelativeSource={RelativeSource Self}, Converter={StaticResource CapsuleRadius}}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentHover}"/>
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.88"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#10499F"/>
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.74"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.4"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -38,17 +51,27 @@
             </Setter>
         </Style>
 
+        <!-- 主按钮：固定强调色（不跟随动作色调），与动作胶囊共用同一套模板。 -->
+        <Style x:Key="ClusterMainButton" TargetType="Button" BasedOn="{StaticResource ClusterActionButton}">
+            <Setter Property="Height" Value="{Binding ButtonDiameter, ElementName=Root}"/>
+            <Setter Property="Background" Value="{StaticResource Accent}"/>
+            <Setter Property="Foreground" Value="{StaticResource ActionTone.OnAccent}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+            <Setter Property="Effect" Value="{StaticResource ElevatedPanelShadow}"/>
+        </Style>
+
         <DataTemplate x:Key="ActionItemTemplate">
             <Grid x:Name="ItemRoot"
-                        Width="{Binding ExpandedOuterWidth, ElementName=Root}"
-                  HorizontalAlignment="Right"
-                  Height="{Binding ButtonDiameter, ElementName=Root}">
+                  Width="{Binding ExpandedOuterWidth, ElementName=Root}"
+                  HorizontalAlignment="Right">
                 <Border x:Name="ExpandedRail"
-                        Height="{Binding ExpandedHeight, ElementName=Root}"
-                        Width="{Binding ExpandedWidth}"
+                        MinWidth="{Binding ExpandedWidth}"
+                        MaxWidth="{Binding MaxExpandedWidth, ElementName=Root}"
+                        Height="{Binding ButtonDiameter, ElementName=Root}"
                         HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
                         Margin="8,0,8,0"
-                        CornerRadius="{Binding ExpandedCornerRadius, ElementName=Root}"
+                        CornerRadius="{Binding ActualHeight, RelativeSource={RelativeSource Self}, Converter={StaticResource CapsuleRadius}}"
                         Background="{StaticResource SurfaceElevated}"
                         BorderBrush="{StaticResource StrokeSubtle}"
                         BorderThickness="1"
@@ -57,38 +80,30 @@
                         IsHitTestVisible="False"
                         RenderTransformOrigin="1,0.5">
                     <Border.RenderTransform>
-                        <ScaleTransform ScaleX="0.55" ScaleY="0.96"/>
+                        <ScaleTransform ScaleX="0.6" ScaleY="0.9"/>
                     </Border.RenderTransform>
                     <Grid x:Name="RailContentHost" Margin="12,0,52,0" VerticalAlignment="Center">
                         <ContentControl x:Name="ExpandedContentHost" Content="{Binding ExpandedContent}"/>
-                        <TextBlock x:Name="LabelText" Text="{Binding Label}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" Visibility="Collapsed"/>
+                        <TextBlock x:Name="LabelText" Text="{Binding Label}" FontSize="12" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
                     </Grid>
                 </Border>
 
                 <Button x:Name="ActionButton"
-                        HorizontalAlignment="Right"
                         Command="{Binding Command}"
                         CommandParameter="{Binding CommandParameter}"
                         IsEnabled="{Binding IsEnabled}"
                         ToolTip="{Binding Label}"
-                        Style="{StaticResource ClusterRoundButton}"
-                        Background="{Binding Background}"
-                        Foreground="{Binding Foreground}">
-                    <Grid Width="16" Height="16">
-                        <Path x:Name="DefaultIcon" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" Visibility="Collapsed"/>
-                        <Path x:Name="CreateProfileIcon" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" Visibility="Collapsed"/>
-                        <Path x:Name="SwitchProfileIcon" Data="M2,5 L11,5 M8,2 L11,5 L8,8 M14,11 L5,11 M8,8 L5,11 L8,14" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
-                        <Path x:Name="ActivateIcon" Data="M3,8 L6.5,11.5 L13,4.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed"/>
-                        <Path x:Name="DeactivateIcon" Data="M3,3 L13,13 M13,3 L3,13" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" StrokeStartLineCap="Round" Visibility="Collapsed"/>
-                        <Path x:Name="RenameIcon" Data="M3,12.5 L3,14 L4.5,14 L13,5.5 L10.5,3 Z M9.5,4 L12,6.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeLineJoin="Round" Visibility="Collapsed"/>
-                        <Path x:Name="DeleteIcon" Data="M3,5 L13,5 M6,5 L6,3 L10,3 L10,5 M4.5,5 L5,14 L11,14 L11.5,5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
-                        <Path x:Name="RefreshIcon" Data="M12.5,6 A5.5,5.5 0 1 0 13,10 M12.5,2.5 L12.5,6 L9,6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
-                        <Path x:Name="ValidateLibraryIcon" Data="M13,5 A5.5,5.5 0 1 0 13.5,9 M13,2.5 L13,5 L10,5 M3,11 A5.5,5.5 0 0 0 8,13.5 M3,11 L3,13.5 L6,13.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
-                        <Path x:Name="ExportIcon" Data="M8,2 L8,10 M4.5,5.5 L8,2 L11.5,5.5 M3,12.5 L13,12.5" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
-                        <Path x:Name="CreateLogicalModIcon" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z M8,7 L8,11 M6,9 L10,9" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeLineJoin="Round" StrokeStartLineCap="Round" Visibility="Collapsed"/>
-                        <Path x:Name="FolderIcon" Data="M1.5,5 L6.5,5 L8,3 L14.5,3 L14.5,13 L1.5,13 Z" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.35" StrokeLineJoin="Round" Visibility="Collapsed"/>
-                        <Path x:Name="ArmorCreateIcon" Data="M8,2 L8,14 M2,8 L14,8" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6" StrokeStartLineCap="Round" Visibility="Collapsed"/>
-                    </Grid>
+                        Style="{StaticResource ClusterActionButton}"
+                        Click="OnActionInvoked">
+                    <Path Width="16" Height="16"
+                          Data="{Binding Kind, Converter={StaticResource ActionIcon}}"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                          StrokeThickness="1.5"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"
+                          StrokeLineJoin="Round"/>
                 </Button>
             </Grid>
             <DataTemplate.Triggers>
@@ -103,96 +118,6 @@
                     <Setter TargetName="LabelText" Property="Visibility" Value="Visible"/>
                     <Setter TargetName="ExpandedContentHost" Property="Visibility" Value="Collapsed"/>
                 </DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="CreateProfile"><Setter TargetName="CreateProfileIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="Import"><Setter TargetName="CreateProfileIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="SwitchProfile"><Setter TargetName="SwitchProfileIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="ActivateProfile"><Setter TargetName="ActivateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="ScheduleDeployment"><Setter TargetName="ActivateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="DeactivateProfile"><Setter TargetName="DeactivateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="RenameProfile"><Setter TargetName="RenameIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="RemoveProfile"><Setter TargetName="DeleteIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="RefreshProfile"><Setter TargetName="RefreshIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="Refresh"><Setter TargetName="RefreshIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="ValidateLibrary"><Setter TargetName="ValidateLibraryIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="Export"><Setter TargetName="ExportIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="CreateLogicalMod"><Setter TargetName="CreateLogicalModIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="OpenFolder"><Setter TargetName="FolderIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="ArmorCreateModel"><Setter TargetName="ArmorCreateIcon" Property="Visibility" Value="Visible"/></DataTrigger>
-                <MultiDataTrigger>
-                    <MultiDataTrigger.Conditions><Condition Binding="{Binding Kind}" Value=""/></MultiDataTrigger.Conditions>
-                    <Setter TargetName="DefaultIcon" Property="Visibility" Value="Visible"/>
-                </MultiDataTrigger>
-                <Trigger SourceName="ItemRoot" Property="IsMouseOver" Value="True">
-                    <Setter TargetName="ExpandedRail" Property="Opacity" Value="1"/>
-                    <Setter TargetName="ExpandedRail" Property="IsHitTestVisible" Value="True"/>
-                    <Trigger.EnterActions>
-                        <BeginStoryboard>
-                            <Storyboard>
-                                <DoubleAnimation Storyboard.TargetName="ExpandedRail"
-                                                 Storyboard.TargetProperty="Opacity"
-                                                 To="1"
-                                                 Duration="0:0:0.16">
-                                    <DoubleAnimation.EasingFunction>
-                                        <CubicEase EasingMode="EaseOut"/>
-                                    </DoubleAnimation.EasingFunction>
-                                </DoubleAnimation>
-                                <DoubleAnimation Storyboard.TargetName="ExpandedRail"
-                                                 Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
-                                                 To="1"
-                                                 Duration="0:0:0.20">
-                                    <DoubleAnimation.EasingFunction>
-                                        <QuinticEase EasingMode="EaseOut"/>
-                                    </DoubleAnimation.EasingFunction>
-                                </DoubleAnimation>
-                                <DoubleAnimation Storyboard.TargetName="ExpandedRail"
-                                                 Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
-                                                 To="1"
-                                                 Duration="0:0:0.16">
-                                    <DoubleAnimation.EasingFunction>
-                                        <CubicEase EasingMode="EaseOut"/>
-                                    </DoubleAnimation.EasingFunction>
-                                </DoubleAnimation>
-                            </Storyboard>
-                        </BeginStoryboard>
-                    </Trigger.EnterActions>
-                    <Trigger.ExitActions>
-                        <BeginStoryboard>
-                            <Storyboard>
-                                <DoubleAnimation Storyboard.TargetName="ExpandedRail"
-                                                 Storyboard.TargetProperty="Opacity"
-                                                 To="0"
-                                                 Duration="0:0:0.12">
-                                    <DoubleAnimation.EasingFunction>
-                                        <CubicEase EasingMode="EaseIn"/>
-                                    </DoubleAnimation.EasingFunction>
-                                </DoubleAnimation>
-                                <DoubleAnimation Storyboard.TargetName="ExpandedRail"
-                                                 Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)"
-                                                 To="0.55"
-                                                 Duration="0:0:0.14">
-                                    <DoubleAnimation.EasingFunction>
-                                        <CubicEase EasingMode="EaseIn"/>
-                                    </DoubleAnimation.EasingFunction>
-                                </DoubleAnimation>
-                                <DoubleAnimation Storyboard.TargetName="ExpandedRail"
-                                                 Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)"
-                                                 To="0.96"
-                                                 Duration="0:0:0.12">
-                                    <DoubleAnimation.EasingFunction>
-                                        <CubicEase EasingMode="EaseIn"/>
-                                    </DoubleAnimation.EasingFunction>
-                                </DoubleAnimation>
-                            </Storyboard>
-                        </BeginStoryboard>
-                    </Trigger.ExitActions>
-                </Trigger>
-                <Trigger SourceName="ItemRoot" Property="IsKeyboardFocusWithin" Value="True">
-                    <Setter TargetName="ExpandedRail" Property="Opacity" Value="1"/>
-                    <Setter TargetName="ExpandedRail" Property="IsHitTestVisible" Value="True"/>
-                    <Setter TargetName="ExpandedRail" Property="RenderTransform">
-                        <Setter.Value><ScaleTransform ScaleX="1" ScaleY="1"/></Setter.Value>
-                    </Setter>
-                </Trigger>
             </DataTemplate.Triggers>
         </DataTemplate>
 
@@ -211,14 +136,20 @@
         </DataTemplate>
     </UserControl.Resources>
 
-    <Grid Width="{Binding ExpandedOuterWidth, ElementName=Root}"
-            Height="{Binding ClusterHeight, ElementName=Root}">
+    <Grid x:Name="ClusterRoot"
+          Width="{Binding ExpandedOuterWidth, ElementName=Root}"
+          Height="{Binding ClusterHeight, ElementName=Root}">
+        <Grid.RenderTransform>
+            <TranslateTransform x:Name="ClusterShift" X="0" Y="0"/>
+        </Grid.RenderTransform>
+
         <ItemsControl x:Name="ActionsHost"
                       Width="{Binding ExpandedOuterWidth, ElementName=Root}"
                       Height="{Binding ClusterHeight, ElementName=Root}"
                       ItemsSource="{Binding Actions, ElementName=Root}"
                       ItemTemplate="{StaticResource ActionItemTemplate}"
                       IsHitTestVisible="False"
+                      Opacity="0"
                       VerticalAlignment="Bottom">
             <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
@@ -234,16 +165,25 @@
             </ItemsControl.ItemContainerStyle>
         </ItemsControl>
 
-        <Button
+        <Button x:Name="MainButton"
                 HorizontalAlignment="{Binding ClusterHorizontalAlignment, ElementName=Root}"
                 VerticalAlignment="Bottom"
-                Panel.ZIndex="10"
+                Panel.ZIndex="1000"
+                Width="{Binding ButtonDiameter, ElementName=Root}"
+                Height="{Binding ButtonDiameter, ElementName=Root}"
                 ToolTip="{Binding MainToolTip, ElementName=Root}"
-                Style="{StaticResource ClusterRoundButton}"
-                Background="{Binding MainBackground, ElementName=Root}"
-                Foreground="{Binding MainForeground, ElementName=Root}"
+                Cursor="Hand"
+                Style="{StaticResource ClusterMainButton}"
+                PreviewMouseLeftButtonDown="OnMainButtonDragStart"
+                PreviewMouseMove="OnMainButtonDragMove"
+                PreviewMouseLeftButtonUp="OnMainButtonDragEnd"
+                LostMouseCapture="OnMainButtonLostCapture"
                 Click="OnMainButtonClick">
-            <Path Width="18" Height="18" Data="M3,5 L15,5 M3,9 L15,9 M3,13 L15,13" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.7" StrokeStartLineCap="Round"/>
+            <Path Width="18" Height="18"
+                  Data="{StaticResource ActionIcon.Menu}"
+                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                  StrokeThickness="1.7"
+                  StrokeStartLineCap="Round"/>
         </Button>
     </Grid>
 </UserControl>

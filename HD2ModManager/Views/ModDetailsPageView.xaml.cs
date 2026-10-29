@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using HD2ModManager.Controls.Lists;
 using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
@@ -20,34 +21,52 @@ namespace HD2ModManager.Views
             Loaded += (_, _) => ModRelationshipDragCoordinator.RegisterTarget(this);
             Unloaded += (_, _) =>
             {
-                ResetRelationshipDropOverlay();
+                RelationshipDropOverlay.HideImmediately();
                 ModRelationshipDragCoordinator.UnregisterTarget(this);
             };
+            DataContextChanged += OnDetailsDataContextChanged;
         }
 
-
-        private void OnSelectImageClick(object sender, RoutedEventArgs e)
+        // 动作在 VM 里声明（浮动操作簇负责画）；这里只接住"必须由视图/壳才能做"的三件事：
+        // 文件对话框、底栏重命名、底栏改备注。
+        private void OnDetailsDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
+            if (e.OldValue is ModDetailsPageViewModel previous)
+            {
+                previous.EditImageRequested -= OnEditImageRequested;
+                previous.EditNameRequested -= OnEditNameRequested;
+                previous.EditDescriptionRequested -= OnEditDescriptionRequested;
+            }
+
+            if (e.NewValue is ModDetailsPageViewModel current)
+            {
+                current.EditImageRequested += OnEditImageRequested;
+                current.EditNameRequested += OnEditNameRequested;
+                current.EditDescriptionRequested += OnEditDescriptionRequested;
+            }
+        }
+
+        private void OnEditImageRequested(object? sender, EventArgs e)
+        {
+            if (DataContext is not ModDetailsPageViewModel details) return;
+
             var dialog = new OpenFileDialog
             {
                 Title = "选择 Mod 图像",
                 Filter = "图像文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|所有文件|*.*",
                 Multiselect = false
             };
-            if (dialog.ShowDialog() == true && DataContext is ModDetailsPageViewModel details)
-            {
-                details.UpdateImageCommand.Execute(dialog.FileName);
-            }
+            if (dialog.ShowDialog() == true) details.UpdateImageCommand.Execute(dialog.FileName);
         }
 
-        private void OnEditNameClick(object sender, RoutedEventArgs e)
+        private void OnEditNameRequested(object? sender, EventArgs e)
         {
             if (DataContext is not ModDetailsPageViewModel details) return;
             if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
                 shell.BeginBottomBarNameEdit(details.ModId, details.Name);
         }
 
-        private void OnEditDescriptionClick(object sender, RoutedEventArgs e)
+        private void OnEditDescriptionRequested(object? sender, EventArgs e)
         {
             if (DataContext is not ModDetailsPageViewModel details) return;
             if (Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
@@ -138,31 +157,14 @@ namespace HD2ModManager.Views
                 && details.CanHostAttachments;
 
         bool IModRelationshipDropTarget.ContainsScreenPoint(Point screenPoint)
-        {
-            if (!IsLoaded
-                || !IsVisible
-                || !ModRelationshipDragCoordinator.IsVisuallyActive(this)
-                || RelationshipDropOverlay.Visibility != Visibility.Visible
-                || RelationshipDropOverlay.ActualWidth <= 0
-                || RelationshipDropOverlay.ActualHeight <= 0)
-                return false;
-            try
-            {
-                var local = RelationshipDropOverlay.PointFromScreen(screenPoint);
-                return local.X >= 0
-                    && local.Y >= 0
-                    && local.X <= RelationshipDropOverlay.ActualWidth
-                    && local.Y <= RelationshipDropOverlay.ActualHeight;
-            }
-            catch (InvalidOperationException)
-            {
-                return false;
-            }
-        }
+            => IsLoaded && RelationshipDropOverlay.ContainsPoint(screenPoint);
 
         bool IModRelationshipDropTarget.ContainsElement(DependencyObject element)
             => IsAncestorOf(element);
 
+        // 详情页的目标是整页而不是某个列表（把 Mod 拖到详情页 = 设为该主体的选项），
+        // 所以它继续自己实现 IModRelationshipDropTarget；叠层、淡入淡出和命中
+        // 由 DropHintOverlay 统一负责。
         void IModRelationshipDropTarget.SetRelationshipDropOverlay(ModRelationshipDragPayload payload, bool visible)
         {
             if (visible)
@@ -170,30 +172,13 @@ namespace HD2ModManager.Views
                 var hostName = DataContext is ModDetailsPageViewModel details
                     ? details.Name
                     : "当前 Mod";
-                RelationshipDropTitle.Text = $"释放以设为“{hostName}”的选项";
-                RelationshipDropDetail.Text = $"将 {payload.SelectedKeys.Count} 个 Mod 挂载到该主体下";
-                RelationshipDropOverlay.Visibility = Visibility.Visible;
-                RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, null);
-                RelationshipDropOverlay.BeginAnimation(
-                    UIElement.OpacityProperty,
-                    new DoubleAnimation(0.92, TimeSpan.FromMilliseconds(140)));
+                RelationshipDropOverlay.Show(new ModListDropHint(
+                    $"释放以设为“{hostName}”的选项",
+                    $"将 {payload.SelectedKeys.Count} 个 Mod 挂载到该主体下"));
                 return;
             }
 
-            if (!IsLoaded)
-            {
-                ResetRelationshipDropOverlay();
-                return;
-            }
-            if (RelationshipDropOverlay.Visibility != Visibility.Visible) return;
-            RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, null);
-            var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
-            fadeOut.Completed += (_, _) =>
-            {
-                if (RelationshipDropOverlay.Opacity <= 0.01)
-                    RelationshipDropOverlay.Visibility = Visibility.Collapsed;
-            };
-            RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, fadeOut);
+            RelationshipDropOverlay.Hide();
         }
 
         void IModRelationshipDropTarget.RaiseRelationshipDropRequested(ModRelationshipDragPayload payload)
@@ -206,11 +191,5 @@ namespace HD2ModManager.Views
                 _ = shell.SetModsAsOptionsForHostAsync(details.ModId, payload.SelectedKeys);
         }
 
-        private void ResetRelationshipDropOverlay()
-        {
-            RelationshipDropOverlay.BeginAnimation(UIElement.OpacityProperty, null);
-            RelationshipDropOverlay.Visibility = Visibility.Collapsed;
-            RelationshipDropOverlay.Opacity = 0;
-        }
     }
 }
