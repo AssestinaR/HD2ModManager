@@ -65,6 +65,12 @@
 遗留：`CrossArmorLayerPreference` 参数与 GUI 的「层偏好」下拉框现在没有读者，需要单独决定
 （删控件，或把偏好实现进 Cells——后者会改装箱结果）。
 
+> 更正（同日）：**GUI 上其实没有那个下拉框**。`CrossArmorLayerPreference` 在 `.xaml` 里
+> 零引用，`CrossArmorTransferPlanWindowViewModel.LayerPreference` 是个没有绑定者的属性；
+> 值一路传到 `CreatePlanAsync` 然后被装箱器忽略。所以这不是「用户看得见但点了没反应」的
+> 假控件，只是**死管道**：API 参数 + VM 属性 + CLI 计划文档里的 `LayerPreference` 字段。
+> 删它要动 CLI 的 JSON 字段（`--layer-preference` 入参），属于兼容性改动，单独做。
+
 以下是当初评估代价的记录，保留以备回溯。
 
 `CrossArmorPlannerKind.Legacy` 在生产里已经不可达：GUI（`CrossArmorTransferPlanWindowViewModel`）
