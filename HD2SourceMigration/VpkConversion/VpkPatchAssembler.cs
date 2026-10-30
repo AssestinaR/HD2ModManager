@@ -214,6 +214,15 @@ public sealed class VpkPatchAssembler
 	/// 给了 <paramref name="materialConverter"/> 时以它的为准——两边不一致会让"去重判断用的 id"
 	/// 与"真正写进包的 id"不是同一个，那种错只会表现为"同一张图写了两遍"或"漏写"。
 	/// </param>
+	/// <param name="onProgress">
+	/// 进度回调：<c>(阶段键, 已完成, 总数)</c>。阶段键是稳定的英文标识：<c>materials</c> / <c>textures</c> / <c>units</c>。
+	/// <para>
+	/// <b>为什么由装配器报而不是让调用方猜。</b>一次转换里最长的两段（逐材质跑 texconv、逐 Unit
+	/// 写几何）在装配器内部，而且都是并行的——调用方只能看到"进了这一步、还没出来"。4K 材质包这一段
+	/// 有 55 秒，没有计数的话进度条就是钉在原地的。
+	/// </para>
+	/// <para>回调会在<b>工作线程</b>上被调用，实现方自己负责封送。</para>
+	/// </param>
 	public async ValueTask<VpkPackageResult> AssembleAsync(
 		IReadOnlyList<VpkUnitPlan> plans,
 		RetargetResult? retarget,
@@ -230,7 +239,8 @@ public sealed class VpkPatchAssembler
 		string? materialPackFileName = null,
 		ulong? unitIdSeed = null,
 		SourceMaterialSource? materialScope = null,
-		string? idNamespace = null)
+		string? idNamespace = null,
+		Action<string, int, int>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
@@ -336,6 +346,7 @@ public sealed class VpkPatchAssembler
 		//    实测一份 42 万顶点的模型，7 个 Unit 串行 18.3 s，并行之后约 3 s。
 		var meshes = new RetargetedMesh[plans.Count];
 		var authoredUnits = new UnitAuthorResult[plans.Count];
+		var unitsDone = 0;
 		Parallel.For(0, plans.Count, VpkParallel.Options, planIndex =>
 		{
 			var plan = plans[planIndex];
@@ -349,6 +360,7 @@ public sealed class VpkPatchAssembler
 				plan.Donor.FileId, materialIdsBySourceMaterial));
 			meshes[planIndex] = mesh;
 			authoredUnits[planIndex] = authored;
+			onProgress?.Invoke("units", Interlocked.Increment(ref unitsDone), plans.Count);
 		});
 
 		// ③ 按计划顺序收口：诊断、产物记录、session 条目都要保持顺序（重跑要逐字节可复现）。
@@ -484,12 +496,14 @@ public sealed class VpkPatchAssembler
 
 			var synthesizedByStem = new MaterialSynthesisResult?[stems.Count];
 			var reportByStem = new MaterialResolveReport?[stems.Count];
+			var materialsDone = 0;
 			Parallel.For(0, stems.Count, VpkParallel.Options, stemIndex =>
 			{
 				if (ownedByStem[stemIndex])
 					synthesizedByStem[stemIndex] = converter.Convert(stems[stemIndex]);
 				else
 					reportByStem[stemIndex] = converter.Resolve(stems[stemIndex]);
+				onProgress?.Invoke("materials", Interlocked.Increment(ref materialsDone), stems.Count);
 			});
 
 			for (var stemIndex = 0; stemIndex < stems.Count; stemIndex++)
@@ -601,14 +615,18 @@ public sealed class VpkPatchAssembler
 				var pureNames = scope.OwnedVtfNames.Order(StringComparer.OrdinalIgnoreCase).ToArray();
 				var pureTextures = new SynthesizedTexture?[pureNames.Length];
 				var pureFailures = new string?[pureNames.Length];
+				var texturesDone = 0;
 				Parallel.For(0, pureNames.Length, VpkParallel.Options, textureIndex =>
 				{
-					if (addedTextureIds.Contains(Hd2AssetId.Texture(pureNames[textureIndex], idNamespace)))
-						return;
-					if (converter.TryConvertTexture(pureNames[textureIndex], out var texture, out var failure))
-						pureTextures[textureIndex] = texture;
-					else
-						pureFailures[textureIndex] = failure;
+					if (!addedTextureIds.Contains(Hd2AssetId.Texture(pureNames[textureIndex], idNamespace)))
+					{
+						if (converter.TryConvertTexture(pureNames[textureIndex], out var texture, out var failure))
+							pureTextures[textureIndex] = texture;
+						else
+							pureFailures[textureIndex] = failure;
+					}
+
+					onProgress?.Invoke("textures", Interlocked.Increment(ref texturesDone), pureNames.Length);
 				});
 
 				for (var textureIndex = 0; textureIndex < pureNames.Length; textureIndex++)

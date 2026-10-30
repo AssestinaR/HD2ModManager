@@ -17,6 +17,7 @@ namespace HD2ModManager.Services
         private readonly ModLibraryService _library;
         private readonly Action<string>? _onInfo;
         private readonly Action<string>? _onError;
+        private readonly Action<string, double?>? _onProgress;
         private readonly StoragePaths _paths;
         private readonly HD2ModCore.Application.IModInformationCenter _informationCenter;
 
@@ -31,11 +32,12 @@ namespace HD2ModManager.Services
         /// </summary>
         public VpkImportReport? LastVpkImportReport { get; private set; }
 
-        public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null, IModInformationCenter? informationCenter = null)
+        public ImportService(ModLibraryService library, Action<string>? onInfo = null, Action<string>? onError = null, IModInformationCenter? informationCenter = null, Action<string, double?>? onProgress = null)
         {
             _library = library;
             _onInfo = onInfo;
             _onError = onError;
+            _onProgress = onProgress;
             _paths = SettingsService.CreateStoragePaths();
             _informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter), "ImportService requires the shared IModInformationCenter.");
         }
@@ -185,7 +187,7 @@ namespace HD2ModManager.Services
             try
             {
                 var service = new VpkImportService(_paths, SettingsService.GetGameDataFolder());
-                return await service.TryPrepareAsync(path, ct).ConfigureAwait(false);
+                return await service.TryPrepareAsync(path, ct, stage => _onProgress?.Invoke(stage, null)).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -208,8 +210,34 @@ namespace HD2ModManager.Services
             try
             {
                 var service = new VpkImportService(_paths, SettingsService.GetGameDataFolder());
+                // 进度：CLI 报的是"这一批里的第几个包"与"这个包里第几个材质/Unit"两层计数，
+                // 合成一个百分比只能在知道队列总数之后做——所以 queue 那一条要记下来当分母。
+                var queueTotal = 0;
+                var queueDone = 0;
                 var (report, produced) = await service
-                    .ConvertAsync(source, stage => _onInfo?.Invoke(stage), ct)
+                    .ConvertAsync(
+                        source,
+                        stage =>
+                        {
+                            _onInfo?.Invoke(stage);
+                            _onProgress?.Invoke(stage, null);
+                        },
+                        ct,
+                        (phase, done, total, text) =>
+                        {
+                            if (phase == "queue")
+                            {
+                                queueTotal = total;
+                                queueDone = done;
+                                _onProgress?.Invoke(text, total == 0 ? null : (double)done / total);
+                                return;
+                            }
+
+                            var innerFraction = total == 0 ? 0.0 : (double)done / total;
+                            _onProgress?.Invoke(
+                                text,
+                                queueTotal == 0 ? null : (queueDone + innerFraction) / queueTotal);
+                        })
                     .ConfigureAwait(false);
                 LastVpkImportReport = report;
                 _onInfo?.Invoke(report.ToSummary());

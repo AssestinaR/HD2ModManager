@@ -1063,14 +1063,22 @@ namespace HD2ModManager.ViewModels
                         $"导入 {System.IO.Path.GetFileName(item.Path)}",
                         item.Path,
                         presentation: BackgroundTaskPresentation.Foreground);
-                    var import = new ImportService(_libraryService, onInfo: null, onError: err => _importQueue.MarkFailed(item, err), informationCenter: _derivedState.InformationCenter);
+                    var import = new ImportService(_libraryService, onInfo: null, onError: err => _importQueue.MarkFailed(item, err), informationCenter: _derivedState.InformationCenter, onProgress: (text, fraction) =>
+                    {
+                        // 这里以前传的是 onInfo: null —— 于是任务条除了开头那句"正在解压缩"再也不会变。
+                        // VPK 来源实测要跑几分钟，用户看到的却是一个不动的"解压中"。
+                        task.UpdateStage(text);
+                        // 只在拿到百分比时改进度条：阶段文案（"正在识别哪些 VPK 能转换"）没有分母，
+                        // 顺手把它清成不确定态会让进度条来回跳。
+                        if (fraction is { } value) task.UpdateProgress(value);
+                    });
                     using var itemPerf = UiPerformanceDiagnostics.Measure(
                         "Import.ProcessItem",
                         thresholdMilliseconds: 100,
                         details: () => $"source={System.IO.Path.GetFileName(item.Path)}; created={import.LastAffectedNodeIds.Count}");
                     try
                     {
-                        task.MarkRunning("正在解压缩");
+                        task.MarkRunning("正在准备导入");
                         // Commit each source immediately, but defer expensive derived-data
                         // production until the whole queue has been committed.
                         var created = await import.ImportPathAsync(
@@ -1098,6 +1106,8 @@ namespace HD2ModManager.ViewModels
                             affectedNodeIds.Add(nodeId);
                         libraryChanged = true;
                         task.UpdateStage("模组库已更新");
+                        // 任务已经做完，进度条留在 37% 只会让人以为卡住了。
+                        task.UpdateProgress(null);
                         LogService.Info($"快速导入完成：来源={item.Path}，新增 Mod 数={created.Count}。导入仅写入模组库；除非后续显式加入活动配置，否则不会部署。");
 						if (import.LastImportHasOptionPathConflicts)
 							_notificationService.Show("Mod 导入成功，但部分选项共享同一 Patch 目录；这些共享内容默认未选择，其余选项已按通常规则初始化。", NotificationLevel.Warning, TimeSpan.FromSeconds(8));

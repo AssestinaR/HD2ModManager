@@ -2055,13 +2055,18 @@ public static class CliApplication
 			var results = new List<VpkConversionOutcome>();
 			var failures = new List<object>();
 			var exitCode = 0;
+			var queueIndex = 0;
 			foreach (var path in vpkPaths)
 			{
+				queueIndex++;
 				// 开关包不产出 patch（它的语义是"关掉某几块"，不是"提供资产"）。
 				// 管理器不会把它排进转换队列（规划阶段就标成 ComponentSwitch），
 				// 但直接命令行调用时它可能就在队列里——这时要明确说明，而不是产一个空包。
 				if (switchPaths.Contains(Path.GetFullPath(path)))
 					continue;
+
+				Progress("queue", queueIndex - 1, vpkPaths.Count,
+					$"正在转换 {queueIndex}/{vpkPaths.Count}：{Path.GetFileName(path)}");
 
 				var directory = Path.Combine(Path.GetFullPath(outputRoot), SafeDirectoryName(Path.GetFileNameWithoutExtension(path)));
 				try
@@ -2555,6 +2560,37 @@ public static class CliApplication
 		return result.Count == 0 ? null : result;
 	}
 	/// <summary>
+	/// 往 stderr 打一行<b>机器可读</b>的进度。管理器按行解析它来驱动任务条。
+	/// <para>
+	/// <b>为什么走 stderr 而不是 stdout。</b>stdout 是结论（<c>--json</c> 时是那一整份报告），
+	/// 中间混进进度行会让它不再是合法 JSON。stderr 本来就是"人看的话"，加一行带固定前缀的
+	/// 结构化行不影响任何现有调用方——不解析它的调用方会把它当普通提示打印出来。
+	/// </para>
+	/// <para>
+	/// 格式固定四个字段：<c>#progress &lt;阶段键&gt; &lt;已完成&gt; &lt;总数&gt; &lt;文案&gt;</c>。
+	/// 阶段键是稳定的英文标识（<c>queue</c> / <c>materials</c> / <c>textures</c> / <c>units</c>），
+	/// 文案是给人看的中文——管理器只按阶段键决定怎么把两个计数合成一个百分比。
+	/// </para>
+	/// </summary>
+	private static void Progress(string phase, int done, int total, string text)
+		=> Console.Error.WriteLine(HD2ModCore.Infrastructure.VpkProgressLine.Format(phase, done, total, text));
+
+	/// <summary>
+	/// 装配器的进度回调：把内部阶段键翻成给人看的文案。
+	/// <para>回调在工作线程上，<see cref="Console.Error"/> 自带同步，所以直接写就行。</para>
+	/// </summary>
+	private static void ReportAssembleProgress(string phase, int done, int total)
+	{
+		var label = phase switch
+		{
+			"materials" => "材质",
+			"textures" => "贴图",
+			"units" => "Unit",
+			_ => phase,
+		};
+		Progress(phase, done, total, $"{label} {done}/{total}");
+	}
+	/// <summary>
 	/// <c>--id-namespace</c> 的值是<b>来源标识</b>（通常就是来源压缩包/目录名），不是 token 本身。
 	/// <para>
 	/// <b>为什么在 CLI 里派生而不是让调用方传 token。</b>派生规则只该有一份：管理器、命令行、
@@ -2659,7 +2695,8 @@ public static class CliApplication
 				materialConverter: materialConverter,
 				materialPackFileName: $"{ArmorArchiveHex}.patch_0",
 				materialScope: scope,
-				idNamespace: ResolveIdNamespace(options)).ConfigureAwait(false);
+				idNamespace: ResolveIdNamespace(options),
+				onProgress: ReportAssembleProgress).ConfigureAwait(false);
 
 			return new(full, "material", outputDirectory, null, 0, 0, materialPackage,
 				string.Empty, string.Empty, new Dictionary<BodyRegion, UnitDonor>(), null);
@@ -2784,7 +2821,8 @@ public static class CliApplication
 			materialConverter: materialConverter,
 			unitIdSeed: reusedUnitIdSeed,
 			materialScope: scope,
-			idNamespace: ResolveIdNamespace(options)).ConfigureAwait(false);
+			idNamespace: ResolveIdNamespace(options),
+			onProgress: ReportAssembleProgress).ConfigureAwait(false);
 
 		// 顺手产出 `sections.json`：这个 patch 里每个 unit 的每个 section 落在 TOC 的哪个偏移、
 		// 原本的 numIndices 是多少。管理器的"衣物装饰组件"树靠它画，烘焙靠它写回原值。

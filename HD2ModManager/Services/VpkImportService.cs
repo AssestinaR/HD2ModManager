@@ -114,7 +114,10 @@ public sealed class VpkImportService
 	/// 判断一个导入来源是不是"VPK 来源"，是就把它摊开到临时目录并列出所有 VPK。
 	/// <para>返回 <c>null</c> 表示这不是 VPK 来源，调用方应当走原来的导入路径。</para>
 	/// </summary>
-	public async Task<VpkImportSource?> TryPrepareAsync(string path, CancellationToken cancellationToken)
+	public async Task<VpkImportSource?> TryPrepareAsync(
+		string path,
+		CancellationToken cancellationToken,
+		Action<string>? onStage = null)
 	{
 		if (File.Exists(path) && Path.GetExtension(path).Equals(".vpk", StringComparison.OrdinalIgnoreCase))
 		{
@@ -128,6 +131,7 @@ public sealed class VpkImportService
 			// 结果是转换报告一路显示成功、一个 Mod 都建不出来。这里直接交回普通导入。
 			if (IsConvertedPackage(path)) return null;
 
+			onStage?.Invoke($"正在查找文件夹里的 VPK：{Path.GetFileName(path)}");
 			var vpks = EnumerateVpkFiles(path);
 			return vpks.Count == 0 ? null : new VpkImportSource(path, CreateStaging(), vpks, ownsStaging: true);
 		}
@@ -154,6 +158,10 @@ public sealed class VpkImportService
 		var extracted = Path.Combine(staging, "source");
 		try
 		{
+			// 解压这一步在实测里是 8 秒（2.45 GB / 19 个 VPK），而它之后还有几分钟的转换。
+			// 不在这里说一句话，用户看到的就是"一直停在解压中"——那也是他报的那个现象的起点。
+			var vpkCount = entries.Count(entry => entry.EndsWith(".vpk", StringComparison.OrdinalIgnoreCase));
+			onStage?.Invoke($"正在解压 {Path.GetFileName(path)}（{vpkCount} 个 VPK）");
 			await extractor.ExtractAsync(path, extracted, cancellationToken).ConfigureAwait(false);
 			var vpks = EnumerateVpkFiles(extracted);
 			if (vpks.Count == 0)
@@ -178,7 +186,8 @@ public sealed class VpkImportService
 	public async Task<(VpkImportReport Report, IReadOnlyList<string> ProducedDirectories)> ConvertAsync(
 		VpkImportSource source,
 		Action<string>? onStage,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		Action<string, int, int, string>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(source);
 		var executable = ResolveCliExecutable();
@@ -235,7 +244,7 @@ public sealed class VpkImportService
 			var raw = Path.Combine(source.StagingRoot, "raw", index.ToString(CultureInfo.InvariantCulture));
 			try
 			{
-				var result = await ConvertOneAsync(executable, candidate.VpkPath, raw, materialSource, idNamespaceSource, cancellationToken).ConfigureAwait(false);
+				var result = await ConvertOneAsync(executable, candidate.VpkPath, raw, materialSource, idNamespaceSource, cancellationToken, onProgress).ConfigureAwait(false);
 				if (result.PatchDirectory is null)
 				{
 					items.Add(new VpkImportItem(candidate.VpkPath, VpkImportOutcome.Skipped, null,
@@ -331,7 +340,8 @@ public sealed class VpkImportService
 		string outputRoot,
 		string materialSource,
 		string idNamespaceSource,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		Action<string, int, int, string>? onProgress = null)
 	{
 		Directory.CreateDirectory(outputRoot);
 		var arguments = new List<string>
@@ -353,7 +363,7 @@ public sealed class VpkImportService
 			"--json",
 		};
 
-		var (exitCode, output, error) = await RunCliAsync(executable, arguments, cancellationToken).ConfigureAwait(false);
+		var (exitCode, output, error) = await RunCliAsync(executable, arguments, cancellationToken, onProgress).ConfigureAwait(false);
 		if (string.IsNullOrWhiteSpace(output))
 		{
 			throw new InvalidDataException(
@@ -460,7 +470,8 @@ public sealed class VpkImportService
 	private static async Task<(int ExitCode, string Output, string Error)> RunCliAsync(
 		string executable,
 		IReadOnlyList<string> arguments,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		Action<string, int, int, string>? onProgress = null)
 	{
 		using var process = new Process
 		{
@@ -481,13 +492,43 @@ public sealed class VpkImportService
 
 		if (!process.Start()) throw new InvalidOperationException("无法启动 hd2mod.exe。");
 		var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-		var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+		// stderr 必须**逐行**读：CLI 把进度写在 stderr 上（见 CliApplication.Progress），
+		// 一行一行才能边转边报。整段 ReadToEnd 会把所有进度攒到进程结束才回来——
+		// 那正是"进度条一直是解压中"的另一半原因。
+		var errorTask = ReadErrorLinesAsync(process.StandardError, onProgress, cancellationToken);
 		using var registration = cancellationToken.Register(() =>
 		{
 			try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
 		});
 		await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
 		return (process.ExitCode, await outputTask.ConfigureAwait(false), await errorTask.ConfigureAwait(false));
+	}
+
+	/// <summary>
+	/// 读 stderr：<c>#progress</c> 行转成进度回调，其余照常攒进"错误输出"。
+	/// <para>
+	/// 进度行<b>不算</b>错误输出。混进去的后果是每次转换的 <c>error</c> 里都塞着几十行进度，
+	/// 而 <c>error</c> 只在失败时才会被拼进给用户看的消息里——那时真正的原因会被埋掉。
+	/// </para>
+	/// </summary>
+	private static async Task<string> ReadErrorLinesAsync(
+		StreamReader reader,
+		Action<string, int, int, string>? onProgress,
+		CancellationToken cancellationToken)
+	{
+		var buffer = new StringBuilder();
+		while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+		{
+			if (HD2ModCore.Infrastructure.VpkProgressLine.TryParse(line, out var phase, out var done, out var total, out var text))
+			{
+				onProgress?.Invoke(phase, done, total, text);
+				continue;
+			}
+
+			buffer.AppendLine(line);
+		}
+
+		return buffer.ToString();
 	}
 
 	/// <summary>
