@@ -22,6 +22,15 @@ internal sealed record VpkRekeyResult(
 
 	/// <summary>目标护甲的显示名（与 <see cref="TargetArchiveIds"/> 一一对应）。</summary>
 	public IReadOnlyList<string> TargetNames { get; init; } = [];
+
+	/// <summary>
+	/// 这次没有做跨护甲搬运，而是把来源 patch 原样退回 <c>Overwrite/</c>（目标就是这个 Mod 自己的素体）。
+	/// <para>
+	/// 单独一个布尔而不是让调用方去读 <see cref="Mappings"/> 的文案：界面要据此换一句话
+	/// （"已退回自定义素体"而不是"替换 7 个 Unit、隐藏 0 个网格"），而文案随时会改。
+	/// </para>
+	/// </summary>
+	public bool RestoredFromSource { get; init; }
 }
 
 /// <summary>
@@ -129,6 +138,36 @@ internal static class CliVpkRekey
 			throw new CliUserException("VpkRekeyPlanInvalid", $"换甲计划不成立：{detail}");
 		}
 
+		var destinationDirectory = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
+
+		// 目标就是这个 Mod **自己**的素体：换甲等于"什么也不用换"。
+		//
+		// 为什么单独走一条路而不是让跨护甲链路算一遍：来源 Unit 与目标 Unit 是同一批键，
+		// 计划里会变成"把 Unit 搬到它自己身上"，那不是一次换甲。用户点"转回自定义素体"
+		// 想要的结果只是"回到刚转出来的样子"，而那份 patch 一直都在 vpk2patch/ 里——
+		// 直接把它复制进 Overwrite 就是最忠实的答案，也最快（不读游戏数据、不重建几何）。
+		if (IsIdentityTarget(source, selected))
+		{
+			var restored = await RestoreSourceAsync(
+				sourcePatch, sourceDirectory, destinationDirectory, cancellationToken).ConfigureAwait(false);
+			return new VpkRekeyResult(
+				node.Id.Value.ToString("N"),
+				modDirectory,
+				sourcePatch,
+				restored,
+				selected.Select(entry => entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+				// 没有搬运任何几何：这里报 0 而不是映射条数，否则界面会说"替换 7 个 Unit"，
+				// 而实际发生的是"把来源原样放回去"。
+				0,
+				0,
+				["目标就是这个 Mod 自己的素体：已把来源 patch 原样退回 Overwrite（Unit 键不变，开关继续有效）。"])
+			{
+				Mappings = ["直接退回来源（不做跨护甲搬运）"],
+				TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
+				RestoredFromSource = true,
+			};
+		}
+
 		var gameData = workspace.GameDataRoot
 			?? throw new CliUserException("GameDataRequired", "换甲需要 --game-data：目标 Unit 与隐藏 Unit 都从游戏本体读。");
 		var ownsOutput = string.IsNullOrWhiteSpace(outputRoot);
@@ -159,7 +198,6 @@ internal static class CliVpkRekey
 
 		var produced = FindUnitPatch(result.OutputDirectory)
 			?? throw new CliUserException("VpkRekeyNoOutput", "换甲没有产出 patch。");
-		var destinationDirectory = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
 		Directory.CreateDirectory(destinationDirectory);
 		var destination = Path.Combine(destinationDirectory, Path.GetFileName(produced));
 
@@ -178,6 +216,29 @@ internal static class CliVpkRekey
 		await WardrobeSectionMapFile
 			.WriteAsync(Path.Combine(destinationDirectory, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
 			.ConfigureAwait(false);
+
+		// 开关表也要跟着搬：它的掩码是 (unit, section)，而换甲把 Unit 换到了目标护甲的键上。
+		// 不翻译的话，换一次甲之后整份开关表就指向不存在的 Unit——界面只能显示"已失效"，
+		// 用户勾过的开关白设了。翻译映射直接来自这次的计划，不需要再猜。
+		var sourceSwitches = await VpkComponentSwitchFile
+			.TryReadAsync(Path.GetDirectoryName(sourcePatch)!, cancellationToken)
+			.ConfigureAwait(false);
+		if (sourceSwitches is not null)
+		{
+			var unitMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var mapping in plan.Mappings)
+			{
+				if (mapping.Source is null)
+					continue;
+				var from = mapping.Source.UnitAssetKey.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+				var to = mapping.PhysicalTarget.UnitAssetKey.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+				unitMap[from] = to;
+			}
+
+			await VpkComponentSwitchFile
+				.WriteAsync(destinationDirectory, VpkComponentSwitchFile.Translate(sourceSwitches, unitMap), cancellationToken)
+				.ConfigureAwait(false);
+		}
 
 		// 临时输出里有 30 MB 的 gpu，切换几次就是几百 MB。产物已经拷进 Overwrite，这里清掉。
 		if (ownsOutput)
@@ -206,6 +267,63 @@ internal static class CliVpkRekey
 		};
 	}
 
+	/// <summary>
+	/// 目标是不是"这个 Mod 自己的素体"：两边 Unit 键集合完全相同。
+	/// <para>
+	/// 用键集合而不是"名字/键相等"来判：自定义素体的键由转换时生成，而用户在界面上选的是
+	/// "哪个素体"——只有键集合能说明"换了等于没换"。也正因为如此，一个**复制出来**的素体
+	/// （同一批 Unit）同样会被认成恒等目标，这是对的：几何确实没变。
+	/// </para>
+	/// </summary>
+	internal static bool IsIdentityTarget(
+		EquipmentUnitCatalogEntry source,
+		IReadOnlyList<EquipmentUnitCatalogEntry> targets)
+	{
+		ArgumentNullException.ThrowIfNull(source);
+		ArgumentNullException.ThrowIfNull(targets);
+		if (targets.Count != 1)
+			return false;
+		var sourceIds = source.Parts.Select(part => part.UnitAssetKey).ToHashSet();
+		var targetIds = targets[0].Parts.Select(part => part.UnitAssetKey).ToHashSet();
+		return targetIds.Count != 0 && targetIds.SetEquals(sourceIds);
+	}
+
+	/// <summary>
+	/// 把来源 patch 原样退回 `Overwrite/`：TOC、sidecar、开关表一起复制，section 表重算。
+	/// <para>
+	/// <b>为什么连 components.json 一起复制、不做翻译。</b>这条路上 Unit 键没变（根本没换甲），
+	/// 掩码本来就对；翻译反而会把"没变"当成"变了"。重算 section 表是必须的：它带着本次构建的
+	/// 偏移，而 Overwrite 里那份是给部署用的。
+	/// </para>
+	/// </summary>
+	private static async ValueTask<string> RestoreSourceAsync(
+		string sourcePatch,
+		string sourceDirectory,
+		string destinationDirectory,
+		CancellationToken cancellationToken)
+	{
+		Directory.CreateDirectory(destinationDirectory);
+		var destination = Path.Combine(destinationDirectory, Path.GetFileName(sourcePatch));
+		foreach (var stale in Directory.EnumerateFiles(destinationDirectory, Path.GetFileName(sourcePatch) + "*"))
+			DeleteQuietly(stale);
+
+		foreach (var suffix in new[] { "", ".gpu_resources", ".stream" })
+		{
+			var from = sourcePatch + suffix;
+			if (File.Exists(from))
+				File.Copy(from, destination + suffix, overwrite: true);
+		}
+
+		var switches = await VpkComponentSwitchFile.TryReadAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
+		if (switches is not null)
+			await VpkComponentSwitchFile.WriteAsync(destinationDirectory, switches, cancellationToken).ConfigureAwait(false);
+
+		var rebuilt = await WardrobeSectionMapFile.BuildAsync(destination, cancellationToken).ConfigureAwait(false);
+		await WardrobeSectionMapFile
+			.WriteAsync(Path.Combine(destinationDirectory, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
+			.ConfigureAwait(false);
+		return destination;
+	}
 	/// <summary>
 	/// 把一个归档 id 扩成"这套装备的完整目标"：同 setId 的护甲 + 头盔。
 	/// <para>
@@ -457,6 +575,7 @@ internal static class CliVpkRekey
 		replacedUnits = result.ReplacedUnits,
 		hiddenMeshes = result.HiddenUnits,
 		mappings = result.Mappings,
+		restoredFromSource = result.RestoredFromSource,
 		warnings = result.Warnings,
 	};
 }

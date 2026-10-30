@@ -1761,6 +1761,23 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private void RemoveCustomModel(RuntimeArmorModelEditorViewModel? model)
 	{
 		if (model is null || !CustomModels.Contains(model)) return;
+
+		// VPK 模组转换出来的素体不许单独删。
+		//
+		// 它不是用户手工建的，而是那个 Mod 的产物：删掉之后 patch 里只剩一堆没人引用的 Unit
+		// （用户看到的正是"无头 vpk2patch"），而唯一的修复办法是重新导入整个包。
+		// 所以它的生命周期必须跟 Mod 绑在一起——删除只能随 Mod 发生。
+		if (VpkModWardrobeService.ReadOwnedCustomModelKeys(SettingsService.CreateStoragePaths().ModsDirectory)
+			.Contains(model.Key))
+		{
+			notifications.Show(
+				$"「{model.Name}」是 VPK 模组转换出来的素体，不能单独删除：删掉之后那个 Mod 会剩下一堆没人引用的 Unit。"
+				+ "请改为移除那个 Mod（素体会跟着消失），或者重新导入那个包。",
+				NotificationLevel.Warning,
+				TimeSpan.FromSeconds(12),
+				"护甲注册");
+			return;
+		}
 		var syntheticId = SyntheticModelItemId(model.Key);
 		var removed = Mappings.Where(mapping => mapping.Source.ItemId == syntheticId).ToArray();
 		var released = removed.Select(mapping => mapping.Target.ItemId).Append(syntheticId).ToHashSet();

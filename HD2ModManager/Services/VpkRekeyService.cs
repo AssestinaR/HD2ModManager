@@ -17,6 +17,12 @@ public sealed record VpkRekeyOutcome(
 	IReadOnlyList<string> TargetNames)
 {
 	public static VpkRekeyOutcome Failed(string error) => new(false, error, [], 0, 0, [], []);
+
+	/// <summary>
+	/// 这次没有跨护甲搬运，而是把来源 patch 原样退回 <c>Overwrite/</c>
+	/// （用户选的目标就是这个 Mod 自己的素体）。界面据此换一句话。
+	/// </summary>
+	public bool RestoredFromSource { get; init; }
 }
 
 /// <summary>
@@ -86,7 +92,11 @@ public static class VpkRekeyService
 				ReadInt(root, "replacedUnits"),
 				ReadInt(root, "hiddenMeshes"),
 				ReadStrings(root, "targets"),
-				ReadStrings(root, "targetNames"));
+				ReadStrings(root, "targetNames"))
+			{
+				RestoredFromSource = root.TryGetProperty("restoredFromSource", out var restored)
+					&& restored.ValueKind == JsonValueKind.True,
+			};
 
 			// 记住这次指向了哪件护甲：组件树的根标题要用它，重开页面时也不必再猜。
 			if (outcome.Ok && !string.IsNullOrWhiteSpace(modDirectory) && Directory.Exists(modDirectory))

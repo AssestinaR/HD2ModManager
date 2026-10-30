@@ -34,8 +34,6 @@ public sealed record VpkTargetArmorOption(
 /// </summary>
 public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 {
-	/// <summary>默认目标：RE-2310「荣誉卫队」的护甲归档（头盔会按 setId 自动补齐）。</summary>
-	private const string DefaultTargetArmorArchiveId = "d923906f8b815987";
 
 	private VpkWardrobeFile _vpkFile = VpkWardrobeFile.Default;
 	private WardrobeTreeViewModel? _vpkTree;
@@ -239,7 +237,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			}
 
 			OnPropertyChanged(nameof(ShowVpkComponentCard));
-			await EnsureVpkTargetArmorsAsync().ConfigureAwait(true);
+			await EnsureVpkTargetArmorsAsync(directory).ConfigureAwait(true);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException)
 		{
@@ -260,7 +258,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// setId 也没有配套头盔，它本身就是完整的目标。
 	/// </para>
 	/// </summary>
-	private async Task EnsureVpkTargetArmorsAsync()
+	private async Task EnsureVpkTargetArmorsAsync(string modDirectory)
 	{
 		if (_vpkArmorsLoading || _vpkTargetArmors.Count != 0) return;
 		_vpkArmorsLoading = true;
@@ -297,9 +295,18 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 			var options = gameArmors.Concat(customModels).ToArray();
 			VpkTargetArmors = options;
-			SelectedVpkTargetArmor = options.FirstOrDefault(option =>
-				option.ArchiveId.Equals(DefaultTargetArmorArchiveId, StringComparison.OrdinalIgnoreCase))
-				?? options.FirstOrDefault();
+			// 默认目标 = **这个 Mod 自己的素体**，不是某件游戏护甲。
+			//
+			// 为什么不能默认指向 RE-2310：VPK 转出来的 7 个 Unit 本身就是一套完整素体，
+			// 它默认就该是"自定义素体模式"。指到游戏护甲上会让用户以为这个 Mod 是"某件护甲的皮肤"，
+			// 而换到那件护甲上还会把原本的护甲件全部隐藏——那是另一个决定，必须由用户点。
+			var ownArchiveId = VpkModWardrobeService.TryReadOwnCustomModelKey(modDirectory) is { } ownKey
+				? RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)
+				: null;
+			SelectedVpkTargetArmor = ownArchiveId is null
+				? null
+				: options.FirstOrDefault(option =>
+					option.ArchiveId.Equals(ownArchiveId, StringComparison.OrdinalIgnoreCase));
 			OnPropertyChanged(nameof(CanApplyVpkTargetArmor));
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
@@ -333,7 +340,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				return;
 			}
 
-			VpkComponentStatus = $"已换到 {target.DisplayName}：替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。";
+			// 两种结果的说法必须不同：退回来源不是"换甲成功"，它压根没搬运几何。
+			VpkComponentStatus = outcome.RestoredFromSource
+				? $"已退回自定义素体（{target.DisplayName}）：来源 patch 已原样复制进 Overwrite，开关继续有效。"
+				: $"已换到 {target.DisplayName}：替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。";
 			_notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(10));
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
@@ -443,7 +453,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		// 没匹配上的必须说清：用户装了"猫耳关"却看不到开关，只会以为功能没做。
 		var parts = new List<string>();
 		if (stale != 0)
-			parts.Add($"{stale} 个开关指向的 Unit 已经不在这份 patch 里（换过目标护甲？）——重新导入一次这个 Mod 即可恢复。");
+			parts.Add($"{stale} 个开关指向的 Unit 已经不在这份 patch 里（旧版换甲没把开关表一起搬）。把目标护甲切回「自定义素体」、或重新导入一次这个 Mod 即可恢复。");
 		if (document is { Unmatched.Count: > 0 })
 		{
 			parts.Add($"{document.Unmatched.Count} 个开关在这个 Mod 里找不到对应材质："

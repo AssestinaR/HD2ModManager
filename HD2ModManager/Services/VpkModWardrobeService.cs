@@ -184,4 +184,22 @@ public sealed class VpkModWardrobeService
 	/// </summary>
 	public static bool IsVpkMod(string modDirectory)
 		=> ResolveEffectivePatchDirectory(modDirectory) is not null;
+
+	/// <summary>
+	/// 读这个 Mod <b>自己</b>登记的自定义素体 key；没有（或读不懂）返回 <c>null</c>。
+	/// <para>实现放在 Core：详情页与护甲映射页都要用同一份读法（见 <see cref="VpkCustomModelFile"/>）。</para>
+	/// </summary>
+	public static string? TryReadOwnCustomModelKey(string modDirectory)
+		=> VpkCustomModelFile.TryReadKey(modDirectory);
+
+	/// <summary>
+	/// 整个 Mod 库里被 VPK 模组"持有"的自定义素体 key。
+	/// <para>
+	/// <b>为什么这些素体不能手动删。</b>它们不是用户手工建的，而是某个 VPK Mod 的转换产物：
+	/// 删掉它，那个 Mod 的 patch 就成了一堆没人引用的 Unit（用户看到的正是"无头 vpk2patch"），
+	/// 唯一的修复办法是重新导入整个包。所以删除只该随 Mod 一起发生。
+	/// </para>
+	/// </summary>
+	public static IReadOnlySet<string> ReadOwnedCustomModelKeys(string modsDirectory)
+		=> VpkCustomModelFile.ReadOwnedKeys(modsDirectory);
 }

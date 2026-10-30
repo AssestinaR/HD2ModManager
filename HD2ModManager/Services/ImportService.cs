@@ -240,15 +240,15 @@ namespace HD2ModManager.Services
                     affected.AddRange(LastAffectedNodeIds);
                     conflicts |= LastImportHasOptionPathConflicts;
 
-                    // 含 Unit 的转换产物**立刻**换到默认目标护甲（RE-2310）。
+                    // **不自动换甲。** 转换产物是"新 Unit id 的自定义素体"，它本来就该以
+                    // 自定义素体模式存在：用户在护甲映射页把它挂到某件护甲上（或者到详情页
+                    // 主动选一个目标）才算"要用它替换谁"。
                     //
-                    // 为什么默认就换：vpk2patch 产出的是"新 Unit id 的自定义素体"，它不替换
-                    // 任何原版护甲——不换甲的话，用户装进游戏什么都不会变（实测反馈）。
-                    // 默认目标写在 CLI 里（vpk rekey 的缺省值），这里不重复定义。
+                    // 以前这里会立刻换到 CLI 的缺省目标（RE-2310），后果是：用户装完一个 VPK
+                    // 模组，发现自己的荣誉卫队被顶掉了，而他从没做过这个决定；想换回自定义素体
+                    // 又会在换甲链路里撞上"把 Unit 搬到它自己身上"。默认不动，是更安全的语义。
                     foreach (var guid in imported)
-                    {
-                        await TryAutoRekeyAsync(guid, ct).ConfigureAwait(false);
-                    }
+                        LogVpkCustomModelImported(guid);
                 }
 
                 LastAffectedNodeIds = affected.Distinct().ToArray();
@@ -272,51 +272,23 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
-        /// 导入之后立刻把这个 Mod 换到默认目标护甲上。
+        /// 转换产物的"装完就能用"提示：告诉用户下一步去哪，而不是替他改掉某件护甲。
         /// <para>
-        /// <b>为什么是导入时而不是"用户点了才换"</b>：vpk2patch 的产物是<b>新 Unit id</b> 的
-        /// 自定义素体，游戏里没有任何护甲引用它——不换甲就等于装了个看不见的 Mod。
-        /// 用户要的是"装完就能用"，切换只是可选项。
-        /// </para>
-        /// <para>
-        /// 失败**不算导入失败**：换甲依赖游戏装备表与资产索引，缺它们时用户仍应拿到
-        /// 转换好的 Mod，只是它还没指向具体护甲——这一点写进日志与报告。
+        /// 只对<b>含 Unit 的</b>转换产物说这句话（判据是 <c>vpk2patch/sections.json</c>）：
+        /// 纯材质包没有 Unit，也就没有"挂到哪件护甲"这回事，对它说这句话只会让人困惑。
         /// </para>
         /// </summary>
-        private async Task TryAutoRekeyAsync(string guid, CancellationToken ct)
+        private void LogVpkCustomModelImported(string guid)
         {
-            try
-            {
-                if (!Guid.TryParse(guid, out var id)
-                    || !_library.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node))
-                    return;
-                var modDirectory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
-                if (!File.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, "sections.json")))
-                    return;
+            if (!Guid.TryParse(guid, out var id)
+                || !_library.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node))
+                return;
+            var modDirectory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
+            if (!File.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, "sections.json")))
+                return;
 
-                _onInfo?.Invoke($"正在把 {node.Metadata.Name} 换到默认目标护甲…");
-                // 空目标 = 用 CLI 的缺省值（RE-2310）。默认只在一处定义，管理器不重复一遍。
-                var outcome = await VpkRekeyService
-                    .RunAsync(guid, modDirectory, Array.Empty<string>(), stage => _onInfo?.Invoke(stage), ct)
-                    .ConfigureAwait(false);
-                if (outcome.Ok)
-                {
-                    LogService.Info($"已换到默认目标护甲：{node.Metadata.Name}（{outcome.TargetNames.FirstOrDefault()}），"
-                        + $"替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。");
-                    return;
-                }
-
-                LogService.Info($"换甲未完成：{node.Metadata.Name}：{outcome.Error}。"
-                    + "这个 Mod 目前是自定义素体版，需要到详情页选择目标护甲。");
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
-            {
-                LogService.Info($"换甲未完成：{exception.Message}");
-            }
+            LogService.Info($"VPK 转换产物「{node.Metadata.Name}」已作为自定义素体导入（未替换任何原版护甲）。"
+                + "要让它生效，请在护甲映射页把它挂到某件护甲上，或到 Mod 详情页选择目标护甲。");
         }
 
     }

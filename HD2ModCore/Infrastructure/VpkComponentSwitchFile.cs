@@ -90,6 +90,56 @@ public static class VpkComponentSwitchFile
 		}
 	}
 
+	/// <summary>
+	/// 把开关表里的 Unit 键按 <paramref name="unitMap"/>（旧 → 新）翻译一遍。
+	/// <para>
+	/// <b>为什么必须翻译。</b>开关的掩码是 <c>(unit, section)</c>，而换目标护甲会把 Unit 换到
+	/// 目标护甲自己的键上。不翻译的话，换一次甲之后整份开关表就指向了不存在的 Unit——
+	/// 界面只能显示"这些开关已经失效"，用户辛苦勾的开关白设了。
+	/// </para>
+	/// <para>
+	/// 映射不到目标的开关<b>保留但清空</b>：名字与材质信息仍然有用（说明这个部件在这个目标上
+	/// 没有落点），清空掩码让界面能明确说"它现在无处可关"，而不是假装能用。
+	/// </para>
+	/// </summary>
+	public static VpkComponentSwitchDocument Translate(
+		VpkComponentSwitchDocument document,
+		IReadOnlyDictionary<string, string> unitMap)
+	{
+		ArgumentNullException.ThrowIfNull(document);
+		ArgumentNullException.ThrowIfNull(unitMap);
+		if (unitMap.Count == 0)
+			return document with { Switches = [.. document.Switches.Select(entry => entry with { Disabled = [] })] };
+
+		var switches = new List<VpkComponentSwitchEntry>(document.Switches.Count);
+		foreach (var entry in document.Switches)
+		{
+			var targets = new List<VpkComponentSwitchTarget>(entry.Disabled.Count);
+			foreach (var target in entry.Disabled)
+			{
+				if (!unitMap.TryGetValue(target.Unit, out var mapped))
+					continue;
+				// 两个来源 Unit 可能映射到同一个目标 Unit（合并），那样要把 section 并起来。
+				var existing = targets.FirstOrDefault(candidate =>
+					string.Equals(candidate.Unit, mapped, StringComparison.OrdinalIgnoreCase));
+				if (existing is null)
+					targets.Add(new VpkComponentSwitchTarget(mapped, [.. target.Sections.Order()]));
+				else
+					targets[targets.IndexOf(existing)] = existing with
+					{
+						Sections = [.. existing.Sections.Concat(target.Sections).Distinct().Order()],
+					};
+			}
+
+			switches.Add(entry with
+			{
+				Disabled = [.. targets.OrderBy(target => target.Unit, StringComparer.Ordinal)],
+			});
+		}
+
+		return document with { Switches = switches };
+	}
+
 	/// <summary>原子写：先写同目录临时文件再替换，避免详情页读到半份表。</summary>
 	public static async ValueTask WriteAsync(
 		string directory,
