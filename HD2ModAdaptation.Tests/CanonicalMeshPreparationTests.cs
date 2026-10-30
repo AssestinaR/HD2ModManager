@@ -155,23 +155,38 @@ public sealed class CanonicalMeshPreparationTests
 		Assert.Contains("unk_normal", diagnostic.Message);
 	}
 
-	[Fact]
-	public void Prepare_ReportsComponentContextWhenPackedNormalEncodingFails()
+	/// <summary>
+	/// 零法线 / 非有限法线**必须兜底成 +Z，不能抛**。
+	/// <para>
+	/// 真实源模型里就有这种顶点（退化三角形、没写法线的补片、重定向后塌成 0 的向量）：
+	/// 实测 `影鸢女武神shinano` 的 Head 与 Chest 各有一个。而一个顶点抛异常会让**整个 Unit**
+	/// 写不出来，最终整份 patch 没有产物——用户看到的是"这个 VPK 里没有 HD2 能用的资源"。
+	/// </para>
+	/// <para>
+	/// 编码值兜底成 <c>(0,0,1)</c>，但 <see cref="UnitVertexComponentValue.FloatValues"/> 保留源值：
+	/// 排查"这个法线是哪来的"要看原值，而不是兜底值。
+	/// </para>
+	/// </summary>
+	[Theory]
+	[InlineData(float.NaN, 0f, 0f)]
+	[InlineData(0f, 0f, 0f)]
+	[InlineData(float.PositiveInfinity, 0f, 0f)]
+	public void Prepare_SanitizesZeroOrNonFiniteNormalsInsteadOfFailing(float x, float y, float z)
 	{
 		var source = Mesh([
-			Component(1, "normal", 30, "unk_normal", [float.NaN, 0f, 0f])
+			Component(1, "normal", 30, "unk_normal", [x, y, z])
 		]);
 
 		var result = new CanonicalMeshPreparation().TryPrepare(
 			source,
 			Stream(4, [StreamComponent(1, 30, "unk_normal", 0, 4)]));
 
-		Assert.False(result.IsValid);
-		var diagnostic = Assert.Single(result.Diagnostics);
-		Assert.Equal("ComponentEncodingFailed", diagnostic.Code);
-		Assert.Contains("Vertex 0", diagnostic.Message);
-		Assert.Contains("target component type 1 index 0", diagnostic.Message);
-		Assert.Contains("unk_normal", diagnostic.Message);
+		Assert.True(result.IsValid, string.Join("; ", result.Diagnostics.Select(item => item.Message)));
+		var normal = Assert.Single(result.Mesh!.Vertices).Components.Single();
+		// (0,0,1) 的八面体编码：两个 512 各占 10 位。编码结果在 RawData 里（UIntValues 是源值，为空）。
+		const uint expectedPacked = 512u | (512u << 10);
+		Assert.Equal(4, normal.RawData.Length);
+		Assert.Equal(expectedPacked, BitConverter.ToUInt32(normal.RawData, 0));
 	}
 
 	[Fact]

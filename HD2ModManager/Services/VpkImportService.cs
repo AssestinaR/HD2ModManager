@@ -371,7 +371,14 @@ public sealed class VpkImportService
 
 		var patchDirectory = FindPatchDirectory(outputRoot);
 		if (patchDirectory is null)
-			return new ConversionResult(null, null, output, 0, 0, 0, notes);
+		{
+			// ⚠️ **没有产物时必须把 CLI 说的原因带出来。**
+			//
+			// 以前这里一律返回 null，管理器于是显示"这个 VPK 里没有 HD2 能用的资源"——
+			// 而真实原因可能完全不是"没资源"：实测 `影鸢女武神shinano` 是**某个顶点的法线是零向量**，
+			// 导致两个 Unit 写不出来，整份 patch 被丢弃。那句话把用户和排查者一起带偏了方向。
+			return new ConversionResult(null, ExplainNothingProduced(root), output, 0, 0, 0, notes);
+		}
 
 		var units = 0;
 		var materials = 0;
@@ -385,10 +392,39 @@ public sealed class VpkImportService
 				textures += ReadInt(patch, "textures");
 				foreach (var warning in ReadStrings(patch, "warnings"))
 					notes.Add(warning);
+				// 诊断不是警告：它表示"该写出来的东西没写出来"。以前只在 JSON 里，界面完全看不到。
+				foreach (var diagnostic in ReadStrings(patch, "diagnostics"))
+					notes.Add("诊断：" + diagnostic);
 			}
 		}
 
 		return new ConversionResult(patchDirectory, null, output, units, materials, textures, notes);
+	}
+
+	/// <summary>
+	/// 一个 VPK 什么产物都没有时，给一句**能照做**的原因。
+	/// <para>
+	/// 优先用 CLI 自己写好的 <c>note</c>（它知道"占位几何""只有描边遮罩"这类源侧意图），
+	/// 其次用第一条诊断（真正的技术原因，例如"法线是零向量"），最后才退回那句通用说明。
+	/// </para>
+	/// </summary>
+	private static string? ExplainNothingProduced(JsonElement root)
+	{
+		if (!root.TryGetProperty("patches", out var patches) || patches.ValueKind != JsonValueKind.Array)
+			return null;
+		foreach (var patch in patches.EnumerateArray())
+		{
+			if (patch.TryGetProperty("note", out var note) && note.ValueKind == JsonValueKind.String
+				&& !string.IsNullOrWhiteSpace(note.GetString()))
+			{
+				return note.GetString();
+			}
+
+			foreach (var diagnostic in ReadStrings(patch, "diagnostics"))
+				return "转换没能写出 patch：" + diagnostic;
+		}
+
+		return null;
 	}
 
 	/// <summary>

@@ -334,11 +334,38 @@ public sealed class CanonicalMeshPreparation
 	private static uint PackOctNormal(float[] values)
 	{
 		if (values.Length < 3) throw new InvalidDataException("Packed normal requires three float values.");
-		var length = MathF.Abs(values[0]) + MathF.Abs(values[1]) + MathF.Abs(values[2]);
-		if (!float.IsFinite(length) || length <= 0) throw new InvalidDataException("Packed normal cannot encode a zero or non-finite vector.");
-		var x = values[0] / length;
-		var y = values[1] / length;
-		if (values[2] < 0)
+
+		// ⚠️ **零法线 / 非有限法线必须就地兜底，不能抛。**
+		//
+		// 真实源模型里就是会有这种顶点：退化三角形、没写 UV/法线的补片、被重定向后长度塌成 0 的向量。
+		// 实测 `影鸢女武神shinano`（40 万顶点）的两个 Unit 各有一个这样的顶点——而一个顶点抛异常
+		// 会让**整个 Unit** 写不出来（`TryEncodeVertex` 直接返回 false，`TryPrepare` 丢弃整份网格），
+		// 于是整份 patch 没有产物，用户看到的是"这个 VPK 里没有 HD2 能用的资源"。
+		//
+		// 零法线没有"正确"值可还原。取 +Z 是中性选择：朝前、不产生黑面，也不改变相邻三角形的插值方向
+		// 到一个会被注意到的程度。这比"整件模型不出现"和"随便取某个邻居的法线"都更可接受。
+		var x = values[0];
+		var y = values[1];
+		var z = values[2];
+		if (!float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(z))
+		{
+			x = 0f;
+			y = 0f;
+			z = 1f;
+		}
+
+		var length = MathF.Abs(x) + MathF.Abs(y) + MathF.Abs(z);
+		if (!float.IsFinite(length) || length <= 0f)
+		{
+			x = 0f;
+			y = 0f;
+			z = 1f;
+			length = 1f;
+		}
+
+		x /= length;
+		y /= length;
+		if (z < 0)
 		{
 			// ⚠️ **`sign(0)` 必须是 `+1`，不能用 `MathF.Sign`。**
 			//
