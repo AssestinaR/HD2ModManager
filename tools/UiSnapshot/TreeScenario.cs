@@ -17,7 +17,7 @@ internal static class TreeScenario
     /// 演示节点：实现控件要求的契约，外加默认行模板会读的那几个展示属性。
     /// 属性名与 WardrobeTreeNodeViewModel 一致，所以那份 VM 接进来时不用改模板。
     /// </summary>
-    private sealed class DemoNode : ITreeSurfaceNode
+    private sealed class DemoNode : ITreeSurfaceNode, System.ComponentModel.INotifyPropertyChanged
     {
         private readonly List<DemoNode> kids = new();
         private int index;
@@ -36,8 +36,22 @@ internal static class TreeScenario
         public bool HasPieceTypeLabel => !string.IsNullOrEmpty(PieceTypeLabel);
         public bool IsMixed { get; set; }
         public bool SharedAcrossBodies { get; set; }
-        public bool IsChecked { get; set; }
-        public bool IsSelected { get; set; }
+        private bool isChecked;
+        private bool isSelected;
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
+        public bool IsChecked
+        {
+            get => isChecked;
+            set { isChecked = value; PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsChecked))); }
+        }
+
+        public bool IsSelected
+        {
+            get => isSelected;
+            set { isSelected = value; PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsSelected))); }
+        }
 
         public DemoNode Add(params DemoNode[] children)
         {
@@ -161,6 +175,26 @@ internal static class TreeScenario
             Width = 620,
             Height = 520,
             Build = () => Frame(surface),
+        };
+    }
+
+    /// <summary>选中一行：验证选中底色与描边（旧树靠 TreeViewItem，新树靠控件自己的单选）。</summary>
+    public static Scenario BuildSelected(string name)
+    {
+        var (surface, root) = BuildSurface();
+        return new Scenario
+        {
+            Name = name,
+            Width = 620,
+            Height = 520,
+            Build = () => Frame(surface),
+            Settle = host =>
+            {
+                host.PumpFor(40);
+                host.PumpFor(40);
+                if (Find(root, "helmet_01") is { } target) surface.Select(target);
+                host.PumpFor(40);
+            },
         };
     }
 

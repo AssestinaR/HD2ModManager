@@ -42,6 +42,13 @@ public interface ITreeSurfaceNode : IModListKeyed
     /// </summary>
     int ZIndex { get; set; }
 
+    /// <summary>
+    /// 这一行是不是当前选中行。**由控件写入**（不是投影层）：选中是控件的交互状态，
+    /// 与"这一行在可见序列里的第几位"无关。旧树靠 TreeViewItem 自带的选中，
+    /// 换成扁平列表之后没有容器可依赖，只能由控件记、写到行上。
+    /// </summary>
+    bool IsSelected { get; set; }
+
     /// <summary>是否有子节点。</summary>
     bool HasChildren => Children.Count > 0;
 }

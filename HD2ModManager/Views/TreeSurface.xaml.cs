@@ -40,6 +40,7 @@ public partial class TreeSurface : UserControl
     private IReadOnlyDictionary<object, ITreeSurfaceNode> _parentOf = TreeRowProjection.Result.Empty.ParentOf;
     private IReadOnlyDictionary<object, ITreeSurfaceNode> _parentOfBefore = TreeRowProjection.Result.Empty.ParentOf;
     private ITreeSurfaceNode? _expandingNode;
+    private ITreeSurfaceNode? _selectedNode;
 
     public TreeSurface()
     {
@@ -90,6 +91,28 @@ public partial class TreeSurface : UserControl
     /// <summary>当前交给列表渲染的行序列（压平之后）。</summary>
     public IEnumerable PresentedItems => _presentedItems;
 
+    /// <summary>当前选中行。旧树靠 TreeViewItem 自带选中，扁平列表里只能自己记。</summary>
+    public ITreeSurfaceNode? SelectedNode => _selectedNode;
+
+    /// <summary>单选：换行时把上一行的标记清掉，保证同一时刻只有一行亮着。</summary>
+    public void Select(ITreeSurfaceNode? node)
+    {
+        if (ReferenceEquals(_selectedNode, node)) return;
+        if (_selectedNode is not null) _selectedNode.IsSelected = false;
+        _selectedNode = node;
+        if (node is not null) node.IsSelected = true;
+    }
+
+    private static bool ContainsRow(IReadOnlyList<ITreeSurfaceNode> rows, ITreeSurfaceNode node)
+    {
+        for (var index = 0; index < rows.Count; index++)
+        {
+            if (ReferenceEquals(rows[index], node)) return true;
+        }
+
+        return false;
+    }
+
     /// <summary>展开/收起一个节点。用户点击走的就是这条路。</summary>
     public void Toggle(ITreeSurfaceNode node)
     {
@@ -121,6 +144,9 @@ public partial class TreeSurface : UserControl
         _parentOfBefore = _parentOf;
         _parentOf = projection.ParentOf;
         _rows.ReplaceWith(projection.Rows);
+
+        // 选中的行被收起藏起来了就一起清掉：看不见的行不该还带着高亮。
+        if (_selectedNode is not null && !ContainsRow(projection.Rows, _selectedNode)) Select(null);
     }
 
     private void OnRowsMouseUp(object sender, MouseButtonEventArgs e)
@@ -131,8 +157,9 @@ public partial class TreeSurface : UserControl
         // 开关、按钮上的点击不是"展开"。
         if (FindAncestor<ButtonBase>(source) is not null) return;
         if (FindRowNode(source) is not { } node) return;
-        if (node.Children.Count == 0) return;
-        Toggle(node);
+        // 选中对每一行都成立（叶子也能选），展开只对有子节点的行。
+        Select(node);
+        if (node.Children.Count > 0) Toggle(node);
         e.Handled = true;
     }
 

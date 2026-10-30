@@ -35,6 +35,7 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel, ITreeSurfaceNode
 	private bool isAlternateRow;
 	private int depth;
 	private int zIndex;
+	private bool isSelected;
 
 	public WardrobeTreeNodeViewModel(WardrobeTreeViewModel owner, WardrobeTreeNode node, string listKey = "0")
 	{
@@ -107,6 +108,13 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel, ITreeSurfaceNode
 	{
 		get => zIndex;
 		set => SetField(ref zIndex, value);
+	}
+
+	/// <summary>由 TreeSurface 写入：点击行时控件维护自己的单选。</summary>
+	public bool IsSelected
+	{
+		get => isSelected;
+		set => SetField(ref isSelected, value);
 	}
 
 	IReadOnlyList<ITreeSurfaceNode> ITreeSurfaceNode.Children => Children;
