@@ -194,8 +194,6 @@ public sealed record VpkPackageResult(
 /// </summary>
 public sealed class VpkPatchAssembler
 {
-	private readonly UnitAuthor author = new();
-
 	/// <param name="avatarTransformInfo">HD2 avatar 骨架，会被并进每个外壳的 TransformInfo。</param>
 	/// <param name="headerTemplateTocData">输出 Patch 的头部模板（用外壳所在存档的 TOC）。</param>
 	/// <param name="patchFileName">
@@ -286,9 +284,17 @@ public sealed class VpkPatchAssembler
 		// 素体只由一个模型构成。本体部位要按目标原生行声明（见 VpkRegistryPiece 的说明），
 		// 配件才用 Any。层号按槽位递增：本体占 0，配件从 1 起。
 		var layerBySlot = new Dictionary<uint, uint>();
-		foreach (var plan in plans)
+
+		// ① 逐 Unit 里"便宜且必须有顺序"的部分先串行算掉：unit id 的分配顺序决定产物可复现，
+		//    配件层号也依赖遍历顺序。把它们塞进并行区只会把顺序搞乱，而它们本身不花时间。
+		var unitIds = new string[plans.Count];
+		var slots = new uint[plans.Count];
+		var registryPiecesByPlan = new IReadOnlyList<VpkRegistryPiece>[plans.Count];
+		var customizations = new UnitCustomizationInfo[plans.Count];
+		for (var planIndex = 0; planIndex < plans.Count; planIndex++)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			var plan = plans[planIndex];
 			var unitId = (seed + index).ToString("x16");
 			index++;
 			while (forbidden.Contains(unitId))
@@ -298,13 +304,14 @@ public sealed class VpkPatchAssembler
 			}
 
 			forbidden.Add(unitId);
+			unitIds[planIndex] = unitId;
 
 			var slot = plan.Group.Region.Slot();
-			IReadOnlyList<VpkRegistryPiece> registryPieces;
+			slots[planIndex] = slot;
 			if (plan.Group.Kind == MeshGroupKind.BodyPart)
 			{
 				layerBySlot[slot] = 1;
-				registryPieces = plan.Group.Region == BodyRegion.Head
+				registryPiecesByPlan[planIndex] = plan.Group.Region == BodyRegion.Head
 					// 头盔：Lua 会把 body=3 的 slot 0 展开进目标的原生 body 行，所以这里就该是 Any。
 					? [new VpkRegistryPiece(3, slot, 0, false)]
 					// 本体：目标原生行是 body=0（Stocky）与 body=1（Slim）两行，
@@ -315,22 +322,46 @@ public sealed class VpkPatchAssembler
 			{
 				var layer = layerBySlot.GetValueOrDefault(slot, 1u);
 				layerBySlot[slot] = layer + 1;
-				registryPieces = [new VpkRegistryPiece(3, slot, layer, false)];
+				registryPiecesByPlan[planIndex] = [new VpkRegistryPiece(3, slot, layer, false)];
 			}
 
-			var mesh = RetargetedMeshBuilder.Build(plan.Group, geometry!, retarget!, avatarTransformInfo!);
-			var customization = new UnitCustomizationInfo(
+			customizations[planIndex] = new UnitCustomizationInfo(
 				"HelldiverCustomizationBodyType_Any",
 				$"HelldiverCustomizationSlot_{plan.SlotName}",
 				plan.Donor.Model.CustomizationInfo.Weight,
 				$"HelldiverCustomizationPieceType_{plan.PieceTypeName}");
+		}
 
-			var authored = author.Author(new UnitAuthorRequest(
-				plan.Donor.Model, plan.Donor.TocData, avatarTransformInfo!, mesh, customization,
+		// ② 逐 Unit 的"重活"并行：建网格 + 写 Unit 互不相干（输入只读、产物各归各的数组）。
+		//    实测一份 42 万顶点的模型，7 个 Unit 串行 18.3 s，并行之后约 3 s。
+		var meshes = new RetargetedMesh[plans.Count];
+		var authoredUnits = new UnitAuthorResult[plans.Count];
+		Parallel.For(0, plans.Count, VpkParallel.Options, planIndex =>
+		{
+			var plan = plans[planIndex];
+			var mesh = RetargetedMeshBuilder.Build(plan.Group, geometry!, retarget!, avatarTransformInfo!);
+			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
+			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
+			// 多造几个小对象比赌这一条便宜得多。
+			var unitAuthor = new UnitAuthor();
+			var authored = unitAuthor.Author(new UnitAuthorRequest(
+				plan.Donor.Model, plan.Donor.TocData, avatarTransformInfo!, mesh, customizations[planIndex],
 				plan.Donor.FileId, materialIdsBySourceMaterial));
+			meshes[planIndex] = mesh;
+			authoredUnits[planIndex] = authored;
+		});
+
+		// ③ 按计划顺序收口：诊断、产物记录、session 条目都要保持顺序（重跑要逐字节可复现）。
+		for (var planIndex = 0; planIndex < plans.Count; planIndex++)
+		{
+			var plan = plans[planIndex];
+			var unitId = unitIds[planIndex];
+			var mesh = meshes[planIndex];
+			var authored = authoredUnits[planIndex];
+			var slot = slots[planIndex];
 
 			units.Add(new VpkUnitOutcome(
-				plan.Group.Name, unitId, plan.Group.Region, slot, registryPieces,
+				plan.Group.Name, unitId, plan.Group.Region, slot, registryPiecesByPlan[planIndex],
 				mesh.VertexCount, mesh.TriangleCount,
 				authored.TocData?.Length ?? 0, authored.GpuData?.Length ?? 0, authored.Diagnostics)
 			{
@@ -440,12 +471,33 @@ public sealed class VpkPatchAssembler
 			var idByStem = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
 			var identityByStem = new Dictionary<string, MaterialIdentity>(StringComparer.OrdinalIgnoreCase);
 			var productByStem = new Dictionary<string, MaterialSynthesisResult>(StringComparer.OrdinalIgnoreCase);
-			foreach (var stem in stems)
+
+			// ⚠️ **这一段必须并行。** 每个材质背后是 texconv 的进程调用（解成 RGBA 量 alpha、编成 BC7），
+			// 单张 4K 图约 3 s；串行时几十个材质就是一两分钟，而它们彼此完全独立。
+			// 实测 4K 材质包 141 s 里有 132 s 花在这条链上。
+			//
+			// 结果按**下标**收集、按**原顺序**收口：skipped / warnings 的次序属于可复现产物的一部分
+			// （报告逐条打印给人看），并行只允许影响"谁先算完"，不允许影响"报告怎么写"。
+			var ownedByStem = new bool[stems.Count];
+			for (var stemIndex = 0; stemIndex < stems.Count; stemIndex++)
+				ownedByStem[stemIndex] = scope is null || scope.OwnsVmt(stems[stemIndex]);
+
+			var synthesizedByStem = new MaterialSynthesisResult?[stems.Count];
+			var reportByStem = new MaterialResolveReport?[stems.Count];
+			Parallel.For(0, stems.Count, VpkParallel.Options, stemIndex =>
 			{
-				var owned = scope is null || scope.OwnsVmt(stem);
-				if (owned)
+				if (ownedByStem[stemIndex])
+					synthesizedByStem[stemIndex] = converter.Convert(stems[stemIndex]);
+				else
+					reportByStem[stemIndex] = converter.Resolve(stems[stemIndex]);
+			});
+
+			for (var stemIndex = 0; stemIndex < stems.Count; stemIndex++)
+			{
+				var stem = stems[stemIndex];
+				if (ownedByStem[stemIndex])
 				{
-					var synthesized = converter.Convert(stem);
+					var synthesized = synthesizedByStem[stemIndex]!;
 					if (synthesized.IsSkipped)
 					{
 						// 源侧自己写着"别画"，不是问题——单列，别混进警告。
@@ -464,7 +516,7 @@ public sealed class VpkPatchAssembler
 				}
 				else
 				{
-					var report = converter.Resolve(stem);
+					var report = reportByStem[stemIndex]!;
 					switch (report.Outcome)
 					{
 						case MaterialResolveOutcome.Resolved:
@@ -545,17 +597,30 @@ public sealed class VpkPatchAssembler
 			//      ——契约说得很清楚：模型 patch 只有 unit，零材质零贴图。
 			if (scope is not null && plans.Count == 0 && scope.OwnedVmtNames.Count == 0)
 			{
-				foreach (var name in scope.OwnedVtfNames.Order(StringComparer.OrdinalIgnoreCase))
+				// 与 ② 同理：每张图都是一次 texconv，串行没有道理。转换并行、写出按名字顺序收口。
+				var pureNames = scope.OwnedVtfNames.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+				var pureTextures = new SynthesizedTexture?[pureNames.Length];
+				var pureFailures = new string?[pureNames.Length];
+				Parallel.For(0, pureNames.Length, VpkParallel.Options, textureIndex =>
 				{
-					if (addedTextureIds.Contains(Hd2AssetId.Texture(name, idNamespace)))
-						continue;
-					if (!converter.TryConvertTexture(name, out var texture, out var failure))
+					if (addedTextureIds.Contains(Hd2AssetId.Texture(pureNames[textureIndex], idNamespace)))
+						return;
+					if (converter.TryConvertTexture(pureNames[textureIndex], out var texture, out var failure))
+						pureTextures[textureIndex] = texture;
+					else
+						pureFailures[textureIndex] = failure;
+				});
+
+				for (var textureIndex = 0; textureIndex < pureNames.Length; textureIndex++)
+				{
+					if (pureFailures[textureIndex] is { } failure)
 					{
 						warnings.Add(failure);
 						continue;
 					}
 
-					TryEmitTexture(texture);
+					if (pureTextures[textureIndex] is { } texture)
+						TryEmitTexture(texture);
 				}
 			}
 

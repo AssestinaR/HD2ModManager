@@ -171,6 +171,23 @@ public sealed class SourceMaterialConverter
 	private readonly Bc7Encoder encoder;
 	private readonly Hd2MaterialTemplateLibrary templates;
 
+	/// <summary>
+	/// 纯色贴图的编码结果，按"名字 + 颜色"缓存。
+	/// <para>
+	/// <b>为什么必须有。</b>纯色槽（共享平面法线 / 共享 PBR / 金属度 / 法线粗糙度）是<b>每个材质各造一遍</b>的，
+	/// 而它们的输入只有"名字 + 四个字节"。实测 4K 材质包 248 次 texconv 调用里有 <b>124 次</b>在重复编同一张
+	/// 4×4 纯色图，合计 <b>27 秒</b>——这些产物按 id 去重后最终只写进包一份，重复的那 123 次纯属白烧。
+	/// </para>
+	/// <para>
+	/// 键里带上颜色是必须的：同名不同色在源码里是合法的（将来若按材质调金属度就会撞上），
+	/// 缓存成"只按名字"会静默把别人的颜色发给它。
+	/// </para>
+	/// <para>
+	/// <b>并发安全</b>：值是不可变的 record + 只读字节数组，下游只读不写，所以多个材质共用一份产物是安全的。
+	/// </para>
+	/// </summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Name, byte Red, byte Green, byte Blue, byte Alpha), SynthesizedTexture> solidTextures = new();
+
 	public SourceMaterialConverter(
 		SourceMaterialSource source,
 		Bc7Encoder encoder,
@@ -1008,6 +1025,15 @@ public sealed class SourceMaterialConverter
 	/// <para>线性格式（<c>BC7_UNORM</c>）：这些是 PBR 输入量，不是颜色，绝不能走 sRGB。</para>
 	/// </summary>
 	private SynthesizedTexture BuildSolidTexture(string owner, string suffix, byte red, byte green, byte blue, byte alpha)
+		// 缓存见 solidTextures 的注释：同一张纯色图只编一次。
+		// 注意 texconv 在极端情况下会被同键的并发请求重复调用（GetOrAdd 的工厂可能跑多次），
+		// 但那只是白编一次 4×4 图，产物逐字节相同，不影响正确性。
+		=> solidTextures.GetOrAdd(
+			(owner + suffix, red, green, blue, alpha),
+			static (key, state) => state.self.EncodeSolidTexture(key.Name, state.suffix, key.Red, key.Green, key.Blue, key.Alpha),
+			(self: this, suffix));
+
+	private SynthesizedTexture EncodeSolidTexture(string name, string suffix, byte red, byte green, byte blue, byte alpha)
 	{
 		const int size = 4;
 		var dds = Hd2TextureAsset.BuildDds(size, size, Rgba8Unorm, [MaterialAppearance.SolidRgba(size, red, green, blue, alpha)]);
@@ -1015,7 +1041,7 @@ public sealed class SourceMaterialConverter
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
-			DeriveTextureId(owner + suffix),
+			DeriveTextureId(name),
 			texture.WriteToc(),
 			texture.Pixels,
 			suffix,
