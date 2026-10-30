@@ -2985,6 +2985,8 @@ public static class CliApplication
 			// 开关包不是"不支持"：它被识别成了组件开关，只是不产出 patch。
 			// 两者混成一个值会让管理器与日志把"这个包有用"报成"这个包没用"。
 			VpkImportKind.ComponentSwitch => "componentSwitch",
+			// 换贴图的开关：不是"不支持"，是"HD2 的 section 开关表达不了"。
+			VpkImportKind.MaterialVariant => "materialVariant",
 			_ => "unsupported",
 		},
 		displayName = candidate.DisplayName,

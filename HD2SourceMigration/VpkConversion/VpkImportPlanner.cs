@@ -21,6 +21,17 @@ public enum VpkImportKind
 	/// </summary>
 	ComponentSwitch,
 
+	/// <summary>
+	/// 换贴图 / 换渲染参数的<b>材质覆盖包</b>：很小、不带贴图、VMT 也不是 <c>$no_draw</c>。
+	/// <para>
+	/// 实测样本：Manuka 的 <c>文身关</c> / <c>切换纹身</c> 把 <c>$basetexture</c> 从
+	/// <c>Manuka_body_Tattoo</c> 换回 <c>Manuka_body</c>——它在源侧是一个开关，但换的是<b>图</b>，
+	/// 不是可见性。HD2 的 section 开关只能"不画"，表达不了"换一张图"，所以它也不该被当成
+	/// 一份能用的材质包（那会产出一个没有任何 Unit 引用的材质，用户看到的是一个什么都不做的 Mod）。
+	/// </para>
+	/// </summary>
+	MaterialVariant,
+
 	/// <summary>不是我们能忠实地翻译的东西（道具、武器、其它 <c>$no_draw</c> 用途…）。</summary>
 	Unsupported,
 }
@@ -342,6 +353,41 @@ public static class VpkImportPlanner
 			return false;
 		if (archive.Entries.Any(entry => entry.Extension.Equals("vtf", StringComparison.OrdinalIgnoreCase)))
 			return false;
+		if (!MaterialBytesWithinLimit(archive))
+			return false;
+
+		foreach (var material in materials)
+		{
+			if (!IsNoDraw(archive, material))
+				return false;
+		}
+
+		displayName = DescribeSwitchName(ReadAddonTitle(archive), Path.GetFileNameWithoutExtension(vpkPath));
+		return true;
+	}
+
+	/// <summary>这份 VMT 是否真的声明了底色（而不是只写着色器名的空壳）。</summary>
+	private static bool HasBaseTexture(VpkArchive archive, string materialName)
+	{
+		var entry = archive.Entries.FirstOrDefault(candidate =>
+			candidate.Extension.Equals("vmt", StringComparison.OrdinalIgnoreCase)
+			&& candidate.FileName.Equals(materialName, StringComparison.OrdinalIgnoreCase));
+		if (entry is null)
+			return false;
+		try
+		{
+			var value = VmtDocument.Parse(archive.Read(entry)).Value("$basetexture");
+			return !string.IsNullOrWhiteSpace(value);
+		}
+		catch (InvalidDataException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>只算 <c>.vmt</c> 的字节数是否在开关包的范围内（见 <see cref="MaximumSwitchMaterialBytes"/>）。</summary>
+	private static bool MaterialBytesWithinLimit(VpkArchive archive)
+	{
 		long materialBytes = 0;
 		foreach (var entry in archive.Entries)
 		{
@@ -352,13 +398,6 @@ public static class VpkImportPlanner
 				return false;
 		}
 
-		foreach (var material in materials)
-		{
-			if (!IsNoDraw(archive, material))
-				return false;
-		}
-
-		displayName = DescribeSwitchName(ReadAddonTitle(archive), Path.GetFileNameWithoutExtension(vpkPath));
 		return true;
 	}
 
@@ -497,6 +536,17 @@ public static class VpkImportPlanner
 				return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
 					"它是一组 `$no_draw` 材质（源侧靠不绘制来隐藏部件），而 HD2 没有\"不绘制\"这种材质，"
 					+ "所以「开关」在 HD2 里没有等价物。", null, materials, textures);
+			}
+
+			// 换贴图型的开关：同样不产出 patch，但理由完全不同（不是"不支持"，是"表达不了"）。
+			// 判据要"真的在换图"——只看"小 + 无贴图"会把只写着着色器名的空壳也误判进来。
+			if (textures.Count == 0 && materials.Count is >= 1 and <= MaximumSwitchEntries
+				&& MaterialBytesWithinLimit(archive)
+				&& materials.Any(name => HasBaseTexture(archive, name)))
+			{
+				return new VpkImportCandidate(path, VpkImportKind.MaterialVariant, null,
+					"它是一组材质覆盖（换贴图或换渲染参数），自身不带贴图。section 开关只能隐藏几何，"
+					+ "表达不了「换一张图」，所以这个开关在 HD2 里没有等价物。", null, materials, textures);
 			}
 
 			return new VpkImportCandidate(path, VpkImportKind.Material, null, null, null, materials, textures);

@@ -186,6 +186,41 @@ public sealed class VpkImportPlannerTests : IDisposable
 		Assert.NotEqual(VpkImportKind.ComponentSwitch, candidate.Kind);
 	}
 
+	/// <summary>
+	/// 换贴图型的开关（实测 `文身关` / `切换纹身`）：不写 `$no_draw`，而是把 `$basetexture`
+	/// 换回另一张图。它也不是"能用的材质包"——自身不带贴图，转出来会是一个没有任何 Unit
+	/// 引用的材质，用户看到的是"一个什么都不做的 Mod"。
+	/// </summary>
+	[Fact]
+	public void Plan_ReportsATextureSwapSwitchAsAMaterialVariantInsteadOfConvertingIt()
+	{
+		var vpk = WriteVpk(
+			("manuka_body.vmt", "materials/mod/opt", Utf8(
+				"\"VertexLitGeneric\"\n{\n\"$basetexture\" \"mod/Manuka_body\"\n}\n")),
+			("addoninfo.txt", " ", Utf8("AddonInfo\n{\naddonTitle \"Manuka JABIS[文身关]\"\n}\n")));
+
+		var candidate = Assert.Single(VpkImportPlanner.Plan([vpk]).Candidates);
+
+		Assert.Equal(VpkImportKind.MaterialVariant, candidate.Kind);
+		Assert.False(candidate.IsConvertible);
+		Assert.Contains("表达不了", candidate.SkipReason!, StringComparison.Ordinal);
+	}
+
+	/// <summary>带贴图的材质包不能被误判成"换贴图型开关"，否则整包材质都不会写出来。</summary>
+	[Fact]
+	public void Plan_KeepsAPackWithTexturesAsAnOrdinaryMaterialPack()
+	{
+		var vpk = WriteVpk(
+			("body.vmt", "materials/mod", Utf8("\"VertexLitGeneric\"\n{\n\"$basetexture\" \"mod/body\"\n}\n")),
+			("body.vtf", "materials/mod", new byte[512]));
+
+		var candidate = Assert.Single(VpkImportPlanner.Plan([vpk]).Candidates);
+
+		// 这一批里没有模型，所以它仍然会被跳过——但跳过理由是"要跟模型一起导入"，
+		// 而不是"这个开关表达不了"。两者是不同的诊断。
+		Assert.Equal(VpkImportKind.Material, candidate.Kind);
+		Assert.Contains("模型", candidate.SkipReason!, StringComparison.Ordinal);
+	}
 	/// <summary>一批里的开关包能被单独列出来（转换前要用它把解析集合剔干净）。</summary>
 	[Fact]
 	public void FindComponentSwitches_ReturnsOnlyTheSwitchPacks()
