@@ -1,0 +1,162 @@
+<UserControl x:Class="HD2ModManager.Views.TreeSurface"
+             x:Name="Root"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views"
+             xmlns:trees="clr-namespace:HD2ModManager.Controls.Trees"
+             xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="TreeBoolToVis"/>
+
+        <!--
+            默认行模板：与原来的"简单树"（WardrobeTreeResources.xaml）逐项对齐——
+            行高 26、Padding、圆角 4、隔行底色、悬停、选中、右侧开关。
+            控件给的是外观；节点只要暴露同名属性（Label / Subtitle / PieceTypeLabel /
+            IsMixed / SharedAcrossBodies / IsChecked）就能直接吃这份模板，不用自己写一份。
+            调用方也可以自己给 ItemTemplate 覆盖它。
+
+            结构上分两列，这一点很关键：
+              第 0 列 = 缩进 + 竖线（宽度 = 层级 × 14）
+              第 1 列 = 行底色 + 内容
+            于是灰条**从缩进处开始**（和旧树一样），不是铺满整行；竖线正好落在
+            "父级内容"和"子级内容"的正中间——它画在 (i+1)×14 上，而两级内容在 14i+7 和 14i+21。
+        -->
+        <DataTemplate x:Key="TreeSurface.DefaultRowTemplate">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <trees:TreeIndentGuides Grid.Column="0"
+                                        Depth="{Binding Depth}"
+                                        VerticalAlignment="Stretch"/>
+
+                <!--
+                    底色画在模板里而不是容器上：隔行、悬停、选中三者必须按顺序覆盖，
+                    分在两层里就会出现"选中被隔行盖掉"这类看不清的优先级问题。
+                    边框粗细恒为 1、默认透明：选中时只换画刷，内容不会被挤动。
+                -->
+                <Border x:Name="RowBack"
+                        Grid.Column="1"
+                        Background="Transparent"
+                        BorderBrush="Transparent"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="6,2,6,2">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Label}"
+                                       Foreground="{StaticResource TextPrimary}"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <!-- 次要信息（编号 · 面数）：只在有源侧名字时出现，旧数据下整行外观不变。 -->
+                            <TextBlock Text="{Binding Subtitle}"
+                                       Margin="6,0,0,0"
+                                       VerticalAlignment="Center"
+                                       FontSize="11"
+                                       Foreground="{StaticResource TextSecondary}"
+                                       TextTrimming="CharacterEllipsis"
+                                       Visibility="{Binding HasSubtitle, Converter={StaticResource TreeBoolToVis}}"/>
+                            <Border Margin="8,0,0,0"
+                                    Padding="5,1"
+                                    CornerRadius="3"
+                                    VerticalAlignment="Center"
+                                    Background="{StaticResource SurfaceCard}"
+                                    Visibility="{Binding HasPieceTypeLabel, Converter={StaticResource TreeBoolToVis}}">
+                                <TextBlock Text="{Binding PieceTypeLabel}"
+                                           FontSize="10"
+                                           Foreground="{StaticResource TextSecondary}"/>
+                            </Border>
+                        </StackPanel>
+
+                        <TextBlock Grid.Column="1"
+                                   Text="部分"
+                                   Margin="8,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="11"
+                                   Foreground="{StaticResource TextSecondary}"
+                                   ToolTip="该节点下只有一部分 section 被关闭"
+                                   Visibility="{Binding IsMixed, Converter={StaticResource TreeBoolToVis}}"/>
+
+                        <!-- 链接标记贴着开关左侧：它说明的是"这一行同时作用于两种身形"，和开关是一件事。 -->
+                        <Path Grid.Column="2"
+                              Width="13" Height="13"
+                              Margin="0,0,8,0"
+                              VerticalAlignment="Center"
+                              Stretch="Uniform"
+                              Stroke="{StaticResource TextSecondary}"
+                              StrokeThickness="1.3"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Data="M6.5,3.5 L5.5,3.5 A2.6,2.6 0 0 0 5.5,8.7 L6.5,8.7 M9.5,3.5 L10.5,3.5 A2.6,2.6 0 0 1 10.5,8.7 L9.5,8.7 M5.9,6.1 L10.1,6.1"
+                              ToolTip="与该mod的另一身形为完全一致的unit"
+                              Visibility="{Binding SharedAcrossBodies, Converter={StaticResource TreeBoolToVis}}"/>
+
+                        <CheckBox Grid.Column="3"
+                                  Margin="12,0,2,0"
+                                  VerticalAlignment="Center"
+                                  Style="{StaticResource AppToggleSwitch}"
+                                  IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                  AutomationProperties.Name="{Binding Label}"/>
+                    </Grid>
+                </Border>
+            </Grid>
+            <DataTemplate.Triggers>
+                <!-- 隔行底色：按当前可见行均匀编号，相邻两行一定不同色。 -->
+                <DataTrigger Binding="{Binding IsAlternateRow}" Value="True">
+                    <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                </DataTrigger>
+                <Trigger SourceName="RowBack" Property="IsMouseOver" Value="True">
+                    <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
+                </Trigger>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
+                    <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <!--
+        扁平化的树：控件只认"行"，不认层级。层级在 TreeRowProjection 里就被压成了
+        Depth / IsAlternateRow / ZIndex 三个数字，所以这里和普通列表没有区别——这正是它
+        能复用 ModListTransitionController 的原因，也是"子行从父行滑出来"能写出来的原因。
+    -->
+    <Grid ClipToBounds="False">
+        <ScrollViewer x:Name="TreeScrollViewer"
+                      VerticalScrollBarVisibility="{Binding VerticalScrollBarVisibility, ElementName=Root}"
+                      HorizontalScrollBarVisibility="Disabled"
+                      CanContentScroll="False"
+                      scroll:WheelScroll.IsEnabled="True">
+            <Grid>
+                <ItemsControl x:Name="RowsHost"
+                              ItemsSource="{Binding PresentedItems, ElementName=Root}"
+                              ItemTemplate="{Binding ItemTemplate, ElementName=Root}"
+                              PreviewMouseLeftButtonUp="OnRowsMouseUp">
+                    <ItemsControl.ItemContainerStyle>
+                        <Style TargetType="ContentPresenter">
+                            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                            <!--
+                                行高由控件统一钉死：调用方的模板再怎么写也改不了行距。
+                                固定行高换来三件事——扑克牌位移严格等距、滚动条长度稳定、
+                                将来打开虚拟化不需要重新量行。
+                            -->
+                            <Setter Property="Height" Value="{x:Static trees:TreeMetrics.RowHeight}"/>
+                            <!-- 越靠前的行越高：父行压住子行，近的子行压住远的。 -->
+                            <Setter Property="Panel.ZIndex" Value="{Binding ZIndex}"/>
+                        </Style>
+                    </ItemsControl.ItemContainerStyle>
+                </ItemsControl>
+                <Canvas x:Name="TransitionOverlay" IsHitTestVisible="False" Panel.ZIndex="10"/>
+            </Grid>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

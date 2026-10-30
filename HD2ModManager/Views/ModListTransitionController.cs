@@ -102,6 +102,23 @@ internal sealed class ModListTransitionController : IDisposable
     public bool IsPlaying => _phase == TransitionPhase.Playing;
     public event Action<bool>? TransitionStateChanged;
 
+    /// <summary>
+    /// 一行入场/出场的自定义位移。默认路径是"原地微抬 5px、140ms"，那对等宽等高、
+    /// 位置本来就相邻的行够用；树要的是"子行从父行出发"，位移是几十上百像素，
+    /// 还得跟"下方行让位"同一个 200ms 才读成一个整体，所以给它一个钩子。
+    /// 不设置时行为与以前完全一致。
+    /// </summary>
+    /// <param name="DeltaY">起始位移（像素）。入场：从哪儿滑到自己的位置；出场：滑到哪儿去。</param>
+    /// <param name="MoveMilliseconds">位移时长。</param>
+    /// <param name="FadeMilliseconds">透明度时长。</param>
+    public readonly record struct RowTransitionHints(double DeltaY, double MoveMilliseconds, double FadeMilliseconds);
+
+    /// <summary>入场位移。参数是行数据与它已经生成好的容器（可以据此算位置）。</summary>
+    public Func<object, FrameworkElement, RowTransitionHints?>? InsertHints { get; set; }
+
+    /// <summary>出场位移。参数是行数据与它当前所在的 Y（容器可能已经不在了）。</summary>
+    public Func<object, double, RowTransitionHints?>? RemoveHints { get; set; }
+
     public void Attach(IEnumerable? source)
     {
         var canReusePresentation = _isSuspended && ReferenceEquals(_suspendedSource, source);
@@ -387,7 +404,7 @@ internal sealed class ModListTransitionController : IDisposable
             if (before.TryGetValue(pair.Key, out var old))
                 StageMovedContainer(pair.Value.Container, old.Position.Y - pair.Value.Position.Y, animationStarts);
             else
-                StageAddedContainer(pair.Value.Container, animationStarts);
+                StageAddedContainer(pair.Value, animationStarts);
         }
 
         foreach (var removed in before.Values.Where(snapshot => !after.ContainsKey(snapshot.Key)))
@@ -797,6 +814,26 @@ internal sealed class ModListTransitionController : IDisposable
         Canvas.SetLeft(presenter, snapshot.Position.X);
         Canvas.SetTop(presenter, snapshot.Position.Y);
         _overlay.Children.Add(presenter);
+
+        // 树收起时子行要滑回父行；默认路径只是原地淡出。
+        if (RemoveHints?.Invoke(snapshot.Item, snapshot.Position.Y) is { } exit)
+        {
+            var transform = new TranslateTransform(0, 0);
+            presenter.RenderTransform = transform;
+            starts.Add(() =>
+            {
+                var fade = new DoubleAnimation(0, Duration(exit.FadeMilliseconds));
+                fade.Completed += (_, _) => _overlay.Children.Remove(presenter);
+                presenter.BeginAnimation(UIElement.OpacityProperty, fade);
+                transform.BeginAnimation(TranslateTransform.YProperty,
+                    new DoubleAnimation(exit.DeltaY, Duration(exit.MoveMilliseconds))
+                    {
+                        EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+                    });
+            });
+            return;
+        }
+
         starts.Add(() =>
         {
             var animation = new DoubleAnimation(0, Duration(140)) { BeginTime = Duration(20) };
@@ -818,16 +855,23 @@ internal sealed class ModListTransitionController : IDisposable
         }));
     }
 
-    private static void StageAddedContainer(FrameworkElement container, ICollection<Action> starts)
+    private void StageAddedContainer(RowSnapshot snapshot, ICollection<Action> starts)
     {
+        var container = snapshot.Container;
+        // 默认是"原地微抬 5px"；树会用 InsertHints 换成"从父行出发"，时长也更长。
+        var hints = InsertHints?.Invoke(snapshot.Item, container);
+        var deltaY = hints?.DeltaY ?? 5d;
+        var moveMilliseconds = hints?.MoveMilliseconds ?? 140d;
+        var fadeMilliseconds = hints?.FadeMilliseconds ?? 120d;
+
         container.BeginAnimation(UIElement.OpacityProperty, null);
         container.Opacity = 0;
-        var transform = new TranslateTransform(0, 5);
+        var transform = new TranslateTransform(0, deltaY);
         container.RenderTransform = transform;
         starts.Add(() =>
         {
-            container.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, Duration(120)));
-            transform.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, Duration(140))
+            container.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, Duration(fadeMilliseconds)));
+            transform.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, Duration(moveMilliseconds))
             {
                 EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
             });

@@ -54,6 +54,9 @@ internal static class ScenarioCatalog
         ["cluster-many-focus"] = () => ClusterScenario.Build("cluster-many-focus", expanded: true, many: true, focus: 3),
         ["cluster-labels"] = () => ClusterScenario.BuildLabelLengths("cluster-labels", "生成替换"),
         ["cluster-labels-max"] = () => ClusterScenario.BuildLabelLengths("cluster-labels-max", "批量生成"),
+        ["tree"] = () => TreeScenario.Build("tree"),
+        ["tree-fan"] = () => TreeScenario.BuildFan("tree-fan"),
+        ["tree-fan-settled"] = () => TreeScenario.BuildFanSettled("tree-fan-settled"),
     };
 
     public static IEnumerable<string> Names => Factories.Keys;
