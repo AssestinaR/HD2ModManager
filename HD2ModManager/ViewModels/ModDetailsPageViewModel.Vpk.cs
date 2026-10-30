@@ -222,7 +222,16 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				var components = patchDirectory is null
 					? null
 					: await VpkComponentSwitchFile.TryReadAsync(patchDirectory).ConfigureAwait(true);
-				ApplyVpkSwitches(components);
+				if (components is null)
+				{
+					// 换过目标护甲之后，实际生效的是 `Overwrite/` 下那份；开关表还留在 `vpk2patch/`。
+					// 读它作兜底，但**必须校验 unit 还在不在**——换甲会把 Unit 换到目标护甲的键上，
+					// 掩码里的 unit id 于是全部失效。宁可显示"要重新导入"，也不要给一组点不动的开关。
+					var source = Path.Combine(directory, ModNodePayloadLayout.VpkPatchDirectoryName);
+					components = await VpkComponentSwitchFile.TryReadAsync(source).ConfigureAwait(true);
+				}
+
+				ApplyVpkSwitches(components, map);
 			}
 			else
 			{
@@ -410,21 +419,40 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// 把开关表装进界面。**没有开关表不是错误**：用旧转换器产的 Mod 里没有
 	/// <c>components.json</c>，那时只显示树，不该给用户一条"出错了"。
 	/// </summary>
-	private void ApplyVpkSwitches(VpkComponentSwitchDocument? document)
+	private void ApplyVpkSwitches(VpkComponentSwitchDocument? document, WardrobeSectionMapDocument sections)
 	{
-		VpkSwitches = document is null
-			? []
-			: document.Switches
-				.Select(entry => new VpkSwitchItemViewModel(entry, ReadSwitchEnabled, WriteSwitch))
-				.ToArray();
+		var stale = 0;
+		var usable = new List<VpkComponentSwitchEntry>();
+		if (document is not null)
+		{
+			foreach (var entry in document.Switches)
+			{
+				// 掩码里的 unit 必须仍然在**当前生效**的 section 表里。
+				// 换甲会把 Unit 换到目标护甲的键上，旧掩码于是整批失效——那种开关点下去什么都不会发生。
+				if (entry.Disabled.Count != 0 && entry.Disabled.All(target => sections.FindUnit(target.Unit) is not null))
+					usable.Add(entry);
+				else
+					stale++;
+			}
+		}
+
+		VpkSwitches = usable
+			.Select(entry => new VpkSwitchItemViewModel(entry, ReadSwitchEnabled, WriteSwitch))
+			.ToArray();
 
 		// 没匹配上的必须说清：用户装了"猫耳关"却看不到开关，只会以为功能没做。
-		VpkSwitchStatus = document is { Unmatched.Count: > 0 }
-			? $"{document.Unmatched.Count} 个开关在这个 Mod 里找不到对应材质："
+		var parts = new List<string>();
+		if (stale != 0)
+			parts.Add($"{stale} 个开关指向的 Unit 已经不在这份 patch 里（换过目标护甲？）——重新导入一次这个 Mod 即可恢复。");
+		if (document is { Unmatched.Count: > 0 })
+		{
+			parts.Add($"{document.Unmatched.Count} 个开关在这个 Mod 里找不到对应材质："
 				+ $"{string.Join("、", document.Unmatched.Take(4).Select(item => item.Name))}"
 				+ (document.Unmatched.Count > 4 ? "…" : string.Empty)
-				+ "。多半是它属于另一个角色/另一份材质包。"
-			: string.Empty;
+				+ "。多半是它属于另一个角色/另一份材质包。");
+		}
+
+		VpkSwitchStatus = string.Join(Environment.NewLine, parts);
 	}
 
 	/// <summary>开关"开着" = 它要关的那几节**没有全部**被关掉（与树的三态语义一致）。</summary>
