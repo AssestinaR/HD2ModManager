@@ -24,6 +24,7 @@ namespace HD2ModManager.Views
         private const double DragThreshold = 4d;
 
         private Effect? _pillShadow;
+        private Effect? _pillRestShadow;
         // 悬停：只影响"胶囊 + 加重阴影 + 临时置顶"，不改任何位置。
         private int _hoveredIndex = -1;
         private double _pointerDistance = double.NaN;
@@ -304,11 +305,12 @@ namespace HD2ModManager.Views
             if (focused) _focusedPresenters.Add(presenter);
             else _focusedPresenters.Remove(presenter);
 
-            // 阴影只给焦点项：重叠时每个圆片都带投影，会在邻居身上叠出一片柔和的
-            // 过渡，看起来像两个煎蛋融在一起。非焦点项靠 1px 描边读边界。
+            // 阴影两档，都复用全局的抬升 token：静止 = ElevatedPanelShadow（底栏、消息面板
+            // 用的同一档），焦点 = ActionFocusShadow。早先静止态是 null，一列白圆片贴在白底上
+            // 就是一张贴纸，完全没有层次。
             if (presenter.ContentTemplate?.FindName("ActionButton", presenter) is FrameworkElement button)
             {
-                button.Effect = focused ? ResolvePillShadow() : null;
+                button.Effect = ResolvePillShadow(focused);
                 // 临时置顶：焦点项压住邻居（但仍然在主按钮之下）。
                 Panel.SetZIndex(presenter, focused ? 999 : zIndex);
             }
@@ -340,11 +342,11 @@ namespace HD2ModManager.Views
             }
         }
 
-        private Effect? ResolvePillShadow()
+        private Effect? ResolvePillShadow(bool focused)
         {
-            if (_pillShadow is not null) return _pillShadow;
-            _pillShadow = TryFindResource("ActionFocusShadow") as Effect;
-            return _pillShadow;
+            if (focused)
+                return _pillShadow ??= TryFindResource("ActionFocusShadow") as Effect;
+            return _pillRestShadow ??= TryFindResource("ElevatedPanelShadow") as Effect;
         }
         private int CollapseLayout()
         {

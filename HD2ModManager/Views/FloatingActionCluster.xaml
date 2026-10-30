@@ -25,6 +25,8 @@
             <Setter Property="Background" Value="{Binding Tone, Converter={StaticResource ToneBrush}, ConverterParameter=Background}"/>
             <Setter Property="Foreground" Value="{Binding Tone, Converter={StaticResource ToneBrush}, ConverterParameter=Foreground}"/>
             <Setter Property="BorderBrush" Value="{Binding Tone, Converter={StaticResource ToneBrush}, ConverterParameter=Border}"/>
+            <!-- 静止阴影用和底栏、消息面板同一档的抬升 token，不另开一套。 -->
+            <Setter Property="Effect" Value="{StaticResource ElevatedPanelShadow}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">

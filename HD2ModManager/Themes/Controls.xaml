@@ -35,7 +35,7 @@
     <CornerRadius x:Key="RadiusItem">10</CornerRadius>
     <CornerRadius x:Key="RadiusCard">14</CornerRadius>
     <DropShadowEffect x:Key="ElevatedPanelShadow" Color="#000000" BlurRadius="18" ShadowDepth="3" Opacity="0.16"/>
-    <!-- 浮动操作簇里"当前焦点"那个圆片的加重阴影。 -->
+    <!-- 浮动操作簇里"当前焦点"那个圆片的加重阴影；静止态用上面那一档 ElevatedPanelShadow。 -->
     <DropShadowEffect x:Key="ActionFocusShadow" Color="#101828" BlurRadius="24" ShadowDepth="5" Opacity="0.30"/>
 
     <!-- 兼容已有页面的历史 key；新增样式仅使用上方的语义 token。 -->
