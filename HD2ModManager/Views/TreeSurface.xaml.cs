@@ -159,8 +159,96 @@ public partial class TreeSurface : UserControl
         if (FindRowNode(source) is not { } node) return;
         // 选中对每一行都成立（叶子也能选），展开只对有子节点的行。
         Select(node);
+        // 点一下就交给键盘：否则鼠标选完再按方向键，焦点还在别处。
+        Focus();
         if (node.Children.Count > 0) Toggle(node);
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// 键盘导航。旧的 TreeView 白送这一套，扁平列表得自己写。
+    /// 方向语义与文件管理器一致：上下走行，右键展开或进入第一个孩子，左键收起或回到父级。
+    /// 展开/收起仍走 <see cref="Toggle"/>，所以键盘触发的也是同一套扑克牌过渡。
+    /// </summary>
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_presentedItems.Count == 0) return;
+
+        var current = _selectedNode;
+        var index = IndexOfPresented(current);
+        switch (e.Key)
+        {
+            case Key.Down:
+                MoveTo(index < 0 ? 0 : index + 1);
+                break;
+            case Key.Up:
+                MoveTo(index < 0 ? _presentedItems.Count - 1 : index - 1);
+                break;
+            case Key.Home:
+                MoveTo(0);
+                break;
+            case Key.End:
+                MoveTo(_presentedItems.Count - 1);
+                break;
+            case Key.Right:
+                if (current is null) { MoveTo(0); break; }
+                if (current.HasChildren && !current.IsExpanded) Toggle(current);
+                else if (current.HasChildren) MoveTo(index + 1);
+                break;
+            case Key.Left:
+                if (current is null) { MoveTo(0); break; }
+                if (current.HasChildren && current.IsExpanded) Toggle(current);
+                else if (_parentOf.TryGetValue(current, out var parent)) MoveTo(IndexOfPresented(parent));
+                break;
+            case Key.Enter:
+            case Key.Space:
+                if (current is { HasChildren: true }) Toggle(current);
+                break;
+            default:
+                return;
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnTreeGotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        // 只在焦点落到控件本身时补一个默认选中；落到行内的开关上不算。
+        if (!ReferenceEquals(e.NewFocus, this)) return;
+        if (_selectedNode is null) MoveTo(0);
+    }
+
+    private void MoveTo(int index)
+    {
+        if (index < 0 || index >= _presentedItems.Count) return;
+        if (_presentedItems[index] is not ITreeSurfaceNode node) return;
+        Select(node);
+        EnsureVisible(index);
+    }
+
+    /// <summary>
+    /// 把第 index 行滚进视口。固定行高在这里兑现第二次：位置就是"序号 × 行高"，
+    /// 不用去问容器要位置，也就不必等布局。
+    /// </summary>
+    private void EnsureVisible(int index)
+    {
+        var top = index * TreeMetrics.RowHeight;
+        var bottom = top + TreeMetrics.RowHeight;
+        var viewTop = TreeScrollViewer.VerticalOffset;
+        var viewBottom = viewTop + TreeScrollViewer.ViewportHeight;
+        if (top < viewTop) TreeScrollViewer.ScrollToVerticalOffset(top);
+        else if (bottom > viewBottom) TreeScrollViewer.ScrollToVerticalOffset(bottom - TreeScrollViewer.ViewportHeight);
+    }
+
+    private int IndexOfPresented(ITreeSurfaceNode? node)
+    {
+        if (node is null) return -1;
+        for (var index = 0; index < _presentedItems.Count; index++)
+        {
+            if (ReferenceEquals(_presentedItems[index], node)) return index;
+        }
+
+        return -1;
     }
 
     private void OnTransitionStateChanged(bool playing)

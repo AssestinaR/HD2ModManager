@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using HD2ModManager.Controls.Trees;
 using HD2ModManager.Views;
@@ -177,6 +178,48 @@ internal static class TreeScenario
             Build = () => Frame(surface),
         };
     }
+
+    /// <summary>
+    /// 键盘导航：直接把 Key 事件抬给控件（离屏没有真实输入设备），
+    /// 逐次打印选中行，确认上下/左右/展开的语义。
+    /// </summary>
+    public static Scenario BuildKeys(string name)
+    {
+        var (surface, _) = BuildSurface();
+        return new Scenario
+        {
+            Name = name,
+            Width = 620,
+            Height = 520,
+            Build = () => Frame(surface),
+            Settle = host =>
+            {
+                host.PumpFor(40);
+                host.PumpFor(40);
+                surface.Focus();
+                host.PumpFor(30);
+                Console.WriteLine("[keys] 初始选中: " + surface.SelectedNode?.ToString());
+
+                foreach (var key in new[] { Key.Down, Key.Down, Key.Down, Key.Right, Key.Down, Key.Down, Key.Up, Key.Left })
+                {
+                    var source = PresentationSource.FromVisual(surface);
+                    if (source is null) { Console.WriteLine("[keys] 没有 PresentationSource"); break; }
+                    var args = new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent };
+                    surface.RaiseEvent(args);
+                    host.PumpFor(30);
+                    host.PumpFor(260);
+                    Console.WriteLine($"[keys] {key,-6} -> {LabelOf(surface.SelectedNode)}  handled={args.Handled}");
+                }
+            },
+        };
+    }
+
+    private static string LabelOf(ITreeSurfaceNode? node) => node switch
+    {
+        null => "(无)",
+        DemoNode demo => demo.Label,
+        _ => node.GetType().Name,
+    };
 
     /// <summary>选中一行：验证选中底色与描边（旧树靠 TreeViewItem，新树靠控件自己的单选）。</summary>
     public static Scenario BuildSelected(string name)

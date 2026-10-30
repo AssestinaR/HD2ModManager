@@ -4,7 +4,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views"
              xmlns:trees="clr-namespace:HD2ModManager.Controls.Trees"
-             xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling">
+             xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling"
+             Focusable="True"
+             GotKeyboardFocus="OnTreeGotKeyboardFocus"
+             PreviewKeyDown="OnPreviewKeyDown">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="TreeBoolToVis"/>
 
@@ -121,6 +124,18 @@
                     <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
                     <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
                 </DataTrigger>
+                <!--
+                    键盘焦点：选中行在"整棵树拿到键盘焦点"时换成强调色描边。
+                    选中底色单独存在是不够的——用鼠标点完、焦点跑到别处之后，
+                    那一行看起来和"键盘正在这一行上"一模一样，用户不知道方向键会作用在哪。
+                -->
+                <MultiDataTrigger>
+                    <MultiDataTrigger.Conditions>
+                        <Condition Binding="{Binding IsSelected}" Value="True"/>
+                        <Condition Binding="{Binding IsKeyboardFocusWithin, RelativeSource={RelativeSource AncestorType=local:TreeSurface}}" Value="True"/>
+                    </MultiDataTrigger.Conditions>
+                    <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                </MultiDataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
     </UserControl.Resources>

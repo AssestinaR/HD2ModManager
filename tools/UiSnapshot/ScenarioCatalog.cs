@@ -56,6 +56,7 @@ internal static class ScenarioCatalog
         ["cluster-labels-max"] = () => ClusterScenario.BuildLabelLengths("cluster-labels-max", "批量生成"),
         ["tree"] = () => TreeScenario.Build("tree"),
         ["tree-selected"] = () => TreeScenario.BuildSelected("tree-selected"),
+        ["tree-keys"] = () => TreeScenario.BuildKeys("tree-keys"),
         ["tree-fan"] = () => TreeScenario.BuildFan("tree-fan"),
         ["tree-fan-settled"] = () => TreeScenario.BuildFanSettled("tree-fan-settled"),
     };
