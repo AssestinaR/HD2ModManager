@@ -2183,6 +2183,7 @@ public static class CliApplication
 				invocation.Command[2],
 				rekeyTargets,
 				invocation.Options.Output,
+				ParseDisabledSections(invocation.Options.Disabled),
 				default).ConfigureAwait(false);
 			Emit(invocation.Options, CliVpkRekey.Project(rekeyResult), () => CliVpkRekey.Format(rekeyResult));
 			return 0;
@@ -2518,6 +2519,41 @@ public static class CliApplication
 		IReadOnlyDictionary<BodyRegion, UnitDonor> Donors,
 		string? RegistryError);
 
+	/// <summary>
+	/// 解析 <c>--disabled "unit:1,2;unit:3"</c>（<c>vpk rekey</c> 用）。
+	/// <para>
+	/// 键是<b>来源</b> Unit 键——管理器存的状态就是按来源 patch 记的。写成这种扁平格式而不是
+	/// JSON：它是命令行参数，可读、可手写、可贴进 issue；而 JSON 在这里只会多一层转义。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyDictionary<string, IReadOnlyCollection<int>>? ParseDisabledSections(string? raw)
+	{
+		if (string.IsNullOrWhiteSpace(raw))
+			return null;
+		var result = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.OrdinalIgnoreCase);
+		foreach (var entry in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+		{
+			var colon = entry.IndexOf(':');
+			if (colon <= 0)
+				throw new CliUserException("DisabledSectionsInvalid",
+					$"--disabled 的每一项都要写成 unit:1,2，实际是 '{entry}'。");
+			var unit = entry[..colon].Trim();
+			if (unit.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+				unit = unit[2..];
+			var sections = entry[(colon + 1)..]
+				.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+				.Select(text => int.TryParse(text, out var index) && index >= 0
+					? index
+					: throw new CliUserException("DisabledSectionsInvalid",
+						$"--disabled 里的 section 下标必须是非负整数，实际是 '{text}'。"))
+				.Order()
+				.ToArray();
+			if (sections.Length != 0)
+				result[unit] = sections;
+		}
+
+		return result.Count == 0 ? null : result;
+	}
 	/// <summary>
 	/// <c>--id-namespace</c> 的值是<b>来源标识</b>（通常就是来源压缩包/目录名），不是 token 本身。
 	/// <para>

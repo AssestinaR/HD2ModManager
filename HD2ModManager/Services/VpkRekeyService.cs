@@ -39,10 +39,15 @@ public static class VpkRekeyService
 	/// 执行一次换甲。<paramref name="modDirectory"/> 给出时，成功后会把"指向哪件护甲"
 	/// 记进 <c>wardrobe.json</c>——组件树的根标题要用它，重开页面时也不必再猜。
 	/// </summary>
+	/// <param name="disabledSections">
+	/// 要烘进产物的禁用 section（**来源** Unit 键空间，与 <c>wardrobe.json</c> 存的一致）。
+	/// 交给换甲去做而不是这里事后再烘一遍：只有换甲手里有"来源 → 目标"的完整映射。
+	/// </param>
 	public static async Task<VpkRekeyOutcome> RunAsync(
 		string modSelector,
 		string? modDirectory,
 		IReadOnlyList<string> targetArchiveIds,
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default)
 	{
@@ -70,6 +75,14 @@ public static class VpkRekeyService
 		};
 		if (targetArchiveIds.Count != 0)
 			arguments.AddRange(["--archive-id", string.Join(',', targetArchiveIds)]);
+		// 扁平格式 `unit:1,2;unit:3`：可读、可手写、可贴进 issue，比 JSON 少一层转义。
+		var disabled = disabledSections?
+			.Where(pair => pair.Value.Count != 0)
+			.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+			.Select(pair => pair.Key + ":" + string.Join(',', pair.Value.Order()))
+			.ToArray();
+		if (disabled is { Length: > 0 })
+			arguments.AddRange(["--disabled", string.Join(';', disabled)]);
 
 		var (exitCode, output, error) = await RunAsync(executable, arguments, cancellationToken).ConfigureAwait(false);
 		if (string.IsNullOrWhiteSpace(output))

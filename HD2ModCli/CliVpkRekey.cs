@@ -57,11 +57,19 @@ internal static class CliVpkRekey
 	/// <summary>来源 patch 的家：<c>vpk2patch/</c>。</summary>
 	private const string SourceDirectoryName = ModNodePayloadLayout.VpkPatchDirectoryName;
 
+	/// <param name="disabledSections">
+	/// 要在<b>来源 Unit 键空间</b>里关掉的 section（来自 <c>wardrobe.json</c> 的勾选状态）。
+	/// <para>
+	/// 由这里烘焙、而不是让管理器事后再烘一遍：换甲会把 Unit 换到目标护甲的键上，
+	/// 只有这里手里有"来源 → 目标"的完整映射。少一次映射传递，就少一处"两份表对不上"。
+	/// </para>
+	/// </param>
 	public static async ValueTask<VpkRekeyResult> RunAsync(
 		CliWorkspace workspace,
 		string modSelector,
 		IReadOnlyList<string> targetArchiveIds,
 		string? outputRoot,
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections = null,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
@@ -143,6 +151,9 @@ internal static class CliVpkRekey
 		{
 			var restored = await RestoreSourceAsync(
 				sourcePatch, sourceDirectory, destinationDirectory, cancellationToken).ConfigureAwait(false);
+			// 恒等路径上 Unit 键没变，掩码可以直接用。
+			var identityBake = await BakeAsync(restored, destinationDirectory, disabledSections, cancellationToken)
+				.ConfigureAwait(false);
 			return new VpkRekeyResult(
 				node.Id.Value.ToString("N"),
 				modDirectory,
@@ -153,7 +164,10 @@ internal static class CliVpkRekey
 				// 而实际发生的是"把来源原样放回去"。
 				0,
 				0,
-				["目标就是这个 Mod 自己的素体：已把来源 patch 原样退回 Overwrite（Unit 键不变，开关继续有效）。"])
+				[
+					"目标就是这个 Mod 自己的素体：已把来源 patch 原样退回 Overwrite（Unit 键不变，开关继续有效）。",
+					.. identityBake.Warnings,
+				])
 			{
 				Mappings = ["直接退回来源（不做跨护甲搬运）"],
 				TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
@@ -218,28 +232,35 @@ internal static class CliVpkRekey
 			.WriteAsync(Path.Combine(destinationDirectory, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
 			.ConfigureAwait(false);
 
-		// 开关表也要跟着搬：它的掩码是 (unit, section)，而换甲把 Unit 换到了目标护甲的键上。
-		// 不翻译的话，换一次甲之后整份开关表就指向不存在的 Unit——界面只能显示"已失效"，
-		// 用户勾过的开关白设了。翻译映射直接来自这次的计划，不需要再猜。
+		// 来源 Unit → 目标 Unit。开关表与烘焙都要用它，所以先算一次。
+		var unitMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var mapping in plan.Mappings)
+		{
+			if (mapping.Source is null)
+				continue;
+			var from = mapping.Source.UnitAssetKey.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+			var to = mapping.PhysicalTarget.UnitAssetKey.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+			unitMap[from] = to;
+		}
+
+		// 开关表跟着搬一份到 Overwrite：它的掩码是 (unit, section)，而换甲把 Unit 换到了目标护甲的键上。
+		// **权威那份留在 vpk2patch/**（它描述的是"这个 VPK 有哪些部件开关"，与目标护甲无关）；
+		// 这里写的是**这一份变体**的派生表，供部署后排查用。
 		var sourceSwitches = await VpkComponentSwitchFile
 			.TryReadAsync(Path.GetDirectoryName(sourcePatch)!, cancellationToken)
 			.ConfigureAwait(false);
 		if (sourceSwitches is not null)
 		{
-			var unitMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-			foreach (var mapping in plan.Mappings)
-			{
-				if (mapping.Source is null)
-					continue;
-				var from = mapping.Source.UnitAssetKey.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
-				var to = mapping.PhysicalTarget.UnitAssetKey.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
-				unitMap[from] = to;
-			}
-
 			await VpkComponentSwitchFile
 				.WriteAsync(destinationDirectory, VpkComponentSwitchFile.Translate(sourceSwitches, unitMap), cancellationToken)
 				.ConfigureAwait(false);
 		}
+
+		// 勾选状态也在来源键空间里，这里翻译完就地烘进新 patch。
+		// 为什么不留给调用方事后再烘：那样它得自己再算一遍映射，两处映射一漂移就会"关错部件"。
+		var translatedDisabled = TranslateDisabled(disabledSections, unitMap);
+		var bake = await BakeAsync(destination, destinationDirectory, translatedDisabled, cancellationToken)
+			.ConfigureAwait(false);
 
 		// 临时输出里有 30 MB 的 gpu，切换几次就是几百 MB。产物已经拷进 Overwrite，这里清掉。
 		if (ownsOutput)
@@ -257,7 +278,7 @@ internal static class CliVpkRekey
 			selected.Select(entry => entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
 			plan.Mappings.Count(mapping => mapping.WillReplace),
 			result.MinifiedMeshCount,
-			[.. mappingNotes, .. rebuilt.Skipped.Select(skip => $"{skip.FileId}：{skip.Reason}")])
+			[.. mappingNotes, .. rebuilt.Skipped.Select(skip => $"{skip.FileId}：{skip.Reason}"), .. bake.Warnings])
 		{
 			Mappings = plan.Mappings
 				.Select(mapping =>
@@ -268,6 +289,57 @@ internal static class CliVpkRekey
 		};
 	}
 
+	/// <summary>
+	/// 把"来源键空间的禁用集合"翻译到目标键空间。映射不到目标 Unit 的条目直接丢掉
+	/// （那个部件在新目标上没有落点，关它没有意义）。
+	/// </summary>
+	internal static IReadOnlyDictionary<string, IReadOnlyCollection<int>>? TranslateDisabled(
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabled,
+		IReadOnlyDictionary<string, string> unitMap)
+	{
+		if (disabled is null || disabled.Count == 0)
+			return null;
+		var translated = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.OrdinalIgnoreCase);
+		foreach (var (unit, sections) in disabled)
+		{
+			if (sections.Count == 0)
+				continue;
+			var key = unit.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? unit[2..] : unit;
+			if (!unitMap.TryGetValue(key, out var mapped))
+				continue;
+			translated[mapped] = translated.TryGetValue(mapped, out var existing)
+				? [.. existing.Concat(sections).Distinct().Order()]
+				: [.. sections.Order()];
+		}
+
+		return translated.Count == 0 ? null : translated;
+	}
+
+	/// <summary>
+	/// 把禁用集合烘进 <paramref name="patchPath"/>（用 <paramref name="directory"/> 里的 sections.json）。
+	/// <para>
+	/// 没有勾选就什么都不做——**不读表、不写盘**，保持"没改过 section"的产物与转换时逐字节一致。
+	/// </para>
+	/// </summary>
+	private static async ValueTask<WardrobeSectionBakeResult> BakeAsync(
+		string patchPath,
+		string directory,
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabled,
+		CancellationToken cancellationToken)
+	{
+		if (disabled is null || disabled.Count == 0)
+			return new WardrobeSectionBakeResult(0, 0, 0, []);
+
+		var sectionsPath = Path.Combine(directory, WardrobeSectionMapFile.FileName);
+		if (!File.Exists(sectionsPath))
+		{
+			return new WardrobeSectionBakeResult(0, 0, 0,
+				[$"缺少 {WardrobeSectionMapFile.FileName}：勾选状态没能烘进 patch。"]);
+		}
+
+		var map = await WardrobeSectionMapFile.ReadAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
+		return await WardrobeSectionBaker.BakeAsync(patchPath, map, disabled, cancellationToken).ConfigureAwait(false);
+	}
 	/// <summary>
 	/// 目标是不是"这个 Mod 自己的素体"：两边 Unit 键集合完全相同。
 	/// <para>

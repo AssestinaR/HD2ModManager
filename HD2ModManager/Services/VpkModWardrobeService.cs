@@ -69,20 +69,64 @@ public sealed class VpkModWardrobeService
 		return null;
 	}
 
+	/// <summary>
+	/// 读这个 Mod 的 section 表。**优先 <c>vpk2patch/</c>（权威事实）**，其次才是生效目录。
+	/// <para>
+	/// <b>为什么权威在前。</b><c>vpk2patch/</c> 是"这个 VPK 翻译出来是什么"，它不随目标护甲变；
+	/// <c>Overwrite/</c> 只是"当前这份变体"。组件卡片（树 + 开关）描述的是<b>这个 Mod 有什么部件</b>，
+	/// 那是权威侧的事实——拿变体侧的 Unit 键去对权威侧的开关掩码，永远对不上。
+	/// </para>
+	/// <para>生效目录只作兜底：老版本换过甲、或转换器还没产出 <c>vpk2patch/sections.json</c> 的情况。</para>
+	/// </summary>
 	public static async Task<WardrobeSectionMapDocument?> ReadSectionMapAsync(string modDirectory, CancellationToken cancellationToken = default)
 	{
-		var directory = ResolveEffectivePatchDirectory(modDirectory);
-		if (directory is null) return null;
-		try
+		foreach (var directory in CandidateDirectories(modDirectory))
 		{
-			return await WardrobeSectionMapFile
-				.ReadAsync(Path.Combine(directory, WardrobeSectionMapFile.FileName), cancellationToken)
-				.ConfigureAwait(false);
+			var path = Path.Combine(directory, WardrobeSectionMapFile.FileName);
+			if (!File.Exists(path))
+				continue;
+			try
+			{
+				return await WardrobeSectionMapFile.ReadAsync(path, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException)
+			{
+				// 坏文件不该让整张卡片消失：换下一个候选目录。
+			}
 		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException)
+
+		return null;
+	}
+
+	/// <summary>
+	/// 读这个 Mod 的组件开关表。同样**优先 <c>vpk2patch/</c>**：开关是"这个 VPK 有哪些部件"，
+	/// 与目标护甲无关；<c>Overwrite/</c> 里那份是换甲时翻译出来的派生表，只在没有权威表时兜底。
+	/// </summary>
+	public static async Task<VpkComponentSwitchDocument?> ReadComponentsAsync(
+		string modDirectory,
+		CancellationToken cancellationToken = default)
+	{
+		foreach (var directory in CandidateDirectories(modDirectory))
 		{
-			return null;
+			var document = await VpkComponentSwitchFile.TryReadAsync(directory, cancellationToken).ConfigureAwait(false);
+			if (document is not null)
+				return document;
 		}
+
+		return null;
+	}
+
+	/// <summary>候选目录：权威（<c>vpk2patch/</c>）在前，生效（<c>Overwrite/</c>）在后，去重。</summary>
+	private static IEnumerable<string> CandidateDirectories(string modDirectory)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var source = Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName);
+		if (seen.Add(source))
+			yield return source;
+		var effective = ResolveEffectivePatchDirectory(modDirectory);
+		if (effective is not null && seen.Add(effective))
+			yield return effective;
 	}
 
 	public static async Task<VpkWardrobeFile> ReadAsync(string modDirectory, CancellationToken cancellationToken = default)
@@ -143,26 +187,6 @@ public sealed class VpkModWardrobeService
 	/// <summary>只保留基础 7 槽的 unit，再交给 <see cref="WardrobeTree.Build"/> 画树。</summary>
 	public static WardrobeTreeNode BuildTree(string label, WardrobeSectionMapDocument map)
 		=> VpkModWardrobeTree.Build(label, map);
-
-	/// <summary>
-	/// 把当前状态烘进正在生效的那份 patch。**只在用户点"应用"时调用**：
-	/// 勾选是编辑意图，烘焙是落盘，两者分开才能"乱点一通、一次写盘"。
-	/// </summary>
-	public static async Task<WardrobeSectionBakeResult> ApplyAsync(
-		string modDirectory,
-		VpkWardrobeState state,
-		CancellationToken cancellationToken = default)
-	{
-		ArgumentNullException.ThrowIfNull(state);
-		var directory = ResolveEffectivePatchDirectory(modDirectory)
-			?? throw new InvalidOperationException("这个 Mod 里没有可烘焙的 patch（缺 sections.json）。");
-		var map = await ReadSectionMapAsync(modDirectory, cancellationToken).ConfigureAwait(false)
-			?? throw new InvalidOperationException("sections.json 读不出来，无法烘焙。");
-		var patch = FindPatchFile(directory)
-			?? throw new InvalidOperationException("patch 目录里没有 patch 文件。");
-
-		return await WardrobeSectionBaker.BakeAsync(patch, map, state.Disabled, cancellationToken).ConfigureAwait(false);
-	}
 
 	public static string? FindPatchFile(string directory)
 	{

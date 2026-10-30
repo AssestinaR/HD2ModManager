@@ -215,20 +215,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				var tree = new WardrobeTreeViewModel(this);
 				tree.LoadFromTree(root, editable: true);
 				VpkTree = tree;
-				// 开关表与树放在同一个目录（都是这次转换的产物）；没有它就不显示开关区。
-				var patchDirectory = VpkModWardrobeService.ResolveEffectivePatchDirectory(directory);
-				var components = patchDirectory is null
-					? null
-					: await VpkComponentSwitchFile.TryReadAsync(patchDirectory).ConfigureAwait(true);
-				if (components is null)
-				{
-					// 换过目标护甲之后，实际生效的是 `Overwrite/` 下那份；开关表还留在 `vpk2patch/`。
-					// 读它作兜底，但**必须校验 unit 还在不在**——换甲会把 Unit 换到目标护甲的键上，
-					// 掩码里的 unit id 于是全部失效。宁可显示"要重新导入"，也不要给一组点不动的开关。
-					var source = Path.Combine(directory, ModNodePayloadLayout.VpkPatchDirectoryName);
-					components = await VpkComponentSwitchFile.TryReadAsync(source).ConfigureAwait(true);
-				}
-
+				// 开关表与 section 表都取自**权威侧**（`vpk2patch/`）：它们描述的是"这个 VPK 有什么"，
+				// 与目标护甲无关。Overwrite 只是当前变体，拿它的 Unit 键去对权威侧的掩码永远对不上。
+				var components = await VpkModWardrobeService.ReadComponentsAsync(directory).ConfigureAwait(true);
 				ApplyVpkSwitches(components, map);
 			}
 			else
@@ -329,10 +318,13 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		VpkComponentStatus = $"正在把 Unit 换到 {target.DisplayName}…";
 		try
 		{
+			// 换甲同样把当前勾选一起烘进去：换目标与改开关是同一件事的两半，
+			// 分开做会出现"换了目标、开关却回到全开"。
 			var outcome = await VpkRekeyService.RunAsync(
 				node.Id.Value.ToString("N"),
 				directory,
 				[target.ArchiveId],
+				_vpkFile.State.Disabled,
 				stage => VpkComponentStatus = stage).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
@@ -376,11 +368,37 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		{
 			VpkComponentStatus = "正在保存勾选…";
 			await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
-			VpkComponentStatus = "正在烘焙到 patch…";
-			var result = await VpkModWardrobeService.ApplyAsync(directory, _vpkFile.State).ConfigureAwait(true);
-			VpkComponentStatus = result.ToSummary();
-			if (result.Warnings.Count != 0)
-				VpkComponentStatus += " 注意：" + string.Join("；", result.Warnings.Take(3));
+
+			// **重新从 vpk2patch 生成 Overwrite**，而不是就地改 Overwrite。
+			//
+			// 为什么不是就地烘：Overwrite 是派生品，它的 Unit 键取决于当时的目标护甲。
+			// 就地改会让"这份变体"慢慢偏离权威事实，而用户改一次设置就想看到"按新方案重新生成"。
+			// 生成过程同时完成两件事：把 Unit 换到目标护甲的键上、把勾选状态烘进去——
+			// 两件事都要那份"来源 → 目标"的映射，所以只能在换甲里面做。
+			VpkComponentStatus = "正在从 vpk2patch 重新生成 Overwrite…";
+			var targets = ResolveApplyTargets(directory);
+			if (targets is null)
+			{
+				VpkComponentStatus = "这个 Mod 没有登记自定义素体，也没有选过目标护甲：请先在上方选择目标护甲。";
+				return;
+			}
+
+			var outcome = await VpkRekeyService.RunAsync(
+				node.Id.Value.ToString("N"),
+				directory,
+				targets,
+				_vpkFile.State.Disabled,
+				stage => VpkComponentStatus = stage,
+				CancellationToken.None).ConfigureAwait(true);
+			if (!outcome.Ok)
+			{
+				VpkComponentStatus = outcome.Error ?? "重新生成失败。";
+				return;
+			}
+
+			VpkComponentStatus = outcome.RestoredFromSource
+				? "已按当前勾选重新生成（自定义素体模式）。"
+				: $"已按当前勾选重新生成：替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。";
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
@@ -393,6 +411,21 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		{
 			_vpkBusy = false;
 		}
+	}
+
+	/// <summary>
+	/// "应用"时要重新生成到哪：记过的目标护甲；没记过就用这个 Mod 自己的素体（恒等 → 退回来源 + 烘焙）。
+	/// <para>
+	/// 返回 <c>null</c> 表示既没有目标也没有登记素体——那时唯一能做的正确事情是让用户先选目标，
+	/// 而不是替他猜一个游戏护甲（旧版就是这样悄悄换到 RE-2310 的）。
+	/// </para>
+	/// </summary>
+	private IReadOnlyList<string>? ResolveApplyTargets(string directory)
+	{
+		if (!string.IsNullOrWhiteSpace(_vpkFile.TargetArmorArchiveId))
+			return [_vpkFile.TargetArmorArchiveId];
+		var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(directory);
+		return ownKey is null ? null : [RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)];
 	}
 
 	private async Task PersistVpkAsync()
@@ -453,7 +486,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		// 没匹配上的必须说清：用户装了"猫耳关"却看不到开关，只会以为功能没做。
 		var parts = new List<string>();
 		if (stale != 0)
-			parts.Add($"{stale} 个开关指向的 Unit 已经不在这份 patch 里（旧版换甲没把开关表一起搬）。把目标护甲切回「自定义素体」、或重新导入一次这个 Mod 即可恢复。");
+			parts.Add($"{stale} 个开关指向的 Unit 不在这份转换产物里——多半是转换时材质没对上，重新导入一次这个 Mod。");
 		if (document is { Unmatched.Count: > 0 })
 		{
 			parts.Add($"{document.Unmatched.Count} 个开关在这个 Mod 里找不到对应材质："
