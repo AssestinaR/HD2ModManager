@@ -127,20 +127,38 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 		Assert.Null(VpkCustomModelFile.TryReadKey(directory));
 	}
 
-	/// <summary>扫库：只有带 <c>custom-model.json</c> 的 Mod 目录才算"持有"素体。</summary>
+	/// <summary>
+	/// 扫库：只有带 <c>custom-model.json</c> 的 Mod 目录才算"持有"素体，并且要带出
+	/// <b>持有它的 Mod 名</b>——拒绝删除时那句话要能点名，否则用户不知道该移除哪一个。
+	/// </summary>
 	[Fact]
-	public void CustomModelFile_CollectsOwnedKeysAcrossTheLibrary()
+	public void CustomModelFile_CollectsOwnersWithTheModName()
 	{
 		var owned = Path.Combine(directory, "vpk-mod-a");
 		var plain = Path.Combine(directory, "hand-made");
 		Directory.CreateDirectory(owned);
 		Directory.CreateDirectory(plain);
-		File.WriteAllText(Path.Combine(owned, VpkCustomModelFile.FileName), "{ \"key\": \"custom-a\" }");
+		File.WriteAllText(Path.Combine(owned, VpkCustomModelFile.FileName),
+			"{ \"key\": \"custom-a\", \"name\": \"MourningVeil Bill\" }");
 		// 手搓的 Mod 没有这个文件——它里面若出现素体，那是用户自己的，不该被保护。
 		File.WriteAllText(Path.Combine(plain, "vpk2patch.json"), "{}");
 
-		var keys = VpkCustomModelFile.ReadOwnedKeys(directory);
+		var owners = VpkCustomModelFile.ReadOwners(directory);
 
-		Assert.Equal(["custom-a"], keys.ToArray());
+		Assert.Equal("MourningVeil Bill", Assert.Single(owners).Value);
+		Assert.Equal("custom-a", owners.Keys.Single());
+	}
+
+	/// <summary>没有 <c>name</c> 时退回目录名：两者在正常流程里是同一个值。</summary>
+	[Fact]
+	public void CustomModelFile_FallsBackToTheDirectoryName()
+	{
+		var owned = Path.Combine(directory, "manuka_jabis_zoey");
+		Directory.CreateDirectory(owned);
+		File.WriteAllText(Path.Combine(owned, VpkCustomModelFile.FileName), "{ \"key\": \"custom-b\" }");
+
+		var owners = VpkCustomModelFile.ReadOwners(directory);
+
+		Assert.Equal("manuka_jabis_zoey", Assert.Single(owners).Value);
 	}
 }

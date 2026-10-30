@@ -40,10 +40,6 @@ public sealed class VpkSwitchItemViewModel : BaseViewModel
 	public string Detail
 		=> $"关掉 {Entry.SectionCount} 块 · {string.Join("、", Entry.Materials)}";
 
-	/// <summary>多个包藏同一批材质时被合并过（否则用户会看到两个开关关同一批几何）。</summary>
-	public bool HasMultipleSources => Entry.SourceVpk.Contains('、', StringComparison.Ordinal);
-
-	public string SourceHint => Entry.SourceVpk;
 
 	public bool IsEnabled
 	{

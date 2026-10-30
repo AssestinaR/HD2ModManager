@@ -188,16 +188,6 @@ public sealed class VpkModWardrobeService
 	public static WardrobeTreeNode BuildTree(string label, WardrobeSectionMapDocument map)
 		=> VpkModWardrobeTree.Build(label, map);
 
-	public static string? FindPatchFile(string directory)
-	{
-		if (!Directory.Exists(directory)) return null;
-		return Directory.EnumerateFiles(directory, "*.patch_*", SearchOption.TopDirectoryOnly)
-			.Where(path => !path.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase)
-				&& !path.EndsWith(".stream", StringComparison.OrdinalIgnoreCase))
-			.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-			.FirstOrDefault();
-	}
-
 	/// <summary>
 	/// 这个 Mod 是不是"VPK 版"——判据是<b>有 sections.json</b>，不是"有 vpk2patch 目录"。
 	/// <para>
@@ -217,13 +207,13 @@ public sealed class VpkModWardrobeService
 		=> VpkCustomModelFile.TryReadKey(modDirectory);
 
 	/// <summary>
-	/// 整个 Mod 库里被 VPK 模组"持有"的自定义素体 key。
+	/// 整个 Mod 库里被 VPK 模组"持有"的自定义素体：key → 持有它的 Mod 名。
 	/// <para>
 	/// <b>为什么这些素体不能手动删。</b>它们不是用户手工建的，而是某个 VPK Mod 的转换产物：
 	/// 删掉它，那个 Mod 的 patch 就成了一堆没人引用的 Unit（用户看到的正是"无头 vpk2patch"），
 	/// 唯一的修复办法是重新导入整个包。所以删除只该随 Mod 一起发生。
 	/// </para>
 	/// </summary>
-	public static IReadOnlySet<string> ReadOwnedCustomModelKeys(string modsDirectory)
-		=> VpkCustomModelFile.ReadOwnedKeys(modsDirectory);
+	public static IReadOnlyDictionary<string, string> ReadCustomModelOwners(string modsDirectory)
+		=> VpkCustomModelFile.ReadOwners(modsDirectory);
 }

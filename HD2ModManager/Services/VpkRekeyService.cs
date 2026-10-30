@@ -10,13 +10,12 @@ namespace HD2ModManager.Services;
 public sealed record VpkRekeyOutcome(
 	bool Ok,
 	string? Error,
-	IReadOnlyList<string> Mappings,
 	int ReplacedUnits,
 	int HiddenMeshes,
 	IReadOnlyList<string> TargetArchiveIds,
 	IReadOnlyList<string> TargetNames)
 {
-	public static VpkRekeyOutcome Failed(string error) => new(false, error, [], 0, 0, [], []);
+	public static VpkRekeyOutcome Failed(string error) => new(false, error, 0, 0, [], []);
 
 	/// <summary>
 	/// 这次没有跨护甲搬运，而是把来源 patch 原样退回 <c>Overwrite/</c>
@@ -101,7 +100,6 @@ public static class VpkRekeyService
 			var outcome = new VpkRekeyOutcome(
 				root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True,
 				null,
-				ReadStrings(root, "mappings"),
 				ReadInt(root, "replacedUnits"),
 				ReadInt(root, "hiddenMeshes"),
 				ReadStrings(root, "targets"),

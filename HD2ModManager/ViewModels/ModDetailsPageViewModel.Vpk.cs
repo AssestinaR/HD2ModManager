@@ -451,7 +451,13 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		=> WardrobeTree.Counts(node, IsVpkSectionDisabled).IsMixed;
 
 	void IWardrobeTreeToggleStore.ApplyToggle(WardrobeTreeNode node, bool enabled)
-		=> _vpkFile = _vpkFile with { State = _vpkFile.State.SetEnabled(node, enabled) };
+	{
+		_vpkFile = _vpkFile with { State = _vpkFile.State.SetEnabled(node, enabled) };
+		// 开关列表与树是同一份状态的两种视图：树上改了一节，开关那一行也要跟着变
+		// （它可能正好覆盖这一节）。不刷新就会出现"开关显示开、几何却已经关了"。
+		foreach (var item in _vpkSwitches)
+			item.RaiseEnabledChanged();
+	}
 
 	private bool IsVpkSectionDisabled(string unit, int sectionIndex)
 		=> _vpkFile.State.IsDisabled(unit, sectionIndex);

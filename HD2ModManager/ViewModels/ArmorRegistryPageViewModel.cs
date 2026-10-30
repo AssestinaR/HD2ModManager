@@ -1767,12 +1767,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		// 它不是用户手工建的，而是那个 Mod 的产物：删掉之后 patch 里只剩一堆没人引用的 Unit
 		// （用户看到的正是"无头 vpk2patch"），而唯一的修复办法是重新导入整个包。
 		// 所以它的生命周期必须跟 Mod 绑在一起——删除只能随 Mod 发生。
-		if (VpkModWardrobeService.ReadOwnedCustomModelKeys(SettingsService.CreateStoragePaths().ModsDirectory)
-			.Contains(model.Key))
+		//
+		// 提示里必须**点名是哪个 Mod**：用户库里有几十个模组，"请移除那个 Mod"等于没说。
+		if (VpkModWardrobeService.ReadCustomModelOwners(SettingsService.CreateStoragePaths().ModsDirectory)
+			.TryGetValue(model.Key, out var ownerName))
 		{
 			notifications.Show(
-				$"「{model.Name}」是 VPK 模组转换出来的素体，不能单独删除：删掉之后那个 Mod 会剩下一堆没人引用的 Unit。"
-				+ "请改为移除那个 Mod（素体会跟着消失），或者重新导入那个包。",
+				$"{model.Name} 被 {ownerName} 绑定，请移除对应模组。",
 				NotificationLevel.Warning,
 				TimeSpan.FromSeconds(12),
 				"护甲注册");

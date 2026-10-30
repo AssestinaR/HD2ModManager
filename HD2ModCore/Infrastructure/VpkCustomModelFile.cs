@@ -36,17 +36,23 @@ public static class VpkCustomModelFile
 	}
 
 	/// <summary>
-	/// 整个 Mod 库里被 VPK 模组"持有"的素体 key。
+	/// 整个 Mod 库里被 VPK 模组"持有"的素体：key → <b>持有它的那个 Mod 的名字</b>。
 	/// <para>
 	/// <b>为什么要扫库而不是查注册表。</b>注册表里没有"这个素体属于哪个 Mod"这一维，
 	/// 而 <c>custom-model.json</c> 就在 Mod 目录里——那是唯一不会漂移的事实来源。
 	/// </para>
+	/// <para>
+	/// <b>为什么要把名字带出来。</b>拒绝删除时只说"这是 VPK 转换出来的"没有可操作性：
+	/// 用户手上有几十个 Mod，他不知道该移除哪一个。带上名字，提示才能变成一句能照做的话。
+	/// 名字取 <c>custom-model.json</c> 的 <c>name</c>（转换时写的就是 Mod 名），
+	/// 缺了才退回目录名——两者在正常流程里是同一个值。
+	/// </para>
 	/// </summary>
-	public static IReadOnlySet<string> ReadOwnedKeys(string modsDirectory)
+	public static IReadOnlyDictionary<string, string> ReadOwners(string modsDirectory)
 	{
-		var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		if (string.IsNullOrWhiteSpace(modsDirectory) || !Directory.Exists(modsDirectory))
-			return keys;
+			return owners;
 		IEnumerable<string> files;
 		try
 		{
@@ -54,16 +60,41 @@ public static class VpkCustomModelFile
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			return keys;
+			return owners;
 		}
 
 		foreach (var file in files)
 		{
-			var key = TryReadKey(Path.GetDirectoryName(file)!);
-			if (!string.IsNullOrWhiteSpace(key))
-				keys.Add(key);
+			var directory = Path.GetDirectoryName(file)!;
+			var key = TryReadKey(directory);
+			if (string.IsNullOrWhiteSpace(key))
+				continue;
+			var name = TryReadName(directory) ?? Path.GetFileName(directory);
+			// 同一个 key 出现在两个 Mod 里说明库里有重复项：保留第一个，行为可预期。
+			owners.TryAdd(key, name);
 		}
 
-		return keys;
+		return owners;
+	}
+
+	/// <summary>读 <c>custom-model.json</c> 的 <c>name</c>（转换时写进去的 Mod 名）。</summary>
+	public static string? TryReadName(string modDirectory)
+	{
+		if (string.IsNullOrWhiteSpace(modDirectory))
+			return null;
+		var path = Path.Combine(modDirectory, FileName);
+		if (!File.Exists(path))
+			return null;
+		try
+		{
+			using var stream = File.OpenRead(path);
+			using var document = JsonDocument.Parse(stream);
+			var name = document.RootElement.TryGetProperty("name", out var value) ? value.GetString() : null;
+			return string.IsNullOrWhiteSpace(name) ? null : name;
+		}
+		catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+		{
+			return null;
+		}
 	}
 }
