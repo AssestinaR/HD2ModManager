@@ -57,6 +57,7 @@ namespace HD2ModManager
             // App.xaml uses StartupUri, so the base implementation creates the
             // first window. Start diagnostics before it so the initial page load
             // and startup synchronization are included in the trace.
+            // 采集默认关闭（HD2_UI_DIAG=1 打开），打开后写 logs/trace_*.log。
             base.OnStartup(e);
         }
 

@@ -1634,7 +1634,10 @@ namespace HD2ModManager.ViewModels
                 "InformationCenter.Production",
                 $"kind={value.Kind}; source={value.Source}",
                 threshold: 8);
-            LogService.Info($"信息中心开始生产：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，来源={value.Source}，operation={value.OperationKey}。缓存未命中或要求刷新。");
+            // 生产开始只是内部记账：任务中心里已经有这条任务在跑，日志里再记一遍只会让
+            // 用户日志变成流水账。它只在"开始后再也没结束"时才有价值，所以进 trace。
+            LogService.Trace("信息中心",
+                $"开始生产：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，来源={value.Source}，operation={SummarizeOperationKey(value.OperationKey)}。缓存未命中或要求刷新。");
             RefreshOnUiThread(() =>
             {
                 if (_informationTasks.ContainsKey(value.OperationKey)) return;
@@ -1655,7 +1658,10 @@ namespace HD2ModManager.ViewModels
             var issues = value.Issues.Count == 0
                 ? string.Empty
                 : $"，问题={string.Join(" | ", value.Issues.Take(5).Select(issue => $"{issue.Code}:{issue.Message}"))}";
-            LogService.Info($"信息中心诊断：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，状态={value.Status}，缓存命中={value.CacheHit}，合并请求={value.WasCoalesced}，耗时={(value.CompletedUtc - value.StartedUtc).TotalMilliseconds:F0}ms，operation={value.OperationKey}{issues}。");
+            // 信息中心是内部记账：终态在任务中心里已经看得到，用户日志不需要再抄一遍。
+            // 它照旧写，只是写进 trace 通道 —— 查"某个派生结果为什么是旧的"时才去翻。
+            LogService.Trace("信息中心",
+                $"诊断：类型={value.Kind}，节点={value.NodeId?.Value.ToString("N") ?? "全局"}，generation={value.Generation ?? "空"}，状态={value.Status}，缓存命中={value.CacheHit}，合并请求={value.WasCoalesced}，耗时={(value.CompletedUtc - value.StartedUtc).TotalMilliseconds:F0}ms，operation={SummarizeOperationKey(value.OperationKey)}{issues}。");
             RefreshOnUiThread(() =>
             {
                 if (value.OperationKey is null || !_informationTasks.TryGetValue(value.OperationKey, out var task)) return;
@@ -1670,6 +1676,20 @@ namespace HD2ModManager.ViewModels
                 // 诊断是该 OperationKey 的唯一终态；历史任务仍由 BackgroundTaskService 保留。
                 _informationTasks.Remove(value.OperationKey);
             });
+        }
+
+        /// <summary>
+        /// OperationKey 是完整快照的键。FileFacts 的键里带着整个 Mod 库的 GUID 列表，
+        /// 原样写进日志就是一行 3.5KB —— 一份日志里 55 行这样的东西，什么都看不见了。
+        /// 日志里只保留头尾：头能认出类型和前几个节点，尾能认出属性名。
+        /// 内存里的键不动，它还要按全等匹配。
+        /// </summary>
+        private static string SummarizeOperationKey(string? key)
+        {
+            const int head = 64;
+            const int tail = 48;
+            if (string.IsNullOrEmpty(key) || key.Length <= head + tail + 24) return key ?? string.Empty;
+            return $"{key[..head]}…（省略 {key.Length - head - tail} 字符）…{key[^tail..]}";
         }
 
         private static string GetInformationKindText(ModInformationKind kind) => kind switch

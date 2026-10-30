@@ -8,6 +8,9 @@ namespace HD2ModManager.Services;
 /// Low-overhead diagnostics for UI stalls. This class observes the UI and records
 /// only slow synchronous work, visible frame gaps, and short-lived event bursts.
 /// It intentionally does not change scheduling, throttling, or collection behavior.
+///
+/// 默认关闭，设 <c>HD2_UI_DIAG=1</c> 才启动：它是查卡顿时才需要打开的工具，不是常驻功能。
+/// 打开后写 trace 通道（logs/trace_*.log），不污染用户日志 manager_*.log。
 /// </summary>
 public static class UiPerformanceDiagnostics
 {
@@ -23,13 +26,25 @@ public static class UiPerformanceDiagnostics
 
     public static bool IsEnabled => Volatile.Read(ref _started) != 0;
 
+    /// <summary>
+    /// 只有显式要求才采集。没有这个开关时，每一次正常游玩都会留下几十行
+    /// frame-stall / event-burst，而它们只对写这段代码的人有意义。
+    /// </summary>
+    private static bool IsRequestedByEnvironment()
+    {
+        var value = Environment.GetEnvironmentVariable("HD2_UI_DIAG");
+        return string.Equals(value, "1", StringComparison.Ordinal)
+            || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static void Start()
     {
+        if (!IsRequestedByEnvironment()) return;
         if (Interlocked.Exchange(ref _started, 1) != 0) return;
         _lastRenderTimestamp = Stopwatch.GetTimestamp();
         _lastFrameStallLogTimestamp = 0;
         CompositionTarget.Rendering += OnRendering;
-        LogService.Info($"[UIPerf] diagnostics-started; uiThread={Environment.CurrentManagedThreadId}; frequency={Stopwatch.Frequency}.");
+        LogService.Trace("UIPerf", $"diagnostics-started; uiThread={Environment.CurrentManagedThreadId}; frequency={Stopwatch.Frequency}.");
     }
 
     public static void Stop()
@@ -37,7 +52,7 @@ public static class UiPerformanceDiagnostics
         if (Interlocked.Exchange(ref _started, 0) == 0) return;
         CompositionTarget.Rendering -= OnRendering;
         lock (BurstLock) Bursts.Clear();
-        LogService.Info("[UIPerf] diagnostics-stopped.");
+        LogService.Trace("UIPerf", "diagnostics-stopped.");
     }
 
     public static IDisposable Measure(
@@ -60,7 +75,7 @@ public static class UiPerformanceDiagnostics
         var elapsed = ElapsedMilliseconds(startedTimestamp, Stopwatch.GetTimestamp());
         if (elapsed < thresholdMilliseconds) return;
         var ui = Application.Current?.Dispatcher?.CheckAccess() == true;
-        LogService.Warn($"[UIPerf] slow-operation; name={operation}; elapsed={elapsed:0}ms; threshold={thresholdMilliseconds:0}ms; ui={ui}; thread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}.");
+        LogService.Trace("UIPerf", $"slow-operation; name={operation}; elapsed={elapsed:0}ms; threshold={thresholdMilliseconds:0}ms; ui={ui}; thread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}.");
     }
 
     /// <summary>
@@ -92,7 +107,7 @@ public static class UiPerformanceDiagnostics
 
         if (!shouldLog) return;
         var ui = Application.Current?.Dispatcher?.CheckAccess() == true;
-        LogService.Warn($"[UIPerf] event-burst; category={category}; count={count}; window={windowMilliseconds:0}ms; ui={ui}; thread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}{FormatDetails(details)}.");
+        LogService.Trace("UIPerf", $"event-burst; category={category}; count={count}; window={windowMilliseconds:0}ms; ui={ui}; thread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}{FormatDetails(details)}.");
     }
 
     private static void OnRendering(object? sender, EventArgs e)
@@ -110,7 +125,7 @@ public static class UiPerformanceDiagnostics
         if (lastLog != 0 && ElapsedMilliseconds(lastLog, now) < FrameStallLogCooldownMilliseconds) return;
         if (Interlocked.CompareExchange(ref _lastFrameStallLogTimestamp, now, lastLog) != lastLog) return;
 
-        LogService.Warn($"[UIPerf] frame-stall; gap={gapMilliseconds:0}ms; uiThread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}.");
+        LogService.Trace("UIPerf", $"frame-stall; gap={gapMilliseconds:0}ms; uiThread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}.");
     }
 
     private static string FormatDetails(string? details)
@@ -159,7 +174,7 @@ public static class UiPerformanceDiagnostics
             string? detail = null;
             try { detail = _details?.Invoke(); } catch { }
             var endedOnUi = Application.Current?.Dispatcher?.CheckAccess() == true;
-            LogService.Warn($"[UIPerf] slow-operation; name={_operation}; elapsed={elapsed:0}ms; threshold={_thresholdMilliseconds:0}ms; startUi={_startedOnUi}; endUi={endedOnUi}; startThread={_startThread}; endThread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}{FormatDetails(detail)}.");
+            LogService.Trace("UIPerf", $"slow-operation; name={_operation}; elapsed={elapsed:0}ms; threshold={_thresholdMilliseconds:0}ms; startUi={_startedOnUi}; endUi={endedOnUi}; startThread={_startThread}; endThread={Environment.CurrentManagedThreadId}; {MemorySnapshot()}{FormatDetails(detail)}.");
         }
     }
 

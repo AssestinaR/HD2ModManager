@@ -271,9 +271,9 @@ internal sealed class ModListTransitionController : IDisposable
         if (_disposed || _phase != TransitionPhase.AwaitingLayout) return;
         // 布局在预算内没落定。最常见的原因是列表在过渡途中被折叠或移出了宿主。
         // 放弃这一轮动画，比让列表永久不可点要好得多。留一条日志：这是异常路径，
-        // 下一次用户报"卡住"时它就是确凿证据。
+        // 下一次用户报"卡住"时它就是确凿证据。它走 manager 通道，不受 HD2_UI_DIAG 开关影响。
         LogService.Warn(
-            $"[UIPerf] mod-list-layout-watchdog; pending={_transitionPending}; items={_itemsList.Items.Count}; "
+            $"[ModList] layout-watchdog; pending={_transitionPending}; items={_itemsList.Items.Count}; "
             + $"ownerLoaded={_owner.IsLoaded}; ownerVisible={_owner.IsVisible}; bulk={_bulkVisualTransition is not null}.");
         SettleWithoutAnimation();
     }
@@ -493,8 +493,8 @@ internal sealed class ModListTransitionController : IDisposable
         PresentedItems.ReplaceWith(desiredEntries.Select(entry => entry.Item));
         if (UiPerformanceDiagnostics.IsEnabled)
         {
-            LogService.Info(
-                $"[UIPerf] mod-list-bulk-projection; before={_bulkVisualTransition?.OldCount ?? PresentedItems.Count}; desired={desiredEntries.Count}; mode=dual-host-crossfade.");
+            LogService.Trace("UIPerf",
+                $"mod-list-bulk-projection; before={_bulkVisualTransition?.OldCount ?? PresentedItems.Count}; desired={desiredEntries.Count}; mode=dual-host-crossfade.");
         }
     }
 
@@ -671,8 +671,8 @@ internal sealed class ModListTransitionController : IDisposable
 
         if (UiPerformanceDiagnostics.IsEnabled && (movedCount != 0 || insertedCount + removedCount >= 8))
         {
-            LogService.Info(
-                $"[UIPerf] mod-list-reconcile; before={oldCount}; desired={desiredEntries.Count}; remove={removedCount}; insert={insertedCount}; move={movedCount}; strategy={strategy}; forward={forwardMoveCount}; backward={backwardMoveCount}.");
+            LogService.Trace("UIPerf",
+                $"mod-list-reconcile; before={oldCount}; desired={desiredEntries.Count}; remove={removedCount}; insert={insertedCount}; move={movedCount}; strategy={strategy}; forward={forwardMoveCount}; backward={backwardMoveCount}.");
         }
     }
 
