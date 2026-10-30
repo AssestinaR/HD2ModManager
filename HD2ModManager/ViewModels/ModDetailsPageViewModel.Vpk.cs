@@ -149,27 +149,32 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	public VpkTargetArmorOption? SelectedVpkTargetArmor
 	{
 		get => _selectedVpkTargetArmor;
-		set
-		{
-			if (!SetField(ref _selectedVpkTargetArmor, value)) return;
-			OnPropertyChanged(nameof(CanApplyVpkTargetArmor));
-		}
+		set => SetField(ref _selectedVpkTargetArmor, value);
 	}
 
-	public bool CanApplyVpkTargetArmor => IsVpkMod && !_vpkBusy && SelectedVpkTargetArmor is not null;
-
-	// 命令对象要缓存：属性每次 new 一个会让 CanExecute 的重新查询失去意义，
-	// 界面上的按钮就会一直停在初始的可用状态。
+	// 命令对象要缓存：属性每次 new 一个会让 CanExecute 的重新查询失去意义。
 	private RelayCommand? _applyVpkTargetArmorCommand;
 	private RelayCommand? _applyVpkComponentsCommand;
 
+	/// <summary>
+	/// 「切换」与「应用」都<b>不做禁用</b>，能不能做由点击之后判断。
+	/// <para>
+	/// <b>为什么去掉 CanExecute。</b><see cref="RelayCommand"/> 没有挂
+	/// <c>CommandManager.RequerySuggested</c>，而这两个命令的判据
+	/// （<c>SelectedVpkTargetArmor</c> / <c>HasVpkComponentTree</c>）都是<b>异步加载完之后</b>才有值的。
+	/// 按钮在模板实例化那一刻问过一次 <c>CanExecute</c>，得到 <c>false</c> 之后就再也没有人重新问
+	/// —— 界面上的表现是"这个按钮永远是灰的，重启管理器也一样"。
+	/// </para>
+	/// <para>
+	/// 禁用的本意是"别让用户点了没反应"。更好的做法是<b>点了之后把话说清楚</b>：
+	/// 目标没变就说没变，没选就提示去选。这比一个永远灰着的按钮好，因为灰按钮不解释自己。
+	/// </para>
+	/// </summary>
 	public RelayCommand ApplyVpkTargetArmorCommand => _applyVpkTargetArmorCommand ??= new(
-		async _ => await ApplyVpkTargetArmorAsync(),
-		_ => CanApplyVpkTargetArmor);
+		async _ => await ApplyVpkTargetArmorAsync());
 
 	public RelayCommand ApplyVpkComponentsCommand => _applyVpkComponentsCommand ??= new(
-		async _ => await ApplyVpkComponentsAsync(),
-		_ => IsVpkMod && !_vpkBusy && HasVpkComponentTree);
+		async _ => await ApplyVpkComponentsAsync());
 
 	/// <summary>每次详情页刷新时重算：是不是 VPK 版、组件树长什么样。</summary>
 	private void RefreshVpk()
@@ -186,7 +191,6 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		OnPropertyChanged(nameof(EnableVpkComponentTree));
 		OnPropertyChanged(nameof(HasVpkComponentTree));
 		OnPropertyChanged(nameof(VpkComponentStatus));
-		OnPropertyChanged(nameof(CanApplyVpkTargetArmor));
 
 		if (!TryGetCurrentNode(out var node)) return;
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
@@ -284,19 +288,16 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 			var options = gameArmors.Concat(customModels).ToArray();
 			VpkTargetArmors = options;
-			// 默认目标 = **这个 Mod 自己的素体**，不是某件游戏护甲。
+			// 默认选中 = **当前实际生效的目标**，其次才是这个 Mod 自己的素体。
+			//
+			// 先认记录：换过目标之后下拉必须显示那件护甲。以前这里一律选"自己的素体"，
+			// 于是换到 RE-2310 之后重开页面，下拉显示的是自定义素体、而 Overwrite 里是 RE-2310 的
+			// Unit 键——用户看到"下拉里就是我要的"就点不了应用（判据相同），或者反过来被换回去。
 			//
 			// 为什么不能默认指向 RE-2310：VPK 转出来的 7 个 Unit 本身就是一套完整素体，
 			// 它默认就该是"自定义素体模式"。指到游戏护甲上会让用户以为这个 Mod 是"某件护甲的皮肤"，
 			// 而换到那件护甲上还会把原本的护甲件全部隐藏——那是另一个决定，必须由用户点。
-			var ownArchiveId = VpkModWardrobeService.TryReadOwnCustomModelKey(modDirectory) is { } ownKey
-				? RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)
-				: null;
-			SelectedVpkTargetArmor = ownArchiveId is null
-				? null
-				: options.FirstOrDefault(option =>
-					option.ArchiveId.Equals(ownArchiveId, StringComparison.OrdinalIgnoreCase));
-			OnPropertyChanged(nameof(CanApplyVpkTargetArmor));
+			SelectedVpkTargetArmor = ResolveCurrentTargetArmor(modDirectory);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
 		{
@@ -308,13 +309,47 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		}
 	}
 
+	/// <summary>
+	/// 点「切换」：把 Unit 换到下拉里选中的目标上。
+	/// <para>
+	/// <b>先比旧目标和新目标。</b>没变化就什么都不做——换甲是一次几秒到几十秒的重新烘焙，
+	/// 而且会重写 Overwrite。用户什么都没改却看到"已换到 X"，下次就会怀疑这个按钮到底做了什么。
+	/// </para>
+	/// <para>
+	/// 没有禁用态（见 <see cref="ApplyVpkTargetArmorCommand"/>）：没选目标、目标没变、
+	/// 上一个操作还没跑完，这三种情况都在这里用一句话说清楚，而不是让按钮灰着不解释自己。
+	/// </para>
+	/// </summary>
 	private async Task ApplyVpkTargetArmorAsync()
 	{
-		if (!TryGetCurrentNode(out var node) || SelectedVpkTargetArmor is null) return;
+		// 连点两下不该起两次转换。按钮不再禁用，所以这道门必须自己把。
+		if (_vpkBusy)
+		{
+			VpkComponentStatus = "上一个操作还在跑，请等它结束。";
+			return;
+		}
+
+		if (!TryGetCurrentNode(out var node)) return;
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
 		var target = SelectedVpkTargetArmor;
+		if (target is null)
+		{
+			VpkComponentStatus = "还没选目标护甲：请在上方下拉里选一个，再点「切换」。";
+			return;
+		}
+
+		var current = ResolveCurrentTargetArmor(directory);
+		if (current is not null
+			&& string.Equals(current.ArchiveId, target.ArchiveId, StringComparison.OrdinalIgnoreCase))
+		{
+			VpkComponentStatus = $"目标没有变化（仍是 {target.DisplayName}），没有重新生成。"
+				+ (ShowVpkComponentCard
+					? "要应用勾选改动，请用「衣物装饰组件」卡右上角的「应用」。"
+					: string.Empty);
+			return;
+		}
+
 		_vpkBusy = true;
-		OnPropertyChanged(nameof(CanApplyVpkTargetArmor));
 		VpkComponentStatus = $"正在把 Unit 换到 {target.DisplayName}…";
 		try
 		{
@@ -350,17 +385,57 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		finally
 		{
 			_vpkBusy = false;
-			OnPropertyChanged(nameof(CanApplyVpkTargetArmor));
 		}
+	}
+
+	/// <summary>
+	/// 当前实际生效的目标：<c>wardrobe.json</c> 里记着的那个；没记过就是这个 Mod 自己的素体。
+	/// <para>
+	/// <b>为什么要单独算一次而不是直接读 <see cref="SelectedVpkTargetArmor"/>。</b>下拉里的选中项是
+	/// "用户想换成什么"，这里的答案是"现在是什么"。两者相同才叫没有变化。
+	/// </para>
+	/// <para>
+	/// 记着的那件护甲可能已经不在候选里（护甲索引重建过、或者那个自定义素体被删了）。
+	/// 那时仍然返回它——否则比对会退回"自己的素体"，于是界面说"目标没变"而实际目标并不是它。
+	/// </para>
+	/// </summary>
+	private VpkTargetArmorOption? ResolveCurrentTargetArmor(string directory)
+	{
+		if (!string.IsNullOrWhiteSpace(_vpkFile.TargetArmorArchiveId))
+		{
+			var recorded = _vpkFile.TargetArmorArchiveId;
+			return VpkTargetArmors.FirstOrDefault(option =>
+					option.ArchiveId.Equals(recorded, StringComparison.OrdinalIgnoreCase))
+				?? new VpkTargetArmorOption(recorded, _vpkFile.TargetArmorName ?? recorded);
+		}
+
+		// 从没换过目标 = 它自己的素体（转换产物本身就是一套自定义素体）。
+		var ownArchiveId = VpkModWardrobeService.TryReadOwnCustomModelKey(directory) is { } ownKey
+			? RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)
+			: null;
+		if (ownArchiveId is null) return null;
+		return VpkTargetArmors.FirstOrDefault(option =>
+				option.ArchiveId.Equals(ownArchiveId, StringComparison.OrdinalIgnoreCase))
+			?? new VpkTargetArmorOption(ownArchiveId, "自定义素体", VpkTargetArmorKind.CustomModel);
 	}
 
 	/// <summary>
 	/// 点"应用"：先把勾选状态落盘，再烘进 patch。
 	/// <b>顺序不能反</b>——烘焙是从状态算出来的，状态没写就先烘，崩在中间会出现
 	/// "patch 已改、状态还是旧的"，下一次点应用就会把旧状态烘回去。
+	/// <para>
+	/// 与「切换」一样<b>不做禁用</b>（原因见 <see cref="ApplyVpkTargetArmorCommand"/>）：
+	/// 上一次操作还没跑完时点它，这里给一句话而不是让按钮灰着。
+	/// </para>
 	/// </summary>
 	private async Task ApplyVpkComponentsAsync()
 	{
+		if (_vpkBusy)
+		{
+			VpkComponentStatus = "上一个操作还在跑，请等它结束。";
+			return;
+		}
+
 		if (!TryGetCurrentNode(out var node)) return;
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
 		_vpkBusy = true;
