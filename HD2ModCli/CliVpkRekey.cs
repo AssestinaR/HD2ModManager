@@ -497,15 +497,21 @@ internal static class CliVpkRekey
 	}
 
 	/// <summary>
-	/// 手写映射：我们的每个 Unit 落到目标护甲**同部位**的全部 Unit 上。
+	/// 手写映射：我们的每个 Unit 落到目标护甲**同部位**的 Unit 上。
 	/// <para>
 	/// 为什么不用自动规划器：自动规划器是按"语义族 + 层级 + 身形"去猜的，输入是装备表里的
 	/// 真实归档；我们这里来源是"自己造的 7 个 Unit"，语义族无从比对。而映射关系其实是确定的——
 	/// 同一部位就是同一部位，一个 <c>Any</c> 来源同时供 Slim 与 Stocky 两个目标（这正是
 	/// 组件树里"链接"标记的由来）。写死比猜更可靠。
 	/// </para>
+	/// <para>
+	/// <b>同部位有多层时按层优先：</b>Undergarment → Armor → Accessory，命中第一个"这件护甲
+	/// 真有 Unit"的层，就用那层的**全部** Unit（Slim / Stocky / Any 各一个），其余层交给隐藏。
+	/// 只认内衣层是不够的：有的护甲某个部位只有护甲层（AF-52「禁锢」的右臂没有
+	/// <c>右臂－内衣</c>），那时把护甲层也隐藏掉，那条肢体就彻底没了。
+	/// </para>
 	/// </summary>
-	private static (CrossArmorTransferPlan Plan, IReadOnlyList<string> Notes) BuildPlan(
+	internal static (CrossArmorTransferPlan Plan, IReadOnlyList<string> Notes) BuildPlan(
 		EquipmentUnitCatalogEntry source,
 		IReadOnlyList<EquipmentUnitCatalogEntry> targets)
 	{
@@ -518,38 +524,99 @@ internal static class CliVpkRekey
 			// unit 生成两条映射，计划校验直接以 DuplicateTargetMapping 拒掉整份计划。
 			// A unit is the unit of work: two pieces sharing one unit must map once.
 			var mappedUnits = new HashSet<AssetKey>();
+			var fallbackNotedKinds = new HashSet<UnitMeshPartKind>();
+
+			// **每个部位落在哪一层**：按 Undergarment → Armor → Accessory 的顺序找，
+			// 命中第一个"这件护甲真有 Unit"的层。命中之后，同部位**更高层**的 Unit 全部隐藏。
+			//
+			// 为什么必须这么做：护甲层被隐藏的前提是同一个部位在更低的层上还有一个 Unit 顶着。
+			// 有的护甲某个部位压根没有内衣层（实测 AF-52「禁锢」的右臂只有
+			// 右臂－护甲－通用/健壮/纤细，没有 右臂－内衣），那时护甲层就是那个部位**唯一**
+			// 的几何——按"护甲层一律隐藏"处理，等于既没写进我们的、又删掉了原版的，整条胳膊消失。
+			var carrierLayerByKind = new Dictionary<UnitMeshPartKind, UnitMeshPartLayer>();
 			foreach (var part in target.Parts)
 			{
-				// 只映射"基础 7 槽"：undergarment 层 + 头盔。
-				//
-				// 目标护甲还有一层 Armor（护肩、护胸板、护腿板…），它们不在 7 槽里。
-				// 如果按部位一股脑映射，玩家会看到"身体上又长出一层护甲"；正确做法是
-				// 让它们走隐藏路径——这也正是 AutoHideUnmappedTargetUnits 的用途。
-				var inBaseSlots = part.Layer == UnitMeshPartLayer.Undergarment
-					|| part.PartKind == UnitMeshPartKind.Helmet;
-				if (!inBaseSlots)
+				if (LayerRank(part.Layer) == int.MaxValue)
 					continue;
-				if (!mappedUnits.Add(part.UnitAssetKey))
-					continue;
-				var matched = source.Parts.FirstOrDefault(candidate => candidate.PartKind == part.PartKind);
-				if (matched is null)
+				if (!carrierLayerByKind.TryGetValue(part.PartKind, out var current)
+					|| LayerRank(part.Layer) < LayerRank(current))
 				{
-					var note = $"{part.PartKind}/{part.Layer}/{part.BodyVariant} 没有对应来源 Unit，将走隐藏。";
-					if (!notes.Contains(note)) notes.Add(note);
+					carrierLayerByKind[part.PartKind] = part.Layer;
+				}
+			}
+
+			foreach (var part in target.Parts)
+			{
+				var rank = LayerRank(part.Layer);
+				// Culling / Static 是辅助 Unit（隐藏壳、静态网格），永远不承载我们的几何。
+				if (rank == int.MaxValue)
+					continue;
+
+				var matched = source.Parts.FirstOrDefault(candidate => candidate.PartKind == part.PartKind);
+				var isCarrier = carrierLayerByKind.TryGetValue(part.PartKind, out var carrier)
+					&& carrier == part.Layer;
+
+				if (matched is null || !isCarrier)
+				{
+					// 走隐藏（AutoHideUnmappedTargetUnits）。两条理由各说一次：
+					// 没有来源 Unit；或者这一层不是承载层（同部位更低层已经承载了）。
+					if (matched is null && isCarrier)
+					{
+						var note = $"{part.PartKind}/{part.Layer}/{part.BodyVariant} 没有对应来源 Unit，将走隐藏。";
+						if (!notes.Contains(note)) notes.Add(note);
+					}
+
 					continue;
 				}
 
-				mappings.Add(new CrossArmorTransferMapping(
+				if (!mappedUnits.Add(part.UnitAssetKey))
+					continue;
+
+				// 承载层不是内衣层 = 这件护甲该部位没有内衣层，我们退到了更高的层。
+				// 这个必须说出来：它意味着原版那个部位的"内衣层几何"本来就不存在，
+				// 现在整块由我们的 Unit 顶替。头盔不算——它天生就只有一层。
+				if (part.Layer != UnitMeshPartLayer.Undergarment
+					&& part.PartKind != UnitMeshPartKind.Helmet
+					&& fallbackNotedKinds.Add(part.PartKind))
+				{
+					notes.Add($"{target.DisplayName} 的 {part.PartKind} 没有内衣层 Unit，"
+						+ $"改由 {part.Layer} 层承载来源 Unit。");
+				}
+
+				var mapping = new CrossArmorTransferMapping(
 					new CrossArmorPhysicalTargetKey(part.UnitAssetKey),
 					part,
 					matched,
 					WillReplace: true,
-					Reason: $"同部位直用来源 Unit（{matched.PartKind}）",
+					Reason: isCarrier && part.Layer == UnitMeshPartLayer.Undergarment
+						? $"同部位直用来源 Unit（{matched.PartKind}）"
+						: $"该部位内衣层缺失，{part.Layer} 层直用来源 Unit（{matched.PartKind}）",
 					UsedByArchiveIds: [target.ArchiveId],
 					UsedByDisplayNames: [target.DisplayName],
 					IsManual: false,
-					IsSuppressed: false));
+					IsSuppressed: false);
+				mappings.Add(mapping);
 			}
+		}
+
+		// 一个来源 Unit 一个落点都没有 = 它会整份消失。
+		// 以前这里**一声不响**：AF-52 的右臂就是这么没的，直到玩家进游戏才发现。
+		//
+		// ⚠️ **必须跨目标判定。** 换一件护甲会同时给出护甲与头盔两个归档，而我们的 7 个 Unit
+		// 分散在两边（Helmet 在头盔归档，其余在护甲归档）。按单个归档判，另一个归档的
+		// 6 个 Unit 会被全部误报成"没有落点"。
+		var mappedSourceIds = mappings
+			.Select(mapping => mapping.Source!.UnitAssetKey.FileId)
+			.ToHashSet();
+		var targetNames = string.Join("、", targets.Select(target => target.DisplayName).Distinct(StringComparer.Ordinal));
+		foreach (var sourcePart in source.Parts)
+		{
+			if (mappedSourceIds.Contains(sourcePart.UnitAssetKey.FileId))
+				continue;
+
+			var note = $"{targetNames} 上找不到 {sourcePart.PartKind} 的落点："
+				+ $"来源 Unit 0x{sourcePart.UnitAssetKey.FileId:x16} 不会写出去，那一块会消失。";
+			if (!notes.Contains(note)) notes.Add(note);
 		}
 
 		return (new CrossArmorTransferPlan(
@@ -560,6 +627,25 @@ internal static class CliVpkRekey
 			Impacts: [],
 			Issues: []), notes);
 	}
+
+	/// <summary>
+	/// 目标 Unit 的承载优先级：数字小的先承载。<see cref="int.MaxValue"/> = 不参与承载。
+	/// <para>
+	/// <b>为什么不是直接比枚举值。</b><c>UnitMeshPartLayer</c> 里 <c>Unknown</c> 排在
+	/// <c>Undergarment</c> 之前（值 0），直接比大小会让"层没判出来"的 Unit 抢走承载权。
+	/// <c>Culling</c> / <c>Static</c> 是隐藏壳与静态网格，属于辅助 Unit，写进我们的几何
+	/// 只会得到"看不见的模型"，所以直接排除。
+	/// </para>
+	/// </summary>
+	private static int LayerRank(UnitMeshPartLayer layer) => layer switch
+	{
+		UnitMeshPartLayer.Undergarment => 0,
+		UnitMeshPartLayer.Armor => 1,
+		UnitMeshPartLayer.Accessory => 2,
+		// 层没判出来：能承载，但排在所有明确层之后（有别的选择就不用它）。
+		UnitMeshPartLayer.Unknown => 3,
+		_ => int.MaxValue,
+	};
 
 	// 部位名解析统一走 ArmorStructure（Hip / Pelvis / Head 这些旧写法都在它的别名表里），
 	// 这里不再维护第二份 switch。

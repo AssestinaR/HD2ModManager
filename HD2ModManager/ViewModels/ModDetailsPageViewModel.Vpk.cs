@@ -368,10 +368,22 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			}
 
 			// 两种结果的说法必须不同：退回来源不是"换甲成功"，它压根没搬运几何。
-			VpkComponentStatus = outcome.RestoredFromSource
+			var summary = outcome.RestoredFromSource
 				? $"已退回自定义素体（{target.DisplayName}）：来源 patch 已原样复制进 Overwrite，开关继续有效。"
 				: $"已换到 {target.DisplayName}：替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。";
-			_notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(10));
+
+			// ⚠️ **"某个部位没有落点"必须留在卡上。** 换甲会照常报成功，但那个部位的来源 Unit
+			// 整份没写出去、原版又已被隐藏——玩家进游戏看到的是"衣服还在、人体胳膊不见了"。
+			// 以前这些提示只存在于 CLI 的 warnings 里，界面完全不显示，等于没查。
+			var warningText = outcome.Warnings.Count == 0
+				? string.Empty
+				: " 注意：" + string.Join(" ", outcome.Warnings.Take(2))
+					+ (outcome.Warnings.Count > 2 ? $"（另有 {outcome.Warnings.Count - 2} 条）" : string.Empty);
+			VpkComponentStatus = summary + warningText;
+			_notifications?.Show(
+				VpkComponentStatus,
+				outcome.Warnings.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
+				TimeSpan.FromSeconds(outcome.Warnings.Count == 0 ? 10 : 20));
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);

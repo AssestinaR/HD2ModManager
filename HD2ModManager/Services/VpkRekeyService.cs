@@ -22,6 +22,12 @@ public sealed record VpkRekeyOutcome(
 	/// （用户选的目标就是这个 Mod 自己的素体）。界面据此换一句话。
 	/// </summary>
 	public bool RestoredFromSource { get; init; }
+
+	/// <summary>
+	/// 换甲过程中"需要用户知道但不阻止成功"的事：某个部位没有来源 Unit 将走隐藏、
+	/// 某个来源 Unit 在这件护甲上没有落点（会整份消失）、某部位退到了护甲层承载。
+	/// </summary>
+	public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
 /// <summary>
@@ -107,6 +113,9 @@ public static class VpkRekeyService
 			{
 				RestoredFromSource = root.TryGetProperty("restoredFromSource", out var restored)
 					&& restored.ValueKind == JsonValueKind.True,
+				// 换甲时"某个部位没有落点"只在 CLI 的 warnings 里说，而这一条正是
+				// "进游戏少一条胳膊"的唯一线索。以前没往界面传，等于白说。
+				Warnings = ReadStrings(root, "warnings"),
 			};
 
 			// 记住这次指向了哪件护甲：组件树的根标题要用它，重开页面时也不必再猜。
