@@ -7,23 +7,10 @@
              xmlns:cards="clr-namespace:HD2ModManager.Controls.Cards">
     <UserControl.Resources>
         <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <!-- 组件树的外观与护甲映射页共用一份，避免两处长歪。 -->
-                <ResourceDictionary Source="WardrobeTreeResources.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
 
             <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
             <local:AttachmentListMaxHeightConverter x:Key="AttachmentListMaxHeight"/>
             <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-
-            <!--
-                组件树的行容器：外观来自共享字典，本页只额外加"单击展开"这个手势。
-                护甲映射页那棵树仍是双击——那里点一行更多是"选中来编辑"，单击就展开反而碍事。
-            -->
-            <Style x:Key="VpkWardrobeTreeItemStyle" TargetType="TreeViewItem"
-                   BasedOn="{StaticResource WardrobeTreeItemStyleBase}">
-                <Setter Property="tree:TreeRowExpand.OnSingleClick" Value="True"/>
-            </Style>
 
             <!--
                 本页的卡片内容模板。键名约定 CardTemplate.{CardKind}，由 CardStackHost 解析。
@@ -158,8 +145,7 @@
                                Visibility="{Binding HasVpkSwitchStatus, Converter={StaticResource BoolToVis}}"/>
                     <!--
                         行外观、缩进、竖线、点击展开、展开/收起的过渡全在 TreeSurface 里，
-                        这里只给数据。原来那套 ItemTemplate + ItemContainerStyle +
-                        TreeRowExpand 三件套不再需要。
+                        这里只给数据。原来那套 ItemTemplate + ItemContainerStyle 不再需要。
                     -->
                     <local:TreeSurface Roots="{Binding VpkTree.Roots}"
                                        Margin="0,8,0,0"

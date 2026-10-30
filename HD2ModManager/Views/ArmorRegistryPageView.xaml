@@ -6,17 +6,7 @@
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <ResourceDictionary>
-        <ResourceDictionary.MergedDictionaries>
-            <!-- 树的外观与 Mod 详情页的 VPK 组件卡共用一份，避免两处漂移。 -->
-            <ResourceDictionary Source="WardrobeTreeResources.xaml"/>
-        </ResourceDictionary.MergedDictionaries>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-        <!--
-            行容器：外观来自共享字典，本页只额外加"双击展开"这个手势。
-        -->
-        <Style x:Key="WardrobeTreeItemStyle" TargetType="TreeViewItem" BasedOn="{StaticResource WardrobeTreeItemStyleBase}">
-            <EventSetter Event="MouseDoubleClick" Handler="OnWardrobeTreeItemDoubleClick"/>
-        </Style>
         <DataTemplate x:Key="ArmorPieceEditorTemplate">
             <Grid Margin="12,8" MinHeight="42">
                 <Grid.RowDefinitions>
