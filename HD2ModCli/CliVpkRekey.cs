@@ -131,13 +131,6 @@ internal static class CliVpkRekey
 		if (selected.Count == 0)
 			throw new CliUserException("TargetArmorNotFound", $"找不到任何目标：{string.Join("、", targets)}。");
 
-		var (plan, mappingNotes) = BuildPlan(source, selected);
-		if (!plan.CanContinue)
-		{
-			var detail = string.Join("；", plan.Issues.Select(issue => $"{issue.Code}: {issue.Message}"));
-			throw new CliUserException("VpkRekeyPlanInvalid", $"换甲计划不成立：{detail}");
-		}
-
 		var destinationDirectory = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
 
 		// 目标就是这个 Mod **自己**的素体：换甲等于"什么也不用换"。
@@ -166,6 +159,14 @@ internal static class CliVpkRekey
 				TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
 				RestoredFromSource = true,
 			};
+		}
+
+		// 计划只在真的要搬运几何时才需要：恒等目标那条路连游戏数据都不读。
+		var (plan, mappingNotes) = BuildPlan(source, selected);
+		if (!plan.CanContinue)
+		{
+			var detail = string.Join("；", plan.Issues.Select(issue => $"{issue.Code}: {issue.Message}"));
+			throw new CliUserException("VpkRekeyPlanInvalid", $"换甲计划不成立：{detail}");
 		}
 
 		var gameData = workspace.GameDataRoot
