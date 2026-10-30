@@ -1,3 +1,4 @@
+using HD2ModManager.Controls.Trees;
 using System.IO;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
@@ -27,18 +28,21 @@ namespace HD2ModManager.ViewModels;
 // protocol's target_mode, so the two are deliberately named differently.
 
 /// <summary>树上的一个节点。父子都持有同一份 <see cref="WardrobeTreeNode"/> 描述。</summary>
-public sealed class WardrobeTreeNodeViewModel : BaseViewModel
+public sealed class WardrobeTreeNodeViewModel : BaseViewModel, ITreeSurfaceNode
 {
 	private readonly WardrobeTreeViewModel owner;
 	private bool isExpanded;
-	private bool isOddRow;
+	private bool isAlternateRow;
+	private int depth;
+	private int zIndex;
 
-	public WardrobeTreeNodeViewModel(WardrobeTreeViewModel owner, WardrobeTreeNode node)
+	public WardrobeTreeNodeViewModel(WardrobeTreeViewModel owner, WardrobeTreeNode node, string listKey = "0")
 	{
 		this.owner = owner;
 		Node = node;
+		ListKey = listKey;
 		Children = node.Children
-			.Select(child => new WardrobeTreeNodeViewModel(owner, child))
+			.Select((child, index) => new WardrobeTreeNodeViewModel(owner, child, $"{listKey}.{index}"))
 			.ToArray();
 		// 打开时只展开到"能看到槽位"：一件护甲几十个 section 全摊开会一眼看不到结构。
 		isExpanded = node.Kind is WardrobeTreeNodeKind.Armour or WardrobeTreeNodeKind.BodyType;
@@ -76,23 +80,36 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 		get => isExpanded;
 		set
 		{
-			if (!SetField(ref isExpanded, value))
-				return;
-			// 隔行底色按**可见行**均匀编号，所以展开/收起之后必须重算；
-			// 否则收起一棵奇数行的子树，它下面那一行会和上一行同色，正好是用户看到的问题。
-			owner.RecomputeRowStripes();
+			// 隔行底色与层级现在都由 TreeRowProjection 在重投影时统一算，
+			// 这里只记状态——控件翻转它之后会自己重建可见行序列。
+			SetField(ref isExpanded, value);
 		}
 	}
 
-	/// <summary>
-	/// 这一行在**当前可见行**里是不是奇数行。界面的隔行底色用它，
-	/// 而不是每个父节点各数一遍——那样每个子集都会从白色重新开始，相邻两行常常同色。
-	/// </summary>
-	public bool IsOddRow
+	/// <summary>行的稳定标识，过渡动画靠它认人。结构建好就不变。</summary>
+	public string ListKey { get; }
+
+	// 下面三个由 TreeRowProjection 每次重投影时写入。必须走 SetField：展开/收起会让
+	// 下方所有行的可见序号改变，隔行底色和层级都要跟着通知界面，否则灰条会串色。
+	public int Depth
 	{
-		get => isOddRow;
-		internal set => SetField(ref isOddRow, value);
+		get => depth;
+		set => SetField(ref depth, value);
 	}
+
+	public bool IsAlternateRow
+	{
+		get => isAlternateRow;
+		set => SetField(ref isAlternateRow, value);
+	}
+
+	public int ZIndex
+	{
+		get => zIndex;
+		set => SetField(ref zIndex, value);
+	}
+
+	IReadOnlyList<ITreeSurfaceNode> ITreeSurfaceNode.Children => Children;
 
 	/// <summary>
 	/// 开关状态：**只要不是"全关"就是开**。
@@ -193,7 +210,6 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 			}
 		}
 
-		RecomputeRowStripes();
 	}
 
 	public IReadOnlyList<WardrobeTreeNodeViewModel> Roots => roots;
@@ -334,7 +350,6 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 				string.IsNullOrWhiteSpace(armourLabel) ? $"护甲 {armourItemId}" : armourLabel,
 				units);
 			roots = new[] { new WardrobeTreeNodeViewModel(this, built) };
-			RecomputeRowStripes();
 			IsEditable = !isTarget || !followSource;
 			var notes = new List<string>();
 			// 两种缺法必须分开说：unit 没找到（部署与原版都没有）与护甲条目在注册文件里
@@ -426,27 +441,6 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 		}
 	}
 
-	/// <summary>
-	/// 按**当前可见行**重新给隔行底色编号：只往下走已展开的节点，
-	/// 这样"相邻两行一定不同色"这件事与展开状态无关。
-	/// 收起一棵奇数行的子树时如果不重算，它下面那一行会和上一行同色——
-	/// 那正是按父节点各数一遍会看到的问题，只是换了个触发时机。
-	/// </summary>
-	internal void RecomputeRowStripes()
-	{
-		var index = 0;
-		foreach (var root in roots)
-			Walk(root);
-
-		void Walk(WardrobeTreeNodeViewModel node)
-		{
-			node.IsOddRow = (index++ & 1) == 1;
-			if (!node.IsExpanded)
-				return;
-			foreach (var child in node.Children)
-				Walk(child);
-		}
-	}
 
 	/// <summary>清空（关闭编辑器时调用）。</summary>
 	public void Clear()

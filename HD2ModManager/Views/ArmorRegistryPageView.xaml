@@ -329,18 +329,13 @@
                                     树占满卡片剩下的高度（之前给了 MaxHeight，底部就空出一截）。
                                     它自己滚动，外层不再套 ScrollViewer——两层滚动条只会互相抢滚轮。
                                 -->
-                                <TreeView Grid.Row="1"
-                                          ItemsSource="{Binding Wardrobe.Roots}"
-                                          ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
-                                          ItemContainerStyle="{StaticResource WardrobeTreeItemStyle}"
-                                          Margin="6,0,6,0"
-                                          Padding="0,2,6,6"
-                                          BorderThickness="0"
-                                          Background="Transparent"
-                                          IsEnabled="{Binding Wardrobe.IsEditable}"
-                                          ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                          Visibility="{Binding Wardrobe.HasRoots, Converter={StaticResource BoolToVis}}"/>
+                                <!-- 行外观与展开动画都在 TreeSurface 里，这里只给数据。 -->
+                                <local:TreeSurface Grid.Row="1"
+                                                   Roots="{Binding Wardrobe.Roots}"
+                                                   Margin="6,0,6,0"
+                                                   IsEnabled="{Binding Wardrobe.IsEditable}"
+                                                   VerticalScrollBarVisibility="Auto"
+                                                   Visibility="{Binding Wardrobe.HasRoots, Converter={StaticResource BoolToVis}}"/>
                             </Grid>
                         </Grid>
                     </Border>

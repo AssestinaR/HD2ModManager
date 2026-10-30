@@ -156,15 +156,15 @@
                                Margin="0,4,0,0"
                                Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"
                                Visibility="{Binding HasVpkSwitchStatus, Converter={StaticResource BoolToVis}}"/>
-                    <TreeView ItemsSource="{Binding VpkTree.Roots}"
-                              ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
-                              ItemContainerStyle="{StaticResource VpkWardrobeTreeItemStyle}"
-                              Background="Transparent" BorderThickness="0"
-                              Margin="0,8,0,0"
-                              MaxHeight="420"
-                              scroll:WheelScroll.IsEnabled="True"
-                              ScrollViewer.VerticalScrollBarVisibility="Auto"
-                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                    <!--
+                        行外观、缩进、竖线、点击展开、展开/收起的过渡全在 TreeSurface 里，
+                        这里只给数据。原来那套 ItemTemplate + ItemContainerStyle +
+                        TreeRowExpand 三件套不再需要。
+                    -->
+                    <local:TreeSurface Roots="{Binding VpkTree.Roots}"
+                                       Margin="0,8,0,0"
+                                       MaxHeight="420"
+                                       VerticalScrollBarVisibility="Auto"/>
                 </StackPanel>
             </DataTemplate>
 

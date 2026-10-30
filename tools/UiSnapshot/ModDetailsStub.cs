@@ -93,7 +93,67 @@ public sealed class ModDetailsStub
 
     public sealed class VpkTreeStub
     {
-        public IEnumerable Roots { get; } = Array.Empty<object>();
+        public VpkTreeStub() => Roots = new[] { BuildArmour() };
+
+        public IEnumerable Roots { get; }
+
+        private static StubTreeRow BuildArmour()
+        {
+            var helmet = new StubTreeRow("头盔", "slot", "helmet")
+                .Add(
+                    new StubTreeRow("helmet_01", "6 section", "unit").Add(
+                        new StubTreeRow("section 0"),
+                        new StubTreeRow("section 1"),
+                        new StubTreeRow("section 2")),
+                    new StubTreeRow("helmet_02", "4 section", "unit"));
+            var chest = new StubTreeRow("胸部", "slot", "chest")
+                .Add(new StubTreeRow("chest_01", "9 section", "unit"));
+            var sturdy = new StubTreeRow("健壮", "bodyType").Add(helmet, chest);
+            var root = new StubTreeRow("RE-2310 护甲", "armour").Add(sturdy);
+            root.IsExpanded = true;
+            sturdy.IsExpanded = true;
+            helmet.IsExpanded = true;
+            ((StubTreeRow)helmet.Children[0]).IsExpanded = true;
+            return root;
+        }
+    }
+
+    /// <summary>桩行：只实现树控件要求的契约 + 默认行模板会读的展示属性。</summary>
+    public sealed class StubTreeRow : HD2ModManager.Controls.Trees.ITreeSurfaceNode
+    {
+        private readonly List<StubTreeRow> kids = new();
+        private static int counter;
+
+        public StubTreeRow(string label, string? subtitle = null, string? pieceType = null)
+        {
+            Label = label;
+            Subtitle = subtitle;
+            PieceTypeLabel = pieceType;
+            ListKey = $"stub-{++counter}";
+        }
+
+        public string Label { get; }
+        public string? Subtitle { get; }
+        public bool HasSubtitle => !string.IsNullOrEmpty(Subtitle);
+        public string? PieceTypeLabel { get; }
+        public bool HasPieceTypeLabel => !string.IsNullOrEmpty(PieceTypeLabel);
+        public bool IsMixed { get; set; }
+        public bool SharedAcrossBodies { get; set; }
+        public bool IsChecked { get; set; }
+        public bool IsSelected { get; set; }
+
+        public StubTreeRow Add(params StubTreeRow[] children)
+        {
+            kids.AddRange(children);
+            return this;
+        }
+
+        public IReadOnlyList<HD2ModManager.Controls.Trees.ITreeSurfaceNode> Children => kids;
+        public bool IsExpanded { get; set; }
+        public int Depth { get; set; }
+        public bool IsAlternateRow { get; set; }
+        public int ZIndex { get; set; }
+        public string ListKey { get; }
     }
 }
 
