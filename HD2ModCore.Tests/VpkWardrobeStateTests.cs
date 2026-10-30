@@ -100,4 +100,38 @@ public sealed class VpkWardrobeStateTests
 
 		Assert.DoesNotContain(Pelvis, state.Disabled.Keys);
 	}
+
+	/// <summary>
+	/// 组件开关走的是"某几个 unit 的第几节"，不是树节点。
+	/// <para>
+	/// 这条钉住三件事：能跨 unit 一次改、只动点名的节、关掉再打开能完全复原。
+	/// 少了任何一条，界面上的"猫耳"开关就会连带关掉别的东西，而且用户没法撤回。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void SetSectionsEnabled_TouchesExactlyTheNamedSectionsAcrossUnits()
+	{
+		var state = VpkWardrobeState.Empty
+			.SetSectionsEnabled(Torso, [1, 2], enabled: false)
+			.SetSectionsEnabled(Helmet, [0], enabled: false);
+
+		Assert.Equal(new[] { 1, 2 }, state.Disabled[Torso]);
+		Assert.Equal(new[] { 0 }, state.Disabled[Helmet]);
+		// 没点名的节必须原样开着。
+		Assert.False(state.IsDisabled(Torso, 0));
+		Assert.False(state.IsDisabled(Pelvis, 0));
+
+		var restored = state
+			.SetSectionsEnabled(Torso, [1, 2], enabled: true)
+			.SetSectionsEnabled(Helmet, [0], enabled: true);
+		Assert.Empty(restored.Disabled);
+	}
+
+	/// <summary>打开一个从没关过的 unit 不该凭空造出一条空记录。</summary>
+	[Fact]
+	public void SetSectionsEnabled_EnablingAnUnknownUnitDoesNotCreateAnEntry()
+	{
+		var state = VpkWardrobeState.Empty.SetSectionsEnabled(Torso, [0, 1], enabled: true);
+		Assert.Empty(state.Disabled);
+	}
 }

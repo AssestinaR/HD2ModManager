@@ -53,6 +53,11 @@ public sealed class WardrobeTreeNodeViewModel : BaseViewModel
 
 	public string Label => Node.Label;
 
+	/// <summary>主标题之外的次要信息（编号、面数）。没有名字时为空，界面据此隐藏。</summary>
+	public string Subtitle => Node.Subtitle;
+
+	public bool HasSubtitle => !string.IsNullOrEmpty(Node.Subtitle);
+
 	public bool IsSection => Node.Kind == WardrobeTreeNodeKind.Section;
 
 	/// <summary>该 unit 的 bodyType 是 Any，界面据此加锁链图标（两处切换天然同步）。</summary>
@@ -194,6 +199,26 @@ public sealed class WardrobeTreeViewModel : BaseViewModel
 	public IReadOnlyList<WardrobeTreeNodeViewModel> Roots => roots;
 
 	public bool HasRoots => roots.Count > 0;
+
+	/// <summary>
+	/// 让每一行重读勾选状态。
+	/// <para>
+	/// 用在一个"树外"的控件改了同一份状态之后（组件开关列表就是这种：一个开关对应若干
+	/// section，但它不是树上的节点）。重建整棵树会丢掉展开状态，所以只刷新勾选。
+	/// </para>
+	/// </summary>
+	public void RefreshChecks()
+	{
+		foreach (var root in roots)
+			RefreshChecks(root);
+	}
+
+	private static void RefreshChecks(WardrobeTreeNodeViewModel node)
+	{
+		node.RaiseCheckedChanged();
+		foreach (var child in node.Children)
+			RefreshChecks(child);
+	}
 
 	public string StatusMessage
 	{

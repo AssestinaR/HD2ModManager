@@ -50,6 +50,16 @@ public sealed record VpkUnitPlan(
 public sealed record VpkRegistryPiece(uint Body, uint Slot, uint PieceType, bool IsDefaultBase);
 
 /// <summary>
+/// 一个 section 在源侧是谁：材质裸名 + 它算出来的材质 id。
+/// <para>
+/// <b>为什么要逐节记。</b>多个源材质可能算出同一个材质 id（同一张底色、同样的模板与后缀）——
+/// 实测 Manuka 的 <c>c_white_a</c> / <c>c_white_a_ear</c> / <c>c_white_a_tail</c> 共用一张
+/// <c>C_White_A</c>。只按 id 反查名字，"关猫耳"会连尾巴一起关；逐节记才能把它们分开。
+/// </para>
+/// </summary>
+public sealed record VpkSectionSource(string MaterialName, ulong MaterialId);
+
+/// <summary>
 /// 一个部件的产出记录。
 /// <para>
 /// <see cref="RegistryPieces"/> 是运行时护甲注册表的条目，不是 Unit 自己的 <c>CustomizationInfo</c>
@@ -70,6 +80,12 @@ public sealed record VpkUnitOutcome(
 	IReadOnlyList<string> Diagnostics)
 {
 	public bool IsValid => Diagnostics.Count == 0;
+
+	/// <summary>
+	/// 逐 section 的源材质（下标 = section 下标）。空表示"这次转换没有材质表可对"。
+	/// <para>用途是给 <c>sections.json</c> 起名，从而让组件开关能精确到"猫耳"而不是"共用这张底色的所有东西"。</para>
+	/// </summary>
+	public IReadOnlyList<VpkSectionSource> SectionSources { get; init; } = [];
 }
 
 /// <summary>
@@ -316,7 +332,10 @@ public sealed class VpkPatchAssembler
 			units.Add(new VpkUnitOutcome(
 				plan.Group.Name, unitId, plan.Group.Region, slot, registryPieces,
 				mesh.VertexCount, mesh.TriangleCount,
-				authored.TocData?.Length ?? 0, authored.GpuData?.Length ?? 0, authored.Diagnostics));
+				authored.TocData?.Length ?? 0, authored.GpuData?.Length ?? 0, authored.Diagnostics)
+			{
+				SectionSources = BuildSectionSources(mesh, sourceMaterialNames, materialIdsBySourceMaterial),
+			});
 
 			if (!authored.IsValid)
 			{
@@ -660,6 +679,39 @@ public sealed class VpkPatchAssembler
 	}
 
 	/// <summary>Unit 真正用到的源材质下标（按三角形取，去重后排序）。</summary>
+	/// <summary>
+	/// 逐 section 的源材质：名字取自模型的材质表，id 取自这次转换算出来的对照表。
+	/// <para>
+	/// 对齐方式是<b>下标</b>：<c>mesh.Sections</c> 的顺序就是写进 Unit 的材质绑定顺序，
+	/// 也是 <c>sections.json</c> 里 section 的顺序。写入方（<see cref="WardrobeSectionMapFile"/>）
+	/// 会再用材质 id 自校验一次，所以即使这里错位，也不会把开关接到别的部件上。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyList<VpkSectionSource> BuildSectionSources(
+		RetargetedMesh mesh,
+		IReadOnlyList<string>? sourceMaterialNames,
+		IReadOnlyDictionary<int, ulong> materialIdsBySourceMaterial)
+	{
+		if (sourceMaterialNames is null || sourceMaterialNames.Count == 0)
+			return [];
+		var sources = new List<VpkSectionSource>(mesh.Sections.Count);
+		foreach (var section in mesh.Sections)
+		{
+			var index = section.SourceMaterialIndex;
+			if (index < 0 || index >= sourceMaterialNames.Count)
+			{
+				sources.Add(new VpkSectionSource(string.Empty, 0));
+				continue;
+			}
+
+			sources.Add(new VpkSectionSource(
+				StemOf(sourceMaterialNames[index]),
+				materialIdsBySourceMaterial.TryGetValue(index, out var id) ? id : 0UL));
+		}
+
+		return sources;
+	}
+
 	private static IEnumerable<int> UsedMaterialIndices(IReadOnlyList<VpkUnitPlan> plans, SourceGeometry geometry)
 		=> plans
 			.SelectMany(plan => plan.Group.TriangleIndices)

@@ -53,6 +53,52 @@ public sealed record VpkWardrobeState(IReadOnlyDictionary<string, IReadOnlyColle
 				StringComparer.Ordinal);
 		return new VpkWardrobeState(normalized);
 	}
+
+	/// <summary>
+	/// 直接把某个 unit 的一组 section 设成启用/禁用。
+	/// <para>
+	/// <b>为什么不复用 <see cref="SetEnabled(WardrobeTreeNode, bool)"/>。</b>那条路要一棵树节点，
+	/// 而组件开关（<c>components.json</c> 里的一个开关）描述的是"某几个 unit 的第几节"——
+	/// 它可能跨多个 unit（一个开关关掉披风 + 披风的挂件），也可能与树上的某个节点没有对应关系。
+	/// 让调用方去树上找节点再反过来算下标，会把"开关是什么"和"树怎么画"耦合起来。
+	/// </para>
+	/// </summary>
+	public VpkWardrobeState SetSectionsEnabled(string unit, IReadOnlyList<int> sections, bool enabled)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(unit);
+		ArgumentNullException.ThrowIfNull(sections);
+
+		var byUnit = Disabled.ToDictionary(
+			pair => pair.Key,
+			pair => pair.Value.ToHashSet(),
+			StringComparer.Ordinal);
+		if (!byUnit.TryGetValue(unit, out var indices))
+		{
+			if (!enabled)
+			{
+				indices = new HashSet<int>();
+				byUnit.Add(unit, indices);
+			}
+		}
+
+		if (indices is not null)
+		{
+			foreach (var section in sections)
+			{
+				if (enabled) indices.Remove(section);
+				else indices.Add(section);
+			}
+		}
+
+		// 与 SetEnabled 同一条归一规则：空条目等于"没有这个 unit"。
+		var normalized = byUnit
+			.Where(pair => pair.Value.Count > 0)
+			.ToDictionary(
+				pair => pair.Key,
+				pair => (IReadOnlyCollection<int>)pair.Value.Order().ToArray(),
+				StringComparer.Ordinal);
+		return new VpkWardrobeState(normalized);
+	}
 }
 
 /// <summary>

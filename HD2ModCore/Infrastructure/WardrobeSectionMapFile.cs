@@ -55,6 +55,10 @@ public static class WardrobeSectionMapFile
 		DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
 		ReadCommentHandling = JsonCommentHandling.Skip,
 		AllowTrailingCommas = true,
+		// 中文名字（`猫耳CatEars`、`裙子关`）必须原样写进文件。
+		// 默认编码器会把它们转成 \uXXXX——JSON 语义没错，但这份表是**给人看的构建产物**：
+		// 排查"哪个开关关掉了哪一块"时要能直接读、能直接 grep。
+		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
 	// --- 构建 ---------------------------------------------------------------
@@ -64,9 +68,23 @@ public static class WardrobeSectionMapFile
 	/// 单个 unit 解析失败不会中断整次构建——一个坏 unit 不该让整份表产不出来，
 	/// 但失败必须进 <c>Skipped</c>，否则用户会以为"这个 unit 没有 section"。
 	/// </summary>
+	/// <param name="unitNames">
+	/// unit fileId → 源侧名字（bodypart 名或部位名）。给不出就留空：名字只影响显示，
+	/// 不影响任何偏移，所以"拿不到名字"绝不该让这份表产不出来。
+	/// </param>
+	/// <param name="materialNames">
+	/// 材质 id（<c>0x…</c> 或 16 位 hex）→ 源侧材质裸名。同上，纯显示用途。
+	/// <para>
+	/// 这两张表的键都是<b>宽松</b>的：大小写、带不带 <c>0x</c> 都接受，解析不了的行直接忽略。
+	/// 因为它们由不同调用方（CLI、编辑器、脚本）拼出来，键的写法不该成为"名字丢了"的原因。
+	/// </para>
+	/// </param>
 	public static async ValueTask<WardrobeSectionMapBuildResult> BuildAsync(
 		string patchTocPath,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		IReadOnlyDictionary<string, string>? unitNames = null,
+		IReadOnlyDictionary<string, string>? materialNames = null,
+		IReadOnlyDictionary<string, IReadOnlyList<WardrobeSectionSourceName>>? sectionNames = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(patchTocPath);
 		var fullPath = Path.GetFullPath(patchTocPath);
@@ -98,7 +116,7 @@ public static class WardrobeSectionMapFile
 				continue;
 			}
 
-			var built = BuildUnit(fileId, unit.Model);
+			var built = BuildUnit(fileId, unit.Model, unitNames, materialNames, sectionNames);
 			if (built is null)
 			{
 				skipped.Add(new WardrobeSectionMapSkippedUnit(fileId, "没有可用的 LOD 家族（缺 LOD0 或全部是静态件）"));
@@ -130,7 +148,12 @@ public static class WardrobeSectionMapFile
 	/// <see cref="WardrobeSectionSource"/> 复用同一套规则——两边各写一份，
 	/// 迟早会出现"编辑器看到的 section 数和 CLI 算出来的不一样"。
 	/// </summary>
-	internal static WardrobeSectionMapUnit? BuildUnit(string fileId, UnitMeshModel model)
+	internal static WardrobeSectionMapUnit? BuildUnit(
+		string fileId,
+		UnitMeshModel model,
+		IReadOnlyDictionary<string, string>? unitNames = null,
+		IReadOnlyDictionary<string, string>? materialNames = null,
+		IReadOnlyDictionary<string, IReadOnlyList<WardrobeSectionSourceName>>? sectionNames = null)
 	{
 		// 只有 lod >= 0 的 mesh 属于 LOD 家族；lod = -1 的那些是独立的单节静态件。
 		var family = model.Meshes.Where(mesh => mesh.LodIndex >= 0).OrderBy(mesh => mesh.LodIndex).ToArray();
@@ -178,7 +201,13 @@ public static class WardrobeSectionMapFile
 				NormalizeMaterialId(materialId),
 				triangles,
 				Fingerprint(materialId, triangles),
-				toggles));
+				toggles)
+			{
+				// 名字只是显示用：查不到就留空，绝不因此少一个 section。
+				// 逐节的名字优先（能分开"同一张底色上的三个部件"），退回按材质 id 的通用名字。
+				SourceMaterial = LookupSectionName(sectionNames, fileId, index, materialId)
+					?? LookupMaterialName(materialNames, materialId),
+			});
 		}
 
 		// unit 级语义取自 LOD0 的第一个 mesh，而不是上面那个"section 最多的"：
@@ -194,7 +223,89 @@ public static class WardrobeSectionMapFile
 			semantic?.Weight ?? string.Empty,
 			count,
 			consistent,
-			sections);
+			sections)
+		{
+			SourceName = LookupUnitName(unitNames, fileId),
+		};
+	}
+
+	/// <summary>
+	/// 键的宽松归一：去空白、去 <c>0x</c> 前缀、转小写。
+	/// <para>
+	/// 这两张名字表由不同调用方拼出来（CLI 用 <c>0x…</c> 的材质 id、脚本可能直接抄十进制），
+	/// 键的写法不该成为"名字静默丢掉"的原因。归一化只做这三件可预期的事，不做模糊匹配。
+	/// </para>
+	/// </summary>
+	private static string NormalizeNameKey(string key)
+	{
+		var trimmed = key.Trim();
+		if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+			trimmed = trimmed[2..];
+		return trimmed.ToLowerInvariant();
+	}
+
+	private static string? LookupUnitName(IReadOnlyDictionary<string, string>? unitNames, string fileId)
+	{
+		if (unitNames is null || unitNames.Count == 0)
+			return null;
+		foreach (var (key, value) in unitNames)
+		{
+			if (string.IsNullOrWhiteSpace(value))
+				continue;
+			if (string.Equals(NormalizeNameKey(key), NormalizeNameKey(fileId), StringComparison.Ordinal))
+				return value.Trim();
+		}
+
+		return null;
+	}
+
+	private static string? LookupMaterialName(IReadOnlyDictionary<string, string>? materialNames, ulong materialId)
+	{
+		if (materialNames is null || materialNames.Count == 0 || materialId == 0)
+			return null;
+		var wanted = NormalizeNameKey(NormalizeMaterialId(materialId));
+		foreach (var (key, value) in materialNames)
+		{
+			if (string.IsNullOrWhiteSpace(value))
+				continue;
+			if (string.Equals(NormalizeNameKey(key), wanted, StringComparison.Ordinal))
+				return value.Trim();
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// 逐节的源材质名。<b>必须自校验</b>：传进来的名字是按顺序对到 section 上的，
+	/// 顺序一旦错位就会把开关接到别的部件上（而且不报错），所以这里要求
+	/// "这一节实际绑的材质 id" 与 "那个源材质算出来的 id" 相等才采信名字。
+	/// </summary>
+	private static string? LookupSectionName(
+		IReadOnlyDictionary<string, IReadOnlyList<WardrobeSectionSourceName>>? sectionNames,
+		string fileId,
+		int index,
+		ulong materialId)
+	{
+		if (sectionNames is null || sectionNames.Count == 0 || materialId == 0)
+			return null;
+		IReadOnlyList<WardrobeSectionSourceName>? names = null;
+		foreach (var (key, value) in sectionNames)
+		{
+			if (string.Equals(NormalizeNameKey(key), NormalizeNameKey(fileId), StringComparison.Ordinal))
+			{
+				names = value;
+				break;
+			}
+		}
+
+		if (names is null || index < 0 || index >= names.Count)
+			return null;
+		var candidate = names[index];
+		if (candidate is null || string.IsNullOrWhiteSpace(candidate.Name))
+			return null;
+		var expected = NormalizeNameKey(candidate.MaterialId);
+		var actual = NormalizeNameKey(NormalizeMaterialId(materialId));
+		return string.Equals(expected, actual, StringComparison.Ordinal) ? candidate.Name.Trim() : null;
 	}
 
 	/// <summary>材质 ID 统一成 16 位小写 hex、不带 0x；解析不出来（全零）时写成 none。</summary>
@@ -245,9 +356,11 @@ public static class WardrobeSectionMapFile
 
 		if (document is null)
 			throw new InvalidDataException("sections.json 内容为空。");
-		if (!string.Equals(document.Schema, WardrobeSectionMapDocument.CurrentSchema, StringComparison.Ordinal))
+		if (!WardrobeSectionMapDocument.ReadableSchemas.Contains(document.Schema, StringComparer.Ordinal))
 			throw new InvalidDataException(
-				$"sections.json 的 schema 是 '{document.Schema}'，本程序只认 '{WardrobeSectionMapDocument.CurrentSchema}'；请用当前版本重新生成。");
+				$"sections.json 的 schema 是 '{document.Schema}'，本程序只认 "
+				+ $"{string.Join("、", WardrobeSectionMapDocument.ReadableSchemas.Select(item => $"'{item}'"))}；"
+				+ "请用当前版本重新生成。");
 		if (document.SectionRecordSize != WardrobeSectionMapDocument.ExpectedSectionRecordSize)
 			throw new InvalidDataException(
 				$"sections.json 的 sectionRecordSize 是 {document.SectionRecordSize}，运行时按 {WardrobeSectionMapDocument.ExpectedSectionRecordSize} 字节解析；拒绝使用。");

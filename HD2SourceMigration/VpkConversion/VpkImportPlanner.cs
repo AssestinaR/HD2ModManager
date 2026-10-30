@@ -11,7 +11,17 @@ public enum VpkImportKind
 	/// <summary>不含模型、只带材质/贴图：要转成材质包。</summary>
 	Material,
 
-	/// <summary>不是我们能忠实地翻译的东西（道具、武器、$no_draw 开关…）。</summary>
+	/// <summary>
+	/// 组件开关包：几份 <c>$no_draw</c> 材质，用来"让某个部件不画"。
+	/// <para>
+	/// 它<b>不产出 patch</b>，但也不是"不支持"——HD2 侧的等价物是 section 开关
+	/// （<c>WardrobeSectionMap</c> + 烘焙）。识别它，是为了把它的名字与材质表交给
+	/// 后续步骤翻译成"关掉哪几个 section"，并在界面上显示成"猫耳 关/开"而不是"Section 7"。
+	/// </para>
+	/// </summary>
+	ComponentSwitch,
+
+	/// <summary>不是我们能忠实地翻译的东西（道具、武器、其它 <c>$no_draw</c> 用途…）。</summary>
 	Unsupported,
 }
 
@@ -45,8 +55,31 @@ public sealed record VpkImportCandidate(
 	IReadOnlyCollection<string> OwnedTextureNames)
 {
 	/// <summary>这次要不要真的转换它。</summary>
-	public bool IsConvertible => Kind != VpkImportKind.Unsupported && SkipReason is null && DuplicateOfVpkPath is null;
+	public bool IsConvertible
+		=> Kind is VpkImportKind.CharacterModel or VpkImportKind.Material
+			&& SkipReason is null
+			&& DuplicateOfVpkPath is null;
+
+	/// <summary>
+	/// 给人看的名字。目前只有 <see cref="VpkImportKind.ComponentSwitch"/> 用它
+	/// （<c>猫耳</c>、<c>披风</c>），其余情况为 <c>null</c>，调用方退回文件名。
+	/// </summary>
+	public string? DisplayName { get; init; }
 }
+
+/// <summary>
+/// 一个组件开关包：<b>名字</b> + 它要藏起来的<b>材质裸名</b>。
+/// <para>
+/// 源侧靠"覆盖同名材质为 <c>$no_draw</c>"来隐藏部件（Manuka 这类包用 <c>opt/</c> 影子目录，
+/// 橘雪莉那类直接覆盖同名路径）。所以"一个开关 = 一组材质名"，把它翻成 HD2 的 section 掩码
+/// 只需要再知道"这些材质落在哪几个 section"——那由 <c>sections.json</c> 的
+/// <c>sourceMaterial</c> 回答。
+/// </para>
+/// </summary>
+public sealed record VpkComponentSwitch(
+	string VpkPath,
+	string DisplayName,
+	IReadOnlyList<string> MaterialStems);
 
 /// <summary>一次导入的规划：每个 VPK 的去向与理由。</summary>
 public sealed record VpkImportPlan(IReadOnlyList<VpkImportCandidate> Candidates)
@@ -240,6 +273,186 @@ public static class VpkImportPlanner
 		or UnauthorizedAccessException or KeyNotFoundException or ArgumentException
 		or IndexOutOfRangeException or OverflowException or FormatException;
 
+	/// <summary>开关包的条目上限。实测样本是 2–4 条（1–3 份 VMT + addoninfo），留三倍余量。</summary>
+	private const int MaximumSwitchEntries = 12;
+
+	/// <summary>
+	/// 开关包的"材质字节"上限：只算 <c>.vmt</c>，<b>不算别的文件</b>。
+	/// <para>
+	/// 实测有包在里面塞了一张 1.5 MB 的 <c>addonimage.jpg</c>（橘雪莉那两个开关），
+	/// 按"整包字节"判会把它们判成"不是开关"，于是退回"不支持 <c>$no_draw</c>"的老结论。
+	/// 判据只该看材质本身——开关的全部信息就是那几份几百字节的 VMT。
+	/// </para>
+	/// </summary>
+	private const int MaximumSwitchMaterialBytes = 64 * 1024;
+
+	/// <summary>
+	/// 一批 VPK 里哪些是<b>组件开关包</b>（<c>$no_draw</c> 覆盖）。
+	/// <para>
+	/// <b>为什么单独给一个入口而不是让调用方读 <see cref="Plan"/>。</b><see cref="Plan"/> 为了
+	/// 判重会去解析每个模型（读 vvd/vtx、数三角形），在几百个包的 L4D2 addons 目录上很贵；
+	/// 而"这个包是不是开关"只看目录树与几份几百字节的 VMT。转换前必须知道这件事，
+	/// 否则开关包会进材质解析集合，把真材质顶成 <c>$no_draw</c>（见 <see cref="SourceMaterialSource"/>）。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyList<VpkComponentSwitch> FindComponentSwitches(IReadOnlyList<string> vpkPaths)
+	{
+		ArgumentNullException.ThrowIfNull(vpkPaths);
+		var found = new List<VpkComponentSwitch>();
+		foreach (var path in vpkPaths)
+		{
+			if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+				continue;
+			try
+			{
+				using var archive = VpkArchive.Open(path);
+				var materials = archive.Entries
+					.Where(entry => entry.Extension.Equals("vmt", StringComparison.OrdinalIgnoreCase))
+					.Select(entry => entry.FileName)
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.ToArray();
+				if (TryDescribeComponentSwitch(archive, path, materials, out var displayName))
+					found.Add(new VpkComponentSwitch(Path.GetFullPath(path), displayName, materials));
+			}
+			catch (Exception exception) when (IsProbeFailure(exception))
+			{
+				// 打不开的包不在这里报错：它在规划阶段会带着原因出现在"跳过"里。
+			}
+		}
+
+		return found;
+	}
+
+	/// <summary>
+	/// 判据（全部来自实测样本，不是猜的）：<b>没有贴图、条目很少、总字节很小、每份 VMT 都只写
+	/// <c>$no_draw</c></b>。
+	/// <para>
+	/// 只看"全是 <c>$no_draw</c>"是不够的：源侧还有别的用法（隐藏血贴花、隐藏描边层），
+	/// 那些包可能很大。加上"没有 vtf 且很小"这两条，命中的才真的是"一个开关"。
+	/// </para>
+	/// </summary>
+	private static bool TryDescribeComponentSwitch(
+		VpkArchive archive,
+		string vpkPath,
+		IReadOnlyList<string> materials,
+		out string displayName)
+	{
+		displayName = string.Empty;
+		if (materials.Count == 0 || archive.Entries.Count > MaximumSwitchEntries)
+			return false;
+		if (archive.Entries.Any(entry => entry.Extension.Equals("vtf", StringComparison.OrdinalIgnoreCase)))
+			return false;
+		long materialBytes = 0;
+		foreach (var entry in archive.Entries)
+		{
+			if (!entry.Extension.Equals("vmt", StringComparison.OrdinalIgnoreCase))
+				continue;
+			materialBytes += entry.TotalLength;
+			if (materialBytes > MaximumSwitchMaterialBytes)
+				return false;
+		}
+
+		foreach (var material in materials)
+		{
+			if (!IsNoDraw(archive, material))
+				return false;
+		}
+
+		displayName = DescribeSwitchName(ReadAddonTitle(archive), Path.GetFileNameWithoutExtension(vpkPath));
+		return true;
+	}
+
+	/// <summary>读 <c>addoninfo.txt</c> 里的 <c>addonTitle</c>；读不到返回 <c>null</c>。</summary>
+	private static string? ReadAddonTitle(VpkArchive archive)
+	{
+		var entry = archive.Entries.FirstOrDefault(candidate =>
+			candidate.Extension.Equals("txt", StringComparison.OrdinalIgnoreCase)
+			&& candidate.FileName.Equals("addoninfo", StringComparison.OrdinalIgnoreCase));
+		if (entry is null)
+			return null;
+		try
+		{
+			// addoninfo 是键值文本，不是 UTF-8 保证的：中文标题在实测样本里有 GBK 的。
+			var bytes = archive.Read(entry);
+			var text = System.Text.Encoding.UTF8.GetString(bytes);
+			if (text.Contains('\uFFFD', StringComparison.Ordinal))
+				text = System.Text.Encoding.GetEncoding(936).GetString(bytes);
+			foreach (var line in text.Split('\n'))
+			{
+				var trimmed = line.Trim();
+				var lower = trimmed.ToLowerInvariant();
+				if (!lower.StartsWith("addontitle", StringComparison.Ordinal))
+					continue;
+				var start = trimmed.IndexOf('"');
+				var end = trimmed.LastIndexOf('"');
+				if (start >= 0 && end > start)
+					return trimmed[(start + 1)..end].Trim();
+			}
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
+		{
+			return null;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// 开关的显示名。优先级：<c>addonTitle</c> 方括号里的内容 → <c>addonTitle</c> → 文件名。
+	/// <para>
+	/// 两种写法都要吃（实测样本里都有）：<c>Manuka JABIS[猫耳关]</c> 与
+	/// <c>Manuka JABIS猫耳关</c>、<c>【VRM】橘雪莉 披风 关</c>；还有一种不是"关"而是"切换"：
+	/// <c>Manuka_LaFiore切换纹身</c>。所以清理规则是"去掉 关/关闭/off 后缀、去掉 切换 前缀"，
+	/// 而不是只按"删掉一个关字"。
+	/// </para>
+	/// <para>清不出东西时退回原始文本——宁可显示得啰嗦，也不要显示空名字。</para>
+	/// </summary>
+	public static string DescribeSwitchName(string? addonTitle, string fileNameWithoutExtension)
+	{
+		var raw = addonTitle;
+		if (!string.IsNullOrWhiteSpace(raw))
+		{
+			var open = raw.IndexOf('[');
+			var close = raw.LastIndexOf(']');
+			if (open >= 0 && close > open)
+				raw = raw[(open + 1)..close];
+		}
+
+		if (string.IsNullOrWhiteSpace(raw))
+			raw = fileNameWithoutExtension;
+		if (string.IsNullOrWhiteSpace(raw))
+			return string.Empty;
+
+		var label = raw.Trim();
+		// 去掉开头的 【…】 / […] 前缀（橘雪莉那类把模组名写在最前面）。
+		if (label.StartsWith('【'))
+		{
+			var end = label.IndexOf('】');
+			if (end > 0)
+				label = label[(end + 1)..].Trim();
+		}
+
+		foreach (var prefix in new[] { "切换", "switch " })
+		{
+			if (label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+			{
+				label = label[prefix.Length..].Trim();
+				break;
+			}
+		}
+
+		foreach (var suffix in new[] { "关闭", "关掉", "关", " off", "off" })
+		{
+			if (label.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+			{
+				label = label[..^suffix.Length].Trim();
+				break;
+			}
+		}
+
+		return label.Length == 0 ? raw.Trim() : label;
+	}
+
 	private static VpkImportCandidate Probe(string path)
 	{
 		try
@@ -265,6 +478,17 @@ public static class VpkImportPlanner
 			{
 				return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
 					"里面既没有 .mdl，也没有 .vmt/.vtf —— 没有可转换的内容。", null, materials, textures);
+			}
+
+			// 组件开关包：不产出 patch，但**要被识别出来**（翻译成 HD2 的 section 开关）。
+			if (TryDescribeComponentSwitch(archive, path, materials.ToArray(), out var switchName))
+			{
+				return new VpkImportCandidate(path, VpkImportKind.ComponentSwitch, null,
+					$"这是一个组件开关包（{switchName}）：它靠 $no_draw 隐藏部件，不单独产出 patch；"
+					+ "已识别为组件开关，会出现在组件树的开关列表里。", null, materials, textures)
+				{
+					DisplayName = switchName,
+				};
 			}
 
 			// 整包都是 `$no_draw`：源侧靠"不绘制"来隐藏部件，HD2 的材质模板没有这个槽。

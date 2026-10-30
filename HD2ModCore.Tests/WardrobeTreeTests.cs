@@ -60,6 +60,53 @@ public sealed class WardrobeTreeTests
 			1,
 			new[] { new WardrobeWorkspaceArmour(Target, WardrobeMaskMode.Own, units) });
 
+	/// <summary>
+	/// 有源侧名字时，主标题是名字、编号退到副标题。
+	/// <para>
+	/// 这条对应用户的原话："现有的 section 开关没有预设只有数字，用户太难看懂"。
+	/// 名字来自 <c>sections.json</c> 的 <c>sourceMaterial</c> / <c>sourceName</c>；
+	/// 旧表没有这两项，所以下一条用例钉住"没有名字时外观一字不变"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void Build_PrefersSourceNamesAndMovesNumbersToTheSubtitle()
+	{
+		var named = Unit(TorsoUnderAny, "Torso", "Undergarment", "Any", 2) with
+		{
+			SourceName = "猫耳CatEars",
+			Sections =
+			[
+				Unit(TorsoUnderAny, "Torso", "Undergarment", "Any", 2).Sections[0] with { SourceMaterial = "Hair" },
+				Unit(TorsoUnderAny, "Torso", "Undergarment", "Any", 2).Sections[1] with { SourceMaterial = "manuka_costume" },
+			],
+		};
+
+		var root = Build(named);
+		// bodyType=Any 会同时挂在健壮和纤细两支下——这是同一份数据的两处显示，不是两个 unit。
+		var unit = root.Descendants().First(node => node.Kind == WardrobeTreeNodeKind.Unit);
+		Assert.Equal("猫耳CatEars", unit.Label);
+		Assert.Contains(TorsoUnderAny, unit.Subtitle, StringComparison.Ordinal);
+		Assert.Contains("Unit 0", unit.Subtitle, StringComparison.Ordinal);
+
+		var sections = unit.Sections().ToArray();
+		Assert.Equal(new[] { "Hair", "manuka_costume" }, sections.Select(node => node.Label).ToArray());
+		Assert.Equal("#0 · 100 面", sections[0].Subtitle);
+		Assert.Equal("#1 · 101 面", sections[1].Subtitle);
+	}
+
+	/// <summary>没有名字（旧 <c>sections.json</c>）时，标签必须与历史版本逐字相同。</summary>
+	[Fact]
+	public void Build_KeepsTheNumericLabelsWhenNoSourceNamesAreAvailable()
+	{
+		var root = Build(Unit(TorsoUnderAny, "Torso", "Undergarment", "Any", 2));
+		var unit = root.Descendants().First(node => node.Kind == WardrobeTreeNodeKind.Unit);
+		Assert.Equal("Unit 0 " + TorsoUnderAny, unit.Label);
+		Assert.Equal(string.Empty, unit.Subtitle);
+		var sections = unit.Sections().ToArray();
+		Assert.Equal("#0 · 100 面", sections[0].Label);
+		Assert.Equal(string.Empty, sections[0].Subtitle);
+	}
+
 	[Fact]
 	public void Build_RootIsTheArmourItself()
 	{

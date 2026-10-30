@@ -74,9 +74,74 @@ public sealed class WardrobeSectionMapTests
 	public void Parse_RejectsUnknownSchema()
 	{
 		var text = WardrobeSectionMapFile.Serialize(CreateMap())
-			.Replace("hd2mod.section-map/2", "hd2mod.section-map/1", StringComparison.Ordinal);
+			.Replace(WardrobeSectionMapDocument.CurrentSchema, "hd2mod.section-map/1", StringComparison.Ordinal);
 		var exception = Assert.Throws<InvalidDataException>(() => WardrobeSectionMapFile.Parse(text));
 		Assert.Contains("schema", exception.Message, StringComparison.Ordinal);
+	}
+
+	/// <summary>
+	/// <b>/2 必须仍然能读。</b>/3 只是加了两个可选的显示字段（unit 名、section 的源材质名），
+	/// 布局常量一个都没动。用户库里那批用旧转换器产出的 Mod 不重导就该照常可用——
+	/// 只是组件树里显示的是编号而不是名字。
+	/// </summary>
+	[Fact]
+	public void Parse_AcceptsTheOlderV2SchemaWithoutNames()
+	{
+		var text = WardrobeSectionMapFile.Serialize(CreateMap())
+			.Replace(WardrobeSectionMapDocument.CurrentSchema, "hd2mod.section-map/2", StringComparison.Ordinal);
+		var parsed = WardrobeSectionMapFile.Parse(text);
+
+		Assert.Equal("hd2mod.section-map/2", parsed.Schema);
+		Assert.Equal(2, parsed.Units.Count);
+		Assert.All(parsed.Units, unit => Assert.Null(unit.SourceName));
+		Assert.All(parsed.Units.SelectMany(unit => unit.Sections), section => Assert.Null(section.SourceMaterial));
+	}
+
+	/// <summary>名字必须真的写进文件、再读回来——它是界面唯一的"这一块是什么"的来源。</summary>
+	[Fact]
+	public void SourceNamesSurviveASerializeParseRoundTrip()
+	{
+		var named = CreateMap() with
+		{
+			Units =
+			[
+				CreateMap().Units[0] with { SourceName = "猫耳CatEars" },
+				CreateMap().Units[1] with { SourceName = "Chest" },
+			],
+		};
+		var text = WardrobeSectionMapFile.Serialize(named);
+		// 名字是给人看的，必须出现在文件里（否则界面还是只能显示数字）。
+		Assert.Contains("猫耳CatEars", text, StringComparison.Ordinal);
+
+		var parsed = WardrobeSectionMapFile.Parse(text);
+		Assert.Equal("猫耳CatEars", parsed.FindUnit(UnitA)!.SourceName);
+		Assert.Equal("Chest", parsed.FindUnit(UnitB)!.SourceName);
+	}
+
+	/// <summary>section 的源材质名同样要能往返，且不参与身份（指纹不变）。</summary>
+	[Fact]
+	public void SectionSourceMaterialSurvivesRoundTripWithoutTouchingIdentity()
+	{
+		var map = CreateMap();
+		var original = map.FindSection(UnitA, 0)!;
+		var named = map with
+		{
+			Units =
+			[
+				map.Units[0] with
+				{
+					Sections = [map.Units[0].Sections[0] with { SourceMaterial = "Hair" }, map.Units[0].Sections[1]],
+				},
+				map.Units[1],
+			],
+		};
+
+		var parsed = WardrobeSectionMapFile.Parse(WardrobeSectionMapFile.Serialize(named));
+		var section = parsed.FindSection(UnitA, 0)!;
+		Assert.Equal("Hair", section.SourceMaterial);
+		// 身份不因为多了个名字而变化：掩码仍然按指纹对齐。
+		Assert.Equal(original.Fingerprint, section.Fingerprint);
+		Assert.Equal(original.MaterialId, section.MaterialId);
 	}
 
 	[Fact]

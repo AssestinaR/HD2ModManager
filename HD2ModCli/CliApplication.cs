@@ -2004,9 +2004,29 @@ public static class CliApplication
 				extraPaths.AddRange(entries.Where(File.Exists));
 			}
 
-			var batch = SourceMaterialSource.Open([.. vpkPaths, .. extraPaths]);
+			// 组件开关包（`$no_draw` 覆盖）：既不能进解析集合，也不能当材质包转换。
+			//
+			// **必须从解析集合里剔除。** 开关包的 VMT 与真材质**裸名相同**（Manuka 用
+			// `opt/同名.vmt`，橘雪莉直接覆盖同名路径），而 SourceMaterialSource 只按裸名索引、
+			// 先到先得。开关包一旦排在前面，真材质会被顶成 `$no_draw`，那个部件就静默失去材质
+			// ——不报错、不警告。实测今天只是侥幸（`附加材质\` 是子目录，排在同级文件之后）。
+			var componentSwitches = VpkImportPlanner.FindComponentSwitches([.. vpkPaths, .. extraPaths]);
+			var switchPaths = componentSwitches
+				.Select(item => item.VpkPath)
+				.ToHashSet(StringComparer.OrdinalIgnoreCase);
+			var resolutionPaths = vpkPaths.Concat(extraPaths)
+				.Where(path => !switchPaths.Contains(Path.GetFullPath(path)))
+				.ToArray();
+
+			var batch = SourceMaterialSource.Open(resolutionPaths);
 			foreach (var failure in batch.Failures)
 				Console.Error.WriteLine($"⚠️ 解析集合里这个包打不开：{failure}");
+			if (componentSwitches.Count != 0)
+			{
+				Console.Error.WriteLine(
+					$"ℹ️ 识别到 {componentSwitches.Count} 个组件开关包："
+					+ $"{string.Join("、", componentSwitches.Select(item => item.DisplayName))}");
+			}
 
 			// matcap 的几何来源：队列里第一个**读得出来**的模型 VPK。没有就不烘（`$matcaptint ≥ 0.9`
 			// 的材质会缺观感）。读不出来就换下一个：这里只是可选的观感来源，一个坏模型不该让整批转换失败。
@@ -2037,6 +2057,12 @@ public static class CliApplication
 			var exitCode = 0;
 			foreach (var path in vpkPaths)
 			{
+				// 开关包不产出 patch（它的语义是"关掉某几块"，不是"提供资产"）。
+				// 管理器不会把它排进转换队列（规划阶段就标成 ComponentSwitch），
+				// 但直接命令行调用时它可能就在队列里——这时要明确说明，而不是产一个空包。
+				if (switchPaths.Contains(Path.GetFullPath(path)))
+					continue;
+
 				var directory = Path.Combine(Path.GetFullPath(outputRoot), SafeDirectoryName(Path.GetFileNameWithoutExtension(path)));
 				try
 				{
@@ -2070,6 +2096,51 @@ public static class CliApplication
 				}
 			}
 
+			// 组件开关：把每个开关包翻译成 section 掩码，写进产出 patch 的目录（`components.json`）。
+			//
+			// 必须在**所有**转换之后：8 人包里有 8 个 survivor 各出一份 patch，同一个开关包对每一份
+			// 都要解析一次，而每份的 `sections.json` 是它自己那份（偏移与 section 数都不同）。
+			var switchReports = new List<object>();
+			foreach (var outcome in results)
+			{
+				if (outcome.Package.TocPath is null)
+					continue;
+				var directory = Path.GetDirectoryName(outcome.Package.TocPath)!;
+				try
+				{
+					var sectionsPath = Path.Combine(directory, HD2ModCore.Infrastructure.WardrobeSectionMapFile.FileName);
+					if (!File.Exists(sectionsPath))
+						continue;
+					var sections = await HD2ModCore.Infrastructure.WardrobeSectionMapFile
+						.ReadAsync(sectionsPath).ConfigureAwait(false);
+					var document = CliVpkComponentSwitches.Resolve(componentSwitches, sections);
+					if (document.Switches.Count == 0 && document.Unmatched.Count == 0)
+						continue;
+					await HD2ModCore.Infrastructure.VpkComponentSwitchFile
+						.WriteAsync(directory, document).ConfigureAwait(false);
+					switchReports.Add(new
+					{
+						patch = Path.GetFileName(outcome.Package.TocPath),
+						summary = CliVpkComponentSwitches.Summarize(document),
+						switches = document.Switches.Select(item => new
+						{
+							name = item.Name,
+							source = item.SourceVpk,
+							materials = item.Materials,
+							sections = item.SectionCount,
+							disabled = item.Disabled.Select(target => new { unit = target.Unit, sections = target.Sections }),
+						}),
+						unmatched = document.Unmatched.Select(item => new { name = item.Name, source = item.SourceVpk, reason = item.Reason }),
+					});
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException
+					or UnauthorizedAccessException or InvalidOperationException)
+				{
+					// 开关表是可选的增强：写不出来不该让整次转换失败，但必须让人看得见。
+					Console.Error.WriteLine($"⚠️ 没能产出 components.json（组件开关将不可用）：{exception.Message}");
+				}
+			}
+
 			Emit(invocation.Options,
 				new
 				{
@@ -2082,6 +2153,11 @@ public static class CliApplication
 					idNamespace = ResolveIdNamespace(invocation.Options),
 					matcapGeometry = matcapModel?.MdlPath,
 					patches = results.Select(ProjectConversion).ToArray(),
+					// 识别到但没产出 patch 的组件开关包（它们只描述"关什么"）。
+					componentSwitchSources = componentSwitches
+						.Select(item => new { name = item.DisplayName, vpk = Path.GetFileName(item.VpkPath), materials = item.MaterialStems })
+						.ToArray(),
+					componentSwitches = switchReports,
 					failures,
 				},
 				() => FormatVpk2Patch(results, failures, Path.GetFullPath(outputRoot), matcapModel?.MdlPath));
@@ -2683,8 +2759,38 @@ public static class CliApplication
 		{
 			try
 			{
+				// 名字表：只用于界面显示（"哪一块是猫耳"），不参与任何偏移计算。
+				// 拿不到名字的表仍然可用，只是界面只能显示数字——所以这里失败也绝不阻断。
+				var unitNames = package.Units
+					.Where(unit => unit.IsValid && !string.IsNullOrWhiteSpace(unit.Name))
+					.GroupBy(unit => unit.UnitId, StringComparer.OrdinalIgnoreCase)
+					.ToDictionary(group => group.Key, group => group.First().Name, StringComparer.OrdinalIgnoreCase);
+				var materialNames = package.Materials
+					.GroupBy(item => item.MaterialId)
+					.Where(group => group.Key != 0)
+					.ToDictionary(
+						group => "0x" + group.Key.ToString("x16", System.Globalization.CultureInfo.InvariantCulture),
+						group => Path.GetFileNameWithoutExtension(
+							VmtDocument.NormalizePath(group.First().SourceMaterialName)),
+						StringComparer.OrdinalIgnoreCase);
+				// 逐节的源材质名：能分开"共用一张底色的几个部件"（猫耳 / 尾巴 / 白衣服都指 C_White_A）。
+				// 没有它，组件开关只能落到"按材质 id 反查到的第一个名字"上，关一个会连带关一片。
+				var sectionNames = package.Units
+					.Where(unit => unit.IsValid && unit.SectionSources.Count != 0)
+					.GroupBy(unit => unit.UnitId, StringComparer.OrdinalIgnoreCase)
+					.ToDictionary(
+						group => group.Key,
+						group => (IReadOnlyList<HD2ModCore.Domain.WardrobeSectionSourceName>)group.First().SectionSources
+							.Select(source => new HD2ModCore.Domain.WardrobeSectionSourceName(
+								source.MaterialName,
+								source.MaterialId == 0
+									? string.Empty
+									: "0x" + source.MaterialId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture)))
+							.ToArray(),
+						StringComparer.OrdinalIgnoreCase);
+
 				var built = await HD2ModCore.Infrastructure.WardrobeSectionMapFile
-					.BuildAsync(package.TocPath, cancellationToken).ConfigureAwait(false);
+					.BuildAsync(package.TocPath, cancellationToken, unitNames, materialNames, sectionNames).ConfigureAwait(false);
 				await HD2ModCore.Infrastructure.WardrobeSectionMapFile
 					.WriteAsync(
 						Path.Combine(Path.GetDirectoryName(package.TocPath)!, HD2ModCore.Infrastructure.WardrobeSectionMapFile.FileName),
@@ -2876,8 +2982,12 @@ public static class CliApplication
 		{
 			VpkImportKind.CharacterModel => "model",
 			VpkImportKind.Material => "material",
+			// 开关包不是"不支持"：它被识别成了组件开关，只是不产出 patch。
+			// 两者混成一个值会让管理器与日志把"这个包有用"报成"这个包没用"。
+			VpkImportKind.ComponentSwitch => "componentSwitch",
 			_ => "unsupported",
 		},
+		displayName = candidate.DisplayName,
 		convertible = candidate.IsConvertible,
 		signature = candidate.Signature is null
 			? null

@@ -99,6 +99,53 @@
                 <StackPanel>
                     <TextBlock Text="关掉的 section 不再绘制。改动在点「应用」后烘进 patch。"
                                Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"/>
+                    <!--
+                        组件开关：源侧 `XXX关` 那类 $no_draw 包的翻译结果。
+                        与下面的树是同一份状态的两种视图——这里按"部件"命名（猫耳、披风），
+                        树按"unit / section"铺开。勾一下等于把对应的几节全关。
+                    -->
+                    <TextBlock Text="{Binding VpkSwitchSummary}"
+                               Margin="0,10,0,0"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"
+                               Visibility="{Binding HasVpkSwitches, Converter={StaticResource BoolToVis}}"/>
+                    <ItemsControl ItemsSource="{Binding VpkSwitches}"
+                                  Margin="0,6,0,0"
+                                  Visibility="{Binding HasVpkSwitches, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{StaticResource SurfaceMuted}"
+                                        CornerRadius="4"
+                                        Padding="10,6"
+                                        Margin="0,0,0,4">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Name}"
+                                                       Foreground="{StaticResource TextPrimary}"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Detail}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1"
+                                                  Style="{StaticResource AppToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="12,0,2,0"
+                                                  IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                                  AutomationProperties.Name="{Binding Name}"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="{Binding VpkSwitchStatus}"
+                               Margin="0,4,0,0"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"
+                               Visibility="{Binding HasVpkSwitchStatus, Converter={StaticResource BoolToVis}}"/>
                     <TreeView ItemsSource="{Binding VpkTree.Roots}"
                               ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
                               ItemContainerStyle="{StaticResource WardrobeTreeItemStyleBase}"

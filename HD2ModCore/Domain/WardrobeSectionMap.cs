@@ -43,6 +43,15 @@ public sealed record WardrobeSectionToggle(
 /// <summary>
 /// 一个 section 的完整描述：身份 + 各级落点。
 /// `Fingerprint` 必须由 <see cref="WardrobeSectionFingerprint"/> 生成，绝不手写。
+/// <para>
+/// <b><see cref="SourceMaterial"/> 是给人看的名字，不是身份。</b>它来自源侧的材质裸名
+/// （<c>Hair</c>、<c>manuka_costume</c>…），只用于界面显示与"哪个开关关掉了什么"的解释。
+/// 身份仍然是 <see cref="Fingerprint"/>：名字在重建后可能变（换了贴图目录），身份不该跟着变。
+/// </para>
+/// <para>
+/// 没有它时，界面只能显示 <c>Section 0/1/2</c>——用户看不出哪一块是猫耳、哪一块是外套。
+/// 这就是"section 开关没有预设只有数字"的直接原因。
+/// </para>
 /// </summary>
 public sealed record WardrobeSectionMapEntry(
 	int Index,
@@ -53,7 +62,26 @@ public sealed record WardrobeSectionMapEntry(
 {
 	/// <summary>与掩码文件里 `off=` 行对齐用的身份。</summary>
 	public WardrobeSectionIdentity ToIdentity(string unit) => new(unit, Index, Fingerprint);
+
+	/// <summary>源侧材质裸名（不含目录与扩展名）。旧表没有这一项，所以可为空。</summary>
+	public string? SourceMaterial { get; init; }
 }
+
+/// <summary>
+/// 一个 section 在<b>源侧</b>是谁：材质裸名 + 它算出来的材质 id。
+/// <para>
+/// <b>为什么要带 id。</b>名字与 section 是按顺序传进来的，顺序一旦错位，开关就会关掉别的部件
+/// ——而且不报错。带上 id 就能在写入前自校验：这一节实际绑的材质 id 必须与源材质算出来的
+/// 那个相等，不等就<b>不采信名字</b>（退回按材质 id 的通用名字），宁可显示得粗糙，也不要关错。
+/// </para>
+/// <para>
+/// <b>为什么不能只按材质 id 反查名字。</b>多个源材质可能算出同一个 id（同一张底色、同样的模板
+/// 与后缀），比如 Manuka 的 <c>c_white_a</c> / <c>c_white_a_ear</c> / <c>c_white_a_tail</c>
+/// 共用一张 <c>C_White_A</c>。按 id 反查只能得到其中"第一个"，于是"关猫耳"会连尾巴一起关。
+/// 逐节记录才能把三个部件分开。
+/// </para>
+/// </summary>
+public sealed record WardrobeSectionSourceName(string Name, string MaterialId);
 
 /// <summary>
 /// 一个 unit 的 section 表。`LodConsistent` 为假时只保留与 LOD0 节数相同的 LOD。
@@ -68,7 +96,18 @@ public sealed record WardrobeSectionMapUnit(
 	string Weight,
 	int SectionCount,
 	bool LodConsistent,
-	IReadOnlyList<WardrobeSectionMapEntry> Sections);
+	IReadOnlyList<WardrobeSectionMapEntry> Sections)
+{
+	/// <summary>
+	/// 源侧的 unit 名：bodypart 名（<c>猫耳CatEars</c>）或部位名（<c>Chest</c>）。
+	/// <para>
+	/// 只在 <c>--components all</c> 下才等于"一个可切换的组件"；默认的 <c>merge</c> 会把配件
+	/// 并进身躯槽位，那时它只是"这份 Unit 由哪个 bodypart 主导"。所以它<b>是提示，不是身份</b>，
+	/// 旧表没有这一项。
+	/// </para>
+	/// </summary>
+	public string? SourceName { get; init; }
+}
 
 /// <summary>
 /// `sections.json` 的内存表示。`Schema` 是版本闸门：格式变了就换字符串，
@@ -83,7 +122,16 @@ public sealed record WardrobeSectionMapDocument(
 	IReadOnlyList<WardrobeSectionMapUnit> Units)
 {
 	/// <summary>当前格式标识。</summary>
-	public const string CurrentSchema = "hd2mod.section-map/2";
+	/// <remarks>
+	/// <b>/3 相对 /2 只加了两项可选字段</b>（unit 的 <c>sourceName</c>、section 的 <c>sourceMaterial</c>），
+	/// 布局常量一个都没动。所以 /2 的表仍然可以安全读取——只是界面只能显示数字。
+	/// 反过来（新表给旧程序）会明确拒绝，因为旧程序不知道这两个字段的存在也无所谓，
+	/// 但它写回时会丢掉名字；宁可让它报"请用当前版本重新生成"。
+	/// </remarks>
+	public const string CurrentSchema = "hd2mod.section-map/3";
+
+	/// <summary>读取时接受的格式版本。新增字段的版本必须在这里登记，否则旧表会被判成"格式不对"。</summary>
+	public static readonly IReadOnlyList<string> ReadableSchemas = ["hd2mod.section-map/2", "hd2mod.section-map/3"];
 
 	/// <summary>节记录固定 24 字节（见 <c>UnitMeshReader</c> 的 section 解析）。</summary>
 	public const int ExpectedSectionRecordSize = 24;

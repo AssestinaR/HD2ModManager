@@ -44,6 +44,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private bool _vpkArmorsLoading;
 	private IReadOnlyList<VpkTargetArmorOption> _vpkTargetArmors = [];
 	private VpkTargetArmorOption? _selectedVpkTargetArmor;
+	private IReadOnlyList<VpkSwitchItemViewModel> _vpkSwitches = [];
+	private string _vpkSwitchStatus = string.Empty;
 
 	/// <summary>这个 Mod 是不是 VPK 版（有 <c>vpk2patch/</c> 载荷）。</summary>
 	public bool IsVpkMod { get; private set; }
@@ -63,6 +65,54 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 	public bool HasVpkComponentTree => _vpkTree?.HasRoots == true;
+
+	/// <summary>
+	/// 组件开关（<c>components.json</c> 里的"关掉猫耳/披风"）。
+	/// <para>
+	/// 与树是<b>两种视图、同一份状态</b>：开关写的是"这些 section 关没关"，
+	/// 树上显示的也是同一件事。所以这里没有第二份持久化数据，勾一下等于替用户把
+	/// 对应的那几节全关（或全开）。
+	/// </para>
+	/// </summary>
+	public IReadOnlyList<VpkSwitchItemViewModel> VpkSwitches
+	{
+		get => _vpkSwitches;
+		private set
+		{
+			_vpkSwitches = value;
+			OnPropertyChanged();
+			OnPropertyChanged(nameof(HasVpkSwitches));
+			OnPropertyChanged(nameof(VpkSwitchSummary));
+		}
+	}
+
+	public bool HasVpkSwitches => _vpkSwitches.Count > 0;
+
+	/// <summary>开关区的一句话说明：多少个开关、共关掉多少块几何。</summary>
+	public string VpkSwitchSummary
+	{
+		get
+		{
+			if (_vpkSwitches.Count == 0)
+				return string.Empty;
+			var sections = _vpkSwitches.Sum(item => item.Entry.SectionCount);
+			return $"识别到 {_vpkSwitches.Count} 个组件开关（共 {sections} 块几何）。"
+				+ "关掉之后点「应用」烘进 patch。";
+		}
+	}
+
+	/// <summary>没匹配上的开关、以及"这个 Mod 是旧版转的"这类提示。</summary>
+	public string VpkSwitchStatus
+	{
+		get => _vpkSwitchStatus;
+		private set
+		{
+			if (!SetField(ref _vpkSwitchStatus, value)) return;
+			OnPropertyChanged(nameof(HasVpkSwitchStatus));
+		}
+	}
+
+	public bool HasVpkSwitchStatus => !string.IsNullOrWhiteSpace(_vpkSwitchStatus);
 
 	/// <summary>「启用 L4N 支持的衣物装饰组件切换」——开关本身存在 Mod 自己的 wardrobe.json 里。</summary>
 	public bool EnableVpkComponentTree
@@ -129,6 +179,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		_vpkFile = VpkWardrobeFile.Default;
 		_vpkStatus = string.Empty;
 		VpkTree = null;
+		VpkSwitches = [];
+		VpkSwitchStatus = string.Empty;
 		IsVpkMod = false;
 		OnPropertyChanged(nameof(IsVpkMod));
 		OnPropertyChanged(nameof(ShowPatchSettingsCard));
@@ -165,6 +217,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				var tree = new WardrobeTreeViewModel(this);
 				tree.LoadFromTree(root, editable: true);
 				VpkTree = tree;
+				// 开关表与树放在同一个目录（都是这次转换的产物）；没有它就不显示开关区。
+				var patchDirectory = VpkModWardrobeService.ResolveEffectivePatchDirectory(directory);
+				var components = patchDirectory is null
+					? null
+					: await VpkComponentSwitchFile.TryReadAsync(patchDirectory).ConfigureAwait(true);
+				ApplyVpkSwitches(components);
 			}
 			else
 			{
@@ -345,4 +403,46 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 	private bool IsVpkSectionDisabled(string unit, int sectionIndex)
 		=> _vpkFile.State.IsDisabled(unit, sectionIndex);
+
+	// ── 组件开关（源侧 $no_draw 包的翻译结果）──
+
+	/// <summary>
+	/// 把开关表装进界面。**没有开关表不是错误**：用旧转换器产的 Mod 里没有
+	/// <c>components.json</c>，那时只显示树，不该给用户一条"出错了"。
+	/// </summary>
+	private void ApplyVpkSwitches(VpkComponentSwitchDocument? document)
+	{
+		VpkSwitches = document is null
+			? []
+			: document.Switches
+				.Select(entry => new VpkSwitchItemViewModel(entry, ReadSwitchEnabled, WriteSwitch))
+				.ToArray();
+
+		// 没匹配上的必须说清：用户装了"猫耳关"却看不到开关，只会以为功能没做。
+		VpkSwitchStatus = document is { Unmatched.Count: > 0 }
+			? $"{document.Unmatched.Count} 个开关在这个 Mod 里找不到对应材质："
+				+ $"{string.Join("、", document.Unmatched.Take(4).Select(item => item.Name))}"
+				+ (document.Unmatched.Count > 4 ? "…" : string.Empty)
+				+ "。多半是它属于另一个角色/另一份材质包。"
+			: string.Empty;
+	}
+
+	/// <summary>开关"开着" = 它要关的那几节**没有全部**被关掉（与树的三态语义一致）。</summary>
+	private bool ReadSwitchEnabled(VpkComponentSwitchEntry entry)
+	{
+		if (entry.Disabled.Count == 0)
+			return false;
+		return !entry.Disabled.All(target =>
+			target.Sections.All(section => _vpkFile.State.IsDisabled(target.Unit, section)));
+	}
+
+	private void WriteSwitch(VpkComponentSwitchEntry entry, bool enabled)
+	{
+		var state = _vpkFile.State;
+		foreach (var target in entry.Disabled)
+			state = state.SetSectionsEnabled(target.Unit, target.Sections, enabled);
+		_vpkFile = _vpkFile with { State = state };
+		// 树上显示的是同一份状态：不刷新就会出现"开关关了、树上还勾着"。
+		VpkTree?.RefreshChecks();
+	}
 }

@@ -141,6 +141,86 @@ public sealed class VpkImportPlannerTests : IDisposable
 		return mdl;
 	}
 
+	// ── 组件开关包（$no_draw 覆盖） ──
+
+	private const string NoDrawVmt = "VertexLitGeneric\n{\n\t$no_draw 1\n\t$zero 0\n}\n";
+
+	private static byte[] Utf8(string text) => Encoding.UTF8.GetBytes(text);
+
+	/// <summary>
+	/// 开关包的判据来自实测样本：小、无贴图、每份 VMT 都只写 <c>$no_draw</c>。
+	/// 识别它的意义是<b>不把它当材质包转</b>，并给出可读名字（<c>[猫耳关]</c> → <c>猫耳</c>）。
+	/// </summary>
+	[Fact]
+	public void Plan_RecognisesADollarNoDrawSwitchPackAndNamesItFromTheAddonTitle()
+	{
+		var vpk = WriteVpk(
+			("c_white_a_ear.vmt", "materials/mod/opt", Utf8(NoDrawVmt)),
+			("addoninfo.txt", " ", Utf8("AddonInfo\n{\naddonTitle \"Manuka JABIS[猫耳关]\"\n}\n")));
+
+		var plan = VpkImportPlanner.Plan([vpk]);
+		var candidate = Assert.Single(plan.Candidates);
+
+		Assert.True(candidate.Kind == VpkImportKind.ComponentSwitch, candidate.SkipReason ?? "没有理由");
+		Assert.Equal("猫耳", candidate.DisplayName);
+		Assert.Contains("c_white_a_ear", candidate.OwnedMaterialNames);
+		// 它不产出 patch，但也不是"不支持"：理由要说清它被认成了开关。
+		Assert.False(candidate.IsConvertible);
+		Assert.Contains("组件开关", candidate.SkipReason!, StringComparison.Ordinal);
+	}
+
+	/// <summary>
+	/// 有贴图的包<b>不是</b>开关包，哪怕它的 VMT 里也写了 <c>$no_draw</c>。
+	/// 这条挡住的是"把一整个材质包误判成开关、于是材质一张都不写"。
+	/// </summary>
+	[Fact]
+	public void Plan_DoesNotTreatAPackWithTexturesAsASwitch()
+	{
+		var vpk = WriteVpk(
+			("c_white_a_ear.vmt", "materials/mod/opt", Utf8(NoDrawVmt)),
+			("body.vtf", "materials/mod", new byte[512]));
+
+		var plan = VpkImportPlanner.Plan([vpk]);
+		var candidate = Assert.Single(plan.Candidates);
+
+		Assert.NotEqual(VpkImportKind.ComponentSwitch, candidate.Kind);
+	}
+
+	/// <summary>一批里的开关包能被单独列出来（转换前要用它把解析集合剔干净）。</summary>
+	[Fact]
+	public void FindComponentSwitches_ReturnsOnlyTheSwitchPacks()
+	{
+		var switchPack = WriteVpk(
+			("c_white_a_ear.vmt", "materials/mod/opt", Utf8(NoDrawVmt)),
+			("addoninfo.txt", " ", Utf8("addoninfo\n{\naddontitle \"Manuka JABIS[猫耳关]\"\n}\n")));
+		var materialPack = WriteVpk(
+			("body.vmt", "materials/mod", Utf8("\"VertexLitGeneric\"\n{\n\"$basetexture\" \"mod/body\"\n}\n")),
+			("body.vtf", "materials/mod", new byte[512]));
+
+		var found = VpkImportPlanner.FindComponentSwitches([switchPack, materialPack]);
+
+		var single = Assert.Single(found);
+		Assert.Equal(Path.GetFullPath(switchPack), single.VpkPath);
+		Assert.Equal("猫耳", single.DisplayName);
+		Assert.Equal(["c_white_a_ear"], single.MaterialStems);
+	}
+
+	/// <summary>
+	/// 名字解析要吃掉实测里出现过的四种写法。写错的表现是"开关名字变成一串文件路径"，
+	/// 用户不会知道那是猫耳。
+	/// </summary>
+	[Theory]
+	[InlineData("Manuka JABIS[猫耳关]", "x", "猫耳")]
+	[InlineData("Manuka JABIS猫耳关", "x", "Manuka JABIS猫耳")]
+	[InlineData("【VRM】橘雪莉 披风 关", "x", "橘雪莉 披风")]
+	[InlineData("Manuka_LaFiore切换纹身", "x", "Manuka_LaFiore切换纹身")]
+	[InlineData(null, "Manuka_JABIS猫耳关", "Manuka_JABIS猫耳")]
+	[InlineData("", "Manuka_LaFiore切换纹身", "Manuka_LaFiore切换纹身")]   // 「切换」只在开头才算前缀
+	public void DescribeSwitchName_HandlesTheShapesSeenInRealPacks(string? title, string fileName, string expected)
+	{
+		Assert.Equal(expected, VpkImportPlanner.DescribeSwitchName(title, fileName));
+	}
+
 	private string WriteVpk(params (string Name, string Directory, byte[] Content)[] files)
 	{
 		var path = Path.Combine(Path.GetTempPath(), "hd2-planner-" + Guid.NewGuid().ToString("N") + ".vpk");

@@ -69,6 +69,17 @@ public sealed record WardrobeTreeNode(
 	/// <summary>section 节点的三角形数，界面用来判断"这块到底多大"。</summary>
 	public uint Triangles { get; init; }
 
+	/// <summary>
+	/// 主标题之外的次要信息（<c>Unit 3 · 1a2b…</c>、<c>#7 · 240 面</c>）。
+	/// <para>
+	/// <b>为什么要把名字提到主标题。</b>section 的编号（<c>#0/#1/#2</c>）对用户没有意义——
+	/// 他要知道的是"这一块是猫耳还是外套"。源侧材质名与 bodypart 名能回答这个问题，
+	/// 但它们只是<b>提示</b>（旧表没有、重建后可能变），所以放副标题而不是当成身份。
+	/// 没有名字时主标题退回编号，副标题留空——旧行为原样保留。
+	/// </para>
+	/// </summary>
+	public string Subtitle { get; init; } = string.Empty;
+
 	/// <summary>先序遍历全部后代（不含自己）。</summary>
 	public IEnumerable<WardrobeTreeNode> Descendants()
 	{
@@ -212,27 +223,39 @@ public static class WardrobeTree
 		var unitKey = $"{rootKey}/body:{bodyType}/slot:{slot}/unit:{unit.FileId}";
 		var sections = unit.Sections
 			.OrderBy(section => section.Index)
-			.Select(section => new WardrobeTreeNode(
-				WardrobeTreeNodeKind.Section,
-				$"{unitKey}/section:{section.Index}",
-				$"#{section.Index} · {section.Triangles.ToString(CultureInfo.InvariantCulture)} 面",
-				unit.FileId,
-				section.Index,
-				Array.Empty<WardrobeTreeNode>())
+			.Select(section =>
 			{
-				Triangles = section.Triangles,
+				// 有源材质名就以它为主标题：用户认得出"Hair"，认不出"#3"。
+				// 编号与面数退到副标题——排查时仍然要能对回掩码里的下标。
+				var name = section.SourceMaterial;
+				var detail = $"#{section.Index.ToString(CultureInfo.InvariantCulture)} · "
+					+ $"{section.Triangles.ToString(CultureInfo.InvariantCulture)} 面";
+				return new WardrobeTreeNode(
+					WardrobeTreeNodeKind.Section,
+					$"{unitKey}/section:{section.Index}",
+					string.IsNullOrWhiteSpace(name) ? detail : name,
+					unit.FileId,
+					section.Index,
+					Array.Empty<WardrobeTreeNode>())
+				{
+					Triangles = section.Triangles,
+					Subtitle = string.IsNullOrWhiteSpace(name) ? string.Empty : detail,
+				};
 			})
 			.ToArray();
+		var unitName = unit.SourceName;
+		var ordinalText = $"Unit {ordinal.ToString(CultureInfo.InvariantCulture)}";
 		return new WardrobeTreeNode(
 			WardrobeTreeNodeKind.Unit,
 			unitKey,
-			$"Unit {ordinal.ToString(CultureInfo.InvariantCulture)} {unit.FileId}",
+			string.IsNullOrWhiteSpace(unitName) ? $"{ordinalText} {unit.FileId}" : unitName,
 			unit.FileId,
 			SectionIndex: null,
 			sections)
 		{
 			SharedAcrossBodies = string.Equals(Normalize(unit.BodyType, UnknownBodyType), AnyBodyType, StringComparison.Ordinal),
 			PieceTypeLabel = PieceTypeLabel(Normalize(unit.PieceType, UnknownPieceType)),
+			Subtitle = string.IsNullOrWhiteSpace(unitName) ? string.Empty : $"{ordinalText} · {unit.FileId}",
 		};
 	}
 

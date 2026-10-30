@@ -48,6 +48,14 @@
                                Foreground="{StaticResource TextPrimary}"
                                VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis"/>
+                    <!-- 次要信息（编号 · 面数）：只在有源侧名字时出现，旧数据下整行外观不变。 -->
+                    <TextBlock Text="{Binding Subtitle}"
+                               Margin="6,0,0,0"
+                               VerticalAlignment="Center"
+                               FontSize="11"
+                               Foreground="{StaticResource TextSecondary}"
+                               TextTrimming="CharacterEllipsis"
+                               Visibility="{Binding HasSubtitle, Converter={StaticResource WardrobeBoolToVis}}"/>
                     <Border Margin="8,0,0,0"
                             Padding="5,1"
                             CornerRadius="3"
