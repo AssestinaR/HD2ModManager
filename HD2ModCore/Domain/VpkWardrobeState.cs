@@ -124,6 +124,9 @@ public static class VpkModWardrobeTree
 	public static WardrobeTreeNode Build(string label, WardrobeSectionMapDocument map)
 	{
 		ArgumentNullException.ThrowIfNull(map);
-		return WardrobeTree.Build(label, map.Units.Where(IsBaseSlotUnit).ToArray());
+		// **部位层与 unit 层合一。** 转换产物的每个部位只有一个 unit，所以"部位 → Unit"
+		// 这一层永远只有一个孩子，纯粹多一次点击。合并后一行就是
+		// `头盔　Unit 0 · af431352d9b95e83`，点开是它的 section。
+		return WardrobeTree.Build(label, map.Units.Where(IsBaseSlotUnit).ToArray(), mergeSingleUnitSlots: true);
 	}
 }

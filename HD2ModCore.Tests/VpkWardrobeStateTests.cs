@@ -60,6 +60,30 @@ public sealed class VpkWardrobeStateTests
 		Assert.All(tree.Sections(), section => Assert.NotNull(section.Unit));
 	}
 
+	/// <summary>
+	/// 部位层与 unit 层合一：转换产物的每个部位只有一个 unit，所以行上直接是
+	/// <c>头盔　Unit 0 · &lt;fileId&gt;</c>，不再有"部位 → Unit"这一层多余的点击。
+	/// </summary>
+	[Fact]
+	public void Build_MergesThePartAndUnitLevels()
+	{
+		var tree = VpkModWardrobeTree.Build("VPK x", CreateMap());
+		var body = tree.Children.First(child => child.Kind == WardrobeTreeNodeKind.BodyType);
+
+		// 每个部位直接就是 unit 节点（没有中间的 Slot 层）。
+		Assert.All(body.Children, node =>
+		{
+			Assert.Equal(WardrobeTreeNodeKind.Unit, node.Kind);
+			Assert.NotNull(node.Unit);
+			Assert.Contains("Unit ", node.Subtitle, StringComparison.Ordinal);
+			Assert.Equal(string.Empty, node.PieceTypeLabel);
+		});
+
+		var helmet = body.Children.Single(node => node.Unit == Helmet);
+		Assert.Equal("头盔", helmet.Label);
+		Assert.Contains(Helmet, helmet.Subtitle, StringComparison.Ordinal);
+	}
+
 	[Fact]
 	public void SetEnabled_OnAUnit_TogglesEverySectionOfThatUnit()
 	{

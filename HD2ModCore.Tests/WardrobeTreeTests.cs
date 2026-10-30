@@ -161,6 +161,47 @@ public sealed class WardrobeTreeTests
 		Assert.Equal("内衣", undergarmentUnit.PieceTypeLabel);
 	}
 
+	/// <summary>
+	/// 只有一个 unit 的槽位可以折成一行（VPK 组件树走这条）：行上是
+	/// <c>头盔　Unit 0 · &lt;fileId&gt;</c>，点开直接是 section。
+	/// </summary>
+	[Fact]
+	public void Build_MergesTheSlotAndUnitLevelsWhenASlotHasASingleUnit()
+	{
+		var root = WardrobeTree.Build(
+			ArmourLabel,
+			[Unit(HelmetUnderAny, "Helmet", "Undergarment", "Any", 2)],
+			mergeSingleUnitSlots: true);
+
+		var body = root.Children[0];   // 健壮；Any 的 unit 会同时挂在两支下，这里只看第一支
+		var merged = Assert.Single(body.Children);
+		Assert.Equal("头盔", merged.Label);
+		// 标题被部位名占用，编号与 fileId 必须退到副标题——否则整行只剩"头盔"两个字。
+		Assert.Equal("Unit 0 · " + HelmetUnderAny, merged.Subtitle);
+		// 折的只是显示：它仍然是一个 unit 节点，勾选语义 / section 子节点 / Key 都没变。
+		Assert.Equal(WardrobeTreeNodeKind.Unit, merged.Kind);
+		Assert.Equal(HelmetUnderAny, merged.Unit);
+		Assert.Equal("armour/body:Stocky/slot:Helmet/unit:" + HelmetUnderAny, merged.Key);
+		Assert.Equal(2, merged.Children.Count);
+		// 一个部位只有一个 unit 时"护甲 / 内衣"没有分辨对象，别再挂个看不懂的灰标签。
+		Assert.Equal(string.Empty, merged.PieceTypeLabel);
+	}
+
+	/// <summary>一个槽位有多个 unit 时不能折——折了就把两个 unit 压成一个，用户再也分不开。</summary>
+	[Fact]
+	public void Build_KeepsTheSlotLevelWhenASlotHasSeveralUnits()
+	{
+		var root = WardrobeTree.Build(ArmourLabel, Units(), mergeSingleUnitSlots: true);
+
+		var slot = Find(root, "armour/body:Slim/slot:Torso");
+		Assert.Equal(WardrobeTreeNodeKind.Slot, slot.Kind);
+		Assert.Equal(2, slot.Children.Count);
+		Assert.All(slot.Children, child => Assert.Equal(WardrobeTreeNodeKind.Unit, child.Kind));
+
+		// 头盔只有一个 unit，所以同一棵树里头盔那一行被折了。
+		Assert.Equal("头盔", Find(root, "armour/body:Slim/slot:Helmet/unit:" + HelmetUnderAny).Label);
+	}
+
 	[Fact]
 	public void Build_PropagatesTheLinkedFlagUpWhenEveryUnitIsAny()
 	{

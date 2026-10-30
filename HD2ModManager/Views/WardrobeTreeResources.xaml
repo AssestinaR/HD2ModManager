@@ -9,13 +9,16 @@
         VPK 组件卡、将来可能的批量编辑），各写一份必然漂移，而漂移的表现是
         "同一个开关在两个页面长得不一样"，用户会以为它们不是同一件事。
 
-        这里只放**外观**。行容器的交互（双击展开）留在各自页面：它是页面自己的手势，
-        不是这套树的语义。
+        这里只放**外观**。行容器的交互（点一行展不展开）留在各自页面：它是页面自己的手势，
+        不是这套树的语义——Mod 详情页的组件卡是单击（控件见 Controls/Trees/TreeRowExpand.cs），
+        护甲映射页仍是双击。
     -->
     <BooleanToVisibilityConverter x:Key="WardrobeBoolToVis"/>
 
     <!--
-        section 树的一个节点。层级：护甲 → 身形 → 槽位 → Unit → section。
+        section 树的一个节点。层级：护甲 → 身形 → 槽位 → Unit → section；
+        只有一个 unit 的槽位会把后两层合成一行（VPK 组件卡就是这样，见 WardrobeTree.Build 的
+        mergeSingleUnitSlots），合并后的行仍然是 unit 节点，外观不需要区分。
         勾选框统一在最右侧、行宽拉伸到卡片右缘（§4.3 的交互约定）；
         点条目本身不改变显隐——避免"想看详情结果改掉了设置"。
         锁链是矢量图，只在 bodyType=Any 的 unit 上出现：它同时挂在健壮和纤细两支下，
@@ -86,7 +89,7 @@
                       StrokeStartLineCap="Round"
                       StrokeEndLineCap="Round"
                       Data="M6.5,3.5 L5.5,3.5 A2.6,2.6 0 0 0 5.5,8.7 L6.5,8.7 M9.5,3.5 L10.5,3.5 A2.6,2.6 0 0 1 10.5,8.7 L9.5,8.7 M5.9,6.1 L10.1,6.1"
-                      ToolTip="这一行下的 unit 全部同时用于两种身形，改一处等于改两支"
+                      ToolTip="与该mod的另一身形为完全一致的unit"
                       Visibility="{Binding SharedAcrossBodies, Converter={StaticResource WardrobeBoolToVis}}"/>
                 <CheckBox Grid.Column="3"
                           Margin="12,0,2,0"
@@ -112,7 +115,7 @@
     </HierarchicalDataTemplate>
 
     <!--
-        行容器：没有小三角（双击展开），整行拉伸，隔行底色 + 悬停 + 选中。
+        行容器：没有小三角，整行拉伸，隔行底色 + 悬停 + 选中。展开手势由各页面挂（见上面的说明）。
         底色放在容器上而不是模板里，这样悬停/选中/隔行三者只需要在一个地方排优先级。
     -->
     <Style x:Key="WardrobeTreeItemStyleBase" TargetType="TreeViewItem">

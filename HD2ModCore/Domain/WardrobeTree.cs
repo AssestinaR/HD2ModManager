@@ -127,7 +127,24 @@ public static class WardrobeTree
 	/// 用一件护甲的赢家 unit 表构建树。根是这件护甲本身。
 	/// `Any` 身形会被展开到健壮和纤细两支下——是同一个身份，不是两份数据。
 	/// </summary>
-	public static WardrobeTreeNode Build(string armourLabel, IReadOnlyList<WardrobeSectionMapUnit> units)
+	/// <param name="mergeSingleUnitSlots">
+	/// 只有一个 unit 的槽位要不要<b>折成一行</b>（部位层与 unit 层合一）。
+	/// <para>
+	/// <b>为什么需要它。</b>VPK 转换产物的每个部位<b>只有一个 unit</b>，于是树上必然出现
+	/// "头盔 → Unit 0 → 三个 section"这种三层只为放一个孩子的结构——多出来的一层不是信息，
+	/// 是一次多余的点击。合并之后是"头盔 <c>Unit 0 · &lt;fileId&gt;</c> → 三个 section"。
+	/// </para>
+	/// <para>
+	/// <b>为什么是参数而不是默认行为。</b>衣柜编辑器的树按护甲现算，一个槽位里确实可能
+	/// 同时有护甲与内衣两个 unit；那里"部位 → unit"是有内容的，不能折。
+	/// 合并后的节点<b>仍然是一个 unit 节点</b>（勾选语义、section 子节点、Key 都不变），
+	/// 只是标题换成部位名——所以折与不折不会让"勾一下写了什么"有任何差别。
+	/// </para>
+	/// </param>
+	public static WardrobeTreeNode Build(
+		string armourLabel,
+		IReadOnlyList<WardrobeSectionMapUnit> units,
+		bool mergeSingleUnitSlots = false)
 	{
 		ArgumentNullException.ThrowIfNull(units);
 		var rootKey = "armour";
@@ -158,9 +175,24 @@ public static class WardrobeTree
 				// Unit 的序号在整个槽位上算（不是在每个身形分支里各算一遍），
 				// 这样 Any 的 unit 在健壮和纤细两支下是同一个编号——否则看起来像两个不同的 unit。
 				var slotKey = Normalize(slotGroup.First().Unit.Slot, UnknownSlot);
-				var unitNodes = slotGroup
+				var slotUnits = slotGroup
 					.Select(pair => pair.Unit)
 					.OrderBy(unit => unit.FileId, StringComparer.Ordinal)
+					.ToArray();
+				// 只有一个 unit 的槽位：部位层与 unit 层合一，标题用部位名（见 Build 的参数注释）。
+				if (mergeSingleUnitSlots && slotUnits.Length == 1)
+				{
+					slotNodes.Add(BuildUnitNode(
+						rootKey,
+						bodyGroup.Key,
+						slotKey,
+						slotUnits[0],
+						ordinals[slotKey][slotUnits[0].FileId],
+						labelOverride: SlotLabel(slotKey)));
+					continue;
+				}
+
+				var unitNodes = slotUnits
 					.Select(unit => BuildUnitNode(
 						rootKey,
 						bodyGroup.Key,
@@ -218,7 +250,8 @@ public static class WardrobeTree
 		string bodyType,
 		string slot,
 		WardrobeSectionMapUnit unit,
-		int ordinal)
+		int ordinal,
+		string? labelOverride = null)
 	{
 		var unitKey = $"{rootKey}/body:{bodyType}/slot:{slot}/unit:{unit.FileId}";
 		var sections = unit.Sections
@@ -245,17 +278,21 @@ public static class WardrobeTree
 			.ToArray();
 		var unitName = unit.SourceName;
 		var ordinalText = $"Unit {ordinal.ToString(CultureInfo.InvariantCulture)}";
+		// 合并到部位层时（labelOverride 非空），标题被部位名占用，编号与 fileId 必须一律退到副标题：
+		// 否则整行只剩"头盔"两个字，用户看不到这一行到底是哪个 unit。
+		var hasSubtitle = labelOverride is not null || !string.IsNullOrWhiteSpace(unitName);
 		return new WardrobeTreeNode(
 			WardrobeTreeNodeKind.Unit,
 			unitKey,
-			string.IsNullOrWhiteSpace(unitName) ? $"{ordinalText} {unit.FileId}" : unitName,
+			labelOverride ?? (string.IsNullOrWhiteSpace(unitName) ? $"{ordinalText} {unit.FileId}" : unitName),
 			unit.FileId,
 			SectionIndex: null,
 			sections)
 		{
 			SharedAcrossBodies = string.Equals(Normalize(unit.BodyType, UnknownBodyType), AnyBodyType, StringComparison.Ordinal),
-			PieceTypeLabel = PieceTypeLabel(Normalize(unit.PieceType, UnknownPieceType)),
-			Subtitle = string.IsNullOrWhiteSpace(unitName) ? string.Empty : $"{ordinalText} · {unit.FileId}",
+			// 合并之后"护甲 / 内衣"没有分辨对象了（一个部位只有一个 unit），留着只是行上一个看不懂的灰标签。
+			PieceTypeLabel = labelOverride is null ? PieceTypeLabel(Normalize(unit.PieceType, UnknownPieceType)) : string.Empty,
+			Subtitle = hasSubtitle ? $"{ordinalText} · {unit.FileId}" : string.Empty,
 		};
 	}
 

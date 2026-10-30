@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HD2ModManager.Views" xmlns:scroll="clr-namespace:HD2ModManager.Controls.Scrolling"
              xmlns:lists="clr-namespace:HD2ModManager.Controls.Lists"
+             xmlns:tree="clr-namespace:HD2ModManager.Controls.Trees"
              xmlns:cards="clr-namespace:HD2ModManager.Controls.Cards">
     <UserControl.Resources>
         <ResourceDictionary>
@@ -14,6 +15,15 @@
             <local:ImagePlaceholderConverter x:Key="ImagePlaceholder"/>
             <local:AttachmentListMaxHeightConverter x:Key="AttachmentListMaxHeight"/>
             <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+            <!--
+                组件树的行容器：外观来自共享字典，本页只额外加"单击展开"这个手势。
+                护甲映射页那棵树仍是双击——那里点一行更多是"选中来编辑"，单击就展开反而碍事。
+            -->
+            <Style x:Key="VpkWardrobeTreeItemStyle" TargetType="TreeViewItem"
+                   BasedOn="{StaticResource WardrobeTreeItemStyleBase}">
+                <Setter Property="tree:TreeRowExpand.OnSingleClick" Value="True"/>
+            </Style>
 
             <!--
                 本页的卡片内容模板。键名约定 CardTemplate.{CardKind}，由 CardStackHost 解析。
@@ -94,10 +104,10 @@
                 </StackPanel>
             </DataTemplate>
 
-            <!-- 关掉的 section 不再绘制。改动在点标题右侧「应用」后烘进 patch。 -->
+            <!-- 关掉的 section 不再绘制；勾选改动要点卡标题右侧的「应用」才写进 patch。 -->
             <DataTemplate x:Key="CardTemplate.VpkComponents">
                 <StackPanel>
-                    <TextBlock Text="关掉的 section 不再绘制。改动在点「应用」后烘进 patch。"
+                    <TextBlock Text="条目可单击展开，应用后修改mod，重启游戏重新读取mod才能生效"
                                Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"/>
                     <!--
                         组件开关：源侧 `XXX关` 那类 $no_draw 包的翻译结果。
@@ -148,7 +158,7 @@
                                Visibility="{Binding HasVpkSwitchStatus, Converter={StaticResource BoolToVis}}"/>
                     <TreeView ItemsSource="{Binding VpkTree.Roots}"
                               ItemTemplate="{StaticResource WardrobeTreeNodeTemplate}"
-                              ItemContainerStyle="{StaticResource WardrobeTreeItemStyleBase}"
+                              ItemContainerStyle="{StaticResource VpkWardrobeTreeItemStyle}"
                               Background="Transparent" BorderThickness="0"
                               Margin="0,8,0,0"
                               MaxHeight="420"

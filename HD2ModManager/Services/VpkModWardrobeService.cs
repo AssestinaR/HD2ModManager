@@ -20,10 +20,16 @@ public sealed record VpkWardrobeFile(
 {
 	public static VpkWardrobeFile Default { get; } = new(false, VpkWardrobeState.Empty);
 
-	/// <summary>树的根标题：<c>VPK &lt;模组名&gt; 替换 &lt;目标护甲&gt;</c>。</summary>
+	/// <summary>
+	/// 树的根标题：<c>VPK &lt;模组名&gt; 替换 &lt;目标护甲&gt;</c>。
+	/// <para>
+	/// <b>没换过目标时不加任何后缀。</b>以前会写成"（尚未指向具体护甲）"，可这个 Mod 本来就是
+	/// <c>vpk2patch</c> 的产物、本来就不指向任何护甲——那句话描述的是正常状态，读起来却像缺了什么。
+	/// </para>
+	/// </summary>
 	public string BuildTreeLabel(string modName)
 		=> string.IsNullOrWhiteSpace(TargetArmorName)
-			? $"VPK {modName}（尚未指向具体护甲）"
+			? $"VPK {modName}"
 			: $"VPK {modName} 替换 {TargetArmorName}";
 }
 
