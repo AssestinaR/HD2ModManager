@@ -177,7 +177,8 @@ public sealed class SourceMaterialConverter
 		Hd2MaterialTemplateLibrary templates,
 		AlbedoAdjustment? albedoAdjustment = null,
 		IReadOnlyDictionary<string, double[]>? matcapMeans = null,
-		MatCapMode matcapMode = MatCapMode.Bake)
+		MatCapMode matcapMode = MatCapMode.Bake,
+		string? idNamespace = null)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -185,7 +186,34 @@ public sealed class SourceMaterialConverter
 		this.albedoAdjustment = albedoAdjustment;
 		this.matcapMeans = matcapMeans;
 		this.matcapMode = matcapMode;
+		this.idNamespace = string.IsNullOrWhiteSpace(idNamespace) ? null : idNamespace.Trim();
 	}
+
+	/// <summary>
+	/// 材质/贴图 id 的命名空间（见 <see cref="Hd2AssetId.NamespaceFor"/>）。
+	/// <para>
+	/// <b>为什么在转换器上而不是在 id 派生处按需传。</b>这个转换器一次只服务一个 VPK，
+	/// 命名空间在整个生命周期里是常量；做成字段，五个派生点（材质 id、底色、遮罩、发光、
+	/// 纯色标量图）就不可能漏掉一个——漏掉的那张会退回"全 Mod 同名共享"，正是要修的病。
+	/// </para>
+	/// <para><c>null</c> = 旧行为（与历史产物逐位相同）。</para>
+	/// </summary>
+	public string? IdNamespace => idNamespace;
+
+	/// <summary>
+	/// 材质 id：身份串 + 本转换器的命名空间。
+	/// <para>
+	/// 拆成方法而不是让五处各自调 <see cref="Hd2AssetId"/>：这五个派生点里<b>漏掉一个</b>，
+	/// 漏掉的那张贴图就会退回"全库同名共享"，而现象只是"某个 Mod 的某个部位串味"——
+	/// 看不出是哪一步漏的。统一收口之后，"忘了传命名空间"在类型上就写不出来。
+	/// </para>
+	/// </summary>
+	public ulong DeriveMaterialId(string identity) => Hd2AssetId.Material(identity, idNamespace);
+
+	/// <summary>贴图 id：名字 + 本转换器的命名空间（见 <see cref="DeriveMaterialId"/>）。</summary>
+	public ulong DeriveTextureId(string textureName) => Hd2AssetId.Texture(textureName, idNamespace);
+
+	private readonly string? idNamespace;
 
 	/// <summary>matcap 怎么处理：烘进底色，还是直接当底色。见 <see cref="MatCapMode"/>。</summary>
 	private readonly MatCapMode matcapMode;
@@ -647,7 +675,7 @@ public sealed class SourceMaterialConverter
 
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
-			identity, Hd2AssetId.Material(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
+			identity, DeriveMaterialId(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
 			matcapTextureName, matcapIsSurface);
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
@@ -766,7 +794,7 @@ public sealed class SourceMaterialConverter
 		texture.FromDds(bc7);
 		return (
 			new SynthesizedTexture(
-				Hd2AssetId.Texture(textureName),
+				DeriveTextureId(textureName),
 				texture.WriteToc(),
 				texture.Pixels,
 				textureName,
@@ -808,7 +836,7 @@ public sealed class SourceMaterialConverter
 			var asset = new Hd2TextureAsset();
 			asset.FromDds(bc7);
 			texture = new SynthesizedTexture(
-				Hd2AssetId.Texture(stem), asset.WriteToc(), asset.Pixels, stem,
+				DeriveTextureId(stem), asset.WriteToc(), asset.Pixels, stem,
 				asset.FormatName, asset.Width, asset.Height);
 			failure = string.Empty;
 			return true;
@@ -850,7 +878,7 @@ public sealed class SourceMaterialConverter
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
-			Hd2AssetId.Texture(textureName + "_opacity"),
+			DeriveTextureId(textureName + "_opacity"),
 			texture.WriteToc(),
 			texture.Pixels,
 			textureName + "_opacity",
@@ -987,7 +1015,7 @@ public sealed class SourceMaterialConverter
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
-			Hd2AssetId.Texture(owner + suffix),
+			DeriveTextureId(owner + suffix),
 			texture.WriteToc(),
 			texture.Pixels,
 			suffix,

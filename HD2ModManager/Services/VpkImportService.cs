@@ -210,6 +210,15 @@ public sealed class VpkImportService
 
 		// 解析集合：整批都交出去，这样材质包才能借到模型 VPK 里的几何与贴图。
 		var materialSource = string.Join(';', source.VpkPaths);
+		// 材质/贴图 id 的命名空间：**整批共用**，由来源包名派生（CLI 侧算 token，见 Hd2AssetId.NamespaceFor）。
+		//
+		// 为什么必须有：贴图 id 只由 basename 派生，两个 VPK Mod 里都叫 hair 的贴图会得到同一个 id，
+		// 同时装上就只有一个能生效——另一个 Mod 的头发会采样到别人的图集（实测两个不同作者的包
+		// 就是这样串味的）。加了命名空间之后，同一个名字在不同来源里是不同资产，两个 Mod 可以共存。
+		//
+		// 为什么用包名而不是随机 GUID：用户重转同一份包应当得到同一套 id，否则同一个 Mod 重导一次
+		// 就变成另一套资产，库里会堆出重复项。
+		var idNamespaceSource = ResolveNamespaceSource(source.SourcePath);
 		// 同一个压缩包里可能出现同名（或只差大小写）的 VPK——实测一个八人包里就有一份重复的
 		// "手套Gloves关"。它们会算到同一个产出目录，第二个在 Move 时抛
 		// "a file or directory with the same name already exists"，那一个包就丢了。
@@ -226,7 +235,7 @@ public sealed class VpkImportService
 			var raw = Path.Combine(source.StagingRoot, "raw", index.ToString(CultureInfo.InvariantCulture));
 			try
 			{
-				var result = await ConvertOneAsync(executable, candidate.VpkPath, raw, materialSource, cancellationToken).ConfigureAwait(false);
+				var result = await ConvertOneAsync(executable, candidate.VpkPath, raw, materialSource, idNamespaceSource, cancellationToken).ConfigureAwait(false);
 				if (result.PatchDirectory is null)
 				{
 					items.Add(new VpkImportItem(candidate.VpkPath, VpkImportOutcome.Skipped, null,
@@ -321,6 +330,7 @@ public sealed class VpkImportService
 		string vpkPath,
 		string outputRoot,
 		string materialSource,
+		string idNamespaceSource,
 		CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(outputRoot);
@@ -330,6 +340,9 @@ public sealed class VpkImportService
 			"--output", outputRoot,
 			// 同批的包互为解析集合：材质包要能借到模型 VPK 的几何来算 matcap，模型包要能借到别处的材质。
 			"--material-source", materialSource,
+			// 整批共用同一个命名空间来源（见 ConvertAsync 里的注释）。少传这一个参数，
+			// 转出来的 Mod 就会退回"全库同名共享 id"，也就是这次要修的那个病。
+			"--id-namespace", idNamespaceSource,
 			// 默认产出"7 槽位标准版"：附加部件并进它主导的那个身躯槽位。
 			"--components", "merge",
 			// matcap 直接当底色：这样"只换 matcap"的包才是真正可换的 patch。
@@ -499,6 +512,24 @@ public sealed class VpkImportService
 		try { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
 		catch (IOException) { }
 		catch (UnauthorizedAccessException) { }
+	}
+
+	/// <summary>
+	/// 命名空间的"来源标识"：压缩包/目录/单个 VPK 的名字（去扩展名）。
+	/// <para>
+	/// 只取名字、不取路径：同一个包被解到别的地方、或者用户挪了目录，重转出来的 id 仍应相同。
+	/// 真正的 token 由 CLI 侧算（<c>Hd2AssetId.NamespaceFor</c>），这里只负责给一个稳定的名字。
+	/// </para>
+	/// </summary>
+	private static string ResolveNamespaceSource(string sourcePath)
+	{
+		if (string.IsNullOrWhiteSpace(sourcePath))
+			return "vpk";
+		var trimmed = sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		var name = Path.GetFileNameWithoutExtension(trimmed);
+		if (string.IsNullOrWhiteSpace(name))
+			name = Path.GetFileName(trimmed);
+		return string.IsNullOrWhiteSpace(name) ? "vpk" : name;
 	}
 
 	private static string SafeDirectoryName(string name)

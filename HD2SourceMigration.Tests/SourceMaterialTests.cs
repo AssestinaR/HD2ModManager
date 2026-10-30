@@ -75,6 +75,63 @@ public sealed class SourceMaterialTests
 		Assert.Throws<ArgumentOutOfRangeException>(() => Hd2AssetId.Derive(0x10, "x"));
 	}
 
+	/// <summary>
+	/// 用户实测的那个 bug：两个不同作者的 VPK Mod 都带 <c>Hair.vtf</c>（4096² DXT5 与 2048² DXT1），
+	/// 名字相同、内容不同。没有命名空间时它们算出<b>同一个贴图 id</b>，两个 Mod 同时装上就只有一个
+	/// 能生效，另一个 Mod 的头发会采样到别人的图集。
+	/// <para>
+	/// 这条钉的是"加上命名空间之后，同名不同来源必须是不同 id"，以及"同一个来源仍然稳定"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void NamespaceSeparatesTheSameNameComingFromDifferentMods()
+	{
+		var eku = Hd2AssetId.NamespaceFor("【vrchat】eku-见习奇术师");
+		var melty = Hd2AssetId.NamespaceFor("【PUBLIC】Milfy_MeltyDoll八人包");
+
+		// 没有命名空间时就是今天的行为：同名同 id（这正是串味的根因）。
+		Assert.Equal(Hd2AssetId.Texture("Hair"), Hd2AssetId.Texture("Hair", null));
+
+		// 有命名空间时：两个来源不同 id，同一个来源稳定。
+		Assert.NotEqual(Hd2AssetId.Texture("Hair", eku), Hd2AssetId.Texture("Hair", melty));
+		Assert.Equal(Hd2AssetId.Texture("Hair", eku), Hd2AssetId.Texture("Hair", eku));
+		Assert.NotEqual(Hd2AssetId.Texture("Hair"), Hd2AssetId.Texture("Hair", eku));
+
+		// 材质 id 同理：同一个角色的两个皮肤包会写同一套 $basetexture 路径。
+		const string sharedBase = "models/survivors/survivor_zoey/body";
+		Assert.NotEqual(Hd2AssetId.Material(sharedBase, eku), Hd2AssetId.Material(sharedBase, melty));
+
+		// 命名空间不能吃掉高位前缀，否则类型判断全废。
+		Assert.Equal(Hd2AssetId.TexturePrefix, Hd2AssetId.PrefixOf(Hd2AssetId.Texture("Hair", eku)));
+		Assert.Equal(Hd2AssetId.MaterialPrefix, Hd2AssetId.PrefixOf(Hd2AssetId.Material(sharedBase, eku)));
+	}
+
+	/// <summary>
+	/// 命名空间 token 由来源包名派生，必须是"同名同 token、异名异 token"，
+	/// 且对空白与大小写不敏感——同一个包被复制成不同大小写的名字时不该变成另一套 id。
+	/// </summary>
+	[Fact]
+	public void NamespaceForIsStableAcrossCaseAndWhitespaceAndDistinctPerSource()
+	{
+		var a = Hd2AssetId.NamespaceFor("Milfy_MeltyDoll八人包");
+		Assert.Equal(a, Hd2AssetId.NamespaceFor("  MILFY_MELTYDOLL八人包  "));
+		Assert.Equal(a, Hd2AssetId.NamespaceFor("milfy_meltydoll八人包"));
+		Assert.NotEqual(a, Hd2AssetId.NamespaceFor("eku-见习奇术师"));
+		Assert.StartsWith("vpk-", a);
+		Assert.Throws<ArgumentException>(() => Hd2AssetId.NamespaceFor("  "));
+	}
+
+	/// <summary>空命名空间必须与"不传"完全等价——旧产物与 Python 对拍都靠这一条。</summary>
+	[Fact]
+	public void BlankNamespaceIsTheSameAsNoNamespace()
+	{
+		foreach (var blank in new[] { "", "   " })
+		{
+			Assert.Equal(Hd2AssetId.Material("a"), Hd2AssetId.Material("a", blank));
+			Assert.Equal(Hd2AssetId.Texture("a"), Hd2AssetId.Texture("a", blank));
+		}
+	}
+
 	[Fact]
 	public void SourceMaterialSourceIgnoresNonexistentPathsWithoutThrowing()
 	{

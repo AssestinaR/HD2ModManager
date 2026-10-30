@@ -57,7 +57,10 @@ public sealed record CliGlobalOptions(
 	string? Sections = null,
 	// `vpk2patch --dry-run`：只算"哪些能转、哪些跳过、哪些是同一个模型"，不真的转换。
 	// 管理器导入时要先知道结果才能决定进度条与提示，所以这一步必须能单独跑。
-	bool DryRun = false);
+	bool DryRun = false,
+	// 材质/贴图 id 的命名空间（见 Hd2AssetId.NamespaceFor）。**一批必须共用同一个值**：
+	// 模型 patch 引用的材质 id 要与材质 patch 写出的相等。不给 = 旧行为（id 只由名字决定）。
+	string? IdNamespace = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -90,6 +93,7 @@ public static class CliArgumentParser
 		string? donor = null;
 		string? file = null;
 		string? sections = null;
+		string? idNamespace = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -187,6 +191,9 @@ public static class CliArgumentParser
 				case "--sections":
 					sections = ReadValue(args, ref index, argument);
 					break;
+				case "--id-namespace":
+					idNamespace = ReadValue(args, ref index, argument);
+					break;
 				case "--matcap":
 					var rawMatcap = ReadValue(args, ref index, argument);
 					if (!rawMatcap.Equals("bake", StringComparison.OrdinalIgnoreCase)
@@ -260,7 +267,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Text.Json;
 using HD2ModCore.Application;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
@@ -2077,6 +2077,9 @@ public static class CliApplication
 					output = Path.GetFullPath(outputRoot),
 					queue = vpkPaths,
 					resolutionSet = batch.VpkPaths,
+					// 命名空间：整批共用。写进报告是为了让"这个 Mod 的材质 id 凭什么这样"可回答——
+					// 同一个来源包重转会得到同一个 token，换一个来源就得到另一套 id（这正是隔离的原理）。
+					idNamespace = ResolveIdNamespace(invocation.Options),
 					matcapGeometry = matcapModel?.MdlPath,
 					patches = results.Select(ProjectConversion).ToArray(),
 					failures,
@@ -2269,7 +2272,8 @@ public static class CliApplication
 					invocation.Options.AlbedoFactor is { } factor
 						? new AlbedoAdjustment(AlbedoDarkenMode.Multiply, factor)
 						: null,
-					matcapMeans);
+					matcapMeans,
+					idNamespace: ResolveIdNamespace(invocation.Options));
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -2278,7 +2282,8 @@ public static class CliApplication
 				cancellationToken: default,
 				sourceMaterialNames: inputs.Model.MaterialPaths,
 				materialConverter: materialConverter,
-				unitIdSeed: reusedUnitIdSeed).ConfigureAwait(false);
+				unitIdSeed: reusedUnitIdSeed,
+				idNamespace: ResolveIdNamespace(invocation.Options)).ConfigureAwait(false);
 
 			// 登记素体。**只写工作区**（`<mod库>/.hd2modmanager/armor-registry.workspace.json`），
 			// 由管理器自己把它编译成 `armor-registry.protocol`——直接改协议文件会被下一次应用覆盖。
@@ -2438,6 +2443,18 @@ public static class CliApplication
 		string? RegistryError);
 
 	/// <summary>
+	/// <c>--id-namespace</c> 的值是<b>来源标识</b>（通常就是来源压缩包/目录名），不是 token 本身。
+	/// <para>
+	/// <b>为什么在 CLI 里派生而不是让调用方传 token。</b>派生规则只该有一份：管理器、命令行、
+	/// 将来别的入口都传"名字"，token 由 <see cref="Hd2AssetId.NamespaceFor"/> 统一算。
+	/// 让调用方自己算，两边一旦漂移就是"同一份包重转得到两套 id"——那种问题查起来极贵。
+	/// </para>
+	/// <para>不传 = <c>null</c> = 旧行为（id 只由名字决定，与历史产物逐位相同）。</para>
+	/// </summary>
+	private static string? ResolveIdNamespace(CliGlobalOptions options)
+		=> string.IsNullOrWhiteSpace(options.IdNamespace) ? null : Hd2AssetId.NamespaceFor(options.IdNamespace);
+
+	/// <summary>
 	/// 把一个 VPK 忠实地翻译成一个 patch。
 	/// <para>
 	/// <b>输出范围由 <paramref name="scopedMaterials"/> 决定</b>：给了就只写<b>这个 VPK 自己的</b>
@@ -2516,7 +2533,9 @@ public static class CliApplication
 				// matcap 怎么处理。`albedo` 让"只换 matcap"的包（C1/C2 那种）成为真正可换的 patch。
 				options.Matcap is not null && options.Matcap.Equals("albedo", StringComparison.OrdinalIgnoreCase)
 					? MatCapMode.Albedo
-					: MatCapMode.Bake);
+					: MatCapMode.Bake,
+				// 命名空间：一批共用一个 token（见 Hd2AssetId.NamespaceFor）。
+				ResolveIdNamespace(options));
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──
@@ -2527,7 +2546,8 @@ public static class CliApplication
 				cancellationToken: cancellationToken,
 				materialConverter: materialConverter,
 				materialPackFileName: $"{ArmorArchiveHex}.patch_0",
-				materialScope: scope).ConfigureAwait(false);
+				materialScope: scope,
+				idNamespace: ResolveIdNamespace(options)).ConfigureAwait(false);
 
 			return new(full, "material", outputDirectory, null, 0, 0, materialPackage,
 				string.Empty, string.Empty, new Dictionary<BodyRegion, UnitDonor>(), null);
@@ -2651,7 +2671,8 @@ public static class CliApplication
 			sourceMaterialNames: inputs.Model.MaterialPaths,
 			materialConverter: materialConverter,
 			unitIdSeed: reusedUnitIdSeed,
-			materialScope: scope).ConfigureAwait(false);
+			materialScope: scope,
+			idNamespace: ResolveIdNamespace(options)).ConfigureAwait(false);
 
 		// 顺手产出 `sections.json`：这个 patch 里每个 unit 的每个 section 落在 TOC 的哪个偏移、
 		// 原本的 numIndices 是多少。管理器的"衣物装饰组件"树靠它画，烘焙靠它写回原值。

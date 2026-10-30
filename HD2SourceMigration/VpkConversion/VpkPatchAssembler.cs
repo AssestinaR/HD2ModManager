@@ -195,6 +195,11 @@ public sealed class VpkPatchAssembler
 	/// 输出范围。见类型注释。给定时它<b>必须</b>是一个 <see cref="SourceMaterialSource.ScopedTo"/> 视图，
 	/// 否则"这个 VPK 自己带了什么"无从判断。
 	/// </param>
+	/// <param name="idNamespace">
+	/// 材质/贴图 id 的命名空间（见 <see cref="Hd2AssetId.NamespaceFor"/>）。
+	/// 给了 <paramref name="materialConverter"/> 时以它的为准——两边不一致会让"去重判断用的 id"
+	/// 与"真正写进包的 id"不是同一个，那种错只会表现为"同一张图写了两遍"或"漏写"。
+	/// </param>
 	public async ValueTask<VpkPackageResult> AssembleAsync(
 		IReadOnlyList<VpkUnitPlan> plans,
 		RetargetResult? retarget,
@@ -210,7 +215,8 @@ public sealed class VpkPatchAssembler
 		SourceMaterialConverter? materialConverter = null,
 		string? materialPackFileName = null,
 		ulong? unitIdSeed = null,
-		SourceMaterialSource? materialScope = null)
+		SourceMaterialSource? materialScope = null,
+		string? idNamespace = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
@@ -230,6 +236,10 @@ public sealed class VpkPatchAssembler
 		var diagnostics = new List<string>();
 		var warnings = new List<string>();
 		var skipped = new List<string>();
+
+		// 命名空间以转换器为准（见参数注释）：转换器有它就一定用它派生，装配器必须跟着用，
+		// 否则下面两处"按 id 去重"的键与真正写出的 id 不是同一个。
+		idNamespace = materialConverter?.IdNamespace ?? (string.IsNullOrWhiteSpace(idNamespace) ? null : idNamespace.Trim());
 		var units = new List<VpkUnitOutcome>();
 		var session = new CanonicalPatchSession();
 		var forbidden = new HashSet<string>(forbiddenUnitIds ?? [], StringComparer.OrdinalIgnoreCase);
@@ -518,7 +528,7 @@ public sealed class VpkPatchAssembler
 			{
 				foreach (var name in scope.OwnedVtfNames.Order(StringComparer.OrdinalIgnoreCase))
 				{
-					if (addedTextureIds.Contains(Hd2AssetId.Texture(name)))
+					if (addedTextureIds.Contains(Hd2AssetId.Texture(name, idNamespace)))
 						continue;
 					if (!converter.TryConvertTexture(name, out var texture, out var failure))
 					{
@@ -628,7 +638,7 @@ public sealed class VpkPatchAssembler
 		{
 			foreach (var name in materialScope!.OwnedVtfNames.Order(StringComparer.OrdinalIgnoreCase))
 			{
-				var id = Hd2AssetId.Texture(name);
+				var id = Hd2AssetId.Texture(name, idNamespace);
 				if (addedTextureIds.Contains(id))
 					continue;
 				textureOutcomes.Add(new VpkTextureOutcome(

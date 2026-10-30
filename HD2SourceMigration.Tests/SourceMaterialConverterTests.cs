@@ -195,7 +195,7 @@ public sealed class SourceMaterialConverterTests
 
 		// 四个身份两两不同，而且 id 也必须两两不同——身份只是中间量，真正去重的是 id。
 		var ids = new[] { opaque, clipped, emissive, emissiveClipped }
-			.Select(Hd2AssetId.Material)
+			.Select(identity => Hd2AssetId.Material(identity))
 			.ToArray();
 		Assert.Equal(ids.Length, ids.Distinct().Count());
 
