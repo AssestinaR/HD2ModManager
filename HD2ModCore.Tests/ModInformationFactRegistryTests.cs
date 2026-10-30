@@ -471,8 +471,19 @@ public sealed class ModInformationFactRegistryTests
 		return count;
 	}
 
+	// 统一成 LF 再交给断言：本文件里的扫描都是"跨行片段"（"\n\tpublic "、"签名(\n"），
+	// 一旦读到的源码是 CRLF，这些片段就永远匹配不上，断言会退化成"集合为空"。
+	// 工作区到底是 LF 还是 CRLF 取决于 checkout 时机器的 core.autocrlf，
+	// 所以这里不能假设——不归一化就等于让测试结果随开发机配置变化（CI 就是这么红的）。
+	// Normalize to LF before asserting: the scans here are multi-line snippets
+	// ("\n\tpublic ", "signature(\n"), which can never match CRLF text and degrade the
+	// assertions into "empty collection". Whether the worktree is LF or CRLF depends on
+	// core.autocrlf at checkout time, so it must not be assumed here — without
+	// normalization the test result follows the developer's machine config (which is
+	// exactly how CI went red).
 	private static string ReadSource(params string[] relativeSegments)
-		=> File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. relativeSegments]));
+		=> File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. relativeSegments]))
+			.Replace("\r\n", "\n", StringComparison.Ordinal);
 
 	private static string FindRepositoryRoot()
 	{

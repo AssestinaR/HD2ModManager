@@ -54,11 +54,14 @@ jobs:
       - name: Build
         run: dotnet build WpfApp1.sln -c Release --no-restore
 
-      # 跑全部 4 个测试项目：Core / Adaptation / Cli / Decryptor。
+      # 跑全部 6 个测试项目：Core / Adaptation / Cli / Decryptor / SourceMigration / SourceModel。
       # CLI 测试通过 CliManagerProcessProbe 中和了"桌面端正在运行"的检查，
       # 因此 CI 机器上即使存在同名进程也不会产生误报。
-      # Runs all four test projects. The CLI tests neutralize the "desktop app is running" guard through
+      # 依赖本机素材（Steam 库、E:\tmp 等）的用例自己会 return 跳过，不会因为 CI 上没有这些文件而红。
+      # Runs all six test projects. The CLI tests neutralize the "desktop app is running" guard through
       # CliManagerProcessProbe, so a same-named process on the CI machine cannot cause false failures.
+      # Cases that need local fixtures (Steam library, E:\tmp, ...) return early on their own, so their
+      # absence on CI cannot turn the job red.
       - name: Test
         run: dotnet test WpfApp1.sln -c Release --no-build --no-restore --logger "trx;LogFileName=results.trx"
 

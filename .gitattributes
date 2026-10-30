@@ -1,7 +1,30 @@
 ###############################################################################
 # Set default behavior to automatically normalize line endings.
+#
+# eol=lf 是刻意的：仓库里有一批"架构测试"会读取源码文本再断言其中的片段
+# （例如 ModInformationFactRegistryTests 检查成员签名后面紧跟换行）。
+# 只写 text=auto 时，工作区到底是 LF 还是 CRLF 由每台机器的 core.autocrlf 决定：
+# 本机 false → LF，测试通过；GitHub Actions 的 windows-latest 是 Git for Windows
+# 默认的 true → CRLF，同一个测试就变成"集合为空"而失败。构建于是只在本地成功。
+# 写死 eol=lf 让 checkout 结果与机器配置无关，测试才可复现。
+# eol=lf is deliberate: several architecture tests read source text and assert on
+# snippets (e.g. ModInformationFactRegistryTests checks that a member signature is
+# followed by a newline). With plain text=auto the worktree ends up LF or CRLF
+# depending on each machine's core.autocrlf: false locally -> tests pass, while
+# GitHub Actions windows-latest uses the Git for Windows default true -> CRLF, and
+# the same test fails with an empty collection. Pinning eol=lf makes the checkout
+# independent of machine config, so the tests are reproducible.
 ###############################################################################
-* text=auto
+* text=auto eol=lf
+
+###############################################################################
+# 例外：Windows 批处理保持 CRLF。cmd.exe 对只有 LF 的 .cmd/.bat 处理不稳定
+# （goto/label、行尾续行都会出问题），这类文件不值得为一致性冒险。
+# Exception: keep CRLF for Windows batch files. cmd.exe is unreliable with LF-only
+# .cmd/.bat (goto/labels, line continuation), so these keep CRLF.
+###############################################################################
+*.bat text eol=crlf
+*.cmd text eol=crlf
 
 ###############################################################################
 # Set default behavior for command prompt diff.
