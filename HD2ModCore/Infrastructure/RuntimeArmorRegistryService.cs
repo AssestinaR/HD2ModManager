@@ -484,6 +484,9 @@ public sealed class RuntimeArmorRegistryService
 							foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
 							{
 								if (!piece.Enabled) continue;
+								// IsReserved = 编辑器把分行合并成 Any 之后留下的旧副本，真正生效的是 Any 那条。
+								// 一起写出去会让同一 (槽位, 层) 在多个 body 行里各出现一次，正是"身形串件"的来源。
+								if (piece.IsReserved) continue;
 								if (!TryParseUnitHex(piece.Unit, out var unit)) continue;
 								pieces.Add(new ArmorRegistryDataSourcePiece(piece.Body, piece.Slot, piece.PieceType, unit));
 							}

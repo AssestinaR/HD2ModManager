@@ -79,7 +79,10 @@ public sealed record CliGlobalOptions(
 	string? IdNamespaceToken = null,
 	// matcap 烘进底色时的亮度增益（默认 1.0 = 不加）。
 	// 实机反馈"金属太黑、没反光"，而 matcap 是加法高光图、平均色偏暗，所以留这个旋钮。
-	double? MatcapGain = null);
+	double? MatcapGain = null,
+	// 把每个 Unit 的**身份**钉成某件游戏护甲自己的那一行（id + 身形/槽位/重量/层）。
+	// 见 VpkUnitIdentityOverride：不给就是"自定义素体"形态（随机 id + BodyType_Any）。
+	string? UnitIds = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -117,6 +120,7 @@ public static class CliArgumentParser
 		string? cutout = null;
 		string? idNamespaceToken = null;
 		double? matcapGain = null;
+		string? unitIds = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -231,6 +235,9 @@ public static class CliArgumentParser
 
 					idNamespaceToken = rawToken.ToLowerInvariant();
 					break;
+				case "--unit-ids":
+					unitIds = ReadValue(args, ref index, argument);
+					break;
 				case "--disabled":
 					disabled = ReadValue(args, ref index, argument);
 					break;
@@ -270,11 +277,13 @@ public static class CliArgumentParser
 				case "--matcap":
 					var rawMatcap = ReadValue(args, ref index, argument);
 					if (!rawMatcap.Equals("bake", StringComparison.OrdinalIgnoreCase)
-						&& !rawMatcap.Equals("albedo", StringComparison.OrdinalIgnoreCase))
+						&& !rawMatcap.Equals("albedo", StringComparison.OrdinalIgnoreCase)
+						&& !rawMatcap.Equals("metal", StringComparison.OrdinalIgnoreCase))
 					{
 						throw new CliUserException("InvalidOption",
-							$"--matcap 只接受 bake 或 albedo，实际是 '{rawMatcap}'。" +
-							"bake = 把 matcap 的平均色烘进底色（旧行为）；albedo = 直接拿 matcap 当底色。");
+							$"--matcap 只接受 bake / albedo / metal，实际是 '{rawMatcap}'。" +
+							"bake = 把 matcap 的平均色烘进底色（旧行为）；albedo = 直接拿 matcap 当底色；" +
+							"metal = 归一成金属 F0（保留色相、丢掉亮度图案）。");
 					}
 
 					matcap = rawMatcap.ToLowerInvariant();
@@ -340,7 +349,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

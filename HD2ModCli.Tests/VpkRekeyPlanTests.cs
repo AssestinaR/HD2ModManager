@@ -5,11 +5,15 @@ using Xunit;
 namespace HD2ModCli.Tests;
 
 /// <summary>
-/// 换甲映射（<see cref="CliVpkRekey.BuildPlan"/>）的层优先规则。
+/// 换甲映射（<see cref="CliVpkRekey.BuildPlan"/>）的层规则：**外层优先**。
 /// <para>
-/// 这些用例来自一次真实的丢件：AF-52「禁锢」的右臂只有护甲层、没有内衣层，
-/// 旧规则把护甲层一律判成"隐藏"，于是原版右臂被隐藏、我们的右臂又没写出去，
-/// 玩家进游戏看到的是"衣服还在、人体胳膊不见了"。
+/// 历史一：AF-52「禁锢」的右臂只有护甲层、没有内衣层，更早的规则把护甲层一律判成"隐藏"，
+/// 于是原版右臂被隐藏、我们的右臂又没写出去 → "衣服还在、人体胳膊不见了"。
+/// </para>
+/// <para>
+/// 历史二（现行规则）：内层优先会丢手套与丝袜。护甲件的 <c>mesh0</c> 是只写深度的剔除
+/// 代理网格（形状就是整条前臂 / 小腿），而隐藏空壳把它原样保留，于是挂在更内层的几何
+/// 被深度剔除。改成外层优先后实机正常。
 /// </para>
 /// </summary>
 public sealed class VpkRekeyPlanTests
@@ -34,13 +38,14 @@ public sealed class VpkRekeyPlanTests
         Assert.All(mapped, mapping => Assert.Equal(UnitMeshPartLayer.Armor, mapping.Target.Layer));
         Assert.All(mapped, mapping => Assert.True(mapping.WillReplace));
         Assert.Contains(notes, note => note.Contains("RightArm", StringComparison.Ordinal)
-            && note.Contains("没有内衣层", StringComparison.Ordinal));
+            && note.Contains("Armor 层承载", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void BuildPlan_PrefersTheUndergarmentLayerAndLeavesTheArmorLayerToHiding()
+    public void BuildPlan_PrefersTheArmorLayerAndLeavesTheUndergarmentToHiding()
     {
-        // 目标内衣层与护甲层都有右臂（RE-2310 的形状）：只换内衣层，护甲层留着被隐藏。
+        // 目标内衣层与护甲层都有右臂（RE-2310 的形状）：几何换到**护甲层**，
+        // 内衣层交给隐藏——内层优先会让手套 / 丝袜被外层护甲件的剔除代理按深度挡掉。
         var target = Target(
             Part(0x07, UnitMeshPartKind.RightArm, UnitMeshPartLayer.Undergarment, UnitMeshBodyVariant.Slim),
             Part(0x08, UnitMeshPartKind.RightArm, UnitMeshPartLayer.Undergarment, UnitMeshBodyVariant.Stocky),
@@ -49,10 +54,25 @@ public sealed class VpkRekeyPlanTests
         var (plan, notes) = CliVpkRekey.BuildPlan(Source(), [target]);
 
         var mapped = plan.Mappings.Where(mapping => mapping.Source is not null).ToArray();
-        Assert.Equal(2, mapped.Length);
-        Assert.All(mapped, mapping => Assert.Equal(UnitMeshPartLayer.Undergarment, mapping.Target.Layer));
-        Assert.DoesNotContain(notes, note => note.Contains("RightArm", StringComparison.Ordinal)
-            && note.Contains("没有内衣层", StringComparison.Ordinal));
+        var mapping = Assert.Single(mapped);
+        Assert.Equal(UnitMeshPartLayer.Armor, mapping.Target.Layer);
+        Assert.Contains(notes, note => note.Contains("RightArm", StringComparison.Ordinal)
+            && note.Contains("Armor 层承载", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BuildPlan_PrefersTheAccessoryLayerWhenItExists()
+    {
+        // 三层都在时取**最外层**（Accessory）——"替换尽可能的外层、把内层隐藏"。
+        var target = Target(
+            Part(0x07, UnitMeshPartKind.Torso, UnitMeshPartLayer.Undergarment, UnitMeshBodyVariant.Slim),
+            Part(0x08, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Slim),
+            Part(0x09, UnitMeshPartKind.Torso, UnitMeshPartLayer.Accessory, UnitMeshBodyVariant.Slim));
+
+        var (plan, _) = CliVpkRekey.BuildPlan(Source(), [target]);
+
+        var mapping = Assert.Single(plan.Mappings, item => item.Source is not null);
+        Assert.Equal(UnitMeshPartLayer.Accessory, mapping.Target.Layer);
     }
 
     [Fact]

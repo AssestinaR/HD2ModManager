@@ -76,8 +76,40 @@ public sealed class VmtDocument
 	/// Python 侧因此要求"VMT 开关<b>且</b>贴图真有 alpha"两条同时成立才切成 alphaclip 模板
 	/// （<c>fix_appearance.py</c> 的规则 A，M7 只按开关判、漏了 3 组）。
 	/// </para>
+	/// <para>
+	/// ⚠️ <b>两种"想要透明"在 HD2 里的命运完全不同，不要混用</b>——见
+	/// <see cref="WantsAlphaTest"/> 与 <see cref="WantsTranslucency"/>。
+	/// </para>
 	/// </summary>
-	public bool WantsTransparency => IsEnabled("$translucent") || IsEnabled("$alphatest");
+	public bool WantsTransparency => WantsAlphaTest || WantsTranslucency;
+
+	/// <summary>
+	/// <c>$alphatest 1</c>：<b>硬裁</b>（alpha 低于参考值就丢弃像素）。
+	/// <para>
+	/// 这个语义与 HD2 的 <c>alphaclip</c> 模板<b>一致</b>，可以照搬。实测 serenade 的
+	/// 蕾丝件（<c>lace_white_*</c>，18 个）全是这种，它们的 alpha 就是"蕾丝眼"的形状。
+	/// </para>
+	/// </summary>
+	public bool WantsAlphaTest => IsEnabled("$alphatest");
+
+	/// <summary>
+	/// <c>$translucent 1</c>：<b>混合</b>（按 alpha 与背景做 alpha blending，半透明）。
+	/// <para>
+	/// ⚠️ <b>这个语义 HD2 表达不了，绝不能当 <c>alphaclip</c> 处理。</b>
+	/// <c>alphaclip</c> 是硬裁：把"半透明"当成"低于阈值就消失"，会把大半表面直接删掉。
+	/// 实测 serenade 的 <c>_1__white</c>（袖套 / 丝袜）就是这种写法，它的 alpha 是
+	/// <b>UV 图集里的形状遮罩</b>，分布 p50=0 / p90=27 / p95=223 ——
+	/// 按阈值 0.5 硬裁会<b>裁掉 58.8%</b> 的像素，游戏里表现为"整片袖套消失，只剩袖口一点"；
+	/// 换阈值 0.144 也只从 58.8% 降到 56.8%，所以 A/B 两档看起来毫无区别。
+	/// </para>
+	/// <para>
+	/// HD2 里带底色贴图槽的模板只有 <c>advanced</c>（完全没有透明度）与
+	/// <c>alphaclip</c>（硬裁），<c>translucent</c> 模板只有纯色 <c>BaseColor</c>、没有贴图槽
+	/// （见官方 modding wiki 的材质页）。所以这类材质只能<b>退成不透明</b>——
+	/// 那至少是"看得见、颜色对"，比整片消失好。转换器会把这件事写进报告的提示里。
+	/// </para>
+	/// </summary>
+	public bool WantsTranslucency => IsEnabled("$translucent");
 
 	public string? Value(string key) => values.GetValueOrDefault(key.ToLowerInvariant());
 

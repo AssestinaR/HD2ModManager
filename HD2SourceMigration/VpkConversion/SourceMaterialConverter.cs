@@ -24,6 +24,108 @@ public enum MatCapMode
 	/// </para>
 	/// </summary>
 	Albedo = 1,
+
+	/// <summary>
+	/// 把 matcap <b>归一成金属的 F0</b>，而不是原样当底色 —— 这是唯一的物理上成立的那条。
+	/// <para>
+	/// <b>为什么 <see cref="Albedo"/> 不够。</b>在 PBR 里，金属表面的底色<b>就是</b>它的
+	/// 镜面反射率 F0（银 0.97 / 铝 0.91 / 铁 0.56，线性）。实测 serenade 的
+	/// <c>matcap_metal7</c> 平均亮度只有 sRGB 106（线性 F0 ≈ 0.14）—— 一块"反射率 14% 的金属"，
+	/// 于是又黑又没有反光。
+	/// </para>
+	/// <para>
+	/// <b>为什么不能靠乘增益救。</b>这张图是双峰的：中位数 66、p90 231。
+	/// 乘 1.6 就有 32% 的像素被压到 255，而平均亮度只从 105 涨到 138（F0 0.25）；
+	/// 乘到 5.0 才到 F0 0.66，那时 64% 的像素已经是纯白，图案全毁。
+	/// 换算关系不是线性的，因为高光那一半先撞顶。
+	/// </para>
+	/// <para>
+	/// <b>这个档做什么。</b>丢掉 matcap 的亮度图案，只保留它的<b>色相</b>，
+	/// 把整片抬到目标 F0。金属的反光应该由 PBR 的环境反射算出来，而不是由一张烘死的图假装。
+	/// 这是一个刻意"信息损失"的近似：源侧的 matcap 本来就是<b>叠加在受光表面上的高光图</b>，
+	/// 而不是表面颜色本身。
+	/// </para>
+	/// </summary>
+	Metal = 2,
+}
+
+/// <summary>
+/// 源侧要镂空（<c>$alphatest</c>/<c>$translucent</c> 且 alpha 真在表达形状）时，
+/// 这个材质在 HD2 里怎么落地。
+/// <para>
+/// <b>为什么需要三档而不是一档。</b>实测扫遍 <c>HD2ModManager\mods</c> 的 128 个 <c>advanced</c>
+/// 与 76 个 <c>alphaclip</c> 材质之后发现：<c>alphaclip</c> 的 76 次里 <b>60 次来自"隐藏物品/
+/// 隐藏 NPC"这类模组</b>——那些模组的全部目的就是让东西消失。也就是说 <c>alphaclip</c> 在 HD2
+/// 里实际上是"隐形着色器"，而它只有 3 个槽、<b>没有任何 PBR 输入</b>（没有 <c>Nar</c> 法线/粗糙度、
+/// 没有 <c>IlluminateData</c> 金属度、没有 LUT），切过去就等于把材质降级成最小着色器。
+/// </para>
+/// <para>
+/// 三档对应三种假设，需要实机对照才能定：
+/// </para>
+/// </summary>
+public enum CutoutStrategy
+{
+	/// <summary>
+	/// <b>A（历史行为）</b>：切到 <c>alphaclip</c> 模板，<c>OpacityThreshold</c> 留模板默认
+	/// <b>0.5</b>。
+	/// <para>
+	/// 已知现象：镂空件在军械库里**隐形**、并且被环境着色器污染。0.5 这个阈值本身也可疑——
+	/// 源侧蕾丝的 alpha 大量落在 0.2～0.4 的半透明过渡区，一刀切到 0.5 会把整片裁光。
+	/// </para>
+	/// </summary>
+	AlphaClip = 0,
+
+	/// <summary>
+	/// <b>B</b>：仍用 <c>alphaclip</c>，只把 <c>OpacityThreshold</c> 降到 <b>0.144</b>。
+	/// <para>
+	/// 0.144 不是猜的：它是 SDK <c>alphaclip+</c> 模板的默认值，而 <c>HD2ModManager\mods</c> 里
+	/// 唯一一个拿 <c>alphaclip+</c> 做衣服的模组（<c>VRchat_Milltina 可脱穿 材质球-衣服-*</c>）
+	/// 原样保留了它。B 与 A 只差这一个变量，所以能干净地回答"是不是阈值切太狠"。
+	/// </para>
+	/// </summary>
+	AlphaClipTuned = 1,
+
+	/// <summary>
+	/// 遮罩<b>取反</b>：白=透明、黑=可见。
+	/// <para>
+	/// 用来实测 <c>OpacityClipMap</c> 的极性。我们的遮罩现在是「源侧 alpha 直接搬过来」
+	/// （白=可见），而 A≈B 说明阈值不是杠杆——那么下一个嫌疑就是极性反了：
+	/// 极性反了会让"几乎不透明"的件被整片裁掉，现象正是"镂空件隐形"。
+	/// </para>
+	/// </summary>
+	MaskInverted = 2,
+
+	/// <summary>
+	/// 遮罩放在 <b>alpha 通道</b>（RGB 恒 255），而不是 RGB。
+	/// <para>
+	/// 实测 HD2 的贴图文档明确写着"Alpha 是整体透明度，0 全透明、255 全不透明"
+	/// （HD2 Modding Wiki / Textures），所以着色器很可能采样的是 <c>.a</c>。
+	/// 我们一直把 alpha 写成 255，如果它读的是 alpha，那遮罩就<b>完全没生效</b>。
+	/// </para>
+	/// </summary>
+	MaskInAlpha = 3,
+
+	/// <summary>遮罩放 alpha 通道，并取反。</summary>
+	MaskInAlphaInverted = 4,
+}
+
+/// <summary>
+/// <b>已证伪的假设，留档以免重走：把遮罩塞进 <c>advanced</c> 的 <c>SclarFieldOpacity</c>。</b>
+/// <para>
+/// 曾经假设「<c>advanced</c> 靠 <c>SclarFieldOpacity</c> + <c>OpacitySharpness/Offset</c>
+/// 做硬边镂空」，实机 A/B/C 三档对照的结果是<b>完全没效果</b>——那些件仍然是不透明的。
+/// </para>
+/// <para>
+/// 原因后来查清了：现役模组里这个槽装的是 <b>1×1 <c>R8_UNORM</c> 标量</b>
+/// （实测 Crimson Kitty 的两张 <c>0xc0b94ae8509a1bd4</c> / <c>0x812b33c5a3ebdb86</c>
+/// 都是 1×1 R8）。也就是说 <c>SclarFieldOpacity</c> 是<b>整体不透明度标量</b>，
+/// 不是逐像素遮罩——它根本没有能力做镂空。
+/// </para>
+/// </summary>
+internal static class RejectedCutoutStrategies
+{
+	/// <summary>这一档已删除。相关槽位常量见 <c>SourceMaterialConverter.AdvancedOpacitySlot</c>。</summary>
+	internal const string AdvancedScalarOpacity = "SclarFieldOpacity 是 1×1 R8 标量，做不了镂空。";
 }
 
 /// <summary>一个自造贴图的产物：新 id + 可直接进包的 TocData 与 GPU 侧车字节。</summary>
@@ -94,6 +196,17 @@ public sealed record MaterialSynthesisResult(
 
 	public bool IsSkipped => SkipReason is not null;
 
+	/// <summary>
+	/// <b>降级提示</b>：材质造出来了，但有一样东西无法忠实表达。
+	/// <para>
+	/// 与 <see cref="Diagnostics"/> 分开是刻意的：诊断是"这件事做不成"，必须中止；
+	/// 而"<c>$translucent</c> 的半透明 HD2 做不到、我们退成了不透明"是
+	/// <b>做成了、但不是原样</b>——它该出现在报告的警告里，让人一眼看到，
+	/// 而不该把整个材质判失败（那会让整片部件消失，比不忠实更糟）。
+	/// </para>
+	/// </summary>
+	public IReadOnlyList<string> Notices { get; init; } = [];
+
 	/// <summary>这个材质的身份（id / 模板 / 底色名 / matcap 来源）。转换成功时非 null。</summary>
 	public MaterialIdentity? Identity { get; init; }
 
@@ -156,6 +269,57 @@ public sealed class SourceMaterialConverter
 	public const int AdvancedMetallicSlot = 3;
 
 	/// <summary>
+	/// <c>advanced</c> 槽 1 = <c>SclarFieldOpacity</c>（0x479fb1ef）。
+	/// <para>
+	/// 这是 <c>advanced</c> 唯一的不透明度来源。SDK 模板里它指向一张占位贴图，
+	/// 所有现成模组都原样留着——<see cref="CutoutStrategy.AdvancedOpacity"/> 才把它当遮罩用。
+	/// </para>
+	/// </summary>
+	public const int AdvancedOpacitySlot = 1;
+
+	/// <summary><c>OpacityThreshold</c>（0x529a4aaf）：<c>alphaclip</c> 族的镂空阈值。</summary>
+	public const uint OpacityThresholdVariableId = 0x529a4aaf;
+
+	/// <summary><c>OpacitySharpness</c>（0xcb8c5728）：<c>advanced</c> 的不透明度过渡陡度。</summary>
+	public const uint OpacitySharpnessVariableId = 0xcb8c5728;
+
+	/// <summary><c>OpacityOffset</c>（0xccddd706）：<c>advanced</c> 的不透明度阈值偏移。</summary>
+	public const uint OpacityOffsetVariableId = 0xccddd706;
+
+	/// <summary>
+	/// <see cref="CutoutStrategy.AlphaClipTuned"/> 用的阈值 = SDK <c>alphaclip+</c> 模板的默认值。
+	/// <para>来源：<c>tools/ref/HD2SDK-CommunityEdition/materials/alphaclip+.material</c> 的
+	/// <c>OpacityThreshold</c> 实测 0.144（<c>alphaclip</c> 是 0.5）。</para>
+	/// </summary>
+	public const float TunedOpacityThreshold = 0.144f;
+
+	/// <summary>
+	/// <see cref="MatCapMode.Metal"/> 归一到的目标反射率（<b>线性</b>）。
+	/// <para>
+	/// <b>0.96 是实机 A/B/C/D 四档对照选出来的</b>：银（0.97）这一档观感最好，
+	/// 铝（0.90）偏灰。源侧这些"金属件"本来就以亮银为主。
+	/// 要更暗或更亮用 <c>--matcap-gain</c> 微调（它是这个值的乘数）。
+	/// </para>
+	/// <para>
+	/// 对照实测：原来的做法（matcap 原样当底色）等效 F0 ≈ <b>0.14</b>，
+	/// 所以用户看到的"金属又黑又不反光"是反射率问题，不是亮度问题。
+	/// </para>
+	/// </summary>
+	public const double MetalF0 = 0.96;
+
+	/// <summary>
+	/// <see cref="CutoutStrategy.AdvancedOpacity"/> 的陡度。抄自游戏本体角色材质
+	/// （父 id <c>0x8f669f365f24594e</c>）的 <c>OpacitySharpness</c>。
+	/// </summary>
+	public const float CutoutOpacitySharpness = 64f;
+
+	/// <summary>
+	/// <see cref="CutoutStrategy.AdvancedOpacity"/> 的阈值偏移。抄自同一个材质：
+	/// <c>saturate((mask - 0.5) × 64)</c> 才是硬边。
+	/// </summary>
+	public const float CutoutOpacityOffset = -0.5f;
+
+	/// <summary>
 	/// 共享 PBR 贴图里 <b>alpha</b> 通道的粗糙度值（<c>fix_materials.py:89</c> 的 <c>PBR_ROUGHNESS = 0.62</c>）。
 	/// </summary>
 	public const byte PbrRoughness = 158;   // 0.62 × 255 四舍五入
@@ -195,7 +359,9 @@ public sealed class SourceMaterialConverter
 		AlbedoAdjustment? albedoAdjustment = null,
 		IReadOnlyDictionary<string, double[]>? matcapMeans = null,
 		MatCapMode matcapMode = MatCapMode.Bake,
-		string? idNamespace = null)
+		string? idNamespace = null,
+		CutoutStrategy cutoutStrategy = CutoutStrategy.AlphaClip,
+		double matcapBakeGain = 1.0)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -204,7 +370,68 @@ public sealed class SourceMaterialConverter
 		this.matcapMeans = matcapMeans;
 		this.matcapMode = matcapMode;
 		this.idNamespace = string.IsNullOrWhiteSpace(idNamespace) ? null : idNamespace.Trim();
+		this.cutoutStrategy = cutoutStrategy;
+		this.matcapBakeGain = double.IsFinite(matcapBakeGain) && matcapBakeGain > 0 ? matcapBakeGain : 1.0;
 	}
+
+	/// <summary>
+	/// matcap 烘进底色时的<b>亮度增益</b>（默认 1.0 = 不加）。
+	/// <para>
+	/// <b>为什么需要它。</b>matcap 是<b>加法的高光图</b>：它的面积加权平均色远低于它最亮的那片，
+	/// 所以"把平均色烘进底色"得到的是偏暗的一层。而 HD2 那边我们同时把金属度顶到 ~1，
+	/// 于是结果就是"黑金属 + 微弱高光"——实机反馈的"金属几乎没有反光、太黑了"。
+	/// </para>
+	/// <para>
+	/// 物理上更对的近似是：<b>底色取金属本身的反射色（偏亮），高光交给 PBR 算</b>。
+	/// 增益就是往这个方向调的一个旋钮；调到多少要看实机，所以做成参数而不是常量。
+	/// </para>
+	/// </summary>
+	public double MatcapBakeGain => matcapBakeGain;
+
+	private readonly double matcapBakeGain;
+
+	/// <summary>
+	/// 镂空材质怎么落地。见 <see cref="CutoutStrategy"/>。
+	/// <para><b>默认 = <see cref="CutoutStrategy.AlphaClip"/>，即历史行为逐位不变</b>。</para>
+	/// </summary>
+	public CutoutStrategy CutoutStrategy => cutoutStrategy;
+
+	private readonly CutoutStrategy cutoutStrategy;
+
+	/// <summary>这个模板名是不是 <c>alphaclip</c> 族（槽表只有 3～4 个、没有 PBR 输入）。</summary>
+	private static bool IsAlphaClipTemplate(string templateName)
+		=> templateName.StartsWith("alphaclip", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// 这个 VMT 是不是<b>没有真底色</b>（<c>$basetexture</c> 缺失，或写着占位值
+	/// <c>"basetexture"</c> / <c>"base"</c>）。
+	/// <para>
+	/// <b>这是源侧的合法写法，不是坏材质。</b>NekoToon 这套着色器里，金属 / 宝石件由作者
+	/// 主动把 <c>$basetexture</c> 注释掉，观感 100% 来自 <c>$matcapture</c>
+	/// （实测 serenade 有 20 个、mourningveil 有 4 个这样的材质）。
+	/// 源侧渲染的其实就是「底色 = 0 + matcap × tint」。
+	/// </para>
+	/// <para>
+	/// 以前这里直接判失败，后果是<b>整个金属件退回外壳护甲的材质</b>——用户报的
+	/// 「金属材质丢失」就是它。正确的做法是合成一张纯黑底色，让 matcap 顶上去。
+	/// </para>
+	/// </summary>
+	public static bool HasNoRealBaseTexture(VmtDocument vmt)
+	{
+		ArgumentNullException.ThrowIfNull(vmt);
+		var baseTexture = vmt.BaseTexture;
+		return string.IsNullOrWhiteSpace(baseTexture) || baseTexture is "basetexture" or "base";
+	}
+
+	/// <summary>
+	/// 没有真底色时合成出来的底色在<b>身份串</b>里的名字。
+	/// <para>
+	/// 必须按材质名区分：同一批里 20 个金属件都没有底色，但它们的 matcap 各不相同，
+	/// 用同一个合成名会把它们并成一个材质。带上 stem 之后，
+	/// 再加上后面必有的 <c>|matcap:&lt;贴图&gt;</c>，身份就唯一了。
+	/// </para>
+	/// </summary>
+	private static string SyntheticBaseName(string stem) => "synthetic-base:" + stem;
 
 	/// <summary>
 	/// 材质/贴图 id 的命名空间（见 <see cref="Hd2AssetId.NamespaceFor"/>）。
@@ -271,7 +498,11 @@ public sealed class SourceMaterialConverter
 				continue;
 
 			var vmt = VmtDocument.Parse(vmtBytes, source.CreateIncludeReader());
-			if (!MaterialAppearance.Evaluate(vmt).MatCapIsTheSurface)
+			// 要算平均色的两类：
+			//   ① matcap 就是表面（tint ≥ 0.9）；
+			//   ② 根本没有底色（NekoToon 金属件）——那时 matcap 也是唯一的观感来源，
+			//      与 tint 多大无关。少了 ② 这些件烘不出颜色，只能是纯黑。
+			if (!MaterialAppearance.Evaluate(vmt).MatCapIsTheSurface && !HasNoRealBaseTexture(vmt))
 				continue;
 
 			// matcap 贴图的名字与底色同源：`$matcaptexture` 缺省时回落到 `$basetexture`
@@ -349,7 +580,8 @@ public sealed class SourceMaterialConverter
 		double[]? MatcapMean,
 		double MatcapTint,
 		string? MatcapTextureName,
-		bool MatcapIsSurface)
+		bool MatcapIsSurface,
+		IReadOnlyList<string> Notices)
 	{
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
@@ -415,7 +647,8 @@ public sealed class SourceMaterialConverter
 		}
 
 		var textures = new List<SynthesizedTexture> { texture };
-		if (loaded.UseAlphaClip)
+		// 分支看的是**模板**，不是"源侧要不要镂空"：C 档源侧仍然要镂空，但刻意留在 advanced。
+		if (loaded.UseAlphaClip && IsAlphaClipTemplate(loaded.TemplateName))
 		{
 			if (opacityMask is null)
 				return MaterialSynthesisResult.Failed($"{stem}：判定要切 alphaclip，但没有产出遮罩贴图");
@@ -437,6 +670,14 @@ public sealed class SourceMaterialConverter
 			material.SetTexture(AlphaClipOpacitySlot, opacityMask.Id);
 			material.SetTexture(AlphaClipBaseColorSlot, texture.Id);
 			textures.Add(opacityMask);
+
+			// B 档：只动阈值这一个变量（A 档保持模板默认 0.5）。
+			if (cutoutStrategy == CutoutStrategy.AlphaClipTuned
+				&& !material.TrySetScalar(OpacityThresholdVariableId, TunedOpacityThreshold))
+			{
+				return MaterialSynthesisResult.Failed(
+					$"{stem}：alphaclip 模板里找不到 OpacityThreshold 变量，无法把阈值调到 {TunedOpacityThreshold}");
+			}
 		}
 		else
 		{
@@ -482,13 +723,14 @@ public sealed class SourceMaterialConverter
 				textures.Add(metallic);
 				textures.Add(normalRoughness);
 			}
+
 		}
 
 		return new MaterialSynthesisResult(
 			new SynthesizedMaterial(loaded.MaterialId, material.Write(), loaded.TemplateName, loaded.BaseTexture, material.TextureIds),
 			textures,
 			[])
-		{ Identity = loaded.ToIdentity() };
+		{ Identity = loaded.ToIdentity(), Notices = loaded.Notices };
 	}
 
 	/// <summary>
@@ -535,33 +777,10 @@ public sealed class SourceMaterialConverter
 			return LoadOutcome.Skipped;
 		}
 
-		var baseTexture = vmt.BaseTexture;
-		// 占位值："$basetexture" "basetexture" 是模组作者的"这里没有底色"写法——
-		// 这类材质（玻璃、纯 phong、着色器覆盖）的观感全来自 envmap / phong / matcap。
-		// HD2 的材质模板没有这些槽，所以它们**注定转不出来**；理由必须说清是"源侧没有底色"，
-		// 而不是让我们看起来像"找不到文件"。
-		if (!string.IsNullOrWhiteSpace(baseTexture) && baseTexture is "basetexture" or "base")
-		{
-			reason = $"{stem}：$basetexture 是占位值（{baseTexture}），这份材质没有自己的底色贴图"
-				+ "（观感来自 envmap / phong），HD2 材质模板没有对应槽";
-			return LoadOutcome.Failed;
-		}
-
-		if (string.IsNullOrWhiteSpace(baseTexture))
-		{
-			reason = vmt.IsPatch
-				? $"{stem}：patch 材质展开后仍然没有 $basetexture（include={vmt.IncludePath ?? "缺失"}）"
-				: $"{stem}：VMT 里没有 $basetexture";
-			return LoadOutcome.Failed;
-		}
-
-		var textureName = Path.GetFileNameWithoutExtension(baseTexture);
-		if (!source.TryReadVtf(textureName, out var vtfBytes))
-		{
-			reason = $"{stem}：贴图来源里找不到 {textureName}.vtf";
-			return LoadOutcome.Failed;
-		}
-
+		// 收敛成非 null：`HasNoRealBaseTexture` 把"缺失"和"占位值"都算作没有底色，
+		// 所以下面的合成分支一定会给它赋一个真值。用 `?? string.Empty` 是为了让
+		// 可空性在类型上闭合，而不是在每处调用点加 `!`。
+		var baseTexture = vmt.BaseTexture ?? string.Empty;
 		var verdict = MaterialAppearance.Evaluate(vmt);
 
 		// matcap 贴图名要留到身份里：**它的内容可能来自别的 VPK**，而 id 只由名字决定。
@@ -570,22 +789,88 @@ public sealed class SourceMaterialConverter
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.MatCapTexture));
 
+		// ── 没有真底色的两种写法，处理方式不同 ──────────────────────────────
+		//
+		// ① `$basetexture "basetexture"` / `"base"`：作者显式写的"这里没有底色"占位值。
+		// ② 干脆没写 `$basetexture`：NekoToon 的金属/宝石件就是这样（作者把它注释掉了）。
+		//
+		// 两种都是**源侧的合法写法**，不是坏材质。共同点是"观感全来自 matcap"：
+		//   源侧实际渲染 = 底色(0) + matcap × tint
+		// 所以我们合成一张**纯黑**底色，让 matcap 顶上去；判失败才是错的——
+		// 判失败会让整个金属件退回外壳护甲的材质（用户报的"金属材质丢失"）。
+		//
+		// 没有 matcap 兜底时仍然是失败：那类材质（玻璃、纯 phong、着色器覆盖）的观感来自
+		// envmap / phong，HD2 的模板没有对应槽，理由必须说清是"源侧没有底色"。
+		// 诊断开关：`HD2_NO_SYNTHETIC_BASE=1` 时**恢复发布版行为**——没有真底色的材质直接判失败。
+		//
+		// 存在的理由：这些材质以前是"悬空 id"，游戏回退到外壳护甲的材质才看得见；
+		// 现在它们有了自己的材质。用户报"手套/丝袜/臂环不见"，需要一次干净的对照来确认
+		// 问题是否出在"新产出的材质"上。这条分支只为这个对照存在，不是产品行为。
+		var allowSyntheticBase = Environment.GetEnvironmentVariable("HD2_NO_SYNTHETIC_BASE") != "1";
+
+		var syntheticBase = false;
+		if (HasNoRealBaseTexture(vmt))
+		{
+			if (string.IsNullOrWhiteSpace(matcapTextureName))
+			{
+				reason = string.IsNullOrWhiteSpace(baseTexture)
+					? (vmt.IsPatch
+						? $"{stem}：patch 材质展开后仍然没有 $basetexture（include={vmt.IncludePath ?? "缺失"}），也没有 $matcapture 可以兜底"
+						: $"{stem}：VMT 里既没有 $basetexture 也没有 $matcapture（观感来自 envmap / phong），HD2 材质模板没有对应槽")
+					: $"{stem}：$basetexture 是占位值（{baseTexture}），且没有 $matcapture 可以兜底"
+						+ "（观感来自 envmap / phong），HD2 材质模板没有对应槽";
+				return LoadOutcome.Failed;
+			}
+
+			if (!allowSyntheticBase)
+			{
+				reason = $"{stem}：没有 $basetexture，且诊断开关 HD2_NO_SYNTHETIC_BASE=1（恢复发布版行为）";
+				return LoadOutcome.Failed;
+			}
+
+			syntheticBase = true;
+			baseTexture = SyntheticBaseName(stem);
+		}
+
+		var textureName = syntheticBase
+			? stem + "_matcapbase"
+			: Path.GetFileNameWithoutExtension(baseTexture);
+
+		if (!syntheticBase && !source.TryReadVtf(textureName, out _))
+		{
+			reason = $"{stem}：贴图来源里找不到 {textureName}.vtf";
+			return LoadOutcome.Failed;
+		}
+
 		// 先解**底色**：既要它的像素（铸进 patch），也要它的 alpha 与亮度来判定
 		// "matcap 是不是这个表面本身"。判定必须看内容，不能只看 tint —— 见下面的注释。
 		VtfFile vtf;
 		byte[] rgba;
 		AlphaStats baseAlpha;
-		try
+		if (syntheticBase)
 		{
-			vtf = VtfFile.Read(vtfBytes);
-			// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
-			rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+			// 纯黑 4×4。尺寸取 4×4 而不是 1×1：占位判据是"长宽都 ≤ 4"，两条都满足，
+			// 而 4×4 让下游的 DDS / BC7 编码走正常路径。alpha 也置 0
+			// ——"底色不承担形状"，这样下面不会被误判成 alphaclip。
+			vtf = VtfFile.Synthetic(4, 4);
+			rgba = MaterialAppearance.SolidRgba(4, 0, 0, 0, 0);
 			baseAlpha = TextureAlpha.Measure(rgba);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		else
 		{
-			reason = $"{stem}：贴图 {textureName} 读不出来——{exception.Message}";
-			return LoadOutcome.Failed;
+			source.TryReadVtf(textureName, out var vtfBytes);
+			try
+			{
+				vtf = VtfFile.Read(vtfBytes);
+				// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
+				rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+				baseAlpha = TextureAlpha.Measure(rgba);
+			}
+			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+			{
+				reason = $"{stem}：贴图 {textureName} 读不出来——{exception.Message}";
+				return LoadOutcome.Failed;
+			}
 		}
 
 		// matcap 承载表面 = **tint 高 ∧ 底色没有自己的外观 ∧ alpha 不承担形状**。
@@ -596,12 +881,27 @@ public sealed class SourceMaterialConverter
 		//   ① 底色被 matcap 顶掉 → 花瓣渲染成 matcap 的金属/菱形渐变；
 		//   ② alphaclip 被强制关掉 → 花瓣的镂空变成不透明白方块（"白色渐变"）。
 		// 实测就是 Lilium_Sancta 的花瓣材质报的那两条现象。
-		var matcapIsSurface = verdict.MatCapIsTheSurface
-			&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)
-			&& !baseAlpha.IsMeaningful;
+		//
+		// ⚠️ 合成底色的情况**无条件**算"matcap 承载表面"：底色根本不存在，
+		// 观感只可能来自 matcap，与 tint 多大无关（实测 mourningveil 的
+		// `mat_gem1_shoes` 就没有底色而 tint 只有 0.9）。
+		var matcapIsSurface = syntheticBase
+			|| (verdict.MatCapIsTheSurface
+				&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)
+				&& !baseAlpha.IsMeaningful);
 		double[]? matcapMean = null;
+		var notices = new List<string>();
 
-		if (matcapIsSurface && matcapMode == MatCapMode.Albedo)
+		// ⚠️ **Metal 模式只对"没有真底色"的材质生效**（`syntheticBase`）。
+		//
+		// 原来写成 `matcapMode is Albedo or Metal`，于是 metal 模式会把**所有** matcap 承载表面
+		// 的材质换掉底色——包括那些底色是一张"纯色但真实"的布料的材质（`IsContentFreeBase`
+		// 把均匀色也算作"无内容"）。结果是布料丢掉自己的贴图。
+		//
+		// 现在的分工：
+		//   · Albedo（发布版行为）：matcap 承载表面 → 拿 matcap 当底色
+		//   · Metal：只有**没有 $basetexture** 的件才归一成金属 F0，有底色的布料保持原样
+		if (matcapIsSurface && (matcapMode == MatCapMode.Albedo || (matcapMode == MatCapMode.Metal && syntheticBase)))
 		{
 			// matcap 当底色：真正决定观感的是 matcap 那张图，不是底色
 			// （实测 A1 的 `Ornament_metal_Underwear.vtf` 是 1×1 占位图）。
@@ -613,25 +913,43 @@ public sealed class SourceMaterialConverter
 				return LoadOutcome.Failed;
 			}
 
-			if (!source.TryReadVtf(matcapTextureName, out vtfBytes))
+			// ⚠️ **Metal 模式下拿不到 matcap 不算失败。**
+			// 金属档只需要 matcap 的"色相"，整片亮度会被归一成 F0——那张图缺了，
+			// 退成中性金属就好。判失败会让整个部件丢掉材质（现象就是"部件不见了"），
+			// 而"中性金属"至少是对的颜色。实测 serenade 的 `jem_red` / `jem_red_earring`
+			// 引用的 `m7` 就不在包里。
+			var matcapAvailable = source.TryReadVtf(matcapTextureName, out var matcapBytes);
+			if (!matcapAvailable && matcapMode != MatCapMode.Metal)
 			{
 				reason = $"{stem}：matcap 贴图来源里找不到 {matcapTextureName}.vtf";
 				return LoadOutcome.Failed;
 			}
 
-			try
+			if (matcapAvailable)
 			{
-				vtf = VtfFile.Read(vtfBytes);
-				rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
-				baseAlpha = TextureAlpha.Measure(rgba);
-			}
-			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
-			{
-				reason = $"{stem}：matcap 贴图 {matcapTextureName} 读不出来——{exception.Message}";
-				return LoadOutcome.Failed;
-			}
+				try
+				{
+					vtf = VtfFile.Read(matcapBytes);
+					rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+					baseAlpha = TextureAlpha.Measure(rgba);
+					textureName = matcapTextureName;
+				}
+				catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+				{
+					if (matcapMode != MatCapMode.Metal)
+					{
+						reason = $"{stem}：matcap 贴图 {matcapTextureName} 读不出来——{exception.Message}";
+						return LoadOutcome.Failed;
+					}
 
-			textureName = matcapTextureName;
+					// Metal：读不出来就用现有的（合成）底色，色相取中性。
+					notices.Add($"{stem}：matcap 贴图 {matcapTextureName} 读不出来，金属色按中性处理。");
+				}
+			}
+			else
+			{
+				notices.Add($"{stem}：找不到 matcap 贴图 {matcapTextureName}.vtf，金属色按中性处理。");
+			}
 		}
 		else if (matcapIsSurface && matcapMeans is not null)
 		{
@@ -657,9 +975,32 @@ public sealed class SourceMaterialConverter
 			//    照抄"没裁"才是忠实的；拿 matcap 的 alpha 当遮罩会把金属件穿出洞。
 			// 2. 不变量上：金 / 银两版的 `11.vtf` 内容不同。模板判定一旦依赖内容，
 			//    两版就会得到不同的 TOC —— 而它们必须同号互换。
-			useAlphaClip = matcapIsSurface && matcapMode == MatCapMode.Albedo
+			// Metal 模式同样不切 alphaclip：底色将被整片归一成 F0，源侧的 alpha 不再有意义。
+			//
+			// ⚠️ **`$translucent` 仍然映射到 alphaclip —— 这是实机 A/B 逼出来的结论，别"修正"它。**
+			//
+			// 我曾认为"`$translucent` 是 alpha 混合、HD2 表达不了，当硬裁会删掉 58.8% 的
+			// 像素"，于是把它改成"退成不透明（advanced）"。实机结果是：
+			// **布料件（袖套 / 美甲底布）整片不见了，改动之前是好的。**
+			// 拿发布版二进制做同参数 A/B 也证实：发布版把这些布料做成 alphaclip，显示正常；
+			// 改成 advanced 之后看不见。也就是说那些 alpha 图案不是"多余的花纹"，
+			// 而是这些件**唯一**的形状来源；不透明反而露出了不该画的整片 UV 区域。
+			//
+			// 所以这里按"源侧要不要透明"来判（`WantsTransparency`），与发布版一致。
+			// `WantsAlphaTest` / `WantsTranslucency` 的区分仍然保留（报告里要说清是哪种），
+			// 但**不改变模板选择**。
+			useAlphaClip = matcapIsSurface && matcapMode is MatCapMode.Albedo or MatCapMode.Metal
 				? false
 				: vmt.WantsTransparency && baseAlpha.IsMeaningful;
+		}
+
+		// 降级提示：半透明在 HD2 里表达不了，我们退成了不透明。
+		// 必须说出来——否则用户只会看到"袖套没透明"，或者更糟：以为我们又把东西弄丢了。
+		if (useAlphaClip && vmt.WantsTranslucency && !vmt.WantsAlphaTest)
+		{
+			notices.Add(
+				$"{stem}：源侧声明 $translucent（alpha 混合半透明），HD2 没有混合模板，"
+				+ "已按硬裁（alphaclip）处理——形状正确，但没有真正的半透明过渡。");
 		}
 
 		var templateName = useAlphaClip ? "alphaclip" : "advanced";
@@ -686,6 +1027,22 @@ public sealed class SourceMaterialConverter
 		// 装配器去重"先到先得"——**每一处冲突都是 advanced 赢**，
 		// 于是蕾丝的 alphaclip 模板被静默丢掉、镂空消失（用户报的"镂空材质忘了做"就是这个）。
 		// 反过来如果 alphaclip 赢了，普通件会被蕾丝的遮罩**穿出洞**，同样错。
+		// ⚠️ **matcap 只要 VMT 声明了就必须进身份串，不看 tint。**
+		//
+		// 原来只在 tint ≥ 0.9 时才加，于是"同底色 + 不同 matcap + tint < 0.9"的材质
+		// 全部塌成同一个 id。实测 mourningveil 的 `mat_cloth_shoes`（Matcap_highlight1 @ .3）、
+		// `mat_leather_shoes` 与 `mat_metal`（Matcap_cloths4 @ .2）共用 `Mat_Metal` 底色——
+		// 装配器按 id 去重"先到先得"，三件里两件拿到别人的 matcap。
+		// 用户看到的就是"鞋跟上有一部分材质颜色错误"。
+		//
+		// tint 也进：Bake 模式下烘进底色的强度**就是** tint，强度不同就是不同观感。
+		// ⚠️ 身份串恢复成**发布版形式**（只在 matcap 就是表面时才带 matcap 名，且不带 tint）。
+		//
+		// 原因：这一条改动会把几乎所有带 matcap 的材质 id 全部改写一遍。
+		// A/B 已经排除"多出的 39 个金属材质"（撤掉后手套仍不显示），
+		// 于是与发布版剩下的唯一差别就是**这些 id 值**本身。
+		// 先把 id 改回去做单变量验证：如果手套回来 ⇒ id 就是原因；如果还不回来 ⇒ 与 id 无关，
+		// 差异在我们的产物之外（Overwrite / 注册表 / 部署状态），那时再换方向。
 		var identity = BuildMaterialIdentity(
 			baseTexture, emissionTexture, useAlphaClip,
 			verdict.MatCapIsTheSurface ? vmt.MatCapTexture : null);
@@ -693,7 +1050,7 @@ public sealed class SourceMaterialConverter
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
 			identity, DeriveMaterialId(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
-			matcapTextureName, matcapIsSurface);
+			matcapTextureName, matcapIsSurface, notices);
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
 	}
@@ -719,15 +1076,38 @@ public sealed class SourceMaterialConverter
 	/// 不看"队列里有没有模型能算平均色"。否则同一个 VMT 在不同队列里会算出不同的 id——
 	/// 那会让 patch 之间再也对不上。
 	/// </para>
+	/// <para>
+	/// <b>为什么 matcap 与 tint 都要进。</b>它们决定底色长什么样，而材质 id 是
+	/// "同 id 就被合并"。实测 mourningveil 的 <c>mat_cloth_shoes</c> /
+	/// <c>mat_leather_shoes</c> / <c>mat_metal</c> 共用 <c>Mat_Metal</c> 底色、
+	/// matcap 各不相同（<c>Matcap_highlight1</c> @ .3 与 <c>Matcap_cloths4</c> @ .2）——
+	/// 身份不含 matcap 时它们塌成一个材质，用户看到"鞋跟上有颜色错误"。
+	/// </para>
+	/// <para>
+	/// ⚠️ 判据是 <b>VMT 声明了 matcap</b>（<c>$matcap</c> 或 <c>$matcaptexture</c>），
+	/// 不看"队列里有没有模型能算平均色"——后者会让同一个 VMT 在不同队列里得到不同 id。
+	/// </para>
+	/// <para>
+	/// ⚠️ <b>但 <see cref="CutoutStrategy"/> 不进身份串。</b>它和 <see cref="MatCapMode"/> 一样是
+	/// <b>转换器的全局模式</b>，不是某个材质的属性：同一份源材质无论用哪一档转，都必须是同一个 id。
+	/// 否则"只重转某一个材质包"会让 id 全变一遍，而模型 patch 里引用的还是旧 id，材质静默失效。
+	/// </para>
 	/// </summary>
 	public static string BuildMaterialIdentity(
-		string baseTexture, string? emissionTexture, bool useAlphaClip, string? matcapTexture = null)
+		string baseTexture, string? emissionTexture, bool useAlphaClip, string? matcapTexture = null,
+		double? matcapTint = null)
 	{
 		var identity = string.IsNullOrWhiteSpace(emissionTexture) ? baseTexture : baseTexture + "|emission";
 		if (useAlphaClip)
 			identity += "|alphaclip";
 		if (!string.IsNullOrWhiteSpace(matcapTexture))
 			identity += "|matcap:" + matcapTexture;
+		if (matcapTint is { } tint)
+		{
+			// 固定小数位 + 不变文化：id 是哈希，浮点表示法一漂移 id 就变。
+			identity += "|matcaptint:" + tint.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+		}
+
 		return identity;
 	}
 
@@ -758,7 +1138,15 @@ public sealed class SourceMaterialConverter
 		// 压暗要作用在 sRGB 编码的像素上（见 AlbedoAdjustment 的注释）。
 		// matcap 烘焙也必须在清零 alpha 之前（它只改 RGB，但顺序上这里最自然）。
 		if (loaded.MatcapMean is not null)
-			MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint);
+			MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint * matcapBakeGain);
+		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Metal)
+		{
+			// 归一成金属 F0：保留色相、整片抬到目标反射率。
+			// 目标值 = MetalF0 × matcapBakeGain，这样 gain 在这里退化成"F0 微调"。
+			MaterialAppearance.LevelToMetalF0(rgba, MetalF0 * matcapBakeGain);
+		}
+		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
+			MaterialAppearance.ScaleRgb(rgba, matcapBakeGain);
 
 		albedoAdjustment?.Apply(rgba, vtf.Width, vtf.Height);
 
@@ -880,14 +1268,22 @@ public sealed class SourceMaterialConverter
 		// texconv 读不出自洽的输入就**走兜底路径把输入原样退回**（退出码仍是 0），
 		// 最终表现为"某材质转换失败，产物只有 132 字节"。
 		// 第 23–26 轮追了四轮的那个现象，根因就在这里。
+		//
+		// 通道与极性由 <see cref="CutoutStrategy"/> 决定：A/B 档是"RGB = alpha、A = 255"
+		// （历史行为），另外三档用来实测 HD2 到底采样哪个通道、什么极性。
+		var inAlpha = cutoutStrategy is CutoutStrategy.MaskInAlpha or CutoutStrategy.MaskInAlphaInverted;
+		var inverted = cutoutStrategy is CutoutStrategy.MaskInverted or CutoutStrategy.MaskInAlphaInverted;
 		var mask = new byte[checked(width * height * 4)];
 		for (var offset = 0; offset < mask.Length; offset += 4)
 		{
-			var alpha = rgba[offset + 3];
-			mask[offset + 0] = alpha;
-			mask[offset + 1] = alpha;
-			mask[offset + 2] = alpha;
-			mask[offset + 3] = 255;
+			var value = rgba[offset + 3];
+			if (inverted)
+				value = (byte)(255 - value);
+			var grey = inAlpha ? (byte)255 : value;
+			mask[offset + 0] = grey;
+			mask[offset + 1] = grey;
+			mask[offset + 2] = grey;
+			mask[offset + 3] = inAlpha ? value : (byte)255;
 		}
 
 		var dds = Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [mask]);

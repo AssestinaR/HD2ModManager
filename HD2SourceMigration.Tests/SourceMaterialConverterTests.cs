@@ -1,3 +1,4 @@
+using System.Text;
 using HD2SourceMigration.Retarget;
 using HD2SourceMigration.VpkConversion;
 
@@ -28,7 +29,7 @@ public sealed class SourceMaterialConverterTests
 	/// <c>pak01</c> 在前、addons 在后，同名先出现的赢。
 	/// </para>
 	/// </param>
-	private static Fixture? OpenFixture(bool includeAddons = false)
+	private static Fixture? OpenFixture(bool includeAddons = false, CutoutStrategy cutout = CutoutStrategy.AlphaClip)
 	{
 		var encoderPath = Bc7Encoder.Locate(Environment.GetEnvironmentVariable("HD2_TEXCONV"));
 		var templates = Hd2MaterialTemplateLibrary.Locate();
@@ -55,7 +56,8 @@ public sealed class SourceMaterialConverterTests
 		var source = includeAddons
 			? SourceMaterialSource.OpenDirectories(gameRoot, Path.Combine(gameRoot, "addons"))
 			: SourceMaterialSource.Open([gameVpk]);
-		var converter = new SourceMaterialConverter(source, new Bc7Encoder(encoderPath), templates);
+		var converter = new SourceMaterialConverter(source, new Bc7Encoder(encoderPath), templates,
+			cutoutStrategy: cutout);
 		return new Fixture(converter, source, inputs.Model.MaterialPaths);
 	}
 
@@ -245,70 +247,92 @@ public sealed class SourceMaterialConverterTests
 	}
 
 	/// <summary>
-	/// 真实数据上的回归闸门：<b>同一张底色同时被"要镂空"和"不要镂空"的材质使用时，
-	/// 必须产出两个不同的 HD2 材质</b>，而不是撞成一个。
+	/// <b>只有 <c>$alphatest</c> 才是硬裁，<c>$translucent</c> 不是。</b>
 	/// <para>
-	/// 这一条对应的正是用户报的"镂空蕾丝没做"：NekoToon 这套模型里大量材质共用同一张
-	/// "贴图表"底色，实测 <c>lower_white01_underwear</c> 一张被 11 个材质用（7 蕾丝 + 4 普通）。
-	/// 身份只按底色算时它们撞成同一个 id，装配器去重"先到先得"——每一处冲突都是 advanced 赢，
-	/// 蕾丝的 alphaclip 模板被静默丢掉。
+	/// 这条是纯逻辑测试（不需要贴图），钉的是"意图识别"这一步：
+	/// 两个开关必须能被分开，而不是被 <c>WantsTransparency</c> 糊成一个。
+	/// </para>
+	/// <para>
+	/// 为什么重要：实测 serenade 的 <c>_1__white</c>（袖套 / 丝袜）写着 <c>$translucent 1</c>，
+	/// 它的 alpha 是 UV 图集里的形状遮罩；按阈值 0.5 硬裁会删掉 <b>58.8%</b> 的像素，
+	/// 游戏里就是"整片袖套消失、只剩袖口一点"。而换阈值 0.144 只降到 56.8%，
+	/// 所以之前的 A/B 两档看起来毫无区别 —— 阈值从来不是杠杆，开关语义才是。
+	/// </para>
+	/// <para>
+	/// 全库统计（源 VPK 里的 VMT）：lilium alphatest 70 / translucent 0；
+	/// lunalice 39/60；mourningveil 114/96；serenade 18/3。两种写法都常见，
+	/// 所以必须分开处理，不能一律切或不切。
 	/// </para>
 	/// </summary>
 	[Fact]
-	public void RealData_SharedBaseTextureStillYieldsBothAnOpaqueAndACutoutMaterial()
+	public void AlphaTestAndTranslucencyAreDifferentIntentions()
+	{
+		VmtDocument Parse(string body)
+			=> VmtDocument.Parse(Encoding.UTF8.GetBytes("NekoToon\n{\n" + body + "\n}\n"));
+
+		// 硬裁：语义与 HD2 的 alphaclip 一致。
+		var alphaTest = Parse("$alphatest 1");
+		Assert.True(alphaTest.WantsAlphaTest);
+		Assert.False(alphaTest.WantsTranslucency);
+		Assert.True(alphaTest.WantsTransparency);
+
+		// 混合：HD2 表达不了，不能当硬裁。
+		var translucent = Parse("$translucent 1");
+		Assert.False(translucent.WantsAlphaTest);
+		Assert.True(translucent.WantsTranslucency);
+		Assert.True(translucent.WantsTransparency);
+
+		// 两个都写：硬裁优先（源侧先裁再混，裁是更"硬"的那一步）。
+		var both = Parse("$alphatest 1\n$translucent 1");
+		Assert.True(both.WantsAlphaTest);
+		Assert.True(both.WantsTranslucency);
+
+		// 关掉的写法不能被当成开。
+		Assert.False(Parse("$alphatest 0").WantsAlphaTest);
+		Assert.False(Parse("$translucent 0").WantsTranslucency);
+	}
+
+	/// <summary>
+	/// 真实数据上：<c>$translucent</c> 的布料仍然走 <c>alphaclip</c>，并留一条提示。
+	/// <para>
+	/// 这条曾经被我写成"必须退成不透明"，实机证明那是错的：
+	/// serenade 的袖套 / 美甲底布（<c>_1__white</c>）整片消失，改回 alphaclip 才正常。
+	/// 发布版二进制同参数 A/B 也证实了这一点，所以这里钉住的是<b>发布版行为</b>。
+	/// </para>
+	/// <para>
+	/// 结论：这些件的 alpha 图案不是多余花纹，而是它们**唯一**的形状来源；
+	/// 做成不透明反而会露出不该画的整片 UV 区域。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void RealData_TranslucencyStillUsesAlphaClipLikeTheRelease()
 	{
 		var fixture = OpenFixture(includeAddons: true);
 		if (fixture is null)
 			return;
 
-		// 第一遍只解析 VMT（很便宜），按底色分组，找出"组内既有要透明的、也有不要的"那些组。
-		// 只转换这些组——转换要跑 texconv 编 BC7，全模型 92 个材质要两分钟，
-		// 而这条测试关心的是"同底色撞不撞"，不需要碰其余的。
-		var byBaseTexture = new Dictionary<string, List<(string Name, bool Wants)>>(StringComparer.Ordinal);
+		var translucentOnly = new List<string>();
 		foreach (var name in fixture.MaterialNames)
 		{
 			if (!fixture.Source.TryReadVmt(name, out var vmtBytes))
 				continue;
 			var vmt = VmtDocument.Parse(vmtBytes);
-			if (string.IsNullOrWhiteSpace(vmt.BaseTexture))
-				continue;
-			if (!byBaseTexture.TryGetValue(vmt.BaseTexture!, out var list))
-				byBaseTexture[vmt.BaseTexture!] = list = [];
-			list.Add((name, vmt.WantsTransparency));
+			if (vmt.WantsTranslucency && !vmt.WantsAlphaTest)
+				translucentOnly.Add(name);
 		}
 
-		var contested = byBaseTexture
-			.Where(pair => pair.Value.Select(item => item.Wants).Distinct().Count() > 1)
-			.ToArray();
-		Assert.True(contested.Length > 0,
-			"样本里没有一张底色同时被要镂空和不要镂空的材质使用——这条闸门失去意义");
+		if (translucentOnly.Count == 0)
+			return;   // 这份样本里没有只写 $translucent 的材质，这条闸门不适用。
 
-		var cutouts = 0;
-		foreach (var (baseTexture, items) in contested)
+		foreach (var name in translucentOnly)
 		{
-			var ids = new List<(bool Wants, ulong Id, string Template, string Name)>();
-			foreach (var (name, wants) in items)
-			{
-				var result = fixture.Converter.Convert(name);
-				if (result.IsValid)
-					ids.Add((wants, result.Material!.Id, result.Material!.TemplateName, name));
-			}
-
-			// 要透明的那一侧**未必**都真的切成 alphaclip：贴图 alpha 可能不表达镂空，
-			// 那正是 TextureAlpha.IsMeaningful 要挡的（装饰件常写 $alphatest 1 但贴图是 1×1）。
-			// 但两侧的 id 必须完全不相交——交集非空就说明模板被静默合并掉了。
-			var opaqueIds = ids.Where(item => !item.Wants).Select(item => item.Id).ToHashSet();
-			var clippedIds = ids.Where(item => item.Wants).Select(item => item.Id).ToHashSet();
-			var shared = opaqueIds.Intersect(clippedIds).ToArray();
-			Assert.True(shared.Length == 0,
-				$"{baseTexture}：不透明与镂空两侧共用了材质 id "
-				+ string.Join("、", shared.Select(id => $"0x{id:x16}")));
-
-			cutouts += ids.Count(item => item.Wants && item.Template == "alphaclip");
+			var result = fixture.Converter.Convert(name);
+			if (!result.IsValid)
+				continue;
+			// 只要贴图 alpha 有意义，就必须是 alphaclip（不许退成 advanced）。
+			if (result.Material!.TemplateName == "alphaclip")
+				Assert.Contains(result.Notices, notice => notice.Contains("$translucent", StringComparison.Ordinal));
 		}
-
-		// 整条 alphaclip 路径必须真的被走到过，否则上面那条"id 不相交"可能只是
-		// 因为一个都没切成 alphaclip 而空转。
-		Assert.True(cutouts > 0, "争议底色里一个 alphaclip 材质都没切出来——镂空这条路没被验证到");
 	}
+
 }

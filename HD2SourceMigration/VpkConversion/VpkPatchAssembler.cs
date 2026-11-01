@@ -25,11 +25,33 @@ public sealed record UnitDonor(
 	uint Unknown4);
 
 /// <summary>一个要写成 Unit 的部件：它的网格分组 + 目标槽位 + 用哪个外壳。</summary>
+/// <summary>
+/// 把一个 Unit 的**身份**钉死成"某件目标护甲自己的那一行"。
+/// <para>
+/// 默认情况下 Unit id = 随机种子 + 序号，<c>CustomizationInfo.BodyType</c> 一律写
+/// <c>Any</c>——那是"自定义素体"的形态。而当这个 Unit 要**直接顶替某件游戏护甲自己的
+/// Unit 槽位**时，这两样都必须跟着目标走：id 用目标的那个，身形/槽位/重量/层也用目标
+/// 那一行的真实值。否则产出的 Unit 与它所占的槽位在字段上互相矛盾。
+/// </para>
+/// <para>
+/// 四个 <c>*Name</c> 都是**完整的** customization 字符串（含
+/// <c>HelldiverCustomization…_</c> 前缀），直接取自目标 Unit 的 TocData，避免在这里
+/// 再维护一份枚举 ↔ 字符串的映射。
+/// </para>
+/// </summary>
+public sealed record VpkUnitIdentityOverride(
+	string UnitId,
+	string BodyTypeName,
+	string SlotName,
+	string PieceTypeName,
+	string WeightName);
+
 public sealed record VpkUnitPlan(
 	MeshGroup Group,
 	UnitDonor Donor,
 	string SlotName,
-	string PieceTypeName);
+	string PieceTypeName,
+	VpkUnitIdentityOverride? Identity = null);
 
 /// <summary>
 /// 一条运行时护甲注册表的 piece。
@@ -305,12 +327,22 @@ public sealed class VpkPatchAssembler
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var plan = plans[planIndex];
-			var unitId = (seed + index).ToString("x16");
-			index++;
-			while (forbidden.Contains(unitId))
+			// 给了 Identity 就用目标护甲自己的 Unit id：这条 Unit 会直接顶替那个槽位，
+			// 用生成出来的 id 会让"内容说 Any、占位说 Slim"这种自相矛盾的产物成立。
+			var unitId = plan.Identity?.UnitId;
+			if (string.IsNullOrWhiteSpace(unitId))
 			{
 				unitId = (seed + index).ToString("x16");
 				index++;
+				while (forbidden.Contains(unitId))
+				{
+					unitId = (seed + index).ToString("x16");
+					index++;
+				}
+			}
+			else
+			{
+				unitId = unitId.Trim().ToLowerInvariant();
 			}
 
 			forbidden.Add(unitId);
@@ -335,11 +367,20 @@ public sealed class VpkPatchAssembler
 				registryPiecesByPlan[planIndex] = [new VpkRegistryPiece(3, slot, layer, false)];
 			}
 
-			customizations[planIndex] = new UnitCustomizationInfo(
-				"HelldiverCustomizationBodyType_Any",
-				$"HelldiverCustomizationSlot_{plan.SlotName}",
-				plan.Donor.Model.CustomizationInfo.Weight,
-				$"HelldiverCustomizationPieceType_{plan.PieceTypeName}");
+			// 默认是"自定义素体"形态：身形 Any、槽位/层来自计划、重量沿用外壳护甲。
+			// 钉了 Identity 时整套换成目标护甲那一行的真实值——四个字段必须**一起**换，
+			// 只换 id 不换身形就会留下"占 Slim 的槽、自称 Any"的 Unit。
+			customizations[planIndex] = plan.Identity is { } identity
+				? new UnitCustomizationInfo(
+					identity.BodyTypeName,
+					identity.SlotName,
+					identity.WeightName,
+					identity.PieceTypeName)
+				: new UnitCustomizationInfo(
+					"HelldiverCustomizationBodyType_Any",
+					$"HelldiverCustomizationSlot_{plan.SlotName}",
+					plan.Donor.Model.CustomizationInfo.Weight,
+					$"HelldiverCustomizationPieceType_{plan.PieceTypeName}");
 		}
 
 		// ①b 把 jiggle 骨的**合成节点**追加进 TransformInfo（必须在建网格之前）。
@@ -535,6 +576,12 @@ public sealed class VpkPatchAssembler
 						warnings.Add($"源材质 {stem} 合成失败：{string.Join("；", synthesized.Diagnostics)}");
 						continue;
 					}
+
+					// 降级提示（材质造出来了，但有东西表达不了）：进警告，不算失败。
+					// 单独走一条是因为"做成了但不忠实"和"没做成"混在一起，会让人分不清
+					// 到底该不该重新导——而这两件事的处理方式完全不同。
+					foreach (var notice in synthesized.Notices)
+						warnings.Add(notice);
 
 					idByStem[stem] = synthesized.Material.Id;
 					productByStem[stem] = synthesized;

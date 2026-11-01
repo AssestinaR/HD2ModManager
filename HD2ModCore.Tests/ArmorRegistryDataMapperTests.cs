@@ -126,10 +126,10 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		Directory.CreateDirectory(Path.Combine(gameData, "game"));
 		var library = Library(
 			Kit(100, 3,
-				Piece(0xAAAAAAAAAAAAAAAA, 1, 0, targetWeight),
+				Piece(0xAAAAAAAAAAAAAAAA, 3, 0, targetWeight),
 				Piece(0xBBBBBBBBBBBBBBBB, 2, 0, targetWeight)),
 			Kit(200, 3,
-				Piece(0xCCCCCCCCCCCCCCCC, 1, 0, sourceWeight),
+				Piece(0xCCCCCCCCCCCCCCCC, 3, 0, sourceWeight),
 				Piece(0xDDDDDDDDDDDDDDDD, 2, 0, sourceWeight),
 				Piece(0xEEEEEEEEEEEEEEEE, 2, 1, sourceWeight)));
 		await File.WriteAllBytesAsync(
@@ -150,8 +150,8 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		await File.WriteAllBytesAsync(
 			Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName),
 			Seal(Library(
-				Kit(100, 3, Piece(0x1111111111111111, 1, 0, weight: 2, lut: targetLut, tone: 7)),
-				Kit(200, 3, Piece(0x2222222222222222, 1, 0, weight: 0, lut: sourceLut, tone: 3)))));
+				Kit(100, 3, Piece(0x1111111111111111, 2, 0, weight: 2, lut: targetLut, tone: 7)),
+				Kit(200, 3, Piece(0x2222222222222222, 2, 0, weight: 0, lut: sourceLut, tone: 3)))));
 
 		var backup = Path.Combine(_root, "backup");
 		await new ArmorRegistryDataMapper().ApplyAsync(
@@ -175,7 +175,7 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		var backup = Path.Combine(_root, "backup");
 		var modelPieces = new[]
 		{
-			new ArmorRegistryDataSourcePiece(3, 1, 0, 0xC0FFEE0000000001),
+			new ArmorRegistryDataSourcePiece(3, 3, 0, 0xC0FFEE0000000001),
 			new ArmorRegistryDataSourcePiece(3, 2, 0, 0xC0FFEE0000000002),
 		};
 		var result = await new ArmorRegistryDataMapper().ApplyAsync(
@@ -189,6 +189,47 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		Assert.Contains(pieces, p => p.Unit == 0xC0FFEE0000000002);
 		// 素体只提供 unit/slot/type，weight 仍然是目标自己的 2。
 		Assert.All(ReadWeights(plain, 100), weight => Assert.Equal(2u, weight));
+	}
+
+	[Fact]
+	public async Task Apply_CustomModelNeverLeaksItsHelmetUnitIntoABodyKit()
+	{
+		// 自定义素体是一个整体（7 部位 + 1 头盔），而护甲与头盔是两个独立装备。
+		// 头盔件（slot 0）绝不能写进护甲套件——那会表现成"装身体也冒出头盔"。
+		var gameData = await CreateGameDataAsync(targetWeight: 2, sourceWeight: 0);
+		var backup = Path.Combine(_root, "backup");
+		var modelPieces = new[]
+		{
+			new ArmorRegistryDataSourcePiece(3, 0, 0, 0xC0FFEE0000000010), // 头盔
+			new ArmorRegistryDataSourcePiece(3, 2, 0, 0xC0FFEE0000000011), // 身体
+		};
+		await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, null, modelPieces)], backup);
+
+		var plain = Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData)));
+		var pieces = ReadPieces(plain, 100);
+		Assert.DoesNotContain(pieces, p => p.Unit == 0xC0FFEE0000000010);
+		Assert.Contains(pieces, p => p.Unit == 0xC0FFEE0000000011);
+	}
+
+	[Fact]
+	public async Task Apply_KeepsTheCapePlaceholderUntouched()
+	{
+		// slot 1 是披风占位，映射不谈它：来源就算给了 slot 1 也不替换，目标原本那条原样留下。
+		var gameData = await CreateGameDataAsync(targetWeight: 2, sourceWeight: 0);
+		var backup = Path.Combine(_root, "backup");
+		var modelPieces = new[]
+		{
+			new ArmorRegistryDataSourcePiece(3, 1, 0, 0xC0FFEE0000000020), // 披风：应被忽略
+			new ArmorRegistryDataSourcePiece(3, 2, 0, 0xC0FFEE0000000021), // 身体：应生效
+		};
+		await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, null, modelPieces)], backup);
+
+		var plain = Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData)));
+		var pieces = ReadPieces(plain, 100);
+		Assert.DoesNotContain(pieces, p => p.Unit == 0xC0FFEE0000000020);
+		Assert.Contains(pieces, p => p.Unit == 0xC0FFEE0000000021);
 	}
 
 	byte[] ReadRecord(byte[] plain, uint itemId)

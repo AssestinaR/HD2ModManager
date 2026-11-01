@@ -168,6 +168,106 @@ public static class MaterialAppearance
 		}
 	}
 
+	/// <summary>
+	/// 把整片 RGB 乘一个增益（clamp 到 0..255），alpha 不动。
+	/// <para>
+	/// <b>为什么 Albedo 模式也需要它。</b>matcap 当底色时，底色<b>就是</b>那张高光图；
+	/// 而高光图的平均亮度远低于它最亮的那块，于是"金属度顶到 1 + 底色偏暗"在 PBR 里
+	/// 就等于一块暗金属——实机反馈的"金属几乎没有反光、太黑了"。
+	/// </para>
+	/// <para>物理上更对的近似是"底色取金属的反射色（偏亮），高光交给 PBR 算"，增益就是往这个方向调。</para>
+	/// </summary>
+	public static void ScaleRgb(byte[] rgba, double gain)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		if (!double.IsFinite(gain) || gain <= 0)
+			throw new ArgumentOutOfRangeException(nameof(gain), $"增益必须是非负有限数，实际是 {gain}。");
+		if (gain == 1.0)
+			return;
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			for (var channel = 0; channel < 3; channel++)
+				rgba[offset + channel] = (byte)Math.Clamp(Math.Round(rgba[offset + channel] * gain), 0, 255);
+		}
+	}
+
+	/// <summary>线性 0..1 的反射率 → sRGB 编码后的 0..255（与 BC7_UNORM_SRGB 的像素含义一致）。</summary>
+	public static byte LinearToSrgbByte(double linear)
+	{
+		linear = Math.Clamp(linear, 0, 1);
+		var srgb = linear <= 0.0031308
+			? linear * 12.92
+			: (1.055 * Math.Pow(linear, 1.0 / 2.4)) - 0.055;
+		return (byte)Math.Clamp(Math.Round(srgb * 255.0), 0, 255);
+	}
+
+	/// <summary>
+	/// 把整片 RGBA <b>归一成金属的 F0</b>：丢掉亮度图案，只保留色相，整片抬到
+	/// <paramref name="targetLinear"/> 这个反射率。
+	/// <para>
+	/// <b>为什么是"归一"而不是"乘增益"。</b>实测 serenade 的 <c>matcap_metal7</c> 是双峰的
+	/// （中位 66 / p90 231 / 均值 106）。乘 1.6 就有 32% 的像素撞到 255，而均值只到 138
+	/// （F0 0.25）；要乘到 5.0 才勉强 F0 0.66，那时 64% 像素已是纯白——图案毁掉了，还是不够亮。
+	/// 因为高光那一半先撞顶，换算关系严重非线性。
+	/// </para>
+	/// <para>
+	/// <b>色相从哪来。</b>取整张图的面积平均色，归一成"同亮度"的单位色相，
+	/// 再乘目标亮度。这样金色的 matcap 出金色、银色出银色，而亮度是可控的。
+	/// 平均色接近中性（实测 silver 是 106/106/107）时结果就是中性金属。
+	/// </para>
+	/// <para>
+	/// alpha 一律置 0：底色不承担自发光，也不承担形状。
+	/// </para>
+	/// </summary>
+	public static void LevelToMetalF0(byte[] rgba, double targetLinear)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+
+		// ① 平均色 → 色相。
+		long sumR = 0, sumG = 0, sumB = 0;
+		var pixels = rgba.Length / 4;
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			sumR += rgba[offset];
+			sumG += rgba[offset + 1];
+			sumB += rgba[offset + 2];
+		}
+
+		var meanR = (double)sumR / pixels;
+		var meanG = (double)sumG / pixels;
+		var meanB = (double)sumB / pixels;
+		var maxChannel = Math.Max(meanR, Math.Max(meanG, meanB));
+
+		// 全黑（或近乎全黑）的 matcap 只能是中性金属——否则除零会把色相放大成噪声。
+		double hueR = 1, hueG = 1, hueB = 1;
+		if (maxChannel > 1)
+		{
+			hueR = meanR / maxChannel;
+			hueG = meanG / maxChannel;
+			hueB = meanB / maxChannel;
+		}
+
+		// ② 目标字节。
+		var target = LinearToSrgbByte(targetLinear);
+		var r = (byte)Math.Clamp(Math.Round(target * hueR), 0, 255);
+		var g = (byte)Math.Clamp(Math.Round(target * hueG), 0, 255);
+		var b = (byte)Math.Clamp(Math.Round(target * hueB), 0, 255);
+
+		// ③ 整片涂平。
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			rgba[offset + 0] = r;
+			rgba[offset + 1] = g;
+			rgba[offset + 2] = b;
+			rgba[offset + 3] = 0;
+		}
+	}
+
 	/// <summary>造一张 <paramref name="size"/>×<paramref name="size"/> 的纯色 RGBA（用于金属度/粗糙度这类标量槽）。</summary>
 	public static byte[] SolidRgba(int size, byte red, byte green, byte blue, byte alpha = 255)
 	{

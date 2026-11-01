@@ -2585,14 +2585,18 @@ public static class CliApplication
 			if (donorFailures.Count != 0)
 				throw new CliUserException("DonorUnusable", $"这些部位找不到可用的外壳 Unit（需要带槽位记录）：{string.Join("、", donorFailures)}。");
 
-			var plans = selectedGroups.Select(group =>
+			var unitIdentities = ResolveUnitIdentities(invocation.Options);
+			var plans = selectedGroups.SelectMany(group =>
 			{
 				var donor = donors[group.Region];
-				return new VpkUnitPlan(
-					group,
-					donor,
-					CliSourceConvert.SlotNames[group.Region],
-					group.Kind == MeshGroupKind.BodyPart ? "Undergarment" : "Armor");
+				var slotName = CliSourceConvert.SlotNames[group.Region];
+				var pieceType = group.Kind == MeshGroupKind.BodyPart ? "Undergarment" : "Armor";
+				var ids = LookupIdentities(unitIdentities, slotName);
+				// 没给身份 = 自定义素体形态：一个部位一份 Unit。
+				if (ids.Count == 0)
+					return [new VpkUnitPlan(group, donor, slotName, pieceType)];
+				// 给了身份 = 每个目标行各出一份（几何相同、身份不同）。
+				return ids.Select(id => new VpkUnitPlan(group, donor, slotName, pieceType, id)).ToArray();
 			}).ToArray();
 
 			var headerTemplate = (await new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameData)
@@ -2926,6 +2930,85 @@ public static class CliApplication
 	/// 存在：那时手上没有原压缩包名，而模型 patch 里引用的材质 id 是按那个 token 算的。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 读 <c>--unit-ids</c> 的 JSON：把"部位槽位名"映射到"目标护甲那一行的 Unit 身份"。
+	/// <para>
+	/// 形状（键 = <c>sections.json</c> 里的 slot 名，四个字符串是目标 Unit TocData 里的原样值）：
+	/// <code>
+	/// {
+	///   "Torso": { "unit": "cae35ee15168145f",
+	///              "bodyType": "HelldiverCustomizationBodyType_Slim",
+	///              "slot": "HelldiverCustomizationSlot_Torso",
+	///              "pieceType": "HelldiverCustomizationPieceType_Undergarment",
+	///              "weight": "HelldiverCustomizationWeight_Medium" }
+	/// }
+	/// </code>
+	/// </para>
+	/// <para>
+	/// <b>为什么要外部喂而不是从目标护甲自动推。</b>转换器手里只有游戏数据包，没有
+	/// "用户选了哪件护甲"这件事；而查那件事要装备表（管理器侧）。把身份表当成一份
+	/// 显式输入，转换器就仍然只做"照单生产"，出问题只需看这一份表。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyDictionary<string, IReadOnlyList<VpkUnitIdentityOverride>>? ResolveUnitIdentities(CliGlobalOptions options)
+	{
+		if (string.IsNullOrWhiteSpace(options.UnitIds))
+			return null;
+		var path = Path.GetFullPath(options.UnitIds);
+		if (!File.Exists(path))
+			throw new CliUserException("UnitIdsFileMissing", $"--unit-ids 指向的文件不存在：{path}");
+		var document = System.Text.Json.JsonSerializer.Deserialize<
+			Dictionary<string, System.Text.Json.JsonElement>>(File.ReadAllText(path))
+			?? throw new CliUserException("UnitIdsInvalid", $"--unit-ids 不是合法的 JSON 对象：{path}");
+
+		// 一个部位可以有**多个**身份：HD2 的原生护甲按体型分行存 Unit（Slim / Stocky 各一个），
+		// 而我们一个部位只有一份几何。所以这里允许给一串身份，转换器会为每个身份各出一份 Unit，
+		// 几何相同、身份不同——不这样的话，玩家是另一种体型就会看到原版内衣。
+		var result = new Dictionary<string, IReadOnlyList<VpkUnitIdentityOverride>>(StringComparer.OrdinalIgnoreCase);
+		foreach (var (slotName, element) in document)
+		{
+			var items = element.ValueKind == System.Text.Json.JsonValueKind.Array
+				? element.EnumerateArray().ToArray()
+				: [element];
+			var identities = new List<VpkUnitIdentityOverride>(items.Length);
+			foreach (var item in items)
+			{
+				string? Read(string name)
+					=> item.ValueKind == System.Text.Json.JsonValueKind.Object
+						&& item.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
+							? value.GetString()
+							: null;
+				var unit = Read("unit");
+				if (string.IsNullOrWhiteSpace(unit))
+					throw new CliUserException("UnitIdsInvalid", $"--unit-ids 里 '{slotName}' 有一项缺 unit。");
+				identities.Add(new VpkUnitIdentityOverride(
+					unit!.Trim().ToLowerInvariant(),
+					Read("bodyType") ?? "HelldiverCustomizationBodyType_Any",
+					Read("slot") ?? $"HelldiverCustomizationSlot_{slotName}",
+					Read("pieceType") ?? "HelldiverCustomizationPieceType_Undergarment",
+					Read("weight") ?? "HelldiverCustomizationWeight_Medium"));
+			}
+
+			result[slotName] = identities;
+		}
+
+		return result.Count == 0 ? null : result;
+	}
+
+	/// <summary>按槽位名取身份列表；容忍 Hip/Hips 这类写法差异。</summary>
+	private static IReadOnlyList<VpkUnitIdentityOverride> LookupIdentities(
+		IReadOnlyDictionary<string, IReadOnlyList<VpkUnitIdentityOverride>>? identities, string slotName)
+	{
+		if (identities is null)
+			return [];
+		if (identities.TryGetValue(slotName, out var exact))
+			return exact;
+		foreach (var candidate in new[] { slotName + "s", slotName.TrimEnd('s'), slotName.Replace("Hip", "Hips") })
+			if (identities.TryGetValue(candidate, out var loose))
+				return loose;
+		return [];
+	}
+
 	private static string? ResolveIdNamespace(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.IdNamespaceToken))
@@ -3027,9 +3110,12 @@ public static class CliApplication
 				options.AlbedoFactor is { } factor ? new AlbedoAdjustment(AlbedoDarkenMode.Multiply, factor) : null,
 				matcapMeans,
 				// matcap 怎么处理。`albedo` 让"只换 matcap"的包（C1/C2 那种）成为真正可换的 patch。
-				options.Matcap is not null && options.Matcap.Equals("albedo", StringComparison.OrdinalIgnoreCase)
-					? MatCapMode.Albedo
-					: MatCapMode.Bake,
+				options.Matcap?.ToLowerInvariant() switch
+				{
+					"albedo" => MatCapMode.Albedo,
+					"metal" => MatCapMode.Metal,
+					_ => MatCapMode.Bake,
+				},
 				// 命名空间：一批共用一个 token（见 Hd2AssetId.NamespaceFor）。
 				ResolveIdNamespace(options),
 				ResolveCutoutStrategy(options),
@@ -3109,14 +3195,16 @@ public static class CliApplication
 		if (donorFailures.Count != 0)
 			throw new CliUserException("DonorUnusable", $"这些部位找不到可用的外壳 Unit（需要带槽位记录）：{string.Join("、", donorFailures)}。");
 
-		var plans = selectedGroups.Select(group =>
+		var unitIdentities = ResolveUnitIdentities(invocation.Options);
+		var plans = selectedGroups.SelectMany(group =>
 		{
 			var donor = donors[group.Region];
-			return new VpkUnitPlan(
-				group,
-				donor,
-				CliSourceConvert.SlotNames[group.Region],
-				group.Kind == MeshGroupKind.BodyPart ? "Undergarment" : "Armor");
+			var slotName = CliSourceConvert.SlotNames[group.Region];
+			var pieceType = group.Kind == MeshGroupKind.BodyPart ? "Undergarment" : "Armor";
+			var ids = LookupIdentities(unitIdentities, slotName);
+			if (ids.Count == 0)
+				return [new VpkUnitPlan(group, donor, slotName, pieceType)];
+			return ids.Select(id => new VpkUnitPlan(group, donor, slotName, pieceType, id)).ToArray();
 		}).ToArray();
 
 		headerTemplate ??= (await new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(gameData)

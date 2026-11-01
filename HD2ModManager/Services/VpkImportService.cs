@@ -433,8 +433,14 @@ public sealed class VpkImportService
 			"--id-namespace", idNamespaceSource,
 			// 默认产出"7 槽位标准版"：附加部件并进它主导的那个身躯槽位。
 			"--components", "merge",
-			// matcap 直接当底色：这样"只换 matcap"的包才是真正可换的 patch。
-			"--matcap", "albedo",
+			// matcap 归一成金属 F0，而不是原样当底色。
+			//
+			// **这个改动有实机依据**：albedo 模式下金属件的底色就是 matcap 图，
+			// 实测它的平均亮度只等效反射率 0.14（银应该是 0.97），于是"又黑又没反光"。
+			// metal 模式保留 matcap 的色相、把整片抬到 F0（默认 0.96），
+			// 四档对照里 0.96 那一档观感最好。
+			// 注意：两种模式的贴图 id 与材质 id 完全相同，所以切换不破坏已有映射。
+			"--matcap", "metal",
 			"--manager-root", _managerRoot,
 			"--library", _libraryRoot,
 			"--game-data", _gameDataDirectory,

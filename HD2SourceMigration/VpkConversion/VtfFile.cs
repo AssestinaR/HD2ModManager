@@ -81,6 +81,24 @@ public sealed record VtfFile
 
 	public string FormatName => Formats.TryGetValue(HighResFormat, out var name) ? name : $"FMT{HighResFormat}";
 
+	/// <summary>
+	/// 造一个<b>只有尺寸</b>的占位 VTF。
+	/// <para>
+	/// 用途只有一个：源材质<b>没有 <c>$basetexture</c></b> 时（NekoToon 的金属/宝石件把
+	/// <c>$basetexture</c> 注释掉，观感 100% 来自 <c>$matcapture</c>），
+	/// 我们要合成一张纯色底色，而下游（<see cref="SourceMaterialConverter"/>）按
+	/// <see cref="Width"/>/<see cref="Height"/> 建 DDS。给它一个"只有尺寸"的对象，
+	/// 比给一堆假字节更不容易被误当成真像素。
+	/// </para>
+	/// <para>拿它去读 <see cref="Mips"/> 一定拿到空数组——不要那样用。</para>
+	/// </summary>
+	public static VtfFile Synthetic(int width, int height)
+	{
+		if (width <= 0 || height <= 0)
+			throw new ArgumentOutOfRangeException(nameof(width), "合成 VTF 的尺寸必须为正。");
+		return new VtfFile { Width = width, Height = height, MipCount = 1, Frames = 1 };
+	}
+
 	/// <summary>VTF 格式号 → 名字。含两个非标准的 L4D2/CSGO 压缩掩码（37=BC5、38=BC4）。</summary>
 	public static readonly IReadOnlyDictionary<uint, string> Formats = new Dictionary<uint, string>
 	{

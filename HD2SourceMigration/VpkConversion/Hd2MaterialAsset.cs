@@ -245,6 +245,35 @@ public sealed class Hd2MaterialAsset
 	}
 
 	/// <summary>
+	/// 按<b>变量 id</b>改一个标量变量的值。
+	/// <para>
+	/// 只改已经存在的变量：变量表属于模板的着色器契约，凭空追加一条游戏解析不了。
+	/// 找不到就返回 <c>false</c>（调用方必须据此失败，而不是静默用默认值）。
+	/// </para>
+	/// <para>
+	/// 用法见 <c>SourceMaterialConverter</c> 的镂空三档：<c>OpacityThreshold</c>（alphaclip 族）
+	/// 与 <c>OpacitySharpness</c> / <c>OpacityOffset</c>（advanced）。
+	/// </para>
+	/// </summary>
+	public bool TrySetScalar(uint variableId, float value)
+	{
+		foreach (var variable in Variables)
+		{
+			if (variable.Id != variableId)
+				continue;
+			var values = variable.Values.ToArray();
+			if (values.Length == 0)
+				values = [value];
+			else
+				values[0] = value;
+			variable.Values = values;
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
 	/// 替换一个<b>已存在</b>槽位的贴图 id。
 	/// <para>
 	/// 刻意严格：槽位键属于模板的着色器契约，凭空造一个槽（追加零键）会产出游戏解析不了的材质。

@@ -505,10 +505,18 @@ internal static class CliVpkRekey
 	/// 组件树里"链接"标记的由来）。写死比猜更可靠。
 	/// </para>
 	/// <para>
-	/// <b>同部位有多层时按层优先：</b>Undergarment → Armor → Accessory，命中第一个"这件护甲
-	/// 真有 Unit"的层，就用那层的**全部** Unit（Slim / Stocky / Any 各一个），其余层交给隐藏。
-	/// 只认内衣层是不够的：有的护甲某个部位只有护甲层（AF-52「禁锢」的右臂没有
-	/// <c>右臂－内衣</c>），那时把护甲层也隐藏掉，那条肢体就彻底没了。
+	/// <b>同部位有多层时外层优先：</b>Accessory → Armor → Undergarment，命中这件护甲该部位
+	/// 存在的**最外层**，就用那层的全部 Unit（Slim / Stocky / Any 各一个），更内层交给隐藏。
+	/// <para>
+	/// 为什么是外层而不是内层（2026-11-01 实机对照得出，不是猜）：护甲件的 <c>mesh0</c> 是
+	/// <c>lod=-1</c>、只写深度的剔除代理网格，形状就是整条前臂 / 小腿，而隐藏空壳会把它
+	/// **原样保留**（见 <c>SameKeyCanonicalUnitRebuilder</c> 的"保留 target cutout"分支）。
+	/// 于是挂在更内层的我们的几何会在那几圈被深度剔除，表现成"手套 / 丝袜整段不显示、
+	/// 也不是品红"。把我们的几何换到外层、内层全部隐藏，实测手套与丝袜正常。
+	/// </para>
+	/// <para>
+	/// 外层优先同时覆盖了原来的边界情况：有的护甲某个部位只有护甲层（AF-52「禁锢」的右臂
+	/// 没有 <c>右臂－内衣</c>），那时护甲层就是最外层，本来就该由它承载。
 	/// </para>
 	/// </summary>
 	internal static (CrossArmorTransferPlan Plan, IReadOnlyList<string> Notes) BuildPlan(
@@ -533,13 +541,20 @@ internal static class CliVpkRekey
 			// 有的护甲某个部位压根没有内衣层（实测 AF-52「禁锢」的右臂只有
 			// 右臂－护甲－通用/健壮/纤细，没有 右臂－内衣），那时护甲层就是那个部位**唯一**
 			// 的几何——按"护甲层一律隐藏"处理，等于既没写进我们的、又删掉了原版的，整条胳膊消失。
+			// **外层优先**：Accessory → Armor → Undergarment，取这件护甲该部位存在的**最外层**。
+			//
+			// 为什么把"内层优先"改掉（这是实测结论，不是猜）：内层会被外层的**剔除代理网格**
+			// 按深度挡掉。护甲件的 mesh0 是 lod=-1、只写深度的代理网格，形状就是整条前臂 /
+			// 小腿——空壳它被原样保留（SameKeyCanonicalUnitRebuilder 的 "保留 target cutout"
+			// 分支），于是挂在层 0 的我们的几何在那几圈被深度剔除，表现成"手套 / 丝袜整段不显示"。
+			// 把我们的几何换到外层、内层全部隐藏，就绕开了那条路。
 			var carrierLayerByKind = new Dictionary<UnitMeshPartKind, UnitMeshPartLayer>();
 			foreach (var part in target.Parts)
 			{
-				if (LayerRank(part.Layer) == int.MaxValue)
+				if (part.Layer is UnitMeshPartLayer.Unknown or UnitMeshPartLayer.Culling or UnitMeshPartLayer.Static)
 					continue;
 				if (!carrierLayerByKind.TryGetValue(part.PartKind, out var current)
-					|| LayerRank(part.Layer) < LayerRank(current))
+					|| LayerRank(part.Layer) > LayerRank(current))
 				{
 					carrierLayerByKind[part.PartKind] = part.Layer;
 				}
@@ -572,15 +587,13 @@ internal static class CliVpkRekey
 				if (!mappedUnits.Add(part.UnitAssetKey))
 					continue;
 
-				// 承载层不是内衣层 = 这件护甲该部位没有内衣层，我们退到了更高的层。
-				// 这个必须说出来：它意味着原版那个部位的"内衣层几何"本来就不存在，
-				// 现在整块由我们的 Unit 顶替。头盔不算——它天生就只有一层。
-				if (part.Layer != UnitMeshPartLayer.Undergarment
-					&& part.PartKind != UnitMeshPartKind.Helmet
-					&& fallbackNotedKinds.Add(part.PartKind))
+				// 承载层现在**总是**该部位存在的最外层（外层优先）。这条说明留着是因为
+				// 它是排查依据：哪个部位由哪一层承载，直接决定进游戏会不会被剔除代理挡住。
+				// 头盔不算——它天生就只有一层。
+				if (part.PartKind != UnitMeshPartKind.Helmet && fallbackNotedKinds.Add(part.PartKind))
 				{
-					notes.Add($"{target.DisplayName} 的 {part.PartKind} 没有内衣层 Unit，"
-						+ $"改由 {part.Layer} 层承载来源 Unit。");
+					notes.Add($"{target.DisplayName} 的 {part.PartKind} 由 {part.Layer} 层承载来源 Unit"
+						+ "（外层优先：内层会被外层护甲件的剔除代理按深度挡掉）。");
 				}
 
 				var mapping = new CrossArmorTransferMapping(

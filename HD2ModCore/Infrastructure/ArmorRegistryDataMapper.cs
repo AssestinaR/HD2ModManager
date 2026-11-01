@@ -211,46 +211,100 @@ public sealed class ArmorRegistryDataMapper
 	/// 用来源的件表重建目标套件：header + bodies + 连续件数组。
 	/// bodyOffset 恒为 64，第一个件数组紧接在 body 数组之后——这是游戏自己的排布。
 	/// </summary>
+	/// <summary>
+	/// 用来源件表替换目标套件的件表：header + bodies + 连续件数组。
+	/// <para>
+	/// <b>这是"替换"不是"叠加"。</b>映射完成后这套装备只应有来源的件（加上披风那一格占位），
+	/// 目标自己的其余件（别的层、我们没有的部位）一律不写——留着就成了缝合怪。空行也不写。
+	/// </para>
+	/// <para>
+	/// <b>槽位族必须按套件分开。</b>自定义素体是一个包着「7 个部位 + 1 个头盔」的整体，
+	/// 而游戏里护甲套件与头盔套件是两个独立装备。把整套件表原样铺进去，头盔件会落进护甲套件
+	/// （装身体也冒出头盔）、身体件会落进头盔套件（装头盔也冒出身体）。所以这里先看目标套件
+	/// 自己有哪些槽位族，只接受属于该族的来源件。
+	/// </para>
+	/// </summary>
 	static byte[] CloneKit(byte[] plain, Kit target, IReadOnlyList<ArmorRegistryDataSourcePiece> sourcePieces)
 	{
+		const uint CapeSlot = 1;
 		var headerSize = (int)target.BodyOffset;
-		var bodiesSize = target.Bodies.Count * BodySize;
-		var perBody = new List<List<byte[]>>();
-		foreach (var body in target.Bodies)
-		{
-			var records = sourcePieces
-				.Where(piece => piece.BodyType == body.BodyType)
-				.OrderBy(piece => piece.Slot).ThenBy(piece => piece.PieceType)
-				.Select(sourcePiece =>
-				{
-					var template = FindTemplate(target, sourcePiece);
-					var record = new byte[PieceSize];
-					// 先把目标模板整条抄过来（拿到目标的 weight / 资源哈希 / tone / 保留区）。
-					// 目标完全没有该身形时 record 保持全零，这是唯一没有目标值可继承的情况。
-					if (template is not null)
-						Array.Copy(plain, template.Offset, record, 0, PieceSize);
-					// 再只覆盖映射真正要换的三个字段。
-					BinaryPrimitives.WriteUInt64LittleEndian(record, sourcePiece.Unit);
-					BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(8), sourcePiece.Slot);
-					BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(12), sourcePiece.PieceType);
-					return record;
-				})
-				.ToList();
-			perBody.Add(records);
-		}
+		var targetHasHelmet = target.Pieces.Any(piece => piece.Slot == 0);
+		var targetHasBody = target.Pieces.Any(piece => piece.Slot >= 2 && piece.Slot <= 9);
+		var wanted = sourcePieces
+			.Where(piece => (piece.Slot == 0 && targetHasHelmet)
+				|| (piece.Slot >= 2 && piece.Slot <= 9 && targetHasBody))
+			.ToArray();
 
-		var totalPieces = perBody.Sum(list => list.Count);
-		var payload = new byte[headerSize + bodiesSize + totalPieces * PieceSize];
-		Array.Copy(plain, target.PayloadStart, payload, 0, headerSize);
-		var cursor = headerSize + bodiesSize;
+		// 逐条身体行收集；空行直接丢弃（不进入 kept），最后同步写回 bodyCount。
+		var kept = new List<(int OriginalIndex, uint BodyType, List<byte[]> Records)>();
 		for (var b = 0; b < target.Bodies.Count; b++)
 		{
-			var srcBodyAt = target.PayloadStart + (int)target.BodyOffset + b * BodySize;
-			var dstBodyAt = headerSize + b * BodySize;
+			var body = target.Bodies[b];
+			// body 精确匹配 + Any(3) 展开进每一行；同一 (slot, layer) 只留一条，精确 body 优先于 Any。
+			var chosen = wanted
+				.Where(piece => piece.BodyType == body.BodyType || piece.BodyType == 3)
+				.GroupBy(piece => (piece.Slot, piece.PieceType))
+				.Select(group => group.OrderBy(piece => piece.BodyType == 3 ? 1 : 0).First())
+				.OrderBy(piece => piece.Slot).ThenBy(piece => piece.PieceType)
+				.ToList();
+
+			var records = new List<byte[]>(chosen.Count + 1);
+			foreach (var sourcePiece in chosen)
+			{
+				var template = FindTemplate(target, sourcePiece);
+				var record = new byte[PieceSize];
+				// 先把目标模板整条抄过来（拿到目标的 weight / 资源哈希 / tone / 保留区）。
+				// 目标完全没有该部位时 record 保持全零——那是"给这个槽位新建一条"的情形，
+				// 注册表是权威来源，别的护甲允许这个槽位存在，引擎就会接受它。
+				if (template is not null)
+					Array.Copy(plain, template.Offset, record, 0, PieceSize);
+				// 只覆盖映射真正要换的三个字段。
+				BinaryPrimitives.WriteUInt64LittleEndian(record, sourcePiece.Unit);
+				BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(8), sourcePiece.Slot);
+				BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(12), sourcePiece.PieceType);
+				records.Add(record);
+			}
+
+			// 披风是独立装备、只占位，按约定原样保留这一行里的披风件。
+			foreach (var cape in target.Pieces.Where(piece => piece.Slot == CapeSlot && piece.BodyType == body.BodyType))
+			{
+				var record = new byte[PieceSize];
+				Array.Copy(plain, cape.Offset, record, 0, PieceSize);
+				records.Add(record);
+			}
+
+			// 空行会让军械库遍历身形时拿到空数组而崩溃，直接不写这一行。
+			if (records.Count == 0) continue;
+			kept.Add((b, body.BodyType, records));
+		}
+
+		// 一个件都给不出来（来源里没有属于这套装备的槽位）时**原样不动**：
+		// 把整份装备清成空壳比"没映射上"更糟，而且空表本身就是军械库崩溃的来源。
+		if (kept.Count == 0)
+		{
+			var untouched = new byte[target.PayloadSize];
+			Array.Copy(plain, target.PayloadStart, untouched, 0, target.PayloadSize);
+			return untouched;
+		}
+
+		var totalPieces = kept.Sum(entry => entry.Records.Count);
+		var payload = new byte[headerSize + kept.Count * BodySize + totalPieces * PieceSize];
+		Array.Copy(plain, target.PayloadStart, payload, 0, headerSize);
+		// 行数变了就必须写回：bodyOffset 恒为 64，bodyCount 紧跟其后（见 ParseKits）。
+		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(48), headerSize);
+		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(56), kept.Count);
+
+		var cursor = headerSize + kept.Count * BodySize;
+		for (var i = 0; i < kept.Count; i++)
+		{
+			var srcBodyAt = target.PayloadStart + headerSize + kept[i].OriginalIndex * BodySize;
+			var dstBodyAt = headerSize + i * BodySize;
+			// 整条 24 字节抄过来（保留未知字段），再覆盖三个已知字段。
 			Array.Copy(plain, srcBodyAt, payload, dstBodyAt, BodySize);
+			BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(dstBodyAt), kept[i].BodyType);
 			BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(dstBodyAt + 8), cursor);
-			BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(dstBodyAt + 16), perBody[b].Count);
-			foreach (var record in perBody[b])
+			BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(dstBodyAt + 16), kept[i].Records.Count);
+			foreach (var record in kept[i].Records)
 			{
 				Array.Copy(record, 0, payload, cursor, PieceSize);
 				cursor += PieceSize;
