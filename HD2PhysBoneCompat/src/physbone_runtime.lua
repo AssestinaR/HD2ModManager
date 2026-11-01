@@ -31,7 +31,7 @@
 
 local M = {}
 
-M.VERSION = "1.8.0"
+M.VERSION = "1.9.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -176,6 +176,10 @@ local function discover(S_, cache, options, logger)
 
 	cache.avatarCandidates = 0
 	local avatar, withMg, withoutMg = nil, {}, {}
+	-- 优先用"上一次认定的玩家"：阵亡后尸体可能也满足 avatar 判据，
+	-- 如果这里只取"第一个"，很容易一直选中尸体（于是新玩家永远接不上物理）。
+	local prefer = cache.preferAvatar
+	local preferFound = false
 	for index = 1, count do
 		local unit = units[index]
 		if Compat.unit_alive(S_, unit) then
@@ -187,7 +191,11 @@ local function discover(S_, cache, options, logger)
 						-- 记一下**有几个**候选：阵亡后如果尸体仍保有动画状态机，这里会变成 2 个。
 						-- 这条数字是"换人检测"最需要的事实，没有它只能靠猜。
 						cache.avatarCandidates = (cache.avatarCandidates or 0) + 1
-						if avatar == nil then avatar = unit end
+						if prefer ~= nil and rawequal(unit, prefer) then
+							avatar, preferFound = unit, true
+						elseif avatar == nil and not preferFound then
+							avatar = unit
+						end
 					end
 				elseif try(S_.Unit.has_node, unit, supportMg) == true then
 					if #withMg < maxUnits then
@@ -327,8 +335,17 @@ local function tryAttach(runtime)
 	if farCount > 0 then
 		runtime.logger("[physbone] 跳过 %d 个离玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
 	end
+	-- 给候选打分是这里最贵的一步（每份容器 × 每根骨一次 has_node，一件 ~460 次调用）。
+	-- 候选多时（军械库里几十个人台）不设上限就是几万次调用 ⇒ 明显卡顿。
+	-- 只测最近的一批：真正属于玩家的护甲一定是最近的那几件。
+	local maxScored = options.maxScoredCandidates or 12
 	local plan, bestScored = {}, nil
-	for _, candidate in ipairs(nearCandidates) do
+	for index = 1, #nearCandidates do
+		if index > maxScored then
+			runtime.logger("[physbone] 只给最近的 %d 件护甲打分（候选共 %d 件）", maxScored, #nearCandidates)
+			break
+		end
+		local candidate = nearCandidates[index]
 		local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
 		if best ~= nil and (best.full or allowPartial) then
 			plan[#plan + 1] = {
@@ -395,9 +412,11 @@ local function tryAttach(runtime)
 	local chains = 0
 	for _, session in ipairs(sessions) do chains = chains + #session.sessions end
 	runtime.sessions = sessions
-	-- 记住"当时谁是玩家"：阵亡后尸体还活着，只有实例名能区分"换人了"。
+	-- 记住"当时谁是玩家"。⚠️ 判"换没换人"要比 **userdata 同一性**，不是 `debug_name`：
+	-- 实测丢掉 7 个 unit 后重新挂上的还是同一批 `#ID[...]`，说明那个 id 是按资源算的。
 	runtime.avatar = avatar
 	runtime.avatarTag = unit_tag(S, avatar)
+	cache.preferAvatar = avatar
 	runtime.attachedFrame = frame
 	runtime.reArm = 0
 	runtime.rearmAt = nil
@@ -440,75 +459,91 @@ local function pruneSessions(runtime)
 	return dead + rebuilt
 end
 
+--- 便宜的 avatar 扫描：只做两项引擎调用，让"换人检测"能在驱动中定期跑。
+--- 返回候选列表；`nil` 表示"这次扫不了"（世界/单位列表取不到）。
+---
+--- 为什么不用 `discover`：那一趟还要算节点数、算到玩家的距离、给每个候选打分排序，
+--- 一次约 7 千次引擎调用 —— 每 1~2 秒来一趟就是肉眼可见的顿卡（2026-11-01 实测掉到 60 fps）。
+--- 判"换人"只需要"场上有哪些 unit 同时有动画状态机 + support_mg"，两项调用就够。
+local function scanAvatars(runtime)
+	local world, units = pickWorld(S, runtime.cache)
+	if world == nil or units == nil then return nil end
+	local supportMg = id32(S, "support_mg")
+	if supportMg == nil then return nil end
+	local found = {}
+	for index = 1, #units do
+		local unit = units[index]
+		if Compat.unit_alive(S, unit)
+			and try(S.Unit.has_animation_state_machine, unit) == true
+			and try(S.Unit.has_node, unit, supportMg) == true then
+			found[#found + 1] = unit
+		end
+	end
+	return found
+end
+
+local function isIgnored(runtime, unit)
+	local list = runtime.ignoredAvatars
+	if list == nil then return false end
+	for index = 1, #list do
+		if rawequal(list[index], unit) then return true end
+	end
+	return false
+end
+
+local function ignoreAvatar(runtime, unit)
+	if unit == nil then return end
+	local list = runtime.ignoredAvatars
+	if list == nil then list = {}; runtime.ignoredAvatars = list end
+	if isIgnored(runtime, unit) then return end
+	list[#list + 1] = unit
+end
+
 --- 玩家换人了吗（阵亡 → 尸体留在原地 → 新实体出现）。
 ---
 --- 为什么必须单独做这件事：阵亡时**旧实体不会被销毁**（尸体还活着），
 --- `pruneSessions` 只会在 `Unit.alive == false` 或节点数变化时才丢会话，
---- 于是我们一直驱动着尸体，而新玩家的护甲 unit 从来没被挂过 —— 表现就是"复活后没有物理"。
+--- 于是我们一直驱动着尸体，而新玩家的护甲 unit 从来没被挂过 —— "复活之后没有物理"。
 ---
---- 判据**不用**"离玩家多远"（复活点可能就在原地，距离区分不开），而是看**谁是玩家**：
---- `discover` 认 avatar 的条件是"有动画状态机 + 带 support_mg"，尸体是 ragdoll，
---- 没有动画状态机 ⇒ 它不会再被认成 avatar。于是 avatar 的实例名一变，就是换人了。
+--- ⚠️ 判据用 **userdata 同一性**（`rawequal`），**不是** `debug_name`。
+--- 2026-11-01 实测：丢掉 7 个 unit 之后重新挂上的还是**同一批 `#ID[...]`**，
+--- 说明那个 id 是按资源/描述符算的，不是按实例 —— 拿它比"是不是同一个人"永远为真，
+--- 于是换人检测一次都没触发（日志里 `[换人]` 计数为 0）。userdata 才是实例。
 ---
---- 代价：这一步要走一遍 `discover`（扫所有 unit）。所以只在驱动中按
---- `validateFrames`（默认 120 帧 ≈ 1.2 秒）跑一次，实测约占引擎调用总量的 10%。
---- 设 `validateFrames = 0` 可关掉。
+--- 尸体若仍保有动画状态机，场上会有 2 个候选；所以用"忽略表"记住已经判定为尸体的 avatar，
+--- 只认**没被忽略的新候选**，避免每 1.2 秒都判一次换人造成反复重挂。
 ---@return boolean changed 玩家换了（调用方应当释放并重挂）
 local function playerChanged(runtime)
-	local options = runtime.options
-	if runtime.avatar == nil or runtime.avatarTag == nil then return false end
-	local previousTag = runtime.avatarTag
-	-- 便宜的一手：当初那个玩家 unit 直接没了 ⇒ 一定换人了（尸体是另一个 unit）。
-	-- 这一步只要 1 次引擎调用，能省掉下面那趟全量扫描。
-	if not Compat.unit_alive(S, runtime.avatar) then
-		runtime.logger("[physbone][换人] 原玩家 unit=%s 已销毁 ⇒ 释放旧会话后重挂",
-			tostring(previousTag))
-		runtime.avatar, runtime.avatarTag = nil, nil
-		return true
+	local avatars = scanAvatars(runtime)
+	if avatars == nil then return false end
+	-- 清掉已经销毁的忽略项，免得表无限增长
+	local kept = {}
+	for _, unit in ipairs(runtime.ignoredAvatars or {}) do
+		if Compat.unit_alive(S, unit) then kept[#kept + 1] = unit end
 	end
-	local world, units, avatar, armorList = discover(S, runtime.cache, options, runtime.logger)
-	if world == nil or avatar == nil or armorList == nil then
-		-- 扫不到（加载中 / 切场景）：不据此判换人，交给 prune 与下一次校验。
-		return false
-	end
-	local tag = unit_tag(S, avatar)
-	local candidates = runtime.cache.avatarCandidates or 0
-	if candidates > 1 and not runtime.multiAvatarLogged then
-		runtime.multiAvatarLogged = true
-		-- 场上不止一个"有状态机的 unit"。如果阵亡后尸体也保有状态机，就会这样；
-		-- 那时"第一个"不一定是活着的玩家，需要换判据。这条日志是判它的唯一依据。
-		runtime.logger("[physbone][观测] 场上有 %d 个 avatar 候选（只取第一个：%s）"
-			.. "——如果复活后没物理，把这一行发我", candidates, tostring(tag))
-	end
-	if tag == previousTag then
-		-- 同一个人，但"身边的护甲一件都不是我们挂着的"也可能发生（实体被重建 / 同一 unit 被复用
-		-- 只换了位置）。那时实例名不变，只有位置对不上 —— 这条兜住它。
-		local maxDist = options.maxArmorDistance == nil and 5.0 or options.maxArmorDistance
-		local maxDist2 = maxDist > 0 and (maxDist * maxDist) or nil
-		if maxDist2 ~= nil then
-			local mine = {}
-			for _, session in ipairs(runtime.sessions or {}) do
-				mine[tostring(session.unitTag or "?")] = true
-			end
-			local nearMine, nearTotal = 0, 0
-			for _, candidate in ipairs(armorList) do
-				if candidate.distance ~= nil and candidate.distance <= maxDist2 then
-					nearTotal = nearTotal + 1
-					if mine[tostring(unit_tag(S, candidate.unit))] then nearMine = nearMine + 1 end
-				end
-			end
-			if nearTotal > 0 and nearMine == 0 then
-				runtime.logger("[physbone][换人] 玩家实例没变（%s），但身边的 %d 件护甲一件都不是我们挂着的"
-					.. " ⇒ 按换了人处理（旧实体留在原地？）", tostring(tag), nearTotal)
-				return true
-			end
+	runtime.ignoredAvatars = kept
+
+	-- 优先挑"没被忽略、且不是当前这个"的候选：那就是新出现的玩家实体。
+	for _, unit in ipairs(avatars) do
+		if not rawequal(unit, runtime.avatar) and not isIgnored(runtime, unit) then
+			runtime.logger("[physbone][换人] 出现新的玩家实体（候选 %d 个，旧=%s，新=%s）⇒ 释放旧会话后重挂",
+				#avatars, tostring(runtime.avatarTag), tostring(unit_tag(S, unit)))
+			ignoreAvatar(runtime, runtime.avatar)
+			runtime.avatar = unit
+			runtime.avatarTag = unit_tag(S, unit)
+			-- 让下一次 discover 优先认它：阵亡后尸体可能也满足 avatar 判据，
+			-- 只取"第一个"很容易一直选中尸体。
+			runtime.cache.preferAvatar = unit
+			return true
 		end
-		return false
 	end
-	runtime.logger("[physbone][换人] 玩家实例变了：%s → %s（阵亡/复活？）⇒ 释放旧会话后重挂",
-		tostring(previousTag), tostring(tag))
-	runtime.avatar, runtime.avatarTag = avatar, tag
-	return true
+
+	-- 没有新候选：确认我们那个还活着就行。
+	if runtime.avatar ~= nil and Compat.unit_alive(S, runtime.avatar) then return false end
+
+	-- 我们的 avatar 没了，且场上没有别的候选：等下一拍（可能正在复活加载）。
+	runtime.avatar, runtime.avatarTag = nil, nil
+	return false
 end
 
 --- 释放并丢弃全部会话。
@@ -609,8 +644,18 @@ local function drive(runtime)
 			note_wait(runtime, "退避等待重扫")
 			return
 		end
-		if (frame % (options.pollFrames or 20)) ~= 0 then return end
+		-- 等待中的轮询会跑一趟完整的 `discover`（扫所有 unit + 给每个候选打分，几千次引擎调用），
+		-- 所以**必须**随等待时长放慢：刚掉线那 2 秒要快（复活/换甲很快结束），
+		-- 之后就按 3 倍间隔扫一次 —— 否则"一直等不到"会变成持续的顿卡。
+		runtime.waitSince = runtime.waitSince or frame
+		local waited = frame - runtime.waitSince
+		local poll = options.pollFrames or 20
+		if waited > (options.waitSlowAfter or 200) then poll = poll * 3 end
+		if (frame % poll) ~= 0 then return end
 		if not tryAttach(runtime) then return end
+		runtime.waitSince = nil
+	else
+		runtime.waitSince = nil
 	end
 
 	-- ---------- 驱动 ----------
