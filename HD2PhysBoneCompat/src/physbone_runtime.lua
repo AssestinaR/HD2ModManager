@@ -31,7 +31,7 @@
 
 local M = {}
 
-M.VERSION = "1.1.0"
+M.VERSION = "1.2.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -382,6 +382,8 @@ local function tryAttach(runtime)
 	runtime.zeroFrames = 0
 	runtime.driveFrames = 0
 	runtime.callsAccum = 0
+	runtime.peakAngle = 0
+	runtime.repeatCalls = 0
 	runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器）unit=%s",
 		#sessions, chains, #carriers, table.concat(tags, ","))
 	return true
@@ -423,21 +425,46 @@ local function drive(runtime)
 	Compat.begin_frame(frame)
 
 	-- dt 用引擎自己的时间差，不写死 1/60。
-	-- `update` 实测约 70 次/秒，写死 1/60 会让物理比真实时间慢 15~30%——观感上就是
-	-- "动得比衣服沉"、"回弹拖沓"，而这很容易被误判成阻尼调大了。
-	-- ⚠️ `Application.time_since_launch` 每帧只更新一次，所以只能在**帧之间**做差：
-	-- 在一次回调内部取首尾差值恒为 0（踩过）。做不出差（首帧 / 时钟回退）就保持上一个值。
+	-- 实测回调约 120 次/秒（不是 70，也不是 375），写死 1/60 会让物理比真实时间快/慢一截，
+	-- 观感是"回弹拖沓"或"甩得太开"，很容易被误判成阻尼/刚度调错了。
+	--
+	-- ⚠️ `Application.time_since_launch` **每帧只更新一次**，所以：
+	--   ① 只能在**帧之间**做差（在一次回调内部取首尾差值恒为 0，踩过）；
+	--   ② 一帧里被调用多次时，后面那几次拿到的差值是 0 —— 这时**绝不能再用上一次的 dt 积分**，
+	--      否则一帧就积了 N 倍的时间，物理快 N 倍、永远停不下来（表现就是"飘逸过头"）。
+	--      正确做法是：时钟没前进 ⇒ 这一拍不是新的时间步 ⇒ 什么都不做。
 	local now = try(S.Application.time_since_launch)
+	local advanced = true
 	if type(now) == "number" and now == now then
 		local previous = runtime.lastTime
 		runtime.lastTime = now
-		if previous ~= nil and now > previous then
+		if previous == nil then
+			advanced = true                      -- 首帧：没有差值可比，照常驱动
+		elseif now > previous then
 			local delta = now - previous
 			-- 上限 0.25 与 compat 的稳定性闸一致：卡顿帧不该被当成"过了 0.5 秒"去积分。
 			if delta > 0.25 then delta = 0.25 end
 			if delta >= 0.001 then runtime.dt = delta end
+			advanced = true
+		else
+			advanced = false                     -- 同一时间步内的重复调用
+			runtime.repeatCalls = (runtime.repeatCalls or 0) + 1
+			-- 兜底：引擎时钟**一直不动**（老版本没有这个量 / 被谁包了一层）时不能永远不动。
+			-- 连续太多次没前进就退回"按上一次的 dt 照常积分"，并大声说一次——
+			-- 宁可物理快一点，也不要静默冻住（静默失败是这一整层最贵的一类问题）。
+			runtime.stuckClock = (runtime.stuckClock or 0) + 1
+			if runtime.stuckClock >= (options.stuckClockLimit or 600) then
+				if not runtime.stuckClockLogged then
+					runtime.stuckClockLogged = true
+					logger("[physbone][警告] 引擎时钟连续 %d 次没有前进（time_since_launch 不可用？）"
+						.. "⇒ 退回固定 dt=%.4f 继续驱动", runtime.stuckClock, runtime.dt or (1 / 60))
+				end
+				runtime.stuckClock = 0
+				advanced = true
+			end
 		end
 	end
+	if not advanced then return end
 
 	if runtime.sessions ~= nil and #runtime.sessions > 0 then
 		local dropped = pruneSessions(runtime)
@@ -494,16 +521,35 @@ local function drive(runtime)
 	runtime.callsAccum = (runtime.callsAccum or 0) + engineCalls
 	runtime.staticChains = staticChains
 
-	-- 阶段心跳：每 N 帧一行，证明驱动块确实被进入过，并给出当帧的四个事实。
+	-- 峰值转角：判断"甩得太开"到底开到了多少度。
+	-- 只报**本拍**的峰值和**本次挂载以来**的峰值——前者说明当下在动多少，
+	-- 后者是"最离谱的那一下"，两者合起来才能区分"一直很大"和"偶尔抽一下"。
+	local framePeak = 0
+	for _, session in ipairs(runtime.sessions) do
+		for _, item in ipairs(session.sessions) do
+			local rotations = item.lastRotations
+			if rotations ~= nil then
+				for index = 1, #rotations do
+					local angle = rotations[index][4]
+					if angle > framePeak then framePeak = angle end
+				end
+			end
+		end
+	end
+	local framePeakDeg = framePeak * 180 / math.pi
+	if framePeakDeg > (runtime.peakAngle or 0) then runtime.peakAngle = framePeakDeg end
+
+	-- 阶段心跳：每 N 帧一行，证明驱动块确实被进入过，并给出当帧的关键事实。
 	-- 上一轮出现过"phase 明明是 live 但 update 从不执行"，没有这条就无法区分
 	-- "没进块"和"进了块但走了别的分支"。
 	local heartbeat = options.heartbeatFrames or 120
 	if (runtime.driveFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
-		logger("[physbone] 驱动心跳 unit=%d 链=%d 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d",
-			#runtime.sessions, chains, written, skippedSame, engineCalls,
-			runtime.callsAccum / runtime.driveFrames, staticChains)
+		logger("[physbone] 驱动心跳 unit=%d 链=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 峰值=%.1f°(史上%.1f°) 同拍重复=%d",
+			#runtime.sessions, chains, runtime.dt or 0, written, skippedSame, engineCalls,
+			runtime.callsAccum / runtime.driveFrames, staticChains, framePeakDeg,
+			runtime.peakAngle or 0, runtime.repeatCalls or 0)
 	end
 
 	-- 逐链明细（默认关）：区分"求解器在动"和"参数算出来就是 0"——后者在画面上就是钢板。
