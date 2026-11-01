@@ -14,6 +14,9 @@ namespace HD2ModCore.Tests;
 // 为什么必须有这些用例：2026-10-28 的真实故障是 Chef Shared Loader 在真映射模式下
 // 部署失败。修完之后的约定是：第三方 Lua patch 一律原样部署，管理器只负责自己那份
 // 运行时；Lua 启动入口被多方争用时只报告，不擅自合并。
+//
+// ⚠️ 构造函数改的是**静态**设置 ⇒ 必须与其它改它的用例串行（见 LuaDeploymentStateCollection）。
+[Collection(LuaDeploymentStateCollection.Name)]
 public sealed class LuaDeploymentLoaderPackageTests
 {
 	private const string BootSource =

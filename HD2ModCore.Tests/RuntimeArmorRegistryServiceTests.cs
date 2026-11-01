@@ -11,10 +11,12 @@ using Microsoft.Data.Sqlite;
 
 namespace HD2ModCore.Tests;
 
+// LuaDeploymentService.MappingMode 对应设置页的「护甲映射模式」。它是静态字段，
+// 这里的部署用例覆盖"需要运行时 Lua"的产品路径，所以显式指定独占入口模式。
+// ⚠️ 静态设置 ⇒ 与本集合内的其它用例串行执行（见 LuaDeploymentStateCollection）。
+[Collection(LuaDeploymentStateCollection.Name)]
 public sealed class RuntimeArmorRegistryServiceTests
 {
-	// LuaDeploymentService.MappingMode 对应设置页的「护甲映射模式」。它是静态字段，
-	// 这里的部署用例覆盖"需要运行时 Lua"的产品路径，所以显式指定独占入口模式。
 	public RuntimeArmorRegistryServiceTests() => LuaDeploymentService.MappingMode = ArmorMappingModes.Default;
 
 	[Fact]
