@@ -457,27 +457,6 @@ local function flag_set(flags, bit)
 	return math.floor(flags / bit) % 2 == 1
 end
 
---- 由 yaw/pitch 分轴范围推出一个**外包对称锥**。
---- <para>
---- 为什么需要它：源模型里有**三种**约束形式——锥（`angleCon`）、偏航（`yawCon`）、
---- 俯仰（`pitchCon`）。过去这里只读 `angleLimit`，而带 `yawCon/pitchCon` 的骨那个字段是 0，
---- 于是被当成"完全不限位"：整条链可以甩到任意角度。
---- 实测一份裙摆/缎带资产 55 根骨里有 21 根是这种，实机单节转角冲到 174°
---- （同一批的另外三套资产全带 `angleCon`，只有 34~39°）。
---- </para>
---- <para>
---- 这一步只做"外包对称锥"：`max(|minYaw|, |maxYaw|, |minPitch|, |maxPitch|)`。
---- 它比"无限位"严格得多，但**丢掉非对称**——`pitch −45..0`（只许往下）会变成 ±45°。
---- 非对称要按轴分别夹，那是下一步的事；先把"根本没约束"这个明确的 bug 去掉。
---- </para>
-local function cone_from_axes(params)
-	local yaw = math.max(math.abs(tonumber(params.minYaw) or 0), math.abs(tonumber(params.maxYaw) or 0))
-	local pitch = math.max(math.abs(tonumber(params.minPitch) or 0), math.abs(tonumber(params.maxPitch) or 0))
-	local cone = math.max(yaw, pitch)
-	if cone >= math.pi then return 0 end   -- 同样等于不限位
-	return cone
-end
-
 --- 29 个源参数 → 求解器增益。
 --- <para>
 --- 关键：`k` 的量纲是 1/s²、`c` 是 1/s，**与长度单位无关**，所以 ωn/ζ 可以直用。
@@ -508,15 +487,24 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 	-- 行为等价：limit=2π 时 `angle > 2π` 永远不成立，和 limit=0 跳过分支完全一样。
 	local angleLimit = math.abs(tonumber(params.angleLimit) or 0.6)
 	if angleLimit >= math.pi then angleLimit = 0 end
-	-- 没有锥（angleCon）时，退到 yaw/pitch 分轴范围的外包锥。见 cone_from_axes 的说明。
+	-- 没有锥（angleCon）时，退到 yaw/pitch **分轴**约束（每根骨相对自己的绑定方向各夹各的）。
 	local limitSource = "cone"
 	local flags = opts and opts.flags
+	local limitYaw, limitPitch, axisLimits = 0, 0, false
 	if angleLimit == 0 and flags ~= nil then
 		if not flag_set(flags, M.FLAG_ANGLE_CONSTRAINED) then
-			local cone = cone_from_axes(params)
-			if cone > 0 then
-				angleLimit = cone
-				limitSource = "yawPitchCone"
+			local yaw = math.max(math.abs(tonumber(params.minYaw) or 0), math.abs(tonumber(params.maxYaw) or 0))
+			local pitch = math.max(math.abs(tonumber(params.minPitch) or 0), math.abs(tonumber(params.maxPitch) or 0))
+			if yaw > 0 or pitch > 0 then
+				-- 分轴：每根骨相对**自己绑定方向**各夹各的（见 step_tip 里的说明）。
+				-- 存 sin(限位角)：后面比的是单位向量在轴上的分量，本来就是 sin。
+				limitYaw = (yaw > 0 and yaw < math.pi) and math.sin(yaw) or 1
+				limitPitch = (pitch > 0 and pitch < math.pi) and math.sin(pitch) or 1
+				axisLimits = true
+				limitSource = "yawPitchAxes"
+				-- 外包锥只用来做诊断/兜底：两轴合成后的最大偏角。
+				local combined = math.min(math.pi * 0.5, math.sqrt(yaw * yaw + pitch * pitch))
+				angleLimit = combined
 			else
 				limitSource = "none"
 			end
@@ -535,6 +523,9 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 		g = (tonumber(params.tipMass) or 0) * gravityScale, -- 重力加速度幅值（米/秒²）
 		limit = angleLimit,
 		limitSource = limitSource,
+		axisLimits = axisLimits,
+		limitYaw = limitYaw,
+		limitPitch = limitPitch,
 		-- 预存 cos(limit)：step_tip 判断"是否超限"时只需 dot < cosLimit，
 		-- 不用每骨每子步调一次 acos（省一次 C 库调用）。见 step_tip 的说明。
 		cosLimit = math.cos(angleLimit),
@@ -671,13 +662,50 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 			dx, dy, dz, length = prevX, prevY, prevZ, 1
 		end
 		local nx, ny, nz = dx / length, dy / length, dz / length
+		if gains.axisLimits then
+			-- 分轴限位（源骨 `yawCon`/`pitchCon`）：夹的是**这一节相对自己绑定方向**的偏转。
+			--
+			-- ⚠️ 为什么不能沿用下面那个锥（那是相对**父节**的）：锥会沿着链累加。
+			-- 实测一份 3 节侧发（每节 30/20/20°），从下垂 18° 起能累到 70°，足够让它翘到水平以上
+			-- ——实机看到的就是"左右两侧各一根翘起来"。而 Valve 的 min/max yaw/pitch 是每根骨
+			-- 相对**自身静止姿态**的范围，不累加。所以这一类骨改用绑定方向做基准。
+			--
+			-- 几何：`l`/`u` 是 `frameLocal` 里的 left/up，按构造都与绑定方向正交，
+			-- 所以 `l·n`、`u·n` 直接就是 yaw / pitch 分量（在单位向量上就是 sin）。
+			local b = item.segDirLocal[k]
+			local rqx, rqy, rqz, rqw = qx, qy, qz, qw
+			if item.goalQ ~= nil then
+				-- 世界朝向锚定的链（flags 同时含 yawCon+pitchCon 的就是），静止参考系是 goalQ 而不是当前锚点。
+				rqx, rqy, rqz, rqw = item.goalQ[1], item.goalQ[2], item.goalQ[3], item.goalQ[4]
+			end
+			local bx2, by2, bz2 = qrot(rqx, rqy, rqz, rqw, b[1], b[2], b[3])
+			local devYaw = lx * nx + ly * ny + lz * nz
+			local devPitch = ux * nx + uy * ny + uz * nz
+			local clamped = false
+			if devYaw > gains.limitYaw then devYaw, clamped = gains.limitYaw, true
+			elseif devYaw < -gains.limitYaw then devYaw, clamped = -gains.limitYaw, true end
+			if devPitch > gains.limitPitch then devPitch, clamped = gains.limitPitch, true
+			elseif devPitch < -gains.limitPitch then devPitch, clamped = -gains.limitPitch, true end
+			if clamped then
+				-- 用"绑定方向 + 两个轴上的分量"重建再归一化；l/u/b 是一组正交基，这一步不丢信息。
+				local vx = bx2 + devYaw * lx + devPitch * ux
+				local vy = by2 + devYaw * ly + devPitch * uy
+				local vz = bz2 + devYaw * lz + devPitch * uz
+				local vlen = math.sqrt(vx * vx + vy * vy + vz * vz)
+				if vlen > 1e-9 then
+					nx, ny, nz = vx / vlen, vy / vlen, vz / vlen
+				end
+			end
+		end
 		-- 角度限位：与该节动画方向的夹角不超过 limit（相对自己的 goal，不是相对世界）
 		--
 		-- ⚠️ 不要为了"判断是否超限"去算 acos：acos 是 C 库调用，而这里只需要比较大小。
 		-- 预存 cosLimit = cos(limit)，判据变成 dot < cosLimit（dot 是单位向量点积 = cos 夹角）。
 		-- 只有**真的超限**时才需要角度值（而且下面用的是 limit 本身，连 acos 都不用）。
+		--
+		-- 分轴约束的骨**不走这条**：锥是相对父节的，会累加（见上面 axisLimits 的说明）。
 		local dot = nx * prevX + ny * prevY + nz * prevZ
-		if gains.limit > 0 and dot < gains.cosLimit then
+		if not gains.axisLimits and gains.limit > 0 and dot < gains.cosLimit then
 			local sx, sy, sz, _ = swing_axis(prevX, prevY, prevZ, nx, ny, nz)
 			if sx ~= nil then
 				local rqx, rqy, rqz, rqw = q_axis_angle(sx, sy, sz, gains.limit)
