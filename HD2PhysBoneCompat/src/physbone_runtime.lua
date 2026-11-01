@@ -31,7 +31,7 @@
 
 local M = {}
 
-M.VERSION = "1.7.0"
+M.VERSION = "1.8.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -174,6 +174,7 @@ local function discover(S_, cache, options, logger)
 	local minNodes = options.minNodes or 90
 	local maxUnits = options.maxUnits or 64
 
+	cache.avatarCandidates = 0
 	local avatar, withMg, withoutMg = nil, {}, {}
 	for index = 1, count do
 		local unit = units[index]
@@ -182,8 +183,11 @@ local function discover(S_, cache, options, logger)
 			if type(nodes) == "number" and nodes >= minNodes then
 				if try(S_.Unit.has_animation_state_machine, unit) == true then
 					-- 玩家 avatar：有动画状态机 **且** 带 support_mg 挂点。
-					if avatar == nil and try(S_.Unit.has_node, unit, supportMg) == true then
-						avatar = unit
+					if try(S_.Unit.has_node, unit, supportMg) == true then
+						-- 记一下**有几个**候选：阵亡后如果尸体仍保有动画状态机，这里会变成 2 个。
+						-- 这条数字是"换人检测"最需要的事实，没有它只能靠猜。
+						cache.avatarCandidates = (cache.avatarCandidates or 0) + 1
+						if avatar == nil then avatar = unit end
 					end
 				elseif try(S_.Unit.has_node, unit, supportMg) == true then
 					if #withMg < maxUnits then
@@ -307,8 +311,24 @@ local function tryAttach(runtime)
 	end
 	if #carriers == 0 then carriers = loadCarriers(S, cache, options, runtime.logger); runtime.carriers = carriers end
 	local allowPartial = options.allowPartial == true
-	local plan, bestScored = {}, nil
+	-- 只挂**离玩家近**的护甲件。为什么必须过滤：阵亡后尸体留在原地、unit 一直活着，
+	-- 而复活点常在别处 ⇒ 不过滤的话会把尸体也一起挂上（既浪费，也让"给尸体关物理"落空）。
+	-- 距离读不到（avatar 位置拿不到）时不过滤，行为与以前一致。
+	local maxDist = options.maxArmorDistance == nil and 5.0 or options.maxArmorDistance
+	local maxDist2 = maxDist > 0 and (maxDist * maxDist) or nil
+	local nearCandidates, farCount = {}, 0
 	for _, candidate in ipairs(armorList) do
+		if maxDist2 == nil or candidate.distance == nil or candidate.distance <= maxDist2 then
+			nearCandidates[#nearCandidates + 1] = candidate
+		else
+			farCount = farCount + 1
+		end
+	end
+	if farCount > 0 then
+		runtime.logger("[physbone] 跳过 %d 个离玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
+	end
+	local plan, bestScored = {}, nil
+	for _, candidate in ipairs(nearCandidates) do
 		local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
 		if best ~= nil and (best.full or allowPartial) then
 			plan[#plan + 1] = {
@@ -326,9 +346,9 @@ local function tryAttach(runtime)
 			detail = "没有物理容器可匹配"
 		elseif bestScored ~= nil then
 			detail = string.format("%d 个候选 unit × %d 份容器，最高命中 %d/%d 根骨（%s）",
-				#armorList, #carriers, bestScored.score, bestScored.total, tostring(bestScored.path))
+				#nearCandidates, #carriers, bestScored.score, bestScored.total, tostring(bestScored.path))
 		else
-			detail = string.format("%d 个候选 unit × %d 份容器，全部 0 命中", #armorList, #carriers)
+			detail = string.format("%d 个候选 unit × %d 份容器，全部 0 命中", #nearCandidates, #carriers)
 		end
 		note_wait(runtime, "没有 unit 命中任何物理容器", detail)
 		return false
@@ -375,6 +395,9 @@ local function tryAttach(runtime)
 	local chains = 0
 	for _, session in ipairs(sessions) do chains = chains + #session.sessions end
 	runtime.sessions = sessions
+	-- 记住"当时谁是玩家"：阵亡后尸体还活着，只有实例名能区分"换人了"。
+	runtime.avatar = avatar
+	runtime.avatarTag = unit_tag(S, avatar)
 	runtime.attachedFrame = frame
 	runtime.reArm = 0
 	runtime.rearmAt = nil
@@ -415,6 +438,92 @@ local function pruneSessions(runtime)
 			dead, rebuilt, #kept)
 	end
 	return dead + rebuilt
+end
+
+--- 玩家换人了吗（阵亡 → 尸体留在原地 → 新实体出现）。
+---
+--- 为什么必须单独做这件事：阵亡时**旧实体不会被销毁**（尸体还活着），
+--- `pruneSessions` 只会在 `Unit.alive == false` 或节点数变化时才丢会话，
+--- 于是我们一直驱动着尸体，而新玩家的护甲 unit 从来没被挂过 —— 表现就是"复活后没有物理"。
+---
+--- 判据**不用**"离玩家多远"（复活点可能就在原地，距离区分不开），而是看**谁是玩家**：
+--- `discover` 认 avatar 的条件是"有动画状态机 + 带 support_mg"，尸体是 ragdoll，
+--- 没有动画状态机 ⇒ 它不会再被认成 avatar。于是 avatar 的实例名一变，就是换人了。
+---
+--- 代价：这一步要走一遍 `discover`（扫所有 unit）。所以只在驱动中按
+--- `validateFrames`（默认 120 帧 ≈ 1.2 秒）跑一次，实测约占引擎调用总量的 10%。
+--- 设 `validateFrames = 0` 可关掉。
+---@return boolean changed 玩家换了（调用方应当释放并重挂）
+local function playerChanged(runtime)
+	local options = runtime.options
+	if runtime.avatar == nil or runtime.avatarTag == nil then return false end
+	local previousTag = runtime.avatarTag
+	-- 便宜的一手：当初那个玩家 unit 直接没了 ⇒ 一定换人了（尸体是另一个 unit）。
+	-- 这一步只要 1 次引擎调用，能省掉下面那趟全量扫描。
+	if not Compat.unit_alive(S, runtime.avatar) then
+		runtime.logger("[physbone][换人] 原玩家 unit=%s 已销毁 ⇒ 释放旧会话后重挂",
+			tostring(previousTag))
+		runtime.avatar, runtime.avatarTag = nil, nil
+		return true
+	end
+	local world, units, avatar, armorList = discover(S, runtime.cache, options, runtime.logger)
+	if world == nil or avatar == nil or armorList == nil then
+		-- 扫不到（加载中 / 切场景）：不据此判换人，交给 prune 与下一次校验。
+		return false
+	end
+	local tag = unit_tag(S, avatar)
+	local candidates = runtime.cache.avatarCandidates or 0
+	if candidates > 1 and not runtime.multiAvatarLogged then
+		runtime.multiAvatarLogged = true
+		-- 场上不止一个"有状态机的 unit"。如果阵亡后尸体也保有状态机，就会这样；
+		-- 那时"第一个"不一定是活着的玩家，需要换判据。这条日志是判它的唯一依据。
+		runtime.logger("[physbone][观测] 场上有 %d 个 avatar 候选（只取第一个：%s）"
+			.. "——如果复活后没物理，把这一行发我", candidates, tostring(tag))
+	end
+	if tag == previousTag then
+		-- 同一个人，但"身边的护甲一件都不是我们挂着的"也可能发生（实体被重建 / 同一 unit 被复用
+		-- 只换了位置）。那时实例名不变，只有位置对不上 —— 这条兜住它。
+		local maxDist = options.maxArmorDistance == nil and 5.0 or options.maxArmorDistance
+		local maxDist2 = maxDist > 0 and (maxDist * maxDist) or nil
+		if maxDist2 ~= nil then
+			local mine = {}
+			for _, session in ipairs(runtime.sessions or {}) do
+				mine[tostring(session.unitTag or "?")] = true
+			end
+			local nearMine, nearTotal = 0, 0
+			for _, candidate in ipairs(armorList) do
+				if candidate.distance ~= nil and candidate.distance <= maxDist2 then
+					nearTotal = nearTotal + 1
+					if mine[tostring(unit_tag(S, candidate.unit))] then nearMine = nearMine + 1 end
+				end
+			end
+			if nearTotal > 0 and nearMine == 0 then
+				runtime.logger("[physbone][换人] 玩家实例没变（%s），但身边的 %d 件护甲一件都不是我们挂着的"
+					.. " ⇒ 按换了人处理（旧实体留在原地？）", tostring(tag), nearTotal)
+				return true
+			end
+		end
+		return false
+	end
+	runtime.logger("[physbone][换人] 玩家实例变了：%s → %s（阵亡/复活？）⇒ 释放旧会话后重挂",
+		tostring(previousTag), tostring(tag))
+	runtime.avatar, runtime.avatarTag = avatar, tag
+	return true
+end
+
+--- 释放并丢弃全部会话。
+--- 对**还活着**的 unit（尸体）要把姿态交还成基准姿态：不交还的话头发会停在最后写入的
+--- 那一帧（半空中的姿势），看着像被冻住；交还之后回到静止形状，才像一具正常尸体。
+local function dropAllSessions(runtime, why)
+	for _, session in ipairs(runtime.sessions or {}) do
+		if Compat.unit_alive(S, session.unit) then
+			local ok, restored = pcall(Compat.release, session)
+			runtime.logger("[physbone][换人] 释放 unit=%s（%s）%s",
+				tostring(session.unitTag or "?"), tostring(why),
+				ok and ("已交还 " .. tostring(restored) .. " 节基准姿态") or "交还失败")
+		end
+	end
+	runtime.sessions = nil
 end
 
 local function drive(runtime)
@@ -482,6 +591,16 @@ local function drive(runtime)
 			local delay = math.min(options.maxReArmFrames or 600, (options.reArmFrames or 60) * runtime.reArm)
 			runtime.rearmAt = frame + delay
 			logger("[physbone][LIFECYCLE] 场景已变（存活 %d 帧）⇒ 退避 %d 帧后重扫", survived, delay)
+		else
+			-- 会话全都还"健康"，但玩家可能已经换人了：阵亡后尸体会一直活着，
+			-- `pruneSessions` 判不出来（它只看 Unit.alive / 节点数）。所以定期问一次"谁是玩家"。
+			local validateFrames = options.validateFrames == nil and 120 or options.validateFrames
+			if validateFrames > 0 and (frame % validateFrames) == 0 and playerChanged(runtime) then
+				-- 尸体交还基准姿态（否则头发停在最后写入的姿势，像被冻住），然后重新挂新玩家。
+				dropAllSessions(runtime, "玩家已换人")
+				runtime.reArm = 1                     -- 换人不是抖动，下一次要尽快重挂
+				runtime.rearmAt = frame + (options.respawnReArmFrames or 30)
+			end
 		end
 	end
 
