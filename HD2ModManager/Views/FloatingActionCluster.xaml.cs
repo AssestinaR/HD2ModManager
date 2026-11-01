@@ -634,6 +634,10 @@ namespace HD2ModManager.Views
                 return;
             }
 
+            // 点主按钮展开时，指针本来就在按钮上——但 MouseEnter 早在"还没展开"时就触发过了，
+            // 那次被 IsExpanded 挡掉，之后再不会有新的 MouseEnter。所以这里补一次：
+            // 展开的那一刻指针在哪，就以哪为准。
+            _mainButtonHovered = true;
             IsExpanded = !IsExpanded;
         }
 

@@ -157,6 +157,58 @@ internal static class ClusterScenario
         };
     }
 
+    /// <summary>
+    /// 走真实点击路径展开：指针停在主按钮上点一下，说明应当直接弹出来，
+    /// 不需要把鼠标移开再移回来。这里抬一个 Click 给主按钮，等价于用户点它。
+    /// </summary>
+    public static Scenario BuildAllLabelsByClick(string name)
+    {
+        var list = new ModListPanel
+        {
+            HeaderTitle = "配置文件",
+            HeaderSummary = "点击主按钮展开，指针不动",
+            ItemsSource = FakeRow.Sample(),
+            SelectionPolicy = ModListSelectionPolicy.Multiple,
+        };
+
+        var cluster = new FloatingActionCluster
+        {
+            Actions = ProfileActions(),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(18),
+        };
+
+        var grid = new Grid();
+        grid.Children.Add(list);
+        grid.Children.Add(cluster);
+
+        return new Scenario
+        {
+            Name = name,
+            Build = () => new Border
+            {
+                Background = ScenarioCatalog.Resource("SurfaceCanvas"),
+                Padding = new Thickness(12),
+                Child = grid,
+            },
+            Settle = host =>
+            {
+                host.PumpFor(60);
+                var main = VisualTree.All<Button>(cluster).FirstOrDefault(button => button.Name == "MainButton");
+                if (main is null)
+                {
+                    Console.WriteLine("[by-click] 没找到主按钮");
+                    return;
+                }
+
+                main.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                host.PumpFor(60);
+                host.PumpFor(420);
+            },
+        };
+    }
+
     public static Scenario Build(string name, bool expanded, bool many = false, int focus = -1)
     {
         var actions = many ? ManyActions() : ProfileActions();

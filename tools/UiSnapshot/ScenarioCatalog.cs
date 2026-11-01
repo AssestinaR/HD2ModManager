@@ -53,6 +53,7 @@ internal static class ScenarioCatalog
         ["cluster-many"] = () => ClusterScenario.Build("cluster-many", expanded: true, many: true),
         ["cluster-many-focus"] = () => ClusterScenario.Build("cluster-many-focus", expanded: true, many: true, focus: 3),
         ["cluster-all-labels"] = () => ClusterScenario.BuildAllLabels("cluster-all-labels", many: false),
+        ["cluster-all-labels-by-click"] = () => ClusterScenario.BuildAllLabelsByClick("cluster-all-labels-by-click"),
         ["cluster-all-labels-many"] = () => ClusterScenario.BuildAllLabels("cluster-all-labels-many", many: true),
         ["cluster-labels"] = () => ClusterScenario.BuildLabelLengths("cluster-labels", "生成替换"),
         ["cluster-labels-max"] = () => ClusterScenario.BuildLabelLengths("cluster-labels-max", "批量生成"),
