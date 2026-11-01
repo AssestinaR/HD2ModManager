@@ -1047,14 +1047,20 @@ end
 
 --- 这个 Unit 还活着吗。**任何**引擎调用之前都要先过这里。
 --- 没有 `Unit.alive` 的引擎版本退回"乐观为真"（至少不比原来更差）。
----@return boolean
+--- <para>
+--- 第二个返回值只在"判死原因是调用本身抛错"时给出文本。它不改变判死口径（仍然只有
+--- `Unit.alive` 一条路），只是让日志能区分**真的销毁**和**签名不对/引擎换了**——
+--- 这两种在观测上都表现为 `alive == false`，但修法完全相反。
+--- </para>
+---@return boolean alive
+---@return string|nil 抛错文本
 function M.unit_alive(S, unit)
-	if unit == nil then return false end
+	if unit == nil then return false, "unit 为 nil" end
 	if type(S) ~= "table" or type(S.Unit) ~= "table" then return true end
 	local alive = rawget(S.Unit, "alive")
 	if type(alive) ~= "function" then return true end
 	local ok, value = pcall(alive, unit)
-	if not ok then return false end
+	if not ok then return false, "Unit.alive 抛错：" .. tostring(value) end
 	-- 只信明确的 false；nil / 非布尔（老引擎或签名不同）按"活着"处理，
 	-- 免得一次误判就把正常驱动永久关掉。
 	if value == false then return false end
@@ -1104,8 +1110,10 @@ function M.session_health(session, stamp)
 	if stamp ~= nil and session.healthStamp == stamp then return "ok" end
 	if stamp ~= nil then session.healthStamp = stamp end
 	local S = session.S
-	if not M.unit_alive(S, session.unit) then
+	local aliveNow, aliveError = M.unit_alive(S, session.unit)
+	if not aliveNow then
 		session.dead = "dead"
+		session.deadReason = aliveError
 		return "dead"
 	end
 	session.healthFrames = (session.healthFrames or 0) + 1

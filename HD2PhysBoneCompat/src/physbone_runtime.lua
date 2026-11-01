@@ -22,10 +22,16 @@
 --   · 不能缓存引擎返回的句柄（0.1 秒就变 inf）；
 --   · 对已销毁 Unit 调任何方法 = 原生 AV ⇒ 每帧先 `Unit.alive`；
 --   · 场景图重建只看 `num_scene_graph_items`（`has_node` 会假翻）。
+--
+-- 观测（v1.1.0 起）：这一层必须能自证"我到底做了什么"。
+-- 2026-11-01 那次"物理完全没生效"排查了整整两轮，卡点全在"日志里没有事实"：
+-- 分不清是没进驱动块、进了但没写、写了但写错骨、还是根本没挂上。
+-- 所以下面每一处"静默 return"都配了一条原因日志，并且**只在原因变化时**落盘
+-- （每 20 帧一条同样的等待原因是刷屏，不是信息）。
 
 local M = {}
 
-M.VERSION = "1.0.0"
+M.VERSION = "1.1.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -39,26 +45,35 @@ local originalRender  -- 挂载前的 render（链式调用，不吞掉别人）
 -- 小工具
 -- ---------------------------------------------------------------------------
 
-local function noop() end
+--- 默认日志路径。`options.logPath` 可覆盖，`options.log == false` 可彻底静默。
+local function defaultLogPath(options)
+	local path = options and options.logPath
+	if path ~= nil then return path end
+	if options and options.log == false then return nil end
+	local base = os.getenv("LOCALAPPDATA")
+	if type(base) == "string" and #base > 0 then return base .. "\\hd2physbone.log" end
+	return nil
+end
 
+--- 造一个 logger。返回 `log, context`。
+--- <para>
+--- 两个刻意的选择：
+---   ① **追加**而不是覆盖。覆盖式会把上一次启动的证据抹掉，于是"这次和上次哪里不一样"
+---      永远无从对比——2026-11-01 排查就卡在这里（日志只剩最后 30 秒）。
+---   ② 每行带**时间戳 + 帧号**。没有帧号，跨会话的"30 帧后全灭"这种时序规律看不出来。
+--- 帧号由 `drive` 每帧写进 `context.frame`：compat 会直接调 `session.logger`，
+--- 只能靠这个共享表把上下文带进去。
+--- </para>
 local function makeLogger(options)
 	local handle = nil
-	-- 默认就写日志：生产环境下"什么都没发生"和"根本没加载"从外部无法区分，
-	-- 而这正是 2026-11-01 那次"物理完全没生效、日志一个字都没有"的排查代价。
-	-- 只想彻底静默时传 `options.log = false`。
-	local path = options and options.logPath
-	if path == nil and not (options and options.log == false) then
-		local base = os.getenv("LOCALAPPDATA")
-		if type(base) == "string" and #base > 0 then path = base .. "\\hd2physbone.log" end
-	end
+	local path = defaultLogPath(options)
 	if path then
-		local ok, h = pcall(io.open, path, "w")
+		local ok, h = pcall(io.open, path, "a")
 		if ok then handle = h end
 	end
 	local debugEnabled = options ~= nil and options.debug == true
-	return function(fmt, ...)
-		if handle == nil and not debugEnabled then return end
-		local text = select("#", ...) > 0 and string.format(fmt, ...) or fmt
+	local context = { frame = 0 }
+	local function emit(text)
 		if handle ~= nil then
 			pcall(function() handle:write(text, "\n") handle:flush() end)
 		end
@@ -67,6 +82,12 @@ local function makeLogger(options)
 			if type(real) == "function" then pcall(real, text) end
 		end
 	end
+	local function log(fmt, ...)
+		if handle == nil and not debugEnabled then return end
+		local body = select("#", ...) > 0 and string.format(fmt, ...) or fmt
+		emit(string.format("%s f%-7d %s", os.date("%H:%M:%S"), context.frame, body))
+	end
+	return log, context
 end
 
 local function try(...)
@@ -86,6 +107,28 @@ local function id32(S_, text)
 	local ok, value = pcall(function() return S_.Application.string_to_id32(text) end)
 	if ok then return value end
 	return nil
+end
+
+--- `Unit.debug_name` 返回形如 `#ID[a0cc3d2318d9e237]` 的**实例**标识。
+--- 这是运行时唯一可靠的"是不是同一个 unit"判据（`Unit.id` 对大量 unit 返回 nil）。
+--- ⚠️ 只能对活着的 unit 调：销毁之后再读就是原生 AV，所以挂载时就要记下来。
+local function unit_tag(S_, unit)
+	local text = try(S_.Unit.debug_name, unit)
+	if type(text) ~= "string" then return "?" end
+	return text
+end
+
+--- 记一条"还没挂上"的原因。
+--- 只在**原因变化**时落盘，重复次数留给心跳报——这样"一直卡在同一步"和"来回变"能区分开。
+--- `detail` 里的数字会变（分数、节点数…），所以只在变化时打一次，不参与去重键。
+local function note_wait(runtime, reason, detail)
+	if runtime.waitReason == reason then
+		runtime.waitRepeat = (runtime.waitRepeat or 0) + 1
+		return
+	end
+	runtime.logger("[physbone][等待] %s%s", reason, detail ~= nil and ("：" .. detail) or "")
+	runtime.waitReason = reason
+	runtime.waitRepeat = 0
 end
 
 -- ---------------------------------------------------------------------------
@@ -114,18 +157,20 @@ local function pickWorld(S_, cache)
 end
 
 --- 一趟扫完：玩家 avatar + 候选护甲件（存活、节点数够、无动画状态机），按"离 avatar 距离"排序。
---- 返回 nil 表示"还没准备好"（场景在变 / 找不到目标）。
+--- 返回 nil + 原因 表示"还没准备好"（场景在变 / 找不到目标），调用方下一拍再来。
 local function discover(S_, cache, options, logger)
 	local world, units = pickWorld(S_, cache)
-	if world == nil or units == nil then return nil end
+	if world == nil or units == nil then return nil, "读不到世界或 unit 列表" end
 	local count = #units
 	local previous = cache.lastUnitCount
 	cache.lastUnitCount = count
 	-- 场景还在加载/切换（unit 总数在变）⇒ 不做全量扫描，下一拍再来。
-	if previous ~= count then return nil end
+	if previous ~= count then
+		return nil, "unit 总数在变（加载/切场景中）"
+	end
 
 	local supportMg = id32(S_, "support_mg")
-	if supportMg == nil then return nil end
+	if supportMg == nil then return nil, "support_mg 的 id32 拿不到" end
 	local minNodes = options.minNodes or 90
 	local maxUnits = options.maxUnits or 64
 
@@ -152,14 +197,16 @@ local function discover(S_, cache, options, logger)
 	end
 	if avatar == nil then
 		cache.worldIndex = nil   -- 可能选错了世界，下一拍重新挑
-		return nil
+		return nil, string.format("没找到玩家 avatar（%d 个 unit 里没有同时满足动画状态机 + support_mg 的）", count)
 	end
 	local armorList = withMg
 	for _, candidate in ipairs(withoutMg) do
 		if #armorList >= maxUnits then break end
 		armorList[#armorList + 1] = candidate
 	end
-	if #armorList == 0 then return nil end
+	if #armorList == 0 then
+		return nil, string.format("没有候选护甲件（%d 个 unit，节点数门槛 %d）", count, minNodes)
+	end
 
 	-- 玩家自己那套护甲挂在 avatar 骨架上，位置几乎重合；人台/队友都在别处。
 	-- 这一步决定"谁是主件"、以及被上限截断时谁留下。
@@ -217,21 +264,31 @@ end
 -- 挂载 / 卸载
 -- ---------------------------------------------------------------------------
 
---- 就绪采样：等场景稳定（unit 总数连续两拍相同 + 主件位置不动）后再 attach。
+--- 就绪采样：等场景稳定（unit 总数连续两拍相同 + 主件节点数不变）后再 attach。
 local function tryAttach(runtime)
 	local options, cache = runtime.options, runtime.cache
 	local frame = runtime.frame
-	local world, units, avatar, armorList = discover(S, cache, options, runtime.logger)
-	if world == nil or armorList == nil then return false end
+	local world, units, avatar, armorList, reason = discover(S, cache, options, runtime.logger)
+	if world == nil or armorList == nil then
+		note_wait(runtime, reason or "发现目标失败（未给出原因）")
+		return false
+	end
 	local armor = armorList[1]
 
 	local nodeCount = try(S.Unit.num_scene_graph_items, armor.unit)
-	if type(nodeCount) ~= "number" or nodeCount < 10 then return false end
+	if type(nodeCount) ~= "number" or nodeCount < 10 then
+		note_wait(runtime, "主件节点数异常", tostring(nodeCount))
+		return false
+	end
 	local sample = readVector(S, try(S.Unit.world_position, armor.unit, 1))
-	if sample == nil then return false end
+	if sample == nil then
+		note_wait(runtime, "主件世界坐标读不到")
+		return false
+	end
 
 	-- 两次采样一致 ⇒ 加载/传送/换装已经结束。间隔太短容易在动画还没落位时就 attach。
 	-- ⚠️ 采样一旦记下就**不要每帧覆盖**，否则 (frame - previous.frame) 永远是 1，永远等不到。
+	-- 这一步是正常路径（10 帧内必然过去），所以不记等待原因，免得盖掉真正的卡点。
 	local settleFrames = options.settleFrames or 10
 	local previous = cache.settle
 	if previous == nil or previous.nodes ~= nodeCount then
@@ -250,14 +307,32 @@ local function tryAttach(runtime)
 	end
 	if #carriers == 0 then carriers = loadCarriers(S, cache, options, runtime.logger); runtime.carriers = carriers end
 	local allowPartial = options.allowPartial == true
-	local plan = {}
+	local plan, bestScored = {}, nil
 	for _, candidate in ipairs(armorList) do
-		local best = Compat.select_rig(S, { candidate.unit }, carriers)
+		local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
 		if best ~= nil and (best.full or allowPartial) then
-			plan[#plan + 1] = { unit = candidate.unit, rig = best.rig, path = best.path, mg = candidate.mg }
+			plan[#plan + 1] = {
+				unit = candidate.unit, rig = best.rig, path = best.path, mg = candidate.mg,
+				tag = unit_tag(S, candidate.unit),
+			}
+		elseif scored ~= nil and scored[1] ~= nil then
+			-- 记下"最接近的那一份"，没挂上时这条是唯一能指出"差几根骨"的线索。
+			if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
 		end
 	end
-	if #plan == 0 then return false end
+	if #plan == 0 then
+		local detail
+		if #carriers == 0 then
+			detail = "没有物理容器可匹配"
+		elseif bestScored ~= nil then
+			detail = string.format("%d 个候选 unit × %d 份容器，最高命中 %d/%d 根骨（%s）",
+				#armorList, #carriers, bestScored.score, bestScored.total, tostring(bestScored.path))
+		else
+			detail = string.format("%d 个候选 unit × %d 份容器，全部 0 命中", #armorList, #carriers)
+		end
+		note_wait(runtime, "没有 unit 命中任何物理容器", detail)
+		return false
+	end
 	table.sort(plan, function(a, b)
 		if (a.unit == armor.unit) ~= (b.unit == armor.unit) then return a.unit == armor.unit end
 		if a.mg ~= b.mg then return a.mg end
@@ -270,16 +345,32 @@ local function tryAttach(runtime)
 		strictIdentity = options.strictIdentity == true,
 		fastWrite = options.fastWrite ~= false,
 	}
-	local sessions = {}
+	local sessions, tags, emptyUnits = {}, {}, 0
 	for index = 1, #plan do
 		local entry = plan[index]
 		if Compat.unit_alive(S, entry.unit) then
 			local session = Compat.attach(S, entry.unit, entry.rig, attachOptions)
 			session.rigSource = entry.path
-			if #session.sessions > 0 then sessions[#sessions + 1] = session end
+			session.unitTag = entry.tag
+			session.attachFrame = frame
+			if #session.sessions > 0 then
+				sessions[#sessions + 1] = session
+				tags[#tags + 1] = entry.tag
+			else
+				-- attach 走完了却一条链都没产出：容器骨名和这个 unit 的节点名对不上，
+				-- 或者锚点全缺。以前这里完全静默，等于"挂上了"和"挂出 0 条"从日志上看一样。
+				emptyUnits = emptyUnits + 1
+				runtime.logger("[physbone][失败] unit=%s 挂载完成但产出 0 条链（容器 %s）",
+					entry.tag, tostring(entry.path))
+			end
+		else
+			runtime.logger("[physbone][失败] unit=%s 在挂载前一刻已销毁（跳过）", tostring(entry.tag))
 		end
 	end
-	if #sessions == 0 then return false end
+	if #sessions == 0 then
+		note_wait(runtime, "attach 没有产出任何链", string.format("%d 个 unit 通过容器匹配、%d 个产出 0 条链", #plan, emptyUnits))
+		return false
+	end
 
 	local chains = 0
 	for _, session in ipairs(sessions) do chains = chains + #session.sessions end
@@ -287,51 +378,162 @@ local function tryAttach(runtime)
 	runtime.attachedFrame = frame
 	runtime.reArm = 0
 	runtime.rearmAt = nil
-	runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器）", #sessions, chains, #carriers)
+	runtime.waitReason, runtime.waitRepeat = nil, nil
+	runtime.zeroFrames = 0
+	runtime.driveFrames = 0
+	runtime.callsAccum = 0
+	runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器）unit=%s",
+		#sessions, chains, #carriers, table.concat(tags, ","))
 	return true
 end
 
 --- 丢掉失效会话。任何一个失效都意味着场景变了 ⇒ 必须重扫（不能"还剩几个就继续开"）。
+--- 返回丢弃总数；dead / rebuilt 分开计数并各自落日志。
 local function pruneSessions(runtime)
-	local kept, dropped = {}, 0
+	local kept, dead, rebuilt = {}, 0, 0
 	for _, session in ipairs(runtime.sessions or {}) do
 		local health = Compat.session_health(session, runtime.frame)
 		if health == "ok" then
 			kept[#kept + 1] = session
 		else
-			dropped = dropped + 1
+			session.dead = health
+			if health == "rebuilt" then rebuilt = rebuilt + 1 else dead = dead + 1 end
+			-- `unitTag` 是**挂载时**记下的实例名：unit 已经死了，现在再读 debug_name 就是 AV。
+			-- 这条名字是 P0.5 判"换实例（军械库 churn）还是同实例被销毁"的唯一依据。
+			runtime.logger("[physbone][LIFECYCLE] 会话失效（%s）：unit=%s 存活 %d 帧 链=%d%s",
+				health, tostring(session.unitTag or "?"),
+				runtime.frame - (session.attachFrame or runtime.frame),
+				#(session.sessions or {}),
+				session.deadReason ~= nil and (" 判死原因=" .. session.deadReason) or "")
 		end
 	end
 	runtime.sessions = kept
-	if dropped > 0 then
-		runtime.logger("[physbone] %d 个会话失效，准备重扫（剩 %d）", dropped, #kept)
+	if dead > 0 or rebuilt > 0 then
+		runtime.logger("[physbone] 丢弃 %d 个已销毁 / %d 个已重建，剩 %d 个会话",
+			dead, rebuilt, #kept)
 	end
-	return dropped
+	return dead + rebuilt
 end
 
 local function drive(runtime)
 	local frame = runtime.frame
-	Compat.begin_frame(frame)
 	local options = runtime.options
+	local logger = runtime.logger
+	runtime.logContext.frame = frame
+	Compat.begin_frame(frame)
 
 	if runtime.sessions ~= nil and #runtime.sessions > 0 then
 		local dropped = pruneSessions(runtime)
 		if dropped > 0 or #runtime.sessions == 0 then
 			-- 场景变了：退回等待，带退避（避免换甲期间每秒重挂一次）。
+			-- 存活时长决定退避：刚挂上就死 = 抖动（换甲中），要越等越久；
+			-- 稳定跑过 5 秒再死 = 正常换场景，下一次应当**立刻**重挂。
+			local survived = frame - (runtime.attachedFrame or frame)
 			runtime.sessions = nil
-			runtime.reArm = (runtime.reArm or 0) + 1
-			runtime.rearmAt = frame + math.min(options.maxReArmFrames or 600, (options.reArmFrames or 60) * runtime.reArm)
+			if survived >= (options.stableFrames or 600) then
+				runtime.reArm = 1
+			else
+				runtime.reArm = (runtime.reArm or 0) + 1
+			end
+			local delay = math.min(options.maxReArmFrames or 600, (options.reArmFrames or 60) * runtime.reArm)
+			runtime.rearmAt = frame + delay
+			logger("[physbone][LIFECYCLE] 场景已变（存活 %d 帧）⇒ 退避 %d 帧后重扫", survived, delay)
 		end
 	end
 
 	if runtime.sessions == nil then
-		if runtime.rearmAt ~= nil and frame < runtime.rearmAt then return end
+		if runtime.rearmAt ~= nil and frame < runtime.rearmAt then
+			note_wait(runtime, "退避等待重扫")
+			return
+		end
 		if (frame % (options.pollFrames or 20)) ~= 0 then return end
 		if not tryAttach(runtime) then return end
 	end
 
+	-- ---------- 驱动 ----------
+	-- 计时不可靠（`Application.time_since_launch` 每帧只更新一次、`os.clock()` 被引擎其它
+	-- 线程污染），所以性能只报**引擎调用次数**——唯一不会被环境噪声污染的口径。
+	local written, skippedSame, engineCalls, staticChains = 0, 0, 0, 0
+	local dt = runtime.dt or (1 / 60)
 	for index = 1, #runtime.sessions do
-		pcall(Compat.update, runtime.sessions[index], runtime.dt or (1 / 60))
+		local session = runtime.sessions[index]
+		-- compat 只在正常返回时刷新这两个计数；先清零，免得沿用上一帧的值把看门狗骗过去。
+		session.skippedSame, session.engineCalls = 0, 0
+		local ok, out = pcall(Compat.update, session, dt)
+		if ok then
+			if type(out) == "number" then written = written + out end
+		elseif not session.updateErrorLogged then
+			-- 以前这里是裸 pcall：一条 unit 每帧都抛错，日志里却什么也没有。
+			session.updateErrorLogged = true
+			logger("[physbone][错误] unit=%s 驱动抛错：%s", tostring(session.unitTag or "?"), tostring(out))
+		end
+		skippedSame = skippedSame + (session.skippedSame or 0)
+		engineCalls = engineCalls + (session.engineCalls or 0)
+		for _, item in ipairs(session.sessions) do
+			if (item.staticFrames or 0) > 0 then staticChains = staticChains + 1 end
+		end
+	end
+	runtime.driveFrames = (runtime.driveFrames or 0) + 1
+	runtime.callsAccum = (runtime.callsAccum or 0) + engineCalls
+	runtime.staticChains = staticChains
+
+	-- 阶段心跳：每 N 帧一行，证明驱动块确实被进入过，并给出当帧的四个事实。
+	-- 上一轮出现过"phase 明明是 live 但 update 从不执行"，没有这条就无法区分
+	-- "没进块"和"进了块但走了别的分支"。
+	local heartbeat = options.heartbeatFrames or 120
+	if (runtime.driveFrames % heartbeat) == 0 then
+		local chains = 0
+		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
+		logger("[physbone] 驱动心跳 unit=%d 链=%d 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d",
+			#runtime.sessions, chains, written, skippedSame, engineCalls,
+			runtime.callsAccum / runtime.driveFrames, staticChains)
+	end
+
+	-- 逐链明细（默认关）：区分"求解器在动"和"参数算出来就是 0"——后者在画面上就是钢板。
+	if options.debug and (runtime.driveFrames % (options.debugDetailFrames or 240)) == 0 then
+		local peak, parts, shown = 0, {}, 0
+		for _, session in ipairs(runtime.sessions) do
+			for _, item in ipairs(session.sessions) do
+				local rotations = item.lastRotations
+				if rotations ~= nil and shown < 6 then
+					local itemPeak = 0
+					for index = 1, #rotations do
+						local angle = rotations[index][4] * 180 / math.pi
+						if angle > itemPeak then itemPeak = angle end
+					end
+					if itemPeak > peak then peak = itemPeak end
+					shown = shown + 1
+					parts[#parts + 1] = string.format("%s=%.1f°",
+						tostring(item.chain and item.chain[1] and item.chain[1].name or "?"), itemPeak)
+				end
+			end
+		end
+		logger("[physbone][debug] 逐链峰值 %s（全体峰值 %.1f°）", table.concat(parts, " "), peak)
+	end
+
+	-- ⚠️ 判"驱动失效"不能用"这一帧写了几个骨"：加了"姿态没变就跳过"之后，
+	-- 站着不动时 written 天然就是 0，用它判失效会让静止的角色每 45 帧重挂一次（踩过）。
+	-- 真正的判据是"求解器有没有在处理链"：写了 + 因没变而跳过 = 处理过的骨数。
+	local handled = written + skippedSame
+	if handled == 0 then
+		runtime.zeroFrames = (runtime.zeroFrames or 0) + 1
+	else
+		runtime.zeroFrames = 0
+	end
+	local tripped = false
+	for _, session in ipairs(runtime.sessions) do
+		for _, item in ipairs(session.sessions) do
+			if item.disabled == true then tripped = true end
+		end
+	end
+	if runtime.zeroFrames >= (options.zeroLimit or 45) or tripped then
+		logger("[physbone][驱动失效] 连续 %d 帧一条骨都没处理（护栏=%s）⇒ 退回等待重挂",
+			runtime.zeroFrames, tostring(tripped))
+		runtime.sessions = nil
+		runtime.zeroFrames = 0
+		runtime.reArm = (runtime.reArm or 0) + 1
+		local delay = math.min(options.maxReArmFrames or 600, (options.reArmFrames or 60) * runtime.reArm)
+		runtime.rearmAt = frame + delay
 	end
 end
 
@@ -353,10 +555,11 @@ function M.install(stingray, options)
 	end
 	Compat = compat
 
-	local logger = makeLogger(options)
+	local logger, logContext = makeLogger(options)
 	state = {
 		options = options,
 		logger = logger,
+		logContext = logContext,
 		cache = {},
 		carriers = nil,
 		sessions = nil,
@@ -364,6 +567,11 @@ function M.install(stingray, options)
 		dt = options.dt or (1 / 60),
 		reArm = 0,
 		rearmAt = nil,
+		driveFrames = 0,
+		callsAccum = 0,
+		zeroFrames = 0,
+		waitReason = nil,
+		waitRepeat = 0,
 		installed = true,
 	}
 	rawset(_G, INSTALL_KEY, state)
@@ -386,8 +594,10 @@ function M.install(stingray, options)
 		return result
 	end)
 
-	logger("[physbone] 运行时 %s 已安装（%s）", M.VERSION,
-		options.mode == "boot" and "独占 boot" or "外置模块")
+	logger("[physbone] 运行时 %s 已安装（%s）启动于 %s",
+		M.VERSION,
+		options.mode == "boot" and "独占 boot" or "外置模块",
+		os.date("%Y-%m-%d %H:%M:%S"))
 	return state
 end
 
