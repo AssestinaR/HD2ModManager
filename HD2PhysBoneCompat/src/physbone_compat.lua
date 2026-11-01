@@ -442,6 +442,42 @@ end
 
 M._q = { mul = qmul, conj = qconj, rot = qrot, axis_angle = q_axis_angle, swing = swing_axis }
 
+--- 源骨的约束标志位（`mstudiojigglebone_t.flags` 的低 7 位，与 HD2SourceModel.SourceJiggleFlags 一致）。
+M.FLAG_FLEXIBLE = 0x01
+M.FLAG_RIGID = 0x02
+M.FLAG_YAW_CONSTRAINED = 0x04
+M.FLAG_PITCH_CONSTRAINED = 0x08
+M.FLAG_ANGLE_CONSTRAINED = 0x10
+M.FLAG_LENGTH_CONSTRAINED = 0x20
+M.FLAG_BASE_SPRING = 0x40
+
+--- 取 flags 的某一位。PUC Lua 5.1 没有位运算库，用整除取余。
+local function flag_set(flags, bit)
+	if type(flags) ~= "number" or flags <= 0 then return false end
+	return math.floor(flags / bit) % 2 == 1
+end
+
+--- 由 yaw/pitch 分轴范围推出一个**外包对称锥**。
+--- <para>
+--- 为什么需要它：源模型里有**三种**约束形式——锥（`angleCon`）、偏航（`yawCon`）、
+--- 俯仰（`pitchCon`）。过去这里只读 `angleLimit`，而带 `yawCon/pitchCon` 的骨那个字段是 0，
+--- 于是被当成"完全不限位"：整条链可以甩到任意角度。
+--- 实测一份裙摆/缎带资产 55 根骨里有 21 根是这种，实机单节转角冲到 174°
+--- （同一批的另外三套资产全带 `angleCon`，只有 34~39°）。
+--- </para>
+--- <para>
+--- 这一步只做"外包对称锥"：`max(|minYaw|, |maxYaw|, |minPitch|, |maxPitch|)`。
+--- 它比"无限位"严格得多，但**丢掉非对称**——`pitch −45..0`（只许往下）会变成 ±45°。
+--- 非对称要按轴分别夹，那是下一步的事；先把"根本没约束"这个明确的 bug 去掉。
+--- </para>
+local function cone_from_axes(params)
+	local yaw = math.max(math.abs(tonumber(params.minYaw) or 0), math.abs(tonumber(params.maxYaw) or 0))
+	local pitch = math.max(math.abs(tonumber(params.minPitch) or 0), math.abs(tonumber(params.maxPitch) or 0))
+	local cone = math.max(yaw, pitch)
+	if cone >= math.pi then return 0 end   -- 同样等于不限位
+	return cone
+end
+
 --- 29 个源参数 → 求解器增益。
 --- <para>
 --- 关键：`k` 的量纲是 1/s²、`c` 是 1/s，**与长度单位无关**，所以 ωn/ζ 可以直用。
@@ -453,6 +489,9 @@ M._q = { mul = qmul, conj = qconj, rot = qrot, axis_angle = q_axis_angle, swing 
 --- 静垂角算成 81.9°，远超 35° 限位 ⇒ 头发被重力顶死在限位上、"总是指向正下方"。
 --- 旧版的 `MASS_BASE = 300` 把 `tipMass` 当惯性质量放进分母，等于给每个资产换了刚度，已删除。
 --- </para>
+---@param opts table|nil { normalize = false, flags = <源骨 flags> }
+---   `flags` 决定"限位从哪来"：带 `angleCon` 就用锥；只有 `yawCon/pitchCon` 就由分轴范围外包成锥；
+---   两者都没有才真的不限位。不给 flags 时保持旧行为（只看 `angleLimit`），便于纯数学测试。
 function M.gains_of(params, lengthScale, gravityScale, opts)
 	lengthScale = lengthScale or SOURCE_UNIT_TO_METERS
 	gravityScale = gravityScale or SOURCE_UNIT_TO_METERS
@@ -469,12 +508,33 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 	-- 行为等价：limit=2π 时 `angle > 2π` 永远不成立，和 limit=0 跳过分支完全一样。
 	local angleLimit = math.abs(tonumber(params.angleLimit) or 0.6)
 	if angleLimit >= math.pi then angleLimit = 0 end
+	-- 没有锥（angleCon）时，退到 yaw/pitch 分轴范围的外包锥。见 cone_from_axes 的说明。
+	local limitSource = "cone"
+	local flags = opts and opts.flags
+	if angleLimit == 0 and flags ~= nil then
+		if not flag_set(flags, M.FLAG_ANGLE_CONSTRAINED) then
+			local cone = cone_from_axes(params)
+			if cone > 0 then
+				angleLimit = cone
+				limitSource = "yawPitchCone"
+			else
+				limitSource = "none"
+			end
+		else
+			-- 带 angleCon 但限位写成了 0。严格讲这是"作者要求一点都不许转"，
+			-- 但真按 0° 夹会让这根骨**完全冻住**，而"冻住一块布"比"它多晃两下"难看得多，
+			-- 也更容易被误判成"物理没生效"。目前**不强制**，只在限位来源统计里标出来
+			-- （`coneZero`），真遇到这样的资产再去决定要不要夹。扫过的四份 rig 里没有这种。
+			limitSource = "coneZero"
+		end
+	end
 	local gains = {
 		kYaw = kYaw, cYaw = cYaw,
 		kPitch = kPitch, cPitch = cPitch,
 		L = length,                                        -- 虚拟杆长（米）
 		g = (tonumber(params.tipMass) or 0) * gravityScale, -- 重力加速度幅值（米/秒²）
 		limit = angleLimit,
+		limitSource = limitSource,
 		-- 预存 cos(limit)：step_tip 判断"是否超限"时只需 dot < cosLimit，
 		-- 不用每骨每子步调一次 acos（省一次 C 库调用）。见 step_tip 的说明。
 		cosLimit = math.cos(angleLimit),
@@ -1445,7 +1505,8 @@ function M.attach(S, unit, rig, options)
 							local world = bindWorld[index]
 							local ox, oy, oz = world[1] - awx, world[2] - awy, world[3] - awz
 							local lx, ly, lz = qrot(cqx, cqy, cqz, cqw, ox, oy, oz)
-							local gains = M.gains_of(chain[index].params, lengthScale, gravityScale)
+							local gains = M.gains_of(chain[index].params, lengthScale, gravityScale,
+								{ flags = chain[index].flags })
 							bonesNew[index] = {
 								gains = gains,
 								offLocal = { lx, ly, lz },
@@ -1600,6 +1661,36 @@ function M.attach(S, unit, rig, options)
 
 	logger(string.format("[physbone] attach：可用链 %d 条（缺节点 %d、缺锚点 %d）",
 		#sessions, skippedNoNode, skippedNoAnchor))
+	-- 限位来源统计：源模型里有三种约束形式（锥 / 偏航 / 俯仰），这里把"实际用了哪一种"摊开。
+	-- 这条能直接看出"某个 mod 的头发为什么甩得离谱"：如果 `不限位` 的骨很多，
+	-- 说明它用的是 yaw/pitch 约束而我们没读（历史 bug），而不是参数本身有问题。
+	do
+		local tally, bySource = 0, {}
+		for _, item in ipairs(sessions) do
+			local tip = item.tip
+			if tip ~= nil and tip.bones ~= nil then
+				for index = 1, #tip.bones do
+					local gains = tip.bones[index].gains
+					if gains ~= nil then
+						tally = tally + 1
+						local key = gains.limitSource or "cone"
+						if gains.limit <= 0 then key = "不限位" end
+						bySource[key] = (bySource[key] or 0) + 1
+					end
+				end
+			end
+		end
+		if tally > 0 then
+			local keys = {}
+			for key in pairs(bySource) do keys[#keys + 1] = key end
+			table.sort(keys)
+			local parts = {}
+			for _, key in ipairs(keys) do
+				parts[#parts + 1] = string.format("%s×%d", key, bySource[key])
+			end
+			logger("[physbone] 限位来源：%s（共 %d 根骨）", table.concat(parts, " "), tally)
+		end
+	end
 	-- 身份指纹：之后每帧靠它判断"这个 Unit 还是我当初挂的那个吗"。
 	--   nodeCount    —— 场景图节点数，变了说明 Unit 被重建/换装（**这是唯一可靠的判据**）；
 	--   identityNode —— 第一条链第一节的骨名 id，仅用于观测（has_node 会假翻，不能据此判死）。

@@ -31,7 +31,7 @@
 
 local M = {}
 
-M.VERSION = "1.3.0"
+M.VERSION = "1.4.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
