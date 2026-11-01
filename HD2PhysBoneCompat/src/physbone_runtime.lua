@@ -31,7 +31,7 @@
 
 local M = {}
 
-M.VERSION = "1.4.0"
+M.VERSION = "1.4.1"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -521,31 +521,23 @@ local function drive(runtime)
 	runtime.callsAccum = (runtime.callsAccum or 0) + engineCalls
 	runtime.staticChains = staticChains
 
-	-- 峰值转角：判断"甩得太开"到底开到了多少度。
-	-- 只报**本拍**的峰值和**本次挂载以来**的峰值——前者说明当下在动多少，
-	-- 后者是"最离谱的那一下"，两者合起来才能区分"一直很大"和"偶尔抽一下"。
+	-- 峰值：**偏离绑定方向**的最大角，也就是"离模型原本的形状有多远"。
 	--
-	-- ⚠️ 同时统计**超限**的骨数：求解器每节都按 `gains.limit` 把方向夹在父节方向上，
-	-- 所以单节转角原则上不该超过 limit。实机日志里出现过 174° 而 limit 只有 12~35°，
-	-- 这要么是限位没生效、要么是我这个"峰值"读的根本不是单节转角——两种都很严重，
-	-- 必须用一条明确计数把它们分开，而不是靠人眼比对两个数。
-	local framePeak, overLimit, worstBone = 0, 0, nil
+	-- ⚠️ 它**不是**单节转角，所以拿它跟 `angleLimit` 比是错的（上一版就这么错了）：
+	-- 求解器夹的是"相对父节"的偏转，而多节链上第 k 节的"偏离绑定"会把前面每一节的偏转累加进去
+	-- ——5 节 × 25° 累到 100° 完全合法。上一版把它算成"超限骨"，报了 28~77，纯属误报。
+	-- 判"限位有没有生效"要看相对父节的偏转，那是求解器内部量，不在这一层。
+	local framePeak, worstBone = 0, nil
 	for _, session in ipairs(runtime.sessions) do
 		for _, item in ipairs(session.sessions) do
 			local rotations = item.lastRotations
-			local tip = item.tip
-			local tipBones = tip and tip.bones
 			if rotations ~= nil then
 				for index = 1, #rotations do
 					local angle = rotations[index][4]
 					if angle > framePeak then
 						framePeak = angle
-						local bone = tipBones and tipBones[index]
-						worstBone = bone
+						worstBone = item.chain and item.chain[index] or nil
 					end
-					local gains = tipBones and tipBones[index] and tipBones[index].gains
-					local limit = gains and gains.limit or 0
-					if limit > 0 and angle > limit * 1.05 then overLimit = overLimit + 1 end
 				end
 			end
 		end
@@ -562,10 +554,10 @@ local function drive(runtime)
 	if (runtime.driveFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
-		logger("[physbone] 驱动心跳 unit=%d 链=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 峰值=%.1f°(史上%.1f°) 超限骨=%d 最离谱=%s(限%.0f°) 同拍重复=%d",
+		logger("[physbone] 驱动心跳 unit=%d 链=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",
 			#runtime.sessions, chains, runtime.dt or 0, written, skippedSame, engineCalls,
 			runtime.callsAccum / runtime.driveFrames, staticChains, framePeakDeg,
-			runtime.peakAngle or 0, overLimit,
+			runtime.peakAngle or 0,
 			worstBone ~= nil and tostring(worstBone.name or "?") or "-", worstLimit,
 			runtime.repeatCalls or 0)
 	end
