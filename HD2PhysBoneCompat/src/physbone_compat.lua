@@ -498,6 +498,16 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 			if yaw > 0 or pitch > 0 then
 				-- 分轴：每根骨相对**自己绑定方向**各夹各的（见 step_tip 里的说明）。
 				-- 存 sin(限位角)：后面比的是单位向量在轴上的分量，本来就是 sin。
+				--
+				-- `limitRelax` 把所有分轴限位按倍数放宽（1.0 = 完全尊重作者）。
+				-- 存在的理由：有些资产作者给的 yaw 只有 ±15°，而实测摆动需求能到 ±57°
+				-- （lime 的 Side.L/R、Back_S.L/R）——按作者值夹必然是"几乎不动的硬杆"。
+				-- 尊重还是放宽是**产品选择**，不是对错，所以做成显式开关，不偷偷改。
+				local relax = (opts and tonumber(opts.limitRelax)) or 1
+				if relax ~= 1 and relax > 0 then
+					yaw = yaw * relax
+					pitch = pitch * relax
+				end
 				limitYaw = (yaw > 0 and yaw < math.pi) and math.sin(yaw) or 1
 				limitPitch = (pitch > 0 and pitch < math.pi) and math.sin(pitch) or 1
 				axisLimits = true
@@ -691,19 +701,46 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 			end
 			local devYaw = blx * nx + bly * ny + blz * nz
 			local devPitch = bux * nx + buy * ny + buz * nz
-			local clamped = false
-			if devYaw > gains.limitYaw then devYaw, clamped = gains.limitYaw, true
-			elseif devYaw < -gains.limitYaw then devYaw, clamped = -gains.limitYaw, true end
-			if devPitch > gains.limitPitch then devPitch, clamped = gains.limitPitch, true
-			elseif devPitch < -gains.limitPitch then devPitch, clamped = -gains.limitPitch, true end
-			if clamped then
-				-- 用"静止方向 + 两个轴上的分量"重建再归一化；l/u/b 是一组正交基，这一步不丢信息。
+			local overYaw, overPitch = 0, 0     -- 0 未超限；±1 = 从哪一侧超的
+			if devYaw > gains.limitYaw then devYaw, overYaw = gains.limitYaw, 1
+			elseif devYaw < -gains.limitYaw then devYaw, overYaw = -gains.limitYaw, -1 end
+			if devPitch > gains.limitPitch then devPitch, overPitch = gains.limitPitch, 1
+			elseif devPitch < -gains.limitPitch then devPitch, overPitch = -gains.limitPitch, -1 end
+			if overYaw ~= 0 or overPitch ~= 0 then
+				-- 用"静止方向 + 两个轴上的分量"重建，再**软一点**回夹。
+				--
+				-- ⚠️ 不要硬吸附到位（`n = normalize(clamped)`）。硬吸附有两个可看出来的后果：
+				--   ① 撞墙那一下会把速度留在墙外，下一次释放时被甩出去 ⇒ 尖端"卡一下再弹开"；
+				--   ② 3 节链每节各自贴在自己的边界上，形状变成一个折角点，看着"不自然弯折"。
+				-- 做法：位置只往边界靠 kSoft（保留一点弹性余量），同时把**朝墙外**的速度分量去掉
+				-- （非弹性约束）。这样贴着边界滑动是连续的，既不抖也不折。
 				local vx = bbx + devYaw * blx + devPitch * bux
 				local vy = bby + devYaw * bly + devPitch * buy
 				local vz = bbz + devYaw * blz + devPitch * buz
 				local vlen = math.sqrt(vx * vx + vy * vy + vz * vz)
 				if vlen > 1e-9 then
-					nx, ny, nz = vx / vlen, vy / vlen, vz / vlen
+					vx, vy, vz = vx / vlen, vy / vlen, vz / vlen
+					local soft = bone.limitSoft or 0.4
+					local mixX = nx + (vx - nx) * soft
+					local mixY = ny + (vy - ny) * soft
+					local mixZ = nz + (vz - nz) * soft
+					local mlen = math.sqrt(mixX * mixX + mixY * mixY + mixZ * mixZ)
+					if mlen > 1e-9 then
+						nx, ny, nz = mixX / mlen, mixY / mlen, mixZ / mlen
+					end
+					-- 去掉朝墙外的那一份速度：否则它会一直堆着，等约束不再生效时一次性甩出来。
+					local vyaw = tip.vx * blx + tip.vy * bly + tip.vz * blz
+					if overYaw > 0 and vyaw > 0 then
+						tip.vx, tip.vy, tip.vz = tip.vx - vyaw * blx, tip.vy - vyaw * bly, tip.vz - vyaw * blz
+					elseif overYaw < 0 and vyaw < 0 then
+						tip.vx, tip.vy, tip.vz = tip.vx - vyaw * blx, tip.vy - vyaw * bly, tip.vz - vyaw * blz
+					end
+					local vpitch = tip.vx * bux + tip.vy * buy + tip.vz * buz
+					if overPitch > 0 and vpitch > 0 then
+						tip.vx, tip.vy, tip.vz = tip.vx - vpitch * bux, tip.vy - vpitch * buy, tip.vz - vpitch * buz
+					elseif overPitch < 0 and vpitch < 0 then
+						tip.vx, tip.vy, tip.vz = tip.vx - vpitch * bux, tip.vy - vpitch * buy, tip.vz - vpitch * buz
+					end
 				end
 			end
 		end
@@ -719,7 +756,22 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 			local sx, sy, sz, _ = swing_axis(prevX, prevY, prevZ, nx, ny, nz)
 			if sx ~= nil then
 				local rqx, rqy, rqz, rqw = q_axis_angle(sx, sy, sz, gains.limit)
+				local obx, oby, obz = nx, ny, nz
 				nx, ny, nz = qrot(rqx, rqy, rqz, rqw, prevX, prevY, prevZ)
+				-- 同上：把**朝墙外**的那份速度去掉。否则它会一直堆在墙外，
+				-- 等约束不再生效时一次性甩出来 —— 实机上就是"卡一下再弹开"。
+				local anx = obx - prevX * dot
+				local any = oby - prevY * dot
+				local anz = obz - prevZ * dot
+				local alen = math.sqrt(anx * anx + any * any + anz * anz)
+				if alen > 1e-9 then
+					anx, any, anz = anx / alen, any / alen, anz / alen
+					local outward = tip.vx * anx + tip.vy * any + tip.vz * anz
+					if outward > 0 then
+						tip.vx, tip.vy, tip.vz =
+							tip.vx - outward * anx, tip.vy - outward * any, tip.vz - outward * anz
+					end
+				end
 			else
 				nx, ny, nz = prevX, prevY, prevZ
 			end
@@ -1544,7 +1596,7 @@ function M.attach(S, unit, rig, options)
 							local ox, oy, oz = world[1] - awx, world[2] - awy, world[3] - awz
 							local lx, ly, lz = qrot(cqx, cqy, cqz, cqw, ox, oy, oz)
 							local gains = M.gains_of(chain[index].params, lengthScale, gravityScale,
-								{ flags = chain[index].flags })
+								{ flags = chain[index].flags, limitRelax = options.limitRelax })
 							bonesNew[index] = {
 								gains = gains,
 								offLocal = { lx, ly, lz },
