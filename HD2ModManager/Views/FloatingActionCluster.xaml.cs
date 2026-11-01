@@ -36,6 +36,10 @@ namespace HD2ModManager.Views
         // 当前显示着标签的容器。只在状态真的变化时才动动画——每次布局都给所有项
         // 重启一遍动画，快速掠过时前一个的收回就会被反复打断。
         private readonly HashSet<ContentPresenter> _focusedPresenters = new();
+        // 说明文字正在弹开的那些行。和焦点分开记：全弹模式下没有焦点项，只有弹出的说明。
+        private readonly HashSet<ContentPresenter> _railVisiblePresenters = new();
+        // 指针是否停在主按钮上。停在这里 = 把这一页能做的事都摊开给我看。
+        private bool _mainButtonHovered;
         private FrameworkElement? _observedParent;
 
         private bool _isDragging;
@@ -166,6 +170,7 @@ namespace HD2ModManager.Views
             _view.SortDescriptions.Add(new SortDescription(nameof(PageActionViewModel.Order), ListSortDirection.Ascending));
             ActionsHost.ItemsSource = _view;
             _focusedPresenters.Clear();
+            _railVisiblePresenters.Clear();
             UpdateShapeMetrics();
         }
 
@@ -301,33 +306,50 @@ namespace HD2ModManager.Views
             // 只在状态真的变化时才动：每次布局都给所有项重启一遍动画，
             // 快速掠过时前一个胶囊的收回会被反复打断，看起来像卡住。
             var wasFocused = _focusedPresenters.Contains(presenter);
-            if (focused == wasFocused) return;
-            if (focused) _focusedPresenters.Add(presenter);
-            else _focusedPresenters.Remove(presenter);
-
-            // 阴影两档，都复用全局的抬升 token：静止 = ElevatedPanelShadow（底栏、消息面板
-            // 用的同一档），焦点 = ActionFocusShadow。早先静止态是 null，一列白圆片贴在白底上
-            // 就是一张贴纸，完全没有层次。
-            if (presenter.ContentTemplate?.FindName("ActionButton", presenter) is FrameworkElement button)
+            if (focused != wasFocused)
             {
-                button.Effect = ResolvePillShadow(focused);
-                // 临时置顶：焦点项压住邻居（但仍然在主按钮之下）。
-                Panel.SetZIndex(presenter, focused ? 999 : zIndex);
+                if (focused) _focusedPresenters.Add(presenter);
+                else _focusedPresenters.Remove(presenter);
+
+                // 阴影两档，都复用全局的抬升 token：静止 = ElevatedPanelShadow（底栏、消息面板
+                // 用的同一档），焦点 = ActionFocusShadow。早先静止态是 null，一列白圆片贴在白底上
+                // 就是一张贴纸，完全没有层次。
+                if (presenter.ContentTemplate?.FindName("ActionButton", presenter) is FrameworkElement button)
+                {
+                    button.Effect = ResolvePillShadow(focused);
+                    // 临时置顶：焦点项压住邻居（但仍然在主按钮之下）。
+                    Panel.SetZIndex(presenter, focused ? 999 : zIndex);
+                }
+
+                // 只有焦点项的文字可点；"全弹"模式只是给人读，点击要穿过去落到胶囊上。
+                if (presenter.ContentTemplate?.FindName("ExpandedRail", presenter) is FrameworkElement rail)
+                    rail.IsHitTestVisible = focused;
             }
 
+            // 说明文字弹出：焦点项一定弹；指针停在整个簇的主按钮上时全部弹出来，
+            // 这样不用逐个悬停就能把这一页能做的事一次看完。
+            ApplyRail(presenter, focused || (_mainButtonHovered && IsExpanded));
+        }
+
+        /// <summary>弹开/收起一行的说明文字。只管动画，不管阴影和层级。</summary>
+        private void ApplyRail(ContentPresenter presenter, bool visible)
+        {
             if (presenter.ContentTemplate?.FindName("ExpandedRail", presenter) is not FrameworkElement rail) return;
 
-            rail.IsHitTestVisible = focused;
+            var wasVisible = _railVisiblePresenters.Contains(presenter);
+            if (visible == wasVisible) return;
+            if (visible) _railVisiblePresenters.Add(presenter);
+            else _railVisiblePresenters.Remove(presenter);
 
-            var duration = TimeSpan.FromMilliseconds(focused ? 170 : 130);
-            var easing = new CubicEase { EasingMode = focused ? EasingMode.EaseOut : EasingMode.EaseIn };
+            var duration = TimeSpan.FromMilliseconds(visible ? 170 : 130);
+            var easing = new CubicEase { EasingMode = visible ? EasingMode.EaseOut : EasingMode.EaseIn };
             var storyboard = new Storyboard
             {
                 Children =
                 {
-                    Create("Opacity", focused ? 1d : 0d),
-                    Create("(UIElement.RenderTransform).(ScaleTransform.ScaleX)", focused ? 1d : 0.6d),
-                    Create("(UIElement.RenderTransform).(ScaleTransform.ScaleY)", focused ? 1d : 0.9d),
+                    Create("Opacity", visible ? 1d : 0d),
+                    Create("(UIElement.RenderTransform).(ScaleTransform.ScaleX)", visible ? 1d : 0.6d),
+                    Create("(UIElement.RenderTransform).(ScaleTransform.ScaleY)", visible ? 1d : 0.9d),
                 },
             };
 
@@ -340,6 +362,23 @@ namespace HD2ModManager.Views
                 Storyboard.SetTargetProperty(animation, new PropertyPath(path));
                 return animation;
             }
+        }
+
+        // 指针停到主按钮上：把全部说明摊开。这里顺手清掉 _hoveredIndex——
+        // "悬停某个胶囊"和"悬停主按钮"是两件事，同时成立会让某一行既是焦点又被摊平。
+        private void OnMainButtonMouseEnter(object sender, MouseEventArgs e)
+        {
+            if (!IsExpanded) return;
+            _mainButtonHovered = true;
+            _hoveredIndex = -1;
+            UpdateFocusVisuals();
+        }
+
+        private void OnMainButtonMouseLeave(object sender, MouseEventArgs e)
+        {
+            if (!_mainButtonHovered) return;
+            _mainButtonHovered = false;
+            UpdateFocusVisuals();
         }
 
         private Effect? ResolvePillShadow(bool focused)
@@ -401,6 +440,7 @@ namespace HD2ModManager.Views
             }
 
             ResetFocusState();
+            UpdateFocusVisuals();
             // 收起时按钮原地不动，只把动作列淡出并收回主按钮背后。
             AnimateActionsOpacity(0d, 150d);
             Dispatcher.BeginInvoke(() =>

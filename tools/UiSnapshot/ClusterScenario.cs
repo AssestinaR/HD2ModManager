@@ -97,6 +97,66 @@ internal static class ClusterScenario
         };
     }
 
+    /// <summary>
+    /// 指针停在主按钮上：全部说明应当同时弹开。离屏没有真实鼠标，
+    /// 直接把 MouseEnter 抬给主按钮（处理器不读事件参数，只看有没有发生）。
+    /// </summary>
+    public static Scenario BuildAllLabels(string name, bool many)
+    {
+        var actions = many ? ManyActions() : ProfileActions();
+        var list = new ModListPanel
+        {
+            HeaderTitle = "配置文件",
+            HeaderSummary = many ? "14 个动作 · 悬停主按钮" : "6 个动作 · 悬停主按钮",
+            ItemsSource = FakeRow.Sample(),
+            SelectionPolicy = ModListSelectionPolicy.Multiple,
+        };
+
+        var cluster = new FloatingActionCluster
+        {
+            Actions = actions,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(18),
+        };
+
+        var grid = new Grid();
+        grid.Children.Add(list);
+        grid.Children.Add(cluster);
+
+        return new Scenario
+        {
+            Name = name,
+            Build = () => new Border
+            {
+                Background = ScenarioCatalog.Resource("SurfaceCanvas"),
+                Padding = new Thickness(12),
+                Child = grid,
+            },
+            Settle = host =>
+            {
+                cluster.IsExpanded = true;
+                host.PumpFor(60);
+                host.PumpFor(420);
+
+                var main = VisualTree.All<Button>(cluster).FirstOrDefault(button => button.Name == "MainButton");
+                if (main is null)
+                {
+                    Console.WriteLine("[all-labels] 没找到主按钮");
+                    return;
+                }
+
+                main.RaiseEvent(new System.Windows.Input.MouseEventArgs(
+                    System.Windows.Input.Mouse.PrimaryDevice, Environment.TickCount)
+                {
+                    RoutedEvent = UIElement.MouseEnterEvent,
+                });
+                host.PumpFor(40);
+                host.PumpFor(300);
+            },
+        };
+    }
+
     public static Scenario Build(string name, bool expanded, bool many = false, int focus = -1)
     {
         var actions = many ? ManyActions() : ProfileActions();

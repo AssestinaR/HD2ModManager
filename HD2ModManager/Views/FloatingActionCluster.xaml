@@ -180,6 +180,8 @@
                 PreviewMouseMove="OnMainButtonDragMove"
                 PreviewMouseLeftButtonUp="OnMainButtonDragEnd"
                 LostMouseCapture="OnMainButtonLostCapture"
+                MouseEnter="OnMainButtonMouseEnter"
+                MouseLeave="OnMainButtonMouseLeave"
                 Click="OnMainButtonClick">
             <Path Width="18" Height="18"
                   Data="{StaticResource ActionIcon.Menu}"
