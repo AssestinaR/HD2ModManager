@@ -2012,17 +2012,13 @@ public static class CliApplication
 					var modDirectory = Path.Combine(repairWorkspace.LibraryRoot, relativePath);
 					if (!Directory.Exists(modDirectory))
 						continue;
-					var vpk = Directory.EnumerateFiles(modDirectory, "*.vpk", SearchOption.TopDirectoryOnly).FirstOrDefault();
-					if (vpk is null)
-					{
-						skipped.Add(new { mod = relativePath, reason = "目录里没有 .vpk（不是 VPK 来源的 mod）" });
-						continue;
-					}
 
 					try
 					{
+						// 来源交给 embedder 自己找：转换期产出的 physbone-rig.bin 优先（带链根锚点），
+						// 其次目录里唯一的 .vpk。这里以前取"第一个 *.vpk"，多 VPK 的包会选错模型。
 						var outcome = await PhysBoneContainerEmbedder
-							.EmbedAsync(vpk, modDirectory, CancellationToken.None)
+							.EmbedAsync(null, modDirectory, CancellationToken.None)
 							.ConfigureAwait(false);
 						if (outcome.Reason is not null)
 							skipped.Add(new { mod = relativePath, reason = outcome.Reason });
@@ -2034,6 +2030,7 @@ public static class CliApplication
 								patches = outcome.PatchCount,
 								addedBytes = outcome.AddedBytes,
 								replaced = outcome.AlreadyPresent,
+								rigSource = outcome.RigSource,
 							});
 					}
 					catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
@@ -2060,15 +2057,16 @@ public static class CliApplication
 
 			return failures.Count == 0 ? 0 : 1;
 		}
-		if (command.Length == 4 && command[0] == "physbone" && command[1] == "embed-mod")
+		if (command.Length is 3 or 4 && command[0] == "physbone" && command[1] == "embed-mod")
 		{
 			// 给**整个 Mod 目录**嵌物理参数：根 / vpk2patch/ / Overwrite/ 三处的、含 Unit 的 patch 都会嵌。
 			// 为什么要覆盖三处：Overwrite 是在 vpk2patch 产物上**重新构建**出来的，尾部容器不会自动跟过去——
 			// 只在转换产物上嵌，等于交付给游戏的那一份没有参数。
 			//
-			// 用法：hd2mod physbone embed-mod <mod 目录> <来源 vpk 或 rig 文件> [--json]
+			// 用法：hd2mod physbone embed-mod <mod 目录> [<来源 vpk 或 rig 文件>] [--json]
+			// 来源可省略：转换期产出的 physbone-rig.bin 优先，其次目录里唯一的 .vpk。
 			var embedModDirectory = Path.GetFullPath(command[2]);
-			var embedModSource = Path.GetFullPath(command[3]);
+			var embedModSource = command.Length == 4 ? Path.GetFullPath(command[3]) : null;
 			var embedModOutcome = await PhysBoneContainerEmbedder
 				.EmbedAsync(embedModSource, embedModDirectory, CancellationToken.None)
 				.ConfigureAwait(false);
@@ -2077,12 +2075,15 @@ public static class CliApplication
 			{
 				Emit(invocation.Options, new
 				{
-					ok = embedModOutcome.Embedded || embedModOutcome.Reason is not null,
+					// ⚠️ 这里**不能**写成 `Embedded || Reason is not null`：那等于"跳过也算成功"，
+					// 于是"这个 mod 没有物理参数"在调用方看来和"已经嵌好了"完全一样，用户一个字都看不到。
+					ok = embedModOutcome.Embedded,
 					embedded = embedModOutcome.Embedded,
 					replaced = embedModOutcome.AlreadyPresent,
 					bones = embedModOutcome.BoneCount,
 					patches = embedModOutcome.PatchCount,
 					addedBytes = embedModOutcome.AddedBytes,
+					rigSource = embedModOutcome.RigSource,
 					reason = embedModOutcome.Reason,
 				}, () => string.Empty);
 			}
@@ -2094,7 +2095,8 @@ public static class CliApplication
 			{
 				Console.WriteLine($"已嵌入物理参数：{embedModOutcome.PatchCount} 个 patch，"
 					+ $"{embedModOutcome.BoneCount} 根骨，新增 {embedModOutcome.AddedBytes:N0} 字节"
-					+ (embedModOutcome.AlreadyPresent ? "（替换了旧容器）" : string.Empty));
+					+ (embedModOutcome.AlreadyPresent ? "（替换了旧容器）" : string.Empty)
+					+ (embedModOutcome.RigSource is null ? string.Empty : $"，参数来自 {embedModOutcome.RigSource}"));
 			}
 
 			return 0;

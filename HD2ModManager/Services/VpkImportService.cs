@@ -294,28 +294,82 @@ public sealed class VpkImportService
 		// 批次落地后：把物理参数容器嵌进**模型 patch**（来源有 jiggle 骨才做；材质包由 CLI 自己跳过）。
 		// 放在最后一步是刻意的——转换阶段往 `.gpu_resources` 追加字节会让后续受管步骤记账错位
 		// （历史症状：材质整体投递失败、面部品红）。这里已经是产物，没人会再重排它。
+		//
+		// 来源由 CLI 自己找（转换期产出的 physbone-rig.bin 优先，其次目录里唯一的 .vpk）：
+		// 这里以前取"第一个 *.vpk"，多 VPK 的包（模型 + 贴图分包）会选错模型，
+		// 拿别的模型的参数去驱动这套护甲——静默的。
 		foreach (var modDirectory in produced)
 		{
-			var vpkInside = Directory.EnumerateFiles(modDirectory, "*.vpk", SearchOption.TopDirectoryOnly).FirstOrDefault();
-			if (vpkInside is null)
-				continue;
+			var modName = Path.GetFileName(modDirectory);
 			try
 			{
 				var (code, embedOutput, embedError) = await RunCliAsync(
 					executable,
-					["physbone", "embed-mod", modDirectory, vpkInside, "--json"],
+					["physbone", "embed-mod", modDirectory, "--json"],
 					cancellationToken).ConfigureAwait(false);
 				if (code != 0)
-					notes.Add($"{Path.GetFileName(modDirectory)}：物理参数嵌入失败（hd2mod 退出码 {code}）：{(string.IsNullOrWhiteSpace(embedError) ? embedOutput : embedError).Trim()}");
+				{
+					notes.Add($"{modName}：物理参数嵌入失败（hd2mod 退出码 {code}）：{(string.IsNullOrWhiteSpace(embedError) ? embedOutput : embedError).Trim()}");
+					continue;
+				}
+
+				// 退出码 0 只说明"命令跑完了"。**跳过也返回 0**，所以必须读 json 里的 ok/embedded，
+				// 否则"这个 mod 没有物理参数"和"已经嵌好了"在报告里长得一模一样，用户一个字都看不到。
+				var outcome = ParseEmbedOutcome(embedOutput);
+				if (outcome is null)
+					continue;   // 输出不是预期格式：不编造结论，也不打扰用户
+
+				notes.Add(outcome.Embedded
+					? $"{modName}：已写入物理参数（{outcome.Patches} 个 patch、{outcome.Bones} 根骨"
+						+ (string.IsNullOrWhiteSpace(outcome.RigSource) ? "）" : $"，参数来自 {outcome.RigSource}）")
+					: $"{modName}：**没有物理参数**（{outcome.Reason ?? "原因未知"}）——"
+						+ "这套护甲不会有头发/裙摆摆动。");
 			}
-			catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
+			catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException or JsonException)
 			{
 				// 嵌不进去不该让导入失败：参数可以以后补，产物本身是好的。
-				notes.Add($"{Path.GetFileName(modDirectory)}：物理参数嵌入跳过（{exception.Message}）");
+				notes.Add($"{modName}：物理参数嵌入跳过（{exception.Message}）");
 			}
 		}
 
 		return (new VpkImportReport(source.SourcePath, items, notes), produced);
+	}
+
+	/// <summary><c>physbone embed-mod --json</c> 的输出。</summary>
+	/// <param name="Bones">-1 表示这次没解析骨数（来自转换期 rig 或裸 rig，长度由回读校验把关）。</param>
+	private sealed record EmbedOutcome(bool Embedded, int Bones, int Patches, string? RigSource, string? Reason);
+
+	private static EmbedOutcome? ParseEmbedOutcome(string json)
+	{
+		if (string.IsNullOrWhiteSpace(json))
+			return null;
+		try
+		{
+			using var document = JsonDocument.Parse(json);
+			var root = document.RootElement;
+			if (root.ValueKind != JsonValueKind.Object)
+				return null;
+			return new EmbedOutcome(
+				root.TryGetProperty("embedded", out var embedded) && embedded.ValueKind == JsonValueKind.True,
+				ReadInt(root, "bones"),
+				ReadInt(root, "patches"),
+				ReadString(root, "rigSource"),
+				ReadString(root, "reason"));
+		}
+		catch (JsonException)
+		{
+			return null;
+		}
+
+		static int ReadInt(JsonElement root, string name) =>
+			root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+				? number
+				: 0;
+
+		static string? ReadString(JsonElement root, string name) =>
+			root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+				? value.GetString()
+				: null;
 	}
 
 	private sealed record PlannedItem(string VpkPath, string? Reason);

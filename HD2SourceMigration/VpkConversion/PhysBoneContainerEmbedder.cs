@@ -45,19 +45,20 @@ public static class PhysBoneContainerEmbedder
 	/// 给 <paramref name="modDirectory"/> 下所有**含 Unit 的** patch 嵌入容器。
 	/// 没有 jiggle 骨、或者找不到模型 patch 时返回 <see cref="Outcome.Skip"/>（调用方当作正常的"不需要"）。
 	/// </summary>
+	/// <param name="vpkPath">
+	/// 来源：一个 VPK、或一份裸 rig（<c>HD2SRG01</c>）。可以给 <c>null</c>——
+	/// 那样就只按 <paramref name="modDirectory"/> 自己找（见 <see cref="ResolveSource"/>）。
+	/// </param>
 	public static async Task<Outcome> EmbedAsync(
-		string vpkPath,
+		string? vpkPath,
 		string modDirectory,
 		CancellationToken cancellationToken = default)
 	{
-		ArgumentException.ThrowIfNullOrWhiteSpace(vpkPath);
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
-		if (!File.Exists(vpkPath))
-			return Outcome.Skip($"来源 VPK 不存在：{vpkPath}");
 		if (!Directory.Exists(modDirectory))
 			return Outcome.Skip($"Mod 目录不存在：{modDirectory}");
 
-		// 来源优先级：**转换期产出的 rig** > 裸 rig 文件 > 重读来源 VPK。
+		// 来源优先级：**转换期产出的 rig** > 显式来源 > 目录里唯一的 .vpk。
 		//
 		// 为什么转换期那份优先：容器里的"链根锚点名"只有重定向那一刻算得出来
 		// （源骨架里有一批骨在 HD2 侧不存在，要写成它回退到的 HD2 骨名）。embed-mod 只看得到
@@ -73,20 +74,24 @@ public static class PhysBoneContainerEmbedder
 			boneCount = -1;   // 交回读校验把关（与裸 rig 同一口径）
 			rigSource = Path.GetFileName(sidecarPath!);
 		}
-		else if (vpkPath.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+		else if (ResolveSource(vpkPath, modDirectory, out var sourceReason) is not { } source)
 		{
-			rig = await File.ReadAllBytesAsync(vpkPath, cancellationToken).ConfigureAwait(false);
+			return Outcome.Skip(sourceReason!);
+		}
+		else if (source.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+		{
+			rig = await File.ReadAllBytesAsync(source, cancellationToken).ConfigureAwait(false);
 			if (rig.Length < 8 || !rig.AsSpan(0, 8).SequenceEqual(PhysBoneSpringRig.Magic))
-				return Outcome.Skip($"{Path.GetFileName(vpkPath)} 不是裸 rig（应以 HD2SRG01 开头）");
+				return Outcome.Skip($"{Path.GetFileName(source)} 不是裸 rig（应以 HD2SRG01 开头）");
 			boneCount = -1;   // 裸 rig 不解析骨数，交回读校验把关
-			rigSource = Path.GetFileName(vpkPath);
+			rigSource = Path.GetFileName(source);
 		}
 		else
 		{
 			SourceModelInspection inspection;
 			try
 			{
-				inspection = SourceModelInspector.Inspect(vpkPath);
+				inspection = SourceModelInspector.Inspect(source);
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
 			{
@@ -165,6 +170,44 @@ public static class PhysBoneContainerEmbedder
 			: new Outcome(true, alreadyPresent, boneCount, embedded, added,
 				locked.Count > 0 ? "部分 patch 被占用未更新：" + string.Join("；", locked.Take(3)) : null)
 				{ RigSource = rigSource };
+	}
+
+	/// <summary>
+	/// 决定这次从哪儿取参数：显式来源优先；没给就只看 mod 目录。
+	/// <para>
+	/// <b>为什么多 VPK 时宁可不嵌。</b>以前调用方取"目录里第一个 <c>*.vpk</c>"，
+	/// 而多 VPK 的包（模型 + 贴图分包）里第一个往往<b>不是</b>模型那份——于是拿别的模型
+	/// 的 jiggle 参数去驱动这套护甲，或者干脆 0 条链。猜错的代价比"没嵌上"高得多：
+	/// 没嵌上会在导入报告里明说，猜错是静默的。
+	/// </para>
+	/// </summary>
+	private static string? ResolveSource(string? explicitPath, string modDirectory, out string? reason)
+	{
+		reason = null;
+		if (!string.IsNullOrWhiteSpace(explicitPath))
+		{
+			if (!File.Exists(explicitPath))
+			{
+				reason = $"来源 VPK 不存在：{explicitPath}";
+				return null;
+			}
+
+			return explicitPath;
+		}
+
+		var found = Directory.EnumerateFiles(modDirectory, "*.vpk", SearchOption.TopDirectoryOnly).ToArray();
+		if (found.Length == 1)
+			return found[0];
+		if (found.Length == 0)
+		{
+			reason = $"Mod 目录里既没有 {PhysBoneRigSidecar.FileName} 也没有 .vpk，无从取物理参数";
+			return null;
+		}
+
+		reason = "Mod 目录里有多个 .vpk，判断不出哪一个是这套护甲的来源（"
+			+ string.Join("、", found.Select(Path.GetFileName))
+			+ "）；重新导入一次即可带上来源 rig";
+		return null;
 	}
 
 	/// <summary>回读校验：容器能取出、里面有 <see cref="RigRecordName"/> 且长度一致。</summary>
