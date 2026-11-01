@@ -11,8 +11,11 @@ namespace HD2ModManager
     {
         protected override void OnStartup(StartupEventArgs e)
         {
-            // 启动时把设置里的护甲映射模式同步到静态字段：计划阶段读它，不读磁盘。
-            _ = Services.SettingsService.GetArmorMappingMode();
+            // 启动时把设置里的三项 lua 相关项同步到静态字段：部署阶段读静态字段，不读磁盘。
+            // 必须**三项都同步**——只同步护甲映射模式的话，物理模式会停在默认的「关闭」，
+            // 于是设置页显示"已开启"、部署却不带物理运行时（2026-11-01 实机踩过：
+            // 一局下来既没有物理，日志也没被创建）。
+            Services.SettingsService.ApplyToLuaDeployment();
             // Do not auto-compile a temporary diagnostic protocol or overwrite
             // user state while a recovery journal is pending.
             var recovery = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory,

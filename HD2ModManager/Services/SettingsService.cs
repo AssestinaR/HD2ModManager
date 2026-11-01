@@ -270,6 +270,27 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
+        /// 把三项 lua 相关设置一次性同步到 <see cref="LuaDeploymentService"/> 的静态字段。
+        /// <para>
+        /// ⚠️ 这三项在部署阶段都是**只读静态字段**（计划阶段不读磁盘），所以启动时必须
+        /// 全部同步一次。少同步一项，那一项就停在默认值上，而设置页里明明显示"已开启"——
+        /// 2026-11-01 实机就是这样：物理模式存着「独占 boot」，但启动时没人读它，
+        /// 静态字段停在默认的「关闭」，于是部署出来的 patch 里根本没有物理运行时，
+        /// 游戏里从头到尾没有任何反应，日志都不会被创建。
+        /// </para>
+        /// <para>
+        /// 设置页改值时各自会同步，所以启动这一次就够；但必须三项都读。
+        /// </para>
+        /// </summary>
+        public static void ApplyToLuaDeployment()
+        {
+            // 顺序有依赖：另外两项的合法性都要看总开关，所以先读它。
+            GetBuiltInLuaEnabled();
+            GetArmorMappingMode();
+            GetPhysicsMode();
+        }
+
+        /// <summary>
         /// 读取物理骨骼模式并同步到 <see cref="LuaDeploymentService.PhysicsMode"/>。
         /// 总开关关闭时恒为外置入口（那一档是唯一合法的）。
         /// </summary>

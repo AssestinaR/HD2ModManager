@@ -17,7 +17,11 @@ namespace HD2ModCore.Tests;
 [Collection(LuaDeploymentStateCollection.Name)]
 public sealed class RuntimeArmorRegistryServiceTests
 {
-	public RuntimeArmorRegistryServiceTests() => LuaDeploymentService.MappingMode = ArmorMappingModes.Default;
+	public RuntimeArmorRegistryServiceTests()
+	{
+		LuaDeploymentService.MappingMode = ArmorMappingModes.Default;
+		LuaDeploymentService.PhysicsMode = PhysicsModes.Default;
+	}
 
 	[Fact]
 	public async Task ArmorPiecesUseRuntimeBodyEncodingNotCatalogEnum()
@@ -436,6 +440,72 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(4240, hiddenPayload.TocData.Length);
 		Assert.Equal(418, hiddenPayload.GpuResourceData.Length);
 		Assert.Empty(result.PatchIndex.FilesByNode[legacyId]);
+	}
+
+	[Fact]
+	public async Task LuaDeployment_PhysicsExclusiveBoot_IsBuiltEvenWhenMappingDoesNotUseRuntimeLua()
+	{
+		// 物理与护甲映射是**两件独立的事**：真映射只表示"外观写进注册表数据、不投放映射运行时"，
+		// 它并不禁止投放别的 Lua 功能。所以「真映射 + 物理独占 boot」必须能产出一个 boot patch。
+		//
+		// 这条同时钉住 2026-11-01 那次"整轮完全没有物理"的反面教训：那次**不是**这两者互斥，
+		// 而是启动时没人把设置里的物理模式同步到静态字段，它停在默认的「关闭」——
+		// 见 SettingsService.ApplyToLuaDeployment 的注释。别把这两件事混成一条判据。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.PhysicsMode = PhysicsMode.ExclusiveLuaEntry;
+
+		await using var fixture = await Fixture.CreateAsync();
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}"),
+			CreateGameBootArchive([0x1B, 0x4C, 0x4A, 0x02]));
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []),
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		Assert.Single(result.GeneratedPatchGroups);
+	}
+
+	[Fact]
+	public async Task LuaDeployment_PhysicsOffAndMappingWithoutRuntimeLua_ProducesNoLuaPatch()
+	{
+		// 这正是 2026-11-01 实机的产物形态：真映射 + 物理静态字段停在默认的「关闭」⇒
+		// 管理器一个 patch 都不产、游戏里既没有物理也没有日志。把"什么都没产出"固定成
+		// 一条**预期**行为，将来再出现同样的空部署时能一眼看出是哪一侧关掉了。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
+
+		await using var fixture = await Fixture.CreateAsync();
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []),
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+		Assert.Empty(result.GeneratedPatchGroups);
 	}
 
 	[Fact]
