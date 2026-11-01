@@ -422,6 +422,23 @@ local function drive(runtime)
 	runtime.logContext.frame = frame
 	Compat.begin_frame(frame)
 
+	-- dt 用引擎自己的时间差，不写死 1/60。
+	-- `update` 实测约 70 次/秒，写死 1/60 会让物理比真实时间慢 15~30%——观感上就是
+	-- "动得比衣服沉"、"回弹拖沓"，而这很容易被误判成阻尼调大了。
+	-- ⚠️ `Application.time_since_launch` 每帧只更新一次，所以只能在**帧之间**做差：
+	-- 在一次回调内部取首尾差值恒为 0（踩过）。做不出差（首帧 / 时钟回退）就保持上一个值。
+	local now = try(S.Application.time_since_launch)
+	if type(now) == "number" and now == now then
+		local previous = runtime.lastTime
+		runtime.lastTime = now
+		if previous ~= nil and now > previous then
+			local delta = now - previous
+			-- 上限 0.25 与 compat 的稳定性闸一致：卡顿帧不该被当成"过了 0.5 秒"去积分。
+			if delta > 0.25 then delta = 0.25 end
+			if delta >= 0.001 then runtime.dt = delta end
+		end
+	end
+
 	if runtime.sessions ~= nil and #runtime.sessions > 0 then
 		local dropped = pruneSessions(runtime)
 		if dropped > 0 or #runtime.sessions == 0 then
