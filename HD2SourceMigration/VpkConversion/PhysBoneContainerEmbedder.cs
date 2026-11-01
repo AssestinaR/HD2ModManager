@@ -28,6 +28,14 @@ public static class PhysBoneContainerEmbedder
 		string? Reason)
 	{
 		public static Outcome Skip(string reason) => new(false, false, 0, 0, 0, reason);
+
+		/// <summary>
+		/// 这次嵌进去的 rig 是从哪来的。三种取值：
+		/// 转换期产出的 <c>physbone-rig.bin</c>（**带链根锚点**，最完整）、
+		/// 用户给的裸 rig 文件、来源 VPK 重读（**不带锚点**，裙摆那类链会缺锚点）。
+		/// 排查"为什么某块布不晃"时，第一个要看的就是这个。
+		/// </summary>
+		public string? RigSource { get; init; }
 	}
 
 	/// <summary>模块名常量，运行时按这个名字取容器里的记录（与协议文档一致）。</summary>
@@ -49,17 +57,29 @@ public static class PhysBoneContainerEmbedder
 		if (!Directory.Exists(modDirectory))
 			return Outcome.Skip($"Mod 目录不存在：{modDirectory}");
 
-		// 来源既可以是 VPK（按源模型重新导出参数），也可以是一份**裸 rig 文件**
-		// （`source physbone` 的产物，或已调好的 %LOCALAPPDATA%\hd2pbx_rig.bin）——
-		// 后者用于"源包不在手边"或"想把当前调好的参数原样带上"的场合。
+		// 来源优先级：**转换期产出的 rig** > 裸 rig 文件 > 重读来源 VPK。
+		//
+		// 为什么转换期那份优先：容器里的"链根锚点名"只有重定向那一刻算得出来
+		// （源骨架里有一批骨在 HD2 侧不存在，要写成它回退到的 HD2 骨名）。embed-mod 只看得到
+		// 来源 VPK、看不到 HD2 骨架，重算不出来——不读这份，裙摆那类链会整条记「缺锚点」被跳过。
 		byte[] rig;
 		int boneCount;
-		if (vpkPath.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+		string rigSource;
+		var sidecarPath = PhysBoneRigSidecar.Locate(modDirectory);
+		var sidecar = sidecarPath is null ? null : PhysBoneRigSidecar.TryRead(sidecarPath);
+		if (sidecar is not null)
+		{
+			rig = sidecar;
+			boneCount = -1;   // 交回读校验把关（与裸 rig 同一口径）
+			rigSource = Path.GetFileName(sidecarPath!);
+		}
+		else if (vpkPath.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
 		{
 			rig = await File.ReadAllBytesAsync(vpkPath, cancellationToken).ConfigureAwait(false);
 			if (rig.Length < 8 || !rig.AsSpan(0, 8).SequenceEqual(PhysBoneSpringRig.Magic))
 				return Outcome.Skip($"{Path.GetFileName(vpkPath)} 不是裸 rig（应以 HD2SRG01 开头）");
 			boneCount = -1;   // 裸 rig 不解析骨数，交回读校验把关
+			rigSource = Path.GetFileName(vpkPath);
 		}
 		else
 		{
@@ -78,6 +98,7 @@ public static class PhysBoneContainerEmbedder
 
 			rig = PhysBoneSpringRig.Serialize(inspection.JiggleBones);
 			boneCount = inspection.JiggleBones.Count;
+			rigSource = "来源 VPK（未带链根锚点）";
 		}
 		var scanner = new PatchTocScanner();
 		var embedded = 0;
@@ -129,18 +150,21 @@ public static class PhysBoneContainerEmbedder
 			var verification = Verify(gpuPath, rig.Length);
 			if (verification is not null)
 				return new Outcome(false, alreadyPresent, boneCount, embedded, added,
-					$"{Path.GetFileName(patchPath)} 写入后校验失败：{verification}");
+					$"{Path.GetFileName(patchPath)} 写入后校验失败：{verification}")
+					{ RigSource = rigSource };
 
 			static bool kept(byte[] clean, byte[] combined) => combined.AsSpan(0, clean.Length).SequenceEqual(clean);
 		}
 
 		if (locked.Count > 0 && embedded == 0)
-			return new Outcome(false, alreadyPresent, boneCount, 0, 0, "文件被占用：" + string.Join("；", locked.Take(3)));
+			return new Outcome(false, alreadyPresent, boneCount, 0, 0, "文件被占用：" + string.Join("；", locked.Take(3)))
+				{ RigSource = rigSource };
 
 		return embedded == 0 && !alreadyPresent
 			? Outcome.Skip("没有找到含 Unit 的 patch")
 			: new Outcome(true, alreadyPresent, boneCount, embedded, added,
-				locked.Count > 0 ? "部分 patch 被占用未更新：" + string.Join("；", locked.Take(3)) : null);
+				locked.Count > 0 ? "部分 patch 被占用未更新：" + string.Join("；", locked.Take(3)) : null)
+				{ RigSource = rigSource };
 	}
 
 	/// <summary>回读校验：容器能取出、里面有 <see cref="RigRecordName"/> 且长度一致。</summary>

@@ -139,18 +139,7 @@ public static class SourceModelInspector
 			.ToArray();
 
 		// 逐根 jiggle 骨的完整事实。按骨下标排序，保证输出稳定（便于 diff 与测试）。
-		var jiggleBones = model.JiggleBones
-			.OrderBy(bone => bone.Index)
-			.Select(bone => new SourceJiggleBoneFact(
-				bone.Index,
-				bone.DisplayName,
-				bone.ParentIndex,
-				ParentName(model, bone),
-				bone.Jiggle!.Flags,
-				SourceJiggleFlags.Describe(bone.Jiggle!.Flags),
-				new Vec3(bone.WorldBind.M14, bone.WorldBind.M24, bone.WorldBind.M34),
-				bone.Jiggle!))
-			.ToArray();
+		var jiggleBones = JiggleFacts(model);
 
 		// 逐根 jiggle 骨统计它在 LOD0 上带了多少顶点（完整版插节点/改权重的依据）。
 		// 口径：
@@ -181,6 +170,31 @@ public static class SourceModelInspector
 				new SourcePartSummary(part.BodyPart, part.Model, part.VertexCount, part.TriangleCount))],
 			jiggleWeights,
 			model.Diagnostics);
+	}
+
+	/// <summary>
+	/// 逐根 jiggle 骨的完整事实（按骨下标排序，输出稳定便于 diff 与测试）。
+	/// <para>
+	/// 抽出来是因为有<b>两个</b>调用方：检查报告（本类）和转换器（<c>vpk2patch</c> 要拿它
+	/// 连同"链根锚点名"一起写出物理参数容器）。两处各写一份的话，"转换时算的锚点"和
+	/// "嵌入时写的参数"会慢慢漂移，而漂移的表现是参数对不上某根骨——完全静默。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyList<SourceJiggleBoneFact> JiggleFacts(SourceModelDocument model)
+	{
+		ArgumentNullException.ThrowIfNull(model);
+		return model.JiggleBones
+			.OrderBy(bone => bone.Index)
+			.Select(bone => new SourceJiggleBoneFact(
+				bone.Index,
+				bone.DisplayName,
+				bone.ParentIndex,
+				ParentName(model, bone),
+				bone.Jiggle!.Flags,
+				SourceJiggleFlags.Describe(bone.Jiggle!.Flags),
+				new Vec3(bone.WorldBind.M14, bone.WorldBind.M24, bone.WorldBind.M34),
+				bone.Jiggle!))
+			.ToArray();
 	}
 
 	/// <summary>统计每根 jiggle 骨在装配后几何上带多少顶点（口径见 <see cref="SourceJiggleWeightFact"/>）。</summary>

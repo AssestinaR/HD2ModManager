@@ -127,4 +127,62 @@ public sealed partial class Retargeter
 
 		return extras;
 	}
+
+	/// <summary>
+	/// 链根的**锚点名**：源父骨显示名 → 它回退到的 HD2 原生骨名。
+	/// <para>
+	/// 为什么需要这一步：容器（<c>HD2SRG01</c>）里的每根骨存的是<b>源侧</b>父骨名，
+	/// 运行时靠它把链根挂到 HD2 的骨名表上。但源骨架里有一批骨在 HD2 侧根本不存在
+	/// （无名骨 <c>source_extra_90</c>、以及 <c>UN_Skirt_R_02</c> 这类非 Biped 命名），
+	/// 运行时的映射表只认 ValveBiped，查不到就退化成"把源骨名当 HD2 骨名查"——必然查不到，
+	/// 于是整条链记「缺锚点」被跳过。实测一份裙子上 25 条链死 5 条。
+	/// </para>
+	/// <para>
+	/// 这里给出的正是<b>重定向当时</b>已经算出来的答案：<c>resolved[父骨]</c> 就是那根骨
+	/// 回退到的 HD2 原生骨下标。把它的<b>名字</b>写进容器的 <c>parentName</c>，
+	/// 运行时的回退分支立刻就能解析——不动协议、不动运行时、旧 rig 也照样能用。
+	/// </para>
+	/// <para>
+	/// 父骨本身是 jiggle 骨的（链套链）不在此列：那种情况下运行时按父骨下标认链，
+	/// 根本不需要锚点，写进去反而会把它当成"挂到别的骨上"。
+	/// </para>
+	/// </summary>
+	/// <param name="bones">源骨表（下标即骨下标）。</param>
+	/// <param name="resolved">**插合成骨之前**的源骨 → HD2 骨映射。</param>
+	/// <param name="hd2Bones">HD2 avatar 骨架，用来把下标换回名字。</param>
+	public static Dictionary<string, string> PlanJiggleAnchors(
+		IReadOnlyList<SourceBone> bones,
+		IReadOnlyDictionary<int, int> resolved,
+		IReadOnlyList<Hd2RigBone> hd2Bones)
+	{
+		ArgumentNullException.ThrowIfNull(bones);
+		ArgumentNullException.ThrowIfNull(resolved);
+		ArgumentNullException.ThrowIfNull(hd2Bones);
+
+		var anchors = new Dictionary<string, string>(StringComparer.Ordinal);
+		foreach (var bone in bones)
+		{
+			if (bone.Jiggle is null)
+				continue;
+
+			var parent = bone.ParentIndex;
+			if (parent < 0 || parent >= bones.Count)
+				continue;                       // 根骨：没有可挂的父骨
+			if (bones[parent].Jiggle is not null)
+				continue;                       // 链套链：父是 jiggle 骨，运行时按下标认
+
+			if (!resolved.TryGetValue(parent, out var nativeIndex))
+				continue;                       // 父骨连回退都没落到 HD2 骨上
+			if (nativeIndex < 0 || nativeIndex >= hd2Bones.Count)
+				continue;
+
+			var name = hd2Bones[nativeIndex].Name;
+			if (string.IsNullOrEmpty(name))
+				continue;                       // HD2 侧这根骨也没名字，写进去同样解析不了
+
+			anchors[bones[parent].DisplayName] = name!;
+		}
+
+		return anchors;
+	}
 }

@@ -51,6 +51,11 @@ public sealed record RetargetMetrics(
 /// 在 <see cref="RetargetSkeleton.Native"/> 下后者等于前者——这正是"离线摆成什么样、游戏里就是什么样"
 /// 的判据，也是唯一能和参考包对比的渲染。
 /// </para>
+/// <para>
+/// <see cref="JiggleAnchors"/> 是<b>源父骨显示名 → HD2 锚点名</b>。它不进网格，进的是物理参数容器：
+/// 容器里的骨记录存的是源侧父骨名，而源骨架有一批骨在 HD2 侧不存在，运行时就挂不上链根。
+/// 转换期把重定向已经算出的答案写进去，运行时才能把链根锚到真实存在的骨上。
+/// </para>
 /// </summary>
 public sealed record RetargetResult(
 	IReadOnlyList<Vec3> SourcePoints,
@@ -67,6 +72,7 @@ public sealed record RetargetResult(
 	IReadOnlyDictionary<string, double> PalmGirth,
 	IReadOnlyList<RetargetExtraBone> ExtraBones,
 	IReadOnlyDictionary<int, int> JiggleWeightTargets,
+	IReadOnlyDictionary<string, string> JiggleAnchors,
 	RetargetMetrics Metrics)
 {
 	/// <summary>把结果里的顶点位置摊平成 <c>[x, y, z]</c> 数组，供 npz 落盘与逐点对拍。</summary>

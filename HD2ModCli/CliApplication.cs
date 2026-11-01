@@ -3226,6 +3226,35 @@ public static class CliApplication
 			}
 		}
 
+		// 顺手把物理参数 rig 落在 patch 旁边——它比"重读来源 VPK"多带一样东西：**链根锚点名**。
+		//
+		// 为什么不在这一步直接嵌进 `.gpu_resources`：转换阶段往那儿追加字节会让后续受管步骤
+		// 记账错位（历史症状：材质整体投递失败、面部品红）。嵌入由导入末尾的
+		// `physbone embed-mod` 做，它读这份文件；而锚点名只有重定向这一刻算得出来
+		// （embed-mod 只看得到来源 VPK，看不到 HD2 骨架）。
+		//
+		// 为什么需要锚点名：容器里的骨记录存的是**源侧**父骨名，而源骨架有一批骨在 HD2 侧不存在
+		// （无名骨 source_extra_90、非 Biped 命名的 UN_Skirt_R_02…）。运行时的映射表只认
+		// ValveBiped，查不到就退化成"把源骨名当 HD2 骨名查"，必然查不到 ⇒ 整条链记「缺锚点」
+		// 被跳过。实测一份裙子上 25 条链死 5 条。
+		if (package.IsValid && retarget is not null && retarget.ExtraBones.Count > 0)
+		{
+			try
+			{
+				PhysBoneRigSidecar.Write(
+					outputDirectory,
+					SourceModelInspector.JiggleFacts(inputs.Model),
+					retarget.JiggleAnchors);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+			{
+				// 不阻断转换：网格和材质都是好的，只是裙摆那类链会缺锚点被运行时跳过。
+				// 但必须喊出来——这条消息是"某块布不晃"的唯一线索。
+				Console.Error.WriteLine(
+					$"⚠️ 没能产出 {PhysBoneRigSidecar.FileName}（链根会缺锚点，裙摆/缎带一类可能不晃）：{exception.Message}");
+			}
+		}
+
 		// 登记素体。**只写工作区**（`<mod库>/.hd2modmanager/armor-registry.workspace.json`），
 		// 由管理器自己把它编译成 `armor-registry.protocol`——直接改协议文件会被下一次应用覆盖。
 		string? registryError = null;

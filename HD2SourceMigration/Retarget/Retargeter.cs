@@ -311,6 +311,11 @@ public sealed partial class Retargeter
 		// 合成骨只通过 `jiggleTargets` 在"写权重"那一层生效。
 		var (extraBones, jiggleTargets) = CollectJiggleBones(resolved);
 
+		// 链根锚点名：容器里存的是**源侧**父骨名，而源骨架有一批骨在 HD2 侧不存在
+		// （无名骨 source_extra_90、非 Biped 命名的 UN_Skirt_R_02…）。这里把重定向已经算出的
+		// "这根父骨回退到了哪根 HD2 骨"换成名字交出去，转换期写进容器，运行时就能挂上链根。
+		var jiggleAnchors = PlanJiggleAnchors(_model.Bones, resolved, _rig.Bones);
+
 		// ⚠️ 合成骨的位置必须**经过和网格同样的姿态变换**（A-pose / 上臂缩放 / 头部缩放…）。
 		// 之前直接用"对齐后的源关节位置"，于是：网格被转成了 HD2 的变体 A-pose（手臂从 T-pose 变成
 		// "弹钢琴"手势），而这些新骨还留在原来的位置 —— 袖子骨与袖子网格差 0.65~1.31 m，
@@ -413,6 +418,7 @@ public sealed partial class Retargeter
 			palmGirth,
 			extraBones,
 			jiggleTargets,
+			jiggleAnchors,
 			metrics);
 	}
 
