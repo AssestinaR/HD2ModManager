@@ -305,6 +305,32 @@ public sealed partial class Retargeter
 		_resolved = resolved;
 		_hops = hops;
 
+		// P3-b：jiggle 骨各分一根**合成骨**（下标接在原生骨之后）。
+		// ⚠️ 这里**不改** `resolved`：它同时被 `SkinAll` 的形变查表和若干顶点级阶段使用，
+		// 一改几何就变（实测 24.3% 顶点位移、最大 1.42 m，表现为网格折痕）。
+		// 合成骨只通过 `jiggleTargets` 在"写权重"那一层生效。
+		var (extraBones, jiggleTargets) = CollectJiggleBones(resolved);
+
+		// ⚠️ 合成骨的位置必须**经过和网格同样的姿态变换**（A-pose / 上臂缩放 / 头部缩放…）。
+		// 之前直接用"对齐后的源关节位置"，于是：网格被转成了 HD2 的变体 A-pose（手臂从 T-pose 变成
+		// "弹钢琴"手势），而这些新骨还留在原来的位置 —— 袖子骨与袖子网格差 0.65~1.31 m，
+		// 实机表现就是"骨骼在动、那块布却横着捅出去"。（头发只差 0.17 m，所以看起来正常。）
+		// 做法：用锚点（合成骨在插骨前会落到的原生骨）的 deform 把关节位置搬过去，
+		// 与这些顶点所用的形变完全一致。
+		if (extraBones.Count > 0)
+		{
+			var posedExtras = new List<RetargetExtraBone>(extraBones.Count);
+			foreach (var extra in extraBones)
+			{
+				posedExtras.Add(
+					extra.AnchorIndex >= 0 && _deform.TryGetValue(extra.AnchorIndex, out var anchorDeform)
+						? extra with { WorldOrigin = anchorDeform.TransformPoint(extra.WorldOrigin) }
+						: extra);
+			}
+
+			extraBones = posedExtras;
+		}
+
 		var outPoints = SkinAll(aligned, _deform);
 
 		// ---- 4e. 仅网格的手臂重拟合 -----------------------------------------
@@ -385,6 +411,8 @@ public sealed partial class Retargeter
 			fingerRows,
 			handRows,
 			palmGirth,
+			extraBones,
+			jiggleTargets,
 			metrics);
 	}
 

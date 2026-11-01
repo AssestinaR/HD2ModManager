@@ -63,7 +63,23 @@ public sealed record CliGlobalOptions(
 	string? IdNamespace = null,
 	// `vpk rekey` 要烘进产物的禁用 section：`unit:1,2;unit:3`（unit 是来源键，带不带 0x 都行）。
 	// 换甲会把 Unit 换到目标护甲的键上，所以这件事必须在换甲**里面**做——只有那里有完整映射。
-	string? Disabled = null);
+	string? Disabled = null,
+	// 镂空材质的落地方式（见 CutoutStrategy）：`a`（默认，alphaclip + 阈值 0.5）、
+	// `b`（alphaclip + 阈值 0.144）、`c`（留在 advanced，遮罩进 SclarFieldOpacity + 硬边）。
+	// 只影响"源侧要求透明且 alpha 真在表达形状"的那批材质，其余材质三档完全一致。
+	string? Cutout = null,
+	// 直接给命名空间 **token**（形如 `vpk-060d479e4bc677d0`），跳过"名字 → token"那一步。
+	//
+	// 存在的理由只有一个：**只重转一批里的某一个包**。管理器给的 `--id-namespace` 是来源压缩包名，
+	// 而用户日后重转单个 VPK 时手上只有那个 VPK、没有原压缩包名——拿不到同一个 token，
+	// 算出的材质 id 与模型 patch 里引用的对不上，材质静默失效。
+	// 有了它就能把那次导入的 token 原样接上。
+	//
+	// 正常调用方（管理器）仍然传 `--id-namespace <来源名>`，让派生规则只有一份。
+	string? IdNamespaceToken = null,
+	// matcap 烘进底色时的亮度增益（默认 1.0 = 不加）。
+	// 实机反馈"金属太黑、没反光"，而 matcap 是加法高光图、平均色偏暗，所以留这个旋钮。
+	double? MatcapGain = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -98,6 +114,9 @@ public static class CliArgumentParser
 		string? sections = null;
 		string? idNamespace = null;
 		string? disabled = null;
+		string? cutout = null;
+		string? idNamespaceToken = null;
+		double? matcapGain = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -198,8 +217,55 @@ public static class CliArgumentParser
 				case "--id-namespace":
 					idNamespace = ReadValue(args, ref index, argument);
 					break;
+				case "--id-namespace-token":
+					var rawToken = ReadValue(args, ref index, argument).Trim();
+					// 形状：`vpk-` + 16 位十六进制（= sha256 十六进制串的前 8 字节，见 Hd2AssetId.NamespaceFor）。
+					if (!rawToken.StartsWith("vpk-", StringComparison.OrdinalIgnoreCase)
+						|| rawToken.Length != 20
+						|| !rawToken[4..].All(Uri.IsHexDigit))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--id-namespace-token 要的是 token 本身（形如 vpk-060d479e4bc677d0），实际是 '{rawToken}'。"
+							+ "要按来源名派生请用 --id-namespace。");
+					}
+
+					idNamespaceToken = rawToken.ToLowerInvariant();
+					break;
 				case "--disabled":
 					disabled = ReadValue(args, ref index, argument);
+					break;
+				case "--cutout":
+					var rawCutout = ReadValue(args, ref index, argument);
+					var normalizedCutout = rawCutout.ToLowerInvariant();
+					if (normalizedCutout is "c" or "advanced")
+					{
+						throw new CliUserException("InvalidOption",
+							"--cutout c 已删除：实机对照证明把遮罩塞进 advanced 的 SclarFieldOpacity 完全没效果，"
+							+ "而那个槽在现役模组里装的是 1×1 R8 标量（整体不透明度），本来就做不了镂空。");
+					}
+
+					if (normalizedCutout is not ("a" or "b" or "alphaclip" or "tuned"
+						or "rgb-inv" or "alpha" or "alpha-inv"))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--cutout 只接受 a/b/rgb-inv/alpha/alpha-inv，实际是 '{rawCutout}'。"
+							+ "a = RGB 存遮罩、阈值 0.5（旧行为）；b = 同 a 但阈值 0.144；"
+							+ "rgb-inv = RGB 存遮罩并取反；alpha = 遮罩存 alpha 通道；alpha-inv = 遮罩存 alpha 并取反。");
+					}
+
+					cutout = normalizedCutout;
+					break;
+				case "--matcap-gain":
+					var rawGain = ReadValue(args, ref index, argument);
+					if (!double.TryParse(rawGain, System.Globalization.NumberStyles.Float,
+							System.Globalization.CultureInfo.InvariantCulture, out var parsedGain)
+						|| parsedGain <= 0 || parsedGain > 16)
+					{
+						throw new CliUserException("InvalidOption",
+							$"--matcap-gain 需要一个 (0, 16] 的数，实际是 '{rawGain}'。1.0 = 不增益（默认）。");
+					}
+
+					matcapGain = parsedGain;
 					break;
 				case "--matcap":
 					var rawMatcap = ReadValue(args, ref index, argument);
@@ -274,7 +340,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

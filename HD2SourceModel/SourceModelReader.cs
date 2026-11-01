@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace HD2SourceModel;
@@ -85,10 +86,37 @@ public static class SourceModelReader
 		var name = ReadCString(mdl, NameOffset, NameLength) ?? string.Empty;
 
 		var bones = ReadBones(mdl, diagnostics);
+		// 给占位骨名加**按来源模型派生**的命名空间（见 SourceBone.DisplayName 的 remarks）。
+		// 在这里统一施加：读骨的时候还不知道模型身份，读完就能算了。
+		bones = ApplyBoneNamespace(bones, name, checksum);
 		var materials = ReadMaterialPaths(mdl, diagnostics);
 		var bodyParts = ReadBodyParts(mdl, diagnostics);
 
 		return new SourceModelDocument(version, name, checksum, bones, bodyParts, materials, diagnostics);
+	}
+
+	/// <summary>
+	/// 派生并施加占位骨名的命名空间。
+	/// <para>
+	/// 种子取 <c>模型名 + checksum + 每根骨的(名字, 父下标)</c>：同一份模型重复读得到同一个 token
+	/// （重转同一份包不会变出新名字），不同模型几乎不可能撞。
+	/// 用 6 字节摘要（12 个十六进制位），1000 个模型时碰撞概率约 1e-9。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyList<SourceBone> ApplyBoneNamespace(
+		IReadOnlyList<SourceBone> bones, string name, int checksum)
+	{
+		var seed = new StringBuilder();
+		seed.Append(name).Append('|').Append(checksum);
+		foreach (var bone in bones)
+			seed.Append('|').Append(bone.Index).Append(':').Append(bone.Name ?? "").Append('@').Append(bone.ParentIndex);
+		var digest = SHA256.HashData(Encoding.UTF8.GetBytes(seed.ToString()));
+		var token = "j" + Convert.ToHexString(digest, 0, 6).ToLowerInvariant();
+
+		var result = new List<SourceBone>(bones.Count);
+		foreach (var bone in bones)
+			result.Add(bone with { Namespace = token });
+		return result;
 	}
 
 	private static IReadOnlyList<SourceBone> ReadBones(byte[] mdl, List<SourceModelDiagnostic> diagnostics)

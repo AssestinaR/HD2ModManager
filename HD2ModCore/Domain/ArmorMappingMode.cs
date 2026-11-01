@@ -60,4 +60,26 @@ public static class ArmorMappingModes
 	/// <summary>把持久化的整数值收敛到合法模式；未知值回落到默认。</summary>
 	public static ArmorMappingMode Normalize(int value)
 		=> Enum.IsDefined(typeof(ArmorMappingMode), value) ? (ArmorMappingMode)value : Default;
+
+	/// <summary>
+	/// 当前可选的档位。**总开关关闭时不提供「独占 lua 入口」**——管理器不占 boot，
+	/// 那一档在物理上就无法实现，所以直接从选项里去掉，而不是让用户选完发现无效。
+	/// </summary>
+	public static IReadOnlyList<ArmorMappingMode> AvailableFor(bool builtInLuaEnabled)
+		=> builtInLuaEnabled
+			? [ArmorMappingMode.ExclusiveLuaEntry, ArmorMappingMode.ExternalLuaEntry, ArmorMappingMode.TrueMapping]
+			: [ArmorMappingMode.ExternalLuaEntry, ArmorMappingMode.TrueMapping];
+
+	/// <summary>
+	/// 把持久化的整数值收敛到合法模式，并考虑总开关。
+	/// 总开关关闭时「独占」收敛到「外置」——保留"用运行时"这层意图，
+	/// 不跳到语义完全不同的真映射。
+	/// </summary>
+	public static ArmorMappingMode Normalize(int value, bool builtInLuaEnabled)
+	{
+		var mode = Normalize(value);
+		if (!builtInLuaEnabled && mode == ArmorMappingMode.ExclusiveLuaEntry)
+			return ArmorMappingMode.ExternalLuaEntry;
+		return mode;
+	}
 }

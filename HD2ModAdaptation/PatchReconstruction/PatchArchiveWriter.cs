@@ -124,6 +124,18 @@ public sealed class PatchArchiveWriter
 		}
 		if (streamLength == 0) File.Delete(streamPath);
 		if (gpuLength == 0) File.Delete(gpuPath);
+		else
+		{
+			// **物理参数容器（HD2PBX01）跟随**：这一步是"按条目重写一个 patch"，
+			// 尾部附加的数据不在条目里，所以不会自动跟过来。实测踩过两次：
+			// 护甲标准化（部署前）与应用为 RE2310（custom-model convert）重写之后容器消失，
+			// 运行时读不到参数 → 退回外部 rig 文件 → 拿别的模型的参数去驱动。
+			// 协议允许容器放在受引用范围**之后**，所以原样搬到输出末尾即可，不影响任何 TOC 偏移。
+			var sourceGpuPath = source + ".gpu_resources";
+			// 规则只有一份实现（PhysBoneCarrier.CarryFromAnyAsync），这里只是喂来源。
+			if (await PhysBoneCarrier.CarryFromAnyAsync([sourceGpuPath], gpuPath, cancellationToken).ConfigureAwait(false))
+				gpuLength = new FileInfo(gpuPath).Length;
+		}
 		return new PatchArchiveFileWriteResult(output, tocPath, streamPath, gpuPath, tocLength, streamLength, gpuLength);
 	}
 

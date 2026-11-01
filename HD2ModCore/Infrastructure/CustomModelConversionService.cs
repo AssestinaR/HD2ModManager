@@ -188,6 +188,20 @@ public sealed class CustomModelConversionService(StoragePaths paths, IModInforma
 			var result = await CoreServices.CreateCanonicalCrossArmorOrchestrator(paths, reader).ExecuteAsync(
 				new(stagedPath, gameData, output, plan.Transfer, Progress: progress, AutoHideUnmappedTargetUnits: false, ExpandLodFamilyMappings: false), token);
 			if (!result.IsSuccessful) throw new InvalidDataException(string.Join("；", result.Issues.Select(i => i.Message)));
+
+			// 物理参数容器（HD2PBX01）要跟着走：上面这一步是**按条目重新写 patch**，
+			// 尾部附加的容器不会自动跟过来。不搬的话，"应用为 RE2310"之后的那份产物就没有物理参数，
+			// 运行时只能退回外部 rig 文件——正是"换个模型要手动换参数"的病根。
+			// 来源是 vpk2patch 的产物（`facts.SourcePatchTocPaths[0]`），容器就在它的 .gpu_resources 末尾。
+			if (facts.SourcePatchTocPaths.Count > 0)
+			{
+				var carry = await PhysBoneCarrier
+					.CarryForwardAsync(facts.SourcePatchTocPaths[0], output, token)
+					.ConfigureAwait(false);
+				if (carry.Patches > 0)
+					progress?.Report(new("physbone", $"已把物理参数搬到 {carry.Patches} 个 patch（{carry.RigBytes} 字节）", 0, 0, TimeSpan.Zero));
+			}
+
 			var definition = Path.Combine(output, "custom-model.json");
 			progress?.Report(new("registering", "正在保存自定义素体定义", 0, 0, TimeSpan.Zero));
 			await File.WriteAllTextAsync(definition, JsonSerializer.Serialize(plan.Model, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), token);

@@ -22,6 +22,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private readonly IExternalInstallFileFactsService _externalFiles;
 	private readonly RuntimeArmorRegistryService? _armorRegistry;
 	private static readonly ModNodeId ArmorRegistryNodeId = new(Guid.Parse("6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"));
+	private static readonly ModNodeId PhysicsRuntimeNodeId = new(Guid.Parse("7c1e2b90-5f3a-4d68-9a11-2b7c4e5f6a01"));
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
 
 	/// <summary>
@@ -31,6 +32,35 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	/// 外置入口走独立补丁；真映射模式完全不投放 Lua，改由注册表数据承载。
 	/// </summary>
 	public static ArmorMappingMode MappingMode { get; set; } = ArmorMappingModes.Default;
+
+	/// <summary>
+	/// 总开关：是否启用「管理器内置 lua 类功能」。
+	///
+	/// 这是所有内置 Lua 功能的**总闸**：关闭时管理器**永不占用 boot 入口**，
+	/// 于是 <see cref="ArmorMappingMode.ExclusiveLuaEntry"/> 与
+	/// <see cref="PhysicsMode.ExclusiveLuaEntry"/> 在物理上无法实现，会被收敛到外置入口。
+	/// 设置页据此过滤下拉选项，避免用户选了之后发现无效。
+	/// </summary>
+	public static bool BuiltInLuaEnabled { get; set; } = true;
+
+	/// <summary>
+	/// 物理骨骼的落地方式。默认 <see cref="PhysicsModes.Default"/>（关闭）。
+	/// 见 <see cref="Domain.PhysicsMode"/>：物理没有"真映射"这一档，只有 关闭 / 独占 / 外置。
+	/// </summary>
+	public static PhysicsMode PhysicsMode { get; set; } = PhysicsModes.Default;
+
+	/// <summary>
+	/// 实际生效的映射模式（把总开关约束算进去）。
+	/// 计划阶段一律用这个，不要直接读 <see cref="MappingMode"/>。
+	/// </summary>
+	public static ArmorMappingMode EffectiveMappingMode
+		=> !BuiltInLuaEnabled && MappingMode == ArmorMappingMode.ExclusiveLuaEntry
+			? ArmorMappingMode.ExternalLuaEntry
+			: MappingMode;
+
+	/// <summary>实际生效的物理模式（把总开关约束算进去）。</summary>
+	public static PhysicsMode EffectivePhysicsMode
+		=> BuiltInLuaEnabled ? PhysicsMode : PhysicsModes.Normalize((int)PhysicsMode, false);
 
 	public LuaDeploymentService(
 		LuaPatchComposer? luaComposer = null,
@@ -278,11 +308,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		// 独占入口时运行时的 Lua 文档。先建好但**不**立刻塞进 documents：
 		// 只有确认"必须生成合并补丁"之后它才有用，否则那个文档会被丢弃。
 		LuaDocumentSource? armorBootDocument = null;
+		LuaDocumentSource? physicsBootDocument = null;
 		if (_armorRegistry is not null)
 		{
 			// 不在真映射模式时，把数据层曾经写进去的改动还原。切换模式会触发一次部署，
 			// 所以这里覆盖了"切走模式但没重新点应用"的情况。
-			if (MappingMode != ArmorMappingMode.TrueMapping
+			if (EffectiveMappingMode != ArmorMappingMode.TrueMapping
 				&& !string.IsNullOrWhiteSpace(gameDataDirectory)
 				&& Directory.Exists(gameDataDirectory))
 			{
@@ -309,9 +340,9 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					&& await _armorRegistry.IsManagedDeploymentEnabledAsync(cancellationToken).ConfigureAwait(false);
 				// 真映射模式不投放任何 Lua：外观由注册表数据承载，这里连隐藏 unit 补丁都不需要
 				// （件表直接写成目标件集，没有"来源缺槽"的问题）。
-				if (mappingsEnabled && MappingMode.UsesRuntimeLua())
+				if (mappingsEnabled && EffectiveMappingMode.UsesRuntimeLua())
 				{
-					if (MappingMode == ArmorMappingMode.ExternalLuaEntry)
+					if (EffectiveMappingMode == ArmorMappingMode.ExternalLuaEntry)
 					{
 						// 外置入口：运行时 + 隐藏 unit 打包成一个独立补丁，管理器不碰 boot。
 						armorAddon = await CreateArmorRegistryAddonAsync(
@@ -355,10 +386,43 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		// （2026-10-28 撞的是加载器包：引导桩 + 自身模块 + gpu 在同一个 patch 里）。
 		// 让多个第三方 Lua mod 共存是**加载器**的职责，不是管理器的职责。
 		//
+		if (EffectivePhysicsMode == PhysicsMode.ExclusiveLuaEntry)
+		{
+			// 物理「独占 boot」：把物理运行时也塞进**同一个** boot 文档。
+			// 引擎只执行一个 Lua 启动脚本，所以两路 Lua 功能必须合并成一个文档里的两个块，
+			// 各占一份 patch 会互相顶掉（引擎只跑最高号 patch 的 boot）。
+			try
+			{
+				var physicsDocument = await CreateBootDocumentAsync(
+					gameDataDirectory,
+					[new BootBlock(
+						"HD2 Physics Bone Runtime",
+						PhysBoneLuaSource.ComposeStandalonePackage(LuaAddonCatalog.PhysicsAddonId, mode: "boot"),
+						LuaAddonCatalog.PhysicsAddonId)],
+					cancellationToken).ConfigureAwait(false);
+				physicsBootDocument = new LuaDocumentSource(
+					PhysicsRuntimeNodeId,
+					int.MaxValue,
+					new PatchGroupIdentity(PhysicsRuntimeNodeId, $"{LuaAssetKeys.BootArchiveId:x16}", 0, int.MaxValue),
+					physicsDocument);
+			}
+			catch (Exception exception) when (exception is IOException
+				or UnauthorizedAccessException
+				or InvalidDataException
+				or LuaPatchFormatException)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Error,
+					"PhysicsRuntimePreparationFailed",
+					$"无法准备物理运行时启动组件：{exception.Message}",
+					ExceptionMessage: exception.ToString()));
+			}
+		}
+
 		// 现在的规则只有两条：
 		//   1. 第三方 Lua patch 一律原样部署，管理器不解析、不合并、不改一个字节；
 		//   2. 独占模式下运行时必须独占 boot，别人也占就明确报错，让用户自己选。
-		if (armorBootDocument is null)
+		if (armorBootDocument is null && physicsBootDocument is null)
 		{
 			// 外置 / 真映射：管理器自己不占 boot，只把别人的争用情况说清楚。
 			ReportBootEntryContention(bootProviders, issues, ownerIsManager: false);
@@ -381,7 +445,19 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, 0);
 		}
 
-		documents.Add(armorBootDocument);
+		// 两路都选独占时，把物理的块并进同一个文档：一个 boot patch 里跑两个运行时。
+		if (armorBootDocument is not null && physicsBootDocument is not null)
+		{
+			var mergedBlocks = armorBootDocument.Document.Blocks
+				.Concat(physicsBootDocument.Document.Blocks)
+				.ToArray();
+			armorBootDocument = armorBootDocument with
+			{
+				Document = armorBootDocument.Document with { Blocks = mergedBlocks },
+			};
+		}
+		var bootDocument = armorBootDocument ?? physicsBootDocument!;
+		documents.Add(bootDocument);
 		var filteredIndex = patchIndex;
 
 		GeneratedPatchGroup generated;
@@ -391,7 +467,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			// 只有一个文档：管理器自己的运行时。它由"重放游戏原始 boot 字节码 + 用
 			// loadstring 跑运行时源码"封装而成——这正是任何加载器用的同一个套路，
 			// 只是这里的派发者是我们自己。
-			var composition = _luaComposer.Wrap(armorBootDocument.Document);
+			var composition = _luaComposer.Wrap(bootDocument.Document);
 			// The game now only accepts a compiled chunk. Wrapping the source in one
 			// fixed prototype keeps the bytes on disk in the same shape as the game's
 			// own boot resource while the readable source stays available for
@@ -668,8 +744,26 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private static string ArmorRegistrySourceFingerprint()		=> Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(RuntimeArmorRegistryLuaSource.Load())))
 			.ToLowerInvariant();
 
-	private static async ValueTask<LuaPatchDocument> CreateArmorRegistryDocumentAsync(
+	/// <summary>boot 里的一个运行时块：名字（诊断用）+ 源码 + 给 loadstring 的 chunk 名。</summary>
+	private sealed record BootBlock(string Name, string Source, string ChunkName);
+
+	private static ValueTask<LuaPatchDocument> CreateArmorRegistryDocumentAsync(
 		string gameDataDirectory,
+		CancellationToken cancellationToken)
+		=> CreateBootDocumentAsync(
+			gameDataDirectory,
+			[new BootBlock("HD2 Runtime Armor Registry", RuntimeArmorRegistryLuaSource.Load(), "mods/codex/runtime_armor_registry")],
+			cancellationToken);
+
+	/// <summary>
+	/// 用游戏原始 boot 字节码 + 一组运行时块合成一个 boot 文档。
+	///
+	/// 引擎只执行**一个** Lua 启动脚本，所以映射和物理都选"独占 boot"时，
+	/// 它们必须合并成同一个文档里的两个块——各占一份 patch 会互相顶掉。
+	/// </summary>
+	private static async ValueTask<LuaPatchDocument> CreateBootDocumentAsync(
+		string gameDataDirectory,
+		IReadOnlyList<BootBlock> blocks,
 		CancellationToken cancellationToken)
 	{
 		var packageName = $"{LuaAssetKeys.BootArchiveId:x16}";
@@ -707,21 +801,26 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			LuaAssetKeys.BootAssetKey,
 			"<manager:runtime-armor-registry>",
 			$"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
-		var runtimeSource = Encoding.UTF8.GetBytes(RuntimeArmorRegistryLuaSource.Load());
-		var body = "local __hd2_registry_loader = rawget(_G, \"loadstring\") or rawget(_G, \"load\")\n"
-			+ "local __hd2_registry_chunk = __hd2_registry_loader and __hd2_registry_loader(\""
-			+ EscapeLuaBytes(runtimeSource)
-			+ "\", \"@mods/codex/runtime_armor_registry\")\n"
-			+ "if __hd2_registry_chunk then pcall(__hd2_registry_chunk) end";
+		var blockList = new List<LuaPatchBlock>(blocks.Count);
+		for (var index = 0; index < blocks.Count; index++)
+		{
+			var block = blocks[index];
+			var runtimeSource = Encoding.UTF8.GetBytes(block.Source);
+			// 每个块独立 pcall：一个功能装不上不能拖累另一个。
+			var body = "local __hd2_l" + index + " = rawget(_G, \"loadstring\") or rawget(_G, \"load\")\n"
+				+ "local __hd2_c" + index + " = __hd2_l" + index + " and __hd2_l" + index + "(\""
+				+ EscapeLuaBytes(runtimeSource)
+				+ "\", \"@" + block.ChunkName + "\")\n"
+				+ "if __hd2_c" + index + " then pcall(__hd2_c" + index + ") end";
+			blockList.Add(new LuaPatchBlock(block.Name, body));
+		}
 		return new LuaPatchDocument(
 			syntheticEntry.SourceFilePath,
 			syntheticEntry,
 			new HD2ModAdaptation.PatchReconstruction.PatchEntryPayload(syntheticEntry, boot, [], []),
 			header,
 			boot,
-			[
-				new LuaPatchBlock("HD2 Runtime Armor Registry", body)
-			]);
+			blockList);
 	}
 
 	private static byte[] CreateLuaHeaderTemplate()

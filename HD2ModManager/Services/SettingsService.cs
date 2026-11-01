@@ -33,6 +33,11 @@ namespace HD2ModManager.Services
         public bool DeployLuaMods { get; set; } = true;
         // 护甲映射模式（ArmorMappingMode 的整数值）。null 表示尚未迁移。
         public int? ArmorMappingMode { get; set; }
+        // 总开关：是否启用「管理器内置 lua 类功能」。关闭时管理器永不占用 boot 入口。
+        // 可空是为了区分"从没存过"（老配置，按默认开）与"显式关掉"。
+        public bool? BuiltInLuaEnabled { get; set; }
+        // 物理骨骼模式（PhysicsMode 的整数值）。null 表示尚未设置 ⇒ 默认关闭。
+        public int? PhysicsMode { get; set; }
             public string? DefaultExportPath { get; set; }
         }
 
@@ -72,6 +77,19 @@ namespace HD2ModManager.Services
             {
                 return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, DefaultExportPath);
             }
+        }
+
+        /// <summary>
+        /// 内置 Lua 功能外置包的固定根目录：<c>%LOCALAPPDATA%\HD2ModManager\LuaPackages</c>。
+        /// 每个功能一个子目录（<c>physbone</c> / <c>wardrobe</c>），各自再分 <c>lua版</c> 与 <c>patch版</c>。
+        ///
+        /// 为什么不跟随"默认导出路径"：那个是给转换产物用的，混在一起用户会分不清
+        /// "哪个文件是要拖进 mod 库的"。这里固定、可预期，且每次导出整目录重建。
+        /// </summary>
+        public static string GetLuaPackagesDirectory()
+        {
+            var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(root, "HD2ModManager", "LuaPackages");
         }
 
         public static string? GetLanguage()
@@ -192,6 +210,8 @@ namespace HD2ModManager.Services
                     : model?.DeployLuaMods == false
                         ? ArmorMappingMode.ExternalLuaEntry
                         : ArmorMappingModes.Default;
+                // 总开关关闭时「独占」不可选 ⇒ 收敛到外置，避免存着一个用不了的档。
+                mode = ArmorMappingModes.Normalize((int)mode, GetBuiltInLuaEnabled());
             }
             catch
             {
@@ -212,6 +232,72 @@ namespace HD2ModManager.Services
                     // 同步旧字段，便于回退到旧版本时行为不突变。
                     model.DeployLuaMods = mode.UsesRuntimeLua();
                 });
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 总开关「启用管理器内置 lua 类功能」。默认开（保持既有行为）。
+        /// 关闭时管理器**永不占用 boot 入口**，所有内置 Lua 功能只能以外置补丁包形式存在。
+        /// </summary>
+        public static bool GetBuiltInLuaEnabled()
+        {
+            bool enabled;
+            try { enabled = LoadAll()?.BuiltInLuaEnabled ?? true; }
+            catch { enabled = true; }
+            LuaDeploymentService.BuiltInLuaEnabled = enabled;
+            return enabled;
+        }
+
+        public static bool SetBuiltInLuaEnabled(bool enabled)
+        {
+            LuaDeploymentService.BuiltInLuaEnabled = enabled;
+            try
+            {
+                Update(model => model.BuiltInLuaEnabled = enabled);
+                // 关掉总开关后，"独占"档不再合法 ⇒ 把已存的模式一并收敛，
+                // 否则下次打开设置页会显示一个选项里不存在的值。
+                if (!enabled)
+                {
+                    if (GetArmorMappingMode() == ArmorMappingMode.ExclusiveLuaEntry)
+                        SetArmorMappingMode(ArmorMappingMode.ExternalLuaEntry);
+                    GetPhysicsMode();
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 读取物理骨骼模式并同步到 <see cref="LuaDeploymentService.PhysicsMode"/>。
+        /// 总开关关闭时恒为外置入口（那一档是唯一合法的）。
+        /// </summary>
+        public static PhysicsMode GetPhysicsMode()
+        {
+            PhysicsMode mode;
+            try
+            {
+                var model = LoadAll();
+                mode = model?.PhysicsMode is int stored
+                    ? (Enum.IsDefined(typeof(PhysicsMode), stored) ? (PhysicsMode)stored : PhysicsModes.Default)
+                    : PhysicsModes.Default;
+                mode = PhysicsModes.Normalize((int)mode, GetBuiltInLuaEnabled());
+            }
+            catch
+            {
+                mode = PhysicsModes.Default;
+            }
+            LuaDeploymentService.PhysicsMode = mode;
+            return mode;
+        }
+
+        public static bool SetPhysicsMode(PhysicsMode mode)
+        {
+            LuaDeploymentService.PhysicsMode = mode;
+            try
+            {
+                Update(model => model.PhysicsMode = (int)mode);
                 return true;
             }
             catch { return false; }

@@ -95,7 +95,8 @@ public sealed record SourceBone(
 	int ParentIndex,
 	Mat4 PoseToBone,
 	Mat4 WorldBind,
-	SourceJiggleBone? Jiggle)
+	SourceJiggleBone? Jiggle,
+	string? Namespace = null)
 {
 	public bool HasName => !string.IsNullOrEmpty(Name);
 
@@ -103,7 +104,21 @@ public sealed record SourceBone(
 	/// 没有可读名字时的占位名。名字读不出来的骨（头发/裙摆/大袖子的 helper）数量很大，
 	/// 需要一个稳定、与下标一一对应的称呼，日志和映射报告才读得下去。
 	/// </summary>
-	public string DisplayName => HasName ? Name! : $"source_extra_{Index}";
+	/// <remarks>
+	/// <b>为什么占位名必须带命名空间。</b>占位名是 <c>source_extra_&lt;源骨下标&gt;</c>，纯下标派生，
+	/// 于是<b>不同模型上同一个下标必然重名</b> —— 实测两套护甲模型的 jiggle 骨有 50/56 个名字相同。
+	/// 这些名字会作为节点名写进 Unit，运行时靠"名字能对上几根"判断哪份物理参数属于这套护甲；
+	/// 一旦重名，运行时就会拿别的模型的参数与绑定方向去驱动，表现是<b>头发高高翘起</b>。
+	/// 加按来源模型派生的命名空间后，两个模型的占位名不再相同（与材质的 <c>idNamespace</c> 同一思路）。
+	/// <para>
+	/// ⚠️ <b>只给占位名加前缀，有真名的骨保持原样。</b>父骨名要拿去查
+	/// <c>M.anchor_name</c> 的源→HD2 映射表（<c>ValveBiped.Bip01_Head1</c> → <c>head</c>），
+	/// 给有名字的父骨加前缀会让映射全部落空，整条链因"缺锚点"被丢掉。
+	/// </para>
+	/// </remarks>
+	public string DisplayName => HasName
+		? Name!
+		: (string.IsNullOrEmpty(Namespace) ? $"source_extra_{Index}" : $"{Namespace}/source_extra_{Index}");
 
 	/// <summary>骨骼局部 +X 轴在世界空间里的方向。两个引擎都把骨骼放在局部 +X 上。</summary>
 	public Vec3 WorldAxis => new Vec3(WorldBind.M11, WorldBind.M21, WorldBind.M31).Normalized();

@@ -889,6 +889,35 @@ public sealed class CanonicalCrossArmorOrchestrator
 			};
 			var fileDiagnostics = await ValidateWrittenFilesAsync(written, outputEntries, outputReadRequest, cancellationToken).ConfigureAwait(false);
 			issues.AddRange(fileDiagnostics.Select(diagnostic => new CoreIssue(CoreIssueSeverity.Error, diagnostic.Code, diagnostic.Message)));
+
+			// **物理参数容器（HD2PBX01）跟随**：编排器走的是 PatchWorkspaceWriter（不是 PatchArchiveWriter），
+			// 同样是"按条目重建"，尾部附加的容器不在条目里，所以不会跟过来。
+			// 实测代价：`vpk rekey`（应用为 RE2310）之后容器消失，运行时读不到参数 →
+			// 退回外部 rig 文件 → 拿**别的模型**的参数去驱动（171 节点的模型被 54 根骨驱动）。
+			// 容器放在受引用范围之后，不影响任何 TOC 偏移，所以校验通过后再追加最稳。
+			if (fileDiagnostics.Count == 0 && !string.IsNullOrWhiteSpace(written.GpuResourceFilePath))
+			{
+				var carried = await PhysBoneCarrier
+					.TryReadContainerFromFileAsync(request.SourcePatchTocPath + ".gpu_resources", cancellationToken)
+					.ConfigureAwait(false);
+				if (carried is not null)
+				{
+					try
+					{
+						await PhysBoneCarrier.AppendContainerToFileAsync(written.GpuResourceFilePath, carried, cancellationToken).ConfigureAwait(false);
+						Log($"[PHYSBONE-CARRY] 物理参数容器已随产物搬走（{carried.Length} 字节）");
+					}
+					catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+					{
+						// 搬不过去不该让换甲失败，但必须留下痕迹。
+						Log($"[PHYSBONE-CARRY] 失败：{exception.Message}");
+					}
+				}
+				else
+				{
+					Log("[PHYSBONE-CARRY] 来源 patch 里没有物理参数容器（这个 mod 可能没做 embed）");
+				}
+			}
 			reportState.Status = fileDiagnostics.Count == 0 ? "WrittenForGameTest" : "Failed";
 			Log($"[WRITE-DONE] Patch={Path.GetFileName(written.TocFilePath)} Units={outputUnitCount} FileDiagnostics={fileDiagnostics.Count}");
 			await WriteMarkdownReportAsync(reportPath, request, reportState, replacementPlanMappings, outputEntries, rebuiltTargets, fileDiagnostics, outputUnitCount, replacementCount, cancellationToken).ConfigureAwait(false);

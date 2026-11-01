@@ -42,7 +42,12 @@
 
             <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
                 <StackPanel>
-                    <TextBlock Text="护甲映射" Style="{StaticResource AppCardTitle}"/>
+                    <TextBlock Text="内置 lua" Style="{StaticResource AppCardTitle}"/>
+                    <CheckBox Style="{StaticResource AppToggleSwitch}" Margin="0,12,0,0"
+                              Content="启用管理器内置 lua 类功能"
+                              IsChecked="{Binding BuiltInLuaEnabled, Mode=TwoWay}"
+                              ToolTip="这是所有内置 Lua 功能的唯一入口。关闭后管理器不再占用游戏启动入口（boot），内置功能只能以外置补丁包形式提供。"/>
+                    <TextBlock Text="{Binding BuiltInLuaNote}" Style="{StaticResource AppSupportingText}" Margin="0,6,0,0" TextWrapping="Wrap"/>
                     <Grid Margin="0,14,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="150"/>
@@ -56,6 +61,18 @@
                     </Grid>
                     <TextBlock Text="{Binding ArmorMappingModeDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
                     <TextBlock Text="{Binding ArmorMappingModeHotSwitchNote}" Style="{StaticResource AppSupportingText}" Margin="150,4,0,0" TextWrapping="Wrap"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="物理模式" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
+                                  ItemsSource="{Binding PhysicsModeOptions}"
+                                  DisplayMemberPath="DisplayName" SelectedValuePath="Value"
+                                  SelectedValue="{Binding PhysicsMode, Mode=TwoWay}"/>
+                    </Grid>
+                    <TextBlock Text="{Binding PhysicsModeDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
             </Border>
 

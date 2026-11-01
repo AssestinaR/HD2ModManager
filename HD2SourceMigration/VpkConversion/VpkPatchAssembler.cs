@@ -342,6 +342,17 @@ public sealed class VpkPatchAssembler
 				$"HelldiverCustomizationPieceType_{plan.PieceTypeName}");
 		}
 
+		// ①b 把 jiggle 骨的**合成节点**追加进 TransformInfo（必须在建网格之前）。
+		// 网格是按 `NameHashes[目标骨下标]` 取哈希的：合成骨不进表，那条路径就会拿到越界下标，
+		// 表现是"骨哈希 … 不在外壳扩展后的 TransformInfo 里"。追加只影响末尾，原生下标一个不动。
+		var transformInfo = UnitTransformInfoAppender.Append(avatarTransformInfo!, retarget?.ExtraBones);
+		if (transformInfo is not null && retarget?.ExtraBones is { Count: > 0 })
+		{
+			// 转换时就把"locals ↔ world 自洽"这条不变量钉住：
+			// 不一致时游戏不报错，只会把那些骨上的网格拉长 1~3 米（2026-10-31 实机踩过）。
+			UnitTransformInfoAppender.AssertLocalAndWorldAgree(transformInfo, avatarTransformInfo!.Matrices.Count);
+		}
+
 		// ② 逐 Unit 的"重活"并行：建网格 + 写 Unit 互不相干（输入只读、产物各归各的数组）。
 		//    实测一份 42 万顶点的模型，7 个 Unit 串行 18.3 s，并行之后约 3 s。
 		var meshes = new RetargetedMesh[plans.Count];
@@ -350,13 +361,13 @@ public sealed class VpkPatchAssembler
 		Parallel.For(0, plans.Count, VpkParallel.Options, planIndex =>
 		{
 			var plan = plans[planIndex];
-			var mesh = RetargetedMeshBuilder.Build(plan.Group, geometry!, retarget!, avatarTransformInfo!);
+			var mesh = RetargetedMeshBuilder.Build(plan.Group, geometry!, retarget!, transformInfo!);
 			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
 			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
 			// 多造几个小对象比赌这一条便宜得多。
 			var unitAuthor = new UnitAuthor();
 			var authored = unitAuthor.Author(new UnitAuthorRequest(
-				plan.Donor.Model, plan.Donor.TocData, avatarTransformInfo!, mesh, customizations[planIndex],
+				plan.Donor.Model, plan.Donor.TocData, transformInfo!, mesh, customizations[planIndex],
 				plan.Donor.FileId, materialIdsBySourceMaterial));
 			meshes[planIndex] = mesh;
 			authoredUnits[planIndex] = authored;

@@ -15,6 +15,12 @@ public static class ArmorRuntimeScriptExport
 {
 	public const string FileName = "armor_override_runtime.lua";
 
+	/// <summary>
+	/// 内嵌的运行时源码。导出、打包、部署三处共用同一份，避免版本漂移
+	/// （曾经的坑：导出的是 A 版、部署的是 B 版，用户按 A 版的行为判断，排查时对不上）。
+	/// </summary>
+	public static string LoadSource() => RuntimeArmorRegistryLuaSource.Load();
+
 	/// <summary>写出脚本并返回文件路径。</summary>
 	public static string Export(string directory)
 	{
@@ -24,7 +30,7 @@ public static class ArmorRuntimeScriptExport
 		var path = Path.Combine(full, FileName);
 		File.WriteAllText(
 			path,
-			RuntimeArmorRegistryLuaSource.Load(),
+			LoadSource(),
 			new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 		return path;
 	}

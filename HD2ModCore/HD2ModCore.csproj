@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -123,6 +123,19 @@
     -->
     <EmbeddedResource Include="..\HD2ModManager\Resources\AssetMetadata\typehash.txt"
                       Link="AssetMetadata\typehash.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      物理骨骼运行时。两个文件都必须内嵌：
+        physbone_compat.lua  = 求解器库（attach / 求解 / 生命周期闸），纯 Lua 无依赖；
+        physbone_runtime.lua = 生产入口（发现目标 / 调度 / 挂卸钩子）。
+      导出外置包时把 compat **内联**进 runtime，玩家只需要拖一个文件进 mod 库。
+    -->
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\physbone_compat.lua"
+                      Link="PhysBone\physbone_compat.lua" />
+    <EmbeddedResource Include="..\HD2PhysBoneCompat\src\physbone_runtime.lua"
+                      Link="PhysBone\physbone_runtime.lua" />
   </ItemGroup>
 
 </Project>

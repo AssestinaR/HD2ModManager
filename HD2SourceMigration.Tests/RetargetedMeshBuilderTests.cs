@@ -52,7 +52,10 @@ public sealed class RetargetedMeshBuilderTests
 		var inputs = SourceRetargetPipeline.LoadSource(vpkPath, ModelStem);
 		var rig = SourceRetargetPipeline.LoadRig(tocPath, boneHashPath);
 		var result = SourceRetargetPipeline.Run(inputs, rig);
-		var avatar = UnitMeshReader.ReadTransformInfoFromUnitToc(File.ReadAllBytes(tocPath));
+		// 生产路径的顺序是"先追加合成骨，再建网格"（VpkPatchAssembler）。
+		// 这里必须照做，否则 jiggle 骨的权重哈希落在 avatar 的 NameHashes 之外，会被当成越界丢掉。
+		var avatar = UnitTransformInfoAppender.Append(
+			UnitMeshReader.ReadTransformInfoFromUnitToc(File.ReadAllBytes(tocPath)), result.ExtraBones)!;
 		var split = SourceSegmentation.Split(inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), result.Resolved);
 
 		var known = avatar.NameHashes.ToHashSet();
@@ -86,5 +89,82 @@ public sealed class RetargetedMeshBuilderTests
 				Assert.InRange(c, 0, mesh.VertexCount - 1);
 			}
 		}
+	}
+
+	/// <summary>
+	/// 合成骨（jiggle 骨）的节点位置必须和它管辖的顶点贴在一起。
+	/// <para>
+	/// 为什么必须钉这条：合成骨的位置过去直接用"对齐后的源关节"，**没有经过 A-pose 等姿态变换**，
+	/// 而网格顶点经过了。结果在 Lilium 上，袖子骨离自己的顶点 0.65~1.31 m（头发只差 0.17 m，
+	/// 因为头几乎没被姿态改动），实机上就是"骨骼在动、那块布却横着捅出去一米多"。
+	/// 修法是把关节位置用锚点的 <c>Deform</c> 搬过去；这条断言就是它的守门员。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void RealData_JiggleBonesSitInsideTheirVertices()
+	{
+		var vpkPath = Environment.GetEnvironmentVariable("HD2_WEIGHT_VPK") ?? Resolve("HD2_LEGACY_TEST_VPK", DefaultVpkPath);
+		var tocPath = Resolve("HD2_AVATAR_TOC", DefaultAvatarTocPath);
+		var boneHashPath = Resolve("HD2_BONEHASH", DefaultBoneHashPath);
+		if (vpkPath is null || tocPath is null || boneHashPath is null)
+			return;
+
+		var stem = Environment.GetEnvironmentVariable("HD2_WEIGHT_STEM") ?? ModelStem;
+		var inputs = SourceRetargetPipeline.LoadSource(vpkPath, stem);
+		var rig = SourceRetargetPipeline.LoadRig(tocPath, boneHashPath);
+		var result = SourceRetargetPipeline.Run(inputs, rig);
+		if (result.ExtraBones.Count == 0)
+			return;   // 这份资产没有 jiggle 骨，没什么可判的
+
+		var avatar = UnitTransformInfoAppender.Append(
+			UnitMeshReader.ReadTransformInfoFromUnitToc(File.ReadAllBytes(tocPath)), result.ExtraBones)!;
+
+		// 节点世界位置
+		var nodeByHash = new Dictionary<uint, (double X, double Y, double Z)>();
+		var hashToIndex = new Dictionary<uint, int>();
+		for (var i = 0; i < avatar.NameHashes.Count; i++)
+		{
+			hashToIndex[avatar.NameHashes[i]] = i;
+			var v = avatar.Matrices[i].Values;
+			nodeByHash[avatar.NameHashes[i]] = (v[12], v[13], v[14]);
+		}
+
+		// 每个骨哈希 → 它管辖（权重 ≥0.5）的顶点质心
+		var sums = new Dictionary<uint, (double X, double Y, double Z, double W)>();
+		var split = SourceSegmentation.Split(inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), result.Resolved);
+		foreach (var group in split.Groups)
+		{
+			var mesh = RetargetedMeshBuilder.Build(group, inputs.Geometry, result, avatar);
+			foreach (var vertex in mesh.Vertices)
+			{
+				foreach (var influence in vertex.Influences)
+				{
+					if (influence.Weight < 0.5) continue;
+					var acc = sums.TryGetValue(influence.BoneHash, out var previous) ? previous : default;
+					sums[influence.BoneHash] = (
+						acc.X + vertex.Position.X * influence.Weight,
+						acc.Y + vertex.Position.Y * influence.Weight,
+						acc.Z + vertex.Position.Z * influence.Weight,
+						acc.W + influence.Weight);
+				}
+			}
+		}
+
+		var worst = 0.0;
+		var worstName = string.Empty;
+		foreach (var extra in result.ExtraBones)
+		{
+			if (!sums.TryGetValue(extra.NameHash, out var acc) || acc.W <= 0) continue;
+			var cx = acc.X / acc.W;
+			var cy = acc.Y / acc.W;
+			var cz = acc.Z / acc.W;
+			var node = nodeByHash[extra.NameHash];
+			var distance = Math.Sqrt(
+				(cx - node.X) * (cx - node.X) + (cy - node.Y) * (cy - node.Y) + (cz - node.Z) * (cz - node.Z));
+			if (distance > worst) { worst = distance; worstName = extra.Name; }
+		}
+
+		// 0.5 m 是个宽松上限：正常应当远小于它（Lilium 修好后最大 0.318 m，修前 1.31 m）。
+		Assert.True(worst < 0.5, $"合成骨离自己的顶点太远：{worstName} = {worst:F3} m（上限 0.5 m）");
 	}
 }

@@ -291,6 +291,30 @@ public sealed class VpkImportService
 		if (items.Any(item => item.Outcome == VpkImportOutcome.Converted))
 			notes.Add("转换产物写在各 Mod 文件夹的 vpk2patch/ 下；同目录的 vpk2patch.json 是这一批的转换报告。");
 
+		// 批次落地后：把物理参数容器嵌进**模型 patch**（来源有 jiggle 骨才做；材质包由 CLI 自己跳过）。
+		// 放在最后一步是刻意的——转换阶段往 `.gpu_resources` 追加字节会让后续受管步骤记账错位
+		// （历史症状：材质整体投递失败、面部品红）。这里已经是产物，没人会再重排它。
+		foreach (var modDirectory in produced)
+		{
+			var vpkInside = Directory.EnumerateFiles(modDirectory, "*.vpk", SearchOption.TopDirectoryOnly).FirstOrDefault();
+			if (vpkInside is null)
+				continue;
+			try
+			{
+				var (code, embedOutput, embedError) = await RunCliAsync(
+					executable,
+					["physbone", "embed-mod", modDirectory, vpkInside, "--json"],
+					cancellationToken).ConfigureAwait(false);
+				if (code != 0)
+					notes.Add($"{Path.GetFileName(modDirectory)}：物理参数嵌入失败（hd2mod 退出码 {code}）：{(string.IsNullOrWhiteSpace(embedError) ? embedOutput : embedError).Trim()}");
+			}
+			catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
+			{
+				// 嵌不进去不该让导入失败：参数可以以后补，产物本身是好的。
+				notes.Add($"{Path.GetFileName(modDirectory)}：物理参数嵌入跳过（{exception.Message}）");
+			}
+		}
+
 		return (new VpkImportReport(source.SourcePath, items, notes), produced);
 	}
 

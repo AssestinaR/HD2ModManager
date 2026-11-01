@@ -137,8 +137,79 @@ public sealed class RealSourceModelTests
 		Assert.Equal(2, jiggleParents.Count(name => name == "R_Calf"));
 
 		// 剩下的是骨名读不出来的 helper（大袖子之类），必须落在 source_extra_N 上而不是空串。
+		// 占位名现在带**按来源模型派生**的命名空间（`j<12hex>/source_extra_N`），见 SourceBone.DisplayName。
 		Assert.Equal(
 			jiggleParents.Length - 33,
-			jiggleParents.Count(name => name.StartsWith("source_extra_", StringComparison.Ordinal)));
+			jiggleParents.Count(name => name.Contains("source_extra_", StringComparison.Ordinal)));
+	}
+
+	[Fact]
+	public void RealVpk_Zoey_JiggleParametersAndTheTwinTailChainMatchTheIndependentParse()
+	{
+		var vpkPath = ResolveVpk();
+		if (vpkPath is null)
+			return;
+
+		var inspection = SourceModelInspector.Inspect(vpkPath, ModelStem);
+
+		// 这份数字同时被两条互不共享代码的链路确认过：
+		//   · 管理器（C# 读 mdl）
+		//   · 独立的 Python 直读 mdl（tmp/physbone-recon/export_jiggle_json.py）
+		// 数值一旦漂移，就说明解析或序列化的字段顺序出了问题。
+		Assert.Equal(57, inspection.JiggleBones.Count);
+		Assert.All(inspection.JiggleBones, bone =>
+		{
+			Assert.False(string.IsNullOrWhiteSpace(bone.BoneName));
+			Assert.True(bone.ParentBoneIndex >= -1 && bone.ParentBoneIndex < inspection.BoneCount);
+			Assert.Contains("flexible", bone.FlagNames);
+		});
+
+		// 作者用了两套预设，不是一套：
+		//   · 头发/裙摆那 55 根：30 单位长、末端质量 200、yaw/pitch 各 50 刚度 7 阻尼
+		//   · 脊柱那 2 根（Spine4 下的）：20 单位长、末端质量 0、pitch 刚度 200 —— 明显更"硬"
+		// 把两套都钉住，才能区分"我们读对了"和"我们只读对了大多数"。
+		var hairPreset = inspection.JiggleBones.Where(bone => bone.Parameters.Length == 30f).ToArray();
+		var spinePreset = inspection.JiggleBones.Where(bone => bone.Parameters.Length == 20f).ToArray();
+		Assert.Equal(55, hairPreset.Length);
+		Assert.Equal(2, spinePreset.Length);
+		Assert.All(hairPreset, bone =>
+		{
+			Assert.Equal(200f, bone.Parameters.TipMass, 3);
+			Assert.Equal(50f, bone.Parameters.YawStiffness, 3);
+			Assert.Equal(7f, bone.Parameters.YawDamping, 3);
+			Assert.Equal(50f, bone.Parameters.PitchStiffness, 3);
+		});
+		Assert.All(spinePreset, bone =>
+		{
+			Assert.Equal(0f, bone.Parameters.TipMass, 3);
+			Assert.Equal(5f, bone.Parameters.YawDamping, 3);
+			Assert.Equal(200f, bone.Parameters.PitchStiffness, 3);
+		});
+
+		// 双马尾：Head1 下最长的一条 3 节链 72 → 73 → 74，另一侧 75 → 76 → 77 镜像。
+		var byIndex = inspection.JiggleBones.ToDictionary(bone => bone.BoneIndex);
+		Assert.Equal(72, byIndex[73].ParentBoneIndex);
+		Assert.Equal(73, byIndex[74].ParentBoneIndex);
+		Assert.Equal(75, byIndex[76].ParentBoneIndex);
+		Assert.Equal(76, byIndex[77].ParentBoneIndex);
+
+		// 两条链的根挂在同一个父骨上，且世界 bind 位置在 X 上互为镜像。
+		// 注意镜像轴是 X：这里的坐标来自 WorldBind（逆 bind 矩阵），与 mdl 里骨结构的
+		// 局部偏移不是同一个坐标系——按局部偏移的直觉会写错轴。
+		Assert.Equal(byIndex[72].ParentBoneIndex, byIndex[75].ParentBoneIndex);
+		Assert.Equal("ValveBiped.Bip01_Head1", byIndex[72].ParentName);
+		Assert.Equal(byIndex[72].WorldPosition.X, -byIndex[75].WorldPosition.X, 2);
+		Assert.Equal(byIndex[72].WorldPosition.Z, byIndex[75].WorldPosition.Z, 2);
+
+		// 角度限值只有两档：马尾这一整条 0.611 rad（约 35°），另有一批更紧的 0.209。
+		Assert.Equal(0.611f, byIndex[72].Parameters.AngleLimit, 3);
+		Assert.Equal(0.611f, byIndex[73].Parameters.AngleLimit, 3);
+		Assert.Equal(0.611f, byIndex[74].Parameters.AngleLimit, 3);
+		var distinctLimits = inspection.JiggleBones
+			.Select(bone => Math.Round(bone.Parameters.AngleLimit, 3))
+			.Distinct()
+			.OrderBy(value => value)
+			.ToArray();
+		Assert.Equal(new[] { 0.209, 0.611 }, distinctLimits);
 	}
 }

@@ -1454,6 +1454,9 @@ namespace HD2ModManager.ViewModels
     /// <summary>设置页「映射模式」下拉框的一项。</summary>
     public sealed record ArmorMappingModeOption(ArmorMappingMode Value, string DisplayName, string Description);
 
+    /// <summary>设置页「物理模式」下拉框的一项。</summary>
+    public sealed record PhysicsModeOption(PhysicsMode Value, string DisplayName, string Description);
+
     public class SettingsPageViewModel : PageViewModel
     {
 		private readonly ProfileService _profiles;
@@ -1492,9 +1495,39 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        /// <summary>设置页「映射模式」下拉框的选项。</summary>
-        public IReadOnlyList<ArmorMappingModeOption> ArmorMappingModeOptions { get; } =
-            Enum.GetValues<ArmorMappingMode>()
+        /// <summary>
+        /// 总开关「启用管理器内置 lua 类功能」。
+        ///
+        /// 关掉时管理器**永不占用 boot 入口**，所以两个下拉里的「独占」档都不可选——
+        /// 选项本身表达能力边界，而不是让用户选完再发现无效。
+        /// </summary>
+        public bool BuiltInLuaEnabled
+        {
+            get => SettingsService.GetBuiltInLuaEnabled();
+            set
+            {
+                SettingsService.SetBuiltInLuaEnabled(value);
+                OnPropertyChanged(nameof(BuiltInLuaEnabled));
+                // 选项集合变了，下拉要重建；当前值也可能被收敛过，一并刷新。
+                OnPropertyChanged(nameof(ArmorMappingModeOptions));
+                OnPropertyChanged(nameof(ArmorMappingMode));
+                OnPropertyChanged(nameof(ArmorMappingModeDescription));
+                OnPropertyChanged(nameof(ArmorMappingModeHotSwitchNote));
+                OnPropertyChanged(nameof(PhysicsModeOptions));
+                OnPropertyChanged(nameof(PhysicsMode));
+                OnPropertyChanged(nameof(PhysicsModeDescription));
+                OnPropertyChanged(nameof(BuiltInLuaNote));
+            }
+        }
+
+        /// <summary>总开关下面那句说明：讲清"关掉之后会发生什么"。</summary>
+        public string BuiltInLuaNote => BuiltInLuaEnabled
+            ? "管理器会占用游戏启动入口（boot）来投放内置 Lua 功能。这是所有内置功能的唯一入口。"
+            : "管理器不占用启动入口；内置 Lua 功能只能以外置补丁包形式存在，需要你手动加进 mod 库。";
+
+        /// <summary>设置页「映射模式」下拉框的选项（按总开关过滤）。</summary>
+        public IReadOnlyList<ArmorMappingModeOption> ArmorMappingModeOptions =>
+            ArmorMappingModes.AvailableFor(BuiltInLuaEnabled)
                 .Select(mode => new ArmorMappingModeOption(mode, mode.DisplayName(), mode.Description()))
                 .ToArray();
 
@@ -1507,8 +1540,14 @@ namespace HD2ModManager.ViewModels
             get => SettingsService.GetArmorMappingMode();
             set
             {
+                var changed = value != SettingsService.GetArmorMappingMode();
                 if (SettingsService.SetArmorMappingMode(value))
+                {
                     _profiles.RequestActiveProfileDeployment();
+                    // 选「外置加载器兼容」时把包导出来并打开目录：否则用户选了外置却找不到东西可装。
+                    if (changed && value == ArmorMappingMode.ExternalLuaEntry)
+                        RevealRuntimeScriptForExternalLoader();
+                }
                 OnPropertyChanged(nameof(ArmorMappingMode));
                 OnPropertyChanged(nameof(ArmorMappingModeDescription));
                 OnPropertyChanged(nameof(ArmorMappingModeHotSwitchNote));
@@ -1523,25 +1562,77 @@ namespace HD2ModManager.ViewModels
             ? "该模式支持游戏运行中切换映射，不需要重启。"
             : "该模式把外观写进注册表数据，改动映射后必须重启游戏才生效。";
 
-    /// <summary>
-    /// 关闭独占模式时把运行时脚本导出到「默认导出路径\wardrobe-lua」并打开该文件夹，
-    /// 让用户可以直接把它丢给第三方加载器。导出失败不影响设置本身已保存。
-    /// </summary>
-    private static void RevealRuntimeScriptForExternalLoader()
-    {
-        try
+        /// <summary>设置页「物理」下拉框的选项（按总开关过滤）。</summary>
+        public IReadOnlyList<PhysicsModeOption> PhysicsModeOptions =>
+            PhysicsModes.AvailableFor(BuiltInLuaEnabled)
+                .Select(mode => new PhysicsModeOption(mode, mode.DisplayName(), mode.Description()))
+                .ToArray();
+
+        /// <summary>
+        /// 物理骨骼模式。选「外置 lua 入口兼容」并应用时，会把运行时导出成一个独立补丁包
+        /// 并打开所在文件夹，供用户手动加进 mod 库。
+        /// </summary>
+        public PhysicsMode PhysicsMode
         {
-            var folder = Path.Combine(SettingsService.GetResolvedDefaultExportPath(), "wardrobe-lua");
-            ArmorRuntimeScriptExport.Export(folder);
-            OpenFolder(folder);
+            get => SettingsService.GetPhysicsMode();
+            set
+            {
+                var changed = value != SettingsService.GetPhysicsMode();
+                if (SettingsService.SetPhysicsMode(value))
+                {
+                    _profiles.RequestActiveProfileDeployment();
+                    // 外置包必须立刻可见，否则用户选了"外置"却找不到东西可装。
+                    if (changed && value == PhysicsMode.ExternalLuaEntry)
+                        RevealPhysBonePackage();
+                }
+                OnPropertyChanged(nameof(PhysicsMode));
+                OnPropertyChanged(nameof(PhysicsModeDescription));
+            }
         }
-        catch (Exception exception) when (exception is IOException
-            or UnauthorizedAccessException
-            or InvalidOperationException)
+
+        /// <summary>物理模式的一句话说明。</summary>
+        public string PhysicsModeDescription => PhysicsMode.Description();
+
+        /// <summary>
+        /// 把物理运行时导出成外置包并打开文件夹。
+        /// 路径固定落在管理器数据目录下，不跟随"默认导出路径"——那个是给转换产物用的，
+        /// 混在一起会让用户分不清"哪个是要拖进 mod 库的"。
+        /// </summary>
+        private static void RevealPhysBonePackage()
         {
-            // 导出失败不应让设置保存失败。
+            RevealLuaPackage(LuaAddonCatalog.Physics());
         }
-    }
+
+        /// <summary>
+        /// 把某个内置 Lua 功能导出成外置包并打开**根目录**。
+        ///
+        /// 两个功能落在同一个根目录下（各自一个子目录），所以不管用户先选哪个，
+        /// 打开的都是同一个地方——他装了几个加载器、需要哪份包，一眼就能看到。
+        /// </summary>
+        private static void RevealLuaPackage(LuaAddonPackageExport.Feature feature)
+        {
+            try
+            {
+                var root = SettingsService.GetLuaPackagesDirectory();
+                LuaAddonPackageExport.Export(root, feature);
+                OpenFolder(root);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidOperationException)
+            {
+                // 导出失败不应让设置保存失败。
+            }
+        }
+
+        /// <summary>
+        /// 关闭独占模式时把运行时脚本导出到「默认导出路径\wardrobe-lua」并打开该文件夹，
+        /// 让用户可以直接把它丢给第三方加载器。导出失败不影响设置本身已保存。
+        /// </summary>
+        private static void RevealRuntimeScriptForExternalLoader()
+        {
+            RevealLuaPackage(LuaAddonCatalog.Wardrobe());
+        }
     public bool AutoUpdateAssetMetadata
         {
             get => SettingsService.GetAutoUpdateAssetMetadata();

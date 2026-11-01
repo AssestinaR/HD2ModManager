@@ -118,8 +118,10 @@ public static class RetargetedMeshBuilder
 		{
 			if (weight <= 0)
 				continue;
-			if (!result.Resolved.TryGetValue(boneIndex, out var hd2))
-				continue;
+			// jiggle 骨：权重写到它自己的**合成节点**上（几何仍按锚点烘焙，见 Retargeter.JiggleBones.cs）
+			var hd2 = result.JiggleWeightTargets.TryGetValue(boneIndex, out var jiggleNode)
+				? jiggleNode
+				: result.Resolved.TryGetValue(boneIndex, out var nativeNode) ? nativeNode : -1;
 			if (hd2 < 0 || hd2 >= avatarTransformInfo.NameHashes.Count)
 				continue;
 			var hash = avatarTransformInfo.NameHashes[hd2];

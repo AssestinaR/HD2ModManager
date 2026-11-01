@@ -65,6 +65,8 @@ public sealed record RetargetResult(
 	IReadOnlyList<FingerPoseRow> Fingers,
 	IReadOnlyList<HandReorientRow> HandReorient,
 	IReadOnlyDictionary<string, double> PalmGirth,
+	IReadOnlyList<RetargetExtraBone> ExtraBones,
+	IReadOnlyDictionary<int, int> JiggleWeightTargets,
 	RetargetMetrics Metrics)
 {
 	/// <summary>把结果里的顶点位置摊平成 <c>[x, y, z]</c> 数组，供 npz 落盘与逐点对拍。</summary>

@@ -1922,6 +1922,259 @@ public static class CliApplication
 			return 0;
 		}
 
+		if (command.Length is 3 or 4 && command[0] == "source" && command[1] == "physbone")
+		{
+			// 把源模型的弹簧骨数据落成运行时能直接读的两份文件：
+			//   hd2_spring_rig.bin        —— 定长二进制，运行时兼容层读它
+			//   physbone-container.bin    —— HD2PBX01 容器（后续嵌进 patch 的 .gpu_resources）
+			// 单独成命令是为了能"只看这一件事"：容器格式出错时不必跑完整导入。
+			var vpkPath = invocation.Command[2];
+			if (!File.Exists(vpkPath))
+				throw new CliUserException("VpkNotFound", $"找不到 VPK 文件：{vpkPath}");
+			var stem = command.Length == 4 ? invocation.Command[3] : null;
+			var target = RequireOutput(invocation.Options, "source physbone");
+			var directory = Path.GetFullPath(target);
+			Directory.CreateDirectory(directory);
+
+			var inspection = SourceModelInspector.Inspect(vpkPath, stem);
+			if (inspection.JiggleBones.Count == 0)
+				throw new CliUserException("PhysBoneEmpty", "这个模型没有 jigglebone，没有可迁移的物理骨骼数据。");
+
+			var rig = PhysBoneSpringRig.Serialize(inspection.JiggleBones);
+			var container = PhysBoneContainer.Build([new PhysBoneContainer.Entry("hd2_spring_rig.bin", rig)]);
+
+			var rigPath = Path.Combine(directory, "hd2_spring_rig.bin");
+			var containerPath = Path.Combine(directory, "physbone-container.bin");
+			if (!invocation.Options.Overwrite)
+			{
+				foreach (var path in new[] { rigPath, containerPath })
+					if (File.Exists(path))
+						throw new CliUserException("OutputExists", $"输出文件已存在：{path}（用 --overwrite 覆盖）");
+			}
+
+			await File.WriteAllBytesAsync(rigPath, rig).ConfigureAwait(false);
+			await File.WriteAllBytesAsync(containerPath, container).ConfigureAwait(false);
+
+			Emit(
+				invocation.Options,
+				new
+				{
+					ok = true,
+					model = inspection.ModelPath,
+					jiggleBones = inspection.JiggleBones.Count,
+					rigBytes = rig.Length,
+					containerBytes = container.Length,
+					rig = rigPath,
+					container = containerPath,
+				},
+				() => $"源模型：{inspection.ModelPath}{Environment.NewLine}"
+					+ $"  jiggle 骨：{inspection.JiggleBones.Count} 根{Environment.NewLine}"
+					+ $"  弹簧 rig：{rig.Length} 字节 → {rigPath}{Environment.NewLine}"
+					+ $"  HD2PBX01 容器：{container.Length} 字节 → {containerPath}");
+			return 0;
+		}
+
+		if (command.Length == 2 && command[0] == "physbone" && command[1] == "repair-library")
+		{
+			// 全库兜底：把每个 **standard** mod 的模型 patch 都补上物理参数容器。
+			//
+			// 为什么需要这道闸：patch 会被**多处重建**（护甲标准化、装饰合并、头盔合并、应用为 RE2310…），
+			// 每一次都是"按条目重新写一个 patch"，尾部附加的容器不会跟过去。逐点打补丁永远追不完，
+			// 所以在"要交付给游戏"的边界上统一补一次——幂等，没有 jiggle 骨的 mod 自动跳过。
+			var repairWorkspace = CliWorkspace.Open(invocation.Options);
+			if (repairWorkspace.LibraryRoot is null)
+				throw new CliUserException("LibraryRequired", "请用 --library 指定 Mod 库目录。");
+
+			var libraryJson = Path.Combine(repairWorkspace.LibraryRoot, "library.json");
+			if (!File.Exists(libraryJson))
+				throw new CliUserException("LibraryNotInitialized", $"库里没有 library.json：{libraryJson}");
+
+			var repaired = new List<object>();
+			var skipped = new List<object>();
+			var failures = new List<object>();
+			using (var document = JsonDocument.Parse(await File.ReadAllTextAsync(libraryJson).ConfigureAwait(false)))
+			{
+				if (!document.RootElement.TryGetProperty("nodes", out var nodes))
+					throw new CliUserException("LibraryNotInitialized", "library.json 里没有 nodes。");
+
+				foreach (var node in nodes.EnumerateObject())
+				{
+					var value = node.Value;
+					var kind = value.TryGetProperty("metadata", out var metadata) && metadata.TryGetProperty("kind", out var kindElement)
+						? kindElement.GetString()
+						: null;
+					if (!string.Equals(kind, "standard", StringComparison.OrdinalIgnoreCase))
+						continue;   // option（材质等）不需要；它们没有 Unit
+
+					var relativePath = value.TryGetProperty("relativePath", out var relElement) ? relElement.GetString() : null;
+					if (string.IsNullOrWhiteSpace(relativePath))
+						continue;
+					var modDirectory = Path.Combine(repairWorkspace.LibraryRoot, relativePath);
+					if (!Directory.Exists(modDirectory))
+						continue;
+					var vpk = Directory.EnumerateFiles(modDirectory, "*.vpk", SearchOption.TopDirectoryOnly).FirstOrDefault();
+					if (vpk is null)
+					{
+						skipped.Add(new { mod = relativePath, reason = "目录里没有 .vpk（不是 VPK 来源的 mod）" });
+						continue;
+					}
+
+					try
+					{
+						var outcome = await PhysBoneContainerEmbedder
+							.EmbedAsync(vpk, modDirectory, CancellationToken.None)
+							.ConfigureAwait(false);
+						if (outcome.Reason is not null)
+							skipped.Add(new { mod = relativePath, reason = outcome.Reason });
+						else
+							repaired.Add(new
+							{
+								mod = relativePath,
+								bones = outcome.BoneCount,
+								patches = outcome.PatchCount,
+								addedBytes = outcome.AddedBytes,
+								replaced = outcome.AlreadyPresent,
+							});
+					}
+					catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+					{
+						failures.Add(new { mod = relativePath, error = exception.Message });
+					}
+				}
+			}
+
+			if (invocation.Options.Json)
+			{
+				Emit(invocation.Options, new { ok = failures.Count == 0, repaired, skipped, failures }, () => string.Empty);
+			}
+			else
+			{
+				foreach (var item in repaired)
+					Console.WriteLine($"✔ {item}");
+				foreach (var item in skipped)
+					Console.WriteLine($"· 跳过 {item}");
+				foreach (var item in failures)
+					Console.Error.WriteLine($"✗ 失败 {item}");
+				Console.WriteLine($"完成：修复 {repaired.Count} 个、跳过 {skipped.Count} 个、失败 {failures.Count} 个。");
+			}
+
+			return failures.Count == 0 ? 0 : 1;
+		}
+		if (command.Length == 4 && command[0] == "physbone" && command[1] == "embed-mod")
+		{
+			// 给**整个 Mod 目录**嵌物理参数：根 / vpk2patch/ / Overwrite/ 三处的、含 Unit 的 patch 都会嵌。
+			// 为什么要覆盖三处：Overwrite 是在 vpk2patch 产物上**重新构建**出来的，尾部容器不会自动跟过去——
+			// 只在转换产物上嵌，等于交付给游戏的那一份没有参数。
+			//
+			// 用法：hd2mod physbone embed-mod <mod 目录> <来源 vpk 或 rig 文件> [--json]
+			var embedModDirectory = Path.GetFullPath(command[2]);
+			var embedModSource = Path.GetFullPath(command[3]);
+			var embedModOutcome = await PhysBoneContainerEmbedder
+				.EmbedAsync(embedModSource, embedModDirectory, CancellationToken.None)
+				.ConfigureAwait(false);
+
+			if (invocation.Options.Json)
+			{
+				Emit(invocation.Options, new
+				{
+					ok = embedModOutcome.Embedded || embedModOutcome.Reason is not null,
+					embedded = embedModOutcome.Embedded,
+					replaced = embedModOutcome.AlreadyPresent,
+					bones = embedModOutcome.BoneCount,
+					patches = embedModOutcome.PatchCount,
+					addedBytes = embedModOutcome.AddedBytes,
+					reason = embedModOutcome.Reason,
+				}, () => string.Empty);
+			}
+			else if (embedModOutcome.Reason is not null)
+			{
+				Console.WriteLine($"跳过：{embedModOutcome.Reason}");
+			}
+			else
+			{
+				Console.WriteLine($"已嵌入物理参数：{embedModOutcome.PatchCount} 个 patch，"
+					+ $"{embedModOutcome.BoneCount} 根骨，新增 {embedModOutcome.AddedBytes:N0} 字节"
+					+ (embedModOutcome.AlreadyPresent ? "（替换了旧容器）" : string.Empty));
+			}
+
+			return 0;
+		}
+		if (command.Length is 4 or 5 && command[0] == "physbone" && command[1] == "embed")
+		{
+			// 把源模型的 jigglebone 参数作为 HD2PBX01 容器嵌进**成品** patch 的 `.gpu_resources` 末尾。
+			//
+			// 为什么必须放在"成品阶段"（转换之后、交给游戏之前）：
+			//   转换输出还要经过导入 / `vpk rekey`，那两步把 `.gpu_resources` 当作受管的 GPU 数据流，
+			//   尾部多出来的裸字节会让它们的记账对不上——实测症状是**材质整体投递失败**（面部品红）。
+			//   所以转换阶段保持纯净，注入是最后一步、幂等的一步（重复执行不会层层叠加）。
+			//
+			// 用法：hd2mod physbone embed <patch_0> <来源 vpk> [模型名] [--output <目录>]
+			var embedPatch = Path.GetFullPath(command[2]);
+			var embedVpk = Path.GetFullPath(command[3]);
+			if (!File.Exists(embedPatch))
+				throw new CliUserException("PatchNotFound", $"找不到 patch 文件：{embedPatch}");
+			if (!File.Exists(embedVpk))
+				throw new CliUserException("VpkNotFound", $"找不到 VPK 文件：{embedVpk}");
+
+			var embedGpu = embedPatch + ".gpu_resources";
+			if (!File.Exists(embedGpu))
+				throw new CliUserException("GpuResourcesMissing", $"patch 旁边没有 .gpu_resources：{embedGpu}");
+
+			var embedStem = command.Length == 5 ? command[4] : null;
+			// 第三个参数既可以是**来源 VPK**（按源模型重新导出参数），也可以直接是一份 **rig 文件**
+			// （`source physbone` 产出的 hd2_spring_rig.bin / %LOCALAPPDATA% 里那份）——
+			// 后者用于"源 VPK 已不在手边"或"想原样带上当前调好的参数"的场合。
+			byte[] embedRig;
+			string embedModelLabel;
+			var embedIsRigFile = embedVpk.EndsWith(".bin", StringComparison.OrdinalIgnoreCase);
+			if (embedIsRigFile)
+			{
+				embedRig = await File.ReadAllBytesAsync(embedVpk).ConfigureAwait(false);
+				if (embedRig.Length < 8 || embedRig[0] != (byte)'H' || embedRig[1] != (byte)'D'
+					|| embedRig[2] != (byte)'2' || embedRig[3] != (byte)'S')
+				{
+					throw new CliUserException("RigFileInvalid",
+						$"{embedVpk} 不是裸 rig（应以 HD2SRG01 开头）。要么给 VPK，要么给 source physbone 产出的 rig。");
+				}
+				embedModelLabel = $"{Path.GetFileName(embedVpk)}（裸 rig 文件）";
+			}
+			else
+			{
+				var embedInspection = SourceModelInspector.Inspect(embedVpk, embedStem);
+				if (embedInspection.JiggleBones.Count == 0)
+					throw new CliUserException("NoJiggleBones",
+						$"源模型 {embedInspection.ModelPath} 没有 jigglebone，没有必要注入。");
+				embedRig = PhysBoneSpringRig.Serialize(embedInspection.JiggleBones);
+				embedModelLabel = $"{embedInspection.ModelPath}（jiggle 骨 {embedInspection.JiggleBones.Count} 根）";
+			}
+
+			// --output：写一份副本（不动原件），便于对照实验
+			var embedOut = invocation.Options.Output;
+			if (!string.IsNullOrWhiteSpace(embedOut))
+			{
+				var embedDir = Path.GetFullPath(embedOut);
+				Directory.CreateDirectory(embedDir);
+				var embedPatchCopy = Path.Combine(embedDir, Path.GetFileName(embedPatch));
+				var embedGpuCopy = Path.Combine(embedDir, Path.GetFileName(embedGpu));
+				File.Copy(embedPatch, embedPatchCopy, overwrite: true);
+				File.Copy(embedGpu, embedGpuCopy, overwrite: true);
+				embedPatch = embedPatchCopy;
+				embedGpu = embedGpuCopy;
+			}
+
+			var embedCarrier = await File.ReadAllBytesAsync(embedGpu).ConfigureAwait(false);
+			var embedClean = PhysBoneContainer.StripIfPresent(embedCarrier, out var embedHad).ToArray();
+			var embedCombined = PhysBoneContainer.AppendTo(
+				embedClean,
+				[new PhysBoneContainer.Entry("hd2_spring_rig.bin", embedRig)]);
+			await File.WriteAllBytesAsync(embedGpu, embedCombined).ConfigureAwait(false);
+
+			Console.WriteLine($"来源：{embedModelLabel} → rig {embedRig.Length:N0} 字节");
+			Console.WriteLine($"容器：{embedClean.Length:N0} → {embedCombined.Length:N0} 字节"
+				+ $"（新增 {embedCombined.Length - embedClean.Length:N0}；替换了旧容器：{(embedHad ? "是" : "否")}）");
+			Console.WriteLine($"已写入：{embedGpu}");
+			return 0;
+		}
 		if (command.Length is 3 or 4 && command[0] == "source" && command[1] == "inspect")
 		{
 			var vpkPath = invocation.Command[2];
@@ -2146,6 +2399,71 @@ public static class CliApplication
 				}
 			}
 
+			// 物理骨骼：把源模型的 jigglebone 参数封成 HD2PBX01 容器，追加到该 patch 的
+			// `.gpu_resources` 末尾。
+			//
+			// ⚠️ 默认关闭，必须显式打开（环境变量 HD2_PHYSBONE_CONTAINER=1）。
+			//
+			// 为什么默认关：转换输出还要交给导入 / `vpk rekey` 继续处理，而那两步把
+			// `.gpu_resources` 当作**受管的 GPU 数据流**。在转换阶段就往尾部追加 10752 字节，
+			// 会让它们的记账对不上——实测症状是**材质整体投递失败**（面部变成品红占位、
+			// 而头发与装饰正常）。对照数据：同一份输入，未追加的产物 gpu 31,487,430 字节、
+			// 追加后 31,498,182 字节，出问题的正是后者。
+			// ⇒ 容器应当在**交付阶段**再加（或由专门的一步合并），不在纯净的转换输出里。
+			var physBoneEnabled = string.Equals(
+				Environment.GetEnvironmentVariable("HD2_PHYSBONE_CONTAINER"),
+				"1",
+				StringComparison.Ordinal);
+			var physBoneReports = new List<object>();
+			foreach (var outcome in physBoneEnabled ? results : [])
+			{
+				if (outcome.Package.TocPath is null || string.IsNullOrWhiteSpace(outcome.MdlPath))
+					continue;
+				var gpuPath = outcome.Package.TocPath + ".gpu_resources";
+				if (!File.Exists(gpuPath))
+					continue;
+				try
+				{
+					var stem = Path.GetFileNameWithoutExtension(outcome.MdlPath);
+					var inspection = SourceModelInspector.Inspect(outcome.VpkPath, stem);
+					if (inspection.JiggleBones.Count == 0)
+						continue;
+					if (!string.Equals(inspection.ModelPath, outcome.MdlPath, StringComparison.OrdinalIgnoreCase))
+					{
+						// 选错了模型就等于把别处的参数塞进这个 patch——宁可跳过也不要张冠李戴。
+						Console.Error.WriteLine(
+							$"⚠️ {Path.GetFileName(outcome.VpkPath)}：物理骨检查选中的模型是 {inspection.ModelPath}，"
+							+ $"与转换用的 {outcome.MdlPath} 不一致，已跳过物理数据。");
+						continue;
+					}
+
+					var rig = PhysBoneSpringRig.Serialize(inspection.JiggleBones);
+					var carrier = await File.ReadAllBytesAsync(gpuPath).ConfigureAwait(false);
+					// 先去掉可能已存在的旧容器，保证重复转换是幂等的（不会层层叠加）。
+					var clean = PhysBoneContainer.StripIfPresent(carrier, out var hadContainer).ToArray();
+					var combined = PhysBoneContainer.AppendTo(
+						clean,
+						[new PhysBoneContainer.Entry("hd2_spring_rig.bin", rig)]);
+					await File.WriteAllBytesAsync(gpuPath, combined).ConfigureAwait(false);
+
+					physBoneReports.Add(new
+					{
+						patch = Path.GetFileName(outcome.Package.TocPath),
+						model = inspection.ModelPath,
+						bones = inspection.JiggleBones.Count,
+						rigBytes = rig.Length,
+						containerBytes = combined.Length - clean.Length,
+						replaced = hadContainer,
+					});
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException
+					or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+				{
+					Console.Error.WriteLine(
+						$"⚠️ 没能写物理骨骼数据（{Path.GetFileName(outcome.VpkPath)}）：{exception.Message}");
+				}
+			}
+
 			Emit(invocation.Options,
 				new
 				{
@@ -2153,6 +2471,7 @@ public static class CliApplication
 					output = Path.GetFullPath(outputRoot),
 					queue = vpkPaths,
 					resolutionSet = batch.VpkPaths,
+					physBones = physBoneReports,
 					// 命名空间：整批共用。写进报告是为了让"这个 Mod 的材质 id 凭什么这样"可回答——
 					// 同一个来源包重转会得到同一个 token，换一个来源就得到另一套 id（这正是隔离的原理）。
 					idNamespace = ResolveIdNamespace(invocation.Options),
@@ -2355,7 +2674,9 @@ public static class CliApplication
 						? new AlbedoAdjustment(AlbedoDarkenMode.Multiply, factor)
 						: null,
 					matcapMeans,
-					idNamespace: ResolveIdNamespace(invocation.Options));
+					idNamespace: ResolveIdNamespace(invocation.Options),
+					cutoutStrategy: ResolveCutoutStrategy(invocation.Options),
+					matcapBakeGain: invocation.Options.MatcapGain ?? 1.0);
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -2598,9 +2919,34 @@ public static class CliApplication
 	/// 让调用方自己算，两边一旦漂移就是"同一份包重转得到两套 id"——那种问题查起来极贵。
 	/// </para>
 	/// <para>不传 = <c>null</c> = 旧行为（id 只由名字决定，与历史产物逐位相同）。</para>
+	/// <para>
+	/// <c>--id-namespace-token</c> 直接给 token，跳过派生。它只为"只重转一批里的某一个包"
+	/// 存在：那时手上没有原压缩包名，而模型 patch 里引用的材质 id 是按那个 token 算的。
+	/// </para>
 	/// </summary>
 	private static string? ResolveIdNamespace(CliGlobalOptions options)
-		=> string.IsNullOrWhiteSpace(options.IdNamespace) ? null : Hd2AssetId.NamespaceFor(options.IdNamespace);
+	{
+		if (!string.IsNullOrWhiteSpace(options.IdNamespaceToken))
+			return options.IdNamespaceToken.Trim();
+		return string.IsNullOrWhiteSpace(options.IdNamespace) ? null : Hd2AssetId.NamespaceFor(options.IdNamespace);
+	}
+
+	/// <summary>
+	/// <c>--cutout</c> 的三个档位（见 <see cref="CutoutStrategy"/>）。不给 = A 档 = 历史行为。
+	/// <para>
+	/// 存在这个开关的唯一理由是<b>实机 A/B/C 对照</b>：三档分别对应三种关于"HD2 怎么镂空"的假设，
+	/// 谁也说服不了谁，只能进游戏看。定下来之后产品侧应当只留一档，这个开关就退化成诊断用。
+	/// </para>
+	/// </summary>
+	private static CutoutStrategy ResolveCutoutStrategy(CliGlobalOptions options)
+		=> options.Cutout?.ToLowerInvariant() switch
+		{
+			"b" or "tuned" => CutoutStrategy.AlphaClipTuned,
+			"rgb-inv" => CutoutStrategy.MaskInverted,
+			"alpha" => CutoutStrategy.MaskInAlpha,
+			"alpha-inv" => CutoutStrategy.MaskInAlphaInverted,
+			_ => CutoutStrategy.AlphaClip,
+		};
 
 	/// <summary>
 	/// 把一个 VPK 忠实地翻译成一个 patch。
@@ -2683,7 +3029,9 @@ public static class CliApplication
 					? MatCapMode.Albedo
 					: MatCapMode.Bake,
 				// 命名空间：一批共用一个 token（见 Hd2AssetId.NamespaceFor）。
-				ResolveIdNamespace(options));
+				ResolveIdNamespace(options),
+				ResolveCutoutStrategy(options),
+				options.MatcapGain ?? 1.0);
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──
@@ -4808,6 +5156,42 @@ public static class CliApplication
 		{
 			lines.Add("  jiggle 骨的父骨分布：");
 			lines.AddRange(inspection.JiggleParents.Select(parent => $"    {parent.ParentName} × {parent.Count}"));
+		}
+
+		// 逐根列出参数：这既是报告，也是"运行时该复现什么"的清单。
+		// 只打印前 12 根（整份在 --json 里），避免几十根的时候刷屏。
+		if (inspection.JiggleBones.Count > 0)
+		{
+			const int inlineLimit = 12;
+			lines.Add($"  jiggle 骨参数（共 {inspection.JiggleBones.Count} 根，此处列前 {Math.Min(inlineLimit, inspection.JiggleBones.Count)} 根；完整内容见 --json）：");
+			lines.AddRange(inspection.JiggleBones.Take(inlineLimit).Select(bone =>
+				$"    [{bone.BoneIndex,3}] {bone.BoneName,-22} 父={bone.ParentName,-26} "
+				+ $"flags=0x{bone.Flags:x2}({string.Join(",", bone.FlagNames)}) "
+				+ $"len={bone.Parameters.Length:F1} mass={bone.Parameters.TipMass:F0} "
+				+ $"yaw={bone.Parameters.YawStiffness:F0}/{bone.Parameters.YawDamping:F1} "
+				+ $"pitch={bone.Parameters.PitchStiffness:F0}/{bone.Parameters.PitchDamping:F1} "
+				+ $"ang={bone.Parameters.AngleLimit:F3} "
+				+ $"pos=({bone.WorldPosition.X:F3},{bone.WorldPosition.Y:F3},{bone.WorldPosition.Z:F3})"));
+			if (inspection.JiggleBones.Count > inlineLimit)
+				lines.Add($"    … 另有 {inspection.JiggleBones.Count - inlineLimit} 根未在终端展开");
+		}
+
+		// 每根 jiggle 骨带多少顶点：完整版"插哪些节点、把哪些顶点改指过去"的依据。
+		// Dominant 才是"这块几何归它"；Covered 只说明它参与过（可能权重极小）。
+		if (inspection.JiggleWeights.Count > 0)
+		{
+			var weighted = inspection.JiggleWeights.Where(item => item.DominantCount > 0).ToArray();
+			var empty = inspection.JiggleWeights.Count - weighted.Length;
+			lines.Add($"  jiggle 骨的顶点归属（LOD0）：有主导顶点的 {weighted.Length} 根，"
+				+ $"没有的 {empty} 根（后者不必插节点）");
+			const int weightLimit = 15;
+			lines.AddRange(weighted
+				.OrderByDescending(item => item.DominantCount)
+				.ThenBy(item => item.BoneName, StringComparer.Ordinal)
+				.Take(weightLimit)
+				.Select(item => $"    {item.BoneName,-22} 主导顶点 {item.DominantCount,6}  参与顶点 {item.VertexCount,6}"));
+			if (weighted.Length > weightLimit)
+				lines.Add($"    … 另有 {weighted.Length - weightLimit} 根有主导顶点的未展开（完整内容见 --json）");
 		}
 
 		if (inspection.Diagnostics.Count > 0)

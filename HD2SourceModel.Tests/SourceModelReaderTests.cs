@@ -10,11 +10,39 @@ public sealed class SourceModelReaderTests
 	private static BodyPartSpec[] OneBodyPart(int vertexCount = 6, int vertexIndex = 0) =>
 		[new("head", [new ModelSpec("m0", vertexCount, vertexIndex, [new MeshSpec(0, vertexCount, 0)])])];
 
+	/// <summary>
+	/// 占位骨名（<c>source_extra_N</c>）必须**按来源模型隔离**。
+	/// <para>
+	/// 这是多 mod 共存的前提：占位名纯按源骨下标派生，不同模型上同一个下标必然重名。
+	/// 这些名字会作为节点名写进 Unit，运行时靠"名字能对上几根"判断哪份物理参数属于这套护甲；
+	/// 重名 ⇒ 拿别的模型的参数/绑定方向去驱动 ⇒ 头发高高翘起（2026-11-01 实机）。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void Read_PlaceholderBoneNamesAreScopedToTheirSourceModel()
+	{
+		SourceModelDocument Read(string name) =>
+			SourceModelReader.Read(BuildMdl(name, 48, [new BoneSpec(null, -1)], OneBodyPart()));
+
+		var first = Read("model_a");
+		var other = Read("model_b");
+		var again = Read("model_a");
+
+		Assert.False(first.Bones[0].HasName);
+
+		// 不同模型 → 占位名必须不同。
+		Assert.NotEqual(first.Bones[0].Namespace, other.Bones[0].Namespace);
+		Assert.NotEqual(first.Bones[0].DisplayName, other.Bones[0].DisplayName);
+
+		// 同一模型重复读 → 逐字相同（重转同一份包不该变出新名字）。
+		Assert.Equal(first.Bones[0].Namespace, again.Bones[0].Namespace);
+		Assert.Equal(first.Bones[0].DisplayName, again.Bones[0].DisplayName);
+	}
+
 	[Fact]
 	public void Read_RejectsForeignMagic()
 	{
-		var mdl = BuildMdl("x", 48, [new BoneSpec("root", -1)], OneBodyPart());
-		mdl[0] = (byte)'X';
+		var mdl = BuildMdl("x", 48, [new BoneSpec("root", -1)], OneBodyPart());		mdl[0] = (byte)'X';
 
 		var error = Assert.Throws<InvalidDataException>(() => SourceModelReader.Read(mdl));
 		Assert.Contains("IDST", error.Message, StringComparison.Ordinal);
@@ -150,7 +178,10 @@ public sealed class SourceModelReaderTests
 		Assert.True(document.Bones[0].HasName);
 		Assert.Equal("ValveBiped.Bip01_Pelvis", document.Bones[0].DisplayName);
 		Assert.False(document.Bones[1].HasName);
-		Assert.Equal("source_extra_1", document.Bones[1].DisplayName);
+		// 占位名带按来源模型派生的命名空间：`j<12hex>/source_extra_<源骨下标>`。
+		// 有真名的骨保持原样（父骨名要拿去查源→HD2 映射表，加前缀会让链因缺锚点被丢掉）。
+		Assert.Matches(@"^j[0-9a-f]{12}/source_extra_1$", document.Bones[1].DisplayName);
+		Assert.StartsWith(document.Bones[1].Namespace + "/", document.Bones[1].DisplayName);
 	}
 
 	[Fact]

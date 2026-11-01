@@ -109,6 +109,19 @@ public sealed record RetargetOptions
 	/// <summary>发货前把轴对称轴转回原始轴（BatchTool 的最后一步）。</summary>
 	public bool AxisRoundtrip { get; init; } = true;
 
+	/// <summary>
+	/// 是否把 jiggle 骨当**独立骨**保留下来（每根分配一个合成骨），而不是回退到最近的 HD2 骨。
+	/// <para>
+	/// 默认<b>关</b>，原因是它必须与"把合成骨写进 Unit 的 TransformInfo"配套：
+	/// 只改映射不改 Unit，顶点权重会指向不存在的下标。等上层接线完成并验收后再翻默认值。
+	/// </para>
+	/// <para>
+	/// 打开后行为：<c>source_extra_*</c> 这类骨不再是 <c>head</c>/<c>hips</c> 的附属，
+	/// 顶点权重保留在它们自己身上 —— 这是"导入即得物理"的前提（运行时按骨名找节点驱动它们）。
+	/// </para>
+	/// </summary>
+	public bool IncludeJiggleBones { get; init; } = true;
+
 	// ---- post: 仅作用于网格的后处理 ----------------------------------------
 	public Vec3 MeshShift { get; init; } = new(0, -0.100, -0.090);
 

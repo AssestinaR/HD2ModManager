@@ -121,6 +121,25 @@ public sealed class CanonicalPatchWriter : ICanonicalPatchWriter
 		}
 		if (streamLength == 0) File.Delete(streamPath);
 		if (gpuLength == 0) File.Delete(gpuPath);
+		else
+		{
+			// **尾部附加数据（物理参数容器 HD2PBX01）跟随**：这里是"按条目重建 patch"，
+			// 尾附数据不在条目里，所以不会自动跟过来。
+			// 来源由**会话里的 payload 区间**推出来（`CanonicalPayloadSourceRange.FilePath`），
+			// 因此所有走这个写入器的路径（跨护甲编排、同键重建、头盔合并）都自动覆盖。
+			// 容器放在受引用范围之后，不影响任何 TOC 偏移。
+			var carriers = session.Entries
+				.Select(entry => entry.GpuDataSource?.FilePath)
+				.Where(path => !string.IsNullOrWhiteSpace(path))
+				.Select(path => path!)
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+			if (carriers.Length > 0
+				&& await PhysBoneCarrier.CarryFromAnyAsync(carriers, gpuPath, cancellationToken).ConfigureAwait(false))
+			{
+				gpuLength = new FileInfo(gpuPath).Length;
+			}
+		}
 		return new(output, tocPath, streamPath, gpuPath, tocLength, streamLength, gpuLength);
 	}
 
