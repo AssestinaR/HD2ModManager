@@ -663,34 +663,44 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		end
 		local nx, ny, nz = dx / length, dy / length, dz / length
 		if gains.axisLimits then
-			-- 分轴限位（源骨 `yawCon`/`pitchCon`）：夹的是**这一节相对自己绑定方向**的偏转。
+			-- 分轴限位（源骨 `yawCon`/`pitchCon`）：夹的是**这一节相对自己静止姿态**的偏转。
 			--
 			-- ⚠️ 为什么不能沿用下面那个锥（那是相对**父节**的）：锥会沿着链累加。
-			-- 实测一份 3 节侧发（每节 30/20/20°），从下垂 18° 起能累到 70°，足够让它翘到水平以上
-			-- ——实机看到的就是"左右两侧各一根翘起来"。而 Valve 的 min/max yaw/pitch 是每根骨
-			-- 相对**自身静止姿态**的范围，不累加。所以这一类骨改用绑定方向做基准。
+			-- 实测一份 3 节侧发（每节 30/20/20°），从下垂 18° 起能累到 70°，足够让它翘到水平以上。
+			-- Valve 的 min/max yaw/pitch 是每根骨相对**自身静止姿态**的范围，不累加。
 			--
-			-- 几何：`l`/`u` 是 `frameLocal` 里的 left/up，按构造都与绑定方向正交，
-			-- 所以 `l·n`、`u·n` 直接就是 yaw / pitch 分量（在单位向量上就是 sin）。
-			local b = item.segDirLocal[k]
-			local rqx, rqy, rqz, rqw = qx, qy, qz, qw
-			if item.goalQ ~= nil then
-				-- 世界朝向锚定的链（flags 同时含 yawCon+pitchCon 的就是），静止参考系是 goalQ 而不是当前锚点。
-				rqx, rqy, rqz, rqw = item.goalQ[1], item.goalQ[2], item.goalQ[3], item.goalQ[4]
+			-- ⚠️⚠️ 三个轴必须取**同一个参考系**。这里曾经出过一次很严重的错：
+			-- 绑定方向用 `goalQ`（绑定时锚点朝向）旋转，而 left/up 用**当前** `q` 旋转 ——
+			-- 两个参考系一错开，`l·n` / `u·n` 就不再是"偏离多少"，而是一个随机数，
+			-- 于是每帧都在被夹，角色一动（身体转向）头发就被钉在某个方向上：
+			-- 实机表现是"跑起来头发向前翘起、特别僵硬"。
+			-- 现在统一用静止参考系，而且**在 attach 时就算好**（goalQ 恒定）⇒ 每帧零成本。
+			local lf = bone.limitFrame
+			local blx, bly, blz, bux, buy, buz, bbx, bby, bbz
+			if lf ~= nil then
+				blx, bly, blz = lf[1], lf[2], lf[3]
+				bux, buy, buz = lf[4], lf[5], lf[6]
+				bbx, bby, bbz = lf[7], lf[8], lf[9]
+			else
+				-- 没有 goalQ（父级朝向会带着走）的链：静止参考系就是当前锚点朝向，逐帧算。
+				local b = item.segDirLocal[k]
+				local f = bone.frameLocal
+				blx, bly, blz = qrot(qx, qy, qz, qw, f[1], f[2], f[3])
+				bux, buy, buz = qrot(qx, qy, qz, qw, f[4], f[5], f[6])
+				bbx, bby, bbz = qrot(qx, qy, qz, qw, b[1], b[2], b[3])
 			end
-			local bx2, by2, bz2 = qrot(rqx, rqy, rqz, rqw, b[1], b[2], b[3])
-			local devYaw = lx * nx + ly * ny + lz * nz
-			local devPitch = ux * nx + uy * ny + uz * nz
+			local devYaw = blx * nx + bly * ny + blz * nz
+			local devPitch = bux * nx + buy * ny + buz * nz
 			local clamped = false
 			if devYaw > gains.limitYaw then devYaw, clamped = gains.limitYaw, true
 			elseif devYaw < -gains.limitYaw then devYaw, clamped = -gains.limitYaw, true end
 			if devPitch > gains.limitPitch then devPitch, clamped = gains.limitPitch, true
 			elseif devPitch < -gains.limitPitch then devPitch, clamped = -gains.limitPitch, true end
 			if clamped then
-				-- 用"绑定方向 + 两个轴上的分量"重建再归一化；l/u/b 是一组正交基，这一步不丢信息。
-				local vx = bx2 + devYaw * lx + devPitch * ux
-				local vy = by2 + devYaw * ly + devPitch * uy
-				local vz = bz2 + devYaw * lz + devPitch * uz
+				-- 用"静止方向 + 两个轴上的分量"重建再归一化；l/u/b 是一组正交基，这一步不丢信息。
+				local vx = bbx + devYaw * blx + devPitch * bux
+				local vy = bby + devYaw * bly + devPitch * buy
+				local vz = bbz + devYaw * blz + devPitch * buz
 				local vlen = math.sqrt(vx * vx + vy * vy + vz * vz)
 				if vlen > 1e-9 then
 					nx, ny, nz = vx / vlen, vy / vlen, vz / vlen
@@ -1616,13 +1626,21 @@ function M.attach(S, unit, rig, options)
 						end
 						-- 世界朝向锚定：源数据里同时带 **yaw 约束(0x04) + pitch 约束(0x08)** 的骨，
 						-- 按"布料式"处理 —— 父级旋转只带动平移，不改变朝向。
-						-- 实测样本：大袖子 flags=0x3d（含这两条），头发 flags=0x31（不含）⇒ 头发行为不变。
+						--
+						-- ⚠️ 还必须**同时带 angleCon(0x10)**，这条是 2026-11-01 补的。
+						-- 原判据只查 0x04+0x08，样本恰好是"大袖子 0x3d（有 0x10）"和"头发 0x31（没有 0x04/0x08）"，
+						-- 于是看着能把两者分开。但真实资产里还有第三类：**纯 yaw/pitch 的头发（0x2d，
+						-- 0x01|0x04|0x08|0x20，没有 0x10）**——它被误判成"布料"，于是头怎么转头发都不跟，
+						-- 相对头就是扭了整整一个转头角。实机看着就是"跑起来（身体转向）头发向前翘起、特别僵硬"。
+						-- 袖子是挂在手臂上的布，世界锚定合理；头发是长在头上的，必须跟着头走（只是滞后）。
 						local function hasFlag(value, mask)
 							if bit ~= nil and bit.band ~= nil then return bit.band(value, mask) ~= 0 end
 							-- 没有 bit 库时退回纯算术（掩码都是 2 的幂）
 							return math.floor(value / mask) % 2 == 1
 						end
-						local worldAnchored = hasFlag(chain[1].flags or 0, 0x04) and hasFlag(chain[1].flags or 0, 0x08)
+						local worldAnchored = hasFlag(chain[1].flags or 0, 0x04)
+							and hasFlag(chain[1].flags or 0, 0x08)
+							and hasFlag(chain[1].flags or 0, 0x10)
 						if worldAnchored then
 							logger("[physbone] 链 %s：flags=0x%02x 含 yaw/pitch 约束 ⇒ 世界朝向锚定（父级只带动平移）",
 								tostring(chain[1] and chain[1].name), chain[1].flags or 0)
@@ -1632,6 +1650,24 @@ function M.attach(S, unit, rig, options)
 							dirs = {}, anchorBindQ = { qbx, qby, qbz, qbw },
 							goalQ = worldAnchored and { qbx, qby, qbz, qbw } or nil,
 						}
+						-- 分轴限位的**静止参考系**：右/上/前三个轴一次性在 goalQ 里算好。
+						--
+						-- ⚠️ 必须和"绑定方向"用同一个参考系。曾经混用过（方向用 goalQ、轴用当前 q），
+						-- 于是 `l·n` 不再是"偏离多少"而是随机数，每帧都被夹 ⇒ 一动就僵硬/向前翘。
+						-- goalQ 是绑定时锚点朝向、恒定，所以这里能预计算，每帧零成本。
+						if tipData.goalQ ~= nil then
+							local gq = tipData.goalQ
+							for index = 1, #bonesNew do
+								if bonesNew[index].gains ~= nil and bonesNew[index].gains.axisLimits then
+									local f = bonesNew[index].frameLocal
+									local b = segDirLocal[index]
+									local l1, l2, l3 = qrot(gq[1], gq[2], gq[3], gq[4], f[1], f[2], f[3])
+									local u1, u2, u3 = qrot(gq[1], gq[2], gq[3], gq[4], f[4], f[5], f[6])
+									local b1, b2, b3 = qrot(gq[1], gq[2], gq[3], gq[4], b[1], b[2], b[3])
+									bonesNew[index].limitFrame = { l1, l2, l3, u1, u2, u3, b1, b2, b3 }
+								end
+							end
+						end
 					else
 						logger("[physbone] 链 %s：拿不到 bind 世界位置/锚点旋转，退回旧核", tostring(chain[1] and chain[1].name))
 					end

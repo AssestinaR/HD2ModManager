@@ -31,7 +31,7 @@
 
 local M = {}
 
-M.VERSION = "1.5.0"
+M.VERSION = "1.6.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -527,7 +527,9 @@ local function drive(runtime)
 	-- 求解器夹的是"相对父节"的偏转，而多节链上第 k 节的"偏离绑定"会把前面每一节的偏转累加进去
 	-- ——5 节 × 25° 累到 100° 完全合法。上一版把它算成"超限骨"，报了 28~77，纯属误报。
 	-- 判"限位有没有生效"要看相对父节的偏转，那是求解器内部量，不在这一层。
-	local framePeak, worstBone = 0, nil
+	-- 骨名取 item.chain[index].name，限位取 item.bones[index].gains —— **两个不同的对象**。
+	-- 混用过一次，于是限位永远打印 0°，看着像"限位没生效"，白查一轮。
+	local framePeak, worstName, worstLimit = 0, nil, 0
 	for _, session in ipairs(runtime.sessions) do
 		for _, item in ipairs(session.sessions) do
 			local rotations = item.lastRotations
@@ -536,7 +538,11 @@ local function drive(runtime)
 					local angle = rotations[index][4]
 					if angle > framePeak then
 						framePeak = angle
-						worstBone = item.chain and item.chain[index] or nil
+						local chainBone = item.chain and item.chain[index]
+						worstName = chainBone and chainBone.name or nil
+						local simBone = item.bones and item.bones[index]
+						local gains = simBone and simBone.gains
+						worstLimit = (gains and gains.limit or 0) * 180 / math.pi
 					end
 				end
 			end
@@ -544,8 +550,6 @@ local function drive(runtime)
 	end
 	local framePeakDeg = framePeak * 180 / math.pi
 	if framePeakDeg > (runtime.peakAngle or 0) then runtime.peakAngle = framePeakDeg end
-	local worstLimit = 0
-	if worstBone ~= nil and worstBone.gains ~= nil then worstLimit = (worstBone.gains.limit or 0) * 180 / math.pi end
 
 	-- 阶段心跳：每 N 帧一行，证明驱动块确实被进入过，并给出当帧的关键事实。
 	-- 上一轮出现过"phase 明明是 live 但 update 从不执行"，没有这条就无法区分
@@ -558,7 +562,7 @@ local function drive(runtime)
 			#runtime.sessions, chains, runtime.dt or 0, written, skippedSame, engineCalls,
 			runtime.callsAccum / runtime.driveFrames, staticChains, framePeakDeg,
 			runtime.peakAngle or 0,
-			worstBone ~= nil and tostring(worstBone.name or "?") or "-", worstLimit,
+			worstName ~= nil and tostring(worstName) or "-", worstLimit,
 			runtime.repeatCalls or 0)
 	end
 
