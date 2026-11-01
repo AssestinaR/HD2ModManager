@@ -31,7 +31,7 @@
 
 local M = {}
 
-M.VERSION = "1.2.0"
+M.VERSION = "1.3.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -524,20 +524,36 @@ local function drive(runtime)
 	-- 峰值转角：判断"甩得太开"到底开到了多少度。
 	-- 只报**本拍**的峰值和**本次挂载以来**的峰值——前者说明当下在动多少，
 	-- 后者是"最离谱的那一下"，两者合起来才能区分"一直很大"和"偶尔抽一下"。
-	local framePeak = 0
+	--
+	-- ⚠️ 同时统计**超限**的骨数：求解器每节都按 `gains.limit` 把方向夹在父节方向上，
+	-- 所以单节转角原则上不该超过 limit。实机日志里出现过 174° 而 limit 只有 12~35°，
+	-- 这要么是限位没生效、要么是我这个"峰值"读的根本不是单节转角——两种都很严重，
+	-- 必须用一条明确计数把它们分开，而不是靠人眼比对两个数。
+	local framePeak, overLimit, worstBone = 0, 0, nil
 	for _, session in ipairs(runtime.sessions) do
 		for _, item in ipairs(session.sessions) do
 			local rotations = item.lastRotations
+			local tip = item.tip
+			local tipBones = tip and tip.bones
 			if rotations ~= nil then
 				for index = 1, #rotations do
 					local angle = rotations[index][4]
-					if angle > framePeak then framePeak = angle end
+					if angle > framePeak then
+						framePeak = angle
+						local bone = tipBones and tipBones[index]
+						worstBone = bone
+					end
+					local gains = tipBones and tipBones[index] and tipBones[index].gains
+					local limit = gains and gains.limit or 0
+					if limit > 0 and angle > limit * 1.05 then overLimit = overLimit + 1 end
 				end
 			end
 		end
 	end
 	local framePeakDeg = framePeak * 180 / math.pi
 	if framePeakDeg > (runtime.peakAngle or 0) then runtime.peakAngle = framePeakDeg end
+	local worstLimit = 0
+	if worstBone ~= nil and worstBone.gains ~= nil then worstLimit = (worstBone.gains.limit or 0) * 180 / math.pi end
 
 	-- 阶段心跳：每 N 帧一行，证明驱动块确实被进入过，并给出当帧的关键事实。
 	-- 上一轮出现过"phase 明明是 live 但 update 从不执行"，没有这条就无法区分
@@ -546,10 +562,12 @@ local function drive(runtime)
 	if (runtime.driveFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
-		logger("[physbone] 驱动心跳 unit=%d 链=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 峰值=%.1f°(史上%.1f°) 同拍重复=%d",
+		logger("[physbone] 驱动心跳 unit=%d 链=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 峰值=%.1f°(史上%.1f°) 超限骨=%d 最离谱=%s(限%.0f°) 同拍重复=%d",
 			#runtime.sessions, chains, runtime.dt or 0, written, skippedSame, engineCalls,
 			runtime.callsAccum / runtime.driveFrames, staticChains, framePeakDeg,
-			runtime.peakAngle or 0, runtime.repeatCalls or 0)
+			runtime.peakAngle or 0, overLimit,
+			worstBone ~= nil and tostring(worstBone.name or "?") or "-", worstLimit,
+			runtime.repeatCalls or 0)
 	end
 
 	-- 逐链明细（默认关）：区分"求解器在动"和"参数算出来就是 0"——后者在画面上就是钢板。
