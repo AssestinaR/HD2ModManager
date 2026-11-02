@@ -32,6 +32,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     private ScrollViewer? _dragAutoScrollViewer;
     private int _dragAutoScrollDirection;
     private double _dragAutoScrollStep;
+    private bool _transitionActive;
+    private readonly MouseButtonEventHandler _dragUpGuardHandler;
     private bool _isInternalDragActive;
     private bool _isExternalProfileDragActive;
     private bool _isRelationshipDragActive;
@@ -62,6 +64,7 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
         _transitionController.TransitionStateChanged += OnTransitionStateChanged;
         ItemsList.Loaded += (_, _) => ConfigureInternalSmoothScroll(UseInternalScroll);
         _dragAutoScrollTimer.Tick += OnDragAutoScrollTick;
+        _dragUpGuardHandler = OnDragUpGuard;
         Loaded += (_, _) =>
         {
             _transitionController.Attach(ItemsSource);
@@ -205,9 +208,22 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
 
     private void OnTransitionStateChanged(bool isTransitionActive)
     {
-        ItemsList.IsHitTestVisible = !isTransitionActive;
+        _transitionActive = isTransitionActive;
+        SyncItemsHitTest();
         TransitionStateChanged?.Invoke(this, new ModListTransitionStateChangedEventArgs(isTransitionActive));
     }
+
+    /// <summary>
+    /// 列表在过渡期间不接受点击（防止动画中误点）。但**拖动进行中绝不能关**：
+    /// WPF 在"持有鼠标捕获的元素变成不可命中"时会释放捕获，拖动会当场断掉——
+    /// 表现就是拖到一半松手什么都没发生，而且只有第一次拖得动。
+    /// </summary>
+    private void SyncItemsHitTest()
+    {
+        ItemsList.IsHitTestVisible = !_transitionActive || IsDragActive;
+    }
+
+    private bool IsDragActive => _isInternalDragActive || _isRelationshipDragActive || _isExternalProfileDragActive;
 
     private void OnToggleSearchClick(object sender, RoutedEventArgs e)
     {
@@ -502,6 +518,14 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
 
     private void OnListBackgroundMouseDown(object sender, MouseButtonEventArgs e)
     {
+        // 保险：上一次拖动如果在窗口外松手，抬起事件谁都收不到，状态会残留。
+        // 新的一次按下先把残留清掉，否则这一下会被误当成上一次拖动的延续。
+        if (IsDragActive)
+        {
+            EndInternalDrag();
+            EndExternalRelationshipDrag(commit: false);
+            EndExternalProfileDrag(commit: false);
+        }
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
         if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject) is not null)
         {
@@ -535,6 +559,9 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
 
     private void OnItemsListPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        // 拖动结算通常在 OnDragUpGuard（窗口级）就完成了，它先于这里执行并把事件吃掉。
+        // 下面这三支是"面板没有挂在窗口里、兜底挂不上"时的退路——不是重复逻辑，
+        // 两条路都调同一组 End* 方法，谁先跑到谁结算，后到的因为状态已清而空转。
         if (_isInternalDragActive)
         {
             EndInternalDrag(e.GetPosition(ItemsList));
@@ -571,6 +598,46 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
 
         _dragCandidate = null;
     }
+
+    /// <summary>
+    /// 拖动期间在窗口级兜住鼠标抬起。WPF 有时会在拖动中途释放捕获（原因未明），
+    /// 那一瞬间抬起事件会落到光标下的别的元素上，列表收不到，拖动就"静默失败"了。
+    /// 窗口级的预览处理器一定能收到，所以把它作为唯一出口——捕获还在时也走这里，
+    /// 只有一条路径，不会重复处理。
+    /// </summary>
+    private void OnDragUpGuard(object sender, MouseButtonEventArgs e)
+    {
+        if (!IsDragActive) return;
+        if (_isExternalProfileDragActive)
+        {
+            EndExternalProfileDrag(commit: true, e.GetPosition(this));
+        }
+        else if (_isRelationshipDragActive)
+        {
+            EndExternalRelationshipDrag(commit: true, e.GetPosition(this));
+        }
+        else
+        {
+            EndInternalDrag(e.GetPosition(ItemsList));
+        }
+
+        e.Handled = true;
+    }
+
+    private void AttachDragUpGuard()
+    {
+        var window = Window.GetWindow(this);
+        if (window is null) return;
+        window.RemoveHandler(UIElement.PreviewMouseLeftButtonUpEvent, _dragUpGuardHandler);
+        window.AddHandler(UIElement.PreviewMouseLeftButtonUpEvent, _dragUpGuardHandler, handledEventsToo: true);
+    }
+
+    private void DetachDragUpGuard()
+    {
+        var window = Window.GetWindow(this);
+        window?.RemoveHandler(UIElement.PreviewMouseLeftButtonUpEvent, _dragUpGuardHandler);
+    }
+
 
     private bool TryRequestSelectionAtPointer(MouseButtonEventArgs e)
     {
@@ -619,6 +686,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     private void BeginInternalDrag(DragCandidate candidate, Point position)
     {
         _isInternalDragActive = true;
+        SyncItemsHitTest();
+        AttachDragUpGuard();
         _activeInternalDragPayload = new InternalDragPayload(candidate.SelectedKeys);
         _isRelationshipDropTargetActive = RelationshipDragOperation != ModRelationshipDragOperation.None
             && ModRelationshipDragCoordinator.TryBegin(
@@ -655,6 +724,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
         _activeInternalDragPayload = null;
         _dragCandidate = null;
         _isInternalDragActive = false;
+        SyncItemsHitTest();
+        DetachDragUpGuard();
         try
         {
             var position = dropPosition;
@@ -687,15 +758,25 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
 
     private void OnItemsListLostMouseCapture(object sender, MouseEventArgs e)
     {
-        if (_isInternalDragActive) EndInternalDrag();
-        if (_isRelationshipDragActive) EndExternalRelationshipDrag(commit: false);
-        if (_isExternalProfileDragActive) EndExternalProfileDrag(commit: false);
+        if (!IsDragActive) return;
+
+        // 捕获丢失**不等于**拖动结束。
+        // WPF 会在拖动开始约 0.3 秒后自己把捕获清成 null（ChangeMouseCapture(null)，
+        // 从 InputManager.ProcessStagingArea 进来，列表本身可用/可见/可命中、也没有过渡在跑）。
+        // 早先这里直接把拖动取消，于是用户真正松手时什么都没发生——那正是"拖不动"的成因。
+        // 现在抬起统一由窗口级兜底处理器结算，这里只记录，不动状态。
     }
 
     private void BeginExternalProfileDrag(DragCandidate candidate)
     {
-        if (!ModListExternalProfileDropCoordinator.TryBegin(this, candidate.SelectedKeys)) return;
+        if (!ModListExternalProfileDropCoordinator.TryBegin(this, candidate.SelectedKeys))
+        {
+            // 拖不起来的三种原因都在 TryBegin 里，让它自己写日志，这里只记一次"到此一游"。
+            return;
+        }
         _isExternalProfileDragActive = true;
+        SyncItemsHitTest();
+        AttachDragUpGuard();
         _previousOverrideCursor = Mouse.OverrideCursor;
         Mouse.OverrideCursor = Cursors.SizeAll;
         Mouse.Capture(ItemsList, CaptureMode.Element);
@@ -712,6 +793,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
             return false;
 
         _isRelationshipDragActive = true;
+        SyncItemsHitTest();
+        AttachDragUpGuard();
         _previousOverrideCursor = Mouse.OverrideCursor;
         Mouse.OverrideCursor = Cursors.SizeAll;
         Mouse.Capture(ItemsList, CaptureMode.Element);
@@ -739,6 +822,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     {
         if (!_isExternalProfileDragActive) return;
         _isExternalProfileDragActive = false;
+        SyncItemsHitTest();
+        DetachDragUpGuard();
         _dragCandidate = null;
         try
         {
@@ -759,6 +844,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     {
         if (!_isRelationshipDragActive) return;
         _isRelationshipDragActive = false;
+        SyncItemsHitTest();
+        DetachDragUpGuard();
         _dragCandidate = null;
         try
         {
@@ -777,9 +864,16 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
 
     internal bool ContainsScreenPoint(Point point)
     {
-        if (!IsLoaded || !AllowExternalProfileDrop || ItemsList.ActualWidth <= 0 || ItemsList.ActualHeight <= 0) return false;
+        if (!IsLoaded || !AllowExternalProfileDrop || ItemsList.ActualWidth <= 0 || ItemsList.ActualHeight <= 0)
+        {
+            return false;
+        }
         var local = ItemsList.PointFromScreen(point);
-        return local.X >= 0 && local.Y >= 0 && local.X <= ItemsList.ActualWidth && local.Y <= ItemsList.ActualHeight;
+        var inside = local.X >= 0 && local.Y >= 0 && local.X <= ItemsList.ActualWidth && local.Y <= ItemsList.ActualHeight;
+        if (!inside)
+        {
+        }
+        return inside;
     }
 
     internal bool ContainsScreenPointForRemoval(Point point)
