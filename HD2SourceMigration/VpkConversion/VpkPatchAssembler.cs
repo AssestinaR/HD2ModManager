@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
@@ -318,6 +319,8 @@ public sealed class VpkPatchAssembler
 		var skipped = new List<string>();
 		// 材质总账（见 VpkMaterialGap 的注释）：由 ResolveAndEmitMaterials 填。
 		VpkMaterialGap? materialGap = null;
+		// 源侧声明 `$no_draw` 的材质下标（= sourceMaterialNames 的下标），由 ResolveAndEmitMaterials 填。
+		var noDrawMaterialIndices = new HashSet<int>();
 
 		// 命名空间以转换器为准（见参数注释）：转换器有它就一定用它派生，装配器必须跟着用，
 		// 否则下面两处"按 id 去重"的键与真正写出的 id 不是同一个。
@@ -344,6 +347,15 @@ public sealed class VpkPatchAssembler
 		if (materialConverter is not null && (materialScope is not null || sourceMaterialNames is not null))
 			ResolveAndEmitMaterials();
 
+		// 源侧写着 `$no_draw` 的部件：**连几何一起不写**。
+		//
+		// 源侧语义就是"这块不画"，最常用的场合是**网格变体选择**：P1/P2/P3 三套衣服全部烘在
+		// 同一个模型里，靠"哪几个材质声明 $no_draw"决定当前显示哪一套。
+		// 以前我们在 HD2 里把它当"无等价物"只跳过材质、三角形照写 → 那些 section 指向一个谁都
+		// 没有的材质 id → 上机紫块（实测「少女前线2 夏安」49 个材质里有 24 个是这种）。
+		// 正确做法：这些三角形不写进 patch——既忠实于源侧，也不会留下没人认领的 section。
+		var effectivePlans = FilterNoDrawPlans(plans, geometry, noDrawMaterialIndices, warnings);
+
 		// 与 CustomModelConversionService 同构：一个随机块 + 递增，保证同批产物不撞号。
 		// 给了 `unitIdSeed` 就用它 —— 用来**原地替换**一个已经登记过的包：
 		// unit id 保持不变，工作区里的映射就不用重做，改动只剩"几何变了"这一个变量。
@@ -355,14 +367,14 @@ public sealed class VpkPatchAssembler
 
 		// ① 逐 Unit 里"便宜且必须有顺序"的部分先串行算掉：unit id 的分配顺序决定产物可复现，
 		//    配件层号也依赖遍历顺序。把它们塞进并行区只会把顺序搞乱，而它们本身不花时间。
-		var unitIds = new string[plans.Count];
-		var slots = new uint[plans.Count];
-		var registryPiecesByPlan = new IReadOnlyList<VpkRegistryPiece>[plans.Count];
-		var customizations = new UnitCustomizationInfo[plans.Count];
-		for (var planIndex = 0; planIndex < plans.Count; planIndex++)
+		var unitIds = new string[effectivePlans.Count];
+		var slots = new uint[effectivePlans.Count];
+		var registryPiecesByPlan = new IReadOnlyList<VpkRegistryPiece>[effectivePlans.Count];
+		var customizations = new UnitCustomizationInfo[effectivePlans.Count];
+		for (var planIndex = 0; planIndex < effectivePlans.Count; planIndex++)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			var plan = plans[planIndex];
+			var plan = effectivePlans[planIndex];
 			// 给了 Identity 就用目标护甲自己的 Unit id：这条 Unit 会直接顶替那个槽位，
 			// 用生成出来的 id 会让"内容说 Any、占位说 Slim"这种自相矛盾的产物成立。
 			var unitId = plan.Identity?.UnitId;
@@ -432,12 +444,12 @@ public sealed class VpkPatchAssembler
 
 		// ② 逐 Unit 的"重活"并行：建网格 + 写 Unit 互不相干（输入只读、产物各归各的数组）。
 		//    实测一份 42 万顶点的模型，7 个 Unit 串行 18.3 s，并行之后约 3 s。
-		var meshes = new RetargetedMesh[plans.Count];
-		var authoredUnits = new UnitAuthorResult[plans.Count];
+		var meshes = new RetargetedMesh[effectivePlans.Count];
+		var authoredUnits = new UnitAuthorResult[effectivePlans.Count];
 		var unitsDone = 0;
-		Parallel.For(0, plans.Count, VpkParallel.Options, planIndex =>
+		Parallel.For(0, effectivePlans.Count, VpkParallel.Options, planIndex =>
 		{
-			var plan = plans[planIndex];
+			var plan = effectivePlans[planIndex];
 			var mesh = RetargetedMeshBuilder.Build(plan.Group, geometry!, retarget!, transformInfo!);
 			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
 			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
@@ -448,13 +460,13 @@ public sealed class VpkPatchAssembler
 				plan.Donor.FileId, materialIdsBySourceMaterial));
 			meshes[planIndex] = mesh;
 			authoredUnits[planIndex] = authored;
-			onProgress?.Invoke("units", Interlocked.Increment(ref unitsDone), plans.Count);
+			onProgress?.Invoke("units", Interlocked.Increment(ref unitsDone), effectivePlans.Count);
 		});
 
 		// ③ 按计划顺序收口：诊断、产物记录、session 条目都要保持顺序（重跑要逐字节可复现）。
-		for (var planIndex = 0; planIndex < plans.Count; planIndex++)
+		for (var planIndex = 0; planIndex < effectivePlans.Count; planIndex++)
 		{
-			var plan = plans[planIndex];
+			var plan = effectivePlans[planIndex];
 			var unitId = unitIds[planIndex];
 			var mesh = meshes[planIndex];
 			var authored = authoredUnits[planIndex];
@@ -757,10 +769,28 @@ public sealed class VpkPatchAssembler
 			{
 				if (idByStem.ContainsKey(required)) continue;
 				var reason = skipReasonByStem.TryGetValue(required, out var text) ? text : string.Empty;
-				if (reason.Contains("$no_draw", StringComparison.OrdinalIgnoreCase))
+				// **两类判据都要看。**
+				// 转换器只在"自己解析到的那份 VMT 直接写着 $no_draw"时才给这个理由；
+				// 而 `eye_l` 那类包的 VMT 先走了 include 展开、在别的地方先失败（"展开后没有底色"），
+				// 于是理由里没有 $no_draw 三个字——按理由分类会把它误判成"真缺失"。
+				// 这里再补一次**原始字节**检查：文件里写着 $no_draw 就是源侧要求不绘制。
+				if (reason.Contains("$no_draw", StringComparison.OrdinalIgnoreCase) || DeclaresNoDraw(required))
 					noDrawMaterials.Add(required);
 				else
 					missingMaterials.Add(required);
+			}
+
+			bool DeclaresNoDraw(string stem)
+			{
+				try
+				{
+					if (scope is null || !scope.TryReadVmt(stem, out var bytes) || bytes.Length == 0) return false;
+					return Encoding.UTF8.GetString(bytes).Contains("$no_draw", StringComparison.OrdinalIgnoreCase);
+				}
+				catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+				{
+					return false;
+				}
 			}
 
 			materialGap = new VpkMaterialGap(
@@ -768,6 +798,22 @@ public sealed class VpkPatchAssembler
 				ResolvedCount: requiredStems.Count(material => idByStem.ContainsKey(material)),
 				NoDraw: noDrawMaterials,
 				Missing: missingMaterials);
+
+			// 把"没有材质可指"的名字翻成**材质下标**，供装配阶段丢掉对应三角形的几何。
+			//
+			// **两类都要丢**：`$no_draw` 是源侧要求不画；真缺失（谁都没提供）留着只会让那块上机紫。
+			// 一个指向不存在材质 id 的 section 从来不会有好结果，只会把问题藏到进游戏之后。
+			if (sourceMaterialNames is not null && (noDrawMaterials.Count != 0 || missingMaterials.Count != 0))
+			{
+				var unmaterialedStems = noDrawMaterials
+					.Concat(missingMaterials)
+					.ToHashSet(StringComparer.OrdinalIgnoreCase);
+				for (var materialIndex = 0; materialIndex < sourceMaterialNames.Count; materialIndex++)
+				{
+					if (unmaterialedStems.Contains(StemOf(sourceMaterialNames[materialIndex])))
+						noDrawMaterialIndices.Add(materialIndex);
+				}
+			}
 
 			// ⑤ 对照表。**每一条都要有行**——包括"算过但没写进本 patch"和
 			// "本 VPK 自己带、模型没用到"。没有这张表，"少了一个材质"只能靠人肉比对。
@@ -928,6 +974,53 @@ public sealed class VpkPatchAssembler
 			.Select(triangle => geometry.Triangles[triangle].MaterialIndex)
 			.Distinct()
 			.Order();
+
+	/// <summary>
+	/// 把"整块都用 <c>$no_draw</c> 材质"的三角形从计划里剔掉。
+	/// <para>
+	/// 剔除的是<b>三角形</b>而不是整个 Unit：一个 Unit 里通常既有要画的部件、也有 `$no_draw` 的，
+	/// 按材质逐段剔除才是源侧的意思。剔除之后 section 自然只剩要画的那些——
+	/// 不会留下指向"不存在的材质"的 section（那正是紫块的来源）。
+	/// </para>
+	/// <para>
+	/// 整条 Unit 的三角形全被剔掉时，这条 Unit 不产出（记录一条警告，别让"少了几个 Unit"无声无息）。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyList<VpkUnitPlan> FilterNoDrawPlans(
+		IReadOnlyList<VpkUnitPlan> plans,
+		SourceGeometry? geometry,
+		IReadOnlySet<int> noDrawMaterialIndices,
+		List<string> warnings)
+	{
+		if (plans.Count == 0 || geometry is null || noDrawMaterialIndices.Count == 0) return plans;
+
+		var filtered = new List<VpkUnitPlan>(plans.Count);
+		var dropped = new List<string>();
+		foreach (var plan in plans)
+		{
+			var kept = plan.Group.TriangleIndices
+				.Where(triangle => !noDrawMaterialIndices.Contains(geometry.Triangles[triangle].MaterialIndex))
+				.ToArray();
+			if (kept.Length == 0)
+			{
+				dropped.Add(plan.Group.Name);
+				continue;
+			}
+
+			filtered.Add(kept.Length == plan.Group.TriangleIndices.Count
+				? plan
+				: plan with { Group = plan.Group with { TriangleIndices = kept } });
+		}
+
+		if (dropped.Count != 0)
+		{
+			warnings.Add($"{dropped.Count} 个部件整块都是源侧 $no_draw（不绘制），已按源侧不产出："
+				+ $"{string.Join("、", dropped.Take(8))}"
+				+ (dropped.Count > 8 ? $"…（共 {dropped.Count} 个）" : string.Empty));
+		}
+
+		return filtered;
+	}
 
 	private static string StemOf(string materialName)
 		=> Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(materialName));
