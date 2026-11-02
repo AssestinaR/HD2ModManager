@@ -1124,10 +1124,26 @@ public sealed class SourceMaterialConverter
 			? stem + "_matcapbase"
 			: Path.GetFileNameWithoutExtension(baseTexture);
 
+		// 底图缺失时的提示，等 `notices` 建好之后再塞进去（它声明在后面）。
+		string? missingBaseNotice = null;
+
 		if (!syntheticBase && !source.TryReadVtf(textureName, out _))
 		{
-			reason = $"{stem}：贴图来源里找不到 {textureName}.vtf";
-			return LoadOutcome.Failed;
+			// ⚠️ **底图找不到不再整块失败**——退成中性色，并大声报告。
+			//
+			// 原来的行为是 `return LoadOutcome.Failed`，于是这个材质在 patch 里根本不存在，
+			// 模型引用的 section 找不到材质 → 游戏里显示**品红**。实测代价：MourningVeil 的
+			// B3（服装色白紫）包里 `mat_glovepreal*` 三个材质的 `$basetexture` 写的是 `black`，
+			// 而 `black.vtf` **在任何包里都不存在**（B1/B2 用的是 `Mat_GloveCloth`）——
+			// 那是源包的打包缺陷，但用户看到的是"右臂珍珠臂环中心一块品红"。
+			//
+			// 对转换器来说，**一块颜色不对但看得见的材质，永远好过一块品红**。
+			// 所以这里退成中性色继续走，并把这件事写进 warnings（管理器会展示）。
+			missingBaseNotice =
+				$"{stem}：底图 {textureName}.vtf 在材质来源里找不到"
+				+ "（源包缺这张图），已退成中性灰 —— 游戏里不会显示品红，但颜色不对。";
+			syntheticBase = true;
+			baseTexture = SyntheticBaseName(stem);
 		}
 
 		// 先解**底色**：既要它的像素（铸进 patch），也要它的 alpha 与亮度来判定
@@ -1137,11 +1153,12 @@ public sealed class SourceMaterialConverter
 		AlphaStats baseAlpha;
 		if (syntheticBase)
 		{
-			// 纯黑 4×4。尺寸取 4×4 而不是 1×1：占位判据是"长宽都 ≤ 4"，两条都满足，
+			// 4×4 中性灰。尺寸取 4×4 而不是 1×1：占位判据是"长宽都 ≤ 4"，两条都满足，
 			// 而 4×4 让下游的 DDS / BC7 编码走正常路径。alpha 也置 0
 			// ——"底色不承担形状"，这样下面不会被误判成 alphaclip。
+			var grey = MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
 			vtf = VtfFile.Synthetic(4, 4);
-			rgba = MaterialAppearance.SolidRgba(4, 0, 0, 0, 0);
+			rgba = MaterialAppearance.SolidRgba(4, grey, grey, grey, 0);
 			baseAlpha = TextureAlpha.Measure(rgba);
 		}
 		else
@@ -1224,6 +1241,8 @@ public sealed class SourceMaterialConverter
 		// 打在一块有内容的底色上，观感介于"金属"和"塑料"之间，最难查。
 		double[]? matcapMean = null;
 		var notices = new List<string>();
+		if (missingBaseNotice is not null)
+			notices.Add(missingBaseNotice);
 
 		// ⚠️ **Metal 模式只对"没有真底色"的材质生效**（`syntheticBase`）。
 		//
