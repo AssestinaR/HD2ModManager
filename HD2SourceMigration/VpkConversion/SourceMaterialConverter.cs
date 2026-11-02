@@ -408,7 +408,8 @@ public sealed class SourceMaterialConverter
 		CutoutStrategy cutoutStrategy = CutoutStrategy.AlphaClip,
 		double matcapBakeGain = 1.0,
 		AlphaExperiment alphaExperiment = AlphaExperiment.None,
-		int ditherScale = 2)
+		int ditherScale = 1,
+		double ditherDensity = 0.75)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -421,6 +422,7 @@ public sealed class SourceMaterialConverter
 		this.matcapBakeGain = double.IsFinite(matcapBakeGain) && matcapBakeGain > 0 ? matcapBakeGain : 1.0;
 		this.alphaExperiment = alphaExperiment;
 		this.ditherScale = Math.Clamp(ditherScale, 1, 8);
+		this.ditherDensity = double.IsFinite(ditherDensity) ? Math.Clamp(ditherDensity, 0.05, 1.0) : 1.0;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -458,10 +460,22 @@ public sealed class SourceMaterialConverter
 	private readonly AlphaExperiment alphaExperiment;
 
 	/// <summary>
-	/// 抖动的**点大小**（1 = 每像素一个点，2 = 2×2 的点）。面积不变、空间频率降低，
-	/// 所以远处等效透明度不变、近处颗粒感减轻。默认 2。
+	/// 抖动的**点大小**（1 = 每像素一个点，2 = 2×2 的点）。
+	/// <para>
+	/// 实机反馈：2 太粗——放大点只会让颗粒更明显，不会更"轻"。所以默认回到 1，
+	/// "稀不稀"交给 <see cref="ditherDensity"/>。
+	/// </para>
 	/// </summary>
 	private readonly int ditherScale;
+
+	/// <summary>
+	/// 抖动的**密度**（乘在 alpha 上）：1.0 = 忠实还原源侧 alpha；越小点越少、越透。
+	/// <para>
+	/// 点大小与密度是两个独立旋钮。实机结论是"点保持 1 像素、只降密度"观感最好：
+	/// 源侧 alpha 直接抖出来的点偏密、偏"厚"，压到 0.75 之后薄纱感更像原版。
+	/// </para>
+	/// </summary>
+	private readonly double ditherDensity;
 
 	/// <summary>
 	/// 实验开关是否真的改这个材质的模板：**只对"需要透明"的材质生效**。
@@ -1569,7 +1583,7 @@ public sealed class SourceMaterialConverter
 		{
 			var value = rgba[offset + 3];
 			if (dithered)
-				value = DitherAlpha(value, offset / 4, width, ditherGain, ditherScale);
+				value = DitherAlpha(value, offset / 4, width, ditherGain, ditherScale, ditherDensity);
 			if (inverted)
 				value = (byte)(255 - value);
 			var grey = inAlpha ? (byte)255 : value;
@@ -1611,17 +1625,22 @@ public sealed class SourceMaterialConverter
 	/// 我们合成的遮罩本来就只有 1 级 mip（<c>BuildDds(..., [mask])</c> 单元素 mip 链）。
 	/// </para>
 	/// </summary>
-	private static byte DitherAlpha(byte alpha, int pixelIndex, int width, double gain, int dotScale)
+	private static byte DitherAlpha(byte alpha, int pixelIndex, int width, double gain, int dotScale, double density)
 	{
 		const int lowCut = 13;    // ≈5%
 		const int highCut = 242;  // ≈95%
 		var scaled = gain == 1.0 ? alpha : Math.Min(255.0, alpha * gain);
 		if (scaled <= lowCut) return 0;
-		if (scaled >= highCut && gain == 1.0) return 255;
+		// **密度**：乘在 alpha 上，也就是"同样大小的一小块区域里画几个点"。
+		// 1.0 = 忠实还原源侧 alpha（点阵密度 = 透明度）；< 1 就是整体更透（点更少）。
+		// 实机调参结论：源侧 alpha 直接抖出来的点**偏密**，观感偏"厚"，
+		// 而玩家要的是"点还是那么小、但更稀"——所以点大小保持 1 像素、密度单独压。
+		if (density != 1.0) scaled *= Math.Clamp(density, 0.05, 1.0);
+		if (scaled >= highCut && gain == 1.0 && density == 1.0) return 255;
 
 		// **点的大小**：阈值按 dotScale×dotScale 个像素共用一个格子。
-		// 1 = 每像素一个点（最细，近看像噪点）；2 = 2×2 的点（近看像细网纱）；
-		// 面积不变、空间频率降低，所以远处等效透明度不变、近处颗粒感明显减轻。
+		// 1 = 每像素一个点（最细，近看像细噪点）；2 = 2×2 的点（像细网纱，但颗粒更粗）。
+		// 实机反馈：2 太粗，观感不如 1 —— 所以默认 1，靠 density 控制"稀不稀"。
 		var scale = Math.Clamp(dotScale, 1, 8);
 		var x = pixelIndex % width / scale;
 		var y = pixelIndex / width / scale;
