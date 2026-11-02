@@ -396,6 +396,25 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	private const string MetalF0Suffix = "_f0";
 
+	/// <summary>
+	/// <c>DirtGlobalAmount</c>（0xa3351311）：<b>脏污/天气的总开关</b>（标量）。
+	/// <para>
+	/// <b>这就是"镂空件在雪地被雪图层覆盖"的根因。</b>实测 <c>alphaclip</c> 模板的默认值是
+	/// <b>1</b>（满脏污），配套还有 <c>WeatheringCoverage = 0.5</c>、
+	/// <c>WeatheringMasking = 1</c>、<c>DirtDetailMasking = 1</c>、<c>DirtAoCoverage = 1</c>；
+	/// 而 <c>advanced</c> 模板<b>根本没有这些变量</b>，它的 <c>WeatheringTiling</c> 还是 0。
+	/// </para>
+	/// <para>
+	/// 所以同一件衣服，做成 <c>advanced</c> 不受天气影响、做成 <c>alphaclip</c> 就被雪盖住
+	/// —— 不是"alphaclip 缺掩码槽"，而是它的默认值把天气拉满了。
+	/// 源侧模组没有"天气/脏污"这个概念，所以转换时应当关掉。
+	/// </para>
+	/// </summary>
+	public const uint DirtGlobalAmountVariableId = 0xa3351311;
+
+	/// <summary><c>WeatheringCoverage</c>（0x4a7cd0ef）：天气覆盖率（标量，alphaclip 默认 0.5）。</summary>
+	public const uint WeatheringCoverageVariableId = 0x4a7cd0ef;
+
 	/// <summary><c>OpacityThreshold</c>（0x529a4aaf）：<c>alphaclip</c> 族的镂空阈值。</summary>
 	public const uint OpacityThresholdVariableId = 0x529a4aaf;
 
@@ -994,6 +1013,14 @@ public sealed class SourceMaterialConverter
 			material.SetTexture(AlphaClipOpacitySlot, opacityMask.Id);
 			material.SetTexture(AlphaClipBaseColorSlot, texture.Id);
 			textures.Add(opacityMask);
+
+			// 关掉脏污/天气。`alphaclip` 模板的默认值是**满脏污**（`DirtGlobalAmount = 1`），
+			// 于是镂空件在雪地会被雪图层整个盖住，而 `advanced` 的件不受影响。
+			// 源侧模组没有"天气/脏污"这个概念，转换器应当关掉。
+			if (!material.TrySetScalar(DirtGlobalAmountVariableId, 0f))
+				return MaterialSynthesisResult.Failed(
+					$"{stem}：alphaclip 模板里找不到 DirtGlobalAmount 变量，无法关闭天气/脏污");
+			material.TrySetScalar(WeatheringCoverageVariableId, 0f);
 
 			// B 档：只动阈值这一个变量（A 档保持模板默认 0.5）。
 			if (cutoutStrategy == CutoutStrategy.AlphaClipTuned
