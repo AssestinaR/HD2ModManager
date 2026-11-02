@@ -3808,6 +3808,17 @@ public static class CliApplication
 			warnings = package.Warnings,
 			// 跳过：源侧自己写着"别画"（$no_draw）。不是问题，别和警告混在一起。
 			skipped = package.Skipped,
+			// **材质总账**：模型要多少、落地多少、差的是哪两类。
+			// 上机紫块只能靠这一份说清——"写了 31 个材质"本身看不出够不够。
+			materialGap = package.MaterialGap is null
+				? null
+				: new
+				{
+					required = package.MaterialGap.RequiredCount,
+					resolved = package.MaterialGap.ResolvedCount,
+					noDraw = package.MaterialGap.NoDraw,
+					missing = package.MaterialGap.Missing,
+				},
 			// 这个 VPK 一个 patch 都没产出时的**一句话结论**（null 表示产出了东西）。
 			note = outcome.Kind == "material" && package.TocPath is null && package.MaterialPackPath is null
 				? "这个 VPK 里没有 HD2 能用的资源，因此没有产出 patch。" + ExplainNothingProduced(outcome)
@@ -3930,6 +3941,21 @@ public static class CliApplication
 			// 跳过的东西单独一段：它们是源侧本来的意思，不该用警告的口气说。
 			foreach (var skip in package.Skipped)
 				lines.Add($"        · 跳过：{skip}");
+
+			// 材质总账。**一行说清"紫块从哪来"**：要多少 / 落地多少 / 差在哪一类。
+			if (package.MaterialGap is { } gap && !gap.IsClean)
+			{
+				lines.Add($"        ⚠️ 材质总账：模型要 {gap.RequiredCount} 个，落地 {gap.ResolvedCount} 个"
+					+ $"，缺 {gap.UnresolvedCount} 个"
+					+ $"（其中源侧 $no_draw 不绘制 {gap.NoDraw.Count} 个、真缺失 {gap.Missing.Count} 个）");
+				if (gap.Missing.Count != 0)
+					lines.Add($"          真缺失：{string.Join("、", gap.Missing.Take(12))}"
+						+ (gap.Missing.Count > 12 ? $"…（共 {gap.Missing.Count} 个）" : string.Empty));
+				if (gap.NoDraw.Count != 0)
+					lines.Add($"          $no_draw（HD2 里暂无等价物，上机会显示为紫块）："
+						+ $"{string.Join("、", gap.NoDraw.Take(8))}"
+						+ (gap.NoDraw.Count > 8 ? $"…（共 {gap.NoDraw.Count} 个）" : string.Empty));
+			}
 
 			if (outcome.RegistryError is not null)
 				lines.Add($"        ⚠️ 素体未登记：{outcome.RegistryError}");

@@ -142,6 +142,31 @@ public sealed record VpkMaterialOutcome(
 /// <summary>一张贴图的产出记录。同样是为了让"没写"有明确理由，而不是靠猜。</summary>
 public sealed record VpkTextureOutcome(string Name, ulong Id, string Origin, bool Emitted, string Reason);
 
+/// <summary>
+/// 材质的**总账**：模型要多少、落地多少、差的是哪几类。
+/// <para>
+/// <b>为什么必须有。</b>「少女前线2 夏安」那种包上机后一片紫块，而转换报告只写了
+/// "31 个材质"——没写"模型要 51 个"。差的那 20 个里有两类完全不同的东西：
+/// </para>
+/// <list type="bullet">
+/// <item><b><see cref="NoDraw"/></b>：源侧自己写着 <c>$no_draw</c>。在 L4D2 里这是
+/// "这块网格不绘制"，常常被用来做<b>网格变体选择</b>（P1/P2/P3 三套衣服共存，靠材质决定哪套可见）。
+/// 我们目前在 HD2 里没有等价物 ⇒ 这些部件会紫。修法是把它们翻成 section 隐藏，不是丢掉。</item>
+/// <item><b><see cref="Missing"/></b>：模型引用了、但谁都解析不出来（包里没有 / 合成失败）。这是真缺失。</item>
+/// </list>
+/// </summary>
+public sealed record VpkMaterialGap(
+	int RequiredCount,
+	int ResolvedCount,
+	IReadOnlyList<string> NoDraw,
+	IReadOnlyList<string> Missing)
+{
+	/// <summary>模型要的材质里，有多少没有对应材质（<see cref="NoDraw"/> ∪ <see cref="Missing"/>）。</summary>
+	public int UnresolvedCount => RequiredCount - ResolvedCount;
+
+	public bool IsClean => UnresolvedCount <= 0;
+}
+
 public sealed record VpkPackageResult(
 	string? TocPath,
 	IReadOnlyList<VpkUnitOutcome> Units,
@@ -196,6 +221,15 @@ public sealed record VpkPackageResult(
 	/// </para>
 	/// </summary>
 	public IReadOnlyList<string> Skipped { get; init; } = [];
+
+	/// <summary>
+	/// 材质总账：模型要多少、落地多少、差的是哪几类（<c>$no_draw</c> vs 真缺失）。
+	/// <para>
+	/// <b>这是"上机紫块"的唯一诚实答案。</b>以前只报"写了 N 个材质"，读者无从判断够不够；
+	/// 有了这份总账，"要 51 / 落地 39 / 12 个是源侧 <c>$no_draw</c>"一行就能说清问题在哪。
+	/// </para>
+	/// </summary>
+	public VpkMaterialGap? MaterialGap { get; init; }
 }
 
 /// <summary>
@@ -282,6 +316,8 @@ public sealed class VpkPatchAssembler
 		var diagnostics = new List<string>();
 		var warnings = new List<string>();
 		var skipped = new List<string>();
+		// 材质总账（见 VpkMaterialGap 的注释）：由 ResolveAndEmitMaterials 填。
+		VpkMaterialGap? materialGap = null;
 
 		// 命名空间以转换器为准（见参数注释）：转换器有它就一定用它派生，装配器必须跟着用，
 		// 否则下面两处"按 id 去重"的键与真正写出的 id 不是同一个。
@@ -489,6 +525,7 @@ public sealed class VpkPatchAssembler
 			Textures = textureOutcomes,
 			Warnings = warnings,
 			Skipped = skipped,
+			MaterialGap = materialGap,
 		};
 
 		// ── 局部函数：材质与贴图的解析与写出 ──────────────────────────────────
@@ -506,6 +543,8 @@ public sealed class VpkPatchAssembler
 			// ① 要解析的材质名。**去重**：`MaterialPaths` 里同名材质会出现多次。
 			var stems = new List<string>();
 			var seenStems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			// 模型真正引用到的那些（= "必须落地"的集合），用来算材质总账。
+			var requiredStems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			if (sourceMaterialNames is not null)
 			{
 				foreach (var materialIndex in UsedMaterialIndices(plans, geometry!))
@@ -513,6 +552,7 @@ public sealed class VpkPatchAssembler
 					if (materialIndex < 0 || materialIndex >= sourceMaterialNames.Count)
 						continue;
 					var stem = StemOf(sourceMaterialNames[materialIndex]);
+					requiredStems.Add(stem);
 					if (seenStems.Add(stem))
 						stems.Add(stem);
 				}
@@ -535,6 +575,8 @@ public sealed class VpkPatchAssembler
 			var idByStem = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
 			var identityByStem = new Dictionary<string, MaterialIdentity>(StringComparer.OrdinalIgnoreCase);
 			var productByStem = new Dictionary<string, MaterialSynthesisResult>(StringComparer.OrdinalIgnoreCase);
+			// 每个没落地的材质名 → 理由（用来把 $no_draw 和真缺失分开）。
+			var skipReasonByStem = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 			// ⚠️ **这一段必须并行。** 每个材质背后是 texconv 的进程调用（解成 RGBA 量 alpha、编成 BC7），
 			// 单张 4K 图约 3 s；串行时几十个材质就是一两分钟，而它们彼此完全独立。
@@ -568,12 +610,14 @@ public sealed class VpkPatchAssembler
 					{
 						// 源侧自己写着"别画"，不是问题——单列，别混进警告。
 						skipped.Add(synthesized.SkipReason!);
+						skipReasonByStem[stem] = synthesized.SkipReason!;
 						continue;
 					}
 
 					if (!synthesized.IsValid || synthesized.Material is null)
 					{
 						warnings.Add($"源材质 {stem} 合成失败：{string.Join("；", synthesized.Diagnostics)}");
+						skipReasonByStem[stem] = string.Join("；", synthesized.Diagnostics);
 						continue;
 					}
 
@@ -597,6 +641,7 @@ public sealed class VpkPatchAssembler
 							break;
 						case MaterialResolveOutcome.Skipped:
 							skipped.Add(report.Reason);
+							skipReasonByStem[stem] = report.Reason;
 							break;
 						default:
 							// 这个材质不属于本 patch，但 Unit 要靠它的 id。解析不出来 = 那一段会
@@ -699,6 +744,30 @@ public sealed class VpkPatchAssembler
 						TryEmitTexture(texture);
 				}
 			}
+
+			// ④.5 材质总账。**必须在 ①~④ 之后、⑤ 之前**：这时"哪些落地了、哪些没有、为什么"
+			// 全都定了，而 ⑤ 只是把它们逐条翻成表。
+			//
+			// 这一份回答的是"上机紫块到底缺什么"，并把两类完全不同的缺口分开：
+			//   · $no_draw ：源侧要求不绘制（常用来做网格变体选择）→ 该翻成 section 隐藏；
+			//   · 其余     ：真解析不出来（包里没有 / 合成失败）→ 真缺失。
+			var noDrawMaterials = new List<string>();
+			var missingMaterials = new List<string>();
+			foreach (var required in requiredStems.Order(StringComparer.OrdinalIgnoreCase))
+			{
+				if (idByStem.ContainsKey(required)) continue;
+				var reason = skipReasonByStem.TryGetValue(required, out var text) ? text : string.Empty;
+				if (reason.Contains("$no_draw", StringComparison.OrdinalIgnoreCase))
+					noDrawMaterials.Add(required);
+				else
+					missingMaterials.Add(required);
+			}
+
+			materialGap = new VpkMaterialGap(
+				RequiredCount: requiredStems.Count,
+				ResolvedCount: requiredStems.Count(material => idByStem.ContainsKey(material)),
+				NoDraw: noDrawMaterials,
+				Missing: missingMaterials);
 
 			// ⑤ 对照表。**每一条都要有行**——包括"算过但没写进本 patch"和
 			// "本 VPK 自己带、模型没用到"。没有这张表，"少了一个材质"只能靠人肉比对。
