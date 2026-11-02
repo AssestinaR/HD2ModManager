@@ -2894,14 +2894,15 @@ public static class CliApplication
 		string? RegistryError);
 
 	/// <summary>
-	/// 这次 <c>vpk rekey</c> 要不要做**头身合并**。不传 <c>--head-merge</c> = 做。
+	/// 这次 <c>vpk rekey</c> 要不要做**头身合并**。只有显式传 <c>--head-merge on</c> 才做。
 	/// <para>
-	/// 默认开：默认做法要求玩家把配套头盔 item 也穿上才有头，那是不必要的负担。
-	/// <c>--head-merge off</c> 是留给"实机发现合并后不对劲"时的退路。
+	/// <b>默认关</b>：合并改变的是"头画在哪"——把我们模型的头搬进护甲套件的胸部槽位，
+	/// 并让那件头盔 item 变成空模型。这种事必须由用户明确选择，不该成为默认行为。
+	/// 管理器侧有「头身合并到身体」开关，用户打开它才会传 <c>on</c>。
 	/// </para>
 	/// </summary>
 	private static bool MergeHeadIntoArmour(CliGlobalOptions options)
-		=> !string.Equals(options.HeadMerge, "off", StringComparison.OrdinalIgnoreCase);
+		=> string.Equals(options.HeadMerge, "on", StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>
 	/// 解析 <c>--disabled "unit:1,2;unit:3"</c>（<c>vpk rekey</c> 用）。
@@ -3335,6 +3336,12 @@ public static class CliApplication
 		var displayName = string.IsNullOrWhiteSpace(options.Name)
 			? Path.GetFileNameWithoutExtension(full)
 			: options.Name.Trim();
+
+		// 告诉转换器"模型直接引用了哪些材质"：它据此决定"include 链中间层"能不能安全跳过。
+		// 少了这一条，一份既被别的 VMT include、模型又直接引用的材质会被当成中间层悄悄跳过 ——
+		// 那会让模型的材质表里留一个没写出去的 id。
+		if (materialConverter is not null)
+			materialConverter.ModelMaterialNames = inputs.Model.MaterialPaths;
 
 		var package = await new VpkPatchAssembler().AssembleAsync(
 			plans, retarget, inputs.Geometry, avatar, headerTemplate,
@@ -7879,13 +7886,13 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	  hd2mod source retarget <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> [--bone-hash <hash→名字表>] --output <输出目录> [--overwrite] --json
 	  hd2mod vpk rekey <Mod GUID 或前缀> [--archive-id <护甲归档>[,<头盔归档>]] [--disabled <unit:1,2;…>] [--head-merge on|off] --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --json
 	    把 vpk2patch 产出的 Unit 换到某件护甲自己的 Unit 键上，其余件用隐藏 Unit 顶掉；产物写进 Overwrite/（来源不动）。
-	    --head-merge on（默认）
+	    --head-merge off（默认）
+	                    老做法：头由头盔套件承载，玩家必须把配套头盔 item 也穿上才有头。
+	    --head-merge on
 	                    **头身合并**：头落到护甲套件胸部槽位的最外层、身体落到次外层，头盔套件一件都不写
 	                    （于是游戏里那件头盔 item 没有模型，头由护甲自己带着）。
 	                    层号不是写死的，按目标这件护甲胸部槽位实际有几层算；只有一层时装不下两件几何，
 	                    自动退回老做法并在 warnings 里说明。
-	    --head-merge off
-	                    老做法：头由头盔套件承载，玩家必须把配套头盔 item 也穿上才有头。
 	    --disabled <unit:1,2;unit:3>
 	                    要烘成关闭状态的 section（**来源** Unit 键空间，与 wardrobe.json 存的一致）。
 	  hd2mod vpk2patch <VPK文件> [<VPK文件> ...] --output <输出根目录> [--avatar-toc <avatar Unit TocData>] [--game-data <游戏data目录>] [--material-source <分号分隔的 VPK 或目录>] [--components merge|all|none|<名字,名字>] [--json]

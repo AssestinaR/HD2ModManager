@@ -17,7 +17,7 @@ public sealed record VpkWardrobeFile(
 	VpkWardrobeState State,
 	string? TargetArmorArchiveId = null,
 	string? TargetArmorName = null,
-	bool HeadMergeIntoBody = true)
+	bool HeadMergeIntoBody = false)
 {
 	public static VpkWardrobeFile Default { get; } = new(false, VpkWardrobeState.Empty);
 
@@ -148,11 +148,13 @@ public sealed class VpkModWardrobeService
 			var enabled = root.TryGetProperty("componentTreeEnabled", out var flag) && flag.ValueKind == JsonValueKind.True;
 			var targetArchiveId = root.TryGetProperty("targetArmorArchiveId", out var archive) ? archive.GetString() : null;
 			var targetName = root.TryGetProperty("targetArmorName", out var armorName) ? armorName.GetString() : null;
-			// 头身合并：**没有这个字段就是开着**（老状态文件一律按"合并"读）。
-			// 为什么默认开：默认做法要求玩家把配套头盔 item 也穿上才有头，那是不必要的负担；
-			// 而老文件里没有这条记录，说明它从来没被关过。
-			var headMerge = !root.TryGetProperty("headMergeIntoBody", out var headMergeElement)
-				|| headMergeElement.ValueKind != JsonValueKind.False;
+			// 头身合并：**没有这个字段就是关着**（老状态文件一律按"不合并"读）。
+			//
+			// 为什么默认关：它是**产物形状**的开关，不是显示开关——打开会把头从头盔套件搬进
+			// 护甲套件的胸部槽位，并且让那件头盔 item 变成空模型。这种改动必须由用户明确选择，
+			// 不该因为"读到一个没有这条记录的旧文件"就替他发现一个新行为。
+			var headMerge = root.TryGetProperty("headMergeIntoBody", out var headMergeElement)
+				&& headMergeElement.ValueKind == JsonValueKind.True;
 			var disabled = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.Ordinal);
 			if (root.TryGetProperty("disabled", out var map) && map.ValueKind == JsonValueKind.Object)
 			{

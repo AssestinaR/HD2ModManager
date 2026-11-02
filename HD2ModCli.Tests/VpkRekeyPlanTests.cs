@@ -144,7 +144,7 @@ public sealed class VpkRekeyPlanTests
     [Fact]
     public void Merge_PutsTheHeadOnTheOutermostTorsoLayerAndTheBodyBelowIt()
     {
-        var (plan, notes, headMerge) = CliVpkRekey.BuildPlan(Source(), [ThreeLayerArmour(), HelmetKit()]);
+        var (plan, notes, headMerge) = CliVpkRekey.BuildPlan(Source(), [ThreeLayerArmour(), HelmetKit()], mergeHeadIntoArmour: true);
 
         Assert.Equal(VpkHeadMergeState.Applied, headMerge);
 
@@ -180,7 +180,7 @@ public sealed class VpkRekeyPlanTests
             Part(0x03, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any));
         armour = armour with { ArchiveId = ArmorArchive, Category = "Armor", DisplayName = "两层护甲" };
 
-        var (plan, _, _) = CliVpkRekey.BuildPlan(Source(), [armour, HelmetKit()]);
+        var (plan, _, _) = CliVpkRekey.BuildPlan(Source(), [armour, HelmetKit()], mergeHeadIntoArmour: true);
 
         var head = Assert.Single(plan.Mappings, item => item.Source?.PartKind == UnitMeshPartKind.Helmet);
         Assert.Equal(UnitMeshPartLayer.Armor, head.Target.Layer);
@@ -195,7 +195,7 @@ public sealed class VpkRekeyPlanTests
         var armour = Target(Part(0x02, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any));
         armour = armour with { ArchiveId = ArmorArchive, Category = "Armor", DisplayName = "一层护甲" };
 
-        var (plan, notes, headMerge) = CliVpkRekey.BuildPlan(Source(), [armour, HelmetKit()]);
+        var (plan, notes, headMerge) = CliVpkRekey.BuildPlan(Source(), [armour, HelmetKit()], mergeHeadIntoArmour: true);
 
         var head = Assert.Single(plan.Mappings, item => item.Source?.PartKind == UnitMeshPartKind.Helmet);
         Assert.Equal(UnitMeshPartKind.Helmet, head.Target.PartKind);
@@ -204,10 +204,14 @@ public sealed class VpkRekeyPlanTests
         Assert.Equal(VpkHeadMergeState.UnavailableSingleLayer, headMerge);
     }
 
+    /// <summary>
+    /// **默认关**。头身合并改变的是"头画在哪"，还让那件头盔 item 变成空模型，
+    /// 必须由用户明确打开——所以连"目标完全支持合并"时，不传开关也不该合并。
+    /// </summary>
     [Fact]
-    public void Merge_CanBeTurnedOff()
+    public void Merge_IsOffByDefault()
     {
-        var (plan, notes, headMerge) = CliVpkRekey.BuildPlan(Source(), [ThreeLayerArmour(), HelmetKit()], mergeHeadIntoArmour: false);
+        var (plan, notes, headMerge) = CliVpkRekey.BuildPlan(Source(), [ThreeLayerArmour(), HelmetKit()]);
 
         var head = Assert.Single(plan.Mappings, item => item.Source?.PartKind == UnitMeshPartKind.Helmet);
         Assert.Equal(UnitMeshPartKind.Helmet, head.Target.PartKind);
@@ -226,7 +230,8 @@ public sealed class VpkRekeyPlanTests
     {
         var (plan, _, headMerge) = CliVpkRekey.BuildPlan(Source(), [Target(
             Part(0x02, UnitMeshPartKind.Torso, UnitMeshPartLayer.Undergarment, UnitMeshBodyVariant.Any),
-            Part(0x03, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any))]);
+            Part(0x03, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any))],
+            mergeHeadIntoArmour: true);
 
         Assert.Equal(VpkHeadMergeState.UnavailableNoHelmetKit, headMerge);
         // 头仍然要有落点：没有可合并的地方就照老做法落到 Helmet 件上（这里没有，于是它会报"找不到落点"）。

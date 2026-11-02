@@ -99,7 +99,9 @@ internal static class CliVpkRekey
 		IReadOnlyList<string> targetArchiveIds,
 		string? outputRoot,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections = null,
-		bool mergeHeadIntoArmour = true,
+		// 头身合并**默认关**：它改变的是"头画在哪"（搬进护甲胸位 + 头盔 item 变空模型），
+		// 必须由用户明确打开。见 ResolveHeadBodyMerge。
+		bool mergeHeadIntoArmour = false,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
@@ -563,14 +565,14 @@ internal static class CliVpkRekey
 	/// </para>
 	/// </summary>
 	/// <param name="mergeHeadIntoArmour">
-	/// 是否做**头身合并**（见 <see cref="ResolveHeadBodyMerge"/>）。
+	/// 是否做**头身合并**（见 <see cref="ResolveHeadBodyMerge"/>）。<b>默认关</b>。
 	/// 返回的第三个值说明这一次**实际**发生了什么——开关打开不等于合并成功
 	/// （目标是自己的素体、或胸部只有一层时都不会合并），界面要照实说。
 	/// </param>
 	internal static (CrossArmorTransferPlan Plan, IReadOnlyList<string> Notes, VpkHeadMergeState HeadMerge) BuildPlan(
 		EquipmentUnitCatalogEntry source,
 		IReadOnlyList<EquipmentUnitCatalogEntry> targets,
-		bool mergeHeadIntoArmour = true)
+		bool mergeHeadIntoArmour = false)
 	{
 		var mappings = new List<CrossArmorTransferMapping>();
 		var notes = new List<string>();

@@ -61,6 +61,7 @@ public static class VpkRekeyService
 	/// 头身合并：<c>true</c> = 头并进护甲套件的胸部槽位（游戏里那件头盔 item 不再有模型），
 	/// <c>false</c> = 老做法（头由头盔套件承载，玩家得穿配套头盔）。
 	/// 这是**产物形状**的开关，不是显示开关——两个状态下写出来的 patch 完全不同。
+	/// <b>默认关</b>：它改变的是"头画在哪"，必须由用户明确打开。
 	/// </param>
 	public static async Task<VpkRekeyOutcome> RunAsync(
 		string modSelector,
@@ -69,7 +70,7 @@ public static class VpkRekeyService
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default,
-		bool headMergeIntoBody = true)
+		bool headMergeIntoBody = false)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		var gameData = SettingsService.GetGameDataFolder();

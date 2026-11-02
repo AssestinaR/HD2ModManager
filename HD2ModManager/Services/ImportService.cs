@@ -281,6 +281,25 @@ namespace HD2ModManager.Services
 
                 LastAffectedNodeIds = affected.Distinct().ToArray();
                 LastImportHasOptionPathConflicts = conflicts;
+
+                // 同批的"模型 + 它的材质包"自动接成 主体 → 选项：用户现在要导入完之后在库里
+                // 把材质包一个个拖到模型下面，而同一批转换出来的东西本来就知道谁是谁的。
+                // **物理结构不变**（还是平铺的一个个文件夹），改的只是 option.json 的父子关系。
+                var attach = await AttachVpkBatchOptionsAsync(guids, ct).ConfigureAwait(false);
+                if (attach.Relationships > 0)
+                {
+                    var message = attach.Hosts == 1
+                        ? $"已把 {attach.Materials} 个材质包设为同批模型的选项。"
+                        : $"已把 {attach.Materials} 个材质包挂到 {attach.Hosts} 个模型主体的选项下。";
+                    _onInfo?.Invoke(message);
+                    LogService.Info(message);
+                }
+
+                if (attach.Failures > 0)
+                {
+                    LogService.Warn($"有 {attach.Failures} 个模型主体没能建立选项关系（产物本身没问题，可在库里手动拖）。");
+                }
+
                 if (refreshDerivedData && LastAffectedNodeIds.Count != 0)
                 {
                     await _library.RefreshCommittedContentAsync(
@@ -297,6 +316,74 @@ namespace HD2ModManager.Services
             {
                 source.Dispose();
             }
+        }
+
+        /// <summary>一次"把同批材质包挂成选项"的结果。<c>Relationships</c> = 实际新建的关系条数。</summary>
+        private readonly record struct VpkOptionAttachResult(int Hosts, int Materials, int Relationships, int Failures);
+
+        /// <summary>
+        /// 把这一批里的**材质包**挂到同一批的**模型主体**下面当选项。
+        /// <para>
+        /// <b>只在这一批内部认亲。</b>同一次导入的 VPK 共用命名空间，模型 patch 引用的材质 id
+        /// 就写在那几个材质包里——批次之内"谁是谁的材质"是确定的，跨批去猜会把别人的包挂过来。
+        /// </para>
+        /// <para>
+        /// <b>判据：</b>含 <c>vpk2patch/sections.json</c> = 带 Unit 的模型产物（主体）；
+        /// 有 <c>vpk2patch.json</c> 但没有 <c>sections.json</c> = 纯材质包（选项）；
+        /// 都不是的（普通导入的包）不参与。
+        /// </para>
+        /// <para>
+        /// <b>失败只记日志。</b>这一步是便利，不是导入正确性的一部分：关系写失败时产物照样是好的，
+        /// 手动拖一下就能补；让它把整次导入判失败，代价远大于收益。
+        /// </para>
+        /// </summary>
+        private async Task<VpkOptionAttachResult> AttachVpkBatchOptionsAsync(List<string> guids, CancellationToken cancellationToken)
+        {
+            var distinct = guids.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (distinct.Length < 2) return default;
+
+            var hosts = new List<string>();
+            var materialOptions = new List<string>();
+            foreach (var guid in distinct)
+            {
+                var directory = TryGetModDirectory(guid);
+                if (directory is null) continue;
+                var payload = ModNodePayloadLayout.GetVpkPatchDirectory(directory);
+                if (File.Exists(Path.Combine(payload, WardrobeSectionMapFile.FileName)))
+                    hosts.Add(guid);
+                else if (VpkConversionReport.TryRead(directory) is not null)
+                    materialOptions.Add(guid);
+            }
+
+            if (hosts.Count == 0 || materialOptions.Count == 0) return default;
+
+            var relationships = 0;
+            var failures = 0;
+            foreach (var host in hosts)
+            {
+                try
+                {
+                    var result = await _library.AddOptionsToHostAsync(host, materialOptions, cancellationToken)
+                        .ConfigureAwait(false);
+                    relationships += result.ChangedNodeIds.Count;
+                }
+                catch (Exception exception) when (exception is ModRelationshipMutationException
+                    or InvalidOperationException or IOException or UnauthorizedAccessException)
+                {
+                    failures++;
+                    LogService.Warn($"没能把同批材质包设为主体「{_library.Get(host)?.Name ?? host}」的选项：{exception.Message}");
+                }
+            }
+
+            return new VpkOptionAttachResult(hosts.Count, materialOptions.Count, relationships, failures);
+        }
+
+        /// <summary>从 Mod 的 GUID 拿到它的目录；拿不到就 <c>null</c>。</summary>
+        private string? TryGetModDirectory(string guid)
+        {
+            if (!Guid.TryParse(guid, out var id)) return null;
+            if (!_library.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node)) return null;
+            return Path.Combine(_paths.ModsDirectory, node.RelativePath);
         }
 
         /// <summary>

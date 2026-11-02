@@ -336,6 +336,25 @@ public sealed class SourceMaterialConverter
 	private readonly Hd2MaterialTemplateLibrary templates;
 
 	/// <summary>
+	/// 被别的 VMT <c>include</c> 的材质短名集合（懒加载，只在本批**自己带的** VMT 里找）。
+	/// <para>
+	/// 用途只有一个：把"include 链的中间层"从"合成失败"降级成"跳过"。实测 `lime_witch.vpk`
+	/// （模型与材质同包）15 份 VMT 里有 5 份是这种：模板根 `basic` 把 <c>$basetexture</c> 写成
+	/// 占位值，`part_selfillum` / `part_emiss` / `body_phong` / `face_phong` 只给下游补参数，
+	/// 真正的底色由引用它们的那份用 <c>replace</c> 写。模型从不直接引用它们，
+	/// 所以那 5 条"合成失败"只是噪音。
+	/// </para>
+	/// </summary>
+	private readonly Lazy<IReadOnlySet<string>> includeTargets;
+
+	/// <summary>
+	/// 模型**直接引用**的材质短名（可空，装配器在 <c>AssembleAsync</c> 之前塞进来）。
+	/// 用来防止"中间层跳过"误伤：某份 VMT 既被 include、模型又直接引用它时，
+	/// 没有底色是**真失败**，不能悄悄跳过（那会让模型引用一个没写出去的材质 id）。
+	/// </summary>
+	public IReadOnlyCollection<string>? ModelMaterialNames { get; set; }
+
+	/// <summary>
 	/// 纯色贴图的编码结果，按"名字 + 颜色"缓存。
 	/// <para>
 	/// <b>为什么必须有。</b>纯色槽（共享平面法线 / 共享 PBR / 金属度 / 法线粗糙度）是<b>每个材质各造一遍</b>的，
@@ -372,6 +391,7 @@ public sealed class SourceMaterialConverter
 		this.idNamespace = string.IsNullOrWhiteSpace(idNamespace) ? null : idNamespace.Trim();
 		this.cutoutStrategy = cutoutStrategy;
 		this.matcapBakeGain = double.IsFinite(matcapBakeGain) && matcapBakeGain > 0 ? matcapBakeGain : 1.0;
+		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
 	/// <summary>
@@ -525,6 +545,48 @@ public sealed class SourceMaterialConverter
 		}
 
 		return means;
+	}
+
+	/// <summary>模型是否直接引用了这个材质短名（含没设 <see cref="ModelMaterialNames"/> 时永远为 false）。</summary>
+	private bool IsReferencedByModel(string stem)
+	{
+		var names = ModelMaterialNames;
+		if (names is null || names.Count == 0) return false;
+		foreach (var name in names)
+		{
+			if (string.Equals(
+				Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(name)),
+				stem,
+				StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>被本批自带 VMT <c>include</c> 的材质短名集合。见 <see cref="includeTargets"/>。</summary>
+	private IReadOnlySet<string> BuildIncludeTargets()
+	{
+		var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var name in source.OwnedVmtNames)
+		{
+			var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(name));
+			if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVmt(stem, out var vmtBytes))
+				continue;
+
+			// **不展开 include**：这里只问"它 include 了谁"。展开会让每个中间层的链
+			// 都被走一遍，而这条判据只需要第一层。
+			var document = VmtDocument.Parse(vmtBytes);
+			if (string.IsNullOrWhiteSpace(document.IncludePath))
+				continue;
+
+			var included = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(document.IncludePath));
+			if (!string.IsNullOrWhiteSpace(included)) targets.Add(included);
+		}
+
+		return targets;
 	}
 
 	private static double[]? ComputeOneMatCapMean(SourceGeometry geometry, int materialIndex, byte[] vtfBytes, Bc7Encoder encoder)
@@ -813,6 +875,15 @@ public sealed class SourceMaterialConverter
 		{
 			if (string.IsNullOrWhiteSpace(matcapTextureName))
 			{
+				// 被别的 VMT include 了 = 它只是给下游补参数的模板，真正的底色在引用它的那份里。
+				// 这类材质不出现在模型的材质名里，跳过而不是报"合成失败"；
+				// 但模型直接引用它时不能跳——那种情况"没有底色"是真失败。
+				if (includeTargets.Value.Contains(stem) && !IsReferencedByModel(stem))
+				{
+					reason = $"{stem}：include 链的中间层（真正的底色由引用它的那份 VMT 用 replace 写），跳过";
+					return LoadOutcome.Skipped;
+				}
+
 				reason = string.IsNullOrWhiteSpace(baseTexture)
 					? (vmt.IsPatch
 						? $"{stem}：patch 材质展开后仍然没有 $basetexture（include={vmt.IncludePath ?? "缺失"}），也没有 $matcapture 可以兜底"

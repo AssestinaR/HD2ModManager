@@ -91,9 +91,10 @@ public sealed record CliGlobalOptions(
 	// 结果就是 wardrobe 里记的开关掩码、真映射写进 dl_bin 的件表全部失效。
 	// 有了这个参数，重构建只要把旧的那份指过来，产出的 id 就与原来逐位相同。
 	string? ReuseModel = null,
-	// `vpk rekey` 的头身合并：`on`（默认）把来源的头 Unit 落到护甲套件的胸部槽位上，
-	// 让头盔存档一件模型都不剩；`off` 回到老做法（头由头盔套件承载，玩家得穿配套头盔）。
+	// `vpk rekey` 的头身合并：`on` 把来源的头 Unit 落到护甲套件的胸部槽位上，
+	// 让头盔存档一件模型都不剩；`off`（默认）是老做法（头由头盔套件承载，玩家得穿配套头盔）。
 	//
+	// 默认关的理由：它改变的是"头画在哪"，还会让那件头盔 item 变成空模型——必须由用户明确打开。
 	// 层号不是写死的：按目标护甲胸部槽位实际有几层算（最外层放头、次外层放身体），
 	// 只有一层时自动退回老做法。见 CliVpkRekey.ResolveHeadBodyMerge。
 	string? HeadMerge = null);
@@ -263,8 +264,8 @@ public static class CliArgumentParser
 					{
 						throw new CliUserException("InvalidOption",
 							$"--head-merge 只接受 on / off，实际是 '{rawHeadMerge}'。"
-							+ "on（默认）= 头并进护甲套件的胸部槽位、头盔 item 不再有模型；"
-							+ "off = 头仍由头盔套件承载（玩家需要穿配套头盔）。");
+							+ "off（默认）= 头由头盔套件承载（玩家需要穿配套头盔）；"
+							+ "on = 头并进护甲套件的胸部槽位、头盔 item 不再有模型。");
 					}
 
 					headMerge = rawHeadMerge is "on" or "true" or "1" ? "on" : "off";
