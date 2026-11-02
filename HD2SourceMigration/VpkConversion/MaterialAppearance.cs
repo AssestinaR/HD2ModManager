@@ -47,24 +47,30 @@ public static class MaterialAppearance
 	public const double NearBlackMeanLuminance = 40;
 
 	/// <summary>
-	/// 底色"没有内容"的平坦度判据：亮度标准差低于它就当整片同色。
+	/// 底色是不是**没有自己的颜色**：占位图（≤4×4），或整片近黑。
 	/// <para>
-	/// 需要这一条是因为金属装饰件的底色常常是一张**纯色灰图**（实测 <c>gray1</c> / <c>gray</c>），
-	/// 既不近黑也不是 1×1，但它确实没有细节——观感全来自 matcap 与 PBR。
-	/// 真照片/真贴图的标准差远大于此值，不会误伤。
-	/// </para>
-	/// </summary>
-	public const double FlatLuminanceStdDev = 6;
-
-	/// <summary>
-	/// 底色是不是**没有自己的外观**（占位图、整片近黑、或整片同色）。
-	/// <para>
-	/// <b>为什么光有 <c>tint ≥ 0.9</c> 不够。</b>那一条的原始依据是"底色近黑、观感全来自 matcap"，
-	/// 但 <c>tint</c> 高本身并不说明底色没内容——装饰件写 <c>$matcaptint "[1 1 1 1]"</c> 是常态，
+	/// <b>为什么光有 <c>tint ≥ 0.9</c> 不够。</b>装饰件写 <c>$matcaptint "[1 1 1 1]"</c> 是常态，
 	/// 意思是"按全强度叠加 matcap"，底色照样可能是一张真图。
-	/// 只看 tint 就会把这类材质误判成"matcap 就是表面"：
-	/// 底色被 matcap 顶掉、alphaclip 被关掉，于是**镂空的花瓣变成不透明白方块 + 金属色**
-	/// （Lilium_Sancta 的花瓣材质就是这么坏的）。
+	/// </para>
+	/// <para>
+	/// <b>⚠️ 曾经还有第三条"整片同色"，已删除（实机逼出来的）。</b>
+	/// 它的依据是"金属件的底色是一张纯色灰图（<c>gray1</c> / <c>gray</c>）"，
+	/// 但实测那两张<b>都是 1×1</b>——占位图那一条已经覆盖，这条是冗余的。而它的代价很实在：
+	/// </para>
+	/// <list type="bullet">
+	/// <item>MourningVeil 的<b>玻璃鞋跟</b>（<c>mat_gem1_shoes</c>，64×64 纯色 197）
+	/// 被当成"没有颜色" → 判成金属 → 实机是"玻璃变成了金属"。</item>
+	/// </list>
+	/// <para>
+	/// 一条<b>纯色但真实</b>的底色仍然<b>是一个颜色</b>：它只是没有花纹，不是没有颜色。
+	/// "没有颜色"只能由"占位图"或"近黑"来表达。
+	/// </para>
+	/// <para>
+	/// <b>⚠️ 也刻意不看 alpha。</b>alpha 表达的是<b>形状</b>（镂空/半透明），与"颜色从哪来"正交。
+	/// 曾经要求 <c>!baseAlpha.IsMeaningful</c>，后果是：凡是靠 alpha 镂空的金属件
+	/// （NekoToon 里金属饰品普遍写 <c>$alphatest 1</c>）全部判不成金属 ——
+	/// 实测 MourningVeil 93 个材质里<b>一个金属都没有</b>，正是用户报的
+	/// "相当多金属饰品没有金属光泽"。
 	/// </para>
 	/// </summary>
 	public static bool IsContentFreeBase(int width, int height, ReadOnlySpan<byte> rgba)
@@ -74,22 +80,13 @@ public static class MaterialAppearance
 		if (rgba.Length == 0 || rgba.Length % 4 != 0)
 			return false;
 
-		// 平均亮度与标准差（Rec.601 权重）。一趟遍历算完。
+		// 平均亮度（Rec.601 权重）。
 		var pixels = rgba.Length / 4;
 		double sum = 0;
-		double sumSquares = 0;
 		for (var offset = 0; offset < rgba.Length; offset += 4)
-		{
-			var luminance = (0.299 * rgba[offset]) + (0.587 * rgba[offset + 1]) + (0.114 * rgba[offset + 2]);
-			sum += luminance;
-			sumSquares += luminance * luminance;
-		}
+			sum += (0.299 * rgba[offset]) + (0.587 * rgba[offset + 1]) + (0.114 * rgba[offset + 2]);
 
-		var mean = sum / pixels;
-		if (mean < NearBlackMeanLuminance)
-			return true;
-		var variance = Math.Max(0, (sumSquares / pixels) - (mean * mean));
-		return Math.Sqrt(variance) < FlatLuminanceStdDev;
+		return sum / pixels < NearBlackMeanLuminance;
 	}
 
 

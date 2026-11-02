@@ -26,6 +26,28 @@ public readonly record struct AlphaStats(byte Min, byte Max, double Coverage)
 	/// </summary>
 	public bool IsMeaningful => Spread >= SpreadThreshold && Coverage >= CoverageThreshold;
 
+	/// <summary>
+	/// 这片 alpha 是<b>整片均匀半透明</b>（没有形状，只是整体压了一个不透明度）。
+	/// <para>
+	/// <b>为什么必须单独认这一类。</b><see cref="IsMeaningful"/> 要求 <c>Spread ≥ 3</c>，
+	/// 于是"整张图 alpha 恒为 102"会被判成"没有 alpha"——可它恰恰是源侧最直白的一种表达：
+	/// <b>这个表面整体是 40% 不透明</b>。
+	/// </para>
+	/// <para>
+	/// 实测代价：MourningVeil 的鞋跟（<c>mat_gem1_shoes</c>）在 L4D2 里是<b>半透明玻璃</b>，
+	/// 底图 alpha 恒为 102；我们把它判成不透明 → 实机变成一片不透明白塑料，
+	/// 用户看到的就是"玻璃鞋跟变成了金属/塑料"。
+	/// </para>
+	/// <para>
+	/// 阈值取 <c>Max ≤ 200</c>（≥ 22% 透明）而不是 <c>&lt; 255</c>：差几个 8 位量化单位的
+	/// 不透明图很常见，把那种当半透明会让"本该不透明的东西突然透了"——那个方向的误判更难查。
+	/// </para>
+	/// </summary>
+	public bool IsUniformlyTranslucent => Spread < SpreadThreshold && Max <= UniformTranslucentMax;
+
+	/// <summary>整片均匀半透明时 alpha 的上限（≥ 22% 透明才算）。</summary>
+	public const byte UniformTranslucentMax = 200;
+
 	public const double SpreadThreshold = 3.0;
 
 	public const double CoverageThreshold = 0.005;

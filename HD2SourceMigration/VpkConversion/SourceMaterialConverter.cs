@@ -303,6 +303,16 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	public const int AdvancedOpacitySlot = 1;
 
+	/// <summary>
+	/// 金属件 F0 底色贴图的名字后缀。
+	/// <para>
+	/// 存在的唯一理由：让这张图<b>不沿用 matcap 的名字</b>。贴图 id 由名字派生，
+	/// 而"该由哪个 patch 产出"也按名字判——沿用 matcap 名会让它被两边都推给对方，
+	/// 最终<b>谁都不产出</b>，材质在游戏里没有底色。见 <c>TryLoad</c> 里赋值处的注释。
+	/// </para>
+	/// </summary>
+	private const string MetalF0Suffix = "_f0";
+
 	/// <summary><c>OpacityThreshold</c>（0x529a4aaf）：<c>alphaclip</c> 族的镂空阈值。</summary>
 	public const uint OpacityThresholdVariableId = 0x529a4aaf;
 
@@ -1119,18 +1129,37 @@ public sealed class SourceMaterialConverter
 		// `mat_gem1_shoes` 就没有底色而 tint 只有 0.9）。
 		var matcapIsSurface = syntheticBase
 			|| (verdict.MatCapIsTheSurface
-				&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)
-				&& !baseAlpha.IsMeaningful);
+				&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba));
 
-		// 底色是不是**真的只是一张占位图**（没有 $basetexture，或者 ≤4×4）。
+		// 分类诊断：`HD2MOD_MATCAP_DEBUG=1` 时把判定输入打到 stderr。
 		//
-		// ⚠️ 与 `IsContentFreeBase` 刻意分开：后者把"整片同色的真布料"也算作没内容，
-		// 那条对**模板判定**够用（那种材质确实没有花纹可裁），但**不足以**让 Metal 档
-		// 把整张贴图换掉 —— 换掉就等于"布料丢掉自己的颜色"。
-		// 所以 Metal 档只对占位图生效，其余一律保留源底色。
-		var baseIsPlaceholder = syntheticBase
-			|| (vtf.Width <= MaterialAppearance.PlaceholderMaxDimension
-				&& vtf.Height <= MaterialAppearance.PlaceholderMaxDimension);
+		// 存在的理由：金属/玻璃/布料这三类的判定全是从像素统计**猜**出来的（NekoToon 没有
+		// 金属度输入），一旦猜错，游戏里的表现只是"看着不对"，没有任何线索。有了这一行，
+		// "哪个材质判错了、因为哪一条"当场可查。
+		if (Environment.GetEnvironmentVariable("HD2MOD_MATCAP_DEBUG") is { Length: > 0 })
+		{
+			var pixels = Math.Max(1, rgba.Length / 4);
+			double lumSum = 0;
+			for (var offset = 0; offset < rgba.Length; offset += 4)
+				lumSum += (0.299 * rgba[offset]) + (0.587 * rgba[offset + 1]) + (0.114 * rgba[offset + 2]);
+			Console.Error.WriteLine(
+				$"[matcap] {stem,-34} base={textureName,-20} {vtf.Width}x{vtf.Height} "
+				+ $"meanLum={lumSum / pixels,6:F1} tint={verdict.Tint:F2} "
+				+ $"alpha=[{baseAlpha.Min},{baseAlpha.Max} cov={baseAlpha.Coverage:P1}] "
+				+ $"synthetic={syntheticBase} contentFree={MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)} "
+				+ $"=> matcapIsSurface={matcapIsSurface}");
+		}
+
+		// ⚠️ **只要判成"matcap 承载表面"，Metal 档就整片换成中性 F0 —— 不再按"是不是占位图"分叉。**
+		//
+		// 曾经分叉过：只有 `syntheticBase` / 占位图才换，其余保留源底色。理由是"换掉就等于
+		// 布料丢掉自己的颜色"。但那个理由依赖 `IsContentFreeBase` 把"纯色"也算作没内容——
+		// 那条已经删掉了（纯色仍然是一个颜色，见 `IsContentFreeBase` 的注释）。
+		//
+		// 现在 `IsContentFreeBase` 只剩"占位图 ∨ 近黑"，两者都**没有颜色可保**：
+		// 近黑的底色本来就是"颜色来自 matcap"，保留它反而会得到一块黑金属。
+		// 分叉留下的实际后果是**不一致**：判成金属却保留了源底色，金属度顶到 1.0
+		// 打在一块有内容的底色上，观感介于"金属"和"塑料"之间，最难查。
 		double[]? matcapMean = null;
 		var notices = new List<string>();
 
@@ -1143,9 +1172,7 @@ public sealed class SourceMaterialConverter
 		// 现在的分工：
 		//   · Albedo（发布版行为）：matcap 承载表面 → 拿 matcap 当底色
 		//   · Metal：只有**没有 $basetexture** 的件才归一成金属 F0，有底色的布料保持原样
-		if (matcapIsSurface
-			&& (matcapMode == MatCapMode.Albedo
-				|| (matcapMode == MatCapMode.Metal && (syntheticBase || baseIsPlaceholder))))
+		if (matcapIsSurface && matcapMode is MatCapMode.Albedo or MatCapMode.Metal)
 		{
 			// matcap 当底色：真正决定观感的是 matcap 那张图，不是底色
 			// （实测 A1 的 `Ornament_metal_Underwear.vtf` 是 1×1 占位图）。
@@ -1175,8 +1202,24 @@ public sealed class SourceMaterialConverter
 				{
 					vtf = VtfFile.Read(matcapBytes);
 					rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
-					baseAlpha = TextureAlpha.Measure(rgba);
-					textureName = matcapTextureName;
+					// ⚠️ **不要重新测 `baseAlpha`。** 它描述的是**源底色**的 alpha，
+					// 而下面 `useAlphaClip` 正是靠它决定"这个件要不要镂空"。
+					// 曾经在这里 `baseAlpha = TextureAlpha.Measure(rgba)` —— 那一行把它换成了
+					// **matcap 的** alpha（一张不透明的球面图），于是镂空判定恒为 false，
+					// 所有"靠 alpha 镂空的金属件"都被判成 advanced：既没有镂空也没有金属。
+					// 实测 MourningVeil 的金属饰品全是这种写法。
+					// ⚠️ 贴图名要**加后缀**，不能沿用 matcap 的名字。
+					//
+					// 原因：贴图 id 由名字派生，而"归谁产出"由名字**是不是本 VPK 带的 VTF** 决定。
+					// 沿用 matcap 名 → 这张图会被判成"由别的 VPK 提供，归那个 patch" → 本 patch 不写它；
+					// 而那个 VPK 又因为"自己没材质用这张图"也不写它 → **两边都不产出**，
+					// 材质在游戏里没有底色。
+					//
+					// 实测代价：MourningVeil 的 `mat_gem1` 底色指向 `matcap_jewel7`（由 A1 提供），
+					// 用它的是 B1 的材质 —— 结果那张贴图谁都没产出，手臂上的金属装饰**整块丢了材质**。
+					//
+					// 加后缀 = 声明"这是本材质派生出来的图"，于是它一定跟着材质走。
+					textureName = matcapTextureName + MetalF0Suffix;
 				}
 				catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
 				{
@@ -1245,9 +1288,19 @@ public sealed class SourceMaterialConverter
 			// 所以这里按"源侧要不要透明"来判（`WantsTransparency`），与发布版一致。
 			// `WantsAlphaTest` / `WantsTranslucency` 的区分仍然保留（报告里要说清是哪种），
 			// 但**不改变模板选择**。
-			useAlphaClip = matcapIsSurface && matcapMode is MatCapMode.Albedo or MatCapMode.Metal
-				? false
-				: vmt.WantsTransparency && baseAlpha.IsMeaningful;
+			// ⚠️ **金属件现在也会走 alphaclip**（曾经在这里被强行关掉）。
+			//
+			// 当时关掉的理由是"Metal 模式下底色会被整片归一成 F0，源侧的 alpha 不再有意义"。
+			// 那条在**金属度写不进 alphaclip** 的年代成立；现在金属度写进
+			// `BaseColorMetalMap.alpha`、不透明度走 `OpacityClipMap`，两者互不占用，
+			// 所以"镂空 + 金属"可以同时成立。实测 MourningVeil 的金属饰品全是
+			// `$alphatest 1` + alpha 镂空，强行关掉就等于既没有镂空也没有金属。
+			useAlphaClip =
+				// 两种"源侧要透明"都要认：
+				//   · IsMeaningful —— alpha 在表达**形状**（镂空、蕾丝、抖动薄纱）
+				//   · IsUniformlyTranslucent —— alpha 整片均匀且明显 < 255，即**整体半透明**
+				//     （实测 MourningVeil 的玻璃鞋跟 alpha 恒 102；不认这一类就会变成不透明白塑料）
+				vmt.WantsTransparency && (baseAlpha.IsMeaningful || baseAlpha.IsUniformlyTranslucent);
 		}
 
 		// 半透明落地方式的说明。**必须说出来**——否则用户只会看到"袖套没透明"，
@@ -1447,7 +1500,24 @@ public sealed class SourceMaterialConverter
 
 		albedoAdjustment?.Apply(rgba, vtf.Width, vtf.Height);
 
-		ZeroAlpha(rgba);
+		// alpha 通道的用途**跟着模板走**，不能一律清零：
+		//
+		// · `advanced`：槽 5 `AlbedoEmissive` 的 alpha 是**自发光**。清零是对的
+		//   （发光另有一段按 `$emissiontexture` 写回）。清不干净会让整件护甲自发光。
+		// · `alphaclip`：槽 2 是 `BaseColorMetalMap` —— **底色和金属度共用一张图，
+		//   金属度住在 alpha 里**（SDK hashlists：`BaseColorMetalMap 0x848ba63b`；
+		//   见 docs/vpk-cutout-strategies-20261101.md §4 第 2 条）。
+		//   所以镂空 + 金属的件必须把金属度写进 alpha，清零就等于**金属度归零**。
+		//
+		// 实测代价：MourningVeil 的金属饰品全部是 `$alphatest 1` + alpha 镂空（走 alphaclip），
+		// 清零之后 93 个材质里**一个金属都没有**，用户报的正是"相当多金属饰品没有金属光泽"。
+		var alphaFill = loaded.UseAlphaClip
+			&& loaded.MatcapIsSurface
+			&& matcapMode == MatCapMode.Metal
+			&& IsAlphaClipTemplate(loaded.TemplateName)
+				? MaterialAppearance.MetallicValue
+				: (byte)0;
+		FillAlpha(rgba, alphaFill);
 
 		// 发光：`advanced` 槽 5 的 **alpha 就是 emission**，而上面刚把它清零了。
 		// 所以这里按声明把 `$emissiontexture` 的亮度写回去。
@@ -1904,5 +1974,27 @@ public sealed class SourceMaterialConverter
 			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
 		for (var offset = 3; offset < rgba.Length; offset += 4)
 			rgba[offset] = 0;
+	}
+
+	/// <summary>
+	/// 把裸像素的 alpha 通道整片填成 <paramref name="value"/>。
+	/// <para>
+	/// <c>0</c> 等价于 <see cref="ZeroAlpha"/>（<c>advanced</c> 的"不承担自发光"）；
+	/// 非 0 是给 <c>alphaclip</c> 用的 —— 那个模板的 <c>BaseColorMetalMap</c>
+	/// <b>alpha 就是金属度</b>。
+	/// </para>
+	/// </summary>
+	private static void FillAlpha(byte[] rgba, byte value)
+	{
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+		if (value == 0)
+		{
+			ZeroAlpha(rgba);
+			return;
+		}
+
+		for (var offset = 3; offset < rgba.Length; offset += 4)
+			rgba[offset] = value;
 	}
 }

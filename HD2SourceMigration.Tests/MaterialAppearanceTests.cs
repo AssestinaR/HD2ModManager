@@ -134,27 +134,100 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
-	/// <c>IsContentFreeBase</c>：只有"底色没有自己的外观"时 matcap 才算承载表面。
+	/// <c>IsContentFreeBase</c>：只有"底色没有自己的**颜色**"时 matcap 才算承载表面。
 	/// <para>
-	/// 这条钉住 Lilium_Sancta 花瓣的坏法：花瓣材质的底色是 <c>Mat_Ornament_Pearl</c>
-	/// 真图（alpha 里就是花瓣形状），但 VMT 写着 <c>$matcaptint "[1 1 1 1]"</c>。
-	/// 只看 tint 会把它们判成"matcap 就是表面"，连带把 alphaclip 关掉——
-	/// 结果花瓣变成不透明白方块（"白色渐变"）+ 金属色。
+	/// 两个方向都有实机依据：
 	/// </para>
+	/// <list type="bullet">
+	/// <item><b>不能只看 tint。</b>Lilium_Sancta 的花瓣底色是 <c>Mat_Ornament_Pearl</c> 真图
+	/// （alpha 里就是花瓣形状），但 VMT 写着 <c>$matcaptint "[1 1 1 1]"</c>——
+	/// 只看 tint 会把它们判成"matcap 就是表面"，连带把 alphaclip 关掉，
+	/// 结果花瓣变成不透明白方块 + 金属色。</item>
+	/// <item><b>"整片同色"不算没颜色。</b>MourningVeil 的玻璃鞋跟 <c>mat_gem1_shoes</c>
+	/// 是 64×64 纯色 197——曾经被判成"没有内容"→ 金属 → 实机"玻璃变成了金属"。
+	/// 一条纯色但真实的底色仍然**是一个颜色**。</item>
+	/// </list>
 	/// </summary>
 	[Fact]
-	public void ContentFreeBaseMeansTinyNearBlackOrFlatColor()
+	public void ContentFreeBaseMeansTinyOrNearBlackOnly()
 	{
-		// 1×1 占位图：实测 gray / gray1 都是 1×1。
+		// 1×1 占位图：实测 gray / gray1 / m_metal / pearl 全是 1×1。
 		Assert.True(MaterialAppearance.IsContentFreeBase(1, 1, [85, 85, 85, 255]));
 
-		// 大片但整片近黑（实测 (15,15,15)）：观感全来自 matcap。
+		// 大片但整片近黑（实测 mat_metal 平均亮度 17）：颜色全来自 matcap。
 		Assert.True(MaterialAppearance.IsContentFreeBase(64, 64, Solid(64, 15)));
-		// 大片但整片同色（纯灰）：没有细节，观感同样来自 matcap。
-		Assert.True(MaterialAppearance.IsContentFreeBase(64, 64, Solid(64, 150)));
+
+		// 大片纯色但**明亮**（实测玻璃鞋跟 mat_gem1_shoes 平均 143/197）：
+		// 它有自己的颜色，matcap 只是高光层 —— 不能判成"没有内容"。
+		Assert.False(MaterialAppearance.IsContentFreeBase(64, 64, Solid(64, 150)));
+		Assert.False(MaterialAppearance.IsContentFreeBase(64, 64, Solid(64, 197)));
 
 		// 有细节的真贴图：不能判成"没有内容"，否则花瓣 / 衣服会被 matcap 顶掉。
 		Assert.False(MaterialAppearance.IsContentFreeBase(64, 64, Checker(64)));
+	}
+
+	/// <summary>
+	/// <c>IsUniformlyTranslucent</c>：alpha **整片均匀且明显 &lt; 255** = 整体半透明。
+	/// <para>
+	/// 实测 MourningVeil 的玻璃鞋跟 <c>mat_gem1_shoes</c> 底图 alpha 恒 102（≈40% 不透明）。
+	/// <c>IsMeaningful</c> 要求 <c>Spread ≥ 3</c>，于是它被判成"没有 alpha"→ 不透明 →
+	/// 实机是一块不透明白塑料，用户看到的就是"玻璃鞋跟变成了金属/塑料"。
+	/// </para>
+	/// <para>
+	/// 阈值刻意取 <c>Max ≤ 200</c>：差几个量化单位的不透明图很常见，
+	/// 把那种当半透明会让"本该不透明的东西突然透了"——那个方向的误判更难查。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void UniformlyLowAlphaMeansTheWholeSurfaceIsTranslucent()
+	{
+		// 玻璃鞋跟：整片 102。
+		var glass = TextureAlpha.Measure(SolidAlpha(8, 102));
+		Assert.False(glass.IsMeaningful);
+		Assert.True(glass.IsUniformlyTranslucent);
+
+		// 完全不透明：不是半透明。
+		var opaque = TextureAlpha.Measure(SolidAlpha(8, 255));
+		Assert.False(opaque.IsMeaningful);
+		Assert.False(opaque.IsUniformlyTranslucent);
+
+		// 只差几个量化单位的不透明图：不能当半透明（否则本该实心的东西会透）。
+		Assert.False(TextureAlpha.Measure(SolidAlpha(8, 248)).IsUniformlyTranslucent);
+
+		// 有形状的 alpha：走 IsMeaningful，不走这一条。
+		var shaped = TextureAlpha.Measure(CheckerAlpha(8));
+		Assert.True(shaped.IsMeaningful);
+		Assert.False(shaped.IsUniformlyTranslucent);
+	}
+
+	/// <summary>一半像素全透明、一半全不透明：模拟"alpha 在表达形状"。</summary>
+	private static byte[] CheckerAlpha(int size)
+	{
+		var rgba = new byte[size * size * 4];
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			var opaque = (offset / 4) % 2 == 0;
+			rgba[offset] = 200;
+			rgba[offset + 1] = 200;
+			rgba[offset + 2] = 200;
+			rgba[offset + 3] = (byte)(opaque ? 255 : 0);
+		}
+
+		return rgba;
+	}
+
+	private static byte[] SolidAlpha(int size, byte alpha)
+	{
+		var rgba = new byte[size * size * 4];
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			rgba[offset] = 200;
+			rgba[offset + 1] = 200;
+			rgba[offset + 2] = 200;
+			rgba[offset + 3] = alpha;
+		}
+
+		return rgba;
 	}
 
 	private static byte[] Solid(int size, byte value)
