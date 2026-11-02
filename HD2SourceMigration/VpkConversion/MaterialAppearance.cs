@@ -100,6 +100,37 @@ public static class MaterialAppearance
 	];
 
 	/// <summary>
+	/// 从<b>贴图名</b>猜它是不是一张"平色占位图"，返回 sRGB 字节值；猜不出返回 <c>null</c>。
+	/// <para>
+	/// <b>用途：底图缺失时的兜底颜色。</b>模组里常把纯色底图直接命名成 <c>black</c> /
+	/// <c>white</c> / <c>gray</c>（NekoToon 的金属件底色就是 <c>gray1</c>）。
+	/// 实测 MourningVeil 的 B3 包引用了一张不存在的 <c>matchacheese/MourningVeil/black</c>
+	/// —— 名字已经说明它要的是**纯黑**，退成中性灰就错了。
+	/// </para>
+	/// <para>
+	/// 只认<b>整名匹配</b>（可带数字后缀，如 <c>gray1</c>），不做子串匹配：
+	/// <c>blacktop</c> / <c>blackcable</c> 这类是真实贴图，不是平色。
+	/// </para>
+	/// </summary>
+	public static byte? TryParseFlatColourName(string? textureName)
+	{
+		if (string.IsNullOrWhiteSpace(textureName))
+			return null;
+
+		// 去掉目录与末尾数字（gray1 → gray）。
+		var stem = textureName.Replace('\\', '/');
+		stem = stem[(stem.LastIndexOf('/') + 1)..].ToLowerInvariant().TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9');
+
+		return stem switch
+		{
+			"black" or "blackcolor" => 0,
+			"white" or "whitecolor" => 255,
+			"gray" or "grey" or "graycolor" => 128,
+			_ => null,
+		};
+	}
+
+	/// <summary>
 	/// matcap 承载表面但<b>不是</b>金属时，底色被顶掉后用什么（线性反射率）。
 	/// <para>
 	/// 存在的理由：有些件的底色是<b>近黑占位图</b>（实测 Lilium 的 <c>m_metal</c> 是

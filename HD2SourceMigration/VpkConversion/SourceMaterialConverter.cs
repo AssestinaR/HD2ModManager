@@ -1126,6 +1126,8 @@ public sealed class SourceMaterialConverter
 
 		// 底图缺失时的提示，等 `notices` 建好之后再塞进去（它声明在后面）。
 		string? missingBaseNotice = null;
+		// 底图缺失时用的平色（0..255）；null = 用默认中性灰。
+		byte? syntheticBaseGrey = null;
 
 		if (!syntheticBase && !source.TryReadVtf(textureName, out _))
 		{
@@ -1139,10 +1141,15 @@ public sealed class SourceMaterialConverter
 			//
 			// 对转换器来说，**一块颜色不对但看得见的材质，永远好过一块品红**。
 			// 所以这里退成中性色继续走，并把这件事写进 warnings（管理器会展示）。
+			// 兜底色：名字能说明是平色就用那个颜色（`black` → 黑、`white` → 白、`gray` → 中灰），
+			// 否则用中性灰。实测 MourningVeil B3 引用的是不存在的 `…/black`，它要的是纯黑。
+			var fallbackGrey = MaterialAppearance.TryParseFlatColourName(textureName)
+				?? MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
 			missingBaseNotice =
 				$"{stem}：底图 {textureName}.vtf 在材质来源里找不到"
-				+ "（源包缺这张图），已退成中性灰 —— 游戏里不会显示品红，但颜色不对。";
+				+ $"（源包缺这张图），已退成中性色 ({fallbackGrey}) —— 游戏里不会显示品红，但颜色不一定对。";
 			syntheticBase = true;
+			syntheticBaseGrey = fallbackGrey;
 			baseTexture = SyntheticBaseName(stem);
 		}
 
@@ -1153,10 +1160,11 @@ public sealed class SourceMaterialConverter
 		AlphaStats baseAlpha;
 		if (syntheticBase)
 		{
-			// 4×4 中性灰。尺寸取 4×4 而不是 1×1：占位判据是"长宽都 ≤ 4"，两条都满足，
+			// 4×4 平色。尺寸取 4×4 而不是 1×1：占位判据是"长宽都 ≤ 4"，两条都满足，
 			// 而 4×4 让下游的 DDS / BC7 编码走正常路径。alpha 也置 0
 			// ——"底色不承担形状"，这样下面不会被误判成 alphaclip。
-			var grey = MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
+			var grey = syntheticBaseGrey
+				?? MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
 			vtf = VtfFile.Synthetic(4, 4);
 			rgba = MaterialAppearance.SolidRgba(4, grey, grey, grey, 0);
 			baseAlpha = TextureAlpha.Measure(rgba);
