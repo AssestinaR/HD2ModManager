@@ -2746,7 +2746,8 @@ public static class CliApplication
 					matcapMeans,
 					idNamespace: ResolveIdNamespace(invocation.Options),
 					cutoutStrategy: ResolveCutoutStrategy(invocation.Options),
-					matcapBakeGain: invocation.Options.MatcapGain ?? 1.0);
+					matcapBakeGain: invocation.Options.MatcapGain ?? 1.0,
+				alphaExperiment: ResolveAlphaExperiment(invocation.Options));
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3098,10 +3099,28 @@ public static class CliApplication
 	/// 谁也说服不了谁，只能进游戏看。定下来之后产品侧应当只留一档，这个开关就退化成诊断用。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 半透明实验开关（--alpha-experiment）。不传 = 现有行为。
+	/// </summary>
+	private static AlphaExperiment ResolveAlphaExperiment(CliGlobalOptions options)
+		=> options.AlphaExperiment?.Trim().ToLowerInvariant() switch
+		{
+			"translucent" => AlphaExperiment.Translucent,
+			"advanced-opacity" => AlphaExperiment.AdvancedOpacity,
+			_ => AlphaExperiment.None,
+		};
+
+	/// <summary>
+	/// `--cutout` 的三档位（见 <see cref="CutoutStrategy"/>）。不给 = A 档 = 历史行为。
+	/// </summary>
 	private static CutoutStrategy ResolveCutoutStrategy(CliGlobalOptions options)
 		=> options.Cutout?.ToLowerInvariant() switch
 		{
 			"b" or "tuned" => CutoutStrategy.AlphaClipTuned,
+			// 抖动透明：把渐变 alpha 抖成二值，用"点阵密度"近似半透明
+			// （源侧 $allowalphatocoverage 的等价做法，见 CutoutStrategy.AlphaClipDithered）。
+			"dither" => CutoutStrategy.AlphaClipDithered,
+			"dither-strong" => CutoutStrategy.AlphaClipDitheredStrong,
 			"rgb-inv" => CutoutStrategy.MaskInverted,
 			"alpha" => CutoutStrategy.MaskInAlpha,
 			"alpha-inv" => CutoutStrategy.MaskInAlphaInverted,
@@ -3241,7 +3260,8 @@ public static class CliApplication
 				// 命名空间：一批共用一个 token（见 Hd2AssetId.NamespaceFor）。
 				ResolveIdNamespace(options),
 				ResolveCutoutStrategy(options),
-				options.MatcapGain ?? 1.0);
+				options.MatcapGain ?? 1.0,
+				ResolveAlphaExperiment(options));
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──

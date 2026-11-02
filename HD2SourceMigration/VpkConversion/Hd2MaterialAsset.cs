@@ -274,6 +274,34 @@ public sealed class Hd2MaterialAsset
 	}
 
 	/// <summary>
+	/// 改写一个<b>已存在</b>的向量变量（Vector3 / Vector4 均可，只覆盖前三个分量）。
+	/// <para>
+	/// 用在 <c>translucent</c> 模板的 <c>BaseColor</c>：那个模板没有反照率槽，
+	/// 表面颜色只能靠这条平涂色给。
+	/// </para>
+	/// </summary>
+	public bool TrySetVector(uint variableId, float red, float green, float blue)
+	{
+		foreach (var variable in Variables)
+		{
+			if (variable.Id != variableId)
+				continue;
+			if (variable.FloatCount < 3)
+				return false;
+			var values = variable.Values.ToArray();
+			if (values.Length < variable.FloatCount)
+				return false;
+			values[0] = red;
+			values[1] = green;
+			values[2] = blue;
+			variable.Values = values;
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
 	/// 替换一个<b>已存在</b>槽位的贴图 id。
 	/// <para>
 	/// 刻意严格：槽位键属于模板的着色器契约，凭空造一个槽（追加零键）会产出游戏解析不了的材质。

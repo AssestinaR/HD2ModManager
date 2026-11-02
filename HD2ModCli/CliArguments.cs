@@ -114,7 +114,12 @@ public sealed record CliGlobalOptions(
 	// 为什么需要它：整合包里常有"材质包里塞了摆姿势的展示模型 / 动画模型"的包，自动判断会把整包
 	// 当角色去转换，然后死在模型解析上（实测报 `MDL 骨骼数量异常：0`），而它其实是整只角色的主材质。
 	// 规划阶段靠材质目录已经能认出来，这里把那个结论显式交给转换器，不在转换阶段再猜一次。
-	string? TreatAs = null);
+	string? TreatAs = null,
+	// 半透明落地方式的实验开关（none / translucent / advanced-opacity）。不传 = 现有行为。
+	//
+	// 三个变体必须**同命名空间**才有意义：实验开关不改材质 id，模型 patch 才能只换一次，
+	// 之后换材质包即可对照。见 AlphaExperiment。
+	string? AlphaExperiment = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -159,6 +164,7 @@ public static class CliArgumentParser
 		string? materialSourceList = null;
 		string? componentSourceList = null;
 		string? treatAs = null;
+		string? alphaExperiment = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -299,6 +305,16 @@ public static class CliArgumentParser
 
 					treatAs = rawTreatAs;
 					break;
+				case "--alpha-experiment":
+					var rawAlphaExperiment = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					if (rawAlphaExperiment is not ("none" or "translucent" or "advanced-opacity"))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--alpha-experiment 只接受 none / translucent / advanced-opacity，实际是 '{rawAlphaExperiment}'。");
+					}
+
+					alphaExperiment = rawAlphaExperiment;
+					break;
 				case "--head-merge":
 					var rawHeadMerge = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
 					if (rawHeadMerge is not ("on" or "off" or "true" or "false" or "1" or "0"))
@@ -325,12 +341,14 @@ public static class CliArgumentParser
 					}
 
 					if (normalizedCutout is not ("a" or "b" or "alphaclip" or "tuned"
-						or "rgb-inv" or "alpha" or "alpha-inv"))
+						or "rgb-inv" or "alpha" or "alpha-inv" or "dither" or "dither-strong"))
 					{
 						throw new CliUserException("InvalidOption",
-							$"--cutout 只接受 a/b/rgb-inv/alpha/alpha-inv，实际是 '{rawCutout}'。"
+							$"--cutout 只接受 a/b/rgb-inv/alpha/alpha-inv/dither/dither-strong，实际是 '{rawCutout}'。"
 							+ "a = RGB 存遮罩、阈值 0.5（旧行为）；b = 同 a 但阈值 0.144；"
-							+ "rgb-inv = RGB 存遮罩并取反；alpha = 遮罩存 alpha 通道；alpha-inv = 遮罩存 alpha 并取反。");
+							+ "rgb-inv = RGB 存遮罩并取反；alpha = 遮罩存 alpha 通道；alpha-inv = 遮罩存 alpha 并取反；"
+							+ "dither = 把渐变 alpha 抖成二值以近似半透明（只抖中间值）；"
+							+ "dither-strong = 同上但整片参与抖动、alpha 先乘 1.35。");
 					}
 
 					cutout = normalizedCutout;
@@ -422,7 +440,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

@@ -111,6 +111,32 @@ public sealed class VmtDocument
 	/// </summary>
 	public bool WantsTranslucency => IsEnabled("$translucent");
 
+	/// <summary>
+	/// <c>$allowalphatocoverage 1</c>：<b>抖动透明</b>——用 MSAA 的覆盖位把渐变 alpha 变成
+	/// "这一小块区域里画几个像素"，视觉上近似半透明，但不进混合队列（没有排序问题）。
+	/// <para>
+	/// <b>这一条是能把半透明做对的关键。</b>实测 Lilium_Sancta 那套衣服：VMT 里
+	/// <c>$translucent 1</c> 是被注释掉的，真正生效的是 <c>$alphatest 1</c>
+	/// + <c>$alphatestreference 0.5</c> + <c>$allowalphatocoverage 1</c>，
+	/// 而底色 alpha 有 <b>76%</b> 落在中间值——作者要的就是抖动半透明，不是硬裁。
+	/// </para>
+	/// <para>
+	/// HD2 侧用 <c>alphaclip</c> 复现：把遮罩抖成二值（见 <c>SourceMaterialConverter.DitherAlpha</c>），
+	/// 远处被 TAA 累积平均成透明度。实机 A/B 已确认观感与源侧薄纱一致。
+	/// </para>
+	/// </summary>
+	public bool WantsAlphaToCoverage => IsEnabled("$allowalphatocoverage");
+
+	/// <summary>
+	/// 这个材质该走<b>抖动</b>而不是硬裁：源侧要么要混合（<c>$translucent</c>），
+	/// 要么自己就写着抖动透明（<c>$allowalphatocoverage</c>）。
+	/// <para>
+	/// 剩下的纯 <c>$alphatest</c>（蕾丝、镂空这类二值 alpha）继续硬裁——那才是源侧原意：
+	/// Source 的 <c>$alphatest</c> 就是"低于参考值直接丢弃"。
+	/// </para>
+	/// </summary>
+	public bool WantsDitheredTransparency => WantsTranslucency || WantsAlphaToCoverage;
+
 	public string? Value(string key) => values.GetValueOrDefault(key.ToLowerInvariant());
 
 	/// <summary>把 <c>1</c>/<c>true</c>/<c>yes</c> 之类的常见写法都当作开。</summary>

@@ -107,6 +107,32 @@ public enum CutoutStrategy
 
 	/// <summary>遮罩放 alpha 通道，并取反。</summary>
 	MaskInAlphaInverted = 4,
+
+	/// <summary>
+	/// <b>D：抖动透明（alpha-to-coverage 的等价做法）</b>。
+	/// <para>
+	/// 渐变 alpha 在 <c>alphaclip</c> 下只有"在/不在"两态，于是源侧 76% 的中间值被压成硬边。
+	/// 这一档把遮罩**抖成二值**：每个像素按 <c>alpha</c> 与 8×8 Bayer 阈值比较决定画不画，
+	/// 远处被 TAA 累积平均成正确的透明度，近处看到细密噪点。
+	/// </para>
+	/// <para>
+	/// <b>为什么这是"还原"而不是"发明"：</b>源侧这些衣服本来就写着
+	/// <c>$alphatest 1</c> + <c>$allowalphatocoverage 1</c>——Source 2013 用 MSAA 的
+	/// 覆盖位做同样的事。我们只是把那个手段搬到了贴图空间。
+	/// </para>
+	/// <para>
+	/// 只抖中间值（5%～95%），两端保持纯实/纯透：镂空边缘不变，只有"薄纱"那层变成半透。
+	/// </para>
+	/// </summary>
+	AlphaClipDithered = 5,
+
+	/// <summary>
+	/// <b>E：抖动加强</b>——与 D 同一套抖动，但 alpha 先乘 1.35、并且整片都参与抖动。
+	/// <para>
+	/// 用来回答"是不是抖得太保守"：如果 D 看着还是偏薄/偏硬，E 会把观感往实里推。
+	/// </para>
+	/// </summary>
+	AlphaClipDitheredStrong = 6,
 }
 
 /// <summary>
@@ -380,7 +406,8 @@ public sealed class SourceMaterialConverter
 		MatCapMode matcapMode = MatCapMode.Bake,
 		string? idNamespace = null,
 		CutoutStrategy cutoutStrategy = CutoutStrategy.AlphaClip,
-		double matcapBakeGain = 1.0)
+		double matcapBakeGain = 1.0,
+		AlphaExperiment alphaExperiment = AlphaExperiment.None)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -391,6 +418,7 @@ public sealed class SourceMaterialConverter
 		this.idNamespace = string.IsNullOrWhiteSpace(idNamespace) ? null : idNamespace.Trim();
 		this.cutoutStrategy = cutoutStrategy;
 		this.matcapBakeGain = double.IsFinite(matcapBakeGain) && matcapBakeGain > 0 ? matcapBakeGain : 1.0;
+		this.alphaExperiment = alphaExperiment;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -417,6 +445,37 @@ public sealed class SourceMaterialConverter
 	public CutoutStrategy CutoutStrategy => cutoutStrategy;
 
 	private readonly CutoutStrategy cutoutStrategy;
+
+	/// <summary>
+	/// 半透明落地方式的实验开关（默认 <see cref="AlphaExperiment.None"/>）。
+	/// <para>
+	/// 打开时**模板不再由 VMT 决定**，而是由这个开关决定；同时材质身份串里**不再带模板后缀**
+	/// ——三个变体必须算出同一个 id，模型 patch 才能一次换好、之后只换材质包做对照。
+	/// </para>
+	/// </summary>
+	private readonly AlphaExperiment alphaExperiment;
+
+	/// <summary>
+	/// 实验开关是否真的改这个材质的模板：**只对"需要透明"的材质生效**。
+	/// <para>
+	/// 不能对所有材质一律改——那会把整只角色（金属装饰、脸、头发）都变成平涂半透明，
+	/// 对照就失去意义了。不透明件保持原有模板（<c>advanced</c>），只有本来会走
+	/// <c>alphaclip</c> 的那些才换成实验模板。
+	/// </para>
+	/// </summary>
+	private bool ExperimentApplies(bool useAlphaClip)
+		=> alphaExperiment != AlphaExperiment.None && useAlphaClip;
+
+	/// <summary><c>translucent</c> 模板的变量 id（SDK <c>hashlists/shadervariables.txt</c>）。</summary>
+	private const uint TranslucentOpacityBaseVariableId = 0xab58e70d;
+
+	private const uint TranslucentBaseColorVariableId = 0xcb577b8f;
+
+	/// <summary><c>advanced</c> 模板里那条"不透明度场"的变量（本实验用来试探它是否混合）。</summary>
+	private const uint AdvancedOpacityOffsetVariableId = 0xccddd706;
+
+	/// <summary><c>advanced</c> 模板的 <c>SclarFieldOpacity</c> 槽下标。</summary>
+	public const int AdvancedOpacityFieldSlot = 1;
 
 	/// <summary>这个模板名是不是 <c>alphaclip</c> 族（槽表只有 3～4 个、没有 PBR 输入）。</summary>
 	private static bool IsAlphaClipTemplate(string templateName)
@@ -643,7 +702,10 @@ public sealed class SourceMaterialConverter
 		double MatcapTint,
 		string? MatcapTextureName,
 		bool MatcapIsSurface,
-		IReadOnlyList<string> Notices)
+		IReadOnlyList<string> Notices,
+		// 遮罩要不要抖成二值（近似半透明）。由**源侧意图**决定：
+		// `$translucent`（要混合）或 `$allowalphatocoverage`（自己就写着抖动）。
+		bool UseDither)
 	{
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
@@ -699,13 +761,41 @@ public sealed class SourceMaterialConverter
 
 		SynthesizedTexture texture;
 		SynthesizedTexture? opacityMask;
+		SynthesizedTexture? translucentMap;
 		try
 		{
-			(texture, opacityMask) = BuildBaseColorTexture(loaded);
+			(texture, opacityMask, translucentMap) = BuildBaseColorTexture(loaded);
 		}
 		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：贴图 {textureName} 转换失败——{exception.Message}");
+		}
+
+		// ===== 实验路线 1：translucent 模板 =====
+		// 槽只有 1 个（NormalXyRoughnessOpacity），没有反照率槽 ⇒ 颜色只能靠 BaseColor 平涂。
+		if (alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip)
+		{
+			if (translucentMap is null)
+				return MaterialSynthesisResult.Failed($"{stem}：实验路线 1 需要不透明度贴图，但没有产出");
+			if (material.TextureIds.Count == 0)
+				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板没有贴图槽");
+
+			material.SetTexture(0, translucentMap.Id);
+			// 平涂色取底色平均值：布料这种大面积渐变底色取平均后与整体观感接近。
+			var average = AverageColor(loaded.Rgba);
+			if (!material.TrySetVector(TranslucentBaseColorVariableId, average[0], average[1], average[2]))
+				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板里找不到 BaseColor 变量");
+			// OpacityBase 是整体不透明度倍率：源 alpha 已经在贴图里，这里给 1 不做二次衰减。
+			material.TrySetScalar(TranslucentOpacityBaseVariableId, 1.0f);
+
+			return new MaterialSynthesisResult(
+				new SynthesizedMaterial(loaded.MaterialId, material.Write(), loaded.TemplateName, loaded.BaseTexture, material.TextureIds),
+				[translucentMap],
+				[])
+			{
+				Identity = loaded.ToIdentity(),
+				Notices = [.. loaded.Notices, $"{stem}：实验路线 1（translucent 模板，平涂色 + 贴图 alpha）"],
+			};
 		}
 
 		var textures = new List<SynthesizedTexture> { texture };
@@ -747,6 +837,19 @@ public sealed class SourceMaterialConverter
 				return MaterialSynthesisResult.Failed(
 					$"advanced 模板只有 {material.TextureIds.Count} 个槽，放不下下标 {AdvancedAlbedoSlot} 的底色");
 			material.SetTexture(AdvancedAlbedoSlot, texture.Id);
+
+			// ===== 实验路线 2：advanced + SclarFieldOpacity =====
+			// 想知道的是：advanced 会不会**混合**，还是只做裁切。
+			// 遮罩走它自己那个"不透明度场"槽；OpacityOffset 保持模板默认（0 = 不额外偏移）。
+			if (alphaExperiment == AlphaExperiment.AdvancedOpacity && loaded.UseAlphaClip && opacityMask is not null)
+			{
+				if (material.TextureIds.Count <= AdvancedOpacityFieldSlot)
+					return MaterialSynthesisResult.Failed(
+						$"{stem}：advanced 模板只有 {material.TextureIds.Count} 个槽，放不下 SclarFieldOpacity");
+				material.SetTexture(AdvancedOpacityFieldSlot, opacityMask.Id);
+				textures.Add(opacityMask);
+				material.TrySetScalar(AdvancedOpacityOffsetVariableId, 0.0f);
+			}
 
 			// 槽 2（Nar = RGB 法线 / A 粗糙度）与槽 3（金属度）也要写 ——
 			// 用的是**全局共享**的一对（`fix_materials.py:25-27` 的 shared_flat_normal / shared_pbr），
@@ -1065,16 +1168,26 @@ public sealed class SourceMaterialConverter
 				: vmt.WantsTransparency && baseAlpha.IsMeaningful;
 		}
 
-		// 降级提示：半透明在 HD2 里表达不了，我们退成了不透明。
-		// 必须说出来——否则用户只会看到"袖套没透明"，或者更糟：以为我们又把东西弄丢了。
+		// 半透明落地方式的说明。**必须说出来**——否则用户只会看到"袖套没透明"，
+		// 或者更糟：以为我们又把东西弄丢了。
+		//
+		// 现在的做法是抖动（见 DitherAlpha）：源侧的渐变 alpha 被抖成二值点阵，
+		// 远处由 TAA 累积成等效透明度。实机 A/B 已确认观感与源侧薄纱一致。
 		if (useAlphaClip && vmt.WantsTranslucency && !vmt.WantsAlphaTest)
 		{
 			notices.Add(
 				$"{stem}：源侧声明 $translucent（alpha 混合半透明），HD2 没有混合模板，"
-				+ "已按硬裁（alphaclip）处理——形状正确，但没有真正的半透明过渡。");
+				+ "已按**抖动透明**处理（点阵近似）——远处观感接近，近看有细密噪点。");
 		}
 
-		var templateName = useAlphaClip ? "alphaclip" : "advanced";
+		var templateName = ExperimentApplies(useAlphaClip)
+			? alphaExperiment switch
+			{
+				AlphaExperiment.Translucent => "translucent",
+				AlphaExperiment.AdvancedOpacity => "advanced",
+				_ => useAlphaClip ? "alphaclip" : "advanced",
+			}
+			: useAlphaClip ? "alphaclip" : "advanced";
 		if (!templates.Contains(templateName))
 		{
 			reason = $"材质模板库缺少 {templateName}，无法造材质";
@@ -1115,13 +1228,21 @@ public sealed class SourceMaterialConverter
 		// 先把 id 改回去做单变量验证：如果手套回来 ⇒ id 就是原因；如果还不回来 ⇒ 与 id 无关，
 		// 差异在我们的产物之外（Overwrite / 注册表 / 部署状态），那时再换方向。
 		var identity = BuildMaterialIdentity(
-			baseTexture, emissionTexture, useAlphaClip,
+			baseTexture, emissionTexture,
+			// **实验开关不参与身份串**：id 必须与基线逐位相同，三个变体才能互换。
+			// 那个 `|alphaclip` 后缀仍然按"源侧要不要透明"算——它只用于区分同底色的不同材质，
+			// 与最终选哪个模板无关。
+			useAlphaClip,
 			verdict.MatCapIsTheSurface ? vmt.MatCapTexture : null);
 
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
 			identity, DeriveMaterialId(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
-			matcapTextureName, matcapIsSurface, notices);
+			matcapTextureName, matcapIsSurface, notices,
+			// 抖动是**默认**的半透明落地方式，但只给"源侧真的要半透明"的材质：
+			// `$translucent`（想混合，HD2 表达不了）与 `$allowalphatocoverage`（源侧自己就在抖）。
+			// 纯 `$alphatest` 继续硬裁——那是 Source 的原语义（低于参考值丢弃），蕾丝/镂空靠它。
+			UseDither: useAlphaClip && vmt.WantsDitheredTransparency);
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
 	}
@@ -1194,14 +1315,21 @@ public sealed class SourceMaterialConverter
 	/// 量的那一步在 <c>TryLoad</c>，所以这里的顺序天然是对的。
 	/// </para>
 	/// </summary>
-	private (SynthesizedTexture BaseColor, SynthesizedTexture? OpacityMask) BuildBaseColorTexture(LoadedMaterial loaded)
+	private (SynthesizedTexture BaseColor, SynthesizedTexture? OpacityMask, SynthesizedTexture? TranslucentMap)
+		BuildBaseColorTexture(LoadedMaterial loaded)
 	{
 		var vtf = loaded.Vtf;
 		var rgba = loaded.Rgba;
 		var textureName = loaded.TextureName;
 
 		var opacityMask = loaded.UseAlphaClip
-			? BuildOpacityMask(textureName, rgba, vtf.Width, vtf.Height)
+			? BuildOpacityMask(textureName, rgba, vtf.Width, vtf.Height, loaded.UseDither)
+			: null;
+
+		// 实验路线 1：`translucent` 模板唯一那个槽是 `NormalXyRoughnessOpacity`
+		// （RGB = 平面法线 XY + 粗糙度，A = 不透明度），必须在**清零 alpha 之前**合成出来。
+		var translucentMap = alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip
+			? BuildTranslucentMap(textureName, rgba, vtf.Width, vtf.Height)
 			: null;
 
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
@@ -1277,7 +1405,69 @@ public sealed class SourceMaterialConverter
 				texture.FormatName,
 				texture.Width,
 				texture.Height),
-			opacityMask);
+			opacityMask,
+			translucentMap);
+	}
+
+	/// <summary>
+	/// 底色的平均 RGB（0..1）。给 <c>translucent</c> 模板的平涂色用。
+	/// <para>
+	/// 按 8 位采样值直接平均，不转线性——这个值只做"整体色调"用，
+	/// 实机对照要看的也不是色准，而是"到底会不会混合"。
+	/// </para>
+	/// </summary>
+	private static float[] AverageColor(byte[] rgba)
+	{
+		double red = 0, green = 0, blue = 0;
+		var pixels = rgba.Length / 4;
+		if (pixels == 0) return [1f, 1f, 1f];
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			red += rgba[offset + 0];
+			green += rgba[offset + 1];
+			blue += rgba[offset + 2];
+		}
+
+		return
+		[
+			(float)(red / pixels / 255.0),
+			(float)(green / pixels / 255.0),
+			(float)(blue / pixels / 255.0),
+		];
+	}
+
+	/// <summary>
+	/// 合成 <c>translucent</c> 模板要的那张 <c>NormalXyRoughnessOpacity</c>：
+	/// <b>RGB = 平面法线 XY + 粗糙度，A = 源底色 alpha</b>。
+	/// <para>
+	/// 这是实验路线 1 的核心：HD2 把"半透明强度"放在这张图的 A 通道里，
+	/// 而不是像 Source 那样由 <c>$translucent</c> 开关加底色的 alpha 决定。
+	/// 法线用平面法线（128,128）——布料没有法线图时照抄平面值不会引入假起伏。
+	/// </para>
+	/// </summary>
+	private SynthesizedTexture BuildTranslucentMap(string textureName, byte[] rgba, int width, int height)
+	{
+		var map = new byte[checked(width * height * 4)];
+		for (var offset = 0; offset < map.Length; offset += 4)
+		{
+			map[offset + 0] = 128;                 // 法线 X
+			map[offset + 1] = 128;                 // 法线 Y
+			map[offset + 2] = PbrRoughness;        // 粗糙度
+			map[offset + 3] = rgba[offset + 3];    // 不透明度 = 源 alpha
+		}
+
+		var bc7 = encoder.EncodeToBc7(
+			Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [map]), srgb: false);
+		var texture = new Hd2TextureAsset();
+		texture.FromDds(bc7);
+		return new SynthesizedTexture(
+			DeriveTextureId(textureName + "_opacity"),
+			texture.WriteToc(),
+			texture.Pixels,
+			textureName + "_opacity",
+			texture.FormatName,
+			texture.Width,
+			texture.Height);
 	}
 
 	/// <summary>
@@ -1332,7 +1522,7 @@ public sealed class SourceMaterialConverter
 	/// （<c>fix_alphaclip.py:117-155</c>）。
 	/// </para>
 	/// </summary>
-	private SynthesizedTexture BuildOpacityMask(string textureName, byte[] rgba, int width, int height)
+	private SynthesizedTexture BuildOpacityMask(string textureName, byte[] rgba, int width, int height, bool ditherBySource)
 	{
 		// ⚠️ `rgba` 是 **texconv 解出来的完整 DDS**（128 字节头 + 像素），不是裸像素。
 		// 当成裸像素用会产出一份"头写着 w×h、后面却跟着 128+w*h*4 字节"的 DDS，
@@ -1344,10 +1534,22 @@ public sealed class SourceMaterialConverter
 		// （历史行为），另外三档用来实测 HD2 到底采样哪个通道、什么极性。
 		var inAlpha = cutoutStrategy is CutoutStrategy.MaskInAlpha or CutoutStrategy.MaskInAlphaInverted;
 		var inverted = cutoutStrategy is CutoutStrategy.MaskInverted or CutoutStrategy.MaskInAlphaInverted;
+		// 抖动与否：**源侧意图优先**（`$translucent` / `$allowalphatocoverage`），
+		// 而显式的 cutout 档位可以强制打开（dither / dither-strong）或强制关掉（其余档）。
+		var dithered = cutoutStrategy switch
+		{
+			CutoutStrategy.AlphaClipDithered => true,
+			CutoutStrategy.AlphaClipDitheredStrong => true,
+			// A/B/rgb-inv/alpha/alpha-inv 是"显式指定硬裁"的诊断档，不参与自动抖动。
+			_ => ditherBySource,
+		};
+		var ditherGain = cutoutStrategy == CutoutStrategy.AlphaClipDitheredStrong ? 1.35 : 1.0;
 		var mask = new byte[checked(width * height * 4)];
 		for (var offset = 0; offset < mask.Length; offset += 4)
 		{
 			var value = rgba[offset + 3];
+			if (dithered)
+				value = DitherAlpha(value, offset / 4, width, ditherGain);
 			if (inverted)
 				value = (byte)(255 - value);
 			var grey = inAlpha ? (byte)255 : value;
@@ -1370,6 +1572,52 @@ public sealed class SourceMaterialConverter
 			texture.Width,
 			texture.Height);
 	}
+
+	/// <summary>
+	/// 把 0～255 的渐变 alpha 抖成二值（0 或 255），用来在 <c>alphaclip</c> 下近似半透明。
+	/// <para>
+	/// <b>为什么这么算。</b>取 8×8 Bayer 阈值矩阵的归一化值 <c>t ∈ [0,1)</c>，
+	/// 若 <c>alpha &gt; t</c> 就画、否则不画。于是"这一小块区域里被画出来的像素比例 ≈ alpha"，
+	/// 远处缩小/被 TAA 累积后就是这个 alpha 的等效透明度。
+	/// </para>
+	/// <para>
+	/// <b>只抖中间值。</b>低于 <c>lowCut</c>（≈5%）一律不画、高于 <c>highCut</c>（≈95%）一律画——
+	/// 镂空边缘与实心区完全保持原样，只有"薄纱"那一段变成半透。
+	/// 加强档（gain &gt; 1）会把整片都纳入抖动范围，用于把观感往实里推。
+	/// </para>
+	/// <para>
+	/// <b>抖动必须在贴图空间做，而且遮罩不能带 mip。</b>一旦生成 mip，缩小后抖动会被平均回
+	/// 原始渐变 alpha，再被 <c>OpacityThreshold 0.5</c> 一裁就白做了。
+	/// 我们合成的遮罩本来就只有 1 级 mip（<c>BuildDds(..., [mask])</c> 单元素 mip 链）。
+	/// </para>
+	/// </summary>
+	private static byte DitherAlpha(byte alpha, int pixelIndex, int width, double gain)
+	{
+		const int lowCut = 13;    // ≈5%
+		const int highCut = 242;  // ≈95%
+		var scaled = gain == 1.0 ? alpha : Math.Min(255.0, alpha * gain);
+		if (scaled <= lowCut) return 0;
+		if (scaled >= highCut && gain == 1.0) return 255;
+
+		var x = pixelIndex % width;
+		var y = pixelIndex / width;
+		// Bayer 8×8 的阈值归一到 (0,1)：矩阵里 0..63 取 (v + 0.5) / 64，避免 0 与 1 两个端点。
+		var threshold = (Bayer8x8[(y & 7) * 8 + (x & 7)] + 0.5) / 64.0;
+		return scaled / 255.0 > threshold ? (byte)255 : (byte)0;
+	}
+
+	/// <summary>标准 8×8 Bayer 有序抖动矩阵（值域 0..63，确定性、可复现）。</summary>
+	private static readonly int[] Bayer8x8 =
+	[
+		 0, 32,  8, 40,  2, 34, 10, 42,
+		48, 16, 56, 24, 50, 18, 58, 26,
+		12, 44,  4, 36, 14, 46,  6, 38,
+		60, 28, 52, 20, 62, 30, 54, 22,
+		 3, 35, 11, 43,  1, 33,  9, 41,
+		51, 19, 59, 27, 49, 17, 57, 25,
+		15, 47,  7, 39, 13, 45,  5, 37,
+		63, 31, 55, 23, 61, 29, 53, 21,
+	];
 
 	/// <summary><c>R8G8B8A8_UNORM</c> 的 DXGI 号；非压缩源统一扩成它。</summary>
 	private const uint Rgba8Unorm = 28;
