@@ -119,7 +119,9 @@ public sealed record CliGlobalOptions(
 	//
 	// 三个变体必须**同命名空间**才有意义：实验开关不改材质 id，模型 patch 才能只换一次，
 	// 之后换材质包即可对照。见 AlphaExperiment。
-	string? AlphaExperiment = null);
+	string? AlphaExperiment = null,
+	// 抖动的点大小（1 = 每像素一个点，2 = 2×2 的点，默认 2）。只影响颗粒粗细，不影响等效透明度。
+	int? DitherScale = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -165,6 +167,7 @@ public static class CliArgumentParser
 		string? componentSourceList = null;
 		string? treatAs = null;
 		string? alphaExperiment = null;
+		int? ditherScale = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -305,7 +308,17 @@ public static class CliArgumentParser
 
 					treatAs = rawTreatAs;
 					break;
-				case "--alpha-experiment":
+				case "--dither-scale":
+					var rawDitherScale = ReadValue(args, ref index, argument);
+					if (!int.TryParse(rawDitherScale, out var parsedDitherScale) || parsedDitherScale is < 1 or > 8)
+					{
+						throw new CliUserException("InvalidOption",
+							$"--dither-scale 需要 1..8 的整数，实际是 '{rawDitherScale}'。1 = 每像素一个点（最细），2 = 2×2 的点（默认，颗粒更轻）。");
+					}
+
+						ditherScale = parsedDitherScale;
+						break;
+					case "--alpha-experiment":
 					var rawAlphaExperiment = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
 					if (rawAlphaExperiment is not ("none" or "translucent" or "advanced-opacity"))
 					{
@@ -440,7 +453,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

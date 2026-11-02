@@ -2747,7 +2747,8 @@ public static class CliApplication
 					idNamespace: ResolveIdNamespace(invocation.Options),
 					cutoutStrategy: ResolveCutoutStrategy(invocation.Options),
 					matcapBakeGain: invocation.Options.MatcapGain ?? 1.0,
-				alphaExperiment: ResolveAlphaExperiment(invocation.Options));
+					alphaExperiment: ResolveAlphaExperiment(invocation.Options),
+					ditherScale: invocation.Options.DitherScale ?? 2);
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3261,7 +3262,8 @@ public static class CliApplication
 				ResolveIdNamespace(options),
 				ResolveCutoutStrategy(options),
 				options.MatcapGain ?? 1.0,
-				ResolveAlphaExperiment(options));
+				ResolveAlphaExperiment(options),
+				options.DitherScale ?? 2);
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──

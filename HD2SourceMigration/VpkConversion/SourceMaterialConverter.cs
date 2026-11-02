@@ -407,7 +407,8 @@ public sealed class SourceMaterialConverter
 		string? idNamespace = null,
 		CutoutStrategy cutoutStrategy = CutoutStrategy.AlphaClip,
 		double matcapBakeGain = 1.0,
-		AlphaExperiment alphaExperiment = AlphaExperiment.None)
+		AlphaExperiment alphaExperiment = AlphaExperiment.None,
+		int ditherScale = 2)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -419,6 +420,7 @@ public sealed class SourceMaterialConverter
 		this.cutoutStrategy = cutoutStrategy;
 		this.matcapBakeGain = double.IsFinite(matcapBakeGain) && matcapBakeGain > 0 ? matcapBakeGain : 1.0;
 		this.alphaExperiment = alphaExperiment;
+		this.ditherScale = Math.Clamp(ditherScale, 1, 8);
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -454,6 +456,12 @@ public sealed class SourceMaterialConverter
 	/// </para>
 	/// </summary>
 	private readonly AlphaExperiment alphaExperiment;
+
+	/// <summary>
+	/// 抖动的**点大小**（1 = 每像素一个点，2 = 2×2 的点）。面积不变、空间频率降低，
+	/// 所以远处等效透明度不变、近处颗粒感减轻。默认 2。
+	/// </summary>
+	private readonly int ditherScale;
 
 	/// <summary>
 	/// 实验开关是否真的改这个材质的模板：**只对"需要透明"的材质生效**。
@@ -1228,12 +1236,24 @@ public sealed class SourceMaterialConverter
 		// 先把 id 改回去做单变量验证：如果手套回来 ⇒ id 就是原因；如果还不回来 ⇒ 与 id 无关，
 		// 差异在我们的产物之外（Overwrite / 注册表 / 部署状态），那时再换方向。
 		var identity = BuildMaterialIdentity(
-			baseTexture, emissionTexture,
-			// **实验开关不参与身份串**：id 必须与基线逐位相同，三个变体才能互换。
-			// 那个 `|alphaclip` 后缀仍然按"源侧要不要透明"算——它只用于区分同底色的不同材质，
-			// 与最终选哪个模板无关。
-			useAlphaClip,
-			verdict.MatCapIsTheSurface ? vmt.MatCapTexture : null);
+			// ⚠️ **身份串 = 材质名，不带任何后缀。**
+			//
+			// 实测（Lilium_Sancta 的服装色变体）：同一个源材质 `mat_ornament_pearl_tiara`
+			// 在白/粉款里 `$basetexture` 是 `.../gray`、在黑款里是 `.../pearl`，matcap 也不同。
+			// 只要 id 里掺了"底色"或"matcap"，同名材质在不同颜色包里就是不同 id，
+			// 而模型 patch 的材质槽只能烘一套 ⇒ 换另一个颜色包时那些 section 找不到材质，
+			// 游戏里就是**品红**（实测 12 处装饰件：tiara / 发饰 / 耳坠 / 项链 / 裙饰 / 鞋）。
+			//
+			// 以前那三个后缀（`|emission`、`|alphaclip`、`|matcap:`）存在的唯一理由，是
+			// **根是 `$basetexture`** 时"不同名字共用一张底色"会塌成同一个材质。
+			// 根换成材质名之后这个理由消失了：不同名字天然不同 id，
+			// 而同一个名字就是**同一个槽**——变体之间的底色/matcap 差异正是我们要折叠掉的东西。
+			//
+			// 代价：材质条目略多（不再按底色去重）。贴图仍然按 basename 共享，包不会明显变大。
+			stem,
+			emissionTexture: null,
+			useAlphaClip: false,
+			matcapTexture: null);
 
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
@@ -1549,7 +1569,7 @@ public sealed class SourceMaterialConverter
 		{
 			var value = rgba[offset + 3];
 			if (dithered)
-				value = DitherAlpha(value, offset / 4, width, ditherGain);
+				value = DitherAlpha(value, offset / 4, width, ditherGain, ditherScale);
 			if (inverted)
 				value = (byte)(255 - value);
 			var grey = inAlpha ? (byte)255 : value;
@@ -1591,7 +1611,7 @@ public sealed class SourceMaterialConverter
 	/// 我们合成的遮罩本来就只有 1 级 mip（<c>BuildDds(..., [mask])</c> 单元素 mip 链）。
 	/// </para>
 	/// </summary>
-	private static byte DitherAlpha(byte alpha, int pixelIndex, int width, double gain)
+	private static byte DitherAlpha(byte alpha, int pixelIndex, int width, double gain, int dotScale)
 	{
 		const int lowCut = 13;    // ≈5%
 		const int highCut = 242;  // ≈95%
@@ -1599,8 +1619,12 @@ public sealed class SourceMaterialConverter
 		if (scaled <= lowCut) return 0;
 		if (scaled >= highCut && gain == 1.0) return 255;
 
-		var x = pixelIndex % width;
-		var y = pixelIndex / width;
+		// **点的大小**：阈值按 dotScale×dotScale 个像素共用一个格子。
+		// 1 = 每像素一个点（最细，近看像噪点）；2 = 2×2 的点（近看像细网纱）；
+		// 面积不变、空间频率降低，所以远处等效透明度不变、近处颗粒感明显减轻。
+		var scale = Math.Clamp(dotScale, 1, 8);
+		var x = pixelIndex % width / scale;
+		var y = pixelIndex / width / scale;
 		// Bayer 8×8 的阈值归一到 (0,1)：矩阵里 0..63 取 (v + 0.5) / 64，避免 0 与 1 两个端点。
 		var threshold = (Bayer8x8[(y & 7) * 8 + (x & 7)] + 0.5) / 64.0;
 		return scaled / 255.0 > threshold ? (byte)255 : (byte)0;
