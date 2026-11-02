@@ -2102,8 +2102,36 @@ namespace HD2ModManager.ViewModels
                     AssetIndexCounts = $"Archive {item.Current}/{item.Total}";
                 });
                 await Task.Run(() => index.BuildOrRebuildAsync(gameData, archiveHashes, progress, task?.CancellationToken ?? CancellationToken.None).AsTask());
+
+                // **接着把「Armor / Helmet Unit 部位事实」一起算出来。**
+                //
+                // 这两半以前是两个按钮：主按钮只建基础索引，部位事实要另点一次。可是 VPK 换甲、
+                // 跨护甲规划、护甲映射页全都依赖部位事实（以及它顺带写出的
+                // `data/hidden-unit-cache`）——用户装完包点"重建资产"再去换甲，就会撞上
+                // "索引不可用/需要重建"的提示，而他明明刚重建过。
+                // CLI 的 `gamedata index apply` 一直是两半连着做的，这里对齐它。
+                task?.MarkRunning("正在分析 Armor / Helmet Unit 部位");
+                AssetIndexState = "部位计算中";
+                AssetIndexSummary = "基础索引已就绪，正在计算 Unit 部件部位与隐藏 Unit 缓存。";
+                var advancedIndex = CoreServices.CreateAdvancedEquipmentIndexService(_paths);
+                var unitProgress = new Progress<IndexBuildProgress>(item =>
+                {
+                    task?.UpdateStage(item.Current <= 0
+                        ? item.CurrentArchiveId ?? "正在分析 Unit 部位"
+                        : $"正在分析 Unit 部位 {item.Current}/{item.Total}");
+                    task?.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
+                    AssetIndexCounts = $"Unit 部位 {item.Current}/{item.Total}";
+                });
+                // `BuildMissing…` 而不是 `RebuildAll…`：基础索引刚重建时"缺事实"就是全部，于是它等价于
+                // 全量重算；而重复点这个按钮时它只处理真正还缺的那几个（实测 0.1 秒）。
+                // 不用 `IsCurrentAsync` 当门：那个判据要求**每一个**注册表 unit 都有事实，
+                // 只要有一个读不出来的（实测 2 个只存在于 bundle 里的归档），门就永远为假，
+                // 于是每次重建都会白跑八十秒全量分析。
+                var token = task?.CancellationToken ?? CancellationToken.None;
+                await Task.Run(() => advancedIndex.BuildMissingUnitPartFactsAsync(gameData, unitProgress, token).AsTask());
+
                 task?.MarkCompleted();
-                AssetIndexHint = "基础资产索引已重建；Unit 部件部位事实需通过右侧专用按钮单独计算。";
+                AssetIndexHint = "资产索引已重建，Unit 部件部位事实与隐藏 Unit 缓存也已就绪。";
                 await Task.Run(
                     () => _library.RefreshAssetSummariesAsync(task?.CancellationToken ?? CancellationToken.None),
                     task?.CancellationToken ?? CancellationToken.None);
