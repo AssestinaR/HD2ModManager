@@ -167,6 +167,52 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
+	/// <c>IsMetallicMatcapName</c>：金属与否按 matcap <b>名字</b>判，不看像素。
+	/// <para>
+	/// 这条钉的是两条被否掉的路：
+	/// </para>
+	/// <list type="bullet">
+	/// <item>"底色近黑 = 金属"——实测同一条 <c>mat_metal</c> 底图亮度 B1（黑）17.2、
+	/// B3（白紫）128.4，测的是颜色变体不是材质。</item>
+	/// <item>"边缘密度区分金属与宝石"——<c>matcap_jewel9</c> 4.84 vs <c>matcap_metal7</c> 11.15，
+	/// 区间重叠。</item>
+	/// </list>
+	/// <para>名字不随颜色变体变化，是作者的声明。</para>
+	/// </summary>
+	[Fact]
+	public void MetallicMatcapsAreRecognisedByName()
+	{
+		// 实测样本：金属。
+		foreach (var name in new[]
+		{
+			"matcap_metal11", "Matcap_metal7", "Matcap_metal8", "Platinum_Silver",
+			"matcap_Silver", "MRmagnet", "materials/x/Matcap_Metal1",
+		})
+		{
+			Assert.True(MaterialAppearance.IsMetallicMatcapName(name), name);
+		}
+
+		// 实测样本：非金属（宝石/珍珠/布料/环境/高光）。
+		foreach (var name in new[]
+		{
+			"matcap_jewel7", "matcap_jewel9", "Matcap_jewel2", "Matcap_diamond1",
+			"Matcap_diamond4", "matcap_pearl3", "matcap_cloths9", "matcap_env3",
+			"matcap_highlight", "matcap_rim", "Matcap27_EC",
+		})
+		{
+			Assert.False(MaterialAppearance.IsMetallicMatcapName(name), name);
+		}
+
+		// 非金属词优先：名字里同时出现时按非金属处理。
+		Assert.False(MaterialAppearance.IsMetallicMatcapName("matcap_metal_gem"));
+
+		// 认不出来 → 非金属（金属化是"加强"，误判代价更大）。
+		Assert.False(MaterialAppearance.IsMetallicMatcapName("11"));
+		Assert.False(MaterialAppearance.IsMetallicMatcapName(null));
+		Assert.False(MaterialAppearance.IsMetallicMatcapName("  "));
+	}
+
+	/// <summary>
 	/// <c>IsUniformlyTranslucent</c>：alpha **整片均匀且明显 &lt; 255** = 整体半透明。
 	/// <para>
 	/// 实测 MourningVeil 的玻璃鞋跟 <c>mat_gem1_shoes</c> 底图 alpha 恒 102（≈40% 不透明）。

@@ -793,6 +793,15 @@ public sealed class SourceMaterialConverter
 		double MatcapTint,
 		string? MatcapTextureName,
 		bool MatcapIsSurface,
+		/// <summary>
+		/// 这个材质是不是<b>金属</b>——由 matcap 的名字判（见
+		/// <see cref="MaterialAppearance.IsMetallicMatcapName"/>），与底色亮度无关。
+		/// <para>
+		/// 与 <see cref="MatcapIsSurface"/> 刻意分开：后者是"底色该不该被 matcap 顶掉"，
+		/// 前者是"金属度给不给"。两者在宝石/玻璃上会分叉——底色要顶掉（源底色是近黑占位图），
+		/// 但不该给金属度。
+		/// </para>
+		bool MatcapIsMetal,
 		IReadOnlyList<string> Notices,
 		// 遮罩要不要抖成二值（近似半透明）。由**源侧意图**决定：
 		// `$translucent`（要混合）或 `$allowalphatocoverage`（自己就写着抖动）。
@@ -967,7 +976,7 @@ public sealed class SourceMaterialConverter
 			// 这两个值是照参考模组实测定的（MaterialAppearance.MetallicValue / RoughnessValue）。
 			//
 			// ⚠️ 判据是 `MatcapIsSurface`（**VMT 说了算**），不是"有没有烘平均色"。
-			if (loaded.MatcapIsSurface)
+			if (loaded.MatcapIsMetal)
 			{
 				// 金属度/粗糙度**跟着 matcap 档位走** —— 这是"黄紫"那个 bug 的修法。
 				//
@@ -1164,9 +1173,25 @@ public sealed class SourceMaterialConverter
 		// ⚠️ 合成底色的情况**无条件**算"matcap 承载表面"：底色根本不存在，
 		// 观感只可能来自 matcap，与 tint 多大无关（实测 mourningveil 的
 		// `mat_gem1_shoes` 就没有底色而 tint 只有 0.9）。
-		var matcapIsSurface = syntheticBase
-			|| (verdict.MatCapIsTheSurface
-				&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba));
+		// 金属：**按 matcap 的名字**判，与底色亮度无关。
+		// 曾经用"底色近黑"当判据，实测同一条 mat_metal 在 B1（黑）是 17.2、B3（白紫）是 128.4
+		// —— 它测的是颜色变体的属性，不是材质的属性。详见 MaterialAppearance.IsMetallicMatcapName。
+		var matcapIsMetal = verdict.MatCapIsTheSurface
+			&& MaterialAppearance.IsMetallicMatcapName(matcapTextureName);
+
+		// "matcap 承载表面"= 底色该被顶掉。
+		// Metal 档：金属件、没有底色的件、以及**底色根本没有颜色**（占位图/近黑）的件。
+		//   最后那条不能省：Lilium 的钻石件（`mat_diamond_*_tiara`）matcap 名字是宝石系 →
+		//   非金属，但底色是 1×1 的 `m_metal`(15,15,15)——不顶掉就是**纯黑**。
+		//   非金属的顶掉用中性浅灰（见 NonMetallicSurfaceF0），不给金属度。
+		// 其它档沿用"底色有没有颜色"这条老判据。
+		var matcapIsSurface = matcapMode == MatCapMode.Metal
+			? matcapIsMetal || syntheticBase
+				|| (verdict.MatCapIsTheSurface
+					&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba))
+			: syntheticBase
+				|| (verdict.MatCapIsTheSurface
+					&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba));
 
 		// 分类诊断：`HD2MOD_MATCAP_DEBUG=1` 时把判定输入打到 stderr。
 		//
@@ -1184,7 +1209,7 @@ public sealed class SourceMaterialConverter
 				+ $"meanLum={lumSum / pixels,6:F1} tint={verdict.Tint:F2} "
 				+ $"alpha=[{baseAlpha.Min},{baseAlpha.Max} cov={baseAlpha.Coverage:P1}] "
 				+ $"synthetic={syntheticBase} contentFree={MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)} "
-				+ $"=> matcapIsSurface={matcapIsSurface}");
+				+ $"=> metal={matcapIsMetal} matcapIsSurface={matcapIsSurface}");
 		}
 
 		// ⚠️ **只要判成"matcap 承载表面"，Metal 档就整片换成中性 F0 —— 不再按"是不是占位图"分叉。**
@@ -1340,8 +1365,7 @@ public sealed class SourceMaterialConverter
 				vmt.WantsTransparency && (baseAlpha.IsMeaningful || baseAlpha.IsUniformlyTranslucent);
 
 			// "既要镂空又是金属"只能二选一：选 MetalWins 就放弃镂空、走 advanced 换回金属度。
-			if (useAlphaClip && matcapIsSurface && matcapMode == MatCapMode.Metal
-				&& metalCutout == MetalCutoutPolicy.MetalWins)
+			if (useAlphaClip && matcapIsMetal && metalCutout == MetalCutoutPolicy.MetalWins)
 			{
 				useAlphaClip = false;
 				notices.Add(
@@ -1433,7 +1457,7 @@ public sealed class SourceMaterialConverter
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
 			identity, DeriveMaterialId(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
-			matcapTextureName, matcapIsSurface, notices,
+			matcapTextureName, matcapIsSurface, matcapIsMetal, notices,
 			// 抖动是**默认**的半透明落地方式，但只给"源侧真的要半透明"的材质：
 			// `$translucent`（想混合，HD2 表达不了）与 `$allowalphatocoverage`（源侧自己就在抖）。
 			// 纯 `$alphatest` 继续硬裁——那是 Source 的原语义（低于参考值丢弃），蕾丝/镂空靠它。
@@ -1533,7 +1557,13 @@ public sealed class SourceMaterialConverter
 		// matcap 烘焙也必须在清零 alpha 之前（它只改 RGB，但顺序上这里最自然）。
 		if (loaded.MatcapMean is not null)
 			MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint * matcapBakeGain);
-		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Metal)
+		else if (loaded.MatcapIsSurface && !loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
+		{
+			// matcap 承载表面但**不是**金属（宝石/玻璃/珍珠）：底色同样要顶掉
+			// （源底色可能是近黑占位图，保留就是一块纯黑），但用中性浅灰而不是金属 F0。
+			MaterialAppearance.FlattenToMetalF0(rgba, MaterialAppearance.NonMetallicSurfaceF0);
+		}
+		else if (loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
 		{
 			// 涂成中性金属 F0：丢掉 matcap 的亮度图案**和色相**，整片抬到目标反射率。
 			// 目标值 = MetalF0 × matcapBakeGain，这样 gain 在这里退化成"F0 微调"。

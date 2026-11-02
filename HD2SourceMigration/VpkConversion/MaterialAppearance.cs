@@ -41,6 +41,76 @@ public static class MaterialAppearance
 	public const int PlaceholderMaxDimension = 4;
 
 	/// <summary>
+	/// 这张 matcap 是不是<b>金属</b>——按<b>名字</b>判，不看像素。
+	/// <para>
+	/// <b>为什么不用像素统计（实机 + 实测双重否定）。</b>
+	/// </para>
+	/// <list type="bullet">
+	/// <item><b>"底色近黑 = 金属"不可靠</b>：它测的是<b>颜色变体</b>的属性，不是材质的属性。
+	/// 实测同一条 <c>mat_metal</c> 的底图平均亮度：B1（服装色黑）<b>17.2</b>、
+	/// B3（服装色白紫）<b>128.4</b>——差 7 倍。于是同一套金属件在深色款判成金属、
+	/// 在浅色款一个都判不出来。</item>
+	/// <item><b>"边缘密度"分不开金属与宝石</b>：实测 <c>matcap_jewel9</c> 平均梯度 4.84
+	/// （像金属）而 <c>matcap_metal7</c> 11.15（像宝石），两类区间重叠。</item>
+	/// </list>
+	/// <para>
+	/// <b>名字为什么可靠。</b>NekoToon 的 matcap 按材质类型命名，且<b>不随颜色变体变化</b>
+	/// （<c>matcap_metal11</c> 在黑款白款里都叫这个）。这是<b>作者的声明</b>，
+	/// 比从像素反推更接近源意。
+	/// </para>
+	/// <para>
+	/// <b>非金属关键词优先</b>：先查 <c>jewel/gem/diamond/pearl/cloth/env/highlight/rim</c>，
+	/// 这样"宝石/布料"这类明确的词不会被偶然包含的金属词压过。
+	/// </para>
+	/// </summary>
+	public static bool IsMetallicMatcapName(string? matcapName)
+	{
+		if (string.IsNullOrWhiteSpace(matcapName))
+			return false;
+		var name = matcapName.ToLowerInvariant();
+
+		foreach (var marker in NonMetallicMatcapMarkers)
+		{
+			if (name.Contains(marker, StringComparison.Ordinal))
+				return false;
+		}
+
+		foreach (var marker in MetallicMatcapMarkers)
+		{
+			if (name.Contains(marker, StringComparison.Ordinal))
+				return true;
+		}
+
+		// 认不出来就当非金属：金属化是"加强"，判错的代价比"把布料/宝石做成金属"小。
+		return false;
+	}
+
+	/// <summary>名字里出现这些词 → <b>不是</b>金属（优先于金属词）。</summary>
+	private static readonly string[] NonMetallicMatcapMarkers =
+	[
+		"jewel", "gem", "diamond", "pearl", "cloth", "env", "highlight", "rim",
+		"skin", "eye", "hair", "tattoo", "scale", "feather",
+	];
+
+	/// <summary>名字里出现这些词 → 金属。</summary>
+	private static readonly string[] MetallicMatcapMarkers =
+	[
+		"metal", "silver", "platinum", "magnet", "steel", "chrome", "iron",
+		"gold", "brass", "copper", "bronze", "aluminium", "aluminum",
+	];
+
+	/// <summary>
+	/// matcap 承载表面但<b>不是</b>金属时，底色被顶掉后用什么（线性反射率）。
+	/// <para>
+	/// 存在的理由：有些件的底色是<b>近黑占位图</b>（实测 Lilium 的 <c>m_metal</c> 是
+	/// 1×1、(15,15,15)），而 matcap 名字是宝石系——保留源底色会得到一块<b>纯黑</b>；
+	/// 拿 matcap 图当底色又会采到球面上的一块随机区域（"生铁"那个坑）。
+	/// 所以给一个中性浅灰：宝石/玻璃看着像"亮的塑料"，是这里能做到的最不坏的近似。
+	/// </para>
+	/// </summary>
+	public const double NonMetallicSurfaceF0 = 0.6;
+
+	/// <summary>
 	/// 底色"没有内容"的亮度判据：平均亮度低于它就当整片近黑。
 	/// <para>实测那些"观感全来自 matcap"的金属件，底色是 <c>(15,15,15)</c>。</para>
 	/// </summary>
