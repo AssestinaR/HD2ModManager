@@ -263,6 +263,25 @@ public static class VpkRebuildService
 				out var backupDirectory, out var swapError, out var restoreReadOnly);
 			if (!swapped) return VpkRebuildOutcome.Failed(swapError!, notes);
 
+			// ⑤b **刷新 `vpk2patch.json`。**
+			//
+			// ⚠️ 不刷新是个隐蔽的坑：报告是管理器展示材质/贴图/警告的**唯一来源**，
+			// 也是"这次到底改了没有"的判断依据。只换 `vpk2patch/` 不换报告，界面会一直
+			// 显示上一次的数字——实测因此误判过一次：补丁已经是新的、报告还是旧的，
+			// 看上去像"改动没生效"。（`fresh` 就是从这次进程输出解析出来的，非 null
+			// 说明输出是合法 JSON，可以原样落盘。）
+			if (fresh is not null && !string.IsNullOrWhiteSpace(conversion.Output))
+			{
+				await File.WriteAllTextAsync(
+					VpkConversionReport.GetPath(modDirectory), conversion.Output, cancellationToken)
+					.ConfigureAwait(false);
+			}
+			else
+			{
+				notes.Add("这次没能解析出转换报告，`vpk2patch.json` 保持旧内容——"
+					+ "界面上的材质/贴图计数与警告可能已经过时。");
+			}
+
 			// ⑥ 物理参数容器：转换阶段刻意不嵌（会让受管步骤记账错位），这里才是它该来的地方。
 			onStage?.Invoke("正在写入物理参数…");
 			notes.Add(await EmbedPhysBonesAsync(executable, modDirectory, cancellationToken).ConfigureAwait(false));

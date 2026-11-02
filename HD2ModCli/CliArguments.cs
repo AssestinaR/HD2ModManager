@@ -450,7 +450,7 @@ public static class CliArgumentParser
 					{
 						throw new CliUserException("InvalidOption",
 							$"--cutout-template 只接受 alphaclip / original，实际是 '{rawCutoutTemplate}'。"
-							+ "alphaclip 有镂空但没有任何天气/雪槽；original 有天气掩码但也没有金属度。");
+							+ "alphaclip 是唯一支持逐像素镂空的模板；original 已实机证伪（没有镂空），仅留档。");
 					}
 
 					cutoutTemplate = rawCutoutTemplate.ToLowerInvariant();

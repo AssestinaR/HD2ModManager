@@ -26,8 +26,18 @@ public enum CutoutTemplate
 	AlphaClip = 0,
 
 	/// <summary>
-	/// <c>original</c>：本体角色材质用的那个 13 槽模板（有镂空 + 有天气掩码、无金属）。
-	/// <para>槽位下标取自本体材质 <c>0x8f669f365f24594e</c> 的实例顺序。</para>
+	/// <c>original</c>：本体角色材质用的那个 13 槽模板。
+	/// <para>
+	/// <b>⚠️ 已实机证伪，别再用。</b>把镂空遮罩写进 <c>SubsurfaceOpacity</c>（槽 7）之后，
+	/// 游戏里<b>完全没有镂空</b>。原因后来想通了：那份本体材质自己的贴图 alpha 全是 0～4
+	/// —— 游戏角色根本不靠材质做镂空，<c>SubsurfaceOpacity</c> 是次表面散射用的，
+	/// 不是逐像素 alpha。
+	/// </para>
+	/// <para>
+	/// 所以 <c>alphaclip</c> 是 HD2 里<b>唯一</b>支持逐像素镂空的模板；它的雪污染已经通过
+	/// 关掉 <c>DirtGlobalAmount</c> 解决（见 <see cref="DirtGlobalAmountVariableId"/>）。
+	/// 这个枚举值保留只为留档。
+	/// </para>
 	/// </summary>
 	Original = 1,
 }
