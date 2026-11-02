@@ -1060,7 +1060,9 @@ namespace HD2ModManager.ViewModels
             var registryWorkspaceLocked = false;
             try
             {
-                await FlushArmorRegistryWorkspaceAsync().ConfigureAwait(true);
+                // 同样要保证在 UI 线程上（见 ReleaseArmorRegistryWorkspaceOnUiAsync 的说明）：
+                // 这方法本身会按调用线程决定要不要再串一次。
+                await EnterArmorRegistryWorkspaceOnUiAsync().ConfigureAwait(true);
                 registryWorkspaceLocked = true;
             }
             catch (Exception exception) when (exception is IOException or InvalidOperationException or UnauthorizedAccessException)
@@ -1202,13 +1204,16 @@ namespace HD2ModManager.ViewModels
             {
                 _importProcessGate.Release();
                 // 解锁并重新读工作区：把 CLI 刚登记的素体装进页面，否则界面上看不到它。
+                //
+                // ⚠️ **必须回 UI 线程**：走到这里时，上面那些 ConfigureAwait(false) 已经把执行流
+                // 甩到线程池了，而 `EndExternalWorkspaceEdit` 会改 `IsBusy` → 触发
+                // `RaiseCommandStates` → 读 Button.Command（UI 对象）。跨线程直接调就是
+                // 「调用线程无法访问此对象，因为另一个线程拥有该对象」。
                 if (registryWorkspaceLocked)
                 {
-                    EndArmorRegistryWorkspaceEdit();
                     try
                     {
-                        if (_armorRegistryWorkspacePage is { } registryPage)
-                            await registryPage.ReloadWorkspaceAsync().ConfigureAwait(true);
+                        await ReleaseArmorRegistryWorkspaceOnUiAsync().ConfigureAwait(false);
                     }
                     catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
                     {
@@ -2295,6 +2300,50 @@ namespace HD2ModManager.ViewModels
                 return;
             }
             _ = dispatcher.InvokeAsync(refresh);
+        }
+
+        /// <summary>
+        /// 锁定护甲注册工作区（冲掉待写保存并让它停手），**串到 UI 线程上做**。理由同
+        /// <see cref="ReleaseArmorRegistryWorkspaceOnUiAsync"/>：它也会改 <c>IsBusy</c>。
+        /// </summary>
+        private async Task EnterArmorRegistryWorkspaceOnUiAsync()
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                await FlushArmorRegistryWorkspaceAsync().ConfigureAwait(true);
+                return;
+            }
+
+            await dispatcher.InvokeAsync(FlushArmorRegistryWorkspaceAsync).Task.Unwrap().ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 解锁护甲注册工作区并让它重新读盘——**串到 UI 线程上做**。
+        /// <para>
+        /// 这两件事都会碰 UI 绑定状态（<c>IsBusy</c> → 命令的 CanExecute、可观察集合的 Apply），
+        /// 而导入队列走到收尾时执行流已经在线程池上，跨线程直接调会抛
+        /// 「调用线程无法访问此对象，因为另一个线程拥有该对象」（实测崩在
+        /// <c>ButtonBase.UpdateCanExecute</c>）。
+        /// </para>
+        /// </summary>
+        private async Task ReleaseArmorRegistryWorkspaceOnUiAsync()
+        {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                EndArmorRegistryWorkspaceEdit();
+                if (_armorRegistryWorkspacePage is { } page)
+                    await page.ReloadWorkspaceAsync().ConfigureAwait(true);
+                return;
+            }
+
+            await dispatcher.InvokeAsync(async () =>
+            {
+                EndArmorRegistryWorkspaceEdit();
+                if (_armorRegistryWorkspacePage is { } page)
+                    await page.ReloadWorkspaceAsync();
+            }).Task.Unwrap().ConfigureAwait(false);
         }
 
         private PageViewModel CreatePage(WorkspacePageType pageType)
