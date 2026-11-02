@@ -123,7 +123,9 @@ public sealed record CliGlobalOptions(
 	// 抖动的点大小（1 = 每像素一个点，2 = 2×2 的点，默认 2）。只影响颗粒粗细，不影响等效透明度。
 	int? DitherScale = null,
 	// 抖动密度（0.05..1，默认 0.75）：乘在 alpha 上，越小点越少、越透。点大小与密度是两个独立旋钮。
-	double? DitherDensity = null);
+	double? DitherDensity = null,
+	// 抖动阈值图案（ign = 无可见结构，默认；ayer = 8×8 有序矩阵，会看出方格）。
+	string? DitherPattern = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -171,6 +173,7 @@ public static class CliArgumentParser
 		string? alphaExperiment = null;
 		int? ditherScale = null;
 		double? ditherDensity = null;
+		string? ditherPattern = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -321,6 +324,16 @@ public static class CliArgumentParser
 
 						ditherScale = parsedDitherScale;
 						break;
+					case "--dither-pattern":
+					var rawPattern = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					if (rawPattern is not ("ign" or "bayer"))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--dither-pattern 只接受 ign / bayer，实际是 '{rawPattern}'。ign = 无可见结构（默认），bayer = 8×8 有序矩阵（能看出方格）。");
+					}
+
+								ditherPattern = rawPattern;
+						break;
 					case "--dither-density":
 					var rawDitherDensity = ReadValue(args, ref index, argument);
 					if (!double.TryParse(rawDitherDensity, System.Globalization.NumberStyles.Float,
@@ -468,7 +481,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

@@ -2749,7 +2749,8 @@ public static class CliApplication
 					matcapBakeGain: invocation.Options.MatcapGain ?? 1.0,
 					alphaExperiment: ResolveAlphaExperiment(invocation.Options),
 					ditherScale: invocation.Options.DitherScale ?? 1,
-					ditherDensity: invocation.Options.DitherDensity ?? 0.75);
+					ditherDensity: invocation.Options.DitherDensity ?? 0.75,
+										ditherPattern: ResolveDitherPattern(invocation.Options));
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3104,6 +3105,19 @@ public static class CliApplication
 	/// <summary>
 	/// 半透明实验开关（--alpha-experiment）。不传 = 现有行为。
 	/// </summary>
+	/// <summary>
+	/// 抖动阈值图案（--dither-pattern）。不传 = 交错梯度噪声（无可见结构）。
+	/// </summary>
+	private static DitherPattern ResolveDitherPattern(CliGlobalOptions options)
+		=> options.DitherPattern?.Trim().ToLowerInvariant() switch
+		{
+			"bayer" => DitherPattern.Bayer,
+			_ => DitherPattern.InterleavedGradient,
+		};
+
+	/// <summary>
+	/// 半透明实验开关（--alpha-experiment）。不传 = 现有行为。
+	/// </summary>
 	private static AlphaExperiment ResolveAlphaExperiment(CliGlobalOptions options)
 		=> options.AlphaExperiment?.Trim().ToLowerInvariant() switch
 		{
@@ -3265,7 +3279,8 @@ public static class CliApplication
 				options.MatcapGain ?? 1.0,
 				ResolveAlphaExperiment(options),
 				options.DitherScale ?? 1,
-				options.DitherDensity ?? 0.75);
+				options.DitherDensity ?? 0.75,
+				ResolveDitherPattern(options));
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──

@@ -409,7 +409,8 @@ public sealed class SourceMaterialConverter
 		double matcapBakeGain = 1.0,
 		AlphaExperiment alphaExperiment = AlphaExperiment.None,
 		int ditherScale = 1,
-		double ditherDensity = 0.75)
+		double ditherDensity = 0.75,
+		DitherPattern ditherPattern = DitherPattern.InterleavedGradient)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -423,6 +424,7 @@ public sealed class SourceMaterialConverter
 		this.alphaExperiment = alphaExperiment;
 		this.ditherScale = Math.Clamp(ditherScale, 1, 8);
 		this.ditherDensity = double.IsFinite(ditherDensity) ? Math.Clamp(ditherDensity, 0.05, 1.0) : 1.0;
+		this.ditherPattern = ditherPattern;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -476,6 +478,11 @@ public sealed class SourceMaterialConverter
 	/// </para>
 	/// </summary>
 	private readonly double ditherDensity;
+
+	/// <summary>
+	/// 抖动的**阈值图案**：默认交错梯度噪声（无可见重复结构）；Bayer 保留用于对照。
+	/// </summary>
+	private readonly DitherPattern ditherPattern;
 
 	/// <summary>
 	/// 实验开关是否真的改这个材质的模板：**只对"需要透明"的材质生效**。
@@ -1583,7 +1590,7 @@ public sealed class SourceMaterialConverter
 		{
 			var value = rgba[offset + 3];
 			if (dithered)
-				value = DitherAlpha(value, offset / 4, width, ditherGain, ditherScale, ditherDensity);
+				value = DitherAlpha(value, offset / 4, width, ditherGain, ditherScale, ditherDensity, ditherPattern);
 			if (inverted)
 				value = (byte)(255 - value);
 			var grey = inAlpha ? (byte)255 : value;
@@ -1625,7 +1632,7 @@ public sealed class SourceMaterialConverter
 	/// 我们合成的遮罩本来就只有 1 级 mip（<c>BuildDds(..., [mask])</c> 单元素 mip 链）。
 	/// </para>
 	/// </summary>
-	private static byte DitherAlpha(byte alpha, int pixelIndex, int width, double gain, int dotScale, double density)
+	private static byte DitherAlpha(byte alpha, int pixelIndex, int width, double gain, int dotScale, double density, DitherPattern pattern)
 	{
 		const int lowCut = 13;    // ≈5%
 		const int highCut = 242;  // ≈95%
@@ -1644,9 +1651,31 @@ public sealed class SourceMaterialConverter
 		var scale = Math.Clamp(dotScale, 1, 8);
 		var x = pixelIndex % width / scale;
 		var y = pixelIndex / width / scale;
-		// Bayer 8×8 的阈值归一到 (0,1)：矩阵里 0..63 取 (v + 0.5) / 64，避免 0 与 1 两个端点。
-		var threshold = (Bayer8x8[(y & 7) * 8 + (x & 7)] + 0.5) / 64.0;
+		var threshold = pattern == DitherPattern.Bayer
+			// Bayer 8×8 的阈值归一到 (0,1)：矩阵里 0..63 取 (v + 0.5) / 64，避免 0 与 1 两个端点。
+			? (Bayer8x8[(y & 7) * 8 + (x & 7)] + 0.5) / 64.0
+			: InterleavedGradientNoise(x, y);
 		return scaled / 255.0 > threshold ? (byte)255 : (byte)0;
+	}
+
+	/// <summary>
+	/// 交错梯度噪声（Interleaved Gradient Noise，Jorge Jimenez 2014）：**无可见重复结构**的抖动阈值。
+	/// <para>
+	/// <b>为什么需要它。</b>Bayer 矩阵是规则的 8×8 网格，同一张 2048² 的贴图铺满就是几百个相同的方块，
+	/// 实机看就是"点排得太整齐"——一眼能看出织法，像纱窗而不是薄纱。
+	/// IGN 每像素一个独立阈值，没有周期性，观感接近细噪点；它也是 UE / CoD 这类引擎做
+	/// 抖动透明与接触阴影时的标准选择。
+	/// </para>
+	/// <para>
+	/// 确定性：只由 (x, y) 决定，所以同一张贴图每次转换得到逐字节相同的结果（id 与产物都可复现）。
+	/// </para>
+	/// </summary>
+	private static double InterleavedGradientNoise(int x, int y)
+	{
+		var value = 0.06711056 * x + 0.00583715 * y;
+		value -= Math.Floor(value);
+		value *= 52.9829189;
+		return value - Math.Floor(value);
 	}
 
 	/// <summary>标准 8×8 Bayer 有序抖动矩阵（值域 0..63，确定性、可复现）。</summary>
