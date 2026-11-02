@@ -86,6 +86,8 @@ public sealed record CliGlobalOptions(
 	// "既要镂空又是金属"时怎么取舍：cutout = 保镂空（默认）、metal = 保金属。
 	// HD2 的 advanced 有金属度没镂空、alphaclip 有镂空没金属度，两者无法共存（实机已验证）。
 	string? MetalCutout = null,
+	// 镂空件用哪个模板：alphaclip（默认，无天气掩码）/ original（有天气掩码，无金属度）。
+	string? CutoutTemplate = null,
 	// 把每个 Unit 的**身份**钉成某件游戏护甲自己的那一行（id + 身形/槽位/重量/层）。
 	// 见 VpkUnitIdentityOverride：不给就是"自定义素体"形态（随机 id + BodyType_Any）。
 	string? UnitIds = null,
@@ -171,6 +173,7 @@ public static class CliArgumentParser
 		double? matcapGain = null;
 		double? metalRoughness = null;
 		string? metalCutout = null;
+		string? cutoutTemplate = null;
 		string? unitIds = null;
 		string? reuseModel = null;
 		string? headMerge = null;
@@ -440,6 +443,18 @@ public static class CliArgumentParser
 
 					metalCutout = rawCutoutPolicy.ToLowerInvariant();
 					break;
+				case "--cutout-template":
+					var rawCutoutTemplate = ReadValue(args, ref index, argument);
+					if (!rawCutoutTemplate.Equals("alphaclip", StringComparison.OrdinalIgnoreCase)
+						&& !rawCutoutTemplate.Equals("original", StringComparison.OrdinalIgnoreCase))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--cutout-template 只接受 alphaclip / original，实际是 '{rawCutoutTemplate}'。"
+							+ "alphaclip 有镂空但没有任何天气/雪槽；original 有天气掩码但也没有金属度。");
+					}
+
+					cutoutTemplate = rawCutoutTemplate.ToLowerInvariant();
+					break;
 				case "--matcap":
 					var rawMatcap = ReadValue(args, ref index, argument);
 					if (!rawMatcap.Equals("bake", StringComparison.OrdinalIgnoreCase)
@@ -515,7 +530,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

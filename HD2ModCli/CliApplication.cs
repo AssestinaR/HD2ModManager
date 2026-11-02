@@ -2752,7 +2752,8 @@ public static class CliApplication
 					ditherDensity: invocation.Options.DitherDensity ?? 0.75,
 					ditherPattern: ResolveDitherPattern(invocation.Options),
 					metalRoughness: invocation.Options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
-					metalCutout: ResolveMetalCutout(invocation.Options));
+					metalCutout: ResolveMetalCutout(invocation.Options),
+					cutoutTemplate: ResolveCutoutTemplate(invocation.Options));
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3114,6 +3115,22 @@ public static class CliApplication
 	/// 这两个属性<b>无法共存</b>——实机已验证（docs/vpk-cutout-strategies-20261101.md §5）。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 镂空件用哪个模板（--cutout-template）。不传 = alphaclip（历史行为）。
+	/// <para>
+	/// <c>alphaclip</c> 只有 3 个槽、<b>一个天气/雪槽都没有</b>（雪地会被雪图层整个盖住）；
+	/// <c>original</c> 是本体角色材质那套 13 槽，有 <c>WeatheringSpecial</c> 掩码和
+	/// <c>SubsurfaceOpacity</c>，但同样没有金属度。详见
+	/// docs/vpk-cutout-strategies-20261101.md §6。
+	/// </para>
+	/// </summary>
+	private static CutoutTemplate ResolveCutoutTemplate(CliGlobalOptions options)
+		=> options.CutoutTemplate?.Trim().ToLowerInvariant() switch
+		{
+			"original" => CutoutTemplate.Original,
+			_ => CutoutTemplate.AlphaClip,
+		};
+
 	private static MetalCutoutPolicy ResolveMetalCutout(CliGlobalOptions options)
 		=> options.MetalCutout?.Trim().ToLowerInvariant() switch
 		{
@@ -3298,7 +3315,8 @@ public static class CliApplication
 				options.DitherDensity ?? 0.75,
 				ResolveDitherPattern(options),
 				options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
-				ResolveMetalCutout(options));
+				ResolveMetalCutout(options),
+				ResolveCutoutTemplate(options));
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──

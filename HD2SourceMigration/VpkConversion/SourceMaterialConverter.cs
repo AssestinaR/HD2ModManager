@@ -4,6 +4,35 @@ using HD2SourceModel;
 namespace HD2SourceMigration.VpkConversion;
 
 /// <summary>
+/// 镂空件用哪个模板落地。
+/// <para>
+/// <b>为什么这是一个选项而不是定论。</b>HD2 没有任何模板同时具备
+/// 「逐像素不透明度 + 金属度 + 天气掩码」（见 docs/vpk-cutout-strategies-20261101.md §6）：
+/// </para>
+/// <list type="bullet">
+/// <item><c>alphaclip</c>：有 <c>OpacityClipMap</c>，但<b>一个天气/雪槽都没有</b>
+/// —— 实测"所有镂空件在雪地会被雪图层覆盖"就是它。</item>
+/// <item><c>original</c>：有 <c>SubsurfaceOpacity</c>（逐像素不透明度）<b>和</b>
+/// <c>WeatheringSpecial</c>（天气掩码），但<b>没有金属度</b>。</item>
+/// </list>
+/// <para>
+/// 所以 <c>original</c> 严格优于 <c>alphaclip</c>（后者两样都没有），但它的槽位语义
+/// （哪个槽是底色、要不要配 <c>OpacitySharpness</c>）只能靠实机定。
+/// </para>
+/// </summary>
+public enum CutoutTemplate
+{
+	/// <summary>历史行为：<c>alphaclip</c>（有镂空、无金属、无天气掩码）。</summary>
+	AlphaClip = 0,
+
+	/// <summary>
+	/// <c>original</c>：本体角色材质用的那个 13 槽模板（有镂空 + 有天气掩码、无金属）。
+	/// <para>槽位下标取自本体材质 <c>0x8f669f365f24594e</c> 的实例顺序。</para>
+	/// </summary>
+	Original = 1,
+}
+
+/// <summary>
 /// 一个材质<b>既要镂空、又是金属</b>时怎么取舍。
 /// <para>
 /// <b>为什么必须二选一（实机实测，不是设计选择）。</b>
@@ -318,6 +347,30 @@ public sealed class SourceMaterialConverter
 
 	public const int AlphaClipBaseColorSlot = 2;
 
+	/// <summary>
+	/// <c>original</c> 模板（13 槽）里我们关心的三个槽位下标。
+	/// <para>
+	/// 顺序取自本体角色材质 <c>0x8f669f365f24594e</c> 的实例（材质按模板槽序存）：
+	/// 0 <c>ClearcoatRoughnessAoSpec</c> / 1 <c>EmissiveColor</c> / 2 <c>BloodTiler</c> /
+	/// 3 <c>SclarFieldOpacity</c> / 4 <c>DetailNormal1</c> / <b>5 <c>Normal</c></b> /
+	/// 6 <c>WeatheringSpecial</c> / <b>7 <c>SubsurfaceOpacity</c></b> /
+	/// 8 <c>TextureMap02</c> / <b>9 <c>AlbedoIridescence</c></b> /
+	/// 10–12 <c>WoundNormal</c> / <c>WoundData</c> / <c>WoundDerivative</c>。
+	/// </para>
+	/// <para>
+	/// <b>这三个映射是待实机验证的假设</b>：底色取 <c>AlbedoIridescence</c>（名字含 albedo）、
+	/// 遮罩取 <c>SubsurfaceOpacity</c>（唯一的逐像素不透明度候选）、法线取 <c>Normal</c>。
+	/// <c>WeatheringSpecial</c>（6）刻意<b>不动</b>——留模板默认，让天气掩码按游戏原意工作。
+	/// </para>
+	/// </summary>
+	public const int OriginalNormalSlot = 5;
+
+	/// <inheritdoc cref="OriginalNormalSlot"/>
+	public const int OriginalOpacitySlot = 7;
+
+	/// <inheritdoc cref="OriginalNormalSlot"/>
+	public const int OriginalBaseColorSlot = 9;
+
 	/// <summary><c>advanced</c> 槽 2 = <c>Nar</c>（RGB 法线、<b>A 粗糙度</b>）。</summary>
 	public const int AdvancedNarSlot = 2;
 
@@ -452,7 +505,8 @@ public sealed class SourceMaterialConverter
 		double ditherDensity = 0.75,
 		DitherPattern ditherPattern = DitherPattern.InterleavedGradient,
 		double metalRoughness = MaterialAppearance.DefaultMetalRoughness,
-		MetalCutoutPolicy metalCutout = MetalCutoutPolicy.CutoutWins)
+		MetalCutoutPolicy metalCutout = MetalCutoutPolicy.CutoutWins,
+		CutoutTemplate cutoutTemplate = CutoutTemplate.AlphaClip)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -471,6 +525,7 @@ public sealed class SourceMaterialConverter
 			Math.Round((double.IsFinite(metalRoughness) ? Math.Clamp(metalRoughness, 0, 1) : MaterialAppearance.DefaultMetalRoughness) * 255.0),
 			0, 255);
 		this.metalCutout = metalCutout;
+		this.cutoutTemplate = cutoutTemplate;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -489,6 +544,11 @@ public sealed class SourceMaterialConverter
 	public MetalCutoutPolicy MetalCutout => metalCutout;
 
 	private readonly MetalCutoutPolicy metalCutout;
+
+	/// <summary>镂空件用哪个模板。见 <see cref="CutoutTemplate"/>。</summary>
+	public CutoutTemplate CutoutTemplate => cutoutTemplate;
+
+	private readonly CutoutTemplate cutoutTemplate;
 
 	/// <summary>
 	/// matcap 烘进底色时的<b>亮度增益</b>（默认 1.0 = 不加）。
@@ -569,6 +629,18 @@ public sealed class SourceMaterialConverter
 	public const int AdvancedOpacityFieldSlot = 1;
 
 	/// <summary>这个模板名是不是 <c>alphaclip</c> 族（槽表只有 3～4 个、没有 PBR 输入）。</summary>
+	/// <summary>镂空件落到哪个模板；不需要镂空时一律 <c>advanced</c>。</summary>
+	private string CutoutTemplateName(bool useAlphaClip)
+	{
+		if (!useAlphaClip)
+			return "advanced";
+		return cutoutTemplate == CutoutTemplate.Original ? "original" : "alphaclip";
+	}
+
+	/// <summary>这个模板是不是 <c>original</c>（本体角色材质那一套 13 槽）。</summary>
+	private static bool IsOriginalTemplate(string templateName)
+		=> string.Equals(templateName, "original", StringComparison.OrdinalIgnoreCase);
+
 	private static bool IsAlphaClipTemplate(string templateName)
 		=> templateName.StartsWith("alphaclip", StringComparison.OrdinalIgnoreCase);
 
@@ -930,6 +1002,38 @@ public sealed class SourceMaterialConverter
 				return MaterialSynthesisResult.Failed(
 					$"{stem}：alphaclip 模板里找不到 OpacityThreshold 变量，无法把阈值调到 {TunedOpacityThreshold}");
 			}
+		}
+		else if (loaded.UseAlphaClip && IsOriginalTemplate(loaded.TemplateName))
+		{
+			// ===== `original`：本体角色材质那套 13 槽 =====
+			//
+			// 换它的**唯一理由**：`alphaclip` 一个天气/雪槽都没有，于是镂空件在雪地会被雪图层
+			// 整个盖住；`original` 有 `WeatheringSpecial`（掩码）+ `SubsurfaceOpacity`
+			// （逐像素不透明度）。代价仍然是没有金属度（13 槽里没有 `IlluminateData`）。
+			//
+			// ⚠️ 三个槽位映射是**待实机验证的假设**，见 OriginalBaseColorSlot 的注释。
+			if (opacityMask is null)
+				return MaterialSynthesisResult.Failed($"{stem}：判定要镂空，但没有产出遮罩贴图");
+			if (material.TextureIds.Count <= OriginalBaseColorSlot)
+				return MaterialSynthesisResult.Failed(
+					$"original 模板只有 {material.TextureIds.Count} 个槽，放不下下标 {OriginalBaseColorSlot} 的底色");
+
+			// 槽 5 `Normal`：RGB 法线。用与其它模板**同一张**全局共享平面法线
+			// （名字相同 → id 相同 → 装配器按 id 去重）。
+			var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+			material.SetTexture(OriginalNormalSlot, flatNormal.Id);
+			textures.Add(flatNormal);
+
+			material.SetTexture(OriginalOpacitySlot, opacityMask.Id);
+			material.SetTexture(OriginalBaseColorSlot, texture.Id);
+			textures.Add(opacityMask);
+
+			// 遮罩是二值（硬裁或抖动），所以锐度取 1.0、偏移 0.0 就能原样通过。
+			// 本体那份实例是 0/0 —— 它不靠这个槽做镂空，所以那两个值对我们没有参考价值。
+			if (!material.TrySetScalar(OpacitySharpnessVariableId, 1.0f))
+				return MaterialSynthesisResult.Failed(
+					$"{stem}：original 模板里找不到 OpacitySharpness 变量");
+			material.TrySetScalar(OpacityOffsetVariableId, 0.0f);
 		}
 		else
 		{
@@ -1419,9 +1523,9 @@ public sealed class SourceMaterialConverter
 			{
 				AlphaExperiment.Translucent => "translucent",
 				AlphaExperiment.AdvancedOpacity => "advanced",
-				_ => useAlphaClip ? "alphaclip" : "advanced",
+				_ => CutoutTemplateName(useAlphaClip),
 			}
-			: useAlphaClip ? "alphaclip" : "advanced";
+			: CutoutTemplateName(useAlphaClip);
 		if (!templates.Contains(templateName))
 		{
 			reason = $"材质模板库缺少 {templateName}，无法造材质";
