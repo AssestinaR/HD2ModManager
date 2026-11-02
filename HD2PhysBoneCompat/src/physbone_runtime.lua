@@ -31,7 +31,9 @@
 
 local M = {}
 
-M.VERSION = "1.9.0"
+-- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
+--        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
+M.VERSION = "1.9.1"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -243,31 +245,69 @@ end
 
 --- 从部署后的 patch 尾部读物理容器。返回 { { rig = ..., path = ... }, ... }。
 --- 路径是"猜"的（运行时不知道 data 的绝对路径），所以多前缀都试一遍，成功后按相对名去重。
+---
+--- **扫描窗口按实际部署算，不写死。** patch 序号 = 这个 mod 在配置里的载入顺序：
+--- 单独装一个物理 mod 时它是 `patch_0`，装了一大堆之后它可能是 `patch_87`。
+--- 以前这里写死 `0..63`，于是"装一堆 mod 就找不到任何容器"——排在 63 之后的容器全被漏掉，
+--- 日志还写着"来源模型可能没做 embed"，把问题指到了完全错误的方向。
+---
+--- 现在：先定出能打开的前缀 → 用倍增+二分问出最大序号（O(log N) 次探测）→ 扫 `0..最大+5`。
+--- 那 +5 是余量：万一部署序列中间出现空洞（理论上不会，管理器每次从 0 连续重编），
+--- 二分可能低估，多探五格兜住。
 local function loadCarriers(S_, cache, options, logger)
 	local archive = options.archiveId or "9ba626afa44a3aa3"
-	local maxIndex = options.maxPatchIndex or 63
 	local carriers = {}
 	local seen = {}
-	for _, prefix in ipairs({ "data/", "data\\", "./data/", "../data/", "..\\data\\" }) do
-		for index = 0, maxIndex do
-			local relative = archive .. ".patch_" .. index .. ".gpu_resources"
-			if seen[relative] == nil then
-				local handle = io.open(prefix .. relative, "rb")
-				if handle ~= nil then
-					handle:close()
-					seen[relative] = true
-					local rig = Compat.load_rig({ prefix .. relative })
-					if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
-						carriers[#carriers + 1] = { rig = rig, path = prefix .. relative }
+
+	-- 老版本 compat 没有探测函数（外置包里两个文件总是一起生成，但玩家可能只更新了其中一个）。
+	-- 缺了它就退回原来的固定窗口，至少不至于整条物理链路报错。
+	local canProbe = type(Compat.detect_prefix) == "function"
+		and type(Compat.find_max_patch_index) == "function"
+
+	local prefixes = { "data/", "data\\", "./data/", "../data/", "..\\data\\" }
+	local poked = {}
+	local scannedTo = -1
+	for _, prefix in ipairs(prefixes) do
+		if not canProbe or Compat.detect_prefix(archive, { prefix }) ~= nil then
+			local maxIndex = options.maxPatchIndex
+			if maxIndex == nil then
+				local last = canProbe and Compat.find_max_patch_index(prefix, archive) or -1
+				if last < 0 then
+					maxIndex = canProbe and 5 or 63     -- 探不到就用老的固定窗口
+				else
+					maxIndex = last + 5
+				end
+			end
+			if maxIndex > scannedTo then scannedTo = maxIndex end
+
+			for index = 0, maxIndex do
+				local relative = archive .. ".patch_" .. index .. ".gpu_resources"
+				if seen[relative] == nil then
+					local handle = io.open(prefix .. relative, "rb")
+					if handle ~= nil then
+						handle:close()
+						seen[relative] = true
+						poked[#poked + 1] = prefix .. relative
+						local rig = Compat.load_rig({ prefix .. relative })
+						if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
+							carriers[#carriers + 1] = { rig = rig, path = prefix .. relative }
+						end
 					end
 				end
 			end
 		end
 	end
+
 	if #carriers > 0 then
-		logger("[physbone] 读到 %d 份物理容器", #carriers)
+		logger(string.format("[physbone] 读到 %d 份物理容器（扫了 patch 0..%d）", #carriers, scannedTo))
+	elseif scannedTo >= 0 then
+		-- **把"扫了多大范围"写进日志。** 以前只有一句"可能没做 embed"，而真正的原因
+		-- 往往在"扫的窗口不够大"：说了范围，下一次一眼就能分辨是哪种。
+		logger(string.format(
+			"[physbone] 没找到任何物理容器（扫了 patch 0..%d，%d 个 .gpu_resources 存在但都不含容器）",
+			scannedTo, #poked))
 	else
-		logger("[physbone] 没找到任何物理容器（来源模型可能没做 embed）")
+		logger("[physbone] 没找到任何物理容器（data 目录下没有这个归档的 patch 文件——游戏是否还没部署过？）")
 	end
 	return carriers
 end

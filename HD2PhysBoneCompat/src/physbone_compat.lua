@@ -219,17 +219,89 @@ end
 -- 为什么要在若干候选路径里试：Lua 拿不到"游戏安装目录"，
 -- io.open 的基址是游戏进程的工作目录。不同安装方式下 data 目录的相对位置可能不同，
 -- 所以宁可多试几个，失败也不抛。
-function M.default_search_paths()
-	local archiveIds = { "9ba626afa44a3aa3" }
+function M.default_search_paths(archiveId, maxIndex)
+	archiveId = archiveId or "9ba626afa44a3aa3"
+	if maxIndex == nil then
+		-- 不给上限就**按实际部署算**：patch 序号 = mod 在配置里的载入顺序，
+		-- 装上百个 mod 时能到三位数，任何写死的窗口都会漏掉排在后面的容器。
+		local prefix = M.detect_prefix(archiveId)
+		local last = prefix and M.find_max_patch_index(prefix, archiveId) or -1
+		maxIndex = last < 0 and 15 or (last + 5)
+	end
+
 	local paths = {}
-	for _, archiveId in ipairs(archiveIds) do
-		for index = 0, 15 do
-			paths[#paths + 1] = string.format("data/%s.patch_%d.gpu_resources", archiveId, index)
-			paths[#paths + 1] = string.format("./data/%s.patch_%d.gpu_resources", archiveId, index)
-			paths[#paths + 1] = string.format("../data/%s.patch_%d.gpu_resources", archiveId, index)
-		end
+	for index = 0, maxIndex do
+		paths[#paths + 1] = string.format("data/%s.patch_%d.gpu_resources", archiveId, index)
+		paths[#paths + 1] = string.format("./data/%s.patch_%d.gpu_resources", archiveId, index)
+		paths[#paths + 1] = string.format("../data/%s.patch_%d.gpu_resources", archiveId, index)
 	end
 	return paths
+end
+
+--- 这个前缀下有没有 patch N（基文件或 `.gpu_resources` sidecar 都算"存在"）。
+--- <para>
+--- 只看"有没有文件"，不读内容：要用它做几十次探测，不能把几十个几十 MB 的包打开读。
+--- 基文件与 sidecar 任一存在就算这个序号被占用——部署时一个 patch group 的三份文件
+--- （base / .stream / .gpu_resources）共用同一个序号，所以按任一文件判断都不会漏。
+--- </para>
+function M.patch_exists(prefix, archiveId, index)
+	local base = prefix .. archiveId .. ".patch_" .. index
+	local handle = io.open(base, "rb")
+	if handle ~= nil then
+		handle:close()
+		return true
+	end
+	handle = io.open(base .. ".gpu_resources", "rb")
+	if handle ~= nil then
+		handle:close()
+		return true
+	end
+	return false
+end
+
+--- 找出部署里**最大的** patch 序号：倍增探上界 + 二分定位。
+--- <para>
+--- 为什么不能线性扫：序号上界是"这个玩家装了多少个带 patch 的 mod"，没有可信上限；
+--- 按 0..N 全扫是 O(N) 次 io.open，装两百个 mod 就是两百次磁盘探测。
+--- 倍增+二分是 O(log N)：N=200 时约二十次。
+--- </para>
+--- <para>
+--- 部署序列是连续的（管理器每次先删掉 data 里所有旧 patch，再按载入顺序从 0 重新编号），
+--- 所以"存在 ⇒ 之前的都存在"这个假设成立；万一哪天出现空洞，调用方还会按 +5 的余量补扫。
+--- </para>
+function M.find_max_patch_index(prefix, archiveId, cap)
+	cap = cap or 4096
+	if not M.patch_exists(prefix, archiveId, 0) then return -1 end
+
+	local low, high = 0, 1
+	while high <= cap and M.patch_exists(prefix, archiveId, high) do
+		low, high = high, high * 2
+	end
+	if high > cap then high = cap end
+
+	while low + 1 < high do
+		local mid = math.floor((low + high) / 2)
+		if M.patch_exists(prefix, archiveId, mid) then
+			low = mid
+		else
+			high = mid
+		end
+	end
+	return low
+end
+
+--- 找出"能打开 patch 的那个前缀"。
+--- <para>
+--- 运行时不知道 data 的绝对路径，只能挨个试；试准一个就够——再往下扫都用它，
+--- 免得每个序号都把五个前缀试一遍（那是五倍的 io.open）。
+--- 返回 <c>nil</c> 表示一个前缀都没有 patch_0，调用方按"没部署"处理。
+--- </para>
+function M.detect_prefix(archiveId, prefixes)
+	prefixes = prefixes or { "data/", "data\\", "./data/", "../data/", "..\\data\\" }
+	for _, prefix in ipairs(prefixes) do
+		if M.patch_exists(prefix, archiveId, 0) then return prefix end
+	end
+	return nil
 end
 
 local function read_file(path)
