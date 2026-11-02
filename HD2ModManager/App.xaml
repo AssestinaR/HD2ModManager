@@ -12,6 +12,14 @@
                 <ResourceDictionary Source="Themes/CardTemplates.xaml"/>
             </ResourceDictionary.MergedDictionaries>
             <sys:Double x:Key="LayoutGap">12</sys:Double>
+            <!--
+                全局的 bool→Visibility 转换器。
+                以前各视图各声明一份（ModListPanel / MainWindow / 各 BottomBar 都有自己的一份），
+                任何新视图想用就得再声明一次，漏了就在**加载期**抛
+                「无法找到名为 BoolToVis 的资源」——实测踩过两次。
+                放在这里之后视图直接用即可；视图内自己声明的那份仍然优先，不影响既有行为。
+            -->
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
             <Thickness x:Key="LayoutGapThickness">12</Thickness>
             <Thickness x:Key="CardStackMargin">0,0,0,12</Thickness>
             <Thickness x:Key="CardPadding">16</Thickness>

@@ -7,10 +7,6 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d"
              d:DesignHeight="884.68" d:DesignWidth="800">
-    <UserControl.Resources>
-        <!-- 各视图各自声明一份（App.xaml 里没有这个 key）：少了它 StaticResource 会在加载期抛异常。-->
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-    </UserControl.Resources>
     <ScrollViewer Background="Transparent" scroll:SmoothScrollBehavior.IsEnabled="True">
         <StackPanel>
             <TextBlock Text="{x:Static Member=res:Strings.Home_Settings}" Style="{StaticResource AppPageTitle}" Margin="0,0,0,12"/>
