@@ -91,13 +91,30 @@ public sealed record CliGlobalOptions(
 	// 结果就是 wardrobe 里记的开关掩码、真映射写进 dl_bin 的件表全部失效。
 	// 有了这个参数，重构建只要把旧的那份指过来，产出的 id 就与原来逐位相同。
 	string? ReuseModel = null,
-	// `vpk rekey` 的头身合并：`on` 把来源的头 Unit 落到护甲套件的胸部槽位上，
-	// 让头盔存档一件模型都不剩；`off`（默认）是老做法（头由头盔套件承载，玩家得穿配套头盔）。
+	// `vpk rekey` 的头身合并：`on` 把来源的头 Unit 落到护甲套件的胸部槽位上，	// 让头盔存档一件模型都不剩；`off`（默认）是老做法（头由头盔套件承载，玩家得穿配套头盔）。
 	//
 	// 默认关的理由：它改变的是"头画在哪"，还会让那件头盔 item 变成空模型——必须由用户明确打开。
 	// 层号不是写死的：按目标护甲胸部槽位实际有几层算（最外层放头、次外层放身体），
 	// 只有一层时自动退回老做法。见 CliVpkRekey.ResolveHeadBodyMerge。
-	string? HeadMerge = null);
+	string? HeadMerge = null,
+	// 从**清单文件**读要转换的 VPK（每行一个绝对路径，空行与 `#` 开头的行忽略）。
+	//
+	// 为什么需要它：Windows 命令行上限是 32767 字符，而一个中文整合包里 140 个 VPK 的绝对路径
+	// 就有近 3 万字符——拼进参数会在 CreateProcess 那一步失败，报的还是「文件名或扩展名太长」
+	// （Win32 206），看起来像路径太深，实际是命令行太长。
+	string? VpkList = null,
+	// 同上，给 `--material-source` 用的清单文件（解析集合）。
+	string? MaterialSourceList = null,
+	// 组件开关包的清单（只用于**识别开关**，不进解析集合）。分主体转换时，开关包在别的组里，
+	// 不单独指过来就翻译不出 components.json。
+	string? ComponentSourceList = null,
+	// 强制这批输入按"模型"还是"材质包"转换（`model` / `material`）。
+	// 不传 = 按"有没有 .mdl"自动判断（历史行为）。
+	//
+	// 为什么需要它：整合包里常有"材质包里塞了摆姿势的展示模型 / 动画模型"的包，自动判断会把整包
+	// 当角色去转换，然后死在模型解析上（实测报 `MDL 骨骼数量异常：0`），而它其实是整只角色的主材质。
+	// 规划阶段靠材质目录已经能认出来，这里把那个结论显式交给转换器，不在转换阶段再猜一次。
+	string? TreatAs = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -138,6 +155,10 @@ public static class CliArgumentParser
 		string? unitIds = null;
 		string? reuseModel = null;
 		string? headMerge = null;
+		string? vpkList = null;
+		string? materialSourceList = null;
+		string? componentSourceList = null;
+		string? treatAs = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -257,6 +278,26 @@ public static class CliArgumentParser
 					break;
 				case "--reuse-model":
 					reuseModel = ReadValue(args, ref index, argument);
+					break;
+				case "--vpk-list":
+					vpkList = ReadValue(args, ref index, argument);
+					break;
+				case "--material-source-list":
+					materialSourceList = ReadValue(args, ref index, argument);
+					break;
+				case "--component-source-list":
+					componentSourceList = ReadValue(args, ref index, argument);
+					break;
+				case "--treat-as":
+					var rawTreatAs = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					if (rawTreatAs is not ("model" or "material"))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--treat-as 只接受 model / material，实际是 '{rawTreatAs}'。"
+							+ "不传就按有没有 .mdl 自动判断。");
+					}
+
+					treatAs = rawTreatAs;
 					break;
 				case "--head-merge":
 					var rawHeadMerge = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
@@ -381,7 +422,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

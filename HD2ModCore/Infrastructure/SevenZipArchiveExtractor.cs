@@ -6,7 +6,25 @@ namespace HD2ModCore.Infrastructure;
 // 作用：通过随管理器分发的 7-Zip 命令行运行时解压归档，隔离压缩格式解析并支持取消。
 public sealed class SevenZipArchiveExtractor
 {
-	public async Task ExtractAsync(string archiveFilePath, string destinationDirectory, CancellationToken cancellationToken = default)
+	/// <param name="flatten">
+	/// <c>true</c> = 只取文件、不重建包内的目录结构（<c>7z e</c>）。
+	/// <para>
+	/// <b>为什么要这个开关。</b>中文整合包的目录常常又深又长（实测一个 292 MB 的包里，
+	/// 解压后最深路径到 <b>268</b> 字符），而临时目录本身还要占掉一百来个字符——
+	/// 于是"解压到临时目录"这一步就会撞上 260 的路径上限。7-Zip 自己用 <c>\\?\</c> 能过，
+	/// 但后续任何一个走老 API 的环节都会炸，而且报的是"找不到文件"这种南辕北辙的错。
+	/// </para>
+	/// <para>
+	/// 摊平是安全的：VPK 转换只按<b>文件名</b>找包，包内的目录层次对它没有任何意义。
+	/// 代价是包内同名文件会互相覆盖——所以调用方必须**先确认没有重名**再摊平
+	/// （见 <c>VpkImportService.TryPrepareAsync</c>）。
+	/// </para>
+	/// </param>
+	public async Task ExtractAsync(
+		string archiveFilePath,
+		string destinationDirectory,
+		CancellationToken cancellationToken = default,
+		bool flatten = false)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(archiveFilePath);
 		ArgumentException.ThrowIfNullOrWhiteSpace(destinationDirectory);
@@ -15,7 +33,7 @@ public sealed class SevenZipArchiveExtractor
 
 		Directory.CreateDirectory(destinationDirectory);
 		var (exitCode, output, error) = await RunAsync(
-			["x", "-y", "-bd", $"-o{Path.GetFullPath(destinationDirectory)}", archive],
+			[flatten ? "e" : "x", "-y", "-bd", $"-o{Path.GetFullPath(destinationDirectory)}", archive],
 			cancellationToken).ConfigureAwait(false);
 		if (exitCode != 0)
 		{

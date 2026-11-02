@@ -252,19 +252,22 @@ namespace HD2ModManager.Services
                 // 每个 VPK 一个文件夹，逐个走常规导入。派生数据在整批之后再算一次，
                 // 否则每个 VPK 都要重算一遍全库内容事实。
                 var guids = new List<string>();
+                // guid → 它属于哪个主体组、是主体还是材质包（挂选项关系时要用）。
+                var groupOf = new Dictionary<string, VpkProducedPackage>(StringComparer.OrdinalIgnoreCase);
                 var affected = new List<ModNodeId>();
                 var conflicts = false;
-                foreach (var directory in produced)
+                foreach (var package in produced)
                 {
                     ct.ThrowIfCancellationRequested();
                     var imported = await ImportPathAsync(
-                        directory,
+                        package.Directory,
                         ct,
                         notifyLibraryChanged: false,
                         refreshDerivedData: false,
                         // 这是转换产出，不是待转换的来源：见 ImportPathAsync 里的说明。
                         allowVpkConversion: false).ConfigureAwait(false);
                     guids.AddRange(imported);
+                    foreach (var guid in imported) groupOf[guid] = package;
                     affected.AddRange(LastAffectedNodeIds);
                     conflicts |= LastImportHasOptionPathConflicts;
 
@@ -285,7 +288,7 @@ namespace HD2ModManager.Services
                 // 同批的"模型 + 它的材质包"自动接成 主体 → 选项：用户现在要导入完之后在库里
                 // 把材质包一个个拖到模型下面，而同一批转换出来的东西本来就知道谁是谁的。
                 // **物理结构不变**（还是平铺的一个个文件夹），改的只是 option.json 的父子关系。
-                var attach = await AttachVpkBatchOptionsAsync(guids, ct).ConfigureAwait(false);
+                var attach = await AttachVpkBatchOptionsAsync(guids, groupOf, ct).ConfigureAwait(false);
                 if (attach.Relationships > 0)
                 {
                     var message = attach.Hosts == 1
@@ -324,58 +327,67 @@ namespace HD2ModManager.Services
         /// <summary>
         /// 把这一批里的**材质包**挂到同一批的**模型主体**下面当选项。
         /// <para>
-        /// <b>只在这一批内部认亲。</b>同一次导入的 VPK 共用命名空间，模型 patch 引用的材质 id
-        /// 就写在那几个材质包里——批次之内"谁是谁的材质"是确定的，跨批去猜会把别人的包挂过来。
+        /// <b>按主体分组挂。</b>整合包里几套角色的材质裸名相同（<c>tights_socks.vmt</c> 谁都有），
+        /// 把 plum 的材质挂到 chiffon 下面会得到一堆"看起来对、点开什么都不变"的选项。
+        /// 所以只把**同一个主体组**里的材质挂给这个主体。
         /// </para>
         /// <para>
-        /// <b>判据：</b>含 <c>vpk2patch/sections.json</c> = 带 Unit 的模型产物（主体）；
-        /// 有 <c>vpk2patch.json</c> 但没有 <c>sections.json</c> = 纯材质包（选项）；
-        /// 都不是的（普通导入的包）不参与。
+        /// <b>判据：</b>转换阶段已经算好了——含 <c>vpk2patch/sections.json</c> 的是模型主体，
+        /// 其余是它的材质包（见 <c>VpkImportService.BuildConversionWorkload</c>）。
+        /// 没有分组信息的（只导材质包）退回老做法：全部材质挂到唯一的主体下。
         /// </para>
         /// <para>
         /// <b>失败只记日志。</b>这一步是便利，不是导入正确性的一部分：关系写失败时产物照样是好的，
-        /// 手动拖一下就能补；让它把整次导入判失败，代价远大于收益。
+        /// 手动拖一下就能补。
         /// </para>
         /// </summary>
-        private async Task<VpkOptionAttachResult> AttachVpkBatchOptionsAsync(List<string> guids, CancellationToken cancellationToken)
+        private async Task<VpkOptionAttachResult> AttachVpkBatchOptionsAsync(
+            List<string> guids,
+            IReadOnlyDictionary<string, VpkProducedPackage> groupOf,
+            CancellationToken cancellationToken)
         {
             var distinct = guids.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             if (distinct.Length < 2) return default;
 
-            var hosts = new List<string>();
-            var materialOptions = new List<string>();
-            foreach (var guid in distinct)
-            {
-                var directory = TryGetModDirectory(guid);
-                if (directory is null) continue;
-                var payload = ModNodePayloadLayout.GetVpkPatchDirectory(directory);
-                if (File.Exists(Path.Combine(payload, WardrobeSectionMapFile.FileName)))
-                    hosts.Add(guid);
-                else if (VpkConversionReport.TryRead(directory) is not null)
-                    materialOptions.Add(guid);
-            }
+            // 分组：主体 → 它自己的材质包。分组信息缺失时整批算一组（老行为）。
+            var groups = distinct
+                .GroupBy(guid => groupOf.TryGetValue(guid, out var package) && package.GroupName is { Length: > 0 }
+                    ? package.GroupName
+                    : "（整批）", StringComparer.OrdinalIgnoreCase)
+                .Select(group => new
+                {
+                    Hosts = group.Where(guid => !groupOf.TryGetValue(guid, out var package) || package.IsModel).ToArray(),
+                    Materials = group.Where(guid => groupOf.TryGetValue(guid, out var package) && !package.IsModel).ToArray(),
+                })
+                .Where(group => group.Hosts.Length != 0 && group.Materials.Length != 0)
+                .ToArray();
 
-            if (hosts.Count == 0 || materialOptions.Count == 0) return default;
+            if (groups.Length == 0) return default;
 
             var relationships = 0;
             var failures = 0;
-            foreach (var host in hosts)
+            var materials = groups.Sum(group => group.Materials.Length);
+            var hosts = groups.Sum(group => group.Hosts.Length);
+            foreach (var group in groups)
             {
-                try
+                foreach (var host in group.Hosts)
                 {
-                    var result = await _library.AddOptionsToHostAsync(host, materialOptions, cancellationToken)
-                        .ConfigureAwait(false);
-                    relationships += result.ChangedNodeIds.Count;
-                }
-                catch (Exception exception) when (exception is ModRelationshipMutationException
-                    or InvalidOperationException or IOException or UnauthorizedAccessException)
-                {
-                    failures++;
-                    LogService.Warn($"没能把同批材质包设为主体「{_library.Get(host)?.Name ?? host}」的选项：{exception.Message}");
+                    try
+                    {
+                        var result = await _library.AddOptionsToHostAsync(host, group.Materials, cancellationToken)
+                            .ConfigureAwait(false);
+                        relationships += result.ChangedNodeIds.Count;
+                    }
+                    catch (Exception exception) when (exception is ModRelationshipMutationException
+                        or InvalidOperationException or IOException or UnauthorizedAccessException)
+                    {
+                        failures++;
+                        LogService.Warn($"没能把同批材质包设为主体「{_library.Get(host)?.Name ?? host}」的选项：{exception.Message}");
+                    }
                 }
             }
 
-            return new VpkOptionAttachResult(hosts.Count, materialOptions.Count, relationships, failures);
+            return new VpkOptionAttachResult(hosts, materials, relationships, failures);
         }
 
         /// <summary>从 Mod 的 GUID 拿到它的目录；拿不到就 <c>null</c>。</summary>

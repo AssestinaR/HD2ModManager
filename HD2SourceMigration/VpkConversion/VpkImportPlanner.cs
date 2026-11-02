@@ -76,6 +76,15 @@ public sealed record VpkImportCandidate(
 	/// （<c>猫耳</c>、<c>披风</c>），其余情况为 <c>null</c>，调用方退回文件名。
 	/// </summary>
 	public string? DisplayName { get; init; }
+
+	/// <summary>
+	/// 这个包里有没有 <c>.mdl</c>（不论它最后被判成什么）。
+	/// <para>
+	/// 用来区分"模型层面的失败"和"材质层面的失败"：前者（模型读不出来 / 不是角色）在一份
+	/// 材质包里只是附属内容，可以整包改判成材质包；后者（<c>$no_draw</c> 之类）改判没有意义。
+	/// </para>
+	/// </summary>
+	public bool HasModelContent { get; init; }
 }
 
 /// <summary>
@@ -106,7 +115,30 @@ public sealed record VpkImportPlan(IReadOnlyList<VpkImportCandidate> Candidates)
 
 	public IReadOnlyList<VpkImportCandidate> Materials
 		=> Candidates.Where(candidate => candidate.IsConvertible && candidate.Kind == VpkImportKind.Material).ToArray();
+
+	/// <summary>
+	/// 「模型主体 + 它自己的材质包」。一个整合包里有几套角色时，它就是"库里有几个主体、
+	/// 每个主体下有哪些材质选项"的答案。见 <c>VpkImportPlanner.BuildModelGroups</c>。
+	/// </summary>
+	public IReadOnlyList<VpkModelGroup> Groups { get; init; } = [];
+
+	/// <summary>认不出属于哪个模型的材质包：跳过并点名（见 <see cref="Groups"/> 的判据）。</summary>
+	public IReadOnlyList<string> UnassignedMaterials { get; init; } = [];
 }
+
+/// <summary>
+/// 一个「模型主体组」：一个模型 VPK + 属于它的材质包。
+/// <para>
+/// <b>为什么要按主体分组而不是整批一起转。</b>整合包里几套角色的材质<b>裸名相同</b>，
+/// 而解析是按裸名先到先得的——不分组就会串味；材质 id 又只在同一命名空间内唯一，
+/// 不分组两套角色也装不到一起。所以每组各用一个命名空间、各用一份解析集合。
+/// </para>
+/// </summary>
+public sealed record VpkModelGroup(
+	string ModelVpkPath,
+	string DisplayName,
+	string IdNamespaceSource,
+	IReadOnlyList<string> MaterialVpkPaths);
 
 /// <summary>
 /// 决定"这批 VPK 里哪些值得转、哪些跳过、哪些是同一个模型"。
@@ -205,7 +237,86 @@ public static class VpkImportPlanner
 			};
 		}
 
-		return new VpkImportPlan(candidates);
+		var groups = BuildModelGroups(candidates, out var providerPaths);
+
+		// 供应了某个主体材质的包 = **材质包**，哪怕它里面塞了模型（姿势/动画模型）或那个模型读不出来。
+		// 不这样改判，本样本的「基础材质」（78 VMT + 5 个读不出的 mdl）会被判成"不支持"，
+		// 而它正是整只角色的主材质——模型那边就一个材质都没有。
+		if (providerPaths.Count != 0)
+		{
+			var providers = providerPaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+			for (var index = 0; index < candidates.Count; index++)
+			{
+				var candidate = candidates[index];
+				if (!providers.Contains(candidate.VpkPath)) continue;
+				if (candidate.Kind is VpkImportKind.CharacterModel)
+				{
+					candidates[index] = candidate with
+					{
+						Kind = VpkImportKind.Material,
+						Signature = null,
+						SkipReason = null,
+					};
+				}
+				else if (candidate.Kind is VpkImportKind.Unsupported && candidate.HasModelContent)
+				{
+					// "模型读不出来 / 不是角色"这类理由对材质包不成立：它的模型只是附属内容。
+					// $no_draw 之类的**材质层面**失败不在这里改判——那包确实表达不了。
+					candidates[index] = candidate with
+					{
+						Kind = VpkImportKind.Material,
+						Signature = null,
+						SkipReason = null,
+					};
+				}
+			}
+		}
+
+		var assigned = groups
+			.SelectMany(group => group.MaterialVpkPaths)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var unassigned = candidates
+			.Where(candidate => candidate.Kind == VpkImportKind.Material
+				&& candidate.IsConvertible
+				&& !assigned.Contains(candidate.VpkPath))
+			.Select(candidate => candidate.VpkPath)
+			.ToArray();
+
+		// **组里只留真正能转换的材质包。**
+		//
+		// 分组的判据是"它提供的材质目录对得上这个模型"，而那与"它能不能被翻译成 HD2 材质"是两件事：
+		// 组件开关包（`附加材质X关`）和"只换渲染参数"的变体（`组件材质b1/b2/b3/c2`）同样提供
+		// 同名目录，但它们要么只是 `$no_draw` 开关、要么只是改几个着色器参数——前者该走组件开关、
+		// 后者 HD2 表达不了。把它们留在组里，转换队列就会多出一堆没意义的 Mod。
+		var convertiblePaths = candidates
+			.Where(candidate => candidate.IsConvertible)
+			.Select(candidate => candidate.VpkPath)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var filteredGroups = groups
+			.Select(group => group with
+			{
+				MaterialVpkPaths = group.MaterialVpkPaths
+					.Where(convertiblePaths.Contains)
+					.ToArray(),
+			})
+			.ToArray();
+
+		// 过滤之后重新算"没归属的"：只报真正该转却没归属的材质包，不把开关/变体算进去。
+		var stillAssigned = filteredGroups
+			.SelectMany(group => group.MaterialVpkPaths)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		unassigned = candidates
+			.Where(candidate => candidate.Kind == VpkImportKind.Material
+				&& candidate.IsConvertible
+				&& !stillAssigned.Contains(candidate.VpkPath))
+			.Select(candidate => candidate.VpkPath)
+			.ToArray();
+
+		return new VpkImportPlan(candidates)
+		{
+			Groups = filteredGroups,
+			UnassignedMaterials = unassigned,
+		};
 	}
 
 	/// <summary>
@@ -511,7 +622,7 @@ public static class VpkImportPlanner
 			}
 
 			if (hasModel)
-				return ProbeModel(path, archive, materials, textures);
+				return ProbeModel(path, archive, materials, textures) with { HasModelContent = true };
 
 			if (materials.Count == 0 && textures.Count == 0)
 			{
@@ -559,6 +670,217 @@ public static class VpkImportPlanner
 		}
 	}
 
+	/// <summary>
+	/// 路径快筛：这个 <c>.mdl</c> 看起来是不是角色。
+	/// <para>
+	/// 只看路径，因为这一步要能在**没有游戏数据**的 plan 阶段跑。判据全是实测样本里出现过的
+	/// 非角色目录：道具、武器/手模、动画、特效、碎块。真正把关的是转换时的骨架校验
+	/// （骨架对不上 HD2 Biped 就不转），这里只是把明显的先挡掉，省掉几十分钟空转。
+	/// </para>
+	/// <para>
+	/// <b>不限定只认生还者目录</b>：敌人模型（<c>models/infected/…</c>）只要骨架合适照样是角色。
+	/// </para>
+	/// </summary>
+	private static string? DescribeNonCharacterModel(string modelPath)
+	{
+		var path = modelPath.Replace('\\', '/').ToLowerInvariant();
+		var reason = path.Contains("anims_", StringComparison.Ordinal) ? "动画模型（anims_*）"
+			: path.Contains("models/props", StringComparison.Ordinal) || path.Contains("props_unique", StringComparison.Ordinal)
+				? "道具模型（models/props*）"
+			: path.Contains("models/weapons/", StringComparison.Ordinal) ? "武器/手模（models/weapons/*）"
+			: path.Contains("models/effects/", StringComparison.Ordinal) || path.Contains("models/particles/", StringComparison.Ordinal)
+				? "特效模型"
+			: path.Contains("models/gibs/", StringComparison.Ordinal) ? "碎块模型"
+			: null;
+
+		return reason is null
+			? null
+			: $"里面的模型是{reason}（{Path.GetFileNameWithoutExtension(modelPath)}），不是角色："
+				+ "转换成护甲没有意义，已跳过。";
+	}
+
+	/// <summary>
+	/// 从 mdl 里读出它**声明的材质目录**（<c>ko_chiffon_aw\</c> 这种）。
+	/// <para>
+	/// <b>为什么要读它。</b>同一个包里常常有几套"实际相同、只是来源不同"的材质（本样本里 chiffon
+	/// 与 plum 的 <c>tights_socks.vmt</c> 裸名完全相同），靠文件名分组会系统性判错。
+	/// 而模型自己写着"我要 <c>ko_chiffon_aw</c> 目录下的材质"，材质包写着"我提供
+	/// <c>materials/ko_chiffon_aw</c> 的 VMT"——两边一对就命中。这是**内容**，不是文件名。
+	/// </para>
+	/// <para>
+	/// 做法是扫字符串而不是走结构解析：mdl 里的材质目录是 <c>mstudiomodel_t</c> 的 cdtexture
+	/// 字符串（以分隔符结尾），而"以分隔符结尾的可打印串"在我们关心的范围内没有歧义
+	/// （模型路径以 <c>.mdl</c> 结尾、材质裸名不带分隔符）。这样不依赖版本相关的结构偏移，
+	/// 读坏了最多是"读不出目录"，不会读错。
+	/// </para>
+	/// </summary>
+	private static IReadOnlySet<string> ReadModelMaterialFolders(VpkArchive archive)
+	{
+		var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		byte[] bytes;
+		try
+		{
+			bytes = archive.Read(SourceModelLocator.FindModel(archive, null));
+		}
+		catch (Exception exception) when (IsProbeFailure(exception))
+		{
+			return folders;
+		}
+
+		var run = new System.Text.StringBuilder(64);
+		foreach (var value in bytes)
+		{
+			if (value is >= 0x20 and < 0x7F)
+			{
+				if (run.Length > 128) run.Clear();
+				run.Append((char)value);
+				continue;
+			}
+
+			AddFolder(run.ToString(), folders);
+			run.Clear();
+		}
+
+		AddFolder(run.ToString(), folders);
+		return folders;
+
+		static void AddFolder(string candidate, HashSet<string> target)
+		{
+			// 只认"以分隔符结尾"的串：那就是 cdtexture 条目的形状。
+			if (candidate.Length is < 3 or > 96) return;
+			if (!candidate.EndsWith('\\') && !candidate.EndsWith('/')) return;
+			foreach (var ch in candidate)
+			{
+				if (char.IsAsciiLetterOrDigit(ch) || ch is '_' or '-' or '\\' or '/' or '.') continue;
+				return;
+			}
+
+			var normalized = NormalizeFolder(candidate);
+			if (normalized.Length != 0) target.Add(normalized);
+		}
+	}
+
+	/// <summary>
+	/// 材质包提供的材质目录：<b>VMT 与 VTF 都算</b>（<c>materials/ko_chiffon_aw</c> → <c>ko_chiffon_aw</c>）。
+	/// <para>
+	/// 为什么要连 VTF 一起看：实测有包只带一张 <c>warp.vtf</c>（卡通渐变条）就构成一个渲染风格选项，
+	/// 一个 VMT 都没有。只看 VMT 会把这种包判成"认不出属于谁"而丢掉。
+	/// </para>
+	/// </summary>
+	private static IReadOnlySet<string> ReadProvidedMaterialFolders(VpkArchive archive)
+	{
+		var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var entry in archive.Entries)
+		{
+			var isMaterialOrTexture = entry.Extension.Equals("vmt", StringComparison.OrdinalIgnoreCase)
+				|| entry.Extension.Equals("vtf", StringComparison.OrdinalIgnoreCase);
+			if (!isMaterialOrTexture) continue;
+			var normalized = NormalizeFolder(entry.Directory);
+			if (normalized.Length != 0) folders.Add(normalized);
+		}
+
+		return folders;
+	}
+
+	/// <summary>统一材质目录写法：去 <c>materials/</c> 前缀、去首尾分隔符、小写、正斜杠。</summary>
+	private static string NormalizeFolder(string? folder)
+	{
+		if (string.IsNullOrWhiteSpace(folder)) return string.Empty;
+		var value = folder.Trim().Replace('\\', '/');
+		while (value.StartsWith("materials/", StringComparison.OrdinalIgnoreCase))
+			value = value["materials/".Length..];
+		return value.Trim('/').ToLowerInvariant();
+	}
+
+	/// <summary>
+	/// 把这一批分成「模型主体 + 它自己的材质包」。
+	/// <para>
+	/// <b>为什么必须有分组。</b>一个整合包里可以有几套完全不同的角色，它们的材质<b>裸名相同</b>
+	/// （<c>tights_socks.vmt</c> 谁都有），而材质 id 只在同一命名空间内唯一。不分组的后果是：
+	/// 模型会吃到别人的材质（解析按裸名先到先得），两套角色也没法共存。
+	/// </para>
+	/// <para><b>归属判据（内容，不看文件名）：</b></para>
+	/// <list type="number">
+	/// <item>模型侧：mdl 声明的材质目录（见 <see cref="ReadModelMaterialFolders"/>）。</item>
+	/// <item>材质侧：它提供的 VMT/VTF 目录（见 <see cref="ReadProvidedMaterialFolders"/>）。</item>
+	/// <item>两边目录有交集 ⇒ 它是这个模型的材质包。一个包可以同时属于多个模型（共用材质是正常的）。</item>
+	/// <item>对不上任何模型的材质包 ⇒ 不回退、不猜，跳过并点名。</item>
+	/// </list>
+	/// <para>
+	/// <b>带模型的材质包会被改判成材质包。</b>实测有包把"摆姿势的展示模型 / 动画模型"塞在材质包里
+	/// （本样本的「基础材质」有 5 个 mdl + 78 个 VMT，其中 <c>ko_*_aw/3.mdl</c> 甚至读不出来），
+	/// 于是它先被判成"模型"、再因为模型读不出来判成"不支持"——而这个包其实是整只角色的**主材质**。
+	/// 只要它提供的材质目录能对上某个模型，就把整包改判成材质包、内部的模型当辅助内容忽略。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyList<VpkModelGroup> BuildModelGroups(
+		IReadOnlyList<VpkImportCandidate> candidates,
+		out IReadOnlyList<string> providerVpkPaths)
+	{
+		providerVpkPaths = [];
+		var modelCandidates = candidates
+			.Where(candidate => candidate.Kind == VpkImportKind.CharacterModel && candidate.IsConvertible)
+			.ToArray();
+		if (modelCandidates.Length == 0) return [];
+
+		var modelFolders = new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+		var providedFolders = new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+		foreach (var candidate in candidates)
+		{
+			if (candidate.VpkPath.Length == 0) continue;
+			try
+			{
+				using var archive = VpkArchive.Open(candidate.VpkPath);
+				var folders = ReadProvidedMaterialFolders(archive);
+				if (folders.Count != 0) providedFolders[candidate.VpkPath] = folders;
+				if (candidate.Kind == VpkImportKind.CharacterModel && candidate.IsConvertible)
+					modelFolders[candidate.VpkPath] = ReadModelMaterialFolders(archive);
+			}
+			catch (Exception exception) when (IsProbeFailure(exception))
+			{
+				// 打不开的包在规划阶段已经带着原因被跳过了，这里不重复报。
+			}
+		}
+
+		// 每个提供材质目录的候选 → 它匹配到哪些模型。**排除自己**：自带材质的模型包不算别人的材质包。
+		var matchedModelsByProvider = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+		foreach (var (providerPath, folders) in providedFolders)
+		{
+			foreach (var (modelPath, modelFolderSet) in modelFolders)
+			{
+				if (string.Equals(providerPath, modelPath, StringComparison.OrdinalIgnoreCase)) continue;
+				if (!folders.Overlaps(modelFolderSet)) continue;
+				if (!matchedModelsByProvider.TryGetValue(providerPath, out var list))
+					matchedModelsByProvider[providerPath] = list = [];
+				list.Add(modelPath);
+			}
+		}
+
+		var providerPaths = matchedModelsByProvider.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		providerVpkPaths = providerPaths.ToArray();
+
+		// 主体 = 模型候选里**不是**别人材质包的那些。
+		var groups = new List<VpkModelGroup>(modelCandidates.Length);
+		foreach (var subject in modelCandidates.Where(candidate => !providerPaths.Contains(candidate.VpkPath)))
+		{
+			var materials = matchedModelsByProvider
+				.Where(pair => pair.Value.Contains(subject.VpkPath, StringComparer.OrdinalIgnoreCase))
+				.Select(pair => pair.Key)
+				.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+			var displayName = Path.GetFileNameWithoutExtension(subject.VpkPath);
+			groups.Add(new VpkModelGroup(
+				subject.VpkPath,
+				displayName,
+				// 命名空间来源标识：**每个主体各一个**。于是"实际相同、但属于不同角色"的材质会得到
+				// 不同的 id，几套角色可以同时装而不互相覆盖。
+				IdNamespaceSource: displayName,
+				MaterialVpkPaths: materials));
+		}
+
+		return groups;
+	}
+
 	private static VpkImportCandidate ProbeModel(
 		string path,
 		VpkArchive archive,
@@ -576,6 +898,17 @@ public static class VpkImportPlanner
 		{
 			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
 				$"模型读不出来（{exception.GetType().Name}）：{exception.Message}", null, materials, textures);
+		}
+
+		// **不是角色就不要排进转换队列。** 中文整合包里大量"有 .mdl 但不是角色"的包：
+		// 道具（`models/props_unique/…`）、武器/手模（`models/weapons/…`）、
+		// 动画模型（`anims_*`，只有动画没有网格）。它们走角色链路只会白转几十分钟并产出垃圾 Mod。
+		// 这里只做**路径快筛**（便宜、可在 plan 阶段做）；真正的判据是转换时的骨架校验。
+		var notACharacter = DescribeNonCharacterModel(mdl.Path);
+		if (notACharacter is not null)
+		{
+			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
+				notACharacter, null, materials, textures);
 		}
 
 		// 占位几何：先认出"这个包的 .vvd 只有个头"，否则下面会抛

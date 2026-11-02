@@ -2213,16 +2213,18 @@ public static class CliApplication
 			//
 			// 为什么只有一条命令：用户/agent 不该需要先判断"这个 VPK 是模型还是材质"。
 			// 含 `.mdl` → 出 unit patch；只有 `.vmt`/`.vtf` → 出材质/贴图 patch。
-			if (command.Length < 2)
+			if (command.Length < 2 && string.IsNullOrWhiteSpace(invocation.Options.VpkList))
 				throw new CliUserException("VpkRequired",
 					"用法：hd2mod vpk2patch <vpk1> [<vpk2> ...] --output <目录> "
 					+ "[--avatar-toc <avatar Unit 的 TocData>] [--game-data <游戏 data 目录>] "
-					+ "[--material-source <目录或 VPK>] [--components merge|all|none|<名字,...>] [--json]");
+					+ "[--material-source <目录或 VPK>] [--components merge|all|none|<名字,...>] [--json] "
+					+ "（VPK 多到命令行放不下时用 --vpk-list <清单文件>，每行一个路径）");
 
 			var outputRoot = RequireOutput(invocation.Options, "vpk2patch");
 			var vpkPaths = new List<string>();
 			var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-			foreach (var path in command.Skip(1))
+			// 清单文件与位置参数合起来用：清单解决"命令行太长"，位置参数保持原来的用法。
+			foreach (var path in command.Skip(1).Concat(ReadPathList(invocation.Options.VpkList, "--vpk-list")))
 			{
 				if (!File.Exists(path))
 					throw new CliUserException("VpkNotFound", $"找不到 VPK 文件：{path}");
@@ -2243,6 +2245,16 @@ public static class CliApplication
 						queue = vpkPaths,
 						convertible = plan.Convertible.Select(ProjectVpkImportCandidate).ToArray(),
 						skipped = plan.Skipped.Select(ProjectVpkImportCandidate).ToArray(),
+						// 「模型主体 → 它的材质包」：整合包里有几套角色时，管理器按这个分组逐个转换，
+						// 每组各用一份命名空间与解析集合（否则几套角色会串材质、也没法共存）。
+						modelGroups = plan.Groups.Select(group => new
+						{
+							model = group.ModelVpkPath,
+							name = group.DisplayName,
+							idNamespace = group.IdNamespaceSource,
+							materials = group.MaterialVpkPaths,
+						}).ToArray(),
+						unassignedMaterials = plan.UnassignedMaterials,
 					},
 					() => FormatVpkImportPlan(plan));
 				return 0;
@@ -2259,13 +2271,23 @@ public static class CliApplication
 				extraPaths.AddRange(entries.Where(File.Exists));
 			}
 
+			// 解析集合也可以来自清单文件：一次导入上百个 VPK 时，路径拼进命令行会超掉
+			// Windows 的 32767 上限（报「文件名或扩展名太长」）。
+			extraPaths.AddRange(ReadPathList(invocation.Options.MaterialSourceList, "--material-source-list"));
+
+			// 组件开关包只用于**识别开关**，不进解析集合（见下）。分主体转换时开关包在别的组里，
+			// 所以调用方用清单把它们单独指过来。
+			var switchScanPaths = extraPaths
+				.Concat(ReadPathList(invocation.Options.ComponentSourceList, "--component-source-list"))
+				.ToArray();
+
 			// 组件开关包（`$no_draw` 覆盖）：既不能进解析集合，也不能当材质包转换。
 			//
 			// **必须从解析集合里剔除。** 开关包的 VMT 与真材质**裸名相同**（Manuka 用
 			// `opt/同名.vmt`，橘雪莉直接覆盖同名路径），而 SourceMaterialSource 只按裸名索引、
 			// 先到先得。开关包一旦排在前面，真材质会被顶成 `$no_draw`，那个部件就静默失去材质
 			// ——不报错、不警告。实测今天只是侥幸（`附加材质\` 是子目录，排在同级文件之后）。
-			var componentSwitches = VpkImportPlanner.FindComponentSwitches([.. vpkPaths, .. extraPaths]);
+			var componentSwitches = VpkImportPlanner.FindComponentSwitches([.. vpkPaths, .. switchScanPaths]);
 			var switchPaths = componentSwitches
 				.Select(item => item.VpkPath)
 				.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -3151,11 +3173,26 @@ public static class CliApplication
 		var full = Path.GetFullPath(vpkPath);
 		Directory.CreateDirectory(outputDirectory);
 
-		// ① 自动识别类型。**只看有没有 `.mdl`**：含模型就出 unit patch，
-		//    否则按材质/贴图包处理。这个判断必须极简——它是"一条命令"的全部依据。
+		// ① 识别类型。默认**只看有没有 `.mdl`**：含模型就出 unit patch，否则按材质/贴图包处理。
+		//
+		// 但"有 .mdl"不等于"是角色"：整合包里常见"材质包里塞了摆姿势的展示模型 / 动画模型"的包
+		// （实测 `基础材质` 有 78 个 VMT + 5 个 mdl，其中 `ko_chiffon_aw/3.mdl` 骨骼数是 0，直接读炸）。
+		// 那种包其实是主材质，硬按模型转只会失败。规划阶段靠"材质目录对得上哪个模型"已经认出来了，
+		// 所以这里允许调用方用 `--treat-as` 把结论显式传进来，不在转换阶段再猜一次。
 		bool isModel;
-		using (var probe = VpkArchive.Open(full))
+		if (string.Equals(options.TreatAs, "model", StringComparison.OrdinalIgnoreCase))
+		{
+			isModel = true;
+		}
+		else if (string.Equals(options.TreatAs, "material", StringComparison.OrdinalIgnoreCase))
+		{
+			isModel = false;
+		}
+		else
+		{
+			using var probe = VpkArchive.Open(full);
 			isModel = probe.WithExtension("mdl").Any();
+		}
 
 		// 作用域视图：自身优先、整批兜底。**"只含自己的资源"能成立，全靠它。**
 		var scope = scopedMaterials ? materialBatch.ScopedTo(full) : null;
@@ -3643,6 +3680,21 @@ public static class CliApplication
 		{
 			$"vpk2patch 规划：{plan.Candidates.Count} 个 VPK → 转换 {plan.Convertible.Count} 个，跳过 {plan.Skipped.Count} 个。",
 		};
+
+		// 分组先讲：用户关心的是"会得到几个主体、每个主体带哪些材质"，
+		// 而不是逐条列 140 个文件。
+		foreach (var group in plan.Groups)
+		{
+			lines.Add($"  【主体】{group.DisplayName}（命名空间来源：{group.IdNamespaceSource}）");
+			lines.Add($"         材质包 {group.MaterialVpkPaths.Count} 个");
+		}
+		if (plan.UnassignedMaterials.Count != 0)
+		{
+			lines.Add($"  ⚠️ {plan.UnassignedMaterials.Count} 个材质包认不出属于哪个主体，已跳过：");
+			foreach (var path in plan.UnassignedMaterials)
+				lines.Add($"     - {Path.GetFileName(path)}");
+		}
+
 		foreach (var candidate in plan.Convertible)
 		{
 			var kind = candidate.Kind == VpkImportKind.CharacterModel ? "模型" : "材质";
@@ -5419,6 +5471,32 @@ public static class CliApplication
 		if (string.IsNullOrWhiteSpace(options.Plan))
 			throw new CliUserException("HostDerivedPlanRequired", "请通过 --plan <主体派生 Overwrite 计划.json> 提供计划文件。 ");
 		return options.Plan;
+	}
+
+	/// <summary>
+	/// 读一份路径清单（每行一个绝对路径；空行与 <c>#</c> 开头的行忽略）。
+	/// <para>
+	/// <b>为什么需要清单文件。</b>Windows 命令行上限 32767 字符。一个中文整合包里 140 个 VPK 的
+	/// 绝对路径就有近 3 万字符，拼进参数会在 <c>CreateProcess</c> 那一步就失败，而报的是
+	/// 「文件名或扩展名太长」（Win32 206）——那个错误码叫"文件名"，实际说的是命令行。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyList<string> ReadPathList(string? listPath, string optionName)
+	{
+		if (string.IsNullOrWhiteSpace(listPath)) return [];
+		var full = Path.GetFullPath(listPath);
+		if (!File.Exists(full))
+			throw new CliUserException("PathListNotFound", $"{optionName} 指定的清单文件不存在：{full}");
+
+		var paths = new List<string>();
+		foreach (var line in File.ReadAllLines(full))
+		{
+			var trimmed = line.Trim().Trim('"');
+			if (trimmed.Length == 0 || trimmed.StartsWith('#')) continue;
+			paths.Add(trimmed);
+		}
+
+		return paths;
 	}
 
 	private static bool Matches(IReadOnlyList<string> actual, params string[] expected)
