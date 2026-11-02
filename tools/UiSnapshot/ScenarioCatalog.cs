@@ -46,6 +46,7 @@ internal static class ScenarioCatalog
         ["nav-transition"] = () => NavScenario.BuildTransition("nav-transition"),
         ["wheel-probe"] = () => WheelProbeScenario.Build("wheel-probe"),
         ["wheel-probe-fixed"] = () => WheelProbeScenario.Build("wheel-probe-fixed", wheelScrollEnabled: true),
+        ["scroll-step-probe"] = () => ScrollStepProbeScenario.Build("scroll-step-probe"),
         ["empty-mock"] = () => EmptyStateScenario.Build("empty-mock"),
         ["capsule-mock"] = () => CapsuleMockScenario.Build("capsule-mock"),
         ["cluster"] = () => ClusterScenario.Build("cluster", expanded: false),

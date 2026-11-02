@@ -69,11 +69,12 @@ public static class SmoothScrollBehavior
 
 		if (viewer.GetValue(StateProperty) is SmoothScrollState state)
 		{
-			// **逻辑滚动的 viewer 不能按 84 像素走。** `CanContentScroll="True"` 的那些
-			// （TreeView、ListBox、虚拟化列表的内层）VerticalOffset 的单位是"第几项"：
-			// 写死 84 就是滚一格跳 84 项。而且这类 viewer 也不适合插值——落在两项之间的偏移
-			// 会让虚拟化面板抖一下，所以按整行直接步进，不做平滑。
-			if (viewer.CanContentScroll)
+			// **单位看内容面板，不看 CanContentScroll。**
+			// 真正"按项滚动"的 viewer（偏移量以项为单位）不能按 84 走：那是 84 项/格。
+			// 但 `CanContentScroll=true` + `VirtualizingPanel.ScrollUnit=Pixel` 的组合（ModListBox、
+			// 卡片列表都是这么配的）偏移量仍是**像素**，必须保持原来的 84 像素平滑滚动——
+			// 一旦把它误判成"项"，一格只走一两像素，实机表现就是"卡片根本滚不动"。
+			if (ScrollUnits.UsesItemOffsets(viewer))
 			{
 				var rows = Math.Clamp(SystemParameters.WheelScrollLines, 1, 3);
 				viewer.ScrollToVerticalOffset(Math.Round(viewer.VerticalOffset - (Math.Sign(e.Delta) * rows)));

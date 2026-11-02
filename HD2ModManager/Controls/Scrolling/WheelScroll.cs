@@ -163,12 +163,13 @@ public static class WheelScroll
         // 系统设成 10 行是给文档阅读器的，套到下拉上就是一格跳一屏多，又回到"飞快"。
         var lines = Math.Clamp(SystemParameters.WheelScrollLines, 1, 3);
 
-        if (viewer.CanContentScroll) return lines;
+        // **单位要看内容面板，不能只看 CanContentScroll。**
+        // `CanContentScroll=true` + `VirtualizingPanel.ScrollUnit=Pixel`（ModListBox 就是这样配的）
+        // 偏移量仍然是像素——把它当"项"会让一格只走一两像素。判据见 ScrollUnits。
+        if (ScrollUnits.UsesItemOffsets(viewer)) return lines;
 
         // 像素滚动：一行 = 第一个列表项的高度，拿不到就退回 32（AppComboBoxItem 的 MinHeight + 边距）。
-        var row = FindDescendant<ComboBoxItem>(viewer)?.ActualHeight
-            ?? FindDescendant<ListBoxItem>(viewer)?.ActualHeight
-            ?? 0;
+        var row = ScrollUnits.MeasureRowHeight(viewer);
         return row > 0 ? row * lines : 32d * lines;
     }
 
