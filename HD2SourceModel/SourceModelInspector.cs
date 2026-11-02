@@ -99,7 +99,17 @@ public sealed record SourceModelInspection(
 	bool UsedV7IndexStride,
 	IReadOnlyList<SourcePartSummary> Parts,
 	IReadOnlyList<SourceJiggleWeightFact> JiggleWeights,
-	IReadOnlyList<SourceModelDiagnostic> Diagnostics);
+	IReadOnlyList<SourceModelDiagnostic> Diagnostics)
+{
+	/// <summary>
+	/// mdl 声明的材质目录（<c>cdtextures</c>，有序）。**这是"模型从哪些目录找材质"的权威答案**，
+	/// 引擎按顺序找 <c>materials/&lt;目录&gt;/&lt;名字&gt;.vmt</c>，第一个存在的胜出。
+	/// </summary>
+	public IReadOnlyList<string> MaterialFolders { get; init; } = [];
+
+	/// <summary>每个材质名 × 每个目录展开出的候选全路径（<see cref="SourceMaterialRef.Path"/>）。</summary>
+	public IReadOnlyList<string> MaterialRefs { get; init; } = [];
+}
 
 /// <summary>
 /// 读一个源模型并产出一份"人看得懂、机器也看得懂"的检查报告。
@@ -169,7 +179,11 @@ public static class SourceModelInspector
 			[.. geometry.Parts.Select(part =>
 				new SourcePartSummary(part.BodyPart, part.Model, part.VertexCount, part.TriangleCount))],
 			jiggleWeights,
-			model.Diagnostics);
+			model.Diagnostics)
+		{
+			MaterialFolders = model.MaterialFolders,
+			MaterialRefs = model.MaterialRefs.Select(reference => reference.Path).ToArray(),
+		};
 	}
 
 	/// <summary>

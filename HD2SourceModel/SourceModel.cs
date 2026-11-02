@@ -192,6 +192,25 @@ public sealed record SourceGeometry(
 	IReadOnlyList<SourceGeometryPart> Parts);
 
 /// <summary>
+/// 一条"模型需要的材质"：名字 + 它在 mdl 材质目录表里的那个目录。
+/// <para>
+/// <b>为什么需要目录。</b>同一个名字可以在 <c>…/P2/x.vmt</c> 和 <c>…/P3/x.vmt</c> 各有一份、
+/// 内容不同；只按名字找等于把两者当成同一个材质。引擎的规则是
+/// <c>materials/&lt;目录&gt;/&lt;名字&gt;.vmt</c>，按目录表的**顺序**找第一个存在的——
+/// 所以"候选全路径"才是可判定的事实。
+/// </para>
+/// </summary>
+/// <param name="Name">材质名（mdl <c>mtextures</c> 里的那一项，不含目录、不含扩展名）。</param>
+/// <param name="Folder">材质目录（如 <c>diyu2026/GF2Exilium/Cheyanne/MaidenDebut/P2</c>）；空 = 模型没声明目录表。</param>
+/// <param name="Priority">目录在表里的下标：数值小的优先（引擎按顺序试）。</param>
+public sealed record SourceMaterialRef(string Name, string Folder, int Priority)
+{
+	/// <summary>引擎实际会去找的那个 VMT 路径（不含 <c>materials/</c> 前缀、不含扩展名）。</summary>
+	public string Path
+		=> Folder.Length == 0 ? Name : Folder + "/" + Name;
+}
+
+/// <summary>
 /// MDL 文件的解析结果（骨架 + bodypart 结构 + 材质路径），还不含顶点数据。
 /// </summary>
 public sealed record SourceModelDocument(
@@ -204,4 +223,20 @@ public sealed record SourceModelDocument(
 	IReadOnlyList<SourceModelDiagnostic> Diagnostics)
 {
 	public IEnumerable<SourceBone> JiggleBones => Bones.Where(bone => bone.Jiggle is not null);
+
+	/// <summary>
+	/// mdl 头部声明的材质目录（<c>cdtextures</c>），**有序**：引擎按这个顺序解析材质名。
+	/// 空 = 老模型没有这张表。
+	/// </summary>
+	public IReadOnlyList<string> MaterialFolders { get; init; } = [];
+
+	/// <summary>
+	/// 每个材质名 × 每个材质目录展开出的候选全路径（见 <see cref="SourceMaterialRef"/>）。
+	/// <b>"模型需要哪些材质"以这份为准</b>；<see cref="MaterialPaths"/> 只是为了兼容只认识名字的老调用方。
+	/// </summary>
+	public IReadOnlyList<SourceMaterialRef> MaterialRefs { get; init; } = [];
+
+	/// <summary>按名字取它的候选全路径（同名不同目录时会有多条，按 <c>Priority</c> 升序）。</summary>
+	public IEnumerable<SourceMaterialRef> RefsFor(string materialName)
+		=> MaterialRefs.Where(reference => string.Equals(reference.Name, materialName, StringComparison.OrdinalIgnoreCase));
 }

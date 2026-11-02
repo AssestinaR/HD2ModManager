@@ -46,6 +46,9 @@ public static class SourceModelReader
 	private const int BoneOffsetOffset = 160;
 	private const int TextureCountOffset = 204;
 	private const int TextureOffsetOffset = 208;
+	// 材质**目录**表：引擎按这张表的顺序找 materials/<目录>/<名字>.vmt，第一个存在的胜出。
+	private const int CdTextureCountOffset = 212;
+	private const int CdTextureOffsetOffset = 216;
 	private const int BodyPartCountOffset = 232;
 	private const int BodyPartOffsetOffset = 236;
 
@@ -60,6 +63,7 @@ public static class SourceModelReader
 	private const int MaxModelCountPerBodyPart = 1024;
 	private const int MaxMeshCountPerModel = 4096;
 	private const int MaxTextureCount = 4096;
+	private const int MaxCdTextureCount = 256;
 	private const int VertexStride = 48;
 
 	public static SourceModelDocument Read(byte[] mdl)
@@ -90,9 +94,78 @@ public static class SourceModelReader
 		// 在这里统一施加：读骨的时候还不知道模型身份，读完就能算了。
 		bones = ApplyBoneNamespace(bones, name, checksum);
 		var materials = ReadMaterialPaths(mdl, diagnostics);
+		var materialRefs = ReadMaterialRefs(mdl, materials, diagnostics);
 		var bodyParts = ReadBodyParts(mdl, diagnostics);
 
-		return new SourceModelDocument(version, name, checksum, bones, bodyParts, materials, diagnostics);
+		return new SourceModelDocument(version, name, checksum, bones, bodyParts, materials, diagnostics)
+		{
+			MaterialRefs = materialRefs,
+			MaterialFolders = ReadCdTextures(mdl, diagnostics),
+		};
+	}
+
+	/// <summary>
+	/// 读 mdl 头部声明的**材质目录表**（<c>cdtextures</c>）。
+	/// <para>
+	/// <b>这张表是"模型需要哪些材质"的权威答案。</b>引擎解析材质名时按这张表的**顺序**找
+	/// <c>materials/&lt;目录&gt;/&lt;名字&gt;.vmt</c>，第一个存在的胜出；一个都找不到就是紫块。
+	/// 以前我们只读了材质**名**、丢掉了目录，于是"同名的两个材质分属不同目录"时必然串味，
+	/// 也没法回答"这个模型到底缺哪个材质"。
+	/// </para>
+	/// <para>目录串以反斜杠结尾（如 <c>diyu2026\GF2Exilium\Cheyanne\MaidenDebut\P2\</c>），这里统一成正斜杠、去尾斜杠。</para>
+	/// </summary>
+	private static IReadOnlyList<string> ReadCdTextures(byte[] mdl, List<SourceModelDiagnostic> diagnostics)
+	{
+		var count = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(CdTextureCountOffset));
+		var offset = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(CdTextureOffsetOffset));
+		if (count <= 0)
+			return [];
+		if (count > MaxCdTextureCount || offset <= 0 || offset + (count * 4) > mdl.Length)
+		{
+			diagnostics.Add(new SourceModelDiagnostic(
+				"CdTextureTableUnreadable", $"材质目录表读不出来：count={count} offset={offset}。"));
+			return [];
+		}
+
+		var folders = new List<string>(count);
+		for (var index = 0; index < count; index++)
+		{
+			var stringOffset = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(offset + (index * 4)));
+			var raw = stringOffset > 0 ? ReadCString(mdl, stringOffset, 260) : null;
+			var normalized = (raw ?? string.Empty).Replace('\\', '/').Trim('/');
+			if (normalized.Length != 0) folders.Add(normalized);
+		}
+
+		return folders;
+	}
+
+	/// <summary>
+	/// 把"材质名"展开成"候选全路径"：<b>每个名字 × 每个材质目录</b>。
+	/// <para>
+	/// 为什么不挑一个目录：引擎是"按顺序试着找"，所以同一个名字在 P2 / P3 / base 三个目录里
+	/// 都可能命中，而内容是不同的材质。把候选路径全给出来，调用方才能做精确的"谁提供了它"判断，
+	/// 也能按顺序决定优先生效的那一份。
+	/// </para>
+	/// <para>没有材质目录表的模型（老包）退化成"只有名字、目录为空"。</para>
+	/// </summary>
+	private static IReadOnlyList<SourceMaterialRef> ReadMaterialRefs(
+		byte[] mdl,
+		IReadOnlyList<string> names,
+		List<SourceModelDiagnostic> diagnostics)
+	{
+		if (names.Count == 0) return [];
+		var folders = ReadCdTextures(mdl, diagnostics);
+		if (folders.Count == 0)
+			return names.Select(name => new SourceMaterialRef(name, string.Empty, 0)).ToArray();
+
+		var refs = new List<SourceMaterialRef>(names.Count * folders.Count);
+		for (var folderIndex = 0; folderIndex < folders.Count; folderIndex++)
+		{
+			foreach (var name in names)
+				refs.Add(new SourceMaterialRef(name, folders[folderIndex], folderIndex));
+		}
+
+		return refs;
 	}
 
 	/// <summary>
