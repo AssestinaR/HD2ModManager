@@ -64,6 +64,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
 	private IReadOnlyList<RuntimeArmorRegistryModel> modelDefinitions = [];
+	// 加载时见过的素体 key：保存时用它区分「用户删掉的」和「别的进程（VPK 导入）刚加进来的」。
+	private readonly HashSet<string> knownModelKeys = new(StringComparer.Ordinal);
 	private IReadOnlyList<RuntimeArmorRegistryMapping> modelMappings = [];
 	private IReadOnlyList<RuntimeArmorRegistryPieceOverride> pieceOverrides = [];
 	private IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes = [];
@@ -611,6 +613,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 		Mappings.Clear();
 		modelDefinitions = snapshot.Document.ModelDefinitions;
+		knownModelKeys.Clear();
+		foreach (var model in modelDefinitions) knownModelKeys.Add(model.Key);
 		foreach (var model in modelDefinitions)
 		{
 			var syntheticId = SyntheticModelItemId(model.Key);
@@ -1512,7 +1516,15 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			await workspaceSaveGate.WaitAsync(cancellation.Token);
 			try
 			{
-				await service.SaveWorkspaceAsync(document, cancellation.Token);
+				// **不吞掉别人刚加进来的素体。**
+				//
+				// VPK 导入是另一个进程往同一个工作区写素体的：这边如果整份覆盖，刚导入的素体就当场
+				// 消失（实测：导入后工作区 9 个模型，21 秒后一次自动保存变回 8 个）。
+				// 口径见 `SaveWorkspacePreservingExternalModelsAsync`：只并"我加载时没见过"的那些，
+				// 用户自己删的仍然删。
+				await service
+					.SaveWorkspacePreservingExternalModelsAsync(document, knownModelKeys, cancellation.Token)
+					.ConfigureAwait(false);
 				workspaceSaveError = null;
 			}
 			finally { workspaceSaveGate.Release(); }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -1049,6 +1050,25 @@ namespace HD2ModManager.ViewModels
                 thresholdMilliseconds: 150,
                 details: () => $"paths={paths.Length}");
             await _importProcessGate.WaitAsync();
+            // **导入期间让护甲注册工作区停手。**
+            //
+            // VPK 导入会用独立进程（`hd2mod vpk2patch`）把新导入的素体写进
+            // `<mod库>/.hd2modmanager/armor-registry.workspace.json`；而护甲映射页手里有一份
+            // 导入前的内存快照，它那套"改动后 400 ms 自动保存"会把新素体整份覆盖掉——实测就是
+            // 导入后工作区 9 个模型、21 秒后变回 8 个，页面上"导入完却找不到这个素体"。
+            // 这里复用「一键转为自定义素体」那套现成握手：先冲掉并锁住 → 导入 → 解锁 + 重新读。
+            var registryWorkspaceLocked = false;
+            try
+            {
+                await FlushArmorRegistryWorkspaceAsync().ConfigureAwait(true);
+                registryWorkspaceLocked = true;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or UnauthorizedAccessException)
+            {
+                // 锁不上不该拦住导入本身；至少把事实记下来。
+                LogService.Warn($"导入前没能锁定护甲注册工作区（新素体可能被自动保存覆盖）：{exception.Message}");
+            }
+
             try
             {
                 var libraryChanged = false;
@@ -1181,6 +1201,20 @@ namespace HD2ModManager.ViewModels
             finally
             {
                 _importProcessGate.Release();
+                // 解锁并重新读工作区：把 CLI 刚登记的素体装进页面，否则界面上看不到它。
+                if (registryWorkspaceLocked)
+                {
+                    EndArmorRegistryWorkspaceEdit();
+                    try
+                    {
+                        if (_armorRegistryWorkspacePage is { } registryPage)
+                            await registryPage.ReloadWorkspaceAsync().ConfigureAwait(true);
+                    }
+                    catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+                    {
+                        LogService.Warn($"导入后刷新护甲注册工作区失败（新素体要重新打开页面才可见）：{exception.Message}");
+                    }
+                }
             }
         }
 

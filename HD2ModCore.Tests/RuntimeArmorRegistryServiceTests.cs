@@ -780,6 +780,54 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.False(RuntimeArmorRegistryService.TryReadCustomModelKey(null, out _));
 	}
 
+	/// <summary>
+	/// VPK 导入是**另一个进程**把新素体写进工作区的；管理器的护甲映射页拿着导入前的内存快照
+	/// 稍后自动保存一次，就会把新素体整份覆盖掉——"导入完成了，页面上却找不到这个素体"。
+	/// 这条用例钉住"保存时要把别人刚加进来的素体并回来"。
+	/// </summary>
+	[Fact]
+	public async Task SaveWorkspacePreservingExternalModels_KeepsModelsAnotherProcessJustRegistered()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+
+		// 另一个进程（`hd2mod vpk2patch`）把刚导入的素体写进工作区。
+		await fixture.Service.SaveWorkspaceAsync(Document(models: [Model("custom-external")]));
+		Assert.Single(await fixture.Service.ReadWorkspaceModelsAsync());
+
+		// 页面拿着"加载时的旧快照"（没有这个素体）来保存。
+		var merged = await fixture.Service.SaveWorkspacePreservingExternalModelsAsync(
+			Document(models: []),
+			knownModelKeys: new HashSet<string>(StringComparer.Ordinal));
+
+		Assert.Contains(merged.ModelDefinitions, model => model.Key == "custom-external");
+	}
+
+	/// <summary>反向保证：用户自己删掉的素体不能被"合并"逻辑复活。</summary>
+	[Fact]
+	public async Task SaveWorkspacePreservingExternalModels_StillDeletesModelsTheUserRemoved()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		await fixture.Service.SaveWorkspaceAsync(Document(models: [Model("custom-gone")]));
+		Assert.Single(await fixture.Service.ReadWorkspaceModelsAsync());
+
+		var merged = await fixture.Service.SaveWorkspacePreservingExternalModelsAsync(
+			Document(models: []),
+			knownModelKeys: new HashSet<string>(["custom-gone"], StringComparer.Ordinal));
+
+		Assert.Empty(merged.ModelDefinitions);
+		Assert.Empty(await fixture.Service.ReadWorkspaceModelsAsync());
+	}
+
+	// 素体必须至少有一个 piece 才算有效结构，所以给一个最小可用的 body/slot/unit。
+	private static RuntimeArmorRegistryModel Model(string key) => new(
+		key,
+		null,
+		[new RuntimeArmorRegistryModelPiece(1, "0000000000000001", 2, 0, IsDefaultBase: true)],
+		key);
+
+	private static RuntimeArmorRegistryDocument Document(IReadOnlyList<RuntimeArmorRegistryModel> models)
+		=> new(1, true, [], models);
+
 	private sealed class Fixture : IAsyncDisposable
 	{
 		private Fixture(string root, string registryRoot, RuntimeArmorRegistryService service)

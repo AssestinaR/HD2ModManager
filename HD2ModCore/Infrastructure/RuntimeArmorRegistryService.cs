@@ -109,6 +109,66 @@ public sealed class RuntimeArmorRegistryService
 		await WriteWorkspaceAsync(document, cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// 保存工作区，但**不吞掉别人刚加进来的素体**。
+	/// <para>
+	/// <b>为什么需要它。</b>VPK 导入时是 <c>hd2mod vpk2patch</c> 这个独立进程把新素体写进工作区的；
+	/// 而管理器的护甲映射页手里拿着一份内存快照，稍后一次"自动保存"（改动后 400 ms 触发）
+	/// 会用旧快照整份覆盖——新素体当场消失。实测：导入后工作区里有 9 个模型，
+	/// 21 秒后的一次自动保存把它变回 8 个，表现就是"导入完成了，但护甲映射页里找不到这个素体"。
+	/// </para>
+	/// <para>
+	/// 口径：<paramref name="knownModelKeys"/> = 调用方**加载时**见过的那些 key。
+	/// 磁盘上有、它没见过、本次文档里也没有的模型 = 别人加的 ⇒ 合并进来一起写。
+	/// 调用方自己删掉的（见过、本次文档里没有）照旧删除，不会"删了又活过来"。
+	/// </para>
+	/// </summary>
+	public async ValueTask<RuntimeArmorRegistryDocument> SaveWorkspacePreservingExternalModelsAsync(
+		RuntimeArmorRegistryDocument document,
+		IReadOnlySet<string> knownModelKeys,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(document);
+		ArgumentNullException.ThrowIfNull(knownModelKeys);
+
+		var mine = document.ModelDefinitions
+			.Select(model => model.Key)
+			.ToHashSet(StringComparer.Ordinal);
+		var onDisk = await ReadWorkspaceModelsOrEmptyAsync(cancellationToken).ConfigureAwait(false);
+		var external = onDisk
+			.Where(model => !knownModelKeys.Contains(model.Key) && !mine.Contains(model.Key))
+			.ToArray();
+		if (external.Length == 0)
+		{
+			await SaveWorkspaceAsync(document, cancellationToken).ConfigureAwait(false);
+			return document;
+		}
+
+		// ⚠️ **不能用 `document with { Models = … }`。** `ModelDefinitions` 是由 `Models`
+		// 初始化的 init 属性（见 RuntimeArmorRegistryDocument），`with` 复制记录时会把已经算好的
+		// 那份**旧值**一起复制过去——于是"合并后的文档"看上去有模型，`SaveWorkspaceAsync`
+		// 序列化的 `ModelDefinitions` 却还是空的，等于什么都没并。
+		var merged = new RuntimeArmorRegistryDocument(
+			document.Revision,
+			document.Enabled,
+			document.Mappings,
+			[.. document.ModelDefinitions, .. external],
+			document.PieceOverrideDefinitions,
+			document.TargetModeDefinitions,
+			document.CompositionMode);
+		await SaveWorkspaceAsync(merged, cancellationToken).ConfigureAwait(false);
+		return merged;
+	}
+
+	/// <summary>工作区文件里现有的素体（文件不存在时返回空）。</summary>
+	private async ValueTask<IReadOnlyList<RuntimeArmorRegistryModel>> ReadWorkspaceModelsOrEmptyAsync(
+		CancellationToken cancellationToken)
+	{
+		if (!File.Exists(WorkspacePath)) return [];
+		var workspace = await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false);
+		return workspace.ModelDefinitions;
+	}
+
 	public async ValueTask<bool> IsManagedDeploymentEnabledAsync(
 		CancellationToken cancellationToken = default)
 	{
