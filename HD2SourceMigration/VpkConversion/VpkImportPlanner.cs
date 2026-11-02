@@ -843,9 +843,20 @@ public static class VpkImportPlanner
 		}
 
 		// 每个提供材质目录的候选 → 它匹配到哪些模型。**排除自己**：自带材质的模型包不算别人的材质包。
+		//
+		// **自己就是可用模型的包，一律不降级。** 以前只看"目录对得上别人"，于是两个各自带真几何的
+		// 模型包会互相把对方判成材质包——实测「少女前线2 夏安」包里 `基础组件` 与 `L4N 基础组件`
+		// 共用同一批材质目录，两个 VPK 的模型都完整可用，却双双被降级 ⇒ 一个主体都不剩，
+		// 整个角色没导进来、只导进一堆材质。
+		// 降级的本意只针对"模型是摆姿势 / 动画 / 读不出来的附属内容"那种包，所以判据是
+		// **它自己的模型能不能用**，不是"它的目录有没有被别人声明"。
+		var usableModelPaths = modelCandidates
+			.Select(candidate => candidate.VpkPath)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var matchedModelsByProvider = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 		foreach (var (providerPath, folders) in providedFolders)
 		{
+			if (usableModelPaths.Contains(providerPath)) continue;
 			foreach (var (modelPath, modelFolderSet) in modelFolders)
 			{
 				if (string.Equals(providerPath, modelPath, StringComparison.OrdinalIgnoreCase)) continue;

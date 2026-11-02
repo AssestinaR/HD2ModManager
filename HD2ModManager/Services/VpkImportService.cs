@@ -504,14 +504,20 @@ public sealed class VpkImportService
 		if (plan.Groups.Count == 0)
 		{
 			// 没有主体（比如只导材质包）：退回"整批一份"的老做法，至少不要什么都不做。
+			//
+			// **排除"没归属"的那些**：报告里已经把它们写成"认不出属于谁，已跳过"，
+			// 这里再转一遍就成了"报告说跳过、实际却导入了"，对不上账。
+			var unassigned = plan.UnassignedMaterials.ToHashSet(StringComparer.OrdinalIgnoreCase);
+			var convertible = plan.Convertible.Where(item => !unassigned.Contains(item.VpkPath)).ToArray();
+			if (convertible.Length == 0) return jobs;
 			var allListPath = WritePathList(
 				Path.GetTempPath(),
 				"hd2modmanager-materials-" + Guid.NewGuid().ToString("N")[..8] + ".txt",
-				plan.Convertible.Select(item => item.VpkPath));
-			var namespaceSource = string.Join("+", plan.Convertible
+				convertible.Select(item => item.VpkPath));
+			var namespaceSource = string.Join("+", convertible
 				.Select(item => Path.GetFileNameWithoutExtension(item.VpkPath))
 				.OrderBy(name => name, StringComparer.OrdinalIgnoreCase));
-			foreach (var item in plan.Convertible)
+			foreach (var item in convertible)
 				jobs.Add(new ConversionJob(item.VpkPath, "（整批）", namespaceSource, allListPath, string.Empty, IsModel: false));
 			return jobs;
 		}
