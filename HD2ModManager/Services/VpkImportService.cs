@@ -614,13 +614,16 @@ public sealed class VpkImportService
 			"--id-namespace", idNamespaceSource,
 			// 默认产出"7 槽位标准版"：附加部件并进它主导的那个身躯槽位。
 			"--components", "merge",
-			// matcap 归一成金属 F0，而不是原样当底色。
+			// matcap 涂成**中性金属 F0**，而不是原样当底色。
 			//
 			// **这个改动有实机依据**：albedo 模式下金属件的底色就是 matcap 图，
-			// 实测它的平均亮度只等效反射率 0.14（银应该是 0.97），于是"又黑又没反光"。
-			// metal 模式保留 matcap 的色相、把整片抬到 F0（默认 0.96），
-			// 四档对照里 0.96 那一档观感最好。
-			// 注意：两种模式的贴图 id 与材质 id 完全相同，所以切换不破坏已有映射。
+			// 实测它的平均亮度只等效反射率 0.14（银应该是 0.97），于是"又黑又没反光"；
+			// 而且 matcap 的 UV 是视角法线、不是模型 UV，当底色会采到球面上的一块随机区域
+			// （实测鞋底落在暗部 = "粗糙的生铁"）。
+			// metal 模式丢掉 matcap 的图案与色相，整片涂成中性 F0（默认 0.96），
+			// 配合金属度 1.0 / 粗糙度 0.20 交给 PBR 算反光。
+			// **色相必须丢**：matcap 由可选的颜色变体包提供，取色相会让同一份源的
+			// 转换结果取决于装了哪个变体包。详见 MaterialAppearance.FlattenToMetalF0。
 			"--matcap", "metal",
 			"--manager-root", _managerRoot,
 			"--library", _libraryRoot,
