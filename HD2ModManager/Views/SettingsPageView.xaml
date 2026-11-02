@@ -7,6 +7,10 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d"
              d:DesignHeight="884.68" d:DesignWidth="800">
+    <UserControl.Resources>
+        <!-- 各视图各自声明一份（App.xaml 里没有这个 key）：少了它 StaticResource 会在加载期抛异常。-->
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
     <ScrollViewer Background="Transparent" scroll:SmoothScrollBehavior.IsEnabled="True">
         <StackPanel>
             <TextBlock Text="{x:Static Member=res:Strings.Home_Settings}" Style="{StaticResource AppPageTitle}" Margin="0,0,0,12"/>
@@ -73,6 +77,16 @@
                                   SelectedValue="{Binding PhysicsMode, Mode=TwoWay}"/>
                     </Grid>
                     <TextBlock Text="{Binding PhysicsModeDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
+                    <!--
+                        外置包刷新提示：升级管理器后，早就是外置模式的用户手里那份 lua 还是旧的，
+                        而他们不会再动上面那个下拉 —— 所以这里主动说一句"包已更新、要重新装一次"。
+                        只在真的写过盘时出现（内容一致时完全不打扰）。
+                    -->
+                    <TextBlock Text="{Binding LuaPackageUpdateHint}"
+                               Foreground="{StaticResource StatusWarning}"
+                               Style="{StaticResource AppSupportingText}"
+                               Margin="150,6,0,0" TextWrapping="Wrap"
+                               Visibility="{Binding HasLuaPackageUpdateHint, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </Border>
 

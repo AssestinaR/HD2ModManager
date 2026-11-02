@@ -1544,9 +1544,13 @@ namespace HD2ModManager.ViewModels
                 if (SettingsService.SetArmorMappingMode(value))
                 {
                     _profiles.RequestActiveProfileDeployment();
-                    // 选「外置加载器兼容」时把包导出来并打开目录：否则用户选了外置却找不到东西可装。
-                    if (changed && value == ArmorMappingMode.ExternalLuaEntry)
-                        RevealRuntimeScriptForExternalLoader();
+                    // 同 PhysicsMode：每次切到外置都对齐一次导出包（理由见那里）。
+                    if (value == ArmorMappingMode.ExternalLuaEntry)
+                    {
+                        var refreshed = EnsureLuaPackageUpToDate(LuaAddonCatalog.Wardrobe());
+                        if (changed) OpenLuaPackagesFolder();
+                        if (refreshed) NoteLuaPackageRefreshed([LuaAddonCatalog.Wardrobe()]);
+                    }
                 }
                 OnPropertyChanged(nameof(ArmorMappingMode));
                 OnPropertyChanged(nameof(ArmorMappingModeDescription));
@@ -1581,9 +1585,17 @@ namespace HD2ModManager.ViewModels
                 if (SettingsService.SetPhysicsMode(value))
                 {
                     _profiles.RequestActiveProfileDeployment();
-                    // 外置包必须立刻可见，否则用户选了"外置"却找不到东西可装。
-                    if (changed && value == PhysicsMode.ExternalLuaEntry)
-                        RevealPhysBonePackage();
+                    // 每次切到外置都**重新对齐一次导出包**，而不是只在"模式变了"那一次。
+                    //
+                    // 为什么：切模式那条路径只覆盖"用户此刻正在切"。可绝大多数玩家一旦选了外置就
+                    // 一直停在这一档——管理器升级之后，他手里的 hd2physbone.lua 还是旧版本，
+                    // 而且没有任何地方会提示他（物理运行时的修复就这样永远到不了这些人）。
+                    if (value == PhysicsMode.ExternalLuaEntry)
+                    {
+                        var refreshed = EnsureLuaPackageUpToDate(LuaAddonCatalog.Physics());
+                        if (changed) OpenLuaPackagesFolder();
+                        if (refreshed) NoteLuaPackageRefreshed([LuaAddonCatalog.Physics()]);
+                    }
                 }
                 OnPropertyChanged(nameof(PhysicsMode));
                 OnPropertyChanged(nameof(PhysicsModeDescription));
@@ -1623,6 +1635,107 @@ namespace HD2ModManager.ViewModels
             {
                 // 导出失败不应让设置保存失败。
             }
+        }
+
+        /// <summary>
+        /// 让导出目录里那份包与**当前版本**一致；内容本来就一样就什么都不做。
+        /// <para>
+        /// 只比内容、不比时间戳：`LuaAddonPackageExport.Export` 每次都整目录重建，
+        /// 无脑重导会让时间戳一直变、也会把用户在用的那份删一次再建一次。
+        /// </para>
+        /// </summary>
+        /// <returns>真的写过盘（＝用户手里那份是旧的或缺失）时返回 true。</returns>
+        private static bool EnsureLuaPackageUpToDate(LuaAddonPackageExport.Feature feature)
+        {
+            try
+            {
+                var root = SettingsService.GetLuaPackagesDirectory();
+                var luaPath = Path.Combine(root, feature.Key, "lua版", feature.LuaFileName);
+                if (File.Exists(luaPath)
+                    && string.Equals(File.ReadAllText(luaPath), feature.Source, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                LuaAddonPackageExport.Export(root, feature);
+                return true;
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>打开外置包根目录（两个功能共用同一个根）。</summary>
+        private static void OpenLuaPackagesFolder()
+        {
+            try
+            {
+                var root = SettingsService.GetLuaPackagesDirectory();
+                Directory.CreateDirectory(root);
+                OpenFolder(root);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidOperationException)
+            {
+                // 打不开目录不影响导出本身。
+            }
+        }
+
+        /// <summary>记一次"外置包刚刷新过"，并提示用户把它重新装进 mod 库。</summary>
+        private void NoteLuaPackageRefreshed(IReadOnlyList<LuaAddonPackageExport.Feature> features)
+        {
+            if (features.Count == 0) return;
+            LuaPackageUpdateHint =
+                "外置包已更新到当前版本（" + string.Join("、", features.Select(feature => feature.Title))
+                + "）：请把它们重新拖进 mod 库替换旧的那一份，否则游戏里跑的还是旧脚本。";
+        }
+
+        private string _luaPackageUpdateHint = string.Empty;
+
+        /// <summary>
+        /// 外置包刷新提示（空 = 不显示）。
+        /// 只在"确实写过盘"时出现：升级管理器后第一次打开设置页，或切到外置那一下。
+        /// </summary>
+        public string LuaPackageUpdateHint
+        {
+            get => _luaPackageUpdateHint;
+            private set
+            {
+                if (!SetField(ref _luaPackageUpdateHint, value)) return;
+                OnPropertyChanged(nameof(HasLuaPackageUpdateHint));
+            }
+        }
+
+        public bool HasLuaPackageUpdateHint => !string.IsNullOrEmpty(_luaPackageUpdateHint);
+
+        /// <summary>
+        /// 启动时把"已经是外置模式"的那些包对齐到当前版本。
+        /// <para>
+        /// 这是升级路径上唯一的自救点：用户选了外置之后通常一辈子不会再动那个下拉，
+        /// 只靠"切换时导出"等于升级后永远不更新——物理运行时的修复就这样到不了他手上。
+        /// 这里比对内容，只有真的变了才写盘。
+        /// </para>
+        /// </summary>
+        private void RefreshLuaPackagesOnStartup()
+        {
+            var refreshed = new List<LuaAddonPackageExport.Feature>();
+            if (SettingsService.GetPhysicsMode() == PhysicsMode.ExternalLuaEntry)
+            {
+                var feature = LuaAddonCatalog.Physics();
+                if (EnsureLuaPackageUpToDate(feature)) refreshed.Add(feature);
+            }
+
+            if (SettingsService.GetArmorMappingMode() == ArmorMappingMode.ExternalLuaEntry)
+            {
+                var feature = LuaAddonCatalog.Wardrobe();
+                if (EnsureLuaPackageUpToDate(feature)) refreshed.Add(feature);
+            }
+
+            NoteLuaPackageRefreshed(refreshed);
         }
 
         /// <summary>
@@ -1779,6 +1892,9 @@ namespace HD2ModManager.ViewModels
             VerifyWithSteamCommand = new RelayCommand(
                 _ => _ = VerifyWithSteamAsync(),
                 _ => !IsVerifyingWithSteam && !string.IsNullOrWhiteSpace(GameDataFolder));
+
+            // 早就是外置模式的用户永远不会再点那个下拉，唯一的刷新机会就是这里。
+            RefreshLuaPackagesOnStartup();
         }
 
         bool isVerifyingWithSteam;
