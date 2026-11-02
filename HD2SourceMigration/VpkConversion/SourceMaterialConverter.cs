@@ -3,6 +3,36 @@ using HD2SourceModel;
 
 namespace HD2SourceMigration.VpkConversion;
 
+/// <summary>
+/// 一个材质<b>既要镂空、又是金属</b>时怎么取舍。
+/// <para>
+/// <b>为什么必须二选一（实机实测，不是设计选择）。</b>
+/// <c>advanced</c> 有金属度（槽 3 <c>IlluminateData</c>）但<b>没有逐像素不透明度</b>
+/// （<c>SclarFieldOpacity</c> 是 1×1 标量，A/B/C 三档已证伪）；
+/// <c>alphaclip</c> 有逐像素镂空但<b>没有金属度</b>——
+/// 它的 <c>BaseColorMetalMap.alpha</c> 曾被当成金属度写入，实机对照<b>完全没有效果</b>
+/// （见 <c>docs/vpk-cutout-strategies-20261101.md</c> §5）。
+/// </para>
+/// </summary>
+public enum MetalCutoutPolicy
+{
+	/// <summary>
+	/// <b>保镂空</b>（历史行为）：走 <c>alphaclip</c>，金属度丢失。
+	/// <para>对"靠 alpha 才能成形"的件（蕾丝、镂空花纹）是唯一正确选择。</para>
+	/// </summary>
+	CutoutWins = 0,
+
+	/// <summary>
+	/// <b>保金属</b>：走 <c>advanced</c>，金属度生效，镂空丢失。
+	/// <para>
+	/// <b>为什么这可能是对的。</b>NekoToon 的装饰件贴图是一张<b>图集</b>，alpha 里那些透明区域
+	/// 很可能只是"图集空白"，而网格 UV 本来就只落在不透明区——那种情况下镂空是<b>冗余的</b>。
+	/// 是否成立只能实机看"有没有露出整块 UV 方片"。
+	/// </para>
+	/// </summary>
+	MetalWins = 1,
+}
+
 /// <summary>材质身份串里的 matcap 后缀要不要加，以及底色到底用哪张图。</summary>
 public enum MatCapMode
 {
@@ -421,7 +451,8 @@ public sealed class SourceMaterialConverter
 		int ditherScale = 1,
 		double ditherDensity = 0.75,
 		DitherPattern ditherPattern = DitherPattern.InterleavedGradient,
-		double metalRoughness = MaterialAppearance.DefaultMetalRoughness)
+		double metalRoughness = MaterialAppearance.DefaultMetalRoughness,
+		MetalCutoutPolicy metalCutout = MetalCutoutPolicy.CutoutWins)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -439,6 +470,7 @@ public sealed class SourceMaterialConverter
 		this.metalRoughness = (byte)Math.Clamp(
 			Math.Round((double.IsFinite(metalRoughness) ? Math.Clamp(metalRoughness, 0, 1) : MaterialAppearance.DefaultMetalRoughness) * 255.0),
 			0, 255);
+		this.metalCutout = metalCutout;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -452,6 +484,11 @@ public sealed class SourceMaterialConverter
 	public byte MetalRoughness => metalRoughness;
 
 	private readonly byte metalRoughness;
+
+	/// <summary>"既要镂空又是金属"时怎么取舍。见 <see cref="MetalCutoutPolicy"/>。</summary>
+	public MetalCutoutPolicy MetalCutout => metalCutout;
+
+	private readonly MetalCutoutPolicy metalCutout;
 
 	/// <summary>
 	/// matcap 烘进底色时的<b>亮度增益</b>（默认 1.0 = 不加）。
@@ -1291,16 +1328,27 @@ public sealed class SourceMaterialConverter
 			// ⚠️ **金属件现在也会走 alphaclip**（曾经在这里被强行关掉）。
 			//
 			// 当时关掉的理由是"Metal 模式下底色会被整片归一成 F0，源侧的 alpha 不再有意义"。
-			// 那条在**金属度写不进 alphaclip** 的年代成立；现在金属度写进
-			// `BaseColorMetalMap.alpha`、不透明度走 `OpacityClipMap`，两者互不占用，
-			// 所以"镂空 + 金属"可以同时成立。实测 MourningVeil 的金属饰品全是
-			// `$alphatest 1` + alpha 镂空，强行关掉就等于既没有镂空也没有金属。
+			// 现在不再一刀切：**镂空和金属在 HD2 里无法共存**（见 <see cref="MetalCutoutPolicy"/>），
+			// 所以取舍交给 `--metal-cutout`：默认保镂空，可选保金属。
+			// 实测 MourningVeil 的金属饰品全是 `$alphatest 1` + alpha 镂空，
+			// 一刀切成 advanced 就等于既没有镂空也没有金属——那是最坏的一种。
 			useAlphaClip =
 				// 两种"源侧要透明"都要认：
 				//   · IsMeaningful —— alpha 在表达**形状**（镂空、蕾丝、抖动薄纱）
 				//   · IsUniformlyTranslucent —— alpha 整片均匀且明显 < 255，即**整体半透明**
 				//     （实测 MourningVeil 的玻璃鞋跟 alpha 恒 102；不认这一类就会变成不透明白塑料）
 				vmt.WantsTransparency && (baseAlpha.IsMeaningful || baseAlpha.IsUniformlyTranslucent);
+
+			// "既要镂空又是金属"只能二选一：选 MetalWins 就放弃镂空、走 advanced 换回金属度。
+			if (useAlphaClip && matcapIsSurface && matcapMode == MatCapMode.Metal
+				&& metalCutout == MetalCutoutPolicy.MetalWins)
+			{
+				useAlphaClip = false;
+				notices.Add(
+					$"{stem}：既是金属又要镂空，HD2 的模板无法同时表达"
+					+ "（advanced 有金属度没镂空、alphaclip 有镂空没金属度），"
+					+ "按 --metal-cutout metal 选择**保金属**，镂空已放弃。");
+			}
 		}
 
 		// 半透明落地方式的说明。**必须说出来**——否则用户只会看到"袖套没透明"，
@@ -1500,24 +1548,13 @@ public sealed class SourceMaterialConverter
 
 		albedoAdjustment?.Apply(rgba, vtf.Width, vtf.Height);
 
-		// alpha 通道的用途**跟着模板走**，不能一律清零：
+		// alpha 一律清零。
 		//
-		// · `advanced`：槽 5 `AlbedoEmissive` 的 alpha 是**自发光**。清零是对的
-		//   （发光另有一段按 `$emissiontexture` 写回）。清不干净会让整件护甲自发光。
-		// · `alphaclip`：槽 2 是 `BaseColorMetalMap` —— **底色和金属度共用一张图，
-		//   金属度住在 alpha 里**（SDK hashlists：`BaseColorMetalMap 0x848ba63b`；
-		//   见 docs/vpk-cutout-strategies-20261101.md §4 第 2 条）。
-		//   所以镂空 + 金属的件必须把金属度写进 alpha，清零就等于**金属度归零**。
-		//
-		// 实测代价：MourningVeil 的金属饰品全部是 `$alphatest 1` + alpha 镂空（走 alphaclip），
-		// 清零之后 93 个材质里**一个金属都没有**，用户报的正是"相当多金属饰品没有金属光泽"。
-		var alphaFill = loaded.UseAlphaClip
-			&& loaded.MatcapIsSurface
-			&& matcapMode == MatCapMode.Metal
-			&& IsAlphaClipTemplate(loaded.TemplateName)
-				? MaterialAppearance.MetallicValue
-				: (byte)0;
-		FillAlpha(rgba, alphaFill);
+		// ⚠️ **曾经以为 `alphaclip` 的 `BaseColorMetalMap.alpha` 是金属度，在这里写过 255 ——
+		// 实机对照完全没有效果，已证伪**（docs/vpk-cutout-strategies-20261101.md §5）。
+		// `advanced` 那边 alpha 是**自发光**，清零是对的；`alphaclip` 那边既然不参与金属度，
+		// 也不该往里面塞东西 —— 未知通道塞值只会制造"看着不对但查不出来"的问题。
+		ZeroAlpha(rgba);
 
 		// 发光：`advanced` 槽 5 的 **alpha 就是 emission**，而上面刚把它清零了。
 		// 所以这里按声明把 `$emissiontexture` 的亮度写回去。
@@ -1974,27 +2011,5 @@ public sealed class SourceMaterialConverter
 			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
 		for (var offset = 3; offset < rgba.Length; offset += 4)
 			rgba[offset] = 0;
-	}
-
-	/// <summary>
-	/// 把裸像素的 alpha 通道整片填成 <paramref name="value"/>。
-	/// <para>
-	/// <c>0</c> 等价于 <see cref="ZeroAlpha"/>（<c>advanced</c> 的"不承担自发光"）；
-	/// 非 0 是给 <c>alphaclip</c> 用的 —— 那个模板的 <c>BaseColorMetalMap</c>
-	/// <b>alpha 就是金属度</b>。
-	/// </para>
-	/// </summary>
-	private static void FillAlpha(byte[] rgba, byte value)
-	{
-		if (rgba.Length == 0 || rgba.Length % 4 != 0)
-			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
-		if (value == 0)
-		{
-			ZeroAlpha(rgba);
-			return;
-		}
-
-		for (var offset = 3; offset < rgba.Length; offset += 4)
-			rgba[offset] = value;
 	}
 }

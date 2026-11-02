@@ -2751,7 +2751,8 @@ public static class CliApplication
 					ditherScale: invocation.Options.DitherScale ?? 1,
 					ditherDensity: invocation.Options.DitherDensity ?? 0.75,
 					ditherPattern: ResolveDitherPattern(invocation.Options),
-					metalRoughness: invocation.Options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness);
+					metalRoughness: invocation.Options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
+					metalCutout: ResolveMetalCutout(invocation.Options));
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3107,6 +3108,20 @@ public static class CliApplication
 	/// 半透明实验开关（--alpha-experiment）。不传 = 现有行为。
 	/// </summary>
 	/// <summary>
+	/// "既要镂空又是金属"时的取舍（--metal-cutout）。不传 = 保镂空（历史行为）。
+	/// <para>
+	/// HD2 的 <c>advanced</c> 有金属度没镂空、<c>alphaclip</c> 有镂空没金属度，
+	/// 这两个属性<b>无法共存</b>——实机已验证（docs/vpk-cutout-strategies-20261101.md §5）。
+	/// </para>
+	/// </summary>
+	private static MetalCutoutPolicy ResolveMetalCutout(CliGlobalOptions options)
+		=> options.MetalCutout?.Trim().ToLowerInvariant() switch
+		{
+			"metal" => MetalCutoutPolicy.MetalWins,
+			_ => MetalCutoutPolicy.CutoutWins,
+		};
+
+	/// <summary>
 	/// 抖动阈值图案（--dither-pattern）。不传 = 交错梯度噪声（无可见结构）。
 	/// </summary>
 	private static DitherPattern ResolveDitherPattern(CliGlobalOptions options)
@@ -3282,7 +3297,8 @@ public static class CliApplication
 				options.DitherScale ?? 1,
 				options.DitherDensity ?? 0.75,
 				ResolveDitherPattern(options),
-				options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness);
+				options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
+				ResolveMetalCutout(options));
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──
