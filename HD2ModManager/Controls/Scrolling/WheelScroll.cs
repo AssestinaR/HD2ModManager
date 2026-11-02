@@ -141,9 +141,35 @@ public static class WheelScroll
 
     private static void ScrollPopup(ScrollViewer viewer, MouseWheelEventArgs e)
     {
-        viewer.ScrollToVerticalOffset(viewer.VerticalOffset - Math.Sign(e.Delta) * 48d);
+        // **单位必须跟 ScrollViewer 的滚动单位对上。**
+        //
+        // 下拉列表的 ScrollViewer 是 `CanContentScroll="True"`（见 Themes/Controls.xaml 的 AppComboBox
+        // 模板），也就是**逻辑滚动**：VerticalOffset 的单位是"第几项"，不是像素。
+        // 这里以前按像素写死 48——于是滚一格 = 跳 48 项。列表一屏才 8 行，一格就是六七屏，
+        // 实际感受就是"滚轮飞快、根本停不下来"。
+        //
+        // 现在：逻辑滚动时一格走 SystemParameters.WheelScrollLines 行（跟系统设置一致，默认 3 行，
+        // 也就是 WPF 原生下拉的表现）；万一哪天模板换成像素滚动，就按第一行的实际高度折算。
+        var notches = e.Delta / 120d;
+        viewer.ScrollToVerticalOffset(viewer.VerticalOffset - (notches * ResolveWheelStep(viewer)));
         // 无条件吃掉：即使已经在顶/底，也不能让事件继续走——那正是页面被滚的原因。
         e.Handled = true;
+    }
+
+    /// <summary>滚一格要走多远（单位与 <paramref name="viewer"/> 的滚动单位一致）。</summary>
+    private static double ResolveWheelStep(ScrollViewer viewer)
+    {
+        // 系统"每次滚动行数"（默认 3）。下拉列表一屏只有七八行，所以按系统值取但夹在 1..3 行：
+        // 系统设成 10 行是给文档阅读器的，套到下拉上就是一格跳一屏多，又回到"飞快"。
+        var lines = Math.Clamp(SystemParameters.WheelScrollLines, 1, 3);
+
+        if (viewer.CanContentScroll) return lines;
+
+        // 像素滚动：一行 = 第一个列表项的高度，拿不到就退回 32（AppComboBoxItem 的 MinHeight + 边距）。
+        var row = FindDescendant<ComboBoxItem>(viewer)?.ActualHeight
+            ?? FindDescendant<ListBoxItem>(viewer)?.ActualHeight
+            ?? 0;
+        return row > 0 ? row * lines : 32d * lines;
     }
 
     private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
