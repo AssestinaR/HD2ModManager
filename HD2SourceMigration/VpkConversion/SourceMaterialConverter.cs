@@ -18,32 +18,32 @@ public enum MatCapMode
 	/// <summary>
 	/// 直接把 <b>matcap 本身当底色</b>（贴图 id = <c>hash(matcap 名)</c>），不烘焙。
 	/// <para>
-	/// 好处：matcap 由哪个 VPK 提供就归哪个 patch，于是 C1/C2 变成真正可换的 patch，
-	/// 「一个 VPK 一个 patch」这条约定在金属色上也成立。
-	/// 代价：观感从"平色金属"变成"整张 matcap 图当 albedo"——需要实机对照。
+	/// 初衷是让 C1/C2 这类"只换 matcap"的 VPK 变成真正可换的 patch。
+	/// </para>
+	/// <para>
+	/// <b>⚠️ 已证伪（实机对照），留着只为留档，不要再启用。</b>matcap 的 UV 是
+	/// <b>视角法线</b>，不是模型 UV；把它当底色贴图，模型 UV 采到的是球面上<b>一块随机区域</b>
+	/// （实测鞋底正好落在暗部）。结果与"这是不是金属"完全无关，只取决于那块 UV 碰巧在哪：
+	/// 实机观感是"<b>粗糙的生铁，完全无反光</b>"。
+	/// </para>
+	/// <para>
+	/// 现在的发布路径是 <see cref="Metal"/>：金属色统一成中性常量，见
+	/// <c>MaterialAppearance.FlattenToMetalF0</c>。
 	/// </para>
 	/// </summary>
 	Albedo = 1,
 
 	/// <summary>
-	/// 把 matcap <b>归一成金属的 F0</b>，而不是原样当底色 —— 这是唯一的物理上成立的那条。
+	/// 把 matcap 涂成<b>中性金属的 F0</b>：丢掉亮度图案与色相，整片抬到目标反射率。
 	/// <para>
-	/// <b>为什么 <see cref="Albedo"/> 不够。</b>在 PBR 里，金属表面的底色<b>就是</b>它的
-	/// 镜面反射率 F0（银 0.97 / 铝 0.91 / 铁 0.56，线性）。实测 serenade 的
-	/// <c>matcap_metal7</c> 平均亮度只有 sRGB 106（线性 F0 ≈ 0.14）—— 一块"反射率 14% 的金属"，
-	/// 于是又黑又没有反光。
+	/// <b>这是发布路径。</b>金属度顶到 1.0、粗糙度按 <c>--metal-roughness</c>（默认 0.20），
+	/// 反光交给 PBR 的环境反射算。
 	/// </para>
 	/// <para>
-	/// <b>为什么不能靠乘增益救。</b>这张图是双峰的：中位数 66、p90 231。
-	/// 乘 1.6 就有 32% 的像素被压到 255，而平均亮度只从 105 涨到 138（F0 0.25）；
-	/// 乘到 5.0 才到 F0 0.66，那时 64% 的像素已经是纯白，图案全毁。
-	/// 换算关系不是线性的，因为高光那一半先撞顶。
-	/// </para>
-	/// <para>
-	/// <b>这个档做什么。</b>丢掉 matcap 的亮度图案，只保留它的<b>色相</b>，
-	/// 把整片抬到目标 F0。金属的反光应该由 PBR 的环境反射算出来，而不是由一张烘死的图假装。
-	/// 这是一个刻意"信息损失"的近似：源侧的 matcap 本来就是<b>叠加在受光表面上的高光图</b>，
-	/// 而不是表面颜色本身。
+	/// <b>为什么不能保留色相。</b>matcap 由<b>可选的颜色变体包</b>提供（C1/C2 提供
+	/// <c>11</c>/<c>Matcap_diamond4</c>，B1/B2/B3 提供 <c>Matcap_metal8</c>/<c>diamond5/6/7</c>），
+	/// 取色相就等于"同一份源装不同变体包出不同金属色"——那对转换器是错的。
+	/// 所以金属色是一个与可选包无关的常量。详见 <c>MaterialAppearance.FlattenToMetalF0</c>。
 	/// </para>
 	/// </summary>
 	Metal = 2,
@@ -410,7 +410,8 @@ public sealed class SourceMaterialConverter
 		AlphaExperiment alphaExperiment = AlphaExperiment.None,
 		int ditherScale = 1,
 		double ditherDensity = 0.75,
-		DitherPattern ditherPattern = DitherPattern.InterleavedGradient)
+		DitherPattern ditherPattern = DitherPattern.InterleavedGradient,
+		double metalRoughness = MaterialAppearance.DefaultMetalRoughness)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -425,8 +426,22 @@ public sealed class SourceMaterialConverter
 		this.ditherScale = Math.Clamp(ditherScale, 1, 8);
 		this.ditherDensity = double.IsFinite(ditherDensity) ? Math.Clamp(ditherDensity, 0.05, 1.0) : 1.0;
 		this.ditherPattern = ditherPattern;
+		this.metalRoughness = (byte)Math.Clamp(
+			Math.Round((double.IsFinite(metalRoughness) ? Math.Clamp(metalRoughness, 0, 1) : MaterialAppearance.DefaultMetalRoughness) * 255.0),
+			0, 255);
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
+
+	/// <summary>
+	/// matcap 承载面在 <c>advanced</c> 槽 2 <b>alpha</b> 里写的粗糙度（0..255）。
+	/// <para>
+	/// <b>这是"够不够金属"最直接的旋钮。</b>0.35（89）是拉丝/氧化的观感，0.08（20）才是镀铬。
+	/// 做成参数而不是常量，是因为它只能靠实机定——每个引擎的环境探针质量不同。
+	/// </para>
+	/// </summary>
+	public byte MetalRoughness => metalRoughness;
+
+	private readonly byte metalRoughness;
 
 	/// <summary>
 	/// matcap 烘进底色时的<b>亮度增益</b>（默认 1.0 = 不加）。
@@ -905,11 +920,25 @@ public sealed class SourceMaterialConverter
 			// 这两个值是照参考模组实测定的（MaterialAppearance.MetallicValue / RoughnessValue）。
 			//
 			// ⚠️ 判据是 `MatcapIsSurface`（**VMT 说了算**），不是"有没有烘平均色"。
-			// Albedo 模式不烘，但金属度/粗糙度照样要写——否则整片金属会变成哑光塑料。
 			if (loaded.MatcapIsSurface)
 			{
-				var metallic = BuildSolidTexture(textureName, "_metallic", MaterialAppearance.MetallicValue, MaterialAppearance.MetallicValue, MaterialAppearance.MetallicValue, 255);
-				var normalRoughness = BuildSolidTexture(textureName, "_nar", 128, 128, 255, MaterialAppearance.RoughnessValue);
+				// 金属度/粗糙度**跟着 matcap 档位走** —— 这是"黄紫"那个 bug 的修法。
+				//
+				// · Metal（发布版）：底色已被 `FlattenToMetalF0` 涂成一块**中性平色 F0**，
+				//   所以必须把金属度顶到 1.0，让 PBR 用环境反射把高光算出来。
+				// · Albedo：**已证伪，留着只为留档。** 它把 matcap 那张图直接当底色，
+				//   而 matcap 的 UV 是**视角法线**、不是模型 UV —— 模型 UV 采到的是球面上
+				//   一块随机区域（实测鞋底正好落在暗部），实机观感是"粗糙的生铁，完全无反光"。
+				//   所以这里按电介质处理，至少不会因为金属度顶满而把随机色放大成黄紫。
+				var metallicValue = matcapMode == MatCapMode.Metal
+					? MaterialAppearance.MetallicValue
+					: DefaultMetallic;
+				var roughnessValue = matcapMode == MatCapMode.Metal
+					? MetalRoughness
+					: PbrRoughness;
+
+				var metallic = BuildSolidTexture(textureName, "_metallic", metallicValue, metallicValue, metallicValue, 255);
+				var normalRoughness = BuildSolidTexture(textureName, "_nar", 128, 128, 255, roughnessValue);
 				if (material.TextureIds.Count <= AdvancedMetallicSlot || material.TextureIds.Count <= AdvancedNarSlot)
 					return MaterialSynthesisResult.Failed($"{stem}：advanced 模板槽不够，放不下金属/粗糙槽");
 				material.SetTexture(AdvancedMetallicSlot, metallic.Id);
@@ -1092,6 +1121,16 @@ public sealed class SourceMaterialConverter
 			|| (verdict.MatCapIsTheSurface
 				&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)
 				&& !baseAlpha.IsMeaningful);
+
+		// 底色是不是**真的只是一张占位图**（没有 $basetexture，或者 ≤4×4）。
+		//
+		// ⚠️ 与 `IsContentFreeBase` 刻意分开：后者把"整片同色的真布料"也算作没内容，
+		// 那条对**模板判定**够用（那种材质确实没有花纹可裁），但**不足以**让 Metal 档
+		// 把整张贴图换掉 —— 换掉就等于"布料丢掉自己的颜色"。
+		// 所以 Metal 档只对占位图生效，其余一律保留源底色。
+		var baseIsPlaceholder = syntheticBase
+			|| (vtf.Width <= MaterialAppearance.PlaceholderMaxDimension
+				&& vtf.Height <= MaterialAppearance.PlaceholderMaxDimension);
 		double[]? matcapMean = null;
 		var notices = new List<string>();
 
@@ -1104,7 +1143,9 @@ public sealed class SourceMaterialConverter
 		// 现在的分工：
 		//   · Albedo（发布版行为）：matcap 承载表面 → 拿 matcap 当底色
 		//   · Metal：只有**没有 $basetexture** 的件才归一成金属 F0，有底色的布料保持原样
-		if (matcapIsSurface && (matcapMode == MatCapMode.Albedo || (matcapMode == MatCapMode.Metal && syntheticBase)))
+		if (matcapIsSurface
+			&& (matcapMode == MatCapMode.Albedo
+				|| (matcapMode == MatCapMode.Metal && (syntheticBase || baseIsPlaceholder))))
 		{
 			// matcap 当底色：真正决定观感的是 matcap 那张图，不是底色
 			// （实测 A1 的 `Ornament_metal_Underwear.vtf` 是 1×1 占位图）。
@@ -1153,6 +1194,18 @@ public sealed class SourceMaterialConverter
 			{
 				notices.Add($"{stem}：找不到 matcap 贴图 {matcapTextureName}.vtf，金属色按中性处理。");
 			}
+
+			// ⚠️ **第二张 matcap（`$MATCAP2 2` + `$MATCAP2TEXTURE`）刻意不参与计算。**
+			//
+			// 它曾经被实现过：按源侧 `$MATCAP2 2`（加法）把第二张叠到第一张上，再取平均色
+			// 算色相——这样"金色系 / 银色系"（C1/C2）就真的能换出金/银两种金属。
+			//
+			// 但那是**错误的通用性**：`11.vtf` / `Matcap_diamond4.vtf` 由 C1/C2 提供，
+			// 而 C1/C2 是"可选的颜色变体包"。于是同一份源，装哪个变体包金属色就不同，
+			// 转换结果不再是源的函数。详见 `MaterialAppearance.FlattenToMetalF0` 的注释。
+			//
+			// 现在的做法：金属色是常量（中性银）。`$MATCAP2` 只作为"源侧语法"被
+			// `VmtDocument` 解析出来留档，不参与任何像素计算。
 		}
 		else if (matcapIsSurface && matcapMeans is not null)
 		{
@@ -1381,9 +1434,13 @@ public sealed class SourceMaterialConverter
 			MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint * matcapBakeGain);
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Metal)
 		{
-			// 归一成金属 F0：保留色相、整片抬到目标反射率。
+			// 涂成中性金属 F0：丢掉 matcap 的亮度图案**和色相**，整片抬到目标反射率。
 			// 目标值 = MetalF0 × matcapBakeGain，这样 gain 在这里退化成"F0 微调"。
-			MaterialAppearance.LevelToMetalF0(rgba, MetalF0 * matcapBakeGain);
+			//
+			// ⚠️ 连色相一起丢是刻意的：matcap 由**可选的颜色变体包**提供（C1/C2、B1/B2/B3），
+			// 取色相就等于"同一份源的转换结果取决于装了哪个变体包"。详见
+			// `MaterialAppearance.FlattenToMetalF0` 的注释。
+			MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
 		}
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
 			MaterialAppearance.ScaleRgb(rgba, matcapBakeGain);

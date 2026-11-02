@@ -2750,7 +2750,8 @@ public static class CliApplication
 					alphaExperiment: ResolveAlphaExperiment(invocation.Options),
 					ditherScale: invocation.Options.DitherScale ?? 1,
 					ditherDensity: invocation.Options.DitherDensity ?? 0.75,
-										ditherPattern: ResolveDitherPattern(invocation.Options));
+					ditherPattern: ResolveDitherPattern(invocation.Options),
+					metalRoughness: invocation.Options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness);
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3280,7 +3281,8 @@ public static class CliApplication
 				ResolveAlphaExperiment(options),
 				options.DitherScale ?? 1,
 				options.DitherDensity ?? 0.75,
-				ResolveDitherPattern(options));
+				ResolveDitherPattern(options),
+				options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness);
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──

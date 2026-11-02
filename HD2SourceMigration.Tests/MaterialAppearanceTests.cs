@@ -88,10 +88,49 @@ public sealed class MaterialAppearanceTests
 	[Fact]
 	public void TheMetallicAndRoughnessConstantsMatchTheShippedRecipe()
 	{
-		// 这两个值是照参考模组实测定的，改它们等于改观感——所以钉在这里。
-		Assert.Equal(191, MaterialAppearance.MetallicValue);
-		Assert.Equal(89, MaterialAppearance.RoughnessValue);
+		// 这两个值直接决定"够不够金属"，改它们等于改观感——所以钉在这里。
+		//
+		// 历史（实机对照逐档走出来的）：
+		//   191 / 89 → "氧化过的铝 / 珍珠的反光色，不够金属"（0.75 金属度留了 25% 漫反射）
+		//   255 / 20 → 镀铬镜面，看着对但**实机更暗**（高光瓣太窄，环境被照成"亮点+大片暗"）
+		//   255 / 51 → 丝光。高光瓣变宽、暗部被填平，整体比 0.08 更亮，金属感也还在。
+		Assert.Equal(255, MaterialAppearance.MetallicValue);
+		Assert.Equal(51, MaterialAppearance.RoughnessValue);
+		Assert.Equal(51 / 255.0, MaterialAppearance.DefaultMetalRoughness);
 		Assert.Equal(0.9, MaterialAppearance.MatCapMinTint);
+	}
+
+	/// <summary>
+	/// <c>FlattenToMetalF0</c>：整片涂成<b>中性</b>平色，连色相也不保留。
+	/// <para>
+	/// 这条钉的是"转换结果不能取决于装了哪个可选的颜色变体包"——matcap 由 C1/C2、
+	/// B1/B2/B3 这些可选包提供，一旦取它的色相，同一份源换个变体包金属色就变了。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void FlatteningToMetalF0IsNeutralAndDropsTheSourcePattern()
+	{
+		// 一张明显偏暖的输入（模拟金色系 matcap）也必须出中性。
+		var warm = MaterialAppearance.SolidRgba(4, 250, 220, 180);
+		MaterialAppearance.FlattenToMetalF0(warm, 0.96);
+
+		var expected = MaterialAppearance.LinearToSrgbByte(0.96);
+		for (var offset = 0; offset < warm.Length; offset += 4)
+		{
+			Assert.Equal(expected, warm[offset + 0]);
+			Assert.Equal(expected, warm[offset + 1]);
+			Assert.Equal(expected, warm[offset + 2]);
+			// alpha 一律 0：底色不承担自发光，也不承担形状。
+			Assert.Equal(0, warm[offset + 3]);
+		}
+
+		// 一张偏冷的输入（模拟银色系 matcap）结果必须**一模一样**。
+		var cool = MaterialAppearance.SolidRgba(4, 180, 220, 250);
+		MaterialAppearance.FlattenToMetalF0(cool, 0.96);
+		Assert.Equal(warm, cool);
+
+		Assert.Throws<ArgumentOutOfRangeException>(() => MaterialAppearance.FlattenToMetalF0(new byte[4], double.NaN));
+		Assert.Throws<InvalidDataException>(() => MaterialAppearance.FlattenToMetalF0(new byte[7], 0.96));
 	}
 
 	/// <summary>

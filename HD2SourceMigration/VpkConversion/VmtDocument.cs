@@ -70,6 +70,44 @@ public sealed class VmtDocument
 	public bool HasMatCap => IsEnabled("$matcap") || Value("$matcaptexture") is not null;
 
 	/// <summary>
+	/// <c>$MATCAP2TEXTURE</c>：第二张 matcap。NekoToon 里它是<b>加法叠加</b>的一层，
+	/// 通常比第一张更亮，负责把金属推到"镀铬"的亮度。
+	/// <para>
+	/// <b>为什么这一条不能省。</b>实测 Lilium_Sancta 的金属件：第一张 matcap
+	/// （<c>Platinum_Silver</c>，均值 129）只是那颗铬球的图案，真正让它亮起来的是
+	/// <c>$MATCAP2TEXTURE "11"</c>（均值 199～206，暖白）。少了这一层，
+	/// 金属就只能靠环境反射发亮——实测观感是"氧化过的铝"。
+	/// </para>
+	/// </summary>
+	public string? MatCap2Texture => Value("$matcap2texture");
+
+	/// <summary>
+	/// 第二张 matcap 是否<b>真的生效</b>。
+	/// <para>
+	/// ⚠️ 判据必须是 <c>$MATCAP2</c>（混合模式）而不是"写了 <c>$MATCAP2TEXTURE</c>"：
+	/// 实测 <c>mat_ornament_petal_shoes</c> 只写了 <c>$MATCAP2TEXTURE</c> 却没写
+	/// <c>$MATCAP2</c>，源侧那张图<b>根本没参与渲染</b>。照"有图就加"处理会把花瓣鞋
+	/// 凭空提亮一档。
+	/// </para>
+	/// </summary>
+	public bool HasMatCap2 => MatCap2Texture is not null && IsEnabled("$matcap2");
+
+	/// <summary><c>$MATCAP2TINT</c>（0..1，取三分量最大值）。缺失时按 1.0——源侧默认全强度叠加。</summary>
+	public double MatCap2Tint
+	{
+		get
+		{
+			var raw = Value("$matcap2tint");
+			// ⚠️ 有些 VMT 把 `$MATCAP2TINT` 误写成第二个 `$matcaptint`（作者笔误），
+			// 那种情况解析出来就是 matcap1 的 tint，语义上等价于"没单独写"，按 1.0 处理更安全。
+			if (string.IsNullOrWhiteSpace(raw))
+				return 1.0;
+			var tint = MaterialAppearance.ParseTint(raw);
+			return tint <= 0 ? 1.0 : tint;
+		}
+	}
+
+	/// <summary>
 	/// "这组想要透明"：<c>$translucent</c> 或 <c>$alphatest</c> 非 0。
 	/// <para>
 	/// 注意这只是<b>意愿</b>，不是结论：装饰件常写 <c>$alphatest 1</c> 但贴图是 1×1 无 alpha。
@@ -287,7 +325,7 @@ public sealed class VmtDocument
 	{
 		foreach (var pair in source.ToArray())
 		{
-			if (pair.Key is "$basetexture" or "$bumpmap" or "$matcaptexture" or "$emissiontexture")
+			if (pair.Key is "$basetexture" or "$bumpmap" or "$matcaptexture" or "$matcap2texture" or "$emissiontexture")
 				source[pair.Key] = NormalizePath(pair.Value);
 		}
 

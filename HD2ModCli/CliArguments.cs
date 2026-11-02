@@ -80,6 +80,9 @@ public sealed record CliGlobalOptions(
 	// matcap 烘进底色时的亮度增益（默认 1.0 = 不加）。
 	// 实机反馈"金属太黑、没反光"，而 matcap 是加法高光图、平均色偏暗，所以留这个旋钮。
 	double? MatcapGain = null,
+	// matcap 承载面（金属装饰件）的粗糙度，0..1。0.08 = 镀铬，0.35 = 拉丝/氧化。
+	// 只能靠实机定，所以留成旋钮；省略时用 MaterialAppearance.DefaultMetalRoughness。
+	double? MetalRoughness = null,
 	// 把每个 Unit 的**身份**钉成某件游戏护甲自己的那一行（id + 身形/槽位/重量/层）。
 	// 见 VpkUnitIdentityOverride：不给就是"自定义素体"形态（随机 id + BodyType_Any）。
 	string? UnitIds = null,
@@ -163,6 +166,7 @@ public static class CliArgumentParser
 		string? cutout = null;
 		string? idNamespaceToken = null;
 		double? matcapGain = null;
+		double? metalRoughness = null;
 		string? unitIds = null;
 		string? reuseModel = null;
 		string? headMerge = null;
@@ -406,6 +410,20 @@ public static class CliArgumentParser
 
 					matcapGain = parsedGain;
 					break;
+				case "--metal-roughness":
+					// matcap 承载面的粗糙度：0.35 = 拉丝/氧化，0.08 以下才是镀铬。
+					// 只能靠实机定，所以留成旋钮（默认见 MaterialAppearance.DefaultMetalRoughness）。
+					var rawRoughness = ReadValue(args, ref index, argument);
+					if (!double.TryParse(rawRoughness, System.Globalization.NumberStyles.Float,
+							System.Globalization.CultureInfo.InvariantCulture, out var parsedRoughness)
+						|| parsedRoughness < 0 || parsedRoughness > 1)
+					{
+						throw new CliUserException("InvalidOption",
+							$"--metal-roughness 需要 0..1 的数，实际是 '{rawRoughness}'。0.08 = 镀铬，0.35 = 拉丝/氧化。");
+					}
+
+					metalRoughness = parsedRoughness;
+					break;
 				case "--matcap":
 					var rawMatcap = ReadValue(args, ref index, argument);
 					if (!rawMatcap.Equals("bake", StringComparison.OrdinalIgnoreCase)
@@ -481,7 +499,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

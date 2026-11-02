@@ -35,6 +35,64 @@ public sealed class VmtDocumentTests
 		Assert.True(vmt.WantsTransparency);          // $translucent 1 就够了
 	}
 
+	/// <summary>
+	/// <c>$MATCAP2</c> 的解析：<b>开关</b>是 <c>$MATCAP2</c>，不是"有没有写贴图"。
+	/// <para>
+	/// 这条钉的是实测踩到的坑：<c>mat_ornament_petal_shoes</c> 只写了
+	/// <c>$MATCAP2TEXTURE</c> 却没写 <c>$MATCAP2</c>，源侧那张图<b>根本没参与渲染</b>。
+	/// 按"有图就加"处理会把花瓣鞋凭空提亮一档。
+	/// </para>
+	/// <para>
+	/// ⚠️ 当前<b>发布路径不使用</b>第二张 matcap 参与像素计算（金属色是中性常量，
+	/// 见 <c>MaterialAppearance.FlattenToMetalF0</c>）。这里保留解析与测试，
+	/// 是为了把 NekoToon 的这套语法留档——否则下次又要重新查一遍。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void MatCap2NeedsTheBlendModeSwitchNotJustTheTexture()
+	{
+		var withSwitch = Parse("""
+			NekoToon
+			{
+				"$basetexture" "a/b"
+				"$matcap" "3"
+				"$matcaptexture" "materials\a\platinum_silver"
+				"$MATCAP2" "2"
+				"$MATCAP2TEXTURE" "materials\a\11"
+				"$MATCAP2TINT" "[.5 .5 .5 1]"
+			}
+			""");
+		Assert.True(withSwitch.HasMatCap2);
+		// 路径也走同一套规范化（小写、正斜杠、去 materials/ 前缀）。
+		Assert.Equal("a/11", withSwitch.MatCap2Texture);
+		Assert.Equal(0.5, withSwitch.MatCap2Tint, 6);
+
+		// 只写贴图、没写开关 —— 源侧不生效。
+		var textureOnly = Parse("""
+			NekoToon
+			{
+				"$basetexture" "a/b"
+				"$matcaptexture" "materials\a\matcap_diamond7"
+				"$MATCAP2TEXTURE" "materials\a\matcap_highlight"
+			}
+			""");
+		Assert.False(textureOnly.HasMatCap2);
+		// ⚠️ 贴图名仍然读得到（和 `MatCapTexture` 一样是"声明了什么"），
+		// 但 `HasMatCap2` 是"生不生效"——两者刻意分开，别用错。
+		Assert.Equal("a/matcap_highlight", textureOnly.MatCap2Texture);
+
+		// 显式关掉也要认。
+		var disabled = Parse("""
+			NekoToon
+			{
+				"$basetexture" "a/b"
+				"$MATCAP2" "0"
+				"$MATCAP2TEXTURE" "materials\a\11"
+			}
+			""");
+		Assert.False(disabled.HasMatCap2);
+	}
+
 	[Fact]
 	public void NormalizePathCollapsesRepeatedSeparators()
 	{
