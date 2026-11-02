@@ -46,6 +46,9 @@ namespace HD2ModManager.Services
 		RepairMods,
         Deployment,
         DeactivateProfile,
+        // 用来源 VPK 重跑转换（Mod 详情里的「重构建」）。单独一类是为了在消息中心里
+        // 一眼区分"这是重出一份产物"，而不是又一次导入。
+        RebuildVpk,
         InformationCenter,
         Other,
     }
@@ -129,6 +132,7 @@ namespace HD2ModManager.Services
 			BackgroundTaskKind.RepairMods => "✦",
             BackgroundTaskKind.Deployment => "⇄",
             BackgroundTaskKind.DeactivateProfile => "■",
+            BackgroundTaskKind.RebuildVpk => "↻",
             _ => "•",
         };
 

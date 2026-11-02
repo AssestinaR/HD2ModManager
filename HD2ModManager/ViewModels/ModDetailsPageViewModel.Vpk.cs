@@ -392,7 +392,27 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		}
 
 		_vpkBusy = true;
-		VpkComponentStatus = $"正在把 Unit 换到 {target.DisplayName}…";
+
+		// 换甲同样是几分钟的转换：**过程信息走消息中心**（阶段 / 进度 / 取消），
+		// 卡片只留最后那句话和"某个部位没有落点"这类必须被看见的警告。
+		// 与「重构建」用同一个任务类别：它们都是"用来源 VPK 重出一份产物"。
+		var task = _backgroundTasks?.Enqueue(
+			BackgroundTaskKind.RebuildVpk,
+			"切换 VPK 目标护甲",
+			$"{node.Metadata.Name} → {target.DisplayName}",
+			origin: "Mod 详情",
+			userVisibleReason: "把 VPK 素体的 Unit 换到目标护甲的 Unit 键上，并按当前勾选重新生成换甲产物。",
+			suggestedAction: "完成后重启游戏生效。",
+			presentation: BackgroundTaskPresentation.Foreground);
+		var cancellation = task?.CancellationToken ?? CancellationToken.None;
+		task?.MarkRunning($"正在把 Unit 换到 {target.DisplayName}…");
+
+		void Report(string stage)
+		{
+			if (task is not null) task.UpdateStage(stage);
+			else VpkComponentStatus = stage;
+		}
+
 		try
 		{
 			// 换甲同样把当前勾选一起烘进去：换目标与改开关是同一件事的两半，
@@ -402,13 +422,16 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				directory,
 				[target.ArchiveId],
 				_vpkFile.State.Disabled,
-				stage => VpkComponentStatus = stage,
-				CancellationToken.None,
+				Report,
+				cancellation,
 				// 头身合并在「切换」里也要守住：换目标不代表用户想改这个开关。
 				headMergeIntoBody: _vpkFile.HeadMergeIntoBody).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
-				VpkComponentStatus = outcome.Error ?? "换甲失败。";
+				var error = outcome.Error ?? "换甲失败。";
+				task?.MarkFailed(error);
+				VpkComponentStatus = error;
+				if (task is null) _notifications?.Show(error, NotificationLevel.Error, TimeSpan.FromSeconds(20));
 				return;
 			}
 
@@ -424,19 +447,32 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				? string.Empty
 				: " 注意：" + string.Join(" ", outcome.Warnings.Take(2))
 					+ (outcome.Warnings.Count > 2 ? $"（另有 {outcome.Warnings.Count - 2} 条）" : string.Empty);
+			task?.SetOutputArtifacts(directory, null);
+			if (outcome.Warnings.Count != 0) task?.UpdateStage($"注意：{outcome.Warnings[0]}");
+			task?.MarkCompleted();
 			VpkComponentStatus = summary + warningText;
-			_notifications?.Show(
-				VpkComponentStatus,
-				outcome.Warnings.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
-				TimeSpan.FromSeconds(outcome.Warnings.Count == 0 ? 10 : 20));
+			if (task is null)
+			{
+				_notifications?.Show(
+					VpkComponentStatus,
+					outcome.Warnings.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
+					TimeSpan.FromSeconds(outcome.Warnings.Count == 0 ? 10 : 20));
+			}
+
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
 			// 换甲后 section 表是新的，树必须重画。
 			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
 		}
+		catch (OperationCanceledException)
+		{
+			task?.MarkCanceled();
+			VpkComponentStatus = "换甲已取消。";
+		}
 		catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
 		{
+			task?.MarkFailed(exception.Message);
 			VpkComponentStatus = "换甲失败：" + exception.Message;
 		}
 		finally
@@ -517,7 +553,24 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		}
 
 		_vpkBusy = true;
-		VpkComponentStatus = enabled ? "正在把头并进身体…" : "正在把头放回头盔套件…";
+		// 头身合并要重跑一次换甲（几分钟）：过程同样走消息中心，卡片只留结论。
+		var task = _backgroundTasks?.Enqueue(
+			BackgroundTaskKind.RebuildVpk,
+			enabled ? "开启头身合并" : "关闭头身合并",
+			node.Metadata.Name,
+			origin: "Mod 详情",
+			userVisibleReason: "改变头画在哪一件装备上，必须按新方案重新生成一次换甲产物。",
+			suggestedAction: "完成后重启游戏生效。",
+			presentation: BackgroundTaskPresentation.Foreground);
+		var cancellation = task?.CancellationToken ?? CancellationToken.None;
+		task?.MarkRunning(enabled ? "正在把头并进身体…" : "正在把头放回头盔套件…");
+
+		void Report(string stage)
+		{
+			if (task is not null) task.UpdateStage(stage);
+			else VpkComponentStatus = stage;
+		}
+
 		try
 		{
 			var outcome = await VpkRekeyService.RunAsync(
@@ -525,14 +578,16 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				directory,
 				targets,
 				_vpkFile.State.Disabled,
-				stage => VpkComponentStatus = stage,
-				CancellationToken.None,
+				Report,
+				cancellation,
 				headMergeIntoBody: enabled).ConfigureAwait(true);
 
 			if (!outcome.Ok)
 			{
-				VpkComponentStatus = outcome.Error ?? "头身合并切换失败。";
-				_notifications?.Show(VpkComponentStatus, NotificationLevel.Error, TimeSpan.FromSeconds(20));
+				var error = outcome.Error ?? "头身合并切换失败。";
+				task?.MarkFailed(error);
+				VpkComponentStatus = error;
+				if (task is null) _notifications?.Show(error, NotificationLevel.Error, TimeSpan.FromSeconds(20));
 				return;
 			}
 
@@ -553,16 +608,25 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				? string.Empty
 				: " " + string.Join(" ", outcome.Warnings.Take(2))
 					+ (outcome.Warnings.Count > 2 ? $"（另有 {outcome.Warnings.Count - 2} 条）" : string.Empty);
+			task?.SetOutputArtifacts(directory, null);
+			if (outcome.Warnings.Count != 0) task?.UpdateStage($"注意：{outcome.Warnings[0]}");
+			task?.MarkCompleted();
 			VpkComponentStatus = summary + warningText;
-			_notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(12));
+			if (task is null) _notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(12));
 
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
 			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
 		}
+		catch (OperationCanceledException)
+		{
+			task?.MarkCanceled();
+			VpkComponentStatus = "头身合并切换已取消。";
+		}
 		catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
 		{
+			task?.MarkFailed(exception.Message);
 			VpkComponentStatus = "头身合并切换失败：" + exception.Message;
 		}
 		finally
@@ -590,6 +654,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		if (!TryGetCurrentNode(out var node)) return;
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
 		_vpkBusy = true;
+		// 声明在 try 外面：取消/异常时也要能在消息中心把这条任务收尾，
+		// 否则它会一直挂在"进行中"。
+		BackgroundTaskItem? task = null;
 		try
 		{
 			VpkComponentStatus = "正在保存勾选…";
@@ -601,6 +668,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 就地改会让"这份变体"慢慢偏离权威事实，而用户改一次设置就想看到"按新方案重新生成"。
 			// 生成过程同时完成两件事：把 Unit 换到目标护甲的键上、把勾选状态烘进去——
 			// 两件事都要那份"来源 → 目标"的映射，所以只能在换甲里面做。
+			// 「应用」也是重跑一次换甲（几分钟）：过程走消息中心，卡片只留结论。
 			VpkComponentStatus = "正在从 vpk2patch 重新生成 Overwrite…";
 			var targets = ResolveApplyTargets(directory);
 			if (targets is null)
@@ -609,21 +677,42 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				return;
 			}
 
+			task = _backgroundTasks?.Enqueue(
+				BackgroundTaskKind.RebuildVpk,
+				"应用组件勾选",
+				node.Metadata.Name,
+				origin: "Mod 详情",
+				userVisibleReason: "把组件树上的勾选烘进换甲产物：重新从 vpk2patch 生成 Overwrite。",
+				suggestedAction: "完成后重启游戏生效。",
+				presentation: BackgroundTaskPresentation.Foreground);
+			var cancellation = task?.CancellationToken ?? CancellationToken.None;
+			task?.MarkRunning("正在从 vpk2patch 重新生成 Overwrite…");
+
+			void Report(string stage)
+			{
+				if (task is not null) task.UpdateStage(stage);
+				else VpkComponentStatus = stage;
+			}
+
 			var outcome = await VpkRekeyService.RunAsync(
 				node.Id.Value.ToString("N"),
 				directory,
 				targets,
 				_vpkFile.State.Disabled,
-				stage => VpkComponentStatus = stage,
-				CancellationToken.None,
+				Report,
+				cancellation,
 				// 重新生成也照这个开关来：否则「应用」会把用户关掉的头身合并又打开。
 				headMergeIntoBody: _vpkFile.HeadMergeIntoBody).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
-				VpkComponentStatus = outcome.Error ?? "重新生成失败。";
+				var error = outcome.Error ?? "重新生成失败。";
+				task?.MarkFailed(error);
+				VpkComponentStatus = error;
 				return;
 			}
 
+			task?.SetOutputArtifacts(directory, null);
+			task?.MarkCompleted();
 			VpkComponentStatus = outcome.RestoredFromSource
 				? "已按当前勾选重新生成（自定义素体模式）。"
 				: $"已按当前勾选重新生成：替换 {outcome.ReplacedUnits} 个 Unit、隐藏 {outcome.HiddenMeshes} 个网格。";
@@ -631,8 +720,14 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
 		}
+		catch (OperationCanceledException)
+		{
+			task?.MarkCanceled();
+			VpkComponentStatus = "应用已取消。";
+		}
 		catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
 		{
+			task?.MarkFailed(exception.Message);
 			VpkComponentStatus = "应用失败：" + exception.Message;
 		}
 		finally
