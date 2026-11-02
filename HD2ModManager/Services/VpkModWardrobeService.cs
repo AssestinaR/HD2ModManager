@@ -16,7 +16,8 @@ public sealed record VpkWardrobeFile(
 	bool ComponentTreeEnabled,
 	VpkWardrobeState State,
 	string? TargetArmorArchiveId = null,
-	string? TargetArmorName = null)
+	string? TargetArmorName = null,
+	bool HeadMergeIntoBody = true)
 {
 	public static VpkWardrobeFile Default { get; } = new(false, VpkWardrobeState.Empty);
 
@@ -147,6 +148,11 @@ public sealed class VpkModWardrobeService
 			var enabled = root.TryGetProperty("componentTreeEnabled", out var flag) && flag.ValueKind == JsonValueKind.True;
 			var targetArchiveId = root.TryGetProperty("targetArmorArchiveId", out var archive) ? archive.GetString() : null;
 			var targetName = root.TryGetProperty("targetArmorName", out var armorName) ? armorName.GetString() : null;
+			// 头身合并：**没有这个字段就是开着**（老状态文件一律按"合并"读）。
+			// 为什么默认开：默认做法要求玩家把配套头盔 item 也穿上才有头，那是不必要的负担；
+			// 而老文件里没有这条记录，说明它从来没被关过。
+			var headMerge = !root.TryGetProperty("headMergeIntoBody", out var headMergeElement)
+				|| headMergeElement.ValueKind != JsonValueKind.False;
 			var disabled = new Dictionary<string, IReadOnlyCollection<int>>(StringComparer.Ordinal);
 			if (root.TryGetProperty("disabled", out var map) && map.ValueKind == JsonValueKind.Object)
 			{
@@ -161,7 +167,7 @@ public sealed class VpkModWardrobeService
 				}
 			}
 
-			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName);
+			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName, headMerge);
 		}
 		catch (Exception exception) when (exception is IOException or JsonException)
 		{
@@ -177,6 +183,7 @@ public sealed class VpkModWardrobeService
 		{
 			schema = Schema,
 			componentTreeEnabled = file.ComponentTreeEnabled,
+			headMergeIntoBody = file.HeadMergeIntoBody,
 			targetArmorArchiveId = file.TargetArmorArchiveId,
 			targetArmorName = file.TargetArmorName,
 			disabled = file.State.Disabled.ToDictionary(

@@ -1,7 +1,5 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Text;
 using System.Text.Json;
 using HD2ModCore.Infrastructure;
 
@@ -477,6 +475,11 @@ public sealed class VpkImportService
 		var units = 0;
 		var materials = 0;
 		var textures = 0;
+		// 报告级的提示（不是某个 patch 的警告）：例如"这次转换没给命名空间，同一模型的
+		// 相关 VPK 必须一次性转换"。它描述的是**整批**的性质，只存在于根对象上；
+		// 漏读等于让用户看不到这条唯一的线索。
+		foreach (var note in ReadStrings(root, "notes"))
+			notes.Add(note);
 		if (root.TryGetProperty("patches", out var patches) && patches.ValueKind == JsonValueKind.Array)
 		{
 			foreach (var patch in patches.EnumerateArray())
@@ -551,69 +554,20 @@ public sealed class VpkImportService
 		}
 	}
 
-	private static async Task<(int ExitCode, string Output, string Error)> RunCliAsync(
+	/// <summary>
+	/// 跑一次 <c>hd2mod.exe</c>。
+	/// <para>
+	/// 进程样板（编码、逐行读 stderr、取消时杀进程树）在 <see cref="Hd2ModProcess"/> 里只有一份：
+	/// 以前导入 / 换甲 / 重构建各自抄了一遍，差异全在"怎么读 stderr"上，而那种差异的表现
+	/// 是"某个入口永远看不到进度"，或者"失败原因里塞满进度行"。
+	/// </para>
+	/// </summary>
+	private static Task<Hd2ModProcess.Result> RunCliAsync(
 		string executable,
 		IReadOnlyList<string> arguments,
 		CancellationToken cancellationToken,
 		Action<string, int, int, string>? onProgress = null)
-	{
-		using var process = new Process
-		{
-			StartInfo = new ProcessStartInfo
-			{
-				FileName = executable,
-				UseShellExecute = false,
-				CreateNoWindow = true,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				// 结论里全是中文。CLI 自己把 Console 设成 UTF-8（Program.cs），这里必须对齐。
-				StandardOutputEncoding = Encoding.UTF8,
-				StandardErrorEncoding = Encoding.UTF8,
-				WorkingDirectory = Path.GetDirectoryName(executable)!,
-			}
-		};
-		foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
-
-		if (!process.Start()) throw new InvalidOperationException("无法启动 hd2mod.exe。");
-		var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-		// stderr 必须**逐行**读：CLI 把进度写在 stderr 上（见 CliApplication.Progress），
-		// 一行一行才能边转边报。整段 ReadToEnd 会把所有进度攒到进程结束才回来——
-		// 那正是"进度条一直是解压中"的另一半原因。
-		var errorTask = ReadErrorLinesAsync(process.StandardError, onProgress, cancellationToken);
-		using var registration = cancellationToken.Register(() =>
-		{
-			try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-		});
-		await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-		return (process.ExitCode, await outputTask.ConfigureAwait(false), await errorTask.ConfigureAwait(false));
-	}
-
-	/// <summary>
-	/// 读 stderr：<c>#progress</c> 行转成进度回调，其余照常攒进"错误输出"。
-	/// <para>
-	/// 进度行<b>不算</b>错误输出。混进去的后果是每次转换的 <c>error</c> 里都塞着几十行进度，
-	/// 而 <c>error</c> 只在失败时才会被拼进给用户看的消息里——那时真正的原因会被埋掉。
-	/// </para>
-	/// </summary>
-	private static async Task<string> ReadErrorLinesAsync(
-		StreamReader reader,
-		Action<string, int, int, string>? onProgress,
-		CancellationToken cancellationToken)
-	{
-		var buffer = new StringBuilder();
-		while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
-		{
-			if (HD2ModCore.Infrastructure.VpkProgressLine.TryParse(line, out var phase, out var done, out var total, out var text))
-			{
-				onProgress?.Invoke(phase, done, total, text);
-				continue;
-			}
-
-			buffer.AppendLine(line);
-		}
-
-		return buffer.ToString();
-	}
+		=> Hd2ModProcess.RunAsync(executable, arguments, cancellationToken, onProgress);
 
 	/// <summary>
 	/// 转换器的位置随布局而变：开发构建把它复制到管理器旁边（<c>CopyHd2ModCliArtifacts</c>），

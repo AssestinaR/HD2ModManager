@@ -82,7 +82,21 @@ public sealed record CliGlobalOptions(
 	double? MatcapGain = null,
 	// 把每个 Unit 的**身份**钉成某件游戏护甲自己的那一行（id + 身形/槽位/重量/层）。
 	// 见 VpkUnitIdentityOverride：不给就是"自定义素体"形态（随机 id + BodyType_Any）。
-	string? UnitIds = null);
+	string? UnitIds = null,
+	// 重构建用：显式给一份 `custom-model.json`，沿用它的**素体 key 与 unit id 基**。
+	//
+	// 为什么需要它：unit id 是 `seed + index` 生成的，而 seed 平时来自"输出目录里已有的
+	// custom-model.json"（重跑同一个目录就复用）。重构建为了不毁掉现有产物，先转到临时目录、
+	// 校验通过才换进去——那个临时目录里当然没有旧文件，于是 id 会重新随机，
+	// 结果就是 wardrobe 里记的开关掩码、真映射写进 dl_bin 的件表全部失效。
+	// 有了这个参数，重构建只要把旧的那份指过来，产出的 id 就与原来逐位相同。
+	string? ReuseModel = null,
+	// `vpk rekey` 的头身合并：`on`（默认）把来源的头 Unit 落到护甲套件的胸部槽位上，
+	// 让头盔存档一件模型都不剩；`off` 回到老做法（头由头盔套件承载，玩家得穿配套头盔）。
+	//
+	// 层号不是写死的：按目标护甲胸部槽位实际有几层算（最外层放头、次外层放身体），
+	// 只有一层时自动退回老做法。见 CliVpkRekey.ResolveHeadBodyMerge。
+	string? HeadMerge = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -121,6 +135,8 @@ public static class CliArgumentParser
 		string? idNamespaceToken = null;
 		double? matcapGain = null;
 		string? unitIds = null;
+		string? reuseModel = null;
+		string? headMerge = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -238,6 +254,21 @@ public static class CliArgumentParser
 				case "--unit-ids":
 					unitIds = ReadValue(args, ref index, argument);
 					break;
+				case "--reuse-model":
+					reuseModel = ReadValue(args, ref index, argument);
+					break;
+				case "--head-merge":
+					var rawHeadMerge = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					if (rawHeadMerge is not ("on" or "off" or "true" or "false" or "1" or "0"))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--head-merge 只接受 on / off，实际是 '{rawHeadMerge}'。"
+							+ "on（默认）= 头并进护甲套件的胸部槽位、头盔 item 不再有模型；"
+							+ "off = 头仍由头盔套件承载（玩家需要穿配套头盔）。");
+					}
+
+					headMerge = rawHeadMerge is "on" or "true" or "1" ? "on" : "off";
+					break;
 				case "--disabled":
 					disabled = ReadValue(args, ref index, argument);
 					break;
@@ -349,7 +380,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, unitIds, reuseModel, headMerge));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

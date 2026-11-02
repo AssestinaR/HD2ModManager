@@ -6,6 +6,25 @@ using HD2ModCore.Infrastructure;
 
 namespace HD2ModCli;
 
+/// <summary>头身合并这次**实际**发生了什么。给界面用，不让它去猜、也不让它自己编一句话。</summary>
+internal enum VpkHeadMergeState
+{
+	/// <summary>调用方关了 `--head-merge off`。</summary>
+	Off = 0,
+
+	/// <summary>真的合并了：头落到护甲套件的胸部槽位，头盔套件一件不写。</summary>
+	Applied = 1,
+
+	/// <summary>目标是这件 Mod **自己**的素体：没有独立的头盔 item，头本来就在主体里。</summary>
+	NotApplicableCustomModel = 2,
+
+	/// <summary>目标护甲的胸部槽位只有一层，装不下身体 + 头，这一次没合并。</summary>
+	UnavailableSingleLayer = 3,
+
+	/// <summary>目标里没有"护甲 + 配套头盔"这一对归档，无从合并。</summary>
+	UnavailableNoHelmetKit = 4,
+}
+
 /// <summary>一次「把 VPK 模组的 7 个 Unit 换到某件护甲上」的结果。</summary>
 internal sealed record VpkRekeyResult(
 	string ModGuid,
@@ -31,6 +50,16 @@ internal sealed record VpkRekeyResult(
 	/// </para>
 	/// </summary>
 	public bool RestoredFromSource { get; init; }
+
+	/// <summary>
+	/// 头身合并的实际结果。
+	/// <para>
+	/// <b>为什么必须有这个字段。</b>开关打开不等于"合并成功了"：目标是自己的素体时没有头盔
+	/// item 可隐藏；目标护甲胸部只有一层时装不下两件几何。界面如果只看开关状态，
+	/// 就会在什么都没发生的场合说"已开启"——用户下一次进游戏发现没变化，就再也信不过这个开关。
+	/// </para>
+	/// </summary>
+	public VpkHeadMergeState HeadMerge { get; init; } = VpkHeadMergeState.Off;
 }
 
 /// <summary>
@@ -70,6 +99,7 @@ internal static class CliVpkRekey
 		IReadOnlyList<string> targetArchiveIds,
 		string? outputRoot,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections = null,
+		bool mergeHeadIntoArmour = true,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
@@ -154,6 +184,10 @@ internal static class CliVpkRekey
 			// 恒等路径上 Unit 键没变，掩码可以直接用。
 			var identityBake = await BakeAsync(restored, destinationDirectory, disabledSections, cancellationToken)
 				.ConfigureAwait(false);
+			// 恒等目标下"头身合并"没有落点：这个素体就是一个整体（头是它自己的 slot 0 件），
+			// 没有独立的头盔 item 可以隐藏。**必须说出来**，否则用户在界面翻了开关、
+			// 看到"已开启"，进游戏什么变化都没有。
+			var closedCount = disabledSections?.Values.Sum(sections => sections.Count) ?? 0;
 			return new VpkRekeyResult(
 				node.Id.Value.ToString("N"),
 				modDirectory,
@@ -165,18 +199,26 @@ internal static class CliVpkRekey
 				0,
 				0,
 				[
-					"目标就是这个 Mod 自己的素体：已把来源 patch 原样退回 Overwrite（Unit 键不变，开关继续有效）。",
+					"目标就是这个 Mod 自己的素体：已把来源 patch 原样退回 Overwrite（Unit 键不变，开关继续有效）。"
+						+ (closedCount == 0 ? "当前没有关掉的 section。" : $"已把 {closedCount} 个 section 烘成关闭。"),
+					.. (mergeHeadIntoArmour
+						? ["头身合并在这种目标上不适用：这个素体本来就是「头 + 身体」一整套"
+							+ "（头是它自己的头盔槽件），没有独立的头盔 item 可隐藏。换成一件游戏护甲才会生效。"]
+						: Array.Empty<string>()),
 					.. identityBake.Warnings,
 				])
 			{
 				Mappings = ["直接退回来源（不做跨护甲搬运）"],
 				TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
 				RestoredFromSource = true,
+				HeadMerge = mergeHeadIntoArmour
+					? VpkHeadMergeState.NotApplicableCustomModel
+					: VpkHeadMergeState.Off,
 			};
 		}
 
 		// 计划只在真的要搬运几何时才需要：恒等目标那条路连游戏数据都不读。
-		var (plan, mappingNotes) = BuildPlan(source, selected);
+		var (plan, mappingNotes, headMergeState) = BuildPlan(source, selected, mergeHeadIntoArmour);
 		if (!plan.CanContinue)
 		{
 			var detail = string.Join("；", plan.Issues.Select(issue => $"{issue.Code}: {issue.Message}"));
@@ -286,6 +328,7 @@ internal static class CliVpkRekey
 					+ $" ← 0x{mapping.Source!.UnitAssetKey.FileId:x16} → 0x{mapping.PhysicalTarget.UnitAssetKey.FileId:x16}")
 				.ToArray(),
 			TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
+			HeadMerge = headMergeState,
 		};
 	}
 
@@ -519,14 +562,49 @@ internal static class CliVpkRekey
 	/// 没有 <c>右臂－内衣</c>），那时护甲层就是最外层，本来就该由它承载。
 	/// </para>
 	/// </summary>
-	internal static (CrossArmorTransferPlan Plan, IReadOnlyList<string> Notes) BuildPlan(
+	/// <param name="mergeHeadIntoArmour">
+	/// 是否做**头身合并**（见 <see cref="ResolveHeadBodyMerge"/>）。
+	/// 返回的第三个值说明这一次**实际**发生了什么——开关打开不等于合并成功
+	/// （目标是自己的素体、或胸部只有一层时都不会合并），界面要照实说。
+	/// </param>
+	internal static (CrossArmorTransferPlan Plan, IReadOnlyList<string> Notes, VpkHeadMergeState HeadMerge) BuildPlan(
 		EquipmentUnitCatalogEntry source,
-		IReadOnlyList<EquipmentUnitCatalogEntry> targets)
+		IReadOnlyList<EquipmentUnitCatalogEntry> targets,
+		bool mergeHeadIntoArmour = true)
 	{
 		var mappings = new List<CrossArmorTransferMapping>();
 		var notes = new List<string>();
+
+		// 头身合并：能不能做、落在哪两层，全由**目标护甲自己有多少层**算出来（见 ResolveHeadBodyMerge）。
+		// 第三个返回值说明"这一次实际发生了什么"：开关打开不等于合并成功。
+		HeadBodyMerge? merge;
+		VpkHeadMergeState headMergeState;
+		if (!mergeHeadIntoArmour)
+		{
+			merge = null;
+			headMergeState = VpkHeadMergeState.Off;
+		}
+		else
+		{
+			merge = ResolveHeadBodyMerge(source, targets, notes, out headMergeState);
+		}
+
+		var helmetSource = merge is null ? null : source.Parts.FirstOrDefault(part => part.PartKind == UnitMeshPartKind.Helmet);
+		var torsoSource = merge is null ? null : source.Parts.FirstOrDefault(part => part.PartKind == UnitMeshPartKind.Torso);
+
 		foreach (var target in targets)
 		{
+			// 合并之后，头盔套件一件都不写：它的件全部交给 AutoHideUnmappedTargetUnits 顶成隐藏壳。
+			// 游戏里那件头盔 item 于是不再有模型，头由护甲自己带着。
+			if (merge is not null && target.ArchiveId.Equals(merge.HelmetArchiveId, StringComparison.OrdinalIgnoreCase))
+			{
+				notes.Add($"{target.DisplayName} 的件全部隐藏（头身合并：头已经并进 {merge.ArmourName}）。");
+				continue;
+			}
+
+			var isMergeArmour = merge is not null
+				&& target.ArchiveId.Equals(merge.ArmourArchiveId, StringComparison.OrdinalIgnoreCase);
+
 			// 映射的单位是 **unit**，不是 (部位, 身形) 组合。注册素体里同一个 unit 常常同时
 			// 挂在 body 0 和 body 1 上（"合并为 Any"之前的形状），按件遍历就会给同一个目标
 			// unit 生成两条映射，计划校验直接以 DuplicateTargetMapping 拒掉整份计划。
@@ -567,15 +645,36 @@ internal static class CliVpkRekey
 				if (rank == int.MaxValue)
 					continue;
 
-				var matched = source.Parts.FirstOrDefault(candidate => candidate.PartKind == part.PartKind);
-				var isCarrier = carrierLayerByKind.TryGetValue(part.PartKind, out var carrier)
+				var carries = carrierLayerByKind.TryGetValue(part.PartKind, out var carrier)
 					&& carrier == part.Layer;
 
-				if (matched is null || !isCarrier)
+				// 谁该落到这个 (部位, 层) 上？
+				//
+				// 常规：这一层是该部位的承载层，就由同部位来源 Unit 顶替它。
+				// 头身合并：胸部槽位的两层分工——**最外层放头、次外层放身体**，其余层照样隐藏。
+				//   层号不是写死的，是目标这件护甲本来就有哪几层算出来的（0/1/2、0/1、1/2 都能用）。
+				EquipmentUnitPart? matched;
+				bool wanted;
+				if (isMergeArmour && part.PartKind == UnitMeshPartKind.Torso)
 				{
-					// 走隐藏（AutoHideUnmappedTargetUnits）。两条理由各说一次：
-					// 没有来源 Unit；或者这一层不是承载层（同部位更低层已经承载了）。
-					if (matched is null && isCarrier)
+					wanted = part.Layer == merge!.HeadLayer || part.Layer == merge.BodyLayer;
+					matched = part.Layer == merge.HeadLayer ? helmetSource
+						: part.Layer == merge.BodyLayer ? torsoSource
+						: null;
+				}
+				else
+				{
+					wanted = carries;
+					matched = carries ? source.Parts.FirstOrDefault(candidate => candidate.PartKind == part.PartKind) : null;
+					// 头已经搬进护甲套件：目标那边的 Helmet 件不该再吃掉它（否则一个来源 Unit 落两处）。
+					if (merge is not null && matched?.PartKind == UnitMeshPartKind.Helmet)
+						matched = null;
+				}
+
+				if (matched is null)
+				{
+					// 只在"这一层本来该承载、却没有来源"时说一句；更低层被隐藏不必逐条解释。
+					if (wanted)
 					{
 						var note = $"{part.PartKind}/{part.Layer}/{part.BodyVariant} 没有对应来源 Unit，将走隐藏。";
 						if (!notes.Contains(note)) notes.Add(note);
@@ -589,21 +688,28 @@ internal static class CliVpkRekey
 
 				// 承载层现在**总是**该部位存在的最外层（外层优先）。这条说明留着是因为
 				// 它是排查依据：哪个部位由哪一层承载，直接决定进游戏会不会被剔除代理挡住。
-				// 头盔不算——它天生就只有一层。
-				if (part.PartKind != UnitMeshPartKind.Helmet && fallbackNotedKinds.Add(part.PartKind))
+				// 头盔不算——它天生就只有一层；头身合并时它由 ResolveHeadBodyMerge 单独说明。
+				var isMergedTorso = isMergeArmour && part.PartKind == UnitMeshPartKind.Torso;
+				if (!isMergedTorso && part.PartKind != UnitMeshPartKind.Helmet && fallbackNotedKinds.Add(part.PartKind))
 				{
 					notes.Add($"{target.DisplayName} 的 {part.PartKind} 由 {part.Layer} 层承载来源 Unit"
 						+ "（外层优先：内层会被外层护甲件的剔除代理按深度挡掉）。");
 				}
+
+				var reason = isMergedTorso
+					? (part.Layer == merge!.HeadLayer
+						? $"头身合并：头落到胸部槽位最外层（{part.Layer}）"
+						: $"头身合并：身体落到胸部槽位次外层（{part.Layer}）")
+					: carries && part.Layer == UnitMeshPartLayer.Undergarment
+						? $"同部位直用来源 Unit（{matched.PartKind}）"
+						: $"该部位内衣层缺失，{part.Layer} 层直用来源 Unit（{matched.PartKind}）";
 
 				var mapping = new CrossArmorTransferMapping(
 					new CrossArmorPhysicalTargetKey(part.UnitAssetKey),
 					part,
 					matched,
 					WillReplace: true,
-					Reason: isCarrier && part.Layer == UnitMeshPartLayer.Undergarment
-						? $"同部位直用来源 Unit（{matched.PartKind}）"
-						: $"该部位内衣层缺失，{part.Layer} 层直用来源 Unit（{matched.PartKind}）",
+					Reason: reason,
 					UsedByArchiveIds: [target.ArchiveId],
 					UsedByDisplayNames: [target.DisplayName],
 					IsManual: false,
@@ -638,7 +744,90 @@ internal static class CliVpkRekey
 			targets,
 			mappings,
 			Impacts: [],
-			Issues: []), notes);
+			Issues: []), notes, headMergeState);
+	}
+
+	/// <summary>头身合并的落点：哪件护甲、哪件头盔，身体与头各在哪一层。</summary>
+	private sealed record HeadBodyMerge(
+		string ArmourArchiveId,
+		string ArmourName,
+		string HelmetArchiveId,
+		string HelmetName,
+		UnitMeshPartLayer BodyLayer,
+		UnitMeshPartLayer HeadLayer);
+
+	/// <summary>
+	/// **能不能做头身合并**，以及落在哪两层上。
+	/// <para>
+	/// <b>为什么会有这个功能。</b>游戏里护甲与头盔是两个归档、两个 item。默认做法是把来源的
+	/// 头 Unit 换进头盔归档——玩家就<b>必须</b>把配套头盔 item 也穿上才有头，换一件别的头盔
+	/// 头就没了；而自定义模型的头往往是连着身体的（发型、发饰、脖子），拆开更不合理。
+	/// 合并之后：头跟着护甲走，那件头盔 item 变成没有模型。
+	/// </para>
+	/// <para><b>层号一律算出来，不写死。实机与数据都要求这样：</b></para>
+	/// <list type="bullet">
+	/// <item>头盔套件 = 目标里"件全是 <c>Helmet</c>"的那个；护甲套件 = 有 <c>Torso</c> 件的那个。
+	/// 两者缺一就不合并（目标不是"护甲 + 配套头盔"这一对，本来就没有头盔 item 的问题）。</item>
+	/// <item>胸部槽位"可承载的层"（去掉 <c>Culling</c>/<c>Static</c>/<c>Unknown</c>）至少要有两层：
+	/// 一层放身体、一层放头。<b>只有一层就装不下两件几何</b>，自动退回老做法并说出来。</item>
+	/// <item>实测这件护甲可能是 0/1/2，也可能只有 0/1，还有 1/2——所以取"最外层放头、
+	/// 次外层放身体"，其余层照样隐藏。</item>
+	/// </list>
+	/// <para>
+	/// <b>为什么头放最外层。</b>内层会被外层的剔除代理按深度挡掉（2026-11-01 实机结论）。
+	/// 两件都是我们的几何，谁也说不准哪个代理会挡住哪个，所以把"一定看得见"的位置留给头：
+	/// 身体缺一块还能看出是人，头没了整个角色就废了。
+	/// </para>
+	/// </summary>
+	private static HeadBodyMerge? ResolveHeadBodyMerge(
+		EquipmentUnitCatalogEntry source,
+		IReadOnlyList<EquipmentUnitCatalogEntry> targets,
+		List<string> notes,
+		out VpkHeadMergeState state)
+	{
+		if (!source.Parts.Any(part => part.PartKind == UnitMeshPartKind.Helmet)
+			|| !source.Parts.Any(part => part.PartKind == UnitMeshPartKind.Torso))
+		{
+			// 这个素体本来就没有头（或没有身体）：谈不上合并。
+			state = VpkHeadMergeState.UnavailableNoHelmetKit;
+			return null;
+		}
+
+		var helmetKit = targets.FirstOrDefault(target => target.Parts.Count != 0
+			&& target.Parts.All(part => part.PartKind == UnitMeshPartKind.Helmet));
+		var armourKit = targets.FirstOrDefault(target => target.Parts.Any(part => part.PartKind == UnitMeshPartKind.Torso));
+		if (helmetKit is null || armourKit is null)
+		{
+			// 目标不是"护甲 + 配套头盔"这一对：没有独立的头盔 item 可隐藏，也就没有可合并的东西。
+			state = VpkHeadMergeState.UnavailableNoHelmetKit;
+			return null;
+		}
+
+		var layers = armourKit.Parts
+			.Where(part => part.PartKind == UnitMeshPartKind.Torso && LayerRank(part.Layer) != int.MaxValue)
+			.Select(part => part.Layer)
+			.Distinct()
+			.OrderByDescending(LayerRank)
+			.ToArray();
+		if (layers.Length < 2)
+		{
+			notes.Add($"{armourKit.DisplayName} 的胸部槽位只有 {layers.Length} 层可承载，"
+				+ "装不下「身体 + 头」两件几何：本次不做头身合并，头仍由头盔套件承载"
+				+ "（玩家需要把那件配套头盔也穿上才有头）。");
+			state = VpkHeadMergeState.UnavailableSingleLayer;
+			return null;
+		}
+
+		var merge = new HeadBodyMerge(
+			armourKit.ArchiveId, armourKit.DisplayName,
+			helmetKit.ArchiveId, helmetKit.DisplayName,
+			BodyLayer: layers[1],
+			HeadLayer: layers[0]);
+		notes.Add($"头身合并：头落到 {merge.ArmourName} 的胸部槽位最外层（{merge.HeadLayer}）、"
+			+ $"身体落到次外层（{merge.BodyLayer}）；{merge.HelmetName} 的件全部隐藏，"
+			+ "于是游戏里那件头盔 item 没有模型，头由护甲自己带着。");
+		state = VpkHeadMergeState.Applied;
+		return merge;
 	}
 
 	/// <summary>
@@ -732,6 +921,14 @@ internal static class CliVpkRekey
 		};
 		foreach (var warning in result.Warnings)
 			lines.Add($"  ⚠️ {warning}");
+		lines.Add(result.HeadMerge switch
+		{
+			VpkHeadMergeState.Applied => "  头身合并：已合并（头在护甲胸位，头盔 item 无模型）",
+			VpkHeadMergeState.NotApplicableCustomModel => "  头身合并：不适用（目标是自己的素体，头本来就在主体里）",
+			VpkHeadMergeState.UnavailableSingleLayer => "  头身合并：未执行（目标胸部只有一层，装不下两件几何）",
+			VpkHeadMergeState.UnavailableNoHelmetKit => "  头身合并：未执行（目标没有配套头盔归档）",
+			_ => "  头身合并：已关闭",
+		});
 		return string.Join(Environment.NewLine, lines);
 	}
 
@@ -748,6 +945,20 @@ internal static class CliVpkRekey
 		hiddenMeshes = result.HiddenUnits,
 		mappings = result.Mappings,
 		restoredFromSource = result.RestoredFromSource,
+		// 头身合并**实际**的结果，取值：
+		//   applied                    真的合并了
+		//   off                        调用方关了
+		//   custom-model               目标是自己的素体：没有头盔 item 可隐藏，不适用
+		//   single-layer               目标护甲胸部只有一层，装不下身体 + 头
+		//   no-helmet-kit              目标里没有"护甲 + 配套头盔"这一对
+		headMerge = result.HeadMerge switch
+		{
+			VpkHeadMergeState.Applied => "applied",
+			VpkHeadMergeState.NotApplicableCustomModel => "custom-model",
+			VpkHeadMergeState.UnavailableSingleLayer => "single-layer",
+			VpkHeadMergeState.UnavailableNoHelmetKit => "no-helmet-kit",
+			_ => "off",
+		},
 		warnings = result.Warnings,
 	};
 }

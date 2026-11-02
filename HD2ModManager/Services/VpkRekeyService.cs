@@ -1,6 +1,4 @@
-using System.Diagnostics;
 using System.IO;
-using System.Text;
 using System.Text.Json;
 using HD2ModCore.Infrastructure;
 
@@ -28,6 +26,17 @@ public sealed record VpkRekeyOutcome(
 	/// 某个来源 Unit 在这件护甲上没有落点（会整份消失）、某部位退到了护甲层承载。
 	/// </summary>
 	public IReadOnlyList<string> Warnings { get; init; } = [];
+
+	/// <summary>
+	/// 头身合并**实际**的结果（CLI 的 <c>headMerge</c> 原样带过来）：
+	/// <c>applied</c> / <c>off</c> / <c>custom-model</c> / <c>single-layer</c> / <c>no-helmet-kit</c>。
+	/// <para>
+	/// <b>为什么要它而不是读开关状态。</b>开关打开不等于合并成功：目标是自己的素体时
+	/// 没有头盔 item 可隐藏，目标胸部只有一层时装不下两件几何。界面如果只看开关，
+	/// 就会在什么都没发生的场合说"已开启"——用户下次进游戏发现没变化，就再也信不过这个开关。
+	/// </para>
+	/// </summary>
+	public string? HeadMerge { get; init; }
 }
 
 /// <summary>
@@ -48,13 +57,19 @@ public static class VpkRekeyService
 	/// 要烘进产物的禁用 section（**来源** Unit 键空间，与 <c>wardrobe.json</c> 存的一致）。
 	/// 交给换甲去做而不是这里事后再烘一遍：只有换甲手里有"来源 → 目标"的完整映射。
 	/// </param>
+	/// <param name="headMergeIntoBody">
+	/// 头身合并：<c>true</c> = 头并进护甲套件的胸部槽位（游戏里那件头盔 item 不再有模型），
+	/// <c>false</c> = 老做法（头由头盔套件承载，玩家得穿配套头盔）。
+	/// 这是**产物形状**的开关，不是显示开关——两个状态下写出来的 patch 完全不同。
+	/// </param>
 	public static async Task<VpkRekeyOutcome> RunAsync(
 		string modSelector,
 		string? modDirectory,
 		IReadOnlyList<string> targetArchiveIds,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
 		Action<string>? onStage,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		bool headMergeIntoBody = true)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		var gameData = SettingsService.GetGameDataFolder();
@@ -88,8 +103,11 @@ public static class VpkRekeyService
 			.ToArray();
 		if (disabled is { Length: > 0 })
 			arguments.AddRange(["--disabled", string.Join(';', disabled)]);
+		// 头身合并：显式传 on/off，不依赖 CLI 的默认值——开关存在 Mod 自己身上，
+		// 而"默认值将来会不会变"不该影响已经配好的 Mod。
+		arguments.AddRange(["--head-merge", headMergeIntoBody ? "on" : "off"]);
 
-		var (exitCode, output, error) = await RunAsync(executable, arguments, cancellationToken).ConfigureAwait(false);
+		var (exitCode, output, error) = await Hd2ModProcess.RunAsync(executable, arguments, cancellationToken).ConfigureAwait(false);
 		if (string.IsNullOrWhiteSpace(output))
 			return VpkRekeyOutcome.Failed($"换甲失败（hd2mod 退出码 {exitCode}）：{error.Trim()}");
 
@@ -116,6 +134,11 @@ public static class VpkRekeyService
 				// 换甲时"某个部位没有落点"只在 CLI 的 warnings 里说，而这一条正是
 				// "进游戏少一条胳膊"的唯一线索。以前没往界面传，等于白说。
 				Warnings = ReadStrings(root, "warnings"),
+				// 头身合并的实际结果：界面据此说话，而不是拿开关状态冒充结果。
+				HeadMerge = root.TryGetProperty("headMerge", out var headMerge)
+					&& headMerge.ValueKind == JsonValueKind.String
+						? headMerge.GetString()
+						: null,
 			};
 
 			// 记住这次指向了哪件护甲：组件树的根标题要用它，重开页面时也不必再猜。
@@ -144,37 +167,4 @@ public static class VpkRekeyService
 
 	private static int ReadInt(JsonElement element, string name)
 		=> element.TryGetProperty(name, out var value) && value.TryGetInt32(out var parsed) ? parsed : 0;
-
-	private static async Task<(int ExitCode, string Output, string Error)> RunAsync(
-		string executable,
-		IReadOnlyList<string> arguments,
-		CancellationToken cancellationToken)
-	{
-		using var process = new Process
-		{
-			StartInfo = new ProcessStartInfo
-			{
-				FileName = executable,
-				UseShellExecute = false,
-				CreateNoWindow = true,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				// 结论里全是中文。CLI 自己把 Console 设成 UTF-8（Program.cs），这里必须对齐。
-				StandardOutputEncoding = Encoding.UTF8,
-				StandardErrorEncoding = Encoding.UTF8,
-				WorkingDirectory = Path.GetDirectoryName(executable)!,
-			}
-		};
-		foreach (var argument in arguments) process.StartInfo.ArgumentList.Add(argument);
-
-		if (!process.Start()) throw new InvalidOperationException("无法启动 hd2mod.exe。");
-		var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-		var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-		using var registration = cancellationToken.Register(() =>
-		{
-			try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-		});
-		await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-		return (process.ExitCode, await outputTask.ConfigureAwait(false), await errorTask.ConfigureAwait(false));
-	}
 }

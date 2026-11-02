@@ -128,6 +128,42 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 	public bool ShowVpkComponentCard => IsVpkMod && _vpkFile.ComponentTreeEnabled && HasVpkComponentTree;
 
+	/// <summary>
+	/// 「头身合并到身体」：头并进护甲套件的胸部槽位，游戏里那件头盔 item 就没有模型了；
+	/// 关掉则回到老做法（头由头盔套件承载，玩家必须把配套头盔也穿上才有头）。
+	/// <para>
+	/// <b>这不是显示开关，是产物开关</b>：两种状态写出来的 patch 完全不同，
+	/// 所以翻转它必须重新生成 Overwrite——和「切换」「应用」一样重。为此这里直接触发一次换甲，
+	/// 而不是等用户另外去点「应用」。状态先落盘（同「应用」的理由：烘焙是从状态算出来的）。
+	/// </para>
+	/// <para>旧状态文件里没有这个字段，读出来就是 <c>true</c>（见 <see cref="VpkWardrobeFile"/>）。</para>
+	/// </summary>
+	public bool HeadMergeIntoBody
+	{
+		get => _vpkFile.HeadMergeIntoBody;
+		set
+		{
+			if (_vpkFile.HeadMergeIntoBody == value) return;
+			_vpkFile = _vpkFile with { HeadMergeIntoBody = value };
+			OnPropertyChanged();
+			_ = ApplyHeadMergeAsync(value);
+		}
+	}
+
+	/// <summary>
+	/// 当前目标下这一项能不能生效。<b>不能就当场说出来</b>——用户翻开关最怕的是"翻了、存了、
+	/// 游戏里没变"，而原因藏在代码里。
+	/// <para>
+	/// 自定义素体目标：那个素体本来就是「头 + 身体」一整套（头是它自己的头盔槽件），
+	/// 没有独立的头盔 item 可以隐藏，所以头身合并对它没有意义。
+	/// </para>
+	/// </summary>
+	public string HeadMergeHint => SelectedVpkTargetArmor is { Kind: VpkTargetArmorKind.CustomModel }
+		? "当前目标是自定义素体：头本来就在主体里，这一项对它不生效（换成游戏护甲才会合并）"
+		: string.Empty;
+
+	public bool HasHeadMergeHint => HeadMergeHint.Length != 0;
+
 	public string VpkComponentStatus
 	{
 		get => _vpkStatus;
@@ -149,7 +185,13 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	public VpkTargetArmorOption? SelectedVpkTargetArmor
 	{
 		get => _selectedVpkTargetArmor;
-		set => SetField(ref _selectedVpkTargetArmor, value);
+		set
+		{
+			if (!SetField(ref _selectedVpkTargetArmor, value)) return;
+			// 换目标会改变"头身合并能不能生效"，提示行要跟着变。
+			OnPropertyChanged(nameof(HeadMergeHint));
+			OnPropertyChanged(nameof(HasHeadMergeHint));
+		}
 	}
 
 	// 命令对象要缓存：属性每次 new 一个会让 CanExecute 的重新查询失去意义。
@@ -360,7 +402,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				directory,
 				[target.ArchiveId],
 				_vpkFile.State.Disabled,
-				stage => VpkComponentStatus = stage).ConfigureAwait(true);
+				stage => VpkComponentStatus = stage,
+				CancellationToken.None,
+				// 头身合并在「切换」里也要守住：换目标不代表用户想改这个开关。
+				headMergeIntoBody: _vpkFile.HeadMergeIntoBody).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
 				VpkComponentStatus = outcome.Error ?? "换甲失败。";
@@ -432,6 +477,100 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 	/// <summary>
+	/// 翻转「头身合并」之后要做的事：先落盘，再按新设置重新生成一次 Overwrite。
+	/// <para>
+	/// <b>为什么必须重新生成而不是只存状态。</b>两个状态写出来的 patch 完全不同
+	/// （头在胸部槽位 / 头在头盔套件），只存状态的话用户会看到开关翻了、游戏里什么都没变。
+	/// </para>
+	/// <para>
+	/// 还没有目标护甲（Overwrite 本来就不存在）时只存状态：那种 Mod 的第一次换甲会自己读到它。
+	/// </para>
+	/// </summary>
+	private async Task ApplyHeadMergeAsync(bool enabled)
+	{
+		if (!TryGetCurrentNode(out var node)) return;
+		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+
+		try
+		{
+			await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
+		}
+		catch (Exception exception) when (exception is IOException or InvalidOperationException)
+		{
+			VpkComponentStatus = "保存头身合并开关失败：" + exception.Message;
+			return;
+		}
+
+		if (_vpkBusy)
+		{
+			VpkComponentStatus = "头身合并已保存；上一个操作还在跑，请等它结束后点「应用」重新生成。";
+			return;
+		}
+
+		var targets = ResolveApplyTargets(directory);
+		if (targets is null)
+		{
+			VpkComponentStatus = enabled
+				? "已开启头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。"
+				: "已关闭头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。";
+			return;
+		}
+
+		_vpkBusy = true;
+		VpkComponentStatus = enabled ? "正在把头并进身体…" : "正在把头放回头盔套件…";
+		try
+		{
+			var outcome = await VpkRekeyService.RunAsync(
+				node.Id.Value.ToString("N"),
+				directory,
+				targets,
+				_vpkFile.State.Disabled,
+				stage => VpkComponentStatus = stage,
+				CancellationToken.None,
+				headMergeIntoBody: enabled).ConfigureAwait(true);
+
+			if (!outcome.Ok)
+			{
+				VpkComponentStatus = outcome.Error ?? "头身合并切换失败。";
+				_notifications?.Show(VpkComponentStatus, NotificationLevel.Error, TimeSpan.FromSeconds(20));
+				return;
+			}
+
+			// 说什么由**实际结果**决定，而不是由开关状态决定。
+			// 开关打开却什么也没合并（目标是自己素体 / 目标胸部只有一层）时，
+			// 一句"已开启"会让用户下次进游戏发现没变化，然后再也不信这个开关。
+			var summary = outcome.HeadMerge switch
+			{
+				"applied" => "头身合并已开启：头并进护甲，头盔 item 不再有模型。",
+				"custom-model" => "开关已记录，但对当前目标不生效：这个 Mod 自己的素体本来就是"
+					+ "「头 + 身体」一整套，没有独立的头盔 item 可隐藏。换成一件游戏护甲才会合并。",
+				"single-layer" => "开关已记录，但这一次没有合并：目标护甲的胸部槽位只有一层，"
+					+ "装不下「身体 + 头」两件几何。",
+				"no-helmet-kit" => "开关已记录，但当前目标没有配套头盔归档，无从合并。",
+				_ => "头身合并已关闭：头回到头盔套件，需要穿配套头盔才有头。",
+			};
+			var warningText = outcome.Warnings.Count == 0
+				? string.Empty
+				: " " + string.Join(" ", outcome.Warnings.Take(2))
+					+ (outcome.Warnings.Count > 2 ? $"（另有 {outcome.Warnings.Count - 2} 条）" : string.Empty);
+			VpkComponentStatus = summary + warningText;
+			_notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(12));
+
+			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
+			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
+				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
+			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
+		}
+		catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
+		{
+			VpkComponentStatus = "头身合并切换失败：" + exception.Message;
+		}
+		finally
+		{
+			_vpkBusy = false;
+		}
+	}
+	/// <summary>
 	/// 点"应用"：先把勾选状态落盘，再烘进 patch。
 	/// <b>顺序不能反</b>——烘焙是从状态算出来的，状态没写就先烘，崩在中间会出现
 	/// "patch 已改、状态还是旧的"，下一次点应用就会把旧状态烘回去。
@@ -476,7 +615,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				targets,
 				_vpkFile.State.Disabled,
 				stage => VpkComponentStatus = stage,
-				CancellationToken.None).ConfigureAwait(true);
+				CancellationToken.None,
+				// 重新生成也照这个开关来：否则「应用」会把用户关掉的头身合并又打开。
+				headMergeIntoBody: _vpkFile.HeadMergeIntoBody).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
 				VpkComponentStatus = outcome.Error ?? "重新生成失败。";

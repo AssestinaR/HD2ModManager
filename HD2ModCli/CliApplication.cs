@@ -2466,6 +2466,26 @@ public static class CliApplication
 				}
 			}
 
+			// 命名空间不传 == 退回"全库同名共享 id"。
+			//
+			// 这条警告是给**人和 agent**看的：管理器导入总会传 --id-namespace（整批共用），
+			// 而直接调命令行的调用方很容易漏掉它，于是模型包和材质包分批转、
+			// 两边算出的材质 id 不同 —— 现象是游戏里材质丢失/白模，而且包里看不出来。
+			// 漏给一个空字符串也是漏，所以判空而不是判非 null。
+			var resolvedIdNamespace = ResolveIdNamespace(invocation.Options);
+			var conversionNotes = new List<string>();
+			if (resolvedIdNamespace is null && results.Count != 0)
+			{
+				const string namespaceWarning =
+					"这次转换没有命名空间（--id-namespace）：材质与贴图的 id 只由名字决定，"
+					+ "会和库里任何其它没给命名空间的导入共用同一套 id。"
+					+ "同一个模型的所有相关 VPK（模型包 + 它引用的材质包）必须一次性转换；"
+					+ "分批转会让模型 patch 引用的材质 id 与材质 patch 写出的对不上，"
+					+ "游戏里表现为材质丢失或白模，而产物本身看不出任何异常。";
+				conversionNotes.Add(namespaceWarning);
+				Console.Error.WriteLine("⚠️ " + namespaceWarning);
+			}
+
 			Emit(invocation.Options,
 				new
 				{
@@ -2476,7 +2496,19 @@ public static class CliApplication
 					physBones = physBoneReports,
 					// 命名空间：整批共用。写进报告是为了让"这个 Mod 的材质 id 凭什么这样"可回答——
 					// 同一个来源包重转会得到同一个 token，换一个来源就得到另一套 id（这正是隔离的原理）。
-					idNamespace = ResolveIdNamespace(invocation.Options),
+					idNamespace = resolvedIdNamespace,
+					// 转换参数：**唯一目的是让重构建能重跑出同一份产物**。
+					// 重构建读的就是这一段（见 VpkConversionReport）：少了它，重构建只能猜默认值，
+					// 猜错的表现是"重构建之后观感变了"，而没人会想到是参数丢了。
+					conversion = new
+					{
+						components = invocation.Options.Components,
+						matcap = invocation.Options.Matcap,
+						matcapGain = invocation.Options.MatcapGain,
+						cutout = invocation.Options.Cutout,
+						albedoFactor = invocation.Options.AlbedoFactor,
+					},
+					notes = conversionNotes,
 					matcapGeometry = matcapModel?.MdlPath,
 					patches = results.Select(ProjectConversion).ToArray(),
 					// 识别到但没产出 patch 的组件开关包（它们只描述"关什么"）。
@@ -2486,7 +2518,15 @@ public static class CliApplication
 					componentSwitches = switchReports,
 					failures,
 				},
-				() => FormatVpk2Patch(results, failures, Path.GetFullPath(outputRoot), matcapModel?.MdlPath));
+				() =>
+				{
+					var text = FormatVpk2Patch(results, failures, Path.GetFullPath(outputRoot), matcapModel?.MdlPath);
+					// 报告里的提示也要出现在**人读的那份**输出里：命令行用户不会去看 JSON。
+					return conversionNotes.Count == 0
+						? text
+						: text + Environment.NewLine + Environment.NewLine
+							+ string.Join(Environment.NewLine, conversionNotes.Select(note => "⚠️ " + note));
+				});
 			return exitCode;
 		}
 
@@ -2510,6 +2550,7 @@ public static class CliApplication
 				rekeyTargets,
 				invocation.Options.Output,
 				ParseDisabledSections(invocation.Options.Disabled),
+				MergeHeadIntoArmour(invocation.Options),
 				default).ConfigureAwait(false);
 			Emit(invocation.Options, CliVpkRekey.Project(rekeyResult), () => CliVpkRekey.Format(rekeyResult));
 			return 0;
@@ -2611,10 +2652,11 @@ public static class CliApplication
 			// 而且工作区会多出一条重复的模型记录。
 			//
 			// unit id 的生成是 `seed + index`（index 从 1 起），所以最小那个 id 减 1 就是 seed。
+			// 显式 `--reuse-model` 时改用调用方指定的那份（重构建就靠它把 id 接上）。
 			string? reusedModelKey = null;
 			ulong? reusedUnitIdSeed = null;
-			var existingModelPath = Path.Combine(Path.GetFullPath(output), "custom-model.json");
-			if (File.Exists(existingModelPath))
+			var existingModelPath = ResolveReuseModelPath(invocation.Options, Path.GetFullPath(output));
+			if (existingModelPath is not null)
 			{
 				using var existingDocument = System.Text.Json.JsonDocument.Parse(File.ReadAllText(existingModelPath));
 				if (existingDocument.RootElement.TryGetProperty("key", out var existingKeyElement))
@@ -2852,6 +2894,16 @@ public static class CliApplication
 		string? RegistryError);
 
 	/// <summary>
+	/// 这次 <c>vpk rekey</c> 要不要做**头身合并**。不传 <c>--head-merge</c> = 做。
+	/// <para>
+	/// 默认开：默认做法要求玩家把配套头盔 item 也穿上才有头，那是不必要的负担。
+	/// <c>--head-merge off</c> 是留给"实机发现合并后不对劲"时的退路。
+	/// </para>
+	/// </summary>
+	private static bool MergeHeadIntoArmour(CliGlobalOptions options)
+		=> !string.Equals(options.HeadMerge, "off", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
 	/// 解析 <c>--disabled "unit:1,2;unit:3"</c>（<c>vpk rekey</c> 用）。
 	/// <para>
 	/// 键是<b>来源</b> Unit 键——管理器存的状态就是按来源 patch 记的。写成这种扁平格式而不是
@@ -3032,6 +3084,38 @@ public static class CliApplication
 			"alpha-inv" => CutoutStrategy.MaskInAlphaInverted,
 			_ => CutoutStrategy.AlphaClip,
 		};
+
+	/// <summary>
+	/// 这次转换要**沿用**哪一份 <c>custom-model.json</c>（素体 key + unit id 基），没有就返回 <c>null</c>。
+	/// <para>
+	/// 两条来源，优先级明确：
+	/// </para>
+	/// <list type="number">
+	/// <item><c>--reuse-model</c> 显式给的那份 —— 重构建用它。重构建必须转到临时目录里转换
+	/// （校验通过才换进 <c>vpk2patch/</c>），临时目录当然是空的，不指过来 id 就会重新随机，
+	/// 而 wardrobe 的开关掩码、真映射写进 dl_bin 的件表都按旧 id 记着，全部失效。</item>
+	/// <item>输出目录里已有的那份 —— "重跑同一个目录"的原地替换，历史行为。
+	/// 少了它，同一份 VPK 转两次就是两具互不相干的素体。</item>
+	/// </list>
+	/// </summary>
+	private static string? ResolveReuseModelPath(CliGlobalOptions options, string outputDirectory)
+	{
+		if (!string.IsNullOrWhiteSpace(options.ReuseModel))
+		{
+			var explicitPath = Path.GetFullPath(options.ReuseModel);
+			if (!File.Exists(explicitPath))
+			{
+				throw new CliUserException("ReuseModelNotFound",
+					$"--reuse-model 指定的文件不存在：{explicitPath}。"
+					+ "它应当是上一次产物的 custom-model.json（在 vpk2patch/ 里）。");
+			}
+
+			return explicitPath;
+		}
+
+		var existing = Path.Combine(outputDirectory, "custom-model.json");
+		return File.Exists(existing) ? existing : null;
+	}
 
 	/// <summary>
 	/// 把一个 VPK 忠实地翻译成一个 patch。
@@ -3218,10 +3302,11 @@ public static class CliApplication
 		// 而且工作区会多出一条重复的模型记录。
 		//
 		// unit id 的生成是 `seed + index`（index 从 1 起），所以最小那个 id 减 1 就是 seed。
+		// 显式 `--reuse-model` 时改用调用方指定的那份（重构建就靠它把 id 接上）。
 		string? reusedModelKey = null;
 		ulong? reusedUnitIdSeed = null;
-		var existingModelPath = Path.Combine(outputDirectory, "custom-model.json");
-		if (File.Exists(existingModelPath))
+		var existingModelPath = ResolveReuseModelPath(options, outputDirectory);
+		if (existingModelPath is not null)
 		{
 			using var existingDocument = System.Text.Json.JsonDocument.Parse(File.ReadAllText(existingModelPath));
 			if (existingDocument.RootElement.TryGetProperty("key", out var existingKeyElement))
@@ -7792,18 +7877,43 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	  hd2mod context export --library <Mod库目录> --output context.json
 	  hd2mod source inspect <VPK文件> [<模型名片段>] [--output source-model-report.json] [--overwrite] --json
 	  hd2mod source retarget <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> [--bone-hash <hash→名字表>] --output <输出目录> [--overwrite] --json
+	  hd2mod vpk rekey <Mod GUID 或前缀> [--archive-id <护甲归档>[,<头盔归档>]] [--disabled <unit:1,2;…>] [--head-merge on|off] --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --json
+	    把 vpk2patch 产出的 Unit 换到某件护甲自己的 Unit 键上，其余件用隐藏 Unit 顶掉；产物写进 Overwrite/（来源不动）。
+	    --head-merge on（默认）
+	                    **头身合并**：头落到护甲套件胸部槽位的最外层、身体落到次外层，头盔套件一件都不写
+	                    （于是游戏里那件头盔 item 没有模型，头由护甲自己带着）。
+	                    层号不是写死的，按目标这件护甲胸部槽位实际有几层算；只有一层时装不下两件几何，
+	                    自动退回老做法并在 warnings 里说明。
+	    --head-merge off
+	                    老做法：头由头盔套件承载，玩家必须把配套头盔 item 也穿上才有头。
+	    --disabled <unit:1,2;unit:3>
+	                    要烘成关闭状态的 section（**来源** Unit 键空间，与 wardrobe.json 存的一致）。
 	  hd2mod vpk2patch <VPK文件> [<VPK文件> ...] --output <输出根目录> [--avatar-toc <avatar Unit TocData>] [--game-data <游戏data目录>] [--material-source <分号分隔的 VPK 或目录>] [--components merge|all|none|<名字,名字>] [--json]
 	    把**一批** VPK 逐个翻译成 patch：每个 VPK 出**一个** patch，只含它自己的资源。
 	    自动识别类型：含 .mdl → 出 unit patch（零材质零贴图）；只有 .vmt/.vtf → 出材质/贴图 patch。
 	    整批构成**解析集合**：材质 VPK 从队列里找模型（算 matcap 平均色要几何），
 	    模型 VPK 从队列里找材质（Unit 必须引用正确的材质 id）。谁也不替谁多带东西。
 	    产出在 <输出根目录>/<VPK 名>/ 下，文件名形如 9ba626afa44a3aa3.patch_0。
-	    --matcap bake|albedo   matcap 怎么处理（默认 bake）
+	    --matcap bake|albedo|metal   matcap 怎么处理（默认 bake；管理器导入传 metal）
 	        bake    把 matcap 的面积加权平均色烘进底色（M3 实机验证过的做法）。
 	                代价：matcap 的内容在**转换时**就固定了，"只换 matcap"的包（C1/C2 那种）
 	                没法成为独立 patch——换 patch 换不掉颜色。
 	        albedo  直接拿 matcap 当底色（贴图 id = hash(matcap 名)）。于是它由哪个 VPK
 	                提供就归哪个 patch，C1/C2 成了真正可换的 patch。观感需要实机对照。
+	        metal   丢掉 matcap 的亮度图案、只保留色相，整片抬到金属 F0（默认 0.96）。
+	                依据：matcap 是加法高光图，当底色用时实测 F0 只有 0.14，于是"又黑又没反光"；
+	                四档实机对照里这一档最像金属。**管理器导入走这一档。**
+	    --id-namespace <来源标识> | --id-namespace-token <token>
+	                   材质/贴图 id 的命名空间。**一批必须共用同一个值**：
+	                   模型 patch 引用的材质 id 要与材质 patch 写出的相等。
+	                   不传 = id 只由名字决定，会和库里其它没给命名空间的导入撞在一起
+	                   （转换器会在报告与 stderr 上明确警告）。
+	                   token 形如 vpk-060d479e4bc677d0，用于"只重转一批里的某一个包"。
+	    --reuse-model <旧产物的 custom-model.json>
+	                   沿用那份记下的素体 key 与 unit id 基。重构建（管理器里的「重构建」按钮）
+	                   靠它把 unit id 接上——否则 id 重新随机，已登记的映射与件表全部失效。
+	    --cutout a|b|rgb-inv|alpha|alpha-inv
+	                   镂空材质的落地方式（见 CutoutStrategy）。默认 a = 历史行为。
 	    **这是管理器导入流程该走的路径。** 下面是 `source convert`（旧路径）的说明。
 	  hd2mod source convert <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> --game-data <游戏data目录> --output <输出目录> [--components merge|all|none|<名字,名字>] [--overwrite] --json
 	    ⚠️ 旧路径：模型专用，把用到的材质**全部合并**进一个材质包（patch_1）。保留它只为 M1/M2 对拍。
