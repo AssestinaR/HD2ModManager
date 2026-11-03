@@ -165,6 +165,49 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
+	/// **matcap 名说不出所以然时，退回源材质名。**
+	/// <para>
+	/// 实测 Lunalice：21 个 <c>ornament_metal_*</c>（项链/项圈/腰带/护腕/裙撑/头饰/小刀…）
+	/// 用的 matcap 文件名叫 <c>11</c>——纯数字，没有任何线索，于是 21 个金属件
+	/// **全部**判成非金属，而它们的模板是 <c>advanced</c>（本来给得了金属度）。
+	/// 它们的材质名其实是同样明确的作者声明。
+	/// </para>
+	/// <para>
+	/// 但不能反过来让材质名推翻 matcap 的结论：MourningVeil 的 <c>Mat_Metal_gem_*</c>
+	/// 材质名含 metal，而 matcap 是 <c>matcap_jewel9</c>（纯宝石），判非金属是对的。
+	/// </para>
+	/// </summary>
+	[Theory]
+	// matcap 名无信息 → 看材质名
+	[InlineData("11", "ornament_metal_chain", true)]
+	[InlineData("11", "ornament_metal_choker", true)]
+	[InlineData("11", "metal_2", true)]
+	[InlineData("11", "acc_metal_1", true)]
+	[InlineData("11", "mat_cloth_dress_outer", false)]      // 材质名也没线索
+	// matcap 名有结论 → 压过材质名
+	[InlineData("matcap_jewel9", "mat_metal_gem_earings", false)]
+	[InlineData("matcap_metal11", "mat_metal_necklace", true)]
+	[InlineData("matcap_highlight", "mat_accpreal_tiara", false)]
+	// 两个都没有 → 非金属
+	[InlineData("6", "mat_ornament_petal", false)]
+	[InlineData(null, null, false)]
+	public void MetalVerdictFallsBackToTheMaterialNameOnlyWhenTheMatcapNameIsSilent(
+		string? matcapName, string? materialName, bool expected)
+	{
+		Assert.Equal(expected, MaterialAppearance.IsMetallicMatcapName(matcapName, materialName));
+	}
+
+	/// <summary>单参重载保持"只看 matcap 名"的旧语义（没有第二个证据时不该改变结论）。</summary>
+	[Theory]
+	[InlineData("11", false)]
+	[InlineData("matcap_metal11", true)]
+	[InlineData("matcap_jewel9", false)]
+	public void SingleArgumentOverloadStillOnlyReadsTheMatcapName(string matcapName, bool expected)
+	{
+		Assert.Equal(expected, MaterialAppearance.IsMetallicMatcapName(matcapName));
+	}
+
+	/// <summary>
 	/// **能不能表达金属度，由"模板有没有这个槽"决定，不是由模板名决定。**
 	/// <para>
 	/// 实测 MourningVeil：判成金属的 10 个材质全部因为"镂空优先"落进 alphaclip，

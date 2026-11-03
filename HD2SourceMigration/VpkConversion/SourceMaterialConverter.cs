@@ -1533,11 +1533,16 @@ public sealed class SourceMaterialConverter
 		// ⚠️ 合成底色的情况**无条件**算"matcap 承载表面"：底色根本不存在，
 		// 观感只可能来自 matcap，与 tint 多大无关（实测 mourningveil 的
 		// `mat_gem1_shoes` 就没有底色而 tint 只有 0.9）。
-		// 金属：**按 matcap 的名字**判，与底色亮度无关。
+		// 金属：**按名字**判，与底色亮度无关。
 		// 曾经用"底色近黑"当判据，实测同一条 mat_metal 在 B1（黑）是 17.2、B3（白紫）是 128.4
 		// —— 它测的是颜色变体的属性，不是材质的属性。详见 MaterialAppearance.IsMetallicMatcapName。
+		//
+		// ⚠️ **第二个参数不是可选的装饰。** 判据先看 matcap 名；当它说不出所以然时（例如
+		// 素材把金属 matcap 命名成 `11`），退回源材质名。实测 Lunalice 的 21 个
+		// `ornament_metal_*` 正是因为 matcap 叫 `11` 而**全部**判成非金属，
+		// 而它们的模板是 advanced（本来给得了金属度）。
 		var matcapIsMetal = verdict.MatCapIsTheSurface
-			&& MaterialAppearance.IsMetallicMatcapName(matcapTextureName);
+			&& MaterialAppearance.IsMetallicMatcapName(matcapTextureName, stem);
 
 		// "matcap 承载表面"= 底色该被顶掉。
 		// Metal 档：金属件、没有底色的件、以及**底色根本没有颜色**（占位图/近黑）的件。

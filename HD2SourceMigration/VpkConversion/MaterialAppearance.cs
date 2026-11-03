@@ -66,30 +66,61 @@ public static class MaterialAppearance
 	/// ⚠️ <b>曾经想把"金属词压过装饰词"改成两层优先级，改完又撤回了</b>——
 	/// 因为真实数据不支持：MourningVeil 的 <c>Mat_Metal_gem_*</c> 材质名里确实有 metal，
 	/// 但它们的 <c>$matcapture</c> 是 <c>matcap_jewel9</c>（纯宝石），判非金属是<b>对的</b>。
-	/// 这批件的"金属没生效"另有原因（它们全部落进 alphaclip，那里根本没有金属度槽），
-	/// 与判定无关。别再凭材质名去猜——判定只看 matcap 名。
+	/// 别再凭材质名去推翻 matcap 的结论——但 matcap 名<b>说不出所以然</b>时，材质名是第二个证据，
+	/// 见 <see cref="IsMetallicMatcapName(string?, string?)"/>。
 	/// </para>
 	/// </summary>
-	public static bool IsMetallicMatcapName(string? matcapName)
+	public static bool IsMetallicMatcapName(string? matcapName) => ClassifyName(matcapName) ?? false;
+
+	/// <summary>
+	/// 判金属：<b>先看 matcap 名，它说不出所以然时再看材质名</b>。
+	/// <para>
+	/// <b>为什么需要第二个证据。</b>实测 Lunalice：21 个 <c>ornament_metal_*</c> 材质
+	/// （项链、项圈、腰带、护腕、裙撑、头饰、小刀…）用的 matcap 文件名叫
+	/// <c>11</c>——一个纯数字。名字里没有任何判定线索，于是 21 个金属件<b>全部判成非金属</b>，
+	/// 而它们的模板是 <c>advanced</c>（本来可以给金属度）。用户看到的就是"金属没有金属效果"。
+	/// </para>
+	/// <para>
+	/// 而它们的材质名 <c>ornament_metal_chain</c> 其实是<b>同样明确的作者声明</b>。
+	/// 所以规则是：matcap 名给出结论就信它（它更具体、且是决定观感的那个图）；
+	/// 给不出结论时退回材质名；两者都说不出所以然才是非金属。
+	/// </para>
+	/// <para>
+	/// 这样不会破坏已有的正确判定：MourningVeil 的 <c>matcap_jewel9</c> 仍然判宝石、
+	/// <c>matcap_metal11</c> 仍然判金属，与材质名无关。
+	/// </para>
+	/// </summary>
+	/// <param name="matcapName">matcap 贴图名（可能是个纯数字，这时它不提供信息）。</param>
+	/// <param name="materialName">源材质名（VMT 名）。第二个证据源。</param>
+	public static bool IsMetallicMatcapName(string? matcapName, string? materialName)
+		=> ClassifyName(matcapName) ?? ClassifyName(materialName) ?? false;
+
+	/// <summary>
+	/// 按名字判金属：有明确结论返回 <c>true/false</c>，<b>名字里没有任何线索时返回 <c>null</c></b>。
+	/// <para>
+	/// 三态是刻意的：只有区分"判为非金属"和"这个名字我看不出来"，才能在上面那个两参重载里
+	/// 正确地退回第二个证据源。二态会让"`11` 看不出来"和"`jewel9` 是宝石"混成同一件事。
+	/// </para>
+	/// </summary>
+	private static bool? ClassifyName(string? name)
 	{
-		if (string.IsNullOrWhiteSpace(matcapName))
-			return false;
-		var name = matcapName.ToLowerInvariant();
+		if (string.IsNullOrWhiteSpace(name))
+			return null;
+		var lower = name.ToLowerInvariant();
 
 		foreach (var marker in NonMetallicMatcapMarkers)
 		{
-			if (name.Contains(marker, StringComparison.Ordinal))
+			if (lower.Contains(marker, StringComparison.Ordinal))
 				return false;
 		}
 
 		foreach (var marker in MetallicMatcapMarkers)
 		{
-			if (name.Contains(marker, StringComparison.Ordinal))
+			if (lower.Contains(marker, StringComparison.Ordinal))
 				return true;
 		}
 
-		// 认不出来就当非金属：金属化是"加强"，判错的代价比"把布料/宝石做成金属"小。
-		return false;
+		return null;
 	}
 
 	/// <summary>名字里出现这些词 → <b>不是</b>金属（优先于金属词）。</summary>
