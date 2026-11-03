@@ -73,6 +73,30 @@ public sealed record VpkConversionReport(
 	/// <summary><c>true</c> = 这份报告里记了转换参数；<c>false</c> = 旧产物，只能按默认值重跑。</summary>
 	public bool HasSettings => Settings != VpkConversionSettings.Default;
 
+	/// <summary>
+	/// 生成这份产物的转换器构建时间（UTC ISO-8601，来自 <c>conversion.toolStamp</c>）。
+	/// <para>
+	/// <b>回答的问题是"这份产物是不是旧代码做的"。</b>实测代价（2026-11-03）：
+	/// 改了转换器行为、也点了重构建，但其中一包没被刷到，于是连续三轮测试都在看旧产物，
+	/// 还在怀疑代码没生效。当时唯一的线索是文件 mtime，而 mtime 分不清
+	/// "重构建过但内容没变"和"根本没重构建"。
+	/// </para>
+	/// <para><c>null</c> = 旧产物（那时还没写这个字段），一律按"可能过期"处理。</para>
+	/// </summary>
+	public string? ToolStamp { get; init; }
+
+	/// <summary>
+	/// 这份产物是否<b>由给定构建</b>的转换器生成。
+	/// <para>
+	/// 任一方为 <c>null</c>（旧产物 / 拿不到当前戳）时返回 <c>false</c> —— 判"可能过期"是安全方向：
+	/// 误判为过期只是建议重构建一次，误判为新则会让用户对着旧产物查半天。
+	/// </para>
+	/// </summary>
+	public bool IsFromBuild(string? currentStamp)
+		=> !string.IsNullOrWhiteSpace(ToolStamp)
+			&& !string.IsNullOrWhiteSpace(currentStamp)
+			&& string.Equals(ToolStamp, currentStamp, StringComparison.Ordinal);
+
 	public static string GetPath(string modDirectory)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
@@ -125,7 +149,10 @@ public sealed record VpkConversionReport(
 				ReadStrings(root, "notes"),
 				counts.Units,
 				counts.Materials,
-				counts.Textures);
+				counts.Textures)
+			{
+				ToolStamp = ReadToolStamp(root),
+			};
 		}
 		catch (JsonException)
 		{
@@ -164,6 +191,12 @@ public sealed record VpkConversionReport(
 			&& value.TryGetInt32(out var parsed)
 			? parsed
 			: 0;
+
+	/// <summary>读 <c>conversion.toolStamp</c>（旧产物没有这个字段 → <c>null</c>）。</summary>
+	private static string? ReadToolStamp(JsonElement root)
+		=> root.TryGetProperty("conversion", out var conversion) && conversion.ValueKind == JsonValueKind.Object
+			? ReadString(conversion, "toolStamp")
+			: null;
 
 	private static VpkConversionSettings ReadSettings(JsonElement root)
 	{

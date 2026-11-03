@@ -60,10 +60,27 @@ public partial class ModDetailsPageViewModel
 		var includeOptions = false;
 		if (optionTargets.Count != 0)
 		{
+			// **先说清哪些选项的产物已经过期。**
+			//
+			// 实测教训（2026-11-03）：用户改了转换器行为、也点了重构建，但其中一包没被刷到，
+			// 于是连续三轮进游戏都在看旧产物。选项一多，"到底刷了哪几个"根本没人能凭印象回答，
+			// 所以这里直接把"过期几个、叫什么"写进对话框 —— 让选择有依据，而不是靠记性。
+			var currentStamp = ConversionStaleness.CurrentToolStamp();
+			var staleNames = optionTargets
+				.Where(option => !ConversionStaleness.IsFromCurrentTool(option.Directory, currentStamp))
+				.Select(option => option.Name)
+				.ToArray();
+
 			var names = string.Join("、", optionTargets.Take(6).Select(option => option.Name));
 			if (optionTargets.Count > 6) names += $"…（共 {optionTargets.Count} 个）";
+			var staleLine = staleNames.Length == 0
+				? "· 这些选项的产物都已是最新转换器生成的\n"
+				: $"⚠️ 其中 {staleNames.Length} 个的产物早于当前转换器（选「是」才会刷新）："
+					+ $"{string.Join("、", staleNames.Take(6))}"
+					+ (staleNames.Length > 6 ? $"…（共 {staleNames.Length} 个）" : string.Empty) + "\n";
 			var optionQuestion =
 				$"这个 Mod 有 {optionTargets.Count} 个选项也是 VPK 转换产物：\n{names}\n\n"
+				+ staleLine + "\n"
 				+ "要把它们也一起重构建吗？\n"
 				+ "· 是：先重建主体，再逐个重建这些选项\n"
 				+ "· 否：只重建主体（选项保持现在的产物）";

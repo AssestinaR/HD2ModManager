@@ -14,6 +14,32 @@ namespace HD2ModCli;
 
 public static class CliApplication
 {
+	/// <summary>
+	/// 当前这份 <c>hd2mod</c> 的构建时间戳（取运行中程序集文件的最后写入时间，UTC ISO-8601）。
+	/// <para>
+	/// **用途只有一个：判断"某份产物是不是旧代码做的"。** 写进每份转换报告的
+	/// <c>conversion.toolStamp</c> 里，之后拿它和"现在的"戳比一比就知道要不要重构建。
+	/// </para>
+	/// <para>
+	/// 为什么不手工维护一个版本号：那种号会忘记改，而忘记改的后果正好是这条判据失效。
+	/// 文件时间是构建系统自己写的，永远不会忘记。
+	/// </para>
+	/// </summary>
+	public static readonly Lazy<string?> CliBuildStamp = new(() =>
+	{
+		try
+		{
+			var path = Environment.ProcessPath;
+			if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+				return null;
+			return File.GetLastWriteTimeUtc(path).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException)
+		{
+			return null;
+		}
+	});
+
 	public static async Task<int> RunAsync(string[] args)
 	{
 		CliInvocation? invocation = null;
@@ -2529,6 +2555,15 @@ public static class CliApplication
 						matcapGain = invocation.Options.MatcapGain,
 						cutout = invocation.Options.Cutout,
 						albedoFactor = invocation.Options.AlbedoFactor,
+						// **生成这份产物的转换器是什么时候构建的。**
+						//
+						// 存在的理由只有一个：回答"这份产物是不是旧代码做的"。
+						// 实测代价（2026-11-03）：用户改了转换器行为、也点了重构建，
+						// 但 MourningVeil 的 B3 那一包没被刷到（其余 11 包都刷了），
+						// 于是连续三轮测试都在看 11-02 的旧产物，还在怀疑代码没生效。
+						// 当时唯一的判断依据是文件 mtime，而 mtime 分不清"重构建过但内容没变"
+						// 和"根本没重构建"。有了这个戳，比较一次就清楚。
+						toolStamp = CliBuildStamp.Value,
 					},
 					notes = conversionNotes,
 					matcapGeometry = matcapModel?.MdlPath,

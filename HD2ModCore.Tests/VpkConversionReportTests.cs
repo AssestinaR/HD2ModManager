@@ -150,4 +150,49 @@ public sealed class VpkConversionReportTests : IDisposable
 		Assert.Null(VpkConversionReport.TryParse("不是 JSON"));
 		Assert.Null(VpkConversionReport.TryParse("[1, 2]"));
 	}
+
+	/// <summary>
+	/// <c>conversion.toolStamp</c>：判断"这份产物是不是当前转换器做的"。
+	/// <para>
+	/// 实测背景（2026-11-03）：改完转换器、也点了重构建，但有一包没被刷到，
+	/// 连续三轮进游戏都在看旧产物。当时只靠文件 mtime，而 mtime 分不清
+	/// "重构建过但内容没变"和"根本没重构建"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void ToolStampTellsWhetherTheProductCameFromTheCurrentConverter()
+	{
+		var report = VpkConversionReport.TryParse("""
+			{
+			  "conversion": { "matcap": "metal", "toolStamp": "2026-11-03T04:45:00.0000000Z" },
+			  "queue": [], "notes": [], "patches": []
+			}
+			""");
+
+		Assert.NotNull(report);
+		Assert.Equal("2026-11-03T04:45:00.0000000Z", report!.ToolStamp);
+
+		// 同一个戳 → 是当前转换器做的。
+		Assert.True(report.IsFromBuild("2026-11-03T04:45:00.0000000Z"));
+
+		// 不同戳（转换器之后又构建过）→ 过期，建议重构建。
+		Assert.False(report.IsFromBuild("2026-11-03T05:10:00.0000000Z"));
+
+		// 任一方为 null 都判"可能过期"：误判过期只是多重建一次，
+		// 误判为新则会让用户对着旧产物查半天。
+		Assert.False(report.IsFromBuild(null));
+		Assert.False(report.IsFromBuild(""));
+	}
+
+	[Fact]
+	public void OldProductWithoutAToolStampIsNeverConsideredCurrent()
+	{
+		var report = VpkConversionReport.TryParse("""
+			{ "conversion": { "matcap": "metal" }, "queue": [], "notes": [], "patches": [] }
+			""");
+
+		Assert.NotNull(report);
+		Assert.Null(report!.ToolStamp);
+		Assert.False(report.IsFromBuild("2026-11-03T04:45:00.0000000Z"));
+	}
 }
