@@ -222,6 +222,33 @@ public sealed class VpkImportService
 				notes), produced);
 		}
 
+		// **导入 VPK 之前先确认「游戏资产索引」在不在。**
+		//
+		// 为什么必须挡在这里：模型转换要读索引里的装备关系表来选外壳 Unit（donor），
+		// 索引不在时 CLI 报 `ArmorIndexUnavailable` → **模型整批失败**；
+		// 而材质包不依赖它、照样能转成。于是用户看到的是
+		// **"这一批只导进了材质，模型没了"**，既没有醒目的失败，也没有任何线索指向索引。
+		//
+		// 口径（用户定）：**只在"不存在"时自动建一次**；已存在的一律不动 ——
+		// 哪怕过期也不重建（重建要几十秒，而过期与否该由用户显式决定）。
+		var indexProblem = await DescribeMissingGameDataIndexAsync(cancellationToken).ConfigureAwait(false);
+		if (indexProblem is not null)
+		{
+			onStage?.Invoke("游戏资产索引不存在，正在自动建立（只这一次）…");
+			var buildError = await TryBuildGameDataIndexAsync(onStage, cancellationToken).ConfigureAwait(false);
+			if (buildError is not null)
+			{
+				var reason = "游戏资产索引不存在，自动建立也失败了 —— 模型转换需要它来选外壳 Unit。"
+					+ $"请到「设置与资产」里手动建立一次资产索引，再重新导入。（{buildError}）";
+				return (new VpkImportReport(source.SourcePath,
+					source.VpkPaths.Select(vpk => new VpkImportItem(vpk, VpkImportOutcome.Failed, null, reason, 0, 0, 0, [])).ToArray(),
+					notes), produced);
+			}
+
+			notes.Add("导入前发现游戏资产索引不存在，已自动建立一次（模型转换靠它选外壳 Unit；"
+				+ "没有它时模型会整批失败，只剩材质包能转出来）。");
+		}
+
 		onStage?.Invoke("正在识别哪些 VPK 能转换");
 		var plan = await PlanAsync(executable, source.VpkPaths, cancellationToken).ConfigureAwait(false);
 		if (plan.Convertible.Count == 0)
@@ -746,6 +773,116 @@ public sealed class VpkImportService
 		=> names.Count <= limit
 			? string.Join("、", names)
 			: string.Join("、", names.Take(limit)) + $"…（共 {names.Count} 个）";
+
+	/// <summary>
+	/// 游戏资产索引**在不在**。<c>null</c> = 就绪（可以直接用）。
+	/// <para>
+	/// 判据是"索引数据库里能不能读出装备关系表"——那正是模型转换选外壳 Unit 用的那张表。
+	/// **刻意不判"过期"**：过期与否要看游戏文件指纹，那属于用户在「设置与资产」里的决定；
+	/// 导入流程只在"根本没有"时自动补一次。
+	/// </para>
+	/// </summary>
+	private async Task<string?> DescribeMissingGameDataIndexAsync(CancellationToken cancellationToken)
+	{
+		// 一批导入是"一个来源一个 `VpkImportService`"，所以同一个批次里会问很多次。
+		// 索引库有 100 MB 量级，逐个来源都去读一遍表既慢又没必要 —— 按
+		// （路径 + 大小 + 修改时间）记一次结果就够了；重建/替换库文件会让键自然失效。
+		var stamp = DescribeIndexFile(_paths.DbPath);
+		if (GameDataIndexProbeCache.TryGetValue(stamp, out var cached))
+			return cached;
+
+		string? problem;
+		try
+		{
+			var snapshot = await ArmorAuthorityIndexReader.TryReadAsync(_paths, cancellationToken).ConfigureAwait(false);
+			problem = snapshot is null ? $"索引数据库里没有装备关系表：{_paths.DbPath}" : null;
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+			or InvalidDataException or NotSupportedException
+			or Microsoft.Data.Sqlite.SqliteException)
+		{
+			// 库文件存在但读不懂 / 被占用，与"没有"同样处理：都等于拿不到。
+			problem = $"索引数据库读不出来：{exception.Message}";
+		}
+
+		GameDataIndexProbeCache[stamp] = problem;
+		return problem;
+	}
+
+	/// <summary>索引库文件的"身份"：路径 + 大小 + 修改时间。三者任一变化就重新探一次。</summary>
+	private static string DescribeIndexFile(string path)
+	{
+		try
+		{
+			var info = new FileInfo(path);
+			return info.Exists
+				? $"{path}|{info.Length}|{info.LastWriteTimeUtc.Ticks}"
+				: $"{path}|missing";
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return $"{path}|unreadable";
+		}
+	}
+
+	/// <summary>
+	/// 「索引库身份 → 探测结果」的记忆。只缓存"有没有"，不缓存快照本身
+	/// （快照是调用方要用的数据，缓存它会让人以为读到的是一次性的新鲜结论）。
+	/// </summary>
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> GameDataIndexProbeCache = new(StringComparer.Ordinal);
+
+	/// <summary>
+	/// 自动建立一次游戏资产索引（基础索引 + Armor/Helmet 的 Unit 部件事实）。
+	/// <para>
+	/// 两步必须连着做，理由与「设置与资产」那个按钮一致：VPK 换甲依赖部位事实，
+	/// 只做基础索引的话，用户"刚建完索引"仍然会在换甲时被告知需要重建。
+	/// </para>
+	/// </summary>
+	/// <returns>成功返回 <c>null</c>；失败返回可读原因。</returns>
+	private async Task<string?> TryBuildGameDataIndexAsync(Action<string>? onStage, CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(_gameDataDirectory) || !Directory.Exists(_gameDataDirectory))
+			return "没有配置游戏 data 目录";
+
+		try
+		{
+			var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
+				.GetArchiveHashesJsonAsync(cancellationToken).ConfigureAwait(false);
+
+			var index = CoreServices.CreateAssetArchiveIndexService(_paths);
+			var progress = new Progress<HD2ModCore.Application.IndexBuildProgress>(item =>
+				onStage?.Invoke(item.Total <= 0
+					? "正在索引 Archive…"
+					: $"正在索引 Archive {item.Current}/{item.Total}"));
+			await Task.Run(
+				() => index.BuildOrRebuildAsync(_gameDataDirectory, archiveHashes, progress, cancellationToken).AsTask(),
+				cancellationToken).ConfigureAwait(false);
+
+			onStage?.Invoke("正在计算 Unit 部件部位…");
+			var advanced = CoreServices.CreateAdvancedEquipmentIndexService(_paths);
+			var unitProgress = new Progress<HD2ModCore.Application.IndexBuildProgress>(item =>
+				onStage?.Invoke(item.Current <= 0
+					? (item.CurrentArchiveId ?? "正在分析 Unit 部位")
+					: $"正在分析 Unit 部位 {item.Current}/{item.Total}"));
+			await Task.Run(
+				() => advanced.BuildMissingUnitPartFactsAsync(_gameDataDirectory, unitProgress, cancellationToken).AsTask(),
+				cancellationToken).ConfigureAwait(false);
+
+			return null;
+		}
+		catch (OperationCanceledException)
+		{
+			throw;
+		}
+		catch (Exception exception)
+		{
+			return exception.Message;
+		}
+	}
 
 	/// <summary>
 	/// 从转换报告里取第一条 <c>registryError</c>（素体没能登记的真正原因）。
