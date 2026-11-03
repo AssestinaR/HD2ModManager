@@ -1109,6 +1109,70 @@ function M.install(stingray, options)
 	}
 	rawset(_G, INSTALL_KEY, state)
 
+	-- ── 原生调用能力探针（临时，2026-11-03）──────────────────────────────────
+	-- 目的：先量清楚这个 Lua VM **有没有**调用原生代码的能力面，再决定要不要
+	-- 走"外置 C++ 算数学"的路线。**默认不加载任何 DLL**：
+	-- 只有用户手动建一个标记文件 `%LOCALAPPDATA%\hd2pbx_allow_native.flag` 才会尝试。
+	--
+	-- 为什么这么谨慎：HD2 有反作弊（EAC）。`package.loadlib` 等价于 LoadLibrary，
+	-- 一旦真去加载外来模块，风险不在"能不能成功"，而在"会不会被判定为注入"。
+	-- 所以第一轮只读能力、不动手。
+	local function runNativeProbe(log)
+		local function kind(name, value) log("[native-probe] %-24s %s", name, tostring(value)) end
+		log("[native-probe] ===== 能力探测开始 =====")
+		kind("_VERSION", _VERSION)
+		kind("package", type(package))
+		if type(package) == "table" then
+			kind("package.loadlib", type(package.loadlib))
+			kind("package.cpath", tostring(package.cpath))
+			kind("package.path", tostring(package.path))
+			kind("package.searchers", type(package.searchers))
+			kind("package.loaders", type(package.loaders))
+		end
+		for _, name in ipairs({ "require", "dofile", "loadfile", "loadstring", "load",
+			"collectgarbage", "setmetatable", "pcall" }) do
+			kind(name, type(rawget(_G, name)))
+		end
+		kind("string.dump", type(string.dump))
+		kind("os.execute", type(os.execute))
+		kind("os.getenv", type(os.getenv))
+		kind("os.tmpname", type(os.tmpname))
+		kind("os.date", type(os.date))
+		kind("jit", type(rawget(_G, "jit")))
+		kind("ffi", type(rawget(_G, "ffi")))
+		kind("debug", type(rawget(_G, "debug")))
+		kind("bit", type(rawget(_G, "bit")))
+		kind("coroutine", type(coroutine))
+
+		local base = os.getenv("LOCALAPPDATA")
+		local flagPath = (type(base) == "string" and #base > 0)
+			and (base .. "\\hd2pbx_allow_native.flag") or "hd2pbx_allow_native.flag"
+		local handle = io.open(flagPath, "r")
+		if handle == nil then
+			log("[native-probe] 未发现标记文件 ⇒ **没有尝试加载任何 DLL**")
+			log("[native-probe] 若要实测加载，请创建：%s", flagPath)
+			log("[native-probe] ===== 能力探测结束 =====")
+			return
+		end
+		local content = handle:read("*a") or ""
+		handle:close()
+		kind("flag", (content:gsub("%s+", " ")))
+		if type(package) ~= "table" or type(package.loadlib) ~= "function" then
+			log("[native-probe] 结论：VM 没有 loadlib ⇒ 不存在『纯 Lua 调原生』的路径")
+			log("[native-probe] ===== 能力探测结束 =====")
+			return
+		end
+		-- 只打开**已经在进程里的系统模块**（kernel32/user32 必然已加载），
+		-- 不引入任何外来二进制；`"*"` 表示不查符号、只 open。
+		for _, dll in ipairs({ "kernel32.dll", "user32.dll" }) do
+			local ok, res, err = pcall(package.loadlib, dll, "*")
+			log("[native-probe] loadlib(%s, \"*\") ok=%s 返回=%s 错误=%s",
+				dll, tostring(ok), type(res), tostring(err))
+		end
+		log("[native-probe] ===== 能力探测结束 =====")
+	end
+	pcall(runNativeProbe, logger)
+
 	local driver = state
 	originalRender = rawget(_G, "render")
 	rawset(_G, "render", function(...)
