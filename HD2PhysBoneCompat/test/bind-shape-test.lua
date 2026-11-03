@@ -156,6 +156,58 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+print("T2b 曲率扩散（默认开启）：把集中在单个关节的折角摊开，且不动 bind 形状")
+do
+	-- 直接测纯函数 `M.relax_bending`，不掺动力学 —— 判据才稳定、可复现。
+	-- 用一条"直链 + 在 joint 2 处故意折 60°"的方向场：
+	-- 扩散后最大相邻夹角必须下降，而"总弯曲量"（各相邻夹角之和）基本守恒
+	-- （只重新分配，不凭空造/吃掉弯曲）。
+	local function build(dirsTable)
+		local item = { dirs = {}, restDir = {}, segDirLocal = {}, bones = {} }
+		for index = 1, #dirsTable do
+			local d = dirsTable[index]
+			item.dirs[index] = { d[1], d[2], d[3] }
+			-- 静止 = 同一条直链（-Z）
+			item.restDir[index] = { 0, 0, -1 }
+			item.segDirLocal[index] = { 0, 0, -1 }
+			item.bones[index] = { gains = {} }
+		end
+		return item
+	end
+
+	local function sumAdj(item)
+		local worst, sum = 0, 0
+		for index = 2, #item.dirs do
+			local a, b = item.dirs[index - 1], item.dirs[index]
+			local angle = angleBetween(a[1], a[2], a[3], b[1], b[2], b[3])
+			worst = math.max(worst, angle); sum = sum + angle
+		end
+		return worst, sum
+	end
+
+	-- 静止时（dirs 全等于 rest）扩散必须是**恒等变换**
+	local still = build({ { 0, 0, -1 }, { 0, 0, -1 }, { 0, 0, -1 }, { 0, 0, -1 } })
+	local changed = M.relax_bending(still, 1.0)
+	local maxDev = 0
+	for index = 1, #still.dirs do
+		maxDev = math.max(maxDev, angleBetween(still.dirs[index][1], still.dirs[index][2], still.dirs[index][3],
+			still.restDir[index][1], still.restDir[index][2], still.restDir[index][3]))
+	end
+	check("形状等于 bind 时扩散不动它", changed == false or maxDev < 1e-6,
+		string.format("最大偏差 %.2e°", maxDev))
+
+	-- 折角摊开
+	local kinked = build({ { 0, 0, -1 }, { 0, 0, -1 }, { 0.5, 0, -0.866 }, { 0.6, 0, -0.8 } })
+	local beforeWorst, beforeSum = sumAdj(kinked)
+	M.relax_bending(kinked, 1.0)
+	local afterWorst, afterSum = sumAdj(kinked)
+	check("最大相邻夹角下降", afterWorst < beforeWorst - 5,
+		string.format("%.1f° → %.1f°", beforeWorst, afterWorst))
+	check("总弯曲量基本守恒（只重新分配）", math.abs(afterSum - beforeSum) < 10,
+		string.format("%.1f° → %.1f°", beforeSum, afterSum))
+end
+
+-- ---------------------------------------------------------------------------
 print("T3 分叉树：每个骨只属于一条路径，且不造假折角")
 do
 	-- 96 → {97, 98, 100}，98 → 99（真实资产的形状，曾被摊平成一条线性链）

@@ -92,8 +92,12 @@ public static class PhysicsSolvers
 	public const string Tip = "tip";
 
 	/// <summary>
-	/// 粒子链 / 弹性杆：距离约束 + 弯曲约束 + 身体碰撞，弯曲沿链分布。
-	/// 治的是"弯曲全塌到某一个关节"造成的折线 / 多截棍感。
+	/// 粒子链 / 弹性杆：距离约束 + 弯曲约束 + 身体碰撞，弯曲沿链会分布开。
+	/// <para>
+	/// ⚠️ **实验性，不要默认开**（2026-11-03 实机：看起来"没有物理"）。
+	/// 它的折角指标更好，但**摆幅只剩一半**（0.44~0.53 m vs 0.45~1.10 m），
+	/// 观感上就是头发被焊在头上跟着转 —— 判据不能只看折角，摆幅掉下去同样不算修好。
+	/// </para>
 	/// </summary>
 	public const string Chain = "chain";
 
@@ -104,19 +108,19 @@ public static class PhysicsSolvers
 
 	public static string DisplayName(string solver) => solver switch
 	{
-		Chain => "粒子链（弹性杆）",
-		Tip => "弹簧铰链（默认）",
+		Chain => "粒子链（实验性）",
+		Tip => "弹簧铰链（默认，已验证）",
 		_ => solver,
 	};
 
 	public static string Description(string solver) => solver switch
 	{
 		Chain =>
-			"相邻节的弯曲被约束在一起，弯曲会沿整条链铺开，不再一段一段地折。"
-			+ "软硬仍然由作者写的刚度决定（头发贴着绑定姿态抖，大袖子被重力拽下去）。",
+			"实验性。弯曲约束把相邻节绑在一起，折角更小；但实测摆幅只有默认的一半，"
+			+ "看起来像头发被焊在头上。想对比手感可以切，不建议长期使用。",
 		Tip =>
-			"每节独立弹簧，实机验证过的稳定版本。缺点是弯曲容易集中到某一个关节上，"
-			+ "看起来像多截棍。",
+			"每节独立弹簧 + 曲率扩散：弯曲不会全塌到一个关节上，同时保留完整摆幅。"
+			+ "实机验证过的稳定版本。",
 		_ => string.Empty,
 	};
 

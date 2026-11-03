@@ -2775,6 +2775,14 @@ function M.attach(S, unit, rig, options)
 						-- 粒子链求解器的参数。默认取 `M.chainDefaults`，可被 options 覆盖，
 						-- 用于游戏内 A/B（bendStiff / carry / dampScale 等）。
 						tipData.chainOptions = options.chainOptions
+						-- **曲率扩散**（默认 1.0 = 全开）。
+						-- 它治的是"弯曲全塌到某一个关节"⇒ 折线/多截棍感，而且是两个核里
+						-- **唯一在保持摆幅的前提下**能降折角的那个：
+						--   旗袍辫子 pd.021 相邻节最大夹角 79.5° → 59.9°（摆幅 0.453→0.458）
+						--   Lilium 大袖子  25.7° → 19.9°（摆幅 1.096→1.081）
+						-- 对比粒子链：折角也降，但摆幅掉到 0.44~0.53（只剩一半）——
+						-- 实机上就是"看起来没物理"。所以摆幅这个判据不能只看折角。
+						tipData.bendBlend = options.bendBlend == nil and 1.0 or options.bendBlend
 						-- 分轴限位的**静止参考系**：右/上/前三个轴一次性在 goalQ 里算好。
 						--
 						-- ⚠️ 必须和"绑定方向"用同一个参考系。曾经混用过（方向用 goalQ、轴用当前 q），
