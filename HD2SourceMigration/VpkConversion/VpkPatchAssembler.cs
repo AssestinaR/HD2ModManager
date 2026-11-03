@@ -877,22 +877,31 @@ public sealed class VpkPatchAssembler
 				return;
 			}
 
-			if (!addedTextureIds.Add(texture.Id))
-				return;
-
-			// ⚠️ 贴图 id **只用 basename** 派生（Python 侧的现状，见 Hd2AssetId 的注释），
-			// 所以不同目录下的同名贴图会撞同一个 id。撞了如果只是去重，就会**静默合并成一张**，
-			// 表现为"某个部件用了别的部件的贴图"。来源不一致时必须报错，不能吞。
-			if (textureSourcesById.TryGetValue(texture.Id, out var existingSource)
-				&& !string.Equals(existingSource, texture.SourcePath, StringComparison.OrdinalIgnoreCase))
+			// ⚠️ **贴图 id 只用 basename 派生**（Python 侧的现状，见 Hd2AssetId 的注释），
+			// 所以不同目录下的同名贴图会撞同一个 id。
+			//
+			// **顺序很关键：先查冲突，再去重。**
+			// 旧实现是 `if (!addedTextureIds.Add(id)) return;` 在前面、冲突检查在后面 ——
+			// 于是同一个 id 第二次出现时**在到达冲突检查之前就返回了**，那一段检查成了死代码，
+			// 撞名永远只表现为"静默合并成一张"，没有任何报告。
+			//
+			// 撞名按**警告**报，不按诊断报：诊断会让整个 patch 消失（见下面的 `diagnostics.Count != 0`
+			// 提前返回），而"某张图撞了名"不该连带把整件护甲弄没。宁可出一份带着说明的产物。
+			if (textureSourcesById.TryGetValue(texture.Id, out var existingSource))
 			{
-				diagnostics.Add(
-					$"贴图 id 冲突：0x{texture.Id:x16} 同时来自 '{existingSource}' 与 '{texture.SourcePath}'" +
-					"（贴图 id 只按 basename 派生，不同目录同名会撞）");
+				if (!string.Equals(existingSource, texture.SourcePath, StringComparison.OrdinalIgnoreCase))
+				{
+					warnings.Add(
+						$"贴图 id 冲突：0x{texture.Id:x16} 同时来自 '{existingSource}' 与 '{texture.SourcePath}'"
+						+ "（贴图 id 只按 basename 派生，不同目录同名会撞）；已保留先出现的那张，"
+						+ "引用后者的部件会显示成前者的图案");
+				}
+
 				return;
 			}
 
 			textureSourcesById[texture.Id] = texture.SourcePath;
+			addedTextureIds.Add(texture.Id);
 			materialSession.AddEntry(new CanonicalPatchSessionEntry(
 				new AssetKey(MaterialDependencyResolver.TextureTypeId, texture.Id),
 				CanonicalPatchEntryOwnership.TargetOutput,

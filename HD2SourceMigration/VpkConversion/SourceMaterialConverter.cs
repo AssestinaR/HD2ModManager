@@ -903,6 +903,18 @@ public sealed class SourceMaterialConverter
 		/// 但不该给金属度。
 		/// </para>
 		bool MatcapIsMetal,
+		/// <summary>
+		/// **源底色的像素**（不是被 matcap 替换过的那份），专门用来生成镂空/半透明遮罩。
+		/// <para>
+		/// 与 <see cref="Rgba"/> 分开的理由见 <c>TryLoad</c> 里 <c>sourceBaseRgba</c> 的注释：
+		/// matcap 承载表面会把底色换成 matcap 图像，而形状信息留在源底色的 alpha 里。
+		/// </para>
+		/// </summary>
+		byte[] SourceBaseRgba,
+		/// <summary>源底色的宽度（与 <see cref="SourceBaseRgba"/> 配套；matcap 尺寸通常不同）。</summary>
+		int SourceBaseWidth,
+		/// <summary>源底色的高度。</summary>
+		int SourceBaseHeight,
 		IReadOnlyList<string> Notices,
 		// 遮罩要不要抖成二值（近似半透明）。由**源侧意图**决定：
 		// `$translucent`（要混合）或 `$allowalphatocoverage`（自己就写着抖动）。
@@ -982,8 +994,10 @@ public sealed class SourceMaterialConverter
 				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板没有贴图槽");
 
 			material.SetTexture(0, translucentMap.Id);
-			// 平涂色取底色平均值：布料这种大面积渐变底色取平均后与整体观感接近。
-			var average = AverageColor(loaded.Rgba);
+			// 平涂色取**源底色**的平均值（不是 `rgba`）：布料这种大面积渐变底色取平均后
+			// 与整体观感接近。⚠️ 不能用 `rgba` —— matcap 承载表面的件那里已经是球面图，
+			// 平均出来是 matcap 的色调，不是这块布的颜色。
+			var average = AverageColor(loaded.SourceBaseRgba);
 			if (!material.TrySetVector(TranslucentBaseColorVariableId, average[0], average[1], average[2]))
 				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板里找不到 BaseColor 变量");
 			// OpacityBase 是整体不透明度倍率：源 alpha 已经在贴图里，这里给 1 不做二次衰减。
@@ -1099,8 +1113,18 @@ public sealed class SourceMaterialConverter
 			//
 			// ⚠️ 默认金属是**近黑 (6,6,6)**；191 属于 matcap 那条路（观感来自 matcap 时
 			// 才需要把金属度顶上去）。两者语义不同，不能混。
-			// matcap 承载表面时这里让位，由下面的 matcap 分支写自己的值。
-			if (!loaded.MatcapIsSurface
+			//
+			// ⚠️ **判据必须是「不是金属」，不能是「matcap 不是表面」。**
+			//
+			// 原来写的是 `!MatcapIsSurface`，于是出现了第三种情况**没人管**：
+			//   `MatcapIsSurface == true` 且 `MatcapIsMetal == false`
+			// —— 也就是宝石 / 玻璃 / 珍珠这些"底色被顶掉、但不该给金属度"的件。
+			// 它们既不进这一支（因为 surface 为真），也不进下面的金属分支（因为不是金属），
+			// 于是槽 2 与槽 3 **保持模板默认值**，两个 PBR 输入是游戏自己定的未知数。
+			// 这正是"玻璃鞋跟变成金属/塑料"那条现象的机制之一。
+			//
+			// 现在按"是不是金属"二分，两种情况都有明确赋值，不留空洞。
+			if (!loaded.MatcapIsMetal
 				&& material.TextureIds.Count > AdvancedNarSlot
 				&& material.TextureIds.Count > AdvancedMetallicSlot)
 			{
@@ -1299,11 +1323,28 @@ public sealed class SourceMaterialConverter
 		VtfFile vtf;
 		byte[] rgba;
 		AlphaStats baseAlpha;
+		// **源底色的 alpha 到底存不存在。**
+		//
+		// 合成的中性底色是"没有源图"的替补，它的 alpha 是我们自己填 0 —— 那**不是**信息，
+		// 不能拿去参与镂空判定。曾经用 `SolidRgba(..., 0)` 造底色，于是
+		// `Spread 0 < 3 ∧ Max 0 ≤ 200` 让 `IsUniformlyTranslucent` 恒为真，
+		// **任何"底图缺失 + 写了 $alphatest 1"的材质都被强制切成 alphaclip**，
+		// 即使它是金属件（金属件没有 IlluminateData 槽，切过去就既没镂空也没金属）。
+		// 旧注释写的是"这样不会被误判成 alphaclip"，与实际行为正好相反。
+		//
+		// 语义上正确的区分是四种状态，不是两种：
+		//   ① 源图在、alpha 有形状     → 镂空（IsMeaningful）
+		//   ② 源图在、alpha 均匀 < 255 → 整体半透明（IsUniformlyTranslucent）
+		//   ③ 源图在、alpha 恒 255     → 不透明
+		//   ④ **源图不在**             → 不知道（≠ 半透明）
+		// 这条布尔量就是 ④ 与 ①②③ 的分界线。
+		var hasSourceOpacity = !syntheticBase;
 		if (syntheticBase)
 		{
 			// 4×4 平色。尺寸取 4×4 而不是 1×1：占位判据是"长宽都 ≤ 4"，两条都满足，
-			// 而 4×4 让下游的 DDS / BC7 编码走正常路径。alpha 也置 0
-			// ——"底色不承担形状"，这样下面不会被误判成 alphaclip。
+			// 而 4×4 让下游的 DDS / BC7 编码走正常路径。
+			// alpha 置 0 只是为了让"这张图不承担形状"这件事在数据上显式，
+			// **判定不读它**（见上面的 hasSourceOpacity）。
 			var grey = syntheticBaseGrey
 				?? MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
 			vtf = VtfFile.Synthetic(4, 4);
@@ -1326,6 +1367,22 @@ public sealed class SourceMaterialConverter
 				return LoadOutcome.Failed;
 			}
 		}
+
+		// **源底色的像素与尺寸必须在这里定格。**
+		//
+		// 下面的 matcap 分支会把 `rgba` / `vtf` **整份换成 matcap 的图像**
+		// （它只改引用，不动原数组），变的是这两个变量、不是底色数据本身。
+		// 而镂空遮罩要的恰恰是**源底色的 alpha** —— 曾经直接从 `rgba` 取，
+		// 于是 matcap 承载表面的件拿到的是那张球面图的 alpha（通常全不透明）
+		// ⇒ 判定说"要镂空"、遮罩却是全白 ⇒ **镂空静默失效**。
+		//
+		// 同一个变量两种语义（"底色像素" vs "形状像素"）是这条链上最容易复发的一类缺陷，
+		// 所以名字上就分开：`rgba` = 会被 matcap 换掉的**渲染用底色**，
+		// `sourceBaseRgba` = 永远指向源底色的那一份（镂空遮罩、平涂色都从这里取）。
+		// 尺寸也必须一起定格：matcap 常是 256²，底色可能 2048²。
+		var sourceBaseRgba = rgba;
+		var sourceBaseWidth = vtf.Width;
+		var sourceBaseHeight = vtf.Height;
 
 		// matcap 承载表面 = **tint 高 ∧ 底色没有自己的外观 ∧ alpha 不承担形状**。
 		//
@@ -1525,12 +1582,16 @@ public sealed class SourceMaterialConverter
 			// 所以取舍交给 `--metal-cutout`：默认保镂空，可选保金属。
 			// 实测 MourningVeil 的金属饰品全是 `$alphatest 1` + alpha 镂空，
 			// 一刀切成 advanced 就等于既没有镂空也没有金属——那是最坏的一种。
-			useAlphaClip =
-				// 两种"源侧要透明"都要认：
-				//   · IsMeaningful —— alpha 在表达**形状**（镂空、蕾丝、抖动薄纱）
-				//   · IsUniformlyTranslucent —— alpha 整片均匀且明显 < 255，即**整体半透明**
-				//     （实测 MourningVeil 的玻璃鞋跟 alpha 恒 102；不认这一类就会变成不透明白塑料）
-				vmt.WantsTransparency && (baseAlpha.IsMeaningful || baseAlpha.IsUniformlyTranslucent);
+			useAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha);
+
+			// 源侧要透明、但源图不在 ⇒ 我们**做不到**镂空。这必须说出来：
+			// 否则用户看到的是"这件该透的地方是实心的"，而报告里一个字都没有。
+			if (!useAlphaClip && !hasSourceOpacity && vmt.WantsTransparency)
+			{
+				notices.Add(
+					$"{stem}：源侧要透明（$alphatest/$translucent），但底色贴图不在来源里 —— "
+					+ "做不出镂空遮罩，已按不透明处理（保住底色与金属度，不会整片消失）。");
+			}
 
 			// "既要镂空又是金属"只能二选一：选 MetalWins 就放弃镂空、走 advanced 换回金属度。
 			if (useAlphaClip && matcapIsMetal && metalCutout == MetalCutoutPolicy.MetalWins)
@@ -1625,7 +1686,7 @@ public sealed class SourceMaterialConverter
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
 			identity, DeriveMaterialId(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
-			matcapTextureName, matcapIsSurface, matcapIsMetal, notices,
+			matcapTextureName, matcapIsSurface, matcapIsMetal, sourceBaseRgba, sourceBaseWidth, sourceBaseHeight, notices,
 			// 抖动是**默认**的半透明落地方式，但只给"源侧真的要半透明"的材质：
 			// `$translucent`（想混合，HD2 表达不了）与 `$allowalphatocoverage`（源侧自己就在抖）。
 			// 纯 `$alphatest` 继续硬裁——那是 Source 的原语义（低于参考值丢弃），蕾丝/镂空靠它。
@@ -1709,14 +1770,22 @@ public sealed class SourceMaterialConverter
 		var rgba = loaded.Rgba;
 		var textureName = loaded.TextureName;
 
+		// ⚠️ **遮罩取 `SourceBaseRgba`（源底色），不是 `rgba`（可能已被换成 matcap）。**
+		// 这两者在 matcap 承载表面的件上是**两张完全不同的图**：
+		//   · `rgba`           = 渲染用底色（matcap 承载表面时**就是**那张球面图）
+		//   · `SourceBaseRgba` = 源底色的原始像素，它里面的 **alpha** 是唯一编码了
+		//                        "哪块是镂空"的那份数据
+		// 曾经两者都用 `rgba`，于是那些件进了 alphaclip、遮罩却是全白 —— 镂空静默失效。
+		// 尺寸也必须用 `SourceBaseWidth/SourceBaseHeight`：matcap 常是 256²，底色可能 2048²。
 		var opacityMask = loaded.UseAlphaClip
-			? BuildOpacityMask(textureName, rgba, vtf.Width, vtf.Height, loaded.UseDither)
+			? BuildOpacityMask(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight, loaded.UseDither)
 			: null;
 
 		// 实验路线 1：`translucent` 模板唯一那个槽是 `NormalXyRoughnessOpacity`
-		// （RGB = 平面法线 XY + 粗糙度，A = 不透明度），必须在**清零 alpha 之前**合成出来。
+		// （RGB = 平面法线 XY + 粗糙度，A = 不透明度），必须在**清零 alpha 之前**合成出来，
+		// 同样取源底色的 alpha。
 		var translucentMap = alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip
-			? BuildTranslucentMap(textureName, rgba, vtf.Width, vtf.Height)
+			? BuildTranslucentMap(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight)
 			: null;
 
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
@@ -1925,18 +1994,47 @@ public sealed class SourceMaterialConverter
 	/// （<c>fix_alphaclip.py:117-155</c>）。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// <b>这个材质要不要切到 <c>alphaclip</c>（逐像素镂空）？</b>
+	/// <para>
+	/// 三个条件缺一不可，而且各自都对应一次实测过的误判：
+	/// </para>
+	/// <list type="number">
+	/// <item>
+	/// <paramref name="wantsTransparency"/> —— 源侧写了 <c>$alphatest</c>/<c>$translucent</c>。
+	/// 只看这个会误判：装饰件常写 <c>$alphatest 1</c> 而贴图是 1×1 无 alpha（M7 就漏了 3 组）。
+	/// </item>
+	/// <item>
+	/// <paramref name="hasSourceOpacity"/> —— <b>源底色的 alpha 真的存在</b>。
+	/// <para>
+	/// 合成底色（底图缺失 / 源包根本没写 <c>$basetexture</c>）的 alpha 是我们自己填的 0，
+	/// 那<b>不是信息</b>。旧实现拿它去算，于是 <c>Spread 0 &lt; 3 ∧ Max 0 ≤ 200</c> 让
+	/// 「整片均匀半透明」恒成立 ⇒ <b>任何"底图缺失 + 写了 <c>$alphatest 1</c>"的材质都被强制
+	/// 切成 alphaclip</b>，哪怕它是金属件（alphaclip 没有金属度槽，切过去既没镂空也没金属）。
+	/// </para>
+	/// <para>
+	/// 语义上要区分的是<b>四种</b>状态而不是两种：源图在且 alpha 有形状 / 源图在且 alpha 均匀
+	/// &lt; 255 / 源图在且 alpha 恒 255 / <b>源图不在（= 不知道，≠ 半透明）</b>。
+	/// 这个布尔量就是最后一条的分界线。
+	/// </para>
+	/// </item>
+	/// <item>
+	/// <paramref name="alpha"/> —— alpha 真在表达形状（<see cref="AlphaStats.IsMeaningful"/>）
+	/// 或真在表达整体半透明（<see cref="AlphaStats.IsUniformlyTranslucent"/>）。
+	/// </item>
+	/// </list>
+	/// <para>
+	/// <b>为什么它必须是纯函数。</b>这条规则改过很多轮，每一轮都是实机看出来的；把它抽出来
+	/// 才能用单测把"哪种输入得到哪种模板"钉死，而不必每次都进游戏。
+	/// </para>
+	/// </summary>
+	public static bool ShouldUseAlphaClip(bool wantsTransparency, bool hasSourceOpacity, AlphaStats alpha)
+		=> wantsTransparency
+			&& hasSourceOpacity
+			&& (alpha.IsMeaningful || alpha.IsUniformlyTranslucent);
+
 	private SynthesizedTexture BuildOpacityMask(string textureName, byte[] rgba, int width, int height, bool ditherBySource)
 	{
-		// ⚠️ `rgba` 是 **texconv 解出来的完整 DDS**（128 字节头 + 像素），不是裸像素。
-		// 当成裸像素用会产出一份"头写着 w×h、后面却跟着 128+w*h*4 字节"的 DDS，
-		// texconv 读不出自洽的输入就**走兜底路径把输入原样退回**（退出码仍是 0），
-		// 最终表现为"某材质转换失败，产物只有 132 字节"。
-		// 第 23–26 轮追了四轮的那个现象，根因就在这里。
-		//
-		// 通道与极性由 <see cref="CutoutStrategy"/> 决定：A/B 档是"RGB = alpha、A = 255"
-		// （历史行为），另外三档用来实测 HD2 到底采样哪个通道、什么极性。
-		var inAlpha = cutoutStrategy is CutoutStrategy.MaskInAlpha or CutoutStrategy.MaskInAlphaInverted;
-		var inverted = cutoutStrategy is CutoutStrategy.MaskInverted or CutoutStrategy.MaskInAlphaInverted;
 		// 抖动与否：**源侧意图优先**（`$translucent` / `$allowalphatocoverage`），
 		// 而显式的 cutout 档位可以强制打开（dither / dither-strong）或强制关掉（其余档）。
 		var dithered = cutoutStrategy switch
@@ -1947,20 +2045,18 @@ public sealed class SourceMaterialConverter
 			_ => ditherBySource,
 		};
 		var ditherGain = cutoutStrategy == CutoutStrategy.AlphaClipDitheredStrong ? 1.35 : 1.0;
-		var mask = new byte[checked(width * height * 4)];
-		for (var offset = 0; offset < mask.Length; offset += 4)
-		{
-			var value = rgba[offset + 3];
-			if (dithered)
-				value = DitherAlpha(value, offset / 4, width, ditherGain, ditherScale, ditherDensity, ditherPattern);
-			if (inverted)
-				value = (byte)(255 - value);
-			var grey = inAlpha ? (byte)255 : value;
-			mask[offset + 0] = grey;
-			mask[offset + 1] = grey;
-			mask[offset + 2] = grey;
-			mask[offset + 3] = inAlpha ? value : (byte)255;
-		}
+
+		// 纯像素部分的实现被抽到 <see cref="BuildOpacityMaskPixels"/>，为的是能脱离 texconv 单测
+		// （这条链历史上最贵的一次 bug 就发生在"字节级"——见那个方法上的注释）。
+		var mask = BuildOpacityMaskPixels(
+			rgba, width, height,
+			inAlpha: cutoutStrategy is CutoutStrategy.MaskInAlpha or CutoutStrategy.MaskInAlphaInverted,
+			inverted: cutoutStrategy is CutoutStrategy.MaskInverted or CutoutStrategy.MaskInAlphaInverted,
+			dithered: dithered,
+			ditherGain: ditherGain,
+			ditherScale: ditherScale,
+			ditherDensity: ditherDensity,
+			ditherPattern: ditherPattern);
 
 		var dds = Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [mask]);
 		var bc7 = encoder.EncodeToBc7(dds, srgb: false);
@@ -1974,6 +2070,63 @@ public sealed class SourceMaterialConverter
 			texture.FormatName,
 			texture.Width,
 			texture.Height);
+	}
+
+	/// <summary>
+	/// 把源底色的 <b>alpha</b> 通道转成 HD2 的镂空遮罩像素（RGBA8888，长 <c>width×height×4</c>）。
+	/// <para>
+	/// <b><paramref name="sourceRgba"/> 必须是裸像素（每像素 4 字节），不是带 DDS 头的整份文件。</b>
+	/// 曾经这里按"含 128 字节头"处理，产出了一份"头写着 w×h、后面多出 128 字节"的 DDS；
+	/// texconv 读不出自洽输入就**把输入原样退回且退出码仍是 0**，最终表现为
+	/// "某材质转换失败、产物只有 132 字节"——第 23~26 轮追了四轮才定位。
+	/// </para>
+	/// <para>
+	/// <b>通道与极性由 <see cref="CutoutStrategy"/> 决定</b>：A/B 档是"RGB = alpha、A = 255"
+	/// （历史行为），另外三档用来实测 HD2 到底采样哪个通道、什么极性。
+	/// </para>
+	/// <para>
+	/// <b>为什么要能单测。</b>这是整条材质链上唯一大量处理裸字节的地方，也是历史上 bug
+	/// 最集中的地方；把它抽成纯函数之后，"遮罩的 alpha 到底来自哪份数据"就变成一条
+	/// 不需要游戏数据、不需要 texconv 的断言。
+	/// </para>
+	/// </summary>
+	internal static byte[] BuildOpacityMaskPixels(
+		byte[] sourceRgba,
+		int width,
+		int height,
+		bool inAlpha,
+		bool inverted,
+		bool dithered,
+		double ditherGain,
+		int ditherScale,
+		double ditherDensity,
+		DitherPattern ditherPattern)
+	{
+		ArgumentNullException.ThrowIfNull(sourceRgba);
+		var pixelCount = checked(width * height);
+		// 少一个像素都不行：下面按 4 字节跨步读 alpha，越界会读到别的数据而不是抛异常。
+		if (sourceRgba.Length < checked(pixelCount * 4))
+		{
+			throw new InvalidDataException(
+				$"遮罩源像素不足：需要 {pixelCount * 4} 字节（{width}×{height}×4），实际 {sourceRgba.Length}。");
+		}
+
+		var mask = new byte[checked(pixelCount * 4)];
+		for (var offset = 0; offset < mask.Length; offset += 4)
+		{
+			var value = sourceRgba[offset + 3];
+			if (dithered)
+				value = DitherAlpha(value, offset / 4, width, ditherGain, ditherScale, ditherDensity, ditherPattern);
+			if (inverted)
+				value = (byte)(255 - value);
+			var grey = inAlpha ? (byte)255 : value;
+			mask[offset + 0] = grey;
+			mask[offset + 1] = grey;
+			mask[offset + 2] = grey;
+			mask[offset + 3] = inAlpha ? value : (byte)255;
+		}
+
+		return mask;
 	}
 
 	/// <summary>

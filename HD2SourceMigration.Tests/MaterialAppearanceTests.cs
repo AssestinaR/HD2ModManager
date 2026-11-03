@@ -63,6 +63,69 @@ public sealed class MaterialAppearanceTests
 		Assert.Equal(expected, MaterialAppearance.ParseTint(raw), 3);
 	}
 
+	/// <summary>
+	/// <b>方括号写法必须被剥掉，而且不能因此丢掉第一个 RGB 分量。</b>
+	/// <para>
+	/// 真实 NekoToon VMT 写的是 <c>[.216 .208 .204 1]</c>（方括号），而解析器曾经只剥花括号
+	/// ⇒ <c>[.216</c> 与 <c>1]</c> 都解析失败 ⇒ 第 1 个分量被吞。
+	/// 首分量最大时后果最严重：<c>[1 0 0 1]</c>（纯红 tint）会被判成 0 = "没有 matcap"。
+	/// </para>
+	/// </summary>
+	[Theory]
+	[InlineData("[.216 .208 .204 1]", 0.216)]
+	[InlineData("[.145 .1402 .1382 1]", 0.145)]
+	[InlineData("[.9 .9 .9 1]", 0.9)]
+	[InlineData("[.2 .2 .2 1]", 0.2)]
+	[InlineData("[1 0 0 1]", 1.0)]        // 首分量最大：丢首分量会归零
+	[InlineData("[0.576 0.576 0.576 1]", 0.576)]
+	[InlineData("[1 1 1 .2]", 1.0)]
+	public void TintParsingStripsSquareBracketsAndKeepsTheLeadingComponent(string raw, double expected)
+	{
+		Assert.Equal(expected, MaterialAppearance.ParseTint(raw), 3);
+	}
+
+	/// <summary>
+	/// <b>第 4 个分量是 alpha，不参与强度比较。</b>
+	/// <para>
+	/// 花括号写法下 token 全部解析成功，旧实现会对<b>全部</b> token 取 max，
+	/// 于是 <c>{.2 .2 .2 1}</c> 取到 1.0 —— 弱 matcap 被当成满强度，
+	/// 而 tint ≥ 0.9 正是"matcap 承载表面"的判据。
+	/// </para>
+	/// </summary>
+	[Theory]
+	[InlineData("{.2 .2 .2 1}", 0.2)]
+	[InlineData("{.9 .9 .9 1}", 0.9)]
+	[InlineData("{.3 .3 .3 .8}", 0.3)]
+	[InlineData(".2 .2 .2 1", 0.2)]       // 裸串同理
+	[InlineData(".1 .1 .1 255", 0.1)]     // alpha 写成 255 制也不该顶成 1.0
+	public void TintParsingIgnoresTheAlphaComponent(string raw, double expected)
+	{
+		Assert.Equal(expected, MaterialAppearance.ParseTint(raw), 3);
+	}
+
+	/// <summary><c>NaN</c> / <c>Infinity</c> 的文本形式能被 <c>TryParse</c> 认出来，必须挡掉。</summary>
+	[Theory]
+	[InlineData("NaN .5 .5", 0.5)]
+	[InlineData(".5 NaN .5", 0.5)]
+	[InlineData(".5 .5 Infinity", 0.5)]
+	[InlineData("NaN NaN NaN", 0.0)]
+	public void TintParsingRejectsNonFiniteComponents(string raw, double expected)
+	{
+		Assert.Equal(expected, MaterialAppearance.ParseTint(raw), 3);
+	}
+
+	/// <summary>
+	/// 回归闸门：这三个输入在历史上分别踩过三个不同的坑，必须同时成立。
+	/// 只修其中一个（例如"补剥方括号但不限制分量数"）会让另一个立刻变错。
+	/// </summary>
+	[Fact]
+	public void TintParsingFixesBracketsComponentsAndFiniteTogether()
+	{
+		Assert.Equal(1.0, MaterialAppearance.ParseTint("[1 0 0 1]"), 3);    // 方括号 + 首分量
+		Assert.Equal(0.2, MaterialAppearance.ParseTint("{.2 .2 .2 1}"), 3); // 花括号 + alpha
+		Assert.Equal(0.6, MaterialAppearance.ParseTint("NaN .6 .6 .6"), 3); // 非有限数
+	}
+
 	[Fact]
 	public void BakeAddsTheScaledMatCapMeanAndClamps()
 	{

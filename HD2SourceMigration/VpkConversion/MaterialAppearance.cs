@@ -232,30 +232,68 @@ public static class MaterialAppearance
 		return new MatCapVerdict(true, ParseTint(vmt.Value("$matcaptint")));
 	}
 
+	/// <summary><c>$matcaptint</c> 里参与强度判断的分量个数。第 4 个分量是 <b>alpha</b>，不是强度。</summary>
+	public const int TintComponentCount = 3;
+
 	/// <summary>
-	/// 解析 <c>$matcaptint</c>，取三个分量的最大值。
+	/// 解析 <c>$matcaptint</c> / <c>$emissiontint</c>，取<b>前三个分量（RGB）</b>的最大值。
 	/// <para>
-	/// 源侧会写成 <c>{1 1 1}</c>、<c>"0.9 0.9 0.9"</c>、<c>"255 255 255"</c> 等几种形式，
-	/// 所以这里做归一化：带花括号的先去掉，大于 1 的按 0..255 归一到 0..1。
+	/// 源侧会写成 <c>{1 1 1}</c>、<c>"0.9 0.9 0.9"</c>、<c>"255 255 255"</c>、
+	/// <c>"[.216 .208 .204 1]"</c> 等几种形式，所以这里做归一化：
+	/// 剥掉两种括号、按空格切分、大于 1 的按 0..255 归一到 0..1。
 	/// </para>
 	/// <para><b>缺失时返回 0</b>——没有 tint 就等于没有 matcap 强度，不该烘。</para>
+	/// <para>
+	/// <b>⚠️ 三件事必须同时成立，缺一个就会以另一种方式判错</b>（2026-11-03 复盘）：
+	/// </para>
+	/// <list type="number">
+	/// <item>
+	/// <b>两种括号都要剥。</b>真实 NekoToon VMT 写的是<b>方括号</b>
+	/// （<c>[.216 .208 .204 1]</c>），而这里曾经只剥花括号，于是 <c>[.216</c> 和 <c>1]</c>
+	/// 都解析失败 —— 恰好把<b>第 1 个 RGB 分量</b>丢掉了。首分量最大时直接归零：
+	/// <c>[1 0 0 1]</c>（纯红 tint）会被判成"没有 matcap"，整件不烘。
+	/// </item>
+	/// <item>
+	/// <b>只取前三个分量。</b>第 4 个是 alpha。花括号写法下它会参与比较：
+	/// <c>{.2 .2 .2 1}</c> 曾经取到 <b>1.0</b>（弱 matcap 被当成满强度），
+	/// 而 <c>MatCapIsTheSurface</c>（tint ≥ 0.9）是金属判定 / 底色顶掉 / 平均色计算
+	/// 三条路的共同入口，一错就连锁错。
+	/// </item>
+	/// <item>
+	/// <b>只接受有限数。</b><c>TryParse</c> 认 <c>NaN</c> / <c>Infinity</c> 的文本形式，
+	/// 放进 <c>Max()</c> 会污染整组（NaN 参与比较的结果是不可预期的）。
+	/// </item>
+	/// </list>
+	/// <para>
+	/// ⚠️ <b>只做第 1 条（补剥方括号）会主动制造第 2 条那个误判</b>：方括号里的 alpha
+	/// 一旦能解析，就会进 <c>Max()</c>。这两个修复必须同批。
+	/// </para>
 	/// </summary>
 	public static double ParseTint(string? raw)
 	{
 		if (string.IsNullOrWhiteSpace(raw))
 			return 0;
-		var cleaned = raw.Replace("{", string.Empty, StringComparison.Ordinal)
+
+		// 方括号与花括号都是数组写法，两种都要剥；逗号是分隔符的另一种写法。
+		var cleaned = raw
+			.Replace("[", string.Empty, StringComparison.Ordinal)
+			.Replace("]", string.Empty, StringComparison.Ordinal)
+			.Replace("{", string.Empty, StringComparison.Ordinal)
 			.Replace("}", string.Empty, StringComparison.Ordinal)
 			.Replace(",", " ", StringComparison.Ordinal);
-		var values = cleaned
+
+		// 按**位置**取前三个成功解析的分量；后面的分量（alpha）直接丢弃，不参与比较。
+		var components = cleaned
 			.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
 			.Select(token => double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : double.NaN)
-			.Where(value => !double.IsNaN(value))
+			.Where(value => double.IsFinite(value))
+			.Take(TintComponentCount)
 			.ToArray();
-		if (values.Length == 0)
+
+		if (components.Length == 0)
 			return 0;
 
-		var max = values.Max();
+		var max = components.Max();
 		if (max <= 0)
 			return 0;
 		// 255 制与 0..1 制都要认；用 max 判断而不是固定除以 255，避免把 1.0 当成 0.0039。
