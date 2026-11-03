@@ -1157,18 +1157,28 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		-- 只有**真的超限**时才需要角度值（而且下面用的是 limit 本身，连 acos 都不用）。
 		--
 		-- 分轴约束的骨**不走这条**：锥是相对父节的，会累加（见上面 axisLimits 的说明）。
-		local dot = nx * prevX + ny * prevY + nz * prevZ
+		-- 锥限位的**中心方向**有两种语义，差别在"沿链累不累加"：
+		--   "parent"（旧行为）：上一节**当前**方向经绑定相对旋转 ⇒ 每节各自 ±limit，
+		--       但世界空间里沿链累加：3 节 × 35° 可达 105° ⇒ 尾部能翻到根的上方。
+		--   "rest"（新，`item.coneMode = "rest"`）：本节**自己的静止方向** ⇒ 每节相对 bind
+		--       单独受限、不累加。实机参照（L4D2）里尾巴不会高过根部，说明是这一种。
+		local ccx, ccy, ccz = prevX, prevY, prevZ
+		if item.coneMode ~= "parent" then
+			local rs = restDirs[k]
+			ccx, ccy, ccz = rs[1], rs[2], rs[3]
+		end
+		local dot = nx * ccx + ny * ccy + nz * ccz
 		if not gains.axisLimits and gains.limit > 0 and dot < gains.cosLimit then
-			local sx, sy, sz, _ = swing_axis(prevX, prevY, prevZ, nx, ny, nz)
+			local sx, sy, sz, _ = swing_axis(ccx, ccy, ccz, nx, ny, nz)
 			if sx ~= nil then
 				local rqx, rqy, rqz, rqw = q_axis_angle(sx, sy, sz, gains.limit)
 				local obx, oby, obz = nx, ny, nz
-				nx, ny, nz = qrot(rqx, rqy, rqz, rqw, prevX, prevY, prevZ)
+				nx, ny, nz = qrot(rqx, rqy, rqz, rqw, ccx, ccy, ccz)
 				-- 同上：把**朝墙外**的那份速度去掉。否则它会一直堆在墙外，
 				-- 等约束不再生效时一次性甩出来 —— 实机上就是"卡一下再弹开"。
-				local anx = obx - prevX * dot
-				local any = oby - prevY * dot
-				local anz = obz - prevZ * dot
+				local anx = obx - ccx * dot
+				local any = oby - ccy * dot
+				local anz = obz - ccz * dot
 				local alen = math.sqrt(anx * anx + any * any + anz * anz)
 				if alen > 1e-9 then
 					anx, any, anz = anx / alen, any / alen, anz / alen
