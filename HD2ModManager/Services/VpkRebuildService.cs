@@ -272,9 +272,31 @@ public static class VpkRebuildService
 			// 说明输出是合法 JSON，可以原样落盘。）
 			if (fresh is not null && !string.IsNullOrWhiteSpace(conversion.Output))
 			{
-				await File.WriteAllTextAsync(
-					VpkConversionReport.GetPath(modDirectory), conversion.Output, cancellationToken)
-					.ConfigureAwait(false);
+				// ⚠️ **`vpk2patch.json` 在 Mod 根上，而且是只读的。**
+				//
+				// 库里的 Mod 根文件（`.vpk` 与 `vpk2patch.json`）被管理器标成只读
+				// （换包时 `SetDirectoryReadOnly(true)`），而 `SwapPayload` 只清 `vpk2patch/`
+				// 里那些文件的属性。于是写报告这一步会拿到
+				// 「Access to the path '…\vpk2patch.json' is denied.」——那句话一个字都没提"只读"，
+				// 第一眼必然怀疑权限或占用（实测就是这样报了"重构建失败"）。
+				// 这里先清属性、写完再补回去，保持这个 Mod 目录原来的保护状态。
+				var reportPath = VpkConversionReport.GetPath(modDirectory);
+				var restoreReportReadOnly = ClearReadOnlyForWrite(reportPath);
+				try
+				{
+					await File.WriteAllTextAsync(reportPath, conversion.Output, cancellationToken)
+						.ConfigureAwait(false);
+				}
+				catch (UnauthorizedAccessException exception)
+				{
+					// 报告写不进去**不该被判成重构建失败**：产物已经换好了，报告只是"界面上显示的数字"。
+					notes.Add($"`vpk2patch.json` 写不进去（{exception.Message}）：产物已换成新的，"
+						+ "但界面上的材质/贴图计数与警告仍是上一次的。多半是别的程序占着这个文件。");
+				}
+				finally
+				{
+					if (restoreReportReadOnly) MarkReadOnly(reportPath);
+				}
 			}
 			else
 			{
@@ -482,6 +504,35 @@ public static class VpkRebuildService
 				+ (backupDirectory is null ? string.Empty : $"（旧产物的备份在：{backupDirectory}）");
 			return false;
 		}
+	}
+
+	/// <summary>
+	/// 写文件前把只读属性清掉；返回"原本是只读的"（写完由调用方补回去）。
+	/// <para>
+	/// 库里的 Mod 文件是被标成只读的，对只读文件写只会得到
+	/// <c>Access to the path … is denied</c>——那句错误一个字都没提"只读"。
+	/// </para>
+	/// </summary>
+	private static bool ClearReadOnlyForWrite(string path)
+	{
+		try
+		{
+			if (!File.Exists(path)) return false;
+			var attributes = File.GetAttributes(path);
+			if ((attributes & FileAttributes.ReadOnly) == 0) return false;
+			File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+			return true;
+		}
+		catch (IOException) { return false; }
+		catch (UnauthorizedAccessException) { return false; }
+	}
+
+	/// <summary>把文件重新标成只读（恢复库的保护状态）；标不上也不抛。</summary>
+	private static void MarkReadOnly(string path)
+	{
+		try { File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly); }
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
 	}
 
 	/// <summary>清掉一个文件的只读属性；文件不存在或清不掉都不抛。</summary>
