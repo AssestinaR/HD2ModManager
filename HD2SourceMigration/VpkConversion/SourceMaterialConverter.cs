@@ -388,6 +388,17 @@ public sealed class SourceMaterialConverter
 	public const int AdvancedMetallicSlot = 3;
 
 	/// <summary>
+	/// 金属度槽的<b>键</b>（<c>IlluminateData</c>，0x90b84a53）。
+	/// <para>
+	/// 用它去问"某个模板能不能表达金属度"（<see cref="Hd2MaterialTemplateLibrary.HasTextureSlot"/>），
+	/// 而<b>不是</b>按模板名写死 <c>"advanced"</c>：名字只是命名，能力由槽决定。
+	/// 换 SDK 版本、模板改名、或将来用上 <c>basic</c> 族的 <c>Mra</c> 时，
+	/// 按名字判断会静默失效。
+	/// </para>
+	/// </summary>
+	public const uint MetallicSlotKey = 0x90b84a53;
+
+	/// <summary>
 	/// <c>advanced</c> 槽 1 = <c>SclarFieldOpacity</c>（0x479fb1ef）。
 	/// <para>
 	/// 这是 <c>advanced</c> 唯一的不透明度来源。SDK 模板里它指向一张占位贴图，
@@ -903,6 +914,20 @@ public sealed class SourceMaterialConverter
 		/// 但不该给金属度。
 		/// </para>
 		bool MatcapIsMetal,
+		/// <summary>
+		/// <b>这个材质最终用的模板能不能表达金属度</b>（= 模板里有没有 <c>IlluminateData</c> 槽）。
+		/// <para>
+		/// 由 <see cref="Hd2MaterialTemplateLibrary.HasTextureSlot"/> 按<b>槽键</b>问出来，
+		/// 不是按模板名猜。用途有二：决定要不要把底色涂成金属 F0；决定要不要告诉用户
+		/// "这块在源侧是金属，但这个模板表达不了"。
+		/// </para>
+		/// <para>
+		/// 实测 MourningVeil：判成金属的 10 个材质<b>全部</b>因为"镂空优先"进了 alphaclip，
+		/// 一个都没拿到金属度；而它们此前仍被涂成 F0 0.96（亮银），在游戏里就是
+		/// "一块不像金属的亮银塑料"。有了这条判据，那种涂法根本不会发生。
+		/// </para>
+		/// </summary>
+		bool MetalDeliverable,
 		/// <summary>
 		/// **源底色的像素**（不是被 matcap 替换过的那份），专门用来生成镂空/半透明遮罩。
 		/// <para>
@@ -1544,6 +1569,10 @@ public sealed class SourceMaterialConverter
 				+ $"meanLum={lumSum / pixels,6:F1} tint={verdict.Tint:F2} "
 				+ $"alpha=[{baseAlpha.Min},{baseAlpha.Max} cov={baseAlpha.Coverage:P1}] "
 				+ $"synthetic={syntheticBase} contentFree={MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)} "
+				// matcap 的名字必须打出来：金属/宝石的判定**只由它决定**，
+				// 而它常常和材质名完全不同（实测 `mat_metal_gem_earings` 用的是另一张 matcap）。
+				// 没有这一列，"这个件为什么没被当成金属"就只能靠猜。
+				+ $"matcap={matcapTextureName ?? "<无>"} "
 				+ $"=> metal={matcapIsMetal} matcapIsSurface={matcapIsSurface}");
 		}
 
@@ -1750,6 +1779,32 @@ public sealed class SourceMaterialConverter
 			return LoadOutcome.Failed;
 		}
 
+		// **这个模板到底能不能表达金属度** —— 按槽键问，不按模板名猜。
+		var metalDeliverable = templates.HasTextureSlot(templateName, MetallicSlotKey);
+
+		// **金属与镂空在 HD2 里确实不能并存**，而且这条结论现在是结构性的、不是经验性的：
+		//
+		//   · 带 `IlluminateData`（金属度）槽的模板（目前只有 `advanced`）**没有**逐像素
+		//     不透明度槽：`SclarFieldOpacity` 实测默认贴图是 1×1 R8，是标量；
+		//   · 带 `OpacityClipMap`（逐像素镂空）的模板是 `alphaclip` / `alphaclip+`，
+		//     而它们的 11 / 12 个变量里**一个金属相关参数都没有**
+		//     （逐条解过：全是不透明度/脏污/天气/分辨率）。
+		//
+		// 实测代价（MourningVeil 58 个材质）：判成金属的 10 个**全部**落进 alphaclip ——
+		// 项链、头冠、耳坠、袖口、腿环、鞋，正好是"金属 + 镂空"那一批。
+		// 一个都没拿到金属度，因为那个槽在这个模板里根本不存在。
+		//
+		// 取舍按用户定的口径：**镂空优先**。所以这里必须把"金属被放弃了"说出来，
+		// 否则用户看到的就是"我的金属没了"，而报告里写着一切正常。
+		if (matcapIsMetal && !metalDeliverable)
+		{
+			notices.Add(
+				$"{stem}：源侧是金属**又要镂空**，HD2 里没有同时支持两者的模板"
+				+ $"（{templateName} 有逐像素镂空但没有金属度槽，advanced 反之）。"
+				+ "已按**镂空优先**处理，并保留源底色（不再涂成亮银）——"
+				+ "金属光泽这一项在这个模板里无法表达。");
+		}
+
 		// 材质 id 用 $basetexture 的全路径（与 Python 侧一致；贴图 id 只用 basename）。
 		// 这个不对称是已知隐患，见 Hd2AssetId 的注释。
 		//
@@ -1806,7 +1861,7 @@ public sealed class SourceMaterialConverter
 		loaded = new LoadedMaterial(
 			stem, baseTexture, textureName, vtf, rgba, useAlphaClip, templateName,
 			identity, DeriveMaterialId(identity), emissionTexture, emissionTint, matcapMean, verdict.Tint,
-			matcapTextureName, matcapIsSurface, matcapIsMetal, sourceBaseRgba, sourceBaseWidth, sourceBaseHeight, notices,
+			matcapTextureName, matcapIsSurface, matcapIsMetal, metalDeliverable, sourceBaseRgba, sourceBaseWidth, sourceBaseHeight, notices,
 			// 抖动是**默认**的半透明落地方式，但只给"源侧真的要半透明"的材质：
 			// `$translucent`（想混合，HD2 表达不了）与 `$allowalphatocoverage`（源侧自己就在抖）。
 			// 纯 `$alphatest` 继续硬裁——那是 Source 的原语义（低于参考值丢弃），蕾丝/镂空靠它。
@@ -1928,7 +1983,22 @@ public sealed class SourceMaterialConverter
 			// ⚠️ 连色相一起丢是刻意的：matcap 由**可选的颜色变体包**提供（C1/C2、B1/B2/B3），
 			// 取色相就等于"同一份源的转换结果取决于装了哪个变体包"。详见
 			// `MaterialAppearance.FlattenToMetalF0` 的注释。
-			MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+			//
+			// ⚠️ **但只有 advanced 才配得上这个 F0。**
+			//
+			// 实测（MourningVeil，58 个材质里 10 个判成金属）：**10/10 全部落进 alphaclip**
+			// ——它们的 alpha 都是真实形状（cov 31~65%），所以"镂空优先"必然把它们从
+			// 金属模板里挤出去。而 `alphaclip` 的 11 个变量里**没有任何金属参数**
+			// （逐条解过模板：只有不透明度/脏污/天气/分辨率），那块金属度无处可写。
+			//
+			// 于是原来的 F0 0.96 会产出一块**亮银塑料**：在游戏里比"什么都不做"更显眼。
+			//
+			// **做不到金属时，我们不再动底色。** 保留作者画的那张（实测这批件共享
+			// `Mat_Metal`，平均亮度 17.2 —— 近黑的中性色）：观感是一块深色金属剪影，
+			// 不抢眼、也不会被误认成"金属做坏了"。这比涂成亮银或统一灰都更接近源意。
+			var metalDeliverable = loaded.MetalDeliverable;
+			if (metalDeliverable)
+				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
 		}
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
 			MaterialAppearance.ScaleRgb(rgba, matcapBakeGain);

@@ -62,6 +62,13 @@ public static class MaterialAppearance
 	/// <b>非金属关键词优先</b>：先查 <c>jewel/gem/diamond/pearl/cloth/env/highlight/rim</c>，
 	/// 这样"宝石/布料"这类明确的词不会被偶然包含的金属词压过。
 	/// </para>
+	/// <para>
+	/// ⚠️ <b>曾经想把"金属词压过装饰词"改成两层优先级，改完又撤回了</b>——
+	/// 因为真实数据不支持：MourningVeil 的 <c>Mat_Metal_gem_*</c> 材质名里确实有 metal，
+	/// 但它们的 <c>$matcapture</c> 是 <c>matcap_jewel9</c>（纯宝石），判非金属是<b>对的</b>。
+	/// 这批件的"金属没生效"另有原因（它们全部落进 alphaclip，那里根本没有金属度槽），
+	/// 与判定无关。别再凭材质名去猜——判定只看 matcap 名。
+	/// </para>
 	/// </summary>
 	public static bool IsMetallicMatcapName(string? matcapName)
 	{

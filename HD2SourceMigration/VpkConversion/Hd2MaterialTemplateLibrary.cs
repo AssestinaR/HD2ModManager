@@ -123,6 +123,33 @@ public sealed class Hd2MaterialTemplateLibrary
 		return Hd2MaterialAsset.Read(LoadBytes(name));
 	}
 
+	/// <summary>
+	/// <b>这个模板有没有某个贴图槽键</b>。
+	/// <para>
+	/// 用来替掉"按模板名判断能力"那种写法：模板叫什么（<c>advanced</c> / <c>alphaclip</c>…）
+	/// 只是命名，真正决定"能不能表达某个特性"的是它<b>有没有那个槽</b>。
+	/// 换 SDK 版本、模板改名、或将来用上 <c>basic</c> 族的 <c>Mra</c> 时，
+	/// 按名字写死的判断会静默失效，按槽键查不会。
+	/// </para>
+	/// <para>
+	/// 结果是缓存的<b>布尔值</b>，不是模板实例：<see cref="Load"/> 返回的对象是可变的
+	/// （<c>SetTexture</c> 会就地改），共用实例会把一个材质的改动泄漏到另一个。
+	/// </para>
+	/// </summary>
+	public bool HasTextureSlot(string name, uint slotKey)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(name);
+		var cacheKey = name + "|" + slotKey.ToString("x8", System.Globalization.CultureInfo.InvariantCulture);
+		if (slotQueries.TryGetValue(cacheKey, out var known))
+			return known;
+		var has = Hd2MaterialAsset.Read(LoadBytes(name)).TextureKeys.Contains(slotKey);
+		slotQueries[cacheKey] = has;
+		return has;
+	}
+
+	/// <summary>「模板名|槽键」→ 有没有这个槽。只缓存布尔值，见 <see cref="HasTextureSlot"/>。</summary>
+	private readonly Dictionary<string, bool> slotQueries = new(StringComparer.Ordinal);
+
 	/// <summary>读原始模板字节（需要"逐字节照抄"语义时用它）。</summary>
 	public byte[] LoadBytes(string name)
 	{

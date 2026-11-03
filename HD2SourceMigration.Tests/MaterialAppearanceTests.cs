@@ -165,6 +165,41 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
+	/// **能不能表达金属度，由"模板有没有这个槽"决定，不是由模板名决定。**
+	/// <para>
+	/// 实测 MourningVeil：判成金属的 10 个材质全部因为"镂空优先"落进 alphaclip，
+	/// 一个都没拿到金属效果；而它们此前仍被涂成 F0 0.96（亮银），
+	/// 游戏里就是"一块不像金属的亮银塑料"。
+	/// </para>
+	/// <para>
+	/// 这里直接拿 <b>SDK 的真实模板</b>去查槽键，而不是断言"名字是 advanced 就为真"：
+	/// 换 SDK 版本、模板改名、或将来用上 `basic` 族的 `Mra` 时，按名字写死的判断会静默失效。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void OnlyTemplatesWithAMetallicSlotCanDeliverMetalness()
+	{
+		var library = Hd2MaterialTemplateLibrary.Locate();
+		if (library is null)
+			return;
+
+		// 已知结论：只有 advanced 带 IlluminateData。
+		Assert.True(library.HasTextureSlot("advanced", SourceMaterialConverter.MetallicSlotKey));
+
+		foreach (var name in new[] { "alphaclip", "alphaclip+", "original", "armorlut", "translucent" })
+		{
+			Assert.False(
+				library.HasTextureSlot(name, SourceMaterialConverter.MetallicSlotKey),
+				$"{name} 不应该有金属度槽——如果 SDK 变了，这条要跟着改，而不是让判定静默失效");
+		}
+
+		// 同一个查询连问两次必须一致（缓存不能改变答案）。
+		Assert.Equal(
+			library.HasTextureSlot("advanced", SourceMaterialConverter.MetallicSlotKey),
+			library.HasTextureSlot("advanced", SourceMaterialConverter.MetallicSlotKey));
+	}
+
+	/// <summary>
 	/// 回归闸门：这三个输入在历史上分别踩过三个不同的坑，必须同时成立。
 	/// 只修其中一个（例如"补剥方括号但不限制分量数"）会让另一个立刻变错。
 	/// </summary>
