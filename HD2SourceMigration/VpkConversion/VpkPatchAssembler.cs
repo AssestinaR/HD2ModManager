@@ -136,6 +136,16 @@ public sealed record VpkMaterialOutcome(
 	/// </summary>
 	public bool Emitted { get; init; }
 
+	/// <summary>
+	/// 这个材质是不是<b>兜底灰占位</b>（模型要它、但没有任何来源提供）。
+	/// <para>
+	/// 单独一列而不是靠"名字看着像不像"去猜：占位材质<b>确实写进了 patch</b>，
+	/// 所以它在 <see cref="Emitted"/> 上是 true —— 只看那一列会把占位当成"真实落地"。
+	/// 用户看着报告逐行核对时，这一列是唯一能指出"这行的颜色不是源侧那个"的东西。
+	/// </para>
+	/// </summary>
+	public bool Placeholder { get; init; }
+
 	/// <summary><c>-1</c> 表示这个材质不是模型引用的，而是本 VPK 自己带的（模型没用到的那些）。</summary>
 	public bool UsedByModel => SourceMaterialIndex >= 0;
 }
@@ -160,9 +170,20 @@ public sealed record VpkMaterialGap(
 	int RequiredCount,
 	int ResolvedCount,
 	IReadOnlyList<string> NoDraw,
-	IReadOnlyList<string> Missing)
+	IReadOnlyList<string> Missing,
+	IReadOnlyList<string>? Fallback = null)
 {
-	/// <summary>模型要的材质里，有多少没有对应材质（<see cref="NoDraw"/> ∪ <see cref="Missing"/>）。</summary>
+	/// <summary>用了兜底灰材质的源材质名（模型要它、但谁都没提供）。</summary>
+	public IReadOnlyList<string> FallbackMaterials => Fallback ?? [];
+
+	/// <summary>
+	/// 模型要的材质里，有多少<b>没有真实材质</b>
+	/// （<see cref="NoDraw"/> ∪ <see cref="Missing"/> ∪ <see cref="FallbackMaterials"/>）。
+	/// <para>
+	/// ⚠️ 兜底材质虽然是"看得见的占位"，但它<b>不是</b>源侧那个材质 —— 颜色、图案、金属度
+	/// 全都不对。把它算进"解决"会让总账显示"全部落地"，而那正是需要被看见的那种问题。
+	/// </para>
+	/// </summary>
 	public int UnresolvedCount => RequiredCount - ResolvedCount;
 
 	public bool IsClean => UnresolvedCount <= 0;
@@ -700,7 +721,7 @@ public sealed class VpkPatchAssembler
 			// 颜色不对是可诊断的（一眼能看出"这块没材质"），部件消失是不可诊断的。
 			//
 			// ⚠️ `$no_draw` **不走这条** —— 那是源侧明确要求不画，交给 FilterNoDrawPlans 剔几何。
-			
+			var fallbackStems = new List<string>();
 			foreach (var required in requiredStems.Order(StringComparer.OrdinalIgnoreCase))
 			{
 				if (idByStem.ContainsKey(required))
@@ -723,6 +744,7 @@ public sealed class VpkPatchAssembler
 
 				idByStem[required] = fallback.Material.Id;
 				productByStem[required] = fallback;
+				fallbackStems.Add(required);
 				foreach (var notice in fallback.Notices)
 					warnings.Add(notice);
 			}
@@ -859,11 +881,17 @@ public sealed class VpkPatchAssembler
 				}
 			}
 
+			// 真实落地的数量**要扣掉兜底的**：兜底材质有 id、也确实写进了 patch，
+			// 但它不是源侧那个材质。算进"解决"会让总账显示"全部落地"，
+			// 而那恰恰是需要被看见的那一种问题（用户看到一块灰面，报告说一切正常）。
+			var fallbackSet = fallbackStems.ToHashSet(StringComparer.OrdinalIgnoreCase);
 			materialGap = new VpkMaterialGap(
 				RequiredCount: requiredStems.Count,
-				ResolvedCount: requiredStems.Count(material => idByStem.ContainsKey(material)),
+				ResolvedCount: requiredStems.Count(material =>
+					idByStem.ContainsKey(material) && !fallbackSet.Contains(material)),
 				NoDraw: noDrawMaterials,
-				Missing: missingMaterials);
+				Missing: missingMaterials,
+				Fallback: fallbackStems);
 
 			// 把 `$no_draw` 的材质名翻成**材质下标**，供装配阶段丢掉对应三角形的几何。
 			//
@@ -918,7 +946,7 @@ public sealed class VpkPatchAssembler
 					product?.Material?.TemplateName ?? identity?.TemplateName ?? string.Empty,
 					product?.Material?.BaseTexture ?? identity?.BaseTexture ?? string.Empty,
 					mergedInto)
-				{ Emitted = addedMaterialIds.Contains(materialId) };
+				{ Emitted = addedMaterialIds.Contains(materialId), Placeholder = fallbackSet.Contains(stem) };
 			}
 		}
 

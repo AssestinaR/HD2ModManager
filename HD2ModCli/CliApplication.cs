@@ -3838,15 +3838,22 @@ public static class CliApplication
 			warnings = package.Warnings,
 			// 跳过：源侧自己写着"别画"（$no_draw）。不是问题，别和警告混在一起。
 			skipped = package.Skipped,
-			// **材质总账**：模型要多少、落地多少、差的是哪两类。
+			// **材质总账**：模型要多少、真实落地多少、差的是哪三类。
 			// 上机紫块只能靠这一份说清——"写了 31 个材质"本身看不出够不够。
+			//
+			// 三类缺口必须分开报，因为处理方式完全不同：
+			//   · noDraw   ：源侧要求不绘制（$no_draw），我们的处理是剔掉几何 —— 正常；
+			//   · fallback ：谁都没提供，已用**兜底灰材质**占位 —— 部件在，但颜色/图案都不对；
+			//   · missing  ：连兜底都造不出来 —— 部件会被移除，最坏的一种。
 			materialGap = package.MaterialGap is null
 				? null
 				: new
 				{
 					required = package.MaterialGap.RequiredCount,
 					resolved = package.MaterialGap.ResolvedCount,
+					unresolved = package.MaterialGap.UnresolvedCount,
 					noDraw = package.MaterialGap.NoDraw,
+					fallback = package.MaterialGap.FallbackMaterials,
 					missing = package.MaterialGap.Missing,
 				},
 			// 这个 VPK 一个 patch 都没产出时的**一句话结论**（null 表示产出了东西）。
@@ -3874,6 +3881,9 @@ public static class CliApplication
 				material = "0x" + item.MaterialId.ToString("x16"),
 				template = item.TemplateName,
 				emitted = item.Emitted,
+				// **兜底灰占位**：`emitted=true` 且这一列为 true 的行，颜色/图案不是源侧那个材质。
+				// 没有这一列，逐行核对时占位行和真实落地行长得一模一样。
+				placeholder = item.Placeholder,
 				mergedInto = item.MergedIntoSourceIndex,
 			}),
 			// 逐贴图：`emitted=false` 的那条必须带理由，否则"少了一张"只能人肉比对
@@ -3972,17 +3982,22 @@ public static class CliApplication
 			foreach (var skip in package.Skipped)
 				lines.Add($"        · 跳过：{skip}");
 
-			// 材质总账。**一行说清"紫块从哪来"**：要多少 / 落地多少 / 差在哪一类。
+			// 材质总账。**一行说清"紫块/灰块从哪来"**：要多少 / 真实落地多少 / 差在哪一类。
 			if (package.MaterialGap is { } gap && !gap.IsClean)
 			{
-				lines.Add($"        ⚠️ 材质总账：模型要 {gap.RequiredCount} 个，落地 {gap.ResolvedCount} 个"
-					+ $"，缺 {gap.UnresolvedCount} 个"
-					+ $"（其中源侧 $no_draw 不绘制 {gap.NoDraw.Count} 个、真缺失 {gap.Missing.Count} 个）");
+				lines.Add($"        ⚠️ 材质总账：模型要 {gap.RequiredCount} 个，真实落地 {gap.ResolvedCount} 个"
+					+ $"，差 {gap.UnresolvedCount} 个"
+					+ $"（其中源侧 $no_draw 不绘制 {gap.NoDraw.Count} 个、"
+					+ $"兜底灰占位 {gap.FallbackMaterials.Count} 个、真缺失 {gap.Missing.Count} 个）");
+				if (gap.FallbackMaterials.Count != 0)
+					lines.Add($"          兜底灰占位（部件在，但颜色/图案不是源侧那个材质）："
+						+ $"{string.Join("、", gap.FallbackMaterials.Take(12))}"
+						+ (gap.FallbackMaterials.Count > 12 ? $"…（共 {gap.FallbackMaterials.Count} 个）" : string.Empty));
 				if (gap.Missing.Count != 0)
-					lines.Add($"          真缺失：{string.Join("、", gap.Missing.Take(12))}"
+					lines.Add($"          真缺失（连兜底都做不出来，部件会被移除）：{string.Join("、", gap.Missing.Take(12))}"
 						+ (gap.Missing.Count > 12 ? $"…（共 {gap.Missing.Count} 个）" : string.Empty));
 				if (gap.NoDraw.Count != 0)
-					lines.Add($"          $no_draw（HD2 里暂无等价物，上机会显示为紫块）："
+					lines.Add($"          $no_draw（源侧要求不绘制，已按源侧剔掉几何）："
 						+ $"{string.Join("、", gap.NoDraw.Take(8))}"
 						+ (gap.NoDraw.Count > 8 ? $"…（共 {gap.NoDraw.Count} 个）" : string.Empty));
 			}

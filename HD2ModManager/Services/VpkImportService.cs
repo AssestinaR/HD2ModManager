@@ -709,11 +709,43 @@ public sealed class VpkImportService
 				// 诊断不是警告：它表示"该写出来的东西没写出来"。以前只在 JSON 里，界面完全看不到。
 				foreach (var diagnostic in ReadStrings(patch, "diagnostics"))
 					notes.Add("诊断：" + diagnostic);
+
+				// **材质总账**：模型要的材质里，哪些没有真实落地。
+				//
+				// 以前管理器完全不读这一段，于是"某个部件变成一块灰面"或者"某个部件没了"
+				// 在界面上**没有任何解释**——用户只能看到"导入成功"。而这份总账正是
+				// 唯一能回答"我那件东西为什么不对"的数据，它已经在 JSON 里躺了很久。
+				//
+				// 两类分开说，因为处理方式不同：
+				//   · fallback 有兜底灰材质 → 部件在，颜色/图案不对（能透过外观判断是哪里）；
+				//   · missing  连兜底都没有   → 部件会被移除（要去看诊断里的技术原因）。
+				if (patch.TryGetProperty("materialGap", out var gap) && gap.ValueKind == JsonValueKind.Object)
+				{
+					var fallback = ReadStrings(gap, "fallback");
+					if (fallback.Count != 0)
+					{
+						notes.Add($"材质总账：{fallback.Count} 个材质用了兜底灰占位（源包里没有它们，颜色/图案不会对）："
+							+ DescribeFirst(fallback));
+					}
+
+					var missing = ReadStrings(gap, "missing");
+					if (missing.Count != 0)
+					{
+						notes.Add($"材质总账：{missing.Count} 个材质连兜底都造不出来，对应部件会被移除："
+							+ DescribeFirst(missing));
+					}
+				}
 			}
 		}
 
 		return new ConversionResult(patchDirectory, null, output, units, materials, textures, notes);
 	}
+
+	/// <summary>把一串名字写成"前几个 + 共几个"，避免几十个名字把界面撑爆。</summary>
+	private static string DescribeFirst(IReadOnlyList<string> names, int limit = 6)
+		=> names.Count <= limit
+			? string.Join("、", names)
+			: string.Join("、", names.Take(limit)) + $"…（共 {names.Count} 个）";
 
 	/// <summary>
 	/// 从转换报告里取第一条 <c>registryError</c>（素体没能登记的真正原因）。
