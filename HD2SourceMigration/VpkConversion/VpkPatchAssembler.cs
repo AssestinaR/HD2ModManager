@@ -317,6 +317,9 @@ public sealed class VpkPatchAssembler
 		var diagnostics = new List<string>();
 		var warnings = new List<string>();
 		var skipped = new List<string>();
+		// 成功写进 session 的 Unit 数（= `units` 里 `IsValid` 的那些）。
+		// 用来区分"部分 Unit 失败"（可继续）与"一条都没写成"（结构性失败）——见 ⑤ 之后的判断。
+		var unitsWritten = 0;
 		// 材质总账（见 VpkMaterialGap 的注释）：由 ResolveAndEmitMaterials 填。
 		VpkMaterialGap? materialGap = null;
 		// 源侧声明 `$no_draw` 的材质下标（= sourceMaterialNames 的下标），由 ResolveAndEmitMaterials 填。
@@ -496,10 +499,32 @@ public sealed class VpkPatchAssembler
 				plan.Donor.Unknown2,
 				plan.Donor.Unknown3,
 				plan.Donor.Unknown4));
+			unitsWritten++;
 		}
 
-		if (diagnostics.Count != 0)
+		// **失败粒度：一条 Unit 写不出来，不该把整个 patch 弄没。**
+		//
+		// 原来只要 `diagnostics` 非空就 `return null`，于是"某个部件的顶点有问题"会让
+		// **整份 patch 消失**——用户看到的是"这个 VPK 里没有能用的资源"，
+		// 而真实原因可能只是其中一个 Unit 的法线是零向量（实测 `影鸢女武神shinano`）。
+		// 那一次排查里，这句话把用户和排查者一起带偏了方向。
+		//
+		// 现在分成两档：
+		//   · 一条 Unit 都没写出来 ⇒ 仍然整体失败（没有 patch 可交，这是结构性失败）；
+		//   · 部分写成 ⇒ 写出来，把失败的那些**逐条**报成警告。
+		// 后者在游戏里表现为"那些部件退回外壳护甲的外观"，比"整件角色都不对"好得多，
+		// 而且报告里能直接看到是哪几个部件。
+		if (diagnostics.Count != 0 && unitsWritten == 0)
 			return new(null, units, diagnostics);
+
+		if (diagnostics.Count != 0)
+		{
+			warnings.Add(
+				$"{diagnostics.Count} 个部件没能写出来（{string.Join("；", diagnostics.Take(3))}"
+				+ (diagnostics.Count > 3 ? "…" : string.Empty)
+				+ $")；其余 {unitsWritten} 个部件与全部材质仍然写进本 patch —— "
+				+ "这些部件在游戏里会退回外壳护甲的外观，请结合上面的诊断确认原因是几何问题还是材质问题。");
+		}
 
 		string? tocPath = null;
 		if (session.Entries.Count != 0)
@@ -664,6 +689,44 @@ public sealed class VpkPatchAssembler
 				}
 			}
 
+			// ②.5 **真缺失的材质给兜底灰材质，不再删几何。**
+			//
+			// 场景：模型引用了某个材质，而所有来源里都没有它（源包打包缺陷，或者它引用了
+			// 别的包里的材质、而那个包没一起导入）。以前的做法是把它当成"不绘制"，
+			// 连三角形一起剔掉 ⇒ 那个部件**整块消失**：用户看到"缺材质/部件没了"，
+			// 而报告里只有一行"某材质没落地"，两边都对不上。
+			//
+			// 按「不能缺失」的口径：给一块**看得见的哑光中性灰**。
+			// 颜色不对是可诊断的（一眼能看出"这块没材质"），部件消失是不可诊断的。
+			//
+			// ⚠️ `$no_draw` **不走这条** —— 那是源侧明确要求不画，交给 FilterNoDrawPlans 剔几何。
+			
+			foreach (var required in requiredStems.Order(StringComparer.OrdinalIgnoreCase))
+			{
+				if (idByStem.ContainsKey(required))
+					continue;   // 已经落地（真实材质或另一个包提供）
+
+				var reason = skipReasonByStem.TryGetValue(required, out var text) ? text : string.Empty;
+				if (reason.Contains("$no_draw", StringComparison.OrdinalIgnoreCase) || DeclaresNoDraw(required))
+					continue;   // 源侧要求不绘制，不是缺失
+
+				var fallback = converter.SynthesizeFallbackMaterial(required);
+				if (!fallback.IsValid || fallback.Material is null)
+				{
+					// 兜底都造不出来（模板库缺 advanced / texconv 失败）：这时只能退回去剔几何，
+					// 但必须**大声说**，否则又变成"部件悄悄不见了"。
+					warnings.Add(
+						$"源材质 {required} 缺失，且兜底材质也造不出来（{string.Join("；", fallback.Diagnostics)}）；"
+						+ "这个部件会被移除，请在游戏里确认它是不是本来就不该显示。");
+					continue;
+				}
+
+				idByStem[required] = fallback.Material.Id;
+				productByStem[required] = fallback;
+				foreach (var notice in fallback.Notices)
+					warnings.Add(notice);
+			}
+
 			// 把 id 分派回源材质下标（Unit 作者按下标取）。
 			if (sourceMaterialNames is not null)
 			{
@@ -785,7 +848,10 @@ public sealed class VpkPatchAssembler
 				try
 				{
 					if (scope is null || !scope.TryReadVmt(stem, out var bytes) || bytes.Length == 0) return false;
-					return Encoding.UTF8.GetString(bytes).Contains("$no_draw", StringComparison.OrdinalIgnoreCase);
+					// ⚠️ **按 VMT 语法判，不能对原始文本 `Contains("$no_draw")`。**
+					// 后者会把注释（`// $no_draw`）、以及 `$no_draw "0"`（= 关）也算成"不要画"，
+					// 于是本该显示的部件被剔掉几何。`IsEnabled` 已经处理了"0/false/空值算关"。
+					return VmtDocument.Parse(bytes).IsEnabled("$no_draw");
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
 				{
@@ -799,18 +865,17 @@ public sealed class VpkPatchAssembler
 				NoDraw: noDrawMaterials,
 				Missing: missingMaterials);
 
-			// 把"没有材质可指"的名字翻成**材质下标**，供装配阶段丢掉对应三角形的几何。
+			// 把 `$no_draw` 的材质名翻成**材质下标**，供装配阶段丢掉对应三角形的几何。
 			//
-			// **两类都要丢**：`$no_draw` 是源侧要求不画；真缺失（谁都没提供）留着只会让那块上机紫。
-			// 一个指向不存在材质 id 的 section 从来不会有好结果，只会把问题藏到进游戏之后。
-			if (sourceMaterialNames is not null && (noDrawMaterials.Count != 0 || missingMaterials.Count != 0))
+			// ⚠️ **只有 `$no_draw` 才丢几何。** 真缺失的材质已经在上面的 ②.5 拿到兜底灰材质，
+			// 几何必须保留——把它们也丢掉的后果是"部件整块消失"，那正是用户报的"缺材质"里
+			// 最糟糕的一种表现：既看不见东西，也没有任何线索指向"是材质缺失"。
+			if (sourceMaterialNames is not null && noDrawMaterials.Count != 0)
 			{
-				var unmaterialedStems = noDrawMaterials
-					.Concat(missingMaterials)
-					.ToHashSet(StringComparer.OrdinalIgnoreCase);
+				var noDrawStems = noDrawMaterials.ToHashSet(StringComparer.OrdinalIgnoreCase);
 				for (var materialIndex = 0; materialIndex < sourceMaterialNames.Count; materialIndex++)
 				{
-					if (unmaterialedStems.Contains(StemOf(sourceMaterialNames[materialIndex])))
+					if (noDrawStems.Contains(StemOf(sourceMaterialNames[materialIndex])))
 						noDrawMaterialIndices.Add(materialIndex);
 				}
 			}

@@ -13,6 +13,50 @@ public sealed class VmtDocumentTests
 {
 	private static VmtDocument Parse(string text) => VmtDocument.Parse(Encoding.UTF8.GetBytes(text));
 
+	/// <summary>
+	/// <c>$no_draw</c> 的判据是「开关为真」，不是「值非空」。
+	/// <para>
+	/// 这条很重要：转换器曾经用 <c>!string.IsNullOrWhiteSpace(Value("$no_draw"))</c> 判，
+	/// 于是 <c>$no_draw "0"</c>（= 明确要求**绘制**）被当成"不要画" → 那个部件连几何一起消失。
+	/// 一个本该显示的部件静默不见，游戏里没有任何线索指向"是这一行判反了"。
+	/// </para>
+	/// </summary>
+	[Theory]
+	[InlineData("VertexLitGeneric { \"$no_draw\" \"1\" }", true)]
+	[InlineData("VertexLitGeneric { \"$no_draw\" \"0\" }", false)]
+	[InlineData("VertexLitGeneric { \"$no_draw\" \"false\" }", false)]
+	[InlineData("VertexLitGeneric { \"$no_draw\" \"no\" }", false)]
+	[InlineData("VertexLitGeneric { \"$no_draw\" \"\" }", true)]     // 空值也算开（值被写了但没内容）
+	[InlineData("VertexLitGeneric { $no_draw }", true)]              // 裸键
+	[InlineData("VertexLitGeneric { \"$basetexture\" \"a\" }", false)]
+	public void NoDrawIsGovernedByTheSwitchNotByTheValueBeingPresent(string text, bool expected)
+	{
+		Assert.Equal(expected, Parse(text).IsEnabled("$no_draw"));
+	}
+
+	/// <summary>
+	/// 注释里的 <c>$no_draw</c> 不能算数。
+	/// <para>
+	/// 装配器曾经对**原始字节**做 `Contains("$no_draw")`，于是被注释掉的
+	/// <c>// $no_draw 1</c> 也会让那个部件被剔掉几何。这条测试锁住"按语法判"这个做法：
+	/// 注释被解析器丢掉，所以 IsEnabled 看不到它。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void NoDrawInsideACommentIsNotASwitch()
+	{
+		const string text = """
+			VertexLitGeneric
+			{
+				// $no_draw 1   ← 作者注释掉的实验行
+				"$basetexture" "models/foo/bar"
+			}
+			""";
+		Assert.False(Parse(text).IsEnabled("$no_draw"));
+		// 前提确认：原始文本里确实有这四个字——也就是说"对原文 Contains"一定会误判。
+		Assert.Contains("$no_draw", text, StringComparison.Ordinal);
+	}
+
 	[Fact]
 	public void Parse_ReadsShaderAndFlatTopLevelValues()
 	{

@@ -958,6 +958,83 @@ public sealed class SourceMaterialConverter
 		};
 	}
 
+	/// <summary>
+	/// 为「源包里根本没有这个材质」的情形造一个**兜底灰材质**。
+	/// <para>
+	/// <b>为什么需要它。</b>装配器原来的做法是：模型引用了某个材质、而它没被任何 VPK 提供（源包
+	/// 打包缺陷、或者引用了别的包里的材质而那个包没一起导入）⇒ 把这个材质下标当成
+	/// "不绘制"，<b>连三角形一起剔掉</b>。结果是那个部件**整块消失**——用户看到的是
+	/// "缺材质/部件没了"，而报告里只有一行"某材质没落地"。
+	/// </para>
+	/// <para>
+	/// 按「不能缺失」的口径，正确做法是：<b>给一个看得见的中性灰材质</b>，让它上机是
+	/// 一块哑光灰面（能立刻看出"这块没材质"），而不是整块不见。颜色不对是可诊断的，
+	/// 部件消失是不可诊断的。
+	/// </para>
+	/// <para>
+	/// 身份串用 <c>stem</c>（与真实材质同一套规则），所以同一个源材质无论在哪个 patch 里
+	/// 兜底，算出的 id 都一致——模型 patch 引用它、材质 patch 产出它，两边对得上。
+	/// </para>
+	/// </summary>
+	/// <param name="stem">源材质的裸名（<c>$basetexture</c> 之前那一层）。</param>
+	public MaterialSynthesisResult SynthesizeFallbackMaterial(string stem)
+	{
+		const string templateName = "advanced";
+		if (string.IsNullOrWhiteSpace(stem))
+			return MaterialSynthesisResult.Failed("兜底材质需要一个非空的材质名");
+		if (!templates.Contains(templateName))
+			return MaterialSynthesisResult.Failed($"{stem}：材质模板库缺少 {templateName}，造不出兜底材质");
+
+		var material = templates.Load(templateName);
+		var textures = new List<SynthesizedTexture>();
+		try
+		{
+			if (material.TextureIds.Count <= AdvancedAlbedoSlot
+				|| material.TextureIds.Count <= AdvancedNarSlot
+				|| material.TextureIds.Count <= AdvancedMetallicSlot)
+			{
+				return MaterialSynthesisResult.Failed($"{stem}：advanced 模板槽数不够，放不下兜底底色");
+			}
+
+			// 半亮中性灰。与"底图缺失时退成中性色"取同一个值（NonMetallicSurfaceF0），
+			// 于是两种"没有真材质"的观感一致，用户不必区分是哪种原因。
+			var grey = MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
+			// alpha = 0：`advanced` 槽 5 的 A 是**自发光**，不清零会让整件发光。
+			var baseColor = BuildSolidTexture(stem + "_fallback", string.Empty, grey, grey, grey, 0);
+			material.SetTexture(AdvancedAlbedoSlot, baseColor.Id);
+			textures.Add(baseColor);
+
+			// 法线与金属度用**全局共享**那一对（名字固定 → id 固定 → 装配器按 id 去重并成一条），
+			// 于是兜底材质不会把包撑大。电介质而非金属：没有依据时不要给金属度。
+			var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+			var sharedPbr = BuildSolidTexture("shared_pbr_", string.Empty, DefaultMetallic, DefaultMetallic, DefaultMetallic, 255);
+			material.SetTexture(AdvancedNarSlot, flatNormal.Id);
+			material.SetTexture(AdvancedMetallicSlot, sharedPbr.Id);
+			textures.Add(flatNormal);
+			textures.Add(sharedPbr);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			return MaterialSynthesisResult.Failed($"{stem}：兜底材质造不出来——{exception.Message}");
+		}
+
+		var identity = BuildMaterialIdentity(stem, null, useAlphaClip: false);
+		var id = DeriveMaterialId(identity);
+		return new MaterialSynthesisResult(
+			new SynthesizedMaterial(id, material.Write(), templateName, stem + "_fallback", material.TextureIds),
+			textures,
+			[])
+		{
+			Identity = new MaterialIdentity(id, templateName, stem + "_fallback", UseAlphaClip: false,
+				MatcapTexture: null, MatcapBaked: false),
+			Notices =
+			[
+				$"{stem}：源包里没有这个材质，已用**兜底灰材质**占位（哑光中性灰）——"
+				+ "部件会显示成一块灰面，不会整块消失。这通常意味着源包缺文件，或它引用了别的包里的材质而那个包没有一起导入。",
+			],
+		};
+	}
+
 	/// <summary>把一个源材质转成 HD2 材质 + 它的贴图。</summary>
 	/// <param name="materialName">源材质的裸名（MDL 材质表里那个）。</param>
 	public MaterialSynthesisResult Convert(string materialName)
@@ -1215,7 +1292,12 @@ public sealed class SourceMaterialConverter
 		// `$no_draw 1`：源侧根本不绘制这个材质（L4D2 用它隐藏部位）。
 		// HD2 没有对应概念，所以**不硬造**——把它当"跳过"报出去。
 		// 硬造两种结果都是错的：当失败会让整个 patch 写不出来；当成功会造出一个看得见的材质。
-		if (!string.IsNullOrWhiteSpace(vmt.Value("$no_draw")))
+		//
+		// ⚠️ 判据是「开关为真」，不是「值非空」。
+		// 写 `$no_draw "0"` 是**明确打开绘制**，按"非空即跳过"会把它当成不要画，
+		// 于是那个部件连几何一起消失——一个本该显示的部件静默不见，
+		// 在游戏里没有任何线索指向"是 $no_draw 判反了"。
+		if (vmt.IsEnabled("$no_draw"))
 		{
 			reason = $"{stem}：源材质声明 $no_draw（源侧不绘制），跳过";
 			return LoadOutcome.Skipped;

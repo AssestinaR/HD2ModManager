@@ -658,6 +658,26 @@ public sealed class VpkImportService
 				output, 0, 0, 0, notes);
 		}
 
+		// ⚠️ **必须以 CLI 自己的结论为准，不能只判"输出非空"。**
+		//
+		// `vpk2patch` 的退出码与 JSON 里的 `ok` 是同一个判据（`ok = exitCode == 0`）。
+		// 以前这里只看输出是否为空，于是 CLI 因 `registryError`（素体没能登记）返回 2 时，
+		// 只要 patch 文件还在盘上，管理器就当成成功继续走 —— 库里留下一个
+		// **"patch 有、素体没登记"的半成品**：护甲换外观不生效，而界面上一切正常。
+		//
+		// 半成品比失败更难查（它看起来是"转换成功但游戏里没反应"），所以这里一旦
+		// CLI 说不行就整体判失败，把原因带到用户面前。
+		var registryError = ReadFirstRegistryError(root);
+		if (root.TryGetProperty("ok", out var okElement) && okElement.ValueKind == JsonValueKind.False)
+		{
+			var detail = !string.IsNullOrWhiteSpace(registryError)
+				? $"素体未登记：{registryError}"
+				: error.Trim();
+			throw new InvalidDataException(
+				$"转换 {Path.GetFileName(vpkPath)} 未成功（hd2mod 退出码 {exitCode}）"
+				+ (string.IsNullOrWhiteSpace(detail) ? "。" : $"：{detail}"));
+		}
+
 		var patchDirectory = FindPatchDirectory(outputRoot);
 		if (patchDirectory is null)
 		{
@@ -693,6 +713,29 @@ public sealed class VpkImportService
 		}
 
 		return new ConversionResult(patchDirectory, null, output, units, materials, textures, notes);
+	}
+
+	/// <summary>
+	/// 从转换报告里取第一条 <c>registryError</c>（素体没能登记的真正原因）。
+	/// <para>
+	/// 这一个字段决定"导进去了但护甲换不了"——它只出现在 patch 对象上，而报告根对象的
+	/// <c>ok</c> 已经因此是 false。没有它，用户只能看到"转换未成功"而不知道是登记失败。
+	/// </para>
+	/// </summary>
+	private static string? ReadFirstRegistryError(JsonElement root)
+	{
+		if (!root.TryGetProperty("patches", out var patches) || patches.ValueKind != JsonValueKind.Array)
+			return null;
+		foreach (var patch in patches.EnumerateArray())
+		{
+			if (patch.TryGetProperty("registryError", out var value) && value.ValueKind == JsonValueKind.String
+				&& value.GetString() is { Length: > 0 } text)
+			{
+				return text;
+			}
+		}
+
+		return null;
 	}
 
 	/// <summary>
