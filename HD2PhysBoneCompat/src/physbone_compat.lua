@@ -2693,6 +2693,29 @@ function M.update_tip(session, dt, maxWrite)
 	-- 肉眼与动画分辨率都吃不出差别。旧值 0.0004（0.023°）过于保守：慢速摆动时
 	-- 绝大多数骨每帧都在"刚刚超一点点"，于是每帧照写。
 	local epsilon = session.writeEpsilon or 0.0015
+	-- ── 按"离相机多远"加权（2026-11-03）──────────────────────────────────
+	-- 判据是 `|Δθ| > 阈值`，所以**放大阈值 = 要求更大的变化才值得写**：
+	--   · 自己的护甲（order=1）权重 1.0 ⇒ 阈值 0.086°，一分不省、观感不变；
+	--   · 队友/远处的护甲权重递减 ⇒ 阈值放大 2~3 倍 ⇒ 只有明显动了才写。
+	-- 角度大的骨天然更容易越过阈值 ⇒ "角度小就少写"不需要额外判断项。
+	--
+	-- ⚠️ 距离按**套护甲**算，不按每根骨算：同一套护甲所有骨的跨度只有 ~1 m，
+	-- 相对相机几米到几十米，骨与骨的差别全是噪声；而按骨算要额外调
+	-- `Unit.world_position` —— 那正是我们要省的引擎调用。按"套"算，距离信息**免费**
+	-- （运行时本来就按相机距离给玩家排过序，`ownerOrder` 就是它）。
+	local order = session.ownerOrder or 1
+	local weight = 1.0
+	if order == 2 then
+		weight = 0.55
+	elseif order == 3 then
+		weight = 0.40
+	elseif order >= 4 then
+		weight = 0.30
+	end
+	if session.remoteWriteWeight ~= nil and order > 1 then
+		weight = session.remoteWriteWeight
+	end
+	epsilon = epsilon / weight
 	-- 保险：每 refreshEvery 帧无条件全量写一次。
 	-- 脏标记假设"我们上次写的姿态引擎会保留"——这条实测成立，但万一某条路径把节点重置了
 	-- （切 LOD / 引擎重算 bind），没有这次全量刷新就会永久停在错的位置上。
