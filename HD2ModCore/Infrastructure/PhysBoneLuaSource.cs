@@ -33,7 +33,17 @@ public static class PhysBoneLuaSource
 	/// Boot Mod Loader / Chef Shared Loader / MDL3 都按这个标记识别 addon，
 	/// 而且要求它必须是首行——所以这里不能有任何前导空行或 BOM。
 	/// </param>
-	public static string ComposeStandalonePackage(string? addonId = null, string mode = "external")
+	/// <param name="mode">boot / external，只影响日志里的措辞。</param>
+	/// <param name="solver">
+	/// 求解器：<c>tip</c>（逐节尖端弹簧铰链）或 <c>chain</c>（粒子链 / 弹性杆）。
+	/// null 或空 ⇒ 不写进 install 的 options，运行时用自己的默认值（<c>tip</c>）。
+	/// <para>
+	/// 为什么要能选：`chain` 是 2026-11-03 新加的核，治的是"弯曲塌到单个关节"造成的
+	/// 折线/多截棍感。它还没在实机上跑过，所以必须能**一键切回去**做 A/B。
+	/// </para>
+	/// </param>
+	public static string ComposeStandalonePackage(string? addonId = null, string mode = "external",
+		string? solver = null)
 	{
 		var compat = LoadCompat();
 		var runtime = LoadRuntime();
@@ -63,7 +73,15 @@ public static class PhysBoneLuaSource
 		builder.AppendLine("\tif engine == nil then return end");
 		builder.Append("\tPhysBoneRuntime.install(engine, { compat = PhysBoneCompat, mode = '")
 			.Append(mode)
-			.AppendLine("' })");
+			.Append("'");
+		// 求解器只在明确指定时才写进去 —— 不指定就让运行时用自己的默认值，
+		// 避免"生成器里写死一个值"和"运行时默认值"两处各自演化。
+		var solverName = solver?.Trim();
+		if (!string.IsNullOrEmpty(solverName))
+		{
+			builder.Append(", solver = '").Append(EscapeLuaString(solverName)).Append('\'');
+		}
+		builder.AppendLine(" })");
 		builder.AppendLine("end)");
 		builder.AppendLine("if not ok then");
 		builder.AppendLine("\tlocal real = rawget(_G, 'print')");
@@ -73,6 +91,13 @@ public static class PhysBoneLuaSource
 		builder.AppendLine("return PhysBoneRuntime");
 		return builder.ToString();
 	}
+
+	/// <summary>
+	/// 单引号字符串转义。求解器名只可能是 `tip` / `chain` 这种短标识符，
+	/// 但**不假设调用方一定规矩**——拼进 Lua 源码的任何外部文本都必须转义。
+	/// </summary>
+	private static string EscapeLuaString(string value)
+		=> value.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\r", "").Replace("\n", "");
 
 	private static string Read(string suffix)
 	{

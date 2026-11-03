@@ -610,6 +610,15 @@ local function tryAttach(runtime)
 		world = world,
 		strictIdentity = options.strictIdentity == true,
 		fastWrite = options.fastWrite ~= false,
+		-- 求解器选择必须**从这里传下去**。以前 attachOptions 不带 solver，
+		-- 于是 `options.solver` 无论怎么设，attach 都退回默认值 "tip"
+		-- ——"设了 chain 却静默跑 tip"就是这么来的（选项形同虚设）。
+		solver = options.solver,
+		chainOptions = options.chainOptions,
+		-- 碰撞代理：`false` 表示整层关掉（A/B 用），默认开启。
+		colliders = options.colliders,
+		colliderScale = options.colliderScale,
+		colliderRadius = options.colliderRadius,
 	}
 	local attached, emptyUnits, already = 0, 0, 0
 	for index = 1, #plan do

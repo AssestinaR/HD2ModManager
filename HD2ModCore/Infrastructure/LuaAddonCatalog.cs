@@ -26,13 +26,19 @@ public static class LuaAddonCatalog
 	public const string WardrobeModGuid = "3f9d5a12-8c47-4b93-a6e0-1d2f3a4b5c02";
 
 	/// <summary>物理功能的外置包描述。</summary>
+	/// <remarks>
+	/// 求解器必须**从这里也传下去**：外置加载器这条路走的是同一个
+	/// <see cref="PhysBoneLuaSource.ComposeStandalonePackage"/>，两处不一致的话
+	/// "独占 boot 用粒子链、外置包还是旧核"会变成一个很难查的分裂。
+	/// </remarks>
 	public static LuaAddonPackageExport.Feature Physics() => new(
 		Key: "physbone",
 		Title: "HD2 物理骨骼运行时",
 		AddonId: PhysicsAddonId,
 		ModGuid: PhysicsModGuid,
 		LuaFileName: "hd2physbone.lua",
-		Source: PhysBoneLuaSource.ComposeStandalonePackage(PhysicsAddonId));
+		Source: PhysBoneLuaSource.ComposeStandalonePackage(PhysicsAddonId,
+			solver: LuaDeploymentService.PhysicsSolver));
 
 	/// <summary>
 	/// 映射功能的外置包描述。

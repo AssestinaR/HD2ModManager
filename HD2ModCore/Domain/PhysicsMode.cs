@@ -82,3 +82,45 @@ public static class PhysicsModes
 		return Enum.IsDefined(typeof(PhysicsMode), value) ? (PhysicsMode)value : Default;
 	}
 }
+
+/// <summary>
+/// 物理求解器的名字与语义。取值直接写进 Lua 的 <c>install</c> options，所以是**字符串**。
+/// </summary>
+public static class PhysicsSolvers
+{
+	/// <summary>逐节尖端弹簧铰链。已实机验证过的那一套。</summary>
+	public const string Tip = "tip";
+
+	/// <summary>
+	/// 粒子链 / 弹性杆：距离约束 + 弯曲约束 + 身体碰撞，弯曲沿链分布。
+	/// 治的是"弯曲全塌到某一个关节"造成的折线 / 多截棍感。
+	/// </summary>
+	public const string Chain = "chain";
+
+	/// <summary>默认仍然是已验证的 <see cref="Tip"/>，新核要用户主动切。</summary>
+	public const string Default = Tip;
+
+	public static IReadOnlyList<string> All { get; } = [Tip, Chain];
+
+	public static string DisplayName(string solver) => solver switch
+	{
+		Chain => "粒子链（弹性杆）",
+		Tip => "弹簧铰链（默认）",
+		_ => solver,
+	};
+
+	public static string Description(string solver) => solver switch
+	{
+		Chain =>
+			"相邻节的弯曲被约束在一起，弯曲会沿整条链铺开，不再一段一段地折。"
+			+ "软硬仍然由作者写的刚度决定（头发贴着绑定姿态抖，大袖子被重力拽下去）。",
+		Tip =>
+			"每节独立弹簧，实机验证过的稳定版本。缺点是弯曲容易集中到某一个关节上，"
+			+ "看起来像多截棍。",
+		_ => string.Empty,
+	};
+
+	/// <summary>把任意输入收敛到合法值，未知一律回到默认（不抛异常，设置页不该因为脏数据崩）。</summary>
+	public static string Normalize(string? solver)
+		=> solver is not null && All.Contains(solver) ? solver : Default;
+}

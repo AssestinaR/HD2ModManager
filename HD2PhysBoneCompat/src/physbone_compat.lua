@@ -687,9 +687,22 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 		omegaYaw = math.sqrt(kYaw), zetaYaw = cYaw / (2 * math.sqrt(kYaw)),
 		omegaPitch = math.sqrt(kPitch), zetaPitch = cPitch / (2 * math.sqrt(kPitch)),
 	}
-	-- 频段归一化是**运行时策略**；纯数学测试要的是源参数原样映射，可以传 { normalize = false } 关掉。
-	if not (opts and opts.normalize == false) then
+	-- ⚠️ **默认不再做频段归一化**（2026-11-03 反转了 2026-11-01 的决定）。
+	--
+	-- 理由：`yawStiffness` / `yawDamping` 就是作者用来区分"硬铰接 ↔ 软布料"的旋钮，
+	-- 换成 ωn = √k 与 ζ = c/(2√k) 之后两族的差别是**量级**级别的（真实数据）：
+	--   · 头发族   k=50, c=7  ⇒ ωn=7.07 rad/s, ζ=0.49  （弹、回位快、会回弹）
+	--   · 大袖子族 k=1,  c=10 ⇒ ωn=1.00 rad/s, ζ=5.0   （沉、滞、不回弹、被重力主导）
+	-- 而旧策略把 ωn 夹进 [4,12]、ζ 夹进 [0.4,1.2]，等于把"很软很滞的布"**改写成**
+	-- "中等硬、还有点弹的链" —— 那正是"多截棍感"的一部分来源，也是用户明确要求
+	-- "尽量复用来源参数、不要手写参数"要去掉的东西。
+	--
+	-- 保留 `M.normalize_gains` 与两个频段常量：① 诊断脚本（`rig-gains-report` /
+	-- `rig-tools`）要报"哪些骨会被夹"；② 想临时回到旧口径可传 `{ normalize = true }`。
+	if opts and opts.normalize == true then
 		M.normalize_gains(gains)
+	else
+		gains.normalized = false
 	end
 	return gains
 end
@@ -1196,6 +1209,40 @@ function M.step_chain(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		end
 		point[1], point[2], point[3] = point[1] + vx + axs * dt2,
 			point[2] + vy + ays * dt2, point[3] + vz + azs * dt2
+	end
+
+	-- ②b **回正弹簧**：每个粒子被拉向"当前锚点下的 bind 位置"。
+	--
+	-- 少了它，一条水平伸出的链在重力下会**绕根整根转到竖直** —— 那是单摆，不是头发。
+	-- Valve 的 `jigglesbones.cpp` 里唯一的作用力就是它：`err = goalTip − tipPos`，
+	-- 而 goalTip 就是"动画算出来的目标位置"。所以这里补的就是原版语义。
+	--
+	-- 好处是**参数全部来自作者**：
+	--   k 大（头发 k=50）⇒ 回正强 ⇒ 贴着 bind 抖、不下垂；
+	--   k 小（大袖子 k=1）⇒ 回正弱 ⇒ 重力主导 ⇒ 自然垂到手臂下方（正是作者要的效果）。
+	-- 阻尼同样取作者的 c。这就是"硬铰接 ↔ 软布料"由来源参数决定，不用手写。
+	--
+	-- 弹簧力作用在**整条链的每个粒子**上（不是只作用在尖端）：这是"弹性杆"与
+	-- "逐节铰链"的另一个区别 —— 每节都被自己的目标约束，弯曲才会均匀铺开。
+	for index = 2, n + 1 do
+		local gains = item.bones[index - 1].gains
+		local kYaw = gains and gains.kYaw or 0
+		if kYaw > 0 then
+			local cYaw = gains.cYaw or 0
+			local point, previous = p[index], prev[index]
+			local r = rest[index]
+			local tx, ty, tz = qrot(qx, qy, qz, qw, r[1], r[2], r[3])
+			tx, ty, tz = apx + tx, apy + ty, apz + tz
+			-- 速度用每帧位移换算（Verlet 的隐式速度）
+			local invDt = (dt > 1e-9) and (1 / dt) or 0
+			local vx, vy, vz = (point[1] - previous[1]) * invDt,
+				(point[2] - previous[2]) * invDt, (point[3] - previous[3]) * invDt
+			local sx2 = kYaw * (tx - point[1]) - cYaw * vx
+			local sy2 = kYaw * (ty - point[2]) - cYaw * vy
+			local sz2 = kYaw * (tz - point[3]) - cYaw * vz
+			point[1], point[2], point[3] = point[1] + sx2 * dt2,
+				point[2] + sy2 * dt2, point[3] + sz2 * dt2
+		end
 	end
 
 	-- ③ 约束迭代：钉根 → 距离 → 弯曲 → 碰撞（顺序固定，重复 iters 次）
@@ -2666,6 +2713,29 @@ function M.attach(S, unit, rig, options)
 							dirs = {}, anchorBindQ = { qbx, qby, qbz, qbw },
 							goalQ = worldAnchored and { qbx, qby, qbz, qbw } or nil,
 						}
+						-- **真实骨距**（米）：粒子链求解器用它当距离约束的静止长度。
+						-- 从 offLocal（锚点局部系里的 bind 偏移）直接量，不用再读引擎。
+						do
+							local spacing = {}
+							local lastSpacing = nil
+							for index = 1, #chain do
+								local a = bonesNew[index].offLocal
+								local b = (index < #chain) and bonesNew[index + 1].offLocal or nil
+								if b ~= nil then
+									local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+									spacing[index] = math.sqrt(dx * dx + dy * dy + dz * dz)
+									lastSpacing = spacing[index]
+								else
+									spacing[index] = lastSpacing or 0.05
+								end
+								-- 退化（骨挤在同一个点）时给一个温和下限，避免零长度约束
+								if spacing[index] < 1e-4 then spacing[index] = 1e-4 end
+							end
+							tipData.spacing = spacing
+						end
+						-- 粒子链求解器的参数。默认取 `M.chainDefaults`，可被 options 覆盖，
+						-- 用于游戏内 A/B（bendStiff / carry / dampScale 等）。
+						tipData.chainOptions = options.chainOptions
 						-- 分轴限位的**静止参考系**：右/上/前三个轴一次性在 goalQ 里算好。
 						--
 						-- ⚠️ 必须和"绑定方向"用同一个参考系。曾经混用过（方向用 goalQ、轴用当前 q），
@@ -2741,6 +2811,10 @@ function M.attach(S, unit, rig, options)
 
 	logger(string.format("[physbone] attach：可用链 %d 条（缺节点 %d、缺锚点 %d）",
 		#sessions, skippedNoNode, skippedNoAnchor))
+	-- 求解器必须**报出来**。以前"设了 chain 却静默跑 tip"就是因为日志里根本没有这一行，
+	-- 排查时只能靠猜。
+	logger("[physbone] 求解器：%s%s", tostring(options.solver or "tip"),
+		options.solver == "chain" and "（粒子链/弹性杆）" or "（逐节尖端弹簧）")
 	-- 限位来源统计：源模型里有三种约束形式（锥 / 偏航 / 俯仰），这里把"实际用了哪一种"摊开。
 	-- 这条能直接看出"某个 mod 的头发为什么甩得离谱"：如果 `不限位` 的骨很多，
 	-- 说明它用的是 yaw/pitch 约束而我们没读（历史 bug），而不是参数本身有问题。
@@ -3385,8 +3459,13 @@ function M.update_tip(session, dt, maxWrite)
 		local tip = item.tip
 		if not item.disabled and tip ~= nil then
 			-- 碰撞代理是 per-Unit 的，所有链共用一个数组；这里只是把引用挂上去。
-			-- 采样失败（colliderNums == nil）就置 nil ⇒ step_tip 里整段空转，行为回到旧版。
-			item.colliders = colliderNums
+			-- 采样失败（colliderNums == nil）就置 nil ⇒ 求解器里整段空转，行为回到旧版。
+			--
+			-- ⚠️ 必须挂在 **tip** 上，不是 item 上。求解器拿到的是 `tip`
+			-- （`stepper(tip, h, …)`），读的也是 `item.colliders` 里那个 item = tip。
+			-- 2026-11-03 之前挂在会话项上，于是碰撞层**一次都没生效过**——
+			-- 日志里"碰撞代理：建起 9/9"是真的，但求解器根本看不到它们。
+			tip.colliders = colliderNums
 			local anchorNode = item.anchorNode
 			local cached = anchors[anchorNode]
 			if cached == nil then
@@ -3453,7 +3532,14 @@ function M.update_tip(session, dt, maxWrite)
 				if lastAnchor == nil then lastAnchor = {}; item.lastAnchor = lastAnchor end
 				lastAnchor[1], lastAnchor[2], lastAnchor[3] = apx, apy, apz
 
-				for _ = 1, steps do stepTip(tip, h, apx, apy, apz, qx, qy, qz, qw) end
+				-- 求解器分派：`session.solver` 决定走哪一核。
+				--   "tip"   —— 逐节尖端弹簧铰链（默认，已实机验证过的那一套）
+				--   "chain" —— 粒子链 / 弹性杆（弯曲约束沿链分布，治"多截棍式折线"）
+				-- ⚠️ 之前 `update_tip` 把**所有**非 "angle" 的值都送进 `step_tip`，
+				-- 于是设 "chain" 会静默继续跑 tip（选项形同虚设）。这里补上真分派。
+				local stepper = stepTip
+				if session.solver == "chain" then stepper = M.step_chain end
+				for _ = 1, steps do stepper(tip, h, apx, apy, apz, qx, qy, qz, qw) end
 				local rotations = localRotations(tip, qx, qy, qz, qw)
 				item.lastRotations = rotations   -- 给观测层读（探针按它打"各节转角"）
 
