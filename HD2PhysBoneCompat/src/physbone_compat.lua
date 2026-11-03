@@ -806,6 +806,551 @@ local function push_out_of_colliders(px, py, pz, colliders)
 end
 M._push_out_of_colliders = push_out_of_colliders
 
+--- 四元数 → 轴角（轴单位化，角度 0..π）。
+--- 取「短弧」表示（先保证 w ≥ 0），否则相邻帧会在 q/−q 之间跳变。
+local function q_to_axis_angle(qx, qy, qz, qw)
+	if qw < 0 then qx, qy, qz, qw = -qx, -qy, -qz, -qw end
+	local s2 = qx * qx + qy * qy + qz * qz
+	local len = math.sqrt(s2)
+	if len < 1e-9 then return 0, 0, 1, 0 end
+	return qx / len, qy / len, qz / len, 2 * math.atan2(len, qw)
+end
+M._q.to_axis_angle = q_to_axis_angle
+
+--- **曲率扩散**：把"相邻节的额外弯曲"沿链抹平。
+--- <para>
+--- 为什么非有不可（2026-11-03 实测）：现在每一节都是**独立的弹簧铰链**，相邻两节之间
+--- 没有任何东西约束"曲率"。于是弯曲必然塌到某一个关节上，表现为**折线 / 多截棍**：
+--- <list type="bullet">
+--- <item>旗袍 chiffon 的麻花辫 `pd.021`（4 节、无重力、ζ≈0.49）：相邻节夹角
+--- <b>9.4° / 42.2° / 9.6°</b> —— 整条链的弯曲全集中在第 3 个关节，前后两节几乎不弯。</item>
+--- <item>Lilium 的大袖子（7 节、`g/(k·L)≥1`）：每节都被重力钉到自己球心正下方，
+--- 7 节累加 630°，作者的形状被整个拽走。</item>
+--- </list>
+--- 真实头发/布料是一根**弹性杆**：曲率沿长度铺开。这里做的就是那件事 ——
+--- 把每节的"额外弯曲"（相对 bind 的相对旋转）取出来，沿链做一次 1-2-1 加权平滑，
+--- 再重建各节方向。
+--- </para>
+--- <para>
+--- <b>对正常模型零影响</b>：额外弯曲全为 0（= 形状等于 bind 形状）时，平滑后仍是 0，
+--- 重建出的方向与输入逐位相同；`blend = 0` 时直接返回。
+--- </para>
+---@param item table 需要 `dirs` / `restDir` / `segDirLocal` / `bones` / `tips`
+---@param blend number 0..1，0 = 关闭（逐位不变），1 = 完全取邻居平均
+---@param budget number|nil 整条链"额外弯曲总量"的弧度上限；超了就整体等比缩回（nil = 不限）
+function M.relax_bending(item, blend, budget)
+	local dirs = item.dirs
+	local rest = item.restDir
+	local count = #dirs
+	if blend == nil or blend <= 0 or rest == nil then return false end
+	if count < 3 then return false end     -- 两节只有一个关节，没有"曲率分布"可言
+
+	-- ① 每节的额外弯曲，表达成**轴 × 角**的世界矢量（相邻节的轴基本同向，可以线性平均）
+	local extra = item.bendExtra
+	if extra == nil then extra = {}; item.bendExtra = extra end
+	local smoothed = item.bendSmooth
+	if smoothed == nil then smoothed = {}; item.bendSmooth = smoothed end
+
+	local total = 0
+	for index = 2, count do
+		local sr, sc = rest[index - 1], rest[index]
+		local ba, bb, bc, bAngle = swing_axis(sr[1], sr[2], sr[3], sc[1], sc[2], sc[3])
+		local da, db, dc = dirs[index - 1], dirs[index]
+		local ca, cb, cc, cAngle = swing_axis(da[1], da[2], da[3], db[1], db[2], db[3])
+
+		local ex, ey, ez = 0, 0, 0
+		if cAngle ~= nil then
+			-- q_extra = q_cur · conj(q_bind)
+			local curX, curY, curZ, curW = q_axis_angle(ca, cb, cc, cAngle)
+			local bindX, bindY, bindZ, bindW = 0, 0, 0, 1
+			if bAngle ~= nil then bindX, bindY, bindZ, bindW = q_axis_angle(ba, bb, bc, bAngle) end
+			local qx, qy, qz, qw = qmul(curX, curY, curZ, curW, -bindX, -bindY, -bindZ, bindW)
+			local ax, ay, az, angle = q_to_axis_angle(qx, qy, qz, qw)
+			ex, ey, ez = ax * angle, ay * angle, az * angle
+		end
+		local slot = extra[index]
+		if slot == nil then slot = {}; extra[index] = slot end
+		slot[1], slot[2], slot[3] = ex, ey, ez
+		total = total + math.sqrt(ex * ex + ey * ey + ez * ez)
+	end
+
+	-- ② 整链预算：弯曲总量超过预算就整体等比缩回。
+	--    这一条治的是"7 节 × 每节都朝同一侧弯"累加成螺旋 —— 那种链在画面上会卷回去。
+	local scale = 1
+	if budget ~= nil and budget > 0 and total > budget then scale = budget / total end
+
+	-- ③ 1-2-1 平滑（端点不动），再按 blend 与原值插值
+	for index = 2, count do
+		local cur = extra[index]
+		local prev = extra[index - 1] or cur
+		local next = extra[index + 1] or cur
+		local avgX = (prev[1] + 2 * cur[1] + next[1]) * 0.25
+		local avgY = (prev[2] + 2 * cur[2] + next[2]) * 0.25
+		local avgZ = (prev[3] + 2 * cur[3] + next[3]) * 0.25
+		local slot = smoothed[index]
+		if slot == nil then slot = {}; smoothed[index] = slot end
+		slot[1] = (cur[1] + (avgX - cur[1]) * blend) * scale
+		slot[2] = (cur[2] + (avgY - cur[2]) * blend) * scale
+		slot[3] = (cur[3] + (avgZ - cur[3]) * blend) * scale
+	end
+
+	-- ④ 从链首往后重建方向：dir_k = dir_{k-1} 依次转 q_bind · q_extra
+	for index = 2, count do
+		local sr, sc = rest[index - 1], rest[index]
+		local ba, bb, bc, bAngle = swing_axis(sr[1], sr[2], sr[3], sc[1], sc[2], sc[3])
+		local bindX, bindY, bindZ, bindW = 0, 0, 0, 1
+		if bAngle ~= nil then bindX, bindY, bindZ, bindW = q_axis_angle(ba, bb, bc, bAngle) end
+		local smooth = smoothed[index]
+		local sx, sy, sz = smooth[1], smooth[2], smooth[3]
+		local sa = math.sqrt(sx * sx + sy * sy + sz * sz)
+		local exX, exY, exZ, exW = 0, 0, 0, 1
+		if sa > 1e-12 then exX, exY, exZ, exW = q_axis_angle(sx / sa, sy / sa, sz / sa, sa) end
+		local qx, qy, qz, qw = qmul(bindX, bindY, bindZ, bindW, exX, exY, exZ, exW)
+		local d = dirs[index - 1]
+		local nx, ny, nz = qrot(qx, qy, qz, qw, d[1], d[2], d[3])
+		local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+		if len > 1e-9 then
+			local slot = dirs[index]
+			slot[1], slot[2], slot[3] = nx / len, ny / len, nz / len
+		end
+	end
+	return true
+end
+
+-- ---------------------------------------------------------------------------
+-- 粒子链求解器（`solver = "chain"`）：把"每节独立弹簧铰链"换成"**弹性杆**"
+--
+-- 为什么必须换（2026-11-03 实测，两个真实资产）：
+--   ① 旗袍 chiffon 的麻花辫 `pd.021`（4 节、无重力）：相邻节夹角 9.4° / **42.2°** / 9.6°
+--      —— 整条链的弯曲全塌在第 3 个关节，前后两节几乎不弯；
+--   ② Lilium 的大袖子（7 节、`g/(k·L) ≥ 1`）：每节都被重力钉到自己球心正下方，
+--      偏离 bind 66~94°、7 节累加 630°。
+-- 两者在画面上都是"多截棍 / 折线"。根因不是参数，是**结构**：`step_tip` 里每节是
+-- 一个独立的二自由度弹簧铰链，相邻节之间没有任何东西约束"曲率"。
+-- 真实头发/布料是一根弹性杆：弯曲沿长度铺开，重力作用在整条链上（悬链线），
+-- 而不是把每个关节单独钉到竖直。
+--
+-- 这里换成位置约束链（XPBD 风格）：
+--   · 粒子 p[0..n]，p[k] 是第 k 节的原点，p[n] 是末节末端；
+--   · **距离约束**：|p[k] − p[k−1]| = 真实骨距（来自 rig，不是作者的虚拟杆长）；
+--   · **弯曲约束**：|p[k+1] − p[k−1]| = bind 时的值 —— 这一条直接编码**曲率**，
+--     所以弯曲天然沿链分布，不会塌到某一个关节上；
+--   · 重力作用在**所有**粒子上 ⇒ 整条链下垂成悬链线，而不是每节各自竖直；
+--   · 每个子步开头把整条链按锚点的**旋转增量**刚体搬运一次 ⇒ 头发跟着头转、并带惯性滞后。
+-- 输出仍然是"每节的方向"，所以写姿态那条路（`local_rotations` + 快写/慢写）完全复用。
+-- ---------------------------------------------------------------------------
+
+--- 每帧一次：算出「静止方向」（bind 方向在当前锚点朝向下的样子）与「相邻节之间的绑定相对旋转」。
+--- 两个求解器（`step_tip` / `step_chain`）共用同一份，判据才可能一致。
+--- <para>
+--- 为什么这里就是"头发不自然下垂 / 朝错误方向下垂"的修复点：
+--- 旧实现里本节的"父段前向"是直接抄上一节的**模拟**方向，于是链的零力平衡态变成一条**直线**，
+--- 作者在 bind 姿态里做出的下垂被当成"要纠正的偏差"。正确关系是：
+--- 本节目标 = 上一节的模拟方向 **经「上一节 → 本节」的绑定相对旋转**转过去 ——
+--- 这样 `dirs[k-1] == rest[k-1]` 时目标正好等于 `rest[k]`，bind 形状就是平衡形状。
+--- </para>
+local function ensure_rest_dirs(item, qx, qy, qz, qw)
+	local gqx, gqy, gqz, gqw = qx, qy, qz, qw
+	-- 世界朝向锚定（`item.goalQ`）：目标朝向用**绑定姿态**的锚点旋转来算，而不是当前动画旋转。
+	-- 效果：父级（上臂）怎么转，只带动这条链**平移**，不改变它的朝向 —— 布料感的关键。
+	-- 对应源数据里大袖子的 yaw/pitch 约束 flag（0x3d），头发（0x31）不启用。
+	if item.goalQ ~= nil then
+		gqx, gqy, gqz, gqw = item.goalQ[1], item.goalQ[2], item.goalQ[3], item.goalQ[4]
+	end
+	local count = #item.bones
+	local rest = item.restDir
+	if rest == nil then rest = {}; item.restDir = rest end
+	local rel = item.relDev
+	if rel == nil then rel = {}; item.relDev = rel end
+	for index = 1, count do
+		local s = item.segDirLocal[index]
+		local slot = rest[index]
+		if slot == nil then slot = {}; rest[index] = slot end
+		slot[1], slot[2], slot[3] = qrot(gqx, gqy, gqz, gqw, s[1], s[2], s[3])
+		rel[index] = nil
+	end
+	for index = 2, count do
+		local a, b = rest[index - 1], rest[index]
+		local ax, ay, az, angle = swing_axis(a[1], a[2], a[3], b[1], b[2], b[3])
+		if ax ~= nil then rel[index] = { ax, ay, az, angle } end
+	end
+	item.restQx, item.restQy, item.restQz, item.restQw = qx, qy, qz, qw
+end
+M._ensure_rest_dirs = ensure_rest_dirs
+
+M.chainDefaults = {
+	iters = 4,          -- 约束迭代次数（XPBD 的标准量级；再多收益很小）
+	bendStiff = 1.0,    -- 弯曲约束的启用系数 0..1
+	bendComplianceScale = 0.5, -- 弯曲柔度的**全局换算常数**：α = 该值 / kYaw（kYaw 来自源模型）
+	bendCompliance = 0.02,     -- 仅当 bendFromStiffness=false 时使用的固定柔度
+	stretchStiff = 1.0, -- 距离约束刚度（1 = 不可拉伸）
+	dampScale = 1.0,    -- 作者阻尼的缩放
+	gravityScale = 1.0, -- 重力缩放（想把"整条链被重力拽走"调轻就调它）
+}
+
+--- 取（或建）粒子链状态。全部是纯数字，不碰引擎。
+local function chainState(item, options)
+	local state = item.chain
+	if state ~= nil then return state end
+	local bones = item.bones
+	local count = #bones
+	state = {
+		n = count,
+		p = {},          -- 位置
+		q = {},          -- 上一子步位置（Verlet）
+		rest = {},       -- 锚点局部系里的 bind 位置
+		d = {},          -- 距离约束的静止长度（真实骨距）
+		bend = {},       -- 弯曲约束的静止距离 |p[k+1] − p[k-1]|
+		options = options or M.chainDefaults,
+	}
+	-- 粒子下标即"节下标"：p[k] = 第 k 节的原点，p[count+1] = 末节末端。
+	-- 所以 p[1] 是链根（被钉住），第 k 节的方向 = p[k+1] − p[k]。
+	for index = 1, count do
+		local off = bones[index].offLocal
+		local slot = state.rest[index]
+		if slot == nil then slot = {}; state.rest[index] = slot end
+		slot[1], slot[2], slot[3] = off[1], off[2], off[3]
+		local position = state.p[index]
+		if position == nil then position = {}; state.p[index] = position end
+		local previous = state.q[index]
+		if previous == nil then previous = {}; state.q[index] = previous end
+	end
+	-- 末端：末节原点 + 真实骨距 · 该节 bind 方向（锚点局部系）
+	local last = state.rest[count]
+	local seg = item.segDirLocal[count]
+	local gap = item.spacing and item.spacing[count] or 0.05
+	state.rest[count + 1] = { last[1] + gap * seg[1], last[2] + gap * seg[2], last[3] + gap * seg[3] }
+	state.p[count + 1] = { 0, 0, 0 }
+	state.q[count + 1] = { 0, 0, 0 }
+	-- 距离约束的静止长度：|rest[k+1] − rest[k]|（真实骨距）
+	for index = 1, count do
+		local a, b = state.rest[index], state.rest[index + 1]
+		local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+		state.d[index] = math.max(math.sqrt(dx * dx + dy * dy + dz * dz), 1e-4)
+	end
+	-- 弯曲约束的静止长度：|rest[k+2] − rest[k]| —— 这一个数就编码了第 k/k+1 节之间的夹角
+	for index = 1, count - 1 do
+		local a, c = state.rest[index], state.rest[index + 2]
+		local dx, dy, dz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+		state.bend[index] = math.sqrt(dx * dx + dy * dy + dz * dz)
+	end
+	item.chain = state
+	return state
+end
+M._chain_state = chainState
+
+--- 把粒子链放到"当前锚点下的 bind 位置"，并清零速度（首帧 / 大跳变后调用）。
+function M.reset_chain(item, apx, apy, apz, qx, qy, qz, qw)
+	local state = chainState(item, item.chainOptions)
+	for index = 1, state.n + 1 do
+		local rest = state.rest[index]
+		local ox, oy, oz = qrot(qx, qy, qz, qw, rest[1], rest[2], rest[3])
+		local point, previous = state.p[index], state.q[index]
+		point[1], point[2], point[3] = apx + ox, apy + oy, apz + oz
+		previous[1], previous[2], previous[3] = point[1], point[2], point[3]
+	end
+	state.anchorX, state.anchorY, state.anchorZ = apx, apy, apz
+	state.qx, state.qy, state.qz, state.qw = qx, qy, qz, qw
+	state.ready = true
+	return state
+end
+
+--- 粒子链的一步（含内部子步由调用方控制）。
+--- 输出写进 `item.dirs[k]`（每节单位方向），与 `step_tip` 完全同一份契约。
+function M.step_chain(item, dt, apx, apy, apz, qx, qy, qz, qw)
+	if dt == nil or dt <= 0 or dt > 0.25 then dt = 1 / 60 end
+	local options = item.chainOptions or M.chainDefaults
+	local state = chainState(item, options)
+	if state.ready ~= true then
+		M.reset_chain(item, apx, apy, apz, qx, qy, qz, qw)
+	end
+	local n = state.n
+	local p, prev, rest = state.p, state.q, state.rest
+
+	-- 静止方向 / 绑定相对旋转（与 `step_tip` 共用同一份，判据才一致）
+	if item.restQx ~= qx or item.restQy ~= qy or item.restQz ~= qz or item.restQw ~= qw then
+		ensure_rest_dirs(item, qx, qy, qz, qw)
+	end
+	local restDirs, relDevs = item.restDir, item.relDev
+
+	--- 第 index 节"允许的朝向中心"：本节静止方向，叠加上一节的实际偏差。
+	local function centerDir(index)
+		local r = restDirs[index]
+		if index == 1 then return r[1], r[2], r[3] end
+		local a, b = p[index - 1], p[index]
+		local ux, uy, uz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+		local ul = math.sqrt(ux * ux + uy * uy + uz * uz)
+		if ul < 1e-9 then return r[1], r[2], r[3] end
+		local rel = relDevs[index]
+		if rel == nil then return ux / ul, uy / ul, uz / ul end
+		local rqx, rqy, rqz, rqw = q_axis_angle(rel[1], rel[2], rel[3], rel[4])
+		return qrot(rqx, rqy, rqz, rqw, ux / ul, uy / ul, uz / ul)
+	end
+
+	-- ① 刚体搬运：整条链按锚点的**旋转增量**转一次，再平移到新锚点。
+	--    没有这一步，头转了链子不跟（因为约束里只有长度关系）。
+	local ax0, ay0, az0 = state.anchorX, state.anchorY, state.anchorZ
+	local cx, cy, cz, cw = state.qx, state.qy, state.qz, state.qw
+	local restX, restY, restZ, restW = qmul(qx, qy, qz, qw, -cx, -cy, -cz, cw)
+	local moved = (math.abs(restW) < 1 - 1e-9)
+		or math.abs(apx - ax0) > 1e-9 or math.abs(apy - ay0) > 1e-9 or math.abs(apz - az0) > 1e-9
+	-- 锚点旋转怎么传给链 —— 这一步决定"有没有惯性滞后"，是链路手感的关键。
+	--   "frameforce"（默认）：位置**和**速度都随帧刚体转（不会双计转动），
+	--       然后在积分里补**旋转参考系的惯性力**（欧拉/离心/科氏）。这是"头发会甩"的唯一正确来源。
+	--   "both"：只做刚体搬运，没有惯性力 ⇒ 匀速转头没问题，但**永远不会滞后**
+	--       （实测和现状 `tip` 摆幅一样，只是形状不再折）。
+	--   "velocity"/"current"（都试过，**不要用**）：位置转、速度不转 ⇒ 隐式速度里已经含了 ω×r，
+	--       Verlet 下一步**再加一次**同一份转动 ⇒ 链以约 2 倍角速度跑掉
+	--       （实测摆幅 0.44 → 1.50 m、折角冲到 149~178°）。
+	--   "none"：不转 ⇒ 头转了头发完全不跟。
+	local carry = options.carry or "frameforce"
+	if not moved then
+		-- 锚点没动：位置速度都不用搬，但也没有新的惯性力
+		state.fictitious = nil
+	end
+	if moved then
+		local dxs, dys, dzs = apx - ax0, apy - ay0, apz - az0
+		-- 由"本帧旋转增量"反推角速度（弧度/秒）与角加速度
+		local axisX, axisY, axisZ, angle = q_to_axis_angle(restX, restY, restZ, restW)
+		local rate = (dt > 1e-9) and (angle / dt) or 0
+		local omegaX, omegaY, omegaZ = axisX * rate, axisY * rate, axisZ * rate
+		if carry == "frameforce" then
+			local fx = state.fictitious
+			if fx == nil then fx = { 0, 0, 0, 0, 0, 0 }; state.fictitious = fx end
+			local inverse = (dt > 1e-9) and (1 / dt) or 0
+			local alphaX = (omegaX - (state.omegaX or 0)) * inverse
+			local alphaY = (omegaY - (state.omegaY or 0)) * inverse
+			local alphaZ = (omegaZ - (state.omegaZ or 0)) * inverse
+			-- 角加速度夹一下：单个坏帧（跳变/重挂）不该把链子甩飞
+			local limit = 300
+			local magnitude = math.sqrt(alphaX * alphaX + alphaY * alphaY + alphaZ * alphaZ)
+			if magnitude > limit then
+				local shrink = limit / magnitude
+				alphaX, alphaY, alphaZ = alphaX * shrink, alphaY * shrink, alphaZ * shrink
+			end
+			fx[1], fx[2], fx[3] = omegaX, omegaY, omegaZ
+			fx[4], fx[5], fx[6] = alphaX, alphaY, alphaZ
+			state.omegaX, state.omegaY, state.omegaZ = omegaX, omegaY, omegaZ
+		else
+			state.fictitious = nil
+		end
+		local carryRotation = carry ~= "none"
+		-- "both" / "frameforce" 都做刚体搬运（速度也一起转）
+		local carryVelocity = (carry == "both" or carry == "frameforce")
+		for index = 1, n + 1 do
+			local point, previous = p[index], prev[index]
+			if carryRotation then
+				local lx, ly, lz = point[1] - ax0, point[2] - ay0, point[3] - az0
+				local wx, wy, wz = qrot(restX, restY, restZ, restW, lx, ly, lz)
+				point[1], point[2], point[3] = apx + wx, apy + wy, apz + wz
+			else
+				point[1], point[2], point[3] = point[1] + dxs, point[2] + dys, point[3] + dzs
+			end
+			if carryVelocity then
+				local lx, ly, lz = previous[1] - ax0, previous[2] - ay0, previous[3] - az0
+				local wx, wy, wz = qrot(restX, restY, restZ, restW, lx, ly, lz)
+				previous[1], previous[2], previous[3] = apx + wx, apy + wy, apz + wz
+			else
+				previous[1], previous[2], previous[3] = previous[1] + dxs, previous[2] + dys, previous[3] + dzs
+			end
+		end
+	end
+
+	-- ② Verlet 积分：重力作用在**所有**粒子上（这才是"整条链下垂"）。
+	--    p[1] 是根，每帧被钉住，所以从 2 开始。
+	--
+	-- `carry = "frameforce"` 时还要加**旋转参考系的惯性力**，这是"头发会甩"的唯一正确来源：
+	-- 位置是随锚点刚体转过来的（`both` 口径，不会双重计入转动），但自由粒子在转动系里
+	-- 会感受到 欧拉力 −α×r、离心力 −ω×(ω×r)、科氏力 −2ω×v。
+	-- 少了它们，匀速转头时头发会像焊在头上；有了它们，突然启动/停止才会真的滞后、回弹。
+	local g = (item.bones[1].gains and item.bones[1].gains.g or 0) * (options.gravityScale or 1)
+	local dt2 = dt * dt
+	local frameForce = (options.carry == "frameforce") and state.fictitious or nil
+	for index = 2, n + 1 do
+		local point, previous = p[index], prev[index]
+		local vx, vy, vz = point[1] - previous[1], point[2] - previous[2], point[3] - previous[3]
+		previous[1], previous[2], previous[3] = point[1], point[2], point[3]
+		local axs, ays, azs = 0, 0, -g
+		if frameForce then
+			local rx, ry, rz = point[1] - apx, point[2] - apy, point[3] - apz
+			local wx, wy, wz = frameForce[1], frameForce[2], frameForce[3]
+			local ex, ey, ez = frameForce[4], frameForce[5], frameForce[6]
+			-- 欧拉力 −α×r
+			axs = axs - (ey * rz - ez * ry)
+			ays = ays - (ez * rx - ex * rz)
+			azs = azs - (ex * ry - ey * rx)
+			-- 离心力 −ω×(ω×r)
+			local cx2 = wy * rz - wz * ry
+			local cy2 = wz * rx - wx * rz
+			local cz2 = wx * ry - wy * rx
+			axs = axs - (wy * cz2 - wz * cy2)
+			ays = ays - (wz * cx2 - wx * cz2)
+			azs = azs - (wx * cy2 - wy * cx2)
+			-- 科氏力 −2ω×v（v 用每帧位移，换算成速度）
+			if dt > 1e-9 then
+				local svx, svy, svz = vx / dt, vy / dt, vz / dt
+				axs = axs - 2 * (wy * svz - wz * svy)
+				ays = ays - 2 * (wz * svx - wx * svz)
+				azs = azs - 2 * (wx * svy - wy * svx)
+			end
+		end
+		point[1], point[2], point[3] = point[1] + vx + axs * dt2,
+			point[2] + vy + ays * dt2, point[3] + vz + azs * dt2
+	end
+
+	-- ③ 约束迭代：钉根 → 距离 → 弯曲 → 碰撞（顺序固定，重复 iters 次）
+	local iterations = math.max(1, options.iters or 4)
+	local stretch = options.stretchStiff or 1
+	local bendStiff = options.bendStiff or 0
+	-- XPBD 的 λ 必须**每个子步清零**（它表示"本子步内累积的约束冲量"）
+	local lambdas = state.lambdaBend
+	if lambdas == nil then lambdas = {}; state.lambdaBend = lambdas end
+	for index = 1, n - 1 do lambdas[index] = 0 end
+	for _ = 1, iterations do
+		-- 根固定：p[1] 永远是"锚点 + 该节的 bind 偏移"（不是锚点中心 —— 见 offLocal 的说明）
+		local root = p[1]
+		local r0 = rest[1]
+		local ox, oy, oz = qrot(qx, qy, qz, qw, r0[1], r0[2], r0[3])
+		root[1], root[2], root[3] = apx + ox, apy + oy, apz + oz
+
+		-- 距离约束（不可拉伸）
+		for index = 1, n do
+			local a, b = p[index], p[index + 1]
+			local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+			local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+			if length > 1e-9 then
+				local correction = (length - state.d[index]) / length * stretch
+				local ax, ay, az = dx * correction, dy * correction, dz * correction
+				if index == 1 then
+					-- 根不动 ⇒ 全部修正给 b
+					b[1], b[2], b[3] = b[1] - ax, b[2] - ay, b[3] - az
+				else
+					a[1], a[2], a[3] = a[1] + ax * 0.5, a[2] + ay * 0.5, a[3] + az * 0.5
+					b[1], b[2], b[3] = b[1] - ax * 0.5, b[2] - ay * 0.5, b[3] - az * 0.5
+				end
+			end
+		end
+
+		-- 弯曲约束：用 |p[k+2] − p[k]| 编码第 k / k+1 节之间的**曲率**，静止值来自 bind 形状。
+		-- 这是整条链"像杆而不是像铰链"的关键一条。
+		--
+		-- ⚠️ **必须是"软"约束（XPBD 柔度），不能只把修正量乘个系数。**
+		-- 实测过：把修正量乘 0.15/0.35/0.8 三次，结果**逐位相同** —— 因为"距离约束 + 二跳距离约束"
+		-- 就是一组三角形，完全满足时整条链是**刚性体**。那样得到的不是弹性杆，是一根铁棍
+		-- （用户上一轮说的"僵硬"）。软靠的是把柔度 α 放进分母：α̃ = α/dt²。
+		if bendStiff > 0 then
+			-- 柔度**从来源参数推导**，不手填：α = 尺度 / kYaw。
+			-- 依据（真实数据，2026-11-03）：
+			--   头发族   k=50, c=7  ⇒ ω=7.07 rad/s, ζ=0.49  ⇒ α 小 ⇒ 有弹性的杆
+			--   大袖子族 k=1,  c=10 ⇒ ω=1.00 rad/s, ζ=5.0   ⇒ α 大 ⇒ 软布，被重力主导
+			-- 也就是说**作者已经用 k / c 表达"硬铰接 ↔ 软布料"**，我们不该再手调一个频段去覆盖它。
+			local alpha
+			if options.bendFromStiffness == false then
+				alpha = (options.bendCompliance or M.chainDefaults.bendCompliance) / (dt * dt)
+			else
+				local scale = options.bendComplianceScale or M.chainDefaults.bendComplianceScale
+				local alphaTime = scale / math.max(item.bones[1].gains and item.bones[1].gains.kYaw or 1, 1e-3)
+				alpha = alphaTime / (dt * dt)
+			end
+			for index = 1, n - 1 do
+				local a, c = p[index], p[index + 2]
+				local dx, dy, dz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+				local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+				local target = state.bend[index]
+				if length > 1e-9 and target ~= nil then
+					-- C = 当前距离 − 静止距离（>0 = 被拉开了 ⇒ 这个关节被"掰直"了）
+					local constraint = length - target
+					local lambda = state.lambdaBend[index] or 0
+					-- 两端权重各为 1（根在 index==1 时权重为 0），所以分母是 2 + α̃
+					local delta = (-constraint - alpha * lambda) / (2 + alpha)
+					state.lambdaBend[index] = lambda + delta
+					local correction = delta / length * bendStiff
+					local ax, ay, az = dx * correction, dy * correction, dz * correction
+					if index == 1 then
+						c[1], c[2], c[3] = c[1] + ax, c[2] + ay, c[3] + az
+					else
+						a[1], a[2], a[3] = a[1] - ax, a[2] - ay, a[3] - az
+						c[1], c[2], c[3] = c[1] + ax, c[2] + ay, c[3] + az
+					end
+				end
+			end
+		end
+
+		-- 角度限位（源骨的锥 `angleLimit`）：每节相对「父节当前方向 + 绑定相对旋转」最多偏 limit。
+		-- ⚠️ 少了这一条，链路解算会把**任何**有重力的链都甩到竖直 —— 实测限位 35° 的
+		-- `source_extra_73/77` 偏离 bind 从 16° 变成 83°，等于把源作者写的限位全废掉。
+		-- 沿半径移动 ⇒ 距离约束天然仍然满足，不需要再补一轮。
+		for index = 1, n do
+			local gains = item.bones[index].gains
+			local limit = gains and gains.limit or 0
+			if limit > 0 and limit < math.pi then
+				local a, b = p[index], p[index + 1]
+				local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+				local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+				if length > 1e-9 then
+					local tx, ty, tz = dx / length, dy / length, dz / length
+					local cx, cy, cz = centerDir(index)
+					if (tx * cx + ty * cy + tz * cz) < math.cos(limit) then
+						-- 把"允许中心"朝当前方向转 limit 弧度，得到边界方向
+						local sx, sy, sz = swing_axis(cx, cy, cz, tx, ty, tz)
+						local nx, ny, nz
+						if sx ~= nil then
+							local rqx, rqy, rqz, rqw = q_axis_angle(sx, sy, sz, limit)
+							nx, ny, nz = qrot(rqx, rqy, rqz, rqw, cx, cy, cz)
+						else
+							nx, ny, nz = cx, cy, cz
+						end
+						b[1], b[2], b[3] = a[1] + nx * length, a[2] + ny * length, a[3] + nz * length
+					end
+				end
+			end
+		end
+
+		-- 身体碰撞：把每个粒子推出代理（根不动）
+		if item.colliders ~= nil and #item.colliders > 0 then
+			for index = 2, n + 1 do
+				local point = p[index]
+				local nx, ny, nz = push_out_of_colliders(point[1], point[2], point[3], item.colliders)
+				point[1], point[2], point[3] = nx, ny, nz
+			end
+		end
+	end
+
+	-- ④ 阻尼（用作者的阻尼系数换算成"每秒衰减比例"；与帧率无关）
+	local damping = (item.bones[1].gains and item.bones[1].gains.cYaw or 4) * (options.dampScale or 1)
+	local keep = math.exp(-math.max(damping, 0) * dt)
+	if keep < 0 then keep = 0 elseif keep > 1 then keep = 1 end
+	for index = 2, n + 1 do
+		local point, previous = p[index], prev[index]
+		local vx = (point[1] - previous[1]) * keep
+		local vy = (point[2] - previous[2]) * keep
+		local vz = (point[3] - previous[3]) * keep
+		previous[1], previous[2], previous[3] = point[1] - vx, point[2] - vy, point[3] - vz
+	end
+
+	-- ⑤ 输出每节方向（与 step_tip 同一份契约）
+	local worst = 0
+	for index = 1, n do
+		local a, b = p[index], p[index + 1]
+		local dx, dy, dz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+		local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+		if length < 1e-9 then
+			local fallback = item.segDirLocal[index]
+			dx, dy, dz, length = fallback[1], fallback[2], fallback[3], 1
+		end
+		local slot = item.dirs[index]
+		if slot == nil then slot = {}; item.dirs[index] = slot end
+		slot[1], slot[2], slot[3] = dx / length, dy / length, dz / length
+		local speed2 = (b[1] - prev[index + 1][1]) ^ 2 + (b[2] - prev[index + 1][2]) ^ 2
+			+ (b[3] - prev[index + 1][3]) ^ 2
+		if speed2 > worst then worst = speed2 end
+	end
+	item.maxSpeed2 = worst / (dt * dt)
+	state.anchorX, state.anchorY, state.anchorZ = apx, apy, apz
+	state.qx, state.qy, state.qz, state.qw = qx, qy, qz, qw
+	return true
+end
+
 --- 一步积分（纯数字）。anchor 位姿来自动画侧（我们从不写锚点，所以没有反馈）。
 --- item 需要：bones[k].gains / .offLocal（锚点局部系里的 bind 偏移）/ .frameLocal（left/up）、
 ---            item.segDirLocal[k]（bind 时该节在锚点局部系里的方向）、item.tips[k]、item.dirs。
@@ -814,6 +1359,9 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 	local prevX, prevY, prevZ
 	-- 局部化标准库函数：PUC Lua 5.1 不会自动消掉重复的全局→字段查找。
 	local sqrt, acos = math.sqrt, math.acos
+
+	-- `baseMode == "spacing"` 需要按节缓存基座位置（见下面基座那一段）。其他模式不分配。
+	if item.baseMode == "spacing" and item.bases == nil then item.bases = {} end
 
 	-- ── 每帧预算：静止方向 + 相邻节的"绑定相对旋转" ──────────────────────
 	-- ⚠️ 这是**修"头发不自然下垂 / 朝错误方向下垂"的那一处**。
@@ -833,32 +1381,7 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 	-- 成本控制：q 在一帧内不变（update_tip 用同一个锚点跑多个子步），
 	-- 所以静止方向与相对旋转**每帧只算一次**，子步里只剩 1 次 axis_angle + 1 次 qrot。
 	if item.restQx ~= qx or item.restQy ~= qy or item.restQz ~= qz or item.restQw ~= qw then
-		local gqx, gqy, gqz, gqw = qx, qy, qz, qw
-		-- 世界朝向锚定（`item.goalQ`）：目标朝向用**绑定姿态**的锚点旋转来算，而不是当前动画旋转。
-		-- 效果：父级（上臂）怎么转，只带动这条链**平移**，不改变它的朝向 —— 布料感的关键。
-		-- 对应源数据里大袖子的 yaw/pitch 约束 flag（0x3d），头发（0x31）不启用。
-		if item.goalQ ~= nil then
-			gqx, gqy, gqz, gqw = item.goalQ[1], item.goalQ[2], item.goalQ[3], item.goalQ[4]
-		end
-		local rest = item.restDir
-		if rest == nil then rest = {}; item.restDir = rest end
-		local rel = item.relDev
-		if rel == nil then rel = {}; item.relDev = rel end
-		for index = 1, #bones do
-			local s = item.segDirLocal[index]
-			local slot = rest[index]
-			if slot == nil then slot = {}; rest[index] = slot end
-			slot[1], slot[2], slot[3] = qrot(gqx, gqy, gqz, gqw, s[1], s[2], s[3])
-			rel[index] = nil
-		end
-		for index = 2, #bones do
-			local a, b = rest[index - 1], rest[index]
-			local ax, ay, az, angle = swing_axis(a[1], a[2], a[3], b[1], b[2], b[3])
-			if ax ~= nil then
-				rel[index] = { ax, ay, az, angle }
-			end
-		end
-		item.restQx, item.restQy, item.restQz, item.restQw = qx, qy, qz, qw
+		ensure_rest_dirs(item, qx, qy, qz, qw)
 	end
 	local restDirs, relDevs = item.restDir, item.relDev
 
@@ -872,13 +1395,29 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		-- ⚠️ 2026-11-03 评审：开这个开关在真实 rig 上把**最大折返幅度**从 14.7~34.0° 恶化到
 		-- 69~96°、首尾夹角 60°→114°（`tmp/lua-check/zigzag-lab4.lua`）。**保持关闭**。
 		local bx, by, bz
-		if item.serialBase and k > 1 then
+		if k > 1 and item.baseMode == "spacing" then
+			-- ── 串行基座 + **真实骨距**（本帧的候选新模型，默认关闭，见下面 baseMode 的说明）──
+			-- 引擎画出来就是这个式子：bone_k 的原点 = bone_{k-1} 的原点 + 真实骨距 · dir_{k-1}。
+			-- 用它当求解器基座，求解器想象的链和画出来的链**才是同一条**。
+			local previousBase = item.bases[k - 1]
+			local gap = item.spacing[k - 1]
+			local d = item.dirs[k - 1]
+			bx, by, bz = previousBase[1] + gap * d[1],
+				previousBase[2] + gap * d[2], previousBase[3] + gap * d[3]
+		elseif item.serialBase and k > 1 then
 			local parentTip = tips[k - 1]
 			bx, by, bz = parentTip.px, parentTip.py, parentTip.pz
 		else
 			-- 动画基座：只由锚点位姿决定（不含我们写出的姿态 ⇒ 不会自激）
 			local ox, oy, oz = qrot(qx, qy, qz, qw, bone.offLocal[1], bone.offLocal[2], bone.offLocal[3])
 			bx, by, bz = apx + ox, apy + oy, apz + oz
+		end
+		-- 记下本节基座，供下一节用（只有 baseMode == "spacing" 才读它）
+		local baseSlot = item.bases
+		if baseSlot ~= nil then
+			local slot = baseSlot[k]
+			if slot == nil then slot = {}; baseSlot[k] = slot end
+			slot[1], slot[2], slot[3] = bx, by, bz
 		end
 		-- 父段前向 = 本节**静止方向**，再叠加上一节的实际偏差（见上面每帧预算的说明）。
 		-- 路径首节（链根，或分叉节点下的分支起点）没有"同一路径里的上一节"可用
@@ -1076,6 +1615,12 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		local slot = item.dirs[k]
 		if slot == nil then slot = {}; item.dirs[k] = slot end
 		slot[1], slot[2], slot[3] = nx, ny, nz
+	end
+
+	-- 曲率扩散：把"额外弯曲"沿链抹平，免得弯曲塌到某一个关节上（折线 / 多截棍）。
+	-- 默认关闭（`bendBlend` 为 nil）⇒ 现有行为逐位不变；见 M.relax_bending 的说明。
+	if item.bendBlend ~= nil and item.bendBlend > 0 then
+		M.relax_bending(item, item.bendBlend, item.bendBudget)
 	end
 end
 
