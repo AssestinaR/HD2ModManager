@@ -1045,9 +1045,19 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		end
 		local ex, ey, ez = gx - tip.px, gy - tip.py, gz - tip.pz
 		local errYaw, errPitch = lx * ex + ly * ey + lz * ez, ux * ex + uy * ey + uz * ez
-		-- ⚠️ Valve 用的是**绝对** tipVel（不是相对目标速度）——匀速走动时的持续滞后正是它给的
-		local velYaw = lx * tip.vx + ly * tip.vy + lz * tip.vz
-		local velPitch = ux * tip.vx + uy * tip.vy + uz * tip.vz
+		-- ⚠️ Valve 用的是**绝对** tipVel（不是相对目标速度）——匀速走动时的持续滞后正是它给的。
+		--
+		-- 2026-11-03：上面把尖端状态**随锚点平移搬运**之后，`tip.v` 变成了**相对速度**
+		-- （相对锚点/身体），于是 `−c·v` 只阻尼相对运动 ⇒ **跑步时没有任何拖拽力**
+		-- ⇒ 布料只剩重力、永远垂直朝下，鼠标用户看到的就是"头发一直指着地板、没有拖动感"。
+		-- 正确做法：阻尼要作用在**世界速度**上 = 相对速度 + 锚点速度。
+		-- 物理含义就是"空气相对布料的流动"：身体以 3 m/s 前进时，空气以 3 m/s 反向吹过布料，
+		-- 于是布料被往后拖 —— 这正是 L4D2 里跑动时头发/裙摆向后飘的来源。
+		local avx, avy, avz = item.anchorVX, item.anchorVY, item.anchorVZ
+		if avx == nil then avx, avy, avz = 0, 0, 0 end
+		local wvx, wvy, wvz = tip.vx + avx, tip.vy + avy, tip.vz + avz
+		local velYaw = lx * wvx + ly * wvy + lz * wvz
+		local velPitch = ux * wvx + uy * wvy + uz * wvz
 		local accYaw = gains.kYaw * errYaw - gains.cYaw * velYaw
 		local accPitch = gains.kPitch * errPitch - gains.cPitch * velPitch
 		-- 重力：上的反面（一致性电池 E1 实测世界 +Z 朝上）
