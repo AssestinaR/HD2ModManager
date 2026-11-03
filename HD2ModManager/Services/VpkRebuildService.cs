@@ -245,13 +245,23 @@ public static class VpkRebuildService
 
 			// 材质包没有 sections.json，上一条守门对它不适用：改用报告里的材质条目数。
 			// 意义一样——"这次少写了一堆材质"绝不能当成成功。
-			if (!isUnitMod && report is { MaterialCount: > 0 } previousPack
+			//
+			// ⚠️ **必须按 VPK 对 VPK 比，不能拿"本 VPK 的数"去比"整批的合计"。**
+			//
+			// 实测事故（2026-11-03）：MourningVeil 的 `B3服装色白紫` 那份旧报告是
+			// **A1主体 + B3 两个 VPK 一次转出来的**（合计 101 个材质），而重构建只重转
+			// 本 Mod 那一个 VPK（98 个）。`98 < 101` 于是被判成"材质塌陷"，**永久拒绝替换**——
+			// 用户点了重构建、产物时间戳却一直不变（还是 11-02），连续三轮测试都在看旧产物，
+			// 还在怀疑代码没生效。这条守门本身是对的，错的是比较的范围。
+			var previousPackMaterials = report?.FindPatch(Path.GetFileName(sources[0]))?.MaterialCount
+				?? (report?.Patches.Count > 1 ? 0 : report?.MaterialCount ?? 0);
+			if (!isUnitMod && previousPackMaterials > 0
 				&& fresh is { MaterialCount: >= 0 } currentPack
-				&& currentPack.MaterialCount < previousPack.MaterialCount)
+				&& currentPack.MaterialCount < previousPackMaterials)
 			{
 				preserveStaging = true;
 				return VpkRebuildOutcome.Failed(
-					$"新产物只写出 {currentPack.MaterialCount} 个材质，而原来有 {previousPack.MaterialCount} 个。"
+					$"新产物只写出 {currentPack.MaterialCount} 个材质，而这个 VPK 原来有 {previousPackMaterials} 个。"
 					+ "多半是解析集合不完整（贴图或 VMT 没找到）。已保留原产物，没有改动任何文件。"
 					+ $"（本次临时产物：{stagingRoot}）", notes);
 			}

@@ -195,4 +195,42 @@ public sealed class VpkConversionReportTests : IDisposable
 		Assert.Null(report!.ToolStamp);
 		Assert.False(report.IsFromBuild("2026-11-03T04:45:00.0000000Z"));
 	}
+
+	/// <summary>
+	/// **一份报告可能是多个 VPK 一次转出来的**，所以"某个 VPK 有多少材质"必须能单独查出来。
+	/// <para>
+	/// 实测事故（2026-11-03）：MourningVeil 的 B3 那份旧报告是 <c>A1主体 + B3</c> 两个 VPK
+	/// 一次转的（合计 101 个材质），而重构建只重转 B3 一个（98 个）。
+	/// 守门拿 98 比 101，判成"材质塌陷"、永久拒绝替换 —— 用户点了重构建，
+	/// 产物时间戳却一直不变，连测三轮都在看旧产物。守门本身对，错的是比较范围。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void PerPatchSummaryLetsCallersCompareLikeWithLike()
+	{
+		var report = VpkConversionReport.TryParse("""
+			{
+			  "queue": [ "a1.vpk", "b3.vpk" ],
+			  "notes": [],
+			  "patches": [
+			    { "name": "A1主体.vpk", "units": 0, "materials": 3, "textures": 5 },
+			    { "name": "B3服装色白紫.vpk", "units": 0, "materials": 98, "textures": 71 }
+			  ]
+			}
+			""");
+
+		Assert.NotNull(report);
+		Assert.Equal(2, report!.Patches.Count);
+		// 合计仍是合计（界面展示用）。
+		Assert.Equal(101, report.MaterialCount);
+
+		// 按 VPK 查：这是守门该用的数。
+		Assert.Equal(98, report.FindPatch("B3服装色白紫.vpk")!.MaterialCount);
+		Assert.Equal(3, report.FindPatch("A1主体.vpk")!.MaterialCount);
+
+		// 大小写 / 带目录 / 找不到 都要有确定答案。
+		Assert.Equal(98, report.FindPatch(@"E:\mod\x\b3服装色白紫.VPK")!.MaterialCount);
+		Assert.Null(report.FindPatch("不存在的.vpk"));
+		Assert.Null(report.FindPatch(null));
+	}
 }

@@ -42,6 +42,17 @@ public sealed record VpkConversionSettings(
 }
 
 /// <summary>
+/// 一次转换里<b>单个 patch</b> 的摘要（每个 patch 对应一个来源 VPK）。
+/// <para>
+/// 单列出来是为了让"守门"能按 VPK 对 VPK 比较。实测事故（2026-11-03）：
+/// 某份报告是 <c>A1主体 + B3</c> 两个 VPK 一次转出来的（101 个材质），
+/// 而重构建只重转 B3 一个（98 个），拿 98 比 101 就被误判成"材质塌陷"、
+/// 永久拒绝替换 —— 用户点了重构建，产物时间戳一直不变，界面上只看到一句长错误。
+/// </para>
+/// </summary>
+public sealed record VpkConversionPatchSummary(string? Name, int UnitCount, int MaterialCount, int TextureCount);
+
+/// <summary>
 /// Mod 目录里 <c>vpk2patch.json</c> 的可读投影。
 /// <para>
 /// 那个文件是管理人自己写的：内容就是 <c>vpk2patch --json</c> 的整份输出（几十 KB，
@@ -64,6 +75,35 @@ public sealed record VpkConversionReport(
 	int MaterialCount = 0,
 	int TextureCount = 0)
 {
+	/// <summary>
+	/// **逐 patch 的摘要**（每个 patch 对应一个来源 VPK）。
+	/// <para>
+	/// 存在的理由是一个真实事故（2026-11-03）：一份报告可能是**多个 VPK 一次转出来的**
+	/// （导入时按"模型主体 + 它的材质包"分组）。而重构建只重转**本 Mod 那一个** VPK，
+	/// 于是"新产物 98 个材质 vs 旧报告 101 个"这种**不同范围**的比较会误判成材质塌陷，
+	/// 然后永久拒绝替换 —— 表现是"重构建点了没反应，产物时间戳一直不变"。
+	/// </para>
+	/// <para>所以守门必须**按 VPK 对 VPK** 比，而不是拿"本 VPK 的数"去比"整批的合计"。</para>
+	/// </summary>
+	public IReadOnlyList<VpkConversionPatchSummary> Patches { get; init; } = [];
+
+	/// <summary>
+	/// 找出与给定来源 VPK 对应的那一条 patch 摘要（按文件名匹配，忽略大小写与目录）。
+	/// <para>找不到返回 <c>null</c> —— 调用方据此退回"不与旧数据比较"，而不是拿合计硬比。</para>
+	/// </summary>
+	public VpkConversionPatchSummary? FindPatch(string? vpkFileName)
+	{
+		if (string.IsNullOrWhiteSpace(vpkFileName))
+			return null;
+		var target = System.IO.Path.GetFileName(vpkFileName);
+		foreach (var patch in Patches)
+		{
+			if (string.Equals(System.IO.Path.GetFileName(patch.Name ?? string.Empty), target, StringComparison.OrdinalIgnoreCase))
+				return patch;
+		}
+
+		return null;
+	}
 	/// <summary>报告文件名。管理器发现"这是 VPK 版 Mod 的产物目录"也靠它。</summary>
 	public const string FileName = "vpk2patch.json";
 
@@ -152,6 +192,7 @@ public sealed record VpkConversionReport(
 				counts.Textures)
 			{
 				ToolStamp = ReadToolStamp(root),
+				Patches = ReadPatchSummaries(root),
 			};
 		}
 		catch (JsonException)
@@ -191,6 +232,25 @@ public sealed record VpkConversionReport(
 			&& value.TryGetInt32(out var parsed)
 			? parsed
 			: 0;
+
+	/// <summary>逐 patch 摘要（每个 patch 对应一个来源 VPK）。见 <see cref="VpkConversionReport.Patches"/>。</summary>
+	private static IReadOnlyList<VpkConversionPatchSummary> ReadPatchSummaries(JsonElement root)
+	{
+		if (!root.TryGetProperty("patches", out var patches) || patches.ValueKind != JsonValueKind.Array)
+			return [];
+
+		var items = new List<VpkConversionPatchSummary>();
+		foreach (var patch in patches.EnumerateArray())
+		{
+			items.Add(new VpkConversionPatchSummary(
+				ReadString(patch, "name"),
+				ReadInt(patch, "units"),
+				ReadInt(patch, "materials"),
+				ReadInt(patch, "textures")));
+		}
+
+		return items;
+	}
 
 	/// <summary>读 <c>conversion.toolStamp</c>（旧产物没有这个字段 → <c>null</c>）。</summary>
 	private static string? ReadToolStamp(JsonElement root)
