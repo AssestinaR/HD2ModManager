@@ -38,10 +38,6 @@ namespace HD2ModManager.Services
         public bool? BuiltInLuaEnabled { get; set; }
         // 物理骨骼模式（PhysicsMode 的整数值）。null 表示尚未设置 ⇒ 默认关闭。
         public int? PhysicsMode { get; set; }
-        // 物理求解器名字（"tip" / "chain"）。null 表示尚未设置 ⇒ 默认 "tip"（已验证的旧核）。
-        // 存**字符串**而不是枚举：这个名字会原样写进 Lua 的 install options，
-        // 两边用同一个值，少一层"枚举 ↔ 字符串"的映射就少一处能对不上的地方。
-        public string? PhysicsSolver { get; set; }
             public string? DefaultExportPath { get; set; }
         }
 
@@ -295,7 +291,6 @@ namespace HD2ModManager.Services
             // 求解器也必须在启动时同步一次。
             // 教训（2026-11-01）：物理那几项曾经只读静态字段、启动时漏同步一项，
             // 结果"配了也不生效"，而日志里什么线索都没有。
-            GetPhysicsSolver();
         }
 
         /// <summary>
@@ -332,36 +327,6 @@ namespace HD2ModManager.Services
             catch { return false; }
         }
 
-        /// <summary>
-        /// 读取物理求解器并同步到 <see cref="LuaDeploymentService.PhysicsSolver"/>。
-        /// 未知值一律收敛到默认（已验证的旧核），不抛异常——设置文件脏了不该让管理器起不来。
-        /// </summary>
-        public static string GetPhysicsSolver()
-        {
-            string solver;
-            try
-            {
-                solver = PhysicsSolvers.Normalize(LoadAll()?.PhysicsSolver);
-            }
-            catch
-            {
-                solver = PhysicsSolvers.Default;
-            }
-            LuaDeploymentService.PhysicsSolver = solver;
-            return solver;
-        }
-
-        public static bool SetPhysicsSolver(string? solver)
-        {
-            var normalized = PhysicsSolvers.Normalize(solver);
-            LuaDeploymentService.PhysicsSolver = normalized;
-            try
-            {
-                Update(model => model.PhysicsSolver = normalized);
-                return true;
-            }
-            catch { return false; }
-        }
         public static string GetAssetMetadataRepository()
         {
             try

@@ -49,15 +49,6 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	/// </summary>
 	public static PhysicsMode PhysicsMode { get; set; } = PhysicsModes.Default;
 
-	/// <summary>
-	/// 物理求解器：<c>tip</c>（逐节尖端弹簧铰链，默认）或 <c>chain</c>（粒子链 / 弹性杆）。
-	/// <para>
-	/// 为什么必须有这个开关：`chain` 治的是"弯曲全塌到一个关节"造成的**折线 / 多截棍感**
-	/// （真实资产实测：旗袍辫子相邻节夹角 9.4° / 42.2° / 9.6°），但它还没在实机上验过。
-	/// 没有一键切回，出问题就只能改代码重编 —— 那是最贵的一种回退。
-	/// </para>
-	/// </summary>
-	public static string PhysicsSolver { get; set; } = PhysicsSolvers.Default;
 
 	/// <summary>
 	/// 实际生效的映射模式（把总开关约束算进去）。
@@ -407,7 +398,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					gameDataDirectory,
 					[new BootBlock(
 						"HD2 Physics Bone Runtime",
-						PhysBoneLuaSource.ComposeStandalonePackage(LuaAddonCatalog.PhysicsAddonId, mode: "boot", solver: PhysicsSolver),
+						PhysBoneLuaSource.ComposeStandalonePackage(LuaAddonCatalog.PhysicsAddonId, mode: "boot"),
 						LuaAddonCatalog.PhysicsAddonId)],
 					cancellationToken).ConfigureAwait(false);
 				physicsBootDocument = new LuaDocumentSource(

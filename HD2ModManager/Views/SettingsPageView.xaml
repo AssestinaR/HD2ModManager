@@ -73,18 +73,6 @@
                                   SelectedValue="{Binding PhysicsMode, Mode=TwoWay}"/>
                     </Grid>
                     <TextBlock Text="{Binding PhysicsModeDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
-                    <Grid Margin="0,10,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="150"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="物理求解器" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
-                                  ItemsSource="{Binding PhysicsSolverOptions}"
-                                  DisplayMemberPath="DisplayName" SelectedValuePath="Value"
-                                  SelectedValue="{Binding PhysicsSolver, Mode=TwoWay}"/>
-                    </Grid>
-                    <TextBlock Text="{Binding PhysicsSolverDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
                     <!--
                         外置包刷新提示：升级管理器后，早就是外置模式的用户手里那份 lua 还是旧的，
                         而他们不会再动上面那个下拉 —— 所以这里主动说一句"包已更新、要重新装一次"。

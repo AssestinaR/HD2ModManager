@@ -1457,9 +1457,6 @@ namespace HD2ModManager.ViewModels
     /// <summary>设置页「物理模式」下拉框的一项。</summary>
     public sealed record PhysicsModeOption(PhysicsMode Value, string DisplayName, string Description);
 
-    /// <summary>设置页「物理求解器」下拉框的一项。</summary>
-    public sealed record PhysicsSolverOption(string Value, string DisplayName, string Description);
-
     public class SettingsPageViewModel : PageViewModel
     {
 		private readonly ProfileService _profiles;
@@ -1607,40 +1604,6 @@ namespace HD2ModManager.ViewModels
 
         /// <summary>物理模式的一句话说明。</summary>
         public string PhysicsModeDescription => PhysicsMode.Description();
-
-        /// <summary>可选的物理求解器（只有"弹簧铰链"和"粒子链"两档）。</summary>
-        public IReadOnlyList<PhysicsSolverOption> PhysicsSolverOptions =>
-            PhysicsSolvers.All
-                .Select(solver => new PhysicsSolverOption(solver,
-                    PhysicsSolvers.DisplayName(solver), PhysicsSolvers.Description(solver)))
-                .ToArray();
-
-        /// <summary>
-        /// 物理求解器。切了要重新部署 boot，否则游戏里还是旧的那一份。
-        /// 「外置入口」那条路还要顺手对齐导出包，否则玩家手里的 .lua 会停在旧核上。
-        /// </summary>
-        public string PhysicsSolver
-        {
-            get => SettingsService.GetPhysicsSolver();
-            set
-            {
-                var changed = value != SettingsService.GetPhysicsSolver();
-                if (SettingsService.SetPhysicsSolver(value))
-                {
-                    OnPropertyChanged(nameof(PhysicsSolver));
-                    OnPropertyChanged(nameof(PhysicsSolverDescription));
-                    if (changed) _profiles.RequestActiveProfileDeployment();
-                    if (PhysicsMode == PhysicsMode.ExternalLuaEntry)
-                    {
-                        var refreshed = EnsureLuaPackageUpToDate(LuaAddonCatalog.Physics());
-                        if (refreshed) NoteLuaPackageRefreshed([LuaAddonCatalog.Physics()]);
-                    }
-                }
-            }
-        }
-
-        /// <summary>求解器的一句话说明。</summary>
-        public string PhysicsSolverDescription => PhysicsSolvers.Description(PhysicsSolver);
 
         /// <summary>
         /// 把物理运行时导出成外置包并打开文件夹。

@@ -1,4 +1,3 @@
-using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
@@ -45,61 +44,6 @@ public sealed class LuaAddonPackageTests
 		Assert.Contains("local PhysBoneRuntime = (function()", source, StringComparison.Ordinal);
 		Assert.Contains("PhysBoneRuntime.install(", source, StringComparison.Ordinal);
 		Assert.Contains("rawget(_G, 'stingray')", source, StringComparison.Ordinal);
-	}
-
-	/// <summary>
-	/// 求解器必须能**从生成器传进运行时**，否则"切到粒子链"只是一个不起作用的设置项。
-	///
-	/// 2026-11-03 之前这条链是断的：`attachOptions` 不传 solver、`update_tip` 又把所有
-	/// 非 "angle" 的值都送进 tip 核，所以设了 `chain` 也会静默跑旧核。
-	/// </summary>
-	[Theory]
-	[InlineData(PhysicsSolvers.Chain)]
-	[InlineData(PhysicsSolvers.Tip)]
-	public void Physics_ComposedSourceCarriesTheChosenSolver(string solver)
-	{
-		var source = PhysBoneLuaSource.ComposeStandalonePackage("mods/t/x", solver: solver);
-		Assert.Contains($"solver = '{solver}'", source, StringComparison.Ordinal);
-	}
-
-	[Fact]
-	public void Physics_ComposedSourceOmitsSolverWhenNotSpecified()
-	{
-		// 不指定就不写 —— 让运行时用自己的默认值，避免生成器与运行时两处各自演化。
-		//
-		// ⚠️ 只能检查**install 那一行**。整份源码里 `solver =` 会出现很多次
-		// （compat 内联代码里有 `solver = options.solver or "tip"`），
-		// 拿整份源码做 DoesNotContain 会必定失败。
-		var installLine = PhysBoneLuaSource.ComposeStandalonePackage("mods/t/x")
-			.Split('\n')
-			.Single(line => line.Contains("PhysBoneRuntime.install(", StringComparison.Ordinal));
-		Assert.DoesNotContain("solver", installLine, StringComparison.Ordinal);
-	}
-
-	[Fact]
-	public void Physics_CatalogUsesTheCurrentlyConfiguredSolver()
-	{
-		var previous = LuaDeploymentService.PhysicsSolver;
-		try
-		{
-			LuaDeploymentService.PhysicsSolver = PhysicsSolvers.Chain;
-			Assert.Contains("solver = 'chain'", LuaAddonCatalog.Physics().Source, StringComparison.Ordinal);
-			LuaDeploymentService.PhysicsSolver = PhysicsSolvers.Tip;
-			Assert.Contains("solver = 'tip'", LuaAddonCatalog.Physics().Source, StringComparison.Ordinal);
-		}
-		finally
-		{
-			LuaDeploymentService.PhysicsSolver = previous;
-		}
-	}
-
-	[Fact]
-	public void PhysicsSolvers_NormalizeFallsBackToTheVerifiedCore()
-	{
-		Assert.Equal(PhysicsSolvers.Tip, PhysicsSolvers.Normalize(null));
-		Assert.Equal(PhysicsSolvers.Tip, PhysicsSolvers.Normalize("nonsense"));
-		Assert.Equal(PhysicsSolvers.Chain, PhysicsSolvers.Normalize(PhysicsSolvers.Chain));
-		Assert.Equal(PhysicsSolvers.Tip, PhysicsSolvers.Default);
 	}
 
 	[Fact]
