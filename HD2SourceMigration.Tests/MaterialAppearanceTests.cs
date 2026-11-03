@@ -404,6 +404,52 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
+	/// <c>$color</c> 是"没有底色图"那类材质**唯一**的颜色线索，必须按线性解释。
+	/// <para>
+	/// 实测 milltina 的 6 个金属件全是 <c>$basetexture "vgui/white"</c> + <c>$color</c>
+	/// 的写法（<c>vgui/white</c> 是引擎内置图，任何 VPK 里都没有它）。此前转换器从不读这个键，
+	/// 于是银 / 金 / 宝石红全按图片名 <c>white</c> 变成同一块纯白。
+	/// </para>
+	/// <para>
+	/// 断言里带具体数值是有意的：<b>线性 vs sRGB 的差别就在数值上</b>
+	/// （0.462 按线性是 181，按"直接乘 255"是 118）。只断言"不等于 0"查不出量纲错。
+	/// </para>
+	/// </summary>
+	[Theory]
+	// 银：0.1792 线性 → 117（sRGB 的 46% 灰）。
+	[InlineData("0.1792 0.1792 0.1792", 117, 117, 117)]
+	// 金：不加引号、无括号——真实 VMT 就长这样。
+	[InlineData("0.462 0.322  0", 181, 154, 0)]
+	// 宝石红：[0.811 0 0] 方括号写法（与 $matcaptint 同一套归一化）。
+	[InlineData("[0.811 0 0]", 233, 0, 0)]
+	// 255 制要认成 0..255，而不是当成 >1 的线性值直接撞顶。
+	[InlineData("[255 128 0]", 255, 188, 0)]
+	// 第 4 个分量是 alpha，不参与。
+	[InlineData("[0.5 0.5 0.5 1]", 188, 188, 188)]
+	public void FlatColorIsReadAsLinearReflectance(string raw, byte red, byte green, byte blue)
+	{
+		Assert.True(MaterialAppearance.TryParseFlatColor(raw, out var actualRed, out var actualGreen, out var actualBlue));
+		Assert.Equal((red, green, blue), (actualRed, actualGreen, actualBlue));
+	}
+
+	/// <summary>
+	/// 分量不足、或者压根没写 → 不给颜色。**不猜。**
+	/// <para>
+	/// 单个数不是颜色：把它当灰度会造出一个没有任何依据的色相，
+	/// 而这种"看着不对但查不出来"的结果比中性灰更难排查。
+	/// </para>
+	/// </summary>
+	[Theory]
+	[InlineData(null)]
+	[InlineData("")]
+	[InlineData("   ")]
+	[InlineData("0.5")]
+	[InlineData("0.5 0.5")]
+	[InlineData("[abc def ghi]")]
+	public void FlatColorNeedsThreeRealComponents(string? raw)
+		=> Assert.False(MaterialAppearance.TryParseFlatColor(raw, out _, out _, out _));
+
+	/// <summary>
 	/// <c>IsUniformlyTranslucent</c>：alpha **整片均匀且明显 &lt; 255** = 整体半透明。
 	/// <para>
 	/// 实测 MourningVeil 的玻璃鞋跟 <c>mat_gem1_shoes</c> 底图 alpha 恒 102（≈40% 不透明）。

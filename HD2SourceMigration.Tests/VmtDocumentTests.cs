@@ -14,6 +14,41 @@ public sealed class VmtDocumentTests
 	private static VmtDocument Parse(string text) => VmtDocument.Parse(Encoding.UTF8.GetBytes(text));
 
 	/// <summary>
+	/// <b>不加引号的多段数值必须整体吃进一个键</b>（真实 VMT 里很常见）。
+	/// <para>
+	/// 实测 milltina 的 6 个金属件写的是 <c>$color   0.462 0.322  0</c>——没有引号、没有括号。
+	/// KeyValues 的语法只吃一个 token，于是按单 token 解析会得到 <c>$color = "0.462"</c>，
+	/// 剩下两个分量变成**垃圾键**（键名就叫 <c>0.322</c>）。后果是颜色丢两个通道，
+	/// 而且丢得不声不响：三个本该不同的金属色最后变成同一块灰。
+	/// </para>
+	/// <para>
+	/// 合并规则必须收得紧：<c>$basetexture a b</c> 这种"两个路径值"不该被拼成一个值，
+	/// 所以只合并**纯数字**的续段。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void UnquotedNumericValuesKeepAllTheirComponents()
+	{
+		var vmt = Parse("""
+			VertexLitGeneric
+			{
+				$color   0.462 0.322  0
+				$basetexture vgui/white
+				$phongboost	"50"
+			}
+			""");
+
+		Assert.Equal("0.462 0.322 0", vmt.Value("$color"));
+		Assert.Null(vmt.Value("0.322"));      // 不再是伪键
+		Assert.Equal("vgui/white", vmt.Value("$basetexture"));
+		Assert.Equal("50", vmt.Value("$phongboost"));
+
+		// 非数字的续段不许并进来：那会把下一个键的值吞掉。
+		var paths = Parse("""VertexLitGeneric { "$basetexture" "a" "next" "b" }""");
+		Assert.Equal("a", paths.Value("$basetexture"));
+	}
+
+	/// <summary>
 	/// <c>$no_draw</c> 的判据是「开关为真」，不是「值非空」。
 	/// <para>
 	/// 这条很重要：转换器曾经用 <c>!string.IsNullOrWhiteSpace(Value("$no_draw"))</c> 判，

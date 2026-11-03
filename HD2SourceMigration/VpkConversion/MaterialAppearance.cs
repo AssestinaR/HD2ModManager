@@ -169,6 +169,60 @@ public static class MaterialAppearance
 	}
 
 	/// <summary>
+	/// 解析源侧的平涂底色 <c>$color</c> / <c>$color2</c> 成 sRGB 字节。
+	/// <para>
+	/// <b>为什么需要它。</b>有一类材质<b>根本没有自己的底色图</b>：
+	/// <c>$basetexture "vgui/white"</c>（<c>vgui/white</c> 是引擎内置图，任何 VPK 里都没有它）
+	/// 加上 <c>$color</c> 给颜色，再用 <c>$phong</c> + <c>$envmap</c> 做金属感。
+	/// 实测 milltina 的 6 个金属件全是这个写法：<c>silver</c> 是
+	/// <c>$color 0.1792 0.1792 0.1792</c>、<c>gold</c> 是 <c>0.462 0.322 0</c>、
+	/// <c>gemstone</c> 是 <c>0.811 0 0</c>。不读这个键，它们的颜色只能按图片名去猜
+	/// （<c>white</c> → 纯白），于是银、金、宝石红全部变成同一块灰。
+	/// </para>
+	/// <para>
+	/// <b>为什么按线性解释。</b><c>$color</c> 在源侧参与的是线性光照，作者写
+	/// <c>0.462</c> 表达的是"这块表面反射 46% 的红光"，不是"46% 的 sRGB 亮度"。
+	/// 我们的底色是 sRGB 编码的贴图，所以必须过一次 <see cref="LinearToSrgbByte"/>；
+	/// 直接乘 255 会把所有金属都压暗一档（0.462 会变成 118 而不是 180）。
+	/// </para>
+	/// <para>
+	/// <b><c>$color</c> 优先于 <c>$color2</c>。</b>实测需要这个键的包都写 <c>$color</c>；
+	/// 而 <c>$color2</c> 在大量源包里是默认值 <c>[1 1 1]</c>，优先读它会把颜色抹成白。
+	/// 分量不足 3 个时返回 false —— 单个数不是颜色，猜它只会造出没有依据的色相。
+	/// </para>
+	/// </summary>
+	public static bool TryParseFlatColor(string? raw, out byte red, out byte green, out byte blue)
+	{
+		red = green = blue = 0;
+		if (string.IsNullOrWhiteSpace(raw))
+			return false;
+
+		// 与 ParseTint 同一套归一化：两种括号、逗号分隔都见过。
+		var cleaned = raw
+			.Replace("[", string.Empty, StringComparison.Ordinal)
+			.Replace("]", string.Empty, StringComparison.Ordinal)
+			.Replace("{", string.Empty, StringComparison.Ordinal)
+			.Replace("}", string.Empty, StringComparison.Ordinal)
+			.Replace(",", " ", StringComparison.Ordinal);
+		var components = cleaned
+			.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.Select(token => double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : double.NaN)
+			.Where(double.IsFinite)
+			.Take(3)
+			.ToArray();
+		if (components.Length < 3)
+			return false;
+
+		// 255 制与 0..1 制都要认。判据取三通道最大值（与 ParseTint 同一条口径），
+		// 逐通道判断会把 `[1 .5 .5]` 这种"红到顶 + 半强度绿蓝"拆成两种量纲。
+		var divisor = components.Max() > 1.0 ? 255.0 : 1.0;
+		red = LinearToSrgbByte(components[0] / divisor);
+		green = LinearToSrgbByte(components[1] / divisor);
+		blue = LinearToSrgbByte(components[2] / divisor);
+		return true;
+	}
+
+	/// <summary>
 	/// matcap 承载表面但<b>不是</b>金属时，底色被顶掉后用什么（线性反射率）。
 	/// <para>
 	/// 存在的理由：有些件的底色是<b>近黑占位图</b>（实测 Lilium 的 <c>m_metal</c> 是

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace HD2SourceMigration.VpkConversion;
@@ -282,6 +283,17 @@ public sealed class VmtDocument
 		public Dictionary<string, Block> Children { get; } = new(StringComparer.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// <see cref="ParseBlock"/> 合并多段数值时的判据：这个 token 本身就是一个数。
+	/// <para>
+	/// 用它而不是"token 不以 <c>$</c> 开头"：后者会把 <c>vgui/white</c> 这类值也当成可合并的
+	/// 续段，于是 <c>$basetexture a b</c> 会被拼成 <c>"a b"</c>——那不是源侧的意思。
+	/// </para>
+	/// </summary>
+	private static bool IsNumericToken(string token)
+		=> token.Length > 0
+			&& double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+
 	/// <summary>解析一个 <c>{</c> … <c>}</c> 块；子块进 <see cref="Block.Children"/>，其余进键值表。</summary>
 	private static Block ParseBlock(List<string> tokens, ref int index)
 	{
@@ -314,8 +326,28 @@ public sealed class VmtDocument
 				continue;
 			}
 
-			block.Values[key] = tokens[index];
+			// ⚠️ **不加引号的多段值要一起吃进来。**
+			//
+			// KeyValues 的语法只允许一个 token，但真实 VMT 里 `$color 0.1792 0.1792 0.1792`
+			// 这种写法很常见（实测 milltina 的 6 个金属件全是），而按单 token 解析会得到
+			// `$color = "0.1792"`，剩下两个分量变成两条**垃圾键**（键名就叫 `0.1792`）。
+			// 后果是颜色丢掉两个通道，而且丢得不声不响：三个本该不同的金属色最后变成同一块灰。
+			//
+			// 合并规则刻意收得很紧：**当前值已经是纯数字**，且下一个 token 也是纯数字，才并进来。
+			// 数字不可能是键名，所以这条规则不会把下一个键的值吞掉；
+			// 遇到 `[`、`"`、`$` 开头的 token 或花括号一律停。
+			var value = tokens[index];
 			index++;
+			// 判据看的是**第一个 token**：拼过之后 `"0.462 0.322"` 自己当然不是一个数，
+			// 拿拼接结果去再判一次会只吃到两个分量（第三个被当成键名）。
+			var numeric = IsNumericToken(value);
+			while (numeric && index < tokens.Count && IsNumericToken(tokens[index]))
+			{
+				value = value + " " + tokens[index];
+				index++;
+			}
+
+			block.Values[key] = value;
 		}
 
 		return block;

@@ -1364,6 +1364,14 @@ public sealed class SourceMaterialConverter
 		var baseTexture = vmt.BaseTexture ?? string.Empty;
 		var verdict = MaterialAppearance.Evaluate(vmt);
 
+		// 源侧写在 VMT 里的平涂底色（`$color`）。见 MaterialAppearance.TryParseFlatColor：
+		// 这一键是"没有底色图"那类材质**唯一**的颜色线索，也是下面合成底色的首选颜色。
+		var declaredFlatRgb = MaterialAppearance.TryParseFlatColor(
+			vmt.Value("$color") ?? vmt.Value("$color2"),
+			out var flatRed, out var flatGreen, out var flatBlue)
+			? new[] { flatRed, flatGreen, flatBlue }
+			: null;
+
 		// matcap 贴图名要留到身份里：**它的内容可能来自别的 VPK**，而 id 只由名字决定。
 		// 装配器据此报警——否则"换个 patch 就能换金属色"是个假承诺。
 		var matcapTextureName = string.IsNullOrWhiteSpace(vmt.MatCapTexture)
@@ -1390,6 +1398,12 @@ public sealed class SourceMaterialConverter
 		var allowSyntheticBase = Environment.GetEnvironmentVariable("HD2_NO_SYNTHETIC_BASE") != "1";
 
 		var syntheticBase = false;
+		// 合成底色要用的 RGB（0..255）；null = 用默认中性灰。
+		//
+		// 之所以要三通道而不是一个字节：源侧有一类材质把颜色写在 `$color` 里
+		// （`$basetexture "vgui/white"` + `$color 0.462 0.322 0`），那是**带色相**的颜色。
+		// 只留灰度就只能得到"一块灰"——实测 milltina 的银 / 金 / 宝石红会变成同一块灰。
+		byte[]? syntheticBaseRgb = null;
 		if (HasNoRealBaseTexture(vmt))
 		{
 			if (string.IsNullOrWhiteSpace(matcapTextureName))
@@ -1420,6 +1434,10 @@ public sealed class SourceMaterialConverter
 
 			syntheticBase = true;
 			baseTexture = SyntheticBaseName(stem);
+			// 这一支的底色图本来就不存在，`$color` 是唯一的颜色线索。
+			// matcap 顶掉底色时用不上它（顶掉后底色只是 F0 载体），但 matcap **也缺失**时
+			// 它就是全部——实测 milltina 的 6 个金属件同时缺这两样。
+			syntheticBaseRgb = declaredFlatRgb;
 		}
 
 		var textureName = syntheticBase
@@ -1428,8 +1446,6 @@ public sealed class SourceMaterialConverter
 
 		// 底图缺失时的提示，等 `notices` 建好之后再塞进去（它声明在后面）。
 		string? missingBaseNotice = null;
-		// 底图缺失时用的平色（0..255）；null = 用默认中性灰。
-		byte? syntheticBaseGrey = null;
 
 		if (!syntheticBase && !source.TryReadVtf(textureName, out _))
 		{
@@ -1443,16 +1459,24 @@ public sealed class SourceMaterialConverter
 			//
 			// 对转换器来说，**一块颜色不对但看得见的材质，永远好过一块品红**。
 			// 所以这里退成中性色继续走，并把这件事写进 warnings（管理器会展示）。
-			// 兜底色：名字能说明是平色就用那个颜色（`black` → 黑、`white` → 白、`gray` → 中灰），
-			// 否则用中性灰。实测 MourningVeil B3 引用的是不存在的 `…/black`，它要的是纯黑。
-			var fallbackGrey = MaterialAppearance.TryParseFlatColourName(textureName)
-				?? MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
-			missingBaseNotice =
-				$"{stem}：底图 {textureName}.vtf 在材质来源里找不到"
-				+ $"（源包缺这张图），已退成中性色 ({fallbackGrey}) —— 游戏里不会显示品红，但颜色不一定对。";
+			//
+			// 颜色优先级：**作者的 `$color` > 图片名（`black`/`white`/`gray`）> 中性灰**。
+			// `$color` 排第一是因为它是唯一"作者明确写下的颜色"；图片名只是文件名，只有在
+			// `$color` 缺席时才有意义。实测 MourningVeil B3 引用的是不存在的 `…/black`（要纯黑），
+			// 而 milltina 的金属件引用的是 `vgui/white` 并另写 `$color`（要银/金/宝石红）——
+			// 两者都必须对，所以不能只按名字猜。
+			var namedGrey = MaterialAppearance.TryParseFlatColourName(textureName);
 			syntheticBase = true;
-			syntheticBaseGrey = fallbackGrey;
 			baseTexture = SyntheticBaseName(stem);
+			syntheticBaseRgb = declaredFlatRgb
+				?? (namedGrey is { } grey ? new[] { grey, grey, grey } : null);
+			missingBaseNotice =
+				$"{stem}：底图 {textureName}.vtf 在材质来源里找不到（源包缺这张图），"
+				+ (syntheticBaseRgb is { } rgb
+					? $"已按平涂色 ({rgb[0]},{rgb[1]},{rgb[2]}) 处理"
+						+ $"（来源 {(declaredFlatRgb is null ? "图片名" : "$color")}）"
+					: $"已退成中性色 ({MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0)})")
+				+ " —— 游戏里不会显示品红，但颜色不一定对。";
 		}
 
 		// 先解**底色**：既要它的像素（铸进 patch），也要它的 alpha 与亮度来判定
@@ -1482,10 +1506,12 @@ public sealed class SourceMaterialConverter
 			// 而 4×4 让下游的 DDS / BC7 编码走正常路径。
 			// alpha 置 0 只是为了让"这张图不承担形状"这件事在数据上显式，
 			// **判定不读它**（见上面的 hasSourceOpacity）。
-			var grey = syntheticBaseGrey
-				?? MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
+			var neutralBase = MaterialAppearance.LinearToSrgbByte(MaterialAppearance.NonMetallicSurfaceF0);
 			vtf = VtfFile.Synthetic(4, 4);
-			rgba = MaterialAppearance.SolidRgba(4, grey, grey, grey, 0);
+			rgba = syntheticBaseRgb is { } baseRgb
+				? MaterialAppearance.SolidRgba(4, baseRgb[0], baseRgb[1], baseRgb[2], 0)
+				: MaterialAppearance.SolidRgba(4,
+					neutralBase, neutralBase, neutralBase, 0);
 			baseAlpha = TextureAlpha.Measure(rgba);
 		}
 		else
@@ -1635,32 +1661,55 @@ public sealed class SourceMaterialConverter
 		// ⚠️ **金属件还多一条闸：模板写不进金属度时，不许换底色。**
 		// 换成 matcap 图像之后它既没有金属（没槽）也丢了自己的颜色，是两头不讨好；
 		// 保留源底色至少颜色是作者画的那个。
-		if (matcapIsSurface && matcapMode is MatCapMode.Albedo or MatCapMode.Metal
-			&& (!matcapIsMetal || metalDeliverable))
+		// ⚠️ **"没有 matcap 可换"不是失败，只是换不成。**
+		//
+		// 这一支原来直接 `return LoadOutcome.Failed`，于是材质在 patch 里根本不存在，
+		// 模型引用的那一格找不到材质 —— 用户看到的是**白模 / 品红**，报告里写的却是
+		// "判定 matcap 承载表面，但 VMT 里没有 $matcaptexture"。
+		//
+		// 实测代价：milltina 的 6 个金属件（`$basetexture "vgui/white"` + `$color` +
+		// `$phong 1` + `$envmap`）全落在这一支 —— `vgui/white` 是**引擎内置图**，
+		// 任何 VPK 里都没有它，于是走了"合成底色"这条路，被判成 matcap 承载表面，
+		// 而 VMT 里压根没有 matcap。整批导入后这几个件只剩兜底材质。
+		//
+		// 但**合成底色本身就是一个可用的颜色**（`$color` 或中性灰），并没有东西需要被顶掉。
+		// 所以这里改成"保留底色继续走"，与上面"底图缺失不整块失败"同一条口径：
+		// 一块颜色不一定对的材质，永远好过一块白模。
+		var takesMatcapAsBase = matcapIsSurface
+			&& matcapMode is MatCapMode.Albedo or MatCapMode.Metal
+			&& (!matcapIsMetal || metalDeliverable);
+		if (takesMatcapAsBase && string.IsNullOrWhiteSpace(matcapTextureName))
+		{
+			notices.Add(
+				$"{stem}：既没有 $basetexture 也没有 $matcaptexture —— 没有东西可以顶掉底色，"
+				+ "已按合成底色继续（颜色来自 $color 或中性灰）。");
+		}
+		else if (takesMatcapAsBase)
 		{
 			// matcap 当底色：真正决定观感的是 matcap 那张图，不是底色
 			// （实测 A1 的 `Ornament_metal_Underwear.vtf` 是 1×1 占位图）。
 			// 贴图 id 于是变成 `hash(matcap 名)` —— 它由**哪个 VPK 提供**就归哪个 patch，
 			// C1/C2 这类"只换 matcap"的包成了真正可换的 patch。
-			if (string.IsNullOrWhiteSpace(matcapTextureName))
-			{
-				reason = $"{stem}：判定 matcap 承载表面，但 VMT 里没有 $matcaptexture";
-				return LoadOutcome.Failed;
-			}
-
-			// ⚠️ **Metal 模式下拿不到 matcap 不算失败。**
+			//
+			// ⚠️ **拿不到 matcap 的图也不算失败。**
 			// 金属档只需要 matcap 的"色相"，整片亮度会被归一成 F0——那张图缺了，
 			// 退成中性金属就好。判失败会让整个部件丢掉材质（现象就是"部件不见了"），
 			// 而"中性金属"至少是对的颜色。实测 serenade 的 `jem_red` / `jem_red_earring`
 			// 引用的 `m7` 就不在包里。
-			var matcapAvailable = source.TryReadVtf(matcapTextureName, out var matcapBytes);
-			if (!matcapAvailable && matcapMode != MatCapMode.Metal)
+			//
+			// 非金属档（Albedo）改成同一条口径：保留已经解出来的底色继续走。
+			// 判失败换来的只是"整件退回外壳护甲材质"，那不是更忠实，那是什么都没有。
+			//
+			// 上面那条 `if` 已经把"没有 matcap 名"排掉了，所以这里可以把它固定成非空局部量。
+			var matcapName = matcapTextureName!;
+			var matcapAvailable = source.TryReadVtf(matcapName, out var matcapBytes);
+			if (!matcapAvailable)
 			{
-				reason = $"{stem}：matcap 贴图来源里找不到 {matcapTextureName}.vtf";
-				return LoadOutcome.Failed;
+				notices.Add(
+					$"{stem}：matcap 贴图 {matcapName}.vtf 在材质来源里找不到，"
+					+ "底色按现有的（源底色或合成底色）处理。");
 			}
-
-			if (matcapAvailable)
+			else
 			{
 				try
 				{
@@ -1687,19 +1736,12 @@ public sealed class SourceMaterialConverter
 				}
 				catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
 				{
-					if (matcapMode != MatCapMode.Metal)
-					{
-						reason = $"{stem}：matcap 贴图 {matcapTextureName} 读不出来——{exception.Message}";
-						return LoadOutcome.Failed;
-					}
-
-					// Metal：读不出来就用现有的（合成）底色，色相取中性。
-					notices.Add($"{stem}：matcap 贴图 {matcapTextureName} 读不出来，金属色按中性处理。");
+					// 读不出来就用现有的（源或合成）底色。判失败会让整件丢掉材质，
+					// 而"颜色不一定对的金属"远好过"部件不见了"。
+					notices.Add(
+						$"{stem}：matcap 贴图 {matcapTextureName} 读不出来（{exception.Message}），"
+						+ "底色按现有的处理。");
 				}
-			}
-			else
-			{
-				notices.Add($"{stem}：找不到 matcap 贴图 {matcapTextureName}.vtf，金属色按中性处理。");
 			}
 
 			// ⚠️ **第二张 matcap（`$MATCAP2 2` + `$MATCAP2TEXTURE`）刻意不参与计算。**
@@ -2005,10 +2047,17 @@ public sealed class SourceMaterialConverter
 		// matcap 烘焙也必须在清零 alpha 之前（它只改 RGB，但顺序上这里最自然）。
 		if (loaded.MatcapMean is not null)
 			MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint * matcapBakeGain);
-		else if (loaded.MatcapIsSurface && !loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
+		else if (loaded.MatcapIsSurface && !loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal
+			&& !string.IsNullOrWhiteSpace(loaded.MatcapTextureName))
 		{
 			// matcap 承载表面但**不是**金属（宝石/玻璃/珍珠）：底色同样要顶掉
 			// （源底色可能是近黑占位图，保留就是一块纯黑），但用中性浅灰而不是金属 F0。
+			//
+			// ⚠️ **必须要求"真的有 matcap"。** 这一条以前只判 `MatcapIsSurface`，而那个标志
+			// 还有一个来源是 `syntheticBase`（底图缺失/占位 → 我们合成了底色）。于是
+			// "合成底色 + 没有 matcap"的材质会被涂成中性浅灰 —— 恰好把 `$color` 这个
+			// **作者明确写的颜色**抹掉。实测 milltina 的 6 个金属件（银/金/宝石红）全中，
+			// 全部变成同一块浅灰。
 			MaterialAppearance.FlattenToMetalF0(rgba, MaterialAppearance.NonMetallicSurfaceF0);
 		}
 		else if (loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
