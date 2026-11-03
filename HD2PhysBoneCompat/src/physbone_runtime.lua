@@ -912,14 +912,37 @@ local function drive(runtime)
 		chainTotal = chainTotal + #(runtime.sessions[index].sessions or {})
 	end
 	local budget = options.maxChainsPerFrame or 160
-	local stride = chainTotal > budget and (options.otherPlayerStride or 2) or 1
+	-- 首位玩家（自己）身上的链数：这部分**不参与分帧**，始终每帧算。
+	local primaryChains = 0
+	if runtime.sessions[1] ~= nil then
+		primaryChains = #(runtime.sessions[1].sessions or {})
+	end
+	-- ── 自适应分帧（2026-11-03 实机：四人局红色折线约是绿色两倍、掉到 40 fps）──
+	-- 旧实现是**固定 stride=2**，于是四人局的实际工作量是
+	--     自己 418 链/帧 + 队友 3×418/2 ≈ 1045 链/帧
+	-- 完全没有被 budget 约束住 —— 每帧预算形同虚设，玩家越多越线性变慢。
+	--
+	-- 现在按"队友链数 / 队友预算"反推步长：队友那边每帧最多驱动 budget/2 条链。
+	-- 于是总工作量被压到 (自己 + budget/2) 附近，不再随玩家人数线性增长。
+	-- dt 仍然累积补偿（compat 内部会再拆子步），所以**物理速度不变，只是队友的采样率下降**。
+	-- 观感上：队友通常在画面里很小/很远，降采样几乎看不出来；自己永远是全速率。
+	local otherChains = chainTotal - primaryChains
+	local stride = 1
+	local otherBudget = math.max(math.floor(budget / 2), 24)
+	-- 只有**真的超预算**才分帧：队友链数在预算内时仍按每帧驱动（别为了省而省）。
+	if otherChains > otherBudget then
+		stride = math.max(2, math.ceil(otherChains / otherBudget))
+		local cap = options.maxOtherPlayerStride or 16
+		if stride > cap then stride = cap end
+	end
 	if stride ~= runtime.driveStride then
 		runtime.driveStride = stride
 		if stride > 1 then
-			logger("[physbone][预算] 链数 %d 超过每帧预算 %d ⇒ 非首位玩家改为每 %d 帧驱动一次（dt 累积补偿，速度不变）",
-				chainTotal, budget, stride)
+			logger("[physbone][预算] 自己 %d 链/帧 + 队友 %d 链 ⇒ 队友每 %d 帧驱动一次（每帧预算 %d；dt 累积补偿，速度不变）",
+				primaryChains, otherChains, stride, budget)
 		else
-			logger("[physbone][预算] 链数 %d 回到每帧预算 %d 以内 ⇒ 所有玩家恢复每帧驱动", chainTotal, budget)
+			logger("[physbone][预算] 链数 %d 在每帧预算 %d 以内 ⇒ 所有玩家恢复每帧驱动",
+				chainTotal, budget)
 		end
 	end
 
@@ -1162,14 +1185,28 @@ function M.install(stingray, options)
 			log("[native-probe] ===== 能力探测结束 =====")
 			return
 		end
-		-- 只打开**已经在进程里的系统模块**（kernel32/user32 必然已加载），
-		-- 不引入任何外来二进制；`"*"` 表示不查符号、只 open。
-		for _, dll in ipairs({ "kernel32.dll", "user32.dll" }) do
-			local ok, res, err = pcall(package.loadlib, dll, "*")
-			log("[native-probe] loadlib(%s, \"*\") ok=%s 返回=%s 错误=%s",
-				dll, tostring(ok), type(res), tostring(err))
+		-- 决定性测试：只从**已经加载在进程里**的系统模块解析真实导出符号。
+		-- 这同时验证 LoadLibrary（打开）与 GetProcAddress（取符号）两条路，
+		-- 而且**不引入任何外来二进制** —— 风险面比加载我们自己的 DLL 小得多。
+		--
+		-- ⚠️ 只"解析"，**绝不调用**返回的函数：Lua 会把它当作 `lua_CFunction`
+		-- （签名 int(*)(lua_State*)）去调，而 GetCurrentProcessId 的真实签名不匹配，
+		-- 调用会拿到垃圾返回值当作"结果个数" ⇒ 直接崩。
+		-- 我们要知道的只是"符号能不能取到"，不需要跑它。
+		local probes = {
+			{ "kernel32.dll", "GetCurrentProcessId" },
+			{ "kernel32.dll", "QueryPerformanceCounter" },
+			{ "user32.dll", "GetSystemMetrics" },
+		}
+		for _, pair in ipairs(probes) do
+			local ok, res, err = pcall(package.loadlib, pair[1], pair[2])
+			log("[native-probe] 符号解析 %s!%s  pcall=%s 得到=%s 错误=%s",
+				pair[1], pair[2], tostring(ok), type(res), tostring(err))
+			if ok and type(res) == "function" then
+				log("[native-probe] ⇒ 原生调用**可用**（dlopen + GetProcAddress 都通），未调用")
+			end
 		end
-		log("[native-probe] ===== 能力探测结束 =====")
+		emit("[native-probe] ===== 能力探测结束 =====")
 	end
 	pcall(runNativeProbe, logger)
 

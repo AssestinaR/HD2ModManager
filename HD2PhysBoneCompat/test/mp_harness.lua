@@ -287,20 +287,26 @@ do
 	for index = 1, 4 do fake:playerAt("p" .. index, (index - 1) * 10, 60) end
 	local runtime = freshRuntime(fake, compat, { maxChainsPerFrame = 160, otherPlayerStride = 2 })
 	fake:advance(80)
-	check(runtime.driveStride == 2, "链数超预算后进入分帧（stride=2）", runtime.driveStride)
+	-- 2026-11-03：分帧步长从"固定 2"改成**按总量自适应**（四人局固定 2 会把预算打穿）。
+	-- 本场景：自己 60 链 + 队友 180 链；队友预算 = 160/2 = 80
+	-- ⇒ stride = ceil(180/80) = 3
+	check(runtime.driveStride == 3, "超预算后按总量自适应分帧（队友 180 链 / 预算 80 ⇒ stride=3）",
+		runtime.driveStride)
 
 	compat.dtByUnit = {}
 	fake:advance(20, 0.01)
 	local frames = 20
 	local byUnit = {}
 	for _, entry in ipairs(compat.dtByUnit) do byUnit[entry.unit] = (byUnit[entry.unit] or 0) + entry.dt end
-	-- 20 帧 × 0.01 = 0.2 秒的时间，每个会话拿到的 dt 总和都必须≈0.2（误差 < 一个 dt）。
+	-- 20 帧 × 0.01 = 0.2 秒的时间，每个会话拿到的 dt 总和都必须≈0.2。
+	-- 容差 = **一个 stride 周期**的时间：分帧的语义是"攒够再算"，所以窗口末尾
+	-- 必然有不足一个周期的 dt 还挂在账上（stride=3 时最多 2 帧 = 0.02 秒）。
 	local worst, worstName = 0, nil
 	for unit, total in pairs(byUnit) do
 		local error = math.abs(total - frames * 0.01)
 		if error > worst then worst, worstName = error, unit end
 	end
-	check(worst <= 0.011, "每个被分帧的会话都拿到了完整的时间（dt 累积补偿）",
+	check(worst <= (runtime.driveStride - 1) * 0.01 + 0.001, "每个被分帧的会话都拿到了完整的时间（dt 累积补偿）",
 		string.format("最差 %s 误差 %.4f 秒", tostring(worstName), worst))
 
 	-- 第一位（自己）每帧都要算，不能被分帧。
