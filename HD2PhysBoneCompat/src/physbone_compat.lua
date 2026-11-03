@@ -943,6 +943,47 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 	end
 	local restDirs, relDevs = item.restDir, item.relDev
 
+	-- ── 把尖端状态随锚点**平移**搬运 ─────────────────────────────────────────
+	-- 为什么必须做：`tip.p` 是世界坐标、不会自己跟着锚点走，而每个子步结束又把它
+	-- 投影回 `base + L·n`。于是锚点平移 Δ 会被当成**转动**，方向瞬间变成 `atan(Δ/L)`
+	-- —— L=0.19 m 时 0.20 m 位移就是 **46°**。实机表现：玩家一动，整条布料在**同一帧**
+	-- 跟着手腕倾到底，像一根胶质果冻棒；之后每帧再吸附一次，手臂摆动时尾端反复弹。
+	-- 离线实测（Lilium `source_extra_93`，阶跃 20 cm）：修前第 1 帧七段同时跳 46~50°。
+	--
+	-- ⚠️ **只搬平移，不搬旋转**。旋转若也搬，转头就完全没有滞后（等于焊死在头上，
+	-- `axis-limit-frame-test` 会挂）。旋转的滞后应由"目标随锚点转、弹簧追不上"产生。
+	local lastAx, lastAy, lastAz = item.lastAnchorX, item.lastAnchorY, item.lastAnchorZ
+	if lastAx ~= nil then
+		local dx, dy, dz = apx - lastAx, apy - lastAy, apz - lastAz
+		if dx ~= 0 or dy ~= 0 or dz ~= 0 then
+			for index = 1, #tips do
+				local t = tips[index]
+				if t.ready then t.px, t.py, t.pz = t.px + dx, t.py + dy, t.pz + dz end
+			end
+			-- 锚点**线加速度**（伪力）：身体加速 / 转向 / 急停时把布料往后甩。
+			-- 这一条替代了几何吸附，而且**与帧率无关**（吸附量 ∝ v·dt，帧率越低甩得越狠）。
+			local dtSafe = (dt > 1e-6) and dt or (1 / 70)
+			local vx2, vy2, vz2 = dx / dtSafe, dy / dtSafe, dz / dtSafe
+			local pvx = item.anchorVX
+			if pvx ~= nil then
+				local axx = (vx2 - pvx) / dtSafe
+				local ayy = (vy2 - item.anchorVY) / dtSafe
+				local azz = (vz2 - item.anchorVZ) / dtSafe
+				local magnitude = math.sqrt(axx * axx + ayy * ayy + azz * azz)
+				if magnitude > 60 then
+					local shrink = 60 / magnitude
+					axx, ayy, azz = axx * shrink, ayy * shrink, azz * shrink
+				end
+				item.anchorAX, item.anchorAY, item.anchorAZ = axx, ayy, azz
+			end
+			item.anchorVX, item.anchorVY, item.anchorVZ = vx2, vy2, vz2
+		else
+			item.anchorVX, item.anchorVY, item.anchorVZ = nil, nil, nil
+			item.anchorAX, item.anchorAY, item.anchorAZ = 0, 0, 0
+		end
+	end
+	item.lastAnchorX, item.lastAnchorY, item.lastAnchorZ = apx, apy, apz
+
 	for k = 1, #bones do
 		local bone, tip, gains = bones[k], tips[k], bones[k].gains
 		-- 该节的基座：**动画基座** —— 只由锚点位姿决定，不含我们写出的姿态（⇒ 不会自激）。
@@ -1000,6 +1041,11 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		local ax = accYaw * lx + accPitch * ux
 		local ay = accYaw * ly + accPitch * uy
 		local az = accYaw * lz + accPitch * uz - gains.g
+		-- 锚点线加速度的伪力（−a_基座）：身体加速/转向/急停时把布料往后甩。
+		local pax, pay, paz = item.anchorAX, item.anchorAY, item.anchorAZ
+		if pax ~= nil and (pax ~= 0 or pay ~= 0 or paz ~= 0) then
+			ax, ay, az = ax - pax, ay - pay, az - paz
+		end
 		tip.vx, tip.vy, tip.vz = tip.vx + ax * dt, tip.vy + ay * dt, tip.vz + az * dt
 		tip.px, tip.py, tip.pz = tip.px + tip.vx * dt, tip.py + tip.vy * dt, tip.pz + tip.vz * dt
 		-- 定长约束（样本 flags=0x31 含 lenC ⇒ 尖端钉在半径 L 的球面上，且没有 along 弹簧）
