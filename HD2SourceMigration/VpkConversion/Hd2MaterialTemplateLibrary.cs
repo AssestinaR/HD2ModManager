@@ -140,15 +140,25 @@ public sealed class Hd2MaterialTemplateLibrary
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(name);
 		var cacheKey = name + "|" + slotKey.ToString("x8", System.Globalization.CultureInfo.InvariantCulture);
-		if (slotQueries.TryGetValue(cacheKey, out var known))
-			return known;
-		var has = Hd2MaterialAsset.Read(LoadBytes(name)).TextureKeys.Contains(slotKey);
-		slotQueries[cacheKey] = has;
-		return has;
+		return slotQueries.GetOrAdd(
+			cacheKey,
+			key => Hd2MaterialAsset.Read(LoadBytes(name)).TextureKeys.Contains(slotKey));
 	}
 
-	/// <summary>「模板名|槽键」→ 有没有这个槽。只缓存布尔值，见 <see cref="HasTextureSlot"/>。</summary>
-	private readonly Dictionary<string, bool> slotQueries = new(StringComparer.Ordinal);
+	/// <summary>
+	/// 「模板名|槽键」→ 有没有这个槽。只缓存布尔值，见 <see cref="HasTextureSlot"/>。
+	/// <para>
+	/// <b>必须线程安全。</b>调用方用 <c>Parallel.For</c> 并行转材质
+	/// （<c>VpkPatchAssembler.cs:652</c>），每个材质都会问一次"这个模板有没有金属度槽"。
+	/// 用普通 <c>Dictionary</c> 时并发写直接抛
+	/// <c>Operations that change non-concurrent collections must have exclusive access</c>，
+	/// 再被 <c>AggregateException</c> 包成 "One or more errors occurred." ——
+	/// 用户看到的是整批 VPK 导入失败，附一句跟材质毫无关系的英文。
+	/// 实测代价（2026-11-03 日志）：一次导入里 5 个包这样挂掉，其中一个还是模型主体。
+	/// </para>
+	/// </summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> slotQueries =
+		new(StringComparer.Ordinal);
 
 	/// <summary>读原始模板字节（需要"逐字节照抄"语义时用它）。</summary>
 	public byte[] LoadBytes(string name)

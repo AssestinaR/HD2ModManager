@@ -168,7 +168,6 @@ public sealed class Hd2MaterialTemplateTests
 		var library = Locate();
 		if (library is null)
 			return;
-
 		var mismatched = library.Names
 			.Select(name => (Name: name, Material: library.Load(name)))
 			.Select(item => new
@@ -244,5 +243,53 @@ public sealed class Hd2MaterialTemplateTests
 			return;
 
 		Assert.Throws<FileNotFoundException>(() => library.Load("no-such-template"));
+	}
+
+	/// <summary>
+	/// <b><see cref="Hd2MaterialTemplateLibrary.HasTextureSlot"/> 必须能并发调用。</b>
+	/// <para>
+	/// 它被 <c>VpkPatchAssembler</c> 在 <c>Parallel.For</c> 里每个材质问一次
+	/// （`VpkPatchAssembler.cs:652`）。缓存用普通 <c>Dictionary</c> 时，并发写会抛
+	/// <c>Operations that change non-concurrent collections must have exclusive access</c>，
+	/// 再被包成 "One or more errors occurred." —— 用户看到整批导入失败，
+	/// 附一句跟材质毫无关系的英文。
+	/// </para>
+	/// <para>
+	/// 实测代价（2026-11-03 管理器日志）：一次导入里 5 个包这样挂掉，其中一个还是模型主体。
+	/// 这条测试用多线程反复问同一个模板，把那次事故钉住。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void HasTextureSlotIsSafeToCallFromManyThreads()
+	{
+		var library = Locate();
+		if (library is null)
+			return;
+
+		var key = SourceMaterialConverter.MetallicSlotKey;
+		var templates = new[] { "advanced", "alphaclip", "original", "basic", "translucent" };
+		var errors = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+
+		// 关键：**从空缓存开始**并发写。先串行预热一次就测不出问题了。
+		Parallel.For(0, 400, new ParallelOptions { MaxDegreeOfParallelism = 8 }, index =>
+		{
+			try
+			{
+				var name = templates[index % templates.Length];
+				var has = library.HasTextureSlot(name, key);
+				// 结果必须稳定：同一个模板无论问多少次都是同一个答案。
+				if (string.Equals(name, "advanced", StringComparison.Ordinal))
+					Assert.True(has);
+				else
+					Assert.False(has);
+			}
+			catch (Exception exception)
+			{
+				errors.Add(exception);
+			}
+		});
+
+		Assert.True(errors.IsEmpty,
+			"HasTextureSlot 并发调用抛异常：" + string.Join("；", errors.Select(error => error.GetType().Name + ": " + error.Message)));
 	}
 }
