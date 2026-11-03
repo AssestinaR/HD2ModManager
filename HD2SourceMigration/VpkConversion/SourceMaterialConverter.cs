@@ -959,6 +959,36 @@ public sealed class SourceMaterialConverter
 	}
 
 	/// <summary>
+	/// 这条材质是否声明了法线图（<c>$bumpmap</c>）。
+	/// <para>
+	/// <b>为什么要单独问一次。</b>法线图目前**完全没有接线**——所有材质写进 HD2 的都是
+	/// 平面法线（128,128,255），而 NekoToon 那套模型普遍带 BC5 高清法线图。
+	/// 这是当前最大的一处保真度损失，却在报告里一个字都没有。
+	/// </para>
+	/// <para>
+	/// <b>为什么不塞进逐材质的 notice。</b>它几乎每个材质都有，逐条报会把真正稀有的警告淹掉。
+	/// 所以只提供一个查询，由装配器按**整包**统计成一行。
+	/// </para>
+	/// </summary>
+	/// <param name="materialName">源材质的裸名（可带目录，会取 basename）。</param>
+	public bool DeclaresBumpMap(string materialName)
+	{
+		var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(materialName));
+		if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVmt(stem, out var bytes))
+			return false;
+		try
+		{
+			// 带 include 展开：法线常常写在被 include 的基材质里。
+			return !string.IsNullOrWhiteSpace(
+				VmtDocument.Parse(bytes, source.CreateIncludeReader()).Value("$bumpmap"));
+		}
+		catch (InvalidDataException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// 为「源包里根本没有这个材质」的情形造一个**兜底灰材质**。
 	/// <para>
 	/// <b>为什么需要它。</b>装配器原来的做法是：模型引用了某个材质、而它没被任何 VPK 提供（源包
