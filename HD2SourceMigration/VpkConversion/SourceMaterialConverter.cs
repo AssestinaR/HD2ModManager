@@ -1596,6 +1596,24 @@ public sealed class SourceMaterialConverter
 		if (missingBaseNotice is not null)
 			notices.Add(missingBaseNotice);
 
+		// ── 先算一次"这个材质最终会用哪个模板"，以及那个模板能不能表达金属度 ────────
+		//
+		// **为什么必须提前算。** 下面的 matcap 分支会**整份换掉 `rgba`**（换成 matcap 图像）。
+		// 换掉之后底色就只剩"F0 载体"这一个用途了 —— 只有在模板**能写金属度**时才有意义。
+		// 金属度写不进去时换掉底色，等于把作者画的那张图换成一张球面图：
+		// 既没有金属（没槽），也丢了自己的颜色。
+		//
+		// ⚠️ **上一版就栽在这里。** 当时的写法是"金属做不到就不涂 F0"，但执行顺序上
+		// `rgba` 早已被换成 matcap 图像，于是"保留源底色"实际保留的是**那张金属球面图**
+		// （亮度与亮银接近）—— 用户实测"MourningVeil 无变化"，因为确实几乎没变。
+		// 修正办法不是调数值，而是把顺序理顺：**先知道模板能不能表达金属，再决定要不要换底色**。
+		var provisionalUseAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha);
+		if (provisionalUseAlphaClip && matcapIsMetal && metalCutout == MetalCutoutPolicy.MetalWins)
+			provisionalUseAlphaClip = false;   // MetalWins 会放弃镂空、回到 advanced
+		var provisionalTemplate = ResolveTemplate(provisionalUseAlphaClip);
+		var metalDeliverable = templates.Contains(provisionalTemplate)
+			&& templates.HasTextureSlot(provisionalTemplate, MetallicSlotKey);
+
 		// 源侧声明了、但 HD2 表达不了的特性（双面 / 自发光 / 高光反射 / 细节层 …）。
 		//
 		// 这一条不改变任何产物，只是把"为什么看着不一样"接上因果：这些键此前要么
@@ -1613,7 +1631,12 @@ public sealed class SourceMaterialConverter
 		// 现在的分工：
 		//   · Albedo（发布版行为）：matcap 承载表面 → 拿 matcap 当底色
 		//   · Metal：只有**没有 $basetexture** 的件才归一成金属 F0，有底色的布料保持原样
-		if (matcapIsSurface && matcapMode is MatCapMode.Albedo or MatCapMode.Metal)
+		//
+		// ⚠️ **金属件还多一条闸：模板写不进金属度时，不许换底色。**
+		// 换成 matcap 图像之后它既没有金属（没槽）也丢了自己的颜色，是两头不讨好；
+		// 保留源底色至少颜色是作者画的那个。
+		if (matcapIsSurface && matcapMode is MatCapMode.Albedo or MatCapMode.Metal
+			&& (!matcapIsMetal || metalDeliverable))
 		{
 			// matcap 当底色：真正决定观感的是 matcap 那张图，不是底色
 			// （实测 A1 的 `Ornament_metal_Underwear.vtf` 是 1×1 占位图）。
@@ -1770,22 +1793,16 @@ public sealed class SourceMaterialConverter
 				+ "已按**抖动透明**处理（点阵近似）——远处观感接近，近看有细密噪点。");
 		}
 
-		var templateName = ExperimentApplies(useAlphaClip)
-			? alphaExperiment switch
-			{
-				AlphaExperiment.Translucent => "translucent",
-				AlphaExperiment.AdvancedOpacity => "advanced",
-				_ => CutoutTemplateName(useAlphaClip),
-			}
-			: CutoutTemplateName(useAlphaClip);
+		var templateName = ResolveTemplate(useAlphaClip);
 		if (!templates.Contains(templateName))
 		{
 			reason = $"材质模板库缺少 {templateName}，无法造材质";
 			return LoadOutcome.Failed;
 		}
 
-		// **这个模板到底能不能表达金属度** —— 按槽键问，不按模板名猜。
-		var metalDeliverable = templates.HasTextureSlot(templateName, MetallicSlotKey);
+		// 正式判定用的是**最终**模板（可能被 MetalWins / 实验档改过），
+		// 而上面那个 provisional 只在"要不要换底色"时用。两者不一致时以这里为准。
+		metalDeliverable = templates.HasTextureSlot(templateName, MetallicSlotKey);
 
 		// **金属与镂空在 HD2 里确实不能并存**，而且这条结论现在是结构性的、不是经验性的：
 		//
@@ -1873,6 +1890,20 @@ public sealed class SourceMaterialConverter
 			UseDither: useAlphaClip && vmt.WantsDitheredTransparency);
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
+
+		// **模板选择只有这一处实现。**
+		// 上面有两次要用到它：一次是"要不要换底色"（提前算，因为换底色会改 `rgba`），
+		// 一次是最终产物。两处必须同一套规则，否则会出现"按 A 模板决定换底色、
+		// 最终却用 B 模板"这种自相矛盾的组合——那正是上一版"保留源底色却保留了球面图"的成因。
+		string ResolveTemplate(bool alphaClip)
+			=> ExperimentApplies(alphaClip)
+				? alphaExperiment switch
+				{
+					AlphaExperiment.Translucent => "translucent",
+					AlphaExperiment.AdvancedOpacity => "advanced",
+					_ => CutoutTemplateName(alphaClip),
+				}
+				: CutoutTemplateName(alphaClip);
 	}
 
 	/// <summary>
