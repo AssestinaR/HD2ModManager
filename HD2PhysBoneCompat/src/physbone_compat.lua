@@ -943,60 +943,6 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 	end
 	local restDirs, relDevs = item.restDir, item.relDev
 
-	-- ── 把尖端状态随锚点**平移**搬运 ─────────────────────────────────────────
-	-- 为什么必须做：`tip.p` 是世界坐标、不会自己跟着锚点走，而每个子步结束又把它
-	-- 投影回 `base + L·n`。于是锚点平移 Δ 会被当成**转动**，方向瞬间变成 `atan(Δ/L)`
-	-- —— L=0.19 m 时 0.20 m 位移就是 **46°**。实机表现：玩家一动，整条布料在**同一帧**
-	-- 跟着手腕倾到底，像一根胶质果冻棒；之后每帧再吸附一次，手臂摆动时尾端反复弹。
-	-- 离线实测（Lilium `source_extra_93`，阶跃 20 cm）：修前第 1 帧七段同时跳 46~50°。
-	--
-	-- ⚠️ **只搬平移，不搬旋转**。旋转若也搬，转头就完全没有滞后（等于焊死在头上，
-	-- `axis-limit-frame-test` 会挂）。旋转的滞后应由"目标随锚点转、弹簧追不上"产生。
-	local lastAx, lastAy, lastAz = item.lastAnchorX, item.lastAnchorY, item.lastAnchorZ
-	if lastAx ~= nil then
-		local dx, dy, dz = apx - lastAx, apy - lastAy, apz - lastAz
-		if dx ~= 0 or dy ~= 0 or dz ~= 0 then
-			for index = 1, #tips do
-				local t = tips[index]
-				if t.ready then t.px, t.py, t.pz = t.px + dx, t.py + dy, t.pz + dz end
-			end
-			-- 锚点**线加速度**（伪力）：身体加速 / 转向 / 急停时把布料往后甩。
-			--
-			-- ⚠️ 这一段**绝不能**用原始二阶差分 `(Δpos/dt − 上次Δpos/dt)/dt`。
-			-- 二阶差分把采样噪声与帧时不稳放大约 1/dt² 倍，离线实测（70 Hz）：
-			--   匀速 + 1 mm 采样抖动      ⇒ 14.7 m/s²（1.5 g）
-			--   匀速 + 帧时 ±40%          ⇒ **4271 m/s²（435 g）**
-			-- 实机日志里 dt 在 0.0093~0.0231 之间跳（±40%），而锚点是每帧重读的
-			-- ⇒ 每帧都会算出几千 m/s² 的随机方向力，实机表现就是"布料到处乱飞"。
-			--
-			-- 改成**一阶低通后的速度**再求加速度：a = α·(v − v̄)/dt。
-			-- 同样条件下最坏只有 2.8 m/s²（0.3 g），而真实的起步/急停仍能给出接近 1 g。
-			-- 上限再夹到 8.24 m/s²（≈0.84 g）：比"走路/转向"该有的量级略宽，但远小于重力 6 倍那种荒谬值。
-			local dtSafe = (dt > 1e-6) and dt or (1 / 70)
-			local vx2, vy2, vz2 = dx / dtSafe, dy / dtSafe, dz / dtSafe
-			local vbx, vby, vbz = item.anchorVX, item.anchorVY, item.anchorVZ
-			if vbx ~= nil then
-				local alpha = 0.12
-				local axx = alpha * (vx2 - vbx) / dtSafe
-				local ayy = alpha * (vy2 - vby) / dtSafe
-				local azz = alpha * (vz2 - vbz) / dtSafe
-				local magnitude = math.sqrt(axx * axx + ayy * ayy + azz * azz)
-				local cap = 8.24
-				if magnitude > cap then
-					local shrink = cap / magnitude
-					axx, ayy, azz = axx * shrink, ayy * shrink, azz * shrink
-				end
-				item.anchorAX, item.anchorAY, item.anchorAZ = axx, ayy, azz
-				vx2, vy2, vz2 = vbx + alpha * (vx2 - vbx), vby + alpha * (vy2 - vby), vbz + alpha * (vz2 - vbz)
-			end
-			item.anchorVX, item.anchorVY, item.anchorVZ = vx2, vy2, vz2
-		else
-			item.anchorVX, item.anchorVY, item.anchorVZ = nil, nil, nil
-			item.anchorAX, item.anchorAY, item.anchorAZ = 0, 0, 0
-		end
-	end
-	item.lastAnchorX, item.lastAnchorY, item.lastAnchorZ = apx, apy, apz
-
 	for k = 1, #bones do
 		local bone, tip, gains = bones[k], tips[k], bones[k].gains
 		-- 该节的基座：**动画基座** —— 只由锚点位姿决定，不含我们写出的姿态（⇒ 不会自激）。
@@ -1045,30 +991,15 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		end
 		local ex, ey, ez = gx - tip.px, gy - tip.py, gz - tip.pz
 		local errYaw, errPitch = lx * ex + ly * ey + lz * ez, ux * ex + uy * ey + uz * ez
-		-- ⚠️ Valve 用的是**绝对** tipVel（不是相对目标速度）——匀速走动时的持续滞后正是它给的。
-		--
-		-- 2026-11-03：上面把尖端状态**随锚点平移搬运**之后，`tip.v` 变成了**相对速度**
-		-- （相对锚点/身体），于是 `−c·v` 只阻尼相对运动 ⇒ **跑步时没有任何拖拽力**
-		-- ⇒ 布料只剩重力、永远垂直朝下，鼠标用户看到的就是"头发一直指着地板、没有拖动感"。
-		-- 正确做法：阻尼要作用在**世界速度**上 = 相对速度 + 锚点速度。
-		-- 物理含义就是"空气相对布料的流动"：身体以 3 m/s 前进时，空气以 3 m/s 反向吹过布料，
-		-- 于是布料被往后拖 —— 这正是 L4D2 里跑动时头发/裙摆向后飘的来源。
-		local avx, avy, avz = item.anchorVX, item.anchorVY, item.anchorVZ
-		if avx == nil then avx, avy, avz = 0, 0, 0 end
-		local wvx, wvy, wvz = tip.vx + avx, tip.vy + avy, tip.vz + avz
-		local velYaw = lx * wvx + ly * wvy + lz * wvz
-		local velPitch = ux * wvx + uy * wvy + uz * wvz
+		-- ⚠️ Valve 用的是**绝对** tipVel（不是相对目标速度）——匀速走动时的持续滞后正是它给的
+		local velYaw = lx * tip.vx + ly * tip.vy + lz * tip.vz
+		local velPitch = ux * tip.vx + uy * tip.vy + uz * tip.vz
 		local accYaw = gains.kYaw * errYaw - gains.cYaw * velYaw
 		local accPitch = gains.kPitch * errPitch - gains.cPitch * velPitch
 		-- 重力：上的反面（一致性电池 E1 实测世界 +Z 朝上）
 		local ax = accYaw * lx + accPitch * ux
 		local ay = accYaw * ly + accPitch * uy
 		local az = accYaw * lz + accPitch * uz - gains.g
-		-- 锚点线加速度的伪力（−a_基座）：身体加速/转向/急停时把布料往后甩。
-		local pax, pay, paz = item.anchorAX, item.anchorAY, item.anchorAZ
-		if pax ~= nil and (pax ~= 0 or pay ~= 0 or paz ~= 0) then
-			ax, ay, az = ax - pax, ay - pay, az - paz
-		end
 		tip.vx, tip.vy, tip.vz = tip.vx + ax * dt, tip.vy + ay * dt, tip.vz + az * dt
 		tip.px, tip.py, tip.pz = tip.px + tip.vx * dt, tip.py + tip.vy * dt, tip.pz + tip.vz * dt
 		-- 定长约束（样本 flags=0x31 含 lenC ⇒ 尖端钉在半径 L 的球面上，且没有 along 弹簧）
@@ -1157,28 +1088,18 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		-- 只有**真的超限**时才需要角度值（而且下面用的是 limit 本身，连 acos 都不用）。
 		--
 		-- 分轴约束的骨**不走这条**：锥是相对父节的，会累加（见上面 axisLimits 的说明）。
-		-- 锥限位的**中心方向**有两种语义，差别在"沿链累不累加"：
-		--   "parent"（旧行为）：上一节**当前**方向经绑定相对旋转 ⇒ 每节各自 ±limit，
-		--       但世界空间里沿链累加：3 节 × 35° 可达 105° ⇒ 尾部能翻到根的上方。
-		--   "rest"（新，`item.coneMode = "rest"`）：本节**自己的静止方向** ⇒ 每节相对 bind
-		--       单独受限、不累加。实机参照（L4D2）里尾巴不会高过根部，说明是这一种。
-		local ccx, ccy, ccz = prevX, prevY, prevZ
-		if item.coneMode ~= "parent" then
-			local rs = restDirs[k]
-			ccx, ccy, ccz = rs[1], rs[2], rs[3]
-		end
-		local dot = nx * ccx + ny * ccy + nz * ccz
+		local dot = nx * prevX + ny * prevY + nz * prevZ
 		if not gains.axisLimits and gains.limit > 0 and dot < gains.cosLimit then
-			local sx, sy, sz, _ = swing_axis(ccx, ccy, ccz, nx, ny, nz)
+			local sx, sy, sz, _ = swing_axis(prevX, prevY, prevZ, nx, ny, nz)
 			if sx ~= nil then
 				local rqx, rqy, rqz, rqw = q_axis_angle(sx, sy, sz, gains.limit)
 				local obx, oby, obz = nx, ny, nz
-				nx, ny, nz = qrot(rqx, rqy, rqz, rqw, ccx, ccy, ccz)
+				nx, ny, nz = qrot(rqx, rqy, rqz, rqw, prevX, prevY, prevZ)
 				-- 同上：把**朝墙外**的那份速度去掉。否则它会一直堆在墙外，
 				-- 等约束不再生效时一次性甩出来 —— 实机上就是"卡一下再弹开"。
-				local anx = obx - ccx * dot
-				local any = oby - ccy * dot
-				local anz = obz - ccz * dot
+				local anx = obx - prevX * dot
+				local any = oby - prevY * dot
+				local anz = obz - prevZ * dot
 				local alen = math.sqrt(anx * anx + any * any + anz * anz)
 				if alen > 1e-9 then
 					anx, any, anz = anx / alen, any / alen, anz / alen
