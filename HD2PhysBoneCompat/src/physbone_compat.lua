@@ -417,6 +417,27 @@ end
 -- ---------------------------------------------------------------------------
 
 --- 返回链数组。链根 = 父骨不是 jiggle 骨的那些。
+--- 把 jiggle 骨树切成**互不重叠的路径**（每个骨只属于一条路径）。
+--- <para>
+--- ⚠️ <b>不能再把整棵树 DFS 摊平成一条链。</b>旧实现（2026-11-01 及之前）从链根出发
+--- 一路 `table.remove(stack)` 下去，于是<b>分叉节点的第二个子骨被当成第一个子骨的续节</b>：
+--- 方向沿 `k-1` 传递时，兄弟分支的弯曲会串到另一条分支上。真实资产实测：
+--- `silent_code_shinano` 骨 96→{97,98,100} 摊平后，"99→100"这一对人造折角是
+--- <b>154.3°</b>，而生产日志里数千帧恒定不变的"偏离绑定峰值"恰好就是 154.3° ——
+--- 就是它（用户描述为"闪电状折痕 / Z 字形扭曲"）。
+--- </para>
+--- <para>
+--- 切法：一条路径从"链根"或"分叉节点的每个子骨"开始，沿<b>唯一子骨</b>一路走到底。
+--- 分叉节点本身留在它所在的那条路径里（作为末节），子骨各自开新路径。
+--- 这样每个骨恰好被一条路径驱动一次，不会有两个求解器抢写同一根骨。
+--- </para>
+--- <para>
+--- 路径首节如果父骨也是 jiggle 骨（即它是某个分叉的孩子），它的"上一节"在别的路径里，
+--- 拿不到那一条的模拟方向 ⇒ 用<b>静止方向</b>当基准（跨路径的耦合一律不做）。
+--- 这是有意的降级：宁可让分叉处"不传递弯曲"，也不要造假折角。
+--- </para>
+---@return table chains 每条路径是一个骨记录数组；首节的 `isBranch` 为 true 表示它有 jiggle 父骨
+---@return table byIndex 源骨下标 → 骨记录
 function M.build_chains(bones)
 	local byIndex = {}
 	for _, bone in ipairs(bones) do byIndex[bone.index] = bone end
@@ -430,23 +451,59 @@ function M.build_chains(bones)
 
 	M.apply_world_segments(bones)
 
-	local chains = {}
+	-- 起点：① 父骨不是 jiggle 骨（真正的链根）② 父骨是 jiggle 骨但那个父骨有多个 jiggle 子骨
+	local function isForkParent(bone)
+		local kids = children[bone.index]
+		return kids ~= nil and #kids > 1
+	end
+
+	local chains, visited = {}, {}
+	local function walk(start)
+		local path = {}
+		local current = start
+		local guard = 0
+		while current ~= nil do
+			-- 防成环：源数据里父子关系成环的话，这个 while 会永远转下去，
+			-- 而它跑在游戏主线程上 —— 表现就是整局卡死（AppHang），不是报错。
+			guard = guard + 1
+			if guard > 10000 then break end
+			if visited[current.index] then break end
+			visited[current.index] = true
+			path[#path + 1] = current
+			local kids = children[current.index]
+			if kids == nil or #kids == 0 then break end
+			if #kids > 1 then break end       -- 分叉：当前节点收尾，子骨各自开新路径
+			current = kids[1]
+		end
+		return path
+	end
+
+	-- 先按"源骨下标"把起点排好，保证同一份 rig 每次切出来的顺序一致
+	-- （顺序影响日志与写节点顺序；不确定性会让"同样的资产两次表现不同"变成玄学问题）。
+	local starts = {}
 	for _, bone in ipairs(bones) do
-		local isRoot = byIndex[bone.parent] == nil      -- 父不是 jiggle 骨 ⇒ 链根
-		if isRoot then
-			local chain, stack = {}, { bone }
-			local guard = 0
-			while #stack > 0 do
-				-- 防成环：源数据里父子关系成环的话，这个 while 会永远转下去，
-				-- 而它跑在游戏主线程上 —— 表现就是整局卡死（AppHang），不是报错。
-				guard = guard + 1
-				if guard > 10000 then break end
-				local current = table.remove(stack)
-				chain[#chain + 1] = current
-				local kids = children[current.index] or {}
-				for i = #kids, 1, -1 do stack[#stack + 1] = kids[i] end
-			end
-			chains[#chains + 1] = chain
+		local parent = byIndex[bone.parent]
+		if parent == nil or isForkParent(parent) then
+			starts[#starts + 1] = bone
+		end
+	end
+	table.sort(starts, function(a, b) return a.index < b.index end)
+
+	for _, start in ipairs(starts) do
+		local path = walk(start)
+		if #path > 0 then
+			path.isBranch = (byIndex[start.parent] ~= nil)
+			path.parentRecord = path.isBranch and byIndex[start.parent] or nil
+			chains[#chains + 1] = path
+		end
+	end
+
+	-- 兜底：成环 / 自引用导致某些骨没有任何"起点"可达。按骨下标补成单节路径，
+	-- 让它们至少还能被驱动（并且计数上不会凭空少一批）。
+	for _, bone in ipairs(bones) do
+		if not visited[bone.index] then
+			chains[#chains + 1] = { bone, isBranch = byIndex[bone.parent] ~= nil,
+				parentRecord = byIndex[bone.parent] }
 		end
 	end
 	return chains, byIndex
@@ -501,13 +558,29 @@ local function q_axis_angle(ax, ay, az, angle)
 	return ax * s, ay * s, az * s, math.cos(angle * 0.5)
 end
 
---- 从 f 转到 t 的最小旋转（都是单位向量）。退化时返回 nil。
+--- 从 f 转到 t 的最小旋转（都是单位向量）。
+--- <para>
+--- 返回 <c>轴 x, y, z, 角度</c>；<b>同向</b>时返回 nil（不需要转）。
+--- ⚠️ <b>反平行也必须返回一个确定的轴</b>，不能返回 nil —— 调用方历史上把 nil 当成"零旋转"，
+--- 于是 180° 的转弯变成 0°（离线实测：目标 179.95° / 180.0° 输出 0°，方向误差 179.95° / 180°）。
+--- 180° 的旋转轴不唯一（任何垂直于 f 的轴都行），所以这里取一个**确定**的垂直轴，
+--- 保证同一输入每次得到同一条轴（否则每帧随机翻，表现是抖动）。
+--- </para>
 local function swing_axis(fx, fy, fz, tx, ty, tz)
 	local dot = fx * tx + fy * ty + fz * tz
-	if dot > 0.9999995 or dot < -0.9999995 then return nil end
+	if dot > 0.9999995 then return nil end
 	local cx, cy, cz = fy * tz - fz * ty, fz * tx - fx * tz, fx * ty - fy * tx
 	local length = math.sqrt(cx * cx + cy * cy + cz * cz)
-	if length < 1e-9 then return nil end
+	if length < 1e-9 then
+		if dot > 0 then return nil end
+		-- 反平行：造一个与 f 垂直的确定轴。f 接近世界 up 时退到 +X，避免叉积退化。
+		local ax, ay, az = 0, 0, 1
+		if math.abs(fz) > 0.9 then ax, ay, az = 1, 0, 0 end
+		cx, cy, cz = fy * az - fz * ay, fz * ax - fx * az, fx * ay - fy * ax
+		length = math.sqrt(cx * cx + cy * cy + cz * cz)
+		if length < 1e-9 then return 1, 0, 0, math.pi end
+		return cx / length, cy / length, cz / length, math.pi
+	end
 	local clamped = math.max(-1, math.min(1, dot))
 	return cx / length, cy / length, cz / length, math.acos(clamped)
 end
@@ -674,6 +747,65 @@ function M.normalize_gains(gains)
 	return gains
 end
 
+--- 把一个点推出所有碰撞代理之外。
+--- <para>
+--- 球形代理是 <c>a == b</c> 的退化胶囊（零分母要单独处理）。
+--- 点正好落在轴线上时法线不唯一，取一个**确定**的垂直方向 —— 不能随机选，也不能除零。
+--- </para>
+---@return number x, number y, number z, boolean hit, number nx, number ny, number nz
+local function push_out_of_colliders(px, py, pz, colliders)
+	if colliders == nil then return px, py, pz, false, 0, 0, 0 end
+	local hit = false
+	local hnx, hny, hnz = 0, 0, 0
+	for index = 1, #colliders do
+		local c = colliders[index]
+		local ax, ay, az, bx, by, bz, r = c[1], c[2], c[3], c[4], c[5], c[6], c[7]
+		local ex, ey, ez = bx - ax, by - ay, bz - az
+		local len2 = ex * ex + ey * ey + ez * ez
+		local cx, cy, cz
+		if len2 < 1e-12 then
+			cx, cy, cz = ax, ay, az
+		else
+			local t = ((px - ax) * ex + (py - ay) * ey + (pz - az) * ez) / len2
+			if t < 0 then t = 0 elseif t > 1 then t = 1 end
+			cx, cy, cz = ax + ex * t, ay + ey * t, az + ez * t
+		end
+		local dx, dy, dz = px - cx, py - cy, pz - cz
+		local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+		if dist < r then
+			hit = true
+			local nx, ny, nz
+			if dist > 1e-6 then
+				nx, ny, nz = dx / dist, dy / dist, dz / dist
+			else
+				-- 落在轴线上：造一个与轴垂直的确定方向（轴接近世界 up 时退到 +X）。
+				local ux, uy, uz = ex, ey, ez
+				local ulen = math.sqrt(len2)
+				if ulen < 1e-9 then
+					ux, uy, uz = 0, 0, 1
+				else
+					ux, uy, uz = ux / ulen, uy / ulen, uz / ulen
+				end
+				local hx, hy, hz = 0, 0, 1
+				if math.abs(uz) > 0.9 then hx, hy, hz = 1, 0, 0 end
+				nx = uy * hz - uz * hy
+				ny = uz * hx - ux * hz
+				nz = ux * hy - uy * hx
+				local nl = math.sqrt(nx * nx + ny * ny + nz * nz)
+				if nl < 1e-9 then
+					nx, ny, nz = 1, 0, 0
+				else
+					nx, ny, nz = nx / nl, ny / nl, nz / nl
+				end
+			end
+			px, py, pz = cx + nx * r, cy + ny * r, cz + nz * r
+			hnx, hny, hnz = nx, ny, nz
+		end
+	end
+	return px, py, pz, hit, hnx, hny, hnz
+end
+M._push_out_of_colliders = push_out_of_colliders
+
 --- 一步积分（纯数字）。anchor 位姿来自动画侧（我们从不写锚点，所以没有反馈）。
 --- item 需要：bones[k].gains / .offLocal（锚点局部系里的 bind 偏移）/ .frameLocal（left/up）、
 ---            item.segDirLocal[k]（bind 时该节在锚点局部系里的方向）、item.tips[k]、item.dirs。
@@ -682,6 +814,54 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 	local prevX, prevY, prevZ
 	-- 局部化标准库函数：PUC Lua 5.1 不会自动消掉重复的全局→字段查找。
 	local sqrt, acos = math.sqrt, math.acos
+
+	-- ── 每帧预算：静止方向 + 相邻节的"绑定相对旋转" ──────────────────────
+	-- ⚠️ 这是**修"头发不自然下垂 / 朝错误方向下垂"的那一处**。
+	--
+	-- 旧实现的 `prev`（本节的"父段前向"）对 k>1 直接抄上一节的**模拟**方向：
+	--     prev_k = dirs[k-1]
+	-- 于是链的**零力平衡态是一条直线**，而不是作者在 bind 姿态里做出来的弯曲形状。
+	-- 更糟的是首帧 `tip.ready == false` 直接把尖端放到这个目标上 ⇒ **第一帧就把整条链掰直**，
+	-- 每节在 bind 里的 20~26° 静态弯曲被当成"需要被弹簧纠正掉的偏差"。
+	-- 用户看到的"头发不会自然下垂、反而指向一个错误的方向"就是它。
+	--
+	-- 正确关系（与 Valve 的 `jigglebones.cpp` 同构）：本节的目标方向 =
+	--   **上一节的模拟方向** 经「上一节 → 本节」的**绑定相对旋转**转过去。
+	-- 这样 dirs[k-1] == rest[k-1] 时 prev_k 正好等于 rest[k] ⇒ bind 形状就是平衡形状，
+	-- 而父级真的摆动起来时，偏差照常沿链传下去（"链式弯曲"仍然在）。
+	--
+	-- 成本控制：q 在一帧内不变（update_tip 用同一个锚点跑多个子步），
+	-- 所以静止方向与相对旋转**每帧只算一次**，子步里只剩 1 次 axis_angle + 1 次 qrot。
+	if item.restQx ~= qx or item.restQy ~= qy or item.restQz ~= qz or item.restQw ~= qw then
+		local gqx, gqy, gqz, gqw = qx, qy, qz, qw
+		-- 世界朝向锚定（`item.goalQ`）：目标朝向用**绑定姿态**的锚点旋转来算，而不是当前动画旋转。
+		-- 效果：父级（上臂）怎么转，只带动这条链**平移**，不改变它的朝向 —— 布料感的关键。
+		-- 对应源数据里大袖子的 yaw/pitch 约束 flag（0x3d），头发（0x31）不启用。
+		if item.goalQ ~= nil then
+			gqx, gqy, gqz, gqw = item.goalQ[1], item.goalQ[2], item.goalQ[3], item.goalQ[4]
+		end
+		local rest = item.restDir
+		if rest == nil then rest = {}; item.restDir = rest end
+		local rel = item.relDev
+		if rel == nil then rel = {}; item.relDev = rel end
+		for index = 1, #bones do
+			local s = item.segDirLocal[index]
+			local slot = rest[index]
+			if slot == nil then slot = {}; rest[index] = slot end
+			slot[1], slot[2], slot[3] = qrot(gqx, gqy, gqz, gqw, s[1], s[2], s[3])
+			rel[index] = nil
+		end
+		for index = 2, #bones do
+			local a, b = rest[index - 1], rest[index]
+			local ax, ay, az, angle = swing_axis(a[1], a[2], a[3], b[1], b[2], b[3])
+			if ax ~= nil then
+				rel[index] = { ax, ay, az, angle }
+			end
+		end
+		item.restQx, item.restQy, item.restQz, item.restQw = qx, qy, qz, qw
+	end
+	local restDirs, relDevs = item.restDir, item.relDev
+
 	for k = 1, #bones do
 		local bone, tip, gains = bones[k], tips[k], bones[k].gains
 		-- 该节的基座。
@@ -689,6 +869,8 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 		-- 用动画基座的版本在"杆长 ≫ 真实骨距"时会出事：目标尖端被推到下一节基座之外，
 		-- 相邻两节互相越过对方，弹簧把一节推一边、下一节推回来 ⇒ 侧面看是锯齿/闪电形
 		-- （2026-10-31 Lilium 头发实测；大袖子因杆长≈骨距而不受影响）。
+		-- ⚠️ 2026-11-03 评审：开这个开关在真实 rig 上把**最大折返幅度**从 14.7~34.0° 恶化到
+		-- 69~96°、首尾夹角 60°→114°（`tmp/lua-check/zigzag-lab4.lua`）。**保持关闭**。
 		local bx, by, bz
 		if item.serialBase and k > 1 then
 			local parentTip = tips[k - 1]
@@ -698,20 +880,26 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 			local ox, oy, oz = qrot(qx, qy, qz, qw, bone.offLocal[1], bone.offLocal[2], bone.offLocal[3])
 			bx, by, bz = apx + ox, apy + oy, apz + oz
 		end
-		-- 父段前向：第 1 节用**动画**方向，其余用上一节的**模拟**方向（这就是链式弯曲）
+		-- 父段前向 = 本节**静止方向**，再叠加上一节的实际偏差（见上面每帧预算的说明）。
+		-- 路径首节（链根，或分叉节点下的分支起点）没有"同一路径里的上一节"可用
+		-- ⇒ 直接用静止方向，不做跨路径耦合（宁可分叉处不传递弯曲，也不造假折角）。
+		--
+		-- ⚠️ `relDevs[k] == nil` 有**两种完全不同的含义**，必须靠 `k` 区分：
+		--   ① k>1 且 rel 为 nil ⇒ 相邻两节的静止方向**相同**，相对旋转是**单位阵**
+		--      ⇒ prev 必须是 `dirs[k-1]` 原样透传，**不能**退回静止方向 ——
+		--      否则父节的偏差传不下来，多节链就变成"只有第一节会动"（离线实测：
+		--      各节转角 7.66° / 0.00° / 0.00°）。
+		--   ② k==1 ⇒ 真的没有父节。
+		local rest, rel = restDirs[k], relDevs[k]
 		if k == 1 then
-			local s = item.segDirLocal[1]
-			-- 世界朝向锚定（`item.goalQ`）：首节目标方向用**绑定姿态**的锚点旋转来算，而不是当前动画旋转。
-			-- 效果：父级（上臂）怎么转，只带动这条链**平移**，不改变它的朝向 —— 布料感的关键。
-			-- 对应源数据里大袖子的 yaw/pitch 约束 flag（0x3d），头发（0x31）不启用。
-			local gqx, gqy, gqz, gqw = qx, qy, qz, qw
-			if item.goalQ ~= nil then
-				gqx, gqy, gqz, gqw = item.goalQ[1], item.goalQ[2], item.goalQ[3], item.goalQ[4]
-			end
-			prevX, prevY, prevZ = qrot(gqx, gqy, gqz, gqw, s[1], s[2], s[3])
-		else
+			prevX, prevY, prevZ = rest[1], rest[2], rest[3]
+		elseif rel == nil then
 			local d = item.dirs[k - 1]
 			prevX, prevY, prevZ = d[1], d[2], d[3]
+		else
+			local rqx, rqy, rqz, rqw = q_axis_angle(rel[1], rel[2], rel[3], rel[4])
+			local d = item.dirs[k - 1]
+			prevX, prevY, prevZ = qrot(rqx, rqy, rqz, rqw, d[1], d[2], d[3])
 		end
 		-- 分解轴（把 bind 时的正交基旋到当前朝向）
 		local lx, ly, lz = qrot(qx, qy, qz, qw, bone.frameLocal[1], bone.frameLocal[2], bone.frameLocal[3])
@@ -846,6 +1034,31 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 				end
 			else
 				nx, ny, nz = prevX, prevY, prevZ
+			end
+		end
+		-- ── 身体碰撞（球 / 胶囊）──────────────────────────────────────────
+		-- 顺序是**先推出身体、再恢复定长**：反过来的话"恢复定长"会把刚推出去的点
+		-- 又拉回身体里，等于白做。
+		-- 没有碰撞代理时这里是**纯空转**（`item.colliders == nil` 直接跳过），
+		-- 保证"没接触 ⇒ 与旧行为逐位相同"。
+		if item.colliders ~= nil and #item.colliders > 0 then
+			local tx0, ty0, tz0 = bx + gains.L * nx, by + gains.L * ny, bz + gains.L * nz
+			local px0, py0, pz0, collided, cnx, cny, cnz =
+				push_out_of_colliders(tx0, ty0, tz0, item.colliders)
+			if collided then
+				local vx, vy, vz = px0 - bx, py0 - by, pz0 - bz
+				local vlen = math.sqrt(vx * vx + vy * vy + vz * vz)
+				if vlen > 1e-9 then
+					nx, ny, nz = vx / vlen, vy / vlen, vz / vlen
+					-- 去掉**朝体内**的速度分量：法线朝外 ⇒ 朝内就是 -n 方向。
+					-- （别照抄"去掉朝墙外"的说法，符号正好相反。）
+					local inward = -(tip.vx * cnx + tip.vy * cny + tip.vz * cnz)
+					if inward > 0 then
+						tip.vx, tip.vy, tip.vz =
+							tip.vx + inward * cnx, tip.vy + inward * cny, tip.vz + inward * cnz
+					end
+					item.collisionHits = (item.collisionHits or 0) + 1
+				end
 			end
 		end
 		tip.px, tip.py, tip.pz = bx + gains.L * nx, by + gains.L * ny, bz + gains.L * nz
@@ -1095,6 +1308,97 @@ function M.anchor_name(sourceParentName, anchorMap)
 	local stripped = M.bone_name_aliases(sourceParentName)[2]
 	if stripped ~= nil then return anchorMap[stripped] end
 	return nil
+end
+
+-- ---------------------------------------------------------------------------
+-- 碰撞体（纯数学球 / 胶囊）
+--
+-- **原版 L4D2 的 jigglebone 没有任何碰撞**（Valve `jigglebones.cpp` 全文没有一次碰撞查询，
+-- 骨骼之间也不通讯）。所以这一层不是"还原 Source"，而是**补上用户明确要求的缺失能力**：
+-- "我们完全没做胶囊碰撞体……效果可以略微差一点，但起码不能有缺失"。
+--
+-- ⚠️ HD2 的 Lua **没有任何物理查询 API**：`PhysicsWorld` / `Actor` / `Joint` / `Mover` /
+-- `Cloth` / `Raycast` / `NavigationMesh` 整层被裁掉（`docs/hd2-armor-physics-research.md:453-457`，
+-- 另有 `HD2RuntimeArmorOverride` 全部 67 个 Lua 文件 `raycast|spherecast|PhysicsWorld` 零命中）。
+-- ⇒ 只能用**纯数字**的身体代理做位置投影，不能问引擎"这里有没有东西"。
+--
+-- 代理从 **HD2 原生骨名**生成（这些名字在真实 Unit 里确定存在），
+-- 半径是**拟定默认值**、按身形尺度缩放，不是实测人体尺寸。
+-- 缺骨就降级（端点缺一个 → 退化成以另一端为球心的球；两个都缺 → 记一笔跳过），
+-- **绝不静默把整层关掉**。
+-- ---------------------------------------------------------------------------
+M.default_colliders = {
+	{ "head", "neck", 0.100 },
+	{ "neck", "chest", 0.075 },
+	{ "hips", "chest", 0.130 },
+	{ "chest", "l_shoulder", 0.070 },
+	{ "chest", "r_shoulder", 0.070 },
+	{ "l_shoulder", "l_elbow", 0.060 },
+	{ "r_shoulder", "r_elbow", 0.060 },
+	{ "hips", "l_thigh", 0.085 },
+	{ "hips", "r_thigh", 0.085 },
+}
+
+--- 建碰撞代理表。
+--- <para>
+--- 半径按"身高"缩放：<c>scale = dist(hips → head) / 0.62</c>（0.62 m 是一个成年人
+--- 髋到头的大致距离）。这样同一套默认值在身材差异大的 mod 上不会过粗/过细。
+--- </para>
+---@param resolveNode fun(name:string): number|nil 骨名 → 节点下标（失败返回 nil）
+---@param options table|nil { colliderScale = <倍数>, colliderRadius = <统一半径覆盖>, colliders = <自己给的列表> }
+---@return table 代理数组：{ ax, ay, az, bx, by, bz, r, nodeA, nodeB }（前 7 项是每帧会变的数字）
+---@return table 统计 { requested, built, skipped, scale, sphereOnly }
+function M.build_colliders(resolveNode, options)
+	options = options or {}
+	local stats = { requested = 0, built = 0, skipped = 0, scale = 1, sphereOnly = 0 }
+	local spec = options.colliders or M.default_colliders
+	if options.colliders == false then return {}, stats end
+
+	-- 先解析所有需要的骨名（同一个名字只查一次）
+	local resolved, order = {}, {}
+	for _, entry in ipairs(spec) do
+		for slot = 1, 2 do
+			local name = entry[slot]
+			if type(name) == "string" and resolved[name] == nil then
+				order[#order + 1] = name
+				resolved[name] = resolveNode(name) or false
+			end
+		end
+	end
+
+	-- 身形尺度：髋 → 头。缺骨就退回 1.0（默认尺寸）。
+	local scale = 1.0
+	if options.colliderScale ~= nil then
+		scale = tonumber(options.colliderScale) or 1.0
+	elseif options.boneDistance then
+		local hips, head = options.boneDistance("hips"), options.boneDistance("head")
+		if hips ~= nil and head ~= nil then
+			local dx, dy, dz = head[1] - hips[1], head[2] - hips[2], head[3] - hips[3]
+			local span = math.sqrt(dx * dx + dy * dy + dz * dz)
+			if span > 0.2 then scale = math.max(0.6, math.min(1.6, span / 0.62)) end
+		end
+	end
+	stats.scale = scale
+
+	local colliders = {}
+	for _, entry in ipairs(spec) do
+		stats.requested = stats.requested + 1
+		local nodeA, nodeB = resolved[entry[1]], resolved[entry[2]]
+		local radius = (options.colliderRadius or entry[3]) * scale
+		if nodeA and nodeB then
+			colliders[#colliders + 1] = { 0, 0, 0, 0, 0, 0, radius, nodeA, nodeB }
+			stats.built = stats.built + 1
+		elseif nodeA or nodeB then
+			-- 退化成一个球：两个端点都设成活着的那一根
+			local only = nodeA or nodeB
+			colliders[#colliders + 1] = { 0, 0, 0, 0, 0, 0, radius * 1.15, only, only }
+			stats.built = stats.built + 1
+			stats.sphereOnly = stats.sphereOnly + 1
+		else
+			stats.skipped = stats.skipped + 1
+		end
+	end
+	return colliders, stats
 end
 
 --- 骨名的**候选写法**：带命名空间的原名，以及去掉命名空间后的名字。
@@ -1556,6 +1860,49 @@ function M.attach(S, unit, rig, options)
 			#chains, #chains * 2 * 3)
 	end
 
+	-- 碰撞代理：从 HD2 原生骨名生成球/胶囊。**每套护甲只建一次**，运行时每帧只更新端点位置。
+	-- 建不起来不是错误（缺骨就少几个胶囊），但必须**说出来**——"没有碰撞"和"碰撞建好了"
+	-- 在日志里不能长得一样。
+	--
+	-- ⚠️ 必须**跟着节点缓存一起缓存**：建代理要额外解析一批骨名、还要读两处世界位置，
+	-- 四名玩家穿同一套护甲时每次都重算就是把 attach 的成本又加回去
+	-- （离线实测：不缓存会让"复用节点缓存的节省率"从 ≥50% 掉到 38%）。
+	local colliderSpec, colliderStats = {}, nil
+	if options.colliders ~= false then
+		-- 用**独立的缓存键**（`<key>:colliders`）而不是塞进 `cachedChains`：
+		-- 链缓存的"有/无"本身是语义（决定走不走抽查路径），往里加字段会打乱那个判断。
+		local colliderKey = cacheKey ~= nil and (cacheKey .. ":colliders") or nil
+		local cachedColliders = colliderKey ~= nil and attachCache[colliderKey] or nil
+		if cachedColliders ~= nil then
+			colliderSpec, colliderStats = cachedColliders.spec, cachedColliders.stats
+			logger("[physbone] 复用同款护甲的碰撞代理（%d 个）", #colliderSpec)
+		else
+			local function boneDistance(name)
+				local node = resolveNode(name)
+				if node == nil then return nil end
+				local x, y, z = read_vec3(S, S.Unit.world_position(unit, node))
+				if x == nil then return nil end
+				return { x, y, z }
+			end
+			colliderSpec, colliderStats = M.build_colliders(resolveNode, {
+				colliders = options.colliders,
+				colliderScale = options.colliderScale,
+				colliderRadius = options.colliderRadius,
+				boneDistance = boneDistance,
+			})
+			if colliderKey ~= nil then
+				attachCache[colliderKey] = { spec = colliderSpec, stats = colliderStats }
+			end
+		end
+		if colliderStats ~= nil then
+			logger(string.format(
+				"[physbone] 碰撞代理：建起 %d/%d（球形退化 %d、缺骨跳过 %d，半径尺度 %.2f%s）",
+				colliderStats.built, colliderStats.requested, colliderStats.sphereOnly,
+				colliderStats.skipped, colliderStats.scale,
+				options.colliders == nil and "" or "，用了自定义列表"))
+		end
+	end
+
 	-- 用**下标循环**而不是 ipairs：ipairs 遇到 nil 洞就停，
 	-- 而 `#chains` 报表长度时可能仍然算上洞后面的元素 ——
 	-- 两者不一致的表现就是"日志说 2 条链，实际只处理 1 条"（2026-10-31 实测踩到）。
@@ -1911,6 +2258,10 @@ function M.attach(S, unit, rig, options)
 		jumpCooldown = options.jumpCooldown or 30,        -- 跳变后静默帧数
 		chainBudget = options.chainBudget or 0.55,        -- 整条链的累计偏角上限（rad，约 31°）
 		solver = options.solver or "tip",                -- P2：默认尖端点簧；"angle" 可切回旧核做 A/B
+		-- 碰撞代理：`nodeA/nodeB` 是节点下标，前 6 个数每帧由 update_tip 采样后填。
+		-- 采样没成功（节点读不到）时整层**不挂**，避免"半径 r、圆心在原点"的假碰撞把头发推到脚下。
+		colliderSpec = colliderSpec,
+		colliderStats = colliderStats,
 	}
 end   -- M.attach 的收尾（缺它会连 M.update 一起吞掉，§24 踩过）
 
@@ -2441,10 +2792,56 @@ function M.update_tip(session, dt, maxWrite)
 	-- 调用次数是唯一不会被环境噪声污染的口径。
 	local calls = 1
 	local perWrite = (M._fastWrite == true) and 2 or 5
+
+	-- ★ 碰撞代理端点：**每个不同的节点每帧只读一次**（head/chest 会被十几条链共用）。
+	-- 采样失败就把整层置 nil —— 宁可这帧没有碰撞，也不要用"圆心在原点"的假代理把头发推到脚下。
+	local colliderNums = nil
+	do
+		local spec = session.colliderSpec
+		if spec ~= nil and #spec > 0 then
+			local cache = session.colliderCache
+			if cache == nil then cache = {}; session.colliderCache = cache end
+			local nums = session.colliderNums
+			if nums == nil then nums = {}; session.colliderNums = nums end
+			local okAll = true
+			for index = 1, #spec do
+				local entry = spec[index]
+				local slot = nums[index]
+				if slot == nil then
+					slot = { 0, 0, 0, 0, 0, 0, entry[7] }
+					nums[index] = slot
+				end
+				slot[7] = entry[7]
+				for which = 0, 1 do
+					local node = entry[8 + which]
+					local hit = cache[node]
+					if hit == nil or hit[4] ~= epoch then
+						local x, y, z = read_vec3(S, S.Unit.world_position(unit, node))
+						calls = calls + 2
+						if x == nil then
+							okAll = false
+							break
+						end
+						hit = hit or {}
+						hit[1], hit[2], hit[3], hit[4] = x, y, z, epoch
+						cache[node] = hit
+					end
+					local at = 1 + which * 3
+					slot[at], slot[at + 1], slot[at + 2] = hit[1], hit[2], hit[3]
+				end
+				if not okAll then break end
+			end
+			if okAll then colliderNums = nums end
+		end
+	end
+
 	for si = 1, itemCount do
 		local item = items[si]
 		local tip = item.tip
 		if not item.disabled and tip ~= nil then
+			-- 碰撞代理是 per-Unit 的，所有链共用一个数组；这里只是把引用挂上去。
+			-- 采样失败（colliderNums == nil）就置 nil ⇒ step_tip 里整段空转，行为回到旧版。
+			item.colliders = colliderNums
 			local anchorNode = item.anchorNode
 			local cached = anchors[anchorNode]
 			if cached == nil then
