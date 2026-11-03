@@ -207,7 +207,23 @@ public sealed class CustomModelConversionService(StoragePaths paths, IModInforma
 			await File.WriteAllTextAsync(definition, JsonSerializer.Serialize(plan.Model, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), token);
 			// Re-read after generation, preserving edits made while the writer was running.
 			var latest = await registry.ReadSnapshotAsync(token);
-			await registry.SaveWorkspaceAsync(latest.Document with { ModelDefinitions = latest.Document.ModelDefinitions.Append(plan.Model).ToArray() }, token);
+			// **同 key 就替换，不追加。** 追加会让"重跑同一次转换"在工作区里堆出同名的多份记录：
+			// 界面上是两个一模一样的素体，用户不知道哪个在起作用，而删掉其中一个之后
+			// 剩下的那份持有同一批 unit —— 归属与内容都对不上。
+			var replaced = false;
+			var merged = new RuntimeArmorRegistryModel[latest.Document.ModelDefinitions.Count];
+			for (var index = 0; index < merged.Length; index++)
+			{
+				var existing = latest.Document.ModelDefinitions[index];
+				if (string.Equals(existing.Key, plan.Model.Key, StringComparison.Ordinal))
+				{
+					merged[index] = plan.Model;
+					replaced = true;
+				}
+				else merged[index] = existing;
+			}
+			var definitions = replaced ? merged : [.. merged, plan.Model];
+			await registry.SaveWorkspaceAsync(latest.Document with { ModelDefinitions = definitions }, token);
 			registered = true;
 			return new(plan.Model, output, definition);
 		}

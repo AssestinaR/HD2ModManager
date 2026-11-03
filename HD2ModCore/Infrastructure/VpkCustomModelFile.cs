@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -12,7 +13,7 @@ namespace HD2ModCore.Infrastructure;
 /// </summary>
 public static class VpkCustomModelFile
 {
-	/// <summary>文件名（写在 Mod 根目录，与 <c>vpk2patch/</c> 平级）。</summary>
+	/// <summary>文件名（写在 Mod 目录里，实测位于 <c>vpk2patch/</c> 下；扫描是递归的）。</summary>
 	public const string FileName = "custom-model.json";
 
 	/// <summary>读一个 Mod 目录登记的素体 key；没有或读不懂返回 <c>null</c>。</summary>
@@ -96,5 +97,32 @@ public static class VpkCustomModelFile
 		{
 			return null;
 		}
+	}
+
+	/// <summary>
+	/// 从一批素体定义里挑出<b>没有 Mod 归属</b>的那些（纯函数，不碰磁盘）。
+	/// <para>
+	/// <b>为什么要有这一步。</b>素体不是独立数据，它是某个 Mod 的转换产物：
+	/// 那套 Unit 只有跟着那个 Mod 部署才有意义。所以它的生命周期必须与 Mod 绑定 ——
+	/// Mod 被删掉之后，注册表里留下的记录只是一堆指向不存在 Unit 的指针，
+	/// 用户看到的却是"护甲映射页里还挂着一个素体，选它却什么都不发生"。
+	/// </para>
+	/// <para>
+	/// <b>判据只能是"库里有没有那份 <c>custom-model.json</c>"。</b>注册表里没有"归属"这一维，
+	/// 而那份文件就躺在 Mod 目录里、随 Mod 一起删——它是唯一不会漂移的事实来源。
+	/// 反过来，也正因为没有"归属"字段，我们<b>无法</b>区分"Mod 被删了"和"这个素体压根没被导入"，
+	/// 于是两者一律按孤儿处理；这正好符合产品口径（见 notes/backlog-20261104.md 的 P2）：
+	/// 素体只允许由"一键转为自定义素体"或"导入 VPK 自动绑定"生成，两种都会落成 Mod。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyList<RuntimeArmorRegistryModel> FindOrphans(
+		IReadOnlyList<RuntimeArmorRegistryModel> models,
+		IReadOnlyDictionary<string, string> owners)
+	{
+		ArgumentNullException.ThrowIfNull(models);
+		ArgumentNullException.ThrowIfNull(owners);
+		return models
+			.Where(model => !owners.ContainsKey(model.Key))
+			.ToArray();
 	}
 }

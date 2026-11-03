@@ -117,9 +117,14 @@ CLI 仅原子替换 `armor-registry.protocol`，不会写 Lua 拥有的状态或
 
 管理器顶栏的护甲映射页使用资产索引中的护甲名称选择目标与视觉来源，
 并显示 Lua 是否已确认当前 revision；用户不需要手工查询 Item ID。
-自定义素体及组件启用状态保存在当前 Mod 库的
-`.hd2modmanager/armor-registry.workspace.json`。点击“应用”时，管理器
-按实际部署的 Unit 编译运行时协议到上述 C 盘目录；Lua 只消费编译结果。
+**自定义素体属于某个 Mod，不是独立的注册表对象**：它只由两条路径产生
+（Mod 详情页的「一键转为自定义素体」、导入 VPK 时的自动登记），两条都会落成
+一个 Mod 目录，并在其中写入 `custom-model.json` 作为归属凭证。
+注册表（当前 Mod 库的 `.hd2modmanager/armor-registry.workspace.json`）
+里那份记录只是它的**投影**：没有 Mod 归属的素体会被清理，删掉 Mod 时
+对应的素体与引用它的映射一并删除（见 `CustomModelOwnershipService`）。
+页面里只保留改名、启用/停用组件这类编辑，不再提供"新增素体"。
+点击“应用”时，管理器按实际部署的 Unit 编译运行时协议到上述 C 盘目录；Lua 只消费编译结果。
 GUI 与 CLI 使用同一把 `.manager.lock`、同一份指纹漂移检查和原子写入流程。
 
 `src/armor_registry_composition.lua` 的默认 `full` 模式可以按视觉来源重组

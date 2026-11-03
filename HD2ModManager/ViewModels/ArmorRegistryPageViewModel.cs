@@ -138,7 +138,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			_ => ApplyAsync(),
 			_ => !IsBusy && !applyCooldownActive);
 		OpenRegistryFolderCommand = new RelayCommand(OpenRegistryFolder);
-		AddCustomModelCommand = new RelayCommand(_ => AddCustomModel(), _ => !IsBusy);
 		RemoveCustomModelCommand = new RelayCommand(
 			parameter => RemoveCustomModel(parameter as RuntimeArmorModelEditorViewModel),
 			_ => !IsBusy);
@@ -146,8 +145,15 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			_ => IsComponentEditorCustomModel && !IsBusy);
 		ConfirmAddComponentRowCommand = new RelayCommand(_ => AddComponentRow(),
 			_ => IsComponentEditorCustomModel && ComponentEditorEditable && !IsBusy);
-		PageActions.Add(new PageActionViewModel(PageActionKind.ArmorCreateModel, "新增自定义素体", AddCustomModelCommand,
-			tone: PageActionTone.Primary, order: 10));
+		// **没有"新增自定义素体"这个动作。**
+		//
+		// 素体不是一个能凭空造的对象：它是一套**已存在**的 Unit（来自某个 Mod 的 patch）。
+		// 手工新建只能编造 unit id —— 那些 id 没有任何 patch 提供，运行时按它们去找模型
+		// 一个也找不到，表现为"素体挂在列表里，选它什么都不发生"。
+		// 所以素体只有两条产生路径，都由转换器写 `custom-model.json` 登记：
+		//   · Mod 详情页的「一键转为自定义素体」
+		//   · 导入 VPK（vpk2patch 转换时）
+		// 归属也由那份文件决定，删掉 Mod 就一起清掉（见 CustomModelOwnershipService）。
 		PageActions.Add(new PageActionViewModel(PageActionKind.OpenFolder, "打开运行时目录", OpenRegistryFolderCommand,
 			order: 20));
 		PageActions.Add(new PageActionViewModel(PageActionKind.Refresh, "刷新", RefreshCommand,
@@ -402,7 +408,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public AsyncRelayCommand RefreshCommand { get; }
 	public AsyncRelayCommand ApplyCommand { get; }
 	public RelayCommand OpenRegistryFolderCommand { get; }
-	public RelayCommand AddCustomModelCommand { get; }
 	public RelayCommand RemoveCustomModelCommand { get; }
 	public RelayCommand AddComponentPieceCommand { get; }
 	public RelayCommand ConfirmAddComponentRowCommand { get; }
@@ -482,6 +487,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		IsBusy = true;
 		try
 		{
+			// 先对一次账：素体是某个 Mod 的产物，Mod 没了它就不该还挂在列表里
+			// （见 CustomModelOwnershipService）。有未保存改动时**跳过**——那份旧文档
+			// 稍后会被整份写回，现在删掉的记录会被它复活，删了也没意义；
+			// 等那次保存落盘之后，下一次刷新自然会对上。
+			if (!HasChanges) await PruneOrphanCustomModelsAsync(isWarmUp).ConfigureAwait(true);
+
 			var core = await Task.Run(LoadCatalogCoreAsync).ConfigureAwait(true);
 			if (core is not { } loaded) return;
 
@@ -528,6 +539,40 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		OnPropertyChanged(nameof(ProvidersEmptyMessage));
 		OnPropertyChanged(nameof(AvailableEmptyMessage));
+	}
+
+	/// <summary>
+	/// 清掉"没有 Mod 归属"的自定义素体（见 <see cref="CustomModelOwnershipService"/>）。
+	/// <para>
+	/// 预热阶段（<paramref name="isWarmUp"/>）照样清理，但**不弹提示**：那时用户还没打开这个页面，
+	/// 弹一条"已清理 N 个素体"只会让人困惑（他只会在日志里看到理由）。
+	/// </para>
+	/// </summary>
+	private async Task<CustomModelPruneReport> PruneOrphanCustomModelsAsync(bool isWarmUp)
+	{
+		try
+		{
+			var ownership = new CustomModelOwnershipService(
+				service, SettingsService.CreateStoragePaths().ModsDirectory);
+			var report = await ownership.PruneAsync().ConfigureAwait(true);
+			// 日志照记，哪怕预热阶段不弹提示：删掉的是注册表记录，事后要能查出"它什么时候没的"。
+			if (report.Describe() is { } message)
+			{
+				LogService.Info("护甲注册清理素体：" + message);
+				if (!isWarmUp)
+					notifications.Show(message, NotificationLevel.Warning, TimeSpan.FromSeconds(16), "护甲注册");
+			}
+			return report;
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or InvalidDataException
+			or InvalidOperationException)
+		{
+			// 对账失败不该让页面打不开：页面本来就能只读地展示现状。
+			LogService.Warn($"清理没有 Mod 归属的素体失败：{exception.Message}");
+			return CustomModelPruneReport.Empty;
+		}
 	}
 
 	// 读取目录与快照：纯 IO + 纯投影，不触碰任何绑定到视图的集合，因此可以在线程池上执行。
@@ -1735,28 +1780,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RecomputeHasChanges();
 	}
 
-	private void AddCustomModel()
-	{
-		var used = CustomModels.Select(model => model.Key)
-			.ToHashSet(StringComparer.OrdinalIgnoreCase);
-		var index = 1;
-		while (used.Contains($"custom-{index}")) index++;
-		var key = $"custom-{index}";
-		var model = new RuntimeArmorRegistryModel(
-			key,
-			null,
-			CreateDefaultCustomModelPieces(),
-			key);
-		var editor = new RuntimeArmorModelEditorViewModel(model, MarkModelDefinitionsDirty);
-		CustomModels.Add(editor);
-		Choices[SyntheticModelItemId(key)] = RuntimeArmorChoiceViewModel.CustomModel(
-			SyntheticModelItemId(key), key, key);
-		RebuildProjections();
-		MarkModelDefinitionsDirty();
-		OnPropertyChanged(nameof(HasCustomModels));
-		OnPropertyChanged(nameof(CustomModelCount));
-	}
-
 	private async Task RefreshAssetLabelsAfterModelDeletionAsync()
 	{
 		try
@@ -1808,24 +1831,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(HasCustomModels));
 		OnPropertyChanged(nameof(CustomModelCount));
 		_ = RefreshAssetLabelsAfterModelDeletionAsync();
-	}
-
-	private static IReadOnlyList<RuntimeArmorRegistryModelPiece> CreateDefaultCustomModelPieces()
-	{
-		var slots = new[] { 2u, 6u, 7u, 3u, 4u, 5u };
-		var pieces = new List<RuntimeArmorRegistryModelPiece>(slots.Length * 2);
-		var seed = (ulong)DateTime.UtcNow.Ticks & 0xfffffffUL;
-		var counter = 0UL;
-		foreach (var slot in slots)
-		{
-			foreach (var body in new[] { 0u, 1u })
-			{
-				var unit = (seed << 20 | counter++).ToString("x16", CultureInfo.InvariantCulture);
-				pieces.Add(new RuntimeArmorRegistryModelPiece(
-					body, unit, slot, 0, 0, true, true));
-			}
-		}
-		return pieces;
 	}
 
 	private static uint SyntheticModelItemId(string key)

@@ -12,7 +12,8 @@
             <TextBlock Text="头盔" VerticalAlignment="Center" Margin="12,0,8,0"/>
             <ComboBox Width="200" Height="32" VerticalAlignment="Center" Style="{StaticResource AppComboBox}"
                       ItemsSource="{Binding Operation.HelmetSources}" DisplayMemberPath="DisplayName" SelectedItem="{Binding Operation.SelectedHelmet}"/>
-            <CheckBox Content="自动导入 Mod 库" VerticalAlignment="Center" Style="{StaticResource AppCheckBox}" Margin="12,0,0,0" IsChecked="{Binding Operation.ImportToLibrary}"/>
+            <TextBlock Text="生成后自动作为新 Mod 导入库：素体依附于该 Mod，删除 Mod 时一并删除"
+                       VerticalAlignment="Center" Margin="12,0,0,0" Opacity="0.75" MaxWidth="300" TextWrapping="Wrap"/>
         </WrapPanel>
         <StackPanel Visibility="{Binding IsOutput, Converter={StaticResource BoolToVis}}">
             <StackPanel Orientation="Horizontal">

@@ -1105,6 +1105,13 @@ namespace HD2ModManager.Services
                 SnapshotChanged?.Invoke(this, EventArgs.Empty);
                 foreach (var failure in deletion.Failures)
                     LogService.Error($"Mod 删除失败：路径={failure.RelativePath}，原因={failure.Detail}");
+
+                // **素体是 Mod 的产物：Mod 没了，它也必须消失。**
+                //
+                // 放在这里而不是"删除按钮旁边"：删库有好几条入口（单个、多选、清空），
+                // 而这是它们唯一的汇合点。做完之后再抛一次内容事实变更，护甲映射页下次
+                // 刷新就看不到那个素体了 —— 否则用户会面对"列表里还挂着，选了却什么都不发生"。
+                await PruneOrphanCustomModelsAsync(cancellationToken).ConfigureAwait(false);
                 return deletion;
             }
             finally { _libraryMutationGate.Release(); }
@@ -1818,6 +1825,38 @@ namespace HD2ModManager.Services
 
         private static ModNodeId? ParseNodeId(string? value)
             => TryParseNodeId(value, out var nodeId) ? nodeId : null;
+
+        /// <summary>
+        /// 删完 Mod 之后清理失去归属的自定义素体（见 <see cref="CustomModelOwnershipService"/>）。
+        /// <para>
+        /// <b>只在删除路径上调它，不要挪到别处。</b>它对"没有 <c>custom-model.json</c> 的素体"
+        /// 是无差别删除的，前提是调用方刚确认过库真的变了；在其它时机调用等于拿一次
+        /// 磁盘抖动去换用户的数据。
+        /// </para>
+        /// <para>
+        /// <b>永不抛。</b>素体清理失败不该让"Mod 已删除"这件事对外变成失败 ——
+        /// 那会让用户以为 Mod 还在。失败只记日志，下次打开护甲映射页还会再对一次。
+        /// </para>
+        /// </summary>
+        private async Task PruneOrphanCustomModelsAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                var ownership = new CustomModelOwnershipService(
+                    CoreServices.CreateRuntimeArmorRegistryService(_paths),
+                    _paths.ModsDirectory);
+                var report = await ownership.PruneAsync(cancellationToken).ConfigureAwait(false);
+                if (!report.IsEmpty)
+                    LogService.Info("删除 Mod 后清理素体：" + report.Describe());
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidDataException
+                or InvalidOperationException)
+            {
+                LogService.Warn($"删除 Mod 后清理素体失败（不影响删除本身）：{exception.Message}");
+            }
+        }
 
         private static LibrarySnapshot EmptySnapshot() => new(
             Version: 1,

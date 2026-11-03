@@ -24,7 +24,6 @@ public enum PageActionKind
     Export,
     CreateLogicalMod,
     OpenFolder,
-    ArmorCreateModel,
     // 详情页
     Table,
     Image,
@@ -60,7 +59,6 @@ internal static class PageActionIconCatalog
     {
         PageActionKind.CreateProfile => "ActionIcon.Plus",
         PageActionKind.Import => "ActionIcon.Plus",
-        PageActionKind.ArmorCreateModel => "ActionIcon.Plus",
         PageActionKind.SwitchProfile => "ActionIcon.Switch",
         PageActionKind.ActivateProfile => "ActionIcon.Check",
         PageActionKind.ScheduleDeployment => "ActionIcon.Check",

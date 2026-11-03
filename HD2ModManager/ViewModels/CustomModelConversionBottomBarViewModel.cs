@@ -28,8 +28,6 @@ public sealed class CustomModelConversionBottomBarViewModel : BaseViewModel
 	public string Name { get => name; set { if (SetField(ref name, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
 	public string OutputDirectory { get => outputDirectory; set { if (SetField(ref outputDirectory, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
 	public string Status { get => status; set => SetField(ref status, value); }
-	private bool importToLibrary;
-	public bool ImportToLibrary { get => importToLibrary; set => SetField(ref importToLibrary, value); }
 	public bool IsRunning { get => isRunning; private set { SetField(ref isRunning, value); GenerateCommand.RaiseCanExecuteChanged(); OnPropertyChanged(nameof(CanEdit)); } }
 	public bool CanEdit => !IsRunning;
 	public BulkObservableCollection<CustomModelSourceOption> ArmorSources { get; } = [];
