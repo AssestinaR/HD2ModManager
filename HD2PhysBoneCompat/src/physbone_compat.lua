@@ -961,20 +961,33 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 				if t.ready then t.px, t.py, t.pz = t.px + dx, t.py + dy, t.pz + dz end
 			end
 			-- 锚点**线加速度**（伪力）：身体加速 / 转向 / 急停时把布料往后甩。
-			-- 这一条替代了几何吸附，而且**与帧率无关**（吸附量 ∝ v·dt，帧率越低甩得越狠）。
+			--
+			-- ⚠️ 这一段**绝不能**用原始二阶差分 `(Δpos/dt − 上次Δpos/dt)/dt`。
+			-- 二阶差分把采样噪声与帧时不稳放大约 1/dt² 倍，离线实测（70 Hz）：
+			--   匀速 + 1 mm 采样抖动      ⇒ 14.7 m/s²（1.5 g）
+			--   匀速 + 帧时 ±40%          ⇒ **4271 m/s²（435 g）**
+			-- 实机日志里 dt 在 0.0093~0.0231 之间跳（±40%），而锚点是每帧重读的
+			-- ⇒ 每帧都会算出几千 m/s² 的随机方向力，实机表现就是"布料到处乱飞"。
+			--
+			-- 改成**一阶低通后的速度**再求加速度：a = α·(v − v̄)/dt。
+			-- 同样条件下最坏只有 2.8 m/s²（0.3 g），而真实的起步/急停仍能给出接近 1 g。
+			-- 上限再夹到 8.24 m/s²（≈0.84 g）：比"走路/转向"该有的量级略宽，但远小于重力 6 倍那种荒谬值。
 			local dtSafe = (dt > 1e-6) and dt or (1 / 70)
 			local vx2, vy2, vz2 = dx / dtSafe, dy / dtSafe, dz / dtSafe
-			local pvx = item.anchorVX
-			if pvx ~= nil then
-				local axx = (vx2 - pvx) / dtSafe
-				local ayy = (vy2 - item.anchorVY) / dtSafe
-				local azz = (vz2 - item.anchorVZ) / dtSafe
+			local vbx, vby, vbz = item.anchorVX, item.anchorVY, item.anchorVZ
+			if vbx ~= nil then
+				local alpha = 0.12
+				local axx = alpha * (vx2 - vbx) / dtSafe
+				local ayy = alpha * (vy2 - vby) / dtSafe
+				local azz = alpha * (vz2 - vbz) / dtSafe
 				local magnitude = math.sqrt(axx * axx + ayy * ayy + azz * azz)
-				if magnitude > 60 then
-					local shrink = 60 / magnitude
+				local cap = 8.24
+				if magnitude > cap then
+					local shrink = cap / magnitude
 					axx, ayy, azz = axx * shrink, ayy * shrink, azz * shrink
 				end
 				item.anchorAX, item.anchorAY, item.anchorAZ = axx, ayy, azz
+				vx2, vy2, vz2 = vbx + alpha * (vx2 - vbx), vby + alpha * (vy2 - vby), vbz + alpha * (vz2 - vbz)
 			end
 			item.anchorVX, item.anchorVY, item.anchorVZ = vx2, vy2, vz2
 		else
