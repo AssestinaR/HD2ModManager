@@ -18,9 +18,11 @@ internal static class CliTestConsole
 	public static async Task<CliCommandCapture> RunCapturedAsync(params string[] args)
 	{
 		await Gate.WaitAsync().ConfigureAwait(false);
-		// CLI 测试跑的是完整管线；这里显式指定需要运行时 Lua 的模式，让"默认值"与
-		// "测试"互不干扰。
+		// CLI 测试跑的是完整管线；这里显式重置静态设置，让用例之间不互相污染。
+		// （真正的值随后由 CliWorkspace.Open 从 settings.json 里读出来覆盖。）
+		HD2ModCore.Infrastructure.LuaDeploymentService.BuiltInLuaEnabled = true;
 		HD2ModCore.Infrastructure.LuaDeploymentService.MappingMode = HD2ModCore.Domain.ArmorMappingModes.Default;
+		HD2ModCore.Infrastructure.LuaDeploymentService.PhysicsMode = HD2ModCore.Domain.PhysicsModes.Default;
 		var originalOut = Console.Out;
 		var originalError = Console.Error;
 		using var output = new StringWriter();

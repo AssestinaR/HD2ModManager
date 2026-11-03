@@ -22,6 +22,17 @@ public sealed record CliManagerSettings(
 	/// 此时按旧开关推导，保证 CLI 与 GUI 对同一份设置得出相同结论。
 	/// </summary>
 	public int? ArmorMappingMode { get; init; }
+
+	/// <summary>
+	/// 总开关「启用管理器内置 lua 类功能」。null = 从没存过 ⇒ 按默认开，
+	/// 与 <c>SettingsService.GetBuiltInLuaEnabled</c> 同一口径。
+	/// </summary>
+	public bool? BuiltInLuaEnabled { get; init; }
+
+	/// <summary>
+	/// 物理骨骼模式（<see cref="Domain.PhysicsMode"/> 的整数值）。null = 尚未设置 ⇒ 按默认值。
+	/// </summary>
+	public int? PhysicsMode { get; init; }
 }
 
 public sealed record CliLibraryState(
@@ -93,14 +104,25 @@ public sealed class CliWorkspace
 
 		var libraryRoot = ResolveLibraryRoot(options.Library, managerRoot, settings, issues);
 		var gameDataRoot = ResolveStoredPath(options.GameData ?? settings?.GameDataFolder, managerRoot);
-		// The GUI arms this switch at startup, so the CLI has to read the same file
-		// before planning; otherwise `deploy plan` would silently drop the Lua patch
-		// that the GUI would have produced for the identical profile.
-		LuaDeploymentService.MappingMode = settings?.ArmorMappingMode is int storedMode
-			? HD2ModCore.Domain.ArmorMappingModes.Normalize(storedMode)
-			: settings?.DeployLuaMods == false
-				? HD2ModCore.Domain.ArmorMappingMode.ExternalLuaEntry
-				: HD2ModCore.Domain.ArmorMappingModes.Default;
+		// The GUI arms these switches at startup (SettingsService.ApplyToLuaDeployment), so the
+		// CLI has to read the same file before planning; otherwise `deploy plan` would silently
+		// drop (or invent) the Lua patches the GUI would have produced for the identical profile.
+		//
+		// 三项都要读，少读一项那一项就停在静态默认值上——2026-11-01 实机就是这么丢掉整轮物理的。
+		LuaDeploymentService.BuiltInLuaEnabled = settings?.BuiltInLuaEnabled ?? true;
+		var builtInLuaEnabled = LuaDeploymentService.BuiltInLuaEnabled;
+		LuaDeploymentService.MappingMode = ArmorMappingModes.Normalize(
+			(int)(settings?.ArmorMappingMode is int storedMode
+				? ArmorMappingModes.Normalize(storedMode)
+				: settings?.DeployLuaMods == false
+					? ArmorMappingMode.ExternalLuaEntry
+					: ArmorMappingModes.Default),
+			builtInLuaEnabled);
+		LuaDeploymentService.PhysicsMode = PhysicsModes.Normalize(
+			settings?.PhysicsMode is int storedPhysics && Enum.IsDefined(typeof(PhysicsMode), storedPhysics)
+				? storedPhysics
+				: (int)PhysicsModes.Default,
+			builtInLuaEnabled);
 		return new CliWorkspace(managerRoot, settingsPath, settings, libraryRoot, gameDataRoot, issues);
 	}
 

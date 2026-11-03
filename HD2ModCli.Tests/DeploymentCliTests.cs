@@ -282,7 +282,16 @@ public sealed class DeploymentCliTests
 			await File.WriteAllTextAsync(Path.Combine(gameRoot, "bin", "helldivers2.exe"), string.Empty);
 			await File.WriteAllTextAsync(
 				Path.Combine(manager, "settings.json"),
-				JsonSerializer.Serialize(new { modLibraryFolder = library, gameDataFolder = gameData }));
+				JsonSerializer.Serialize(new
+				{
+					modLibraryFolder = library,
+					gameDataFolder = gameData,
+					// 这些用例描述的是"一个第三方 Lua 补丁怎么被原样装进去"，与映射/物理模式无关。
+					// 显式钉住两个模式，别让产品默认值变化（2026-11-03 物理默认改成「独占 boot」）
+					// 把它们带到"准备物理运行时"那条路上——那条路要真实的游戏 boot 归档。
+					armorMappingMode = (int)ArmorMappingMode.ExclusiveLuaEntry,
+					physicsMode = (int)PhysicsMode.Off,
+				}));
 
 			var nodes = new Dictionary<ModNodeId, ModNode>();
 			var entries = new List<ProfileEntry>();

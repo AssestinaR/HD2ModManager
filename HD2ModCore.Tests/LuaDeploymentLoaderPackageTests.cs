@@ -29,7 +29,13 @@ public sealed class LuaDeploymentLoaderPackageTests
 		"-- SIBLING-RESOURCE-CONTENT the loader's own core module\n"
 		+ "return function() end\n";
 
-	public LuaDeploymentLoaderPackageTests() => LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+	// 物理显式关掉：这些用例只关心"第三方 Lua 包原样部署"，而物理模式的默认值
+	// （2026-11-03 起是「独占 boot」）会往 boot 里塞物理运行时，把被测的入口争用搅乱。
+	public LuaDeploymentLoaderPackageTests()
+	{
+		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
+	}
 
 	[Fact]
 	public async Task Plan_SingleLoaderPackage_IsDeployedUnchangedWithoutErrors()

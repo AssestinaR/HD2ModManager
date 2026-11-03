@@ -26,7 +26,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
 
 	/// <summary>
-	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingMode.ExclusiveLuaEntry"/>。
+	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingMode.TrueMapping"/>（不投放 Lua）。
 	///
 	/// 只有需要运行时 Lua 的模式才会投放护甲映射补丁：独占入口写 boot，
 	/// 外置入口走独立补丁；真映射模式完全不投放 Lua，改由注册表数据承载。

@@ -29,7 +29,14 @@ public enum ArmorMappingMode
 
 public static class ArmorMappingModes
 {
-	public const ArmorMappingMode Default = ArmorMappingMode.ExclusiveLuaEntry;
+	/// <summary>
+	/// 默认真映射模式。
+	///
+	/// 理由：真映射不投放任何 Lua 运行时，显存占用最低，也不依赖 boot 入口，
+	/// 是三条路里副作用最小的一条；代价只是"改映射要重启游戏"。
+	/// 需要热切换的人自己切到兼容模式即可（设置页两个兼容档都在）。
+	/// </summary>
+	public const ArmorMappingMode Default = ArmorMappingMode.TrueMapping;
 
 	/// <summary>该模式是否需要投放 Lua 运行时。</summary>
 	public static bool UsesRuntimeLua(this ArmorMappingMode mode)

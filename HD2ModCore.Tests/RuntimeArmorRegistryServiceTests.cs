@@ -19,8 +19,11 @@ public sealed class RuntimeArmorRegistryServiceTests
 {
 	public RuntimeArmorRegistryServiceTests()
 	{
-		LuaDeploymentService.MappingMode = ArmorMappingModes.Default;
-		LuaDeploymentService.PhysicsMode = PhysicsModes.Default;
+		// 显式钉住，不跟随产品默认值：默认值会变（2026-11-03 起映射默认「真映射」、
+		// 物理默认「独占 boot」），而这里的用例描述的是**某一种模式下的产物形态**，
+		// 跟着默认值漂移只会让失败信息看起来像功能坏了。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.ExclusiveLuaEntry;
+		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
 	}
 
 	[Fact]

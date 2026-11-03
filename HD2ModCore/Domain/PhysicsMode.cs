@@ -30,6 +30,8 @@ public static class PhysicsModes
 	/// <summary>
 	/// 默认关闭。物理是"额外效果"，默认不替用户开启——想用的人主动选，
 	/// 这样发布初版时不会突然给所有人加一份运行时开销。
+	/// （2026-11-03 试过改成「独占 boot」，当天就改回来了：物理要读游戏自己的
+	/// boot 归档，默认开等于把一个必然失败的分支变成默认路径。）
 	/// </summary>
 	public const PhysicsMode Default = PhysicsMode.Off;
 
