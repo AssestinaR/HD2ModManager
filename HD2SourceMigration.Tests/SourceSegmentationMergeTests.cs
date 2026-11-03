@@ -83,6 +83,43 @@ public sealed class SourceSegmentationMergeTests
 			});
 		}
 
+		/// <summary>一个三角形一根骨：用来造"同一组里横跨多个部位"的几何。</summary>
+		public void AddPartMixed(string bodyPart, int bodyPartIndex, string model, int modelIndex, params int[] bonesPerTriangle)
+		{
+			var vertexStart = _vertices.Count;
+			var triangleStart = _triangles.Count;
+			for (var t = 0; t < bonesPerTriangle.Length; t++)
+			{
+				var bone = bonesPerTriangle[t];
+				var baseIndex = _vertices.Count;
+				for (var corner = 0; corner < 3; corner++)
+				{
+					_vertices.Add(new SourceVertex(
+						new Vec3(corner, t, 0),
+						new Vec3(0, 0, 1),
+						0,
+						0,
+						new SourceVertexWeight(bone, 1),
+						new SourceVertexWeight(bone, 0),
+						new SourceVertexWeight(bone, 0)));
+				}
+
+				_triangles.Add(new SourceTriangle(baseIndex, baseIndex + 1, baseIndex + 2, 0));
+			}
+
+			_parts.Add(new SourceGeometryPart(
+				bodyPart,
+				model,
+				vertexStart,
+				_vertices.Count - vertexStart,
+				triangleStart,
+				bonesPerTriangle.Length)
+			{
+				BodyPartIndex = bodyPartIndex,
+				ModelIndex = modelIndex,
+			});
+		}
+
 		public SourceGeometry Build() => new(_vertices, _triangles, _parts);
 	}
 
@@ -200,6 +237,66 @@ public sealed class SourceSegmentationMergeTests
 		Assert.Equal(split.BodyParts.Select(group => group.Region).OrderBy(region => region),
 			merge.Groups.Select(group => group.Region).OrderBy(region => region));
 		Assert.Empty(merge.Notes);
+	}
+
+	/// <summary>
+	/// **可切换部件横跨多个部位时，必须按三角形归位，而不是整组算一个部位。**
+	/// <para>
+	/// 固定 bodypart 在 <see cref="SourceSegmentation.Split"/> 里已经按骨骼切好了；
+	/// 但**可切换部件（多变体 bodypart）**整块只带一个"主导区域"。
+	/// 实测事故（2026-11-03）<c>l4n silent_code_shinano信浓</c>：26 个 bodypart 是**整套衣服**
+	/// （素体 / bodyacc / 手套 / 袖套 / 高跟鞋…），没有"左右腿"这种 bodypart，
+	/// 于是 26 个组只落进 5 个槽，**右腿和右臂一个 Unit 都没有** —— 上机就是"身体转换不出来"。
+	/// </para>
+	/// <para>
+	/// 这里用一个"多变体 bodypart，其默认变体的三角形分属左右大腿"的几何钉住它：
+	/// 传 <c>vertexRegions</c> 时分出两个部位，不传时保留旧行为（一个部位）。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void SwitchablePartTrianglesArePlacedByTheirOwnRegionNotTheDominantOne()
+	{
+		// 骨架：胯 + 左右大腿（地标骨名见 BodyRegionResolver）。
+		var rig = new Hd2Rig(
+		[
+			new Hd2RigBone(0, "hips", -1, Mat4.Identity),
+			new Hd2RigBone(1, "l_thigh", 0, Mat4.Identity),
+			new Hd2RigBone(2, "r_thigh", 0, Mat4.Identity),
+		]);
+		var resolved = new Dictionary<int, int> { [0] = 0, [1] = 1, [2] = 2 };
+
+		var builder = new GeometryBuilder();
+		// 两个变体 → 这个 bodypart 会被判成"可切换部件"。
+		// 默认变体（modelIndex 更小）同时含左右大腿的三角形；另一个变体只占一个三角形。
+		builder.AddPartMixed("garment", 0, "g0.smd", 0, 1, 1, 2, 2);
+		builder.AddPartMixed("garment", 0, "g1.smd", 1, 1);
+		var geometry = builder.Build();
+
+		var split = SourceSegmentation.Split(
+			Model(BodyPart("garment", "g0.smd", "g1.smd")), geometry, new BodyRegionResolver(rig), resolved);
+		Assert.Empty(split.BodyParts);          // 多变体 → 不是身体本体
+		Assert.Equal(2, split.Components.Count());          // 两个变体各成一个 group
+		var chosen = split.Components.Single(group => group.SourceModelIndex == 0);
+		Assert.Equal(4, chosen.TriangleCount);  // 默认变体（modelIndex 更小）
+
+		// ① 不传 vertexRegions：旧行为 —— 整组落进它的主导区域。
+		var legacy = SourceSegmentation.MergeComponentsIntoBodyParts(geometry, split.Groups);
+		Assert.Single(legacy.Groups);
+
+		// ② 传 vertexRegions：按三角形归位，左右腿各一份。
+		var splitByRegion = SourceSegmentation.MergeComponentsIntoBodyParts(
+			geometry, split.Groups, split.VertexRegions);
+		Assert.Equal(2, splitByRegion.Groups.Count);
+		Assert.Equal(
+			new[] { BodyRegion.LeftLeg, BodyRegion.RightLeg },
+			splitByRegion.Groups.Select(group => group.Region).ToArray());
+		Assert.Equal(2, splitByRegion.Groups[0].TriangleCount);
+		Assert.Equal(2, splitByRegion.Groups[1].TriangleCount);
+
+		// 三角形一个都不能丢：被放弃的那个变体只有 1 个三角形，剩下 4 个都要在。
+		var placed = splitByRegion.Groups.SelectMany(group => group.TriangleIndices).ToArray();
+		Assert.Equal(4, placed.Length);
+		Assert.Equal(4, placed.Distinct().Count());
 	}
 }
 

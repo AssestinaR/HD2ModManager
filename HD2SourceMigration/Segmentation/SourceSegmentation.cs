@@ -72,6 +72,18 @@ public static class SourceSegmentation
 		public IEnumerable<MeshGroup> BodyParts => Groups.Where(group => group.Kind == MeshGroupKind.BodyPart);
 
 		public IEnumerable<MeshGroup> Components => Groups.Where(group => group.Kind == MeshGroupKind.Component);
+
+		/// <summary>
+		/// <b>逐顶点</b>的部位（下标与 <c>SourceGeometry.Vertices</c> 对齐）。
+		/// <para>
+		/// 为什么要把这个交出去：一组网格的三角形可能横跨好几个部位。
+		/// 实测 <c>l4n silent_code_shinano信浓</c> —— 它的 26 个 bodypart 是**整套衣服**
+		/// （素体 / bodyacc / 手套 / 袖套 / 高跟鞋…），没有"左右腿"这种 bodypart。
+		/// 按"整组取主导区域"分，26 个组只落进 5 个槽，**右腿和右臂一个 Unit 都没有**，
+		/// 上机就是"身体转换不出来"。有了这张表，装配阶段就能**按三角形**归位。
+		/// </para>
+		/// </summary>
+		public BodyRegion[] VertexRegions { get; init; } = [];
 	}
 
 	/// <param name="resolvedSourceToHd2">M1 解出的"源骨下标 → HD2 骨下标"绑定表。</param>
@@ -169,7 +181,7 @@ public static class SourceSegmentation
 		var groups = new List<MeshGroup>(bodyParts.Count + components.Count);
 		groups.AddRange(bodyParts);
 		groups.AddRange(components.OrderBy(item => item.PartIndex).Select(item => item.Group));
-		return new Result(groups, diagnostics);
+		return new Result(groups, diagnostics) { VertexRegions = vertexRegion };
 	}
 
 	/// <summary>逐顶点算部位。主骨 = 三组权重里最大的那个；权重全零或绑不上的归胸。</summary>
@@ -211,7 +223,7 @@ public static class SourceSegmentation
 	/// 三角形归哪一份：三个顶点里占多数的那一份。跨边界的三角形必然要选一边——
 	/// 因为切分不影响形变（两边用的是同一套骨架与同一批权重），选哪边只影响"它归哪个槽管"。
 	/// </summary>
-	private static BodyRegion RegionOfTriangle(BodyRegion[] vertexRegion, SourceTriangle triangle)
+	private static BodyRegion RegionOfTriangle(IReadOnlyList<BodyRegion> vertexRegion, SourceTriangle triangle)
 	{
 		var a = vertexRegion[triangle.A];
 		var b = vertexRegion[triangle.B];
@@ -296,15 +308,49 @@ public static class SourceSegmentation
 	/// 否则下一次又是"模型少了一半，产物看不出任何异常"。
 	/// </returns>
 	public static MergeResult MergeComponentsIntoBodyParts(
-		SourceGeometry geometry, IReadOnlyList<MeshGroup> groups)
+		SourceGeometry geometry,
+		IReadOnlyList<MeshGroup> groups,
+		IReadOnlyList<BodyRegion>? vertexRegions = null)
 	{
 		ArgumentNullException.ThrowIfNull(geometry);
 		ArgumentNullException.ThrowIfNull(groups);
 
 		var notes = new List<string>();
 		var merged = new Dictionary<BodyRegion, List<int>>();
+
+		// **按三角形归位，而不是按整组取主导区域。**
+		//
+		// 一组网格的三角形可以横跨好几个部位。旧实现让整组只落进它的"主导区域"，
+		// 于是**衣服式模型**（bodypart 是素体/bodyacc/手套/袖套/高跟鞋…，没有"左右腿"）
+		// 会只落进 5 个槽，右腿右臂一个 Unit 都没有 —— 上机就是"身体转换不出来"。
+		//
+		// `vertexRegions` 为 null 时退回旧行为（整组用一个区域），保证既有调用方与测试不变。
+		void Place(IEnumerable<int> triangles, BodyRegion fallback)
+		{
+			foreach (var index in triangles)
+			{
+				if (index < 0 || index >= geometry.Triangles.Count)
+					continue;
+				var region = vertexRegions is { Count: > 0 }
+					? RegionOfTriangle(vertexRegions, geometry.Triangles[index])
+					: fallback;
+				if (!merged.TryGetValue(region, out var list))
+				{
+					list = [];
+					merged[region] = list;
+				}
+
+				list.Add(index);
+			}
+		}
+
+		var hostRegions = new HashSet<BodyRegion>();
 		foreach (var group in groups.Where(group => group.Kind == MeshGroupKind.BodyPart))
-			merged[group.Region] = new List<int>(group.TriangleIndices);
+		{
+			hostRegions.Add(group.Region);
+			Place(group.TriangleIndices, group.Region);
+		}
+
 		var host = groups
 			.Where(group => group.Kind == MeshGroupKind.BodyPart)
 			.ToDictionary(group => group.Region);
@@ -342,19 +388,15 @@ public static class SourceSegmentation
 				+ "要另一套变体就换变体重转。");
 		}
 
-		// ② 并进各自部位；该部位没有本体就地补一份。
-		var synthesized = new List<BodyRegion>();
+		// ② 并进各自部位（按三角形归位，见上面的 Place）。
 		foreach (var component in keptComponents)
-		{
-			if (!merged.TryGetValue(component.Region, out var target))
-			{
-				target = [];
-				merged[component.Region] = target;
-				synthesized.Add(component.Region);
-			}
+			Place(component.TriangleIndices, component.Region);
 
-			target.AddRange(component.TriangleIndices);
-		}
+		// "补出来的部位" = 收到了三角形、但源侧没有任何固定 bodypart 落在那一区域。
+		var synthesized = merged.Keys
+			.Where(region => !hostRegions.Contains(region) && merged[region].Count != 0)
+			.OrderBy(region => region)
+			.ToList();
 
 		if (synthesized.Count != 0)
 		{

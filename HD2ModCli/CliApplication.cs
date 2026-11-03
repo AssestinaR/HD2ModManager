@@ -3417,7 +3417,11 @@ public static class CliApplication
 		var segmentationNotes = new List<string>();
 		if (string.IsNullOrWhiteSpace(wanted) || wanted.Equals("merge", StringComparison.OrdinalIgnoreCase))
 		{
-			var merged = SourceSegmentation.MergeComponentsIntoBodyParts(inputs.Geometry, split.Groups);
+			// 传 `split.VertexRegions`：按**三角形**归位，而不是整组取主导区域。
+			// 衣服式模型（bodypart 是素体/bodyacc/手套/袖套…，没有左右腿）只有这样才能
+			// 把几何分进全部七个槽 —— 见 SourceSegmentation.MergeComponentsIntoBodyParts。
+			var merged = SourceSegmentation.MergeComponentsIntoBodyParts(
+				inputs.Geometry, split.Groups, split.VertexRegions);
 			segmentationNotes.AddRange(merged.Notes);
 			selected = merged.Groups;
 		}
