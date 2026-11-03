@@ -31,9 +31,16 @@
 
 local M = {}
 
+-- 2.0.0：**多人局**。以前整条调度只认"一个玩家 avatar"，多出来的候选一律当成尸体；
+--        于是队友一出现就被判成"玩家换人了"，会话全丢、重新挂到队友身上，自己身上反而没物理。
+--        现在按玩家分组：每个活动玩家各自持有自己的会话，谁死了只收谁。
+--        附：`World.units_by_resource` 直接列出所有玩家 avatar（一次调用，替代扫 2290 个 unit）；
+--        `World.debug_camera_pose` 给出相机位置，用来排序（最近的那个就是自己）；
+--        链数超预算时非首位玩家按 2 帧一次驱动（dt 累积补偿，不丢时间）。
+--
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "1.9.1"
+M.VERSION = "2.0.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -158,7 +165,103 @@ local function pickWorld(S_, cache)
 	return bestWorld, bestUnits
 end
 
---- 一趟扫完：玩家 avatar + 候选护甲件（存活、节点数够、无动画状态机），按"离 avatar 距离"排序。
+--- 玩家 avatar 的资源路径。同一个角色的所有玩家共用这一个资源，所以
+--- `World.units_by_resource(world, 路径)` **一次调用**就能把场上所有玩家列出来，
+--- 不必再"扫 2290 个 unit 猜谁有动画状态机"。
+---
+--- 这也是"多人局只给一个人挂物理"的正解：我们从来不需要知道**哪个是我**，
+--- 需要的是**哪些是玩家**——这个资源名就是那个答案。谁是第一位（自己）交给相机距离。
+local DEFAULT_AVATAR_RESOURCE = "content/fac_helldivers/cha_avatar/avatar_helldiver"
+
+--- 相机位置。只用于两件事：给玩家排序（最近的那个＝自己）、给驱动预算定优先级。
+--- 读不到**不影响功能**（只是"谁是第一位"退回按 unit 顺序），所以任何一步失败都安静返回 nil，
+--- 并记住别再试——每帧问一次注定失败的引擎调用纯属浪费。
+local function cameraPosition(S_, world, cache)
+	if cache.cameraUsable == false then return nil end
+	local matrix = S_.Matrix4x4
+	if type(matrix) ~= "table" or type(matrix.translation) ~= "function" then
+		cache.cameraUsable = false
+		return nil
+	end
+	local pose = try(S_.World.debug_camera_pose, world)
+	if pose == nil then
+		cache.cameraUsable = false
+		return nil
+	end
+	local ok, value = pcall(matrix.translation, pose)
+	if not ok then
+		cache.cameraUsable = false
+		return nil
+	end
+	local x, y, z = readVector(S_, value)
+	if x == nil then
+		cache.cameraUsable = false
+		return nil
+	end
+	cache.cameraUsable = true
+	return x, y, z
+end
+
+--- 场上**所有**玩家 avatar。判据两级：
+---   ① `World.units_by_resource(world, avatar 资源路径)` —— 精确、一次调用。
+---   ② 拿不到（老版本没这个函数 / 资源路径变了）才退回全量扫描"有动画状态机 + 带 support_mg"。
+--- 两种都要求"带 support_mg"：那是玩家 avatar 的挂点骨，人台/敌人没有。
+local function findAvatars(S_, world, units, count, supportMg, minNodes, options, cache)
+	local resource = options.avatarResource or DEFAULT_AVATAR_RESOURCE
+	local byResource = nil
+	if type(S_.World) == "table" and type(S_.World.units_by_resource) == "function" then
+		byResource = try(S_.World.units_by_resource, world, resource)
+	end
+
+	local function collect(candidates, requireAnim)
+		local list, seen, noAnim = {}, {}, 0
+		for index = 1, #candidates do
+			local unit = candidates[index]
+			if unit ~= nil and seen[unit] == nil then
+				seen[unit] = true
+				if Compat.unit_alive(S_, unit) then
+					local nodes = try(S_.Unit.num_scene_graph_items, unit)
+					local animated = try(S_.Unit.has_animation_state_machine, unit) == true
+					if type(nodes) == "number" and nodes >= minNodes
+						and (supportMg == nil or try(S_.Unit.has_node, unit, supportMg) == true) then
+						if requireAnim and not animated then
+							noAnim = noAnim + 1
+						else
+							list[#list + 1] = { unit = unit, nodes = nodes }
+						end
+					end
+				end
+			end
+		end
+		return list, noAnim
+	end
+
+	local list, dropped = nil, 0
+	if type(byResource) == "table" and #byResource > 0 then
+		cache.avatarSource = "units_by_resource"
+		-- 先要求"有动画状态机"：载具/人台这类同资源的东西通常没有状态机，这一条把它们挡在外面。
+		list, dropped = collect(byResource, true)
+		-- 但绝不因为这一条把所有人都挡掉：退回"只要有 support_mg 就算"。
+		if #list == 0 then list, dropped = collect(byResource, false) end
+	else
+		cache.avatarSource = "scan"
+		local scanned = {}
+		for index = 1, count do
+			local unit = units[index]
+			if try(S_.Unit.has_animation_state_machine, unit) == true then
+				scanned[#scanned + 1] = unit
+			end
+		end
+		list = collect(scanned, true)
+	end
+	-- 把"同资源但没有动画状态机"的数量报出来：实机里"某个队友没挂上"到底是没找到、
+	-- 还是被这一条挡掉了，只有这个数字能分辨。
+	cache.avatarDroppedNoAnim = dropped
+	return list
+end
+
+--- 一趟扫完：**所有**玩家 avatar + 候选护甲件（存活、节点数够），
+--- 每个护甲件归属到"离它最近的那个玩家"，按玩家顺序排序。
 --- 返回 nil + 原因 表示"还没准备好"（场景在变 / 找不到目标），调用方下一拍再来。
 local function discover(S_, cache, options, logger)
 	local world, units = pickWorld(S_, cache)
@@ -175,31 +278,70 @@ local function discover(S_, cache, options, logger)
 	if supportMg == nil then return nil, "support_mg 的 id32 拿不到" end
 	local minNodes = options.minNodes or 90
 	local maxUnits = options.maxUnits or 64
+	local maxAvatars = options.maxAvatars or 4
 
-	cache.avatarCandidates = 0
-	local avatar, withMg, withoutMg = nil, {}, {}
-	-- 优先用"上一次认定的玩家"：阵亡后尸体可能也满足 avatar 判据，
-	-- 如果这里只取"第一个"，很容易一直选中尸体（于是新玩家永远接不上物理）。
-	local prefer = cache.preferAvatar
-	local preferFound = false
+	-- ① 找全所有玩家。
+	local avatars = findAvatars(S_, world, units, count, supportMg, minNodes, options, cache)
+	if #avatars == 0 then
+		cache.worldIndex = nil   -- 可能选错了世界，下一拍重新挑
+		return nil, string.format("没找到玩家 avatar（%d 个 unit，判据=%s%s）",
+			count, tostring(cache.avatarSource),
+			(cache.avatarDroppedNoAnim or 0) > 0
+				and string.format("，另有 %d 个同资源 unit 因没有动画状态机被跳过", cache.avatarDroppedNoAnim)
+				or "")
+	end
+	if (cache.avatarDroppedNoAnim or 0) > 0 and cache.avatarDroppedLogged ~= true then
+		cache.avatarDroppedLogged = true
+		logger(string.format(
+			"[physbone][玩家] 找到 %d 个玩家；另有 %d 个同资源 unit 没有动画状态机，按载具/人台处理（跳过）",
+			#avatars, cache.avatarDroppedNoAnim))
+	end
+
+	-- ② 位置 + 排序。相机距离最近的那个＝自己（第一人称时相机就在自己头上）。
+	local camX, camY, camZ = cameraPosition(S_, world, cache)
+	if cache.cameraLogged ~= true then
+		cache.cameraLogged = true
+		-- 这条只打一次：实机排查时"第一个到底是不是我"完全取决于它，
+		-- 而 debug_camera_pose 在某些版本上返回的是开发自由相机，那种情况下排序会退化。
+		logger(string.format("[physbone] 玩家排序依据：%s",
+			camX ~= nil and "相机位置（最近的那个＝自己）" or "读不到相机 ⇒ 只按节点数排（功能不受影响）"))
+	end
+	for index = 1, #avatars do
+		local avatar = avatars[index]
+		local ax, ay, az = readVector(S_, try(S_.Unit.world_position, avatar.unit, 1))
+		avatar.x, avatar.y, avatar.z = ax, ay, az
+		if camX ~= nil and ax ~= nil then
+			local dx, dy, dz = ax - camX, ay - camY, az - camZ
+			avatar.cameraDistance = dx * dx + dy * dy + dz * dz
+		end
+	end
+	table.sort(avatars, function(a, b)
+		local da, db = a.cameraDistance, b.cameraDistance
+		if da ~= nil and db ~= nil then return da < db end
+		if da ~= nil then return true end
+		if db ~= nil then return false end
+		return (a.nodes or 0) > (b.nodes or 0)
+	end)
+	if #avatars > maxAvatars then
+		-- 上限只防"某个场景里有几十个 avatar 资源实例"把预算吃光；正常对局是 1~4。
+		for index = #avatars, maxAvatars + 1, -1 do table.remove(avatars, index) end
+	end
+	for index = 1, #avatars do
+		avatars[index].order = index
+		avatars[index].tag = nil   -- 实例名等真要挂载时再读（每个 unit 一次引擎调用）
+	end
+
+	-- ③ 护甲候选：扫一遍 unit。avatar 自己不进候选（它们是骨架，不是护甲件）。
+	local avatarUnits = {}
+	for index = 1, #avatars do avatarUnits[avatars[index].unit] = avatars[index] end
+
+	local withMg, withoutMg = {}, {}
 	for index = 1, count do
 		local unit = units[index]
-		if Compat.unit_alive(S_, unit) then
+		if avatarUnits[unit] == nil and Compat.unit_alive(S_, unit) then
 			local nodes = try(S_.Unit.num_scene_graph_items, unit)
 			if type(nodes) == "number" and nodes >= minNodes then
-				if try(S_.Unit.has_animation_state_machine, unit) == true then
-					-- 玩家 avatar：有动画状态机 **且** 带 support_mg 挂点。
-					if try(S_.Unit.has_node, unit, supportMg) == true then
-						-- 记一下**有几个**候选：阵亡后如果尸体仍保有动画状态机，这里会变成 2 个。
-						-- 这条数字是"换人检测"最需要的事实，没有它只能靠猜。
-						cache.avatarCandidates = (cache.avatarCandidates or 0) + 1
-						if prefer ~= nil and rawequal(unit, prefer) then
-							avatar, preferFound = unit, true
-						elseif avatar == nil and not preferFound then
-							avatar = unit
-						end
-					end
-				elseif try(S_.Unit.has_node, unit, supportMg) == true then
+				if try(S_.Unit.has_node, unit, supportMg) == true then
 					if #withMg < maxUnits then
 						withMg[#withMg + 1] = { unit = unit, nodes = nodes, mg = true }
 					end
@@ -208,10 +350,6 @@ local function discover(S_, cache, options, logger)
 				end
 			end
 		end
-	end
-	if avatar == nil then
-		cache.worldIndex = nil   -- 可能选错了世界，下一拍重新挑
-		return nil, string.format("没找到玩家 avatar（%d 个 unit 里没有同时满足动画状态机 + support_mg 的）", count)
 	end
 	local armorList = withMg
 	for _, candidate in ipairs(withoutMg) do
@@ -222,25 +360,36 @@ local function discover(S_, cache, options, logger)
 		return nil, string.format("没有候选护甲件（%d 个 unit，节点数门槛 %d）", count, minNodes)
 	end
 
-	-- 玩家自己那套护甲挂在 avatar 骨架上，位置几乎重合；人台/队友都在别处。
-	-- 这一步决定"谁是主件"、以及被上限截断时谁留下。
-	local ax, ay, az = readVector(S_, try(S_.Unit.world_position, avatar, 1))
-	if ax ~= nil then
-		for _, candidate in ipairs(armorList) do
-			local ux, uy, uz = readVector(S_, try(S_.Unit.world_position, candidate.unit, 1))
-			if ux ~= nil then
-				local dx, dy, dz = ux - ax, uy - ay, uz - az
-				candidate.distance = dx * dx + dy * dy + dz * dz
-			else
-				candidate.distance = math.huge
+	-- ④ 归属：每个候选件属于**离它最近的那个玩家**。
+	--    玩家那套护甲挂在 avatar 骨架上，位置几乎重合；队友的在队友身上；尸体/人台离谁都远。
+	--    这一个不等式就是全部事实来源——不需要问"谁是主件"，也不会因为"多出来一个候选"就误判换人。
+	for _, candidate in ipairs(armorList) do
+		local ux, uy, uz = readVector(S_, try(S_.Unit.world_position, candidate.unit, 1))
+		if ux ~= nil then
+			local best, bestDistance = avatars[1], math.huge
+			for index = 1, #avatars do
+				local avatar = avatars[index]
+				if avatar.x ~= nil then
+					local dx, dy, dz = ux - avatar.x, uy - avatar.y, uz - avatar.z
+					local distance = dx * dx + dy * dy + dz * dz
+					if distance < bestDistance then best, bestDistance = avatar, distance end
+				end
 			end
+			candidate.owner = best
+			candidate.distance = bestDistance
+		else
+			candidate.owner = avatars[1]
+			candidate.distance = math.huge
 		end
-		table.sort(armorList, function(a, b)
-			if a.mg ~= b.mg then return a.mg end
-			return (a.distance or math.huge) < (b.distance or math.huge)
-		end)
 	end
-	return world, units, avatar, armorList
+	table.sort(armorList, function(a, b)
+		local oa = a.owner ~= nil and a.owner.order or 99
+		local ob = b.owner ~= nil and b.owner.order or 99
+		if oa ~= ob then return oa < ob end
+		if a.mg ~= b.mg then return a.mg end
+		return (a.distance or math.huge) < (b.distance or math.huge)
+	end)
+	return world, units, avatars, armorList
 end
 
 --- 从部署后的 patch 尾部读物理容器。返回 { { rig = ..., path = ... }, ... }。
@@ -316,12 +465,18 @@ end
 -- 挂载 / 卸载
 -- ---------------------------------------------------------------------------
 
---- 就绪采样：等场景稳定（unit 总数连续两拍相同 + 主件节点数不变）后再 attach。
+--- 就绪采样 + 增量挂载。
+---
+--- "增量"是这一版的核心：**只补新 unit、只释放主人已经不在的会话**。
+--- 以前是"一有变化就把全部会话丢掉重挂"，多人局里那等于每次有人加入/复活都让所有人
+--- 短暂失去物理（而且会把会话挂到错误的玩家身上）。
+---
+--- 返回 true 表示这一趟真的跑完了（不论有没有新挂上的），false 表示还在等场景稳定。
 local function tryAttach(runtime)
 	local options, cache = runtime.options, runtime.cache
 	local frame = runtime.frame
-	local world, units, avatar, armorList, reason = discover(S, cache, options, runtime.logger)
-	if world == nil or armorList == nil then
+	local world, units, avatars, armorList, reason = discover(S, cache, options, runtime.logger)
+	if world == nil or armorList == nil or avatars == nil then
 		note_wait(runtime, reason or "发现目标失败（未给出原因）")
 		return false
 	end
@@ -359,9 +514,9 @@ local function tryAttach(runtime)
 	end
 	if #carriers == 0 then carriers = loadCarriers(S, cache, options, runtime.logger); runtime.carriers = carriers end
 	local allowPartial = options.allowPartial == true
-	-- 只挂**离玩家近**的护甲件。为什么必须过滤：阵亡后尸体留在原地、unit 一直活着，
+	-- 只挂**离它那个玩家**近的护甲件。为什么必须过滤：阵亡后尸体留在原地、unit 一直活着，
 	-- 而复活点常在别处 ⇒ 不过滤的话会把尸体也一起挂上（既浪费，也让"给尸体关物理"落空）。
-	-- 距离读不到（avatar 位置拿不到）时不过滤，行为与以前一致。
+	-- 注意距离是"到**它自己那个玩家**"的：队友的护甲离队友近，不该因为离我远就被丢掉。
 	local maxDist = options.maxArmorDistance == nil and 5.0 or options.maxArmorDistance
 	local maxDist2 = maxDist > 0 and (maxDist * maxDist) or nil
 	local nearCandidates, farCount = {}, 0
@@ -373,12 +528,12 @@ local function tryAttach(runtime)
 		end
 	end
 	if farCount > 0 then
-		runtime.logger("[physbone] 跳过 %d 个离玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
+		runtime.logger("[physbone] 跳过 %d 个离它所属玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
 	end
 	-- 给候选打分是这里最贵的一步（每份容器 × 每根骨一次 has_node，一件 ~460 次调用）。
-	-- 候选多时（军械库里几十个人台）不设上限就是几万次调用 ⇒ 明显卡顿。
-	-- 只测最近的一批：真正属于玩家的护甲一定是最近的那几件。
-	local maxScored = options.maxScoredCandidates or 12
+	-- 候选多时（军械库里几十个人台 / 四人同屏）不设上限就是几万次调用 ⇒ 明显卡顿。
+	-- 只测最近的一批：真正属于玩家的护甲一定是最近的那几件。玩家越多，允许测的越多。
+	local maxScored = options.maxScoredCandidates or math.max(12, 4 * #avatars)
 	local plan, bestScored = {}, nil
 	for index = 1, #nearCandidates do
 		if index > maxScored then
@@ -391,6 +546,7 @@ local function tryAttach(runtime)
 			plan[#plan + 1] = {
 				unit = candidate.unit, rig = best.rig, path = best.path, mg = candidate.mg,
 				tag = unit_tag(S, candidate.unit),
+				owner = candidate.owner,
 			}
 		elseif scored ~= nil and scored[1] ~= nil then
 			-- 记下"最接近的那一份"，没挂上时这条是唯一能指出"差几根骨"的线索。
@@ -411,10 +567,43 @@ local function tryAttach(runtime)
 		return false
 	end
 	table.sort(plan, function(a, b)
-		if (a.unit == armor.unit) ~= (b.unit == armor.unit) then return a.unit == armor.unit end
+		local oa = a.owner ~= nil and a.owner.order or 99
+		local ob = b.owner ~= nil and b.owner.order or 99
+		if oa ~= ob then return oa < ob end
 		if a.mg ~= b.mg then return a.mg end
 		return false
 	end)
+
+	-- ① 先收掉"主人已经不在了"的会话（玩家退出 / 阵亡后尸体不再算玩家）。
+	--
+	-- 这一步取代了老版本那个 `playerChanged`：老版本把"出现一个新的 avatar 候选"当成
+	-- "玩家换人了"，于是**队友一进房间就把我的会话全丢掉、重挂到队友身上**。
+	-- 现在每个会话都记着自己的主人，主人还在就一律不动。
+	local aliveOwners = {}
+	for index = 1, #avatars do aliveOwners[avatars[index].unit] = true end
+	local kept, released = {}, 0
+	for _, session in ipairs(runtime.sessions or {}) do
+		if session.owner ~= nil and aliveOwners[session.owner] == nil then
+			released = released + 1
+			if Compat.unit_alive(S, session.unit) then
+				local ok, restored = pcall(Compat.release, session)
+				runtime.logger("[physbone][玩家] 主人已不在，释放 unit=%s（%s）%s",
+					tostring(session.unitTag or "?"), tostring(session.ownerTag or "?"),
+					ok and ("已交还 " .. tostring(restored) .. " 节基准姿态") or "交还失败")
+			end
+		else
+			kept[#kept + 1] = session
+		end
+	end
+	if released > 0 then
+		runtime.sessions = kept
+		runtime.logger("[physbone][玩家] 释放了 %d 个会话（主人已离开/阵亡），剩 %d 个", released, #kept)
+	end
+
+	-- ② 再补上还没挂的 unit。已有会话的 unit 直接跳过 —— 这是增量的关键：
+	--    队友加入时，我自己的会话一个字节都不该被碰。
+	local attachedUnits = {}
+	for _, session in ipairs(runtime.sessions or {}) do attachedUnits[session.unit] = true end
 
 	local attachOptions = {
 		logger = runtime.logger,
@@ -422,17 +611,27 @@ local function tryAttach(runtime)
 		strictIdentity = options.strictIdentity == true,
 		fastWrite = options.fastWrite ~= false,
 	}
-	local sessions, tags, emptyUnits = {}, {}, 0
+	local attached, emptyUnits, already = 0, 0, 0
 	for index = 1, #plan do
 		local entry = plan[index]
-		if Compat.unit_alive(S, entry.unit) then
+		if attachedUnits[entry.unit] then
+			already = already + 1
+		elseif Compat.unit_alive(S, entry.unit) then
 			local session = Compat.attach(S, entry.unit, entry.rig, attachOptions)
 			session.rigSource = entry.path
 			session.unitTag = entry.tag
 			session.attachFrame = frame
+			session.owner = entry.owner ~= nil and entry.owner.unit or nil
+			session.ownerOrder = entry.owner ~= nil and entry.owner.order or 99
+			if entry.owner ~= nil then
+				-- 实例名只在这里读一次：unit 一旦销毁再读就是 AV，而日志里全是 `?` 等于没有信息。
+				entry.owner.tag = entry.owner.tag or unit_tag(S, entry.owner.unit)
+			end
+			session.ownerTag = entry.owner ~= nil and entry.owner.tag or nil
 			if #session.sessions > 0 then
-				sessions[#sessions + 1] = session
-				tags[#tags + 1] = entry.tag
+				if runtime.sessions == nil then runtime.sessions = {} end
+				runtime.sessions[#runtime.sessions + 1] = session
+				attached = attached + 1
 			else
 				-- attach 走完了却一条链都没产出：容器骨名和这个 unit 的节点名对不上，
 				-- 或者锚点全缺。以前这里完全静默，等于"挂上了"和"挂出 0 条"从日志上看一样。
@@ -444,19 +643,17 @@ local function tryAttach(runtime)
 			runtime.logger("[physbone][失败] unit=%s 在挂载前一刻已销毁（跳过）", tostring(entry.tag))
 		end
 	end
-	if #sessions == 0 then
+	if (runtime.sessions == nil or #runtime.sessions == 0) then
 		note_wait(runtime, "attach 没有产出任何链", string.format("%d 个 unit 通过容器匹配、%d 个产出 0 条链", #plan, emptyUnits))
 		return false
 	end
 
-	local chains = 0
-	for _, session in ipairs(sessions) do chains = chains + #session.sessions end
-	runtime.sessions = sessions
-	-- 记住"当时谁是玩家"。⚠️ 判"换没换人"要比 **userdata 同一性**，不是 `debug_name`：
-	-- 实测丢掉 7 个 unit 后重新挂上的还是同一批 `#ID[...]`，说明那个 id 是按资源算的。
-	runtime.avatar = avatar
-	runtime.avatarTag = unit_tag(S, avatar)
-	cache.preferAvatar = avatar
+	-- 记下"这次场上有哪些玩家"。下一拍比对它的**实例同一性**（userdata，不是 debug_name：
+	-- 实测那个 id 是按资源算的，拿它比"是不是同一个人"永远为真）。
+	runtime.avatars = avatars
+	local first = avatars[1]
+	runtime.avatar = first.unit
+	runtime.avatarTag = first.tag
 	runtime.attachedFrame = frame
 	runtime.reArm = 0
 	runtime.rearmAt = nil
@@ -466,8 +663,23 @@ local function tryAttach(runtime)
 	runtime.callsAccum = 0
 	runtime.peakAngle = 0
 	runtime.repeatCalls = 0
-	runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器）unit=%s",
-		#sessions, chains, #carriers, table.concat(tags, ","))
+
+	local chains, tags = 0, {}
+	local perOwner = {}
+	for _, session in ipairs(runtime.sessions) do
+		chains = chains + #session.sessions
+		tags[#tags + 1] = tostring(session.unitTag or "?")
+		local key = session.ownerOrder or 99
+		perOwner[key] = (perOwner[key] or 0) + 1
+	end
+	local ownerText = {}
+	for _, order in ipairs({ 1, 2, 3, 4, 99 }) do
+		if perOwner[order] ~= nil then ownerText[#ownerText + 1] = string.format("玩家%d=%d件", order, perOwner[order]) end
+	end
+	runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器，玩家 %d 个%s）；本次新挂 %d、已挂过 %d；unit=%s",
+		#runtime.sessions, chains, #carriers, #avatars,
+		#ownerText > 0 and ("：" .. table.concat(ownerText, " ")) or "",
+		attached, already, table.concat(tags, ","))
 	return true
 end
 
@@ -499,107 +711,73 @@ local function pruneSessions(runtime)
 	return dead + rebuilt
 end
 
---- 便宜的 avatar 扫描：只做两项引擎调用，让"换人检测"能在驱动中定期跑。
---- 返回候选列表；`nil` 表示"这次扫不了"（世界/单位列表取不到）。
+--- 便宜的"场上有哪些玩家"扫描，供驱动中定期比对。
+--- 返回 avatar unit 列表；`nil` 表示"这次扫不了"（世界/单位列表取不到）。
 ---
---- 为什么不用 `discover`：那一趟还要算节点数、算到玩家的距离、给每个候选打分排序，
---- 一次约 7 千次引擎调用 —— 每 1~2 秒来一趟就是肉眼可见的顿卡（2026-11-01 实测掉到 60 fps）。
---- 判"换人"只需要"场上有哪些 unit 同时有动画状态机 + support_mg"，两项调用就够。
+--- 现在几乎免费：`World.units_by_resource` 一次调用就列出所有玩家 avatar，
+--- 之后每个候选只要 1 次 `Unit.alive`。以前这里要遍历 2000+ unit、每个两次引擎调用，
+--- 所以只能 1.2 秒跑一次 —— 队友中途加入要多等一拍才接得上。
 local function scanAvatars(runtime)
 	local world, units = pickWorld(S, runtime.cache)
 	if world == nil or units == nil then return nil end
 	local supportMg = id32(S, "support_mg")
 	if supportMg == nil then return nil end
+	local options = runtime.options or {}
+	local list = findAvatars(S, world, units, #units, supportMg,
+		options.minNodes or 90, options, runtime.cache)
 	local found = {}
-	for index = 1, #units do
-		local unit = units[index]
-		if Compat.unit_alive(S, unit)
-			and try(S.Unit.has_animation_state_machine, unit) == true
-			and try(S.Unit.has_node, unit, supportMg) == true then
-			found[#found + 1] = unit
-		end
+	for index = 1, #list do
+		if Compat.unit_alive(S, list[index].unit) then found[#found + 1] = list[index].unit end
 	end
 	return found
 end
 
-local function isIgnored(runtime, unit)
-	local list = runtime.ignoredAvatars
-	if list == nil then return false end
-	for index = 1, #list do
-		if rawequal(list[index], unit) then return true end
-	end
-	return false
-end
-
-local function ignoreAvatar(runtime, unit)
-	if unit == nil then return end
-	local list = runtime.ignoredAvatars
-	if list == nil then list = {}; runtime.ignoredAvatars = list end
-	if isIgnored(runtime, unit) then return end
-	list[#list + 1] = unit
-end
-
---- 玩家换人了吗（阵亡 → 尸体留在原地 → 新实体出现）。
+--- 玩家人数有没有变化（有人加入 / 有人退出 / 阵亡后尸体不再算玩家）。
 ---
---- 为什么必须单独做这件事：阵亡时**旧实体不会被销毁**（尸体还活着），
---- `pruneSessions` 只会在 `Unit.alive == false` 或节点数变化时才丢会话，
---- 于是我们一直驱动着尸体，而新玩家的护甲 unit 从来没被挂过 —— "复活之后没有物理"。
+--- 取代了旧版的 `playerChanged`。旧版把"出现了一个新的 avatar 候选"当成"玩家换人了"，
+--- 在多人局里这是致命的：队友一进房间，我们就把**自己的**会话全丢掉、重新挂到队友身上，
+--- 而自己身上从此没有物理。现在"多出一个玩家"只是一个**新玩家**，谁的会话都不该动。
 ---
---- ⚠️ 判据用 **userdata 同一性**（`rawequal`），**不是** `debug_name`。
+--- ⚠️ 判据用 **userdata 同一性**（`rawequal`），不是 `debug_name`：
 --- 2026-11-01 实测：丢掉 7 个 unit 之后重新挂上的还是**同一批 `#ID[...]`**，
---- 说明那个 id 是按资源/描述符算的，不是按实例 —— 拿它比"是不是同一个人"永远为真，
---- 于是换人检测一次都没触发（日志里 `[换人]` 计数为 0）。userdata 才是实例。
----
---- 尸体若仍保有动画状态机，场上会有 2 个候选；所以用"忽略表"记住已经判定为尸体的 avatar，
---- 只认**没被忽略的新候选**，避免每 1.2 秒都判一次换人造成反复重挂。
----@return boolean changed 玩家换了（调用方应当释放并重挂）
-local function playerChanged(runtime)
-	local avatars = scanAvatars(runtime)
-	if avatars == nil then return false end
-	-- 清掉已经销毁的忽略项，免得表无限增长
-	local kept = {}
-	for _, unit in ipairs(runtime.ignoredAvatars or {}) do
-		if Compat.unit_alive(S, unit) then kept[#kept + 1] = unit end
+--- 说明那个 id 是按资源/描述符算的，不是按实例 —— 拿它比"是不是同一个人"永远为真。
+---@return boolean changed 需要补挂/收尾
+local function avatarSetChanged(runtime)
+	local live = scanAvatars(runtime)
+	if live == nil then return false end
+	local known = runtime.avatars or {}
+	local knownSet, liveSet = {}, {}
+	for index = 1, #known do knownSet[known[index].unit] = true end
+	local maxAvatars = (runtime.options or {}).maxAvatars or 4
+	for index = 1, #live do
+		local unit = live[index]
+		liveSet[unit] = true
+		if knownSet[unit] == nil then
+			if #known >= maxAvatars then
+				-- 已经到上限了（正常对局 4 人；观战/人台可能更多）。再补会一直"发现新玩家"→
+				-- 每 60 帧白跑一趟 discover，所以这里明确放弃，并留一条日志。
+				if runtime.extraAvatarLogged ~= true then
+					runtime.extraAvatarLogged = true
+					runtime.logger("[physbone][玩家] 场上还有第 %d 个 avatar（%s），超过上限 %d，不挂它的物理",
+						#known + 1, tostring(unit_tag(S, unit)), maxAvatars)
+				end
+			else
+				runtime.logger("[physbone][玩家] 有新玩家（%s）⇒ 补挂它的护甲",
+					tostring(unit_tag(S, unit)))
+				return true
+			end
+		end
 	end
-	runtime.ignoredAvatars = kept
-
-	-- 优先挑"没被忽略、且不是当前这个"的候选：那就是新出现的玩家实体。
-	for _, unit in ipairs(avatars) do
-		if not rawequal(unit, runtime.avatar) and not isIgnored(runtime, unit) then
-			runtime.logger("[physbone][换人] 出现新的玩家实体（候选 %d 个，旧=%s，新=%s）⇒ 释放旧会话后重挂",
-				#avatars, tostring(runtime.avatarTag), tostring(unit_tag(S, unit)))
-			ignoreAvatar(runtime, runtime.avatar)
-			runtime.avatar = unit
-			runtime.avatarTag = unit_tag(S, unit)
-			-- 让下一次 discover 优先认它：阵亡后尸体可能也满足 avatar 判据，
-			-- 只取"第一个"很容易一直选中尸体。
-			runtime.cache.preferAvatar = unit
+	for index = 1, #known do
+		if liveSet[known[index].unit] == nil then
+			runtime.logger("[physbone][玩家] 有玩家离开/阵亡（%s）⇒ 收掉它的会话",
+				tostring(known[index].tag or "?"))
 			return true
 		end
 	end
-
-	-- 没有新候选：确认我们那个还活着就行。
-	if runtime.avatar ~= nil and Compat.unit_alive(S, runtime.avatar) then return false end
-
-	-- 我们的 avatar 没了，且场上没有别的候选：等下一拍（可能正在复活加载）。
-	runtime.avatar, runtime.avatarTag = nil, nil
 	return false
 end
 
---- 释放并丢弃全部会话。
---- 对**还活着**的 unit（尸体）要把姿态交还成基准姿态：不交还的话头发会停在最后写入的
---- 那一帧（半空中的姿势），看着像被冻住；交还之后回到静止形状，才像一具正常尸体。
-local function dropAllSessions(runtime, why)
-	for _, session in ipairs(runtime.sessions or {}) do
-		if Compat.unit_alive(S, session.unit) then
-			local ok, restored = pcall(Compat.release, session)
-			runtime.logger("[physbone][换人] 释放 unit=%s（%s）%s",
-				tostring(session.unitTag or "?"), tostring(why),
-				ok and ("已交还 " .. tostring(restored) .. " 节基准姿态") or "交还失败")
-		end
-	end
-	runtime.sessions = nil
-end
 
 local function drive(runtime)
 	local frame = runtime.frame
@@ -652,12 +830,13 @@ local function drive(runtime)
 
 	if runtime.sessions ~= nil and #runtime.sessions > 0 then
 		local dropped = pruneSessions(runtime)
-		if dropped > 0 or #runtime.sessions == 0 then
-			-- 场景变了：退回等待，带退避（避免换甲期间每秒重挂一次）。
+		if #runtime.sessions == 0 then
+			-- 全没了（换场景 / 全员阵亡）：退回等待，带退避（避免换甲期间每秒重挂一次）。
 			-- 存活时长决定退避：刚挂上就死 = 抖动（换甲中），要越等越久；
 			-- 稳定跑过 5 秒再死 = 正常换场景，下一次应当**立刻**重挂。
 			local survived = frame - (runtime.attachedFrame or frame)
 			runtime.sessions = nil
+			runtime.reconcile = nil
 			if survived >= (options.stableFrames or 600) then
 				runtime.reArm = 1
 			else
@@ -667,14 +846,31 @@ local function drive(runtime)
 			runtime.rearmAt = frame + delay
 			logger("[physbone][LIFECYCLE] 场景已变（存活 %d 帧）⇒ 退避 %d 帧后重扫", survived, delay)
 		else
-			-- 会话全都还"健康"，但玩家可能已经换人了：阵亡后尸体会一直活着，
-			-- `pruneSessions` 判不出来（它只看 Unit.alive / 节点数）。所以定期问一次"谁是玩家"。
-			local validateFrames = options.validateFrames == nil and 120 or options.validateFrames
-			if validateFrames > 0 and (frame % validateFrames) == 0 and playerChanged(runtime) then
-				-- 尸体交还基准姿态（否则头发停在最后写入的姿势，像被冻住），然后重新挂新玩家。
-				dropAllSessions(runtime, "玩家已换人")
-				runtime.reArm = 1                     -- 换人不是抖动，下一次要尽快重挂
-				runtime.rearmAt = frame + (options.respawnReArmFrames or 30)
+			-- 只掉了一部分（某个队友换甲 / 退出 / 阵亡）：**留着活着的那些**，只补缺的。
+			-- 老版本在这一步是"丢掉全部会话再重扫"，多人局里那等于一个人换甲，全场人闪一下没物理。
+			if dropped > 0 then
+				logger("[physbone][LIFECYCLE] 掉了 %d 个会话，剩 %d 个继续跑，随后补挂缺的",
+					dropped, #runtime.sessions)
+				runtime.reconcile = frame
+			end
+			-- 会话全都还"健康"，但场上**玩家名单**可能变了（有人加入 / 有人退出 / 复活换了实体）。
+			-- 这里同样**不释放任何东西**：变的是名单，谁还在谁就继续跑。
+			local validateFrames = options.validateFrames == nil and 60 or options.validateFrames
+			if validateFrames > 0 and (frame % validateFrames) == 0 and avatarSetChanged(runtime) then
+				runtime.reconcile = frame
+			end
+		end
+	end
+
+	-- 名单变化后的补挂/收尾。走的是同一个 `tryAttach`（**增量**：只补没挂的、只收主人不在的），
+	-- 所以不需要先把自己人的会话丢掉 —— 那正是老版本多人局里"所有人闪一下没物理"的来源。
+	if runtime.reconcile ~= nil and runtime.sessions ~= nil and #runtime.sessions > 0 then
+		if frame >= runtime.reconcile then
+			local poll = options.reconcilePollFrames or (options.pollFrames or 20)
+			if tryAttach(runtime) then
+				runtime.reconcile = nil
+			else
+				runtime.reconcile = frame + poll     -- 场景还没稳，下一拍再来
 			end
 		end
 	end
@@ -701,22 +897,58 @@ local function drive(runtime)
 	-- ---------- 驱动 ----------
 	-- 计时不可靠（`Application.time_since_launch` 每帧只更新一次、`os.clock()` 被引擎其它
 	-- 线程污染），所以性能只报**引擎调用次数**——唯一不会被环境噪声污染的口径。
+	--
+	-- 多人局的**预算**：一帧的驱动成本几乎正比于链数（实测单人 52 链 ≈ 180 次引擎调用/帧，
+	-- 约 3.5 次/链）。四个玩家同屏就是 4 倍。真到那个量级还没问题，但"每人身上好几套 mod"
+	-- 会让链数继续翻，所以这里给一条闸：**第一位玩家（离相机最近的那个，也就是自己）每帧都算；
+	-- 其余玩家按 stride 分帧**，被动到的那一帧用**累积的 dt** 积分（compat 内部还会再拆子步），
+	-- 所以物理速度不变，只是采样率降到 1/2。观感差别极小，成本直接对半。
+	local chainTotal = 0
+	for index = 1, #runtime.sessions do
+		chainTotal = chainTotal + #(runtime.sessions[index].sessions or {})
+	end
+	local budget = options.maxChainsPerFrame or 160
+	local stride = chainTotal > budget and (options.otherPlayerStride or 2) or 1
+	if stride ~= runtime.driveStride then
+		runtime.driveStride = stride
+		if stride > 1 then
+			logger("[physbone][预算] 链数 %d 超过每帧预算 %d ⇒ 非首位玩家改为每 %d 帧驱动一次（dt 累积补偿，速度不变）",
+				chainTotal, budget, stride)
+		else
+			logger("[physbone][预算] 链数 %d 回到每帧预算 %d 以内 ⇒ 所有玩家恢复每帧驱动", chainTotal, budget)
+		end
+	end
+
 	local written, skippedSame, engineCalls, staticChains = 0, 0, 0, 0
+	local attempted = 0
 	local dt = runtime.dt or (1 / 60)
 	for index = 1, #runtime.sessions do
 		local session = runtime.sessions[index]
 		-- compat 只在正常返回时刷新这两个计数；先清零，免得沿用上一帧的值把看门狗骗过去。
 		session.skippedSame, session.engineCalls = 0, 0
-		local ok, out = pcall(Compat.update, session, dt)
-		if ok then
-			if type(out) == "number" then written = written + out end
-		elseif not session.updateErrorLogged then
-			-- 以前这里是裸 pcall：一条 unit 每帧都抛错，日志里却什么也没有。
-			session.updateErrorLogged = true
-			logger("[physbone][错误] unit=%s 驱动抛错：%s", tostring(session.unitTag or "?"), tostring(out))
+
+		-- 时间**永远**先累积：没被驱动的这一帧不是"时间不存在"，攒到下一次一起积。
+		-- 丢了它，物理会比真实时间慢 —— 表现是"队友的头发像在水里"。
+		local pending = (session.pendingDt or 0) + dt
+		local order = session.ownerOrder or 1
+		local due = stride <= 1 or order <= 1 or (frame % stride) == ((order - 1) % stride)
+		if not due then
+			session.pendingDt = pending
+		else
+			session.pendingDt = 0
+			attempted = attempted + 1
+			local ok, out = pcall(Compat.update, session, pending)
+			if ok then
+				if type(out) == "number" then written = written + out end
+			elseif not session.updateErrorLogged then
+				-- 以前这里是裸 pcall：一条 unit 每帧都抛错，日志里却什么也没有。
+				session.updateErrorLogged = true
+				logger("[physbone][错误] unit=%s 驱动抛错：%s", tostring(session.unitTag or "?"), tostring(out))
+			end
+			skippedSame = skippedSame + (session.skippedSame or 0)
+			engineCalls = engineCalls + (session.engineCalls or 0)
 		end
-		skippedSame = skippedSame + (session.skippedSame or 0)
-		engineCalls = engineCalls + (session.engineCalls or 0)
+
 		for _, item in ipairs(session.sessions) do
 			if (item.staticFrames or 0) > 0 then staticChains = staticChains + 1 end
 		end
@@ -724,6 +956,11 @@ local function drive(runtime)
 	runtime.driveFrames = (runtime.driveFrames or 0) + 1
 	runtime.callsAccum = (runtime.callsAccum or 0) + engineCalls
 	runtime.staticChains = staticChains
+	runtime.lastChainTotal = chainTotal
+	runtime.lastAttempted = attempted
+	-- 这一帧一条都没驱动（stride 分帧的正常现象）时不能让"零帧看门狗"累加，
+	-- 否则分帧本身会被误判成"驱动失效"→ 重挂 → 分帧 → 再判失效，无限循环。
+	local attemptedAny = attempted > 0
 
 	-- 峰值：**偏离绑定方向**的最大角，也就是"离模型原本的形状有多远"。
 	--
@@ -762,8 +999,9 @@ local function drive(runtime)
 	if (runtime.driveFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
-		logger("[physbone] 驱动心跳 unit=%d 链=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",
-			#runtime.sessions, chains, runtime.dt or 0, written, skippedSame, engineCalls,
+		logger("[physbone] 驱动心跳 unit=%d 链=%d 玩家=%d 分帧=%d 本帧驱动=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",
+			#runtime.sessions, chains, #(runtime.avatars or {}), runtime.driveStride or 1, attempted,
+			runtime.dt or 0, written, skippedSame, engineCalls,
 			runtime.callsAccum / runtime.driveFrames, staticChains, framePeakDeg,
 			runtime.peakAngle or 0,
 			worstName ~= nil and tostring(worstName) or "-", worstLimit,
@@ -795,8 +1033,13 @@ local function drive(runtime)
 	-- ⚠️ 判"驱动失效"不能用"这一帧写了几个骨"：加了"姿态没变就跳过"之后，
 	-- 站着不动时 written 天然就是 0，用它判失效会让静止的角色每 45 帧重挂一次（踩过）。
 	-- 真正的判据是"求解器有没有在处理链"：写了 + 因没变而跳过 = 处理过的骨数。
+	--
+	-- 多人分帧之后还要再排除一种假信号：**这一帧按 stride 谁都不该被驱动**。
+	-- 那种帧一条骨都不会被处理，但这不是故障——它是节流本身。判据要挂"有没有尝试过"。
 	local handled = written + skippedSame
-	if handled == 0 then
+	if not attemptedAny then
+		-- 分帧跳过的帧：不算数，也不清零（清零会让"卡住"永远攒不到上限）
+	elseif handled == 0 then
 		runtime.zeroFrames = (runtime.zeroFrames or 0) + 1
 	else
 		runtime.zeroFrames = 0
@@ -844,6 +1087,11 @@ function M.install(stingray, options)
 		cache = {},
 		carriers = nil,
 		sessions = nil,
+		-- 场上的玩家 avatar 名单（每个玩家一项）。会话按 `session.owner` 归属到其中一项上，
+		-- 名单变化只影响"补挂/收尾"，不会推翻别人的会话。
+		avatars = nil,
+		reconcile = nil,     -- 名单变化后待执行的补挂帧号；nil = 没有待办
+		driveStride = 1,     -- 当前的分帧步长（链数超预算时 >1）
 		frame = 0,
 		dt = options.dt or (1 / 60),
 		reArm = 0,
