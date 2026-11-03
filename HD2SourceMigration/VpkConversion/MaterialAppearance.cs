@@ -223,6 +223,58 @@ public static class MaterialAppearance
 	/// <summary><see cref="RoughnessValue"/> 的 0..1 形式（CLI 的 <c>--metal-roughness</c> 默认值）。</summary>
 	public const double DefaultMetalRoughness = RoughnessValue / 255.0;
 
+	/// <summary>
+	/// 源侧声明了、但 <b>HD2 的材质模板没有对应槽</b>的特性，聚成一句话。
+	/// <para>
+	/// <b>为什么必须说出来。</b>这些键现在是"读了没人用"或者"根本没读"——用户看到的是
+	/// "这件衣服内侧不见了/没有光泽/不发光"，而报告里一个字都没有，
+	/// 于是只能靠猜（或者怀疑是我们把东西弄丢了）。
+	/// 把"源侧要这个、我们给不了"讲清楚，才算把现象和原因接上。
+	/// </para>
+	/// <para>
+	/// <b>刻意不收 <c>$bumpmap</c>。</b>它几乎每个材质都有，逐条报会把真正稀有的警告淹掉
+	/// ——法线图这件事应该按**整包**统计一次（"N 个材质带法线图，尚未接入"），
+	/// 那是观测层的事，不在这个逐材质的出口里。
+	/// </para>
+	/// <para>返回 <c>null</c> 表示这条材质没有声明这类特性（不给报告添噪）。</para>
+	/// </summary>
+	public static string? DescribeUnexpressibleFeatures(VmtDocument vmt)
+	{
+		ArgumentNullException.ThrowIfNull(vmt);
+		var missing = new List<string>(4);
+
+		// 双面渲染：HD2 的材质模板没有 cull 开关，只能单面。
+		if (vmt.IsEnabled("$nocull"))
+			missing.Add("$nocull（双面渲染）");
+
+		// 自发光：我们目前只接 `$emissiontexture`（写进 advanced 槽 5 的 alpha）。
+		// `$selfillum` 走的是另一条路（底色 alpha / lightwarp），没有接线。
+		if (vmt.IsEnabled("$selfillum"))
+			missing.Add("$selfillum（自发光）");
+
+		// 高光 / 环境反射：HD2 用 PBR 的粗糙度+金属度表达，无法照搬 Phong 的参数。
+		if (vmt.IsEnabled("$phong") || !string.IsNullOrWhiteSpace(vmt.Value("$envmap")))
+			missing.Add("$phong/$envmap（高光与环境反射）");
+
+		// 细节层：advanced 有 DetailNormal 槽，但我们没有往下写。
+		if (!string.IsNullOrWhiteSpace(vmt.Value("$detail")))
+			missing.Add("$detail（细节法线层）");
+
+		// 光照 warp：整体亮度曲线，HD2 没有等价物。
+		if (!string.IsNullOrWhiteSpace(vmt.Value("$lightwarptexture")))
+			missing.Add("$lightwarptexture（整体亮度曲线）");
+
+		// 法线 alpha 里编码的反射遮罩：没有消费点。
+		if (vmt.IsEnabled("$normalmapalphaenvmapmask"))
+			missing.Add("$normalmapalphaenvmapmask（反射遮罩）");
+
+		if (missing.Count == 0)
+			return null;
+
+		return "源侧还声明了这些 HD2 表达不了的特性，已按最接近的方式处理（观感会有差异）："
+			+ string.Join("、", missing);
+	}
+
 	/// <summary>判定一份 VMT 的 matcap 情况。</summary>
 	public static MatCapVerdict Evaluate(VmtDocument vmt)
 	{

@@ -115,6 +115,56 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
+	/// 「源侧声明了、但 HD2 表达不了」的聚合说明。
+	/// <para>
+	/// 这一条不改任何产物，唯一作用是让"看着不一样"有因果可查。所以它的验收标准是
+	/// **该报的报、不该报的不报**——多报会把稀有警告淹掉，少报就还是只能猜。
+	/// </para>
+	/// </summary>
+	[Theory]
+	[InlineData("""VertexLitGeneric { "$nocull" "1" }""", "$nocull")]
+	[InlineData("""VertexLitGeneric { "$selfillum" "1" }""", "$selfillum")]
+	[InlineData("""VertexLitGeneric { "$phong" "1" }""", "$phong")]
+	[InlineData("""VertexLitGeneric { "$envmap" "env_cubemap" }""", "$envmap")]
+	[InlineData("""VertexLitGeneric { "$detail" "detail/foo" }""", "$detail")]
+	[InlineData("""VertexLitGeneric { "$lightwarptexture" "lt" }""", "$lightwarptexture")]
+	[InlineData("""VertexLitGeneric { "$normalmapalphaenvmapmask" "1" }""", "$normalmapalphaenvmapmask")]
+	public void UnexpressibleFeaturesAreReportedWhenDeclared(string text, string expected)
+	{
+		var described = MaterialAppearance.DescribeUnexpressibleFeatures(Parse(text));
+		Assert.NotNull(described);
+		Assert.Contains(expected, described, StringComparison.Ordinal);
+		Assert.Contains("HD2 表达不了", described, StringComparison.Ordinal);
+	}
+
+	[Theory]
+	[InlineData("""VertexLitGeneric { "$basetexture" "a" }""")]      // 什么都没声明
+	[InlineData("""VertexLitGeneric { "$nocull" "0" }""")]           // 显式关掉
+	[InlineData("""VertexLitGeneric { "$selfillum" "0" }""")]        // 显式关掉
+	[InlineData("""VertexLitGeneric { "$phong" "0" }""")]            // 0 等于没有 phong
+	[InlineData("""VertexLitGeneric { "$basetexture" "a" "$bumpmap" "b" }""")]  // 法线图刻意不收
+	public void UnexpressibleFeaturesStayQuietOtherwise(string text)
+	{
+		Assert.Null(MaterialAppearance.DescribeUnexpressibleFeatures(Parse(text)));
+	}
+
+	/// <summary>
+	/// 多项同时声明时**聚成一句**，不逐项刷屏。
+	/// </summary>
+	[Fact]
+	public void MultipleUnexpressibleFeaturesCollapseIntoOneLine()
+	{
+		var described = MaterialAppearance.DescribeUnexpressibleFeatures(Parse(
+			"""VertexLitGeneric { "$nocull" "1" "$selfillum" "1" "$envmap" "env_cubemap" }"""));
+
+		Assert.NotNull(described);
+		Assert.Contains("$nocull", described, StringComparison.Ordinal);
+		Assert.Contains("$selfillum", described, StringComparison.Ordinal);
+		Assert.Contains("$envmap", described, StringComparison.Ordinal);
+		Assert.DoesNotContain("\n", described, StringComparison.Ordinal);
+	}
+
+	/// <summary>
 	/// 回归闸门：这三个输入在历史上分别踩过三个不同的坑，必须同时成立。
 	/// 只修其中一个（例如"补剥方括号但不限制分量数"）会让另一个立刻变错。
 	/// </summary>

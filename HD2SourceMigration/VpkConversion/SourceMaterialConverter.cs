@@ -1532,6 +1532,14 @@ public sealed class SourceMaterialConverter
 		if (missingBaseNotice is not null)
 			notices.Add(missingBaseNotice);
 
+		// 源侧声明了、但 HD2 表达不了的特性（双面 / 自发光 / 高光反射 / 细节层 …）。
+		//
+		// 这一条不改变任何产物，只是把"为什么看着不一样"接上因果：这些键此前要么
+		// 读了没人用、要么根本没读，而用户看到的是"内侧不见了/没有光泽/不发光"，
+		// 报告里却一个字都没有 —— 那种情况下唯一的出路就是猜。
+		if (MaterialAppearance.DescribeUnexpressibleFeatures(vmt) is { } unexpressible)
+			notices.Add($"{stem}：{unexpressible}");
+
 		// ⚠️ **Metal 模式只对"没有真底色"的材质生效**（`syntheticBase`）。
 		//
 		// 原来写成 `matcapMode is Albedo or Metal`，于是 metal 模式会把**所有** matcap 承载表面

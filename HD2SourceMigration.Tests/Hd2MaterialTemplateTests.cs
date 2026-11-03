@@ -151,6 +151,57 @@ public sealed class Hd2MaterialTemplateTests
 	}
 
 	/// <summary>
+	/// **父 id 表必须与 SDK 的模板文件逐条吻合**，不只是"认得出来"。
+	/// <para>
+	/// 上面那条只验"父 id 在表里"，于是表里<b>写错名字</b>也照样通过：
+	/// 实测 <c>basic+OLD</c> 的父 id <c>0x2f9c50d9129837fe</c> 被标成了 <c>basic+</c>，
+	/// 而真正的 <c>basic+</c> 是 <c>0x7712ee7808e0ec50</c> —— 诊断打印因此把两个模板混成一个名字。
+	/// </para>
+	/// <para>
+	/// 这条把"表"降级成"被验证的断言"：新增或改名模板时，要么改表、要么它红。
+	/// 表的来源是 SDK（社区版 <c>constants.py</c> 加上模板二进制本身），不是我们的记忆。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void EveryTemplateParentIdMapsBackToItsOwnName()
+	{
+		var library = Locate();
+		if (library is null)
+			return;
+
+		var mismatched = library.Names
+			.Select(name => (Name: name, Material: library.Load(name)))
+			.Select(item => new
+			{
+				item.Name,
+				ParentId = item.Material.ParentMaterialId,
+				Actual = Hd2MaterialAsset.KnownParentIds.TryGetValue(item.Material.ParentMaterialId, out var mapped)
+					? mapped
+					: "<不在表里>",
+			})
+			.Where(item => !string.Equals(item.Name, item.Actual, StringComparison.Ordinal))
+			.Select(item => $"{item.Name} 的父 id 0x{item.ParentId:x16} 在表里写成「{item.Actual}」")
+			.ToArray();
+
+		Assert.True(mismatched.Length == 0,
+			"父 id 表与 SDK 模板对不上（KnownParentIds 需要改正）：" + string.Join("；", mismatched));
+	}
+
+	/// <summary>反向检查：两个不同 id 不能共用一个模板名（诊断打印会混）。</summary>
+	[Fact]
+	public void NoTwoParentIdsShareTheSameName()
+	{
+		var duplicates = Hd2MaterialAsset.KnownParentIds
+			.GroupBy(pair => pair.Value, StringComparer.Ordinal)
+			.Where(group => group.Count() > 1)
+			.Select(group => $"{group.Key}: " + string.Join("、", group.Select(pair => $"0x{pair.Key:x16}")))
+			.ToArray();
+
+		Assert.True(duplicates.Length == 0,
+			"父 id 表里有重名（两个不同 id 用了同一个模板名）：" + string.Join("；", duplicates));
+	}
+
+	/// <summary>
 	/// 换掉一个槽的贴图 id 之后：<b>只有 id 区变</b>，前缀（头 + 键区）与后缀
 	/// （id 区之后的所有内容）都必须逐字节不变。这是"只改 TexIDs"这条契约的判据。
 	/// </summary>

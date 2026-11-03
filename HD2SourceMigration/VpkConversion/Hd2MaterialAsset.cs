@@ -53,7 +53,10 @@ public sealed class Hd2MaterialAsset
 	/// </summary>
 	public static readonly IReadOnlyDictionary<ulong, string> KnownParentIds = new Dictionary<ulong, string>
 	{
-		[3430705909399566334] = "basic+",
+		// ⚠️ `0x2f9c50d9129837fe` 是 **basic+OLD** 的父 id，不是 `basic+`。
+		// 曾经两项都写成 "basic+"，于是诊断打印把两个模板混成一个名字
+		// （由 Hd2MaterialTemplateTests.EveryTemplateParentIdMapsBackToItsOwnName 抓住并锁住）。
+		[3430705909399566334] = "basic+OLD",
 		[15586118709890920288] = "alphaclip",
 		[6101987038150196875] = "original",
 		[15356477064658408677] = "basic",
