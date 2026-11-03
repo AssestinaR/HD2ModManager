@@ -760,6 +760,29 @@ function M.normalize_gains(gains)
 	return gains
 end
 
+--- 碰撞代理的**每帧预计算**字段，写进同一条表里（下标 8..15）。
+--- <para>
+--- 为什么必须预计算：投影需要的 <c>b−a</c>、<c>1/len²</c>、外接球中心与半径，
+--- 原来**每测一个点都重算一遍**。341 条链 × 每链 5 个粒子 × 9 个代理 × 4 次迭代
+--- ≈ 6 万次测试/帧，每次都白算一遍这些常量 —— 实测碰撞层吃掉 5.1 ms/帧。
+--- 预计算之后只剩"比较 + 一次投影"。
+--- </para>
+local function prepareCollider(c)
+	local ax, ay, az = c[1], c[2], c[3]
+	local bx, by, bz = c[4], c[5], c[6]
+	local r = c[7]
+	local ex, ey, ez = bx - ax, by - ay, bz - az
+	local len2 = ex * ex + ey * ey + ez * ez
+	c[8], c[9], c[10] = ex, ey, ez
+	c[11] = len2 > 1e-12 and (1 / len2) or 0
+	-- 外接球：中心 = 两端中点，半径 = 半长 + 半径。用它的平方做廉价早退。
+	c[12], c[13], c[14] = (ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5
+	local br = math.sqrt(len2) * 0.5 + r
+	c[15] = br * br
+	return c
+end
+M._prepare_collider = prepareCollider
+
 --- 把一个点推出所有碰撞代理之外。
 --- <para>
 --- 球形代理是 <c>a == b</c> 的退化胶囊（零分母要单独处理）。
@@ -770,49 +793,59 @@ local function push_out_of_colliders(px, py, pz, colliders)
 	if colliders == nil then return px, py, pz, false, 0, 0, 0 end
 	local hit = false
 	local hnx, hny, hnz = 0, 0, 0
+	local sqrt = math.sqrt
 	for index = 1, #colliders do
 		local c = colliders[index]
-		local ax, ay, az, bx, by, bz, r = c[1], c[2], c[3], c[4], c[5], c[6], c[7]
-		local ex, ey, ez = bx - ax, by - ay, bz - az
-		local len2 = ex * ex + ey * ey + ez * ez
-		local cx, cy, cz
-		if len2 < 1e-12 then
-			cx, cy, cz = ax, ay, az
-		else
-			local t = ((px - ax) * ex + (py - ay) * ey + (pz - az) * ez) / len2
-			if t < 0 then t = 0 elseif t > 1 then t = 1 end
-			cx, cy, cz = ax + ex * t, ay + ey * t, az + ez * t
+		-- 廉价早退：与"胶囊外接球"比平方距离。远处代理连投影都不用算。
+		-- （没预计算过的裸表 —— 测试与旧调用方 —— 就地补一次。）
+		local br2 = c[15]
+		if br2 == nil then
+			prepareCollider(c)
+			br2 = c[15]
 		end
-		local dx, dy, dz = px - cx, py - cy, pz - cz
-		local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-		if dist < r then
-			hit = true
-			local nx, ny, nz
-			if dist > 1e-6 then
-				nx, ny, nz = dx / dist, dy / dist, dz / dist
+		local qx, qy, qz = px - c[12], py - c[13], pz - c[14]
+		if qx * qx + qy * qy + qz * qz < br2 then
+			local ax, ay, az, r = c[1], c[2], c[3], c[7]
+			local ex, ey, ez, inv = c[8], c[9], c[10], c[11]
+			local cx, cy, cz
+			if inv == 0 then
+				cx, cy, cz = ax, ay, az
 			else
-				-- 落在轴线上：造一个与轴垂直的确定方向（轴接近世界 up 时退到 +X）。
-				local ux, uy, uz = ex, ey, ez
-				local ulen = math.sqrt(len2)
-				if ulen < 1e-9 then
-					ux, uy, uz = 0, 0, 1
-				else
-					ux, uy, uz = ux / ulen, uy / ulen, uz / ulen
-				end
-				local hx, hy, hz = 0, 0, 1
-				if math.abs(uz) > 0.9 then hx, hy, hz = 1, 0, 0 end
-				nx = uy * hz - uz * hy
-				ny = uz * hx - ux * hz
-				nz = ux * hy - uy * hx
-				local nl = math.sqrt(nx * nx + ny * ny + nz * nz)
-				if nl < 1e-9 then
-					nx, ny, nz = 1, 0, 0
-				else
-					nx, ny, nz = nx / nl, ny / nl, nz / nl
-				end
+				local t = ((px - ax) * ex + (py - ay) * ey + (pz - az) * ez) * inv
+				if t < 0 then t = 0 elseif t > 1 then t = 1 end
+				cx, cy, cz = ax + ex * t, ay + ey * t, az + ez * t
 			end
-			px, py, pz = cx + nx * r, cy + ny * r, cz + nz * r
-			hnx, hny, hnz = nx, ny, nz
+			local dx, dy, dz = px - cx, py - cy, pz - cz
+			local dist = sqrt(dx * dx + dy * dy + dz * dz)
+			if dist < r then
+				hit = true
+				local nx, ny, nz
+				if dist > 1e-6 then
+					nx, ny, nz = dx / dist, dy / dist, dz / dist
+				else
+					-- 落在轴线上：造一个与轴垂直的确定方向（轴接近世界 up 时退到 +X）。
+					local ulen = sqrt(ex * ex + ey * ey + ez * ez)
+					local ux, uy, uz
+					if ulen < 1e-9 then
+						ux, uy, uz = 0, 0, 1
+					else
+						ux, uy, uz = ex / ulen, ey / ulen, ez / ulen
+					end
+					local hx, hy, hz = 0, 0, 1
+					if math.abs(uz) > 0.9 then hx, hy, hz = 1, 0, 0 end
+					nx = uy * hz - uz * hy
+					ny = uz * hx - ux * hz
+					nz = ux * hy - uy * hx
+					local nl = sqrt(nx * nx + ny * ny + nz * nz)
+					if nl < 1e-9 then
+						nx, ny, nz = 1, 0, 0
+					else
+						nx, ny, nz = nx / nl, ny / nl, nz / nl
+					end
+				end
+				px, py, pz = cx + nx * r, cy + ny * r, cz + nz * r
+				hnx, hny, hnz = nx, ny, nz
+			end
 		end
 	end
 	return px, py, pz, hit, hnx, hny, hnz
@@ -1086,11 +1119,13 @@ function M.step_chain(item, dt, apx, apy, apz, qx, qy, qz, qw)
 	end
 	local restDirs, relDevs = item.restDir, item.relDev
 
-	--- 第 index 节"允许的朝向中心"：本节静止方向，叠加上一节的实际偏差。
-	local function centerDir(index)
+	--- 第 index 节"允许的朝向中心"：本节静止方向，叠加上一节的**实际**偏差。
+	--- ⚠️ 做成模块级函数而不是闭包：闭包每条链每个子步都要新建一次
+	--- （341 链 × 2 子步 = 每帧 682 个短命闭包），既慢又喂 GC。
+	local function centerDir(points, restDirs, relDevs, index)
 		local r = restDirs[index]
 		if index == 1 then return r[1], r[2], r[3] end
-		local a, b = p[index - 1], p[index]
+		local a, b = points[index - 1], points[index]
 		local ux, uy, uz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
 		local ul = math.sqrt(ux * ux + uy * uy + uz * uz)
 		if ul < 1e-9 then return r[1], r[2], r[3] end
@@ -1336,7 +1371,7 @@ function M.step_chain(item, dt, apx, apy, apz, qx, qy, qz, qw)
 				local length = math.sqrt(dx * dx + dy * dy + dz * dz)
 				if length > 1e-9 then
 					local tx, ty, tz = dx / length, dy / length, dz / length
-					local cx, cy, cz = centerDir(index)
+					local cx, cy, cz = centerDir(p, restDirs, relDevs, index)
 					if (tx * cx + ty * cy + tz * cz) < math.cos(limit) then
 						-- 把"允许中心"朝当前方向转 limit 弧度，得到边界方向
 						local sx, sy, sz = swing_axis(cx, cy, cz, tx, ty, tz)
@@ -2460,7 +2495,11 @@ function M.attach(S, unit, rig, options)
 	-- 四名玩家穿同一套护甲时每次都重算就是把 attach 的成本又加回去
 	-- （离线实测：不缓存会让"复用节点缓存的节省率"从 ≥50% 掉到 38%）。
 	local colliderSpec, colliderStats = {}, nil
-	if options.colliders ~= false then
+	-- ⚠️ **默认关闭**（2026-11-03 晚）。实测碰撞层吃掉 5.1 ms/帧（341 链 × 5 粒子 ×
+	-- 9 代理 × 4 次迭代 ≈ 6 万次胶囊测试/帧），把 82 fps 压到 58 fps。
+	-- 优化（预计算 + 外接球早退）还没做完，所以先改成**显式 opt-in**：
+	-- 传 `colliders = true` 才建代理。默认路径下求解器里整段空转，行为回到加碰撞之前。
+	if options.colliders == true then
 		-- 用**独立的缓存键**（`<key>:colliders`）而不是塞进 `cachedChains`：
 		-- 链缓存的"有/无"本身是语义（决定走不走抽查路径），往里加字段会打乱那个判断。
 		local colliderKey = cacheKey ~= nil and (cacheKey .. ":colliders") or nil
@@ -3449,6 +3488,9 @@ function M.update_tip(session, dt, maxWrite)
 					slot[at], slot[at + 1], slot[at + 2] = hit[1], hit[2], hit[3]
 				end
 				if not okAll then break end
+				-- 端点定了，就把投影要用的常量算好（轴、1/len²、外接球）。
+				-- 这一句把"每测一个点重算一遍"变成"每帧每代理算一次"。
+				prepareCollider(slot)
 			end
 			if okAll then colliderNums = nums end
 		end
