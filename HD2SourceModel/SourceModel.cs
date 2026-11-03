@@ -183,7 +183,20 @@ public sealed record SourceGeometryPart(
 	int VertexStart,
 	int VertexCount,
 	int TriangleStart,
-	int TriangleCount);
+	int TriangleCount)
+{
+	/// <summary>它在 MDL 里的 bodypart 下标；未知时为 -1。</summary>
+	/// <remarks>
+	/// <b>为什么必须记下来而不是靠顺序推。</b>顶点数为 0 的空变体不会进 <see cref="SourceGeometry.Parts"/>
+	/// （引擎不画它们），所以 <c>Parts</c> 的下标和 MDL 的"第几个 bodypart / 第几个 model"是两套编号。
+	/// 靠顺序对齐就等于假设"空的变体永远在最后"——那份假设一旦破了，切分会把配件挂到别的部位上，
+	/// 而现象只是"某件衣服跑到腿上了"，看不出来是编号错位。
+	/// </remarks>
+	public int BodyPartIndex { get; init; } = -1;
+
+	/// <summary>它在所属 bodypart 里的 model 下标；未知时为 -1。同一 bodypart 的多个 model 互斥（bodygroup 选项）。</summary>
+	public int ModelIndex { get; init; } = -1;
+}
 
 /// <summary>把 MDL + VVD + VTX 三者装配起来的最终几何。</summary>
 public sealed record SourceGeometry(

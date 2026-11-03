@@ -38,6 +38,15 @@ public sealed record MeshGroup(
 	public int TriangleCount => TriangleIndices.Count;
 
 	public int VertexCount => VertexIndices.Count;
+
+	/// <summary>
+	/// 它是所属 bodypart 里的第几个 model（只有 <see cref="MeshGroupKind.Component"/> 有意义）。
+	/// <para>
+	/// 同一 bodypart 的多个 model 在引擎里是<b>互斥</b>的（bodygroup 选项，同一时刻只画一个），
+	/// 挑"默认那一个"时要用这个下标——它就是 MDL 里写着的顺序，不是猜的。
+	/// </para>
+	/// </summary>
+	public int SourceModelIndex { get; init; } = -1;
 }
 
 /// <summary>
@@ -82,10 +91,18 @@ public static class SourceSegmentation
 		var bodyParts = new List<MeshGroup>();
 		var components = new List<(int PartIndex, MeshGroup Group)>();
 
-		// bodypart 名 → 变体数。多变体 = 可切换开关。
-		var variantsByName = new Dictionary<string, int>(StringComparer.Ordinal);
-		foreach (var bodyPart in model.BodyParts)
-			variantsByName[bodyPart.Name] = bodyPart.Models.Count;
+		// bodypart 下标 → 变体数。多变体 = 可切换开关。
+		//
+		// 数是 **MDL 里声明的 model 个数**，空变体也算一个：这些包把"关掉"做成一个 0 顶点的空 model
+		// （Crowbar 的 $bodygroup blank 约定），它本身就是"作者把这一块标成了可切换"的证据。
+		// 所以这里不能只数"有几何的"——那会把配件降级成本体，等于把开关删掉。
+		var variantsByBodyPart = new int[model.BodyParts.Count];
+		var firstIndexOfName = new Dictionary<string, int>(StringComparer.Ordinal);
+		for (var i = 0; i < model.BodyParts.Count; i++)
+		{
+			variantsByBodyPart[i] = model.BodyParts[i].Models.Count;
+			firstIndexOfName.TryAdd(model.BodyParts[i].Name, i);
+		}
 
 		// 固定 bodypart 按部位收三角形；可切换 bodypart 各成一份。
 		var bodyPartTriangles = new Dictionary<BodyRegion, List<int>>();
@@ -95,7 +112,11 @@ public static class SourceSegmentation
 		var partIndex = 0;
 		foreach (var part in geometry.Parts)
 		{
-			var variantCount = variantsByName.GetValueOrDefault(part.BodyPart, 1);
+			// 下标优先用几何自带的那一份（空变体会让"Parts 下标"和"MDL 下标"错位，见 SourceGeometryPart）。
+			var bodyPartIndex = part.BodyPartIndex >= 0 && part.BodyPartIndex < variantsByBodyPart.Length
+				? part.BodyPartIndex
+				: firstIndexOfName.GetValueOrDefault(part.BodyPart, -1);
+			var variantCount = bodyPartIndex >= 0 ? variantsByBodyPart[bodyPartIndex] : 1;
 			if (variantCount > 1)
 			{
 				var triangles = Range(part.TriangleStart, part.TriangleCount);
@@ -103,10 +124,13 @@ public static class SourceSegmentation
 					part.BodyPart,
 					MeshGroupKind.Component,
 					DominantRegion(geometry, vertexRegion, triangles),
-					partIndex,
+					bodyPartIndex,
 					variantCount,
 					triangles,
-					CollectVertices(geometry, triangles))));
+					CollectVertices(geometry, triangles))
+				{
+					SourceModelIndex = part.ModelIndex,
+				}));
 			}
 			else
 			{
@@ -240,7 +264,7 @@ public static class SourceSegmentation
 	}
 
 	/// <summary>
-	/// 把每个配件并进它<b>主导部位</b>的那份本体，得到"只有七份本体"的切分。
+	/// 把每个配件并进它<b>主导部位</b>的那份本体，得到"每个部位一份"的切分。
 	/// <para>
 	/// <b>为什么需要这条路。</b>配件各成一份 Unit 是最终形态，但它要求游戏侧能正确注册并开关
 	/// 几十个 Unit；在那一层还没验证通过之前，把配件融进本体能让<b>模型是完整的</b>，
@@ -252,40 +276,124 @@ public static class SourceSegmentation
 	/// 这里复用同一个判据，不另立一套。
 	/// </para>
 	/// <para>
-	/// ⚠️ 并进来之后那份本体的 <see cref="MeshGroup.SourceBodyPartIndex"/> 仍然是本体自己的，
-	/// 因为"这份 Unit 由哪个 bodypart 切出来"这句话对合并后的网格已经不再成立——
-	/// 保留本体的值比编一个假值更不容易误导下游。
+	/// <b>两条硬规则（实测各踩过一次，两次的现象都是"整个身体不见了"）：</b>
 	/// </para>
+	/// <list type="number">
+	/// <item><b>同一 bodypart 只取一个变体。</b>同 bodypart 的多个 model 在引擎里互斥
+	/// （bodygroup 选项，同一时刻只画一个），全并进去等于把两套衣服叠着画。
+	/// 取 <see cref="MeshGroup.SourceModelIndex"/> 最小的那个——就是 MDL 里的第 0 个，
+	/// 也就是游戏默认显示的那个，不是我们挑的。</item>
+	/// <item><b>没有本体就自己造一份，绝不丢。</b>身体本身也可能是可切换 bodypart
+	/// （"胸大小""体型""衣服开/关"这类开关下挂着的就是整件身体）。这时该部位在固定 bodypart 里
+	/// 一个三角形都没有，等不到"有本体可挂"；照旧丢掉的话，出来的 Unit 只剩头——
+	/// 实测「L4N silent_code_shinano」就是这样：17 个 bodypart 里没有一个是固定的躯干，
+	/// 于是 26 份里 25 份被当配件、全部丢掉，只剩 face + 发型。</item>
+	/// </list>
 	/// </summary>
-	public static IReadOnlyList<MeshGroup> MergeComponentsIntoBodyParts(
+	/// <returns>
+	/// 合并后的每部位网格，以及"这次做了什么取舍 / 补了什么"的说明。
+	/// 说明不是日志装饰：<b>被略过的变体与被补出来的部位都必须让人看得见</b>，
+	/// 否则下一次又是"模型少了一半，产物看不出任何异常"。
+	/// </returns>
+	public static MergeResult MergeComponentsIntoBodyParts(
 		SourceGeometry geometry, IReadOnlyList<MeshGroup> groups)
 	{
 		ArgumentNullException.ThrowIfNull(geometry);
 		ArgumentNullException.ThrowIfNull(groups);
 
-		var bodyParts = groups.Where(group => group.Kind == MeshGroupKind.BodyPart).ToArray();
-		var merged = bodyParts.ToDictionary(
-			group => group.Region,
-			group => new List<int>(group.TriangleIndices));
-		foreach (var component in groups.Where(group => group.Kind == MeshGroupKind.Component))
+		var notes = new List<string>();
+		var merged = new Dictionary<BodyRegion, List<int>>();
+		foreach (var group in groups.Where(group => group.Kind == MeshGroupKind.BodyPart))
+			merged[group.Region] = new List<int>(group.TriangleIndices);
+		var host = groups
+			.Where(group => group.Kind == MeshGroupKind.BodyPart)
+			.ToDictionary(group => group.Region);
+
+		// ① 同一 bodypart 只取默认变体。
+		//
+		// 按 SourceModelIndex 排序后取第一个"有三角形"的：空变体（0 顶点）在 Split 里根本不会成为
+		// 一个 group，所以走到这里的每个变体都自带几何；仍按三角形数兜一层，防止将来有人放宽那一条。
+		var keptComponents = new List<MeshGroup>();
+		var skippedByBodyPart = new List<(MeshGroup Chosen, int SkippedCount, int SkippedTriangles)>();
+		foreach (var sameBodyPart in groups
+			.Where(group => group.Kind == MeshGroupKind.Component)
+			.GroupBy(group => group.SourceBodyPartIndex))
 		{
-			// 没有对应本体（该部位一个三角形都没有）时只能丢掉：没有可以挂上去的 Unit。
-			if (merged.TryGetValue(component.Region, out var target))
-				target.AddRange(component.TriangleIndices);
+			var ordered = sameBodyPart
+				.OrderBy(group => group.SourceModelIndex)
+				.ThenBy(group => group.Name, StringComparer.Ordinal)
+				.ToArray();
+			var chosen = ordered.FirstOrDefault(group => group.TriangleCount > 0) ?? ordered[0];
+			keptComponents.Add(chosen);
+
+			var dropped = ordered.Where(group => !ReferenceEquals(group, chosen) && group.TriangleCount > 0).ToArray();
+			if (dropped.Length != 0)
+				skippedByBodyPart.Add((chosen, dropped.Length, dropped.Sum(group => group.TriangleCount)));
 		}
 
-		var result = new List<MeshGroup>(bodyParts.Length);
-		foreach (var group in bodyParts)
+		// 说明合并成两句：一句"放弃了哪些变体"，一句"补出了哪些部位"。
+		// 逐件各报一行会把通知刷成十几条，而能被采取的动作其实只有两句话那么多。
+		if (skippedByBodyPart.Count != 0)
 		{
-			var triangles = merged[group.Region];
-			triangles.Sort();
-			result.Add(group with
+			notes.Add(
+				$"{skippedByBodyPart.Count} 个可切换部件只并入了默认变体（共放弃 {skippedByBodyPart.Sum(item => item.SkippedTriangles)} 个三角形）："
+				+ string.Join("、", skippedByBodyPart.Select(item => item.Chosen.Name))
+				+ "。同一 bodypart 的变体在源侧互斥（同时画出来会重影），一个 Unit 里只能放一个；"
+				+ "要另一套变体就换变体重转。");
+		}
+
+		// ② 并进各自部位；该部位没有本体就地补一份。
+		var synthesized = new List<BodyRegion>();
+		foreach (var component in keptComponents)
+		{
+			if (!merged.TryGetValue(component.Region, out var target))
 			{
-				TriangleIndices = triangles,
-				VertexIndices = CollectVertices(geometry, triangles),
-			});
+				target = [];
+				merged[component.Region] = target;
+				synthesized.Add(component.Region);
+			}
+
+			target.AddRange(component.TriangleIndices);
 		}
 
-		return result;
+		if (synthesized.Count != 0)
+		{
+			notes.Add(
+				$"部位 {string.Join("、", synthesized.OrderBy(region => region).Select(region => region.Name()))} "
+				+ "在源模型的固定 bodypart 里没有任何三角形（整块几何都挂在可切换部件里），已各自补出一份本体 Unit；"
+				+ "不补的话这些部位的几何会被整段丢掉。");
+		}
+
+		// 输出顺序 = 部位顺序（槽位升序），补出来的部位也按这个顺序落位。
+		var result = new List<MeshGroup>(merged.Count);
+		foreach (var region in BodyRegions.All)
+		{
+			if (!merged.TryGetValue(region, out var triangles) || triangles.Count == 0)
+				continue;
+
+			triangles.Sort();
+			var template = host.GetValueOrDefault(region);
+			result.Add(template is null
+				? new MeshGroup(
+					region.Name(),
+					MeshGroupKind.BodyPart,
+					region,
+					-1,
+					1,
+					triangles,
+					CollectVertices(geometry, triangles))
+				: template with
+				{
+					TriangleIndices = triangles,
+					VertexIndices = CollectVertices(geometry, triangles),
+				});
+		}
+
+		return new MergeResult(result, notes);
 	}
+
+	/// <summary><see cref="MergeComponentsIntoBodyParts"/> 的结果。</summary>
+	/// <param name="Groups">每个部位一份，按槽位升序。</param>
+	/// <param name="Notes">这次的取舍说明：略过的变体、补出来的部位。</param>
+	public sealed record MergeResult(IReadOnlyList<MeshGroup> Groups, IReadOnlyList<string> Notes);
 }

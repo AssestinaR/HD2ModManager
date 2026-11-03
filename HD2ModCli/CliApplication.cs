@@ -2615,20 +2615,32 @@ public static class CliApplication
 			// 而它的失败现象是"整件身体不见了"——那种失败会把材质的问题一起遮住。
 			var wanted = invocation.Options.Components;
 			IEnumerable<Segmentation.MeshGroup> selected;
+			// 切分/合并自己看到的取舍（哪些部位没有固定本体、哪些变体没并进去）。
+			// 这些是"产物看起来正常但模型缺了一块"的唯一线索，必须跟着报告走。
+			//
+			// merge 模式下只用合并给的说明：切分那句"部位 X 没有任何三角形"在补位成功之后
+			// 就不再是结论（部位是有的，只是没长在固定 bodypart 里），留着会让通知里出现
+			// 六条自相矛盾的告警。
+			var segmentationNotes = new List<string>();
 			if (string.IsNullOrWhiteSpace(wanted) || wanted.Equals("merge", StringComparison.OrdinalIgnoreCase))
 			{
-				selected = SourceSegmentation.MergeComponentsIntoBodyParts(inputs.Geometry, split.Groups);
+				var merged = SourceSegmentation.MergeComponentsIntoBodyParts(inputs.Geometry, split.Groups);
+				segmentationNotes.AddRange(merged.Notes);
+				selected = merged.Groups;
 			}
 			else if (wanted.Equals("none", StringComparison.OrdinalIgnoreCase))
 			{
+				segmentationNotes.AddRange(split.Diagnostics);
 				selected = split.Groups.Where(group => group.Kind == MeshGroupKind.BodyPart);
 			}
 			else if (wanted.Equals("all", StringComparison.OrdinalIgnoreCase))
 			{
+				segmentationNotes.AddRange(split.Diagnostics);
 				selected = split.Groups;
 			}
 			else
 			{
+				segmentationNotes.AddRange(split.Diagnostics);
 				var names = wanted.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
 					.ToHashSet(StringComparer.OrdinalIgnoreCase);
 				selected = split.Groups.Where(group =>
@@ -2764,6 +2776,9 @@ public static class CliApplication
 				materialConverter: materialConverter,
 				unitIdSeed: reusedUnitIdSeed,
 				idNamespace: ResolveIdNamespace(invocation.Options)).ConfigureAwait(false);
+
+			if (segmentationNotes.Count != 0)
+				package = package with { Warnings = [.. package.Warnings, .. segmentationNotes] };
 
 			// 登记素体。**只写工作区**（`<mod库>/.hd2modmanager/armor-registry.workspace.json`），
 			// 由管理器自己把它编译成 `armor-registry.protocol`——直接改协议文件会被下一次应用覆盖。
@@ -3358,20 +3373,32 @@ public static class CliApplication
 		// 而它的失败现象是"整件身体不见了"——那种失败会把材质的问题一起遮住。
 		var wanted = options.Components;
 		IEnumerable<MeshGroup> selected;
+		// 切分/合并自己看到的取舍（哪些部位没有固定本体、哪些变体没并进去）。
+		// 这些是"产物看起来正常但模型缺了一块"的唯一线索，必须跟着报告走。
+		//
+		// merge 模式下只用合并给的说明：切分那句"部位 X 没有任何三角形"在补位成功之后
+		// 就不再是结论（部位是有的，只是没长在固定 bodypart 里），留着会让通知里出现
+		// 六条自相矛盾的告警。
+		var segmentationNotes = new List<string>();
 		if (string.IsNullOrWhiteSpace(wanted) || wanted.Equals("merge", StringComparison.OrdinalIgnoreCase))
 		{
-			selected = SourceSegmentation.MergeComponentsIntoBodyParts(inputs.Geometry, split.Groups);
+			var merged = SourceSegmentation.MergeComponentsIntoBodyParts(inputs.Geometry, split.Groups);
+			segmentationNotes.AddRange(merged.Notes);
+			selected = merged.Groups;
 		}
 		else if (wanted.Equals("none", StringComparison.OrdinalIgnoreCase))
 		{
+			segmentationNotes.AddRange(split.Diagnostics);
 			selected = split.Groups.Where(group => group.Kind == MeshGroupKind.BodyPart);
 		}
 		else if (wanted.Equals("all", StringComparison.OrdinalIgnoreCase))
 		{
+			segmentationNotes.AddRange(split.Diagnostics);
 			selected = split.Groups;
 		}
 		else
 		{
+			segmentationNotes.AddRange(split.Diagnostics);
 			var names = wanted.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
 				.ToHashSet(StringComparer.OrdinalIgnoreCase);
 			selected = split.Groups.Where(group =>
@@ -3465,6 +3492,9 @@ public static class CliApplication
 			materialScope: scope,
 			idNamespace: ResolveIdNamespace(options),
 			onProgress: ReportAssembleProgress).ConfigureAwait(false);
+
+		if (segmentationNotes.Count != 0)
+			package = package with { Warnings = [.. package.Warnings, .. segmentationNotes] };
 
 		// 顺手产出 `sections.json`：这个 patch 里每个 unit 的每个 section 落在 TOC 的哪个偏移、
 		// 原本的 numIndices 是多少。管理器的"衣物装饰组件"树靠它画，烘焙靠它写回原值。

@@ -121,7 +121,11 @@ public static class SourceGeometryBuilder
 					partVertexStart,
 					outputVertices.Count - partVertexStart,
 					partTriangleStart,
-					triangles.Count - partTriangleStart));
+					triangles.Count - partTriangleStart)
+				{
+					BodyPartIndex = bodyPartIndex,
+					ModelIndex = modelIndex,
+				});
 			}
 		}
 

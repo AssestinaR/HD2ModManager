@@ -129,15 +129,16 @@ public sealed class RealSegmentationTests
 	}
 
 	/// <summary>
-	/// 配件并进本体之后仍然是"不重不漏"，而且<b>只出七份本体</b>。
+	/// 配件并进本体之后仍然是"不重不漏"（已并进去的那部分），而且<b>每份本体都在</b>。
 	/// <para>
-	/// 这是 <c>source convert</c> 的默认路径（<c>--components merge</c>），也是当前唯一在用的路径：
+	/// 这是 <c>vpk2patch</c> / <c>source convert</c> 的默认路径（<c>--components merge</c>）：
 	/// 几十个 Unit 的注册与开关还没验证通过，先把配件融进本体，让模型是完整的，
 	/// 才能把"材质对不对"和"Unit 注册对不对"分开查。
 	/// </para>
 	/// <para>
-	/// 并进来之后两份配件如果落到同一个部位，它们必须各自完整地进去——
-	/// 所以这里既查总数，也查每份本体的三角形数<b>不少于</b>它原本体部分的数量。
+	/// 合并有两条硬规则（都有过"整个身体不见了"的实测）：<b>同一 bodypart 只取默认变体</b>
+	/// （变体在源侧互斥，全并进去等于两套衣服叠着画），以及<b>没有本体就地补一份</b>
+	/// （身体本身也可能挂在可切换 bodypart 里）。所以这里既查覆盖，也查"补位"这件事真的发生了。
 	/// </para>
 	/// </summary>
 	[Fact]
@@ -147,10 +148,10 @@ public sealed class RealSegmentationTests
 		if (split is null)
 			return;
 
-		var merged = SourceSegmentation.MergeComponentsIntoBodyParts(geometry, split.Groups);
+		var merged = SourceSegmentation.MergeComponentsIntoBodyParts(geometry, split.Groups).Groups;
 
 		Assert.All(merged, group => Assert.Equal(MeshGroupKind.BodyPart, group.Kind));
-		Assert.Equal(split.BodyParts.Count(), merged.Count);
+		Assert.Equal(BodyRegions.All.Count(region => merged.Any(group => group.Region == region)), merged.Count);
 
 		var owner = new Dictionary<int, string>();
 		var overlaps = new List<string>();
@@ -164,14 +165,13 @@ public sealed class RealSegmentationTests
 		}
 
 		Assert.Empty(overlaps.Take(5));
-		Assert.Equal(geometry.Triangles.Count, owner.Count);
 
-		// 每份本体的三角形必须"只增不减"，且顶点表与三角形表一致（并进来的配件顶点也要在里面）。
+		// 没被并进来的只能是"非默认变体的三角形"——固定 bodypart 的三角形必须一个不少。
+		var fixedTriangles = split.BodyParts.SelectMany(group => group.TriangleIndices).ToHashSet();
+		Assert.All(fixedTriangles, index => Assert.True(owner.ContainsKey(index), $"固定 bodypart 的三角形 {index} 被丢了"));
+
 		foreach (var group in merged)
 		{
-			var original = split.BodyParts.Single(part => part.Region == group.Region);
-			Assert.True(group.TriangleCount >= original.TriangleCount,
-				$"{group.Name} 合并后反而少了三角形");
 			Assert.Equal(group.TriangleIndices.OrderBy(value => value), group.TriangleIndices);
 			Assert.Equal(group.VertexIndices.OrderBy(value => value), group.VertexIndices);
 
