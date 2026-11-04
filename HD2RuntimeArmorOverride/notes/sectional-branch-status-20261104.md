@@ -135,3 +135,54 @@ E:\mod\lunalice_bill\
 
 **不能确定的原因**：12:53 前后本机有两个会话在工作（本会话的 U0 子代理在 12:20–12:50 读库；
 另一个会话在做材质方向）。我没有证据指向任何一方，只能说清事实与时间点。
+
+---
+
+## 掩码链第三层（Core 删除）：试过一次，已回退，附正确顺序
+
+**结论：这一层不是"删几个文件"，删除顺序错了会连锁。我试了一次，三次索引算错、连锁出四处编译错误，已整体回退到 `3be56ee`。下面是摸清楚的东西。**
+
+### 真正的障碍：`WardrobeTreeViewModel` 里有一条死分支
+
+它现在只剩 VPK 那条活路（`IWardrobeTreeToggleStore`），但还留着护甲掩码编辑器的半截：
+
+```
+WardrobeTreeViewModel
+  ├ 字段 workspacePath / workspace / followSource
+  ├ 构造 (string workspacePath)
+  ├ 属性 FollowSource        ← 里面调 WardrobeTree.MakeOwn / MakeInherit + Save()
+  └ 方法 Load(uint,…) / Save() / Refresh()
+        ↓ 依赖
+  WardrobeWorkspaceFile（读写字 wardrobe.workspace.json）
+  WardrobeWorkspace / WardrobeWorkspaceArmour / WardrobeMaskMode
+  WardrobeTree.SetEnabled / MakeOwn / MakeInherit / Replace / Counts(workspace)
+  WardrobeMaskDiagnostic  ← 它声明在 WardrobeMasks.cs 里，所以删那个文件会连带打断 WorkspaceFile
+```
+
+### 必须先做的一件事
+
+`WardrobeMasks.cs` 里**混着两样东西**：
+
+- **活的**：`WardrobeSectionIdentity` + `WardrobeSectionFingerprint`
+  （`sections.json`、`ModInformationCenter`、`WardrobeSectionSource` 都在用）；
+- **死的**：`WardrobeMaskDocument` / `WardrobeMaskEntry` / `WardrobeMaskView` / `WardrobeMaskDiagnostic`。
+
+**先把活的拆到 `WardrobeSectionFingerprint.cs`，再删文件。**
+
+### 正确的删除顺序（按依赖方向，从消费者到被消费者）
+
+| 步 | 删什么 | 为什么在这一步 |
+|---|---|---|
+| 0 | 把 `WardrobeSectionIdentity` + `WardrobeSectionFingerprint` 拆出去 | 它们是活的，混在要被删的文件里 |
+| 1 | `WardrobeTreeViewModel` 的 workspace 分支（字段 / 构造 / `FollowSource` / `Load` / `Save` / `Refresh` 里的工作区部分） | 它是**唯一的消费者**，先断开才谈得上删别的 |
+| 2 | `WardrobeTree` 的 `SetEnabled` / `MakeOwn` / `MakeInherit` / `Replace` / `Counts(workspace)` | 只有第 1 步在用 |
+| 3 | `WardrobeWorkspaceFile` + `WardrobeWorkspace` | 只有第 1 步在用 |
+| 4 | `WardrobeMasks.cs`（掩码文档与视图）+ `WardrobeMaskCompiler` / `WardrobeMaskProjection` / `WardrobeMaskFile` | 第 1–3 步清完之后它们才没有消费者 |
+| 5 | 四个测试文件 + `WardrobeCliTests` 里 compile/validate/project 那批 | 跟代码一起删 |
+
+### 我的教训
+
+**我按"从叶子往上"删（先删 `WardrobeMasks.cs` 这类被依赖的类型），方向反了。**
+依赖方向要求**从消费者往被消费者**删。另外在这种 400+ 行的文件里靠"往上找 `/// <summary>`、往下找 `}"` 猜方法边界"是不可靠的——
+我因此把 `RunSectionsAsync` 一起删掉过一次。正确做法是先 `rg -n '^\t(internal|private) static'` 拿到准确行号，
+再按**降序**用显式区间删。
