@@ -105,8 +105,63 @@ public sealed class SectionalSplitterPatchOverlayTests : IDisposable
 			async () => await SectionalSplitter.ReadMergedEntriesAsync(_directory));
 	}
 
-	private void WriteFake(string name)
-		=> File.WriteAllBytes(Path.Combine(_directory, name), [0]);
+
+	[Fact]
+	public void RemoveConsumedPatches_DeletesFoldedPatchesAndTheirSidecars()
+	{
+		var kept = WriteFake("9ba626afa44a3aa3.patch_0");
+		var folded = WriteFake("9ba626afa44a3aa3.patch_1");
+		var foldedStream = WriteFake("9ba626afa44a3aa3.patch_1.stream");
+		var foldedGpu = WriteFake("9ba626afa44a3aa3.patch_1.gpu_resources");
+		var warnings = new List<string>();
+
+		var removed = SectionalSplitter.RemoveConsumedPatches([kept, folded], _directory, kept, warnings);
+
+		Assert.Equal(1, removed);
+		Assert.True(File.Exists(kept));
+		Assert.False(File.Exists(folded));
+		Assert.False(File.Exists(foldedStream));
+		Assert.False(File.Exists(foldedGpu));
+		Assert.Contains(warnings, warning => warning.Contains("折叠"));
+	}
+
+	[Fact]
+	public void RemoveConsumedPatches_SinglePatch_DoesNothing()
+	{
+		var kept = WriteFake("9ba626afa44a3aa3.patch_0");
+		var warnings = new List<string>();
+
+		var removed = SectionalSplitter.RemoveConsumedPatches([kept], _directory, kept, warnings);
+
+		Assert.Equal(0, removed);
+		Assert.True(File.Exists(kept));
+		Assert.Empty(warnings);
+	}
+
+	[Fact]
+	public void RemoveConsumedPatches_WritingElsewhere_LeavesSourcesAlone()
+	{
+		var kept = WriteFake("9ba626afa44a3aa3.patch_0");
+		var folded = WriteFake("9ba626afa44a3aa3.patch_1");
+		var other = Path.Combine(_directory, "elsewhere");
+		Directory.CreateDirectory(other);
+		var warnings = new List<string>();
+
+		// 产物写到别的目录：源目录一个文件都不该动。
+		var removed = SectionalSplitter.RemoveConsumedPatches(
+			[kept, folded], other, Path.Combine(other, Path.GetFileName(kept)), warnings);
+
+		Assert.Equal(0, removed);
+		Assert.True(File.Exists(kept));
+		Assert.True(File.Exists(folded));
+	}
+
+	private string WriteFake(string name)
+	{
+		var path = Path.Combine(_directory, name);
+		File.WriteAllBytes(path, [0]);
+		return path;
+	}
 
 	private async Task<string> WritePatchAsync(string name, IReadOnlyList<(ulong TypeId, ulong FileId)> keys)
 	{

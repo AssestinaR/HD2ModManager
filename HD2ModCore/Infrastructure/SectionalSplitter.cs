@@ -245,9 +245,33 @@ public static class SectionalSplitter
 
 		Directory.CreateDirectory(outputDirectory);
 		var fileName = ResolveOutputFileName(sources.HeaderTemplatePatchPath);
-		await new CanonicalPatchWriter()
-			.WriteAsync(session, outputDirectory, fileName, ReadHeaderTemplate(sources.HeaderTemplatePatchPath), overwriteExisting: true, cancellationToken)
-			.ConfigureAwait(false);
+		// 头部模板必须在覆盖之前读：搬回去之后源文件就没了。
+		var headerTemplate = ReadHeaderTemplate(sources.HeaderTemplatePatchPath);
+
+		// **就地写会把自己锁死。** writer 用 `FileShare.None` 打开目标文件，而它拷贝 payload 时
+		// 读的又是**源 patch**——产物名与源 patch 同名同目录时，同一份文件既要写又要读，
+		// Windows 上直接报"文件正被另一进程使用"。所以就地覆盖时先进暂存目录，写完再搬回去。
+		var outputFull = Path.GetFullPath(outputDirectory);
+		var sourceFull = Path.GetFullPath(Path.GetDirectoryName(sources.HeaderTemplatePatchPath) ?? string.Empty);
+		var inPlace = string.Equals(outputFull, sourceFull, StringComparison.OrdinalIgnoreCase);
+		var writeDirectory = inPlace
+			? Path.Combine(outputDirectory, ".sectional-staging-" + Guid.NewGuid().ToString("N"))
+			: outputDirectory;
+		try
+		{
+			await new CanonicalPatchWriter()
+				.WriteAsync(session, writeDirectory, fileName, headerTemplate, overwriteExisting: true, cancellationToken)
+				.ConfigureAwait(false);
+			if (inPlace)
+			{
+				foreach (var produced in ProducedFileNames(fileName))
+					MoveIfExists(Path.Combine(writeDirectory, produced), Path.Combine(outputDirectory, produced));
+			}
+		}
+		finally
+		{
+			if (inPlace) TryDeleteDirectory(writeDirectory);
+		}
 
 		var patchPath = Path.Combine(outputDirectory, fileName);
 		var sections = await WardrobeSectionMapFile.BuildAsync(patchPath, cancellationToken).ConfigureAwait(false);
@@ -265,28 +289,48 @@ public static class SectionalSplitter
 		// 叠加成一个 patch 之后，被折叠掉的源 patch **必须删掉**：它们还在目录里就会在部署时
 		// 重新覆盖产物，用户看到的是"拆了但没生效"。只在"产物写回源目录"时才删——
 		// 输出到别的目录时源目录不该被碰。
-		var consumed = RemoveConsumedPatches(sources, outputDirectory, Path.GetFullPath(patchPath), warnings);
+		var consumed = RemoveConsumedPatches(sources.ConsumedPatches, outputDirectory, Path.GetFullPath(patchPath), warnings);
 
 		return new SectionalSplitResult(patchPath, plan, groups, sections.Document, warnings) { RemovedSourcePatchCount = consumed };
+	}
+
+	/// <summary>writer 一次产出的三个文件（主文件 + 两份 sidecar）。</summary>
+	private static IReadOnlyList<string> ProducedFileNames(string patchFileName)
+		=> [patchFileName, patchFileName + ".stream", patchFileName + ".gpu_resources"];
+
+	private static void MoveIfExists(string source, string destination)
+	{
+		if (!File.Exists(source)) return;
+		File.Move(source, destination, overwrite: true);
+	}
+
+	private static void TryDeleteDirectory(string directory)
+	{
+		try
+		{
+			if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+		}
+		catch (IOException) { }
+		catch (UnauthorizedAccessException) { }
 	}
 
 	/// <summary>
 	/// 删掉参与叠加、但**没有成为产物**的那些源 patch（含它们的 <c>.stream</c> / <c>.gpu_resources</c>）。
 	/// 返回删掉的数量。产物目录与源目录不一致时什么都不做。
 	/// </summary>
-	private static int RemoveConsumedPatches(
-		SourceSet sources,
+	internal static int RemoveConsumedPatches(
+		IReadOnlyList<string> consumedPatches,
 		string outputDirectory,
 		string producedPatchPath,
 		List<string> warnings)
 	{
-		if (sources.ConsumedPatches.Count <= 1) return 0;
+		if (consumedPatches.Count <= 1) return 0;
 		var outputFull = Path.GetFullPath(outputDirectory);
-		var sourceDirectory = Path.GetFullPath(Path.GetDirectoryName(sources.ConsumedPatches[0]) ?? string.Empty);
+		var sourceDirectory = Path.GetFullPath(Path.GetDirectoryName(consumedPatches[0]) ?? string.Empty);
 		if (!string.Equals(outputFull, sourceDirectory, StringComparison.OrdinalIgnoreCase)) return 0;
 
 		var removed = 0;
-		foreach (var patch in sources.ConsumedPatches)
+		foreach (var patch in consumedPatches)
 		{
 			var full = Path.GetFullPath(patch);
 			if (string.Equals(full, producedPatchPath, StringComparison.OrdinalIgnoreCase)) continue;
