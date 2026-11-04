@@ -44,6 +44,48 @@ public static class SectionalSplitter
 		=> Path.GetFileName(sourcePatchPath);
 
 	/// <summary>
+	/// 从一组 patch 里挑出**装着几何的那个**：unit 条目最多的那个。
+	/// <para>
+	/// <b>为什么需要挑。</b>一个真实 Mod 目录常常不止一个 patch（实测 18 个分件 Mod 里 4 个有
+	/// <c>patch_0</c> + <c>patch_1</c>），但几何集中在一个里面 —— 双 patch 那种 <c>patch_1</c>
+	/// 只有几 KB，是附属小文件。拆件只需要动带 unit 的那个；其余原样留着，
+	/// 覆盖它们反而会把不该动的成员打乱。
+	/// </para>
+	/// <para>
+	/// 平局时按文件名序取第一个，保证同一批输入每次挑到同一个，产物可复现。
+	/// </para>
+	/// </summary>
+	/// <exception cref="InvalidOperationException">一个 patch 里都没有 unit 条目。</exception>
+	public static async ValueTask<string> SelectSourcePatchAsync(
+		IReadOnlyList<string> patchPaths,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(patchPaths);
+		if (patchPaths.Count == 0)
+			throw new InvalidOperationException("没有可拆件的 patch 文件。");
+		if (patchPaths.Count == 1)
+			return patchPaths[0];
+
+		string? best = null;
+		var bestCount = -1;
+		foreach (var path in patchPaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var entries = await new AdaptationScanner().ScanEntriesAsync(path, cancellationToken).ConfigureAwait(false);
+			var unitCount = entries.Count(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId);
+			if (unitCount > bestCount)
+			{
+				best = path;
+				bestCount = unitCount;
+			}
+		}
+
+		return bestCount > 0 && best is not null
+			? best
+			: throw new InvalidOperationException("这组 patch 里没有任何 unit 条目，无法拆件。");
+	}
+
+	/// <summary>
 	/// 只读预演：读源 patch、跑规划器、把结论说出来。<b>不写任何文件。</b>
 	/// </summary>
 	public static async ValueTask<(SectionalSplitPlan Plan, IReadOnlyList<string> Warnings)> PlanAsync(

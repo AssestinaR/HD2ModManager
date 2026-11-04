@@ -45,7 +45,10 @@ public partial class ModDetailsPageViewModel
         PageActions.Add(new PageActionViewModel(PageActionKind.Package, "Patch 资源重打包", PatchResourceRepackagingCommand, order: 33));
         PageActions.Add(new PageActionViewModel(PageActionKind.Helmet, "头盔合并到盔甲并输出", PlanHelmetToArmorMergeCommand, order: 50));
         PageActions.Add(new PageActionViewModel(PageActionKind.Merge, HelmetMergeToggleText, ToggleHelmetToArmorMergeCommand, order: 51));
-        PageActions.Add(new PageActionViewModel(PageActionKind.CustomModel, "一键转为自定义素体", ConvertToCustomModelCommand, tone: PageActionTone.Danger, order: 60));
+        // 名字改成「生成sectional版」：产出不再只是一具自定义素体，而是**带 section 组的**产物
+        // （7 标准槽 × 身形，每块几何能在游戏里单独开关），生成完直接进库。
+        // 原来那套"只转自定义素体"的用法已被它完全覆盖，所以不再另留入口。
+        PageActions.Add(new PageActionViewModel(PageActionKind.CustomModel, "生成sectional版", ConvertToCustomModelCommand, tone: PageActionTone.Primary, order: 60));
         PageActions.Add(new PageActionViewModel(PageActionKind.PatchRebuild, "重构 patch", RebuildSameKeyCommand, order: 71));
 
         SyncActionVisibility();

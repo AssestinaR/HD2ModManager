@@ -1,4 +1,5 @@
 using System.IO;
+using HD2ModAdaptation.PatchReconstruction;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Services;
@@ -52,8 +53,31 @@ public partial class ModDetailsPageViewModel
 				var gameData = SettingsService.GetGameDataFolder();
 				var result = await Task.Run(() => converter.GenerateAsync(freshFacts, selected, name, output, gameData, token, progress), token);
 				task?.SetOutputArtifacts(result.OutputDirectory, result.DefinitionPath);
+
+				// 拆件：把换甲产物按「7 标准槽 × 身形」重排，让每块几何都能在游戏里单独开关。
+				//
+				// 只拆**装着几何的那个 patch**：真实 Mod 目录常常不止一个 patch
+				// （实测 18 个分件 Mod 里 4 个有 patch_0 + patch_1），但几何集中在一个里面，
+				// patch_1 那种只有几 KB，是附属小文件。覆盖它们会把不该动的成员打乱。
+				task?.UpdateStage("正在拆件：按 7 槽 × 身形重排 section 组");
+				task?.UpdateProgress(null);
+				var unitPatch = await SectionalSplitter
+					.SelectSourcePatchAsync(PhysBoneCarrier.EnumeratePatchFiles(result.OutputDirectory).ToArray(), token)
+					.ConfigureAwait(true);
+				var split = await SectionalSplitter
+					.ExecuteAsync(unitPatch, gameData, result.OutputDirectory, token)
+					.ConfigureAwait(true);
+				if (!split.IsValid)
+				{
+					throw new InvalidOperationException(
+						"拆件失败，已保留已生成的产物但不会导入；请查看 " + result.OutputDirectory
+						+ (split.Warnings.Count == 0 ? string.Empty : "：" + string.Join("；", split.Warnings)));
+				}
+
 				await shell.ReloadArmorRegistryWorkspaceAsync();
-				operation.Status = $"已生成 {result.Model.Pieces?.Count} 个组件：{result.OutputDirectory}";
+				var mergedSlots = split.Plan.Targets.Count(target => target.DonorUnitIds.Count != 0);
+				operation.Status = $"已生成 {result.Model.Pieces?.Count} 个组件 · {split.Groups.Groups.Count} 个 section 组"
+					+ (mergedSlots == 0 ? "（每块一块，无需合并）" : $"（{mergedSlots} 个槽发生过合并）");
 
 				// **必须导入成 Mod，没有"只生成不导入"这条路。**
 				//
