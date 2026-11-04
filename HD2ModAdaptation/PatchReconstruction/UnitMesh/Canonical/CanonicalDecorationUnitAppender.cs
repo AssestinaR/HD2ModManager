@@ -40,7 +40,8 @@ public sealed class CanonicalDecorationUnitAppender
 		IReadOnlyDictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>> inputsByTargetMesh,
 		UnitTransformInfo avatarTransformInfo,
 		bool replaceTargetGeometry = false,
-		CanonicalCullingBoundsMode cullingBounds = CanonicalCullingBoundsMode.Preserve)
+		CanonicalCullingBoundsMode cullingBounds = CanonicalCullingBoundsMode.Preserve,
+		bool uniqueSlotPerSection = false)
     {
         ArgumentNullException.ThrowIfNull(targetUnit);
 		ArgumentNullException.ThrowIfNull(inputsByTargetMesh);
@@ -102,7 +103,7 @@ public sealed class CanonicalDecorationUnitAppender
 				diagnostics.AddRange(transform.Diagnostics);
 				if (!transform.IsValid) return new(null, diagnostics);
 				var start = nextSectionStart;
-				var sourceBindings = BuildMaterialProvenance(source, input.Fragment.RawMesh, group.TargetRaw, start, group.TargetMesh.Index, input.MaterialNamespace, diagnostics);
+				var sourceBindings = BuildMaterialProvenance(source, input.Fragment.RawMesh, group.TargetRaw, start, group.TargetMesh.Index, input.MaterialNamespace, diagnostics, uniqueSlotPerSection);
 				if (diagnostics.Count != 0) return new(null, diagnostics);
 				materialProvenance.AddRange(sourceBindings);
 				origins.AddRange(input.Fragment.RawMesh.Sections.Select((_, section) => new CanonicalAppendSectionOrigin(start + section, sourceIndex, section)));
@@ -164,7 +165,8 @@ public sealed class CanonicalDecorationUnitAppender
 
     private static IReadOnlyList<CanonicalMaterialSectionProvenance> BuildMaterialProvenance(
         UnitMeshModel source, UnitRawMeshData sourceRaw, UnitRawMeshData targetRaw, int finalSectionStart,
-        int targetMeshInfoIndex, ulong materialNamespace, List<CanonicalPlanDiagnostic> diagnostics)
+        int targetMeshInfoIndex, ulong materialNamespace, List<CanonicalPlanDiagnostic> diagnostics,
+        bool uniqueSlotPerSection = false)
     {
         var resolved = CanonicalMaterialBindingResolver.Resolve(source, sourceRaw, targetRaw);
         diagnostics.AddRange(resolved.Diagnostics);
@@ -180,12 +182,56 @@ public sealed class CanonicalDecorationUnitAppender
                 break;
             }
             var binding = resolved.ResolvedSectionBindings[visible++];
+            if (uniqueSlotPerSection)
+            {
+                // 每段独占一个槽：段边界才保得住。
+                // 材质槽分配器在 UsesTargetUnitMaterialSlotLookup=true 时会拿"目标该材质的第 k 个槽"
+                // 复用（occurrence 语义），于是 donor 的段会并进目标那一段 —— 那正是"两块几何
+                // 同生共死"的来源。改走普通来源路径 + 一个每段唯一的 PreferredTargetSlotId，
+                // 槽就不再复用（多个槽指向同一个 MaterialId 是合法的，产品代码本来就会产出这种表）。
+                result.Add(new(targetMeshInfoIndex, finalSectionStart + sectionIndex, materialNamespace,
+                    binding.SourceSlotId, UniqueSlotFor(finalSectionStart + sectionIndex, binding.MaterialId),
+                    binding.MaterialId,
+                    UsesTargetUnitMaterialSlotLookup: false, PreferMeshLocalSlotReuse: false));
+                continue;
+            }
+
             result.Add(new(targetMeshInfoIndex, finalSectionStart + sectionIndex, materialNamespace,
                 binding.SourceSlotId, binding.PreferredTargetSlotId, binding.MaterialId,
                 binding.UsesTargetUnitMaterialSlotLookup, PreferMeshLocalSlotReuse: true));
         }
         return result;
     }
+
+	/// <summary>
+	/// 按 (最终段下标, 材质 id) 算一个稳定的槽 id。
+	/// <para>
+	/// 只要"同一份产物里每段不同、重跑一次还是同一个"就够 —— 它不需要好看，
+	/// 也不需要跨构建稳定（换甲会整体重建）。碰撞由材质槽分配器的 occupied 兜底。
+	/// </para>
+	/// <para>
+	/// <b>public 是刻意的</b>：拆件器（Core）要复用它，测试也要直接钉住它的性质。
+	/// </para>
+	/// </summary>
+	public static uint UniqueSlotFor(int finalSectionIndex, ulong materialId)
+	{
+		ulong hash = 14695981039346656037UL;
+		void Mix(ulong value)
+		{
+			for (var index = 0; index < sizeof(ulong); index++)
+			{
+				hash ^= (byte)(value >> (index * 8));
+				hash *= 1099511628211UL;
+			}
+		}
+
+		Mix(unchecked((uint)finalSectionIndex));
+		Mix(materialId);
+		var slot = unchecked((uint)(hash ^ (hash >> 32)));
+		// 0 与默认材质槽（155175220，见 CanonicalUnitMaterialLayoutCompiler.DefaultMaterialSlotId）
+		// 都是保留值，撞上会让"这一段没有材质"。
+		return slot == 0 || slot == 155175220u ? 1u : slot;
+	}
 
 	// SDK GetMeshData groups all Blender faces that share one material slot into one
 	// RawMaterial section. object.join may leave multiple source sections with the same
