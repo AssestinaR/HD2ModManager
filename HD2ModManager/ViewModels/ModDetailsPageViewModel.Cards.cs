@@ -29,7 +29,6 @@ public static class ModDetailsCardLayout
     public const string DescriptionCardId = "mod-description";
     public const string VpkActionsCardId = "vpk-actions";
     public const string VpkComponentsCardId = "vpk-components";
-    public const string DecorationCardId = "decoration-details";
     public const string UserStatusCardId = "user-status";
     public const string AssetTagsCardId = "asset-tags";
     public const string CompatibilityCardId = "model-compatibility";
@@ -49,7 +48,6 @@ public static class ModDetailsCardLayout
                 Title = "衣物装饰组件",
                 HeaderContent = new CardHeaderAction("应用", applyVpkComponentsCommand)
             },
-            new CardDescriptor(DecorationCardId, CardKind.DecorationDetails, data) { Order = 60, Title = "装饰详情" },
             new CardDescriptor(UserStatusCardId, CardKind.UserStatus, data) { Order = 70, Title = "当前状态" },
             new CardDescriptor(AssetTagsCardId, CardKind.AssetTags, data) { Order = 80, Title = "资产标签" },
             new CardDescriptor(CompatibilityCardId, CardKind.ModelCompatibility, data) { Order = 90, Title = "模型兼容性" },
@@ -70,7 +68,6 @@ public static class ModDetailsCardLayout
                 DescriptionCardId => state.HasDescription,
                 VpkActionsCardId => state.IsVpkMod,
                 VpkComponentsCardId => state.ShowVpkComponentCard,
-                DecorationCardId => state.IsDecoration,
                 UserStatusCardId => state.ShowUserStatusCard,
                 AssetTagsCardId => state.CanUsePatchTools,
                 CompatibilityCardId => state.ShowOutdatedCompatibility,

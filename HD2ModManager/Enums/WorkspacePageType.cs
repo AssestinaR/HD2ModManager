@@ -14,8 +14,6 @@ namespace HD2ModManager.Enums
         CrossArmorPlan,
         MaterialPackaging,
         PatchResourceRepackaging,
-        DecorationPlan,
-        BatchDecorationPlan,
         HelmetToArmorMergePlan,
         ArmorRegistry,
     }

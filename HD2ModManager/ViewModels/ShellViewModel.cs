@@ -824,32 +824,6 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        public void OpenDecorationPlan(string sourceModId)
-        {
-            if (string.IsNullOrWhiteSpace(sourceModId)) return;
-            _editingDecorationId = null;
-            ClearTransientSelection();
-            SelectedModId = sourceModId;
-            OpenSinglePage(WorkspacePageType.DecorationPlan);
-        }
-
-        public void OpenDecorationEditor(string decorationId)
-        {
-            if (string.IsNullOrWhiteSpace(decorationId)) return;
-            _editingDecorationId = decorationId;
-            ClearTransientSelection();
-            SelectedModId = decorationId;
-            OpenSinglePage(WorkspacePageType.DecorationPlan);
-        }
-
-        public void OpenBatchDecorationPlan(string hostModId)
-        {
-            if (string.IsNullOrWhiteSpace(hostModId)) return;
-            ClearTransientSelection();
-            SelectedModId = hostModId;
-            OpenSinglePage(WorkspacePageType.BatchDecorationPlan);
-        }
-
         public void OpenHelmetToArmorMergePlan(string sourceModId)
         {
             if (string.IsNullOrWhiteSpace(sourceModId)) return;
@@ -2361,8 +2335,6 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 WorkspacePageType.PatchResourceRepackaging => new PatchResourceRepackagingPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
-                WorkspacePageType.DecorationPlan => new DecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks, _editingDecorationId),
-                WorkspacePageType.BatchDecorationPlan => new BatchDecorationPlanPageViewModel(_libraryService, _notificationService, SelectedModId ?? string.Empty, _backgroundTasks),
                 WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.ArmorRegistry => CreateArmorRegistryPage(),
                 _ => new HomePageViewModel(_profileService, _libraryService, _importQueue, _applyStatus, _backgroundTasks),
@@ -2484,8 +2456,6 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.CrossArmorPlan => "跨护甲计划",
             WorkspacePageType.MaterialPackaging => "材质候选与输出",
             WorkspacePageType.PatchResourceRepackaging => "Patch 资源重打包",
-            WorkspacePageType.DecorationPlan => "生成装饰 Mod",
-            WorkspacePageType.BatchDecorationPlan => "批量生成装饰",
             WorkspacePageType.HelmetToArmorMergePlan => "头盔合并到盔甲并输出",
             WorkspacePageType.ArmorRegistry => "运行时护甲注册",
             _ => "页面",

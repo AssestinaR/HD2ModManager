@@ -248,13 +248,6 @@
                 </StackPanel>
             </DataTemplate>
 
-            <DataTemplate x:Key="CardTemplate.DecorationDetails">
-                <TextBlock Text="{Binding DecorationSummary}"
-                           FontSize="13"
-                           Foreground="{StaticResource TextSecondary}"
-                           TextWrapping="Wrap"/>
-            </DataTemplate>
-
             <DataTemplate x:Key="CardTemplate.UserStatus">
                 <StackPanel>
                     <TextBlock Text="{Binding UserStatusTitle}"

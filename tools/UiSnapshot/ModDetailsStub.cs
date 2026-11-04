@@ -28,7 +28,6 @@ public sealed class ModDetailsStub
     public bool ShowOutdatedCompatibility { get; set; }
     public bool IsModelOutdated { get; set; }
 
-    public string DecorationSummary { get; set; } = string.Empty;
     public string UserStatusTitle { get; set; } = "已启用";
     public string UserStatusSummary { get; set; } = "当前活动配置已包含这个 Mod，游戏启动后会部署。";
     public string AssetTagsString { get; set; } =
@@ -79,7 +78,6 @@ public sealed class ModDetailsStub
     public ICommand ApplyVpkComponentsCommand => Noop;
     public ICommand ApplyVpkTargetArmorCommand => Noop;
     public ICommand ConvertToCustomModelCommand => Noop;
-    public ICommand EditDecorationCommand => Noop;
     public ICommand NormalizeArmorCommand => Noop;
     public ICommand OpenAdvancedDetailsCommand => Noop;
     public ICommand OpenFolderCommand => Noop;

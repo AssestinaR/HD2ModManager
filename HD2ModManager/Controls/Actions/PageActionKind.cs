@@ -33,12 +33,9 @@ public enum PageActionKind
     CrossArmor,
     Compact,
     Package,
-    BatchDecoration,
-    DecorationPlan,
     Helmet,
     Merge,
     CustomModel,
-    EditDecoration,
     PatchRebuild,
 }
 
@@ -79,12 +76,9 @@ internal static class PageActionIconCatalog
         PageActionKind.CrossArmor => "ActionIcon.Switch",
         PageActionKind.Compact => "ActionIcon.Compact",
         PageActionKind.Package => "ActionIcon.Package",
-        PageActionKind.BatchDecoration => "ActionIcon.HangerPlus",
-        PageActionKind.DecorationPlan => "ActionIcon.HangerPlus",
         PageActionKind.Helmet => "ActionIcon.Helmet",
         PageActionKind.Merge => "ActionIcon.Merge",
         PageActionKind.CustomModel => "ActionIcon.CustomModel",
-        PageActionKind.EditDecoration => "ActionIcon.Hanger",
         PageActionKind.PatchRebuild => "ActionIcon.Refresh",
         _ => "ActionIcon.Plus",
     };

@@ -21,7 +21,6 @@ public enum CardKind
     ModDescription,
     VpkActions,
     VpkComponents,
-    DecorationDetails,
     UserStatus,
     AssetTags,
     ModelCompatibility,

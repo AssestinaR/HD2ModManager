@@ -43,12 +43,9 @@ public partial class ModDetailsPageViewModel
         PageActions.Add(new PageActionViewModel(PageActionKind.CrossArmor, "生成替换其他护甲的模组", PlanCrossArmorTransferCommand, order: 31));
         PageActions.Add(new PageActionViewModel(PageActionKind.Compact, "规整护甲 patch 包", NormalizeArmorCommand, order: 32));
         PageActions.Add(new PageActionViewModel(PageActionKind.Package, "Patch 资源重打包", PatchResourceRepackagingCommand, order: 33));
-        PageActions.Add(new PageActionViewModel(PageActionKind.BatchDecoration, "批量生成装饰（以主体 Mod）", PlanBatchDecorationCommand, order: 40));
-        PageActions.Add(new PageActionViewModel(PageActionKind.DecorationPlan, "生成装饰 Mod（以来源 Mod）", PlanDecorationCommand, order: 41));
         PageActions.Add(new PageActionViewModel(PageActionKind.Helmet, "头盔合并到盔甲并输出", PlanHelmetToArmorMergeCommand, order: 50));
         PageActions.Add(new PageActionViewModel(PageActionKind.Merge, HelmetMergeToggleText, ToggleHelmetToArmorMergeCommand, order: 51));
         PageActions.Add(new PageActionViewModel(PageActionKind.CustomModel, "一键转为自定义素体", ConvertToCustomModelCommand, tone: PageActionTone.Danger, order: 60));
-        PageActions.Add(new PageActionViewModel(PageActionKind.EditDecoration, "编辑装饰 Mod", EditDecorationCommand, order: 70));
         PageActions.Add(new PageActionViewModel(PageActionKind.PatchRebuild, "重构 patch", RebuildSameKeyCommand, order: 71));
 
         SyncActionVisibility();
@@ -68,8 +65,7 @@ public partial class ModDetailsPageViewModel
                 PageActionKind.Fix or PageActionKind.CrossArmor or PageActionKind.Compact
                     or PageActionKind.Package or PageActionKind.Helmet or PageActionKind.Merge
                     or PageActionKind.CustomModel => ShowPatchSettingsCard,
-                PageActionKind.BatchDecoration or PageActionKind.DecorationPlan => CanShowDecorationPlan,
-                PageActionKind.EditDecoration or PageActionKind.PatchRebuild => IsDecoration,
+                PageActionKind.PatchRebuild => IsDecoration,
                 _ => true,
             };
 

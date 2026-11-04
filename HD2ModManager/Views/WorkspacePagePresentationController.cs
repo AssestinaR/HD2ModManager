@@ -259,7 +259,6 @@ internal sealed class WorkspacePagePresentationController : IDisposable
 
         object? content = page switch
         {
-            DecorationPlanPageViewModel plan => new DecorationPlanPageView { DataContext = plan },
             _ when ShouldCacheCorePage(page) => CreateTemplatedPageView(page) ?? page,
             _ => page,
         };
