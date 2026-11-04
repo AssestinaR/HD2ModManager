@@ -12,7 +12,6 @@ public enum ImportPlanItemRole
 {
     Host,
     Option,
-    Decoration,
     PlaceholderHost,
     Ignored,
     ReShade,
