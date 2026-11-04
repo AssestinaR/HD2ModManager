@@ -3101,16 +3101,15 @@ public sealed class SourceMaterialConverter
 		if (width <= 0 || height <= 0 || rgba.Length != checked(width * height * 4))
 			return (null, $"{bumpTexture}：法线图尺寸与像素数不符（{width}×{height}，{rgba.Length} 字节）");
 
-		// **先验一眼"这到底是不是切线空间法线"。**
+		// **先验一眼"这到底是不是正常的切线空间法线"。**
 		//
-		// 实测（2026-11-04，量了几套包全部法线图）：正常法线图的 XY 均值都在 0 附近
-		// （Lunalice 13 张全在 ±0.01 内，σ 0.03~0.42）；而 huahua 的 Chiyu 那套
-		// `*_Normal_OpenGL` 的均值是 **(−0.55, −0.58)**、σ 只有 0.07~0.44 ——
-		// 整张图的法线整体歪向一个方向。那不是"针织的起伏"，也不是绿通道翻不翻的问题：
-		// 它更像别的空间/别的约定（或干脆不是法线图）。照切线空间接进去，结果就是整件衣服
-		// 的明暗歪成一块块暗斑（实机截图里那种"更奇怪"）。
+		// 实测（2026-11-04）：正常法线图的 XY 均值都在 0 附近（Lunalice 13 张全在 ±0.01 内，
+		// 且全是 BC5/ATI2N）。而 Chiyu 与 Manuka 那批 DXT1/DXT5 存的"法线"，
+		// XY 均值是 **(−0.55,−0.55)** —— 一开始我以为它们编码在别的空间里。
 		//
-		// 判据是"均值偏离"，不靠猜文件名：**宁可退回平面法线（没有起伏），也不要歪着起伏。**
+		// 后来量出来真因：**这些图被当成"颜色"做了 sRGB→线性 转换**（正常的 flat 128 被压到 ~55）。
+		// 证据：把存的值按"线性→sRGB"反算回去，8 张图的 XY 均值**全部精确回到 0.00**。
+		// 所以不拒绝，先试一次 gamma 复原；复原后仍居中就照用，否则才退回平面法线。
 		{
 			var (meanX, meanY, sigmaX, sigmaY) = MeasureNormal(rgba);
 			const double MeanLimit = 0.25;
@@ -3118,9 +3117,25 @@ public sealed class SourceMaterialConverter
 			if (Math.Abs(meanX) > MeanLimit || Math.Abs(meanY) > MeanLimit
 				|| sigmaX > SigmaLimit || sigmaY > SigmaLimit)
 			{
-				return (null,
-					$"{bumpTexture}：这张图看起来不是切线空间法线"
-					+ $"（XY 均值 {meanX:F2},{meanY:F2}、σ {sigmaX:F2},{sigmaY:F2}），已按无起伏处理");
+				var recovered = (byte[])rgba.Clone();
+				for (var offset = 0; offset < recovered.Length; offset += 4)
+				{
+					recovered[offset] = MaterialAppearance.LinearToSrgbByte(recovered[offset] / 255.0);
+					recovered[offset + 1] = MaterialAppearance.LinearToSrgbByte(recovered[offset + 1] / 255.0);
+				}
+
+				var (fixedX, fixedY, fixedSx, fixedSy) = MeasureNormal(recovered);
+				if (Math.Abs(fixedX) <= 0.10 && Math.Abs(fixedY) <= 0.10
+					&& fixedSx <= SigmaLimit && fixedSy <= SigmaLimit)
+				{
+					rgba = recovered;
+				}
+				else
+				{
+					return (null,
+						$"{bumpTexture}：这张图看起来不是切线空间法线"
+						+ $"（XY 均值 {meanX:F2},{meanY:F2}、σ {sigmaX:F2},{sigmaY:F2}），已按无起伏处理");
+				}
 			}
 		}
 

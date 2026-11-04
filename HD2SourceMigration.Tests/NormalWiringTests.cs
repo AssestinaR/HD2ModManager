@@ -79,6 +79,32 @@ public sealed class NormalWiringTests
 		Assert.True(meanY < -0.4, $"应当量出明显负均值，实际 {meanY:F2}");
 	}
 
+	/// <summary>
+	/// **被当成颜色压过 gamma 的法线图要能救回来**：正常 flat 的 128 被 sRGB→线性 压到 ~55，
+	/// 表现就是"整张图偏暗、均值歪到 −0.55"。实测 Chiyu 的 4 张与 Manuka 的 8 张全是这样，
+	/// 按"线性→sRGB"反算后 XY 均值精确回到 0.00。
+	/// </summary>
+	[Fact]
+	public void GammaDamagedNormalIsRecovered()
+	{
+		// flat 128 经 sRGB→线性 变成 55（这两张图就是 55 与 128 的关系）
+		var damaged = new byte[] { 55, 55, 200, 255, 57, 57, 200, 255 };
+		var (meanX, meanY, _, _) = SourceMaterialConverter.MeasureNormal(damaged);
+		Assert.True(meanX < -0.5, $"前提：这张图确实歪了（{meanX:F2}）");
+
+		// 复原算法：按"线性→sRGB"逐字节反算
+		var recovered = new byte[damaged.Length];
+		for (var i = 0; i < damaged.Length; i += 4)
+		{
+			recovered[i] = MaterialAppearance.LinearToSrgbByte(damaged[i] / 255.0);
+			recovered[i + 1] = MaterialAppearance.LinearToSrgbByte(damaged[i + 1] / 255.0);
+		}
+
+		var (fixedX, fixedY, _, _) = SourceMaterialConverter.MeasureNormal(recovered);
+		Assert.InRange(fixedX, -0.1, 0.1);
+		Assert.InRange(fixedY, -0.1, 0.1);
+	}
+
 	// ── 法线像素重建 ─────────────────────────────────────────────────────
 
 	/// <summary>
@@ -175,6 +201,8 @@ public sealed class NormalWiringTests
 			MaterialAppearance.RebuildTangentNormal(new byte[] { 1, 2, 3, 4 }, 0, false, 0));
 	}
 }
+
+
 
 
 
