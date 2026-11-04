@@ -13,7 +13,33 @@ namespace HD2SourceMigration.Tests;
 /// </summary>
 public sealed class UvNormalBakeTests
 {
-	/// <summary>一个正方形，四个角各带一个已知法线；UV 铺满 0..1。</summary>
+	/// <summary>一个正方形，四个角各带一个已知法线；UV 铺满 0..1。</summary>	/// <summary>
+	/// **同一块 UV 被朝向相反的面共用**（镜像 UV、尾巴上的叶片、内衣左右两半都是这种）。
+	/// 这种区域任何单一法线都会让其中一半看起来是错的，实机表现是"一块块色块、像是颜色反了"。
+	/// 所以烘出来要退回"朝正面" —— 等于让 matcap / lightwarp 在这块**不生效**，而不是给错的方向。
+	/// </summary>
+	[Fact]
+	public void OverlappingUvWithOpposingNormalsFallsBackToFacingForward()
+	{
+		var forward = new Vec3(0, 0, 1);
+		var backward = new Vec3(0, 0, -1);
+		var vertices = new List<SourceVertex>
+		{
+			new(new Vec3(0, 0, 0), forward, 0, 0, default, default, default),
+			new(new Vec3(1, 0, 0), forward, 1, 0, default, default, default),
+			new(new Vec3(1, 1, 0), forward, 1, 1, default, default, default),
+			new(new Vec3(0, 0, 0), backward, 0, 0, default, default, default),
+			new(new Vec3(1, 0, 0), backward, 1, 0, default, default, default),
+			new(new Vec3(1, 1, 0), backward, 1, 1, default, default, default),
+		};
+		var geometry = new SourceGeometry(vertices, [new SourceTriangle(0, 1, 2, 0), new SourceTriangle(3, 4, 5, 0)], []);
+
+		var map = UvNormalBake.Bake(geometry, 0, resolution: 32);
+		Assert.NotNull(map);
+		var (x, y, z) = map!.Sample(0.5, 0.5);
+		Assert.True(z > 0.9, $"冲突区域应当退回朝正面（z≈1），实际 ({x:F2},{y:F2},{z:F2})");
+	}
+
 	private static SourceGeometry Quad(params Vec3[] normals)
 	{
 		var vertices = new List<SourceVertex>();
@@ -91,3 +117,4 @@ public sealed class UvNormalBakeTests
 		Assert.True(maps.ContainsKey("body"));
 	}
 }
+

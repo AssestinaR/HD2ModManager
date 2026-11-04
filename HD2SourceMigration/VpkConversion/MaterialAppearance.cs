@@ -744,7 +744,10 @@ public static class MaterialAppearance
 		int maskHeight,
 		double[] tintRgba,
 		MatcapBlendMode mode,
-		int maskChannel = 0)
+		int maskChannel = 0,
+		// 传来的 normal 如果是**世界法线**（UvNormalBake 的产物，Source 轴向：X 前 / Y 左 / Z 上），
+		// 球面图的 UV 要按"右 = −Y、上 = +Z"取；否则按 0..255 的 R/G 直接当 uv（切线空间老路）。
+		bool sourceAxes = false)
 	{
 		ArgumentNullException.ThrowIfNull(albedo);
 		ArgumentNullException.ThrowIfNull(matcap);
@@ -781,15 +784,28 @@ public static class MaterialAppearance
 				if (strength <= 0)
 					continue;
 
-				// 采样坐标：切线空间法线 XY（没有法线图就取中心）。
+				// 采样坐标：
+				//  · `sourceAxes` = 传进来的是**世界法线**（UvNormalBake 的产物，Source 轴向
+				//    X 前 / Y 左 / Z 上）⇒ 球面图的 u 取"右"（−Y）、v 取"上"（+Z）；
+				//  · 否则按 R/G 直接当 uv（老路：切线空间，只在没有烘焙结果时走到）。
 				double u = 0.5, v = 0.5;
 				if (normal is not null && normalWidth > 0 && normalHeight > 0)
 				{
 					var nx = Math.Min(normalWidth - 1, x * normalWidth / albedoWidth);
 					var ny = Math.Min(normalHeight - 1, y * normalHeight / albedoHeight);
 					var at = ((ny * normalWidth) + nx) * 4;
-					u = normal[at] / 255.0;
-					v = normal[at + 1] / 255.0;
+					if (sourceAxes)
+					{
+						var worldY = ((normal[at + 1] / 255.0) * 2) - 1;
+						var worldZ = ((normal[at + 2] / 255.0) * 2) - 1;
+						u = Math.Clamp(0.5 - (0.5 * worldY), 0, 1);
+						v = Math.Clamp(0.5 + (0.5 * worldZ), 0, 1);
+					}
+					else
+					{
+						u = normal[at] / 255.0;
+						v = normal[at + 1] / 255.0;
+					}
 				}
 
 				var (srcR, srcG, srcB, srcA) = SampleBilinear(matcap, matcapWidth, matcapHeight, u, v);
@@ -921,9 +937,14 @@ public static class MaterialAppearance
 		byte[]? normal,
 		int normalWidth,
 		int normalHeight,
-		double lightX = 0.25,
-		double lightY = 0.35,
-		double lightZ = 0.90)
+		// Source 的坐标轴是 **X 前 / Y 左 / Z 上**：默认光从"前上方"来。
+		double lightX = 0.60,
+		double lightY = 0.0,
+		double lightZ = 0.80,
+		// **half-lambert**（NekoToon 的 `$lightingrange 0.5`）：先把 N·L 折到 0..1 的中段，
+		// 于是"侧面、正面"都落在受光段，只有明显背光的才进阴影。
+		// 少了这一步，正面朝前（N·L≈0）会被判成阴影 —— 实机就是"阴影反了"。
+		bool halfLambert = true)
 	{
 		ArgumentNullException.ThrowIfNull(albedo);
 		ArgumentNullException.ThrowIfNull(ramp);
@@ -968,8 +989,9 @@ public static class MaterialAppearance
 					nz /= nlen;
 				}
 
-				var ndotl = Math.Clamp((nx * lightX) + (ny * lightY) + (nz * lightZ), 0, 1);
-				var u = ndotl;   // ramp 的 U 就是 N·L（实测受光段从 U≈0.5 开始）
+				var rawDot = (nx * lightX) + (ny * lightY) + (nz * lightZ);
+				// half-lambert：把 −1..1 折成 0..1（0.5 是"正侧面"）；关闭时用物理的 0..1。
+				var u = halfLambert ? (0.5 + (0.5 * rawDot)) : Math.Clamp(rawDot, 0, 1);
 				var rx = Math.Clamp((int)Math.Round(u * (rampWidth - 1)), 0, rampWidth - 1);
 				var rampAt = ((rampRow * rampWidth) + rx) * 4;
 
@@ -1043,3 +1065,6 @@ public static class MaterialAppearance
 		return rgba;
 	}
 }
+
+
+

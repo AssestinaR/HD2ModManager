@@ -140,8 +140,41 @@ public sealed class LightwarpTests
 	}
 
 	/// <summary>单像素底色（灰度 value）。</summary>
+	/// <summary>
+	/// **half-lambert 是"阴影不反"的关键**：NekoToon 写的是 `$$lightingrange 0.5`，
+	/// 也就是把 N·L 折到 0..1 的中段。少了它，正侧面朝前（N·L≈0）会被判成阴影，
+	/// 实机就是"毛衣上的阴影像是反着做的"。
+	/// </summary>
+	[Fact]
+	public void HalfLambertKeepsSideFacingSurfacesLit()
+	{
+		// 光从 +X（正前方）来，法线朝上（与光垂直）：物理 N·L = 0，half-lambert = 0.5
+		var albedo = SinglePixel(200);
+		MaterialAppearance.BakeLightwarpShading(
+			albedo, 1, 1, Ramp(8, 50, 55, 58, 76), 8, 1,
+			SinglePixel3(128, 128, 255), 1, 1,
+			lightX: 1, lightY: 0, lightZ: 0, halfLambert: true);
+
+		Assert.InRange(albedo[0], 196, 200);   // 落在受光段 ⇒ 不动
+	}
+
+	[Fact]
+	public void PhysicalNdotLWouldShadowThatSameSurface()
+	{
+		// 同一组输入，关掉 half-lambert：N·L = 0 ⇒ ramp 的暗端 ⇒ 明显变暗（这正是上一版的错）
+		var albedo = SinglePixel(200);
+		MaterialAppearance.BakeLightwarpShading(
+			albedo, 1, 1, Ramp(8, 50, 55, 58, 76), 8, 1,
+			SinglePixel3(128, 128, 255), 1, 1,
+			lightX: 1, lightY: 0, lightZ: 0, halfLambert: false);
+
+		Assert.True(albedo[0] < 150, $"应当明显变暗，实际 {albedo[0]}");
+	}
+
 	private static byte[] SinglePixel(byte value) => [value, value, value, 255];
 
 	/// <summary>单像素法线（切线空间 0..255 编码）。</summary>
 	private static byte[] SinglePixel3(byte r, byte g, byte b) => [r, g, b, 0];
 }
+
+

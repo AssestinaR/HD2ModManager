@@ -1117,6 +1117,13 @@ public sealed class SourceMaterialConverter
 		/// <summary><c>$MATCAP2TEXTURE</c> 的贴图裸名。</summary>
 		public string? Matcap2Texture { get; init; }
 
+		/// <summary>
+		/// 这张法线图要不要翻 Y —— **OpenGL 约定**的法线图（文件名里带 <c>_opengl</c> 的那类）
+		/// 绿通道方向与起源默认的 DirectX 相反，照原样接进去会让凹凸"看着是反的"。
+		/// 判据来自文件名，与 <c>--normal-flip-y</c> 的显式开关做异或。
+		/// </summary>
+		public bool BumpFlipY { get; init; }
+
 		/// <summary><c>$MATCAP2TINT</c> 的四个分量（缺省全 1.0）。</summary>
 		public double[] Matcap2TintRgba { get; init; } = [1, 1, 1, 1];
 
@@ -2177,6 +2184,9 @@ public sealed class SourceMaterialConverter
 		{
 			BumpTexture = bumpTextureName,
 			BumpStrength = bumpStrength,
+			// OpenGL 约定的法线图（文件名带 `_opengl`）要翻绿通道；与 `--normal-flip-y` 异或：
+			// 那个开关是"全都翻"，这里补的是"作者自己标成 OpenGL 的那部分"。
+			BumpFlipY = normalFlipY ^ LooksOpenGlNormal(bumpTextureName),
 			MatcapBlend = matcapBlend,
 			MatcapTintRgba = matcapTintRgba,
 			Mask1Texture = mask1Texture,
@@ -2404,7 +2414,7 @@ public sealed class SourceMaterialConverter
 				normalWidth: worldNormal?.Width ?? 0,
 				normalHeight: worldNormal?.Height ?? 0,
 				maskRgba, maskWidth, maskHeight,
-				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0);
+				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: true);
 
 			// ===== 第二层（`$MATCAP2`）：叠在第一层之上，蒙版用 `$mask1` 的 **B** 通道 =====
 			//
@@ -2420,7 +2430,7 @@ public sealed class SourceMaterialConverter
 					matcap2Rgba, matcap2Width, matcap2Height,
 					normal: null, normalWidth: 0, normalHeight: 0,
 					maskRgba, maskWidth, maskHeight,
-					loaded.Matcap2TintRgba, loaded.Matcap2Blend, maskChannel: 2);
+					loaded.Matcap2TintRgba, loaded.Matcap2Blend, maskChannel: 2, sourceAxes: true);
 			}
 		}
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
@@ -2974,7 +2984,7 @@ public sealed class SourceMaterialConverter
 	private SynthesizedTexture? TryNormalRoughnessTexture(LoadedMaterial loaded, byte roughness)
 		=> NoNormalMapRequested || loaded.BumpTexture is not { Length: > 0 } bump
 			? null
-			: TryBuildNormalTexture(bump, loaded.BumpStrength, roughness);
+			: TryBuildNormalTexture(bump, loaded.BumpStrength, roughness, loaded.BumpFlipY);
 
 	/// <summary>
 	/// 诊断开关 <c>HD2_NO_NORMAL_MAP=1</c>：**退回平面法线**，用来做 A/B 与计时。
@@ -3016,13 +3026,32 @@ public sealed class SourceMaterialConverter
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
 	/// <para>缓存键含强度/粗糙度/Y 翻转，因为这三样都会改变产物字节。</para>
 	/// </summary>
-	private SynthesizedTexture? TryBuildNormalTexture(string bumpTexture, double strength, byte roughness)
+	private SynthesizedTexture? TryBuildNormalTexture(string bumpTexture, double strength, byte roughness, bool flipY)
 	{
 		var (texture, _) = normalTextures.GetOrAdd(
-			(bumpTexture, strength, roughness, normalFlipY),
+			(bumpTexture, strength, roughness, flipY),
 			static (key, self) => self.EncodeNormalTexture(key.Name, key.Strength, key.Roughness, key.FlipY),
 			this);
 		return texture;
+	}
+
+	/// <summary>
+	/// 这张法线图是不是 **OpenGL 约定**（绿通道与 DirectX 相反）。
+	/// <para>
+	/// 判据只看文件名：作者把这类图命名成 <c>*_Normal_OpenGL</c>（实测 huahua 的 Chiyu 整套都是
+	/// 这样），而起源默认要 DirectX——<c>pbr.vmt</c> 里也写着"加 <c>--invert-green</c>
+	/// 可以把 OpenGL 法线转成 DirectX"。**不翻的后果是凹凸看着是反的**（实机表现为
+	/// "毛衣的阴影像是倒着做的"），而且只在斜面上明显，很容易被误判成"阴影算错了"。
+	/// </para>
+	/// </summary>
+	internal static bool LooksOpenGlNormal(string? bumpTextureName)
+	{
+		if (string.IsNullOrWhiteSpace(bumpTextureName))
+			return false;
+		return bumpTextureName.Contains("opengl", StringComparison.OrdinalIgnoreCase)
+			|| bumpTextureName.Contains("open_gl", StringComparison.OrdinalIgnoreCase)
+			|| bumpTextureName.EndsWith("_gl", StringComparison.OrdinalIgnoreCase)
+			|| bumpTextureName.EndsWith("-gl", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private (SynthesizedTexture? Texture, string? Notice) EncodeNormalTexture(
@@ -3127,6 +3156,11 @@ public sealed class SourceMaterialConverter
 			rgba[offset] = 0;
 	}
 }
+
+
+
+
+
 
 
 

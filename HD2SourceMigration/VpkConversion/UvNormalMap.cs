@@ -55,7 +55,17 @@ public static class UvNormalBake
 		if (resolution <= 0)
 			throw new ArgumentOutOfRangeException(nameof(resolution));
 
-		var pixels = new byte[resolution * resolution * 4];
+		// 逐纹素把"覆盖它的所有三角形"的法线累加起来。
+		//
+		// **为什么要累加而不是"后写的赢"**：同一个 UV 区域常常被**多个面共用**
+		// （镜像 UV、尾巴上的叶片、内衣的左右两半）。后写的赢会让同一块贴图上的颜色
+		// 在两个朝向之间来回跳，实机表现就是"一块块的色块，甚至像是颜色反了"。
+		var count = resolution * resolution;
+		var sumX = new double[count];
+		var sumY = new double[count];
+		var sumZ = new double[count];
+		var hits = new int[count];
+		var conflict = new bool[count];
 		var covered = false;
 
 		foreach (var triangle in geometry.Triangles)
@@ -115,17 +125,64 @@ public static class UvNormalBake
 					ny /= length;
 					nz /= length;
 
-					var at = ((y * resolution) + x) * 4;
-					pixels[at] = Encode(nx);
-					pixels[at + 1] = Encode(ny);
-					pixels[at + 2] = Encode(nz);
-					pixels[at + 3] = 255;
+					var index = (y * resolution) + x;
+					if (hits[index] != 0)
+					{
+						// 已有朝向差不多相反的面覆盖同一纹素 ⇒ 这片 UV 是共用的，
+						// 任何单一法线都会让其中一半看起来是错的。标记出来，最后退回"朝正面"。
+						var sumLength = Math.Sqrt((sumX[index] * sumX[index]) + (sumY[index] * sumY[index]) + (sumZ[index] * sumZ[index]));
+						if (sumLength > 1e-6
+							&& (((sumX[index] * nx) + (sumY[index] * ny) + (sumZ[index] * nz)) / sumLength) < 0.5)
+						{
+							conflict[index] = true;
+						}
+					}
+
+					sumX[index] += nx;
+					sumY[index] += ny;
+					sumZ[index] += nz;
+					hits[index]++;
 					covered = true;
 				}
 			}
 		}
 
-		return covered ? new UvNormalMap(pixels, resolution, resolution) : null;
+		if (!covered)
+			return null;
+
+		var pixels = new byte[count * 4];
+		for (var index = 0; index < count; index++)
+		{
+			var at = index * 4;
+			if (hits[index] == 0 || conflict[index])
+			{
+				// 没覆盖 / 有冲突：写成"朝正面"（128,128,255）。
+				// matcap 于是采到图的正中、lightwarp 于是算作受光 —— 也就是**这两样在这块不生效**，
+				// 而不是给一个方向错误的颜色。宁可不变，也不要错。
+				pixels[at] = 128;
+				pixels[at + 1] = 128;
+				pixels[at + 2] = 255;
+				pixels[at + 3] = 0;
+				continue;
+			}
+
+			var length = Math.Sqrt((sumX[index] * sumX[index]) + (sumY[index] * sumY[index]) + (sumZ[index] * sumZ[index]));
+			if (length < 1e-6)
+			{
+				pixels[at] = 128;
+				pixels[at + 1] = 128;
+				pixels[at + 2] = 255;
+				pixels[at + 3] = 0;
+				continue;
+			}
+
+			pixels[at] = Encode(sumX[index] / length);
+			pixels[at + 1] = Encode(sumY[index] / length);
+			pixels[at + 2] = Encode(sumZ[index] / length);
+			pixels[at + 3] = 255;
+		}
+
+		return new UvNormalMap(pixels, resolution, resolution);
 	}
 
 	/// <summary>把一个材质的 UV 法线按材质裸名索引出来（供转换器取用）。</summary>
