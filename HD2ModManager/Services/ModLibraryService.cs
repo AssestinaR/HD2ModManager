@@ -119,54 +119,13 @@ namespace HD2ModManager.Services
 			}
 		}
 
-        public async Task<DecorationActivationSummary> ToggleDecorationForAllAvailableHostsAsync(string decorationId, CancellationToken cancellationToken = default)
-        {
-            var available = GetAvailableDecorationHostIds(decorationId);
-            var enabled = GetEffectiveDecorationHosts(decorationId).Intersect(available, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (available.Count == 0) return new DecorationActivationSummary(0, 0, false, "无可用主体。");
-            var enable = !available.All(enabled.Contains);
-            await ScheduleDecorationActivationBatchAsync([new DecorationActivationMutation(decorationId, enable)], cancellationToken).ConfigureAwait(false);
-            return new DecorationActivationSummary(enable ? available.Count : 0, available.Count, enable, enable ? "已更新，等待合并。" : "已更新，等待合并。");
-        }
-
-        public async Task<DecorationActivationSummary> SetDecorationEnabledForHostAsync(string decorationId, string hostId, bool enabled, CancellationToken cancellationToken = default)
-        {
-            var available = GetAvailableDecorationHostIds(decorationId);
-            if (!available.Contains(hostId, StringComparer.OrdinalIgnoreCase)) return new DecorationActivationSummary(0, available.Count, false, "当前主体不支持该装饰。");
-            await ScheduleDecorationActivationBatchAsync([new DecorationActivationMutation(decorationId, enabled, hostId)], cancellationToken).ConfigureAwait(false);
-            var enabledCount = GetEffectiveDecorationHosts(decorationId).Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
-            return new DecorationActivationSummary(enabledCount, available.Count, enabled, "已更新，等待合并。");
-        }
-
         // The shared mutation boundary for all decoration enable/disable operations.
         // It computes each host's final attachment set before rebuilding so a host is
         // never rebuilt more than once for one user action.
-        public async Task<DecorationActivationBatchResult> ApplyDecorationActivationBatchAsync(
-            IReadOnlyCollection<DecorationActivationMutation> mutations,
-            CancellationToken cancellationToken = default)
-        {
-            ArgumentNullException.ThrowIfNull(mutations);
-            return await ScheduleDecorationActivationBatchAsync(mutations, cancellationToken).ConfigureAwait(false);
-        }
-
-        public DecorationActivationSummary GetDecorationActivationSummary(string decorationId)
-        {
-            var available = GetAvailableDecorationHostIds(decorationId);
-            var enabled = GetEffectiveDecorationHosts(decorationId).Count(id => available.Contains(id, StringComparer.OrdinalIgnoreCase));
-            return new DecorationActivationSummary(enabled, available.Count, available.Count != 0 && enabled == available.Count,
-                available.Count == 0 ? "无可用主体。" : enabled == 0 ? "尚未启用。" : enabled == available.Count ? $"为 {enabled} 个 Mod 启用了。" : $"为 {enabled}/{available.Count} 个 Mod 启用了。");
-        }
 
         public bool IsDecorationEnabledForHost(string decorationId, string hostId)
             => GetAvailableDecorationHostIds(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase)
                && GetEffectiveDecorationHosts(decorationId).Contains(hostId);
-
-        public IReadOnlyList<ModEntity> GetDecorationsForHost(string hostId)
-            => All().Where(mod => mod.IsDecoration && GetAvailableDecorationHostIds(mod.Guid).Contains(hostId, StringComparer.OrdinalIgnoreCase)).ToArray();
-
-        public bool IsDecorationAvailableForHost(string decorationId, string hostId)
-            => !string.IsNullOrWhiteSpace(hostId)
-               && GetAvailableDecorationHostIds(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase);
 
         public IReadOnlyList<ModEntity> GetOptionsForHost(string hostId)
         {
@@ -294,7 +253,29 @@ namespace HD2ModManager.Services
             }
 
         public IReadOnlyList<ModEntity> GetAttachmentsForHost(string hostId)
-            => GetOptionsForHost(hostId).Concat(GetDecorationsForHost(hostId)).ToArray();
+            => GetOptionsForHost(hostId);
+
+        // Generated Overwrite files are derived artifacts. After a source Patch repair they
+        // must be recreated from the repaired host and the helmet-merge state.
+        // 装饰包已不再支持：这里只剩头盔合并这一路。
+        public async Task<int> RebuildAllActiveDecorationOverwritesAsync(CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var hosts = All()
+                    .Where(mod => mod.IsHelmetToArmorMerged)
+                    .Select(mod => mod.Guid)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (hosts.Length == 0) return 0;
+                var rebuilt = await RebuildDecorationOverwritesAsync(hosts, null, cancellationToken).ConfigureAwait(false);
+                if (rebuilt.Count != 0)
+                    ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(rebuilt, ModContentChangeKind.Changed));
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                return rebuilt.Count;
+            }
+            finally { _libraryMutationGate.Release(); }
+        }
 
         public async Task<int> InitializeDefaultOptionActivationsAsync(
             IEnumerable<string> affectedNodeIds,
@@ -1114,57 +1095,8 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
-        public async Task UpdateDecorationPlanAsync(string decorationId, DecorationPlanDocument plan, CancellationToken cancellationToken = default)
-        {
-            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var decoration = Get(decorationId);
-                if (decoration?.IsDecoration != true) throw new InvalidOperationException("装饰 Mod 不存在。");
-                var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
-                var previous = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-                await File.WriteAllTextAsync(path, JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
-                var hosts = _decorationActivations.GetEnabledHosts(decorationId).ToArray();
-                try
-                {
-                    if (hosts.Length > 0) await RebuildDecorationOverwritesAsync(hosts, null, cancellationToken).ConfigureAwait(false);
-                }
-                catch
-                {
-                    await File.WriteAllTextAsync(path, previous, CancellationToken.None).ConfigureAwait(false);
-                    if (hosts.Length > 0) await RebuildDecorationOverwritesAsync(hosts, null, CancellationToken.None).ConfigureAwait(false);
-                    throw;
-                }
-				await InvalidateContentNodeAsync(ParseNodeId(decorationId)!.Value, cancellationToken).ConfigureAwait(false);
-                SnapshotChanged?.Invoke(this, EventArgs.Empty);
-            }
-            finally { _libraryMutationGate.Release(); }
-        }
-
         // Generated Overwrite files are derived artifacts. After a source Patch repair they
         // must be recreated from the repaired host, active decorations, and helmet-merge state.
-        public async Task<int> RebuildAllActiveDecorationOverwritesAsync(CancellationToken cancellationToken = default)
-        {
-            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var hosts = All().Where(mod => mod.IsDecoration)
-                    .SelectMany(decoration => _decorationActivations.GetEnabledHosts(decoration.Guid))
-                    .Concat(All()
-                        .Where(mod => mod.IsHelmetToArmorMerged)
-                        .Select(mod => mod.Guid))
-                    .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                if (hosts.Length == 0) return 0;
-                var rebuilt = await RebuildDecorationOverwritesAsync(hosts, null, cancellationToken).ConfigureAwait(false);
-                if (rebuilt.Count != 0)
-                    ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(rebuilt, ModContentChangeKind.Changed));
-                SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                return rebuilt.Count;
-            }
-            finally { _libraryMutationGate.Release(); }
-        }
 
         public ModEntity? Get(string guid)
         {
@@ -1473,7 +1405,8 @@ namespace HD2ModManager.Services
                     LogService.Info($"装饰合并进度：主体={host.Id.Value:N}，阶段={item.Stage}，进度={item.Completed}/{item.Total}");
                     progress?.Report(item);
                 });
-                var enabled = await ReadEnabledDecorationsAsync(hostId, activationOverrides, cancellationToken).ConfigureAwait(false);
+                // 装饰包已不再支持：宿主 Overwrite 只剩头盔合并这一路。
+                IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)> enabled = [];
                 var rebuildResult = await RebuildHostOverwriteAsync(host, enabled, host.Metadata.HelmetToArmorMerged, cancellationToken, hostProgress).ConfigureAwait(false);
 
 				// A helmet merge result is nullable only when the host did not request that
@@ -1519,31 +1452,13 @@ namespace HD2ModManager.Services
             return result.HelmetMerge;
         }
 
-        private async Task<IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)>> ReadEnabledDecorationsAsync(
-            string hostId,
-            IReadOnlyDictionary<string, HashSet<string>>? activationOverrides,
-            CancellationToken cancellationToken)
-        {
-            var enabled = new List<(ModEntity Mod, DecorationPlanDocument Plan)>();
-            foreach (var decoration in All().Where(mod => mod.IsDecoration && IsDecorationEnabledForHost(mod.Guid, hostId, activationOverrides)))
-            {
-                var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
-                if (!File.Exists(path)) continue;
-                var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(
-                    await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false),
-                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
-                if (plan is not null) enabled.Add((decoration, plan));
-            }
-            return enabled;
-        }
-
         private async Task<HelmetToArmorMergeResult> RebuildHelmetOverwriteStateAsync(
             ModNode host,
             bool enabled,
             CancellationToken cancellationToken,
             IProgress<HelmetToArmorMergeProgress>? progress = null)
         {
-            var decorations = await ReadEnabledDecorationsAsync(host.Id.Value.ToString("N"), null, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)> decorations = [];
             var inspection = enabled
                 ? await _helmetToArmorMerge.InspectAsync(host, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).ConfigureAwait(false)
                 : null;
