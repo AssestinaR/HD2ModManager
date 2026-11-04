@@ -13,7 +13,7 @@
 | 2 | 三条在役路径产物字节不变 | 装饰合并 / 头盔合并 / 多源合并都走默认 `Preserve` + `uniqueSlotPerSection: false`；W1/W2 的测试里各有一条"返回同一实例"的断言 |
 | 3 | 老 `components.json` 仍能读 | 8 份真实文件实测通过（6/16/6/12/14/13/14/23 个组） |
 | 4 | 没把材质方向会话的文件带进来 | `git diff master...sectional --name-only` 里不该出现 `HD2SourceMigration/VpkConversion/*` 的改动（除了 `UnitAuthor` 之类我明确没碰的） |
-| 5 | master 合进来一次 | 解决 `CliApplication.cs` 等热点文件的冲突；**先合 master 再跑一遍全量** |
+| 5 | master 合进来一次 | **已预演：无冲突**。`git merge-tree --write-tree master sectional` 只回一个树对象，没有冲突输出。master 上目前只多了一个材质方向的提交（`3740238` 接源法线图），与本分支 44 个改动文件零交集。合完再跑一遍全量 |
 | 6 | 管理器能启动、库能打开 | 用 worktree 的 `bin` 启一次，确认 133 个节点正常列出 |
 
 ---
