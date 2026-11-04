@@ -195,3 +195,19 @@ public sealed class WardrobeMaskView
 		return true;
 	}
 }
+
+/// <summary>
+/// 一条诊断。<c>Severity</c> 只有 <c>error</c> 与 <c>warning</c> 两种。
+/// <para>
+/// 它原先声明在 <c>WardrobeMaskCompiler</c> 里。那个编译器随掩码链退场了，
+/// 但 <see cref="WardrobeWorkspaceFile"/> 仍在用它报告读取问题，所以搬到这里。
+/// </para>
+/// </summary>
+public sealed record WardrobeMaskDiagnostic(string Severity, string Code, string Message)
+{
+	public bool IsError => string.Equals(Severity, "error", StringComparison.Ordinal);
+
+	public static WardrobeMaskDiagnostic Error(string code, string message) => new("error", code, message);
+
+	public static WardrobeMaskDiagnostic Warning(string code, string message) => new("warning", code, message);
+}

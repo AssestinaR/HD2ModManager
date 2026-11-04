@@ -177,24 +177,19 @@ public static class CliApplication
 			return 0;
 		}
 		if (command.Length >= 1 && command[0] == "wardrobe")
+		if (command.Length >= 1 && command[0] == "wardrobe")
 		{
-			// 衣柜 section 掩码的三条构建期命令。刻意走独立文件（CliWardrobe）：
-			// 这条链有自己的数据格式（sections.json / wardrobe.masks）和独立的校验规则，
-			// 塞进这个已经七千行的派发表只会让两边都更难读。
+			// 只剩 `wardrobe sections`（从 patch 现算映射表）。刻意走独立文件（CliWardrobe）。
+			//
+			// compile / validate / project 已于 2026-11-04 移除：它们产出的 wardrobe.masks
+			// 只有一段运行时读它，而那段 Lua 在本版引擎上 require('ffi') 失败、加载即退出；
+			// 管理器也从来没有写过这份文件。详见 notes/sectional-branch-status-20261104.md。
 			if (command.Length == 3 && command[1] == "sections")
 				return await CliWardrobe.RunSectionsAsync(invocation, CancellationToken.None).ConfigureAwait(false);
-			if (command.Length == 3 && command[1] == "compile")
-				return await CliWardrobe.RunCompileAsync(invocation, CancellationToken.None).ConfigureAwait(false);
-			if (command.Length == 2 && command[1] == "validate")
-				return await CliWardrobe.RunValidateAsync(invocation, CancellationToken.None).ConfigureAwait(false);
-			if (command.Length == 2 && command[1] == "project")
-				return await CliWardrobe.RunProjectAsync(invocation, CancellationToken.None).ConfigureAwait(false);
 			throw new CliUserException(
 				"InvalidArguments",
-				"wardrobe 子命令：wardrobe sections <patch> --output <sections.json>；" +
-				"wardrobe compile <spec.json> --output <wardrobe.masks>；" +
-				"wardrobe validate --file <wardrobe.masks> --sections <sections.json>；" +
-				"wardrobe project --library <mod库> --output <wardrobe.masks>。");
+				"wardrobe 子命令只剩一个：wardrobe sections <patch> --output <sections.json>。"
+				+ "（compile / validate / project 已移除：它们产出的 wardrobe.masks 没有任何在役的消费者。）");
 		}
 		if (Matches(command, "armor-registry", "status"))
 		{
