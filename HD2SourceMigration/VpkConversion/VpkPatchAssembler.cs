@@ -930,6 +930,24 @@ public sealed class VpkPatchAssembler
 					+ "（材质包通常只带 VMT 与底色），这些材质在游戏里用平面法线，细节立体感会有损失。");
 			}
 
+			// 转换之后才知道的两类异常：gamma 被压坏后复原的、以及真的不是切线空间法线的。
+			// 合成一个"已接入 N 个"会把这两类藏起来 —— 前者是救回来的，后者是丢掉的。
+			var (gammaRecovered, rejectedNormals) = converter.NormalAnomalies;
+			if (gammaRecovered != 0)
+			{
+				warnings.Add(
+					$"{gammaRecovered} 张法线图是被当成「颜色」压过 gamma 的（正常的平面法线被压到 ~55），"
+					+ "已按「线性→sRGB」复原后接入 HD2 的法线通道。");
+			}
+
+
+			if (rejectedNormals != 0)
+			{
+				warnings.Add(
+					$"{rejectedNormals} 张声明为 $bumpmap 的图看起来不是切线空间法线"
+					+ "（XY 均值远离 0，gamma 复原也救不回来），已按无起伏处理。");
+			}
+
 			// 把 `$no_draw` 的材质名翻成**材质下标**，供装配阶段丢掉对应三角形的几何。
 			//
 			// ⚠️ **只有 `$no_draw` 才丢几何。** 真缺失的材质已经在上面的 ②.5 拿到兜底灰材质，

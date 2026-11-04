@@ -563,6 +563,19 @@ public sealed class SourceMaterialConverter
 		(string Name, double Strength, byte Roughness, bool FlipY),
 		(SynthesizedTexture? Texture, string? Notice)> normalTextures = new();
 
+	/// <summary>这次转换里有多少张法线图是"被 gamma 压坏、已复原"的（报告用）。</summary>
+	private int gammaRecoveredNormals;
+
+	/// <summary>这次转换里有多少张法线图被判定"不是切线空间法线"而按无起伏处理（报告用）。</summary>
+	private int rejectedNormals;
+
+	/// <summary>
+	/// 法线图的两类异常计数：(gamma 复原过, 判定不是切线空间法线)。
+	/// 报告要分开说 —— 前者是"救回来了"，后者是"丢掉了"，合成一个数会把损失藏起来。
+	/// </summary>
+	public (int GammaRecovered, int Rejected) NormalAnomalies =>
+		(Volatile.Read(ref gammaRecoveredNormals), Volatile.Read(ref rejectedNormals));
+
 	/// <summary>
 	/// 与**内容**绑定的 BC7 缓存：同一份像素只编一次。
 	/// <para>
@@ -3213,9 +3226,11 @@ public sealed class SourceMaterialConverter
 					&& fixedSx <= SigmaLimit && fixedSy <= SigmaLimit)
 				{
 					rgba = recovered;
+					Interlocked.Increment(ref gammaRecoveredNormals);
 				}
 				else
 				{
+					Interlocked.Increment(ref rejectedNormals);
 					return (null,
 						$"{bumpTexture}：这张图看起来不是切线空间法线"
 						+ $"（XY 均值 {meanX:F2},{meanY:F2}、σ {sigmaX:F2},{sigmaY:F2}），已按无起伏处理");
@@ -3300,6 +3315,8 @@ public sealed class SourceMaterialConverter
 			rgba[offset] = 0;
 	}
 }
+
+
 
 
 
