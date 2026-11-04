@@ -1,8 +1,11 @@
 # sectional 分支进度（2026-11-04）
 
+> ⚠️ **先看这一条：库里 `lunalice_bill` 的载荷没了（见文末「数据事故」）。**
+> 与本分支的代码无关，但影响验证与用户数据，必须先处理。
+
 > 分支 `sectional`，worktree 在 `.agents/worktrees/sectional`，从 master `dc2da4e` 拉出。
 > 设计稿：`section-consolidation-20261104.md`；U0 结论：`sectional-u0-findings-20261104.md`。
-> **测试基线（每次提交前都跑全量）：1730 通过 / 0 失败 / 1 跳过。**
+> **测试基线（每次提交前都跑全量）：1736 通过 / 0 失败 / 1 跳过。**
 
 ---
 
@@ -86,3 +89,43 @@
 - [ ] V0 至少做过一次
 - [ ] 确认没有把材质方向会话正在改的文件带进来（`HD2SourceMigration/VpkConversion/*`）
 - [ ] master 合进分支一次，解决 `CliApplication.cs` 等热点文件的冲突
+
+---
+
+## 数据事故：`E:\mod\lunalice_bill` 的载荷与来源 VPK 不见了
+
+发现时间 2026-11-04 14:05 左右（做 U4 端到端验证、想拿它当样本时）。
+
+**现状**
+
+```
+E:\mod\lunalice_bill\
+    vpk2patch\                       ← 目录本身还在
+        physbone-rig.bin   10974 B   ← 只剩这一个文件（11-03 12:23）
+```
+
+**丢掉的**：来源 `.vpk`（约 12 MB）、`vpk2patch\*.patch_0` + `.gpu_resources` + `.stream`、
+`sections.json`、`components.json`、`custom-model.json`、`wardrobe.json`。
+目录的修改时间是 **2026-11-04 12:53:41**。
+
+**连带影响**
+
+- `library.json` 里这个节点**还在**（`kind=standard`），但 `patchGroups=0`、`children=0`
+  —— 说明管理器之后重扫过，发现没有可部署的 patch。
+- **12 个 option 把它当宿主，且全部 `enabled=true`**。它们现在挂在一个没有内容的宿主上。
+
+**已排除的**
+
+- 不是 `VpkPayloadSwap` 的换载荷操作：库里**没有** `.hd2modmanager-swap-backups` 目录
+  （那个操作会先备份）。
+- 不是我的 `unitprobe` 读取（那次是 13:35，在文件消失之后；且不带 `--patch-numindices` 就是只读）。
+- 全库只有这一个 Mod 缺载荷，其余 130+ 个正常。
+
+**没找到可恢复的副本**：`E:` 全盘按名字搜 `*lunalice*`，只有 9 月的几个部署计划 JSON
+和另一个仓库的源码；回收站查询因 COM 枚举卡住未完成。
+
+**恢复办法**：用户手里应该还有原始的 `lunalice_bill.vpk`（L4D2 addons 目录），
+重新导入即可——**但先要确认是什么删的**，否则导回去可能再被删一次。
+
+**不能确定的原因**：12:53 前后本机有两个会话在工作（本会话的 U0 子代理在 12:20–12:50 读库；
+另一个会话在做材质方向）。我没有证据指向任何一方，只能说清事实与时间点。
