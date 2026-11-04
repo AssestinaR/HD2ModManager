@@ -1,6 +1,6 @@
 # sectional 分支：合并检查清单 + 一次性测试方案
 
-> 分支 `sectional`（worktree `.agents/worktrees/sectional`），15+ 提交，全量测试
+> 分支 `sectional`（worktree `.agents/worktrees/sectional`），32 提交 / 63 个改动文件，全量测试
 > **1739 通过 / 0 失败 / 1 跳过**。本文是"合进 master 之前要做的"与"你只需要测一次的那些"。
 
 ---
