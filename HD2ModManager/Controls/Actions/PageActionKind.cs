@@ -37,6 +37,9 @@ public enum PageActionKind
     Merge,
     CustomModel,
     PatchRebuild,
+    // 模组库的「一键重构所有 VPK 模组」。与详情页的 PatchRebuild 是两种粒度
+    // （一个是这一个 Mod，一个是全库），所以不复用同一个值。
+    RebuildAllVpk,
 }
 
 // 语义色调。逻辑层只说"这是主操作 / 普通操作 / 危险操作"，
@@ -80,6 +83,7 @@ internal static class PageActionIconCatalog
         PageActionKind.Merge => "ActionIcon.Merge",
         PageActionKind.CustomModel => "ActionIcon.CustomModel",
         PageActionKind.PatchRebuild => "ActionIcon.Refresh",
+        PageActionKind.RebuildAllVpk => "ActionIcon.Refresh",
         _ => "ActionIcon.Plus",
     };
 }

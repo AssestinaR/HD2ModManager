@@ -50,6 +50,11 @@ namespace HD2ModManager.ViewModels
         public bool HasModExportBottomBar => _modExportBottomBarOperation is not null;
         private readonly List<IDisposable> _sameKeyRebuildBottomBarRegistrations = [];
         private SameKeyRebuildBottomBarViewModel? _sameKeyRebuildBottomBarOperation;
+        // 「一键重构所有 VPK 模组」：一次只跑一批，所以目标清单在开跑前定下来（用户看到的就是这个数）。
+        private readonly List<BottomBarRegistrationToken> _bulkVpkRebuildRegistrations = [];
+        private VpkBulkRebuildBottomBarViewModel? _bulkVpkRebuildOperation;
+        private IReadOnlyList<VpkBulkRebuildTarget> _bulkVpkRebuildTargets = [];
+        public bool HasBulkVpkRebuildBottomBar => _bulkVpkRebuildOperation is not null;
         private readonly SemaphoreSlim _importProcessGate = new(1, 1);
         private int _pageRefreshQueued;
 
@@ -143,6 +148,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ShowArmorRegistryCommand { get; }
         public RelayCommand ApplyChangesCommand { get; }
         public RelayCommand ValidateModLibraryCommand { get; }
+        public RelayCommand RebuildAllVpkModsCommand { get; }
         public RelayCommand ImportCommand { get; }
         public RelayCommand CreateLogicalModCommand { get; }
         public RelayCommand RefreshCommand { get; }
@@ -298,6 +304,7 @@ namespace HD2ModManager.ViewModels
             ShowArmorRegistryCommand = new RelayCommand(OpenArmorRegistry);
             ApplyChangesCommand = new RelayCommand(QueueActiveProfileDeployment);
             ValidateModLibraryCommand = new RelayCommand(ValidateModLibrary);
+            RebuildAllVpkModsCommand = new RelayCommand(_ => BeginBulkVpkRebuild());
             ImportCommand = new RelayCommand(BrowseAndImport);
             CreateLogicalModCommand = new RelayCommand(_ => BeginCreateLogicalMod());
             RefreshCommand = new RelayCommand(RefreshCurrentPage);
@@ -859,6 +866,8 @@ namespace HD2ModManager.ViewModels
             ClearMaterialPackagingBottomBar();
             ClearSameKeyRebuildBottomBar();
             ClearModExportBottomBar();
+            // 正在跑的批量重构不收：那会把进度和「取消」一起藏掉。
+            ClearBulkVpkRebuildBottomBar();
         }
 
         /// <summary>
@@ -2346,6 +2355,152 @@ namespace HD2ModManager.ViewModels
             page.PageActions.Add(new PageActionViewModel(PageActionKind.Import, "导入 Mod", ImportCommand, tone: PageActionTone.Primary, order: 20));
             page.PageActions.Add(new PageActionViewModel(PageActionKind.ScheduleDeployment, "立即重新部署", ApplyChangesCommand, tone: PageActionTone.Primary, order: 30));
             page.PageActions.Add(new PageActionViewModel(PageActionKind.ValidateLibrary, "校验 Mod 库", ValidateModLibraryCommand, order: 40));
+            // 库里所有 VPK 转换产物一起重出一遍：转换器改了行为之后，让用户逐个点进详情页
+            // 重建一百多个 Mod 是不现实的（而且一定会漏掉几个，然后对着旧产物查半天）。
+            page.PageActions.Add(new PageActionViewModel(PageActionKind.RebuildAllVpk, "一键重构所有 VPK 模组", RebuildAllVpkModsCommand, order: 50));
+        }
+
+        /// <summary>
+        /// 「一键重构所有 VPK 模组」：<b>先弹底栏定并发，再开跑</b>。
+        /// <para>
+        /// <b>为什么不点了就重构。</b>这批活的代价是「每个 Mod 几分钟 × 一百多个」，
+        /// 而并发数直接决定内存与磁盘占用 —— 这两件事都该在开始前由用户定一次，
+        /// 而不是让他点完发现电脑卡死再去找哪里能停下来。
+        /// </para>
+        /// </summary>
+        private void BeginBulkVpkRebuild()
+        {
+            if (_bulkVpkRebuildOperation is { IsRunning: true })
+            {
+                _notificationService.Show("上一批重构还在跑，等它结束，或者先在底栏里取消。",
+                    NotificationLevel.Warning, TimeSpan.FromSeconds(6));
+                return;
+            }
+
+            // 目标清单在这里定下来：底栏上写的"N 个"必须是**开跑时**那个数，
+            // 中途库变了也不该让进度变成 N+3。
+            var targets = VpkBulkRebuildService.EnumerateTargets(_libraryService.Snapshot, _libraryService.ModsRootDirectory);
+            if (targets.Count == 0)
+            {
+                _notificationService.Show(
+                    "库里没有 VPK 类模组（判据是目录里有转换器写的 vpk2patch.json），没有可重构的东西。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return;
+            }
+
+            DismissToolBottomBars();
+            _bulkVpkRebuildTargets = targets;
+            _bulkVpkRebuildOperation = new VpkBulkRebuildBottomBarViewModel(
+                targets.Count,
+                RunBulkVpkRebuildAsync,
+                ClearBulkVpkRebuildBottomBar);
+            RegisterBulkVpkRebuildRow("bulk-vpk-rebuild-options", VpkBulkRebuildBottomBarRowKind.Options, insertAtRow: 1);
+            RegisterBulkVpkRebuildRow("bulk-vpk-rebuild-progress", VpkBulkRebuildBottomBarRowKind.Progress);
+            OnPropertyChanged(nameof(HasBulkVpkRebuildBottomBar));
+            LogService.Info($"一键重构：目标 {targets.Count} 个 VPK 类模组，默认并发 {VpkBulkRebuildService.DefaultConcurrency}。");
+        }
+
+        private void RegisterBulkVpkRebuildRow(string sourceId, VpkBulkRebuildBottomBarRowKind kind, int? insertAtRow = null)
+        {
+            if (_bulkVpkRebuildOperation is null) return;
+            var row = new VpkBulkRebuildBottomBarRowViewModel(_bulkVpkRebuildOperation, kind);
+            _bulkVpkRebuildRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                sourceId,
+                [new BottomBarRowDefinition("main", row)],
+                insertAtRow)));
+        }
+
+        /// <summary>收起这批重构的底栏。<b>正在跑的时候不做</b>：那会连同"取消"一起消失。</summary>
+        public void ClearBulkVpkRebuildBottomBar()
+        {
+            if (_bulkVpkRebuildOperation is { IsRunning: true }) return;
+            foreach (var registration in _bulkVpkRebuildRegistrations) registration.Dispose();
+            _bulkVpkRebuildRegistrations.Clear();
+            _bulkVpkRebuildOperation = null;
+            _bulkVpkRebuildTargets = [];
+            OnPropertyChanged(nameof(HasBulkVpkRebuildBottomBar));
+        }
+
+        private async Task RunBulkVpkRebuildAsync(VpkBulkRebuildBottomBarViewModel operation)
+        {
+            var targets = _bulkVpkRebuildTargets;
+            if (targets.Count == 0) return;
+
+            var concurrency = operation.Concurrency;
+            var startedUtc = DateTime.UtcNow;
+            var task = _backgroundTasks.Enqueue(
+                BackgroundTaskKind.RebuildVpk,
+                "一键重构所有 VPK 模组",
+                $"{targets.Count} 个模组，并发 {concurrency}",
+                origin: "模组库",
+                userVisibleReason: "用每个 Mod 文件夹里的来源 VPK 重出一遍产物，并按各自记着的配置重新生成换甲产物。",
+                suggestedAction: "完成后重启游戏生效；逐条结果见本次任务的报告。",
+                retry: () => RunBulkVpkRebuildAsync(operation),
+                presentation: BackgroundTaskPresentation.Foreground);
+            // 底栏的「取消」与消息中心的取消都算：两个 token 合成一个。
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(task.CancellationToken, operation.Token);
+
+            task.MarkRunning("正在重构建 VPK 类模组");
+            try
+            {
+                var result = await VpkBulkRebuildService.RunAsync(
+                    targets,
+                    concurrency,
+                    (entry, done, total) => RefreshOnUiThread(() =>
+                    {
+                        operation.ReportItemFinished(done, total, entry.Target.Name);
+                        task.UpdateStage($"{done}/{total}：{entry.Target.Name}（{(entry.Ok ? "完成" : "失败")}）");
+                        task.UpdateProgress(total == 0 ? null : (double)done / total);
+                    }),
+                    stage => RefreshOnUiThread(() => operation.ReportStage(stage)),
+                    linked.Token).ConfigureAwait(true);
+
+                // 产物换了 ⇒ 库里的内容事实必须失效，否则界面上还是上一次的材质/贴图计数。
+                // 命中的节点若在活动配置里，这条链路会自己触发一次重新部署（与详情页那条一致）。
+                var succeeded = result.SucceededNodeIds;
+                if (succeeded.Count != 0)
+                {
+                    foreach (var nodeId in succeeded)
+                        await _libraryService.InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(true);
+                    await _libraryService.RefreshCommittedContentAsync(
+                        succeeded,
+                        ModContentChangeKind.Changed,
+                        alreadyInvalidated: true,
+                        cancellationToken: CancellationToken.None).ConfigureAwait(true);
+                }
+
+                var reportPath = VpkBulkRebuildService.WriteReport(result, concurrency, DateTime.UtcNow - startedUtc);
+                task.SetOutputArtifacts(_libraryService.ModsRootDirectory, reportPath);
+
+                var failures = result.Entries
+                    .Where(entry => !entry.Ok && entry.Outcome is not null)
+                    .Select(entry => $"{entry.Target.Name}：{entry.Error}")
+                    .ToArray();
+                var summary = result.Summary + "。" + (result.SucceededCount != 0 ? "重启游戏后生效。" : string.Empty);
+
+                if (result.SucceededCount == 0 && failures.Length != 0) task.MarkFailed(summary + " " + failures[0]);
+                else task.MarkCompleted();
+
+                operation.ReportFinished(summary, result.Canceled);
+                RefreshOnUiThread(() => _notificationService.Show(
+                    summary,
+                    failures.Length == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
+                    TimeSpan.FromSeconds(failures.Length == 0 ? 10 : 20)));
+            }
+            catch (OperationCanceledException)
+            {
+                task.MarkCanceled();
+                // 取消之后"哪些换过、哪些没动"必须说清楚：把未执行的当成功是最坏的一种谎话。
+                operation.ReportFinished("已取消：已经在转换的那几个可能已经换过产物，未开始的保持原样。逐条见消息中心。", canceled: true);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException
+                or InvalidDataException or UnauthorizedAccessException)
+            {
+                task.MarkFailed(exception.Message);
+                operation.ReportFinished("重构失败：" + exception.Message, canceled: false);
+                RefreshOnUiThread(() => _notificationService.Show("一键重构失败：" + exception.Message,
+                    NotificationLevel.Error, TimeSpan.FromSeconds(15)));
+            }
         }
 
 		private async void ValidateModLibrary()

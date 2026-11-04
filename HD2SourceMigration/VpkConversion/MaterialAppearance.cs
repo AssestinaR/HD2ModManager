@@ -454,8 +454,7 @@ public static class MaterialAppearance
 	/// <para>就地改写 RGB；alpha 不动（它的用途不同，且另有清零步骤）。</para>
 	/// </summary>
 	public static void BakeMatCap(byte[] rgba, double[] matcapMean, double tint)
-	{
-		ArgumentNullException.ThrowIfNull(rgba);
+	{		ArgumentNullException.ThrowIfNull(rgba);
 		ArgumentNullException.ThrowIfNull(matcapMean);
 		if (matcapMean.Length < 3)
 			throw new ArgumentException("matcap 平均色至少要有 3 个分量。", nameof(matcapMean));
@@ -554,6 +553,501 @@ public static class MaterialAppearance
 		}
 	}
 
+	/// <summary>
+	/// 解析 <c>$bumpstrength</c>（法线凹凸强度）。缺省 <c>1.0</c>；写坏了一律回 1.0。
+	/// <para>
+	/// <b>为什么不报错。</b>它只缩放 XY 的偏离量，1.0 就是"照源侧原样"——最安全的默认。
+	/// 为一个可选的观感参数让整个材质失败，代价远大于收益。
+	/// </para>
+	/// <para>上限 4.0：再大就不是凹凸而是把法线掰成侧躺，观感只会更糟。</para>
+	/// </summary>
+	public static double ParseBumpStrength(string? raw)
+	{
+		if (string.IsNullOrWhiteSpace(raw))
+			return 1.0;
+
+		var cleaned = raw
+			.Replace("[", string.Empty, StringComparison.Ordinal)
+			.Replace("]", string.Empty, StringComparison.Ordinal)
+			.Replace(",", " ", StringComparison.Ordinal);
+
+		var first = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+		if (first is null || !double.TryParse(first, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+			return 1.0;
+		if (!double.IsFinite(value) || value <= 0)
+			return 1.0;
+		return Math.Clamp(value, 0.01, 4.0);
+	}
+
+	/// <summary>
+	/// 把一张源法线图的 RGBA 像素就地改写成 HD2 <c>Nar</c> 槽要的形状：
+	/// <b>RGB = 切线空间法线（0..255 编码）、A = 粗糙度</b>。
+	/// <para>
+	/// <b>为什么必须重算 B 通道。</b>起源的法线图有两种常见格式：
+	/// <c>DXT5</c>（RG 存 XY、A 存高度）与 <c>ATI2N / BC5</c>（<b>只有</b> RG，B 被丢掉——
+	/// <c>pbr.vmt</c> 里写着"丢弃法线的 B 通道（俗称的黄法线）"）。两种格式解出来的 B
+	/// 都是垃圾（BC5 解成 0）。直接把这张图塞进 HD2，法线会变成"Z=0 的躺平法线"，
+	/// 表现是整片朝侧面受光。所以统一按 <c>z = sqrt(1 − x² − y²)</c> 重建。
+	/// </para>
+	/// <para>
+	/// <b>强度怎么算。</b><c>$bumpstrength</c> 缩放 XY 的<b>偏离量</b>（0.5 那一档仍是 0.5），
+	/// 再重新归一化 Z——这与"把法线往中间压/往外推"的直观看感一致，也不会把 XY 推出 [0,1]。
+	/// </para>
+	/// <para>
+	/// <b>Y 翻转</b>是可选项：DirectX 与 OpenGL 的绿通道相反，而 HD2 的约定没有文档。
+	/// 猜错的表现是"凸的看起来是凹的"，且只在斜面上明显——所以留开关，不做猜测。
+	/// </para>
+	/// </summary>
+	/// <param name="rgba">裸像素（每像素 4 字节）。就地改写，长度必须是 4 的倍数。</param>
+	/// <param name="strength"><c>$bumpstrength</c>，已归一化到 0.01..4.0。</param>
+	/// <param name="flipY">是否翻转 Y（绿）通道。</param>
+	/// <param name="roughness">写进 A 通道的粗糙度（0..255）。</param>
+	public static void RebuildTangentNormal(byte[] rgba, double strength, bool flipY, byte roughness)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+		if (!double.IsFinite(strength) || strength <= 0)
+			throw new ArgumentOutOfRangeException(nameof(strength), $"强度必须是正有限数，实际是 {strength}。");
+
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			// 0..255 → -1..1，再乘强度。取不到 1 的那一档（128 → 0）保持不变。
+			var x = ((rgba[offset + 0] / 255.0) - 0.5) * 2.0 * strength;
+			var y = ((rgba[offset + 1] / 255.0) - 0.5) * 2.0 * strength;
+			if (flipY)
+				y = -y;
+
+			var zz = 1.0 - (x * x) - (y * y);
+			var z = zz <= 0 ? 0.0 : Math.Sqrt(zz);
+
+			rgba[offset + 0] = EncodeUnit(x);
+			rgba[offset + 1] = EncodeUnit(y);
+			rgba[offset + 2] = EncodeUnit(z);
+			rgba[offset + 3] = roughness;
+		}
+	}
+
+	/// <summary>-1..1 → 0..255（四舍五入并夹紧）。</summary>
+	private static byte EncodeUnit(double value)
+		=> (byte)Math.Clamp(Math.Round((value * 0.5 + 0.5) * 255.0, MidpointRounding.AwayFromZero), 0, 255);
+
+	/// <summary>
+	/// NekoToon / lilToon 的 <c>$matcap</c> 混合模式。**编号是 NekoToon 的**，不是 lilToon 的。
+	/// <para>
+	/// 官方参数手册（<c>&lt;L4D2&gt;/shaders/fxc/nekotoon.vmt</c> 第 66 行）逐字：
+	/// <c>0禁用matcap，1正片叠底Multiply，2相加Add, 3Normal, 4Screen</c>。
+	/// lilToon 那边的编号是 <c>0 Normal / 1 Add / 2 Screen / 3 Multiply</c>——<b>两套不能混</b>。
+	/// </para>
+	/// </summary>
+	public enum MatcapBlendMode
+	{
+		/// <summary>不使用 matcap。</summary>
+		Off = 0,
+
+		/// <summary>正片叠底：<c>dst × src</c>。</summary>
+		Multiply = 1,
+
+		/// <summary>相加：<c>dst + src</c>（NekoToon 里最常见的一档）。</summary>
+		Add = 2,
+
+		/// <summary>正常：<c>src</c> 直接盖上去。</summary>
+		Normal = 3,
+
+		/// <summary>屏幕：<c>max(dst + src − dst×src, dst)</c>。</summary>
+		Screen = 4,
+	}
+
+	/// <summary>
+	/// 解析 <c>$matcap</c> 的模式值。**缺省是 <see cref="MatcapBlendMode.Off"/>**——
+	/// 源侧没写这个键就是"不用 matcap"，不能默认打开（会把没参与渲染的图叠上去）。
+	/// </summary>
+	public static MatcapBlendMode ParseMatcapBlend(string? raw)
+	{
+		if (string.IsNullOrWhiteSpace(raw))
+			return MatcapBlendMode.Off;
+		if (!int.TryParse(raw.Trim().Trim('[', ']'), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+			return MatcapBlendMode.Off;
+		return value switch
+		{
+			1 => MatcapBlendMode.Multiply,
+			2 => MatcapBlendMode.Add,
+			3 => MatcapBlendMode.Normal,
+			4 => MatcapBlendMode.Screen,
+			_ => MatcapBlendMode.Off,
+		};
+	}
+
+	/// <summary>
+	/// 解析 <c>$matcaptint</c> / <c>$MATCAP2TINT</c> 的**四个分量**（rgba）。
+	/// <para>
+	/// 与 <see cref="ParseTint"/> 的区别：那个只取三分量的最大值（判"是不是 matcap 承载面"），
+	/// 这里要的是**逐通道强度**与 <b>alpha（整体不透明度）</b>——合成时按通道乘上去。
+	/// 缺省全 1.0（源侧默认全强度）。
+	/// </para>
+	/// </summary>
+	public static double[] ParseTintRgba(string? raw)
+	{
+		var result = new[] { 1.0, 1.0, 1.0, 1.0 };
+		if (string.IsNullOrWhiteSpace(raw))
+			return result;
+
+		var cleaned = raw
+			.Replace("[", string.Empty, StringComparison.Ordinal)
+			.Replace("]", string.Empty, StringComparison.Ordinal)
+			.Replace("{", string.Empty, StringComparison.Ordinal)
+			.Replace("}", string.Empty, StringComparison.Ordinal)
+			.Replace(",", " ", StringComparison.Ordinal);
+
+		var parts = cleaned
+			.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.Select(token => double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : double.NaN)
+			.Where(value => double.IsFinite(value))
+			.ToArray();
+
+		for (var i = 0; i < result.Length && i < parts.Length; i++)
+			result[i] = parts[i] > 1.0 ? parts[i] / 255.0 : parts[i];
+		return result;
+	}
+
+	/// <summary>
+	/// 把源侧的 matcap 层合进底色——<b>lilToon 的公式，逐字实现</b>。
+	/// <para>
+	/// lilToon <c>lil_common_frag.hlsl</c>（第 1515-1562 行）：
+	/// </para>
+	/// <code>
+	/// matCapColor.rgb *= lightColor * _MatCapEnableLighting;        // 受光
+	/// matCapMask      = SAMPLE(_MatCapBlendMask, uvMain).rgb;       // 用主 UV 采样
+	/// fd.col.rgb = lilBlendColor(fd.col.rgb, matCapColor.rgb,
+	///                            _MatCapBlend * matCapColor.a * matCapMask, _MatCapBlendMode);
+	/// </code>
+	/// <para>
+	/// 这里少了 <c>lightColor</c>（HD2 侧没有逐像素光照颜色可读），其余照搬。
+	/// <b>采样坐标是唯一做不到的部分</b>：源侧用 <c>lilCalcMatCapUV</c>（法线投到相机坐标系的 XY），
+	/// 而 HD2 的模板没有 view-normal 采样也没有 cubemap 槽。这里用<b>切线空间法线的 XY</b>
+	/// 作为静态近似——曲面朝向相近的地方亮暗也相近，第三人称视角下观感最接近。
+	/// 没有法线图时退到贴图中心（等价于"整片一个颜色"，不会乱采样）。
+	/// </para>
+	/// </summary>
+	public static void CompositeMatcap(
+		byte[] albedo,
+		int albedoWidth,
+		int albedoHeight,
+		byte[] matcap,
+		int matcapWidth,
+		int matcapHeight,
+		byte[]? normal,
+		int normalWidth,
+		int normalHeight,
+		byte[]? mask,
+		int maskWidth,
+		int maskHeight,
+		double[] tintRgba,
+		MatcapBlendMode mode,
+		int maskChannel = 0,
+		// 传来的 normal 如果是**世界法线**（UvNormalBake 的产物，Source 轴向：X 前 / Y 左 / Z 上），
+		// 球面图的 UV 要按"右 = −Y、上 = +Z"取；否则按 0..255 的 R/G 直接当 uv（切线空间老路）。
+		bool sourceAxes = false)
+	{
+		ArgumentNullException.ThrowIfNull(albedo);
+		ArgumentNullException.ThrowIfNull(matcap);
+		ArgumentNullException.ThrowIfNull(tintRgba);
+		if (mode == MatcapBlendMode.Off)
+			return;
+		if (albedo.Length < albedoWidth * albedoHeight * 4)
+			throw new InvalidDataException($"底色像素不足：{albedoWidth}×{albedoHeight} 需要 {albedoWidth * albedoHeight * 4} 字节。");
+		if (matcap.Length < matcapWidth * matcapHeight * 4)
+			throw new InvalidDataException($"matcap 像素不足：{matcapWidth}×{matcapHeight}。");
+
+		var tintR = tintRgba[0];
+		var tintG = tintRgba[1];
+		var tintB = tintRgba[2];
+		var tintA = tintRgba[3];
+
+		for (var y = 0; y < albedoHeight; y++)
+		{
+			for (var x = 0; x < albedoWidth; x++)
+			{
+				var offset = ((y * albedoWidth) + x) * 4;
+
+				// 蒙版按**主 UV** 采样（与源侧一致：`_MatCapBlendMask` 用的是 uvMain）。
+				// 通道由调用方指定：`$mask1` 的 R 是 matcap 蒙版、B 是 **matcap2** 蒙版
+				// （NekoToon 官方手册第 19 行）。
+				var strength = tintA;
+				if (mask is not null)
+				{
+					var mx = Math.Min(maskWidth - 1, x * maskWidth / albedoWidth);
+					var my = Math.Min(maskHeight - 1, y * maskHeight / albedoHeight);
+					strength *= mask[((my * maskWidth) + mx) * 4 + Math.Clamp(maskChannel, 0, 3)] / 255.0;
+				}
+
+				if (strength <= 0)
+					continue;
+
+				// 采样坐标：
+				//  · `sourceAxes` = 传进来的是**世界法线**（UvNormalBake 的产物，Source 轴向
+				//    X 前 / Y 左 / Z 上）⇒ 球面图的 u 取"右"（−Y）、v 取"上"（+Z）；
+				//  · 否则按 R/G 直接当 uv（老路：切线空间，只在没有烘焙结果时走到）。
+				double u = 0.5, v = 0.5;
+				if (normal is not null && normalWidth > 0 && normalHeight > 0)
+				{
+					var nx = Math.Min(normalWidth - 1, x * normalWidth / albedoWidth);
+					var ny = Math.Min(normalHeight - 1, y * normalHeight / albedoHeight);
+					var at = ((ny * normalWidth) + nx) * 4;
+					if (sourceAxes)
+					{
+						var worldY = ((normal[at + 1] / 255.0) * 2) - 1;
+						var worldZ = ((normal[at + 2] / 255.0) * 2) - 1;
+						u = Math.Clamp(0.5 - (0.5 * worldY), 0, 1);
+						v = Math.Clamp(0.5 + (0.5 * worldZ), 0, 1);
+					}
+					else
+					{
+						u = normal[at] / 255.0;
+						v = normal[at + 1] / 255.0;
+					}
+				}
+
+				var (srcR, srcG, srcB, srcA) = SampleBilinear(matcap, matcapWidth, matcapHeight, u, v);
+				srcR *= tintR;
+				srcG *= tintG;
+				srcB *= tintB;
+				strength *= srcA;
+				if (strength <= 0)
+					continue;
+
+				var dstR = albedo[offset] / 255.0;
+				var dstG = albedo[offset + 1] / 255.0;
+				var dstB = albedo[offset + 2] / 255.0;
+
+				(double outR, double outG, double outB) = mode switch
+				{
+					MatcapBlendMode.Add => (dstR + srcR, dstG + srcG, dstB + srcB),
+					MatcapBlendMode.Multiply => (dstR * srcR, dstG * srcG, dstB * srcB),
+					MatcapBlendMode.Screen => (
+						Math.Max(dstR + srcR - (dstR * srcR), dstR),
+						Math.Max(dstG + srcG - (dstG * srcG), dstG),
+						Math.Max(dstB + srcB - (dstB * srcB), dstB)),
+					_ => (srcR, srcG, srcB),
+				};
+
+				albedo[offset] = ToByte(Lerp(dstR, outR, strength));
+				albedo[offset + 1] = ToByte(Lerp(dstG, outG, strength));
+				albedo[offset + 2] = ToByte(Lerp(dstB, outB, strength));
+			}
+		}
+	}
+
+	private static double Lerp(double from, double to, double t) => from + ((to - from) * Math.Clamp(t, 0, 1));
+
+	/// <summary>0..1 → 0..255（四舍五入并夹紧）。</summary>
+	private static byte ToByte(double unit)
+		=> (byte)Math.Clamp(Math.Round(unit * 255.0, MidpointRounding.AwayFromZero), 0, 255);
+
+	/// <summary>
+	/// 从 <c>$lightwarptexture</c> 的**受光端**取一个逐通道系数（0..1）。
+	/// <para>
+	/// <b>为什么需要它。</b>实测这几个 ramp 的受光段（U ≥ 0.5）恒为 <c>(76,76,76)</c>
+	/// ——也就是 NekoToon 里"受光的表面 = 底色 × <b>0.30</b>"（<c>skinwarp</c> 是 64、
+	/// <c>facewarp/hairwarp/basewarp</c> 是 76；暗端还带一点点色偏，例如 basewarp 的 (50,55,58)）。
+	/// 而 HD2 的 <c>advanced</c> 是标准 PBR，**没有这层上限**——把作者按"还会乘 0.3"画的底色
+	/// 直接当最终反照率，结果就是整体发白、皮肤尤其明显。
+	/// </para>
+	/// <para>
+	/// <b>为什么取受光端而不是平均值。</b>ramp 的作用是"把光照强度映射成颜色"，暗端描述的是
+	/// 环境光下的样子；HD2 那边环境光由 PBR 自己算，我们能补偿的只有受光段这个整体倍率。
+	/// 取平均值等于把影子里的亮度也一起算进底色，会压得更暗。
+	/// </para>
+	/// <para>
+	/// <b>局限（明确记下）</b>：源侧是按 <b>NdotL</b> 查表的逐像素曲线，还有 <c>$mask1</c> 的
+	/// <b>G</b> 通道做 V 重映射；HD2 的模板既没有 ramp 槽也没有逐像素光照，所以这里只能取
+	/// 一个**整片常数倍率**。它能修"整体过亮"，修不了"明暗过渡的形状"。
+	/// </para>
+	/// </summary>
+	/// <param name="rampRgba">ramp 的裸像素。</param>
+	/// <param name="width">ramp 宽度（光照强度映射在 U 上；实测这些 ramp 都是 1 像素高的横条）。</param>
+	/// <param name="height">ramp 高度。</param>
+	/// <param name="litStart">受光段起点（0..1）。0.5 与实测数据一致：U≥0.5 之后是恒定值。</param>
+	public static double[] LightwarpFactor(byte[] rampRgba, int width, int height, double litStart = 0.5)
+	{
+		ArgumentNullException.ThrowIfNull(rampRgba);
+		if (width <= 0 || height <= 0 || rampRgba.Length < width * height * 4)
+			throw new InvalidDataException($"ramp 像素与尺寸不符：{width}×{height}，{rampRgba.Length} 字节。");
+
+		var from = Math.Clamp((int)Math.Round(Math.Clamp(litStart, 0, 1) * (width - 1)), 0, width - 1);
+		var midRow = height / 2;
+		double r = 0, g = 0, b = 0;
+		var count = 0;
+		for (var x = from; x < width; x++)
+		{
+			var at = ((midRow * width) + x) * 4;
+			r += rampRgba[at];
+			g += rampRgba[at + 1];
+			b += rampRgba[at + 2];
+			count++;
+		}
+
+		if (count == 0)
+			return [1, 1, 1];
+
+		// 夹在 0.05..1：全黑的 ramp 会把底色压没（那更像是坏素材，不该由这里静默吃下去）。
+		static double Clamp(double value) => Math.Clamp(value / 255.0, 0.05, 1.0);
+		return [Clamp(r / count), Clamp(g / count), Clamp(b / count)];
+	}
+
+	/// <summary>
+	/// 把 lightwarp **当作卡通阴影曲线**烘进底色：<b>相对化之后</b>按切线空间法线的 N·L 查表。
+	/// <para>
+	/// <b>为什么不是"整片乘 0.30"（那一版实测把全身压成深灰/近黑）。</b>源侧用的是
+	/// <c>albedo × lightwarp(NdotL) × lightColor</c>：ramp 描述的是**光照随 N·L 怎么变**，
+	/// 它的绝对值由 HDR 光照与自动曝光补偿。HD2 的 PBR 光照自己就算这一层，
+	/// 直接把 0.30 乘进 albedo 等于**乘了两次**。
+	/// </para>
+	/// <para>
+	/// <b>但作者填的这些数是有意义的，不能丢。</b>它们编码了两件 HD2 侧没法学的东西：
+	/// </para>
+	/// <list type="number">
+	/// <item><b>阴影该是什么颜色</b>。实测 <c>basewarp</c> 暗端 (50,55,58) 偏冷、
+	/// <c>skinwarp</c> (60,45,49) 偏暖、<c>facewarp</c> (74,58,55) 偏暖——卡通渲染里
+	/// 阴影从来不是灰的，是带色偏的。</item>
+	/// <item><b>明暗过渡的形状</b>：这条 ramp 在 U≈0.5 处是一道硬台阶（硬阴影 / 赛璐璐），
+	/// 而不是物理的 1/N·L。</item>
+	/// </list>
+	/// <para>
+	/// 所以做法是：先把 ramp **除以它自己的受光段**（受光处 = 1.0，绝对亮度不再重复计入），
+	/// 再用<b>切线空间法线的 N·L</b> 去查这条归一化后的曲线，乘进底色。
+	/// 于是受光面保持原样、背光面带上作者指定的色偏，整片不会变暗。
+	/// </para>
+	/// <para>
+	/// <b>近似在哪</b>：真实光照方向随场景变，这里固定一个"从上前方打光"的规范方向；
+	/// 法线来自法线图（切线空间），不是世界空间。两者都只影响"阴影落在哪一侧"，
+	/// 不影响"阴影是什么颜色、台阶有多硬"——而后者才是作者写进 ramp 里的东西。
+	/// </para>
+	/// </summary>
+	/// <param name="albedo">要烘进去的底色像素（就地改 RGB，alpha 不动）。</param>
+	/// <param name="normal">切线空间法线像素（可空：空 = 全部按正面算，等于不压）。</param>
+	/// <param name="lightX">规范光方向的切线空间分量（默认"上前方"）。</param>
+	public static void BakeLightwarpShading(
+		byte[] albedo,
+		int albedoWidth,
+		int albedoHeight,
+		byte[] ramp,
+		int rampWidth,
+		int rampHeight,
+		byte[]? normal,
+		int normalWidth,
+		int normalHeight,
+		// Source 的坐标轴是 **X 前 / Y 左 / Z 上**：默认光从"前上方"来。
+		double lightX = 0.60,
+		double lightY = 0.0,
+		double lightZ = 0.80,
+		// **half-lambert**（NekoToon 的 `$lightingrange 0.5`）：先把 N·L 折到 0..1 的中段，
+		// 于是"侧面、正面"都落在受光段，只有明显背光的才进阴影。
+		// 少了这一步，正面朝前（N·L≈0）会被判成阴影 —— 实机就是"阴影反了"。
+		bool halfLambert = true)
+	{
+		ArgumentNullException.ThrowIfNull(albedo);
+		ArgumentNullException.ThrowIfNull(ramp);
+		if (albedo.Length < albedoWidth * albedoHeight * 4)
+			throw new InvalidDataException($"底色像素不足：{albedoWidth}×{albedoHeight}。");
+		if (ramp.Length < rampWidth * rampHeight * 4 || rampWidth <= 0 || rampHeight <= 0)
+			throw new InvalidDataException($"ramp 像素与尺寸不符：{rampWidth}×{rampHeight}。");
+
+		// 受光段（U ≥ 0.5）的均值：这是"受光时的颜色"，归一化时拿它当 1.0。
+		var litEnd = LightwarpFactor(ramp, rampWidth, rampHeight);
+		if (litEnd[0] <= 0.05 && litEnd[1] <= 0.05 && litEnd[2] <= 0.05)
+			return;   // 全黑的 ramp 更像坏素材，不动
+
+		var length = Math.Sqrt((lightX * lightX) + (lightY * lightY) + (lightZ * lightZ));
+		if (length <= 1e-6)
+			return;
+		lightX /= length;
+		lightY /= length;
+		lightZ /= length;
+
+		var rampRow = rampHeight / 2;
+		for (var y = 0; y < albedoHeight; y++)
+		{
+			for (var x = 0; x < albedoWidth; x++)
+			{
+				double nx = 0, ny = 0, nz = 1;
+				if (normal is not null && normalWidth > 0 && normalHeight > 0)
+				{
+					var nxp = Math.Min(normalWidth - 1, x * normalWidth / albedoWidth);
+					var nyp = Math.Min(normalHeight - 1, y * normalHeight / albedoHeight);
+					var at = ((nyp * normalWidth) + nxp) * 4;
+					nx = (normal[at] / 255.0 * 2) - 1;
+					ny = (normal[at + 1] / 255.0 * 2) - 1;
+					nz = normal[at + 2] / 255.0 * 2 - 1;
+				}
+
+				var nlen = Math.Sqrt((nx * nx) + (ny * ny) + (nz * nz));
+				if (nlen > 1e-6)
+				{
+					nx /= nlen;
+					ny /= nlen;
+					nz /= nlen;
+				}
+
+				var rawDot = (nx * lightX) + (ny * lightY) + (nz * lightZ);
+				// half-lambert：把 −1..1 折成 0..1（0.5 是"正侧面"）；关闭时用物理的 0..1。
+				var u = halfLambert ? (0.5 + (0.5 * rawDot)) : Math.Clamp(rawDot, 0, 1);
+				var rx = Math.Clamp((int)Math.Round(u * (rampWidth - 1)), 0, rampWidth - 1);
+				var rampAt = ((rampRow * rampWidth) + rx) * 4;
+
+				var offset = ((y * albedoWidth) + x) * 4;
+				for (var channel = 0; channel < 3; channel++)
+				{
+					// 归一化：受光段 = 1.0，暗端保留相对色偏。夹 0.2 下限防止某通道被压没。
+					var factor = Math.Clamp(ramp[rampAt + channel] / 255.0 / litEnd[channel], 0.2, 1.0);
+					albedo[offset + channel] = ToByte(albedo[offset + channel] / 255.0 * factor);
+				}
+			}
+		}
+	}
+
+	/// <summary>把逐通道倍率乘进底色的 RGB（就地）。alpha 不动。</summary>
+	public static void MultiplyRgb(byte[] rgba, double[] factor)	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		ArgumentNullException.ThrowIfNull(factor);
+		if (factor.Length < 3)
+			throw new ArgumentException("倍率至少要有 3 个分量。", nameof(factor));
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			rgba[offset + 0] = ToByte(rgba[offset + 0] / 255.0 * factor[0]);
+			rgba[offset + 1] = ToByte(rgba[offset + 1] / 255.0 * factor[1]);
+			rgba[offset + 2] = ToByte(rgba[offset + 2] / 255.0 * factor[2]);
+		}
+	}
+
+	/// <summary>0..1 UV 上的双线性采样，返回 0..1 的 RGBA。</summary>
+	private static (double R, double G, double B, double A) SampleBilinear(
+		byte[] rgba, int width, int height, double u, double v)
+	{
+		var x = Math.Clamp(u, 0, 1) * (width - 1);
+		var y = Math.Clamp(v, 0, 1) * (height - 1);
+		var x0 = (int)Math.Floor(x);
+		var y0 = (int)Math.Floor(y);
+		var x1 = Math.Min(width - 1, x0 + 1);
+		var y1 = Math.Min(height - 1, y0 + 1);
+		var fx = x - x0;
+		var fy = y - y0;
+
+		var at00 = ((y0 * width) + x0) * 4;
+		var at10 = ((y0 * width) + x1) * 4;
+		var at01 = ((y1 * width) + x0) * 4;
+		var at11 = ((y1 * width) + x1) * 4;
+
+		double Blend(int channel)
+			=> ((rgba[at00 + channel] * (1 - fx)) + (rgba[at10 + channel] * fx)) * (1 - fy)
+				+ (((rgba[at01 + channel] * (1 - fx)) + (rgba[at11 + channel] * fx)) * fy);
+
+		return (Blend(0) / 255.0, Blend(1) / 255.0, Blend(2) / 255.0, Blend(3) / 255.0);
+	}
+
 	/// <summary>造一张 <paramref name="size"/>×<paramref name="size"/> 的纯色 RGBA（用于金属度/粗糙度这类标量槽）。</summary>
 	public static byte[] SolidRgba(int size, byte red, byte green, byte blue, byte alpha = 255)
 	{
@@ -571,3 +1065,6 @@ public static class MaterialAppearance
 		return rgba;
 	}
 }
+
+
+

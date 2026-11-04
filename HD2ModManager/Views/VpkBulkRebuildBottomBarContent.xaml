@@ -1,0 +1,46 @@
+<UserControl x:Class="HD2ModManager.Views.VpkBulkRebuildBottomBarContent"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <Grid>
+        <!--
+            选项行（第一行）：这是"要不要开始、开几个"的地方。
+            并发数用文本框而不是滑块：要的是"我知道我在开 5 个进程"，
+            而不是拖到一个看起来差不多的位置再猜是几。
+        -->
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                    Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}">
+            <TextBlock VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"
+                       Text="{Binding Operation.TotalCount, StringFormat=将重构建 {0} 个 VPK 类模组}"/>
+            <TextBlock Text="· 并发数量" VerticalAlignment="Center" Margin="14,0,6,0" Foreground="{StaticResource TextSecondary}"/>
+            <TextBox Style="{StaticResource AppTextBox}" Width="46" TextAlignment="Center"
+                     IsEnabled="{Binding Operation.CanEditConcurrency}"
+                     Text="{Binding Operation.ConcurrencyText, UpdateSourceTrigger=PropertyChanged}"/>
+            <TextBlock Text="{Binding Operation.DefaultHint}" VerticalAlignment="Center" Margin="8,0,0,0"
+                       Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" MaxWidth="330"/>
+            <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding Operation.StartText}"
+                    Command="{Binding Operation.StartCommand}" Margin="12,0,0,0"/>
+            <Button Style="{StaticResource AppSecondaryButton}" Content="{Binding Operation.CancelText}"
+                    Command="{Binding Operation.CancelCommand}" Margin="8,0,0,0"/>
+        </StackPanel>
+
+        <!-- 进度行（第二行）：一句人话 + 一条细进度。逐条结果都进消息中心的报告。 -->
+        <Grid VerticalAlignment="Center" Visibility="{Binding IsProgress, Converter={StaticResource BoolToVis}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="一键重构所有 VPK 模组" VerticalAlignment="Center"
+                       Foreground="{StaticResource TextSecondary}"/>
+            <ProgressBar Grid.Column="1" Width="150" Height="4" Margin="12,2,0,0" Maximum="1"
+                         Value="{Binding Operation.Progress, Mode=OneWay}"
+                         Visibility="{Binding Operation.HasProgress, Converter={StaticResource BoolToVis}}"/>
+            <TextBlock Grid.Column="2" Text="{Binding Operation.Status}" VerticalAlignment="Center"
+                       Margin="12,0,10,0" Foreground="{StaticResource TextPrimary}"
+                       TextTrimming="CharacterEllipsis" MaxWidth="560"/>
+        </Grid>
+    </Grid>
+</UserControl>

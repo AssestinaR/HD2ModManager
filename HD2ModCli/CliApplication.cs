@@ -2331,6 +2331,9 @@ public static class CliApplication
 						matcapGain = invocation.Options.MatcapGain,
 						cutout = invocation.Options.Cutout,
 						albedoFactor = invocation.Options.AlbedoFactor,
+						// 法线 Y 方向：只在**翻过**时写。"不翻"是默认值，写成 false 会让所有
+						// 旧产物在重构建时多出一个参数、日志比对全变（见 VpkConversionSettings）。
+						normalFlipY = invocation.Options.NormalFlipY == true ? true : (bool?)null,
 						// **生成这份产物的转换器是什么时候构建的。**
 						//
 						// 存在的理由只有一个：回答"这份产物是不是旧代码做的"。
@@ -2561,6 +2564,18 @@ public static class CliApplication
 				// 只有真的命中 matcap 规则（tint ≥ 0.9）的材质才会被解码。
 				var matcapMeans = SourceMaterialConverter.ComputeMatCapMeans(
 					materialSource, inputs.Geometry, inputs.Model.MaterialPaths, encoder);
+				// matcap / lightwarp 都需要**世界方向**的法线（理由见 UvNormalBake）。
+				// 一次烘好按材质名索引，转换器那边按材质取用；烘不出来就是 null，不影响材质成败。
+				// 懒烘焙 + 缓存：只有真的用到（有 matcap / lightwarp）的材质才会被烘，
+				// 免得一次给几十个材质各留一张 UV 法线图（512² × 4 字节 = 1 MB/材质）。
+				var indexOf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+				for (var i = 0; i < inputs.Model.MaterialPaths.Count; i++)
+					indexOf[Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(inputs.Model.MaterialPaths[i]))] = i;
+				var uvNormalCache = new System.Collections.Concurrent.ConcurrentDictionary<string, UvNormalMap?>(StringComparer.OrdinalIgnoreCase);
+				UvNormalMap? WorldNormal(string stem)
+					=> uvNormalCache.GetOrAdd(stem, key => indexOf.TryGetValue(key, out var index)
+						? UvNormalBake.Bake(inputs.Geometry, index)
+						: null);
 				materialConverter = new SourceMaterialConverter(materialSource, encoder, templates,
 					// 压暗默认关闭：它改的是**观感**而不是正确性，不擅自打开。
 					invocation.Options.AlbedoFactor is { } factor
@@ -2576,7 +2591,9 @@ public static class CliApplication
 					ditherPattern: ResolveDitherPattern(invocation.Options),
 					metalRoughness: invocation.Options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
 					metalCutout: ResolveMetalCutout(invocation.Options),
-					cutoutTemplate: ResolveCutoutTemplate(invocation.Options));
+					cutoutTemplate: ResolveCutoutTemplate(invocation.Options),
+					normalFlipY: invocation.Options.NormalFlipY ?? false,
+					worldNormalFactory: WorldNormal);
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3140,6 +3157,7 @@ public static class CliApplication
 			// matcap 平均色要按**三角形面积加权**算，所以需要几何——用队列里那个模型的。
 			// 只有真的命中 matcap 规则（tint ≥ 0.9）的材质才会被解码。
 			IReadOnlyDictionary<string, double[]>? matcapMeans = null;
+			Func<string, UvNormalMap?>? WorldNormal = null;
 			if (matcapModel is not null)
 			{
 				var names = new List<string>(matcapModel.Model.MaterialPaths);
@@ -3147,6 +3165,13 @@ public static class CliApplication
 					names.AddRange(scope.OwnedVmtNames);
 				matcapMeans = SourceMaterialConverter.ComputeMatCapMeans(
 					materialSource, matcapModel.Geometry, names, encoder);
+				var indexOf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+				for (var i = 0; i < matcapModel.Model.MaterialPaths.Count; i++)
+					indexOf[Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(matcapModel.Model.MaterialPaths[i]))] = i;
+				var uvNormalCache = new System.Collections.Concurrent.ConcurrentDictionary<string, UvNormalMap?>(StringComparer.OrdinalIgnoreCase);
+				WorldNormal = stem => uvNormalCache.GetOrAdd(stem, key => indexOf.TryGetValue(key, out var index)
+					? UvNormalBake.Bake(matcapModel.Geometry, index)
+					: null);
 			}
 
 			materialConverter = new SourceMaterialConverter(materialSource, encoder, templates,
@@ -3170,7 +3195,9 @@ public static class CliApplication
 				ResolveDitherPattern(options),
 				options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
 				ResolveMetalCutout(options),
-				ResolveCutoutTemplate(options));
+				ResolveCutoutTemplate(options),
+				options.NormalFlipY ?? false,
+				worldNormalFactory: WorldNormal);
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──
@@ -7570,6 +7597,12 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	                   靠它把 unit id 接上——否则 id 重新随机，已登记的映射与件表全部失效。
 	    --cutout a|b|rgb-inv|alpha|alpha-inv
 	                   镂空材质的落地方式（见 CutoutStrategy）。默认 a = 历史行为。
+	    --normal-flip-y on|off
+	                   源法线图的 Y（绿）通道要不要翻。默认 off = 照源侧原样（DirectX）。
+	                   NekoToon / pbr.vmt 用的就是 DirectX 格式（MareTF 的 --invert-green 用于把
+	                   OpenGL 法线转过来），而 HD2 的法线约定没有文档：翻错的表现是
+	                   "凸的地方看起来是凹的"，只能在实机上对比，所以留成开关。
+	                   法线图不在来源里时会退回平面法线，并在报告里点名数量。
 	    **这是管理器导入流程该走的路径。** 下面是 `source convert`（旧路径）的说明。
 	  hd2mod source convert <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> --game-data <游戏data目录> --output <输出目录> [--components merge|all|none|<名字,名字>] [--overwrite] --json
 	    ⚠️ 旧路径：模型专用，把用到的材质**全部合并**进一个材质包（patch_1）。保留它只为 M1/M2 对拍。
@@ -7624,3 +7657,6 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。mod delete plan 会冻结库状态、激活状态与待删目录内容，validate/apply 会重新确认。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。import --add-to-profile 仅加入明确计划中的配置，不自动部署。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。批量 Patch 修复只会替换计划中仍确认过时且被 selected 的 Mod：每个 Patch 家族会先备份，候选失败会恢复原文件，成功后才更新对应库指纹并回建当前活动的管理器 Overwrite。主体派生 Overwrite 永不覆盖非管理器生成的 Overwrite。Patch 资源重打包、头盔合并、装饰外部包和单 Patch Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
 """;
 }
+
+
+

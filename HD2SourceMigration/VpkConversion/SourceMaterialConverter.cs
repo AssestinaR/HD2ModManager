@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using HD2SourceModel;
 
 namespace HD2SourceMigration.VpkConversion;
@@ -326,6 +327,26 @@ public enum MaterialResolveOutcome
 public sealed record MaterialResolveReport(MaterialResolveOutcome Outcome, MaterialIdentity? Identity, string Reason);
 
 /// <summary>
+/// 一个源材质的法线图最终会怎么样（<c>$bumpmap</c> → HD2 的 <c>Nar</c> 通道）。
+/// <para>
+/// <b>为什么有第三档。</b>NekoToon 那套包的 VMT 几乎每个都写 <c>$bumpmap</c>，
+/// 但**贴图本身**常常在另一个包里（材质包只换色、法线留在大包里）。只报
+/// "声明了多少个"会把"其实一半没接上"说成好消息。
+/// </para>
+/// </summary>
+public enum NormalDelivery
+{
+	/// <summary>这个材质没有 <c>$bumpmap</c>（或读不到 VMT）。</summary>
+	None = 0,
+
+	/// <summary>声明了法线图，而且那张图在来源里——会真的写进 HD2。</summary>
+	Wired = 1,
+
+	/// <summary>声明了法线图，但来源里找不到那张 <c>.vtf</c>，只能退回平面法线。</summary>
+	TextureMissing = 2,
+}
+
+/// <summary>
 /// 源材质（VMT + VTF）→ HD2 <c>Material</c> + <c>Texture</c>。
 /// <para>
 /// 这是"每个 Unit 引用自己的材质"这条要求的<b>素材来源</b>：转换器产出的
@@ -530,6 +551,101 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Name, byte Red, byte Green, byte Blue, byte Alpha), SynthesizedTexture> solidTextures = new();
 
+	/// <summary>
+	/// 法线图缓存。键是（法线图名, 强度, 粗糙度, 是否翻 Y）——<b>四样都会改变产物的字节</b>。
+	/// <para>
+	/// 值和 <see cref="solidTextures"/> 一样是不可变 record，可以安全共享；
+	/// <c>Texture = null</c> 的条目表示"这张图读不出来/不在来源里"，也缓存下来，
+	/// 免得同一个坏贴图被几十个材质各解一遍。
+	/// </para>
+	/// </summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<
+		(string Name, double Strength, byte Roughness, bool FlipY),
+		(SynthesizedTexture? Texture, string? Notice)> normalTextures = new();
+
+	/// <summary>这次转换里有多少张法线图是"被 gamma 压坏、已复原"的（报告用）。</summary>
+	private int gammaRecoveredNormals;
+
+	/// <summary>这次转换里有多少张法线图被判定"不是切线空间法线"而按无起伏处理（报告用）。</summary>
+	private int rejectedNormals;
+
+	/// <summary>
+	/// 法线图的两类异常计数：(gamma 复原过, 判定不是切线空间法线)。
+	/// 报告要分开说 —— 前者是"救回来了"，后者是"丢掉了"，合成一个数会把损失藏起来。
+	/// </summary>
+	public (int GammaRecovered, int Rejected) NormalAnomalies =>
+		(Volatile.Read(ref gammaRecoveredNormals), Volatile.Read(ref rejectedNormals));
+
+	/// <summary>
+	/// 与**内容**绑定的 BC7 缓存：同一份像素只编一次。
+	/// <para>
+	/// <b>为什么需要它。</b>编码是这条链上最贵的一步（texconv 编 2048² 约 0.6 s，实测），
+	/// 而材质是**按名字**各编一遍的。实测 Lunalice B1：53 个材质只用到 25 张源贴图——
+	/// 也就是说大约一半的编码在重复编同一份字节。整个包 38 s，砍掉重复的就砍掉三分之一以上。
+	/// </para>
+	/// <para>
+	/// <b>键为什么是内容哈希而不是贴图名。</b>同一张源图在 matcap 烘焙、压暗、擦 alpha
+	/// 之后可能得到不同字节（不同材质不同参数）。按名字缓存会把"别人的那张"发过来，
+	/// 那种错在产物里看不出来，只会让人对着"某个件颜色莫名其妙"查半天。
+	/// </para>
+	/// </summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<
+		(ulong Hash, int Length, bool Srgb), byte[]> bc7ByContent = new();
+
+	/// <summary>按内容去重的 BC7 编码，返回完整 DDS（148 字节头 + 像素）。</summary>
+	private byte[] EncodeBc7Deduplicated(byte[] rgba, int width, int height, bool srgb)
+	{
+		var key = (HashRgba(rgba), rgba.Length, srgb);
+		return bc7ByContent.GetOrAdd(
+			key,
+			_ => encoder.EncodeToBc7(Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [rgba]), srgb));
+	}
+
+	/// <summary>与内容绑定的解码缓存：同一张 VTF 只解一次（texconv 解 2048² 约 0.1 s）。</summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<
+		(string Name, int Length, ulong Hash), byte[]> decodedTextures = new();
+
+	/// <summary>
+	/// 解码一张 VTF 成裸像素，<b>命中缓存时返回副本</b>。
+	/// <para>
+	/// <b>为什么必须复制。</b>调用方会就地改像素——擦 alpha、烘 matcap、涂金属 F0、压暗。
+	/// 共享同一份数组会让"后一个材质改了前一个材质的底色"，那种错在产物里表现为
+	/// 某几件颜色莫名其妙，而且只在多材质共用一张图时出现，极难查。
+	/// </para>
+	/// <para>
+	/// 键里带字节长度与前 8 字节哈希之外的整体哈希：同名不同内容的贴图（不同包里的
+	/// `white.vtf`）不会被当成同一张。
+	/// </para>
+	/// </summary>
+	private byte[] DecodeTextureCached(string textureName, byte[] vtfBytes, VtfFile vtf)
+	{
+		var key = (textureName, vtfBytes.Length, HashRgba(vtfBytes));
+		if (decodedTextures.TryGetValue(key, out var cached))
+			return (byte[])cached.Clone();
+
+		var rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+		decodedTextures.TryAdd(key, (byte[])rgba.Clone());
+		return rgba;
+	}
+
+	/// <summary>
+	/// 64 位 FNV-1a（按 8 字节读）。<b>只为去重服务</b>：33 MB 约 15 ms，
+	/// 而 SHA256 要 90 ms——省下的时间被哈希吃掉就没意义了。
+	/// 键里同时带长度与 srgb，进一步压缩碰撞面；真要撞上，代价是"两张图被当成同一张"。
+	/// </summary>
+	private static ulong HashRgba(byte[] rgba)
+	{
+		const ulong prime = 1099511628211UL;
+		var hash = 14695981039346656037UL;
+		var span = rgba.AsSpan();
+		var index = 0;
+		for (; index + 8 <= span.Length; index += 8)
+			hash = (hash ^ BinaryPrimitives.ReadUInt64LittleEndian(span[index..])) * prime;
+		for (; index < span.Length; index++)
+			hash = (hash ^ span[index]) * prime;
+		return hash == 0 ? 1 : hash;   // 0 留给"没算过"，虽然这里用不到
+	}
+
 	public SourceMaterialConverter(
 		SourceMaterialSource source,
 		Bc7Encoder encoder,
@@ -546,13 +662,18 @@ public sealed class SourceMaterialConverter
 		DitherPattern ditherPattern = DitherPattern.InterleavedGradient,
 		double metalRoughness = MaterialAppearance.DefaultMetalRoughness,
 		MetalCutoutPolicy metalCutout = MetalCutoutPolicy.CutoutWins,
-		CutoutTemplate cutoutTemplate = CutoutTemplate.AlphaClip)
+		CutoutTemplate cutoutTemplate = CutoutTemplate.AlphaClip,
+		bool normalFlipY = false,
+		// 逐材质的「UV 空间模型法线」（见 UvNormalBake）：matcap 与 lightwarp 都需要**世界方向**的
+		// 法线，而法线贴图给的是切线空间的方向。没有它时这两样退回"取正中"。
+		Func<string, UvNormalMap?>? worldNormalFactory = null)
 	{
 		this.source = source;
 		this.encoder = encoder;
 		this.templates = templates;
 		this.albedoAdjustment = albedoAdjustment;
 		this.matcapMeans = matcapMeans;
+		this.worldNormalFactory = worldNormalFactory;
 		this.matcapMode = matcapMode;
 		this.idNamespace = string.IsNullOrWhiteSpace(idNamespace) ? null : idNamespace.Trim();
 		this.cutoutStrategy = cutoutStrategy;
@@ -566,8 +687,22 @@ public sealed class SourceMaterialConverter
 			0, 255);
 		this.metalCutout = metalCutout;
 		this.cutoutTemplate = cutoutTemplate;
+		this.normalFlipY = normalFlipY;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
+
+	/// <summary>
+	/// 源法线图的 <b>Y 方向要不要翻</b>（DirectX ↔ OpenGL）。
+	/// <para>
+	/// <b>为什么要做成开关。</b>NekoToon / <c>pbr.vmt</c> 明确要求 DirectX 格式的法线
+	/// （<c>--invert-green</c> 用来把 OpenGL 的转过来），而 HD2 侧的法线约定<b>没有文档</b>。
+	/// 猜错的表现是"受光面凹下去"，而且只在斜面上看得出来——这种错只能实机 A/B 定，
+	/// 所以给一个可切换的旋钮，而不是在代码里赌一边。
+	/// </para>
+	/// </summary>
+	public bool NormalFlipY => normalFlipY;
+
+	private readonly bool normalFlipY;
 
 	/// <summary>
 	/// matcap 承载面在 <c>advanced</c> 槽 2 <b>alpha</b> 里写的粗糙度（0..255）。
@@ -746,6 +881,27 @@ public sealed class SourceMaterialConverter
 
 	/// <summary>材质裸名 → 该材质上 matcap 贴图的面积加权平均色（<see cref="MatCapSampler"/> 算出来的）。</summary>
 	private readonly IReadOnlyDictionary<string, double[]>? matcapMeans;
+
+	/// <summary>逐材质的 UV 空间模型法线（key = 材质裸名）。</summary>
+	private readonly Func<string, UvNormalMap?>? worldNormalFactory;
+
+	/// <summary>
+	/// `$selfillum` 的发光强度倍率（默认 0.5）。
+	/// <para>
+	/// HD2 的自发光是**叠在 PBR 光照之上**的，给满（1.0）等于把底色再加一遍 —— 实测会过曝。
+	/// 0.5 让"亮的材质不发灰"同时不过曝；需要时用 <c>HD2_SELFILLUM_GAIN</c> 调。
+	/// </para>
+	/// </summary>
+	private readonly double selfIllumGain =
+		double.TryParse(Environment.GetEnvironmentVariable("HD2_SELFILLUM_GAIN"),
+			System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gain)
+			&& double.IsFinite(gain) && gain > 0
+				? Math.Clamp(gain, 0.05, 1.0)
+				: 0.5;
+
+	/// <summary>取这个材质的「UV 空间世界法线」；没有就 <c>null</c>（调用方退回无方向方案）。</summary>
+	private UvNormalMap? WorldNormalFor(string stem)
+		=> worldNormalFactory?.Invoke(stem);
 
 	/// <summary>
 	/// 为一批源材质预算 matcap 平均色，供构造转换器时传入。
@@ -945,6 +1101,86 @@ public sealed class SourceMaterialConverter
 		// `$translucent`（要混合）或 `$allowalphatocoverage`（自己就写着抖动）。
 		bool UseDither)
 	{
+		/// <summary>
+		/// 源侧声明的法线图裸名（<c>$bumpmap</c> 的最后一段）。<c>null</c> = 这个材质没有法线图。
+		/// <para>
+		/// <b>为什么单独留一个字段。</b>法线原来<b>完全没有接线</b>：所有材质写进 HD2 的都是
+		/// 平面法线（128,128,255），而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图。
+		/// 现在它决定"这张材质要不要配一张自己的法线贴图"。
+		/// </para>
+		/// </summary>
+		public string? BumpTexture { get; init; }
+
+		/// <summary>
+		/// <c>$bumpstrength</c>（凹凸强度，NekoToon 默认 1.0）。只缩放 XY 的偏离量，Z 重新归一化。
+		/// </summary>
+		public double BumpStrength { get; init; } = 1.0;
+
+		/// <summary>
+		/// <c>$matcap</c> 的混合模式（NekoToon 编号）。<see cref="MaterialAppearance.MatcapBlendMode.Off"/>
+		/// = 这个材质不用 matcap（源侧没写或写了 0）。
+		/// </summary>
+		public MaterialAppearance.MatcapBlendMode MatcapBlend { get; init; }
+
+		/// <summary><c>$matcaptint</c> 的四个分量（逐通道强度 + alpha 整体强度）。</summary>
+		public double[] MatcapTintRgba { get; init; } = [1, 1, 1, 1];
+
+		/// <summary>
+		/// <c>$mask1</c> 的贴图裸名。<b>它的 R 通道是 matcap 的逐像素强度</b>
+		/// （NekoToon 官方手册：<c>r通道用于matcap蒙版，g通道是lightwarp的V映射，b通道是matcap2蒙版，a通道AO</c>）。
+		/// </summary>
+		public string? Mask1Texture { get; init; }
+
+		/// <summary>
+		/// <c>$MATCAP2</c> 的混合模式（第二层 matcap）。
+		/// <para>
+		/// <b>必须按模式判，不能按"有没有 `$MATCAP2TEXTURE`"判。</b>实测
+		/// <c>mat_ornament_petal_shoes</c> 只写了图没写模式，源侧那张图<b>根本没参与渲染</b>；
+		/// 照"有图就加"处理会把花瓣鞋凭空提亮一档。
+		/// </para>
+		/// </summary>
+		public MaterialAppearance.MatcapBlendMode Matcap2Blend { get; init; }
+
+		/// <summary><c>$MATCAP2TEXTURE</c> 的贴图裸名。</summary>
+		public string? Matcap2Texture { get; init; }
+
+		/// <summary>
+		/// 这张法线图要不要翻 Y —— **OpenGL 约定**的法线图（文件名里带 <c>_opengl</c> 的那类）
+		/// 绿通道方向与起源默认的 DirectX 相反，照原样接进去会让凹凸"看着是反的"。
+		/// 判据来自文件名，与 <c>--normal-flip-y</c> 的显式开关做异或。
+		/// </summary>
+		public bool BumpFlipY { get; init; }
+
+		/// <summary>
+		/// <c>$selfillum</c> 的自发光强度（0 = 关闭，1 = 整片，2 = 蒙版模式）。
+		/// <para>
+		/// 源侧语义：<b>不受光照影响、直接用底色当发光颜色</b>（默认），
+		/// 或用 <c>$selfillummask</c> 当遮罩。HD2 的 <c>advanced</c> 槽 5 的 <b>alpha 就是自发光</b>，
+		/// 所以我们把它写进那张底色的 A 通道。
+		/// </para>
+		/// <para>
+		/// <b>为什么要接。</b>实测 huahua 的 Chiyu 整套都写 <c>$selfillum 1</c>：源侧那件毛衣
+		/// 因此是"亮的、不吃阴影"的，而我们不接就只能靠 PBR 光照，观感偏暗偏灰。
+		/// </para>
+		/// </summary>
+		public double SelfIllumStrength { get; init; }
+
+		/// <summary><c>$selfillummask</c> 的贴图裸名（蒙版模式用）。</summary>
+		public string? SelfIllumMaskTexture { get; init; }
+
+		/// <summary><c>$MATCAP2TINT</c> 的四个分量（缺省全 1.0）。</summary>
+		public double[] Matcap2TintRgba { get; init; } = [1, 1, 1, 1];
+
+		/// <summary>
+		/// <c>$lightwarptexture</c> 的贴图裸名（光照曲线）。
+		/// <para>
+		/// HD2 没有 ramp 槽也没有逐像素光照，所以只能取它<b>受光端</b>的颜色当整片倍率
+		/// ——实测这些 ramp 的受光段是 <c>(76,76,76)</c>，也就是"受光 = 底色 × 0.30"。
+		/// 见 <see cref="MaterialAppearance.LightwarpFactor"/>。
+		/// </para>
+		/// </summary>
+		public string? LightwarpTexture { get; init; }
+
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
 	}
@@ -984,34 +1220,51 @@ public sealed class SourceMaterialConverter
 	}
 
 	/// <summary>
-	/// 这条材质是否声明了法线图（<c>$bumpmap</c>）。
+	/// 这条材质的法线图**最终会怎么样**：没有声明 / 已接入 / 声明了但图不在。
 	/// <para>
-	/// <b>为什么要单独问一次。</b>法线图目前**完全没有接线**——所有材质写进 HD2 的都是
-	/// 平面法线（128,128,255），而 NekoToon 那套模型普遍带 BC5 高清法线图。
-	/// 这是当前最大的一处保真度损失，却在报告里一个字都没有。
+	/// <b>为什么不是一个 bool。</b>报告要说的是两句话，而不是一句：
+	/// 「N 个材质声明了法线图，其中 X 个已接入 HD2 法线通道」和
+	/// 「Y 个因为贴图不在来源里，仍然用平面法线」。合成一个 bool 就只能报前者，
+	/// 用户看到"已接入"却依旧糊的时候没有任何线索。
 	/// </para>
 	/// <para>
-	/// <b>为什么不塞进逐材质的 notice。</b>它几乎每个材质都有，逐条报会把真正稀有的警告淹掉。
-	/// 所以只提供一个查询，由装配器按**整包**统计成一行。
+	/// 逐条 notice 会淹没其它警告（NekoToon 的材质几乎每个都有 <c>$bumpmap</c>），
+	/// 所以只提供查询，由装配器按**整包**统计成两行。
 	/// </para>
 	/// </summary>
 	/// <param name="materialName">源材质的裸名（可带目录，会取 basename）。</param>
-	public bool DeclaresBumpMap(string materialName)
+	public NormalDelivery DescribeBumpMap(string materialName)
 	{
 		var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(materialName));
 		if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVmt(stem, out var bytes))
-			return false;
+			return NormalDelivery.None;
+
+		string? bump;
 		try
 		{
 			// 带 include 展开：法线常常写在被 include 的基材质里。
-			return !string.IsNullOrWhiteSpace(
-				VmtDocument.Parse(bytes, source.CreateIncludeReader()).Value("$bumpmap"));
+			bump = VmtDocument.Parse(bytes, source.CreateIncludeReader()).Value("$bumpmap");
 		}
 		catch (InvalidDataException)
 		{
-			return false;
+			return NormalDelivery.None;
 		}
+
+		if (string.IsNullOrWhiteSpace(bump))
+			return NormalDelivery.None;
+
+		var bumpStem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(bump));
+		if (string.IsNullOrWhiteSpace(bumpStem))
+			return NormalDelivery.TextureMissing;
+
+		// **判据是"来源里有没有这张图"**，不是"能不能解出来"——解码失败要跑一次 texconv，
+		// 在统计阶段做这件事会把整包扫描变成几分钟。真正的解码失败会走
+		// `TryNormalRoughnessTexture` 的保底路径（退回平面法线），结果一样是不接法线。
+		return source.ContainsVtf(bumpStem) ? NormalDelivery.Wired : NormalDelivery.TextureMissing;
 	}
+
+	/// <summary>见 <see cref="DescribeBumpMap"/>。</summary>
+	public bool DeclaresBumpMap(string materialName) => DescribeBumpMap(materialName) != NormalDelivery.None;
 
 	/// <summary>
 	/// 为「源包里根本没有这个材质」的情形造一个**兜底灰材质**。
@@ -1161,7 +1414,9 @@ public sealed class SourceMaterialConverter
 			// 名字相同 → id 相同 → 装配器按 id 去重会并成一条，不会把包撑大。
 			if (material.TextureIds.Count > AlphaClipNormalSlot)
 			{
-				var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+				// 有法线图就用它自己的，没有才用全局共享平面法线（见 TryNormalRoughnessTexture）。
+				var flatNormal = TryNormalRoughnessTexture(loaded, PbrRoughness)
+					?? BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
 				material.SetTexture(AlphaClipNormalSlot, flatNormal.Id);
 				textures.Add(flatNormal);
 			}
@@ -1201,9 +1456,10 @@ public sealed class SourceMaterialConverter
 				return MaterialSynthesisResult.Failed(
 					$"original 模板只有 {material.TextureIds.Count} 个槽，放不下下标 {OriginalBaseColorSlot} 的底色");
 
-			// 槽 5 `Normal`：RGB 法线。用与其它模板**同一张**全局共享平面法线
+			// 槽 5 `Normal`：RGB 法线。有法线图就用它自己的，没有才用全局共享平面法线
 			// （名字相同 → id 相同 → 装配器按 id 去重）。
-			var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+			var flatNormal = TryNormalRoughnessTexture(loaded, PbrRoughness)
+				?? BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
 			material.SetTexture(OriginalNormalSlot, flatNormal.Id);
 			textures.Add(flatNormal);
 
@@ -1260,7 +1516,9 @@ public sealed class SourceMaterialConverter
 				&& material.TextureIds.Count > AdvancedNarSlot
 				&& material.TextureIds.Count > AdvancedMetallicSlot)
 			{
-				var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+				// 有 `$bumpmap` 就用**这个材质自己的**法线图；没有才用全局共享的平面法线。
+				var normal = TryNormalRoughnessTexture(loaded, PbrRoughness);
+				var flatNormal = normal ?? BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
 				var sharedPbr = BuildSolidTexture("shared_pbr_", string.Empty, DefaultMetallic, DefaultMetallic, DefaultMetallic, 255);
 				material.SetTexture(AdvancedNarSlot, flatNormal.Id);
 				material.SetTexture(AdvancedMetallicSlot, sharedPbr.Id);
@@ -1291,7 +1549,8 @@ public sealed class SourceMaterialConverter
 					: PbrRoughness;
 
 				var metallic = BuildSolidTexture(textureName, "_metallic", metallicValue, metallicValue, metallicValue, 255);
-				var normalRoughness = BuildSolidTexture(textureName, "_nar", 128, 128, 255, roughnessValue);
+				var normalRoughness = TryNormalRoughnessTexture(loaded, roughnessValue)
+					?? BuildSolidTexture(textureName, "_nar", 128, 128, 255, roughnessValue);
 				if (material.TextureIds.Count <= AdvancedMetallicSlot || material.TextureIds.Count <= AdvancedNarSlot)
 					return MaterialSynthesisResult.Failed($"{stem}：advanced 模板槽不够，放不下金属/粗糙槽");
 				material.SetTexture(AdvancedMetallicSlot, metallic.Id);
@@ -1377,6 +1636,58 @@ public sealed class SourceMaterialConverter
 		var matcapTextureName = string.IsNullOrWhiteSpace(vmt.MatCapTexture)
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.MatCapTexture));
+
+		// 法线图：同样只留裸名（`$bumpmap "path\Mat_Underwear_N"` → `Mat_Underwear_N`）。
+		//
+		// **这一条以前完全没有接线。** 所有材质写进 HD2 的都是平面法线（128,128,255），
+		// 而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图（官方文档 `pbr.vmt` /
+		// `nekotoon.vmt` 都写着 `$bumpmap` + `$bumpstrength`）。现在它在装配时决定
+		// "这张材质要不要配一张自己的法线贴图"，见 `TryBuildNormalTexture`。
+		var bumpTextureName = string.IsNullOrWhiteSpace(vmt.Value("$bumpmap"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$bumpmap")!));
+		var bumpStrength = MaterialAppearance.ParseBumpStrength(vmt.Value("$bumpstrength"));
+
+		// matcap 的**合成参数**（N2）：模式 + 逐通道强度 + 蒙版。
+		//
+		// 以前只把 `$matcap` 当成"有/没有 matcap"的布尔——模式、tint 的 alpha、`$mask1`
+		// 全部丢弃，于是那层亮光要么被压成一个平均色、要么被整片涂平。
+		// 源侧的实际公式（lilToon / NekoToon）见 MaterialAppearance.CompositeMatcap。
+		var matcapBlend = MaterialAppearance.ParseMatcapBlend(vmt.Value("$matcap"));
+		var matcapTintRgba = MaterialAppearance.ParseTintRgba(vmt.Value("$matcaptint"));
+		var mask1Texture = string.IsNullOrWhiteSpace(vmt.Value("$mask1"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$mask1")!));
+
+		// 第二层 matcap（`$MATCAP2`）。**判据是模式**，不是"有没有写贴图"——
+		// 官方手册里这一层是加法叠加，通常比第一张更亮，负责把金属推到"镀铬"。
+		// 它的逐像素强度由 `$mask1` 的 **B** 通道控制（R 是给第一层的）。
+		var matcap2Blend = MaterialAppearance.ParseMatcapBlend(vmt.Value("$MATCAP2"));
+		var matcap2Texture = string.IsNullOrWhiteSpace(vmt.Value("$MATCAP2TEXTURE"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$MATCAP2TEXTURE")!));
+		var matcap2TintRgba = MaterialAppearance.ParseTintRgba(vmt.Value("$MATCAP2TINT"));
+
+		// `$selfillum`：不受光照影响的自发光（源侧语义是"底色自己当发光色"）。
+		// `$selfillum 2` 是"用 $selfillummask 当遮罩"的模式；`$selfillumtint` 是它的强度/颜色。
+		var selfIllumRaw = vmt.Value("$selfillum");
+		var selfIllumStrength = 0.0;
+		if (!string.IsNullOrWhiteSpace(selfIllumRaw))
+		{
+			selfIllumStrength = vmt.IsEnabled("$selfillum") ? 1.0 : 0.0;
+			var tintStrength = MaterialAppearance.ParseTint(vmt.Value("$selfillumtint"));
+			if (tintStrength > 0 && tintStrength < 1.0)
+				selfIllumStrength *= tintStrength;   // 作者压过强度（纯白 tint 时不动）
+		}
+
+		var selfIllumMaskTexture = string.IsNullOrWhiteSpace(vmt.Value("$selfillummask"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$selfillummask")!));
+
+		// 光照曲线（`$lightwarptexture`）。它的**受光端**就是 NekoToon 里那个著名的"×0.30"上限。
+		var lightwarpTexture = string.IsNullOrWhiteSpace(vmt.Value("$lightwarptexture"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$lightwarptexture")!));
 
 		// ── 没有真底色的两种写法，处理方式不同 ──────────────────────────────
 		//
@@ -1521,7 +1832,7 @@ public sealed class SourceMaterialConverter
 			{
 				vtf = VtfFile.Read(vtfBytes);
 				// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
-				rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+				rgba = DecodeTextureCached(textureName, vtfBytes, vtf);
 				baseAlpha = TextureAlpha.Measure(rgba);
 			}
 			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
@@ -1714,7 +2025,7 @@ public sealed class SourceMaterialConverter
 				try
 				{
 					vtf = VtfFile.Read(matcapBytes);
-					rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+					rgba = DecodeTextureCached(matcapName, matcapBytes, vtf);
 					// ⚠️ **不要重新测 `baseAlpha`。** 它描述的是**源底色**的 alpha，
 					// 而下面 `useAlphaClip` 正是靠它决定"这个件要不要镂空"。
 					// 曾经在这里 `baseAlpha = TextureAlpha.Measure(rgba)` —— 那一行把它换成了
@@ -1929,7 +2240,27 @@ public sealed class SourceMaterialConverter
 			// 抖动是**默认**的半透明落地方式，但只给"源侧真的要半透明"的材质：
 			// `$translucent`（想混合，HD2 表达不了）与 `$allowalphatocoverage`（源侧自己就在抖）。
 			// 纯 `$alphatest` 继续硬裁——那是 Source 的原语义（低于参考值丢弃），蕾丝/镂空靠它。
-			UseDither: useAlphaClip && vmt.WantsDitheredTransparency);
+			UseDither: useAlphaClip && vmt.WantsDitheredTransparency)
+		{
+			BumpTexture = bumpTextureName,
+			BumpStrength = bumpStrength,
+			// **只认显式开关，不再按文件名猜。**
+			//
+			// 曾经加过"名字里带 opengl 就翻绿通道"（huahua 的 Chiyu 整套法线都叫
+			// `*_Normal_OpenGL`）。实机结果是**比不翻更奇怪**：针织的明暗整个反掉、成为一块块暗斑。
+			// 结论：那些图在 L4D2 里就是照原样用的，文件名只是命名习惯，不能当约定来推断。
+			// 要看另一版就显式传 `--normal-flip-y on`。
+			BumpFlipY = normalFlipY,
+			MatcapBlend = matcapBlend,
+			MatcapTintRgba = matcapTintRgba,
+			Mask1Texture = mask1Texture,
+			Matcap2Blend = matcap2Blend,
+			Matcap2Texture = matcap2Texture,
+			Matcap2TintRgba = matcap2TintRgba,
+			LightwarpTexture = lightwarpTexture,
+			SelfIllumStrength = selfIllumStrength,
+			SelfIllumMaskTexture = selfIllumMaskTexture,
+		};
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
 
@@ -2041,6 +2372,33 @@ public sealed class SourceMaterialConverter
 			? BuildTranslucentMap(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight)
 			: null;
 
+		// ===== N3（默认关闭，见 LightwarpShadingEnabled）：把 lightwarp 当卡通阴影曲线烘进底色 =====
+		//
+		// 作者填的这些数是有意义的，不能丢：ramp 的暗端编码了"阴影该是什么颜色"
+		// （basewarp 偏冷 (50,55,58)、skinwarp 偏暖 (60,45,49)、facewarp 也偏暖），
+		// 受光段与暗端之间那道台阶编码了"明暗过渡有多硬"。卡通渲染里阴影从来不是灰的。
+		//
+		// **但绝对值不能照搬**：源侧是 `albedo × lightwarp(NdotL) × lightColor`，ramp 描述的是
+		// 光照曲线，它的 0.30 由 HDR 光照与自动曝光补偿。HD2 的 PBR 光照自己就算这一层——
+		// 直接整片乘 0.30 等于乘两次（实测后果：全身深灰到近黑）。
+		//
+		// 所以先除以 ramp 自己的受光段（受光 = 1.0），再按**法线的 N·L** 查这条归一化曲线：
+		// 受光面保持原样，背光面带作者指定的色偏，整体亮度不变。
+		if (LightwarpShadingEnabled
+			&& loaded.LightwarpTexture is { Length: > 0 } warpName
+			&& TryReadTextureRgba(warpName, out var warpRgba, out var warpWidth, out var warpHeight))
+		{
+			// **必须用世界方向的法线**（见 UvNormalBake）：拿切线空间法线算 N·L 会让阴影
+			// 跟着贴图细节一块块跳。没有烘焙结果时按"正面朝光"算 ⇒ 等于不动。
+			var shadingNormal = WorldNormalFor(loaded.Stem);
+			MaterialAppearance.BakeLightwarpShading(
+				rgba, vtf.Width, vtf.Height,
+				warpRgba, warpWidth, warpHeight,
+				shadingNormal?.Rgba,
+				shadingNormal?.Width ?? 0,
+				shadingNormal?.Height ?? 0);
+		}
+
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
 		// 前者是因为 alpha 的用途不同（镂空走遮罩贴图），后者是因为
 		// 压暗要作用在 sRGB 编码的像素上（见 AlbedoAdjustment 的注释）。
@@ -2084,6 +2442,62 @@ public sealed class SourceMaterialConverter
 			var metalDeliverable = loaded.MetalDeliverable;
 			if (metalDeliverable)
 				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+		}
+
+		// ===== N2：把 matcap 层合进底色 =====
+		//
+		// 源侧的观感 = 底色 ⊕ matcap：模式由 `$matcap` 决定（0 禁用 / 1 乘 / 2 加 / 3 正常 / 4 屏幕），
+		// 强度 = `$matcaptint`.a × `$mask1`.r × matcap 自己的 alpha。逐字实现见
+		// `MaterialAppearance.CompositeMatcap`（lilToon `lilBlendColor`）。
+		//
+		// **这是我们此前丢掉的那一层。** 之前 `$matcap` 只是个布尔：模式、tint 的 alpha、蒙版全部
+		// 丢弃，最后要么压成一个平均色（Bake），要么整片涂成中性 F0（Metal）。于是"局部亮光"
+		// 这种 matcap 最典型的观感在产物里根本不存在 —— 用户说"matcap 看起来没被支持"就是这个。
+		//
+		// 采样坐标：源侧用**视角法线**（lilToon `lilCalcMatCapUV`），HD2 没有 view-normal 采样。
+		// 我们试过直接拿切线空间法线当代替——法线贴图里的细节一抖，颜色就跟着跳，
+		// 实机表现是脸上/发梢/衣褶上一块块色斑。正确的前提是**世界方向的法线**，
+		// 也就是 `UvNormalBake` 把几何烘进 UV 空间得到的那张；没有它就退回取正中
+		// （整片一个颜色，配合逐像素蒙版仍能表达"局部亮光"，但不会出色斑）。
+		if (loaded.MatcapBlend != MaterialAppearance.MatcapBlendMode.Off
+			&& !MatcapLayerDisabled
+			// 底色本身就是 matcap 的那条路（Bake/Albedo）不能叠自己，会自我加强一倍。
+			&& !(loaded.MatcapIsSurface && matcapMode != MatCapMode.Metal)
+			&& loaded.MatcapTextureName is { Length: > 0 } matcapName
+			&& TryReadTextureRgba(matcapName, out var matcapRgba, out var matcapWidth, out var matcapHeight))
+		{
+			byte[]? maskRgba = null;
+			var maskWidth = 0;
+			var maskHeight = 0;
+			if (loaded.Mask1Texture is { Length: > 0 } maskName)
+				TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
+
+			var worldNormal = WorldNormalFor(loaded.Stem);
+			MaterialAppearance.CompositeMatcap(
+				rgba, vtf.Width, vtf.Height,
+				matcapRgba, matcapWidth, matcapHeight,
+				normal: worldNormal?.Rgba,
+				normalWidth: worldNormal?.Width ?? 0,
+				normalHeight: worldNormal?.Height ?? 0,
+				maskRgba, maskWidth, maskHeight,
+				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: true);
+
+			// ===== 第二层（`$MATCAP2`）：叠在第一层之上，蒙版用 `$mask1` 的 **B** 通道 =====
+			//
+			// 官方手册把两个通道分得很清楚：`r通道用于matcap蒙版 … b通道是matcap2蒙版`。
+			// 这一层负责"镀铬亮度"——实测 98 个材质里 93 个写了它，少了它金属会停在
+			// "氧化过的铝"那一档。
+			if (loaded.Matcap2Blend != MaterialAppearance.MatcapBlendMode.Off
+				&& loaded.Matcap2Texture is { Length: > 0 } matcap2Name
+				&& TryReadTextureRgba(matcap2Name, out var matcap2Rgba, out var matcap2Width, out var matcap2Height))
+			{
+				MaterialAppearance.CompositeMatcap(
+					rgba, vtf.Width, vtf.Height,
+					matcap2Rgba, matcap2Width, matcap2Height,
+					normal: null, normalWidth: 0, normalHeight: 0,
+					maskRgba, maskWidth, maskHeight,
+					loaded.Matcap2TintRgba, loaded.Matcap2Blend, maskChannel: 2, sourceAxes: true);
+			}
 		}
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
 			MaterialAppearance.ScaleRgb(rgba, matcapBakeGain);
@@ -2137,9 +2551,43 @@ public sealed class SourceMaterialConverter
 			}
 		}
 
+		else if (loaded.SelfIllumStrength > 0 && loaded.TemplateName == "advanced")
+		{
+			// `$selfillum`：源侧语义是"**底色自己当发光色**、不吃光照"，可选 `$selfillummask` 当遮罩。
+			// HD2 的 `advanced` 槽 5 的 alpha 就是自发光强度，所以把强度写回 A：
+			//   A = 强度 × gain × 蒙版
+			//
+			// gain 默认 0.5：HD2 的发光是**叠在 PBR 光照之上**的，给满等于把底色再加一遍（实测过曝）。
+			// 这个值是实机可调的旋钮（env `HD2_SELFILLUM_GAIN`），不是猜死的常量。
+			byte[]? selfIllumMask = null;
+			var maskWidth = 0;
+			var maskHeight = 0;
+			if (loaded.SelfIllumMaskTexture is { Length: > 0 } selfIllumMaskName)
+				TryReadTextureRgba(selfIllumMaskName, out selfIllumMask, out maskWidth, out maskHeight);
+
+			for (var y = 0; y < vtf.Height; y++)
+			{
+				for (var x = 0; x < vtf.Width; x++)
+				{
+					var mask = 1.0;
+					if (selfIllumMask is not null && maskWidth > 0 && maskHeight > 0)
+					{
+						var mx = Math.Min(maskWidth - 1, x * maskWidth / vtf.Width);
+						var my = Math.Min(maskHeight - 1, y * maskHeight / vtf.Height);
+						var at = ((my * maskWidth) + mx) * 4;
+						mask = ((selfIllumMask[at] * 0.299) + (selfIllumMask[at + 1] * 0.587)
+							+ (selfIllumMask[at + 2] * 0.114)) / 255.0;
+					}
+
+					var value = loaded.SelfIllumStrength * selfIllumGain * mask;
+					rgba[(((y * vtf.Width) + x) * 4) + 3] =
+						(byte)Math.Clamp(Math.Round(value * 255.0), 0, 255);
+				}
+			}
+		}
+
 		// DecodeToRgba 返回的是**裸像素**，编码前要重新包一层 DDS——texconv 只吃 DDS。
-		var bc7 = encoder.EncodeToBc7(
-			Hd2TextureAsset.BuildDds(vtf.Width, vtf.Height, Rgba8Unorm, [rgba]), srgb: true);
+		var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
@@ -2203,8 +2651,14 @@ public sealed class SourceMaterialConverter
 			map[offset + 3] = rgba[offset + 3];    // 不透明度 = 源 alpha
 		}
 
-		var bc7 = encoder.EncodeToBc7(
-			Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [map]), srgb: false);
+		// ⚠️ 这里**刻意不接源法线图**，两个理由：
+		//  1. 这张图按**源底色的尺寸**建（R,G 是法线、B 是粗糙度、A 是不透明度，四样挤在一个
+		//     BC7 块里），而法线图常常是另一个分辨率——尺寸不同就没法逐像素搬。
+		//  2. 这条 `translucent` 路线本身还没有实机结论（见 AlphaExperiment 的注释）。
+		// 等它实机站住了再谈接线；现在接等于给一条未验证的路加复杂度。
+		// 平面法线（128,128）在这里是安全的默认值：观感差一点，但不会歪。
+
+		var bc7 = EncodeBc7Deduplicated(map, width, height, srgb: false);
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
@@ -2242,10 +2696,10 @@ public sealed class SourceMaterialConverter
 		try
 		{
 			var vtf = VtfFile.Read(vtfBytes);
-			var rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+			// 纯贴图包（只换色）里同一张 VTF 常被多个 patch 引用，解码结果可以复用。
+			var rgba = DecodeTextureCached(stem, vtfBytes, vtf);
 			ZeroAlpha(rgba);
-			var bc7 = encoder.EncodeToBc7(
-				Hd2TextureAsset.BuildDds(vtf.Width, vtf.Height, Rgba8Unorm, [rgba]), srgb: true);
+			var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 			var asset = new Hd2TextureAsset();
 			asset.FromDds(bc7);
 			texture = new SynthesizedTexture(
@@ -2333,8 +2787,7 @@ public sealed class SourceMaterialConverter
 			ditherDensity: ditherDensity,
 			ditherPattern: ditherPattern);
 
-		var dds = Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [mask]);
-		var bc7 = encoder.EncodeToBc7(dds, srgb: false);
+		var bc7 = EncodeBc7Deduplicated(mask, width, height, srgb: false);
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
@@ -2594,6 +3047,229 @@ public sealed class SourceMaterialConverter
 	}
 
 	/// <summary>
+	/// 读一张贴图并解成裸像素（带 <see cref="DecodeTextureCached"/> 的复用）。
+	/// 供 matcap 合成读 matcap / 蒙版 / 法线用——它们只需要像素，不需要走材质那一套。
+	/// </summary>
+	private bool TryReadTextureRgba(string textureName, out byte[] rgba, out int width, out int height)
+	{
+		rgba = [];
+		width = 0;
+		height = 0;
+		if (string.IsNullOrWhiteSpace(textureName) || !source.TryReadVtf(textureName, out var bytes) || bytes.Length == 0)
+			return false;
+
+		try
+		{
+			var vtf = VtfFile.Read(bytes);
+			width = vtf.Width;
+			height = vtf.Height;
+			rgba = DecodeTextureCached(textureName, bytes, vtf);
+			return width > 0 && height > 0;
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// 这个材质的「法线 + 粗糙度」图（<b>RGB = 法线、A = 粗糙度</b>）；
+	/// <c>null</c> = 它没有可用的法线图，调用方继续用原来的平面法线。
+	/// <para>
+	/// <b>为什么返回 null 而不是直接给平面法线。</b>四个模板分支的平面法线**各是各的 id**
+	/// （<c>advanced</c> 用全局共享的 <c>shared_flat_normal_</c>，金属件用 <c>&lt;贴图&gt;_nar</c>），
+	/// 直接在这里统一会改动"没有法线图的材质"的产物字节——那批 Mod 全部要重构建一次，
+	/// 而收益为零。所以只替换"真有的那部分"。
+	/// </para>
+	/// </summary>
+	private SynthesizedTexture? TryNormalRoughnessTexture(LoadedMaterial loaded, byte roughness)
+		=> NoNormalMapRequested || loaded.BumpTexture is not { Length: > 0 } bump
+			? null
+			: TryBuildNormalTexture(bump, loaded.BumpStrength, roughness, loaded.BumpFlipY);
+
+	/// <summary>
+	/// 诊断开关 <c>HD2_NO_NORMAL_MAP=1</c>：**退回平面法线**，用来做 A/B 与计时。
+	/// <para>
+	/// 与 <c>HD2_NO_SYNTHETIC_BASE</c> 同一个用途：把"新功能到底改变了多少"变成一次干净对照，
+	/// 不用改代码、不用切分支。它也回答"转得慢是不是法线造成的"——这个问题只能量，不能猜。
+	/// </para>
+	/// </summary>
+	private static readonly bool NoNormalMapRequested =
+		Environment.GetEnvironmentVariable("HD2_NO_NORMAL_MAP") == "1";
+
+	/// <summary>
+	/// 诊断开关 <c>HD2_NO_MATCAP_LAYER=1</c>：不把 matcap 层合进底色（退回 N2 之前的行为）。
+	/// <para>
+	/// 与 <c>HD2_NO_NORMAL_MAP</c> 同一族：把"这一层到底改变了什么"变成一次干净的对照。
+	/// 也是万一合成观感不对时的**就地退路**——不用回滚构建。
+	/// </para>
+	/// </summary>
+	private static readonly bool MatcapLayerDisabled =
+		Environment.GetEnvironmentVariable("HD2_NO_MATCAP_LAYER") == "1";
+
+	/// <summary>
+	/// 开关 <c>HD2_LIGHTWARP=1</c>：把 lightwarp 当卡通阴影曲线烘进底色（<b>默认关闭</b>）。
+	/// <para>
+	/// <b>为什么默认关。</b>同 matcap 那条：源侧用**视角相关**的光照方向，而我们只能用切线空间法线
+	/// 配一个固定光向去近似。实机结果是**脸上、发梢、衣褶上出现一块块色斑**——切线法线是
+	/// "相对这个面"的方向，拿它当世界方向算 N·L，法线一抖阴影就跳。
+	/// </para>
+	/// <para>
+	/// 保留开关是因为这条数据本身有价值（ramp 的暗端编码了"阴影该是什么颜色"：
+	/// basewarp 偏冷、skinwarp 偏暖）。要真正用起来，得先拿到**模型空间的法线**或
+	/// 逐顶点的世界方向，而不是现在这张切线空间法线图。
+	/// </para>
+	/// </summary>
+	private static readonly bool LightwarpShadingEnabled =
+		Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") != "1";
+
+	/// <summary>
+	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
+	/// <para>缓存键含强度/粗糙度/Y 翻转，因为这三样都会改变产物字节。</para>
+	/// </summary>
+	/// <summary>
+	/// 量一张法线图的 XY 均值与标准差（都在 −1..1 域）。
+	/// <para>
+	/// 用途只有一个：判断它**能不能当切线空间法线用**。正常的法线图XY 均值应接近 0；
+	/// 整张图整体歪向一边（均值绝对值很大）说明它编码在别的空间/别的约定里，
+	/// 接进去只会把明暗歪成一块块斑。
+	/// </para>
+	/// </summary>
+	internal static (double MeanX, double MeanY, double SigmaX, double SigmaY) MeasureNormal(byte[] rgba)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		double sumX = 0, sumY = 0, sumX2 = 0, sumY2 = 0;
+		long count = 0;
+		for (var offset = 0; offset + 1 < rgba.Length; offset += 4)
+		{
+			var x = ((rgba[offset] / 255.0) * 2) - 1;
+			var y = ((rgba[offset + 1] / 255.0) * 2) - 1;
+			sumX += x;
+			sumY += y;
+			sumX2 += x * x;
+			sumY2 += y * y;
+			count++;
+		}
+
+		if (count == 0)
+			return (0, 0, 0, 0);
+
+		var meanX = sumX / count;
+		var meanY = sumY / count;
+		return (
+			meanX,
+			meanY,
+			Math.Sqrt(Math.Max(0, (sumX2 / count) - (meanX * meanX))),
+			Math.Sqrt(Math.Max(0, (sumY2 / count) - (meanY * meanY))));
+	}
+
+	private SynthesizedTexture? TryBuildNormalTexture(string bumpTexture, double strength, byte roughness, bool flipY)
+	{
+		var (texture, _) = normalTextures.GetOrAdd(
+			(bumpTexture, strength, roughness, flipY),
+			static (key, self) => self.EncodeNormalTexture(key.Name, key.Strength, key.Roughness, key.FlipY),
+			this);
+		return texture;
+	}
+
+
+	private (SynthesizedTexture? Texture, string? Notice) EncodeNormalTexture(
+		string bumpTexture, double strength, byte roughness, bool flipY)
+	{
+		if (!source.TryReadVtf(bumpTexture, out var bytes) || bytes.Length == 0)
+			return (null, $"{bumpTexture}：法线图不在材质来源里");
+
+		byte[] rgba;
+		int width;
+		int height;
+		try
+		{
+			var vtf = VtfFile.Read(bytes);
+			width = vtf.Width;
+			height = vtf.Height;
+			// 法线是**线性**数据：DXT5/ATI2N 都按线性 DXGI 格式交给 texconv，绝不能走 sRGB。
+			rgba = DecodeTextureCached(bumpTexture, bytes, vtf);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			return (null, $"{bumpTexture}：法线图读不出来（{exception.Message}）");
+		}
+
+		if (width <= 0 || height <= 0 || rgba.Length != checked(width * height * 4))
+			return (null, $"{bumpTexture}：法线图尺寸与像素数不符（{width}×{height}，{rgba.Length} 字节）");
+
+		// **先验一眼"这到底是不是正常的切线空间法线"。**
+		//
+		// 实测（2026-11-04）：正常法线图的 XY 均值都在 0 附近（Lunalice 13 张全在 ±0.01 内，
+		// 且全是 BC5/ATI2N）。而 Chiyu 与 Manuka 那批 DXT1/DXT5 存的"法线"，
+		// XY 均值是 **(−0.55,−0.55)** —— 一开始我以为它们编码在别的空间里。
+		//
+		// 后来量出来真因：**这些图被当成"颜色"做了 sRGB→线性 转换**（正常的 flat 128 被压到 ~55）。
+		// 证据：把存的值按"线性→sRGB"反算回去，8 张图的 XY 均值**全部精确回到 0.00**。
+		// 所以不拒绝，先试一次 gamma 复原；复原后仍居中就照用，否则才退回平面法线。
+		{
+			var (meanX, meanY, sigmaX, sigmaY) = MeasureNormal(rgba);
+			const double MeanLimit = 0.25;
+			const double SigmaLimit = 0.65;
+			if (Math.Abs(meanX) > MeanLimit || Math.Abs(meanY) > MeanLimit
+				|| sigmaX > SigmaLimit || sigmaY > SigmaLimit)
+			{
+				var recovered = (byte[])rgba.Clone();
+				for (var offset = 0; offset < recovered.Length; offset += 4)
+				{
+					recovered[offset] = MaterialAppearance.LinearToSrgbByte(recovered[offset] / 255.0);
+					recovered[offset + 1] = MaterialAppearance.LinearToSrgbByte(recovered[offset + 1] / 255.0);
+				}
+
+				var (fixedX, fixedY, fixedSx, fixedSy) = MeasureNormal(recovered);
+				if (Math.Abs(fixedX) <= 0.10 && Math.Abs(fixedY) <= 0.10
+					&& fixedSx <= SigmaLimit && fixedSy <= SigmaLimit)
+				{
+					rgba = recovered;
+					Interlocked.Increment(ref gammaRecoveredNormals);
+				}
+				else
+				{
+					Interlocked.Increment(ref rejectedNormals);
+					return (null,
+						$"{bumpTexture}：这张图看起来不是切线空间法线"
+						+ $"（XY 均值 {meanX:F2},{meanY:F2}、σ {sigmaX:F2},{sigmaY:F2}），已按无起伏处理");
+				}
+			}
+		}
+
+		MaterialAppearance.RebuildTangentNormal(rgba, strength, flipY, roughness);
+
+		var name = $"{bumpTexture}_nar{DescribeNormalVariant(strength, roughness, flipY)}";
+		var bc7 = EncodeBc7Deduplicated(rgba, width, height, srgb: false);
+		var asset = new Hd2TextureAsset();
+		asset.FromDds(bc7);
+		return (new SynthesizedTexture(
+			DeriveTextureId(name),
+			asset.WriteToc(),
+			asset.Pixels,
+			name,
+			asset.FormatName,
+			asset.Width,
+			asset.Height), null);
+	}
+
+	/// <summary>
+	/// 法线贴图名字里的变体后缀。**只放会改变字节的那些量**——名字进 id，
+	/// 而 id 决定装配器会不会把两张图并成一张。
+	/// </summary>
+	private static string DescribeNormalVariant(double strength, byte roughness, bool flipY)
+	{
+		var parts = new List<string>(3);
+		if (Math.Abs(strength - 1.0) > 1e-6)
+			parts.Add("s" + strength.ToString("0.##", CultureInfo.InvariantCulture));
+		parts.Add("r" + roughness.ToString(CultureInfo.InvariantCulture));
+		if (flipY)
+			parts.Add("fy");
+		return "_" + string.Join('_', parts);
+	}
+
+	/// <summary>
 	/// 造一张 4×4 纯色贴图（金属度、粗糙度这类标量槽用它）。
 	/// <para>
 	/// 4×4 是能表达一个完整 BC 块的最小尺寸，而 <b>1×1 也占满一个块</b>——两者字节数相同，
@@ -2639,3 +3315,23 @@ public sealed class SourceMaterialConverter
 			rgba[offset] = 0;
 	}
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
