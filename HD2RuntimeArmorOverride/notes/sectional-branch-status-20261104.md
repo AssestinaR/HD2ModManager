@@ -402,3 +402,57 @@ _decorationActivations（DecorationActivationStore）
 上一轮我 grep `AttachSelectedDecorationsAsync` 时把 pattern 写成了 `...ToHost`，
 于是判定"没有调用者"并删了方法，编译立刻报第 309 行还在用。
 **grep 的 pattern 必须与真实标识符逐字符一致**；判"没人用"之前先确认 pattern 命中过。
+
+---
+
+## 装饰链退场：服务层第二批完成，剩最后一块（牵头盔合并）
+
+### 本轮完成（`e93fa0b` → `5d22055`）
+
+| 提交 | 内容 | 量 |
+|---|---|---|
+| `e93fa0b` | 九个叶子方法 + 三处适配 | `1877 → 1792` |
+| `ffe803b` | 激活机制（8 个方法）+ 删除路径死块 + 5 个字段 + 7 处 flush 调用 | `1792 → 1536` |
+| `5d22055` | `DecorationPackageSnapshotService` 零调用者，整个删 | Core 870 → 869 |
+
+### 剩下的是同一块：`HostDerivedOverwriteService` 收窄成纯头盔合并
+
+这是最后一块，**不能单独做**，因为它们互相咬合：
+
+```
+HostDerivedOverwriteRequest.EnabledDecorations   ← 装饰附件参数（现在恒空）
+  ↑
+HostDerivedOverwriteService                      ← **头盔合并走它，必须留**
+  ↑ 依赖
+DecorationHostRebuildService                     ← 可删（只为装饰服务）
+  ↑ 依赖
+DecorationHostTargetBinder / DecorationPlanDocument /
+DecorationPayloadDocument / DecorationPlanningDefaults   ← 可删
+
+另有一条平行线：
+DecorationActivationStore                        ← 可删
+  ↑
+SafeModDeletionSafetySnapshot.IsDecorationActivationStateKnown / EnabledDecorations
+SafeModDeletionEnabledDecoration
+blocker "EnabledDecorationRollbackRequired"
+  ↑ 约 54 处引用 / 7 个文件（Core 契约 + CLI + Manager + 测试）
+```
+
+**做法（下一轮）**：
+1. `HostDerivedOverwriteRequest` 去掉 `EnabledDecorations`；`RebuildAsync` 只接 `helmetMerged`
+2. 跟着删 `DecorationHostRebuildService` / `HostTargetBinder` / `PlanDocument` /
+   `PayloadDocument` / `PlanningDefaults`（连同 `CoreServices` 工厂与测试）
+3. `SafeModDeletionSafetySnapshot` 去掉两个装饰字段 + `SafeModDeletionEnabledDecoration`
+   + 那条 blocker
+4. `DecorationActivationStore` + CLI 的读取/清理 + `DecorationActivationCleanupResult`
+5. `ModLibraryService` 里 `_decorationHostRebuild` 字段（第 3 步之后就没用了）
+
+**为什么不在这一轮硬做**：第 3 步会改 Core 的删除安全契约，波及 CLI 与 Manager 两边，
+是一个"改完必须整轮验证"的单元。这轮已经落了 4 个提交、全绿，停在这里比在半途好。
+
+### 一个工具上的教训
+
+删方法的脚本里那条"区块内不许出现禁删方法名"的校验**太严**：
+`ApplyDecorationActivationBatchCoreAsync` 引用了要保留的 `RebuildDecorationOverwritesAsync`，
+**引用是合法的，只有定义不能落在区块里**。改成只校验"区块内不许出现另一个方法签名"之后才对。
+护栏要拦的是"删过头"，不是"提到过"。
