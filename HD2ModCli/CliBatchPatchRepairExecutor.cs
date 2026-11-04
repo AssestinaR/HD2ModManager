@@ -261,53 +261,14 @@ internal static class CliBatchPatchRepairExecutor
 		IModInformationReader reader,
 		CancellationToken cancellationToken)
 	{
-		DecorationActivationSnapshot activations;
-		try
-		{
-			activations = await DecorationActivationStore.TryLoadReadOnlySnapshotAsync(
-				paths.DecorationActivationsPath,
-				cancellationToken).ConfigureAwait(false);
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
-		{
-			return
-			[
-				new CliBatchPatchRepairOverwriteRebuild(
-					string.Empty,
-					"派生 Overwrite",
-					false,
-					null,
-					0,
-					0,
-					0,
-					0,
-					0,
-					false,
-					[new CliBatchPatchRepairDiagnostic(
-						"BatchRepairDecorationActivationsUnreadable",
-						"error",
-						true,
-						$"无法读取 decoration-activations.json，已保留现有 Overwrite：{exception.Message}",
-						paths.DecorationActivationsPath,
-						Details: exception.ToString())])
-			];
-		}
-
+		// 装饰包已不再支持：只剩「头盔合并过的主体」需要重建派生 Overwrite。
 		var hosts = new HashSet<ModNodeId>();
-		foreach (var hostId in activations.EnabledHostsByDecoration.Values.SelectMany(values => values))
-		{
-			if (TryParseNodeId(hostId, out var nodeId)) hosts.Add(nodeId);
-		}
 		foreach (var node in snapshot.Nodes.Values.Where(node => node.Metadata.HelmetToArmorMerged))
 			hosts.Add(node.Id);
 		if (hosts.Count == 0) return Array.Empty<CliBatchPatchRepairOverwriteRebuild>();
 
-		// 装饰包已不再支持：库里不会再有这类节点，所以这里恒为空表。
-		// **HostDerivedOverwriteService 仍然保留** —— 头盔合并走的是同一个入口。
-		var decorations = (IReadOnlyDictionary<string, ModNode>)new Dictionary<string, ModNode>(StringComparer.OrdinalIgnoreCase);
-		var decorationRebuild = CoreServices.CreateDecorationHostRebuildService(paths, reader);
 		var helmetMerge = CoreServices.CreateDirectHelmetToArmorMergeService(paths, reader);
-		var overwriteService = CoreServices.CreateHostDerivedOverwriteService(decorationRebuild, helmetMerge);
+		var overwriteService = CoreServices.CreateHostDerivedOverwriteService(helmetMerge);
 		var results = new List<CliBatchPatchRepairOverwriteRebuild>();
 
 		foreach (var hostId in hosts.OrderBy(id => id.Value))
@@ -332,39 +293,28 @@ internal static class CliBatchPatchRepairExecutor
 				continue;
 			}
 
-			var attachmentsResult = await ReadEnabledAttachmentsAsync(host, decorations, activations, paths, cancellationToken).ConfigureAwait(false);
-			if (attachmentsResult.Diagnostics.Any(diagnostic => diagnostic.Blocking))
-			{
-				results.Add(new CliBatchPatchRepairOverwriteRebuild(
-					CliProjections.FormatId(host.Id), host.Metadata.Name, false, null, 0, 0, 0, 0, 0, false, attachmentsResult.Diagnostics));
-				continue;
-			}
-
 			try
 			{
 				var result = await overwriteService.RebuildAsync(
 					new HostDerivedOverwriteRequest(
 						host,
-						attachmentsResult.Attachments,
 						host.Metadata.HelmetToArmorMerged,
 						paths.ModsDirectory,
 						gameDataDirectory),
 					cancellationToken).ConfigureAwait(false);
 				reader.InvalidateNode(host.Id);
-				var issues = attachmentsResult.Diagnostics
-					.Concat(result.Issues.Select(issue => CreateOverwriteDiagnostic(issue, host)))
-					.ToArray();
+				var issues = result.Issues.Select(issue => CreateOverwriteDiagnostic(issue, host)).ToArray();
 				results.Add(new CliBatchPatchRepairOverwriteRebuild(
 					CliProjections.FormatId(host.Id),
 					host.Metadata.Name,
 					result.Succeeded,
 					result.OverwriteDirectory,
-					result.DecorationRebuild?.RebuiltPatchCount ?? 0,
-					result.DecorationRebuild?.EditedUnitCount ?? 0,
+					0,
+					0,
 					result.HelmetMerge?.ProcessedPatchCount ?? 0,
 					result.HelmetMerge?.MergedArmorUnitCount ?? 0,
 					result.HelmetMerge?.HiddenHelmetUnitCount ?? 0,
-					result.ClearedManagedOverwrite || result.DecorationRebuild?.ClearedGeneratedOverwrite == true,
+					result.ClearedManagedOverwrite,
 					issues));
 			}
 			catch (Exception exception) when (exception is IOException
@@ -385,77 +335,6 @@ internal static class CliBatchPatchRepairExecutor
 		return results;
 	}
 
-	private static async ValueTask<(IReadOnlyList<DecorationHostRebuildAttachment> Attachments, IReadOnlyList<CliBatchPatchRepairDiagnostic> Diagnostics)> ReadEnabledAttachmentsAsync(
-		ModNode host,
-		IReadOnlyDictionary<string, ModNode> decorations,
-		DecorationActivationSnapshot activations,
-		StoragePaths paths,
-		CancellationToken cancellationToken)
-	{
-		var hostKey = host.Id.Value.ToString("N");
-		var attachments = new List<DecorationHostRebuildAttachment>();
-		var diagnostics = new List<CliBatchPatchRepairDiagnostic>();
-		foreach (var (rawDecorationId, hosts) in activations.EnabledHostsByDecoration.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
-		{
-			if (!hosts.Contains(hostKey)) continue;
-			var key = NormalizeGuid(rawDecorationId);
-			if (key is null || !decorations.TryGetValue(key, out var decoration))
-			{
-				diagnostics.Add(new CliBatchPatchRepairDiagnostic(
-					"BatchRepairActiveDecorationMissing",
-					"error",
-					true,
-					"活动装饰状态引用了不存在的装饰 Mod；为避免清空旧 Overwrite，已跳过该主体。",
-					NodeId: CliProjections.FormatId(host.Id)));
-				continue;
-			}
-			var planPath = Path.Combine(paths.ModsDirectory, decoration.RelativePath, "decoration.json");
-			if (!File.Exists(planPath))
-			{
-				diagnostics.Add(new CliBatchPatchRepairDiagnostic(
-					"BatchRepairActiveDecorationPlanMissing",
-					"error",
-					true,
-					$"活动装饰缺少 decoration.json；为避免清空旧 Overwrite，已跳过该主体：{decoration.Metadata.Name}",
-					planPath,
-					CliProjections.FormatId(host.Id)));
-				continue;
-			}
-			try
-			{
-				var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(
-					await File.ReadAllTextAsync(planPath, cancellationToken).ConfigureAwait(false),
-					new JsonSerializerOptions(JsonSerializerDefaults.Web));
-				if (plan is null)
-				{
-					diagnostics.Add(new CliBatchPatchRepairDiagnostic(
-						"BatchRepairActiveDecorationPlanUnreadable",
-						"error",
-						true,
-						$"活动装饰的 decoration.json 为空或无法解析；已跳过主体：{decoration.Metadata.Name}",
-						planPath,
-						CliProjections.FormatId(host.Id)));
-					continue;
-				}
-				attachments.Add(new DecorationHostRebuildAttachment(
-					decoration.Id.Value.ToString("N"),
-					decoration.RelativePath,
-					plan));
-			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
-			{
-				diagnostics.Add(new CliBatchPatchRepairDiagnostic(
-					"BatchRepairActiveDecorationPlanUnreadable",
-					"error",
-					true,
-					$"无法读取活动装饰定义；已跳过主体：{decoration.Metadata.Name}。{exception.Message}",
-					planPath,
-					CliProjections.FormatId(host.Id),
-					exception.ToString()));
-			}
-		}
-		return (attachments, DistinctDiagnostics(diagnostics));
-	}
 
 	private static void AddRepairDiagnostics(
 		ICollection<CliBatchPatchRepairDiagnostic> diagnostics,

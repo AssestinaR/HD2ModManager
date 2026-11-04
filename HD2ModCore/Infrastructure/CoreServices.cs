@@ -236,17 +236,9 @@ public static class CoreServices
 		=> new ArchiveObjectTreeImporter(CreateObjectTreeImporter());
 	public static IModFileResolver CreateModFileResolver()
 		=> new ModFileResolver(CreatePatchFileNameParser());
-	public static DecorationHostRebuildService CreateDecorationHostRebuildService(
-		StoragePaths paths,
-		IModInformationReader informationReader)
-		=> new(paths ?? throw new ArgumentNullException(nameof(paths)), informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static HostDerivedOverwriteService CreateHostDerivedOverwriteService(
-		IDecorationHostRebuildService decorationHostRebuild,
 		IHelmetToArmorMergeService helmetToArmorMerge)
-		=> new(
-			decorationHostRebuild ?? throw new ArgumentNullException(nameof(decorationHostRebuild)),
-			helmetToArmorMerge ?? throw new ArgumentNullException(nameof(helmetToArmorMerge)),
-			CreatePatchFileNameParser());
+		=> new(helmetToArmorMerge ?? throw new ArgumentNullException(nameof(helmetToArmorMerge)));
 	public static IApplyPlanner CreateApplyPlanner()
 		=> new ApplyPlanner(CreatePatchFileNameParser());
 	public static ILuaDeploymentService CreateLuaDeploymentService(StoragePaths? paths = null)

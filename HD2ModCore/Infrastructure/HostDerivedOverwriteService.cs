@@ -4,55 +4,33 @@ using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
 
-// Coordinates the two derived layers that intentionally share one host Overwrite:
-// original host + enabled decorations, followed by the optional helmet merge.
-// It owns no activation state and has no UI dependency, so desktop and future
-// headless callers execute exactly the same ownership and rollback transaction.
+// Owns the single host Overwrite directory used for derived output.
+//
+// 装饰包已不再支持（2026-11-04：能力被分件模组取代），所以这个服务现在只剩
+// **头盔合并**这一条派生来源。它仍然独立存在（而不是并入头盔合并服务），因为
+// 它负责的是"Overwrite 目录的归属、备份与回滚"，那是比合并本身更外一层的事：
+// 谁生成的、能不能覆盖、失败时回滚到哪一步。
 public sealed class HostDerivedOverwriteService
 {
-    private readonly IDecorationHostRebuildService _decorationRebuild;
     private readonly IHelmetToArmorMergeService _helmetToArmorMerge;
-    private readonly IPatchFileNameParser _patchFileNameParser;
 
-    public HostDerivedOverwriteService(
-        IDecorationHostRebuildService decorationRebuild,
-        IHelmetToArmorMergeService helmetToArmorMerge,
-        IPatchFileNameParser patchFileNameParser)
+    public HostDerivedOverwriteService(IHelmetToArmorMergeService helmetToArmorMerge)
     {
-        _decorationRebuild = decorationRebuild ?? throw new ArgumentNullException(nameof(decorationRebuild));
         _helmetToArmorMerge = helmetToArmorMerge ?? throw new ArgumentNullException(nameof(helmetToArmorMerge));
-        _patchFileNameParser = patchFileNameParser ?? throw new ArgumentNullException(nameof(patchFileNameParser));
     }
 
     public async Task<HostDerivedOverwriteResult> RebuildAsync(
         HostDerivedOverwriteRequest request,
         CancellationToken cancellationToken = default,
-        IProgress<DecorationOperationProgress>? decorationProgress = null,
         IProgress<HelmetToArmorMergeProgress>? helmetProgress = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Host);
-        ArgumentNullException.ThrowIfNull(request.EnabledDecorations);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.ModsRootDirectory);
 
         var output = ResolveOverwriteDirectory(request.Host, request.ModsRootDirectory);
-        var decorations = request.EnabledDecorations.ToArray();
         if (!request.HelmetToArmorMerged)
         {
-            if (decorations.Length != 0)
-            {
-                var decoration = await _decorationRebuild.RebuildHostAsync(
-                    request.Host,
-                    decorations,
-                    request.ModsRootDirectory,
-                    request.GameDataDirectory,
-                    cancellationToken,
-                    decorationProgress).ConfigureAwait(false);
-                return decoration.Succeeded
-                    ? HostDerivedOverwriteResult.Success(output, decorationRebuild: decoration, issues: decoration.Issues)
-                    : HostDerivedOverwriteResult.Failure(output, decoration, null, decoration.Issues);
-            }
-
             var cleanup = RemoveManagedOverwrite(output);
             return HostDerivedOverwriteResult.Success(output, clearedManagedOverwrite: cleanup.Removed);
         }
@@ -67,32 +45,10 @@ public sealed class HostDerivedOverwriteService
             var issues = inspection.Issues.Count == 0
                 ? [new CoreIssue(CoreIssueSeverity.Error, "HelmetArmorPairMissing", "当前 Mod 没有可合并的 Armor/Helmet 模型集合。", request.Host.RelativePath, request.Host.Id)]
                 : inspection.Issues;
-            return HostDerivedOverwriteResult.Failure(output, null, null, issues);
+            return HostDerivedOverwriteResult.Failure(output, null, issues);
         }
 
-        if (decorations.Length == 0)
-            return await BuildHelmetOverwriteFromSourceAsync(request, output, inspection.Candidates, cancellationToken, helmetProgress).ConfigureAwait(false);
-
-        // The decoration rebuild writes only the Patch families it edits. Its output
-        // must therefore be overlaid onto the original host before helmet planning,
-        // otherwise a pair in an untouched Patch group would be invisible here.
-        var decorationResult = await _decorationRebuild.RebuildHostAsync(
-            request.Host,
-            decorations,
-            request.ModsRootDirectory,
-            request.GameDataDirectory,
-            cancellationToken,
-            decorationProgress).ConfigureAwait(false);
-        if (!decorationResult.Succeeded)
-            return HostDerivedOverwriteResult.Failure(output, decorationResult, null, decorationResult.Issues);
-
-        return await ApplyHelmetMergeToGeneratedOverwriteAsync(
-            request,
-            output,
-            decorationResult,
-            inspection.Candidates,
-            cancellationToken,
-            helmetProgress).ConfigureAwait(false);
+        return await BuildHelmetOverwriteFromSourceAsync(request, output, inspection.Candidates, cancellationToken, helmetProgress).ConfigureAwait(false);
     }
 
     private async Task<HostDerivedOverwriteResult> BuildHelmetOverwriteFromSourceAsync(
@@ -117,11 +73,11 @@ public sealed class HostDerivedOverwriteService
             if (!result.IsSuccessful)
             {
                 RestoreManagedOverwrite(overwrite, backup);
-                return HostDerivedOverwriteResult.Failure(overwrite, null, result, result.Issues);
+                return HostDerivedOverwriteResult.Failure(overwrite, result, result.Issues);
             }
 
             await File.WriteAllTextAsync(
-                Path.Combine(overwrite, DecorationHostRebuildService.HelmetMergeOverwriteMarkerName),
+                Path.Combine(overwrite, ManagedOverwriteMarkers.HelmetMerge),
                 "generated",
                 cancellationToken).ConfigureAwait(false);
             if (backup is not null) DeleteDirectoryIfExists(backup);
@@ -131,97 +87,6 @@ public sealed class HostDerivedOverwriteService
         {
             RestoreManagedOverwrite(overwrite, backup);
             throw;
-        }
-    }
-
-    private async Task<HostDerivedOverwriteResult> ApplyHelmetMergeToGeneratedOverwriteAsync(
-        HostDerivedOverwriteRequest request,
-        string overwrite,
-        DecorationHostRebuildResult decorationResult,
-        IReadOnlyCollection<HelmetToArmorMergeCandidate> candidates,
-        CancellationToken cancellationToken,
-        IProgress<HelmetToArmorMergeProgress>? helmetProgress)
-    {
-        var temporary = overwrite + ".helmet-merge-" + Guid.NewGuid().ToString("N");
-        var effectiveSource = CreateEffectiveHelmetMergeSource(request.Host, request.ModsRootDirectory, overwrite, cancellationToken);
-        DeleteDirectoryIfExists(temporary);
-        try
-        {
-            var result = await _helmetToArmorMerge.ExecuteAsync(
-                request.Host,
-                effectiveSource,
-                temporary,
-                request.GameDataDirectory,
-                candidates,
-                cancellationToken,
-                helmetProgress).ConfigureAwait(false);
-            if (!result.IsSuccessful)
-                return HostDerivedOverwriteResult.Failure(overwrite, decorationResult, result, result.Issues);
-
-            await File.WriteAllTextAsync(
-                Path.Combine(temporary, DecorationHostRebuildService.HelmetMergeOverwriteMarkerName),
-                "generated",
-                cancellationToken).ConfigureAwait(false);
-            await File.WriteAllTextAsync(
-                Path.Combine(temporary, DecorationHostRebuildService.DecorationOverwriteMarkerName),
-                "generated",
-                cancellationToken).ConfigureAwait(false);
-
-            var backup = PrepareManagedOverwrite(overwrite);
-            try
-            {
-                Directory.Move(temporary, overwrite);
-                if (backup is not null) DeleteDirectoryIfExists(backup);
-            }
-            catch
-            {
-                RestoreManagedOverwrite(overwrite, backup);
-                throw;
-            }
-            return HostDerivedOverwriteResult.Success(overwrite, decorationResult, result, issues: MergeIssues(decorationResult.Issues, result.Issues));
-        }
-        finally
-        {
-            DeleteDirectoryIfExists(temporary);
-            DeleteDirectoryIfExists(effectiveSource);
-        }
-    }
-
-    private string CreateEffectiveHelmetMergeSource(
-        ModNode host,
-        string modsRootDirectory,
-        string decorationOverwrite,
-        CancellationToken cancellationToken)
-    {
-        var sourceDirectory = ResolveHostDirectory(host, modsRootDirectory);
-        var staging = Path.Combine(Path.GetTempPath(), "HD2ModManager-HelmetMerge-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(staging);
-        try
-        {
-            CopyPatchFamilies(sourceDirectory, staging, cancellationToken);
-            CopyPatchFamilies(decorationOverwrite, staging, cancellationToken);
-            return staging;
-        }
-        catch
-        {
-            DeleteDirectoryIfExists(staging);
-            throw;
-        }
-    }
-
-    private void CopyPatchFamilies(string sourceDirectory, string destinationDirectory, CancellationToken cancellationToken)
-    {
-        if (!Directory.Exists(sourceDirectory)) return;
-        foreach (var path in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.TopDirectoryOnly))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!_patchFileNameParser.TryParse(Path.GetFileName(path), out var info)
-                || info?.SidecarKind != PatchSidecarKind.Base)
-                continue;
-
-            CopyFile(path, destinationDirectory);
-            CopyOptionalSidecar(path + ".stream", destinationDirectory);
-            CopyOptionalSidecar(path + ".gpu_resources", destinationDirectory);
         }
     }
 
@@ -249,25 +114,16 @@ public sealed class HostDerivedOverwriteService
         return backup;
     }
 
+    // 两枚标记都要认：`.hd2-decoration-overwrite` 是装饰当年生成的产物，
+    // 我们还必须能识别并清掉它（见 ManagedOverwriteMarkers.Decoration 的说明）。
     private static bool IsManagedOverwrite(string directory)
-        => File.Exists(Path.Combine(directory, DecorationHostRebuildService.HelmetMergeOverwriteMarkerName))
-           || File.Exists(Path.Combine(directory, DecorationHostRebuildService.DecorationOverwriteMarkerName));
+        => File.Exists(Path.Combine(directory, ManagedOverwriteMarkers.HelmetMerge))
+           || File.Exists(Path.Combine(directory, ManagedOverwriteMarkers.Decoration));
 
     private static void RestoreManagedOverwrite(string directory, string? backup)
     {
         DeleteDirectoryIfExists(directory);
         if (backup is not null && Directory.Exists(backup)) Directory.Move(backup, directory);
-    }
-
-    private static void CopyOptionalSidecar(string path, string destinationDirectory)
-    {
-        if (File.Exists(path)) CopyFile(path, destinationDirectory);
-    }
-
-    private static void CopyFile(string sourcePath, string destinationDirectory)
-    {
-        Directory.CreateDirectory(destinationDirectory);
-        File.Copy(sourcePath, Path.Combine(destinationDirectory, Path.GetFileName(sourcePath)), overwrite: true);
     }
 
     private static string ResolveHostDirectory(ModNode host, string modsRootDirectory)
@@ -282,11 +138,6 @@ public sealed class HostDerivedOverwriteService
 
     private static string ResolveOverwriteDirectory(ModNode host, string modsRootDirectory)
         => Path.Combine(ResolveHostDirectory(host, modsRootDirectory), "Overwrite");
-
-    private static IReadOnlyList<CoreIssue> MergeIssues(
-        IReadOnlyList<CoreIssue> left,
-        IReadOnlyList<CoreIssue> right)
-        => left.Concat(right).ToArray();
 
     private static void DeleteDirectoryIfExists(string directory)
     {

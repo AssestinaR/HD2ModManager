@@ -56,7 +56,6 @@ namespace HD2ModManager.Services
         private readonly SemaphoreSlim _libraryMutationGate = new(1, 1);
         private readonly OptionActivationStore _optionActivations;
         private readonly IModRelationshipMutationService _relationshipMutations;
-        private readonly DecorationHostRebuildService _decorationHostRebuild;
 		private readonly HostDerivedOverwriteService _hostDerivedOverwrites;
         // 装饰包已不再支持：`_decorationActivations` / 待合并表 / 去抖源已删除。
 		private readonly OptionActivationDefaultInitializer _optionDefaultInitializer = new();
@@ -399,8 +398,7 @@ namespace HD2ModManager.Services
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths, _informationCenter);
             _optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
             _relationshipMutations = CoreServices.CreateModRelationshipMutationService(_paths, _optionActivations);
-            _decorationHostRebuild = CoreServices.CreateDecorationHostRebuildService(_paths, _informationReader);
-			_hostDerivedOverwrites = CoreServices.CreateHostDerivedOverwriteService(_decorationHostRebuild, _helmetToArmorMerge);
+			_hostDerivedOverwrites = CoreServices.CreateHostDerivedOverwriteService(_helmetToArmorMerge);
             _snapshot = EmptySnapshot();
             _derivedData = EmptyDerivedData();
         }
@@ -1144,7 +1142,7 @@ namespace HD2ModManager.Services
             IEnumerable<string> hostIds,
             IReadOnlyDictionary<string, HashSet<string>>? activationOverrides,
             CancellationToken cancellationToken,
-            IProgress<DecorationOperationProgress>? progress = null)
+            IProgress<HelmetToArmorMergeProgress>? progress = null)
         {
             var changedHosts = new List<ModNodeId>();
             var hosts = hostIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
@@ -1153,14 +1151,7 @@ namespace HD2ModManager.Services
                 var hostId = hosts[hostIndex];
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!TryParseNodeId(hostId, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var host)) continue;
-                var hostProgress = new Progress<DecorationOperationProgress>(item =>
-                {
-                    LogService.Info($"装饰合并进度：主体={host.Id.Value:N}，阶段={item.Stage}，进度={item.Completed}/{item.Total}");
-                    progress?.Report(item);
-                });
-                // 装饰包已不再支持：宿主 Overwrite 只剩头盔合并这一路。
-                IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)> enabled = [];
-                var rebuildResult = await RebuildHostOverwriteAsync(host, enabled, host.Metadata.HelmetToArmorMerged, cancellationToken, hostProgress).ConfigureAwait(false);
+                var rebuildResult = await RebuildHostOverwriteAsync(host, host.Metadata.HelmetToArmorMerged, cancellationToken).ConfigureAwait(false);
 
 				// A helmet merge result is nullable only when the host did not request that
 				// derived layer. If it was requested, a failed result must abort the activation
@@ -1172,34 +1163,23 @@ namespace HD2ModManager.Services
             return changedHosts;
         }
 
-        // The Core coordinator owns the shared managed Overwrite transaction. This
-        // adapter deliberately keeps the existing decoration/helmet service instances so
-        // their information-reader and operation-cache behavior remains unchanged for UI.
+        // The Core coordinator owns the managed Overwrite transaction.
+        // 装饰包已不再支持：这个适配层现在只服务头盔合并。
         private async Task<HelmetToArmorMergeResult?> RebuildHostOverwriteAsync(
             ModNode host,
-            IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)> enabledDecorations,
             bool helmetMerged,
             CancellationToken cancellationToken,
-            IProgress<DecorationOperationProgress>? decorationProgress = null,
             HelmetToArmorMergeInspection? preparedHelmetInspection = null,
             IProgress<HelmetToArmorMergeProgress>? helmetProgress = null)
         {
-            var attachments = enabledDecorations
-                .Select(item => new DecorationHostRebuildAttachment(
-                    item.Mod.Guid,
-                    item.Mod.SourcePath ?? string.Empty,
-                    item.Plan))
-                .ToArray();
             var result = await _hostDerivedOverwrites.RebuildAsync(
                 new HostDerivedOverwriteRequest(
                     host,
-                    attachments,
                     helmetMerged,
                     _paths.ModsDirectory,
                     SettingsService.GetGameDataFolder(),
                     preparedHelmetInspection),
                 cancellationToken,
-                decorationProgress,
                 helmetProgress).ConfigureAwait(false);
             EnsureHostDerivedOverwriteResult(result);
             return result.HelmetMerge;
@@ -1211,13 +1191,11 @@ namespace HD2ModManager.Services
             CancellationToken cancellationToken,
             IProgress<HelmetToArmorMergeProgress>? progress = null)
         {
-            IReadOnlyList<(ModEntity Mod, DecorationPlanDocument Plan)> decorations = [];
             var inspection = enabled
                 ? await _helmetToArmorMerge.InspectAsync(host, _paths.ModsDirectory, SettingsService.GetGameDataFolder(), cancellationToken).ConfigureAwait(false)
                 : null;
             var result = await RebuildHostOverwriteAsync(
                 host,
-                decorations,
                 enabled,
                 cancellationToken,
                 preparedHelmetInspection: inspection,
