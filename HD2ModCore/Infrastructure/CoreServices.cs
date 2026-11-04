@@ -236,9 +236,6 @@ public static class CoreServices
 		=> new ArchiveObjectTreeImporter(CreateObjectTreeImporter());
 	public static IModFileResolver CreateModFileResolver()
 		=> new ModFileResolver(CreatePatchFileNameParser());
-	public static DecorationPackageSnapshotService CreateDecorationPackageSnapshotService(
-		IModInformationReader informationReader)
-		=> new(CreateModFileResolver(), informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static DecorationHostRebuildService CreateDecorationHostRebuildService(
 		StoragePaths paths,
 		IModInformationReader informationReader)
