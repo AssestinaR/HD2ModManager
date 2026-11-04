@@ -2609,6 +2609,7 @@ public static class CliApplication
 				sourceMaterialNames: inputs.Model.MaterialPaths,
 				materialConverter: materialConverter,
 				unitIdSeed: reusedUnitIdSeed,
+				eyeFrame: EyeFrame.FromBones(inputs.Model.Bones),
 				noDrawPolicy: ResolveNoDrawPolicy(invocation.Options),
 				idNamespace: ResolveIdNamespace(invocation.Options)).ConfigureAwait(false);
 
@@ -3442,6 +3443,7 @@ public static class CliApplication
 			materialConverter: materialConverter,
 			unitIdSeed: reusedUnitIdSeed,
 			materialScope: scope,
+			eyeFrame: EyeFrame.FromBones(inputs.Model.Bones),
 			noDrawPolicy: ResolveNoDrawPolicy(options),
 			idNamespace: ResolveIdNamespace(options),
 			onProgress: ReportAssembleProgress).ConfigureAwait(false);

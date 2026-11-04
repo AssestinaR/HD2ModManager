@@ -46,6 +46,57 @@ public sealed record EyeColorSource(string Texture, double U0, double V0, double
 }
 
 /// <summary>
+/// 眼球投影用的"右"和"上"两个方向（单位向量），**由骨架推出**。
+/// <para>
+/// 为什么不用模型坐标轴：实测两套模型都把"左右"放在 X 上，但"朝前"一个是 Y、
+/// 另一个也几乎是 Y（Y/Z 只差 3%），而"眼球最薄的那一维 = 朝前"这种判据在后者上会翻车
+/// （把 X 当成上下，整只眼睛转 90°）。骨架是稳的：右 = 左锁骨 − 右锁骨、上 = 头 − 髋。
+/// </para>
+/// </summary>
+public sealed record EyeFrame(Vec3 Right, Vec3 Up)
+{
+	/// <summary>从骨骼表推"右/上"；推不出来（缺关键骨）时返回 <c>null</c>，由调用方退回形状判据。</summary>
+	public static EyeFrame? FromBones(IReadOnlyList<SourceBone>? bones)
+	{
+		if (bones is null || bones.Count == 0)
+			return null;
+
+		var head = Find(bones, "Head1") ?? Find(bones, "Head");
+		var pelvis = Find(bones, "Pelvis") ?? Find(bones, "Hips");
+		if (head is null || pelvis is null)
+			return null;
+
+		var up = (head.WorldOrigin - pelvis.WorldOrigin);
+		if (up.Length <= 1e-6)
+			return null;
+		up = up.Normalized();
+
+		var left = Find(bones, "L_Clavicle") ?? Find(bones, "L_UpperArm");
+		var rightBone = Find(bones, "R_Clavicle") ?? Find(bones, "R_UpperArm");
+		Vec3 right;
+		if (left is not null && rightBone is not null && (left.WorldOrigin - rightBone.WorldOrigin).Length > 1e-6)
+		{
+			right = (left.WorldOrigin - rightBone.WorldOrigin).Normalized();
+		}
+		else
+		{
+			// 没有锁骨/肩：用"上"叉世界前/后兜底（Source 惯例 X 朝前）。
+			right = Vec3.Cross(new Vec3(1, 0, 0), up);
+			if (right.Length <= 1e-6)
+				right = Vec3.Cross(new Vec3(0, 1, 0), up);
+			if (right.Length <= 1e-6)
+				return null;
+			right = right.Normalized();
+		}
+
+		return new EyeFrame(right, up);
+	}
+
+	private static SourceBone? Find(IReadOnlyList<SourceBone> bones, string fragment)
+		=> bones.FirstOrDefault(bone =>
+			bone.DisplayName.Contains(fragment, StringComparison.OrdinalIgnoreCase));
+}
+/// <summary>
 /// 眼球 UV 重建：找出颜色图里"画着眼睛的那块矩形"，并把眼球网格的 UV 按
 /// 模型的 Y/Z 重新投影上去。
 /// <para>
@@ -180,7 +231,8 @@ public static class EyeUv
 	public static (SourceGeometry Geometry, IReadOnlyList<string> Notes) Reproject(
 		SourceGeometry geometry,
 		IReadOnlyList<string>? materialNames,
-		Func<string, EyeColorSource?> resolve)
+		Func<string, EyeColorSource?> resolve,
+		EyeFrame? eyeFrame = null)
 	{
 		ArgumentNullException.ThrowIfNull(geometry);
 		ArgumentNullException.ThrowIfNull(resolve);
@@ -232,6 +284,7 @@ public static class EyeUv
 				continue;
 
 			// ③ 眼球自己的包围盒：三个方向各量一次跨度。
+			// ③ 眼球自己的包围盒：中心与三个方向的跨度。
 			//    中心取包围盒中点而不是顶点均值：网格顶点疏密不均匀，均值会被密集的一侧拽偏。
 			var low = new[] { double.MaxValue, double.MaxValue, double.MaxValue };
 			var high = new[] { double.MinValue, double.MinValue, double.MinValue };
@@ -247,65 +300,78 @@ public static class EyeUv
 			}
 
 			var extent = new[] { high[0] - low[0], high[1] - low[1], high[2] - low[2] };
+			var center = new Vec3(
+				(low[0] + high[0]) / 2,
+				(low[1] + high[1]) / 2,
+				(low[2] + high[2]) / 2);
 
-			// ④ **"横"和"竖"是哪个轴，必须从数据里推，不能假设模型 X 朝前。**
+			// ④ **投影用哪两个方向，先问骨架，再退回"看眼球形状"。**
 			//
-			// EyeRefract 把虹膜投到虚拟球上（球是圆的），而眼球网格通常是一枚"透镜"：
-			// **最薄的那个方向就是它的朝向**（正对镜头），剩下两个方向构成图像平面。
-			//
-			// ⚠️ 这条是"眼睛被横向拉长"的修法。实测 3798231335 的眼球三个跨度是
-			// X 1.69 / Y 0.70 / Z 1.07 —— 也就是说这个模型**X 是左右**、Y 是前后
-			// （角色在模型空间里朝 ±Y），而 Source 惯例是 X 朝前、左右是 Y。
-			// 上一版把"横"写死成 Y：贴图里那只眼睛的**横向**被摊到了眼球最薄的轴上，
-			// 可见正面几乎不随 Y 变化 ⇒ 横向内容被压成一条，看上去就是横向拉伸。
-			var facing = 0;
-			for (var axis = 1; axis < 3; axis++)
+			// 源侧 EyeRefract 是平面投影（eyes.vsh：`oT1 = (dot($IrisU, worldPos), dot($IrisV, worldPos))`），
+			// 两条向量由引擎按眼球给出。我们在 HD2 里没有它们，只能自己找"右"和"上"——
+			// 而**写死任何一个轴都会错**，实测两套模型就是反例：
+			//   3798231335：眼球跨度 X 1.69 / Y 0.70 / Z 1.07 → 左右 X、上下 Z、朝前 Y
+			//   3783088017：眼球跨度 X 1.65 / Y 0.65 / Z 0.64 → 左右 X、上下 Z，但 Y/Z 只差 3%，
+			//               "最薄的那一维 = 朝前"这种判据在这份数据上会翻车（把X当上下，眼睛转 90°）
+			// 骨架是稳的：右 = 左锁骨 − 右锁骨，上 = 头 − 髋 —— 两套模型上都成立，
+			// 而且与作者在 VMT 里给的 EyeOrigin/IrisU/IrisV 是同一套语义（只是这里用默认值推）。
+			var frameNote = string.Empty;
+			Vec3 right;
+			Vec3 up;
+			if (eyeFrame is { } basis)
 			{
-				if (extent[axis] < extent[facing])
-					facing = axis;
+				right = basis.Right;
+				up = basis.Up;
+				frameNote = $"轴取自骨架（右=({right.X:F2},{right.Y:F2},{right.Z:F2})"
+					+ $"、上=({up.X:F2},{up.Y:F2},{up.Z:F2})）";
 			}
-
-			// 剩下两个方向里，与模型"上"(+Z) 更接近的那个当竖向，另一个当横向。
-			var vertical = -1;
-			var bestUpness = double.MaxValue;
-			for (var axis = 0; axis < 3; axis++)
+			else
 			{
-				if (axis == facing) continue;
-				var upness = axis == 2 ? 0.0 : 1.0;   // 只有 Z 轴本身是"上"
-				if (upness < bestUpness)
+				// 兜底：最薄的一维 = 朝向；剩下两个里最宽的 = 横向（眼睛总是"宽 > 高"）。
+				var facing = 0;
+				for (var axis = 1; axis < 3; axis++)
 				{
-					bestUpness = upness;
-					vertical = axis;
+					if (extent[axis] < extent[facing])
+						facing = axis;
 				}
+
+				var horizontal = facing == 0 ? 1 : 0;
+				var vertical = 3 - facing - horizontal;
+				if (extent[vertical] > extent[horizontal])
+					(horizontal, vertical) = (vertical, horizontal);
+
+				right = AxisUnit(horizontal);
+				up = AxisUnit(vertical);
+				frameNote = $"轴从眼球形状推（横={AxisName(horizontal)}、竖={AxisName(vertical)}、"
+					+ $"朝前={AxisName(facing)}，跨度 {extent[0]:F2}/{extent[1]:F2}/{extent[2]:F2}）";
 			}
 
-			var horizontal = 3 - facing - vertical;   // 0 + 1 + 2 == 3，剩下的那个
-			if (extent[horizontal] <= 1e-6 || extent[vertical] <= 1e-6)
+			// ⑤ 在 right/up 上量范围（不依赖轴对齐），再取**各向同性**的比例。
+			//
+			// 两个方向各算一次、取较大者（比例越大 = 贴图占的模型尺寸越小），
+			// 这样整只眼睛都装得进眼球：装不下就会被轮廓切掉，屏幕上只剩中间一条。
+			double minA = double.MaxValue, maxA = double.MinValue;
+			double minB = double.MaxValue, maxB = double.MinValue;
+			foreach (var index in vertices)
+			{
+				var offset = geometry.Vertices[index].Position - center;
+				var a = (offset.X * right.X) + (offset.Y * right.Y) + (offset.Z * right.Z);
+				var b = (offset.X * up.X) + (offset.Y * up.Y) + (offset.Z * up.Z);
+				minA = Math.Min(minA, a);
+				maxA = Math.Max(maxA, a);
+				minB = Math.Min(minB, b);
+				maxB = Math.Max(maxB, b);
+			}
+
+			var halfWidth = (maxA - minA) / 2;
+			var halfHeight = (maxB - minB) / 2;
+			if (halfWidth <= 1e-6 || halfHeight <= 1e-6)
 			{
 				notes.Add($"{materialNames[materialIndex]}：眼球在图像平面上没有跨度，UV 投影做不了，保持原 UV。");
 				continue;
 			}
 
-			var centerHorizontal = (low[horizontal] + high[horizontal]) / 2;
-			var centerVertical = (low[vertical] + high[vertical]) / 2;
-			var halfHorizontal = extent[horizontal] / 2;
-
-			// ⑤ **各向同性**：U 和 V 用同一个比例（UV/模型单位）。
-			//
-			// 原来 U 按一个轴的跨度、V 按另一个轴的跨度各自撑满内容区，于是**任何不是正方形
-			// 的眼球都会被拉长**：那份网格横 1.69、竖 1.07（宽高比 1.58），而贴图里那只眼睛
-			// 的宽高比是 0.81 —— 两轴各撑一次，眼睛就被纵向拉成 1.24 倍。
-			// 源侧不存在这件事：虚拟球是圆的，贴图画成什么比例，屏幕上就是什么比例。
-			//
-			// 比例取"内容区宽度正好铺满眼球的**横向**跨度"：横向是眼睑开口限制的那一维，
-			// 纵向多出来的部分落到贴图的填充边（= 眼白），眼皮本来也会盖住它。
-			// 比例取"**整只眼睛都能装进眼球**"：两个方向都算一次，取较大的那个比例
-			// （比例越大 = 贴图占的模型尺寸越小）。这样贴图不会被眼球轮廓切掉：
-			// 实测这份眼球横 1.69、竖 1.07（比贴图里的眼睛更"扁"），按宽度量的话高度会溢出
-			// 一半 —— 屏幕上就只剩中间一条，看着就是"横向拉伸"。
-			// 按高度装进去之后，左右多出来的部分露出贴图的填充边（= 眼白），这正是眼睛的样子。
-			var halfVertical = extent[vertical] / 2;
-			var scale = Math.Max(colorSource.HalfU / halfHorizontal, colorSource.HalfV / halfVertical) / EyeScale;
+			var scale = Math.Max(colorSource.HalfU / halfWidth, colorSource.HalfV / halfHeight) / EyeScale;
 			var mixed = 0;
 			foreach (var index in vertices)
 			{
@@ -315,17 +381,16 @@ public static class EyeUv
 					continue;
 				}
 
-				var values = geometry.Vertices[index].Position;
-				var coordinates = new[] { values.X, values.Y, values.Z };
-				// U 跟"横向"（+ 方向）、V 跟"竖向"且**取反**：VTF/DDS 的 V=0 在图像顶部，
-				// 而 +Z 是上方 —— 不取反眼睛就是倒着的。
-				var u = colorSource.CenterU + ((coordinates[horizontal] - centerHorizontal) * scale);
-				var v = colorSource.CenterV - ((coordinates[vertical] - centerVertical) * scale);
+				var offset = geometry.Vertices[index].Position - center;
+				var a = (offset.X * right.X) + (offset.Y * right.Y) + (offset.Z * right.Z);
+				var b = (offset.X * up.X) + (offset.Y * up.Y) + (offset.Z * up.Z);
+				// V 取反：VTF/DDS 的 V=0 在图像顶部，而"上"方向该落到图像顶部。
+				var u = colorSource.CenterU + (a * scale);
+				var v = colorSource.CenterV - (b * scale);
 				projected[index] = (u, v);
 			}
 
-			axesNotes.Add($"{materialNames[materialIndex]}：横={AxisName(horizontal)}、竖={AxisName(vertical)}、"
-				+ $"朝前={AxisName(facing)}（跨度 {extent[0]:F2}/{extent[1]:F2}/{extent[2]:F2}）");
+			axesNotes.Add($"{materialNames[materialIndex]}：{frameNote}");
 
 			if (mixed != 0)
 				notes.Add(
@@ -355,4 +420,12 @@ public static class EyeUv
 
 	/// <summary>轴下标的可读名字（0=X / 1=Y / 2=Z），只用于报告。</summary>
 	private static string AxisName(int axis) => axis switch { 0 => "X", 1 => "Y", _ => "Z" };
+
+	/// <summary>单位轴向量（0=X / 1=Y / 2=Z）。</summary>
+	private static Vec3 AxisUnit(int axis) => axis switch
+	{
+		0 => new Vec3(1, 0, 0),
+		1 => new Vec3(0, 1, 0),
+		_ => new Vec3(0, 0, 1),
+	};
 }

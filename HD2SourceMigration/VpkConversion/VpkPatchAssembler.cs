@@ -320,6 +320,8 @@ public sealed class VpkPatchAssembler
 		SourceMaterialSource? materialScope = null,
 		string? idNamespace = null,
 		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show,
+		// 眼球 UV 投影用的"右/上"方向（见 EyeFrame）。缺省时由 EyeUv 从眼球形状推。
+		EyeFrame? eyeFrame = null,
 		Action<string, int, int>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
@@ -381,7 +383,7 @@ public sealed class VpkPatchAssembler
 		if (materialConverter is not null && geometry is not null && sourceMaterialNames is not null)
 		{
 			var (reprojected, eyeNotes) = EyeUv.Reproject(
-				geometry, sourceMaterialNames, materialConverter.ResolveEyeColorSource);
+				geometry, sourceMaterialNames, materialConverter.ResolveEyeColorSource, eyeFrame);
 			geometry = reprojected;
 			warnings.AddRange(eyeNotes);
 		}
