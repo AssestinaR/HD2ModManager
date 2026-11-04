@@ -456,3 +456,79 @@ blocker "EnabledDecorationRollbackRequired"
 `ApplyDecorationActivationBatchCoreAsync` 引用了要保留的 `RebuildDecorationOverwritesAsync`，
 **引用是合法的，只有定义不能落在区块里**。改成只校验"区块内不许出现另一个方法签名"之后才对。
 护栏要拦的是"删过头"，不是"提到过"。
+
+---
+
+## 「生成sectional版」端到端验证配方（2026-11-04 实测通过）
+
+这是**第一次**用真实包把 `换甲 → 拆件 → 剪枝 → 导入` 走通。配方照抄即可复现。
+
+### 输入
+
+`【4.28-赠品】Chiffon-Rock ala clothing替换UF-16督察员.rar`（10.2 MB，解压 123 MB）。
+
+解压后只有 4 个文件，**一个 patch**：
+
+```
+9ba626afa44a3aa3.patch_0              196 KB     几何
+9ba626afa44a3aa3.patch_0.gpu_resources  118 MB
+9ba626afa44a3aa3.patch_0.stream        1.0 MB
+```
+
+### 为什么这个包能用
+
+`custom-model inspect` 的判据是"Mod 的 unit 取代了某件原版护甲/头盔"（独占归属）。
+这个包替换 UF-16「督察员」，所以两个来源都在：
+
+```
+19b5a68e61d7a9d7  [Armor]   UF-16"督察员"  16 个部件
+fb025c06b0408e5f  [Helmet]  UF-16"督察员"  1 个部件
+```
+
+**库里原有的 133 个 Mod 一个都不满足** —— 11 个已是自定义素体（unit 是新生成的，不归属任何
+原版 archive），119 个是材质包。所以这个按钮只对"还没转换的、取代原版护甲的 Mod"生效。
+
+### 步骤（用临时库，不碰真实库 `E:\mod`）
+
+```powershell
+$exe='HD2ModCli\bin\Debug\net10.0\hd2mod.exe'
+$mgr='E:\Data\source\repos\WpfApp1\HD2ModManager\bin\Debug\net10.0-windows'   # 借它的游戏资产索引
+$lib='E:\tmp\e2e-lib'    # 临时库
+$gd='D:\SteamLibrary\steamapps\common\Helldivers 2\data'
+
+& $exe import plan  <解压目录> --manager-root $mgr --library $lib --output E:\tmp\e2e-plan.json --json
+& $exe import apply --manager-root $mgr --library $lib --plan E:\tmp\e2e-plan.json --confirm --json
+& $exe custom-model inspect <节点id> --manager-root $mgr --library $lib --game-data $gd --json
+& $exe custom-model sectional plan  <节点id> '19b5a68e61d7a9d7,fb025c06b0408e5f' <名字> --manager-root $mgr --library $lib --game-data $gd
+& $exe custom-model sectional apply <节点id> '19b5a68e61d7a9d7,fb025c06b0408e5f' <名字> ... --confirm
+```
+
+### 实测结果
+
+```
+plan : 13 个来源 unit → 11 个输出 unit · 13 个 section 组
+       Torso/Slim 承载 3 个来源（合并 2 个）；LeftShoulder 并进 Torso
+apply: 11 个输出 unit · 13 组 · 11 个组件（剪掉 2 个悬空组件）· 导入 1 个节点
+
+产物 : 单 patch 142 KB
+       components.json 13 组（schema hd2mod.section-groups/1）
+       sections.json   11 units / 24 sections（schema hd2mod.section-map/3）
+       custom-model.json pieces = 11（13 来源 − 2 个被合并掉的 donor）
+```
+
+### 那次跑出来的两个真 bug（单测都抓不到）
+
+1. **就地拆件会把源 patch 锁死**：writer 用 `FileShare.None` 打开目标，同时又要从"源 patch"
+   拷贝 payload（同名同目录）⇒ Windows 报"文件正被另一进程使用"。
+   改成先进 `.sectional-staging-<guid>/` 再搬回。
+2. **`custom-model.json` 的悬空 pieces**：合并掉 donor unit 后，指向它的 `pieceType` 1/2
+   条目会悬空。见 `CustomModelSectionalCompaction`（两处持久化一起改）。
+
+### 还没做的验证
+
+**多 patch 的"删除被折叠 patch"没有端到端跑过** —— `apply` 要写库，被"管理器正在运行"的
+护栏挡住（用户当时开着管理器）。它由 3 条单测覆盖
+（`RemoveConsumedPatches_*`：删 patch 与 sidecar / 单 patch 不动 / 写别处不动源）。
+
+多 patch 的**叠加读取**倒是验过了：把同一个 patch 复制成 `patch_0` + `patch_1` 导入，
+`sectional plan` 得到 **13 个来源而不是 26** —— 说明叠加去重生效了。
