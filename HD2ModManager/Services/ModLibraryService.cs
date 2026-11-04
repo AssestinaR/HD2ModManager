@@ -1119,47 +1119,6 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
-        public async Task<ModEntity> CreateDecorationAsync(string sourceModId, IReadOnlyList<DecorationSourceUnit> sourceUnits, DecorationPlanDocument plan, string displayName, IReadOnlyDictionary<string, IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry>>? preparedEntries = null, CancellationToken cancellationToken = default, IProgress<DecorationOperationProgress>? progress = null)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(sourceModId);
-            ArgumentNullException.ThrowIfNull(sourceUnits);
-            ArgumentNullException.ThrowIfNull(plan);
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                if (!TryParseNodeId(sourceModId, out var sourceId) || !_snapshot.Nodes.TryGetValue(sourceId, out var source))
-                    throw new InvalidOperationException("装饰来源 Mod 不存在。");
-
-                var nodeId = ModNodeId.New();
-                var safeName = string.Concat(displayName.Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
-                if (string.IsNullOrWhiteSpace(safeName)) safeName = "Decoration";
-                // Decoration packages are peer Mod-library entries. Their marker files, not a
-                // special parent directory, distinguish them from deployable patch packages.
-                var relativePath = $"{safeName}-{nodeId.Value:N}";
-                var directory = Path.Combine(_paths.ModsDirectory, relativePath);
-                Directory.CreateDirectory(directory);
-                plan.Name = displayName;
-                plan.Plan.CreatedUtc = DateTime.UtcNow;
-                plan.Version = 3;
-                plan.SourceStorageMode = "PatchSnapshot";
-                plan.SourceUnits = sourceUnits.Select(CloneDecorationSourceUnit).ToList();
-                await new DecorationPackageSnapshotService(CoreServices.CreateModFileResolver(), _informationReader)
-                    .CaptureAsync(source, _paths.ModsDirectory, sourceUnits, directory, preparedEntries, cancellationToken, progress).ConfigureAwait(false);
-                progress?.Report(new DecorationOperationProgress("正在导入装饰 Mod", 1, 1));
-                var planPath = Path.Combine(directory, "decoration.json");
-                await File.WriteAllTextAsync(planPath, JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
-
-                var now = DateTimeOffset.UtcNow;
-                var node = new ModNode(nodeId, relativePath, new ModNodeMetadata(displayName, "Decoration model fragment", now, now, ModNodeKind.Decoration), [], []);
-                _snapshot = await _manager.UpsertNodeAsync(node, cancellationToken).ConfigureAwait(false);
-                Interlocked.Increment(ref _stateVersion);
-                RebuildIndex(buildDerivedData: false);
-                SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                return ToEntity(node, includePatchFiles: false);
-            }
-            finally { _libraryMutationGate.Release(); }
-        }
-
         public async Task UpdateDecorationPlanAsync(string decorationId, DecorationPlanDocument plan, CancellationToken cancellationToken = default)
         {
             await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
@@ -1297,12 +1256,6 @@ namespace HD2ModManager.Services
             }
             finally { _libraryMutationGate.Release(); }
         }
-
-        private static DecorationSourceUnit CloneDecorationSourceUnit(DecorationSourceUnit unit) => new()
-        {
-            TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex,
-            BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling
-        };
 
         private IReadOnlySet<string> GetAvailableDecorationHostIds(string decorationId)
         {
