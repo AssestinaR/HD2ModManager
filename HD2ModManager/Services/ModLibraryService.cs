@@ -1101,17 +1101,19 @@ namespace HD2ModManager.Services
                 foreach (var nodeId in removedIds) nodes.Remove(nodeId);
                 _derivedData = new DerivedLibraryData(DateTimeOffset.UtcNow, nodes, nodes.Values.SelectMany(node => node.Issues).ToArray(), _derivedData.AssetSummaryGeneration);
                 RebuildIndex(buildDerivedData: false);
-                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(removedIds, ModContentChangeKind.Removed));
-                SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                foreach (var failure in deletion.Failures)
-                    LogService.Error($"Mod 删除失败：路径={failure.RelativePath}，原因={failure.Detail}");
 
                 // **素体是 Mod 的产物：Mod 没了，它也必须消失。**
                 //
                 // 放在这里而不是"删除按钮旁边"：删库有好几条入口（单个、多选、清空），
-                // 而这是它们唯一的汇合点。做完之后再抛一次内容事实变更，护甲映射页下次
-                // 刷新就看不到那个素体了 —— 否则用户会面对"列表里还挂着，选了却什么都不发生"。
+                // 而这是它们唯一的汇合点。而且必须早于下面那条内容事实变更 ——
+                // 护甲映射页听到 `Removed` 就会重读一次工作区，那之前清干净，
+                // 页面才不会先看到"素体还在"再看到它消失。
                 await PruneOrphanCustomModelsAsync(cancellationToken).ConfigureAwait(false);
+
+                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(removedIds, ModContentChangeKind.Removed));
+                SnapshotChanged?.Invoke(this, EventArgs.Empty);
+                foreach (var failure in deletion.Failures)
+                    LogService.Error($"Mod 删除失败：路径={failure.RelativePath}，原因={failure.Detail}");
                 return deletion;
             }
             finally { _libraryMutationGate.Release(); }

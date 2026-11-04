@@ -2825,6 +2825,12 @@ public static class CliApplication
 					var registry = new RuntimeArmorRegistryService(
 						new StoragePaths(workspace.ManagerRoot, workspace.LibraryRoot),
 						invocation.Options.RegistryRoot);
+					// ⚠️ **先读工作区，再决定名字。** 用户可能在护甲映射页里给这具素体改过名，
+					// 那是他唯一的可编辑处；重跑转换（导入 / 重构建）若把名字盖回 VPK 文件名，
+					// 表现就是"改名过一会又被还原"。见 ResolveRegisteredModelName。
+					var latest = await registry.ReadSnapshotAsync(default).ConfigureAwait(false);
+					var existingDefinitions = latest.Document.ModelDefinitions;
+					var registeredName = ResolveRegisteredModelName(displayName, existingDefinitions, modelKey);
 					var model = new RuntimeArmorRegistryModel(
 						modelKey,
 						null,
@@ -2833,15 +2839,15 @@ public static class CliApplication
 								new RuntimeArmorRegistryModelPiece(
 									piece.Body, unit.UnitId, piece.Slot, piece.PieceType, IsDefaultBase: piece.IsDefaultBase)))
 							.ToArray(),
-						displayName);
+						registeredName);
+					// 写进 Mod 目录的那份也必须带上这个名字：它是"这具素体属于哪个 Mod"的凭证，
+					// 重构建会拿它当输入（`--reuse-model`），名字漂了就会在下一轮又变回去。
 					await File.WriteAllTextAsync(
 						Path.Combine(Path.GetFullPath(output), "custom-model.json"),
 						JsonSerializer.Serialize(model, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }))
 						.ConfigureAwait(false);
-					var latest = await registry.ReadSnapshotAsync(default).ConfigureAwait(false);
 					// 同 key 已存在就**替换**，否则追加。
 					// 追加会让"重跑同一个目录"在工作区里堆出重复的模型记录。
-					var existingDefinitions = latest.Document.ModelDefinitions;
 					var replaced = false;
 					var merged = new RuntimeArmorRegistryModel[existingDefinitions.Count];
 					for (var i = 0; i < existingDefinitions.Count; i++)
@@ -3259,6 +3265,28 @@ public static class CliApplication
 	}
 
 	/// <summary>
+	/// 登记素体时决定它的显示名：<b>工作区里已有的名字优先</b>。
+	/// <para>
+	/// <b>为什么不能用"这次转换的名字"覆盖。</b>护甲映射页允许用户给素体改名，那是他唯一的
+	/// 可编辑处；而重跑转换（重新导入同一个包、重构建产物）时拿到的名字只是 VPK 文件名。
+	/// 一次覆盖就等于把用户的修改抹掉 —— 实测症状是"改名过一会又被还原"，
+	/// 因为重构建在后台随时可能发生，用户看不出是谁把它改回去的。
+	/// </para>
+	/// <para>
+	/// 反过来，首次登记时工作区里还没有这条记录，于是照常用转换名 —— 语义正确。
+	/// </para>
+	/// </summary>
+	internal static string ResolveRegisteredModelName(
+		string incomingName,
+		IReadOnlyList<RuntimeArmorRegistryModel> existing,
+		string modelKey)
+	{
+		var current = existing.FirstOrDefault(model =>
+			string.Equals(model.Key, modelKey, StringComparison.Ordinal));
+		return string.IsNullOrWhiteSpace(current?.Name) ? incomingName : current!.Name!;
+	}
+
+	/// <summary>
 	/// 把一个 VPK 忠实地翻译成一个 patch。
 	/// <para>
 	/// <b>输出范围由 <paramref name="scopedMaterials"/> 决定</b>：给了就只写<b>这个 VPK 自己的</b>
@@ -3628,6 +3656,10 @@ public static class CliApplication
 				var registry = new RuntimeArmorRegistryService(
 					new StoragePaths(workspace.ManagerRoot, workspace.LibraryRoot),
 					options.RegistryRoot);
+				// 同第一个登记点：**先读工作区，已有的名字优先**（用户可能在护甲映射页改过名）。
+				var latest = await registry.ReadSnapshotAsync(default).ConfigureAwait(false);
+				var existingDefinitions = latest.Document.ModelDefinitions;
+				var registeredName = ResolveRegisteredModelName(displayName, existingDefinitions, modelKey);
 				var model = new RuntimeArmorRegistryModel(
 					modelKey,
 					null,
@@ -3636,15 +3668,13 @@ public static class CliApplication
 							new RuntimeArmorRegistryModelPiece(
 								piece.Body, unit.UnitId, piece.Slot, piece.PieceType, IsDefaultBase: piece.IsDefaultBase)))
 						.ToArray(),
-					displayName);
+					registeredName);
 				await File.WriteAllTextAsync(
 					Path.Combine(outputDirectory, "custom-model.json"),
 					JsonSerializer.Serialize(model, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }))
 					.ConfigureAwait(false);
-				var latest = await registry.ReadSnapshotAsync(default).ConfigureAwait(false);
 				// 同 key 已存在就**替换**，否则追加。
 				// 追加会让"重跑同一个目录"在工作区里堆出重复的模型记录。
-				var existingDefinitions = latest.Document.ModelDefinitions;
 				var replaced = false;
 				var merged = new RuntimeArmorRegistryModel[existingDefinitions.Count];
 				for (var i = 0; i < existingDefinitions.Count; i++)

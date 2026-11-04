@@ -37,6 +37,73 @@ public static class VpkCustomModelFile
 	}
 
 	/// <summary>
+	/// 把一个素体改名写进<b>持有它的那份</b> <c>custom-model.json</c>。找不到持有者返回 false。
+	/// <para>
+	/// <b>为什么不能只改注册表。</b>注册表里那份是投影，而 <c>custom-model.json</c> 才是
+	/// "这具素体属于哪个 Mod"的凭证——重构建就是拿它当输入的（<c>--reuse-model</c>），
+	/// 产物重新登记时又会用那里的名字。只改注册表的话，下一次重构建就把名字盖回 VPK 文件名，
+	/// 用户看到的是"改名过一会又被还原"。
+	/// </para>
+	/// <para>读取失败 / 文件损坏时不动它（返回 false）：宁可这次没改名，也不要把文件写坏。</para>
+	/// </summary>
+	public static bool TryRenameOwned(string modsDirectory, string modelKey, string name)
+	{
+		if (string.IsNullOrWhiteSpace(modsDirectory) || string.IsNullOrWhiteSpace(modelKey))
+			return false;
+		if (string.IsNullOrWhiteSpace(name))
+			return false;
+		var path = TryFindOwnerFile(modsDirectory, modelKey);
+		if (path is null)
+			return false;
+		try
+		{
+			var json = File.ReadAllText(path);
+			var model = JsonSerializer.Deserialize<RuntimeArmorRegistryModel>(json, JsonOptions);
+			if (model is null)
+				return false;
+			if (string.Equals(model.Name, name, StringComparison.Ordinal))
+				return true;
+			var renamed = model with { Name = name.Trim() };
+			File.WriteAllText(path, JsonSerializer.Serialize(renamed, JsonOptions));
+			return true;
+		}
+		catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>按 key 找到持有它的那份 <c>custom-model.json</c> 的完整路径。</summary>
+	public static string? TryFindOwnerFile(string modsDirectory, string modelKey)
+	{
+		if (string.IsNullOrWhiteSpace(modsDirectory) || !Directory.Exists(modsDirectory))
+			return null;
+		IEnumerable<string> files;
+		try
+		{
+			files = Directory.EnumerateFiles(modsDirectory, FileName, SearchOption.AllDirectories);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return null;
+		}
+
+		foreach (var file in files)
+		{
+			if (string.Equals(TryReadKey(Path.GetDirectoryName(file)!), modelKey, StringComparison.Ordinal))
+				return file;
+		}
+
+		return null;
+	}
+
+	/// <summary>与转换器写这份文件时用的同一套选项（Web 默认 = camelCase）。</summary>
+	private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+	{
+		WriteIndented = true,
+	};
+
+	/// <summary>
 	/// 整个 Mod 库里被 VPK 模组"持有"的素体：key → <b>持有它的那个 Mod 的名字</b>。
 	/// <para>
 	/// <b>为什么要扫库而不是查注册表。</b>注册表里没有"这个素体属于哪个 Mod"这一维，

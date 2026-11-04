@@ -20,8 +20,6 @@ public enum ModListRowAction
     ArmorAssign = 1 << 9,
     ArmorRelease = 1 << 10,
     ArmorOpenDetails = 1 << 11,
-    ArmorEditComponents = 1 << 12,
-    ArmorDeleteCustomModel = 1 << 13,
     ArmorRenameCustomModel = 1 << 14,
     ExportMod = 1 << 15,
 }

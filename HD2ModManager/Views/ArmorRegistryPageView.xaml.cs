@@ -53,10 +53,6 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			viewModel.ReleaseProviderItem(item);
 		else if (e.Action == ModListRowAction.ArmorOpenDetails)
 			viewModel.OpenProviderDetails(item);
-		else if (e.Action == ModListRowAction.ArmorEditComponents)
-			_ = viewModel.OpenComponentEditorAsync(item, false);
-		else if (e.Action == ModListRowAction.ArmorDeleteCustomModel)
-			viewModel.DeleteCustomModelItem(item);
 		else if (e.Action == ModListRowAction.ArmorRenameCustomModel)
 			viewModel.RenameCustomModelItem(item);
 	}
@@ -72,8 +68,6 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 		if (DataContext is not ArmorRegistryPageViewModel viewModel) return;
 		if (e.Action == ModListRowAction.ArmorRelease)
 			viewModel.ReleaseTargetItem(e.Item as RuntimeArmorChoiceViewModel);
-		else if (e.Action == ModListRowAction.ArmorEditComponents)
-			_ = viewModel.OpenComponentEditorAsync(e.Item as RuntimeArmorChoiceViewModel, true);
 	}
 
 	private void OnAvailableSelectionRequested(object? sender, ModListSelectionRequestEventArgs e)
@@ -105,12 +99,6 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 	{
 		if (DataContext is ArmorRegistryPageViewModel viewModel)
 			viewModel.CloseProvider();
-	}
-
-	private void OnCloseComponentEditorClick(object? sender, EventArgs e)
-	{
-		if (DataContext is ArmorRegistryPageViewModel viewModel)
-			viewModel.CloseComponentEditor();
 	}
 
 	// 这一页的拖放区是"列"，不是"列表"：左列同时承载来源列表和组件编辑器，

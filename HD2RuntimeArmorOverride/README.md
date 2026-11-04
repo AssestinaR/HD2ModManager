@@ -123,7 +123,10 @@ CLI 仅原子替换 `armor-registry.protocol`，不会写 Lua 拥有的状态或
 注册表（当前 Mod 库的 `.hd2modmanager/armor-registry.workspace.json`）
 里那份记录只是它的**投影**：没有 Mod 归属的素体会被清理，删掉 Mod 时
 对应的素体与引用它的映射一并删除（见 `CustomModelOwnershipService`）。
-页面里只保留改名、启用/停用组件这类编辑，不再提供"新增素体"。
+页面里只保留**改名**这一项编辑：素体的件表由 patch 决定，页面不再提供"新增素体"，
+也不再提供"视觉组件"编辑（section 编辑将并入 Mod 详情页）。
+改名会同时写回 Mod 目录里的 `custom-model.json`，所以重构建不会把名字改回去。
+删除 Mod 时管理器会清掉失去归属的素体，并刷新护甲映射页。
 点击“应用”时，管理器按实际部署的 Unit 编译运行时协议到上述 C 盘目录；Lua 只消费编译结果。
 GUI 与 CLI 使用同一把 `.manager.lock`、同一份指纹漂移检查和原子写入流程。
 

@@ -55,11 +55,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private AvailableArmorKindFilter availableArmorKindFilter;
 	private uint? selectedProviderId;
 	private IReadOnlyList<uint> selectedProviderMemberIds = [];
-	private uint? componentEditorOwnerId;
-	private bool componentEditorIsTarget;
-	private IReadOnlyList<RuntimeArmorRegistryModelPiece> componentEditorSourcePieces = [];
-	private uint? componentEditorSourceOverrideOwner;
-	private int componentEditorRequest;
 	private readonly HashSet<uint> pendingProviderIds = [];
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
@@ -69,7 +64,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private IReadOnlyList<RuntimeArmorRegistryMapping> modelMappings = [];
 	private IReadOnlyList<RuntimeArmorRegistryPieceOverride> pieceOverrides = [];
 	private IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes = [];
-	private bool componentEditorFollowSource = true;
 	private bool hasLoadedCatalog;
 	// 取数还没结束（含"在等启动维护的闸门"）。
 	// 存在的理由只有一个：空列表必须能区分"还没读到"和"真的没有"。
@@ -115,6 +109,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		// 那比上面两件事都早——所以这里必须等，不能靠"预热总是晚于它们"这种时序假设。
 		this.displayFactsReady = displayFactsReady;
 		this.selection.SelectionChanged += OnGlobalSelectionChanged;
+		// 删掉 Mod 可能连带着删掉一具素体：订阅库的内容变更，删完就重读一次。
+		// 挂在这里而不是"删除按钮旁边"：删库有四条入口（库页、详情页、配置页、命令行任务），
+		// 这是它们共同的汇合点，少接一条就会出现"素体还在列表里"。
+		this.library.ModContentFactsChanged += OnLibraryContentFactsChanged;
 		ProvidersView = CollectionViewSource.GetDefaultView(Providers);
 		AvailableArmorsView = CollectionViewSource.GetDefaultView(AvailableArmors);
 		ProviderDetailItemsView = CollectionViewSource.GetDefaultView(ProviderDetailItems);
@@ -122,9 +120,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		AvailableArmorsView.Filter = FilterAvailableArmor;
 		ProviderDetailItemsView.Filter = FilterProviderDetailItem;
 		service = CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths());
-		// 衣柜的权威数据在工作区，和护甲注册工作区同一个目录（见 wardrobe-schema-v2 笔记 §14）。
-		Wardrobe = new WardrobeTreeViewModel(
-			WardrobeWorkspaceFile.ResolvePath(SettingsService.CreateStoragePaths().ModsDirectory));
 		// 刷新是**逃生口**：它从磁盘重读，不该被"有未保存改动"挡住。
 		// 以前条件是 `!IsBusy && !HasChanges`，于是只要 HasChanges 一开始就是真
 		// （基线没对齐、或某个编辑路径忘了回滚），这颗按钮就永远灰着——用户看到的是
@@ -141,10 +136,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RemoveCustomModelCommand = new RelayCommand(
 			parameter => RemoveCustomModel(parameter as RuntimeArmorModelEditorViewModel),
 			_ => !IsBusy);
-		AddComponentPieceCommand = new RelayCommand(_ => AddComponentPiece(),
-			_ => IsComponentEditorCustomModel && !IsBusy);
-		ConfirmAddComponentRowCommand = new RelayCommand(_ => AddComponentRow(),
-			_ => IsComponentEditorCustomModel && ComponentEditorEditable && !IsBusy);
 		// **没有"新增自定义素体"这个动作。**
 		//
 		// 素体不是一个能凭空造的对象：它是一套**已存在**的 Unit（来自某个 Mod 的 patch）。
@@ -164,11 +155,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public BulkObservableCollection<RuntimeArmorChoiceViewModel> Providers { get; } = [];
 	public BulkObservableCollection<RuntimeArmorChoiceViewModel> ProviderDetailItems { get; } = [];
 	public BulkObservableCollection<RuntimeArmorModelEditorViewModel> CustomModels { get; } = [];
-	public ObservableCollection<RuntimeArmorModelPieceEditorViewModel> ComponentEditorPieces { get; } = [];
-	/// <summary>「视觉组件」卡片里的 section 树（无 3D）。与将来的 3D 窗口共用同一份核心树。</summary>
-	public WardrobeTreeViewModel Wardrobe { get; }
-	public ObservableCollection<RuntimeArmorComponentGroupViewModel> ComponentEditorGroups { get; } = [];
-	public ObservableCollection<RuntimeArmorComponentRowViewModel> ComponentEditorRows { get; } = [];
 	public ICollectionView AvailableArmorsView { get; }
 	public ICollectionView ProvidersView { get; }
 	public ICollectionView ProviderDetailItemsView { get; }
@@ -253,10 +239,51 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public override void Dispose()
 	{
-		componentEditorRequest++;
 		selection.SelectionChanged -= OnGlobalSelectionChanged;
+		library.ModContentFactsChanged -= OnLibraryContentFactsChanged;
 		FlushWorkspaceSave();
 		base.Dispose();
+	}
+
+	/// <summary>
+	/// 库内容变了：如果删掉的是 Mod，重读一次（素体跟着 Mod 走，见 <c>CustomModelOwnershipService</c>）。
+	/// <para>
+	/// <b>只在"删除"时动手。</b>新增/替换不改素体归属，重读只会白花一次目录查询。
+	/// </para>
+	/// <para>
+	/// <b>有未保存改动时不重读</b>：手里那份文档会把刚删掉的素体写回去，
+	/// 反而让"删了 Mod 素体还在"变成真事。等那次保存落盘，下一次刷新自然对上。
+	/// </para>
+	/// </summary>
+	private void OnLibraryContentFactsChanged(object? sender, ModContentFactsChangedEventArgs e)
+	{
+		if (e.Kind != ModContentChangeKind.Removed) return;
+		var dispatcher = Application.Current?.Dispatcher;
+		if (dispatcher is not null && !dispatcher.CheckAccess())
+		{
+			_ = dispatcher.InvokeAsync(() => OnLibraryContentFactsChanged(sender, e));
+			return;
+		}
+
+		_ = RefreshAfterModRemovalAsync();
+	}
+
+	private async Task RefreshAfterModRemovalAsync()
+	{
+		if (IsBusy || HasChanges) return;
+		try
+		{
+			await PruneOrphanCustomModelsAsync(isWarmUp: false).ConfigureAwait(true);
+			await ReloadWorkspaceAsync().ConfigureAwait(true);
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or InvalidDataException
+			or InvalidOperationException)
+		{
+			// 删 Mod 本身已经成功了；这里失败只意味着页面停在被删前的样子，下次刷新会纠正。
+			LogService.Warn($"删除 Mod 后刷新护甲映射页失败：{exception.Message}");
+		}
 	}
 
 	public bool Enabled
@@ -276,7 +303,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			if (!SetField(ref isBusy, value)) return;
 			RaiseCommandStates();
-			OnPropertyChanged(nameof(ComponentEditorEditable));
 		}
 	}
 
@@ -314,45 +340,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	}
 
 	public bool IsProviderDetailOpen => selectedProviderId is not null;
-	public bool IsComponentEditorOpen => componentEditorOwnerId is not null;
-	public bool ComponentEditorIsTarget => componentEditorIsTarget;
-	public bool IsComponentEditorCustomModel
-		=> !componentEditorIsTarget && componentEditorOwnerId is { } id
-			&& Choices.TryGetValue(id, out var choice)
-			&& choice.IsCustomModel;
-	public bool ComponentEditorFollowSource
-	{
-		get => componentEditorFollowSource;
-		set
-		{
-			if (!SetField(ref componentEditorFollowSource, value)) return;
-			if (componentEditorIsTarget)
-				PopulateComponentEditor();
-			MarkComponentEditorDirty();
-			OnPropertyChanged(nameof(ComponentEditorEditable));
-			ConfirmAddComponentRowCommand.RaiseCanExecuteChanged();
-		}
-	}
-	public bool ComponentEditorEditable => !IsBusy && (!ComponentEditorIsTarget || !ComponentEditorFollowSource);
-	/// <summary>可选部位：直接来自 ArmorStructure，10 个部位一个不少（含披风与双肩）。</summary>
-	public IReadOnlyList<ArmorComponentSlotOption> ComponentSlotOptions { get; } =
-		ArmorStructure.All
-			.Select(part => new ArmorComponentSlotOption(
-				ArmorStructure.SlotOf(part) ?? 0,
-				ArmorStructure.Display(part)))
-			.ToArray();
-	private uint newComponentSlot = 2;
-	public uint NewComponentSlot
-	{
-		get => newComponentSlot;
-		set => SetField(ref newComponentSlot, value);
-	}
-	public string ComponentEditorTitle => componentEditorOwnerId is { } id
-		? (Choices.TryGetValue(id, out var choice) ? $"←  {choice.Name} · 视觉组件" : $"←  护甲 {id} · 视觉组件")
-		: "视觉组件";
-	public string ComponentEditorName => componentEditorOwnerId is { } id
-		? Choices.TryGetValue(id, out var choice) ? choice.Name : $"护甲 {id}"
-		: "视觉组件";
 	public bool HasMappings => Mappings.Count != 0;
 	public bool HasCustomModels => CustomModels.Count != 0;
 	public IReadOnlyList<RuntimeArmorRegistryModel> ModelDefinitions => modelDefinitions;
@@ -409,8 +396,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public AsyncRelayCommand ApplyCommand { get; }
 	public RelayCommand OpenRegistryFolderCommand { get; }
 	public RelayCommand RemoveCustomModelCommand { get; }
-	public RelayCommand AddComponentPieceCommand { get; }
-	public RelayCommand ConfirmAddComponentRowCommand { get; }
 
 	// 页面首次打开：目录、快照与覆盖事实都还没有，走一次完整加载。
 	// 加载是单飞的（见 EnsureCatalogLoadedAsync），所以它与启动预热**共用同一次**。
@@ -464,7 +449,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public async Task ReloadWorkspaceAsync()
 	{
-		CloseComponentEditor();
 		var snapshot = await service.ReadSnapshotAsync();
 		ApplySnapshot(snapshot, rebuildChoices: true, resetNavigation: false);
 	}
@@ -926,174 +910,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RebuildProjections();
 	}
 
-	public async Task OpenComponentEditorAsync(RuntimeArmorChoiceViewModel? item, bool isTarget)
-	{
-		if (item is null || IsBusy) return;
-		// The target owns overrides, never the component structure. Resolve its
-		// actual mapping rather than whichever provider happens to be selected.
-		var source = isTarget
-			? Mappings.FirstOrDefault(row => row.Target.ItemId == item.ItemId)?.Source
-			: item;
-		if (source is null) return;
-		var request = ++componentEditorRequest;
-		var model = CustomModels.FirstOrDefault(model =>
-			string.Equals(model.Key, source.ModelKey, StringComparison.Ordinal))?.ToDomain();
-		if (source.IsCustomModel && model is null) return;
-		// 组合护甲（头盔 + 护甲成套）的 unit 分散在**多个 item** 上，只查 ItemId 会漏掉
-		// 除第一件之外的全部 unit——这正是"树上少了很多 unit"的来源。
-		var members = source.MemberItemIds.Count > 0 ? source.MemberItemIds : [source.ItemId];
-		var pieces = model?.Pieces;
-		if (pieces is null)
-		{
-			if (members.Count == 1)
-			{
-				pieces = await service.ReadArmorPiecesAsync(members[0]);
-			}
-			else
-			{
-				var merged = new List<RuntimeArmorRegistryModelPiece>();
-				var seen = new HashSet<(uint, string, uint)>();
-				foreach (var member in members)
-				{
-					foreach (var piece in await service.ReadArmorPiecesAsync(member))
-					{
-						if (seen.Add((piece.Body, piece.Unit, piece.Slot)))
-							merged.Add(piece);
-					}
-				}
-				pieces = merged;
-			}
-		}
-		if (request != componentEditorRequest) return;
-		if (isTarget && !Mappings.Any(row => row.Target.ItemId == item.ItemId && row.Source.ItemId == source.ItemId))
-			return;
-		componentEditorOwnerId = item.ItemId;
-		componentEditorIsTarget = isTarget;
-		componentEditorFollowSource = targetModes.FirstOrDefault(mode => mode.TargetItemId == item.ItemId)?.FollowSource ?? true;
-		componentEditorSourcePieces = source.IsCustomModel ? RuntimeArmorModelStructure.Normalize(pieces) : pieces;
-		componentEditorSourceOverrideOwner = source.IsCustomModel ? model?.SourceItemId : source.ItemId;
-		PopulateComponentEditor();
-		// 树要的 unit 表与"组件结构编辑器"要的不是一回事：
-		//   · 自定义素体：它自己就是权威，unit 表来自注册工作区的 models[].pieces；
-		//   · 普通护甲：来自**游戏注册文件**（generated_customization_armor_sets）。
-		// 后者不走 game_data_authority_pieces 那张派生表——实测那张表会丢行
-		// （RE-2310 头盔套 0 行、护甲套缺一个槽位），而注册文件是它的源头。
-		IReadOnlyList<string> treeUnitIds;
-		IReadOnlyList<uint> missingArmourItems = Array.Empty<uint>();
-		var gameData = SettingsService.GetGameDataFolder();
-		if (model is not null)
-		{
-			treeUnitIds = (model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
-				.Select(piece => piece.Unit)
-				.Where(unit => !string.IsNullOrWhiteSpace(unit))
-				.ToArray();
-		}
-		else if (!string.IsNullOrWhiteSpace(gameData) && Directory.Exists(gameData))
-		{
-			// 走信息中心而不是直接读注册文件：编辑器和将来的 3D 窗口问同一批条目时只会算一次。
-			var table = await library.InformationCenter
-				.RequestArmourUnitTableAsync(
-					gameData,
-					members.ToHashSet(),
-					new ModInformationRequest(ModInformationKind.ArmourUnitTable, "ArmorRegistryPage"))
-				.ConfigureAwait(true);
-			treeUnitIds = table.Data?.ForItems(members) ?? Array.Empty<string>();
-			missingArmourItems = table.Data?.MissingItems ?? Array.Empty<uint>();
-			if (treeUnitIds.Count == 0)
-			{
-				// 注册文件读不到时退回件表：宁可少 unit，也不能整棵树空掉。
-				treeUnitIds = componentEditorSourcePieces.Select(piece => piece.Unit).ToArray();
-			}
-		}
-		else
-		{
-			treeUnitIds = componentEditorSourcePieces.Select(piece => piece.Unit).ToArray();
-		}
 
-		// section 结构同样走信息中心：它按"一批 unit 键"记忆，与 section 映射表共用一份描述。
-		IReadOnlyList<WardrobeSectionMapUnit> treeUnits = Array.Empty<WardrobeSectionMapUnit>();
-		IReadOnlyList<string> missingUnitIds = Array.Empty<string>();
-		if (treeUnitIds.Count > 0 && !string.IsNullOrWhiteSpace(gameData) && Directory.Exists(gameData))
-		{
-			var structure = await library.InformationCenter
-				.RequestUnitSectionStructureAsync(
-					gameData,
-					treeUnitIds.ToHashSet(StringComparer.Ordinal),
-					new ModInformationRequest(ModInformationKind.UnitSectionStructure, "ArmorRegistryPage"))
-				.ConfigureAwait(true);
-			treeUnits = structure.Data?.ToMapUnits() ?? Array.Empty<WardrobeSectionMapUnit>();
-			missingUnitIds = structure.Data?.MissingUnitIds ?? Array.Empty<string>();
-		}
 
-		if (request != componentEditorRequest) return;
-		// 树的 section 数据来自当前部署的 patch 与原版数据包，所以编辑器看到的就是游戏实际加载的几何。
-		// 它和组件结构是两条独立的轴：组件结构决定"用哪些 unit"，树决定"这些 unit 的哪些 section 不可见"。
-		Wardrobe.Load(
-			item.ItemId,
-			source.ItemId,
-			isTarget,
-			item.Name,
-			treeUnits,
-			missingUnitIds,
-			missingArmourItems);
-		if (request != componentEditorRequest) return;
-		OnPropertyChanged(nameof(IsComponentEditorOpen));
-		OnPropertyChanged(nameof(ComponentEditorIsTarget));
-		OnPropertyChanged(nameof(IsComponentEditorCustomModel));
-		OnPropertyChanged(nameof(ComponentEditorFollowSource));
-		OnPropertyChanged(nameof(ComponentEditorEditable));
-		OnPropertyChanged(nameof(ComponentEditorTitle));
-		OnPropertyChanged(nameof(ComponentEditorName));
-		ConfirmAddComponentRowCommand.RaiseCanExecuteChanged();
-		selection.Clear();
-	}
 
-	private void PopulateComponentEditor()
-	{
-		if (componentEditorOwnerId is not { } owner || !Choices.TryGetValue(owner, out var item)) return;
-		var pieces = RuntimeArmorComponentProjection.Project(componentEditorSourcePieces,
-			componentEditorSourceOverrideOwner, componentEditorIsTarget ? owner : null,
-			componentEditorFollowSource, pieceOverrides);
-		ComponentEditorPieces.Clear();
-		foreach (var piece in pieces)
-		{
-			var normalizedPiece = piece with { IsDefaultBase = piece.IsDefaultBase || IsLegacyDefaultBasePiece(item, piece) };
-			ComponentEditorPieces.Add(new RuntimeArmorModelPieceEditorViewModel(
-				normalizedPiece,
-				MarkComponentEditorDirty,
-				IsComponentEditorCustomModel,
-				RemoveComponentPiece));
-		}
-		RebuildComponentEditorGroups();
-	}
-
-	private static bool IsLegacyDefaultBasePiece(RuntimeArmorChoiceViewModel item, RuntimeArmorRegistryModelPiece piece)
-		=> item.IsCustomModel
-			&& piece.PieceType == 0
-			&& piece.Slot is 2 or 3 or 4 or 5 or 6 or 7;
-
-	public void CloseComponentEditor()
-	{
-		componentEditorRequest++;
-		if (!IsComponentEditorOpen) return;
-		FlushWorkspaceSave();
-		componentEditorOwnerId = null;
-		componentEditorIsTarget = false;
-		componentEditorFollowSource = true;
-		componentEditorSourcePieces = [];
-		componentEditorSourceOverrideOwner = null;
-		ComponentEditorPieces.Clear();
-		ComponentEditorGroups.Clear();
-		ComponentEditorRows.Clear();
-		Wardrobe.Clear();
-		OnPropertyChanged(nameof(IsComponentEditorOpen));
-		OnPropertyChanged(nameof(ComponentEditorIsTarget));
-		OnPropertyChanged(nameof(IsComponentEditorCustomModel));
-		OnPropertyChanged(nameof(ComponentEditorFollowSource));
-		OnPropertyChanged(nameof(ComponentEditorEditable));
-		OnPropertyChanged(nameof(ComponentEditorTitle));
-		OnPropertyChanged(nameof(ComponentEditorName));
-	}
 
 	// 这个来源还在不在？三种存在形式：待建（pending）、已有映射、或本身就是注册素体。
 	// 判据里刻意不看"有没有映射"——没有映射的待建来源同样必须留在列表里。
@@ -1183,6 +1002,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		if (item is not null) ReleaseToAvailable([item.SelectionKey]);
 	}
 
+	/// <summary>
+	/// 删除一具素体。<b>行上的删除按钮已经不提供</b>（素体依附 Mod，只能随 Mod 一起删），
+	/// 这个方法保留给将来的批量清理，仍然走同一套"有主就不许删"的拒绝逻辑。
+	/// </summary>
 	public void DeleteCustomModelItem(RuntimeArmorChoiceViewModel? item)
 	{
 		if (IsBusy || item is null || !item.IsCustomModel) return;
@@ -1204,14 +1027,24 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			if (IsBusy) throw new InvalidOperationException("护甲映射正在执行其他操作，请稍后重试。");
 			if (!CustomModels.Contains(model)) throw new InvalidOperationException("该自定义素体已被删除。");
 			model.Rename(name);
+			// ⚠️ **改名要同时落到 Mod 目录里那份 `custom-model.json`。**
+			//
+			// 注册表（工作区）里这份只是投影，而那份文件才是"这具素体属于哪个 Mod"的凭证：
+			// 重构建（`--reuse-model`）从它读输入，产物重新登记时又用它的名字。
+			// 只改注册表的话，下一次重构建就把名字盖回 VPK 文件名 ——
+			// 用户看到的是"改名过一会又被还原"，而且完全没有线索指向重构建。
+			if (!VpkCustomModelFile.TryRenameOwned(
+					SettingsService.CreateStoragePaths().ModsDirectory, model.Key, model.Name))
+			{
+				LogService.Warn($"素体 {model.Key} 在库里没有对应的 custom-model.json，改名只落在注册表里；"
+					+ "下次重构建可能会把名字改回 VPK 文件名。");
+			}
 			var choice = RuntimeArmorChoiceViewModel.CustomModel(item.ItemId, model.Name, model.Key);
 			Choices[item.ItemId] = choice;
 			for (var index = 0; index < Mappings.Count; index++)
 				if (Mappings[index].Source.ItemId == item.ItemId)
 					Mappings[index] = Mappings[index] with { Source = choice };
 			RebuildProjections();
-			OnPropertyChanged(nameof(ComponentEditorTitle));
-			OnPropertyChanged(nameof(ComponentEditorName));
 			await FlushWorkspaceAsync();
 			await library.RefreshAssetSummariesAsync();
 		});
@@ -1607,169 +1440,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			targetModes);
 	}
 
-	private void MarkComponentEditorDirty()
-	{
-		if (componentEditorOwnerId is not { } owner) return;
-		if (Choices.TryGetValue(owner, out var ownerChoice) && ownerChoice.IsCustomModel
-			&& ownerChoice.ModelKey is { } modelKey)
-		{
-			var customModel = CustomModels.FirstOrDefault(model =>
-				string.Equals(model.Key, modelKey, StringComparison.Ordinal));
-			customModel?.ReplacePieces(ComponentEditorPieces.Select(piece => piece.ToDomain()));
-			modelDefinitions = CustomModels.Select(model => model.ToDomain()).ToArray();
-			modelDefinitionsDirty = true;
-			RecomputeHasChanges();
-			return;
-		}
-		// Following is a view of the source, not a target override snapshot.
-		// Preserve manual choices while temporarily following the source.
-		if (!componentEditorIsTarget || !componentEditorFollowSource)
-		{
-			var overrides = pieceOverrides.Where(item => item.OwnerItemId != owner).ToList();
-			foreach (var piece in ComponentEditorPieces)
-				overrides.Add(new RuntimeArmorRegistryPieceOverride(
-					owner, piece.Body, piece.Unit, piece.Slot, piece.PieceType, piece.Enabled));
-			pieceOverrides = overrides;
-		}
-		var modes = targetModes.Where(item => item.TargetItemId != owner).ToList();
-		if (componentEditorIsTarget)
-			modes.Add(new RuntimeArmorRegistryTargetMode(owner, componentEditorFollowSource));
-		targetModes = modes;
-		modelDefinitionsDirty = true;
-		RecomputeHasChanges();
-	}
 
-	private void AddComponentPiece() => AddComponentRow();
 
-	private void AddComponentRow()
-	{
-		if (!IsComponentEditorCustomModel || !ComponentEditorEditable) return;
-		var pieceType = ComponentEditorPieces
-			.Where(piece => piece.Slot == NewComponentSlot)
-			.Select(piece => piece.PieceType)
-			.DefaultIfEmpty(0u)
-			.Max() + 1;
-		var seed = ComponentEditorPieces.Count + 1;
-		if (NewComponentSlot == 0)
-		{
-			ComponentEditorPieces.Add(CreateEditorPiece(
-				new RuntimeArmorRegistryModelPiece(3, NewGeneratedUnit(seed), NewComponentSlot, pieceType, 0, true, false)));
-		}
-		else
-		{
-			ComponentEditorPieces.Add(CreateEditorPiece(
-				new RuntimeArmorRegistryModelPiece(0, NewGeneratedUnit(seed), NewComponentSlot, pieceType, 0, true, false)));
-			ComponentEditorPieces.Add(CreateEditorPiece(
-				new RuntimeArmorRegistryModelPiece(1, NewGeneratedUnit(seed + 1), NewComponentSlot, pieceType, 0, true, false)));
-		}
-		RebuildComponentEditorGroups();
-		MarkComponentEditorDirty();
-	}
 
-	private void RemoveComponentPiece(RuntimeArmorModelPieceEditorViewModel piece)
-	{
-		if (!IsComponentEditorCustomModel || !piece.CanRemove) return;
-		if (MessageBox.Show(
-				"删除 Unit 可能破坏已经准备好的 Patch 包。是否继续？",
-				"确认删除 Unit",
-				MessageBoxButton.YesNo,
-				MessageBoxImage.Warning) != MessageBoxResult.Yes)
-			return;
-		ComponentEditorPieces.Remove(piece);
-		if (piece.Body == 3)
-			foreach (var reserved in ComponentEditorPieces.Where(other => other.IsReserved
-				&& other.Slot == piece.Slot && other.PieceType == piece.PieceType).ToArray())
-				ComponentEditorPieces.Remove(reserved);
-		RebuildComponentEditorGroups();
-		MarkComponentEditorDirty();
-	}
 
-	private void RebuildComponentEditorGroups()
-	{
-		ComponentEditorGroups.Clear();
-		ComponentEditorRows.Clear();
-		foreach (var slotGroup in ComponentEditorPieces.Where(piece => !piece.IsReserved)
-			.GroupBy(piece => piece.Slot)
-			.OrderBy(group => SlotOrder(group.Key)))
-		{
-			var rows = new List<RuntimeArmorComponentRowViewModel>();
-			foreach (var typeGroup in slotGroup
-				.GroupBy(piece => piece.PieceType)
-				.OrderBy(group => group.Key))
-			{
-				var pieces = typeGroup.ToArray();
-				var any = pieces.FirstOrDefault(piece => piece.Body == 3);
-				var stocky = pieces.FirstOrDefault(piece => piece.Body == 0);
-				var slim = pieces.FirstOrDefault(piece => piece.Body == 1);
-				rows.Add(new RuntimeArmorComponentRowViewModel(
-					slotGroup.Key,
-					typeGroup.Key,
-					stocky,
-					slim,
-					any,
-					() => MergeComponentRowToAny(slotGroup.Key, typeGroup.Key),
-					() => SplitComponentRow(slotGroup.Key, typeGroup.Key),
-						() => AddMissingComponent(slotGroup.Key, typeGroup.Key, 0),
-						() => AddMissingComponent(slotGroup.Key, typeGroup.Key, 1),
-						IsComponentEditorCustomModel));
-			}
-			ComponentEditorGroups.Add(new RuntimeArmorComponentGroupViewModel(
-				slotGroup.Key,
-				slotGroup.First().SlotLabel,
-				rows));
-			foreach (var row in rows)
-				ComponentEditorRows.Add(row);
-		}
-	}
 
-	private void MergeComponentRowToAny(uint slot, uint pieceType)
-	{
-		if (MessageBox.Show(
-				"合并为 Any 可能改变现有 Unit 的身形注册，并影响已经准备好的 Patch。是否继续？",
-				"确认合并组件",
-				MessageBoxButton.YesNo,
-				MessageBoxImage.Warning) != MessageBoxResult.Yes)
-			return;
-		ReplaceComponentStructure(RuntimeArmorModelStructure.Merge(ComponentEditorPieces.Select(p => p.ToDomain()), slot, pieceType));
-	}
 
-	private void SplitComponentRow(uint slot, uint pieceType)
-	{
-		if (MessageBox.Show(
-				"拆分为双身形可能启用备用 Unit ID；若对应 Patch 尚未准备，该身形将不会显示。是否继续？",
-				"确认拆分组件",
-				MessageBoxButton.YesNo,
-				MessageBoxImage.Warning) != MessageBoxResult.Yes)
-			return;
-		ReplaceComponentStructure(RuntimeArmorModelStructure.Split(ComponentEditorPieces.Select(p => p.ToDomain()), slot, pieceType, () => NewGeneratedUnit()));
-	}
 
-	private void ReplaceComponentStructure(IReadOnlyList<RuntimeArmorRegistryModelPiece> pieces)
-	{
-		ComponentEditorPieces.Clear();
-		foreach (var piece in pieces) ComponentEditorPieces.Add(CreateEditorPiece(piece));
-		RebuildComponentEditorGroups();
-		MarkComponentEditorDirty();
-	}
 
-	private void AddMissingComponent(uint slot, uint pieceType, uint body)
-	{
-		if (ComponentEditorPieces.Any(piece => piece.Slot == slot && piece.PieceType == pieceType && piece.Body == body))
-			return;
-		var existing = ComponentEditorPieces.FirstOrDefault(piece => piece.Slot == slot && piece.PieceType == pieceType);
-		if (existing is null) return;
-		ComponentEditorPieces.Add(CreateEditorPiece(
-			new RuntimeArmorRegistryModelPiece(body, NewGeneratedUnit(), slot, pieceType, existing.Tone, true, false)));
-		RebuildComponentEditorGroups();
-		MarkComponentEditorDirty();
-	}
 
-	private static string NewGeneratedUnit(int salt = 0)
-		=> ((ulong)DateTime.UtcNow.Ticks << 12 | (uint)Random.Shared.Next(1, 4095) ^ (uint)salt)
-			.ToString("x16", CultureInfo.InvariantCulture);
 
-	private RuntimeArmorModelPieceEditorViewModel CreateEditorPiece(RuntimeArmorRegistryModelPiece piece)
-		=> new(piece, MarkComponentEditorDirty, IsComponentEditorCustomModel, RemoveComponentPiece);
 
 	private static int SlotOrder(uint slot) => ArmorStructure.Order(slot);
 
@@ -1817,7 +1497,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var syntheticId = SyntheticModelItemId(model.Key);
 		var removed = Mappings.Where(mapping => mapping.Source.ItemId == syntheticId).ToArray();
 		var released = removed.Select(mapping => mapping.Target.ItemId).Append(syntheticId).ToHashSet();
-		if (componentEditorOwnerId is { } owner && released.Contains(owner)) CloseComponentEditor();
 		if (selectedProviderId == syntheticId) CloseProvider();
 		CustomModels.Remove(model);
 		Choices.Remove(syntheticId);
@@ -2164,11 +1843,11 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool? HasEffectiveUnitOverride { get; }
 	public bool IsUnknown { get; }
 	public bool IsCustomModel { get; }
-	// 自定义素体没有"解除"（它本来就不在映射里），普通护甲没有自定义素体的
-	// 删除/重命名。这条规则以前散在面板 XAML 的转换器里。
+	// 自定义素体没有"解除"（它本来就不在映射里），普通护甲没有"重命名"。
+	// 这条规则以前散在面板 XAML 的转换器里。
 	public ModListRowAction HiddenActions => IsCustomModel
 		? ModListRowAction.ArmorRelease
-		: ModListRowAction.ArmorDeleteCustomModel | ModListRowAction.ArmorRenameCustomModel;
+		: ModListRowAction.ArmorRenameCustomModel;
 	public string? ModelKey { get; }
 	public GameDataEquipmentKitKind KitKind { get; }
 	public uint SetId { get; }
@@ -2248,47 +1927,45 @@ public sealed record RuntimeArmorMappingRowViewModel(
 	RuntimeArmorChoiceViewModel Source,
 	string? ModelKey = null);
 
+/// <summary>
+/// 一具素体在页面上的可编辑部分。
+/// <para>
+/// <b>只剩名字。</b>素体是某个 Mod 的转换产物，它的件表（unit 列表）由 patch 决定，
+/// 在这里编辑件表只能凭空造出没有部署来源的 unit id —— 那正是"素体挂在列表里、
+/// 选它什么都不发生"的来源。所以件表<b>只读</b>，页面只允许改名。
+/// 修改件表需要的能力将来跟 section 编辑一起放到 Mod 详情页（见 notes/backlog-20261104.md）。
+/// </para>
+/// <para>
+/// 「默认底座件」的补标注保留：老工作区里 (body, slot) 的组合本来就是这个意思，
+/// 只在内存里补、落盘时带上，否则下一次读取还得重新猜一遍。
+/// </para>
+/// </summary>
 public sealed class RuntimeArmorModelEditorViewModel : BaseViewModel
 {
 	private readonly Action changed;
-	private bool isExpanded = true;
-	private int nextPieceIndex;
+	private readonly IReadOnlyList<RuntimeArmorRegistryModelPiece> pieces;
 
 	public RuntimeArmorModelEditorViewModel(RuntimeArmorRegistryModel model, Action changed)
 	{
 		Key = model.Key;
-		Name = model.Name ?? model.Key;
+		Name = string.IsNullOrWhiteSpace(model.Name) ? model.Key : model.Name!;
 		SourceItemId = model.SourceItemId;
 		this.changed = changed;
 		var baseSlots = new HashSet<uint> { 2, 3, 4, 5, 6, 7 };
-		Pieces = new ObservableCollection<RuntimeArmorModelPieceEditorViewModel>(
-			(model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
-			.Select(piece => new RuntimeArmorModelPieceEditorViewModel(
-				piece with
-				{
-					IsDefaultBase = piece.IsDefaultBase
-						|| (SourceItemId is null && piece.PieceType == 0 && baseSlots.Contains(piece.Slot))
-				},
-				changed,
-				SourceItemId is null,
-				RemovePiece)));
-		nextPieceIndex = Pieces.Count;
-		AddPieceCommand = new RelayCommand(_ => AddPiece(), _ => SourceItemId is null);
+		pieces = (model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+			.Select(piece => piece with
+			{
+				IsDefaultBase = piece.IsDefaultBase
+					|| (SourceItemId is null && piece.PieceType == 0 && baseSlots.Contains(piece.Slot))
+			})
+			.ToArray();
 	}
 
 	public string Key { get; }
 	public string Name { get; private set; }
 	public uint? SourceItemId { get; }
-	public ObservableCollection<RuntimeArmorModelPieceEditorViewModel> Pieces { get; }
-	public RelayCommand AddPieceCommand { get; }
-	public bool IsExpanded
-	{
-		get => isExpanded;
-		set => SetField(ref isExpanded, value);
-	}
 
-	public RuntimeArmorRegistryModel ToDomain()
-		=> new(Key, SourceItemId, Pieces.Select(piece => piece.ToDomain()).ToArray(), Name);
+	public RuntimeArmorRegistryModel ToDomain() => new(Key, SourceItemId, pieces, Name);
 
 	public void Rename(string name)
 	{
@@ -2297,173 +1974,4 @@ public sealed class RuntimeArmorModelEditorViewModel : BaseViewModel
 		changed();
 		OnPropertyChanged(nameof(Name));
 	}
-
-	public void ReplacePieces(IEnumerable<RuntimeArmorRegistryModelPiece> pieces)
-	{
-		Pieces.Clear();
-		foreach (var piece in pieces)
-		{
-			Pieces.Add(new RuntimeArmorModelPieceEditorViewModel(
-				piece, changed, SourceItemId is null, RemovePiece));
-		}
-		nextPieceIndex = Pieces.Count;
-	}
-
-	private void AddPiece()
-	{
-		var unit = ((ulong)DateTime.UtcNow.Ticks << 12 | (uint)nextPieceIndex++)
-			.ToString("x16", CultureInfo.InvariantCulture);
-		Pieces.Add(new RuntimeArmorModelPieceEditorViewModel(
-			new RuntimeArmorRegistryModelPiece(3, unit, 2, 100 + (uint)nextPieceIndex, 0, true),
-			changed, true, RemovePiece));
-		changed();
-	}
-
-	public void RemovePiece(RuntimeArmorModelPieceEditorViewModel? piece)
-	{
-		if (piece is null || !piece.CanRemove || !Pieces.Remove(piece)) return;
-		changed();
-	}
 }
-
-public sealed class RuntimeArmorModelPieceEditorViewModel : BaseViewModel
-{
-	private readonly Action changed;
-	private bool enabled;
-	private readonly bool canRemove;
-	private readonly Action<RuntimeArmorModelPieceEditorViewModel>? remove;
-
-	public RuntimeArmorModelPieceEditorViewModel(
-		RuntimeArmorRegistryModelPiece piece,
-		Action changed,
-		bool allowRemove = false,
-		Action<RuntimeArmorModelPieceEditorViewModel>? remove = null)
-	{
-		Body = piece.Body;
-		Unit = piece.Unit;
-		Slot = piece.Slot;
-		PieceType = piece.PieceType;
-		Tone = piece.Tone;
-		IsDefaultBase = piece.IsDefaultBase;
-		IsReserved = piece.IsReserved;
-		OriginalBody = piece.OriginalBody;
-		enabled = piece.Enabled;
-		canRemove = allowRemove;
-		this.remove = remove;
-		RemoveCommand = new RelayCommand(_ => remove?.Invoke(this), _ => CanRemove);
-		this.changed = changed;
-	}
-
-	public uint Body { get; private set; }
-	public string Unit { get; }
-	public uint Slot { get; }
-	public uint PieceType { get; }
-	public byte Tone { get; }
-	public string BodyLabel
-	{
-		get
-		{
-			var body = ArmorStructure.ToBodyVariant(Body);
-			return body == HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Other
-				? Body.ToString(CultureInfo.InvariantCulture)
-				: ArmorStructure.DisplayBody(body);
-		}
-	}
-
-	public string SlotLabel
-	{
-		get
-		{
-			var part = ArmorStructure.FromSlot(Slot);
-			return part == ArmorPart.Unknown ? $"槽位 {Slot}" : ArmorStructure.Display(part);
-		}
-	}
-	public bool Enabled
-	{
-		get => enabled;
-		set
-		{
-			if (!SetField(ref enabled, value)) return;
-			changed();
-		}
-	}
-	public bool CanRemove => canRemove;
-	public RelayCommand RemoveCommand { get; }
-
-	public RuntimeArmorRegistryModelPiece ToDomain()
-		=> new(Body, Unit, Slot, PieceType, Tone, Enabled, IsDefaultBase, IsReserved, OriginalBody);
-
-	public bool IsDefaultBase { get; }
-	public bool IsReserved { get; }
-	public uint? OriginalBody { get; }
-	public void SetBody(uint body)
-	{
-		if (Body == body) return;
-		Body = body;
-		OnPropertyChanged(nameof(BodyLabel));
-		changed();
-	}
-}
-
-public sealed class RuntimeArmorComponentGroupViewModel
-{
-	public RuntimeArmorComponentGroupViewModel(
-		uint slot,
-		string title,
-		IReadOnlyList<RuntimeArmorComponentRowViewModel> rows)
-	{
-		Slot = slot;
-		Title = title;
-		Rows = rows;
-	}
-
-	public uint Slot { get; }
-	public string Title { get; }
-	public IReadOnlyList<RuntimeArmorComponentRowViewModel> Rows { get; }
-}
-
-public sealed class RuntimeArmorComponentRowViewModel
-{
-	public RuntimeArmorComponentRowViewModel(
-		uint slot,
-		uint pieceType,
-		RuntimeArmorModelPieceEditorViewModel? stocky,
-		RuntimeArmorModelPieceEditorViewModel? slim,
-		RuntimeArmorModelPieceEditorViewModel? any,
-		Action mergeAny,
-		Action split,
-		Action addStocky,
-		Action addSlim,
-		bool canEditStructure)
-	{
-		PieceType = pieceType;
-		Stocky = stocky;
-		Slim = slim;
-		Any = any;
-		var canChangeStructure = canEditStructure && slot != 0;
-		MergeAnyCommand = new RelayCommand(_ => mergeAny(), _ => canChangeStructure);
-		SplitCommand = new RelayCommand(_ => split(), _ => canChangeStructure);
-		AddMissingStockyCommand = new RelayCommand(_ => addStocky(), _ => canChangeStructure);
-		AddMissingSlimCommand = new RelayCommand(_ => addSlim(), _ => canChangeStructure);
-		CanEditStructure = canChangeStructure;
-	}
-
-	public uint PieceType { get; }
-	public RuntimeArmorModelPieceEditorViewModel? Stocky { get; }
-	public RuntimeArmorModelPieceEditorViewModel? Slim { get; }
-	public RuntimeArmorModelPieceEditorViewModel? Any { get; }
-	public bool IsAny => Any is not null;
-	public string SlotLabel => (Any ?? Stocky ?? Slim)?.SlotLabel ?? "组件";
-	public string LayerLabel => ArmorStructure.DescribePieceSlot(PieceType);
-	public string StructureActionLabel => IsAny ? "拆分为双身形" : "合并为 Any";
-	public RelayCommand MergeAnyCommand { get; }
-	public RelayCommand SplitCommand { get; }
-	public RelayCommand AddMissingStockyCommand { get; }
-	public RelayCommand AddMissingSlimCommand { get; }
-	public bool CanEditStructure { get; }
-	public bool HasMissingStocky => !IsAny && Stocky is null;
-	public bool HasMissingSlim => !IsAny && Slim is null;
-	public RelayCommand StructureActionCommand => IsAny ? SplitCommand : MergeAnyCommand;
-}
-
-public sealed record ArmorComponentSlotOption(uint Slot, string Name);

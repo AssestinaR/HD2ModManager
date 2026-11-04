@@ -125,7 +125,6 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     public static readonly DependencyProperty ArmorAssignToolTipProperty = DependencyProperty.Register(nameof(ArmorAssignToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("加入视觉来源或其映射"));
     public static readonly DependencyProperty ArmorReleaseToolTipProperty = DependencyProperty.Register(nameof(ArmorReleaseToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("解除视觉来源或映射"));
     public static readonly DependencyProperty ArmorOpenDetailsToolTipProperty = DependencyProperty.Register(nameof(ArmorOpenDetailsToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("查看映射目标"));
-    public static readonly DependencyProperty ArmorEditComponentsToolTipProperty = DependencyProperty.Register(nameof(ArmorEditComponentsToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("编辑视觉组件"));
     public static readonly DependencyProperty AllowKeyboardRenameProperty = DependencyProperty.Register(nameof(AllowKeyboardRename), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
@@ -170,7 +169,6 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     public string ArmorAssignToolTip { get => (string)GetValue(ArmorAssignToolTipProperty); set => SetValue(ArmorAssignToolTipProperty, value); }
     public string ArmorReleaseToolTip { get => (string)GetValue(ArmorReleaseToolTipProperty); set => SetValue(ArmorReleaseToolTipProperty, value); }
     public string ArmorOpenDetailsToolTip { get => (string)GetValue(ArmorOpenDetailsToolTipProperty); set => SetValue(ArmorOpenDetailsToolTipProperty, value); }
-    public string ArmorEditComponentsToolTip { get => (string)GetValue(ArmorEditComponentsToolTipProperty); set => SetValue(ArmorEditComponentsToolTipProperty, value); }
     public bool AllowKeyboardRename { get => (bool)GetValue(AllowKeyboardRenameProperty); set => SetValue(AllowKeyboardRenameProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
 
@@ -181,7 +179,6 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
         ModListRowAction.ArmorAssign => ArmorAssignToolTip,
         ModListRowAction.ArmorRelease => ArmorReleaseToolTip,
         ModListRowAction.ArmorOpenDetails => ArmorOpenDetailsToolTip,
-        ModListRowAction.ArmorEditComponents => ArmorEditComponentsToolTip,
         _ => null,
     };
     public bool HasRowActions => (bool)GetValue(HasRowActionsProperty);

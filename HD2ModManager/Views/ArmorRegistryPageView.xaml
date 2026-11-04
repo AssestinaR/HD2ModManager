@@ -50,79 +50,6 @@
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
-        <Style x:Key="ArmorPieceHost" TargetType="ContentControl">
-            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-            <Setter Property="ContentTemplate" Value="{StaticResource ArmorPieceEditorTemplate}"/>
-            <Style.Triggers>
-                <Trigger Property="Content" Value="{x:Null}">
-                    <Setter Property="Visibility" Value="Collapsed"/>
-                </Trigger>
-            </Style.Triggers>
-        </Style>
-        <DataTemplate x:Key="ArmorComponentRowTemplate">
-            <Border BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,0,0,1" Padding="0,6">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <Grid Grid.ColumnSpan="2" Margin="12,2,8,2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding SlotLabel}" FontWeight="SemiBold"
-                                       Foreground="{StaticResource TextPrimary}"/>
-                            <TextBlock Text="{Binding LayerLabel}" Margin="8,0,0,0" FontSize="11"
-                                       Foreground="{StaticResource TextTertiary}" VerticalAlignment="Center"/>
-                        </StackPanel>
-                        <Button Grid.Column="1" Content="{Binding StructureActionLabel}"
-                                Command="{Binding StructureActionCommand}"
-                                Style="{StaticResource AppHeaderTextButton}" FontSize="11"
-                                Padding="6,3"
-                                Visibility="{Binding CanEditStructure, Converter={StaticResource BoolToVis}}"/>
-                    </Grid>
-                    <Grid x:Name="BodyPair" Grid.Row="1" Grid.ColumnSpan="2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <ContentControl Content="{Binding Stocky}" Style="{StaticResource ArmorPieceHost}"/>
-                        <Border Grid.Column="1" BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="1,0,0,0">
-                            <ContentControl Content="{Binding Slim}" Style="{StaticResource ArmorPieceHost}"/>
-                        </Border>
-                        <StackPanel Margin="12,8" Visibility="{Binding HasMissingStocky, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="Stocky · 未配置" Foreground="{StaticResource TextTertiary}" FontSize="12"/>
-                            <Button Content="添加 Stocky" Command="{Binding AddMissingStockyCommand}"
-                                    Style="{StaticResource AppHeaderTextButton}" HorizontalAlignment="Left"
-                                    Padding="0,4" Margin="0,4,0,0"
-                                    Visibility="{Binding CanEditStructure, Converter={StaticResource BoolToVis}}"/>
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" Margin="12,8"
-                                    Visibility="{Binding HasMissingSlim, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="Slim · 未配置" Foreground="{StaticResource TextTertiary}" FontSize="12"/>
-                            <Button Content="添加 Slim" Command="{Binding AddMissingSlimCommand}"
-                                    Style="{StaticResource AppHeaderTextButton}" HorizontalAlignment="Left"
-                                    Padding="0,4" Margin="0,4,0,0"
-                                    Visibility="{Binding CanEditStructure, Converter={StaticResource BoolToVis}}"/>
-                        </StackPanel>
-                    </Grid>
-                    <ContentControl Grid.Row="1" Grid.ColumnSpan="2" Content="{Binding Any}"
-                                    Style="{StaticResource ArmorPieceHost}"
-                                    Visibility="{Binding IsAny, Converter={StaticResource BoolToVis}}"/>
-                </Grid>
-            </Border>
-            <DataTemplate.Triggers>
-                <DataTrigger Binding="{Binding IsAny}" Value="True">
-                    <Setter TargetName="BodyPair" Property="Visibility" Value="Collapsed"/>
-                </DataTrigger>
-            </DataTemplate.Triggers>
-        </DataTemplate>
         <DataTemplate x:Key="AvailableArmorSearchActions">
             <StackPanel Orientation="Horizontal">
                 <Button Style="{StaticResource AppHeaderTextButton}"
@@ -187,10 +114,9 @@
                                     SearchActionsTemplate="{StaticResource ArmorKindSearchActions}"
                                     EmptyMessage="{Binding ProvidersEmptyMessage}"
                                     SelectionPolicy="Multiple"
-                                    RowActions="ArmorRelease, ArmorOpenDetails, ArmorEditComponents, ArmorDeleteCustomModel, ArmorRenameCustomModel"
+                                    RowActions="ArmorRelease, ArmorOpenDetails, ArmorRenameCustomModel"
                                     ArmorReleaseToolTip="解除视觉对象"
                                     ArmorOpenDetailsToolTip="查看映射目标"
-                                    ArmorEditComponentsToolTip="编辑视觉组件"
                                     RelationshipDragOperation="ArmorRegistryRelease"
                                     SelectionRequested="OnProviderSelectionRequested"
                                     RowRightClicked="OnProviderRightClicked"
@@ -216,119 +142,12 @@
                                         HeaderTitleClickable="True"
                                         EmptyMessage="此来源尚无目标；可从右侧添加护甲。"
                                         SelectionPolicy="Multiple"
-                                        RowActions="ArmorRelease, ArmorEditComponents"
+                                        RowActions="ArmorRelease"
                                         ArmorReleaseToolTip="解除映射目标"
-                                        ArmorEditComponentsToolTip="编辑目标组件"
                                         RelationshipDragOperation="ArmorRegistryRelease"
                                         SelectionRequested="OnDetailSelectionRequested"
                                         HeaderTitleClicked="OnBackToProvidersClick"
                                         RowActionInvoked="OnDetailRowActionInvoked"/>
-                </Grid>
-                <Grid x:Name="ComponentEditorSurface" Grid.Row="0" Background="{StaticResource SurfaceCanvas}"
-                      Visibility="{Binding IsComponentEditorOpen, Converter={StaticResource BoolToVis}}">
-                    <Border Style="{StaticResource CardContainer}" Padding="0">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
-                            <Border Grid.Row="0"
-                                    BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,0,0,1"
-                                    Padding="14,12">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Button Grid.Column="0"
-                                            Style="{StaticResource AppHeaderTextButton}"
-                                            HorizontalContentAlignment="Stretch"
-                                            Click="OnCloseComponentEditorClick"
-                                            ToolTip="返回" AutomationProperties.Name="返回">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="26"/>
-                                                <ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <Path Width="16" Height="16" VerticalAlignment="Center"
-                                                  Data="M13,8 L3,8 M3,8 L7,4 M3,8 L7,12"
-                                                  Stroke="{StaticResource TextSecondary}" StrokeThickness="1.6"
-                                                  StrokeStartLineCap="Round" StrokeLineJoin="Round"/>
-                                            <StackPanel Grid.Column="1">
-                                                <TextBlock Text="{Binding ComponentEditorName}" FontSize="16" FontWeight="SemiBold"
-                                                           Foreground="{StaticResource TextPrimary}"
-                                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding ComponentEditorName}"/>
-                                                <TextBlock Text="视觉组件" Foreground="{StaticResource TextSecondary}"
-                                                           FontSize="12" Margin="0,3,0,0"/>
-                                            </StackPanel>
-                                        </Grid>
-                                    </Button>
-                                    <CheckBox Grid.Column="1"
-                                              Margin="16,0,0,0"
-                                              HorizontalAlignment="Right"
-                                              VerticalAlignment="Center"
-                                              Content="跟随视觉来源"
-                                              IsChecked="{Binding ComponentEditorFollowSource, Mode=TwoWay}"
-                                              Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}"
-                                              Style="{StaticResource AppToggleSwitch}"/>
-                                </Grid>
-                            </Border>
-                            <Grid Grid.Row="1" Margin="0,10,0,0">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="*"/>
-                                </Grid.RowDefinitions>
-                                <!--
-                                    组件结构块与「新增组件」行已移除：树本身已经把"用哪些 unit"
-                                    和"哪些 section 不可见"放在同一处描述，再摆一份平铺的组件表
-                                    只会让同一件事有两个入口。
-                                -->
-                                <!--
-                                    显隐的继承/独立。刻意不叫「跟随视觉来源」：
-                                    卡片上原来那个同名开关是**组件结构**的轴（进协议的 target_mode），
-                                    这个是 section 显隐的轴，两个概念同名会让人以为改一个另一个也变。
-                                -->
-                                <StackPanel Grid.Row="0" Margin="14,0,14,6">
-                                    <Grid Visibility="{Binding ComponentEditorIsTarget, Converter={StaticResource BoolToVis}}">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                            <TextBlock Text="显隐跟随视觉来源"
-                                                       Foreground="{StaticResource TextPrimary}"/>
-                                            <TextBlock Text="关闭后这件护甲用自己的 section 设置，不再跟随来源"
-                                                       Foreground="{StaticResource TextSecondary}"
-                                                       FontSize="11" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                        </StackPanel>
-                                        <CheckBox Grid.Column="1"
-                                                  Margin="12,0,0,0"
-                                                  VerticalAlignment="Center"
-                                                  IsChecked="{Binding Wardrobe.FollowSource, Mode=TwoWay}"
-                                                  Style="{StaticResource AppToggleSwitch}"
-                                                  AutomationProperties.Name="显隐跟随视觉来源"/>
-                                    </Grid>
-                                    <TextBlock Text="{Binding Wardrobe.StatusMessage}"
-                                               Margin="0,4,0,0"
-                                               TextWrapping="Wrap"
-                                               Foreground="{StaticResource TextSecondary}"
-                                               FontSize="11"
-                                               Visibility="{Binding Wardrobe.HasStatus, Converter={StaticResource BoolToVis}}"/>
-                                </StackPanel>
-                                <!--
-                                    树占满卡片剩下的高度（之前给了 MaxHeight，底部就空出一截）。
-                                    它自己滚动，外层不再套 ScrollViewer——两层滚动条只会互相抢滚轮。
-                                -->
-                                <!-- 行外观与展开动画都在 TreeSurface 里，这里只给数据。 -->
-                                <local:TreeSurface Grid.Row="1"
-                                                   Roots="{Binding Wardrobe.Roots}"
-                                                   Margin="6,0,6,0"
-                                                   IsEnabled="{Binding Wardrobe.IsEditable}"
-                                                   VerticalScrollBarVisibility="Auto"
-                                                   Visibility="{Binding Wardrobe.HasRoots, Converter={StaticResource BoolToVis}}"/>
-                            </Grid>
-                        </Grid>
-                    </Border>
                 </Grid>
                 <!-- 左列 = "设为视觉来源 / 添加映射目标"的拖放区。盖在组件编辑器之上。 -->
                 <lists:DropHintOverlay x:Name="ProviderDropOverlay" Grid.Row="0" Panel.ZIndex="20"/>
