@@ -4099,114 +4099,15 @@ public static class CliApplication
 		}
 	}
 
-	private static void EnsureDecorationSourceInspectOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
-			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration inspect source 仅接受来源 Mod 标识、--manager-root、--library、--game-data 与 --json。 ");
-		}
-	}
 
-	private static void EnsureDecorationShowOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
-			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData))
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration show 仅接受装饰 Mod 标识、--manager-root、--library 与 --json。 ");
-		}
-	}
 
-	private static void EnsureDecorationPackagePlanOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration package plan 仅接受来源 Mod 标识、--host、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
-		}
-		_ = RequireHost(options);
-	}
 
-	private static void EnsureDecorationPackageValidateOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
-			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration package validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
-		}
-	}
 
-	private static void EnsureDecorationPackageApplyOptions(CliGlobalOptions options)
-	{
-		if (options.Overwrite || !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration package apply 仅接受 --plan、--manager-root、--library、--game-data、--output、--confirm 与 --json。输出必须是新的库外且游戏目录外目录。 ");
-		}
-	}
 
-	private static void EnsureDecorationEditExportOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
-			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration edit export 仅接受装饰 Mod 标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
-		}
-	}
 
-	private static void EnsureDecorationEditInspectOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
-			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration edit inspect 仅接受编辑规格文件、--manager-root、--library、--game-data 与 --json。 ");
-		}
-	}
 
-	private static void EnsureDecorationEditPlanOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
-			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration edit plan 仅接受编辑规格文件、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
-		}
-	}
 
-	private static void EnsureDecorationEditValidateOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
-			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration edit validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
-		}
-	}
 
-	private static void EnsureDecorationEditApplyOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
-			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"decoration edit apply 仅接受 --plan、--manager-root、--library、--game-data、--confirm 与 --json。 ");
-		}
-	}
 
 	private static void EnsurePatchRepackagingInspectOptions(CliGlobalOptions options)
 	{
@@ -4358,78 +4259,12 @@ public static class CliApplication
 		}
 	}
 
-	private static void EnsureHostDerivedInspectOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
-			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"host-derived inspect 仅接受主体标识、--manager-root、--library、--game-data 与 --json。 ");
-		}
-	}
 
-	private static void EnsureHostDerivedDecorationPlanOptions(CliGlobalOptions options, bool allDeclaredHosts)
-	{
-		EnsureHostDerivedPlanCommonOptions(options, "host-derived plan decoration");
-		if (allDeclaredHosts)
-		{
-			if (!string.IsNullOrWhiteSpace(options.Host))
-			{
-				throw new CliUserException(
-					"HostDerivedDecorationTargetAmbiguous",
-					"host-derived plan decoration enable-all/disable-all 不能同时提供 --host。 ");
-			}
-			return;
-		}
-		_ = RequireHostDerivedDecorationHost(options);
-	}
 
-	private static void EnsureHostDerivedHelmetPlanOptions(CliGlobalOptions options)
-	{
-		EnsureHostDerivedPlanCommonOptions(options, "host-derived plan helmet");
-		if (!string.IsNullOrWhiteSpace(options.Host))
-			throw new CliUserException("CommandOptionNotSupported", "host-derived plan helmet 使用位置参数指定主体，不接受 --host。 ");
-	}
 
-	private static void EnsureHostDerivedRebuildPlanOptions(CliGlobalOptions options)
-	{
-		EnsureHostDerivedPlanCommonOptions(options, "host-derived plan rebuild");
-		if (!string.IsNullOrWhiteSpace(options.Host))
-			throw new CliUserException("CommandOptionNotSupported", "host-derived plan rebuild 使用位置参数指定主体，不接受 --host。 ");
-	}
 
-	private static void EnsureHostDerivedPlanCommonOptions(CliGlobalOptions options, string command)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Plan) || options.Confirm || options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				$"{command} 仅接受目标标识、--manager-root、--library、--game-data、--output、--overwrite 与 --json。 ");
-		}
-	}
 
-	private static void EnsureHostDerivedValidateOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || options.Confirm || !string.IsNullOrWhiteSpace(options.Host)
-			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"host-derived validate 仅接受 --plan、--manager-root、--library、--game-data 与 --json。 ");
-		}
-	}
 
-	private static void EnsureHostDerivedApplyOptions(CliGlobalOptions options)
-	{
-		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Host)
-			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions)
-		{
-			throw new CliUserException(
-				"CommandOptionNotSupported",
-				"host-derived apply 仅接受 --plan、--manager-root、--library、--game-data、--confirm 与 --json。 ");
-		}
-	}
 
 	private static void EnsureModExportPlanOptions(CliGlobalOptions options)
 	{
@@ -4984,41 +4819,8 @@ public static class CliApplication
 		return options.Host;
 	}
 
-	private static string RequireHostDerivedDecorationHost(CliGlobalOptions options)
-	{
-		if (string.IsNullOrWhiteSpace(options.Host))
-		{
-			throw new CliUserException(
-				"HostDerivedDecorationHostRequired",
-				"host-derived plan decoration enable/disable 必须显式提供 --host <主体 Mod GUID 或唯一前缀>。 ");
-		}
-		return options.Host;
-	}
 
-	private static CliHostDerivedAction ParseHostDerivedToggleAction(string rawAction, string subject)
-		=> rawAction.Trim().ToLowerInvariant() switch
-		{
-			"enable" or "enable-all" => CliHostDerivedAction.Enable,
-			"disable" or "disable-all" => CliHostDerivedAction.Disable,
-			_ => throw new CliUserException(
-				"HostDerivedActionInvalid",
-				$"{subject}操作只能使用 enable、disable（装饰也可使用 enable-all、disable-all）。"),
-		};
 
-	private static CliHostDerivedRequest CreateHostDerivedRequest(
-		CliHostDerivedOperation operation,
-		CliHostDerivedAction action,
-		IReadOnlyList<string> hostNodeIds,
-		IReadOnlyList<string> decorationNodeIds,
-		bool allDeclaredDecorationHosts,
-		string? gameDataDirectory)
-		=> new(
-			operation,
-			action,
-			hostNodeIds,
-			decorationNodeIds,
-			allDeclaredDecorationHosts,
-			gameDataDirectory ?? string.Empty);
 
 	private static async ValueTask<T> ExecuteMutationAsync<T>(
 		CliGlobalOptions options,
@@ -5300,19 +5102,7 @@ public static class CliApplication
 		return options.Plan;
 	}
 
-	private static string RequireDecorationPackagePlan(CliGlobalOptions options)
-	{
-		if (string.IsNullOrWhiteSpace(options.Plan))
-			throw new CliUserException("DecorationPackagePlanRequired", "请通过 --plan <装饰外部包计划.json> 提供计划文件。 ");
-		return options.Plan;
-	}
 
-	private static string RequireDecorationEditPlan(CliGlobalOptions options)
-	{
-		if (string.IsNullOrWhiteSpace(options.Plan))
-			throw new CliUserException("DecorationEditPlanRequired", "请通过 --plan <装饰编辑计划.json> 提供计划文件。 ");
-		return options.Plan;
-	}
 
 	private static string RequireModExportPlan(CliGlobalOptions options)
 	{
@@ -5439,12 +5229,6 @@ public static class CliApplication
 		return string.Join(Environment.NewLine, lines);
 	}
 
-	private static string RequireHostDerivedPlan(CliGlobalOptions options)
-	{
-		if (string.IsNullOrWhiteSpace(options.Plan))
-			throw new CliUserException("HostDerivedPlanRequired", "请通过 --plan <主体派生 Overwrite 计划.json> 提供计划文件。 ");
-		return options.Plan;
-	}
 
 	/// <summary>
 	/// 读一份路径清单（每行一个绝对路径；空行与 <c>#</c> 开头的行忽略）。
@@ -5814,116 +5598,15 @@ public static class CliApplication
 			: $"库对账被拒绝：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
-	private static string FormatDecorationSourceInspection(CliDecorationSourceInspection inspection)
-	{
-		if (inspection.IsReady)
-		{
-			var defaults = inspection.UnitCandidates.Count(candidate => candidate.IsDefaultSelected);
-			return $"装饰来源检查完成：{inspection.SourceModName}；可选 Unit {inspection.UnitCandidates.Count} 个；默认选择 {defaults} 个；建议目标 {inspection.SuggestedAttachment.TargetPart}/{inspection.SuggestedAttachment.TargetBodyVariant}。";
-		}
-		var blocking = inspection.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-		return blocking.Length == 0
-			? $"装饰来源检查未找到可用 Unit：{inspection.SourceModName}。"
-			: $"装饰来源检查未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-	}
 
-	private static string FormatDecorationManagementInspection(CliDecorationManagementInspection inspection)
-	{
-		if (!inspection.IsReadable)
-		{
-			var blocking = inspection.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-			return blocking.Length == 0
-				? $"装饰详情不可读取：{inspection.DecorationName}。"
-				: $"装饰详情不可读取：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-		}
-		var available = inspection.DeclaredHosts.Count(host => host.IsAvailableForActivation);
-		var enabled = inspection.DeclaredHosts.Count(host => host.IsEnabled);
-		return $"装饰详情：{inspection.DecorationName}；来源 Unit {inspection.SourceUnits.Count} 个；声明主体 {inspection.DeclaredHosts.Count} 个（可启用 {available}，当前启用 {enabled}）。";
-	}
 
-	private static string FormatDecorationPackagePlan(CliDecorationPackagePlanDocument document, string outputPath)
-	{
-		var message = document.IsReady
-			? $"装饰外部包计划已写出：来源 {document.Source.ModName}；默认 Unit {document.Selections.Count} 个；目标主体 {document.Attachment.TargetHostNodeIds.Count} 个。"
-			: $"装饰外部包计划已写出，但当前不可执行：{document.Diagnostics.Count(diagnostic => diagnostic.Blocking)} 个阻断项。";
-		return $"{message}{Environment.NewLine}计划：{outputPath}{Environment.NewLine}请审阅 selections 与 attachment，随后执行 decoration package validate。";
-	}
 
-	private static string FormatDecorationPackageValidation(CliDecorationPackageValidationResult validation)
-	{
-		if (validation.IsValid)
-			return $"装饰外部包验证通过：已选择 {validation.ResolvedSelections.Count} 个来源 Unit。";
-		var blocking = validation.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-		return blocking.Length == 0
-			? "装饰外部包验证未通过；请查看 JSON 结果。"
-			: $"装饰外部包验证未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-	}
 
-	private static string FormatDecorationPackageExecution(CliDecorationPackageExecutionResult execution)
-	{
-		if (execution.Success)
-			return $"装饰外部包已输出：{execution.SelectedUnitCount} 个来源 Unit；目录：{execution.OutputDirectory}。结果尚未导入、启用或部署。";
-		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-		return blocking.Length == 0
-			? "装饰外部包未完成；请查看 JSON 结果或计划。"
-			: $"装饰外部包未完成：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-	}
 
-	private static string FormatDecorationEditSpecification(CliDecorationEditSpecDocument specification, string outputPath)
-	{
-		var status = specification.IsReady
-			? $"装饰编辑规格已写出：{specification.Source.DecorationName}；可选 Unit {specification.Candidates.Count} 个；当前选择 {specification.Selections.Count} 个。"
-			: $"装饰编辑规格已写出，但当前不可执行：{specification.Diagnostics.Count(diagnostic => diagnostic.Blocking)} 个阻断项。";
-		return $"{status}{Environment.NewLine}规格：{outputPath}{Environment.NewLine}请只编辑 selections 与 attachment，然后执行 decoration edit inspect 或 decoration edit plan。";
-	}
 
-	private static string FormatDecorationEditInspection(CliDecorationEditPlanDocument document)
-	{
-		if (document.IsReady)
-		{
-			var active = document.ActiveHosts.Count(host => host.Exists);
-			var detached = document.ActiveHosts.Count(host => host.Exists && host.WasDeclaredBeforeEdit && !host.WillBeDeclaredAfterEdit);
-			return $"装饰编辑检查通过：选择来源 Unit {document.ProposedSourceUnits.Count} 个；目标主体 {document.ProposedAttachment.TargetHostNodeIds.Count} 个；需要回建的已启用主体 {active} 个；将移除 {detached} 个失效启用关联。";
-		}
-		var blocking = document.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-		return blocking.Length == 0
-			? "装饰编辑检查未通过；请查看 JSON 结果。"
-			: $"装饰编辑检查未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-	}
 
-	private static string FormatDecorationEditPlan(CliDecorationEditPlanDocument document, string outputPath)
-	{
-		var status = document.IsReady
-			? $"装饰编辑计划已写出：来源 Unit {document.ProposedSourceUnits.Count} 个；目标主体 {document.ProposedAttachment.TargetHostNodeIds.Count} 个。"
-			: $"装饰编辑计划已写出，但当前不可执行：{document.Diagnostics.Count(diagnostic => diagnostic.Blocking)} 个阻断项。";
-		return $"{status}{Environment.NewLine}计划：{outputPath}{Environment.NewLine}apply 会更新 decoration.json，并回建所有当前启用的主体；被移出目标列表的已启用主体会清除该装饰关联。";
-	}
 
-	private static string FormatDecorationEditValidation(CliDecorationEditValidationResult validation)
-	{
-		if (validation.IsValid)
-			return $"装饰编辑计划验证通过：来源 Unit {validation.Current!.Document.ProposedSourceUnits.Count} 个；已启用主体 {validation.Current.Document.ActiveHosts.Count(host => host.Exists)} 个。";
-		var blocking = validation.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-		return blocking.Length == 0
-			? "装饰编辑计划验证未通过；请查看 JSON 结果。"
-			: $"装饰编辑计划验证未通过：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-	}
 
-	private static string FormatDecorationEditExecution(CliDecorationEditExecutionResult execution)
-	{
-		if (execution.Success)
-		{
-			var rebuilt = execution.Hosts.Count(host => host.PlannedRebuildSucceeded);
-			var state = execution.ActivationStateCommitted
-				? $"；已清理 {execution.PrunedActivationHostCount} 个失效启用关联"
-				: string.Empty;
-			return $"装饰编辑已完成：已更新 decoration.json；已回建 {rebuilt} 个主体{state}。未自动部署。";
-		}
-		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-		return blocking.Length == 0
-			? "装饰编辑未完成；已尝试回滚，请查看 JSON 结果。"
-			: $"装饰编辑未完成：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-	}
 
 	private static object CreateDeploymentPlanProjection(CliDeploymentPlanDocument document)
 		=> new
@@ -6167,63 +5850,8 @@ public static class CliApplication
 			deployment = "not-performed",
 		};
 
-	private static object CreateHostDerivedPlanProjection(CliHostDerivedPlanDocument document)
-		=> new
-		{
-			document.Schema,
-			document.Version,
-			document.CreatedUtc,
-			ready = document.IsReady,
-			noChanges = document.Hosts.Count == 0,
-			document.InputFingerprint,
-			request = document.Request,
-			target = document.Target,
-			hosts = document.Hosts.Select(host => new
-			{
-				host.NodeId,
-				host.Name,
-				host.Kind,
-				host.RelativePath,
-				host.PatchGroupCount,
-				current = new
-				{
-					helmetToArmorMerged = host.CurrentHelmetToArmorMerged,
-					decorations = host.CurrentDecorations,
-				},
-				planned = new
-				{
-					helmetToArmorMerged = host.PlannedHelmetToArmorMerged,
-					decorations = host.PlannedDecorations,
-				},
-				overwrite = host.Overwrite,
-			}).ToArray(),
-			inputs = document.Inputs,
-			diagnostics = document.Diagnostics,
-		};
 
-	private static object CreateHostDerivedValidationProjection(CliHostDerivedValidationResult validation)
-		=> new
-		{
-			isValid = validation.IsValid,
-			requestedInputFingerprint = validation.Document.InputFingerprint,
-			recomputedInputFingerprint = validation.Current?.Document.InputFingerprint,
-			current = validation.Current is null ? null : CreateHostDerivedPlanProjection(validation.Current.Document),
-			diagnostics = validation.Diagnostics,
-		};
 
-	private static object CreateHostDerivedExecutionProjection(CliHostDerivedExecutionResult execution)
-		=> new
-		{
-			execution.Success,
-			execution.StateCommitted,
-			execution.StateMutation,
-			hosts = execution.Hosts,
-			rebuiltHostIds = execution.Hosts.Where(host => host.PlannedRebuildSucceeded).Select(host => host.NodeId).ToArray(),
-			rollbackAttemptedHostIds = execution.Hosts.Where(host => host.RollbackAttempted).Select(host => host.NodeId).ToArray(),
-			rollbackSucceededHostIds = execution.Hosts.Where(host => host.RollbackSucceeded).Select(host => host.NodeId).ToArray(),
-			diagnostics = execution.Diagnostics,
-			gameData = "read-only",
-		};
 
 	private static object CreateGameDataIndexProjection(CliGameDataIndexInspection inspection)
 		=> new
@@ -7373,49 +7001,9 @@ public static class CliApplication
 			: $"跨护甲候选被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
 	}
 
-	private static string FormatHostDerivedInspection(CliHostDerivedPlanDocument document)
-	{
-		var unmanaged = document.Hosts.Count(host => host.Overwrite.Exists && !host.Overwrite.IsManaged);
-		return $"主体派生检查：主体 {document.Hosts.Count}；已启用装饰 {document.Hosts.Sum(host => host.CurrentDecorations.Count)}；临时头盔合并 {document.Hosts.Count(host => host.CurrentHelmetToArmorMerged)}；非管理器 Overwrite {unmanaged}。";
-	}
 
-	private static string FormatHostDerivedPlan(CliHostDerivedPlanDocument document, string outputPath)
-	{
-		var blocking = document.Diagnostics.Count(diagnostic => diagnostic.Blocking);
-		var noChanges = document.Hosts.Count == 0 ? "；本次无状态变化" : string.Empty;
-		return string.Join(Environment.NewLine,
-		[
-			$"已导出主体派生 Overwrite 计划：{outputPath}",
-			$"操作：{document.Request.Operation}/{document.Request.Action}；主体：{document.Hosts.Count}{noChanges}",
-			$"阻断诊断：{blocking}。validate 通过后，apply 才会重建库内 Overwrite 并提交相应状态。",
-		]);
-	}
 
-	private static string FormatHostDerivedValidation(CliHostDerivedValidationResult validation)
-	{
-		var status = validation.IsValid ? "主体派生 Overwrite 验证通过。" : "主体派生 Overwrite 验证未通过。";
-		var issues = validation.Diagnostics.Count == 0
-			? "无诊断。"
-			: string.Join(Environment.NewLine, validation.Diagnostics.Select(diagnostic => $"- [{diagnostic.Code}] {diagnostic.Message}"));
-		return $"{status}{Environment.NewLine}计划主体：{validation.Document.Hosts.Count}；当前可重建主体：{validation.Current?.Document.Hosts.Count ?? 0}{Environment.NewLine}{issues}";
-	}
 
-	private static string FormatHostDerivedExecution(CliHostDerivedExecutionResult execution)
-	{
-		if (execution.Success)
-		{
-			var rebuilt = execution.Hosts.Count(host => host.PlannedRebuildSucceeded);
-			return execution.StateCommitted
-				? $"主体派生 Overwrite 已完成：重建主体 {rebuilt}；已提交状态：{execution.StateMutation}。"
-				: rebuilt == 0
-					? "主体派生 Overwrite 已确认：当前状态无需变化。"
-					: $"主体派生 Overwrite 已重建：主体 {rebuilt}；未修改状态文件。";
-		}
-		var blocking = execution.Diagnostics.Where(diagnostic => diagnostic.Blocking).Take(5).ToArray();
-		return blocking.Length == 0
-			? "主体派生 Overwrite 未完成；请查看 JSON 结果或日志。"
-			: $"主体派生 Overwrite 被拒绝或失败：{string.Join("；", blocking.Select(diagnostic => $"[{diagnostic.Code}] {diagnostic.Message}"))}";
-	}
 
 	private static string FormatGameDataIndex(CliGameDataIndexInspection inspection)
 	{
