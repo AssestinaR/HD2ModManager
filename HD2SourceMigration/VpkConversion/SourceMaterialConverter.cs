@@ -1093,6 +1093,32 @@ public sealed class SourceMaterialConverter
 		/// </summary>
 		public string? Mask1Texture { get; init; }
 
+		/// <summary>
+		/// <c>$MATCAP2</c> 的混合模式（第二层 matcap）。
+		/// <para>
+		/// <b>必须按模式判，不能按"有没有 `$MATCAP2TEXTURE`"判。</b>实测
+		/// <c>mat_ornament_petal_shoes</c> 只写了图没写模式，源侧那张图<b>根本没参与渲染</b>；
+		/// 照"有图就加"处理会把花瓣鞋凭空提亮一档。
+		/// </para>
+		/// </summary>
+		public MaterialAppearance.MatcapBlendMode Matcap2Blend { get; init; }
+
+		/// <summary><c>$MATCAP2TEXTURE</c> 的贴图裸名。</summary>
+		public string? Matcap2Texture { get; init; }
+
+		/// <summary><c>$MATCAP2TINT</c> 的四个分量（缺省全 1.0）。</summary>
+		public double[] Matcap2TintRgba { get; init; } = [1, 1, 1, 1];
+
+		/// <summary>
+		/// <c>$lightwarptexture</c> 的贴图裸名（光照曲线）。
+		/// <para>
+		/// HD2 没有 ramp 槽也没有逐像素光照，所以只能取它<b>受光端</b>的颜色当整片倍率
+		/// ——实测这些 ramp 的受光段是 <c>(76,76,76)</c>，也就是"受光 = 底色 × 0.30"。
+		/// 见 <see cref="MaterialAppearance.LightwarpFactor"/>。
+		/// </para>
+		/// </summary>
+		public string? LightwarpTexture { get; init; }
+
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
 	}
@@ -1570,6 +1596,20 @@ public sealed class SourceMaterialConverter
 		var mask1Texture = string.IsNullOrWhiteSpace(vmt.Value("$mask1"))
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$mask1")!));
+
+		// 第二层 matcap（`$MATCAP2`）。**判据是模式**，不是"有没有写贴图"——
+		// 官方手册里这一层是加法叠加，通常比第一张更亮，负责把金属推到"镀铬"。
+		// 它的逐像素强度由 `$mask1` 的 **B** 通道控制（R 是给第一层的）。
+		var matcap2Blend = MaterialAppearance.ParseMatcapBlend(vmt.Value("$MATCAP2"));
+		var matcap2Texture = string.IsNullOrWhiteSpace(vmt.Value("$MATCAP2TEXTURE"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$MATCAP2TEXTURE")!));
+		var matcap2TintRgba = MaterialAppearance.ParseTintRgba(vmt.Value("$MATCAP2TINT"));
+
+		// 光照曲线（`$lightwarptexture`）。它的**受光端**就是 NekoToon 里那个著名的"×0.30"上限。
+		var lightwarpTexture = string.IsNullOrWhiteSpace(vmt.Value("$lightwarptexture"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$lightwarptexture")!));
 
 		// ── 没有真底色的两种写法，处理方式不同 ──────────────────────────────
 		//
@@ -2129,6 +2169,10 @@ public sealed class SourceMaterialConverter
 			MatcapBlend = matcapBlend,
 			MatcapTintRgba = matcapTintRgba,
 			Mask1Texture = mask1Texture,
+			Matcap2Blend = matcap2Blend,
+			Matcap2Texture = matcap2Texture,
+			Matcap2TintRgba = matcap2TintRgba,
+			LightwarpTexture = lightwarpTexture,
 		};
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
@@ -2241,6 +2285,22 @@ public sealed class SourceMaterialConverter
 			? BuildTranslucentMap(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight)
 			: null;
 
+		// ===== N3：lightwarp → 底色整体倍率 =====
+		//
+		// NekoToon 里"受光的表面 = 底色 × ramp(受光端)"，而实测这些 ramp 的受光段恒为
+		// (76,76,76)（skinwarp 是 64）——也就是 **×0.30**。作者是按"还会乘 0.3"画的底色，
+		// 而 HD2 的 PBR 没有这层上限，直接当最终反照率就会整体发白。
+		//
+		// 只能取**整片常数倍率**：ramp 是按 NdotL 查表的逐像素曲线，HD2 没有 ramp 槽，
+		// 也没有逐像素光照可读。它修的是"整体过亮"，修不了"明暗过渡的形状"。
+		if (!LightwarpDisabled
+			&& loaded.LightwarpTexture is { Length: > 0 } warpName
+			&& TryReadTextureRgba(warpName, out var warpRgba, out var warpWidth, out var warpHeight))
+		{
+			var factor = MaterialAppearance.LightwarpFactor(warpRgba, warpWidth, warpHeight);
+			MaterialAppearance.MultiplyRgb(rgba, factor);
+		}
+
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
 		// 前者是因为 alpha 的用途不同（镂空走遮罩贴图），后者是因为
 		// 压暗要作用在 sRGB 编码的像素上（见 AlbedoAdjustment 的注释）。
@@ -2322,7 +2382,24 @@ public sealed class SourceMaterialConverter
 				matcapRgba, matcapWidth, matcapHeight,
 				normalRgba, normalWidth, normalHeight,
 				maskRgba, maskWidth, maskHeight,
-				loaded.MatcapTintRgba, loaded.MatcapBlend);
+				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0);
+
+			// ===== 第二层（`$MATCAP2`）：叠在第一层之上，蒙版用 `$mask1` 的 **B** 通道 =====
+			//
+			// 官方手册把两个通道分得很清楚：`r通道用于matcap蒙版 … b通道是matcap2蒙版`。
+			// 这一层负责"镀铬亮度"——实测 98 个材质里 93 个写了它，少了它金属会停在
+			// "氧化过的铝"那一档。
+			if (loaded.Matcap2Blend != MaterialAppearance.MatcapBlendMode.Off
+				&& loaded.Matcap2Texture is { Length: > 0 } matcap2Name
+				&& TryReadTextureRgba(matcap2Name, out var matcap2Rgba, out var matcap2Width, out var matcap2Height))
+			{
+				MaterialAppearance.CompositeMatcap(
+					rgba, vtf.Width, vtf.Height,
+					matcap2Rgba, matcap2Width, matcap2Height,
+					normalRgba, normalWidth, normalHeight,
+					maskRgba, maskWidth, maskHeight,
+					loaded.Matcap2TintRgba, loaded.Matcap2Blend, maskChannel: 2);
+			}
 		}
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
 			MaterialAppearance.ScaleRgb(rgba, matcapBakeGain);
@@ -2896,6 +2973,16 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	private static readonly bool MatcapLayerDisabled =
 		Environment.GetEnvironmentVariable("HD2_NO_MATCAP_LAYER") == "1";
+
+	/// <summary>
+	/// 诊断开关 <c>HD2_NO_LIGHTWARP=1</c>：不按 lightwarp 压底色（等于 HD2 侧"没有那层上限"）。
+	/// <para>
+	/// 与另外两个同族开关一起，构成"逐层加减"的对照手段：
+	/// <c>HD2_NO_NORMAL_MAP</c> / <c>HD2_NO_MATCAP_LAYER</c> / <c>HD2_NO_LIGHTWARP</c>。
+	/// </para>
+	/// </summary>
+	private static readonly bool LightwarpDisabled =
+		Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") == "1";
 
 	/// <summary>
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。

@@ -169,6 +169,32 @@ public sealed class MatcapLayerTests
 			MaterialAppearance.MatcapBlendMode.Add));
 	}
 
+	/// <summary>
+	/// 第二层 matcap 的蒙版是 <c>$mask1</c> 的 <b>B</b> 通道（官方手册：r=matcap 蒙版、b=matcap2 蒙版）。
+	/// 这条同时钉住"通道选错就会串"——把 B 当 R 用会让第二层跟着第一层一起亮。
+	/// </summary>
+	[Fact]
+	public void MaskChannelSelectsWhichLayerIsGated()
+	{
+		var matcap = Solid(200, 1, 1);
+		// 蒙版：R=255、B=0
+		var mask = Solid(0, 1, 1);
+		mask[0] = 255;
+		mask[3] = 255;
+
+		var albedo = Solid(100, 1, 1);
+		MaterialAppearance.CompositeMatcap(
+			albedo, 1, 1, matcap, 1, 1, null, 0, 0, mask, 1, 1, [1, 1, 1, 1],
+			MaterialAppearance.MatcapBlendMode.Normal, maskChannel: 0);
+		Assert.InRange(albedo[0], 198, 202);   // R=255 ⇒ 第一层生效
+
+		var albedo2 = Solid(100, 1, 1);
+		MaterialAppearance.CompositeMatcap(
+			albedo2, 1, 1, matcap, 1, 1, null, 0, 0, mask, 1, 1, [1, 1, 1, 1],
+			MaterialAppearance.MatcapBlendMode.Normal, maskChannel: 2);
+		Assert.Equal(100, albedo2[0]);         // B=0 ⇒ 第二层不生效
+	}
+
 	private static byte[] Solid(byte value, int width, int height)
 	{
 		var rgba = new byte[width * height * 4];

@@ -743,7 +743,8 @@ public static class MaterialAppearance
 		int maskWidth,
 		int maskHeight,
 		double[] tintRgba,
-		MatcapBlendMode mode)
+		MatcapBlendMode mode,
+		int maskChannel = 0)
 	{
 		ArgumentNullException.ThrowIfNull(albedo);
 		ArgumentNullException.ThrowIfNull(matcap);
@@ -767,12 +768,14 @@ public static class MaterialAppearance
 				var offset = ((y * albedoWidth) + x) * 4;
 
 				// 蒙版按**主 UV** 采样（与源侧一致：`_MatCapBlendMask` 用的是 uvMain）。
+				// 通道由调用方指定：`$mask1` 的 R 是 matcap 蒙版、B 是 **matcap2** 蒙版
+				// （NekoToon 官方手册第 19 行）。
 				var strength = tintA;
 				if (mask is not null)
 				{
 					var mx = Math.Min(maskWidth - 1, x * maskWidth / albedoWidth);
 					var my = Math.Min(maskHeight - 1, y * maskHeight / albedoHeight);
-					strength *= mask[((my * maskWidth) + mx) * 4 + 0] / 255.0;   // mask1 的 R 通道
+					strength *= mask[((my * maskWidth) + mx) * 4 + Math.Clamp(maskChannel, 0, 3)] / 255.0;
 				}
 
 				if (strength <= 0)
@@ -824,6 +827,75 @@ public static class MaterialAppearance
 	/// <summary>0..1 → 0..255（四舍五入并夹紧）。</summary>
 	private static byte ToByte(double unit)
 		=> (byte)Math.Clamp(Math.Round(unit * 255.0, MidpointRounding.AwayFromZero), 0, 255);
+
+	/// <summary>
+	/// 从 <c>$lightwarptexture</c> 的**受光端**取一个逐通道系数（0..1）。
+	/// <para>
+	/// <b>为什么需要它。</b>实测这几个 ramp 的受光段（U ≥ 0.5）恒为 <c>(76,76,76)</c>
+	/// ——也就是 NekoToon 里"受光的表面 = 底色 × <b>0.30</b>"（<c>skinwarp</c> 是 64、
+	/// <c>facewarp/hairwarp/basewarp</c> 是 76；暗端还带一点点色偏，例如 basewarp 的 (50,55,58)）。
+	/// 而 HD2 的 <c>advanced</c> 是标准 PBR，**没有这层上限**——把作者按"还会乘 0.3"画的底色
+	/// 直接当最终反照率，结果就是整体发白、皮肤尤其明显。
+	/// </para>
+	/// <para>
+	/// <b>为什么取受光端而不是平均值。</b>ramp 的作用是"把光照强度映射成颜色"，暗端描述的是
+	/// 环境光下的样子；HD2 那边环境光由 PBR 自己算，我们能补偿的只有受光段这个整体倍率。
+	/// 取平均值等于把影子里的亮度也一起算进底色，会压得更暗。
+	/// </para>
+	/// <para>
+	/// <b>局限（明确记下）</b>：源侧是按 <b>NdotL</b> 查表的逐像素曲线，还有 <c>$mask1</c> 的
+	/// <b>G</b> 通道做 V 重映射；HD2 的模板既没有 ramp 槽也没有逐像素光照，所以这里只能取
+	/// 一个**整片常数倍率**。它能修"整体过亮"，修不了"明暗过渡的形状"。
+	/// </para>
+	/// </summary>
+	/// <param name="rampRgba">ramp 的裸像素。</param>
+	/// <param name="width">ramp 宽度（光照强度映射在 U 上；实测这些 ramp 都是 1 像素高的横条）。</param>
+	/// <param name="height">ramp 高度。</param>
+	/// <param name="litStart">受光段起点（0..1）。0.5 与实测数据一致：U≥0.5 之后是恒定值。</param>
+	public static double[] LightwarpFactor(byte[] rampRgba, int width, int height, double litStart = 0.5)
+	{
+		ArgumentNullException.ThrowIfNull(rampRgba);
+		if (width <= 0 || height <= 0 || rampRgba.Length < width * height * 4)
+			throw new InvalidDataException($"ramp 像素与尺寸不符：{width}×{height}，{rampRgba.Length} 字节。");
+
+		var from = Math.Clamp((int)Math.Round(Math.Clamp(litStart, 0, 1) * (width - 1)), 0, width - 1);
+		var midRow = height / 2;
+		double r = 0, g = 0, b = 0;
+		var count = 0;
+		for (var x = from; x < width; x++)
+		{
+			var at = ((midRow * width) + x) * 4;
+			r += rampRgba[at];
+			g += rampRgba[at + 1];
+			b += rampRgba[at + 2];
+			count++;
+		}
+
+		if (count == 0)
+			return [1, 1, 1];
+
+		// 夹在 0.05..1：全黑的 ramp 会把底色压没（那更像是坏素材，不该由这里静默吃下去）。
+		static double Clamp(double value) => Math.Clamp(value / 255.0, 0.05, 1.0);
+		return [Clamp(r / count), Clamp(g / count), Clamp(b / count)];
+	}
+
+	/// <summary>把逐通道倍率乘进底色的 RGB（就地）。alpha 不动。</summary>
+	public static void MultiplyRgb(byte[] rgba, double[] factor)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		ArgumentNullException.ThrowIfNull(factor);
+		if (factor.Length < 3)
+			throw new ArgumentException("倍率至少要有 3 个分量。", nameof(factor));
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			rgba[offset + 0] = ToByte(rgba[offset + 0] / 255.0 * factor[0]);
+			rgba[offset + 1] = ToByte(rgba[offset + 1] / 255.0 * factor[1]);
+			rgba[offset + 2] = ToByte(rgba[offset + 2] / 255.0 * factor[2]);
+		}
+	}
 
 	/// <summary>0..1 UV 上的双线性采样，返回 0..1 的 RGBA。</summary>
 	private static (double R, double G, double B, double A) SampleBilinear(
