@@ -269,13 +269,6 @@ internal static class CliVpkRekey
 			if (File.Exists(from)) File.Copy(from, destination + suffix, overwrite: true);
 		}
 
-		// 换甲之后 Unit 键全变了，section 偏移也全变了：必须按**新 patch** 重算一份，
-		// 否则组件树会指向旧偏移，烘焙会写到别的字段上。
-		var rebuilt = await WardrobeSectionMapFile.BuildAsync(destination, cancellationToken).ConfigureAwait(false);
-		await WardrobeSectionMapFile
-			.WriteAsync(Path.Combine(destinationDirectory, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
-			.ConfigureAwait(false);
-
 		// 来源 Unit → 目标 Unit。开关表与烘焙都要用它，所以先算一次。
 		var unitMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		foreach (var mapping in plan.Mappings)
@@ -286,6 +279,21 @@ internal static class CliVpkRekey
 			var to = mapping.PhysicalTarget.UnitAssetKey.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
 			unitMap[from] = to;
 		}
+
+		// 换甲之后 Unit 键全变了，section 偏移也全变了：必须按**新 patch** 重算一份，
+		// 否则组件树会指向旧偏移，烘焙会写到别的字段上。
+		//
+		// 顺带把"目标 unit ← 来源 unit"写进表里：就地烘焙靠它把用户勾的（来源键空间的）
+		// 禁用集合翻译成目标键空间。没有这张对照表，「应用」就只能重跑整条换甲。
+		var sourceUnits = unitMap
+			.GroupBy(pair => pair.Value, StringComparer.OrdinalIgnoreCase)
+			.ToDictionary(group => group.Key, group => group.First().Key, StringComparer.OrdinalIgnoreCase);
+		var rebuilt = await WardrobeSectionMapFile
+			.BuildAsync(destination, cancellationToken, sourceUnits: sourceUnits)
+			.ConfigureAwait(false);
+		await WardrobeSectionMapFile
+			.WriteAsync(Path.Combine(destinationDirectory, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
+			.ConfigureAwait(false);
 
 		// 开关表跟着搬一份到 Overwrite：它的掩码是 (unit, section)，而换甲把 Unit 换到了目标护甲的键上。
 		// **权威那份留在 vpk2patch/**（它描述的是"这个 VPK 有哪些部件开关"，与目标护甲无关）；

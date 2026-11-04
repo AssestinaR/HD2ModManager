@@ -84,7 +84,8 @@ public static class WardrobeSectionMapFile
 		CancellationToken cancellationToken = default,
 		IReadOnlyDictionary<string, string>? unitNames = null,
 		IReadOnlyDictionary<string, string>? materialNames = null,
-		IReadOnlyDictionary<string, IReadOnlyList<WardrobeSectionSourceName>>? sectionNames = null)
+		IReadOnlyDictionary<string, IReadOnlyList<WardrobeSectionSourceName>>? sectionNames = null,
+		IReadOnlyDictionary<string, string>? sourceUnits = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(patchTocPath);
 		var fullPath = Path.GetFullPath(patchTocPath);
@@ -116,7 +117,7 @@ public static class WardrobeSectionMapFile
 				continue;
 			}
 
-			var built = BuildUnit(fileId, unit.Model, unitNames, materialNames, sectionNames);
+			var built = BuildUnit(fileId, unit.Model, unitNames, materialNames, sectionNames, sourceUnits);
 			if (built is null)
 			{
 				skipped.Add(new WardrobeSectionMapSkippedUnit(fileId, "没有可用的 LOD 家族（缺 LOD0 或全部是静态件）"));
@@ -153,7 +154,8 @@ public static class WardrobeSectionMapFile
 		UnitMeshModel model,
 		IReadOnlyDictionary<string, string>? unitNames = null,
 		IReadOnlyDictionary<string, string>? materialNames = null,
-		IReadOnlyDictionary<string, IReadOnlyList<WardrobeSectionSourceName>>? sectionNames = null)
+		IReadOnlyDictionary<string, IReadOnlyList<WardrobeSectionSourceName>>? sectionNames = null,
+		IReadOnlyDictionary<string, string>? sourceUnits = null)
 	{
 		// 只有 lod >= 0 的 mesh 属于 LOD 家族；lod = -1 的那些是独立的单节静态件。
 		var family = model.Meshes.Where(mesh => mesh.LodIndex >= 0).OrderBy(mesh => mesh.LodIndex).ToArray();
@@ -226,7 +228,27 @@ public static class WardrobeSectionMapFile
 			sections)
 		{
 			SourceName = LookupUnitName(unitNames, fileId),
+			SourceUnit = LookupSourceUnit(sourceUnits, fileId),
 		};
+	}
+
+	/// <summary>
+	/// 查"这个目标 unit 在来源侧是谁"。键的宽松归一与名字表同口径（大小写、带不带 <c>0x</c> 都接受）。
+	/// 查不到就返回 <c>null</c>——那表示"没有对照信息"，而不是"它就是自己"。
+	/// </summary>
+	private static string? LookupSourceUnit(IReadOnlyDictionary<string, string>? sourceUnits, string fileId)
+	{
+		if (sourceUnits is null || sourceUnits.Count == 0)
+			return null;
+		foreach (var (key, value) in sourceUnits)
+		{
+			if (string.IsNullOrWhiteSpace(value))
+				continue;
+			if (string.Equals(NormalizeNameKey(key), NormalizeNameKey(fileId), StringComparison.Ordinal))
+				return NormalizeNameKey(value);
+		}
+
+		return null;
 	}
 
 	/// <summary>

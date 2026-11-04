@@ -744,6 +744,11 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			VpkComponentStatus = "正在保存勾选…";
 			await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
 
+			// 优先就地烘焙：Overwrite 已经在的话，勾选变化只是改几个 numIndices，
+			// 不必重跑整条换甲（那是分钟级，这是秒级）。
+			if (await TryBakeInPlaceAsync(directory).ConfigureAwait(true))
+				return;
+
 			// **重新从 vpk2patch 生成 Overwrite**，而不是就地改 Overwrite。
 			//
 			// 为什么不是就地烘：Overwrite 是派生品，它的 Unit 键取决于当时的目标护甲。
@@ -831,6 +836,64 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return [_vpkFile.TargetArmorArchiveId];
 		var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(directory);
 		return ownKey is null ? null : [RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)];
+	}
+
+	/// <summary>
+	/// 就地烘焙：直接改 <c>Overwrite/</c> 里那份 patch 的 <c>numIndices</c>。
+	/// <para>
+	/// <b>返回 false = "这次不适合就地烘"</b>（还没有 Overwrite、或它没有自己的
+	/// <c>sections.json</c>），调用方应当退回"重跑换甲"那条路。
+	/// <b>返回 true = 烘焙已经完成</b>（成功，或者已经给出了失败原因）。
+	/// </para>
+	/// <para>
+	/// <b>为什么能就地烘。</b><see cref="WardrobeSectionBaker"/> 本来就是就地、幂等、可逆的：
+	/// 每个要写的 dword 当前必须 ∈ {0, 原值}，否则拒绝写入。缺的只是"来源键 → 目标键"那张对照表，
+	/// 换甲时已经写进 <c>sections.json</c> 的 <c>sourceUnit</c> 里了。
+	/// </para>
+	/// </summary>
+	private async Task<bool> TryBakeInPlaceAsync(string modDirectory)
+	{
+		var overwrite = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
+		var mapPath = Path.Combine(overwrite, WardrobeSectionMapFile.FileName);
+		if (!File.Exists(mapPath))
+			return false;
+		var patchPath = Directory
+			.EnumerateFiles(overwrite, "*.patch_*", SearchOption.TopDirectoryOnly)
+			.FirstOrDefault(path => !path.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase)
+				&& !path.EndsWith(".stream", StringComparison.OrdinalIgnoreCase));
+		if (patchPath is null)
+			return false;
+
+		try
+		{
+			VpkComponentStatus = "正在把勾选就地烘进 Overwrite…";
+			var map = await WardrobeSectionMapFile.ReadAsync(mapPath).ConfigureAwait(true);
+			var translation = VpkSectionBakePlan.Translate(_vpkFile.State.Disabled, map);
+			// 载荷是只读的：先清、写完再补回去。
+			VpkPayloadSwap.ClearReadOnly(patchPath);
+			var baked = await WardrobeSectionBaker.BakeAsync(patchPath, map, translation.DisabledByTargetUnit).ConfigureAwait(true);
+			VpkPayloadSwap.MarkReadOnly(patchPath);
+
+			var dropped = VpkSectionBakePlan.Describe(translation);
+			VpkComponentStatus = baked.ToSummary()
+				+ (dropped.Length == 0 ? string.Empty : " " + dropped)
+				+ " 重启游戏后生效。";
+
+			if (TryGetCurrentNode(out var bakedNode))
+			{
+				await _library.InvalidateContentNodeAsync(bakedNode.Id, CancellationToken.None).ConfigureAwait(true);
+				await _library.RefreshCommittedContentAsync([bakedNode.Id], ModContentChangeKind.Changed,
+					alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
+			}
+
+			return true;
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+		{
+			// 就地烘失败不该把用户卡住：退回"重跑换甲"那条路，它一定能把状态烘进去。
+			VpkComponentStatus = "就地烘焙没成功（" + exception.Message + "），改为重新生成…";
+			return false;
+		}
 	}
 
 	private async Task PersistVpkAsync()

@@ -107,6 +107,20 @@ public sealed record WardrobeSectionMapUnit(
 	/// </para>
 	/// </summary>
 	public string? SourceName { get; init; }
+
+	/// <summary>
+	/// 这个 unit 在<b>来源侧</b>是谁（16 位小写 hex）。
+	/// <para>
+	/// 换目标护甲会把来源 unit 的 payload 挂到目标护甲的键上，于是同一块几何在
+	/// <c>vpk2patch/sections.json</c> 与 <c>Overwrite/sections.json</c> 里有两个不同的 FileId。
+	/// 而用户勾的"哪些 section 不画"存在<b>来源</b>键空间（它必须与目标无关，否则换一次甲就全丢）。
+	/// </para>
+	/// <para>
+	/// 所以就地烘焙需要这张对照表：只有它能把"来源 unit 的第 3 节"翻译成"目标 unit 的第 3 节"。
+	/// 没换过甲（恒等路径）时不写，或等于自己的 FileId。
+	/// </para>
+	/// </summary>
+	public string? SourceUnit { get; init; }
 }
 
 /// <summary>
