@@ -2555,6 +2555,9 @@ public static class CliApplication
 						matcapGain = invocation.Options.MatcapGain,
 						cutout = invocation.Options.Cutout,
 						albedoFactor = invocation.Options.AlbedoFactor,
+						// 法线 Y 方向：只在**翻过**时写。"不翻"是默认值，写成 false 会让所有
+						// 旧产物在重构建时多出一个参数、日志比对全变（见 VpkConversionSettings）。
+						normalFlipY = invocation.Options.NormalFlipY == true ? true : (bool?)null,
 						// **生成这份产物的转换器是什么时候构建的。**
 						//
 						// 存在的理由只有一个：回答"这份产物是不是旧代码做的"。
@@ -2800,7 +2803,8 @@ public static class CliApplication
 					ditherPattern: ResolveDitherPattern(invocation.Options),
 					metalRoughness: invocation.Options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
 					metalCutout: ResolveMetalCutout(invocation.Options),
-					cutoutTemplate: ResolveCutoutTemplate(invocation.Options));
+					cutoutTemplate: ResolveCutoutTemplate(invocation.Options),
+					normalFlipY: invocation.Options.NormalFlipY ?? false);
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3394,7 +3398,8 @@ public static class CliApplication
 				ResolveDitherPattern(options),
 				options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
 				ResolveMetalCutout(options),
-				ResolveCutoutTemplate(options));
+				ResolveCutoutTemplate(options),
+				options.NormalFlipY ?? false);
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──
@@ -8214,6 +8219,12 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	                   靠它把 unit id 接上——否则 id 重新随机，已登记的映射与件表全部失效。
 	    --cutout a|b|rgb-inv|alpha|alpha-inv
 	                   镂空材质的落地方式（见 CutoutStrategy）。默认 a = 历史行为。
+	    --normal-flip-y on|off
+	                   源法线图的 Y（绿）通道要不要翻。默认 off = 照源侧原样（DirectX）。
+	                   NekoToon / pbr.vmt 用的就是 DirectX 格式（MareTF 的 --invert-green 用于把
+	                   OpenGL 法线转过来），而 HD2 的法线约定没有文档：翻错的表现是
+	                   "凸的地方看起来是凹的"，只能在实机上对比，所以留成开关。
+	                   法线图不在来源里时会退回平面法线，并在报告里点名数量。
 	    **这是管理器导入流程该走的路径。** 下面是 `source convert`（旧路径）的说明。
 	  hd2mod source convert <VPK文件> [<模型名片段>] --avatar-toc <avatar Unit TocData> --game-data <游戏data目录> --output <输出目录> [--components merge|all|none|<名字,名字>] [--overwrite] --json
 	    ⚠️ 旧路径：模型专用，把用到的材质**全部合并**进一个材质包（patch_1）。保留它只为 M1/M2 对拍。

@@ -895,17 +895,39 @@ public sealed class VpkPatchAssembler
 
 			// **法线图：按整包统计一次。**
 			//
-			// 这是当前最大的一处保真度损失：`$bumpmap` 读了但没有消费者，所有材质写进 HD2 的
-			// 都是平面法线（128,128,255），而 NekoToon 那套模型普遍带 BC5 高清法线图。
-			// 报告里此前一个字都没提这件事 —— 用户只会觉得"细节糊了"，却无从判断原因。
+			// 法线图过去完全没有消费者——所有材质写进 HD2 的都是平面法线（128,128,255），
+			// 而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图。现在接上了，但**接了不等于都接上**：
+			// 材质包常常只带 VMT 与底色，法线图留在大模型包里；那种情况下只能退回平面法线。
+			// 所以必须分两个数报，而不是一句"已接入"。
 			//
-			// 逐条 notice 会淹没其它警告（几乎每个材质都有），所以这里只出一行。
-			var bumpMapStems = requiredStems.Count(converter.DeclaresBumpMap);
-			if (bumpMapStems != 0)
+			// 逐条 notice 会淹没其它警告（几乎每个材质都有 `$bumpmap`），所以只出两行。
+			var normalWired = 0;
+			var normalMissing = 0;
+			foreach (var requiredStem in requiredStems)
+			{
+				switch (converter.DescribeBumpMap(requiredStem))
+				{
+					case NormalDelivery.Wired:
+						normalWired++;
+						break;
+					case NormalDelivery.TextureMissing:
+						normalMissing++;
+						break;
+				}
+			}
+
+			if (normalWired != 0)
 			{
 				warnings.Add(
-					$"{bumpMapStems}/{requiredStems.Count} 个材质声明了法线图（$bumpmap），"
-					+ "但法线通道尚未接入 —— 这些材质在游戏里用的是平面法线，细节立体感会有损失。");
+					$"{normalWired}/{requiredStems.Count} 个材质声明了法线图（$bumpmap），已接入 HD2 的法线通道"
+					+ "（RGB = 法线、A = 粗糙度）。");
+			}
+
+			if (normalMissing != 0)
+			{
+				warnings.Add(
+					$"{normalMissing}/{requiredStems.Count} 个材质声明了法线图，但那张 .vtf 不在这次导入的来源里"
+					+ "（材质包通常只带 VMT 与底色），这些材质在游戏里用平面法线，细节立体感会有损失。");
 			}
 
 			// 把 `$no_draw` 的材质名翻成**材质下标**，供装配阶段丢掉对应三角形的几何。

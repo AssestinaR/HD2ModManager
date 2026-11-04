@@ -21,10 +21,11 @@ public sealed record VpkConversionSettings(
 	string? Matcap,
 	double? MatcapGain,
 	string? Cutout,
-	double? AlbedoFactor)
+	double? AlbedoFactor,
+	bool? NormalFlipY = null)
 {
 	/// <summary>什么都没记（旧产物）：重构建只能按默认值来，并且必须说出来。</summary>
-	public static VpkConversionSettings Default { get; } = new(null, null, null, null, null);
+	public static VpkConversionSettings Default { get; } = new(null, null, null, null, null, null);
 
 	/// <summary>把参数摊成命令行参数（顺序固定，便于日志比对；空值跳过，与"没传"语义一致）。</summary>
 	public IReadOnlyList<string> ToArguments()
@@ -37,6 +38,9 @@ public sealed record VpkConversionSettings(
 		if (!string.IsNullOrWhiteSpace(Cutout)) arguments.AddRange(["--cutout", Cutout]);
 		if (AlbedoFactor is { } factor)
 			arguments.AddRange(["--albedo-factor", factor.ToString("R", CultureInfo.InvariantCulture)]);
+		// 法线 Y 方向：**只在显式翻过时记**。默认是"不翻"，记成 false 会让所有旧产物在
+		// 重构建时多出一个参数，日志比对全变。
+		if (NormalFlipY == true) arguments.AddRange(["--normal-flip-y", "on"]);
 		return arguments;
 	}
 }
@@ -269,7 +273,8 @@ public sealed record VpkConversionReport(
 			ReadString(conversion, "matcap"),
 			ReadDouble(conversion, "matcapGain"),
 			ReadString(conversion, "cutout"),
-			ReadDouble(conversion, "albedoFactor"));
+			ReadDouble(conversion, "albedoFactor"),
+			ReadBool(conversion, "normalFlipY"));
 	}
 
 	private static string? ReadString(JsonElement element, string name)
@@ -281,6 +286,15 @@ public sealed record VpkConversionReport(
 		=> element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
 			&& value.TryGetDouble(out var parsed)
 			? parsed
+			: null;
+
+	/// <summary>
+	/// 读一个布尔开关。<b>只有真正的 true/false 才算</b>——缺字段返回 <c>null</c>
+	/// （= 当时没传），不能把"没记"当成 false：那只对"默认 false"这个巧合成立。
+	/// </summary>
+	private static bool? ReadBool(JsonElement element, string name)
+		=> element.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+			? value.GetBoolean()
 			: null;
 
 	private static IReadOnlyList<string> ReadStrings(JsonElement element, string name)

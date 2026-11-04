@@ -454,8 +454,7 @@ public static class MaterialAppearance
 	/// <para>就地改写 RGB；alpha 不动（它的用途不同，且另有清零步骤）。</para>
 	/// </summary>
 	public static void BakeMatCap(byte[] rgba, double[] matcapMean, double tint)
-	{
-		ArgumentNullException.ThrowIfNull(rgba);
+	{		ArgumentNullException.ThrowIfNull(rgba);
 		ArgumentNullException.ThrowIfNull(matcapMean);
 		if (matcapMean.Length < 3)
 			throw new ArgumentException("matcap 平均色至少要有 3 个分量。", nameof(matcapMean));
@@ -553,6 +552,85 @@ public static class MaterialAppearance
 			rgba[offset + 3] = 0;
 		}
 	}
+
+	/// <summary>
+	/// 解析 <c>$bumpstrength</c>（法线凹凸强度）。缺省 <c>1.0</c>；写坏了一律回 1.0。
+	/// <para>
+	/// <b>为什么不报错。</b>它只缩放 XY 的偏离量，1.0 就是"照源侧原样"——最安全的默认。
+	/// 为一个可选的观感参数让整个材质失败，代价远大于收益。
+	/// </para>
+	/// <para>上限 4.0：再大就不是凹凸而是把法线掰成侧躺，观感只会更糟。</para>
+	/// </summary>
+	public static double ParseBumpStrength(string? raw)
+	{
+		if (string.IsNullOrWhiteSpace(raw))
+			return 1.0;
+
+		var cleaned = raw
+			.Replace("[", string.Empty, StringComparison.Ordinal)
+			.Replace("]", string.Empty, StringComparison.Ordinal)
+			.Replace(",", " ", StringComparison.Ordinal);
+
+		var first = cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+		if (first is null || !double.TryParse(first, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+			return 1.0;
+		if (!double.IsFinite(value) || value <= 0)
+			return 1.0;
+		return Math.Clamp(value, 0.01, 4.0);
+	}
+
+	/// <summary>
+	/// 把一张源法线图的 RGBA 像素就地改写成 HD2 <c>Nar</c> 槽要的形状：
+	/// <b>RGB = 切线空间法线（0..255 编码）、A = 粗糙度</b>。
+	/// <para>
+	/// <b>为什么必须重算 B 通道。</b>起源的法线图有两种常见格式：
+	/// <c>DXT5</c>（RG 存 XY、A 存高度）与 <c>ATI2N / BC5</c>（<b>只有</b> RG，B 被丢掉——
+	/// <c>pbr.vmt</c> 里写着"丢弃法线的 B 通道（俗称的黄法线）"）。两种格式解出来的 B
+	/// 都是垃圾（BC5 解成 0）。直接把这张图塞进 HD2，法线会变成"Z=0 的躺平法线"，
+	/// 表现是整片朝侧面受光。所以统一按 <c>z = sqrt(1 − x² − y²)</c> 重建。
+	/// </para>
+	/// <para>
+	/// <b>强度怎么算。</b><c>$bumpstrength</c> 缩放 XY 的<b>偏离量</b>（0.5 那一档仍是 0.5），
+	/// 再重新归一化 Z——这与"把法线往中间压/往外推"的直观看感一致，也不会把 XY 推出 [0,1]。
+	/// </para>
+	/// <para>
+	/// <b>Y 翻转</b>是可选项：DirectX 与 OpenGL 的绿通道相反，而 HD2 的约定没有文档。
+	/// 猜错的表现是"凸的看起来是凹的"，且只在斜面上明显——所以留开关，不做猜测。
+	/// </para>
+	/// </summary>
+	/// <param name="rgba">裸像素（每像素 4 字节）。就地改写，长度必须是 4 的倍数。</param>
+	/// <param name="strength"><c>$bumpstrength</c>，已归一化到 0.01..4.0。</param>
+	/// <param name="flipY">是否翻转 Y（绿）通道。</param>
+	/// <param name="roughness">写进 A 通道的粗糙度（0..255）。</param>
+	public static void RebuildTangentNormal(byte[] rgba, double strength, bool flipY, byte roughness)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+		if (!double.IsFinite(strength) || strength <= 0)
+			throw new ArgumentOutOfRangeException(nameof(strength), $"强度必须是正有限数，实际是 {strength}。");
+
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			// 0..255 → -1..1，再乘强度。取不到 1 的那一档（128 → 0）保持不变。
+			var x = ((rgba[offset + 0] / 255.0) - 0.5) * 2.0 * strength;
+			var y = ((rgba[offset + 1] / 255.0) - 0.5) * 2.0 * strength;
+			if (flipY)
+				y = -y;
+
+			var zz = 1.0 - (x * x) - (y * y);
+			var z = zz <= 0 ? 0.0 : Math.Sqrt(zz);
+
+			rgba[offset + 0] = EncodeUnit(x);
+			rgba[offset + 1] = EncodeUnit(y);
+			rgba[offset + 2] = EncodeUnit(z);
+			rgba[offset + 3] = roughness;
+		}
+	}
+
+	/// <summary>-1..1 → 0..255（四舍五入并夹紧）。</summary>
+	private static byte EncodeUnit(double value)
+		=> (byte)Math.Clamp(Math.Round((value * 0.5 + 0.5) * 255.0, MidpointRounding.AwayFromZero), 0, 255);
 
 	/// <summary>造一张 <paramref name="size"/>×<paramref name="size"/> 的纯色 RGBA（用于金属度/粗糙度这类标量槽）。</summary>
 	public static byte[] SolidRgba(int size, byte red, byte green, byte blue, byte alpha = 255)

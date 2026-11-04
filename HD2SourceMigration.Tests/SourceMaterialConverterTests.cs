@@ -335,4 +335,70 @@ public sealed class SourceMaterialConverterTests
 		}
 	}
 
+	/// <summary>
+	/// 真实数据上：声明了 <c>$bumpmap</c> 且图在来源里时，<c>advanced</c> 的法线槽必须指向
+	/// <b>这个材质自己的</b>法线图，而不是全局共享的平面法线。
+	/// <para>
+	/// <b>这条修的是"最大的一处保真度损失"。</b>法线图此前完全没有消费者：所有材质写进
+	/// HD2 的都是 128,128,255，而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图。
+	/// 判据不能只看"槽里有没有图"——它一直都有，区别是那张图是平的还是真的。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void RealData_BumpMappedMaterialGetsItsOwnNormalTexture()
+	{
+		var fixture = OpenFixture(includeAddons: true);
+		if (fixture is null)
+			return;
+
+		var withNormal = fixture.MaterialNames
+			.FirstOrDefault(name => fixture.Converter.DescribeBumpMap(name) == NormalDelivery.Wired);
+		if (withNormal is null)
+			return;   // 样本里没有"法线图也在包里"的材质，这条闸门不适用。
+
+		var result = fixture.Converter.Convert(withNormal);
+		Assert.True(result.IsValid, $"{withNormal}：{string.Join(" / ", result.Notices)}");
+		var material = result.Material!;
+		Assert.Equal("advanced", material.TemplateName);
+
+		// 法线槽必须指向产物里**真的存在**的那张贴图，而不是共享的平面法线（4×4）。
+		var nar = material.TextureIds[SourceMaterialConverter.AdvancedNarSlot];
+		var normalTexture = result.Textures.SingleOrDefault(texture => texture.Id == nar);
+		Assert.NotNull(normalTexture);
+		Assert.True(normalTexture!.Width > 4 || normalTexture.Height > 4,
+			$"{withNormal}：法线槽仍然指向 4×4 的平面法线（{normalTexture.Width}×{normalTexture.Height}）");
+		Assert.Equal("BC7_UNORM", normalTexture.FormatName);
+	}
+
+	/// <summary>
+	/// 没有 <c>$bumpmap</c> 的材质必须与动手术前<b>逐字节一致</b>：
+	/// 法线槽仍指向全局共享的 4×4 平面法线。
+	/// <para>
+	/// 这条是"不要为了新功能让整个库重构建"的守门：共享贴图 id 由名字派生，
+	/// 一旦改成按材质各造一张，产物里每个材质的槽都会变，几十个 Mod 全部要重转。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void RealData_MaterialWithoutBumpMapKeepsTheSharedFlatNormal()
+	{
+		var fixture = OpenFixture(includeAddons: true);
+		if (fixture is null)
+			return;
+
+		var without = fixture.MaterialNames
+			.FirstOrDefault(name => fixture.Converter.DescribeBumpMap(name) == NormalDelivery.None);
+		if (without is null)
+			return;
+
+		var result = fixture.Converter.Convert(without);
+		if (!result.IsValid || result.Material!.TemplateName != "advanced")
+			return;   // 只对 advanced 这条分支有断言意义。
+
+		var nar = result.Material.TextureIds[SourceMaterialConverter.AdvancedNarSlot];
+		var normalTexture = result.Textures.SingleOrDefault(texture => texture.Id == nar);
+		Assert.NotNull(normalTexture);
+		Assert.Equal(4, normalTexture!.Width);
+		Assert.Equal(4, normalTexture.Height);
+	}
+
 }

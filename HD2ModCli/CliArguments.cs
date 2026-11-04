@@ -133,7 +133,10 @@ public sealed record CliGlobalOptions(
 	// 抖动密度（0.05..1，默认 0.75）：乘在 alpha 上，越小点越少、越透。点大小与密度是两个独立旋钮。
 	double? DitherDensity = null,
 	// 抖动阈值图案（ign = 无可见结构，默认；ayer = 8×8 有序矩阵，会看出方格）。
-	string? DitherPattern = null);
+	string? DitherPattern = null,
+	// 源法线图的 Y（绿）通道要不要翻：DirectX 与 OpenGL 的绿通道相反，而 HD2 的法线约定没有文档。
+	// 不传 = 不翻（照源侧原样）。猜错的表现是"凸的看起来是凹的"，只能在实机上看出来。
+	bool? NormalFlipY = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -185,6 +188,7 @@ public static class CliArgumentParser
 		int? ditherScale = null;
 		double? ditherDensity = null;
 		string? ditherPattern = null;
+		bool? normalFlipY = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -345,6 +349,18 @@ public static class CliArgumentParser
 
 								ditherPattern = rawPattern;
 						break;
+					case "--normal-flip-y":
+					var rawFlip = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					normalFlipY = rawFlip switch
+					{
+						"1" or "on" or "true" or "yes" => true,
+						"0" or "off" or "false" or "no" => false,
+						_ => throw new CliUserException("InvalidOption",
+							$"--normal-flip-y 只接受 on / off，实际是 '{rawFlip}'。"
+							+ "它翻的是源法线图绿通道的方向（DirectX ↔ OpenGL）：猜错时凸面看起来像凹面，"
+							+ "只能在实机上对比，所以做成开关。"),
+					};
+					break;
 					case "--dither-density":
 					var rawDitherDensity = ReadValue(args, ref index, argument);
 					if (!double.TryParse(rawDitherDensity, System.Globalization.NumberStyles.Float,
@@ -530,7 +546,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

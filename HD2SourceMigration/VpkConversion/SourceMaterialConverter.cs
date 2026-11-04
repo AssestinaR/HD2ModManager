@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using HD2SourceModel;
 
 namespace HD2SourceMigration.VpkConversion;
@@ -326,6 +327,26 @@ public enum MaterialResolveOutcome
 public sealed record MaterialResolveReport(MaterialResolveOutcome Outcome, MaterialIdentity? Identity, string Reason);
 
 /// <summary>
+/// 一个源材质的法线图最终会怎么样（<c>$bumpmap</c> → HD2 的 <c>Nar</c> 通道）。
+/// <para>
+/// <b>为什么有第三档。</b>NekoToon 那套包的 VMT 几乎每个都写 <c>$bumpmap</c>，
+/// 但**贴图本身**常常在另一个包里（材质包只换色、法线留在大包里）。只报
+/// "声明了多少个"会把"其实一半没接上"说成好消息。
+/// </para>
+/// </summary>
+public enum NormalDelivery
+{
+	/// <summary>这个材质没有 <c>$bumpmap</c>（或读不到 VMT）。</summary>
+	None = 0,
+
+	/// <summary>声明了法线图，而且那张图在来源里——会真的写进 HD2。</summary>
+	Wired = 1,
+
+	/// <summary>声明了法线图，但来源里找不到那张 <c>.vtf</c>，只能退回平面法线。</summary>
+	TextureMissing = 2,
+}
+
+/// <summary>
 /// 源材质（VMT + VTF）→ HD2 <c>Material</c> + <c>Texture</c>。
 /// <para>
 /// 这是"每个 Unit 引用自己的材质"这条要求的<b>素材来源</b>：转换器产出的
@@ -530,6 +551,18 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Name, byte Red, byte Green, byte Blue, byte Alpha), SynthesizedTexture> solidTextures = new();
 
+	/// <summary>
+	/// 法线图缓存。键是（法线图名, 强度, 粗糙度, 是否翻 Y）——<b>四样都会改变产物的字节</b>。
+	/// <para>
+	/// 值和 <see cref="solidTextures"/> 一样是不可变 record，可以安全共享；
+	/// <c>Texture = null</c> 的条目表示"这张图读不出来/不在来源里"，也缓存下来，
+	/// 免得同一个坏贴图被几十个材质各解一遍。
+	/// </para>
+	/// </summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<
+		(string Name, double Strength, byte Roughness, bool FlipY),
+		(SynthesizedTexture? Texture, string? Notice)> normalTextures = new();
+
 	public SourceMaterialConverter(
 		SourceMaterialSource source,
 		Bc7Encoder encoder,
@@ -546,7 +579,8 @@ public sealed class SourceMaterialConverter
 		DitherPattern ditherPattern = DitherPattern.InterleavedGradient,
 		double metalRoughness = MaterialAppearance.DefaultMetalRoughness,
 		MetalCutoutPolicy metalCutout = MetalCutoutPolicy.CutoutWins,
-		CutoutTemplate cutoutTemplate = CutoutTemplate.AlphaClip)
+		CutoutTemplate cutoutTemplate = CutoutTemplate.AlphaClip,
+		bool normalFlipY = false)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -566,8 +600,22 @@ public sealed class SourceMaterialConverter
 			0, 255);
 		this.metalCutout = metalCutout;
 		this.cutoutTemplate = cutoutTemplate;
+		this.normalFlipY = normalFlipY;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
+
+	/// <summary>
+	/// 源法线图的 <b>Y 方向要不要翻</b>（DirectX ↔ OpenGL）。
+	/// <para>
+	/// <b>为什么要做成开关。</b>NekoToon / <c>pbr.vmt</c> 明确要求 DirectX 格式的法线
+	/// （<c>--invert-green</c> 用来把 OpenGL 的转过来），而 HD2 侧的法线约定<b>没有文档</b>。
+	/// 猜错的表现是"受光面凹下去"，而且只在斜面上看得出来——这种错只能实机 A/B 定，
+	/// 所以给一个可切换的旋钮，而不是在代码里赌一边。
+	/// </para>
+	/// </summary>
+	public bool NormalFlipY => normalFlipY;
+
+	private readonly bool normalFlipY;
 
 	/// <summary>
 	/// matcap 承载面在 <c>advanced</c> 槽 2 <b>alpha</b> 里写的粗糙度（0..255）。
@@ -945,6 +993,21 @@ public sealed class SourceMaterialConverter
 		// `$translucent`（要混合）或 `$allowalphatocoverage`（自己就写着抖动）。
 		bool UseDither)
 	{
+		/// <summary>
+		/// 源侧声明的法线图裸名（<c>$bumpmap</c> 的最后一段）。<c>null</c> = 这个材质没有法线图。
+		/// <para>
+		/// <b>为什么单独留一个字段。</b>法线原来<b>完全没有接线</b>：所有材质写进 HD2 的都是
+		/// 平面法线（128,128,255），而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图。
+		/// 现在它决定"这张材质要不要配一张自己的法线贴图"。
+		/// </para>
+		/// </summary>
+		public string? BumpTexture { get; init; }
+
+		/// <summary>
+		/// <c>$bumpstrength</c>（凹凸强度，NekoToon 默认 1.0）。只缩放 XY 的偏离量，Z 重新归一化。
+		/// </summary>
+		public double BumpStrength { get; init; } = 1.0;
+
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
 	}
@@ -984,34 +1047,51 @@ public sealed class SourceMaterialConverter
 	}
 
 	/// <summary>
-	/// 这条材质是否声明了法线图（<c>$bumpmap</c>）。
+	/// 这条材质的法线图**最终会怎么样**：没有声明 / 已接入 / 声明了但图不在。
 	/// <para>
-	/// <b>为什么要单独问一次。</b>法线图目前**完全没有接线**——所有材质写进 HD2 的都是
-	/// 平面法线（128,128,255），而 NekoToon 那套模型普遍带 BC5 高清法线图。
-	/// 这是当前最大的一处保真度损失，却在报告里一个字都没有。
+	/// <b>为什么不是一个 bool。</b>报告要说的是两句话，而不是一句：
+	/// 「N 个材质声明了法线图，其中 X 个已接入 HD2 法线通道」和
+	/// 「Y 个因为贴图不在来源里，仍然用平面法线」。合成一个 bool 就只能报前者，
+	/// 用户看到"已接入"却依旧糊的时候没有任何线索。
 	/// </para>
 	/// <para>
-	/// <b>为什么不塞进逐材质的 notice。</b>它几乎每个材质都有，逐条报会把真正稀有的警告淹掉。
-	/// 所以只提供一个查询，由装配器按**整包**统计成一行。
+	/// 逐条 notice 会淹没其它警告（NekoToon 的材质几乎每个都有 <c>$bumpmap</c>），
+	/// 所以只提供查询，由装配器按**整包**统计成两行。
 	/// </para>
 	/// </summary>
 	/// <param name="materialName">源材质的裸名（可带目录，会取 basename）。</param>
-	public bool DeclaresBumpMap(string materialName)
+	public NormalDelivery DescribeBumpMap(string materialName)
 	{
 		var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(materialName));
 		if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVmt(stem, out var bytes))
-			return false;
+			return NormalDelivery.None;
+
+		string? bump;
 		try
 		{
 			// 带 include 展开：法线常常写在被 include 的基材质里。
-			return !string.IsNullOrWhiteSpace(
-				VmtDocument.Parse(bytes, source.CreateIncludeReader()).Value("$bumpmap"));
+			bump = VmtDocument.Parse(bytes, source.CreateIncludeReader()).Value("$bumpmap");
 		}
 		catch (InvalidDataException)
 		{
-			return false;
+			return NormalDelivery.None;
 		}
+
+		if (string.IsNullOrWhiteSpace(bump))
+			return NormalDelivery.None;
+
+		var bumpStem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(bump));
+		if (string.IsNullOrWhiteSpace(bumpStem))
+			return NormalDelivery.TextureMissing;
+
+		// **判据是"来源里有没有这张图"**，不是"能不能解出来"——解码失败要跑一次 texconv，
+		// 在统计阶段做这件事会把整包扫描变成几分钟。真正的解码失败会走
+		// `TryNormalRoughnessTexture` 的保底路径（退回平面法线），结果一样是不接法线。
+		return source.ContainsVtf(bumpStem) ? NormalDelivery.Wired : NormalDelivery.TextureMissing;
 	}
+
+	/// <summary>见 <see cref="DescribeBumpMap"/>。</summary>
+	public bool DeclaresBumpMap(string materialName) => DescribeBumpMap(materialName) != NormalDelivery.None;
 
 	/// <summary>
 	/// 为「源包里根本没有这个材质」的情形造一个**兜底灰材质**。
@@ -1161,7 +1241,9 @@ public sealed class SourceMaterialConverter
 			// 名字相同 → id 相同 → 装配器按 id 去重会并成一条，不会把包撑大。
 			if (material.TextureIds.Count > AlphaClipNormalSlot)
 			{
-				var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+				// 有法线图就用它自己的，没有才用全局共享平面法线（见 TryNormalRoughnessTexture）。
+				var flatNormal = TryNormalRoughnessTexture(loaded, PbrRoughness)
+					?? BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
 				material.SetTexture(AlphaClipNormalSlot, flatNormal.Id);
 				textures.Add(flatNormal);
 			}
@@ -1201,9 +1283,10 @@ public sealed class SourceMaterialConverter
 				return MaterialSynthesisResult.Failed(
 					$"original 模板只有 {material.TextureIds.Count} 个槽，放不下下标 {OriginalBaseColorSlot} 的底色");
 
-			// 槽 5 `Normal`：RGB 法线。用与其它模板**同一张**全局共享平面法线
+			// 槽 5 `Normal`：RGB 法线。有法线图就用它自己的，没有才用全局共享平面法线
 			// （名字相同 → id 相同 → 装配器按 id 去重）。
-			var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+			var flatNormal = TryNormalRoughnessTexture(loaded, PbrRoughness)
+				?? BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
 			material.SetTexture(OriginalNormalSlot, flatNormal.Id);
 			textures.Add(flatNormal);
 
@@ -1260,7 +1343,9 @@ public sealed class SourceMaterialConverter
 				&& material.TextureIds.Count > AdvancedNarSlot
 				&& material.TextureIds.Count > AdvancedMetallicSlot)
 			{
-				var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+				// 有 `$bumpmap` 就用**这个材质自己的**法线图；没有才用全局共享的平面法线。
+				var normal = TryNormalRoughnessTexture(loaded, PbrRoughness);
+				var flatNormal = normal ?? BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
 				var sharedPbr = BuildSolidTexture("shared_pbr_", string.Empty, DefaultMetallic, DefaultMetallic, DefaultMetallic, 255);
 				material.SetTexture(AdvancedNarSlot, flatNormal.Id);
 				material.SetTexture(AdvancedMetallicSlot, sharedPbr.Id);
@@ -1291,7 +1376,8 @@ public sealed class SourceMaterialConverter
 					: PbrRoughness;
 
 				var metallic = BuildSolidTexture(textureName, "_metallic", metallicValue, metallicValue, metallicValue, 255);
-				var normalRoughness = BuildSolidTexture(textureName, "_nar", 128, 128, 255, roughnessValue);
+				var normalRoughness = TryNormalRoughnessTexture(loaded, roughnessValue)
+					?? BuildSolidTexture(textureName, "_nar", 128, 128, 255, roughnessValue);
 				if (material.TextureIds.Count <= AdvancedMetallicSlot || material.TextureIds.Count <= AdvancedNarSlot)
 					return MaterialSynthesisResult.Failed($"{stem}：advanced 模板槽不够，放不下金属/粗糙槽");
 				material.SetTexture(AdvancedMetallicSlot, metallic.Id);
@@ -1377,6 +1463,17 @@ public sealed class SourceMaterialConverter
 		var matcapTextureName = string.IsNullOrWhiteSpace(vmt.MatCapTexture)
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.MatCapTexture));
+
+		// 法线图：同样只留裸名（`$bumpmap "path\Mat_Underwear_N"` → `Mat_Underwear_N`）。
+		//
+		// **这一条以前完全没有接线。** 所有材质写进 HD2 的都是平面法线（128,128,255），
+		// 而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图（官方文档 `pbr.vmt` /
+		// `nekotoon.vmt` 都写着 `$bumpmap` + `$bumpstrength`）。现在它在装配时决定
+		// "这张材质要不要配一张自己的法线贴图"，见 `TryBuildNormalTexture`。
+		var bumpTextureName = string.IsNullOrWhiteSpace(vmt.Value("$bumpmap"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$bumpmap")!));
+		var bumpStrength = MaterialAppearance.ParseBumpStrength(vmt.Value("$bumpstrength"));
 
 		// ── 没有真底色的两种写法，处理方式不同 ──────────────────────────────
 		//
@@ -1929,7 +2026,11 @@ public sealed class SourceMaterialConverter
 			// 抖动是**默认**的半透明落地方式，但只给"源侧真的要半透明"的材质：
 			// `$translucent`（想混合，HD2 表达不了）与 `$allowalphatocoverage`（源侧自己就在抖）。
 			// 纯 `$alphatest` 继续硬裁——那是 Source 的原语义（低于参考值丢弃），蕾丝/镂空靠它。
-			UseDither: useAlphaClip && vmt.WantsDitheredTransparency);
+			UseDither: useAlphaClip && vmt.WantsDitheredTransparency)
+		{
+			BumpTexture = bumpTextureName,
+			BumpStrength = bumpStrength,
+		};
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
 
@@ -2202,6 +2303,13 @@ public sealed class SourceMaterialConverter
 			map[offset + 2] = PbrRoughness;        // 粗糙度
 			map[offset + 3] = rgba[offset + 3];    // 不透明度 = 源 alpha
 		}
+
+		// ⚠️ 这里**刻意不接源法线图**，两个理由：
+		//  1. 这张图按**源底色的尺寸**建（R,G 是法线、B 是粗糙度、A 是不透明度，四样挤在一个
+		//     BC7 块里），而法线图常常是另一个分辨率——尺寸不同就没法逐像素搬。
+		//  2. 这条 `translucent` 路线本身还没有实机结论（见 AlphaExperiment 的注释）。
+		// 等它实机站住了再谈接线；现在接等于给一条未验证的路加复杂度。
+		// 平面法线（128,128）在这里是安全的默认值：观感差一点，但不会歪。
 
 		var bc7 = encoder.EncodeToBc7(
 			Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [map]), srgb: false);
@@ -2591,6 +2699,91 @@ public sealed class SourceMaterialConverter
 			output[at + 2] = source[at + b];
 			output[at + 3] = source[at + a];
 		}
+	}
+
+	/// <summary>
+	/// 这个材质的「法线 + 粗糙度」图（<b>RGB = 法线、A = 粗糙度</b>）；
+	/// <c>null</c> = 它没有可用的法线图，调用方继续用原来的平面法线。
+	/// <para>
+	/// <b>为什么返回 null 而不是直接给平面法线。</b>四个模板分支的平面法线**各是各的 id**
+	/// （<c>advanced</c> 用全局共享的 <c>shared_flat_normal_</c>，金属件用 <c>&lt;贴图&gt;_nar</c>），
+	/// 直接在这里统一会改动"没有法线图的材质"的产物字节——那批 Mod 全部要重构建一次，
+	/// 而收益为零。所以只替换"真有的那部分"。
+	/// </para>
+	/// </summary>
+	private SynthesizedTexture? TryNormalRoughnessTexture(LoadedMaterial loaded, byte roughness)
+		=> loaded.BumpTexture is { Length: > 0 } bump
+			? TryBuildNormalTexture(bump, loaded.BumpStrength, roughness)
+			: null;
+
+	/// <summary>
+	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
+	/// <para>缓存键含强度/粗糙度/Y 翻转，因为这三样都会改变产物字节。</para>
+	/// </summary>
+	private SynthesizedTexture? TryBuildNormalTexture(string bumpTexture, double strength, byte roughness)
+	{
+		var (texture, _) = normalTextures.GetOrAdd(
+			(bumpTexture, strength, roughness, normalFlipY),
+			static (key, self) => self.EncodeNormalTexture(key.Name, key.Strength, key.Roughness, key.FlipY),
+			this);
+		return texture;
+	}
+
+	private (SynthesizedTexture? Texture, string? Notice) EncodeNormalTexture(
+		string bumpTexture, double strength, byte roughness, bool flipY)
+	{
+		if (!source.TryReadVtf(bumpTexture, out var bytes) || bytes.Length == 0)
+			return (null, $"{bumpTexture}：法线图不在材质来源里");
+
+		byte[] rgba;
+		int width;
+		int height;
+		try
+		{
+			var vtf = VtfFile.Read(bytes);
+			width = vtf.Width;
+			height = vtf.Height;
+			// 法线是**线性**数据：DXT5/ATI2N 都按线性 DXGI 格式交给 texconv，绝不能走 sRGB。
+			rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			return (null, $"{bumpTexture}：法线图读不出来（{exception.Message}）");
+		}
+
+		if (width <= 0 || height <= 0 || rgba.Length != checked(width * height * 4))
+			return (null, $"{bumpTexture}：法线图尺寸与像素数不符（{width}×{height}，{rgba.Length} 字节）");
+
+		MaterialAppearance.RebuildTangentNormal(rgba, strength, flipY, roughness);
+
+		var name = $"{bumpTexture}_nar{DescribeNormalVariant(strength, roughness, flipY)}";
+		var bc7 = encoder.EncodeToBc7(
+			Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [rgba]), srgb: false);
+		var asset = new Hd2TextureAsset();
+		asset.FromDds(bc7);
+		return (new SynthesizedTexture(
+			DeriveTextureId(name),
+			asset.WriteToc(),
+			asset.Pixels,
+			name,
+			asset.FormatName,
+			asset.Width,
+			asset.Height), null);
+	}
+
+	/// <summary>
+	/// 法线贴图名字里的变体后缀。**只放会改变字节的那些量**——名字进 id，
+	/// 而 id 决定装配器会不会把两张图并成一张。
+	/// </summary>
+	private static string DescribeNormalVariant(double strength, byte roughness, bool flipY)
+	{
+		var parts = new List<string>(3);
+		if (Math.Abs(strength - 1.0) > 1e-6)
+			parts.Add("s" + strength.ToString("0.##", CultureInfo.InvariantCulture));
+		parts.Add("r" + roughness.ToString(CultureInfo.InvariantCulture));
+		if (flipY)
+			parts.Add("fy");
+		return "_" + string.Join('_', parts);
 	}
 
 	/// <summary>
