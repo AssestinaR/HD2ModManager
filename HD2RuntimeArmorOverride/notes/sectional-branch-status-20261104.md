@@ -229,3 +229,26 @@ WardrobeTreeViewModel
 按上面的规模，这是 110 个文件、7 个阶段、其中第 4 步动的是 `ModLibraryService` 这个中枢。
 本会话在**小得多的**删除上（掩码链）已经因为顺序反了回退过一次；在剩余预算内做装饰链，
 最可能的结果是留一个半删的编译不过的分支。**先把它量清、排好序，等一拍再做。**
+
+### 第 4 步（`ModLibraryService`）的真实范围 —— 已量清
+
+`ModLibraryService.cs` 1929 行里有 **137 行**提到 Decoration/HostDerived。而且这些 API **仍有 4 个 VM 在调**，
+所以第 4 步不是"改一个文件"，而是"改一个中枢 + 清 4 个 VM"：
+
+| API | 仍被谁调用 |
+|---|---|
+| `ToggleDecorationForAllAvailableHostsAsync` | `LibraryPageViewModel` |
+| `SetDecorationEnabledForHostAsync` | `ModDetailsPageViewModel` |
+| `ApplyDecorationActivationBatchAsync` | `ShellViewModel` |
+| `GetDecorationActivationSummary` | `LibraryPageViewModel` |
+| `IsDecorationEnabledForHost` | `ModDetailsPageViewModel` |
+| `GetDecorationsForHost` | `ModDetailsPageViewModel` |
+| `IsDecorationAvailableForHost` | `BottomBarCoordinator` / `ShellViewModel` |
+| `FlushPendingDecorationRebuildsAsync` | `ShellViewModel`（11 处引用，含部署/删除前置） |
+
+还有两条**必须小心**的交叉：
+- `ModLibraryService.cs:961` 的 `FlushPendingDecorationRebuildsAsync` 在**部署前置**里；
+- `:1026-1072` 的删除路径把装饰停用、失败回滚、`deletedDecorations` 与 option 处理混在一个事务里。
+
+⇒ 第 4 步要连带改 `LibraryPageViewModel` / `ModDetailsPageViewModel` / `ShellViewModel` /
+`BottomBarCoordinator` 四个文件，其中 `ShellViewModel` 2500+ 行。**必须一轮完整预算，不能在收尾时赶。**
