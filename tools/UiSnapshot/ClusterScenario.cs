@@ -47,7 +47,8 @@ internal static class ClusterScenario
     [
         new(PageActionKind.OpenFolder, "打开文件夹", new AlwaysCommand(), order: 10),
         new(PageActionKind.CrossArmor, "生成替换其他护甲的模组", new AlwaysCommand(), order: 20),
-        new(PageActionKind.BatchDecoration, "批量生成装饰（以主体 Mod）并写入活动配置的派生目录，同时刷新资产标签与兼容性报告", new AlwaysCommand(), order: 30),
+        // 动作类型只为显示文案（都走 AlwaysCommand），这里只需要一个仍然存在的详情页动作。
+        new(PageActionKind.Compact, "批量生成装饰（以主体 Mod）并写入活动配置的派生目录，同时刷新资产标签与兼容性报告", new AlwaysCommand(), order: 30),
     ];
 
     public static Scenario BuildLabelLengths(string name, string focusLabelPrefix = "生成替换")
