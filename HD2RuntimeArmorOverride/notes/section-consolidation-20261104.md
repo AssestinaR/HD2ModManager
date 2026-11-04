@@ -71,6 +71,58 @@ Mod
 
 ⇒ "一个 unit 装几十个 section、靠开关选"不是我们要发明的东西，**它就是原生状态**。
 
+### 2.0 这不是"加强 legacy"，是多了一个新品类
+
+**2026-11-04 用户定调**：这是一个**新功能**，不是对 legacy 模组的加强 ——
+把 legacy 模组变成「受管理器管理的、section 级可自定义的模组」。
+
+于是「Mod 只有两种」：
+
+| 种类 | 含义 | 产物 |
+|---|---|---|
+| **`legacy`**（旧版模组） | 用户丢进来的原始 patch / VPK，管理器只负责部署 | 一堆 patch 文件 |
+| **`sectional`**（分件模组） | 由管理器拆件产出的、每块几何都可寻址可命名的模组 | 7 unit + section 表 + 组表 + 素体身份 |
+
+VPK 转出来的东西**本来就是 sectional**，只是以前没有一个名字把它和 legacy 分开 ——
+今天靠"有没有 `sections.json`"隐式区分，靠"VPK 动作卡"隐式承载。
+这次把这件事**显式化**：`vpk` 这个词从品类名里退场（它只是 sectional 的一种来源）。
+
+### 2.0.1 `kind` 轴必须拆成两个轴
+
+现在 `library.json` 的 `kind` 是 `standard | option | decoration`，它把
+**"这是什么"** 和 **"它跟谁有关系"** 混在一个轴里。不拆的话 `option` 与 `sectional` 会打架
+—— 一个分件模组当然也可以被挂成别人的选项。
+
+| 轴 | 取值 | 回答什么 |
+|---|---|---|
+| **种类** | `legacy` \| `sectional` | 它是什么 |
+| **关系** | 独立 \| 宿主选项（hosted） | 它挂在谁身上 |
+
+库里 121 个 `option` 只是"被挂载的 legacy"，拆轴之后它们的种类仍然是 `legacy`，
+关系是"宿主选项" —— 语义一下就对上了。
+
+### 2.0.2 命名（建议，待拍板）
+
+| 代号 | 中文 | 评价 |
+|---|---|---|
+| **`sectional`** | **分件模组** | ✅ 推荐：与 `legacy`（整包）构成**粒度**词对，直观；不撞现有任何词；`hd2mod mod split` 做动词也顺 |
+| `block` | 区块模组 | 直译 section，但"区块"在中文里更像地形/数据块，不像"可开关的部件" |
+| `assembled` | 装配模组 | 仓库里"装配"已被 `asm_*` 那套占用，会撞 |
+
+选 `sectional` 的理由：它和 `legacy` 在**同一个语义维度**上成对（整包 ↔ 分件），
+而"标准化""装配"都是在描述**过程**，不是在描述**它是什么**。
+
+配套命名：
+
+```
+代码     ModKind.Legacy | ModKind.Sectional
+JSON     "kind": "legacy" | "sectional"
+命令     hd2mod mod split <Mod> [--apply]     ← 拆件（默认预演）
+         hd2mod mod split --all
+界面     旧版模组 / 分件模组
+产物目录 分件模组的 payload 目录（现在叫 vpk2patch，建议改名但需迁移，见 §9.5）
+```
+
 ### 2.2 追加时 section 边界能不能保住（这是全案的承重结论，要说准）
 
 `CanonicalDecorationUnitAppender` 末尾有一句无条件的 `MergeSectionsByMaterialSlot`
@@ -191,7 +243,7 @@ Mod
 ```
 IModRebuildSource
   ├─ VpkSource        : 读 *.vpk  → 跑 vpk2patch
-  └─ LegacySource     : 读 *.patch_* 快照 → 跑 normalize（多 unit 压成 7 unit）
+  └─ LegacySource     : 读 *.patch_* 快照 → 跑 split（多 unit 压成 7 unit）
                        两者输出同一个 payload 形状
 ```
 
@@ -200,7 +252,7 @@ IModRebuildSource
 
 ### 4.4 存量升级器（一次性）
 
-`hd2mod mod normalize <Mod> [--apply]`：
+`hd2mod mod split <Mod> [--apply]`：
 输入一个已经导入的老 Mod（多 unit、unit 级替换），输出主干化产物。
 - 默认**预演**：列出"会并哪些 unit 进哪个槽、会生成哪些组、会隐藏哪些 unit、预计节数"。
 - `--apply` 才动手，且先备份（沿用 `VpkPayloadSwap` 的"先备份再删、保留文件不删"口径）。
@@ -298,7 +350,7 @@ IModRebuildSource
 | **U0 事实核查** | §3 的四件事。造极限样本，进游戏 A/B | 给出"单 unit 能装多少节""跨槽合并后遮挡对不对""共用材质会不会并段"的**实测结论**；这一步决定方案形状 |
 | **U1 组模型** | §5 组表格式 + §6 来源身份 + 生成代；`components.json` 升级 | 老 `components.json` 能原样读进来（`source: noDraw`），不需要迁移 |
 | **U2 组编辑器** | 详情页：树 + 组列表 + 新建/删除/重命名/开关；组/开关/树三视图统一 | 建组 → 开关 → 重建 → 组还在；改名不影响开关状态 |
-| **U3 统一管线** | §4.3 `IModRebuildSource` 抽出 + §4.4 `normalize`（= `LegacySource` 的存量入口） | 一个多 unit 的老 Mod 升级后：7 unit、组表齐、其余槽全隐藏、**重构建按钮可用**；预演与真做的答案一致 |
+| **U3 统一管线（拆件）** | §4.3 `IModRebuildSource` 抽出 + §4.4 `split`（= `LegacySource` 的存量入口） | 一个多 unit 的老 Mod 升级后：7 unit、组表齐、其余槽全隐藏、**重构建按钮可用**；预演与真做的答案一致 |
 | **U4 生效成本** | 就地烘焙（不再重跑整条换甲）+ 勾选即保存 | 勾一下 3 秒内 patch 变了；隐藏→恢复后字节复原；切页不丢 |
 | **U5 修剪** | §7 的退场与删除 | 测试全绿；库能正常打开；无孤儿 XAML / 死命令 |
 
