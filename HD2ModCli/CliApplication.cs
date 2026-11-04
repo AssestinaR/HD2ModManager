@@ -176,6 +176,24 @@ public static class CliApplication
 			}
 			return 0;
 		}
+		// custom-model sectional plan|apply <mod> <archive[,archive]> <name>
+		//
+		// 与上面的 convert 是同一条链，只多一步拆件：产出「7 标准槽 × 身形」的 section 组，
+		// 并且**总是导入库**（没有"只导出"这条路）。plan 也真的会生成一遍产物 ——
+		// 拆件必须先有换甲产物才谈得上规划 —— 但跑完把产物和素体登记一起撤掉。
+		if (command.Length >= 3 && command[0] == "custom-model" && command[1] == "sectional")
+		{
+			// 参数校验放在这里而不是靠"长度不匹配就落到 UnknownCommand"：
+			// 那样用户少打一个参数会收到"不支持的命令"，看不出是自己少写了东西。
+			const string sectionalUsage = "custom-model sectional plan|apply <mod> <archive[,archive]> <name>[ --confirm]";
+			if (command.Length != 6)
+				throw new CliUserException("InvalidArguments", $"用法：{sectionalUsage}");
+			if (command[2] is not ("plan" or "apply"))
+				throw new CliUserException("InvalidArguments", $"第二个参数只能是 plan 或 apply。用法：{sectionalUsage}");
+			return await CliCustomModelSectional.RunAsync(
+				invocation, command[2] == "apply", (json, human) => Emit(invocation.Options, json, human), CancellationToken.None)
+				.ConfigureAwait(false);
+		}
 		if (command.Length >= 1 && command[0] == "wardrobe")
 		if (command.Length >= 1 && command[0] == "wardrobe")
 		{
