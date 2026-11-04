@@ -632,6 +632,224 @@ public static class MaterialAppearance
 	private static byte EncodeUnit(double value)
 		=> (byte)Math.Clamp(Math.Round((value * 0.5 + 0.5) * 255.0, MidpointRounding.AwayFromZero), 0, 255);
 
+	/// <summary>
+	/// NekoToon / lilToon 的 <c>$matcap</c> 混合模式。**编号是 NekoToon 的**，不是 lilToon 的。
+	/// <para>
+	/// 官方参数手册（<c>&lt;L4D2&gt;/shaders/fxc/nekotoon.vmt</c> 第 66 行）逐字：
+	/// <c>0禁用matcap，1正片叠底Multiply，2相加Add, 3Normal, 4Screen</c>。
+	/// lilToon 那边的编号是 <c>0 Normal / 1 Add / 2 Screen / 3 Multiply</c>——<b>两套不能混</b>。
+	/// </para>
+	/// </summary>
+	public enum MatcapBlendMode
+	{
+		/// <summary>不使用 matcap。</summary>
+		Off = 0,
+
+		/// <summary>正片叠底：<c>dst × src</c>。</summary>
+		Multiply = 1,
+
+		/// <summary>相加：<c>dst + src</c>（NekoToon 里最常见的一档）。</summary>
+		Add = 2,
+
+		/// <summary>正常：<c>src</c> 直接盖上去。</summary>
+		Normal = 3,
+
+		/// <summary>屏幕：<c>max(dst + src − dst×src, dst)</c>。</summary>
+		Screen = 4,
+	}
+
+	/// <summary>
+	/// 解析 <c>$matcap</c> 的模式值。**缺省是 <see cref="MatcapBlendMode.Off"/>**——
+	/// 源侧没写这个键就是"不用 matcap"，不能默认打开（会把没参与渲染的图叠上去）。
+	/// </summary>
+	public static MatcapBlendMode ParseMatcapBlend(string? raw)
+	{
+		if (string.IsNullOrWhiteSpace(raw))
+			return MatcapBlendMode.Off;
+		if (!int.TryParse(raw.Trim().Trim('[', ']'), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+			return MatcapBlendMode.Off;
+		return value switch
+		{
+			1 => MatcapBlendMode.Multiply,
+			2 => MatcapBlendMode.Add,
+			3 => MatcapBlendMode.Normal,
+			4 => MatcapBlendMode.Screen,
+			_ => MatcapBlendMode.Off,
+		};
+	}
+
+	/// <summary>
+	/// 解析 <c>$matcaptint</c> / <c>$MATCAP2TINT</c> 的**四个分量**（rgba）。
+	/// <para>
+	/// 与 <see cref="ParseTint"/> 的区别：那个只取三分量的最大值（判"是不是 matcap 承载面"），
+	/// 这里要的是**逐通道强度**与 <b>alpha（整体不透明度）</b>——合成时按通道乘上去。
+	/// 缺省全 1.0（源侧默认全强度）。
+	/// </para>
+	/// </summary>
+	public static double[] ParseTintRgba(string? raw)
+	{
+		var result = new[] { 1.0, 1.0, 1.0, 1.0 };
+		if (string.IsNullOrWhiteSpace(raw))
+			return result;
+
+		var cleaned = raw
+			.Replace("[", string.Empty, StringComparison.Ordinal)
+			.Replace("]", string.Empty, StringComparison.Ordinal)
+			.Replace("{", string.Empty, StringComparison.Ordinal)
+			.Replace("}", string.Empty, StringComparison.Ordinal)
+			.Replace(",", " ", StringComparison.Ordinal);
+
+		var parts = cleaned
+			.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.Select(token => double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : double.NaN)
+			.Where(value => double.IsFinite(value))
+			.ToArray();
+
+		for (var i = 0; i < result.Length && i < parts.Length; i++)
+			result[i] = parts[i] > 1.0 ? parts[i] / 255.0 : parts[i];
+		return result;
+	}
+
+	/// <summary>
+	/// 把源侧的 matcap 层合进底色——<b>lilToon 的公式，逐字实现</b>。
+	/// <para>
+	/// lilToon <c>lil_common_frag.hlsl</c>（第 1515-1562 行）：
+	/// </para>
+	/// <code>
+	/// matCapColor.rgb *= lightColor * _MatCapEnableLighting;        // 受光
+	/// matCapMask      = SAMPLE(_MatCapBlendMask, uvMain).rgb;       // 用主 UV 采样
+	/// fd.col.rgb = lilBlendColor(fd.col.rgb, matCapColor.rgb,
+	///                            _MatCapBlend * matCapColor.a * matCapMask, _MatCapBlendMode);
+	/// </code>
+	/// <para>
+	/// 这里少了 <c>lightColor</c>（HD2 侧没有逐像素光照颜色可读），其余照搬。
+	/// <b>采样坐标是唯一做不到的部分</b>：源侧用 <c>lilCalcMatCapUV</c>（法线投到相机坐标系的 XY），
+	/// 而 HD2 的模板没有 view-normal 采样也没有 cubemap 槽。这里用<b>切线空间法线的 XY</b>
+	/// 作为静态近似——曲面朝向相近的地方亮暗也相近，第三人称视角下观感最接近。
+	/// 没有法线图时退到贴图中心（等价于"整片一个颜色"，不会乱采样）。
+	/// </para>
+	/// </summary>
+	public static void CompositeMatcap(
+		byte[] albedo,
+		int albedoWidth,
+		int albedoHeight,
+		byte[] matcap,
+		int matcapWidth,
+		int matcapHeight,
+		byte[]? normal,
+		int normalWidth,
+		int normalHeight,
+		byte[]? mask,
+		int maskWidth,
+		int maskHeight,
+		double[] tintRgba,
+		MatcapBlendMode mode)
+	{
+		ArgumentNullException.ThrowIfNull(albedo);
+		ArgumentNullException.ThrowIfNull(matcap);
+		ArgumentNullException.ThrowIfNull(tintRgba);
+		if (mode == MatcapBlendMode.Off)
+			return;
+		if (albedo.Length < albedoWidth * albedoHeight * 4)
+			throw new InvalidDataException($"底色像素不足：{albedoWidth}×{albedoHeight} 需要 {albedoWidth * albedoHeight * 4} 字节。");
+		if (matcap.Length < matcapWidth * matcapHeight * 4)
+			throw new InvalidDataException($"matcap 像素不足：{matcapWidth}×{matcapHeight}。");
+
+		var tintR = tintRgba[0];
+		var tintG = tintRgba[1];
+		var tintB = tintRgba[2];
+		var tintA = tintRgba[3];
+
+		for (var y = 0; y < albedoHeight; y++)
+		{
+			for (var x = 0; x < albedoWidth; x++)
+			{
+				var offset = ((y * albedoWidth) + x) * 4;
+
+				// 蒙版按**主 UV** 采样（与源侧一致：`_MatCapBlendMask` 用的是 uvMain）。
+				var strength = tintA;
+				if (mask is not null)
+				{
+					var mx = Math.Min(maskWidth - 1, x * maskWidth / albedoWidth);
+					var my = Math.Min(maskHeight - 1, y * maskHeight / albedoHeight);
+					strength *= mask[((my * maskWidth) + mx) * 4 + 0] / 255.0;   // mask1 的 R 通道
+				}
+
+				if (strength <= 0)
+					continue;
+
+				// 采样坐标：切线空间法线 XY（没有法线图就取中心）。
+				double u = 0.5, v = 0.5;
+				if (normal is not null && normalWidth > 0 && normalHeight > 0)
+				{
+					var nx = Math.Min(normalWidth - 1, x * normalWidth / albedoWidth);
+					var ny = Math.Min(normalHeight - 1, y * normalHeight / albedoHeight);
+					var at = ((ny * normalWidth) + nx) * 4;
+					u = normal[at] / 255.0;
+					v = normal[at + 1] / 255.0;
+				}
+
+				var (srcR, srcG, srcB, srcA) = SampleBilinear(matcap, matcapWidth, matcapHeight, u, v);
+				srcR *= tintR;
+				srcG *= tintG;
+				srcB *= tintB;
+				strength *= srcA;
+				if (strength <= 0)
+					continue;
+
+				var dstR = albedo[offset] / 255.0;
+				var dstG = albedo[offset + 1] / 255.0;
+				var dstB = albedo[offset + 2] / 255.0;
+
+				(double outR, double outG, double outB) = mode switch
+				{
+					MatcapBlendMode.Add => (dstR + srcR, dstG + srcG, dstB + srcB),
+					MatcapBlendMode.Multiply => (dstR * srcR, dstG * srcG, dstB * srcB),
+					MatcapBlendMode.Screen => (
+						Math.Max(dstR + srcR - (dstR * srcR), dstR),
+						Math.Max(dstG + srcG - (dstG * srcG), dstG),
+						Math.Max(dstB + srcB - (dstB * srcB), dstB)),
+					_ => (srcR, srcG, srcB),
+				};
+
+				albedo[offset] = ToByte(Lerp(dstR, outR, strength));
+				albedo[offset + 1] = ToByte(Lerp(dstG, outG, strength));
+				albedo[offset + 2] = ToByte(Lerp(dstB, outB, strength));
+			}
+		}
+	}
+
+	private static double Lerp(double from, double to, double t) => from + ((to - from) * Math.Clamp(t, 0, 1));
+
+	/// <summary>0..1 → 0..255（四舍五入并夹紧）。</summary>
+	private static byte ToByte(double unit)
+		=> (byte)Math.Clamp(Math.Round(unit * 255.0, MidpointRounding.AwayFromZero), 0, 255);
+
+	/// <summary>0..1 UV 上的双线性采样，返回 0..1 的 RGBA。</summary>
+	private static (double R, double G, double B, double A) SampleBilinear(
+		byte[] rgba, int width, int height, double u, double v)
+	{
+		var x = Math.Clamp(u, 0, 1) * (width - 1);
+		var y = Math.Clamp(v, 0, 1) * (height - 1);
+		var x0 = (int)Math.Floor(x);
+		var y0 = (int)Math.Floor(y);
+		var x1 = Math.Min(width - 1, x0 + 1);
+		var y1 = Math.Min(height - 1, y0 + 1);
+		var fx = x - x0;
+		var fy = y - y0;
+
+		var at00 = ((y0 * width) + x0) * 4;
+		var at10 = ((y0 * width) + x1) * 4;
+		var at01 = ((y1 * width) + x0) * 4;
+		var at11 = ((y1 * width) + x1) * 4;
+
+		double Blend(int channel)
+			=> ((rgba[at00 + channel] * (1 - fx)) + (rgba[at10 + channel] * fx)) * (1 - fy)
+				+ (((rgba[at01 + channel] * (1 - fx)) + (rgba[at11 + channel] * fx)) * fy);
+
+		return (Blend(0) / 255.0, Blend(1) / 255.0, Blend(2) / 255.0, Blend(3) / 255.0);
+	}
+
 	/// <summary>造一张 <paramref name="size"/>×<paramref name="size"/> 的纯色 RGBA（用于金属度/粗糙度这类标量槽）。</summary>
 	public static byte[] SolidRgba(int size, byte red, byte green, byte blue, byte alpha = 255)
 	{

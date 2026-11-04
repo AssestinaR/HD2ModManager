@@ -1078,6 +1078,21 @@ public sealed class SourceMaterialConverter
 		/// </summary>
 		public double BumpStrength { get; init; } = 1.0;
 
+		/// <summary>
+		/// <c>$matcap</c> 的混合模式（NekoToon 编号）。<see cref="MaterialAppearance.MatcapBlendMode.Off"/>
+		/// = 这个材质不用 matcap（源侧没写或写了 0）。
+		/// </summary>
+		public MaterialAppearance.MatcapBlendMode MatcapBlend { get; init; }
+
+		/// <summary><c>$matcaptint</c> 的四个分量（逐通道强度 + alpha 整体强度）。</summary>
+		public double[] MatcapTintRgba { get; init; } = [1, 1, 1, 1];
+
+		/// <summary>
+		/// <c>$mask1</c> 的贴图裸名。<b>它的 R 通道是 matcap 的逐像素强度</b>
+		/// （NekoToon 官方手册：<c>r通道用于matcap蒙版，g通道是lightwarp的V映射，b通道是matcap2蒙版，a通道AO</c>）。
+		/// </summary>
+		public string? Mask1Texture { get; init; }
+
 		public MaterialIdentity ToIdentity() => new(
 			MaterialId, TemplateName, BaseTexture, UseAlphaClip, MatcapTextureName, MatcapMean is not null);
 	}
@@ -1544,6 +1559,17 @@ public sealed class SourceMaterialConverter
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$bumpmap")!));
 		var bumpStrength = MaterialAppearance.ParseBumpStrength(vmt.Value("$bumpstrength"));
+
+		// matcap 的**合成参数**（N2）：模式 + 逐通道强度 + 蒙版。
+		//
+		// 以前只把 `$matcap` 当成"有/没有 matcap"的布尔——模式、tint 的 alpha、`$mask1`
+		// 全部丢弃，于是那层亮光要么被压成一个平均色、要么被整片涂平。
+		// 源侧的实际公式（lilToon / NekoToon）见 MaterialAppearance.CompositeMatcap。
+		var matcapBlend = MaterialAppearance.ParseMatcapBlend(vmt.Value("$matcap"));
+		var matcapTintRgba = MaterialAppearance.ParseTintRgba(vmt.Value("$matcaptint"));
+		var mask1Texture = string.IsNullOrWhiteSpace(vmt.Value("$mask1"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$mask1")!));
 
 		// ── 没有真底色的两种写法，处理方式不同 ──────────────────────────────
 		//
@@ -2100,6 +2126,9 @@ public sealed class SourceMaterialConverter
 		{
 			BumpTexture = bumpTextureName,
 			BumpStrength = bumpStrength,
+			MatcapBlend = matcapBlend,
+			MatcapTintRgba = matcapTintRgba,
+			Mask1Texture = mask1Texture,
 		};
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
@@ -2255,6 +2284,45 @@ public sealed class SourceMaterialConverter
 			var metalDeliverable = loaded.MetalDeliverable;
 			if (metalDeliverable)
 				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+		}
+
+		// ===== N2：把 matcap 层合进底色 =====
+		//
+		// 源侧的观感 = 底色 ⊕ matcap：模式由 `$matcap` 决定（0 禁用 / 1 乘 / 2 加 / 3 正常 / 4 屏幕），
+		// 强度 = `$matcaptint`.a × `$mask1`.r × matcap 自己的 alpha。逐字实现见
+		// `MaterialAppearance.CompositeMatcap`（lilToon `lilBlendColor`）。
+		//
+		// **这是我们此前丢掉的那一层。** 之前 `$matcap` 只是个布尔：模式、tint 的 alpha、蒙版全部
+		// 丢弃，最后要么压成一个平均色（Bake），要么整片涂成中性 F0（Metal）。于是"局部亮光"
+		// 这种 matcap 最典型的观感在产物里根本不存在 —— 用户说"matcap 看起来没被支持"就是这个。
+		//
+		// 采样坐标是唯一做不到的部分：源侧用视角法线（lilCalcMatCapUV），HD2 没有 view-normal
+		// 采样也没有 cubemap 槽，这里用**切线空间法线的 XY** 做静态近似；没有法线图就取贴图中心。
+		if (loaded.MatcapBlend != MaterialAppearance.MatcapBlendMode.Off
+			&& !MatcapLayerDisabled
+			// 底色本身就是 matcap 的那条路（Bake/Albedo）不能叠自己，会自我加强一倍。
+			&& !(loaded.MatcapIsSurface && matcapMode != MatCapMode.Metal)
+			&& loaded.MatcapTextureName is { Length: > 0 } matcapName
+			&& TryReadTextureRgba(matcapName, out var matcapRgba, out var matcapWidth, out var matcapHeight))
+		{
+			byte[]? maskRgba = null;
+			var maskWidth = 0;
+			var maskHeight = 0;
+			if (loaded.Mask1Texture is { Length: > 0 } maskName)
+				TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
+
+			byte[]? normalRgba = null;
+			var normalWidth = 0;
+			var normalHeight = 0;
+			if (loaded.BumpTexture is { Length: > 0 } bumpName)
+				TryReadTextureRgba(bumpName, out normalRgba, out normalWidth, out normalHeight);
+
+			MaterialAppearance.CompositeMatcap(
+				rgba, vtf.Width, vtf.Height,
+				matcapRgba, matcapWidth, matcapHeight,
+				normalRgba, normalWidth, normalHeight,
+				maskRgba, maskWidth, maskHeight,
+				loaded.MatcapTintRgba, loaded.MatcapBlend);
 		}
 		else if (loaded.MatcapIsSurface && matcapMode == MatCapMode.Albedo)
 			MaterialAppearance.ScaleRgb(rgba, matcapBakeGain);
@@ -2769,6 +2837,32 @@ public sealed class SourceMaterialConverter
 	}
 
 	/// <summary>
+	/// 读一张贴图并解成裸像素（带 <see cref="DecodeTextureCached"/> 的复用）。
+	/// 供 matcap 合成读 matcap / 蒙版 / 法线用——它们只需要像素，不需要走材质那一套。
+	/// </summary>
+	private bool TryReadTextureRgba(string textureName, out byte[] rgba, out int width, out int height)
+	{
+		rgba = [];
+		width = 0;
+		height = 0;
+		if (string.IsNullOrWhiteSpace(textureName) || !source.TryReadVtf(textureName, out var bytes) || bytes.Length == 0)
+			return false;
+
+		try
+		{
+			var vtf = VtfFile.Read(bytes);
+			width = vtf.Width;
+			height = vtf.Height;
+			rgba = DecodeTextureCached(textureName, bytes, vtf);
+			return width > 0 && height > 0;
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// 这个材质的「法线 + 粗糙度」图（<b>RGB = 法线、A = 粗糙度</b>）；
 	/// <c>null</c> = 它没有可用的法线图，调用方继续用原来的平面法线。
 	/// <para>
@@ -2792,6 +2886,16 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	private static readonly bool NoNormalMapRequested =
 		Environment.GetEnvironmentVariable("HD2_NO_NORMAL_MAP") == "1";
+
+	/// <summary>
+	/// 诊断开关 <c>HD2_NO_MATCAP_LAYER=1</c>：不把 matcap 层合进底色（退回 N2 之前的行为）。
+	/// <para>
+	/// 与 <c>HD2_NO_NORMAL_MAP</c> 同一族：把"这一层到底改变了什么"变成一次干净的对照。
+	/// 也是万一合成观感不对时的**就地退路**——不用回滚构建。
+	/// </para>
+	/// </summary>
+	private static readonly bool MatcapLayerDisabled =
+		Environment.GetEnvironmentVariable("HD2_NO_MATCAP_LAYER") == "1";
 
 	/// <summary>
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
