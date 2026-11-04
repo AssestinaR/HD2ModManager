@@ -812,7 +812,6 @@ namespace HD2ModManager.ViewModels
             try
             {
                 LogService.Info("启动部署：活动配置已加载，立即部署并跳过变更缓冲等待。");
-                await _libraryService.FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
                 var status = await _deploymentCoordinator.FlushAsync(cancellationToken).ConfigureAwait(false);
                 if (status.Stage != ProfileDeploymentStage.Completed)
                     LogService.Error($"启动部署未完成：{status.Message ?? status.Stage.ToString()}。");
@@ -1165,7 +1164,6 @@ namespace HD2ModManager.ViewModels
                                 if (added > 0)
                                 {
                                     LogService.Info($"导入后自动加入活动配置：新增={added}，选项/装饰未加入配置。即将统一部署一次。");
-                                    await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
                                     await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token).ConfigureAwait(false);
                                 }
                             }
@@ -1210,7 +1208,6 @@ namespace HD2ModManager.ViewModels
             {
                 // Window close is a consistency boundary too: do not leave a successful UI
                 // toggle waiting only in the in-memory debounce overlay.
-                await _libraryService.FlushPendingDecorationRebuildsAsync().ConfigureAwait(false);
             }
             catch (Exception exception) { LogService.Error($"退出前装饰合并失败：{exception}"); }
             _lifetimeCancellation.Cancel();
@@ -1360,7 +1357,6 @@ namespace HD2ModManager.ViewModels
         {
             try
             {
-                await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token);
                 var status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
                 if (status.Stage == ProfileDeploymentStage.Completed) return;
                 _notificationService.Show(status.Message ?? "活动配置部署失败。", NotificationLevel.Error, TimeSpan.FromSeconds(8));
@@ -1593,7 +1589,6 @@ namespace HD2ModManager.ViewModels
 				ProfileDeploymentStatus status;
                     try
                     {
-                        await _libraryService.FlushPendingDecorationRebuildsAsync(_lifetimeCancellation.Token);
                         status = await _deploymentCoordinator.FlushAsync(_lifetimeCancellation.Token);
 				}
 				catch (Exception exception)

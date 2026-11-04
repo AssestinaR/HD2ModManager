@@ -54,18 +54,14 @@ namespace HD2ModManager.Services
         private Dictionary<string, ModEntity> _byGuid = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _derivedRefreshGate = new(1, 1);
         private readonly SemaphoreSlim _libraryMutationGate = new(1, 1);
-        private readonly DecorationActivationStore _decorationActivations;
         private readonly OptionActivationStore _optionActivations;
         private readonly IModRelationshipMutationService _relationshipMutations;
         private readonly DecorationHostRebuildService _decorationHostRebuild;
 		private readonly HostDerivedOverwriteService _hostDerivedOverwrites;
+        // 装饰包已不再支持：`_decorationActivations` / 待合并表 / 去抖源已删除。
 		private readonly OptionActivationDefaultInitializer _optionDefaultInitializer = new();
         private readonly IHelmetToArmorMergeService _helmetToArmorMerge;
         private BackgroundTaskService? _backgroundTasks;
-        private readonly object _decorationScheduleSync = new();
-        private readonly Dictionary<string, HashSet<string>> _pendingDecorationActivations = new(StringComparer.OrdinalIgnoreCase);
-        private CancellationTokenSource? _decorationDebounceCancellation;
-        private Task? _decorationDebounceTask;
         private long _stateVersion;
 		public ModLibrarySynchronizationResult? LastSynchronizationResult { get; private set; }
 
@@ -122,10 +118,6 @@ namespace HD2ModManager.Services
         // The shared mutation boundary for all decoration enable/disable operations.
         // It computes each host's final attachment set before rebuilding so a host is
         // never rebuilt more than once for one user action.
-
-        public bool IsDecorationEnabledForHost(string decorationId, string hostId)
-            => GetAvailableDecorationHostIds(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase)
-               && GetEffectiveDecorationHosts(decorationId).Contains(hostId);
 
         public IReadOnlyList<ModEntity> GetOptionsForHost(string hostId)
         {
@@ -405,7 +397,6 @@ namespace HD2ModManager.Services
             _synchronizer = CoreServices.CreateModLibrarySynchronizer();
             _derivedDataService = CoreServices.CreateLibraryDerivedDataService(_paths, _informationCenter);
 		_assetSummaryProjector = CoreServices.CreateModAssetSummaryProjector(_paths, _informationCenter);
-            _decorationActivations = CoreServices.CreateDecorationActivationStore(_paths);
             _optionActivations = optionActivations ?? new OptionActivationStore(Path.Combine(_paths.ModsDirectory, "option-activations.json"));
             _relationshipMutations = CoreServices.CreateModRelationshipMutationService(_paths, _optionActivations);
             _decorationHostRebuild = CoreServices.CreateDecorationHostRebuildService(_paths, _informationReader);
@@ -939,7 +930,6 @@ namespace HD2ModManager.Services
             ArgumentNullException.ThrowIfNull(guids);
             // Deletion must observe the latest requested decoration state before it starts
             // removing plans or hosts referenced by a pending debounce batch.
-            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -1004,40 +994,9 @@ namespace HD2ModManager.Services
                 }
 
                 var requestedNodes = nodeIds.ToDictionary(nodeId => nodeId, nodeId => _snapshot.Nodes[nodeId]);
-                // 装饰包已不再支持：库里不会有这类节点，所以"删除前先停用装饰"这段恒为空。
-                var requestedDecorationIds = Array.Empty<string>();
-                var originalDecorationHosts = requestedDecorationIds.ToDictionary(
-                    decorationId => decorationId,
-                    decorationId => _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase),
-                    StringComparer.OrdinalIgnoreCase);
-                if (requestedDecorationIds.Length > 0)
-                {
-                    await ApplyDecorationActivationBatchCoreAsync(
-                        requestedDecorationIds.Select(id => new DecorationActivationMutation(id, false)).ToArray(),
-                        cancellationToken).ConfigureAwait(false);
-                }
-
                 var deletion = await _manager.DeleteNodesWithResultAsync(nodeIds, deleteStoredFiles: true, cancellationToken).ConfigureAwait(false);
                 var removedIds = deletion.RemovedNodeIds.ToHashSet();
                 _snapshot = deletion.Snapshot;
-
-                // A failed physical removal keeps its library node. Restore any decoration
-                // state we temporarily disabled before probing the filesystem.
-                var failedDecorationIds = requestedDecorationIds
-                    .Where(id => TryParseNodeId(id, out var nodeId) && !removedIds.Contains(nodeId))
-                    .ToArray();
-                if (failedDecorationIds.Length > 0)
-                {
-                    var restoreMutations = failedDecorationIds
-                        .SelectMany(decorationId => originalDecorationHosts[decorationId]
-                            .Select(hostId => new DecorationActivationMutation(decorationId, true, hostId)))
-                        .ToArray();
-                    if (restoreMutations.Length > 0)
-                    {
-                        try { await ApplyDecorationActivationBatchCoreAsync(restoreMutations, cancellationToken).ConfigureAwait(false); }
-                        catch (Exception exception) { LogService.Error($"删除失败后恢复装饰启用状态失败：{exception}"); }
-                    }
-                }
 
                 if (removedIds.Count == 0)
                 {
@@ -1048,7 +1007,6 @@ namespace HD2ModManager.Services
 
                 // The manager already returned the post-delete snapshot, so retain the
                 // requested-node metadata captured above for activation cleanup.
-                var deletedDecorations = Array.Empty<string>();
                 var deletedOptions = removedIds
                     .Where(nodeId => requestedNodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Option)
                     .Select(nodeId => nodeId.Value.ToString("N"))
@@ -1058,11 +1016,6 @@ namespace HD2ModManager.Services
                         && (node.Metadata.Kind == ModNodeKind.Standard || node.Metadata.Kind == ModNodeKind.Option))
                     .Select(nodeId => nodeId.Value.ToString("N"))
                     .ToArray();
-                await _decorationActivations.CleanupAsync(
-                    deletedDecorations,
-                    deletedDecorationHosts,
-                    cancellationToken).ConfigureAwait(false);
-                // An Option can itself be a parent. Remove every deleted node as a
                 // host before removing option-owned state, otherwise descendants
                 // would retain orphaned activation records. CleanupAsync performs
                 // both operations with one persisted JSON write and does not touch
@@ -1184,208 +1137,8 @@ namespace HD2ModManager.Services
             finally { _libraryMutationGate.Release(); }
         }
 
-        private IReadOnlySet<string> GetAvailableDecorationHostIds(string decorationId)
-        {
-            var decoration = Get(decorationId);
-            if (decoration is null || !decoration.IsDecoration) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            try
-            {
-                var path = Path.Combine(_paths.ModsDirectory, decoration.SourcePath ?? string.Empty, "decoration.json");
-                if (!File.Exists(path)) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var plan = JsonSerializer.Deserialize<DecorationPlanDocument>(File.ReadAllText(path), new JsonSerializerOptions(JsonSerializerDefaults.Web));
-                var targets = plan?.Plan?.TargetModGuids ?? [];
-				var availableHosts = _snapshot.Nodes.Values
-					// A logical container is a relationship anchor, not an injection
-					// target. Decorations require a real Patch-bearing host Unit.
-					.Where(node => node.PatchGroups.Count > 0
-						&& node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option)
-                    .Select(node => node.Id.Value.ToString("N"))
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                return targets.Where(availableHosts.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            }
-            catch (JsonException) { return new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
-        }
-
         // UI mutations are optimistic in memory, but the activation file is still written only
         // after the corresponding generated Overwrite has been rebuilt successfully.
-        private Task<DecorationActivationBatchResult> ScheduleDecorationActivationBatchAsync(
-            IReadOnlyCollection<DecorationActivationMutation> mutations,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var changedDecorations = 0;
-            var affectedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            lock (_decorationScheduleSync)
-            {
-                foreach (var mutation in mutations.Where(item => !string.IsNullOrWhiteSpace(item.DecorationId)))
-                {
-                    var available = GetAvailableDecorationHostIds(mutation.DecorationId);
-                    if (available.Count == 0) continue;
-                    if (!_pendingDecorationActivations.TryGetValue(mutation.DecorationId, out var hosts))
-                    {
-                        hosts = _decorationActivations.GetEnabledHosts(mutation.DecorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                        _pendingDecorationActivations[mutation.DecorationId] = hosts;
-                    }
-                    changedDecorations++;
-                    if (string.IsNullOrWhiteSpace(mutation.HostId))
-                    {
-                        if (mutation.Enabled) hosts.UnionWith(available); else hosts.Clear();
-                        foreach (var host in available) affectedHosts.Add(host);
-                    }
-                    else if (available.Contains(mutation.HostId))
-                    {
-                        if (mutation.Enabled) hosts.Add(mutation.HostId); else hosts.Remove(mutation.HostId);
-                        affectedHosts.Add(mutation.HostId);
-                    }
-                }
-                _decorationDebounceCancellation?.Cancel();
-                _decorationDebounceCancellation?.Dispose();
-                _decorationDebounceCancellation = new CancellationTokenSource();
-                _decorationDebounceTask = DebounceDecorationRebuildAsync(_decorationDebounceCancellation.Token);
-            }
-            SnapshotChanged?.Invoke(this, EventArgs.Empty);
-            return Task.FromResult(new DecorationActivationBatchResult(changedDecorations, affectedHosts.Count, affectedHosts.ToArray()));
-        }
-
-        private async Task DebounceDecorationRebuildAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
-                await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-            catch (Exception exception) { LogService.Error($"装饰延迟合并失败：{exception}"); }
-        }
-
-        public async Task FlushPendingDecorationRebuildsAsync(CancellationToken cancellationToken = default)
-        {
-            Dictionary<string, HashSet<string>> planned;
-            lock (_decorationScheduleSync)
-            {
-                if (_pendingDecorationActivations.Count == 0) return;
-                planned = _pendingDecorationActivations.ToDictionary(item => item.Key, item => new HashSet<string>(item.Value, StringComparer.OrdinalIgnoreCase), StringComparer.OrdinalIgnoreCase);
-                _pendingDecorationActivations.Clear();
-                // Do not cancel the token passed by the debounce task itself here. Doing so
-                // would cancel this flush before it can acquire the mutation boundary.
-            }
-            var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "合并装饰", $"{planned.Count} 个装饰计划", "装饰合并");
-            task?.MarkRunning("正在汇总主体装饰");
-            var progress = task is null ? null : new Progress<DecorationOperationProgress>(item =>
-            {
-                task.UpdateStage(item.Total > 0 ? $"{item.Stage}（{item.Completed}/{item.Total}）" : item.Stage);
-                task.UpdateProgress(item.Fraction);
-            });
-            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var mutations = planned.SelectMany(item =>
-                {
-                    var available = GetAvailableDecorationHostIds(item.Key);
-                    return available.Select(host => new DecorationActivationMutation(item.Key, item.Value.Contains(host), host));
-                }).ToArray();
-                await ApplyDecorationActivationBatchCoreAsync(mutations, cancellationToken, progress).ConfigureAwait(false);
-                task?.MarkCompleted();
-            }
-            catch
-            {
-                // Keep a failed desired state visible and retryable; do not lose it merely
-                // because the transient rebuild task failed.
-                lock (_decorationScheduleSync)
-                {
-                    foreach (var item in planned)
-                        if (!_pendingDecorationActivations.ContainsKey(item.Key))
-                            _pendingDecorationActivations[item.Key] = item.Value;
-                }
-                SnapshotChanged?.Invoke(this, EventArgs.Empty);
-                task?.MarkFailed("装饰合并失败");
-                throw;
-            }
-            finally { _libraryMutationGate.Release(); }
-        }
-
-        private IReadOnlySet<string> GetEffectiveDecorationHosts(string decorationId)
-        {
-            lock (_decorationScheduleSync)
-                return _pendingDecorationActivations.TryGetValue(decorationId, out var pending)
-                    ? new HashSet<string>(pending, StringComparer.OrdinalIgnoreCase)
-                    : _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        }
-
-        private async Task<DecorationActivationBatchResult> ApplyDecorationActivationBatchCoreAsync(
-            IReadOnlyCollection<DecorationActivationMutation> mutations,
-            CancellationToken cancellationToken,
-            IProgress<DecorationOperationProgress>? progress = null)
-        {
-            var requested = mutations
-                .Where(mutation => !string.IsNullOrWhiteSpace(mutation.DecorationId))
-                .GroupBy(mutation => $"{mutation.DecorationId}\u001f{mutation.HostId}", StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.Last())
-                .ToArray();
-            if (requested.Length == 0) return new DecorationActivationBatchResult(0, 0, Array.Empty<string>());
-
-            var originals = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-            var planned = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var mutation in requested)
-            {
-                var available = GetAvailableDecorationHostIds(mutation.DecorationId);
-                if (available.Count == 0) continue;
-                if (!originals.TryGetValue(mutation.DecorationId, out var original))
-                {
-                    original = _decorationActivations.GetEnabledHosts(mutation.DecorationId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    originals[mutation.DecorationId] = original;
-                    planned[mutation.DecorationId] = new HashSet<string>(original, StringComparer.OrdinalIgnoreCase);
-                }
-
-                var hosts = planned[mutation.DecorationId];
-                if (string.IsNullOrWhiteSpace(mutation.HostId))
-                {
-                    if (mutation.Enabled) hosts.UnionWith(available);
-                    else hosts.Clear();
-                }
-                else if (available.Contains(mutation.HostId))
-                {
-                    if (mutation.Enabled) hosts.Add(mutation.HostId);
-                    else hosts.Remove(mutation.HostId);
-                }
-            }
-
-            var changed = planned
-                .Where(item => !item.Value.SetEquals(originals[item.Key]))
-                .ToArray();
-            if (changed.Length == 0) return new DecorationActivationBatchResult(0, 0, Array.Empty<string>());
-
-            var affectedHosts = changed
-                .SelectMany(item => originals[item.Key].Concat(item.Value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            try
-            {
-                await RebuildDecorationOverwritesAsync(affectedHosts, planned, cancellationToken, progress).ConfigureAwait(false);
-                await _decorationActivations.SetEnabledHostsBatchAsync(
-                    changed.ToDictionary(item => item.Key, item => (IReadOnlyCollection<string>)item.Value.ToArray(), StringComparer.OrdinalIgnoreCase),
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                // A rebuild may have completed for earlier hosts before a later host failed.
-                // Rebuild from the durable pre-operation state before surfacing the failure.
-                try { await RebuildDecorationOverwritesAsync(affectedHosts, originals, CancellationToken.None, progress).ConfigureAwait(false); }
-                catch (Exception rollbackException) { LogService.Error($"装饰批处理回滚 Overwrite 失败：{rollbackException}"); }
-                throw;
-            }
-
-            var changedNodeIds = affectedHosts
-                .Select(ParseNodeId)
-                .Where(id => id.HasValue)
-                .Select(id => id!.Value)
-                .Distinct()
-                .ToArray();
-            if (changedNodeIds.Length > 0)
-                ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs(changedNodeIds, ModContentChangeKind.Changed));
-            SnapshotChanged?.Invoke(this, EventArgs.Empty);
-            return new DecorationActivationBatchResult(changed.Length, affectedHosts.Length, affectedHosts);
-        }
 
         private async Task<IReadOnlyList<ModNodeId>> RebuildDecorationOverwritesAsync(
             IEnumerable<string> hostIds,
@@ -1478,7 +1231,6 @@ namespace HD2ModManager.Services
             CancellationToken cancellationToken = default,
             IProgress<HelmetToArmorMergeProgress>? progress = null)
         {
-            await FlushPendingDecorationRebuildsAsync(cancellationToken).ConfigureAwait(false);
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -1527,14 +1279,6 @@ namespace HD2ModManager.Services
                 : string.Join("；", result.Issues.Take(4).Select(issue => issue.Message));
             throw new InvalidDataException(detail);
         }
-
-        private bool IsDecorationEnabledForHost(
-            string decorationId,
-            string hostId,
-            IReadOnlyDictionary<string, HashSet<string>>? activationOverrides)
-            => activationOverrides is not null && activationOverrides.TryGetValue(decorationId, out var overridden)
-                ? overridden.Contains(hostId)
-                : _decorationActivations.GetEnabledHosts(decorationId).Contains(hostId, StringComparer.OrdinalIgnoreCase);
 
         public DerivedModNodeData? GetDerivedData(string guid)
         {
