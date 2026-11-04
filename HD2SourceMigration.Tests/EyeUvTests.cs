@@ -108,6 +108,28 @@ public sealed class EyeUvTests
 	}
 
 	[Fact]
+	public void ReprojectKeepsTheEyeUndistortedOnANonSquareEyeball()
+	{
+		// 2 宽 × 4 高的眼球 —— 实测 3798231335 的眼球就是这种"竖长的蛋"
+		// （Y 跨度 0.70 / Z 跨度 1.07），而贴图里那只眼睛的宽高比是 0.81。
+		var geometry = Quad(width: 2, height: 4, u: 0f, v: 1f);
+		var source = new EyeColorSource("eye", 0.25, 0.25, 0.75, 0.75);
+
+		var (projected, _) = EyeUv.Reproject(geometry, ["eye_ball"], _ => source);
+
+		// 内容区半宽 0.25 铺满 Y 半跨度 1 ⇒ 0.25 UV/单位。
+		// V 必须用**同一个**比例：4 个单位 ⇒ 1.0。若按 Z 跨度各撑一次（旧实现），
+		// V 只会摊 0.5，眼睛就被纵向拉长 2 倍 —— 那正是"眼睛形状不对"。
+		var uSpan = Math.Abs(projected.Vertices[1].U - projected.Vertices[0].U);
+		var vSpan = Math.Abs(projected.Vertices[1].V - projected.Vertices[0].V);
+		Assert.Equal(0.5, uSpan, 3);
+		Assert.Equal(1.0, vSpan, 3);
+
+		// 关键不变量：UV 的宽高比 = 模型的宽高比（2:4）⇒ 眼睛没有被拉长/压扁。
+		Assert.Equal(2.0 / 4.0, uSpan / vSpan, 6);
+	}
+
+	[Fact]
 	public void ReprojectLeavesMaterialsThatAreNotEyesAlone()
 	{
 		var geometry = Quad(2, 2, u: 0.11f, v: 0.22f);

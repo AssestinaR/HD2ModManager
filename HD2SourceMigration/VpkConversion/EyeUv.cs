@@ -71,6 +71,25 @@ public static class EyeUv
 	public const double MinimumCoverage = 0.002;
 
 	/// <summary>
+	/// 眼睛在眼球上的**大小**倍率（默认 1.0 = 内容区宽度正好铺满眼球宽度）。
+	/// <para>
+	/// 环境变量 <c>HD2_EYE_SCALE</c>：&gt;1 眼睛更大（贴图放大，边缘被眼皮盖住），
+	/// &lt;1 更小（露出更多眼白）。形状不受它影响（U/V 始终同一个比例），只影响大小。
+	/// </para>
+	/// <para>
+	/// 之所以做成旋钮：源侧把虹膜投到"半径 = <c>$EyeballRadius</c> 的虚拟球"上，
+	/// 而这个参数在 VMT 里常常缺省（默认 0.5），与实际眼球网格的半径（实测 0.35）不一致 ——
+	/// 也就是说"源侧那只眼睛在屏幕上该多大"没法从数据推出来，只能实机对。
+	/// </para>
+	/// </summary>
+	public static double EyeScale { get; } =
+		double.TryParse(Environment.GetEnvironmentVariable("HD2_EYE_SCALE"),
+			System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scale)
+			&& double.IsFinite(scale) && scale > 0
+				? Math.Clamp(scale, 0.25, 4.0)
+				: 1.0;
+
+	/// <summary>
 	/// 一张贴图里"画着东西的那块矩形"（UV，V=0 在图像顶部）。
 	/// <para>
 	/// 判据两步：① 取外框 2 像素的平均色当填充色（眼球图集四周一定是平色）；
@@ -235,6 +254,19 @@ public static class EyeUv
 				continue;
 			}
 
+			// ④ **各向同性**：U 和 V 用同一个比例（UV/模型单位）。
+			//
+			// ⚠️ 这一条是"眼睛形状不对"的修法。原来 U 按 Y 跨度、V 按 Z 跨度各自撑满内容区，
+			// 于是**任何不是正方形的眼球都会被拉长**：实测 3798231335 的眼球网格 Y 跨度 0.70、
+			// Z 跨度 1.07（宽高比 0.65），而贴图里那只眼睛的宽高比是 0.81 —— 两轴各撑一次，
+			// 眼睛就被纵向拉成 1.24 倍，渲染出来是一只**竖长的蛋**（星芒变尖、瞳孔变椭圆）。
+			//
+			// 源侧不存在这个问题：EyeRefract 是把虹膜投到**虚拟球**上（球是圆的），
+			// 所以贴图里画成什么比例，屏幕上就是什么比例。这里用同一个比例尺就是在还原这件事。
+			//
+			// 比例取"内容区宽度正好铺满 Y 跨度"：横向是眼睑开口限制的那一维，
+			// 纵向多出来的部分落到贴图的填充边（= 眼白），眼皮本来也会盖住它。
+			var scale = colorSource.HalfU / halfY / EyeScale;
 			var mixed = 0;
 			foreach (var index in vertices)
 			{
@@ -247,8 +279,8 @@ public static class EyeUv
 				var position = geometry.Vertices[index].Position;
 				// U 跟模型 Y（+Y 是角色左侧，观察者看到的是图像右侧）；V 跟 Z，且**取反**：
 				// VTF/DDS 的 V=0 在图像顶部，而 +Z 是上方 —— 不取反眼睛就是倒着的。
-				var u = colorSource.CenterU + (position.Y - centerY) / halfY * colorSource.HalfU;
-				var v = colorSource.CenterV - (position.Z - centerZ) / halfZ * colorSource.HalfV;
+				var u = colorSource.CenterU + ((position.Y - centerY) * scale);
+				var v = colorSource.CenterV - ((position.Z - centerZ) * scale);
 				projected[index] = (u, v);
 			}
 
@@ -269,9 +301,10 @@ public static class EyeUv
 		}
 
 		notes.Add(
-			$"眼球 UV 已按 $iris 的平面投影重算（U 跟模型 Y、V 跟模型 Z，共 {projected.Count} 个顶点）"
+			$"眼球 UV 已按 $iris 的平面投影重算（U 跟模型 Y、V 跟模型 Z，两轴**同一个比例**，共 {projected.Count} 个顶点）"
 			+ "：源侧 EyeRefract 的采样坐标本来就不来自模型 UV（Valve eyes.vsh 的注释："
-			+ "「Texture 1 is a planar projection used for the iris」），而这份网格的 UV 是常量。");
+			+ "「Texture 1 is a planar projection used for the iris」），而这份网格的 UV 是常量。"
+			+ (Math.Abs(EyeScale - 1.0) > 1e-9 ? $" 眼睛大小倍率 {EyeScale:F2}（HD2_EYE_SCALE）。" : string.Empty));
 
 		return (geometry with { Vertices = vertices2 }, notes);
 	}
