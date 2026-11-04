@@ -302,3 +302,48 @@ RelationshipDragOperation="RemoveOptionParent"
 
 **这个决定该由用户拍板。** 定了它，第 4–7 步才能一次做完：
 定了 B 就连 `ObjectTreeImporter` 的判定一起删，`ModNodeKind.Decoration` 才能安全移除。
+
+---
+
+## 装饰链退场：已完成到第 6 步，第 5 步的范围刚确认
+
+### 已完成
+
+| 步 | 提交 | 内容 |
+|---|---|---|
+| 1–2 | `e61bb92` `51735ad` | 两个页面 + 所有 UI 入口 + 16 个 CLI 派发臂 + 4 个测试文件 |
+| 3 | `7c77850` | 八个不可达 CLI 类 + 40 个连带方法（`CliApplication.cs` 8028 → 7616） |
+| — | `0eb650d` `b1ceef3` | `.bin` 旧路线字段级清理；无调用者的 `CreateDecorationAsync` |
+| 导入 | `493749c` | 装饰包导入改为**明确拒绝** + 阻塞诊断（按用户决定） |
+| 4–6 | `33a222c` | 枚举弃用 + 13 处行为分支清除 + 库读取层丢弃 |
+
+### 三个必须记住的设计决定
+
+**① 枚举值不删，只标 `[Obsolete]`。** `library.json` 的 kind 是字符串序列化的，
+删成员会让旧库直接打不开。`[Obsolete]` 因此成了**精确的工作清单**（编译器用 CS0618
+逐条报出来），清完之后只剩三处必须认得它的地方，都用 `#pragma` + 说明标注：
+
+- `JsonModLibraryStore.DropUnsupportedNodes`——旧库里的装饰节点在**读取层**丢弃
+- `SafeModDeletionPlanningService`——删遗留装饰节点时清它的装饰激活状态（否则留死引用）
+- 三个测试文件——故意用废弃值当夹具，覆盖"旧库里存在装饰节点时怎么处理"
+
+**② `HostDerivedOverwriteService` 是头盔合并的入口，不能删。**
+`RebuildAsync(host, attachments, helmetMerged, …)` 同时收装饰附件与头盔合并标志；
+装饰附件现在恒为空，但头盔合并在用。这是我自己在计划里标的"陷阱 1"，已确认成立。
+
+**③ 宿主附加面板（`DecorationHost:` 作用域）服务选项，不能删。**
+面板标题就是「可为该 Mod 启用的附加选项」。库里 121 个选项靠它。
+
+### 第 5 步（Core 服务）的真实剩余范围
+
+| 类型 | 仍被谁引用 | 能不能删 |
+|---|---|---|
+| `DecorationActivationStore` | `CoreServices` / `ModLibraryService`（8 处）/ CLI（2 处）/ 测试 | 能——要先清 `ModLibraryService` 的那 8 处与 CLI 的 2 处 |
+| `DecorationHostRebuildService` | `HostDerivedOverwriteService` / `CoreServices` / 测试 | 装饰重建那部分能删；它也被 `UnitLodFamilySource` 的注释提到 |
+| `HostDerivedOverwriteService` | `ModLibraryService` / CLI 批量修复 / `CoreServices` | **不能删**（头盔合并） |
+| `DecorationPackageSnapshotService` | `CoreServices` / `ModInformationFactRegistry` / 测试 | 能 |
+| `DecorationHostTargetBinder` | `DecorationHostRebuildService` / 测试 | 跟随上一个 |
+| `DecorationPlanDocument` / `PayloadDocument` / `PlanningDefaults` | 上述服务 + 契约测试 | 跟随 |
+
+⇒ 第 5 步仍是"清 `ModLibraryService` 的 8 处 + CLI 的 2 处 + 六个类型"，**外加**要决定
+`HostDerivedOverwriteService` 的 `attachments` 参数是保留（恒空）还是收窄成纯头盔合并。
