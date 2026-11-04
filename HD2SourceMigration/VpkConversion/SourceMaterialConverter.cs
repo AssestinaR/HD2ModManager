@@ -872,6 +872,20 @@ public sealed class SourceMaterialConverter
 	/// <summary>逐材质的 UV 空间模型法线（key = 材质裸名）。</summary>
 	private readonly Func<string, UvNormalMap?>? worldNormalFactory;
 
+	/// <summary>
+	/// `$selfillum` 的发光强度倍率（默认 0.5）。
+	/// <para>
+	/// HD2 的自发光是**叠在 PBR 光照之上**的，给满（1.0）等于把底色再加一遍 —— 实测会过曝。
+	/// 0.5 让"亮的材质不发灰"同时不过曝；需要时用 <c>HD2_SELFILLUM_GAIN</c> 调。
+	/// </para>
+	/// </summary>
+	private readonly double selfIllumGain =
+		double.TryParse(Environment.GetEnvironmentVariable("HD2_SELFILLUM_GAIN"),
+			System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gain)
+			&& double.IsFinite(gain) && gain > 0
+				? Math.Clamp(gain, 0.05, 1.0)
+				: 0.5;
+
 	/// <summary>取这个材质的「UV 空间世界法线」；没有就 <c>null</c>（调用方退回无方向方案）。</summary>
 	private UvNormalMap? WorldNormalFor(string stem)
 		=> worldNormalFactory?.Invoke(stem);
@@ -1123,6 +1137,23 @@ public sealed class SourceMaterialConverter
 		/// 判据来自文件名，与 <c>--normal-flip-y</c> 的显式开关做异或。
 		/// </summary>
 		public bool BumpFlipY { get; init; }
+
+		/// <summary>
+		/// <c>$selfillum</c> 的自发光强度（0 = 关闭，1 = 整片，2 = 蒙版模式）。
+		/// <para>
+		/// 源侧语义：<b>不受光照影响、直接用底色当发光颜色</b>（默认），
+		/// 或用 <c>$selfillummask</c> 当遮罩。HD2 的 <c>advanced</c> 槽 5 的 <b>alpha 就是自发光</b>，
+		/// 所以我们把它写进那张底色的 A 通道。
+		/// </para>
+		/// <para>
+		/// <b>为什么要接。</b>实测 huahua 的 Chiyu 整套都写 <c>$selfillum 1</c>：源侧那件毛衣
+		/// 因此是"亮的、不吃阴影"的，而我们不接就只能靠 PBR 光照，观感偏暗偏灰。
+		/// </para>
+		/// </summary>
+		public double SelfIllumStrength { get; init; }
+
+		/// <summary><c>$selfillummask</c> 的贴图裸名（蒙版模式用）。</summary>
+		public string? SelfIllumMaskTexture { get; init; }
 
 		/// <summary><c>$MATCAP2TINT</c> 的四个分量（缺省全 1.0）。</summary>
 		public double[] Matcap2TintRgba { get; init; } = [1, 1, 1, 1];
@@ -1623,6 +1654,22 @@ public sealed class SourceMaterialConverter
 			? null
 			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$MATCAP2TEXTURE")!));
 		var matcap2TintRgba = MaterialAppearance.ParseTintRgba(vmt.Value("$MATCAP2TINT"));
+
+		// `$selfillum`：不受光照影响的自发光（源侧语义是"底色自己当发光色"）。
+		// `$selfillum 2` 是"用 $selfillummask 当遮罩"的模式；`$selfillumtint` 是它的强度/颜色。
+		var selfIllumRaw = vmt.Value("$selfillum");
+		var selfIllumStrength = 0.0;
+		if (!string.IsNullOrWhiteSpace(selfIllumRaw))
+		{
+			selfIllumStrength = vmt.IsEnabled("$selfillum") ? 1.0 : 0.0;
+			var tintStrength = MaterialAppearance.ParseTint(vmt.Value("$selfillumtint"));
+			if (tintStrength > 0 && tintStrength < 1.0)
+				selfIllumStrength *= tintStrength;   // 作者压过强度（纯白 tint 时不动）
+		}
+
+		var selfIllumMaskTexture = string.IsNullOrWhiteSpace(vmt.Value("$selfillummask"))
+			? null
+			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$selfillummask")!));
 
 		// 光照曲线（`$lightwarptexture`）。它的**受光端**就是 NekoToon 里那个著名的"×0.30"上限。
 		var lightwarpTexture = string.IsNullOrWhiteSpace(vmt.Value("$lightwarptexture"))
@@ -2198,6 +2245,8 @@ public sealed class SourceMaterialConverter
 			Matcap2Texture = matcap2Texture,
 			Matcap2TintRgba = matcap2TintRgba,
 			LightwarpTexture = lightwarpTexture,
+			SelfIllumStrength = selfIllumStrength,
+			SelfIllumMaskTexture = selfIllumMaskTexture,
 		};
 		reason = string.Empty;
 		return LoadOutcome.Loaded;
@@ -2485,6 +2534,41 @@ public sealed class SourceMaterialConverter
 						+ (emissionRgba[at + 2] * 0.114);
 					rgba[(((y * vtf.Width) + x) * 4) + 3] =
 						(byte)Math.Clamp(Math.Round(luminance * tint), 0, 255);
+				}
+			}
+		}
+
+		else if (loaded.SelfIllumStrength > 0 && loaded.TemplateName == "advanced")
+		{
+			// `$selfillum`：源侧语义是"**底色自己当发光色**、不吃光照"，可选 `$selfillummask` 当遮罩。
+			// HD2 的 `advanced` 槽 5 的 alpha 就是自发光强度，所以把强度写回 A：
+			//   A = 强度 × gain × 蒙版
+			//
+			// gain 默认 0.5：HD2 的发光是**叠在 PBR 光照之上**的，给满等于把底色再加一遍（实测过曝）。
+			// 这个值是实机可调的旋钮（env `HD2_SELFILLUM_GAIN`），不是猜死的常量。
+			byte[]? selfIllumMask = null;
+			var maskWidth = 0;
+			var maskHeight = 0;
+			if (loaded.SelfIllumMaskTexture is { Length: > 0 } selfIllumMaskName)
+				TryReadTextureRgba(selfIllumMaskName, out selfIllumMask, out maskWidth, out maskHeight);
+
+			for (var y = 0; y < vtf.Height; y++)
+			{
+				for (var x = 0; x < vtf.Width; x++)
+				{
+					var mask = 1.0;
+					if (selfIllumMask is not null && maskWidth > 0 && maskHeight > 0)
+					{
+						var mx = Math.Min(maskWidth - 1, x * maskWidth / vtf.Width);
+						var my = Math.Min(maskHeight - 1, y * maskHeight / vtf.Height);
+						var at = ((my * maskWidth) + mx) * 4;
+						mask = ((selfIllumMask[at] * 0.299) + (selfIllumMask[at + 1] * 0.587)
+							+ (selfIllumMask[at + 2] * 0.114)) / 255.0;
+					}
+
+					var value = loaded.SelfIllumStrength * selfIllumGain * mask;
+					rgba[(((y * vtf.Width) + x) * 4) + 3] =
+						(byte)Math.Clamp(Math.Round(value * 255.0), 0, 255);
 				}
 			}
 		}
@@ -3216,6 +3300,9 @@ public sealed class SourceMaterialConverter
 			rgba[offset] = 0;
 	}
 }
+
+
+
 
 
 
