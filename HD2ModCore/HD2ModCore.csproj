@@ -61,48 +61,30 @@
                       Link="RuntimeArmorRegistry\wardrobe_hidden_unit.patch.gpu_resources" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_override_runtime.lua"
                       Link="RuntimeArmorRegistry\armor_override_runtime.lua" />
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_transaction.lua"
-                      Link="RuntimeArmorRegistry\armor_registry_transaction.lua" />
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_composition.lua"
-                      Link="RuntimeArmorRegistry\armor_registry_composition.lua" />
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_protocol.lua"
-                      Link="RuntimeArmorRegistry\armor_registry_protocol.lua" />
     <!--
       琛ｆ煖 section 鎺╃爜鐨勫彧璇昏В鏋愬櫒銆傚繀椤诲拰鍗忚涓€鏍峰唴宓岋細杩愯鏃舵病鏈夌鐩樹笂鐨?src 鐩綍鍙锛?
       鎷兼帴椤哄簭鐢?RuntimeArmorRegistryLuaSource 鍐冲畾锛岃繖涓枃浠舵帓鍦ㄥ叆鍙ｇ偣涔嬪墠銆?
       Read-only wardrobe mask parser. Embedded for the same reason as the protocol: the runtime has no
       src directory on disk, and RuntimeArmorRegistryLuaSource controls the concatenation order.
     -->
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_wardrobe_masks.lua"
-                      Link="RuntimeArmorRegistry\armor_wardrobe_masks.lua" />
     <!--
       unit TOC 鐨勫彧璇荤粨鏋勮В鏋愶細杩愯鏃舵嵁姝よ嚜宸辩畻鍑?section 鍋忕Щ锛屼笉蹇呰鏋勫缓鏈熺殑鏄犲皠琛ㄣ€?
       瀹炴祴渚濇嵁瑙?notes/section-toc-memory-header-differs-only-in-unit-id-20261019.md銆?
       Read-only unit TOC walker: lets the runtime derive section offsets itself instead of
       reading a build-time map. Evidence in the note referenced above.
     -->
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_layout.lua"
-                      Link="RuntimeArmorRegistry\armor_section_layout.lua" />
     <!--
       鎶婃帺鐮佺炕璇戞垚 NumIndices 鍐欏叆骞朵繚璇佸彲鍥炴粴銆備笌璧版煡鍣ㄥ垎寮€锛氳繖涓€灞傚彧鍋?绠楄鍒?鎵ц"锛?
       鎵€浠ヨ兘绂荤嚎鐢ㄥ彲鍙樺瓧鑺傜紦鍐叉祴鍑烘仮澶嶄笌鍥炴粴锛屼笉蹇呰繘娓告垙銆?
       Turns masks into NumIndices writes with rollback. Kept apart from the walker so the
       restore and rollback paths can be verified offline against a mutable byte buffer.
     -->
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_apply.lua"
-                      Link="RuntimeArmorRegistry\armor_section_apply.lua" />
     <!--
       鍦ㄨ繘绋嬪唴瀛橀噷鎸?FileId+8 涓浂瀛楄妭瀹氫綅 unit 鐨?TOC 鍓湰锛屽懡涓悗鐢ㄧ粨鏋勮蛋鏌ラ獙璇併€?
       涓庤蛋鏌ュ櫒鍒嗗紑鏄负浜嗚兘鐢?鍋囧唴瀛?绂荤嚎娴嬭鍛戒腑銆佸潖鍓湰銆佺紦瀛樺け鏁堛€?
       Locates a unit's TOC copy by its FileId and validates it structurally; kept apart so
       false hits, broken copies and cache invalidation can be exercised against fake memory.
     -->
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_locate.lua"
-                      Link="RuntimeArmorRegistry\armor_section_locate.lua" />
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_section_publish.lua"
-                      Link="RuntimeArmorRegistry\armor_section_publish.lua" />
-    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_registry_runtime.lua"
-                      Link="RuntimeArmorRegistry\armor_registry_runtime.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe_core.lua"
                       Link="RuntimeArmorRegistry\armor_metadata_probe_core.lua" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_metadata_probe.lua"
