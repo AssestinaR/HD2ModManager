@@ -226,7 +226,7 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
                     plan.Version = 3;
                     plan.SourceStorageMode = "PatchSnapshot";
                     plan.SourceUnits = sourceUnits.Select(unit => new DecorationSourceUnit { TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex, BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling }).ToList();
-                    await new DecorationPatchSnapshotService(_fileResolver, _library.InformationReader).CaptureAsync(item.SourceNode, _library.ModsRootDirectory, sourceUnits, output, item.PreparedEntries, default, progress);
+                    await new DecorationPackageSnapshotService(_fileResolver, _library.InformationReader).CaptureAsync(item.SourceNode, _library.ModsRootDirectory, sourceUnits, output, item.PreparedEntries, default, progress);
                     await File.WriteAllTextAsync(Path.Combine(output, "decoration.json"), JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true })).ConfigureAwait(true);
                 }
                 generated++;

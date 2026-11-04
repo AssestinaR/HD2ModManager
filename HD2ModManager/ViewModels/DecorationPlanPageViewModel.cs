@@ -311,7 +311,7 @@ public sealed class DecorationPlanPageViewModel : PageViewModel
             plan.Version = 3;
             plan.SourceStorageMode = "PatchSnapshot";
             plan.SourceUnits = sourceUnits.Select(unit => new DecorationSourceUnit { TypeId = unit.TypeId, FileId = unit.FileId, MeshInfoIndex = unit.MeshInfoIndex, BodyVariant = unit.BodyVariant, Layer = unit.Layer, IsCulling = unit.IsCulling }).ToList();
-            await new DecorationPatchSnapshotService(_modFileResolver, _library.InformationReader)
+            await new DecorationPackageSnapshotService(_modFileResolver, _library.InformationReader)
                 .CaptureAsync(source, _library.ModsRootDirectory, sourceUnits, path, _preparedSourceEntries, default, progress);
             await File.WriteAllTextAsync(Path.Combine(path, "decoration.json"), JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
             State = $"计划已写出：{path}";

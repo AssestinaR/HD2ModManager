@@ -7,49 +7,6 @@
     <UserControl.Resources>
         <ResourceDictionary>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-        <DataTemplate x:Key="ArmorPieceEditorTemplate">
-            <Grid Margin="12,8" MinHeight="42">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="BodyName" Text="{Binding BodyLabel}" VerticalAlignment="Center"
-                           Foreground="{StaticResource TextPrimary}" FontWeight="SemiBold"/>
-                <CheckBox Grid.Column="1"
-                          IsChecked="{Binding Enabled, Mode=TwoWay}"
-                          Style="{StaticResource AppToggleSwitch}"
-                          ToolTip="启用或停用此 Unit"
-                          AutomationProperties.Name="{Binding BodyLabel, StringFormat={}{0} 组件启用}"
-                          VerticalAlignment="Center"
-                          Margin="6,0,0,0"/>
-                <Button Grid.Column="2" Command="{Binding RemoveCommand}"
-                        Style="{StaticResource RowIconButton}"
-                        Foreground="{StaticResource StatusDanger}"
-                        ToolTip="删除 Unit" AutomationProperties.Name="删除 Unit"
-                        Visibility="{Binding CanRemove, Converter={StaticResource BoolToVis}}"
-                        Margin="0">
-                    <Path Width="16" Height="16"
-                          Data="M3,4 L13,4 M6,4 L6,2 L10,2 L10,4 M5,6 L5.5,13 L10.5,13 L11,6"
-                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                          StrokeThickness="1.4" StrokeLineJoin="Round"/>
-                </Button>
-                <TextBlock x:Name="UnitId" Grid.Row="1" Grid.ColumnSpan="3"
-                           Text="{Binding Unit}" FontFamily="Consolas" FontSize="11"
-                           Margin="0,4,0,0" Foreground="{StaticResource TextSecondary}"
-                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Unit}"/>
-            </Grid>
-            <DataTemplate.Triggers>
-                <DataTrigger Binding="{Binding Enabled}" Value="False">
-                    <Setter TargetName="BodyName" Property="Foreground" Value="{StaticResource TextTertiary}"/>
-                    <Setter TargetName="UnitId" Property="Opacity" Value="0.55"/>
-                </DataTrigger>
-            </DataTemplate.Triggers>
-        </DataTemplate>
         <DataTemplate x:Key="AvailableArmorSearchActions">
             <StackPanel Orientation="Horizontal">
                 <Button Style="{StaticResource AppHeaderTextButton}"
