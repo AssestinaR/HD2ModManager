@@ -62,12 +62,12 @@ public sealed class CliSectionGroupResolverTests
 			[Switch("猫耳", "c_white_a_ear"), Switch("尾巴", "c_white_a_tail")],
 			map);
 
-		Assert.Equal(2, document.Switches.Count);
+		Assert.Equal(2, document.Groups.Count);
 		Assert.Empty(document.Unmatched);
-		var ears = document.Switches.Single(item => item.Name == "猫耳");
-		Assert.Equal([1], ears.Disabled[0].Sections);
-		var tail = document.Switches.Single(item => item.Name == "尾巴");
-		Assert.Equal([2], tail.Disabled[0].Sections);       // 只有第 2 节
+		var ears = document.Groups.Single(item => item.Name == "猫耳");
+		Assert.Equal([1], ears.Members[0].Sections);
+		var tail = document.Groups.Single(item => item.Name == "尾巴");
+		Assert.Equal([2], tail.Members[0].Sections);       // 只有第 2 节
 	}
 
 	[Fact]
@@ -77,10 +77,10 @@ public sealed class CliSectionGroupResolverTests
 
 		var document = CliSectionGroupResolver.Resolve([Switch("泪钻", "gem_face")], map);
 
-		var entry = Assert.Single(document.Switches);
-		Assert.Equal(2, entry.Disabled.Count);
+		var entry = Assert.Single(document.Groups);
+		Assert.Equal(2, entry.Members.Count);
 		Assert.Equal(2, entry.SectionCount);
-		Assert.Equal([Head, Chest], entry.Disabled.Select(target => target.Unit).ToArray());
+		Assert.Equal([Head, Chest], entry.Members.Select(target => target.Unit).ToArray());
 	}
 
 	[Fact]
@@ -93,7 +93,7 @@ public sealed class CliSectionGroupResolverTests
 			[Switch("猫耳", "c_white_a"), Switch("耳朵", "c_white_a")],
 			map);
 
-		var entry = Assert.Single(document.Switches);
+		var entry = Assert.Single(document.Groups);
 		Assert.Equal("猫耳", entry.Name);
 		Assert.Contains("耳朵", entry.SourceVpk, StringComparison.Ordinal);
 	}
@@ -105,7 +105,7 @@ public sealed class CliSectionGroupResolverTests
 
 		var document = CliSectionGroupResolver.Resolve([Switch("光环", "rl_halo")], map);
 
-		Assert.Empty(document.Switches);
+		Assert.Empty(document.Groups);
 		var unmatched = Assert.Single(document.Unmatched);
 		Assert.Equal("光环", unmatched.Name);
 		// 理由必须点到材质名：用户报"装了开关看不到效果"时，这是唯一能查的线索。
@@ -119,7 +119,7 @@ public sealed class CliSectionGroupResolverTests
 
 		var document = CliSectionGroupResolver.Resolve([Switch("猫耳", "c_white_a")], map);
 
-		var entry = Assert.Single(document.Switches);
-		Assert.Equal([0], entry.Disabled[0].Sections);
+		var entry = Assert.Single(document.Groups);
+		Assert.Equal([0], entry.Members[0].Sections);
 	}
 }

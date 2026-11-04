@@ -4,7 +4,7 @@ using HD2ModCore.Infrastructure;
 namespace HD2ModCore.Tests;
 
 /// <summary>
-/// <c>components.json</c>（<c>hd2mod.vpk-components/1</c>）的格式契约。
+/// <c>components.json</c>（<c>hd2mod.section-groups/1</c>，旧格式 <c>hd2mod.vpk-components/1</c> 只读兼容）的格式契约。
 /// <para>
 /// 重点不是"能不能读"，而是三件事：<b>中文名字不被转义</b>（这份文件是给人 grep 的）、
 /// <b>schema 变了要显式失效</b>（而不是被误读成"零个开关"）、
@@ -66,17 +66,17 @@ public sealed class SectionGroupFileTests : IDisposable
 		var parsed = SectionGroupFile.Parse(SectionGroupFile.Serialize(CreateDocument()));
 
 		Assert.Equal(SectionGroupDocument.CurrentSchema, parsed.Schema);
-		Assert.Equal(2, parsed.Switches.Count);
-		var ears = parsed.Switches[0];
+		Assert.Equal(2, parsed.Groups.Count);
+		var ears = parsed.Groups[0];
 		Assert.Equal("猫耳", ears.Name);
 		Assert.Equal(["c_white_a_ear"], ears.Materials);
 		Assert.Equal(1, ears.SectionCount);
 
 		// 跨 unit 的开关必须原样保留两个目标（一个开关关两处几何）。
-		var coat = parsed.Switches[1];
-		Assert.Equal(2, coat.Disabled.Count);
-		Assert.Equal(new[] { 5, 6 }, coat.Disabled[0].Sections);
-		Assert.Equal(UnitB, coat.Disabled[1].Unit);
+		var coat = parsed.Groups[1];
+		Assert.Equal(2, coat.Members.Count);
+		Assert.Equal(new[] { 5, 6 }, coat.Members[0].Sections);
+		Assert.Equal(UnitB, coat.Members[1].Unit);
 		Assert.Equal(3, coat.SectionCount);
 
 		Assert.Single(parsed.Unmatched);
@@ -110,7 +110,7 @@ public sealed class SectionGroupFileTests : IDisposable
 		var read = await SectionGroupFile.TryReadAsync(directory);
 
 		Assert.NotNull(read);
-		Assert.Equal(document.Switches.Count, read!.Switches.Count);
+		Assert.Equal(document.Groups.Count, read!.Groups.Count);
 		// 原子写不该留下临时文件。
 		Assert.Empty(Directory.EnumerateFiles(directory, "*.tmp", SearchOption.TopDirectoryOnly));
 	}

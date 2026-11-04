@@ -797,11 +797,11 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		var usable = new List<SectionGroup>();
 		if (document is not null)
 		{
-			foreach (var entry in document.Switches)
+			foreach (var entry in document.Groups)
 			{
 				// 掩码里的 unit 必须仍然在**当前生效**的 section 表里。
 				// 换甲会把 Unit 换到目标护甲的键上，旧掩码于是整批失效——那种开关点下去什么都不会发生。
-				if (entry.Disabled.Count != 0 && entry.Disabled.All(target => sections.FindUnit(target.Unit) is not null))
+				if (entry.Members.Count != 0 && entry.Members.All(target => sections.FindUnit(target.Unit) is not null))
 					usable.Add(entry);
 				else
 					stale++;
@@ -830,16 +830,16 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// <summary>开关"开着" = 它要关的那几节**没有全部**被关掉（与树的三态语义一致）。</summary>
 	private bool ReadSwitchEnabled(SectionGroup entry)
 	{
-		if (entry.Disabled.Count == 0)
+		if (entry.Members.Count == 0)
 			return false;
-		return !entry.Disabled.All(target =>
+		return !entry.Members.All(target =>
 			target.Sections.All(section => _vpkFile.State.IsDisabled(target.Unit, section)));
 	}
 
 	private void WriteSwitch(SectionGroup entry, bool enabled)
 	{
 		var state = _vpkFile.State;
-		foreach (var target in entry.Disabled)
+		foreach (var target in entry.Members)
 			state = state.SetSectionsEnabled(target.Unit, target.Sections, enabled);
 		_vpkFile = _vpkFile with { State = state };
 		// 树上显示的是同一份状态：不刷新就会出现"开关关了、树上还勾着"。

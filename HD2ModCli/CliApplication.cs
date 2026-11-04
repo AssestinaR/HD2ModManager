@@ -2422,7 +2422,7 @@ public static class CliApplication
 					var sections = await HD2ModCore.Infrastructure.WardrobeSectionMapFile
 						.ReadAsync(sectionsPath).ConfigureAwait(false);
 					var document = CliSectionGroupResolver.Resolve(componentSwitches, sections);
-					if (document.Switches.Count == 0 && document.Unmatched.Count == 0)
+					if (document.Groups.Count == 0 && document.Unmatched.Count == 0)
 						continue;
 					await HD2ModCore.Infrastructure.SectionGroupFile
 						.WriteAsync(directory, document).ConfigureAwait(false);
@@ -2430,13 +2430,13 @@ public static class CliApplication
 					{
 						patch = Path.GetFileName(outcome.Package.TocPath),
 						summary = CliSectionGroupResolver.Summarize(document),
-						switches = document.Switches.Select(item => new
+						switches = document.Groups.Select(item => new
 						{
 							name = item.Name,
 							source = item.SourceVpk,
 							materials = item.Materials,
 							sections = item.SectionCount,
-							disabled = item.Disabled.Select(target => new { unit = target.Unit, sections = target.Sections }),
+							disabled = item.Members.Select(target => new { unit = target.Unit, sections = target.Sections }),
 						}),
 						unmatched = document.Unmatched.Select(item => new { name = item.Name, source = item.SourceVpk, reason = item.Reason }),
 					});

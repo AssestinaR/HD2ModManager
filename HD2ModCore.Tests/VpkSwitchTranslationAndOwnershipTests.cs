@@ -55,12 +55,12 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 			[OldChest] = NewChest,
 		});
 
-		var ears = translated.Switches.Single(item => item.Name == "猫耳");
-		Assert.Equal(NewHead, Assert.Single(ears.Disabled).Unit);
-		Assert.Equal([3], ears.Disabled[0].Sections);
+		var ears = translated.Groups.Single(item => item.Name == "猫耳");
+		Assert.Equal(NewHead, Assert.Single(ears.Members).Unit);
+		Assert.Equal([3], ears.Members[0].Sections);
 
-		var coat = translated.Switches.Single(item => item.Name == "外套");
-		Assert.Equal([NewHead, NewChest], coat.Disabled.Select(target => target.Unit).ToArray());
+		var coat = translated.Groups.Single(item => item.Name == "外套");
+		Assert.Equal([NewHead, NewChest], coat.Members.Select(target => target.Unit).ToArray());
 		Assert.Equal(3, coat.SectionCount);
 	}
 
@@ -76,8 +76,8 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 			[OldHead] = NewHead,
 		});
 
-		var tail = translated.Switches.Single(item => item.Name == "尾巴");
-		Assert.Empty(tail.Disabled);
+		var tail = translated.Groups.Single(item => item.Name == "尾巴");
+		Assert.Empty(tail.Members);
 		Assert.Equal(0, tail.SectionCount);
 		// 名字与材质必须还在：用户要能看到"这个开关没落点"，而不是它凭空消失。
 		Assert.Equal("c_white_a_tail", Assert.Single(tail.Materials));
@@ -99,7 +99,7 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 			[OldChest] = NewHead,
 		});
 
-		var target = Assert.Single(translated.Switches[0].Disabled);
+		var target = Assert.Single(translated.Groups[0].Members);
 		Assert.Equal(NewHead, target.Unit);
 		Assert.Equal([1, 4], target.Sections);
 	}
@@ -109,8 +109,8 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 	{
 		var translated = SectionGroupFile.Translate(Document(), new Dictionary<string, string>());
 
-		Assert.Equal(3, translated.Switches.Count);
-		Assert.All(translated.Switches, entry => Assert.Empty(entry.Disabled));
+		Assert.Equal(3, translated.Groups.Count);
+		Assert.All(translated.Groups, entry => Assert.Empty(entry.Members));
 	}
 
 	[Fact]

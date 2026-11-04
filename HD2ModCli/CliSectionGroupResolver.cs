@@ -133,10 +133,10 @@ internal static class CliSectionGroupResolver
 	public static string Summarize(SectionGroupDocument document)
 	{
 		ArgumentNullException.ThrowIfNull(document);
-		if (document.Switches.Count == 0 && document.Unmatched.Count == 0)
+		if (document.Groups.Count == 0 && document.Unmatched.Count == 0)
 			return "没有组件开关";
-		var sections = document.Switches.Sum(item => item.SectionCount);
-		var text = $"组件开关 {document.Switches.Count.ToString(CultureInfo.InvariantCulture)} 个"
+		var sections = document.Groups.Sum(item => item.SectionCount);
+		var text = $"组件开关 {document.Groups.Count.ToString(CultureInfo.InvariantCulture)} 个"
 			+ $"（共隐藏 {sections.ToString(CultureInfo.InvariantCulture)} 块几何）";
 		if (document.Unmatched.Count != 0)
 			text += $"，{document.Unmatched.Count.ToString(CultureInfo.InvariantCulture)} 个没匹配上";
