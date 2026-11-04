@@ -70,17 +70,24 @@ astra 审核时明确建议按层退场而不是整包删，所以留给人拍�
   "护甲级策略 → 生成该护甲的烘焙产物"时还能复用，所以按层归档而不是直接删。
 - `wardrobe sections` 要留（补表用）。
 
-### 三个小项（都是一两行的删除，没做是因为要先确认没有外部用户）
+### 三个"小删除"——**核过之后发现都不是死代码，已纠正**
 
-- `vpk2patch --unit-ids`（帮助文本里都没有它，管理器从不传）
-- `WardrobeSectionSource` + 无人发起的 `ModInformationCenter.RequestUnitSectionStructureAsync`
-- 装饰的 `.bin` 旧路线（`DecorationPayloadFile` / `Payloads` / `DecorationHostRebuildService.cs:77-85,533-539`）
+早先那份清单（来自 U0 的 A 线报告）说这三处没人用，逐条核实后不成立：
+
+| 项 | 实际状态 |
+|---|---|
+| `vpk2patch --unit-ids` | **活的**。`CliApplication.ResolveUnitIdentities`（:3091）被 `source convert`（:2698）与 `vpk2patch`（:3489）两处调用。它只是**没写进帮助文本**、管理器也从不传——是"未文档化的可选参数"，不是死代码。 |
+| `WardrobeSectionSource` + `RequestUnitSectionStructureAsync` | **活的**。`ModInformationCenter.cs:472` 调用它，而 `RequestUnitSectionStructureAsync` 是 `IModInformationCenter` 上的公开方法（有实现、有 Fake、有测试）。删它要动公开接口。 |
+| 装饰 `.bin` 旧路线 | **只读不可达**：`Payloads` 全仓唯一的赋值是 `CliDecorationEditPlanArtifacts.cs:713` 的 `Payloads = []`，**没有写入者**；`DecorationHostRebuildService.cs:77-85` 只是读。这条是真的，但它在一整套要退场的子系统里，单独删没意义。 |
+
+教训与之前几次相同：**"没人调"要先按当前代码查调用点，不能照抄报告结论。**
+`--unit-ids` 那条特别典型——它不在帮助里，所以看起来像死参数，实际两个命令都在用。
 
 ---
 
 ## 合并前检查清单
 
-- [ ] 全量测试绿（当前 1730 / 0 / 1）
+- [ ] 全量测试绿（当前 1739 / 0 / 1）
 - [ ] legacy Mod 重构建一次，产物与拆件时逐字节一致（U3 的验收）
 - [ ] V0 至少做过一次
 - [ ] 确认没有把材质方向会话正在改的文件带进来（`HD2SourceMigration/VpkConversion/*`）
