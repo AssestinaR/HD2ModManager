@@ -11,9 +11,25 @@ public sealed record CanonicalDecorationFragment(
 
 public sealed record CanonicalDecorationAppendInput(CanonicalDecorationFragment Fragment, ulong MaterialNamespace);
 
+/// <summary>
+/// 追加之后「最终第 i 段来自哪个来源的第 j 段」。
+/// <para>
+/// <b>拆件器靠它把 donor 的几何翻译成组员</b>：一个组就是"某个 donor 贡献的那些段"。
+/// <see cref="InputIndex"/> 是<b>本次调用</b> <c>inputsByTargetMesh</c> 里的 input 下标（同一个
+/// 目标 unit 的各级 LOD 用同一套 input 顺序）。
+/// </para>
+/// </summary>
+public sealed record CanonicalAppendedSection(int MeshInfoIndex, int FinalSectionIndex, int InputIndex, int SourceSectionIndex);
+
 public sealed record CanonicalDecorationAppendResult(PatchUnitMeshEditResult? Edit, IReadOnlyList<CanonicalPlanDiagnostic> Diagnostics)
 {
     public bool IsValid => Edit is not null && Diagnostics.Count == 0;
+
+    /// <summary>
+    /// 段来源账。**只有段数没有被合并改变时才给**（见 <c>TryAppendLodFamily</c> 里的守卫）——
+    /// 按槽合并会把多段并成一段，那时旧下标就指向别的几何了，宁可不给也不能给错的。
+    /// </summary>
+    public IReadOnlyList<CanonicalAppendedSection> Origins { get; init; } = [];
 }
 
 // Unit-level Blender Join pipeline. All sources are appended before material layout and palette
@@ -159,8 +175,38 @@ public sealed class CanonicalDecorationUnitAppender
         var rebuilt = new CanonicalUnitRebuilder().TryRebuild(expanded, targetUnit.Payload.TocData, prepared, rebuiltBones, material.Bindings);
         diagnostics.AddRange(rebuilt.Diagnostics);
         if (!rebuilt.IsValid) return new(null, diagnostics);
+
+        // 段来源账：只有"合并之后段数没变"时才可信。按槽合并会把多段并成一段，
+        // 那时下标整体位移，照旧下标记下来的账会指向别的几何 —— 宁可不给（留空）。
+        // ⚠️ 这里**不报诊断**：段数变化在默认路径上是正常现象（三条在役路径都不开
+        // uniqueSlotPerSection），把它变成诊断会让它们整体失败。
+        var appendedSections = new List<CanonicalAppendedSection>();
+        var originsTrustworthy = true;
+        foreach (var group in groups)
+        {
+            var origins = originsByMesh[group.TargetMesh.Index];
+            var finalCount = finalByMesh.TryGetValue(group.TargetMesh.Index, out var finalMesh) ? finalMesh.Sections.Count : -1;
+            if (finalCount != origins.Count)
+            {
+                originsTrustworthy = false;
+                break;
+            }
+
+            foreach (var origin in origins)
+            {
+                appendedSections.Add(new CanonicalAppendedSection(
+                    group.TargetMesh.Index,
+                    origin.FinalSectionIndex,
+                    origin.SourceIndex,
+                    origin.SourceSectionIndex));
+            }
+        }
+
         return new(new PatchUnitMeshEditResult(targetUnit.Entry, targetUnit.Payload, rebuilt.Output!.TocData, rebuilt.Output.GpuData,
-            ReplacementMaterialIds: material.Bindings.Select(binding => binding.MaterialId).Distinct().ToArray()), []);
+            ReplacementMaterialIds: material.Bindings.Select(binding => binding.MaterialId).Distinct().ToArray()), [])
+        {
+            Origins = originsTrustworthy ? appendedSections : [],
+        };
     }
 
     private static IReadOnlyList<CanonicalMaterialSectionProvenance> BuildMaterialProvenance(
