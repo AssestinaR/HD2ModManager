@@ -67,10 +67,65 @@ public sealed class MaterialCutoutDecisionTests
 		// ⚠️ 这是 B 那条的回归闸门。
 		// 合成底色的 alpha 是 0/0：旧实现据此判出"整片均匀半透明"，于是把**金属件**
 		// 也切进 alphaclip —— 既没有金属度（模板没有那个槽），镂空也做不出来。
-		Assert.True(SyntheticAlpha().IsUniformlyTranslucent, "前提：合成 alpha 确实会被旧的判据认成半透明");
+		Assert.True(SyntheticAlpha().IsEmpty, "前提：合成 alpha 属于「整片为空」这一档");
+		Assert.False(SyntheticAlpha().IsUniformlyTranslucent, "「整片为空」不再是「整片半透明」");
 
 		Assert.False(SourceMaterialConverter.ShouldUseAlphaClip(
 			wantsTransparency: true, hasSourceOpacity: false, SyntheticAlpha()));
+	}
+
+	/// <summary>
+	/// 实测事故（2026-11-04）：`二阶堂希罗` 的裙子材质 <c>hirocloth2</c> 只写 <c>$translucent</c>，
+	/// 底色 alpha 整片 ≈ 0。旧判据把它当"整片半透明" → <c>alphaclip</c> → 遮罩整张黑 →
+	/// **裙子在游戏里干净地消失**（实测 10 张遮罩 R 均值 1、非零像素 0.47%）。
+	/// 把阈值从 0.5 降到 0.144 也没救：0 小于任何阈值。
+	/// </summary>
+	[Fact]
+	public void EmptyAlphaWithOnlyTranslucencyDoesNotSwitch()
+	{
+		var empty = new AlphaStats(Min: 0, Max: 1, Coverage: 0.995);
+		Assert.True(empty.IsEmpty);
+
+		Assert.False(SourceMaterialConverter.ShouldUseAlphaClip(
+			wantsTransparency: true, hasSourceOpacity: true, empty, wantsAlphaTest: false));
+	}
+
+	/// <summary>
+	/// 但「隐藏物品」那类模组是**故意**让整件不画的：它们写 <c>$alphatest</c>、alpha 整片为 0，
+	/// 靠 <c>alphaclip</c> + 全黑遮罩达成"东西消失"。这一档必须保留，否则那些隐藏件会重新出现。
+	/// </summary>
+	[Fact]
+	public void EmptyAlphaWithAlphaTestKeepsAlphaClip()
+	{
+		var empty = new AlphaStats(Min: 0, Max: 0, Coverage: 1.0);
+
+		Assert.True(SourceMaterialConverter.ShouldUseAlphaClip(
+			wantsTransparency: true, hasSourceOpacity: true, empty, wantsAlphaTest: true));
+	}
+
+	/// <summary>
+	/// 更隐蔽的一档：alpha 动态范围是满的（0..255）、覆盖率也够，但**能看见的像素只有 0.5%**。
+	/// 旧判据（只看动态范围 + "有像素不是全不透明"）会认成"alpha 在表达形状" → alphaclip →
+	/// 整件被裁到只剩几个像素。实测就是 `hirocloth2` 那 10 张遮罩的形状。
+	/// </summary>
+	[Fact]
+	public void SparseAlphaDoesNotSwitchEvenWithFullRange()
+	{
+		var sparse = new AlphaStats(Min: 0, Max: 255, Coverage: 0.995) { VisibleCoverage = 0.0047 };
+
+		Assert.False(sparse.IsMeaningful, "能看见的像素只有 0.47%，不算「在表达形状」");
+		Assert.False(SourceMaterialConverter.ShouldUseAlphaClip(
+			wantsTransparency: true, hasSourceOpacity: true, sparse, wantsAlphaTest: false));
+	}
+
+	/// <summary>真正的镂空件（蕾丝）绝大多数像素可见，只有一小部分是"眼"——这一档必须仍然切 alphaclip。</summary>
+	[Fact]
+	public void NormalCutoutAlphaStillSwitches()
+	{
+		var lace = new AlphaStats(Min: 0, Max: 255, Coverage: 0.35) { VisibleCoverage = 0.65 };
+
+		Assert.True(SourceMaterialConverter.ShouldUseAlphaClip(
+			wantsTransparency: true, hasSourceOpacity: true, lace, wantsAlphaTest: true));
 	}
 
 	[Fact]

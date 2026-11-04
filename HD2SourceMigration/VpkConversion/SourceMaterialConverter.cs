@@ -1944,7 +1944,7 @@ public sealed class SourceMaterialConverter
 		// `rgba` 早已被换成 matcap 图像，于是"保留源底色"实际保留的是**那张金属球面图**
 		// （亮度与亮银接近）—— 用户实测"MourningVeil 无变化"，因为确实几乎没变。
 		// 修正办法不是调数值，而是把顺序理顺：**先知道模板能不能表达金属，再决定要不要换底色**。
-		var provisionalUseAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha);
+		var provisionalUseAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
 		if (provisionalUseAlphaClip && matcapIsMetal && metalCutout == MetalCutoutPolicy.MetalWins)
 			provisionalUseAlphaClip = false;   // MetalWins 会放弃镂空、回到 advanced
 		var provisionalTemplate = ResolveTemplate(provisionalUseAlphaClip);
@@ -2112,7 +2112,21 @@ public sealed class SourceMaterialConverter
 			// 所以取舍交给 `--metal-cutout`：默认保镂空，可选保金属。
 			// 实测 MourningVeil 的金属饰品全是 `$alphatest 1` + alpha 镂空，
 			// 一刀切成 advanced 就等于既没有镂空也没有金属——那是最坏的一种。
-			useAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha);
+			useAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+
+			// 诊断：这条链上"整件消失"的每一次都只能靠猜，所以把判据的四个输入打出来。
+			// `HD2MOD_CUTOUT_DEBUG=1` 时每个材质一行。
+			if (Environment.GetEnvironmentVariable("HD2MOD_CUTOUT_DEBUG") is { Length: > 0 })
+			{
+				Console.WriteLine(
+					$"#cutout {stem}: alpha(min={baseAlpha.Min},max={baseAlpha.Max},"
+					+ $"coverage={baseAlpha.Coverage:P1},visible={baseAlpha.VisibleCoverage:P1}) "
+					+ $"meaningful={baseAlpha.IsMeaningful} uniform={baseAlpha.IsUniformlyTranslucent} "
+					+ $"empty={baseAlpha.IsEmpty} | wantsTransparency={vmt.WantsTransparency} "
+					+ $"alphatest={vmt.WantsAlphaTest} translucent={vmt.WantsTranslucency} "
+					+ $"hasSource={hasSourceOpacity} => useAlphaClip={useAlphaClip} "
+					+ $"template={ResolveTemplate(useAlphaClip)}");
+			}
 
 			// 源侧要透明、但源图不在 ⇒ 我们**做不到**镂空。这必须说出来：
 			// 否则用户看到的是"这件该透的地方是实心的"，而报告里一个字都没有。
@@ -2121,6 +2135,19 @@ public sealed class SourceMaterialConverter
 				notices.Add(
 					$"{stem}：源侧要透明（$alphatest/$translucent），但底色贴图不在来源里 —— "
 					+ "做不出镂空遮罩，已按不透明处理（保住底色与金属度，不会整片消失）。");
+			}
+
+			// 源侧要透明、底图也在，但 alpha **几乎整片是透明的** ⇒ 这不是"半透明"，
+			// 而是"没有可用的镂空数据"。必须说出来：这一档以前会走 alphaclip，遮罩几乎全黑，
+			// **整件东西在游戏里干净地消失**，而报告里一个字都没有
+			// （实测：`二阶堂希罗` 的裙子 hirocloth2，10 张遮罩 R 均值 1、可见像素 0.47%）。
+			if (!useAlphaClip && hasSourceOpacity && vmt.WantsTransparency
+				&& !vmt.WantsAlphaTest && baseAlpha.VisibleCoverage < AlphaStats.MinimumVisibleCoverage)
+			{
+				notices.Add(
+					$"{stem}：源侧声明了 $translucent，但底色 alpha 几乎整片透明"
+					+ $"（只有 {baseAlpha.VisibleCoverage:P1} 的像素可见）—— 已按不透明处理。"
+					+ "若照 alpha 裁，这一件会被整片裁光（遮罩几乎全黑），在游戏里直接消失。");
 			}
 
 			// "既要镂空又是金属"只能二选一：选 MetalWins 就放弃镂空、走 advanced 换回金属度。
@@ -2757,10 +2784,16 @@ public sealed class SourceMaterialConverter
 	/// 才能用单测把"哪种输入得到哪种模板"钉死，而不必每次都进游戏。
 	/// </para>
 	/// </summary>
-	public static bool ShouldUseAlphaClip(bool wantsTransparency, bool hasSourceOpacity, AlphaStats alpha)
+	public static bool ShouldUseAlphaClip(bool wantsTransparency, bool hasSourceOpacity, AlphaStats alpha, bool wantsAlphaTest = true)
 		=> wantsTransparency
 			&& hasSourceOpacity
-			&& (alpha.IsMeaningful || alpha.IsUniformlyTranslucent);
+			&& (alpha.IsMeaningful
+				|| alpha.IsUniformlyTranslucent
+				// **隐藏物品类**：`$alphatest` + 整片 alpha ≈ 0 = "作者就是要它整片不画"。
+				// 这类模组（隐藏披风 / 隐藏 NPC）的全部目的就是让东西消失，所以保留 alphaclip。
+				// 与它相对的是薄纱件（只写 `$translucent`）：那种 alpha≈0 是**数据缺失**，
+				// 走 alphaclip 会把整件裁光——见 <see cref="AlphaStats.IsEmpty"/> 里的实测事故。
+				|| (wantsAlphaTest && alpha.IsEmpty));
 
 	private SynthesizedTexture BuildOpacityMask(string textureName, byte[] rgba, int width, int height, bool ditherBySource)
 	{
