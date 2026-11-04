@@ -2184,9 +2184,13 @@ public sealed class SourceMaterialConverter
 		{
 			BumpTexture = bumpTextureName,
 			BumpStrength = bumpStrength,
-			// OpenGL 约定的法线图（文件名带 `_opengl`）要翻绿通道；与 `--normal-flip-y` 异或：
-			// 那个开关是"全都翻"，这里补的是"作者自己标成 OpenGL 的那部分"。
-			BumpFlipY = normalFlipY ^ LooksOpenGlNormal(bumpTextureName),
+			// **只认显式开关，不再按文件名猜。**
+			//
+			// 曾经加过"名字里带 opengl 就翻绿通道"（huahua 的 Chiyu 整套法线都叫
+			// `*_Normal_OpenGL`）。实机结果是**比不翻更奇怪**：针织的明暗整个反掉、成为一块块暗斑。
+			// 结论：那些图在 L4D2 里就是照原样用的，文件名只是命名习惯，不能当约定来推断。
+			// 要看另一版就显式传 `--normal-flip-y on`。
+			BumpFlipY = normalFlipY,
 			MatcapBlend = matcapBlend,
 			MatcapTintRgba = matcapTintRgba,
 			Mask1Texture = mask1Texture,
@@ -3035,24 +3039,6 @@ public sealed class SourceMaterialConverter
 		return texture;
 	}
 
-	/// <summary>
-	/// 这张法线图是不是 **OpenGL 约定**（绿通道与 DirectX 相反）。
-	/// <para>
-	/// 判据只看文件名：作者把这类图命名成 <c>*_Normal_OpenGL</c>（实测 huahua 的 Chiyu 整套都是
-	/// 这样），而起源默认要 DirectX——<c>pbr.vmt</c> 里也写着"加 <c>--invert-green</c>
-	/// 可以把 OpenGL 法线转成 DirectX"。**不翻的后果是凹凸看着是反的**（实机表现为
-	/// "毛衣的阴影像是倒着做的"），而且只在斜面上明显，很容易被误判成"阴影算错了"。
-	/// </para>
-	/// </summary>
-	internal static bool LooksOpenGlNormal(string? bumpTextureName)
-	{
-		if (string.IsNullOrWhiteSpace(bumpTextureName))
-			return false;
-		return bumpTextureName.Contains("opengl", StringComparison.OrdinalIgnoreCase)
-			|| bumpTextureName.Contains("open_gl", StringComparison.OrdinalIgnoreCase)
-			|| bumpTextureName.EndsWith("_gl", StringComparison.OrdinalIgnoreCase)
-			|| bumpTextureName.EndsWith("-gl", StringComparison.OrdinalIgnoreCase);
-	}
 
 	private (SynthesizedTexture? Texture, string? Notice) EncodeNormalTexture(
 		string bumpTexture, double strength, byte roughness, bool flipY)
@@ -3156,6 +3142,8 @@ public sealed class SourceMaterialConverter
 			rgba[offset] = 0;
 	}
 }
+
+
 
 
 

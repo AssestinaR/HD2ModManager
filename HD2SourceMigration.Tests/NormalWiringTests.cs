@@ -48,40 +48,6 @@ public sealed class NormalWiringTests
 		Assert.Equal(0.01, MaterialAppearance.ParseBumpStrength("0.000001"), 6);
 	}
 
-	// ── OpenGL 约定的法线图 ─────────────────────────────────────────────
-
-	/// <summary>
-	/// 作者把 OpenGL 约定的法线图命名成 <c>*_Normal_OpenGL</c>（实测 huahua 的 Chiyu 整套都是）。
-	/// 起源默认要 DirectX，绿通道方向相反——**不翻就会让凹凸看着是反的**，
-	/// 实机表现正是"毛衣的阴影像是倒着做的"，而且只有这一套有这个问题。
-	/// </summary>
-	[Theory]
-	[InlineData("cloth1_normal_opengl", true)]
-	[InlineData("Hair_Normal_OpenGL", true)]
-	[InlineData("body_normal_open_gl", true)]
-	[InlineData("arm_gl", true)]
-	[InlineData("Mat_Underwear_N", false)]
-	[InlineData("_4_n", false)]
-	[InlineData("", false)]
-	[InlineData(null, false)]
-	public void DetectsOpenGlNormalMapsByName(string? name, bool expected)
-	{
-		Assert.Equal(expected, SourceMaterialConverter.LooksOpenGlNormal(name));
-	}
-
-	[Fact]
-	public void FlippingAnOpenGlNormalInvertsOnlyTheGreenChannel()
-	{
-		var dx = new byte[] { 128, 192, 0, 255 };
-		var gl = new byte[] { 128, 192, 0, 255 };
-
-		MaterialAppearance.RebuildTangentNormal(dx, 1.0, flipY: false, roughness: 0);
-		MaterialAppearance.RebuildTangentNormal(gl, 1.0, flipY: true, roughness: 0);
-
-		Assert.Equal(dx[0], gl[0]);
-		Assert.Equal(255 - dx[1], gl[1]);
-	}
-
 	// ── 法线像素重建 ─────────────────────────────────────────────────────
 
 	/// <summary>
