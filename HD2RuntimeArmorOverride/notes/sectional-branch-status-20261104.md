@@ -195,7 +195,7 @@ WardrobeTreeViewModel
 
 ---
 
-## 装饰链退场：范围已量清，按依赖方向排好序（未动）
+## 装饰链退场：第 1–2 步已完成（`e61bb92` / `51735ad`），第 3 步起未动
 
 **规模**：`rg -l 'Decoration'` → **110 个文件**。`DecorationPlanDocument` 单独牵扯 16 个文件，
 `ModNodeKind.Decoration` 有 **19 个消费点**（Core 导入器 / CLI / 管理器 / 测试）。
@@ -207,9 +207,9 @@ WardrobeTreeViewModel
 
 | 步 | 删什么 | 谁在用 | 风险 |
 |---|---|---|---|
-| 1 | 两个页面：`DecorationPlanPageViewModel` + View、`BatchDecorationPlanPageViewModel` + View；`ShellViewModel` 的 `OpenDecorationPlan` / `OpenBatchDecorationPlan` / 两个 `WorkspacePageType` 分支与显示名 | 只有 UI 自己 | 低——纯 UI 入口，删完功能就没了 |
-| 2 | 详情页/列表页上的装饰行动作（`ArmorRelease` 之外那几条与 decoration 相关的 row action） | UI | 低 |
-| 3 | CLI 的 `decoration package validate/apply`、`decoration edit validate/apply`（4 条）+ `CliDecorationEditPlanArtifacts` / `CliDecorationManagementInspection` / `CliDecorationSourceInspectionArtifacts` / `CliHostDerivedOverwritePlanArtifacts` / `CliBatchPatchRepairExecutor` 里的装饰分支 | 只有 CLI | 中——`CliBatchPatchRepairExecutor` 与批量修复共用，要看清是不是只删装饰那一段 |
+| 1 | ✅ **已完成** `e61bb92`：两个页面 + 三个 `ShellViewModel` 路由 + 两个 `WorkspacePageType` 成员 + 两条页动作 + 两个命令 + `PageActionKind` 两个成员 + 详情页「装饰详情」卡 + UiSnapshot stub | 只有 UI 自己 | 低 |
+| 2 | ✅ **已完成** `e61bb92`：「编辑装饰 Mod」动作 + `EditDecorationCommand` + `CanEditDecoration` + `PageActionKind.EditDecoration` | UI | 低 |
+| 3 | ✅ **入口已摘** `51735ad`：16 个派发臂（含 `host-derived` 全部）+ 4 个测试文件。**八个 artifact/executor 类仍留着**（已成不可达代码，删它们要连带清 `CliApplication.cs` 尾部那批只服务它们的格式化辅助方法） | 只有 CLI | 中 |
 | 4 | `ModLibraryService` 的装饰路径：`ScheduleDecorationActivationBatchAsync` / `FlushPendingDecorationRebuildsAsync` / `RebuildDecorationOverwritesAsync` / `ReadEnabledDecorationsAsync` / `RebuildHostOverwriteAsync` | 只有第 1、3 步 | **高**——`ModLibraryService` 是中枢文件，且 `HostDerivedOverwriteService` 是装饰 + 头盔合并共用的入口 |
 | 5 | `HostDerivedOverwriteService` / `DecorationHostRebuildService` / `DecorationActivationStore` / `DecorationPackageSnapshotService` / `DecorationHostTargetBinder` / `DecorationPlanDocument` / `DecorationPayloadDocument` / `DecorationPlanningDefaults` | 只有第 4 步 | 中 |
 | 6 | `ModNodeKind.Decoration` 及其 19 个消费点；`ObjectTreeImporter` / `ModImportPlanner` / `ModLibraryImporter` 的装饰分支 | 第 1–5 步之后 | 中——枚举值一删，编译器会把所有漏掉的点报出来，这反而是好事 |
