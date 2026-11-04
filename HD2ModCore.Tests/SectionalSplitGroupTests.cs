@@ -59,9 +59,10 @@ public sealed class SectionalSplitGroupTests
 	public void BuildGroups_UsesOnlyTheLedgerSectionsWhenPresent()
 	{
 		// 变体组：只框 donor 贡献的那几段（第 4、5 段），不能把宿主的 0..3 也框进来。
+		// 段来源账**按目标 unit 记**（这里的目标是 Host），InputIndex = donor 在 target.DonorUnitIds 里的位置。
 		var origins = new Dictionary<string, IReadOnlyList<CanonicalAppendedSection>>(StringComparer.Ordinal)
 		{
-			[Donor] =
+			[Host] =
 			[
 				new CanonicalAppendedSection(2, 4, 0, 0),
 				new CanonicalAppendedSection(2, 5, 0, 1),
@@ -75,9 +76,43 @@ public sealed class SectionalSplitGroupTests
 
 		var group = Assert.Single(document.Groups);
 		var member = Assert.Single(group.Members);
-		Assert.Equal(Donor, member.Unit);
+		// 成员指向**宿主**那个 unit：donor 已经被并掉了，产物里没有它。
+		Assert.Equal(Host, member.Unit);
 		Assert.Equal([4, 5], member.Sections);
 		Assert.Equal("Torso/Any", group.ExclusiveGroup);
+	}
+
+	[Fact]
+	public void BuildGroups_SplitsHostAndDonorSectionsOfAMergedTarget()
+	{
+		// 合并之后基础组与变体组必须**各管各的**：
+		// InputIndex = -1 是目标自己原有的段（基础件），>= 0 是第几个 donor 贡献的段（变体）。
+		// 这条守的是一个真 bug：早先版本按"整块 unit"取，基础组把 donor 的几何也吞了，
+		// 而变体组因为查不到 donor 的 unit 记录而变成空组 —— 界面上会看到一个空复选框。
+		var origins = new Dictionary<string, IReadOnlyList<CanonicalAppendedSection>>(StringComparer.Ordinal)
+		{
+			[Host] =
+			[
+				new CanonicalAppendedSection(2, 0, -1, 0),
+				new CanonicalAppendedSection(2, 1, -1, 1),
+				new CanonicalAppendedSection(2, 2, 0, 0),
+				new CanonicalAppendedSection(2, 3, 0, 1),
+				new CanonicalAppendedSection(2, 4, 0, 2),
+			],
+		};
+
+		var document = SectionalSplitter.BuildGroups(
+			Plan(
+				new SectionalSplitGroup("腿", "LeftLeg/Any", [Host], true),
+				new SectionalSplitGroup("腿 变体", "LeftLeg/Any", [Donor], false)),
+			origins,
+			Map((Host, 5)));
+
+		Assert.Equal(2, document.Groups.Count);
+		Assert.Equal([0, 1], Assert.Single(document.Groups[0].Members).Sections);
+		Assert.Equal([2, 3, 4], Assert.Single(document.Groups[1].Members).Sections);
+		// 两组的成员都指向**宿主**那个 unit（donor 已经被并掉了，产物里没有它）。
+		Assert.All(document.Groups, group => Assert.Equal(Host, Assert.Single(group.Members).Unit));
 	}
 
 	[Fact]

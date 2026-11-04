@@ -204,6 +204,16 @@ public static class SectionalSplitter
 		var patchPath = Path.Combine(outputDirectory, fileName);
 		var sections = await WardrobeSectionMapFile.BuildAsync(patchPath, cancellationToken).ConfigureAwait(false);
 		var groups = BuildGroups(plan, originsByTarget, sections.Document);
+
+		// 两份 sidecar 必须跟着产物一起落盘，否则产物"能用但不可编辑"：
+		// sections.json 是组件树与烘焙的唯一偏移来源，components.json 是组表。
+		await WardrobeSectionMapFile
+			.WriteAsync(Path.Combine(outputDirectory, WardrobeSectionMapFile.FileName), sections.Document, cancellationToken)
+			.ConfigureAwait(false);
+		await SectionGroupFile
+			.WriteAsync(outputDirectory, groups, cancellationToken)
+			.ConfigureAwait(false);
+
 		return new SectionalSplitResult(patchPath, plan, groups, sections.Document, warnings);
 	}
 
@@ -220,46 +230,82 @@ public static class SectionalSplitter
 		ArgumentNullException.ThrowIfNull(originsByTarget);
 		ArgumentNullException.ThrowIfNull(sections);
 
+		// 段来源账是**按目标 unit 记**的：一条 (MeshInfoIndex, FinalSectionIndex, InputIndex, SourceSectionIndex)。
+		// 其中 InputIndex = -1 表示"目标自己原有的段"，>= 0 表示"第几个 donor 贡献的段"。
+		// 所以要把 donor 的几何找出来，必须先知道它是**哪个目标的第几个 donor**。
+		var donorSlot = new Dictionary<string, (string HostUnitId, int InputIndex)>(StringComparer.Ordinal);
+		var hostIds = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var target in plan.Targets)
+		{
+			hostIds.Add(target.HostUnitId);
+			for (var index = 0; index < target.DonorUnitIds.Count; index++)
+				donorSlot[target.DonorUnitIds[index]] = (target.HostUnitId, index);
+		}
+
 		var groups = new List<SectionGroup>(plan.Groups.Count);
 		foreach (var group in plan.Groups)
 		{
-			var targets = new List<SectionGroupTarget>();
+			var members = new List<SectionGroupTarget>();
+			var source = SectionGroupSource.Manual;
 			foreach (var unitId in group.MemberUnitIds)
 			{
+				// 谁承载这个 unit 的几何：自己就是宿主，或者是某个目标的第 k 个 donor。
+				string hostUnitId;
+				int inputIndex;
+				if (hostIds.Contains(unitId))
+				{
+					hostUnitId = unitId;
+					inputIndex = -1;
+					source = SectionGroupSource.DonorUnit;
+				}
+				else if (donorSlot.TryGetValue(unitId, out var slot))
+				{
+					hostUnitId = slot.HostUnitId;
+					inputIndex = slot.InputIndex;
+					source = SectionGroupSource.DonorUnit;
+				}
+				else
+				{
+					continue;
+				}
+
 				var mapUnit = sections.Units.FirstOrDefault(unit =>
-					string.Equals(unit.FileId, unitId, StringComparison.OrdinalIgnoreCase));
+					string.Equals(unit.FileId, hostUnitId, StringComparison.OrdinalIgnoreCase));
 				if (mapUnit is null)
 					continue;
 
 				int[] indices;
-				if (originsByTarget.TryGetValue(unitId, out var origins) && origins.Count != 0)
+				if (originsByTarget.TryGetValue(hostUnitId, out var origins) && origins.Count != 0)
 				{
 					// 只取 LOD0 基准网格上的段：sections.json 的 section 下标就是它的段序。
 					var canonicalMeshIndex = ResolveCanonicalMeshIndex(mapUnit, origins);
 					indices = origins
-						.Where(origin => origin.MeshInfoIndex == canonicalMeshIndex)
+						.Where(origin => origin.MeshInfoIndex == canonicalMeshIndex && origin.InputIndex == inputIndex)
 						.Select(origin => origin.FinalSectionIndex)
 						.Distinct()
 						.Order()
 						.ToArray();
 				}
-				else
+				else if (inputIndex < 0)
 				{
 					// 没有段来源账（这个槽本来就只有它一个来源，没走过追加）：
 					// 它自己就是这个槽的全部几何 —— 组员就是它所有的节。
 					indices = [.. mapUnit.Sections.Select(section => section.Index).Order()];
 				}
+				else
+				{
+					// 有 donor 却没有段来源账：说不出 donor 落在哪几段。宁可空着也不猜。
+					indices = [];
+				}
 
 				if (indices.Length == 0)
 					continue;
-				targets.Add(new SectionGroupTarget(mapUnit.FileId, indices));
+				members.Add(new SectionGroupTarget(mapUnit.FileId, indices));
 			}
 
-			groups.Add(new SectionGroup(group.Name, string.Empty, [], targets)
+			groups.Add(new SectionGroup(group.Name, string.Empty, [], members)
 			{
-				Source = group.MemberUnitIds.Count == 1 && plan.Targets.Any(target => target.HostUnitId == group.MemberUnitIds[0])
-					? SectionGroupSource.DonorUnit
-					: SectionGroupSource.DonorUnit,
+				Source = source,
 				ExclusiveGroup = group.ExclusiveGroup,
 			});
 		}
@@ -429,8 +475,12 @@ public static class SectionalSplitter
 			var fileId = entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
 			try
 			{
+				// **必须用保留 payload 的那个读取器。** CanonicalUnitRebuilder 要拿
+				// targetUnit.Payload.TocData 当"未知区间原样保留"的基线；
+				// ReadCanonicalSourceAsync 把 payload 丢掉，换来的是
+				// MissingTargetTocData / InvalidUnitHeaderRange / InvalidMeshInfoRange 一整串诊断。
 				units[fileId] = await reader
-					.ReadCanonicalSourceAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
+					.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
 					.ConfigureAwait(false);
 			}
 			catch (Exception exception) when (exception is InvalidDataException or NotSupportedException or ArgumentException or OverflowException)
