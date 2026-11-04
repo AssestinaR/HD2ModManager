@@ -5,7 +5,7 @@
 
 > 分支 `sectional`，worktree 在 `.agents/worktrees/sectional`，从 master `dc2da4e` 拉出。
 > 设计稿：`section-consolidation-20261104.md`；U0 结论：`sectional-u0-findings-20261104.md`。
-> **测试基线（每次提交前都跑全量）：1736 通过 / 0 失败 / 1 跳过。**
+> **测试基线（每次提交前都跑全量）：1739 通过 / 0 失败 / 1 跳过。**
 
 ---
 
@@ -22,7 +22,10 @@
 | W2 可寻址 | `c95535c` | `uniqueSlotPerSection`；测试直接钉住"共用槽会并段 / 唯一槽保边界" |
 | U3a 规划器 | `1e6c656` | `SectionalSplitPlanner`（7 槽 × 身形，绝不跨身形合并）+ **互斥组强制**（变体替换的全部实现） |
 | U3b 段来源账 | `9ebf1ec` | 追加结果带 `Origins`，供拆件器把 donor 几何翻成组员 |
-| U5a 删死代码 | `adaaaea` | 装饰快照转发壳、孤儿 XAML 模板 |
+| U5a 删死代码 | daaaea | 装饰快照转发壳、孤儿 XAML 模板 |
+| U4 就地烘焙 | c8cf30e | 「应用」不再重跑换甲；端到端验证过（幂等 + 可逆） |
+| U3c 拆件执行器 | 49af034 | 读 patch / 合并 / 写回 / 产 sections.json + 组表；端到端验证过（7 units / 92 段 / 组表 100% 覆盖） |
+| V0 配方 + 死字段容错 | 7363a71 | 验证配方；三个死字段不再阻断工作区读取 |
 
 ### 几个值得记住的判断
 
@@ -38,47 +41,40 @@
 
 ## 还没做
 
-### U3c 拆件执行器（最大的一块）
+### V0 实机那一段（配方已给，进游戏由用户执行）
 
-规划器已经能给出"把哪些 unit 并进哪个槽、生成哪些组"，缺的是**真正写出一份新 patch**：
+`sectional-v0-verification-20261104.md` 里离线两条判据可以立刻跑；
+实机那三条（位置 / 遮挡 / 崩不崩）必须有人进游戏看。
 
-1. 读源 patch 的全部 unit（`PatchTocScanner` + `PatchUnitMeshReader`）。
-2. 每个目标：宿主 `PatchUnitMesh` + donor 的 LOD 家族 → `TryAppendLodFamily(..., cullingBounds: UnionWithComputed, uniqueSlotPerSection: true)`。
-3. 用 `CanonicalPatchSession` + `PatchWorkspaceWriter.WriteAsync(session, outDir, fileName, headerTemplateTocData)` 写出。
-   **卡点**：`PatchTocScanner` 不暴露 `HeaderTemplateTocData`（只有 `PatchWorkspace` 有），
-   需要先确认怎么从一份普通 patch 拿到表头模板。
-4. 用 `WardrobeSectionMapFile.BuildAsync(新patch)` 产 `sections.json`。
-5. 用 `Origins` 把 donor 的段翻译成组员，写 `components.json`。
-6. CLI `hd2mod mod split <Mod> [--plan|--apply]`。
+**前置**：需要一份多 unit 的 legacy 模型样本。本机没有——唯一的 legacy 形态是纯材质包。
+造样本的两条路写在配方 §1.1。
 
-**为什么停在这里**：写 patch 的代码一旦错了，产物是"能加载但几何乱"，
-比不写更糟；而本机**没有任何"多槽位占满"的 legacy 模型 Mod 可当样本**
-（唯一的 legacy 形态是 `【材质版】隐藏物品合集`，纯材质，没有 unit）。
-验证数据要先造：拿**游戏本体的一件护甲 patch** 当 donor 侧（它天然多槽位占满），
-配上我们自己的 7 unit 产物当主体。
+### U5 剩下的两处大退场（刻意没做）
 
-### U4 就地烘焙（「应用」不再重跑整条换甲）
+这两处不是"删几个文件"，而是**删掉一整套仍在编译、仍在测试覆盖里的子系统**。
+astra 审核时明确建议按层退场而不是整包删，所以留给人拍板：
 
-设计已定（`sectional-u0-findings` §6.3），实现路径：
+**① 装饰链退场**（`DecorationHostRebuildService` 788 行 / `HostDerivedOverwriteService` /
+`DecorationActivationStore` / `DecorationPlanDocument` / 两个装饰页面 / CLI 的
+`decoration *` 与 `host-derived *`）
+- 现网 0 个装饰，机制上已被 `SectionalSplitter` 取代（后者把 donor 几何直接并进 7 槽）。
+- 但 `CanonicalDecorationUnitAppender` 是它的底层，**拆件器也在用**——底层必须留，
+  能退的只有它上面那层"独立包 + 启用状态 + 重建宿主"。
+- 建议顺序：先停 GUI 入口 → 观察一个版本 → 再删 CLI → 最后删 Core 服务与测试。
 
-1. `WardrobeSectionMapUnit` 加可选 `sourceUnit`；`CliVpkRekey` 重建表时（`:274`/`:439`）填上。
-2. 「应用」→ 读 `Overwrite/sections.json`，按 `sourceUnit` 把 `disabled`（来源键空间）翻成目标键空间。
-3. `WardrobeSectionBaker.BakeAsync(Overwrite/<patch>, overwriteMap, translated)`。
-4. 判据：勾一下 3 秒内 `numIndices` 变了；连点 5 次一致；隐藏→恢复后字节复原。
+**② 护甲级掩码链退场**（`wardrobe.workspace.json` / `wardrobe.masks` /
+`WardrobeMaskCompiler` / `WardrobeMaskProjection` / `WardrobeMaskFile` /
+`armor_section_*.lua` / `armor_wardrobe_masks.lua` / CLI `wardrobe compile|project|validate`）
+- 运行时那条链**已经不可能生效**（读它的 Lua 第一行 `require('ffi')`，本版引擎没有 ffi）。
+- 但 Core 里的身份规范化（`WardrobeSectionFingerprint`）与投影思路，将来做
+  "护甲级策略 → 生成该护甲的烘焙产物"时还能复用，所以按层归档而不是直接删。
+- `wardrobe sections` 要留（补表用）。
 
-### U5 剩下的修剪
+### 三个小项（都是一两行的删除，没做是因为要先确认没有外部用户）
 
-- `.bin` 装饰旧路线（`DecorationPayloadFile` / `Payloads` / `DecorationHostRebuildService.cs:77-85,533-539`）
-- `WardrobeSectionSource` + 无人发起的 `RequestUnitSectionStructureAsync`
-- `vpk2patch --unit-ids`
-- 护甲级掩码整链按层退场（停分发死 Lua → CLI 弃用一个周期 → Core 归档）
-- `pieceOverrides` / `targetModes` / `CompositionMode` 的校验从致命降为警告
-
-### V0 实机垂直切片
-
-按用户判断**不阻塞开工**，但 **U3 交付前必须做一次**：
-它是那三个"静默少几何"入口（同键并段、LOD 不齐跳过、深度代理遮挡）的唯一裁判。
-配方见 `sectional-u0-findings` §6.1。
+- `vpk2patch --unit-ids`（帮助文本里都没有它，管理器从不传）
+- `WardrobeSectionSource` + 无人发起的 `ModInformationCenter.RequestUnitSectionStructureAsync`
+- 装饰的 `.bin` 旧路线（`DecorationPayloadFile` / `Payloads` / `DecorationHostRebuildService.cs:77-85,533-539`）
 
 ---
 
