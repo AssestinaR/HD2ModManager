@@ -135,23 +135,23 @@
                 </StackPanel>
             </DataTemplate>
 
-            <!-- 关掉的 section 不再绘制；勾选改动要点卡标题右侧的「应用」才写进 patch。 -->
+            <!-- 关掉的 section 不再绘制；勾选会立刻存盘，点卡标题右侧的「应用」才烘进 patch。 -->
             <DataTemplate x:Key="CardTemplate.VpkComponents">
                 <StackPanel>
-                    <TextBlock Text="条目可单击展开，应用后修改mod，重启游戏重新读取mod才能生效"
+                    <TextBlock Text="条目可单击展开。勾选会立刻保存；点「应用」才烘进 patch，之后要重启游戏才生效。"
                                Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"/>
                     <!--
-                        组件开关：源侧 `XXX关` 那类 $no_draw 包的翻译结果。
-                        与下面的树是同一份状态的两种视图——这里按"部件"命名（猫耳、披风），
-                        树按"unit / section"铺开。勾一下等于把对应的几节全关。
+                        section 组：源侧 `XXX关` 那类 $no_draw 包翻译出来的（自动命名），
+                        加上用户自己建的。与下面的树是同一份状态的两种视图——
+                        这里按"部件"命名（猫耳、披风），树按"unit / section"铺开。
                     -->
-                    <TextBlock Text="{Binding VpkSwitchSummary}"
+                    <TextBlock Text="{Binding VpkGroupSummary}"
                                Margin="0,10,0,0"
                                Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"
-                               Visibility="{Binding HasVpkSwitches, Converter={StaticResource BoolToVis}}"/>
-                    <ItemsControl ItemsSource="{Binding VpkSwitches}"
+                               Visibility="{Binding HasVpkGroups, Converter={StaticResource BoolToVis}}"/>
+                    <ItemsControl ItemsSource="{Binding VpkGroups}"
                                   Margin="0,6,0,0"
-                                  Visibility="{Binding HasVpkSwitches, Converter={StaticResource BoolToVis}}">
+                                  Visibility="{Binding HasVpkGroups, Converter={StaticResource BoolToVis}}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Border Background="{StaticResource SurfaceMuted}"
@@ -162,15 +162,30 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding Name}"
-                                                       Foreground="{StaticResource TextPrimary}"
-                                                       TextTrimming="CharacterEllipsis"/>
+                                            <!--
+                                                名字直接可改：失焦即落盘。组名不参与身份（身份是 id），
+                                                所以改名不会影响勾选状态，也不会让别的引用错位。
+                                            -->
+                                            <TextBox Text="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Padding="0"
+                                                     Foreground="{StaticResource TextPrimary}"
+                                                     CaretBrush="{StaticResource TextPrimary}"
+                                                     AutomationProperties.Name="组名"/>
                                             <TextBlock Text="{Binding Detail}"
                                                        FontSize="11"
                                                        Foreground="{StaticResource TextSecondary}"
                                                        TextWrapping="Wrap"/>
+                                            <!-- 共用 / 失效必须当场说出来，否则两个看起来独立的复选框会骗人。 -->
+                                            <TextBlock Text="{Binding StateHint}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource StatusWarning}"
+                                                       TextWrapping="Wrap"
+                                                       Visibility="{Binding HasStateHint, Converter={StaticResource BoolToVis}}"/>
                                         </StackPanel>
                                         <CheckBox Grid.Column="1"
                                                   Style="{StaticResource AppToggleSwitch}"
@@ -178,23 +193,58 @@
                                                   Margin="12,0,2,0"
                                                   IsChecked="{Binding IsEnabled, Mode=TwoWay}"
                                                   AutomationProperties.Name="{Binding Name}"/>
+                                        <Button Grid.Column="2"
+                                                Style="{StaticResource AppSecondaryButton}"
+                                                Content="删除"
+                                                Padding="10,4"
+                                                Margin="8,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Command="{Binding DeleteCommand}"
+                                                AutomationProperties.Name="删除组"/>
                                     </Grid>
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <TextBlock Text="{Binding VpkSwitchStatus}"
+                    <TextBlock Text="{Binding VpkGroupStatus}"
                                Margin="0,4,0,0"
                                Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"
-                               Visibility="{Binding HasVpkSwitchStatus, Converter={StaticResource BoolToVis}}"/>
+                               Visibility="{Binding HasVpkGroupStatus, Converter={StaticResource BoolToVis}}"/>
+                    <!--
+                        新建组：先选目标（在下面的树里点一块几何或一个部位），再命名。
+                        「选中」和「勾选」是两件事——勾选框表达"这一块画不画"，选中表达"要把它建成组"。
+                        混用同一个控件会让用户分不清自己在做什么。
+                    -->
+                    <TextBlock Text="{Binding VpkSelectionHint}"
+                               Margin="0,8,0,0"
+                               Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"/>
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding NewVpkGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{StaticResource AppTextBox}"
+                                 VerticalAlignment="Center"
+                                 AutomationProperties.Name="新组名"/>
+                        <Button Grid.Column="1"
+                                Style="{StaticResource AppSecondaryButton}"
+                                Content="新建组"
+                                Command="{Binding CreateVpkGroupCommand}"
+                                Margin="8,0,0,0"
+                                Padding="14,6"/>
+                    </Grid>
                     <!--
                         行外观、缩进、竖线、点击展开、展开/收起的过渡全在 TreeSurface 里，
                         这里只给数据。原来那套 ItemTemplate + ItemContainerStyle 不再需要。
                     -->
-                    <local:TreeSurface Roots="{Binding VpkTree.Roots}"
+                    <local:TreeSurface
+                                       Roots="{Binding VpkTree.Roots}"
                                        Margin="0,8,0,0"
                                        MaxHeight="420"
-                                       VerticalScrollBarVisibility="Auto"/>
+                                       VerticalScrollBarVisibility="Auto"
+                                       SelectionChanged="OnVpkComponentTreeSelectionChanged"/>
                 </StackPanel>
             </DataTemplate>
 

@@ -94,6 +94,15 @@ public partial class TreeSurface : UserControl
     /// <summary>当前选中行。旧树靠 TreeViewItem 自带选中，扁平列表里只能自己记。</summary>
     public ITreeSurfaceNode? SelectedNode => _selectedNode;
 
+    /// <summary>
+    /// 选中行变了。<b>只报"变了"，不报"没变"</b>——重复报告会让订阅方做无用的刷新。
+    /// <para>
+    /// 控件不知道选中行要拿来干什么（展开、跳转、还是"把这一块建成组"），
+    /// 所以它只把事实说出来，语义留给调用方。
+    /// </para>
+    /// </summary>
+    public event EventHandler<ITreeSurfaceNode?>? SelectionChanged;
+
     /// <summary>单选：换行时把上一行的标记清掉，保证同一时刻只有一行亮着。</summary>
     public void Select(ITreeSurfaceNode? node)
     {
@@ -101,6 +110,7 @@ public partial class TreeSurface : UserControl
         if (_selectedNode is not null) _selectedNode.IsSelected = false;
         _selectedNode = node;
         if (node is not null) node.IsSelected = true;
+        SelectionChanged?.Invoke(this, node);
     }
 
     private static bool ContainsRow(IReadOnlyList<ITreeSurfaceNode> rows, ITreeSurfaceNode node)

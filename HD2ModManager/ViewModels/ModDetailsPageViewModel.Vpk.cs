@@ -42,8 +42,30 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private bool _vpkArmorsLoading;
 	private IReadOnlyList<VpkTargetArmorOption> _vpkTargetArmors = [];
 	private VpkTargetArmorOption? _selectedVpkTargetArmor;
-	private IReadOnlyList<VpkSwitchItemViewModel> _vpkSwitches = [];
+	private IReadOnlyList<VpkGroupItemViewModel> _vpkGroups = [];
 	private string _vpkSwitchStatus = string.Empty;
+
+	/// <summary>
+	/// 组表（<c>components.json</c>）。**与开关状态分开**：这里只回答"有哪些组、每个组包含哪几块"，
+	/// 而"哪些块当前不画"存在 <see cref="VpkWardrobeFile.State"/>（<c>wardrobe.json</c>）。
+	/// 两者分开的理由见 <see cref="SectionGroup"/> 的注释。
+	/// </summary>
+	private SectionGroupDocument _sectionGroups = SectionGroupDocument.Empty;
+
+	/// <summary>新建组 / 改名时用的输入框内容。</summary>
+	private string _newVpkGroupName = string.Empty;
+
+	/// <summary>树上当前选中的节点。<b>新建组就是"把这一块（或这一整棵）建成组"</b>，所以它必须有。</summary>
+	private WardrobeTreeNode? _selectedVpkTreeNode;
+
+	/// <summary>当前生效的 section 表。组 CRUD 之后要拿它重画（不重读文件）。</summary>
+	private WardrobeSectionMapDocument? _vpkSectionMap;
+
+	/// <summary>勾选状态的防抖保存。勾一下不该立刻写盘（连点十下会写十次），但也不能不写。</summary>
+	private CancellationTokenSource? _vpkStateSave;
+
+	/// <summary>防抖窗口。250 ms：比人手连点慢，比"切页"快。</summary>
+	private static readonly TimeSpan VpkStateSaveDelay = TimeSpan.FromMilliseconds(250);
 
 	/// <summary>这个 Mod 是不是 VPK 版（有 <c>vpk2patch/</c> 载荷）。</summary>
 	public bool IsVpkMod { get; private set; }
@@ -65,52 +87,94 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	public bool HasVpkComponentTree => _vpkTree?.HasRoots == true;
 
 	/// <summary>
-	/// 组件开关（<c>components.json</c> 里的"关掉猫耳/披风"）。
+	/// section 组列表（<c>components.json</c> 里的"猫耳 / 披风 / 外套"）。
 	/// <para>
-	/// 与树是<b>两种视图、同一份状态</b>：开关写的是"这些 section 关没关"，
+	/// 与树是<b>两种视图、同一份状态</b>：组写的是"这些 section 关没关"，
 	/// 树上显示的也是同一件事。所以这里没有第二份持久化数据，勾一下等于替用户把
 	/// 对应的那几节全关（或全开）。
 	/// </para>
 	/// </summary>
-	public IReadOnlyList<VpkSwitchItemViewModel> VpkSwitches
+	public IReadOnlyList<VpkGroupItemViewModel> VpkGroups
 	{
-		get => _vpkSwitches;
+		get => _vpkGroups;
 		private set
 		{
-			_vpkSwitches = value;
+			_vpkGroups = value;
 			OnPropertyChanged();
-			OnPropertyChanged(nameof(HasVpkSwitches));
-			OnPropertyChanged(nameof(VpkSwitchSummary));
+			OnPropertyChanged(nameof(HasVpkGroups));
+			OnPropertyChanged(nameof(VpkGroupSummary));
 		}
 	}
 
-	public bool HasVpkSwitches => _vpkSwitches.Count > 0;
+	public bool HasVpkGroups => _vpkGroups.Count > 0;
 
-	/// <summary>开关区的一句话说明：多少个开关、共关掉多少块几何。</summary>
-	public string VpkSwitchSummary
+	/// <summary>新建组时用的名字。留空则用「新组」。</summary>
+	public string NewVpkGroupName
+	{
+		get => _newVpkGroupName;
+		set => SetField(ref _newVpkGroupName, value);
+	}
+
+	/// <summary>树上当前选中的节点。由视图在选中变化时写入。</summary>
+	public WardrobeTreeNode? SelectedVpkTreeNode
+	{
+		get => _selectedVpkTreeNode;
+		set
+		{
+			if (!SetField(ref _selectedVpkTreeNode, value)) return;
+			OnPropertyChanged(nameof(VpkSelectionHint));
+			OnPropertyChanged(nameof(HasVpkSelection));
+		}
+	}
+
+	public bool HasVpkSelection => _selectedVpkTreeNode is not null;
+
+	/// <summary>选中提示：新建组会包含哪几块。<b>点之前就说清</b>，比点了之后猜好。</summary>
+	public string VpkSelectionHint
 	{
 		get
 		{
-			if (_vpkSwitches.Count == 0)
-				return string.Empty;
-			var sections = _vpkSwitches.Sum(item => item.Entry.SectionCount);
-			return $"识别到 {_vpkSwitches.Count} 个组件开关（共 {sections} 块几何）。"
-				+ "关掉之后点「应用」烘进 patch。";
+			if (_selectedVpkTreeNode is not { } node)
+				return "先在下面的树里点一块几何（或一个部位），再点「新建组」。";
+			var sections = node.Kind == WardrobeTreeNodeKind.Section ? [node] : node.Sections().ToArray();
+			var count = sections.Count(section => section.Unit is not null && section.SectionIndex is not null);
+			return count == 0
+				? $"「{node.Label}」下面没有可开关的几何。"
+				: $"「{node.Label}」→ 新建组会包含 {count} 块几何。";
 		}
 	}
 
-	/// <summary>没匹配上的开关、以及"这个 Mod 是旧版转的"这类提示。</summary>
-	public string VpkSwitchStatus
+	/// <summary>组区的一句话说明：多少个组、共覆盖多少块几何、其中多少条已经失效。</summary>
+	public string VpkGroupSummary
+	{
+		get
+		{
+			if (_vpkGroups.Count == 0)
+				return string.Empty;
+			var sections = _vpkGroups.Sum(item => item.Entry.SectionCount);
+			var text = $"共 {_vpkGroups.Count} 个组（覆盖 {sections} 块几何）。";
+			var stale = _vpkGroups.Count(item => item.State == VpkGroupState.Stale);
+			if (stale != 0)
+				text += $"其中 {stale} 个组在当前产物里找不到落点。";
+			var shared = _vpkGroups.Count(item => item.State == VpkGroupState.Shared);
+			if (shared != 0)
+				text += $"另有 {shared} 个组与别的组共用同一块几何（只能一起开关）。";
+			return text + "勾完点「应用」烘进 patch。";
+		}
+	}
+
+	/// <summary>没匹配上的包、以及"这个 Mod 是旧版转的"这类提示。</summary>
+	public string VpkGroupStatus
 	{
 		get => _vpkSwitchStatus;
 		private set
 		{
 			if (!SetField(ref _vpkSwitchStatus, value)) return;
-			OnPropertyChanged(nameof(HasVpkSwitchStatus));
+			OnPropertyChanged(nameof(HasVpkGroupStatus));
 		}
 	}
 
-	public bool HasVpkSwitchStatus => !string.IsNullOrWhiteSpace(_vpkSwitchStatus);
+	public bool HasVpkGroupStatus => !string.IsNullOrWhiteSpace(_vpkSwitchStatus);
 
 	/// <summary>「启用 L4N 支持的衣物装饰组件切换」——开关本身存在 Mod 自己的 wardrobe.json 里。</summary>
 	public bool EnableVpkComponentTree
@@ -218,14 +282,32 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	public RelayCommand ApplyVpkComponentsCommand => _applyVpkComponentsCommand ??= new(
 		async _ => await ApplyVpkComponentsAsync());
 
+	private RelayCommand? _createVpkGroupCommand;
+
+	/// <summary>
+	/// 「新建组」：把树上当前选中的那一块（或那一整棵）建成一个命名组。
+	/// <para>
+	/// <b>为什么用"当前选中"而不是让用户逐节勾选。</b>树上的勾选框表达的是"这一块画不画"，
+	/// 不是"选中"；把两种语义压到同一个控件上，用户会分不清"我勾了它是让它显示，还是让它进组"。
+	/// 选中态是 <see cref="TreeSurface"/> 本来就有的，用它最省事也最不容易误解。
+	/// </para>
+	/// </summary>
+	public RelayCommand CreateVpkGroupCommand => _createVpkGroupCommand ??= new(
+		async _ => await CreateVpkGroupAsync());
+
 	/// <summary>每次详情页刷新时重算：是不是 VPK 版、组件树长什么样。</summary>
 	private void RefreshVpk()
 	{
+		// 先把手上的防抖写盘落地：用户切走之前勾的那几下不能丢。
+		FlushVpkStateSave();
 		_vpkFile = VpkWardrobeFile.Default;
 		_vpkStatus = string.Empty;
 		VpkTree = null;
-		VpkSwitches = [];
-		VpkSwitchStatus = string.Empty;
+		VpkGroups = [];
+		VpkGroupStatus = string.Empty;
+		_sectionGroups = SectionGroupDocument.Empty;
+		SelectedVpkTreeNode = null;
+		NewVpkGroupName = string.Empty;
 		IsVpkMod = false;
 		OnPropertyChanged(nameof(IsVpkMod));
 		OnPropertyChanged(nameof(ShowPatchSettingsCard));
@@ -261,10 +343,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				var tree = new WardrobeTreeViewModel(this);
 				tree.LoadFromTree(root, editable: true);
 				VpkTree = tree;
-				// 开关表与 section 表都取自**权威侧**（`vpk2patch/`）：它们描述的是"这个 VPK 有什么"，
+				// 组表与 section 表都取自**权威侧**（`vpk2patch/`）：它们描述的是"这个 VPK 有什么"，
 				// 与目标护甲无关。Overwrite 只是当前变体，拿它的 Unit 键去对权威侧的掩码永远对不上。
 				var components = await VpkModWardrobeService.ReadComponentsAsync(directory).ConfigureAwait(true);
-				ApplyVpkSwitches(components, map);
+				ApplyVpkGroups(components, map);
 			}
 			else
 			{
@@ -754,10 +836,18 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private async Task PersistVpkAsync()
 	{
 		if (!TryGetCurrentNode(out var node)) return;
-		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+		await WriteWardrobeAsync(Path.Combine(_library.ModsRootDirectory, node.RelativePath), _vpkFile).ConfigureAwait(true);
+	}
+
+	/// <summary>
+	/// 写一份 <c>wardrobe.json</c>。<b>接的是快照而不是字段</b>——防抖落地时页面可能正在重置，
+	/// 异步写盘读到的必须还是调用那一刻的值。
+	/// </summary>
+	private async Task WriteWardrobeAsync(string directory, VpkWardrobeFile file)
+	{
 		try
 		{
-			await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
+			await VpkModWardrobeService.WriteAsync(directory, file).ConfigureAwait(true);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidOperationException)
 		{
@@ -776,73 +866,282 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	void IWardrobeTreeToggleStore.ApplyToggle(WardrobeTreeNode node, bool enabled)
 	{
 		_vpkFile = _vpkFile with { State = _vpkFile.State.SetEnabled(node, enabled) };
-		// 开关列表与树是同一份状态的两种视图：树上改了一节，开关那一行也要跟着变
-		// （它可能正好覆盖这一节）。不刷新就会出现"开关显示开、几何却已经关了"。
-		foreach (var item in _vpkSwitches)
+		// 组列表与树是同一份状态的两种视图：树上改了一节，覆盖它的那些组也要跟着变。
+		foreach (var item in _vpkGroups)
 			item.RaiseEnabledChanged();
+		// 勾一下就要落盘：以前只有「应用」会写文件，勾完直接切页就静默丢了。
+		ScheduleVpkStateSave();
 	}
 
 	private bool IsVpkSectionDisabled(string unit, int sectionIndex)
 		=> _vpkFile.State.IsDisabled(unit, sectionIndex);
 
-	// ── 组件开关（源侧 $no_draw 包的翻译结果）──
+	// ── 组（components.json）──
 
 	/// <summary>
-	/// 把开关表装进界面。**没有开关表不是错误**：用旧转换器产的 Mod 里没有
+	/// 把组表装进界面。**没有组表不是错误**：用旧转换器产的 Mod 里没有
 	/// <c>components.json</c>，那时只显示树，不该给用户一条"出错了"。
 	/// </summary>
-	private void ApplyVpkSwitches(SectionGroupDocument? document, WardrobeSectionMapDocument sections)
+	private void ApplyVpkGroups(SectionGroupDocument? document, WardrobeSectionMapDocument sections)
 	{
-		var stale = 0;
-		var usable = new List<SectionGroup>();
-		if (document is not null)
+		_sectionGroups = document ?? SectionGroupDocument.Empty;
+		_vpkSectionMap = sections;
+
+		// 每块几何被几个组覆盖：>1 就是"关一个会连带关另一个"，界面必须说出来。
+		var coverage = new Dictionary<(string Unit, int Section), int>();
+		foreach (var group in _sectionGroups.Groups)
 		{
-			foreach (var entry in document.Groups)
+			foreach (var target in group.Members)
 			{
-				// 掩码里的 unit 必须仍然在**当前生效**的 section 表里。
-				// 换甲会把 Unit 换到目标护甲的键上，旧掩码于是整批失效——那种开关点下去什么都不会发生。
-				if (entry.Members.Count != 0 && entry.Members.All(target => sections.FindUnit(target.Unit) is not null))
-					usable.Add(entry);
-				else
-					stale++;
+				foreach (var section in target.Sections)
+				{
+					var key = (target.Unit, section);
+					coverage[key] = coverage.TryGetValue(key, out var count) ? count + 1 : 1;
+				}
 			}
 		}
 
-		VpkSwitches = usable
-			.Select(entry => new VpkSwitchItemViewModel(entry, ReadSwitchEnabled, WriteSwitch))
-			.ToArray();
+		var items = new List<VpkGroupItemViewModel>(_sectionGroups.Groups.Count);
+		foreach (var group in _sectionGroups.Groups)
+		{
+			items.Add(new VpkGroupItemViewModel(
+				group,
+				Classify(group, sections, coverage),
+				ReadGroupEnabled,
+				WriteGroup,
+				RenameGroup,
+				DeleteGroup));
+		}
 
-		// 没匹配上的必须说清：用户装了"猫耳关"却看不到开关，只会以为功能没做。
+		VpkGroups = items;
+
+		// 没匹配上的必须说清：用户装了"猫耳关"却看不到组，只会以为功能没做。
 		var parts = new List<string>();
-		if (stale != 0)
-			parts.Add($"{stale} 个开关指向的 Unit 不在这份转换产物里——多半是转换时材质没对上，重新导入一次这个 Mod。");
+		if (_sectionGroups.Groups.Count == 0)
+		{
+			// 没有组时不说"0 个组"——那读起来像出错。给一句可照做的提示。
+			parts.Add("这个 Mod 还没有 section 组。在下面的树里点一块几何，再点「新建组」。");
+		}
+
 		if (document is { Unmatched.Count: > 0 })
 		{
-			parts.Add($"{document.Unmatched.Count} 个开关在这个 Mod 里找不到对应材质："
+			parts.Add($"{document.Unmatched.Count} 个源侧开关包在这个 Mod 里找不到对应材质："
 				+ $"{string.Join("、", document.Unmatched.Take(4).Select(item => item.Name))}"
 				+ (document.Unmatched.Count > 4 ? "…" : string.Empty)
 				+ "。多半是它属于另一个角色/另一份材质包。");
 		}
 
-		VpkSwitchStatus = string.Join(Environment.NewLine, parts);
+		VpkGroupStatus = string.Join(Environment.NewLine, parts);
+		OnPropertyChanged(nameof(VpkSelectionHint));
 	}
 
-	/// <summary>开关"开着" = 它要关的那几节**没有全部**被关掉（与树的三态语义一致）。</summary>
-	private bool ReadSwitchEnabled(SectionGroup entry)
+	/// <summary>判定一个组能不能单独开关。三种状态的定义见 <see cref="VpkGroupState"/>。</summary>
+	private static VpkGroupState Classify(
+		SectionGroup group,
+		WardrobeSectionMapDocument sections,
+		IReadOnlyDictionary<(string Unit, int Section), int> coverage)
 	{
-		if (entry.Members.Count == 0)
+		if (group.Members.Count == 0)
+			return VpkGroupState.Stale;
+		// 掩码里的 unit 必须仍然在**当前生效**的 section 表里。换甲会把 Unit 换到目标护甲的键上。
+		if (group.Members.Any(target => sections.FindUnit(target.Unit) is null))
+			return VpkGroupState.Stale;
+		foreach (var target in group.Members)
+		{
+			foreach (var section in target.Sections)
+			{
+				if (coverage.TryGetValue((target.Unit, section), out var count) && count > 1)
+					return VpkGroupState.Shared;
+			}
+		}
+
+		return VpkGroupState.Independent;
+	}
+
+	/// <summary>组"开着" = 它的成员**没有全部**被关掉（与树的三态语义一致）。</summary>
+	private bool ReadGroupEnabled(SectionGroup group)
+	{
+		if (group.Members.Count == 0)
 			return false;
-		return !entry.Members.All(target =>
+		return !group.Members.All(target =>
 			target.Sections.All(section => _vpkFile.State.IsDisabled(target.Unit, section)));
 	}
 
-	private void WriteSwitch(SectionGroup entry, bool enabled)
+	private void WriteGroup(SectionGroup group, bool enabled)
 	{
 		var state = _vpkFile.State;
-		foreach (var target in entry.Members)
+		foreach (var target in group.Members)
 			state = state.SetSectionsEnabled(target.Unit, target.Sections, enabled);
 		_vpkFile = _vpkFile with { State = state };
-		// 树上显示的是同一份状态：不刷新就会出现"开关关了、树上还勾着"。
+		// 树上显示的是同一份状态：不刷新就会出现"组开了、树上还关着"。
 		VpkTree?.RefreshChecks();
+		ScheduleVpkStateSave();
+	}
+
+	private void RenameGroup(SectionGroup group, string name) => _ = RenameVpkGroupAsync(group, name);
+
+	private void DeleteGroup(SectionGroup group) => _ = DeleteVpkGroupAsync(group);
+
+	/// <summary>新建组：把树上选中的那一块（或那一整棵）建成组。</summary>
+	private async Task CreateVpkGroupAsync()
+	{
+		if (!TryGetCurrentNode(out var node))
+			return;
+		if (SelectedVpkTreeNode is not { } selected)
+		{
+			VpkGroupStatus = "先在下面的树里点一块几何（或一个部位），再点「新建组」。";
+			return;
+		}
+
+		var sections = selected.Kind == WardrobeTreeNodeKind.Section ? [selected] : selected.Sections().ToArray();
+		var members = sections
+			.Where(section => section.Unit is not null && section.SectionIndex is not null)
+			.GroupBy(section => section.Unit!, StringComparer.Ordinal)
+			.Select(group => new SectionGroupTarget(
+				group.Key,
+				[.. group.Select(section => section.SectionIndex!.Value).Order()]))
+			.ToArray();
+
+		var created = SectionGroupEditor.Create(_sectionGroups, NewVpkGroupName, members);
+		if (created is null)
+		{
+			VpkGroupStatus = "这一块下面没有可开关的几何，建不出组。";
+			return;
+		}
+
+		_sectionGroups = created.Value.Document;
+		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+		if (await SaveSectionGroupsAsync(directory).ConfigureAwait(true))
+		{
+			NewVpkGroupName = string.Empty;
+			VpkGroupStatus = $"已新建组「{created.Value.Group.Name}」，覆盖 {created.Value.Group.SectionCount} 块几何。";
+		}
+
+		ReapplyVpkGroups();
+	}
+
+	private async Task RenameVpkGroupAsync(SectionGroup group, string name)
+	{
+		if (!TryGetCurrentNode(out var node))
+			return;
+		var renamed = SectionGroupEditor.Rename(_sectionGroups, group.EffectiveId, name);
+		if (renamed is null)
+		{
+			// 名字为空或 id 找不到：不改文档，只把界面刷回去（否则输入框会停在那个空名字上）。
+			VpkGroupStatus = "组名不能为空。";
+			ReapplyVpkGroups();
+			return;
+		}
+
+		_sectionGroups = renamed;
+		await SaveSectionGroupsAsync(Path.Combine(_library.ModsRootDirectory, node.RelativePath)).ConfigureAwait(true);
+		ReapplyVpkGroups();
+	}
+
+	private async Task DeleteVpkGroupAsync(SectionGroup group)
+	{
+		if (!TryGetCurrentNode(out var node))
+			return;
+		var removed = SectionGroupEditor.Remove(_sectionGroups, group.EffectiveId);
+		if (removed is null)
+			return;
+
+		_sectionGroups = removed;
+		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+		if (await SaveSectionGroupsAsync(directory).ConfigureAwait(true))
+		{
+			// 说清"几何没动"：用户最怕的是删组把模型删掉一块。
+			VpkGroupStatus = $"已删除组「{group.Name}」。它的几何还在，只是不再有名字和开关。";
+		}
+
+		ReapplyVpkGroups();
+	}
+
+	/// <summary>把组表写回权威侧（<c>vpk2patch/</c>）。载荷是只读的，写完要把只读补回去。</summary>
+	private async Task<bool> SaveSectionGroupsAsync(string modDirectory)
+	{
+		var payload = Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName);
+		var path = Path.Combine(payload, SectionGroupFile.FileName);
+		try
+		{
+			VpkPayloadSwap.ClearReadOnly(path);
+			await SectionGroupFile.WriteAsync(payload, _sectionGroups).ConfigureAwait(true);
+			VpkPayloadSwap.MarkReadOnly(path);
+			return true;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			VpkGroupStatus = "保存组表失败：" + exception.Message;
+			return false;
+		}
+	}
+
+	/// <summary>文档改过之后重画组列表（不重读文件）。</summary>
+	private void ReapplyVpkGroups()
+	{
+		if (_vpkSectionMap is not { } map)
+		{
+			VpkGroups = [];
+			return;
+		}
+
+		ApplyVpkGroups(_sectionGroups, map);
+	}
+
+	// ── 勾选状态的防抖保存 ──
+
+	/// <summary>
+	/// 勾一下之后安排一次写盘。<b>以前只有「应用」会写文件</b>，勾完直接切页就静默丢了。
+	/// <para>
+	/// <b>必须在这里就把"写给哪个目录、写什么内容"抓成快照。</b>延时窗口里用户可能已经切到
+	/// 另一个 Mod：那时 <c>_vpkFile</c> 已被重置成默认值，照字段写会把**新 Mod 的**
+	/// <c>wardrobe.json</c> 用一份空状态覆盖掉。
+	/// </para>
+	/// </summary>
+	private void ScheduleVpkStateSave()
+	{
+		if (!TryGetCurrentNode(out var node))
+			return;
+		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+		var file = _vpkFile;
+
+		_vpkStateSave?.Cancel();
+		_vpkStateSave?.Dispose();
+		var source = new CancellationTokenSource();
+		_vpkStateSave = source;
+		_ = SaveAfterDelayAsync(directory, file, source.Token);
+	}
+
+	private async Task SaveAfterDelayAsync(string directory, VpkWardrobeFile file, CancellationToken token)
+	{
+		try
+		{
+			await Task.Delay(VpkStateSaveDelay, token).ConfigureAwait(true);
+		}
+		catch (OperationCanceledException)
+		{
+			return;
+		}
+
+		await WriteWardrobeAsync(directory, file).ConfigureAwait(true);
+	}
+
+	/// <summary>
+	/// 立刻把待写的状态落地。<b>切页 / 刷新详情之前必须调</b>——
+	/// 防抖窗口只有 250 ms，但"用户在窗口内切走"是真实会发生的，不能靠时间赌。
+	/// </summary>
+	private void FlushVpkStateSave()
+	{
+		if (_vpkStateSave is null)
+			return;
+		_vpkStateSave.Cancel();
+		_vpkStateSave.Dispose();
+		_vpkStateSave = null;
+		if (!TryGetCurrentNode(out var node))
+			return;
+		// 快照：RefreshVpk 紧接着就会把 _vpkFile 重置成 Default，异步写盘读到的必须还是旧值。
+		var file = _vpkFile;
+		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+		_ = WriteWardrobeAsync(directory, file);
 	}
 }

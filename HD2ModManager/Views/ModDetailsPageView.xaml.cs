@@ -113,6 +113,20 @@ namespace HD2ModManager.Views
             _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(details.CommitDisplayedHostOptionOrders));
         }
 
+        /// <summary>
+        /// 组件树里选中了一行。<b>"选中"与"勾选"是两件事</b>：勾选框表达"这一块画不画"，
+        /// 选中表达"要把它建成组"。所以这里只把选中的节点转给 ViewModel，不碰任何勾选状态。
+        /// <para>
+        /// 树在 DataTemplate 里，所以走 <c>sender.DataContext</c> 而不是字段——模板里的 x:Name
+        /// 拿不到实例，而 DataContext 一定是这一页的 ViewModel。
+        /// </para>
+        /// </summary>
+        private void OnVpkComponentTreeSelectionChanged(object? sender, Controls.Trees.ITreeSurfaceNode? node)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not ModDetailsPageViewModel details) return;
+            details.SelectedVpkTreeNode = (node as WardrobeTreeNodeViewModel)?.Node;
+        }
+
         private void OnHostDecorationOpenDetailsOnRightClick(object? sender, ModListRowEventArgs e)
         {
             if (DataContext is not ModDetailsPageViewModel details || e.Item is not ModCardViewModel card) return;
