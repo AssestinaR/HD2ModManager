@@ -347,3 +347,58 @@ RelationshipDragOperation="RemoveOptionParent"
 
 ⇒ 第 5 步仍是"清 `ModLibraryService` 的 8 处 + CLI 的 2 处 + 六个类型"，**外加**要决定
 `HostDerivedOverwriteService` 的 `attachments` 参数是保留（恒空）还是收窄成纯头盔合并。
+
+---
+
+## 装饰链退场：UI 层已清空，只剩服务层
+
+### 本轮完成（`1d77782` → `c017d4e`）
+
+| 提交 | 内容 |
+|---|---|
+| `1d77782` | 库页 + 底部栏的 `IsDecoration` 死分支（含「显示装饰/隐藏装饰」筛选） |
+| `12ca218` | 详情页宿主附件：装饰切换分支删掉，**行动作保留给选项** |
+| `8d3d825` | 「附加装饰到宿主」整条功能链（7 个文件） |
+| `c017d4e` | 详情页宿主附件列表只剩选项 |
+
+**结果：七个装饰 API 在 UI 侧已无任何调用者。**
+
+### 下一轮：删服务层
+
+`ModLibraryService` 里这一簇可以整块删（现在只剩内部互相引用）：
+
+```
+ToggleDecorationForAllAvailableHostsAsync   //  122-139
+SetDecorationEnabledForHostAsync
+ApplyDecorationActivationBatchAsync          //  141-150
+GetDecorationActivationSummary               //  152-158
+IsDecorationEnabledForHost（public）         //  160-162
+GetDecorationsForHost                        //  164-165
+IsDecorationAvailableForHost                 //  167-169
+── 连带 ──
+_pendingDecorationActivations / _decorationDebounce*
+ScheduleDecorationActivationBatchAsync / ApplyDecorationActivationBatchCoreAsync
+FlushPendingDecorationRebuildsAsync（**注意：部署前置在调它**，见下）
+ReadEnabledDecorationsAsync / RebuildDecorationOverwritesAsync
+GetAvailableDecorationHostIds / GetEffectiveDecorationHosts / IsDecorationEnabledForHost(private)
+_decorationActivations（DecorationActivationStore）
+```
+
+然后删六个 Core 类型：`DecorationActivationStore` / `DecorationHostRebuildService` /
+`DecorationPackageSnapshotService` / `DecorationHostTargetBinder` /
+`DecorationPlanDocument` + `DecorationPayloadDocument` + `DecorationPlanningDefaults`。
+
+**`HostDerivedOverwriteService` 保留**（头盔合并走它），但它的 `attachments` 参数会恒空。
+
+### 一个必须先处理的交叉
+
+`ModLibraryService.cs` 的**部署前置**里调 `FlushPendingDecorationRebuildsAsync`。
+删它之前要确认：那条前置只是"把待合并的装饰冲刷掉"，删掉之后部署路径不受影响。
+`_pendingDecorationActivations` 恒空，所以这个冲刷本来就是 no-op —— 但要**逐行确认**，
+不能因为"恒空"就跳过检查（部署路径出错，用户看到的是游戏起不来）。
+
+### 一个自己的错，记下来
+
+上一轮我 grep `AttachSelectedDecorationsAsync` 时把 pattern 写成了 `...ToHost`，
+于是判定"没有调用者"并删了方法，编译立刻报第 309 行还在用。
+**grep 的 pattern 必须与真实标识符逐字符一致**；判"没人用"之前先确认 pattern 命中过。
