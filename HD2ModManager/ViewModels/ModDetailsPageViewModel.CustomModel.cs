@@ -76,8 +76,19 @@ public partial class ModDetailsPageViewModel
 
 				await shell.ReloadArmorRegistryWorkspaceAsync();
 				var mergedSlots = split.Plan.Targets.Count(target => target.DonorUnitIds.Count != 0);
-				operation.Status = $"已生成 {result.Model.Pieces?.Count} 个组件 · {split.Groups.Groups.Count} 个 section 组"
-					+ (mergedSlots == 0 ? "（每块一块，无需合并）" : $"（{mergedSlots} 个槽发生过合并）");
+				// 合并把 donor unit 并进了宿主，但素体定义还是按老 unit 记的 ——
+				// 不剪的话护甲映射页会列出"选了什么都不反应"的组件（悬空引用）。
+				var compaction = await CustomModelSectionalCompaction
+					.PruneMergedPiecesAsync(
+						CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths()),
+						result.OutputDirectory,
+						[.. split.Sections.Units.Select(unit => unit.FileId)],
+						token)
+					.ConfigureAwait(true);
+				operation.Status = $"已生成 {compaction.RemainingPieceCount} 个组件 · {split.Groups.Groups.Count} 个 section 组"
+					+ (mergedSlots == 0
+						? "（每块一块，无需合并）"
+						: $"（{mergedSlots} 个槽发生过合并，剪掉 {compaction.RemovedPieceCount} 个悬空组件）");
 
 				// **必须导入成 Mod，没有"只生成不导入"这条路。**
 				//

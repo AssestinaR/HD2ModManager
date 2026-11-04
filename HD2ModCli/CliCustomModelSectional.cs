@@ -144,6 +144,15 @@ internal static class CliCustomModelSectional
                     + (split.Warnings.Count == 0 ? "（没有更多细节）" : string.Join("；", split.Warnings)));
             }
 
+            // 合并把 donor unit 并进宿主，素体定义要跟着剪，否则护甲映射页会列出悬空组件。
+            var compaction = await CustomModelSectionalCompaction
+                .PruneMergedPiecesAsync(
+                    CoreServices.CreateRuntimeArmorRegistryService(paths),
+                    generated.OutputDirectory,
+                    [.. split.Sections.Units.Select(unit => unit.FileId)],
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             // 导入完全复用 import plan/validate/apply 那条守护路径：先建计划，再在跨进程写租约
             // 持有期间重新校验一次，最后才写库。**不绕过去**——绕过就等于让这条路没有护栏。
             var inspection = await CliImportPlanArtifacts.InspectAsync(generated.OutputDirectory, cancellationToken).ConfigureAwait(false);
@@ -172,11 +181,15 @@ internal static class CliCustomModelSectional
                     targets = split.Plan.Targets.Count,
                     groups = split.Groups.Groups.Count,
                     mergedSlots = split.Plan.Targets.Count(target => target.DonorUnitIds.Count != 0),
+                    prunedPieceCount = compaction.RemovedPieceCount,
+                    remainingPieceCount = compaction.RemainingPieceCount,
                     importedNodeCount = GetImportedNodeCount(result),
                     warnings = split.Warnings,
                 },
                 () => $"已生成并导入分件模组「{name}」：{split.Plan.Targets.Count} 个输出 unit · "
-                    + $"{split.Groups.Groups.Count} 个 section 组 · 导入 {GetImportedNodeCount(result)} 个节点。");
+                    + $"{split.Groups.Groups.Count} 个 section 组 · {compaction.RemainingPieceCount} 个组件"
+                    + (compaction.Changed ? $"（剪掉 {compaction.RemovedPieceCount} 个悬空组件）" : string.Empty)
+                    + $" · 导入 {GetImportedNodeCount(result)} 个节点。");
             return 0;
         }
         finally
