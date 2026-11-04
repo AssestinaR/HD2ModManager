@@ -130,6 +130,22 @@ public sealed class EyeUvTests
 	}
 
 	[Fact]
+	public void DilationShrinksTheSampledRegionSoThePupilGrows()
+	{
+		var geometry = Quad(width: 4, height: 2, u: 0f, v: 1f);
+		var plain = EyeUv.Reproject(geometry, ["eye_ball"],
+			_ => new EyeColorSource("eye", 0.25, 0.25, 0.75, 0.75)).Geometry;
+		var dilated = EyeUv.Reproject(geometry, ["eye_ball"],
+			_ => new EyeColorSource("eye", 0.25, 0.25, 0.75, 0.75, 0.4)).Geometry;
+
+		var plainSpan = Math.Abs(plain.Vertices[1].V - plain.Vertices[0].V);
+		var dilatedSpan = Math.Abs(dilated.Vertices[1].V - dilated.Vertices[0].V);
+
+		// `$dilation 0.4` ⇒ 采样半径 ×(1/1.4)：同一段模型覆盖的贴图变小 ⇒ 虹膜/瞳孔放大。
+		Assert.True(dilatedSpan < plainSpan);
+		Assert.Equal(plainSpan / 1.4, dilatedSpan, 3);
+	}
+	[Fact]
 	public void ReprojectLeavesMaterialsThatAreNotEyesAlone()
 	{
 		var geometry = Quad(2, 2, u: 0.11f, v: 0.22f);

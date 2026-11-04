@@ -960,7 +960,18 @@ public sealed class SourceMaterialConverter
 			return null;
 
 		var rect = EyeUv.ContentRect(rgba, width, height);
-		return new EyeColorSource(color.Texture, rect.U0, rect.V0, rect.U1, rect.V1);
+		// `$dilation`：源侧用它放大瞳孔（Valve 文档：0 = 不放大，1 = 最大）。
+		// 解析失败按 0 处理 —— 那比猜一个非零值安全：不放大只是瞳孔偏小，
+		// 猜大了会把虹膜推出眼睑开口。
+		var dilation = 0.0;
+		if (double.TryParse(vmt.Value("$dilation"), System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out var parsedDilation)
+			&& double.IsFinite(parsedDilation))
+		{
+			dilation = Math.Clamp(parsedDilation, 0, 1);
+		}
+
+		return new EyeColorSource(color.Texture, rect.U0, rect.V0, rect.U1, rect.V1, dilation);
 	}
 
 	/// <summary>

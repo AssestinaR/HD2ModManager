@@ -26,11 +26,31 @@ namespace HD2SourceMigration.VpkConversion;
 /// <param name="V0">内容区上边界（0..1，<b>V=0 是图像顶部</b>）。</param>
 /// <param name="U1">内容区右边界。</param>
 /// <param name="V1">内容区下边界。</param>
-public sealed record EyeColorSource(string Texture, double U0, double V0, double U1, double V1)
+/// <param name="Dilation">
+/// <c>$dilation</c>（0..1，0 = 不放大）。源侧用它把虹膜**绕中心放大**——瞳孔在内容区正中，
+/// 所以放大中心 = 瞳孔变大，与 Valve 文档的描述一致（"0 is none, 1 is maximal"）。
+/// </param>
+public sealed record EyeColorSource(
+	string Texture,
+	double U0,
+	double V0,
+	double U1,
+	double V1,
+	double Dilation = 0)
 {
 	public double CenterU => (U0 + U1) / 2;
 
 	public double CenterV => (V0 + V1) / 2;
+
+	/// <summary>
+	/// 采样半径的缩放：<c>1 / (1 + $dilation)</c>。
+	/// <para>
+	/// 采样范围越小 = 屏幕上的虹膜/瞳孔越大。0.4 → 0.71（放大约 1.4 倍）。
+	/// 源侧那条曲线没有公开的精确公式（着色器里是逐个像素算的），这里取的是
+	/// "0 不动、1 放大一倍"的线性近似——能对上方向与量级，且可用 <c>HD2_EYE_DILATION</c> 调。
+	/// </para>
+	/// </summary>
+	public double DilationZoom => 1.0 / (1.0 + Math.Clamp(Dilation * DilationGain, 0, 1));
 
 	/// <summary>内容区半宽（UV）。= 1 表示整张图都是眼睛，没有填充边。</summary>
 	public double HalfU => Math.Max(1e-6, (U1 - U0) / 2);
@@ -38,6 +58,19 @@ public sealed record EyeColorSource(string Texture, double U0, double V0, double
 	/// <summary>内容区半高（UV）。</summary>
 	public double HalfV => Math.Max(1e-6, (V1 - V0) / 2);
 
+	/// <summary>
+	/// <c>$dilation</c> 的倍率（环境变量 <c>HD2_EYE_DILATION</c>，默认 1.0）。
+	/// <para>
+	/// 留着这个旋钮是因为源侧的瞳孔放大曲线没有公开公式：0.4 这种常见取值到底该放大多少，
+	/// 只能实机对比。改成 0 就等于忽略 <c>$dilation</c>（回到上一版的行为）。
+	/// </para>
+	/// </summary>
+	public static double DilationGain { get; } =
+		double.TryParse(Environment.GetEnvironmentVariable("HD2_EYE_DILATION"),
+			System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var gain)
+			&& double.IsFinite(gain) && gain >= 0
+				? Math.Clamp(gain, 0, 3.0)
+				: 1.0;
 	/// <summary>这张图是不是"整张就是一只眼睛"（没有可识别的填充边）。</summary>
 	public bool IsWholeTexture => U0 <= 1e-6 && V0 <= 1e-6 && U1 >= 1 - 1e-6 && V1 >= 1 - 1e-6;
 
@@ -371,7 +404,9 @@ public static class EyeUv
 				continue;
 			}
 
-			var scale = Math.Max(colorSource.HalfU / halfWidth, colorSource.HalfV / halfHeight) / EyeScale;
+			// `$dilation`：把采样半径按 1/(1+d) 收一次 —— 虹膜绕内容区中心放大，瞳孔随之变大。
+			var scale = Math.Max(colorSource.HalfU / halfWidth, colorSource.HalfV / halfHeight)
+				/ EyeScale * colorSource.DilationZoom;
 			var mixed = 0;
 			foreach (var index in vertices)
 			{
@@ -390,7 +425,10 @@ public static class EyeUv
 				projected[index] = (u, v);
 			}
 
-			axesNotes.Add($"{materialNames[materialIndex]}：{frameNote}");
+			axesNotes.Add($"{materialNames[materialIndex]}：{frameNote}"
+				+ (colorSource.Dilation > 0
+					? $"，$dilation={colorSource.Dilation:F2}（采样半径 ×{colorSource.DilationZoom:F2}）"
+					: string.Empty));
 
 			if (mixed != 0)
 				notes.Add(
