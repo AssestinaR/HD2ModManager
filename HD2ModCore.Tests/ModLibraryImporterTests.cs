@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
@@ -121,8 +121,10 @@ public sealed class ModLibraryImporterTests
 	}
 
 	[Fact]
-	public async Task ImportFolderAsync_ImportsDecorationPackageAtLibraryRoot()
+	public async Task ImportFolderAsync_RejectsADecorationPackage()
 	{
+		// 装饰包已不再支持（能力被「分件模组」取代，生成入口全部移除）。
+		// **必须拒绝而不是当普通 Mod 导入**：装上去什么都不会变，比不导入更让人困惑。
 		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
 		var appRoot = Path.Combine(root, "app");
 		var source = Path.Combine(root, "decoration");
@@ -139,14 +141,12 @@ public sealed class ModLibraryImporterTests
 				new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
 				new JsonModLibraryStore(paths));
 
-			var result = await importer.ImportFolderAsync(source);
-
-			var node = Assert.Single(result.Snapshot.Nodes.Values);
-			Assert.Equal(ModNodeKind.Decoration, node.Metadata.Kind);
-			Assert.Empty(node.PatchGroups);
-			Assert.Single(node.RelativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, node.RelativePath, "decoration.json")));
-			Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, node.RelativePath, "stocky.bin")));
+			// 目录里只有 decoration.json + stocky.bin，没有任何 patch：
+			// 导入器扫完之后什么都不剩，于是按"没有可导入内容"拒绝。
+			await Assert.ThrowsAsync<InvalidDataException>(async () => await importer.ImportFolderAsync(source));
+			Assert.Empty(Directory.Exists(paths.ModsDirectory)
+				? Directory.EnumerateDirectories(paths.ModsDirectory)
+				: Array.Empty<string>());
 		}
 		finally
 		{

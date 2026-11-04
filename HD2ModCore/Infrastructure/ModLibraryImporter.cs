@@ -58,7 +58,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var units = await DiscoverFolderUnitsAsync(full, cancellationToken).ConfigureAwait(false);
 		if (units.Count == 0)
-			throw new InvalidDataException("No patch or decoration package was found in the selected folder.");
+			throw new InvalidDataException("所选文件夹里没有可导入的内容（没有 patch，也没有 ReShade 文件）。装饰包已不再支持，请改用分件模组。");
 		return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
 	}
 

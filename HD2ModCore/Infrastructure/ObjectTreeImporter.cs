@@ -32,18 +32,22 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		foreach (var dir in EnumerateDirectoriesDepthFirst(rootDir))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
+			// **装饰包已不再支持**（2026-11-04）：它的整条能力被「分件模组」取代，
+			// 生成入口（页面 / CLI / 服务）已全部移除。这里整条跳过，**不建节点**——
+			// 落到下面的 Standard 分支会让它看起来像一个可部署的 Mod，那比不导入更糟。
+			if (IsDecorationPackageDirectory(dir))
+				continue;
+
 			var patchGroups = CollectPatchGroups(dir);
-			var isDecoration = IsDecorationPackageDirectory(dir);
-			var option = !isDecoration ? TryReadOptionRelation(dir) : null;
+			var option = TryReadOptionRelation(dir);
 			// Logical markers describe zero-payload structure only. If a user later
 			// places a real Patch in the directory, preserve the Patch as deployable
 			// instead of silently importing it as a skipped logical anchor.
-			var isLogicalContainer = !isDecoration
-				&& patchGroups.Count == 0
+			var isLogicalContainer = patchGroups.Count == 0
 				&& ModNodeStorageProtocol.IsLogicalDirectory(dir.FullName);
 			var hasExternalInstallFiles = dir.FullName.Equals(rootDir.FullName, StringComparison.OrdinalIgnoreCase)
 				&& ExternalInstallFileFactsService.HasRecognizedFiles(dir.FullName);
-			if (patchGroups.Count == 0 && !isDecoration && option is null && !hasExternalInstallFiles && !isLogicalContainer)
+			if (patchGroups.Count == 0 && option is null && !hasExternalInstallFiles && !isLogicalContainer)
 			{
 				continue;
 			}
@@ -55,13 +59,11 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 			}
 
 			var id = ModNodeId.New();
-			var kind = isDecoration
-				? ModNodeKind.Decoration
-				: option is not null
-					? ModNodeKind.Option
-					: hasExternalInstallFiles && patchGroups.Count == 0
-						? ModNodeKind.ReShade
-						: ModNodeKind.Standard;
+			var kind = option is not null
+				? ModNodeKind.Option
+				: hasExternalInstallFiles && patchGroups.Count == 0
+					? ModNodeKind.ReShade
+					: ModNodeKind.Standard;
 			var metadata = new ModNodeMetadata(
 				Name: BuildFlatName(rootDir.Name, rel),
 				Notes: null,
@@ -93,6 +95,10 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 		return ValueTask.FromResult(tree);
 	}
 
+    /// <summary>
+    /// 这个目录是不是一个装饰包。<b>现在只用来拒绝它</b>：装饰能力已被分件模组取代，
+    /// 生成入口全部移除，库里也不该再有这种节点。
+    /// </summary>
     private static bool IsDecorationPackageDirectory(DirectoryInfo dir)
         => File.Exists(Path.Combine(dir.FullName, "decoration.json"));
 

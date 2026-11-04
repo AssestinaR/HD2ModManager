@@ -211,6 +211,18 @@ public sealed class ModImportPlanner : IModImportPlanner
 				&& node.PatchGroups.Count == 0
 				&& sourcePaths.Length == 0;
 			var itemDiagnostics = new List<ImportPlanDiagnostic>();
+			if (node.Metadata.Kind == ModNodeKind.Decoration)
+			{
+				// 装饰包已不再支持：整条能力被「分件模组」取代（把 legacy Mod 压成
+				// 7 槽 × 身形的 section 组），生成入口（页面 / CLI / 服务）也已全部移除。
+				// **阻塞**而不是静默忽略：装上去什么都不会变，比不导入更让人困惑。
+				itemDiagnostics.Add(new ImportPlanDiagnostic(
+					"DecorationUnsupported",
+					"装饰包已不再支持。它的用途（把别的 Mod 的几何挂到宿主上）已由「分件模组」取代："
+					+ "请用 mod split 把该 Mod 拆成分件模组，再用组开关在游戏里选部件。",
+					sourcePath,
+					IsBlocking: true));
+			}
 			if (isLogicalNode)
 				itemDiagnostics.Add(new ImportPlanDiagnostic("LogicalOption", "该条目只承载选项关系，不直接包含 patch。", sourcePath));
 			foreach (var conflict in planned.OptionPathConflicts.Where(conflict => conflict.AffectedParentOptionIds.Contains(node.Id)))
@@ -271,7 +283,9 @@ public sealed class ModImportPlanner : IModImportPlanner
 		=> node.Metadata.Kind switch
 		{
 			ModNodeKind.Option => ImportPlanItemRole.Option,
-			ModNodeKind.Decoration => ImportPlanItemRole.Decoration,
+			// 装饰包已不再支持：能力被「分件模组」取代，生成入口全部移除。
+			// 归到 Ignored，并由 ToDiagnostics 给一条阻塞说明（见 DecorationUnsupported）。
+			ModNodeKind.Decoration => ImportPlanItemRole.Ignored,
 			ModNodeKind.ReShade => ImportPlanItemRole.ReShade,
 			_ when node.Id == rootId && node.PatchGroups.Count == 0 => ImportPlanItemRole.PlaceholderHost,
 			_ => ImportPlanItemRole.Host,
