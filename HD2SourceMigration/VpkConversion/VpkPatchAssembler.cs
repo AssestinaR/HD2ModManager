@@ -162,7 +162,8 @@ public sealed record VpkTextureOutcome(string Name, ulong Id, string Origin, boo
 /// <list type="bullet">
 /// <item><b><see cref="NoDraw"/></b>：源侧自己写着 <c>$no_draw</c>。在 L4D2 里这是
 /// "这块网格不绘制"，常常被用来做<b>网格变体选择</b>（P1/P2/P3 三套衣服共存，靠材质决定哪套可见）。
-/// 我们目前在 HD2 里没有等价物 ⇒ 这些部件会紫。修法是把它们翻成 section 隐藏，不是丢掉。</item>
+/// HD2 没有等价物，所以按 <see cref="NoDrawPolicy"/> 落地：默认<b>保留几何 + 材质不显示</b>
+/// （画面与源侧一致，数据不丢），`--no-draw show` 则照常显示、`drop` 才连几何一起丢。</item>
 /// <item><b><see cref="Missing"/></b>：模型引用了、但谁都解析不出来（包里没有 / 合成失败）。这是真缺失。</item>
 /// </list>
 /// </summary>
@@ -318,6 +319,7 @@ public sealed class VpkPatchAssembler
 		ulong? unitIdSeed = null,
 		SourceMaterialSource? materialScope = null,
 		string? idNamespace = null,
+		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Hide,
 		Action<string, int, int>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
@@ -762,6 +764,50 @@ public sealed class VpkPatchAssembler
 					warnings.Add(notice);
 			}
 
+			// ②.6 `$no_draw`：**保留几何**，材质做成"整段被裁掉"。
+			//
+			// 老做法是"连三角形一起剔掉"（见 FilterNoDrawPlans）。它忠实于源侧，但不可逆：
+			// 数据一旦不在 patch 里，导入之后只能改包重导才能找回来。
+			// 实测 L4D2 2829646325（Coach-Ayame）的 cat / facial / basebody2 三份 VMT 都是这种桩，
+			// 合计 6,598 个三角形整块消失，而包里三张对应贴图都在。
+			//
+			// 默认（NoDrawPolicy.Hide）走这条：看得见的东西不变，但几何/材质/段都在 patch 里。
+			var invisibleStems = new List<string>();
+			if (noDrawPolicy == NoDrawPolicy.Hide)
+			{
+				foreach (var required in requiredStems.Order(StringComparer.OrdinalIgnoreCase))
+				{
+					if (idByStem.ContainsKey(required))
+						continue;
+					var reason = skipReasonByStem.TryGetValue(required, out var text) ? text : string.Empty;
+					if (!reason.Contains("$no_draw", StringComparison.OrdinalIgnoreCase) && !DeclaresNoDraw(required))
+						continue;
+
+					var invisible = converter.SynthesizeNoDrawMaterial(required);
+					if (!invisible.IsValid || invisible.Material is null)
+					{
+						warnings.Add(
+							$"源材质 {required} 声明 $no_draw，但「不显示」材质也造不出来"
+							+ $"（{string.Join("；", invisible.Diagnostics)}）；这块会被移除。");
+						continue;
+					}
+
+					idByStem[required] = invisible.Material.Id;
+					productByStem[required] = invisible;
+					invisibleStems.Add(required);
+					foreach (var notice in invisible.Notices)
+						warnings.Add(notice);
+				}
+
+				// 这些材质不再算"跳过"：它们有材质、有几何，只是画面上看不见。
+				// 两份都报会让报告自相矛盾（"跳过 cat" + "cat 已做成不显示材质"）。
+				if (invisibleStems.Count != 0)
+				{
+					skipped.RemoveAll(line => invisibleStems.Exists(stem =>
+						line.StartsWith(stem + "：", StringComparison.OrdinalIgnoreCase)));
+				}
+			}
+
 			// 把 id 分派回源材质下标（Unit 作者按下标取）。
 			if (sourceMaterialNames is not null)
 			{
@@ -865,7 +911,8 @@ public sealed class VpkPatchAssembler
 			var missingMaterials = new List<string>();
 			foreach (var required in requiredStems.Order(StringComparer.OrdinalIgnoreCase))
 			{
-				if (idByStem.ContainsKey(required)) continue;
+				// 做成「不显示」材质的仍然要进这份账：它有 id，但不是"看得见的材质"。
+				if (idByStem.ContainsKey(required) && !invisibleStems.Contains(required)) continue;
 				var reason = skipReasonByStem.TryGetValue(required, out var text) ? text : string.Empty;
 				// **两类判据都要看。**
 				// 转换器只在"自己解析到的那份 VMT 直接写着 $no_draw"时才给这个理由；
@@ -898,13 +945,75 @@ public sealed class VpkPatchAssembler
 			// 但它不是源侧那个材质。算进"解决"会让总账显示"全部落地"，
 			// 而那恰恰是需要被看见的那一种问题（用户看到一块灰面，报告说一切正常）。
 			var fallbackSet = fallbackStems.ToHashSet(StringComparer.OrdinalIgnoreCase);
+			var invisibleSet = invisibleStems.ToHashSet(StringComparer.OrdinalIgnoreCase);
 			materialGap = new VpkMaterialGap(
 				RequiredCount: requiredStems.Count,
 				ResolvedCount: requiredStems.Count(material =>
-					idByStem.ContainsKey(material) && !fallbackSet.Contains(material)),
+					idByStem.ContainsKey(material) && !fallbackSet.Contains(material) && !invisibleSet.Contains(material)),
 				NoDraw: noDrawMaterials,
 				Missing: missingMaterials,
 				Fallback: fallbackStems);
+
+			// `$no_draw` 到底怎么落地、各丢了多少面：**必须点名**。
+			// 一份"少了几个材质"的总账看不出"少的是猫耳还是脸"，而这正是用户要判断的事。
+			if (noDrawMaterials.Count != 0)
+				warnings.Add(DescribeNoDrawParts(noDrawMaterials));
+
+			string DescribeNoDrawParts(IReadOnlyList<string> stems)
+			{
+				var byStem = new Dictionary<string, (int Triangles, SortedSet<string> Parts)>(StringComparer.OrdinalIgnoreCase);
+				if (sourceMaterialNames is not null && geometry is not null)
+				{
+					var partsByMaterial = new Dictionary<int, SortedSet<string>>();
+					foreach (var part in geometry.Parts)
+					{
+						var end = Math.Min(part.TriangleStart + part.TriangleCount, geometry.Triangles.Count);
+						for (var triangleIndex = part.TriangleStart; triangleIndex < end; triangleIndex++)
+						{
+							var materialIndex = geometry.Triangles[triangleIndex].MaterialIndex;
+							if (!partsByMaterial.TryGetValue(materialIndex, out var set))
+								partsByMaterial[materialIndex] = set = new SortedSet<string>(StringComparer.Ordinal);
+							set.Add(part.BodyPart);
+						}
+					}
+
+					for (var materialIndex = 0; materialIndex < sourceMaterialNames.Count; materialIndex++)
+					{
+						var stem = StemOf(sourceMaterialNames[materialIndex]);
+						if (!stems.Contains(stem, StringComparer.OrdinalIgnoreCase))
+							continue;
+						var triangles = 0;
+						foreach (var triangle in geometry.Triangles)
+						{
+							if (triangle.MaterialIndex == materialIndex)
+								triangles++;
+						}
+						byStem[stem] = (triangles,
+							partsByMaterial.TryGetValue(materialIndex, out var parts) ? parts : []);
+					}
+				}
+
+				var detail = stems
+					.Order(StringComparer.OrdinalIgnoreCase)
+					.Select(stem => byStem.TryGetValue(stem, out var fact) && fact.Triangles != 0
+						? $"{stem} {fact.Triangles} 面（{string.Join("/", fact.Parts)}）"
+						: stem);
+				var head = noDrawPolicy switch
+				{
+					NoDrawPolicy.Show =>
+						$"{stems.Count} 个材质声明了 $no_draw，已按 `--no-draw show` **照常显示**：",
+					NoDrawPolicy.Drop =>
+						$"{stems.Count} 个材质声明了 $no_draw，已按 `--no-draw drop` **整段剔除**"
+						+ "（几何不在 patch 里，导入后无法恢复）：",
+					_ =>
+						$"{stems.Count} 个材质声明了 $no_draw（源侧不绘制），已**保留几何**、材质做成不显示"
+						+ "（画面上与 L4D2 一致）：",
+				};
+				var tail = noDrawPolicy == NoDrawPolicy.Hide
+					? "。要看它们：`--no-draw show` 重转一次（管理器里设环境变量 HD2_NO_DRAW=show）。"
+					: "。";
+				return head + string.Join("、", detail) + tail;
+			}
 
 			// **法线图：按整包统计一次。**
 			//
@@ -966,7 +1075,7 @@ public sealed class VpkPatchAssembler
 			// ⚠️ **只有 `$no_draw` 才丢几何。** 真缺失的材质已经在上面的 ②.5 拿到兜底灰材质，
 			// 几何必须保留——把它们也丢掉的后果是"部件整块消失"，那正是用户报的"缺材质"里
 			// 最糟糕的一种表现：既看不见东西，也没有任何线索指向"是材质缺失"。
-			if (sourceMaterialNames is not null && noDrawMaterials.Count != 0)
+			if (sourceMaterialNames is not null && noDrawMaterials.Count != 0 && noDrawPolicy == NoDrawPolicy.Drop)
 			{
 				var noDrawStems = noDrawMaterials.ToHashSet(StringComparer.OrdinalIgnoreCase);
 				for (var materialIndex = 0; materialIndex < sourceMaterialNames.Count; materialIndex++)
@@ -1184,7 +1293,7 @@ public sealed class VpkPatchAssembler
 
 		if (dropped.Count != 0)
 		{
-			warnings.Add($"{dropped.Count} 个部件整块都是源侧 $no_draw（不绘制），已按源侧不产出："
+			warnings.Add($"{dropped.Count} 个部件整块都是源侧 $no_draw（不绘制），已按 `--no-draw drop` 不产出："
 				+ $"{string.Join("、", dropped.Take(8))}"
 				+ (dropped.Count > 8 ? $"…（共 {dropped.Count} 个）" : string.Empty));
 		}

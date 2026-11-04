@@ -2593,6 +2593,7 @@ public static class CliApplication
 					metalCutout: ResolveMetalCutout(invocation.Options),
 					cutoutTemplate: ResolveCutoutTemplate(invocation.Options),
 					normalFlipY: invocation.Options.NormalFlipY ?? false,
+					noDrawPolicy: ResolveNoDrawPolicy(invocation.Options),
 					worldNormalFactory: WorldNormal);
 			}
 
@@ -2603,6 +2604,7 @@ public static class CliApplication
 				sourceMaterialNames: inputs.Model.MaterialPaths,
 				materialConverter: materialConverter,
 				unitIdSeed: reusedUnitIdSeed,
+				noDrawPolicy: ResolveNoDrawPolicy(invocation.Options),
 				idNamespace: ResolveIdNamespace(invocation.Options)).ConfigureAwait(false);
 
 			if (segmentationNotes.Count != 0)
@@ -2988,6 +2990,26 @@ public static class CliApplication
 		};
 
 	/// <summary>
+	/// 源侧 <c>$no_draw</c> 怎么落地（<c>--no-draw hide|show|drop</c>，默认 <c>hide</c>）。
+	/// <para>
+	/// <c>hide</c>：几何保留、材质做成不显示（画面与 L4D2 一致，数据不丢）；
+	/// <c>show</c>：当变体开关，照常显示（猫耳版那种包）；
+	/// <c>drop</c>：连几何一起丢（历史行为，不可恢复）。
+	/// </para>
+	/// <para>
+	/// 没给命令行参数时读环境变量 <c>HD2_NO_DRAW</c>：管理器调用 CLI 时没有这个开关的位置，
+	/// 而"这块到底该不该显示"只有用户能判断。
+	/// </para>
+	/// </summary>
+	private static NoDrawPolicy ResolveNoDrawPolicy(CliGlobalOptions options)
+		=> (options.NoDraw ?? Environment.GetEnvironmentVariable("HD2_NO_DRAW"))?.Trim().ToLowerInvariant() switch
+		{
+			"show" => NoDrawPolicy.Show,
+			"drop" => NoDrawPolicy.Drop,
+			_ => NoDrawPolicy.Hide,
+		};
+
+	/// <summary>
 	/// 抖动阈值图案（--dither-pattern）。不传 = 交错梯度噪声（无可见结构）。
 	/// </summary>
 	private static DitherPattern ResolveDitherPattern(CliGlobalOptions options)
@@ -3197,6 +3219,7 @@ public static class CliApplication
 				ResolveMetalCutout(options),
 				ResolveCutoutTemplate(options),
 				options.NormalFlipY ?? false,
+				noDrawPolicy: ResolveNoDrawPolicy(options),
 				worldNormalFactory: WorldNormal);
 		}
 
@@ -3209,6 +3232,7 @@ public static class CliApplication
 				materialConverter: materialConverter,
 				materialPackFileName: $"{ArmorArchiveHex}.patch_0",
 				materialScope: scope,
+				noDrawPolicy: ResolveNoDrawPolicy(options),
 				idNamespace: ResolveIdNamespace(options),
 				onProgress: ReportAssembleProgress).ConfigureAwait(false);
 
@@ -3869,7 +3893,7 @@ public static class CliApplication
 					lines.Add($"          真缺失（连兜底都做不出来，部件会被移除）：{string.Join("、", gap.Missing.Take(12))}"
 						+ (gap.Missing.Count > 12 ? $"…（共 {gap.Missing.Count} 个）" : string.Empty));
 				if (gap.NoDraw.Count != 0)
-					lines.Add($"          $no_draw（源侧要求不绘制，已按源侧剔掉几何）："
+					lines.Add($"          $no_draw（源侧要求不绘制；几何保留、材质做成不显示，见上面那行逐块说明）："
 						+ $"{string.Join("、", gap.NoDraw.Take(8))}"
 						+ (gap.NoDraw.Count > 8 ? $"…（共 {gap.NoDraw.Count} 个）" : string.Empty));
 			}

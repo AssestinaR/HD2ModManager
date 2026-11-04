@@ -136,7 +136,11 @@ public sealed record CliGlobalOptions(
 	string? DitherPattern = null,
 	// 源法线图的 Y（绿）通道要不要翻：DirectX 与 OpenGL 的绿通道相反，而 HD2 的法线约定没有文档。
 	// 不传 = 不翻（照源侧原样）。猜错的表现是"凸的看起来是凹的"，只能在实机上看出来。
-	bool? NormalFlipY = null);
+	bool? NormalFlipY = null,
+	// 源侧 `$no_draw`（"这一块不画"）怎么落地：hide（默认，几何保留+材质不显示）/ show / drop。
+	// L4D2 里它只是材质层开关，网格仍在文件里，作者常拿它做变体（猫耳/无猫耳）；
+	// 直接丢几何会把数据一起删掉，导入之后只能改包重导。
+	string? NoDraw = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -189,6 +193,7 @@ public static class CliArgumentParser
 		double? ditherDensity = null;
 		string? ditherPattern = null;
 		bool? normalFlipY = null;
+		string? noDraw = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -360,6 +365,18 @@ public static class CliArgumentParser
 							+ "它翻的是源法线图绿通道的方向（DirectX ↔ OpenGL）：猜错时凸面看起来像凹面，"
 							+ "只能在实机上对比，所以做成开关。"),
 					};
+					break;
+					case "--no-draw":
+					var rawNoDraw = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
+					if (rawNoDraw is not ("hide" or "show" or "drop"))
+					{
+						throw new CliUserException("InvalidOption",
+							$"--no-draw 只接受 hide / show / drop，实际是 '{rawNoDraw}'。"
+							+ "源侧的 $no_draw 是「这一块不画」，L4D2 里它只是材质层开关（网格还在文件里），"
+							+ "作者常拿它做变体；hide = 保留几何、材质做成不显示（默认），"
+							+ "show = 照常显示（要看被藏起来的变体时用），drop = 连几何一起丢（不可恢复）。");
+					}
+					noDraw = rawNoDraw;
 					break;
 					case "--dither-density":
 					var rawDitherDensity = ReadValue(args, ref index, argument);
@@ -546,7 +563,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

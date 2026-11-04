@@ -224,6 +224,46 @@ internal static class RejectedCutoutStrategies
 	internal const string AdvancedScalarOpacity = "SclarFieldOpacity 是 1×1 R8 标量，做不了镂空。";
 }
 
+/// <summary>
+/// 源侧声明 <c>$no_draw</c> 的材质（= 源侧根本不绘制这一块）在 HD2 里怎么落地。
+/// <para>
+/// <b>为什么需要三档，而不是"丢掉"一种。</b>L4D2 的隐藏是<b>材质层</b>的：装一份写着
+/// <c>$no_draw 1</c> 的 VMT，材质不再绘制，<b>网格仍在文件里</b>；同一个模型因此可以靠
+/// "换哪份 VMT"做变体（猫耳 / 无猫耳、P1/P2/P3 三套衣服）。HD2 的材质模板没有这个开关，
+/// 于是"丢弃几何"是唯一能保证不画的做法——但它把数据一起删了：<b>导入之后再也拿不回来</b>，
+/// 只能改包重导。
+/// </para>
+/// <para>
+/// 实测代价（L4D2 2829646325 Coach-Ayame）：<c>cat</c> / <c>facial</c> / <c>basebody2</c>
+/// 三份 VMT 都是这种桩，整块几何消失、合计 −6,598 个三角形，而包里三张对应贴图都在。
+/// </para>
+/// </summary>
+public enum NoDrawPolicy
+{
+	/// <summary>
+	/// <b>默认。</b>几何保留，材质做成"整段被裁掉"（<c>alphaclip</c> + alpha 全 0 的遮罩）。
+	/// <para>
+	/// 画面上与源侧完全一致（看不见），但几何、材质、段记录都还在 patch 里——
+	/// 数据没有被销毁，报告里也会点名"哪几块、各多少面"。
+	/// </para>
+	/// </summary>
+	Hide = 0,
+
+	/// <summary>
+	/// 当作没有 <c>$no_draw</c>：照普通材质转换并显示。
+	/// <para>
+	/// 用于"作者把 <c>$no_draw</c> 当变体开关、而你要的正是那个变体"的包（例如猫耳版）。
+	/// 没有底色时会退到"材质名 = 贴图名"那条线索，再不行就是中性灰。
+	/// </para>
+	/// </summary>
+	Show = 1,
+
+	/// <summary>
+	/// 连几何一起丢掉（历史行为）。patch 最小，但<b>数据不可恢复</b>。
+	/// </summary>
+	Drop = 2,
+}
+
 /// <summary>一个自造贴图的产物：新 id + 可直接进包的 TocData 与 GPU 侧车字节。</summary>
 public sealed record SynthesizedTexture(
 	ulong Id,
@@ -666,7 +706,9 @@ public sealed class SourceMaterialConverter
 		bool normalFlipY = false,
 		// 逐材质的「UV 空间模型法线」（见 UvNormalBake）：matcap 与 lightwarp 都需要**世界方向**的
 		// 法线，而法线贴图给的是切线空间的方向。没有它时这两样退回"取正中"。
-		Func<string, UvNormalMap?>? worldNormalFactory = null)
+		Func<string, UvNormalMap?>? worldNormalFactory = null,
+		// 源侧 `$no_draw` 的落地方式（见 NoDrawPolicy）。默认 Hide：不显示，但几何留着。
+		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Hide)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -688,6 +730,7 @@ public sealed class SourceMaterialConverter
 		this.metalCutout = metalCutout;
 		this.cutoutTemplate = cutoutTemplate;
 		this.normalFlipY = normalFlipY;
+		this.noDrawPolicy = noDrawPolicy;
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -703,6 +746,11 @@ public sealed class SourceMaterialConverter
 	public bool NormalFlipY => normalFlipY;
 
 	private readonly bool normalFlipY;
+
+	/// <summary>源侧 <c>$no_draw</c> 怎么落地。见 <see cref="NoDrawPolicy"/>。</summary>
+	public NoDrawPolicy NoDrawPolicy => noDrawPolicy;
+
+	private readonly NoDrawPolicy noDrawPolicy;
 
 	/// <summary>
 	/// matcap 承载面在 <c>advanced</c> 槽 2 <b>alpha</b> 里写的粗糙度（0..255）。
@@ -910,6 +958,96 @@ public sealed class SourceMaterialConverter
 
 		var rect = EyeUv.ContentRect(rgba, width, height);
 		return new EyeColorSource(color.Texture, rect.U0, rect.V0, rect.U1, rect.V1);
+	}
+
+	/// <summary>
+	/// 没有 <c>$basetexture</c> 时，若**材质名本身就是贴图名**（<c>cat.vmt</c> ↔ <c>cat.vtf</c>）就用它。
+	/// <para>
+	/// <b>这是数据能给出的唯一线索，而且是一条强线索</b>：一张与材质同名的贴图除了给这个材质用，
+	/// 没有别的地方需要它。实测 2829646325 的 <c>cat</c> / <c>facial</c> / <c>basebody2</c>
+	/// 都是"<c>$no_draw</c> 桩 + 图还在包里"的形状。
+	/// </para>
+	/// <para>
+	/// ⚠️ 两条限制：只在<b>没有 matcap</b> 时调用（有 matcap 的件底色是 F0 载体，认一张同名图会把
+	/// 金属观感弄乱）；占位名（<c>basetexture</c> / <c>base</c>）不算——那是模板本身的名字。
+	/// </para>
+	/// </summary>
+	private string? TrySameNameTexture(string stem)
+	{
+		var name = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(stem));
+		if (string.IsNullOrWhiteSpace(name) || name is "basetexture" or "base")
+			return null;
+		return source.ContainsVtf(name) ? name : null;
+	}
+
+	/// <summary>
+	/// 为"源侧声明 <c>$no_draw</c>"的材质造一个**整段被裁掉**的材质（见 <see cref="NoDrawPolicy"/>）。
+	/// <para>
+	/// 做法：<c>alphaclip</c> 模板 + 一张 alpha 恒 0 的遮罩。阈值保持模板默认，
+	/// 于是"0 &lt; 阈值"处处成立 ⇒ 每个像素都被裁掉 ⇒ <b>画面上与源侧一致（看不见）</b>。
+	/// </para>
+	/// <para>
+	/// <b>为什么不干脆丢几何。</b>丢了就不可逆（见 <see cref="NoDrawPolicy"/> 的注释）；
+	/// 而这不花什么代价：几何本来就在，遮罩是与所有 <c>$no_draw</c> 材质共用的 4×4 图
+	/// （名字固定 → id 固定 → 装配器按 id 去重只写一张）。
+	/// </para>
+	/// </summary>
+	public MaterialSynthesisResult SynthesizeNoDrawMaterial(string stem)
+	{
+		const string templateName = "alphaclip";
+		if (string.IsNullOrWhiteSpace(stem))
+			return MaterialSynthesisResult.Failed("$no_draw 材质需要一个非空的材质名");
+		if (!templates.Contains(templateName))
+			return MaterialSynthesisResult.Failed($"{stem}：材质模板库缺少 {templateName}，造不出「不显示」材质");
+
+		var material = templates.Load(templateName);
+		var textures = new List<SynthesizedTexture>();
+		try
+		{
+			if (material.TextureIds.Count <= AlphaClipBaseColorSlot)
+				return MaterialSynthesisResult.Failed(
+					$"{stem}：{templateName} 模板只有 {material.TextureIds.Count} 个槽，放不下底色");
+
+			// 遮罩：所有通道全 0。用 4×4 而不是 1×1（占位判据是"长宽都 ≤ 4"，
+			// 而 4×4 让下游 DDS / BC7 走正常路径）。**R/G/B 也给 0**：
+			// 模板读的是哪个通道我们不必赌，全 0 两个通道都是 0。
+			var invisible = BuildSolidTexture("shared_nodraw_mask_", string.Empty, 0, 0, 0, 0);
+			material.SetTexture(AlphaClipOpacitySlot, invisible.Id);
+			material.SetTexture(AlphaClipBaseColorSlot, invisible.Id);
+			textures.Add(invisible);
+
+			var flatNormal = BuildSolidTexture("shared_flat_normal_", string.Empty, 128, 128, 255, PbrRoughness);
+			material.SetTexture(AlphaClipNormalSlot, flatNormal.Id);
+			textures.Add(flatNormal);
+
+			// 与 alphaclip 那条路一致：关掉脏污/天气（模板默认是满脏污）。
+			material.TrySetScalar(DirtGlobalAmountVariableId, 0f);
+			material.TrySetScalar(WeatheringCoverageVariableId, 0f);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			return MaterialSynthesisResult.Failed($"{stem}：「不显示」材质造不出来——{exception.Message}");
+		}
+
+		// 身份串里必须带 `nodraw:`：`--no-draw show` 转出来的同名材质要有**不同的 id**，
+		// 否则两种产物会撞同一个 id，"换个策略重转"就成了随机结果。
+		var token = "nodraw:" + stem;
+		var identity = BuildMaterialIdentity(token, null, useAlphaClip: true);
+		var id = DeriveMaterialId(identity);
+		return new MaterialSynthesisResult(
+			new SynthesizedMaterial(id, material.Write(), templateName, token, material.TextureIds),
+			textures,
+			[])
+		{
+			Identity = new MaterialIdentity(id, templateName, token, UseAlphaClip: true,
+				MatcapTexture: null, MatcapBaked: false),
+			Notices =
+			[
+				$"{stem}：源材质声明 $no_draw（源侧不绘制），已按源侧做成**不显示**材质"
+				+ "（alphaclip + alpha 全 0 的遮罩）—— 几何保留在 patch 里，画面上看不见。"
+				+ "要看这块：加 `--no-draw show` 重转一次。",
+			],
+		};
 	}
 
 	public static bool HasNoRealBaseTexture(VmtDocument vmt)
@@ -1690,11 +1828,16 @@ public sealed class SourceMaterialConverter
 		// 写 `$no_draw "0"` 是**明确打开绘制**，按"非空即跳过"会把它当成不要画，
 		// 于是那个部件连几何一起消失——一个本该显示的部件静默不见，
 		// 在游戏里没有任何线索指向"是 $no_draw 判反了"。
-		if (vmt.IsEnabled("$no_draw"))
+		if (vmt.IsEnabled("$no_draw") && noDrawPolicy != NoDrawPolicy.Show)
 		{
 			reason = $"{stem}：源材质声明 $no_draw（源侧不绘制），跳过";
 			return LoadOutcome.Skipped;
 		}
+
+		// `--no-draw show`：把 `$no_draw` 当"作者的变体开关"，照普通材质转换。
+		// 这条**不能静默**：显示一块源侧本来藏起来的部件，是用户明确要求的结果，
+		// 报告里要说清是哪一键造成的。
+		var noDrawIgnored = vmt.IsEnabled("$no_draw") && noDrawPolicy == NoDrawPolicy.Show;
 
 		// 收敛成非 null：`HasNoRealBaseTexture` 把"缺失"和"占位值"都算作没有底色，
 		// 所以下面的合成分支一定会给它赋一个真值。用 `?? string.Empty` 是为了让
@@ -1800,7 +1943,18 @@ public sealed class SourceMaterialConverter
 		// （见 ShaderColorKeys）。以前这里直接落到"既没有底色也没有 matcap"⇒ 判失败 ⇒
 		// 兜底灰材质 ⇒ 上机两颗灰球，也就是用户报的「眼睛没了」。
 		var shaderColor = HasNoRealBaseTexture(vmt) ? TryShaderColorTexture(vmt) : null;
+		// 次选：**材质名就是贴图名**（`cat.vmt` ↔ `cat.vtf`）。
+		//
+		// 典型的来源是"禁用桩"：作者只写一份 `$no_draw` 的 VMT 来藏部件，而图还躺在包里
+		// （实测 2829646325 的 cat / facial / basebody2 三块都是这种）。这一条只在
+		// **没有 matcap 可以顶掉底色**时才生效——有 matcap 的件（NekoToon 金属/宝石）
+		// 底色本来就是 F0 载体，认一张同名图只会把金属的观感弄乱。
+		var sameNameTexture = HasNoRealBaseTexture(vmt) && shaderColor is null
+			&& string.IsNullOrWhiteSpace(matcapTextureName)
+				? TrySameNameTexture(stem)
+				: null;
 		string? shaderColorNotice = null;
+		string? sameNameNotice = null;
 		if (shaderColor is { } eyeColor)
 		{
 			// 在这条路上 baseTexture 就是**真底色**：alpha、尺寸、去重、身份串全部按正常材质走，
@@ -1809,6 +1963,13 @@ public sealed class SourceMaterialConverter
 			shaderColorNotice =
 				$"{stem}：这块材质用的是 {vmt.Shader} 着色器，颜色图在 {eyeColor.Key} 里（{eyeColor.Texture}）"
 				+ "—— 已按底色接入；它的 UV 由装配器按眼球位置重算（源侧 EyeRefract 的采样坐标不来自模型 UV）。";
+		}
+		else if (sameNameTexture is { } sameName)
+		{
+			baseTexture = sameName;
+			sameNameNotice =
+				$"{stem}：VMT 里没有 $basetexture，但来源里有一张**与材质同名**的贴图（{sameName}）—— 已按底色接入。"
+				+ "这类 VMT 通常是作者用来「隐藏这块」的桩（`$no_draw`），图却还在包里。";
 		}
 		else if (HasNoRealBaseTexture(vmt))
 		{
@@ -2029,6 +2190,10 @@ public sealed class SourceMaterialConverter
 			notices.Add(missingBaseNotice);
 		if (shaderColorNotice is not null)
 			notices.Add(shaderColorNotice);
+		if (sameNameNotice is not null)
+			notices.Add(sameNameNotice);
+		if (noDrawIgnored)
+			notices.Add($"{stem}：源材质声明 $no_draw，但本次用 `--no-draw show` 显式忽略它——这块会被画出来。");
 
 		// ── 先算一次"这个材质最终会用哪个模板"，以及那个模板能不能表达金属度 ────────
 		//
