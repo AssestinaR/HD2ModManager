@@ -2788,6 +2788,18 @@ public static class CliApplication
 				// 只有真的命中 matcap 规则（tint ≥ 0.9）的材质才会被解码。
 				var matcapMeans = SourceMaterialConverter.ComputeMatCapMeans(
 					materialSource, inputs.Geometry, inputs.Model.MaterialPaths, encoder);
+				// matcap / lightwarp 都需要**世界方向**的法线（理由见 UvNormalBake）。
+				// 一次烘好按材质名索引，转换器那边按材质取用；烘不出来就是 null，不影响材质成败。
+				// 懒烘焙 + 缓存：只有真的用到（有 matcap / lightwarp）的材质才会被烘，
+				// 免得一次给几十个材质各留一张 UV 法线图（512² × 4 字节 = 1 MB/材质）。
+				var indexOf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+				for (var i = 0; i < inputs.Model.MaterialPaths.Count; i++)
+					indexOf[Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(inputs.Model.MaterialPaths[i]))] = i;
+				var uvNormalCache = new System.Collections.Concurrent.ConcurrentDictionary<string, UvNormalMap?>(StringComparer.OrdinalIgnoreCase);
+				UvNormalMap? WorldNormal(string stem)
+					=> uvNormalCache.GetOrAdd(stem, key => indexOf.TryGetValue(key, out var index)
+						? UvNormalBake.Bake(inputs.Geometry, index)
+						: null);
 				materialConverter = new SourceMaterialConverter(materialSource, encoder, templates,
 					// 压暗默认关闭：它改的是**观感**而不是正确性，不擅自打开。
 					invocation.Options.AlbedoFactor is { } factor
@@ -2804,7 +2816,8 @@ public static class CliApplication
 					metalRoughness: invocation.Options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
 					metalCutout: ResolveMetalCutout(invocation.Options),
 					cutoutTemplate: ResolveCutoutTemplate(invocation.Options),
-					normalFlipY: invocation.Options.NormalFlipY ?? false);
+					normalFlipY: invocation.Options.NormalFlipY ?? false,
+					worldNormalFactory: WorldNormal);
 			}
 
 			var package = await new VpkPatchAssembler().AssembleAsync(
@@ -3368,6 +3381,7 @@ public static class CliApplication
 			// matcap 平均色要按**三角形面积加权**算，所以需要几何——用队列里那个模型的。
 			// 只有真的命中 matcap 规则（tint ≥ 0.9）的材质才会被解码。
 			IReadOnlyDictionary<string, double[]>? matcapMeans = null;
+			Func<string, UvNormalMap?>? WorldNormal = null;
 			if (matcapModel is not null)
 			{
 				var names = new List<string>(matcapModel.Model.MaterialPaths);
@@ -3375,6 +3389,13 @@ public static class CliApplication
 					names.AddRange(scope.OwnedVmtNames);
 				matcapMeans = SourceMaterialConverter.ComputeMatCapMeans(
 					materialSource, matcapModel.Geometry, names, encoder);
+				var indexOf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+				for (var i = 0; i < matcapModel.Model.MaterialPaths.Count; i++)
+					indexOf[Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(matcapModel.Model.MaterialPaths[i]))] = i;
+				var uvNormalCache = new System.Collections.Concurrent.ConcurrentDictionary<string, UvNormalMap?>(StringComparer.OrdinalIgnoreCase);
+				WorldNormal = stem => uvNormalCache.GetOrAdd(stem, key => indexOf.TryGetValue(key, out var index)
+					? UvNormalBake.Bake(matcapModel.Geometry, index)
+					: null);
 			}
 
 			materialConverter = new SourceMaterialConverter(materialSource, encoder, templates,
@@ -3399,7 +3420,8 @@ public static class CliApplication
 				options.MetalRoughness ?? MaterialAppearance.DefaultMetalRoughness,
 				ResolveMetalCutout(options),
 				ResolveCutoutTemplate(options),
-				options.NormalFlipY ?? false);
+				options.NormalFlipY ?? false,
+				worldNormalFactory: WorldNormal);
 		}
 
 		// ── 材质 / 贴图包：不出 Unit，只出这个 VPK 自己的材质与贴图 ──
@@ -8279,3 +8301,6 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	安全边界：Mod 库写入要求桌面端关闭、严格库读取、跨进程库租约和显式 --confirm。mod delete plan 会冻结库状态、激活状态与待删目录内容，validate/apply 会重新确认。library sync 只更新 library.json 的节点记录，不会导入、删除、移动或部署 Mod，也不会写 Profile、激活状态或派生缓存。import --add-to-profile 仅加入明确计划中的配置，不自动部署。deploy apply 额外要求游戏退出、真实 GameData、双租约与完整 Patch 归属证明；不会接管未知 Patch，也不会执行 Mod Lua。批量 Patch 修复只会替换计划中仍确认过时且被 selected 的 Mod：每个 Patch 家族会先备份，候选失败会恢复原文件，成功后才更新对应库指纹并回建当前活动的管理器 Overwrite。主体派生 Overwrite 永不覆盖非管理器生成的 Overwrite。Patch 资源重打包、头盔合并、装饰外部包和单 Patch Same-key 修复都只写入新的库外目录；不会替换、自动导入、启用或部署结果。
 """;
 }
+
+
+

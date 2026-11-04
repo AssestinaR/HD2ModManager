@@ -650,13 +650,17 @@ public sealed class SourceMaterialConverter
 		double metalRoughness = MaterialAppearance.DefaultMetalRoughness,
 		MetalCutoutPolicy metalCutout = MetalCutoutPolicy.CutoutWins,
 		CutoutTemplate cutoutTemplate = CutoutTemplate.AlphaClip,
-		bool normalFlipY = false)
+		bool normalFlipY = false,
+		// 逐材质的「UV 空间模型法线」（见 UvNormalBake）：matcap 与 lightwarp 都需要**世界方向**的
+		// 法线，而法线贴图给的是切线空间的方向。没有它时这两样退回"取正中"。
+		Func<string, UvNormalMap?>? worldNormalFactory = null)
 	{
 		this.source = source;
 		this.encoder = encoder;
 		this.templates = templates;
 		this.albedoAdjustment = albedoAdjustment;
 		this.matcapMeans = matcapMeans;
+		this.worldNormalFactory = worldNormalFactory;
 		this.matcapMode = matcapMode;
 		this.idNamespace = string.IsNullOrWhiteSpace(idNamespace) ? null : idNamespace.Trim();
 		this.cutoutStrategy = cutoutStrategy;
@@ -864,6 +868,13 @@ public sealed class SourceMaterialConverter
 
 	/// <summary>材质裸名 → 该材质上 matcap 贴图的面积加权平均色（<see cref="MatCapSampler"/> 算出来的）。</summary>
 	private readonly IReadOnlyDictionary<string, double[]>? matcapMeans;
+
+	/// <summary>逐材质的 UV 空间模型法线（key = 材质裸名）。</summary>
+	private readonly Func<string, UvNormalMap?>? worldNormalFactory;
+
+	/// <summary>取这个材质的「UV 空间世界法线」；没有就 <c>null</c>（调用方退回无方向方案）。</summary>
+	private UvNormalMap? WorldNormalFor(string stem)
+		=> worldNormalFactory?.Invoke(stem);
 
 	/// <summary>
 	/// 为一批源材质预算 matcap 平均色，供构造转换器时传入。
@@ -2285,7 +2296,7 @@ public sealed class SourceMaterialConverter
 			? BuildTranslucentMap(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight)
 			: null;
 
-		// ===== N3：把 lightwarp 当**卡通阴影曲线**烘进底色 =====
+		// ===== N3（默认关闭，见 LightwarpShadingEnabled）：把 lightwarp 当卡通阴影曲线烘进底色 =====
 		//
 		// 作者填的这些数是有意义的，不能丢：ramp 的暗端编码了"阴影该是什么颜色"
 		// （basewarp 偏冷 (50,55,58)、skinwarp 偏暖 (60,45,49)、facewarp 也偏暖），
@@ -2297,20 +2308,19 @@ public sealed class SourceMaterialConverter
 		//
 		// 所以先除以 ramp 自己的受光段（受光 = 1.0），再按**法线的 N·L** 查这条归一化曲线：
 		// 受光面保持原样，背光面带作者指定的色偏，整体亮度不变。
-		if (!LightwarpDisabled
+		if (LightwarpShadingEnabled
 			&& loaded.LightwarpTexture is { Length: > 0 } warpName
 			&& TryReadTextureRgba(warpName, out var warpRgba, out var warpWidth, out var warpHeight))
 		{
-			byte[]? shadingNormal = null;
-			var shadingWidth = 0;
-			var shadingHeight = 0;
-			if (loaded.BumpTexture is { Length: > 0 } shadingBump)
-				TryReadTextureRgba(shadingBump, out shadingNormal, out shadingWidth, out shadingHeight);
-
+			// **必须用世界方向的法线**（见 UvNormalBake）：拿切线空间法线算 N·L 会让阴影
+			// 跟着贴图细节一块块跳。没有烘焙结果时按"正面朝光"算 ⇒ 等于不动。
+			var shadingNormal = WorldNormalFor(loaded.Stem);
 			MaterialAppearance.BakeLightwarpShading(
 				rgba, vtf.Width, vtf.Height,
 				warpRgba, warpWidth, warpHeight,
-				shadingNormal, shadingWidth, shadingHeight);
+				shadingNormal?.Rgba,
+				shadingNormal?.Width ?? 0,
+				shadingNormal?.Height ?? 0);
 		}
 
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
@@ -2368,8 +2378,11 @@ public sealed class SourceMaterialConverter
 		// 丢弃，最后要么压成一个平均色（Bake），要么整片涂成中性 F0（Metal）。于是"局部亮光"
 		// 这种 matcap 最典型的观感在产物里根本不存在 —— 用户说"matcap 看起来没被支持"就是这个。
 		//
-		// 采样坐标是唯一做不到的部分：源侧用视角法线（lilCalcMatCapUV），HD2 没有 view-normal
-		// 采样也没有 cubemap 槽，这里用**切线空间法线的 XY** 做静态近似；没有法线图就取贴图中心。
+		// 采样坐标：源侧用**视角法线**（lilToon `lilCalcMatCapUV`），HD2 没有 view-normal 采样。
+		// 我们试过直接拿切线空间法线当代替——法线贴图里的细节一抖，颜色就跟着跳，
+		// 实机表现是脸上/发梢/衣褶上一块块色斑。正确的前提是**世界方向的法线**，
+		// 也就是 `UvNormalBake` 把几何烘进 UV 空间得到的那张；没有它就退回取正中
+		// （整片一个颜色，配合逐像素蒙版仍能表达"局部亮光"，但不会出色斑）。
 		if (loaded.MatcapBlend != MaterialAppearance.MatcapBlendMode.Off
 			&& !MatcapLayerDisabled
 			// 底色本身就是 matcap 的那条路（Bake/Albedo）不能叠自己，会自我加强一倍。
@@ -2383,16 +2396,13 @@ public sealed class SourceMaterialConverter
 			if (loaded.Mask1Texture is { Length: > 0 } maskName)
 				TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
 
-			byte[]? normalRgba = null;
-			var normalWidth = 0;
-			var normalHeight = 0;
-			if (loaded.BumpTexture is { Length: > 0 } bumpName)
-				TryReadTextureRgba(bumpName, out normalRgba, out normalWidth, out normalHeight);
-
+			var worldNormal = WorldNormalFor(loaded.Stem);
 			MaterialAppearance.CompositeMatcap(
 				rgba, vtf.Width, vtf.Height,
 				matcapRgba, matcapWidth, matcapHeight,
-				normalRgba, normalWidth, normalHeight,
+				normal: worldNormal?.Rgba,
+				normalWidth: worldNormal?.Width ?? 0,
+				normalHeight: worldNormal?.Height ?? 0,
 				maskRgba, maskWidth, maskHeight,
 				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0);
 
@@ -2408,7 +2418,7 @@ public sealed class SourceMaterialConverter
 				MaterialAppearance.CompositeMatcap(
 					rgba, vtf.Width, vtf.Height,
 					matcap2Rgba, matcap2Width, matcap2Height,
-					normalRgba, normalWidth, normalHeight,
+					normal: null, normalWidth: 0, normalHeight: 0,
 					maskRgba, maskWidth, maskHeight,
 					loaded.Matcap2TintRgba, loaded.Matcap2Blend, maskChannel: 2);
 			}
@@ -2987,14 +2997,20 @@ public sealed class SourceMaterialConverter
 		Environment.GetEnvironmentVariable("HD2_NO_MATCAP_LAYER") == "1";
 
 	/// <summary>
-	/// 诊断开关 <c>HD2_NO_LIGHTWARP=1</c>：不把 ramp 当卡通阴影曲线烘进底色。
+	/// 开关 <c>HD2_LIGHTWARP=1</c>：把 lightwarp 当卡通阴影曲线烘进底色（<b>默认关闭</b>）。
 	/// <para>
-	/// 默认**开启**（与另外两个 <c>HD2_NO_NORMAL_MAP</c> / <c>HD2_NO_MATCAP_LAYER</c> 同族），
-	/// 因为它只按"法线朝向"给背光面加作者指定的色偏，不改变整体亮度。
+	/// <b>为什么默认关。</b>同 matcap 那条：源侧用**视角相关**的光照方向，而我们只能用切线空间法线
+	/// 配一个固定光向去近似。实机结果是**脸上、发梢、衣褶上出现一块块色斑**——切线法线是
+	/// "相对这个面"的方向，拿它当世界方向算 N·L，法线一抖阴影就跳。
+	/// </para>
+	/// <para>
+	/// 保留开关是因为这条数据本身有价值（ramp 的暗端编码了"阴影该是什么颜色"：
+	/// basewarp 偏冷、skinwarp 偏暖）。要真正用起来，得先拿到**模型空间的法线**或
+	/// 逐顶点的世界方向，而不是现在这张切线空间法线图。
 	/// </para>
 	/// </summary>
-	private static readonly bool LightwarpDisabled =
-		Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") == "1";
+	private static readonly bool LightwarpShadingEnabled =
+		Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") != "1";
 
 	/// <summary>
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
@@ -3111,3 +3127,11 @@ public sealed class SourceMaterialConverter
 			rgba[offset] = 0;
 	}
 }
+
+
+
+
+
+
+
+
