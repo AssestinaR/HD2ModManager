@@ -33,23 +33,23 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 		}
 	}
 
-	private static VpkComponentSwitchDocument Document() => new(
-		VpkComponentSwitchDocument.CurrentSchema,
+	private static SectionGroupDocument Document() => new(
+		SectionGroupDocument.CurrentSchema,
 		[
-			new VpkComponentSwitchEntry("猫耳", "a.vpk", ["c_white_a_ear"], [new VpkComponentSwitchTarget(OldHead, [3])]),
-			new VpkComponentSwitchEntry("外套", "b.vpk", ["_03_coat"],
+			new SectionGroup("猫耳", "a.vpk", ["c_white_a_ear"], [new SectionGroupTarget(OldHead, [3])]),
+			new SectionGroup("外套", "b.vpk", ["_03_coat"],
 			[
-				new VpkComponentSwitchTarget(OldHead, [5]),
-				new VpkComponentSwitchTarget(OldChest, [1, 2]),
+				new SectionGroupTarget(OldHead, [5]),
+				new SectionGroupTarget(OldChest, [1, 2]),
 			]),
-			new VpkComponentSwitchEntry("尾巴", "c.vpk", ["c_white_a_tail"], [new VpkComponentSwitchTarget("ffffffffffffffff", [0])]),
+			new SectionGroup("尾巴", "c.vpk", ["c_white_a_tail"], [new SectionGroupTarget("ffffffffffffffff", [0])]),
 		],
 		[]);
 
 	[Fact]
 	public void Translate_MovesEveryMaskOntoTheNewUnitKeys()
 	{
-		var translated = VpkComponentSwitchFile.Translate(Document(), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+		var translated = SectionGroupFile.Translate(Document(), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 		{
 			[OldHead] = NewHead,
 			[OldChest] = NewChest,
@@ -71,7 +71,7 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 	[Fact]
 	public void Translate_KeepsSwitchesWithoutAMappingButClearsTheirMask()
 	{
-		var translated = VpkComponentSwitchFile.Translate(Document(), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+		var translated = SectionGroupFile.Translate(Document(), new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 		{
 			[OldHead] = NewHead,
 		});
@@ -87,13 +87,13 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 	[Fact]
 	public void Translate_MergesTargetsThatLandOnTheSameUnit()
 	{
-		var merged = new VpkComponentSwitchDocument(
-			VpkComponentSwitchDocument.CurrentSchema,
-			[new VpkComponentSwitchEntry("合并", "m.vpk", ["x"],
-				[new VpkComponentSwitchTarget(OldHead, [1]), new VpkComponentSwitchTarget(OldChest, [4])])],
+		var merged = new SectionGroupDocument(
+			SectionGroupDocument.CurrentSchema,
+			[new SectionGroup("合并", "m.vpk", ["x"],
+				[new SectionGroupTarget(OldHead, [1]), new SectionGroupTarget(OldChest, [4])])],
 			[]);
 
-		var translated = VpkComponentSwitchFile.Translate(merged, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+		var translated = SectionGroupFile.Translate(merged, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 		{
 			[OldHead] = NewHead,
 			[OldChest] = NewHead,
@@ -107,7 +107,7 @@ public sealed class VpkSwitchTranslationAndOwnershipTests : IDisposable
 	[Fact]
 	public void Translate_WithAnEmptyMapClearsEverythingButKeepsTheSwitches()
 	{
-		var translated = VpkComponentSwitchFile.Translate(Document(), new Dictionary<string, string>());
+		var translated = SectionGroupFile.Translate(Document(), new Dictionary<string, string>());
 
 		Assert.Equal(3, translated.Switches.Count);
 		Assert.All(translated.Switches, entry => Assert.Empty(entry.Disabled));

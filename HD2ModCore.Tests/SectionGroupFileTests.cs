@@ -11,7 +11,7 @@ namespace HD2ModCore.Tests;
 /// <b>坏文件只影响开关区</b>（读不懂返回 <c>null</c>，不该让详情页打不开）。
 /// </para>
 /// </summary>
-public sealed class VpkComponentSwitchFileTests : IDisposable
+public sealed class SectionGroupFileTests : IDisposable
 {
 	private const string UnitA = "18054b9f5a540001";
 	private const string UnitB = "18054b9f5a540002";
@@ -32,29 +32,29 @@ public sealed class VpkComponentSwitchFileTests : IDisposable
 		}
 	}
 
-	internal static VpkComponentSwitchDocument CreateDocument() => new(
-		VpkComponentSwitchDocument.CurrentSchema,
+	internal static SectionGroupDocument CreateDocument() => new(
+		SectionGroupDocument.CurrentSchema,
 		[
-			new VpkComponentSwitchEntry(
+			new SectionGroup(
 				"猫耳",
 				"Manuka_JABIS猫耳关.vpk",
 				["c_white_a_ear"],
-				[new VpkComponentSwitchTarget(UnitA, [3])]),
-			new VpkComponentSwitchEntry(
+				[new SectionGroupTarget(UnitA, [3])]),
+			new SectionGroup(
 				"外套",
 				"Manuka_JABIS外套关.vpk",
 				["_2_navy", "_03_coat"],
 				[
-					new VpkComponentSwitchTarget(UnitA, [5, 6]),
-					new VpkComponentSwitchTarget(UnitB, [1]),
+					new SectionGroupTarget(UnitA, [5, 6]),
+					new SectionGroupTarget(UnitB, [1]),
 				]),
 		],
-		[new VpkComponentSwitchUnmatched("文身", "Manuka_JABIS文身关.vpk", "它换的是贴图，不是可见性。")]);
+		[new SectionGroupUnmatched("文身", "Manuka_JABIS文身关.vpk", "它换的是贴图，不是可见性。")]);
 
 	[Fact]
 	public void Serialize_KeepsChineseNamesReadable()
 	{
-		var text = VpkComponentSwitchFile.Serialize(CreateDocument());
+		var text = SectionGroupFile.Serialize(CreateDocument());
 		// 不转义：这份文件要能直接读、直接 grep。
 		Assert.Contains("\"猫耳\"", text, StringComparison.Ordinal);
 		Assert.DoesNotContain("\\u732B", text, StringComparison.OrdinalIgnoreCase);
@@ -63,9 +63,9 @@ public sealed class VpkComponentSwitchFileTests : IDisposable
 	[Fact]
 	public void RoundTrip_KeepsEveryField()
 	{
-		var parsed = VpkComponentSwitchFile.Parse(VpkComponentSwitchFile.Serialize(CreateDocument()));
+		var parsed = SectionGroupFile.Parse(SectionGroupFile.Serialize(CreateDocument()));
 
-		Assert.Equal(VpkComponentSwitchDocument.CurrentSchema, parsed.Schema);
+		Assert.Equal(SectionGroupDocument.CurrentSchema, parsed.Schema);
 		Assert.Equal(2, parsed.Switches.Count);
 		var ears = parsed.Switches[0];
 		Assert.Equal("猫耳", ears.Name);
@@ -86,28 +86,28 @@ public sealed class VpkComponentSwitchFileTests : IDisposable
 	[Fact]
 	public void Parse_RejectsAnUnknownSchemaInsteadOfReturningZeroSwitches()
 	{
-		var text = VpkComponentSwitchFile.Serialize(CreateDocument())
-			.Replace(VpkComponentSwitchDocument.CurrentSchema, "hd2mod.vpk-components/0", StringComparison.Ordinal);
-		var exception = Assert.Throws<InvalidDataException>(() => VpkComponentSwitchFile.Parse(text));
+		var text = SectionGroupFile.Serialize(CreateDocument())
+			.Replace(SectionGroupDocument.CurrentSchema, "hd2mod.vpk-components/0", StringComparison.Ordinal);
+		var exception = Assert.Throws<InvalidDataException>(() => SectionGroupFile.Parse(text));
 		Assert.Contains("schema", exception.Message, StringComparison.Ordinal);
 	}
 
 	[Fact]
 	public async Task TryReadAsync_ReturnsNullForAMissingOrBrokenFile()
 	{
-		Assert.Null(await VpkComponentSwitchFile.TryReadAsync(directory));
+		Assert.Null(await SectionGroupFile.TryReadAsync(directory));
 
 		Directory.CreateDirectory(directory);
-		await File.WriteAllTextAsync(Path.Combine(directory, VpkComponentSwitchFile.FileName), "{ not json");
-		Assert.Null(await VpkComponentSwitchFile.TryReadAsync(directory));
+		await File.WriteAllTextAsync(Path.Combine(directory, SectionGroupFile.FileName), "{ not json");
+		Assert.Null(await SectionGroupFile.TryReadAsync(directory));
 	}
 
 	[Fact]
 	public async Task WriteThenRead_IsStableAndAtomic()
 	{
 		var document = CreateDocument();
-		await VpkComponentSwitchFile.WriteAsync(directory, document);
-		var read = await VpkComponentSwitchFile.TryReadAsync(directory);
+		await SectionGroupFile.WriteAsync(directory, document);
+		var read = await SectionGroupFile.TryReadAsync(directory);
 
 		Assert.NotNull(read);
 		Assert.Equal(document.Switches.Count, read!.Switches.Count);

@@ -14,7 +14,7 @@ namespace HD2ModCore.Infrastructure;
 /// 而写坏一份表会让用户下次打开时"开关凭空消失"，所以写必须要么成功要么不留痕。
 /// </para>
 /// </summary>
-public static class VpkComponentSwitchFile
+public static class SectionGroupFile
 {
 	public const string FileName = "components.json";
 
@@ -33,23 +33,23 @@ public static class VpkComponentSwitchFile
 		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
-	public static string Serialize(VpkComponentSwitchDocument document)
+	public static string Serialize(SectionGroupDocument document)
 	{
 		ArgumentNullException.ThrowIfNull(document);
 		return JsonSerializer.Serialize(document, JsonOptions) + "\n";
 	}
 
 	/// <summary>解析并校验版本。不合法就抛——写入方自己产的文件不该悄悄失效。</summary>
-	public static VpkComponentSwitchDocument Parse(string text)
+	public static SectionGroupDocument Parse(string text)
 	{
 		ArgumentNullException.ThrowIfNull(text);
 		if (Encoding.UTF8.GetByteCount(text) > MaximumBytes)
 			throw new InvalidDataException($"components.json 超过 {MaximumBytes} 字节上限。");
 
-		VpkComponentSwitchDocument? document;
+		SectionGroupDocument? document;
 		try
 		{
-			document = JsonSerializer.Deserialize<VpkComponentSwitchDocument>(text, JsonOptions);
+			document = JsonSerializer.Deserialize<SectionGroupDocument>(text, JsonOptions);
 		}
 		catch (JsonException exception)
 		{
@@ -58,10 +58,10 @@ public static class VpkComponentSwitchFile
 
 		if (document is null)
 			throw new InvalidDataException("components.json 内容为空。");
-		if (!string.Equals(document.Schema, VpkComponentSwitchDocument.CurrentSchema, StringComparison.Ordinal))
+		if (!string.Equals(document.Schema, SectionGroupDocument.CurrentSchema, StringComparison.Ordinal))
 			throw new InvalidDataException(
 				$"components.json 的 schema 是 '{document.Schema}'，本程序只认 "
-				+ $"'{VpkComponentSwitchDocument.CurrentSchema}'；请重新导入一次这个 Mod。");
+				+ $"'{SectionGroupDocument.CurrentSchema}'；请重新导入一次这个 Mod。");
 		return document with
 		{
 			Switches = document.Switches ?? [],
@@ -70,7 +70,7 @@ public static class VpkComponentSwitchFile
 	}
 
 	/// <summary>读一份开关表；文件不存在或读不懂都返回 <c>null</c>（调用方据此隐藏开关区）。</summary>
-	public static async ValueTask<VpkComponentSwitchDocument?> TryReadAsync(
+	public static async ValueTask<SectionGroupDocument?> TryReadAsync(
 		string directory,
 		CancellationToken cancellationToken = default)
 	{
@@ -102,8 +102,8 @@ public static class VpkComponentSwitchFile
 	/// 没有落点），清空掩码让界面能明确说"它现在无处可关"，而不是假装能用。
 	/// </para>
 	/// </summary>
-	public static VpkComponentSwitchDocument Translate(
-		VpkComponentSwitchDocument document,
+	public static SectionGroupDocument Translate(
+		SectionGroupDocument document,
 		IReadOnlyDictionary<string, string> unitMap)
 	{
 		ArgumentNullException.ThrowIfNull(document);
@@ -111,10 +111,10 @@ public static class VpkComponentSwitchFile
 		if (unitMap.Count == 0)
 			return document with { Switches = [.. document.Switches.Select(entry => entry with { Disabled = [] })] };
 
-		var switches = new List<VpkComponentSwitchEntry>(document.Switches.Count);
+		var switches = new List<SectionGroup>(document.Switches.Count);
 		foreach (var entry in document.Switches)
 		{
-			var targets = new List<VpkComponentSwitchTarget>(entry.Disabled.Count);
+			var targets = new List<SectionGroupTarget>(entry.Disabled.Count);
 			foreach (var target in entry.Disabled)
 			{
 				if (!unitMap.TryGetValue(target.Unit, out var mapped))
@@ -123,7 +123,7 @@ public static class VpkComponentSwitchFile
 				var existing = targets.FirstOrDefault(candidate =>
 					string.Equals(candidate.Unit, mapped, StringComparison.OrdinalIgnoreCase));
 				if (existing is null)
-					targets.Add(new VpkComponentSwitchTarget(mapped, [.. target.Sections.Order()]));
+					targets.Add(new SectionGroupTarget(mapped, [.. target.Sections.Order()]));
 				else
 					targets[targets.IndexOf(existing)] = existing with
 					{
@@ -143,7 +143,7 @@ public static class VpkComponentSwitchFile
 	/// <summary>原子写：先写同目录临时文件再替换，避免详情页读到半份表。</summary>
 	public static async ValueTask WriteAsync(
 		string directory,
-		VpkComponentSwitchDocument document,
+		SectionGroupDocument document,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(directory);

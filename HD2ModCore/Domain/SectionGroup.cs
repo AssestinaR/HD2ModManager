@@ -20,7 +20,7 @@ namespace HD2ModCore.Domain;
 /// <summary>
 /// 一个开关关掉的 section 集合。<c>Unit</c> 是 16 位小写 hex（与 <c>sections.json</c> 同口径）。
 /// </summary>
-public sealed record VpkComponentSwitchTarget(string Unit, IReadOnlyList<int> Sections);
+public sealed record SectionGroupTarget(string Unit, IReadOnlyList<int> Sections);
 
 /// <summary>
 /// 一个开关：名字 + 它隐藏的源材质 + 落到哪些 section。
@@ -29,11 +29,11 @@ public sealed record VpkComponentSwitchTarget(string Unit, IReadOnlyList<int> Se
 /// 用户报"关了猫耳结果耳朵还在"时，要先看材质有没有对上。
 /// </para>
 /// </summary>
-public sealed record VpkComponentSwitchEntry(
+public sealed record SectionGroup(
 	string Name,
 	string SourceVpk,
 	IReadOnlyList<string> Materials,
-	IReadOnlyList<VpkComponentSwitchTarget> Disabled)
+	IReadOnlyList<SectionGroupTarget> Disabled)
 {
 	/// <summary>这个开关实际关掉多少块几何。0 表示没匹配上，界面不该把它画成可用开关。</summary>
 	public int SectionCount => Disabled.Sum(target => target.Sections.Count);
@@ -46,16 +46,16 @@ public sealed record VpkComponentSwitchEntry(
 /// 说清"它藏的是 <c>xxx</c>，这个 patch 里没有这个材质"才是可照做的信息。
 /// </para>
 /// </summary>
-public sealed record VpkComponentSwitchUnmatched(string Name, string SourceVpk, string Reason);
+public sealed record SectionGroupUnmatched(string Name, string SourceVpk, string Reason);
 
 /// <summary><c>components.json</c> 的内存表示。<see cref="Schema"/> 是版本闸门。</summary>
-public sealed record VpkComponentSwitchDocument(
+public sealed record SectionGroupDocument(
 	string Schema,
-	IReadOnlyList<VpkComponentSwitchEntry> Switches,
-	IReadOnlyList<VpkComponentSwitchUnmatched> Unmatched)
+	IReadOnlyList<SectionGroup> Switches,
+	IReadOnlyList<SectionGroupUnmatched> Unmatched)
 {
 	/// <summary>当前格式标识。格式变了就换字符串，让旧文件显式失效而不是被误读成"零个开关"。</summary>
 	public const string CurrentSchema = "hd2mod.vpk-components/1";
 
-	public static VpkComponentSwitchDocument Empty { get; } = new(CurrentSchema, [], []);
+	public static SectionGroupDocument Empty { get; } = new(CurrentSchema, [], []);
 }

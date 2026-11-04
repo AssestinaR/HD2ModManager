@@ -16,7 +16,7 @@ namespace HD2ModCli.Tests;
 /// <item><b>掩码去重</b>：两个包藏的是同一批材质时只能出一个开关。</item>
 /// </list>
 /// </summary>
-public sealed class CliVpkComponentSwitchesTests
+public sealed class CliSectionGroupResolverTests
 {
 	private const string Head = "18054b9f5a540001";
 	private const string Chest = "18054b9f5a540002";
@@ -58,7 +58,7 @@ public sealed class CliVpkComponentSwitchesTests
 		// 实测形状：三个源材质共用一张 C_White_A，逐节名字是它们唯一的区分。
 		var map = Map((Head, ["c_white_a", "c_white_a_ear", "c_white_a_tail"]));
 
-		var document = CliVpkComponentSwitches.Resolve(
+		var document = CliSectionGroupResolver.Resolve(
 			[Switch("猫耳", "c_white_a_ear"), Switch("尾巴", "c_white_a_tail")],
 			map);
 
@@ -75,7 +75,7 @@ public sealed class CliVpkComponentSwitchesTests
 	{
 		var map = Map((Head, ["gem_face"]), (Chest, ["gem_face"]));
 
-		var document = CliVpkComponentSwitches.Resolve([Switch("泪钻", "gem_face")], map);
+		var document = CliSectionGroupResolver.Resolve([Switch("泪钻", "gem_face")], map);
 
 		var entry = Assert.Single(document.Switches);
 		Assert.Equal(2, entry.Disabled.Count);
@@ -89,7 +89,7 @@ public sealed class CliVpkComponentSwitchesTests
 		var map = Map((Head, ["c_white_a"]));
 
 		// 两个包藏同一批材质 = 同一件事：并列会让用户看到两个开关，点哪个都关同一批几何。
-		var document = CliVpkComponentSwitches.Resolve(
+		var document = CliSectionGroupResolver.Resolve(
 			[Switch("猫耳", "c_white_a"), Switch("耳朵", "c_white_a")],
 			map);
 
@@ -103,7 +103,7 @@ public sealed class CliVpkComponentSwitchesTests
 	{
 		var map = Map((Head, ["manuka_face"]));
 
-		var document = CliVpkComponentSwitches.Resolve([Switch("光环", "rl_halo")], map);
+		var document = CliSectionGroupResolver.Resolve([Switch("光环", "rl_halo")], map);
 
 		Assert.Empty(document.Switches);
 		var unmatched = Assert.Single(document.Unmatched);
@@ -117,7 +117,7 @@ public sealed class CliVpkComponentSwitchesTests
 	{
 		var map = Map((Head, ["c_white_a", null]));
 
-		var document = CliVpkComponentSwitches.Resolve([Switch("猫耳", "c_white_a")], map);
+		var document = CliSectionGroupResolver.Resolve([Switch("猫耳", "c_white_a")], map);
 
 		var entry = Assert.Single(document.Switches);
 		Assert.Equal([0], entry.Disabled[0].Sections);

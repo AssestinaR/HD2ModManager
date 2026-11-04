@@ -791,10 +791,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// 把开关表装进界面。**没有开关表不是错误**：用旧转换器产的 Mod 里没有
 	/// <c>components.json</c>，那时只显示树，不该给用户一条"出错了"。
 	/// </summary>
-	private void ApplyVpkSwitches(VpkComponentSwitchDocument? document, WardrobeSectionMapDocument sections)
+	private void ApplyVpkSwitches(SectionGroupDocument? document, WardrobeSectionMapDocument sections)
 	{
 		var stale = 0;
-		var usable = new List<VpkComponentSwitchEntry>();
+		var usable = new List<SectionGroup>();
 		if (document is not null)
 		{
 			foreach (var entry in document.Switches)
@@ -828,7 +828,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 	/// <summary>开关"开着" = 它要关的那几节**没有全部**被关掉（与树的三态语义一致）。</summary>
-	private bool ReadSwitchEnabled(VpkComponentSwitchEntry entry)
+	private bool ReadSwitchEnabled(SectionGroup entry)
 	{
 		if (entry.Disabled.Count == 0)
 			return false;
@@ -836,7 +836,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			target.Sections.All(section => _vpkFile.State.IsDisabled(target.Unit, section)));
 	}
 
-	private void WriteSwitch(VpkComponentSwitchEntry entry, bool enabled)
+	private void WriteSwitch(SectionGroup entry, bool enabled)
 	{
 		var state = _vpkFile.State;
 		foreach (var target in entry.Disabled)

@@ -18,20 +18,20 @@ namespace HD2ModManager.ViewModels;
 /// </summary>
 public sealed class VpkSwitchItemViewModel : BaseViewModel
 {
-	private readonly Func<VpkComponentSwitchEntry, bool> read;
-	private readonly Action<VpkComponentSwitchEntry, bool> write;
+	private readonly Func<SectionGroup, bool> read;
+	private readonly Action<SectionGroup, bool> write;
 
 	public VpkSwitchItemViewModel(
-		VpkComponentSwitchEntry entry,
-		Func<VpkComponentSwitchEntry, bool> read,
-		Action<VpkComponentSwitchEntry, bool> write)
+		SectionGroup entry,
+		Func<SectionGroup, bool> read,
+		Action<SectionGroup, bool> write)
 	{
 		Entry = entry ?? throw new ArgumentNullException(nameof(entry));
 		this.read = read ?? throw new ArgumentNullException(nameof(read));
 		this.write = write ?? throw new ArgumentNullException(nameof(write));
 	}
 
-	public VpkComponentSwitchEntry Entry { get; }
+	public SectionGroup Entry { get; }
 
 	/// <summary>开关名，来自源侧 addoninfo 的方括号（<c>[猫耳关]</c> → <c>猫耳</c>）。</summary>
 	public string Name => Entry.Name;

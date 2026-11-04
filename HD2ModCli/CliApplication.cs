@@ -2421,15 +2421,15 @@ public static class CliApplication
 						continue;
 					var sections = await HD2ModCore.Infrastructure.WardrobeSectionMapFile
 						.ReadAsync(sectionsPath).ConfigureAwait(false);
-					var document = CliVpkComponentSwitches.Resolve(componentSwitches, sections);
+					var document = CliSectionGroupResolver.Resolve(componentSwitches, sections);
 					if (document.Switches.Count == 0 && document.Unmatched.Count == 0)
 						continue;
-					await HD2ModCore.Infrastructure.VpkComponentSwitchFile
+					await HD2ModCore.Infrastructure.SectionGroupFile
 						.WriteAsync(directory, document).ConfigureAwait(false);
 					switchReports.Add(new
 					{
 						patch = Path.GetFileName(outcome.Package.TocPath),
-						summary = CliVpkComponentSwitches.Summarize(document),
+						summary = CliSectionGroupResolver.Summarize(document),
 						switches = document.Switches.Select(item => new
 						{
 							name = item.Name,

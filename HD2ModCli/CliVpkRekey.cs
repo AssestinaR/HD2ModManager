@@ -290,13 +290,13 @@ internal static class CliVpkRekey
 		// 开关表跟着搬一份到 Overwrite：它的掩码是 (unit, section)，而换甲把 Unit 换到了目标护甲的键上。
 		// **权威那份留在 vpk2patch/**（它描述的是"这个 VPK 有哪些部件开关"，与目标护甲无关）；
 		// 这里写的是**这一份变体**的派生表，供部署后排查用。
-		var sourceSwitches = await VpkComponentSwitchFile
+		var sourceSwitches = await SectionGroupFile
 			.TryReadAsync(Path.GetDirectoryName(sourcePatch)!, cancellationToken)
 			.ConfigureAwait(false);
 		if (sourceSwitches is not null)
 		{
-			await VpkComponentSwitchFile
-				.WriteAsync(destinationDirectory, VpkComponentSwitchFile.Translate(sourceSwitches, unitMap), cancellationToken)
+			await SectionGroupFile
+				.WriteAsync(destinationDirectory, SectionGroupFile.Translate(sourceSwitches, unitMap), cancellationToken)
 				.ConfigureAwait(false);
 		}
 
@@ -432,9 +432,9 @@ internal static class CliVpkRekey
 				File.Copy(from, destination + suffix, overwrite: true);
 		}
 
-		var switches = await VpkComponentSwitchFile.TryReadAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
+		var switches = await SectionGroupFile.TryReadAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
 		if (switches is not null)
-			await VpkComponentSwitchFile.WriteAsync(destinationDirectory, switches, cancellationToken).ConfigureAwait(false);
+			await SectionGroupFile.WriteAsync(destinationDirectory, switches, cancellationToken).ConfigureAwait(false);
 
 		var rebuilt = await WardrobeSectionMapFile.BuildAsync(destination, cancellationToken).ConfigureAwait(false);
 		await WardrobeSectionMapFile

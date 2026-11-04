@@ -28,7 +28,7 @@ namespace HD2ModCore.Infrastructure;
 public static class VpkPayloadSwap
 {
 	/// <summary>换载荷时既不备份也不删的文件名。</summary>
-	public static readonly string[] PreservedFileNames = ["custom-model.json", VpkComponentSwitchFile.FileName];
+	public static readonly string[] PreservedFileNames = ["custom-model.json", SectionGroupFile.FileName];
 
 	/// <summary>一次换载荷的结果。</summary>
 	/// <param name="Succeeded">是否换成功（失败时旧产物已经还原到原处）。</param>

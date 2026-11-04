@@ -20,13 +20,13 @@ namespace HD2ModCli;
 //     用哪些材质"并不能回答"哪些 section 属于它"；而作者那批 `XXX关` 包本来就是同一批组件的
 //     1:1 枚举（62 轮实测），按包识别既准确又不重复。
 
-internal static class CliVpkComponentSwitches
+internal static class CliSectionGroupResolver
 {
 	/// <summary>
 	/// 把一批开关包解析成掩码。<paramref name="sections"/>
 	/// 必须来自<b>同一个</b> patch，否则"材质在哪几个 section 上"这个 join 没有意义。
 	/// </summary>
-	public static VpkComponentSwitchDocument Resolve(
+	public static SectionGroupDocument Resolve(
 		IReadOnlyList<VpkComponentSwitch> switches,
 		WardrobeSectionMapDocument sections)
 	{
@@ -36,7 +36,7 @@ internal static class CliVpkComponentSwitches
 		// 源材质裸名 → 它在 sections.json 里出现的那些 (unit, section)。
 		// 按**名字**匹配而不是按材质 id：id 是哈希，而"同名不同目录"与"多个源材质并进一个 id"
 		// 都会让 id 层面的对应关系不唯一；名字是转换时逐行写进 sections.json 的，一一对应。
-		var targetsByMaterial = new Dictionary<string, List<VpkComponentSwitchTarget>>(StringComparer.OrdinalIgnoreCase);
+		var targetsByMaterial = new Dictionary<string, List<SectionGroupTarget>>(StringComparer.OrdinalIgnoreCase);
 		foreach (var unit in sections.Units)
 		{
 			foreach (var section in unit.Sections)
@@ -52,14 +52,14 @@ internal static class CliVpkComponentSwitches
 
 				var existing = list.FirstOrDefault(target => string.Equals(target.Unit, unit.FileId, StringComparison.Ordinal));
 				if (existing is null)
-					list.Add(new VpkComponentSwitchTarget(unit.FileId, [section.Index]));
+					list.Add(new SectionGroupTarget(unit.FileId, [section.Index]));
 				else
 					list[list.IndexOf(existing)] = existing with { Sections = [.. existing.Sections, section.Index] };
 			}
 		}
 
-		var entries = new List<VpkComponentSwitchEntry>();
-		var unmatched = new List<VpkComponentSwitchUnmatched>();
+		var entries = new List<SectionGroup>();
+		var unmatched = new List<SectionGroupUnmatched>();
 		// 掩码 → 已合并的那一条。键是排好序的 "unit:idx" 列表，与遍历顺序无关。
 		var byMask = new Dictionary<string, int>(StringComparer.Ordinal);
 		foreach (var item in switches)
@@ -70,7 +70,7 @@ internal static class CliVpkComponentSwitches
 				.Distinct(StringComparer.OrdinalIgnoreCase)
 				.ToArray();
 
-			var disabled = new List<VpkComponentSwitchTarget>();
+			var disabled = new List<SectionGroupTarget>();
 			foreach (var stem in stems)
 			{
 				if (!targetsByMaterial.TryGetValue(stem, out var found))
@@ -90,7 +90,7 @@ internal static class CliVpkComponentSwitches
 
 			if (disabled.Count == 0)
 			{
-				unmatched.Add(new VpkComponentSwitchUnmatched(
+				unmatched.Add(new SectionGroupUnmatched(
 					item.DisplayName,
 					Path.GetFileName(item.VpkPath),
 					$"它要隐藏的材质（{string.Join("、", stems)}）在这个 patch 里找不到——"
@@ -101,7 +101,7 @@ internal static class CliVpkComponentSwitches
 			var mask = string.Join(';', disabled
 				.OrderBy(target => target.Unit, StringComparer.Ordinal)
 				.Select(target => target.Unit + ":" + string.Join(',', target.Sections)));
-			var entry = new VpkComponentSwitchEntry(
+			var entry = new SectionGroup(
 				item.DisplayName,
 				Path.GetFileName(item.VpkPath),
 				stems,
@@ -123,14 +123,14 @@ internal static class CliVpkComponentSwitches
 			entries.Add(entry);
 		}
 
-		return new VpkComponentSwitchDocument(
-			VpkComponentSwitchDocument.CurrentSchema,
+		return new SectionGroupDocument(
+			SectionGroupDocument.CurrentSchema,
 			[.. entries.OrderBy(entry => entry.Name, StringComparer.CurrentCulture)],
 			unmatched);
 	}
 
 	/// <summary>一句话结论，给转换报告与日志用。</summary>
-	public static string Summarize(VpkComponentSwitchDocument document)
+	public static string Summarize(SectionGroupDocument document)
 	{
 		ArgumentNullException.ThrowIfNull(document);
 		if (document.Switches.Count == 0 && document.Unmatched.Count == 0)

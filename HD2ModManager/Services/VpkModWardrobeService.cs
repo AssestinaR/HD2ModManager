@@ -109,13 +109,13 @@ public sealed class VpkModWardrobeService
 	/// 读这个 Mod 的组件开关表。同样**优先 <c>vpk2patch/</c>**：开关是"这个 VPK 有哪些部件"，
 	/// 与目标护甲无关；<c>Overwrite/</c> 里那份是换甲时翻译出来的派生表，只在没有权威表时兜底。
 	/// </summary>
-	public static async Task<VpkComponentSwitchDocument?> ReadComponentsAsync(
+	public static async Task<SectionGroupDocument?> ReadComponentsAsync(
 		string modDirectory,
 		CancellationToken cancellationToken = default)
 	{
 		foreach (var directory in CandidateDirectories(modDirectory))
 		{
-			var document = await VpkComponentSwitchFile.TryReadAsync(directory, cancellationToken).ConfigureAwait(false);
+			var document = await SectionGroupFile.TryReadAsync(directory, cancellationToken).ConfigureAwait(false);
 			if (document is not null)
 				return document;
 		}

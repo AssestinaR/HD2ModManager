@@ -54,7 +54,7 @@ public sealed class VpkPayloadSwapTests : IDisposable
 		var payload = NewDirectory("mod/vpk2patch");
 		File.WriteAllText(Path.Combine(payload, "9ba626afa44a3aa3.patch_0"), "旧载荷");
 		File.WriteAllText(Path.Combine(payload, "custom-model.json"), "{\"key\":\"custom-a\"}");
-		File.WriteAllText(Path.Combine(payload, VpkComponentSwitchFile.FileName), "{}");
+		File.WriteAllText(Path.Combine(payload, SectionGroupFile.FileName), "{}");
 
 		var produced = NewDirectory("produced");
 		File.WriteAllText(Path.Combine(produced, "9ba626afa44a3aa3.patch_0"), "新载荷");
@@ -66,7 +66,7 @@ public sealed class VpkPayloadSwapTests : IDisposable
 		Assert.Equal("新载荷", File.ReadAllText(Path.Combine(payload, "9ba626afa44a3aa3.patch_0")));
 		Assert.True(File.Exists(Path.Combine(payload, "9ba626afa44a3aa3.patch_0.gpu_resources")));
 		Assert.Equal("{\"key\":\"custom-a\"}", File.ReadAllText(Path.Combine(payload, "custom-model.json")));
-		Assert.True(File.Exists(Path.Combine(payload, VpkComponentSwitchFile.FileName)));
+		Assert.True(File.Exists(Path.Combine(payload, SectionGroupFile.FileName)));
 	}
 
 	/// <summary>
