@@ -5,7 +5,7 @@ using HD2ModCore.Domain;
 namespace HD2ModCore.Tests;
 
 // 作用：钉住"替换护甲 = 装箱"这套语义：格子身份、桶、以及 P1~P5 的放置顺序。
-// 背景与实测数据见 docs/armor-registry-page-perf-20261027.md 与 docs/armor-cell-plan-20261027.md。
+// 背景与实测数据见 docs/agent/armor-registry-page-perf-20261027.md 与 docs/agent/armor-cell-plan-20261027.md。
 public sealed class CellAssignmentPlannerTests
 {
 	private const int HelmetSlot = 0;

@@ -376,7 +376,6 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 *.lnk
-docs/
 _diagnostics/
 tmp/*
 */tmp/
@@ -391,4 +390,6 @@ _buildverify/
 probe_*.lib
 
 # 本地 AI 工具的记忆目录，不属于项目内容
+.workbuddy/
 .workbuddy-ai/
+.dsh/

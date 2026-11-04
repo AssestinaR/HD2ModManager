@@ -124,7 +124,7 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 	// 为什么必须有：这条查询是 archives LEFT JOIN archive_entries（35 万行）的 GROUP BY，
 	// 外加每个归档一次 archive_issues 的 EXISTS。实测 ~215ms，而且**每次**打开护甲页
 	// 都会跑一遍——信息中心的无节点事实账本只做并发合并、做完就移除（见
-	// docs/armor-registry-page-perf-20261027.md §1 A2/A3）。
+	// docs/agent/armor-registry-page-perf-20261027.md §1 A2/A3）。
 	//
 	// 为什么可以缓存：摘要只取决于索引库本身的内容，而索引库由 source_fingerprint
 	// 唯一标识。指纹不变，聚合结果就不可能变。
