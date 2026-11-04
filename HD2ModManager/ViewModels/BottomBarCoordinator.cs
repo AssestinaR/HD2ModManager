@@ -74,20 +74,20 @@ namespace HD2ModManager.ViewModels
         public bool IsRelationshipSourceSelection => IsLibrarySelection || IsProfileSelection;
         public string? RelationshipHostId => _relationshipHostId;
         public string RelationshipHostName => _relationshipHostName ?? "当前 Mod";
-        private bool HasSelectedDecorations => _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration == true);
+        // 装饰包已不再支持：`HasSelectedDecorations` 已删除（恒为 false）。
         private bool HasSelectedOptions => _selection.SelectedIds.Any(id => _library.Get(id)?.IsOption == true);
         private bool HasSelectedStandardMods => _selection.SelectedIds.Any(id => _library.Get(id)?.Capabilities.CanJoinProfile == true);
         private bool HasRelationshipHost => GetRelationshipHost() is not null;
         private bool HasSelectedOptionCandidates => GetSelectedOptionCandidateIds().Count != 0;
-        private bool HasSelectedAttachableDecorations => !string.IsNullOrWhiteSpace(_relationshipHostId)
-            && _selection.SelectedIds.Any(id => _library.Get(id)?.IsDecoration == true
-                && _library.IsDecorationAvailableForHost(id, _relationshipHostId));
+        // 装饰包已不再支持：`HasSelectedAttachableDecorations` 已删除（恒为 false）。
         private bool HasSelectedDirectHostOptions => TryGetSelectedDirectHostOptions(out _, out _);
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
         public bool ShowSetAsOption => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedOptionCandidates;
-        public bool ShowAttachDecorationsToHost => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedAttachableDecorations;
-        public bool ShowEnableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && (HasSelectedDecorations || HasSelectedOptions);
-        public bool ShowDisableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && (HasSelectedDecorations || HasSelectedOptions);
+        // 装饰包已不再支持：不再有"把装饰附加到宿主"这个动作。
+        public bool ShowAttachDecorationsToHost => false;
+        // 名字是历史命名：这两个按钮现在的含义是"启用/停用选项"，装饰已不在其中。
+        public bool ShowEnableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedOptions;
+        public bool ShowDisableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedOptions;
         public bool ShowDelete => IsLibrarySelection;
         public bool ShowRemove => IsProfileSelection;
         public bool ShowRemoveOptionsFromHost => IsDecorationHostSelection && HasSelectedDirectHostOptions;
@@ -488,7 +488,7 @@ namespace HD2ModManager.ViewModels
 
             return _selection.SelectedIds
                 .Where(id => !string.Equals(id, _relationshipHostId, StringComparison.OrdinalIgnoreCase))
-                .Where(id => _library.Get(id) is { } mod && !mod.IsDecoration && !mod.IsReShade)
+                .Where(id => _library.Get(id) is { } mod && !mod.IsReShade)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
         }
@@ -497,7 +497,7 @@ namespace HD2ModManager.ViewModels
         {
             if (string.IsNullOrWhiteSpace(_relationshipHostId)) return null;
             var host = _library.Get(_relationshipHostId);
-            return host is null || host.IsDecoration || host.IsReShade ? null : host;
+            return host is null || host.IsReShade ? null : host;
         }
 
         private void RefreshState()

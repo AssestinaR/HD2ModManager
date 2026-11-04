@@ -65,9 +65,7 @@ namespace HD2ModManager.Views
                 case ModListRowAction.AddToProfile:
                     VM.AddToProfileCommand.Execute(card);
                     break;
-                case ModListRowAction.ToggleDecoration:
-                    VM.ToggleDecorationCommand.Execute(card);
-                    break;
+
                 case ModListRowAction.ExportMod:
                     shell?.BeginModExport(card.Mod.Guid, card.Mod.Name);
                     break;
@@ -137,11 +135,6 @@ namespace HD2ModManager.Views
                 await shell.RemoveModsFromSelectedProfileAsync(e.SelectedKeys);
         }
 
-        private void OnToggleDecorationFilterClick(object sender, RoutedEventArgs e)
-        {
-            EnsureVM();
-            if (VM is not null) VM.ShowDecorations = !VM.ShowDecorations;
-        }
 
         private void OnToggleOptionFilterClick(object sender, RoutedEventArgs e)
         {

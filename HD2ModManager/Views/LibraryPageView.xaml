@@ -6,7 +6,7 @@
         <DataTemplate x:Key="LibrarySearchActions">
             <StackPanel Orientation="Horizontal">
                 <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
-                <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding DecorationFilterText}" Click="OnToggleDecorationFilterClick" Margin="10,0,0,0"/>
+
                 <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OptionFilterText}" Click="OnToggleOptionFilterClick" Margin="10,0,0,0"/>
             </StackPanel>
         </DataTemplate>
@@ -21,7 +21,7 @@
                         EmptyState="{Binding EmptyState}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource LibrarySearchActions}"
-                        RowActions="Rename, Details, AddToProfile, ToggleDecoration, ExportMod, OpenFolder, DeleteFromLibrary"
+                        RowActions="Rename, Details, AddToProfile, ExportMod, OpenFolder, DeleteFromLibrary"
                         RowActionInvoked="OnRowActionInvoked"
                         SelectionPolicy="Multiple"
                         RelationshipDragOperation="SetAsOption"

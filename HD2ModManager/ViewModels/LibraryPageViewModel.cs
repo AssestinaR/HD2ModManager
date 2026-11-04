@@ -100,7 +100,7 @@ namespace HD2ModManager.ViewModels
         private RelayCommand? _clearSearchCommand;
         public RelayCommand ClearSearchCommand => _clearSearchCommand ??= new RelayCommand(() => Query = string.Empty);
         private bool _showOnlyOutdated;
-        private bool _showDecorations;
+
         private bool _showOptions;
         public bool ShowOnlyOutdated
         {
@@ -113,17 +113,7 @@ namespace HD2ModManager.ViewModels
             }
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
-        public bool ShowDecorations
-        {
-            get => _showDecorations;
-            set
-            {
-                if (!SetField(ref _showDecorations, value)) return;
-                OnPropertyChanged(nameof(DecorationFilterText));
-                Refresh(ListTransitionKind.Filter);
-            }
-        }
-        public string DecorationFilterText => ShowDecorations ? "隐藏装饰" : "显示装饰";
+        // 装饰包已不再支持：原来那个"显示装饰/隐藏装饰"筛选已删除（永远筛掉 0 条）。
         public bool ShowOptions
         {
             get => _showOptions;
@@ -140,7 +130,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ToggleSelectionCommand { get; }
         public RelayCommand AddToProfileCommand { get; }
         public RelayCommand OpenFolderCommand { get; }
-        public RelayCommand ToggleDecorationCommand { get; }
+
         public ICommand RenameCommand { get; }
         public ICommand EditDescriptionCommand { get; }
         public RelayCommand EditImageCommand { get; }
@@ -174,7 +164,7 @@ namespace HD2ModManager.ViewModels
             ToggleSelectionCommand = new RelayCommand(ToggleSelection);
             AddToProfileCommand = new RelayCommand(parameter => AddToProfile(parameter as ModCardViewModel));
             OpenFolderCommand = new RelayCommand(parameter => OpenFolder(parameter as ModCardViewModel));
-            ToggleDecorationCommand = new RelayCommand(async parameter => await ToggleDecorationAsync(parameter as ModCardViewModel));
+
             RenameCommand = new AsyncRelayCommand(parameter => RenameModAsync(parameter as ModCardViewModel, parameter is string name ? name : string.Empty));
             EditDescriptionCommand = new AsyncRelayCommand(parameter => UpdateDescriptionAsync(parameter as ModCardViewModel, parameter is string description ? description : string.Empty));
             EditImageCommand = new RelayCommand(parameter => _ = UpdateIconAsync(parameter as ModCardViewModel, parameter is string path ? path : string.Empty));
@@ -291,11 +281,11 @@ namespace HD2ModManager.ViewModels
             using var perf = UiPerformanceDiagnostics.Measure(
                 "Library.Refresh",
                 thresholdMilliseconds: 25,
-                details: () => $"kind={transitionKind}; result={Items.Count}; query={(string.IsNullOrWhiteSpace(Query) ? "empty" : "set")}; decorations={ShowDecorations}; options={ShowOptions}; outdated={ShowOnlyOutdated}");
+                details: () => $"kind={transitionKind}; result={Items.Count}; query={(string.IsNullOrWhiteSpace(Query) ? "empty" : "set")}; options={ShowOptions}; outdated={ShowOnlyOutdated}");
             var libraryMods = _library.All().ToList();
             RefreshDirectOptionCounts();
             var all = libraryMods;
-            if (!ShowDecorations) all = all.Where(mod => !mod.IsDecoration).ToList();
+
             if (!ShowOptions) all = all.Where(mod => !mod.IsOption).ToList();
             if (_hideSelectedProfileMembers && _profiles?.SelectedProfile is not null)
             {
@@ -605,11 +595,9 @@ namespace HD2ModManager.ViewModels
         private void AddToProfile(ModCardViewModel? card)
         {
             if (card == null || _profiles == null) return;
-            if (card.Mod.IsDecoration || card.Mod.IsOption)
+            if (card.Mod.IsOption)
             {
-                _notifications?.Show(card.Mod.IsDecoration
-                    ? "装饰 Mod 不能加入配置；请在主体 Mod 中启用。"
-                    : "选项 Mod 不能加入配置；请在主体 Mod 中启用。", NotificationLevel.Info);
+                _notifications?.Show("选项 Mod 不能加入配置；请在主体 Mod 中启用。", NotificationLevel.Info);
                 return;
             }
             if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
@@ -630,21 +618,6 @@ namespace HD2ModManager.ViewModels
             catch { }
         }
 
-        private async Task ToggleDecorationAsync(ModCardViewModel? card)
-        {
-            if (card?.Mod.IsDecoration != true) return;
-            try
-            {
-                var result = await _library.ToggleDecorationForAllAvailableHostsAsync(card.Mod.Guid).ConfigureAwait(true);
-                _notifications?.Show(result.StatusText, NotificationLevel.Info);
-                Refresh();
-            }
-            catch (Exception exception)
-            {
-                LogService.Error($"模组库启用装饰失败：装饰={card.Mod.Guid}，异常={exception}");
-                _notifications?.Show($"启用装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
-            }
-        }
 
         private void ToggleSelection(object? parameter)
         {
@@ -673,7 +646,7 @@ namespace HD2ModManager.ViewModels
 
         private LibraryModListState CreateListState(HD2ModManager.Models.ModEntity mod)
         {
-            var derived = mod.IsDecoration || mod.IsOption || mod.IsReShade
+            var derived = mod.IsOption || mod.IsReShade
                 ? null
                 : _library.GetDerivedData(mod.Guid);
             _userStatuses.TryGetValue(mod.Guid, out var status);
@@ -681,14 +654,7 @@ namespace HD2ModManager.ViewModels
             var decorationStatus = default(string);
             var enabledHostCount = 0;
             var availableHostCount = 0;
-            if (mod.IsDecoration)
-            {
-                var activation = _library.GetDecorationActivationSummary(mod.Guid);
-                decorationStatus = activation.StatusText;
-                enabledHostCount = activation.EnabledHostCount;
-                availableHostCount = activation.AvailableHostCount;
-            }
-            else if (mod.IsOption)
+            if (mod.IsOption)
             {
                 var activation = _library.GetOptionActivationSummary(mod.Guid);
                 decorationStatus = activation.StatusText;
@@ -699,7 +665,7 @@ namespace HD2ModManager.ViewModels
             var assetSummaryText = ModCardViewModel.AppendDirectOptionSummary(
                 ModCardViewModel.BuildAssetSummaryText(mod, derived?.AssetSummary),
                 _directOptionCounts.GetValueOrDefault(mod.Guid));
-            var (activationLabel, activationTone) = mod.IsDecoration || mod.IsOption
+            var (activationLabel, activationTone) = mod.IsOption
                 ? BuildAttachmentActivationPresentation(enabledHostCount, availableHostCount)
                 : (null, ModListRowTone.Muted);
             var rowPresentation = ModCardViewModel.BuildRowPresentation(
@@ -856,10 +822,11 @@ namespace HD2ModManager.ViewModels
         public HD2ModManager.Models.ModEntity Mod => _mod;
         public string SelectionKey => Mod.Guid;
         public string ListKey => SelectionKey;
-        public bool IsDecoration => Mod.IsDecoration;
+        // 装饰包已不再支持：节点在库读取层就被丢弃，所以恒为 false。
+        public bool IsDecoration => false;
         public bool IsOption => Mod.IsOption;
         public bool IsReShade => Mod.IsReShade;
-        public bool IsAttachable => Mod.IsDecoration || Mod.IsOption;
+        public bool IsAttachable => Mod.IsOption;
         public bool CanInternalReorder => Mod.IsOption;
         public bool CanJoinProfile => Mod.Capabilities.CanJoinProfile;
         // 行级动作抑制：不能加入配置的 Mod 不该出现"加入配置"，既不是装饰也不是
@@ -867,7 +834,7 @@ namespace HD2ModManager.ViewModels
         // 靠属性名去猜；现在由行自己回答。
         public ModListRowAction HiddenActions
             => (CanJoinProfile ? ModListRowAction.None : ModListRowAction.AddToProfile)
-             | (IsAttachable ? ModListRowAction.None : ModListRowAction.ToggleDecoration);
+             | ModListRowAction.None;
         private string? _thumbnailSourcePath;
         private string? _imagePath;
         private int _thumbnailRevision;
@@ -886,8 +853,8 @@ namespace HD2ModManager.ViewModels
         public ModUnitCompatibilityReport? UnitCompatibility => _unitCompatibility;
         public bool IsModelOutdated => UnitCompatibility?.IsOutdated == true;
         public string ModelCompatibilitySummary => UnitCompatibility?.Summary ?? "模型版本尚未检测。";
-        public string UserStatusTitle => Mod.IsReShade ? "ReShade 插件" : Mod.IsDecoration ? "装饰 Mod" : Mod.IsOption ? "选项 Mod" : UserStatus?.Title ?? "状态未知";
-        public string UserStatusSummary => Mod.IsReShade ? "启用后部署到游戏 bin 目录。" : Mod.IsDecoration || Mod.IsOption ? DecorationStatus ?? "尚未启用。" : UserStatus?.Summary ?? "正在读取状态。";
+        public string UserStatusTitle => Mod.IsReShade ? "ReShade 插件" : Mod.IsOption ? "选项 Mod" : UserStatus?.Title ?? "状态未知";
+        public string UserStatusSummary => Mod.IsReShade ? "启用后部署到游戏 bin 目录。" : Mod.IsOption ? DecorationStatus ?? "尚未启用。" : UserStatus?.Summary ?? "正在读取状态。";
         public bool HasUserStatus => UserStatus is not null;
         public string? DecorationStatus => _decorationStatus;
 
@@ -1018,7 +985,7 @@ namespace HD2ModManager.ViewModels
             string? orderLabel = null,
             ModListRowTone orderTone = ModListRowTone.Accent)
         {
-            var typeLabel = mod.IsReShade ? "ReShade" : mod.IsDecoration ? "装饰" : mod.IsOption ? "选项" : null;
+            var typeLabel = mod.IsReShade ? "ReShade" : mod.IsOption ? "选项" : null;
             var typeTone = mod.IsReShade ? ModListRowTone.Accent : ModListRowTone.Muted;
             if (string.IsNullOrWhiteSpace(activationLabel) && userStatus is not null)
             {
