@@ -3030,6 +3030,42 @@ public sealed class SourceMaterialConverter
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
 	/// <para>缓存键含强度/粗糙度/Y 翻转，因为这三样都会改变产物字节。</para>
 	/// </summary>
+	/// <summary>
+	/// 量一张法线图的 XY 均值与标准差（都在 −1..1 域）。
+	/// <para>
+	/// 用途只有一个：判断它**能不能当切线空间法线用**。正常的法线图XY 均值应接近 0；
+	/// 整张图整体歪向一边（均值绝对值很大）说明它编码在别的空间/别的约定里，
+	/// 接进去只会把明暗歪成一块块斑。
+	/// </para>
+	/// </summary>
+	internal static (double MeanX, double MeanY, double SigmaX, double SigmaY) MeasureNormal(byte[] rgba)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		double sumX = 0, sumY = 0, sumX2 = 0, sumY2 = 0;
+		long count = 0;
+		for (var offset = 0; offset + 1 < rgba.Length; offset += 4)
+		{
+			var x = ((rgba[offset] / 255.0) * 2) - 1;
+			var y = ((rgba[offset + 1] / 255.0) * 2) - 1;
+			sumX += x;
+			sumY += y;
+			sumX2 += x * x;
+			sumY2 += y * y;
+			count++;
+		}
+
+		if (count == 0)
+			return (0, 0, 0, 0);
+
+		var meanX = sumX / count;
+		var meanY = sumY / count;
+		return (
+			meanX,
+			meanY,
+			Math.Sqrt(Math.Max(0, (sumX2 / count) - (meanX * meanX))),
+			Math.Sqrt(Math.Max(0, (sumY2 / count) - (meanY * meanY))));
+	}
+
 	private SynthesizedTexture? TryBuildNormalTexture(string bumpTexture, double strength, byte roughness, bool flipY)
 	{
 		var (texture, _) = normalTextures.GetOrAdd(
@@ -3064,6 +3100,29 @@ public sealed class SourceMaterialConverter
 
 		if (width <= 0 || height <= 0 || rgba.Length != checked(width * height * 4))
 			return (null, $"{bumpTexture}：法线图尺寸与像素数不符（{width}×{height}，{rgba.Length} 字节）");
+
+		// **先验一眼"这到底是不是切线空间法线"。**
+		//
+		// 实测（2026-11-04，量了几套包全部法线图）：正常法线图的 XY 均值都在 0 附近
+		// （Lunalice 13 张全在 ±0.01 内，σ 0.03~0.42）；而 huahua 的 Chiyu 那套
+		// `*_Normal_OpenGL` 的均值是 **(−0.55, −0.58)**、σ 只有 0.07~0.44 ——
+		// 整张图的法线整体歪向一个方向。那不是"针织的起伏"，也不是绿通道翻不翻的问题：
+		// 它更像别的空间/别的约定（或干脆不是法线图）。照切线空间接进去，结果就是整件衣服
+		// 的明暗歪成一块块暗斑（实机截图里那种"更奇怪"）。
+		//
+		// 判据是"均值偏离"，不靠猜文件名：**宁可退回平面法线（没有起伏），也不要歪着起伏。**
+		{
+			var (meanX, meanY, sigmaX, sigmaY) = MeasureNormal(rgba);
+			const double MeanLimit = 0.25;
+			const double SigmaLimit = 0.65;
+			if (Math.Abs(meanX) > MeanLimit || Math.Abs(meanY) > MeanLimit
+				|| sigmaX > SigmaLimit || sigmaY > SigmaLimit)
+			{
+				return (null,
+					$"{bumpTexture}：这张图看起来不是切线空间法线"
+					+ $"（XY 均值 {meanX:F2},{meanY:F2}、σ {sigmaX:F2},{sigmaY:F2}），已按无起伏处理");
+			}
+		}
 
 		MaterialAppearance.RebuildTangentNormal(rgba, strength, flipY, roughness);
 

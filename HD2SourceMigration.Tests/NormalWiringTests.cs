@@ -48,6 +48,37 @@ public sealed class NormalWiringTests
 		Assert.Equal(0.01, MaterialAppearance.ParseBumpStrength("0.000001"), 6);
 	}
 
+	// ── 法线图的"能不能用"判据 ──────────────────────────────────────────
+
+	/// <summary>
+	/// 实测：正常法线图的 XY 均值都在 0 附近（Lunalice 13 张全在 ±0.01），
+	/// 而 huahua 的 Chiyu 那套 `*_Normal_OpenGL` 均值是（−0.55, −0.58）——
+	/// 整张图整体歪向一边。这不是"起伏强弱"，是它编码在别的空间里；
+	/// 照切线空间接进去只会把明暗歪成一块块暗斑。
+	/// </summary>
+	[Fact]
+	public void MeasureNormalSeesACenteredMap()
+	{
+		var rgba = new byte[] { 128, 128, 255, 255, 130, 126, 255, 255 };
+		var (meanX, meanY, sigmaX, sigmaY) = SourceMaterialConverter.MeasureNormal(rgba);
+
+		Assert.InRange(meanX, -0.02, 0.02);
+		Assert.InRange(meanY, -0.02, 0.02);
+		Assert.InRange(sigmaX, 0.0, 0.02);
+		Assert.InRange(sigmaY, 0.0, 0.02);
+	}
+
+	[Fact]
+	public void MeasureNormalSeesASkewedMap()
+	{
+		// 约等于 (72,72) 的法线：均值远离 0
+		var rgba = new byte[] { 70, 70, 255, 255, 74, 74, 255, 255 };
+		var (meanX, meanY, _, _) = SourceMaterialConverter.MeasureNormal(rgba);
+
+		Assert.True(meanX < -0.4, $"应当量出明显负均值，实际 {meanX:F2}");
+		Assert.True(meanY < -0.4, $"应当量出明显负均值，实际 {meanY:F2}");
+	}
+
 	// ── 法线像素重建 ─────────────────────────────────────────────────────
 
 	/// <summary>
@@ -144,4 +175,6 @@ public sealed class NormalWiringTests
 			MaterialAppearance.RebuildTangentNormal(new byte[] { 1, 2, 3, 4 }, 0, false, 0));
 	}
 }
+
+
 
