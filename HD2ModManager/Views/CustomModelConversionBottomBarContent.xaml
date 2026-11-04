@@ -3,26 +3,29 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <UserControl.Resources><BooleanToVisibilityConverter x:Key="BoolToVis"/></UserControl.Resources>
     <Grid>
-        <WrapPanel VerticalAlignment="Center" Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}" IsEnabled="{Binding Operation.CanEdit}">
-            <TextBlock Text="素体名称" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <TextBox Width="160" VerticalAlignment="Center" Style="{StaticResource AppTextBox}" Text="{Binding Operation.Name, UpdateSourceTrigger=PropertyChanged}"/>
-            <TextBlock Text="护甲" VerticalAlignment="Center" Margin="12,0,8,0"/>
+        <!--
+            输入行：名称 / 护甲 / 头盔 / 生成。全部排在一行里。
+            生成目录刻意不在这里：产物一定是"生成完立刻导入库"，中间目录只是过路。
+        -->
+        <WrapPanel VerticalAlignment="Center" Visibility="{Binding IsMain, Converter={StaticResource BoolToVis}}"
+                   IsEnabled="{Binding Operation.CanEdit}">
+            <TextBlock Text="名称" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBox Width="180" VerticalAlignment="Center" Style="{StaticResource AppTextBox}"
+                     Text="{Binding Operation.Name, UpdateSourceTrigger=PropertyChanged}"/>
+            <TextBlock Text="护甲" VerticalAlignment="Center" Margin="16,0,8,0"/>
             <ComboBox Width="200" Height="32" VerticalAlignment="Center" Style="{StaticResource AppComboBox}"
                       ItemsSource="{Binding Operation.ArmorSources}" DisplayMemberPath="DisplayName" SelectedItem="{Binding Operation.SelectedArmor}"/>
-            <TextBlock Text="头盔" VerticalAlignment="Center" Margin="12,0,8,0"/>
+            <TextBlock Text="头盔" VerticalAlignment="Center" Margin="16,0,8,0"/>
             <ComboBox Width="200" Height="32" VerticalAlignment="Center" Style="{StaticResource AppComboBox}"
                       ItemsSource="{Binding Operation.HelmetSources}" DisplayMemberPath="DisplayName" SelectedItem="{Binding Operation.SelectedHelmet}"/>
-            <TextBlock Text="生成后自动作为新 Mod 导入库：素体依附于该 Mod，删除 Mod 时一并删除"
-                       VerticalAlignment="Center" Margin="12,0,0,0" Opacity="0.75" MaxWidth="300" TextWrapping="Wrap"/>
+            <Button Content="生成" Style="{StaticResource AppPrimaryButton}"
+                    Command="{Binding Operation.GenerateCommand}" Margin="16,0,0,0"/>
         </WrapPanel>
-        <StackPanel Visibility="{Binding IsOutput, Converter={StaticResource BoolToVis}}">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Text="输出位置" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBox Width="350" Style="{StaticResource AppTextBox}" Text="{Binding Operation.OutputDirectory, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding Operation.CanEdit}"/>
-                <Button Content="浏览" Style="{StaticResource AppSecondaryButton}" Command="{Binding Operation.BrowseCommand}" IsEnabled="{Binding Operation.CanEdit}" Margin="8,0,0,0"/>
-                <Button Content="生成" Style="{StaticResource AppPrimaryButton}" Command="{Binding Operation.GenerateCommand}" Margin="8,0,0,0"/>
-            </StackPanel>
-            <TextBlock Text="{Binding Operation.Status}" Foreground="{StaticResource TextSecondary}" Margin="0,5,0,0" MaxWidth="800" TextWrapping="Wrap"/>
-        </StackPanel>
+
+        <!-- 状态行：单独一行，不再和输入挤在一起。 -->
+        <TextBlock VerticalAlignment="Center" Visibility="{Binding IsStatusRow, Converter={StaticResource BoolToVis}}"
+                   Text="{Binding Operation.Status}" Foreground="{StaticResource TextSecondary}"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTip="{Binding Operation.Status}"/>
     </Grid>
 </UserControl>

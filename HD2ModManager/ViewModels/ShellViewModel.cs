@@ -921,11 +921,15 @@ namespace HD2ModManager.ViewModels
         public void OpenCustomModelConversion(CustomModelConversionBottomBarViewModel operation)
         {
             DismissToolBottomBars();
-            foreach (var output in new[] { true, false })
-                _sameKeyRebuildBottomBarRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
-                    "custom-model-" + (output ? "output" : "options"),
-                    [new BottomBarRowDefinition("main", new CustomModelConversionBottomBarRow(operation, output))],
-                    output ? 1 : null)));
+            // 两行：输入行 + 状态行。**不再有"输出位置"那一行** —— 生成目录不让用户选
+            // （产物必定导入库），而原来那一行里还塞了状态文本，会折行成第三行。
+            _sameKeyRebuildBottomBarRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                "custom-model-main",
+                [new BottomBarRowDefinition("main", new CustomModelConversionBottomBarRow(operation, IsStatusRow: false))])));
+            _sameKeyRebuildBottomBarRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                "custom-model-status",
+                [new BottomBarRowDefinition("main", new CustomModelConversionBottomBarRow(operation, IsStatusRow: true))],
+                1)));
         }
 
         public async Task FlushArmorRegistryWorkspaceAsync()
