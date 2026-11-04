@@ -19,6 +19,12 @@ namespace HD2ModCli;
 // The section map is a build artefact that travels with the mod; the mask is a deployment
 // artefact that travels with the target. Their lifetimes differ, so they stay separate
 // commands rather than one that re-walks the whole patch on every checkbox.
+//
+// **2026-11-04：compile / validate / project 进入弃用期，下个发布周期移除。**
+// 理由：它们产出的 wardrobe.masks 只有一段运行时读它，而那段 Lua（armor_registry_runtime）
+// 第一行就是 require('ffi')，本版引擎没有 ffi ⇒ 加载即退出；管理器也从来没有写过这份文件。
+// 也就是说这条链今天已经不可能生效。`wardrobe sections` 保留 —— 它给「补齐旧 Mod 的
+// section 表」用，与掩码无关。
 
 internal static class CliWardrobe
 {
@@ -26,6 +32,16 @@ internal static class CliWardrobe
 	internal const string CompileCommand = "wardrobe compile";
 	internal const string ValidateCommand = "wardrobe validate";
 	internal const string ProjectCommand = "wardrobe project";
+
+	/// <summary>
+	/// 弃用提示。<b>走 stderr</b>——`--json` 的输出必须仍然能被解析，
+	/// 所以不能混进 stdout。
+	/// </summary>
+	private static void WarnDeprecated(string command)
+		=> Console.Error.WriteLine(
+			$"⚠️ {command} 已弃用，下个发布周期移除：它产出的 wardrobe.masks 只有一段运行时读它，"
+			+ "而那段 Lua 在本版引擎上 require('ffi') 失败、加载即退出；管理器也从不写这份文件。"
+			+ "（wardrobe sections 保留。）");
 
 	/// <summary>`wardrobe sections &lt;patch&gt; --output &lt;sections.json&gt;`。</summary>
 	internal static async Task<int> RunSectionsAsync(CliInvocation invocation, CancellationToken cancellationToken)
@@ -73,6 +89,7 @@ internal static class CliWardrobe
 	/// <summary>`wardrobe compile &lt;spec.json&gt; --output &lt;wardrobe.masks&gt;`。</summary>
 	internal static async Task<int> RunCompileAsync(CliInvocation invocation, CancellationToken cancellationToken)
 	{
+		WarnDeprecated(CompileCommand);
 		var options = invocation.Options;
 		EnsureOptions(options, CompileCommand, "--output", "--overwrite", "--sections");
 		var output = RequireOutput(options, CompileCommand);
@@ -124,6 +141,7 @@ internal static class CliWardrobe
 	/// <summary>`wardrobe validate --file &lt;wardrobe.masks&gt; --sections &lt;sections.json&gt;`。</summary>
 	internal static async Task<int> RunValidateAsync(CliInvocation invocation, CancellationToken cancellationToken)
 	{
+		WarnDeprecated(ValidateCommand);
 		var options = invocation.Options;
 		EnsureOptions(options, ValidateCommand, "--file", "--sections");
 		if (string.IsNullOrWhiteSpace(options.File))
@@ -192,6 +210,7 @@ internal static class CliWardrobe
 	/// <summary>`wardrobe project --library &lt;mod库&gt; [--registry-root &lt;协议目录&gt;] --output &lt;wardrobe.masks&gt;`。</summary>
 	internal static async Task<int> RunProjectAsync(CliInvocation invocation, CancellationToken cancellationToken)
 	{
+		WarnDeprecated(ProjectCommand);
 		var options = invocation.Options;
 		EnsureOptions(options, ProjectCommand, "--library", "--registry-root", "--output", "--overwrite", "--sections");
 		var output = RequireOutput(options, ProjectCommand);
