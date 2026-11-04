@@ -252,3 +252,53 @@ WardrobeTreeViewModel
 
 ⇒ 第 4 步要连带改 `LibraryPageViewModel` / `ModDetailsPageViewModel` / `ShellViewModel` /
 `BottomBarCoordinator` 四个文件，其中 `ShellViewModel` 2500+ 行。**必须一轮完整预算，不能在收尾时赶。**
+
+---
+
+## ⚠️ 方案修正：装饰的"宿主附加面板"同时服务选项 —— 不能连带删
+
+这是本轮最重要的发现，它改变了第 4 步的做法。
+
+`ModDetailsPageView.xaml:316-334` 那个列表（`HostAttachmentList`）：
+
+```
+HeaderTitle="可为该 Mod 启用的附加选项"
+HeaderSummary="已列出支持当前主体的装饰与选项。"
+SelectionRequested="OnHostDecorationSelectionRequested"   → 设 scope = "DecorationHost:{ModId}"
+RelationshipDragOperation="RemoveOptionParent"
+```
+
+⇒ **`DecorationHost:` 这个作用域名是历史命名，它服务的是"选项宿主"机制**。
+因此下面这一整套**必须保留**（它们是选项功能的一部分，库里 121 个选项靠它）：
+
+| 保留项 | 为什么 |
+|---|---|
+| `IsDecorationHostSelection` / `DecorationHost:` scope | 选项宿主面板的选中作用域 |
+| `HasHostDecorations` / `HostDecorations` 集合 | 面板标题就写着"装饰与选项" |
+| `ShowEnableDecorations` / `ShowDisableDecorations` | 判断条件里同时含 `HasSelectedOptions` |
+| `ToggleDecoration` 行动作 | 对选项同样生效 |
+| `ModNodeKind.Option` 那一整套 | 活的主力功能 |
+
+**结论：装饰链的"退场"只能在装饰专属的部分做。** 一开始按名字把所有 `Decoration*` 都当末梢，
+是错的判断。
+
+---
+
+## 装饰节点现在只剩一条进库路径
+
+删掉 `CreateDecorationAsync`（`b1ceef3`，无任何调用者）之后：
+
+- ✅ "生成装饰 Mod"这条路**彻底没了**：页面 → CLI → 服务入口，三层全删
+- ⚠️ "用户把一个含 `decoration.json` 的文件夹丢进库"这条路**还活着**
+  （`ObjectTreeImporter.cs:59` 按标记文件认）
+
+这两者的处理方式不同，而且后者不是清理，是一个**行为决定**：
+
+| 选项 | 后果 |
+|---|---|
+| A. 当成普通 Mod 导入 | `PatchGroups` 为空，进库但不可部署；用户看到一条"没内容"的条目 |
+| B. 明确拒绝并说明 | 导入时报"装饰包已不再支持，请改用分件模组"，最清楚 |
+| C. 保持现状（认成 Decoration 但功能已无） | 库里有这类记录的话会显示但没法操作 |
+
+**这个决定该由用户拍板。** 定了它，第 4–7 步才能一次做完：
+定了 B 就连 `ObjectTreeImporter` 的判定一起删，`ModNodeKind.Decoration` 才能安全移除。
