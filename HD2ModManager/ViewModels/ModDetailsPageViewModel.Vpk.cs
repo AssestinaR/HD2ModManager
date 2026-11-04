@@ -970,11 +970,29 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private void WriteGroup(SectionGroup group, bool enabled)
 	{
 		var state = _vpkFile.State;
+
+		// 互斥组：同名互斥组内最多一个开启。**开启**时把同组里已经开着的那些关掉。
+		// 这条就是"变体替换"的全部实现——基础件与各个变体同属一个互斥组，
+		// 选一个变体就等于把基础件关掉，不需要第二个"替换"字段。
+		if (enabled && !string.IsNullOrWhiteSpace(group.ExclusiveGroup))
+		{
+			foreach (var other in _sectionGroups.EnabledInExclusiveGroup(group.ExclusiveGroup, ReadGroupEnabled))
+			{
+				if (string.Equals(other.EffectiveId, group.EffectiveId, StringComparison.Ordinal))
+					continue;
+				foreach (var target in other.Members)
+					state = state.SetSectionsEnabled(target.Unit, target.Sections, false);
+			}
+		}
+
 		foreach (var target in group.Members)
 			state = state.SetSectionsEnabled(target.Unit, target.Sections, enabled);
 		_vpkFile = _vpkFile with { State = state };
 		// 树上显示的是同一份状态：不刷新就会出现"组开了、树上还关着"。
 		VpkTree?.RefreshChecks();
+		// 互斥组可能顺手改了别的组的状态，整列都要重画。
+		foreach (var item in _vpkGroups)
+			item.RaiseEnabledChanged();
 		ScheduleVpkStateSave();
 	}
 
