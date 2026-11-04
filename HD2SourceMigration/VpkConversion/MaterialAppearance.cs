@@ -879,9 +879,113 @@ public static class MaterialAppearance
 		return [Clamp(r / count), Clamp(g / count), Clamp(b / count)];
 	}
 
-	/// <summary>把逐通道倍率乘进底色的 RGB（就地）。alpha 不动。</summary>
-	public static void MultiplyRgb(byte[] rgba, double[] factor)
+	/// <summary>
+	/// 把 lightwarp **当作卡通阴影曲线**烘进底色：<b>相对化之后</b>按切线空间法线的 N·L 查表。
+	/// <para>
+	/// <b>为什么不是"整片乘 0.30"（那一版实测把全身压成深灰/近黑）。</b>源侧用的是
+	/// <c>albedo × lightwarp(NdotL) × lightColor</c>：ramp 描述的是**光照随 N·L 怎么变**，
+	/// 它的绝对值由 HDR 光照与自动曝光补偿。HD2 的 PBR 光照自己就算这一层，
+	/// 直接把 0.30 乘进 albedo 等于**乘了两次**。
+	/// </para>
+	/// <para>
+	/// <b>但作者填的这些数是有意义的，不能丢。</b>它们编码了两件 HD2 侧没法学的东西：
+	/// </para>
+	/// <list type="number">
+	/// <item><b>阴影该是什么颜色</b>。实测 <c>basewarp</c> 暗端 (50,55,58) 偏冷、
+	/// <c>skinwarp</c> (60,45,49) 偏暖、<c>facewarp</c> (74,58,55) 偏暖——卡通渲染里
+	/// 阴影从来不是灰的，是带色偏的。</item>
+	/// <item><b>明暗过渡的形状</b>：这条 ramp 在 U≈0.5 处是一道硬台阶（硬阴影 / 赛璐璐），
+	/// 而不是物理的 1/N·L。</item>
+	/// </list>
+	/// <para>
+	/// 所以做法是：先把 ramp **除以它自己的受光段**（受光处 = 1.0，绝对亮度不再重复计入），
+	/// 再用<b>切线空间法线的 N·L</b> 去查这条归一化后的曲线，乘进底色。
+	/// 于是受光面保持原样、背光面带上作者指定的色偏，整片不会变暗。
+	/// </para>
+	/// <para>
+	/// <b>近似在哪</b>：真实光照方向随场景变，这里固定一个"从上前方打光"的规范方向；
+	/// 法线来自法线图（切线空间），不是世界空间。两者都只影响"阴影落在哪一侧"，
+	/// 不影响"阴影是什么颜色、台阶有多硬"——而后者才是作者写进 ramp 里的东西。
+	/// </para>
+	/// </summary>
+	/// <param name="albedo">要烘进去的底色像素（就地改 RGB，alpha 不动）。</param>
+	/// <param name="normal">切线空间法线像素（可空：空 = 全部按正面算，等于不压）。</param>
+	/// <param name="lightX">规范光方向的切线空间分量（默认"上前方"）。</param>
+	public static void BakeLightwarpShading(
+		byte[] albedo,
+		int albedoWidth,
+		int albedoHeight,
+		byte[] ramp,
+		int rampWidth,
+		int rampHeight,
+		byte[]? normal,
+		int normalWidth,
+		int normalHeight,
+		double lightX = 0.25,
+		double lightY = 0.35,
+		double lightZ = 0.90)
 	{
+		ArgumentNullException.ThrowIfNull(albedo);
+		ArgumentNullException.ThrowIfNull(ramp);
+		if (albedo.Length < albedoWidth * albedoHeight * 4)
+			throw new InvalidDataException($"底色像素不足：{albedoWidth}×{albedoHeight}。");
+		if (ramp.Length < rampWidth * rampHeight * 4 || rampWidth <= 0 || rampHeight <= 0)
+			throw new InvalidDataException($"ramp 像素与尺寸不符：{rampWidth}×{rampHeight}。");
+
+		// 受光段（U ≥ 0.5）的均值：这是"受光时的颜色"，归一化时拿它当 1.0。
+		var litEnd = LightwarpFactor(ramp, rampWidth, rampHeight);
+		if (litEnd[0] <= 0.05 && litEnd[1] <= 0.05 && litEnd[2] <= 0.05)
+			return;   // 全黑的 ramp 更像坏素材，不动
+
+		var length = Math.Sqrt((lightX * lightX) + (lightY * lightY) + (lightZ * lightZ));
+		if (length <= 1e-6)
+			return;
+		lightX /= length;
+		lightY /= length;
+		lightZ /= length;
+
+		var rampRow = rampHeight / 2;
+		for (var y = 0; y < albedoHeight; y++)
+		{
+			for (var x = 0; x < albedoWidth; x++)
+			{
+				double nx = 0, ny = 0, nz = 1;
+				if (normal is not null && normalWidth > 0 && normalHeight > 0)
+				{
+					var nxp = Math.Min(normalWidth - 1, x * normalWidth / albedoWidth);
+					var nyp = Math.Min(normalHeight - 1, y * normalHeight / albedoHeight);
+					var at = ((nyp * normalWidth) + nxp) * 4;
+					nx = (normal[at] / 255.0 * 2) - 1;
+					ny = (normal[at + 1] / 255.0 * 2) - 1;
+					nz = normal[at + 2] / 255.0 * 2 - 1;
+				}
+
+				var nlen = Math.Sqrt((nx * nx) + (ny * ny) + (nz * nz));
+				if (nlen > 1e-6)
+				{
+					nx /= nlen;
+					ny /= nlen;
+					nz /= nlen;
+				}
+
+				var ndotl = Math.Clamp((nx * lightX) + (ny * lightY) + (nz * lightZ), 0, 1);
+				var u = ndotl;   // ramp 的 U 就是 N·L（实测受光段从 U≈0.5 开始）
+				var rx = Math.Clamp((int)Math.Round(u * (rampWidth - 1)), 0, rampWidth - 1);
+				var rampAt = ((rampRow * rampWidth) + rx) * 4;
+
+				var offset = ((y * albedoWidth) + x) * 4;
+				for (var channel = 0; channel < 3; channel++)
+				{
+					// 归一化：受光段 = 1.0，暗端保留相对色偏。夹 0.2 下限防止某通道被压没。
+					var factor = Math.Clamp(ramp[rampAt + channel] / 255.0 / litEnd[channel], 0.2, 1.0);
+					albedo[offset + channel] = ToByte(albedo[offset + channel] / 255.0 * factor);
+				}
+			}
+		}
+	}
+
+	/// <summary>把逐通道倍率乘进底色的 RGB（就地）。alpha 不动。</summary>
+	public static void MultiplyRgb(byte[] rgba, double[] factor)	{
 		ArgumentNullException.ThrowIfNull(rgba);
 		ArgumentNullException.ThrowIfNull(factor);
 		if (factor.Length < 3)

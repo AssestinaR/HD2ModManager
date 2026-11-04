@@ -2285,20 +2285,32 @@ public sealed class SourceMaterialConverter
 			? BuildTranslucentMap(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight)
 			: null;
 
-		// ===== N3：lightwarp → 底色整体倍率 =====
+		// ===== N3：把 lightwarp 当**卡通阴影曲线**烘进底色 =====
 		//
-		// NekoToon 里"受光的表面 = 底色 × ramp(受光端)"，而实测这些 ramp 的受光段恒为
-		// (76,76,76)（skinwarp 是 64）——也就是 **×0.30**。作者是按"还会乘 0.3"画的底色，
-		// 而 HD2 的 PBR 没有这层上限，直接当最终反照率就会整体发白。
+		// 作者填的这些数是有意义的，不能丢：ramp 的暗端编码了"阴影该是什么颜色"
+		// （basewarp 偏冷 (50,55,58)、skinwarp 偏暖 (60,45,49)、facewarp 也偏暖），
+		// 受光段与暗端之间那道台阶编码了"明暗过渡有多硬"。卡通渲染里阴影从来不是灰的。
 		//
-		// 只能取**整片常数倍率**：ramp 是按 NdotL 查表的逐像素曲线，HD2 没有 ramp 槽，
-		// 也没有逐像素光照可读。它修的是"整体过亮"，修不了"明暗过渡的形状"。
+		// **但绝对值不能照搬**：源侧是 `albedo × lightwarp(NdotL) × lightColor`，ramp 描述的是
+		// 光照曲线，它的 0.30 由 HDR 光照与自动曝光补偿。HD2 的 PBR 光照自己就算这一层——
+		// 直接整片乘 0.30 等于乘两次（实测后果：全身深灰到近黑）。
+		//
+		// 所以先除以 ramp 自己的受光段（受光 = 1.0），再按**法线的 N·L** 查这条归一化曲线：
+		// 受光面保持原样，背光面带作者指定的色偏，整体亮度不变。
 		if (!LightwarpDisabled
 			&& loaded.LightwarpTexture is { Length: > 0 } warpName
 			&& TryReadTextureRgba(warpName, out var warpRgba, out var warpWidth, out var warpHeight))
 		{
-			var factor = MaterialAppearance.LightwarpFactor(warpRgba, warpWidth, warpHeight);
-			MaterialAppearance.MultiplyRgb(rgba, factor);
+			byte[]? shadingNormal = null;
+			var shadingWidth = 0;
+			var shadingHeight = 0;
+			if (loaded.BumpTexture is { Length: > 0 } shadingBump)
+				TryReadTextureRgba(shadingBump, out shadingNormal, out shadingWidth, out shadingHeight);
+
+			MaterialAppearance.BakeLightwarpShading(
+				rgba, vtf.Width, vtf.Height,
+				warpRgba, warpWidth, warpHeight,
+				shadingNormal, shadingWidth, shadingHeight);
 		}
 
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
@@ -2975,10 +2987,10 @@ public sealed class SourceMaterialConverter
 		Environment.GetEnvironmentVariable("HD2_NO_MATCAP_LAYER") == "1";
 
 	/// <summary>
-	/// 诊断开关 <c>HD2_NO_LIGHTWARP=1</c>：不按 lightwarp 压底色（等于 HD2 侧"没有那层上限"）。
+	/// 诊断开关 <c>HD2_NO_LIGHTWARP=1</c>：不把 ramp 当卡通阴影曲线烘进底色。
 	/// <para>
-	/// 与另外两个同族开关一起，构成"逐层加减"的对照手段：
-	/// <c>HD2_NO_NORMAL_MAP</c> / <c>HD2_NO_MATCAP_LAYER</c> / <c>HD2_NO_LIGHTWARP</c>。
+	/// 默认**开启**（与另外两个 <c>HD2_NO_NORMAL_MAP</c> / <c>HD2_NO_MATCAP_LAYER</c> 同族），
+	/// 因为它只按"法线朝向"给背光面加作者指定的色偏，不改变整体亮度。
 	/// </para>
 	/// </summary>
 	private static readonly bool LightwarpDisabled =

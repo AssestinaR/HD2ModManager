@@ -74,4 +74,74 @@ public sealed class LightwarpTests
 		Assert.Throws<InvalidDataException>(() =>
 			MaterialAppearance.MultiplyRgb(new byte[3], [1, 1, 1]));
 	}
+
+	// ── 当"卡通阴影曲线"烘进底色 ──────────────────────────────────────
+
+	/// <summary>正面朝光的法线：查到的就是受光段，归一化后 = 1.0 ⇒ 底色一点不该动。</summary>
+	[Fact]
+	public void LitSurfaceIsLeftAlone()
+	{
+		var albedo = SinglePixel(200);
+		var normal = SinglePixel3(128, 128, 255);   // 平坦法线（+Z）
+		MaterialAppearance.BakeLightwarpShading(
+			albedo, 1, 1, Ramp(8, 50, 55, 58, 76), 8, 1, normal, 1, 1);
+
+		Assert.InRange(albedo[0], 196, 200);
+	}
+
+	/// <summary>
+	/// 背光面带上 ramp 暗端的**色偏**：basewarp 暗端 (50,55,58) / 受光 76 ⇒
+	/// 蓝压得最少、红最多——也就是"偏冷的阴影"，正是作者写进去的东西。
+	/// </summary>
+	[Fact]
+	public void BackFacingSurfaceGetsTheShadowTint()
+	{
+		var albedo = SinglePixel(204);
+		var normal = SinglePixel3(128, 128, 0);    // 背向光（−Z 方向的重建结果接近 0）
+		MaterialAppearance.BakeLightwarpShading(
+			albedo, 1, 1, Ramp(8, 50, 55, 58, 76), 8, 1, normal, 1, 1);
+
+		var r = albedo[0];
+		var g = albedo[1];
+		var b = albedo[2];
+		// 冷阴影 = 蓝保留得最多：(50,55,58) 归一化后是 (0.66,0.72,0.76)，所以 B > G > R。
+		Assert.True(b > g && g > r, $"阴影应当偏冷（B>G>R），实际 ({r},{g},{b})");
+		Assert.True(r < 204, "背光面必须比受光面暗");
+	}
+
+	[Fact]
+	public void ShadowNeverBlackensAChannelBelowOneFifth()
+	{
+		// ramp 暗端是纯 0：归一化后按 0.2 兜底，不会把某个通道彻底压没。
+		var albedo = SinglePixel(255);
+		var normal = SinglePixel3(128, 128, 0);
+		MaterialAppearance.BakeLightwarpShading(
+			albedo, 1, 1, Ramp(4, 0, 0, 0, 76), 4, 1, normal, 1, 1);
+		Assert.InRange(albedo[0], 45, 55);
+	}
+
+	[Fact]
+	public void NoNormalMapMeansNoShadingChange()
+	{
+		// 没有法线图时按"正面朝光"算 ⇒ 落在受光段 ⇒ 不动。
+		var albedo = SinglePixel(180);
+		MaterialAppearance.BakeLightwarpShading(
+			albedo, 1, 1, Ramp(8, 50, 55, 58, 76), 8, 1, normal: null, normalWidth: 0, normalHeight: 0);
+		Assert.InRange(albedo[0], 176, 180);
+	}
+
+	[Fact]
+	public void BrokenRampIsIgnored()
+	{
+		var albedo = SinglePixel(120);
+		MaterialAppearance.BakeLightwarpShading(
+			albedo, 1, 1, Ramp(4, 0, 0, 0, 0), 4, 1, SinglePixel3(128, 128, 255), 1, 1);
+		Assert.Equal(120, albedo[0]);   // 全黑 ramp 更像坏素材：不动
+	}
+
+	/// <summary>单像素底色（灰度 value）。</summary>
+	private static byte[] SinglePixel(byte value) => [value, value, value, 255];
+
+	/// <summary>单像素法线（切线空间 0..255 编码）。</summary>
+	private static byte[] SinglePixel3(byte r, byte g, byte b) => [r, g, b, 0];
 }
