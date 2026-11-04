@@ -9,10 +9,10 @@ public sealed class DecorationPlanDocument
     public string Format { get; set; } = "HD2ModManager.Decoration";
     public int Version { get; set; } = 3;
     public string Name { get; set; } = string.Empty;
-    // PatchSnapshot is the current self-contained format. Payloads remains for legacy .bin packages only.
+    // PatchSnapshot is the only supported storage mode. The legacy .bin payload list
+    // (and its `DecorationPayloadFile` record) is gone: nothing ever wrote it.
     public string SourceStorageMode { get; set; } = "PatchSnapshot";
     public List<DecorationSourceUnit> SourceUnits { get; set; } = new();
-    public List<DecorationPayloadFile> Payloads { get; set; } = new();
     public DecorationAttachmentPlan Plan { get; set; } = new();
 }
 
@@ -29,11 +29,6 @@ public sealed class DecorationAttachmentPlan
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
 }
 
-public sealed class DecorationPayloadFile
-{
-    public string BodyVariant { get; set; } = string.Empty;
-    public string File { get; set; } = string.Empty;
-}
 
 public sealed class DecorationSourceUnit
 {

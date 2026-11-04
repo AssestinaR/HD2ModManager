@@ -1143,7 +1143,6 @@ namespace HD2ModManager.Services
                 plan.Version = 3;
                 plan.SourceStorageMode = "PatchSnapshot";
                 plan.SourceUnits = sourceUnits.Select(CloneDecorationSourceUnit).ToList();
-                plan.Payloads.Clear();
                 await new DecorationPackageSnapshotService(CoreServices.CreateModFileResolver(), _informationReader)
                     .CaptureAsync(source, _paths.ModsDirectory, sourceUnits, directory, preparedEntries, cancellationToken, progress).ConfigureAwait(false);
                 progress?.Report(new DecorationOperationProgress("正在导入装饰 Mod", 1, 1));

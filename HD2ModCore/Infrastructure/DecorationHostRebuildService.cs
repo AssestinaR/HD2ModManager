@@ -62,7 +62,8 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
         {
             var avatar = await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(gameDataDirectory)).ReadTransformInfoAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             var payloads = new List<(DecorationHostRebuildAttachment Attachment, DecorationAttachmentPlan Plan, DecorationPayloadDocument Payload)>();
-            var payloadCount = attachments.Sum(attachment => IsPatchSnapshot(attachment.Plan) ? 1 : attachment.Plan.Payloads.Count);
+            // 每个来源快照贡献一份 payload；非 PatchSnapshot 的包已被下面的守卫明确拒绝。
+            var payloadCount = attachments.Length;
             var readPayloads = 0;
             progress?.Report(new DecorationOperationProgress("正在读取装饰模型", 0, payloadCount));
             foreach (var attachment in attachments)
@@ -74,14 +75,10 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
                     progress?.Report(new DecorationOperationProgress("正在读取装饰来源 Patch", ++readPayloads, payloadCount));
                     continue;
                 }
-                // 旧版 .bin 装饰路线已移除：全仓没有任何写入者（Payloads 唯一的赋值是
-                // `Payloads = []`，见 CliDecorationEditPlanArtifacts），所以走到这里的
-                // 只可能是很老的手工包。**不静默跳过**——那会让用户以为装饰生效了。
-                if (attachment.Plan.Payloads.Count != 0)
-                {
-                    throw new InvalidDataException(
-                        "这个装饰包用的是已移除的 .bin 旧格式，请重新生成该装饰（现在是 PatchSnapshot 格式）。");
-                }
+                // 旧版 .bin 装饰路线已完全移除（连字段都没了）。
+                // **不静默跳过**——那会让用户以为装饰生效了。
+                throw new InvalidDataException(
+                    "这个装饰包用的是已移除的 .bin 旧格式，请重新生成该装饰（现在是 PatchSnapshot 格式）。");
             }
             var backup = PrepareGeneratedOverwrite(output);
             try
@@ -731,18 +728,7 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
                     host.Id));
                 continue;
             }
-            foreach (var payload in attachment.Plan.Payloads)
-            {
-                if (!TryResolveChildPath(attachmentRoot, payload.File, out _))
-                {
-                    issues.Add(new CoreIssue(
-                        CoreIssueSeverity.Error,
-                        "DecorationLegacyPayloadPathInvalid",
-                        "旧版装饰 payload 路径必须位于装饰包目录内。",
-                        payload.File,
-                        host.Id));
-                }
-            }
+
         }
         return issues;
     }
