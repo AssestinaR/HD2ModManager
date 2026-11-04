@@ -320,7 +320,7 @@
                                     MaxHeight="{Binding ActualHeight, ElementName=DetailsScrollViewer, Converter={StaticResource AttachmentListMaxHeight}}"
                                     VerticalScrollBarVisibility="Auto"
                                     UseInternalScroll="True"
-                                    RowActions="Rename, Details, ExportMod, OpenFolder, DeleteFromLibrary"
+                                    RowActions="Rename, Details, ToggleDecoration, ExportMod, OpenFolder, DeleteFromLibrary"
                                     RowActionInvoked="OnHostDecorationRowActionInvoked"
                                     RowRightClicked="OnHostDecorationOpenDetailsOnRightClick"
                                     SelectionPolicy="Multiple"

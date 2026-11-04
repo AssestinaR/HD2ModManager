@@ -1080,28 +1080,19 @@ namespace HD2ModManager.ViewModels
             shell.OpenSameKeyRebuild(new SameKeyRebuildBottomBarViewModel(RebuildSameKeyAsync));
         }
 
+        /// <summary>
+        /// 在宿主附件列表上启用/停用某个附件。<b>现在只剩选项</b>：装饰包已不再支持。
+        /// <para>
+        /// 方法名与行动作名里的 "Decoration" 是历史命名（那个列表以前同时列装饰与选项）；
+        /// 改名会波及 XAML 的 RowActions 与行动作表，收益不值那个风险。
+        /// </para>
+        /// </summary>
         public async Task ToggleDecorationForCurrentHostAsync(ModCardViewModel? card)
         {
-            if (card is null || Mod is null || !CanHostAttachments || (!card.Mod.IsDecoration && !card.Mod.IsOption)) return;
-            if (card.Mod.IsOption)
-            {
-                var optionMessage = await _library.ToggleOptionForHostAsync(card.Mod.Guid, Mod.Guid).ConfigureAwait(true);
-                _notifications?.Show(optionMessage);
-                RefreshHostDecorations();
-                return;
-            }
-            try
-            {
-                var enabled = _library.IsDecorationEnabledForHost(card.Mod.Guid, Mod.Guid);
-                var result = await _library.SetDecorationEnabledForHostAsync(card.Mod.Guid, Mod.Guid, !enabled).ConfigureAwait(true);
-                _notifications?.Show(result.StatusText);
-                RefreshHostDecorations();
-            }
-            catch (Exception exception)
-            {
-                LogService.Error($"主体详情启用装饰失败：主体={Mod.Guid}，装饰={card.Mod.Guid}，异常={exception}");
-                _notifications?.Show($"启用装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
-            }
+            if (card is null || Mod is null || !CanHostAttachments || !card.Mod.IsOption) return;
+            var optionMessage = await _library.ToggleOptionForHostAsync(card.Mod.Guid, Mod.Guid).ConfigureAwait(true);
+            _notifications?.Show(optionMessage);
+            RefreshHostDecorations();
         }
 
         public async Task ReorderHostOptionsAsync(IReadOnlyList<string> draggedKeys, int insertionIndex)
