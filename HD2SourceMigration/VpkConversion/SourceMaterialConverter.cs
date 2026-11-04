@@ -563,6 +563,76 @@ public sealed class SourceMaterialConverter
 		(string Name, double Strength, byte Roughness, bool FlipY),
 		(SynthesizedTexture? Texture, string? Notice)> normalTextures = new();
 
+	/// <summary>
+	/// 与**内容**绑定的 BC7 缓存：同一份像素只编一次。
+	/// <para>
+	/// <b>为什么需要它。</b>编码是这条链上最贵的一步（texconv 编 2048² 约 0.6 s，实测），
+	/// 而材质是**按名字**各编一遍的。实测 Lunalice B1：53 个材质只用到 25 张源贴图——
+	/// 也就是说大约一半的编码在重复编同一份字节。整个包 38 s，砍掉重复的就砍掉三分之一以上。
+	/// </para>
+	/// <para>
+	/// <b>键为什么是内容哈希而不是贴图名。</b>同一张源图在 matcap 烘焙、压暗、擦 alpha
+	/// 之后可能得到不同字节（不同材质不同参数）。按名字缓存会把"别人的那张"发过来，
+	/// 那种错在产物里看不出来，只会让人对着"某个件颜色莫名其妙"查半天。
+	/// </para>
+	/// </summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<
+		(ulong Hash, int Length, bool Srgb), byte[]> bc7ByContent = new();
+
+	/// <summary>按内容去重的 BC7 编码，返回完整 DDS（148 字节头 + 像素）。</summary>
+	private byte[] EncodeBc7Deduplicated(byte[] rgba, int width, int height, bool srgb)
+	{
+		var key = (HashRgba(rgba), rgba.Length, srgb);
+		return bc7ByContent.GetOrAdd(
+			key,
+			_ => encoder.EncodeToBc7(Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [rgba]), srgb));
+	}
+
+	/// <summary>与内容绑定的解码缓存：同一张 VTF 只解一次（texconv 解 2048² 约 0.1 s）。</summary>
+	private readonly System.Collections.Concurrent.ConcurrentDictionary<
+		(string Name, int Length, ulong Hash), byte[]> decodedTextures = new();
+
+	/// <summary>
+	/// 解码一张 VTF 成裸像素，<b>命中缓存时返回副本</b>。
+	/// <para>
+	/// <b>为什么必须复制。</b>调用方会就地改像素——擦 alpha、烘 matcap、涂金属 F0、压暗。
+	/// 共享同一份数组会让"后一个材质改了前一个材质的底色"，那种错在产物里表现为
+	/// 某几件颜色莫名其妙，而且只在多材质共用一张图时出现，极难查。
+	/// </para>
+	/// <para>
+	/// 键里带字节长度与前 8 字节哈希之外的整体哈希：同名不同内容的贴图（不同包里的
+	/// `white.vtf`）不会被当成同一张。
+	/// </para>
+	/// </summary>
+	private byte[] DecodeTextureCached(string textureName, byte[] vtfBytes, VtfFile vtf)
+	{
+		var key = (textureName, vtfBytes.Length, HashRgba(vtfBytes));
+		if (decodedTextures.TryGetValue(key, out var cached))
+			return (byte[])cached.Clone();
+
+		var rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+		decodedTextures.TryAdd(key, (byte[])rgba.Clone());
+		return rgba;
+	}
+
+	/// <summary>
+	/// 64 位 FNV-1a（按 8 字节读）。<b>只为去重服务</b>：33 MB 约 15 ms，
+	/// 而 SHA256 要 90 ms——省下的时间被哈希吃掉就没意义了。
+	/// 键里同时带长度与 srgb，进一步压缩碰撞面；真要撞上，代价是"两张图被当成同一张"。
+	/// </summary>
+	private static ulong HashRgba(byte[] rgba)
+	{
+		const ulong prime = 1099511628211UL;
+		var hash = 14695981039346656037UL;
+		var span = rgba.AsSpan();
+		var index = 0;
+		for (; index + 8 <= span.Length; index += 8)
+			hash = (hash ^ BinaryPrimitives.ReadUInt64LittleEndian(span[index..])) * prime;
+		for (; index < span.Length; index++)
+			hash = (hash ^ span[index]) * prime;
+		return hash == 0 ? 1 : hash;   // 0 留给"没算过"，虽然这里用不到
+	}
+
 	public SourceMaterialConverter(
 		SourceMaterialSource source,
 		Bc7Encoder encoder,
@@ -1618,7 +1688,7 @@ public sealed class SourceMaterialConverter
 			{
 				vtf = VtfFile.Read(vtfBytes);
 				// ⚠️ 量 alpha 必须在清零之前（清零发生在编码那一步，见 BuildBaseColorTexture）。
-				rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+				rgba = DecodeTextureCached(textureName, vtfBytes, vtf);
 				baseAlpha = TextureAlpha.Measure(rgba);
 			}
 			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
@@ -1811,7 +1881,7 @@ public sealed class SourceMaterialConverter
 				try
 				{
 					vtf = VtfFile.Read(matcapBytes);
-					rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+					rgba = DecodeTextureCached(matcapName, matcapBytes, vtf);
 					// ⚠️ **不要重新测 `baseAlpha`。** 它描述的是**源底色**的 alpha，
 					// 而下面 `useAlphaClip` 正是靠它决定"这个件要不要镂空"。
 					// 曾经在这里 `baseAlpha = TextureAlpha.Measure(rgba)` —— 那一行把它换成了
@@ -2239,8 +2309,7 @@ public sealed class SourceMaterialConverter
 		}
 
 		// DecodeToRgba 返回的是**裸像素**，编码前要重新包一层 DDS——texconv 只吃 DDS。
-		var bc7 = encoder.EncodeToBc7(
-			Hd2TextureAsset.BuildDds(vtf.Width, vtf.Height, Rgba8Unorm, [rgba]), srgb: true);
+		var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
@@ -2311,8 +2380,7 @@ public sealed class SourceMaterialConverter
 		// 等它实机站住了再谈接线；现在接等于给一条未验证的路加复杂度。
 		// 平面法线（128,128）在这里是安全的默认值：观感差一点，但不会歪。
 
-		var bc7 = encoder.EncodeToBc7(
-			Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [map]), srgb: false);
+		var bc7 = EncodeBc7Deduplicated(map, width, height, srgb: false);
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
@@ -2350,10 +2418,10 @@ public sealed class SourceMaterialConverter
 		try
 		{
 			var vtf = VtfFile.Read(vtfBytes);
-			var rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+			// 纯贴图包（只换色）里同一张 VTF 常被多个 patch 引用，解码结果可以复用。
+			var rgba = DecodeTextureCached(stem, vtfBytes, vtf);
 			ZeroAlpha(rgba);
-			var bc7 = encoder.EncodeToBc7(
-				Hd2TextureAsset.BuildDds(vtf.Width, vtf.Height, Rgba8Unorm, [rgba]), srgb: true);
+			var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 			var asset = new Hd2TextureAsset();
 			asset.FromDds(bc7);
 			texture = new SynthesizedTexture(
@@ -2441,8 +2509,7 @@ public sealed class SourceMaterialConverter
 			ditherDensity: ditherDensity,
 			ditherPattern: ditherPattern);
 
-		var dds = Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [mask]);
-		var bc7 = encoder.EncodeToBc7(dds, srgb: false);
+		var bc7 = EncodeBc7Deduplicated(mask, width, height, srgb: false);
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
@@ -2712,9 +2779,19 @@ public sealed class SourceMaterialConverter
 	/// </para>
 	/// </summary>
 	private SynthesizedTexture? TryNormalRoughnessTexture(LoadedMaterial loaded, byte roughness)
-		=> loaded.BumpTexture is { Length: > 0 } bump
-			? TryBuildNormalTexture(bump, loaded.BumpStrength, roughness)
-			: null;
+		=> NoNormalMapRequested || loaded.BumpTexture is not { Length: > 0 } bump
+			? null
+			: TryBuildNormalTexture(bump, loaded.BumpStrength, roughness);
+
+	/// <summary>
+	/// 诊断开关 <c>HD2_NO_NORMAL_MAP=1</c>：**退回平面法线**，用来做 A/B 与计时。
+	/// <para>
+	/// 与 <c>HD2_NO_SYNTHETIC_BASE</c> 同一个用途：把"新功能到底改变了多少"变成一次干净对照，
+	/// 不用改代码、不用切分支。它也回答"转得慢是不是法线造成的"——这个问题只能量，不能猜。
+	/// </para>
+	/// </summary>
+	private static readonly bool NoNormalMapRequested =
+		Environment.GetEnvironmentVariable("HD2_NO_NORMAL_MAP") == "1";
 
 	/// <summary>
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
@@ -2744,7 +2821,7 @@ public sealed class SourceMaterialConverter
 			width = vtf.Width;
 			height = vtf.Height;
 			// 法线是**线性**数据：DXT5/ATI2N 都按线性 DXGI 格式交给 texconv，绝不能走 sRGB。
-			rgba = encoder.DecodeToRgba(BuildSourceDds(vtf));
+			rgba = DecodeTextureCached(bumpTexture, bytes, vtf);
 		}
 		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
 		{
@@ -2757,8 +2834,7 @@ public sealed class SourceMaterialConverter
 		MaterialAppearance.RebuildTangentNormal(rgba, strength, flipY, roughness);
 
 		var name = $"{bumpTexture}_nar{DescribeNormalVariant(strength, roughness, flipY)}";
-		var bc7 = encoder.EncodeToBc7(
-			Hd2TextureAsset.BuildDds(width, height, Rgba8Unorm, [rgba]), srgb: false);
+		var bc7 = EncodeBc7Deduplicated(rgba, width, height, srgb: false);
 		var asset = new Hd2TextureAsset();
 		asset.FromDds(bc7);
 		return (new SynthesizedTexture(
