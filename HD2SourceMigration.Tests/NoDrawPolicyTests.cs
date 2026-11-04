@@ -27,12 +27,13 @@ public sealed class NoDrawPolicyTests : IDisposable
 	}
 
 	[Fact]
-	public void DefaultPolicyIsHide()
+	public void DefaultPolicyIsShowSoHiddenPartsStayVisible()
 	{
 		var converter = CreateConverter(SourceMaterialSource.Open([]));
 
-		// 默认不是 Drop：Drop 会把几何一起删掉，而那不可逆。
-		Assert.Equal(NoDrawPolicy.Hide, converter.NoDrawPolicy);
+		// 默认是 Show：源侧的 $no_draw 只是材质层开关（网格仍在文件里），
+		// 导入时替用户藏掉是不可逆的；"要不要看"用 section 组件编辑器随时改。
+		Assert.Equal(NoDrawPolicy.Show, converter.NoDrawPolicy);
 	}
 
 	[Fact]
@@ -44,7 +45,7 @@ public sealed class NoDrawPolicyTests : IDisposable
 				$no_draw 1
 				$nodecal 1
 			}
-			"""));
+			"""), NoDrawPolicy.Hide);
 
 		var result = converter.Convert("cat");
 
@@ -110,7 +111,7 @@ public sealed class NoDrawPolicyTests : IDisposable
 		=> Bc7Encoder.Locate(Environment.GetEnvironmentVariable("HD2_TEXCONV")) is not null;
 
 	private static SourceMaterialConverter CreateConverter(
-		SourceMaterialSource source, NoDrawPolicy policy = NoDrawPolicy.Hide)
+		SourceMaterialSource source, NoDrawPolicy policy = NoDrawPolicy.Show)
 	{
 		var encoder = Bc7Encoder.Locate(Environment.GetEnvironmentVariable("HD2_TEXCONV"))
 			?? Path.Combine(Path.GetTempPath(), "texconv.exe");

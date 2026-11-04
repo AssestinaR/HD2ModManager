@@ -137,7 +137,7 @@ public sealed record CliGlobalOptions(
 	// 源法线图的 Y（绿）通道要不要翻：DirectX 与 OpenGL 的绿通道相反，而 HD2 的法线约定没有文档。
 	// 不传 = 不翻（照源侧原样）。猜错的表现是"凸的看起来是凹的"，只能在实机上看出来。
 	bool? NormalFlipY = null,
-	// 源侧 `$no_draw`（"这一块不画"）怎么落地：hide（默认，几何保留+材质不显示）/ show / drop。
+	// 源侧 `$no_draw`（"这一块不画"）怎么落地：show（默认，照常显示）/ hide（几何保留+不显示）/ drop。
 	// L4D2 里它只是材质层开关，网格仍在文件里，作者常拿它做变体（猫耳/无猫耳）；
 	// 直接丢几何会把数据一起删掉，导入之后只能改包重导。
 	string? NoDraw = null);
@@ -373,8 +373,8 @@ public static class CliArgumentParser
 						throw new CliUserException("InvalidOption",
 							$"--no-draw 只接受 hide / show / drop，实际是 '{rawNoDraw}'。"
 							+ "源侧的 $no_draw 是「这一块不画」，L4D2 里它只是材质层开关（网格还在文件里），"
-							+ "作者常拿它做变体；hide = 保留几何、材质做成不显示（默认），"
-							+ "show = 照常显示（要看被藏起来的变体时用），drop = 连几何一起丢（不可恢复）。");
+							+ "作者常拿它做变体；show = 照常显示（默认，想隐藏用 section 组件编辑器关掉），"
+							+ "hide = 保留几何但做成不显示，drop = 连几何一起丢（不可恢复）。");
 					}
 					noDraw = rawNoDraw;
 					break;

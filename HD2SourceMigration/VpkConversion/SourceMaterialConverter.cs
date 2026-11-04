@@ -241,19 +241,22 @@ internal static class RejectedCutoutStrategies
 public enum NoDrawPolicy
 {
 	/// <summary>
-	/// <b>默认。</b>几何保留，材质做成"整段被裁掉"（<c>alphaclip</c> + alpha 全 0 的遮罩）。
-	/// <para>
-	/// 画面上与源侧完全一致（看不见），但几何、材质、段记录都还在 patch 里——
-	/// 数据没有被销毁，报告里也会点名"哪几块、各多少面"。
-	/// </para>
+	/// 几何保留，材质做成"整段被裁掉"（<c>alphaclip</c> + alpha 全 0 的遮罩）：
+	/// 画面上与源侧完全一致（看不见），但数据还在 patch 里。
+	/// <para>给"我要的是 L4D2 那个观感"的人用：<c>--no-draw hide</c>。</para>
 	/// </summary>
 	Hide = 0,
 
 	/// <summary>
-	/// 当作没有 <c>$no_draw</c>：照普通材质转换并显示。
+	/// <b>默认。</b>当作没有 <c>$no_draw</c>：照普通材质转换并<b>显示出来</b>。
 	/// <para>
-	/// 用于"作者把 <c>$no_draw</c> 当变体开关、而你要的正是那个变体"的包（例如猫耳版）。
-	/// 没有底色时会退到"材质名 = 贴图名"那条线索，再不行就是中性灰。
+	/// <b>为什么默认是这个。</b>L4D2 的 <c>$no_draw</c> 只是<b>材质层</b>开关，网格仍在文件里，
+	/// 作者拿它做变体（猫耳 / 无猫耳、P1/P2/P3 三套衣服）。移植到 HD2 之后，
+	/// "藏起来"这件事<b>用户自己就能用 section 组件编辑器随时开关</b>——那是可逆的；
+	/// 而"导入时就按源侧删掉/藏掉"是不可逆的：数据一旦不在 patch 里，只能改包重导。
+	/// </para>
+	/// <para>
+	/// 所以默认取"全都显示"，把"要不要看"交回给人。想恢复 L4D2 观感就用 <c>hide</c>。
 	/// </para>
 	/// </summary>
 	Show = 1,
@@ -708,7 +711,7 @@ public sealed class SourceMaterialConverter
 		// 法线，而法线贴图给的是切线空间的方向。没有它时这两样退回"取正中"。
 		Func<string, UvNormalMap?>? worldNormalFactory = null,
 		// 源侧 `$no_draw` 的落地方式（见 NoDrawPolicy）。默认 Hide：不显示，但几何留着。
-		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Hide)
+		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show)
 	{
 		this.source = source;
 		this.encoder = encoder;

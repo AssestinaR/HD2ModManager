@@ -2976,7 +2976,10 @@ public static class CliApplication
 	/// </para>
 	/// </summary>
 	private static CutoutTemplate ResolveCutoutTemplate(CliGlobalOptions options)
-		=> options.CutoutTemplate?.Trim().ToLowerInvariant() switch
+		// 环境变量兜底：管理器导入时没有这个开关的位置，而"镂空件到底走哪个模板"
+		// 只能实机 A/B 定（alphaclip 有"军械库里不可见"的已知问题）。
+		=> (options.CutoutTemplate ?? Environment.GetEnvironmentVariable("HD2_CUTOUT_TEMPLATE"))
+			?.Trim().ToLowerInvariant() switch
 		{
 			"original" => CutoutTemplate.Original,
 			_ => CutoutTemplate.AlphaClip,
@@ -2990,23 +2993,25 @@ public static class CliApplication
 		};
 
 	/// <summary>
-	/// 源侧 <c>$no_draw</c> 怎么落地（<c>--no-draw hide|show|drop</c>，默认 <c>hide</c>）。
+	/// 源侧 <c>$no_draw</c> 怎么落地（<c>--no-draw show|hide|drop</c>，<b>默认 <c>show</c></b>）。
+	/// <para>
+	/// <c>show</c>（默认）：照常显示。源侧的 <c>$no_draw</c> 只是材质层开关，网格仍在文件里——
+	/// 移植过来之后"要不要看"交给 section 组件编辑器，那是可逆的；导入时替用户藏掉则不可逆。
+	/// </para>
 	/// <para>
 	/// <c>hide</c>：几何保留、材质做成不显示（画面与 L4D2 一致，数据不丢）；
-	/// <c>show</c>：当变体开关，照常显示（猫耳版那种包）；
 	/// <c>drop</c>：连几何一起丢（历史行为，不可恢复）。
 	/// </para>
 	/// <para>
-	/// 没给命令行参数时读环境变量 <c>HD2_NO_DRAW</c>：管理器调用 CLI 时没有这个开关的位置，
-	/// 而"这块到底该不该显示"只有用户能判断。
+	/// 没给命令行参数时读环境变量 <c>HD2_NO_DRAW</c>：管理器调用 CLI 时没有这个开关的位置。
 	/// </para>
 	/// </summary>
 	private static NoDrawPolicy ResolveNoDrawPolicy(CliGlobalOptions options)
 		=> (options.NoDraw ?? Environment.GetEnvironmentVariable("HD2_NO_DRAW"))?.Trim().ToLowerInvariant() switch
 		{
-			"show" => NoDrawPolicy.Show,
+			"hide" => NoDrawPolicy.Hide,
 			"drop" => NoDrawPolicy.Drop,
-			_ => NoDrawPolicy.Hide,
+			_ => NoDrawPolicy.Show,
 		};
 
 	/// <summary>

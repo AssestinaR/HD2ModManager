@@ -319,7 +319,7 @@ public sealed class VpkPatchAssembler
 		ulong? unitIdSeed = null,
 		SourceMaterialSource? materialScope = null,
 		string? idNamespace = null,
-		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Hide,
+		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show,
 		Action<string, int, int>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
@@ -1000,14 +1000,15 @@ public sealed class VpkPatchAssembler
 						: stem);
 				var head = noDrawPolicy switch
 				{
-					NoDrawPolicy.Show =>
-						$"{stems.Count} 个材质声明了 $no_draw，已按 `--no-draw show` **照常显示**：",
 					NoDrawPolicy.Drop =>
 						$"{stems.Count} 个材质声明了 $no_draw，已按 `--no-draw drop` **整段剔除**"
 						+ "（几何不在 patch 里，导入后无法恢复）：",
-					_ =>
-						$"{stems.Count} 个材质声明了 $no_draw（源侧不绘制），已**保留几何**、材质做成不显示"
+					NoDrawPolicy.Hide =>
+						$"{stems.Count} 个材质声明了 $no_draw，已按 `--no-draw hide` **保留几何**、材质做成不显示"
 						+ "（画面上与 L4D2 一致）：",
+					_ =>
+						$"{stems.Count} 个材质声明了 $no_draw（源侧默认不绘制），已按默认策略**照常显示**"
+						+ "（源侧只是材质层开关，网格仍在文件里；不想看就在 section 组件编辑器里关掉它）：",
 				};
 				var tail = noDrawPolicy == NoDrawPolicy.Hide
 					? "。要看它们：`--no-draw show` 重转一次（管理器里设环境变量 HD2_NO_DRAW=show）。"
