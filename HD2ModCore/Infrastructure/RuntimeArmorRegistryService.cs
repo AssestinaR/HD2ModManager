@@ -104,8 +104,11 @@ public sealed class RuntimeArmorRegistryService
 		ArgumentNullException.ThrowIfNull(document);
 		ValidateMappings(document.Mappings);
 		ValidateModels(document.ModelDefinitions, document.Mappings);
-		ValidatePieceOverrides(document.PieceOverrideDefinitions);
-		ValidateTargetModes(document.TargetModeDefinitions);
+		// 这三个字段（pieceOverrides / targetModes / compositionMode）**没有任何在役消费者**：
+		// 两条在役链路（真映射走 dl_bin、兼容模式走 wardrobe.links）的签名里都没有它们，
+		// 现网 0 条，唯一读它们的 Lua 因缺 ffi 加载即退出。
+		// 所以**不再校验**：一个没人消费的字段不该有能力让整份工作区读不出来。
+		// 详见 notes/sectional-u0-findings-20261104.md §7。
 		await WriteWorkspaceAsync(document, cancellationToken).ConfigureAwait(false);
 	}
 
@@ -452,8 +455,7 @@ public sealed class RuntimeArmorRegistryService
 		ArgumentNullException.ThrowIfNull(targetModes);
 		ValidateMappings(mappings);
 		ValidateModels(models, mappings);
-		ValidatePieceOverrides(pieceOverrides);
-		ValidateTargetModes(targetModes);
+		// 同 ReadAsync：这三个字段没有在役消费者，不再阻断性校验（见那段注释）。
 		Directory.CreateDirectory(registryRoot);
 		var lockPath = Path.Combine(registryRoot, ".manager.lock");
 		await using var lease = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -647,8 +649,11 @@ public sealed class RuntimeArmorRegistryService
 			workspace.CompositionMode);
 		ValidateMappings(document.Mappings);
 		ValidateModels(document.ModelDefinitions, document.Mappings);
-		ValidatePieceOverrides(document.PieceOverrideDefinitions);
-		ValidateTargetModes(document.TargetModeDefinitions);
+		// 这三个字段（pieceOverrides / targetModes / compositionMode）**没有任何在役消费者**：
+		// 两条在役链路（真映射走 dl_bin、兼容模式走 wardrobe.links）的签名里都没有它们，
+		// 现网 0 条，唯一读它们的 Lua 因缺 ffi 加载即退出。
+		// 所以**不再校验**：一个没人消费的字段不该有能力让整份工作区读不出来。
+		// 详见 notes/sectional-u0-findings-20261104.md §7。
 		return document;
 	}
 
@@ -805,34 +810,52 @@ public sealed class RuntimeArmorRegistryService
 					mappings.Add(new RuntimeArmorRegistryMapping(modelTarget, null, targetModelKey));
 					break;
 				case "piece_override":
-					var overrideParts = value.Split(',');
-					if (overrideParts.Length != 6)
-						throw InvalidLine(lineNumber, "piece_override 必须是 item_id,body,unit,slot,piece_type,enabled。");
-					var owner = ParseItemId(overrideParts[0], lineNumber, "组件覆盖对象");
-					var overrideBody = (uint)ParseInteger(overrideParts[1], lineNumber, "override body", 0, int.MaxValue);
-					var overrideUnit = overrideParts[2].Trim();
-					if (overrideUnit.Length != 16 || !overrideUnit.All(Uri.IsHexDigit))
-						throw InvalidLine(lineNumber, "piece_override unit 必须是 16 位十六进制 ID。");
-					var overrideSlot = ParseOverrideSlot(overrideParts[3], lineNumber, overrideBody);
-					var overridePieceType = (uint)ParseInteger(overrideParts[4], lineNumber, "override piece type", 0, int.MaxValue);
-					var overrideEnabled = ParseBoolean(overrideParts[5], lineNumber, "piece_override enabled");
-					pieceOverrides.Add(new RuntimeArmorRegistryPieceOverride(
-						owner, overrideBody, overrideUnit.ToLowerInvariant(), overrideSlot, overridePieceType, overrideEnabled));
+					// 这个字段没有在役消费者（见文件顶部注释）：坏行只跳过，不该让整份工作区读不出来。
+					try
+					{
+						var overrideParts = value.Split(',');
+						if (overrideParts.Length != 6)
+							throw InvalidLine(lineNumber, "piece_override 必须是 item_id,body,unit,slot,piece_type,enabled。");
+						var owner = ParseItemId(overrideParts[0], lineNumber, "组件覆盖对象");
+						var overrideBody = (uint)ParseInteger(overrideParts[1], lineNumber, "override body", 0, int.MaxValue);
+						var overrideUnit = overrideParts[2].Trim();
+						if (overrideUnit.Length != 16 || !overrideUnit.All(Uri.IsHexDigit))
+							throw InvalidLine(lineNumber, "piece_override unit 必须是 16 位十六进制 ID。");
+						var overrideSlot = ParseOverrideSlot(overrideParts[3], lineNumber, overrideBody);
+						var overridePieceType = (uint)ParseInteger(overrideParts[4], lineNumber, "override piece type", 0, int.MaxValue);
+						var overrideEnabled = ParseBoolean(overrideParts[5], lineNumber, "piece_override enabled");
+						pieceOverrides.Add(new RuntimeArmorRegistryPieceOverride(
+							owner, overrideBody, overrideUnit.ToLowerInvariant(), overrideSlot, overridePieceType, overrideEnabled));
+						break;
+					}
+					catch (InvalidDataException)
+					{
+						// 跳过这一行。
+					}
 					break;
 				case "target_mode":
-					var modeParts = value.Split(',');
-					if (modeParts.Length != 2)
-						throw InvalidLine(lineNumber, "target_mode 必须是 target_item_id,follow|manual。");
-					var modeTarget = ParseItemId(modeParts[0], lineNumber, "目标");
-					var follow = modeParts[1].Trim() switch
+					// 同上：坏行只跳过。
+					try
 					{
-						"follow" => true,
-						"manual" => false,
-						_ => throw InvalidLine(lineNumber, "target_mode 必须是 follow 或 manual。"),
-					};
-					if (targetModes.Any(mode => mode.TargetItemId == modeTarget))
-						throw InvalidLine(lineNumber, $"目标护甲 {modeTarget} 的 target_mode 重复。");
-					targetModes.Add(new RuntimeArmorRegistryTargetMode(modeTarget, follow));
+						var modeParts = value.Split(',');
+						if (modeParts.Length != 2)
+							throw InvalidLine(lineNumber, "target_mode 必须是 target_item_id,follow|manual。");
+						var modeTarget = ParseItemId(modeParts[0], lineNumber, "目标");
+						var follow = modeParts[1].Trim() switch
+						{
+							"follow" => true,
+							"manual" => false,
+							_ => throw InvalidLine(lineNumber, "target_mode 必须是 follow 或 manual。"),
+						};
+						if (targetModes.Any(mode => mode.TargetItemId == modeTarget))
+							throw InvalidLine(lineNumber, $"目标护甲 {modeTarget} 的 target_mode 重复。");
+						targetModes.Add(new RuntimeArmorRegistryTargetMode(modeTarget, follow));
+						break;
+					}
+					catch (InvalidDataException)
+					{
+						// 跳过这一行。
+					}
 					break;
 				default:
 					throw InvalidLine(lineNumber, $"未知字段：{key}");
@@ -1029,33 +1052,6 @@ public sealed class RuntimeArmorRegistryService
 	private static IReadOnlyList<RuntimeArmorRegistryTargetMode> NormalizeTargetModes(
 		IEnumerable<RuntimeArmorRegistryTargetMode> modes)
 		=> modes.OrderBy(mode => mode.TargetItemId).ToArray();
-
-	private static void ValidatePieceOverrides(
-		IEnumerable<RuntimeArmorRegistryPieceOverride> overrides)
-	{
-		var keys = new HashSet<(uint Owner, uint Body, uint Slot, uint PieceType, string Unit)>();
-		foreach (var item in overrides)
-		{
-			if (item.Slot == 0 && item.Body != 3)
-				throw new InvalidDataException($"组件覆盖对象 {item.OwnerItemId} 的头盔 slot=0 只能用于 body=3。");
-			if (item.Unit.Length != 16 || !item.Unit.All(Uri.IsHexDigit))
-				throw new InvalidDataException($"组件覆盖对象 {item.OwnerItemId} 包含无效 Unit ID。");
-			if (!keys.Add((item.OwnerItemId, item.Body, item.Slot, item.PieceType, item.Unit)))
-				throw new InvalidDataException(
-					$"组件覆盖对象 {item.OwnerItemId} 重复使用 body={item.Body}, slot={item.Slot}, piece_type={item.PieceType}, unit={item.Unit}。");
-		}
-	}
-
-	private static void ValidateTargetModes(
-		IEnumerable<RuntimeArmorRegistryTargetMode> modes)
-	{
-		var targets = new HashSet<uint>();
-		foreach (var mode in modes)
-		{
-			if (!targets.Add(mode.TargetItemId))
-				throw new InvalidDataException($"目标护甲 {mode.TargetItemId} 的 target_mode 重复。");
-		}
-	}
 
 	private static void ValidateModels(
 		IEnumerable<RuntimeArmorRegistryModel> models,
