@@ -74,14 +74,13 @@ public sealed class DecorationHostRebuildService : IDecorationHostRebuildService
                     progress?.Report(new DecorationOperationProgress("正在读取装饰来源 Patch", ++readPayloads, payloadCount));
                     continue;
                 }
-                foreach (var file in attachment.Plan.Payloads)
+                // 旧版 .bin 装饰路线已移除：全仓没有任何写入者（Payloads 唯一的赋值是
+                // `Payloads = []`，见 CliDecorationEditPlanArtifacts），所以走到这里的
+                // 只可能是很老的手工包。**不静默跳过**——那会让用户以为装饰生效了。
+                if (attachment.Plan.Payloads.Count != 0)
                 {
-                    if (!Path.GetExtension(file.File).Equals(".bin", StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidDataException("仅兼容旧版 .bin 装饰，请重新生成该装饰。");
-                    var payloadPath = Path.Combine(modsRoot, attachment.RelativePath, file.File);
-                    var payload = await ReadPayloadAsync(payloadPath, cancellationToken).ConfigureAwait(false);
-                    payloads.Add((attachment, attachment.Plan.Plan, payload));
-                    progress?.Report(new DecorationOperationProgress("正在读取装饰模型", ++readPayloads, payloadCount));
+                    throw new InvalidDataException(
+                        "这个装饰包用的是已移除的 .bin 旧格式，请重新生成该装饰（现在是 PatchSnapshot 格式）。");
                 }
             }
             var backup = PrepareGeneratedOverwrite(output);

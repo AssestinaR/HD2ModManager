@@ -254,15 +254,22 @@ public sealed class BatchDecorationPlanPageViewModel : PageViewModel
     private static string NormalizeDualVariantMode(string value) => value.Contains("全部") ? "ApplyAllToBoth" : "AutoAssign";
     private static string SanitizeFileName(string value) => string.Concat(value.Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character));
 
+    /// <summary>
+    /// 导出：**复制目录内全部文件**，不按文件名挑。
+    /// <para>
+    /// 早先这里按 <c>decoration.json / stocky.bin / slim.bin</c> 三个固定名字复制，而后两个
+    /// 自 PatchSnapshot 格式起就再没有写入者 —— 于是"批量 + 关自动导入"导出来的目录里
+    /// **只有 decoration.json、没有 patch**，包不可用。单页那边一直是复制整个目录的，
+    /// 两边行为不该不一样。
+    /// </para>
+    /// </summary>
     private static void CopyOutput(string sourceDirectory, string destinationDirectory)
     {
         Directory.CreateDirectory(destinationDirectory);
-        foreach (var name in new[] { "decoration.json", "stocky.bin", "slim.bin" })
+        foreach (var source in Directory.EnumerateFiles(sourceDirectory))
         {
-            var source = Path.Combine(sourceDirectory, name);
-            var destination = Path.Combine(destinationDirectory, name);
-            if (File.Exists(source)) File.Copy(source, destination, overwrite: true);
-            else if (File.Exists(destination)) File.Delete(destination);
+            var destination = Path.Combine(destinationDirectory, Path.GetFileName(source));
+            File.Copy(source, destination, overwrite: true);
         }
     }
 }
