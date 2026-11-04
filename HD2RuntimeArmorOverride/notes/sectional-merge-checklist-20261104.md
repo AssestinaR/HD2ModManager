@@ -92,3 +92,17 @@ git branch -D sectional
    没被单独验证过。V0 就是为它准备的。
 3. **`uniqueSlotPerSection` 的代价**：材质槽与 `BoneInfo.Remaps` 条数随段数线性增长。
    段数上界（100+ 是否可行）还没测。
+
+---
+
+## 六、跑全量之前必须退出游戏
+
+`DeploymentCliTests` 有 5 条会**必然失败**，只要 Helldivers 2 在运行：
+
+```
+deploy validate 带 includeProcessCheck，检测到游戏在跑就返回 2
+（CliApplication.cs:1177 `return validation.IsValid ? 0 : 2`），而测试断言 0。
+```
+
+这是护栏在起作用，不是回归。**已用 master 复现同一组失败确认过**，与本分支无关。
+症状是 `Assert.Equal() Failure: Expected 0, Actual 2`，全在 `DeploymentCliTests` 里。
