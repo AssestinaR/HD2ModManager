@@ -9,7 +9,33 @@
 
 ---
 
-## 0 三个入口，各自的判据
+## 0 离线部分已经跑过（2026-11-04），三条判据全过
+
+合成样本：把 `MourningVeil_Bill` 产物里 `HelldiverCustomizationSlot_LeftArm` 原地改成
+`..._LeftLeg`（两者等长，长度前缀字符串不受影响），造出"两个 unit 抢同一个槽"。
+于是 LeftLeg 有宿主 + 1 个 donor，正好触发合并路径。
+
+```
+预演   : 6 targets（LeftArm 并入 LeftLeg）/ 7 groups / 1 条预期警告
+执行   : valid=True，写出 patch + .gpu_resources + sections.json + components.json
+
+判据 1 段数对账 : LeftLeg = 27 = 16（宿主）+ 11（donor）   ✅ 没有并段
+判据 2 组员不交叠: overlap = 0，覆盖 92/92 段（100%）        ✅
+判据 3 逐级 LOD : L0..L3 全是 27 段，consistent=True        ✅ 没有哪一级被静默跳过
+
+组表   : LeftLeg 基础组 16 段 / 变体组 11 段，同属 LeftLeg/Any 互斥组
+         ⇒ 打开变体就把基础件关掉 = 变体替换成立
+```
+
+**这一轮同时抓出并修掉了拆件器的两个真 bug**（见提交 `5b136dc`）：
+读 unit 用了丢 payload 的读取器（导致合并整串失败、donor 几何被静默丢掉），
+以及合并后基础组把 donor 的几何也吞了、变体组反而是空的。
+
+**还没做的只有实机那三条**（位置 / 遮挡 / 崩不崩）——只有进游戏能判。
+
+---
+
+## 1 三个入口，各自的判据
 
 | 入口 | 机制 | 离线能不能判 | 实机表现 |
 |---|---|---|---|
