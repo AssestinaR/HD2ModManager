@@ -48,7 +48,12 @@ public sealed class CustomModelConversionBottomBarViewModel : BaseViewModel
 			.Where(s => s.Category.Equals("Helmet", StringComparison.OrdinalIgnoreCase)).Select(s => new CustomModelSourceOption(s))), ListTransitionKind.Replace);
 		SelectedArmor = ArmorSources.Skip(1).FirstOrDefault() ?? ArmorSources[0];
 		SelectedHelmet = HelmetSources.Skip(1).FirstOrDefault() ?? HelmetSources[0];
-		Status = available.Length == 0 ? "无效：没有含独占 Unit 的可见护甲/头盔来源" : "可选一份护甲和一份头盔；不需要的类别请选择「不包含」";
+		Status = available.Length == 0
+			// 这条提示会命中"已经是自定义素体"的 Mod —— 而那正是库里绝大多数。
+			// 只写"无效"等于让用户对着一个禁用的按钮猜原因，所以把判据和出路都写出来。
+			? "这个 Mod 没有可用的来源：只有「取代原版护甲/头盔」的 Mod 才有独占 Unit 可当来源。"
+				+ "已经是自定义素体的 Mod 换不出东西来 —— 它不需要这一步。"
+			: "可选一份护甲和一份头盔；不需要的类别请选择「不包含」";
 	}
 
 	private async Task GenerateAsync()
