@@ -16,6 +16,10 @@ public enum VpkImportOutcome
 }
 
 /// <summary>一个 VPK 在这次导入里的去向。</summary>
+/// <param name="Updated">
+/// 这次是<b>更新库里已有的 Mod</b>，而不是新建。与"新建"分开报，是因为用户看到的
+/// 后果完全不同（原有 Mod 的名字、位置、开关、素体都还在，只是产物换新）。
+/// </param>
 public sealed record VpkImportItem(
 	string VpkPath,
 	VpkImportOutcome Outcome,
@@ -24,7 +28,8 @@ public sealed record VpkImportItem(
 	int Units,
 	int Materials,
 	int Textures,
-	IReadOnlyList<string> Notes);
+	IReadOnlyList<string> Notes,
+	bool Updated = false);
 
 /// <summary>
 /// 一个转出来的 Mod 目录，以及它在**哪个模型主体组**里、它是主体还是材质包。
@@ -32,8 +37,22 @@ public sealed record VpkImportItem(
 /// 分组要一路带到"挂选项"那一步：几套角色的材质裸名相同，把 plum 的材质挂到 chiffon 下面
 /// 会得到一堆"看起来对、点开却什么都不变"的选项。
 /// </para>
+/// <para>
+/// <see cref="UpdateTargetDirectory"/> 非 <c>null</c> 表示<b>这不是新 Mod</b>：库里已经有
+/// 来自同一个 VPK 的 Mod，产物应当换进那个目录（保留节点、名字、顺序、启停与素体 key）。
+/// </para>
 /// </summary>
-public sealed record VpkProducedPackage(string Directory, string? GroupName, bool IsModel);
+public sealed record VpkProducedPackage(
+	string Directory,
+	string? GroupName,
+	bool IsModel,
+	string? UpdateTargetDirectory = null,
+	string? UpdateTargetName = null,
+	string? ReportJson = null,
+	int UpdateCandidateCount = 1)
+{
+	public bool IsUpdate => UpdateTargetDirectory is not null;
+}
 
 /// <summary>一次 VPK 导入的完整结果。**跳过也要给理由**——否则用户只会看到"少导入了几个"。</summary>
 public sealed record VpkImportReport(
@@ -67,7 +86,9 @@ public sealed record VpkImportReport(
 			switch (item.Outcome)
 			{
 				case VpkImportOutcome.Converted:
-					lines.Add($"  ✔ {name} → {item.ModDirectoryName}（{item.Units} 个 Unit / {item.Materials} 个材质 / {item.Textures} 张贴图）");
+					lines.Add($"  ✔ {name} → {item.ModDirectoryName}"
+						+ (item.Updated ? "（更新原有 Mod）" : string.Empty)
+						+ $"（{item.Units} 个 Unit / {item.Materials} 个材质 / {item.Textures} 张贴图）");
 					break;
 				case VpkImportOutcome.Skipped:
 					lines.Add($"  – {name}：{item.Reason}");
@@ -290,6 +311,8 @@ public sealed class VpkImportService
 		// "a file or directory with the same name already exists"，那一个包就丢了。
 		// 加后缀区分：宁可多出一个 Mod，也不要静默丢一个。
 		var usedDirectoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		// 这一批里已经"更新"过的目标目录：同一个目标只更新一次（见下面的说明）。
+		var updatedTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var index = 0;
 		foreach (var job in workload)
 		{
@@ -301,14 +324,56 @@ public sealed class VpkImportService
 			var raw = Path.Combine(source.StagingRoot, "raw", index.ToString(CultureInfo.InvariantCulture));
 			try
 			{
+				// **同一来源再来一次 = 更新那个 Mod，不是再建一个。**
+				//
+				// 判据：库里某个 Mod 目录的根上就躺着这个 VPK（导入时留的原件），
+				// 且文件名与**字节数**都相同。字节数必须比——同名不同内容的两份包
+				// （作者发了第二版、或者两个人各自命名成 `材质.vpk`）覆盖掉对方是**破坏性的**；
+				// 多出一个 Mod 只是让人烦。所以宁可保守。
+				//
+				// ⚠️ **同一批里一个目标只能更新一次。** 一个压缩包里放了两份完全相同的 VPK
+				// 是真会发生的（实测八人包里就有一份重复的「手套Gloves关」）。两次都换进
+				// 同一个目录，后一个会静默盖掉前一个 —— 那正是我们要消灭的那种"看不出来"的错。
+				var existing = VpkSourceIdentity.FindExistingMod(_paths.ModsDirectory, job.VpkPath);
+				if (existing is not null && !updatedTargets.Add(Path.GetFullPath(existing.Directory)))
+					existing = null;
+				string? reuseModelPath = null;
+				if (existing is not null)
+				{
+					// 复用旧素体定义：unit id 与 key 都必须逐位相同，否则护甲映射、
+					// idea 里的开关掩码、真映射写进 dl_bin 的件表全部失效。
+					// 这条与"重构建"用的是同一个机制（见 VpkRebuildService）。
+					reuseModelPath = Path.Combine(
+						existing.Directory, ModNodePayloadLayout.VpkPatchDirectoryName, VpkCustomModelFile.FileName);
+					if (!File.Exists(reuseModelPath)) reuseModelPath = null;
+				}
+
 				var result = await ConvertOneAsync(
 					executable, job.VpkPath, raw,
 					job.MaterialSourceListPath, switchListPath, job.IdNamespaceSource, job.IsModel,
-					cancellationToken, onProgress).ConfigureAwait(false);
+					cancellationToken, onProgress, reuseModelPath).ConfigureAwait(false);
 				if (result.PatchDirectory is null)
 				{
 					items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Skipped, null,
 						result.FailureReason ?? "这个 VPK 里没有 HD2 能用的资源，因此没有产出 patch。", 0, 0, 0, result.Notes));
+					continue;
+				}
+
+				if (existing is not null)
+				{
+					// 更新：转换物只是"待换进旧 Mod 的载荷"，不建新目录。
+					var extraNote = existing.CandidateCount > 1
+						? $"库里另有 {existing.CandidateCount - 1} 个同源 Mod（同名同大小），本次只更新了「{existing.Name}」；多余的可以删掉。"
+						: null;
+					produced.Add(new VpkProducedPackage(
+						result.PatchDirectory, job.GroupName, job.IsModel,
+						existing.Directory, existing.Name, result.ReportJson, existing.CandidateCount));
+					items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Converted, existing.Name, null,
+						result.Units, result.Materials, result.Textures,
+						extraNote is null
+							? [.. result.Notes, $"库里已有来自同一个 VPK 的 Mod「{existing.Name}」，本次**更新它**而不是新建。"]
+							: [.. result.Notes, $"库里已有来自同一个 VPK 的 Mod「{existing.Name}」，本次**更新它**而不是新建。", extraNote],
+						Updated: true));
 					continue;
 				}
 
@@ -327,6 +392,7 @@ public sealed class VpkImportService
 				// "原始转换"或者换个参数重转，就只能重新去下载一遍来源包。
 				// 这也正是这套目录约定：根 = 来源，vpk2patch/ = 转换产物，
 				// Overwrite/ = 在产物上再改出来的变体。
+				// 它同时是"同一来源"的判据（见上面 TryFindExistingModDirectory）。
 				File.Copy(job.VpkPath, Path.Combine(target, Path.GetFileName(job.VpkPath)), overwrite: true);
 
 				await File.WriteAllTextAsync(Path.Combine(target, PackageReportFileName), result.ReportJson, cancellationToken)
@@ -368,6 +434,15 @@ public sealed class VpkImportService
 		// 拿别的模型的参数去驱动这套护甲——静默的。
 		foreach (var package in produced)
 		{
+			// **更新型的产物跳过这一步。**
+			//
+			// 它们的 `Directory` 只是暂存里的转换物（没有来源 VPK），而 `physbone embed-mod`
+			// 要靠目录里那份 .vpk 才找得到 jiggle 骨 —— 在这里跑只会得到"没有物理参数"，
+			// 然后被原样换进用户的 Mod，把原来那套参数覆盖成空的。
+			// 真正的嵌入放在换进 Mod 之后（见 ImportService.SwapIntoExistingModAsync）。
+			if (package.IsUpdate)
+				continue;
+
 			var modDirectory = package.Directory;
 			var modName = Path.GetFileName(modDirectory);
 			try
@@ -630,7 +705,8 @@ public sealed class VpkImportService
 		string idNamespaceSource,
 		bool isModel,
 		CancellationToken cancellationToken,
-		Action<string, int, int, string>? onProgress = null)
+		Action<string, int, int, string>? onProgress = null,
+		string? reuseModelPath = null)
 	{
 		Directory.CreateDirectory(outputRoot);
 		var arguments = new List<string>
@@ -663,6 +739,14 @@ public sealed class VpkImportService
 			"--game-data", _gameDataDirectory,
 			"--json",
 		};
+
+		// 复用旧素体定义（key + unit id 基）：
+		// 重新导入同一个 VPK 时要**更新**原来那个 Mod，而 unit id 是 `seed + index` 生成的。
+		// 不指过去就会重新随机 —— 护甲映射、衣柜里记的开关掩码、真映射写进 dl_bin 的件表
+		// 全部失效，用户看到的是"重导一次，之前挂好的护甲不生效了"。
+		// 与重构建用的是同一个 CLI 参数（见 VpkRebuildService）。
+		if (!string.IsNullOrWhiteSpace(reuseModelPath))
+			arguments.AddRange(["--reuse-model", reuseModelPath]);
 
 		// 组件开关包单独指过去：它们只用于"识别开关"，不进解析集合（会顶掉同名真材质），
 		// 而分主体转换时它们散在各组之外——不指过来就翻译不出 components.json。
@@ -1089,6 +1173,7 @@ public sealed class VpkImportService
 			if (used.Add(candidate)) return candidate;
 		}
 	}
+
 }
 
 /// <summary>一个已摊开的 VPK 来源：临时根目录 + 这批 VPK。</summary>

@@ -57,12 +57,6 @@ public sealed record VpkRebuildOutcome(
 public static class VpkRebuildService
 {
 	/// <summary>
-	/// 重构建期间**不删**的文件：<c>custom-model.json</c>（新的那份会覆盖它，内容相同）、
-	/// <c>components.json</c>（由组件开关包翻译而来，而开关包不在这个 Mod 里——删了就再也算不出来）。
-	/// </summary>
-	private static readonly string[] PreservedFileNames = ["custom-model.json", VpkComponentSwitchFile.FileName];
-
-	/// <summary>
 	/// 产物里**没有**记下转换参数时（旧版转换器产的）用的那套。
 	/// <para>
 	/// <b>为什么不是"什么都不传、让 CLI 用自己的默认值"。</b>CLI 的默认是
@@ -267,11 +261,12 @@ public static class VpkRebuildService
 			}
 
 			// ⑤ 换进 vpk2patch/：先把旧载荷备份到临时目录，再整批替换。
+			// 规则与"同一来源再次导入"共用一份（见 VpkPayloadSwap），否则两条路会各自漂移。
 			onStage?.Invoke("正在替换 vpk2patch/…");
-			var swapped = SwapPayload(
-				payloadDirectory, produced, backupRoot,
-				out var backupDirectory, out var swapError, out var restoreReadOnly);
-			if (!swapped) return VpkRebuildOutcome.Failed(swapError!, notes);
+			var swap = VpkPayloadSwap.Swap(payloadDirectory, produced, backupRoot);
+			if (!swap.Succeeded) return VpkRebuildOutcome.Failed(swap.Error!, notes);
+			var backupDirectory = swap.BackupDirectory;
+			var restoreReadOnly = swap.RestoreReadOnly;
 
 			// ⑤b **刷新 `vpk2patch.json`。**
 			//
@@ -291,7 +286,7 @@ public static class VpkRebuildService
 				// 第一眼必然怀疑权限或占用（实测就是这样报了"重构建失败"）。
 				// 这里先清属性、写完再补回去，保持这个 Mod 目录原来的保护状态。
 				var reportPath = VpkConversionReport.GetPath(modDirectory);
-				var restoreReportReadOnly = ClearReadOnlyForWrite(reportPath);
+				var restoreReportReadOnly = VpkPayloadSwap.ClearReadOnlyForWrite(reportPath);
 				try
 				{
 					await File.WriteAllTextAsync(reportPath, conversion.Output, cancellationToken)
@@ -305,7 +300,7 @@ public static class VpkRebuildService
 				}
 				finally
 				{
-					if (restoreReportReadOnly) MarkReadOnly(reportPath);
+					if (restoreReportReadOnly) VpkPayloadSwap.MarkReadOnly(reportPath);
 				}
 			}
 			else
@@ -316,7 +311,7 @@ public static class VpkRebuildService
 
 			// ⑥ 物理参数容器：转换阶段刻意不嵌（会让受管步骤记账错位），这里才是它该来的地方。
 			onStage?.Invoke("正在写入物理参数…");
-			notes.Add(await EmbedPhysBonesAsync(executable, modDirectory, cancellationToken).ConfigureAwait(false));
+			notes.Add(await VpkPhysBoneEmbedder.RunAsync(executable, modDirectory, cancellationToken).ConfigureAwait(false));
 
 			// ⑦ **按当前配置**重新生成 Overwrite/。
 			//
@@ -374,7 +369,7 @@ public static class VpkRebuildService
 			// 库里的 Mod 文件本来是被标成只读的（管理器换包时会 SetDirectoryReadOnly(true)），
 			// 我们在替换时临时清掉了它——这里补回去，别让 Mod 目录从此变成可随意改写。
 			// **必须放在最后**：中间那两步（嵌物理参数、重建 Overwrite）都要往产物里写字。
-			if (restoreReadOnly) SetPayloadReadOnly(payloadDirectory);
+			if (restoreReadOnly) VpkPayloadSwap.SetPayloadReadOnly(payloadDirectory);
 			return new VpkRebuildOutcome(true, null, units, isUnitMod ? freshMaterials : (fresh?.MaterialCount ?? 0),
 				rekeyed, backupDirectory, notes)
 			{
@@ -439,141 +434,6 @@ public static class VpkRebuildService
 		return result;
 	}
 
-	/// <summary>
-	/// 把新产物整批换进 <c>vpk2patch/</c>：旧载荷先复制到备份目录（临时），再删掉旧载荷、
-	/// 拷进新的。<see cref="PreservedFileNames"/> 里的文件既不备份也不删。
-	/// <para>
-	/// <b>为什么这里要专门处理只读属性。</b>库里的 Mod 文件是被标成只读的
-	/// （管理器换包时会 <c>SetDirectoryReadOnly(true)</c>）。对只读文件调 <c>File.Delete</c>
-	/// 或带 <c>overwrite</c> 的 <c>File.Copy</c> 只会得到
-	/// <c>Access to the path … is denied</c>——那句话一个字都没提"只读"，第一眼必然怀疑权限/占用。
-	/// 所以：动手前逐个清掉只读，替换完再按原样补回去（<paramref name="restoreReadOnly"/>）。
-	/// </para>
-	/// <para>
-	/// 补回属性**不能**在这里做：后面还有两步（嵌物理参数、重建 Overwrite）要往产物里写字。
-	/// 调用方在整条流程最后才调 <see cref="SetPayloadReadOnly"/>。
-	/// </para>
-	/// </summary>
-	private static bool SwapPayload(
-		string payloadDirectory,
-		string producedDirectory,
-		string backupRoot,
-		out string? backupDirectory,
-		out string? error,
-		out bool restoreReadOnly)
-	{
-		backupDirectory = null;
-		error = null;
-		restoreReadOnly = false;
-		try
-		{
-			Directory.CreateDirectory(payloadDirectory);
-			var existing = Directory.EnumerateFiles(payloadDirectory, "*", SearchOption.TopDirectoryOnly)
-				.Where(path => !PreservedFileNames.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase))
-				.ToArray();
-
-			// 先清只读（备份的同时做，备份文件也保持可读即可）。
-			foreach (var path in existing)
-			{
-				var attributes = File.GetAttributes(path);
-				if ((attributes & FileAttributes.ReadOnly) == 0) continue;
-				restoreReadOnly = true;
-				File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
-			}
-
-			if (existing.Length != 0)
-			{
-				Directory.CreateDirectory(backupRoot);
-				foreach (var path in existing)
-				{
-					var destination = Path.Combine(backupRoot, Path.GetFileName(path));
-					File.Copy(path, destination, overwrite: true);
-					// 备份也清掉只读：它是给人回滚用的，不该再挡一次删除。
-					ClearReadOnly(destination);
-				}
-
-				backupDirectory = backupRoot;
-			}
-
-			foreach (var path in existing) File.Delete(path);
-			foreach (var path in Directory.EnumerateFiles(producedDirectory, "*", SearchOption.TopDirectoryOnly))
-			{
-				var destination = Path.Combine(payloadDirectory, Path.GetFileName(path));
-				// 保留下来的文件（custom-model.json / components.json）没在上面的 existing 里，
-				// 但它们同样是只读的 —— 覆盖前也得清。
-				ClearReadOnly(destination);
-				File.Copy(path, destination, overwrite: true);
-			}
-
-			return true;
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-		{
-			error = "替换 vpk2patch/ 失败：" + exception.Message
-				+ (restoreReadOnly ? "（这些文件是只读的，我已经先清过一次属性；如果还失败，多半是别的程序占着它）" : string.Empty)
-				+ (backupDirectory is null ? string.Empty : $"（旧产物的备份在：{backupDirectory}）");
-			return false;
-		}
-	}
-
-	/// <summary>
-	/// 写文件前把只读属性清掉；返回"原本是只读的"（写完由调用方补回去）。
-	/// <para>
-	/// 库里的 Mod 文件是被标成只读的，对只读文件写只会得到
-	/// <c>Access to the path … is denied</c>——那句错误一个字都没提"只读"。
-	/// </para>
-	/// </summary>
-	private static bool ClearReadOnlyForWrite(string path)
-	{
-		try
-		{
-			if (!File.Exists(path)) return false;
-			var attributes = File.GetAttributes(path);
-			if ((attributes & FileAttributes.ReadOnly) == 0) return false;
-			File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
-			return true;
-		}
-		catch (IOException) { return false; }
-		catch (UnauthorizedAccessException) { return false; }
-	}
-
-	/// <summary>把文件重新标成只读（恢复库的保护状态）；标不上也不抛。</summary>
-	private static void MarkReadOnly(string path)
-	{
-		try { File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly); }
-		catch (IOException) { }
-		catch (UnauthorizedAccessException) { }
-	}
-
-	/// <summary>清掉一个文件的只读属性；文件不存在或清不掉都不抛。</summary>
-	private static void ClearReadOnly(string path)
-	{
-		try
-		{
-			if (!File.Exists(path)) return;
-			var attributes = File.GetAttributes(path);
-			if ((attributes & FileAttributes.ReadOnly) == 0) return;
-			File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
-		}
-		catch (IOException) { }
-		catch (UnauthorizedAccessException) { }
-	}
-
-	/// <summary>
-	/// 把产物文件重新标成只读——恢复这个 Mod 目录原来的保护状态（管理器换包时就是这么做的）。
-	/// <para>清不掉也不抛：这只影响"别人误改"的概率，不影响产物本身。</para>
-	/// </summary>
-	private static void SetPayloadReadOnly(string payloadDirectory)
-	{
-		if (!Directory.Exists(payloadDirectory)) return;
-		foreach (var path in Directory.EnumerateFiles(payloadDirectory, "*", SearchOption.TopDirectoryOnly))
-		{
-			try { File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly); }
-			catch (IOException) { }
-			catch (UnauthorizedAccessException) { }
-		}
-	}
-
 	/// <summary>重跑换甲的目标：记过的游戏护甲优先，其次这个 Mod 自己登记的素体。都没有就返回 <c>null</c>。</summary>
 	private static IReadOnlyList<string>? ResolveRekeyTargets(string modDirectory, VpkWardrobeFile wardrobe)
 	{
@@ -582,40 +442,6 @@ public static class VpkRebuildService
 
 		var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(modDirectory);
 		return ownKey is null ? null : [RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)];
-	}
-
-	/// <summary>把物理参数容器嵌进这个 Mod 的 patch，返回一条给人看的结论（永远不为空）。</summary>
-	private static async Task<string> EmbedPhysBonesAsync(
-		string executable,
-		string modDirectory,
-		CancellationToken cancellationToken)
-	{
-		try
-		{
-			var result = await Hd2ModProcess.RunAsync(
-				executable, ["physbone", "embed-mod", modDirectory, "--json"], cancellationToken).ConfigureAwait(false);
-			if (result.ExitCode != 0) return "物理参数嵌入失败：" + Hd2ModProcess.Explain(result, "写入物理参数");
-			if (string.IsNullOrWhiteSpace(result.Output)) return "物理参数嵌入没有输出，已跳过。";
-
-			using var document = JsonDocument.Parse(result.Output);
-			var root = document.RootElement;
-			var embedded = root.TryGetProperty("embedded", out var flag) && flag.ValueKind == JsonValueKind.True;
-			if (embedded)
-			{
-				var bones = root.TryGetProperty("bones", out var bonesValue) && bonesValue.TryGetInt32(out var parsed) ? parsed : 0;
-				var patches = root.TryGetProperty("patches", out var patchesValue) && patchesValue.TryGetInt32(out var parsedPatches) ? parsedPatches : 0;
-				return $"已写入物理参数（{patches} 个 patch、{bones} 根骨）。";
-			}
-
-			var reason = root.TryGetProperty("reason", out var reasonValue) && reasonValue.ValueKind == JsonValueKind.String
-				? reasonValue.GetString()
-				: null;
-			return "没有物理参数（" + (string.IsNullOrWhiteSpace(reason) ? "原因未知" : reason) + "）——这套护甲不会有头发/裙摆摆动。";
-		}
-		catch (Exception exception) when (exception is IOException or JsonException or InvalidOperationException)
-		{
-			return "物理参数嵌入跳过（" + exception.Message + "）";
-		}
 	}
 
 	/// <summary>转换目录下那个"唯一含 patch 文件的子目录"（<c>vpk2patch</c> 按包名建目录，名字会被清洗过）。</summary>
