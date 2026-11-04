@@ -413,20 +413,7 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 				result.Add(new SafeModDeletionActivationCleanupKey(
 					SafeModDeletionActivationCleanupKind.OptionActivationForHost,
 					removal.NodeId));
-				result.Add(new SafeModDeletionActivationCleanupKey(
-					SafeModDeletionActivationCleanupKind.DecorationActivationForHost,
-					removal.NodeId));
 			}
-			// 旧库里仍可能留着装饰节点（kind 值保留是为了让旧库读得出来）。
-			// 删这种遗留节点时仍要清掉它的装饰激活状态，否则 option-activations 里会留死引用。
-			#pragma warning disable CS0618 // 这里正是唯一必须认得那个废弃值的地方
-			if (removal.Kind == ModNodeKind.Decoration)
-			{
-				result.Add(new SafeModDeletionActivationCleanupKey(
-					SafeModDeletionActivationCleanupKind.DecorationActivationForDecoration,
-					removal.NodeId));
-			}
-			#pragma warning restore CS0618
 		}
 
 		foreach (var relation in relationRemovals)
@@ -512,15 +499,6 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 				[node.RelativePath]);
 		}
 
-		if (!safety.IsDecorationActivationStateKnown)
-		{
-			blockers.Add(
-				"DecorationActivationStateUnknown",
-				SafeModDeletionBlockerSeverity.Warning,
-				"Decoration activation state was not supplied. A caller must inspect it before executing this plan.",
-				removedNodes.Where(node => node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option).Select(node => node.Id).ToArray());
-		}
-
 		if (!safety.IsManagedOverwriteStateKnown && removedNodes.Any(node => node.Metadata.HelmetToArmorMerged))
 		{
 			blockers.Add(
@@ -528,17 +506,6 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 				SafeModDeletionBlockerSeverity.Warning,
 				"Managed Overwrite state was not supplied for a helmet-merged Mod. A caller must inspect it before execution.",
 				removedNodes.Where(node => node.Metadata.HelmetToArmorMerged).Select(node => node.Id).ToArray());
-		}
-
-		foreach (var attachment in safety.EnabledDecorations ?? Array.Empty<SafeModDeletionEnabledDecoration>())
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			if (!removalIds.Contains(attachment.DecorationId) && !removalIds.Contains(attachment.HostId)) continue;
-			blockers.Add(
-				"EnabledDecorationRollbackRequired",
-				SafeModDeletionBlockerSeverity.Blocking,
-				$"Enabled Decoration '{ToKey(attachment.DecorationId)}' is attached to host '{ToKey(attachment.HostId)}'. Disable it and rebuild or clear the managed Overwrite before deletion.",
-				[attachment.DecorationId, attachment.HostId]);
 		}
 
 		foreach (var overwrite in safety.ManagedOverwrites ?? Array.Empty<SafeModDeletionManagedOverwrite>())

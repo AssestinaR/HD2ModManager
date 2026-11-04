@@ -117,8 +117,6 @@ public enum SafeModDeletionActivationCleanupKind
 	OptionActivationForOption = 0,
 	OptionActivationForHost = 1,
 	OptionActivationForRelation = 2,
-	DecorationActivationForDecoration = 3,
-	DecorationActivationForHost = 4,
 }
 
 /// <summary>
@@ -160,35 +158,25 @@ public sealed record SafeModDeletionBlocker(
 	IReadOnlyList<string> RelativePaths);
 
 /// <summary>
-/// Optional facts obtained by a caller that owns the live activation and
-/// Overwrite stores. The deletion planner never reads those files itself.
+/// Optional facts obtained by a caller that owns the live Overwrite store.
+/// The deletion planner never reads those files itself.
+/// <para>
+/// 装饰包已不再支持（2026-11-04）：`IsDecorationActivationStateKnown` 与
+/// `EnabledDecorations` 一起删除 —— 装饰已不可能存在，那两项永远只能是空/真。
+/// </para>
 /// </summary>
 public sealed record SafeModDeletionSafetySnapshot(
-	bool IsDecorationActivationStateKnown,
-	IReadOnlyList<SafeModDeletionEnabledDecoration> EnabledDecorations,
 	bool IsManagedOverwriteStateKnown,
 	IReadOnlyList<SafeModDeletionManagedOverwrite> ManagedOverwrites)
 {
 	public static SafeModDeletionSafetySnapshot Unknown { get; } = new(
-		IsDecorationActivationStateKnown: false,
-		EnabledDecorations: Array.Empty<SafeModDeletionEnabledDecoration>(),
 		IsManagedOverwriteStateKnown: false,
 		ManagedOverwrites: Array.Empty<SafeModDeletionManagedOverwrite>());
 
 	public static SafeModDeletionSafetySnapshot EmptyKnown { get; } = new(
-		IsDecorationActivationStateKnown: true,
-		EnabledDecorations: Array.Empty<SafeModDeletionEnabledDecoration>(),
 		IsManagedOverwriteStateKnown: true,
 		ManagedOverwrites: Array.Empty<SafeModDeletionManagedOverwrite>());
 }
-
-/// <summary>
-/// A live enabled Decoration-to-host attachment. Deletion must first disable it
-/// and rebuild or clear its host Overwrite through the UI-aware workflow.
-/// </summary>
-public sealed record SafeModDeletionEnabledDecoration(
-	ModNodeId DecorationId,
-	ModNodeId HostId);
 
 public enum SafeModDeletionManagedOverwriteKind
 {

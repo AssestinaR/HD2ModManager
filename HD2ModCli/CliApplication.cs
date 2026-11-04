@@ -6787,16 +6787,8 @@ public static class CliApplication
 				result.OptionActivationCleanup.RemovedHostRelationshipCount,
 				result.OptionActivationCleanup.Changed,
 			},
-			decorationActivationCleanup = result.DecorationActivationCleanup is null ? null : new
-			{
-				result.DecorationActivationCleanup.RemovedDecorationCount,
-				result.DecorationActivationCleanup.RemovedHostReferenceCount,
-				result.DecorationActivationCleanup.Changed,
-			},
-			derivedInformation = result.Status == CliModDeletionStatus.Completed ? "requires-manager-refresh" : "not-started",
-			deployment = "not-performed",
-			result.PostCommitError,
 		};
+
 
 	private static object CreateModDeletionPlanDocumentProjection(CliModDeletionPlanDocument document)
 		=> new

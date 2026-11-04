@@ -41,7 +41,6 @@ public sealed record CliModDeletionInputState(
 	CliModDeletionFileSnapshot LibrarySnapshot,
 	CliModDeletionFileSnapshot Profiles,
 	CliModDeletionFileSnapshot OptionActivations,
-	CliModDeletionFileSnapshot DecorationActivations,
 	IReadOnlyList<CliModDeletionStorageSnapshot> Storage);
 
 public sealed record CliModDeletionFileSnapshot(
@@ -117,7 +116,6 @@ internal static class CliModDeletionPlanArtifacts
 			await CaptureFileAsync(paths.LibraryPath, cancellationToken).ConfigureAwait(false),
 			await CaptureFileAsync(paths.ProfilesPath, cancellationToken).ConfigureAwait(false),
 			await CaptureFileAsync(Path.Combine(paths.ModsDirectory, "option-activations.json"), cancellationToken).ConfigureAwait(false),
-			await CaptureFileAsync(paths.DecorationActivationsPath, cancellationToken).ConfigureAwait(false),
 			storage);
 		var request = new CliModDeletionRequest(frozenSelectors, scope);
 		var target = new CliModDeletionTarget(Path.GetFullPath(workspace.ManagerRoot), Path.GetFullPath(workspace.LibraryRoot));

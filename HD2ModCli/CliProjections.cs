@@ -278,7 +278,6 @@ public static class CliProjections
 		ArgumentNullException.ThrowIfNull(graph);
 		var id = FormatId(node.Id);
 		var optionStates = ReadOptionStates(node.Id, state.OptionActivations);
-		var decorationHosts = ReadDecorationHosts(node.Id, state.DecorationActivations);
 		var hostKey = node.Id.Value.ToString("N");
 		var directOptions = graph.GetDirectOptions(node.Id)
 			.Select(option => new
@@ -402,7 +401,7 @@ public static class CliProjections
 			mods,
 			profiles,
 			orphanedOptionActivationIds = GetOrphanedActivationIds(state.OptionActivations.Options.Keys, state.Snapshot.Nodes),
-			orphanedDecorationActivationIds = GetOrphanedActivationIds(state.DecorationActivations.Keys, state.Snapshot.Nodes),
+			// 装饰包已不再支持：`orphanedDecorationActivationIds` 已删除。
 			issues = state.ReadIssues,
 		};
 	}
@@ -521,14 +520,6 @@ public static class CliProjections
 				effectiveOrder = pair.Value.EffectiveOrder,
 			})
 			.ToArray();
-	}
-
-	private static string[] ReadDecorationHosts(ModNodeId decorationId, IReadOnlyDictionary<string, IReadOnlySet<string>> states)
-	{
-		var key = decorationId.Value.ToString("N");
-		return states.TryGetValue(key, out var hosts)
-			? hosts.OrderBy(host => host, StringComparer.OrdinalIgnoreCase).Select(FormatRawGuid).ToArray()
-			: Array.Empty<string>();
 	}
 
 	private static string[] NormalizeIds(IEnumerable<string>? values)

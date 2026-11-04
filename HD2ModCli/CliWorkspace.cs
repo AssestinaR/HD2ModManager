@@ -38,7 +38,6 @@ public sealed record CliManagerSettings(
 public sealed record CliLibraryState(
 	LibrarySnapshot Snapshot,
 	OptionActivationSnapshot OptionActivations,
-	IReadOnlyDictionary<string, IReadOnlySet<string>> DecorationActivations,
 	IReadOnlyList<string> ReadIssues);
 
 public sealed class CliWorkspace
@@ -157,19 +156,8 @@ public sealed class CliWorkspace
 		{
 			throw new CliUserException("OptionActivationsUnreadable", $"无法安全读取 option-activations.json：{exception.Message}");
 		}
-		DecorationActivationSnapshot decorationActivations;
-		try
-		{
-			decorationActivations = await DecorationActivationStore.TryLoadReadOnlySnapshotAsync(
-				paths.DecorationActivationsPath,
-				cancellationToken).ConfigureAwait(false);
-		}
-		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
-		{
-			throw new CliUserException("DecorationActivationsUnreadable", $"无法安全读取 decoration-activations.json：{exception.Message}");
-		}
 
-		return new CliLibraryState(snapshot, optionStates, decorationActivations.EnabledHostsByDecoration, _issues.ToArray());
+		return new CliLibraryState(snapshot, optionStates, _issues.ToArray());
 	}
 
 	private static string? ResolveLibraryRoot(
