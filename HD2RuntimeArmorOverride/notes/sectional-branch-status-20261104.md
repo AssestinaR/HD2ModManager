@@ -192,3 +192,40 @@ WardrobeTreeViewModel
 依赖方向要求**从消费者往被消费者**删。另外在这种 400+ 行的文件里靠"往上找 `/// <summary>`、往下找 `}"` 猜方法边界"是不可靠的——
 我因此把 `RunSectionsAsync` 一起删掉过一次。正确做法是先 `rg -n '^\t(internal|private) static'` 拿到准确行号，
 再按**降序**用显式区间删。
+
+---
+
+## 装饰链退场：范围已量清，按依赖方向排好序（未动）
+
+**规模**：`rg -l 'Decoration'` → **110 个文件**。`DecorationPlanDocument` 单独牵扯 16 个文件，
+`ModNodeKind.Decoration` 有 **19 个消费点**（Core 导入器 / CLI / 管理器 / 测试）。
+
+**一个有利条件**：现网 `library.json` 里 `kind=Decoration` 的节点 **0 个**，
+所以删这个枚举值**不需要数据迁移**。
+
+### 依赖顺序（消费者 → 被消费者）
+
+| 步 | 删什么 | 谁在用 | 风险 |
+|---|---|---|---|
+| 1 | 两个页面：`DecorationPlanPageViewModel` + View、`BatchDecorationPlanPageViewModel` + View；`ShellViewModel` 的 `OpenDecorationPlan` / `OpenBatchDecorationPlan` / 两个 `WorkspacePageType` 分支与显示名 | 只有 UI 自己 | 低——纯 UI 入口，删完功能就没了 |
+| 2 | 详情页/列表页上的装饰行动作（`ArmorRelease` 之外那几条与 decoration 相关的 row action） | UI | 低 |
+| 3 | CLI 的 `decoration package validate/apply`、`decoration edit validate/apply`（4 条）+ `CliDecorationEditPlanArtifacts` / `CliDecorationManagementInspection` / `CliDecorationSourceInspectionArtifacts` / `CliHostDerivedOverwritePlanArtifacts` / `CliBatchPatchRepairExecutor` 里的装饰分支 | 只有 CLI | 中——`CliBatchPatchRepairExecutor` 与批量修复共用，要看清是不是只删装饰那一段 |
+| 4 | `ModLibraryService` 的装饰路径：`ScheduleDecorationActivationBatchAsync` / `FlushPendingDecorationRebuildsAsync` / `RebuildDecorationOverwritesAsync` / `ReadEnabledDecorationsAsync` / `RebuildHostOverwriteAsync` | 只有第 1、3 步 | **高**——`ModLibraryService` 是中枢文件，且 `HostDerivedOverwriteService` 是装饰 + 头盔合并共用的入口 |
+| 5 | `HostDerivedOverwriteService` / `DecorationHostRebuildService` / `DecorationActivationStore` / `DecorationPackageSnapshotService` / `DecorationHostTargetBinder` / `DecorationPlanDocument` / `DecorationPayloadDocument` / `DecorationPlanningDefaults` | 只有第 4 步 | 中 |
+| 6 | `ModNodeKind.Decoration` 及其 19 个消费点；`ObjectTreeImporter` / `ModImportPlanner` / `ModLibraryImporter` 的装饰分支 | 第 1–5 步之后 | 中——枚举值一删，编译器会把所有漏掉的点报出来，这反而是好事 |
+| 7 | 测试：`DecorationEditCliTests` / `DecorationManagementCliTests` / `HostDerivedOverwriteCliTests` + Core 里那 4 个提到 Decoration 的测试文件 | 跟代码一起 | 低 |
+
+### 三个必须先看清的陷阱
+
+1. **`HostDerivedOverwriteService` 是装饰与头盔合并共用的入口**（`DecorationHostRebuildService.cs:73-95` 里
+   "先装饰、再把头盔合并叠上去"）。删它之前要确认常规线的头盔合并走的是 `HelmetToArmorMergeService` 而不是它。
+2. **`CanonicalDecorationUnitAppender` 绝对不能删**——它是 `SectionalSplitter` 的底层。
+   名字里有 Decoration，但它是"把 donor 几何并进宿主"的唯一实现。
+3. **`CliBatchPatchRepairExecutor` 同时服务"批量修 patch"和"装饰"**，只能删装饰那一段，
+   不能整文件删。
+
+### 为什么这一轮没做
+
+按上面的规模，这是 110 个文件、7 个阶段、其中第 4 步动的是 `ModLibraryService` 这个中枢。
+本会话在**小得多的**删除上（掩码链）已经因为顺序反了回退过一次；在剩余预算内做装饰链，
+最可能的结果是留一个半删的编译不过的分支。**先把它量清、排好序，等一拍再做。**
