@@ -138,9 +138,15 @@ E:\mod\lunalice_bill\
 
 ---
 
-## 掩码链第三层（Core 删除）：试过一次，已回退，附正确顺序
+## 掩码链第三层：已完成一半（`bdfda20`），剩下的一半附正确顺序
 
-**结论：这一层不是"删几个文件"，删除顺序错了会连锁。我试了一次，三次索引算错、连锁出四处编译错误，已整体回退到 `3be56ee`。下面是摸清楚的东西。**
+**已删（`bdfda20`）**：`WardrobeMaskCompiler` / `WardrobeMaskProjection` / `WardrobeMaskFile` 三个类
++ 它们的三个测试文件 + CLI 的 compile / validate / project 三条命令。这三个类**只有 CLI 在用**，
+所以它们是干净的叶子。`WardrobeMaskDiagnostic` 搬进了 `WardrobeMasks.cs`（`WardrobeWorkspaceFile` 还在用）。
+
+**还没删**：`WardrobeMasks.cs`（MaskDocument / MaskView）、`WardrobeWorkspaceFile`、`WardrobeWorkspace`。
+障碍与正确的删除顺序写在下面 —— 我第一次试的时候**顺序反了**（按叶子往上删），
+三次索引算错、连锁出四处编译错误，整体回退过一次。第二次按依赖方向才成了现在这一半。
 
 ### 真正的障碍：`WardrobeTreeViewModel` 里有一条死分支
 
