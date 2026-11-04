@@ -39,7 +39,8 @@ public sealed class CanonicalDecorationUnitAppender
 		PatchUnitMesh targetUnit,
 		IReadOnlyDictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>> inputsByTargetMesh,
 		UnitTransformInfo avatarTransformInfo,
-		bool replaceTargetGeometry = false)
+		bool replaceTargetGeometry = false,
+		CanonicalCullingBoundsMode cullingBounds = CanonicalCullingBoundsMode.Preserve)
     {
         ArgumentNullException.ThrowIfNull(targetUnit);
 		ArgumentNullException.ThrowIfNull(inputsByTargetMesh);
@@ -149,6 +150,10 @@ public sealed class CanonicalDecorationUnitAppender
             if (result.Mesh is not null) prepared.Add(result.Mesh);
         }
         if (diagnostics.Count != 0 || prepared.Count != finalRaw.Length) return new(null, diagnostics);
+		// 追加几何之后必须重算包围盒：CanonicalUnitRebuilder 不动 MeshInfo 里那 7 个 float，
+		// 留下的会是**外壳的**盒，顶点跑出盒外就被游戏剔除（表现是"整块几何消失但游戏不崩"）。
+		// 默认 Preserve 保持三条在役路径的产物字节不变；实验 / 拆件路径显式传 UnionWithComputed。
+		expanded = CanonicalCullingBounds.Apply(expanded, prepared, cullingBounds);
 		var rebuiltBones = expanded.BoneInfos.Select((bone, index) => new CanonicalBoneInfoRebuild(index, rebuiltBonesByLod.GetValueOrDefault(index) ?? bone)).ToArray();
         var rebuilt = new CanonicalUnitRebuilder().TryRebuild(expanded, targetUnit.Payload.TocData, prepared, rebuiltBones, material.Bindings);
         diagnostics.AddRange(rebuilt.Diagnostics);
