@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -22,6 +22,8 @@
 
   <ItemGroup>
     <Compile Include="..\HD2ModManager\ViewModels\BottomBarLayout.cs" Link="BottomBarLayout.cs" />
+    <!-- 树的多选集合运算：纯逻辑、不碰 WPF，所以按文件链进来测。 -->
+    <Compile Include="..\HD2ModManager\Controls\Trees\TreeSelectionMath.cs" Link="TreeSelectionMath.cs" />
   </ItemGroup>
 
 </Project>

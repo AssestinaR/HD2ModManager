@@ -55,8 +55,13 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// <summary>新建组 / 改名时用的输入框内容。</summary>
 	private string _newVpkGroupName = string.Empty;
 
-	/// <summary>树上当前选中的节点。<b>新建组就是"把这一块（或这一整棵）建成组"</b>，所以它必须有。</summary>
-	private WardrobeTreeNode? _selectedVpkTreeNode;
+	/// <summary>
+	/// 树上当前选中的节点。<b>新建组就是"把这些块（或这几整棵）建成组"</b>，所以它必须有。
+	/// <para>
+	/// 多选：Ctrl 单拾取、Shift 区域拾取，<b>同一时刻只可能有一层</b>（跨层会被当成重新开始）。
+	/// </para>
+	/// </summary>
+	private IReadOnlyList<WardrobeTreeNode> _selectedVpkTreeNodes = [];
 
 	/// <summary>当前生效的 section 表。组 CRUD 之后要拿它重画（不重读文件）。</summary>
 	private WardrobeSectionMapDocument? _vpkSectionMap;
@@ -116,32 +121,64 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 	/// <summary>树上当前选中的节点。由视图在选中变化时写入。</summary>
-	public WardrobeTreeNode? SelectedVpkTreeNode
+	public IReadOnlyList<WardrobeTreeNode> SelectedVpkTreeNodes
 	{
-		get => _selectedVpkTreeNode;
+		get => _selectedVpkTreeNodes;
 		set
 		{
-			if (!SetField(ref _selectedVpkTreeNode, value)) return;
+			// 集合是按引用比较的，SetField 那套不适用；这里比内容。
+			var next = value ?? [];
+			if (_selectedVpkTreeNodes.Count == next.Count
+				&& _selectedVpkTreeNodes.SequenceEqual(next))
+				return;
+			_selectedVpkTreeNodes = next;
+			OnPropertyChanged();
 			OnPropertyChanged(nameof(VpkSelectionHint));
 			OnPropertyChanged(nameof(HasVpkSelection));
 		}
 	}
 
-	public bool HasVpkSelection => _selectedVpkTreeNode is not null;
+	public bool HasVpkSelection => _selectedVpkTreeNodes.Count != 0;
 
 	/// <summary>选中提示：新建组会包含哪几块。<b>点之前就说清</b>，比点了之后猜好。</summary>
 	public string VpkSelectionHint
 	{
 		get
 		{
-			if (_selectedVpkTreeNode is not { } node)
-				return "先在下面的树里点一块几何（或一个部位），再点「新建组」。";
-			var sections = node.Kind == WardrobeTreeNodeKind.Section ? [node] : node.Sections().ToArray();
+			if (_selectedVpkTreeNodes.Count == 0)
+				return "先在下面的树里点一块几何（或一个部位），再点「新建组」。按住 Ctrl 可多选、Shift 可选一段。";
+			var sections = CollectSelectedSections();
 			var count = sections.Count(section => section.Unit is not null && section.SectionIndex is not null);
-			return count == 0
-				? $"「{node.Label}」下面没有可开关的几何。"
-				: $"「{node.Label}」→ 新建组会包含 {count} 块几何。";
+			if (count == 0)
+				return _selectedVpkTreeNodes.Count == 1
+					? $"「{_selectedVpkTreeNodes[0].Label}」下面没有可开关的几何。"
+					: "选中的这些条目下面没有可开关的几何。";
+			return _selectedVpkTreeNodes.Count == 1
+				? $"「{_selectedVpkTreeNodes[0].Label}」→ 新建组会包含 {count} 块几何。"
+				: $"已选 {_selectedVpkTreeNodes.Count} 个条目 → 新建组会包含 {count} 块几何。";
 		}
+	}
+
+	/// <summary>
+	/// 把选中的节点摊平成 section 列表。<b>按 section 去重</b>——
+	/// 多选时两条父级条目可能覆盖同一块几何（例如同一个 unit 下的相邻分支），
+	/// 不去重会让同一块几何在组里出现两次。
+	/// </summary>
+	private IReadOnlyList<WardrobeTreeNode> CollectSelectedSections()
+	{
+		if (_selectedVpkTreeNodes.Count == 0) return [];
+		var seen = new HashSet<WardrobeTreeNode>();
+		var result = new List<WardrobeTreeNode>();
+		foreach (var node in _selectedVpkTreeNodes)
+		{
+			var sections = node.Kind == WardrobeTreeNodeKind.Section ? [node] : node.Sections();
+			foreach (var section in sections)
+			{
+				if (seen.Add(section)) result.Add(section);
+			}
+		}
+
+		return result;
 	}
 
 	/// <summary>组区的一句话说明：多少个组、共覆盖多少块几何、其中多少条已经失效。</summary>
@@ -306,7 +343,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		VpkGroups = [];
 		VpkGroupStatus = string.Empty;
 		_sectionGroups = SectionGroupDocument.Empty;
-		SelectedVpkTreeNode = null;
+		SelectedVpkTreeNodes = [];
 		NewVpkGroupName = string.Empty;
 		IsVpkMod = false;
 		OnPropertyChanged(nameof(IsVpkMod));
@@ -1063,24 +1100,24 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 	private void DeleteGroup(SectionGroup group) => _ = DeleteVpkGroupAsync(group);
 
-	/// <summary>新建组：把树上选中的那一块（或那一整棵）建成组。</summary>
+	/// <summary>新建组：把树上选中的那几块（或那几整棵）建成组。</summary>
 	private async Task CreateVpkGroupAsync()
 	{
 		if (!TryGetCurrentNode(out var node))
 			return;
-		if (SelectedVpkTreeNode is not { } selected)
+		if (_selectedVpkTreeNodes.Count == 0)
 		{
-			VpkGroupStatus = "先在下面的树里点一块几何（或一个部位），再点「新建组」。";
+			VpkGroupStatus = "先在下面的树里点一块几何（或一个部位），再点「新建组」。按住 Ctrl 可多选、Shift 可选一段。";
 			return;
 		}
 
-		var sections = selected.Kind == WardrobeTreeNodeKind.Section ? [selected] : selected.Sections().ToArray();
+		var sections = CollectSelectedSections();
 		var members = sections
 			.Where(section => section.Unit is not null && section.SectionIndex is not null)
 			.GroupBy(section => section.Unit!, StringComparer.Ordinal)
 			.Select(group => new SectionGroupTarget(
 				group.Key,
-				[.. group.Select(section => section.SectionIndex!.Value).Order()]))
+				[.. group.Select(section => section.SectionIndex!.Value).Distinct().Order()]))
 			.ToArray();
 
 		var created = SectionGroupEditor.Create(_sectionGroups, NewVpkGroupName, members);

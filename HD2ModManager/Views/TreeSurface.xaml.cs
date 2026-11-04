@@ -40,7 +40,9 @@ public partial class TreeSurface : UserControl
     private IReadOnlyDictionary<object, ITreeSurfaceNode> _parentOf = TreeRowProjection.Result.Empty.ParentOf;
     private IReadOnlyDictionary<object, ITreeSurfaceNode> _parentOfBefore = TreeRowProjection.Result.Empty.ParentOf;
     private ITreeSurfaceNode? _expandingNode;
-    private ITreeSurfaceNode? _selectedNode;
+    private readonly List<ITreeSurfaceNode> _selectedNodes = [];
+    /// <summary>区间选择的起点（上次点的那一行）。Shift 连续点几次都从这里长区间。</summary>
+    private ITreeSurfaceNode? _selectionAnchor;
 
     public TreeSurface()
     {
@@ -91,27 +93,79 @@ public partial class TreeSurface : UserControl
     /// <summary>当前交给列表渲染的行序列（压平之后）。</summary>
     public IEnumerable PresentedItems => _presentedItems;
 
-    /// <summary>当前选中行。旧树靠 TreeViewItem 自带选中，扁平列表里只能自己记。</summary>
-    public ITreeSurfaceNode? SelectedNode => _selectedNode;
+    /// <summary>当前选中行。多选时返回 <c>null</c>（避免调用方"只拿到一个"却以为拿全了）。</summary>
+    public ITreeSurfaceNode? SelectedNode => _selectedNodes.Count == 1 ? _selectedNodes[0] : null;
 
     /// <summary>
-    /// 选中行变了。<b>只报"变了"，不报"没变"</b>——重复报告会让订阅方做无用的刷新。
+    /// 当前选中的全部行。<b>同一时刻只可能有一层</b>——跨层的加选会被当成"重新开始"。
+    /// </summary>
+    public IReadOnlyList<ITreeSurfaceNode> SelectedNodes => _selectedNodes;
+
+    /// <summary>
+    /// 选中集合变了。<b>只报"变了"，不报"没变"</b>——重复报告会让订阅方做无用的刷新。
     /// <para>
-    /// 控件不知道选中行要拿来干什么（展开、跳转、还是"把这一块建成组"），
+    /// 控件不知道选中行要拿来干什么（展开、跳转、还是"把这几块建成组"），
     /// 所以它只把事实说出来，语义留给调用方。
     /// </para>
     /// </summary>
-    public event EventHandler<ITreeSurfaceNode?>? SelectionChanged;
+    public event EventHandler<IReadOnlyList<ITreeSurfaceNode>>? SelectionChanged;
 
-    /// <summary>单选：换行时把上一行的标记清掉，保证同一时刻只有一行亮着。</summary>
-    public void Select(ITreeSurfaceNode? node)
+    /// <summary>
+    /// 选一行。<paramref name="mode"/> 对应鼠标修饰键：
+    /// <see cref="TreeSelectionMode.Replace"/> 普通点击、<see cref="TreeSelectionMode.Toggle"/> Ctrl、
+    /// <see cref="TreeSelectionMode.Range"/> Shift。
+    /// <para>
+    /// 规则全在 <see cref="TreeSelectionMath"/> 里（纯逻辑、有单测）：同一时刻只有一层、
+    /// 跨层当成重新开始、Ctrl 切换、Shift 只取同层的可见区间。这里只负责把结果落到行上。
+    /// </para>
+    /// </summary>
+    public void Select(ITreeSurfaceNode? node, TreeSelectionMode mode = TreeSelectionMode.Replace)
     {
-        if (ReferenceEquals(_selectedNode, node)) return;
-        if (_selectedNode is not null) _selectedNode.IsSelected = false;
-        _selectedNode = node;
-        if (node is not null) node.IsSelected = true;
-        SelectionChanged?.Invoke(this, node);
+        if (node is null)
+        {
+            ClearSelection();
+            return;
+        }
+
+        var visible = _presentedItems.OfType<ITreeSurfaceNode>().ToArray();
+        var result = TreeSelectionMath.Compute(
+            _selectedNodes,
+            _selectionAnchor,
+            visible,
+            node,
+            mode,
+            candidate => candidate.Depth);
+
+        _selectionAnchor = result.Anchor;
+        ApplySelection(result.Nodes);
     }
+
+    private void ClearSelection()
+    {
+        if (_selectedNodes.Count == 0 && _selectionAnchor is null) return;
+        foreach (var selected in _selectedNodes) selected.IsSelected = false;
+        _selectedNodes.Clear();
+        _selectionAnchor = null;
+        RaiseSelectionChanged();
+    }
+
+    /// <summary>整体替换选中集合。先把旧的全灭掉，再点亮新的。</summary>
+    private void ApplySelection(IReadOnlyList<ITreeSurfaceNode> nodes)
+    {
+        foreach (var selected in _selectedNodes) selected.IsSelected = false;
+        _selectedNodes.Clear();
+        foreach (var node in nodes)
+        {
+            if (_selectedNodes.Any(selected => ReferenceEquals(selected, node))) continue;
+            _selectedNodes.Add(node);
+            node.IsSelected = true;
+        }
+
+        RaiseSelectionChanged();
+    }
+
+    private void RaiseSelectionChanged()
+        => SelectionChanged?.Invoke(this, _selectedNodes);
 
     private static bool ContainsRow(IReadOnlyList<ITreeSurfaceNode> rows, ITreeSurfaceNode node)
     {
@@ -156,7 +210,19 @@ public partial class TreeSurface : UserControl
         _rows.ReplaceWith(projection.Rows);
 
         // 选中的行被收起藏起来了就一起清掉：看不见的行不该还带着高亮。
-        if (_selectedNode is not null && !ContainsRow(projection.Rows, _selectedNode)) Select(null);
+        var hidden = _selectedNodes.Where(selected => !ContainsRow(projection.Rows, selected)).ToArray();
+        if (hidden.Length != 0)
+        {
+            foreach (var node in hidden)
+            {
+                node.IsSelected = false;
+                _selectedNodes.RemoveAll(selected => ReferenceEquals(selected, node));
+            }
+
+            if (_selectionAnchor is not null && hidden.Any(node => ReferenceEquals(node, _selectionAnchor)))
+                _selectionAnchor = null;
+            RaiseSelectionChanged();
+        }
     }
 
     private void OnRowsMouseUp(object sender, MouseButtonEventArgs e)
@@ -167,11 +233,16 @@ public partial class TreeSurface : UserControl
         // 开关、按钮上的点击不是"展开"。
         if (FindAncestor<ButtonBase>(source) is not null) return;
         if (FindRowNode(source) is not { } node) return;
+        // 修饰键决定选择模式：Ctrl 单拾取、Shift 区域拾取、其余替换。
+        var mode = TreeSelectionMode.Replace;
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) mode = TreeSelectionMode.Toggle;
+        else if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) mode = TreeSelectionMode.Range;
         // 选中对每一行都成立（叶子也能选），展开只对有子节点的行。
-        Select(node);
+        Select(node, mode);
         // 点一下就交给键盘：否则鼠标选完再按方向键，焦点还在别处。
         Focus();
-        if (node.Children.Count > 0) Toggle(node);
+        // 按住修饰键时是在多选，不该顺手展开/收起 —— 那会让行序变动、选择跟着跳。
+        if (mode == TreeSelectionMode.Replace && node.Children.Count > 0) Toggle(node);
         e.Handled = true;
     }
 
@@ -184,7 +255,8 @@ public partial class TreeSurface : UserControl
     {
         if (_presentedItems.Count == 0) return;
 
-        var current = _selectedNode;
+        // 键盘导航以"上次点的那一行"为准（多选时 SelectedNode 是 null）。
+        var current = _selectionAnchor;
         var index = IndexOfPresented(current);
         switch (e.Key)
         {
@@ -225,7 +297,7 @@ public partial class TreeSurface : UserControl
     {
         // 只在焦点落到控件本身时补一个默认选中；落到行内的开关上不算。
         if (!ReferenceEquals(e.NewFocus, this)) return;
-        if (_selectedNode is null) MoveTo(0);
+        if (_selectedNodes.Count == 0) MoveTo(0);
     }
 
     private void MoveTo(int index)

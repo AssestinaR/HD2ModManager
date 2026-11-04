@@ -121,10 +121,12 @@ namespace HD2ModManager.Views
         /// 拿不到实例，而 DataContext 一定是这一页的 ViewModel。
         /// </para>
         /// </summary>
-        private void OnVpkComponentTreeSelectionChanged(object? sender, Controls.Trees.ITreeSurfaceNode? node)
+        private void OnVpkComponentTreeSelectionChanged(object? sender, IReadOnlyList<Controls.Trees.ITreeSurfaceNode> nodes)
         {
             if ((sender as FrameworkElement)?.DataContext is not ModDetailsPageViewModel details) return;
-            details.SelectedVpkTreeNode = (node as WardrobeTreeNodeViewModel)?.Node;
+            // 树保证同一时刻只有一层；这里只做类型转换，不再额外过滤。
+            details.SelectedVpkTreeNodes =
+                [.. nodes.OfType<WardrobeTreeNodeViewModel>().Select(item => item.Node)];
         }
 
         private void OnHostDecorationOpenDetailsOnRightClick(object? sender, ModListRowEventArgs e)
