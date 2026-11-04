@@ -310,19 +310,9 @@ public static class WardrobeTree
 		yield return (unit, "Stocky");
 	}
 
-	/// <summary>统计一个子树在当前工作区里被禁用了多少 section。</summary>
-	public static WardrobeTreeCounts Counts(
-		WardrobeTreeNode node,
-		uint armourItemId,
-		WardrobeWorkspaceDocument workspace)
-	{
-		ArgumentNullException.ThrowIfNull(workspace);
-		return Counts(node, (unit, index) => workspace.IsDisabled(armourItemId, unit, index));
-	}
-
 	/// <summary>
-	/// 同 <see cref="Counts(WardrobeTreeNode, uint, WardrobeWorkspaceDocument)"/>，
-	/// 但禁用集合由调用方给。VPK 模组的组件树没有"护甲 itemId"这个概念——
+	/// 统计一个子树里有多少 section 被禁用。**禁用集合由调用方给**：
+	/// VPK 模组的组件树没有"护甲 itemId"这个概念——
 	/// 它的禁用集合存在自己的源文件里，烘进自己的 patch，和衣柜工作区不是同一份数据。
 	/// </summary>
 	public static WardrobeTreeCounts Counts(WardrobeTreeNode node, Func<string, int, bool> isDisabled)
@@ -337,101 +327,6 @@ public static class WardrobeTree
 			&& section.SectionIndex is not null
 			&& isDisabled(section.Unit, section.SectionIndex.Value));
 		return new WardrobeTreeCounts(sections.Length, disabled);
-	}
-
-	/// <summary>
-	/// 把某个子树整体设为启用或禁用，返回新的工作区。
-	///
-	/// 前提：该护甲的工作区条目已经是 <see cref="WardrobeMaskMode.Own"/>。
-	/// 继承模式下改条目会和 <c>mode</c> 自相矛盾，所以这里直接拒绝——
-	/// 调用方（编辑器）必须先通过 <see cref="MakeOwn"/> 把继承关系落成一个快照。
-	/// </summary>
-	public static WardrobeWorkspaceDocument SetEnabled(
-		WardrobeWorkspaceDocument workspace,
-		uint armourItemId,
-		WardrobeTreeNode node,
-		bool enabled)
-	{
-		ArgumentNullException.ThrowIfNull(workspace);
-		ArgumentNullException.ThrowIfNull(node);
-		var armour = workspace.FindArmour(armourItemId);
-		if (armour is null || armour.Mode != WardrobeMaskMode.Own)
-		{
-			throw new InvalidOperationException(
-				$"护甲 {armourItemId} 还没有独立掩码（当前是继承）；请先调用 MakeOwn 把继承关系落成快照再改。");
-		}
-
-		var targets = node.Kind == WardrobeTreeNodeKind.Section
-			? new[] { node }
-			: node.Sections().ToArray();
-		var byUnit = armour.Units.ToDictionary(unit => unit.Unit, unit => unit.Off.ToHashSet(), StringComparer.Ordinal);
-		foreach (var section in targets)
-		{
-			if (section.Unit is null || section.SectionIndex is null)
-				continue;
-			if (!byUnit.TryGetValue(section.Unit, out var indices))
-			{
-				indices = new HashSet<int>();
-				byUnit.Add(section.Unit, indices);
-			}
-
-			if (enabled)
-				indices.Remove(section.SectionIndex.Value);
-			else
-				indices.Add(section.SectionIndex.Value);
-		}
-
-		// 空条目要删掉：工作区里"有 unit 但一条都不关"和"没有这个 unit"是同一件事，
-		// 留着只会让文件里堆一堆空数组。
-		var units = byUnit
-			.Where(pair => pair.Value.Count > 0)
-			.Select(pair => new WardrobeWorkspaceUnit(pair.Key, pair.Value.Order().ToArray()))
-			.OrderBy(unit => unit.Unit, StringComparer.Ordinal)
-			.ToArray();
-		return Replace(workspace, armour with { Units = units });
-	}
-
-	/// <summary>
-	/// 把某件护甲从"继承"落成"独立"，并用来源当前的禁用集合作为初值。
-	///
-	/// 为什么要复制而不是从空开始：用户点第一下之前看到的就是继承来的那份，
-	/// 从空开始会让其余已隐藏的 section 突然全部出现——那不是"开始独立编辑"，
-	/// 那是"把所有设置清掉"。
-	/// </summary>
-	public static WardrobeWorkspaceDocument MakeOwn(
-		WardrobeWorkspaceDocument workspace,
-		uint armourItemId,
-		WardrobeWorkspaceArmour? inheritedFrom)
-	{
-		ArgumentNullException.ThrowIfNull(workspace);
-		var units = inheritedFrom is null || inheritedFrom.Mode != WardrobeMaskMode.Own
-			? Array.Empty<WardrobeWorkspaceUnit>()
-			: inheritedFrom.Units
-				.Where(unit => unit.Off.Count > 0)
-				.Select(unit => unit with { Off = unit.Off.Distinct().Order().ToArray() })
-				.OrderBy(unit => unit.Unit, StringComparer.Ordinal)
-				.ToArray();
-		return Replace(workspace, new WardrobeWorkspaceArmour(armourItemId, WardrobeMaskMode.Own, units));
-	}
-
-	/// <summary>把某件护甲恢复成继承（丢弃它的独立掩码）。</summary>
-	public static WardrobeWorkspaceDocument MakeInherit(WardrobeWorkspaceDocument workspace, uint armourItemId)
-	{
-		ArgumentNullException.ThrowIfNull(workspace);
-		var armours = workspace.Armours
-			.Where(armour => armour.ItemId != armourItemId)
-			.ToArray();
-		return new WardrobeWorkspaceDocument(workspace.Schema, workspace.Revision, armours);
-	}
-
-	private static WardrobeWorkspaceDocument Replace(WardrobeWorkspaceDocument workspace, WardrobeWorkspaceArmour armour)
-	{
-		var armours = workspace.Armours
-			.Where(candidate => candidate.ItemId != armour.ItemId)
-			.Append(armour)
-			.OrderBy(candidate => candidate.ItemId)
-			.ToArray();
-		return new WardrobeWorkspaceDocument(workspace.Schema, workspace.Revision, armours);
 	}
 
 	// --- 显示名 -------------------------------------------------------------
