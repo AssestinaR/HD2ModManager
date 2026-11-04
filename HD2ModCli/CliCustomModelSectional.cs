@@ -89,13 +89,10 @@ internal static class CliCustomModelSectional
             }
             modelKey = generated.Model.Key;
 
-            var unitPatch = await SectionalSplitter
-                .SelectSourcePatchAsync(
-                    [.. PhysBoneCarrier.EnumeratePatchFiles(generated.OutputDirectory)],
-                    cancellationToken)
-                .ConfigureAwait(false);
+            // 传**目录**而不是挑一个 patch：拆件器会把目录里所有 patch 当成一个集合叠加
+            // （同一 asset key 以 patch 序号较大者为胜者）。
             var (plan, planWarnings) = await SectionalSplitter
-                .PlanAsync(unitPatch, cancellationToken)
+                .PlanAsync(generated.OutputDirectory, cancellationToken)
                 .ConfigureAwait(false);
 
             if (!apply)
@@ -134,7 +131,7 @@ internal static class CliCustomModelSectional
             }
 
             var split = await SectionalSplitter
-                .ExecuteAsync(unitPatch, workspace.GameDataRoot, generated.OutputDirectory, cancellationToken)
+                .ExecuteAsync(generated.OutputDirectory, workspace.GameDataRoot, generated.OutputDirectory, cancellationToken)
                 .ConfigureAwait(false);
             if (!split.IsValid)
             {

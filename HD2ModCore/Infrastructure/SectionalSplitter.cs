@@ -4,6 +4,7 @@ using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Domain;
 using AdaptationTocEntry = HD2ModAdaptation.PatchReconstruction.PatchTocEntry;
+using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using AdaptationScanner = HD2ModAdaptation.PatchReconstruction.PatchTocScanner;
 using AdaptationGameDataPackageResolver = HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver;
 
@@ -18,6 +19,11 @@ public sealed record SectionalSplitResult(
 	IReadOnlyList<string> Warnings)
 {
 	public bool IsValid => PatchPath.Length != 0;
+
+	/// <summary>
+	/// 为了折叠成单个产物 patch 而被删掉的源 patch 数量（输入是单 patch 或输出到别的目录时为 0）。
+	/// </summary>
+	public int RemovedSourcePatchCount { get; init; }
 }
 
 /// <summary>
@@ -39,61 +45,55 @@ public sealed record SectionalSplitResult(
 /// </summary>
 public static class SectionalSplitter
 {
-	/// <summary>输出 patch 的文件名沿用源 patch 的名字——部署时靠同名顶掉，改名会变成两份。</summary>
+	/// <summary>输出 patch 的文件名沿用**最低序号源 patch** 的名字——部署时靠同名顶掉，改名会变成两份。</summary>
 	public static string ResolveOutputFileName(string sourcePatchPath)
 		=> Path.GetFileName(sourcePatchPath);
 
 	/// <summary>
-	/// 从一组 patch 里挑出**装着几何的那个**：unit 条目最多的那个。
+	/// 枚举一个 Mod 目录里的 patch，**按 patch 序号升序**。
 	/// <para>
-	/// <b>为什么需要挑。</b>一个真实 Mod 目录常常不止一个 patch（实测 18 个分件 Mod 里 4 个有
-	/// <c>patch_0</c> + <c>patch_1</c>），但几何集中在一个里面 —— 双 patch 那种 <c>patch_1</c>
-	/// 只有几 KB，是附属小文件。拆件只需要动带 unit 的那个；其余原样留着，
-	/// 覆盖它们反而会把不该动的成员打乱。
-	/// </para>
-	/// <para>
-	/// 平局时按文件名序取第一个，保证同一批输入每次挑到同一个，产物可复现。
+	/// 序号是文件名末尾的 <c>.patch_N</c>。升序即"覆盖顺序"：数字大的后写、覆盖数字小的，
+	/// 与游戏侧叠加顺序一致。
 	/// </para>
 	/// </summary>
-	/// <exception cref="InvalidOperationException">一个 patch 里都没有 unit 条目。</exception>
-	public static async ValueTask<string> SelectSourcePatchAsync(
-		IReadOnlyList<string> patchPaths,
-		CancellationToken cancellationToken = default)
+	public static IReadOnlyList<string> EnumeratePatchFiles(string modDirectory)
 	{
-		ArgumentNullException.ThrowIfNull(patchPaths);
-		if (patchPaths.Count == 0)
-			throw new InvalidOperationException("没有可拆件的 patch 文件。");
-		if (patchPaths.Count == 1)
-			return patchPaths[0];
+		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
+		if (!Directory.Exists(modDirectory))
+			throw new DirectoryNotFoundException($"找不到 Mod 目录：{modDirectory}");
+		return [.. Directory
+			.EnumerateFiles(modDirectory, "*.patch_*", SearchOption.TopDirectoryOnly)
+			// sidecar 也叫 *.patch_N.stream / .gpu_resources，这里只要主文件。
+			.Where(path => !path.EndsWith(".stream", StringComparison.OrdinalIgnoreCase)
+				&& !path.EndsWith(".gpu_resources", StringComparison.OrdinalIgnoreCase))
+			.OrderBy(ParsePatchIndex)
+			.ThenBy(path => path, StringComparer.OrdinalIgnoreCase)];
+	}
 
-		string? best = null;
-		var bestCount = -1;
-		foreach (var path in patchPaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			var entries = await new AdaptationScanner().ScanEntriesAsync(path, cancellationToken).ConfigureAwait(false);
-			var unitCount = entries.Count(entry => entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId);
-			if (unitCount > bestCount)
-			{
-				best = path;
-				bestCount = unitCount;
-			}
-		}
-
-		return bestCount > 0 && best is not null
-			? best
-			: throw new InvalidOperationException("这组 patch 里没有任何 unit 条目，无法拆件。");
+	/// <summary>从 <c>xxx.patch_N</c> 里取 N；解析不出来就排到最后（当"最高优先"看会掩盖问题，所以排最后）。</summary>
+	internal static int ParsePatchIndex(string path)
+	{
+		var name = Path.GetFileName(path);
+		var marker = name.LastIndexOf(".patch_", StringComparison.OrdinalIgnoreCase);
+		if (marker < 0) return int.MaxValue;
+		return int.TryParse(name[(marker + ".patch_".Length)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
+			? index
+			: int.MaxValue;
 	}
 
 	/// <summary>
-	/// 只读预演：读源 patch、跑规划器、把结论说出来。<b>不写任何文件。</b>
+	/// 只读预演：读源 → 跑规划器 → 把结论说出来。<b>不写任何文件。</b>
 	/// </summary>
+	/// <param name="sourcePatchOrDirectory">
+	/// Mod 目录，或单个 patch 文件。<b>给目录时会把目录里所有 patch 当成一个集合叠加</b>
+	/// （同一 asset key 以 patch 序号较大者为胜者），见 <see cref="ReadSourcesAsync"/>。
+	/// </param>
 	public static async ValueTask<(SectionalSplitPlan Plan, IReadOnlyList<string> Warnings)> PlanAsync(
-		string sourcePatchPath,
+		string sourcePatchOrDirectory,
 		CancellationToken cancellationToken = default)
 	{
-		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchPath);
-		var sources = await ReadSourcesAsync(sourcePatchPath, cancellationToken).ConfigureAwait(false);
+		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
+		var sources = await ReadSourcesAsync(sourcePatchOrDirectory, cancellationToken).ConfigureAwait(false);
 		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit => Describe(unit))]);
 		var warnings = new List<string>(plan.Warnings);
 		foreach (var skipped in sources.Skipped)
@@ -102,22 +102,28 @@ public static class SectionalSplitter
 	}
 
 	/// <summary>
-	/// 执行拆件：读源 patch → 按计划合并 → 写出新 patch + <c>sections.json</c> + <c>components.json</c>。
+	/// 执行拆件：读源 → 按计划合并 → 写出新 patch + <c>sections.json</c> + <c>components.json</c>。
 	/// </summary>
+	/// <param name="sourcePatchOrDirectory">
+	/// Mod 目录，或单个 patch 文件。给目录时把所有 patch 叠加成一个集合
+	/// （同一 asset key 以 patch 序号较大者为胜者），**并且只写一个输出 patch**
+	/// ——<c>sections.json</c> 的格式只能描述一个 patch，所以叠加后的胜者集合必须折叠成一份。
+	/// 被折叠掉的源 patch 会在写成功后从目录里删掉，否则它们会重新覆盖产物。
+	/// </param>
 	/// <param name="gameDataDirectory">读头像骨架用（合并要按骨骼名对齐）。</param>
 	/// <param name="outputDirectory">产物目录。为空则抛。</param>
 	public static async ValueTask<SectionalSplitResult> ExecuteAsync(
-		string sourcePatchPath,
+		string sourcePatchOrDirectory,
 		string gameDataDirectory,
 		string outputDirectory,
 		CancellationToken cancellationToken = default)
 	{
-		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchPath);
+		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
 
 		var warnings = new List<string>();
-		var sources = await ReadSourcesAsync(sourcePatchPath, cancellationToken).ConfigureAwait(false);
+		var sources = await ReadSourcesAsync(sourcePatchOrDirectory, cancellationToken).ConfigureAwait(false);
 		foreach (var skipped in sources.Skipped)
 			warnings.Add(skipped);
 
@@ -125,7 +131,7 @@ public static class SectionalSplitter
 		warnings.AddRange(plan.Warnings);
 		if (plan.Targets.Count == 0)
 			return new SectionalSplitResult(string.Empty, plan, SectionGroupDocument.Empty,
-				EmptySections(sourcePatchPath), warnings);
+				EmptySections(sources.HeaderTemplatePatchPath), warnings);
 
 		// 只有真的要合并时才去读头像骨架：一个"7 个 unit 各自占一个槽"的产物不需要它，
 		// 而读骨架要开游戏 data，是个不该被无条件付出的成本。
@@ -234,13 +240,13 @@ public static class SectionalSplitter
 			foreach (var diagnostic in finalized.Diagnostics)
 				warnings.Add($"依赖闭包不完整：{diagnostic.Code} {diagnostic.Message}");
 			return new SectionalSplitResult(string.Empty, plan, SectionGroupDocument.Empty,
-				EmptySections(sourcePatchPath), warnings);
+				EmptySections(sources.HeaderTemplatePatchPath), warnings);
 		}
 
 		Directory.CreateDirectory(outputDirectory);
-		var fileName = ResolveOutputFileName(sourcePatchPath);
+		var fileName = ResolveOutputFileName(sources.HeaderTemplatePatchPath);
 		await new CanonicalPatchWriter()
-			.WriteAsync(session, outputDirectory, fileName, ReadHeaderTemplate(sourcePatchPath), overwriteExisting: true, cancellationToken)
+			.WriteAsync(session, outputDirectory, fileName, ReadHeaderTemplate(sources.HeaderTemplatePatchPath), overwriteExisting: true, cancellationToken)
 			.ConfigureAwait(false);
 
 		var patchPath = Path.Combine(outputDirectory, fileName);
@@ -256,7 +262,52 @@ public static class SectionalSplitter
 			.WriteAsync(outputDirectory, groups, cancellationToken)
 			.ConfigureAwait(false);
 
-		return new SectionalSplitResult(patchPath, plan, groups, sections.Document, warnings);
+		// 叠加成一个 patch 之后，被折叠掉的源 patch **必须删掉**：它们还在目录里就会在部署时
+		// 重新覆盖产物，用户看到的是"拆了但没生效"。只在"产物写回源目录"时才删——
+		// 输出到别的目录时源目录不该被碰。
+		var consumed = RemoveConsumedPatches(sources, outputDirectory, Path.GetFullPath(patchPath), warnings);
+
+		return new SectionalSplitResult(patchPath, plan, groups, sections.Document, warnings) { RemovedSourcePatchCount = consumed };
+	}
+
+	/// <summary>
+	/// 删掉参与叠加、但**没有成为产物**的那些源 patch（含它们的 <c>.stream</c> / <c>.gpu_resources</c>）。
+	/// 返回删掉的数量。产物目录与源目录不一致时什么都不做。
+	/// </summary>
+	private static int RemoveConsumedPatches(
+		SourceSet sources,
+		string outputDirectory,
+		string producedPatchPath,
+		List<string> warnings)
+	{
+		if (sources.ConsumedPatches.Count <= 1) return 0;
+		var outputFull = Path.GetFullPath(outputDirectory);
+		var sourceDirectory = Path.GetFullPath(Path.GetDirectoryName(sources.ConsumedPatches[0]) ?? string.Empty);
+		if (!string.Equals(outputFull, sourceDirectory, StringComparison.OrdinalIgnoreCase)) return 0;
+
+		var removed = 0;
+		foreach (var patch in sources.ConsumedPatches)
+		{
+			var full = Path.GetFullPath(patch);
+			if (string.Equals(full, producedPatchPath, StringComparison.OrdinalIgnoreCase)) continue;
+			foreach (var path in new[] { full, full + ".stream", full + ".gpu_resources" })
+			{
+				try
+				{
+					if (File.Exists(path)) File.Delete(path);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 删不掉就明说：残留的 patch 会重新覆盖产物，这是会让用户困惑的那种失败。
+					warnings.Add($"无法删除已被折叠的源 patch「{Path.GetFileName(path)}」：{exception.Message}"
+						+ "。它会在部署时重新覆盖产物，请手动删除。");
+				}
+			}
+			removed++;
+		}
+		if (removed != 0)
+			warnings.Add($"已把 {removed + 1} 个源 patch 折叠为 1 个，并删除被折叠的 {removed} 个。");
+		return removed;
 	}
 
 	/// <summary>
@@ -498,18 +549,90 @@ public static class SectionalSplitter
 	private sealed record SourceSet(
 		IReadOnlyList<AdaptationTocEntry> Entries,
 		IReadOnlyDictionary<string, PatchUnitMesh> Units,
-		IReadOnlyList<string> Skipped);
-
-	private static async ValueTask<SourceSet> ReadSourcesAsync(string patchPath, CancellationToken cancellationToken)
+		IReadOnlyList<string> Skipped,
+		/// <summary>参与叠加的源 patch，按序号升序。第一个同时充当输出文件名与头部模板的来源。</summary>
+		IReadOnlyList<string> ConsumedPatches)
 	{
-		var fullPath = Path.GetFullPath(patchPath);
-		if (!File.Exists(fullPath))
-			throw new FileNotFoundException($"找不到 patch 文件：{fullPath}", fullPath);
+		/// <summary>输出 patch 的文件名与头部模板取它。</summary>
+		public string HeaderTemplatePatchPath => ConsumedPatches[0];
+	}
 
-		var entries = await new AdaptationScanner().ScanEntriesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+	/// <summary>
+	/// 读出"叠加后的条目表"。参数是目录时把目录里所有 patch 当成一个集合，是文件时等价于单个。
+	/// <para>
+	/// 规则：按 patch 序号升序扫描，**同一 <c>asset key</c> 以序号较大者为胜者**（与游戏侧加载顺序一致）。
+	/// 败者完全不进结果表——产物只写一个 patch，留一份败者就等于把死内容打进产物。
+	/// 条目顺序保持"首次出现的位置"，只把内容换成胜者，所以同一批输入的产物是确定的。
+	/// </para>
+	/// <para>internal 是为了让测试能直接验证叠加规则，不必先造出可拆件的 unit。</para>
+	/// </summary>
+	internal static async ValueTask<(IReadOnlyList<AdaptationTocEntry> Entries, IReadOnlyList<string> ConsumedPatches, IReadOnlyList<string> Skipped)> ReadMergedEntriesAsync(
+		string patchOrDirectory,
+		CancellationToken cancellationToken = default)
+	{
+		var fullPath = Path.GetFullPath(patchOrDirectory);
+		IReadOnlyList<string> patches;
+		if (Directory.Exists(fullPath))
+		{
+			patches = EnumeratePatchFiles(fullPath);
+			if (patches.Count == 0)
+				throw new InvalidOperationException($"这个目录里没有 patch 文件：{fullPath}");
+		}
+		else if (File.Exists(fullPath))
+		{
+			patches = [fullPath];
+		}
+		else
+		{
+			throw new FileNotFoundException($"找不到 patch 文件或 Mod 目录：{fullPath}", fullPath);
+		}
+
+		// 按序号升序扫描；后面的覆盖前面的。
+		var ordered = patches.OrderBy(ParsePatchIndex).ThenBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray();
+		var entries = new List<AdaptationTocEntry>();
+		var positionByKey = new Dictionary<AdaptationAssetKey, int>();
+		var skipped = new List<string>();
+		foreach (var patch in ordered)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			IReadOnlyList<AdaptationTocEntry> scanned;
+			try
+			{
+				scanned = await new AdaptationScanner().ScanEntriesAsync(patch, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is InvalidDataException or NotSupportedException or ArgumentException)
+			{
+				skipped.Add($"patch「{Path.GetFileName(patch)}」读不出来，已整份跳过：{exception.Message}");
+				continue;
+			}
+
+			foreach (var entry in scanned)
+			{
+				if (positionByKey.TryGetValue(entry.AssetKey, out var position))
+				{
+					// 序号更大的 patch 覆盖：位置不动，内容换成胜者。
+					entries[position] = entry;
+				}
+				else
+				{
+					positionByKey[entry.AssetKey] = entries.Count;
+					entries.Add(entry);
+				}
+			}
+		}
+
+		if (entries.Count == 0)
+			throw new InvalidOperationException($"这些 patch 里一条条目都读不出来：{fullPath}");
+		return (entries, ordered, skipped);
+	}
+
+	private static async ValueTask<SourceSet> ReadSourcesAsync(string patchOrDirectory, CancellationToken cancellationToken)
+	{
+		var (entries, consumedPatches, readSkipped) = await ReadMergedEntriesAsync(patchOrDirectory, cancellationToken).ConfigureAwait(false);
+		var skipped = new List<string>(readSkipped);
+
 		var reader = new PatchUnitMeshReader();
 		var units = new Dictionary<string, PatchUnitMesh>(StringComparer.Ordinal);
-		var skipped = new List<string>();
 		foreach (var entry in entries)
 		{
 			if (entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
@@ -531,6 +654,6 @@ public static class SectionalSplitter
 			}
 		}
 
-		return new SourceSet(entries, units, skipped);
+		return new SourceSet(entries, units, skipped, consumedPatches);
 	}
 }

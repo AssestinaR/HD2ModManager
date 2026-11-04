@@ -61,11 +61,8 @@ public partial class ModDetailsPageViewModel
 				// patch_1 那种只有几 KB，是附属小文件。覆盖它们会把不该动的成员打乱。
 				task?.UpdateStage("正在拆件：按 7 槽 × 身形重排 section 组");
 				task?.UpdateProgress(null);
-				var unitPatch = await SectionalSplitter
-					.SelectSourcePatchAsync(PhysBoneCarrier.EnumeratePatchFiles(result.OutputDirectory).ToArray(), token)
-					.ConfigureAwait(true);
 				var split = await SectionalSplitter
-					.ExecuteAsync(unitPatch, gameData, result.OutputDirectory, token)
+					.ExecuteAsync(result.OutputDirectory, gameData, result.OutputDirectory, token)
 					.ConfigureAwait(true);
 				if (!split.IsValid)
 				{
