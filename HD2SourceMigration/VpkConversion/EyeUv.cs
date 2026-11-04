@@ -213,6 +213,9 @@ public static class EyeUv
 
 		var projected = new Dictionary<int, (double U, double V)>();
 		var notes = new List<string>();
+		// 每个眼球实际用了哪三个轴（横/竖/朝前）：报告里要写清楚，
+		// 否则"眼睛为什么长这样"事后无从判断。
+		var axesNotes = new List<string>();
 		foreach (var (materialIndex, colorSource) in eyeByMaterial.OrderBy(pair => pair.Key))
 		{
 			var vertices = new HashSet<int>();
@@ -228,45 +231,81 @@ public static class EyeUv
 			if (vertices.Count == 0)
 				continue;
 
-			// ③ 眼球自己的包围盒：U 摊到 Y 跨度、V 摊到 Z 跨度。
-			//    中心取包围盒中点而不是顶点均值：网格顶点在球面上的疏密不均匀，
-			//    均值会被密集的一侧拽偏，瞳孔就不在眼球中心了。
-			var minY = double.MaxValue;
-			var maxY = double.MinValue;
-			var minZ = double.MaxValue;
-			var maxZ = double.MinValue;
+			// ③ 眼球自己的包围盒：三个方向各量一次跨度。
+			//    中心取包围盒中点而不是顶点均值：网格顶点疏密不均匀，均值会被密集的一侧拽偏。
+			var low = new[] { double.MaxValue, double.MaxValue, double.MaxValue };
+			var high = new[] { double.MinValue, double.MinValue, double.MinValue };
 			foreach (var index in vertices)
 			{
 				var position = geometry.Vertices[index].Position;
-				minY = Math.Min(minY, position.Y);
-				maxY = Math.Max(maxY, position.Y);
-				minZ = Math.Min(minZ, position.Z);
-				maxZ = Math.Max(maxZ, position.Z);
+				var values = new[] { position.X, position.Y, position.Z };
+				for (var axis = 0; axis < 3; axis++)
+				{
+					low[axis] = Math.Min(low[axis], values[axis]);
+					high[axis] = Math.Max(high[axis], values[axis]);
+				}
 			}
 
-			var centerY = (minY + maxY) / 2;
-			var centerZ = (minZ + maxZ) / 2;
-			var halfY = (maxY - minY) / 2;
-			var halfZ = (maxZ - minZ) / 2;
-			if (halfY <= 1e-6 || halfZ <= 1e-6)
+			var extent = new[] { high[0] - low[0], high[1] - low[1], high[2] - low[2] };
+
+			// ④ **"横"和"竖"是哪个轴，必须从数据里推，不能假设模型 X 朝前。**
+			//
+			// EyeRefract 把虹膜投到虚拟球上（球是圆的），而眼球网格通常是一枚"透镜"：
+			// **最薄的那个方向就是它的朝向**（正对镜头），剩下两个方向构成图像平面。
+			//
+			// ⚠️ 这条是"眼睛被横向拉长"的修法。实测 3798231335 的眼球三个跨度是
+			// X 1.69 / Y 0.70 / Z 1.07 —— 也就是说这个模型**X 是左右**、Y 是前后
+			// （角色在模型空间里朝 ±Y），而 Source 惯例是 X 朝前、左右是 Y。
+			// 上一版把"横"写死成 Y：贴图里那只眼睛的**横向**被摊到了眼球最薄的轴上，
+			// 可见正面几乎不随 Y 变化 ⇒ 横向内容被压成一条，看上去就是横向拉伸。
+			var facing = 0;
+			for (var axis = 1; axis < 3; axis++)
 			{
-				notes.Add($"{materialNames[materialIndex]}：眼球在 Y/Z 上没有跨度，UV 投影做不了，保持原 UV。");
+				if (extent[axis] < extent[facing])
+					facing = axis;
+			}
+
+			// 剩下两个方向里，与模型"上"(+Z) 更接近的那个当竖向，另一个当横向。
+			var vertical = -1;
+			var bestUpness = double.MaxValue;
+			for (var axis = 0; axis < 3; axis++)
+			{
+				if (axis == facing) continue;
+				var upness = axis == 2 ? 0.0 : 1.0;   // 只有 Z 轴本身是"上"
+				if (upness < bestUpness)
+				{
+					bestUpness = upness;
+					vertical = axis;
+				}
+			}
+
+			var horizontal = 3 - facing - vertical;   // 0 + 1 + 2 == 3，剩下的那个
+			if (extent[horizontal] <= 1e-6 || extent[vertical] <= 1e-6)
+			{
+				notes.Add($"{materialNames[materialIndex]}：眼球在图像平面上没有跨度，UV 投影做不了，保持原 UV。");
 				continue;
 			}
 
-			// ④ **各向同性**：U 和 V 用同一个比例（UV/模型单位）。
+			var centerHorizontal = (low[horizontal] + high[horizontal]) / 2;
+			var centerVertical = (low[vertical] + high[vertical]) / 2;
+			var halfHorizontal = extent[horizontal] / 2;
+
+			// ⑤ **各向同性**：U 和 V 用同一个比例（UV/模型单位）。
 			//
-			// ⚠️ 这一条是"眼睛形状不对"的修法。原来 U 按 Y 跨度、V 按 Z 跨度各自撑满内容区，
-			// 于是**任何不是正方形的眼球都会被拉长**：实测 3798231335 的眼球网格 Y 跨度 0.70、
-			// Z 跨度 1.07（宽高比 0.65），而贴图里那只眼睛的宽高比是 0.81 —— 两轴各撑一次，
-			// 眼睛就被纵向拉成 1.24 倍，渲染出来是一只**竖长的蛋**（星芒变尖、瞳孔变椭圆）。
+			// 原来 U 按一个轴的跨度、V 按另一个轴的跨度各自撑满内容区，于是**任何不是正方形
+			// 的眼球都会被拉长**：那份网格横 1.69、竖 1.07（宽高比 1.58），而贴图里那只眼睛
+			// 的宽高比是 0.81 —— 两轴各撑一次，眼睛就被纵向拉成 1.24 倍。
+			// 源侧不存在这件事：虚拟球是圆的，贴图画成什么比例，屏幕上就是什么比例。
 			//
-			// 源侧不存在这个问题：EyeRefract 是把虹膜投到**虚拟球**上（球是圆的），
-			// 所以贴图里画成什么比例，屏幕上就是什么比例。这里用同一个比例尺就是在还原这件事。
-			//
-			// 比例取"内容区宽度正好铺满 Y 跨度"：横向是眼睑开口限制的那一维，
+			// 比例取"内容区宽度正好铺满眼球的**横向**跨度"：横向是眼睑开口限制的那一维，
 			// 纵向多出来的部分落到贴图的填充边（= 眼白），眼皮本来也会盖住它。
-			var scale = colorSource.HalfU / halfY / EyeScale;
+			// 比例取"**整只眼睛都能装进眼球**"：两个方向都算一次，取较大的那个比例
+			// （比例越大 = 贴图占的模型尺寸越小）。这样贴图不会被眼球轮廓切掉：
+			// 实测这份眼球横 1.69、竖 1.07（比贴图里的眼睛更"扁"），按宽度量的话高度会溢出
+			// 一半 —— 屏幕上就只剩中间一条，看着就是"横向拉伸"。
+			// 按高度装进去之后，左右多出来的部分露出贴图的填充边（= 眼白），这正是眼睛的样子。
+			var halfVertical = extent[vertical] / 2;
+			var scale = Math.Max(colorSource.HalfU / halfHorizontal, colorSource.HalfV / halfVertical) / EyeScale;
 			var mixed = 0;
 			foreach (var index in vertices)
 			{
@@ -276,13 +315,17 @@ public static class EyeUv
 					continue;
 				}
 
-				var position = geometry.Vertices[index].Position;
-				// U 跟模型 Y（+Y 是角色左侧，观察者看到的是图像右侧）；V 跟 Z，且**取反**：
-				// VTF/DDS 的 V=0 在图像顶部，而 +Z 是上方 —— 不取反眼睛就是倒着的。
-				var u = colorSource.CenterU + ((position.Y - centerY) * scale);
-				var v = colorSource.CenterV - ((position.Z - centerZ) * scale);
+				var values = geometry.Vertices[index].Position;
+				var coordinates = new[] { values.X, values.Y, values.Z };
+				// U 跟"横向"（+ 方向）、V 跟"竖向"且**取反**：VTF/DDS 的 V=0 在图像顶部，
+				// 而 +Z 是上方 —— 不取反眼睛就是倒着的。
+				var u = colorSource.CenterU + ((coordinates[horizontal] - centerHorizontal) * scale);
+				var v = colorSource.CenterV - ((coordinates[vertical] - centerVertical) * scale);
 				projected[index] = (u, v);
 			}
+
+			axesNotes.Add($"{materialNames[materialIndex]}：横={AxisName(horizontal)}、竖={AxisName(vertical)}、"
+				+ $"朝前={AxisName(facing)}（跨度 {extent[0]:F2}/{extent[1]:F2}/{extent[2]:F2}）");
 
 			if (mixed != 0)
 				notes.Add(
@@ -300,12 +343,16 @@ public static class EyeUv
 			vertices2[index] = source with { U = (float)uv.U, V = (float)uv.V };
 		}
 
+		notes.AddRange(axesNotes);
 		notes.Add(
-			$"眼球 UV 已按 $iris 的平面投影重算（U 跟模型 Y、V 跟模型 Z，两轴**同一个比例**，共 {projected.Count} 个顶点）"
+			$"眼球 UV 已按 $iris 的平面投影重算（两轴**同一个比例**，共 {projected.Count} 个顶点）"
 			+ "：源侧 EyeRefract 的采样坐标本来就不来自模型 UV（Valve eyes.vsh 的注释："
 			+ "「Texture 1 is a planar projection used for the iris」），而这份网格的 UV 是常量。"
 			+ (Math.Abs(EyeScale - 1.0) > 1e-9 ? $" 眼睛大小倍率 {EyeScale:F2}（HD2_EYE_SCALE）。" : string.Empty));
 
 		return (geometry with { Vertices = vertices2 }, notes);
 	}
+
+	/// <summary>轴下标的可读名字（0=X / 1=Y / 2=Z），只用于报告。</summary>
+	private static string AxisName(int axis) => axis switch { 0 => "X", 1 => "Y", _ => "Z" };
 }

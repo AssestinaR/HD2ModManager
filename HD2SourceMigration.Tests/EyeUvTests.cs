@@ -103,8 +103,9 @@ public sealed class EyeUvTests
 		AssertUv(projected, geometry, vertexIndex: 0, u: 0.25, v: 0.75);   // Y=-1 → U 左；Z=-1 → V 大
 		AssertUv(projected, geometry, vertexIndex: 2, u: 0.75, v: 0.75);
 		AssertUv(projected, geometry, vertexIndex: 3, u: 0.25, v: 0.25);
-		Assert.Single(notes);
-		Assert.Contains("眼球 UV 已按 $iris 的平面投影重算", notes[0], StringComparison.Ordinal);
+		// 两条说明：先报"这个眼球用了哪三个轴"（横/竖/朝前），再报"UV 已重算"。
+		Assert.Contains(notes, note => note.Contains("横=Y、竖=Z、朝前=X", StringComparison.Ordinal));
+		Assert.Contains(notes, note => note.Contains("眼球 UV 已按 $iris 的平面投影重算", StringComparison.Ordinal));
 	}
 
 	[Fact]
