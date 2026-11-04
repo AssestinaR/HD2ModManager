@@ -17,7 +17,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         ICommand enableDecorationsCommand,
         ICommand disableDecorationsCommand,
         ICommand setSelectedModsAsOptionsCommand,
-        ICommand attachSelectedDecorationsCommand,
+
         ICommand removeSelectedOptionsFromHostCommand,
         ICommand promoteArmorProvidersCommand,
         ICommand registerArmorTargetsCommand,
@@ -33,7 +33,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
         EnableDecorationsCommand = enableDecorationsCommand;
         DisableDecorationsCommand = disableDecorationsCommand;
         SetSelectedModsAsOptionsCommand = setSelectedModsAsOptionsCommand;
-        AttachSelectedDecorationsCommand = attachSelectedDecorationsCommand;
+
         RemoveSelectedOptionsFromHostCommand = removeSelectedOptionsFromHostCommand;
         PromoteArmorProvidersCommand = promoteArmorProvidersCommand;
         RegisterArmorTargetsCommand = registerArmorTargetsCommand;
@@ -58,8 +58,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public bool ShowDisableDecorations => _bottomBar.ShowDisableDecorations;
     public bool ShowSetAsOption => _bottomBar.ShowSetAsOption;
     public string SetAsOptionText => _bottomBar.SetAsOptionText;
-    public bool ShowAttachDecorationsToHost => _bottomBar.ShowAttachDecorationsToHost;
-    public string AttachDecorationsToHostText => _bottomBar.AttachDecorationsToHostText;
+
     public bool ShowRemoveOptionsFromHost => _bottomBar.ShowRemoveOptionsFromHost;
     public bool ShowPromoteArmorProviders => _bottomBar.ShowPromoteArmorProviders;
     public bool ShowRegisterArmorTargets => _bottomBar.ShowRegisterArmorTargets;
@@ -74,7 +73,7 @@ public sealed class SelectionActionBarPresentation : BaseViewModel
     public ICommand EnableDecorationsCommand { get; }
     public ICommand DisableDecorationsCommand { get; }
     public ICommand SetSelectedModsAsOptionsCommand { get; }
-    public ICommand AttachSelectedDecorationsCommand { get; }
+
     public ICommand RemoveSelectedOptionsFromHostCommand { get; }
     public ICommand PromoteArmorProvidersCommand { get; }
     public ICommand RegisterArmorTargetsCommand { get; }

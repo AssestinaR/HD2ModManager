@@ -297,7 +297,7 @@ namespace HD2ModManager
                 shell.EnableSelectedDecorationsCommand,
                 shell.DisableSelectedDecorationsCommand,
                 shell.SetSelectedModsAsOptionsCommand,
-                shell.AttachSelectedDecorationsCommand,
+
                 shell.RemoveSelectedOptionsFromHostCommand,
                 shell.PromoteArmorProvidersCommand,
                 shell.RegisterArmorTargetsCommand,

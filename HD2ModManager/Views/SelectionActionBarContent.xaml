@@ -10,7 +10,7 @@
         <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding MoveButtonText}" Command="{Binding BeginMoveCommand}" Margin="0,0,8,0" Visibility="{Binding ShowMove, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="插入" Command="{Binding BeginInsertCommand}" Margin="0,0,8,0" Visibility="{Binding ShowInsert, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding SetAsOptionText}" Command="{Binding SetSelectedModsAsOptionsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowSetAsOption, Converter={StaticResource BoolToVis}}"/>
-        <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding AttachDecorationsToHostText}" Command="{Binding AttachSelectedDecorationsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowAttachDecorationsToHost, Converter={StaticResource BoolToVis}}"/>
+
         <Button Style="{StaticResource AppSecondaryButton}" Content="从当前 Mod 移除选项" Command="{Binding RemoveSelectedOptionsFromHostCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRemoveOptionsFromHost, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="转为视觉对象" Command="{Binding PromoteArmorProvidersCommand}" Margin="0,0,8,0" Visibility="{Binding ShowPromoteArmorProviders, Converter={StaticResource BoolToVis}}"/>
         <!--

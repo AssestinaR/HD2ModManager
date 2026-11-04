@@ -83,8 +83,7 @@ namespace HD2ModManager.ViewModels
         private bool HasSelectedDirectHostOptions => TryGetSelectedDirectHostOptions(out _, out _);
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
         public bool ShowSetAsOption => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedOptionCandidates;
-        // 装饰包已不再支持：不再有"把装饰附加到宿主"这个动作。
-        public bool ShowAttachDecorationsToHost => false;
+
         // 名字是历史命名：这两个按钮现在的含义是"启用/停用选项"，装饰已不在其中。
         public bool ShowEnableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedOptions;
         public bool ShowDisableDecorations => (IsLibrarySelection || IsDecorationHostSelection) && HasSelectedOptions;
@@ -96,7 +95,7 @@ namespace HD2ModManager.ViewModels
         public bool ShowInsert => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
         public string MoveButtonText => IsDecorationHostSelection ? "调整顺序" : "移动";
         public string SetAsOptionText => $"设为“{RelationshipHostName}”的选项";
-        public string AttachDecorationsToHostText => $"附加到“{RelationshipHostName}”";
+
         public bool ShowPromoteArmorProviders => IsArmorRegistryAvailableSelection;
         public bool ShowRegisterArmorTargets => IsArmorRegistryAvailableTargetSelection;
         public bool ShowReleaseArmorProviders => IsArmorRegistryProviderSelection;
@@ -521,7 +520,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(RelationshipHostName));
             OnPropertyChanged(nameof(ShowAddToProfile));
             OnPropertyChanged(nameof(ShowSetAsOption));
-            OnPropertyChanged(nameof(ShowAttachDecorationsToHost));
+
             OnPropertyChanged(nameof(ShowEnableDecorations));
             OnPropertyChanged(nameof(ShowDisableDecorations));
             OnPropertyChanged(nameof(ShowDelete));
@@ -538,7 +537,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowClearArmorTargets));
             OnPropertyChanged(nameof(MoveButtonText));
             OnPropertyChanged(nameof(SetAsOptionText));
-            OnPropertyChanged(nameof(AttachDecorationsToHostText));
+
             OnPropertyChanged(nameof(SelectionSummary));
             OnPropertyChanged(nameof(EditLabel));
             OnPropertyChanged(nameof(PositionLabel));

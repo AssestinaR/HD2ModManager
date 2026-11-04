@@ -151,7 +151,7 @@ namespace HD2ModManager.ViewModels
         public RelayCommand SelectionDeleteCommand { get; }
         public RelayCommand SelectionDeleteFromLibraryCommand { get; }
         public RelayCommand SetSelectedModsAsOptionsCommand { get; }
-        public RelayCommand AttachSelectedDecorationsCommand { get; }
+
         public RelayCommand RemoveSelectedOptionsFromHostCommand { get; }
         public RelayCommand PromoteArmorProvidersCommand { get; }
         public RelayCommand RegisterArmorTargetsCommand { get; }
@@ -306,7 +306,7 @@ namespace HD2ModManager.ViewModels
             SelectionDeleteCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteAsync());
             SelectionDeleteFromLibraryCommand = new RelayCommand(async _ => await ExecuteSelectionDeleteFromLibraryAsync());
             SetSelectedModsAsOptionsCommand = new RelayCommand(async _ => await SetSelectedModsAsOptionsAsync());
-            AttachSelectedDecorationsCommand = new RelayCommand(async _ => await AttachSelectedDecorationsAsync());
+
             RemoveSelectedOptionsFromHostCommand = new RelayCommand(async _ => await RemoveSelectedOptionsFromHostAsync());
             PromoteArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.Promote));
             RegisterArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.RegisterTargets));
@@ -1929,48 +1929,6 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        private async Task AttachSelectedDecorationsAsync()
-        {
-            if (!_selection.HasSelection
-                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection)
-                || string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId)) return;
-
-            var host = _libraryService.Get(_bottomBar.RelationshipHostId);
-            if (host is null || host.IsDecoration || host.IsReShade) return;
-            var decorations = _selection.SelectedIds
-                .Select(_libraryService.Get)
-                .Where(mod => mod?.IsDecoration == true)
-                .Cast<HD2ModManager.Models.ModEntity>()
-                .Where(decoration => _libraryService.IsDecorationAvailableForHost(decoration.Guid, host.Guid))
-                .GroupBy(decoration => decoration.Guid, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .ToArray();
-            if (decorations.Length == 0)
-            {
-                _notificationService.Show($"所选装饰没有可附加到“{host.Name}”的主体。", NotificationLevel.Warning);
-                return;
-            }
-
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, "附加装饰", $"为“{host.Name}”附加 {decorations.Length} 个装饰");
-            task.MarkRunning("正在更新装饰状态");
-            try
-            {
-                await _libraryService.ApplyDecorationActivationBatchAsync(
-                    decorations.Select(decoration => new DecorationActivationMutation(decoration.Guid, true, host.Guid)).ToArray(),
-                    task.CancellationToken);
-                task.MarkCompleted();
-                _notificationService.Show($"已将 {decorations.Length} 个装饰附加到“{host.Name}”；后台将合并主体覆盖文件。 ");
-                _selection.Clear();
-                RefreshCurrentPage();
-            }
-            catch (OperationCanceledException) { task.MarkCanceled(); }
-            catch (Exception exception)
-            {
-                task.MarkFailed(exception.Message);
-                _notificationService.Show($"附加装饰失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(8));
-            }
-        }
-
         private async Task RemoveSelectedOptionsFromHostAsync()
         {
             if (!_selection.HasSelection
@@ -2201,41 +2159,39 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        /// <summary>
+        /// 启用/停用选中的<b>选项</b>。
+        /// <para>
+        /// 名字里的 Decorations 是历史命名：这个方法过去同时处理装饰与选项，装饰包已不再支持。
+        /// 保留方法名与命令名是为了不动 XAML 里的绑定。
+        /// </para>
+        /// </summary>
         private async Task SetSelectedDecorationsEnabledAsync(bool enabled)
         {
             if (!_selection.HasSelection) return;
-            var decorations = _selection.SelectedIds
-                .Select(id => _libraryService.Get(id))
-                .Where(mod => mod?.IsDecoration == true)
-                .Cast<HD2ModManager.Models.ModEntity>()
-                .ToArray();
             var options = _selection.SelectedIds
                 .Select(id => _libraryService.Get(id))
                 .Where(mod => mod?.IsOption == true)
                 .Cast<HD2ModManager.Models.ModEntity>()
                 .ToArray();
-            if (decorations.Length == 0 && options.Length == 0) return;
+            if (options.Length == 0) return;
 
             var hostId = _selection.Scope?.StartsWith("DecorationHost:", StringComparison.Ordinal) == true
                 ? _selection.Scope["DecorationHost:".Length..]
                 : null;
-            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, enabled ? "启用装饰" : "禁用装饰", $"{decorations.Length} 个装饰 Mod");
-            task.MarkRunning(enabled ? "正在更新装饰启用状态" : "正在更新装饰禁用状态");
+            var task = _backgroundTasks.Enqueue(BackgroundTaskKind.Other, enabled ? "启用选项" : "禁用选项", $"{options.Length} 个选项 Mod");
+            task.MarkRunning(enabled ? "正在更新选项启用状态" : "正在更新选项禁用状态");
             try
             {
-                var result = await _libraryService.ApplyDecorationActivationBatchAsync(
-                    decorations.Select(decoration => new DecorationActivationMutation(decoration.Guid, enabled, hostId)).ToArray(),
-                    task.CancellationToken);
-                var optionMessages = new List<string>();
+                var messages = new List<string>();
                 foreach (var option in options)
                 {
-                    optionMessages.Add(hostId is null
+                    messages.Add(hostId is null
                         ? await _libraryService.SetOptionEnabledForAllAvailableHostsAsync(option.Guid, enabled, task.CancellationToken)
                         : await SetOptionEnabledForHostAsync(option.Guid, hostId, enabled, task.CancellationToken));
                 }
                 task.MarkCompleted();
-                var stateText = enabled ? "已启用选中的装饰。" : "已禁用选中的装饰。";
-                _notificationService.Show(result.ChangedDecorationCount == 0 ? "选中的装饰状态没有变化。" : stateText);
+                _notificationService.Show(messages.Count == 0 ? "没有可更新的选项。" : messages[0]);
                 _selection.Clear();
                 RefreshCurrentPage();
             }
