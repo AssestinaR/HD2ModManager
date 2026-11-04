@@ -3384,6 +3384,7 @@ public static class CliApplication
 			materialConverter: materialConverter,
 			unitIdSeed: reusedUnitIdSeed,
 			materialScope: scope,
+			noDrawPolicy: ResolveNoDrawPolicy(options),
 			idNamespace: ResolveIdNamespace(options),
 			onProgress: ReportAssembleProgress).ConfigureAwait(false);
 
@@ -3893,7 +3894,7 @@ public static class CliApplication
 					lines.Add($"          真缺失（连兜底都做不出来，部件会被移除）：{string.Join("、", gap.Missing.Take(12))}"
 						+ (gap.Missing.Count > 12 ? $"…（共 {gap.Missing.Count} 个）" : string.Empty));
 				if (gap.NoDraw.Count != 0)
-					lines.Add($"          $no_draw（源侧要求不绘制；几何保留、材质做成不显示，见上面那行逐块说明）："
+					lines.Add($"          $no_draw（源侧要求不绘制；按上面那行的策略落地）："
 						+ $"{string.Join("、", gap.NoDraw.Take(8))}"
 						+ (gap.NoDraw.Count > 8 ? $"…（共 {gap.NoDraw.Count} 个）" : string.Empty));
 			}
