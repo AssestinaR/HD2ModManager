@@ -833,6 +833,85 @@ public sealed class SourceMaterialConverter
 	/// 「金属材质丢失」就是它。正确的做法是合成一张纯黑底色，让 matcap 顶上去。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 着色器把<b>表面颜色</b>放在 <c>$basetexture</c> 以外的键里时，按这个顺序去找。
+	/// <para>
+	/// <b>这是一份"着色器语义"清单，不是某个模组的特例。</b>条目只从 Valve 的着色器参数表里取，
+	/// 并且每条都要说得出"哪个着色器的哪个参数"：
+	/// </para>
+	/// <list type="bullet">
+	/// <item><c>$iris</c> —— <c>EyeRefract</c>（<c>materialsystem/stdshaders/eye_refract.cpp</c>，
+	/// <c>SHADER_PARAM( IRIS, … "iris texture" )</c>）与老的 <c>Eyes</c>。这两套着色器的参数表里
+	/// <b>没有 <c>$basetexture</c></b>，眼球颜色只来自 <c>$iris</c>（官方
+	/// <c>models/survivors/producer/producer_eyeball_l.vmt</c> 就是这么写的）。</item>
+	/// <item><c>$eyeball</c> —— 老 <c>Eyes</c> 着色器的眼白图。只作 <c>$iris</c> 的兜底：
+	/// 那套着色器里两块都参与（<c>$eyeball</c> 眼白 + <c>$iris</c> 虹膜），而 HD2 的
+	/// <c>advanced</c> 只有一个底色槽——虹膜更能代表"这是眼睛"，所以排在前面。</item>
+	/// </list>
+	/// <para>
+	/// ⚠️ 命中之后还要满足"<b>那张图真的在来源里</b>"才算数（见 <see cref="TryShaderColorTexture"/>）：
+	/// 只凭键名换一个名字继续失败，比不换更难查。
+	/// </para>
+	/// </summary>
+	private static readonly string[] ShaderColorKeys = ["$iris", "$eyeball"];
+
+	/// <summary>
+	/// 这个 VMT 有没有"颜色写在别的键里"的图：返回 (键名, 贴图裸名)，没有则 <c>null</c>。
+	/// <para>只认<b>在来源里真的存在</b>的贴图——见 <see cref="ShaderColorKeys"/>。</para>
+	/// </summary>
+	private (string Key, string Texture)? TryShaderColorTexture(VmtDocument vmt)
+	{
+		ArgumentNullException.ThrowIfNull(vmt);
+		foreach (var key in ShaderColorKeys)
+		{
+			var raw = vmt.Value(key);
+			if (string.IsNullOrWhiteSpace(raw))
+				continue;
+			var name = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(raw));
+			if (string.IsNullOrWhiteSpace(name) || !source.ContainsVtf(name))
+				continue;
+			return (key, name);
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// 这个材质是不是"颜色来自 <c>$iris</c>"的眼球，以及那张图里<b>画着眼睛的那块矩形</b>。
+	/// <para>
+	/// 装配器要用它重建眼球的 UV（见 <see cref="EyeUv"/>）：源侧 EyeRefract 的采样坐标是
+	/// 引擎按眼球位置算出来的平面投影，模型 UV 完全不参与，所以原样搬过来只会得到一整块纯色。
+	/// </para>
+	/// <para>不是眼球、或图读不出来时返回 <c>null</c>（装配器据此不动这个材质的 UV）。</para>
+	/// </summary>
+	/// <param name="materialName">源材质裸名（可带目录，会取 basename）。</param>
+	public EyeColorSource? ResolveEyeColorSource(string materialName)
+	{
+		var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(materialName));
+		if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVmt(stem, out var vmtBytes))
+			return null;
+
+		VmtDocument vmt;
+		try
+		{
+			vmt = VmtDocument.Parse(vmtBytes, source.CreateIncludeReader());
+		}
+		catch (InvalidDataException)
+		{
+			return null;
+		}
+
+		if (!HasNoRealBaseTexture(vmt))
+			return null;
+		if (TryShaderColorTexture(vmt) is not { } color)
+			return null;
+		if (!TryReadTextureRgba(color.Texture, out var rgba, out var width, out var height))
+			return null;
+
+		var rect = EyeUv.ContentRect(rgba, width, height);
+		return new EyeColorSource(color.Texture, rect.U0, rect.V0, rect.U1, rect.V1);
+	}
+
 	public static bool HasNoRealBaseTexture(VmtDocument vmt)
 	{
 		ArgumentNullException.ThrowIfNull(vmt);
@@ -1715,7 +1794,23 @@ public sealed class SourceMaterialConverter
 		// （`$basetexture "vgui/white"` + `$color 0.462 0.322 0`），那是**带色相**的颜色。
 		// 只留灰度就只能得到"一块灰"——实测 milltina 的银 / 金 / 宝石红会变成同一块灰。
 		byte[]? syntheticBaseRgb = null;
-		if (HasNoRealBaseTexture(vmt))
+		// 颜色**不在 <c>$basetexture</c> 里**的着色器：EyeRefract / Eyes 把眼球颜色放在 `$iris`。
+		//
+		// 判据是"VMT 用了哪个着色器 + 那张图在来源里真的存在"，与材质名、模组名、文件名无关
+		// （见 ShaderColorKeys）。以前这里直接落到"既没有底色也没有 matcap"⇒ 判失败 ⇒
+		// 兜底灰材质 ⇒ 上机两颗灰球，也就是用户报的「眼睛没了」。
+		var shaderColor = HasNoRealBaseTexture(vmt) ? TryShaderColorTexture(vmt) : null;
+		string? shaderColorNotice = null;
+		if (shaderColor is { } eyeColor)
+		{
+			// 在这条路上 baseTexture 就是**真底色**：alpha、尺寸、去重、身份串全部按正常材质走，
+			// 只是这张图不是从 `$basetexture` 那里读来的。
+			baseTexture = eyeColor.Texture;
+			shaderColorNotice =
+				$"{stem}：这块材质用的是 {vmt.Shader} 着色器，颜色图在 {eyeColor.Key} 里（{eyeColor.Texture}）"
+				+ "—— 已按底色接入；它的 UV 由装配器按眼球位置重算（源侧 EyeRefract 的采样坐标不来自模型 UV）。";
+		}
+		else if (HasNoRealBaseTexture(vmt))
 		{
 			if (string.IsNullOrWhiteSpace(matcapTextureName))
 			{
@@ -1932,6 +2027,8 @@ public sealed class SourceMaterialConverter
 		var notices = new List<string>();
 		if (missingBaseNotice is not null)
 			notices.Add(missingBaseNotice);
+		if (shaderColorNotice is not null)
+			notices.Add(shaderColorNotice);
 
 		// ── 先算一次"这个材质最终会用哪个模板"，以及那个模板能不能表达金属度 ────────
 		//

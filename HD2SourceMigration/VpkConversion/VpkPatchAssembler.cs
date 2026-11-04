@@ -371,6 +371,19 @@ public sealed class VpkPatchAssembler
 		if (materialConverter is not null && (materialScope is not null || sourceMaterialNames is not null))
 			ResolveAndEmitMaterials();
 
+		// 眼球：把 UV 按 `$iris` 的平面投影重算一遍（见 EyeUv）。
+		//
+		// 必须在写几何之前、且在材质解析之后：判据是"这个材质的颜色来自 `$iris`"，
+		// 那要求读 VMT 并量出贴图里画着眼睛的那块矩形——也就是 ResolveAndEmitMaterials
+		// 手上那批 VMT。漏掉这一步的表现是"眼球不是没有材质，而是整颗只剩一个像素的颜色"。
+		if (materialConverter is not null && geometry is not null && sourceMaterialNames is not null)
+		{
+			var (reprojected, eyeNotes) = EyeUv.Reproject(
+				geometry, sourceMaterialNames, materialConverter.ResolveEyeColorSource);
+			geometry = reprojected;
+			warnings.AddRange(eyeNotes);
+		}
+
 		// 源侧写着 `$no_draw` 的部件：**连几何一起不写**。
 		//
 		// 源侧语义就是"这块不画"，最常用的场合是**网格变体选择**：P1/P2/P3 三套衣服全部烘在

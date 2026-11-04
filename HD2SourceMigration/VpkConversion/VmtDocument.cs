@@ -65,6 +65,22 @@ public sealed class VmtDocument
 	/// <summary><c>$bumpmap</c>。Python 侧解析了但没用上。</summary>
 	public string? BumpMap => Value("$bumpmap");
 
+	/// <summary>
+	/// <c>$iris</c>：<c>EyeRefract</c>（以及老的 <c>Eyes</c>）的<b>眼球颜色图</b>。
+	/// <para>
+	/// <b>这不是冷门键，是那套着色器唯一的颜色来源。</b>Valve 的
+	/// <c>materialsystem/stdshaders/eye_refract.cpp</c> 里，<c>EyeRefract</c> 的参数表
+	/// 只有 <c>$iris</c> / <c>$corneatexture</c> / <c>$ambientoccltexture</c> / <c>$envmap</c>
+	/// 四张贴图，<b>没有 <c>$basetexture</c></b>；L4D2 自己的 <c>producer_eyeball_*.vmt</c>
+	/// 也是这么写的。
+	/// </para>
+	/// <para>
+	/// 少了它，眼球材质就是"既没有 <c>$basetexture</c> 也没有 <c>$matcapture</c>" ⇒ 判失败 ⇒
+	/// 用兜底灰材质占位：上机是<b>两颗灰球</b>（用户报的「眼睛没了」）。
+	/// </para>
+	/// </summary>
+	public string? IrisTexture => Value("$iris");
+
 	/// <summary><c>$matcaptexture</c>，没有时回落到 <c>$basetexture</c>（VMT 的常见写法）。</summary>
 	public string? MatCapTexture => Value("$matcaptexture") ?? (HasMatCap ? BaseTexture : null);
 
