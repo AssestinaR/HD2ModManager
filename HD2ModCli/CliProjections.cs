@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Domain;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCli;
@@ -318,7 +318,8 @@ public static class CliProjections
 			parentOptionIds = graph.GetParents(node.Id).Select(FormatId).ToArray(),
 			declaredChildIds = node.Children.Select(FormatId).ToArray(),
 			optionActivation = node.Metadata.Kind == ModNodeKind.Option ? optionStates : Array.Empty<object>(),
-			decorationEnabledHostIds = node.Metadata.Kind == ModNodeKind.Decoration ? decorationHosts : Array.Empty<string>(),
+			// 装饰包已不再支持：这个字段恒为空，保留是为兼容读取该 JSON 的脚本。
+			decorationEnabledHostIds = Array.Empty<string>(),
 			sourcePackage = new
 			{
 				guid = node.Metadata.SourcePackageGuid,

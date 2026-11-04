@@ -417,12 +417,16 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 					SafeModDeletionActivationCleanupKind.DecorationActivationForHost,
 					removal.NodeId));
 			}
+			// 旧库里仍可能留着装饰节点（kind 值保留是为了让旧库读得出来）。
+			// 删这种遗留节点时仍要清掉它的装饰激活状态，否则 option-activations 里会留死引用。
+			#pragma warning disable CS0618 // 这里正是唯一必须认得那个废弃值的地方
 			if (removal.Kind == ModNodeKind.Decoration)
 			{
 				result.Add(new SafeModDeletionActivationCleanupKey(
 					SafeModDeletionActivationCleanupKind.DecorationActivationForDecoration,
 					removal.NodeId));
 			}
+			#pragma warning restore CS0618
 		}
 
 		foreach (var relation in relationRemovals)
@@ -514,7 +518,7 @@ public sealed class SafeModDeletionPlanningService : ISafeModDeletionPlanningSer
 				"DecorationActivationStateUnknown",
 				SafeModDeletionBlockerSeverity.Warning,
 				"Decoration activation state was not supplied. A caller must inspect it before executing this plan.",
-				removedNodes.Where(node => node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option or ModNodeKind.Decoration).Select(node => node.Id).ToArray());
+				removedNodes.Where(node => node.Metadata.Kind is ModNodeKind.Standard or ModNodeKind.Option).Select(node => node.Id).ToArray());
 		}
 
 		if (!safety.IsManagedOverwriteStateKnown && removedNodes.Any(node => node.Metadata.HelmetToArmorMerged))

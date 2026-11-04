@@ -129,7 +129,7 @@ public sealed class ModRelationshipMutationService : IModRelationshipMutationSer
 				throw Failure(ModRelationshipMutationFailure.SourceNotFound, $"未找到来源 Mod：{Key(sourceId)}。", hostId, sourceId);
 			if (sourceId == hostId)
 				throw Failure(ModRelationshipMutationFailure.SelfRelation, "不能将 Mod 设置为自己的选项。", hostId, sourceId);
-			if (source.Metadata.Kind is ModNodeKind.Decoration or ModNodeKind.ReShade)
+			if (source.Metadata.Kind is ModNodeKind.ReShade)
 				throw Failure(ModRelationshipMutationFailure.SourceKindUnsupported, $"“{source.Metadata.Name}”不能作为 Option。", hostId, sourceId);
 
 			var currentHosts = ParseAndValidateHosts(snapshot, source);

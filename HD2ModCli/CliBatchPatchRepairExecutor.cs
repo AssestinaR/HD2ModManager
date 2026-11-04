@@ -302,9 +302,9 @@ internal static class CliBatchPatchRepairExecutor
 			hosts.Add(node.Id);
 		if (hosts.Count == 0) return Array.Empty<CliBatchPatchRepairOverwriteRebuild>();
 
-		var decorations = snapshot.Nodes.Values
-			.Where(node => node.Metadata.Kind == ModNodeKind.Decoration)
-			.ToDictionary(node => node.Id.Value.ToString("N"), StringComparer.OrdinalIgnoreCase);
+		// 装饰包已不再支持：库里不会再有这类节点，所以这里恒为空表。
+		// **HostDerivedOverwriteService 仍然保留** —— 头盔合并走的是同一个入口。
+		var decorations = (IReadOnlyDictionary<string, ModNode>)new Dictionary<string, ModNode>(StringComparer.OrdinalIgnoreCase);
 		var decorationRebuild = CoreServices.CreateDecorationHostRebuildService(paths, reader);
 		var helmetMerge = CoreServices.CreateDirectHelmetToArmorMergeService(paths, reader);
 		var overwriteService = CoreServices.CreateHostDerivedOverwriteService(decorationRebuild, helmetMerge);

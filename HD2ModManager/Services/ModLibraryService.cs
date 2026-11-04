@@ -1023,10 +1023,8 @@ namespace HD2ModManager.Services
                 }
 
                 var requestedNodes = nodeIds.ToDictionary(nodeId => nodeId, nodeId => _snapshot.Nodes[nodeId]);
-                var requestedDecorationIds = requestedNodes
-                    .Where(pair => pair.Value.Metadata.Kind == ModNodeKind.Decoration)
-                    .Select(pair => pair.Key.Value.ToString("N"))
-                    .ToArray();
+                // 装饰包已不再支持：库里不会有这类节点，所以"删除前先停用装饰"这段恒为空。
+                var requestedDecorationIds = Array.Empty<string>();
                 var originalDecorationHosts = requestedDecorationIds.ToDictionary(
                     decorationId => decorationId,
                     decorationId => _decorationActivations.GetEnabledHosts(decorationId).ToHashSet(StringComparer.OrdinalIgnoreCase),
@@ -1069,10 +1067,7 @@ namespace HD2ModManager.Services
 
                 // The manager already returned the post-delete snapshot, so retain the
                 // requested-node metadata captured above for activation cleanup.
-                var deletedDecorations = removedIds
-                    .Where(nodeId => requestedNodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Decoration)
-                    .Select(nodeId => nodeId.Value.ToString("N"))
-                    .ToArray();
+                var deletedDecorations = Array.Empty<string>();
                 var deletedOptions = removedIds
                     .Where(nodeId => requestedNodes.TryGetValue(nodeId, out var node) && node.Metadata.Kind == ModNodeKind.Option)
                     .Select(nodeId => nodeId.Value.ToString("N"))
@@ -1574,8 +1569,7 @@ namespace HD2ModManager.Services
             {
                 if (!TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.TryGetValue(nodeId, out var host))
                     throw new InvalidOperationException("当前 Mod 不存在。");
-                if (host.Metadata.Kind == ModNodeKind.Decoration)
-                    throw new InvalidOperationException("装饰 Mod 不能临时合并头盔。");
+                // 装饰包已不再支持，主体不可能是装饰节点：原来那条守卫不再需要。
                 if (host.Metadata.HelmetToArmorMerged == enabled)
                     return new HelmetToArmorMergeResult(true, Path.Combine(_paths.ModsDirectory, host.RelativePath, "Overwrite"), 0, 0, 0, Array.Empty<CoreIssue>());
 
@@ -1726,7 +1720,9 @@ namespace HD2ModManager.Services
                 Description = node.Metadata.Notes,
                 Image = derived?.IconPath ?? ModIconLocator.TryResolve(ResolveAbsolutePath(node.RelativePath)),
                 SourcePath = node.RelativePath,
-                IsDecoration = node.Metadata.Kind == ModNodeKind.Decoration,
+                // 装饰包已不再支持（节点在库读取层被丢弃），所以这个标志恒为 false。
+                // 属性保留是为了不改动十几处 `!mod.IsDecoration` 守卫——它们在语义上已经恒成立。
+                IsDecoration = false,
                 IsOption = node.Metadata.Kind == ModNodeKind.Option,
                 IsReShade = node.Metadata.Kind == ModNodeKind.ReShade,
                 IsHelmetToArmorMerged = node.Metadata.HelmetToArmorMerged,

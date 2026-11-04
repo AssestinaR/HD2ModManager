@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HD2ModCore.Application;
@@ -98,7 +98,11 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 				throw new InvalidDataException($"Unsupported library data version. Expected {CurrentVersion}.");
 
 			var profileState = await _profileStore.TryLoadReadOnlyAsync(cancellationToken).ConfigureAwait(false);
-			return new LibrarySnapshot(fileSnapshot.Version, fileSnapshot.SavedUtc, fileSnapshot.Nodes, profileState.Profiles, profileState.ActiveProfileId);
+			// 装饰包已不再支持（2026-11-04）：旧库里可能还留着这类节点。
+			// **在读取这一层丢弃**，而不是让每个下游各自判断——下游少一处判断就少一处漏。
+			// 节点本身合法（能反序列化），只是功能没了；丢弃比让它以"不可操作"的形态留在库里清楚。
+			var nodes = DropUnsupportedNodes(fileSnapshot.Nodes);
+			return new LibrarySnapshot(fileSnapshot.Version, fileSnapshot.SavedUtc, nodes, profileState.Profiles, profileState.ActiveProfileId);
 		}
 		catch (JsonException exception)
 		{
@@ -481,4 +485,21 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 		bool Existed,
 		FileAttributes? Attributes,
 		byte[]? Content);
+
+	/// <summary>
+	/// 丢掉不再支持的节点类型（目前只有已废弃的装饰包）。
+	/// <para>
+	/// 保留 <see cref="ModNodeKind.Decoration"/> 这个枚举值是为了让旧库仍能反序列化
+	/// （kind 是字符串序列化的，删成员会让整库打不开）；真正"退场"的是把它从库里清掉。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyDictionary<ModNodeId, ModNode> DropUnsupportedNodes(IReadOnlyDictionary<ModNodeId, ModNode> nodes)
+	{
+		if (nodes.Count == 0)
+			return nodes;
+#pragma warning disable CS0618 // 这里正是唯一必须认得那个废弃值的地方
+		var kept = nodes.Where(pair => pair.Value.Metadata.Kind != ModNodeKind.Decoration).ToDictionary(pair => pair.Key, pair => pair.Value);
+#pragma warning restore CS0618
+		return kept.Count == nodes.Count ? nodes : kept;
+	}
 }

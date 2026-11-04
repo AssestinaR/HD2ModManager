@@ -1,3 +1,7 @@
+// 这几个用例**故意**用已废弃的装饰节点当夹具：它们覆盖的是"旧库里存在装饰节点时
+// 各服务怎么处理"这条遗留路径。装饰包已不再支持，但读取旧数据时仍可能遇到，
+// 所以这些守卫要留着、也就要继续测。
+#pragma warning disable CS0618 // ModNodeKind.Decoration 已废弃，这里正是要测它
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;

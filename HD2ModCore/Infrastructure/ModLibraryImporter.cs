@@ -177,7 +177,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 	internal static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
 		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0
-			|| node.Metadata.Kind == ModNodeKind.Decoration
 			|| node.Metadata.IsLogicalContainer)
 			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory);
 
@@ -588,7 +587,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			StringComparer.OrdinalIgnoreCase);
 		var conflictingPayloadNodes = new List<ManifestPayloadConflict>();
 		foreach (var sourceNode in tree.Nodes.Values
-			.Where(node => node.Metadata.Kind != ModNodeKind.Decoration)
+
 			.Where(node => node.PatchGroups.Count > 0)
 			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase))
 		{
@@ -674,7 +673,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 
 		var physicalPayloadNodes = compatibilityMode
 			? tree.Nodes.Values
-				.Where(node => node.Metadata.Kind != ModNodeKind.Decoration)
+	
 				.Where(node => node.PatchGroups.Count > 0)
 				.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
 			.ToArray()
@@ -711,13 +710,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				physicalSource.PatchGroups,
 				Array.Empty<ModNodeId>());
 			sourcePaths[physicalId] = [physicalPath];
-		}
-
-		foreach (var decoration in tree.Nodes.Values.Where(node => node.Metadata.Kind == ModNodeKind.Decoration))
-		{
-			if (nodes.ContainsKey(decoration.Id)) continue;
-			nodes[decoration.Id] = decoration;
-			sourcePaths[decoration.Id] = [NormalizeRelativePath(decoration.RelativePath)];
 		}
 
 		return new PlannedImportTree(tree with { RootId = rootId, Nodes = nodes }, sourcePaths)
@@ -768,7 +760,6 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	{
 		var payloadNodes = tree.Nodes.Values
 			.Where(node => node.PatchGroups.Count > 0
-				|| node.Metadata.Kind == ModNodeKind.Decoration
 				|| node.Metadata.IsLogicalContainer
 				|| (string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
 					&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)))
@@ -787,7 +778,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 
 		var patchNodes = payloadNodes
-			.Where(node => node.PatchGroups.Count > 0 && node.Metadata.Kind is not (ModNodeKind.Decoration or ModNodeKind.ReShade))
+			.Where(node => node.PatchGroups.Count > 0 && node.Metadata.Kind is not ModNodeKind.ReShade)
 			.ToArray();
 		if (patchNodes.Length == 0)
 		{
@@ -829,7 +820,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			sourcePathsByNode[rootId] = Array.Empty<string>();
 		}
 
-		foreach (var auxiliary in payloadNodes.Where(node => node.Id != rootCandidate?.Id && (node.Metadata.Kind is ModNodeKind.Decoration or ModNodeKind.ReShade)))
+		foreach (var auxiliary in payloadNodes.Where(node => node.Id != rootCandidate?.Id && node.Metadata.Kind is ModNodeKind.ReShade))
 		{
 			nodes[auxiliary.Id] = auxiliary;
 			sourcePathsByNode[auxiliary.Id] = [NormalizeRelativePath(auxiliary.RelativePath)];
@@ -884,9 +875,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	}
 
 	private static ModNodeKind GetHeuristicStandaloneKind(ModNode node, string sourceRootDirectory)
-		=> node.Metadata.Kind == ModNodeKind.Decoration
-			? ModNodeKind.Decoration
-			: string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
+		=> string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
 				&& node.PatchGroups.Count == 0
 				&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)
 				? ModNodeKind.ReShade
