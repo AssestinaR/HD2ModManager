@@ -1167,8 +1167,8 @@ namespace HD2ModManager.ViewModels
                 : ProfileOptionRouteResolution.Empty;
             EnsureDisplayedHostOptionOrders(Mod.Guid, directOptions);
             _directHostOptionCount = directOptions.Count;
-            var decorations = _library.GetDecorationsForHost(Mod.Guid);
-            var attachmentStates = new List<HostAttachmentListState>(directOptions.Count + decorations.Count);
+            // 装饰包已不再支持：宿主附件列表只剩选项。
+            var attachmentStates = new List<HostAttachmentListState>(directOptions.Count);
 
             for (var index = 0; index < directOptions.Count; index++)
             {
@@ -1183,15 +1183,6 @@ namespace HD2ModManager.ViewModels
                     activationLabel: routePresentation.ActivationLabel,
                     activationTone: routePresentation.ActivationTone,
                     activationSummary: routePresentation.Summary));
-            }
-
-            foreach (var decoration in decorations)
-            {
-                attachmentStates.Add(HostAttachmentListState.Create(
-                    decoration,
-                    IsHostDecorationSelected(decoration.Guid),
-                    _library.IsDecorationEnabledForHost(decoration.Guid, Mod.Guid),
-                    directOptionCount: directOptionCounts.GetValueOrDefault(decoration.Guid)));
             }
 
             _hostAttachmentStates = attachmentStates;
