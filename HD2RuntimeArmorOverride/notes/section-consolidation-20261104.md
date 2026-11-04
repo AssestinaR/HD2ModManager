@@ -442,7 +442,7 @@ section 侧在 `HD2ModCore` / `HD2ModAdaptation` / `HD2ModManager` / `HD2ModCli`
 
 **合并前必须满足**：
 
-- 全量测试绿（当前基线：1685 通过 / 0 失败）；
+- 全量测试绿（**分支建立时实测基线：1691 通过 / 0 失败 / 1 跳过** —— Decryptor 5 / SourceModel 68 / Adaptation 182 / Core 915 / CLI 207 / SourceMigration 314）；
 - 「legacy Mod 重构建一次，产物与拆件时逐字节一致」（U3 的验收，证明真的走了同一条管线）；
 - V0 至少做过一次（见 §8）。
 
