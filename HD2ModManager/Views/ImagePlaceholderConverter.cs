@@ -54,7 +54,7 @@ namespace HD2ModManager.Views
         // 缓存键里带 mtime，是为了"图标被换掉"时能自然失效。但 mtime 的代价是
         // **每次** Convert 两次文件系统调用（File.Exists + GetLastWriteTimeUtc），
         // 而 Convert 跑在 UI 线程上，且列表每次 Reset 都会把可见行重新绑一遍
-        // （见 docs/armor-registry-page-perf-20261027.md §5 E2）。
+        // （见 docs/agent/armor-registry-page-perf-20261027.md §5 E2）。
         //
         // 于是把 mtime 探针本身缓存一个很短的窗口：同一批重建里的重复绑定不再摸盘，
         // 而图标真的被替换时最多 2 秒就能看到新图。图标不是需要毫秒级新鲜度的数据。

@@ -70,7 +70,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	// 取数还没结束（含"在等启动维护的闸门"）。
 	// 存在的理由只有一个：空列表必须能区分"还没读到"和"真的没有"。
 	// 以前两者在界面上长得一模一样，空状态还写着"所有护甲都已分配为视觉来源或映射目标"——
-	// 用户看到的是一个错误结论（见 docs/armor-registry-page-perf-20261027.md §1 A6）。
+	// 用户看到的是一个错误结论（见 docs/agent/armor-registry-page-perf-20261027.md §1 A6）。
 	private bool isLoadingCatalog = true;
 	// 首次加载是"单飞"的：启动预热与用户首开共用同一个 Task。
 	// 没有它就有两个坑——预热与首开各读一遍；或者预热还在跑时用户点开页面，
@@ -868,7 +868,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	// 作用域要跟着"左侧现在是什么"走，不能恒为 Available。
 	// 底栏的动作完全由作用域推导：Available → 「转为视觉对象」，
 	// AvailableAsTarget → 「注册为映射目标」。以前两者共用 Available，
-	// 于是多选永远只会变成视觉来源（见 docs/armor-registry-page-perf-20261027.md §4）。
+	// 于是多选永远只会变成视觉来源（见 docs/agent/armor-registry-page-perf-20261027.md §4）。
 	public void ApplyAvailableSelection(IReadOnlyList<string> selectedKeys)
 	{
 		ApplyMutuallyExclusiveSelection(
