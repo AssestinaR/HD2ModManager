@@ -2172,10 +2172,15 @@ public static class CliApplication
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException
 					or InvalidOperationException or NotSupportedException or UnauthorizedAccessException
-					or KeyNotFoundException or ArgumentException or IndexOutOfRangeException)
+					or KeyNotFoundException or ArgumentException or IndexOutOfRangeException
+					// ⚠️ 算术溢出与 AggregateException 也要按"单个 VPK 失败"处理。
+					// 不接的话它会被顶层的兜底处理器抓住，报出一句
+					// "One or more errors occurred. (Arithmetic operation resulted in an overflow.)"
+					// —— 既没有位置也没有类型，用户和管理器都只能看到"转换 0 个"（实测 2026-11-04）。
+					or OverflowException or AggregateException)
 				{
 					// 单个 VPK 失败**不拖垮整批**——这是契约里明确要求的。
-					failures.Add(new { vpk = path, error = exception.Message });
+					failures.Add(new { vpk = path, error = DescribeFailure(exception) });
 					exitCode = 2;
 				}
 			}
@@ -2834,6 +2839,54 @@ public static class CliApplication
 	/// </summary>
 	private static void Progress(string phase, int done, int total, string text)
 		=> Console.Error.WriteLine(HD2ModCore.Infrastructure.VpkProgressLine.Format(phase, done, total, text));
+
+	/// <summary>
+	/// 把一个转换失败翻译成"能定位"的一句话。
+	/// <para>
+	/// <b>为什么不能直接写 <c>exception.Message</c>。</b>装配器里的材质转换跑在
+	/// <c>Parallel.For</c> 里，那里抛出来的任何异常都会被包成 <see cref="AggregateException"/>，
+	/// 于是用户看到的是一句
+	/// <c>One or more errors occurred. (Arithmetic operation resulted in an overflow.)</c>
+	/// —— 既没有类型、也没有位置，连"是哪个阶段"都看不出来（实测 2026-11-04 的
+	/// `牛牛rebone替换路易斯.vpk`，整批只报"转换 0 个"）。
+	/// </para>
+	/// <para>
+	/// 这里把聚合异常摊平，取**去重后的前几条**内层消息，并附上第一条的
+	/// 「异常类型 @ 方法名」，让报告本身就能指出嫌疑点。
+	/// </para>
+	/// </summary>
+	internal static string DescribeFailure(Exception exception)
+	{
+		ArgumentNullException.ThrowIfNull(exception);
+		if (exception is not AggregateException aggregate)
+			return $"{exception.GetType().Name}：{exception.Message}{FirstFrame(exception)}";
+
+		var inner = aggregate.Flatten().InnerExceptions;
+		if (inner.Count == 0) return aggregate.Message;
+		var messages = inner
+			.Select(item => $"{item.GetType().Name}：{item.Message}")
+			.Distinct(StringComparer.Ordinal)
+			.Take(3)
+			.ToArray();
+		var summary = inner.Count == 1 ? messages[0] : $"{inner.Count} 处失败 —— " + string.Join("；", messages);
+		return summary + FirstFrame(inner[0]);
+	}
+
+	/// <summary>第一个"有名字"的栈帧（形如 <c> @ SourceMaterialConverter.BuildOpacityMask</c>）。</summary>
+	private static string FirstFrame(Exception exception)
+	{
+		var frames = new System.Diagnostics.StackTrace(exception, fNeedFileInfo: false).GetFrames();
+		foreach (var frame in frames ?? [])
+		{
+			var method = frame.GetMethod();
+			if (method?.DeclaringType is not { } declaring) continue;
+			// 跳过本方法自己与聚合包装，留下真正出事的那一层。
+			if (method.Name is "DescribeFailure" or "FirstFrame" or "Invoke" or "MoveNext") continue;
+			return $" @ {declaring.Name}.{method.Name}";
+		}
+
+		return string.Empty;
+	}
 
 	/// <summary>
 	/// 装配器的进度回调：把内部阶段键翻成给人看的文案。
