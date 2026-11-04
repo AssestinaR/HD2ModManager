@@ -66,6 +66,22 @@ public sealed class SevenZipArchiveExtractor
 			throw new InvalidDataException($"7-Zip listing failed with exit code {exitCode}.{Environment.NewLine}{error}".Trim());
 		}
 
+		return ParseEntries(output, archive);
+	}
+
+	/// <summary>
+	/// 把 <c>7z l -slt -ba</c> 的输出解析成条目路径。
+	/// <para>
+	/// <b>为什么不能"永远删掉第一条"。</b>完整输出里第一条确实是归档自身，但这里带了
+	/// <c>-ba</c>（bare），7-Zip 于是<b>不打印</b>归档自身那一段。老实现照文档删第一条，
+	/// 删掉的是<b>第一个真实条目</b>：一个「<c>x.vpk</c> + 预览图」的包里，第一个条目正好是
+	/// 那个 .vpk，于是"包里有 VPK"这个判据永远为假，整包被交回普通导入，
+	/// 报出一句和用户看到的画面毫无关系的 "No importable patch or decoration package"。
+	/// 所以判据只能是"这一条是不是归档自己"，不是"它排第几"。
+	/// </para>
+	/// </summary>
+	internal static IReadOnlyList<string> ParseEntries(string output, string archiveFilePath)
+	{
 		var entries = new List<string>();
 		foreach (var line in output.Split('\n'))
 		{
@@ -76,9 +92,33 @@ public sealed class SevenZipArchiveExtractor
 			if (path.Length != 0) entries.Add(path);
 		}
 
-		// 第一条永远是归档自身。
-		if (entries.Count != 0) entries.RemoveAt(0);
+		// 只在真能认出"这是归档自己"时删；认不出就一条都不删（宁可多一条，不可少一条——
+		// 少了的那条可能正是决定走哪条导入路线的那个 .vpk）。
+		if (entries.Count != 0 && IsArchiveItself(entries[0], archiveFilePath))
+			entries.RemoveAt(0);
 		return entries;
+	}
+
+	private static bool IsArchiveItself(string entry, string archiveFilePath)
+	{
+		// 只认"绝对路径与归档全路径相同"这一种。7-Zip 若打进这一条，打印的就是命令行给的
+		// 绝对路径；而**相对名与归档同名**（包里真的躺着一个同名文件）不能算自己——
+		// 删掉它等于静默丢一个条目，而那可能正是决定导入路线的那个 .vpk。
+		if (!Path.IsPathRooted(entry))
+			return false;
+
+		try
+		{
+			return string.Equals(Path.GetFullPath(entry), archiveFilePath, StringComparison.OrdinalIgnoreCase);
+		}
+		catch (ArgumentException)
+		{
+			return false;
+		}
+		catch (NotSupportedException)
+		{
+			return false;
+		}
 	}
 
 	private static async Task<(int ExitCode, string Output, string Error)> RunAsync(

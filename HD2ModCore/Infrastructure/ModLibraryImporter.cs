@@ -81,6 +81,21 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				extractRoot,
 				cancellationToken,
 				Path.GetFileNameWithoutExtension(full)).ConfigureAwait(false);
+			// 包里只有 .vpk 说明它本该走"VPK 来源"那条路（见 VpkImportService.TryPrepareAsync）。
+			// 走到这里意味着那条路没能接手（7-Zip 列不出目录、解压失败、或转换前准备失败），
+			// 而下面那句 "No importable patch…" 完全指不到真正的原因——用户只会以为包是坏的。
+			if (units.Count == 0)
+			{
+				var vpkCount = CountVpkFiles(extractRoot);
+				if (vpkCount != 0)
+				{
+					throw new InvalidDataException(
+						$"这个压缩包里只有 {vpkCount} 个 .vpk，管理器没能按 VPK 来源处理它"
+						+ "（压缩包打不开，或 VPK 转换的准备阶段失败了，原因见消息中心）。"
+						+ "可以把里面的 .vpk 单独拖进管理器重试一次。");
+				}
+			}
+
 			return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
 		}
 		finally
@@ -165,6 +180,25 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			|| node.Metadata.Kind == ModNodeKind.Decoration
 			|| node.Metadata.IsLogicalContainer)
 			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory);
+
+	/// <summary>数一数目录里（含子目录）有几个 <c>.vpk</c>。只用于给出"这包其实是 VPK 来源"的提示。</summary>
+	private static int CountVpkFiles(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory)
+				? Directory.EnumerateFiles(directory, "*.vpk", SearchOption.AllDirectories).Count()
+				: 0;
+		}
+		catch (IOException)
+		{
+			return 0;
+		}
+		catch (UnauthorizedAccessException)
+		{
+			return 0;
+		}
+	}
 
 	internal static PackageRoot ResolvePackageRoot(string directory)
 	{
