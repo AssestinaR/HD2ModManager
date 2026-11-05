@@ -2107,18 +2107,27 @@ public static class CliApplication
 					+ $"{string.Join("、", componentSwitches.Select(item => item.DisplayName))}");
 			}
 
-			// matcap 的几何来源：队列里第一个**读得出来**的模型 VPK。没有就不烘（`$matcaptint ≥ 0.9`
-			// 的材质会缺观感）。读不出来就换下一个：这里只是可选的观感来源，一个坏模型不该让整批转换失败。
-			RetargetInputs? matcapModel = null;
-			foreach (var path in vpkPaths)
+			// matcap / 世界法线的几何来源：**队列里**的模型优先（模型包当然用自己的），
+			// 队列里没有就退到**解析集合**里找。
+			//
+			// ⚠️ 后一条是 2026-11-05 补的，它解释了一个长期症状：材质包（serenade a1 那种）
+			// 单独进队列时，模型只出现在 `--material-source` 里 ⇒ 这里找不到几何 ⇒
+			// `matcapMeans` 与 `WorldNormal` 全是 null ⇒ 每张 matcap 都只采到球心那一个像素，
+			// 于是"金属的明暗图案"在产物里根本不存在，怎么改像素都看不出变化。
+			// 实测：部署包里 `silver_glove` 的 F0 是整片 121（= 球心那一个像素），
+			// 而同一套规则在 milfy（模型与材质同队列）里是正常的。
+			var geometryCandidates = new List<RetargetInputs>();
+			foreach (var path in vpkPaths.Concat(extraPaths))
 			{
 				try
 				{
 					using var probe = VpkArchive.Open(path);
 					if (!probe.WithExtension("mdl").Any())
 						continue;
-					matcapModel = SourceRetargetPipeline.LoadSource(path, null);
-					break;
+					geometryCandidates.Add(SourceRetargetPipeline.LoadSource(path, null));
+					// 队列里的模型就够了：解析集合里可能还有别的角色，别让它们抢。
+					if (vpkPaths.Contains(path))
+						break;
 				}
 				catch (Exception exception) when (exception is IOException or InvalidDataException
 					or InvalidOperationException or NotSupportedException or UnauthorizedAccessException
@@ -2152,7 +2161,7 @@ public static class CliApplication
 				{
 					var outcome = await ConvertVpkAsync(
 						invocation, path, directory, batch,
-						scopedMaterials: true, matcapModel, headerTemplate, cancellationToken: default).ConfigureAwait(false);
+						scopedMaterials: true, geometryCandidates, headerTemplate, cancellationToken: default).ConfigureAwait(false);
 					results.Add(outcome);
 					// **退出码只表示"这次导入能不能用"**，不表示"有没有提示"。
 					// 降级项（warnings）与"源侧本来就不绘制"（skipped）都放在 JSON 里由 UI 展示；
@@ -2350,7 +2359,7 @@ public static class CliApplication
 						toolStamp = CliBuildStamp.Value,
 					},
 					notes = conversionNotes,
-					matcapGeometry = matcapModel?.MdlPath,
+					matcapGeometry = geometryCandidates.FirstOrDefault()?.MdlPath,
 					patches = results.Select(ProjectConversion).ToArray(),
 					// 识别到但没产出 patch 的组件开关包（它们只描述"关什么"）。
 					componentSwitchSources = componentSwitches
@@ -2361,7 +2370,7 @@ public static class CliApplication
 				},
 				() =>
 				{
-					var text = FormatVpk2Patch(results, failures, Path.GetFullPath(outputRoot), matcapModel?.MdlPath);
+					var text = FormatVpk2Patch(results, failures, Path.GetFullPath(outputRoot), geometryCandidates.FirstOrDefault()?.MdlPath);
 					// 报告里的提示也要出现在**人读的那份**输出里：命令行用户不会去看 JSON。
 					return conversionNotes.Count == 0
 						? text
@@ -3184,7 +3193,7 @@ public static class CliApplication
 		string outputDirectory,
 		SourceMaterialSource materialBatch,
 		bool scopedMaterials,
-		RetargetInputs? matcapModel,
+		IReadOnlyList<RetargetInputs> matcapModels,
 		byte[]? headerTemplate,
 		string? modelStem = null,
 		CancellationToken cancellationToken = default)
@@ -3235,23 +3244,42 @@ public static class CliApplication
 					+ "这是发布包缺文件，不是这个包本身的问题。");
 			var encoder = new Bc7Encoder(encoderPath);
 
-			// matcap 平均色要按**三角形面积加权**算，所以需要几何——用队列里那个模型的。
-			// 只有真的命中 matcap 规则（tint ≥ 0.9）的材质才会被解码。
+			// matcap 平均色要按**三角形面积加权**算，世界法线要按材质所在的那块几何烘，
+			// 所以两者都需要"哪个模型用了这个材质"。候选模型可以有多个（模型包自己的 + 解析集合里的），
+			// 这里按**材质名**把它们索引起来：一个 stem 归第一个用到它的模型。
+			//
+			// ⚠️ 多个模型的状况是常态：管理器按"一个 Mod 一个队列"转换，材质包的队列里没有模型，
+			// 模型只在 `--material-source` 里。以前这里只看队列 ⇒ 材质包永远拿不到几何 ⇒
+			// 每张 matcap 只采到球心一个像素（实测部署包里 `silver_glove` 的 F0 整片 121）。
 			IReadOnlyDictionary<string, double[]>? matcapMeans = null;
 			Func<string, UvNormalMap?>? WorldNormal = null;
-			if (matcapModel is not null)
+			if (matcapModels.Count != 0)
 			{
-				var names = new List<string>(matcapModel.Model.MaterialPaths);
-				if (scope is not null)
-					names.AddRange(scope.OwnedVmtNames);
-				matcapMeans = SourceMaterialConverter.ComputeMatCapMeans(
-					materialSource, matcapModel.Geometry, names, encoder);
-				var indexOf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-				for (var i = 0; i < matcapModel.Model.MaterialPaths.Count; i++)
-					indexOf[Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(matcapModel.Model.MaterialPaths[i]))] = i;
+				var means = new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase);
+				var geometryOf = new Dictionary<string, (RetargetInputs Model, int Index)>(StringComparer.OrdinalIgnoreCase);
+				foreach (var model in matcapModels)
+				{
+					var names = new List<string>(model.Model.MaterialPaths);
+					if (scope is not null)
+						names.AddRange(scope.OwnedVmtNames);
+					foreach (var pair in SourceMaterialConverter.ComputeMatCapMeans(materialSource, model.Geometry, names, encoder))
+					{
+						// 面积加权：同一个 stem 只在**第一个**用到它的模型上算一次，
+						// 后面的模型（别的角色）不该覆盖它。
+						means.TryAdd(pair.Key, pair.Value);
+					}
+
+					for (var i = 0; i < model.Model.MaterialPaths.Count; i++)
+					{
+						var stem = Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(model.Model.MaterialPaths[i]));
+						geometryOf.TryAdd(stem, (model, i));
+					}
+				}
+
+				matcapMeans = means;
 				var uvNormalCache = new System.Collections.Concurrent.ConcurrentDictionary<string, UvNormalMap?>(StringComparer.OrdinalIgnoreCase);
-				WorldNormal = stem => uvNormalCache.GetOrAdd(stem, key => indexOf.TryGetValue(key, out var index)
-					? UvNormalBake.Bake(matcapModel.Geometry, index)
+				WorldNormal = stem => uvNormalCache.GetOrAdd(stem, key => geometryOf.TryGetValue(key, out var found)
+					? UvNormalBake.Bake(found.Model.Geometry, found.Index)
 					: null);
 			}
 

@@ -2845,18 +2845,39 @@ public sealed class SourceMaterialConverter
 				var maskHeight = 0;
 				if (loaded.Mask1Texture is { Length: > 0 } maskName)
 					TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
-				var worldNormal = WorldNormalFor(loaded.Stem);
+				var (normalRgba, normalWidth, normalHeight, sourceAxes) = MatcapNormalSource();
 				MaterialAppearance.LiftMatcapToSurface(
 					rgba, vtf.Width, vtf.Height,
 					matcapRgba, matcapWidth, matcapHeight,
-					worldNormal?.Rgba, worldNormal?.Width ?? 0, worldNormal?.Height ?? 0,
+					normalRgba, normalWidth, normalHeight,
 					maskRgba, maskWidth, maskHeight,
-					loaded.MatcapTintRgba, targetLinear);
+					loaded.MatcapTintRgba, targetLinear, maskChannel: 0, sourceAxes: sourceAxes);
 				return;
 			}
 
 			// 连 matcap 图都读不到：只能涂平（这比"什么都不做"好，源底色往往就是近黑占位）。
 			MaterialAppearance.FlattenToMetalF0(rgba, targetLinear);
+		}
+
+		// matcap 的采样坐标（u,v）从哪来：优先**世界方向法线**（UvNormalBake 烘的），
+		// 没有就退回**这个材质自己的 `$bumpmap`**（切线空间 → 直接拿 R/G 当 uv）。
+		//
+		// ⚠️ 第二条以前没有，代价很实在：实测 serenade 的 `silver_*` 用**平铺 UV**
+		// （U 3.0~5.9），几何烘出来只有零星几个纹素有效，于是 matcap 几乎恒定 ⇒ 金属件
+		// 是一块平色。而它们的 `$bumpmap`（`silver_n`）里恰好画着链条/十字/月牙的凹凸 ——
+		// 拿它当 uv 就等于"按表面起伏去取球面图"，正是源侧那层"闪"的来源。
+		(byte[]? Rgba, int Width, int Height, bool SourceAxes) MatcapNormalSource()
+		{
+			// 覆盖率低的世界法线等于没用（平铺 UV 的件烘不出东西）——那种情况优先用 bumpmap。
+			if (WorldNormalFor(loaded.Stem) is { } world && world.Coverage >= 0.30)
+				return (world.Rgba, world.Width, world.Height, true);
+			if (!string.IsNullOrWhiteSpace(loaded.BumpTexture)
+				&& TryReadTextureRgba(loaded.BumpTexture, out var bump, out var bumpWidth, out var bumpHeight))
+			{
+				return (bump, bumpWidth, bumpHeight, false);
+			}
+
+			return (null, 0, 0, true);
 		}
 
 		// ===== N2：把 matcap 层合进底色 =====
@@ -2896,15 +2917,16 @@ public sealed class SourceMaterialConverter
 			if (loaded.Mask1Texture is { Length: > 0 } maskName)
 				TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
 
-			var worldNormal = WorldNormalFor(loaded.Stem);
+			// 采样坐标与金属那条同源：世界法线优先，没有就用这个材质自己的 `$bumpmap`。
+			var (layerNormal, layerNormalWidth, layerNormalHeight, layerAxes) = MatcapNormalSource();
 			MaterialAppearance.CompositeMatcap(
 				rgba, vtf.Width, vtf.Height,
 				matcapRgba, matcapWidth, matcapHeight,
-				normal: worldNormal?.Rgba,
-				normalWidth: worldNormal?.Width ?? 0,
-				normalHeight: worldNormal?.Height ?? 0,
+				normal: layerNormal,
+				normalWidth: layerNormalWidth,
+				normalHeight: layerNormalHeight,
 				maskRgba, maskWidth, maskHeight,
-				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: true);
+				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: layerAxes);
 
 			// ===== 第二层（`$MATCAP2`）：叠在第一层之上，蒙版用 `$mask1` 的 **B** 通道 =====
 			//
