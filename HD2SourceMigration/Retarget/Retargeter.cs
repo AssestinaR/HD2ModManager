@@ -309,6 +309,18 @@ public sealed partial class Retargeter
 
 		// ---- 蒙皮：源骨 → HD2 骨 -------------------------------------------
 		var (resolved, hops, _) = ResolveBoneMap();
+		// **一根骨都没对上 = 骨架没有骨名表**，必须当场停。
+		// 2026-11-05 踩到：`source convert` 少给 `--bone-hash` 时，骨架读出来 `HasName` 全为 false，
+		// 重定向于是"安静地把 128 根骨全丢掉"——顶点权重解不出来，调色板空，最后报的却是
+		// `InvalidFinalBoneRemap: fake=0, provisionalFakeCount=0`，看起来像"jiggle 骨太多"。
+		// 那一刻离真正的原因（缺骨名表）已经隔了三层。宁可在这里红，也不要往下游漏。
+		if (resolved.Count == 0)
+		{
+			var named = _rig.Bones.Count(bone => bone.HasName);
+			throw new InvalidDataException(
+				$"重定向一根骨都没对上（源骨 {_model.Bones.Count} 根，HD2 骨 {_rig.Bones.Count} 根，其中有名字的只有 {named} 根）。"
+				+ "多半是 HD2 骨架缺骨名表：给 --bone-hash <hash→名字表>，或在管理器里建立资产索引。");
+		}
 		_resolved = resolved;
 		_hops = hops;
 
