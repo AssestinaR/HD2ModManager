@@ -117,12 +117,80 @@ public static class MaterialAppearance
 	/// </para>
 	/// </summary>
 	/// <param name="matcapIsTheSurface"><c>tint ≥ 0.9</c>，见 <see cref="MatCapVerdict.MatCapIsTheSurface"/>。</param>
-	/// <param name="baseHasOwnColour">底色是一张有内容的图（不是占位图、也不是整片近黑）。</param>
+	/// <param name="baseIsPatterned">底色是一张<b>有花纹</b>的图（见 <see cref="IsPatterned"/>）。</param>
 	public static bool MatCapIsMetallicSurface(
-		bool matcapIsTheSurface, bool baseHasOwnColour, string? matcapName, string? materialName)
-		=> matcapIsTheSurface
-			&& !baseHasOwnColour
-			&& IsMetallicMatcapName(matcapName, materialName);
+		bool matcapIsTheSurface, bool baseIsPatterned, string? matcapName, string? materialName)
+	{
+		if (!matcapIsTheSurface)
+			return false;
+		// 有花纹的底色 = 布料/皮肤/纱：那上面的一层 matcap 是高光，不是表面本身。
+		if (baseIsPatterned)
+			return false;
+
+		// 两个名字**任一**明确说金属即可，但各自的装饰词仍然优先（`ClassifyName` 内部先查装饰词）。
+		//
+		// ⚠️ **这是 11-05 的第二个修正，别再退回"只看 matcap 名"。**
+		// 实测 恋星milfy 的 `Metal` / `Metal1` / `Metal2`（金属配件，53,102 面：链条/星形挂饰/
+		// 项圈扣/裙边包边）：材质名是 **metal**，而 `$matcaptexture` 是 `gem`（一颗切面宝石球，
+		// 用作"闪一下"的叠加）。只看 matcap 名 ⇒ gem 是硬性非金属 ⇒ 判非金属 ⇒ 金属度 6
+		// ⇒ 实机是一块哑光深红/黑的"塑料边"，正是用户报的"金属件没有金属材质"。
+		// 同一条口径也能解释为什么 `Jewel`（材质名 jewel）与 MourningVeil 的
+		// `Mat_Metal_gem_*`（同一个名字里既有 metal 又有 gem）**不该**因此变金属：
+		// 它们的材质名自己就带装饰词，`ClassifyName` 会先撞上装饰词 ⇒ false。
+		return ClassifyName(matcapName) == true || ClassifyName(materialName) == true;
+	}
+
+	/// <summary>
+	/// 底色是不是一张<b>有花纹</b>的图：明显偏离平均色的像素占比超过 <see cref="PatternedFraction"/>。
+	/// <para>
+	/// <b>为什么需要这条，而不是复用 <see cref="IsContentFreeBase"/>。</b>后者只有两档
+	/// （占位图 ∨ 整片近黑），而"纯色但真实"的底色（<c>red</c> / <c>yellow</c> / <c>purple</c>
+	/// 这种 1024² 平涂色块）两者都不算 —— 它确实有颜色，但那颜色是<b>金属自身的颜色</b>
+	/// （上色/阳极氧化金属），不是布料的花纹。
+	/// </para>
+	/// <para>
+	/// 实测（2026-11-05，恋星milfy 与 serenade 全库）：
+	/// 平涂色块 <c>red</c>/<c>yellow</c>/<c>purple</c>/<c>green</c> 都是 <b>0.0%</b>；
+	/// 真实图集全部 <b>≥ 43%</b>（uv1_whitepink_2 99.6%、manuka_body 43.3%、
+	/// milltina_cloth_black 90.5%、chain 99.9%）。取 2% 作阈值，离两类都远。
+	/// </para>
+	/// </summary>
+	public static bool IsPatterned(int width, int height, ReadOnlySpan<byte> rgba)
+	{
+		if (width <= 0 || height <= 0 || rgba.Length < width * height * 4)
+			return false;
+
+		var pixels = width * height;
+		double sumR = 0, sumG = 0, sumB = 0;
+		for (var offset = 0; offset < pixels * 4; offset += 4)
+		{
+			sumR += rgba[offset];
+			sumG += rgba[offset + 1];
+			sumB += rgba[offset + 2];
+		}
+
+		var meanR = sumR / pixels;
+		var meanG = sumG / pixels;
+		var meanB = sumB / pixels;
+
+		var off = 0;
+		for (var offset = 0; offset < pixels * 4; offset += 4)
+		{
+			var deviation = Math.Max(
+				Math.Abs(rgba[offset] - meanR),
+				Math.Max(Math.Abs(rgba[offset + 1] - meanG), Math.Abs(rgba[offset + 2] - meanB)));
+			if (deviation > PatternedDeviation)
+				off++;
+		}
+
+		return off / (double)pixels > PatternedFraction;
+	}
+
+	/// <summary>单像素算"偏离平均色"的阈值（与 <see cref="IsContentFreeBase"/> 那一侧的量纲一致）。</summary>
+	public const double PatternedDeviation = 24;
+
+	/// <summary>偏离像素占比超过它就算"有花纹"。实测平涂 0.0%、真实图集 ≥ 43%。</summary>
+	public const double PatternedFraction = 0.02;
 
 	/// <summary>
 	/// 按名字判金属：有明确结论返回 <c>true/false</c>，<b>名字里没有任何线索时返回 <c>null</c></b>。

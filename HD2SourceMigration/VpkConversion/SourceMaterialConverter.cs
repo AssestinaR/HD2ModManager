@@ -1376,6 +1376,17 @@ public sealed class SourceMaterialConverter
 		public string? BumpTexture { get; init; }
 
 		/// <summary>
+		/// 金属 + <b>纯色底色</b>：底色不是花纹而是"金属自身的颜色"（上色/阳极氧化金属），
+		/// 所以<b>保留</b>它当 F0 的色相，不归一成中性亮银、也不顶成 matcap 图。
+		/// <para>
+		/// 实测 恋星milfy 的 <c>Metal</c>：底色 <c>red</c>（1024² 平涂砖红、偏离像素 0.0%），
+		/// matcap <c>gem</c> 只提供"闪一下"。归一成中性银会得到一条白边，
+		/// 而源侧是深红偏暗的金属包边。
+		/// </para>
+		/// </summary>
+		public bool MatcapKeepsBaseColour { get; init; }
+
+		/// <summary>
 		/// <c>$bumpstrength</c>（凹凸强度，NekoToon 默认 1.0）。只缩放 XY 的偏离量，Z 重新归一化。
 		/// </summary>
 		public double BumpStrength { get; init; } = 1.0;
@@ -2190,10 +2201,21 @@ public sealed class SourceMaterialConverter
 		// 但底色是有花纹的布料 —— 旧判据把它们做成 metallic=1、粗糙度 0.20，
 		// 实机就是用户报的"裙子和丝袜变成金属"。判据与实测数据的完整推导见
 		// <see cref="MaterialAppearance.MatCapIsMetallicSurface"/>。
-		var baseHasOwnColour = !syntheticBase
-			&& !MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba);
+		var contentFreeBase = syntheticBase
+			|| MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba);
+		// "有花纹"与"没有颜色"是两件事：平涂的 `red` / `yellow`（0.0% 偏离）是有颜色的，
+		// 但那颜色就是**金属自身的颜色**（上色金属），不该像布料那样否掉金属度。
+		var baseIsPatterned = !contentFreeBase
+			&& MaterialAppearance.IsPatterned(vtf.Width, vtf.Height, rgba);
 		var matcapIsMetal = MaterialAppearance.MatCapIsMetallicSurface(
-			verdict.MatCapIsTheSurface, baseHasOwnColour, matcapTextureName, stem);
+			verdict.MatCapIsTheSurface, baseIsPatterned, matcapTextureName, stem);
+
+		// 金属 + **纯色**底色（不是占位图/近黑）= 上色金属：底色留着当它的颜色（F0 的色相），
+		// 不顶成 matcap 图、也不归一成中性亮银。
+		//
+		// 实测 恋星milfy 的 `Metal`：底色 `red`（1024² 平涂砖红），matcap `gem` 只提供"闪"。
+		// 归一成中性银会得到一条白边，而源侧是深红偏暗的金属包边——保留色相才像它。
+		var metalKeepsBaseColour = matcapIsMetal && !contentFreeBase;
 
 		// "matcap 承载表面"= 底色该被顶掉。
 		// Metal 档：金属件、没有底色的件、以及**底色根本没有颜色**（占位图/近黑）的件。
@@ -2202,7 +2224,7 @@ public sealed class SourceMaterialConverter
 		//   非金属的顶掉用中性浅灰（见 NonMetallicSurfaceF0），不给金属度。
 		// 其它档沿用"底色有没有颜色"这条老判据。
 		var matcapIsSurface = matcapMode == MatCapMode.Metal
-			? matcapIsMetal || syntheticBase
+			? (matcapIsMetal && !metalKeepsBaseColour) || syntheticBase
 				|| (verdict.MatCapIsTheSurface
 					&& MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba))
 			: syntheticBase
@@ -2225,7 +2247,7 @@ public sealed class SourceMaterialConverter
 				+ $"meanLum={lumSum / pixels,6:F1} tint={verdict.Tint:F2} "
 				+ $"alpha=[{baseAlpha.Min},{baseAlpha.Max} cov={baseAlpha.Coverage:P1}] "
 				+ $"synthetic={syntheticBase} contentFree={MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)} "
-				+ $"ownColour={baseHasOwnColour} "
+				+ $"patterned={baseIsPatterned} keepsBase={metalKeepsBaseColour} "
 				// matcap 的名字必须打出来：金属/宝石的判定**只由它决定**，
 				// 而它常常和材质名完全不同（实测 `mat_metal_gem_earings` 用的是另一张 matcap）。
 				// 没有这一列，"这个件为什么没被当成金属"就只能靠猜。
@@ -2308,6 +2330,7 @@ public sealed class SourceMaterialConverter
 		// 所以这里改成"保留底色继续走"，与上面"底图缺失不整块失败"同一条口径：
 		// 一块颜色不一定对的材质，永远好过一块白模。
 		var takesMatcapAsBase = matcapIsSurface
+			&& !metalKeepsBaseColour
 			&& matcapMode is MatCapMode.Albedo or MatCapMode.Metal
 			&& (!matcapIsMetal || metalDeliverable);
 		if (takesMatcapAsBase && string.IsNullOrWhiteSpace(matcapTextureName))
@@ -2591,6 +2614,7 @@ public sealed class SourceMaterialConverter
 			UseDither: useAlphaClip && vmt.WantsDitheredTransparency)
 		{
 			BumpTexture = bumpTextureName,
+			MatcapKeepsBaseColour = metalKeepsBaseColour,
 			BumpStrength = bumpStrength,
 			// **只认显式开关，不再按文件名猜。**
 			//
@@ -2788,7 +2812,10 @@ public sealed class SourceMaterialConverter
 			// `Mat_Metal`，平均亮度 17.2 —— 近黑的中性色）：观感是一块深色金属剪影，
 			// 不抢眼、也不会被误认成"金属做坏了"。这比涂成亮银或统一灰都更接近源意。
 			var metalDeliverable = loaded.MetalDeliverable;
-			if (metalDeliverable)
+
+			// **纯色底色的金属保留自己的颜色**（见 MatcapKeepsBaseColour）：那是金属的色相，
+			// 归一成中性 F0 会把它变成一条白边。这里什么都不做，只让下面的金属度槽生效。
+			if (metalDeliverable && !loaded.MatcapKeepsBaseColour)
 				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
 		}
 
@@ -2811,6 +2838,14 @@ public sealed class SourceMaterialConverter
 			&& !MatcapLayerDisabled
 			// 底色本身就是 matcap 的那条路（Bake/Albedo）不能叠自己，会自我加强一倍。
 			&& !(loaded.MatcapIsSurface && matcapMode != MatCapMode.Metal)
+			// **金属件更不能叠自己。** Metal 档下底色已经被归一成 F0（或保留了纯色的金属色），
+			// 那张球面图再叠一遍就是**二次计入**：
+			//   · 相加 → F0 0.96（≈250）加上任何亮部都撞顶 ⇒ 整片 **255 纯白**（实测 serenade 的
+			//     `silver_*` 全中：`matcap_metal7_f0` 的 min=max=255）。F0 从此不再是被实机
+			//     认可的那个 0.96，"金属"变成一块没有明暗的白塑料。
+			//   · 相乘 → 没有世界法线时整片采到球心那一个暗像素 ⇒ **整片变黑**
+			//     （实测 恋星milfy 的 `metal`/`jewel` 的 `$matcap2 1` × `Jewel2`）。
+			&& !(loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
 			&& loaded.MatcapTextureName is { Length: > 0 } matcapName
 			&& TryReadTextureRgba(matcapName, out var matcapRgba, out var matcapWidth, out var matcapHeight))
 		{
