@@ -30,6 +30,14 @@ public sealed class CanonicalLodBonePaletteCompiler
 			diagnostics.Add(new("EmptyLodBoneCompilation", "A Canonical LOD palette requires at least one final skinned mesh."));
 		if (inputs.Any(input => input.Mesh.LodIndex != lodIndex))
 			diagnostics.Add(new("LodBoneMeshMismatch", "A final mesh was supplied to the wrong Canonical LOD palette."));
+		// 空调色板要**点名是哪份网格**：只报"顶点越界"会把它误读成"jiggle 骨太多"。
+		// 实测（L4D2-3702 Soppo）真正的原因是某份网格的临时调色板 0 条 ——
+		// 顶点连假下标 0 都指不进去，于是每条权重都报一次 InvalidFinalBoneRemap。
+		foreach (var input in inputs)
+			if (input.ProvisionalBoneInfo.RealIndices.Count == 0)
+				diagnostics.Add(new("EmptyProvisionalPalette",
+					$"MeshInfo={input.Mesh.MeshInfoIndex}, Lod={input.Mesh.LodIndex}, "
+					+ $"vertices={input.Mesh.Vertices.Count}: 临时骨骼调色板为空（这份网格没有任何骨骼权重）。"));
 		if (diagnostics.Count != 0)
 			return new(null, [], Array.AsReadOnly(diagnostics.ToArray()));
 
@@ -212,7 +220,16 @@ public sealed class CanonicalLodBonePaletteCompiler
 
 	private static uint Remap(uint fake, UnitBoneRemap oldRemap, UnitBoneInfo oldInfo, UnitBoneRemap newRemap, UnitBoneInfo unified, IReadOnlyList<uint> hashes, List<CanonicalPlanDiagnostic> diagnostics)
 	{
-		if (fake >= oldRemap.FakeIndices.Count) { diagnostics.Add(new("InvalidFinalBoneRemap", "A final fake index exceeds the provisional remap.")); return 0; }
+		if (fake >= oldRemap.FakeIndices.Count)
+		{
+			// 带上具体数字：只写"超出"没法判断是"顶点引用越界"还是"临时调色板太短"，
+			// 而这两件事的修法完全不同（前者错在权重，后者错在 BoneInfo 的 remap 生成）。
+			diagnostics.Add(new("InvalidFinalBoneRemap",
+				$"A final fake index exceeds the provisional remap: fake={fake}, "
+				+ $"provisionalFakeCount={oldRemap.FakeIndices.Count}, material={oldRemap.MaterialIndex}, "
+				+ $"provisionalRealCount={oldInfo.RealIndices.Count}."));
+			return 0;
+		}
 		var oldPalette = oldRemap.FakeIndices[(int)fake];
 		if (oldPalette >= oldInfo.RealIndices.Count || oldInfo.RealIndices[(int)oldPalette] >= hashes.Count) { diagnostics.Add(new("InvalidFinalBonePalette", "A final fake index resolves outside TransformInfo.")); return 0; }
 		var hash = hashes[(int)oldInfo.RealIndices[(int)oldPalette]];

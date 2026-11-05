@@ -331,6 +331,21 @@ public sealed class UnitAuthor
 			}
 		}
 
+		// 调色板为空的唯一原因是"这份网格一个带权重的顶点都没有"。
+		// 那不是一个可以继续的中间状态：下游会拿一张 0 条的 remap 去解顶点下标，
+		// 于是每个权重都报一次 InvalidFinalBoneRemap（实测 L4D2-3702 Soppo：
+		// MeshInfo=0 / Lod=3 / 145203 顶点，报出来像"jiggle 骨太多"，其实一个骨都没绑上）。
+		// 这里**当场点名**：有多少顶点没有影响、多少顶点有影响但哈希没落进外壳。
+		if (palette.Count == 0)
+		{
+			var empty = request.Mesh.Vertices.Count(vertex => vertex.Influences.Count == 0);
+			diagnostics.Add(
+				$"网格 #{mesh.Index}（Lod={mesh.LodIndex}）的骨骼调色板为空："
+				+ $"{request.Mesh.Vertices.Count} 个顶点里 {empty} 个没有任何影响、"
+				+ $"{request.Mesh.Vertices.Count - empty} 个有影响但一个都没落进外壳的 TransformInfo。");
+			return null;
+		}
+
 		palette.Sort();
 		var realIndices = new uint[palette.Count];
 		for (var i = 0; i < palette.Count; i++)
