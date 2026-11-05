@@ -1566,6 +1566,17 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				pieceOverrides,
 				targetModes,
 				gameDataDirectory: SettingsService.GetGameDataFolder());
+
+			// **真映射那一层的结论必须说出来。** 以前这个结果被直接丢掉，于是
+			// "没有一条映射能应用""备份基准失效无法还原""当前文件被外部替换"这些原因
+			// 一个字都不会到界面 —— 用户看到的就是"关不掉 / 打不开、点了没反应"。
+			if (result.DataMapping is { Message: { Length: > 0 } dataMessage } dataMapping)
+			{
+				LogService.Info($"真映射：{dataMessage}");
+				StatusDetail = dataMessage;
+				if (!dataMapping.Written)
+					notifications.Show(dataMessage, NotificationLevel.Warning, TimeSpan.FromSeconds(16), "护甲注册");
+			}
 			modelDefinitions = result.Document.ModelDefinitions;
 			pieceOverrides = result.Document.PieceOverrideDefinitions;
 			targetModes = result.Document.TargetModeDefinitions;

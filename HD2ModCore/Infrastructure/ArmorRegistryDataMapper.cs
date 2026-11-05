@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using FileDecryptor;
+using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -19,15 +20,7 @@ public sealed record ArmorRegistryDataMapping(
 	uint? SourceItemId = null,
 	IReadOnlyList<ArmorRegistryDataSourcePiece>? SourcePieces = null);
 
-/// <summary>真映射模式的执行结果。</summary>
-public sealed record ArmorRegistryDataMappingResult(
-	int Applied,
-	int Skipped,
-	bool Written,
-	string? Message = null)
-{
-	public static readonly ArmorRegistryDataMappingResult Nothing = new(0, 0, false, null);
-}
+/// <summary>真映射模式的执行结果（类型在 <c>HD2ModCore.Domain</c>，因为要放进 ApplyResult）。</summary>
 
 /// <summary>
 /// 真映射模式：把外观直接写进 <c>generated_customization_armor_sets.dl_bin</c>。
@@ -455,6 +448,17 @@ public sealed class ArmorRegistryDataMapper
 				&& !string.Equals(recordedBuild, currentBuildId, StringComparison.Ordinal))
 			|| (!string.Equals(currentHash, recordedPristine, StringComparison.OrdinalIgnoreCase)
 				&& !string.Equals(currentHash, recordedWritten, StringComparison.OrdinalIgnoreCase));
+		// ⚠️ **重新播种前必须挡住一种情况：当前文件仍是我们改写过的，但基准已经失效。**
+		// 那说明原件找不回来了（备份过期/状态丢失），而拿"我们改过的文件"当新基准会把改动
+		// 固化成"原版"——之后再也分不清哪份才是官方的，还原也就永远做不到了。
+		// 旧实现会在这里静默播种，于是用户看到的是"关掉真映射没效果"。
+		if (reseed && stateSaysOurs)
+		{
+			return new ArmorRegistryDataMappingResult(0, mappings.Count, false,
+				"原始备份基准已失效（游戏版本变化或状态文件丢失），而当前注册表仍是被改写过的版本 —— "
+				+ "无法安全还原。请先执行「Steam 校验完整性」恢复官方文件，再重新应用映射。");
+		}
+
 		if (reseed)
 			await File.WriteAllBytesAsync(backupPath, current, cancellationToken).ConfigureAwait(false);
 
@@ -512,19 +516,42 @@ public sealed class ArmorRegistryDataMapper
 		// 没有任何改动时把游戏文件还原成原始备份（支持"删掉映射就撤销"）。
 		if (applied == 0)
 		{
-			// 只有当前文件**确实是我们写的那份**才用备份还原。若它既不是备份、也不是我们
-			// 写的，说明文件被外部替换过（游戏更新 / Steam 校验完整性）。这时把旧备份写
-			// 回去，等于用一份可能已被污染的基准覆盖干净文件。
+			var alreadyPristine = string.Equals(currentHash, pristineSha, StringComparison.OrdinalIgnoreCase);
+
+			// ⚠️ **只有"明确要求关掉"（一条映射都没给）才走还原。**
+			// 给了映射却一条都没应用上（目标护甲/来源件表找不到、或内容已经一致），
+			// 这时还原等于把上一次已经生效的映射一起抹掉 —— 而用户明明是想"打开/更新"。
+			// 旧实现不看这一条，于是"全部跳过"和"要求关闭"走了同一条路。
+			if (mappings.Count != 0)
+			{
+				return new ArmorRegistryDataMappingResult(0, skipped, false,
+					$"没有一条映射能应用（{mappings.Count} 条全部跳过：目标护甲或来源件表在注册表里找不到）。"
+					+ "已保留当前注册表，未做任何改动。");
+			}
+
+			// 已经就是原版：没什么可还原的，但**要说出来**，否则用户看到的是"点了没反应"。
+			if (alreadyPristine)
+			{
+				return new ArmorRegistryDataMappingResult(0, skipped, false,
+					"注册表已经是原始版本，无需还原。");
+			}
+
+			// 当前文件既不是原版、也不是我们写的那份 ⇒ 被外部替换过（Steam 校验 / 其它工具）。
+			// 这时数据层的改动其实已经不在文件里了，但**绝不能**拿旧备份去覆盖它：
+			// 那会毁掉外部写入的内容，也会让索引指纹对不上真原版。
 			var weWroteIt = recordedWritten is { Length: > 0 }
 				&& string.Equals(currentHash, recordedWritten, StringComparison.OrdinalIgnoreCase);
-			if (weWroteIt && !string.Equals(currentHash, pristineSha, StringComparison.OrdinalIgnoreCase))
+			if (!weWroteIt)
 			{
-				await WriteAtomicAsync(targetPath, pristine, cancellationToken).ConfigureAwait(false);
-				await WriteStateAsync(statePath, pristineSha, pristineSha, pristineContent, currentBuildId,
-					gameDataDirectory, cancellationToken).ConfigureAwait(false);
-				return new ArmorRegistryDataMappingResult(0, skipped, true, "已还原原始注册表数据。");
+				return new ArmorRegistryDataMappingResult(0, skipped, false,
+					"当前注册表已被外部替换（Steam 校验完整性或其它工具），映射在数据层已经不再生效，无需还原；"
+					+ "也没有覆盖它——覆盖会把外部写入的内容一起毁掉。");
 			}
-			return new ArmorRegistryDataMappingResult(0, skipped, false, null);
+
+			await WriteAtomicAsync(targetPath, pristine, cancellationToken).ConfigureAwait(false);
+			await WriteStateAsync(statePath, pristineSha, pristineSha, pristineContent, currentBuildId,
+				gameDataDirectory, cancellationToken).ConfigureAwait(false);
+			return new ArmorRegistryDataMappingResult(0, skipped, true, "已还原原始注册表数据。");
 		}
 
 		if (!TryForge(edited, contentHash))
@@ -537,7 +564,8 @@ public sealed class ArmorRegistryDataMapper
 		{
 			await WriteStateAsync(statePath, pristineSha, currentHash, pristineContent, currentBuildId,
 				gameDataDirectory, cancellationToken).ConfigureAwait(false);
-			return new ArmorRegistryDataMappingResult(applied, skipped, false, null);
+			return new ArmorRegistryDataMappingResult(applied, skipped, false,
+				$"{applied} 条映射已经在注册表里生效，无需重写。");
 		}
 
 		var sealedBytes = decryptor.EncodeData(edited);

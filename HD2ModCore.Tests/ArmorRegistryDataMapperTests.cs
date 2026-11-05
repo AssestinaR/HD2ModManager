@@ -437,6 +437,78 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		Assert.Equal(ReadPieces(plain, 200).OrderBy(p => p), ReadPieces(plain, 100).OrderBy(p => p));
 	}
 
+	/// <summary>
+	/// **给了映射、却一条都没应用上时，绝不能走"还原"。**
+	/// <para>
+	/// 旧实现把"全部跳过"和"要求关闭"当成同一件事：都进还原分支，用原始备份覆盖当前文件。
+	/// 后果是——上一次已经生效的映射被静默抹掉，而用户明明是想"打开/更新"。
+	/// （2026-11-05 反馈：Steam 校验完整性之后真映射"打开没效果"。）
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task Apply_WithOnlySkippedMappings_NeverRevertsThePreviouslyAppliedSet()
+	{
+		var gameData = await CreateGameDataAsync();
+		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
+		var backup = Path.Combine(_root, "backup");
+		var mapper = new ArmorRegistryDataMapper();
+
+		var applied = await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
+		Assert.True(applied.Written);
+		var afterApply = Convert.ToHexString(await File.ReadAllBytesAsync(target));
+
+		// 一条目标套件根本不存在的映射：全部跳过。
+		var skipped = await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(999, 200)], backup);
+
+		Assert.False(skipped.Written);
+		Assert.Equal(0, skipped.Applied);
+		Assert.Equal(1, skipped.Skipped);
+		// 文件必须还是上一次写出来的那份（没有被"还原"覆盖）。
+		Assert.Equal(afterApply, Convert.ToHexString(await File.ReadAllBytesAsync(target)));
+		Assert.False(string.IsNullOrWhiteSpace(skipped.Message));
+	}
+
+	/// <summary>
+	/// 要求关闭、但当前文件已经被外部替换（Steam 校验 / 其它工具）时：不覆盖、**并且说出来**。
+	/// 旧实现这里返回 <c>null</c> 消息，界面于是什么都不显示 —— 用户看到"关不掉"。
+	/// </summary>
+	[Fact]
+	public async Task Apply_TurnOffOnExternallyReplacedFile_ExplainsInsteadOfStayingSilent()
+	{
+		var gameData = await CreateGameDataAsync();
+		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
+		var backup = Path.Combine(_root, "backup");
+		var mapper = new ArmorRegistryDataMapper();
+
+		await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
+		var external = Seal(Library(Kit(300, 3, Piece(0x9999999999999999, 1, 0))));
+		await File.WriteAllBytesAsync(target, external);
+
+		var restore = await mapper.ApplyAsync(gameData, [], backup);
+
+		Assert.False(restore.Written);
+		Assert.Equal(Convert.ToHexString(external), Convert.ToHexString(await File.ReadAllBytesAsync(target)));
+		// 外部文件会被当作新基准（这正是 Steam 校验的语义），所以这里报的是"已经是原始版本"。
+		// 要紧的是：**不覆盖、也不静默**。
+		Assert.False(string.IsNullOrWhiteSpace(restore.Message));
+	}
+
+	/// <summary>要求关闭、文件本来就是原版：不写，但要说清"无需还原"。</summary>
+	[Fact]
+	public async Task Apply_TurnOffOnPristineFile_SaysThereIsNothingToRestore()
+	{
+		var gameData = await CreateGameDataAsync();
+		var backup = Path.Combine(_root, "backup");
+		var mapper = new ArmorRegistryDataMapper();
+		// 先播种一次基准（不写映射），让备份与状态就位。
+		await mapper.ApplyAsync(gameData, [], backup);
+
+		var restore = await mapper.ApplyAsync(gameData, [], backup);
+
+		Assert.False(restore.Written);
+		Assert.Contains("已经是原始版本", restore.Message);
+	}
+
 	[Fact]
 	public async Task UnmodifiedPath_PointsAtTheBackupOnceWeWrite()
 	{

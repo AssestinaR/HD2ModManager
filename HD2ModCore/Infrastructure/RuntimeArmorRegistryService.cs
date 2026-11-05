@@ -525,6 +525,8 @@ public sealed class RuntimeArmorRegistryService
 		{
 			if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
 		}
+		// 真映射这一层的结果要一路带到返回值里（见 RuntimeArmorRegistryApplyResult.DataMapping）。
+		ArmorRegistryDataMappingResult? dataMapping = null;
 		// 运行时真正执行的是 unit 对列表（wardrobe.links）；协议本身只是管理器的意图记录。
 		// 没有游戏数据目录或编译失败时**不写文件**——留上一版映射，比写一份空映射安全。
 		if (gameDataDirectory is not null && Directory.Exists(gameDataDirectory))
@@ -591,7 +593,10 @@ public sealed class RuntimeArmorRegistryService
 						Path.Combine(backupDirectory, ArmorRegistryDataMapper.StateFileName));
 					if (inTrueMapping || everModified)
 					{
-						await new ArmorRegistryDataMapper().ApplyAsync(
+						// ⚠️ **结果必须接住。** 以前这里是裸 await，返回值直接丢掉，于是
+						// "没有一条映射能应用""备份基准失效无法还原""被外部替换"这些原因
+						// 全都消失在空气里 —— 用户只看到"点了没反应"。
+						dataMapping = await new ArmorRegistryDataMapper().ApplyAsync(
 							gameDataDirectory,
 							dataMappings,
 							backupDirectory,
@@ -630,7 +635,11 @@ public sealed class RuntimeArmorRegistryService
 			snapshot.Document,
 			snapshot.Fingerprint,
 			snapshot.RuntimeProcessRunning,
-			snapshot.RuntimeAcknowledged);
+			snapshot.RuntimeAcknowledged)
+		{
+			// 真映射那一层的结论必须带回去（没写成功时 Message 说明原因）。
+			DataMapping = dataMapping,
+		};
 	}
 
 	private static readonly JsonSerializerOptions WorkspaceJsonOptions = new(JsonSerializerDefaults.Web)

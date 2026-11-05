@@ -1,4 +1,22 @@
 namespace HD2ModCore.Domain;
+/// <summary>
+/// 真映射模式的执行结果。
+/// <para>
+/// <b>为什么放在 Domain 而不是 Infrastructure。</b>它要挂到
+/// <see cref="RuntimeArmorRegistryApplyResult"/> 上一起回给调用方（界面/CLI），
+/// 而 Domain 不能反向依赖 Infrastructure。记录本身只有四个原始字段，没有行为依赖。
+/// </para>
+/// <param name="Applied">实际写进注册表的映射条数。</param>
+/// <param name="Skipped">被跳过的映射条数（目标护甲或来源件表找不到）。</param>
+/// <param name="Written">是否真的写了文件。<c>false</c> 时 <paramref name="Message"/> 说明为什么没写。</param>
+public sealed record ArmorRegistryDataMappingResult(
+	int Applied,
+	int Skipped,
+	bool Written,
+	string? Message = null)
+{
+	public static readonly ArmorRegistryDataMappingResult Nothing = new(0, 0, false, null);
+}
 
 public sealed record RuntimeArmorRegistryModel(
 	string Key,
@@ -136,4 +154,15 @@ public sealed record RuntimeArmorRegistryApplyResult(
 	RuntimeArmorRegistryDocument Document,
 	string Fingerprint,
 	bool RuntimeProcessRunning,
-	bool RuntimeAcknowledged);
+	bool RuntimeAcknowledged)
+{
+	/// <summary>
+	/// 真映射这一层的结果（只有真的动过 <c>generated_customization_armor_sets.dl_bin</c> 时非 null）。
+	/// <para>
+	/// <b>为什么必须带出来。</b>这个值以前被直接丢掉，于是"没有一条映射能应用""备份基准失效
+	/// 无法还原""当前文件被外部替换"这些明确的失败原因<b>一个字都不会到界面</b>，
+	/// 用户看到的就是"点了没反应"（2026-11-05 反馈：真映射关不掉 / Steam 校验后打不开）。
+	/// </para>
+	/// </summary>
+	public ArmorRegistryDataMappingResult? DataMapping { get; init; }
+}
