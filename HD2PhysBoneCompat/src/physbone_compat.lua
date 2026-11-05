@@ -681,43 +681,61 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 	-- 行为等价：limit=2π 时 `angle > 2π` 永远不成立，和 limit=0 跳过分支完全一样。
 	local angleLimit = math.abs(tonumber(params.angleLimit) or 0.6)
 	if angleLimit >= math.pi then angleLimit = 0 end
-	-- 没有锥（angleCon）时，退到 yaw/pitch **分轴**约束（每根骨相对自己的绑定方向各夹各的）。
+	-- 分轴限位：**带符号**，且与锥**叠加**（不是二选一）。
+	--
+	-- Valve 的三个 flag 各自独立生效：yawCon 夹 yaw 区间、pitchCon 夹 pitch 区间、
+	-- angleCon 夹总偏角。以前我们是"有锥就不看分轴"，而且把区间取成
+	-- `max(|min|,|max|)` 的**对称**值。
+	--
+	-- 2026-11-05 实测（L4D2-3831123094 的头发）：作者给的是**单边**区间 ——
+	--   `Bn_r_cefa01/02` yaw [0, +10°]（只能往外）、`Bn_liuhaia01/aic01/aid01/b01` yaw [−10°, 0]。
+	-- 对称化之后"只能往外"被抹成"里外都行"，实机就是头发朝脸那一侧甩。
+	-- 现在按原值夹：`devYaw ∈ [sin(minYaw), sin(maxYaw)]`。
 	local limitSource = "cone"
 	local flags = opts and opts.flags
-	local limitYaw, limitPitch, axisLimits = 0, 0, false
-	if angleLimit == 0 and flags ~= nil then
-		if not flag_set(flags, M.FLAG_ANGLE_CONSTRAINED) then
-			local yaw = math.max(math.abs(tonumber(params.minYaw) or 0), math.abs(tonumber(params.maxYaw) or 0))
-			local pitch = math.max(math.abs(tonumber(params.minPitch) or 0), math.abs(tonumber(params.maxPitch) or 0))
-			if yaw > 0 or pitch > 0 then
-				-- 分轴：每根骨相对**自己绑定方向**各夹各的（见 step_tip 里的说明）。
-				-- 存 sin(限位角)：后面比的是单位向量在轴上的分量，本来就是 sin。
-				--
-				-- `limitRelax` 把所有分轴限位按倍数放宽（1.0 = 完全尊重作者）。
-				-- 存在的理由：有些资产作者给的 yaw 只有 ±15°，而实测摆动需求能到 ±57°
-				-- （lime 的 Side.L/R、Back_S.L/R）——按作者值夹必然是"几乎不动的硬杆"。
-				-- 尊重还是放宽是**产品选择**，不是对错，所以做成显式开关，不偷偷改。
-				local relax = (opts and tonumber(opts.limitRelax)) or 1
-				if relax ~= 1 and relax > 0 then
-					yaw = yaw * relax
-					pitch = pitch * relax
-				end
-				limitYaw = (yaw > 0 and yaw < math.pi) and math.sin(yaw) or 1
-				limitPitch = (pitch > 0 and pitch < math.pi) and math.sin(pitch) or 1
+	local yawMin, yawMax, pitchMin, pitchMax = 0, 0, 0, 0
+	local axisLimits = false
+	if flags ~= nil then
+		-- `limitRelax` 把所有分轴限位按倍数放宽（1.0 = 完全尊重作者）。
+		-- 存在的理由：有些资产作者给的 yaw 只有 ±15°，而实测摆动需求能到 ±57°
+		-- （lime 的 Side.L/R、Back_S.L/R）——按作者值夹必然是"几乎不动的硬杆"。
+		-- 尊重还是放宽是**产品选择**，不是对错，所以做成显式开关，不偷偷改。
+		local relax = (opts and tonumber(opts.limitRelax)) or 1
+		if relax <= 0 then relax = 1 end
+		-- 角 → 分量界限。比的是单位向量在该轴上的分量，所以差值就是 sin。
+		-- 与旧实现同一条规则：|θ| ≥ π 视作 1（等于不限），θ = 0 就是 0。
+		local function bound(angle)
+			if angle == 0 then return 0 end
+			if math.abs(angle) >= math.pi then return angle > 0 and 1 or -1 end
+			return math.sin(angle)
+		end
+		if flag_set(flags, M.FLAG_YAW_CONSTRAINED) then
+			local lo = (tonumber(params.minYaw) or 0) * relax
+			local hi = (tonumber(params.maxYaw) or 0) * relax
+			if lo ~= 0 or hi ~= 0 then
+				yawMin, yawMax = bound(lo), bound(hi)
 				axisLimits = true
-				limitSource = "yawPitchAxes"
-				-- 外包锥只用来做诊断/兜底：两轴合成后的最大偏角。
-				local combined = math.min(math.pi * 0.5, math.sqrt(yaw * yaw + pitch * pitch))
-				angleLimit = combined
-			else
-				limitSource = "none"
 			end
-		else
+		end
+		if flag_set(flags, M.FLAG_PITCH_CONSTRAINED) then
+			local lo = (tonumber(params.minPitch) or 0) * relax
+			local hi = (tonumber(params.maxPitch) or 0) * relax
+			if lo ~= 0 or hi ~= 0 then
+				pitchMin, pitchMax = bound(lo), bound(hi)
+				axisLimits = true
+			end
+		end
+		if axisLimits then
+			limitSource = "yawPitchAxes"
+		elseif flag_set(flags, M.FLAG_ANGLE_CONSTRAINED) and angleLimit == 0 then
 			-- 带 angleCon 但限位写成了 0。严格讲这是"作者要求一点都不许转"，
 			-- 但真按 0° 夹会让这根骨**完全冻住**，而"冻住一块布"比"它多晃两下"难看得多，
 			-- 也更容易被误判成"物理没生效"。目前**不强制**，只在限位来源统计里标出来
 			-- （`coneZero`），真遇到这样的资产再去决定要不要夹。扫过的四份 rig 里没有这种。
 			limitSource = "coneZero"
+		elseif angleLimit == 0 then
+			-- 三种约束都没有 ⇒ 真的不限位。
+			limitSource = "none"
 		end
 	end
 	local gains = {
@@ -728,8 +746,14 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 		limit = angleLimit,
 		limitSource = limitSource,
 		axisLimits = axisLimits,
-		limitYaw = limitYaw,
-		limitPitch = limitPitch,
+		-- 带符号的区间（单位向量在该轴上的分量界限）。对称情况 min = −max，与旧行为等价。
+		limitYawMin = yawMin, limitYawMax = yawMax,
+		limitPitchMin = pitchMin, limitPitchMax = pitchMax,
+		-- 诊断只用：旧的"对称幅值"口径，方便报告里继续显示 ±x°。
+		limitYaw = math.max(math.abs(yawMin), math.abs(yawMax)),
+		limitPitch = math.max(math.abs(pitchMin), math.abs(pitchMax)),
+		-- 总偏角上限（Valve 的 angleCon）：分量是 sin，所以"总偏角的正弦"就是两分量平方和开根。
+		sinTotal = angleLimit > 0 and math.sin(angleLimit) or 0,
 		-- 预存 cos(limit)：step_tip 判断"是否超限"时只需 dot < cosLimit，
 		-- 不用每骨每子步调一次 acos（省一次 C 库调用）。见 step_tip 的说明。
 		cosLimit = math.cos(angleLimit),
@@ -1088,10 +1112,22 @@ function M.step_tip(item, dt, apx, apy, apz, qx, qy, qz, qw)
 			local devYaw = blx * nx + bly * ny + blz * nz
 			local devPitch = bux * nx + buy * ny + buz * nz
 			local overYaw, overPitch = 0, 0     -- 0 未超限；±1 = 从哪一侧超的
-			if devYaw > gains.limitYaw then devYaw, overYaw = gains.limitYaw, 1
-			elseif devYaw < -gains.limitYaw then devYaw, overYaw = -gains.limitYaw, -1 end
-			if devPitch > gains.limitPitch then devPitch, overPitch = gains.limitPitch, 1
-			elseif devPitch < -gains.limitPitch then devPitch, overPitch = -gains.limitPitch, -1 end
+			-- 带符号区间：作者写 [0, +10°] 就是"只许往外"，不能再被对称成 ±10°。
+			if devYaw > gains.limitYawMax then devYaw, overYaw = gains.limitYawMax, 1
+			elseif devYaw < gains.limitYawMin then devYaw, overYaw = gains.limitYawMin, -1 end
+			if devPitch > gains.limitPitchMax then devPitch, overPitch = gains.limitPitchMax, 1
+			elseif devPitch < gains.limitPitchMin then devPitch, overPitch = gains.limitPitchMin, -1 end
+			-- 总偏角（Valve 的 angleCon）：与分轴**叠加**，不是二选一。
+			-- 两个分量正交，所以"总偏角的正弦"就是 √(y²+p²)；超过 sin(angleLimit) 就按比例收回来。
+			if gains.sinTotal > 0 then
+				local magnitude = math.sqrt((devYaw * devYaw) + (devPitch * devPitch))
+				if magnitude > gains.sinTotal then
+					local scale = gains.sinTotal / magnitude
+					devYaw, devPitch = devYaw * scale, devPitch * scale
+					if overYaw == 0 then overYaw = 1 end
+					if overPitch == 0 then overPitch = 1 end
+				end
+			end
 			if overYaw ~= 0 or overPitch ~= 0 then
 				-- 用"静止方向 + 两个轴上的分量"重建，再**软一点**回夹。
 				--
