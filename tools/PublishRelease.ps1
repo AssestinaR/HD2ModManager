@@ -239,7 +239,6 @@ function Assert-ReleaseLayout {
         'HD2ModManager.exe',
         'README.md',
         'hd2mod.cmd',
-        'Armor-Diagnostics.cmd',
         'data\resources\archivehashes.json',
         'data\resources\asset-metadata-manifest.json',
         'data\resources\bonehash.txt',
@@ -429,8 +428,6 @@ function Publish-ReleaseVariant {
     Write-RootReadme -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout -CompatibilityMode $CompatibilityMode
     Write-CliLauncher -PackageDirectory $stageDirectory
     Copy-MaterialToolchain -PackageDirectory $stageDirectory
-    Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'Armor-Diagnostics.cmd') -Destination $stageDirectory -Force
-    Copy-Item -LiteralPath (Join-Path $cliDocumentationSource 'ARMOR-DIAGNOSTICS.md') -Destination $documentationDirectory -Force
     Assert-ReleaseLayout -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout
 
     $variantLabel = if ($CompatibilityMode) { "compat-$VariantName" } else { $VariantName }
