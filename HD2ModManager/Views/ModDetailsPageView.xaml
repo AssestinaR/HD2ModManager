@@ -79,14 +79,17 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                            <TextBlock Text="section 组件开关"
-                                       Foreground="{StaticResource TextPrimary}" TextWrapping="Wrap"/>
-                            <TextBlock Text="按「7 标准槽 × 身形」分组；每块几何能单独开关。在单独的编辑页里调，空间更大。"
-                                       Foreground="{StaticResource TextSecondary}" FontSize="11" TextWrapping="Wrap"/>
-                        </StackPanel>
+                        <!--
+                            单行：这一行只是"去哪儿调"，说明写在编辑页里。
+                            按钮与「目标护甲」行同一个 Padding + VerticalAlignment=Center，
+                            两行按钮高度才会一致（原来用 StackPanel 两行字把行撑高了，按钮跟着变高）。
+                        -->
+                        <TextBlock Grid.Column="0" Text="section 组件开关"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
                         <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="编辑 section 组"
                                 Command="{Binding OpenSectionalEditorCommand}" Margin="12,0,0,0" Padding="14,6"
+                                VerticalAlignment="Center"
                                 Visibility="{Binding CanOpenSectionalEditor, Converter={StaticResource BoolToVis}}"/>
                     </Grid>
                     <!--
