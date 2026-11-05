@@ -536,6 +536,22 @@ public sealed class SourceMaterialConverter
 	public const double MetalF0 = 0.96;
 
 	/// <summary>
+	/// 「金属 + 真镂空」的件（只能进 <c>alphaclip</c>，没有金属度槽）把底色写成这个电平：
+	/// <b>线性 0.58 ≈ sRGB 200 的中性银灰</b>。
+	/// <para>
+	/// <b>为什么是平色、不用 matcap。</b>这些件的观感全在一张球面图上，而多数件的 UV 只是
+	/// 一两纹素的缝隙（实测 MourningVeil 的 <c>Mat_ACCMetal_Tiara</c> U 宽 0.001），
+	/// 没有纹理空间存图案；按 matcap 抬升还会采到球心的暗像素，算出 ~91 的深灰，等于没变。
+	/// 所以这里给一个能一眼看出"是金属"的平色，比任何花活都可靠。
+	/// </para>
+	/// <para>
+	/// <b>为什么不是满 F0 0.96。</b>没有金属反射可依靠，顶到 0.96 会变成一块亮银塑料
+	/// （11-01 的实机结论）；0.58 保住金属明度，又留一点灰度。
+	/// </para>
+	/// </summary>
+	public const double CutoutMetalLevel = 0.58;
+
+	/// <summary>
 	/// <see cref="CutoutStrategy.AdvancedOpacity"/> 的陡度。抄自游戏本体角色材质
 	/// （父 id <c>0x8f669f365f24594e</c>）的 <c>OpacitySharpness</c>。
 	/// </summary>
@@ -2831,6 +2847,21 @@ public sealed class SourceMaterialConverter
 			// 归一成中性 F0 会把它变成一条白边。这里什么都不做，只让下面的金属度槽生效。
 			if (metalDeliverable && !loaded.MatcapKeepsBaseColour)
 				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+			else if (!metalDeliverable && loaded.MatcapIsSurface)
+			{
+				// ── 「金属 + 真镂空」的件（判据全部来自数据，不点任何 mod / 材质名）──────
+				//
+				// ① 模板表达不了金属：`$alphatest` + 底色 alpha 真有图案 ⇒ 落进 `alphaclip`
+				//    （镂空优先），而它的 11 个变量里**没有任何金属参数**；
+				// ② 底色没有自己的颜色（占位图 ∨ 近黑）——观感本来就只在 matcap 上。
+				// 「是不是金属」由外层的 `loaded.MatcapIsMetal` 保证（这个分支就在它里面）。
+				//
+				// 于是这批件既没有金属度、底色又是近黑占位 ⇒ 实机是一块灰黑剪影。
+				// 做法：底色写成**平的中性金属色**（见 CutoutMetalLevel），镂空完全不动。
+				// 平色而不是 matcap：这些件的 UV 多是缝隙（存不下图案），而按 matcap 抬升
+				// 还会采到球心的暗像素，算出 ~91 的深灰 —— 等于没变（11-05 实机结论）。
+				MaterialAppearance.FlattenToMetalF0(rgba, CutoutMetalLevel);
+			}
 		}
 
 		// ===== N2：把 matcap 层合进底色 =====
