@@ -40,48 +40,6 @@ public sealed class UvNormalBakeTests
 		Assert.True(z > 0.9, $"冲突区域应当退回朝正面（z≈1），实际 ({x:F2},{y:F2},{z:F2})");
 	}
 
-	/// <summary>
-	/// **平铺 UV（U 超出 0..1）也必须烘得出来。**
-	/// <para>
-	/// 实测 serenade 的一批材质是平铺坐标：<c>silver_Glove</c> U[3.00,5.90]、
-	/// <c>silver_Necklace</c> U[3.02,3.98]、<c>Lace_*</c> U[4.5,8.5]（作者把花纹图平铺若干次）。
-	/// 直接乘分辨率会得到 1533 这类坐标，夹到边缘后 <c>minX &gt; maxX</c>，一个纹素都填不上
-	/// ⇒ <c>Bake</c> 返回 null ⇒ matcap 只采到球心一个像素 ⇒ 金属件是一块平色（"白膜"）。
-	/// 引擎那边是 wrap 采样，所以这里必须按 <c>frac(u)</c> 落回一块纹理内。
-	/// </para>
-	/// <para>
-	/// 这里用的是**实测那种形状**：一块 tile 里偏中段的 UV（3.1..3.9），不是刚好卡在整数上。
-	/// 卡在整数上的三角形在单一 tile 里本来就没有合法展开（3.0 与 4.0 同相），只能跳过。
-	/// </para>
-	/// </summary>
-	[Fact]
-	public void TiledUvsBeyondUnitSquareStillBake()
-	{
-		// 两个三角形：一个整块铺满 tile 3（U 3..4），一个在 tile 0 里铺满 0..1。
-		var vertices = new List<SourceVertex>
-		{
-			new(new Vec3(0, 0, 0), new Vec3(0, 0, 1), 0, 0, default, default, default),
-			new(new Vec3(1, 0, 0), new Vec3(0, 0, 1), 1, 0, default, default, default),
-			new(new Vec3(1, 1, 0), new Vec3(0, 0, 1), 1, 1, default, default, default),
-			new(new Vec3(2, 0, 0), new Vec3(0, 1, 0), 3.1f, 0, default, default, default),
-			new(new Vec3(3, 0, 0), new Vec3(0, 1, 0), 3.9f, 0, default, default, default),
-			new(new Vec3(3, 1, 0), new Vec3(0, 1, 0), 3.9f, 1, default, default, default),
-		};
-		var geometry = new SourceGeometry(
-			vertices,
-			[new SourceTriangle(0, 1, 2, 0), new SourceTriangle(3, 4, 5, 1)],
-			[]);
-
-		// 材质 1 的 UV 全在 0..1 之外：以前这条会返回 null。
-		var tiled = UvNormalBake.Bake(geometry, 1, resolution: 32);
-		Assert.NotNull(tiled);
-		Assert.True(tiled!.Coverage > 0.3, $"平铺 UV 该烘出成片的法线，实际覆盖率 {tiled.Coverage:P1}");
-
-		// 材质 0 是普通 UV，行为不变。
-		var plain = UvNormalBake.Bake(geometry, 0, resolution: 32);
-		Assert.NotNull(plain);
-	}
-
 	private static SourceGeometry Quad(params Vec3[] normals)
 	{
 		var vertices = new List<SourceVertex>();

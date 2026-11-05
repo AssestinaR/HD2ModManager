@@ -25,32 +25,6 @@ namespace HD2SourceMigration.VpkConversion;
 /// </summary>
 public sealed record UvNormalMap(byte[] Rgba, int Width, int Height)
 {
-	/// <summary>
-	/// 这张图**真的烘到了**多少比例（alpha &gt; 0 的纹素占比）。
-	/// <para>
-	/// 用途：判断它值不值得给 matcap 当采样坐标。实测 serenade 的 <c>silver_*</c> 用平铺 UV
-	/// （U 3.0~5.9），烘出来只有零星几个纹素有效，其余全是"朝正面"⇒ matcap 采到球心、
-	/// 整件一块平色。覆盖率低的时候，那个材质的 <c>$bumpmap</c> 反而是更好的坐标来源。
-	/// </para>
-	/// </summary>
-	public double Coverage
-	{
-		get
-		{
-			var count = Width * Height;
-			if (count <= 0 || Rgba.Length < count * 4)
-				return 0;
-			var covered = 0;
-			for (var i = 0; i < count; i++)
-			{
-				if (Rgba[(i * 4) + 3] != 0)
-					covered++;
-			}
-
-			return covered / (double)count;
-		}
-	}
-
 	/// <summary>按 UV（0..1）取模型空间法线（已归一化）。越界按边缘夹取。</summary>
 	public (double X, double Y, double Z) Sample(double u, double v)
 	{
@@ -110,17 +84,9 @@ public static class UvNormalBake
 			var c = geometry.Vertices[triangle.C];
 
 			// UV → 纹素坐标（V 与贴图行同向：0 在上）。
-			//
-			// ⚠️ **UV 必须在 [0,1) 里，否则整块烘不出来。** 有一类材质（实测 serenade 的
-			// `silver_Glove` U[3.00,5.90]、`silver_Necklace` U[3.02,3.98]、`Lace_*` U[4.5,8.5]）
-			// 的 UV 是**平铺坐标**：作者把花纹图平铺若干次，U=3 表示"第 3 块"。
-			// 直接乘分辨率会得到 1533 这种坐标，夹到边缘后 minX > maxX，循环一次都不执行
-			// ⇒ `Bake` 返回 null ⇒ matcap / lightworld 全部退回"球心那一个像素"
-			// （实测部署包里这些金属件的 F0 是整片 121，怎么改像素都看不出变化）。
-			// 引擎那边是 wrap 采样，所以这里按 `frac(u)` 落回一块纹理内 —— 与引擎一致。
-			double ax = Wrap(a.U) * (resolution - 1), ay = Wrap(a.V) * (resolution - 1);
-			double bx = Wrap(b.U) * (resolution - 1), by = Wrap(b.V) * (resolution - 1);
-			double cx = Wrap(c.U) * (resolution - 1), cy = Wrap(c.V) * (resolution - 1);
+			double ax = a.U * (resolution - 1), ay = a.V * (resolution - 1);
+			double bx = b.U * (resolution - 1), by = b.V * (resolution - 1);
+			double cx = c.U * (resolution - 1), cy = c.V * (resolution - 1);
 
 			// 面积（顺带判退化：UV 上共线或重合的三角形没有可填的像素）
 			var area = ((bx - ax) * (cy - ay)) - ((by - ay) * (cx - ax));
@@ -244,22 +210,5 @@ public static class UvNormalBake
 
 	private static byte Encode(double unit)
 		=> (byte)Math.Clamp(Math.Round((unit * 0.5 + 0.5) * 255.0, MidpointRounding.AwayFromZero), 0, 255);
-
-	/// <summary>
-	/// 把可能超出 [0,1] 的 UV 折回一块纹理内（引擎是 wrap 采样）。
-	/// <para>
-	/// <b>贴到整数边界的值要算作 1，不能算作 0。</b>取 <c>frac</c> 会把 U=5.0 变成 0.0，
-	/// 于是同一个三角形的两条边被拉到纹理的两端，面积算出来巨大、覆盖整张图 —— 那比
-	/// 什么都不烘还糟。这里把"差一点点就落在整数上"的值保持为 1。
-	/// </para>
-	/// </summary>
-	private static double Wrap(double uv)
-	{
-		if (uv >= 0 && uv <= 1)
-			return uv;
-		var wrapped = uv - Math.Floor(uv);
-		// 折到 0 附近（原值非常接近整数）时按 1 算，避免把面拉过整张贴图。
-		return wrapped < 1e-4 ? 1.0 : wrapped;
-	}
 }
 

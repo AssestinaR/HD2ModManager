@@ -208,9 +208,9 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
-	/// **金属 = 名字说是金属（matcap 名或材质名任一） ∧ 这张 matcap 就是表面本身（底色不是花纹图）。**
+	/// **金属 = 名字说是金属 ∧ 这张 matcap 就是表面本身（底色没有自己的颜色）。**
 	/// <para>
-	/// 实测几类，形状不同但名字很像：
+	/// 实测两类，形状完全相反但名字一样：
 	/// </para>
 	/// <list type="bullet">
 	/// <item>金属件：底色是 1×1 占位图（Lunalice 的 <c>Ornament_metal_Underwear</c>、
@@ -218,15 +218,10 @@ public sealed class MaterialAppearanceTests
 	/// <item>布料：底色是 2048² 的花纹图（恋星milfy 的 <c>uv_1</c> 裙子 / <c>uv_2</c> 薄纱袖，
 	/// 都写 <c>$matcap 2</c> + <c>$matcaptexture metal</c>）⇒ matcap 只是叠上去的一层高光
 	/// ⇒ <b>不能</b>判金属，否则裙子变成镀铬。</item>
-	/// <item><b>金属但 matcap 名是装饰系</b>（恋星milfy 的 <c>Metal</c>：材质名 metal、matcap <c>gem</c>、
-	/// 底色是 1024² 平涂砖红）⇒ 材质名说是金属就该判金属。只看 matcap 名会让 53,102 面金属配件
-	/// 变成哑光深色塑料边（用户报的"金属件没有金属材质"）。</item>
-	/// <item>名字自己就混着装饰词（MourningVeil 的 <c>Mat_Metal_gem_earings</c>）⇒ 装饰词优先，
-	/// 仍然非金属——那件的观感确实是宝石。</item>
 	/// </list>
 	/// <para>
 	/// 也钉住"tint 不够就根本不是表面"这条前置条件：<c>tint &lt; 0.9</c> 时 matcap 只是叠加高光，
-	/// 与底色有没有花纹无关。
+	/// 与底色有没有内容无关。
 	/// </para>
 	/// </summary>
 	[Theory]
@@ -234,191 +229,21 @@ public sealed class MaterialAppearanceTests
 	[InlineData(true, false, "11", "ornament_metal_chain", true)]
 	[InlineData(true, false, "Platinum_Silver", "mat_ornament_metal_tiara", true)]
 	[InlineData(true, false, "matcap_metal8", "mat_ornament_ivory_earrings", true)]
-	// 金属 + 平涂色底色（恋星milfy 的 Metal / Metal1 / Metal2）：matcap 名是装饰系也算金属
-	[InlineData(true, false, "gem", "metal", true)]
-	[InlineData(true, false, "gem", "Metal1", true)]
-	// 布料：底色自成一张花纹图 —— 名字再像金属也不能算
+	// 布料：底色自成一张图 —— 名字再像金属也不能算
 	[InlineData(true, true, "metal", "uv_1", false)]
-	[InlineData(true, true, "metal", "uv_2", false)]
+	[InlineData(true, true, "metal", "metal1", false)]
 	[InlineData(true, true, "matcap_metal11", "mat_metal_necklace", false)]
 	// 宝石 / 无名：名字就否掉了，与底色无关
 	[InlineData(true, false, "gem", "jewel", false)]
 	[InlineData(true, true, "matcap1", "clothes", false)]
-	// 同一个名字里既有 metal 又有装饰词：装饰词优先（实测 MourningVeil，观感确实是宝石）
-	[InlineData(true, false, "matcap_jewel9", "mat_metal_gem_earings", false)]
 	// tint 不够：matcap 只是叠加高光，不算表面
 	[InlineData(false, false, "metal", "metal", false)]
 	public void MetalNeedsBothAMetallicNameAndAMatcapThatIsTheSurface(
-		bool matcapIsTheSurface, bool baseIsPatterned, string? matcapName, string? materialName, bool expected)
+		bool matcapIsTheSurface, bool baseHasOwnColour, string? matcapName, string? materialName, bool expected)
 	{
 		Assert.Equal(
 			expected,
-			MaterialAppearance.MatCapIsMetallicSurface(matcapIsTheSurface, baseIsPatterned, matcapName, materialName));
-	}
-
-	/// <summary>
-	/// **"把 matcap 抬成表面"必须保住图案，不能涂成一片。**
-	/// <para>
-	/// 这是实机逼出来的第二次修正：涂平（<c>FlattenToMetalF0</c>）在游戏里就是用户报的
-	/// "白膜 / 灰膜"——一块没有任何明暗的纯白/纯灰面，和"材质没贴图"一模一样。
-	/// 源侧那些件（serenade 的头冠 / 项链 / 月牙 / 小灯笼 / 心形 / 十字架）底色被作者注释掉了，
-	/// 观感 100% 来自 matcap，涂平等于删掉它们唯一的信息。
-	/// </para>
-	/// <para>
-	/// 这里钉三件事：① 有明暗（min < max，且差得够多）；② 均值落在目标反射率附近（不会被抬爆）；
-	/// ③ 传进来的底色被整片重写（不会残留源图）。
-	/// </para>
-	/// </summary>
-	[Fact]
-	public void LiftingAMatcapKeepsThePatternAtTheTargetLevel()
-	{
-		const int size = 32;
-		const int matcapSize = 16;
-
-		// 球面图：左半暗（20）、右半亮（240），均值约 130 —— 与实测的 `matcap_metal7` 同类（双峰）。
-		var matcap = new byte[matcapSize * matcapSize * 4];
-		for (var y = 0; y < matcapSize; y++)
-		for (var x = 0; x < matcapSize; x++)
-		{
-			var value = (byte)(x < matcapSize / 2 ? 20 : 240);
-			var offset = ((y * matcapSize) + x) * 4;
-			matcap[offset] = value;
-			matcap[offset + 1] = value;
-			matcap[offset + 2] = value;
-			matcap[offset + 3] = 255;
-		}
-
-		// 世界法线：让屏幕上从左到右扫过整张球面图（sourceAxes 的换算见实现）。
-		var normal = new byte[size * size * 4];
-		for (var y = 0; y < size; y++)
-		for (var x = 0; x < size; x++)
-		{
-			var u = x / (double)(size - 1);
-			var offset = ((y * size) + x) * 4;
-			normal[offset] = 128;
-			normal[offset + 1] = (byte)Math.Round((1 - u) * 255);   // u = 1 − G
-			normal[offset + 2] = 128;                                 // v = B = 0.5
-			normal[offset + 3] = 255;
-		}
-
-		// 底色故意填成整片纯白 255：抬完必须被整片重写，不残留。
-		var albedo = new byte[size * size * 4];
-		Array.Fill(albedo, (byte)255);
-
-		MaterialAppearance.LiftMatcapToSurface(
-			albedo, size, size, matcap, matcapSize, matcapSize,
-			normal, size, size, mask: null, maskWidth: 0, maskHeight: 0,
-			tintRgba: [1, 1, 1, 1], targetLinear: SourceMaterialConverter.MetalF0);
-
-		var min = 255;
-		var max = 0;
-		double sum = 0;
-		for (var i = 0; i < size * size; i++)
-		{
-			var value = albedo[i * 4];
-			min = Math.Min(min, value);
-			max = Math.Max(max, value);
-			sum += value;
-		}
-
-		var mean = sum / (size * size);
-		var target = MaterialAppearance.LinearToSrgbByte(SourceMaterialConverter.MetalF0);
-
-		// ① 有明暗（不是一块平色）
-		Assert.True(max - min > 40, $"抬完仍然是一块平色：min={min} max={max}");
-		// ② 电平对得上（均值离 F0 不超过 1/5 的行程；撞顶会把它压低，允许这个偏差）
-		Assert.InRange(mean, target * 0.55, target * 1.05);
-		// ③ 每一格都被写过（不会残留源图的 255）
-		Assert.True(albedo[3] == 0, "alpha 必须清零");
-	}
-
-	/// <summary>
-	/// 同一个函数在"没有世界法线"时退回采样球心：结果是一块平色，但**电平仍然是对的**，
-	/// 不会出现"比值爆掉 → 整片 255"（实测 serenade 的 <c>jem_white</c> 就是这样炸成白膜的）。
-	/// </summary>
-	[Fact]
-	public void WithoutWorldNormalsTheLiftStillLandsOnTheTargetLevel()
-	{
-		const int size = 8;
-		var matcap = new byte[4 * 4 * 4];
-		for (var i = 0; i < 16; i++)
-		{
-			var value = (byte)(i % 2 == 0 ? 30 : 220);
-			matcap[(i * 4)] = value;
-			matcap[(i * 4) + 1] = value;
-			matcap[(i * 4) + 2] = value;
-			matcap[(i * 4) + 3] = 255;
-		}
-
-		var albedo = new byte[size * size * 4];
-		MaterialAppearance.LiftMatcapToSurface(
-			albedo, size, size, matcap, 4, 4,
-			normal: null, normalWidth: 0, normalHeight: 0, mask: null, maskWidth: 0, maskHeight: 0,
-			tintRgba: [1, 1, 1, 1], targetLinear: MaterialAppearance.NonMetallicSurfaceF0);
-
-		var value0 = albedo[0];
-		for (var i = 0; i < size * size; i++)
-			Assert.Equal(value0, albedo[i * 4]);
-
-		// 不能是 255（撞顶），也不能是全黑：目标 0.6 线性 ≈ 204，图案对比 0.6 应该落在它附近。
-		Assert.InRange(value0, 80, 235);
-	}
-
-	/// <para>
-	/// 这条是"金属度给不给"的关键分界，实测数据：
-	/// 平涂 <c>red</c> / <c>yellow</c> / <c>purple</c> / <c>green</c>（恋星milfy 的金属件底色）
-	/// 偏离像素 <b>0.0%</b>；真实图集全部 ≥ 43%（<c>uv1_whitepink_2</c> 99.6%、
-	/// <c>manuka_body</c> 43.3%、<c>milltina_cloth_black</c> 90.5%）。阈值取 2%。
-	/// </para>
-	/// <para>
-	/// 平涂色是<b>有颜色</b>的（所以 <see cref="MaterialAppearance.IsContentFreeBase"/> 为假），
-	/// 但那颜色是金属自身的颜色（上色金属），不该像布料那样否掉金属度。
-	/// </para>
-	/// </summary>
-	[Fact]
-	public void FlatColourIsNotPatternedButAPaintedAtlasIs()
-	{
-		const int size = 64;
-
-		// 平涂砖红（BC7 压缩后会有 ±2 的噪声，这里直接给纯色）。
-		var flat = new byte[size * size * 4];
-		for (var i = 0; i < size * size; i++)
-		{
-			flat[(i * 4)] = 230;
-			flat[(i * 4) + 1] = 58;
-			flat[(i * 4) + 2] = 71;
-			flat[(i * 4) + 3] = 255;
-		}
-
-		Assert.False(MaterialAppearance.IsPatterned(size, size, flat));
-		// 同一张图仍然"有颜色"，所以 IsContentFreeBase 为假——两者是两个问题。
-		Assert.False(MaterialAppearance.IsContentFreeBase(size, size, flat));
-
-		// 棋盘（花纹）：一半像素偏亮、一半偏暗。
-		var patterned = (byte[])flat.Clone();
-		for (var y = 0; y < size; y++)
-		for (var x = 0; x < size; x++)
-		{
-			if ((x / 4 + y / 4) % 2 == 0) continue;
-			var offset = ((y * size) + x) * 4;
-			patterned[offset] = 40;
-			patterned[offset + 1] = 190;
-			patterned[offset + 2] = 90;
-		}
-
-		Assert.True(MaterialAppearance.IsPatterned(size, size, patterned));
-
-		// 只有极少数像素偏离（例如平涂色块上的一枚小 logo）仍按"平涂"处理：
-		// 96×96 里点缀 0.5% 的像素，不该把整件判成布料。
-		var speckled = (byte[])flat.Clone();
-		for (var i = 0; i < size * size / 200; i++)
-		{
-			speckled[(i * 4)] = 20;
-			speckled[(i * 4) + 1] = 20;
-			speckled[(i * 4) + 2] = 20;
-		}
-
-		Assert.False(MaterialAppearance.IsPatterned(size, size, speckled));
+			MaterialAppearance.MatCapIsMetallicSurface(matcapIsTheSurface, baseHasOwnColour, matcapName, materialName));
 	}
 
 	/// <summary>
