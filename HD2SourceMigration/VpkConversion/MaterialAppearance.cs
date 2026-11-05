@@ -740,26 +740,40 @@ public static class MaterialAppearance
 				var g = ((srcG * tintRgba[1]) * weight) + (1 - weight);
 				var b = ((srcB * tintRgba[2]) * weight) + (1 - weight);
 
-				var factorR = 1 + (SurfaceContrast * Math.Clamp((r / imageR) - 1, -0.95, 2.0));
-				var factorG = 1 + (SurfaceContrast * Math.Clamp((g / imageG) - 1, -0.95, 2.0));
-				var factorB = 1 + (SurfaceContrast * Math.Clamp((b / imageB) - 1, -0.95, 2.0));
+				// **只往下压，不往上抬。** 这张球面图的中心是暗的（`matcap_metal7`：
+				// 中位 66 / p90 231），而"正对镜头的面"恰好采到中心 —— 按均值归一的话，
+				// 整件会被压成中灰（实测 serenade 的银饰 meanLum 从 250 掉到 136，实机是"灰膜"）。
+				// 所以基准固定为 target，matcap 只用来**压暗凹处**：factor ∈ [0.78, 1.09]。
+				// 观感 = 亮银底 + 刻痕/边缘的暗线，与源侧"暗刻面 + 亮边"同向，
+				// 但电平仍然停在 F0（金属的反射率不会被图案带偏）。
+				var shade = Math.Clamp(r / imageR, 0, 1.4);
+				var factorR = BaseFactor + (VariationGain * shade);
+				shade = Math.Clamp(g / imageG, 0, 1.4);
+				var factorG = BaseFactor + (VariationGain * shade);
+				shade = Math.Clamp(b / imageB, 0, 1.4);
+				var factorB = BaseFactor + (VariationGain * shade);
 
-				rgba[offset + 0] = ToByte(target * Math.Clamp(factorR, 0, 2));
-				rgba[offset + 1] = ToByte(target * Math.Clamp(factorG, 0, 2));
-				rgba[offset + 2] = ToByte(target * Math.Clamp(factorB, 0, 2));
+				rgba[offset + 0] = ToByte(target * Math.Clamp(factorR, 0, 1.2));
+				rgba[offset + 1] = ToByte(target * Math.Clamp(factorG, 0, 1.2));
+				rgba[offset + 2] = ToByte(target * Math.Clamp(factorB, 0, 1.2));
 				rgba[offset + 3] = 0;
 			}
 		}
 	}
 
 	/// <summary>
-	/// <see cref="LiftMatcapToSurface"/> 的图案强度：0 = 涂平（旧行为），1 = 严格按均值归一。
+	/// <see cref="LiftMatcapToSurface"/> 的基准电平：target × 它 = 最暗处。
+	/// 0.78 意味着凹处比 F0 暗 22%，凸处略亮（见 <see cref="VariationGain"/>）。
 	/// <para>
-	/// 取 0.6 的理由：1.0 时双峰的球面图（中位 66 / p90 231）会把亮的那一半全部撞到 255，
-	/// 均值反而被拉低；0.6 时均值留在 F0 附近，同时保住凹凸明暗，不再像"没贴图"。
+	/// 为什么不是"按均值归一"（那会让均值正好等于 F0）：球面图的中心是暗的，而正对镜头的面
+	/// 恰好采到中心，于是整件被压到中灰 —— 实测 serenade 的银饰 meanLum 250 → 136，
+	/// 实机就是用户报的"灰膜"。金属的电平必须自己端住。
 	/// </para>
 	/// </summary>
-	public const double SurfaceContrast = 0.6;
+	public const double BaseFactor = 0.78;
+
+	/// <summary>凸处相对基准的增益：factor 上限 = <see cref="BaseFactor"/> + 它 × 1.4 ≈ 1.09。</summary>
+	public const double VariationGain = 0.22;
 
 	/// <summary>
 	/// 解析 <c>$bumpstrength</c>（法线凹凸强度）。缺省 <c>1.0</c>；写坏了一律回 1.0。
