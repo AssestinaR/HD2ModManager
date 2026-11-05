@@ -951,6 +951,12 @@ local function lift_bone(S_, runtime, name, metres)
 
 	local after = bone_world_z(S_, avatar, id)
 	local headZ = bone_world_z(S_, avatar, id32(S_, "head"))
+	-- 相机也得读：它的成败和网格是两件事（根节点那次就是"相机动、网格不动"）。
+	local cameraZ = nil
+	if runtime.world ~= nil and runtime.cache ~= nil then
+		local cx, _, cz = cameraPosition(S_, runtime.world, runtime.cache)
+		if cx ~= nil then cameraZ = cz end
+	end
 	local armorZ = nil
 	for index = 1, #(runtime.sessions or {}) do
 		local armor = runtime.sessions[index].unit
@@ -959,7 +965,8 @@ local function lift_bone(S_, runtime, name, metres)
 			if armorZ ~= nil then break end
 		end
 	end
-	return { before = before, after = after, head = headZ, armor = armorZ, wrote = wrote, kept = kept }
+	return { before = before, after = after, head = headZ, camera = cameraZ, armor = armorZ,
+		wrote = wrote, kept = kept }
 end
 
 --- 每帧调一次。没有调参文件 / `lift` 为 0 时什么都不做（**连读都不读**，只多一次缓存判断）。
@@ -1035,12 +1042,13 @@ local function apply_lift(runtime, S_)
 				runtime.logger("[physbone][抬升-骨] %s：avatar 上找不到这根骨（或读写失败）", boneName)
 			else
 				runtime.logger(
-					"[physbone][抬升-骨] %s +%.3f 写入=%s 保持=%s | 该骨世界 z %s→%s | 头骨 z %s | 护甲同名骨 z %s",
+					"[physbone][抬升-骨] %s +%.3f 写入=%s 保持=%s | 该骨世界 z %s→%s | 头骨 z %s | 相机 z %s | 护甲同名骨 z %s",
 					boneName, metres,
 					result.wrote and "是" or "否", result.kept and "是" or "否",
 					result.before ~= nil and string.format("%.3f", result.before) or "?",
 					result.after ~= nil and string.format("%.3f", result.after) or "?",
 					result.head ~= nil and string.format("%.3f", result.head) or "?",
+					result.camera ~= nil and string.format("%.3f", result.camera) or "?",
 					result.armor ~= nil and string.format("%.3f", result.armor) or "?")
 			end
 		end
