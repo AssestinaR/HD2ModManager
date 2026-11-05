@@ -282,11 +282,12 @@ public static class CliApplication
 					"ArmorRegistryApplyConfirmationRequired",
 					"armor-registry apply 会原子替换外置护甲注册协议并触发运行时热更新；请审阅计划后显式传入 --confirm。");
 			var plan = await CliArmorRegistryProtocol.ReadPlanAsync(RequireArmorRegistryPlan(invocation.Options)).ConfigureAwait(false);
-			var execution = await CliArmorRegistryProtocol.ApplyAsync(plan, invocation.Options.RegistryRoot).ConfigureAwait(false);
+			var execution = await CliArmorRegistryProtocol.ApplyAsync(plan, invocation.Options.RegistryRoot, CliWorkspace.Open(invocation.Options)).ConfigureAwait(false);
 			Emit(
 				invocation.Options,
 				new { ok = execution.Success, execution },
-				() => $"护甲注册协议状态：{execution.Status}，revision={execution.Revision}，活动映射 {execution.ActiveMappingCount} 条。");
+				() => $"护甲注册协议状态：{execution.Status}，revision={execution.Revision}，活动映射 {execution.ActiveMappingCount} 条。"
+				+ (string.IsNullOrWhiteSpace(execution.DataMappingMessage) ? string.Empty : " " + execution.DataMappingMessage));
 			return execution.Success ? 0 : 2;
 		}
 		if (Matches(command, "assets", "metadata", "inspect"))
@@ -4098,16 +4099,18 @@ public static class CliApplication
 
 	private static void EnsureArmorRegistryApplyOptions(CliGlobalOptions options)
 	{
-		if (!string.IsNullOrWhiteSpace(options.ManagerRoot)
-			|| !string.IsNullOrWhiteSpace(options.Library)
-			|| !string.IsNullOrWhiteSpace(options.GameData)
-			|| !string.IsNullOrWhiteSpace(options.Output)
+		// `--manager-root` / `--library` / `--game-data` 现在**允许**：
+		// 真映射模式要写 `generated_customization_armor_sets.dl_bin`，还得把工作区
+		// （`<库>/.hd2modmanager/armor-registry.workspace.json`）与 wardrobe.links 一起更新，
+		// 而这三件事都需要知道管理器目录、库目录与游戏 data 目录。
+		// 不给的话就退化成"只替换协议文件"（旧行为），在真映射模式下等于什么都没发生。
+		if (!string.IsNullOrWhiteSpace(options.Output)
 			|| options.Overwrite
 			|| HasUnrelatedArmorRegistryOptions(options))
 		{
 			throw new CliUserException(
 				"CommandOptionNotSupported",
-				"armor-registry apply 仅接受 --plan、--registry-root、--confirm 与 --json。");
+				"armor-registry apply 仅接受 --plan、--registry-root、--manager-root、--library、--game-data、--confirm 与 --json。");
 		}
 	}
 
