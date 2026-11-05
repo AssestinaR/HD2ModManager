@@ -536,6 +536,16 @@ public sealed class SourceMaterialConverter
 	public const double MetalF0 = 0.96;
 
 	/// <summary>
+	/// 镂空金属件（alphaclip，拿不到金属度）抬底色时用的系数：<c>F0 × 0.85</c>。
+	/// <para>
+	/// 不抬到满 F0 是因为这些件**没有金属反射**可依靠，全靠底色"看起来像金属"；
+	/// 顶到 0.96 会变成一块亮银塑料（11-01 的实机结论），0.85 保住金属的明度
+	/// 又留一点灰度，配合 matcap 的图案更像"抛光过的银"。
+	/// </para>
+	/// </summary>
+	public const double CutoutMetalLevel = 0.85;
+
+	/// <summary>
 	/// <see cref="CutoutStrategy.AdvancedOpacity"/> 的陡度。抄自游戏本体角色材质
 	/// （父 id <c>0x8f669f365f24594e</c>）的 <c>OpacitySharpness</c>。
 	/// </summary>
@@ -1385,6 +1395,9 @@ public sealed class SourceMaterialConverter
 		/// </para>
 		/// </summary>
 		public bool MatcapKeepsBaseColour { get; init; }
+
+		/// <summary>底色「没有自己的颜色」（占位图 ∨ 整片近黑）：观感只能来自 matcap。</summary>
+		public bool BaseIsContentFree { get; init; }
 
 		/// <summary>
 		/// <c>$bumpstrength</c>（凹凸强度，NekoToon 默认 1.0）。只缩放 XY 的偏离量，Z 重新归一化。
@@ -2623,6 +2636,7 @@ public sealed class SourceMaterialConverter
 		{
 			BumpTexture = bumpTextureName,
 			MatcapKeepsBaseColour = metalKeepsBaseColour,
+			BaseIsContentFree = contentFreeBase,
 			BumpStrength = bumpStrength,
 			// **只认显式开关，不再按文件名猜。**
 			//
@@ -2828,6 +2842,22 @@ public sealed class SourceMaterialConverter
 			// 归一成中性 F0 会把它变成一条白边。这里什么都不做，只让下面的金属度槽生效。
 			if (metalDeliverable && !loaded.MatcapKeepsBaseColour)
 				LiftToSurface(MetalF0 * matcapBakeGain);
+			else if (!metalDeliverable && loaded.BaseIsContentFree)
+			{
+				// ⚠️ **镂空件（alphaclip）没有金属度槽，但也不能就这么留成近黑。**
+				//
+				// 实测 MourningVeil：58 个材质里 10 个判成金属，**10/10 都因为 `$alphatest`
+				// 落进 alphaclip**（镂空优先），而 alphaclip 的 11 个变量里没有任何金属参数。
+				// 于是它们保留作者那张 `Mat_Metal`（平均亮度 17.2）——实机是**一块灰黑的剪影**，
+				// 用户报的"项链/十字架/月牙是灰的、没有金属色"就是这批件。
+				//
+				// HD2 里没有任何模板同时有镂空槽和金属度槽（见 vpk-cutout-strategies §6.4），
+				// 所以"真金属反射"拿不到；能拿到的是**把金属的观感画进底色**：
+				// 底色抬到金属电平（略低于 F0，避免糊成亮银塑料），图案仍然来自 matcap。
+				// 这类件的底色本来就是近黑/占位（`contentFreeBase`），抬亮不会毁掉任何信息；
+				// 有自己花纹的件仍然走"保留原底色"，不受影响。
+				LiftToSurface(MetalF0 * matcapBakeGain * CutoutMetalLevel);
+			}
 		}
 
 		// 把"这张 matcap 就是表面"的件抬到目标反射率，**同时保留图案**。
