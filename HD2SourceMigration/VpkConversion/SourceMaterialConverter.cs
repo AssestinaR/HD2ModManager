@@ -2387,7 +2387,15 @@ public sealed class SourceMaterialConverter
 					// 用它的是 B1 的材质 —— 结果那张贴图谁都没产出，手臂上的金属装饰**整块丢了材质**。
 					//
 					// 加后缀 = 声明"这是本材质派生出来的图"，于是它一定跟着材质走。
-					textureName = matcapTextureName + MetalF0Suffix;
+					//
+					// ⚠️ **名字里还必须带材质名，不能只带 matcap 名。**（2026-11-05，实机逼出来的）
+					// 只带 matcap 名时，凡是共用同一张 matcap 的材质会算出**同一个贴图 id**，
+					// 于是多个兄弟包都声称提供它（serenade 的 a1 与 b1 都用到 `matcap_metal7`）——
+					// 引擎只会用其中一个，**换哪个包先被扫描就是哪个的字节**。
+					// 实测后果：a1 重转三次、画面一点没变，因为 b1 里那份旧字节赢了。
+					// 而现在抬图案要按**每个材质自己的世界法线**烘（见 `LiftMatcapToSurface`），
+					// 共用一张图本身就是错的：同一张球面图在不同件上该有不同的明暗。
+					textureName = matcapTextureName + "-" + stem + MetalF0Suffix;
 				}
 				catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
 				{
