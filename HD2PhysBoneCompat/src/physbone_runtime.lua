@@ -655,6 +655,7 @@ local function tryAttach(runtime)
 	-- 记下"这次场上有哪些玩家"。下一拍比对它的**实例同一性**（userdata，不是 debug_name：
 	-- 实测那个 id 是按资源算的，拿它比"是不是同一个人"永远为真）。
 	runtime.avatars = avatars
+	runtime.world = world
 	local first = avatars[1]
 	runtime.avatar = first.unit
 	runtime.avatarTag = first.tag
@@ -782,6 +783,213 @@ local function avatarSetChanged(runtime)
 	return false
 end
 
+
+-- ---------------------------------------------------------------------------
+-- 抬升诊断（默认关闭，靠一个外部文本文件打开）
+-- ---------------------------------------------------------------------------
+--
+-- 只回答一个问题：**把 avatar 整体抬高，摄像机会不会跟着走。**
+--
+-- 为什么这条决定一切：护甲网格是按骨名从 avatar 取世界变换渲染的（本仓库实测：往护甲
+-- 自己的 `chest` 写 pose 能留住 450 帧，子节点世界坐标一点都不动），枪挂在 avatar 的
+-- `attach_hand_r` / `r_hand` 上。所以抬 avatar ⇒ 网格和枪**一定**一起走，相对关系不变。
+-- 唯一的未知量是摄像机：它若从 avatar 取，视线跟着抬 ⇒ 脚落地、手和枪对齐、瞄准不变，
+-- 这条路就是完整的解；它若不跟，网格和枪升上去而视线留在原地 ⇒ 瞄准对不上，
+-- 那这条路直接作废（那时只剩"只压腿"一条）。
+--
+-- 开关刻意放在**外部文本文件**里（`%LOCALAPPDATA%\hd2pbx_tune.txt`）：
+--   lift=0.09        抬多少米（正 = 向上）；不给 / 给 0 / 没有文件 ⇒ 这一段完全不执行
+--   lift_armor=1     对照实验：连护甲件的根节点也一起抬（用来分辨"网格到底跟谁走"）
+--   lift_log_frames  每多少帧打一行（默认 60）
+-- 不放进打包配置，是因为诊断要能**就地改数值、就地关掉**，不该逼着重新打包或重建管理器。
+--
+-- ⚠️ 边界：这一段挂在 `drive()` 里，所以**只有挂着物理会话时才会执行**。诊断足够用；
+-- 若哪天要把它做成正式功能（不只是诊断），必须挪到独立的 render 钩子，否则
+-- "没物理骨的模型 / 关掉物理的玩家"都不会被抬。
+
+--- 读调参文件（缓存，默认 2 秒重读一次）。返回 `key = number` 的表。
+local function tune_values(runtime)
+	local frame = runtime.frame or 0
+	local cached = runtime.tune
+	local refresh = (runtime.options and runtime.options.tuneRefreshFrames) or 120
+	if cached ~= nil and (frame - cached.frame) < refresh then return cached.values end
+
+	local values = {}
+	local path = runtime.options and runtime.options.tunePath
+	if path == nil then
+		local base = os.getenv("LOCALAPPDATA")
+		if type(base) == "string" and #base > 0 then path = base .. "\\hd2pbx_tune.txt" end
+	end
+	if path ~= nil then
+		local ok, handle = pcall(io.open, path, "r")
+		if ok and handle ~= nil then
+			local okRead, text = pcall(handle.read, handle, "*a")
+			pcall(handle.close, handle)
+			if okRead and type(text) == "string" then
+				for line in text:gmatch("[^\r\n]+") do
+					local key, raw = line:match("^%s*([%w_]+)%s*=%s*([%+%-%d%.]+)")
+					local number = key ~= nil and tonumber(raw) or nil
+					if number ~= nil then values[key] = number end
+				end
+			end
+		end
+	end
+	runtime.tune = { frame = frame, values = values }
+	return values
+end
+
+--- 给一个 unit 的根节点（node 1）加一个垂直偏移。返回 `wrote, kept`。
+--- <para>
+--- **绝不能累加**。规则是"先读、再判断"：
+---   · 读到的值等于我们上次写进去的 ⇒ 引擎这一帧没重设 ⇒ 不再加（否则每帧 +9 cm，会飞）；
+---   · 否则说明引擎把它设回了基线 ⇒ 在**当前值**上重加一次。
+--- 根 unit 的 local == world，玩家一动引擎就重设 ⇒ 正常路径是"每帧重写一次"；
+--- 被父节点带着走的 unit（local 恒定）⇒ 路径是"写一次后一直跳过"。两种情况都稳。
+--- </para>
+local function lift_unit(S_, world, unit, state, metres)
+	local current = try(S_.Unit.local_position, unit, 1)
+	if current == nil then return false, false end
+	local cx, cy, cz = readVector(S_, current)
+	if cx == nil then return false, false end
+	local written = state.written
+	if written ~= nil
+		and math.abs(cx - written[1]) < 1e-4
+		and math.abs(cy - written[2]) < 1e-4
+		and math.abs(cz - written[3]) < 1e-4 then
+		return false, true
+	end
+	local ok = pcall(function()
+		S_.Unit.set_local_position(unit, 1, S_.Vector3(cx, cy, cz + metres))
+	end)
+	if not ok then return false, false end
+	if world ~= nil then pcall(function() S_.World.update_unit(world, unit) end) end
+	state.written = { cx, cy, cz + metres }
+	state.base = { cx, cy, cz }
+	return true, false
+end
+
+--- unit 还活着吗。诊断这条路上不能依赖 `Compat` 已注入（单测会直接调它），
+--- 所以没有 Compat 时退回裸 `Unit.alive`。
+local function lift_unit_ok(api, unit)
+	if unit == nil then return false end
+	if Compat ~= nil and type(Compat.unit_alive) == "function" then
+		return Compat.unit_alive(api, unit) and true or false
+	end
+	return try(api.Unit.alive, unit) == true
+end
+
+--- 每帧调一次。没有调参文件 / `lift` 为 0 时什么都不做（**连读都不读**，只多一次缓存判断）。
+--- <param name="S_">引擎命名空间；省略时用安装时注入的那份（单测会显式传）。</param>
+local function apply_lift(runtime, S_)
+	local api = S_ or S
+	if api == nil or runtime == nil then return end
+	local values = tune_values(runtime)
+	local metres = values.lift
+
+	-- 关掉时把写过的值还回去一次。根 unit 会被引擎每帧重设，所以只有"写得住"的
+	-- （被父节点带着走的）那类需要显式还原——但两种都还一次更省心，代价是一次写。
+	if metres == nil or metres == 0 then
+		local states = runtime.liftState
+		if states ~= nil then
+			for index = 1, #states do
+				local state = states[index]
+				if state ~= nil and state.written ~= nil and state.base ~= nil then
+					local unit = state.unit
+					if unit ~= nil and lift_unit_ok(api, unit) then
+						pcall(function()
+							api.Unit.set_local_position(unit, 1,
+								api.Vector3(state.base[1], state.base[2], state.base[3]))
+						end)
+						if runtime.world ~= nil then
+							pcall(function() api.World.update_unit(runtime.world, unit) end)
+						end
+					end
+				end
+			end
+			runtime.liftState = nil
+			runtime.logger("[physbone][抬升] 已关闭，写过位置的目标都还原了一次")
+		end
+		return
+	end
+
+	local world = runtime.world
+	local states = runtime.liftState or {}
+	runtime.liftState = states
+	local wrote, kept, failed = 0, 0, 0
+
+	local function apply(unit, index, tag)
+		local state = states[index]
+		if state == nil then
+			state = { unit = unit }
+			states[index] = state
+		end
+		state.unit = unit
+		state.tag = tag
+		local didWrite, didKeep = lift_unit(api, world, unit, state, metres)
+		if didWrite then
+			wrote = wrote + 1
+		elseif didKeep then
+			kept = kept + 1
+		else
+			failed = failed + 1
+		end
+	end
+
+	for index = 1, #(runtime.avatars or {}) do
+		local avatar = runtime.avatars[index]
+		if avatar ~= nil and avatar.unit ~= nil and lift_unit_ok(api, avatar.unit) then
+			apply(avatar.unit, index, "avatar")
+		end
+	end
+	if values.lift_armor ~= nil and values.lift_armor ~= 0 then
+		for index = 1, #(runtime.sessions or {}) do
+			local session = runtime.sessions[index]
+			if session ~= nil and session.unit ~= nil and lift_unit_ok(api, session.unit) then
+				apply(session.unit, #(runtime.avatars or {}) + index, "armor")
+			end
+		end
+	end
+
+	-- 首次生效时说一次，免得"日志里没动静"分不清是没打开还是没生效。
+	if runtime.liftActive ~= metres then
+		runtime.liftActive = metres
+		runtime.logger("[physbone][抬升] 已打开：每个目标根节点 +%.3f m（护甲件%s）；"
+			.. "看三件事——视线有没有跟着抬、枪和手有没有错位、脚下还陷不陷",
+			metres, values.lift_armor ~= nil and values.lift_armor ~= 0 and "也抬" or "不动")
+	end
+
+	local every = values.lift_log_frames or (runtime.options and runtime.options.liftLogFrames) or 60
+	if ((runtime.driveFrames or 0) % every) ~= 0 then return end
+
+	-- 关键那一行：相机 z 与 avatar 根 / 头骨的 z 放在一起。
+	-- 相机跟着走 ⇒ 「相机−头骨」恒为常数；不跟 ⇒ 相机 z 原地不动、差值随抬升变大。
+	local cameraZ = nil
+	if runtime.world ~= nil and runtime.cache ~= nil then
+		local cx, _, cz = cameraPosition(api, runtime.world, runtime.cache)
+		if cx ~= nil then cameraZ = cz end
+	end
+	local rootZ, headZ = nil, nil
+	local avatarUnit = runtime.avatar
+	if avatarUnit ~= nil and lift_unit_ok(api, avatarUnit) then
+		local _, _, rz = readVector(api, try(api.Unit.world_position, avatarUnit, 1))
+		rootZ = rz
+		local headId = id32(api, "head")
+		if headId ~= nil and try(api.Unit.has_node, avatarUnit, headId) == true then
+			local node = try(api.Unit.node, avatarUnit, headId)
+			if type(node) == "number" then
+				local _, _, hz = readVector(api, try(api.Unit.world_position, avatarUnit, node))
+				headZ = hz
+			end
+		end
+	end
+	runtime.logger(
+		"[physbone][抬升] +%.3f m 写入=%d 保持=%d 失败=%d | avatar 根 z=%s 头骨 z=%s 相机 z=%s 相机−头骨=%s",
+		metres, wrote, kept, failed,
+		rootZ ~= nil and string.format("%.3f", rootZ) or "?",
+		headZ ~= nil and string.format("%.3f", headZ) or "?",
+		cameraZ ~= nil and string.format("%.3f", cameraZ) or "?",
+		(cameraZ ~= nil and headZ ~= nil) and string.format("%+.3f", cameraZ - headZ) or "?")
+end
 
 local function drive(runtime)
 	local frame = runtime.frame
@@ -981,6 +1189,11 @@ local function drive(runtime)
 		end
 	end
 	runtime.driveFrames = (runtime.driveFrames or 0) + 1
+
+	-- 抬升诊断（默认关；没有调参文件时这里只多一次缓存判断）。
+	-- 放在物理写入之后：这一帧渲染用的就是"抬过"的 avatar 根。
+	apply_lift(runtime)
+
 	runtime.callsAccum = (runtime.callsAccum or 0) + engineCalls
 	runtime.staticChains = staticChains
 	runtime.lastChainTotal = chainTotal
@@ -1180,5 +1393,13 @@ function M.setOptions(patch)
 end
 
 M.install_ = M.install
+
+-- 测试钩子：抬升探针的两块纯逻辑（读调参文件 / 给一个 unit 加偏移）。
+-- 单独暴露出来，是因为"不累加、引擎重设后能重写、关掉时能还原"这三条
+-- 只要错一条就会让角色每帧往上飞 —— 这种判据必须能被单测直接钉住，
+-- 而不是靠进游戏看。
+M.tune_values_ = tune_values
+M.lift_unit_ = lift_unit
+M.apply_lift_ = apply_lift
 
 return M
