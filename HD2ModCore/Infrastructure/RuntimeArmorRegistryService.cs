@@ -182,23 +182,24 @@ public sealed class RuntimeArmorRegistryService
 	}
 
 	/// <summary>
-	/// 把真映射模式写进注册表的数据还原成原版。只在确实改过（存在状态文件）时动作。
+	/// 把真映射模式写进注册表的数据还原成原版（= 用空结构编译一次）。
 	///
 	/// 离开真映射模式时必须调用：数据层的改动没有任何运行时能撤销，留着它再叠加
 	/// 运行时覆盖，等于把外观映射了两次。
+	/// <para>
+	/// <b>不再看"有没有改过"。</b>受管 dl_bin 是派生事实：用空结构编译一次就是还原，
+	/// 不需要任何状态文件来证明它曾经被改过。已经等于原版时编译结果不变、也不会写盘。
+	/// </para>
 	/// </summary>
 	public async ValueTask<ArmorRegistryDataMappingResult> RestoreDataMappingAsync(
 		string gameDataDirectory,
 		CancellationToken cancellationToken = default)
 	{
 		if (string.IsNullOrWhiteSpace(gameDataDirectory)) return ArmorRegistryDataMappingResult.Nothing;
-		var backupDirectory = Path.Combine(registryRoot, "backup");
-		if (!File.Exists(Path.Combine(backupDirectory, ArmorRegistryDataMapper.StateFileName)))
-			return ArmorRegistryDataMappingResult.Nothing;
 		return await new ArmorRegistryDataMapper().ApplyAsync(
 			gameDataDirectory,
 			Array.Empty<ArmorRegistryDataMapping>(),
-			backupDirectory,
+			Path.Combine(registryRoot, "backup"),
 			cancellationToken).ConfigureAwait(false);
 	}
 
@@ -349,32 +350,24 @@ public sealed class RuntimeArmorRegistryService
 		var deploymentPath = DeploymentStatePath;
 		var protocolExists = File.Exists(protocolPath);
 		var deployment = await ReadKeyValueFileAsync(deploymentPath, cancellationToken).ConfigureAwait(false);
-		var workspaceBelongsToCurrentLibrary = !deployment.Exists
-			|| !deployment.Values.TryGetValue("workspace", out var deployedWorkspace)
-			|| string.Equals(
-				Path.GetFullPath(deployedWorkspace),
-				Path.GetFullPath(WorkspacePath),
-				StringComparison.OrdinalIgnoreCase);
 		var workspaceExists = File.Exists(WorkspacePath);
 		// 归属回退链：协议旁边的 owner（新，与协议同生命周期）→ 程序目录的部署状态（旧，换目录即丢）→ 无从判断。
-		// 注意这里**只用于展示**，不参与"要不要采用协议"的决定——采用与否仍然只看上面那条 workspaceBelongsToCurrentLibrary，
-		// 因为把回退收紧会让换过目录的老用户直接看不到自己的映射（用户已明确否决该方向）。
+		// **只用于展示**（"这份协议来自哪个库"），不参与任何采用/合并决定。
 		var owner = await ReadKeyValueFileAsync(Path.Combine(registryRoot, OwnerFileName), cancellationToken).ConfigureAwait(false);
 		string? protocolOwnerWorkspace = null;
 		if (owner.Values.TryGetValue("workspace", out var ownedWorkspace) && !string.IsNullOrWhiteSpace(ownedWorkspace))
 			protocolOwnerWorkspace = ownedWorkspace;
 		else if (deployment.Values.TryGetValue("workspace", out var deployedOwner) && !string.IsNullOrWhiteSpace(deployedOwner))
 			protocolOwnerWorkspace = deployedOwner;
+		// **映射结构的唯一来源是模组库里的那份 JSON。**
+		// 它不在 ⇒ 映射结构就是空的，**绝不回退去读 C 盘协议**：那是派生文件，
+		// 换库时它属于上一个库，读它等于把旧库的映射带进新库（用户明确要求：换库只信任库里的结构文件）。
 		var documentSource = workspaceExists
 			? RuntimeArmorRegistryDocumentSource.Workspace
-			: protocolExists && workspaceBelongsToCurrentLibrary
-				? RuntimeArmorRegistryDocumentSource.ProtocolFallback
-				: RuntimeArmorRegistryDocumentSource.Empty;
+			: RuntimeArmorRegistryDocumentSource.Empty;
 		var document = workspaceExists
 			? await ReadWorkspaceAsync(cancellationToken).ConfigureAwait(false)
-			: documentSource is RuntimeArmorRegistryDocumentSource.ProtocolFallback
-				? ParseProtocol(await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false))
-				: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
+			: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
 		// **素体的权威来源是 Mod 文件夹**（每个 Mod 目录里的 `custom-model.json`），
 		// 注册表里那份只是缓存。这里用磁盘收集的结果覆盖模型列表，于是：
 		//   · 名字永远来自持有它的那份文件（工作区被删/被回退成协议都不会丢名字）；
@@ -585,23 +578,15 @@ public sealed class RuntimeArmorRegistryService
 						if (mapping.SourceItemId is uint sourceId)
 							dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, sourceId));
 					}
-					// 真映射模式下按映射重建；其它模式（以及关闭映射时）用空列表调用，
-					// 走还原路径。只有确实改过（存在状态文件）才需要还原，避免无谓的
-					// 解密与备份播种。
-					var backupDirectory = Path.Combine(registryRoot, "backup");
-					var everModified = File.Exists(
-						Path.Combine(backupDirectory, ArmorRegistryDataMapper.StateFileName));
-					if (inTrueMapping || everModified)
-					{
-						// ⚠️ **结果必须接住。** 以前这里是裸 await，返回值直接丢掉，于是
-						// "没有一条映射能应用""备份基准失效无法还原""被外部替换"这些原因
-						// 全都消失在空气里 —— 用户只看到"点了没反应"。
-						dataMapping = await new ArmorRegistryDataMapper().ApplyAsync(
-							gameDataDirectory,
-							dataMappings,
-							backupDirectory,
-							cancellationToken).ConfigureAwait(false);
-					}
+					// **应用 = 编译。** 真映射模式下按映射编译；其它模式（以及关闭映射时）用
+					// 空列表编译 —— 空结构编译出来就是原件，于是"关掉"自然成立。
+					// 不再用状态文件判断"要不要还原"：受管 dl_bin 是派生事实，没有历史可言。
+					// 编译结果与原件一致时不会写盘，所以这条路没有额外 I/O。
+					dataMapping = await new ArmorRegistryDataMapper().ApplyAsync(
+						gameDataDirectory,
+						dataMappings,
+						Path.Combine(registryRoot, "backup"),
+						cancellationToken).ConfigureAwait(false);
 				}
 			}
 			catch (Exception exception) when (exception is IOException

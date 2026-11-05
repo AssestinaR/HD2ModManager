@@ -1771,13 +1771,12 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		// 用户换了一个解压目录之后，本库没有工作区，页面只能显示协议副本——那是他映射的最后一份存留。
 		// 显示它是对的，但不告诉他"这不是本库的工作区"，他会以为映射本来就这么少。
 		var advisories = new List<string>();
-		if (snapshot.DocumentSource is RuntimeArmorRegistryDocumentSource.ProtocolFallback)
+		// 映射结构文件不在 —— 这是映射唯一的"消失"场景，必须说清楚，
+		// 但**不再**去读 C 盘协议副本（那是派生文件，换库之后属于上一个库）。
+		if (snapshot.DocumentSource is RuntimeArmorRegistryDocumentSource.Empty)
 		{
-			var owner = string.IsNullOrWhiteSpace(snapshot.ProtocolOwnerWorkspace)
-				? "未知（该协议由更早的版本应用，没有留下归属记录）"
-				: snapshot.ProtocolOwnerWorkspace;
-			advisories.Add($"当前模组库没有工作区文件，正在显示协议副本；该协议上次由 {owner} 应用。"
-				+ "如果这不是你要用的模组库，请到设置页确认模组库地址。");
+			advisories.Add("当前模组库里没有映射结构文件（.hd2modmanager/armor-registry.workspace.json），"
+				+ "所以映射列表是空的。重新配一份并点「应用」即可；不需要做任何修复操作。");
 		}
 		if (hasLoadedCatalog && cachedCatalog.Count == 0)
 		{

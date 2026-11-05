@@ -110,9 +110,11 @@ public sealed class ArmorRegistryPageResilienceArchitectureTests
 		var status = ExtractMember(page, "private void UpdateStatus(");
 
 		Assert.True(status.Length > 0, "无法定位 UpdateStatus。");
-		// 工作区缺失 → 退回协议副本时必须说清楚。
-		Assert.Contains("RuntimeArmorRegistryDocumentSource.ProtocolFallback", status);
-		Assert.Contains("请到设置页确认模组库地址", status);
+		// 映射结构文件缺失（唯一的"映射消失"场景）必须说清楚，并告诉用户不需要做修复动作。
+		Assert.Contains("RuntimeArmorRegistryDocumentSource.Empty", status);
+		Assert.Contains("没有映射结构文件", status);
+		// 并且**不再**回退去读 C 盘协议副本：那是派生文件，换库之后属于上一个库。
+		Assert.DoesNotContain("ProtocolFallback", status);
 		// 目录 0 条 → 名字解析不了，要指路而不是静默显示未知护甲。
 		Assert.Contains("cachedCatalog.Count == 0", status);
 		Assert.Contains("请到设置页建立资产索引", status);

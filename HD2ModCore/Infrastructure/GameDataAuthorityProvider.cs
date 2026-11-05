@@ -61,10 +61,14 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		var gameRoot = Path.Combine(dataRoot, "game");
 		var plaintextPath = Path.Combine(gameRoot, GeneratedLibraryName);
 		var encryptedPath = Path.Combine(gameRoot, EncryptedLibraryName);
-		// 真映射模式会改写这份文件。权威数据一律读**原件**：索引内容、指纹、以及兼容模式
-		// 的 link 编译都基于官方数据，我们的改动对它们完全不可见。否则按被改过的件表重建
-		// 索引后，link 编译会判定"目标已等于来源"而静默失效。
-		encryptedPath = ArmorDataFileIdentity.GetUnmodifiedSealedPath(encryptedPath, _registryRoot);
+		// **导入 = 读当前 dl_bin 并刷新原件副本。**
+		//
+		// 为什么读当前文件、而不是读原件：原件副本的**唯一用途**是给真映射编译当基底，
+		// 而它必须和这份数据库来自同一份文件——否则库里的 kit id 与编译基底里的对不上，
+		// 应用时会出现"几百条映射全部跳过"（实测 2026-11-05：本机备份 453 KB 是旧版本、
+		// 当前文件 287 KB，两边 kit id 不同）。
+		// 所以每次重建资产都把当前文件记成新原件：**数据库与编译基底永远同源**。
+		// 真映射写进去的改动只换 unit id，不换 kit/槽位，所以再导入一次也不会污染结构。
 		var entitiesPath = Path.Combine(gameRoot, GeneratedEntitiesName);
 		var issues = new List<CoreIssue>();
 
@@ -90,6 +94,10 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 					authoritativeBytes = encrypted.Bytes;
 					sourceKind = GameDataAuthoritySourceKind.DecryptedDataLibrary;
 					sourcePath = encryptedPath;
+
+					// 把当前文件记成"原件"：真映射的编译基底就是它（见上面那段说明）。
+					if (!string.IsNullOrWhiteSpace(_registryRoot))
+						await TryRefreshOriginalCopyAsync(encryptedPath, issues, cancellationToken).ConfigureAwait(false);
 
 					if (refreshPlaintextCache)
 					{
@@ -230,6 +238,47 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 			or BadImageFormatException)
 		{
 			return (null, exception);
+		}
+	}
+
+	/// <summary>
+	/// 把当前 dl_bin 记成「原件副本」——真映射的编译基底。
+	/// <para>
+	/// <b>为什么由"重建资产"来写。</b>这份副本的唯一用途是给编译当基底，而它必须和数据库
+	/// 来自同一份文件；由导入这一步刷新，两者就不可能不同源。
+	/// </para>
+	/// <para>
+	/// 写失败只记一条警告：导入本身已经成功，副本下次重建还会再试。
+	/// </para>
+	/// </summary>
+	private async ValueTask TryRefreshOriginalCopyAsync(
+		string encryptedPath,
+		List<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			var backupPath = ArmorDataFileIdentity.ResolveBackupPath(_registryRoot);
+			var current = await ReadAllBytesSharedAsync(encryptedPath, cancellationToken).ConfigureAwait(false);
+			if (File.Exists(backupPath))
+			{
+				var existing = await ReadAllBytesSharedAsync(backupPath, cancellationToken).ConfigureAwait(false);
+				if (existing.AsSpan().SequenceEqual(current)) return;
+			}
+
+			Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+			var temp = backupPath + ".tmp";
+			await File.WriteAllBytesAsync(temp, current, cancellationToken).ConfigureAwait(false);
+			File.Move(temp, backupPath, overwrite: true);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Warning,
+				"ArmorOriginalCopyRefreshFailed",
+				$"已读取装备关系表，但无法刷新原件副本（真映射的编译基底）：{exception.Message}",
+				encryptedPath,
+				ExceptionMessage: exception.ToString()));
 		}
 	}
 

@@ -669,14 +669,15 @@ public sealed class RuntimeArmorRegistryServiceTests
 		return archive;
 	}
 
-	// 作用：把"本库没有工作区时，退回协议副本"这件事**标记出来**，而不是悄悄发生。
+	// 作用：**本库没有工作区时，绝不回退去读 C 盘协议副本。**
 	//
-	// 为什么这是正确性要求而不是诊断：工作区在模组库里（跟库走），协议在用户目录里（跟用户走），
-	// 两者生命周期不同。用户把新版解压到另一个目录后，本库没有工作区，页面只能显示协议副本——
-	// 那是他映射的最后一份存留。**显示它是对的**（看不见比看见得不全更糟），
-	// 但必须能说出"这不是本库的工作区"，否则用户会以为映射本来就这么少。
+	// 2026-11-05 用户口径：映射结构的唯一来源是模组库里的那份 JSON；协议（以及受管 dl_bin）
+	// 都是**派生文件**，换库之后它属于上一个库。读它等于把旧库的映射带进新库，
+	// 于是"换库"看起来像"映射还在"，而实际生效的是别人的结构。
+	//
+	// 唯一会出现的"映射消失"场景就是这一条：结构文件不在 ⇒ 映射为空 ⇒ 用户重配一份即可。
 	[Fact]
-	public async Task MissingWorkspace_FallsBackToTheProtocolAndRecordsThatItDid()
+	public async Task MissingWorkspace_YieldsEmptyStructureAndIgnoresTheProtocolCopy()
 	{
 		await using var fixture = await Fixture.CreateAsync();
 		await File.WriteAllTextAsync(
@@ -685,11 +686,11 @@ public sealed class RuntimeArmorRegistryServiceTests
 
 		var snapshot = await fixture.Service.ReadSnapshotAsync();
 
-		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
-		// 回退必须真的发生——映射不能被"藏起来"。
-		Assert.Single(snapshot.Document.Mappings);
-		// 旧版本写的协议没有归属记录，要如实说"无从判断"，而不是假装它是本库的。
-		Assert.Null(snapshot.ProtocolOwnerWorkspace);
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.Empty, snapshot.DocumentSource);
+		// 派生文件里的映射**不许**被当成这个库的结构。
+		Assert.Empty(snapshot.Document.Mappings);
+		// 协议文件本身仍然存在（我们没删它），只是不参与读取。
+		Assert.True(File.Exists(Path.Combine(fixture.RegistryRoot, RuntimeArmorRegistryService.ProtocolFileName)));
 	}
 
 	// 作用：钉住"归属凭据与被守护的文件同生共死"。
@@ -718,8 +719,10 @@ public sealed class RuntimeArmorRegistryServiceTests
 
 		var snapshot = await fresh.ReadSnapshotAsync();
 
-		// 仍然是回退（不隐藏映射），但现在**能说清楚这份协议属于谁**——页面据此提示用户确认库地址。
-		Assert.Equal(RuntimeArmorRegistryDocumentSource.ProtocolFallback, snapshot.DocumentSource);
+		// **换库之后不继承旧协议**：新库没有结构文件 ⇒ 结构为空。
+		Assert.Equal(RuntimeArmorRegistryDocumentSource.Empty, snapshot.DocumentSource);
+		Assert.Empty(snapshot.Document.Mappings);
+		// 但归属记录仍然能告诉用户"这份旧协议属于哪个库"（纯展示用）。
 		Assert.Equal(fixture.Service.WorkspacePath, snapshot.ProtocolOwnerWorkspace);
 	}
 

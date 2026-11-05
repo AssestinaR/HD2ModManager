@@ -64,17 +64,16 @@ public sealed class SteamAppManifestTests
 	}
 
 	[Fact]
-	public void ClearBaseline_RemovesBackupAndState()
+	public void ClearBaseline_RemovesTheOriginalCopy()
 	{
+		// 只删原件副本。**没有状态文件**：受管 dl_bin 是派生事实，不维护任何哈希记忆。
 		var root = Path.Combine(Path.GetTempPath(), "hd2-baseline-" + Guid.NewGuid().ToString("N"));
 		var backup = Path.Combine(root, "backup");
 		Directory.CreateDirectory(backup);
-		File.WriteAllText(Path.Combine(backup, ArmorRegistryDataMapper.StateFileName), "x");
 		File.WriteAllText(Path.Combine(backup, ArmorRegistryDataMapper.BackupFileName), "y");
 		try
 		{
 			ArmorRegistryDataMapper.ClearBaseline(root);
-			Assert.False(File.Exists(Path.Combine(backup, ArmorRegistryDataMapper.StateFileName)));
 			Assert.False(File.Exists(Path.Combine(backup, ArmorRegistryDataMapper.BackupFileName)));
 		}
 		finally

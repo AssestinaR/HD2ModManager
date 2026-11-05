@@ -37,7 +37,6 @@ public sealed class ArmorRegistryDataMapper
 {
 	public const string FileName = "generated_customization_armor_sets.dl_bin";
 	public const string BackupFileName = "generated_customization_armor_sets.original.dl_bin";
-	public const string StateFileName = "armor-data-mapping.state";
 
 	const int SubdataHeaderSize = 24;
 	const uint ArmorCustomizationTypeId = 0xd9a55aa0;
@@ -129,7 +128,13 @@ public sealed class ArmorRegistryDataMapper
 	static List<Kit> ParseKits(byte[] plain)
 	{
 		var kits = new List<Kit>();
-		var position = 4;
+		// ⚠️ **起点不能写死成 4。** 这个文件的明文是「4 字节前缀 + 若干 LDLD 子数据块」，
+		// 但前缀长度属于**未公开格式**，游戏更新完全可能改它。写死会让整个解析循环在第一次
+		// 迭代就 break，返回 0 个套件 —— 而调用方只会看到"目标护甲找不到"，把一次
+		// "读不懂文件"伪装成"映射配错了"（实测 2026-11-05：237 条映射全部跳过）。
+		// 所以在前 64 字节里找第一个 LDLD 当起点。
+		var position = FindFirstSubdataHeader(plain);
+		if (position < 0) return kits;
 		while (position + SubdataHeaderSize <= plain.Length)
 		{
 			if (!new ReadOnlySpan<byte>(plain, position, 4).SequenceEqual("LDLD"u8)) break;
@@ -170,6 +175,25 @@ public sealed class ArmorRegistryDataMapper
 			position = payloadStart + (int)size;
 		}
 		return kits;
+	}
+
+	/// <summary>
+	/// 明文里第一个 <c>LDLD</c> 子数据块的位置；找不到返回 -1。
+	/// <para>只看前 64 字节：前缀是定长小结构，扫太远会把某段碰巧等于 "LDLD" 的数据当起点。</para>
+	/// </summary>
+	private static int FindFirstSubdataHeader(byte[] plain)
+	{
+		var limit = Math.Min(plain.Length - 4, 64);
+		for (var offset = 0; offset <= limit; offset++)
+		{
+			if (plain[offset] == (byte)'L' && plain[offset + 1] == (byte)'D'
+				&& plain[offset + 2] == (byte)'L' && plain[offset + 3] == (byte)'D')
+			{
+				return offset;
+			}
+		}
+
+		return -1;
 	}
 
 	/// <summary>
@@ -350,6 +374,12 @@ public sealed class ArmorRegistryDataMapper
 
 	/// <summary>
 	/// 丢弃记录的原始备份与状态，让下一次应用以当前文件为新基准。
+	/// <summary>
+	/// 丢掉「原件副本」，让下一次编译以当前 dl_bin 为基底。
+	/// <para>
+	/// <b>只在「Steam 校验完整性之后」调用。</b>那一刻游戏文件一定是官方版本，是整条链里
+	/// 唯一能确认"这就是原件"的时刻。平时调用会把一份可能被改过的文件当成原件。
+	/// </para>
 	/// </summary>
 	public static void ClearBaseline(string? registryRoot = null)
 	{
@@ -358,20 +388,16 @@ public sealed class ArmorRegistryDataMapper
 			var directory = Path.Combine(
 				registryRoot ?? RuntimeArmorRegistryService.ResolveRegistryRoot(),
 				"backup");
-			File.Delete(Path.Combine(directory, StateFileName));
 			File.Delete(Path.Combine(directory, BackupFileName));
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
 		{
-			// 删不掉不影响主流程：下次应用会因状态缺失而重新播种。
+			// 删不掉不影响主流程：下一次应用会重新记一份原件。
 		}
 	}
 
 	/// <summary>
-	/// 丢弃旧基准，并**立刻**用当前位置的文件重建一份新备份。
-	///
-	/// 这是 Steam 校验完成后的动作：那一刻游戏文件一定是官方版本，是整条链路里唯一
-	/// 可信的时刻。旧备份和旧状态一律不可信，必须整个换掉。
+	/// Steam 校验完成后的动作：把当前 dl_bin 记为原件，并按空结构编译一次（= 还原成原版）。
 	/// </summary>
 	public static async ValueTask<ArmorRegistryDataMappingResult> ResetBaselineAsync(
 		string gameDataDirectory,
@@ -391,87 +417,43 @@ public sealed class ArmorRegistryDataMapper
 		return File.Exists(nested) ? nested : Path.Combine(gameDataDirectory, FileName);
 	}
 
+	/// <summary>一次编译的结果。</summary>
+	/// <param name="Sealed">编译出来的密文（<see cref="Changed"/> 为假时等于基底）。</param>
+	/// <param name="Changed">明文是否真的变了。没变就不必写盘。</param>
+	public sealed record ArmorRegistryCompileOutcome(
+		int Applied,
+		int Skipped,
+		byte[] Sealed,
+		bool Changed);
+
 	/// <summary>
-	/// 用 <paramref name="mappings"/> 重建注册表数据。始终从原始备份出发，所以重复调用结果
-	/// 一致，删掉映射也会还原。
+	/// **编译**：以 <paramref name="baseSealed"/>（原件密文）为基底，把 <paramref name="mappings"/>
+	/// 叠上去，返回新的密文。纯函数：不读写任何文件。
+	/// <para>
+	/// 这是「应用」的全部逻辑。**没有状态、没有哈希协商、没有"这个文件是不是我们写的"** ——
+	/// 受管 dl_bin 是派生事实：随时可以丢、随时可以重算，所以不需要记住它曾经是什么样。
+	/// </para>
+	/// <para>
+	/// 结构（哪个 kit、哪些 piece、偏移在哪）来自<b>基底文件本身</b>；这正是"原件是编译输入"的
+	/// 含义。数据库那份结构是给界面看的事实，不参与这里的字节写入。
+	/// </para>
 	/// </summary>
-	public async ValueTask<ArmorRegistryDataMappingResult> ApplyAsync(
-		string gameDataDirectory,
-		IReadOnlyList<ArmorRegistryDataMapping> mappings,
-		string backupDirectory,
-		CancellationToken cancellationToken = default)
+	/// <exception cref="InvalidDataException">基底不是可识别的护甲注册表文件。</exception>
+	public static ArmorRegistryCompileOutcome Compile(
+		byte[] baseSealed,
+		IReadOnlyList<ArmorRegistryDataMapping> mappings)
 	{
+		ArgumentNullException.ThrowIfNull(baseSealed);
 		ArgumentNullException.ThrowIfNull(mappings);
-		if (string.IsNullOrWhiteSpace(gameDataDirectory)) return ArmorRegistryDataMappingResult.Nothing;
-		var targetPath = ResolveTargetPath(gameDataDirectory);
-		if (!File.Exists(targetPath))
-			return new ArmorRegistryDataMappingResult(0, mappings.Count, false, "找不到护甲注册表数据文件。");
-
-		Directory.CreateDirectory(backupDirectory);
-		var backupPath = Path.Combine(backupDirectory, BackupFileName);
-		var statePath = Path.Combine(backupDirectory, StateFileName);
-		var current = await File.ReadAllBytesAsync(targetPath, cancellationToken).ConfigureAwait(false);
-
-		var currentHash = Convert.ToHexString(SHA256.HashData(current));
-		var recorded = File.Exists(statePath)
-			? (await File.ReadAllTextAsync(statePath, cancellationToken).ConfigureAwait(false)).Trim()
-			: null;
-
-		// 游戏版本：备份只对同一个版本有效。读不到 manifest 时跳过这条判据。
-		var currentBuildId = SteamAppManifest
-			.TryRead(SteamAppManifest.ResolveManifestPath(gameDataDirectory))?.TrustedBuildId;
-		var recordedParts = recorded?.Split('|');
-		var recordedPristine = recordedParts is { Length: > 0 } ? recordedParts[0] : null;
-		var recordedWritten = recordedParts is { Length: > 1 } ? recordedParts[1] : null;
-		var recordedBuild = recordedParts is { Length: > 3 } ? recordedParts[3] : null;
-
-		// 状态说"当前文件是我们写的"，但备份不见了：原件已经丢了。此时绝不能拿被改过的
-		// 文件当新基准——那会把改动固化成"原版"，之后再也分不清哪份才是官方的。
-		var stateSaysOurs = recordedWritten is { Length: > 0 }
-			&& string.Equals(currentHash, recordedWritten, StringComparison.OrdinalIgnoreCase);
-		if (stateSaysOurs && !File.Exists(backupPath))
-		{
-			return new ArmorRegistryDataMappingResult(0, mappings.Count, false,
-				"原始备份丢失，而当前注册表是被改写过的版本。请先执行「Steam 校验完整性」恢复官方文件。");
-		}
-
-		// 备份的归属判定。任一成立就按当前文件重建基准：
-		//   1. 还没有备份；
-		//   2. 没有状态文件（无法证明备份属于哪个原始文件）；
-		//   3. buildid 变了——游戏更新过，旧备份必然过期（这条是文件哈希看不出来的）；
-		//   4. 当前文件既不是备份、也不是我们写的（Steam 校验 / 手动换文件）。
-		var reseed =
-			!File.Exists(backupPath)
-			|| recorded is null
-			|| (recordedBuild is { Length: > 0 }
-				&& currentBuildId is { Length: > 0 }
-				&& !string.Equals(recordedBuild, currentBuildId, StringComparison.Ordinal))
-			|| (!string.Equals(currentHash, recordedPristine, StringComparison.OrdinalIgnoreCase)
-				&& !string.Equals(currentHash, recordedWritten, StringComparison.OrdinalIgnoreCase));
-		// ⚠️ **重新播种前必须挡住一种情况：当前文件仍是我们改写过的，但基准已经失效。**
-		// 那说明原件找不回来了（备份过期/状态丢失），而拿"我们改过的文件"当新基准会把改动
-		// 固化成"原版"——之后再也分不清哪份才是官方的，还原也就永远做不到了。
-		// 旧实现会在这里静默播种，于是用户看到的是"关掉真映射没效果"。
-		if (reseed && stateSaysOurs)
-		{
-			return new ArmorRegistryDataMappingResult(0, mappings.Count, false,
-				"原始备份基准已失效（游戏版本变化或状态文件丢失），而当前注册表仍是被改写过的版本 —— "
-				+ "无法安全还原。请先执行「Steam 校验完整性」恢复官方文件，再重新应用映射。");
-		}
-
-		if (reseed)
-			await File.WriteAllBytesAsync(backupPath, current, cancellationToken).ConfigureAwait(false);
-
-		var pristine = await File.ReadAllBytesAsync(backupPath, cancellationToken).ConfigureAwait(false);
-		var pristineSha = Convert.ToHexString(SHA256.HashData(pristine));
-
 #pragma warning disable CS0618
 		var decryptor = Decryptor.CreateWithEmbeddedKeys();
 #pragma warning restore CS0618
-		var plain = decryptor.DecodeData(pristine);
+		var plain = decryptor.DecodeData(baseSealed);
 		var contentHash = HashContent(plain);
-		// 供 ArmorDataFileIdentity 使用：让索引指纹看到"未改动"的内容身份。
-		var pristineContent = Convert.ToHexString(SHA256.HashData(plain)).ToLowerInvariant();
+
+		var kits = ParseKits(plain);
+		if (kits.Count == 0)
+			throw new InvalidDataException("这份 dl_bin 解析不出任何护甲套件：它不是可识别的护甲注册表文件。");
 
 		var applied = 0;
 		var skipped = 0;
@@ -513,83 +495,83 @@ public sealed class ArmorRegistryDataMapper
 			applied++;
 		}
 
-		// 没有任何改动时把游戏文件还原成原始备份（支持"删掉映射就撤销"）。
+		// 没有任何改动 ⇒ 输出就是基底本身（"删掉映射就还原"由此自动成立）。
 		if (applied == 0)
-		{
-			var alreadyPristine = string.Equals(currentHash, pristineSha, StringComparison.OrdinalIgnoreCase);
-
-			// ⚠️ **只有"明确要求关掉"（一条映射都没给）才走还原。**
-			// 给了映射却一条都没应用上（目标护甲/来源件表找不到、或内容已经一致），
-			// 这时还原等于把上一次已经生效的映射一起抹掉 —— 而用户明明是想"打开/更新"。
-			// 旧实现不看这一条，于是"全部跳过"和"要求关闭"走了同一条路。
-			if (mappings.Count != 0)
-			{
-				return new ArmorRegistryDataMappingResult(0, skipped, false,
-					$"没有一条映射能应用（{mappings.Count} 条全部跳过：目标护甲或来源件表在注册表里找不到）。"
-					+ "已保留当前注册表，未做任何改动。");
-			}
-
-			// 已经就是原版：没什么可还原的，但**要说出来**，否则用户看到的是"点了没反应"。
-			if (alreadyPristine)
-			{
-				return new ArmorRegistryDataMappingResult(0, skipped, false,
-					"注册表已经是原始版本，无需还原。");
-			}
-
-			// 当前文件既不是原版、也不是我们写的那份 ⇒ 被外部替换过（Steam 校验 / 其它工具）。
-			// 这时数据层的改动其实已经不在文件里了，但**绝不能**拿旧备份去覆盖它：
-			// 那会毁掉外部写入的内容，也会让索引指纹对不上真原版。
-			var weWroteIt = recordedWritten is { Length: > 0 }
-				&& string.Equals(currentHash, recordedWritten, StringComparison.OrdinalIgnoreCase);
-			if (!weWroteIt)
-			{
-				return new ArmorRegistryDataMappingResult(0, skipped, false,
-					"当前注册表已被外部替换（Steam 校验完整性或其它工具），映射在数据层已经不再生效，无需还原；"
-					+ "也没有覆盖它——覆盖会把外部写入的内容一起毁掉。");
-			}
-
-			await WriteAtomicAsync(targetPath, pristine, cancellationToken).ConfigureAwait(false);
-			await WriteStateAsync(statePath, pristineSha, pristineSha, pristineContent, currentBuildId,
-				gameDataDirectory, cancellationToken).ConfigureAwait(false);
-			return new ArmorRegistryDataMappingResult(0, skipped, true, "已还原原始注册表数据。");
-		}
+			return new ArmorRegistryCompileOutcome(0, skipped, baseSealed, Changed: false);
 
 		if (!TryForge(edited, contentHash))
-			return new ArmorRegistryDataMappingResult(applied, skipped, false, "无法把内容校验和伪造回原值，已放弃写入。");
+			throw new InvalidDataException("无法把内容校验和伪造回原值，已放弃写入。");
 
-		// 结果与磁盘上已有的完全一致时不重写：反复应用同一份映射不应产生任何 I/O。
-		// 只能比较明文——NaCl 密封箱每次加密都会重新生成临时密钥，密文永远不同。
-		var currentPlain = decryptor.DecodeData(current);
-		if (currentPlain.AsSpan().SequenceEqual(edited))
-		{
-			await WriteStateAsync(statePath, pristineSha, currentHash, pristineContent, currentBuildId,
-				gameDataDirectory, cancellationToken).ConfigureAwait(false);
-			return new ArmorRegistryDataMappingResult(applied, skipped, false,
-				$"{applied} 条映射已经在注册表里生效，无需重写。");
-		}
-
-		var sealedBytes = decryptor.EncodeData(edited);
-		await WriteAtomicAsync(targetPath, sealedBytes, cancellationToken).ConfigureAwait(false);
-		var sealedSha = Convert.ToHexString(SHA256.HashData(sealedBytes));
-		await WriteStateAsync(statePath, pristineSha, sealedSha, pristineContent, currentBuildId,
-			gameDataDirectory, cancellationToken).ConfigureAwait(false);
-		return new ArmorRegistryDataMappingResult(applied, skipped, true, null);
+		return new ArmorRegistryCompileOutcome(applied, skipped, decryptor.EncodeData(edited), Changed: true);
 	}
 
-	/// <summary>状态文件：<c>原始密文SHA|写出密文SHA|原始内容SHA|buildid|游戏数据目录</c>。</summary>
-	static async ValueTask WriteStateAsync(
-		string statePath,
-		string pristineSha,
-		string writtenSha,
-		string pristineContent,
-		string? buildId,
-		string dataDirectory,
-		CancellationToken cancellationToken)
-		=> await File.WriteAllTextAsync(
-			statePath,
-			$"{pristineSha}|{writtenSha}|{pristineContent}|{buildId ?? string.Empty}|{dataDirectory}",
-			new UTF8Encoding(false),
-			cancellationToken).ConfigureAwait(false);
+	/// <summary>
+	/// **应用**：编译并写盘。基底优先用原件副本，没有就把当前 dl_bin 记一份当原件。
+	/// <para>
+	/// 只有两种失败会出现在这里：<b>找不到/读不懂 dl_bin</b>、<b>目标不可写</b>。
+	/// 其它情况一律不做判断——受管 dl_bin 是派生事实，写坏了重编一次即可。
+	/// </para>
+	/// </summary>
+	public async ValueTask<ArmorRegistryDataMappingResult> ApplyAsync(
+		string gameDataDirectory,
+		IReadOnlyList<ArmorRegistryDataMapping> mappings,
+		string backupDirectory,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(mappings);
+		if (string.IsNullOrWhiteSpace(gameDataDirectory)) return ArmorRegistryDataMappingResult.Nothing;
+		var targetPath = ResolveTargetPath(gameDataDirectory);
+		if (!File.Exists(targetPath))
+			return new ArmorRegistryDataMappingResult(0, mappings.Count, false, "找不到护甲注册表数据文件。");
+
+		var backupPath = Path.Combine(backupDirectory, BackupFileName);
+		byte[] baseSealed;
+		try
+		{
+			if (File.Exists(backupPath))
+			{
+				baseSealed = await File.ReadAllBytesAsync(backupPath, cancellationToken).ConfigureAwait(false);
+			}
+			else
+			{
+				// 第一次应用：此刻文件还没被我们改过，记一份当原件（不写任何哈希状态）。
+				baseSealed = await File.ReadAllBytesAsync(targetPath, cancellationToken).ConfigureAwait(false);
+				Directory.CreateDirectory(backupDirectory);
+				await File.WriteAllBytesAsync(backupPath, baseSealed, cancellationToken).ConfigureAwait(false);
+			}
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return new ArmorRegistryDataMappingResult(0, mappings.Count, false,
+				$"读不了注册表文件（{exception.Message}）。");
+		}
+
+		ArmorRegistryCompileOutcome outcome;
+		try
+		{
+			outcome = Compile(baseSealed, mappings);
+		}
+		catch (InvalidDataException exception)
+		{
+			return new ArmorRegistryDataMappingResult(0, mappings.Count, false, exception.Message);
+		}
+
+		// **每次都写。** 不拿"编译结果和原件一样"当跳过理由：关掉映射时编译结果就是原件，
+		// 而磁盘上那份可能还是上一次写进去的改动 —— 跳过写入会让"关掉"变成没效果。
+		// 派生文件本来就是"随时重算、随时覆盖"，没有需要保护的历史。
+		try
+		{
+			await WriteAtomicAsync(targetPath, outcome.Sealed, cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			// 第二类、也是唯一需要用户动手的错误：目标不可写。
+			return new ArmorRegistryDataMappingResult(outcome.Applied, outcome.Skipped, false,
+				$"写不进注册表文件：{targetPath}（{exception.Message}）。请检查只读属性、占用或权限。");
+		}
+
+		return new ArmorRegistryDataMappingResult(outcome.Applied, outcome.Skipped, true, null);
+	}
 
 	static async ValueTask WriteAtomicAsync(string path, byte[] content, CancellationToken cancellationToken)
 	{

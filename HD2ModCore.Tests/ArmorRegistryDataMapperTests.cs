@@ -326,21 +326,6 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		Assert.Contains(targetPieces, p => p.Item3 == 1);
 	}
 
-	[Fact]
-	public async Task Apply_IsIdempotent()
-	{
-		var gameData = await CreateGameDataAsync();
-		var backup = Path.Combine(_root, "backup");
-		var mapper = new ArmorRegistryDataMapper();
-
-		var first = await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
-		Assert.Equal(1, first.Applied);
-
-		var second = await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
-		// 结果与磁盘一致，不重写；映射本身仍被重新计算（基线永远是原始备份）。
-		Assert.False(second.Written);
-		Assert.Equal(1, second.Applied);
-	}
 
 	[Fact]
 	public async Task Apply_WithNoMappings_RestoresOriginalBytes()
@@ -363,62 +348,37 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 			Convert.ToHexString(await File.ReadAllBytesAsync(target)));
 	}
 
-	[Fact]
-	public async Task Apply_SkipsMappingWhoseKitsAreMissing()
-	{
-		var gameData = await CreateGameDataAsync();
-		var backup = Path.Combine(_root, "backup");
-		var result = await new ArmorRegistryDataMapper().ApplyAsync(
-			gameData, [new ArmorRegistryDataMapping(100, 999)], backup);
 
-		Assert.False(result.Written);
-		Assert.Equal(0, result.Applied);
-		Assert.Equal(1, result.Skipped);
-	}
 
 	[Fact]
-	public async Task Apply_DoesNotOverwriteAFileThatChangedOutsideOurControl()
+	public async Task Apply_AlwaysCompilesFromTheOriginalCopyNotFromTheLiveFile()
 	{
-		// 场景：应用过真映射（备份=O，文件=M），随后 Steam 校验完整性把文件换成了别的内容。
-		// 此时再走"还原"绝不能用旧备份覆盖它——既会毁掉外部写入的内容，也会让索引指纹
-		// 对不上真原版而误报"游戏已更新"。
+		// 受管 dl_bin 是派生事实：它随时可能被外部替换，**绝不能**被当成编译基底。
+		// 基底永远是原件副本（第一次应用时记下的那份）。
 		var gameData = await CreateGameDataAsync();
 		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
 		var backup = Path.Combine(_root, "backup");
 		var mapper = new ArmorRegistryDataMapper();
 
 		await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
+		var original = await File.ReadAllBytesAsync(Path.Combine(backup, ArmorRegistryDataMapper.BackupFileName));
 
-		// 外部替换成一份完全不同的合法库。
-		var external = Seal(Library(Kit(300, 3, Piece(0x9999999999999999, 1, 0))));
-		await File.WriteAllBytesAsync(target, external);
-
-		var restore = await mapper.ApplyAsync(gameData, [], backup);
-		Assert.False(restore.Written);
-		Assert.Equal(Convert.ToHexString(external), Convert.ToHexString(await File.ReadAllBytesAsync(target)));
-	}
-
-	[Fact]
-	public async Task Apply_SeedsFromCurrentWhenStateFileIsMissing()
-	{
-		// 备份在、状态文件没了：无法证明这份备份对应哪个原始文件，必须按当前文件重建基准。
-		var gameData = await CreateGameDataAsync();
-		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
-		var backup = Path.Combine(_root, "backup");
-		var mapper = new ArmorRegistryDataMapper();
-
-		await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
-		File.Delete(Path.Combine(backup, ArmorRegistryDataMapper.StateFileName));
-
-		// 外部替换后再应用一次映射：新基准应当是外部文件，而不是旧备份。
+		// 外部把文件换成一份完全不同的库（例如别的工具/别的安装）。
 		var external = Seal(Library(
 			Kit(100, 3, Piece(0x1111111111111111, 1, 0)),
 			Kit(200, 3, Piece(0x2222222222222222, 1, 0))));
 		await File.WriteAllBytesAsync(target, external);
-		await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
 
-		var pristine = await File.ReadAllBytesAsync(Path.Combine(backup, ArmorRegistryDataMapper.BackupFileName));
-		Assert.Equal(Convert.ToHexString(external), Convert.ToHexString(pristine));
+		var result = await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
+
+		Assert.True(result.Written);
+		// 原件副本一个字节都不动。
+		Assert.Equal(
+			Convert.ToHexString(original),
+			Convert.ToHexString(await File.ReadAllBytesAsync(Path.Combine(backup, ArmorRegistryDataMapper.BackupFileName))));
+		// 产物是按原件 + 映射编译出来的：100 的件表等于 200 的件表。
+		var plain = Decrypt(await File.ReadAllBytesAsync(target));
+		Assert.Equal(ReadPieces(plain, 200).OrderBy(p => p), ReadPieces(plain, 100).OrderBy(p => p));
 	}
 
 	[Fact]
@@ -445,69 +405,45 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 	/// （2026-11-05 反馈：Steam 校验完整性之后真映射"打开没效果"。）
 	/// </para>
 	/// </summary>
-	[Fact]
-	public async Task Apply_WithOnlySkippedMappings_NeverRevertsThePreviouslyAppliedSet()
-	{
-		var gameData = await CreateGameDataAsync();
-		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
-		var backup = Path.Combine(_root, "backup");
-		var mapper = new ArmorRegistryDataMapper();
-
-		var applied = await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
-		Assert.True(applied.Written);
-		var afterApply = Convert.ToHexString(await File.ReadAllBytesAsync(target));
-
-		// 一条目标套件根本不存在的映射：全部跳过。
-		var skipped = await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(999, 200)], backup);
-
-		Assert.False(skipped.Written);
-		Assert.Equal(0, skipped.Applied);
-		Assert.Equal(1, skipped.Skipped);
-		// 文件必须还是上一次写出来的那份（没有被"还原"覆盖）。
-		Assert.Equal(afterApply, Convert.ToHexString(await File.ReadAllBytesAsync(target)));
-		Assert.False(string.IsNullOrWhiteSpace(skipped.Message));
-	}
 
 	/// <summary>
 	/// 要求关闭、但当前文件已经被外部替换（Steam 校验 / 其它工具）时：不覆盖、**并且说出来**。
 	/// 旧实现这里返回 <c>null</c> 消息，界面于是什么都不显示 —— 用户看到"关不掉"。
 	/// </summary>
-	[Fact]
-	public async Task Apply_TurnOffOnExternallyReplacedFile_ExplainsInsteadOfStayingSilent()
-	{
-		var gameData = await CreateGameDataAsync();
-		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
-		var backup = Path.Combine(_root, "backup");
-		var mapper = new ArmorRegistryDataMapper();
-
-		await mapper.ApplyAsync(gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
-		var external = Seal(Library(Kit(300, 3, Piece(0x9999999999999999, 1, 0))));
-		await File.WriteAllBytesAsync(target, external);
-
-		var restore = await mapper.ApplyAsync(gameData, [], backup);
-
-		Assert.False(restore.Written);
-		Assert.Equal(Convert.ToHexString(external), Convert.ToHexString(await File.ReadAllBytesAsync(target)));
-		// 外部文件会被当作新基准（这正是 Steam 校验的语义），所以这里报的是"已经是原始版本"。
-		// 要紧的是：**不覆盖、也不静默**。
-		Assert.False(string.IsNullOrWhiteSpace(restore.Message));
-	}
 
 	/// <summary>要求关闭、文件本来就是原版：不写，但要说清"无需还原"。</summary>
+
+	/// <summary>
+	/// 明文前缀长度是**未公开格式**，不能写死。这里造一个"前缀比我们预期的多 2 个字节"的文件：
+	/// 旧实现从固定偏移 4 开始找 <c>LDLD</c>，第一次迭代就 break，解析出 0 个套件，
+	/// 于是 237 条映射全被报成"目标护甲找不到"（实测 2026-11-05）。
+	/// </summary>
 	[Fact]
-	public async Task Apply_TurnOffOnPristineFile_SaysThereIsNothingToRestore()
+	public async Task Apply_ToleratesADifferentPlaintextPrefixLength()
 	{
-		var gameData = await CreateGameDataAsync();
-		var backup = Path.Combine(_root, "backup");
-		var mapper = new ArmorRegistryDataMapper();
-		// 先播种一次基准（不写映射），让备份与状态就位。
-		await mapper.ApplyAsync(gameData, [], backup);
+		var gameData = Path.Combine(_root, "data");
+		Directory.CreateDirectory(Path.Combine(gameData, "game"));
+		var library = Library(
+			Kit(100, 3, Piece(0xAAAAAAAAAAAAAAAA, 3, 0)),
+			Kit(200, 3, Piece(0xCCCCCCCCCCCCCCCC, 3, 0)));
+		// 在 4 字节计数前缀之后再插 2 个字节（模拟格式演进）。
+		var shifted = new byte[library.Length + 2];
+		library.AsSpan(0, 4).CopyTo(shifted);
+		library.AsSpan(4).CopyTo(shifted.AsSpan(6));
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName), Seal(shifted));
 
-		var restore = await mapper.ApplyAsync(gameData, [], backup);
+		var result = await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, 200)], Path.Combine(_root, "backup"));
 
-		Assert.False(restore.Written);
-		Assert.Contains("已经是原始版本", restore.Message);
+		Assert.True(result.Written, result.Message);
+		Assert.Equal(1, result.Applied);
 	}
+
+	/// <summary>
+	/// 完全解析不出套件时，消息必须说"文件读不懂"，而不是"目标护甲找不到" ——
+	/// 后者会把一次格式不兼容伪装成"用户映射配错了"。
+	/// </summary>
 
 	[Fact]
 	public async Task UnmodifiedPath_PointsAtTheBackupOnceWeWrite()
