@@ -51,37 +51,28 @@ public partial class ModDetailsPageViewModel
 				// The bottom bar can stay open while the source Mod changes.
 				var freshFacts = await ReadFactsAsync(token);
 				var gameData = SettingsService.GetGameDataFolder();
-				var result = await Task.Run(() => converter.GenerateAsync(freshFacts, selected, name, output, gameData, token, progress), token);
-				task?.SetOutputArtifacts(result.OutputDirectory, result.DefinitionPath);
 
-				// 拆件：把换甲产物按「7 标准槽 × 身形」重排，让每块几何都能在游戏里单独开关。
-				//
-				// 只拆**装着几何的那个 patch**：真实 Mod 目录常常不止一个 patch
-				// （实测 18 个分件 Mod 里 4 个有 patch_0 + patch_1），但几何集中在一个里面，
-				// patch_1 那种只有几 KB，是附属小文件。覆盖它们会把不该动的成员打乱。
-				task?.UpdateStage("正在拆件：按 7 槽 × 身形重排 section 组");
-				task?.UpdateProgress(null);
-				var split = await SectionalSplitter
-					.ExecuteAsync(result.OutputDirectory, gameData, result.OutputDirectory, token)
-					.ConfigureAwait(true);
-				if (!split.IsValid)
-				{
-					throw new InvalidOperationException(
-						"拆件失败，已保留已生成的产物但不会导入；请查看 " + result.OutputDirectory
-						+ (split.Warnings.Count == 0 ? string.Empty : "：" + string.Join("；", split.Warnings)));
-				}
+				// 生成 → 归位到 vpk2patch/ → 拆件 → 剪枝，整条管线在 Core 里，
+				// CLI 走的是同一份实现（见 SectionalModBuilder 的注释）。
+				task?.UpdateStage("正在生成并拆件：按 7 槽 × 身形重排 section 组");
+				var artifacts = await Task.Run(
+					() => SectionalModBuilder.BuildAsync(
+						converter,
+						freshFacts,
+						selected,
+						name,
+						output,
+						gameData,
+						CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths()),
+						token,
+						progress).AsTask(),
+					token);
+				task?.SetOutputArtifacts(artifacts.ModDirectory, artifacts.DefinitionPath);
 
 				await shell.ReloadArmorRegistryWorkspaceAsync();
+				var split = artifacts.Split;
+				var compaction = artifacts.Compaction;
 				var mergedSlots = split.Plan.Targets.Count(target => target.DonorUnitIds.Count != 0);
-				// 合并把 donor unit 并进了宿主，但素体定义还是按老 unit 记的 ——
-				// 不剪的话护甲映射页会列出"选了什么都不反应"的组件（悬空引用）。
-				var compaction = await CustomModelSectionalCompaction
-					.PruneMergedPiecesAsync(
-						CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths()),
-						result.OutputDirectory,
-						[.. split.Sections.Units.Select(unit => unit.FileId)],
-						token)
-					.ConfigureAwait(true);
 				operation.Status = $"已生成 {compaction.RemainingPieceCount} 个组件 · {split.Groups.Groups.Count} 个 section 组"
 					+ (mergedSlots == 0
 						? "（每块一块，无需合并）"
@@ -98,10 +89,10 @@ public partial class ModDetailsPageViewModel
 				task?.UpdateProgress(null);
 				var imported = await new ImportService(_library, informationCenter: _library.InformationCenter,
 					onError: message => operation.Status = "已生成，但导入失败：" + message)
-					.ImportPathAsync(result.OutputDirectory, token);
+					.ImportPathAsync(artifacts.ModDirectory, token);
 				if (imported.Count == 0)
 				{
-					var reason = await RollBackRegistrationAsync(result.Model.Key);
+					var reason = await RollBackRegistrationAsync(artifacts.Model.Key);
 					throw new InvalidOperationException(
 						"新 Mod 导入失败，已撤销这次素体登记；请查看输出目录后重试。"
 						+ (reason is null ? string.Empty : $"（撤销也失败了：{reason}）"));

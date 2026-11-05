@@ -69,35 +69,30 @@ internal static class CliCustomModelSectional
         var imported = false;
         try
         {
-            CustomModelConversionResult generated;
-            try
-            {
-                generated = await converter
-                    .GenerateAsync(facts, archives, name, staging, workspace.GameDataRoot, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (InvalidDataException exception)
-            {
-                // 换甲来源为空是最常见的失败：只有**取代原版护甲/头盔**的 Mod 才有"仅属于某个
-                // Archive 的 Unit"可当来源。已经是自定义素体的 Mod 换不出东西来 ——
-                // 那种输入不需要这一步，直接对它拆件即可。这里把话说明白，别只丢一句
-                // "来源无效"。
-                throw new CliUserException(
-                    "SectionalSourceInvalid",
-                    $"这个 Mod 没有可用于换甲的来源：{exception.Message}"
-                    + "（只有取代原版护甲/头盔的 Mod 才有独占 Unit 可当来源；已经是自定义素体的 Mod 没有可换的来源。）");
-            }
-            modelKey = generated.Model.Key;
-
-            // 传**目录**而不是挑一个 patch：拆件器会把目录里所有 patch 当成一个集合叠加
-            // （同一 asset key 以 patch 序号较大者为胜者）。
-            var (plan, planWarnings) = await SectionalSplitter
-                .PlanAsync(generated.OutputDirectory, cancellationToken)
-                .ConfigureAwait(false);
-
             if (!apply)
             {
-                // 预演：把产物与素体登记都撤掉，只把"会发生什么"报出来。
+                // 预演：换甲产物必须真的生成一遍，拆件才有东西可规划。
+                // 跑完把产物与素体登记一起撤掉，库和注册表都不留痕。
+                CustomModelConversionResult probe;
+                try
+                {
+                    probe = await converter
+                        .GenerateAsync(facts, archives, name, staging, workspace.GameDataRoot, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (InvalidDataException exception)
+                {
+                    throw DescribeSourceFailure(exception);
+                }
+
+                modelKey = probe.Model.Key;
+                // 预演也要归位：布局是"能不能被识别成分件模组"的关键，
+                // 不归位的话预演看的是根目录，而实际执行看的是内容层，结论会对不上。
+                var payloadDirectory = SectionalModBuilder.RelocateToPayloadDirectory(probe.OutputDirectory);
+                var (plan, planWarnings) = await SectionalSplitter
+                    .PlanAsync(payloadDirectory, cancellationToken)
+                    .ConfigureAwait(false);
+
                 await RollBackRegistrationAsync(paths, modelKey).ConfigureAwait(false);
                 modelKey = null;
                 emit(
@@ -130,29 +125,39 @@ internal static class CliCustomModelSectional
                 return 0;
             }
 
-            var split = await SectionalSplitter
-                .ExecuteAsync(generated.OutputDirectory, workspace.GameDataRoot, generated.OutputDirectory, cancellationToken)
-                .ConfigureAwait(false);
-            if (!split.IsValid)
+            // 执行：生成 → 归位到 vpk2patch/ → 拆件 → 剪枝，整条管线在 Core 里
+            // （管理器走的是同一份实现，见 SectionalModBuilder 的注释）。
+            SectionalModArtifacts artifacts;
+            try
             {
-                throw new CliUserException(
-                    "SectionalSplitFailed",
-                    "拆件失败，产物已丢弃、素体登记已撤销："
-                    + (split.Warnings.Count == 0 ? "（没有更多细节）" : string.Join("；", split.Warnings)));
+                artifacts = await SectionalModBuilder
+                    .BuildAsync(
+                        converter,
+                        facts,
+                        archives,
+                        name,
+                        staging,
+                        workspace.GameDataRoot,
+                        CoreServices.CreateRuntimeArmorRegistryService(paths),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (InvalidDataException exception) when (exception.Message.StartsWith("拆件失败", StringComparison.Ordinal))
+            {
+                throw new CliUserException("SectionalSplitFailed", "拆件失败，产物已丢弃、素体登记已撤销：" + exception.Message);
+            }
+            catch (InvalidDataException exception)
+            {
+                throw DescribeSourceFailure(exception);
             }
 
-            // 合并把 donor unit 并进宿主，素体定义要跟着剪，否则护甲映射页会列出悬空组件。
-            var compaction = await CustomModelSectionalCompaction
-                .PruneMergedPiecesAsync(
-                    CoreServices.CreateRuntimeArmorRegistryService(paths),
-                    generated.OutputDirectory,
-                    [.. split.Sections.Units.Select(unit => unit.FileId)],
-                    cancellationToken)
-                .ConfigureAwait(false);
+            modelKey = artifacts.Model.Key;
+            var split = artifacts.Split;
+            var compaction = artifacts.Compaction;
 
             // 导入完全复用 import plan/validate/apply 那条守护路径：先建计划，再在跨进程写租约
             // 持有期间重新校验一次，最后才写库。**不绕过去**——绕过就等于让这条路没有护栏。
-            var inspection = await CliImportPlanArtifacts.InspectAsync(generated.OutputDirectory, cancellationToken).ConfigureAwait(false);
+            var inspection = await CliImportPlanArtifacts.InspectAsync(artifacts.ModDirectory, cancellationToken).ConfigureAwait(false);
             var document = CliImportPlanArtifacts.CreateDocument(inspection);
             await using var lease = await CoreServices.CreateLibraryWriteLeaseProvider()
                 .AcquireAsync(paths.ModsDirectory)
@@ -175,6 +180,7 @@ internal static class CliCustomModelSectional
                     mode = "apply",
                     name,
                     modelKey,
+                    payloadDirectory = artifacts.PayloadDirectory,
                     targets = split.Plan.Targets.Count,
                     groups = split.Groups.Groups.Count,
                     mergedSlots = split.Plan.Targets.Count(target => target.DonorUnitIds.Count != 0),
@@ -203,6 +209,17 @@ internal static class CliCustomModelSectional
             }
         }
     }
+
+    /// <summary>
+    /// 换甲来源为空是最常见的失败：只有**取代原版护甲/头盔**的 Mod 才有"仅属于某个 Archive
+    /// 的 Unit"可当来源。已经是自定义素体的 Mod 换不出东西来 —— 那种输入不需要这一步。
+    /// 这里把话说明白，别只丢一句"来源无效"。
+    /// </summary>
+    private static CliUserException DescribeSourceFailure(InvalidDataException exception)
+        => new(
+            "SectionalSourceInvalid",
+            $"这个 Mod 没有可用于换甲的来源：{exception.Message}"
+            + "（只有取代原版护甲/头盔的 Mod 才有独占 Unit 可当来源；已经是自定义素体的 Mod 没有可换的来源。）");
 
     private static int GetImportedNodeCount(ModImportExecutionResult result)
         => result.ImportedNodeIds?.Count ?? 0;

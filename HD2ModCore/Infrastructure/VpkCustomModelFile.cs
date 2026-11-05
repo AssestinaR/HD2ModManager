@@ -16,12 +16,24 @@ public static class VpkCustomModelFile
 	/// <summary>文件名（写在 Mod 目录里，实测位于 <c>vpk2patch/</c> 下；扫描是递归的）。</summary>
 	public const string FileName = "custom-model.json";
 
-	/// <summary>读一个 Mod 目录登记的素体 key；没有或读不懂返回 <c>null</c>。</summary>
+	/// <summary>
+	/// 读一个 Mod 目录登记的素体 key；没有或读不懂返回 <c>null</c>。
+	/// <para>
+	/// <b>两处都要看。</b>转换产物把这份文件写在 <c>vpk2patch/</c> 下（内容层），
+	/// 手写的或早期的写在根上。只认根目录的话，VPK 类 Mod 会读不到自己的素体 ——
+	/// 表现是详情页的"默认目标"选不中自己的素体、重构建拿不到 key。
+	/// </para>
+	/// </summary>
 	public static string? TryReadKey(string modDirectory)
 	{
 		if (string.IsNullOrWhiteSpace(modDirectory))
 			return null;
-		var path = Path.Combine(modDirectory, FileName);
+		return ReadKeyAt(Path.Combine(modDirectory, FileName))
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName));
+	}
+
+	private static string? ReadKeyAt(string path)
+	{
 		if (!File.Exists(path))
 			return null;
 		try
