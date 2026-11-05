@@ -29,7 +29,10 @@ public sealed class CustomModelSectionalCompactionTests : IDisposable
 		Directory.CreateDirectory(appRoot);
 		Directory.CreateDirectory(libraryRoot);
 		_paths = new StoragePaths(appRoot, libraryRoot);
-		_registry = new RuntimeArmorRegistryService(_paths);
+		// **必须把注册表根也指到临时目录。** 默认值指向 LocalApplicationData 下的真实注册表：
+		// 工作区文件不存在时 `ReadSnapshotAsync` 会回退去读那里的协议文件，于是把用户真实的
+		// 素体列表带进这份"空工作区"，断言就会看到一堆 custom-*（而且真的被写回临时工作区）。
+		_registry = new RuntimeArmorRegistryService(_paths, Path.Combine(_root, "registry"));
 		_modDirectory = Path.Combine(libraryRoot, "TestMod");
 		Directory.CreateDirectory(_modDirectory);
 	}

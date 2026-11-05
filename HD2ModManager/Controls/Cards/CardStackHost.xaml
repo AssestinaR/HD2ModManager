@@ -16,13 +16,14 @@
         <cards:CardHeightConverter x:Key="CardHeight"/>
         <cards:CardOverflowConverter x:Key="CardOverflow"/>
 
-        <Style x:Key="CardShell" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource SurfaceCard}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource StrokeSubtle}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="{StaticResource RadiusCard}"/>
+        <!--
+            卡片外观只在一处定义：`AppCard`（Themes/Controls.xaml）。
+            这里只补"卡片特有的行为"（Role 的阴影 / 底色 / 危险描边 / 可点）。
+            以前两边各写一遍 —— 于是手写卡片的地方（比如分件编辑页）漏了描边，
+            看起来和别的页面不是一套。
+        -->
+        <Style x:Key="CardShell" TargetType="Border" BasedOn="{StaticResource AppCard}">
             <Setter Property="Padding" Value="{StaticResource CardPadding}"/>
-            <Setter Property="SnapsToDevicePixels" Value="True"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Role}" Value="Elevated">
                     <Setter Property="Effect" Value="{StaticResource ElevatedPanelShadow}"/>

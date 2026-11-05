@@ -15,8 +15,7 @@
             顶部单行卡：左边"新增组"，右边"应用"。
             这两件事是一组（选块 → 建组 → 应用才生效），放同一行比散在两列里好找。
         -->
-        <Border Grid.Row="0" Background="{StaticResource SurfaceCard}" CornerRadius="{StaticResource RadiusCard}"
-                Padding="16,12" Margin="0,0,0,12">
+        <Border Grid.Row="0" Style="{StaticResource AppCard}" Padding="16,12" Margin="0,0,0,12">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -58,7 +57,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- 左：section 树卡片。树占满标题以外的全部高度（不设 MaxHeight）。 -->
-            <Border Grid.Column="0" Background="{StaticResource SurfaceCard}" CornerRadius="{StaticResource RadiusCard}" Padding="16">
+            <Border Grid.Column="0" Style="{StaticResource AppCard}">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="section 树" FontSize="15" FontWeight="SemiBold"
                                Foreground="{StaticResource TextPrimary}"/>
@@ -73,7 +72,7 @@
             </Border>
 
             <!-- 右：section 组卡片 -->
-            <Border Grid.Column="2" Background="{StaticResource SurfaceCard}" CornerRadius="{StaticResource RadiusCard}" Padding="16">
+            <Border Grid.Column="2" Style="{StaticResource AppCard}">
                 <DockPanel>
                     <TextBlock DockPanel.Dock="Top" Text="section 组" FontSize="15" FontWeight="SemiBold"
                                Foreground="{StaticResource TextPrimary}"/>
