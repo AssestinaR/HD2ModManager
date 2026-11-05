@@ -22,10 +22,14 @@ public partial class ModDetailsPageViewModel
 	/// <summary>
 	/// 重构建。<b>不做禁用</b>（与「切换」「应用」一致）：没来源 VPK、上一个操作还在跑，
 	/// 都在方法里用一句话说清楚，而不是让按钮灰着不解释自己。
+	/// <para>
+	/// 点了先开底栏（选范围与并发），而不是直接跑 —— 子级一多，逐个跑要等很久，
+	/// 而并发直接决定内存与磁盘占用，这两件事该在开始前一起决定。
+	/// </para>
 	/// </summary>
-	public RelayCommand RebuildVpkCommand => _rebuildVpkCommand ??= new(_ => _ = RebuildVpkAsync());
+	public RelayCommand RebuildVpkCommand => _rebuildVpkCommand ??= new(_ => OpenRebuildBottomBar());
 
-	private async Task RebuildVpkAsync()
+	private void OpenRebuildBottomBar()
 	{
 		if (_vpkBusy)
 		{
@@ -35,61 +39,28 @@ public partial class ModDetailsPageViewModel
 
 		if (!TryGetCurrentNode(out var node)) return;
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
-
-		// 这一步会覆盖产物，所以必须确认——但确认文案要说清**代价与不变量**：
-		// 旧产物会被备份、目标护甲与勾选都会保住、游戏数据不动（真映射保持原样）。
-		const string question =
-			"将用 Mod 文件夹里那份来源 VPK 重新转换：\n"
-			+ "· vpk2patch/ 会被替换（旧产物先备份到临时目录）\n"
-			+ "· 转换完**按当前配置**重新生成换甲产物：目标护甲取上方下拉里选的那件，\n"
-			+ "  勾选取组件树上当前的状态（包括还没点「应用」的改动）\n"
-			+ "· 不写游戏数据：护甲映射保持原样\n\n"
-			+ "作者发了新版包、或者想用新的转换参数重出一遍时，用它就不用重新导入。继续吗？";
-		var owner = System.Windows.Application.Current?.MainWindow;
-		var confirm = owner is null
-			? MessageBox.Show(question, "重构建 VPK 模组", MessageBoxButton.OKCancel, MessageBoxImage.Question)
-			: MessageBox.Show(owner, question, "重构建 VPK 模组", MessageBoxButton.OKCancel, MessageBoxImage.Question);
-		if (confirm != MessageBoxResult.OK) return;
-
-		// 选项也是 VPK 转换产物时，再问一次要不要一起重构建。
-		//
-		// 为什么要问而不是自动一起做：选项可能是别的作者、别的来源包（材质包、发型包），
-		// 重构建它们同样要几分钟，而且用户完全可能只想换主体。反过来，如果什么都不问，
-		// 用户会发现"主体换了、材质包还是老的"，那才是真的坑。
-		var optionTargets = CollectVpkOptionTargets(node);
-		var includeOptions = false;
-		if (optionTargets.Count != 0)
+		if (VpkRebuildService.FindSourceVpkCount(directory) == 0)
 		{
-			// **先说清哪些选项的产物已经过期。**
-			//
-			// 实测教训（2026-11-03）：用户改了转换器行为、也点了重构建，但其中一包没被刷到，
-			// 于是连续三轮进游戏都在看旧产物。选项一多，"到底刷了哪几个"根本没人能凭印象回答，
-			// 所以这里直接把"过期几个、叫什么"写进对话框 —— 让选择有依据，而不是靠记性。
-			var currentStamp = ConversionStaleness.CurrentToolStamp();
-			var staleNames = optionTargets
-				.Where(option => !ConversionStaleness.IsFromCurrentTool(option.Directory, currentStamp))
-				.Select(option => option.Name)
-				.ToArray();
-
-			var names = string.Join("、", optionTargets.Take(6).Select(option => option.Name));
-			if (optionTargets.Count > 6) names += $"…（共 {optionTargets.Count} 个）";
-			var staleLine = staleNames.Length == 0
-				? "· 这些选项的产物都已是最新转换器生成的\n"
-				: $"⚠️ 其中 {staleNames.Length} 个的产物早于当前转换器（选「是」才会刷新）："
-					+ $"{string.Join("、", staleNames.Take(6))}"
-					+ (staleNames.Length > 6 ? $"…（共 {staleNames.Length} 个）" : string.Empty) + "\n";
-			var optionQuestion =
-				$"这个 Mod 有 {optionTargets.Count} 个选项也是 VPK 转换产物：\n{names}\n\n"
-				+ staleLine + "\n"
-				+ "要把它们也一起重构建吗？\n"
-				+ "· 是：先重建主体，再逐个重建这些选项\n"
-				+ "· 否：只重建主体（选项保持现在的产物）";
-			var answersOwner = System.Windows.Application.Current?.MainWindow;
-			var answer = answersOwner is null
-				? MessageBox.Show(optionQuestion, "一并重构建选项？", MessageBoxButton.YesNo, MessageBoxImage.Question)
-				: MessageBox.Show(answersOwner, optionQuestion, "一并重构建选项？", MessageBoxButton.YesNo, MessageBoxImage.Question);
-			includeOptions = answer == MessageBoxResult.Yes;
+			VpkComponentStatus = "这个 Mod 的文件夹里没有来源 .vpk，无法重构建（把最初导入的那个 .vpk 放回根上再试）。";
+			return;
 		}
+
+		if (System.Windows.Application.Current?.MainWindow?.DataContext is not ShellViewModel shell) return;
+		var descendants = CollectVpkOptionTargets(node);
+		var bar = new VpkRebuildBottomBarViewModel(node.Metadata.Name, descendants.Count,
+			operation => RebuildVpkAsync(node, directory, operation, descendants),
+			() => shell.DismissToolBottomBars());
+		shell.OpenVpkRebuild(bar);
+	}
+
+	private async Task RebuildVpkAsync(
+		ModNode node,
+		string directory,
+		VpkRebuildBottomBarViewModel options,
+		IReadOnlyList<VpkOptionTarget> optionTargets)
+	{
+		var includeOptions = options.IncludeDescendants && optionTargets.Count != 0;
+		var concurrency = options.Concurrency;
 
 		_vpkBusy = true;
 
@@ -97,7 +68,6 @@ public partial class ModDetailsPageViewModel
 		//
 		// 重构建是几分钟的长任务，管理器对这类活的统一风格是"背景任务 + 消息中心"：
 		// 阶段、进度、取消、报告都在那里；卡片只留一句结论。
-		// 以前把每一句阶段文字都写到卡片的 `VpkComponentStatus` 上，读起来像日志、还会被下一句顶掉。
 		var stepCount = includeOptions ? 1 + optionTargets.Count : 1;
 		var completedSteps = 0;
 		var task = _backgroundTasks?.Enqueue(
@@ -107,21 +77,33 @@ public partial class ModDetailsPageViewModel
 			origin: "Mod 详情",
 			userVisibleReason: "用 Mod 文件夹里那份来源 VPK 重新转换，并按当前配置重新生成换甲产物。",
 			suggestedAction: "完成后重启游戏生效；细节见本次任务的报告。",
-			retry: () => RebuildVpkAsync(),
+			retry: () =>
+			{
+				// 重试 = 重新开底栏：范围与并发让用户再定一次，而不是悄悄用上次的。
+				OpenRebuildBottomBar();
+				return Task.CompletedTask;
+			},
 			presentation: BackgroundTaskPresentation.Foreground);
 		var cancellation = task?.CancellationToken ?? CancellationToken.None;
+
+		// 运行中让底栏的「取消」也能停：底栏不知道 CancellationToken，只发事件。
+		void OnCancelRequested(object? sender, EventArgs e) => task?.Cancel();
+		options.CancelRequested += OnCancelRequested;
 
 		// 没有消息中心时（设计期 / 单测直接 new 这个 VM）退回卡片，行为不至于丢。
 		void Report(string stage)
 		{
 			if (task is not null) task.UpdateStage(stage);
 			else VpkComponentStatus = stage;
+			options.Status = stage;
 		}
 
 		void Step()
 		{
 			completedSteps++;
-			task?.UpdateProgress(Math.Min(1d, (double)completedSteps / stepCount));
+			var ratio = Math.Min(1d, (double)completedSteps / stepCount);
+			task?.UpdateProgress(ratio);
+			options.Progress = ratio;
 		}
 
 		task?.MarkRunning("正在保存当前配置");
@@ -179,33 +161,48 @@ public partial class ModDetailsPageViewModel
 			var rebuiltNodes = new List<ModNodeId> { node.Id };
 			if (includeOptions)
 			{
+				// 并发跑：每个选项是独立目录、独立转换进程，互不影响。
+				// 并发数由用户在底栏定（默认 5、上限 12），逐个跑在选项多时要等很久。
 				var succeeded = 0;
 				var failed = new List<string>();
-				var optionIndex = 0;
-				foreach (var option in optionTargets)
+				var optionNotes = new List<string>();
+				var completedOptions = 0;
+				using var gate = new SemaphoreSlim(concurrency, concurrency);
+				var workers = optionTargets.Select(async option =>
 				{
-					cancellation.ThrowIfCancellationRequested();
-					optionIndex++;
-					Report($"正在重构建选项 {optionIndex}/{optionTargets.Count}：{option.Name}");
-					var optionOutcome = await VpkRebuildService.RunAsync(
-						option.Selector,
-						option.Directory,
-						targetArchiveIds: null,
-						disabledSections: null,
-						stage => Report($"选项 {optionIndex}/{optionTargets.Count} {option.Name}：{stage}"),
-						cancellation).ConfigureAwait(true);
-					Step();
-					if (!optionOutcome.Ok)
+					await gate.WaitAsync(cancellation).ConfigureAwait(true);
+					try
 					{
-						failed.Add($"{option.Name}：{optionOutcome.Error ?? "原因未知"}");
-						continue;
-					}
+						var optionOutcome = await VpkRebuildService.RunAsync(
+							option.Selector,
+							option.Directory,
+							targetArchiveIds: null,
+							disabledSections: null,
+							stage => Report($"选项 {option.Name}：{stage}"),
+							cancellation).ConfigureAwait(true);
+						lock (optionNotes)
+						{
+							Interlocked.Increment(ref completedOptions);
+							if (!optionOutcome.Ok)
+							{
+								failed.Add($"{option.Name}：{optionOutcome.Error ?? "原因未知"}");
+								return;
+							}
 
-					succeeded++;
-					if (TryParseNodeId(option.Selector, out var optionNodeId)) rebuiltNodes.Add(optionNodeId);
-					foreach (var note in optionOutcome.Notes)
-						detailNotes.Add($"{option.Name}：{note}");
-				}
+							succeeded++;
+							if (TryParseNodeId(option.Selector, out var optionNodeId)) rebuiltNodes.Add(optionNodeId);
+							foreach (var note in optionOutcome.Notes) optionNotes.Add($"{option.Name}：{note}");
+						}
+
+						Step();
+					}
+					finally
+					{
+						gate.Release();
+					}
+				}).ToArray();
+				await Task.WhenAll(workers).ConfigureAwait(true);
+				detailNotes.AddRange(optionNotes);
 
 				summary += $"选项重建 {succeeded}/{optionTargets.Count} 个。";
 				if (failed.Count != 0)
@@ -263,6 +260,7 @@ public partial class ModDetailsPageViewModel
 		}
 		finally
 		{
+			options.CancelRequested -= OnCancelRequested;
 			_vpkBusy = false;
 		}
 	}

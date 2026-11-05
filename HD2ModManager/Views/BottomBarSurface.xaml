@@ -25,6 +25,9 @@
         <DataTemplate DataType="{x:Type viewModels:VpkBulkRebuildBottomBarRowViewModel}">
             <local:VpkBulkRebuildBottomBarContent/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type viewModels:VpkRebuildBottomBarRow}">
+            <local:VpkRebuildBottomBarContent/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type viewModels:ModExportBottomBarRowViewModel}">
             <local:ModExportBottomBarContent/>
         </DataTemplate>

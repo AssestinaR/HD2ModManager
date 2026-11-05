@@ -1,0 +1,53 @@
+<UserControl x:Class="HD2ModManager.Views.VpkRebuildBottomBarContent"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <Grid>
+        <!--
+            选项行：范围 + 并发 + 开始。
+            范围用开关而不是下拉：只有两种取值，而"含子级"是更常见的那个默认，
+            下拉会让人以为还有第三种。
+        -->
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                    Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}">
+            <TextBlock VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"
+                       Text="{Binding Operation.ModName, StringFormat=重构建「{0}」}"
+                       TextTrimming="CharacterEllipsis" MaxWidth="220"/>
+            <CheckBox Content="含子级" Style="{StaticResource AppToggleSwitch}" VerticalAlignment="Center" Margin="14,0,0,0"
+                      IsChecked="{Binding Operation.IncludeDescendants, Mode=TwoWay}"
+                      IsEnabled="{Binding Operation.HasDescendants}"
+                      ToolTip="子级是那些同样是转换产物的选项；一起重出可以避免主体换了、子级还是老产物。"/>
+            <TextBlock Text="{Binding Operation.ScopeText}" VerticalAlignment="Center" Margin="10,0,0,0"
+                       Foreground="{StaticResource TextPrimary}"/>
+            <TextBlock Text="· 并发数量" VerticalAlignment="Center" Margin="14,0,6,0" Foreground="{StaticResource TextSecondary}"/>
+            <TextBox Style="{StaticResource AppTextBox}" Width="46" TextAlignment="Center"
+                     IsEnabled="{Binding Operation.CanEditConcurrency}"
+                     Text="{Binding Operation.ConcurrencyText, UpdateSourceTrigger=PropertyChanged}"/>
+            <TextBlock Text="{Binding Operation.DefaultHint}" VerticalAlignment="Center" Margin="8,0,0,0"
+                       Foreground="{StaticResource TextSecondary}" TextTrimming="CharacterEllipsis" MaxWidth="300"/>
+            <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding Operation.StartText}"
+                    Command="{Binding Operation.StartCommand}" Margin="12,0,0,0"/>
+            <Button Style="{StaticResource AppSecondaryButton}" Content="{Binding Operation.CancelText}"
+                    Command="{Binding Operation.CancelCommand}" Margin="8,0,0,0"/>
+        </StackPanel>
+
+        <!-- 进度行：一句人话 + 一条细进度。逐条结果都进消息中心的报告。 -->
+        <Grid VerticalAlignment="Center" Visibility="{Binding IsProgressRow, Converter={StaticResource BoolToVis}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Grid.Column="0" Text="重构建" VerticalAlignment="Center"
+                       Foreground="{StaticResource TextSecondary}"/>
+            <ProgressBar Grid.Column="1" Width="150" Height="4" Margin="12,2,0,0" Maximum="1"
+                         Value="{Binding Operation.Progress, Mode=OneWay}"
+                         Visibility="{Binding Operation.HasProgress, Converter={StaticResource BoolToVis}}"/>
+            <TextBlock Grid.Column="2" Text="{Binding Operation.Status}" VerticalAlignment="Center"
+                       Margin="12,0,10,0" Foreground="{StaticResource TextPrimary}"
+                       TextTrimming="CharacterEllipsis" MaxWidth="560"/>
+        </Grid>
+    </Grid>
+</UserControl>

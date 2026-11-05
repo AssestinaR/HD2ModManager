@@ -75,6 +75,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// <summary>这个 Mod 是不是 VPK 版（有 <c>vpk2patch/</c> 载荷）。</summary>
 	public bool IsVpkMod { get; private set; }
 
+	/// <summary>这个 Mod 根上有没有来源 .vpk。没有就无法「用来源重构建」（转出来的分件模组就是这种）。</summary>
+	public bool HasSourceVpk { get; private set; }
+
 	/// <summary>patch 版设置卡的可见性：VPK 版一律不显示。</summary>
 	public bool ShowPatchSettingsCard => CanUsePatchTools && !IsVpkMod;
 
@@ -355,6 +358,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 		if (!TryGetCurrentNode(out var node)) return;
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+		// 来源包在不在，与"是不是分件模组"是两件事：转出来的分件模组没有来源 .vpk，
+		// 所以它没有"用来源重构建"这个动作。
+		HasSourceVpk = VpkRebuildService.FindSourceVpkCount(directory) != 0;
 		if (!VpkModWardrobeService.IsVpkMod(directory)) return;
 
 		IsVpkMod = true;

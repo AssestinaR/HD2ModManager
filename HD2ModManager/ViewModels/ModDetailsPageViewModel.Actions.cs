@@ -49,6 +49,9 @@ public partial class ModDetailsPageViewModel
         // （7 标准槽 × 身形，每块几何能在游戏里单独开关），生成完直接进库。
         // 原来那套"只转自定义素体"的用法已被它完全覆盖，所以不再另留入口。
         PageActions.Add(new PageActionViewModel(PageActionKind.CustomModel, "生成sectional版", ConvertToCustomModelCommand, tone: PageActionTone.Primary, order: 60));
+        // 「用来源重构建」从 VPK 动作卡移到这里：它是 patch 级动作，而动作卡留给"这个 Mod 有什么"。
+        // 只有**根上有来源 .vpk** 的 Mod 才有它 —— 转出来的分件模组没有来源包，重构建无从谈起。
+        PageActions.Add(new PageActionViewModel(PageActionKind.RebuildVpk, "用来源重构建", RebuildVpkCommand, order: 40));
         PageActions.Add(new PageActionViewModel(PageActionKind.PatchRebuild, "重构 patch", RebuildSameKeyCommand, order: 71));
 
         SyncActionVisibility();
@@ -65,6 +68,9 @@ public partial class ModDetailsPageViewModel
             action.IsVisible = action.Kind switch
             {
                 PageActionKind.Table => CanUsePatchTools,
+                // 重构建只对"有来源 VPK"的 Mod 有意义：判据是根上有没有 .vpk。
+                // 转出来的分件模组没有来源包，所以它不出现。
+                PageActionKind.RebuildVpk => HasSourceVpk,
                 PageActionKind.Fix or PageActionKind.CrossArmor or PageActionKind.Compact
                     or PageActionKind.Package or PageActionKind.Helmet or PageActionKind.Merge
                     or PageActionKind.CustomModel => ShowPatchSettingsCard,

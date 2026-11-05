@@ -397,6 +397,15 @@ public static class VpkRebuildService
 	/// Mod 根上的来源 VPK（只取顶层、跳过纯数字分卷）。
 	/// 分卷由 <c>_dir.vpk</c> 引用，单列出来会被当成另一个包重复转换。
 	/// </summary>
+	/// <summary>
+	/// 这个 Mod 根上有几份来源 VPK。<b>0 表示无法重构建</b> ——
+	/// 汉堡菜单据此决定要不要显示「用来源重构建」（转出来的分件模组没有来源包）。
+	/// </summary>
+	public static int FindSourceVpkCount(string modDirectory)
+		=> string.IsNullOrWhiteSpace(modDirectory) || !Directory.Exists(modDirectory)
+			? 0
+			: FindSourceVpks(modDirectory).Count;
+
 	private static List<string> FindSourceVpks(string modDirectory)
 		=> Directory.EnumerateFiles(modDirectory, "*.vpk", SearchOption.TopDirectoryOnly)
 			.Where(path => !IsVolume(path))

@@ -113,22 +113,9 @@
                                FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
                                Visibility="{Binding HasHeadMergeHint, Converter={StaticResource BoolToVis}}"/>
                     <!--
-                        重构建：用 Mod 文件夹里那份来源 VPK 重跑一次转换。
-                        它不是"再导入一次"——目标护甲、section 勾选、素体 unit id 全部保住，
-                        所以作者发新版包时不用从头配一遍。
+                        重构建已经移到汉堡菜单（它和并发/范围一起在底栏里定），
+                        这里不再重复放一个按钮 —— 同一个动作两个入口只会让人猜哪个是"真"的。
                     -->
-                    <Grid Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0"
-                                   Text="用来源 VPK 重新转换（保住目标护甲与勾选）"
-                                   Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"
-                                   TextWrapping="Wrap" FontSize="12"/>
-                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="重构建"
-                                Command="{Binding RebuildVpkCommand}" Margin="12,0,0,0" Padding="14,6"/>
-                    </Grid>
                     <TextBlock Text="{Binding VpkComponentStatus}" Foreground="{StaticResource TextSecondary}"
                                TextWrapping="Wrap" Margin="0,8,0,0"
                                Visibility="{Binding HasVpkComponentStatus, Converter={StaticResource BoolToVis}}"/>

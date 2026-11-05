@@ -51,6 +51,9 @@ namespace HD2ModManager.ViewModels
         private readonly List<IDisposable> _sameKeyRebuildBottomBarRegistrations = [];
         private SameKeyRebuildBottomBarViewModel? _sameKeyRebuildBottomBarOperation;
         // 「一键重构所有 VPK 模组」：一次只跑一批，所以目标清单在开跑前定下来（用户看到的就是这个数）。
+        // 详情页的「用来源重构建」底栏（单 Mod，可选连带子级）。
+        private readonly List<IDisposable> _vpkRebuildRegistrations = [];
+        private VpkRebuildBottomBarViewModel? _vpkRebuildOperation;
         private readonly List<BottomBarRegistrationToken> _bulkVpkRebuildRegistrations = [];
         private VpkBulkRebuildBottomBarViewModel? _bulkVpkRebuildOperation;
         private IReadOnlyList<VpkBulkRebuildTarget> _bulkVpkRebuildTargets = [];
@@ -866,8 +869,39 @@ namespace HD2ModManager.ViewModels
             ClearMaterialPackagingBottomBar();
             ClearSameKeyRebuildBottomBar();
             ClearModExportBottomBar();
+            ClearVpkRebuildBottomBar();
             // 正在跑的批量重构不收：那会把进度和「取消」一起藏掉。
             ClearBulkVpkRebuildBottomBar();
+        }
+
+        /// <summary>
+        /// 详情页的「用来源重构建」：开底栏选范围与并发。
+        /// <para>
+        /// 两行：选项行（范围 + 并发 + 开始）与进度行。<b>重跑时不换 VM</b>——
+        /// 结束后再点一次用的是同一个实例（用户的第一反应就是"再来一遍"），
+        /// 所以这里只在还没注册时注册一次。
+        /// </para>
+        /// </summary>
+        public void OpenVpkRebuild(VpkRebuildBottomBarViewModel operation)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            if (ReferenceEquals(_vpkRebuildOperation, operation) && _vpkRebuildRegistrations.Count != 0) return;
+            ClearVpkRebuildBottomBar();
+            _vpkRebuildOperation = operation;
+            _vpkRebuildRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                "vpk-rebuild-options",
+                [new BottomBarRowDefinition("main", new VpkRebuildBottomBarRow(operation, IsProgressRow: false))])));
+            _vpkRebuildRegistrations.Add(_bottomBar.RegisterSurfaceSource(new BottomBarRegistrationRequest(
+                "vpk-rebuild-progress",
+                [new BottomBarRowDefinition("main", new VpkRebuildBottomBarRow(operation, IsProgressRow: true))],
+                1)));
+        }
+
+        private void ClearVpkRebuildBottomBar()
+        {
+            foreach (var registration in _vpkRebuildRegistrations) registration.Dispose();
+            _vpkRebuildRegistrations.Clear();
+            _vpkRebuildOperation = null;
         }
 
         /// <summary>
