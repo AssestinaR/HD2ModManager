@@ -526,23 +526,30 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	}
 
 	/// <summary>
-	/// 清掉"没有 Mod 归属"的自定义素体（见 <see cref="CustomModelOwnershipService"/>）。
+	/// 素体 ↔ 映射对账：<b>素体以 Mod 文件夹为权威</b>，没有素体的映射自动解散
+	/// （见 <see cref="CustomModelReconciler"/>）。
 	/// <para>
-	/// 预热阶段（<paramref name="isWarmUp"/>）照样清理，但**不弹提示**：那时用户还没打开这个页面，
-	/// 弹一条"已清理 N 个素体"只会让人困惑（他只会在日志里看到理由）。
+	/// <b>它不再删素体。</b>旧实现（<c>CustomModelOwnershipService.PruneAsync</c>）会把"没有
+	/// Mod 归属"的素体连同映射一起删掉，而"归属"是靠读每个 Mod 目录里的
+	/// <c>custom-model.json</c> 判断的 —— 那个文件一时被占用/无权限，素体就被判成孤儿删掉。
+	/// 现在素体定义只存在于 Mod 目录里（读不出来就 fail-closed，什么都不删），
+	/// 这边最多解除"指向不存在素体的映射"，那是可以在界面上重配的。
+	/// </para>
+	/// <para>
+	/// 预热阶段（<paramref name="isWarmUp"/>）照样对账，但**不弹提示**：那时用户还没打开这个页面。
 	/// </para>
 	/// </summary>
-	private async Task<CustomModelPruneReport> PruneOrphanCustomModelsAsync(bool isWarmUp)
+	private async Task<CustomModelReconcileReport> PruneOrphanCustomModelsAsync(bool isWarmUp)
 	{
 		try
 		{
-			var ownership = new CustomModelOwnershipService(
+			var reconciler = new CustomModelReconciler(
 				service, SettingsService.CreateStoragePaths().ModsDirectory);
-			var report = await ownership.PruneAsync().ConfigureAwait(true);
-			// 日志照记，哪怕预热阶段不弹提示：删掉的是注册表记录，事后要能查出"它什么时候没的"。
+			var report = await reconciler.ReconcileAsync().ConfigureAwait(true);
+			// 日志照记，哪怕预热阶段不弹提示：改的是注册表记录，事后要能查出"它什么时候变的"。
 			if (report.Describe() is { } message)
 			{
-				LogService.Info("护甲注册清理素体：" + message);
+				LogService.Info("护甲注册素体对账：" + message);
 				if (!isWarmUp)
 					notifications.Show(message, NotificationLevel.Warning, TimeSpan.FromSeconds(16), "护甲注册");
 			}
@@ -554,8 +561,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			or InvalidOperationException)
 		{
 			// 对账失败不该让页面打不开：页面本来就能只读地展示现状。
-			LogService.Warn($"清理没有 Mod 归属的素体失败：{exception.Message}");
-			return CustomModelPruneReport.Empty;
+			LogService.Warn($"素体对账失败：{exception.Message}");
+			return CustomModelReconcileReport.Empty;
 		}
 	}
 

@@ -34,7 +34,15 @@ public sealed class ModLibraryResidualCleanupService : IModLibraryResidualCleanu
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var relative = Normalize(Path.GetRelativePath(root, directory));
+			// ⚠️ **管理器自己在库根上占用的目录永远不删。**
+			// `<库>/.hd2modmanager/` 里放的是护甲映射工作区（`armor-registry.workspace.json`）。
+			// 它只有 .json、不被任何库节点引用，按"残留目录"的判据恰好全部命中 ——
+			// 于是"校验 Mod 库"会把整个目录删掉。实测症状（2026-11-05 用户反馈）：
+			// 校验库之后所有自定义素体名称变成 key。
+			// 本机没中招只是因为目录里躺着几份 `.bak-*`，扩展名不在"无害"清单里，纯属侥幸。
 			if (string.Equals(Path.GetFileName(directory), TrashDirectoryName, StringComparison.OrdinalIgnoreCase)
+				|| Path.GetFileName(directory).StartsWith(
+					CustomModelCatalog.ManagerDirectoryPrefix, StringComparison.OrdinalIgnoreCase)
 				|| referenced.Contains(relative)
 				|| referenced.Any(path => path.StartsWith(relative + "/", StringComparison.OrdinalIgnoreCase)))
 				continue;

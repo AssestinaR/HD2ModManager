@@ -105,17 +105,22 @@ public static class CustomModelSectionalCompaction
 	{
 		var snapshot = await registry.ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
 		var document = snapshot.Document;
+		// ⚠️ **"工作区里有没有这个素体"必须问工作区，不能问快照。**
+		// 快照现在会把 Mod 目录里那份 `custom-model.json` 合并进来（文件是素体的权威来源），
+		// 于是"转换后还没登记过、但文件已在磁盘上"的素体会出现在快照里 ——
+		// 拿它判存在性就会把一具本不属于工作区的素体写进工作区。
+		var workspaceModels = await registry.ReadWorkspaceModelsAsync(cancellationToken).ConfigureAwait(false);
 		var index = -1;
-		for (var i = 0; i < document.ModelDefinitions.Count; i++)
+		for (var i = 0; i < workspaceModels.Count; i++)
 		{
-			if (!string.Equals(document.ModelDefinitions[i].Key, pruned.Key, StringComparison.Ordinal)) continue;
+			if (!string.Equals(workspaceModels[i].Key, pruned.Key, StringComparison.Ordinal)) continue;
 			index = i;
 			break;
 		}
 		// 工作区里没有这个素体（例如转换后还没登记过）就什么都不用做。
 		if (index < 0) return;
 
-		var models = document.ModelDefinitions.ToArray();
+		var models = workspaceModels.ToArray();
 		models[index] = pruned;
 
 		// ⚠️ **不能用 `document with { Models = models }`。** `ModelDefinitions` 是由 `Models`

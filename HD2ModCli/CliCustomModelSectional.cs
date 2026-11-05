@@ -235,8 +235,7 @@ internal static class CliCustomModelSectional
         try
         {
             await new CustomModelOwnershipService(
-                CoreServices.CreateRuntimeArmorRegistryService(paths),
-                paths.ModsDirectory).RemoveAsync(modelKey).ConfigureAwait(false);
+                CoreServices.CreateRuntimeArmorRegistryService(paths)).RemoveAsync(modelKey).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException
             or UnauthorizedAccessException

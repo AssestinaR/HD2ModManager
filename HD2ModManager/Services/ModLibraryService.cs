@@ -1429,19 +1429,19 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var ownership = new CustomModelOwnershipService(
+                var reconciler = new CustomModelReconciler(
                     CoreServices.CreateRuntimeArmorRegistryService(_paths),
                     _paths.ModsDirectory);
-                var report = await ownership.PruneAsync(cancellationToken).ConfigureAwait(false);
-                if (!report.IsEmpty)
-                    LogService.Info("删除 Mod 后清理素体：" + report.Describe());
+                var report = await reconciler.ReconcileAsync(cancellationToken).ConfigureAwait(false);
+                if (report.Describe() is { } message)
+                    LogService.Info("删除 Mod 后素体对账：" + message);
             }
             catch (Exception exception) when (exception is IOException
                 or UnauthorizedAccessException
                 or InvalidDataException
                 or InvalidOperationException)
             {
-                LogService.Warn($"删除 Mod 后清理素体失败（不影响删除本身）：{exception.Message}");
+                LogService.Warn($"删除 Mod 后素体对账失败（不影响删除本身）：{exception.Message}");
             }
         }
 

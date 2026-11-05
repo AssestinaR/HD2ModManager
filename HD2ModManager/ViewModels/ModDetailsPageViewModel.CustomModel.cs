@@ -131,8 +131,7 @@ public partial class ModDetailsPageViewModel
 		try
 		{
 			var ownership = new CustomModelOwnershipService(
-				CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths()),
-				SettingsService.CreateStoragePaths().ModsDirectory);
+				CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths()));
 			await ownership.RemoveAsync(modelKey).ConfigureAwait(false);
 			return null;
 		}

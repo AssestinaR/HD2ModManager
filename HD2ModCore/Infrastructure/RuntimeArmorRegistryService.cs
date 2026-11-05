@@ -375,6 +375,27 @@ public sealed class RuntimeArmorRegistryService
 			: documentSource is RuntimeArmorRegistryDocumentSource.ProtocolFallback
 				? ParseProtocol(await ReadBoundedTextAsync(protocolPath, MaximumProtocolBytes, cancellationToken).ConfigureAwait(false))
 				: new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
+		// **素体的权威来源是 Mod 文件夹**（每个 Mod 目录里的 `custom-model.json`），
+		// 注册表里那份只是缓存。这里用磁盘收集的结果覆盖模型列表，于是：
+		//   · 名字永远来自持有它的那份文件（工作区被删/被回退成协议都不会丢名字）；
+		//   · 素体的出现与消失跟着 Mod 走，不需要"删除素体"这个动作。
+		// 工作区里存在、磁盘上没有的那些**暂时保留**（迁移期），由
+		// `CustomModelReconciler` 在"首次只标记、之后才解散"的两阶段规则下处理。
+		var customModels = CustomModelCatalog.Collect(paths.ModsDirectory);
+		if (customModels.LibraryUsable && customModels.Entries.Count != 0)
+		{
+			var merged = new Dictionary<string, RuntimeArmorRegistryModel>(StringComparer.OrdinalIgnoreCase);
+			foreach (var model in customModels.Models) merged[model.Key] = model;
+			foreach (var model in document.ModelDefinitions) merged.TryAdd(model.Key, model);
+			document = new RuntimeArmorRegistryDocument(
+				document.Revision,
+				document.Enabled,
+				document.Mappings,
+				merged.Values.OrderBy(model => model.Key, StringComparer.Ordinal).ToArray(),
+				document.PieceOverrideDefinitions,
+				document.TargetModeDefinitions,
+				document.CompositionMode);
+		}
 		var fingerprint = await FingerprintProtocolAsync(cancellationToken).ConfigureAwait(false);
 		var runtime = await ReadKeyValueFileAsync(runtimePath, cancellationToken).ConfigureAwait(false);
 		var cache = await ReadKeyValueFileAsync(cachePath, cancellationToken).ConfigureAwait(false);
