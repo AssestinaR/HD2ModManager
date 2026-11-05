@@ -602,6 +602,55 @@ local function flag_set(flags, bit)
 	return math.floor(flags / bit) % 2 == 1
 end
 
+-- ---------------------------------------------------------------------------
+-- 世界朝向锚定：这条链的"静止朝向"要不要钉在绑定姿态上
+-- ---------------------------------------------------------------------------
+--
+-- 语义：开了之后，链的目标朝向用**绑定姿态**的锚点旋转来算，父级动画只带动平移、
+-- 不带转动。观感就是"这块布不跟着肢体转，只跟着走"。
+--
+-- 这个模式是给**袖子**做的：大袖子挂在会大幅摆动的手臂上，让它滞后于手臂才对。
+-- 判据一直是"flags 同时带 yaw/pitch/angle 三种约束"（0x04|0x08|0x10）。
+--
+-- **2026-11-05 实测发现这条判据太宽**：Soppo（包 L4D2-3702）的 `Chest_L`/`Chest_R`
+-- flags 也是 0x3D，可它们挂在 **Spine4（躯干）**上。于是胸口的布不跟躯干转，只跟着平移
+-- —— 玩家弯腰/转身时布保持原朝向，实机看到的就是"胸口反重力立起来/往上飘"。
+--
+-- 真正的区别不在 flags，而在**挂在哪根骨上**：
+--   · Lilium 的 0x3D 链根全挂在 `L_UpperArm` / `R_UpperArm`（手臂）——袖子 ✓
+--   · Soppo 的 0x3D 链根挂在 `Spine4`（躯干）——胸口 ✗
+--
+-- 所以判据改成"flags + 锚点是哪根骨"，但**只在能证明是躯干/头/胯时才关掉**：
+-- 解析不出名字（`source_extra_91` 这类辅助骨）时一律保持旧行为，宁可不动，
+-- 也不要因为一个猜出来的名字把已验收的观感改掉。
+--- 躯干/头/胯：挂在它们上的布必须跟着躯干转。
+--- 用模式而不是固定表：源侧是 `Spine` / `Spine1` / `Spine2` / `Spine4`（没有 Spine3），
+--- HD2 侧是 `spine1` / `spine2` / `chest`——同一根骨在两套命名里叫法不同，逐条列举必然漏。
+local function is_torso_anchor(key)
+	if key == "chest" or key == "neck" or key == "head"
+		or key == "hips" or key == "pelvis" then
+		return true
+	end
+	return key:match("^spine%d*$") ~= nil
+end
+
+--- 这条链要不要世界朝向锚定。
+--- @param flags number 源 jigglebone 的 flags
+--- @param anchorName string|nil 链根挂到的那根 **HD2** 骨名（解析不出就是源父骨名）
+--- @return boolean worldAnchored, string reason
+function M.world_anchor_of(flags, anchorName)
+	local byFlags = flag_set(flags, 0x04) and flag_set(flags, 0x08) and flag_set(flags, 0x10)
+	if not byFlags then return false, "flags 没有 yaw+pitch+angle 三约束" end
+	if anchorName == nil then return true, "锚点未知，保持旧行为" end
+	local key = tostring(anchorName):lower()
+	-- 源侧名字（`ValveBiped.Bip01_Spine4` / `Spine4`）也认，省掉一层"锚点表没命中"的漏判。
+	key = key:gsub("^valvebiped%.bip01_", "")
+	if is_torso_anchor(key) then
+		return false, "锚点在躯干/头（" .. tostring(anchorName) .. "）⇒ 必须跟着躯干转"
+	end
+	return true, "flags 齐全且锚点不是躯干"
+end
+
 --- 29 个源参数 → 求解器增益。
 --- <para>
 --- 关键：`k` 的量纲是 1/s²、`c` 是 1/s，**与长度单位无关**，所以 ωn/ζ 可以直用。
@@ -1892,14 +1941,16 @@ function M.attach(S, unit, rig, options)
 			skippedNoNode = skippedNoNode + 1
 		else
 			-- 2) 锚点：链根挂在哪根 HD2 骨上（用它的世界位置算加速度）
+			-- 锚点**名字**要在锚点解析之前就算好：世界朝向锚定的判据要用它判断
+			-- "这条链挂在手臂上还是躯干上"（见 M.world_anchor_of）。
+			local anchorName = M.anchor_name(chain[1].parentName, options.anchorMap)
+				or chain[1].parentName
 			local anchorNode = cached and cached.anchorNode or nil
 			if anchorNode == nil then
 				-- rig v2 直接带父骨名字，所以这里能跨到 HD2 的骨名表上。
 				-- 映射表没命中时**把名字本身当成 HD2 骨名**再试一次：链是我们自己插进 Unit 的，
 				-- 那时父骨名本来就写成 HD2 的名字（如 "head"），没有"源→HD2"这层要转。
 				-- 这样做是安全的：名字不存在时 resolveNode 返回 nil，只会计进"缺锚点"。
-				local anchorName = M.anchor_name(chain[1].parentName, options.anchorMap)
-					or chain[1].parentName
 				if anchorName ~= nil then
 					anchorNode = resolveNode(anchorName)
 				end
@@ -2046,17 +2097,20 @@ function M.attach(S, unit, rig, options)
 						-- 0x01|0x04|0x08|0x20，没有 0x10）**——它被误判成"布料"，于是头怎么转头发都不跟，
 						-- 相对头就是扭了整整一个转头角。实机看着就是"跑起来（身体转向）头发向前翘起、特别僵硬"。
 						-- 袖子是挂在手臂上的布，世界锚定合理；头发是长在头上的，必须跟着头走（只是滞后）。
-						local function hasFlag(value, mask)
-							if bit ~= nil and bit.band ~= nil then return bit.band(value, mask) ~= 0 end
-							-- 没有 bit 库时退回纯算术（掩码都是 2 的幂）
-							return math.floor(value / mask) % 2 == 1
-						end
-						local worldAnchored = hasFlag(chain[1].flags or 0, 0x04)
-							and hasFlag(chain[1].flags or 0, 0x08)
-							and hasFlag(chain[1].flags or 0, 0x10)
+						--
+						-- ⚠️ 2026-11-05 再补一条：光看 flags 还是不够。Soppo 的 `Chest_L`/`Chest_R`
+						-- flags 也是 0x3D，但挂在 **Spine4（躯干）** 上 ⇒ 胸口的布不跟躯干转，
+						-- 实机是"胸口反重力立起来/往上飘"。判据交给 M.world_anchor_of：
+						-- flags 齐全 **且** 锚点不是躯干/头/胯。
+						local worldAnchored, anchorReason = M.world_anchor_of(chain[1].flags or 0, anchorName)
 						if worldAnchored then
-							logger("[physbone] 链 %s：flags=0x%02x 含 yaw/pitch 约束 ⇒ 世界朝向锚定（父级只带动平移）",
-								tostring(chain[1] and chain[1].name), chain[1].flags or 0)
+							logger("[physbone] 链 %s：flags=0x%02x，锚点 %s ⇒ 世界朝向锚定（父级只带动平移）",
+								tostring(chain[1] and chain[1].name), chain[1].flags or 0,
+								tostring(anchorName))
+						elseif flag_set(chain[1].flags or 0, 0x04) then
+							-- 只对"本来会开、这次被关掉"的链说话，免得每个 0x31 头发都刷一行。
+							logger("[physbone] 链 %s：flags=0x%02x 但%s ⇒ 跟父级转（这是修胸口上飘的那一处）",
+								tostring(chain[1] and chain[1].name), chain[1].flags or 0, anchorReason)
 						end
 						tipData = {
 							bones = bonesNew, tips = tipsNew, segDirLocal = segDirLocal,

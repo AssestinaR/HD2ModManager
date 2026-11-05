@@ -243,6 +243,13 @@ public sealed partial class Retargeter
 			AlignPoint(_sourceWorldMetres[_shortByName[sourceName]].Origin) + _translation;
 
 		var pairs = new List<(string Source, string Hd2)>(body);
+		// 源骨架的脊椎命名不统一：Valve 标准是 `Spine` / `Spine1` / `Spine2` / `Spine4`，
+		// 而有些资产（实测 L4D2-3702 Soppo）只有 `Spine1` + `Spine4`，**没有裸 `Spine`**。
+		// 没有 `Spine` 时 `spine2` 就没有落点，`FillHd2OnlyHeads` 会在插值时崩（键 spine1 不存在）。
+		// 这里补一条别名：只在源侧确实缺 `Spine` 时，把 `Spine1` 接到 HD2 的 `spine1` 上。
+		// 条件写死成"缺 Spine 才启用"，是为了不动标准骨架的 spine1 位置（那根原本是插值出来的）。
+		if (!_shortByName.ContainsKey("Spine") && _shortByName.ContainsKey("Spine1"))
+			pairs.Add(("Spine1", "spine1"));
 		pairs.AddRange(FingerPairs());
 		foreach (var (sourceName, hd2Name) in pairs.Concat(SnapToes()))
 		{
@@ -266,7 +273,7 @@ public sealed partial class Retargeter
 				_newHead[hd2Name] = Joint(sourceName);
 		}
 
-		FillHd2OnlyHeads();
+		FillHd2OnlyHeads(missing);
 
 		// ---- 2b / 2c. 站姿 --------------------------------------------------
 		if (Math.Abs(_options.LegTilt) > 1e-9)
@@ -520,25 +527,49 @@ public sealed partial class Retargeter
 	}
 
 	/// <summary>HD2 独有骨（源侧没有对端）的确定性插值填充，对应 BatchTool 的 <c>build_snap_heads</c>。</summary>
-	private void FillHd2OnlyHeads()
+	/// <remarks>
+	/// <b>2026-11-05 修</b>：以前这里直接下标 `_newHead["hips"]` / `["spine1"]` / `["neck"]` /
+	/// `["{side}_shoulder"]`，只要源骨架缺一环就抛 <c>KeyNotFoundException</c>，
+	/// 整个转换以 "The given key 'spine1' was not present in the dictionary" 结束
+	/// （实测 L4D2-3702 Soppo：源侧只有 Spine1 + Spine4，没有裸 Spine）。
+	/// 现在每一处都要求**两端都在**才插值，缺的那根就保持 HD2 原生位置，并把原因记进
+	/// <paramref name="missing"/> —— 宁可少插一根骨，也不要因为缺一根骨整包转不出来。
+	/// </remarks>
+	private void FillHd2OnlyHeads(List<string> missing)
 	{
-		if (!_newHead.ContainsKey("spine1") && _newHead.TryGetValue("spine2", out var spine2))
-			_newHead["spine1"] = Lerp(_newHead["hips"], spine2, 0.50);
-		if (!_newHead.ContainsKey("spine2"))
-			_newHead["spine2"] = Lerp(_newHead["spine1"], _newHead["neck"], 0.50);
-		_newHead.TryAdd("chest", _newHead["spine2"]);
+		if (!_newHead.ContainsKey("spine1")
+			&& _newHead.TryGetValue("spine2", out var spine2)
+			&& _newHead.TryGetValue("hips", out var hips))
+			_newHead["spine1"] = Lerp(hips, spine2, 0.50);
+		if (!_newHead.ContainsKey("spine2")
+			&& _newHead.TryGetValue("spine1", out var spine1)
+			&& _newHead.TryGetValue("neck", out var neck))
+			_newHead["spine2"] = Lerp(spine1, neck, 0.50);
+		if (_newHead.TryGetValue("spine2", out var spine2Head))
+			_newHead.TryAdd("chest", spine2Head);
+		else
+			missing.Add("spine2 没有落点（源骨架缺 Spine 类骨）⇒ HD2 的脊椎保持原生位置");
 
 		foreach (var side in new[] { "l", "r" })
 		{
-			var shoulder = _newHead[$"{side}_shoulder"];
-			var elbow = _newHead[$"{side}_elbow"];
-			var wrist = _newHead[$"{side}_hand"];
+			// 肩肘腕三根缺任何一根，这一侧的 twist 骨就无从插值 —— 跳过，别拿半根骨算。
+			if (!_newHead.TryGetValue($"{side}_shoulder", out var shoulder)
+				|| !_newHead.TryGetValue($"{side}_elbow", out var elbow)
+				|| !_newHead.TryGetValue($"{side}_hand", out var wrist))
+			{
+				missing.Add($"{side} 肩/肘/腕 不齐 ⇒ 跳过 {side}_shoulder_twist / {side}_hand_twist 的插值");
+				continue;
+			}
+
 			_newHead.TryAdd($"{side}_shoulder_twist", Lerp(shoulder, elbow, 0.42));
 			_newHead.TryAdd($"{side}_hand_twist", wrist);
-			if (_byName.ContainsKey($"{side}_shoulderarmour"))
-				_newHead[$"{side}_shoulderarmour"] = Lerp(_newHead[$"{side}_clavicle"], shoulder, 0.90);
-			if (_newHead.TryGetValue($"{side}_ball", out var ball) && _byName.ContainsKey($"{side}_toe"))
-				_newHead[$"{side}_toe"] = ball + ((ball - _newHead[$"{side}_foot"]) * 0.35);
+			if (_byName.ContainsKey($"{side}_shoulderarmour")
+				&& _newHead.TryGetValue($"{side}_clavicle", out var clavicle))
+				_newHead[$"{side}_shoulderarmour"] = Lerp(clavicle, shoulder, 0.90);
+			if (_newHead.TryGetValue($"{side}_ball", out var ball)
+				&& _byName.ContainsKey($"{side}_toe")
+				&& _newHead.TryGetValue($"{side}_foot", out var foot))
+				_newHead[$"{side}_toe"] = ball + ((ball - foot) * 0.35);
 		}
 
 		if (_byName.ContainsKey("head_tip"))
