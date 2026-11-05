@@ -3333,6 +3333,30 @@ public static class CliApplication
 		var inputs = SourceRetargetPipeline.LoadSource(full, modelStem);
 		var avatar = await ResolveAvatarTransformInfoAsync(options, gameData).ConfigureAwait(false);
 		var rig = SourceRetargetPipeline.LoadRigFromTransformInfo(avatar, ResolveBoneHashPath(options, workspace));
+		// 镂空 → 几何（`--cutout-geometry`）。
+		//
+		// **必须在这里**：`Run` 与 `SourceSegmentation.Split` 都会按下标引用这套几何，
+		// 在装配器里裁会让计划里的三角形下标失效（实测 KeyNotFoundException: 116519 …）。
+		// 裁完几何本身没有洞，材质就可以走 `advanced` 拿到真正的金属度 —— 这是 HD2 里
+		// 「镂空 + 金属」唯一能同时满足的路。
+		var cutoutStems = ResolveCutoutGeometryMaterials(options);
+		if (cutoutStems.Count > 0 && materialConverter is not null)
+		{
+			var (cutGeometry, cuts) = CutoutMesh.Cut(
+				inputs.Geometry,
+				inputs.Model.MaterialPaths,
+				materialConverter.TryCreateAlphaSampler,
+				cutoutStems);
+			foreach (var item in cuts)
+			{
+				Console.Error.WriteLine(item.Skipped is null
+					? $"裁镂空 {item.Material}：{item.Before} → {item.After} 面（材质改用 advanced）"
+					: $"裁镂空 {item.Material}：跳过（{item.Skipped}）");
+			}
+
+			inputs = inputs with { Geometry = cutGeometry };
+		}
+
 		var retarget = SourceRetargetPipeline.Run(inputs, rig);
 
 		var split = SourceSegmentation.Split(
