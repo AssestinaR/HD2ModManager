@@ -258,6 +258,11 @@ public enum NoDrawPolicy
 	/// <para>
 	/// 所以默认取"全都显示"，把"要不要看"交回给人。想恢复 L4D2 观感就用 <c>hide</c>。
 	/// </para>
+	/// <para>
+	/// <b>一个例外：源侧连底色都不给。</b>只写 <c>$no_draw</c>（外加一个把 alpha 归零的 proxy）
+	/// 的材质<b>没有外观可画</b>——"显示"它只会得到引擎的缺失材质色（纯洋红）。
+	/// 那种件在任何策略下都做成<b>不显示</b>（见 <see cref="SourceMaterialConverter.SynthesizeNoDrawMaterial(string, NoDrawPolicy)"/>）。
+	/// </para>
 	/// </summary>
 	Show = 1,
 
@@ -1017,6 +1022,20 @@ public sealed class SourceMaterialConverter
 	/// </para>
 	/// </summary>
 	public MaterialSynthesisResult SynthesizeNoDrawMaterial(string stem)
+		=> SynthesizeNoDrawMaterial(stem, policy: NoDrawPolicy.Hide);
+
+	/// <summary>
+	/// 同上，但把"为什么做成不显示"讲清楚（<c>hide</c> 是策略，<c>show</c> 是"没东西可画"）。
+	/// <para>
+	/// <b><c>show</c> 也会走到这里，这不是退让。</b>源侧写 <c>$no_draw</c> 又<b>不给任何底色</b>
+	/// （只有 <c>$no_draw 1</c> + 一个把 alpha 归零的 proxy）时，这块材料<b>本来就不该有外观</b>：
+	/// 拿不出贴图就没有"显示出来"这回事，唯一能画的东西是"没有"。
+	/// 而如果这里什么都不写，Unit 仍然会引用它的 id ⇒ 游戏里画成<b>纯洋红</b>（引擎的缺失材质色）。
+	/// 实测 恋星milfy 的 <c>face_transparent</c>（眼球/睫毛叠层，6924 面）就是这样：
+	/// 脸上那几道洋红"眉毛"就是它露出脸皮的那几条。
+	/// </para>
+	/// </summary>
+	public MaterialSynthesisResult SynthesizeNoDrawMaterial(string stem, NoDrawPolicy policy)
 	{
 		const string templateName = "alphaclip";
 		if (string.IsNullOrWhiteSpace(stem))
@@ -1067,9 +1086,13 @@ public sealed class SourceMaterialConverter
 				MatcapTexture: null, MatcapBaked: false),
 			Notices =
 			[
-				$"{stem}：源材质声明 $no_draw（源侧不绘制），已按源侧做成**不显示**材质"
-				+ "（alphaclip + alpha 全 0 的遮罩）—— 几何保留在 patch 里，画面上看不见。"
-				+ "要看这块：加 `--no-draw show` 重转一次。",
+				policy == NoDrawPolicy.Hide
+					? $"{stem}：源材质声明 $no_draw（源侧不绘制），已按源侧做成**不显示**材质"
+						+ "（alphaclip + alpha 全 0 的遮罩）—— 几何保留在 patch 里，画面上看不见。"
+						+ "要看这块：加 `--no-draw show` 重转一次。"
+					: $"{stem}：源材质声明 $no_draw，而这份 VMT 里**没有任何底色贴图**可画"
+						+ "（只有 `$no_draw` 与一个把 alpha 归零的 proxy）——源侧本来就没有外观，"
+						+ "已做成**不显示**材质（alphaclip + alpha 全 0），几何保留在 patch 里。",
 			],
 		};
 	}
@@ -2158,8 +2181,19 @@ public sealed class SourceMaterialConverter
 		// 素材把金属 matcap 命名成 `11`），退回源材质名。实测 Lunalice 的 21 个
 		// `ornament_metal_*` 正是因为 matcap 叫 `11` 而**全部**判成非金属，
 		// 而它们的模板是 advanced（本来给得了金属度）。
-		var matcapIsMetal = verdict.MatCapIsTheSurface
-			&& MaterialAppearance.IsMetallicMatcapName(matcapTextureName, stem);
+		//
+		// ⚠️ **名字之外还必须问一句「这张 matcap 是不是表面本身」。**
+		// 底色自己就是一张成套的图（布料花纹、纱、皮肤）时，`$matcap` 是**叠在它上面的一层高光**，
+		// 表面颜色由底色决定 —— 这种件判成金属，就等于把布做成镀铬。
+		// 实测 恋星milfy：`uv_1`（裙子，底色 `UV1_WhitePink_2` 2048²）与 `uv_2`（薄纱袖）
+		// 都写着 `$matcap 2` + `$matcaptexture metal`，matcap 名字确实是 metal，
+		// 但底色是有花纹的布料 —— 旧判据把它们做成 metallic=1、粗糙度 0.20，
+		// 实机就是用户报的"裙子和丝袜变成金属"。判据与实测数据的完整推导见
+		// <see cref="MaterialAppearance.MatCapIsMetallicSurface"/>。
+		var baseHasOwnColour = !syntheticBase
+			&& !MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba);
+		var matcapIsMetal = MaterialAppearance.MatCapIsMetallicSurface(
+			verdict.MatCapIsTheSurface, baseHasOwnColour, matcapTextureName, stem);
 
 		// "matcap 承载表面"= 底色该被顶掉。
 		// Metal 档：金属件、没有底色的件、以及**底色根本没有颜色**（占位图/近黑）的件。
@@ -2191,6 +2225,7 @@ public sealed class SourceMaterialConverter
 				+ $"meanLum={lumSum / pixels,6:F1} tint={verdict.Tint:F2} "
 				+ $"alpha=[{baseAlpha.Min},{baseAlpha.Max} cov={baseAlpha.Coverage:P1}] "
 				+ $"synthetic={syntheticBase} contentFree={MaterialAppearance.IsContentFreeBase(vtf.Width, vtf.Height, rgba)} "
+				+ $"ownColour={baseHasOwnColour} "
 				// matcap 的名字必须打出来：金属/宝石的判定**只由它决定**，
 				// 而它常常和材质名完全不同（实测 `mat_metal_gem_earings` 用的是另一张 matcap）。
 				// 没有这一列，"这个件为什么没被当成金属"就只能靠猜。

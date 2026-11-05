@@ -691,6 +691,17 @@ public sealed class VpkPatchAssembler
 
 					if (!synthesized.IsValid || synthesized.Material is null)
 					{
+						// ⚠️ `$no_draw` 且**一张底色都没有**的材质会走到这里（`show` 下它不再被跳过）：
+						// 源侧本来就规定"这块不画"，也没有任何贴图可画——**没有东西可产出**。
+						// 需要它的那个 patch（模型）会把它做成"不显示"材质（见 ②.6），
+						// 所以这里不该报"合成失败"：那不是缺陷，是源侧的意思。
+						if (DeclaresNoDraw(stem))
+						{
+							skipped.Add($"{stem}：源材质声明 $no_draw 且没有任何底色贴图 —— 源侧不绘制，本包不产出材质");
+							skipReasonByStem[stem] = "$no_draw";
+							continue;
+						}
+
 						warnings.Add($"源材质 {stem} 合成失败：{string.Join("；", synthesized.Diagnostics)}");
 						skipReasonByStem[stem] = string.Join("；", synthesized.Diagnostics);
 						continue;
@@ -774,8 +785,16 @@ public sealed class VpkPatchAssembler
 			// 合计 6,598 个三角形整块消失，而包里三张对应贴图都在。
 			//
 			// 默认（NoDrawPolicy.Hide）走这条：看得见的东西不变，但几何/材质/段都在 patch 里。
+			//
+			// ⚠️ **`show` 也要走一遍（只是通常什么都不做）。** 它兜的是"想显示却显示不出来"的那种：
+			// 源侧只写了 `$no_draw`、**一张底色都不给**，于是 `converter` 那边必然合成失败。
+			// 失败之后如果什么都不写，Unit 仍然引用这个 id ⇒ 游戏里是**纯洋红**（引擎的缺失材质色）。
+			// 实测 恋星milfy 的 `face_transparent`（眼球/睫毛叠层，6924 面，只有 `$no_draw` +
+			// 把 alpha 归零的 proxy）：脸上那几道洋红"眉毛"就是它露出脸皮的那几条。
+			// `show` 之后凡是**已经解析出材质**的都会被上面那句 `idByStem.ContainsKey` 跳过，
+			// 所以这里只会捡起真正没有外观可画的那几个。
 			var invisibleStems = new List<string>();
-			if (noDrawPolicy == NoDrawPolicy.Hide)
+			if (noDrawPolicy != NoDrawPolicy.Drop)
 			{
 				foreach (var required in requiredStems.Order(StringComparer.OrdinalIgnoreCase))
 				{
@@ -785,7 +804,7 @@ public sealed class VpkPatchAssembler
 					if (!reason.Contains("$no_draw", StringComparison.OrdinalIgnoreCase) && !DeclaresNoDraw(required))
 						continue;
 
-					var invisible = converter.SynthesizeNoDrawMaterial(required);
+					var invisible = converter.SynthesizeNoDrawMaterial(required, noDrawPolicy);
 					if (!invisible.IsValid || invisible.Material is null)
 					{
 						warnings.Add(
@@ -807,6 +826,11 @@ public sealed class VpkPatchAssembler
 				{
 					skipped.RemoveAll(line => invisibleStems.Exists(stem =>
 						line.StartsWith(stem + "：", StringComparison.OrdinalIgnoreCase)));
+
+					// ② 那条"本 patch 不写它，但 Unit 需要它的 id"也是**当时**的事实：
+					// 现在它有了材质（不显示的），再留着就是自相矛盾的报告。
+					warnings.RemoveAll(line => invisibleStems.Exists(stem =>
+						line.StartsWith($"源材质 {stem} 解析失败", StringComparison.OrdinalIgnoreCase)));
 				}
 			}
 
@@ -963,6 +987,9 @@ public sealed class VpkPatchAssembler
 
 			string DescribeNoDrawParts(IReadOnlyList<string> stems)
 			{
+				// `show` 里"想显示却没有东西可画"的那几个（见 ②.6 的注释）：它们也在 stems 里，
+				// 但落地结果是不显示，所以那句"照常显示"不能说在它们头上。
+				var invisibleCount = stems.Count(stem => invisibleSet.Contains(stem));
 				var byStem = new Dictionary<string, (int Triangles, SortedSet<string> Parts)>(StringComparer.OrdinalIgnoreCase);
 				if (sourceMaterialNames is not null && geometry is not null)
 				{
@@ -1008,9 +1035,15 @@ public sealed class VpkPatchAssembler
 					NoDrawPolicy.Hide =>
 						$"{stems.Count} 个材质声明了 $no_draw，已按 `--no-draw hide` **保留几何**、材质做成不显示"
 						+ "（画面上与 L4D2 一致）：",
-					_ =>
-						$"{stems.Count} 个材质声明了 $no_draw（源侧默认不绘制），已按默认策略**照常显示**"
-						+ "（源侧只是材质层开关，网格仍在文件里；不想看就在 section 组件编辑器里关掉它）：",
+					// show 之下也可能有"显示不出来"的：源侧只给了 `$no_draw`、一张底色都没给。
+					// 那种件没有外观可画，仍然做成不显示（做了才不会是洋红），所以这句必须分开说。
+					_ => invisibleCount == 0
+						? $"{stems.Count} 个材质声明了 $no_draw（源侧默认不绘制），已按默认策略**照常显示**"
+							+ "（源侧只是材质层开关，网格仍在文件里；不想看就在 section 组件编辑器里关掉它）："
+						: $"{stems.Count} 个材质声明了 $no_draw（源侧默认不绘制）。其中 {invisibleCount} 个"
+							+ "**源侧一个底色都没给**（只有 `$no_draw` 与把 alpha 归零的 proxy）⇒ 没有外观可画，"
+							+ "已做成**不显示**（不是洋红、也不是灰块）；其余按默认策略**照常显示**"
+							+ "（不想看就在 section 组件编辑器里关掉它）：",
 				};
 				var tail = noDrawPolicy == NoDrawPolicy.Hide
 					? "。要看它们：`--no-draw show` 重转一次（管理器里设环境变量 HD2_NO_DRAW=show）。"

@@ -91,6 +91,41 @@ public sealed class NoDrawPolicyTests : IDisposable
 		Assert.Contains(result.Notices, notice => notice.Contains("不显示", StringComparison.Ordinal));
 	}
 
+	/// <summary>
+	/// <b><c>show</c> 之下"想显示却没有东西可画"的件也必须做成不显示。</b>
+	/// <para>
+	/// 源侧只写 <c>$no_draw</c> + 一个把 alpha 归零的 proxy、<b>一张底色都不给</b>时，
+	/// 转换器那边必然合成失败。失败之后如果什么都不写，Unit 仍然引用它的 id，
+	/// 游戏里就画成<b>纯洋红</b>（引擎的缺失材质色）——实测 恋星milfy 的 <c>face_transparent</c>
+	/// （眼球/睫毛叠层）就是脸上那几道洋红"眉毛"。
+	/// </para>
+	/// <para>
+	/// 这时"显示"没有意义：没有贴图就没有外观。把它做成 alpha 全 0 才是源侧的意思，
+	/// 也是唯一不会画出洋红的选择。提示语必须说清"为什么还是看不见"，
+	/// 否则用户会以为 <c>--no-draw show</c> 没生效。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void UnderShowAMaterialWithoutAnyAlbedoIsStillMadeInvisible()
+	{
+		var converter = CreateConverter(SourceMaterialSource.Open([]));
+		if (!TexconvAvailable())
+			return;
+
+		var result = converter.SynthesizeNoDrawMaterial("face_transparent", NoDrawPolicy.Show);
+
+		Assert.True(result.IsValid);
+		Assert.Equal("alphaclip", result.Material!.TemplateName);
+		// 与 hide 档**同一个 id**：两种策略给出同一块"看不见"，没有理由让产物分成两份。
+		Assert.Equal(
+			converter.SynthesizeNoDrawMaterial("face_transparent").Material!.Id,
+			result.Material.Id);
+		// 但提示语要说得不一样：这不是"按策略藏的"，是"没有东西可画"。
+		Assert.Contains(result.Notices, notice =>
+			notice.Contains("没有任何底色贴图", StringComparison.Ordinal)
+			&& !notice.Contains("加 `--no-draw show` 重转", StringComparison.Ordinal));
+	}
+
 	[Fact]
 	public void TheNoDrawMaterialHasItsOwnIdentitySoShowAndHideDoNotCollide()
 	{

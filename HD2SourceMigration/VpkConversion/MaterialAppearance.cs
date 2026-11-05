@@ -96,6 +96,35 @@ public static class MaterialAppearance
 		=> ClassifyName(matcapName) ?? ClassifyName(materialName) ?? false;
 
 	/// <summary>
+	/// 这个材质是不是<b>金属表面</b>：名字说是金属 <b>∧</b> 这张 matcap <b>就是表面本身</b>。
+	/// <para>
+	/// <b>为什么名字不够。</b>NekoToon 的 <c>$matcap</c> 有两种用法，名字（<c>metal</c> / <c>silver</c>）
+	/// 只区分"这张图长什么样"，不区分"它替换表面还是叠在表面上"：
+	/// </para>
+	/// <list type="bullet">
+	/// <item><b>替换表面</b>（金属件）：底色是 1×1 占位图或整片近黑，表面<b>只有</b>这张 matcap。
+	/// 实测 Lunalice 的 21 个 <c>ornament_metal_*</c> 底色全是 1×1 的
+	/// <c>Ornament_metal_Underwear</c>，Lilium 的是 1×1 的 <c>gray1</c>。</item>
+	/// <item><b>叠在表面之上</b>（布料/薄纱/皮肤）：底色自己是一张有花纹的图，matcap 只是一层高光。
+	/// 把这种件做成金属度 1.0 就是"布变镀铬"——实测 恋星milfy 的 <c>uv_1</c>（裙子）与
+	/// <c>uv_2</c>（薄纱袖）：都写着 <c>$matcap 2</c> + <c>$matcaptexture metal</c>，
+	/// 底色是 2048² 的布料图。</item>
+	/// </list>
+	/// <para>
+	/// <b>为什么不用 <c>$matcap</c> 的模式号判。</b>实测分不开：已知的金属件里有 <c>2</c>（相加）
+	/// 也有 <c>3</c>（Normal），而那两条布料也都是 <c>2</c>。
+	/// "底色有没有自己的颜色"才是真正把两类分开的那一条。
+	/// </para>
+	/// </summary>
+	/// <param name="matcapIsTheSurface"><c>tint ≥ 0.9</c>，见 <see cref="MatCapVerdict.MatCapIsTheSurface"/>。</param>
+	/// <param name="baseHasOwnColour">底色是一张有内容的图（不是占位图、也不是整片近黑）。</param>
+	public static bool MatCapIsMetallicSurface(
+		bool matcapIsTheSurface, bool baseHasOwnColour, string? matcapName, string? materialName)
+		=> matcapIsTheSurface
+			&& !baseHasOwnColour
+			&& IsMetallicMatcapName(matcapName, materialName);
+
+	/// <summary>
 	/// 按名字判金属：有明确结论返回 <c>true/false</c>，<b>名字里没有任何线索时返回 <c>null</c></b>。
 	/// <para>
 	/// 三态是刻意的：只有区分"判为非金属"和"这个名字我看不出来"，才能在上面那个两参重载里

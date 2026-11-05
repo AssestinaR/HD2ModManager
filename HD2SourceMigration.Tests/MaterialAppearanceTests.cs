@@ -208,6 +208,45 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
+	/// **金属 = 名字说是金属 ∧ 这张 matcap 就是表面本身（底色没有自己的颜色）。**
+	/// <para>
+	/// 实测两类，形状完全相反但名字一样：
+	/// </para>
+	/// <list type="bullet">
+	/// <item>金属件：底色是 1×1 占位图（Lunalice 的 <c>Ornament_metal_Underwear</c>、
+	/// Lilium 的 <c>gray1</c>）⇒ 表面只有 matcap ⇒ 判金属。</item>
+	/// <item>布料：底色是 2048² 的花纹图（恋星milfy 的 <c>uv_1</c> 裙子 / <c>uv_2</c> 薄纱袖，
+	/// 都写 <c>$matcap 2</c> + <c>$matcaptexture metal</c>）⇒ matcap 只是叠上去的一层高光
+	/// ⇒ <b>不能</b>判金属，否则裙子变成镀铬。</item>
+	/// </list>
+	/// <para>
+	/// 也钉住"tint 不够就根本不是表面"这条前置条件：<c>tint &lt; 0.9</c> 时 matcap 只是叠加高光，
+	/// 与底色有没有内容无关。
+	/// </para>
+	/// </summary>
+	[Theory]
+	// 金属件：底色没有自己的颜色
+	[InlineData(true, false, "11", "ornament_metal_chain", true)]
+	[InlineData(true, false, "Platinum_Silver", "mat_ornament_metal_tiara", true)]
+	[InlineData(true, false, "matcap_metal8", "mat_ornament_ivory_earrings", true)]
+	// 布料：底色自成一张图 —— 名字再像金属也不能算
+	[InlineData(true, true, "metal", "uv_1", false)]
+	[InlineData(true, true, "metal", "metal1", false)]
+	[InlineData(true, true, "matcap_metal11", "mat_metal_necklace", false)]
+	// 宝石 / 无名：名字就否掉了，与底色无关
+	[InlineData(true, false, "gem", "jewel", false)]
+	[InlineData(true, true, "matcap1", "clothes", false)]
+	// tint 不够：matcap 只是叠加高光，不算表面
+	[InlineData(false, false, "metal", "metal", false)]
+	public void MetalNeedsBothAMetallicNameAndAMatcapThatIsTheSurface(
+		bool matcapIsTheSurface, bool baseHasOwnColour, string? matcapName, string? materialName, bool expected)
+	{
+		Assert.Equal(
+			expected,
+			MaterialAppearance.MatCapIsMetallicSurface(matcapIsTheSurface, baseHasOwnColour, matcapName, materialName));
+	}
+
+	/// <summary>
 	/// **能不能表达金属度，由"模板有没有这个槽"决定，不是由模板名决定。**
 	/// <para>
 	/// 实测 MourningVeil：判成金属的 10 个材质全部因为"镂空优先"落进 alphaclip，
