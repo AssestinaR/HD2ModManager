@@ -72,6 +72,9 @@
         <DataTemplate DataType="{x:Type localVM:PatchResourceRepackagingPageViewModel}">
             <views:PatchResourceRepackagingPageView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type localVM:SectionalEditorPageViewModel}">
+            <views:SectionalEditorPageView/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type localVM:HelmetToArmorMergePlanPageViewModel}">
             <views:HelmetToArmorMergePlanPageView/>
         </DataTemplate>

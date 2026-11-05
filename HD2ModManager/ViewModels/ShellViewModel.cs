@@ -804,6 +804,37 @@ namespace HD2ModManager.ViewModels
             RaiseSlotFlags();
         }
 
+        /// <summary>
+        /// 打开分件编辑页：左边 section 组、右边 section 树。
+        /// <para>
+        /// <b>不复用 <c>CreatePage</c></b>：这一页要拿"当前详情页 VM"当数据源，
+        /// 而 <c>CreatePage</c> 是 new 一个新的（那会让编辑状态和详情页分成两份）。
+        /// 与 <see cref="OpenCrossArmorPlan"/> 同一个路子：设好页面类型再直接赋实例。
+        /// </para>
+        /// </summary>
+        public void OpenSectionalEditor(ModDetailsPageViewModel source)
+        {
+            ArgumentNullException.ThrowIfNull(source);
+            DismissToolBottomBars();
+            var page = new SectionalEditorPageViewModel(source, () => RestoreDetailsPage(source));
+            LeftPageType = WorkspacePageType.SectionalEditor;
+            RightPageType = WorkspacePageType.SectionalEditor;
+            LeftPage = page;
+            RightPage = null;
+            UpdateModeFromSlots();
+            RaiseSlotFlags();
+        }
+
+        /// <summary>从分件编辑页回到它来源的那个详情页（同一个实例，编辑状态不丢）。</summary>
+        private void RestoreDetailsPage(ModDetailsPageViewModel source)
+        {
+            LeftPageType = WorkspacePageType.ModDetails;
+            RightPageType = WorkspacePageType.ModDetails;
+            LeftPage = source;
+            RightPage = null;
+            UpdateModeFromSlots();
+            RaiseSlotFlags();
+        }
         public void OpenMaterialPackaging(ModDetailsPageViewModel sourcePage, MaterialPackagingPageViewModel packagingPage)
         {
             DismissToolBottomBars();
@@ -2331,6 +2362,7 @@ namespace HD2ModManager.ViewModels
                 WorkspacePageType.GameDataBrowser => new GameDataBrowserPageViewModel(_libraryService, _profileService, _derivedState.InformationCenter),
                 WorkspacePageType.GameDataArchiveDetails => new GameDataArchiveDetailsHostPageViewModel(null),
                 WorkspacePageType.CrossArmorPlan => throw new InvalidOperationException("跨护甲计划必须通过专用路由创建。"),
+                WorkspacePageType.SectionalEditor => throw new InvalidOperationException("分件编辑页必须通过专用路由创建（它要拿当前详情页当数据源）。"),
                 WorkspacePageType.MaterialPackaging => throw new InvalidOperationException("材质打包必须通过 Mod 详情创建。"),
                 WorkspacePageType.PatchResourceRepackaging => new PatchResourceRepackagingPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
                 WorkspacePageType.HelmetToArmorMergePlan => new HelmetToArmorMergePlanPageViewModel(_libraryService, SelectedModId ?? string.Empty, _notificationService, _backgroundTasks),
@@ -2602,6 +2634,7 @@ namespace HD2ModManager.ViewModels
             WorkspacePageType.PatchResourceRepackaging => "Patch 资源重打包",
             WorkspacePageType.HelmetToArmorMergePlan => "头盔合并到盔甲并输出",
             WorkspacePageType.ArmorRegistry => "运行时护甲注册",
+            WorkspacePageType.SectionalEditor => "分件编辑",
             _ => "页面",
         };
 

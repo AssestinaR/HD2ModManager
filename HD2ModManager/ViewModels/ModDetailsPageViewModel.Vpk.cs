@@ -89,6 +89,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			if (!SetField(ref _vpkTree, value)) return;
 			OnPropertyChanged(nameof(ShowVpkComponentCard));
 			OnPropertyChanged(nameof(HasVpkComponentTree));
+		OnPropertyChanged(nameof(CanOpenSectionalEditor));
 		}
 	}
 
@@ -216,7 +217,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 	public bool HasVpkGroupStatus => !string.IsNullOrWhiteSpace(_vpkSwitchStatus);
 
-	/// <summary>「启用 L4N 支持的衣物装饰组件切换」——开关本身存在 Mod 自己的 wardrobe.json 里。</summary>
+	/// <summary>「启用 L4N 支持的衣物装饰组件切换」——开关本身存在 Mod 自己的 wardrobe.json 里。详情页已无入口（编辑搬到独立页面），保留读法是因为老 Mod 可能把它关着。</summary>
 	public bool EnableVpkComponentTree
 	{
 		get => _vpkFile.ComponentTreeEnabled;
@@ -225,12 +226,31 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			if (_vpkFile.ComponentTreeEnabled == value) return;
 			_vpkFile = _vpkFile with { ComponentTreeEnabled = value };
 			OnPropertyChanged();
-			OnPropertyChanged(nameof(ShowVpkComponentCard));
 			_ = PersistVpkAsync();
 		}
 	}
 
-	public bool ShowVpkComponentCard => IsVpkMod && _vpkFile.ComponentTreeEnabled && HasVpkComponentTree;
+	/// <summary>
+	/// 能不能进分件编辑页。判据是"有 section 树"——空树进去只会看到一片空白，
+	/// 不如把按钮藏掉（那种 Mod 通常还没有 section 表，或者产物里没有可开关的块）。
+	/// </summary>
+	public bool CanOpenSectionalEditor => IsVpkMod && HasVpkComponentTree;
+
+	private RelayCommand? _openSectionalEditorCommand;
+
+	/// <summary>
+	/// 跳到分件编辑页（左 section 组 / 右 section 树）。
+	/// <para>
+	/// 原来这里是一个「启用 L4N 支持的衣物装饰组件切换」开关，打开后详情页内嵌一棵树。
+	/// 详情页那一列太窄，树和组挤在一起谁都不好用；改成独立页面，两边各得一块。
+	/// </para>
+	/// </summary>
+	public RelayCommand OpenSectionalEditorCommand => _openSectionalEditorCommand ??= new RelayCommand(_ =>
+	{
+		if (System.Windows.Application.Current?.MainWindow?.DataContext is ShellViewModel shell)
+			shell.OpenSectionalEditor(this);
+	});
+	public bool ShowVpkComponentCard => false;
 
 	/// <summary>
 	/// 「头身合并到身体」：头并进护甲套件的胸部槽位，游戏里那件头盔 item 就没有模型了；
@@ -354,6 +374,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		OnPropertyChanged(nameof(ShowVpkComponentCard));
 		OnPropertyChanged(nameof(EnableVpkComponentTree));
 		OnPropertyChanged(nameof(HasVpkComponentTree));
+		OnPropertyChanged(nameof(CanOpenSectionalEditor));
 		OnPropertyChanged(nameof(VpkComponentStatus));
 
 		if (!TryGetCurrentNode(out var node)) return;

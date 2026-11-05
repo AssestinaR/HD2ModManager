@@ -79,11 +79,15 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="启用 L4N 支持的衣物装饰组件切换"
-                                   Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
-                                  IsChecked="{Binding EnableVpkComponentTree, Mode=TwoWay}"
-                                  VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <TextBlock Text="section 组件开关"
+                                       Foreground="{StaticResource TextPrimary}" TextWrapping="Wrap"/>
+                            <TextBlock Text="按「7 标准槽 × 身形」分组；每块几何能单独开关。在单独的编辑页里调，空间更大。"
+                                       Foreground="{StaticResource TextSecondary}" FontSize="11" TextWrapping="Wrap"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="编辑 section 组"
+                                Command="{Binding OpenSectionalEditorCommand}" Margin="12,0,0,0" Padding="14,6"
+                                Visibility="{Binding CanOpenSectionalEditor, Converter={StaticResource BoolToVis}}"/>
                     </Grid>
                     <!--
                         头身合并：头并进护甲套件的胸部槽位，于是游戏里那件头盔 item 不再有模型

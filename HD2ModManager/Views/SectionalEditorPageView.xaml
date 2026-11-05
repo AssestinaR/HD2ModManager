@@ -1,0 +1,105 @@
+<UserControl x:Class="HD2ModManager.Views.SectionalEditorPageView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:HD2ModManager.Views">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <!--
+        两列：左 section 组，右 section 树。
+        比例用 2:3 而不是 1:1：树要显示 unit / section 两层加缩进，横向更吃紧；
+        组列表每行只有名字 + 开关 + 删除，窄一点够用。
+    -->
+    <Grid Margin="0">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="2*"/>
+            <ColumnDefinition Width="16"/>
+            <ColumnDefinition Width="3*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 左：section 组卡片 -->
+        <Border Grid.Column="0" Background="{StaticResource SurfaceCard}" CornerRadius="{StaticResource RadiusCard}" Padding="16">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Text="section 组" FontSize="15" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimary}"/>
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Source.VpkGroupSummary}" Margin="0,6,0,0"
+                           Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="12"
+                           Visibility="{Binding Source.HasVpkGroups, Converter={StaticResource BoolToVis}}"/>
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Source.VpkGroupStatus}" Margin="0,4,0,0"
+                           Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"
+                           Visibility="{Binding Source.HasVpkGroupStatus, Converter={StaticResource BoolToVis}}"/>
+                <TextBlock DockPanel.Dock="Bottom" Text="勾选会立刻保存；点「应用」才烘进 patch，之后要重启游戏才生效。"
+                           Margin="0,10,0,0" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"/>
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,10,0,0">
+                    <ItemsControl ItemsSource="{Binding Source.VpkGroups}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{StaticResource SurfaceMuted}" CornerRadius="4" Padding="10,6" Margin="0,0,0,4">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <!-- 名字失焦即落盘：组名不参与身份（身份是 id），改名不会影响勾选状态。 -->
+                                            <TextBox Text="{Binding Name, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                     Background="Transparent" BorderThickness="0" Padding="0"
+                                                     Foreground="{StaticResource TextPrimary}"
+                                                     CaretBrush="{StaticResource TextPrimary}"
+                                                     AutomationProperties.Name="组名"/>
+                                            <TextBlock Text="{Binding Detail}" FontSize="11"
+                                                       Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap"/>
+                                            <!-- 共用 / 失效必须当场说出来，否则两个看起来独立的复选框会骗人。 -->
+                                            <TextBlock Text="{Binding StateHint}" FontSize="11"
+                                                       Foreground="{StaticResource StatusWarning}" TextWrapping="Wrap"
+                                                       Visibility="{Binding HasStateHint, Converter={StaticResource BoolToVis}}"/>
+                                        </StackPanel>
+                                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
+                                                  VerticalAlignment="Center" Margin="12,0,2,0"
+                                                  IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                                  AutomationProperties.Name="{Binding Name}"/>
+                                        <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}"
+                                                Content="删除" Padding="10,4" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                Command="{Binding DeleteCommand}" AutomationProperties.Name="删除组"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </Border>
+
+        <!-- 右：section 树卡片（新建组在**这张卡的最顶部**） -->
+        <Border Grid.Column="2" Background="{StaticResource SurfaceCard}" CornerRadius="{StaticResource RadiusCard}" Padding="16">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Text="section 树" FontSize="15" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimary}"/>
+                <!--
+                    新建组：先选目标（在下面的树里点一块几何或一个部位，Ctrl/Shift 可多选），再命名。
+                    「选中」和「勾选」是两件事——勾选框表达"这一块画不画"，选中表达"要把它建成组"。
+                -->
+                <TextBlock DockPanel.Dock="Top" Text="{Binding Source.VpkSelectionHint}" Margin="0,8,0,0"
+                           Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" FontSize="11"/>
+                <Grid DockPanel.Dock="Top" Margin="0,6,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0" Text="{Binding Source.NewVpkGroupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             Style="{StaticResource AppTextBox}" VerticalAlignment="Center"
+                             AutomationProperties.Name="新组名"/>
+                    <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="新建组"
+                            Command="{Binding Source.CreateVpkGroupCommand}" Margin="8,0,0,0" Padding="14,6"/>
+                </Grid>
+
+                <local:TreeSurface Roots="{Binding Source.VpkTree.Roots}"
+                                   Margin="0,10,0,0"
+                                   VerticalScrollBarVisibility="Auto"
+                                   SelectionChanged="OnTreeSelectionChanged"/>
+            </DockPanel>
+        </Border>
+    </Grid>
+</UserControl>
