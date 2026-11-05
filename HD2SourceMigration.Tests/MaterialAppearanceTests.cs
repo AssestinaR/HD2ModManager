@@ -208,9 +208,9 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
-	/// **金属 = 名字说是金属 ∧ 这张 matcap 就是表面本身（底色没有自己的颜色）。**
+	/// **金属 = 名字说是金属（matcap 名或材质名任一） ∧ 这张 matcap 就是表面本身（底色不是花纹图）。**
 	/// <para>
-	/// 实测两类，形状完全相反但名字一样：
+	/// 实测几类，形状不同但名字很像：
 	/// </para>
 	/// <list type="bullet">
 	/// <item>金属件：底色是 1×1 占位图（Lunalice 的 <c>Ornament_metal_Underwear</c>、
@@ -218,10 +218,15 @@ public sealed class MaterialAppearanceTests
 	/// <item>布料：底色是 2048² 的花纹图（恋星milfy 的 <c>uv_1</c> 裙子 / <c>uv_2</c> 薄纱袖，
 	/// 都写 <c>$matcap 2</c> + <c>$matcaptexture metal</c>）⇒ matcap 只是叠上去的一层高光
 	/// ⇒ <b>不能</b>判金属，否则裙子变成镀铬。</item>
+	/// <item><b>金属但 matcap 名是装饰系</b>（恋星milfy 的 <c>Metal</c>：材质名 metal、matcap <c>gem</c>、
+	/// 底色是 1024² 平涂砖红）⇒ 材质名说是金属就该判金属。只看 matcap 名会让 53,102 面金属配件
+	/// 变成哑光深色塑料边（用户报的"金属件没有金属材质"）。</item>
+	/// <item>名字自己就混着装饰词（MourningVeil 的 <c>Mat_Metal_gem_earings</c>）⇒ 装饰词优先，
+	/// 仍然非金属——那件的观感确实是宝石。</item>
 	/// </list>
 	/// <para>
 	/// 也钉住"tint 不够就根本不是表面"这条前置条件：<c>tint &lt; 0.9</c> 时 matcap 只是叠加高光，
-	/// 与底色有没有内容无关。
+	/// 与底色有没有花纹无关。
 	/// </para>
 	/// </summary>
 	[Theory]
@@ -229,21 +234,85 @@ public sealed class MaterialAppearanceTests
 	[InlineData(true, false, "11", "ornament_metal_chain", true)]
 	[InlineData(true, false, "Platinum_Silver", "mat_ornament_metal_tiara", true)]
 	[InlineData(true, false, "matcap_metal8", "mat_ornament_ivory_earrings", true)]
-	// 布料：底色自成一张图 —— 名字再像金属也不能算
+	// 金属 + 平涂色底色（恋星milfy 的 Metal / Metal1 / Metal2）：matcap 名是装饰系也算金属
+	[InlineData(true, false, "gem", "metal", true)]
+	[InlineData(true, false, "gem", "Metal1", true)]
+	// 布料：底色自成一张花纹图 —— 名字再像金属也不能算
 	[InlineData(true, true, "metal", "uv_1", false)]
-	[InlineData(true, true, "metal", "metal1", false)]
+	[InlineData(true, true, "metal", "uv_2", false)]
 	[InlineData(true, true, "matcap_metal11", "mat_metal_necklace", false)]
 	// 宝石 / 无名：名字就否掉了，与底色无关
 	[InlineData(true, false, "gem", "jewel", false)]
 	[InlineData(true, true, "matcap1", "clothes", false)]
+	// 同一个名字里既有 metal 又有装饰词：装饰词优先（实测 MourningVeil，观感确实是宝石）
+	[InlineData(true, false, "matcap_jewel9", "mat_metal_gem_earings", false)]
 	// tint 不够：matcap 只是叠加高光，不算表面
 	[InlineData(false, false, "metal", "metal", false)]
 	public void MetalNeedsBothAMetallicNameAndAMatcapThatIsTheSurface(
-		bool matcapIsTheSurface, bool baseHasOwnColour, string? matcapName, string? materialName, bool expected)
+		bool matcapIsTheSurface, bool baseIsPatterned, string? matcapName, string? materialName, bool expected)
 	{
 		Assert.Equal(
 			expected,
-			MaterialAppearance.MatCapIsMetallicSurface(matcapIsTheSurface, baseHasOwnColour, matcapName, materialName));
+			MaterialAppearance.MatCapIsMetallicSurface(matcapIsTheSurface, baseIsPatterned, matcapName, materialName));
+	}
+
+	/// <summary>
+	/// **"平涂纯色"不算花纹，而"有图案的图集"算。**
+	/// <para>
+	/// 这条是"金属度给不给"的关键分界，实测数据：
+	/// 平涂 <c>red</c> / <c>yellow</c> / <c>purple</c> / <c>green</c>（恋星milfy 的金属件底色）
+	/// 偏离像素 <b>0.0%</b>；真实图集全部 ≥ 43%（<c>uv1_whitepink_2</c> 99.6%、
+	/// <c>manuka_body</c> 43.3%、<c>milltina_cloth_black</c> 90.5%）。阈值取 2%。
+	/// </para>
+	/// <para>
+	/// 平涂色是<b>有颜色</b>的（所以 <see cref="MaterialAppearance.IsContentFreeBase"/> 为假），
+	/// 但那颜色是金属自身的颜色（上色金属），不该像布料那样否掉金属度。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void FlatColourIsNotPatternedButAPaintedAtlasIs()
+	{
+		const int size = 64;
+
+		// 平涂砖红（BC7 压缩后会有 ±2 的噪声，这里直接给纯色）。
+		var flat = new byte[size * size * 4];
+		for (var i = 0; i < size * size; i++)
+		{
+			flat[(i * 4)] = 230;
+			flat[(i * 4) + 1] = 58;
+			flat[(i * 4) + 2] = 71;
+			flat[(i * 4) + 3] = 255;
+		}
+
+		Assert.False(MaterialAppearance.IsPatterned(size, size, flat));
+		// 同一张图仍然"有颜色"，所以 IsContentFreeBase 为假——两者是两个问题。
+		Assert.False(MaterialAppearance.IsContentFreeBase(size, size, flat));
+
+		// 棋盘（花纹）：一半像素偏亮、一半偏暗。
+		var patterned = (byte[])flat.Clone();
+		for (var y = 0; y < size; y++)
+		for (var x = 0; x < size; x++)
+		{
+			if ((x / 4 + y / 4) % 2 == 0) continue;
+			var offset = ((y * size) + x) * 4;
+			patterned[offset] = 40;
+			patterned[offset + 1] = 190;
+			patterned[offset + 2] = 90;
+		}
+
+		Assert.True(MaterialAppearance.IsPatterned(size, size, patterned));
+
+		// 只有极少数像素偏离（例如平涂色块上的一枚小 logo）仍按"平涂"处理：
+		// 96×96 里点缀 0.5% 的像素，不该把整件判成布料。
+		var speckled = (byte[])flat.Clone();
+		for (var i = 0; i < size * size / 200; i++)
+		{
+			speckled[(i * 4)] = 20;
+			speckled[(i * 4) + 1] = 20;
+			speckled[(i * 4) + 2] = 20;
+		}
+
+		Assert.False(MaterialAppearance.IsPatterned(size, size, speckled));
 	}
 
 	/// <summary>
