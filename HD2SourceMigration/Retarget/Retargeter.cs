@@ -222,7 +222,7 @@ public sealed partial class Retargeter
 		var headHd2 = _byName.TryGetValue("head", out var headBone)
 			? _restHd2[headBone.Index].Origin
 			: Vec3.Zero;
-		const double referenceGroundZ = 0.0; // HD2 自己的脚底在 z = 0
+		const double referenceGroundZ = 0.0; // HD2 自己的脚底在 z = 0（实测 l_ball = +0.0081 m，见 RetargetOptions.GroundLift）
 		var sourceHeight = (_alignment.Transform(_sourceHeadJoint)).Z - (_alignment.Transform(_sole)).Z;
 		_scale = _options.Scale > 0
 			? _options.Scale
@@ -388,6 +388,17 @@ public sealed partial class Retargeter
 		if (Math.Abs(_options.PalmScale - 1.0) > 1e-12 || _options.PalmScaleAuto)
 			outPoints = ApplyPalmScale(outPoints, palmGirth);
 
+		// ---- 4j. 抬回地面 ----------------------------------------------------
+		// **必须是最后一步纯平移。** 4c 的 MeshShift 把整张网格往下压了 0.090（脚底于是落到
+		// z = −0.0912 m），4d/4e 的缩放又按 z 做了羽化，所以"把下移量改小"并不等于"把结果抬回去"。
+		// 放在这里之后，网格与 rest_hd2 之间那 9 cm 的错位也一起被抹平了。
+		if (Math.Abs(_options.GroundLift) > 1e-12)
+		{
+			var lift = new Vec3(0, 0, _options.GroundLift);
+			for (var i = 0; i < outPoints.Length; i++)
+				outPoints[i] += lift;
+		}
+
 		// ---- 5. 游戏真正显示的姿态 -------------------------------------------
 		var idleOutput = ApplyIdle(outPoints);
 
@@ -399,6 +410,8 @@ public sealed partial class Retargeter
 			FootSpread(_sourcePoints),
 			FootSpread(aligned),
 			FootSpread(outPoints),
+			outPoints.Min(p => p.Z),
+			_options.GroundLift,
 			_newHead.Count,
 			missing,
 			CountByHops(hops));

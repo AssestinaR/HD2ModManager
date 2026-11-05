@@ -31,6 +31,8 @@ public sealed record HandReorientRow(
 	int InfluencedVertices);
 
 /// <summary>管线指标。全部是"能证伪"的量，不是装饰。</summary>
+/// <param name="SoleZ">发货网格的最低顶点 z（米）。<c>0</c> = 脚底踩在地面上，负值 = 陷进去了多少。</param>
+/// <param name="GroundLift">最后一刻施加的垂直抬升（米）。它把 <see cref="SoleZ"/> 抬回 0。</param>
 public sealed record RetargetMetrics(
 	double Scale,
 	double SourceHeight,
@@ -39,6 +41,8 @@ public sealed record RetargetMetrics(
 	double FootSpreadSource,
 	double FootSpreadSnapped,
 	double FootSpreadOutput,
+	double SoleZ,
+	double GroundLift,
 	int SnappedBoneCount,
 	IReadOnlyList<string> MissingPairs,
 	IReadOnlyDictionary<int, int> FallbackHops);

@@ -20,6 +20,8 @@ internal sealed record CliSourceRetargetSummary(
 	double HeightAfter,
 	double FootSpreadSource,
 	double FootSpreadOutput,
+	double SoleZ,
+	double GroundLift,
 	IReadOnlyList<string> Missing,
 	IReadOnlyDictionary<int, int> Hops,
 	IReadOnlyDictionary<string, double> PalmGirth,
@@ -49,6 +51,8 @@ internal static class CliSourceRetarget
 			metrics.HeightAfter,
 			metrics.FootSpreadSource,
 			metrics.FootSpreadOutput,
+			metrics.SoleZ,
+			metrics.GroundLift,
 			metrics.MissingPairs,
 			metrics.FallbackHops,
 			result.PalmGirth,
@@ -65,6 +69,7 @@ internal static class CliSourceRetarget
 			$"  网格 {summary.Vertices} 顶点 / {summary.Triangles} 三角形；源骨 {summary.SourceBones} 根，HD2 骨 {summary.Hd2Bones} 根，已绑定 {summary.ResolvedBones} 根",
 			$"  统一缩放 {summary.Scale:F6}；身高 {summary.HeightBefore:F4} → {summary.HeightAfter:F4} m",
 			$"  脚距：源 {summary.FootSpreadSource:F4} → 出图 {summary.FootSpreadOutput:F4} m",
+			$"  脚底 z = {summary.SoleZ:+0.0000;-0.0000} m（最后抬升 {summary.GroundLift:F3} m；0 = 踩在地面上，负 = 陷进去）",
 			$"  已写出：{Path.Combine(summary.OutputDirectory, "model.npz")}",
 		};
 

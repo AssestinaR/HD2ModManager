@@ -125,6 +125,34 @@ public sealed record RetargetOptions
 	// ---- post: 仅作用于网格的后处理 ----------------------------------------
 	public Vec3 MeshShift { get; init; } = new(0, -0.100, -0.090);
 
+	/// <summary>
+	/// 发货网格整体的垂直抬升（米，正 = 抬高）。<b>默认 0 = 保持现状</b>（脚底在 <c>z = −0.0912</c>）。
+	/// 设成 <c>0.090</c> 就是"整只模型抬回地面"。
+	/// <para>
+	/// <b>实测（Lunalice_Zoey，发货参数）</b>：对齐后的源网格最低点 <c>z = −0.0012 m</c>，
+	/// 经 4c 的 <see cref="MeshShift"/> 之后变成 <b>−0.0912 m</b>；而 HD2 自己的
+	/// <c>l_ball</c> 在 <c>z = +0.0081</c> —— 地平面确实是 <c>z ≈ 0</c>，所以这 9 cm 是真的陷进去了。
+	/// 证据脚本：<c>tmp/riglab-src/_measure_sole_z.py</c>、<c>_hd2_sole_and_wrist.py</c>。
+	/// </para>
+	/// <para>
+	/// <b>为什么默认不是 0.090 —— 这 9 cm 是"买"来的，不能白拿回去。</b>
+	/// 出货状态下逐区量"顶点质心 − 骨位置"：手/手指各区只差 1–4 cm（手是<b>贴在</b>手骨上的），
+	/// 而脚底比 <c>l_ball</c> 低 9 cm。也就是说这个模型的腿比 HD2 骨架长 9 cm，
+	/// <see cref="MeshShift"/> 的下移正是为了让<b>手</b>落在手骨上（枪挂在那根骨上）。
+	/// 整体抬 9 cm ⇒ 脚对上、手离开手骨 9 cm ⇒ 第一人称会变成"枪浮在手下面"。
+	/// <b>没有任何一个整体平移能同时对上脚和手</b>——这是比例差，不是偏移差。
+	/// 真要两者都对，只能压缩髋→脚底这段网格（约 9%），即当初被明确避开的那件事。
+	/// </para>
+	/// <para>
+	/// <b>为什么不直接把 <see cref="MeshShift"/> 的 z 改成 0：</b>4d 的上半身缩放按 z 做
+	/// smoothstep 羽化（枢轴 <see cref="UpperPivotZ"/>、半宽 <see cref="UpperBlend"/>），
+	/// 网格下移 9 cm 会让羽化带里的顶点落在不同的 z 上。实测"先下移再上抬"与"不下移"
+	/// 得到的<b>不是同一个网格</b>——胸部最大差 9.4 cm（<c>_ab_lift.py</c>）。
+	/// 因此抬升必须是<b>最后一次纯平移</b>：只有这样才能做到"观感一点不变，只是整体抬高"。
+	/// </para>
+	/// </summary>
+	public double GroundLift { get; init; }
+
 	public double UpperScale { get; init; } = 1.12;
 
 	public double? UpperPivotZ { get; init; } = 1.15;
