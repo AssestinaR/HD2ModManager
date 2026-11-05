@@ -799,22 +799,33 @@ end
 --
 -- 开关刻意放在**外部文本文件**里（`%LOCALAPPDATA%\hd2pbx_tune.txt`）：
 --   lift=0.09        抬多少米（正 = 向上）；不给 / 给 0 / 没有文件 ⇒ 这一段完全不执行
---   lift_armor=1     对照实验：连护甲件的根节点也一起抬（用来分辨"网格到底跟谁走"）
+--   lift_bone=chest  改抬 **avatar 上某一根骨**（不给 = 抬 avatar 根节点）
+--   lift_armor=1     对照实验：连护甲件的根节点也一起抬
 --   lift_log_frames  每多少帧打一行（默认 60）
 -- 不放进打包配置，是因为诊断要能**就地改数值、就地关掉**，不该逼着重新打包或重建管理器。
+--
+-- **实机结论（2026-11-05，用户测试）**：
+--   · `lift_armor=1` 与 `=0` **完全一样** ⇒ 护甲件的根节点不参与渲染
+--     （它的网格只认被重定向的骨，这条和 §B2.3 的实测一致）；
+--   · 写 avatar 的 node 1 ⇒ **只有摄像机跟着动，网格一点不动**。
+--     也就是说 unit 根节点对相机有效、对网格的变换链无效（网格的蒙皮来自动画烘焙，不吃 node 1）。
+-- ⇒ 下一个要试的杠杆是**骨**：`lift_bone` 写 avatar 某根骨的 local position，然后读回
+--    ① 这根骨自己的世界 z（杠杆存不存在）、② 头骨的世界 z（子节点跟不跟）、
+--    ③ 护甲上同名骨的世界 z（网格会不会跟）。三个数在同一行里。
 --
 -- ⚠️ 边界：这一段挂在 `drive()` 里，所以**只有挂着物理会话时才会执行**。诊断足够用；
 -- 若哪天要把它做成正式功能（不只是诊断），必须挪到独立的 render 钩子，否则
 -- "没物理骨的模型 / 关掉物理的玩家"都不会被抬。
 
---- 读调参文件（缓存，默认 2 秒重读一次）。返回 `key = number` 的表。
+--- 读调参文件（缓存，默认 2 秒重读一次）。
+--- 数字进表本身（`lift` 等），字符串原文进 `values.text`（`lift_bone` 这类骨名）。
 local function tune_values(runtime)
 	local frame = runtime.frame or 0
 	local cached = runtime.tune
 	local refresh = (runtime.options and runtime.options.tuneRefreshFrames) or 120
 	if cached ~= nil and (frame - cached.frame) < refresh then return cached.values end
 
-	local values = {}
+	local values = { text = {} }
 	local path = runtime.options and runtime.options.tunePath
 	if path == nil then
 		local base = os.getenv("LOCALAPPDATA")
@@ -827,9 +838,13 @@ local function tune_values(runtime)
 			pcall(handle.close, handle)
 			if okRead and type(text) == "string" then
 				for line in text:gmatch("[^\r\n]+") do
-					local key, raw = line:match("^%s*([%w_]+)%s*=%s*([%+%-%d%.]+)")
-					local number = key ~= nil and tonumber(raw) or nil
-					if number ~= nil then values[key] = number end
+					-- `#` 开头的行整行跳过；值只取到空白或 `#` 为止（行尾可以写说明）
+					local key, raw = line:match("^%s*([%w_]+)%s*=%s*([^%s#]+)")
+					if key ~= nil then
+						local number = tonumber(raw)
+						if number ~= nil then values[key] = number end
+						values.text[key] = raw
+					end
 				end
 			end
 		end
@@ -878,6 +893,75 @@ local function lift_unit_ok(api, unit)
 	return try(api.Unit.alive, unit) == true
 end
 
+--- 读某个 unit 上某根骨的世界 z（不存在的骨返回 nil）。
+local function bone_world_z(S_, unit, id)
+	if unit == nil or id == nil or not lift_unit_ok(S_, unit) then return nil end
+	if try(S_.Unit.has_node, unit, id) ~= true then return nil end
+	local node = try(S_.Unit.node, unit, id)
+	if type(node) ~= "number" then return nil end
+	local _, _, z = readVector(S_, try(S_.Unit.world_position, unit, node))
+	return z
+end
+
+--- 抬 **avatar 上的一根骨**（`lift_bone`）。
+--- <para>
+--- 为什么必须直接量三个数才能下结论：
+---   ① 这根骨自己的世界 z —— 写进去之后**变了**，才说明"写骨"这个杠杆存在；
+---   ② 头骨的世界 z —— 子节点跟没跟。跟了才说明整条骨链都能被抬；
+---   ③ 护甲上**同名骨**的世界 z —— 网格渲不渲染就看它（渲染读的是这个值）。
+--- 根节点那次的教训就是只看了"写了没报错"：结果相机动了、网格没动。
+--- </para>
+local function lift_bone(S_, runtime, name, metres)
+	local avatar = runtime.avatar
+	if avatar == nil or not lift_unit_ok(S_, avatar) then return nil end
+	local id = id32(S_, name)
+	if id == nil then return nil end
+	local node = try(S_.Unit.node, avatar, id)
+	if type(node) ~= "number" or try(S_.Unit.has_node, avatar, id) ~= true then return nil end
+
+	local state = runtime.boneLift or {}
+	runtime.boneLift = state
+	local entry = state[name] or {}
+
+	local before = bone_world_z(S_, avatar, id)
+	local cx, cy, cz = readVector(S_, try(S_.Unit.local_position, avatar, node))
+	local wrote, kept = false, false
+	if cx ~= nil then
+		local written = entry.written
+		if written ~= nil
+			and math.abs(cx - written[1]) < 1e-4
+			and math.abs(cy - written[2]) < 1e-4
+			and math.abs(cz - written[3]) < 1e-4 then
+			kept = true
+		else
+			local ok = pcall(function()
+				S_.Unit.set_local_position(avatar, node, S_.Vector3(cx, cy, cz + metres))
+			end)
+			if ok then
+				if runtime.world ~= nil then
+					pcall(function() S_.World.update_unit(runtime.world, avatar) end)
+				end
+				entry.written = { cx, cy, cz + metres }
+				entry.base = entry.base or { cx, cy, cz }
+				wrote = true
+			end
+		end
+	end
+	state[name] = entry
+
+	local after = bone_world_z(S_, avatar, id)
+	local headZ = bone_world_z(S_, avatar, id32(S_, "head"))
+	local armorZ = nil
+	for index = 1, #(runtime.sessions or {}) do
+		local armor = runtime.sessions[index].unit
+		if armor ~= nil then
+			armorZ = bone_world_z(S_, armor, id)
+			if armorZ ~= nil then break end
+		end
+	end
+	return { before = before, after = after, head = headZ, armor = armorZ, wrote = wrote, kept = kept }
+end
+
 --- 每帧调一次。没有调参文件 / `lift` 为 0 时什么都不做（**连读都不读**，只多一次缓存判断）。
 --- <param name="S_">引擎命名空间；省略时用安装时注入的那份（单测会显式传）。</param>
 local function apply_lift(runtime, S_)
@@ -885,10 +969,37 @@ local function apply_lift(runtime, S_)
 	if api == nil or runtime == nil then return end
 	local values = tune_values(runtime)
 	local metres = values.lift
+	local every = values.lift_log_frames or (runtime.options and runtime.options.liftLogFrames) or 60
+	local boneName = values.text and values.text.lift_bone
+	local boneMode = boneName ~= nil and boneName ~= "" and boneName ~= "0" and boneName ~= "none"
+		and metres ~= nil and metres ~= 0
 
 	-- 关掉时把写过的值还回去一次。根 unit 会被引擎每帧重设，所以只有"写得住"的
 	-- （被父节点带着走的）那类需要显式还原——但两种都还一次更省心，代价是一次写。
 	if metres == nil or metres == 0 then
+		local boneStates = runtime.boneLift
+		if boneStates ~= nil then
+			local avatar = runtime.avatar
+			if avatar ~= nil and lift_unit_ok(api, avatar) then
+				for name, entry in pairs(boneStates) do
+					if entry.written ~= nil and entry.base ~= nil then
+						local id = id32(api, name)
+						local node = id ~= nil and try(api.Unit.node, avatar, id) or nil
+						if type(node) == "number" then
+							pcall(function()
+								api.Unit.set_local_position(avatar, node,
+									api.Vector3(entry.base[1], entry.base[2], entry.base[3]))
+							end)
+						end
+					end
+				end
+				if runtime.world ~= nil then
+					pcall(function() api.World.update_unit(runtime.world, avatar) end)
+				end
+			end
+			runtime.boneLift = nil
+			runtime.logger("[physbone][抬升] 已关闭，写过的骨位置还回去了")
+		end
 		local states = runtime.liftState
 		if states ~= nil then
 			for index = 1, #states do
@@ -908,6 +1019,30 @@ local function apply_lift(runtime, S_)
 			end
 			runtime.liftState = nil
 			runtime.logger("[physbone][抬升] 已关闭，写过位置的目标都还原了一次")
+		end
+		return
+	end
+
+	-- ── 骨模式：只写 avatar 的一根骨，并把三个读数打在同一行 ────────────────
+	if boneMode then
+		if runtime.liftMode ~= ("bone:" .. boneName) then
+			runtime.liftMode = "bone:" .. boneName
+			runtime.logger("[physbone][抬升] 模式=写骨 %s（+%.3f m；unit 根节点不再动）", boneName, metres)
+		end
+		local result = lift_bone(api, runtime, boneName, metres)
+		if ((runtime.driveFrames or 0) % every) == 0 then
+			if result == nil then
+				runtime.logger("[physbone][抬升-骨] %s：avatar 上找不到这根骨（或读写失败）", boneName)
+			else
+				runtime.logger(
+					"[physbone][抬升-骨] %s +%.3f 写入=%s 保持=%s | 该骨世界 z %s→%s | 头骨 z %s | 护甲同名骨 z %s",
+					boneName, metres,
+					result.wrote and "是" or "否", result.kept and "是" or "否",
+					result.before ~= nil and string.format("%.3f", result.before) or "?",
+					result.after ~= nil and string.format("%.3f", result.after) or "?",
+					result.head ~= nil and string.format("%.3f", result.head) or "?",
+					result.armor ~= nil and string.format("%.3f", result.armor) or "?")
+			end
 		end
 		return
 	end
@@ -1400,6 +1535,7 @@ M.install_ = M.install
 -- 而不是靠进游戏看。
 M.tune_values_ = tune_values
 M.lift_unit_ = lift_unit
+M.lift_bone_ = lift_bone
 M.apply_lift_ = apply_lift
 
 return M

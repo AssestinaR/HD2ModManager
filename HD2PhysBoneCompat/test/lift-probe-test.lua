@@ -79,13 +79,15 @@ end
 -- ---------------------------------------------------------------------------
 -- ① 解析
 -- ---------------------------------------------------------------------------
-write_tune("lift=0.09\nlift_armor=1\n# 注释行不算\nlift_log_frames = 30\n")
+write_tune("lift=0.09\nlift_armor=1\nlift_bone=chest\n# 注释行不算\nlift_log_frames = 30\n")
 do
 	local runtime = make_runtime(TUNE)
 	local values = M.tune_values_(runtime)
 	check("lift=0.09", near(values.lift, 0.09), tostring(values.lift))
 	check("lift_armor=1", near(values.lift_armor, 1), tostring(values.lift_armor))
 	check("带空格和等号也能解析", near(values.lift_log_frames, 30), tostring(values.lift_log_frames))
+	check("骨名按字符串解析", values.text and values.text.lift_bone == "chest",
+		tostring(values.text and values.text.lift_bone))
 	check("注释行不产生键", values["#"] == nil, tostring(values["#"]))
 	-- 缓存：改了文件也不会立刻生效（避免每帧 io.open）
 	write_tune("lift=0.5\n")
@@ -159,6 +161,45 @@ do
 	runtime.avatars = { { unit = unit } }
 	M.apply_lift_(runtime, S)
 	check("文件不存在时一个字节都不写", near(unit.pos[3], 0.5), "z=" .. tostring(unit.pos[3]))
+end
+
+-- ---------------------------------------------------------------------------
+-- ④ 骨模式：写 avatar 上的一根骨，并量它的世界 z（root 那次就是漏了这个读数）
+-- ---------------------------------------------------------------------------
+do
+	local S = make_engine()
+	-- 让 world_position 直接返回 local（最简单的"骨链跟着父节点走"模型）
+	local nodeOf = { chest = 5, head = 9 }
+	S.Unit.has_node = function(unit, id) return nodeOf[id] ~= nil end
+	S.Unit.node = function(unit, id) return nodeOf[id] end
+	local pos = { [5] = { 0, 0, 1.30 }, [9] = { 0, 0, 1.69 } }
+	S.Unit.local_position = function(unit, node)
+		local p = pos[node]
+		return { x = p[1], y = p[2], z = p[3] }
+	end
+	S.Unit.set_local_position = function(unit, node, v) pos[node] = { v.x, v.y, v.z } end
+	S.Unit.world_position = S.Unit.local_position
+	S.Application.string_to_id32 = function(text) return text end
+
+	local avatar = { unit = true, ids = { chest = true, head = true } }
+	local runtime = make_runtime(TUNE)
+	runtime.avatar = avatar
+	runtime.avatars = { { unit = avatar } }
+	runtime.sessions = {}
+
+	local result = assert(M.lift_bone_(S, runtime, "chest", 0.09))
+	check("骨模式：写进去了", result.wrote == true, tostring(result.wrote))
+	check("骨模式：该骨世界 z 抬了 9 cm",
+		near(result.after - result.before, 0.09),
+		string.format("%.3f→%.3f", result.before, result.after))
+	check("骨模式：头骨读数也拿到了", near(result.head, 1.69), tostring(result.head))
+	check("骨模式：没有护甲件时不报错", result.armor == nil, tostring(result.armor))
+
+	-- 引擎重设后要能重写（不能因为"上次写过"就永久跳过）
+	pos[5] = { 0, 0, 1.30 }
+	local second = assert(M.lift_bone_(S, runtime, "chest", 0.09))
+	check("骨模式：引擎重设后能重写", second.wrote == true and near(pos[5][3], 1.39),
+		"z=" .. tostring(pos[5][3]))
 end
 
 pcall(os.remove, TUNE)
