@@ -322,6 +322,8 @@ public sealed class VpkPatchAssembler
 		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show,
 		// 眼球 UV 投影用的"右/上"方向（见 EyeFrame）。缺省时由 EyeUv 从眼球形状推。
 		EyeFrame? eyeFrame = null,
+		// 要把「镂空」变成几何的材质（见 CutoutMesh）。空 = 不做，行为与以前完全一致。
+		IReadOnlyCollection<string>? cutoutGeometryMaterials = null,
 		Action<string, int, int>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
@@ -388,6 +390,26 @@ public sealed class VpkPatchAssembler
 			warnings.AddRange(eyeNotes);
 		}
 
+		// 镂空 → 几何（`--cutout-geometry`）。
+		//
+		// 必须在写几何之前、也在 `FilterNoDrawPlans` 之前：裁完的三角形数量变了，
+		// 任何按下标做区间的步骤都得看到新的几何。
+		if (materialConverter is not null
+			&& geometry is not null
+			&& sourceMaterialNames is not null
+			&& cutoutGeometryMaterials is { Count: > 0 })
+		{
+			var (cut, cuts) = CutoutMesh.Cut(
+				geometry,
+				sourceMaterialNames,
+				materialConverter.TryCreateAlphaSampler,
+				cutoutGeometryMaterials);
+			geometry = cut;
+			foreach (var cut1 in cuts.Where(item => item.Skipped is not null))
+				warnings.Add($"{cut1.Material}：没裁（{cut1.Skipped}）—— 仍然走 alpha 镂空");
+			foreach (var cut1 in cuts.Where(item => item.Skipped is null))
+				warnings.Add($"{cut1.Material}：镂空已裁成几何 {cut1.Before} → {cut1.After} 面，材质改用 advanced（金属度可用）");
+		}
 		// 源侧写着 `$no_draw` 的部件：**连几何一起不写**。
 		//
 		// 源侧语义就是"这块不画"，最常用的场合是**网格变体选择**：P1/P2/P3 三套衣服全部烘在

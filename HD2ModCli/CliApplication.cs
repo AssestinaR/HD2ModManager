@@ -3060,6 +3060,29 @@ public static class CliApplication
 	/// 没给命令行参数时读环境变量 <c>HD2_NO_DRAW</c>：管理器调用 CLI 时没有这个开关的位置。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// `--cutout-geometry "mat_metal,mat_accmetal_tiara"`（或环境变量 `HD2_CUTOUT_GEOMETRY`）：
+	/// 这批材质的「镂空」会被裁成**几何**（见 <c>CutoutMesh</c>），于是材质可以走 `advanced`、
+	/// 拿到真正的金属度 —— 这是 HD2 里「镂空 + 金属」唯一能同时满足的路。
+	/// <para>
+	/// <b>空 = 完全不做</b>，行为与以前逐字节一致。这一点是刻意的：改动只该命中明确点名的材质，
+	/// 绝不悄悄影响别的模型（教训：11-05 那几轮"全局改采样口径"把皮肤烘成了白/红）。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyCollection<string> ResolveCutoutGeometryMaterials(CliGlobalOptions options)
+	{
+		var raw = options.CutoutGeometry;
+		if (string.IsNullOrWhiteSpace(raw))
+			raw = Environment.GetEnvironmentVariable("HD2_CUTOUT_GEOMETRY");
+		if (string.IsNullOrWhiteSpace(raw))
+			return [];
+
+		return raw
+			.Split(new[] { ',', ';', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+	}
+
 	private static NoDrawPolicy ResolveNoDrawPolicy(CliGlobalOptions options)
 		=> (options.NoDraw ?? Environment.GetEnvironmentVariable("HD2_NO_DRAW"))?.Trim().ToLowerInvariant() switch
 		{
@@ -3279,6 +3302,8 @@ public static class CliApplication
 				ResolveCutoutTemplate(options),
 				options.NormalFlipY ?? false,
 				noDrawPolicy: ResolveNoDrawPolicy(options),
+				// 几何已被 CutoutMesh 裁开的材质：不再写 alpha 测试（见 --cutout-geometry）。
+				opaqueMaterials: ResolveCutoutGeometryMaterials(options),
 				worldNormalFactory: WorldNormal);
 		}
 
@@ -3445,6 +3470,8 @@ public static class CliApplication
 			materialScope: scope,
 			eyeFrame: EyeFrame.FromBones(inputs.Model.Bones),
 			noDrawPolicy: ResolveNoDrawPolicy(options),
+			// 把这些材质（--cutout-geometry）的镂空裁成几何：裁完才能走 advanced 拿金属度。
+			cutoutGeometryMaterials: ResolveCutoutGeometryMaterials(options),
 			idNamespace: ResolveIdNamespace(options),
 			onProgress: ReportAssembleProgress).ConfigureAwait(false);
 

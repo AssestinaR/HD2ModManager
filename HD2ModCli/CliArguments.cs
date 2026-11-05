@@ -140,7 +140,10 @@ public sealed record CliGlobalOptions(
 	// 源侧 `$no_draw`（"这一块不画"）怎么落地：show（默认，照常显示）/ hide（几何保留+不显示）/ drop。
 	// L4D2 里它只是材质层开关，网格仍在文件里，作者常拿它做变体（猫耳/无猫耳）；
 	// 直接丢几何会把数据一起删掉，导入之后只能改包重导。
-	string? NoDraw = null);
+	string? NoDraw = null,
+	// --cutout-geometry <材质,材质>：把这些材质的「镂空」裁成几何（见 CutoutMesh），
+	// 于是它们能走 advanced 拿到金属度。空 = 不做，行为与以前逐字节一致。
+	string? CutoutGeometry = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -194,6 +197,7 @@ public static class CliArgumentParser
 		string? ditherPattern = null;
 		bool? normalFlipY = null;
 		string? noDraw = null;
+		string? cutoutGeometry = null;
 		var picks = new List<string>();
 		int? position = null;
 		int? limit = null;
@@ -366,7 +370,10 @@ public static class CliArgumentParser
 							+ "只能在实机上对比，所以做成开关。"),
 					};
 					break;
-					case "--no-draw":
+				case "--cutout-geometry":
+					cutoutGeometry = ReadValue(args, ref index, argument);
+					break;
+				case "--no-draw":
 					var rawNoDraw = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
 					if (rawNoDraw is not ("hide" or "show" or "drop"))
 					{
@@ -563,7 +570,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

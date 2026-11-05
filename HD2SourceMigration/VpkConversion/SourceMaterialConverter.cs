@@ -716,7 +716,10 @@ public sealed class SourceMaterialConverter
 		// 法线，而法线贴图给的是切线空间的方向。没有它时这两样退回"取正中"。
 		Func<string, UvNormalMap?>? worldNormalFactory = null,
 		// 源侧 `$no_draw` 的落地方式（见 NoDrawPolicy）。默认 Hide：不显示，但几何留着。
-		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show)
+		NoDrawPolicy noDrawPolicy = NoDrawPolicy.Show,
+		// 这些材质**强制不镂空**：几何已经被 CutoutMesh 裁过了（见 --cutout-geometry），
+		// 再叠一层 alpha 测试等于把裁好的边又啃一遍，而且会白白丢掉金属度。
+		IReadOnlyCollection<string>? opaqueMaterials = null)
 	{
 		this.source = source;
 		this.encoder = encoder;
@@ -739,6 +742,9 @@ public sealed class SourceMaterialConverter
 		this.cutoutTemplate = cutoutTemplate;
 		this.normalFlipY = normalFlipY;
 		this.noDrawPolicy = noDrawPolicy;
+		this.opaqueMaterials = opaqueMaterials is null
+			? null
+			: new HashSet<string>(opaqueMaterials.Where(name => !string.IsNullOrWhiteSpace(name)), StringComparer.OrdinalIgnoreCase);
 		this.includeTargets = new Lazy<IReadOnlySet<string>>(BuildIncludeTargets, LazyThreadSafetyMode.ExecutionAndPublication);
 	}
 
@@ -759,6 +765,12 @@ public sealed class SourceMaterialConverter
 	public NoDrawPolicy NoDrawPolicy => noDrawPolicy;
 
 	private readonly NoDrawPolicy noDrawPolicy;
+
+	/// <summary>几何已被裁开的材质：不写 alpha 测试，走 <c>advanced</c>（金属度可用）。</summary>
+	private readonly HashSet<string>? opaqueMaterials;
+
+	/// <summary>贴图名 → 已解出的 RGBA（alpha 采样器用，避免同一张图反复解码）。</summary>
+	private readonly Dictionary<string, (byte[] Rgba, int Width, int Height)?> alphaSamplers = new(StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>
 	/// matcap 承载面在 <c>advanced</c> 槽 2 <b>alpha</b> 里写的粗糙度（0..255）。
@@ -2287,7 +2299,7 @@ public sealed class SourceMaterialConverter
 		// `rgba` 早已被换成 matcap 图像，于是"保留源底色"实际保留的是**那张金属球面图**
 		// （亮度与亮银接近）—— 用户实测"MourningVeil 无变化"，因为确实几乎没变。
 		// 修正办法不是调数值，而是把顺序理顺：**先知道模板能不能表达金属，再决定要不要换底色**。
-		var provisionalUseAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+		var provisionalUseAlphaClip = !IsGeometryCut(stem) && ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
 		if (provisionalUseAlphaClip && matcapIsMetal && metalCutout == MetalCutoutPolicy.MetalWins)
 			provisionalUseAlphaClip = false;   // MetalWins 会放弃镂空、回到 advanced
 		var provisionalTemplate = ResolveTemplate(provisionalUseAlphaClip);
@@ -2456,7 +2468,9 @@ public sealed class SourceMaterialConverter
 			// 所以取舍交给 `--metal-cutout`：默认保镂空，可选保金属。
 			// 实测 MourningVeil 的金属饰品全是 `$alphatest 1` + alpha 镂空，
 			// 一刀切成 advanced 就等于既没有镂空也没有金属——那是最坏的一种。
-			useAlphaClip = ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+			// 几何已裁过（--cutout-geometry）就不再做 alpha 测试：洞已经在网格里了，
+			// 再裁一遍等于把边啃掉，而且白白失去 advanced 的金属度。
+			useAlphaClip = !IsGeometryCut(stem) && ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
 
 			// 诊断：这条链上"整件消失"的每一次都只能靠猜，所以把判据的四个输入打出来。
 			// `HD2MOD_CUTOUT_DEBUG=1` 时每个材质一行。
@@ -3140,6 +3154,61 @@ public sealed class SourceMaterialConverter
 	/// 才能用单测把"哪种输入得到哪种模板"钉死，而不必每次都进游戏。
 	/// </para>
 	/// </summary>
+	/// <summary>这个材质的几何是不是已经被 <see cref="CutoutMesh"/> 裁开了（于是不需要 alpha 测试）。</summary>
+	public bool IsGeometryCut(string stem)
+		=> opaqueMaterials is not null && opaqueMaterials.Contains(CutoutMesh.StemOf(stem));
+
+	/// <summary>
+	/// 取某个材质<b>底色贴图的 alpha 采样器</b>（供 <see cref="CutoutMesh"/> 用）。
+	/// <para>
+	/// 返回 <c>null</c> 表示这个材质拿不到可用的 alpha（没有 <c>$basetexture</c>、或在来源里找不到那张图）——
+	/// 调用方必须把这种材质<b>原样保留</b>，绝不能当成"全在外面"而把几何删光。
+	/// </para>
+	/// </summary>
+	public Func<double, double, double>? TryCreateAlphaSampler(string stem)
+	{
+		if (string.IsNullOrWhiteSpace(stem))
+			return null;
+
+		var name = CutoutMesh.StemOf(stem);
+		if (!alphaSamplers.TryGetValue(name, out var cached))
+		{
+			cached = LoadAlphaSource(name);
+			alphaSamplers[name] = cached;
+		}
+
+		if (cached is not { } source)
+			return null;
+
+		var (rgba, width, height) = source;
+		return (u, v) =>
+		{
+			var x = Math.Clamp((int)(u * (width - 1)), 0, width - 1);
+			var y = Math.Clamp((int)((1 - v) * (height - 1)), 0, height - 1);
+			return rgba[(((y * width) + x) * 4) + 3] / 255.0;
+		};
+	}
+
+	private (byte[] Rgba, int Width, int Height)? LoadAlphaSource(string name)
+	{
+		try
+		{
+			if (!source.TryReadVmt(name, out var vmtBytes) || vmtBytes.Length == 0)
+				return null;
+			var baseTexture = VmtDocument.Parse(vmtBytes).Value("$basetexture");
+			if (string.IsNullOrWhiteSpace(baseTexture))
+				return null;
+			var stem = CutoutMesh.StemOf(baseTexture);
+			if (string.IsNullOrWhiteSpace(stem) || !source.TryReadVtf(stem, out var vtfBytes))
+				return null;
+			var vtf = VtfFile.Read(vtfBytes);
+			return (DecodeTextureCached(stem, vtfBytes, vtf), vtf.Width, vtf.Height);
+		}
+		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		{
+			return null;
+		}
+	}
 	public static bool ShouldUseAlphaClip(bool wantsTransparency, bool hasSourceOpacity, AlphaStats alpha, bool wantsAlphaTest = true)
 		=> wantsTransparency
 			&& hasSourceOpacity
