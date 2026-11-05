@@ -27,20 +27,39 @@ namespace HD2SourceMigration.VpkConversion;
 /// <param name="U1">内容区右边界。</param>
 /// <param name="V1">内容区下边界。</param>
 /// <param name="Dilation">
-/// <c>$dilation</c>（0..1，0 = 不放大）。源侧用它把虹膜**绕中心放大**——瞳孔在内容区正中，
-/// 所以放大中心 = 瞳孔变大，与 Valve 文档的描述一致（"0 is none, 1 is maximal"）。
+/// <c>$dilation</c>（0..1，0 = 不放大）。源侧用它把虹膜**绕瞳孔放大**。
 /// </param>
+/// <param name="PupilU">
+/// 瞳孔中心（UV）。<c>NaN</c> = 没测出来，退回内容区几何中心。
+/// <para>
+/// <b>为什么要单独测。</b>瞳孔不在内容区正中时，把"内容区中心"对到眼球中心会让瞳孔
+/// 整体偏一侧 —— 两眼用同一张贴图，于是两眼都朝同一个方向偏（实测 3798231335 是
+/// 斗鸡眼，瞳孔偏内侧约 12% 的内容区宽度）。以瞳孔为中心才是"看向前方"。
+/// </para>
+/// </param>
+/// <param name="PupilV">瞳孔中心（UV，V=0 在图像顶部）。</param>
 public sealed record EyeColorSource(
 	string Texture,
 	double U0,
 	double V0,
 	double U1,
 	double V1,
-	double Dilation = 0)
+	double Dilation = 0,
+	double PupilU = double.NaN,
+	double PupilV = double.NaN)
 {
-	public double CenterU => (U0 + U1) / 2;
+	/// <summary>投影中心 U：**瞳孔**优先，测不出来才用内容区几何中心。</summary>
+	public double CenterU => double.IsNaN(PupilU) ? (U0 + U1) / 2 : PupilU;
 
-	public double CenterV => (V0 + V1) / 2;
+	/// <summary>投影中心 V：同 <see cref="CenterU"/>。</summary>
+	public double CenterV => double.IsNaN(PupilV) ? (V0 + V1) / 2 : PupilV;
+
+	/// <summary>瞳孔偏离内容区几何中心多少（UV）。用来判断"这只眼睛画得正不正"。</summary>
+	public (double U, double V) PupilOffset => (CenterU - ((U0 + U1) / 2), CenterV - ((V0 + V1) / 2));
+
+	/// <summary>瞳孔偏了多少（占内容区的比例），报告里用。</summary>
+	public (double U, double V) PupilOffsetRatio =>
+		(PupilOffset.U / Math.Max(1e-6, (U1 - U0) / 2), PupilOffset.V / Math.Max(1e-6, (V1 - V0) / 2));
 
 	/// <summary>
 	/// 采样半径的缩放：<c>1 / (1 + $dilation)</c>。
@@ -166,6 +185,16 @@ public static class EyeUv
 	/// 也就是说"源侧那只眼睛在屏幕上该多大"没法从数据推出来，只能实机对。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 逐眼镜像开关（环境变量 <c>HD2_EYE_MIRROR</c>，默认 0 = 不镜像）。
+	/// <para>
+	/// 只在诊断时打开：真眼是镜像摆的（同一张图在左眼里左右翻转），但源侧这两份 VMT
+	/// 只有一条中线 attachment，"引擎到底怎么给每只眼睛摆朝向"没法从数据推出来，只能实机比。
+	/// </para>
+	/// </summary>
+	public static bool EyeMirror { get; } =
+		Environment.GetEnvironmentVariable("HD2_EYE_MIRROR") is { Length: > 0 } value
+		&& (value.Trim() is "1" or "on" or "true");
 	public static double EyeScale { get; } =
 		double.TryParse(Environment.GetEnvironmentVariable("HD2_EYE_SCALE"),
 			System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scale)
@@ -181,6 +210,97 @@ public static class EyeUv
 	/// 内容几乎铺满整张图时返回 (0,0,1,1)——那时"整张图就是眼睛"，没有可裁的边。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 瞳孔中心（UV）。测不出来时返回 <c>(NaN, NaN)</c>，由调用方退回内容区几何中心。
+	/// <para>
+	/// <b>为什么必须单独测。</b>瞳孔不在内容区正中时，"内容区中心对到眼球中心"会让瞳孔
+	/// 整体偏一侧；而两只眼睛共用同一张贴图，于是**两眼都朝同一个方向偏** ——
+	/// 实测 3798231335 就是斗鸡眼（瞳孔偏内侧约 12% 的内容区宽度）。
+	/// 以瞳孔为中心才对得上"看向前方"。
+	/// </para>
+	/// <para>
+	/// 两步：① 只用中间 70% 的行（上下边缘是睫毛/眼睑，会把重心拽偏），逐列算平均亮度，
+	/// 最暗的那一列就是瞳孔的横坐标；② 在该列 ±25% 内容区宽的窗口里算二维亮度加权重心。
+	/// </para>
+	/// <para>
+	/// <b>测错了怎么办。</b>偏移超过内容区 40% 直接判为不可信（多半是整块暗背景或纯色图），
+	/// 退回几何中心 —— 那与上一版行为一致，不会比原来更差。
+	/// </para>
+	/// </summary>
+	public static (double U, double V) PupilCenter(
+		byte[] rgba, int width, int height, double u0, double v0, double u1, double v1)
+	{
+		var none = (double.NaN, double.NaN);
+		if (rgba.Length < width * height * 4)
+			return none;
+
+		var x0 = (int)Math.Round(u0 * width);
+		var x1 = (int)Math.Round(u1 * width);
+		var y0 = (int)Math.Round(v0 * height);
+		var y1 = (int)Math.Round(v1 * height);
+		if (x1 - x0 < 8 || y1 - y0 < 8)
+			return none;
+
+		var margin = Math.Max(1, (y1 - y0) * 15 / 100);
+		var ya = Math.Max(y0, y0 + margin);
+		var yb = Math.Min(y1, y1 - margin);
+		if (yb - ya < 4)
+			return none;
+
+		// ① 逐列平均亮度 → 最暗的列。
+		var columns = new double[x1 - x0];
+		for (var x = x0; x < x1; x++)
+		{
+			double sum = 0;
+			for (var y = ya; y < yb; y++)
+			{
+				var offset = ((y * width) + x) * 4;
+				sum += (0.299 * rgba[offset]) + (0.587 * rgba[offset + 1]) + (0.114 * rgba[offset + 2]);
+			}
+
+			columns[x - x0] = sum / (yb - ya);
+		}
+
+		var darkest = 0;
+		for (var i = 1; i < columns.Length; i++)
+		{
+			if (columns[i] < columns[darkest])
+				darkest = i;
+		}
+
+		// ② 最暗列 ±25% 内容区宽 的窗口里算二维加权重心。
+		var window = Math.Max(2, (x1 - x0) * 25 / 100);
+		var left = Math.Max(0, darkest - window);
+		var right = Math.Min(columns.Length - 1, darkest + window);
+
+		double sx = 0, sy = 0, sw = 0;
+		for (var y = ya; y < yb; y++)
+		{
+			for (var i = left; i <= right; i++)
+			{
+				var x = x0 + i;
+				var offset = ((y * width) + x) * 4;
+				var lum = (0.299 * rgba[offset]) + (0.587 * rgba[offset + 1]) + (0.114 * rgba[offset + 2]);
+				var weight = (255 - lum) * (255 - lum);
+				sx += x * weight;
+				sy += y * weight;
+				sw += weight;
+			}
+		}
+
+		if (sw <= 1e-6)
+			return none;
+
+		var pupilU = sx / sw / width;
+		var pupilV = sy / sw / height;
+
+		var centerU = (u0 + u1) / 2;
+		var centerV = (v0 + v1) / 2;
+		if (Math.Abs(pupilU - centerU) > (u1 - u0) * 0.4 || Math.Abs(pupilV - centerV) > (v1 - v0) * 0.4)
+			return none;
+
+		return (pupilU, pupilV);
+	}
 	public static (double U0, double V0, double U1, double V1) ContentRect(byte[] rgba, int width, int height)
 	{
 		var whole = (U0: 0d, V0: 0d, U1: 1d, V1: 1d);
@@ -283,6 +403,36 @@ public static class EyeUv
 
 		if (eyeByMaterial.Count == 0)
 			return (geometry, []);
+
+		// ② 两只眼球各自的中点，平均出一个"中线"：逐眼镜像时用它判断哪一侧。
+		var eyeCenters = new Dictionary<int, Vec3>();
+		foreach (var materialIndex in eyeByMaterial.Keys)
+		{
+			double lowX = double.MaxValue, highX = double.MinValue;
+			double lowY = double.MaxValue, highY = double.MinValue;
+			double lowZ = double.MaxValue, highZ = double.MinValue;
+			foreach (var triangle in geometry.Triangles)
+			{
+				if (triangle.MaterialIndex != materialIndex) continue;
+				foreach (var vertexIndex in new[] { triangle.A, triangle.B, triangle.C })
+				{
+					var p = geometry.Vertices[vertexIndex].Position;
+					lowX = Math.Min(lowX, p.X); highX = Math.Max(highX, p.X);
+					lowY = Math.Min(lowY, p.Y); highY = Math.Max(highY, p.Y);
+					lowZ = Math.Min(lowZ, p.Z); highZ = Math.Max(highZ, p.Z);
+				}
+			}
+
+			if (highX > lowX)
+				eyeCenters[materialIndex] = new Vec3((lowX + highX) / 2, (lowY + highY) / 2, (lowZ + highZ) / 2);
+		}
+
+		var midline = eyeCenters.Count == 0
+			? (Vec3?)null
+			: new Vec3(
+				eyeCenters.Values.Average(p => p.X),
+				eyeCenters.Values.Average(p => p.Y),
+				eyeCenters.Values.Average(p => p.Z));
 
 		// ② 每个顶点被哪些材质用到（判"混用"）。
 		var materialsByVertex = new Dictionary<int, HashSet<int>>();
@@ -407,6 +557,16 @@ public static class EyeUv
 			// `$dilation`：把采样半径按 1/(1+d) 收一次 —— 虹膜绕内容区中心放大，瞳孔随之变大。
 			var scale = Math.Max(colorSource.HalfU / halfWidth, colorSource.HalfV / halfHeight)
 				/ EyeScale * colorSource.DilationZoom;
+
+			// 逐眼镜像（诊断开关 `HD2_EYE_MIRROR=1`）。
+			// 真实的两只眼睛是"镜像摆"的：同一张图在两只眼里应当左右翻转。
+			// 源侧只有一个中线 attachment（"eyes"），到底该不该镜像只能实机看：
+			// 不镜像时，贴图里任何一点左右不对称（高光、瞳孔偏次）都会让两只眼睛"朝同一边"，
+			// 看上去就是"一只看里、一只看外"。
+			var mirror = 1.0;
+			if (EyeMirror && midline is { } midlinePoint && eyeCenters.TryGetValue(materialIndex, out var eyeCenter))
+				mirror = Vec3.Dot(eyeCenter - midlinePoint, right) >= 0 ? 1.0 : -1.0;
+
 			var mixed = 0;
 			foreach (var index in vertices)
 			{
@@ -420,15 +580,19 @@ public static class EyeUv
 				var a = (offset.X * right.X) + (offset.Y * right.Y) + (offset.Z * right.Z);
 				var b = (offset.X * up.X) + (offset.Y * up.Y) + (offset.Z * up.Z);
 				// V 取反：VTF/DDS 的 V=0 在图像顶部，而"上"方向该落到图像顶部。
-				var u = colorSource.CenterU + (a * scale);
+				var u = colorSource.CenterU + (a * scale * mirror);
 				var v = colorSource.CenterV - (b * scale);
 				projected[index] = (u, v);
 			}
 
+			var (pupilU, pupilV) = colorSource.PupilOffsetRatio;
 			axesNotes.Add($"{materialNames[materialIndex]}：{frameNote}"
 				+ (colorSource.Dilation > 0
 					? $"，$dilation={colorSource.Dilation:F2}（采样半径 ×{colorSource.DilationZoom:F2}）"
-					: string.Empty));
+					: string.Empty)
+				+ (double.IsNaN(colorSource.PupilU)
+					? "，瞳孔未测出（按内容区中心）"
+					: $"，瞳孔偏移 {pupilU:+0.0%;-0.0%;0%}/{pupilV:+0.0%;-0.0%;0%}"));
 
 			if (mixed != 0)
 				notes.Add(

@@ -971,7 +971,17 @@ public sealed class SourceMaterialConverter
 			dilation = Math.Clamp(parsedDilation, 0, 1);
 		}
 
-		return new EyeColorSource(color.Texture, rect.U0, rect.V0, rect.U1, rect.V1, dilation);
+		// 瞳孔位置：**默认用内容区几何中心**（= 作者把眼睛画在图集正中的那套约定）。
+		//
+		// 诊断开关 `HD2_EYE_PUPIL=pupil`：改用"亮度最暗处"当瞳孔中心。**默认不启用**——
+		// 这两套手绘贴图里最暗的地方是"眼球内部 + 下半眼睑的渐变"，不是瞳孔：
+		// 实测两套都会被拖偏 24% 左右（方向还与画法无关），拿它当基准等于引入一个新的偏移。
+		var pupilMode = Environment.GetEnvironmentVariable("HD2_EYE_PUPIL");
+		var pupil = pupilMode is { Length: > 0 }
+			&& pupilMode.Trim().Equals("pupil", StringComparison.OrdinalIgnoreCase)
+				? EyeUv.PupilCenter(rgba, width, height, rect.U0, rect.V0, rect.U1, rect.V1)
+				: (U: double.NaN, V: double.NaN);
+		return new EyeColorSource(color.Texture, rect.U0, rect.V0, rect.U1, rect.V1, dilation, pupil.U, pupil.V);
 	}
 
 	/// <summary>
