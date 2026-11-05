@@ -257,7 +257,113 @@ public sealed class MaterialAppearanceTests
 	}
 
 	/// <summary>
-	/// **"平涂纯色"不算花纹，而"有图案的图集"算。**
+	/// **"把 matcap 抬成表面"必须保住图案，不能涂成一片。**
+	/// <para>
+	/// 这是实机逼出来的第二次修正：涂平（<c>FlattenToMetalF0</c>）在游戏里就是用户报的
+	/// "白膜 / 灰膜"——一块没有任何明暗的纯白/纯灰面，和"材质没贴图"一模一样。
+	/// 源侧那些件（serenade 的头冠 / 项链 / 月牙 / 小灯笼 / 心形 / 十字架）底色被作者注释掉了，
+	/// 观感 100% 来自 matcap，涂平等于删掉它们唯一的信息。
+	/// </para>
+	/// <para>
+	/// 这里钉三件事：① 有明暗（min < max，且差得够多）；② 均值落在目标反射率附近（不会被抬爆）；
+	/// ③ 传进来的底色被整片重写（不会残留源图）。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void LiftingAMatcapKeepsThePatternAtTheTargetLevel()
+	{
+		const int size = 32;
+		const int matcapSize = 16;
+
+		// 球面图：左半暗（20）、右半亮（240），均值约 130 —— 与实测的 `matcap_metal7` 同类（双峰）。
+		var matcap = new byte[matcapSize * matcapSize * 4];
+		for (var y = 0; y < matcapSize; y++)
+		for (var x = 0; x < matcapSize; x++)
+		{
+			var value = (byte)(x < matcapSize / 2 ? 20 : 240);
+			var offset = ((y * matcapSize) + x) * 4;
+			matcap[offset] = value;
+			matcap[offset + 1] = value;
+			matcap[offset + 2] = value;
+			matcap[offset + 3] = 255;
+		}
+
+		// 世界法线：让屏幕上从左到右扫过整张球面图（sourceAxes 的换算见实现）。
+		var normal = new byte[size * size * 4];
+		for (var y = 0; y < size; y++)
+		for (var x = 0; x < size; x++)
+		{
+			var u = x / (double)(size - 1);
+			var offset = ((y * size) + x) * 4;
+			normal[offset] = 128;
+			normal[offset + 1] = (byte)Math.Round((1 - u) * 255);   // u = 1 − G
+			normal[offset + 2] = 128;                                 // v = B = 0.5
+			normal[offset + 3] = 255;
+		}
+
+		// 底色故意填成整片纯白 255：抬完必须被整片重写，不残留。
+		var albedo = new byte[size * size * 4];
+		Array.Fill(albedo, (byte)255);
+
+		MaterialAppearance.LiftMatcapToSurface(
+			albedo, size, size, matcap, matcapSize, matcapSize,
+			normal, size, size, mask: null, maskWidth: 0, maskHeight: 0,
+			tintRgba: [1, 1, 1, 1], targetLinear: SourceMaterialConverter.MetalF0);
+
+		var min = 255;
+		var max = 0;
+		double sum = 0;
+		for (var i = 0; i < size * size; i++)
+		{
+			var value = albedo[i * 4];
+			min = Math.Min(min, value);
+			max = Math.Max(max, value);
+			sum += value;
+		}
+
+		var mean = sum / (size * size);
+		var target = MaterialAppearance.LinearToSrgbByte(SourceMaterialConverter.MetalF0);
+
+		// ① 有明暗（不是一块平色）
+		Assert.True(max - min > 40, $"抬完仍然是一块平色：min={min} max={max}");
+		// ② 电平对得上（均值离 F0 不超过 1/5 的行程；撞顶会把它压低，允许这个偏差）
+		Assert.InRange(mean, target * 0.55, target * 1.05);
+		// ③ 每一格都被写过（不会残留源图的 255）
+		Assert.True(albedo[3] == 0, "alpha 必须清零");
+	}
+
+	/// <summary>
+	/// 同一个函数在"没有世界法线"时退回采样球心：结果是一块平色，但**电平仍然是对的**，
+	/// 不会出现"比值爆掉 → 整片 255"（实测 serenade 的 <c>jem_white</c> 就是这样炸成白膜的）。
+	/// </summary>
+	[Fact]
+	public void WithoutWorldNormalsTheLiftStillLandsOnTheTargetLevel()
+	{
+		const int size = 8;
+		var matcap = new byte[4 * 4 * 4];
+		for (var i = 0; i < 16; i++)
+		{
+			var value = (byte)(i % 2 == 0 ? 30 : 220);
+			matcap[(i * 4)] = value;
+			matcap[(i * 4) + 1] = value;
+			matcap[(i * 4) + 2] = value;
+			matcap[(i * 4) + 3] = 255;
+		}
+
+		var albedo = new byte[size * size * 4];
+		MaterialAppearance.LiftMatcapToSurface(
+			albedo, size, size, matcap, 4, 4,
+			normal: null, normalWidth: 0, normalHeight: 0, mask: null, maskWidth: 0, maskHeight: 0,
+			tintRgba: [1, 1, 1, 1], targetLinear: MaterialAppearance.NonMetallicSurfaceF0);
+
+		var value0 = albedo[0];
+		for (var i = 0; i < size * size; i++)
+			Assert.Equal(value0, albedo[i * 4]);
+
+		// 不能是 255（撞顶），也不能是全黑：目标 0.6 线性 ≈ 204，图案对比 0.6 应该落在它附近。
+		Assert.InRange(value0, 80, 235);
+	}
+
 	/// <para>
 	/// 这条是"金属度给不给"的关键分界，实测数据：
 	/// 平涂 <c>red</c> / <c>yellow</c> / <c>purple</c> / <c>green</c>（恋星milfy 的金属件底色）

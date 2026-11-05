@@ -651,6 +651,117 @@ public static class MaterialAppearance
 	}
 
 	/// <summary>
+	/// 把 matcap 的<b>图案</b>抬到指定反射率，当表面本身用（金属件 / 宝石件）。
+	/// <para>
+	/// <b>为什么不能只涂平（这是实机逼出来的第二次修正）。</b><see cref="FlattenToMetalF0"/>
+	/// 把整片涂成同一个值（F0 0.96 ≈ sRGB 250）。实机结果是用户报的
+	/// <b>"白膜 / 灰膜"</b>：一块没有任何明暗的纯白（金属）或纯灰（宝石）面，
+	/// 与"材质没贴图"看起来一模一样 —— 因为源侧那些件的<b>全部观感就来自这张 matcap</b>
+	/// （底色被作者注释掉了），涂平等于把它唯一的信息删掉。
+	/// 实测 2026-11-05：serenade 的头冠 / 项链 / 月牙 / 小灯笼 / 心形 / 十字架挂饰全是这种白块。
+	/// </para>
+	/// <para>
+	/// <b>做法：保图案、定电平。</b>逐像素采样 matcap（世界法线 → 球面 UV），
+	/// 用 <b>整张 matcap 的均值</b>当基准做比值，再用 <c>factor = 1 + contrast × (src / mean − 1)</c>
+	/// 把偏离压向 1，最后乘到目标反射率上。
+	/// </para>
+	/// <para>
+	/// ⚠️ <b>基准必须是"整张图的均值"，不能是"本材质采样到的那部分像素的均值"。</b>
+	/// 后者在"只用掉球面一小块暗部"时会把均值压到接近 0，比值爆掉——
+	/// 实测 serenade 的 <c>jem_white</c> 整片被推到 255，又一个白膜。
+	/// </para>
+	/// </summary>
+	public static void LiftMatcapToSurface(byte[] rgba, int width, int height, byte[] matcap, int matcapWidth,
+		int matcapHeight, byte[]? normal, int normalWidth, int normalHeight, byte[]? mask, int maskWidth,
+		int maskHeight, double[] tintRgba, double targetLinear, int maskChannel = 0, bool sourceAxes = true)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		ArgumentNullException.ThrowIfNull(matcap);
+		ArgumentNullException.ThrowIfNull(tintRgba);
+		if (width <= 0 || height <= 0 || rgba.Length < width * height * 4)
+			throw new InvalidDataException($"底色像素不足：{width}×{height}。");
+		if (matcapWidth <= 0 || matcapHeight <= 0 || matcap.Length < matcapWidth * matcapHeight * 4)
+			throw new InvalidDataException($"matcap 像素不足：{matcapWidth}×{matcapHeight}。");
+
+		var matcapPixels = matcapWidth * matcapHeight;
+		double imageR = 0, imageG = 0, imageB = 0;
+		for (var offset = 0; offset < matcapPixels * 4; offset += 4)
+		{
+			imageR += matcap[offset] / 255.0;
+			imageG += matcap[offset + 1] / 255.0;
+			imageB += matcap[offset + 2] / 255.0;
+		}
+
+		imageR = Math.Max(1.0 / 255, imageR / matcapPixels);
+		imageG = Math.Max(1.0 / 255, imageG / matcapPixels);
+		imageB = Math.Max(1.0 / 255, imageB / matcapPixels);
+
+		var target = LinearToSrgbByte(targetLinear) / 255.0;
+		for (var y = 0; y < height; y++)
+		{
+			for (var x = 0; x < width; x++)
+			{
+				var offset = ((y * width) + x) * 4;
+
+				var strength = tintRgba[3];
+				if (mask is not null)
+				{
+					var mx = Math.Min(maskWidth - 1, x * maskWidth / width);
+					var my = Math.Min(maskHeight - 1, y * maskHeight / height);
+					strength *= mask[((my * maskWidth) + mx) * 4 + Math.Clamp(maskChannel, 0, 3)] / 255.0;
+				}
+
+				double u = 0.5, v = 0.5;
+				if (normal is not null && normalWidth > 0 && normalHeight > 0)
+				{
+					var nx = Math.Min(normalWidth - 1, x * normalWidth / width);
+					var ny = Math.Min(normalHeight - 1, y * normalHeight / height);
+					var at = ((ny * normalWidth) + nx) * 4;
+					if (sourceAxes)
+					{
+						var worldY = ((normal[at + 1] / 255.0) * 2) - 1;
+						var worldZ = ((normal[at + 2] / 255.0) * 2) - 1;
+						u = Math.Clamp(0.5 - (0.5 * worldY), 0, 1);
+						v = Math.Clamp(0.5 + (0.5 * worldZ), 0, 1);
+					}
+					else
+					{
+						u = normal[at] / 255.0;
+						v = normal[at + 1] / 255.0;
+					}
+				}
+
+				var (srcR, srcG, srcB, srcA) = SampleBilinear(matcap, matcapWidth, matcapHeight, u, v);
+
+				// matcap 这一点的强度：tint × 蒙版 × matcap 自己的 alpha。
+				// 强度 0（蒙版外）按"均值"处理 ⇒ 该像素正好落在 target 上。
+				var weight = Math.Clamp(strength * srcA, 0, 1);
+				var r = ((srcR * tintRgba[0]) * weight) + (1 - weight);
+				var g = ((srcG * tintRgba[1]) * weight) + (1 - weight);
+				var b = ((srcB * tintRgba[2]) * weight) + (1 - weight);
+
+				var factorR = 1 + (SurfaceContrast * Math.Clamp((r / imageR) - 1, -0.95, 2.0));
+				var factorG = 1 + (SurfaceContrast * Math.Clamp((g / imageG) - 1, -0.95, 2.0));
+				var factorB = 1 + (SurfaceContrast * Math.Clamp((b / imageB) - 1, -0.95, 2.0));
+
+				rgba[offset + 0] = ToByte(target * Math.Clamp(factorR, 0, 2));
+				rgba[offset + 1] = ToByte(target * Math.Clamp(factorG, 0, 2));
+				rgba[offset + 2] = ToByte(target * Math.Clamp(factorB, 0, 2));
+				rgba[offset + 3] = 0;
+			}
+		}
+	}
+
+	/// <summary>
+	/// <see cref="LiftMatcapToSurface"/> 的图案强度：0 = 涂平（旧行为），1 = 严格按均值归一。
+	/// <para>
+	/// 取 0.6 的理由：1.0 时双峰的球面图（中位 66 / p90 231）会把亮的那一半全部撞到 255，
+	/// 均值反而被拉低；0.6 时均值留在 F0 附近，同时保住凹凸明暗，不再像"没贴图"。
+	/// </para>
+	/// </summary>
+	public const double SurfaceContrast = 0.6;
+
+	/// <summary>
 	/// 解析 <c>$bumpstrength</c>（法线凹凸强度）。缺省 <c>1.0</c>；写坏了一律回 1.0。
 	/// <para>
 	/// <b>为什么不报错。</b>它只缩放 XY 的偏离量，1.0 就是"照源侧原样"——最安全的默认。

@@ -2788,7 +2788,10 @@ public sealed class SourceMaterialConverter
 			// "合成底色 + 没有 matcap"的材质会被涂成中性浅灰 —— 恰好把 `$color` 这个
 			// **作者明确写的颜色**抹掉。实测 milltina 的 6 个金属件（银/金/宝石红）全中，
 			// 全部变成同一块浅灰。
-			MaterialAppearance.FlattenToMetalF0(rgba, MaterialAppearance.NonMetallicSurfaceF0);
+			// 宝石/玻璃/珍珠：底色要顶掉（源底色可能是近黑占位图），但用中性浅灰而不是金属 F0；
+			// 而且**保留 matcap 的图案**（见 LiftToSurface）：整片涂成同一个灰，
+			// 实机就是用户报的"灰膜"——和"没贴图"一模一样。
+			LiftToSurface(MaterialAppearance.NonMetallicSurfaceF0);
 		}
 		else if (loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
 		{
@@ -2816,7 +2819,36 @@ public sealed class SourceMaterialConverter
 			// **纯色底色的金属保留自己的颜色**（见 MatcapKeepsBaseColour）：那是金属的色相，
 			// 归一成中性 F0 会把它变成一条白边。这里什么都不做，只让下面的金属度槽生效。
 			if (metalDeliverable && !loaded.MatcapKeepsBaseColour)
-				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+				LiftToSurface(MetalF0 * matcapBakeGain);
+		}
+
+		// 把"这张 matcap 就是表面"的件抬到目标反射率，**同时保留图案**。
+		//
+		// ⚠️ 涂平（FlattenToMetalF0）在实机里就是"白膜"：这些件的底色被作者注释掉了，
+		// 观感 100% 来自 matcap，涂平等于把它们唯一的信息删掉，得到一块没有任何明暗的纯白。
+		// 实测用户 2026-11-05 报的 serenade 头冠/项链/月牙/小灯笼/心形/十字架全是这种白块。
+		void LiftToSurface(double targetLinear)
+		{
+			if (!string.IsNullOrWhiteSpace(loaded.MatcapTextureName)
+				&& TryReadTextureRgba(loaded.MatcapTextureName, out var matcapRgba, out var matcapWidth, out var matcapHeight))
+			{
+				byte[]? maskRgba = null;
+				var maskWidth = 0;
+				var maskHeight = 0;
+				if (loaded.Mask1Texture is { Length: > 0 } maskName)
+					TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
+				var worldNormal = WorldNormalFor(loaded.Stem);
+				MaterialAppearance.LiftMatcapToSurface(
+					rgba, vtf.Width, vtf.Height,
+					matcapRgba, matcapWidth, matcapHeight,
+					worldNormal?.Rgba, worldNormal?.Width ?? 0, worldNormal?.Height ?? 0,
+					maskRgba, maskWidth, maskHeight,
+					loaded.MatcapTintRgba, targetLinear);
+				return;
+			}
+
+			// 连 matcap 图都读不到：只能涂平（这比"什么都不做"好，源底色往往就是近黑占位）。
+			MaterialAppearance.FlattenToMetalF0(rgba, targetLinear);
 		}
 
 		// ===== N2：把 matcap 层合进底色 =====
@@ -2836,15 +2868,16 @@ public sealed class SourceMaterialConverter
 		// （整片一个颜色，配合逐像素蒙版仍能表达"局部亮光"，但不会出色斑）。
 		if (loaded.MatcapBlend != MaterialAppearance.MatcapBlendMode.Off
 			&& !MatcapLayerDisabled
-			// 底色本身就是 matcap 的那条路（Bake/Albedo）不能叠自己，会自我加强一倍。
-			&& !(loaded.MatcapIsSurface && matcapMode != MatCapMode.Metal)
-			// **金属件更不能叠自己。** Metal 档下底色已经被归一成 F0（或保留了纯色的金属色），
-			// 那张球面图再叠一遍就是**二次计入**：
-			//   · 相加 → F0 0.96（≈250）加上任何亮部都撞顶 ⇒ 整片 **255 纯白**（实测 serenade 的
-			//     `silver_*` 全中：`matcap_metal7_f0` 的 min=max=255）。F0 从此不再是被实机
-			//     认可的那个 0.96，"金属"变成一块没有明暗的白塑料。
-			//   · 相乘 → 没有世界法线时整片采到球心那一个暗像素 ⇒ **整片变黑**
-			//     （实测 恋星milfy 的 `metal`/`jewel` 的 `$matcap2 1` × `Jewel2`）。
+			// **底色本来就是这张 matcap 的时候，一层都不能再叠。**
+			// 三种模式都成立：Bake / Albedo 拿它当底色；Metal 档现在用
+			// `LiftMatcapToSurface` 把**图案**抬到 F0（见那里的注释）。
+			// 再叠一遍就是二次计入：
+			//   · 相加 → 撞顶成纯白（实测 serenade `jem_white`：抬到 0.6 灰之后又被加回 255）；
+			//   · 金属件更糟，见下一行。
+			&& !loaded.MatcapIsSurface
+			// 金属件即使底色没被顶掉（纯色底色的上色金属，`MatcapKeepsBaseColour`）也不能叠：
+			// 那张球面图再叠一遍，相加会把 F0 撞成 255 纯白、相乘会把它压成纯黑
+			// （无世界法线时整片采到球心那一个暗像素）。
 			&& !(loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
 			&& loaded.MatcapTextureName is { Length: > 0 } matcapName
 			&& TryReadTextureRgba(matcapName, out var matcapRgba, out var matcapWidth, out var matcapHeight))
