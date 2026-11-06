@@ -78,6 +78,9 @@ public static class VpkCustomModelFile
 			if (string.Equals(model.Name, name, StringComparison.Ordinal))
 				return true;
 			var renamed = model with { Name = name.Trim() };
+			// 库里的产物是只读的：不清属性就写不进去，异常被下面的 catch 吞掉，
+			// 调用方只能看到 false——于是"改名失败"看起来像"找不到这个素体"。
+			VpkPayloadSwap.ClearReadOnlyForWrite(path);
 			File.WriteAllText(path, JsonSerializer.Serialize(renamed, JsonOptions));
 			return true;
 		}
@@ -159,12 +162,25 @@ public static class VpkCustomModelFile
 		return owners;
 	}
 
-	/// <summary>读 <c>custom-model.json</c> 的 <c>name</c>（转换时写进去的 Mod 名）。</summary>
+	/// <summary>
+	/// 读 <c>custom-model.json</c> 的 <c>name</c>（转换时写进去的 Mod 名）。
+	/// <para>
+	/// <b>和 <see cref="TryReadKey"/> 找同样三处。</b>转换产物把这份文件写在 <c>vpk2patch/</c>
+	/// （现在是 <c>sectional/</c>）下；只读根目录的话 VPK 类 Mod 永远读不到名字，
+	/// 界面就退回显示 <c>custom-xxxx</c>——用户报的"素体名变乱码"就是这么来的。
+	/// </para>
+	/// </summary>
 	public static string? TryReadName(string modDirectory)
 	{
 		if (string.IsNullOrWhiteSpace(modDirectory))
 			return null;
-		var path = Path.Combine(modDirectory, FileName);
+		return ReadNameAt(Path.Combine(modDirectory, FileName))
+			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName))
+			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName));
+	}
+
+	private static string? ReadNameAt(string path)
+	{
 		if (!File.Exists(path))
 			return null;
 		try

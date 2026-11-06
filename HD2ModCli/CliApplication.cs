@@ -157,6 +157,31 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateStatus(workspace), () => FormatStatus(workspace));
 			return 0;
 		}
+		// custom-model rename <mod> <名字>
+		//
+		// 为什么必须有这条：名字存在 Mod 自己的 `custom-model.json` 里，而重构建拿它当输入。
+		// 用 `custom-model convert` 去"改名"会**重造 unit id**——已有映射当场全废。
+		// 这个陷阱在双面评估里被点名过，所以给一条只改 name、不碰任何 id 的路。
+		if (command.Length == 4 && command[0] == "custom-model" && command[1] == "rename")
+		{
+			EnsureNoExplicitOutput(invocation.Options);
+			var (renameWorkspace, renameState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var renameRoot = renameWorkspace.LibraryRoot
+				?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");
+			var target = CliProjections.ResolveMod(renameState.Snapshot.Nodes, invocation.Command[2]);
+			var newName = invocation.Command[3].Trim();
+			var key = VpkCustomModelFile.TryReadKey(Path.Combine(renameRoot, target.RelativePath));
+			if (key is null)
+				throw new CliUserException("CustomModelMissing",
+					$"{target.Metadata.Name} 没有登记素体（custom-model.json 里没有 key），没有可改的名字。");
+			var renamed = VpkCustomModelFile.TryRenameOwned(renameRoot, key, newName);
+			Emit(invocation.Options,
+				new { ok = renamed, customModel = new { key, name = renamed ? newName : (string?)null } },
+				() => renamed
+					? $"已把素体 {key} 改名为「{newName}」。unit id 与件表原样未动。"
+					: $"改名失败：没能写入持有素体 {key} 的那份 custom-model.json（它是只读的？）。");
+			return renamed ? 0 : 2;
+		}
 		if (command.Length >= 3 && command[0] == "custom-model" && command[1] is "inspect" or "convert")
 		{
 			var convert = command[1] == "convert";
@@ -7897,6 +7922,7 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod custom-model rename <Mod GUID或前缀> <名字> --manager-root <管理器目录> --json
 	  hd2mod mod clone <Mod GUID或前缀> <变体名> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rebuild <Mod GUID或前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod material set <Mod GUID或前缀> <patch1,patch2|none> --manager-root <管理器目录> --confirm --json
