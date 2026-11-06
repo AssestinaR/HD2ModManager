@@ -139,8 +139,11 @@ internal static class CliVpkRekey
 		if (!Directory.Exists(modDirectory))
 			throw new CliUserException("ModDirectoryMissing", $"Mod 目录不存在：{modDirectory}");
 
-		var sourceDirectory = Path.Combine(modDirectory, SourceDirectoryName);
-		var sourcePatch = FindUnitPatch(sourceDirectory) ?? FindUnitPatch(modDirectory)
+		// 基底目录可能还叫老名字（vpk2patch/）。按"存在哪个用哪个"取，别只认新名字——
+		// 老库上只认 sectional/ 会让换甲报"没有 Unit patch"，而文件明明就在隔壁。
+		var sourceDirectory = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
+		var sourcePatch = (sourceDirectory is null ? null : FindUnitPatch(sourceDirectory))
+			?? FindUnitPatch(modDirectory)
 			?? throw new CliUserException("VpkPatchMissing",
 				$"这个 Mod 里没有 vpk2patch 产出的 Unit patch。VPK 版 Mod 的 patch 应当放在 {SourceDirectoryName}/ 下。");
 		var sectionMapPath = Path.Combine(Path.GetDirectoryName(sourcePatch)!, WardrobeSectionMapFile.FileName);
@@ -184,7 +187,7 @@ internal static class CliVpkRekey
 		if (IsIdentityTarget(source, selected))
 		{
 			var restored = await RestoreSourceAsync(
-				sourcePatch, sourceDirectory, destinationDirectory, cancellationToken).ConfigureAwait(false);
+				sourcePatch, Path.GetDirectoryName(sourcePatch)!, destinationDirectory, cancellationToken).ConfigureAwait(false);
 			// 恒等路径上 Unit 键没变，掩码可以直接用。
 			var identityBake = await BakeAsync(restored, destinationDirectory, disabledSections, cancellationToken)
 				.ConfigureAwait(false);

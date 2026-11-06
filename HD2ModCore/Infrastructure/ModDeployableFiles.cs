@@ -113,6 +113,9 @@ public static class ModDeployableFiles
 				File.Copy(source, target, overwrite: false);
 			}
 		}
+		// 物化出来的目录由管理器创建，就地盖章：否则之后换甲/重构建会被
+		// "不是管理器生成的目录" 挡在门外——而挡住的那个目录正是我们刚建的。
+		ManagedOverwriteDirectory.Commit(overwriteDirectory, Decoration.ManagedOverwriteMarkers.VpkRekey);
 		return EnumerateFiles(overwriteDirectory);
 	}
 }

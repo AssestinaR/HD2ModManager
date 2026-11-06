@@ -724,6 +724,18 @@ public static class CliApplication
 				() => result.Changed ? "已更新 Mod 备注。未自动部署。" : "Mod 备注未变化。未自动部署。");
 			return 0;
 		}
+		if (command.Length == 3 && command[0] == "mod" && command[1] == "rebuild")
+		{
+			EnsureModRebuildOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var outcome = await CliModRebuild.RunAsync(
+				workspace,
+				state,
+				invocation.Command[2],
+				stage => Console.Error.WriteLine("#progress " + stage)).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = outcome.Ok, rebuild = outcome }, () => FormatModRebuild(outcome));
+			return outcome.Ok ? 0 : 2;
+		}
 		if (command.Length == 5 && command[0] == "mod" && command[1] == "material" && command[2] == "set")
 		{
 			EnsureMaterialSetOptions(invocation.Options, "mod material set");
@@ -4389,6 +4401,40 @@ public static class CliApplication
 		return string.Join(Environment.NewLine, lines);
 	}
 
+	/// <summary>重构建会重写这个 Mod 的产物，所以要求 --confirm。</summary>
+	private static void EnsureModRebuildOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"ModRebuildConfirmationRequired",
+				"mod rebuild 会用这个 Mod 自己的来源 VPK 重新转换并替换现有产物；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod rebuild 仅接受 --manager-root、--library、--game-data、--confirm 与 --json。 ");
+		}
+	}
+
+	private static string FormatModRebuild(VpkRebuildOutcome outcome)
+	{
+		if (!outcome.Ok) return $"重构建失败：{outcome.Error}";
+		var lines = new List<string>
+		{
+			$"重构建完成：{outcome.Units} 个 Unit、{outcome.Materials} 个材质"
+			+ (outcome.Rekeyed ? "，已按 wardrobe.json 重新换甲。" : "，没有换甲。"),
+		};
+		if (outcome.BackupDirectory is not null)
+			lines.Add($"旧产物已备份到：{outcome.BackupDirectory}");
+		lines.AddRange(outcome.Notes.Select(note => "  · " + note));
+		lines.Add("未自动部署。");
+		return string.Join(Environment.NewLine, lines);
+	}
+
 	/// <summary>材质选择会重写生效层，所以要求 --confirm；不接受与它无关的参数。</summary>
 	private static void EnsureMaterialSetOptions(CliGlobalOptions options, string commandName)
 	{
@@ -7793,6 +7839,7 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod rebuild <Mod GUID或前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod material set <Mod GUID或前缀> <patch1,patch2|none> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod create <逻辑 Mod 名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
