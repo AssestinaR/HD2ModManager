@@ -162,10 +162,13 @@ public sealed class ModFolderTreeExporter : IModFolderTreeExporter
 		bool includeOverwrite,
 		out bool hasOverwrite)
 	{
-		// VPK 版 Mod：真正的 patch 在 vpk2patch\ 下，根上的 .vpk 只是来源原件。
-		var vpkPatchDirectory = ModNodePayloadLayout.GetVpkPatchDirectory(nodeDirectory);
-		var isVpkNode = Directory.Exists(vpkPatchDirectory);
-		var baseline = isVpkNode ? vpkPatchDirectory : nodeDirectory;
+		// 转换版 Mod：真正的 patch 在基底目录（sectional\，老库是 vpk2patch\）下，
+		// 根上的 .vpk / .patch_n 只是来源原件。**读路径必须两个名字都认**，
+		// 否则改名当天老库会被判成"没有内容层"，导出会改导根目录——
+		// 15 MB 的 .vpk 进了包、真正的 patch 一个都没有，而且不报错。
+		var vpkPatchDirectory = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(nodeDirectory);
+		var isVpkNode = vpkPatchDirectory is not null;
+		var baseline = vpkPatchDirectory ?? nodeDirectory;
 
 		var overwriteDirectory = ModNodePayloadLayout.GetOverwriteDirectory(nodeDirectory);
 		hasOverwrite = Directory.Exists(overwriteDirectory);

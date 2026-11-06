@@ -29,7 +29,9 @@ public static class VpkCustomModelFile
 		if (string.IsNullOrWhiteSpace(modDirectory))
 			return null;
 		return ReadKeyAt(Path.Combine(modDirectory, FileName))
-			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName));
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName))
+			// 老库里它在旧名目录下。漏了这一条，全库素体都会被判成孤儿，护甲映射页会把记录删掉。
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName));
 	}
 
 	private static string? ReadKeyAt(string path)

@@ -119,7 +119,11 @@ public static class VpkRebuildService
 				+ "把最初导入的那个 .vpk 放回 Mod 文件夹根上（和 vpk2patch 同级），再点一次。");
 		}
 
-		var payloadDirectory = ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory);
+		// 读侧两个名字都认：老库里基底目录还叫 vpk2patch/，只认新名会让
+		// reuseModel 与 hadSections 同时为假 —— 重构建会把这个 Mod 当纯材质包处理，
+		// unit id 重新随机，已登记的映射与件表全部失效。
+		var payloadDirectory = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory)
+			?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory);
 		var previousModelPath = Path.Combine(payloadDirectory, "custom-model.json");
 		var reuseModel = File.Exists(previousModelPath) ? previousModelPath : null;
 

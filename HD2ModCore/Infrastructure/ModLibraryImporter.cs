@@ -1097,8 +1097,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	/// </summary>
 	private static void CopyVpkPatchPayload(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)
 	{
-		var source = ModNodePayloadLayout.GetVpkPatchDirectory(sourceDir);
-		if (!Directory.Exists(source)) return;
+		// 来源可能是老库布局（vpk2patch/），所以读侧两个名字都认；写侧一律落新名。
+		var source = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(sourceDir);
+		if (source is null) return;
 		var destination = ModNodePayloadLayout.GetVpkPatchDirectory(destDir);
 		Directory.CreateDirectory(destination);
 		foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.TopDirectoryOnly))

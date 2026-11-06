@@ -139,6 +139,9 @@ public static class CustomModelCatalog
 	{
 		yield return Path.Combine(modDirectory, FileName);
 		yield return Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName);
+		// 老库布局。这份"根 + 子目录"的路径在两处各写了一遍（这里与 VpkCustomModelFile），
+		// 只改一处会出现"映射页列得出素体、详情页选不中它"——不报错，只是行为对不上。
+		yield return Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName);
 	}
 
 	/// <summary>
