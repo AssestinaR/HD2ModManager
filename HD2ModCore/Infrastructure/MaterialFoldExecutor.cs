@@ -152,12 +152,15 @@ public static class MaterialFoldExecutor
 		foreach (var entry in plan.Entries)
 			optionNames[entry.TargetPatchFileName] = entry.ModName;
 
+		// 宿主可能已经有用户改过的选项名/顺序——折并只追加新条目，不该把它们冲掉。
+		var previousManifest = SectionalPatchManifestFile.TryReadAsync(hostPayload).AsTask().GetAwaiter().GetResult();
 		var document = SectionalPatchManifestFile.Build(
 			hostPayload,
 			SectionalPatchManifestFile.ReadArchiveHex16(hostPayload),
 			report,
 			DateTimeOffset.UtcNow,
-			optionNames);
+			optionNames,
+			previousManifest);
 		var error = SectionalPatchManifestFile.TryWrite(hostPayload, document);
 		if (error is not null)
 			warnings.Add($"折并完成，但 patches.json 写不进去：{error}");

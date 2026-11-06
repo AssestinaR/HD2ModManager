@@ -49,6 +49,19 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 			}
 			var selectedByName = deployable.FilesByName;
 
+			// 结构文件里如果写了顺序，就以它为准（那是用户排的，代表"谁覆盖谁"的意图）。
+			var orderByPatchFileName = new System.Collections.Generic.Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+			if (ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(nodeDir) is { } manifestDirectory)
+			{
+				var manifest = SectionalPatchManifestFile
+					.TryReadAsync(manifestDirectory).AsTask().GetAwaiter().GetResult();
+				foreach (var entry in manifest?.Patches ?? Array.Empty<HD2ModCore.Domain.SectionalPatchGroupEntry>())
+				{
+					if (entry.Order is not { } order) continue;
+					orderByPatchFileName[$"{entry.ArchiveHex16}.patch_{entry.PatchIndex}"] = order;
+				}
+			}
+
 			var parsed = selectedByName.Values
 				.Select(path => (Path: path, Name: Path.GetFileName(path), Info: TryParse(path)))
 				.Where(x => x.Info is not null)
@@ -109,7 +122,10 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 						NormalizedOrder: normalizedOrder,
 						SidecarKind: file.Info.SidecarKind,
 						Length: info.Exists ? info.Length : 0,
-						LastWriteTimeUtc: info.Exists ? info.LastWriteTimeUtc : DateTimeOffset.MinValue));
+						LastWriteTimeUtc: info.Exists ? info.LastWriteTimeUtc : DateTimeOffset.MinValue,
+						DeployOrder: orderByPatchFileName.TryGetValue(file.Name, out var declaredOrder)
+							? declaredOrder
+							: normalizedOrder));
 				}
 			}
 

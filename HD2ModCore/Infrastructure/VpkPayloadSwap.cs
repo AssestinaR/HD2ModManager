@@ -92,11 +92,17 @@ public static class VpkPayloadSwap
 			var modRoot = Path.GetDirectoryName(payloadDirectory);
 			if (!string.IsNullOrWhiteSpace(modRoot) && Directory.Exists(modRoot))
 			{
+				// 重转会把结构文件整个重写一遍；先把上一版读出来，
+				// 于是用户改过的名字/备注/配图/顺序能跨重建留下来。
+				var previousManifest = SectionalPatchManifestFile
+					.TryReadAsync(payloadDirectory).AsTask().GetAwaiter().GetResult();
 				var manifest = SectionalPatchManifestFile.Build(
 					payloadDirectory,
 					SectionalPatchManifestFile.ReadArchiveHex16(payloadDirectory),
 					VpkConversionReport.TryRead(modRoot),
-					DateTimeOffset.UtcNow);
+					DateTimeOffset.UtcNow,
+					optionNameByPatchFileName: null,
+					previous: previousManifest);
 				if (manifest.Patches.Count != 0)
 					_ = SectionalPatchManifestFile.TryWrite(payloadDirectory, manifest);
 			}

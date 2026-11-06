@@ -71,7 +71,8 @@ public static class SectionalPatchManifestFile
 		string archiveHex16,
 		VpkConversionReport? report,
 		DateTimeOffset generatedUtc,
-		IReadOnlyDictionary<string, string>? optionNameByPatchFileName = null)
+		IReadOnlyDictionary<string, string>? optionNameByPatchFileName = null,
+		SectionalPatchManifestDocument? previous = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(payloadDirectory);
 		var entries = new List<SectionalPatchGroupEntry>();
@@ -98,6 +99,7 @@ public static class SectionalPatchManifestFile
 				{ MatchedUnit: true } => SectionalPatchRole.Unit,
 				_ => patchIndex == 0 ? SectionalPatchRole.Unit : SectionalPatchRole.Material,
 			};
+			var carried = previous?.Patches.FirstOrDefault(entry => entry.PatchIndex == patchIndex);
 			entries.Add(new SectionalPatchGroupEntry(
 				patchIndex,
 				archiveHex16,
@@ -107,10 +109,15 @@ public static class SectionalPatchManifestFile
 				// 它和折并进来的材质包是同一类东西（一个 patch、可勾选），
 				// 单独给它一个名字是为了让用户在选项表里一眼认出"这是自带的，不是后来加的包"。
 				OptionName: optionNameByPatchFileName?.GetValueOrDefault(name)
+					?? carried?.OptionName
 					?? (matched is { MatchedMaterial: true } ? SectionalPatchManifest.BuiltInMaterialOptionName : null),
 				UnitCount: matched?.Patch.UnitCount,
 				MaterialCount: matched?.Patch.MaterialCount,
-				TextureCount: matched?.Patch.TextureCount));
+				TextureCount: matched?.Patch.TextureCount,
+				// 用户写的那几项跨重建保留：它们是用户输入，不该因为重转一次就没了。
+				Order: carried?.Order,
+				Notes: carried?.Notes,
+				ImageFileName: carried?.ImageFileName));
 		}
 
 		entries.Sort((left, right) => left.PatchIndex.CompareTo(right.PatchIndex));

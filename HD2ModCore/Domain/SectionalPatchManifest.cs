@@ -68,7 +68,19 @@ public sealed record SectionalPatchGroupEntry(
 	string? OptionName = null,
 	int? UnitCount = null,
 	int? MaterialCount = null,
-	int? TextureCount = null);
+	int? TextureCount = null,
+	/// <summary>
+	/// 材质选项的**部署顺序**（越小越先部署，后部署的覆盖先部署的）。
+	/// <para>
+	/// 用户可以用它决定"多个材质同时启用时谁说了算"。它只改这个文件里的一个数字，
+	/// 不碰任何 patch 文件——部署时按它排序，就完成了"重定向"。
+	/// </para>
+	/// </summary>
+	int? Order = null,
+	/// <summary>选项备注（用户写的，与 Mod 自己的备注分开）。</summary>
+	string? Notes = null,
+	/// <summary>选项配图文件名，实际文件在 <c>&lt;mod&gt;/.hd2modmanager/options/</c> 下。</summary>
+	string? ImageFileName = null);
 
 public sealed record SectionalPatchManifestDocument(
 	string Schema,
