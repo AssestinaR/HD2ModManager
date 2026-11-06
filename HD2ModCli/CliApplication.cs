@@ -465,6 +465,16 @@ public static class CliApplication
 		{
 			return await DispatchGameDataExtractAsync(invocation, command).ConfigureAwait(false);
 		}
+		if (Matches(command, "library", "material-fold", "plan"))
+		{
+			EnsureLibraryMaterialFoldPlanOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var projection = CliMaterialFoldPlan.Build(workspace, state);
+			Emit(invocation.Options,
+				new { ok = projection.CanApply, materialFold = projection },
+				() => CliMaterialFoldPlan.Format(projection));
+			return projection.CanApply ? 0 : 2;
+		}
 		if (Matches(command, "library", "sync", "inspect"))
 		{
 			EnsureLibrarySyncInspectOptions(invocation.Options);
@@ -4230,6 +4240,21 @@ public static class CliApplication
 	private static void EnsureDeactivationApplyOptions(CliGlobalOptions options)
 		=> EnsureDeploymentApplyOptions(options);
 
+	/// <summary>
+	/// 折并计划是**只读**的：不接受 --output/--confirm/--plan 等会让人误以为它会写盘的参数。
+	/// </summary>
+	private static void EnsureLibraryMaterialFoldPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData) || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library material-fold plan 是只读检查，仅接受 --manager-root、--library 与 --json。 ");
+		}
+	}
+
 	private static void EnsureLibrarySyncInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -7558,6 +7583,7 @@ HD2 Mod Manager 命令行
 	  hd2mod gamedata extract show <TypeID十六进制> <FileID十六进制> [<归档ID>] --game-data <游戏data目录> --json
 	  hd2mod gamedata extract asset <TypeID十六进制> <FileID十六进制> [<归档ID>] --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
 	  hd2mod gamedata extract archive <归档ID> --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
+	  hd2mod library material-fold plan --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json

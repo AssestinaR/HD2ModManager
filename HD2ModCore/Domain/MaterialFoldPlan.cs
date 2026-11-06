@@ -60,7 +60,24 @@ public sealed record MaterialFoldPlan(
 	/// <summary>没有阻断项且有可搬成员时才允许执行。</summary>
 	public bool CanApply => Blockers.Count == 0 && Entries.Count != 0;
 
-	/// <summary>折并之后应当被选中的那一份；没有启用项时为 <c>null</c>。</summary>
+	/// <summary>折并之前处于启用状态的那些成员（可能不止一个）。</summary>
+	public IReadOnlyList<string> EnabledTargetPatchFileNames
+		=> Entries.Where(entry => entry.Enabled)
+			.Select(entry => entry.TargetPatchFileName)
+			.ToArray();
+
+	/// <summary>
+	/// 折并之后应当被选中的那一份；没有任何启用项时为 <c>null</c>。
+	/// <para>
+	/// <b>取"最后一个启用的"，不是"第一个"。</b>部署按顺序叠 patch，同一份资产后者覆盖前者，
+	/// 所以用户今天实际看到的外观 = **顺序最靠后的那个启用项**。取第一个会让折并之后
+	/// 外观悄悄变成另一个颜色——那是最难解释的那类"我没动它就变了"。
+	/// </para>
+	/// </summary>
 	public string? SelectedTargetPatchFileName
-		=> Entries.FirstOrDefault(entry => entry.Enabled)?.TargetPatchFileName;
+		=> Entries.Where(entry => entry.Enabled)
+			.OrderByDescending(entry => entry.Order)
+			.ThenBy(entry => entry.ModName, StringComparer.OrdinalIgnoreCase)
+			.Select(entry => entry.TargetPatchFileName)
+			.FirstOrDefault();
 }

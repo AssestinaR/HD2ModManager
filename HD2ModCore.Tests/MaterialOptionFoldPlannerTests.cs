@@ -58,6 +58,39 @@ public sealed class MaterialOptionFoldPlannerTests : IDisposable
 		Assert.All(plan.Entries, entry => Assert.EndsWith(".patch_0", entry.SourcePatchPath));
 	}
 
+	// 真库里确实存在"多个材质同时启用"的宿主（Lilium 的 patch_1 / patch_2 / patch_5 都启用）。
+	// 部署按顺序叠 patch，后者覆盖前者，所以用户今天看到的是**顺序最靠后**的那个。
+	// 折并取"第一个启用项"会让外观悄悄变成另一个颜色——必须取最后一个。
+	[Fact]
+	public void Plan_SelectsTheLastEnabledMember_NotTheFirst()
+	{
+		var host = NewPayload("host", $"{Archive}.patch_0");
+		var early = NewPayload("early", $"{Archive}.patch_0");
+		var late = NewPayload("late", $"{Archive}.patch_0");
+
+		var plan = MaterialOptionFoldPlanner.Plan(host,
+		[
+			new MaterialFoldMember("n1", "A1主体", early, Enabled: true, Order: 1),
+			new MaterialFoldMember("n2", "C1金属金色系", late, Enabled: true, Order: 5),
+		]);
+
+		Assert.Equal(2, plan.EnabledTargetPatchFileNames.Count);
+		Assert.Equal($"{Archive}.patch_2", plan.SelectedTargetPatchFileName);
+	}
+
+	[Fact]
+	public void Plan_WithNoEnabledMember_SelectsNothing()
+	{
+		var host = NewPayload("host", $"{Archive}.patch_0");
+		var member = NewPayload("m", $"{Archive}.patch_0");
+
+		var plan = MaterialOptionFoldPlanner.Plan(host,
+			[new MaterialFoldMember("n1", "A1", member, Enabled: false, Order: 0)]);
+
+		Assert.Empty(plan.EnabledTargetPatchFileNames);
+		Assert.Null(plan.SelectedTargetPatchFileName);
+	}
+
 	[Fact]
 	public void Plan_KeepsOptionOrder()
 	{
