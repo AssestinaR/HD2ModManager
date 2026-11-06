@@ -71,7 +71,11 @@ internal static class CliLibrarySynchronizationExecutor
 				locked.Diagnostics);
 		}
 
-		_ = await session.SaveNodesOnlyAsync(synchronization.Snapshot, cancellationToken).ConfigureAwait(false);
+		var persisted = await session.SaveNodesOnlyAsync(synchronization.Snapshot, cancellationToken).ConfigureAwait(false);
+
+		// 与 GUI 库同步、与折并走同一份残留清理：节点消失之后，它们留下的空壳该一起收掉。
+		var cleanup = CoreServices.CreateModLibraryResidualCleanupService()
+			.Cleanup(persisted, workspace.LibraryRoot!, cancellationToken);
 		return new CliLibrarySynchronizationExecutionResult(
 			true,
 			true,

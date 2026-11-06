@@ -88,7 +88,32 @@ internal static class CliMaterialFoldApplier
 		next = new ProfileStructuralMaintenanceService()
 			.CleanupAfterMutation(state.Snapshot, next, retired.ToArray()).Snapshot;
 		await session.SaveNodesOnlyAsync(next, cancellationToken).ConfigureAwait(false);
+
+		// 折并把成员的 patch 与来源 VPK 都搬走了，它们的文件夹通常只剩空目录与几份元数据。
+		// 这些空壳是**这次操作自己造出来的**，就地收掉——否则发布出去用户库里会多出
+		// 几十个"看起来像 Mod、其实什么都没有"的文件夹，还得他自己判断能不能删。
+		RunResidualCleanup(next, workspace, notes);
+
 		return new CliMaterialFoldApplyResult(true, foldedHosts, movedFiles, retired.Count, notes, null);
+	}
+
+	/// <summary>
+	/// 用与 GUI 库同步**同一个**残留清理：未被库引用、且不含任何载荷/外部安装文件的目录才删。
+	/// 判据不在两处各写一份——同一个库不该因为走了哪条入口而有不同的清理结果。
+	/// </summary>
+	private static void RunResidualCleanup(
+		HD2ModCore.Domain.LibrarySnapshot snapshot,
+		CliWorkspace workspace,
+		List<string> notes)
+	{
+		if (string.IsNullOrWhiteSpace(workspace.LibraryRoot)) return;
+		var cleanup = HD2ModCore.Infrastructure.CoreServices
+			.CreateModLibraryResidualCleanupService()
+			.Cleanup(snapshot, workspace.LibraryRoot);
+		if (cleanup.RemovedCount > 0)
+			notes.Add($"已清理 {cleanup.RemovedCount} 个折并后遗留的空文件夹。");
+		foreach (var failure in cleanup.Failures)
+			notes.Add($"空文件夹清理失败：{failure}");
 	}
 
 	/// <summary>

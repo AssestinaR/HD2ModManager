@@ -153,16 +153,20 @@ public static class CliApplication
 		if (Matches(command, "library", "cleanup"))
 		{
 			EnsureLibraryCleanupOptions(invocation.Options);
-			var (workspace, _) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var (workspace, cleanupState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
 			var root = workspace.LibraryRoot
 				?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");
 			var entries = CliLibraryCleanup.Scan(root);
 			var result = invocation.Options.Confirm
-				? CliLibraryCleanup.Apply(root, entries)
+				? CliLibraryCleanup.Apply(root, entries, cleanupState.Snapshot)
 				: new CliLibraryCleanupResult(false, entries.Sum(entry => entry.Bytes), entries.Count, entries, Array.Empty<string>());
+
+			// 顺手收掉"折并/删除之后留下的空壳目录"。判据用的是与 GUI 库同步**同一个**服务：
+			// 未被库引用、且里面不含任何载荷或外部安装文件。两处各写一份判据迟早会不一致。
+			var emptyFolders = CliLibraryCleanup.RemovedResidualFolders;
 			Emit(invocation.Options,
-				new { ok = result.Failures.Count == 0, cleanup = result },
-				() => FormatLibraryCleanup(result));
+				new { ok = result.Failures.Count == 0, cleanup = result, residualFoldersRemoved = emptyFolders },
+				() => FormatLibraryCleanup(result, emptyFolders));
 			return result.Failures.Count == 0 ? 0 : 2;
 		}
 		// settings get [key] / settings set <key> <value>
@@ -4494,7 +4498,7 @@ public static class CliApplication
 		}
 	}
 
-	private static string FormatLibraryCleanup(CliLibraryCleanupResult result)
+	private static string FormatLibraryCleanup(CliLibraryCleanupResult result, int residualFoldersRemoved)
 	{
 		var megabytes = result.Bytes / (1024.0 * 1024.0);
 		if (result.Items == 0)
@@ -4507,6 +4511,8 @@ public static class CliApplication
 		};
 		lines.AddRange(result.Entries.Select(entry => $"  · {entry.RelativePath}（{entry.Bytes / (1024.0 * 1024.0):F1} MB）"));
 		lines.AddRange(result.Failures.Select(failure => "  ! " + failure));
+		if (residualFoldersRemoved > 0)
+			lines.Add($"另外清掉了 {residualFoldersRemoved} 个未被库引用的空文件夹（折并/删除之后的空壳）。");
 		return string.Join(Environment.NewLine, lines);
 	}
 
