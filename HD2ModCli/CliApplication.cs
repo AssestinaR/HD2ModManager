@@ -125,6 +125,21 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateGameLocate(workspace, location), () => FormatGameLocate(workspace, location));
 			return 0;
 		}
+		if (Matches(command, "library", "cleanup"))
+		{
+			EnsureLibraryCleanupOptions(invocation.Options);
+			var (workspace, _) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var root = workspace.LibraryRoot
+				?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");
+			var entries = CliLibraryCleanup.Scan(root);
+			var result = invocation.Options.Confirm
+				? CliLibraryCleanup.Apply(root, entries)
+				: new CliLibraryCleanupResult(false, entries.Sum(entry => entry.Bytes), entries.Count, entries, Array.Empty<string>());
+			Emit(invocation.Options,
+				new { ok = result.Failures.Count == 0, cleanup = result },
+				() => FormatLibraryCleanup(result));
+			return result.Failures.Count == 0 ? 0 : 2;
+		}
 		if (Matches(command, "doctor"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -4311,6 +4326,36 @@ public static class CliApplication
 	/// <summary>
 	/// 折并计划是**只读**的：不接受 --output/--confirm/--plan 等会让人误以为它会写盘的参数。
 	/// </summary>
+	/// <summary>清理只认 --confirm；不接受跟它无关的参数。</summary>
+	private static void EnsureLibraryCleanupOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library cleanup 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	private static string FormatLibraryCleanup(CliLibraryCleanupResult result)
+	{
+		var megabytes = result.Bytes / (1024.0 * 1024.0);
+		if (result.Items == 0)
+			return "库里没有可回收的备份目录。";
+		var lines = new List<string>
+		{
+			result.Applied
+				? $"已删除 {result.Items} 项备份目录，回收 {megabytes:F1} MB。"
+				: $"可回收 {result.Items} 项、{megabytes:F1} MB。加 --confirm 才会真的删除。",
+		};
+		lines.AddRange(result.Entries.Select(entry => $"  · {entry.RelativePath}（{entry.Bytes / (1024.0 * 1024.0):F1} MB）"));
+		lines.AddRange(result.Failures.Select(failure => "  ! " + failure));
+		return string.Join(Environment.NewLine, lines);
+	}
+
 	/// <summary>医生的结论：先事实、再问题、再下一步。</summary>
 	private static string FormatDoctor(CliDoctorReport report)
 	{
@@ -7686,6 +7731,7 @@ HD2 Mod Manager 命令行
 
 用法：
 	  hd2mod capabilities --json
+	  hd2mod library cleanup --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod doctor --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod status --manager-root <管理器目录> --json
 	  hd2mod game locate [--manager-root <管理器目录>] --json

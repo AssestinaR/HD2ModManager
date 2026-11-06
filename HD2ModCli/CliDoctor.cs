@@ -111,12 +111,15 @@ internal static class CliDoctor
 					"跑 `gamedata index plan plan` 看要不要重建；需要时 `gamedata index plan apply --confirm`。"));
 		}
 
-		var (reclaimableBytes, reclaimableItems) = ScanReclaimable(workspace.LibraryRoot);
+		// 与 `library cleanup` 用同一份扫描：医生说的"可回收"必须就是清理会删的。
+		var reclaimable = CliLibraryCleanup.Scan(workspace.LibraryRoot ?? string.Empty);
+		var reclaimableBytes = reclaimable.Sum(entry => entry.Bytes);
+		var reclaimableItems = reclaimable.Count;
 		if (reclaimableItems > 0)
 			issues.Add(new CliDoctorIssue("ReclaimableJunk", "info",
 				$"库里有 {reclaimableItems} 项可回收的备份目录，共 {reclaimableBytes / (1024.0 * 1024.0):F1} MB。",
 				"这些是换甲/重转留下的中间产物，不影响功能。",
-				"确认当前外观正常后可以手动删除 `*.bak-*` 与 `*.backup-*` 目录。"));
+				"`library cleanup --backups --confirm` 会删掉这些目录；先不带 --confirm 跑一次可以看到明细。"));
 
 		return new CliDoctorReport(
 			workspace.ManagerRoot,
@@ -135,51 +138,4 @@ internal static class CliDoctor
 			issues);
 	}
 
-	/// <summary>
-	/// 库里的中间产物：换甲/重转留下的 <c>*.bak-*</c>、<c>*.backup-*</c>。
-	/// 它们通常在**每个 Mod 文件夹里面**（如 <c>&lt;mod&gt;/vpk2patch.bak-2026…</c>），
-	/// 所以两层都要看。
-	/// </summary>
-	private static (long Bytes, int Items) ScanReclaimable(string? libraryRoot)
-	{
-		if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot)) return (0, 0);
-		long bytes = 0;
-		var items = 0;
-
-		static bool IsJunk(string name)
-			=> name.Contains(".bak-", StringComparison.OrdinalIgnoreCase)
-			|| name.Contains(".backup-", StringComparison.OrdinalIgnoreCase);
-
-		long SizeOf(string directory)
-		{
-			try
-			{
-				return new DirectoryInfo(directory)
-					.EnumerateFiles("*", SearchOption.AllDirectories)
-					.Sum(file => file.Length);
-			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-			{
-				// 读不到就当 0：这是"可以回收多少"的估计，不是账目。
-				return 0;
-			}
-		}
-
-		foreach (var top in Directory.EnumerateDirectories(libraryRoot))
-		{
-			if (IsJunk(Path.GetFileName(top)))
-			{
-				items++;
-				bytes += SizeOf(top);
-				continue;
-			}
-			foreach (var inner in Directory.EnumerateDirectories(top))
-			{
-				if (!IsJunk(Path.GetFileName(inner))) continue;
-				items++;
-				bytes += SizeOf(inner);
-			}
-		}
-		return (bytes, items);
-	}
 }
