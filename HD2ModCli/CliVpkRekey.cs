@@ -260,17 +260,8 @@ internal static class CliVpkRekey
 
 		var produced = FindUnitPatch(result.OutputDirectory)
 			?? throw new CliUserException("VpkRekeyNoOutput", "换甲没有产出 patch。");
-		Directory.CreateDirectory(destinationDirectory);
-		var destination = Path.Combine(destinationDirectory, Path.GetFileName(produced));
-
-		// Overwrite 是"顶掉同名 patch"的一层：旧变体必须先清掉，否则 sidecar 会与新 TOC 不配。
-		foreach (var stale in Directory.EnumerateFiles(destinationDirectory, Path.GetFileName(produced) + "*"))
-			DeleteQuietly(stale);
-		foreach (var suffix in new[] { "", ".gpu_resources", ".stream" })
-		{
-			var from = produced + suffix;
-			if (File.Exists(from)) File.Copy(from, destination + suffix, overwrite: true);
-		}
+		// 装进 Overwrite：删同名旧变体（含 sidecar）+ 复制 TOC 与 sidecar，统一走共享原语。
+		var destination = OverwritePatchInstaller.Install(destinationDirectory, produced).PatchPath;
 
 		// 来源 Unit → 目标 Unit。开关表与烘焙都要用它，所以先算一次。
 		var unitMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -432,17 +423,7 @@ internal static class CliVpkRekey
 		string destinationDirectory,
 		CancellationToken cancellationToken)
 	{
-		Directory.CreateDirectory(destinationDirectory);
-		var destination = Path.Combine(destinationDirectory, Path.GetFileName(sourcePatch));
-		foreach (var stale in Directory.EnumerateFiles(destinationDirectory, Path.GetFileName(sourcePatch) + "*"))
-			DeleteQuietly(stale);
-
-		foreach (var suffix in new[] { "", ".gpu_resources", ".stream" })
-		{
-			var from = sourcePatch + suffix;
-			if (File.Exists(from))
-				File.Copy(from, destination + suffix, overwrite: true);
-		}
+		var destination = OverwritePatchInstaller.Install(destinationDirectory, sourcePatch).PatchPath;
 
 		var switches = await SectionGroupFile.TryReadAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
 		if (switches is not null)
