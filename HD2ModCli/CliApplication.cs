@@ -724,6 +724,32 @@ public static class CliApplication
 				() => result.Changed ? "已更新 Mod 备注。未自动部署。" : "Mod 备注未变化。未自动部署。");
 			return 0;
 		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "clone")
+		{
+			EnsureModCloneOptions(invocation.Options);
+			var (cloneWorkspace, cloneState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			await using var cloneSession = await CliWriteTargetGuard
+				.AcquireSessionAsync(cloneWorkspace, CliWriteTargetMode.Mutation)
+				.ConfigureAwait(false);
+			var clone = await CliModClone.RunAsync(
+				cloneWorkspace,
+				cloneState,
+				invocation.Command[2],
+				invocation.Command[3],
+				stage => Console.Error.WriteLine("#progress " + stage)).ConfigureAwait(false);
+			if (clone.Ok && clone.CloneName is not null)
+			{
+				// 副本已经在库里了（文件夹 + 自己的 id 都写好了），把它纳进快照即可。
+				var synchronizer = new ModLibrarySynchronizer(new PatchFileNameParser());
+				var inspection = await synchronizer
+					.InspectAsync(cloneState.Snapshot, cloneWorkspace.LibraryRoot!)
+					.ConfigureAwait(false);
+				var applied = synchronizer.ApplyInspection(cloneState.Snapshot, inspection);
+				await cloneSession.SaveSnapshotAsync(applied.Snapshot).ConfigureAwait(false);
+			}
+			Emit(invocation.Options, new { ok = clone.Ok, clone }, () => FormatModClone(clone));
+			return clone.Ok ? 0 : 2;
+		}
 		if (command.Length == 3 && command[0] == "mod" && command[1] == "rebuild")
 		{
 			EnsureModRebuildOptions(invocation.Options);
@@ -4401,6 +4427,38 @@ public static class CliApplication
 		return string.Join(Environment.NewLine, lines);
 	}
 
+	/// <summary>复制会新建一个 Mod 目录，所以要求 --confirm。</summary>
+	private static void EnsureModCloneOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"ModCloneConfirmationRequired",
+				"mod clone 会在库里新建一个副本目录并重新转换；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod clone 仅接受 --manager-root、--library、--game-data、--confirm 与 --json。 ");
+		}
+	}
+
+	private static string FormatModClone(CliModCloneResult clone)
+	{
+		if (!clone.Ok) return $"复制失败：{clone.Error}";
+		var lines = new List<string>
+		{
+			$"已复制成「{clone.CloneName}」，命名空间 {clone.IdNamespace}。",
+			$"目录：{clone.CloneDirectory}",
+		};
+		lines.AddRange(clone.Notes.Select(note => "  · " + note));
+		lines.Add("两套外观的材质 id 不同，可以同时部署。未自动部署。");
+		return string.Join(Environment.NewLine, lines);
+	}
+
 	/// <summary>重构建会重写这个 Mod 的产物，所以要求 --confirm。</summary>
 	private static void EnsureModRebuildOptions(CliGlobalOptions options)
 	{
@@ -7839,6 +7897,7 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod clone <Mod GUID或前缀> <变体名> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rebuild <Mod GUID或前缀> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod material set <Mod GUID或前缀> <patch1,patch2|none> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod create <逻辑 Mod 名称> --manager-root <管理器目录> --confirm --json

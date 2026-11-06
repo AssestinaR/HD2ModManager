@@ -90,7 +90,8 @@ public static class VpkRebuildService
 		IReadOnlyList<string>? targetArchiveIds,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
 		Action<string>? onStage,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		string? idNamespaceOverride = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
@@ -189,8 +190,12 @@ public static class VpkRebuildService
 			arguments.AddRange(["--manager-root", paths.AppRootDirectory]);
 			arguments.AddRange(["--library", paths.ModsRootDirectory ?? paths.AppRootDirectory]);
 			arguments.AddRange(["--game-data", gameData]);
-			// 命名空间：给了 token 就原样接上，与上一份产物的材质 id 逐位一致。
-			if (report?.IdNamespace is { Length: > 0 } token)
+			// 命名空间：默认接上原 token（材质 id 逐位一致，重构建就靠这个）。
+			// 给了覆盖就是**换一个新命名空间**——复制出来的变体必须与本体 id 不撞，
+			// 否则两套外观会互相覆盖，那正是复制要解决的问题。
+			if (!string.IsNullOrWhiteSpace(idNamespaceOverride))
+				arguments.AddRange(["--id-namespace", idNamespaceOverride]);
+			else if (report?.IdNamespace is { Length: > 0 } token)
 				arguments.AddRange(["--id-namespace-token", token]);
 			arguments.AddRange(settings.ToArguments());
 			if (reuseModel is not null)
