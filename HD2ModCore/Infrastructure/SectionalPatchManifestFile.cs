@@ -21,8 +21,9 @@ public static class SectionalPatchManifestFile
 	{
 		WriteIndented = true,
 		DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-		// 角色写成字符串：这份文件是给人看的（"每个 patch 组是谁"），数字读起来是噪音。
+		// 角色写成字符串、中文不转义：这份文件是给人看的（“每个 patch 组是谁”）。
 		Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
 	public static string GetPath(string payloadDirectory)

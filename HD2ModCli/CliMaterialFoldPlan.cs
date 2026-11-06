@@ -32,6 +32,13 @@ internal sealed record CliMaterialFoldPlanProjection(
 	public bool CanApply => BlockerCount == 0 && EntryCount != 0;
 }
 
+/// <summary>折并的输入：一个宿主 + 它的材质成员。</summary>
+internal sealed record CliMaterialFoldHost(
+	ModNode Host,
+	string HostDirectory,
+	string PayloadDirectory,
+	IReadOnlyList<MaterialFoldMember> Members);
+
 /// <summary>
 /// 「把材质 Option 折进宿主」的**只读**计划命令。
 /// <para>
@@ -41,14 +48,13 @@ internal sealed record CliMaterialFoldPlanProjection(
 /// </summary>
 internal static class CliMaterialFoldPlan
 {
-	public static CliMaterialFoldPlanProjection Build(CliWorkspace workspace, CliLibraryState state)
+	public static IReadOnlyList<CliMaterialFoldHost> BuildHosts(CliWorkspace workspace, CliLibraryState state)
 	{
 		var libraryRoot = workspace.LibraryRoot;
-		if (string.IsNullOrWhiteSpace(libraryRoot))
-			return new CliMaterialFoldPlanProjection(Array.Empty<CliMaterialFoldHostProjection>());
+		if (string.IsNullOrWhiteSpace(libraryRoot)) return Array.Empty<CliMaterialFoldHost>();
 
 		var graph = OptionRelationshipGraph.Create(state.Snapshot);
-		var hosts = new List<CliMaterialFoldHostProjection>();
+		var hosts = new List<CliMaterialFoldHost>();
 		foreach (var host in state.Snapshot.Nodes.Values
 			.OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase)
 			.ThenBy(node => node.Id.Value))
@@ -58,45 +64,47 @@ internal static class CliMaterialFoldPlan
 
 			var hostDirectory = Path.Combine(libraryRoot, host.RelativePath);
 			var hostPayload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(hostDirectory);
-			// 没有基底目录的宿主不是"折并对象"（它没有 patch_0 可当 unit 层）。
+			// 没有基底目录的宿主不是折并对象（它没有 patch_0 可当 unit 层）。
 			if (hostPayload is null) continue;
 
 			var hostIdN = host.Id.Value.ToString("N");
-			var members = children
-				.Select(child =>
-				{
-					var childDirectory = Path.Combine(libraryRoot, child.RelativePath);
-					var childPayload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(childDirectory)
-						// 不存在时给一个确定不存在的路径：planner 会据此报 MemberHasNoPatch，
-					// 而不是把"没有 payload 的成员"当成合法输入静默跳过。
-						?? ModNodePayloadLayout.GetVpkPatchDirectory(childDirectory);
-					var childIdN = child.Id.Value.ToString("N");
-					var enabled = state.OptionActivations.IsEnabled(childIdN, hostIdN);
-					// **顺序必须用生效顺序。** `Metadata.OptionOrder` 在这些 mod 上普遍是 null，
-					// 全当成 int.MaxValue 之后就只剩"按名字排"——而名字顺序与部署顺序无关，
-					// 于是"当前生效的是哪一份材质"会算错，折并后外观会悄悄变成另一个颜色。
-					var order = state.OptionActivations.Options.TryGetValue(childIdN, out var hosts)
-						&& hosts.TryGetValue(hostIdN, out var hostState)
-						&& hostState.EffectiveOrder is { } effective
-							? effective
-							: child.Metadata.OptionOrder ?? int.MaxValue;
-					return new MaterialFoldMember(
-						childIdN,
-						child.Metadata.Name,
-						childPayload,
-						enabled,
-						order);
-				})
-				.ToArray();
+			var members = children.Select(child =>
+			{
+				var childDirectory = Path.Combine(libraryRoot, child.RelativePath);
+				var childPayload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(childDirectory)
+					// 不存在时给一个确定不存在的路径：planner 会据此把它列为"跳过"，
+					// 而不是把"没有 payload 的成员"当合法输入静默忽略。
+					?? ModNodePayloadLayout.GetVpkPatchDirectory(childDirectory);
+				var childIdN = child.Id.Value.ToString("N");
+				var enabled = state.OptionActivations.IsEnabled(childIdN, hostIdN);
+				// 顺序取**生效顺序**：`Metadata.OptionOrder` 在这些 mod 上普遍是 null，
+				// 全当成 int.MaxValue 之后就只剩按名字排，而名字顺序与部署顺序无关。
+				var order = state.OptionActivations.Options.TryGetValue(childIdN, out var optionHosts)
+					&& optionHosts.TryGetValue(hostIdN, out var hostState)
+					&& hostState.EffectiveOrder is { } effective
+						? effective
+						: child.Metadata.OptionOrder ?? int.MaxValue;
+				return new MaterialFoldMember(childIdN, child.Metadata.Name, childPayload, enabled, order);
+			}).ToArray();
 
-			var plan = MaterialOptionFoldPlanner.Plan(hostPayload, members);
+			hosts.Add(new CliMaterialFoldHost(host, hostDirectory, hostPayload, members));
+		}
+		return hosts;
+	}
+
+	public static CliMaterialFoldPlanProjection Build(CliWorkspace workspace, CliLibraryState state)
+	{
+		var hosts = new List<CliMaterialFoldHostProjection>();
+		foreach (var host in BuildHosts(workspace, state))
+		{
+			var plan = MaterialOptionFoldPlanner.Plan(host.PayloadDirectory, host.Members);
 			hosts.Add(new CliMaterialFoldHostProjection(
-				hostIdN,
-				host.Metadata.Name,
-				host.RelativePath,
-				hostPayload,
+				host.Host.Id.Value.ToString("N"),
+				host.Host.Metadata.Name,
+				host.Host.RelativePath,
+				host.PayloadDirectory,
 				plan.ArchiveHex16,
-				ReadPatchFileNames(hostPayload),
+				ReadPatchFileNames(host.PayloadDirectory),
 				plan.Entries
 					.Select(entry => new CliMaterialFoldEntryProjection(
 						entry.NodeId, entry.ModName, entry.SourcePatchPath,
@@ -105,7 +113,6 @@ internal static class CliMaterialFoldPlan
 				plan.Blockers.Select(blocker => blocker.Message).ToArray(),
 				plan.Skipped));
 		}
-
 		return new CliMaterialFoldPlanProjection(hosts);
 	}
 

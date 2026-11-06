@@ -475,6 +475,19 @@ public static class CliApplication
 				() => CliMaterialFoldPlan.Format(projection));
 			return projection.CanApply ? 0 : 2;
 		}
+		if (Matches(command, "library", "material-fold", "apply"))
+		{
+			EnsureLibraryMaterialFoldApplyOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			await using var session = await CliWriteTargetGuard
+				.AcquireSessionAsync(workspace, CliWriteTargetMode.Mutation)
+				.ConfigureAwait(false);
+			var result = await CliMaterialFoldApplier.ApplyAsync(workspace, state, session).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = result.Succeeded, materialFold = result },
+				() => FormatMaterialFoldApply(result));
+			return result.Succeeded ? 0 : 2;
+		}
 		if (Matches(command, "library", "sync", "inspect"))
 		{
 			EnsureLibrarySyncInspectOptions(invocation.Options);
@@ -4241,6 +4254,41 @@ public static class CliApplication
 		=> EnsureDeploymentApplyOptions(options);
 
 	/// <summary>
+	/// 折并执行会移动库内文件：要求显式 --confirm；且不接受与它无关的参数。
+	/// </summary>
+	private static void EnsureLibraryMaterialFoldApplyOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"MaterialFoldApplyConfirmationRequired",
+				"library material-fold apply 会移动 Mod 库里的文件；请先跑一次 material-fold plan 核对，再显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library material-fold apply 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	/// <summary>折并执行的人话结果。</summary>
+	private static string FormatMaterialFoldApply(CliMaterialFoldApplyResult result)
+	{
+		var lines = new List<string>
+		{
+			result.Succeeded
+				? $"材质折并完成：{result.FoldedHosts} 个宿主、搬了 {result.MovedFiles} 个文件、退役 {result.RetiredNodes} 个材质节点。"
+				: $"材质折并未完成：{result.Error}",
+		};
+		lines.AddRange(result.Notes.Select(note => "  · " + note));
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	/// <summary>
 	/// 折并计划是**只读**的：不接受 --output/--confirm/--plan 等会让人误以为它会写盘的参数。
 	/// </summary>
 	private static void EnsureLibraryMaterialFoldPlanOptions(CliGlobalOptions options)
@@ -7584,6 +7632,7 @@ HD2 Mod Manager 命令行
 	  hd2mod gamedata extract asset <TypeID十六进制> <FileID十六进制> [<归档ID>] --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
 	  hd2mod gamedata extract archive <归档ID> --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
 	  hd2mod library material-fold plan --manager-root <管理器目录> --library <Mod库目录> --json
+	  hd2mod library material-fold apply --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
