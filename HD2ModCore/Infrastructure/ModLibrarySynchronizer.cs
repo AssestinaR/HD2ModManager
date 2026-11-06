@@ -225,10 +225,30 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var info = new FileInfo(path);
-			var relative = Path.GetRelativePath(directory, path).Replace('\\', '/');
+			var relative = NormalizeLayerName(Path.GetRelativePath(directory, path).Replace('\\', '/'));
 			builder.Append(relative.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
 		}
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+	}
+
+	/// <summary>
+	/// 把基底目录的**旧名**归一化成新名，再进指纹。
+	/// <para>
+	/// 目录从 <c>vpk2patch/</c> 改名成 <c>sectional/</c> 不代表内容变了，但相对路径进过指纹：
+	/// 不改归一化的话，一次性改名会把用户刚生成、刚审阅过的库对账计划当场作废
+	/// （实测报 <c>LibrarySyncInputChanged</c>，而改名其实已经发生了）。
+	/// </para>
+	/// <para>
+	/// 只映射旧名 → 新名，所以已经在用新名的 Mod 指纹一个字都不变，不会造成额外 churn。
+	/// </para>
+	/// </summary>
+	private static string NormalizeLayerName(string relative)
+	{
+		var legacy = ModNodePayloadLayout.LegacyVpkPatchDirectoryName + "/";
+		var current = ModNodePayloadLayout.VpkPatchDirectoryName + "/";
+		return relative.StartsWith(legacy, StringComparison.OrdinalIgnoreCase)
+			? current + relative[legacy.Length..]
+			: relative;
 	}
 
 	private static string NormalizePath(string path)
