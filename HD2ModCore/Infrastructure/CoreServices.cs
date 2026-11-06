@@ -40,7 +40,7 @@ public static class CoreServices
 		// 启动期自检：登记表必须自洽（每个 kind 都登记、依赖边都指向已登记的 kind、依赖图无环）。
 		// Startup self-check: the fact registry must be self-consistent before any production request runs.
 		HD2ModCore.Domain.ModInformationFactRegistry.Validate();
-		var referenceIndex = new SqliteModFactsStore(paths);
+		var referenceIndex = InMemoryModFactsStore.For(paths);
 		var analysisProvider = new ModInformationPatchGroupAnalysisProvider(informationReader);
 		return new ModInformationCenter(
 			CreateModFileFactsProducer(),
@@ -184,7 +184,7 @@ public static class CoreServices
 	public static IReferenceGraphProducer CreateReferenceGraphProducer(IModInformationReader informationReader)
 		=> new ReferenceGraphProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static IReferenceGraphQueryIndex CreateReferenceGraphQueryIndex(StoragePaths paths)
-		=> new SqliteModFactsStore(paths);
+		=> InMemoryModFactsStore.For(paths);
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new AdvancedModAnalysisService(informationCenter);
 	public static IPatchGraphDiagnosticsService CreatePatchGraphDiagnosticsService(IModInformationReader informationReader)
