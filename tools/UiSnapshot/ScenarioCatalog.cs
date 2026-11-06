@@ -42,6 +42,7 @@ internal static class ScenarioCatalog
         ["moddetails"] = () => ModDetailsScenario.Build("moddetails", vpk: false),
         ["moddetails-vpk"] = () => ModDetailsScenario.Build("moddetails-vpk", vpk: true),
         ["moddetails-materials"] = () => ModDetailsScenario.Build("moddetails-materials", vpk: true, materials: true),
+        ["moddetails-materials-empty"] = () => ModDetailsScenario.Build("moddetails-materials-empty", vpk: true, materials: true, filteredEmpty: true),
         ["nav"] = () => NavScenario.Build("nav", 1200),
         ["nav-narrow"] = () => NavScenario.Build("nav-narrow", 520),
         ["nav-transition"] = () => NavScenario.BuildTransition("nav-transition"),

@@ -50,7 +50,8 @@ public sealed class ModDetailsStub
 
     // 材质选项：和真实 VM 一样暴露 ItemsSource + 计数 + 结果文案，
     // 这样快照验的是"这张卡长什么样"，不是另一套假的绑定。
-    public IReadOnlyList<object> MaterialOptions { get; } = new object[]
+    public IReadOnlyList<object> MaterialOptions => MaterialOptionRows;
+    public List<object> MaterialOptionRows { get; } = new()
     {
         new StubMaterialRow("4k清晰度材质包", order: 0, enabled: true,
             notes: "78 个材质 / 78 张贴图", builtIn: false),
@@ -62,10 +63,22 @@ public sealed class ModDetailsStub
             notes: "只改光泽贴图", builtIn: false),
     };
 
-    public bool HasMaterialOptions => MaterialOptions.Count > 0;
-    public string MaterialOptionSummary => "共 4 个材质选项 · 已启用 1 个 · 越靠下越优先";
-    public string? MaterialOptionStatus => "已启用并重建生效层（重启游戏后生效）。";
-    public bool HasMaterialOptionStatus => true;
+    // 卡片是否显示看"文件里有没有"，与过滤后剩几个无关——搜不到时卡片必须还在，
+    // 否则搜索框和"清除搜索"会跟着一起消失，用户没有出路。
+    public bool HasMaterialOptions => MaterialOptionTotal > 0;
+    public int MaterialOptionTotal { get; set; } = 4;
+    public string MaterialOptionSummary { get; set; } = "共 4 个材质选项 · 已启用 1 个 · 越靠下越优先";
+    public string MaterialOptionQuery { get; set; } = string.Empty;
+    public bool ShowMaterialOptionReorder => true;
+    public HD2ModManager.Controls.Lists.ModListRowAction MaterialOptionRowActions =>
+        HD2ModManager.Controls.Lists.ModListRowAction.Rename
+        | HD2ModManager.Controls.Lists.ModListRowAction.ToggleEnabled
+        | HD2ModManager.Controls.Lists.ModListRowAction.OpenFolder
+        | HD2ModManager.Controls.Lists.ModListRowAction.MoveUp
+        | HD2ModManager.Controls.Lists.ModListRowAction.MoveDown;
+    public HD2ModManager.Controls.EmptyState.EmptyStatePresentation? MaterialOptionEmptyState { get; set; }
+    public string? MaterialOptionStatus { get; set; } = "已启用并重建生效层（重启游戏后生效）。";
+    public bool HasMaterialOptionStatus => MaterialOptionStatus is not null;
 
     /// <summary>材质选项的桩行：只实现面板要的接口和行模板读的成员。</summary>
     public sealed class StubMaterialRow : HD2ModManager.ViewModels.IModListKeyed,

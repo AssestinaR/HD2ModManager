@@ -48,6 +48,9 @@ public sealed class MaterialOptionRowViewModel : BaseViewModel,
     /// <summary>显示名：用户改过就用它，否则退回"材质 N"。</summary>
     public string Name => string.IsNullOrWhiteSpace(view.Name) ? $"材质 {view.PatchIndex}" : view.Name!;
 
+    /// <summary>备注。搜索也会查它。</summary>
+    public string? Notes => view.Notes;
+
     /// <summary>配图绝对路径；没有配图时为 <c>null</c>，行模板会退回占位图。</summary>
     public string? ImagePath
     {

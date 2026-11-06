@@ -342,9 +342,11 @@
                                     MaxHeight="{Binding ActualHeight, ElementName=DetailsScrollViewer, Converter={StaticResource AttachmentListMaxHeight}}"
                                     VerticalScrollBarVisibility="Auto"
                                     UseInternalScroll="True"
-                                    RowActions="Rename, ToggleEnabled, OpenFolder, MoveUp, MoveDown"
+                                    SearchText="{Binding MaterialOptionQuery, UpdateSourceTrigger=PropertyChanged}"
+                                    EmptyState="{Binding MaterialOptionEmptyState}"
+                                    RowActions="{Binding MaterialOptionRowActions}"
                                     RowActionInvoked="OnMaterialOptionRowActionInvoked"
-                                    AllowInternalReorder="True"
+                                    AllowInternalReorder="{Binding ShowMaterialOptionReorder}"
                                     InternalReorderRequested="OnMaterialOptionInternalReorderRequested"
                                     SelectionPolicy="None"
                                     Visibility="{Binding HasMaterialOptions, Converter={StaticResource BoolToVis}}"/>
