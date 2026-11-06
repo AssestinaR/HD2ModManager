@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using HD2ModCore.Infrastructure;
 
-namespace HD2ModManager.Services;
+namespace HD2ModCore.Infrastructure;
 
 /// <summary>
 /// 把物理参数（<c>HD2PBX01</c> 容器）写进某个 Mod 的 <c>vpk2patch/</c>。

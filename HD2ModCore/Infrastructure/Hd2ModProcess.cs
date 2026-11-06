@@ -3,7 +3,7 @@ using System.IO;
 using System.Text;
 using HD2ModCore.Infrastructure;
 
-namespace HD2ModManager.Services;
+namespace HD2ModCore.Infrastructure;
 
 /// <summary>
 /// 跑一次 <c>hd2mod.exe</c> 并收回它的三段输出。
@@ -20,15 +20,15 @@ namespace HD2ModManager.Services;
 /// 混进进度就等于把真正的原因埋掉。
 /// </para>
 /// </summary>
-internal static class Hd2ModProcess
+public static class Hd2ModProcess
 {
 	/// <summary>一次运行的结果。<see cref="Error"/> 已剔除进度行。</summary>
-	internal readonly record struct Result(int ExitCode, string Output, string Error);
+	public readonly record struct Result(int ExitCode, string Output, string Error);
 
 	/// <param name="onProgress">
 	/// 收到 <c>#progress</c> 行时回调（阶段键 / 已完成 / 总数 / 文案）。给 <c>null</c> 就只丢弃。
 	/// </param>
-	internal static async Task<Result> RunAsync(
+	public static async Task<Result> RunAsync(
 		string executable,
 		IReadOnlyList<string> arguments,
 		CancellationToken cancellationToken = default,
@@ -86,7 +86,7 @@ internal static class Hd2ModProcess
 	}
 
 	/// <summary>失败时给一句话：优先 stderr（真正的原因），退回 stdout（CLI 的 JSON 错误体）。</summary>
-	internal static string Explain(Result result, string what)
+	public static string Explain(Result result, string what)
 	{
 		var detail = string.IsNullOrWhiteSpace(result.Error) ? result.Output : result.Error;
 		return $"{what}失败（hd2mod 退出码 {result.ExitCode}）：{detail.Trim()}";

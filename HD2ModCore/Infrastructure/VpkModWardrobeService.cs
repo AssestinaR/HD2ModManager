@@ -3,7 +3,7 @@ using System.Text.Json;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
-namespace HD2ModManager.Services;
+namespace HD2ModCore.Infrastructure;
 
 /// <summary>
 /// <c>mods/&lt;VPK&gt;/wardrobe.json</c> 的内容：这个 VPK 模组的组件开关。

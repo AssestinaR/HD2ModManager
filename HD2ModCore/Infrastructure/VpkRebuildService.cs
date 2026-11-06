@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using HD2ModCore.Infrastructure;
 
-namespace HD2ModManager.Services;
+namespace HD2ModCore.Infrastructure;
 
 /// <summary>一次「从来源 VPK 重构建这个 VPK 模组」的结果。</summary>
 /// <param name="Units">产物里有几个 Unit。</param>
@@ -86,6 +86,7 @@ public static class VpkRebuildService
 	public static async Task<VpkRebuildOutcome> RunAsync(
 		string modSelector,
 		string modDirectory,
+		VpkHostContext context,
 		IReadOnlyList<string>? targetArchiveIds,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
 		Action<string>? onStage,
@@ -98,7 +99,7 @@ public static class VpkRebuildService
 		if (!Directory.Exists(modDirectory))
 			return VpkRebuildOutcome.Failed($"Mod 目录不存在：{modDirectory}");
 
-		var gameData = SettingsService.GetGameDataFolder();
+		var gameData = context.GameDataFolder;
 		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
 			return VpkRebuildOutcome.Failed("没有配置游戏 data 目录：转换要读外壳 Unit 与 avatar 骨架。");
 
@@ -158,7 +159,7 @@ public static class VpkRebuildService
 				+ "这种情况下请改用「重新导入」。");
 		}
 
-		var paths = SettingsService.CreateStoragePaths();
+		var paths = context.Paths;
 		// ③ 解析集合：自己 + 同批转换的兄弟 Mod（靠命名空间认亲）。
 		// 为什么必须带上兄弟：模型 VPK 往往不含材质，材质在另一份 VPK 里。
 		// 少了它们，重构建会以"材质解析不到"的方式把材质整体丢掉。
@@ -344,7 +345,7 @@ public static class VpkRebuildService
 			{
 				onStage?.Invoke("正在按当前配置重新生成换甲产物…");
 				var rekey = await VpkRekeyService.RunAsync(
-					modSelector, modDirectory, targets, disabled,
+					modSelector, modDirectory, context, targets, disabled,
 					stage => onStage?.Invoke(stage), cancellationToken,
 					// 头身合并也照 Mod 自己的设置来：重构建不该把用户关掉的开关又打开。
 					headMergeIntoBody: wardrobe.HeadMergeIntoBody).ConfigureAwait(false);

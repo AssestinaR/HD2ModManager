@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using HD2ModCore.Infrastructure;
 
-namespace HD2ModManager.Services;
+namespace HD2ModCore.Infrastructure;
 
 /// <summary>一次换甲的结果。</summary>
 public sealed record VpkRekeyOutcome(
@@ -66,6 +66,7 @@ public static class VpkRekeyService
 	public static async Task<VpkRekeyOutcome> RunAsync(
 		string modSelector,
 		string? modDirectory,
+		VpkHostContext context,
 		IReadOnlyList<string> targetArchiveIds,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
 		Action<string>? onStage,
@@ -73,11 +74,11 @@ public static class VpkRekeyService
 		bool headMergeIntoBody = false)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
-		var gameData = SettingsService.GetGameDataFolder();
+		var gameData = context.GameDataFolder;
 		if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
 			return VpkRekeyOutcome.Failed("没有配置游戏 data 目录：换甲要读目标护甲与隐藏 Unit。");
 
-		var paths = SettingsService.CreateStoragePaths();
+		var paths = context.Paths;
 		// 位置随布局而变（开发构建在旁边、发布包在 bin\ 下），见 Hd2ModCliLocator。
 		var executable = Hd2ModCliLocator.TryResolve();
 		if (executable is null)
