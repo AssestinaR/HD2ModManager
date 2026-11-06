@@ -152,6 +152,53 @@ public static class CliApplication
 				() => FormatLibraryCleanup(result));
 			return result.Failures.Count == 0 ? 0 : 2;
 		}
+		// settings get [key] / settings set <key> <value>
+		//
+		// 有些开关只在这个文件里（真映射模式、物理模式），平时只能通过界面改。
+		// 没有 GUI 的场合，agent 能诊断出"开关是 2"却改不了——这条补上。
+		if (command.Length is 2 or 3 && command[0] == "settings" && command[1] == "get")
+		{
+			EnsureNoExplicitOutput(invocation.Options);
+			var settingsWorkspace = CliWorkspace.Open(invocation.Options);
+			var path = CliSettings.ResolvePath(settingsWorkspace);
+			var document = CliSettings.TryRead(path);
+			if (document is null)
+				throw new CliUserException("SettingsUnreadable", $"读不到管理器设置：{path}");
+			if (command.Length == 3)
+			{
+				if (!CliSettings.TryGet(document, command[2], out var value))
+					throw new CliUserException("SettingsKeyMissing", $"设置里没有 {command[2]}。");
+				// 回显文件里的真实写法，而不是用户敲的写法：大小写不敏感查找，但报告要准。
+				var actualKey = document
+					.Select(pair => pair.Key)
+					.FirstOrDefault(name => string.Equals(name, command[2], StringComparison.OrdinalIgnoreCase))
+					?? command[2];
+				Emit(invocation.Options,
+					new { ok = true, key = actualKey, value = value?.ToJsonString() },
+					() => $"{actualKey} = {value?.ToJsonString() ?? "(null)"}");
+			}
+			else
+			{
+				Emit(invocation.Options, new { ok = true, path, settings = document }, () => document.ToJsonString());
+			}
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "settings" && command[1] == "set")
+		{
+			EnsureSettingsSetOptions(invocation.Options);
+			var settingsWorkspace = CliWorkspace.Open(invocation.Options);
+			var path = CliSettings.ResolvePath(settingsWorkspace);
+			var document = CliSettings.TryRead(path) ?? new System.Text.Json.Nodes.JsonObject();
+			var writtenKey = CliSettings.Set(document, command[2], command[3]);
+			var settingsError = CliSettings.TryWrite(path, document);
+			if (settingsError is not null)
+				throw new CliUserException("SettingsWriteFailed", $"写不进设置文件：{path}（{settingsError}）");
+			CliSettings.TryGet(document, writtenKey, out var written);
+			Emit(invocation.Options,
+				new { ok = true, path, key = writtenKey, value = written?.ToJsonString() },
+				() => $"{writtenKey} = {written?.ToJsonString() ?? "(null)"}\n路径：{path}\n其它设置原样保留。重启管理器后生效。");
+			return 0;
+		}
 		if (Matches(command, "doctor"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -4464,6 +4511,26 @@ public static class CliApplication
 		return string.Join(Environment.NewLine, lines);
 	}
 
+	/// <summary>改设置会写管理器目录里的文件，所以要求 --confirm。</summary>
+	private static void EnsureSettingsSetOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"SettingsSetConfirmationRequired",
+				"settings set 会改写管理器设置；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"settings set 仅接受 --manager-root、--confirm 与 --json。 ");
+		}
+	}
+
 	/// <summary>修复命令要求 --confirm：它写的是库快照本身。</summary>
 	private static void EnsureRepairOptions(CliGlobalOptions options, string commandName)
 	{
@@ -7953,6 +8020,8 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod settings get [<键>] --manager-root <管理器目录> --json
+	  hd2mod settings set <键> <值> --manager-root <管理器目录> --confirm --json
 	  hd2mod repair library-snapshot --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod custom-model rename <Mod GUID或前缀> <名字> --manager-root <管理器目录> --json
 	  hd2mod mod clone <Mod GUID或前缀> <变体名> --manager-root <管理器目录> --confirm --json
