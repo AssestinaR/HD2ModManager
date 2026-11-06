@@ -243,6 +243,29 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
 	}
 
+	// 换过甲的 Mod：Overwrite 里的 unit patch 是**换甲产物**，与基底里那份不是一回事。
+	// 改材质选择时若拿基底那份重建生效层，用户选的护甲就被悄悄换回未换甲的样子。
+	// 真库里有 8 个这样的 Mod。
+	[Fact]
+	public void Materialize_KeepsTheRekeyedUnitPatchThatAlreadyLivesInOverwrite()
+	{
+		var mod = NewMod();
+		AddPatch(mod, 0, "baseline-unit");
+		AddPatch(mod, 1, "material");
+		var overwrite = Overwrite(mod);
+		Directory.CreateDirectory(overwrite);
+		File.WriteAllText(Path.Combine(overwrite, $"{Archive}.patch_0"), "rekeyed-unit");
+		File.WriteAllText(Path.Combine(overwrite, $"{Archive}.patch_0.gpu_resources"), "rekeyed-gpu");
+		ManagedOverwriteDirectory.Commit(overwrite, ManagedOverwriteMarkers.VpkRekey);
+
+		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_1"]));
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.Equal("rekeyed-unit", File.ReadAllText(Path.Combine(overwrite, $"{Archive}.patch_0")));
+		Assert.Equal("rekeyed-gpu", File.ReadAllText(Path.Combine(overwrite, $"{Archive}.patch_0.gpu_resources")));
+		Assert.True(File.Exists(Path.Combine(overwrite, $"{Archive}.patch_1")));
+	}
+
 	[Fact]
 	public void Materialize_WithoutPayload_Fails()
 	{

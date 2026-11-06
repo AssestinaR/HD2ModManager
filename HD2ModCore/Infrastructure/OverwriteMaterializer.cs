@@ -91,9 +91,41 @@ public static class OverwriteMaterializer
 		var unitFileName = $"{archive}.patch_{UnitPatchIndex}";
 
 		// unit 层：默认取基底里那份；调用方给了替换（换甲产物）就用它。
-		var unitLayer = string.IsNullOrWhiteSpace(unitLayerPatchPath)
-			? Path.Combine(payload, unitFileName)
-			: unitLayerPatchPath;
+		// unit 层：调用方给了替换（换甲产物）就用它；否则用**当前生效的那一份**。
+		//
+		// 关键：生效层里已经有一份 unit patch 时，那一份是换甲产物，而基底里那份是未换甲的
+		// 原版。拿基底那份重建生效层，等于把用户选的护甲悄悄换回去——真库里有 8 个这样的
+		// Mod，改一次材质选择就会中招。
+		string? stashDirectory = null;
+		string? unitLayer;
+		if (!string.IsNullOrWhiteSpace(unitLayerPatchPath))
+		{
+			unitLayer = unitLayerPatchPath;
+		}
+		else
+		{
+			var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
+			var existingUnit = Path.Combine(overwrite, unitFileName);
+			if (File.Exists(existingUnit))
+			{
+				// 先把这一份（含 sidecar）挪到临时目录：重建会先清空 Overwrite，
+				// 不挪出来就把它自己删了。
+				stashDirectory = Path.Combine(
+					Path.GetTempPath(), "hd2-overwrite-unit-" + Guid.NewGuid().ToString("N"));
+				Directory.CreateDirectory(stashDirectory);
+				foreach (var suffix in OverwritePatchInstaller.SidecarSuffixes)
+				{
+					var from = existingUnit + suffix;
+					if (File.Exists(from))
+						File.Copy(from, Path.Combine(stashDirectory, unitFileName + suffix), overwrite: true);
+				}
+				unitLayer = Path.Combine(stashDirectory, unitFileName);
+			}
+			else
+			{
+				unitLayer = Path.Combine(payload, unitFileName);
+			}
+		}
 		if (!File.Exists(unitLayer))
 			return OverwriteMaterializationResult.Failure($"unit 层 patch 不存在：{unitLayer}");
 
@@ -117,7 +149,17 @@ public static class OverwriteMaterializer
 			materials.Add(path);
 		}
 
-		return MaterializeCore(modDirectory, unitLayer, materials, marker, warnings);
+		try
+		{
+			return MaterializeCore(modDirectory, unitLayer, materials, marker, warnings);
+		}
+		finally
+		{
+			if (stashDirectory is not null)
+			{
+				try { Directory.Delete(stashDirectory, recursive: true); } catch (IOException) { }
+			}
+		}
 	}
 
 	/// <summary>
@@ -143,6 +185,18 @@ public static class OverwriteMaterializer
 		List<string> warnings)
 	{
 		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
+		// 老库里的生效层是 P3-1 之前写的，没有归属标记。它里面有本归档的 unit patch，
+		// 就说明这一层是管理器给的（不是用户手工塞的）——按这个口径就地认领，
+		// 否则每一个现任用户都改不了材质选择。
+		if (Directory.Exists(overwrite) && !ManagedOverwriteDirectory.IsManaged(overwrite))
+		{
+			var archiveForAdoption = SectionalPatchManifestFile.ReadArchiveHex16(
+				ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory) ?? modDirectory);
+			if (!string.IsNullOrEmpty(archiveForAdoption)
+				&& File.Exists(Path.Combine(overwrite, $"{archiveForAdoption}.patch_{UnitPatchIndex}")))
+				ManagedOverwriteDirectory.Commit(overwrite, marker);
+		}
+
 		string? backup;
 		try
 		{
