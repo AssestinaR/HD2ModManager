@@ -47,6 +47,17 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		return path;
 	}
 
+	private static void WriteReport(string modRoot, string unitPatch, string? materialPatch)
+	{
+		var payload = new System.Text.StringBuilder();
+		payload.Append("{\"patches\":[{\"name\":\"host.vpk\",\"kind\":\"model\",\"units\":7,");
+		payload.Append("\"materials\":1,\"textures\":2,");
+		payload.Append($"\"unitPatch\":\"{unitPatch}\"");
+		if (materialPatch is not null) payload.Append($",\"materialPatch\":\"{materialPatch}\"");
+		payload.Append("}]}");
+		File.WriteAllText(Path.Combine(modRoot, "vpk2patch.json"), payload.ToString());
+	}
+
 	private string Overwrite(string modRoot) => Path.Combine(modRoot, ModNodePayloadLayout.OverwriteDirectoryName);
 
 	[Fact]
@@ -125,6 +136,70 @@ public sealed class OverwriteMaterializerTests : IDisposable
 
 		Assert.True(result.Succeeded, result.Error);
 		Assert.Equal("rekeyed-unit", File.ReadAllText(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
+	}
+
+	// 实测形状（恋星milfy_bill）：宿主**自己那次转换**同时产出了 unitPatch=patch_0 与
+	// materialPatch=patch_1。那是同一份来源的**基底材质**，不是变体。把它漏掉，
+	// unit 引用的材质 id 就没人定义——游戏里就是黑模。
+	[Fact]
+	public void Materialize_IncludesBaseMaterialPatchesDeclaredByTheHostsOwnReport()
+	{
+		var mod = NewMod();
+		AddPatch(mod, 0);
+		AddPatch(mod, 1, "base-material");
+		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
+
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None);
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
+	}
+
+	[Fact]
+	public void Materialize_VariantWithoutOwnMaterial_StillWorks()
+	{
+		var mod = NewMod();
+		AddPatch(mod, 0);
+		AddPatch(mod, 1, "base-material");
+		AddPatch(mod, 2, "variant");
+		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
+
+		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_2"));
+
+		Assert.True(result.Succeeded, result.Error);
+		// 基底材质 + 选中的变体都在；另一份变体（这里没有）不在。
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_2")));
+	}
+
+	[Fact]
+	public void Materialize_SelectingABaseMaterial_WarnsInsteadOfInstallingTwice()
+	{
+		var mod = NewMod();
+		AddPatch(mod, 0);
+		AddPatch(mod, 1, "base-material");
+		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
+
+		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_1"));
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.Contains(result.Warnings, warning => warning.Contains("基底材质", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void Materialize_WithoutReport_TreatsOnlyTheUnitPatchAsBase()
+	{
+		var mod = NewMod();
+		AddPatch(mod, 0);
+		AddPatch(mod, 1, "would-be-material");
+
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None);
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
+		// 没有报告就说不出它是基底还是变体：**不猜**，只放 unit 层。
+		Assert.False(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
 	}
 
 	[Fact]
