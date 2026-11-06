@@ -125,6 +125,16 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateGameLocate(workspace, location), () => FormatGameLocate(workspace, location));
 			return 0;
 		}
+		if (Matches(command, "doctor"))
+		{
+			EnsureNoExplicitOutput(invocation.Options);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var report = await CliDoctor.BuildAsync(workspace).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = report.IsHealthy, doctor = report },
+				() => FormatDoctor(report));
+			return report.IsHealthy ? 0 : 2;
+		}
 		if (Matches(command, "status"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
@@ -4301,6 +4311,39 @@ public static class CliApplication
 	/// <summary>
 	/// 折并计划是**只读**的：不接受 --output/--confirm/--plan 等会让人误以为它会写盘的参数。
 	/// </summary>
+	/// <summary>医生的结论：先事实、再问题、再下一步。</summary>
+	private static string FormatDoctor(CliDoctorReport report)
+	{
+		var lines = new List<string>
+		{
+			$"管理器：{report.ManagerRoot ?? "(未确定)"}",
+			$"Mod 库：{report.LibraryRoot ?? "(未确定)"}",
+			$"游戏数据：{report.GameDataRoot ?? "(未确定)"}",
+			$"护甲注册表：{report.RegistryRoot ?? "(未确定)"}",
+			report.LibraryLoaded
+				? $"库里有 {report.NodeCount} 个 Mod；文件夹缺失 {report.MissingDirectoryCount} 个；无载荷 {report.ModWithoutPayloadCount} 个。"
+				: "库没能加载（见下面的问题）。",
+			$"游戏数据索引：{report.GameDataIndexState}（{(report.GameDataIndexReady ? "可用" : "不可用")}）。",
+			report.ReclaimableItems == 0
+				? "没有可回收的中间产物。"
+				: $"可回收：{report.ReclaimableItems} 项、{report.ReclaimableBytes / (1024.0 * 1024.0):F1} MB。",
+		};
+		if (report.Issues.Count == 0)
+		{
+			lines.Add("没有发现问题。");
+		}
+		else
+		{
+			lines.Add(string.Empty);
+			foreach (var issue in report.Issues)
+			{
+				lines.Add($"[{issue.Severity}] {issue.Code}：{issue.Observed}");
+				if (issue.Fix is not null) lines.Add($"      → {issue.Fix}");
+			}
+		}
+		return string.Join(Environment.NewLine, lines);
+	}
+
 	/// <summary>材质选择会重写生效层，所以要求 --confirm；不接受与它无关的参数。</summary>
 	private static void EnsureMaterialSetOptions(CliGlobalOptions options, string commandName)
 	{
@@ -7643,6 +7686,7 @@ HD2 Mod Manager 命令行
 
 用法：
 	  hd2mod capabilities --json
+	  hd2mod doctor --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod status --manager-root <管理器目录> --json
 	  hd2mod game locate [--manager-root <管理器目录>] --json
 	  hd2mod custom-model inspect <Mod GUID> --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --json
