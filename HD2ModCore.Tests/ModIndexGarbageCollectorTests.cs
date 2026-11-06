@@ -36,9 +36,40 @@ public sealed class ModIndexGarbageCollectorTests
 		finally { DeleteRoot(root); }
 	}
 
+	// 2026-11-06 实测：201 个节点留下 245 个 AssetInventory 缓存，44 个是旧 generation 残留。
+	// 旧逻辑只按"节点是否还在库中"删，永远碰不到这些文件——它们会一直留在 data/indexes 里。
 	[Fact]
-	public async Task CollectAsync_KeepsSnapshotCacheCoveringAnyLiveNode()
+	public async Task CollectAsync_ForALiveNode_KeepsOnlyTheNewestGeneration()
 	{
+		var root = CreateRoot();
+		try
+		{
+			var paths = new StoragePaths(root);
+			var live = ModNodeId.New();
+			var info = Path.Combine(paths.IndexDirectory, "mod-information");
+			Directory.CreateDirectory(info);
+			var older = Path.Combine(info, $"AssetInventory_{live.Value:N}_{GenerationA}.json");
+			var newer = Path.Combine(info, $"AssetInventory_{live.Value:N}_{GenerationB}.json");
+			File.WriteAllText(older, "{}");
+			File.WriteAllText(newer, "{}");
+			File.SetLastWriteTimeUtc(older, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+			File.SetLastWriteTimeUtc(newer, new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc));
+			// 另一个种类的旧代也应被回收（同一节点、不同 kind 各自保留最新）
+			var otherKind = Path.Combine(info, $"ReferenceGraph_{live.Value:N}_{GenerationA}.json");
+			File.WriteAllText(otherKind, "{}");
+
+			var result = await new ModIndexGarbageCollector(paths).CollectAsync([live]);
+
+			Assert.Equal(1, result.RemovedCacheFiles);
+			Assert.False(File.Exists(older));
+			Assert.True(File.Exists(newer));
+			Assert.True(File.Exists(otherKind));
+		}
+		finally { DeleteRoot(root); }
+	}
+
+	[Fact]
+	public async Task CollectAsync_KeepsSnapshotCacheCoveringAnyLiveNode()	{
 		var root = CreateRoot();
 		try
 		{
@@ -77,6 +108,29 @@ public sealed class ModIndexGarbageCollectorTests
 
 			Assert.Equal(0, result.RemovedCacheFiles);
 			Assert.True(File.Exists(unknown));
+		}
+		finally { DeleteRoot(root); }
+	}
+
+	// mod-data-index 已没有任何读写方（详情页那一行改查 SQL 索引）。旧库上它还会留着
+	// 一堆文件，这里锁住"回收时会整目录清掉"。
+	[Fact]
+	public async Task CollectAsync_RemovesObsoleteModDataIndexDirectory()
+	{
+		var root = CreateRoot();
+		try
+		{
+			var paths = new StoragePaths(root);
+			var live = ModNodeId.New();
+			var obsolete = Path.Combine(paths.IndexDirectory, "mod-data-index");
+			Directory.CreateDirectory(obsolete);
+			File.WriteAllText(Path.Combine(obsolete, $"{live.Value:N}.json"), "{}");
+			File.WriteAllText(Path.Combine(obsolete, $"{ModNodeId.New().Value:N}.json"), "{}");
+
+			var result = await new ModIndexGarbageCollector(paths).CollectAsync([live]);
+
+			Assert.Equal(2, result.RemovedCacheFiles);
+			Assert.False(Directory.Exists(obsolete));
 		}
 		finally { DeleteRoot(root); }
 	}

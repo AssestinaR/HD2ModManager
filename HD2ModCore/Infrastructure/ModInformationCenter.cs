@@ -279,15 +279,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var generation = request.Generation ?? ComputeThumbnailGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
 		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
-		if (!effectiveRequest.RequireFresh && _informationCache is not null)
-		{
-			try
-			{
-				var cached = await _informationCache.TryLoadAsync<ModThumbnailFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-				if (cached is not null) return new ModInformationResult<ModThumbnailFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
-			}
-			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
-		}
 		var entry = new Lazy<Task<ModInformationResult<ModThumbnailFacts>>>(() => ProduceThumbnailAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
 		var existing = _thumbnailTasks.GetOrAdd(key, entry);
 		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
@@ -1142,25 +1133,22 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var started = DateTimeOffset.UtcNow;
 		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<ModThumbnailFacts>? completed = null;
-		ModInformationCacheEntry<ModThumbnailFacts>? stale = null;
 		try
 		{
-			stale = await TryLoadStaleAsync<ModThumbnailFacts>(ModInformationKind.Thumbnail, node.Id, nodeCancellation.Token).ConfigureAwait(false);
 			var data = await _thumbnailProducer!.ProduceAsync(node, root, nodeCancellation.Token).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production completed after the node was invalidated.", node.RelativePath, node.Id));
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.Thumbnail, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
+				return completed = CreateFailedOrStale<ModThumbnailFacts>(null, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production completed after the node was invalidated.", node.RelativePath, node.Id));
 			var result = new ModInformationResult<ModThumbnailFacts>(data, ModInformationStatus.Fresh, request.Kind, request.Generation ?? data.Generation, data.Issues);
 			completed = result;
 			return completed;
 		}
 		catch (OperationCanceledException)
 		{
-			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production was canceled.", node.RelativePath, node.Id));
+			return completed = CreateFailedOrStale<ModThumbnailFacts>(null, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production was canceled.", node.RelativePath, node.Id));
 		}
 		catch (Exception exception)
 		{
-			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ThumbnailProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
+			return completed = CreateFailedOrStale<ModThumbnailFacts>(null, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ThumbnailProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
 		}
 		finally
 		{

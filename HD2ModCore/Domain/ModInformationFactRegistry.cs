@@ -216,20 +216,14 @@ public static class ModInformationFactRegistry
 			FactProducerKind.UnitVersionService,
 			[ModInformationPropertyKind.AssetInventory]),
 
-		// 依据：装饰定义从 Mod 的资产清单里挑出可替换的 Unit 与材质
-		// （DecorationPackageSnapshotService 先用 ReadPatchIndexAsync 定位来源 Patch，
-		// 再按选中的 AssetKey 过滤，AssetKey 来自 AssetInventory）。
-		[ModInformationPropertyKind.DecorationDefinition] = new(
-			FactSubjectKind.Node,
-			ModInformationCacheScope.Persistent,
-			FactProducerKind.Composite,
-			[ModInformationPropertyKind.AssetInventory]),
-
 		// 依据：ModThumbnailProducer 只读 Mod 目录里约定命名的图标文件（ModIconLocator.TryResolve），
 		// 不做任何 Patch 分析，因此没有上游事实。
 		[ModInformationPropertyKind.Thumbnail] = new(
 			FactSubjectKind.Node,
-			ModInformationCacheScope.Persistent,
+			// **会话级就够，不落盘。** 这份"事实"的全部内容就是图标文件路径 + 长度 + mtime，
+			// 而 producer 自己做一次 ModIconLocator.TryResolve + FileInfo 就是同样的成本。
+			// 以前为它每个节点写一份 JSON（实测 201 个文件），换来的只是省掉一次 stat。
+			ModInformationCacheScope.Session,
 			FactProducerKind.ThumbnailService),
 	};
 

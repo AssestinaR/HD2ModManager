@@ -178,8 +178,6 @@ public static class CoreServices
 		=> new ReferenceGraphProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static IReferenceGraphQueryIndex CreateReferenceGraphQueryIndex(StoragePaths paths)
 		=> new SqliteModFactsStore(paths);
-	public static IModAssetRoleFactsService CreateModAssetRoleFactsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ModAssetRoleFactsService(informationCenter, CreateReferenceGraphQueryIndex(paths));
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new AdvancedModAnalysisService(informationCenter);
 	public static IPatchGraphDiagnosticsService CreatePatchGraphDiagnosticsService(IModInformationReader informationReader)

@@ -19,7 +19,7 @@ public sealed class ModInformationFactRegistryTests
 
 		var declared = Enum.GetValues<ModInformationPropertyKind>();
 
-		Assert.Equal(26, declared.Length);
+		Assert.Equal(25, declared.Length);
 		Assert.Equal(declared.Length, ModInformationFactRegistry.Count);
 		Assert.All(declared, kind => Assert.True(
 			ModInformationFactRegistry.IsRegistered(kind),
