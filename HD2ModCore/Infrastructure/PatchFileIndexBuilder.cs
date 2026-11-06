@@ -38,8 +38,10 @@ public sealed class PatchFileIndexBuilder : IPatchFileIndexBuilder
 				continue;
 			}
 
-			// 载荷（根 + vpk2patch/）+ Overwrite 顶替，全部由 ModNodePayloadLayout 定义。
-			var selectedByName = ModNodePayloadLayout.EnumerateEffectiveFilesByName(nodeDir);
+			// 会进游戏的文件：管理器物化过 Overwrite 就用它，否则沿用"基底 + 同名顶替"。
+			// 折并之后基底目录里平铺着十几个材质 patch、只有启用的那几个进了 Overwrite——
+			// 继续按"基底全上"来索引，会把未启用的材质也一起部署。
+			var selectedByName = ModDeployableFiles.EnumerateByName(nodeDir);
 
 			var parsed = selectedByName.Values
 				.Select(path => (Path: path, Name: Path.GetFileName(path), Info: TryParse(path)))
