@@ -68,7 +68,17 @@ public sealed record VpkConversionPatchSummary(
 	int TextureCount,
 	string? Kind = null,
 	string? UnitPatch = null,
-	string? MaterialPatch = null);
+	string? MaterialPatch = null,
+	/// <summary>
+	/// 这份 patch **确实写出**的材质 id（<c>materialDetails[].emitted == true</c>）。
+	/// <para>
+	/// 报告里同一份 <c>materialDetails</c> 还包含"引用了但没写出来"的条目
+	/// （模型自己的报告里就有一堆）。只有 emitted 的那些才算"这个 Mod 提供它"。
+	/// </para>
+	/// </summary>
+	IReadOnlyList<ulong>? EmittedMaterialIds = null,
+	/// <summary>同上，贴图 id（<c>textureDetails[].emitted == true</c>）。</summary>
+	IReadOnlyList<ulong>? EmittedTextureIds = null);
 
 /// <summary>
 /// Mod 目录里 <c>vpk2patch.json</c> 的可读投影。
@@ -267,10 +277,32 @@ public sealed record VpkConversionReport(
 				ReadInt(patch, "textures"),
 				ReadString(patch, "kind"),
 				ReadString(patch, "unitPatch"),
-				ReadString(patch, "materialPatch")));
+				ReadString(patch, "materialPatch"),
+				ReadEmittedIds(patch, "materialDetails", "material"),
+				ReadEmittedIds(patch, "textureDetails", "texture")));
 		}
 
 		return items;
+	}
+
+	/// <summary>读 <c>xxxDetails[]</c> 里 emitted 为真的那些 id（十六进制字符串，如 <c>0xa3b6…</c>）。</summary>
+	private static IReadOnlyList<ulong> ReadEmittedIds(JsonElement patch, string detailsField, string idField)
+	{
+		if (!patch.TryGetProperty(detailsField, out var details) || details.ValueKind != JsonValueKind.Array)
+			return Array.Empty<ulong>();
+
+		var ids = new List<ulong>();
+		foreach (var detail in details.EnumerateArray())
+		{
+			if (!detail.TryGetProperty("emitted", out var emitted) || emitted.ValueKind != JsonValueKind.True)
+				continue;
+			var text = ReadString(detail, idField);
+			if (string.IsNullOrWhiteSpace(text) || text.Length < 3) continue;
+			if (ulong.TryParse(text.AsSpan(2), System.Globalization.NumberStyles.HexNumber,
+				System.Globalization.CultureInfo.InvariantCulture, out var id) && id != 0)
+				ids.Add(id);
+		}
+		return ids;
 	}
 
 	/// <summary>读 <c>conversion.toolStamp</c>（旧产物没有这个字段 → <c>null</c>）。</summary>
