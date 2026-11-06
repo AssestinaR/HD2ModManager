@@ -14,7 +14,7 @@ internal static class SqliteSchema
 	// the persisted authority snapshot. Bumping the source identity ensures an
 	// existing index is rebuilt rather than silently retaining the old display
 	// metadata.
-	public const int SchemaVersion = 11;
+	public const int SchemaVersion = 12;
 
 	public static async Task EnsureCreatedAsync(SqliteConnection connection, CancellationToken cancellationToken)
 	{
@@ -73,6 +73,14 @@ CREATE TABLE IF NOT EXISTS archive_issues (
 );
 
 CREATE INDEX IF NOT EXISTS ix_archive_entries_asset ON archive_entries(type_id, file_id);
+
+-- 五张「只写不读」的表：实测全仓库零 SELECT，写入只是白费时间与空间。
+-- 从 schema 里删掉之后，老库里还留着它们，这里顺手回收（DROP IF EXISTS 对不存在的表是空操作）。
+DROP TABLE IF EXISTS game_data_archive_names;
+DROP TABLE IF EXISTS archive_domains;
+DROP TABLE IF EXISTS game_data_authority_entities;
+DROP TABLE IF EXISTS game_data_authority_issues;
+DROP TABLE IF EXISTS game_data_authority_resources;
 CREATE INDEX IF NOT EXISTS ix_archive_issues_archive ON archive_issues(archive_id);
 
 CREATE TABLE IF NOT EXISTS assets (
@@ -145,45 +153,11 @@ CREATE TABLE IF NOT EXISTS game_data_authority_kits (
 
 CREATE INDEX IF NOT EXISTS ix_game_data_authority_kits_archive ON game_data_authority_kits(archive_id, kit_kind);
 
-CREATE TABLE IF NOT EXISTS game_data_archive_names (
-	archive_id TEXT NOT NULL,
-	locale TEXT NOT NULL,
-	display_name TEXT NOT NULL,
-	source TEXT NOT NULL,
-	confidence INTEGER NOT NULL,
-	item_id INTEGER NOT NULL DEFAULT 0,
-	PRIMARY KEY(archive_id, locale, display_name, item_id)
-);
-
-CREATE INDEX IF NOT EXISTS ix_game_data_archive_names_archive_locale ON game_data_archive_names(archive_id, locale);
 
 -- 内容域：从 archive 自己的内容反推出的「这是什么」（环境 / 目标点 / 设施 / 音效…）。
 -- 与 archives.category 的区别：category 只有一个值、优先放权威结论；这张表可以多值，
 -- 并且带 source/confidence，资源树按域聚合时读它。
-CREATE TABLE IF NOT EXISTS archive_domains (
-	archive_id TEXT NOT NULL,
-	domain TEXT NOT NULL,
-	subject TEXT NOT NULL,
-	source TEXT NOT NULL,
-	confidence INTEGER NOT NULL,
-	PRIMARY KEY(archive_id, domain, subject)
-);
 
-CREATE INDEX IF NOT EXISTS ix_archive_domains_domain ON archive_domains(domain, subject);
-
-CREATE TABLE IF NOT EXISTS game_data_authority_entities (
-	entity_id INTEGER PRIMARY KEY,
-	unit_type_id INTEGER NOT NULL,
-	unit_file_id INTEGER NOT NULL,
-	is_exact_unit_match INTEGER NOT NULL,
-	is_weapon_candidate INTEGER NOT NULL,
-	equipment_type INTEGER NULL,
-	component_type_ids_json TEXT NOT NULL,
-	localized_names_json TEXT NOT NULL,
-	localized_designations_json TEXT NOT NULL DEFAULT '{}'
-);
-
-CREATE INDEX IF NOT EXISTS ix_game_data_authority_entities_unit ON game_data_authority_entities(unit_type_id, unit_file_id);
 
 CREATE TABLE IF NOT EXISTS game_data_authority_pieces (
 	piece_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -209,24 +183,6 @@ CREATE TABLE IF NOT EXISTS game_data_authority_pieces (
 CREATE INDEX IF NOT EXISTS ix_game_data_authority_pieces_archive_unit ON game_data_authority_pieces(archive_id, unit_type_id, unit_file_id);
 CREATE INDEX IF NOT EXISTS ix_game_data_authority_pieces_unit ON game_data_authority_pieces(unit_type_id, unit_file_id);
 
-CREATE TABLE IF NOT EXISTS game_data_authority_resources (
-	piece_id INTEGER NOT NULL,
-	role TEXT NOT NULL,
-	file_id INTEGER NOT NULL,
-	PRIMARY KEY(piece_id, role, file_id),
-	FOREIGN KEY(piece_id) REFERENCES game_data_authority_pieces(piece_id)
-);
-
-CREATE INDEX IF NOT EXISTS ix_game_data_authority_resources_file ON game_data_authority_resources(file_id);
-
-CREATE TABLE IF NOT EXISTS game_data_authority_issues (
-	issue_id INTEGER PRIMARY KEY AUTOINCREMENT,
-	severity INTEGER NOT NULL,
-	code TEXT NOT NULL,
-	message TEXT NOT NULL,
-	file_path TEXT NULL,
-	exception_message TEXT NULL
-);
 
 DROP TABLE IF EXISTS game_data_unit_part_scans;
 
@@ -247,7 +203,6 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		// 旧库里它们还留着，值全是 -1，删掉不影响任何数据。
 		await DropColumnIfPresentAsync(connection, "game_data_unit_parts", "authority_slot", cancellationToken).ConfigureAwait(false);
 		await DropColumnIfPresentAsync(connection, "game_data_unit_parts", "authority_piece_type", cancellationToken).ConfigureAwait(false);
-		await AddColumnIfMissingAsync(connection, "game_data_authority_entities", "localized_designations_json", "TEXT NOT NULL DEFAULT '{}'", cancellationToken).ConfigureAwait(false);
 
 		await SetMetaAsync(connection, "schema_version", SchemaVersion.ToString(), cancellationToken).ConfigureAwait(false);
 	}
@@ -388,10 +343,6 @@ DELETE FROM asset_archives;
 DELETE FROM assets;
 DELETE FROM game_data_stream_layouts;
 DELETE FROM game_data_unit_parts;
-DELETE FROM game_data_archive_names;
-DELETE FROM archive_domains;
-DELETE FROM game_data_authority_entities;
-DELETE FROM game_data_authority_issues;
 DELETE FROM archive_issues;
 DELETE FROM archive_entries;
 DELETE FROM archives;
@@ -411,7 +362,6 @@ DELETE FROM archives;
 	{
 		await using var cmd = connection.CreateCommand();
 		cmd.CommandText = @"
-DELETE FROM game_data_authority_resources;
 DELETE FROM game_data_authority_pieces;
 DELETE FROM game_data_authority_kits;
 ";
