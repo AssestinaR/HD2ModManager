@@ -82,33 +82,6 @@ public sealed class ModIndexGarbageCollectorTests
 	}
 
 	[Fact]
-	public async Task CollectAsync_RemovesDeadDataIndexNodesAndLegacyFile()
-	{
-		var root = CreateRoot();
-		try
-		{
-			var paths = new StoragePaths(root);
-			var live = ModNodeId.New();
-			var dead = ModNodeId.New();
-			var nodes = Path.Combine(paths.IndexDirectory, "mod-data-index");
-			Directory.CreateDirectory(nodes);
-			File.WriteAllText(Path.Combine(nodes, live.Value.ToString("N") + ".json"), "[]");
-			File.WriteAllText(Path.Combine(nodes, dead.Value.ToString("N") + ".json"), "[]");
-			var legacy = Path.Combine(paths.IndexDirectory, "mod-data-index.json");
-			File.WriteAllText(legacy, "{}");
-
-			var result = await new ModIndexGarbageCollector(paths).CollectAsync([live]);
-
-			// 一个死节点文件 + 旧版单文件
-			Assert.Equal(2, result.RemovedIndexNodes);
-			Assert.True(File.Exists(Path.Combine(nodes, live.Value.ToString("N") + ".json")));
-			Assert.False(File.Exists(Path.Combine(nodes, dead.Value.ToString("N") + ".json")));
-			Assert.False(File.Exists(legacy));
-		}
-		finally { DeleteRoot(root); }
-	}
-
-	[Fact]
 	public async Task CollectAsync_RemovesDeadReplacementBackups()
 	{
 		var root = CreateRoot();

@@ -44,7 +44,9 @@ public static class CoreServices
 			new JsonModInformationCache(paths),
 			CreateAdvancedUnitAnalysisProducer(analysisProvider.ForDepth(PatchAnalysisDepth.Full)),
 			CreateModThumbnailProducer(),
-			CreateModDataIndex(paths),
+			// 详情页"跨 Mod 索引"那一行的反向查询直接走 referenceGraph 的 SQL 索引（同一个对象），
+			// 不再维护一份 mod-data-index 的 JSON 副本。
+			referenceIndex,
 			referenceIndex,
 			ownedInformationReader,
 			// 无节点事实（设计文档 §22）的生产者：资产索引、资产映射、实际部署图。
@@ -109,8 +111,6 @@ public static class CoreServices
 	public static ISourceUnitEligibilityService CreateSourceUnitEligibilityService()
 		=> new SourceUnitEligibilityService();
 	public static IModThumbnailProducer CreateModThumbnailProducer() => new ModThumbnailProducer();
-	public static IModDataIndex CreateModDataIndex(StoragePaths paths) => new ModDataIndex(paths);
-	public static IModDataIndex CreateModDataIndex() => new ModDataIndex();
 	public static IPatchStateScanner CreatePatchStateScanner()
 		=> new PatchStateScanner(CreatePatchFileNameParser());
  	public static IPatchEntryPayloadReader CreatePatchEntryPayloadReader()

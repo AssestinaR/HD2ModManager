@@ -14,7 +14,7 @@ public sealed class ModInformationCenterArchitectureTests
 			.Where(path => !path.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
 			.Where(path => !path.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
 		var forbidden = new Regex(
-			@"(?:CoreServices\.)?CreateModDataIndex\s*\(|new\s+(?:ModDataIndex|JsonModInformationCache|SqliteModFactsStore)\s*\(|new\s+(?:ModFileFactsProducer|ModContentFactsService|ReferenceGraphProducer|UnitVersionInformationProducer|AdvancedUnitAnalysisProducer|ModThumbnailProducer)\s*\(",
+			@"new\s+(?:JsonModInformationCache|SqliteModFactsStore)\s*\(|new\s+(?:ModFileFactsProducer|ModContentFactsService|ReferenceGraphProducer|UnitVersionInformationProducer|AdvancedUnitAnalysisProducer|ModThumbnailProducer)\s*\(",
 			RegexOptions.Compiled);
 		var violations = sourceFiles
 			.SelectMany(path => File.ReadLines(path).Select((line, number) => (path, line, number: number + 1)))

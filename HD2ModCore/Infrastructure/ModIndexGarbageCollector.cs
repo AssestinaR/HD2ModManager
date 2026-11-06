@@ -49,12 +49,11 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		var failures = new List<string>();
 
 		var cacheFiles = CollectInformationCache(live, failures, cancellationToken);
-		var indexNodes = CollectDataIndexNodes(live, failures, cancellationToken);
 		var backups = CollectBackupDirectories(live, failures, cancellationToken);
 		var temporaryFiles = CollectTemporaryFiles(failures);
 		var factRows = await CollectFactRowsAsync(live, failures, cancellationToken).ConfigureAwait(false);
 
-		return new ModIndexGarbageCollectionResult(cacheFiles, indexNodes, factRows, backups, temporaryFiles, failures);
+		return new ModIndexGarbageCollectionResult(cacheFiles, factRows, backups, temporaryFiles, failures);
 	}
 
 	private int CollectInformationCache(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
@@ -121,49 +120,6 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		}
 	}
 
-	private int CollectDataIndexNodes(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
-	{
-		var removed = 0;
-		var directory = Path.Combine(_paths.IndexDirectory, "mod-data-index");
-		if (Directory.Exists(directory))
-		{
-			foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
-			{
-				cancellationToken.ThrowIfCancellationRequested();
-				if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out var id)) continue;
-				if (live.Contains(id.ToString("N"))) continue;
-				try
-				{
-					TryClearReadOnly(path);
-					File.Delete(path);
-					removed++;
-				}
-				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-				{
-					failures.Add($"{Path.GetFileName(path)}: {exception.Message}");
-				}
-			}
-		}
-
-		// 按节点分文件的布局一旦就位，旧版单文件就是纯死重。
-		// Once the per-node layout exists the legacy single file is pure dead weight.
-		var legacy = Path.Combine(_paths.IndexDirectory, "mod-data-index.json");
-		if (Directory.Exists(directory) && Directory.EnumerateFiles(directory, "*.json").Any() && File.Exists(legacy))
-		{
-			try
-			{
-				TryClearReadOnly(legacy);
-				File.Delete(legacy);
-				removed++;
-			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-			{
-				failures.Add($"{Path.GetFileName(legacy)}: {exception.Message}");
-			}
-		}
-		return removed;
-	}
-
 	private int CollectBackupDirectories(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
 	{
 		var directory = Path.Combine(_paths.DataDirectory, "mod-replacement-backups");
@@ -197,7 +153,6 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		{
 			_paths.IndexDirectory,
 			Path.Combine(_paths.IndexDirectory, "mod-information"),
-			Path.Combine(_paths.IndexDirectory, "mod-data-index"),
 		})
 		{
 			if (!Directory.Exists(directory)) continue;

@@ -23,8 +23,11 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly IDeployedOverrideGraphService? _deployedOverrideGraphService;
 	private readonly IModFileFactsCache? _fileFactsCache;
 	private readonly IModInformationCache? _informationCache;
-	private readonly IModDataIndex? _modDataIndex;
 	private readonly IReferenceGraphIndexWriter? _referenceGraphIndexWriter;
+	// 详情页"跨 Mod 索引"那一行要的反向查询。**直接用 referenceGraph 的 SQL 查询索引**，
+	// 不再维护一份按节点落盘的 `mod-data-index/*.json`——那是同一批关系的第二份物化副本，
+	// 只为一行字服务，却要在每次资产清单/引用图刷新时多一次 JSON 序列化 + 原子写。
+	private readonly IReferenceGraphQueryIndex? _referenceGraphQueryIndex;
 	private readonly IAsyncDisposable? _ownedInformationReader;
 	// 作用：进行中的生产任务按"事实身份 + 输入指纹"登记，取代旧的 "{nodeId}|{kind}|{generation}" 字符串键。
 	// Purpose: In-flight production is registered by (FactKey, revision) instead of the old concatenated string key.
@@ -49,7 +52,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	/// <summary>索引数据库的位置：护甲→unit 这类权威事实一律从这里读，不读游戏注册表文件。</summary>
 	private readonly StoragePaths? _storagePaths;
 
-	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null, IAssetArchiveIndexService? assetArchiveIndexService = null, IGameDataMappingFactsService? gameDataMappingFactsService = null, IDeployedOverrideGraphService? deployedOverrideGraphService = null, StoragePaths? storagePaths = null)
+	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IReferenceGraphQueryIndex? referenceGraphQueryIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null, IAssetArchiveIndexService? assetArchiveIndexService = null, IGameDataMappingFactsService? gameDataMappingFactsService = null, IDeployedOverrideGraphService? deployedOverrideGraphService = null, StoragePaths? storagePaths = null)
 	{
 		_storagePaths = storagePaths;
 		_fileFactsProducer = fileFactsProducer ?? throw new ArgumentNullException(nameof(fileFactsProducer));
@@ -60,7 +63,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		_unitVersionProducer = unitVersionProducer;
 		_advancedUnitAnalysisProducer = advancedUnitAnalysisProducer;
 		_thumbnailProducer = thumbnailProducer;
-		_modDataIndex = modDataIndex;
+		_referenceGraphQueryIndex = referenceGraphQueryIndex;
 		_referenceGraphIndexWriter = referenceGraphIndexWriter;
 		_ownedInformationReader = ownedInformationReader;
 		_assetArchiveIndexService = assetArchiveIndexService;
@@ -113,7 +116,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				var cached = await _informationCache.TryLoadAsync<ModContentFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
 				if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
 				{
-					_modDataIndex?.Update(cached);
 					return new ModInformationResult<ModContentFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
 				}
 			}
@@ -149,7 +151,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				var cached = await _informationCache.TryLoadAsync<ReferenceGraphFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
 				if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
 				{
-					_modDataIndex?.Update(cached);
 					return new ModInformationResult<ReferenceGraphFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
 				}
 			}
@@ -210,9 +211,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				failures).ConfigureAwait(false);
 			await TryInvalidateAsync(
 				() => _informationCache?.DeleteNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
-				failures).ConfigureAwait(false);
-			await TryInvalidateAsync(
-				() => _modDataIndex?.RemoveNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
 				failures).ConfigureAwait(false);
 			await TryInvalidateAsync(
 				() => _referenceGraphIndexWriter?.DeleteNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
@@ -295,10 +293,24 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
 	}
 
-	public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
-		=> _modDataIndex is null
-			? ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0))
-			: _modDataIndex.GetAssetRelationSummaryAsync(assetKeys, excludedNodeId, cancellationToken);
+	public async ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(assetKeys);
+		if (_referenceGraphQueryIndex is null)
+			return new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0);
+		var keys = assetKeys.Distinct().ToArray();
+		if (keys.Length == 0) return new ModDataIndexSummary(ModDataIndexStatus.Ready, 0, 0);
+		// Domain.AssetKey (ulong TypeId/FileId) → Adaptation 的同形键；两侧一直靠这个映射互通。
+		var adaptationKeys = keys
+			.Select(key => new HD2ModAdaptation.PatchReconstruction.AssetKey(key.TypeId, key.FileId))
+			.ToArray();
+		// 计数口径沿用旧实现：数**行**而不是数节点（同一节点可能有多条关系）。
+		var providers = await _referenceGraphQueryIndex.FindProviderFactsAsync(adaptationKeys, cancellationToken).ConfigureAwait(false);
+		var consumers = await _referenceGraphQueryIndex.FindConsumerFactsAsync(adaptationKeys, cancellationToken).ConfigureAwait(false);
+		var providerCount = providers.Count(fact => !excludedNodeId.HasValue || fact.NodeId != excludedNodeId.Value);
+		var consumerCount = consumers.Count(fact => !excludedNodeId.HasValue || fact.NodeId != excludedNodeId.Value);
+		return new ModDataIndexSummary(ModDataIndexStatus.Ready, providerCount, consumerCount);
+	}
 
 	// ===== 无节点事实（设计文档 §22） =====
 	// 与节点事实的三点差别，都是"没有节点"直接推出来的，不是新策略：
@@ -1020,7 +1032,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 					data = data with { Issues = [.. data.Issues, CreateCacheSaveIssue(ModInformationKind.AssetInventory, request.Generation ?? data.ContentGeneration, node.RelativePath, exception)] };
 				}
 			}
-			_modDataIndex?.Update(data);
 			return new ModInformationResult<ModContentFacts>(data, ModInformationStatus.Fresh, ModInformationKind.AssetInventory, request.Generation ?? data.ContentGeneration, data.Issues, false, false);
 		}
 		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -1048,7 +1059,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			var result = new ModInformationResult<ReferenceGraphFacts>(data, ModInformationStatus.Fresh, ModInformationKind.ReferenceGraph, data.Generation, data.Issues);
 			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.ReferenceGraph, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
 			if (_referenceGraphIndexWriter is not null) await _referenceGraphIndexWriter.ReplaceNodeAsync(data, nodeCancellation.Token).ConfigureAwait(false);
-			_modDataIndex?.Update(data);
 			completed = result;
 			return completed;
 		}

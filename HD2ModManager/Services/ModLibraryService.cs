@@ -516,7 +516,7 @@ namespace HD2ModManager.Services
                 var indexGc = await CoreServices.CreateModIndexGarbageCollector(_paths)
                     .CollectAsync(result.Snapshot.Nodes.Keys.ToArray(), cancellationToken).ConfigureAwait(false);
                 if (!indexGc.IsEmpty)
-                    LogService.Info($"索引回收：缓存文件={indexGc.RemovedCacheFiles}，索引节点={indexGc.RemovedIndexNodes}，事实行={indexGc.RemovedFactRows}，替换备份={indexGc.RemovedBackupDirectories}，临时文件={indexGc.RemovedTemporaryFiles}。");
+                    LogService.Info($"索引回收：缓存文件={indexGc.RemovedCacheFiles}，事实行={indexGc.RemovedFactRows}，替换备份={indexGc.RemovedBackupDirectories}，临时文件={indexGc.RemovedTemporaryFiles}。");
                 foreach (var failure in indexGc.Failures)
                     LogService.Error($"索引回收失败：{failure}");
             }
