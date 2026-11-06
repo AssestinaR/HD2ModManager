@@ -143,7 +143,12 @@ public static class CoreServices
 			informationReader: informationReader);
 	}
    public static IAssetArchiveIndexService CreateAssetArchiveIndexService(StoragePaths paths, string? registryRoot = null)
-		=> new AssetArchiveIndexService(paths, registryRoot: registryRoot);
+		// **这里是生产的组合根，所以默认解析本机的护甲注册表目录。**
+		// 传 null 时若让 AssetArchiveIndexService 自己决定，它会当成"没有副本"去读当前
+		// dl_bin——而当前文件可能是真映射的产物（件表只剩被映射的那几个模型的 unit），
+		// 拿它当权威会让高级装备索引一个 unit 都建不出来（2026-11-06 实测）。
+		// 显式传空字符串 = 明确表示"没有副本，读当前文件"（测试用）。
+		=> new AssetArchiveIndexService(paths, registryRoot: registryRoot ?? RuntimeArmorRegistryService.ResolveRegistryRoot());
 	public static IAdvancedEquipmentIndexService CreateAdvancedEquipmentIndexService(StoragePaths paths)
 		=> new AdvancedEquipmentIndexService(paths);
 	public static IGameDataLocator CreateGameDataLocator()

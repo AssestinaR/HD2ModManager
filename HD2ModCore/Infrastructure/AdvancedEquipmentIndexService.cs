@@ -88,7 +88,10 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 		if (!File.Exists(paths.DbPath)) throw new InvalidOperationException("请先建立基础 Game Data 资产索引。");
 		await EnsureSchemaAsync(cancellationToken).ConfigureAwait(false);
 
-		var fingerprint = await new AssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
+		// 必须和建索引那条路用**同一个** registryRoot：指纹里含原件副本的身份，
+		// 两边解析出不同的副本（或一边没有副本）就会算出两个指纹，于是这份高级索引
+		// 永远判自己过期、每次都全量重算。
+		var fingerprint = await CoreServices.CreateAssetArchiveIndexService(paths).GetFingerprintAsync(cancellationToken).ConfigureAwait(false)
 			?? throw new InvalidOperationException("基础 Game Data 资产索引缺少版本指纹。");
 		var effectiveRebuildAll = rebuildAll || !await IsCurrentAsync(cancellationToken).ConfigureAwait(false);
 		var allUnits = await ReadEquipmentUnitsAsync(cancellationToken).ConfigureAwait(false);

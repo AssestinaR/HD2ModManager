@@ -323,6 +323,8 @@ public sealed class GameDataInspectionCliTests
 			await File.WriteAllBytesAsync(Path.Combine(gameData, secondaryArchiveId), BuildToc([new AssetKey(0x15, 0xc9)]));
 			Directory.CreateDirectory(paths.ResourcesDirectory);
 			await File.WriteAllTextAsync(paths.ArchiveHashesPath, archiveHashes);
+			// 必须和被测命令走同一个权威源：命令侧用 CoreServices 的默认（本机护甲注册表），
+			// 这里若显式关掉副本，两边算出的指纹不同，索引会立刻被判过期。
 			await CoreServices.CreateAssetArchiveIndexService(paths).BuildOrRebuildAsync(gameData, archiveHashes);
 
 			return new Fixture(root, managerRoot, libraryRoot, gameData, archiveId, secondaryArchiveId, node, paths);
