@@ -25,6 +25,7 @@ public static class MaterialOptionFoldPlanner
 		ArgumentNullException.ThrowIfNull(members);
 
 		var blockers = new List<MaterialFoldBlocker>();
+		var skipped = new List<string>();
 		var entries = new List<MaterialFoldEntry>();
 		var archive = SectionalPatchManifestFile.ReadArchiveHex16(hostPayloadDirectory);
 		var existing = ReadExistingPatchIndices(hostPayloadDirectory);
@@ -35,7 +36,7 @@ public static class MaterialOptionFoldPlanner
 				MaterialFoldBlockerKind.HostHasNoUnitPatch,
 				null,
 				$"宿主的基底目录里没有 unit patch（{SectionalPatchManifestFile.GetPath(hostPayloadDirectory)} 同级应当有 <archive>.patch_0）。"));
-			return new MaterialFoldPlan(hostPayloadDirectory, archive, entries, blockers);
+			return new MaterialFoldPlan(hostPayloadDirectory, archive, entries, blockers, skipped);
 		}
 
 		var nextIndex = existing.Count == 0 ? 1 : existing.Max() + 1;
@@ -45,18 +46,12 @@ public static class MaterialOptionFoldPlanner
 			var patches = ReadPatchFiles(member.PayloadDirectory);
 			if (patches.Count == 0)
 			{
-				blockers.Add(new MaterialFoldBlocker(
-					MaterialFoldBlockerKind.MemberHasNoPatch,
-					member.ModName,
-					$"{member.ModName} 的基底目录里没有 patch，无法作为材质变体折入。"));
+				skipped.Add($"{member.ModName}：基底目录里没有 patch，已跳过（它可能不是材质包）。");
 				continue;
 			}
 			if (patches.Count > 1)
 			{
-				blockers.Add(new MaterialFoldBlocker(
-					MaterialFoldBlockerKind.MemberHasMultiplePatches,
-					member.ModName,
-					$"{member.ModName} 的基底目录里有 {patches.Count} 份 patch，无法判断该搬哪一份。"));
+				skipped.Add($"{member.ModName}：基底目录里有 {patches.Count} 份 patch，无法判断该搬哪一份，已跳过。");
 				continue;
 			}
 
@@ -72,7 +67,7 @@ public static class MaterialOptionFoldPlanner
 				member.Order));
 		}
 
-		return new MaterialFoldPlan(hostPayloadDirectory, archive, entries, blockers);
+		return new MaterialFoldPlan(hostPayloadDirectory, archive, entries, blockers, skipped);
 	}
 
 	/// <summary>宿主基底目录里已经用掉的 patch 序号。</summary>

@@ -54,28 +54,26 @@ public sealed class MaterialOptionFoldPlannerTests : IDisposable
 		Assert.Equal([1, 2], plan.Entries.Select(entry => entry.TargetPatchIndex).ToArray());
 		Assert.Equal($"{Archive}.patch_1", plan.Entries[0].TargetPatchFileName);
 		Assert.Equal($"{Archive}.patch_2", plan.Entries[1].TargetPatchFileName);
-		Assert.Equal($"{Archive}.patch_1", plan.SelectedTargetPatchFileName);
+		Assert.Equal([$"{Archive}.patch_1"], plan.EnabledTargetPatchFileNames);
 		Assert.All(plan.Entries, entry => Assert.EndsWith(".patch_0", entry.SourcePatchPath));
 	}
 
-	// 真库里确实存在"多个材质同时启用"的宿主（Lilium 的 patch_1 / patch_2 / patch_5 都启用）。
-	// 部署按顺序叠 patch，后者覆盖前者，所以用户今天看到的是**顺序最靠后**的那个。
-	// 折并取"第一个启用项"会让外观悄悄变成另一个颜色——必须取最后一个。
+	// 多个材质包同时启用是**今天的正常用法**：材质 id 冲突、后加载覆盖前者，
+	// 那是包作者之间的事。折并只是换个存放位置，不该顺手替用户做减法。
 	[Fact]
-	public void Plan_SelectsTheLastEnabledMember_NotTheFirst()
+	public void Plan_KeepsEveryEnabledMember()
 	{
 		var host = NewPayload("host", $"{Archive}.patch_0");
-		var early = NewPayload("early", $"{Archive}.patch_0");
-		var late = NewPayload("late", $"{Archive}.patch_0");
+		var a = NewPayload("a", $"{Archive}.patch_0");
+		var b = NewPayload("b", $"{Archive}.patch_0");
 
 		var plan = MaterialOptionFoldPlanner.Plan(host,
 		[
-			new MaterialFoldMember("n1", "A1主体", early, Enabled: true, Order: 1),
-			new MaterialFoldMember("n2", "C1金属金色系", late, Enabled: true, Order: 5),
+			new MaterialFoldMember("n1", "A1主体", a, Enabled: true, Order: 1),
+			new MaterialFoldMember("n2", "C1金属", b, Enabled: true, Order: 5),
 		]);
 
-		Assert.Equal(2, plan.EnabledTargetPatchFileNames.Count);
-		Assert.Equal($"{Archive}.patch_2", plan.SelectedTargetPatchFileName);
+		Assert.Equal([$"{Archive}.patch_1", $"{Archive}.patch_2"], plan.EnabledTargetPatchFileNames);
 	}
 
 	[Fact]
@@ -88,7 +86,6 @@ public sealed class MaterialOptionFoldPlannerTests : IDisposable
 			[new MaterialFoldMember("n1", "A1", member, Enabled: false, Order: 0)]);
 
 		Assert.Empty(plan.EnabledTargetPatchFileNames);
-		Assert.Null(plan.SelectedTargetPatchFileName);
 	}
 
 	[Fact]
@@ -105,7 +102,7 @@ public sealed class MaterialOptionFoldPlannerTests : IDisposable
 		]);
 
 		Assert.Equal(["A", "Z"], plan.Entries.Select(entry => entry.ModName).ToArray());
-		Assert.Equal($"{Archive}.patch_1", plan.SelectedTargetPatchFileName);
+		Assert.Equal([$"{Archive}.patch_1"], plan.EnabledTargetPatchFileNames);
 	}
 
 	[Fact]
@@ -149,10 +146,10 @@ public sealed class MaterialOptionFoldPlannerTests : IDisposable
 			new MaterialFoldMember("n2", "有用的", good, Enabled: true, Order: 1),
 		]);
 
-		Assert.False(plan.CanApply);
-		var blocker = Assert.Single(plan.Blockers);
-		Assert.Equal(MaterialFoldBlockerKind.MemberHasNoPatch, blocker.Kind);
-		Assert.Equal("空的", blocker.MemberName);
+		// 个别成员有问题**不该**否掉整个宿主：跳过它、点名，其余照常折。
+		Assert.True(plan.CanApply);
+		Assert.Empty(plan.Blockers);
+		Assert.Contains(plan.Skipped, note => note.Contains("空的", StringComparison.Ordinal));
 		Assert.Equal("有用的", Assert.Single(plan.Entries).ModName);
 	}
 
@@ -165,9 +162,10 @@ public sealed class MaterialOptionFoldPlannerTests : IDisposable
 		var plan = MaterialOptionFoldPlanner.Plan(host,
 			[new MaterialFoldMember("n1", "一堆", ambiguous, Enabled: false, Order: 0)]);
 
-		Assert.False(plan.CanApply);
-		Assert.Equal(MaterialFoldBlockerKind.MemberHasMultiplePatches, Assert.Single(plan.Blockers).Kind);
+		Assert.False(plan.CanApply);   // 没有可搬成员了，所以仍然不执行
+		Assert.Empty(plan.Blockers);   // 但它不是"阻断"，只是这个成员被跳过
 		Assert.Empty(plan.Entries);
+		Assert.Contains(plan.Skipped, note => note.Contains("一堆", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -194,6 +192,6 @@ public sealed class MaterialOptionFoldPlannerTests : IDisposable
 		Assert.False(plan.CanApply);
 		Assert.Empty(plan.Entries);
 		Assert.Empty(plan.Blockers);
-		Assert.Null(plan.SelectedTargetPatchFileName);
+		Assert.Empty(plan.EnabledTargetPatchFileNames);
 	}
 }

@@ -5,13 +5,24 @@ namespace HD2ModCore.Infrastructure;
 /// <summary>
 /// 用户对外观做的一次选择。<b>现在是参数、还没有落盘</b>——持久化会随 `mod.json` 一起做（P4）。
 /// </summary>
-/// <param name="MaterialPatchFileName">
-/// 选中的**材质变体** patch 文件名（例如 <c>9ba626afa44a3aa3.patch_2</c>）；<c>null</c> = 不加变体。
-/// 槽位是**单选**：变体之间共用同一套材质 id，同时部署两份只会让后加载的那份覆盖前者。
+/// <param name="EnabledMaterialPatchFileNames">
+/// 要启用的材质 patch 文件名集合——**每个材质选项一个 patch，可以任意启用几个**。
+/// <para>
+/// <c>null</c> = 用默认（宿主自己那次转换产出的材质 patch，即「模型内置材质」）。
+/// 空集合 = 一个都不启用（用户明确关掉了全部材质）。
+/// </para>
+/// <para>
+/// <b>不做单选限制。</b>多个材质包同时启用时，材质 id 之间可能互相冲突——那是包作者之间的事，
+/// 不是管理器该替用户决定的事。用户勾了哪些就诚实部署哪些，和今天多个 Option 同时启用一样。
+/// </para>
 /// </param>
-public sealed record OverwriteSelection(string? MaterialPatchFileName)
+public sealed record OverwriteSelection(IReadOnlyCollection<string>? EnabledMaterialPatchFileNames)
 {
-	public static OverwriteSelection None { get; } = new((string?)null);
+	/// <summary>用默认（只启用模型内置材质）。</summary>
+	public static OverwriteSelection Default { get; } = new((IReadOnlyCollection<string>?)null);
+
+	/// <summary>一个材质都不启用。</summary>
+	public static OverwriteSelection Empty { get; } = new(Array.Empty<string>());
 }
 
 public sealed record OverwriteMaterializationResult(
@@ -76,7 +87,6 @@ public static class OverwriteMaterializer
 			return OverwriteMaterializationResult.Failure("基底目录里没有 unit patch，无法物化生效层。");
 
 		var report = VpkConversionReport.TryRead(modDirectory);
-		var basePatches = ResolveBasePatchFileNames(payload, report, archive);
 		var unitFileName = $"{archive}.patch_{UnitPatchIndex}";
 
 		// unit 层：默认取基底里那份；调用方给了替换（换甲产物）就用它。
@@ -87,68 +97,46 @@ public static class OverwriteMaterializer
 			return OverwriteMaterializationResult.Failure($"unit 层 patch 不存在：{unitLayer}");
 
 		var warnings = new List<string>();
-		var materials = basePatches
-			.Where(name => !string.Equals(name, unitFileName, StringComparison.OrdinalIgnoreCase))
-			.Select(name => Path.Combine(payload, name))
-			.Where(File.Exists)
-			.ToList();
-
-		string? variantLayer = null;
-		if (!string.IsNullOrWhiteSpace(selection.MaterialPatchFileName))
+		var enabled = selection.EnabledMaterialPatchFileNames
+			// 没有显式选择 ⇒ 默认只启用宿主自己那次转换产出的材质（"模型内置材质"）。
+			?? BuiltInMaterialPatches(report);
+		var materials = new List<string>();
+		foreach (var name in enabled.Distinct(StringComparer.OrdinalIgnoreCase))
 		{
-			if (basePatches.Contains(selection.MaterialPatchFileName, StringComparer.OrdinalIgnoreCase))
+			if (string.Equals(name, unitFileName, StringComparison.OrdinalIgnoreCase)) continue;
+			var path = Path.Combine(payload, name);
+			if (!File.Exists(path))
 			{
-				// 它本来就是基底材质，已经在生效层里了：按"没选变体"处理，并说出来。
-				warnings.Add(
-					$"{selection.MaterialPatchFileName} 是这个 Mod 自己的基底材质（不是变体），它已经包含在生效层里。");
+				// 跳过一个文件就否掉整次，只会让用户卡住：其余十一个材质都是好的，
+				// 而他却看不到任何东西、还被告知"去解决"。跳过、点名、继续。
+				warnings.Add($"跳过了 {name}：它已不在基底目录里（可能被删除或改名）。");
+				continue;
 			}
-			else
-			{
-				var candidate = Path.Combine(payload, selection.MaterialPatchFileName);
-				if (!File.Exists(candidate))
-					return OverwriteMaterializationResult.Failure(
-						$"选中的材质 patch 不在基底目录里：{selection.MaterialPatchFileName}。"
-						+ "它可能已被删除或改名；重新选一次即可。");
-				variantLayer = candidate;
-			}
+			materials.Add(path);
 		}
 
-		return MaterializeCore(modDirectory, unitLayer, materials, variantLayer, marker, warnings);
+		return MaterializeCore(modDirectory, unitLayer, materials, marker, warnings);
 	}
 
 	/// <summary>
-	/// 宿主**自己的来源**产出的 patch：转换报告里逐条写着 <c>unitPatch</c> / <c>materialPatch</c>。
-	/// 报告缺失时退化为一件事——只有 <c>patch_0</c> 是基底。
+	/// 宿主**自己那次转换**产出的材质 patch 文件名——它们在选项表里的名字是「模型内置材质」。
+	/// 转换报告里逐条写着 <c>materialPatch</c>；报告缺失时为空（此时默认不启用任何材质层）。
 	/// </summary>
-	private static IReadOnlyList<string> ResolveBasePatchFileNames(
-		string payload,
-		VpkConversionReport? report,
-		string archive)
+	private static IReadOnlyList<string> BuiltInMaterialPatches(VpkConversionReport? report)
 	{
-		var names = new List<string>();
-		if (report is not null)
-		{
-			foreach (var patch in report.Patches)
-			{
-				foreach (var name in new[] { patch.UnitPatch, patch.MaterialPatch })
-				{
-					if (string.IsNullOrWhiteSpace(name)) continue;
-					if (names.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
-					names.Add(name);
-				}
-			}
-		}
-		var unitFileName = $"{archive}.patch_{UnitPatchIndex}";
-		if (!names.Contains(unitFileName, StringComparer.OrdinalIgnoreCase))
-			names.Insert(0, unitFileName);
-		return names;
+		if (report is null) return Array.Empty<string>();
+		return report.Patches
+			.Select(patch => patch.MaterialPatch)
+			.Where(name => !string.IsNullOrWhiteSpace(name))
+			.Select(name => name!)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
 	}
 
 	private static OverwriteMaterializationResult MaterializeCore(
 		string modDirectory,
 		string unitLayer,
 		IReadOnlyList<string> materialLayers,
-		string? variantLayer,
 		string marker,
 		List<string> warnings)
 	{
@@ -170,8 +158,6 @@ public static class OverwriteMaterializer
 			written.AddRange(OverwritePatchInstaller.Install(overwrite, unitLayer).WrittenFiles);
 			foreach (var material in materialLayers)
 				written.AddRange(OverwritePatchInstaller.Install(overwrite, material).WrittenFiles);
-			if (variantLayer is not null)
-				written.AddRange(OverwritePatchInstaller.Install(overwrite, variantLayer).WrittenFiles);
 			ManagedOverwriteDirectory.Commit(overwrite, marker);
 			ManagedOverwriteDirectory.DiscardBackup(backup);
 			return new OverwriteMaterializationResult(true, written, warnings, null);

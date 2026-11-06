@@ -67,7 +67,7 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		AddPatch(mod, 0);
 		AddPatch(mod, 1);
 
-		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None);
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default);
 
 		Assert.True(result.Succeeded, result.Error);
 		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
@@ -84,7 +84,7 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		AddPatch(mod, 1, "material-one");
 		AddPatch(mod, 2, "material-two");
 
-		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_2"));
+		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_2"]));
 
 		Assert.True(result.Succeeded, result.Error);
 		Assert.Equal("material-two", File.ReadAllText(Path.Combine(Overwrite(mod), $"{Archive}.patch_2")));
@@ -99,9 +99,9 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		AddPatch(mod, 0);
 		AddPatch(mod, 1, "one");
 		AddPatch(mod, 2, "two");
-		OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_1"));
+		OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_1"]));
 
-		OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_2"));
+		OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_2"]));
 
 		Assert.False(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
 		Assert.Equal("two", File.ReadAllText(Path.Combine(Overwrite(mod), $"{Archive}.patch_2")));
@@ -114,8 +114,8 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		AddPatch(mod, 0);
 		AddPatch(mod, 1);
 
-		var first = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_1"));
-		var second = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_1"));
+		var first = OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_1"]));
+		var second = OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_1"]));
 
 		Assert.True(first.Succeeded && second.Succeeded);
 		Assert.Equal(first.WrittenFiles.OrderBy(x => x), second.WrittenFiles.OrderBy(x => x));
@@ -132,7 +132,7 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		Directory.CreateDirectory(Path.GetDirectoryName(rekeyed)!);
 		File.WriteAllText(rekeyed, "rekeyed-unit");
 
-		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None, rekeyed);
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default, rekeyed);
 
 		Assert.True(result.Succeeded, result.Error);
 		Assert.Equal("rekeyed-unit", File.ReadAllText(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
@@ -149,7 +149,7 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		AddPatch(mod, 1, "base-material");
 		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
 
-		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None);
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default);
 
 		Assert.True(result.Succeeded, result.Error);
 		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
@@ -157,34 +157,42 @@ public sealed class OverwriteMaterializerTests : IDisposable
 	}
 
 	[Fact]
-	public void Materialize_VariantWithoutOwnMaterial_StillWorks()
+	public void Materialize_EnablingSeveralMaterialOptions_InstallsAllOfThem()
 	{
+		// 多个材质包同时启用是**正常用法**：它们之间材质 id 可能冲突、后加载的覆盖先加载的，
+		// 那是包作者之间的事。管理器只负责诚实部署用户勾了的那几个。
 		var mod = NewMod();
 		AddPatch(mod, 0);
-		AddPatch(mod, 1, "base-material");
-		AddPatch(mod, 2, "variant");
+		AddPatch(mod, 1, "built-in");
+		AddPatch(mod, 2, "extra-pack");
 		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
 
-		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_2"));
+		var result = OverwriteMaterializer.Materialize(mod,
+			new OverwriteSelection([$"{Archive}.patch_1", $"{Archive}.patch_2"]));
 
 		Assert.True(result.Succeeded, result.Error);
-		// 基底材质 + 选中的变体都在；另一份变体（这里没有）不在。
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
 		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
 		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_2")));
+		Assert.Empty(result.Warnings);
 	}
 
 	[Fact]
-	public void Materialize_SelectingABaseMaterial_WarnsInsteadOfInstallingTwice()
+	public void Materialize_ExplicitSelectionIsExact_NoHiddenDefaults()
 	{
+		// 用户明确只勾了 patch_2，就只部署 patch_2——不替他补上内置材质。
+		// 他要两个都在就勾两个（见上一条用例）。
 		var mod = NewMod();
 		AddPatch(mod, 0);
-		AddPatch(mod, 1, "base-material");
+		AddPatch(mod, 1, "built-in");
+		AddPatch(mod, 2, "only-this");
 		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
 
-		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_1"));
+		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_2"]));
 
 		Assert.True(result.Succeeded, result.Error);
-		Assert.Contains(result.Warnings, warning => warning.Contains("基底材质", StringComparison.Ordinal));
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_2")));
+		Assert.False(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
 	}
 
 	[Fact]
@@ -194,7 +202,7 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		AddPatch(mod, 0);
 		AddPatch(mod, 1, "would-be-material");
 
-		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None);
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default);
 
 		Assert.True(result.Succeeded, result.Error);
 		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_0")));
@@ -208,25 +216,28 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		var mod = Path.Combine(_root, "bare");
 		Directory.CreateDirectory(mod);
 
-		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None);
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default);
 
 		Assert.False(result.Succeeded);
 		Assert.Contains("基底目录", result.Error);
 	}
 
 	[Fact]
-	public void Materialize_WithMissingSelection_FailsAndLeavesPreviousOverwriteIntact()
+	public void Materialize_WithOneMissingSelection_SkipsItAndKeepsTheRest()
 	{
+		// 一个材质文件没了，不该让另外几个也白勾——跳过它、点名、照常物化。
+		// 否掉整次只会让用户卡住：他面前什么都没有，还被告知"去解决"。
 		var mod = NewMod();
 		AddPatch(mod, 0);
 		AddPatch(mod, 1, "one");
-		OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_1"));
 
-		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_9"));
+		var result = OverwriteMaterializer.Materialize(mod,
+			new OverwriteSelection([$"{Archive}.patch_1", $"{Archive}.patch_9"]));
 
-		Assert.False(result.Succeeded);
-		// 失败不该把用户当前看到的外观抹掉。
+		Assert.True(result.Succeeded, result.Error);
+		Assert.Contains(result.Warnings, warning => warning.Contains($"{Archive}.patch_9", StringComparison.Ordinal));
 		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
+		Assert.False(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_9")));
 	}
 
 	[Fact]
@@ -238,21 +249,24 @@ public sealed class OverwriteMaterializerTests : IDisposable
 		Directory.CreateDirectory(overwrite);
 		File.WriteAllText(Path.Combine(overwrite, "user-file.txt"), "hand made");
 
-		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.None);
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default);
 
 		Assert.False(result.Succeeded);
 		Assert.True(File.Exists(Path.Combine(overwrite, "user-file.txt")));
 	}
 
 	[Fact]
-	public void Materialize_WhenSelectionIsTheUnitLayer_TreatsItAsNoSelection()
+	public void Materialize_WhenSelectionIsTheUnitLayer_IgnoresIt()
 	{
+		// unit 层本来就在生效层里；把它当材质勾选没有意义，但也不是错误——
+		// 跳过就好，不必弹一条用户看不懂的警告。
 		var mod = NewMod();
 		AddPatch(mod, 0);
 
-		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection($"{Archive}.patch_0"));
+		var result = OverwriteMaterializer.Materialize(mod, new OverwriteSelection([$"{Archive}.patch_0"]));
 
 		Assert.True(result.Succeeded, result.Error);
-		Assert.Single(result.Warnings);
+		Assert.Empty(result.Warnings);
+		Assert.Single(Directory.EnumerateFiles(Overwrite(mod), $"*{Archive}.patch_0"));
 	}
 }

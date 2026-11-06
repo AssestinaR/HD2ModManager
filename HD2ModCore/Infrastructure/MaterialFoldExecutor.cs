@@ -42,7 +42,8 @@ public static class MaterialFoldExecutor
 
 		if (plan.Blockers.Count != 0)
 			return MaterialFoldExecutionResult.Failure(
-				"折并计划有阻断项，未执行：" + string.Join("；", plan.Blockers.Select(blocker => blocker.Message)));
+				"折并计划有阻断项，未执行：" + string.Join("；", plan.Blockers.Select(blocker => blocker.Message))
+				+ "（修好后重新生成计划即可。）");
 		if (plan.Entries.Count == 0)
 			return MaterialFoldExecutionResult.Failure("折并计划里没有可搬的成员。");
 
@@ -59,10 +60,12 @@ public static class MaterialFoldExecutor
 			.ToArray();
 		if (collisions.Length != 0)
 			return MaterialFoldExecutionResult.Failure(
-				"宿主的基底目录里已经有同名 patch，未执行：" + string.Join("、", collisions));
+				"宿主的基底目录里已经有同名 patch，未执行：" + string.Join("、", collisions)
+				+ "（计划可能已过期，重新生成一次即可。）");
 
 		var moves = new List<MaterialFoldMove>();
-		var warnings = new List<string>();
+		// 计划里被跳过的成员照样说出来，但不影响其余成员折并。
+		var warnings = new List<string>(plan.Skipped);
 		foreach (var entry in plan.Entries.OrderBy(item => item.TargetPatchIndex))
 		{
 			try
@@ -81,7 +84,7 @@ public static class MaterialFoldExecutor
 			}
 		}
 
-		RefreshManifest(hostPayload, warnings);
+		RefreshManifest(hostPayload, hostModDirectory, plan, warnings);
 		return new MaterialFoldExecutionResult(true, moves, warnings, null);
 	}
 
@@ -122,15 +125,39 @@ public static class MaterialFoldExecutor
 		}
 	}
 
-	private static void RefreshManifest(string hostPayload, List<string> warnings)
+	/// <summary>
+	/// 重写 <c>patches.json</c>：每个材质 patch 都要有一个**选项名**，它才是用户在界面上看到的那一行。
+	/// <para>
+	/// 折并进来的材质包用成员自己的名字。宿主自己那次转换产出的材质 patch 也是选项之一，
+	/// 名字固定为「模型内置材质」——它和别的材质包是同一类东西（一个 patch、可勾选），
+	/// 不该被当成"永远生效的基底"而特殊对待。
+	/// </para>
+	/// </summary>
+	private static void RefreshManifest(
+		string hostPayload,
+		string hostModDirectory,
+		MaterialFoldPlan plan,
+		List<string> warnings)
 	{
-		var hostRoot = Directory.GetParent(hostPayload)?.FullName;
-		var report = string.IsNullOrWhiteSpace(hostRoot) ? null : VpkConversionReport.TryRead(hostRoot);
+		var report = VpkConversionReport.TryRead(hostModDirectory);
+		var optionNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		if (report is not null)
+		{
+			foreach (var patch in report.Patches)
+			{
+				if (string.IsNullOrWhiteSpace(patch.MaterialPatch)) continue;
+				optionNames[patch.MaterialPatch] = SectionalPatchManifest.BuiltInMaterialOptionName;
+			}
+		}
+		foreach (var entry in plan.Entries)
+			optionNames[entry.TargetPatchFileName] = entry.ModName;
+
 		var document = SectionalPatchManifestFile.Build(
 			hostPayload,
 			SectionalPatchManifestFile.ReadArchiveHex16(hostPayload),
 			report,
-			DateTimeOffset.UtcNow);
+			DateTimeOffset.UtcNow,
+			optionNames);
 		var error = SectionalPatchManifestFile.TryWrite(hostPayload, document);
 		if (error is not null)
 			warnings.Add($"折并完成，但 patches.json 写不进去：{error}");

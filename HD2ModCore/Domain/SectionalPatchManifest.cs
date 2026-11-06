@@ -19,6 +19,15 @@ public static class SectionalPatchManifest
 
 	public const string CurrentSchema = "hd2mod.patch-groups/1";
 
+	/// <summary>
+	/// 宿主自己那次转换产出的材质 patch 在选项表里的名字。
+	/// <para>
+	/// 它和折并进来的材质包是**同一类东西**——都是一个 patch、都能勾选。
+	/// 单独给它一个名字，是为了让用户在选项表里一眼认出"这是模型自带的，不是后来加的包"。
+	/// </para>
+	/// </summary>
+	public const string BuiltInMaterialOptionName = "模型内置材质";
+
 	/// <summary>能读的 schema；将来加字段时把新值加进来，旧值继续能读。</summary>
 	public static IReadOnlyList<string> ReadableSchemas { get; } = [CurrentSchema];
 }
@@ -40,7 +49,14 @@ public enum SectionalPatchRole
 /// <param name="ArchiveHex16">同名 patch 的目标归档。</param>
 /// <param name="Role">unit 还是材质。</param>
 /// <param name="SourceVpkName">这个 patch 由哪个来源 VPK 转出来；认不出来时为 <c>null</c>。</param>
-/// <param name="Variant">材质变体名（P3 起使用）；未命名时为 <c>null</c>。</param>
+/// <param name="OptionName">
+/// 材质**选项**的显示名；unit patch 为 <c>null</c>。
+/// <para>
+/// 每个材质选项恰好对应一个 patch。宿主自己那次转换产出的材质 patch 也是选项之一，
+/// 名字固定为 <see cref="BuiltInMaterialOptionName"/>（"模型内置材质"）——它和别的选项
+/// 一样可以被勾选/取消，不该被当成"永远生效的基底"而特殊对待。
+/// </para>
+/// </param>
 /// <param name="UnitCount">里面有多少个 unit；未知时为 <c>null</c>。</param>
 /// <param name="MaterialCount">里面有多少个材质；未知时为 <c>null</c>。</param>
 /// <param name="TextureCount">里面有多少张贴图；未知时为 <c>null</c>。</param>
@@ -49,7 +65,7 @@ public sealed record SectionalPatchGroupEntry(
 	string ArchiveHex16,
 	SectionalPatchRole Role,
 	string? SourceVpkName = null,
-	string? Variant = null,
+	string? OptionName = null,
 	int? UnitCount = null,
 	int? MaterialCount = null,
 	int? TextureCount = null);

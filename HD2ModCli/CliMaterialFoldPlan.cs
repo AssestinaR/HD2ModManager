@@ -19,10 +19,9 @@ internal sealed record CliMaterialFoldHostProjection(
 	string PayloadDirectory,
 	string ArchiveHex16,
 	IReadOnlyList<string> ExistingPatchFileNames,
-	string? SelectedTargetPatchFileName,
 	IReadOnlyList<CliMaterialFoldEntryProjection> Entries,
 	IReadOnlyList<string> Blockers,
-	IReadOnlyList<string> Warnings);
+	IReadOnlyList<string> Skipped);
 
 internal sealed record CliMaterialFoldPlanProjection(
 	IReadOnlyList<CliMaterialFoldHostProjection> Hosts)
@@ -98,14 +97,13 @@ internal static class CliMaterialFoldPlan
 				hostPayload,
 				plan.ArchiveHex16,
 				ReadPatchFileNames(hostPayload),
-				plan.SelectedTargetPatchFileName,
 				plan.Entries
 					.Select(entry => new CliMaterialFoldEntryProjection(
 						entry.NodeId, entry.ModName, entry.SourcePatchPath,
 						entry.TargetPatchFileName, entry.TargetPatchIndex, entry.Enabled, entry.Order))
 					.ToArray(),
 				plan.Blockers.Select(blocker => blocker.Message).ToArray(),
-				DescribeEnabledOverlap(plan, members)));
+				plan.Skipped));
 		}
 
 		return new CliMaterialFoldPlanProjection(hosts);
@@ -130,36 +128,12 @@ internal static class CliMaterialFoldPlan
 			}
 			foreach (var blocker in host.Blockers)
 				lines.Add($"    !! {blocker}");
-			foreach (var warning in host.Warnings)
-				lines.Add($"    ** {warning}");
-			if (host.SelectedTargetPatchFileName is not null)
-				lines.Add($"  折并后应选中：{host.SelectedTargetPatchFileName}");
+			foreach (var skip in host.Skipped)
+				lines.Add($"    .. 跳过 {skip}");
 		}
 		if (projection.HostCount == 0)
 			lines.Add("没有可折并的宿主（库里没有带基底目录且含材质 Option 的 Mod）。");
 		return string.Join(Environment.NewLine, lines);
-	}
-
-	/// <summary>
-	/// "同时启用了多个材质"这件事必须说出来：部署按顺序叠 patch、后者覆盖前者，
-	/// 所以用户今天看到的是**顺序最靠后**的那一个；折并之后只留那一份，其余的变成可选。
-	/// 不说清楚的话，用户会以为折并"删掉了"他的材质。
-	/// </summary>
-	private static IReadOnlyList<string> DescribeEnabledOverlap(
-		MaterialFoldPlan plan,
-		IReadOnlyList<MaterialFoldMember> members)
-	{
-		var enabled = plan.EnabledTargetPatchFileNames;
-		if (enabled.Count <= 1) return Array.Empty<string>();
-		var selected = plan.SelectedTargetPatchFileName;
-		var selectedName = plan.Entries
-			.FirstOrDefault(entry => string.Equals(entry.TargetPatchFileName, selected, StringComparison.Ordinal))
-			?.ModName ?? selected ?? string.Empty;
-		return
-		[
-			$"折并前同时启用了 {enabled.Count} 个材质（部署时后者覆盖前者）；"
-			+ $"折并后保留「{selectedName}」（{selected}），其余 {enabled.Count - 1} 个留在基底目录里、可随时切换。",
-		];
 	}
 
 	private static IReadOnlyList<string> ReadPatchFileNames(string payloadDirectory)

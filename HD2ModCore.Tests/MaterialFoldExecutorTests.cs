@@ -134,18 +134,39 @@ public sealed class MaterialFoldExecutorTests : IDisposable
 	}
 
 	[Fact]
-	public void Execute_RefusesAPlanWithBlockers()
+	public void Execute_RefusesAHostWithoutUnitPatch()
 	{
-		var host = NewMod("host", $"{Archive}.patch_0");
-		var emptyPayload = Path.Combine(_root, "empty", ModNodePayloadLayout.VpkPatchDirectoryName);
-		Directory.CreateDirectory(emptyPayload);
+		// 只有"宿主自己没有 unit patch"才是真正的阻断：那意味着没有可挂靠的基底。
+		var host = NewMod("host");
+		Directory.CreateDirectory(Payload(host));
+		var member = NewMod("m1", $"{Archive}.patch_0");
 		var plan = MaterialOptionFoldPlanner.Plan(Payload(host),
-			[new MaterialFoldMember("n1", "空包", emptyPayload, false, 0)]);
+			[new MaterialFoldMember("n1", "m1", Payload(member), true, 0)]);
 
 		var result = MaterialFoldExecutor.Execute(plan, host);
 
 		Assert.False(result.Succeeded);
 		Assert.Contains("阻断", result.Error);
+	}
+
+	[Fact]
+	public void Execute_SkipsABadMemberButStillFoldsTheRest()
+	{
+		var host = NewMod("host", $"{Archive}.patch_0");
+		var good = NewMod("good", $"{Archive}.patch_0");
+		var emptyPayload = Path.Combine(_root, "empty", ModNodePayloadLayout.VpkPatchDirectoryName);
+		Directory.CreateDirectory(emptyPayload);
+		var plan = MaterialOptionFoldPlanner.Plan(Payload(host),
+		[
+			new MaterialFoldMember("n1", "空包", emptyPayload, false, 0),
+			new MaterialFoldMember("n2", "good", Payload(good), true, 1),
+		]);
+
+		var result = MaterialFoldExecutor.Execute(plan, host);
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.True(File.Exists(Path.Combine(Payload(host), $"{Archive}.patch_1")));
+		Assert.Contains(result.Warnings, warning => warning.Contains("空包", StringComparison.Ordinal));
 	}
 
 	[Fact]
@@ -160,7 +181,7 @@ public sealed class MaterialFoldExecutorTests : IDisposable
 		[
 			new MaterialFoldEntry("n1", "m1", Path.Combine(Payload(member), $"{Archive}.patch_0"),
 				member, $"{Archive}.patch_1", 1, true, 0),
-		], Array.Empty<MaterialFoldBlocker>());
+		], Array.Empty<MaterialFoldBlocker>(), Array.Empty<string>());
 
 		var result = MaterialFoldExecutor.Execute(plan, host);
 

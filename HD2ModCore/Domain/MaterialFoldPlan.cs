@@ -55,29 +55,28 @@ public sealed record MaterialFoldPlan(
 	string HostPayloadDirectory,
 	string ArchiveHex16,
 	IReadOnlyList<MaterialFoldEntry> Entries,
-	IReadOnlyList<MaterialFoldBlocker> Blockers)
+	IReadOnlyList<MaterialFoldBlocker> Blockers,
+	IReadOnlyList<string> Skipped)
 {
-	/// <summary>没有阻断项且有可搬成员时才允许执行。</summary>
+	/// <summary>
+	/// 没有宿主级阻断项、且有可搬成员时就执行。
+	/// <para>
+	/// <b>个别成员有问题不该否掉整个宿主。</b>那只会让用户"因为一个包奇怪就一个都折不了"，
+	/// 然后不得不找人。跳过它、在 <see cref="Skipped"/> 里点名，其余的照常折。
+	/// </para>
+	/// </summary>
 	public bool CanApply => Blockers.Count == 0 && Entries.Count != 0;
 
-	/// <summary>折并之前处于启用状态的那些成员（可能不止一个）。</summary>
+	/// <summary>
+	/// 折并之前处于启用状态的那些成员——它们折并之后**照样启用**。
+	/// <para>
+	/// <b>这里不做"只留一个"的判断。</b>多个材质包同时启用、材质 id 互相冲突、
+	/// 后加载的覆盖先加载的——那是包作者之间的事，也是这套系统**今天就在用**的方式。
+	/// 换成同一个 mod 里的多个 patch 不会改变这件事，管理器没有理由替用户做减法。
+	/// </para>
+	/// </summary>
 	public IReadOnlyList<string> EnabledTargetPatchFileNames
 		=> Entries.Where(entry => entry.Enabled)
 			.Select(entry => entry.TargetPatchFileName)
 			.ToArray();
-
-	/// <summary>
-	/// 折并之后应当被选中的那一份；没有任何启用项时为 <c>null</c>。
-	/// <para>
-	/// <b>取"最后一个启用的"，不是"第一个"。</b>部署按顺序叠 patch，同一份资产后者覆盖前者，
-	/// 所以用户今天实际看到的外观 = **顺序最靠后的那个启用项**。取第一个会让折并之后
-	/// 外观悄悄变成另一个颜色——那是最难解释的那类"我没动它就变了"。
-	/// </para>
-	/// </summary>
-	public string? SelectedTargetPatchFileName
-		=> Entries.Where(entry => entry.Enabled)
-			.OrderByDescending(entry => entry.Order)
-			.ThenBy(entry => entry.ModName, StringComparer.OrdinalIgnoreCase)
-			.Select(entry => entry.TargetPatchFileName)
-			.FirstOrDefault();
 }

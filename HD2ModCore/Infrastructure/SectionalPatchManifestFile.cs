@@ -69,7 +69,8 @@ public static class SectionalPatchManifestFile
 		string payloadDirectory,
 		string archiveHex16,
 		VpkConversionReport? report,
-		DateTimeOffset generatedUtc)
+		DateTimeOffset generatedUtc,
+		IReadOnlyDictionary<string, string>? optionNameByPatchFileName = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(payloadDirectory);
 		var entries = new List<SectionalPatchGroupEntry>();
@@ -97,7 +98,7 @@ public static class SectionalPatchManifestFile
 				archiveHex16,
 				role,
 				matched?.Name,
-				Variant: null,
+				OptionName: optionNameByPatchFileName?.GetValueOrDefault(name),
 				UnitCount: matched?.UnitCount,
 				MaterialCount: matched?.MaterialCount,
 				TextureCount: matched?.TextureCount));
