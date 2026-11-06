@@ -918,6 +918,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private async Task<bool> TryBakeInPlaceAsync(string modDirectory)
 	{
 		var overwrite = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
+		// 只改管理器自己生成的 Overwrite。没有归属标记的目录可能是用户手工放的，
+		// 就地改它的字节是**不可逆**的（numIndices 被清零后无法还原），所以宁可退回"重跑换甲"。
+		if (!Directory.Exists(overwrite) || !ManagedOverwriteDirectory.IsManaged(overwrite))
+			return false;
 		var mapPath = Path.Combine(overwrite, WardrobeSectionMapFile.FileName);
 		if (!File.Exists(mapPath))
 			return false;

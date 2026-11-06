@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModCore.Decoration;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
@@ -172,6 +173,7 @@ internal static class CliVpkRekey
 			throw new CliUserException("TargetArmorNotFound", $"找不到任何目标：{string.Join("、", targets)}。");
 
 		var destinationDirectory = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
+		EnsureOverwriteIsWritable(destinationDirectory);
 
 		// 目标就是这个 Mod **自己**的素体：换甲等于"什么也不用换"。
 		//
@@ -190,7 +192,8 @@ internal static class CliVpkRekey
 			// 没有独立的头盔 item 可以隐藏。**必须说出来**，否则用户在界面翻了开关、
 			// 看到"已开启"，进游戏什么变化都没有。
 			var closedCount = disabledSections?.Values.Sum(sections => sections.Count) ?? 0;
-			return new VpkRekeyResult(
+			MarkOverwriteManaged(destinationDirectory);
+		return new VpkRekeyResult(
 				node.Id.Value.ToString("N"),
 				modDirectory,
 				sourcePatch,
@@ -322,6 +325,7 @@ internal static class CliVpkRekey
 			catch (UnauthorizedAccessException) { }
 		}
 
+		MarkOverwriteManaged(destinationDirectory);
 		return new VpkRekeyResult(
 			node.Id.Value.ToString("N"),
 			modDirectory,
@@ -903,6 +907,32 @@ internal static class CliVpkRekey
 		{
 			return false;
 		}
+	}
+
+	/// <summary>
+	/// 写之前确认这个 Overwrite 目录可以被接管。
+	/// <para>
+	/// 判定只有一条：**不是管理器生成的、且里面已经有东西 ⇒ 拒绝**。空目录可以接管
+	/// （那是上次派生中断留下的壳）；有归属标记的可以覆盖。放宽这一条，
+	/// 用户手工放进 Overwrite 的补丁就会在某次换甲里被静默删掉，而这种删除没有日志能补救。
+	/// </para>
+	/// </summary>
+	private static void EnsureOverwriteIsWritable(string destinationDirectory)
+	{
+		if (!Directory.Exists(destinationDirectory)) return;
+		if (ManagedOverwriteDirectory.IsManaged(destinationDirectory)) return;
+		if (!Directory.EnumerateFileSystemEntries(destinationDirectory).Any()) return;
+		throw new CliUserException(
+			"OverwriteNotManaged",
+			$"这个 Mod 的 Overwrite 目录不是管理器生成的，已拒绝写入：{destinationDirectory}。"
+			+ "如果里面有你手工放进去的文件，请先把它移走再重试。");
+	}
+
+	/// <summary>换甲成功：盖上归属标记。之后其它派生来源（头盔合并等）才认得出这个目录。</summary>
+	private static void MarkOverwriteManaged(string destinationDirectory)
+	{
+		if (!Directory.Exists(destinationDirectory)) return;
+		ManagedOverwriteDirectory.Commit(destinationDirectory, ManagedOverwriteMarkers.VpkRekey);
 	}
 
 	private static void DeleteQuietly(string path)
