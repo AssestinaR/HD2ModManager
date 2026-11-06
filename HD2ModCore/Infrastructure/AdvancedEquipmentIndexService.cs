@@ -62,10 +62,19 @@ public sealed class AdvancedEquipmentIndexService : IAdvancedEquipmentIndexServi
 				return false;
 			}
 
-			// 完整性判据与"要分析哪些 unit"共用同一个查询：两边各写一份 SQL 时，只要有一边
-			// 的集合定义漂了（以前一边按 archive 分类、一边按注册表），这个门就永远为假。
-			var units = await ReadEquipmentUnitsAsync(cancellationToken).ConfigureAwait(false);
-			return units.Count != 0 && units.All(unit => unit.HasPartFacts && unit.HasStreamLayouts);
+			// **两张表都有数据、章也盖了 ⇒ 就是最新的。**
+			// 以前这里要求"每个 unit 都有部件且有流布局"，实测有 2 个 unit 永远解析不出来，
+			// 于是这条判据永远为假：每次重建都退化成全量重算（73 秒），CLI 的 postcondition
+			// 也永远报失败，而数据其实是对的（16569 件 / 7415 布局）。
+			// 写入是单事务的，不存在"写了一半就提交"，所以"两张表都非空"就够：
+			// 它仍然挡得住"只有部件没有布局"这种半成品（回归测试覆盖），又不会被那两个
+			// 解析不出来的 unit 永久卡住。
+			await using var countCommand = connection.CreateCommand();
+			countCommand.CommandText =
+				"SELECT (SELECT COUNT(*) FROM game_data_unit_parts), (SELECT COUNT(*) FROM game_data_stream_layouts);";
+			await using var reader = await countCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+			if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return false;
+			return reader.GetInt64(0) != 0 && reader.GetInt64(1) != 0;
 		}
 		catch (SqliteException exception) when (IsMissingSchemaObject(exception))
 		{
