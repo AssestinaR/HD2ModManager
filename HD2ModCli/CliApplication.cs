@@ -128,6 +128,19 @@ public static class CliApplication
 		// repair library-snapshot —— 库快照坏了时的重建路径。
 		//
 		// 它刻意**不经过 LoadLibraryAsync**：库坏了才需要它，那条路会先抛异常。
+		// repair index —— 把 plan → validate → apply 三步收成一条。
+		if (Matches(command, "repair", "index"))
+		{
+			EnsureRepairOptions(invocation.Options, "repair index");
+			var repairIndexWorkspace = CliWorkspace.Open(invocation.Options);
+			var repaired = await CliRepairIndex.RunAsync(repairIndexWorkspace).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = repaired.Ok, repair = repaired },
+				() => repaired.Ok
+					? $"索引已重建：基础索引当前={repaired.BaseIndexCurrent}；Unit 部位事实当前={repaired.AdvancedEquipmentFactsCurrent}。"
+					: $"索引重建未完成：{string.Join("；", repaired.Diagnostics)}");
+			return repaired.Ok ? 0 : 2;
+		}
 		if (Matches(command, "repair", "library-snapshot"))
 		{
 			EnsureRepairOptions(invocation.Options, "repair library-snapshot");
@@ -8042,6 +8055,7 @@ HD2 Mod Manager 命令行
 	  hd2mod armor-registry restore --manager-root <管理器目录> --confirm --json
 	  hd2mod settings get [<键>] --manager-root <管理器目录> --json
 	  hd2mod settings set <键> <值> --manager-root <管理器目录> --confirm --json
+	  hd2mod repair index --manager-root <管理器目录> --game-data <游戏 data 目录> --confirm --json
 	  hd2mod repair library-snapshot --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod custom-model rename <Mod GUID或前缀> <名字> --manager-root <管理器目录> --json
 	  hd2mod mod clone <Mod GUID或前缀> <变体名> --manager-root <管理器目录> --confirm --json
