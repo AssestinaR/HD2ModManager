@@ -52,6 +52,46 @@ public sealed class GameDataHashLookupReaderTests
 		Assert.Throws<InvalidDataException>(() => GameDataHashLookupReader.ReadArchiveByPath(payload[..^4]));
 	}
 
+	// 这一条盯的是"异常不再被当成控制流"。
+	//
+	// 载荷带 3792 字节头部时，读取器要逐个偏移试到第 3793 个起点才成功；
+	// 以前每次失败都 throw 一次，于是**一次刷新就抛几千个异常**——
+	// 调试器会把每一个都打印出来，界面直接卡死（真机症状）。
+	// 现在整条路径一个异常都没有：失败只是 false。
+	[Fact]
+	public void TryReadArchiveByPath_FindsThePayloadBehindAHeader_WithoutThrowing()
+	{
+		var payload = BuildPayload([(0x1111111111111111UL, 0x2222222222222222UL)]);
+		var header = new byte[3792];
+		for (var index = 0; index < header.Length; index++) header[index] = (byte)(index * 31 + 7);
+		var withHeader = header.Concat(payload).ToArray();
+
+		Assert.True(GameDataHashLookupReader.TryReadArchiveByPath(withHeader, out var map, out var error));
+		Assert.Null(error);
+		Assert.Equal(0x2222222222222222UL, map[0x1111111111111111UL]);
+	}
+
+	[Fact]
+	public void TryReadArchiveByPath_ReportsWhyItFailed()
+	{
+		var payload = BuildPayload([(0x1111111111111111UL, 0x2222222222222222UL)]);
+
+		Assert.False(GameDataHashLookupReader.TryReadArchiveByPath(payload[..^4], out var map, out var error));
+		Assert.Empty(map);
+		Assert.False(string.IsNullOrWhiteSpace(error));
+	}
+
+	[Fact]
+	public void TryReadArchiveByPath_OnGarbage_ReportsTheSafetyLimitItHit()
+	{
+		// 全是 0xFF 的载荷：第一个 "count" 就是个天文数字。这条同时证明
+		// 失败原因带的是**第一个起点**的，是最有信息量的那一个。
+		var garbage = Enumerable.Repeat((byte)0xFF, 4096).ToArray();
+
+		Assert.False(GameDataHashLookupReader.TryReadArchiveByPath(garbage, out _, out var error));
+		Assert.Contains("exceeds the safety limit", error, StringComparison.Ordinal);
+	}
+
 	private static byte[] BuildPayload(IReadOnlyList<(ulong Path, ulong Archive)> entries)
 	{
 		using var stream = new MemoryStream();

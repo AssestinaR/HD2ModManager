@@ -559,20 +559,20 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 				}
 				else
 				{
-					try
+					// 读不出来只是"武器和载具定制名称暂不写入"，用返回值表达就够了。
+					// 这里以前包着 try/catch，而读取器内部靠抛异常试探载荷起点，
+					// 于是一次刷新就会抛几千个异常——调试器下每个都会打印，界面直接卡死。
+					if (GameDataHashLookupReader.TryReadArchiveByPath(hashLookupPayload, out var resolved, out var hashLookupError))
 					{
-						archiveByPath = GameDataHashLookupReader.ReadArchiveByPath(hashLookupPayload);
+						archiveByPath = resolved;
 					}
-					catch (Exception exception) when (exception is InvalidDataException
-						or OverflowException
-						or ArgumentOutOfRangeException)
+					else
 					{
 						issues.Add(new CoreIssue(
 							CoreIssueSeverity.Warning,
 							"GameDataAuthorityHashLookupInvalid",
-							$"无法验证 hash_lookup Archive 映射：{exception.Message}",
-							StringsArchiveName,
-							ExceptionMessage: exception.ToString()));
+							$"无法验证 hash_lookup Archive 映射：{hashLookupError}",
+							StringsArchiveName));
 					}
 				}
 			}
