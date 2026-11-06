@@ -37,6 +37,8 @@ public enum PageActionKind
     Merge,
     CustomModel,
     PatchRebuild,
+    /// <summary>把 sectional / vpk2patch 类 Mod 复制成独立命名空间的变体。</summary>
+    CloneVariant,
     // 模组库的「一键重构所有 VPK 模组」。与详情页的 PatchRebuild 是两种粒度
     // （一个是这一个 Mod，一个是全库），所以不复用同一个值。
     RebuildAllVpk,
@@ -86,6 +88,7 @@ internal static class PageActionIconCatalog
         PageActionKind.Merge => "ActionIcon.Merge",
         PageActionKind.CustomModel => "ActionIcon.CustomModel",
         PageActionKind.PatchRebuild => "ActionIcon.Refresh",
+        PageActionKind.CloneVariant => "ActionIcon.Package",
         PageActionKind.RebuildAllVpk => "ActionIcon.Refresh",
         PageActionKind.RebuildVpk => "ActionIcon.Refresh",
         _ => "ActionIcon.Plus",
