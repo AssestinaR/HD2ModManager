@@ -125,6 +125,18 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateGameLocate(workspace, location), () => FormatGameLocate(workspace, location));
 			return 0;
 		}
+		// repair library-snapshot —— 库快照坏了时的重建路径。
+		//
+		// 它刻意**不经过 LoadLibraryAsync**：库坏了才需要它，那条路会先抛异常。
+		if (Matches(command, "repair", "library-snapshot"))
+		{
+			EnsureRepairOptions(invocation.Options, "repair library-snapshot");
+			var repairWorkspace = CliWorkspace.Open(invocation.Options);
+			var repair = await CliLibrarySnapshotRepair.RunAsync(repairWorkspace).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = repair.Ok, repair }, () =>
+				$"已从磁盘重建 library.json：{repair.NodeCount} 个 Mod。\n路径：{repair.LibraryPath}\n名字/备注/id 取自各 Mod 自己的 .hd2modmanager-mod.json；profiles.json 未被触碰。");
+			return 0;
+		}
 		if (Matches(command, "library", "cleanup"))
 		{
 			EnsureLibraryCleanupOptions(invocation.Options);
@@ -4452,6 +4464,25 @@ public static class CliApplication
 		return string.Join(Environment.NewLine, lines);
 	}
 
+	/// <summary>修复命令要求 --confirm：它写的是库快照本身。</summary>
+	private static void EnsureRepairOptions(CliGlobalOptions options, string commandName)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"RepairConfirmationRequired",
+				$"{commandName} 会重写库快照；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{commandName} 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
 	/// <summary>复制会新建一个 Mod 目录，所以要求 --confirm。</summary>
 	private static void EnsureModCloneOptions(CliGlobalOptions options)
 	{
@@ -7922,6 +7953,7 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod repair library-snapshot --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod custom-model rename <Mod GUID或前缀> <名字> --manager-root <管理器目录> --json
 	  hd2mod mod clone <Mod GUID或前缀> <变体名> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rebuild <Mod GUID或前缀> --manager-root <管理器目录> --confirm --json
