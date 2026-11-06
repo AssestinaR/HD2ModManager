@@ -280,8 +280,15 @@ ORDER BY c.archive_id, c.file_id;";
 		foreach (var part in parts) await InsertPartAsync(insert, part, cancellationToken).ConfigureAwait(false);
 		await using var layoutInsert = CreateLayoutCommand(connection, transaction);
 		foreach (var layout in layouts) await InsertLayoutAsync(layoutInsert, layout, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		// **一行都没写进去就不许盖"完成"章。**
+		// 实测 2026-11-06：权威源被换成真映射的产物后，逐 unit 解析全部失败、插入 0 行，
+		// 但这两行 meta 仍把版本与指纹写成"已完成"，于是 IsCurrentAsync 认为它是最新的，
+		// 坏状态（两张表 0 行）会永久留着，用户没有任何办法让它自愈。
+		if (parts.Count > 0 || layouts.Count > 0)
+		{
+			await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
+			await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		}
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}
 

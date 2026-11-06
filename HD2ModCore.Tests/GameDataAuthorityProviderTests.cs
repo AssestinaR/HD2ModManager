@@ -79,6 +79,168 @@ public sealed class GameDataAuthorityProviderTests
 		}
 	}
 
+	// 2026-11-06 实测回归：真映射会重写 live 的 .dl_bin，而它的件表只保留被映射的那几个
+	// 来源模型的 unit（不同 unit 2006 → 66、件 3527 → 2080）。读 live 当权威等于读我们自己的
+	// 输出，高级装备索引会一个 unit 都建不出来。权威源必须回到原件副本。
+	[Fact]
+	public async Task LoadAsync_PrefersOriginalCopyOverMappedLiveFile()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-authority-tests", Guid.NewGuid().ToString("N"));
+		var gameData = Path.Combine(root, "data");
+		var gameDirectory = Path.Combine(gameData, "game");
+		var registryRoot = Path.Combine(root, "registry");
+		var backupDirectory = Path.Combine(registryRoot, "backup");
+		Directory.CreateDirectory(gameDirectory);
+		Directory.CreateDirectory(backupDirectory);
+		try
+		{
+			await WriteEncryptedAsync(
+				Path.Combine(backupDirectory, ArmorRegistryDataMapper.BackupFileName),
+				BuildLibrary(
+					(itemId: 101u, archiveId: 0x1111111111111111UL, kitType: CustomizationKitType.Armor,
+						bodies:
+						[
+							(bodyType: 0u, slot: CustomizationKitSlot.Torso, unitId: 0xaaaaUL),
+							(bodyType: 1u, slot: CustomizationKitSlot.Torso, unitId: 0xbbbbUL),
+							(bodyType: 3u, slot: CustomizationKitSlot.LeftArm, unitId: 0xccccUL),
+						])));
+			// live：模拟"真映射已应用"——只剩一个件、套件也换了。
+			await WriteEncryptedAsync(
+				Path.Combine(gameDirectory, "generated_customization_armor_sets.dl_bin"),
+				BuildLibrary(
+					(itemId: 202u, archiveId: 0x2222222222222222UL, kitType: CustomizationKitType.Helmet,
+						bodies: [(bodyType: 3u, slot: CustomizationKitSlot.Helmet, unitId: 0xddddUL)])));
+
+			var snapshot = await new GameDataAuthorityProvider(registryRoot: registryRoot).LoadAsync(gameData);
+
+			var kit = Assert.Single(snapshot.Kits);
+			Assert.Equal("1111111111111111", kit.ArchiveId);
+			Assert.Equal(3, kit.Pieces.Count);
+			Assert.EndsWith(ArmorRegistryDataMapper.BackupFileName, snapshot.SourcePath!, StringComparison.Ordinal);
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task LoadAsync_NoOriginalCopy_AdoptsLiveFileAsOriginal()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-authority-tests", Guid.NewGuid().ToString("N"));
+		var gameData = Path.Combine(root, "data");
+		var gameDirectory = Path.Combine(gameData, "game");
+		var registryRoot = Path.Combine(root, "registry");
+		Directory.CreateDirectory(gameDirectory);
+		try
+		{
+			var liveBytes = BuildLibrary(
+				(itemId: 202u, archiveId: 0x2222222222222222UL, kitType: CustomizationKitType.Helmet,
+					bodies: [(bodyType: 3u, slot: CustomizationKitSlot.Helmet, unitId: 0xddddUL)]));
+			var livePath = Path.Combine(gameDirectory, "generated_customization_armor_sets.dl_bin");
+			await WriteEncryptedAsync(livePath, liveBytes);
+
+			var snapshot = await new GameDataAuthorityProvider(registryRoot: registryRoot).LoadAsync(gameData);
+
+			Assert.Equal("2222222222222222", Assert.Single(snapshot.Kits).ArchiveId);
+			var backupPath = Path.Combine(registryRoot, "backup", ArmorRegistryDataMapper.BackupFileName);
+			Assert.True(File.Exists(backupPath));
+			Assert.Equal(await File.ReadAllBytesAsync(livePath), await File.ReadAllBytesAsync(backupPath));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task LoadAsync_AfterGameUpdate_AdoptsLiveFileWhenItStillHasAllPieces()
+	{
+		var (root, gameData, registryRoot, backupPath) = await PrepareCopyAsync(pieceCount: 1);
+		try
+		{
+			// 游戏更新过：Steam 覆盖了 live，所以 live 是官方版本、件数不少于副本。
+			await WriteSteamManifestAsync(gameData, lastUpdatedUnix: 1_800_000_000);
+			var livePath = Path.Combine(gameData, "game", "generated_customization_armor_sets.dl_bin");
+			await WriteEncryptedAsync(livePath, BuildLibrary(
+				(itemId: 202u, archiveId: 0x2222222222222222UL, kitType: CustomizationKitType.Helmet,
+					bodies:
+					[
+						(bodyType: 3u, slot: CustomizationKitSlot.Helmet, unitId: 0xddddUL),
+						(bodyType: 0u, slot: CustomizationKitSlot.Torso, unitId: 0xeeeeUL),
+					])));
+
+			var snapshot = await new GameDataAuthorityProvider(registryRoot: registryRoot).LoadAsync(gameData);
+
+			Assert.Equal("2222222222222222", Assert.Single(snapshot.Kits).ArchiveId);
+			Assert.Equal(await File.ReadAllBytesAsync(livePath), await File.ReadAllBytesAsync(backupPath));
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	[Fact]
+	public async Task LoadAsync_AfterGameUpdate_KeepsCopyWhenLiveStillLooksMapped()
+	{
+		var (root, gameData, registryRoot, backupPath) = await PrepareCopyAsync(pieceCount: 3);
+		try
+		{
+			// 游戏更新过，但 live 的件数比副本少 ⇒ 它仍带着真映射的改动，绝不能覆盖副本。
+			await WriteSteamManifestAsync(gameData, lastUpdatedUnix: 1_800_000_000);
+			await WriteEncryptedAsync(Path.Combine(gameData, "game", "generated_customization_armor_sets.dl_bin"),
+				BuildLibrary(
+					(itemId: 202u, archiveId: 0x2222222222222222UL, kitType: CustomizationKitType.Helmet,
+						bodies: [(bodyType: 3u, slot: CustomizationKitSlot.Helmet, unitId: 0xddddUL)])));
+			var pristineCopy = await File.ReadAllBytesAsync(backupPath);
+
+			var snapshot = await new GameDataAuthorityProvider(registryRoot: registryRoot).LoadAsync(gameData);
+
+			Assert.Equal("1111111111111111", Assert.Single(snapshot.Kits).ArchiveId);
+			Assert.Equal(pristineCopy, await File.ReadAllBytesAsync(backupPath));
+			Assert.Contains(snapshot.Issues, issue => issue.Code == "ArmorOriginalCopyKeptAfterGameUpdate");
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	private static async Task<(string Root, string GameData, string RegistryRoot, string BackupPath)> PrepareCopyAsync(int pieceCount)
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-authority-tests", Guid.NewGuid().ToString("N"));
+		var gameData = Path.Combine(root, "data");
+		var registryRoot = Path.Combine(root, "registry");
+		var backupPath = Path.Combine(registryRoot, "backup", ArmorRegistryDataMapper.BackupFileName);
+		Directory.CreateDirectory(Path.Combine(gameData, "game"));
+		Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+		var bodies = new List<(uint bodyType, uint slot, ulong unitId)>();
+		for (var index = 0; index < pieceCount; index++)
+			bodies.Add(((uint)index, CustomizationKitSlot.Torso, 0xa000UL + (ulong)index));
+		await WriteEncryptedAsync(backupPath, BuildLibrary(
+			(itemId: 101u, archiveId: 0x1111111111111111UL, kitType: CustomizationKitType.Armor, bodies: [.. bodies])));
+		// 副本早于这次游戏更新。
+		File.SetLastWriteTimeUtc(backupPath, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+		return (root, gameData, registryRoot, backupPath);
+	}
+
+	private static async Task WriteSteamManifestAsync(string gameData, long lastUpdatedUnix)
+	{
+		var manifestPath = SteamAppManifest.ResolveManifestPath(gameData);
+		Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
+		await File.WriteAllTextAsync(manifestPath, "\"AppState\"\n{\n\t\"appid\"\t\t\"553850\"\n\t\"buildid\"\t\t\"18000000\"\n"
+			+ $"\t\"LastUpdated\"\t\t\"{lastUpdatedUnix}\"\n\t\"StateFlags\"\t\t\"4\"\n}}\n");
+	}
+
+	private static async Task WriteEncryptedAsync(string path, byte[] plaintext)
+	{
+#pragma warning disable CS0618
+		var encrypted = Decryptor.CreateWithEmbeddedKeys().EncodeData(plaintext);
+#pragma warning restore CS0618
+		await File.WriteAllBytesAsync(path, encrypted);
+	}
+
 	private static byte[] BuildLibrary(
 		params (uint itemId, ulong archiveId, uint kitType, (uint bodyType, uint slot, ulong unitId)[] bodies)[] kits)
 	{

@@ -61,16 +61,22 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		var gameRoot = Path.Combine(dataRoot, "game");
 		var plaintextPath = Path.Combine(gameRoot, GeneratedLibraryName);
 		var encryptedPath = Path.Combine(gameRoot, EncryptedLibraryName);
-		// **导入 = 读当前 dl_bin 并刷新原件副本。**
+		// **权威源 = 原件副本，不是当前文件。**
 		//
-		// 为什么读当前文件、而不是读原件：原件副本的**唯一用途**是给真映射编译当基底，
-		// 而它必须和这份数据库来自同一份文件——否则库里的 kit id 与编译基底里的对不上，
-		// 应用时会出现"几百条映射全部跳过"（实测 2026-11-05：本机备份 453 KB 是旧版本、
-		// 当前文件 287 KB，两边 kit id 不同）。
-		// 所以每次重建资产都把当前文件记成新原件：**数据库与编译基底永远同源**。
-		// 真映射写进去的改动只换 unit id，不换 kit/槽位，所以再导入一次也不会污染结构。
+		// 为什么不能读当前文件：真映射会重写它，而真映射的产物只保留"被映射的那几个来源模型"
+		// 的 unit。实测 2026-11-06：读当前文件时不同 unit 从 2006 个塌成 66 个、件从 3527
+		// 掉到 2080，于是高级装备索引（unit 部件 / 流布局）一个都建不出来——数据库描述的是
+		// 我们自己的输出，而不是游戏原版。
+		//
+		// 副本只在两种情况下刷新：
+		//   ① 还没有副本（第一次建库）；
+		//   ② 游戏更新过（Steam manifest 的 LastUpdated 晚于副本时间），且当前文件看起来没被
+		//      我们改过（件数不少于副本）。
+		// 其余情况一律读副本。判断依据全是外部事实（Steam 的 manifest、文件的件数），
+		// 不需要任何"我们写过它没有"的状态文件。
 		var entitiesPath = Path.Combine(gameRoot, GeneratedEntitiesName);
 		var issues = new List<CoreIssue>();
+		var authorityPath = await ResolveAuthoritySourceAsync(encryptedPath, dataRoot, issues, cancellationToken).ConfigureAwait(false);
 
 		GameItemAssetCatalog? catalog = null;
 		byte[]? authoritativeBytes = null;
@@ -81,9 +87,9 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		// Steam updates the latter, but knows nothing about our locally generated
 		// cache.  Decoding is inexpensive compared to scanning every GameData TOC,
 		// and also gives a rebuild one single authoritative update boundary.
-		if (File.Exists(encryptedPath))
+		if (File.Exists(authorityPath))
 		{
-			var encrypted = await TryReadEncryptedDataLibraryAsync(encryptedPath, cancellationToken).ConfigureAwait(false);
+			var encrypted = await TryReadEncryptedDataLibraryAsync(authorityPath, cancellationToken).ConfigureAwait(false);
 			if (encrypted.Error is null && encrypted.Bytes is not null)
 			{
 				try
@@ -93,11 +99,7 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 						throw new InvalidDataException("解密后的装备关系表不包含任何可用装备条目。");
 					authoritativeBytes = encrypted.Bytes;
 					sourceKind = GameDataAuthoritySourceKind.DecryptedDataLibrary;
-					sourcePath = encryptedPath;
-
-					// 把当前文件记成"原件"：真映射的编译基底就是它（见上面那段说明）。
-					if (!string.IsNullOrWhiteSpace(_registryRoot))
-						await TryRefreshOriginalCopyAsync(encryptedPath, issues, cancellationToken).ConfigureAwait(false);
+					sourcePath = authorityPath;
 
 					if (refreshPlaintextCache)
 					{
@@ -122,7 +124,7 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 						CoreIssueSeverity.Error,
 						"GameDataAuthorityDecryptedFormatInvalid",
 						$"解密后的装备关系表格式无效：{exception.Message}",
-						encryptedPath,
+						authorityPath,
 						ExceptionMessage: exception.ToString()));
 				}
 			}
@@ -131,8 +133,8 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 				issues.Add(new CoreIssue(
 					CoreIssueSeverity.Warning,
 					"GameDataAuthorityEncryptedRefreshFailed",
-					$"无法从当前 .dl_bin 重建装备关系明文缓存，将尝试使用现有明文：{encrypted.Error.Message}",
-					encryptedPath,
+					$"无法从权威 .dl_bin 重建装备关系明文缓存，将尝试使用现有明文：{encrypted.Error.Message}",
+					authorityPath,
 					ExceptionMessage: encrypted.Error.ToString()));
 			}
 		}
@@ -197,15 +199,20 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 				File.Exists(entitiesPath) ? entitiesPath : (File.Exists(plaintextPath) ? plaintextPath : encryptedPath)));
 		}
 
-		// 索引指纹**不再包含注册表文件**。管理器管理下的用户可能用任何办法改过它，
-		// 拿它做判据只会产生误报。注册表的正确性由"备份是唯一可信原件"保证，
-		// 而不是靠指纹去检测。游戏版本与其它文件的变化由 AssetArchiveIndexService 负责。
+		// 索引指纹**包含原件副本的身份**，但**不包含当前文件**。
+		//
+		// 区别在于：真映射每应用一次都会改写当前文件，拿它做判据会让索引每次都误报过期；
+		// 而原件副本只在"游戏更新过"时才换一份，所以它的 SHA256 既稳定（我们自己的写入
+		// 不会让它变），又能在游戏更新后失效——这正是索引该在什么时候重建。
+		// 上次这里传了空字节，等于把注册表整个排除在指纹之外，于是"权威源换了"也不会
+		// 让索引过期，数据库会带着旧内容继续自称 current（2026-11-06 实测踩到）。
 		return new GameDataAuthoritySnapshot(
 			sourceKind,
 			sourcePath,
 			ComputeFingerprint(
 				sourceKind,
-				Array.Empty<byte>(),
+				ArmorDataFileIdentity.IdentityBytes(
+					ArmorDataFileIdentity.GetUnmodifiedSealedSha(encryptedPath, _registryRoot)),
 				localized.SourceFingerprint,
 				supplemental.SourceFingerprint,
 				entities.SourceFingerprint),
@@ -242,24 +249,104 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 	}
 
 	/// <summary>
-	/// 把当前 dl_bin 记成「原件副本」——真映射的编译基底。
+	/// 决定这次拿哪一份文件当权威源，必要时把当前文件采纳为新的原件副本。
 	/// <para>
-	/// <b>为什么由"重建资产"来写。</b>这份副本的唯一用途是给编译当基底，而它必须和数据库
-	/// 来自同一份文件；由导入这一步刷新，两者就不可能不同源。
-	/// </para>
-	/// <para>
-	/// 写失败只记一条警告：导入本身已经成功，副本下次重建还会再试。
+	/// 判据全是外部事实，不维护任何"我们写过它没有"的状态：
+	/// <list type="bullet">
+	/// <item>没有副本 → 采纳当前文件（第一次建库）。</item>
+	/// <item>游戏更新过（Steam manifest 的 LastUpdated 晚于副本写入时间）→ 当前文件是 Steam
+	/// 覆盖过的官方版本，采纳它；但如果它的件数比副本还少，说明它仍带着真映射的改动，
+	/// <b>不采纳</b>，继续读副本并给出一条可执行的提示。</item>
+	/// <item>其余 → 读副本。</item>
+	/// </list>
 	/// </para>
 	/// </summary>
-	private async ValueTask TryRefreshOriginalCopyAsync(
-		string encryptedPath,
+	private async ValueTask<string> ResolveAuthoritySourceAsync(
+		string livePath,
+		string dataRoot,
+		List<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(_registryRoot)) return livePath;
+		var copyPath = ArmorDataFileIdentity.ResolveBackupPath(_registryRoot);
+		if (!File.Exists(copyPath))
+		{
+			await TryAdoptAsOriginalCopyAsync(livePath, copyPath, issues, cancellationToken).ConfigureAwait(false);
+			return File.Exists(copyPath) ? copyPath : livePath;
+		}
+
+		if (!GameUpdatedSince(copyPath, dataRoot)) return copyPath;
+
+		var livePieces = await TryCountPiecesAsync(livePath, cancellationToken).ConfigureAwait(false);
+		var copyPieces = await TryCountPiecesAsync(copyPath, cancellationToken).ConfigureAwait(false);
+		if (livePieces is not null && copyPieces is not null && livePieces >= copyPieces)
+		{
+			await TryAdoptAsOriginalCopyAsync(livePath, copyPath, issues, cancellationToken).ConfigureAwait(false);
+			return copyPath;
+		}
+
+		issues.Add(new CoreIssue(
+			CoreIssueSeverity.Warning,
+			"ArmorOriginalCopyKeptAfterGameUpdate",
+			"游戏更新过，但当前 .dl_bin 的件数比原件副本还少，它可能仍带着真映射的改动，所以没有覆盖原件副本。"
+			+ "请先在管理器里关掉真映射（应用一次空映射就会把文件还原），再重建 gamedata 资产。",
+			livePath));
+		return copyPath;
+	}
+
+	/// <summary>Steam 记录的"最后更新时间"晚于副本的写入时间 ⇒ 副本早于这次游戏更新。</summary>
+	private static bool GameUpdatedSince(string copyPath, string dataRoot)
+	{
+		var manifest = SteamAppManifest.TryRead(SteamAppManifest.ResolveManifestPath(dataRoot));
+		if (manifest is null || !manifest.IsFullyInstalled) return false;
+		try
+		{
+			var updated = DateTimeOffset.FromUnixTimeSeconds(manifest.LastUpdatedUnix);
+			return File.GetLastWriteTimeUtc(copyPath) < updated.UtcDateTime;
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or ArgumentOutOfRangeException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>解出这份 dl_bin 里的件数；解不开返回 <c>null</c>——判据缺失时不猜。</summary>
+	private static async ValueTask<int?> TryCountPiecesAsync(string path, CancellationToken cancellationToken)
+	{
+		if (!File.Exists(path)) return null;
+		var decoded = await TryReadEncryptedDataLibraryAsync(path, cancellationToken).ConfigureAwait(false);
+		if (decoded.Bytes is null) return null;
+		try
+		{
+			return CustomizationArmorSetsReader.Read(decoded.Bytes).Items.Sum(item => item.Pieces.Count);
+		}
+		catch (Exception exception) when (exception is InvalidDataException
+			or OverflowException
+			or ArgumentOutOfRangeException
+			or IndexOutOfRangeException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// 把一份 dl_bin 记成「原件副本」——真映射的编译基底。
+	/// <para>
+	/// 只在两个时机调用：还没有副本，或游戏确实更新过。写失败只记一条警告：
+	/// 这次读到的数据仍然有效，下次重建还会再试。
+	/// </para>
+	/// </summary>
+	private static async ValueTask TryAdoptAsOriginalCopyAsync(
+		string sourcePath,
+		string backupPath,
 		List<CoreIssue> issues,
 		CancellationToken cancellationToken)
 	{
 		try
 		{
-			var backupPath = ArmorDataFileIdentity.ResolveBackupPath(_registryRoot);
-			var current = await ReadAllBytesSharedAsync(encryptedPath, cancellationToken).ConfigureAwait(false);
+			var current = await ReadAllBytesSharedAsync(sourcePath, cancellationToken).ConfigureAwait(false);
 			if (File.Exists(backupPath))
 			{
 				var existing = await ReadAllBytesSharedAsync(backupPath, cancellationToken).ConfigureAwait(false);
@@ -276,8 +363,8 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 			issues.Add(new CoreIssue(
 				CoreIssueSeverity.Warning,
 				"ArmorOriginalCopyRefreshFailed",
-				$"已读取装备关系表，但无法刷新原件副本（真映射的编译基底）：{exception.Message}",
-				encryptedPath,
+				$"已读到装备关系表，但无法刷新原件副本（真映射的编译基底）：{exception.Message}",
+				backupPath,
 				ExceptionMessage: exception.ToString()));
 		}
 	}
