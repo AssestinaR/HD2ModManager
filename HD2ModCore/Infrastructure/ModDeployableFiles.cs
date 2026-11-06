@@ -15,15 +15,15 @@ public sealed record ModDeployableSet(
 /// 顺序（与部署器的实际行为一一对应）：
 /// <list type="number">
 /// <item><b>Overwrite 里有有效 patch</b> ⇒ 只部署它，这个 Mod 结束。</item>
-/// <item><b>sectional / vpk2patch 类</b>：有基底目录 ⇒ 把里面的文件**硬链接**进 Overwrite 并部署；
-/// 没有 ⇒ 跳过这条并说明原因。</item>
+/// <item><b>sectional / vpk2patch 类</b>：有基底目录 ⇒ 就部署它；没有 ⇒ 跳过这条并说明原因。</item>
 /// <item><b>legacy / logical</b>：根目录有 patch ⇒ 部署；没有 ⇒ 跳过这条并说明原因。</item>
 /// </list>
 /// </para>
 /// <para>
-/// <b>为什么硬链接而不是复制。</b>Overwrite 是"顶掉同名 patch"的一层，把基底文件链进去之后，
-/// 这个 Mod 下一次就命中第 1 条，判定变成一次目录列举——不需要每次部署都重新算一遍。
-/// 硬链接不占额外空间（同一分区），也不产生第二份需要同步的副本。
+/// <b>判定不写盘。</b>这一步只回答"哪些文件会进游戏"，一个字节都不创建——因为
+/// <c>deploy plan</c> 用的就是它，而计划是只读的。把基底硬链接进 Overwrite 是**写操作**，
+/// 它发生在用户真正动手的地方（改材质选择、折并），不是发生在"看一眼会发生什么"的时候。
+/// 实测踩过：跑一次计划就在 40 多个 Mod 里凭空出现 <c>Overwrite/</c>，用户完全没预期。
 /// </para>
 /// <para>
 /// <b>为什么不需要"每个槽位在基底里必须有一份默认版"。</b>那条规则是我多加的约束：
@@ -52,7 +52,7 @@ public static class ModDeployableFiles
 			var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(nodeDirectory);
 			if (payload is null)
 				return new ModDeployableSet(Empty, $"这个 Mod 是 {kind} 类，但没有基底目录（sectional/），没有可部署的 patch。");
-			return new ModDeployableSet(Materialize(payload, overwrite), null);
+			return new ModDeployableSet(EnumerateFiles(payload), null);
 		}
 
 		// ③ legacy / logical：patch 在根目录上。
@@ -64,10 +64,6 @@ public static class ModDeployableFiles
 	}
 
 	private static readonly Dictionary<string, string> Empty = new(StringComparer.OrdinalIgnoreCase);
-
-	/// <summary>硬链接。net8 的 <c>File</c> 还没有这个 API（net9 才加），所以直接调 Win32。</summary>
-	[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
-	private static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, nint lpSecurityAttributes);
 
 	/// <summary>目录里至少有一份"能被解析成 patch"的文件——不要求每一个都是。</summary>
 	private static bool HasValidPatch(string directory, IPatchFileNameParser parser)
@@ -89,33 +85,5 @@ public static class ModDeployableFiles
 		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
 			files[Path.GetFileName(path)] = path;
 		return files;
-	}
-
-	/// <summary>把基底目录里的文件链进 Overwrite，返回生效层的内容。</summary>
-	private static Dictionary<string, string> Materialize(string payloadDirectory, string overwriteDirectory)
-	{
-		Directory.CreateDirectory(overwriteDirectory);
-		
-		foreach (var source in Directory.EnumerateFiles(payloadDirectory, "*", SearchOption.TopDirectoryOnly))
-		{
-			var target = Path.Combine(overwriteDirectory, Path.GetFileName(source));
-			if (File.Exists(target)) continue;
-			try
-			{
-				if (!CreateHardLinkW(target, source, 0))
-					throw new IOException($"建立硬链接失败：{Path.GetFileName(source)}（Win32 {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}）");
-			}
-			catch (Exception exception) when (exception is IOException
-				or UnauthorizedAccessException
-				or PlatformNotSupportedException)
-			{
-				// 硬链接建不了（跨卷、文件系统不支持）就复制：结果是同一份内容，只是多占一份空间。
-				File.Copy(source, target, overwrite: false);
-			}
-		}
-		// 物化出来的目录由管理器创建，就地盖章：否则之后换甲/重构建会被
-		// "不是管理器生成的目录" 挡在门外——而挡住的那个目录正是我们刚建的。
-		ManagedOverwriteDirectory.Commit(overwriteDirectory, Decoration.ManagedOverwriteMarkers.VpkRekey);
-		return EnumerateFiles(overwriteDirectory);
 	}
 }

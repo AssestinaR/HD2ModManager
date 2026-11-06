@@ -89,8 +89,10 @@ public sealed class ModDeployableFilesTests : IDisposable
 		Assert.Equal("root-patch", File.ReadAllText(result.FilesByName[Patch(0)]));
 	}
 
+	// 判定**不写盘**：deploy plan 用的就是它，而计划是只读的。
+	// 实测踩过：跑一次计划就在 40 多个 Mod 里凭空出现 Overwrite/，用户完全没预期。
 	[Fact]
-	public void SectionalWithoutOverwrite_MaterializesThePayload()
+	public void SectionalWithoutOverwrite_DeploysThePayloadWithoutTouchingTheDisk()
 	{
 		var mod = NewMod();
 		var payload = ModNodePayloadLayout.GetVpkPatchDirectory(mod);
@@ -102,11 +104,7 @@ public sealed class ModDeployableFilesTests : IDisposable
 		Assert.Null(result.SkipReason);
 		Assert.Equal("unit", File.ReadAllText(result.FilesByName[Patch(0)]));
 		Assert.Equal("material", File.ReadAllText(result.FilesByName[Patch(1)]));
-		// 硬链接之后 Overwrite 就是生效层，下一次判定只需列举目录。
-		Assert.True(File.Exists(Path.Combine(ModNodePayloadLayout.GetOverwriteDirectory(mod), Patch(1))));
-		Assert.Equal(
-			result.FilesByName.Keys.OrderBy(name => name),
-			ModDeployableFiles.Resolve(mod, _parser).FilesByName.Keys.OrderBy(name => name));
+		Assert.False(Directory.Exists(ModNodePayloadLayout.GetOverwriteDirectory(mod)));
 	}
 
 	[Fact]
