@@ -41,6 +41,7 @@ internal static class ScenarioCatalog
         ["cards-swap"] = () => CardScenario.BuildSwap("cards-swap"),
         ["moddetails"] = () => ModDetailsScenario.Build("moddetails", vpk: false),
         ["moddetails-vpk"] = () => ModDetailsScenario.Build("moddetails-vpk", vpk: true),
+        ["moddetails-materials"] = () => ModDetailsScenario.Build("moddetails-materials", vpk: true, materials: true),
         ["nav"] = () => NavScenario.Build("nav", 1200),
         ["nav-narrow"] = () => NavScenario.Build("nav-narrow", 520),
         ["nav-transition"] = () => NavScenario.BuildTransition("nav-transition"),

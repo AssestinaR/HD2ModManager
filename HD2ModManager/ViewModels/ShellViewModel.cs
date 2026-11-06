@@ -721,6 +721,13 @@ namespace HD2ModManager.ViewModels
         }
 
         public void BeginBottomBarNameEdit(string modId, string currentValue) => _bottomBar.BeginNameEdit(modId, currentValue);
+        /// <summary>
+        /// 通用改名输入条：不绑定任何 Mod，保存逻辑由调用方给。
+        /// 材质选项的名字存在 Mod 自己的结构文件里，走不了"改库里的 Mod 名"那条路，
+        /// 但输入这件事应该长得和别处一样，所以复用同一个编辑器。
+        /// </summary>
+        public void BeginCustomNameEdit(string currentValue, Func<string, Task> save)
+            => _bottomBar.BeginCustomNameEdit(currentValue, save);
         public void BeginBottomBarDescriptionEdit(string modId, string currentValue) => _bottomBar.BeginDescriptionEdit(modId, currentValue);
         public void BeginCreateLogicalMod()
         {

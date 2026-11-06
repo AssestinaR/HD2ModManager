@@ -48,6 +48,67 @@ public sealed class ModDetailsStub
     public bool HasHostDecorations => false;
     public bool CanReorderHostOptions { get; set; }
 
+    // 材质选项：和真实 VM 一样暴露 ItemsSource + 计数 + 结果文案，
+    // 这样快照验的是"这张卡长什么样"，不是另一套假的绑定。
+    public IReadOnlyList<object> MaterialOptions { get; } = new object[]
+    {
+        new StubMaterialRow("4k清晰度材质包", order: 0, enabled: true,
+            notes: "78 个材质 / 78 张贴图", builtIn: false),
+        new StubMaterialRow("2k清晰度材质包", order: 1, enabled: false,
+            notes: "同一套材质的低清版本", builtIn: false),
+        new StubMaterialRow("模型内置材质", order: 2, enabled: false,
+            notes: null, builtIn: true),
+        new StubMaterialRow("金属高光加强", order: 3, enabled: false,
+            notes: "只改光泽贴图", builtIn: false),
+    };
+
+    public bool HasMaterialOptions => MaterialOptions.Count > 0;
+    public string MaterialOptionSummary => "共 4 个材质选项 · 已启用 1 个 · 越靠下越优先";
+    public string? MaterialOptionStatus => "已启用并重建生效层（重启游戏后生效）。";
+    public bool HasMaterialOptionStatus => true;
+
+    /// <summary>材质选项的桩行：只实现面板要的接口和行模板读的成员。</summary>
+    public sealed class StubMaterialRow : HD2ModManager.ViewModels.IModListKeyed,
+        HD2ModManager.ViewModels.IModListInternalReorderable,
+        HD2ModManager.Controls.Lists.IModListRowActionFilter
+    {
+        public StubMaterialRow(string name, int order, bool enabled, string? notes, bool builtIn)
+        {
+            Name = name;
+            Order = order;
+            IsEnabled = enabled;
+            Notes = notes;
+            BuiltIn = builtIn;
+            ListKey = name;
+        }
+
+        public string Name { get; }
+        public int Order { get; }
+        public string? Notes { get; }
+        public bool BuiltIn { get; }
+        public string? ImagePath => null;
+        public string ListKey { get; }
+        public bool IsEnabled { get; set; }
+        public bool CanToggle => true;
+        public bool CanInternalReorder => true;
+
+        public HD2ModManager.Controls.Lists.ModListRowAction HiddenActions =>
+            HD2ModManager.Controls.Lists.ModListRowAction.DeleteFromLibrary
+            | HD2ModManager.Controls.Lists.ModListRowAction.RemoveFromProfile
+            | HD2ModManager.Controls.Lists.ModListRowAction.AddToProfile
+            | HD2ModManager.Controls.Lists.ModListRowAction.ToggleDecoration
+            | HD2ModManager.Controls.Lists.ModListRowAction.ExportMod;
+
+        public HD2ModManager.ViewModels.ModListRowPresentation RowPresentation => new(
+            TypeLabel: BuiltIn ? "内置" : "材质",
+            ActivationLabel: IsEnabled ? "已启用" : "未启用",
+            ActivationTone: IsEnabled
+                ? HD2ModManager.ViewModels.ModListRowTone.Success
+                : HD2ModManager.ViewModels.ModListRowTone.Muted,
+            OrderLabel: $"顺序 {Order + 1}",
+            Summary: Notes);
+    }
+
     // 与真实 VM 使用同一份卡片声明，保证 before/after 对比的是外观而不是数据。
     private ObservableCollection<CardDescriptor>? _cards;
 
