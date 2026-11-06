@@ -14,6 +14,10 @@ public static class CoreServices
 	// 作用：把老库里还叫 vpk2patch/ 的基底目录一次性改名为 sectional/。
 	// Purpose: One-time rename of legacy payload directories to the current name.
 	public static IModContentLayoutMigration CreateModContentLayoutMigration() => new ModContentLayoutMigration();
+	// 作用：判定一个 Mod 目录的存储形态——**全应用唯一一处**，别再各自 Directory.Exists 猜。
+	// Purpose: The single classifier for a Mod directory's storage shape.
+	public static IModStorageKindResolver CreateModStorageKindResolver()
+		=> new ModStorageKindResolver(CreatePatchFileNameParser());
 	// 作用：以当前库快照为准回收派生索引里属于已删除节点的残留（它们全是可重建的缓存）。
 	// Purpose: Reclaims derived-index residue for nodes absent from the library (all rebuildable caches).
 	public static IModIndexGarbageCollector CreateModIndexGarbageCollector(StoragePaths paths)

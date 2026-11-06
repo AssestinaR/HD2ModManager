@@ -87,6 +87,20 @@ public static class VpkPayloadSwap
 				File.Copy(path, destination, overwrite: true);
 			}
 
+			// 换了载荷就重写一份 patches.json：旧的那份描述的是上一批产物，
+			// 留着它比没有更糟（工具会照着它去找已经不存在的 patch）。
+			var modRoot = Path.GetDirectoryName(payloadDirectory);
+			if (!string.IsNullOrWhiteSpace(modRoot) && Directory.Exists(modRoot))
+			{
+				var manifest = SectionalPatchManifestFile.Build(
+					payloadDirectory,
+					SectionalPatchManifestFile.ReadArchiveHex16(payloadDirectory),
+					VpkConversionReport.TryRead(modRoot),
+					DateTimeOffset.UtcNow);
+				if (manifest.Patches.Count != 0)
+					_ = SectionalPatchManifestFile.TryWrite(payloadDirectory, manifest);
+			}
+
 			return new Result(true, backupDirectory, restoreReadOnly, null);
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

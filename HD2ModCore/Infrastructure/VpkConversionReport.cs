@@ -54,7 +54,21 @@ public sealed record VpkConversionSettings(
 /// 永久拒绝替换 —— 用户点了重构建，产物时间戳一直不变，界面上只看到一句长错误。
 /// </para>
 /// </summary>
-public sealed record VpkConversionPatchSummary(string? Name, int UnitCount, int MaterialCount, int TextureCount);
+/// <summary>
+/// 一次转换里单个 patch 的摘要。
+/// </summary>
+/// <param name="Name">来源 VPK 的文件名（不是 patch 文件名）。</param>
+/// <param name="Kind">转换器给的种类：<c>model</c> / <c>material</c>。</param>
+/// <param name="UnitPatch">这个来源产出的 unit patch 文件名（<c>&lt;archive&gt;.patch_N</c>）。</param>
+/// <param name="MaterialPatch">这个来源产出的材质 patch 文件名。</param>
+public sealed record VpkConversionPatchSummary(
+	string? Name,
+	int UnitCount,
+	int MaterialCount,
+	int TextureCount,
+	string? Kind = null,
+	string? UnitPatch = null,
+	string? MaterialPatch = null);
 
 /// <summary>
 /// Mod 目录里 <c>vpk2patch.json</c> 的可读投影。
@@ -250,7 +264,10 @@ public sealed record VpkConversionReport(
 				ReadString(patch, "name"),
 				ReadInt(patch, "units"),
 				ReadInt(patch, "materials"),
-				ReadInt(patch, "textures")));
+				ReadInt(patch, "textures"),
+				ReadString(patch, "kind"),
+				ReadString(patch, "unitPatch"),
+				ReadString(patch, "materialPatch")));
 		}
 
 		return items;
