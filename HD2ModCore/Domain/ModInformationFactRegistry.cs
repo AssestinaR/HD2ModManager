@@ -225,15 +225,6 @@ public static class ModInformationFactRegistry
 			FactProducerKind.Composite,
 			[ModInformationPropertyKind.AssetInventory]),
 
-		// 依据（代码坐实，不是推断）：ModInformationCenter.ProduceMaintenanceAndRemoveAsync
-		// 先 await RequestAssetInventoryAsync(...)，再把 inventory.Data 传给 _maintenanceProducer.ProduceAsync(node, inventory.Data, …)。
-		// 这是本表里唯一一条"中心内部真实按依赖顺序取上游"的边。
-		[ModInformationPropertyKind.Maintenance] = new(
-			FactSubjectKind.Node,
-			ModInformationCacheScope.Persistent,
-			FactProducerKind.MaintenanceAnalysisService,
-			[ModInformationPropertyKind.AssetInventory]),
-
 		// 依据：ModThumbnailProducer 只读 Mod 目录里约定命名的图标文件（ModIconLocator.TryResolve），
 		// 不做任何 Patch 分析，因此没有上游事实。
 		[ModInformationPropertyKind.Thumbnail] = new(

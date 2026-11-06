@@ -304,9 +304,28 @@ DROP TABLE IF EXISTS game_data_unit_part_scans;
 		}
 	}
 
-	public static async Task SetMetaAsync(SqliteConnection connection, string key, string value, CancellationToken cancellationToken)
+	public static Task SetMetaAsync(SqliteConnection connection, string key, string value, CancellationToken cancellationToken)
+		=> SetMetaAsync(connection, null, key, value, cancellationToken);
+
+	/// <summary>
+	/// 写一条记账键；给了事务就**参加那个事务**。
+	/// <para>
+	/// <b>为什么必须有带事务的重载。</b>记账（版本号 / 指纹 / 构建时间）是"这份数据已经写完了"的
+	/// 声明。它一旦独立于数据提交，就会出现"数据是新的、记账还是旧的"或者"记账说已完成、数据是空的"
+	/// 这种自相矛盾的状态——实测 2026-11-06 踩过：`advanced_equipment_index_version` 写着已完成，
+	/// 而两张表是 0 行，于是"是否最新"永远为真、坏状态永久留着。
+	/// 记账与数据必须同一次提交，否则它不配叫声明。
+	/// </para>
+	/// </summary>
+	public static async Task SetMetaAsync(
+		SqliteConnection connection,
+		SqliteTransaction? transaction,
+		string key,
+		string value,
+		CancellationToken cancellationToken)
 	{
 		await using var cmd = connection.CreateCommand();
+		cmd.Transaction = transaction;
 		cmd.CommandText = @"INSERT INTO meta(key,value) VALUES($key,$value)
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
 		cmd.Parameters.AddWithValue("$key", key);

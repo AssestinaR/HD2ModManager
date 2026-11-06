@@ -58,7 +58,6 @@ internal sealed class FakeInformationCenter : IModInformationCenter
 		_referenceFacts.TryGetValue(node.Id, out var facts);
 		return ValueTask.FromResult(new ModInformationResult<ReferenceGraphFacts>(facts, facts is null ? ModInformationStatus.Failed : ModInformationStatus.Fresh, request.Kind, facts?.Generation, facts?.Issues ?? []));
 	}
-	public ValueTask<ModInformationResult<MaintenanceAnalysisFacts>> RequestMaintenanceAnalysisAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<ModUnitVersionFacts>> RequestUnitVersionAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 	public ValueTask<ModInformationResult<AdvancedUnitAnalysisFacts>> RequestAdvancedUnitAnalysisAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default)
 	{

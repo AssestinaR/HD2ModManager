@@ -468,20 +468,24 @@ GROUP BY e.archive_id;";
 
 		await RestoreDerivedEquipmentFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 
+		// **记账与数据同一次提交。** 这些键是"这次重建已经完成"的声明，必须晚于数据、
+		// 但不早于数据落盘——否则进程在这中间被杀就会留下"记账说完成、数据是空的"
+		// （或者反过来：数据是新的、指纹还是旧的），而任何"是否最新"的判断都会据此跑偏。
+		await SqliteSchema.SetMetaAsync(connection, tx, "built_utc", DateTimeOffset.UtcNow.ToString("O"), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "archives_total", total.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "archives_indexed", indexed.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "asset_keys_total", df.Count.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_directory", normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "source_fingerprint", sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_source_kind", authority.SourceKind.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_source_path", authority.SourcePath ?? string.Empty, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_fingerprint", authority.SourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_version", "authority-v2-entity-encyclopedia-v1", cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
+
 		await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-		await SqliteSchema.SetMetaAsync(connection, "built_utc", DateTimeOffset.UtcNow.ToString("O"), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "archives_total", total.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "archives_indexed", indexed.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "asset_keys_total", df.Count.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_directory", normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "source_fingerprint", sourceFingerprint, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_kind", authority.SourceKind.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_path", authority.SourcePath ?? string.Empty, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_fingerprint", authority.SourceFingerprint, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_version", "authority-v2-entity-encyclopedia-v1", cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
 		// Readers use pooled shared-cache connections. Purge their pre-rebuild pages so
 		// in-process catalog queries observe the committed index without requiring restart.
 		SqliteConnection.ClearAllPools();

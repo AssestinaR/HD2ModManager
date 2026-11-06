@@ -891,65 +891,6 @@ public sealed class AssetArchiveIndexServiceTests
 		}
 	}
 
-	[Fact]
-	public async Task ModCompatibilityAnalyzer_ClassifiesByCurrentIndexMatches()
-	{
-		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
-		var appRoot = Path.Combine(root, "app");
-		var gameData = Path.Combine(root, "game", "data");
-		Directory.CreateDirectory(appRoot);
-		Directory.CreateDirectory(gameData);
-
-		try
-		{
-			var archiveA = "aaaaaaaaaaaaaaaa";
-			File.WriteAllBytes(Path.Combine(gameData, archiveA), BuildToc(new[]
-			{
-				new AssetKey(10, 100),
-				new AssetKey(20, 200),
-			}));
-
-			var archiveHashes = new Dictionary<string, Dictionary<string, string>>
-			{
-				["Armor"] = new Dictionary<string, string>
-				{
-					[archiveA] = "Armor A",
-				}
-			};
-			var json = JsonSerializer.Serialize(archiveHashes);
-
-			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths);
-			await indexService.BuildOrRebuildAsync(gameData, json);
-
-			var summary = new ModAssetSummary(
-				new ModNodeId(Guid.NewGuid()),
-				"Old Mod",
-				new[]
-				{
-					BuildAssetEntry(archiveA, new AssetKey(10, 100)),
-					BuildAssetEntry(archiveA, new AssetKey(20, 200)),
-					BuildAssetEntry(archiveA, new AssetKey(30, 300)),
-					BuildAssetEntry(archiveA, new AssetKey(40, 400)),
-				},
-				Array.Empty<string>(),
-				Array.Empty<ModAssetTargetGroup>());
-
-			var analyzer = new ModCompatibilityAnalyzer(indexService);
-			var report = await analyzer.AnalyzeAsync(summary);
-
-			Assert.Equal(ModCompatibilityStatus.Partial, report.Status);
-			Assert.Equal(4, report.TotalAssets);
-			Assert.Equal(2, report.MatchedAssets);
-			Assert.Equal(2, report.MissingAssets);
-			Assert.Equal(0.5, report.MatchRatio);
-			Assert.True(report.HasIndex);
-		}
-		finally
-		{
-			try { Directory.Delete(root, recursive: true); } catch { }
-		}
-	}
 
 	private static byte[] BuildToc(AssetKey[] entries)
 	{

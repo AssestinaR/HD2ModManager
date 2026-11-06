@@ -298,8 +298,8 @@ ORDER BY c.archive_id, c.file_id;";
 		// 坏状态（两张表 0 行）会永久留着，用户没有任何办法让它自愈。
 		if (parts.Count > 0 || layouts.Count > 0)
 		{
-			await SqliteSchema.SetMetaAsync(connection, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
-			await SqliteSchema.SetMetaAsync(connection, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
+			await SqliteSchema.SetMetaAsync(connection, transaction, "advanced_equipment_index_version", Version, cancellationToken).ConfigureAwait(false);
+			await SqliteSchema.SetMetaAsync(connection, transaction, SourceFingerprintMetaKey, sourceFingerprint, cancellationToken).ConfigureAwait(false);
 		}
 		await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 	}

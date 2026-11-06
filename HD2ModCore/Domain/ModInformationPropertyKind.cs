@@ -23,7 +23,6 @@ public enum ModInformationPropertyKind
 	GameDataMapping,
 	Compatibility,
 	DecorationDefinition,
-	Maintenance,
 	Thumbnail,
 	// 游戏数据侧的两个输入事实（设计文档 §4 #8 / #9）。追加在末尾以保持既有取值的数值不变：
 	// 这些取值会随诊断状态一起出现在内存对象里，改变数值会让"同一份日志"在两版之间对不上。

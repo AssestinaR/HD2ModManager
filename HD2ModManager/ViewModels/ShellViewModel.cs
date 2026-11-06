@@ -1795,7 +1795,6 @@ namespace HD2ModManager.ViewModels
             ModInformationKind.AdvancedUnitAnalysis => "高级分析",
             ModInformationKind.Thumbnail => "缩略图",
             ModInformationKind.UnitVersion => "版本",
-            ModInformationKind.MaintenanceAnalysis => "维护分析",
             _ => "文件",
         };
 

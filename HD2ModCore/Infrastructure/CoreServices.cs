@@ -40,7 +40,6 @@ public static class CoreServices
 			CreateAssetInventoryProducer(analysisProvider.ForDepth(PatchAnalysisDepth.Inventory)),
 			new JsonModFileFactsCache(paths),
 			CreateReferenceGraphProducer(analysisProvider.ForDepth(PatchAnalysisDepth.DependencyGraph)),
-			CreateMaintenanceAnalysisProducer(paths),
 			CreateUnitVersionInformationProducer(analysisProvider.ForDepth(PatchAnalysisDepth.Inventory)),
 			new JsonModInformationCache(paths),
 			CreateAdvancedUnitAnalysisProducer(analysisProvider.ForDepth(PatchAnalysisDepth.Full)),
@@ -181,8 +180,6 @@ public static class CoreServices
 		=> new SqliteModFactsStore(paths);
 	public static IModAssetRoleFactsService CreateModAssetRoleFactsService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new ModAssetRoleFactsService(informationCenter, CreateReferenceGraphQueryIndex(paths));
-	public static IMaintenanceAnalysisProducer CreateMaintenanceAnalysisProducer(StoragePaths paths)
-		=> new MaintenanceAnalysisProducer(CreateModCompatibilityAnalyzer(paths));
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new AdvancedModAnalysisService(informationCenter);
 	public static IPatchGraphDiagnosticsService CreatePatchGraphDiagnosticsService(IModInformationReader informationReader)
@@ -233,8 +230,6 @@ public static class CoreServices
 	}
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));
-   public static IModCompatibilityAnalyzer CreateModCompatibilityAnalyzer(StoragePaths paths)
-		=> new ModCompatibilityAnalyzer(CreateAssetArchiveIndexService(paths));
    public static IObjectTreeImporter CreateObjectTreeImporter()
 		=> new ObjectTreeImporter(CreatePatchFileNameParser());
    public static IArchiveObjectTreeImporter CreateArchiveObjectTreeImporter()
