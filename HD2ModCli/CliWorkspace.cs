@@ -75,9 +75,18 @@ public sealed class CliWorkspace
 		string? settingsPath = null;
 		CliManagerSettings? settings = null;
 
-		if (!string.IsNullOrWhiteSpace(options.ManagerRoot))
+		// 没给 --manager-root 时用 hd2mod.exe 所在目录。
+		//
+		// 发布包里 hd2mod.exe 就躺在管理器运行目录里（设置、缓存、索引都在那儿），
+		// 所以这个默认值几乎总是对的。有了它，agent 不需要先知道路径就能自举——
+		// 否则裸跑 `doctor` 只会得到一片 null 和"请传 --manager-root"。
+		var managerRootOption = string.IsNullOrWhiteSpace(options.ManagerRoot)
+			? AppContext.BaseDirectory
+			: options.ManagerRoot;
+
+		if (!string.IsNullOrWhiteSpace(managerRootOption))
 		{
-			managerRoot = CliOutput.NormalizeDirectoryPath(options.ManagerRoot, "ManagerRootInvalid");
+			managerRoot = CliOutput.NormalizeDirectoryPath(managerRootOption, "ManagerRootInvalid");
 			if (!Directory.Exists(managerRoot))
 				throw new CliUserException("ManagerRootNotFound", $"管理器目录不存在：{managerRoot}");
 			settingsPath = Path.Combine(managerRoot, "settings.json");
