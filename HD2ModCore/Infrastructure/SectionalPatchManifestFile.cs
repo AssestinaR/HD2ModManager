@@ -87,22 +87,30 @@ public static class SectionalPatchManifestFile
 			if (!TryReadPatchIndex(name, out var patchIndex)) continue;
 
 			var matched = Match(report, name);
-			var role = matched?.Kind switch
+			// 角色看**命中的是哪个字段**，而不是那条报告的 kind。
+			//
+			// 一次转换可能同时产出 unit patch 与材质 patch（模型自带材质时会拆成两份），
+			// 那条报告的 kind 是 "model" —— 照 kind 判会把材质 patch 也标成 unit，
+			// 于是 `mod show` 的材质选项表是空的、`mod material set` 无从下手。
+			var role = matched switch
 			{
-				"model" => SectionalPatchRole.Unit,
-				"material" => SectionalPatchRole.Material,
-				// 报告缺失/对不上时按约定：patch_0 是 unit，其余是材质。
+				{ MatchedMaterial: true } => SectionalPatchRole.Material,
+				{ MatchedUnit: true } => SectionalPatchRole.Unit,
 				_ => patchIndex == 0 ? SectionalPatchRole.Unit : SectionalPatchRole.Material,
 			};
 			entries.Add(new SectionalPatchGroupEntry(
 				patchIndex,
 				archiveHex16,
 				role,
-				matched?.Name,
-				OptionName: optionNameByPatchFileName?.GetValueOrDefault(name),
-				UnitCount: matched?.UnitCount,
-				MaterialCount: matched?.MaterialCount,
-				TextureCount: matched?.TextureCount));
+				matched?.Patch.Name,
+				// 模型自带的那份材质也是选项之一，名字固定为「模型内置材质」：
+				// 它和折并进来的材质包是同一类东西（一个 patch、可勾选），
+				// 单独给它一个名字是为了让用户在选项表里一眼认出"这是自带的，不是后来加的包"。
+				OptionName: optionNameByPatchFileName?.GetValueOrDefault(name)
+					?? (matched is { MatchedMaterial: true } ? SectionalPatchManifest.BuiltInMaterialOptionName : null),
+				UnitCount: matched?.Patch.UnitCount,
+				MaterialCount: matched?.Patch.MaterialCount,
+				TextureCount: matched?.Patch.TextureCount));
 		}
 
 		entries.Sort((left, right) => left.PatchIndex.CompareTo(right.PatchIndex));
@@ -190,14 +198,18 @@ public static class SectionalPatchManifestFile
 		}
 	}
 
-	private static VpkConversionPatchSummary? Match(VpkConversionReport? report, string patchFileName)
+	/// <param name="MatchedUnit">命中报告的 <c>unitPatch</c> 字段。</param>
+	/// <param name="MatchedMaterial">命中报告的 <c>materialPatch</c> 字段。</param>
+	private sealed record MatchResult(VpkConversionPatchSummary Patch, bool MatchedUnit, bool MatchedMaterial);
+
+	private static MatchResult? Match(VpkConversionReport? report, string patchFileName)
 	{
 		if (report is null) return null;
 		foreach (var patch in report.Patches)
 		{
-			if (string.Equals(patch.UnitPatch, patchFileName, StringComparison.OrdinalIgnoreCase)
-				|| string.Equals(patch.MaterialPatch, patchFileName, StringComparison.OrdinalIgnoreCase))
-				return patch;
+			var unit = string.Equals(patch.UnitPatch, patchFileName, StringComparison.OrdinalIgnoreCase);
+			var material = string.Equals(patch.MaterialPatch, patchFileName, StringComparison.OrdinalIgnoreCase);
+			if (unit || material) return new MatchResult(patch, unit, material);
 		}
 		return null;
 	}

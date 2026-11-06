@@ -35,6 +35,7 @@ public sealed class ModContentLayoutMigration : IModContentLayoutMigration
 		var renamed = 0;
 		var alreadyCurrent = 0;
 		var adopted = 0;
+		var manifests = 0;
 		var conflicts = new List<string>();
 		var failures = new List<string>();
 		// 老库把名字/备注只存在 library.json 里。文件夹是权威之后，先把它们落到各自的
@@ -54,6 +55,12 @@ public sealed class ModContentLayoutMigration : IModContentLayoutMigration
 			if (nodesByPath is not null && nodesByPath.TryGetValue(name, out var nodeRecord)
 				&& AdoptSettingsFile(node, nodeRecord))
 				adopted++;
+
+			// 结构文件也补一份：`patches.json` 是"每个 patch 组是什么"的唯一来源，
+			// 而它只在转换/交换/折并时被写。老库里的 Mod 从来没有过它，
+			// 于是 `mod show` 的材料选项表是空的、`mod material set` 无从下手。
+			if (BackfillManifest(node))
+				manifests++;
 
 			var legacy = Path.Combine(node, ModNodePayloadLayout.LegacyVpkPatchDirectoryName);
 			var current = Path.Combine(node, ModNodePayloadLayout.VpkPatchDirectoryName);
@@ -85,12 +92,30 @@ public sealed class ModContentLayoutMigration : IModContentLayoutMigration
 		}
 
 		return ValueTask.FromResult(new ModContentLayoutMigrationResult(
-			renamed, alreadyCurrent, conflicts, failures, adopted));
+			renamed, alreadyCurrent, conflicts, failures, adopted, manifests));
 	}
 
 	/// <summary>
 	/// 把一个 Mod 的名字/备注/id 写进它自己的设置文件。已有完整内容的不动（幂等）。
 	/// </summary>
+	/// <summary>
+	/// 给"有基底目录但没有结构文件"的 Mod 补一份 <c>patches.json</c>。
+	/// 已有就一个字都不动——它是派生数据，但用户可能已经在界面里调整过选项。
+	/// </summary>
+	private static bool BackfillManifest(string modDirectory)
+	{
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
+		if (payload is null) return false;
+		if (File.Exists(SectionalPatchManifestFile.GetPath(payload))) return false;
+
+		var archive = SectionalPatchManifestFile.ReadArchiveHex16(payload);
+		if (string.IsNullOrEmpty(archive)) return false;
+
+		var document = SectionalPatchManifestFile.Build(
+			payload, archive, VpkConversionReport.TryRead(modDirectory), DateTimeOffset.UtcNow);
+		return SectionalPatchManifestFile.TryWrite(payload, document) is null;
+	}
+
 	private static bool AdoptSettingsFile(string modDirectory, ModNode node)
 	{
 		var existing = ModSettingsFile.TryRead(modDirectory);
