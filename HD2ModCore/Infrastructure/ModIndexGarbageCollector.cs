@@ -26,13 +26,6 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		@"^(?<kind>[A-Za-z]+)_(?<node>[0-9a-fA-F]{32})_[0-9a-fA-F]{64}$",
 		RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-	private static readonly string[] FactTables =
-	[
-		"asset_references",
-		"mod_assets",
-		"patch_groups",
-	];
-
 	private readonly StoragePaths _paths;
 
 	public ModIndexGarbageCollector(StoragePaths paths)
@@ -50,7 +43,7 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		cacheFiles += CollectObsoleteCacheDirectories(failures, cancellationToken);
 		var backups = CollectBackupDirectories(live, failures, cancellationToken);
 		var temporaryFiles = CollectTemporaryFiles(failures);
-		var factRows = await CollectFactRowsAsync(live, failures, cancellationToken).ConfigureAwait(false);
+		var factRows = CollectObsoleteFactsDatabase(failures);
 
 		return new ModIndexGarbageCollectionResult(cacheFiles, factRows, backups, temporaryFiles, failures);
 	}
@@ -237,63 +230,34 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		return removed;
 	}
 
-	private async ValueTask<int> CollectFactRowsAsync(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
+	/// <summary>
+	/// 回收已废弃的 <c>mod-facts.sqlite</c>。
+	/// <para>
+	/// 这些事实现在只活在会话内存里（<see cref="InMemoryModFactsStore"/>），文件没人读了。
+	/// 以前这里只会修剪它的行、把文件永远留着（21.7 MB）；既然不读了，整个删掉才叫回收。
+	/// </para>
+	/// </summary>
+	private int CollectObsoleteFactsDatabase(List<string> failures)
 	{
 		var databasePath = _paths.ModFactsDbPath;
 		if (!File.Exists(databasePath)) return 0;
-
-		var removed = 0;
 		try
 		{
-			await using var connection = new SqliteConnection($"Data Source={databasePath}");
-			await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-			var existingTables = await ReadTableNamesAsync(connection, cancellationToken).ConfigureAwait(false);
-			await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-			foreach (var table in FactTables)
+			// WAL 模式会留下两个同名旁路文件，一起清掉才算真的回收。
+			foreach (var suffix in new[] { "", "-wal", "-shm" })
 			{
-				// 这个库是惰性建表的：表不存在是正常状态，不是失败。
-				// Tables are created lazily, so a missing table is a normal state rather than a failure.
-				if (!existingTables.Contains(table)) continue;
-
-				var dead = new List<string>();
-				await using (var select = connection.CreateCommand())
-				{
-					select.Transaction = (SqliteTransaction)transaction;
-					select.CommandText = $"SELECT DISTINCT node_id FROM {table}";
-					await using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-					while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-					{
-						var node = reader.GetString(0);
-						if (!live.Contains(node)) dead.Add(node);
-					}
-				}
-
-				foreach (var node in dead)
-				{
-					await using var delete = connection.CreateCommand();
-					delete.Transaction = (SqliteTransaction)transaction;
-					delete.CommandText = $"DELETE FROM {table} WHERE node_id = $node";
-					delete.Parameters.AddWithValue("$node", node);
-					removed += await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-				}
+				var path = databasePath + suffix;
+				if (File.Exists(path)) File.Delete(path);
 			}
-			await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+			return 1;
 		}
-		catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or System.Security.SecurityException)
 		{
 			failures.Add($"mod-facts.sqlite: {exception.Message}");
+			return 0;
 		}
-		return removed;
-	}
-
-	private static async ValueTask<HashSet<string>> ReadTableNamesAsync(SqliteConnection connection, CancellationToken cancellationToken)
-	{
-		var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table'";
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) names.Add(reader.GetString(0));
-		return names;
 	}
 
 	private static void ClearAttributesRecursive(string directory)
