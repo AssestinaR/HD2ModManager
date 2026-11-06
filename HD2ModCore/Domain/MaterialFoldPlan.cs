@@ -31,11 +31,13 @@ public sealed record MaterialFoldBlocker(
 	string Message);
 
 /// <param name="SourcePatchPath">成员目录里那份 patch 的完整路径。</param>
+/// <param name="MemberRootDirectory">成员自己的 mod 根目录——它的来源 <c>*.vpk</c> 要一起搬走。</param>
 /// <param name="TargetPatchFileName">搬进宿主之后叫什么（<c>&lt;archive&gt;.patch_N</c>）。</param>
 public sealed record MaterialFoldEntry(
 	string NodeId,
 	string ModName,
 	string SourcePatchPath,
+	string MemberRootDirectory,
 	string TargetPatchFileName,
 	int TargetPatchIndex,
 	bool Enabled,

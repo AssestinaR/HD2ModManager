@@ -65,6 +65,7 @@ public static class MaterialOptionFoldPlanner
 				member.NodeId,
 				member.ModName,
 				patches[0],
+				Directory.GetParent(member.PayloadDirectory)?.FullName ?? member.PayloadDirectory,
 				$"{archive}.patch_{index}",
 				index,
 				member.Enabled,
