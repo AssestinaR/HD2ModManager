@@ -360,9 +360,6 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	{
 		// 先把手上的防抖写盘落地：用户切走之前勾的那几下不能丢。
 		FlushVpkStateSave();
-		// 材质选项与"是不是 VPK 版"无关：凡是带基底目录的 Mod 都可能有。放在最前面，
-		// 免得后面那些 VPK 专属的提前 return 把它跳过。
-		RefreshMaterialOptions();
 		_vpkFile = VpkWardrobeFile.Default;
 		_vpkStatus = string.Empty;
 		VpkTree = null;

@@ -117,12 +117,16 @@ public static class MaterialOptionSettings
 
 	/// <summary>启用哪几个（多选，不限制数量）。</summary>
 	public static string? SetEnabled(string modDirectory, IReadOnlyList<string> enabledPatchFileNames)
-		=> ModSettingsFile.TryWrite(modDirectory, new ModSettingsFile.Document(
+	{
+		// 只读一次：这份文件里还有 id/名字/备注，重写时必须原样带上，否则一次勾选就把它们抹了。
+		var existing = ModSettingsFile.TryRead(modDirectory);
+		return ModSettingsFile.TryWrite(modDirectory, new ModSettingsFile.Document(
 			ModSettingsFile.CurrentSchema,
 			enabledPatchFileNames,
-			ModSettingsFile.TryRead(modDirectory)?.Id,
-			ModSettingsFile.TryRead(modDirectory)?.Name,
-			ModSettingsFile.TryRead(modDirectory)?.Notes));
+			existing?.Id,
+			existing?.Name,
+			existing?.Notes));
+	}
 
 	private static void Replace(
 		List<SectionalPatchGroupEntry> source,
