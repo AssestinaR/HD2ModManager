@@ -699,6 +699,16 @@ public static class CliApplication
 				() => result.Changed ? "已更新 Mod 备注。未自动部署。" : "Mod 备注未变化。未自动部署。");
 			return 0;
 		}
+		if (command.Length == 5 && command[0] == "mod" && command[1] == "material" && command[2] == "set")
+		{
+			EnsureMaterialSetOptions(invocation.Options, "mod material set");
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var result = CliMaterialSelection.Set(workspace, state, invocation.Command[3], invocation.Command[4]);
+			Emit(invocation.Options,
+				new { ok = result.Succeeded, material = result },
+				() => FormatMaterialSelection(result));
+			return result.Succeeded ? 0 : 2;
+		}
 		if (command.Length == 4 && command[0] == "mod" && command[1] == "notes" && command[2] == "clear")
 		{
 			EnsureMetadataMutationOptions(invocation.Options, "mod notes clear");
@@ -4291,6 +4301,42 @@ public static class CliApplication
 	/// <summary>
 	/// 折并计划是**只读**的：不接受 --output/--confirm/--plan 等会让人误以为它会写盘的参数。
 	/// </summary>
+	/// <summary>材质选择会重写生效层，所以要求 --confirm；不接受与它无关的参数。</summary>
+	private static void EnsureMaterialSetOptions(CliGlobalOptions options, string commandName)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"MaterialSetConfirmationRequired",
+				$"{commandName} 会重写这个 Mod 的生效层；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{commandName} 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	/// <summary>材质选择的人话结果。</summary>
+	private static string FormatMaterialSelection(CliMaterialSelection.Result result)
+	{
+		if (!result.Succeeded) return $"材质未切换：{result.Error}";
+		var enabled = result.EnabledPatchFileNames.Count == 0
+			? "（未启用任何材质）"
+			: string.Join("、", result.EnabledPatchFileNames);
+		var lines = new List<string>
+		{
+			$"已启用材质：{enabled}",
+			$"生效层已重写：{result.WrittenFiles.Count} 个文件。未自动部署。",
+		};
+		lines.AddRange(result.Notes.Select(note => "  · " + note));
+		return string.Join(Environment.NewLine, lines);
+	}
+
 	private static void EnsureLibraryMaterialFoldPlanOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -7657,6 +7703,7 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod material set <Mod GUID或前缀> <patch1,patch2|none> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod create <逻辑 Mod 名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json

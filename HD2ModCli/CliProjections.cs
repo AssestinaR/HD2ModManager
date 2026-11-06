@@ -332,6 +332,8 @@ public static class CliProjections
 				guid = node.Metadata.SourcePackageGuid,
 				path = node.Metadata.SourcePackagePath,
 			},
+			// 材质选项表：每个选项一个 patch，用户可以任意启用几个。
+			materialOptions = ReadMaterialOptions(node, workspace),
 			helmetsMergedIntoArmor = node.Metadata.HelmetToArmorMerged,
 			contentFingerprint = node.ContentFingerprint,
 			createdUtc = node.Metadata.CreatedUtc,
@@ -569,6 +571,35 @@ public static class CliProjections
 		return string.IsNullOrWhiteSpace(full)
 			? ModStorageKind.Unknown.ToString().ToLowerInvariant()
 			: StorageKindResolver.Resolve(full).ToString().ToLowerInvariant();
+	}
+
+	/// <summary>
+	/// 一个 Mod 的材质选项表：来自基底目录里的 <c>patches.json</c>，启用状态来自 Mod 自己的设置文件。
+	/// 读不到就返回空表——这只是给人看的清单，不值得为它报错。
+	/// </summary>
+	private static IReadOnlyList<object> ReadMaterialOptions(ModNode node, CliWorkspace workspace)
+	{
+		var directory = ResolveNodePath(workspace.LibraryRoot, node.RelativePath);
+		if (string.IsNullOrWhiteSpace(directory)) return Array.Empty<object>();
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory);
+		if (payload is null) return Array.Empty<object>();
+		var manifest = SectionalPatchManifestFile
+			.TryReadAsync(payload)
+			.AsTask().GetAwaiter().GetResult();
+		if (manifest is null) return Array.Empty<object>();
+		var enabled = ModSettingsFile.TryRead(directory)?.EnabledMaterialPatches;
+		return manifest.Patches
+			.Where(entry => entry.Role == SectionalPatchRole.Material)
+			.Select(entry => (object)new
+			{
+				patchFileName = $"{entry.ArchiveHex16}.patch_{entry.PatchIndex}",
+				optionName = entry.OptionName,
+				// 设置文件里没有显式状态时，按"内置材质默认启用"算——与物化器的默认一致。
+				enabled = enabled is null
+					? entry.OptionName == SectionalPatchManifest.BuiltInMaterialOptionName
+					: enabled.Contains($"{entry.ArchiveHex16}.patch_{entry.PatchIndex}", StringComparer.OrdinalIgnoreCase),
+			})
+			.ToArray();
 	}
 
 	private static string? ResolveNodePath(string? libraryRoot, string relativePath)

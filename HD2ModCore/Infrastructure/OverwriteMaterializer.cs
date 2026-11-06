@@ -8,7 +8,8 @@ namespace HD2ModCore.Infrastructure;
 /// <param name="EnabledMaterialPatchFileNames">
 /// 要启用的材质 patch 文件名集合——**每个材质选项一个 patch，可以任意启用几个**。
 /// <para>
-/// <c>null</c> = 用默认（宿主自己那次转换产出的材质 patch，即「模型内置材质」）。
+/// <c>null</c> = 读 Mod 自己的设置文件（`<mod>/.hd2modmanager-mod.json`）；那里也没有时，
+/// 默认只启用宿主自己那次转换产出的材质（「模型内置材质」）。
 /// 空集合 = 一个都不启用（用户明确关掉了全部材质）。
 /// </para>
 /// <para>
@@ -98,7 +99,8 @@ public static class OverwriteMaterializer
 
 		var warnings = new List<string>();
 		var enabled = selection.EnabledMaterialPatchFileNames
-			// 没有显式选择 ⇒ 默认只启用宿主自己那次转换产出的材质（"模型内置材质"）。
+			// 没有显式选择 ⇒ 先问 Mod 自己的设置文件；那里也没有才退回"模型内置材质"。
+			?? ModSettingsFile.TryRead(modDirectory)?.EnabledMaterialPatches
 			?? BuiltInMaterialPatches(report);
 		var materials = new List<string>();
 		foreach (var name in enabled.Distinct(StringComparer.OrdinalIgnoreCase))

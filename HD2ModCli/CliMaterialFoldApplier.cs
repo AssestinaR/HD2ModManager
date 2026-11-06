@@ -66,6 +66,13 @@ internal static class CliMaterialFoldApplier
 				continue;
 			}
 
+			// 记下折并时的启用集合：以后用户改选就改这个文件，重开管理器会照它重新物化。
+			var settingsError = ModSettingsFile.TryWrite(host.HostDirectory, new ModSettingsFile.Document(
+				ModSettingsFile.CurrentSchema,
+				plan.EnabledTargetPatchFileNames));
+			if (settingsError is not null)
+				notes.Add($"{host.Host.Metadata.Name}：启用集合写不进去（{settingsError}）；下次物化会退回只启用模型内置材质。");
+
 			// ③ 退役：成员的东西都搬走了，节点记录也该走。
 			foreach (var entry in plan.Entries)
 				retired.Add(new ModNodeId(Guid.ParseExact(entry.NodeId, "N")));

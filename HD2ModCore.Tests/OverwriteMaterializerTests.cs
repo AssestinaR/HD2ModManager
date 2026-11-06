@@ -211,6 +211,39 @@ public sealed class OverwriteMaterializerTests : IDisposable
 	}
 
 	[Fact]
+	public void Materialize_DefaultReadsTheModsOwnSettings()
+	{
+		// 用户改过选择之后，默认物化要照它来，而不是永远退回"只有模型内置材质"。
+		var mod = NewMod();
+		AddPatch(mod, 0);
+		AddPatch(mod, 1, "built-in");
+		AddPatch(mod, 2, "chosen");
+		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
+		ModSettingsFile.TryWrite(mod, new ModSettingsFile.Document(
+			ModSettingsFile.CurrentSchema, [$"{Archive}.patch_2"]));
+
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default);
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_2")));
+		Assert.False(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
+	}
+
+	[Fact]
+	public void Materialize_WithoutSettings_FallsBackToTheBuiltInMaterial()
+	{
+		var mod = NewMod();
+		AddPatch(mod, 0);
+		AddPatch(mod, 1, "built-in");
+		WriteReport(mod, unitPatch: $"{Archive}.patch_0", materialPatch: $"{Archive}.patch_1");
+
+		var result = OverwriteMaterializer.Materialize(mod, OverwriteSelection.Default);
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.True(File.Exists(Path.Combine(Overwrite(mod), $"{Archive}.patch_1")));
+	}
+
+	[Fact]
 	public void Materialize_WithoutPayload_Fails()
 	{
 		var mod = Path.Combine(_root, "bare");
