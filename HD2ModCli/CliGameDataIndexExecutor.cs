@@ -47,6 +47,13 @@ internal static class CliGameDataIndexExecutor
 					await CoreServices.CreateAssetArchiveIndexService(validation.Current.Paths)
 						.BuildOrRebuildAsync(document.Request.GameDataDirectory, archiveHashes, progress: null, cancellationToken)
 						.ConfigureAwait(false);
+					// 基础重建会**清空** game_data_unit_parts / game_data_stream_layouts
+					// （见 SqliteSchema.ClearIndexDataAsync）。只做上一步的话，命令报告成功、
+					// 而索引里一条部位事实都没有——这正是之前那次"部位事实 0 条"故障的形状。
+					// 所以同一个操作里把它们一起重建成当前状态。
+					await CoreServices.CreateAdvancedEquipmentIndexService(validation.Current.Paths)
+						.RebuildAllUnitPartFactsAsync(document.Request.GameDataDirectory, progress: null, cancellationToken)
+						.ConfigureAwait(false);
 					break;
 				}
 				case CliGameDataIndexOperation.RebuildAllEquipmentFacts:
@@ -66,7 +73,9 @@ internal static class CliGameDataIndexExecutor
 			var post = await CliGameDataIndexPlanArtifacts.BuildAsync(workspace, document.Request, cancellationToken).ConfigureAwait(false);
 			var expectedReady = post.Operation switch
 			{
-				CliGameDataIndexOperation.RebuildBase => post.Document.Inputs.BaseIndexCurrent,
+				// 基础重建已经把部位事实一起重建了，所以两样都必须是当前的才算成功。
+				CliGameDataIndexOperation.RebuildBase
+					=> post.Document.Inputs.BaseIndexCurrent && post.Document.Inputs.AdvancedEquipmentFactsCurrent,
 				CliGameDataIndexOperation.RebuildAllEquipmentFacts or CliGameDataIndexOperation.BuildMissingEquipmentFacts
 					=> post.Document.Inputs.BaseIndexCurrent && post.Document.Inputs.AdvancedEquipmentFactsCurrent,
 				_ => false,
