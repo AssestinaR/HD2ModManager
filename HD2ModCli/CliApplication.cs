@@ -374,6 +374,25 @@ public static class CliApplication
 					: $"护甲注册计划已失效：{string.Join("；", validation.Diagnostics.Select(item => item.Message))}");
 			return validation.IsValid ? 0 : 2;
 		}
+		// armor-registry restore —— 把上一次 apply 之前的那份协议放回去。
+		//
+		// 协议本身是用户输入（几十条映射），而它只有一份：写坏了 `show` 都读不出来，
+		// 备份里也只有 dl_bin 原件、没有协议。这条补上"退回去"的能力。
+		if (Matches(command, "armor-registry", "restore"))
+		{
+			EnsureArmorRegistryApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException(
+					"ArmorRegistryRestoreConfirmationRequired",
+					"armor-registry restore 会用备份覆盖当前协议；请显式传入 --confirm。");
+			var restored = await CliArmorRegistryProtocol
+				.RestoreAsync(invocation.Options.RegistryRoot)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, execution = restored },
+				() => $"已回滚协议：{restored.ProtocolPath}（revision {restored.Revision}，{restored.ActiveMappingCount} 条映射）。重启游戏后生效。");
+			return 0;
+		}
 		if (Matches(command, "armor-registry", "apply"))
 		{
 			EnsureArmorRegistryApplyOptions(invocation.Options);
@@ -8020,6 +8039,7 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod armor-registry restore --manager-root <管理器目录> --confirm --json
 	  hd2mod settings get [<键>] --manager-root <管理器目录> --json
 	  hd2mod settings set <键> <值> --manager-root <管理器目录> --confirm --json
 	  hd2mod repair library-snapshot --manager-root <管理器目录> --library <Mod库目录> --confirm --json
