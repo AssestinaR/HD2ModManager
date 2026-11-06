@@ -27,9 +27,18 @@ public static class ModSettingsFile
 		Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
 	};
 
+	/// <param name="Id">
+	/// 持久节点 id（N 格式）。它让"把 mod 文件夹搬到另一个库"之后，配置条目、映射来源、
+	/// 装饰宿主这些引用仍然指得回同一个 Mod——否则它们会集体悬空。
+	/// </param>
+	/// <param name="Name">显示名。**文件夹里的这份是权威**，library.json 只是索引。</param>
+	/// <param name="Notes">备注。只存在这里和 library.json 里，丢了就真丢了。</param>
 	public sealed record Document(
 		string Schema,
-		IReadOnlyList<string>? EnabledMaterialPatches);
+		IReadOnlyList<string>? EnabledMaterialPatches = null,
+		string? Id = null,
+		string? Name = null,
+		string? Notes = null);
 
 	/// <summary>读设置；文件不存在或读不懂时返回 <c>null</c>（调用方走默认，不猜）。</summary>
 	public static Document? TryRead(string modDirectory)

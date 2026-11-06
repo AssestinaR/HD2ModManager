@@ -34,7 +34,7 @@ internal static class CliLibrarySynchronizationExecutor
 		// 基底目录改名（vpk2patch/ → sectional/）。放在租约内、第二次校验之前：
 		// 改名会动磁盘，而下面那次扫描必须看到改名之后的布局。
 		var migration = await CoreServices.CreateModContentLayoutMigration()
-			.MigrateAsync(workspace.LibraryRoot!, cancellationToken)
+			.MigrateAsync(workspace.LibraryRoot!, validation.Current.Synchronization.Snapshot, cancellationToken)
 			.ConfigureAwait(false);
 		if (!migration.IsClean)
 		{

@@ -11,10 +11,11 @@ public sealed record ModContentLayoutMigrationResult(
 	int Renamed,
 	int AlreadyCurrent,
 	IReadOnlyList<string> Conflicts,
-	IReadOnlyList<string> Failures)
+	IReadOnlyList<string> Failures,
+	int Adopted = 0)
 {
 	public bool IsClean => Conflicts.Count == 0 && Failures.Count == 0;
 
 	public static ModContentLayoutMigrationResult Nothing { get; } =
-		new(0, 0, Array.Empty<string>(), Array.Empty<string>());
+		new(0, 0, Array.Empty<string>(), Array.Empty<string>(), 0);
 }

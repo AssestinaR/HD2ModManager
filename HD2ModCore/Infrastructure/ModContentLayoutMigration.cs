@@ -25,6 +25,7 @@ public sealed class ModContentLayoutMigration : IModContentLayoutMigration
 {
 	public ValueTask<ModContentLayoutMigrationResult> MigrateAsync(
 		string modsRootDirectory,
+		LibrarySnapshot? snapshot = null,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modsRootDirectory);
@@ -33,8 +34,14 @@ public sealed class ModContentLayoutMigration : IModContentLayoutMigration
 
 		var renamed = 0;
 		var alreadyCurrent = 0;
+		var adopted = 0;
 		var conflicts = new List<string>();
 		var failures = new List<string>();
+		// 老库把名字/备注只存在 library.json 里。文件夹是权威之后，先把它们落到各自的
+		// `.hd2modmanager-mod.json`，否则"把文件夹搬到另一个库"就会丢名字——那正是要解决的事。
+		var nodesByPath = snapshot?.Nodes.Values
+			.GroupBy(node => node.RelativePath, StringComparer.OrdinalIgnoreCase)
+			.ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
 		foreach (var node in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly))
 		{
@@ -43,6 +50,10 @@ public sealed class ModContentLayoutMigration : IModContentLayoutMigration
 			// 管理器自己的目录（护甲映射工作区、换载荷备份、回收站…）不参与。
 			if (name.StartsWith(CustomModelCatalog.ManagerDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
 				continue;
+
+			if (nodesByPath is not null && nodesByPath.TryGetValue(name, out var nodeRecord)
+				&& AdoptSettingsFile(node, nodeRecord))
+				adopted++;
 
 			var legacy = Path.Combine(node, ModNodePayloadLayout.LegacyVpkPatchDirectoryName);
 			var current = Path.Combine(node, ModNodePayloadLayout.VpkPatchDirectoryName);
@@ -74,6 +85,28 @@ public sealed class ModContentLayoutMigration : IModContentLayoutMigration
 		}
 
 		return ValueTask.FromResult(new ModContentLayoutMigrationResult(
-			renamed, alreadyCurrent, conflicts, failures));
+			renamed, alreadyCurrent, conflicts, failures, adopted));
+	}
+
+	/// <summary>
+	/// 把一个 Mod 的名字/备注/id 写进它自己的设置文件。已有完整内容的不动（幂等）。
+	/// </summary>
+	private static bool AdoptSettingsFile(string modDirectory, ModNode node)
+	{
+		var existing = ModSettingsFile.TryRead(modDirectory);
+		var id = node.Id.Value.ToString("N");
+		if (existing is not null
+			&& string.Equals(existing.Id, id, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(existing.Name, node.Metadata.Name, StringComparison.Ordinal)
+			&& string.Equals(existing.Notes, node.Metadata.Notes, StringComparison.Ordinal))
+			return false;
+
+		var document = new ModSettingsFile.Document(
+			ModSettingsFile.CurrentSchema,
+			existing?.EnabledMaterialPatches,
+			id,
+			node.Metadata.Name,
+			node.Metadata.Notes);
+		return ModSettingsFile.TryWrite(modDirectory, document) is null;
 	}
 }

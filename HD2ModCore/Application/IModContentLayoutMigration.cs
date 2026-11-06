@@ -8,5 +8,6 @@ public interface IModContentLayoutMigration
 {
 	ValueTask<ModContentLayoutMigrationResult> MigrateAsync(
 		string modsRootDirectory,
+		LibrarySnapshot? snapshot = null,
 		CancellationToken cancellationToken = default);
 }

@@ -1,4 +1,4 @@
-﻿using HD2ModCore.Application;
+using HD2ModCore.Application;
 using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
@@ -354,6 +354,16 @@ public sealed class ModLibraryManager : IModLibraryManager
 		nodes[nodeId] = node with { Metadata = metadata, RelativePath = node.RelativePath };
 		var updated = snapshot with { Nodes = nodes, SavedUtc = DateTimeOffset.UtcNow };
 		await _store.SaveAsync(updated, cancellationToken).ConfigureAwait(false);
+		// 名字/备注同时写进 Mod 自己的设置文件——它是**权威**，library.json 只是索引。
+		// 只写库不写文件夹的话，下次扫描会用文件夹里的旧名字覆盖掉用户刚改的。
+		var directory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
+		var existing = ModSettingsFile.TryRead(directory);
+		ModSettingsFile.TryWrite(directory, new ModSettingsFile.Document(
+			ModSettingsFile.CurrentSchema,
+			existing?.EnabledMaterialPatches,
+			nodeId.Value.ToString("N"),
+			metadata.Name,
+			metadata.Notes));
 		return updated;
 	}
 
