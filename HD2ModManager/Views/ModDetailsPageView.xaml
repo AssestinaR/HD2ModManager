@@ -350,14 +350,6 @@
                                     InternalReorderRequested="OnMaterialOptionInternalReorderRequested"
                                     SelectionPolicy="None"
                                     Visibility="{Binding HasMaterialOptions, Converter={StaticResource BoolToVis}}"/>
-
-                <!-- 最近一次改动的结果（成功或失败都写在这一行，不弹窗打断） -->
-                <TextBlock Text="{Binding MaterialOptionStatus}"
-                           Foreground="{StaticResource TextSecondary}"
-                           FontSize="12"
-                           TextWrapping="Wrap"
-                           Margin="16,4,16,16"
-                           Visibility="{Binding HasMaterialOptionStatus, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
         </ScrollViewer>
 

@@ -340,6 +340,22 @@ namespace HD2ModManager.Services
                             : $"为 {enabled}/{available.Length} 个主体启用了。");
         }
 
+        /// <summary>
+        /// 告知"这个 Mod 的目录内容变了"（例如材质选项刚重建了生效层）。
+        /// <para>
+        /// 为什么不直接调部署：这个应用里"内容变了要不要重新部署"只有一个判断点——
+        /// Shell 订阅 <see cref="ModContentFactsChanged"/> 后跑「部署触发检查」，只有这个 Mod
+        /// 在活动配置里（或可达）才部署。换甲合并就是这么接的，材质选项也应该走同一条路，
+        /// 而不是自己另开一个"总是部署"的入口。
+        /// </para>
+        /// </summary>
+        public async Task NotifyModContentChangedAsync(string guid, CancellationToken cancellationToken = default)
+        {
+            if (!TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.ContainsKey(nodeId)) return;
+            await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+            ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs([nodeId], ModContentChangeKind.Changed));
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+        }
         public async Task<string> ToggleOptionForHostAsync(string optionId, string hostId, CancellationToken cancellationToken = default)
         {
             var option = Get(optionId);

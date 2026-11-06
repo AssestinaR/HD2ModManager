@@ -36,7 +36,6 @@ public partial class ModDetailsPageViewModel
 	private readonly Dictionary<string, MaterialOptionRowViewModel> _materialOptionRows =
 		new(StringComparer.OrdinalIgnoreCase);
 	private string _materialOptionQuery = string.Empty;
-	private string? _materialOptionStatus;
 	private bool _materialOperationInFlight;
 	private RelayCommand? _clearMaterialOptionQueryCommand;
 
@@ -114,9 +113,6 @@ public partial class ModDetailsPageViewModel
 		}
 	}
 
-	public string? MaterialOptionStatus => _materialOptionStatus;
-
-	public bool HasMaterialOptionStatus => !string.IsNullOrWhiteSpace(_materialOptionStatus);
 
 	/// <summary>这个 Mod 的目录（材质选项的 patch、配图、结构文件都在里面）。</summary>
 	private string? MaterialOptionDirectory
@@ -204,7 +200,7 @@ public partial class ModDetailsPageViewModel
 		var directory = MaterialOptionDirectory;
 		if (directory is null)
 		{
-			SetMaterialOptionStatus("找不到 Mod 目录，改动没有保存。", isError: true);
+			_notifications?.Show("找不到 Mod 目录，改动没有保存。", NotificationLevel.Error);
 			return;
 		}
 
@@ -328,14 +324,16 @@ public partial class ModDetailsPageViewModel
 	}
 
 	/// <summary>
-	/// 所有写操作走同一个门：同一时刻只允许一个物化在跑（连点会让两次物化互相覆盖），
-	/// 结束后统一刷新列表与状态文案。
+	/// 所有写操作走同一个门：同一时刻只允许一个物化在跑（连点会让两次物化互相覆盖）。
+	/// 成功后按"内容变了"通报出去——要不要重新部署由 Shell 的部署触发检查决定，
+	/// 和换甲合并、VPK 重建走同一条路。反馈用通知，和详情页那张选项卡一致：
+	/// 那张卡也没有在卡片下方留一行状态文字。
 	/// </summary>
 	private async Task RunMaterialOperationAsync(Func<Task<string?>> operation, string successMessage)
 	{
 		if (_materialOperationInFlight)
 		{
-			SetMaterialOptionStatus("上一项改动还在处理，请稍候。", isError: false);
+			_notifications?.Show("上一项改动还在处理，请稍候。");
 			return;
 		}
 
@@ -344,12 +342,19 @@ public partial class ModDetailsPageViewModel
 		{
 			var error = await operation().ConfigureAwait(true);
 			RefreshMaterialOptions();
-			SetMaterialOptionStatus(error ?? successMessage, isError: error is not null);
+			if (error is not null)
+			{
+				_notifications?.Show(error, NotificationLevel.Error);
+				return;
+			}
+
+			await NotifyMaterialContentChangedAsync().ConfigureAwait(true);
+			_notifications?.Show(successMessage);
 		}
 		catch (Exception exception)
 		{
 			RefreshMaterialOptions();
-			SetMaterialOptionStatus($"改动失败：{exception.Message}", isError: true);
+			_notifications?.Show($"改动失败：{exception.Message}", NotificationLevel.Error);
 		}
 		finally
 		{
@@ -357,13 +362,22 @@ public partial class ModDetailsPageViewModel
 		}
 	}
 
-	private void SetMaterialOptionStatus(string? message, bool isError)
+	/// <summary>
+	/// 告诉库"这个 Mod 的目录内容变了"（生效层刚被重建）。
+	/// 不自己调部署：这个应用里"内容变了要不要重新部署"只有 DeploymentTriggerCheck 一个判断点，
+	/// 而它挂在 ModContentFactsChanged 上。
+	/// </summary>
+	private async Task NotifyMaterialContentChangedAsync()
 	{
-		_materialOptionStatus = message;
-		OnPropertyChanged(nameof(MaterialOptionStatus));
-		OnPropertyChanged(nameof(HasMaterialOptionStatus));
-		OnPropertyChanged(nameof(MaterialOptionSummary));
-		if (isError && !string.IsNullOrWhiteSpace(message))
-			LogService.Warn($"材质选项：{message}");
+		if (Mod is null) return;
+		try
+		{
+			await _library.NotifyModContentChangedAsync(Mod.Guid).ConfigureAwait(true);
+		}
+		catch (Exception exception)
+		{
+			// 通报失败不该把"已经写好的改动"变成一次报错；记一行，用户仍能手动部署。
+			LogService.Warn($"材质选项：通报内容变更失败（{exception.Message}），本次不会自动重新部署。");
+		}
 	}
 }

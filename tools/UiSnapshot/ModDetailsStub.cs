@@ -77,8 +77,7 @@ public sealed class ModDetailsStub
         | HD2ModManager.Controls.Lists.ModListRowAction.MoveUp
         | HD2ModManager.Controls.Lists.ModListRowAction.MoveDown;
     public HD2ModManager.Controls.EmptyState.EmptyStatePresentation? MaterialOptionEmptyState { get; set; }
-    public string? MaterialOptionStatus { get; set; } = "已启用并重建生效层（重启游戏后生效）。";
-    public bool HasMaterialOptionStatus => MaterialOptionStatus is not null;
+
 
     /// <summary>材质选项的桩行：只实现面板要的接口和行模板读的成员。</summary>
     public sealed class StubMaterialRow : HD2ModManager.ViewModels.IModListKeyed,
