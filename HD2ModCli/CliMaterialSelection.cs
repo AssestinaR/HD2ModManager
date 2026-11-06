@@ -50,6 +50,45 @@ internal static class CliMaterialSelection
 			materialization.Error);
 	}
 
+	/// <summary>
+	/// 按给定次序重排材质选项。顺序写在结构文件里，决定"多个同时启用时谁覆盖谁"，
+	/// patch 文件一个都不动。
+	/// </summary>
+	public static Result SetOrder(CliWorkspace workspace, CliLibraryState state, string selector, string spec)
+	{
+		var node = CliProjections.ResolveMod(state.Snapshot.Nodes, selector);
+		var libraryRoot = workspace.LibraryRoot
+			?? throw new CliUserException("LibraryNotConfigured", "未能确定 Mod 库。");
+		var directory = Path.Combine(libraryRoot, node.RelativePath);
+
+		var requested = ParseSpecification(spec);
+		var current = MaterialOptionSettings.Read(directory);
+		if (current.Count == 0)
+			throw new CliUserException("ModHasNoMaterialOptions",
+				$"{node.Metadata.Name} 没有材质选项（不是 sectional 类，或结构文件里没有材质 patch）。");
+
+		// 只按名字匹配，未列出的排在后面并保持原来的相对次序。
+		var byName = current.ToDictionary(option => option.PatchFileName, StringComparer.OrdinalIgnoreCase);
+		var ordered = new List<int>();
+		foreach (var name in requested)
+			if (byName.TryGetValue(name, out var option)) ordered.Add(option.PatchIndex);
+		foreach (var option in current)
+			if (!ordered.Contains(option.PatchIndex)) ordered.Add(option.PatchIndex);
+
+		var error = MaterialOptionSettings.Move(directory, ordered);
+		if (error is not null)
+			return new Result(false, SectionalPatchManifestFile.ReadArchiveHex16(
+				ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory) ?? directory),
+				Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), error);
+
+		var after = MaterialOptionSettings.Read(directory);
+		return new Result(true, string.Empty,
+			after.Where(option => option.Enabled).Select(option => option.PatchFileName).ToArray(),
+			Array.Empty<string>(),
+			after.Select(option => $"{option.Order}. {option.Name ?? option.PatchFileName}").ToArray(),
+			null);
+	}
+
 	/// <summary><c>none</c> = 一个都不启用；其余按逗号分隔的 patch 文件名。</summary>
 	private static IReadOnlyList<string> ParseSpecification(string spec)
 	{

@@ -577,27 +577,24 @@ public static class CliProjections
 	/// 一个 Mod 的材质选项表：来自基底目录里的 <c>patches.json</c>，启用状态来自 Mod 自己的设置文件。
 	/// 读不到就返回空表——这只是给人看的清单，不值得为它报错。
 	/// </summary>
+	/// <summary>
+	/// 一个 Mod 的材质选项表：顺序、名字、备注、配图、启用状态。
+	/// 走 <see cref="MaterialOptionSettings.Read"/>，与详情页那张卡是同一份读法——
+	/// 两个界面各写一份的话，同一个库会显示成两种样子。
+	/// </summary>
 	private static IReadOnlyList<object> ReadMaterialOptions(ModNode node, CliWorkspace workspace)
 	{
 		var directory = ResolveNodePath(workspace.LibraryRoot, node.RelativePath);
 		if (string.IsNullOrWhiteSpace(directory)) return Array.Empty<object>();
-		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory);
-		if (payload is null) return Array.Empty<object>();
-		var manifest = SectionalPatchManifestFile
-			.TryReadAsync(payload)
-			.AsTask().GetAwaiter().GetResult();
-		if (manifest is null) return Array.Empty<object>();
-		var enabled = ModSettingsFile.TryRead(directory)?.EnabledMaterialPatches;
-		return manifest.Patches
-			.Where(entry => entry.Role == SectionalPatchRole.Material)
-			.Select(entry => (object)new
+		return MaterialOptionSettings.Read(directory)
+			.Select(option => (object)new
 			{
-				patchFileName = $"{entry.ArchiveHex16}.patch_{entry.PatchIndex}",
-				optionName = entry.OptionName,
-				// 设置文件里没有显式状态时，按"内置材质默认启用"算——与物化器的默认一致。
-				enabled = enabled is null
-					? entry.OptionName == SectionalPatchManifest.BuiltInMaterialOptionName
-					: enabled.Contains($"{entry.ArchiveHex16}.patch_{entry.PatchIndex}", StringComparer.OrdinalIgnoreCase),
+				patchFileName = option.PatchFileName,
+				optionName = option.Name,
+				notes = option.Notes,
+				imageFileName = option.ImageFileName,
+				order = option.Order,
+				enabled = option.Enabled,
 			})
 			.ToArray();
 	}

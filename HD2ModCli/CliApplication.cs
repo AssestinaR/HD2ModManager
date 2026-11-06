@@ -882,6 +882,18 @@ public static class CliApplication
 			Emit(invocation.Options, new { ok = outcome.Ok, rebuild = outcome }, () => FormatModRebuild(outcome));
 			return outcome.Ok ? 0 : 2;
 		}
+		if (command.Length == 5 && command[0] == "mod" && command[1] == "material" && command[2] == "order")
+		{
+			EnsureMaterialSetOptions(invocation.Options, "mod material order");
+			var (orderWorkspace, orderState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var ordered = CliMaterialSelection.SetOrder(orderWorkspace, orderState, invocation.Command[3], invocation.Command[4]);
+			Emit(invocation.Options,
+				new { ok = ordered.Succeeded, material = ordered },
+				() => ordered.Succeeded
+					? "顺序已更新（写在结构文件里，patch 文件未改动）：\n  " + string.Join("\n  ", ordered.Notes)
+					: $"排序失败：{ordered.Error}");
+			return ordered.Succeeded ? 0 : 2;
+		}
 		if (command.Length == 5 && command[0] == "mod" && command[1] == "material" && command[2] == "set")
 		{
 			EnsureMaterialSetOptions(invocation.Options, "mod material set");
@@ -8066,6 +8078,7 @@ HD2 Mod Manager 命令行
 	  hd2mod custom-model rename <Mod GUID或前缀> <名字> --manager-root <管理器目录> --json
 	  hd2mod mod clone <Mod GUID或前缀> <变体名> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rebuild <Mod GUID或前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod material order <Mod GUID或前缀> <patch1,patch2,...> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod material set <Mod GUID或前缀> <patch1,patch2|none> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod create <逻辑 Mod 名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
