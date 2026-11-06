@@ -1,3 +1,5 @@
+using HD2ModCore.Infrastructure;
+
 namespace HD2ModCli;
 
 internal sealed record CliLibrarySynchronizationExecutionResult(
@@ -29,6 +31,26 @@ internal static class CliLibrarySynchronizationExecutor
 		await using var session = await CliWriteTargetGuard
 			.AcquireSessionAsync(workspace, CliWriteTargetMode.Mutation, cancellationToken)
 			.ConfigureAwait(false);
+		// 基底目录改名（vpk2patch/ → sectional/）。放在租约内、第二次校验之前：
+		// 改名会动磁盘，而下面那次扫描必须看到改名之后的布局。
+		var migration = await CoreServices.CreateModContentLayoutMigration()
+			.MigrateAsync(workspace.LibraryRoot!, cancellationToken)
+			.ConfigureAwait(false);
+		if (!migration.IsClean)
+		{
+			var diagnostics = migration.Conflicts
+				.Select(name => new CliLibrarySynchronizationDiagnostic(
+					"LibraryLayoutMigrationConflict", "warning", false,
+					$"{name} 的新旧两个基底目录（sectional/ 与 vpk2patch/）同时存在；已跳过改名，需要人工确认哪个才是当前产物。",
+					Path: name))
+				.Concat(migration.Failures.Select(failure => new CliLibrarySynchronizationDiagnostic(
+					"LibraryLayoutMigrationFailed", "warning", false,
+					$"基底目录改名失败：{failure}")))
+				.ToArray();
+			if (diagnostics.Length != 0)
+				return new CliLibrarySynchronizationExecutionResult(
+					true, false, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), diagnostics);
+		}
 		// Repeat validation inside the cross-process lease before writing the
 		// library file; the plan never bypasses this second scan.
 		var locked = await CliLibrarySynchronizationPlanArtifacts

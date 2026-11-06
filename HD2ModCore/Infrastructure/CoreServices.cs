@@ -11,6 +11,9 @@ public static class CoreServices
 	public static IPatchFileNameParser CreatePatchFileNameParser() => new PatchFileNameParser();
 	public static IModLibraryResidualCleanupService CreateModLibraryResidualCleanupService()
 		=> new ModLibraryResidualCleanupService(CreatePatchFileNameParser());
+	// 作用：把老库里还叫 vpk2patch/ 的基底目录一次性改名为 sectional/。
+	// Purpose: One-time rename of legacy payload directories to the current name.
+	public static IModContentLayoutMigration CreateModContentLayoutMigration() => new ModContentLayoutMigration();
 	// 作用：以当前库快照为准回收派生索引里属于已删除节点的残留（它们全是可重建的缓存）。
 	// Purpose: Reclaims derived-index residue for nodes absent from the library (all rebuildable caches).
 	public static IModIndexGarbageCollector CreateModIndexGarbageCollector(StoragePaths paths)

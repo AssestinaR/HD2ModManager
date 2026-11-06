@@ -496,6 +496,18 @@ namespace HD2ModManager.Services
             var synchronizationIsCurrent = synchronizeVersion == Volatile.Read(ref _stateVersion);
             if (synchronizationIsCurrent)
             {
+                // 基底目录改名（vpk2patch/ → sectional/）：**一次性**，且必须在残留清理之前，
+                // 这样后面的分类看到的是统一的布局。读路径同时认两个名字只是过渡期保险，
+                // 一直留着会让"写进哪一个"这个问题永远悬着。
+                var layoutMigration = await CoreServices.CreateModContentLayoutMigration()
+                    .MigrateAsync(_paths.ModsDirectory, cancellationToken).ConfigureAwait(false);
+                if (layoutMigration.Renamed > 0)
+                    LogService.Info($"基底目录改名：已把 {layoutMigration.Renamed} 个 Mod 的 vpk2patch 目录改为 sectional。");
+                foreach (var conflict in layoutMigration.Conflicts)
+                    LogService.Warn($"基底目录改名跳过 {conflict}：新旧两个基底目录同时存在，需要人工确认哪个才是当前产物。");
+                foreach (var failure in layoutMigration.Failures)
+                    LogService.Warn($"基底目录改名失败：{failure}");
+
                 var residualCleanup = CoreServices.CreateModLibraryResidualCleanupService()
                     .Cleanup(result.Snapshot, _paths.ModsDirectory, cancellationToken);
                 if (residualCleanup.RemovedCount > 0)

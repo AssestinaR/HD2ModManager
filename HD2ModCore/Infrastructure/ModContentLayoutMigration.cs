@@ -1,0 +1,79 @@
+using HD2ModCore.Application;
+using HD2ModCore.Domain;
+
+namespace HD2ModCore.Infrastructure;
+
+/// <summary>
+/// 把老库里还叫 <c>vpk2patch/</c> 的基底目录改名为 <c>sectional/</c>。
+/// <para>
+/// <b>为什么需要它。</b>2026-11 把基底目录改名了。读路径确实同时认两个名字
+/// （见 <see cref="ModNodePayloadLayout.TryGetExistingVpkPatchDirectory"/>），但"两个名字都认"
+/// 只是过渡期的保险，不该成为长期形态：只要库里有旧名目录，写路径就必须不断回答
+/// "这次写进哪一个"，而任何一个回答错的调用点都会在同一个 Mod 里造出两层基底——
+/// 旧层里被删掉的 patch 会以"只在旧层存在"的身份复活。
+/// </para>
+/// <para>
+/// <b>为什么只是一次性改名，不做别的。</b>目录里的文件一个字节都不用动：它们记的是
+/// patch 内容，与目录叫什么无关。<c>serialize → 改名</c> 之外任何"顺手整理"都是多余风险。
+/// </para>
+/// <para>
+/// <b>新旧同时存在时不动。</b>那说明有人已经在新名下写过东西，两边都可能是"当前"。
+/// 猜错会静默改变用户的观感，所以只报告、不合并——交给显式修复命令或用户决定。
+/// </para>
+/// </summary>
+public sealed class ModContentLayoutMigration : IModContentLayoutMigration
+{
+	public ValueTask<ModContentLayoutMigrationResult> MigrateAsync(
+		string modsRootDirectory,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(modsRootDirectory);
+		var root = Path.GetFullPath(modsRootDirectory);
+		if (!Directory.Exists(root)) return ValueTask.FromResult(ModContentLayoutMigrationResult.Nothing);
+
+		var renamed = 0;
+		var alreadyCurrent = 0;
+		var conflicts = new List<string>();
+		var failures = new List<string>();
+
+		foreach (var node in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var name = Path.GetFileName(node);
+			// 管理器自己的目录（护甲映射工作区、换载荷备份、回收站…）不参与。
+			if (name.StartsWith(CustomModelCatalog.ManagerDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
+				continue;
+
+			var legacy = Path.Combine(node, ModNodePayloadLayout.LegacyVpkPatchDirectoryName);
+			var current = Path.Combine(node, ModNodePayloadLayout.VpkPatchDirectoryName);
+			var hasLegacy = Directory.Exists(legacy);
+			var hasCurrent = Directory.Exists(current);
+
+			if (!hasLegacy)
+			{
+				alreadyCurrent++;
+				continue;
+			}
+			if (hasCurrent)
+			{
+				conflicts.Add(name);
+				continue;
+			}
+
+			try
+			{
+				Directory.Move(legacy, current);
+				renamed++;
+			}
+			catch (Exception exception) when (exception is IOException
+				or UnauthorizedAccessException
+				or System.Security.SecurityException)
+			{
+				failures.Add($"{name}: {exception.Message}");
+			}
+		}
+
+		return ValueTask.FromResult(new ModContentLayoutMigrationResult(
+			renamed, alreadyCurrent, conflicts, failures));
+	}
+}
