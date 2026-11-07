@@ -1357,9 +1357,10 @@ namespace HD2ModManager.Services
         private void RebuildEntityIndex(bool includePatchFiles = true)
         {
             var rebuilt = new Dictionary<string, ModEntity>(StringComparer.OrdinalIgnoreCase);
+            var passFacts = CreatePassFileFacts();
             foreach (var node in _snapshot.Nodes.Values.OrderBy(n => n.Metadata.Name, StringComparer.OrdinalIgnoreCase))
             {
-                rebuilt[node.Id.Value.ToString("N")] = ToEntity(node, includePatchFiles);
+                rebuilt[node.Id.Value.ToString("N")] = ToEntity(node, includePatchFiles, passFacts);
             }
             Volatile.Write(ref _byGuid, rebuilt);
         }
@@ -1367,15 +1368,16 @@ namespace HD2ModManager.Services
         private void UpdateEntityIndex(IEnumerable<ModNodeId> nodeIds)
         {
             var updated = new Dictionary<string, ModEntity>(Volatile.Read(ref _byGuid), StringComparer.OrdinalIgnoreCase);
+            var passFacts = CreatePassFileFacts();
             foreach (var nodeId in nodeIds)
             {
-                if (_snapshot.Nodes.TryGetValue(nodeId, out var node)) updated[nodeId.Value.ToString("N")] = ToEntity(node);
+                if (_snapshot.Nodes.TryGetValue(nodeId, out var node)) updated[nodeId.Value.ToString("N")] = ToEntity(node, true, passFacts);
                 else updated.Remove(nodeId.Value.ToString("N"));
             }
             Volatile.Write(ref _byGuid, updated);
         }
 
-        private ModEntity ToEntity(ModNode node, bool includePatchFiles = true)
+        private ModEntity ToEntity(ModNode node, bool includePatchFiles = true, Lazy<PatchFileIndex?>? passFacts = null)
         {
             var derived = _derivedData.Find(node.Id);
             return new ModEntity
@@ -1396,7 +1398,7 @@ namespace HD2ModManager.Services
                 HasPatchContent = node.PatchGroups.Count > 0,
                 CreatedAt = node.Metadata.CreatedUtc.UtcDateTime,
                 UpdatedAt = (node.Metadata.ModifiedUtc ?? node.Metadata.CreatedUtc).UtcDateTime,
-                FileGroups = (includePatchFiles ? GetPatchFiles(node, derived) : Array.Empty<IndexedPatchFile>())
+                FileGroups = (includePatchFiles ? GetPatchFiles(node, derived, passFacts) : Array.Empty<IndexedPatchFile>())
                     .Where(f => f.SidecarKind == PatchSidecarKind.Base)
                     .OrderBy(f => f.ArchiveHex16, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(f => f.NormalizedOrder)
@@ -1410,24 +1412,39 @@ namespace HD2ModManager.Services
             };
         }
 
-        private IReadOnlyList<IndexedPatchFile> GetPatchFiles(ModNode node, DerivedModNodeData? derived)
+        // 一次实体索引重建/更新只向信息中心要一次整库 FileFacts。
+        // 以前每个"没有派生 PatchFiles"的节点都各发一次整库请求（遍历全库文件算 generation + 整份 JSON 缓存解析，
+        // 实测命中缓存也要 50~70ms，一天累计近 3000 次），而且是同步阻塞等待。
+        // 惰性：整批节点都有派生数据时一次请求都不发；作用域只限一次重建，所以没有跨时刻的过期问题。
+        private Lazy<PatchFileIndex?> CreatePassFileFacts()
         {
-            if (derived?.PatchFiles is { Count: > 0 } files) return files;
+            var snapshot = _snapshot;
+            return new Lazy<PatchFileIndex?>(() => RequestFileFactsBlocking(snapshot), LazyThreadSafetyMode.ExecutionAndPublication);
+        }
+
+        private PatchFileIndex? RequestFileFactsBlocking(LibrarySnapshot snapshot)
+        {
             try
             {
                 // This fallback runs while the entity index is being materialized. Route it
                 // through the information center so a missing derived snapshot does not
                 // trigger a second independent Patch-file scan.
-                var facts = _informationCenter.RequestFileFactsAsync(
-                    _snapshot,
+                return _informationCenter.RequestFileFactsAsync(
+                    snapshot,
                     _paths.ModsDirectory,
                     new ModInformationRequest(ModInformationKind.FileFacts, "ModLibraryService:EntityIndex"))
-                    .AsTask().GetAwaiter().GetResult();
-                return facts.Data is not null && facts.Data.FilesByNode.TryGetValue(node.Id, out var nodeFiles)
-                    ? nodeFiles
-                    : Array.Empty<IndexedPatchFile>();
+                    .AsTask().GetAwaiter().GetResult().Data;
             }
-            catch { return Array.Empty<IndexedPatchFile>(); }
+            catch { return null; }
+        }
+
+        private IReadOnlyList<IndexedPatchFile> GetPatchFiles(ModNode node, DerivedModNodeData? derived, Lazy<PatchFileIndex?>? passFacts)
+        {
+            if (derived?.PatchFiles is { Count: > 0 } files) return files;
+            var facts = passFacts is not null ? passFacts.Value : RequestFileFactsBlocking(_snapshot);
+            return facts is not null && facts.FilesByNode.TryGetValue(node.Id, out var nodeFiles)
+                ? nodeFiles
+                : Array.Empty<IndexedPatchFile>();
         }
 
         private static bool TryParseNodeId(string? value, out ModNodeId nodeId)

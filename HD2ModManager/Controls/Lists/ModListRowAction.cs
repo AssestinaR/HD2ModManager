@@ -26,6 +26,14 @@ public enum ModListRowAction
     ArmorOpenDetails = 1 << 11,
     ArmorRenameCustomModel = 1 << 14,
     ExportMod = 1 << 15,
+    // 设置这一行（或选中的这几行）属于哪个分类。只在面板拿到 CategoryFilter 且分类已启用时才出现。
+    Category = 1 << 17,
+}
+
+// 面板自己知道某些动作"此刻不可用"（比如分类被关掉）时，通过它告诉行动作生成器。
+public interface IRowActionAvailability
+{
+    ModListRowAction UnavailableActions { get; }
 }
 
 // 行级动作抑制。某些动作对特定行没有意义（自定义素体不能"解除"、非装饰不能

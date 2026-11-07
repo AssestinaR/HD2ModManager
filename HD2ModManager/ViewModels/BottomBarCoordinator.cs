@@ -36,6 +36,8 @@ namespace HD2ModManager.ViewModels
             BeginMoveCommand = new RelayCommand(_ => BeginMove());
             BeginInsertCommand = new RelayCommand(_ => BeginInsert());
             Registrations.LayoutChanged += (_, snapshot) => LayoutChanged?.Invoke(this, snapshot);
+            // 分类开关变化时，选择栏上的"设置分类"按钮随之出现/消失。
+            CategoryFilterPreference.Changed += () => OnPropertyChanged(nameof(ShowSetCategory));
             _selection.SelectionChanged += (_, _) =>
             {
                 if (!_suppressSelectionCancel) CancelEdit();
@@ -82,6 +84,9 @@ namespace HD2ModManager.ViewModels
         // 装饰包已不再支持：`HasSelectedAttachableDecorations` 已删除（恒为 false）。
         private bool HasSelectedDirectHostOptions => TryGetSelectedDirectHostOptions(out _, out _);
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
+        // 库页/配置页的选择都可以一键批量设置分类；分类被关掉时不显示。
+        public bool ShowSetCategory => IsRelationshipSourceSelection && CategoryFilterPreference.IsEnabled;
+        public IReadOnlyList<string> SelectedIds => _selection.SelectedIds.ToArray();
         public bool ShowSetAsOption => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedOptionCandidates;
 
         // 名字是历史命名：这两个按钮现在的含义是"启用/停用选项"，装饰已不在其中。
@@ -520,6 +525,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(RelationshipHostName));
             OnPropertyChanged(nameof(ShowAddToProfile));
             OnPropertyChanged(nameof(ShowSetAsOption));
+            OnPropertyChanged(nameof(ShowSetCategory));
 
             OnPropertyChanged(nameof(ShowEnableDecorations));
             OnPropertyChanged(nameof(ShowDisableDecorations));

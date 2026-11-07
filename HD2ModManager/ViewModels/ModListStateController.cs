@@ -13,9 +13,11 @@ public interface IModListProjectionSource : IEnumerable
     event EventHandler<ModListProjectionChangedEventArgs>? ProjectionChanged;
 }
 
-public sealed class ModListProjectionChangedEventArgs(IReadOnlyList<object> items) : EventArgs
+public sealed class ModListProjectionChangedEventArgs(IReadOnlyList<object> items, bool animate = true) : EventArgs
 {
     public IReadOnlyList<object> Items { get; } = items;
+    // false：这次变化是"换页/换上下文"造成的整体替换，不要排过渡动画，直接落定。
+    public bool Animate { get; } = animate;
 }
 
 public sealed class ModListProjectionSource<TItem> : IReadOnlyList<TItem>, IModListProjectionSource
@@ -27,10 +29,10 @@ public sealed class ModListProjectionSource<TItem> : IReadOnlyList<TItem>, IModL
     public int Count => _items.Count;
     public TItem this[int index] => _items[index];
 
-    internal void Publish(IReadOnlyList<TItem> items)
+    internal void Publish(IReadOnlyList<TItem> items, bool animate = true)
     {
         _items = items.ToArray();
-        ProjectionChanged?.Invoke(this, new ModListProjectionChangedEventArgs(_items.Cast<object>().ToArray()));
+        ProjectionChanged?.Invoke(this, new ModListProjectionChangedEventArgs(_items.Cast<object>().ToArray(), animate));
     }
 
     public IEnumerator<TItem> GetEnumerator() => _items.GetEnumerator();
@@ -56,6 +58,7 @@ public sealed class ModListStateController<TState, TItem> : IDisposable
     private IReadOnlyList<string> _presentedKeys = Array.Empty<string>();
     private readonly HashSet<string> _presentedKeySet = new(StringComparer.OrdinalIgnoreCase);
     private int _visibleCount;
+    private bool _pendingAnimate = true;
     private bool _disposed;
 
     public ModListStateController(
@@ -100,7 +103,8 @@ public sealed class ModListStateController<TState, TItem> : IDisposable
     public void Submit(
         IEnumerable<TState> states,
         IEnumerable<string>? retainedKeys = null,
-        bool commitImmediately = false)
+        bool commitImmediately = false,
+        bool animate = true)
     {
         ArgumentNullException.ThrowIfNull(states);
         var normalized = Normalize(states);
@@ -111,7 +115,7 @@ public sealed class ModListStateController<TState, TItem> : IDisposable
 
         if (!_dispatcher.CheckAccess())
         {
-            _ = _dispatcher.BeginInvoke(() => Submit(normalized.Select(entry => entry.State), retained, commitImmediately));
+            _ = _dispatcher.BeginInvoke(() => Submit(normalized.Select(entry => entry.State), retained, commitImmediately, animate));
             return;
         }
 
@@ -119,6 +123,8 @@ public sealed class ModListStateController<TState, TItem> : IDisposable
         _pendingSnapshot = normalized;
         _pendingRetainedKeys = retained;
         _visibleCount = normalized.Count;
+        // 防抖窗口里只要有一次要求"不动画"，这一轮提交就不动画。
+        _pendingAnimate &= animate;
 
         if (commitImmediately)
         {
@@ -191,6 +197,8 @@ public sealed class ModListStateController<TState, TItem> : IDisposable
             "ModListState.Commit",
             thresholdMilliseconds: 16,
             details: () => $"state={typeof(TState).Name}; snapshot={(pendingSnapshot?.Count ?? -1)}; content={pendingContent.Length}; presented={Items.Count}; cached={_cache.Count}");
+        var animate = _pendingAnimate;
+        _pendingAnimate = true;
         _pendingSnapshot = null;
         _pendingRetainedKeys = null;
         _pendingContentStates.Clear();
@@ -235,7 +243,7 @@ public sealed class ModListStateController<TState, TItem> : IDisposable
             // custom event gives ModListPanel a complete desired order while the
             // panel retains the actual WPF collection and applies Move/Insert/
             // Remove operations instead of a destructive Reset.
-            _items.Publish(orderedItems);
+            _items.Publish(orderedItems, animate);
             _presentedKeys = orderedKeys;
             _presentedKeySet.Clear();
             _presentedKeySet.UnionWith(orderedKeys);

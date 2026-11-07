@@ -16,12 +16,13 @@
         这里只声明"参与解除选项关系"并处理放下。
     -->
     <local:ModListPanel x:Name="LibraryModList" ItemsSource="{Binding Items}"
+                        CategoryFilter="{Binding Category}"
                         HeaderTitle="模组库"
                         HeaderSummary="{Binding ItemCountText}"
                         EmptyState="{Binding EmptyState}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource LibrarySearchActions}"
-                        RowActions="Rename, Details, AddToProfile, ExportMod, OpenFolder, DeleteFromLibrary"
+                        RowActions="Rename, Details, Category, AddToProfile, ExportMod, OpenFolder, DeleteFromLibrary"
                         RowActionInvoked="OnRowActionInvoked"
                         SelectionPolicy="Multiple"
                         RelationshipDragOperation="SetAsOption"

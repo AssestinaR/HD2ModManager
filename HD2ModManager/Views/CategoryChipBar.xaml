@@ -1,0 +1,70 @@
+<UserControl x:Class="HD2ModManager.Views.CategoryChipBar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+        分类筛选芯片条：DataContext 是 ModCategoryFilter。
+        单行、左右滚动，不换行；没有宿主过滤器或被关闭时整条折叠不占位。
+        自建分类的芯片可右键重命名/删除；末尾的"＋ 新建分类"点一下就地变成输入框。
+    -->
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+    <ScrollViewer x:Name="Scroller"
+                  HorizontalScrollBarVisibility="Hidden"
+                  VerticalScrollBarVisibility="Disabled"
+                  PanningMode="HorizontalOnly"
+                  Focusable="False"
+                  Padding="8,6,8,6"
+                  PreviewMouseWheel="OnPreviewMouseWheel"
+                  Visibility="{Binding HasChips, Converter={StaticResource BoolToVis}, FallbackValue=Collapsed, TargetNullValue=Collapsed}">
+        <ItemsControl ItemsSource="{Binding Chips}" Focusable="False">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal"/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Grid Margin="0,0,6,0">
+                        <Button Content="{Binding Text}"
+                                Command="{Binding DataContext.SelectCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                CommandParameter="{Binding}"
+                                Padding="10,3"
+                                Cursor="Hand"
+                                BorderThickness="1"
+                                Click="OnChipClick">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="12"
+                                            Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Setter Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                                    <Setter Property="BorderBrush" Value="{StaticResource StrokeSubtle}"/>
+                                    <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsAdd}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                            <Setter Property="Background" Value="{StaticResource Accent}"/>
+                                            <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                            <Setter Property="Foreground" Value="White"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </Grid>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </ScrollViewer>
+</UserControl>

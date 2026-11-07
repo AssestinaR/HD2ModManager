@@ -2388,6 +2388,16 @@ namespace HD2ModManager.ViewModels
                 _selection,
                 _armorDisplayFactsGate.Task);
 
+        // 选择栏"设置分类"用：当前选择属于哪个页面，就用哪个页面的分类筛选；返回选中的 Mod Guid。
+        internal (ModCategoryFilter Filter, IReadOnlyList<string> Guids)? GetCategorySelectionTarget()
+        {
+            var filter = _bottomBar.IsLibrarySelection ? _libraryWorkspacePage?.Category
+                : _bottomBar.IsProfileSelection ? _profileWorkspacePage?.Category
+                : null;
+            if (filter is null || !filter.IsEnabled) return null;
+            return (filter, _bottomBar.SelectedIds);
+        }
+
         private LibraryPageViewModel CreateLibraryPage()
         {
             var hideSelectedProfileMembers = LeftPageType == WorkspacePageType.Profile || RightPageType == WorkspacePageType.Profile;

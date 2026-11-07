@@ -21,6 +21,7 @@ public sealed class RowActionListConverter : IMultiValueConverter
         var hidden = values[1] is IModListRowActionFilter filter
             ? filter.HiddenActions
             : ModListRowAction.None;
+        if (values[2] is IRowActionAvailability availability) hidden |= availability.UnavailableActions;
         var tips = values[2] as IRowActionToolTipSource;
 
         var items = new List<ModListRowActionItem>(ModListRowActionCatalog.All.Count);

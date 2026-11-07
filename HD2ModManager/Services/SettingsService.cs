@@ -8,6 +8,9 @@ using HD2ModCore.Infrastructure;
 
 namespace HD2ModManager.Services
 {
+    // 用户自建的分类：Id 稳定不变，Name 可改。
+    public sealed record CustomCategoryRecord(string Id, string Name);
+
     public static class SettingsService
     {
         private static readonly string SettingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
@@ -29,6 +32,11 @@ namespace HD2ModManager.Services
             public DateTime? LastGameDataIndexCheckUtc { get; set; }
             public int GameDataIndexCheckIntervalHours { get; set; } = 24;
             public bool AutoImportToActiveProfile { get; set; } = true;
+            // 列表顶部的自动分类筛选条是否显示。默认开。
+            public bool CategoryFilterEnabled { get; set; } = true;
+            // 用户自建分类，以及"某个 Mod 手动归到哪个分类"的覆盖（Mod Guid → 分类键）。
+            public List<CustomCategoryRecord>? CustomCategories { get; set; }
+            public Dictionary<string, string>? CategoryOverrides { get; set; }
         // 旧的二态开关。保留字段只为读取历史设置并迁移，新代码一律读写 ArmorMappingMode。
         public bool DeployLuaMods { get; set; } = true;
         // 护甲映射模式（ArmorMappingMode 的整数值）。null 表示尚未迁移。
@@ -181,6 +189,35 @@ namespace HD2ModManager.Services
             try
             {
                 Update(model => model.GameDataIndexCheckIntervalHours = NormalizeInterval(value));
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool GetCategoryFilterEnabled() => LoadAll()?.CategoryFilterEnabled ?? true;
+
+        public static bool SetCategoryFilterEnabled(bool enabled)
+        {
+            try { Update(model => model.CategoryFilterEnabled = enabled); return true; }
+            catch { return false; }
+        }
+
+        public static (IReadOnlyList<CustomCategoryRecord> Custom, IReadOnlyDictionary<string, string> Overrides) GetCategoryUserData()
+        {
+            var model = LoadAll();
+            return (model?.CustomCategories ?? new List<CustomCategoryRecord>(),
+                model?.CategoryOverrides ?? new Dictionary<string, string>());
+        }
+
+        public static bool SetCategoryUserData(IReadOnlyList<CustomCategoryRecord> custom, IReadOnlyDictionary<string, string> overrides)
+        {
+            try
+            {
+                Update(model =>
+                {
+                    model.CustomCategories = custom.ToList();
+                    model.CategoryOverrides = new Dictionary<string, string>(overrides, StringComparer.OrdinalIgnoreCase);
+                });
                 return true;
             }
             catch { return false; }
