@@ -1,5 +1,6 @@
 using System.Text;
 using HD2ModCore.Application;
+using HD2ModCore.Decoration;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
@@ -80,15 +81,23 @@ public sealed class ModDeployableFilesTests : IDisposable
 	private static string Marker(string path)
 		=> Encoding.UTF8.GetString(File.ReadAllBytes(path), sizeof(uint), (int)new FileInfo(path).Length - sizeof(uint));
 
+	/// <summary>把 <c>Overwrite/</c> 标成"管理器物化过的"——只有这种才允许独占整层。</summary>
+	private static void MarkManaged(string overwriteDirectory)
+	{
+		Directory.CreateDirectory(overwriteDirectory);
+		File.WriteAllText(Path.Combine(overwriteDirectory, ManagedOverwriteMarkers.VpkRekey), string.Empty);
+	}
+
 	private static string Patch(int index) => $"{Archive}.patch_{index}";
 
 	[Fact]
-	public void OverwriteWithAValidPatch_Wins_ForASectionalMod()
+	public void ManagedOverwriteWithAValidPatch_Wins_ForASectionalMod()
 	{
 		var mod = NewMod();
 		WritePatch(ModNodePayloadLayout.GetVpkPatchDirectory(mod), Patch(0), "baseline");
 		WritePatch(ModNodePayloadLayout.GetVpkPatchDirectory(mod), Patch(5), "unselected");
 		WritePatch(ModNodePayloadLayout.GetOverwriteDirectory(mod), Patch(0), "selected");
+		MarkManaged(ModNodePayloadLayout.GetOverwriteDirectory(mod));
 
 		var result = ModDeployableFiles.Resolve(mod, _parser);
 
@@ -99,16 +108,46 @@ public sealed class ModDeployableFilesTests : IDisposable
 
 	// legacy 模组同样可能有 Overwrite。给它加"仅 sectional 生效"的检查会把生效层整个忽略掉。
 	[Fact]
-	public void OverwriteWithAValidPatch_Wins_ForALegacyModToo()
+	public void ManagedOverwriteWithAValidPatch_Wins_ForALegacyModToo()
 	{
 		var mod = NewMod();
 		WritePatch(mod, Patch(0), "root-patch");
 		WritePatch(ModNodePayloadLayout.GetOverwriteDirectory(mod), Patch(0), "overwrite-patch");
+		MarkManaged(ModNodePayloadLayout.GetOverwriteDirectory(mod));
 
 		var result = ModDeployableFiles.Resolve(mod, _parser);
 
 		Assert.Null(result.SkipReason);
 		Assert.Equal("overwrite-patch", Marker(result.FilesByName[Patch(0)]));
+	}
+
+	/// <summary>
+	/// <b>真实样本（2026-11-07，用户 reimu）</b>：基底有 unit + material 两层，
+	/// <c>Overwrite/</c> 是 P3-1 之前那次换甲写的、**只含 unit 层且没有归属标记**。
+	/// <para>
+	/// 判定必须按名顶替，而不是"只部署 Overwrite"：材质层（16.7 MB 贴图）要留在部署集合里。
+	/// 升级到 1.5.0 之后这里只部署 Overwrite，模型在、材质没了；重构建不碰 Overwrite，
+	/// 所以怎么重转都好不了，只有删掉重加才行 —— 社区反馈的正是这个。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void UnmanagedOverwriteWithOnlyTheUnitLayer_KeepsTheBaseMaterialPatch()
+	{
+		var mod = NewMod();
+		var payload = ModNodePayloadLayout.GetVpkPatchDirectory(mod);
+		WritePatch(payload, Patch(0), "unit-before-rekey");
+		WritePatch(payload, Patch(1), "material-with-textures");
+
+		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(mod);
+		WritePatch(overwrite, Patch(0), "unit-after-rekey");
+
+		var result = ModDeployableFiles.Resolve(mod, _parser);
+
+		Assert.Null(result.SkipReason);
+		// unit 换成换甲后的那份…
+		Assert.Equal("unit-after-rekey", Marker(result.FilesByName[Patch(0)]));
+		// …材质层原样保留。
+		Assert.Equal("material-with-textures", Marker(result.FilesByName[Patch(1)]));
 	}
 
 	[Fact]

@@ -14,10 +14,11 @@ public sealed record ModDeployableSet(
 /// <para>
 /// 顺序（与部署器的实际行为一一对应）：
 /// <list type="number">
-/// <item><b>Overwrite 里有有效 patch</b> ⇒ 只部署它，这个 Mod 结束。"有效"= 名字像 patch
-/// <b>且</b>文件头是 patch TOC 魔数（见 <see cref="HasReadablePatchToc"/>）。</item>
-/// <item><b>sectional / vpk2patch 类</b>：有基底目录 ⇒ 就部署它；没有 ⇒ 跳过这条并说明原因。</item>
-/// <item><b>legacy / logical</b>：根目录有 patch ⇒ 部署；没有 ⇒ 跳过这条并说明原因。</item>
+/// <item><b>Overwrite 是管理器物化过的</b>（有归属标记）<b>且读得出 patch TOC</b> ⇒ 只部署它，
+/// 这个 Mod 结束。两个条件缺一不可：没有标记的 Overwrite 是历史形态（可能只写了 unit 层），
+/// 读不出来的文件是残留（半截文件、手工塞进去的同名文件）。</item>
+/// <item><b>sectional / vpk2patch 类</b>：有基底目录 ⇒ 基底 + 同名 Overwrite 顶替；没有 ⇒ 跳过并说明。</item>
+/// <item><b>legacy / logical</b>：根目录有 patch ⇒ 同样按名顶替；没有 ⇒ 跳过并说明。</item>
 /// </list>
 /// </para>
 /// <para>
@@ -41,28 +42,49 @@ public static class ModDeployableFiles
 
 		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(nodeDirectory);
 
-		// ① 生效层已经有内容 ⇒ 它就是全部，不再看任何别的层。
-		if (HasReadablePatchToc(overwrite, parser))
+		// ① 生效层是**管理器物化过的**（有归属标记）且确实读得出来 ⇒ 它就是全部，不再看别的层。
+		//
+		// ⚠️ 标记不能省。老库里躺着一批 P3-1 之前写的 Overwrite：那时换甲只往这里写 unit 层，
+		// **材质层留在基底目录里**。把这种 Overwrite 当成"全部"，材质就整体不部署了
+		// —— 用户看到"模型在、材质没了"，重构建不碰 Overwrite 所以怎么重转都好不了，
+		// 只有删掉重加（新 Mod 没有 Overwrite）才行。2026-11-07 的真实样本就是这样：
+		//   基底：patch_0（unit）+ patch_1（material，16.7 MB 贴图）
+		//   Overwrite：只有 patch_0，且**没有归属标记**
+		// 判定在这些用户上升级前是"两层按名合并"，升级后变成"只看 Overwrite"。
+		if (ManagedOverwriteDirectory.IsManaged(overwrite) && HasReadablePatchToc(overwrite, parser))
 			return new ModDeployableSet(EnumerateFiles(overwrite), null);
 
 		var kind = new ModStorageKindResolver(parser).Resolve(nodeDirectory);
 
-		// ② sectional / vpk2patch：基底就是答案，把它物化成生效层。
+		// ② sectional / vpk2patch：有基底 ⇒ 按名合并（基底 + 同名 Overwrite 顶替）。
 		if (kind is ModStorageKind.Sectional or ModStorageKind.Vpk2Patch)
 		{
 			var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(nodeDirectory);
 			if (payload is null)
 				return new ModDeployableSet(Empty, $"这个 Mod 是 {kind} 类，但没有基底目录（sectional/），没有可部署的 patch。");
-			return new ModDeployableSet(EnumerateFiles(payload), null);
+			return new ModDeployableSet(MergeByName(nodeDirectory), null);
 		}
 
-		// ③ legacy / logical：patch 在根目录上。
+		// ③ legacy / logical：patch 在根目录上，同样让同名 Overwrite 顶替。
 		if (HasValidPatch(nodeDirectory, parser))
-			return new ModDeployableSet(EnumerateFiles(nodeDirectory), null);
+			return new ModDeployableSet(MergeByName(nodeDirectory), null);
 
 		return new ModDeployableSet(Empty,
 			$"这个 Mod 是 {kind} 类，根目录也没有 patch，没有可部署的东西。");
 	}
+
+	/// <summary>
+	/// 载荷（根 + 基底目录，同名后者赢）叠加同名的 <c>Overwrite/</c> 文件。
+	/// <para>
+	/// <b>为什么"没被物化"的 Overwrite 只能按名顶替、不能独占整层。</b>按名顶替不会让任何
+	/// 基底文件消失：它只换掉名字相同的那一份。于是"老 Overwrite 只写了 unit 层"这种情况
+	/// 天然就是对的——unit 被换成换甲后的那份，材质层原样保留。
+	/// </para>
+	/// <para>规则本身在 <see cref="ModNodePayloadLayout.EnumerateEffectiveFilesByName"/>，
+	/// 这里只借用，不另写一套：详情页、资产事实、部署索引必须看到同一批文件。</para>
+	/// </summary>
+	private static Dictionary<string, string> MergeByName(string nodeDirectory)
+		=> ModNodePayloadLayout.EnumerateEffectiveFilesByName(nodeDirectory);
 
 	private static readonly Dictionary<string, string> Empty = new(StringComparer.OrdinalIgnoreCase);
 
