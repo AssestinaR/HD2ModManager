@@ -111,22 +111,16 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
-        /// 走主窗口的正常关闭流程（先保存再退出），并保证替换脚本只在程序确定要退出时才启动。
-        /// 窗口的保存流程可以否决关闭（保存失败时会提示并留在原地）：那样旧实例还活着，脚本不能启动，
-        /// 所以这里等应用的 Exit 事件——它触发才启动脚本；等不到就返回 false，更新回到「已下载」状态，可以重试。
+        /// 走主窗口的正常关闭流程（先保存再退出）并等待结果：应用的 Exit 事件触发返回 true；
+        /// 窗口的保存流程否决了关闭（保存失败时会提示并留在原地）或 60 秒内没有退出则返回 false，调用方撤掉替换脚本。
         /// 本方法在后台线程上被调用并阻塞等待；窗口关闭本身在 UI 线程上进行。
         /// </summary>
-        private static bool RequestExit(Action launch)
+        private static bool RequestExit()
         {
             var app = Application.Current;
-            if (app is null) { launch(); return true; }
+            if (app is null) return true;
             using var exiting = new ManualResetEventSlim();
-            ExitEventHandler handler = (_, _) =>
-            {
-                try { launch(); }
-                catch (Exception e) { LogService.Error($"启动更新脚本失败：{e.Message}"); }
-                exiting.Set();
-            };
+            ExitEventHandler handler = (_, _) => exiting.Set();
             app.Dispatcher.Invoke(() =>
             {
                 app.Exit += handler;
@@ -135,7 +129,6 @@ namespace HD2ModManager.Services
             });
             if (exiting.Wait(TimeSpan.FromSeconds(60))) return true;
             app.Dispatcher.Invoke(() => app.Exit -= handler);
-            // Exit 恰好在超时前后触发的竞态：如果已经触发，脚本已启动，程序正在退出。
             return exiting.IsSet;
         }
 

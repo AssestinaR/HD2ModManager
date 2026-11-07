@@ -386,12 +386,12 @@ public sealed class AppUpdateTests : IDisposable
 
 	// ---- 安装器：解压校验 ----
 
-	private ZipUpdateInstaller NewInstaller(string variant, out string appDir, Func<Action, bool>? requestExit = null, Func<System.Diagnostics.ProcessStartInfo, System.Diagnostics.Process?>? start = null)
+	private ZipUpdateInstaller NewInstaller(string variant, out string appDir, Func<bool>? requestExit = null, Func<System.Diagnostics.ProcessStartInfo, Action?>? start = null)
 	{
 		appDir = Path.Combine(_dir, "app");
 		Directory.CreateDirectory(appDir);
 		File.WriteAllText(Path.Combine(appDir, InstalledPackage.FileName), JsonSerializer.Serialize(new { version = "1.5.0", variant }));
-		return new ZipUpdateInstaller(appDir, Path.Combine(_dir, "run"), Path.Combine(appDir, "HD2ModManager.exe"), requestExit ?? (launch => { launch(); return true; }), null, start ?? (_ => null));
+		return new ZipUpdateInstaller(appDir, Path.Combine(_dir, "run"), Path.Combine(appDir, "HD2ModManager.exe"), requestExit ?? (() => true), null, start ?? (_ => () => { }));
 	}
 
 	private InstallRequest Pack(byte[] zip, string version = "1.6.0")
@@ -442,36 +442,70 @@ public sealed class AppUpdateTests : IDisposable
 	[Fact]
 	public void Installer_DevBuildWithoutMarker_IsNotInstallable()
 	{
-		var installer = new ZipUpdateInstaller(Path.Combine(_dir, "nomarker"), Path.Combine(_dir, "run"), "x.exe", _ => true, null, _ => null);
+		var installer = new ZipUpdateInstaller(Path.Combine(_dir, "nomarker"), Path.Combine(_dir, "run"), "x.exe", () => true, null, _ => () => { });
 		Directory.CreateDirectory(Path.Combine(_dir, "nomarker"));
 		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
 		Assert.Equal(UpdateErrorCode.NotInstallable, ex.Code);
 	}
 
 	[Fact]
-	public void Installer_Install_StartsScriptOnlyWhenExitIsConfirmed()
+	public void Installer_Install_StartsHelperThenRequestsExit()
 	{
+		var order = new List<string>();
 		System.Diagnostics.ProcessStartInfo? started = null;
-		Action? pending = null;
-		var installer = NewInstaller("complete", out var appDir, launch => { pending = launch; return true; }, psi => { started = psi; return System.Diagnostics.Process.GetCurrentProcess(); });
+		var installer = NewInstaller("complete", out var appDir, () => { order.Add("exit"); return true; }, psi => { started = psi; order.Add("start"); return () => order.Add("cancel"); });
 		installer.Install(Pack(MakePackage("1.6.0", "complete")));
-		Assert.Null(started); // 退出被批准之后、真正退出的时候才由宿主去启动
-		pending!();
-		pending(); // 重复调用只启动一次
+		Assert.Equal(new[] { "start", "exit" }, order); // 脚本先起来（只是在等本进程退出），再请求退出
 		Assert.Equal("powershell.exe", started!.FileName);
 		Assert.Equal(appDir, started.ArgumentList[started.ArgumentList.IndexOf("-AppDir") + 1]);
 		Assert.True(File.Exists(installer.ScriptPath));
 	}
 
 	[Fact]
-	public void Installer_ExitVetoed_ThrowsFailedAndNeverStartsScript()
+	public void Installer_ExitVetoed_CancelsHelperAndThrowsFailed()
 	{
-		var started = false;
-		var installer = NewInstaller("complete", out _, _ => false, _ => { started = true; return null; });
+		var order = new List<string>();
+		var installer = NewInstaller("complete", out _, () => false, _ => () => order.Add("cancel"));
 		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
 		Assert.Equal(UpdateErrorCode.Failed, ex.Code);
-		Assert.False(started);
+		Assert.Equal(new[] { "cancel" }, order); // 保存被否决：把还在等待的脚本撤掉
 		Assert.False(Directory.Exists(Path.Combine(_dir, "run", "stage-1.6.0")));
+	}
+
+	[Fact]
+	public void Installer_ExitThrows_CancelsHelperAndRethrows()
+	{
+		var cancelled = false;
+		var installer = NewInstaller("complete", out _, () => throw new InvalidOperationException("boom"), _ => () => cancelled = true);
+		Assert.Throws<InvalidOperationException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
+		Assert.True(cancelled);
+	}
+
+	[Fact]
+	public void Installer_HelperFailsToStart_NeverRequestsExit()
+	{
+		var exitRequested = false;
+		var installer = NewInstaller("complete", out _, () => { exitRequested = true; return true; }, _ => null);
+		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
+		Assert.Equal(UpdateErrorCode.Failed, ex.Code);
+		Assert.False(exitRequested); // 脚本没起来就不能让程序退出
+	}
+
+	[Fact]
+	public async Task Updater_UnreadablePackageAtInstall_LeavesDefinedState()
+	{
+		var (net, _, name) = ReleaseWorld();
+		var installer = new RecordingInstaller();
+		using var updater = NewUpdater(net, installer);
+		await updater.CheckAsync();
+		await updater.DownloadAsync();
+		using (new FileStream(Path.Combine(_dir, "run", name), FileMode.Open, FileAccess.Read, FileShare.None))
+		{
+			var ex = await Assert.ThrowsAsync<UpdateException>(() => updater.InstallAsync());
+			Assert.Equal(UpdateErrorCode.DigestMismatch, ex.Code);
+		}
+		Assert.NotEqual(DownloadPhase.Installing, updater.View().Download.Phase); // 不会卡在「安装中」
+		Assert.Null(installer.Request);
 	}
 
 	[Theory]

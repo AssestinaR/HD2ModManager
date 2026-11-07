@@ -72,22 +72,24 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 	private readonly string _appDir;
 	private readonly string _runDir;
 	private readonly string _exe;
-	private readonly Func<Action, bool> _requestExit;
+	private readonly Func<bool> _requestExit;
 	private readonly Func<bool> _idle;
-	private readonly Func<ProcessStartInfo, Process?> _start;
+	private readonly Func<ProcessStartInfo, Action?> _start;
 
 	/// <param name="requestExit">
-	/// 让程序退出：入参是「退出时启动替换脚本」的动作，实现必须保证它在程序确定要退出时恰好执行一次；
-	/// 返回 true 表示退出已被批准（窗口的保存流程没有否决），false 表示没能退出（例如保存失败、超时）。
+	/// 让程序退出并等待结果：true 表示程序确定在退出（窗口的保存流程没有否决），false 表示没能退出（保存失败、超时等）。
 	/// </param>
-	public ZipUpdateInstaller(string appDir, string runDir, string exe, Func<Action, bool> requestExit, Func<bool>? idle = null, Func<ProcessStartInfo, Process?>? start = null)
+	/// <param name="start">
+	/// 启动替换脚本。返回「取消」动作（用于在程序没能退出时杀掉还在等待的脚本）；返回 null 表示没能启动。
+	/// </param>
+	public ZipUpdateInstaller(string appDir, string runDir, string exe, Func<bool> requestExit, Func<bool>? idle = null, Func<ProcessStartInfo, Action?>? start = null)
 	{
 		_appDir = appDir.TrimEnd('\\', '/');
 		_runDir = runDir;
 		_exe = exe;
 		_requestExit = requestExit;
 		_idle = idle ?? (() => true);
-		_start = start ?? Process.Start;
+		_start = start ?? StartHelper;
 	}
 
 	public bool IsIdle => _idle();
@@ -103,6 +105,17 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 		if (path.Split('\\').Any(segment => segment is ".." or "." or "")) return false;
 		if (AllowedFiles.Any(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase))) return true;
 		return AllowedDirectories.Any(d => path.StartsWith(d + "\\", StringComparison.OrdinalIgnoreCase));
+	}
+
+	private static Action? StartHelper(ProcessStartInfo psi)
+	{
+		var process = Process.Start(psi);
+		if (process is null) return null;
+		return () =>
+		{
+			try { if (!process.HasExited) process.Kill(true); }
+			catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+		};
 	}
 
 	public string ScriptPath => Path.Combine(_runDir, "apply-update.ps1");
@@ -125,16 +138,17 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 				"-ProcessId", Environment.ProcessId.ToString(), "-AppDir", _appDir, "-Stage", stage, "-Exe", _exe,
 				"-Version", request.Version, "-ResultFile", UpdateApplyResult.ResultPath(_runDir), "-LogFile", Path.Combine(_appDir, "logs", "app-update.log") })
 				psi.ArgumentList.Add(a);
-			// 脚本只在程序确定要退出时才启动：窗口的保存流程可能否决关闭，那样旧实例还活着，不能让脚本去替换它的文件。
-			var launched = false;
-			void Launch()
+			// 先启动脚本并确认它真的起来了；它此时只是在等本进程退出，不会碰任何文件。
+			var cancel = _start(psi) ?? throw new UpdateException(UpdateErrorCode.Failed, "Could not start the update script");
+			bool exiting;
+			try { exiting = _requestExit(); }
+			catch { cancel(); throw; }
+			if (!exiting)
 			{
-				if (launched) return;
-				launched = true;
-				_ = _start(psi);
-			}
-			if (!_requestExit(Launch))
+				// 窗口的保存流程否决了关闭（或超时）：旧实例还活着，把还在等待的脚本撤掉，更新留待重试。
+				cancel();
 				throw new UpdateException(UpdateErrorCode.Failed, "The manager did not close (saving was refused or timed out); the update was not applied");
+			}
 		}
 		catch (UpdateException) { TryDeleteDir(stage); throw; }
 		catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.ComponentModel.Win32Exception)
@@ -200,7 +214,7 @@ param([int]$ProcessId, [string]$AppDir, [string]$Stage, [string]$Exe, [string]$V
 $ErrorActionPreference = 'Stop'
 $AppDir = $AppDir.TrimEnd('\')
 $Stage = $Stage.TrimEnd('\')
-$Backup = Join-Path (Split-Path -Parent $Stage) ("backup-" + $Version)
+$Backup = Join-Path (Split-Path -Parent $Stage) ("backup-" + $Version + "-" + (Get-Date -Format 'yyyyMMddHHmmssfff'))
 $swapped = $false
 $created = @()
 $rolledBack = $false

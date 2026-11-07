@@ -413,7 +413,8 @@ public sealed class AppUpdater : IDisposable
 		}
 		Raise();
 		string actual;
-		try { actual = await UpdateDownloader.Sha256FileAsync(r.File).ConfigureAwait(false); } catch (IOException) { actual = string.Empty; }
+		try { actual = await UpdateDownloader.Sha256FileAsync(r.File).ConfigureAwait(false); }
+		catch (Exception e) when (e is IOException or UnauthorizedAccessException) { actual = string.Empty; } // 读不了包：按「包变了」处理，走下面的摘要不符分支
 		if (_stopped || (automatic && (!_prefs.AutoUpdate || _prefs.Skipped == r.Version)))
 		{
 			lock (_gate) { if (_download.Phase == DownloadPhase.Installing) _download = new DownloadView(DownloadPhase.Ready, r.Version); }
