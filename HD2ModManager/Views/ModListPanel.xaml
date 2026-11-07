@@ -51,10 +51,30 @@
                          Opacity="0"
                          Text="{Binding SearchText, ElementName=Root, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="搜索名称或备注"/>
-                <Button Grid.Column="1"
-                        Style="{StaticResource AppSearchToggleButton}"
-                        ToolTip="显示或隐藏搜索"
-                        Click="OnToggleSearchClick"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <!-- 分类开关：图标按钮，紧挨搜索按钮。宿主没给 CategoryFilter 时整个隐藏。 -->
+                    <Button x:Name="CategoryToggleButton"
+                            DataContext="{Binding CategoryFilter, ElementName=Root}"
+                            Command="{Binding ToggleEnabledCommand}"
+                            ToolTip="{Binding ToggleText}"
+                            Margin="0,0,2,0">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource AppCategoryToggleButton}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsEnabled}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                    <Button Style="{StaticResource AppSearchToggleButton}"
+                            ToolTip="显示或隐藏搜索"
+                            Click="OnToggleSearchClick"/>
+                </StackPanel>
                 <TextBlock x:Name="HeaderSummaryElement"
                            Grid.Row="1"
                            Grid.ColumnSpan="2"
@@ -73,6 +93,9 @@
             </Grid>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
+            <DockPanel>
+            <!-- 分类芯片条固定在列表卡片顶部，不跟随滚动；只在启用且分类 ≥ 2 种时占位。 -->
+            <local:CategoryChipBar DockPanel.Dock="Top" DataContext="{Binding CategoryFilter, ElementName=Root}"/>
             <Grid ClipToBounds="True">
             <Grid x:Name="ActivePresentationLayer">
             <ListBox x:Name="ItemsList" ItemsSource="{Binding PresentedItems, ElementName=Root}"
@@ -199,6 +222,8 @@
                                                 <Binding Path="RowActions" ElementName="Root"/>
                                                 <Binding/>
                                                 <Binding ElementName="Root"/>
+                                                <!-- 分类开关变化时重新生成行动作（"设置分类"按钮随之出现/消失）。 -->
+                                                <Binding Path="CategoryFilter.IsEnabled" ElementName="Root" FallbackValue="False"/>
                                             </MultiBinding>
                                         </ItemsControl.ItemsSource>
                                         <ItemsControl.ItemsPanel>
@@ -370,6 +395,7 @@
             <lists:DropHintOverlay x:Name="ExternalDropOverlay" Panel.ZIndex="40"/>
             <lists:DropHintOverlay x:Name="RelationshipDropOverlay" Panel.ZIndex="45"/>
             </Grid>
+            </DockPanel>
         </Border>
     </DockPanel>
 </UserControl>

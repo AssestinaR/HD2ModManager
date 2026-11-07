@@ -305,6 +305,7 @@ namespace HD2ModManager
                 shell.ReleaseArmorTargetsCommand,
                 shell.ClearArmorTargetsCommand,
                 shell.CancelSelectionCommand);
+            _selectionActionPresentation.CategoryTargetProvider = shell.GetCategorySelectionTarget;
             _temporaryEditorPresentation ??= new TemporaryEditorBarPresentation(shell.BottomBar);
 
             if (shell.BottomBar.HasSelection)

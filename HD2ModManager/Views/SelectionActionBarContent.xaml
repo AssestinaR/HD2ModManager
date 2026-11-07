@@ -9,6 +9,7 @@
         <Button Style="{StaticResource AppPrimaryButton}" Content="加入配置" Command="{Binding SelectionPrimaryCommand}" Margin="0,0,8,0" Visibility="{Binding ShowAddToProfile, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding MoveButtonText}" Command="{Binding BeginMoveCommand}" Margin="0,0,8,0" Visibility="{Binding ShowMove, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="插入" Command="{Binding BeginInsertCommand}" Margin="0,0,8,0" Visibility="{Binding ShowInsert, Converter={StaticResource BoolToVis}}"/>
+        <Button Style="{StaticResource AppPrimaryButton}" Content="设置分类" Click="OnSetCategoryClick" Margin="0,0,8,0" Visibility="{Binding ShowSetCategory, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding SetAsOptionText}" Command="{Binding SetSelectedModsAsOptionsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowSetAsOption, Converter={StaticResource BoolToVis}}"/>
 
         <Button Style="{StaticResource AppSecondaryButton}" Content="从当前 Mod 移除选项" Command="{Binding RemoveSelectedOptionsFromHostCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRemoveOptionsFromHost, Converter={StaticResource BoolToVis}}"/>

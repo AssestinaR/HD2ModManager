@@ -4,16 +4,19 @@
              xmlns:local="clr-namespace:HD2ModManager.Views">
     <UserControl.Resources>
         <DataTemplate x:Key="ProfileSearchActions">
-            <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource AppHeaderTextButton}" Content="{Binding OutdatedFilterText}" Click="OnToggleOutdatedFilterClick"/>
+            </StackPanel>
         </DataTemplate>
     </UserControl.Resources>
     <local:ModListPanel x:Name="ProfileModList" ItemsSource="{Binding Items}"
+                        CategoryFilter="{Binding Category}"
                         HeaderTitle="{Binding CurrentProfileTitle}"
                         HeaderSummary="{Binding HeaderSummary}"
                         EmptyState="{Binding EmptyState}"
                         SearchText="{Binding Query, UpdateSourceTrigger=PropertyChanged}"
                         SearchActionsTemplate="{StaticResource ProfileSearchActions}"
-                        RowActions="Details, ExportMod, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
+                        RowActions="Details, Category, ExportMod, MoveUp, MoveDown, RemoveFromProfile, DeleteFromLibrary"
                          RowActionInvoked="OnRowActionInvoked"
                          SelectionPolicy="Multiple"
                          RelationshipDragOperation="SetAsOption"

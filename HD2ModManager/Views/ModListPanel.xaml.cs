@@ -15,7 +15,7 @@ using HD2ModManager.ViewModels;
 namespace HD2ModManager.Views;
 
 // Shared visual shell. Host pages retain all Mod-specific commands and transactions.
-public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRelationshipDropTarget
+public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowActionAvailability, IModRelationshipDropTarget
 {
     private readonly Dictionary<Border, SelectionIndicatorSubscription> _selectionIndicatorSubscriptions = new();
     private readonly BulkObservableCollection<object> _presentedItems = new();
@@ -126,6 +126,7 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     public static readonly DependencyProperty ArmorReleaseToolTipProperty = DependencyProperty.Register(nameof(ArmorReleaseToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("解除视觉来源或映射"));
     public static readonly DependencyProperty ArmorOpenDetailsToolTipProperty = DependencyProperty.Register(nameof(ArmorOpenDetailsToolTip), typeof(string), typeof(ModListPanel), new PropertyMetadata("查看映射目标"));
     public static readonly DependencyProperty AllowKeyboardRenameProperty = DependencyProperty.Register(nameof(AllowKeyboardRename), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
+    public static readonly DependencyProperty CategoryFilterProperty = DependencyProperty.Register(nameof(CategoryFilter), typeof(HD2ModManager.ViewModels.ModCategoryFilter), typeof(ModListPanel), new PropertyMetadata(null));
     public static readonly DependencyProperty SearchActionsTemplateProperty = DependencyProperty.Register(nameof(SearchActionsTemplate), typeof(DataTemplate), typeof(ModListPanel), new PropertyMetadata(null, OnSearchActionsTemplateChanged));
     private static readonly DependencyPropertyKey HasPresentedItemsPropertyKey = DependencyProperty.RegisterReadOnly(nameof(HasPresentedItems), typeof(bool), typeof(ModListPanel), new PropertyMetadata(false));
     public static readonly DependencyProperty HasPresentedItemsProperty = HasPresentedItemsPropertyKey.DependencyProperty;
@@ -170,6 +171,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
     public string ArmorReleaseToolTip { get => (string)GetValue(ArmorReleaseToolTipProperty); set => SetValue(ArmorReleaseToolTipProperty, value); }
     public string ArmorOpenDetailsToolTip { get => (string)GetValue(ArmorOpenDetailsToolTipProperty); set => SetValue(ArmorOpenDetailsToolTipProperty, value); }
     public bool AllowKeyboardRename { get => (bool)GetValue(AllowKeyboardRenameProperty); set => SetValue(AllowKeyboardRenameProperty, value); }
+    // 宿主提供自动分类筛选时，面板在卡片顶部固定显示芯片条，并在搜索按钮旁提供开关图标。
+    public HD2ModManager.ViewModels.ModCategoryFilter? CategoryFilter { get => (HD2ModManager.ViewModels.ModCategoryFilter?)GetValue(CategoryFilterProperty); set => SetValue(CategoryFilterProperty, value); }
     public DataTemplate? SearchActionsTemplate { get => (DataTemplate?)GetValue(SearchActionsTemplateProperty); set => SetValue(SearchActionsTemplateProperty, value); }
 
     // 同一动作在不同列表里意思不同（"解除视觉对象" vs "解除映射目标"），
@@ -503,12 +506,52 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IModRe
         e.Handled = true;
     }
 
+    // 没有分类筛选（宿主没传，或用户关掉了分类）时，"设置分类"动作不出现。
+    public ModListRowAction UnavailableActions
+        => CategoryFilter is { IsEnabled: true } ? ModListRowAction.None : ModListRowAction.Category;
+
+    // 点行上的"设置分类"：目标是被选中的所有行（点的这行在选中里时），否则只是点的这一行。
+    private void ShowCategoryMenu(FrameworkElement anchor, object rowItem)
+    {
+        if (CategoryFilter is not { IsEnabled: true } filter) return;
+        var guids = (rowItem is IModListSelectable { IsSelected: true }
+                ? GetSelectedItems()
+                : new[] { rowItem })
+            .OfType<IModListSelectable>()
+            .Select(item => item.SelectionKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (guids.Length == 0) return;
+
+        var popup = new Popup
+        {
+            PlacementTarget = anchor,
+            Placement = PlacementMode.Bottom,
+            // 卡片宽 300 + 两侧 14 的阴影边距；右对齐到按钮，避免从窗口右缘溢出。
+            HorizontalOffset = anchor.ActualWidth - 328 + 14,
+            VerticalOffset = -6,
+            StaysOpen = false,
+            AllowsTransparency = true,
+            PopupAnimation = PopupAnimation.Fade,
+        };
+        popup.Child = new CategoryPickerCard(filter, guids, () => popup.IsOpen = false);
+        popup.IsOpen = true;
+    }
+
     private void OnRowActionClick(object sender, RoutedEventArgs e)
     {
         // 按钮在行模板里的 ItemsControl 中，所以按钮的 DataContext 是动作项而不是
         // 行对象；行对象必须从容器上取回来。
         if (sender is not FrameworkElement { Tag: ModListRowActionItem actionItem }) return;
         if (FindAncestor<ListBoxItem>(sender as DependencyObject)?.DataContext is not { } rowItem) return;
+        if (actionItem.Action == ModListRowAction.Category)
+        {
+            // 分类是面板自己的能力（数据都在 CategoryFilter 里），不需要宿主页面再转一手。
+            ShowCategoryMenu((FrameworkElement)sender, rowItem);
+            e.Handled = true;
+            return;
+        }
         RowActionInvoked?.Invoke(this, new ModListRowActionEventArgs(rowItem, actionItem.Action));
         e.Handled = true;
     }

@@ -193,9 +193,9 @@ internal sealed class ModListTransitionController : IDisposable
     }
 
     private void OnProjectionChanged(object? sender, ModListProjectionChangedEventArgs args)
-        => HandleDesiredChanged(args.Items, "projection");
+        => HandleDesiredChanged(args.Items, "projection", args.Animate);
 
-    private void HandleDesiredChanged(IReadOnlyList<object> desired, string action)
+    private void HandleDesiredChanged(IReadOnlyList<object> desired, string action, bool animate = true)
     {
         if (_disposed) return;
         _desired = desired;
@@ -208,7 +208,9 @@ internal sealed class ModListTransitionController : IDisposable
         // 于是 phase 停在 AwaitingLayout、IsHitTestVisible 停在 false，
         // 要等用户切走再切回来（Suspend → Cancel）才恢复 —— 用户看到的就是
         // "列表是空的/点不动，过一会儿又好了"。折叠面板必须直接落定。
-        if (!CanAnimate)
+        // 换页造成的整体替换（如模组库在"单页/并排"之间切换导致成员翻转）：
+        // 页面本身正在做淡入淡出，再叠一层双宿主交叉淡化只会白白多布局一次整张列表。
+        if (!animate || !CanAnimate)
         {
             SettleImmediately(desired);
             return;

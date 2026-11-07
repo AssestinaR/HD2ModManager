@@ -519,6 +519,15 @@ namespace HD2ModManager.ViewModels
 
         public ModListProjectionSource<ProfileListItemViewModel> Items => _list.Items;
         public bool HasItems => _list.VisibleCount != 0;
+        // 自动分类筛选（与模组库页共用）。选中具体分类时列表是子集，禁用拖动排序。
+        private ModCategoryFilter? _categoryFilter;
+        public ModCategoryFilter Category => _categoryFilter ??= new ModCategoryFilter(
+            guid => _library.GetDerivedData(guid)?.AssetSummary,
+            () =>
+            {
+                OnPropertyChanged(nameof(CanReorder));
+                Refresh(ListTransitionKind.Filter);
+            });
         public ObservableCollection<string> Profiles { get; } = new();
         public string Query
         {
@@ -553,7 +562,7 @@ namespace HD2ModManager.ViewModels
             }
         }
         public string OutdatedFilterText => ShowOnlyOutdated ? "显示全部" : "显示过时";
-        public bool CanReorder => string.IsNullOrWhiteSpace(Query) && !ShowOnlyOutdated;
+        public bool CanReorder => string.IsNullOrWhiteSpace(Query) && !ShowOnlyOutdated && !Category.IsActive;
         private bool _canAcceptLibraryDrop;
         public bool CanAcceptLibraryDrop => _canAcceptLibraryDrop;
 
@@ -811,6 +820,8 @@ namespace HD2ModManager.ViewModels
             RefreshDirectOptionCounts();
             EnsureDisplayedOrders(profile);
             var states = new List<ProfileModListState>();
+            // 先过搜索/过时筛选得到候选集，用它统计分类芯片，再按选中的分类做最后一道筛选。
+            var candidates = new List<(string Guid, ProfileEntry Entry, HD2ModManager.Models.ModEntity? Mod, DerivedModNodeData? Derived)>();
             foreach (var entry in _profiles.GetSortedEntries(profile))
             {
                 var guid = entry.NodeId.Value.ToString("N");
@@ -819,6 +830,13 @@ namespace HD2ModManager.ViewModels
                 var assetSummary = derived?.AssetSummary;
                 if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) continue;
                 if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) continue;
+                candidates.Add((guid, entry, mod, derived));
+            }
+            Category.Rebuild(candidates.Select(candidate => candidate.Guid).ToList());
+            OnPropertyChanged(nameof(CanReorder));
+            foreach (var (guid, entry, mod, derived) in candidates)
+            {
+                if (!Category.Matches(guid)) continue;
                 _userStatuses.TryGetValue(guid, out var status);
                 states.Add(CreateListState(guid, mod, derived, entry.LoadOrder, entry.AddedUtc, status));
             }
@@ -1030,8 +1048,9 @@ namespace HD2ModManager.ViewModels
                 details: () => $"guids={guids.Count}; rebuild={requiresRebuild}; visibleContent={refreshVisibleContent}; refreshThumbnails={refreshThumbnails}; items={Items.Count}");
             RefreshUserStatuses();
             var contentCanAffectMembership = guids.Count != 0
-                && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated);
-            if (requiresRebuild || contentCanAffectMembership)
+                && (!string.IsNullOrWhiteSpace(Query) || ShowOnlyOutdated || Category.IsActive);
+            var categoriesChanged = !requiresRebuild && Category.HasClassificationChanged(guids.Count != 0 ? guids : null);
+            if (requiresRebuild || contentCanAffectMembership || categoriesChanged)
                 Refresh();
             else if (guids.Count != 0)
                 PublishContent(guids);
@@ -1126,6 +1145,7 @@ namespace HD2ModManager.ViewModels
             var assetSummary = derived?.AssetSummary;
             if (!ModSearchMatcher.IsMatch(mod?.Name, mod?.Description, assetSummary, Query)) return null;
             if (ShowOnlyOutdated && derived?.UnitCompatibility.IsOutdated != true) return null;
+            if (!Category.Matches(guid)) return null;
             _userStatuses.TryGetValue(guid, out var status);
             return CreateListState(guid, mod, derived, entry.LoadOrder, entry.AddedUtc, status);
         }
@@ -1265,6 +1285,7 @@ namespace HD2ModManager.ViewModels
             _thumbnailCancellation?.Dispose();
             _thumbnailCancellation = null;
             _list.Committed -= OnListProjectionCommitted;
+            _categoryFilter?.Dispose();
             _list.Dispose();
         }
     }
@@ -1380,6 +1401,7 @@ namespace HD2ModManager.ViewModels
         private string? _description;
         private string? _thumbnailSourcePath;
         private string? _imagePath;
+        private bool _imagePathResolved;
         private int _thumbnailRevision;
         private string _contentVersion = string.Empty;
         private string _assetSummary;
@@ -1391,7 +1413,20 @@ namespace HD2ModManager.ViewModels
         private DateTimeOffset _addedUtc;
         public string Name => _name;
         public string? Description => _description;
-        public string? ImagePath => _imagePath;
+        public string? ImagePath
+        {
+            get
+            {
+                // 缩略图路径要 stat 磁盘：只在行真正被虚拟化面板实例化、绑定读取时才解析，
+                // 屏幕外的行不付这笔钱。
+                if (!_imagePathResolved)
+                {
+                    _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+                    _imagePathResolved = true;
+                }
+                return _imagePath;
+            }
+        }
         public string AssetSummary => _assetSummary;
         public string AssetSummaryText => SecondaryDetailText;
         public ModListRowPresentation RowPresentation => _rowPresentation;
@@ -1417,7 +1452,7 @@ namespace HD2ModManager.ViewModels
             _name = name;
             _description = description;
             _thumbnailSourcePath = imagePath;
-            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            _imagePathResolved = false;
             _assetSummary = assetSummary;
             _loadOrder = loadOrder;
             _displayOrder = displayOrder;
@@ -1445,7 +1480,7 @@ namespace HD2ModManager.ViewModels
             _thumbnailRevision = state.ThumbnailRevision;
             _contentVersion = state.ContentVersion;
             _thumbnailSourcePath = state.ImagePath;
-            _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            _imagePathResolved = false;
         }
 
         internal void ApplyListState(ProfileModListState state)
@@ -1468,7 +1503,7 @@ namespace HD2ModManager.ViewModels
             _thumbnailSourcePath = state.ImagePath;
             _thumbnailRevision = state.ThumbnailRevision;
             _contentVersion = state.ContentVersion;
-            if (imageChanged) _imagePath = ThumbnailService.GetExistingThumbnailPath(_thumbnailSourcePath, 72);
+            if (imageChanged) _imagePathResolved = false;
             _assetSummary = state.AssetSummary;
             _loadOrder = state.LoadOrder;
             _displayOrder = state.DisplayOrder;
