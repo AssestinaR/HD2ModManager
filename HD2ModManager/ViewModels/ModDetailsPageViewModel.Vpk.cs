@@ -288,7 +288,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// 留着会一条消息弹两次。
 	/// </para>
 	/// </summary>
-	private void SetVpkStatus(string value, NotificationLevel level = NotificationLevel.Info, int seconds = 12)
+	private void SetVpkStatus(string value, NotificationLevel level = NotificationLevel.Info, int seconds = 12, bool notify = true)
 	{
 		if (_vpkStatus != value)
 		{
@@ -297,8 +297,11 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			OnPropertyChanged(nameof(HasVpkComponentStatus));
 		}
 
-		if (!string.IsNullOrWhiteSpace(value))
-			_notifications?.Show(value, level, TimeSpan.FromSeconds(seconds), "Mod 详情");
+		if (string.IsNullOrWhiteSpace(value)) return;
+		// notify=false：这条只是"这次翻开关发生了什么"的即时反馈，翻来翻去会刷屏，
+		// 不弹通知，只在日志里留一条痕迹。
+		if (notify) _notifications?.Show(value, level, TimeSpan.FromSeconds(seconds), "Mod 详情");
+		else LogService.Info("Mod 详情：" + value);
 	}
 
 	public bool HasVpkComponentStatus => !string.IsNullOrWhiteSpace(_vpkStatus);
@@ -680,16 +683,18 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 		if (_vpkBusy)
 		{
-			VpkComponentStatus = "头身合并已保存；上一个操作还在跑，请等它结束后点「应用」重新生成。";
+			SetVpkStatus("头身合并已保存；上一个操作还在跑，请等它结束后点「应用」重新生成。", notify: false);
 			return;
 		}
 
 		var targets = ResolveApplyTargets(directory);
 		if (targets is null)
 		{
-			VpkComponentStatus = enabled
-				? "已开启头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。"
-				: "已关闭头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。";
+			SetVpkStatus(
+				enabled
+					? "已开启头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。"
+					: "已关闭头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。",
+				notify: false);
 			return;
 		}
 
