@@ -226,25 +226,37 @@ namespace HD2ModManager.ViewModels
             var bridge = new OperationProgressBridge(new BackgroundTaskOperationTarget(task), operationId, SynchronizationContext.Current ?? new SynchronizationContext());
             try
             {
-                task.MarkRunning("正在重建 GameData 资产索引");
+                task.MarkRunning("正在检查 GameData 资产索引");
                 var archiveHashes = await CoreServices.CreateFileSystemArchiveHashesProvider(_paths)
                     .GetArchiveHashesJsonAsync(task.CancellationToken);
                 var assetIndex = CoreServices.CreateAssetArchiveIndexService(_paths);
-                var lastProgressUpdate = 0L;
-                var indexProgress = new Progress<IndexBuildProgress>(item =>
+                // 索引指纹包含游戏 build 号与 GameData 文件元数据：与当前一致就直接沿用已建好的索引，
+                // 不再每次整库重扫；游戏更新 / 校验改了文件时才重建。
+                var existingStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
+                if (existingStatus.IsCurrent)
                 {
-                    var now = Environment.TickCount64;
-                    if (now - Interlocked.Read(ref lastProgressUpdate) < 200 && item.Current < item.Total) return;
-                    Interlocked.Exchange(ref lastProgressUpdate, now);
-                    task.UpdateStage($"正在重建 GameData 资产索引 {item.Current}/{item.Total}");
-                    task.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
-                });
-                await Task.Run(() => assetIndex.BuildOrRebuildAsync(gameData, archiveHashes, indexProgress, task.CancellationToken).AsTask(), task.CancellationToken);
-                var indexStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
-                if (!indexStatus.IsCurrent)
-                    throw new InvalidOperationException("GameData 资产索引重建后仍不可用或已过时。");
+                    task.UpdateStage("索引与当前游戏版本一致，沿用已有索引");
+                    LogService.Info("一键修复：资产索引与当前游戏版本一致，跳过重建。");
+                }
+                else
+                {
+                    task.MarkRunning("正在重建 GameData 资产索引");
+                    var lastProgressUpdate = 0L;
+                    var indexProgress = new Progress<IndexBuildProgress>(item =>
+                    {
+                        var now = Environment.TickCount64;
+                        if (now - Interlocked.Read(ref lastProgressUpdate) < 200 && item.Current < item.Total) return;
+                        Interlocked.Exchange(ref lastProgressUpdate, now);
+                        task.UpdateStage($"正在重建 GameData 资产索引 {item.Current}/{item.Total}");
+                        task.UpdateProgress(item.Total <= 0 ? null : (double)item.Current / item.Total);
+                    });
+                    await Task.Run(() => assetIndex.BuildOrRebuildAsync(gameData, archiveHashes, indexProgress, task.CancellationToken).AsTask(), task.CancellationToken);
+                    var indexStatus = await assetIndex.GetIndexStatusAsync(gameData, archiveHashes, task.CancellationToken);
+                    if (!indexStatus.IsCurrent)
+                        throw new InvalidOperationException("GameData 资产索引重建后仍不可用或已过时。");
 
-                await Task.Run(() => _library.RefreshAssetSummariesAsync(task.CancellationToken), task.CancellationToken);
+                    await Task.Run(() => _library.RefreshAssetSummariesAsync(task.CancellationToken), task.CancellationToken);
+                }
 
                 task.UpdateStage("正在读取 Unit 版本并检测过时 Mod");
                 var nodes = new List<ModNode>();
