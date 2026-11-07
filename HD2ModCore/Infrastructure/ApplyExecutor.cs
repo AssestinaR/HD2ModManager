@@ -9,6 +9,9 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Preflights deployment sources, commits one complete patch set, verifies it and publishes activation state atomically.
 public sealed class ApplyExecutor : IApplyExecutor
 {
+	// Marks a DeployPatch result whose target already was the wanted link and was left untouched.
+	public const string UnchangedMessage = "Unchanged";
+
 	private readonly IPatchStateScanner _stateScanner;
 	private readonly IPatchFileNameParser _fileNameParser;
 	private readonly IActivationStateStore _activationStateStore;
@@ -62,8 +65,11 @@ public sealed class ApplyExecutor : IApplyExecutor
 		var deployedExternal = new List<ExternalFileMapping>();
 		ExternalFileCommitResult? externalCommit = null;
 		var commitFailed = false;
+		// Incremental deploy: a target that already is the wanted link is neither deleted nor recreated.
+		var unchangedTargets = FindUnchangedTargets(deployOperations, plan.DeploymentMethod);
 		foreach (var operation in plan.Operations.Where(operation => operation.Kind == ApplyOperationKind.DeletePatch))
 		{
+			if (unchangedTargets.Contains(NormalizeTarget(operation.TargetPath))) continue;
 			var result = DeletePatch(operation);
 			operationResults.Add(result);
 			if (!result.Success)
@@ -77,7 +83,9 @@ public sealed class ApplyExecutor : IApplyExecutor
 		{
 			foreach (var operation in deployOperations)
 			{
-				var result = DeployPatch(operation, plan.DeploymentMethod);
+				var result = unchangedTargets.Contains(NormalizeTarget(operation.TargetPath))
+					? new ApplyOperationResult(operation, true, plan.DeploymentMethod, null, UnchangedMessage)
+					: DeployPatch(operation, plan.DeploymentMethod);
 				operationResults.Add(result);
 				if (!result.Success || result.Method is null)
 				{
@@ -847,6 +855,42 @@ public sealed class ApplyExecutor : IApplyExecutor
 			return new ApplyOperationResult(operation, true, DeploymentMethod.Delete, null, null);
 		}
 		catch (Exception exception) { return new ApplyOperationResult(operation, false, DeploymentMethod.Delete, "CannotDeleteExistingPatch", exception.Message); }
+	}
+
+	private static string NormalizeTarget(string path) => Path.GetFullPath(path);
+
+	private static HashSet<string> FindUnchangedTargets(IReadOnlyList<ApplyOperation> deployOperations, DeploymentMethod method)
+	{
+		var unchanged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var operation in deployOperations)
+			if (IsAlreadyDeployed(operation, method)) unchanged.Add(NormalizeTarget(operation.TargetPath));
+		return unchanged;
+	}
+
+	// True only when the target provably is the library file under another name: the same file id for a
+	// hard link, a link resolving to the source for a symbolic link. Equal bytes alone never count.
+	private static bool IsAlreadyDeployed(ApplyOperation operation, DeploymentMethod method)
+	{
+		if (string.IsNullOrWhiteSpace(operation.SourcePath)) return false;
+		try
+		{
+			if (!File.Exists(operation.TargetPath) || !File.Exists(operation.SourcePath)) return false;
+			var isReparsePoint = (File.GetAttributes(operation.TargetPath) & FileAttributes.ReparsePoint) != 0;
+			if (method == DeploymentMethod.HardLink)
+				return !isReparsePoint && FileIdentity.AreSameFile(operation.TargetPath, operation.SourcePath) == true;
+			if (method == DeploymentMethod.SymbolicLink)
+			{
+				if (!isReparsePoint) return false;
+				var resolved = File.ResolveLinkTarget(operation.TargetPath, returnFinalTarget: true);
+				return resolved is not null
+					&& string.Equals(Path.GetFullPath(resolved.FullName), Path.GetFullPath(operation.SourcePath), StringComparison.OrdinalIgnoreCase);
+			}
+			return false;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return false;
+		}
 	}
 
 	private static ApplyOperationResult DeployPatch(ApplyOperation operation, DeploymentMethod method)
