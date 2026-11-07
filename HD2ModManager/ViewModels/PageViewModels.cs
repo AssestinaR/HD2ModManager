@@ -1867,8 +1867,18 @@ namespace HD2ModManager.ViewModels
         private bool _isLoadingGameDataIndex;
         public bool IsLoadingGameDataIndex { get => _isLoadingGameDataIndex; private set => SetField(ref _isLoadingGameDataIndex, value); }
 
+        /// <summary>设置页「程序更新」卡片；更新服务在 Shell 启动时创建，这里只是它的界面视图模型。</summary>
+        public AppUpdateSectionViewModel AppUpdate { get; }
+
+        public override void Dispose()
+        {
+            AppUpdate.Dispose();
+            base.Dispose();
+        }
+
         public SettingsPageViewModel(ProfileService profiles, ModLibraryService library, BottomBarCoordinator bottomBar, BackgroundTaskService? backgroundTasks = null)
         {
+            AppUpdate = new AppUpdateSectionViewModel(AppUpdateService.Instance ?? throw new InvalidOperationException("应用更新服务尚未初始化。"));
             Title = "设置";
 			_profiles = profiles;
 			_library = library;
