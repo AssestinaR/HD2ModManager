@@ -261,6 +261,9 @@ namespace HD2ModManager.ViewModels
                 task.UpdateStage("正在读取 Unit 版本并检测过时 Mod");
                 var nodes = new List<ModNode>();
                 var unreadableCount = 0;
+                // 音效 Mod 自带整库 Wwise bank，游戏更新后缺条目会连原版声音一起丢；与 Unit 版本检测互不相干，单独检测。
+                var audioService = new HD2ModCore.Audio.AudioBankRepairService(new HD2ModCore.Audio.GameDataOfficialBankSource(gameData));
+                var audioNodes = new List<(ModNode Node, string Directory, int SafeCount, int UnsafeCount)>();
                 var candidates = _library.Snapshot.Nodes.Values
                     .OrderBy(node => node.Metadata.Name, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
@@ -283,33 +286,97 @@ namespace HD2ModManager.ViewModels
                     {
                         unreadableCount++;
                     }
+
+                    try
+                    {
+                        var nodeDirectory = Path.Combine(_library.ModsRootDirectory, candidate.RelativePath);
+                        var audio = await audioService.InspectDirectoryAsync(nodeDirectory, task.CancellationToken);
+                        if (audio.IsOutdated)
+                            audioNodes.Add((candidate, nodeDirectory, audio.Findings.Count(item => item.Safe), audio.Findings.Count(item => !item.Safe)));
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception audioException)
+                    {
+                        // 音频检测是附加能力：读取失败只记录，不能拖垮原有的 Unit 过时检测与修复。
+                        LogService.Warn($"音效过时检测失败，已跳过 {candidate.Metadata.Name}：{audioException.Message}");
+                    }
                 }
                 SetOutdatedDetectionResult(nodes.Count, unreadableCount);
-                if (nodes.Count == 0)
+                var repairableAudioNodes = audioNodes.Where(item => item.SafeCount > 0).ToArray();
+                var skippedAudioBanks = audioNodes.Sum(item => item.UnsafeCount);
+                if (nodes.Count == 0 && repairableAudioNodes.Length == 0)
                 {
                     task.MarkCompleted();
                     var summary = unreadableCount == 0
                         ? "检测完成：未发现需要修复的过时 Mod。"
                         : $"检测完成：未发现需要修复的过时 Mod；{unreadableCount} 个 Mod 的 Unit 版本无法确认，已跳过。";
+                    if (skippedAudioBanks > 0)
+                        summary += $"\n另有 {skippedAudioBanks} 个语音类音库含较多自定义条目，为避免丢失自定义语音已跳过。";
                     System.Windows.MessageBox.Show(summary, "检测并修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
                     return;
                 }
 
                 var unreadableNotice = unreadableCount == 0 ? string.Empty : $"\n另有 {unreadableCount} 个 Mod 的 Unit 版本无法确认，本次将跳过。";
-                var confirm = System.Windows.MessageBox.Show($"已检测到 {nodes.Count} 个过时 Mod。{unreadableNotice}\n\n将仅为这些 Mod 生成当前版本候选，并仅在候选完整通过内部检查后替换原 Patch。原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "检测并修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+                var detected = new List<string>();
+                if (nodes.Count > 0) detected.Add($"{nodes.Count} 个模型过时 Mod");
+                if (repairableAudioNodes.Length > 0) detected.Add($"{repairableAudioNodes.Length} 个音效过时 Mod");
+                var audioNotice = repairableAudioNodes.Length == 0
+                    ? string.Empty
+                    : "\n音效 Mod 会以当前官方音库为基础重建，保留 Mod 替换过的音频；任一音库校验不通过时退回官方音库（该库 Mod 音色失效，但原版声音保证可用）。"
+                      + (skippedAudioBanks > 0 ? $"\n另有 {skippedAudioBanks} 个语音类音库含较多自定义条目，已跳过。" : string.Empty);
+                var confirm = System.Windows.MessageBox.Show($"已检测到 {string.Join("、", detected)}。{unreadableNotice}{audioNotice}\n\n将仅处理这些 Mod，并仅在候选完整通过内部检查后替换原 Patch。原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "检测并修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
                 if (confirm != System.Windows.MessageBoxResult.Yes)
                 {
                     task.MarkCompleted();
                     return;
                 }
 
-                task.UpdateStage("正在生成并验证重构候选");
-                task.UpdateProgress(null);
-                var result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
-                task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
-                if (result.CanceledModCount > 0 || result.NotStartedModCount > 0 || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
+                ModRepairBatchResult? result = null;
+                if (nodes.Count > 0)
+                {
+                    task.UpdateStage("正在生成并验证重构候选");
+                    task.UpdateProgress(null);
+                    result = await _repairBatch.RepairAsync(nodes, _library.ModsRootDirectory, gameData, task.CancellationToken, new InlineProgress<OperationProgressEvent>(bridge.Apply), operationId);
+                    task.UpdateStage($"已修复 {result.RepairedModCount}；跳过 {result.SkippedModCount}；失败 {result.FailedModCount}；取消 {result.CanceledModCount}；未开始 {result.NotStartedModCount}");
+                }
+
+                var audioRepairedMods = 0;
+                var audioFailedMods = 0;
+                var audioFallbackNotes = new List<string>();
+                var audioBackupRoot = Path.Combine(_paths.AppRootDirectory, "backups", DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff") + "-audio");
+                if (repairableAudioNodes.Length > 0 && !task.CancellationToken.IsCancellationRequested)
+                {
+                    task.UpdateStage("正在重建过时音效库");
+                    for (var index = 0; index < repairableAudioNodes.Length; index++)
+                    {
+                        task.CancellationToken.ThrowIfCancellationRequested();
+                        var item = repairableAudioNodes[index];
+                        task.UpdateStage($"正在重建音效库 {index + 1}/{repairableAudioNodes.Length}：{item.Node.Metadata.Name}");
+                        task.UpdateProgress((double)(index + 1) / repairableAudioNodes.Length);
+                        try
+                        {
+                            var repaired = await audioService.RepairDirectoryAsync(item.Directory, Path.Combine(audioBackupRoot, item.Node.RelativePath), includeUnsafe: false, task.CancellationToken);
+                            if (repaired.Repaired.Count > 0) audioRepairedMods++;
+                            audioFallbackNotes.AddRange(repaired.Repaired.SelectMany(patch => patch.Notes));
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception audioException)
+                        {
+                            audioFailedMods++;
+                            LogService.Warn($"音效库重建失败 {item.Node.Metadata.Name}：{audioException.Message}");
+                        }
+                    }
+                }
+
+                if (result is not null && (result.CanceledModCount > 0 || result.NotStartedModCount > 0) || task.CancellationToken.IsCancellationRequested) task.MarkCanceled();
                 else task.MarkCompleted();
-                if (result.HasRepairs)
+                if (audioRepairedMods > 0 && result?.HasRepairs != true)
+                {
+                    // 音效补丁同样是原地替换了 Mod 目录中的文件，指纹必须同步，否则下次启动会被当成外部修改。
+                    await _library.SynchronizeAsync(task.CancellationToken);
+                    if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
+                }
+                if (result is not null && result.HasRepairs)
                 {
                     // 修复过程直接替换了 Mod 目录中的 Patch；必须同步并持久化新的 ContentFingerprint，
                     // 否则下次启动会把本次已知修改误判为外部修改并删除所有信息中心缓存。
@@ -320,7 +387,17 @@ namespace HD2ModManager.ViewModels
                     if (_profiles.ActiveProfile is not null) _profiles.NotifyActiveModContentChanged();
                     ClearOutdatedDetectionResult();
                 }
-                System.Windows.MessageBox.Show($"批次完成。\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}\n\n备份与审计清单：{result.BatchDirectory}", "一键修复", System.Windows.MessageBoxButton.OK, result.FailedModCount == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
+                var report = new System.Text.StringBuilder("批次完成。");
+                if (result is not null)
+                    report.Append($"\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}");
+                if (repairableAudioNodes.Length > 0)
+                    report.Append($"\n音效已重建：{audioRepairedMods} 个 Mod" + (audioFailedMods > 0 ? $"；失败：{audioFailedMods}" : string.Empty));
+                if (audioFallbackNotes.Count > 0)
+                    report.Append("\n\n以下音库已退回官方版本（Mod 音色失效）：\n" + string.Join("\n", audioFallbackNotes.Take(5)) + (audioFallbackNotes.Count > 5 ? $"\n…另有 {audioFallbackNotes.Count - 5} 条" : string.Empty));
+                if (audioRepairedMods > 0) report.Append($"\n\n音效备份：{audioBackupRoot}\n需要重新部署后，游戏里才会生效。");
+                if (result is not null) report.Append($"\n\n备份与审计清单：{result.BatchDirectory}");
+                var failed = (result?.FailedModCount ?? 0) + audioFailedMods;
+                System.Windows.MessageBox.Show(report.ToString(), "一键修复", System.Windows.MessageBoxButton.OK, failed == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
             }
             catch (OperationCanceledException)
             {
