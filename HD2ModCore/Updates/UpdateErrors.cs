@@ -4,6 +4,8 @@ public enum UpdateErrorCode
 {
 	Network, RateLimited, Http, BadResponse, NoPackage, NoDigest, DigestMismatch, Busy,
 	NotInstallable, NotReady, NothingNew, Cancelled, Failed, DiskSpace, BadPackage,
+	/// <summary>替换脚本没能确认已停止：本次运行内不能再安装，需要重启管理器。</summary>
+	HelperUnconfirmed,
 }
 
 public sealed class UpdateException : Exception

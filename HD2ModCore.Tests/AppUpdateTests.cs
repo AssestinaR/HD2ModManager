@@ -487,10 +487,10 @@ public sealed class AppUpdateTests : IDisposable
 		var starts = 0;
 		var installer = NewInstaller("complete", out _, () => false, _ => { starts++; return () => false; });
 		var first = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
-		Assert.Equal(UpdateErrorCode.Failed, first.Code);
+		Assert.Equal(UpdateErrorCode.HelperUnconfirmed, first.Code);
 		Assert.True(Directory.Exists(Path.Combine(_dir, "run", "stage-1.6.0"))); // 脚本可能还活着：stage 留给它
 		var second = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
-		Assert.Equal(UpdateErrorCode.Failed, second.Code);
+		Assert.Equal(UpdateErrorCode.HelperUnconfirmed, second.Code);
 		Assert.Equal(1, starts); // 不会再起第二个脚本
 	}
 
@@ -593,6 +593,22 @@ public sealed class AppUpdateTests : IDisposable
 
 		Assert.Equal(1, installer.Calls);
 		Assert.Equal(DownloadPhase.Ready, updater.View().Download.Phase); // 没能关闭程序：包还在，可以直接再试
+	}
+
+	[Fact]
+	public async Task Updater_HelperUnconfirmed_SurfacesDedicatedCodeInState()
+	{
+		var (net, _, _) = ReleaseWorld();
+		var installer = new BlockingInstaller { Throw = new UpdateException(UpdateErrorCode.HelperUnconfirmed, "restart") };
+		installer.Release.Set();
+		using var updater = NewUpdater(net, installer);
+		await updater.CheckAsync();
+		await updater.DownloadAsync();
+		var ex = await Assert.ThrowsAsync<UpdateException>(() => updater.InstallAsync());
+		Assert.Equal(UpdateErrorCode.HelperUnconfirmed, ex.Code);
+		var d = updater.View().Download;
+		Assert.Equal(DownloadPhase.Error, d.Phase); // 界面按 Code 显示「请先重启管理器」，不是笼统的「安装交接失败」
+		Assert.Equal(UpdateErrorCode.HelperUnconfirmed, d.Code);
 	}
 
 	[Fact]

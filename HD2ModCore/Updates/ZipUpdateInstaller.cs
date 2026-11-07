@@ -135,7 +135,7 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 	public void Install(InstallRequest request)
 	{
 		// 上一次没能确认撤掉替换脚本：它可能还活着并等着本进程退出，再起第二个会让两个脚本同时替换同一个 stage。
-		if (_helperUnconfirmed) throw new UpdateException(UpdateErrorCode.Failed, "A previous update helper could not be stopped; restart the manager before updating");
+		if (_helperUnconfirmed) throw new UpdateException(UpdateErrorCode.HelperUnconfirmed, "A previous update helper could not be stopped; restart the manager before updating");
 		var stage = Path.Combine(_runDir, "stage-" + request.Version);
 		var keepStage = false;
 		try
@@ -170,7 +170,7 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 					// 没能确认脚本已终止：保留 stage（它若还活着，之后程序正常退出时仍能用同一份 stage 完成更新），并禁止再起第二个。
 					_helperUnconfirmed = true;
 					keepStage = true;
-					throw new UpdateException(UpdateErrorCode.Failed, "The manager did not close and the update helper could not be stopped; restart the manager to finish or discard the update");
+					throw new UpdateException(UpdateErrorCode.HelperUnconfirmed, "The manager did not close and the update helper could not be stopped; restart the manager to finish or discard the update");
 				}
 				throw new UpdateException(UpdateErrorCode.Failed, "The manager did not close (saving was refused or timed out); the update was not applied");
 			}

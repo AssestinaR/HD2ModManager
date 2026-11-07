@@ -157,6 +157,7 @@ namespace HD2ModManager.Services
             UpdateErrorCode.NothingNew => "没有可用的新版本",
             UpdateErrorCode.Cancelled => "已取消",
             UpdateErrorCode.Failed => "安装交接失败",
+            UpdateErrorCode.HelperUnconfirmed => "上一次更新的替换脚本没能确认已停止，请先重启管理器，再重新更新",
             UpdateErrorCode.DiskSpace => "磁盘空间不足",
             UpdateErrorCode.BadPackage => "更新包内容不符合要求，已拒绝安装",
             _ => code.ToString(),
