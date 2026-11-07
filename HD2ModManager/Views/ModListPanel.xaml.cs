@@ -371,8 +371,7 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         CrossFade(HeaderTitleElement, title);
         CrossFade(HeaderSummaryElement, title);
         CrossFade(HeaderSearchBox, _searchOpen);
-        // 搜索动作区只在"搜索状态 + 宿主真的给了模板"时出现。
-        CrossFade(HeaderSearchActions, _searchOpen && HasSearchActions);
+        ApplyHeaderSearchActions(_searchOpen);
 
         foreach (var item in HeaderModes)
         {
@@ -392,6 +391,20 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
             HeaderSearchBox.Focus();
             HeaderSearchBox.SelectAll();
         }
+    }
+
+    // 搜索动作区必须"不显示就彻底不参与布局"。
+    //
+    // 它的 Content 是宿主页面的 DataContext，而 MainWindow 为每个页面 VM 都注册了隐式
+    // DataTemplate（VM → View）。宿主没给 SearchActionsTemplate 时，这个 ContentPresenter
+    // 会退化成"用隐式模板渲染整个页面"，而页面里往往又嵌着 ModListPanel——于是
+    // ModListPanel → 页面 → ModListPanel 无限套下去，直接 StackOverflow。
+    // 所以：不用它的时候既不给 Content，也让 Visibility 收起。
+    private void ApplyHeaderSearchActions(bool searchOpen)
+    {
+        var show = searchOpen && HasSearchActions;
+        HeaderSearchActions.Content = show ? DataContext : null;
+        HeaderSearchActions.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // 交叉淡入淡出：只动 Opacity，终值立刻写进本地值（FillBehavior.Stop 让动画只负责观感），

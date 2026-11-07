@@ -78,14 +78,17 @@
                            Style="{StaticResource AppSupportingText}"
                            VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"/>
+                <!-- 搜索动作区：Content 与 Visibility 都由 ApplyHeaderContent 管。
+                     不能在这里常驻可见——它的 Content 是宿主页面的 DataContext，
+                     在没有 SearchActionsTemplate 的宿主上会被隐式 DataTemplate 整页再渲染一遍，
+                     而页面里往往又有 ModListPanel，于是无限递归（StackOverflow）。
+                     所以只有"真的要用它"时才给它 Content 并参与布局。 -->
                 <ContentPresenter x:Name="HeaderSearchActions"
                                   Grid.Row="1"
                                   Grid.ColumnSpan="2"
-                                  Content="{Binding DataContext, ElementName=Root}"
                                   ContentTemplate="{Binding SearchActionsTemplate, ElementName=Root}"
                                   VerticalAlignment="Center"
-                                  Opacity="0"
-                                  IsHitTestVisible="False"/>
+                                  Visibility="Collapsed"/>
             </Grid>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">

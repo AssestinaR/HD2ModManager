@@ -241,9 +241,10 @@
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="16">
-                        <Path Width="14" Height="14" HorizontalAlignment="Center" VerticalAlignment="Center"
-                              Data="M1,3 L13,3 M3,7 L11,7 M5,11 L9,11"
-                              Stroke="{TemplateBinding Foreground}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                        <!-- 图标由 Content 提供（每个"标题卡状态"用自己的图标）：
+                             以前这里把三条横线写死在模板里，于是谁设了 Content 都看不到自己的图标。 -->
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Border" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/><Setter Property="Foreground" Value="{StaticResource Accent}"/></Trigger>
