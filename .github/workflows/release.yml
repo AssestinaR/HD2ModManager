@@ -95,3 +95,22 @@ jobs:
               @(Get-ChildItem -LiteralPath 'artifacts\publish' -Filter '*.zip' -File |
                   Sort-Object Name | ForEach-Object { $_.FullName })
           gh release create $env:GITHUB_REF_NAME --draft --title $env:GITHUB_REF_NAME --generate-notes $files
+
+      # 草稿有可能是带着**占位标签**（`untagged-…`）建出来的。那种草稿即使发布出去也绑不到
+      # 真正的 v* 标签上，而更新器是按 tag 解析版本号的（`AppVersion.FromTag`）：解析不到
+      # 就等于"发了新版本，但所有用户都收不到更新"——一个完全静默的故障。
+      # 这里显式把它绑回真标签，并在绑不上时直接把这一次运行判红。
+      - name: Bind draft release to the real tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $drafts = gh api "repos/${{ github.repository }}/releases?per_page=10" | ConvertFrom-Json
+          $draft = $drafts | Where-Object { $_.draft -and $_.name -eq $env:GITHUB_REF_NAME } | Select-Object -First 1
+          if (-not $draft) { throw "找不到刚创建的草稿 Release（name = $env:GITHUB_REF_NAME）。" }
+          gh api -X PATCH "repos/${{ github.repository }}/releases/$($draft.id)" -f tag_name="$env:GITHUB_REF_NAME" | Out-Null
+          $tag = (gh api "repos/${{ github.repository }}/releases/$($draft.id)" | ConvertFrom-Json).tag_name
+          if ($tag -ne $env:GITHUB_REF_NAME) {
+              throw "草稿 $($draft.id) 仍然绑在 '$tag' 上：发布出去更新器会认不出这一版。"
+          }
+          Write-Host "draft $($draft.id) -> $tag"
