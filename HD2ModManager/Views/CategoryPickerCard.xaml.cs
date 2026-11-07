@@ -21,8 +21,13 @@ namespace HD2ModManager.Views
             _guids = guids;
             _close = close;
             Subtitle.Text = guids.Count == 1 ? "选一个分类，覆盖自动识别的结果" : $"已选 {guids.Count} 个 Mod，一起归到同一分类";
+            // 已经全部归在这个分类下的目标打勾（勾是矢量图标，见 CategoryPickerCard.xaml）。
             Pills.ItemsSource = filter.AssignTargets
-                .Select(target => new PickerItem(target.Key, filter.AllInCategory(guids, target.Key) ? "✓ " + target.Label : target.Label, filter.AllInCategory(guids, target.Key)))
+                .Select(target =>
+                {
+                    var assigned = filter.AllInCategory(guids, target.Key);
+                    return new PickerItem(target.Key, target.Label, assigned);
+                })
                 .ToArray();
             ResetButton.Visibility = filter.AnyOverridden(guids) ? Visibility.Visible : Visibility.Collapsed;
         }

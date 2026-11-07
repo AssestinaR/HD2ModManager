@@ -140,22 +140,23 @@ namespace HD2ModManager.ViewModels
         private static void Save() => SettingsService.SetCategoryUserData(_custom!, _overrides!);
     }
 
-    // 作用：分类筛选条的"是否启用"偏好。两个列表页共用一个开关，值持久化在设置里。
+    // 作用：记住"上次把分类打开了没有"，作为新页面实例的默认值。
+    // 注意：这**不是**当前的开关状态——模组库页和配置页各有一份自己的 ModCategoryFilter，
+    // 各自独立开关（以前把状态放在这里，点一边会把两边的标题卡一起切掉）。
     internal static class CategoryFilterPreference
     {
         private static bool? _enabled;
         public static event Action? Changed;
 
-        public static bool IsEnabled
+        public static bool IsEnabled => _enabled ??= SettingsService.GetCategoryFilterEnabled();
+
+        /// <summary>记下这次的选择：只影响"以后新建的实例的默认值"和底部选择栏的显隐判断。</summary>
+        public static void Remember(bool enabled)
         {
-            get => _enabled ??= SettingsService.GetCategoryFilterEnabled();
-            set
-            {
-                if (_enabled == value) return;
-                _enabled = value;
-                SettingsService.SetCategoryFilterEnabled(value);
-                Changed?.Invoke();
-            }
+            if (_enabled == enabled) return;
+            _enabled = enabled;
+            SettingsService.SetCategoryFilterEnabled(enabled);
+            Changed?.Invoke();
         }
     }
 
@@ -174,39 +175,39 @@ namespace HD2ModManager.ViewModels
         private readonly LibraryCategoryChip _addChip = new(string.Empty, string.Empty, CategoryChipKind.Add, 0, false);
         private RelayCommand? _selectCommand;
         private bool _enabled;
-        private RelayCommand? _toggleEnabledCommand;
 
         public ModCategoryFilter(Func<string, ModAssetSummary?> summaryOf, Action onSelectionChanged)
         {
             _summaryOf = summaryOf ?? throw new ArgumentNullException(nameof(summaryOf));
             _onSelectionChanged = onSelectionChanged ?? throw new ArgumentNullException(nameof(onSelectionChanged));
             _enabled = CategoryFilterPreference.IsEnabled;
-            CategoryFilterPreference.Changed += OnPreferenceChanged;
             CategoryStore.Changed += OnStoreChanged;
         }
 
         // 关掉时彻底不参与：不显示芯片、不筛选、不做分类计算。
-        public bool IsEnabled => _enabled;
-        public string ToggleText => _enabled ? "隐藏分类" : "显示分类";
-        public RelayCommand ToggleEnabledCommand => _toggleEnabledCommand ??= new RelayCommand(() => CategoryFilterPreference.IsEnabled = !CategoryFilterPreference.IsEnabled);
-
-        private void OnPreferenceChanged()
+        // 每个宿主页面各有一份，互不影响：标题卡上的分类开关只切所在的那一侧。
+        public bool IsEnabled
         {
-            if (_enabled == CategoryFilterPreference.IsEnabled) return;
-            _enabled = CategoryFilterPreference.IsEnabled;
-            if (!_enabled)
+            get => _enabled;
+            set
             {
-                // 收起时正选着某个分类：退回"全部"，避免列表莫名少了东西却看不到原因。
-                _selected = null;
-                _counted.Clear();
-                Chips.Clear();
+                if (_enabled == value) return;
+                _enabled = value;
+                if (!value)
+                {
+                    _selected = null;
+                    _counted.Clear();
+                    Chips.Clear();
+                }
+
+                OnPropertyChanged(nameof(IsEnabled));
+                OnPropertyChanged(nameof(HasChips));
+                OnPropertyChanged(nameof(IsActive));
+                // 只记住这次选择（作为下次的默认值），不通知别的页面实例。
+                CategoryFilterPreference.Remember(value);
+                // 开 → 统计芯片；关 → 恢复完整列表。
+                _onSelectionChanged();
             }
-            OnPropertyChanged(nameof(IsEnabled));
-            OnPropertyChanged(nameof(ToggleText));
-            OnPropertyChanged(nameof(HasChips));
-            OnPropertyChanged(nameof(IsActive));
-            // 重新刷新：开 → 统计芯片；关 → 恢复完整列表。
-            _onSelectionChanged();
         }
 
         // 分类的用户数据变了（新建/改名/删除/手动归类）：选中的自建分类被删就退回"全部"，然后整体刷新。
@@ -224,7 +225,6 @@ namespace HD2ModManager.ViewModels
 
         public void Dispose()
         {
-            CategoryFilterPreference.Changed -= OnPreferenceChanged;
             CategoryStore.Changed -= OnStoreChanged;
         }
 

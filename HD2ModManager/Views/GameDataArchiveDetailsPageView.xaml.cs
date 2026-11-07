@@ -30,10 +30,9 @@ namespace HD2ModManager.Views
 
         private static T? FindVisualParent<T>(DependencyObject? source) where T : DependencyObject
         {
-            while (source is not null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
-                if (source is T result) return result;
-                source = VisualTreeHelper.GetParent(source);
+                if (current is T result) return result;
             }
             return null;
         }

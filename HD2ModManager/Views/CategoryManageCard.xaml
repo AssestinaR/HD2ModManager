@@ -13,7 +13,10 @@
 
             <TextBlock x:Name="EmptyText" Text="还没有自建分类" Margin="0,0,0,12" FontSize="12"
                        Foreground="{StaticResource TextTertiary}"/>
-            <ItemsControl x:Name="Rows" Margin="0,0,0,8" Focusable="False">
+            <!-- 条目区有上限：自建分类再多也不让卡片一直长到屏幕外（超出就滚动）。 -->
+            <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                          Focusable="False" Padding="0,0,2,0">
+                <ItemsControl x:Name="Rows" Margin="0,0,0,8" Focusable="False">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <Border CornerRadius="8" Padding="10,4" Margin="0,0,0,6" Background="{StaticResource SurfaceMuted}">
@@ -96,7 +99,8 @@
                         </Border>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
-            </ItemsControl>
+                </ItemsControl>
+            </ScrollViewer>
 
             <Border BorderBrush="{StaticResource StrokeSubtle}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
                 <StackPanel>

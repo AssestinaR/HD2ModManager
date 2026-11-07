@@ -581,7 +581,7 @@ namespace HD2ModManager.Views
 
         private int FindItemIndex(DependencyObject? element)
         {
-            for (var current = element; current is not null; current = VisualTreeHelper.GetParent(current))
+            for (var current = element; current is not null; current = VisualTreeWalk.Parent(current))
             {
                 if (current is ContentPresenter presenter)
                     return ActionsHost.ItemContainerGenerator.IndexFromContainer(presenter);

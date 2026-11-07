@@ -19,18 +19,8 @@ public partial class SelectionActionBarContent : UserControl
             || provider() is not { } target
             || target.Guids.Count == 0) return;
 
-        var popup = new Popup
-        {
-            PlacementTarget = anchor,
-            // 选择栏在窗口底部，卡片向上展开。
-            Placement = PlacementMode.Top,
-            HorizontalOffset = -14,
-            VerticalOffset = 6,
-            StaysOpen = false,
-            AllowsTransparency = true,
-            PopupAnimation = PopupAnimation.Fade,
-        };
-        popup.Child = new CategoryPickerCard(target.Filter, target.Guids, () => popup.IsOpen = false);
-        popup.IsOpen = true;
+        // 选择栏在窗口底部，卡片向上展开。开合由 CategoryPopup 统一管。
+        CategoryPopup.Toggle(anchor, PlacementMode.Top, -14, 6,
+            () => new CategoryPickerCard(target.Filter, target.Guids, CategoryPopup.Close));
     }
 }

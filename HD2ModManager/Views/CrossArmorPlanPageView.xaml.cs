@@ -97,10 +97,9 @@ namespace HD2ModManager.Views
 
         private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
         {
-            while (source is not null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
-                if (source is T match) return match;
-                source = VisualTreeHelper.GetParent(source);
+                if (current is T match) return match;
             }
             return null;
         }

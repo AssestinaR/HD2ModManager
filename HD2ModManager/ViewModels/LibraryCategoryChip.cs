@@ -29,6 +29,6 @@ namespace HD2ModManager.ViewModels
         public int Count { get => _count; set { if (SetField(ref _count, value)) OnPropertyChanged(nameof(Text)); } }
         public bool IsSelected { get => _isSelected; set => SetField(ref _isSelected, value); }
         public string Label { get => _label; set { if (SetField(ref _label, value)) OnPropertyChanged(nameof(Text)); } }
-        public string Text => Kind == CategoryChipKind.Add ? "⚙ 设置分类" : new StringBuilder(Label).Append(' ').Append(Count).ToString();
+        public string Text => Kind == CategoryChipKind.Add ? "设置分类" : new StringBuilder(Label).Append(' ').Append(Count).ToString();
     }
 }

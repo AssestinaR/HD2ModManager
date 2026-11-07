@@ -162,7 +162,7 @@ internal static class ModRelationshipDragCoordinator
     internal static bool IsVisuallyActive(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
-        for (DependencyObject? current = element; current is not null; current = VisualTreeHelper.GetParent(current))
+        for (DependencyObject? current = element; current is not null; current = VisualTreeWalk.Parent(current))
         {
             if (current is UIElement visual
                 && (visual.Visibility != Visibility.Visible || visual.Opacity <= 0.01))

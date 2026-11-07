@@ -36,5 +36,17 @@
                         SelectionRequested="OnSelectionRequested"
                         KeyboardCommandRequested="OnKeyboardCommandRequested"
                         RowRightClicked="OnOpenDetailsOnRightClick"
-                        BackgroundClicked="OnListBackgroundClick"/>
+                        BackgroundClicked="OnListBackgroundClick">
+        <local:ModListPanel.HeaderModes>
+            <!-- 分类是标题卡的一个可切换状态（第三态：标题 / 搜索 / 分类）。
+                 开关绑到**本页**的 Category.IsEnabled，所以点它只切换这一侧。 -->
+            <local:ModListHeaderMode Key="Categories"
+                                     ToggleToolTip="显示或隐藏分类"
+                                     ToggleIcon="{StaticResource RowIcon.Category}"
+                                     IsRequested="{Binding Category.IsEnabled, Mode=TwoWay}"
+                                     IsAvailable="{Binding Category.HasChips}">
+                <local:CategoryChipBar DataContext="{Binding Category}"/>
+            </local:ModListHeaderMode>
+        </local:ModListPanel.HeaderModes>
+    </local:ModListPanel>
 </UserControl>

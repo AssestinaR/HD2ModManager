@@ -245,22 +245,20 @@ namespace HD2ModManager
             shell.CancelBottomBarEdit();
         }
 
-        private static bool IsDescendantOf(DependencyObject source, DependencyObject ancestor)
+        private static bool IsDescendantOf(DependencyObject? source, DependencyObject ancestor)
         {
-            while (source != null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
-                if (ReferenceEquals(source, ancestor)) return true;
-                source = VisualTreeHelper.GetParent(source);
+                if (ReferenceEquals(current, ancestor)) return true;
             }
             return false;
         }
 
-        private static bool IsDescendantOfType<T>(DependencyObject source) where T : DependencyObject
+        private static bool IsDescendantOfType<T>(DependencyObject? source) where T : DependencyObject
         {
-            while (source != null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
-                if (source is T) return true;
-                source = VisualTreeHelper.GetParent(source);
+                if (current is T) return true;
             }
             return false;
         }
@@ -494,13 +492,11 @@ namespace HD2ModManager
             e.Handled = true;
         }
 
-        private static T? FindVisualParent<T>(DependencyObject source) where T : DependencyObject
+        private static T? FindVisualParent<T>(DependencyObject? source) where T : DependencyObject
         {
-            var current = source;
-            while (current is not null)
+            for (var current = source; current is not null; current = VisualTreeWalk.Parent(current))
             {
                 if (current is T match) return match;
-                current = System.Windows.Media.VisualTreeHelper.GetParent(current);
             }
             return null;
         }
@@ -544,12 +540,11 @@ namespace HD2ModManager
             public int ImageCount { get; set; }
         }
 
-        private static T? FindAncestor<T>(DependencyObject current) where T : DependencyObject
+        private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
         {
-            while (current != null)
+            for (var node = current; node is not null; node = VisualTreeWalk.Parent(node))
             {
-                if (current is T match) return match;
-                current = VisualTreeHelper.GetParent(current);
+                if (node is T match) return match;
             }
             return null;
         }

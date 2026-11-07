@@ -47,30 +47,26 @@
                          Style="{StaticResource AppSearchBox}"
                          Margin="0,0,8,0"
                          VerticalAlignment="Center"
-                         Visibility="Collapsed"
                          Opacity="0"
+                         IsHitTestVisible="False"
+                         Focusable="False"
                          Text="{Binding SearchText, ElementName=Root, UpdateSourceTrigger=PropertyChanged}"
                          ToolTip="搜索名称或备注"/>
+                <!-- 引用方注册的额外状态（分类就是其中一个）挂在这一层上：
+                     Grid.RowSpan=2 让它同时占掉标题行和摘要行。面板负责互斥与交叉淡入淡出，
+                     见 ModListPanel.xaml.cs 的 ApplyHeaderContent。 -->
+                <Grid x:Name="HeaderModeLayer"
+                      Grid.RowSpan="2"
+                      Grid.Column="0"
+                      Margin="0,0,8,0"
+                      VerticalAlignment="Center"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <!-- 分类开关：图标按钮，紧挨搜索按钮。宿主没给 CategoryFilter 时整个隐藏。 -->
-                    <Button x:Name="CategoryToggleButton"
-                            DataContext="{Binding CategoryFilter, ElementName=Root}"
-                            Command="{Binding ToggleEnabledCommand}"
-                            ToolTip="{Binding ToggleText}"
-                            Margin="0,0,2,0">
-                        <Button.Style>
-                            <Style TargetType="Button" BasedOn="{StaticResource AppCategoryToggleButton}">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding}" Value="{x:Null}">
-                                        <Setter Property="Visibility" Value="Collapsed"/>
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsEnabled}" Value="True">
-                                        <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Button.Style>
-                    </Button>
+                    <!-- 注册状态的切换按钮由代码生成（见 RebuildHeaderModeToggles）：
+                         注册项本身是 UIElement，放进 ItemsControl 会被当成容器使用，
+                         而它已经挂在 HeaderModeLayer 上了。搜索键永远排在最后。 -->
+                    <StackPanel x:Name="HeaderModeToggles"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"/>
                     <Button Style="{StaticResource AppSearchToggleButton}"
                             ToolTip="显示或隐藏搜索"
                             Click="OnToggleSearchClick"/>
@@ -88,14 +84,11 @@
                                   Content="{Binding DataContext, ElementName=Root}"
                                   ContentTemplate="{Binding SearchActionsTemplate, ElementName=Root}"
                                   VerticalAlignment="Center"
-                                  Visibility="Collapsed"
-                                  Opacity="0"/>
+                                  Opacity="0"
+                                  IsHitTestVisible="False"/>
             </Grid>
         </Border>
         <Border Style="{StaticResource CardContainer}" Padding="0">
-            <DockPanel>
-            <!-- 分类芯片条固定在列表卡片顶部，不跟随滚动；只在启用且分类 ≥ 2 种时占位。 -->
-            <local:CategoryChipBar DockPanel.Dock="Top" DataContext="{Binding CategoryFilter, ElementName=Root}"/>
             <Grid ClipToBounds="True">
             <Grid x:Name="ActivePresentationLayer">
             <ListBox x:Name="ItemsList" ItemsSource="{Binding PresentedItems, ElementName=Root}"
@@ -395,7 +388,6 @@
             <lists:DropHintOverlay x:Name="ExternalDropOverlay" Panel.ZIndex="40"/>
             <lists:DropHintOverlay x:Name="RelationshipDropOverlay" Panel.ZIndex="45"/>
             </Grid>
-            </DockPanel>
         </Border>
     </DockPanel>
 </UserControl>
