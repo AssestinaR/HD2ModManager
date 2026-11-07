@@ -131,6 +131,22 @@ public static class VpkCustomModelFile
 	public static IReadOnlyDictionary<string, string> ReadOwners(string modsDirectory)
 	{
 		var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var (key, directory) in ReadOwnerDirectories(modsDirectory))
+			owners[key] = TryReadName(directory) ?? Path.GetFileName(directory);
+		return owners;
+	}
+
+	/// <summary>
+	/// 素体 key → 登记它的那份 <c>custom-model.json</c> 所在目录（通常是 Mod 目录下的 <c>vpk2patch</c>）。
+	/// <para>
+	/// 为什么要单独给目录：<c>custom-model.json</c> 里的 <c>name</c> 是转换时写的名字，
+	/// 用户在库里把 Mod 改名之后两者就不一样了（库里叫"布莱默顿"，素体仍叫目录名"2505895990"）。
+	/// 想告诉用户"该去库里移除哪个 Mod"，要靠目录去库里反查<b>现在的</b>名字。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyDictionary<string, string> ReadOwnerDirectories(string modsDirectory)
+	{
+		var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		if (string.IsNullOrWhiteSpace(modsDirectory) || !Directory.Exists(modsDirectory))
 			return owners;
 		IEnumerable<string> files;
@@ -149,9 +165,8 @@ public static class VpkCustomModelFile
 			var key = TryReadKey(directory);
 			if (string.IsNullOrWhiteSpace(key))
 				continue;
-			var name = TryReadName(directory) ?? Path.GetFileName(directory);
 			// 同一个 key 出现在两个 Mod 里说明库里有重复项：保留第一个，行为可预期。
-			owners.TryAdd(key, name);
+			owners.TryAdd(key, directory);
 		}
 
 		return owners;
