@@ -53,17 +53,41 @@
                                 <ComboBoxItem Content="优先使用镜像" Tag="2"/>
                             </ComboBox>
                         </Grid>
+                        <TextBlock Text="{Binding SourceHint}" Style="{StaticResource AppSupportingText}" Margin="150,4,0,0" TextWrapping="Wrap"/>
+                        <Grid Margin="0,10,0,0" Visibility="{Binding ShowMirrorPicker, Converter={StaticResource BoolToVis}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="镜像" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}" Width="320" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding MirrorOptions}" DisplayMemberPath="Label" SelectedValuePath="Id" SelectedValue="{Binding MirrorId, Mode=TwoWay}"/>
+                        </Grid>
                         <Grid Margin="0,10,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="150"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="自定义镜像前缀" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                            <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}" Text="{Binding CustomMirror, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                     ToolTip="可选。形如 https://mirror.example.com/ ；会和内置镜像一起参与自动选择。"/>
+                            <TextBlock Text="自定义镜像" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <Grid Grid.Column="1">
+                                <TextBox x:Name="CustomMirrorBox" Style="{StaticResource AppTextBox}" Text="{Binding CustomMirror, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"/>
+                                <TextBlock Text="https://mirror.example.com/" IsHitTestVisible="False" Foreground="#99808080" VerticalAlignment="Center" Margin="12,0,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=CustomMirrorBox}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
                         </Grid>
+                        <TextBlock Text="可选。填写后会出现在镜像列表和失败弹窗里。格式：镜像前缀，原始地址接在它后面，例如 https://mirror.example.com/。只接受 https 公网域名；只有 github.com 的请求会经过镜像。" Style="{StaticResource AppSupportingText}" Margin="150,4,0,0" TextWrapping="Wrap"/>
                         <TextBlock Text="{Binding CustomMirrorError}" Foreground="#E5484D" Margin="150,4,0,0" TextWrapping="Wrap" Visibility="{Binding HasCustomMirrorError, Converter={StaticResource BoolToVis}}"/>
-                        <TextBlock Text="镜像只负责转发；下载的更新包必须通过 SHA-256 校验，镜像无法替换它。" Style="{StaticResource AppSupportingText}" Margin="150,4,0,0" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding MirrorRiskNote}" Style="{StaticResource AppSupportingText}" Margin="150,4,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 </UserControl>

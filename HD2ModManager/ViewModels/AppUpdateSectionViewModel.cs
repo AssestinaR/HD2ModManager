@@ -147,6 +147,28 @@ namespace HD2ModManager.ViewModels
             set { _service.Updater.SetPrefs(source: (HD2ModCore.Updates.DownloadSourceMode)value); OnPropertyChanged(); OnPropertyChanged(nameof(ShowMirrorPicker)); }
         }
 
+        public string SourceHint => View.Prefs.DownloadSource switch
+        {
+            HD2ModCore.Updates.DownloadSourceMode.Auto => "先连 GitHub；直连失败后自动改用镜像，自动检查也会这样做。",
+            HD2ModCore.Updates.DownloadSourceMode.Mirror => "总是通过下面选的镜像下载。",
+            _ => "先连 GitHub；连不上时弹窗询问是否改用镜像。",
+        };
+
+        public sealed record MirrorOption(string Id, string Label);
+
+        /// <summary>「优先使用镜像」可选的镜像：内置的按推荐度排序，自定义的（如果有）放最后。</summary>
+        public System.Collections.Generic.IReadOnlyList<MirrorOption> MirrorOptions
+        {
+            get
+            {
+                var list = UpdateMirrors.All.Select((m, i) => new MirrorOption(m.Id, i == 0 ? $"{m.Host}（推荐）" : i == 1 ? $"{m.Host}（备用）" : m.Host)).ToList();
+                if (UpdateMirrors.Custom(View.Prefs.CustomMirror) is { } own) list.Add(new MirrorOption(own.Id, $"{own.Host}（你自己设置的镜像）"));
+                return list;
+            }
+        }
+
+        public string MirrorRiskNote => "镜像由第三方运营。通过镜像下载时，文件仍会校验 SHA-256：会先尝试从 GitHub 取官方校验值，GitHub 连不上时才用镜像提供的校验值，界面会标出「校验信息来自镜像」。";
+
         public bool ShowMirrorPicker => View.Prefs.DownloadSource == HD2ModCore.Updates.DownloadSourceMode.Mirror;
 
         public string MirrorId
@@ -170,6 +192,8 @@ namespace HD2ModManager.ViewModels
                 {
                     CustomMirrorError = string.Empty;
                     _service.Updater.SetPrefs(customMirror: normalized);
+                    OnPropertyChanged(nameof(MirrorOptions));
+                    OnPropertyChanged(nameof(MirrorId));
                 }
                 OnPropertyChanged();
             }
@@ -193,7 +217,7 @@ namespace HD2ModManager.ViewModels
                 nameof(IsSkipped), nameof(SkipText), nameof(ShowBlockedNote), nameof(BlockedNote), nameof(IsDownloading), nameof(ShowProgress),
                 nameof(ProgressValue), nameof(ProgressIndeterminate), nameof(ProgressText), nameof(IsReady), nameof(DigestNote), nameof(HasDigestNote),
                 nameof(CanCheck), nameof(CanDownload), nameof(CanInstallNow), nameof(ShowDownloadButton), nameof(DownloadButtonText), nameof(ShowReleasePageButton),
-                nameof(AutoCheck), nameof(AutoUpdate), nameof(DownloadSourceChoice), nameof(ShowMirrorPicker), nameof(MirrorId),
+                nameof(AutoCheck), nameof(AutoUpdate), nameof(DownloadSourceChoice), nameof(ShowMirrorPicker), nameof(MirrorId), nameof(SourceHint), nameof(MirrorOptions),
             }) OnPropertyChanged(name);
             _check.RaiseCanExecuteChanged();
             _download.RaiseCanExecuteChanged();
