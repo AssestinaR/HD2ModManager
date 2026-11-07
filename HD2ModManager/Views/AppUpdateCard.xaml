@@ -1,0 +1,69 @@
+<UserControl x:Class="HD2ModManager.Views.AppUpdateCard"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                <Border Style="{StaticResource CardContainer}" Margin="{StaticResource CardStackMargin}">
+                    <StackPanel>
+                        <TextBlock Text="程序更新" Style="{StaticResource AppCardTitle}"/>
+                        <TextBlock Text="{Binding CurrentVersionText}" Style="{StaticResource AppSupportingText}" Margin="0,8,0,0"/>
+                        <DockPanel Margin="0,10,0,0" LastChildFill="False">
+                            <TextBlock DockPanel.Dock="Left" Text="{Binding StatusText}" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="460"/>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="检查更新" Command="{Binding CheckCommand}"/>
+                                <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding DownloadButtonText}" Command="{Binding DownloadCommand}" Margin="8,0,0,0" Visibility="{Binding ShowDownloadButton, Converter={StaticResource BoolToVis}}"/>
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="取消下载" Command="{Binding CancelCommand}" Margin="8,0,0,0" Visibility="{Binding IsDownloading, Converter={StaticResource BoolToVis}}"/>
+                                <Button Style="{StaticResource AppPrimaryButton}" Content="安装并重启" Command="{Binding InstallCommand}" Margin="8,0,0,0" Visibility="{Binding IsReady, Converter={StaticResource BoolToVis}}"/>
+                            </StackPanel>
+                        </DockPanel>
+                        <StackPanel Visibility="{Binding ShowProgress, Converter={StaticResource BoolToVis}}" Margin="0,10,0,0">
+                            <ProgressBar Height="6" Minimum="0" Maximum="100" Value="{Binding ProgressValue, Mode=OneWay}" IsIndeterminate="{Binding ProgressIndeterminate}"/>
+                            <TextBlock Text="{Binding ProgressText}" Style="{StaticResource AppSupportingText}" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <StackPanel Visibility="{Binding HasRelease, Converter={StaticResource BoolToVis}}" Margin="0,12,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding ReleaseTitle}" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding ReleaseDate}" Style="{StaticResource AppSupportingText}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <Border BorderThickness="1" BorderBrush="#33808080" CornerRadius="6" Margin="0,8,0,0" Padding="10,8" MaxHeight="220">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <TextBlock Text="{Binding ReleaseNotes}" TextWrapping="Wrap"/>
+                                </ScrollViewer>
+                            </Border>
+                            <TextBlock Text="{Binding BlockedNote}" Style="{StaticResource AppSupportingText}" Margin="0,8,0,0" TextWrapping="Wrap" Visibility="{Binding ShowBlockedNote, Converter={StaticResource BoolToVis}}"/>
+                            <TextBlock Text="{Binding DigestNote}" Style="{StaticResource AppSupportingText}" Margin="0,8,0,0" TextWrapping="Wrap" Visibility="{Binding HasDigestNote, Converter={StaticResource BoolToVis}}"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="{Binding SkipText}" Command="{Binding ToggleSkipCommand}"/>
+                                <Button Style="{StaticResource AppSecondaryButton}" Content="打开 Release 页面" Command="{Binding OpenReleasePageCommand}" Margin="8,0,0,0"/>
+                            </StackPanel>
+                        </StackPanel>
+                        <Separator Margin="0,16,0,12"/>
+                        <StackPanel Orientation="Horizontal">
+                            <CheckBox Style="{StaticResource AppToggleSwitch}" Content="自动检查更新" IsChecked="{Binding AutoCheck, Mode=TwoWay}"/>
+                            <CheckBox Style="{StaticResource AppToggleSwitch}" Content="自动下载并在空闲时安装" IsChecked="{Binding AutoUpdate, Mode=TwoWay}" Margin="24,0,0,0"
+                                      ToolTip="发现新版本后自动下载；只有在没有部署、导入等任务时才会自动安装并重启。已跳过的版本不会自动安装。"/>
+                        </StackPanel>
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="下载来源" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}" Width="240" HorizontalAlignment="Left" SelectedValue="{Binding DownloadSourceChoice, Mode=TwoWay}" SelectedValuePath="Tag">
+                                <ComboBoxItem Content="直连，失败后询问是否换镜像" Tag="0"/>
+                                <ComboBoxItem Content="直连失败时自动换镜像" Tag="1"/>
+                                <ComboBoxItem Content="优先使用镜像" Tag="2"/>
+                            </ComboBox>
+                        </Grid>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="自定义镜像前缀" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}" Text="{Binding CustomMirror, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                     ToolTip="可选。形如 https://mirror.example.com/ ；会和内置镜像一起参与自动选择。"/>
+                        </Grid>
+                        <TextBlock Text="{Binding CustomMirrorError}" Foreground="#E5484D" Margin="150,4,0,0" TextWrapping="Wrap" Visibility="{Binding HasCustomMirrorError, Converter={StaticResource BoolToVis}}"/>
+                        <TextBlock Text="镜像只负责转发；下载的更新包必须通过 SHA-256 校验，镜像无法替换它。" Style="{StaticResource AppSupportingText}" Margin="150,4,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+</UserControl>

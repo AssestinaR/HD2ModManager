@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $OutputDirectory = "artifacts\publish-compat",
-    [switch] $KeepExistingOutput
+    [switch] $KeepExistingOutput,
+    [string] $Version
 )
 
 # Keep native dotnet output readable in both Windows PowerShell 5.1 and
@@ -16,8 +17,11 @@ $OutputEncoding = $publishUtf8
 # Targeted compatibility release for older Windows 10 / older hardware.
 # The normal release remains unchanged; this only passes CETCompat=false to
 # the Manager and CLI publish invocations and labels the resulting ZIP files.
+$extraArguments = @{}
+if ($Version) { $extraArguments['Version'] = $Version }
 & (Join-Path $PSScriptRoot 'tools\PublishRelease.ps1') `
     -OutputDirectory $OutputDirectory `
     -CompatibilityMode `
-    -KeepExistingOutput:$KeepExistingOutput
+    -KeepExistingOutput:$KeepExistingOutput `
+    @extraArguments
 exit $LASTEXITCODE

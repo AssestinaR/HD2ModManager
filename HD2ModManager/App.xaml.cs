@@ -40,6 +40,7 @@ namespace HD2ModManager
         protected override void OnExit(ExitEventArgs e)
         {
             UiPerformanceDiagnostics.Stop();
+            AppUpdateService.Instance?.Dispose();
             SettingsService.FlushAsync().GetAwaiter().GetResult();
             base.OnExit(e);
         }
