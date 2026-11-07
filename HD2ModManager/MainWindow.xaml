@@ -24,17 +24,17 @@
         <DataTemplate x:Key="MessageItemTemplate">
             <Border Padding="6,5" Margin="0,1" Background="Transparent" MouseLeftButtonUp="OnMessageItemClick">
                 <Grid>
-                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <Path Grid.RowSpan="2" Width="14" Height="14" VerticalAlignment="Center" Data="M7,1.5 A5.5,5.5 0 1 0 7,12.5 A5.5,5.5 0 1 0 7,1.5 M7,4 L7,7.5 M7,9.5 L7,9.7" Stroke="{StaticResource Accent}" StrokeThickness="1.3" StrokeStartLineCap="Round"/>
+                    <Path Grid.Row="0" Grid.RowSpan="2" Width="14" Height="14" VerticalAlignment="Center" Data="M7,1.5 A5.5,5.5 0 1 0 7,12.5 A5.5,5.5 0 1 0 7,1.5 M7,4 L7,7.5 M7,9.5 L7,9.7" Stroke="{StaticResource Accent}" StrokeThickness="1.3" StrokeStartLineCap="Round"/>
                     <TextBlock Grid.Column="1" Text="{Binding Title}" FontWeight="SemiBold" TextWrapping="Wrap" MaxHeight="42" TextTrimming="CharacterEllipsis"/>
                     <StackPanel Grid.Row="0" Grid.RowSpan="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="复制消息" Command="{Binding DataContext.CopyMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}"><Path Width="12" Height="12" Data="M4,4 L11,4 11,11 4,11 Z M2,8 L2,2 8,2" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.2" StrokeLineJoin="Round"/></Button>
                         <Button Style="{StaticResource AppHeaderTextButton}" Width="24" Height="24" MinWidth="0" MinHeight="0" Padding="0" ToolTip="我知道了，移除消息" Command="{Binding DataContext.DismissMessageCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Visibility="{Binding CanDismiss, Converter={StaticResource BoolToVis}}"><Path Width="12" Height="12" Data="M2,6.5 L5,9.5 10.5,3" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Button>
                     </StackPanel>
                     <TextBlock Grid.Row="1" Grid.Column="1" Foreground="{StaticResource TextSecondary}" FontSize="11" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" Margin="0,2,4,0"/>
-                    <ProgressBar Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Value="{Binding Progress, Mode=OneWay}" Maximum="1" Height="3" Margin="0,21,4,0" Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}"/>
-                    <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding ExpandedDetail, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" BorderThickness="0" Background="Transparent" Margin="0,6,4,0" Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}"/>
+                    <ProgressBar Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Value="{Binding Progress, Mode=OneWay}" Maximum="1" Height="3" Margin="0,4,4,0" Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding ExpandedDetail, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" BorderThickness="0" Background="Transparent" Margin="0,6,4,0" Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
             </Border>
         </DataTemplate>
