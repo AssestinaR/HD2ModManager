@@ -176,6 +176,13 @@ internal static class CliVpkRekey
 			throw new CliUserException("TargetArmorNotFound", $"找不到任何目标：{string.Join("、", targets)}。");
 
 		var destinationDirectory = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
+		// 老库里的 Overwrite 是 P3-1 之前写的、**没有归属标记**。先按"里面躺着本归档的
+		// unit patch"就地认领，再走写前检查——不认领的话这一步会把每一个现任用户都挡在门外，
+		// 换甲与重构建永远修不好那些目录（2026-11-07 用户样本 reimu 就是这样被拒的）。
+		ManagedOverwriteDirectory.AdoptIfUnitLayer(
+			destinationDirectory,
+			SectionalPatchManifestFile.ReadArchiveHex16(Path.GetDirectoryName(sourcePatch)!),
+			ManagedOverwriteMarkers.VpkRekey);
 		EnsureOverwriteIsWritable(destinationDirectory);
 
 		// 目标就是这个 Mod **自己**的素体：换甲等于"什么也不用换"。
@@ -186,16 +193,16 @@ internal static class CliVpkRekey
 		// 直接把它复制进 Overwrite 就是最忠实的答案，也最快（不读游戏数据、不重建几何）。
 		if (IsIdentityTarget(source, selected))
 		{
-			var restored = await RestoreSourceAsync(
-				sourcePatch, Path.GetDirectoryName(sourcePatch)!, destinationDirectory, cancellationToken).ConfigureAwait(false);
-			// 恒等路径上 Unit 键没变，掩码可以直接用。
-			var identityBake = await BakeAsync(restored, destinationDirectory, disabledSections, cancellationToken)
+			var identity = await RestoreIdentityOverwriteAsync(
+				modDirectory, sourcePatch, destinationDirectory, disabledSections, cancellationToken)
 				.ConfigureAwait(false);
+			var restored = identity.UnitPatchPath;
+			var identityBakeWarnings = identity.BakeWarnings;
+			var materialWarnings = identity.MaterialWarnings;
 			// 恒等目标下"头身合并"没有落点：这个素体就是一个整体（头是它自己的 slot 0 件），
 			// 没有独立的头盔 item 可以隐藏。**必须说出来**，否则用户在界面翻了开关、
 			// 看到"已开启"，进游戏什么变化都没有。
 			var closedCount = disabledSections?.Values.Sum(sections => sections.Count) ?? 0;
-			MarkOverwriteManaged(destinationDirectory);
 		return new VpkRekeyResult(
 				node.Id.Value.ToString("N"),
 				modDirectory,
@@ -207,13 +214,15 @@ internal static class CliVpkRekey
 				0,
 				0,
 				[
-					"目标就是这个 Mod 自己的素体：已把来源 patch 原样退回 Overwrite（Unit 键不变，开关继续有效）。"
+					"目标就是这个 Mod 自己的素体：已把来源产物装成生效层"
+						+ "（unit 层 + 模型自带的材质层；Unit 键不变，开关继续有效）。"
 						+ (closedCount == 0 ? "当前没有关掉的 section。" : $"已把 {closedCount} 个 section 烘成关闭。"),
 					.. (mergeHeadIntoArmour
 						? ["头身合并在这种目标上不适用：这个素体本来就是「头 + 身体」一整套"
 							+ "（头是它自己的头盔槽件），没有独立的头盔 item 可隐藏。换成一件游戏护甲才会生效。"]
 						: Array.Empty<string>()),
-					.. identityBake.Warnings,
+					.. identityBakeWarnings,
+					.. materialWarnings,
 				])
 			{
 				Mappings = ["直接退回来源（不做跨护甲搬运）"],
@@ -391,6 +400,73 @@ internal static class CliVpkRekey
 		var map = await WardrobeSectionMapFile.ReadAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
 		return await WardrobeSectionBaker.BakeAsync(patchPath, map, disabled, cancellationToken).ConfigureAwait(false);
 	}
+
+	/// <summary>恒等路径的产物：装进生效层的 unit patch、section 烘焙警告、物化警告。</summary>
+	internal sealed record IdentityOverwriteResult(
+		string UnitPatchPath,
+		IReadOnlyList<string> BakeWarnings,
+		IReadOnlyList<string> MaterialWarnings);
+
+	/// <summary>
+	/// 恒等换甲（目标就是这个 Mod 自己的素体）真正写盘的那一步：<b>unit 层 + 模型自带的材质层</b>。
+	/// <para>
+	/// <b>为什么单独抽出来。</b>这一步以前是"把来源 patch 复制进 Overwrite"——只带 unit 层，
+	/// 模型自己的材质 patch（<c>patch_1</c> 起，往往带十几 MB 贴图）永远进不了生效层。
+	/// 部署只看这一层时，进游戏就是"模型在、材质没了"：2026-11-07 用户样本 reimu 的
+	/// <c>Overwrite/patch_0</c> 与基底 <c>patch_0</c> 字节完全相同，而基底的 <c>patch_1</c>
+	/// 从来没进过生效层。
+	/// </para>
+	/// <para>
+	/// 现在走**唯一的写者** <see cref="OverwriteMaterializer"/>：先在临时目录把来源 patch
+	/// 装好、把 section 开关烘进去，再让物化器把「unit 层 + 启用的材质层」一次装成完整生效层。
+	/// 结构文件（section 表、开关表）必须写在物化**之后**——物化器会重开目录。
+	/// </para>
+	/// </summary>
+	internal static async ValueTask<IdentityOverwriteResult> RestoreIdentityOverwriteAsync(
+		string modDirectory,
+		string sourcePatch,
+		string destinationDirectory,
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
+		CancellationToken cancellationToken)
+	{
+		var sourceDirectory = Path.GetDirectoryName(sourcePatch)!;
+		var stagingRoot = Path.Combine(
+			Path.GetTempPath(), "hd2-vpk-identity-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(stagingRoot);
+		try
+		{
+			var staged = OverwritePatchInstaller.Install(stagingRoot, sourcePatch).PatchPath;
+			// 恒等路径上 Unit 键没变，掩码可以直接用（表取自来源目录）。
+			var bake = await BakeAsync(staged, sourceDirectory, disabledSections, cancellationToken)
+				.ConfigureAwait(false);
+
+			var materialized = OverwriteMaterializer.Materialize(
+				modDirectory, OverwriteSelection.Default, staged, ManagedOverwriteMarkers.VpkRekey);
+			if (!materialized.Succeeded)
+				throw new CliUserException(
+					"OverwriteMaterializeFailed", materialized.Error ?? "生效层没有装成。");
+
+			var restored = Path.Combine(destinationDirectory, Path.GetFileName(staged));
+			// section 表按**装进去的**那份 patch 重算：它带着本次构建的偏移，部署要用新表。
+			var rebuilt = await WardrobeSectionMapFile.BuildAsync(restored, cancellationToken).ConfigureAwait(false);
+			await WardrobeSectionMapFile
+				.WriteAsync(Path.Combine(destinationDirectory, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
+				.ConfigureAwait(false);
+
+			var switches = await SectionGroupFile.TryReadAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
+			if (switches is not null)
+				await SectionGroupFile.WriteAsync(destinationDirectory, switches, cancellationToken).ConfigureAwait(false);
+
+			return new IdentityOverwriteResult(restored, bake.Warnings, materialized.Warnings);
+		}
+		finally
+		{
+			try { if (Directory.Exists(stagingRoot)) Directory.Delete(stagingRoot, recursive: true); }
+			catch (IOException) { }
+			catch (UnauthorizedAccessException) { }
+		}
+	}
+
 	/// <summary>
 	/// 目标是不是"这个 Mod 自己的素体"：两边 Unit 键集合完全相同。
 	/// <para>
@@ -412,32 +488,6 @@ internal static class CliVpkRekey
 		return targetIds.Count != 0 && targetIds.SetEquals(sourceIds);
 	}
 
-	/// <summary>
-	/// 把来源 patch 原样退回 `Overwrite/`：TOC、sidecar、开关表一起复制，section 表重算。
-	/// <para>
-	/// <b>为什么连 components.json 一起复制、不做翻译。</b>这条路上 Unit 键没变（根本没换甲），
-	/// 掩码本来就对；翻译反而会把"没变"当成"变了"。重算 section 表是必须的：它带着本次构建的
-	/// 偏移，而 Overwrite 里那份是给部署用的。
-	/// </para>
-	/// </summary>
-	private static async ValueTask<string> RestoreSourceAsync(
-		string sourcePatch,
-		string sourceDirectory,
-		string destinationDirectory,
-		CancellationToken cancellationToken)
-	{
-		var destination = OverwritePatchInstaller.Install(destinationDirectory, sourcePatch).PatchPath;
-
-		var switches = await SectionGroupFile.TryReadAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
-		if (switches is not null)
-			await SectionGroupFile.WriteAsync(destinationDirectory, switches, cancellationToken).ConfigureAwait(false);
-
-		var rebuilt = await WardrobeSectionMapFile.BuildAsync(destination, cancellationToken).ConfigureAwait(false);
-		await WardrobeSectionMapFile
-			.WriteAsync(Path.Combine(destinationDirectory, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
-			.ConfigureAwait(false);
-		return destination;
-	}
 	/// <summary>
 	/// 把一个归档 id 扩成"这套装备的完整目标"：同 setId 的护甲 + 头盔。
 	/// <para>

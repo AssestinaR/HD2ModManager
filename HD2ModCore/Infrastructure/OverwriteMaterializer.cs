@@ -87,7 +87,6 @@ public static class OverwriteMaterializer
 		if (string.IsNullOrEmpty(archive))
 			return OverwriteMaterializationResult.Failure("基底目录里没有 unit patch，无法物化生效层。");
 
-		var report = VpkConversionReport.TryRead(modDirectory);
 		var unitFileName = $"{archive}.patch_{UnitPatchIndex}";
 
 		// unit 层：默认取基底里那份；调用方给了替换（换甲产物）就用它。
@@ -130,24 +129,9 @@ public static class OverwriteMaterializer
 			return OverwriteMaterializationResult.Failure($"unit 层 patch 不存在：{unitLayer}");
 
 		var warnings = new List<string>();
-		var enabled = selection.EnabledMaterialPatchFileNames
-			// 没有显式选择 ⇒ 先问 Mod 自己的设置文件；那里也没有才退回"模型内置材质"。
-			?? ModSettingsFile.TryRead(modDirectory)?.EnabledMaterialPatches
-			?? BuiltInMaterialPatches(report);
-		var materials = new List<string>();
-		foreach (var name in enabled.Distinct(StringComparer.OrdinalIgnoreCase))
-		{
-			if (string.Equals(name, unitFileName, StringComparison.OrdinalIgnoreCase)) continue;
-			var path = Path.Combine(payload, name);
-			if (!File.Exists(path))
-			{
-				// 跳过一个文件就否掉整次，只会让用户卡住：其余十一个材质都是好的，
-				// 而他却看不到任何东西、还被告知"去解决"。跳过、点名、继续。
-				warnings.Add($"跳过了 {name}：它已不在基底目录里（可能被删除或改名）。");
-				continue;
-			}
-			materials.Add(path);
-		}
+		var (materials, materialWarnings) = ResolveMaterialLayers(
+			modDirectory, selection.EnabledMaterialPatchFileNames);
+		warnings.AddRange(materialWarnings);
 
 		try
 		{
@@ -177,6 +161,51 @@ public static class OverwriteMaterializer
 			.ToArray();
 	}
 
+	/// <summary>
+	/// 这个 Mod 现在应该装进生效层的**材质层**（完整路径）。
+	/// <para>
+	/// <b>定义只放在这一处。</b>顺序是：调用方给的显式选择 → Mod 自己的设置文件 → 模型内置材质
+	/// （转换报告里的 <c>materialPatch</c>）。换甲/重构建这些自己也想往 <c>Overwrite/</c> 装东西的
+	/// 调用点必须用同一个函数：各写一遍，迟早出现"从这条路走丢材质、从那条路走不丢"，
+	/// 而用户看到的都是"模型在、材质没了"（2026-11-07 用户样本 reimu 就是这么来的）。
+	/// </para>
+	/// </summary>
+	/// <param name="enabledPatchFileNames">
+	/// <c>null</c> = 读设置文件；那里也没有就退回"模型内置材质"。
+	/// 空集合 = 用户明确关掉了全部材质（不是"没选"，别再自作主张加回来）。
+	/// </param>
+	public static (IReadOnlyList<string> Paths, IReadOnlyList<string> Warnings) ResolveMaterialLayers(
+		string modDirectory,
+		IReadOnlyCollection<string>? enabledPatchFileNames = null)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
+		var warnings = new List<string>();
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
+		if (payload is null) return (Array.Empty<string>(), warnings);
+
+		var enabled = enabledPatchFileNames
+			?? ModSettingsFile.TryRead(modDirectory)?.EnabledMaterialPatches
+			?? BuiltInMaterialPatches(VpkConversionReport.TryRead(modDirectory));
+		var unitFileName = $"{SectionalPatchManifestFile.ReadArchiveHex16(payload)}.patch_{UnitPatchIndex}";
+
+		var paths = new List<string>();
+		foreach (var name in enabled.Distinct(StringComparer.OrdinalIgnoreCase))
+		{
+			if (string.Equals(name, unitFileName, StringComparison.OrdinalIgnoreCase)) continue;
+			var path = Path.Combine(payload, name);
+			if (!File.Exists(path))
+			{
+				// 跳过一个文件就否掉整次，只会让用户卡住：其余十一个材质都是好的，
+				// 而他却看不到任何东西、还被告知"去解决"。跳过、点名、继续。
+				warnings.Add($"跳过了 {name}：它已不在基底目录里（可能被删除或改名）。");
+				continue;
+			}
+			paths.Add(path);
+		}
+
+		return (paths, warnings);
+	}
+
 	private static OverwriteMaterializationResult MaterializeCore(
 		string modDirectory,
 		string unitLayer,
@@ -186,16 +215,13 @@ public static class OverwriteMaterializer
 	{
 		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
 		// 老库里的生效层是 P3-1 之前写的，没有归属标记。它里面有本归档的 unit patch，
-		// 就说明这一层是管理器给的（不是用户手工塞的）——按这个口径就地认领，
-		// 否则每一个现任用户都改不了材质选择。
-		if (Directory.Exists(overwrite) && !ManagedOverwriteDirectory.IsManaged(overwrite))
-		{
-			var archiveForAdoption = SectionalPatchManifestFile.ReadArchiveHex16(
-				ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory) ?? modDirectory);
-			if (!string.IsNullOrEmpty(archiveForAdoption)
-				&& File.Exists(Path.Combine(overwrite, $"{archiveForAdoption}.patch_{UnitPatchIndex}")))
-				ManagedOverwriteDirectory.Commit(overwrite, marker);
-		}
+		// 就说明这一层是管理器给的（不是用户手工塞的）——就地认领，否则每一个现任用户
+		// 都改不了材质选择。
+		ManagedOverwriteDirectory.AdoptIfUnitLayer(
+			overwrite,
+			SectionalPatchManifestFile.ReadArchiveHex16(
+				ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory) ?? modDirectory),
+			marker);
 
 		string? backup;
 		try

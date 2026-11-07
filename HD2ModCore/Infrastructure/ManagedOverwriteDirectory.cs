@@ -33,6 +33,30 @@ public static class ManagedOverwriteDirectory
 			File.Exists(Path.Combine(directory, marker)));
 
 	/// <summary>
+	/// 就地认领一个**旧版管理器**写的 <c>Overwrite/</c>：里面躺着本归档的 unit patch，
+	/// 就说明它是我们生成的，只是当年还没有归属标记（P3-1 之前）。返回是否认领。
+	/// <para>
+	/// <b>为什么必须有这一步。</b>不认领的话，"写入前检查"会把每一个现任用户都挡住——
+	/// 他们的 Overwrite 是 1.5.0 之前写的、没有标记，于是换甲与重构建永远修不好它，
+	/// 只能让用户手工删目录。实测（2026-11-07 用户样本 reimu）：`vpk rekey` 一进门就被
+	/// "Overwrite 不是管理器生成的"拒绝，重构建那一步因此从来没成功过。
+	/// </para>
+	/// <para>
+	/// <b>判据故意窄。</b>只认"本归档的 unit patch 在这个目录里"，不看别的文件名：
+	/// 用户自己塞进去的补丁一般不是本归档的 <c>patch_0</c>，不会被误认。
+	/// </para>
+	/// </summary>
+	public static bool AdoptIfUnitLayer(string directory, string archiveHex16, string marker)
+	{
+		if (string.IsNullOrWhiteSpace(archiveHex16)) return false;
+		if (!Directory.Exists(directory)) return false;
+		if (IsManaged(directory)) return false;
+		if (!File.Exists(Path.Combine(directory, $"{archiveHex16}.patch_0"))) return false;
+		Commit(directory, marker);
+		return true;
+	}
+
+	/// <summary>
 	/// 准备一次重写：把现有目录挪成备份、建一个新的空目录。
 	/// 返回备份路径（原本不存在或原本是空目录时为 <c>null</c>）。
 	/// </summary>
