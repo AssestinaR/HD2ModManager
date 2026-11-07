@@ -495,6 +495,19 @@ public sealed class AppUpdateTests : IDisposable
 	}
 
 	[Fact]
+	public void Installer_ExitThrowsAndCancelUnconfirmed_ReportsHelperUnconfirmed()
+	{
+		var starts = 0;
+		var installer = NewInstaller("complete", out _, () => throw new InvalidOperationException("boom"), _ => { starts++; return () => false; });
+		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
+		Assert.Equal(UpdateErrorCode.HelperUnconfirmed, ex.Code);
+		Assert.IsType<InvalidOperationException>(ex.InnerException);
+		Assert.True(Directory.Exists(Path.Combine(_dir, "run", "stage-1.6.0")));
+		Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
+		Assert.Equal(1, starts);
+	}
+
+	[Fact]
 	public void Installer_HelperFailsToStart_NeverRequestsExit()
 	{
 		var exitRequested = false;

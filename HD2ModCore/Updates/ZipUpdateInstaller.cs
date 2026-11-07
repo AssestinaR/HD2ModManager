@@ -157,10 +157,13 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 			var cancel = _start(psi) ?? throw new UpdateException(UpdateErrorCode.Failed, "Could not start the update script");
 			bool exiting;
 			try { exiting = _requestExit(); }
-			catch
+			catch (Exception e)
 			{
-				if (!cancel()) { _helperUnconfirmed = true; keepStage = true; }
-				throw;
+				if (cancel()) throw;
+				// 请求退出出了异常、脚本又没能确认已停止：同样要告诉用户重启，而不是笼统的「安装交接失败」。
+				_helperUnconfirmed = true;
+				keepStage = true;
+				throw new UpdateException(UpdateErrorCode.HelperUnconfirmed, "The update helper could not be stopped; restart the manager before updating", e);
 			}
 			if (!exiting)
 			{
