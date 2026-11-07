@@ -302,6 +302,30 @@ function Assert-ReleaseLayout {
     }
 }
 
+# The in-app updater only replaces these shipped locations and refuses any package that carries anything else
+# (settings.json, mods, config, data\indexes, ...), so a stray user file in the stage fails the release here.
+function Assert-UpdatablePackage {
+    param([string] $PackageDirectory, [string] $Version)
+
+    $allowedFiles = @('HD2ModManager.exe', 'README.md', 'hd2mod.cmd', 'update-package.json')
+    $allowedDirectories = @('bin\', 'third_party\', 'hd2mod-docs\', 'data\resources\')
+    $root = (Resolve-Path -LiteralPath $PackageDirectory).Path.TrimEnd('\')
+    foreach ($file in Get-ChildItem -LiteralPath $PackageDirectory -Recurse -File) {
+        $relative = $file.FullName.Substring($root.Length + 1)
+        $ok = $allowedFiles -contains $relative
+        foreach ($directory in $allowedDirectories) {
+            if ($relative.StartsWith($directory, [StringComparison]::OrdinalIgnoreCase)) { $ok = $true }
+        }
+        if (-not $ok) { throw "Release package contains a path the in-app updater would refuse: $relative" }
+    }
+
+    # The version the app reports must be the version in the marker and the archive name.
+    $reported = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $PackageDirectory 'HD2ModManager.exe')).ProductVersion
+    if ($null -eq $reported -or -not ($reported -eq $Version -or $reported.StartsWith("$Version+"))) {
+        throw "HD2ModManager.exe reports version '$reported' but the release is '$Version'."
+    }
+}
+
 function Compress-ReleaseStage {
     param(
         [string] $StageDirectory,
@@ -366,6 +390,8 @@ function Publish-ReleaseVariant {
         '-p:IncludeNativeLibrariesForSelfExtract=true',
         '-p:DebugType=None',
         '-p:DebugSymbols=false',
+        # The running app reports this as its version; the in-app updater compares it with the release tag.
+        "-p:Version=$Version",
         # The CLI ProjectReference is build-only (ReferenceOutputAssembly=false)
         # and is published independently below, so SDK executable-reference
         # self-contained validation is not relevant for this layout.
@@ -445,6 +471,7 @@ function Publish-ReleaseVariant {
     $markerJson = [ordered]@{ version = $Version; variant = $variantLabel } | ConvertTo-Json -Compress
     [System.IO.File]::WriteAllText((Join-Path $stageDirectory 'update-package.json'), $markerJson, (New-Object System.Text.UTF8Encoding($false)))
     Assert-ReleaseLayout -PackageDirectory $stageDirectory -IncludesPrivateRuntime $IncludesPrivateRuntime -RuntimeLayout $RuntimeLayout
+    Assert-UpdatablePackage -PackageDirectory $stageDirectory -Version $Version
 
     # The updater looks packages up by exactly this name: HD2ModManager-<version>-win-x64-<variant>.zip.
     $archivePath = Join-Path $archiveDirectory "HD2ModManager-$Version-win-x64-$variantLabel.zip"

@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using HD2ModCore.Updates;
 
 namespace HD2ModCore.Tests;
@@ -385,12 +386,12 @@ public sealed class AppUpdateTests : IDisposable
 
 	// ---- 安装器：解压校验 ----
 
-	private ZipUpdateInstaller NewInstaller(string variant, out string appDir, Action? exit = null, Func<System.Diagnostics.ProcessStartInfo, System.Diagnostics.Process?>? start = null)
+	private ZipUpdateInstaller NewInstaller(string variant, out string appDir, Func<Action, bool>? requestExit = null, Func<System.Diagnostics.ProcessStartInfo, System.Diagnostics.Process?>? start = null)
 	{
 		appDir = Path.Combine(_dir, "app");
 		Directory.CreateDirectory(appDir);
 		File.WriteAllText(Path.Combine(appDir, InstalledPackage.FileName), JsonSerializer.Serialize(new { version = "1.5.0", variant }));
-		return new ZipUpdateInstaller(appDir, Path.Combine(_dir, "run"), Path.Combine(appDir, "HD2ModManager.exe"), exit ?? (() => { }), null, start ?? (_ => null));
+		return new ZipUpdateInstaller(appDir, Path.Combine(_dir, "run"), Path.Combine(appDir, "HD2ModManager.exe"), requestExit ?? (launch => { launch(); return true; }), null, start ?? (_ => null));
 	}
 
 	private InstallRequest Pack(byte[] zip, string version = "1.6.0")
@@ -441,24 +442,138 @@ public sealed class AppUpdateTests : IDisposable
 	[Fact]
 	public void Installer_DevBuildWithoutMarker_IsNotInstallable()
 	{
-		var installer = new ZipUpdateInstaller(Path.Combine(_dir, "nomarker"), Path.Combine(_dir, "run"), "x.exe", () => { }, null, _ => null);
+		var installer = new ZipUpdateInstaller(Path.Combine(_dir, "nomarker"), Path.Combine(_dir, "run"), "x.exe", _ => true, null, _ => null);
 		Directory.CreateDirectory(Path.Combine(_dir, "nomarker"));
 		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
 		Assert.Equal(UpdateErrorCode.NotInstallable, ex.Code);
 	}
 
 	[Fact]
-	public void Installer_Install_StartsScriptWithExpectedArgumentsThenExits()
+	public void Installer_Install_StartsScriptOnlyWhenExitIsConfirmed()
 	{
-		var exited = false;
 		System.Diagnostics.ProcessStartInfo? started = null;
-		var installer = NewInstaller("complete", out var appDir, () => exited = true, psi => { started = psi; return System.Diagnostics.Process.GetCurrentProcess(); });
+		Action? pending = null;
+		var installer = NewInstaller("complete", out var appDir, launch => { pending = launch; return true; }, psi => { started = psi; return System.Diagnostics.Process.GetCurrentProcess(); });
 		installer.Install(Pack(MakePackage("1.6.0", "complete")));
-		Assert.True(exited);
+		Assert.Null(started); // 退出被批准之后、真正退出的时候才由宿主去启动
+		pending!();
+		pending(); // 重复调用只启动一次
 		Assert.Equal("powershell.exe", started!.FileName);
-		Assert.Contains("-AppDir", started.ArgumentList);
 		Assert.Equal(appDir, started.ArgumentList[started.ArgumentList.IndexOf("-AppDir") + 1]);
 		Assert.True(File.Exists(installer.ScriptPath));
+	}
+
+	[Fact]
+	public void Installer_ExitVetoed_ThrowsFailedAndNeverStartsScript()
+	{
+		var started = false;
+		var installer = NewInstaller("complete", out _, _ => false, _ => { started = true; return null; });
+		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
+		Assert.Equal(UpdateErrorCode.Failed, ex.Code);
+		Assert.False(started);
+		Assert.False(Directory.Exists(Path.Combine(_dir, "run", "stage-1.6.0")));
+	}
+
+	[Theory]
+	[InlineData("HD2ModManager.exe", true)]
+	[InlineData("update-package.json", true)]
+	[InlineData("bin/hd2mod.exe", true)]
+	[InlineData("bin\\dotnet\\host\\fxr\\hostfxr.dll", true)]
+	[InlineData("data/resources/archivehashes.json", true)]
+	[InlineData("third_party/7zip/7z.exe", true)]
+	[InlineData("settings.json", false)]
+	[InlineData("mods/a/b.patch_0", false)]
+	[InlineData("config/library.json", false)]
+	[InlineData("data/indexes/mod-facts.sqlite", false)]
+	[InlineData("backups/x", false)]
+	[InlineData("data/resourcesX/a", false)]
+	[InlineData("Bin/../settings.json", false)]
+	public void Installer_PackagePathPolicy_OnlyShippedLocations(string path, bool allowed)
+		=> Assert.Equal(allowed, ZipUpdateInstaller.IsAllowedPackagePath(path) && !path.Contains(".."));
+
+	[Theory]
+	[InlineData("settings.json")]
+	[InlineData("mods/a/b.patch_0")]
+	[InlineData("config/library.json")]
+	[InlineData("data/indexes/mod-facts.sqlite")]
+	public void Installer_Extract_RejectsPackageCarryingUserDataPaths(string extra)
+	{
+		var installer = NewInstaller("complete", out _);
+		using var ms = new MemoryStream();
+		ms.Write(MakePackage("1.6.0", "complete"));
+		using (var zip = new ZipArchive(ms, ZipArchiveMode.Update, true))
+		{
+			using var w = new StreamWriter(zip.CreateEntry(extra).Open());
+			w.Write("x");
+		}
+		var stage = Path.Combine(_dir, "stage-user");
+		var ex = Assert.Throws<UpdateException>(() => installer.Extract(Pack(ms.ToArray()), stage));
+		Assert.Equal(UpdateErrorCode.BadPackage, ex.Code);
+		Assert.False(File.Exists(Path.Combine(stage, extra.Replace('/', Path.DirectorySeparatorChar))));
+	}
+
+	private sealed class BlockingInstaller : IUpdateInstaller
+	{
+		public bool IsIdle => true;
+		public int Calls;
+		public Exception? Throw;
+		public readonly ManualResetEventSlim Entered = new();
+		public readonly ManualResetEventSlim Release = new();
+		public void Install(InstallRequest request)
+		{
+			Interlocked.Increment(ref Calls);
+			Entered.Set();
+			Release.Wait(TimeSpan.FromSeconds(10));
+			if (Throw is not null) throw Throw;
+		}
+	}
+
+	[Fact]
+	public async Task Updater_ConcurrentInstall_RunsInstallerOnce_AndFailedHandoffReturnsToReady()
+	{
+		var (net, _, _) = ReleaseWorld();
+		var installer = new BlockingInstaller { Throw = new UpdateException(UpdateErrorCode.Failed, "veto") };
+		using var updater = NewUpdater(net, installer);
+		await updater.CheckAsync();
+		await updater.DownloadAsync();
+
+		var first = updater.InstallAsync();
+		Assert.True(installer.Entered.Wait(TimeSpan.FromSeconds(10)));
+		var second = await Assert.ThrowsAsync<UpdateException>(() => updater.InstallAsync());
+		Assert.Equal(UpdateErrorCode.NotReady, second.Code);
+		installer.Release.Set();
+		await Assert.ThrowsAsync<UpdateException>(() => first);
+
+		Assert.Equal(1, installer.Calls);
+		Assert.Equal(DownloadPhase.Ready, updater.View().Download.Phase); // 没能关闭程序：包还在，可以直接再试
+	}
+
+	[Fact]
+	public async Task Updater_ConcurrentStartDownload_ClaimsStateImmediately()
+	{
+		var (net, _, name) = ReleaseWorld();
+		using var updater = NewUpdater(net, new RecordingInstaller());
+		await updater.CheckAsync();
+		updater.StartDownload();
+		Assert.Equal(DownloadPhase.Downloading, updater.View().Download.Phase); // 返回时状态就已占位
+		var ex = Assert.Throws<UpdateException>(() => updater.StartDownload());
+		Assert.Equal(UpdateErrorCode.Busy, ex.Code);
+		var deadline = DateTime.UtcNow.AddSeconds(10);
+		while (updater.View().Download.Phase == DownloadPhase.Downloading && DateTime.UtcNow < deadline) await Task.Delay(20);
+		Assert.Equal(DownloadPhase.Ready, updater.View().Download.Phase);
+		Assert.Equal(1, net.Requests.Count(r => r.Url.EndsWith(name, StringComparison.Ordinal)));
+	}
+
+	[Fact]
+	public void Installer_CleanupStage_KeepsBackupDirectories()
+	{
+		var run = Path.Combine(_dir, "run");
+		Directory.CreateDirectory(Path.Combine(run, "stage-1.6.0"));
+		Directory.CreateDirectory(Path.Combine(run, "backup-1.6.0"));
+		File.WriteAllText(Path.Combine(run, "backup-1.6.0", "x"), "x");
+		ZipUpdateInstaller.CleanupStage(run);
+		Assert.False(Directory.Exists(Path.Combine(run, "stage-1.6.0")));
+		Assert.True(File.Exists(Path.Combine(run, "backup-1.6.0", "x"))); // 回滚不完整时它是唯一的恢复副本
 	}
 
 	// 用真实的发布脚本产出的包验证解压（设置环境变量 HD2_UPDATE_REAL_ZIP 指向 complete 包时才运行，否则直接通过）。
@@ -474,15 +589,5 @@ public sealed class AppUpdateTests : IDisposable
 		Assert.True(File.Exists(Path.Combine(stage, "bin", "hd2mod.exe")));
 		Assert.NotEmpty(Directory.GetFiles(Path.Combine(stage, "bin", "dotnet", "host", "fxr"), "hostfxr.dll", SearchOption.AllDirectories));
 		Assert.True(File.Exists(Path.Combine(stage, "data", "resources", "archivehashes.json")));
-	}
-
-	[Fact]
-	public void Installer_ScriptStartFailure_ThrowsAndDoesNotExit()
-	{
-		var exited = false;
-		var installer = NewInstaller("complete", out _, () => exited = true, _ => null);
-		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
-		Assert.Equal(UpdateErrorCode.Failed, ex.Code);
-		Assert.False(exited);
 	}
 }

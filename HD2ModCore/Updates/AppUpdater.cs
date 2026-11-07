@@ -288,10 +288,14 @@ public sealed class AppUpdater : IDisposable
 	/// <summary>后台开始下载（界面从状态跟踪进度）；不能开始时立刻抛出。</summary>
 	public void StartDownload(string? mirror = null)
 	{
-		lock (_gate) Downloadable();
+		UpdateCandidate c;
+		CancellationTokenSource abort;
+		// 检查与占位必须在同一个临界区里：否则两次点击都能通过检查，各自启动一个下载。
+		lock (_gate) { c = Downloadable(); abort = ClaimDownload(c); }
+		Raise();
 		_ = Task.Run(async () =>
 		{
-			try { await DownloadAsync(mirror, manual: true).ConfigureAwait(false); }
+			try { await RunDownloadAsync(c, abort, mirror, manual: true).ConfigureAwait(false); }
 			catch (UpdateException) { /* 已记录在下载状态 */ }
 		});
 	}
@@ -300,11 +304,28 @@ public sealed class AppUpdater : IDisposable
 	public async Task DownloadAsync(string? mirror = null, bool manual = false)
 	{
 		UpdateCandidate c;
+		CancellationTokenSource abort;
 		lock (_gate)
 		{
 			c = Downloadable();
 			if (_download.Phase == DownloadPhase.Ready && _download.Version == c.Release.Version) return;
+			abort = ClaimDownload(c);
 		}
+		Raise();
+		await RunDownloadAsync(c, abort, mirror, manual).ConfigureAwait(false);
+	}
+
+	/// <summary>在锁内把状态原子地置为「下载中」，并创建这次下载的取消源。</summary>
+	private CancellationTokenSource ClaimDownload(UpdateCandidate c)
+	{
+		var abort = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+		_abort = abort;
+		_download = new DownloadView(DownloadPhase.Downloading, c.Release.Version);
+		return abort;
+	}
+
+	private async Task RunDownloadAsync(UpdateCandidate c, CancellationTokenSource abort, string? mirror, bool manual)
+	{
 		var fetch = _network.Source(UpdateMirrors.ById(mirror, _prefs.CustomMirror)?.Id, Loopback);
 		UpdateException Fail(UpdateErrorCode code)
 		{
@@ -313,15 +334,12 @@ public sealed class AppUpdater : IDisposable
 			Raise();
 			return new UpdateException(code, $"Update download failed: {code}");
 		}
-		if (c.Package is null || c.Sums is null) throw Fail(UpdateErrorCode.NoPackage);
-		if (!ReleaseJson.IsSha256Digest(c.Package.Digest)) throw Fail(UpdateErrorCode.NoDigest);
-		var abort = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-		lock (_gate) { _abort = abort; _download = new DownloadView(DownloadPhase.Downloading, c.Release.Version); }
-		Raise();
-		var file = Path.Combine(_o.RunDir, c.Package.Name);
 		var last = DateTimeOffset.MinValue;
 		try
 		{
+			if (c.Package is null || c.Sums is null) throw new UpdateException(UpdateErrorCode.NoPackage, "No package for this installation variant");
+			if (!ReleaseJson.IsSha256Digest(c.Package.Digest)) throw new UpdateException(UpdateErrorCode.NoDigest, "Package has no SHA-256 digest");
+			var file = Path.Combine(_o.RunDir, c.Package.Name);
 			Directory.CreateDirectory(_o.RunDir);
 			UpdateDownloader.CleanupParts(_o.RunDir);
 			var sumMeta = await fetch.OfficialFirstAsync(f => UpdateHttp.GetTextAsync(f, c.Sums.Url, abort.Token)).ConfigureAwait(false);
@@ -390,10 +408,18 @@ public sealed class AppUpdater : IDisposable
 		{
 			if (_ready is null || _download.Phase != DownloadPhase.Ready) throw new UpdateException(UpdateErrorCode.NotReady, "Package not downloaded");
 			r = _ready;
+			// 校验一个大 zip 要一会儿：状态先原子地置为「安装中」，期间的重复点击会得到 NotReady，不会并发安装。
+			_download = new DownloadView(DownloadPhase.Installing, r.Version);
 		}
+		Raise();
 		string actual;
 		try { actual = await UpdateDownloader.Sha256FileAsync(r.File).ConfigureAwait(false); } catch (IOException) { actual = string.Empty; }
-		if (_stopped || (automatic && (!_prefs.AutoUpdate || _prefs.Skipped == r.Version))) return;
+		if (_stopped || (automatic && (!_prefs.AutoUpdate || _prefs.Skipped == r.Version)))
+		{
+			lock (_gate) { if (_download.Phase == DownloadPhase.Installing) _download = new DownloadView(DownloadPhase.Ready, r.Version); }
+			Raise();
+			return;
+		}
 		if (actual != r.Sha256)
 		{
 			lock (_gate)
@@ -404,18 +430,18 @@ public sealed class AppUpdater : IDisposable
 			Raise();
 			throw new UpdateException(UpdateErrorCode.DigestMismatch, "Package changed after download");
 		}
-		lock (_gate) _download = new DownloadView(DownloadPhase.Installing, r.Version);
-		Raise();
 		try { await Task.Run(() => installer.Install(r)).ConfigureAwait(false); }
 		catch (UpdateException e)
 		{
-			lock (_gate) _download = new DownloadView(DownloadPhase.Error, r.Version, Code: e.Code);
+			// 包本身有问题（内容不符、开发构建）重试没有意义；没能关闭程序、磁盘不够这类情况，包还在，可以直接再试。
+			var retryable = e.Code is UpdateErrorCode.Failed or UpdateErrorCode.DiskSpace;
+			lock (_gate) _download = retryable ? new DownloadView(DownloadPhase.Ready, r.Version) : new DownloadView(DownloadPhase.Error, r.Version, Code: e.Code);
 			Raise();
 			throw;
 		}
 		catch (Exception e)
 		{
-			lock (_gate) _download = new DownloadView(DownloadPhase.Error, r.Version, Code: UpdateErrorCode.Failed);
+			lock (_gate) _download = new DownloadView(DownloadPhase.Ready, r.Version);
 			Raise();
 			throw new UpdateException(UpdateErrorCode.Failed, "Installer hand-off failed", e);
 		}

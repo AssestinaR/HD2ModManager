@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Threading;
 using System.Windows;
 using HD2ModCore.Updates;
 
@@ -52,7 +53,7 @@ namespace HD2ModManager.Services
                 ConfigDir = Path.Combine(baseDir, "config"),
                 RunDir = _runDir,
                 Variant = Package?.Variant,
-                Installer = new ZipUpdateInstaller(baseDir, _runDir, exe, CloseApplication, isIdle),
+                Installer = new ZipUpdateInstaller(baseDir, _runDir, exe, RequestExit, isIdle),
             });
             Updater.Changed += OnUpdaterChanged;
         }
@@ -109,16 +110,33 @@ namespace HD2ModManager.Services
                 NotificationLevel.Info, TimeSpan.FromSeconds(10), "程序更新", "app-update-available");
         }
 
-        /// <summary>走主窗口的正常关闭流程（先保存再退出）；没有主窗口时直接退出。</summary>
-        private static void CloseApplication()
+        /// <summary>
+        /// 走主窗口的正常关闭流程（先保存再退出），并保证替换脚本只在程序确定要退出时才启动。
+        /// 窗口的保存流程可以否决关闭（保存失败时会提示并留在原地）：那样旧实例还活着，脚本不能启动，
+        /// 所以这里等应用的 Exit 事件——它触发才启动脚本；等不到就返回 false，更新回到「已下载」状态，可以重试。
+        /// 本方法在后台线程上被调用并阻塞等待；窗口关闭本身在 UI 线程上进行。
+        /// </summary>
+        private static bool RequestExit(Action launch)
         {
             var app = Application.Current;
-            if (app is null) return;
-            _ = app.Dispatcher.InvokeAsync(() =>
+            if (app is null) { launch(); return true; }
+            using var exiting = new ManualResetEventSlim();
+            ExitEventHandler handler = (_, _) =>
             {
+                try { launch(); }
+                catch (Exception e) { LogService.Error($"启动更新脚本失败：{e.Message}"); }
+                exiting.Set();
+            };
+            app.Dispatcher.Invoke(() =>
+            {
+                app.Exit += handler;
                 if (app.MainWindow is { } window) window.Close();
                 else app.Shutdown();
             });
+            if (exiting.Wait(TimeSpan.FromSeconds(60))) return true;
+            app.Dispatcher.Invoke(() => app.Exit -= handler);
+            // Exit 恰好在超时前后触发的竞态：如果已经触发，脚本已启动，程序正在退出。
+            return exiting.IsSet;
         }
 
         public void Dispose()

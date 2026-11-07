@@ -72,21 +72,38 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 	private readonly string _appDir;
 	private readonly string _runDir;
 	private readonly string _exe;
-	private readonly Action _exitApp;
+	private readonly Func<Action, bool> _requestExit;
 	private readonly Func<bool> _idle;
 	private readonly Func<ProcessStartInfo, Process?> _start;
 
-	public ZipUpdateInstaller(string appDir, string runDir, string exe, Action exitApp, Func<bool>? idle = null, Func<ProcessStartInfo, Process?>? start = null)
+	/// <param name="requestExit">
+	/// 让程序退出：入参是「退出时启动替换脚本」的动作，实现必须保证它在程序确定要退出时恰好执行一次；
+	/// 返回 true 表示退出已被批准（窗口的保存流程没有否决），false 表示没能退出（例如保存失败、超时）。
+	/// </param>
+	public ZipUpdateInstaller(string appDir, string runDir, string exe, Func<Action, bool> requestExit, Func<bool>? idle = null, Func<ProcessStartInfo, Process?>? start = null)
 	{
 		_appDir = appDir.TrimEnd('\\', '/');
 		_runDir = runDir;
 		_exe = exe;
-		_exitApp = exitApp;
+		_requestExit = requestExit;
 		_idle = idle ?? (() => true);
 		_start = start ?? Process.Start;
 	}
 
 	public bool IsIdle => _idle();
+
+	/// <summary>更新包只允许带这些位置的文件；其余（settings.json、mods、config、backups、data\indexes …）一律拒绝。</summary>
+	public static readonly string[] AllowedFiles = { "HD2ModManager.exe", "README.md", "hd2mod.cmd", InstalledPackage.FileName };
+	public static readonly string[] AllowedDirectories = { "bin", "third_party", "hd2mod-docs", @"data\resources" };
+
+	/// <summary>相对路径（任一分隔符）是否在更新包允许的范围内。</summary>
+	public static bool IsAllowedPackagePath(string relative)
+	{
+		var path = relative.Replace('/', '\\').TrimStart('\\');
+		if (path.Split('\\').Any(segment => segment is ".." or "." or "")) return false;
+		if (AllowedFiles.Any(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase))) return true;
+		return AllowedDirectories.Any(d => path.StartsWith(d + "\\", StringComparison.OrdinalIgnoreCase));
+	}
 
 	public string ScriptPath => Path.Combine(_runDir, "apply-update.ps1");
 
@@ -108,7 +125,16 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 				"-ProcessId", Environment.ProcessId.ToString(), "-AppDir", _appDir, "-Stage", stage, "-Exe", _exe,
 				"-Version", request.Version, "-ResultFile", UpdateApplyResult.ResultPath(_runDir), "-LogFile", Path.Combine(_appDir, "logs", "app-update.log") })
 				psi.ArgumentList.Add(a);
-			_ = _start(psi) ?? throw new UpdateException(UpdateErrorCode.Failed, "Could not start the update script");
+			// 脚本只在程序确定要退出时才启动：窗口的保存流程可能否决关闭，那样旧实例还活着，不能让脚本去替换它的文件。
+			var launched = false;
+			void Launch()
+			{
+				if (launched) return;
+				launched = true;
+				_ = _start(psi);
+			}
+			if (!_requestExit(Launch))
+				throw new UpdateException(UpdateErrorCode.Failed, "The manager did not close (saving was refused or timed out); the update was not applied");
 		}
 		catch (UpdateException) { TryDeleteDir(stage); throw; }
 		catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.ComponentModel.Win32Exception)
@@ -116,7 +142,6 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 			TryDeleteDir(stage);
 			throw new UpdateException(UpdateErrorCode.Failed, "Installing the update failed: " + e.Message, e);
 		}
-		_exitApp();
 	}
 
 	/// <summary>解压并校验：条目不得越出目录；必须带 HD2ModManager.exe 和 update-package.json，且版本与安装变体匹配；磁盘要放得下。</summary>
@@ -135,9 +160,11 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 			if (free < total * 5 / 2) throw new UpdateException(UpdateErrorCode.DiskSpace, "Not enough free disk space to unpack the update");
 			foreach (var e in zip.Entries)
 			{
+				var isDirectory = e.FullName.EndsWith('/') || e.FullName.EndsWith('\\');
+				if (!isDirectory && !IsAllowedPackagePath(e.FullName)) throw new UpdateException(UpdateErrorCode.BadPackage, $"Package contains a path outside the shipped files: {e.FullName}");
 				var target = Path.GetFullPath(Path.Combine(stage, e.FullName));
 				if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new UpdateException(UpdateErrorCode.BadPackage, "Package entry escapes the target folder");
-				if (e.FullName.EndsWith('/') || e.FullName.EndsWith('\\')) { Directory.CreateDirectory(target); continue; }
+				if (isDirectory) { Directory.CreateDirectory(target); continue; }
 				Directory.CreateDirectory(Path.GetDirectoryName(target)!);
 				e.ExtractToFile(target, true);
 			}
@@ -156,7 +183,7 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 		try
 		{
 			if (!Directory.Exists(runDir)) return;
-			foreach (var d in Directory.EnumerateDirectories(runDir, "stage-*")) TryDeleteDir(d);
+			foreach (var d in Directory.EnumerateDirectories(runDir, "stage-*")) TryDeleteDir(d); // backup-* 不动：回滚不完整时它是唯一的恢复副本
 			foreach (var f in new[] { "apply-update.ps1" }) { try { File.Delete(Path.Combine(runDir, f)); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
 		}
 		catch (IOException) { }
@@ -173,9 +200,10 @@ param([int]$ProcessId, [string]$AppDir, [string]$Stage, [string]$Exe, [string]$V
 $ErrorActionPreference = 'Stop'
 $AppDir = $AppDir.TrimEnd('\')
 $Stage = $Stage.TrimEnd('\')
-$Backup = "$Stage.backup"
+$Backup = Join-Path (Split-Path -Parent $Stage) ("backup-" + $Version)
 $swapped = $false
 $created = @()
+$rolledBack = $false
 $restart = $false
 
 function Log($m) {
@@ -210,6 +238,14 @@ try {
 
     $files = @(Get-ChildItem -LiteralPath $Stage -Recurse -File | ForEach-Object { Rel $Stage $_.FullName })
     if ($files.Count -eq 0) { throw 'The staged update is empty.' }
+    # Only shipped files may be replaced. The app already refuses other paths; this is the second, independent check.
+    $allowedFiles = @('HD2ModManager.exe', 'README.md', 'hd2mod.cmd', 'update-package.json')
+    $allowedDirs = @('bin\', 'third_party\', 'hd2mod-docs\', 'data\resources\')
+    foreach ($rel in $files) {
+        $ok = $allowedFiles -contains $rel
+        foreach ($d in $allowedDirs) { if ($rel.StartsWith($d, [StringComparison]::OrdinalIgnoreCase)) { $ok = $true } }
+        if (-not $ok) { throw "The update contains a path outside the shipped files: $rel" }
+    }
 
     if (Test-Path -LiteralPath $Backup) { Remove-Item -LiteralPath $Backup -Recurse -Force }
     New-Item -ItemType Directory -Path $Backup -Force | Out-Null
@@ -258,10 +294,15 @@ catch {
                 Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $AppDir $rel) -Force
             }
             Log 'rolled back'
+            $rolledBack = $true
         } catch {
-            $note = ' Rollback was incomplete; verify the game files and reinstall the manager from the release page if it does not start.'
+            $note = " Rollback was incomplete; a backup of the previous files is kept in $Backup. Reinstall the manager from the release page if it does not start."
             Log "rollback failed: $_"
         }
+    } else { $rolledBack = $true }
+    if ($rolledBack) {
+        Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
     }
     Result $false ($reason + $note)
 }
