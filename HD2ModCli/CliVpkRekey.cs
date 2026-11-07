@@ -328,6 +328,15 @@ internal static class CliVpkRekey
 			catch (UnauthorizedAccessException) { }
 		}
 
+		// 换甲把 unit 换到了目标护甲的键上，但**模型自己的材质层不该因此消失**：
+		// 用户启用过的材质 patch（模型自带的、或归拢进来的变体）仍要进生效层，
+		// 否则"部署只看这一层"会把它们整体挡掉——这正是 1.5.0 丢材质的那条路。
+		//
+		// 顺序：先烘 section（改的是 unit patch 的掩码），再装材质层（装的是独立的 patch 组）。
+		var (materialLayers, crossArmorMaterialWarnings) = OverwriteMaterializer.ResolveMaterialLayers(modDirectory);
+		foreach (var layer in materialLayers)
+			OverwritePatchInstaller.Install(destinationDirectory, layer);
+
 		MarkOverwriteManaged(destinationDirectory);
 		return new VpkRekeyResult(
 			node.Id.Value.ToString("N"),
@@ -337,7 +346,7 @@ internal static class CliVpkRekey
 			selected.Select(entry => entry.ArchiveId).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
 			plan.Mappings.Count(mapping => mapping.WillReplace),
 			result.MinifiedMeshCount,
-			[.. mappingNotes, .. rebuilt.Skipped.Select(skip => $"{skip.FileId}：{skip.Reason}"), .. bake.Warnings])
+			[.. mappingNotes, .. rebuilt.Skipped.Select(skip => $"{skip.FileId}：{skip.Reason}"), .. bake.Warnings, .. crossArmorMaterialWarnings])
 		{
 			Mappings = plan.Mappings
 				.Select(mapping =>

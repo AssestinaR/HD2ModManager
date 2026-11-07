@@ -64,6 +64,7 @@ internal static class CliDoctor
 		var nodeCount = 0;
 		var missingDirectory = 0;
 		var withoutPayload = 0;
+		var nestedPayload = new List<string>();
 		var libraryLoaded = false;
 		if (!string.IsNullOrWhiteSpace(workspace.LibraryRoot))
 		{
@@ -79,7 +80,35 @@ internal static class CliDoctor
 					&& ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory) is null
 					&& !Directory.EnumerateFiles(directory, "*.patch_*", SearchOption.TopDirectoryOnly).Any())
 					withoutPayload++;
+
+				// 载荷层里出现子目录 = patch 不在顶层 = 下游一律看不到它们。
+				//
+				// 这是 2026-11-08 用户实测的形状：迁移把老库里"按包名建的子目录"原样搬进了
+				// `sectional/`，于是部署索引、材质选项表、重构建**全都扫不到**，
+				// 表现是"部署成功、游戏里什么都没变"，而文件明明在那里。
+				foreach (var layer in new[]
+				{
+					ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory),
+					Directory.Exists(ModNodePayloadLayout.GetOverwriteDirectory(directory))
+						? ModNodePayloadLayout.GetOverwriteDirectory(directory)
+						: null,
+				})
+				{
+					if (layer is null) continue;
+					if (!Directory.EnumerateDirectories(layer).Any()) continue;
+					nestedPayload.Add(Path.Combine(node.RelativePath, Path.GetFileName(layer)));
+					break;
+				}
 			}
+			if (nestedPayload.Count > 0)
+				issues.Add(new CliDoctorIssue("ModPayloadNested", "error",
+					$"{nestedPayload.Count} 个 Mod 的载荷层里有子目录（patch 必须平铺在顶层）："
+					+ string.Join("、", nestedPayload.Take(5))
+					+ (nestedPayload.Count > 5 ? $"…（共 {nestedPayload.Count} 个）" : string.Empty),
+					"`sectional/` 与 `Overwrite/` 顶层只放 patch 文件与结构文件；"
+					+ "部署索引、材质选项表、重构建全部只扫顶层。",
+					"这些 patch 现在等于不存在。跑 `library family-merge plan` 看要不要归拢，"
+					+ "再对涉及的 Mod 各跑一次 `mod rebuild`。"));
 			if (missingDirectory > 0)
 				issues.Add(new CliDoctorIssue("ModDirectoryMissing", "error",
 					$"{missingDirectory} 个 Mod 的文件夹不在库里。",

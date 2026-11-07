@@ -633,6 +633,40 @@ public static class CliApplication
 				() => FormatMaterialFoldApply(result));
 			return result.Succeeded ? 0 : 2;
 		}
+		if (Matches(command, "library", "family-merge", "plan"))
+		{
+			EnsureLibraryFamilyMergePlanOptions(invocation.Options);
+			var (workspace, _) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var plan = CliFamilyMerge.BuildPlan(workspace);
+			Emit(invocation.Options,
+				new { ok = true, familyMerge = plan },
+				() => CliFamilyMerge.FormatPlan(plan));
+			return 0;
+		}
+		if (Matches(command, "library", "family-merge", "apply"))
+		{
+			EnsureLibraryFamilyMergeApplyOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var plan = CliFamilyMerge.BuildPlan(workspace);
+			if (plan.Families.Count == 0)
+			{
+				Emit(invocation.Options,
+					new { ok = true, familyMerge = new { mergedFamilies = 0 } },
+					() => CliFamilyMerge.FormatPlan(plan));
+				return 0;
+			}
+
+			await using var familySession = await CliWriteTargetGuard
+				.AcquireSessionAsync(workspace, CliWriteTargetMode.Mutation)
+				.ConfigureAwait(false);
+			var outcome = await CliFamilyMerge
+				.ApplyAsync(workspace, state, plan, stage => Console.Error.WriteLine("… " + stage), CancellationToken.None)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = outcome.Errors.Count == 0, familyMerge = outcome },
+				() => CliFamilyMerge.FormatOutcome(outcome, workspace.LibraryRoot ?? string.Empty));
+			return outcome.Errors.Count == 0 ? 0 : 2;
+		}
 		if (Matches(command, "library", "sync", "inspect"))
 		{
 			EnsureLibrarySyncInspectOptions(invocation.Options);
@@ -2254,6 +2288,14 @@ public static class CliApplication
 					vpkPaths.Add(Path.GetFullPath(path));
 			}
 
+			// 逐 VPK 的类型清单：`<绝对路径>\t model|material`，每行一个。
+			//
+			// 为什么需要它（而不是只用 `--treat-as`）：一次"整批转换"里模型和材质包是**混着**的，
+			// 而 `--treat-as` 会作用于这次调用的**每一个**输入。混着传 `model` 会把材质包当角色转
+			// （死在 `MDL 骨骼数量异常：0`）；不传又会把"塞了展示模型的材质包"当角色。
+			// 规划阶段（`--dry-run` 的 `modelGroups`）本来就知道每个 VPK 是什么，这里把那份结论接住。
+			var forcedTypes = ReadTreatAsList(invocation.Options.TreatAsList, seenPaths);
+
 			// `--dry-run`：只算"哪些能转、哪些跳过、哪些是同一个模型"。
 			// 管理器必须先知道这件事才能画进度、才能解释"为什么只导入了一部分"。
 			if (invocation.Options.DryRun)
@@ -2372,7 +2414,9 @@ public static class CliApplication
 				{
 					var outcome = await ConvertVpkAsync(
 						invocation, path, directory, batch,
-						scopedMaterials: true, matcapModel, headerTemplate, cancellationToken: default).ConfigureAwait(false);
+						scopedMaterials: true, matcapModel, headerTemplate,
+						treatAs: forcedTypes.TryGetValue(Path.GetFullPath(path), out var declaredType) ? declaredType : null,
+						cancellationToken: default).ConfigureAwait(false);
 					results.Add(outcome);
 					// **退出码只表示"这次导入能不能用"**，不表示"有没有提示"。
 					// 降级项（warnings）与"源侧本来就不绘制"（skipped）都放在 JSON 里由 UI 展示；
@@ -3258,6 +3302,7 @@ public static class CliApplication
 			?.Trim().ToLowerInvariant() switch
 		{
 			"original" => CutoutTemplate.Original,
+			"cutoutmetal" => CutoutTemplate.CutoutMetal,
 			_ => CutoutTemplate.AlphaClip,
 		};
 
@@ -3432,6 +3477,7 @@ public static class CliApplication
 		RetargetInputs? matcapModel,
 		byte[]? headerTemplate,
 		string? modelStem = null,
+		string? treatAs = null,
 		CancellationToken cancellationToken = default)
 	{
 		var options = invocation.Options;
@@ -3445,11 +3491,13 @@ public static class CliApplication
 		// 那种包其实是主材质，硬按模型转只会失败。规划阶段靠"材质目录对得上哪个模型"已经认出来了，
 		// 所以这里允许调用方用 `--treat-as` 把结论显式传进来，不在转换阶段再猜一次。
 		bool isModel;
-		if (string.Equals(options.TreatAs, "model", StringComparison.OrdinalIgnoreCase))
+		// 逐 VPK 的结论优先（`--treat-as-list`），其次才是整次调用统一给的 `--treat-as`。
+		var declaredTreatAs = treatAs ?? options.TreatAs;
+		if (string.Equals(declaredTreatAs, "model", StringComparison.OrdinalIgnoreCase))
 		{
 			isModel = true;
 		}
-		else if (string.Equals(options.TreatAs, "material", StringComparison.OrdinalIgnoreCase))
+		else if (string.Equals(declaredTreatAs, "material", StringComparison.OrdinalIgnoreCase))
 		{
 			isModel = false;
 		}
@@ -4462,6 +4510,45 @@ public static class CliApplication
 
 	private static void EnsureDeactivationApplyOptions(CliGlobalOptions options)
 		=> EnsureDeploymentApplyOptions(options);
+
+	/// <summary>
+	/// 家族归拢的 plan 是**只读**的：不接受 --confirm/--plan 这些会让人以为它会写盘的参数。
+	/// </summary>
+	private static void EnsureLibraryFamilyMergePlanOptions(CliGlobalOptions options)
+	{
+		if (options.Confirm || !string.IsNullOrWhiteSpace(options.Output) || options.Overwrite
+			|| !string.IsNullOrWhiteSpace(options.Plan) || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData) || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library family-merge plan 是只读检查，仅接受 --manager-root、--library 与 --json。");
+		}
+	}
+
+	/// <summary>
+	/// 家族归拢会**搬库里的文件并重构建**：要求显式 --confirm；不接受无关参数。
+	/// </summary>
+	private static void EnsureLibraryFamilyMergeApplyOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"FamilyMergeConfirmationRequired",
+				"library family-merge apply 会把材质包的来源 VPK 搬进模型条目并重构建；"
+				+ "请先跑一次 family-merge plan 核对，再显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite
+			|| !string.IsNullOrWhiteSpace(options.Plan) || !string.IsNullOrWhiteSpace(options.Host)
+			|| options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library family-merge apply 仅接受 --manager-root、--library、--game-data、--confirm 与 --json。");
+		}
+	}
 
 	/// <summary>
 	/// 折并执行会移动库内文件：要求显式 --confirm；且不接受与它无关的参数。
@@ -5922,6 +6009,46 @@ public static class CliApplication
 
 	private static bool Matches(IReadOnlyList<string> actual, params string[] expected)
 		=> actual.Count == expected.Length && actual.SequenceEqual(expected, StringComparer.Ordinal);
+
+	/// <summary>
+	/// 读 <c>--treat-as-list</c>：每行「&lt;绝对路径&gt;\t model|material」。
+	/// <para>
+	/// <b>路径必须在本次输入集合里。</b>清单写错一个字就该报错，而不是静默退化成"自动判断"——
+	/// 那正是这个开关要消灭的行为（把塞了展示模型的材质包当角色转，死在模型解析上）。
+	/// </para>
+	/// </summary>
+	private static Dictionary<string, string> ReadTreatAsList(string? listPath, HashSet<string> knownPaths)
+	{
+		var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		if (string.IsNullOrWhiteSpace(listPath)) return map;
+		if (!File.Exists(listPath))
+			throw new CliUserException("FileNotFound", $"找不到 --treat-as-list 指向的清单：{listPath}");
+
+		var lineNumber = 0;
+		foreach (var line in File.ReadAllLines(listPath))
+		{
+			lineNumber++;
+			if (string.IsNullOrWhiteSpace(line)) continue;
+			var parts = line.Split(['\t', '|'], 2, StringSplitOptions.TrimEntries);
+			if (parts.Length != 2)
+				throw new CliUserException("InvalidOption",
+					$"--treat-as-list 第 {lineNumber} 行不是「<路径>\t model|material」：{line}");
+
+			var kind = parts[1].ToLowerInvariant();
+			if (kind is not ("model" or "material"))
+				throw new CliUserException("InvalidOption",
+					$"--treat-as-list 第 {lineNumber} 行只接受 model / material，实际是 '{parts[1]}'。");
+
+			var full = Path.GetFullPath(parts[0]);
+			if (!knownPaths.Contains(full))
+				throw new CliUserException("InvalidOption",
+					$"--treat-as-list 里的这个 VPK 不在本次输入里：{parts[0]}");
+
+			map[full] = kind;
+		}
+
+		return map;
+	}
 	private static void Emit(CliGlobalOptions options, object json, Func<string> human)
 	{
 		if (options.Json) CliOutput.WriteJson(json);
@@ -8051,6 +8178,8 @@ HD2 Mod Manager 命令行
 	  hd2mod gamedata extract archive <归档ID> --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
 	  hd2mod library material-fold plan --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library material-fold apply --manager-root <管理器目录> --library <Mod库目录> --confirm --json
+	  hd2mod library family-merge plan --manager-root <管理器目录> --library <Mod库目录> --json
+	  hd2mod library family-merge apply --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --confirm --json
 	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json

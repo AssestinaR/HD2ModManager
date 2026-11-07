@@ -217,15 +217,27 @@ public static class VpkRebuildService
 			var conversion = await Hd2ModProcess.RunAsync(
 				executable, arguments, cancellationToken,
 				onProgress: (_, _, _, text) => onStage?.Invoke(text)).ConfigureAwait(false);
-			var produced = FindProducedPatchDirectory(convertRoot);
-			if (produced is null)
+
+			// ⚠️ **一次转换的产出是「每个输入 VPK 一个子目录」**（模型一个、每个材质包各一个）。
+			// 而存储约定要求 `sectional/` 里全部 patch 组平铺按序号，所以这里必须先收成
+			// 一份平铺载荷：模型 → `patch_0`，材质 → `patch_1..patch_N`。
+			//
+			// 以前这一步是"找第一个含 patch 的子目录"，于是**模型 patch 进来了、材质全丢** ——
+			// 表现是"重构完成、游戏里材质没了"，重转多少次都一样（2026-11-07 用户实测）。
+			var fresh = VpkConversionReport.TryParse(conversion.Output);
+			var collectedPayload = Path.Combine(stagingRoot, "payload");
+			var collected = VpkPayloadCollector.Collect(convertRoot, collectedPayload, fresh);
+			if (!collected.Succeeded)
 			{
-				// 失败时留下的临时产物不删：那是唯一能看"CLI 到底写了什么"的东西。
 				preserveStaging = true;
 				return VpkRebuildOutcome.Failed(
-					ExplainConversionFailure(conversion) + $"（临时产物保留在：{stagingRoot}）", notes);
+					(conversion.ExitCode == 0 ? string.Empty : ExplainConversionFailure(conversion))
+					+ "收集转换产物失败：" + collected.Error
+					+ $"（临时产物保留在：{stagingRoot}）", notes);
 			}
 
+			notes.AddRange(collected.Notes);
+			var produced = collectedPayload;
 			if (isUnitMod && !File.Exists(Path.Combine(produced, WardrobeSectionMapFile.FileName)))
 			{
 				preserveStaging = true;
@@ -234,7 +246,6 @@ public static class VpkRebuildService
 					+ $"继续替换只会得到一个关不掉任何东西的 Mod。临时产物保留在：{stagingRoot}", notes);
 			}
 
-			var fresh = VpkConversionReport.TryParse(conversion.Output);
 			var units = fresh?.UnitCount ?? 0;
 			var previousMaterials = await CountDistinctMaterialsAsync(payloadDirectory, cancellationToken).ConfigureAwait(false);
 			var freshMaterials = await CountDistinctMaterialsAsync(produced, cancellationToken).ConfigureAwait(false);
@@ -332,6 +343,16 @@ public static class VpkRebuildService
 			// ⑥ 物理参数容器：转换阶段刻意不嵌（会让受管步骤记账错位），这里才是它该来的地方。
 			onStage?.Invoke("正在写入物理参数…");
 			notes.Add(await VpkPhysBoneEmbedder.RunAsync(executable, modDirectory, cancellationToken).ConfigureAwait(false));
+
+			// ⑥b **生效层**：基底里现在可能有多个材质 patch（模型自带的 + 归拢进来的材质包），
+			// 而部署在"没有 Overwrite"时会按基底全上，同名资源互相覆盖。
+			// 重构建之后必须重新物化一次：unit（基底那份；已有换甲产物时物化器会沿用它）+ 启用的材质。
+			var rebuiltLayer = OverwriteMaterializer.Materialize(modDirectory, OverwriteSelection.Default);
+			if (!rebuiltLayer.Succeeded)
+				notes.Add("生效层没能重建（" + (rebuiltLayer.Error ?? "原因未知")
+					+ "）：材质会按基底目录里的全部变体一起上。");
+			else
+				foreach (var warning in rebuiltLayer.Warnings) notes.Add(warning);
 
 			// ⑦ **按当前配置**重新生成 Overwrite/。
 			//
@@ -475,19 +496,6 @@ public static class VpkRebuildService
 
 		var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(modDirectory);
 		return ownKey is null ? null : [RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)];
-	}
-
-	/// <summary>转换目录下那个"唯一含 patch 文件的子目录"（<c>vpk2patch</c> 按包名建目录，名字会被清洗过）。</summary>
-	private static string? FindProducedPatchDirectory(string root)
-	{
-		if (!Directory.Exists(root)) return null;
-		foreach (var directory in Directory.EnumerateDirectories(root))
-		{
-			if (Directory.EnumerateFiles(directory, "*.patch_*", SearchOption.TopDirectoryOnly).Any())
-				return directory;
-		}
-
-		return null;
 	}
 
 	private static string ExplainConversionFailure(Hd2ModProcess.Result result)

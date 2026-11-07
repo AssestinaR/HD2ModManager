@@ -318,8 +318,10 @@ public sealed class VpkImportService
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			index++;
-			var name = Path.GetFileName(job.VpkPath);
+			var name = Path.GetFileName(job.PrimaryVpkPath);
 			onStage?.Invoke($"正在转换 {index}/{workload.Count}：{job.GroupName} → {name}");
+			if (job.Inputs.Count > 1)
+				onStage?.Invoke($"这一组共 {job.Inputs.Count} 个 VPK（模型 + 它的 {job.Inputs.Count - 1} 个材质包），一次转成同一个 Mod");
 
 			var raw = Path.Combine(source.StagingRoot, "raw", index.ToString(CultureInfo.InvariantCulture));
 			try
@@ -334,7 +336,7 @@ public sealed class VpkImportService
 				// ⚠️ **同一批里一个目标只能更新一次。** 一个压缩包里放了两份完全相同的 VPK
 				// 是真会发生的（实测八人包里就有一份重复的「手套Gloves关」）。两次都换进
 				// 同一个目录，后一个会静默盖掉前一个 —— 那正是我们要消灭的那种"看不出来"的错。
-				var existing = VpkSourceIdentity.FindExistingMod(_paths.ModsDirectory, job.VpkPath);
+				var existing = VpkSourceIdentity.FindExistingMod(_paths.ModsDirectory, job.PrimaryVpkPath);
 				if (existing is not null && !updatedTargets.Add(Path.GetFullPath(existing.Directory)))
 					existing = null;
 				string? reuseModelPath = null;
@@ -349,13 +351,14 @@ public sealed class VpkImportService
 				}
 
 				var result = await ConvertOneAsync(
-					executable, job.VpkPath, raw,
+					executable, job, raw,
 					job.MaterialSourceListPath, switchListPath, job.IdNamespaceSource, job.IsModel,
 					cancellationToken, onProgress, reuseModelPath).ConfigureAwait(false);
 				if (result.PatchDirectory is null)
 				{
-					items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Skipped, null,
-						result.FailureReason ?? "这个 VPK 里没有 HD2 能用的资源，因此没有产出 patch。", 0, 0, 0, result.Notes));
+					foreach (var input in job.Inputs)
+						items.Add(new VpkImportItem(input.VpkPath, VpkImportOutcome.Skipped, null,
+							result.FailureReason ?? "这个 VPK 里没有 HD2 能用的资源，因此没有产出 patch。", 0, 0, 0, result.Notes));
 					continue;
 				}
 
@@ -368,39 +371,41 @@ public sealed class VpkImportService
 					produced.Add(new VpkProducedPackage(
 						result.PatchDirectory, job.GroupName, job.IsModel,
 						existing.Directory, existing.Name, result.ReportJson, existing.CandidateCount));
-					items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Converted, existing.Name, null,
+					items.Add(new VpkImportItem(job.PrimaryVpkPath, VpkImportOutcome.Converted, existing.Name, null,
 						result.Units, result.Materials, result.Textures,
 						extraNote is null
-							? [.. result.Notes, $"库里已有来自同一个 VPK 的 Mod「{existing.Name}」，本次**更新它**而不是新建。"]
-							: [.. result.Notes, $"库里已有来自同一个 VPK 的 Mod「{existing.Name}」，本次**更新它**而不是新建。", extraNote],
+							? [.. result.Notes, $"库里已有来自同一批来源的 Mod「{existing.Name}」，本次**更新它**而不是新建。"]
+							: [.. result.Notes, $"库里已有来自同一批来源的 Mod「{existing.Name}」，本次**更新它**而不是新建。", extraNote],
 						Updated: true));
 					continue;
 				}
 
+				// 目录名取**主体**那个 VPK 的名字：一个组只建一个 Mod，材质包不再是独立条目。
 				var directoryName = MakeUniqueDirectoryName(
-					SafeDirectoryName(Path.GetFileNameWithoutExtension(job.VpkPath) + job.DirectorySuffix),
+					SafeDirectoryName(Path.GetFileNameWithoutExtension(job.PrimaryVpkPath)),
 					usedDirectoryNames);
 				var target = Path.Combine(source.StagingRoot, "pkg", directoryName);
 				var payload = Path.Combine(target, ModNodePayloadLayout.VpkPatchDirectoryName);
 				Directory.CreateDirectory(target);
 				Directory.Move(result.PatchDirectory, payload);
 
-				// 把来源 VPK 原件留在 Mod 文件夹根上。
+				// 把**这一组所有**来源 VPK 原件留在 Mod 文件夹根上。
 				//
 				// 为什么必须留：patch 是**转换产物**。换过目标护甲、烘过 section 之后，
-				// vpk2patch/ 里那份已经不是最初转换出来的东西了；没有原件，用户想回到
+				// sectional/ 里那份已经不是最初转换出来的东西了；没有原件，用户想回到
 				// "原始转换"或者换个参数重转，就只能重新去下载一遍来源包。
-				// 这也正是这套目录约定：根 = 来源，vpk2patch/ = 转换产物，
-				// Overwrite/ = 在产物上再改出来的变体。
-				// 它同时是"同一来源"的判据（见上面 TryFindExistingModDirectory）。
-				File.Copy(job.VpkPath, Path.Combine(target, Path.GetFileName(job.VpkPath)), overwrite: true);
+				// 这同时是重构建的输入：根上有几个 VPK，重构建就转几个、产出几组 patch。
+				// 它也是"同一来源"的判据（见 VpkSourceIdentity）。
+				foreach (var input in job.Inputs)
+					File.Copy(input.VpkPath, Path.Combine(target, Path.GetFileName(input.VpkPath)), overwrite: true);
 
 				await File.WriteAllTextAsync(Path.Combine(target, PackageReportFileName), result.ReportJson, cancellationToken)
 					.ConfigureAwait(false);
 
 				produced.Add(new VpkProducedPackage(target, job.GroupName, job.IsModel));
-				items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Converted, directoryName, null,
-					result.Units, result.Materials, result.Textures, result.Notes));
+				foreach (var input in job.Inputs)
+					items.Add(new VpkImportItem(input.VpkPath, VpkImportOutcome.Converted, directoryName, null,
+						result.Units, result.Materials, result.Textures, result.Notes));
 			}
 			catch (OperationCanceledException)
 			{
@@ -409,8 +414,9 @@ public sealed class VpkImportService
 			catch (Exception exception) when (exception is IOException or InvalidDataException
 				or InvalidOperationException or UnauthorizedAccessException or JsonException)
 			{
-				// 单个 VPK 失败**不拖垮整批**：其它包照样能导入。
-				items.Add(new VpkImportItem(job.VpkPath, VpkImportOutcome.Failed, null, exception.Message, 0, 0, 0, []));
+				// 一组失败**不拖垮整批**：其它组照样能导入。
+				foreach (var input in job.Inputs)
+					items.Add(new VpkImportItem(input.VpkPath, VpkImportOutcome.Failed, null, exception.Message, 0, 0, 0, []));
 			}
 		}
 
@@ -533,15 +539,30 @@ public sealed class VpkImportService
 		public IReadOnlyList<PlannedItem> Convertible => Items.Where(item => item.Reason is null).ToArray();
 	}
 
-	/// <summary>一次转换任务：转哪个 VPK、用哪组的命名空间与解析集合、产出目录要不要加后缀。</summary>
+	/// <summary>转换任务里的一个输入 VPK，以及它在规划阶段被认成的类型。</summary>
+	private sealed record ConversionInput(string VpkPath, string Kind);
+
+	/// <summary>
+	/// 一次转换任务 = **一个自洽条目**（一个模型主体 + 它自己的全部材质包）。
+	/// <para>
+	/// <b>为什么是"一组 VPK"而不是"一个 VPK"。</b>存储约定是「一个 sectional Mod = 一个自洽条目，
+	/// 材质不再作为独立 Option mod」：整组一次 <c>vpk2patch</c>，产物平铺成
+	/// <c>patch_0</c>(unit) + <c>patch_1..N</c>(材质)，全部落进**同一个** Mod。
+	/// 按单个 VPK 建任务的话，每个材质包都会各自变成一个 Mod —— 那正是"材质与主体分离"的成因
+	/// （2026-11-08 用户实测：只有自带材质的 `恋星milfy_bill` 是自洽的）。
+	/// </para>
+	/// </summary>
 	private sealed record ConversionJob(
-		string VpkPath,
+		IReadOnlyList<ConversionInput> Inputs,
 		string GroupName,
 		string IdNamespaceSource,
 		string MaterialSourceListPath,
-		string DirectorySuffix,
-		// true = 这一项是模型主体（不是它的材质包）：挂"选项"关系时靠它区分主次。
-		bool IsModel);
+		// true = 这一组里有模型主体（不是纯材质批）。
+		bool IsModel)
+	{
+		/// <summary>这个任务的主 VPK：模型组就是模型，材质批就是第一个。目录名与"同一来源"判定用它。</summary>
+		public string PrimaryVpkPath => Inputs.Count == 0 ? string.Empty : Inputs[0].VpkPath;
+	}
 
 	private async Task<PlanResult> PlanAsync(string executable, IReadOnlyList<string> vpkPaths, CancellationToken cancellationToken)
 	{
@@ -605,7 +626,7 @@ public sealed class VpkImportService
 		var jobs = new List<ConversionJob>();
 		if (plan.Groups.Count == 0)
 		{
-			// 没有主体（比如只导材质包）：退回"整批一份"的老做法，至少不要什么都不做。
+			// 没有主体（比如只导材质包）：整批当**一个**条目转。
 			//
 			// **排除"没归属"的那些**：报告里已经把它们写成"认不出属于谁，已跳过"，
 			// 这里再转一遍就成了"报告说跳过、实际却导入了"，对不上账。
@@ -619,16 +640,12 @@ public sealed class VpkImportService
 			var namespaceSource = string.Join("+", convertible
 				.Select(item => Path.GetFileNameWithoutExtension(item.VpkPath))
 				.OrderBy(name => name, StringComparer.OrdinalIgnoreCase));
-			foreach (var item in convertible)
-				jobs.Add(new ConversionJob(item.VpkPath, "（整批）", namespaceSource, allListPath, string.Empty, IsModel: false));
+			var inputs = convertible
+				.Select(item => new ConversionInput(item.VpkPath, "material"))
+				.ToArray();
+			jobs.Add(new ConversionJob(inputs, "（整批）", namespaceSource, allListPath, IsModel: false));
 			return jobs;
 		}
-
-		// 同一份材质被几个主体共用 → 决定哪些产出目录要加主体后缀（只出现一次的不加，名字保持干净）。
-		var usageCount = plan.Groups
-			.SelectMany(group => group.Materials)
-			.GroupBy(path => path, StringComparer.OrdinalIgnoreCase)
-			.ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
 
 		var staging = Path.GetTempPath();
 		for (var index = 0; index < plan.Groups.Count; index++)
@@ -642,22 +659,31 @@ public sealed class VpkImportService
 				$"hd2modmanager-materials-{index}-{Guid.NewGuid().ToString("N")[..8]}.txt",
 				materialSource);
 
-			jobs.Add(new ConversionJob(
-				group.ModelVpkPath, group.DisplayName, group.IdNamespaceSource, listPath, string.Empty, IsModel: true));
-
-			foreach (var material in group.Materials)
-			{
-				var shared = usageCount.TryGetValue(material, out var count) && count > 1;
-				jobs.Add(new ConversionJob(
-					material,
-					group.DisplayName,
-					group.IdNamespaceSource,
-					listPath,
-					shared ? $"（{group.DisplayName}）" : string.Empty, IsModel: false));
-			}
+			// **一个主体 = 一个任务 = 一个 Mod。** 模型在前（决定 unit patch 的归属），
+			// 它自己的材质包跟在后面；类型逐 VPK 标出来，转换器不用再猜。
+			var inputs = new List<ConversionInput> { new(group.ModelVpkPath, "model") };
+			inputs.AddRange(group.Materials.Select(material => new ConversionInput(material, "material")));
+			jobs.Add(new ConversionJob(inputs, group.DisplayName, group.IdNamespaceSource, listPath, IsModel: true));
 		}
 
 		return jobs;
+	}
+
+	/// <summary>
+	/// 给 <c>--treat-as-list</c> 写一份「路径 → 类型」清单（每行 <c>&lt;绝对路径&gt;\t model|material</c>）。
+	/// <para>
+	/// 为什么不在命令行上逐 VPK 传：一次导入上百个包时命令行会撞 Windows 的 32767 字符上限
+	/// （报的是「文件名或扩展名太长」，看着像路径问题）。
+	/// </para>
+	/// </summary>
+	private static string WriteTreatAsList(ConversionJob job)
+	{
+		var path = Path.Combine(
+			Path.GetTempPath(),
+			"hd2modmanager-treatas-" + Guid.NewGuid().ToString("N")[..8] + ".txt");
+		var lines = job.Inputs.Select(input => Path.GetFullPath(input.VpkPath) + "\t" + input.Kind);
+		File.WriteAllLines(path, lines);
+		return path;
 	}
 
 	/// <summary>把一批路径写成清单文件（每行一个绝对路径），供 CLI 的 <c>--*-list</c> 参数读取。</summary>
@@ -698,7 +724,7 @@ public sealed class VpkImportService
 
 	private async Task<ConversionResult> ConvertOneAsync(
 		string executable,
-		string vpkPath,
+		ConversionJob job,
 		string outputRoot,
 		string materialSourceListPath,
 		string? componentSourceListPath,
@@ -709,13 +735,26 @@ public sealed class VpkImportService
 		string? reuseModelPath = null)
 	{
 		Directory.CreateDirectory(outputRoot);
-		var arguments = new List<string>
+		var arguments = new List<string> { "vpk2patch" };
+		arguments.AddRange(job.Inputs.Select(input => input.VpkPath));
+		arguments.AddRange(["--output", outputRoot]);
+
+		// **逐 VPK 的类型**：模型出 unit patch、材质包出材质 patch，而一次调用里两者是混着的。
+		//   · 单输入：`--treat-as` 就够（不能让它只看"有没有 .mdl"：整合包里"材质包塞了展示模型"
+		//     会被当角色去转，死在模型解析上，实测 `MDL 骨骼数量异常：0`）。
+		//   · 多输入：`--treat-as` 会作用于整批，混着传必然错。改用 `--treat-as-list` 逐行指定，
+		//     结论来自规划阶段（`--dry-run` 的 `modelGroups`）。
+		if (job.Inputs.Count == 1)
 		{
-			"vpk2patch", vpkPath,
-			"--output", outputRoot,
-			// **显式告诉转换器这是模型还是材质包**。不能让它只看"有没有 .mdl"：整合包里
-			// "材质包塞了展示模型"的情况会让它当角色去转，死在模型解析上（实测 `MDL 骨骼数量异常：0`）。
-			"--treat-as", isModel ? "model" : "material",
+			arguments.AddRange(["--treat-as", job.Inputs[0].Kind]);
+		}
+		else
+		{
+			var typesPath = WriteTreatAsList(job);
+			arguments.AddRange(["--treat-as-list", typesPath]);
+		}
+
+		arguments.AddRange([
 			// 解析集合（**本主体自己那一组**）走清单文件：上百个 VPK 的路径拼进命令行会超出
 			// Windows 的 32767 字符上限。注意它不再是"整批"——混进别的角色就会串材质。
 			"--material-source-list", materialSourceListPath,
@@ -738,7 +777,7 @@ public sealed class VpkImportService
 			"--library", _libraryRoot,
 			"--game-data", _gameDataDirectory,
 			"--json",
-		};
+		]);
 
 		// 复用旧素体定义（key + unit id 基）：
 		// 重新导入同一个 VPK 时要**更新**原来那个 Mod，而 unit id 是 `seed + index` 生成的。
@@ -757,7 +796,7 @@ public sealed class VpkImportService
 		if (string.IsNullOrWhiteSpace(output))
 		{
 			throw new InvalidDataException(
-				$"转换 {Path.GetFileName(vpkPath)} 失败（hd2mod 退出码 {exitCode}）：{error.Trim()}");
+				$"转换 {job.GroupName} 失败（hd2mod 退出码 {exitCode}）：{error.Trim()}");
 		}
 
 		using var document = JsonDocument.Parse(output);
@@ -785,20 +824,35 @@ public sealed class VpkImportService
 				? $"素体未登记：{registryError}"
 				: error.Trim();
 			throw new InvalidDataException(
-				$"转换 {Path.GetFileName(vpkPath)} 未成功（hd2mod 退出码 {exitCode}）"
+				$"转换 {job.GroupName} 未成功（hd2mod 退出码 {exitCode}）"
 				+ (string.IsNullOrWhiteSpace(detail) ? "。" : $"：{detail}"));
 		}
 
-		var patchDirectory = FindPatchDirectory(outputRoot);
-		if (patchDirectory is null)
+		// ⚠️ **一次转换的产出是「每个输入 VPK 一个子目录」**（模型一个、每个材质包各一个）。
+		// 而存储约定要求 `sectional/` 里全部 patch 组**平铺按序号**：unit 恒为 `patch_0`，
+		// 材质 `patch_1..patch_N`，不建子目录。所以这里必须先把产出收成一份平铺载荷。
+		//
+		// 少了这一步只有两种结果，都很糟：
+		//   · 只取第一个子目录 → 模型 patch 进来、材质全丢（"导入成功、游戏里材质没了"）；
+		//   · 把整个输出根搬进去 → 得到一堆子目录，而下游所有枚举器只扫顶层，
+		//     这些 patch 既不被识别也不被部署（"部署成功、什么都没变"）。
+		var payloadDirectory = outputRoot.TrimEnd(Path.DirectorySeparatorChar) + "-payload";
+		var collected = VpkPayloadCollector.Collect(
+			outputRoot,
+			payloadDirectory,
+			VpkConversionReport.TryParse(output),
+			Path.GetFileNameWithoutExtension(job.PrimaryVpkPath));
+		if (!collected.Succeeded)
 		{
-			// ⚠️ **没有产物时必须把 CLI 说的原因带出来。**
-			//
-			// 以前这里一律返回 null，管理器于是显示"这个 VPK 里没有 HD2 能用的资源"——
-			// 而真实原因可能完全不是"没资源"：实测 `影鸢女武神shinano` 是**某个顶点的法线是零向量**，
-			// 导致两个 Unit 写不出来，整份 patch 被丢弃。那句话把用户和排查者一起带偏了方向。
-			return new ConversionResult(null, ExplainNothingProduced(root), output, 0, 0, 0, notes);
+			return new ConversionResult(
+				null,
+				(collected.Error ?? "收集转换产物失败。") + ExplainNothingProduced(root),
+				output, 0, 0, 0, notes);
 		}
+
+		foreach (var note in collected.Notes)
+			notes.Add(note);
+		var patchDirectory = payloadDirectory;
 
 		var units = 0;
 		var materials = 0;
@@ -1012,22 +1066,6 @@ public sealed class VpkImportService
 
 			foreach (var diagnostic in ReadStrings(patch, "diagnostics"))
 				return "转换没能写出 patch：" + diagnostic;
-		}
-
-		return null;
-	}
-
-	/// <summary>
-	/// 找到 CLI 产出的那个目录。<c>vpk2patch</c> 会在 <c>--output</c> 下建一个以包名命名的目录，
-	/// 所以这里取"唯一含 patch 文件的子目录"，而不是猜名字（名字会被 CLI 清洗过）。
-	/// </summary>
-	private static string? FindPatchDirectory(string outputRoot)
-	{
-		if (!Directory.Exists(outputRoot)) return null;
-		foreach (var directory in Directory.EnumerateDirectories(outputRoot))
-		{
-			if (Directory.EnumerateFiles(directory, "*.patch_*", SearchOption.TopDirectoryOnly).Any())
-				return directory;
 		}
 
 		return null;

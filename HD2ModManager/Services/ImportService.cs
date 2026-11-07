@@ -303,6 +303,18 @@ namespace HD2ModManager.Services
                 LastAffectedNodeIds = affected.Distinct().ToArray();
                 LastImportHasOptionPathConflicts = conflicts;
 
+                // **生效层**：每个刚导入/刚换过载荷的 VPK 转换产物，都建一份
+                // `Overwrite/` = unit（基底那份或已有的换甲产物）+ 启用的材质。
+                //
+                // 不建会怎样：部署按"基底全上"执行，`sectional/` 里**所有**材质变体一起进游戏，
+                // 同名资源互相覆盖 —— 用户看到的颜色取决于部署顺序，而不是他选了什么。
+                // 这一条正是"一个 Mod 自带 N 个材质变体"之后必须补上的一半（另一半是物化器本身）。
+                foreach (var nodeId in LastAffectedNodeIds)
+                {
+                    if (!_library.Snapshot.Nodes.TryGetValue(nodeId, out var affectedNode)) continue;
+                    MaterializeEffectiveLayer(Path.Combine(_paths.ModsDirectory, affectedNode.RelativePath));
+                }
+
                 // 同批的"模型 + 它的材质包"自动接成 主体 → 选项：用户现在要导入完之后在库里
                 // 把材质包一个个拖到模型下面，而同一批转换出来的东西本来就知道谁是谁的。
                 // **物理结构不变**（还是平铺的一个个文件夹），改的只是 option.json 的父子关系。
@@ -410,6 +422,11 @@ namespace HD2ModManager.Services
                 var physBone = await VpkPhysBoneEmbedder.TryRunAsync(modDirectory, cancellationToken).ConfigureAwait(false);
                 if (physBone is not null) _onInfo?.Invoke($"{package.UpdateTargetName}：{physBone}");
 
+                // 生效层：刚换进来的载荷可能多了几个材质 patch（例如这次归拢了材质包），
+                // 而 `Overwrite/` 还是上一批产物的那份。**必须在只读补回去之前做**——
+                // 物化器会重写整个目录。
+                MaterializeEffectiveLayer(modDirectory);
+
                 // 这条路径后面没有写入步骤了，把库的只读保护补回去。
                 if (swap.RestoreReadOnly) VpkPayloadSwap.SetPayloadReadOnly(payload);
 
@@ -512,6 +529,32 @@ namespace HD2ModManager.Services
             if (!Guid.TryParse(guid, out var id)) return null;
             if (!_library.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node)) return null;
             return Path.Combine(_paths.ModsDirectory, node.RelativePath);
+        }
+
+        /// <summary>
+        /// 把 <c>Overwrite/</c>（唯一生效层）建起来：unit 层 + 启用的材质层。
+        /// <para>
+        /// 只在"这是 VPK 转换产物"时调用——判据是根上有 <c>vpk2patch.json</c>。手写或手工拼的
+        /// sectional Mod 没有转换报告，物化器无从判断"哪些材质算模型自带"，贸然物化会把它
+        /// 自己的 patch 藏进变体里（表现是"导入成功、游戏里没东西"）。
+        /// </para>
+        /// </summary>
+        private void MaterializeEffectiveLayer(string modDirectory)
+        {
+            if (VpkConversionReport.TryRead(modDirectory) is null) return;
+
+            var result = OverwriteMaterializer.Materialize(modDirectory, OverwriteSelection.Default);
+            if (!result.Succeeded)
+            {
+                // 物化失败**不算导入失败**：Mod 仍然可以部署，只是退回"基底全上"的老行为。
+                // 但必须说出来——否则用户看到的是"颜色不对"，而没人会想到是这一步没过。
+                _onError?.Invoke($"「{Path.GetFileName(modDirectory)}」的生效层没能建起来（{result.Error}）："
+                    + "这个 Mod 仍然可用，但材质会按基底目录里的全部变体一起上。");
+                return;
+            }
+
+            foreach (var warning in result.Warnings)
+                LogService.Warn(warning);
         }
 
         /// <summary>

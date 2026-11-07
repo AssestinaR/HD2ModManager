@@ -66,6 +66,9 @@ public sealed class Hd2MaterialAsset
 		[9576304397847579354] = "translucent",
 		[8580182439406660688] = "basic+",
 		[0xc6042e3403385d40] = "alphaclip+",
+		// `cutoutmetal`（镂空 + 金属）：内置模板集里有它，父 id 一直没进表。
+		// 由 Hd2MaterialTemplateTests 报出来的真值补进，不是猜的。
+		[0xec555165044bb60a] = "cutoutmetal",
 	};
 
 	public byte[] Undat1 { get; set; } = new byte[12];

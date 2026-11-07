@@ -123,6 +123,13 @@ public sealed record CliGlobalOptions(
 	// 当角色去转换，然后死在模型解析上（实测报 `MDL 骨骼数量异常：0`），而它其实是整只角色的主材质。
 	// 规划阶段靠材质目录已经能认出来，这里把那个结论显式交给转换器，不在转换阶段再猜一次。
 	string? TreatAs = null,
+	// 逐 VPK 的类型清单（`<绝对路径>\t model|material`，每行一个）。
+	//
+	// 为什么需要第二个开关：`--treat-as` 的效果作用于**整次调用的每一个输入**，而一次"整批转换"
+	// 里模型和材质包是**混着**的（模型出 unit patch、材质包出材质 patch）。混着传 `--treat-as model`
+	// 会把材质包当角色去转（死在 `MDL 骨骼数量异常：0`），不传又会把"塞了展示模型的材质包"当角色。
+	// 规划阶段本来就知道每个 VPK 是什么，这个清单就是把那份结论原样交给转换器。
+	string? TreatAsList = null,
 	// 半透明落地方式的实验开关（none / translucent / advanced-opacity）。不传 = 现有行为。
 	//
 	// 三个变体必须**同命名空间**才有意义：实验开关不改材质 id，模型 patch 才能只换一次，
@@ -191,6 +198,7 @@ public static class CliArgumentParser
 		string? materialSourceList = null;
 		string? componentSourceList = null;
 		string? treatAs = null;
+		string? treatAsList = null;
 		string? alphaExperiment = null;
 		int? ditherScale = null;
 		double? ditherDensity = null;
@@ -337,6 +345,9 @@ public static class CliArgumentParser
 					}
 
 					treatAs = rawTreatAs;
+					break;
+				case "--treat-as-list":
+					treatAsList = ReadValue(args, ref index, argument);
 					break;
 				case "--dither-scale":
 					var rawDitherScale = ReadValue(args, ref index, argument);
@@ -486,11 +497,13 @@ public static class CliArgumentParser
 				case "--cutout-template":
 					var rawCutoutTemplate = ReadValue(args, ref index, argument);
 					if (!rawCutoutTemplate.Equals("alphaclip", StringComparison.OrdinalIgnoreCase)
-						&& !rawCutoutTemplate.Equals("original", StringComparison.OrdinalIgnoreCase))
+						&& !rawCutoutTemplate.Equals("original", StringComparison.OrdinalIgnoreCase)
+						&& !rawCutoutTemplate.Equals("cutoutmetal", StringComparison.OrdinalIgnoreCase))
 					{
 						throw new CliUserException("InvalidOption",
-							$"--cutout-template 只接受 alphaclip / original，实际是 '{rawCutoutTemplate}'。"
-							+ "alphaclip 是唯一支持逐像素镂空的模板；original 已实机证伪（没有镂空），仅留档。");
+							$"--cutout-template 只接受 alphaclip / original / cutoutmetal，实际是 '{rawCutoutTemplate}'。"
+							+ "alphaclip 支持逐像素镂空但没有金属度；original 已实机证伪（没有镂空），仅留档；"
+							+ "cutoutmetal 是游戏里那个「镂空 + 金属」档位（根材质 0xec555165044bb60a），实验用。");
 					}
 
 					cutoutTemplate = rawCutoutTemplate.ToLowerInvariant();
@@ -570,7 +583,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

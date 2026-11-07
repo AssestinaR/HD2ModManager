@@ -110,7 +110,7 @@ public static class SectionalPatchManifestFile
 				// 单独给它一个名字是为了让用户在选项表里一眼认出"这是自带的，不是后来加的包"。
 				OptionName: optionNameByPatchFileName?.GetValueOrDefault(name)
 					?? carried?.OptionName
-					?? (matched is { MatchedMaterial: true } ? SectionalPatchManifest.BuiltInMaterialOptionName : null),
+					?? DefaultOptionName(matched),
 				UnitCount: matched?.Patch.UnitCount,
 				MaterialCount: matched?.Patch.MaterialCount,
 				TextureCount: matched?.Patch.TextureCount,
@@ -208,6 +208,29 @@ public static class SectionalPatchManifestFile
 	/// <param name="MatchedUnit">命中报告的 <c>unitPatch</c> 字段。</param>
 	/// <param name="MatchedMaterial">命中报告的 <c>materialPatch</c> 字段。</param>
 	private sealed record MatchResult(VpkConversionPatchSummary Patch, bool MatchedUnit, bool MatchedMaterial);
+
+	/// <summary>
+	/// 材质选项的默认名字：**模型自己那次转换**产出的材质叫「模型内置材质」，
+	/// 别人的材质包产出的就叫那个 VPK 的名字。
+	/// <para>
+	/// <b>为什么必须区分。</b>一整组（模型 + N 个材质包）转进同一个 Mod 之后，材质选项表里有 N+1 行。
+	/// 全都叫「模型内置材质」的话，用户在界面上根本分不出哪一行是哪个包——而以前每个材质包是
+	/// 独立 Mod，靠 Mod 名区分；合并成一个条目之后，只剩这个字段能区分了。
+	/// </para>
+	/// </summary>
+	private static string? DefaultOptionName(MatchResult? matched)
+	{
+		if (matched is not { MatchedMaterial: true }) return null;
+		var kind = matched.Patch.Kind;
+		if (string.IsNullOrWhiteSpace(kind)
+			|| string.Equals(kind, "model", StringComparison.OrdinalIgnoreCase))
+			return SectionalPatchManifest.BuiltInMaterialOptionName;
+
+		var name = matched.Patch.Name;
+		return string.IsNullOrWhiteSpace(name)
+			? SectionalPatchManifest.BuiltInMaterialOptionName
+			: Path.GetFileNameWithoutExtension(name);
+	}
 
 	private static MatchResult? Match(VpkConversionReport? report, string patchFileName)
 	{
