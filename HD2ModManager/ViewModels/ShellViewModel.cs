@@ -246,6 +246,8 @@ namespace HD2ModManager.ViewModels
             _applyStatus = new ApplyStatusService();
             _notificationService = new NotificationService();
             _messageCenter = new MessageCenterService(_notificationService, _backgroundTasks);
+            // 程序自身更新：启动检查与每日检查；没有部署/导入等后台任务时才允许自动安装。
+            AppUpdateService.Initialize(_notificationService, () => !_backgroundTasks.Tasks.Any(task => task.IsActive && !task.IsInformationCenter));
             _informationCenter.ProductionStarted += OnInformationProductionStarted;
             _informationCenter.DiagnosticRecorded += OnInformationDiagnosticRecorded;
             _bottomBar = new BottomBarCoordinator(_selection, _libraryService, _profileService, _notificationService, RefreshCurrentPage);

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $OutputDirectory = "artifacts\publish",
-    [switch] $KeepExistingOutput
+    [switch] $KeepExistingOutput,
+    [string] $Version
 )
 
 # Keep native dotnet output readable in both Windows PowerShell 5.1 and
