@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    作用：扫描游戏数据里所有 material 资产，产出「根材质（= 引擎着色器变体）→ 槽位 / 变量」能力矩阵。
+
+    为什么需要它：HD2 的材质资产只有三段纯数据 —— 父材质 id、槽→贴图 id、着色器变量值。
+    「能做出什么样的外观」完全由**可用的根材质**决定，而 SDK 只随包发了 10 个模板（advanced /
+    alphaclip / …），游戏里实际有 380 个。不做这一步就只能在这 10 个里瞎猜，
+    也解释不了「为什么有些件既想要镂空又想要金属度却做不到」——那只是这 10 个的局限，不是引擎的。
+
+    只读游戏包，不写任何游戏文件，不依赖管理器索引。用法：
+
+      dotnet run (project) tools/ShaderMatrix "&lt;游戏 data 目录&gt;" "&lt;shadervariables.txt&gt;" "&lt;输出.json&gt;" "&lt;输出.md&gt;"
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>ShaderMatrix</AssemblyName>
+    <RootNamespace>ShaderMatrix</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\HD2ModCore\HD2ModCore.csproj" />
+    <ProjectReference Include="..\..\HD2SourceMigration\HD2SourceMigration.csproj" />
+  </ItemGroup>
+
+</Project>
