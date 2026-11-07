@@ -277,11 +277,28 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	public string VpkComponentStatus
 	{
 		get => _vpkStatus;
-		private set
+		private set => SetVpkStatus(value);
+	}
+
+	/// <summary>
+	/// 卡片不再显示状态行（那张卡要保持静态），所以这里把每一条状态都**同时**送进消息中心，
+	/// 否则"读取护甲列表失败""还没选目标护甲"这类只在卡上出现过的提示会彻底变隐形。
+	/// <para>
+	/// 调用方原来在"没有后台任务时"额外补一条通知，现在由本方法统一发，那些镜像调用已删除——
+	/// 留着会一条消息弹两次。
+	/// </para>
+	/// </summary>
+	private void SetVpkStatus(string value, NotificationLevel level = NotificationLevel.Info, int seconds = 12)
+	{
+		if (_vpkStatus != value)
 		{
-			if (!SetField(ref _vpkStatus, value)) return;
+			_vpkStatus = value;
+			OnPropertyChanged(nameof(VpkComponentStatus));
 			OnPropertyChanged(nameof(HasVpkComponentStatus));
 		}
+
+		if (!string.IsNullOrWhiteSpace(value))
+			_notifications?.Show(value, level, TimeSpan.FromSeconds(seconds), "Mod 详情");
 	}
 
 	public bool HasVpkComponentStatus => !string.IsNullOrWhiteSpace(_vpkStatus);
@@ -560,8 +577,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			{
 				var error = outcome.Error ?? "换甲失败。";
 				task?.MarkFailed(error);
-				VpkComponentStatus = error;
-				if (task is null) _notifications?.Show(error, NotificationLevel.Error, TimeSpan.FromSeconds(20));
+				SetVpkStatus(error, NotificationLevel.Error, 20);
 				return;
 			}
 
@@ -580,14 +596,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			task?.SetOutputArtifacts(directory, null);
 			if (outcome.Warnings.Count != 0) task?.UpdateStage($"注意：{outcome.Warnings[0]}");
 			task?.MarkCompleted();
-			VpkComponentStatus = summary + warningText;
-			if (task is null)
-			{
-				_notifications?.Show(
-					VpkComponentStatus,
-					outcome.Warnings.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
-					TimeSpan.FromSeconds(outcome.Warnings.Count == 0 ? 10 : 20));
-			}
+			SetVpkStatus(summary + warningText,
+				outcome.Warnings.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
+				outcome.Warnings.Count == 0 ? 10 : 20);
 
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
@@ -717,8 +728,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			{
 				var error = outcome.Error ?? "头身合并切换失败。";
 				task?.MarkFailed(error);
-				VpkComponentStatus = error;
-				if (task is null) _notifications?.Show(error, NotificationLevel.Error, TimeSpan.FromSeconds(20));
+				SetVpkStatus(error, NotificationLevel.Error, 20);
 				return;
 			}
 
@@ -742,8 +752,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			task?.SetOutputArtifacts(directory, null);
 			if (outcome.Warnings.Count != 0) task?.UpdateStage($"注意：{outcome.Warnings[0]}");
 			task?.MarkCompleted();
-			VpkComponentStatus = summary + warningText;
-			if (task is null) _notifications?.Show(VpkComponentStatus, NotificationLevel.Info, TimeSpan.FromSeconds(12));
+			SetVpkStatus(summary + warningText);
 
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,

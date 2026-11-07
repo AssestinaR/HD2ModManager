@@ -111,12 +111,10 @@
                                   AutomationProperties.Name="头身合并到身体"/>
                     </Grid>
                     <!--
-                        重构建已经移到汉堡菜单（它和并发/范围一起在底栏里定），
-                        这里不再重复放一个按钮 —— 同一个动作两个入口只会让人猜哪个是"真"的。
+                        这张卡保持**静态**：只在上面三行给出入口与开关，不在这里显示任何过程/
+                        结果文字。翻转开关或点「切换」产生的话一律走消息中心（后台任务或通知），
+                        否则卡面会随每次操作冒出一行，且内容与消息中心重复。
                     -->
-                    <TextBlock Text="{Binding VpkComponentStatus}" Foreground="{StaticResource TextSecondary}"
-                               TextWrapping="Wrap" Margin="0,8,0,0"
-                               Visibility="{Binding HasVpkComponentStatus, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </DataTemplate>
 
