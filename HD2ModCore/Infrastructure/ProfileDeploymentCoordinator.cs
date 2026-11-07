@@ -302,18 +302,7 @@ public sealed class ProfileDeploymentCoordinator : IProfileDeploymentCoordinator
 	}
 
 	private static string FormatFailureMessage(string prefix, ApplyResult result)
-	{
-		var details = result.Issues
-			.Where(issue => issue.Severity == CoreIssueSeverity.Error)
-			.Select(issue =>
-			{
-				var path = string.IsNullOrWhiteSpace(issue.FilePath) ? string.Empty : $" 路径={issue.FilePath}";
-				return $"[{issue.Code}] {issue.Message}{path}";
-			})
-			.Take(5)
-			.ToArray();
-		return details.Length == 0 ? $"{prefix}，但未返回结构化错误信息。请查看部署日志。" : $"{prefix}：{string.Join("；", details)}";
-	}
+		=> DeploymentFailureSummary.Format(prefix, result.Issues);
 
 	public async ValueTask DisposeAsync()
 	{
