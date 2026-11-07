@@ -201,7 +201,7 @@ Valve 的语义是**质点沿骨骼局部 +Z 伸出 length**。合成节点的 l
 
 ## 4. 仍缺的输入
 
-- L4D2 侧权威资料尚未落到 `docs/external/`（下载任务失败一次，未重跑）。
+- L4D2 侧权威资料尚未落到 `docs/agent/external/`（下载任务失败一次，未重跑）。
   需要的：`$jigglebone` 参数语义与合法范围、VMT 参数全集、Source 硬限制、NekoToon/L4N 参数表。
 - 没有任何"NekoToon 真实 VMT"样本在仓库里（`tmp/` 样本全是 KKS 材质，无 `$matcap` 键），
   所以 `$matcapture` vs `$matcaptexture` 的拼写疑点无法离线确认。

@@ -1,0 +1,65 @@
+﻿"Important Info for Leg Order: Foot, shin, calf, thigh"
+Lod0,,Lod1,,Lod2,,Lod3,,Lod4,,Lod5,,Lod6,,Lod7
+Vertex #,Body Part,Vertex #,Body Part,Vertex #,Body Part,Vertex #,Body Part,Vertex #,Body Part,Vertex #,Body Part,Vertex #,Body Part,Vertex #,Body Part
+0.0," Left Thigh, Torso Lights",0.0," Left shin, Waist Lights",0.0,"Left shin, Waist Lights",0.0,Waist,0.0,Torso,0.0,Torso,0.0,Right thigh,0.0,Torso
+1.0, Nothing,1.0," Torso, Torso Lights",1.0,"Torso, Torso Lights",1.0,Torso,1.0,Left knee pistons,1.0,Middle of antenna 2,1.0,Left leg right piston,1.0,Left leg right piston
+2.0," Waist, Waist Lights",2.0, Left thigh,2.0,Left thigh,2.0,Left thigh,2.0,Back hatch top,2.0,Back hatch top,2.0,Right shin,2.0,Right thigh
+3.0," Torso, Left Axel",3.0, Right thigh,3.0,Nothing,3.0,Left foot,3.0,Left foot,3.0,Left foot,3.0,Right knee cover/calf,3.0,Right shin
+4.0, Left Knee Cover,4.0, Right calf,4.0,Nothing,4.0,Right thigh,4.0,Right calf,4.0,Right calf,4.0,Right foot,4.0,Right foot
+5.0, Right Calf,5.0, Left calf,5.0,Nothing,5.0,Left shin,5.0,Left shin,5.0,Left shin,5.0,Torso,5.0,Right knee cover/calf
+6.0, Right Thigh,6.0, Left knee pistons,6.0,Right knee pistons,6.0,Left knee,6.0,Launcher Back,6.0,Launcher Back,6.0,Launcher Back,6.0,Waist
+7.0, Left Leg Right Piston,7.0, Left axel right,7.0,Right knee pistons,7.0,Right shin,7.0,Right shin,7.0,Right shin,7.0,Right knee pistons,7.0,Left leg left piston
+8.0, Back Hatch Top,8.0,Left knee cover,8.0,Right thigh,8.0,Left calf,8.0,Waist,8.0,Waist,8.0,Right knee pistons,8.0,Left leg left piston
+9.0, Left Shin,9.0, Waist,9.0,Right foot,9.0,Right knee pistons,9.0,Left knee hinges,9.0,Left knee hinges,9.0,Launcher Front,9.0,Right leg left piston
+10.0, Left Foot,10.0, Left knee hinge,10.0,Left foot,10.0,Right knee pistons,10.0,Right knee hinges,10.0,Right knee hinges,10.0,Right leg left piston,10.0,Right leg left piston
+11.0, Nothing,11.0, Right shin,11.0,Waist,11.0,Right foot,11.0,Left thigh,11.0,Left thigh,11.0,Right leg left piston,11.0,Left leg right piston
+12.0, Left Leg Right Piston,12.0, Left Leg Right Pistot,12.0,Right calf,12.0,Right calf,12.0,Right thigh,12.0,Right thigh,12.0,Right leg right piston,12.0,Right leg right piston
+13.0, Left Leg Left Piston,13.0, Left Back hatch top,13.0,Left calf,13.0,Left leg right piston,13.0,Nothing,13.0,Left leg left piston,13.0,Right leg right piston,13.0,Right leg right piston
+14.0, Right Shin,14.0, Left foot,14.0,Left knee cover,14.0,Left leg right piston,14.0,Nothing,14.0,Left leg left piston,14.0,Left knee cover/calf,14.0,Left knee cover/calf
+15.0, Back Hatch Bottom,15.0, Nothing,15.0,Left leg axel right,15.0,Left knee pistons,15.0,Nothing,15.0,Left leg right piston,15.0,Left thigh,15.0,Left thigh
+16.0, Left Calf,16.0, Nothing,16.0,Left knee pistons,16.0,Left left axel right,16.0,Left calf,16.0,Left leg right piston,16.0,Left shin,16.0,Back hatch bottom
+17.0, Nothing,17.0, Left leg left piston,17.0,Left knee hinge,17.0,Right leg axel right,17.0,Back hatch bottom,17.0,Left calf,17.0,Left foot,17.0,Back hatch top
+18.0, Nothing,18.0, Left leg right piston,18.0,Back hatch top,18.0,Nothing,18.0,Right knee cover,18.0,Back hatch bottom,18.0,Nothing,18.0,Left shin
+19.0, Nothing,19.0, Back hatch bottom,19.0,Right shin,19.0,Nothing,19.0,Left knee cover,19.0,Left knee pistons,19.0,Back hatch top,19.0,Left foot
+20.0, Right Knee Pistons,20.0, Nothing,20.0,Left leg right piston,20.0,Left leg left piston,20.0,Left leg axel right,20.0,Left knee pistons,20.0,Back hatch bottom
+21.0, Right Foot,21.0, Nothing,21.0,Nothing,21.0,Left leg left piston,21.0,Left knee pistons,21.0,Nothing,21.0,Left leg right piston
+22.0, Nothing,22.0, Nothing,22.0,Nothing,22.0,Back hatch bottom,22.0,Right leg axel right,22.0,Nothing,22.0,Nothing
+23.0,Launcher Front,23.0, Right foot,23.0,Left leg left piston,23.0,Left knee cover,23.0,Nothing,23.0,Nothing,23.0,Waist
+24.0, Back Hatch Hinge,24.0, Right knee pistons,24.0,Left leg right piston,24.0,Back hatch top,24.0,Nothing,24.0,Nothing
+25.0,Right Knee Cover,25.0,Launcher Front,25.0,Back hatch bottom,25.0,Nothing,25.0,Launcher Front,25.0,Right leg right piston
+26.0, Nothing,26.0, Left knee pistons,26.0,Right leg left piston,26.0,Nothing,26.0,Right leg axel left,26.0,Right leg right piston
+27.0, Nothing,27.0, Back hatch hinge,27.0,Right leg left piston,27.0,Right leg left piston,27.0,Right leg pistons,27.0,Launcher Front
+28.0, Right Knee Hinge Cover,28.0,Right knee cover,28.0,Antenna attach point,28.0,Left knee pistons,28.0,Right foot,28.0,Right leg left piston
+29.0, Right Leg Left Piston,29.0, Right Leg axel left,29.0,Launcher Front,29.0,Right knee cover,29.0, Top of antenna,29.0,Right leg left piston
+30.0, Right Leg Left Piston,30.0, Right leg right piston,30.0,Left knee pistons,30.0,Right leg left piston,30.0, Top Middle of antenna,30.0,Right foot
+31.0, Right Leg Right Piston,31.0, Right knee hinge,31.0,Right leg right piston,31.0,Launcher Front,31.0, Middle of antenna,31.0,Right knee pistons
+32.0, Nothing,32.0, Right leg right piston,32.0,Right leg right piston,32.0,Right leg right piston,32.0, Bottom Middle of antenna,32.0,Right knee pistons
+33.0, Left Knee Hinge Cover,33.0, Right leg left piston,33.0,Back hatch hinge,33.0,Right leg right piston,33.0, Top Bottom of antenna,33.0,Bottom Middle of antenna 2
+34.0, Left Leg Left Piston,34.0, Right knee pistons,34.0,Right knee cover,34.0,Right knee hinge,34.0, Bottom of antenna,34.0,Top Middle of antenna 2
+35.0, Left Leg Knee Pistons,35.0, Left leg left piston,35.0,Nothing,35.0,Launcher Back,35.0,Top Middle of antenna 2,35.0,Top of antenna 2
+36.0, Left Leg Knee Pistons,36.0, Right leg axel right,36.0,Nothing,36.0,Right leg axel left,36.0,Middle of antenna 2,36.0, Top Bottom of antenna 2
+37.0, Top of antenna,37.0, Nothing,37.0,Nothing,37.0,Nothing,37.0,Bottom Middle of antenna 2,37.0,Bottom of antenna 2
+38.0, Top Middle of antenna,38.0, Nothing,38.0,Top of antenna 2,38.0,Nothing,38.0,Top Bottom of antenna 2,38.0,Right leg axel right
+39.0, Middle of antenna,39.0, Top of antenna,39.0,Top Middle of antenna 2,39.0,Nothing,39.0,Bottom of antenna 2,39.0,Nothing
+40.0, Bottom Middle of antenna,40.0, Top Middle of antenna,40.0,Middle of antenna 2,,,40.0,Top of antenna 2,40.0, Middle of antenna
+41.0, Top Bottom of antenna,41.0, Middle of antenna,41.0,Bottom Middle of antenna 2,,,41.0,Right knee pistons,41.0, Bottom Middle of antenna
+42.0, Bottom of antenna,42.0, Bottom Middle of antenna,42.0,Top Bottom of antenna 2,,,42.0,Nothing,42.0, Top Bottom of antenna
+43.0, Antenna attach point,43.0, Top Bottom of antenna,43.0,Bottom of antenna 2,,,43.0,Right leg left piston,43.0, Top of antenna
+44.0, Right Leg Left Piston,44.0, Bottom of antenna,44.0,Right leg axel left,,,44.0,Right leg left piston,44.0, Top Middle of antenna
+45.0, Nothing,45.0, Antenna attach point,45.0,Launcher Back,,,45.0,Right leg right piston,45.0, Bottom of antenna
+46.0, Nothing,46.0,Launcher Back,46.0,Left leg left piston,,,46.0,Right leg right piston,46.0,Nothing
+47.0, Nothing,47.0, Right leg left piston,47.0,Right knee hinge,,,47.0,Left leg left piston,,,,,,
+48.0, Right Leg Knee Pistons,48.0, Bottom of antenna 2,48.0, Top Middle of antenna,,,48.0,Nothing
+49.0, Nothing,49.0, Top Bottom of antenna 2,49.0, Top of antenna,,,49.0,Nothing
+50.0, Top of antenna ,50.0, Bottom Middle of antenna 2,50.0, Bottom of antenna,,,50.0,Nothing
+51.0, Top Middle of antenna ,51.0, Middle of antenna 2,51.0, Top Bottom of antenna,,,51.0,Left leg right piston,,,,,,
+52.0, Middle of antenna ,52.0, Top Middle of antenna 2,52.0, Bottom Middle of antenna,,,52.0,Left leg left piston,,,,,,
+53.0, Bottom Middle of antenna ,53.0, Top of antenna 2,53.0, Middle of antenna,,,53.0,Left leg right piston,,,,,,
+54.0, Top Bottom of antenna ,54.0, Nothing,54.0,Nothing,,,54.0,Back hatch hinge,,,,,,
+55.0, Bottom of antenna ,55.0, Nothing,55.0,Nothing,,,,,,,,,,
+56.0,Launcher Back,56.0, Nothing,56.0,Nothing
+57.0, Right Leg Right Axel
+58.0, Nothing
+59.0, Nothing
+60.0, Right Leg Left Axel
+61.0, Left Leg Right Axel

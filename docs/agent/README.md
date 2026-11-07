@@ -68,6 +68,15 @@
 | `CoreRedesignRequirements.md` | Core 重做需求总结（讨论稿） |
 | `逻辑说明2.md` | 空文件，待补 |
 
+## 外部权威资料（`external/`）
+
+上游/社区给出的、被本仓结论引用的事实来源。改动它们等于造新事实，别改；要反驳就在自己的文档里写。
+
+| 文档 | 内容 |
+|---|---|
+| `external/L4D2-AUTHORITATIVE-FACTS.md` | L4D2 侧权威事实（`$jigglebone` 字段、单位、约束语义）；`HD2RuntimeArmorOverride/notes/` 里多处引用它 |
+| `external/INDEX.md` 与 `external/hd2-archive-ids/` | 社区维护的 HD2 资产 ID 表（25 类 CSV：护甲、头盔、披风、武器、音频等） |
+
 ## 未收录
 
 本地素材与第三方源码留在磁盘上、不进版本库：`docs/blender-main/`、`docs/参考项目/`、`docs/HD2SDK-CommunityEdition-3.8.0/`、若干第三方压缩包等（见 `.gitignore` 末尾）。

@@ -104,7 +104,7 @@ flags(4B) + 29 个 float = 120 字节（v49）；v48 多 5 个 boing* float = 14
 
 #### `is_boing`
 
-`impact_speed` / `impact_angle` / `damping_rate` / `frequency` / `amplitude`。**v49（L4D2/CSGO）的 `mstudiojigglebone_t` 没有这 5 个字段**，只有 v48（GMod/TF2 系）有。`[官方源码]+[仓库既有结论 docs/external/L4D2-AUTHORITATIVE-FACTS.md]`
+`impact_speed` / `impact_angle` / `damping_rate` / `frequency` / `amplitude`。**v49（L4D2/CSGO）的 `mstudiojigglebone_t` 没有这 5 个字段**，只有 v48（GMod/TF2 系）有。`[官方源码]+[仓库既有结论 docs/agent/external/L4D2-AUTHORITATIVE-FACTS.md]`
 
 ---
 
@@ -577,7 +577,7 @@ README 开头还有一句社区铁律（和 §3 的轴对称问题对应）：
 |---|---|---|---|
 | **`studiomdl.exe`**（Valve 官方） | 编译 QC→mdl/vvd/vtx/phy | 闭源；L4D2 安装目录里**没有**，要从 Source SDK 或别的游戏目录拿 `[本机实测]` | 解析 `$jigglebone` 并写入 `mstudiojigglebone_t` |
 | **NekoMDL**（studiomdl 的 64 位增强 fork）`[官方文档]` | 更高上限、glTF/FBX 直读、`-reloadhlmv` 编译后热重载 HLMV | 不是 Valve 官方；社区维护 | **有两根专门修 jigglebone 轴的命令：`$JiggleBoneRealign`、`$ReverseJiggleBoneRotation`** —— 说明"轴不对"是社区公认痛点 |
-| **`mdlc`**（Rust 重写的独立编译器，MoRanYue/mdlc）`[社区]` | 跨平台、无依赖重写 `studiomdl`；v48/v49 布局都实现（含 `is_boing`） | 新项目，边界情况可能没覆盖 | 仓库既有文档 `docs/external/L4D2-AUTHORITATIVE-FACTS.md` 的很多结论引的就是它（**这是你们最好的第二意见来源**） |
+| **`mdlc`**（Rust 重写的独立编译器，MoRanYue/mdlc）`[社区]` | 跨平台、无依赖重写 `studiomdl`；v48/v49 布局都实现（含 `is_boing`） | 新项目，边界情况可能没覆盖 | 仓库既有文档 `docs/agent/external/L4D2-AUTHORITATIVE-FACTS.md` 的很多结论引的就是它（**这是你们最好的第二意见来源**） |
 | **Crowbar**（ZeqMacaw）`[社区]` | **mdl → QC 反编译（含 `$jigglebone` 块）**、批量解包 VPK、调 HLMV 预览、批量编译 | 反编译不是 100% 无损（作者自称 ~97%）；v49 + `$sequence` 用 delta/predelta 时 jigglebone 与 pose 参数会串（v0.63 修过） | **这就是你要的"把 mdl 里的 jiggle 参数 dump 成结构化文本"的现成工具** —— 直接产出可读 QC。**建议拿它和你们 C# 解析器的输出做交叉验证** |
 | **Blender Source Tools**（Artfunkel）`[官方文档]` | Blender ↔ SMD/DMX/QC 导入导出、`$definebone` 生成 | **不生成 `$jigglebone`**：QC 里的 jigglebone 块要手写或用脚本生成；也不模拟弹簧 | 有第三方脚本补这个洞（下一条） |
 | **JiggleBones-QC-Creater**（Feromon32，Blender 插件脚本）`[社区]` | 选中骨架 → 一键把所有（或选中的）骨骼导出成 `$jigglebone` QC 文本到剪贴板；README 附带尾巴/大衣/胸/道具/长发 5 套现成配方 | 只生成文本，不模拟、不写回 mdl | **做"批量给链上每根骨加 jigglebone"最省事** |

@@ -265,7 +265,7 @@ gains.cPitch = 2 * newZeta * newOmegaPitch    -- :670  ← newZeta 来自 yaw，
 
 真实命中：`silent_code_shinano信浓_bill` 的 flags 集合含 **`81 = 0x51 = flexible|angle_con|base_spring`**（其余 7 个模型没有）。也就是说**用户库里已经有一份资产在用它**，我们完全没实现，而且日志里不会提一个字。
 
-**语义**（据 `docs/external/L4D2-AUTHORITATIVE-FACTS.md:79-87`）：`base_*` 是**基部**弹簧，坐标是 left/up/forward 三个平面方向的 min/max + friction，与 `yaw/pitch`（尖端）是两套自由度。**修法方向**：base spring 是"锚点自身的二阶弹簧"，可以在同一套 `step_tip` 里加"锚点位移态"（3 个方向各一根弹簧 + 各自的 min/max/friction），或者退一步：先用 `base_stiffness/base_damping` 给链根加一个迟滞（延迟跟随 anchor 的平移/旋转），观感上明显优于"链根焊死在头上"。
+**语义**（据 `docs/agent/external/L4D2-AUTHORITATIVE-FACTS.md:79-87`）：`base_*` 是**基部**弹簧，坐标是 left/up/forward 三个平面方向的 min/max + friction，与 `yaw/pitch`（尖端）是两套自由度。**修法方向**：base spring 是"锚点自身的二阶弹簧"，可以在同一套 `step_tip` 里加"锚点位移态"（3 个方向各一根弹簧 + 各自的 min/max/friction），或者退一步：先用 `base_stiffness/base_damping` 给链根加一个迟滞（延迟跟随 anchor 的平移/旋转），观感上明显优于"链根焊死在头上"。
 
 ### 3.7 缺陷 7：完全没有碰撞体 —— **成立（能力缺失）**
 
@@ -373,7 +373,7 @@ local h = dt / steps
 - C#：源单位 = **1 英寸 = 0.0254 m**（`Retargeter.cs:99-101,146`、`SourceToHd2RigMap.cs:54`、`RetargetOptions.cs:233`）。
 - Lua：`SOURCE_UNIT_TO_METERS = 0.75 * 0.0254 = 0.01905`（`physbone_compat.lua:473-476`），用于 `length` 与 `tipMass`。
 - 两者相差 **25%**。对 `L` 与 `g` 同比例，所以静垂角 `atan(g/(kL))` 不变（这也解释了为什么没人发现）；但 `L` 相对**真实骨距**小了 25%，直接放大 §4.1 的"杆长 ≠ 骨距"错配。
-- `docs/external/L4D2-AUTHORITATIVE-FACTS.md:67` 明确 `length` 单位是**英寸**，且"应等于骨骼长度；写大于骨长会得到奇怪且不可预测的运动"。⇒ 建议统一用 0.0254，并把"L/spacing 中位数 3.8~12.4"当成一次显式的作者参数不合法告警（而不是静默照抄）。
+- `docs/agent/external/L4D2-AUTHORITATIVE-FACTS.md:67` 明确 `length` 单位是**英寸**，且"应等于骨骼长度；写大于骨长会得到奇怪且不可预测的运动"。⇒ 建议统一用 0.0254，并把"L/spacing 中位数 3.8~12.4"当成一次显式的作者参数不合法告警（而不是静默照抄）。
 
 ### 4.8 【文档与现实】"三种约束形式"其实只实现了两种，第三种（分轴）是死代码
 
