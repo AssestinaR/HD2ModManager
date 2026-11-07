@@ -14,7 +14,8 @@ public sealed record ModDeployableSet(
 /// <para>
 /// 顺序（与部署器的实际行为一一对应）：
 /// <list type="number">
-/// <item><b>Overwrite 里有有效 patch</b> ⇒ 只部署它，这个 Mod 结束。</item>
+/// <item><b>Overwrite 里有有效 patch</b> ⇒ 只部署它，这个 Mod 结束。"有效"= 名字像 patch
+/// <b>且</b>文件头是 patch TOC 魔数（见 <see cref="HasReadablePatchToc"/>）。</item>
 /// <item><b>sectional / vpk2patch 类</b>：有基底目录 ⇒ 就部署它；没有 ⇒ 跳过这条并说明原因。</item>
 /// <item><b>legacy / logical</b>：根目录有 patch ⇒ 部署；没有 ⇒ 跳过这条并说明原因。</item>
 /// </list>
@@ -41,7 +42,7 @@ public static class ModDeployableFiles
 		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(nodeDirectory);
 
 		// ① 生效层已经有内容 ⇒ 它就是全部，不再看任何别的层。
-		if (HasValidPatch(overwrite, parser))
+		if (HasReadablePatchToc(overwrite, parser))
 			return new ModDeployableSet(EnumerateFiles(overwrite), null);
 
 		var kind = new ModStorageKindResolver(parser).Resolve(nodeDirectory);
@@ -65,7 +66,10 @@ public static class ModDeployableFiles
 
 	private static readonly Dictionary<string, string> Empty = new(StringComparer.OrdinalIgnoreCase);
 
-	/// <summary>目录里至少有一份"能被解析成 patch"的文件——不要求每一个都是。</summary>
+	/// <summary>
+	/// 目录里至少有一份"能被解析成 patch"的文件——不要求每一个都是，也**不读文件内容**。
+	/// <para>用于"根目录有没有东西可部署"这种低成本判断：部署一份读不出来的文件不会有别的副作用。</para>
+	/// </summary>
 	private static bool HasValidPatch(string directory, IPatchFileNameParser parser)
 	{
 		if (!Directory.Exists(directory)) return false;
@@ -74,6 +78,35 @@ public static class ModDeployableFiles
 			if (parser.TryParse(Path.GetFileName(path), out var info)
 				&& info is not null
 				&& info.SidecarKind == PatchSidecarKind.Base)
+				return true;
+		}
+		return false;
+	}
+
+	/// <summary>
+	/// 目录里至少有一份**读得出来**的 patch：名字像，且文件头是 patch TOC 的魔数。
+	/// <para>
+	/// <b>为什么 <c>Overwrite/</c> 的接管必须用这一条、而不能只看名字。</b>
+	/// 接管是"整个 Mod 只剩这一层"，代价最大，所以要最硬的证据。只看名字时，
+	/// 一次中断留下的半截文件、或者用户手工塞进 <c>Overwrite/</c> 的同名文件，都会让这个 Mod
+	/// 变成"只部署它"：基线层里的模型与材质一个都不部署，用户看到的是"模型在、材质没了"。
+	/// 而重新转换不碰 <c>Overwrite/</c>，所以重构建怎么修都好不了，只有删掉重加才行 ——
+	/// 社区反馈的正是这个形状（2026-11-07，1.5.0 之后）。
+	/// </para>
+	/// <para>
+	/// 判据同时与 <see cref="ModNodePayloadLayout.EnumerateEffectiveFilesByName"/> 对齐：
+	/// 那边一直要求读得出来的 TOC，这边当初只解析了文件名，两套判定对着同一批文件给出不同答案。
+	/// </para>
+	/// </summary>
+	private static bool HasReadablePatchToc(string directory, IPatchFileNameParser parser)
+	{
+		if (!Directory.Exists(directory)) return false;
+		foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
+		{
+			if (parser.TryParse(Path.GetFileName(path), out var info)
+				&& info is not null
+				&& info.SidecarKind == PatchSidecarKind.Base
+				&& ModNodePayloadLayout.IsPatchToc(path))
 				return true;
 		}
 		return false;
