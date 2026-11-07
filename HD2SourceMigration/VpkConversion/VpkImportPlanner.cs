@@ -907,8 +907,13 @@ public static class VpkImportPlanner
 		}
 		catch (Exception exception) when (IsProbeFailure(exception))
 		{
+			// 占位几何必须在这里认回来：SourceModelLocator 会校验 .vvd 里到底有没有顶点数据，
+			// 只有 28 字节头的壳因此在 resolve 阶段就被跳过，走不到下面——报出来又会变回
+			// "找不到顶点/索引文件"这种技术话（用例：Plan_PlaceholderVvdSaysTheGeometryIsAStub）。
+			var stub = DescribeStubGeometry(archive);
 			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
-				$"模型读不出来（{exception.GetType().Name}）：{exception.Message}", null, materials, textures);
+				stub ?? $"模型读不出来（{exception.GetType().Name}）：{exception.Message}",
+				null, materials, textures);
 		}
 
 		// **不是角色就不要排进转换队列。** 中文整合包里大量"有 .mdl 但不是角色"的包：
@@ -920,16 +925,6 @@ public static class VpkImportPlanner
 		{
 			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
 				notACharacter, null, materials, textures);
-		}
-
-		// 占位几何：先认出"这个包的 .vvd 只有个头"，否则下面会抛
-		// "VVD magic 不是 IDSV" —— magic 其实是对的，是文件本身没有顶点数据。
-		if (files.Vvd.Length < MinimumVertexDataBytes)
-		{
-			return new VpkImportCandidate(path, VpkImportKind.Unsupported, null,
-				$"模型几何是占位文件：{files.Vvd.Path} 只有 {files.Vvd.Length} 字节"
-				+ $"（.vtx {files.Vtx.Length} 字节），不含顶点数据。这类包通常只带材质和菜单图，"
-				+ "真正的模型在配套的「基础组件」包里；单独导入它不会出模型。", null, materials, textures);
 		}
 
 		SourceModelDocument model;
@@ -977,6 +972,32 @@ public static class VpkImportPlanner
 			.Where(name => name.Length != 0)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		return new VpkImportCandidate(path, VpkImportKind.CharacterModel, signature, null, null, referenced, textures);
+	}
+
+	/// <summary>
+	/// 这个包的几何是不是"只有头的占位文件"：认出来就给人话理由，而不是"找不到顶点/索引文件"。
+	/// <para>
+	/// "是不是真几何"的判据不在这里重复——那是 <see cref="SourceModelLocator.LooksLikeRealVvd"/> 的事。
+	/// 这里只补一个更便宜的筛子：装不下顶点（小于 <see cref="MinimumVertexDataBytes"/>）又带
+	/// <c>IDSV</c> 头的，就是实测那种 28 字节的壳；其真正的模型在配套的基础组件包里。
+	/// </para>
+	/// </summary>
+	private static string? DescribeStubGeometry(VpkArchive archive)
+	{
+		foreach (var vvd in archive.WithExtension("vvd"))
+		{
+			if (vvd.Length >= MinimumVertexDataBytes) continue;
+			if (SourceModelLocator.LooksLikeRealVvd(archive, vvd)) continue;
+			if (!archive.TryRead(vvd, out var head) || head.Length < 4) continue;
+			if (head[0] != (byte)'I' || head[1] != (byte)'D' || head[2] != (byte)'S' || head[3] != (byte)'V') continue;
+
+			var vtxLength = archive.WithExtension("vtx").Select(entry => (long)entry.Length).DefaultIfEmpty(0L).Max();
+			return $"模型几何是占位文件：{vvd.Path} 只有 {vvd.Length} 字节"
+				+ $"（.vtx {vtxLength} 字节），不含顶点数据。这类包通常只带材质和菜单图，"
+				+ "真正的模型在配套的「基础组件」包里；单独导入它不会出模型。";
+		}
+
+		return null;
 	}
 
 	private static bool IsCharacterRig(SourceModelDocument model)

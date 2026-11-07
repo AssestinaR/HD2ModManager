@@ -129,8 +129,12 @@ public static class SourceModelLocator
 	/// 的同一条规则验算：<c>vertexOffset + lod0VertexCount × 48</c> 必须落在文件内。
 	/// 头部本身就谎报长度的，一律当成没有数据。
 	/// </para>
+	/// <para>
+	/// 公开给导入规划用：它要认出"这个包的几何是占位"并给出人话理由，判据只能有一处，
+	/// 不能在那里再抄一遍这条规则。
+	/// </para>
 	/// </summary>
-	private static bool LooksLikeRealVvd(VpkArchive archive, VpkEntry entry)
+	public static bool LooksLikeRealVvd(VpkArchive archive, VpkEntry entry)
 	{
 		try
 		{
