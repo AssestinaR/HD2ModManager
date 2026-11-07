@@ -238,6 +238,41 @@ public sealed class VpkRekeyPlanTests
         Assert.DoesNotContain(plan.Mappings, item => item.Source?.PartKind == UnitMeshPartKind.Helmet);
     }
 
+    /// <summary>
+    /// 自定义素体目标：护甲与头盔是**同一个条目**——Torso 件是身体，Helmet 件就是那件头盔 item
+    /// 的内容（素体本身没有配套头盔归档）。合并之后仍然应当是「头到胸部外层、身体到内层、
+    /// Helmet 件一件不写」，于是游戏里那件头盔 item 实际隐藏，头由护甲自己带着。
+    /// </summary>
+    [Fact]
+    public void Merge_WorksWhenTheCustomModelIsItsOwnHelmetKit()
+    {
+        var model = new EquipmentUnitCatalogEntry("custom:model", "CustomModel", "自定义素体",
+        [
+            Part(0x31, UnitMeshPartKind.Helmet, UnitMeshPartLayer.Undergarment, UnitMeshBodyVariant.Any),
+            Part(0x32, UnitMeshPartKind.Torso, UnitMeshPartLayer.Undergarment, UnitMeshBodyVariant.Any),
+            Part(0x33, UnitMeshPartKind.Torso, UnitMeshPartLayer.Armor, UnitMeshBodyVariant.Any),
+        ])
+        { CustomModelKey = "model" };
+
+        var (plan, notes, headMerge) = CliVpkRekey.BuildPlan(Source(), [model], mergeHeadIntoArmour: true);
+
+        Assert.Equal(VpkHeadMergeState.Applied, headMerge);
+
+        // 头 → 胸部外层（Armor 比 Undergarment 外一层）。
+        var head = Assert.Single(plan.Mappings, item => item.Source?.PartKind == UnitMeshPartKind.Helmet);
+        Assert.Equal(UnitMeshPartKind.Torso, head.Target.PartKind);
+        Assert.Equal(UnitMeshPartLayer.Armor, head.Target.Layer);
+
+        // 身体 → 胸部内层。
+        var body = Assert.Single(plan.Mappings, item => item.Source?.PartKind == UnitMeshPartKind.Torso);
+        Assert.Equal(UnitMeshPartLayer.Undergarment, body.Target.Layer);
+
+        // 头盔槽件一件都不写（这就是"头盔 item 在游戏里没有模型"）。
+        Assert.DoesNotContain(plan.Mappings, item =>
+            item.Target.PartKind == UnitMeshPartKind.Helmet && item.Source is not null);
+        Assert.Contains(notes, note => note.Contains("自定义素体", StringComparison.Ordinal));
+    }
+
     private static EquipmentUnitCatalogEntry ThreeLayerArmour()
         => new(ArmorArchive, "Armor", "三层护甲",
         [

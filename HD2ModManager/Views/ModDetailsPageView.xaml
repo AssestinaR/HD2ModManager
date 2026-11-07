@@ -102,23 +102,14 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
-                            <TextBlock Text="头身合并到身体（头盔 item 不再有模型）"
-                                       Foreground="{StaticResource TextPrimary}" TextWrapping="Wrap"/>
-                            <TextBlock Text="关掉则头回到头盔套件，需要把配套头盔也穿上才有头"
-                                       Foreground="{StaticResource TextSecondary}" FontSize="11"
-                                       TextWrapping="Wrap"/>
-                        </StackPanel>
+                        <TextBlock Grid.Column="0" Text="将头盔合并到身体"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
                         <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
                                   IsChecked="{Binding HeadMergeIntoBody, Mode=TwoWay}"
                                   VerticalAlignment="Center" Margin="12,0,0,0"
                                   AutomationProperties.Name="头身合并到身体"/>
                     </Grid>
-                    <!-- 当前目标下这一项不生效时当场说明（例如目标是自定义素体：头本来就在主体里）。 -->
-                    <TextBlock Text="{Binding HeadMergeHint}"
-                               Foreground="{StaticResource StatusWarning}"
-                               FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0"
-                               Visibility="{Binding HasHeadMergeHint, Converter={StaticResource BoolToVis}}"/>
                     <!--
                         重构建已经移到汉堡菜单（它和并发/范围一起在底栏里定），
                         这里不再重复放一个按钮 —— 同一个动作两个入口只会让人猜哪个是"真"的。

@@ -274,20 +274,6 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		}
 	}
 
-	/// <summary>
-	/// 当前目标下这一项能不能生效。<b>不能就当场说出来</b>——用户翻开关最怕的是"翻了、存了、
-	/// 游戏里没变"，而原因藏在代码里。
-	/// <para>
-	/// 自定义素体目标：那个素体本来就是「头 + 身体」一整套（头是它自己的头盔槽件），
-	/// 没有独立的头盔 item 可以隐藏，所以头身合并对它没有意义。
-	/// </para>
-	/// </summary>
-	public string HeadMergeHint => SelectedVpkTargetArmor is { Kind: VpkTargetArmorKind.CustomModel }
-		? "当前目标是自定义素体：头本来就在主体里，这一项对它不生效（换成游戏护甲才会合并）"
-		: string.Empty;
-
-	public bool HasHeadMergeHint => HeadMergeHint.Length != 0;
-
 	public string VpkComponentStatus
 	{
 		get => _vpkStatus;
@@ -310,11 +296,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	{
 		get => _selectedVpkTargetArmor;
 		set
-		{
+			{
 			if (!SetField(ref _selectedVpkTargetArmor, value)) return;
-			// 换目标会改变"头身合并能不能生效"，提示行要跟着变。
-			OnPropertyChanged(nameof(HeadMergeHint));
-			OnPropertyChanged(nameof(HasHeadMergeHint));
 		}
 	}
 
