@@ -74,15 +74,16 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 	private readonly string _exe;
 	private readonly Func<bool> _requestExit;
 	private readonly Func<bool> _idle;
-	private readonly Func<ProcessStartInfo, Action?> _start;
+	private readonly Func<ProcessStartInfo, Func<bool>?> _start;
+	private volatile bool _helperUnconfirmed;
 
 	/// <param name="requestExit">
 	/// 让程序退出并等待结果：true 表示程序确定在退出（窗口的保存流程没有否决），false 表示没能退出（保存失败、超时等）。
 	/// </param>
 	/// <param name="start">
-	/// 启动替换脚本。返回「取消」动作（用于在程序没能退出时杀掉还在等待的脚本）；返回 null 表示没能启动。
+	/// 启动替换脚本。返回「取消」动作（用于在程序没能退出时杀掉还在等待的脚本，返回 true 表示已确认脚本不在了）；返回 null 表示没能启动。
 	/// </param>
-	public ZipUpdateInstaller(string appDir, string runDir, string exe, Func<bool> requestExit, Func<bool>? idle = null, Func<ProcessStartInfo, Action?>? start = null)
+	public ZipUpdateInstaller(string appDir, string runDir, string exe, Func<bool> requestExit, Func<bool>? idle = null, Func<ProcessStartInfo, Func<bool>?>? start = null)
 	{
 		_appDir = appDir.TrimEnd('\\', '/');
 		_runDir = runDir;
@@ -107,14 +108,25 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 		return AllowedDirectories.Any(d => path.StartsWith(d + "\\", StringComparison.OrdinalIgnoreCase));
 	}
 
-	private static Action? StartHelper(ProcessStartInfo psi)
+	private static Func<bool>? StartHelper(ProcessStartInfo psi)
 	{
 		var process = Process.Start(psi);
 		if (process is null) return null;
 		return () =>
 		{
-			try { if (!process.HasExited) process.Kill(true); }
-			catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+			// Kill 是异步的：等它真的结束才算取消成功；杀不掉就如实报告，调用方不能当作取消成功。
+			try
+			{
+				if (!process.HasExited)
+				{
+					try { process.Kill(true); }
+					catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { /* 以下面的 HasExited 为准 */ }
+					process.WaitForExit(5000);
+				}
+				return process.HasExited;
+			}
+			catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
+			finally { process.Dispose(); }
 		};
 	}
 
@@ -122,7 +134,10 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 
 	public void Install(InstallRequest request)
 	{
+		// 上一次没能确认撤掉替换脚本：它可能还活着并等着本进程退出，再起第二个会让两个脚本同时替换同一个 stage。
+		if (_helperUnconfirmed) throw new UpdateException(UpdateErrorCode.Failed, "A previous update helper could not be stopped; restart the manager before updating");
 		var stage = Path.Combine(_runDir, "stage-" + request.Version);
+		var keepStage = false;
 		try
 		{
 			Extract(request, stage);
@@ -142,15 +157,25 @@ public sealed class ZipUpdateInstaller : IUpdateInstaller
 			var cancel = _start(psi) ?? throw new UpdateException(UpdateErrorCode.Failed, "Could not start the update script");
 			bool exiting;
 			try { exiting = _requestExit(); }
-			catch { cancel(); throw; }
+			catch
+			{
+				if (!cancel()) { _helperUnconfirmed = true; keepStage = true; }
+				throw;
+			}
 			if (!exiting)
 			{
 				// 窗口的保存流程否决了关闭（或超时）：旧实例还活着，把还在等待的脚本撤掉，更新留待重试。
-				cancel();
+				if (!cancel())
+				{
+					// 没能确认脚本已终止：保留 stage（它若还活着，之后程序正常退出时仍能用同一份 stage 完成更新），并禁止再起第二个。
+					_helperUnconfirmed = true;
+					keepStage = true;
+					throw new UpdateException(UpdateErrorCode.Failed, "The manager did not close and the update helper could not be stopped; restart the manager to finish or discard the update");
+				}
 				throw new UpdateException(UpdateErrorCode.Failed, "The manager did not close (saving was refused or timed out); the update was not applied");
 			}
 		}
-		catch (UpdateException) { TryDeleteDir(stage); throw; }
+		catch (UpdateException) { if (!keepStage) TryDeleteDir(stage); throw; }
 		catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.ComponentModel.Win32Exception)
 		{
 			TryDeleteDir(stage);

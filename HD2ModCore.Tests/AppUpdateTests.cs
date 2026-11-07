@@ -386,12 +386,12 @@ public sealed class AppUpdateTests : IDisposable
 
 	// ---- 安装器：解压校验 ----
 
-	private ZipUpdateInstaller NewInstaller(string variant, out string appDir, Func<bool>? requestExit = null, Func<System.Diagnostics.ProcessStartInfo, Action?>? start = null)
+	private ZipUpdateInstaller NewInstaller(string variant, out string appDir, Func<bool>? requestExit = null, Func<System.Diagnostics.ProcessStartInfo, Func<bool>?>? start = null)
 	{
 		appDir = Path.Combine(_dir, "app");
 		Directory.CreateDirectory(appDir);
 		File.WriteAllText(Path.Combine(appDir, InstalledPackage.FileName), JsonSerializer.Serialize(new { version = "1.5.0", variant }));
-		return new ZipUpdateInstaller(appDir, Path.Combine(_dir, "run"), Path.Combine(appDir, "HD2ModManager.exe"), requestExit ?? (() => true), null, start ?? (_ => () => { }));
+		return new ZipUpdateInstaller(appDir, Path.Combine(_dir, "run"), Path.Combine(appDir, "HD2ModManager.exe"), requestExit ?? (() => true), null, start ?? (_ => () => true));
 	}
 
 	private InstallRequest Pack(byte[] zip, string version = "1.6.0")
@@ -442,7 +442,7 @@ public sealed class AppUpdateTests : IDisposable
 	[Fact]
 	public void Installer_DevBuildWithoutMarker_IsNotInstallable()
 	{
-		var installer = new ZipUpdateInstaller(Path.Combine(_dir, "nomarker"), Path.Combine(_dir, "run"), "x.exe", () => true, null, _ => () => { });
+		var installer = new ZipUpdateInstaller(Path.Combine(_dir, "nomarker"), Path.Combine(_dir, "run"), "x.exe", () => true, null, _ => () => true);
 		Directory.CreateDirectory(Path.Combine(_dir, "nomarker"));
 		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
 		Assert.Equal(UpdateErrorCode.NotInstallable, ex.Code);
@@ -453,7 +453,7 @@ public sealed class AppUpdateTests : IDisposable
 	{
 		var order = new List<string>();
 		System.Diagnostics.ProcessStartInfo? started = null;
-		var installer = NewInstaller("complete", out var appDir, () => { order.Add("exit"); return true; }, psi => { started = psi; order.Add("start"); return () => order.Add("cancel"); });
+		var installer = NewInstaller("complete", out var appDir, () => { order.Add("exit"); return true; }, psi => { started = psi; order.Add("start"); return () => { order.Add("cancel"); return true; }; });
 		installer.Install(Pack(MakePackage("1.6.0", "complete")));
 		Assert.Equal(new[] { "start", "exit" }, order); // 脚本先起来（只是在等本进程退出），再请求退出
 		Assert.Equal("powershell.exe", started!.FileName);
@@ -465,7 +465,7 @@ public sealed class AppUpdateTests : IDisposable
 	public void Installer_ExitVetoed_CancelsHelperAndThrowsFailed()
 	{
 		var order = new List<string>();
-		var installer = NewInstaller("complete", out _, () => false, _ => () => order.Add("cancel"));
+		var installer = NewInstaller("complete", out _, () => false, _ => () => { order.Add("cancel"); return true; });
 		var ex = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
 		Assert.Equal(UpdateErrorCode.Failed, ex.Code);
 		Assert.Equal(new[] { "cancel" }, order); // 保存被否决：把还在等待的脚本撤掉
@@ -476,9 +476,22 @@ public sealed class AppUpdateTests : IDisposable
 	public void Installer_ExitThrows_CancelsHelperAndRethrows()
 	{
 		var cancelled = false;
-		var installer = NewInstaller("complete", out _, () => throw new InvalidOperationException("boom"), _ => () => cancelled = true);
+		var installer = NewInstaller("complete", out _, () => throw new InvalidOperationException("boom"), _ => () => { cancelled = true; return true; });
 		Assert.Throws<InvalidOperationException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
 		Assert.True(cancelled);
+	}
+
+	[Fact]
+	public void Installer_CancelUnconfirmed_KeepsStageAndRefusesASecondHelper()
+	{
+		var starts = 0;
+		var installer = NewInstaller("complete", out _, () => false, _ => { starts++; return () => false; });
+		var first = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
+		Assert.Equal(UpdateErrorCode.Failed, first.Code);
+		Assert.True(Directory.Exists(Path.Combine(_dir, "run", "stage-1.6.0"))); // 脚本可能还活着：stage 留给它
+		var second = Assert.Throws<UpdateException>(() => installer.Install(Pack(MakePackage("1.6.0", "complete"))));
+		Assert.Equal(UpdateErrorCode.Failed, second.Code);
+		Assert.Equal(1, starts); // 不会再起第二个脚本
 	}
 
 	[Fact]
