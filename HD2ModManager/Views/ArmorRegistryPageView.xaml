@@ -71,7 +71,7 @@
                                     SearchActionsTemplate="{StaticResource ArmorKindSearchActions}"
                                     EmptyMessage="{Binding ProvidersEmptyMessage}"
                                     SelectionPolicy="Multiple"
-                                    RowActions="ArmorRelease, ArmorOpenDetails, ArmorRenameCustomModel"
+                                    RowActions="ArmorRelease, ArmorOpenDetails"
                                     ArmorReleaseToolTip="解除视觉对象"
                                     ArmorOpenDetailsToolTip="查看映射目标"
                                     RelationshipDragOperation="ArmorRegistryRelease"
