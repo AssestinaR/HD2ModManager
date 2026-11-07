@@ -41,7 +41,9 @@ public static class ModDetailsCardLayout
         {
             new CardDescriptor(HeaderCardId, CardKind.ModHeader, data) { Order = 10 },
             new CardDescriptor(DescriptionCardId, CardKind.ModDescription, data) { Order = 20, Title = "备注" },
-            new CardDescriptor(VpkActionsCardId, CardKind.VpkActions, data) { Order = 40, Title = "VPK 动作" },
+            // 这张卡里放的是"这个 Mod 能做什么"，与 VPK 无关（sectional 类 Mod 也在用它）。
+            // 标题只在需要区分时才给，这里不给——它上面那张已经是 ModHeader 了。
+            new CardDescriptor(VpkActionsCardId, CardKind.VpkActions, data) { Order = 40 },
             new CardDescriptor(VpkComponentsCardId, CardKind.VpkComponents, data)
             {
                 Order = 50,

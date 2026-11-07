@@ -7,6 +7,10 @@ public static class CliProjections
 {
 	public const string ProtocolVersion = "1.27";
 
+	// 存储形态判定的唯一入口（P2-1）。每个节点现算一次目录，代价就是一次目录枚举。
+	private static readonly HD2ModCore.Application.IModStorageKindResolver StorageKindResolver =
+		HD2ModCore.Infrastructure.CoreServices.CreateModStorageKindResolver();
+
 	public static object CreateCapabilities()
 		=> new
 		{
@@ -298,6 +302,10 @@ public static class CliProjections
 		{
 			id,
 			kind = node.Metadata.Kind.ToString().ToLowerInvariant(),
+			// 存储形态：logical / legacy / sectional / vpk2patch。
+			// 与上面的 kind（节点角色）是两个正交的轴——以前只有 kind，于是
+			// 一个标准的 vpk2patch Mod 被报成 option，"它是怎么来的"完全看不出来。
+			storageKind = FormatStorageKind(workspace.LibraryRoot, node.RelativePath),
 			name = node.Metadata.Name,
 			notes = node.Metadata.Notes,
 			relativePath = node.RelativePath,
@@ -324,6 +332,8 @@ public static class CliProjections
 				guid = node.Metadata.SourcePackageGuid,
 				path = node.Metadata.SourcePackagePath,
 			},
+			// 材质选项表：每个选项一个 patch，用户可以任意启用几个。
+			materialOptions = ReadMaterialOptions(node, workspace),
 			helmetsMergedIntoArmor = node.Metadata.HelmetToArmorMerged,
 			contentFingerprint = node.ContentFingerprint,
 			createdUtc = node.Metadata.CreatedUtc,
@@ -554,6 +564,40 @@ public static class CliProjections
 
 	private static string FormatRawGuid(string raw)
 		=> Guid.TryParse(raw, out var value) ? value.ToString("D") : raw;
+
+	private static string FormatStorageKind(string? libraryRoot, string relativePath)
+	{
+		var full = ResolveNodePath(libraryRoot, relativePath);
+		return string.IsNullOrWhiteSpace(full)
+			? ModStorageKind.Unknown.ToString().ToLowerInvariant()
+			: StorageKindResolver.Resolve(full).ToString().ToLowerInvariant();
+	}
+
+	/// <summary>
+	/// 一个 Mod 的材质选项表：来自基底目录里的 <c>patches.json</c>，启用状态来自 Mod 自己的设置文件。
+	/// 读不到就返回空表——这只是给人看的清单，不值得为它报错。
+	/// </summary>
+	/// <summary>
+	/// 一个 Mod 的材质选项表：顺序、名字、备注、配图、启用状态。
+	/// 走 <see cref="MaterialOptionSettings.Read"/>，与详情页那张卡是同一份读法——
+	/// 两个界面各写一份的话，同一个库会显示成两种样子。
+	/// </summary>
+	private static IReadOnlyList<object> ReadMaterialOptions(ModNode node, CliWorkspace workspace)
+	{
+		var directory = ResolveNodePath(workspace.LibraryRoot, node.RelativePath);
+		if (string.IsNullOrWhiteSpace(directory)) return Array.Empty<object>();
+		return MaterialOptionSettings.Read(directory)
+			.Select(option => (object)new
+			{
+				patchFileName = option.PatchFileName,
+				optionName = option.Name,
+				notes = option.Notes,
+				imageFileName = option.ImageFileName,
+				order = option.Order,
+				enabled = option.Enabled,
+			})
+			.ToArray();
+	}
 
 	private static string? ResolveNodePath(string? libraryRoot, string relativePath)
 	{

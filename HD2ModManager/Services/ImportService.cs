@@ -362,7 +362,11 @@ namespace HD2ModManager.Services
         {
             try
             {
-                var payload = Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName);
+                // 写进**已存在的**基底目录：老库里它叫 vpk2patch/，直接写新名会在旁边多出一个
+                // sectional/，于是同一个 Mod 有两层基底——枚举时新名赢，但旧名里被删掉的 patch
+                // 会以"只在旧层存在"的身份复活。迁移由 P2 的一次性改名统一处理。
+                var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory)
+                    ?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory);
                 var backupRoot = Path.Combine(
                     _paths.ModsDirectory,
                     ".hd2modmanager-swap-backups",

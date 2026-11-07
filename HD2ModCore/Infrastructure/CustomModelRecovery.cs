@@ -117,7 +117,10 @@ public sealed class CustomModelRecovery
 
 	private static bool HasDefinition(string modDirectory)
 		=> File.Exists(Path.Combine(modDirectory, VpkCustomModelFile.FileName))
-			|| File.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, VpkCustomModelFile.FileName));
+			|| File.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, VpkCustomModelFile.FileName))
+			// 老库布局。漏了它就会判定"这个 Mod 没有素体定义"，于是重新生成一份新 key，
+			// 旧 key 上的 wardrobe 掩码与真映射件表全部作废——用户看到的是"开关莫名重置"。
+			|| File.Exists(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, VpkCustomModelFile.FileName));
 
 	/// <summary>
 	/// 从产物的 <c>sections.json</c> 读件表。两个位置都看：转换产物写在 <c>vpk2patch/</c> 下，
@@ -202,8 +205,10 @@ public sealed class CustomModelRecovery
 
 	private static void Write(string modDirectory, RuntimeArmorRegistryModel model)
 	{
-		// 写在 `vpk2patch/` 下：与转换产物一致，且换载荷时会被 PreservedFileNames 保留。
-		var payload = Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName);
+		// 写在基底目录下：与转换产物一致，且换载荷时会被 PreservedFileNames 保留。
+		// 老库还叫 vpk2patch/，写进已存在的那个，别在旁边又建一个新目录。
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory)
+			?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory);
 		var directory = Directory.Exists(payload) ? payload : modDirectory;
 		var path = Path.Combine(directory, VpkCustomModelFile.FileName);
 		if (File.Exists(path)) return;   // 幂等：绝不覆盖。

@@ -349,6 +349,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			CopyResolvedIcon(sourceRoot, destDir, node, manifest, cancellationToken);
 			ModNodeStorageProtocol.SynchronizeNodeMetadata(destDir, node, cancellationToken);
 			NormalizePatchDirectories(destDir, cancellationToken);
+			WriteSectionalPatchManifest(destDir, cancellationToken);
 
 			nodes[kvp.Key] = node with
 			{
@@ -1095,10 +1096,30 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	/// 结果就是「导入成功、库里这个 Mod 一个 patch 都没有」。
 	/// </para>
 	/// </summary>
-	private static void CopyVpkPatchPayload(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)
+	/// <summary>
+	/// 在基底目录里写一份 <c>patches.json</c>，说明每个 patch 组是"谁"。
+	/// <para>
+	/// 写完就没必要每次再去解析根上的转换报告、也不必靠文件名猜角色。写不出来只记一条诊断，
+	/// 不影响导入：这份清单是派生的便利信息，读不到时下游会回退到按目录列举。
+	/// </para>
+	/// </summary>
+	private static void WriteSectionalPatchManifest(string destDir, CancellationToken cancellationToken)
 	{
-		var source = ModNodePayloadLayout.GetVpkPatchDirectory(sourceDir);
-		if (!Directory.Exists(source)) return;
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(destDir);
+		if (payload is null) return;
+		var report = VpkConversionReport.TryRead(destDir);
+		// 归档段直接取自目录里的文件名：报告可能缺失，而文件名永远在。
+		var archive = SectionalPatchManifestFile.ReadArchiveHex16(payload);
+
+		var document = SectionalPatchManifestFile.Build(payload, archive, report, DateTimeOffset.UtcNow);
+		if (document.Patches.Count == 0) return;
+		_ = SectionalPatchManifestFile.TryWrite(payload, document);
+	}
+
+	private static void CopyVpkPatchPayload(string sourceDir, string destDir, bool preferHardLinks, CancellationToken cancellationToken)	{
+		// 来源可能是老库布局（vpk2patch/），所以读侧两个名字都认；写侧一律落新名。
+		var source = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(sourceDir);
+		if (source is null) return;
 		var destination = ModNodePayloadLayout.GetVpkPatchDirectory(destDir);
 		Directory.CreateDirectory(destination);
 		foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.TopDirectoryOnly))

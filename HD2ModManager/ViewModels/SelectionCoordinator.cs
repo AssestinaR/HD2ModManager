@@ -43,7 +43,7 @@ namespace HD2ModManager.ViewModels
     // 同一批右侧选中的护甲，"来源列表里"是「转为视觉对象」，
     // "某个来源的目标列表里"是「注册为映射目标」——这是两种完全不同的操作，
     // 以前它们共用一个作用域，于是多选永远只会变成视觉来源（见
-    // docs/armor-registry-page-perf-20261027.md §4 D1）。
+    // docs/agent/armor-registry-page-perf-20261027.md §4 D1）。
     internal static class ArmorRegistryScopes
     {
         public const string Available = "ArmorRegistry:Available";

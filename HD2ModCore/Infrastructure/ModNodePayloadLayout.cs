@@ -27,16 +27,27 @@ namespace HD2ModCore.Infrastructure;
 /// </summary>
 public static class ModNodePayloadLayout
 {
-	/// <summary>由 <c>vpk2patch</c> 生成的实际生效 patch 目录名。</summary>
-	public const string VpkPatchDirectoryName = "vpk2patch";
+	/// <summary>
+	/// 转换产物的<b>权威基底</b>目录名：unit patch（恒为 <c>patch_0</c>）与全部材质变体
+	/// patch（<c>patch_1..patch_N</c>）都平铺在这里，另有一份 <c>patches.json</c> 标记每组是谁。
+	/// </summary>
+	public const string VpkPatchDirectoryName = HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Sectional;
+
+	/// <summary>
+	/// 2026-11 之前叫这个名字。**只读兼容用**：老库里该目录仍在，必须仍能被认出来，
+	/// 否则那批 Mod 会突然"没有 payload"——部署时一个 patch 都不写、界面也不报错。
+	/// 新写入一律用 <see cref="VpkPatchDirectoryName"/>。
+	/// </summary>
+	public const string LegacyVpkPatchDirectoryName = HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.LegacySectional;
 
 	/// <summary>装饰/派生重建产物的替换目录名。</summary>
-	public const string OverwriteDirectoryName = "Overwrite";
+	public const string OverwriteDirectoryName = HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Overwrite;
 
-	/// <summary>这个目录名是不是保留给 vpk2patch 载荷的（大小写不敏感）。</summary>
+	/// <summary>这个目录名是不是保留给转换产物基底目录的（新旧名都算，大小写不敏感）。</summary>
 	public static bool IsVpkPatchDirectoryName(string? name)
 		=> !string.IsNullOrWhiteSpace(name)
-			&& name.Equals(VpkPatchDirectoryName, StringComparison.OrdinalIgnoreCase);
+			&& (name.Equals(VpkPatchDirectoryName, StringComparison.OrdinalIgnoreCase)
+				|| name.Equals(LegacyVpkPatchDirectoryName, StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>这个目录名是不是装饰重建的替换目录（大小写不敏感）。</summary>
 	public static bool IsOverwriteDirectoryName(string? name)
@@ -49,6 +60,24 @@ public static class ModNodePayloadLayout
 		return Path.Combine(nodeDirectory, VpkPatchDirectoryName);
 	}
 
+	/// <summary>
+	/// 这个节点**已经存在**的基底目录：优先新名，其次旧名，都没有返回 <c>null</c>。
+	/// <para>
+	/// <b>读路径一律用这个，不要自己 <c>Directory.Exists(GetVpkPatchDirectory(...))</c>。</b>
+	/// 那样写在改名当天会把老库里所有 VPK 类 Mod 判成"没有内容层"：
+	/// 导出器会改导根目录（把 15 MB 的 .vpk 打进包里、真正的 patch 一个都没有），
+	/// 详情页会按 legacy 渲染（组件树、换甲卡片全不出现）。写路径才用 <see cref="GetVpkPatchDirectory"/>。
+	/// </para>
+	/// </summary>
+	public static string? TryGetExistingVpkPatchDirectory(string nodeDirectory)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(nodeDirectory);
+		var current = GetVpkPatchDirectory(nodeDirectory);
+		if (Directory.Exists(current)) return current;
+		var legacy = Path.Combine(nodeDirectory, LegacyVpkPatchDirectoryName);
+		return Directory.Exists(legacy) ? legacy : null;
+	}
+
 	public static string GetOverwriteDirectory(string nodeDirectory)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(nodeDirectory);
@@ -56,16 +85,25 @@ public static class ModNodePayloadLayout
 	}
 
 	/// <summary>
-	/// 这个节点自己的内容目录：先是节点根，再是（存在时的）<c>vpk2patch/</c>。
+	/// 这个节点自己的内容目录：先是节点根，再是（存在时的）转换产物基底目录。
 	/// <b>不含 <c>Overwrite/</c></b>——它是替换层，由调用方在内容定下来之后再叠上去。
+	/// <para>
+	/// <b>为什么同时认新旧两个名字。</b>2026-11 把 <c>vpk2patch/</c> 改名为
+	/// <c>sectional/</c>；老库里的目录不会自动改名，而这里一旦只认新名，那批 Mod 的
+	/// patch 组会全部变空 —— 对账会把它们的 <c>patchGroups</c> 清空，部署计划随后静默跳过，
+	/// 表现是"部署成功、游戏里什么都没变"。所以读路径必须两个名字都认。
+	/// 两个都在时以新名为准（它才是当前写入位置）。
+	/// </para>
 	/// </summary>
 	public static IReadOnlyList<string> EnumeratePayloadDirectories(string nodeDirectory)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(nodeDirectory);
-		var vpkPatches = GetVpkPatchDirectory(nodeDirectory);
-		return Directory.Exists(vpkPatches)
-			? [nodeDirectory, vpkPatches]
-			: [nodeDirectory];
+		var directories = new List<string>(3) { nodeDirectory };
+		var legacy = Path.Combine(nodeDirectory, LegacyVpkPatchDirectoryName);
+		if (Directory.Exists(legacy)) directories.Add(legacy);
+		var current = Path.Combine(nodeDirectory, VpkPatchDirectoryName);
+		if (Directory.Exists(current)) directories.Add(current);
+		return directories;
 	}
 
 	/// <summary>

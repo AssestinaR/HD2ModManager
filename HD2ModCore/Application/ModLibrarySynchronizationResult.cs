@@ -37,4 +37,7 @@ public sealed record ModLibrarySynchronizationDirectory(
 	IReadOnlyList<PatchGroupKey> PatchGroups,
 	string ContentFingerprint,
 	bool IsLogicalContainer = false,
-	ModNodeId? LogicalNodeId = null);
+	ModNodeId? LogicalNodeId = null,
+	string? Notes = null,
+	ModNodeId? SettingsNodeId = null,
+	bool HasSettings = false);

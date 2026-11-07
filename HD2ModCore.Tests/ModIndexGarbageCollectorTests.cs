@@ -36,9 +36,40 @@ public sealed class ModIndexGarbageCollectorTests
 		finally { DeleteRoot(root); }
 	}
 
+	// 2026-11-06 实测：201 个节点留下 245 个 AssetInventory 缓存，44 个是旧 generation 残留。
+	// 旧逻辑只按"节点是否还在库中"删，永远碰不到这些文件——它们会一直留在 data/indexes 里。
 	[Fact]
-	public async Task CollectAsync_KeepsSnapshotCacheCoveringAnyLiveNode()
+	public async Task CollectAsync_ForALiveNode_KeepsOnlyTheNewestGeneration()
 	{
+		var root = CreateRoot();
+		try
+		{
+			var paths = new StoragePaths(root);
+			var live = ModNodeId.New();
+			var info = Path.Combine(paths.IndexDirectory, "mod-information");
+			Directory.CreateDirectory(info);
+			var older = Path.Combine(info, $"AssetInventory_{live.Value:N}_{GenerationA}.json");
+			var newer = Path.Combine(info, $"AssetInventory_{live.Value:N}_{GenerationB}.json");
+			File.WriteAllText(older, "{}");
+			File.WriteAllText(newer, "{}");
+			File.SetLastWriteTimeUtc(older, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+			File.SetLastWriteTimeUtc(newer, new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc));
+			// 另一个种类的旧代也应被回收（同一节点、不同 kind 各自保留最新）
+			var otherKind = Path.Combine(info, $"ReferenceGraph_{live.Value:N}_{GenerationA}.json");
+			File.WriteAllText(otherKind, "{}");
+
+			var result = await new ModIndexGarbageCollector(paths).CollectAsync([live]);
+
+			Assert.Equal(1, result.RemovedCacheFiles);
+			Assert.False(File.Exists(older));
+			Assert.True(File.Exists(newer));
+			Assert.True(File.Exists(otherKind));
+		}
+		finally { DeleteRoot(root); }
+	}
+
+	[Fact]
+	public async Task CollectAsync_KeepsSnapshotCacheCoveringAnyLiveNode()	{
 		var root = CreateRoot();
 		try
 		{
@@ -81,29 +112,25 @@ public sealed class ModIndexGarbageCollectorTests
 		finally { DeleteRoot(root); }
 	}
 
+	// mod-data-index 已没有任何读写方（详情页那一行改查 SQL 索引）。旧库上它还会留着
+	// 一堆文件，这里锁住"回收时会整目录清掉"。
 	[Fact]
-	public async Task CollectAsync_RemovesDeadDataIndexNodesAndLegacyFile()
+	public async Task CollectAsync_RemovesObsoleteModDataIndexDirectory()
 	{
 		var root = CreateRoot();
 		try
 		{
 			var paths = new StoragePaths(root);
 			var live = ModNodeId.New();
-			var dead = ModNodeId.New();
-			var nodes = Path.Combine(paths.IndexDirectory, "mod-data-index");
-			Directory.CreateDirectory(nodes);
-			File.WriteAllText(Path.Combine(nodes, live.Value.ToString("N") + ".json"), "[]");
-			File.WriteAllText(Path.Combine(nodes, dead.Value.ToString("N") + ".json"), "[]");
-			var legacy = Path.Combine(paths.IndexDirectory, "mod-data-index.json");
-			File.WriteAllText(legacy, "{}");
+			var obsolete = Path.Combine(paths.IndexDirectory, "mod-data-index");
+			Directory.CreateDirectory(obsolete);
+			File.WriteAllText(Path.Combine(obsolete, $"{live.Value:N}.json"), "{}");
+			File.WriteAllText(Path.Combine(obsolete, $"{ModNodeId.New().Value:N}.json"), "{}");
 
 			var result = await new ModIndexGarbageCollector(paths).CollectAsync([live]);
 
-			// 一个死节点文件 + 旧版单文件
-			Assert.Equal(2, result.RemovedIndexNodes);
-			Assert.True(File.Exists(Path.Combine(nodes, live.Value.ToString("N") + ".json")));
-			Assert.False(File.Exists(Path.Combine(nodes, dead.Value.ToString("N") + ".json")));
-			Assert.False(File.Exists(legacy));
+			Assert.Equal(2, result.RemovedCacheFiles);
+			Assert.False(Directory.Exists(obsolete));
 		}
 		finally { DeleteRoot(root); }
 	}
@@ -157,43 +184,26 @@ public sealed class ModIndexGarbageCollectorTests
 		finally { DeleteRoot(root); }
 	}
 
+	// 这些事实现在只活在会话内存里，文件没人读了。以前这里只修剪它的行、把文件永远留着；
+	// 既然不读了，整个删掉才叫回收——21.7 MB 不该为了"以后也许有用"一直躺着。
 	[Fact]
-	public async Task CollectAsync_RemovesFactRowsForDeadNodes()
+	public async Task CollectAsync_ReclaimsTheObsoleteFactsDatabase()
 	{
 		var root = CreateRoot();
 		try
 		{
 			var paths = new StoragePaths(root);
 			Directory.CreateDirectory(paths.IndexDirectory);
-			var live = ModNodeId.New();
-			var dead = ModNodeId.New();
-			using (var connection = new SqliteConnection($"Data Source={paths.ModFactsDbPath}"))
-			{
-				connection.Open();
-				using var create = connection.CreateCommand();
-				create.CommandText = "CREATE TABLE patch_groups(node_id TEXT NOT NULL, group_id TEXT NOT NULL)";
-				create.ExecuteNonQuery();
-				foreach (var id in new[] { live, dead })
-				{
-					using var insert = connection.CreateCommand();
-					insert.CommandText = "INSERT INTO patch_groups(node_id, group_id) VALUES($n, 'g')";
-					insert.Parameters.AddWithValue("$n", id.Value.ToString("N"));
-					insert.ExecuteNonQuery();
-				}
-			}
-			SqliteConnection.ClearAllPools();
+			await File.WriteAllTextAsync(paths.ModFactsDbPath, "stale");
+			await File.WriteAllTextAsync(paths.ModFactsDbPath + "-wal", "stale");
+			await File.WriteAllTextAsync(paths.ModFactsDbPath + "-shm", "stale");
 
-			var result = await new ModIndexGarbageCollector(paths).CollectAsync([live]);
+			var result = await new ModIndexGarbageCollector(paths).CollectAsync([ModNodeId.New()]);
 
 			Assert.Equal(1, result.RemovedFactRows);
-			using var verify = new SqliteConnection($"Data Source={paths.ModFactsDbPath}");
-			verify.Open();
-			using var count = verify.CreateCommand();
-			count.CommandText = "SELECT node_id FROM patch_groups";
-			using var reader = count.ExecuteReader();
-			Assert.True(reader.Read());
-			Assert.Equal(live.Value.ToString("N"), reader.GetString(0));
-			Assert.False(reader.Read());
+			Assert.False(File.Exists(paths.ModFactsDbPath));
+			Assert.False(File.Exists(paths.ModFactsDbPath + "-wal"));
+			Assert.False(File.Exists(paths.ModFactsDbPath + "-shm"));
 		}
 		finally { DeleteRoot(root); }
 	}

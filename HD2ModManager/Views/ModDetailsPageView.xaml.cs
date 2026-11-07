@@ -114,6 +114,40 @@ namespace HD2ModManager.Views
         }
 
         /// <summary>
+        /// 材质选项的行内动作。只有四个：改名、打开文件夹、上移、下移——
+        /// 没有删除、没有移出列表，因为材质选项是主 Mod 的一部分而不是库节点。
+        /// </summary>
+        private void OnMaterialOptionRowActionInvoked(object? sender, ModListRowActionEventArgs e)
+        {
+            if (DataContext is not ModDetailsPageViewModel details) return;
+            if (e.Item is not MaterialOptionRowViewModel row) return;
+            switch (e.Action)
+            {
+                case ModListRowAction.Rename:
+                    details.BeginRenameMaterialOption(row);
+                    break;
+                case ModListRowAction.ToggleEnabled:
+                    row.Toggle();
+                    break;
+                case ModListRowAction.OpenFolder:
+                    details.OpenMaterialOptionFolder();
+                    break;
+                case ModListRowAction.MoveUp:
+                    details.MoveMaterialOption(row, -1);
+                    break;
+                case ModListRowAction.MoveDown:
+                    details.MoveMaterialOption(row, +1);
+                    break;
+            }
+        }
+
+        private void OnMaterialOptionInternalReorderRequested(object? sender, ModListInternalReorderEventArgs e)
+        {
+            if (DataContext is ModDetailsPageViewModel details)
+                details.ReorderMaterialOptions(e.DraggedKeys, e.InsertionIndex);
+        }
+
+        /// <summary>
         /// 组件树里选中了一行。<b>"选中"与"勾选"是两件事</b>：勾选框表达"这一块画不画"，
         /// 选中表达"要把它建成组"。所以这里只把选中的节点转给 ViewModel，不碰任何勾选状态。
         /// <para>

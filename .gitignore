@@ -376,7 +376,6 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 *.lnk
-docs/
 _diagnostics/
 tmp/*
 */tmp/
@@ -391,4 +390,22 @@ _buildverify/
 probe_*.lib
 
 # 本地 AI 工具的记忆目录，不属于项目内容
+.workbuddy/
 .workbuddy-ai/
+.dsh/
+
+# docs/ 是项目文档，但同目录下也堆着本地素材与第三方源码（体积以百 MB 计），
+# 只有我们自己写的文档进版本库；下面这些目录留在磁盘上、不进 git。
+docs/blender-main/
+docs/参考项目/
+docs/HD2SDK-CommunityEdition-3.8.0/
+docs/HD2-C4-Quick-Actions-main/
+docs/BingusSharedLoader-main/
+docs/StingrayTextureOptimizer-master/
+docs/hd2-repatcher-main/
+docs/前置Bingus-Shared-Loader-v15/
+docs/_backup/
+docs/temp/
+docs/eye-check/
+docs/autofix Tools/
+docs/*.zip

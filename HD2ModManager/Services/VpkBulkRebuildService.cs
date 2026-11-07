@@ -139,6 +139,7 @@ public static class VpkBulkRebuildService
 					var outcome = await VpkRebuildService.RunAsync(
 						target.NodeId.Value.ToString("N"),
 						target.Directory,
+						new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
 						targetArchiveIds: null,
 						disabledSections: null,
 						stage => onStage?.Invoke($"{target.Name}：{stage}"),

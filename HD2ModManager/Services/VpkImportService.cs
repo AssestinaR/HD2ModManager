@@ -1088,14 +1088,15 @@ public sealed class VpkImportService
 	}
 
 	/// <summary>
-	/// 这个目录是不是<b>已经转换过</b>的 VPK 版 Mod（根上有 <c>vpk2patch/</c> 或 <c>vpk2patch.json</c>）。
+	/// 这个目录是不是<b>已经转换过</b>的 VPK 版 Mod（根上有转换报告，或已有基底目录）。
 	/// <para>
-	/// 判据只看转换器自己写的这两样东西：它们只有 <c>vpk2patch</c> 会产出，用户的源包不会有。
+	/// 判据只看转换器自己写的这两样东西：它们只有转换器会产出，用户的源包不会有。
+	/// 基底目录新旧两个名字都要认——老库里它叫 <c>vpk2patch/</c>。
 	/// </para>
 	/// </summary>
 	private static bool IsConvertedPackage(string directory)
 		=> File.Exists(Path.Combine(directory, PackageReportFileName))
-			|| Directory.Exists(ModNodePayloadLayout.GetVpkPatchDirectory(directory));
+			|| ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(directory) is not null;
 
 	private string CreateStaging()
 	{

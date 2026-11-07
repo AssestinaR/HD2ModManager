@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModCore.Decoration;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
@@ -138,8 +139,11 @@ internal static class CliVpkRekey
 		if (!Directory.Exists(modDirectory))
 			throw new CliUserException("ModDirectoryMissing", $"Mod 目录不存在：{modDirectory}");
 
-		var sourceDirectory = Path.Combine(modDirectory, SourceDirectoryName);
-		var sourcePatch = FindUnitPatch(sourceDirectory) ?? FindUnitPatch(modDirectory)
+		// 基底目录可能还叫老名字（vpk2patch/）。按"存在哪个用哪个"取，别只认新名字——
+		// 老库上只认 sectional/ 会让换甲报"没有 Unit patch"，而文件明明就在隔壁。
+		var sourceDirectory = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
+		var sourcePatch = (sourceDirectory is null ? null : FindUnitPatch(sourceDirectory))
+			?? FindUnitPatch(modDirectory)
 			?? throw new CliUserException("VpkPatchMissing",
 				$"这个 Mod 里没有 vpk2patch 产出的 Unit patch。VPK 版 Mod 的 patch 应当放在 {SourceDirectoryName}/ 下。");
 		var sectionMapPath = Path.Combine(Path.GetDirectoryName(sourcePatch)!, WardrobeSectionMapFile.FileName);
@@ -172,6 +176,7 @@ internal static class CliVpkRekey
 			throw new CliUserException("TargetArmorNotFound", $"找不到任何目标：{string.Join("、", targets)}。");
 
 		var destinationDirectory = Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName);
+		EnsureOverwriteIsWritable(destinationDirectory);
 
 		// 目标就是这个 Mod **自己**的素体：换甲等于"什么也不用换"。
 		//
@@ -182,7 +187,7 @@ internal static class CliVpkRekey
 		if (IsIdentityTarget(source, selected))
 		{
 			var restored = await RestoreSourceAsync(
-				sourcePatch, sourceDirectory, destinationDirectory, cancellationToken).ConfigureAwait(false);
+				sourcePatch, Path.GetDirectoryName(sourcePatch)!, destinationDirectory, cancellationToken).ConfigureAwait(false);
 			// 恒等路径上 Unit 键没变，掩码可以直接用。
 			var identityBake = await BakeAsync(restored, destinationDirectory, disabledSections, cancellationToken)
 				.ConfigureAwait(false);
@@ -190,7 +195,8 @@ internal static class CliVpkRekey
 			// 没有独立的头盔 item 可以隐藏。**必须说出来**，否则用户在界面翻了开关、
 			// 看到"已开启"，进游戏什么变化都没有。
 			var closedCount = disabledSections?.Values.Sum(sections => sections.Count) ?? 0;
-			return new VpkRekeyResult(
+			MarkOverwriteManaged(destinationDirectory);
+		return new VpkRekeyResult(
 				node.Id.Value.ToString("N"),
 				modDirectory,
 				sourcePatch,
@@ -257,17 +263,8 @@ internal static class CliVpkRekey
 
 		var produced = FindUnitPatch(result.OutputDirectory)
 			?? throw new CliUserException("VpkRekeyNoOutput", "换甲没有产出 patch。");
-		Directory.CreateDirectory(destinationDirectory);
-		var destination = Path.Combine(destinationDirectory, Path.GetFileName(produced));
-
-		// Overwrite 是"顶掉同名 patch"的一层：旧变体必须先清掉，否则 sidecar 会与新 TOC 不配。
-		foreach (var stale in Directory.EnumerateFiles(destinationDirectory, Path.GetFileName(produced) + "*"))
-			DeleteQuietly(stale);
-		foreach (var suffix in new[] { "", ".gpu_resources", ".stream" })
-		{
-			var from = produced + suffix;
-			if (File.Exists(from)) File.Copy(from, destination + suffix, overwrite: true);
-		}
+		// 装进 Overwrite：删同名旧变体（含 sidecar）+ 复制 TOC 与 sidecar，统一走共享原语。
+		var destination = OverwritePatchInstaller.Install(destinationDirectory, produced).PatchPath;
 
 		// 来源 Unit → 目标 Unit。开关表与烘焙都要用它，所以先算一次。
 		var unitMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -322,6 +319,7 @@ internal static class CliVpkRekey
 			catch (UnauthorizedAccessException) { }
 		}
 
+		MarkOverwriteManaged(destinationDirectory);
 		return new VpkRekeyResult(
 			node.Id.Value.ToString("N"),
 			modDirectory,
@@ -428,17 +426,7 @@ internal static class CliVpkRekey
 		string destinationDirectory,
 		CancellationToken cancellationToken)
 	{
-		Directory.CreateDirectory(destinationDirectory);
-		var destination = Path.Combine(destinationDirectory, Path.GetFileName(sourcePatch));
-		foreach (var stale in Directory.EnumerateFiles(destinationDirectory, Path.GetFileName(sourcePatch) + "*"))
-			DeleteQuietly(stale);
-
-		foreach (var suffix in new[] { "", ".gpu_resources", ".stream" })
-		{
-			var from = sourcePatch + suffix;
-			if (File.Exists(from))
-				File.Copy(from, destination + suffix, overwrite: true);
-		}
+		var destination = OverwritePatchInstaller.Install(destinationDirectory, sourcePatch).PatchPath;
 
 		var switches = await SectionGroupFile.TryReadAsync(sourceDirectory, cancellationToken).ConfigureAwait(false);
 		if (switches is not null)
@@ -903,6 +891,32 @@ internal static class CliVpkRekey
 		{
 			return false;
 		}
+	}
+
+	/// <summary>
+	/// 写之前确认这个 Overwrite 目录可以被接管。
+	/// <para>
+	/// 判定只有一条：**不是管理器生成的、且里面已经有东西 ⇒ 拒绝**。空目录可以接管
+	/// （那是上次派生中断留下的壳）；有归属标记的可以覆盖。放宽这一条，
+	/// 用户手工放进 Overwrite 的补丁就会在某次换甲里被静默删掉，而这种删除没有日志能补救。
+	/// </para>
+	/// </summary>
+	private static void EnsureOverwriteIsWritable(string destinationDirectory)
+	{
+		if (!Directory.Exists(destinationDirectory)) return;
+		if (ManagedOverwriteDirectory.IsManaged(destinationDirectory)) return;
+		if (!Directory.EnumerateFileSystemEntries(destinationDirectory).Any()) return;
+		throw new CliUserException(
+			"OverwriteNotManaged",
+			$"这个 Mod 的 Overwrite 目录不是管理器生成的，已拒绝写入：{destinationDirectory}。"
+			+ "如果里面有你手工放进去的文件，请先把它移走再重试。");
+	}
+
+	/// <summary>换甲成功：盖上归属标记。之后其它派生来源（头盔合并等）才认得出这个目录。</summary>
+	private static void MarkOverwriteManaged(string destinationDirectory)
+	{
+		if (!Directory.Exists(destinationDirectory)) return;
+		ManagedOverwriteDirectory.Commit(destinationDirectory, ManagedOverwriteMarkers.VpkRekey);
 	}
 
 	private static void DeleteQuietly(string path)

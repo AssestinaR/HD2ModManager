@@ -124,7 +124,7 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 	// 为什么必须有：这条查询是 archives LEFT JOIN archive_entries（35 万行）的 GROUP BY，
 	// 外加每个归档一次 archive_issues 的 EXISTS。实测 ~215ms，而且**每次**打开护甲页
 	// 都会跑一遍——信息中心的无节点事实账本只做并发合并、做完就移除（见
-	// docs/armor-registry-page-perf-20261027.md §1 A2/A3）。
+	// docs/agent/armor-registry-page-perf-20261027.md §1 A2/A3）。
 	//
 	// 为什么可以缓存：摘要只取决于索引库本身的内容，而索引库由 source_fingerprint
 	// 唯一标识。指纹不变，聚合结果就不可能变。
@@ -407,8 +407,6 @@ GROUP BY e.archive_id;";
 		await using var archiveCommand = CreateArchiveInsertCommand(connection);
 		await using var issueCommand = CreateArchiveIssueInsertCommand(connection);
 		await using var entryCommand = CreateArchiveEntryInsertCommand(connection);
-		await using var domainCommand = CreateArchiveDomainInsertCommand(connection);
-		await using var derivedNameCommand = CreateDerivedNameInsertCommand(connection);
 
 		foreach (var archive in facts.Archives)
 		{
@@ -417,15 +415,6 @@ GROUP BY e.archive_id;";
 			progress?.Report(new IndexBuildProgress(current, total, archive.PackageName));
 
 			await InsertArchiveAsync(archiveCommand, archive, cancellationToken).ConfigureAwait(false);
-			if (contentProfiles.TryGetValue(archive.PackageName, out var contentProfile))
-			{
-				await InsertArchiveDomainAsync(domainCommand, archive.PackageName, contentProfile, cancellationToken).ConfigureAwait(false);
-				// 只有"这个名字确实被采用了"才记进名字表，避免派生名抢走权威名的位置。
-				if (string.Equals(archive.DisplayName, contentProfile.DerivedName, StringComparison.Ordinal))
-				{
-					await InsertDerivedNameAsync(derivedNameCommand, archive.PackageName, contentProfile, cancellationToken).ConfigureAwait(false);
-				}
-			}
 			foreach (var issue in archive.Issues)
 				await InsertArchiveIssueAsync(issueCommand, archive.PackageName, issue, cancellationToken).ConfigureAwait(false);
 
@@ -468,20 +457,24 @@ GROUP BY e.archive_id;";
 
 		await RestoreDerivedEquipmentFactsAsync(connection, tx, cancellationToken).ConfigureAwait(false);
 
+		// **记账与数据同一次提交。** 这些键是"这次重建已经完成"的声明，必须晚于数据、
+		// 但不早于数据落盘——否则进程在这中间被杀就会留下"记账说完成、数据是空的"
+		// （或者反过来：数据是新的、指纹还是旧的），而任何"是否最新"的判断都会据此跑偏。
+		await SqliteSchema.SetMetaAsync(connection, tx, "built_utc", DateTimeOffset.UtcNow.ToString("O"), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "archives_total", total.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "archives_indexed", indexed.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "asset_keys_total", df.Count.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_directory", normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "source_fingerprint", sourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_source_kind", authority.SourceKind.ToString(), cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_source_path", authority.SourcePath ?? string.Empty, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_fingerprint", authority.SourceFingerprint, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "game_data_authority_version", "authority-v2-entity-encyclopedia-v1", cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
+		await SqliteSchema.SetMetaAsync(connection, tx, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
+
 		await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-		await SqliteSchema.SetMetaAsync(connection, "built_utc", DateTimeOffset.UtcNow.ToString("O"), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "archives_total", total.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "archives_indexed", indexed.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "asset_keys_total", df.Count.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_directory", normalizedGameDataDirectory, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "source_fingerprint", sourceFingerprint, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_kind", authority.SourceKind.ToString(), cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_source_path", authority.SourcePath ?? string.Empty, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_fingerprint", authority.SourceFingerprint, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "game_data_authority_version", "authority-v2-entity-encyclopedia-v1", cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "parser_version", facts.ParserVersion, cancellationToken).ConfigureAwait(false);
-		await SqliteSchema.SetMetaAsync(connection, "index_schema_version", facts.SchemaVersion, cancellationToken).ConfigureAwait(false);
 		// Readers use pooled shared-cache connections. Purge their pre-rebuild pages so
 		// in-process catalog queries observe the committed index without requiring restart.
 		SqliteConnection.ClearAllPools();
@@ -988,44 +981,6 @@ ORDER BY archive_id,unit_file_id,stream_index;";
 	private static bool IsPlaceholderName(string? displayName, string packageName)
 		=> ArchiveDisplayNames.IsPlaceholder(displayName, packageName);
 
-	private static SqliteCommand CreateArchiveDomainInsertCommand(SqliteConnection connection)
-	{
-		var cmd = connection.CreateCommand();
-		cmd.CommandText = "INSERT OR REPLACE INTO archive_domains(archive_id,domain,subject,source,confidence) VALUES($a,$d,$s,$src,$c)";
-		foreach (var name in new[] { "$a", "$d", "$s", "$src" }) cmd.Parameters.Add(name, SqliteType.Text);
-		cmd.Parameters.Add("$c", SqliteType.Integer);
-		cmd.Prepare();
-		return cmd;
-	}
-
-	private static async Task InsertArchiveDomainAsync(SqliteCommand cmd, string archiveId, ArchiveContentProfile profile, CancellationToken cancellationToken)
-	{
-		cmd.Parameters["$a"].Value = archiveId;
-		cmd.Parameters["$d"].Value = profile.Domain;
-		cmd.Parameters["$s"].Value = profile.Subject;
-		cmd.Parameters["$src"].Value = "derived:content-path";
-		cmd.Parameters["$c"].Value = profile.Confidence;
-		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-	}
-
-	private static SqliteCommand CreateDerivedNameInsertCommand(SqliteConnection connection)
-	{
-		var cmd = connection.CreateCommand();
-		cmd.CommandText = "INSERT OR REPLACE INTO game_data_archive_names(archive_id,locale,display_name,source,confidence,item_id) VALUES($a,'und',$n,'derived:content-path',$c,0)";
-		foreach (var name in new[] { "$a", "$n" }) cmd.Parameters.Add(name, SqliteType.Text);
-		cmd.Parameters.Add("$c", SqliteType.Integer);
-		cmd.Prepare();
-		return cmd;
-	}
-
-	private static async Task InsertDerivedNameAsync(SqliteCommand cmd, string archiveId, ArchiveContentProfile profile, CancellationToken cancellationToken)
-	{
-		cmd.Parameters["$a"].Value = archiveId;
-		cmd.Parameters["$n"].Value = profile.DerivedName;
-		cmd.Parameters["$c"].Value = profile.Confidence;
-		await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-	}
-
 	private static async Task SaveAuthoritySnapshotAsync(
 		SqliteConnection connection,
 		SqliteTransaction transaction,
@@ -1057,84 +1012,9 @@ RETURNING piece_id;";
 		pieceCommand.Parameters.Add("$archive", SqliteType.Text);
 		pieceCommand.Prepare();
 
-		await using var resourceCommand = connection.CreateCommand();
-		resourceCommand.Transaction = transaction;
-		// 同一份资源可能被多条（现已去重的）piece 行重复给出；
-		// 主键就是 (piece_id, role, file_id)，重复即等价，忽略即可。
-		resourceCommand.CommandText = "INSERT OR IGNORE INTO game_data_authority_resources(piece_id,role,file_id) VALUES($pieceId,$role,$file);";
-		resourceCommand.Parameters.Add("$pieceId", SqliteType.Integer);
-		resourceCommand.Parameters.Add("$role", SqliteType.Text);
-		resourceCommand.Parameters.Add("$file", SqliteType.Integer);
-		resourceCommand.Prepare();
-
 		await using var pieceIdCommand = connection.CreateCommand();
 		pieceIdCommand.Transaction = transaction;
 		pieceIdCommand.CommandText = "SELECT last_insert_rowid();";
-
-		await using var nameCommand = connection.CreateCommand();
-		nameCommand.Transaction = transaction;
-		nameCommand.CommandText = @"
-INSERT INTO game_data_archive_names(archive_id,locale,display_name,source,confidence,item_id)
-VALUES($archive,$locale,$name,$source,$confidence,$item);";
-		nameCommand.Parameters.Add("$archive", SqliteType.Text);
-		nameCommand.Parameters.Add("$locale", SqliteType.Text);
-		nameCommand.Parameters.Add("$name", SqliteType.Text);
-		nameCommand.Parameters.Add("$source", SqliteType.Text);
-		nameCommand.Parameters.Add("$confidence", SqliteType.Integer);
-		nameCommand.Parameters.Add("$item", SqliteType.Integer);
-		nameCommand.Prepare();
-
-		await using var entityCommand = connection.CreateCommand();
-		entityCommand.Transaction = transaction;
-		entityCommand.CommandText = @"
-INSERT INTO game_data_authority_entities(entity_id,unit_type_id,unit_file_id,is_exact_unit_match,is_weapon_candidate,equipment_type,component_type_ids_json,localized_names_json,localized_designations_json)
-VALUES($entity,$unitType,$unitFile,$exact,$weapon,$equipmentType,$components,$names,$designations);";
-		entityCommand.Parameters.Add("$entity", SqliteType.Integer);
-		entityCommand.Parameters.Add("$unitType", SqliteType.Integer);
-		entityCommand.Parameters.Add("$unitFile", SqliteType.Integer);
-		entityCommand.Parameters.Add("$exact", SqliteType.Integer);
-		entityCommand.Parameters.Add("$weapon", SqliteType.Integer);
-		entityCommand.Parameters.Add("$equipmentType", SqliteType.Integer);
-		entityCommand.Parameters.Add("$components", SqliteType.Text);
-		entityCommand.Parameters.Add("$names", SqliteType.Text);
-		entityCommand.Parameters.Add("$designations", SqliteType.Text);
-		entityCommand.Prepare();
-
-		foreach (var entity in snapshot.EntityFacts)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			entityCommand.Parameters["$entity"].Value = unchecked((long)entity.EntityId);
-			entityCommand.Parameters["$unitType"].Value = unchecked((long)entity.UnitAssetKey.TypeId);
-			entityCommand.Parameters["$unitFile"].Value = unchecked((long)entity.UnitAssetKey.FileId);
-			entityCommand.Parameters["$exact"].Value = entity.IsExactUnitMatch ? 1 : 0;
-			entityCommand.Parameters["$weapon"].Value = entity.IsWeaponCandidate ? 1 : 0;
-			entityCommand.Parameters["$equipmentType"].Value = entity.EquipmentType is uint equipmentType
-				? unchecked((long)equipmentType)
-				: DBNull.Value;
-			entityCommand.Parameters["$components"].Value = JsonSerializer.Serialize(entity.ComponentTypeIds);
-			entityCommand.Parameters["$names"].Value = JsonSerializer.Serialize(entity.LocalizedNames);
-			entityCommand.Parameters["$designations"].Value = JsonSerializer.Serialize(entity.Designations);
-			await entityCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-		}
-
-		foreach (var name in snapshot.ArchiveNames)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			if (string.IsNullOrWhiteSpace(name.ArchiveId)
-				|| string.IsNullOrWhiteSpace(name.Locale)
-				|| string.IsNullOrWhiteSpace(name.DisplayName))
-			{
-				continue;
-			}
-
-			nameCommand.Parameters["$archive"].Value = name.ArchiveId;
-			nameCommand.Parameters["$locale"].Value = name.Locale;
-			nameCommand.Parameters["$name"].Value = name.DisplayName;
-			nameCommand.Parameters["$source"].Value = name.Source;
-			nameCommand.Parameters["$confidence"].Value = name.Confidence;
-			nameCommand.Parameters["$item"].Value = name.ItemId;
-			await nameCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-		}
 
 		foreach (var kit in snapshot.Kits)
 		{
@@ -1162,43 +1042,12 @@ VALUES($entity,$unitType,$unitFile,$exact,$weapon,$equipmentType,$components,$na
 				pieceCommand.Parameters["$tone"].Value = piece.ToneVariations;
 				pieceCommand.Parameters["$unitType"].Value = unchecked((long)piece.UnitAssetKey.TypeId);
 				pieceCommand.Parameters["$unitFile"].Value = unchecked((long)piece.UnitAssetKey.FileId);
-				// RETURNING 直接给出 piece_id：新插入时是新行，冲突时是已有行——
-				// 两种情况下资源都挂到正确的那一行。
-				var pieceId = Convert.ToInt64(
-					await pieceCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-					CultureInfo.InvariantCulture);
-
-				foreach (var resource in piece.Resources)
-				{
-					resourceCommand.Parameters["$pieceId"].Value = pieceId;
-					resourceCommand.Parameters["$role"].Value = resource.Role;
-					resourceCommand.Parameters["$file"].Value = unchecked((long)resource.FileId);
-					await resourceCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-				}
+				// 资源表（game_data_authority_resources）已删：它零读取，写入只是白费时间。
+				await pieceCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
 			}
 		}
 
-		await using var issueCommand = connection.CreateCommand();
-		issueCommand.Transaction = transaction;
-		issueCommand.CommandText = @"
-INSERT INTO game_data_authority_issues(severity,code,message,file_path,exception_message)
-VALUES($severity,$code,$message,$path,$exception);";
-		issueCommand.Parameters.Add("$severity", SqliteType.Integer);
-		issueCommand.Parameters.Add("$code", SqliteType.Text);
-		issueCommand.Parameters.Add("$message", SqliteType.Text);
-		issueCommand.Parameters.Add("$path", SqliteType.Text);
-		issueCommand.Parameters.Add("$exception", SqliteType.Text);
-		issueCommand.Prepare();
-		foreach (var issue in snapshot.Issues)
-		{
-			issueCommand.Parameters["$severity"].Value = (int)issue.Severity;
-			issueCommand.Parameters["$code"].Value = issue.Code;
-			issueCommand.Parameters["$message"].Value = issue.Message;
-			issueCommand.Parameters["$path"].Value = (object?)issue.FilePath ?? DBNull.Value;
-			issueCommand.Parameters["$exception"].Value = (object?)issue.ExceptionMessage ?? DBNull.Value;
-			await issueCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-		}
-	}
+}
 
 	// 基础索引重建会清空整库（`ClearIndexDataAsync`），而它自己**不产生**这两张表：
 	// 部位事实与 stream 布局只有 `AdvancedEquipmentIndexService` 会写。所以重建前后必须

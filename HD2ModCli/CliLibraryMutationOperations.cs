@@ -772,9 +772,21 @@ internal static class CliLibraryMutationOperations
 		var persisted = await session.SaveSnapshotAsync(
 			snapshot with { Nodes = nodes, SavedUtc = DateTimeOffset.UtcNow },
 			cancellationToken).ConfigureAwait(false);
-		return persisted.Nodes.TryGetValue(updatedNode.Id, out var stored)
-			? stored
-			: throw new CliUserException("ModMutationPersistenceFailed", "保存后未能重新定位刚刚修改的 Mod。");
+		if (!persisted.Nodes.TryGetValue(updatedNode.Id, out var stored))
+			throw new CliUserException("ModMutationPersistenceFailed", "保存后未能重新定位刚刚修改的 Mod。");
+
+		// 名字/备注同时写进 Mod 自己的设置文件——它是**权威**，library.json 只是索引。
+		// 只写库不写文件夹的话，下次扫描会把用户的改名用文件夹里的旧名字覆盖回去。
+		var directory = Path.Combine(session.Paths.ModsDirectory, stored.RelativePath);
+		var existing = ModSettingsFile.TryRead(directory);
+		ModSettingsFile.TryWrite(directory, new ModSettingsFile.Document(
+			ModSettingsFile.CurrentSchema,
+			existing?.EnabledMaterialPatches,
+			stored.Id.Value.ToString("N"),
+			stored.Metadata.Name,
+			stored.Metadata.Notes));
+
+		return stored;
 	}
 
 	private static async ValueTask<OptionActivationStore> CreateValidatedOptionActivationStoreAsync(

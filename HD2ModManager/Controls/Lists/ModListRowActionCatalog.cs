@@ -22,6 +22,7 @@ internal static class ModListRowActionCatalog
         new(ModListRowAction.ArmorOpenDetails, "RowIcon.ArmorOpenDetails", "查看映射目标", 1.5),
         new(ModListRowAction.AddToProfile, "RowIcon.AddToProfile", "加入正在编辑的配置", 1.6),
         new(ModListRowAction.ToggleDecoration, "RowIcon.ToggleDecoration", "启用或禁用选项", 1.5),
+        new(ModListRowAction.ToggleEnabled, "RowIcon.ToggleEnabled", "启用或停用", 1.5),
         new(ModListRowAction.ExportMod, "RowIcon.ExportMod", "导出为文件夹结构 zip", 1.5),
         new(ModListRowAction.OpenFolder, "RowIcon.OpenFolder", "打开文件夹", 1.4),
         new(ModListRowAction.MoveUp, "RowIcon.MoveUp", "上移", 1.6),

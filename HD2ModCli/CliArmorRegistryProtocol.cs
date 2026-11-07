@@ -102,6 +102,13 @@ public static class CliArmorRegistryProtocol
 	public const string SpecificationSchema = "hd2mod.armor-registry-spec";
 	public const string PlanSchema = "hd2mod.armor-registry-plan";
 	public const string ProtocolFileName = "armor-registry.protocol";
+
+	/// <summary>
+	/// 上一次成功应用之前的协议。**协议本身是用户输入**（几十条映射），
+	/// 而它只有一份——写坏了就什么都不剩，`show` 也读不出来。
+	/// 留一份滚动备份，才有可能"退回去"。
+	/// </summary>
+	public const string ProtocolBackupFileName = "armor-registry.protocol.bak";
 	public const string RuntimeStatusFileName = "runtime.status";
 	public const string LocatorCacheFileName = "locator.cache";
 
@@ -532,6 +539,19 @@ public static class CliArmorRegistryProtocol
 		}
 		await using (lease)
 		{
+			// 先留旧协议的备份，再原子替换。顺序不能反：反了就没有"上一版"可退回。
+			if (File.Exists(protocolPath))
+			{
+				try
+				{
+					File.Copy(protocolPath, Path.Combine(root, ProtocolBackupFileName), overwrite: true);
+				}
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+				{
+					// 备份失败不该挡住应用：它只是"退路"，不是这次操作的前提。
+				}
+			}
+
 			var temporaryPath = Path.Combine(root, "." + ProtocolFileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
 			try
 			{
@@ -921,5 +941,44 @@ public static class CliArmorRegistryProtocol
 		{
 			throw new CliUserException("ArmorRegistryStatusReadFailed", $"无法读取运行时状态文件 {path}：{exception.Message}");
 		}
+	}
+
+	/// <summary>把上一次应用前的协议放回去。没有备份就如实说没有。</summary>
+	public static async ValueTask<CliArmorRegistryExecution> RestoreAsync(
+		string? registryRoot,
+		CancellationToken cancellationToken = default)
+	{
+		var root = ResolveRegistryRoot(registryRoot);
+		var protocolPath = Path.Combine(root, ProtocolFileName);
+		var backupPath = Path.Combine(root, ProtocolBackupFileName);
+		if (!File.Exists(backupPath))
+			throw new CliUserException("ArmorRegistryBackupMissing",
+				$"没有可回滚的协议备份：{backupPath}（每次 armor-registry apply 之前会留一份）。");
+
+		try
+		{
+			File.Copy(backupPath, protocolPath, overwrite: true);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			throw new CliUserException("ArmorRegistryRestoreFailed", $"回滚协议失败：{exception.Message}");
+		}
+
+		CliArmorRegistryDocument? restored = null;
+		try
+		{
+			restored = await ReadProtocolAsync(root, allowMissing: true, cancellationToken).ConfigureAwait(false);
+		}
+		catch (CliUserException)
+		{
+			// 备份本身也读不懂时，至少已经把文件放回去了——报告里 revision 留空。
+		}
+		return new CliArmorRegistryExecution(
+			true,
+			"restored",
+			root,
+			protocolPath,
+			restored?.Revision ?? 0,
+			restored is null || !restored.Enabled ? 0 : restored.Mappings.Count);
 	}
 }

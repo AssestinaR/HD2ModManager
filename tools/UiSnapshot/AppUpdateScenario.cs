@@ -40,7 +40,7 @@ internal static class AppUpdateScenario
                 new
                 {
                     tag_name = "v" + latest, name = "v" + latest, body = notes, draft = false, prerelease = false,
-                    html_url = "https://github.com/egoist74110/HD2ModManager/releases/tag/v" + latest, published_at = "2026-11-07T08:00:00Z",
+                    html_url = "https://github.com/AssestinaR/HD2ModManager/releases/tag/v" + latest, published_at = "2026-11-07T08:00:00Z",
                     assets = new[]
                     {
                         new { name, browser_download_url = "http://127.0.0.1:1/dl/" + name, digest = "sha256:" + Hex(zip), size = (long)zip.Length },
@@ -63,7 +63,7 @@ internal static class AppUpdateScenario
             };
             Updater = new AppUpdater(new AppUpdaterOptions
             {
-                Current = "1.5.0", Repo = "egoist74110/HD2ModManager", ConfigDir = Path.Combine(_dir, "config"), RunDir = Path.Combine(_dir, "run"),
+                Current = "1.5.0", Repo = "AssestinaR/HD2ModManager", ConfigDir = Path.Combine(_dir, "config"), RunDir = Path.Combine(_dir, "run"),
                 Variant = mode == Mode.Dev ? null : "complete", Installer = new NoopInstaller(), Raw = raw, Feed = "http://127.0.0.1:1/releases",
                 FirstCheckDelay = TimeSpan.FromDays(1),
             });

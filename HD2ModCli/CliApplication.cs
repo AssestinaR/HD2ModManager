@@ -125,12 +125,138 @@ public static class CliApplication
 			Emit(invocation.Options, CliProjections.CreateGameLocate(workspace, location), () => FormatGameLocate(workspace, location));
 			return 0;
 		}
+		// repair library-snapshot —— 库快照坏了时的重建路径。
+		//
+		// 它刻意**不经过 LoadLibraryAsync**：库坏了才需要它，那条路会先抛异常。
+		// repair index —— 把 plan → validate → apply 三步收成一条。
+		if (Matches(command, "repair", "index"))
+		{
+			EnsureRepairOptions(invocation.Options, "repair index");
+			var repairIndexWorkspace = CliWorkspace.Open(invocation.Options);
+			var repaired = await CliRepairIndex.RunAsync(repairIndexWorkspace).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = repaired.Ok, repair = repaired },
+				() => repaired.Ok
+					? $"索引已重建：基础索引当前={repaired.BaseIndexCurrent}；Unit 部位事实当前={repaired.AdvancedEquipmentFactsCurrent}。"
+					: $"索引重建未完成：{string.Join("；", repaired.Diagnostics)}");
+			return repaired.Ok ? 0 : 2;
+		}
+		if (Matches(command, "repair", "library-snapshot"))
+		{
+			EnsureRepairOptions(invocation.Options, "repair library-snapshot");
+			var repairWorkspace = CliWorkspace.Open(invocation.Options);
+			var repair = await CliLibrarySnapshotRepair.RunAsync(repairWorkspace).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = repair.Ok, repair }, () =>
+				$"已从磁盘重建 library.json：{repair.NodeCount} 个 Mod。\n路径：{repair.LibraryPath}\n名字/备注/id 取自各 Mod 自己的 .hd2modmanager-mod.json；profiles.json 未被触碰。");
+			return 0;
+		}
+		if (Matches(command, "library", "cleanup"))
+		{
+			EnsureLibraryCleanupOptions(invocation.Options);
+			var (workspace, cleanupState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var root = workspace.LibraryRoot
+				?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");
+			var entries = CliLibraryCleanup.Scan(root);
+			var result = invocation.Options.Confirm
+				? CliLibraryCleanup.Apply(root, entries, cleanupState.Snapshot)
+				: new CliLibraryCleanupResult(false, entries.Sum(entry => entry.Bytes), entries.Count, entries, Array.Empty<string>());
+
+			// 顺手收掉"折并/删除之后留下的空壳目录"。判据用的是与 GUI 库同步**同一个**服务：
+			// 未被库引用、且里面不含任何载荷或外部安装文件。两处各写一份判据迟早会不一致。
+			var emptyFolders = CliLibraryCleanup.RemovedResidualFolders;
+			Emit(invocation.Options,
+				new { ok = result.Failures.Count == 0, cleanup = result, residualFoldersRemoved = emptyFolders },
+				() => FormatLibraryCleanup(result, emptyFolders));
+			return result.Failures.Count == 0 ? 0 : 2;
+		}
+		// settings get [key] / settings set <key> <value>
+		//
+		// 有些开关只在这个文件里（真映射模式、物理模式），平时只能通过界面改。
+		// 没有 GUI 的场合，agent 能诊断出"开关是 2"却改不了——这条补上。
+		if (command.Length is 2 or 3 && command[0] == "settings" && command[1] == "get")
+		{
+			EnsureNoExplicitOutput(invocation.Options);
+			var settingsWorkspace = CliWorkspace.Open(invocation.Options);
+			var path = CliSettings.ResolvePath(settingsWorkspace);
+			var document = CliSettings.TryRead(path);
+			if (document is null)
+				throw new CliUserException("SettingsUnreadable", $"读不到管理器设置：{path}");
+			if (command.Length == 3)
+			{
+				if (!CliSettings.TryGet(document, command[2], out var value))
+					throw new CliUserException("SettingsKeyMissing", $"设置里没有 {command[2]}。");
+				// 回显文件里的真实写法，而不是用户敲的写法：大小写不敏感查找，但报告要准。
+				var actualKey = document
+					.Select(pair => pair.Key)
+					.FirstOrDefault(name => string.Equals(name, command[2], StringComparison.OrdinalIgnoreCase))
+					?? command[2];
+				Emit(invocation.Options,
+					new { ok = true, key = actualKey, value = value?.ToJsonString() },
+					() => $"{actualKey} = {value?.ToJsonString() ?? "(null)"}");
+			}
+			else
+			{
+				Emit(invocation.Options, new { ok = true, path, settings = document }, () => document.ToJsonString());
+			}
+			return 0;
+		}
+		if (command.Length == 4 && command[0] == "settings" && command[1] == "set")
+		{
+			EnsureSettingsSetOptions(invocation.Options);
+			var settingsWorkspace = CliWorkspace.Open(invocation.Options);
+			var path = CliSettings.ResolvePath(settingsWorkspace);
+			var document = CliSettings.TryRead(path) ?? new System.Text.Json.Nodes.JsonObject();
+			var writtenKey = CliSettings.Set(document, command[2], command[3]);
+			var settingsError = CliSettings.TryWrite(path, document);
+			if (settingsError is not null)
+				throw new CliUserException("SettingsWriteFailed", $"写不进设置文件：{path}（{settingsError}）");
+			CliSettings.TryGet(document, writtenKey, out var written);
+			Emit(invocation.Options,
+				new { ok = true, path, key = writtenKey, value = written?.ToJsonString() },
+				() => $"{writtenKey} = {written?.ToJsonString() ?? "(null)"}\n路径：{path}\n其它设置原样保留。重启管理器后生效。");
+			return 0;
+		}
+		if (Matches(command, "doctor"))
+		{
+			EnsureNoExplicitOutput(invocation.Options);
+			var workspace = CliWorkspace.Open(invocation.Options);
+			var report = await CliDoctor.BuildAsync(workspace).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = report.IsHealthy, doctor = report },
+				() => FormatDoctor(report));
+			return report.IsHealthy ? 0 : 2;
+		}
 		if (Matches(command, "status"))
 		{
 			EnsureNoExplicitOutput(invocation.Options);
 			var workspace = CliWorkspace.Open(invocation.Options);
 			Emit(invocation.Options, CliProjections.CreateStatus(workspace), () => FormatStatus(workspace));
 			return 0;
+		}
+		// custom-model rename <mod> <名字>
+		//
+		// 为什么必须有这条：名字存在 Mod 自己的 `custom-model.json` 里，而重构建拿它当输入。
+		// 用 `custom-model convert` 去"改名"会**重造 unit id**——已有映射当场全废。
+		// 这个陷阱在双面评估里被点名过，所以给一条只改 name、不碰任何 id 的路。
+		if (command.Length == 4 && command[0] == "custom-model" && command[1] == "rename")
+		{
+			EnsureNoExplicitOutput(invocation.Options);
+			var (renameWorkspace, renameState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var renameRoot = renameWorkspace.LibraryRoot
+				?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");
+			var target = CliProjections.ResolveMod(renameState.Snapshot.Nodes, invocation.Command[2]);
+			var newName = invocation.Command[3].Trim();
+			var key = VpkCustomModelFile.TryReadKey(Path.Combine(renameRoot, target.RelativePath));
+			if (key is null)
+				throw new CliUserException("CustomModelMissing",
+					$"{target.Metadata.Name} 没有登记素体（custom-model.json 里没有 key），没有可改的名字。");
+			var renamed = VpkCustomModelFile.TryRenameOwned(renameRoot, key, newName);
+			Emit(invocation.Options,
+				new { ok = renamed, customModel = new { key, name = renamed ? newName : (string?)null } },
+				() => renamed
+					? $"已把素体 {key} 改名为「{newName}」。unit id 与件表原样未动。"
+					: $"改名失败：没能写入持有素体 {key} 的那份 custom-model.json（它是只读的？）。");
+			return renamed ? 0 : 2;
 		}
 		if (command.Length >= 3 && command[0] == "custom-model" && command[1] is "inspect" or "convert")
 		{
@@ -264,6 +390,25 @@ public static class CliApplication
 					? $"护甲注册计划状态：{validation.Status}。"
 					: $"护甲注册计划已失效：{string.Join("；", validation.Diagnostics.Select(item => item.Message))}");
 			return validation.IsValid ? 0 : 2;
+		}
+		// armor-registry restore —— 把上一次 apply 之前的那份协议放回去。
+		//
+		// 协议本身是用户输入（几十条映射），而它只有一份：写坏了 `show` 都读不出来，
+		// 备份里也只有 dl_bin 原件、没有协议。这条补上"退回去"的能力。
+		if (Matches(command, "armor-registry", "restore"))
+		{
+			EnsureArmorRegistryApplyOptions(invocation.Options);
+			if (!invocation.Options.Confirm)
+				throw new CliUserException(
+					"ArmorRegistryRestoreConfirmationRequired",
+					"armor-registry restore 会用备份覆盖当前协议；请显式传入 --confirm。");
+			var restored = await CliArmorRegistryProtocol
+				.RestoreAsync(invocation.Options.RegistryRoot)
+				.ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = true, execution = restored },
+				() => $"已回滚协议：{restored.ProtocolPath}（revision {restored.Revision}，{restored.ActiveMappingCount} 条映射）。重启游戏后生效。");
+			return 0;
 		}
 		if (Matches(command, "armor-registry", "apply"))
 		{
@@ -464,6 +609,29 @@ public static class CliApplication
 		if (command.Length >= 2 && command[0] == "gamedata" && command[1] == "extract")
 		{
 			return await DispatchGameDataExtractAsync(invocation, command).ConfigureAwait(false);
+		}
+		if (Matches(command, "library", "material-fold", "plan"))
+		{
+			EnsureLibraryMaterialFoldPlanOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var projection = CliMaterialFoldPlan.Build(workspace, state);
+			Emit(invocation.Options,
+				new { ok = projection.CanApply, materialFold = projection },
+				() => CliMaterialFoldPlan.Format(projection));
+			return projection.CanApply ? 0 : 2;
+		}
+		if (Matches(command, "library", "material-fold", "apply"))
+		{
+			EnsureLibraryMaterialFoldApplyOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			await using var session = await CliWriteTargetGuard
+				.AcquireSessionAsync(workspace, CliWriteTargetMode.Mutation)
+				.ConfigureAwait(false);
+			var result = await CliMaterialFoldApplier.ApplyAsync(workspace, state, session).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new { ok = result.Succeeded, materialFold = result },
+				() => FormatMaterialFoldApply(result));
+			return result.Succeeded ? 0 : 2;
 		}
 		if (Matches(command, "library", "sync", "inspect"))
 		{
@@ -675,6 +843,66 @@ public static class CliApplication
 				new { ok = true, mutation = CreateNodeMetadataMutationProjection(result) },
 				() => result.Changed ? "已更新 Mod 备注。未自动部署。" : "Mod 备注未变化。未自动部署。");
 			return 0;
+		}
+		if (command.Length == 4 && command[0] == "mod" && command[1] == "clone")
+		{
+			EnsureModCloneOptions(invocation.Options);
+			var (cloneWorkspace, cloneState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			await using var cloneSession = await CliWriteTargetGuard
+				.AcquireSessionAsync(cloneWorkspace, CliWriteTargetMode.Mutation)
+				.ConfigureAwait(false);
+			var clone = await CliModClone.RunAsync(
+				cloneWorkspace,
+				cloneState,
+				invocation.Command[2],
+				invocation.Command[3],
+				stage => Console.Error.WriteLine("#progress " + stage)).ConfigureAwait(false);
+			if (clone.Ok && clone.CloneName is not null)
+			{
+				// 副本已经在库里了（文件夹 + 自己的 id 都写好了），把它纳进快照即可。
+				var synchronizer = new ModLibrarySynchronizer(new PatchFileNameParser());
+				var inspection = await synchronizer
+					.InspectAsync(cloneState.Snapshot, cloneWorkspace.LibraryRoot!)
+					.ConfigureAwait(false);
+				var applied = synchronizer.ApplyInspection(cloneState.Snapshot, inspection);
+				await cloneSession.SaveSnapshotAsync(applied.Snapshot).ConfigureAwait(false);
+			}
+			Emit(invocation.Options, new { ok = clone.Ok, clone }, () => FormatModClone(clone));
+			return clone.Ok ? 0 : 2;
+		}
+		if (command.Length == 3 && command[0] == "mod" && command[1] == "rebuild")
+		{
+			EnsureModRebuildOptions(invocation.Options);
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var outcome = await CliModRebuild.RunAsync(
+				workspace,
+				state,
+				invocation.Command[2],
+				stage => Console.Error.WriteLine("#progress " + stage)).ConfigureAwait(false);
+			Emit(invocation.Options, new { ok = outcome.Ok, rebuild = outcome }, () => FormatModRebuild(outcome));
+			return outcome.Ok ? 0 : 2;
+		}
+		if (command.Length == 5 && command[0] == "mod" && command[1] == "material" && command[2] == "order")
+		{
+			EnsureMaterialSetOptions(invocation.Options, "mod material order");
+			var (orderWorkspace, orderState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var ordered = CliMaterialSelection.SetOrder(orderWorkspace, orderState, invocation.Command[3], invocation.Command[4]);
+			Emit(invocation.Options,
+				new { ok = ordered.Succeeded, material = ordered },
+				() => ordered.Succeeded
+					? "顺序已更新（写在结构文件里，patch 文件未改动）：\n  " + string.Join("\n  ", ordered.Notes)
+					: $"排序失败：{ordered.Error}");
+			return ordered.Succeeded ? 0 : 2;
+		}
+		if (command.Length == 5 && command[0] == "mod" && command[1] == "material" && command[2] == "set")
+		{
+			EnsureMaterialSetOptions(invocation.Options, "mod material set");
+			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var result = CliMaterialSelection.Set(workspace, state, invocation.Command[3], invocation.Command[4]);
+			Emit(invocation.Options,
+				new { ok = result.Succeeded, material = result },
+				() => FormatMaterialSelection(result));
+			return result.Succeeded ? 0 : 2;
 		}
 		if (command.Length == 4 && command[0] == "mod" && command[1] == "notes" && command[2] == "clear")
 		{
@@ -4230,6 +4458,262 @@ public static class CliApplication
 	private static void EnsureDeactivationApplyOptions(CliGlobalOptions options)
 		=> EnsureDeploymentApplyOptions(options);
 
+	/// <summary>
+	/// 折并执行会移动库内文件：要求显式 --confirm；且不接受与它无关的参数。
+	/// </summary>
+	private static void EnsureLibraryMaterialFoldApplyOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"MaterialFoldApplyConfirmationRequired",
+				"library material-fold apply 会移动 Mod 库里的文件；请先跑一次 material-fold plan 核对，再显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library material-fold apply 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	/// <summary>折并执行的人话结果。</summary>
+	private static string FormatMaterialFoldApply(CliMaterialFoldApplyResult result)
+	{
+		var lines = new List<string>
+		{
+			result.Succeeded
+				? $"材质折并完成：{result.FoldedHosts} 个宿主、搬了 {result.MovedFiles} 个文件、退役 {result.RetiredNodes} 个材质节点。"
+				: $"材质折并未完成：{result.Error}",
+		};
+		lines.AddRange(result.Notes.Select(note => "  · " + note));
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	/// <summary>
+	/// 折并计划是**只读**的：不接受 --output/--confirm/--plan 等会让人误以为它会写盘的参数。
+	/// </summary>
+	/// <summary>清理只认 --confirm；不接受跟它无关的参数。</summary>
+	private static void EnsureLibraryCleanupOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library cleanup 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	private static string FormatLibraryCleanup(CliLibraryCleanupResult result, int residualFoldersRemoved)
+	{
+		var megabytes = result.Bytes / (1024.0 * 1024.0);
+		if (result.Items == 0)
+			return "库里没有可回收的备份目录。";
+		var lines = new List<string>
+		{
+			result.Applied
+				? $"已删除 {result.Items} 项备份目录，回收 {megabytes:F1} MB。"
+				: $"可回收 {result.Items} 项、{megabytes:F1} MB。加 --confirm 才会真的删除。",
+		};
+		lines.AddRange(result.Entries.Select(entry => $"  · {entry.RelativePath}（{entry.Bytes / (1024.0 * 1024.0):F1} MB）"));
+		lines.AddRange(result.Failures.Select(failure => "  ! " + failure));
+		if (residualFoldersRemoved > 0)
+			lines.Add($"另外清掉了 {residualFoldersRemoved} 个未被库引用的空文件夹（折并/删除之后的空壳）。");
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	/// <summary>医生的结论：先事实、再问题、再下一步。</summary>
+	private static string FormatDoctor(CliDoctorReport report)
+	{
+		var lines = new List<string>
+		{
+			$"管理器：{report.ManagerRoot ?? "(未确定)"}",
+			$"Mod 库：{report.LibraryRoot ?? "(未确定)"}",
+			$"游戏数据：{report.GameDataRoot ?? "(未确定)"}",
+			$"护甲注册表：{report.RegistryRoot ?? "(未确定)"}",
+			report.LibraryLoaded
+				? $"库里有 {report.NodeCount} 个 Mod；文件夹缺失 {report.MissingDirectoryCount} 个；无载荷 {report.ModWithoutPayloadCount} 个。"
+				: "库没能加载（见下面的问题）。",
+			$"游戏数据索引：{report.GameDataIndexState}（{(report.GameDataIndexReady ? "可用" : "不可用")}）。",
+			report.ReclaimableItems == 0
+				? "没有可回收的中间产物。"
+				: $"可回收：{report.ReclaimableItems} 项、{report.ReclaimableBytes / (1024.0 * 1024.0):F1} MB。",
+		};
+		if (report.Issues.Count == 0)
+		{
+			lines.Add("没有发现问题。");
+		}
+		else
+		{
+			lines.Add(string.Empty);
+			foreach (var issue in report.Issues)
+			{
+				lines.Add($"[{issue.Severity}] {issue.Code}：{issue.Observed}");
+				if (issue.Fix is not null) lines.Add($"      → {issue.Fix}");
+			}
+		}
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	/// <summary>改设置会写管理器目录里的文件，所以要求 --confirm。</summary>
+	private static void EnsureSettingsSetOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"SettingsSetConfirmationRequired",
+				"settings set 会改写管理器设置；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"settings set 仅接受 --manager-root、--confirm 与 --json。 ");
+		}
+	}
+
+	/// <summary>修复命令要求 --confirm：它写的是库快照本身。</summary>
+	private static void EnsureRepairOptions(CliGlobalOptions options, string commandName)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"RepairConfirmationRequired",
+				$"{commandName} 会重写库快照；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{commandName} 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	/// <summary>复制会新建一个 Mod 目录，所以要求 --confirm。</summary>
+	private static void EnsureModCloneOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"ModCloneConfirmationRequired",
+				"mod clone 会在库里新建一个副本目录并重新转换；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod clone 仅接受 --manager-root、--library、--game-data、--confirm 与 --json。 ");
+		}
+	}
+
+	private static string FormatModClone(CliModCloneResult clone)
+	{
+		if (!clone.Ok) return $"复制失败：{clone.Error}";
+		var lines = new List<string>
+		{
+			$"已复制成「{clone.CloneName}」，命名空间 {clone.IdNamespace}。",
+			$"目录：{clone.CloneDirectory}",
+		};
+		lines.AddRange(clone.Notes.Select(note => "  · " + note));
+		lines.Add("两套外观的材质 id 不同，可以同时部署。未自动部署。");
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	/// <summary>重构建会重写这个 Mod 的产物，所以要求 --confirm。</summary>
+	private static void EnsureModRebuildOptions(CliGlobalOptions options)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"ModRebuildConfirmationRequired",
+				"mod rebuild 会用这个 Mod 自己的来源 VPK 重新转换并替换现有产物；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"mod rebuild 仅接受 --manager-root、--library、--game-data、--confirm 与 --json。 ");
+		}
+	}
+
+	private static string FormatModRebuild(VpkRebuildOutcome outcome)
+	{
+		if (!outcome.Ok) return $"重构建失败：{outcome.Error}";
+		var lines = new List<string>
+		{
+			$"重构建完成：{outcome.Units} 个 Unit、{outcome.Materials} 个材质"
+			+ (outcome.Rekeyed ? "，已按 wardrobe.json 重新换甲。" : "，没有换甲。"),
+		};
+		if (outcome.BackupDirectory is not null)
+			lines.Add($"旧产物已备份到：{outcome.BackupDirectory}");
+		lines.AddRange(outcome.Notes.Select(note => "  · " + note));
+		lines.Add("未自动部署。");
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	/// <summary>材质选择会重写生效层，所以要求 --confirm；不接受与它无关的参数。</summary>
+	private static void EnsureMaterialSetOptions(CliGlobalOptions options, string commandName)
+	{
+		if (!options.Confirm)
+		{
+			throw new CliUserException(
+				"MaterialSetConfirmationRequired",
+				$"{commandName} 会重写这个 Mod 的生效层；请显式传入 --confirm。");
+		}
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				$"{commandName} 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	/// <summary>材质选择的人话结果。</summary>
+	private static string FormatMaterialSelection(CliMaterialSelection.Result result)
+	{
+		if (!result.Succeeded) return $"材质未切换：{result.Error}";
+		var enabled = result.EnabledPatchFileNames.Count == 0
+			? "（未启用任何材质）"
+			: string.Join("、", result.EnabledPatchFileNames);
+		var lines = new List<string>
+		{
+			$"已启用材质：{enabled}",
+			$"生效层已重写：{result.WrittenFiles.Count} 个文件。未自动部署。",
+		};
+		lines.AddRange(result.Notes.Select(note => "  · " + note));
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	private static void EnsureLibraryMaterialFoldPlanOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive || options.WithUnsharedOptions
+			|| !string.IsNullOrWhiteSpace(options.GameData) || !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library material-fold plan 是只读检查，仅接受 --manager-root、--library 与 --json。 ");
+		}
+	}
+
 	private static void EnsureLibrarySyncInspectOptions(CliGlobalOptions options)
 	{
 		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan) || options.Confirm
@@ -7524,6 +8008,8 @@ HD2 Mod Manager 命令行
 
 用法：
 	  hd2mod capabilities --json
+	  hd2mod library cleanup --manager-root <管理器目录> --library <Mod库目录> --confirm --json
+	  hd2mod doctor --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod status --manager-root <管理器目录> --json
 	  hd2mod game locate [--manager-root <管理器目录>] --json
 	  hd2mod custom-model inspect <Mod GUID> --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏data目录> --json
@@ -7558,6 +8044,8 @@ HD2 Mod Manager 命令行
 	  hd2mod gamedata extract show <TypeID十六进制> <FileID十六进制> [<归档ID>] --game-data <游戏data目录> --json
 	  hd2mod gamedata extract asset <TypeID十六进制> <FileID十六进制> [<归档ID>] --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
 	  hd2mod gamedata extract archive <归档ID> --game-data <游戏data目录> --output <输出目录> [--overwrite] --json
+	  hd2mod library material-fold plan --manager-root <管理器目录> --library <Mod库目录> --json
+	  hd2mod library material-fold apply --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 	  hd2mod library sync inspect --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod library sync plan --manager-root <管理器目录> --library <Mod库目录> --output library-sync-plan.json --json
 	  hd2mod library sync validate --plan library-sync-plan.json --manager-root <管理器目录> --library <Mod库目录> --json
@@ -7582,6 +8070,16 @@ HD2 Mod Manager 命令行
 	  hd2mod mod image show <Mod GUID或唯一前缀> --library <Mod库目录> --json
 	  hd2mod mod image set <Mod GUID或唯一前缀> <PNG|JPG|JPEG|WEBP|BMP> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod image clear <Mod GUID或唯一前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod armor-registry restore --manager-root <管理器目录> --confirm --json
+	  hd2mod settings get [<键>] --manager-root <管理器目录> --json
+	  hd2mod settings set <键> <值> --manager-root <管理器目录> --confirm --json
+	  hd2mod repair index --manager-root <管理器目录> --game-data <游戏 data 目录> --confirm --json
+	  hd2mod repair library-snapshot --manager-root <管理器目录> --library <Mod库目录> --confirm --json
+	  hd2mod custom-model rename <Mod GUID或前缀> <名字> --manager-root <管理器目录> --json
+	  hd2mod mod clone <Mod GUID或前缀> <变体名> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod rebuild <Mod GUID或前缀> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod material order <Mod GUID或前缀> <patch1,patch2,...> --manager-root <管理器目录> --confirm --json
+	  hd2mod mod material set <Mod GUID或前缀> <patch1,patch2|none> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod create <逻辑 Mod 名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod rename <Mod GUID或唯一前缀> <新名称> --manager-root <管理器目录> --confirm --json
 	  hd2mod mod notes set <Mod GUID或唯一前缀> <备注> --manager-root <管理器目录> --confirm --json

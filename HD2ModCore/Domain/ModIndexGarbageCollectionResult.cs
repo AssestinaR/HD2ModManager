@@ -5,21 +5,19 @@ namespace HD2ModCore.Domain;
 // so a sweep can be audited from the log alone.
 public sealed record ModIndexGarbageCollectionResult(
 	int RemovedCacheFiles,
-	int RemovedIndexNodes,
 	int RemovedFactRows,
 	int RemovedBackupDirectories,
 	int RemovedTemporaryFiles,
 	IReadOnlyList<string> Failures)
 {
 	public bool IsEmpty => RemovedCacheFiles == 0
-		&& RemovedIndexNodes == 0
 		&& RemovedFactRows == 0
 		&& RemovedBackupDirectories == 0
 		&& RemovedTemporaryFiles == 0;
 
-	public int TotalRemoved => RemovedCacheFiles + RemovedIndexNodes + RemovedFactRows
+	public int TotalRemoved => RemovedCacheFiles + RemovedFactRows
 		+ RemovedBackupDirectories + RemovedTemporaryFiles;
 
 	public static ModIndexGarbageCollectionResult Nothing { get; } =
-		new(0, 0, 0, 0, 0, Array.Empty<string>());
+		new(0, 0, 0, 0, Array.Empty<string>());
 }

@@ -27,12 +27,6 @@ public interface IModInformationCenter : IAsyncDisposable
 		ModInformationRequest request,
 		CancellationToken cancellationToken = default);
 
-	ValueTask<ModInformationResult<MaintenanceAnalysisFacts>> RequestMaintenanceAnalysisAsync(
-		ModNode node,
-		string modsRootDirectory,
-		ModInformationRequest request,
-		CancellationToken cancellationToken = default);
-
 	ValueTask<ModInformationResult<ModUnitVersionFacts>> RequestUnitVersionAsync(
 		ModNode node,
 		string modsRootDirectory,

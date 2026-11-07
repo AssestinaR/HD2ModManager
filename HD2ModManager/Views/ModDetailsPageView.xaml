@@ -326,6 +326,30 @@
                                     InternalReorderRequested="OnHostAttachmentInternalReorderRequested"
                                     TransitionStateChanged="OnHostAttachmentTransitionStateChanged"
                                     Visibility="{Binding HasHostDecorations, Converter={StaticResource BoolToVis}}"/>
+
+                <!--
+                    材质选项：就是库页那张 modlist 卡，直接摆在这里（和上面那张同样的做法），
+                    不做成 CardDescriptor —— 这张卡自带 header，再套进 CardStackHost 就成卡片套卡片了。
+
+                    行内动作只有改名 / 打开文件夹 / 上移 / 下移：
+                    材质选项是主 Mod 的一部分，没有"删除"也没有"移出列表"。
+                    拖动 = 部署顺序（越靠下越优先），松手后由 ViewModel 写回结构文件并重建生效层。
+                -->
+                <local:ModListPanel x:Name="MaterialOptionList"
+                                    ItemsSource="{Binding MaterialOptions}"
+                                    HeaderTitle="材质选项"
+                                    HeaderSummary="{Binding MaterialOptionSummary}"
+                                    MaxHeight="{Binding ActualHeight, ElementName=DetailsScrollViewer, Converter={StaticResource AttachmentListMaxHeight}}"
+                                    VerticalScrollBarVisibility="Auto"
+                                    UseInternalScroll="True"
+                                    SearchText="{Binding MaterialOptionQuery, UpdateSourceTrigger=PropertyChanged}"
+                                    EmptyState="{Binding MaterialOptionEmptyState}"
+                                    RowActions="{Binding MaterialOptionRowActions}"
+                                    RowActionInvoked="OnMaterialOptionRowActionInvoked"
+                                    AllowInternalReorder="{Binding ShowMaterialOptionReorder}"
+                                    InternalReorderRequested="OnMaterialOptionInternalReorderRequested"
+                                    SelectionPolicy="None"
+                                    Visibility="{Binding HasMaterialOptions, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
         </ScrollViewer>
 

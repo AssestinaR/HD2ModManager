@@ -101,6 +101,8 @@ public sealed class VpkPatchPayloadTests
 			var appRoot = Path.Combine(root, "app");
 			Directory.CreateDirectory(appRoot);
 			var source = Path.Combine(root, "Lunalice_Bill");
+			// 来源刻意用**旧名** vpk2patch/：改名之后这条用例要证明"老库布局仍能被导入"，
+			// 并且落库时会被搬到新名 sectional/ 下。
 			Directory.CreateDirectory(Path.Combine(source, "vpk2patch"));
 			File.WriteAllText(Path.Combine(source, "vpk2patch", PatchName), "toc");
 			File.WriteAllText(Path.Combine(source, "vpk2patch.json"), "{}");
@@ -116,7 +118,7 @@ public sealed class VpkPatchPayloadTests
 			var node = Assert.Single(result.Snapshot.Nodes.Values);
 			Assert.Single(node.PatchGroups);
 			var storedDirectory = Path.Combine(paths.ModsDirectory, node.RelativePath);
-			Assert.True(File.Exists(Path.Combine(storedDirectory, "vpk2patch", PatchName)));
+			Assert.True(File.Exists(Path.Combine(storedDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, PatchName)));
 			Assert.True(File.Exists(Path.Combine(storedDirectory, "vpk2patch.json")));
 
 			// 重新载入库：对账只看顶层目录，但必须认得出"patch 全在 vpk2patch 里"的节点，

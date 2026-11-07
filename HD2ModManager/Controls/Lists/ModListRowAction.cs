@@ -17,6 +17,10 @@ public enum ModListRowAction
     RemoveFromProfile = 1 << 6,
     DeleteFromLibrary = 1 << 7,
     ToggleDecoration = 1 << 8,
+    // 启用/停用"这一项参不参与部署"。和 ToggleDecoration 分开：
+    // 后者是装饰包专用（挂在某个主体的选项上），这里是"本体的一部分被打开/关掉"。
+    // 图例与提示沿用同一种电源图形——在这个应用里它已经等于"开关"。
+    ToggleEnabled = 1 << 16,
     ArmorAssign = 1 << 9,
     ArmorRelease = 1 << 10,
     ArmorOpenDetails = 1 << 11,

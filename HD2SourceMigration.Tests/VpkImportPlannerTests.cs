@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
 using HD2SourceMigration.VpkConversion;
+using HD2SourceModel;
 using Xunit;
 
 namespace HD2SourceMigration.Tests;
@@ -36,7 +37,7 @@ public sealed class VpkImportPlannerTests : IDisposable
 	{
 		var vpk = WriteVpk(
 			("survivor.mdl", "models/survivors", BuildMdl(version: 13617)),
-			("survivor.vvd", "models/survivors", new byte[64]),
+			("survivor.vvd", "models/survivors", BuildRealVvd()),
 			("survivor.dx90.vtx", "models/survivors", new byte[64]));
 
 		var plan = VpkImportPlanner.Plan([vpk]);
@@ -54,7 +55,7 @@ public sealed class VpkImportPlannerTests : IDisposable
 	{
 		var vpk = WriteVpk(
 			("survivor.mdl", "models/survivors", Encoding.ASCII.GetBytes("IDST")),
-			("survivor.vvd", "models/survivors", new byte[64]),
+			("survivor.vvd", "models/survivors", BuildRealVvd()),
 			("survivor.dx90.vtx", "models/survivors", new byte[64]));
 
 		var plan = VpkImportPlanner.Plan([vpk]);
@@ -69,7 +70,7 @@ public sealed class VpkImportPlannerTests : IDisposable
 	{
 		var badModel = WriteVpk(
 			("survivor.mdl", "models/survivors", BuildMdl(version: 13617)),
-			("survivor.vvd", "models/survivors", new byte[64]),
+			("survivor.vvd", "models/survivors", BuildRealVvd()),
 			("survivor.dx90.vtx", "models/survivors", new byte[64]));
 		var material = WriteVpk(("white.vmt", "materials/lunalice", Encoding.UTF8.GetBytes("LightmappedGeneric")));
 
@@ -129,6 +130,23 @@ public sealed class VpkImportPlannerTests : IDisposable
 		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(4), 4);
 		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(8), 0x7537E69A);
 		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(12), 1);
+		return vvd;
+	}
+
+	/// <summary>
+	/// 一个"真几何"的最小 <c>.vvd</c>：IDSV 头 + lod0 顶点数 × 48 字节数据。
+	/// <para>
+	/// 合成包必须用它而不是全零字节，否则 <see cref="SourceModelLocator.LooksLikeRealVvd"/> 会把它
+	/// 当成占位壳跳过，测试就变成在验"找不到顶点文件"，而不是它本来想验的那条降级路径。
+	/// </para>
+	/// </summary>
+	private static byte[] BuildRealVvd(int vertices = 4)
+	{
+		var vvd = new byte[64 + (vertices * 48)];
+		Encoding.ASCII.GetBytes("IDSV").CopyTo(vvd, 0);
+		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(4), 4);
+		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(16), vertices);
+		BinaryPrimitives.WriteInt32LittleEndian(vvd.AsSpan(56), 64);
 		return vvd;
 	}
 

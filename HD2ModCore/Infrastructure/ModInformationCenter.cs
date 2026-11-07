@@ -12,7 +12,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly IModFileFactsProducer _fileFactsProducer;
 	private readonly IAssetInventoryProducer _assetInventoryProducer;
 	private readonly IReferenceGraphProducer? _referenceGraphProducer;
-	private readonly IMaintenanceAnalysisProducer? _maintenanceProducer;
 	private readonly IUnitVersionInformationProducer? _unitVersionProducer;
 	private readonly IAdvancedUnitAnalysisProducer? _advancedUnitAnalysisProducer;
 	private readonly IModThumbnailProducer? _thumbnailProducer;
@@ -24,15 +23,17 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	private readonly IDeployedOverrideGraphService? _deployedOverrideGraphService;
 	private readonly IModFileFactsCache? _fileFactsCache;
 	private readonly IModInformationCache? _informationCache;
-	private readonly IModDataIndex? _modDataIndex;
 	private readonly IReferenceGraphIndexWriter? _referenceGraphIndexWriter;
+	// 详情页"跨 Mod 索引"那一行要的反向查询。**直接用 referenceGraph 的 SQL 查询索引**，
+	// 不再维护一份按节点落盘的 `mod-data-index/*.json`——那是同一批关系的第二份物化副本，
+	// 只为一行字服务，却要在每次资产清单/引用图刷新时多一次 JSON 序列化 + 原子写。
+	private readonly IReferenceGraphQueryIndex? _referenceGraphQueryIndex;
 	private readonly IAsyncDisposable? _ownedInformationReader;
 	// 作用：进行中的生产任务按"事实身份 + 输入指纹"登记，取代旧的 "{nodeId}|{kind}|{generation}" 字符串键。
 	// Purpose: In-flight production is registered by (FactKey, revision) instead of the old concatenated string key.
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<PatchFileIndex>>>> _fileTasks = new();
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModContentFacts>>>> _assetTasks = new();
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ReferenceGraphFacts>>>> _referenceTasks = new();
-	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<MaintenanceAnalysisFacts>>>> _maintenanceTasks = new();
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModUnitVersionFacts>>>> _unitVersionTasks = new();
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<AdvancedUnitAnalysisFacts>>>> _advancedUnitAnalysisTasks = new();
 	private readonly ConcurrentDictionary<FactRevisionKey, Lazy<Task<ModInformationResult<ModThumbnailFacts>>>> _thumbnailTasks = new();
@@ -51,7 +52,7 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 	/// <summary>索引数据库的位置：护甲→unit 这类权威事实一律从这里读，不读游戏注册表文件。</summary>
 	private readonly StoragePaths? _storagePaths;
 
-	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IMaintenanceAnalysisProducer? maintenanceProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IModDataIndex? modDataIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null, IAssetArchiveIndexService? assetArchiveIndexService = null, IGameDataMappingFactsService? gameDataMappingFactsService = null, IDeployedOverrideGraphService? deployedOverrideGraphService = null, StoragePaths? storagePaths = null)
+	public ModInformationCenter(IModFileFactsProducer fileFactsProducer, IAssetInventoryProducer assetInventoryProducer, IModFileFactsCache? fileFactsCache = null, IReferenceGraphProducer? referenceGraphProducer = null, IUnitVersionInformationProducer? unitVersionProducer = null, IModInformationCache? informationCache = null, IAdvancedUnitAnalysisProducer? advancedUnitAnalysisProducer = null, IModThumbnailProducer? thumbnailProducer = null, IReferenceGraphQueryIndex? referenceGraphQueryIndex = null, IReferenceGraphIndexWriter? referenceGraphIndexWriter = null, IAsyncDisposable? ownedInformationReader = null, IAssetArchiveIndexService? assetArchiveIndexService = null, IGameDataMappingFactsService? gameDataMappingFactsService = null, IDeployedOverrideGraphService? deployedOverrideGraphService = null, StoragePaths? storagePaths = null)
 	{
 		_storagePaths = storagePaths;
 		_fileFactsProducer = fileFactsProducer ?? throw new ArgumentNullException(nameof(fileFactsProducer));
@@ -59,11 +60,10 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		_fileFactsCache = fileFactsCache;
 		_informationCache = informationCache;
 		_referenceGraphProducer = referenceGraphProducer;
-		_maintenanceProducer = maintenanceProducer;
 		_unitVersionProducer = unitVersionProducer;
 		_advancedUnitAnalysisProducer = advancedUnitAnalysisProducer;
 		_thumbnailProducer = thumbnailProducer;
-		_modDataIndex = modDataIndex;
+		_referenceGraphQueryIndex = referenceGraphQueryIndex;
 		_referenceGraphIndexWriter = referenceGraphIndexWriter;
 		_ownedInformationReader = ownedInformationReader;
 		_assetArchiveIndexService = assetArchiveIndexService;
@@ -116,7 +116,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				var cached = await _informationCache.TryLoadAsync<ModContentFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
 				if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
 				{
-					_modDataIndex?.Update(cached);
 					return new ModInformationResult<ModContentFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
 				}
 			}
@@ -152,7 +151,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				var cached = await _informationCache.TryLoadAsync<ReferenceGraphFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
 				if (cached is not null && IsNodeRequestCurrent(node.Id, nodeCancellation))
 				{
-					_modDataIndex?.Update(cached);
 					return new ModInformationResult<ReferenceGraphFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
 				}
 			}
@@ -186,8 +184,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			_fileTasks.TryRemove(pair.Key, out _);
 		foreach (var pair in _referenceTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_referenceTasks.TryRemove(pair.Key, out _);
-		foreach (var pair in _maintenanceTasks.Where(pair => pair.Key.Key.Subject == subject))
-			_maintenanceTasks.TryRemove(pair.Key, out _);
 		foreach (var pair in _unitVersionTasks.Where(pair => pair.Key.Key.Subject == subject))
 			_unitVersionTasks.TryRemove(pair.Key, out _);
 		foreach (var pair in _advancedUnitAnalysisTasks.Where(pair => pair.Key.Key.Subject == subject))
@@ -215,9 +211,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 				failures).ConfigureAwait(false);
 			await TryInvalidateAsync(
 				() => _informationCache?.DeleteNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
-				failures).ConfigureAwait(false);
-			await TryInvalidateAsync(
-				() => _modDataIndex?.RemoveNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
 				failures).ConfigureAwait(false);
 			await TryInvalidateAsync(
 				() => _referenceGraphIndexWriter?.DeleteNodeAsync(nodeId, cancellationToken) ?? ValueTask.CompletedTask,
@@ -286,24 +279,29 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var generation = request.Generation ?? ComputeThumbnailGeneration(node, modsRootDirectory);
 		var effectiveRequest = request with { Generation = generation };
 		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
-		if (!effectiveRequest.RequireFresh && _informationCache is not null)
-		{
-			try
-			{
-				var cached = await _informationCache.TryLoadAsync<ModThumbnailFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-				if (cached is not null) return new ModInformationResult<ModThumbnailFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
-			}
-			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
-		}
 		var entry = new Lazy<Task<ModInformationResult<ModThumbnailFacts>>>(() => ProduceThumbnailAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
 		var existing = _thumbnailTasks.GetOrAdd(key, entry);
 		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
 	}
 
-	public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
-		=> _modDataIndex is null
-			? ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0))
-			: _modDataIndex.GetAssetRelationSummaryAsync(assetKeys, excludedNodeId, cancellationToken);
+	public async ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(assetKeys);
+		if (_referenceGraphQueryIndex is null)
+			return new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0);
+		var keys = assetKeys.Distinct().ToArray();
+		if (keys.Length == 0) return new ModDataIndexSummary(ModDataIndexStatus.Ready, 0, 0);
+		// Domain.AssetKey (ulong TypeId/FileId) → Adaptation 的同形键；两侧一直靠这个映射互通。
+		var adaptationKeys = keys
+			.Select(key => new HD2ModAdaptation.PatchReconstruction.AssetKey(key.TypeId, key.FileId))
+			.ToArray();
+		// 计数口径沿用旧实现：数**行**而不是数节点（同一节点可能有多条关系）。
+		var providers = await _referenceGraphQueryIndex.FindProviderFactsAsync(adaptationKeys, cancellationToken).ConfigureAwait(false);
+		var consumers = await _referenceGraphQueryIndex.FindConsumerFactsAsync(adaptationKeys, cancellationToken).ConfigureAwait(false);
+		var providerCount = providers.Count(fact => !excludedNodeId.HasValue || fact.NodeId != excludedNodeId.Value);
+		var consumerCount = consumers.Count(fact => !excludedNodeId.HasValue || fact.NodeId != excludedNodeId.Value);
+		return new ModDataIndexSummary(ModDataIndexStatus.Ready, providerCount, consumerCount);
+	}
 
 	// ===== 无节点事实（设计文档 §22） =====
 	// 与节点事实的三点差别，都是"没有节点"直接推出来的，不是新策略：
@@ -876,31 +874,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
 	}
 
-	public async ValueTask<ModInformationResult<MaintenanceAnalysisFacts>> RequestMaintenanceAnalysisAsync(ModNode node, string modsRootDirectory, ModInformationRequest request, CancellationToken cancellationToken = default)
-	{
-		ArgumentNullException.ThrowIfNull(node);
-		ArgumentNullException.ThrowIfNull(request);
-		if (request.Kind != ModInformationKind.MaintenanceAnalysis) throw new ArgumentException("Request kind must be MaintenanceAnalysis.", nameof(request));
-		if (_maintenanceProducer is null)
-			return new ModInformationResult<MaintenanceAnalysisFacts>(null, ModInformationStatus.Unavailable, ModInformationKind.MaintenanceAnalysis, request.Generation, [new CoreIssue(CoreIssueSeverity.Warning, "MaintenanceAnalysisUnavailable", "Maintenance analysis producer is not configured.", node.RelativePath, node.Id)]);
-		var nodeCancellation = BeginNodeRequest(node.Id);
-		var generation = request.Generation ?? ComputeNodeGeneration(node, modsRootDirectory);
-		var effectiveRequest = request with { Generation = generation };
-		var key = new FactRevisionKey(new FactKey(FactSubject.Node(node.Id), effectiveRequest.EffectiveProperty), generation);
-		if (!effectiveRequest.RequireFresh && _informationCache is not null)
-		{
-			try
-			{
-				var cached = await _informationCache.TryLoadAsync<MaintenanceAnalysisFacts>(effectiveRequest.Kind, node.Id, generation, cancellationToken).ConfigureAwait(false);
-				if (cached is not null) return new ModInformationResult<MaintenanceAnalysisFacts>(cached, ModInformationStatus.Cached, effectiveRequest.Kind, generation, cached.Issues, false, false, true);
-			}
-			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException) { _ = exception; }
-		}
-		var entry = new Lazy<Task<ModInformationResult<MaintenanceAnalysisFacts>>>(() => ProduceMaintenanceAndRemoveAsync(key, node, modsRootDirectory, effectiveRequest, nodeCancellation), LazyThreadSafetyMode.ExecutionAndPublication);
-		var existing = _maintenanceTasks.GetOrAdd(key, entry);
-		return await AwaitEntryAsync(existing, ReferenceEquals(entry, existing), cancellationToken).ConfigureAwait(false);
-	}
-
 	private async Task<ModInformationResult<PatchFileIndex>> ProduceFileFactsAndRemoveAsync(FactRevisionKey key, LibrarySnapshot snapshot, string root, ModInformationRequest request, IReadOnlyDictionary<ModNodeId, CancellationTokenSource> nodeStates)
 	{
 		var started = DateTimeOffset.UtcNow;
@@ -1050,7 +1023,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 					data = data with { Issues = [.. data.Issues, CreateCacheSaveIssue(ModInformationKind.AssetInventory, request.Generation ?? data.ContentGeneration, node.RelativePath, exception)] };
 				}
 			}
-			_modDataIndex?.Update(data);
 			return new ModInformationResult<ModContentFacts>(data, ModInformationStatus.Fresh, ModInformationKind.AssetInventory, request.Generation ?? data.ContentGeneration, data.Issues, false, false);
 		}
 		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -1078,7 +1050,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 			var result = new ModInformationResult<ReferenceGraphFacts>(data, ModInformationStatus.Fresh, ModInformationKind.ReferenceGraph, data.Generation, data.Issues);
 			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.ReferenceGraph, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
 			if (_referenceGraphIndexWriter is not null) await _referenceGraphIndexWriter.ReplaceNodeAsync(data, nodeCancellation.Token).ConfigureAwait(false);
-			_modDataIndex?.Update(data);
 			completed = result;
 			return completed;
 		}
@@ -1094,44 +1065,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		{
 			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
 			_referenceTasks.TryRemove(key, out _);
-		}
-	}
-
-	private async Task<ModInformationResult<MaintenanceAnalysisFacts>> ProduceMaintenanceAndRemoveAsync(FactRevisionKey key, ModNode node, string root, ModInformationRequest request, CancellationTokenSource nodeCancellation)
-	{
-		var started = DateTimeOffset.UtcNow;
-		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
-		ModInformationResult<MaintenanceAnalysisFacts>? completed = null;
-		ModInformationCacheEntry<MaintenanceAnalysisFacts>? stale = null;
-		try
-		{
-			stale = await TryLoadStaleAsync<MaintenanceAnalysisFacts>(ModInformationKind.MaintenanceAnalysis, node.Id, nodeCancellation.Token).ConfigureAwait(false);
-			var inventoryRequest = new ModInformationRequest(ModInformationKind.AssetInventory, $"{request.Source}:MaintenancePrerequisite", request.Generation, request.RequireFresh);
-			var inventory = await RequestAssetInventoryAsync(node, root, inventoryRequest, nodeCancellation.Token).ConfigureAwait(false);
-			if (inventory.Data is null)
-			{
-				return completed = new ModInformationResult<MaintenanceAnalysisFacts>(null, ModInformationStatus.Failed, ModInformationKind.MaintenanceAnalysis, inventory.Generation, inventory.Issues, inventory.CacheHit, true);
-			}
-			var data = await _maintenanceProducer!.ProduceAsync(node, inventory.Data, nodeCancellation.Token).ConfigureAwait(false);
-			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return completed = CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "MaintenanceAnalysisInvalidated", "Maintenance analysis completed after the node was invalidated.", node.RelativePath, node.Id));
-			var result = new ModInformationResult<MaintenanceAnalysisFacts>(data, ModInformationStatus.Fresh, ModInformationKind.MaintenanceAnalysis, request.Generation ?? data.Generation, data.Issues);
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.MaintenanceAnalysis, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
-			completed = result;
-			return completed;
-		}
-		catch (OperationCanceledException)
-		{
-			return completed = CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "MaintenanceAnalysisInvalidated", "Maintenance analysis was canceled because the node was invalidated.", node.RelativePath, node.Id));
-		}
-		catch (Exception exception)
-		{
-			return completed = CreateFailedOrStale(stale, ModInformationKind.MaintenanceAnalysis, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "MaintenanceAnalysisProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
-		}
-		finally
-		{
-			RecordDiagnostic(CreateDiagnostic(request, node.Id, key, started, completed));
-			_maintenanceTasks.TryRemove(key, out _);
 		}
 	}
 
@@ -1180,7 +1113,6 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		_fileTasks.Clear();
 		_assetTasks.Clear();
 		_referenceTasks.Clear();
-		_maintenanceTasks.Clear();
 		_unitVersionTasks.Clear();
 		_advancedUnitAnalysisTasks.Clear();
 		_thumbnailTasks.Clear();
@@ -1201,25 +1133,22 @@ public sealed class ModInformationCenter : IModInformationCenter, IAsyncDisposab
 		var started = DateTimeOffset.UtcNow;
 		RecordProductionStarted(new ModInformationProductionStarted(request.Source, request.Kind, node.Id, request.Generation, started, key.ToString()));
 		ModInformationResult<ModThumbnailFacts>? completed = null;
-		ModInformationCacheEntry<ModThumbnailFacts>? stale = null;
 		try
 		{
-			stale = await TryLoadStaleAsync<ModThumbnailFacts>(ModInformationKind.Thumbnail, node.Id, nodeCancellation.Token).ConfigureAwait(false);
 			var data = await _thumbnailProducer!.ProduceAsync(node, root, nodeCancellation.Token).ConfigureAwait(false);
 			if (!IsNodeRequestCurrent(node.Id, nodeCancellation))
-				return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production completed after the node was invalidated.", node.RelativePath, node.Id));
-			if (_informationCache is not null) await _informationCache.SaveAsync(ModInformationKind.Thumbnail, node.Id, request.Generation ?? data.Generation, data, nodeCancellation.Token).ConfigureAwait(false);
+				return completed = CreateFailedOrStale<ModThumbnailFacts>(null, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production completed after the node was invalidated.", node.RelativePath, node.Id));
 			var result = new ModInformationResult<ModThumbnailFacts>(data, ModInformationStatus.Fresh, request.Kind, request.Generation ?? data.Generation, data.Issues);
 			completed = result;
 			return completed;
 		}
 		catch (OperationCanceledException)
 		{
-			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production was canceled.", node.RelativePath, node.Id));
+			return completed = CreateFailedOrStale<ModThumbnailFacts>(null, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Warning, "ThumbnailInvalidated", "Thumbnail production was canceled.", node.RelativePath, node.Id));
 		}
 		catch (Exception exception)
 		{
-			return completed = CreateFailedOrStale(stale, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ThumbnailProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
+			return completed = CreateFailedOrStale<ModThumbnailFacts>(null, request.Kind, request.Generation, new CoreIssue(CoreIssueSeverity.Error, "ThumbnailProductionFailed", exception.Message, node.RelativePath, node.Id, exception.ToString()));
 		}
 		finally
 		{

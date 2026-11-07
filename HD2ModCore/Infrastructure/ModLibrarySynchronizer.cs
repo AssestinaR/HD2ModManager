@@ -61,13 +61,19 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 			// the node's deployment semantics.
 			var isLogicalContainer = logicalNodeId.HasValue && patchGroups.Count == 0;
 			if (patchGroups.Count == 0 && !isLogicalContainer) continue;
+			// 文件夹里的设置文件是**权威**：名字、备注、持久 id 都以它为准。
+			// library.json 只是索引——把它当权威的话，把文件夹搬到另一个库就会丢名字。
+			var settings = ModSettingsFile.TryRead(directory);
 			directories.Add(new ModLibrarySynchronizationDirectory(
 				relativePath,
-				Path.GetFileName(directory),
+				string.IsNullOrWhiteSpace(settings?.Name) ? Path.GetFileName(directory) : settings!.Name!,
 				patchGroups,
 				ComputeFingerprint(directory, cancellationToken),
 				isLogicalContainer,
-				logicalNodeId));
+				logicalNodeId,
+				settings?.Notes,
+				TryParseNodeId(settings?.Id),
+				HasSettings: settings is not null));
 		}
 		return new ModLibrarySynchronizationInspection(
 			directories.OrderBy(directory => directory.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray(),
@@ -99,7 +105,12 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 			{
 				if (!string.Equals(existing.ContentFingerprint, directory.ContentFingerprint, StringComparison.Ordinal)
 					|| !PatchGroupsEqual(existing.PatchGroups, directory.PatchGroups)
-					|| existing.Metadata.IsLogicalContainer != directory.IsLogicalContainer)
+					|| existing.Metadata.IsLogicalContainer != directory.IsLogicalContainer
+					// 只有在文件夹**确实有设置文件**时才比名字/备注：否则"没有设置文件"会被读成
+					// "备注是 null"，下一次扫描就把用户的备注抹掉了。
+					|| (directory.HasSettings
+						&& (!string.Equals(existing.Metadata.Name, directory.Name, StringComparison.Ordinal)
+							|| !string.Equals(existing.Metadata.Notes, directory.Notes, StringComparison.Ordinal))))
 				{
 					nodes[existing.Id] = existing with
 					{
@@ -109,6 +120,9 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 						{
 							ModifiedUtc = timestamp,
 							IsLogicalContainer = directory.IsLogicalContainer,
+							// 名字/备注以文件夹为准（用户可能直接在别的库里改过、又把文件夹搬回来）。
+							Name = directory.HasSettings ? directory.Name : existing.Metadata.Name,
+							Notes = directory.HasSettings ? directory.Notes : existing.Metadata.Notes,
 						}
 					};
 					changed.Add(existing.Id);
@@ -116,9 +130,10 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 				continue;
 			}
 
-			var id = plannedIds.TryGetValue(relativePath, out var plannedId)
-				? plannedId
-				: directory.LogicalNodeId ?? ModNodeId.New();
+			var id = directory.SettingsNodeId
+				?? (plannedIds.TryGetValue(relativePath, out var plannedId)
+					? plannedId
+					: directory.LogicalNodeId ?? ModNodeId.New());
 			if (nodes.ContainsKey(id))
 			{
 				// A stale logical marker can survive a deleted/re-imported Mod.  The
@@ -132,7 +147,7 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 			nodes[id] = new ModNode(
 				id,
 				relativePath,
-				new ModNodeMetadata(directory.Name, null, timestamp, null, ModNodeKind.Standard,
+				new ModNodeMetadata(directory.Name, directory.Notes, timestamp, null, ModNodeKind.Standard,
 					IsLogicalContainer: directory.IsLogicalContainer),
 				directory.PatchGroups,
 				Array.Empty<ModNodeId>(),
@@ -210,10 +225,30 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var info = new FileInfo(path);
-			var relative = Path.GetRelativePath(directory, path).Replace('\\', '/');
+			var relative = NormalizeLayerName(Path.GetRelativePath(directory, path).Replace('\\', '/'));
 			builder.Append(relative.ToLowerInvariant()).Append(':').Append(info.Length).Append(':').Append(info.LastWriteTimeUtc.Ticks).AppendLine();
 		}
 		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
+	}
+
+	/// <summary>
+	/// 把基底目录的**旧名**归一化成新名，再进指纹。
+	/// <para>
+	/// 目录从 <c>vpk2patch/</c> 改名成 <c>sectional/</c> 不代表内容变了，但相对路径进过指纹：
+	/// 不改归一化的话，一次性改名会把用户刚生成、刚审阅过的库对账计划当场作废
+	/// （实测报 <c>LibrarySyncInputChanged</c>，而改名其实已经发生了）。
+	/// </para>
+	/// <para>
+	/// 只映射旧名 → 新名，所以已经在用新名的 Mod 指纹一个字都不变，不会造成额外 churn。
+	/// </para>
+	/// </summary>
+	private static string NormalizeLayerName(string relative)
+	{
+		var legacy = ModNodePayloadLayout.LegacyVpkPatchDirectoryName + "/";
+		var current = ModNodePayloadLayout.VpkPatchDirectoryName + "/";
+		return relative.StartsWith(legacy, StringComparison.OrdinalIgnoreCase)
+			? current + relative[legacy.Length..]
+			: relative;
 	}
 
 	private static string NormalizePath(string path)
@@ -254,4 +289,9 @@ public sealed class ModLibrarySynchronizer : IModLibrarySynchronizer
 
 	private static string ComputeEmptyFingerprint()
 		=> Convert.ToHexString(SHA256.HashData(Array.Empty<byte>())).ToLowerInvariant();
+
+	private static ModNodeId? TryParseNodeId(string? value)
+		=> !string.IsNullOrWhiteSpace(value) && Guid.TryParseExact(value, "N", out var parsed)
+			? new ModNodeId(parsed)
+			: null;
 }

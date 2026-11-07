@@ -60,7 +60,7 @@ public sealed class AssetArchiveIndexServiceTests
 	// 作用：钉住归档摘要缓存的失效条件。
 	//
 	// 为什么这条必须有：摘要查询是 archives LEFT JOIN archive_entries（35 万行）的 GROUP BY，
-	// 实测 ~215ms，而护甲页每打开一次就会问一次（见 docs/armor-registry-page-perf-20261027.md
+	// 实测 ~215ms，而护甲页每打开一次就会问一次（见 docs/agent/armor-registry-page-perf-20261027.md
 	// §1 A2/A3）。所以它被缓存了。但缓存键是 source_fingerprint，而**展示名与分类来自
 	// friendlynames / archivehashes**，两者都不在指纹里 —— 只换命名数据的一次重建会
 	// 得到完全相同的指纹。如果失效只看指纹，用户改完名字重建后会一直看到旧名字。
@@ -891,65 +891,6 @@ public sealed class AssetArchiveIndexServiceTests
 		}
 	}
 
-	[Fact]
-	public async Task ModCompatibilityAnalyzer_ClassifiesByCurrentIndexMatches()
-	{
-		var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
-		var appRoot = Path.Combine(root, "app");
-		var gameData = Path.Combine(root, "game", "data");
-		Directory.CreateDirectory(appRoot);
-		Directory.CreateDirectory(gameData);
-
-		try
-		{
-			var archiveA = "aaaaaaaaaaaaaaaa";
-			File.WriteAllBytes(Path.Combine(gameData, archiveA), BuildToc(new[]
-			{
-				new AssetKey(10, 100),
-				new AssetKey(20, 200),
-			}));
-
-			var archiveHashes = new Dictionary<string, Dictionary<string, string>>
-			{
-				["Armor"] = new Dictionary<string, string>
-				{
-					[archiveA] = "Armor A",
-				}
-			};
-			var json = JsonSerializer.Serialize(archiveHashes);
-
-			var paths = new StoragePaths(appRoot);
-			var indexService = new AssetArchiveIndexService(paths);
-			await indexService.BuildOrRebuildAsync(gameData, json);
-
-			var summary = new ModAssetSummary(
-				new ModNodeId(Guid.NewGuid()),
-				"Old Mod",
-				new[]
-				{
-					BuildAssetEntry(archiveA, new AssetKey(10, 100)),
-					BuildAssetEntry(archiveA, new AssetKey(20, 200)),
-					BuildAssetEntry(archiveA, new AssetKey(30, 300)),
-					BuildAssetEntry(archiveA, new AssetKey(40, 400)),
-				},
-				Array.Empty<string>(),
-				Array.Empty<ModAssetTargetGroup>());
-
-			var analyzer = new ModCompatibilityAnalyzer(indexService);
-			var report = await analyzer.AnalyzeAsync(summary);
-
-			Assert.Equal(ModCompatibilityStatus.Partial, report.Status);
-			Assert.Equal(4, report.TotalAssets);
-			Assert.Equal(2, report.MatchedAssets);
-			Assert.Equal(2, report.MissingAssets);
-			Assert.Equal(0.5, report.MatchRatio);
-			Assert.True(report.HasIndex);
-		}
-		finally
-		{
-			try { Directory.Delete(root, recursive: true); } catch { }
-		}
-	}
 
 	private static byte[] BuildToc(AssetKey[] entries)
 	{

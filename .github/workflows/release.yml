@@ -1,0 +1,97 @@
+name: release
+
+# 只在推 v* tag 时运行：打 tag 就是"发这一版"的动作，其它时候这个工作流完全不介入。
+# Runs only on v* tags; pushing the tag is the act of releasing.
+on:
+  push:
+    tags: [ 'v*' ]
+
+# 创建工作区里的 Release 需要写权限；默认的只读 token 不够。
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  release:
+    # 与 build.yml 同样的理由：WPF + net10.0-windows 只能在 Windows 上发布。
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      # 版本号这一版同时出现在四个地方：tag、csproj 的 <Version>、zip 文件名、包里的
+      # update-package.json。更新器会核对后两者与 Release 公告的版本是否一致，不一致就拒绝安装——
+      # 那一步发生在用户机器上。所以在这里先挡住：机器比人对得准，代价也只有一次红灯。
+      - name: Check tag matches <Version>
+        id: version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(?<v>\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?)$') {
+              throw "Tag '$tag' is not v<SemVer> (e.g. v1.5.0)."
+          }
+          $tagVersion = $Matches['v']
+          [xml] $project = Get-Content -LiteralPath 'HD2ModManager\HD2ModManager.csproj' -Raw
+          $fileVersion = @($project.Project.PropertyGroup |
+              ForEach-Object { $_.Version } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+              Select-Object -First 1)[0]
+          if ($fileVersion -ne $tagVersion) {
+              throw "Tag says $tagVersion but HD2ModManager.csproj says '$fileVersion'."
+          }
+          Write-Host "Releasing $tagVersion"
+          "version=$tagVersion" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      # 红着测试发出去的包，用户那边是要靠更新器自动装的：先在包装之前跑一遍全测。
+      - name: Build and test
+        run: |
+          dotnet build WpfApp1.sln -c Release
+          dotnet test WpfApp1.sln -c Release --no-build
+
+      - name: Publish (complete + requires-dotnet)
+        shell: pwsh
+        run: ./publish.ps1 -OutputDirectory artifacts\publish
+
+      # 与上一步同一个输出目录：脚本会把四个包合并进同一份 SHA256SUMS。
+      - name: Publish (compat variants)
+        shell: pwsh
+        run: ./publish-compat.ps1 -OutputDirectory artifacts\publish
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.version.outputs.version }}
+          path: |
+            artifacts/publish/*.zip
+            artifacts/publish/SHA256SUMS
+
+      # 建成草稿：更新器只认已发布的 Release，所以草稿等于"机器把包备好，你过一眼再放出去"。
+      # 想让它直接发，把 --draft 去掉即可。
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = @('artifacts\publish\SHA256SUMS') +
+              @(Get-ChildItem -LiteralPath 'artifacts\publish' -Filter '*.zip' -File |
+                  Sort-Object Name | ForEach-Object { $_.FullName })
+          gh release create $env:GITHUB_REF_NAME --draft --title $env:GITHUB_REF_NAME --generate-notes $files

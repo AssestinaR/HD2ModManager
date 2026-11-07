@@ -106,7 +106,9 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 		}
 		catch (JsonException exception)
 		{
-			throw new InvalidDataException("Library data is invalid JSON.", exception);
+			throw new InvalidDataException(
+					$"Mod 库的 library.json 不是合法 JSON：{_paths.LibraryPath}。可以跑 `hd2mod repair library-snapshot --library <Mod 库目录> --confirm` 从磁盘上的 Mod 文件夹重建它（名字/备注/id 来自各 Mod 自己的 .hd2modmanager-mod.json）。",
+					exception);
 		}
 		finally
 		{
@@ -154,7 +156,9 @@ public sealed class JsonModLibraryStore : IModLibraryStore
 		}
 		catch (JsonException exception)
 		{
-			throw new InvalidDataException("Library data is invalid JSON.", exception);
+			throw new InvalidDataException(
+					$"Mod 库的 library.json 不是合法 JSON：{_paths.LibraryPath}。可以跑 `hd2mod repair library-snapshot --library <Mod 库目录> --confirm` 从磁盘上的 Mod 文件夹重建它（名字/备注/id 来自各 Mod 自己的 .hd2modmanager-mod.json）。",
+					exception);
 		}
 	}
 

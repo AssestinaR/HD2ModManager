@@ -369,8 +369,9 @@ public static class PhysBoneCarrier
 		foreach (var directory in new[]
 		{
 			modDirectory,
-			Path.Combine(modDirectory, "vpk2patch"),
-			Path.Combine(modDirectory, "Overwrite"),
+			Path.Combine(modDirectory, ModContentLayerNames.Sectional),
+			Path.Combine(modDirectory, ModContentLayerNames.LegacySectional),
+			Path.Combine(modDirectory, ModContentLayerNames.Overwrite),
 		})
 		{
 			if (!Directory.Exists(directory))

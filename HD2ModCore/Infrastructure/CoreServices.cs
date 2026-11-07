@@ -11,6 +11,13 @@ public static class CoreServices
 	public static IPatchFileNameParser CreatePatchFileNameParser() => new PatchFileNameParser();
 	public static IModLibraryResidualCleanupService CreateModLibraryResidualCleanupService()
 		=> new ModLibraryResidualCleanupService(CreatePatchFileNameParser());
+	// 作用：把老库里还叫 vpk2patch/ 的基底目录一次性改名为 sectional/。
+	// Purpose: One-time rename of legacy payload directories to the current name.
+	public static IModContentLayoutMigration CreateModContentLayoutMigration() => new ModContentLayoutMigration();
+	// 作用：判定一个 Mod 目录的存储形态——**全应用唯一一处**，别再各自 Directory.Exists 猜。
+	// Purpose: The single classifier for a Mod directory's storage shape.
+	public static IModStorageKindResolver CreateModStorageKindResolver()
+		=> new ModStorageKindResolver(CreatePatchFileNameParser());
 	// 作用：以当前库快照为准回收派生索引里属于已删除节点的残留（它们全是可重建的缓存）。
 	// Purpose: Reclaims derived-index residue for nodes absent from the library (all rebuildable caches).
 	public static IModIndexGarbageCollector CreateModIndexGarbageCollector(StoragePaths paths)
@@ -33,19 +40,20 @@ public static class CoreServices
 		// 启动期自检：登记表必须自洽（每个 kind 都登记、依赖边都指向已登记的 kind、依赖图无环）。
 		// Startup self-check: the fact registry must be self-consistent before any production request runs.
 		HD2ModCore.Domain.ModInformationFactRegistry.Validate();
-		var referenceIndex = new SqliteModFactsStore(paths);
+		var referenceIndex = InMemoryModFactsStore.For(paths);
 		var analysisProvider = new ModInformationPatchGroupAnalysisProvider(informationReader);
 		return new ModInformationCenter(
 			CreateModFileFactsProducer(),
 			CreateAssetInventoryProducer(analysisProvider.ForDepth(PatchAnalysisDepth.Inventory)),
 			new JsonModFileFactsCache(paths),
 			CreateReferenceGraphProducer(analysisProvider.ForDepth(PatchAnalysisDepth.DependencyGraph)),
-			CreateMaintenanceAnalysisProducer(paths),
 			CreateUnitVersionInformationProducer(analysisProvider.ForDepth(PatchAnalysisDepth.Inventory)),
 			new JsonModInformationCache(paths),
 			CreateAdvancedUnitAnalysisProducer(analysisProvider.ForDepth(PatchAnalysisDepth.Full)),
 			CreateModThumbnailProducer(),
-			CreateModDataIndex(paths),
+			// 详情页"跨 Mod 索引"那一行的反向查询直接走 referenceGraph 的 SQL 索引（同一个对象），
+			// 不再维护一份 mod-data-index 的 JSON 副本。
+			referenceIndex,
 			referenceIndex,
 			ownedInformationReader,
 			// 无节点事实（设计文档 §22）的生产者：资产索引、资产映射、实际部署图。
@@ -110,8 +118,6 @@ public static class CoreServices
 	public static ISourceUnitEligibilityService CreateSourceUnitEligibilityService()
 		=> new SourceUnitEligibilityService();
 	public static IModThumbnailProducer CreateModThumbnailProducer() => new ModThumbnailProducer();
-	public static IModDataIndex CreateModDataIndex(StoragePaths paths) => new ModDataIndex(paths);
-	public static IModDataIndex CreateModDataIndex() => new ModDataIndex();
 	public static IPatchStateScanner CreatePatchStateScanner()
 		=> new PatchStateScanner(CreatePatchFileNameParser());
  	public static IPatchEntryPayloadReader CreatePatchEntryPayloadReader()
@@ -178,11 +184,7 @@ public static class CoreServices
 	public static IReferenceGraphProducer CreateReferenceGraphProducer(IModInformationReader informationReader)
 		=> new ReferenceGraphProducer(informationReader ?? throw new ArgumentNullException(nameof(informationReader)));
 	public static IReferenceGraphQueryIndex CreateReferenceGraphQueryIndex(StoragePaths paths)
-		=> new SqliteModFactsStore(paths);
-	public static IModAssetRoleFactsService CreateModAssetRoleFactsService(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ModAssetRoleFactsService(informationCenter, CreateReferenceGraphQueryIndex(paths));
-	public static IMaintenanceAnalysisProducer CreateMaintenanceAnalysisProducer(StoragePaths paths)
-		=> new MaintenanceAnalysisProducer(CreateModCompatibilityAnalyzer(paths));
+		=> InMemoryModFactsStore.For(paths);
 	public static IAdvancedModAnalysisService CreateAdvancedModAnalysisService(StoragePaths paths, IModInformationCenter informationCenter)
 		=> new AdvancedModAnalysisService(informationCenter);
 	public static IPatchGraphDiagnosticsService CreatePatchGraphDiagnosticsService(IModInformationReader informationReader)
@@ -233,8 +235,6 @@ public static class CoreServices
 	}
    public static IReplacementTargetDeriver CreateReplacementTargetDeriver(StoragePaths paths)
 		=> new ReplacementTargetDeriver(paths, CreateAssetArchiveIndexService(paths));
-   public static IModCompatibilityAnalyzer CreateModCompatibilityAnalyzer(StoragePaths paths)
-		=> new ModCompatibilityAnalyzer(CreateAssetArchiveIndexService(paths));
    public static IObjectTreeImporter CreateObjectTreeImporter()
 		=> new ObjectTreeImporter(CreatePatchFileNameParser());
    public static IArchiveObjectTreeImporter CreateArchiveObjectTreeImporter()

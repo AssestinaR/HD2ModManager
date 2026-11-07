@@ -340,6 +340,22 @@ namespace HD2ModManager.Services
                             : $"为 {enabled}/{available.Length} 个主体启用了。");
         }
 
+        /// <summary>
+        /// 告知"这个 Mod 的目录内容变了"（例如材质选项刚重建了生效层）。
+        /// <para>
+        /// 为什么不直接调部署：这个应用里"内容变了要不要重新部署"只有一个判断点——
+        /// Shell 订阅 <see cref="ModContentFactsChanged"/> 后跑「部署触发检查」，只有这个 Mod
+        /// 在活动配置里（或可达）才部署。换甲合并就是这么接的，材质选项也应该走同一条路，
+        /// 而不是自己另开一个"总是部署"的入口。
+        /// </para>
+        /// </summary>
+        public async Task NotifyModContentChangedAsync(string guid, CancellationToken cancellationToken = default)
+        {
+            if (!TryParseNodeId(guid, out var nodeId) || !_snapshot.Nodes.ContainsKey(nodeId)) return;
+            await InvalidateContentNodeAsync(nodeId, cancellationToken).ConfigureAwait(false);
+            ModContentFactsChanged?.Invoke(this, new ModContentFactsChangedEventArgs([nodeId], ModContentChangeKind.Changed));
+            SnapshotChanged?.Invoke(this, EventArgs.Empty);
+        }
         public async Task<string> ToggleOptionForHostAsync(string optionId, string hostId, CancellationToken cancellationToken = default)
         {
             var option = Get(optionId);
@@ -496,6 +512,18 @@ namespace HD2ModManager.Services
             var synchronizationIsCurrent = synchronizeVersion == Volatile.Read(ref _stateVersion);
             if (synchronizationIsCurrent)
             {
+                // 基底目录改名（vpk2patch/ → sectional/）：**一次性**，且必须在残留清理之前，
+                // 这样后面的分类看到的是统一的布局。读路径同时认两个名字只是过渡期保险，
+                // 一直留着会让"写进哪一个"这个问题永远悬着。
+                var layoutMigration = await CoreServices.CreateModContentLayoutMigration()
+                    .MigrateAsync(_paths.ModsDirectory, result.Snapshot, cancellationToken).ConfigureAwait(false);
+                if (layoutMigration.Renamed > 0)
+                    LogService.Info($"基底目录改名：已把 {layoutMigration.Renamed} 个 Mod 的 vpk2patch 目录改为 sectional。");
+                foreach (var conflict in layoutMigration.Conflicts)
+                    LogService.Warn($"基底目录改名跳过 {conflict}：新旧两个基底目录同时存在，需要人工确认哪个才是当前产物。");
+                foreach (var failure in layoutMigration.Failures)
+                    LogService.Warn($"基底目录改名失败：{failure}");
+
                 var residualCleanup = CoreServices.CreateModLibraryResidualCleanupService()
                     .Cleanup(result.Snapshot, _paths.ModsDirectory, cancellationToken);
                 if (residualCleanup.RemovedCount > 0)
@@ -516,7 +544,7 @@ namespace HD2ModManager.Services
                 var indexGc = await CoreServices.CreateModIndexGarbageCollector(_paths)
                     .CollectAsync(result.Snapshot.Nodes.Keys.ToArray(), cancellationToken).ConfigureAwait(false);
                 if (!indexGc.IsEmpty)
-                    LogService.Info($"索引回收：缓存文件={indexGc.RemovedCacheFiles}，索引节点={indexGc.RemovedIndexNodes}，事实行={indexGc.RemovedFactRows}，替换备份={indexGc.RemovedBackupDirectories}，临时文件={indexGc.RemovedTemporaryFiles}。");
+                    LogService.Info($"索引回收：缓存文件={indexGc.RemovedCacheFiles}，事实行={indexGc.RemovedFactRows}，替换备份={indexGc.RemovedBackupDirectories}，临时文件={indexGc.RemovedTemporaryFiles}。");
                 foreach (var failure in indexGc.Failures)
                     LogService.Error($"索引回收失败：{failure}");
             }

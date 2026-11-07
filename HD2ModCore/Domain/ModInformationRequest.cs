@@ -23,7 +23,6 @@ public sealed record ModInformationRequest(
 		ModInformationKind.ReferenceGraph => ModInformationPropertyKind.ReferenceClosure,
 		ModInformationKind.UnitVersion => ModInformationPropertyKind.Compatibility,
 		ModInformationKind.AdvancedUnitAnalysis => ModInformationPropertyKind.UnitStructure,
-		ModInformationKind.MaintenanceAnalysis => ModInformationPropertyKind.Maintenance,
 		ModInformationKind.Thumbnail => ModInformationPropertyKind.Thumbnail,
 		ModInformationKind.GameDataIndex => ModInformationPropertyKind.GameDataIndex,
 		ModInformationKind.GameDataMapping => ModInformationPropertyKind.GameDataMapping,

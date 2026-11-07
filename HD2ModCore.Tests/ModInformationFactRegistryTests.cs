@@ -19,7 +19,7 @@ public sealed class ModInformationFactRegistryTests
 
 		var declared = Enum.GetValues<ModInformationPropertyKind>();
 
-		Assert.Equal(27, declared.Length);
+		Assert.Equal(25, declared.Length);
 		Assert.Equal(declared.Length, ModInformationFactRegistry.Count);
 		Assert.All(declared, kind => Assert.True(
 			ModInformationFactRegistry.IsRegistered(kind),
@@ -197,21 +197,10 @@ public sealed class ModInformationFactRegistryTests
 	[InlineData(ModInformationPropertyKind.StreamPayload, ModInformationPropertyKind.PatchEntryPayload)]
 	[InlineData(ModInformationPropertyKind.TocPayload, ModInformationPropertyKind.PatchEntryPayload)]
 	[InlineData(ModInformationPropertyKind.Compatibility, ModInformationPropertyKind.AssetInventory)]
-	[InlineData(ModInformationPropertyKind.Maintenance, ModInformationPropertyKind.AssetInventory)]
 	[InlineData(ModInformationPropertyKind.GameDataMapping, ModInformationPropertyKind.GameDataIndex)]
 	[InlineData(ModInformationPropertyKind.GameDataMapping, ModInformationPropertyKind.AssetMetadata)]
 	public void DeclaredDependencyEdgeExists(ModInformationPropertyKind kind, ModInformationPropertyKind dependency)
 		=> Assert.Contains(dependency, ModInformationFactRegistry.Describe(kind).Dependencies);
-
-	// Maintenance 是本表里唯一一条"中心内部真实按依赖顺序取上游"的边，单独锁住防止回退。
-	[Fact]
-	public void MaintenanceIsTheEdgeTheCenterActuallyRequestsThroughTheCenter()
-	{
-		var center = ReadSource("HD2ModCore", "Infrastructure", "ModInformationCenter.cs");
-
-		Assert.Contains("RequestAssetInventoryAsync(node, root, inventoryRequest", center);
-		Assert.Contains("_maintenanceProducer!.ProduceAsync(node, inventory.Data", center);
-	}
 
 	[Fact]
 	public void DependencyGraphIsAcyclic()

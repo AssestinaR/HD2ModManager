@@ -53,6 +53,8 @@ public partial class ModDetailsPageViewModel
         // 只有**根上有来源 .vpk** 的 Mod 才有它 —— 转出来的分件模组没有来源包，重构建无从谈起。
         PageActions.Add(new PageActionViewModel(PageActionKind.RebuildVpk, "用来源重构建", RebuildVpkCommand, order: 40));
         PageActions.Add(new PageActionViewModel(PageActionKind.PatchRebuild, "重构 patch", RebuildSameKeyCommand, order: 71));
+        // 复制成独立命名空间的变体：两套外观能同时部署。只对 sectional / vpk2patch 类有意义。
+        PageActions.Add(new PageActionViewModel(PageActionKind.CloneVariant, "复制为变体", CloneVariantCommand, order: 72));
 
         SyncActionVisibility();
         // 状态一变就重算可见性与文案；动作集合本身不动，所以不会触发重排动画。
@@ -75,6 +77,7 @@ public partial class ModDetailsPageViewModel
                     or PageActionKind.Package or PageActionKind.Helmet or PageActionKind.Merge
                     or PageActionKind.CustomModel => ShowPatchSettingsCard,
                 PageActionKind.PatchRebuild => IsDecoration,
+                PageActionKind.CloneVariant => CanCloneVariant,
                 _ => true,
             };
 

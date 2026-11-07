@@ -26,15 +26,6 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		@"^(?<kind>[A-Za-z]+)_(?<node>[0-9a-fA-F]{32})_[0-9a-fA-F]{64}$",
 		RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-	private static readonly string[] FactTables =
-	[
-		"asset_references",
-		"mod_assets",
-		"patch_groups",
-		"mod_fact_snapshots",
-		"advanced_mod_analysis_snapshots",
-	];
-
 	private readonly StoragePaths _paths;
 
 	public ModIndexGarbageCollector(StoragePaths paths)
@@ -49,12 +40,12 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		var failures = new List<string>();
 
 		var cacheFiles = CollectInformationCache(live, failures, cancellationToken);
-		var indexNodes = CollectDataIndexNodes(live, failures, cancellationToken);
+		cacheFiles += CollectObsoleteCacheDirectories(failures, cancellationToken);
 		var backups = CollectBackupDirectories(live, failures, cancellationToken);
 		var temporaryFiles = CollectTemporaryFiles(failures);
-		var factRows = await CollectFactRowsAsync(live, failures, cancellationToken).ConfigureAwait(false);
+		var factRows = CollectObsoleteFactsDatabase(failures);
 
-		return new ModIndexGarbageCollectionResult(cacheFiles, indexNodes, factRows, backups, temporaryFiles, failures);
+		return new ModIndexGarbageCollectionResult(cacheFiles, factRows, backups, temporaryFiles, failures);
 	}
 
 	private int CollectInformationCache(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
@@ -62,29 +53,57 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		var directory = Path.Combine(_paths.IndexDirectory, "mod-information");
 		if (!Directory.Exists(directory)) return 0;
 
-		var removed = 0;
+		// 先把文件名分好类，再决定删谁——"同一节点同一类型只留最新 generation"必须**先看到
+		// 全部候选**才能判断谁是新的，边遍历边删会把新的当成旧的删掉。
+		// 实测 2026-11-06：201 个节点留下 245 个 AssetInventory 文件，44 个是旧 generation 残留；
+		// 旧逻辑只按"节点是否还在库中"删，永远碰不到它们。
+		var perNode = new List<(string Path, string Kind, string Node, string Generation, DateTime WrittenUtc)>();
+		var snapshotCandidates = new List<string>();
 		foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var name = Path.GetFileNameWithoutExtension(path);
 			var match = PerNodeInformationFile.Match(name);
-			bool dead;
 			if (match.Success)
 			{
-				dead = !live.Contains(match.Groups["node"].Value);
+				DateTime written;
+				try { written = File.GetLastWriteTimeUtc(path); }
+				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { continue; }
+				perNode.Add((path, match.Groups["kind"].Value, match.Groups["node"].Value, name, written));
+				continue;
 			}
-			else
-			{
-				// 快照级 FileFacts 缓存：只有当它能被解析、并且 filesByNode 里的节点一个都不在库中时
-				// 才删除。无法判定形状的文件一律保留——宁可留垃圾也不误删活数据。
-				// Snapshot-level FileFacts: only removed when it parses AND none of its covered nodes
-				// is live. Files with an unrecognized shape are always kept.
-				var covered = TryReadCoveredNodes(path);
-				if (covered is null || covered.Length == 0) continue;
-				dead = covered.All(node => !live.Contains(node));
-			}
+			// 快照级 FileFacts 缓存：只有当它能被解析、并且 filesByNode 里的节点一个都不在库中时
+			// 才删除。无法判定形状的文件一律保留——宁可留垃圾也不误删活数据。
+			// Snapshot-level FileFacts: only removed when it parses AND none of its covered nodes
+			// is live. Files with an unrecognized shape are always kept.
+			var covered = TryReadCoveredNodes(path);
+			if (covered is null || covered.Length == 0) continue;
+			if (covered.All(node => !live.Contains(node))) snapshotCandidates.Add(path);
+		}
 
-			if (!dead) continue;
+		var doomed = new List<string>(snapshotCandidates);
+		foreach (var group in perNode.GroupBy(entry => (entry.Kind, entry.Node)))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			// 节点已不在库中 ⇒ 这一组全删；否则只留最近写入的那一份（同一代重复时按文件名定序，
+			// 保证结果可复现）。
+			if (!live.Contains(group.Key.Node))
+			{
+				doomed.AddRange(group.Select(entry => entry.Path));
+				continue;
+			}
+			var keep = group
+				.OrderByDescending(entry => entry.WrittenUtc)
+				.ThenByDescending(entry => entry.Generation, StringComparer.Ordinal)
+				.First();
+			doomed.AddRange(group.Where(entry => !string.Equals(entry.Path, keep.Path, StringComparison.Ordinal))
+				.Select(entry => entry.Path));
+		}
+
+		var removed = 0;
+		foreach (var path in doomed)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
 			try
 			{
 				TryClearReadOnly(path);
@@ -93,8 +112,42 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 			}
 			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
 			{
-				failures.Add($"{name}: {exception.Message}");
+				failures.Add($"{Path.GetFileNameWithoutExtension(path)}: {exception.Message}");
 			}
+		}
+		return removed;
+	}
+
+	/// <summary>
+	/// 删掉已经**没有读者**的派生缓存目录。
+	/// <para>
+	/// <c>mod-data-index/</c> 曾按节点存"哪些资产属于哪个 mod"，与 <c>mod-facts.sqlite</c>
+	/// 逐条重复，唯一读者是详情页一行字；2026-11-06 改为直接查 SQL 索引后，这份目录不再有任何
+	/// 读写方。留着它只会让人以为"这里还有东西要维护"，所以在这里一次性清掉。
+	/// </para>
+	/// <para>
+	/// 它整体可再生（旧版本重新跑一次就会重建），所以整目录删除是安全的；删不掉只记账，不阻断。
+	/// </para>
+	/// </summary>
+	private int CollectObsoleteCacheDirectories(List<string> failures, CancellationToken cancellationToken)
+	{
+		var directory = Path.Combine(_paths.IndexDirectory, "mod-data-index");
+		if (!Directory.Exists(directory)) return 0;
+		var removed = 0;
+		try
+		{
+			foreach (var path in Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories))
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				TryClearReadOnly(path);
+			}
+			removed = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).Count();
+			Directory.Delete(directory, recursive: true);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+		{
+			failures.Add($"mod-data-index: {exception.Message}");
+			return 0;
 		}
 		return removed;
 	}
@@ -119,49 +172,6 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		{
 			return null;
 		}
-	}
-
-	private int CollectDataIndexNodes(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
-	{
-		var removed = 0;
-		var directory = Path.Combine(_paths.IndexDirectory, "mod-data-index");
-		if (Directory.Exists(directory))
-		{
-			foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
-			{
-				cancellationToken.ThrowIfCancellationRequested();
-				if (!Guid.TryParseExact(Path.GetFileNameWithoutExtension(path), "N", out var id)) continue;
-				if (live.Contains(id.ToString("N"))) continue;
-				try
-				{
-					TryClearReadOnly(path);
-					File.Delete(path);
-					removed++;
-				}
-				catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-				{
-					failures.Add($"{Path.GetFileName(path)}: {exception.Message}");
-				}
-			}
-		}
-
-		// 按节点分文件的布局一旦就位，旧版单文件就是纯死重。
-		// Once the per-node layout exists the legacy single file is pure dead weight.
-		var legacy = Path.Combine(_paths.IndexDirectory, "mod-data-index.json");
-		if (Directory.Exists(directory) && Directory.EnumerateFiles(directory, "*.json").Any() && File.Exists(legacy))
-		{
-			try
-			{
-				TryClearReadOnly(legacy);
-				File.Delete(legacy);
-				removed++;
-			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-			{
-				failures.Add($"{Path.GetFileName(legacy)}: {exception.Message}");
-			}
-		}
-		return removed;
 	}
 
 	private int CollectBackupDirectories(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
@@ -197,7 +207,6 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		{
 			_paths.IndexDirectory,
 			Path.Combine(_paths.IndexDirectory, "mod-information"),
-			Path.Combine(_paths.IndexDirectory, "mod-data-index"),
 		})
 		{
 			if (!Directory.Exists(directory)) continue;
@@ -221,63 +230,34 @@ public sealed class ModIndexGarbageCollector : IModIndexGarbageCollector
 		return removed;
 	}
 
-	private async ValueTask<int> CollectFactRowsAsync(HashSet<string> live, List<string> failures, CancellationToken cancellationToken)
+	/// <summary>
+	/// 回收已废弃的 <c>mod-facts.sqlite</c>。
+	/// <para>
+	/// 这些事实现在只活在会话内存里（<see cref="InMemoryModFactsStore"/>），文件没人读了。
+	/// 以前这里只会修剪它的行、把文件永远留着（21.7 MB）；既然不读了，整个删掉才叫回收。
+	/// </para>
+	/// </summary>
+	private int CollectObsoleteFactsDatabase(List<string> failures)
 	{
 		var databasePath = _paths.ModFactsDbPath;
 		if (!File.Exists(databasePath)) return 0;
-
-		var removed = 0;
 		try
 		{
-			await using var connection = new SqliteConnection($"Data Source={databasePath}");
-			await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-			var existingTables = await ReadTableNamesAsync(connection, cancellationToken).ConfigureAwait(false);
-			await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-			foreach (var table in FactTables)
+			// WAL 模式会留下两个同名旁路文件，一起清掉才算真的回收。
+			foreach (var suffix in new[] { "", "-wal", "-shm" })
 			{
-				// 这个库是惰性建表的：表不存在是正常状态，不是失败。
-				// Tables are created lazily, so a missing table is a normal state rather than a failure.
-				if (!existingTables.Contains(table)) continue;
-
-				var dead = new List<string>();
-				await using (var select = connection.CreateCommand())
-				{
-					select.Transaction = (SqliteTransaction)transaction;
-					select.CommandText = $"SELECT DISTINCT node_id FROM {table}";
-					await using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-					while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-					{
-						var node = reader.GetString(0);
-						if (!live.Contains(node)) dead.Add(node);
-					}
-				}
-
-				foreach (var node in dead)
-				{
-					await using var delete = connection.CreateCommand();
-					delete.Transaction = (SqliteTransaction)transaction;
-					delete.CommandText = $"DELETE FROM {table} WHERE node_id = $node";
-					delete.Parameters.AddWithValue("$node", node);
-					removed += await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-				}
+				var path = databasePath + suffix;
+				if (File.Exists(path)) File.Delete(path);
 			}
-			await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+			return 1;
 		}
-		catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or System.Security.SecurityException)
 		{
 			failures.Add($"mod-facts.sqlite: {exception.Message}");
+			return 0;
 		}
-		return removed;
-	}
-
-	private static async ValueTask<HashSet<string>> ReadTableNamesAsync(SqliteConnection connection, CancellationToken cancellationToken)
-	{
-		var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		await using var command = connection.CreateCommand();
-		command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table'";
-		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) names.Add(reader.GetString(0));
-		return names;
 	}
 
 	private static void ClearAttributesRecursive(string directory)

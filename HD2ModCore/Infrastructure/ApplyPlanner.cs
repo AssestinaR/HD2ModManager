@@ -114,7 +114,9 @@ public sealed class ApplyPlanner : IApplyPlanner
 					if (groupFiles.Any(file => file.SidecarKind == PatchSidecarKind.Base))
 						plannedGroups.Add(new PlannedPatchGroup(
 							entry.LoadOrder,
-							sourceBaseIndex,
+							// 用**部署顺序**而不是源序号：用户在材质列表里排序就是这个目的——
+							// 决定"多个材质同时启用时谁覆盖谁"。patch 文件本身一个都不用动。
+							groupFiles[0].DeployOrder,
 							groupFiles[0].ArchiveHex16,
 							groupFiles[0].NodeId,
 							groupFiles,
@@ -148,6 +150,7 @@ public sealed class ApplyPlanner : IApplyPlanner
 						archive,
 						generatedGroup.SourcePatchIndex,
 						generatedGroup.SourcePatchIndex,
+
 						file.SidecarKind,
 						file.Length,
 						file.LastWriteTimeUtc))

@@ -230,8 +230,9 @@ public static class PhysBoneContainerEmbedder
 		foreach (var directory in new[]
 		{
 			modDirectory,
-			Path.Combine(modDirectory, "vpk2patch"),
-			Path.Combine(modDirectory, "Overwrite"),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Sectional),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.LegacySectional),
+			Path.Combine(modDirectory, HD2ModAdaptation.PatchReconstruction.ModContentLayerNames.Overwrite),
 		})
 		{
 			if (!Directory.Exists(directory))

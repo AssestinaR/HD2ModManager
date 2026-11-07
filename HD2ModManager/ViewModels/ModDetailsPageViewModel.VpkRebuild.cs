@@ -133,6 +133,7 @@ public partial class ModDetailsPageViewModel
 			var outcome = await VpkRebuildService.RunAsync(
 				node.Id.Value.ToString("N"),
 				directory,
+				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
@@ -176,6 +177,7 @@ public partial class ModDetailsPageViewModel
 						var optionOutcome = await VpkRebuildService.RunAsync(
 							option.Selector,
 							option.Directory,
+							new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
 							targetArchiveIds: null,
 							disabledSections: null,
 							stage => Report($"选项 {option.Name}：{stage}"),

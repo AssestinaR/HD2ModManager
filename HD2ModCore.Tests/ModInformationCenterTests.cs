@@ -79,9 +79,8 @@ public sealed class ModInformationCenterTests
 			var node = new ModNode(new ModNodeId(Guid.NewGuid()), "mod", new ModNodeMetadata("Test", "", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), [], []);
 			var producer = new BlockingAssetInventoryProducer(node);
 			var cache = new RecordingInformationCache();
-			var index = new RecordingModDataIndex();
 			var center = new HD2ModCore.Infrastructure.ModInformationCenter(
-				new FailingFileFactsProducer(), producer, informationCache: cache, modDataIndex: index);
+				new FailingFileFactsProducer(), producer, informationCache: cache);
 			var request = center.RequestAssetInventoryAsync(node, root, new ModInformationRequest(ModInformationKind.AssetInventory, "Test", "generation", true)).AsTask();
 			await producer.Started.Task;
 
@@ -91,14 +90,12 @@ public sealed class ModInformationCenterTests
 
 			Assert.NotEqual(ModInformationStatus.Fresh, result.Status);
 			Assert.Empty(cache.SavedGenerations);
-			Assert.Empty(index.UpdatedNodeIds);
 
 			producer.AllowNextRequest();
 			var replacement = await center.RequestAssetInventoryAsync(node, root, new ModInformationRequest(ModInformationKind.AssetInventory, "Test", "generation-2", true));
 			Assert.Equal(ModInformationStatus.Fresh, replacement.Status);
 			Assert.Equal(2, producer.Count);
             Assert.Equal("generation-2", Assert.Single(cache.SavedGenerations));
-			Assert.Equal(node.Id, Assert.Single(index.UpdatedNodeIds));
 			await center.DisposeAsync();
 		}
 		finally
@@ -132,9 +129,8 @@ public sealed class ModInformationCenterTests
 		var node = CreateNode();
 		var cached = new ModContentFacts(node.Id, node.RelativePath, "generation", DateTimeOffset.UtcNow, [], []);
 		var cache = new BlockingInformationCache(cached);
-		var index = new RecordingModDataIndex();
 		var center = new HD2ModCore.Infrastructure.ModInformationCenter(
-			new FailingFileFactsProducer(), new ThrowingAssetInventoryProducer(), informationCache: cache, modDataIndex: index);
+			new FailingFileFactsProducer(), new ThrowingAssetInventoryProducer(), informationCache: cache);
 
 		var request = center.RequestAssetInventoryAsync(node, Path.GetTempPath(), new ModInformationRequest(ModInformationKind.AssetInventory, "Test", "generation")).AsTask();
 		await cache.Started.Task;
@@ -143,7 +139,6 @@ public sealed class ModInformationCenterTests
 
 		var result = await request;
 		Assert.NotEqual(ModInformationStatus.Cached, result.Status);
-		Assert.Empty(index.UpdatedNodeIds);
 		await center.DisposeAsync();
 	}
 
@@ -206,21 +201,18 @@ public sealed class ModInformationCenterTests
 	{
 		var node = CreateNode();
 		var information = new RecordingInformationCache();
-		var index = new RecordingModDataIndex();
 		var writer = new RecordingReferenceGraphIndexWriter();
 		var center = new HD2ModCore.Infrastructure.ModInformationCenter(
 			new FailingFileFactsProducer(),
 			new ThrowingAssetInventoryProducer(),
 			fileFactsCache: new ThrowingFileFactsCache(),
 			informationCache: information,
-			modDataIndex: index,
 			referenceGraphIndexWriter: writer);
 
 		var failure = await Assert.ThrowsAsync<UnauthorizedAccessException>(async () => await center.InvalidateNodeAsync(node.Id));
 
 		Assert.NotNull(failure);
 		Assert.Equal(node.Id, Assert.Single(information.Deleted));
-		Assert.Equal(node.Id, Assert.Single(index.Removed));
 		Assert.Equal(node.Id, Assert.Single(writer.Deleted));
 		await center.DisposeAsync();
 	}
@@ -318,19 +310,6 @@ public sealed class ModInformationCenterTests
 		public ValueTask<ModInformationCacheEntry<T>?> TryLoadLatestAsync<T>(ModInformationKind kind, ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.FromResult<ModInformationCacheEntry<T>?>(default);
 		public ValueTask SaveAsync<T>(ModInformationKind kind, ModNodeId nodeId, string generation, T data, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
 		public ValueTask DeleteNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
-	}
-
-	private sealed class RecordingModDataIndex : HD2ModCore.Application.IModDataIndex
-	{
-		public List<ModNodeId> UpdatedNodeIds { get; } = [];
-		public List<ModNodeId> Removed { get; } = [];
-		public ValueTask<IReadOnlyList<ModDataIndexEntry>> FindProvidersAsync(AssetKey assetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<ModDataIndexEntry>>([]);
-		public ValueTask<IReadOnlyList<ModDataIndexEntry>> FindConsumersAsync(AssetKey assetKey, CancellationToken cancellationToken = default) => ValueTask.FromResult<IReadOnlyList<ModDataIndexEntry>>([]);
-		public ValueTask<ModDataIndexSummary> GetAssetRelationSummaryAsync(IReadOnlyCollection<AssetKey> assetKeys, ModNodeId? excludedNodeId = null, CancellationToken cancellationToken = default) => ValueTask.FromResult(new ModDataIndexSummary(ModDataIndexStatus.Unavailable, 0, 0));
-		public ValueTask<ModDataIndexEntry?> ResolveFinalProviderAsync(AssetKey assetKey, Profile profile, CancellationToken cancellationToken = default) => ValueTask.FromResult<ModDataIndexEntry?>(null);
-		public ValueTask RemoveNodeAsync(ModNodeId nodeId, CancellationToken cancellationToken = default) { Removed.Add(nodeId); return ValueTask.CompletedTask; }
-		public void Update(ModContentFacts inventory) => UpdatedNodeIds.Add(inventory.NodeId);
-		public void Update(ReferenceGraphFacts graph) { }
 	}
 
 	private sealed class ThrowingFileFactsCache : HD2ModCore.Application.IModFileFactsCache
