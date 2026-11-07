@@ -36,7 +36,9 @@ namespace HD2ModManager.Services
         public string Detail => _task is null
             ? BuildNotificationDetail(_notification!)
             : BuildTaskDetail(_task);
-        public string ExpandedDetail => _task is null ? _notification?.Message ?? string.Empty : CopyText;
+        // 展开视图只放"标题行里看不到的、有信息量的"内容；完整诊断转储留给 CopyText（复制按钮）。
+        public string ExpandedDetail => _task is null ? BuildNotificationExpanded(_notification!) : BuildTaskExpanded(_task);
+        public bool HasExpandedDetail => ExpandedDetail.Length != 0;
         public bool IsExpanded { get => _isExpanded; private set { if (_isExpanded == value) return; _isExpanded = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsExpanded))); } }
         public NotificationLevel Level => _notification?.Level ?? _task?.Status switch
         {
@@ -65,7 +67,42 @@ namespace HD2ModManager.Services
                 $"输出目录：{_task.OutputDirectory}", $"报告：{_task.ReportPath}",
             });
 
-        public void ToggleExpanded() => IsExpanded = !IsExpanded;
+        public void ToggleExpanded()
+        {
+            if (IsExpanded || HasExpandedDetail) IsExpanded = !IsExpanded;
+        }
+
+        // 通知的标题就是消息本身；只有长到标题行会被截断（或本身带换行）时，展开才有意义。
+        private static string BuildNotificationExpanded(NotificationItem notification)
+        {
+            var message = notification.Message ?? string.Empty;
+            return message.Length > 40 || message.Contains('\n') ? message : string.Empty;
+        }
+
+        private static string BuildTaskExpanded(BackgroundTaskItem task)
+        {
+            var lines = new List<string>();
+            void Add(string label, string? value)
+            {
+                if (!string.IsNullOrWhiteSpace(value)) lines.Add($"{label}：{value.Trim()}");
+            }
+
+            if (task.FinishedAt is { } finished)
+            {
+                var elapsed = finished - (task.StartedAt ?? task.CreatedAt);
+                if (elapsed >= TimeSpan.FromSeconds(1))
+                    lines.Add($"耗时：{(elapsed.TotalMinutes >= 1 ? $"{(int)elapsed.TotalMinutes} 分 {elapsed.Seconds} 秒" : $"{elapsed.TotalSeconds:0.#} 秒")}");
+            }
+
+            // Detail 与标题相同时不重复显示。
+            if (!string.Equals(task.Detail?.Trim(), task.Name, StringComparison.Ordinal)) Add("详情", task.Detail);
+            Add("原因", task.UserVisibleReason);
+            Add("错误", task.Error);
+            Add("建议", task.SuggestedAction);
+            Add("输出目录", task.OutputDirectory);
+            Add("报告", task.ReportPath);
+            return string.Join(Environment.NewLine, lines);
+        }
 
         private static string BuildNotificationDetail(NotificationItem notification)
         {
