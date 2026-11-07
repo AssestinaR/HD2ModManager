@@ -42,15 +42,23 @@ API 被限流（匿名每小时 60 次）或出错时，会改用 `releases.atom
 版本号只在 `HD2ModManager\HD2ModManager.csproj` 的 `<Version>`。
 
 ```powershell
-# 1. 改 <Version>，提交并打 tag：v<Version>
-# 2. 构建发布包（产出带版本号的 zip 和 SHA256SUMS）
-.\publish.ps1
-# 3.（可选）兼容版发到同一目录，SHA256SUMS 会合并四个包
-.\publish-compat.ps1 -OutputDirectory artifacts\publish
-# 4. 创建 Release 并上传 artifacts\publish 下的所有 zip 和 SHA256SUMS
-gh release create v<Version> artifacts\publish\*.zip artifacts\publish\SHA256SUMS --title "v<Version>" --notes-file <更新说明.md>
+git commit -am "release: 1.5.0"
+git tag v1.5.0
+git push origin master --tags
+```
+
+推 tag 会触发 `.github/workflows/release.yml`：跑构建与全测 → `publish.ps1` 与 `publish-compat.ps1` 出四个包 → 建成**草稿** Release（`gh release create --draft`）。更新器只认已发布的 Release，所以草稿等于"包已经备好、等你过一眼再放出去"；在网页上写好说明、点 Publish 才对外生效。
+
+工作流里有一道 tag 与 `<Version>` 的一致性校验。版本号在这一次发版里同时出现在四处（tag、`<Version>`、zip 文件名、包内 `update-package.json`），不一致时更新器会在用户机器上拒绝安装，所以在包装之前先挡住。
+
+本机发版仍然是这两条（工作流做的就是它们，只是加上了草稿 Release）：
+
+```powershell
+.\publish.ps1                                   # complete + requires-dotnet
+.\publish-compat.ps1 -OutputDirectory artifacts\publish   # 兼容版，SHA256SUMS 合并成四条
 ```
 
 更新器按固定文件名找包：`HD2ModManager-<version>-win-x64-<variant>.zip`，Release 里必须同时有 `SHA256SUMS`。Release 说明正文会原样（纯文本）显示给用户。
+
 
 检查更新的仓库在 `HD2ModManager\Services\AppUpdateService.cs` 的 `Repository` 常量（目前是上游 `AssestinaR/HD2ModManager`；自己 fork 测试时改成自己的仓库）。
