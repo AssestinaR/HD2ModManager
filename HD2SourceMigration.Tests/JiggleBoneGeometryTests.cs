@@ -24,7 +24,11 @@ public sealed class JiggleBoneGeometryTests
 	private const string DefaultModelStem = "survivor_namvet";
 	private const string DefaultAvatarToc = RepoRoot + @"\tmp\rig-lab\avatar\unit_0x4d1c334d294dfa97.toc";
 	private const string DefaultBoneHash = RepoRoot + @"\HD2ModManager\Resources\AssetMetadata\bonehash.txt";
-	private static readonly string ReportPath = RepoRoot + @"\tmp\jiggle-geom-diff.txt";
+	// 报告写进作者本机的 tmp；该目录不存在（CI、别的机器）时落到系统临时目录，
+	// 否则“缺素材就跳过”这条路径自己会因 DirectoryNotFoundException 而失败。
+	private static readonly string ReportPath = Directory.Exists(RepoRoot + @"\tmp")
+		? RepoRoot + @"\tmp\jiggle-geom-diff.txt"
+		: Path.Combine(Path.GetTempPath(), "jiggle-geom-diff.txt");
 
 	[Fact]
 	public void InsertingJiggleBones_MustNotMoveVertices()
