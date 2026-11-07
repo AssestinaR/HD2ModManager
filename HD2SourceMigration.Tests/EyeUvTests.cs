@@ -184,6 +184,46 @@ public sealed class EyeUvTests
 		Assert.Contains(notes, note => note.Contains("同时被别的材质用到", StringComparison.Ordinal));
 	}
 
+	/// <summary>
+	/// 十二万个三角形 + 一个眼球材质：<c>Reproject</c> 必须跑得完。
+	/// <para>
+	/// <b>钉的是"循环体里 stackalloc"这个已经复发过一次的坑。</b>那个写法每一轮都再占一份栈，
+	/// 直到方法返回才回收：12 万三角形 × 16 字节 ≈ 2 MB &gt; 默认 1 MB 栈，进程直接
+	/// 0xC00000FD 消失，连异常都抓不到 —— 所以这条用例失败时不是断言失败，是整个测试宿主没了。
+	/// </para>
+	/// <para>
+	/// 2026-10-28 <c>RetargetedMeshBuilder</c> 撞过一次（19 万三角形），
+	/// 2026-11-04 写 <c>EyeUv.Reproject</c> 时又把同一个写法写了回来，
+	/// 2026-11-07 由「可露凯-速度之星 埃利斯」这份样本第二次撞出来。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void ReprojectSurvivesAModelWithHundredsOfThousandsOfTriangles()
+	{
+		const int triangleCount = 120_000;
+		SourceVertex At(double y, double z) => new(
+			new Vec3(0, y, z),
+			new Vec3(1, 0, 0),
+			0f,
+			1f,
+			new SourceVertexWeight(0, 1),
+			new SourceVertexWeight(0, 0),
+			new SourceVertexWeight(0, 0));
+
+		var triangles = new SourceTriangle[triangleCount];
+		for (var i = 0; i < triangleCount; i++)
+			triangles[i] = new SourceTriangle(0, 1, 2, 0);
+		var geometry = new SourceGeometry([At(-1, -1), At(1, 1), At(1, -1)], triangles, []);
+
+		var (projected, notes) = EyeUv.Reproject(geometry, ["eye_ball"],
+			_ => new EyeColorSource("eye", 0.25, 0.25, 0.75, 0.75));
+
+		// 三个顶点都只被眼球这一个材质用到 ⇒ 都会被重算（1=(+Y,+Z) → U 右、V 小）。
+		Assert.Equal(0.75, projected.Vertices[1].U, 3);
+		Assert.Equal(0.25, projected.Vertices[1].V, 3);
+		Assert.Contains(notes, note => note.Contains("眼球 UV 已按 $iris 的平面投影重算", StringComparison.Ordinal));
+	}
+
 	private static void AssertUv(SourceGeometry projected, SourceGeometry original, int vertexIndex, double u, double v)
 	{
 		Assert.NotSame(original, projected);

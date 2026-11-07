@@ -438,12 +438,15 @@ public static class EyeUv
 		var materialsByVertex = new Dictionary<int, HashSet<int>>();
 		foreach (var triangle in geometry.Triangles)
 		{
-			foreach (var vertex in stackalloc[] { triangle.A, triangle.B, triangle.C })
-			{
-				if (!materialsByVertex.TryGetValue(vertex, out var set))
-					materialsByVertex[vertex] = set = [];
-				set.Add(triangle.MaterialIndex);
-			}
+			// ⚠️ 这里**不能**写 `foreach (var vertex in stackalloc[] { triangle.A, triangle.B, triangle.C })`：
+			// 循环体里的 stackalloc 每一轮都会再占一份栈，直到方法返回才回收。
+			// 12 万个三角形 × 16 字节 ≈ 2 MB，默认 1 MB 栈直接 Stack overflow
+			// （2026-11-07 用户样本「可露凯-速度之星 埃利斯」：0xC00000FD，进程当场消失，
+			// 连异常都抓不到，日志里只剩一句"退出码 -1073741571"）。
+			// 同一个坑 2026-10-28 在 RetargetedMeshBuilder 上踩过一次，这里是把那个写法写了回来。
+			AddMaterialUse(materialsByVertex, triangle.A, triangle.MaterialIndex);
+			AddMaterialUse(materialsByVertex, triangle.B, triangle.MaterialIndex);
+			AddMaterialUse(materialsByVertex, triangle.C, triangle.MaterialIndex);
 		}
 
 		var projected = new Dictionary<int, (double U, double V)>();
@@ -618,6 +621,14 @@ public static class EyeUv
 			+ (Math.Abs(EyeScale - 1.0) > 1e-9 ? $" 眼睛大小倍率 {EyeScale:F2}（HD2_EYE_SCALE）。" : string.Empty));
 
 		return (geometry with { Vertices = vertices2 }, notes);
+	}
+
+	/// <summary>记一次"这个顶点被这个材质用到"。抽成方法只为避开循环里的 stackalloc（见调用点注释）。</summary>
+	private static void AddMaterialUse(Dictionary<int, HashSet<int>> materialsByVertex, int vertex, int materialIndex)
+	{
+		if (!materialsByVertex.TryGetValue(vertex, out var set))
+			materialsByVertex[vertex] = set = [];
+		set.Add(materialIndex);
 	}
 
 	/// <summary>轴下标的可读名字（0=X / 1=Y / 2=Z），只用于报告。</summary>
