@@ -5,7 +5,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <!-- 程序版本号（SemVer）。应用内更新用它判断有没有新版本；发布脚本据此给压缩包命名，所以发版只改这一处。 -->
-    <Version>1.5.0</Version>
+    <Version>1.5.1</Version>
     <ApplicationIcon>Resources\helldivers2.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
