@@ -252,6 +252,8 @@ public static class VpkBulkRebuildService
 			return $"材质包：写出 {outcome.Materials} 个材质";
 
 		return $"{outcome.Units} 个 Unit，引用 {outcome.Materials} 种材质"
-			+ (outcome.Rekeyed ? "，换甲产物已重新生成" : string.Empty);
+			+ (outcome.Rekeyed ? "，换甲产物已重新生成" : string.Empty)
+			// 该重建却没重建：必须挂在这一行上，不能只躺在 Notes 里当细节。
+			+ (outcome.IncompleteReason is { } reason ? $"；**生效层未重建**：{reason}" : string.Empty);
 	}
 }

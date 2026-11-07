@@ -24,6 +24,16 @@ public sealed record VpkRebuildOutcome(
 
 	/// <summary>这次换到了哪件护甲（显示名）；<c>null</c> = 没做换甲。</summary>
 	public string? TargetName { get; init; }
+
+	/// <summary>
+	/// 该做却没做成的那一步的原因（目前只有"生效层没重建"）。
+	/// <para>
+	/// <b>为什么要有它。</b>来源产物已经换好了，所以整次重构建不能算失败；但生效层还停在旧状态，
+	/// 于是"用户以为修好了、游戏里还是旧样子"。只写在 Notes 里会被折叠进细节——实测有用户
+	/// 重构建了全部 vpk2patch Mod、每次其实都失败在换甲那一步，界面却只说"重构建完成"。
+	/// </para>
+	/// </summary>
+	public string? IncompleteReason { get; init; }
 }
 
 /// <summary>
@@ -331,6 +341,7 @@ public static class VpkRebuildService
 			// 否则"点完重构建，界面上的配置还没生效"会再困惑一次。
 			var rekeyed = false;
 			string? targetName = null;
+			string? incompleteReason = null;
 			var wardrobe = await VpkModWardrobeService.ReadAsync(modDirectory, cancellationToken).ConfigureAwait(false);
 			var targets = targetArchiveIds is { Count: > 0 }
 				? targetArchiveIds
@@ -356,8 +367,10 @@ public static class VpkRebuildService
 					headMergeIntoBody: wardrobe.HeadMergeIntoBody).ConfigureAwait(false);
 				if (!rekey.Ok)
 				{
-					// 来源产物已经换好了，换甲失败不该把这件事说成"什么都没做"。
-					notes.Add("来源产物已更新，但重新生成 Overwrite 失败：" + (rekey.Error ?? "原因未知")
+					// 来源产物已经换好了，换甲失败不该把这件事说成"什么都没做"；
+					// 但也不能报成"做完了"——生效层还停在旧状态，用户会以为已经修好。
+					incompleteReason = rekey.Error ?? "原因未知";
+					notes.Add("来源产物已更新，但重新生成 Overwrite 失败：" + incompleteReason
 						+ "。可以在详情页点「应用」重试。");
 				}
 				else
@@ -384,6 +397,7 @@ public static class VpkRebuildService
 				rekeyed, backupDirectory, notes)
 			{
 				TargetName = targetName,
+				IncompleteReason = incompleteReason,
 			};
 		}
 		catch (OperationCanceledException)
