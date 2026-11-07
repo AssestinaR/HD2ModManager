@@ -59,6 +59,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
 	private IReadOnlyList<RuntimeArmorRegistryModel> modelDefinitions = [];
+	// 素体 key → 所属 Mod 在库里现在的名字。素体在界面上叫什么，以它为准（见 ApplySnapshot）。
+	private IReadOnlyDictionary<string, string> customModelOwnerNames = new Dictionary<string, string>();
 	// 加载时见过的素体 key：保存时用它区分「用户删掉的」和「别的进程（VPK 导入）刚加进来的」。
 	private readonly HashSet<string> knownModelKeys = new(StringComparer.Ordinal);
 	private IReadOnlyList<RuntimeArmorRegistryMapping> modelMappings = [];
@@ -479,6 +481,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 			var core = await Task.Run(LoadCatalogCoreAsync).ConfigureAwait(true);
 			if (core is not { } loaded) return;
+			customModelOwnerNames = await Task.Run(ReadCustomModelOwnerNames).ConfigureAwait(true);
 
 			// 第一段：先把护甲列表画出来。图标与"已被覆盖"标记要等闸门和覆盖事实，
 			// 那是第二段的事——它们不该挡住列表本身。
@@ -654,8 +657,15 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		foreach (var model in modelDefinitions)
 		{
 			var syntheticId = SyntheticModelItemId(model.Key);
+			// 名字只认库里 Mod 的当前名字：素体是 Mod 的产物，不该再有第二个名字——
+			// 以前它沿用转换时写进 custom-model.json 的名字，Mod 在库里一改名两边就对不上，
+			// 用户在库里根本搜不到护甲页里那条素体。找不到所属 Mod 时才退回登记的名字。
 			Choices[syntheticId] = RuntimeArmorChoiceViewModel.CustomModel(
-				syntheticId, model.Name ?? model.Key, model.Key);
+				syntheticId,
+				customModelOwnerNames.TryGetValue(model.Key, out var ownerName) && !string.IsNullOrWhiteSpace(ownerName)
+					? ownerName
+					: model.Name ?? model.Key,
+				model.Key);
 		}
 		modelMappings = [];
 		pieceOverrides = snapshot.Document.PieceOverrideDefinitions;
@@ -966,6 +976,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var removed = Mappings.Where(row => memberIds.Contains(row.Source.ItemId)).ToArray();
 		if (removed.Length == 0)
 		{
+			notifications.Show(
+				"所选视觉来源名下没有映射目标，无需解除。",
+				NotificationLevel.Info,
+				TimeSpan.FromSeconds(5),
+				"护甲注册");
 			selection.Clear();
 			return;
 		}
@@ -1169,9 +1184,77 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		return values.All(id => Mappings.Any(mapping => mapping.Target.ItemId == id));
 	}
 
+	/// <summary>
+	/// 选中的东西里有自定义素体来源时，「解除视觉对象」是被刻意拒绝的（素体依附 Mod，只能随 Mod 删除）。
+	/// 以前这条拒绝是纯静默——按钮亮着、点了没反应。这里把原因和归属 Mod 的名字说出来。
+	/// </summary>
+	/// <summary>
+	/// 由 <c>custom-model.json</c> 所在目录反查库里这个 Mod <b>现在的</b>名字。
+	/// 素体名是转换时写死的（常常就是目录名/创意工坊 ID），用户在库里改名后两边对不上，
+	/// 提示里只给素体名等于没说该移除哪个 Mod；所以优先给库里的显示名，并附上目录名方便定位。
+	/// </summary>
+	private string ResolveOwnerModName(string customModelDirectory, bool includeFolder = true)
+	{
+		var folder = Path.GetFileName(customModelDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+		try
+		{
+			var relative = Path.GetRelativePath(library.ModsRootDirectory, customModelDirectory)
+				.Replace('\\', '/');
+			var node = library.Snapshot.Nodes.Values
+				.Where(candidate => !string.IsNullOrEmpty(candidate.RelativePath)
+					&& (relative.Equals(candidate.RelativePath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)
+						|| relative.StartsWith(candidate.RelativePath.Replace('\\', '/') + "/", StringComparison.OrdinalIgnoreCase)))
+				.OrderByDescending(candidate => candidate.RelativePath.Length)
+				.FirstOrDefault();
+			if (node is null) return folder;
+			var topFolder = node.RelativePath.Replace('\\', '/').Split('/')[0];
+			return !includeFolder || string.Equals(node.Metadata.Name, topFolder, StringComparison.OrdinalIgnoreCase)
+				? node.Metadata.Name
+				: $"{node.Metadata.Name}（文件夹 {topFolder}）";
+		}
+		catch (ArgumentException)
+		{
+			return folder;
+		}
+	}
+
+	/// <summary>素体 key → 它所属 Mod 在库里<b>现在</b>的名字。扫盘，只在刷新时算一次，不进 RebuildProjections。</summary>
+	private IReadOnlyDictionary<string, string> ReadCustomModelOwnerNames()
+	{
+		var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var (key, directory) in VpkCustomModelFile.ReadOwnerDirectories(library.ModsRootDirectory))
+			result[key] = ResolveOwnerModName(directory, includeFolder: false);
+		return result;
+	}
+
+	private bool TryExplainCustomSourceBound(IReadOnlyList<string> keys)
+	{
+		var bound = keys
+			.SelectMany(key => FindDisplayedItem(key)?.MemberItemIds ?? [])
+			.Distinct()
+			.Select(id => Providers.FirstOrDefault(provider => provider.IsCustomModel && provider.MemberItemIds.Contains(id)))
+			.Where(provider => provider is not null)
+			.Select(provider => provider!)
+			.DistinctBy(provider => provider.ModelKey)
+			.ToArray();
+		if (bound.Length == 0) return false;
+
+		var text = string.Join("、", bound.Select(provider => $"「{provider.Name}」"));
+		notifications.Show(
+			$"{text} 是模组的素体，不能在这里单独解除；请在模组库里移除同名模组。若只想重配目标，请用「解除映射目标」。",
+			NotificationLevel.Warning,
+			TimeSpan.FromSeconds(12),
+			"护甲注册");
+		return true;
+	}
+
 	public void ReleaseToAvailable(IReadOnlyList<string> keys)
 	{
-		if (!CanReleaseToAvailable(keys)) return;
+		if (!CanReleaseToAvailable(keys))
+		{
+			TryExplainCustomSourceBound(keys);
+			return;
+		}
 		var ids = keys
 			.SelectMany(key => FindDisplayedItem(key)?.MemberItemIds ?? [])
 			.ToHashSet();
