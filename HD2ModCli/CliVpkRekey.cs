@@ -184,20 +184,7 @@ internal static class CliVpkRekey
 		// 计划里会变成"把 Unit 搬到它自己身上"，那不是一次换甲。用户点"转回自定义素体"
 		// 想要的结果只是"回到刚转出来的样子"，而那份 patch 一直都在 vpk2patch/ 里——
 		// 直接把它复制进 Overwrite 就是最忠实的答案，也最快（不读游戏数据、不重建几何）。
-		//
-		// **例外：恒等目标 + 头身合并**。这条路是真的要改 patch 的——把素体的头从"头盔槽件"
-		// 挪到胸部外层，头盔槽件一件不写。只复制来源做不到这件事，必须走计划链路。
-		var identityTarget = IsIdentityTarget(source, selected);
-		var customModelIdentity = identityTarget && selected.Count == 1 && selected[0].IsCustomModel;
-		// 恒等目标上先算一次"到底能不能合并"：只有胸部件真有 ≥2 层可承载时才走计划链路
-		// （那会真的重写 patch：头挪到外层、头盔槽件不写）。算不出来就仍旧原样退回来源，
-		// 并照实说明原因——不能让用户看到开关翻了、游戏里却没变化。
-		HeadBodyMerge? identityMerge = null;
-		var identityMergeState = VpkHeadMergeState.Off;
-		if (customModelIdentity && mergeHeadIntoArmour)
-			identityMerge = ResolveHeadBodyMerge(source, selected, [], out identityMergeState);
-
-		if (identityTarget && identityMerge is null)
+		if (IsIdentityTarget(source, selected))
 		{
 			var restored = await RestoreSourceAsync(
 				sourcePatch, Path.GetDirectoryName(sourcePatch)!, destinationDirectory, cancellationToken).ConfigureAwait(false);
@@ -223,10 +210,8 @@ internal static class CliVpkRekey
 					"目标就是这个 Mod 自己的素体：已把来源 patch 原样退回 Overwrite（Unit 键不变，开关继续有效）。"
 						+ (closedCount == 0 ? "当前没有关掉的 section。" : $"已把 {closedCount} 个 section 烘成关闭。"),
 					.. (mergeHeadIntoArmour
-						? [customModelIdentity
-							? "头身合并这一次没有生效：这个素体的胸部槽位不足两层可承载，装不下「身体 + 头」两件几何，"
-								+ "本次仍把来源原样退回。给素体补一件胸部外层（pieceType 1）的件之后再试。"
-							: "头身合并在这种目标上不适用：来源与目标共用同一批 Unit，没有可挪的落点。"]
+						? ["头身合并在这种目标上不适用：这个素体本来就是「头 + 身体」一整套"
+							+ "（头是它自己的头盔槽件），没有独立的头盔 item 可隐藏。换成一件游戏护甲才会生效。"]
 						: Array.Empty<string>()),
 					.. identityBake.Warnings,
 				])
@@ -235,7 +220,7 @@ internal static class CliVpkRekey
 				TargetNames = selected.Select(entry => entry.DisplayName).Distinct(StringComparer.Ordinal).ToArray(),
 				RestoredFromSource = true,
 				HeadMerge = mergeHeadIntoArmour
-					? (customModelIdentity ? identityMergeState : VpkHeadMergeState.NotApplicableCustomModel)
+					? VpkHeadMergeState.NotApplicableCustomModel
 					: VpkHeadMergeState.Off,
 			};
 		}
@@ -609,12 +594,7 @@ internal static class CliVpkRekey
 		{
 			// 合并之后，头盔套件一件都不写：它的件全部交给 AutoHideUnmappedTargetUnits 顶成隐藏壳。
 			// 游戏里那件头盔 item 于是不再有模型，头由护甲自己带着。
-			// 注意：自定义素体目标下"护甲"与"头盔"是**同一个条目**（它的 Helmet 槽件才是头盔 item
-			// 的内容），那时不能整个跳过——跳过等于什么都不写。那种情况交给下面的逐件循环：
-			// Helmet 件因为 merge 非空而拿到 null 来源，自然被隐藏。
-			if (merge is not null
-				&& !string.Equals(merge.HelmetArchiveId, merge.ArmourArchiveId, StringComparison.OrdinalIgnoreCase)
-				&& target.ArchiveId.Equals(merge.HelmetArchiveId, StringComparison.OrdinalIgnoreCase))
+			if (merge is not null && target.ArchiveId.Equals(merge.HelmetArchiveId, StringComparison.OrdinalIgnoreCase))
 			{
 				notes.Add($"{target.DisplayName} 的件全部隐藏（头身合并：头已经并进 {merge.ArmourName}）。");
 				continue;
@@ -814,19 +794,9 @@ internal static class CliVpkRekey
 		var helmetKit = targets.FirstOrDefault(target => target.Parts.Count != 0
 			&& target.Parts.All(part => part.PartKind == UnitMeshPartKind.Helmet));
 		var armourKit = targets.FirstOrDefault(target => target.Parts.Any(part => part.PartKind == UnitMeshPartKind.Torso));
-		if (armourKit is null)
+		if (helmetKit is null || armourKit is null)
 		{
 			// 目标不是"护甲 + 配套头盔"这一对：没有独立的头盔 item 可隐藏，也就没有可合并的东西。
-			state = VpkHeadMergeState.UnavailableNoHelmetKit;
-			return null;
-		}
-
-		// 自定义素体：**同一个条目**同时扮演"护甲"和"头盔"两个角色——它的 Torso 槽件是身体，
-		// Helmet 槽件就是那件头盔 item 的内容。所以没有独立的头盔套件时，让这个条目自己兼任，
-		// 合并的意思仍然是"头挪进胸部的外层、Helmet 槽件一件都不写"（于是头盔 item 没有模型）。
-		helmetKit ??= armourKit.Parts.Any(part => part.PartKind == UnitMeshPartKind.Helmet) ? armourKit : null;
-		if (helmetKit is null)
-		{
 			state = VpkHeadMergeState.UnavailableNoHelmetKit;
 			return null;
 		}
@@ -851,20 +821,9 @@ internal static class CliVpkRekey
 			helmetKit.ArchiveId, helmetKit.DisplayName,
 			BodyLayer: layers[1],
 			HeadLayer: layers[0]);
-		if (string.Equals(merge.HelmetArchiveId, merge.ArmourArchiveId, StringComparison.OrdinalIgnoreCase))
-		{
-			// 自定义素体：护甲与头盔是同一个条目，被隐藏的是它的**头盔槽件**，不是"这个条目的件"。
-			notes.Add($"头身合并（自定义素体）：头落到 {merge.ArmourName} 胸部槽位的外层（{merge.HeadLayer}）、"
-				+ $"身体落到内层（{merge.BodyLayer}）；头盔槽件一件都不写，"
-				+ "于是游戏里那件头盔 item 没有模型，头由护甲自己带着。");
-		}
-		else
-		{
-			notes.Add($"头身合并：头落到 {merge.ArmourName} 的胸部槽位最外层（{merge.HeadLayer}）、"
-				+ $"身体落到次外层（{merge.BodyLayer}）；{merge.HelmetName} 的件全部隐藏，"
-				+ "于是游戏里那件头盔 item 没有模型，头由护甲自己带着。");
-		}
-
+		notes.Add($"头身合并：头落到 {merge.ArmourName} 的胸部槽位最外层（{merge.HeadLayer}）、"
+			+ $"身体落到次外层（{merge.BodyLayer}）；{merge.HelmetName} 的件全部隐藏，"
+			+ "于是游戏里那件头盔 item 没有模型，头由护甲自己带着。");
 		state = VpkHeadMergeState.Applied;
 		return merge;
 	}

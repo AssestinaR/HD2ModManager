@@ -2831,7 +2831,8 @@ public static class CliApplication
 				unitIdSeed: reusedUnitIdSeed,
 				eyeFrame: EyeFrame.FromBones(inputs.Model.Bones),
 				noDrawPolicy: ResolveNoDrawPolicy(invocation.Options),
-				idNamespace: ResolveIdNamespace(invocation.Options)).ConfigureAwait(false);
+				idNamespace: ResolveIdNamespace(invocation.Options),
+				mergeHeadIntoTorso: MergeHeadIntoArmour(invocation.Options)).ConfigureAwait(false);
 
 			if (segmentationNotes.Count != 0)
 				package = package with { Warnings = [.. package.Warnings, .. segmentationNotes] };
@@ -2858,7 +2859,8 @@ public static class CliApplication
 						package.Units.Where(unit => unit.IsValid)
 							.SelectMany(unit => unit.RegistryPieces.Select(piece =>
 								new RuntimeArmorRegistryModelPiece(
-									piece.Body, unit.UnitId, piece.Slot, piece.PieceType, IsDefaultBase: piece.IsDefaultBase)))
+									piece.Body, unit.UnitId, piece.Slot, piece.PieceType, IsDefaultBase: piece.IsDefaultBase)
+									{ MovedFrom = piece.MovedFrom }))
 							.ToArray(),
 						registeredName);
 					// 写进 Mod 目录的那份也必须带上这个名字：它是"这具素体属于哪个 Mod"的凭证，
@@ -3538,6 +3540,7 @@ public static class CliApplication
 				materialScope: scope,
 				noDrawPolicy: ResolveNoDrawPolicy(options),
 				idNamespace: ResolveIdNamespace(options),
+				mergeHeadIntoTorso: MergeHeadIntoArmour(invocation.Options),
 				onProgress: ReportAssembleProgress).ConfigureAwait(false);
 
 			return new(full, "material", outputDirectory, null, 0, 0, materialPackage,
@@ -3717,7 +3720,8 @@ public static class CliApplication
 			// 把这些材质（--cutout-geometry）的镂空裁成几何：裁完才能走 advanced 拿金属度。
 			cutoutGeometryMaterials: ResolveCutoutGeometryMaterials(options),
 			idNamespace: ResolveIdNamespace(options),
-			onProgress: ReportAssembleProgress).ConfigureAwait(false);
+			mergeHeadIntoTorso: MergeHeadIntoArmour(invocation.Options),
+				onProgress: ReportAssembleProgress).ConfigureAwait(false);
 
 		if (segmentationNotes.Count != 0)
 			package = package with { Warnings = [.. package.Warnings, .. segmentationNotes] };
@@ -3825,7 +3829,8 @@ public static class CliApplication
 					package.Units.Where(unit => unit.IsValid)
 						.SelectMany(unit => unit.RegistryPieces.Select(piece =>
 							new RuntimeArmorRegistryModelPiece(
-								piece.Body, unit.UnitId, piece.Slot, piece.PieceType, IsDefaultBase: piece.IsDefaultBase)))
+								piece.Body, unit.UnitId, piece.Slot, piece.PieceType, IsDefaultBase: piece.IsDefaultBase)
+									{ MovedFrom = piece.MovedFrom }))
 						.ToArray(),
 					registeredName);
 				await File.WriteAllTextAsync(

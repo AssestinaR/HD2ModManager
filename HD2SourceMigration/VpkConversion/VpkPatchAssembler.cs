@@ -70,7 +70,18 @@ public sealed record VpkUnitPlan(
 /// 配件才用 <c>body=3</c>（Any），层号从 1 起，那是真正新增的位点。
 /// </para>
 /// </summary>
-public sealed record VpkRegistryPiece(uint Body, uint Slot, uint PieceType, bool IsDefaultBase);
+public sealed record VpkRegistryPiece(uint Body, uint Slot, uint PieceType, bool IsDefaultBase)
+{
+	/// <summary>
+	/// 这一件是**被挪过来的**时，写下它原来的格子（形如 <c>slot0/layer0</c>）。
+	/// <para>
+	/// 只给"头身合并"用：素体的头原本是「头盔槽 / 层 0」，合并后被挪到胸部的某个空层。
+	/// 没有这个字段，事后没人能证明"胸甲层 1 的那件就是头盔层 0 挪过去的"——看到的只是
+	/// 两条互不相干的记录。空 = 原生件。
+	/// </para>
+	/// </summary>
+	public string? MovedFrom { get; init; }
+}
 
 /// <summary>
 /// 一个 section 在源侧是谁：材质裸名 + 它算出来的材质 id。
@@ -302,6 +313,103 @@ public sealed class VpkPatchAssembler
 	/// </para>
 	/// <para>回调会在<b>工作线程</b>上被调用，实现方自己负责封送。</para>
 	/// </param>
+	/// <summary>
+	/// 头身合并：把"头"那一件从「头盔槽 / 层 0」挪到胸部槽位的**第一个空层**，并记下原格子。
+	/// <para>
+	/// <b>为什么扫空位而不是写死层 1。</b>素体的胸部默认只有本体件（层 0），所以第一个空位通常
+	/// 就是 1；但有的素体还带胸部护甲件（层 1 已被占），写死就会把那件盖掉。这里扫 0→1→2，
+	/// 全被占用就**明确报错**——静默合并等于悄悄丢一件，用户只会看到"有块东西不见了"。
+	/// </para>
+	/// <para>
+	/// <b>为什么要写 <see cref="VpkRegistryPiece.MovedFrom"/>。</b>合并后注册表里只剩一条
+	/// "胸部的某层有件"，没有这个字段就没人能证明它是头盔层 0 挪过来的，也没法据此还原。
+	/// </para>
+	/// </summary>
+	internal static IReadOnlyList<VpkRegistryPiece> MoveHeadToFirstFreeTorsoLayer(
+		IReadOnlyList<VpkRegistryPiece> pieces,
+		int headIndex,
+		uint torsoSlot,
+		int maxLayer = 2)
+	{
+		ArgumentNullException.ThrowIfNull(pieces);
+		if (headIndex < 0 || headIndex >= pieces.Count)
+			throw new ArgumentOutOfRangeException(nameof(headIndex));
+
+		var used = new HashSet<uint>();
+		for (var i = 0; i < pieces.Count; i++)
+		{
+			if (i == headIndex) continue;
+			if (pieces[i].Slot == torsoSlot) used.Add(pieces[i].PieceType);
+		}
+
+		var head = pieces[headIndex];
+		for (uint layer = 0; layer <= maxLayer; layer++)
+		{
+			if (used.Contains(layer)) continue;
+			var moved = new VpkRegistryPiece[pieces.Count];
+			for (var i = 0; i < pieces.Count; i++)
+			{
+				moved[i] = i == headIndex
+					? pieces[i] with
+					{
+						Slot = torsoSlot,
+						PieceType = layer,
+						MovedFrom = $"slot{head.Slot}/layer{head.PieceType}",
+					}
+					: pieces[i];
+			}
+
+			return moved;
+		}
+
+		throw new InvalidOperationException(
+			$"头身合并失败：胸部槽位（slot {torsoSlot}）的 0..{maxLayer} 层都已占用，没有空位放头。"
+			+ "请先去掉一件胸部护甲件，或关闭「将头盔合并到身体」。");
+	}
+
+	/// <summary>
+	/// 头身合并的落点：头件所在的 plan 与胸部槽位都从**计划本身**算，不写死槽位号。
+	/// </summary>
+	private static void MergeHeadIntoTorso(
+		IReadOnlyList<VpkUnitPlan> plans,
+		IReadOnlyList<VpkRegistryPiece>[] registryPiecesByPlan)
+	{
+		var headIndex = -1;
+		uint? torsoSlot = null;
+		for (var i = 0; i < plans.Count; i++)
+		{
+			if (plans[i].Group.Kind != MeshGroupKind.BodyPart) continue;
+			if (plans[i].Group.Region == BodyRegion.Head && headIndex < 0) headIndex = i;
+			if (plans[i].Group.Region == BodyRegion.Chest && registryPiecesByPlan[i] is { Count: > 0 })
+				torsoSlot ??= registryPiecesByPlan[i][0].Slot;
+		}
+
+		if (headIndex < 0 || registryPiecesByPlan[headIndex] is not { Count: > 0 }) return;
+		if (torsoSlot is null)
+		{
+			throw new InvalidOperationException(
+				"头身合并失败：这个模型没有胸部部件，没有可以放头的地方。");
+		}
+
+		// 占用情况要按**整具模型**算：胸部层可能被任何一个 plan 的件占着。
+		var flat = new List<VpkRegistryPiece>();
+		var offsets = new int[registryPiecesByPlan.Length];
+		for (var i = 0; i < registryPiecesByPlan.Length; i++)
+		{
+			offsets[i] = flat.Count;
+			if (registryPiecesByPlan[i] is { } pieces) flat.AddRange(pieces);
+		}
+
+		var merged = MoveHeadToFirstFreeTorsoLayer(flat, offsets[headIndex], torsoSlot.Value);
+		var cursor = 0;
+		for (var i = 0; i < registryPiecesByPlan.Length; i++)
+		{
+			var count = registryPiecesByPlan[i]?.Count ?? 0;
+			registryPiecesByPlan[i] = merged.Skip(cursor).Take(count).ToArray();
+			cursor += count;
+		}
+	}
+
 	public async ValueTask<VpkPackageResult> AssembleAsync(
 		IReadOnlyList<VpkUnitPlan> plans,
 		RetargetResult? retarget,
@@ -324,6 +432,9 @@ public sealed class VpkPatchAssembler
 		EyeFrame? eyeFrame = null,
 		// 要把「镂空」变成几何的材质（见 CutoutMesh）。空 = 不做，行为与以前完全一致。
 		IReadOnlyCollection<string>? cutoutGeometryMaterials = null,
+		// 头身合并：把头的注册件从「头盔槽 / 层 0」挪到胸部的第一个空层（见 MergeHeadIntoTorso）。
+		// **不改 patch 字节**，只改注册表条目，于是头盔 item 没有模型、头跟着护甲走。
+		bool mergeHeadIntoTorso = false,
 		Action<string, int, int>? onProgress = null)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
@@ -481,6 +592,11 @@ public sealed class VpkPatchAssembler
 					plan.Donor.Model.CustomizationInfo.Weight,
 					$"HelldiverCustomizationPieceType_{plan.PieceTypeName}");
 		}
+
+		// ①a' 头身合并：把头的注册件从「头盔槽 / 层 0」挪到胸部的第一个空层（不会改任何 patch 字节，
+		// 只改注册表条目）。要在候选构造之前做，后面的 Unit 注册与 sections 都读这份 pieces。
+		if (mergeHeadIntoTorso)
+			MergeHeadIntoTorso(effectivePlans, registryPiecesByPlan);
 
 		// ①b 把 jiggle 骨的**合成节点**追加进 TransformInfo（必须在建网格之前）。
 		// 网格是按 `NameHashes[目标骨下标]` 取哈希的：合成骨不进表，那条路径就会拿到越界下标，
