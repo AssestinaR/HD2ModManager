@@ -785,7 +785,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			.Where(node => node.PatchGroups.Count > 0
 				|| node.Metadata.IsLogicalContainer
 				|| (string.IsNullOrEmpty(NormalizeRelativePath(node.RelativePath))
-					&& ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)))
+					&& (ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)
+						// 根上只有来源 VPK 也是合法条目：载荷由重构建产出（转换 → 编译）。
+						|| ObjectTreeImporter.HasSourceVpk(sourceRootDirectory))))
 			.OrderBy(node => NormalizeRelativePath(node.RelativePath), StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 		if (payloadNodes.Length == 0)

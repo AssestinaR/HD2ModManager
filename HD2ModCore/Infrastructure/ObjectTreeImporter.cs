@@ -47,7 +47,15 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 				&& ModNodeStorageProtocol.IsLogicalDirectory(dir.FullName);
 			var hasExternalInstallFiles = dir.FullName.Equals(rootDir.FullName, StringComparison.OrdinalIgnoreCase)
 				&& ExternalInstallFileFactsService.HasRecognizedFiles(dir.FullName);
-			if (patchGroups.Count == 0 && option is null && !hasExternalInstallFiles && !isLogicalContainer)
+			// **根上只有来源 VPK 也是合法条目。**
+			//
+			// vpk2patch / sectional 类的**来源**就是权威事实：`sectional/` 与 `Overwrite/` 是派生物，
+			// 由重构建（转换 → 编译）产出。所以"解压 → 建条目 → 重构建"这条链的第一步
+			// 不能因为"还没有 patch"被判成空目录丢弃。
+			// 只看根目录：子目录里的 .vpk 属于别的结构（选项/附属包），不在这里扩语义。
+			var hasSourceVpk = dir.FullName.Equals(rootDir.FullName, StringComparison.OrdinalIgnoreCase)
+				&& HasSourceVpk(dir.FullName);
+			if (patchGroups.Count == 0 && option is null && !hasExternalInstallFiles && !isLogicalContainer && !hasSourceVpk)
 			{
 				continue;
 			}
@@ -122,6 +130,21 @@ public sealed class ObjectTreeImporter : IObjectTreeImporter
 
 	// 载荷目录 = 节点根 + （存在时的）`vpk2patch/`。后者是 vpk2patch 转换产物的家：
 	// 那些 patch 本来就不在根上，所以必须算进这个节点的内容，否则「导入了但一个 patch 都没有」。
+	/// <summary>这个目录根上有没有来源 VPK（`*.vpk`，顶层）。</summary>
+	internal static bool HasSourceVpk(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory)
+				&& Directory.EnumerateFiles(directory, "*.vpk", SearchOption.TopDirectoryOnly).Any();
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or DirectoryNotFoundException)
+		{
+			return false;
+		}
+	}
 	private List<PatchGroupKey> CollectPatchGroups(DirectoryInfo dir)
 	{
 		var patchGroups = new HashSet<PatchGroupKey>();
