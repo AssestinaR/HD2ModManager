@@ -607,8 +607,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
-			// 换甲后 section 表是新的，树必须重画。
-			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
+			// **不重载整页**：树与组件取自**权威侧**（sectional 的 section 表），
+			// 换甲只改 `Overwrite/` 里那份产物，权威侧一个字节都没动。
+			// 以前这里重载一次，整列组件树 + 材质列表被重建，卡面就抖一下。
 		}
 		catch (OperationCanceledException)
 		{
@@ -858,16 +859,23 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 说什么由**实际结果**决定，而不是由开关状态决定。
 			// 开关打开却什么也没合并（目标是自己素体 / 目标胸部只有一层）时，
 			// 一句"已开启"会让用户下次进游戏发现没变化，然后再也不信这个开关。
-			var summary = outcome.Rekey?.HeadMerge switch
-			{
-				"applied" => "头身合并已开启：头并进护甲，头盔 item 不再有模型。",
+			// **自身素体**（不换甲）这条路没有 Rekey 结果，以前会掉进 `_` 分支，
+			// 于是不管开还是关都报"头身合并已关闭"。这里先按"有没有换甲"分开说。
+			var summary = outcome.Rekeyed
+				? outcome.Rekey?.HeadMerge switch
+				{
+					"applied" => "头身合并已开启：头并进护甲，头盔 item 不再有模型。",
 				"custom-model" => "开关已记录，但对当前目标不生效：这个 Mod 自己的素体本来就是"
 					+ "「头 + 身体」一整套，没有独立的头盔 item 可隐藏。换成一件游戏护甲才会合并。",
 				"single-layer" => "开关已记录，但这一次没有合并：目标护甲的胸部槽位只有一层，"
 					+ "装不下「身体 + 头」两件几何。",
-				"no-helmet-kit" => "开关已记录，但当前目标没有配套头盔归档，无从合并。",
-				_ => "头身合并已关闭：头回到头盔套件，需要穿配套头盔才有头。",
-			};
+					"no-helmet-kit" => "开关已记录，但当前目标没有配套头盔归档，无从合并。",
+					_ => "头身合并已关闭：头回到头盔套件，需要穿配套头盔才有头。",
+				}
+				// 自身素体：合并只改注册表（头件的挂载点），本来就没有独立的头盔 item。
+				: enabled
+					? "头身合并已开启：头件已挂到胸部槽位第 1 层。"
+					: "头身合并已关闭：头件回到头盔槽位。";
 			var warningText = (outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count == 0
 				? string.Empty
 				: " " + string.Join(" ", (outcome.Rekey?.Warnings ?? Array.Empty<string>()).Take(2))
@@ -880,7 +888,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
-			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
+			// **不重载整页**：这次编译只改了 `Overwrite/custom-model.json`，
+			// 组件树（取自权威 sectional）与材质列表都没变。重载会把它们重建一遍，
+			// 表现就是"每翻一次开关，卡面跟着抖一下"。
 		}
 		catch (OperationCanceledException)
 		{

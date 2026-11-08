@@ -87,10 +87,15 @@
                         <TextBlock Grid.Column="0" Text="section 组件开关"
                                    Foreground="{StaticResource TextPrimary}"
                                    VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <!--
+                            ⚠ **不要用 Visibility 绑这里**：那会让这一行整行消失/出现，
+                            卡面高度跟着变——用户看到的就是"每点一次按钮，卡片抖一下"。
+                            置灰（IsEnabled）不改变布局，静态卡才真的是静态。
+                        -->
                         <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="编辑 section 组"
                                 Command="{Binding OpenSectionalEditorCommand}" Margin="12,0,0,0" Padding="14,6"
                                 VerticalAlignment="Center"
-                                Visibility="{Binding CanOpenSectionalEditor, Converter={StaticResource BoolToVis}}"/>
+                                IsEnabled="{Binding CanOpenSectionalEditor}"/>
                     </Grid>
                     <!--
                         头身合并：头并进护甲套件的胸部槽位，于是游戏里那件头盔 item 不再有模型
