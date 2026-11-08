@@ -292,4 +292,40 @@ public sealed class Hd2MaterialTemplateTests
 		Assert.True(errors.IsEmpty,
 			"HasTextureSlot 并发调用抛异常：" + string.Join("；", errors.Select(error => error.GetType().Name + ": " + error.Message)));
 	}
+
+	/// <summary>
+	/// <c>cutoutmetal</c> 是<b>从游戏根材质生成</b>的模板，不是 SDK 随包发的那些 ——
+	/// 所以它的结构必须被钉住，否则"哪天谁改了一行生成脚本"会让整档材质悄悄错位。
+	/// <para>
+	/// 三个槽的顺序是**契约**：转换器按 <c>AlphaClipNormalSlot=0 / AlphaClipOpacitySlot=1 /
+	/// AlphaClipBaseColorSlot=2</c> 写，而这个模板就是照这个顺序生成的（与 <c>alphaclip</c> 同名同序）。
+	/// 顺序一错，底色会写进镂空槽、遮罩会写进金属槽 —— 症状是"整件东西穿了孔还发白"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void CutoutMetalTemplateKeepsTheSlotOrderTheConverterWritesByIndex()
+	{
+		var library = Hd2MaterialTemplateLibrary.Locate();
+		Assert.Contains("cutoutmetal", library.Names);
+
+		var template = library.Load("cutoutmetal");
+
+		// 父材质 = 游戏里的根材质 0xec555165044bb60a（BaseColorMetalMap + OpacityClipMap + …）。
+		Assert.Equal(0xec555165044bb60aUL, template.ParentMaterialId);
+
+		Assert.Equal(
+			[
+				0x1d57dcf3U, // NormalXyAoRoughMap
+				0xcbde381bU, // OpacityClipMap
+				0x848ba63bU, // BaseColorMetalMap
+				0x13ce14bbU, // ParallaxMap（我们不用，留空）
+			],
+			template.TextureKeys.Select(key => key).ToArray());
+
+		// 槽里的贴图 id 必须全空：模板只带着色器契约，贴图由每个材质自己填。
+		Assert.All(template.TextureIds, id => Assert.Equal(0UL, id));
+
+		// 变量表跟着根材质走（7 个）：这四个 *Opacity 是"哪张图的 alpha 参与不透明度"的开关。
+		Assert.Equal(7, template.Variables.Count);
+	}
 }

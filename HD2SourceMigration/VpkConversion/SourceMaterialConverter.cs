@@ -41,6 +41,24 @@ public enum CutoutTemplate
 	/// </para>
 	/// </summary>
 	Original = 1,
+
+	/// <summary>
+	/// <c>cutoutmetal</c>：从游戏数据里找出来的「镂空 + 金属」档位
+	/// （根材质 <c>0xec555165044bb60a</c>，全游戏 154 个材质用它）。
+	/// <para>
+	/// <b>为什么是它。</b>它的槽表 = <c>NormalXyAoRoughMap</c> / <c>OpacityClipMap</c> /
+	/// <c>BaseColorMetalMap</c>（与 <c>alphaclip</c> 三个槽<b>同名同序</b>）+ 一个 <c>ParallaxMap</c>。
+	/// 也就是说：做 A/B 时唯一多出来的变量就是"共享了另一个着色器"，槽位语义不需要重新猜。
+	/// 这个档位本身带 <c>BaseColorMetalMap</c>，理论上金属度是可表达的 ——
+	/// 至于是靠它的 A 通道还是别处，只能实机定（见 <see cref="CutoutMetalAlpha"/>）。
+	/// </para>
+	/// <para>
+	/// 模板文件由 <c>tools/ref/HD2SDK-CommunityEdition/materials/cutoutmetal.material</c> 提供，
+	/// 是<b>从游戏根材质直接生成的</b>（parent 指向根材质、槽键按上面的顺序、贴图 id 全清），
+	/// 不是手写常量表。重新生成的方式见 docs/agent/hd2-shader-inventory.md。
+	/// </para>
+	/// </summary>
+	CutoutMetal = 2,
 }
 
 /// <summary>
@@ -552,6 +570,20 @@ public sealed class SourceMaterialConverter
 	public const double CutoutMetalLevel = 0.58;
 
 	/// <summary>
+	/// <c>cutoutmetal</c> 档里写进 <c>BaseColorMetalMap.alpha</c> 的金属度（255 = 全金属）。
+	/// <para>
+	/// <b>这是一个探针，不是结论。</b>`alphaclip` 的同一个通道曾被认为"写金属度无效"
+	/// （docs/vpk-cutout-strategies-20261101.md §5），但那次结论的前提是"部署上去的确实是这份字节"——
+	/// 而本轮实测发现过部署链路把旧包留在原地（patch_5 里底图仍是源侧 17.4，转换器算的是 200）。
+	/// 所以需要在<b>可验证字节</b>的前提下重测一次。
+	/// </para>
+	/// <para>
+	/// 只对这一档生效：<c>advanced</c> 的 alpha 是自发光（写满整件护甲会发光），不能碰。
+	/// </para>
+	/// </summary>
+	public const byte CutoutMetalAlpha = 255;
+
+	/// <summary>
 	/// <see cref="CutoutStrategy.AdvancedOpacity"/> 的陡度。抄自游戏本体角色材质
 	/// （父 id <c>0x8f669f365f24594e</c>）的 <c>OpacitySharpness</c>。
 	/// </summary>
@@ -893,15 +925,29 @@ public sealed class SourceMaterialConverter
 	{
 		if (!useAlphaClip)
 			return "advanced";
-		return cutoutTemplate == CutoutTemplate.Original ? "original" : "alphaclip";
+		return cutoutTemplate switch
+		{
+			CutoutTemplate.Original => "original",
+			CutoutTemplate.CutoutMetal => "cutoutmetal",
+			_ => "alphaclip",
+		};
 	}
 
 	/// <summary>这个模板是不是 <c>original</c>（本体角色材质那一套 13 槽）。</summary>
 	private static bool IsOriginalTemplate(string templateName)
 		=> string.Equals(templateName, "original", StringComparison.OrdinalIgnoreCase);
 
+	/// <summary>
+	/// 这个模板是不是「镂空 + 金属」那档（根材质 <c>0xec555165044bb60a</c>）。
+	/// <para>它的三个主槽与 <c>alphaclip</c> 同名同序，所以共用同一条写入路径，
+	/// 只有"金属度往哪写"和"脏污/天气变量存不存在"两处需要分开。</para>
+	/// </summary>
+	private static bool IsCutoutMetalTemplate(string templateName)
+		=> string.Equals(templateName, "cutoutmetal", StringComparison.OrdinalIgnoreCase);
+
 	private static bool IsAlphaClipTemplate(string templateName)
-		=> templateName.StartsWith("alphaclip", StringComparison.OrdinalIgnoreCase);
+		=> templateName.StartsWith("alphaclip", StringComparison.OrdinalIgnoreCase)
+			|| IsCutoutMetalTemplate(templateName);
 
 	/// <summary>
 	/// 这个 VMT 是不是<b>没有真底色</b>（<c>$basetexture</c> 缺失，或写着占位值
@@ -1165,6 +1211,48 @@ public sealed class SourceMaterialConverter
 
 	/// <summary>贴图 id：名字 + 本转换器的命名空间（见 <see cref="DeriveMaterialId"/>）。</summary>
 	public ulong DeriveTextureId(string textureName) => Hd2AssetId.Texture(textureName, idNamespace);
+
+	/// <summary>
+	/// 派生贴图的 id = <b>名字 + 内容指纹</b>。
+	/// <para>
+	/// <b>为什么名字不够（实测，2026-11-08）。</b>派生 id 过去只看<b>源贴图名</b>
+	/// （<c>DeriveTextureId("mat_metal")</c>）。于是「共用同一张源底图、但外观处理不同」的
+	/// 多个材质会算出<b>同一个 id</b>：
+	/// </para>
+	/// <list type="bullet">
+	/// <item>金属件被压成中性 F0（sRGB ≈ 200、A = 255，见 <see cref="CutoutMetalLevel"/>）；</item>
+	/// <item>布料件保留自己的底色（17.2、A = 0）。</item>
+	/// </list>
+	/// <para>
+	/// 一个 id 在包里只能占一条记录 —— <b>谁后写谁赢</b>。MourningVeil B1 的 92 个材质里有 47 个
+	/// 都指向 <c>mat_metal</c>，金属件的 F0 直接被布料的底色顶掉。实机表现就是「金属永远不反光」，
+	/// 而转换器日志里算的是对的 —— 这正是那次「转换器算出 200、部署的包里躺着 17.4」的真相。
+	/// </para>
+	/// <para>
+	/// <b>为什么用内容指纹而不是材质名。</b>按材质名命名（曾经试过）会让每个材质各存一份贴图：
+	/// B1 有 92 个材质、2048² BC7 一张 16 MB，包体直接从 100 MB 涨到 GB 级。
+	/// 内容指纹让<b>像素完全一样</b>的派生物仍然共享同一个 id（该省的一样省），
+	/// 只有外观真的不同才分裂 —— 恰好是我们想要的那条线。
+	/// </para>
+	/// </summary>
+	public ulong DeriveTextureIdFor(string name, byte[] payload)
+		=> Hd2AssetId.Texture(name + "#" + ContentStamp(payload), idNamespace);
+
+	/// <summary>
+	/// 内容指纹（FNV-1a 64）。不需要密码学强度，只用来回答「这两张图是不是同一张」。
+	/// <para>输入是<b>已编码</b>的 GPU 字节：BC7 编码器是确定性的，同样输入必得同样字节。</para>
+	/// </summary>
+	private static string ContentStamp(byte[] payload)
+	{
+		var hash = 14695981039346656037UL;
+		foreach (var value in payload)
+		{
+			hash ^= value;
+			hash *= 1099511628211UL;
+		}
+
+		return hash.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+	}
 
 	private readonly string? idNamespace;
 
@@ -1731,13 +1819,24 @@ public sealed class SourceMaterialConverter
 			// 关掉脏污/天气。`alphaclip` 模板的默认值是**满脏污**（`DirtGlobalAmount = 1`），
 			// 于是镂空件在雪地会被雪图层整个盖住，而 `advanced` 的件不受影响。
 			// 源侧模组没有"天气/脏污"这个概念，转换器应当关掉。
-			if (!material.TrySetScalar(DirtGlobalAmountVariableId, 0f))
-				return MaterialSynthesisResult.Failed(
-					$"{stem}：alphaclip 模板里找不到 DirtGlobalAmount 变量，无法关闭天气/脏污");
-			material.TrySetScalar(WeatheringCoverageVariableId, 0f);
+			//
+			// ⚠️ `cutoutmetal` 的根材质**一个脏污/天气变量都没有**（它的 7 个变量是
+			// BaseColorOpacity / MetallicOpacity / NormalCcnormOpacity / RoughnessOpacity /
+			// UseParallax / UvOffset / UvScale）。所以这里必须按"变量在不在"分支，
+			// 而不是照旧要求 `DirtGlobalAmount` 必须存在 —— 否则整批材质直接造不出来。
+			if (!IsCutoutMetalTemplate(loaded.TemplateName))
+			{
+				if (!material.TrySetScalar(DirtGlobalAmountVariableId, 0f))
+					return MaterialSynthesisResult.Failed(
+						$"{stem}：alphaclip 模板里找不到 DirtGlobalAmount 变量，无法关闭天气/脏污");
+				material.TrySetScalar(WeatheringCoverageVariableId, 0f);
+			}
 
 			// B 档：只动阈值这一个变量（A 档保持模板默认 0.5）。
+			// `cutoutmetal` 没有 `OpacityThreshold` 变量（只有 `ScalarfieldOpacitySharpness` 之类），
+			// 所以这一档对它不适用，跳过而不是判失败。
 			if (cutoutStrategy == CutoutStrategy.AlphaClipTuned
+				&& !IsCutoutMetalTemplate(loaded.TemplateName)
 				&& !material.TrySetScalar(OpacityThresholdVariableId, TunedOpacityThreshold))
 			{
 				return MaterialSynthesisResult.Failed(
@@ -2756,6 +2855,10 @@ public sealed class SourceMaterialConverter
 		var rgba = loaded.Rgba;
 		var textureName = loaded.TextureName;
 
+		// 这个材质的"表面"是否被我们整体换掉了（金属 F0、宝石中性色、matcap 平涂）。
+		// 只有这类材质需要独占贴图 id —— 见方法末尾的 baseColorId。
+		var surfaceOverridden = false;
+
 		// ⚠️ **遮罩取 `SourceBaseRgba`（源底色），不是 `rgba`（可能已被换成 matcap）。**
 		// 这两者在 matcap 承载表面的件上是**两张完全不同的图**：
 		//   · `rgba`           = 渲染用底色（matcap 承载表面时**就是**那张球面图）
@@ -2806,7 +2909,10 @@ public sealed class SourceMaterialConverter
 		// 压暗要作用在 sRGB 编码的像素上（见 AlbedoAdjustment 的注释）。
 		// matcap 烘焙也必须在清零 alpha 之前（它只改 RGB，但顺序上这里最自然）。
 		if (loaded.MatcapMean is not null)
-			MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint * matcapBakeGain);
+			{
+				MaterialAppearance.BakeMatCap(rgba, loaded.MatcapMean, loaded.MatcapTint * matcapBakeGain);
+				surfaceOverridden = true;
+			}
 		else if (loaded.MatcapIsSurface && !loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal
 			&& !string.IsNullOrWhiteSpace(loaded.MatcapTextureName))
 		{
@@ -2818,7 +2924,10 @@ public sealed class SourceMaterialConverter
 			// "合成底色 + 没有 matcap"的材质会被涂成中性浅灰 —— 恰好把 `$color` 这个
 			// **作者明确写的颜色**抹掉。实测 milltina 的 6 个金属件（银/金/宝石红）全中，
 			// 全部变成同一块浅灰。
-			MaterialAppearance.FlattenToMetalF0(rgba, MaterialAppearance.NonMetallicSurfaceF0);
+			{
+				MaterialAppearance.FlattenToMetalF0(rgba, MaterialAppearance.NonMetallicSurfaceF0);
+				surfaceOverridden = true;
+			}
 		}
 		else if (loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal)
 		{
@@ -2846,7 +2955,10 @@ public sealed class SourceMaterialConverter
 			// **纯色底色的金属保留自己的颜色**（见 MatcapKeepsBaseColour）：那是金属的色相，
 			// 归一成中性 F0 会把它变成一条白边。这里什么都不做，只让下面的金属度槽生效。
 			if (metalDeliverable && !loaded.MatcapKeepsBaseColour)
-				MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+				{
+					MaterialAppearance.FlattenToMetalF0(rgba, MetalF0 * matcapBakeGain);
+					surfaceOverridden = true;
+				}
 			else if (!metalDeliverable && loaded.MatcapIsSurface)
 			{
 				// ── 「金属 + 真镂空」的件（判据全部来自数据，不点任何 mod / 材质名）──────
@@ -2861,6 +2973,7 @@ public sealed class SourceMaterialConverter
 				// 平色而不是 matcap：这些件的 UV 多是缝隙（存不下图案），而按 matcap 抬升
 				// 还会采到球心的暗像素，算出 ~91 的深灰 —— 等于没变（11-05 实机结论）。
 				MaterialAppearance.FlattenToMetalF0(rgba, CutoutMetalLevel);
+				surfaceOverridden = true;
 			}
 		}
 
@@ -2940,6 +3053,22 @@ public sealed class SourceMaterialConverter
 		// 也不该往里面塞东西 —— 未知通道塞值只会制造"看着不对但查不出来"的问题。
 		ZeroAlpha(rgba);
 
+		// ===== `cutoutmetal` 档：金属度写进 BaseColorMetalMap 的 alpha =====
+		//
+		// 为什么值得再试一次：`alphaclip` 的这条通道被判过"写金属度无效"，但那次实机对照
+		// 的前提是"部署上去的确实是这份字节"，而本轮发现过部署链路把旧包留在原地
+		// （patch_5 里底图仍是源侧 17.4，转换器算的是 200）——旧结论需要一个干净复测。
+		//
+		// 这里是唯一的探针，实机只有两种结果，一眼可辨：
+		//   · 金属件出现金属反光 → A 就是金属度，这一档成立，接着接粗糙度/清漆；
+		//   · 与 alphaclip 完全一样 → A 不参与金属度，换下一个候选根材质。
+		if (IsCutoutMetalTemplate(loaded.TemplateName)
+			&& loaded.MatcapIsMetal
+			&& matcapMode == MatCapMode.Metal)
+		{
+			SetAlpha(rgba, CutoutMetalAlpha);
+		}
+
 		// 发光：`advanced` 槽 5 的 **alpha 就是 emission**，而上面刚把它清零了。
 		// 所以这里按声明把 `$emissiontexture` 的亮度写回去。
 		//
@@ -3015,13 +3144,54 @@ public sealed class SourceMaterialConverter
 		}
 
 		// DecodeToRgba 返回的是**裸像素**，编码前要重新包一层 DDS——texconv 只吃 DDS。
+		if (Environment.GetEnvironmentVariable("HD2MOD_ALBEDO_DEBUG") is { Length: > 0 })
+		{
+			// 存在的理由：**"转换器算出来的像素"和"包里躺着的像素"是两件事**，
+			// 而两者对不上时，所有材质结论都会变成瞎猜（本项目踩过一次：
+			// 转换器算出 200，部署到游戏的包里还是源侧 17.4）。
+			// 这一行把"我们到底编码了什么"写成可对照的数字。
+			var pixels = Math.Max(1, rgba.Length / 4);
+			double lumSum = 0;
+			var alphaSum = 0.0;
+			var alphaMin = 255;
+			var alphaMax = 0;
+			for (var offset = 0; offset < rgba.Length; offset += 4)
+			{
+				lumSum += (0.299 * rgba[offset]) + (0.587 * rgba[offset + 1]) + (0.114 * rgba[offset + 2]);
+				alphaSum += rgba[offset + 3];
+				alphaMin = Math.Min(alphaMin, rgba[offset + 3]);
+				alphaMax = Math.Max(alphaMax, rgba[offset + 3]);
+			}
+
+			Console.Error.WriteLine(
+				$"[albedo] {loaded.Stem,-34} tmpl={loaded.TemplateName,-12} {vtf.Width}x{vtf.Height} "
+				+ $"name={textureName,-20} "
+				+ $"meanLum={lumSum / pixels,6:F1} alpha={alphaSum / pixels,6:F1} [{alphaMin},{alphaMax}] "
+				+ $"metal={loaded.MatcapIsMetal} surface={loaded.MatcapIsSurface} deliverable={loaded.MetalDeliverable}");
+		}
+
 		var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
+
+		// **表面被我们整体换掉的材质，必须独占贴图 id。**
+		//
+		// 事故：`DeriveTextureId` 只看**源贴图名**，于是"共用同一张源底图、但外观处理不同"的材质
+		// 算出同一个 id，而一个 id 在包里只能占一条记录 —— 谁后写谁赢。MourningVeil B1 的 92 个
+		// 材质里有 47 个都指向 `mat_metal`，金属件算出来的 F0（sRGB 200 / A 255）被保留原色的布料
+		// 顶掉，实机表现就是"金属永远不反光"。这是「转换器算得对、包里躺的是别的」的真相。
+		//
+		// **为什么只给"表面被换掉"的那批独占 id，不给所有材质。**颜色变体包（C1/C2 发色、
+		// D1/D2 瞳色）是纯贴图包，靠"同名 → 同 id → 顶掉同名贴图"生效。给每个材质都发内容指纹 id
+		// 会让变体永远顶不到东西（实测交集从 2 条掉到 0 条）；而全量独占还会让包体从 100 MB
+		// 涨到 318 MB（92 个材质各存一份 2048² 底色）。所以：**只修真正会打架的那一类**。
+		var baseColorId = surfaceOverridden
+			? DeriveTextureIdFor(textureName, texture.Pixels)
+			: DeriveTextureId(textureName);
 		return (
 			new SynthesizedTexture(
-				DeriveTextureId(textureName),
+				baseColorId,
 				texture.WriteToc(),
 				texture.Pixels,
 				textureName,
@@ -3090,7 +3260,7 @@ public sealed class SourceMaterialConverter
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
-			DeriveTextureId(textureName + "_opacity"),
+			DeriveTextureIdFor(textureName + "_opacity", texture.Pixels),
 			texture.WriteToc(),
 			texture.Pixels,
 			textureName + "_opacity",
@@ -3280,7 +3450,7 @@ public sealed class SourceMaterialConverter
 		var texture = new Hd2TextureAsset();
 		texture.FromDds(bc7);
 		return new SynthesizedTexture(
-			DeriveTextureId(textureName + "_opacity"),
+			DeriveTextureIdFor(textureName + "_opacity", texture.Pixels),
 			texture.WriteToc(),
 			texture.Pixels,
 			textureName + "_opacity",
@@ -3734,7 +3904,7 @@ public sealed class SourceMaterialConverter
 		var asset = new Hd2TextureAsset();
 		asset.FromDds(bc7);
 		return (new SynthesizedTexture(
-			DeriveTextureId(name),
+			DeriveTextureIdFor(name, asset.Pixels),
 			asset.WriteToc(),
 			asset.Pixels,
 			name,
@@ -3802,6 +3972,19 @@ public sealed class SourceMaterialConverter
 			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
 		for (var offset = 3; offset < rgba.Length; offset += 4)
 			rgba[offset] = 0;
+	}
+
+	/// <summary>
+	/// 把裸像素的 alpha 通道统一写成 <paramref name="value"/>。
+	/// <para>只给 <c>cutoutmetal</c> 那条路用（见 <see cref="CutoutMetalAlpha"/>），
+	/// 其它模板一律 <see cref="ZeroAlpha"/>。</para>
+	/// </summary>
+	private static void SetAlpha(byte[] rgba, byte value)
+	{
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+		for (var offset = 3; offset < rgba.Length; offset += 4)
+			rgba[offset] = value;
 	}
 }
 
