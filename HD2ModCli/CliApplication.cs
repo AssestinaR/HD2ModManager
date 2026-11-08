@@ -2260,6 +2260,7 @@ public static class CliApplication
 
 		if (command[0] == "vpk2patch")
 		{
+			EnsureHeadMergeConsent(invocation.Options);
 			// 一条命令、整批进队、逐个出 patch、**自动识别类型**。
 			//
 			// 为什么必须是"一批"：
@@ -2661,13 +2662,13 @@ public static class CliApplication
 				throw new CliUserException("ModRequired",
 					"用法：hd2mod vpk rekey <Mod GUID 或前缀> [--archive-id <护甲归档>[,<头盔归档>]] "
 					+ "[--output <临时目录>] --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏 data 目录> --json");
+			EnsureHeadMergeConsent(invocation.Options);
 			var rekeyWorkspace = CliWorkspace.Open(invocation.Options);
 			if (MergeHeadIntoArmour(invocation.Options))
 			{
 				Console.Error.WriteLine(
-					"⚠️ --head-merge on 是**实验 / 救急**功能：它改的是生效层（Overwrite）的形状，"
-					+ "之后的换甲、section 开关、材质开关都会以它为输入。只允许在 CLI 里显式使用，"
-					+ "用之前必须明确告知用户这不安全。");
+					"⚠️ 已按用户同意执行 --head-merge on（实验 / 不安全）：它改的是生效层（Overwrite）的形状，"
+					+ "之后的换甲、section 开关、材质开关都会以它为输入。");
 			}
 			var rekeyTargets = string.IsNullOrWhiteSpace(invocation.Options.ArchiveId)
 				? CliVpkRekey.DefaultTargetArchiveIds
@@ -3078,6 +3079,24 @@ public static class CliApplication
 	/// 管理器侧有「头身合并到身体」开关，用户打开它才会传 <c>on</c>。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 头身合并是**实验 / 不安全**功能，必须由用户明确同意。
+	/// <para>
+	/// 这里把"先问用户"变成硬约束：`--head-merge on` 不带 `--head-merge-consent` 直接拒绝。
+	/// 不这么做，agent 会替用户默认同意——而这件事改的是"头画在哪一件装备上"，
+	/// 出了问题是用户自己的 Mod 承担后果。
+	/// </para>
+	/// </summary>
+	private static void EnsureHeadMergeConsent(CliGlobalOptions options)
+	{
+		if (!MergeHeadIntoArmour(options) || options.HeadMergeConsent)
+			return;
+		throw new CliUserException("HeadMergeConsentRequired",
+			"--head-merge on 是实验 / 不安全功能（它改变头画在哪一件装备上，还会让那件头盔 item 变成空模型）。"
+			+ "调用方（尤其是 agent）必须先向用户说明这一点并取得明确同意；"
+			+ "用户同意后，在命令里加上 --head-merge-consent 再重试。");
+	}
+
 	private static bool MergeHeadIntoArmour(CliGlobalOptions options)
 		=> string.Equals(options.HeadMerge, "on", StringComparison.OrdinalIgnoreCase);
 
@@ -8346,7 +8365,8 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	    --head-merge off（默认）
 	                    老做法：头由头盔套件承载，玩家必须把配套头盔 item 也穿上才有头。
 	    --head-merge on
-	                    **⚠️ 实验 / 救急功能，仅限 CLI 显式使用，默认不要用。**
+	                    **⚠️ 实验 / 不安全功能，必须同时带 --head-merge-consent，否则直接拒绝。**
+	                    调用方（尤其是 agent）要先把风险讲清楚、拿到用户明确同意，再带这个标记。
 	                    **头身合并**：头落到护甲套件胸部槽位的最外层、身体落到次外层，头盔套件一件都不写
 	                    （于是游戏里那件头盔 item 没有模型，头由护甲自己带着）。
 	                    层号不是写死的，按目标这件护甲胸部槽位实际有几层算；只有一层时装不下两件几何，
@@ -8362,7 +8382,8 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	    模型 VPK 从队列里找材质（Unit 必须引用正确的材质 id）。谁也不替谁多带东西。
 	    产出在 <输出根目录>/<VPK 名>/ 下，文件名形如 9ba626afa44a3aa3.patch_0。
 	    --head-merge on|off
-	                    **⚠️ 实验 / 救急功能，仅限 CLI 显式使用，默认 off。**
+	                    **⚠️ 实验 / 不安全功能，默认 off；传 on 必须同时带 --head-merge-consent。**
+	                    调用方（尤其是 agent）要先把风险讲清楚、拿到用户明确同意，再带这个标记。
 	                    on 会把「头身合并」**直接烘进 sectional 产物**（头的注册件从 slot0/layer0 挪到胸部层并留
 	                    movedFrom），那份 patch 就不再是标准 7 槽位素体——属于协议外产物，后续一切都会以它为源。
 	                    常规流程里这个条件应当在**编译阶段**（sectional → Overwrite）生效，不在转换阶段。

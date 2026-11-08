@@ -105,6 +105,10 @@ public sealed record CliGlobalOptions(
 	// 层号不是写死的：按目标护甲胸部槽位实际有几层算（最外层放头、次外层放身体），
 	// 只有一层时自动退回老做法。见 CliVpkRekey.ResolveHeadBodyMerge。
 	string? HeadMerge = null,
+	// **头身合并的用户同意标记**：`--head-merge on` 必须同时带 `--head-merge-consent`，
+	// 否则 CLI 直接拒绝。理由：这个功能改的是"头画在哪"，出问题要用户自己承担——
+	// 调用它的 agent 必须先把这个风险讲清楚、拿到用户明确同意，再带上这个标记。
+	bool HeadMergeConsent = false,
 	// 从**清单文件**读要转换的 VPK（每行一个绝对路径，空行与 `#` 开头的行忽略）。
 	//
 	// 为什么需要它：Windows 命令行上限是 32767 字符，而一个中文整合包里 140 个 VPK 的绝对路径
@@ -194,6 +198,7 @@ public static class CliArgumentParser
 		string? unitIds = null;
 		string? reuseModel = null;
 		string? headMerge = null;
+		var headMergeConsent = false;
 		string? vpkList = null;
 		string? materialSourceList = null;
 		string? componentSourceList = null;
@@ -418,6 +423,9 @@ public static class CliArgumentParser
 
 					alphaExperiment = rawAlphaExperiment;
 					break;
+				case "--head-merge-consent":
+					headMergeConsent = true;
+					break;
 				case "--head-merge":
 					var rawHeadMerge = ReadValue(args, ref index, argument).Trim().ToLowerInvariant();
 					if (rawHeadMerge is not ("on" or "off" or "true" or "false" or "1" or "0"))
@@ -583,7 +591,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)
