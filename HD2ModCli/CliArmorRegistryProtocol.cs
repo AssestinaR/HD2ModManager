@@ -95,6 +95,12 @@ public sealed record CliArmorRegistryExecution(
 
 	/// <summary>数据层是否真的写了。<c>null</c> = 没动数据层。</summary>
 	public bool? DataMappingWritten { get; init; }
+
+	/// <summary>换成本源 unit 的格子数。</summary>
+	public int? DataMappingReplaced { get; init; }
+
+	/// <summary>被写成 <c>0</c>（隐藏）的格子数。来源没覆盖到的部位都算在这里。</summary>
+	public int? DataMappingHidden { get; init; }
 }
 
 public static class CliArmorRegistryProtocol
@@ -523,6 +529,8 @@ public static class CliArmorRegistryProtocol
 			{
 				DataMappingMessage = applied.DataMapping?.Message,
 				DataMappingWritten = applied.DataMapping?.Written,
+				DataMappingReplaced = applied.DataMapping?.Replaced,
+				DataMappingHidden = applied.DataMapping?.Hidden,
 			};
 		}
 

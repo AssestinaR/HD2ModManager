@@ -22,8 +22,14 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { }
 	}
 
-	// 112 字节件记录：unit / slot / pieceType / weight 有用，+24 放一个 LUT 标记、+88 放 tone，
-	// 89..111 是容器忽略的哨兵。
+	// 112 字节件记录：unit / slot / pieceType / weight 有用，+24 放一个 LUT 标记、+88 放 tone。
+	//
+	// ⚠️ +89..111 **不是**一整片自由区：
+	//   +89..95   全 0
+	//   +96..103  一个 int64 —— 指向 payload 内第二张表的偏移，-1 = 没有表（实测 6 套有表）
+	//   +104      条目数（0 或 4）
+	//   +105..111 全 0
+	// 所以能借的自由字节只有 +89..95 与 +105..111 各 7 字节，都不够一个 64 位未知量。
 	static byte[] Piece(ulong unit, uint slot, uint pieceType, uint weight = 1, ulong lut = 0, byte tone = 0)
 	{
 		var record = new byte[PieceSize];
@@ -33,26 +39,37 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(16), weight);
 		BinaryPrimitives.WriteUInt64LittleEndian(record.AsSpan(24), lut);
 		record[88] = tone;
-		for (var i = 0; i < 7; i++) record[89 + i] = 0x00;
-		for (var i = 0; i < 7; i++) record[96 + i] = 0xFF;
+		for (var i = 0; i < 8; i++) record[96 + i] = 0xFF;   // 没有第二张表
 		return record;
 	}
 
 	static byte[] Kit(uint itemId, uint bodyType, params byte[][] pieces)
+		=> MultiKit(itemId, (bodyType, pieces));
+
+	/// <summary>
+	/// 多身形行的套件。真实文件里护甲套件恒有 3 行：<c>Any(3) / Stocky(0) / Slim(1)</c>，
+	/// 而且 Any 与两个身形行在同一 (slot, pieceType) 上**互斥**。单行夹具测不出这些规则。
+	/// </summary>
+	static byte[] MultiKit(uint itemId, params (uint Body, byte[][] Pieces)[] rows)
 	{
 		const int headerSize = 64;
-		var payload = new byte[headerSize + BodySize + pieces.Length * PieceSize];
+		var totalPieces = rows.Sum(row => row.Pieces.Length);
+		var payload = new byte[headerSize + rows.Length * BodySize + totalPieces * PieceSize];
 		BinaryPrimitives.WriteUInt32LittleEndian(payload, itemId);
 		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(48), headerSize);
-		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(56), 1);
-		BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(headerSize), bodyType);
-		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(headerSize + 8), headerSize + BodySize);
-		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(headerSize + 16), pieces.Length);
-		var cursor = headerSize + BodySize;
-		foreach (var piece in pieces)
+		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(56), rows.Length);
+		var cursor = headerSize + rows.Length * BodySize;
+		for (var r = 0; r < rows.Length; r++)
 		{
-			Array.Copy(piece, 0, payload, cursor, PieceSize);
-			cursor += PieceSize;
+			var rowAt = headerSize + r * BodySize;
+			BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(rowAt), rows[r].Body);
+			BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(rowAt + 8), cursor);
+			BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(rowAt + 16), rows[r].Pieces.Length);
+			foreach (var piece in rows[r].Pieces)
+			{
+				Array.Copy(piece, 0, payload, cursor, PieceSize);
+				cursor += PieceSize;
+			}
 		}
 		return payload;
 	}
@@ -75,6 +92,7 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		return stream.ToArray();
 	}
 
+	/// <summary>读出某套件的全部件（**跨所有身形行**，按文件顺序）。</summary>
 	(ulong Unit, uint Slot, uint PieceType)[] ReadPieces(byte[] plain, uint itemId)
 	{
 		var position = 4;
@@ -86,17 +104,21 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 			var payload = plain.AsSpan(payloadStart, (int)size);
 			if (BinaryPrimitives.ReadUInt32LittleEndian(payload) == itemId)
 			{
-				var bodyOffset = BinaryPrimitives.ReadInt64LittleEndian(payload[48..]);
-				var pieceOffset = BinaryPrimitives.ReadInt64LittleEndian(payload[((int)bodyOffset + 8)..]);
-				var pieceCount = BinaryPrimitives.ReadInt64LittleEndian(payload[((int)bodyOffset + 16)..]);
+				var bodyOffset = (int)BinaryPrimitives.ReadInt64LittleEndian(payload[48..]);
+				var bodyCount = (int)BinaryPrimitives.ReadInt64LittleEndian(payload[56..]);
 				var result = new List<(ulong, uint, uint)>();
-				for (var p = 0; p < pieceCount; p++)
+				for (var b = 0; b < bodyCount; b++)
 				{
-					var at = payloadStart + (int)pieceOffset + p * PieceSize;
-					result.Add((
-						BinaryPrimitives.ReadUInt64LittleEndian(plain.AsSpan(at)),
-						BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(at + 8)),
-						BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(at + 12))));
+					var pieceOffset = BinaryPrimitives.ReadInt64LittleEndian(payload[(bodyOffset + b * BodySize + 8)..]);
+					var pieceCount = BinaryPrimitives.ReadInt64LittleEndian(payload[(bodyOffset + b * BodySize + 16)..]);
+					for (var p = 0; p < pieceCount; p++)
+					{
+						var at = payloadStart + (int)pieceOffset + p * PieceSize;
+						result.Add((
+							BinaryPrimitives.ReadUInt64LittleEndian(plain.AsSpan(at)),
+							BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(at + 8)),
+							BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(at + 12))));
+					}
 				}
 				return result.ToArray();
 			}
@@ -184,10 +206,10 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		Assert.True(result.Written);
 		var plain = Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData)));
 		var pieces = ReadPieces(plain, 100);
-		Assert.Equal(2, pieces.Length);
-		Assert.Contains(pieces, p => p.Unit == 0xC0FFEE0000000001);
-		Assert.Contains(pieces, p => p.Unit == 0xC0FFEE0000000002);
+		Assert.Equal(0xC0FFEE0000000001UL, pieces.Single(p => p.Slot == 3).Unit);
+		Assert.Equal(0xC0FFEE0000000002UL, pieces.Single(p => p.Slot == 2).Unit);
 		// 素体只提供 unit/slot/type，weight 仍然是目标自己的 2。
+		Assert.Equal(2, ReadWeights(plain, 100).Length);
 		Assert.All(ReadWeights(plain, 100), weight => Assert.Equal(2u, weight));
 	}
 
@@ -213,9 +235,11 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 	}
 
 	[Fact]
-	public async Task Apply_KeepsTheCapePlaceholderUntouched()
+	public async Task Apply_HidesCellsTheSourceDoesNotCoverAndNeverWritesACapeUnit()
 	{
-		// slot 1 是披风占位，映射不谈它：来源就算给了 slot 1 也不替换，目标原本那条原样留下。
+		// 覆盖语义（用户口径 2026-11-08）：目标套件里每一格都要有结论。
+		// 来源没覆盖到的格子写 0（隐藏），否则会露出原版件，变成"新外观 + 原版件"的缝合怪。
+		// 披风也一样：来源给了 slot 1 的件也不采用——披风是独立装备，映射不谈它。
 		var gameData = await CreateGameDataAsync(targetWeight: 2, sourceWeight: 0);
 		var backup = Path.Combine(_root, "backup");
 		var modelPieces = new[]
@@ -228,8 +252,12 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 
 		var plain = Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData)));
 		var pieces = ReadPieces(plain, 100);
+		// 件数一件不增不减。
+		Assert.Equal(2, pieces.Length);
 		Assert.DoesNotContain(pieces, p => p.Unit == 0xC0FFEE0000000020);
-		Assert.Contains(pieces, p => p.Unit == 0xC0FFEE0000000021);
+		// 来源没覆盖 slot 3 → 写 0 隐藏。
+		Assert.Equal(0UL, pieces.Single(p => p.Slot == 3).Unit);
+		Assert.Equal(0xC0FFEE0000000021UL, pieces.Single(p => p.Slot == 2).Unit);
 	}
 
 	byte[] ReadRecord(byte[] plain, uint itemId)
@@ -282,23 +310,23 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 	[Fact]
 	public async Task Apply_KeepsTargetArmorRatingWeight()
 	{
-		// 件记录 +16 的 weight 是护甲等级（轻/中/重），属于玩法字段。映射只换外观，
-		// 绝不能把目标甲的等级换成来源甲的——那等于改数值。
+		// 件记录 +16 的 weight 是护甲等级（0/1/2 = 轻/中/重 = 50/100/150 护甲值），
+		// 属于玩法字段。映射只换 unit，**这条字段一个字节都不该被写**。
 		var gameData = await CreateGameDataAsync(targetWeight: 2, sourceWeight: 0);
 		var backup = Path.Combine(_root, "backup");
 		await new ArmorRegistryDataMapper().ApplyAsync(
 			gameData, [new ArmorRegistryDataMapping(100, 200)], backup);
 
 		var plain = Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData)));
-		// 来源的件被搬过来了（3 件），但每一件的 weight 都必须是目标自己的 2。
-		Assert.Equal(3, ReadWeights(plain, 100).Length);
+		// 目标仍然只有自己原来那 2 件，每件 weight 都是 2。
+		Assert.Equal(2, ReadWeights(plain, 100).Length);
 		Assert.All(ReadWeights(plain, 100), weight => Assert.Equal(2u, weight));
 		// 来源自己不受影响。
 		Assert.All(ReadWeights(plain, 200), weight => Assert.Equal(0u, weight));
 	}
 
 	[Fact]
-	public async Task Apply_RewritesTargetPieceSetAndKeepsContentHash()
+	public async Task Apply_ChangesOnlyTheUnitFieldAndKeepsContentHash()
 	{
 		var gameData = await CreateGameDataAsync();
 		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
@@ -317,13 +345,122 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		Assert.Equal(originalHash, ArmorRegistryDataMapper.HashContent(appliedPlain));
 		Assert.NotEqual(Convert.ToHexString(originalPlain), Convert.ToHexString(appliedPlain));
 
+		// ① 件的结构与数量完全不变：来源多出来的 pieceType=1 不会被注入。
 		var targetPieces = ReadPieces(appliedPlain, 100);
-		var sourcePieces = ReadPieces(appliedPlain, 200);
 		Assert.Equal(
-			sourcePieces.OrderBy(p => p),
-			targetPieces.OrderBy(p => p));
-		// 来源的件被完整搬过来（含目标原本没有的 pieceType=1）。
-		Assert.Contains(targetPieces, p => p.Item3 == 1);
+			ReadPieces(originalPlain, 100).Select(p => (p.Slot, p.PieceType)),
+			targetPieces.Select(p => (p.Slot, p.PieceType)));
+		Assert.DoesNotContain(targetPieces, p => p.PieceType == 1);
+
+		// ② 只有 unit 变了，而且取的是来源同一格子的 unit。
+		var sourcePieces = ReadPieces(appliedPlain, 200).ToDictionary(p => (p.Slot, p.PieceType), p => p.Unit);
+		Assert.All(targetPieces, p => Assert.Equal(sourcePieces[(p.Slot, p.PieceType)], p.Unit));
+	}
+
+	/// <summary>
+	/// **结构（件数、格子、顺序、weight、资源哈希、tone、+96 第二张表）一个字节都不许动。**
+	/// <para>
+	/// 这是整条实现的全部承诺。以前的重建写法在这条上全错：它把整条 112 字节从别的件抄过来，
+	/// 于是 weight（护甲值）、材质 LUT、tone、第二张表偏移全部跟着搬。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task Apply_LeavesEveryNonUnitByteAlone()
+	{
+		var gameData = await CreateGameDataAsync();
+		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
+		var originalPlain = Decrypt(await File.ReadAllBytesAsync(target));
+		var backup = Path.Combine(_root, "backup");
+
+		await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, 200)], backup, CancellationToken.None);
+		var appliedPlain = Decrypt(await File.ReadAllBytesAsync(target));
+
+		// 每一条件记录：除前 8 字节外逐字节相同（用绝对值偏移比，结构变了就比不出来）。
+		var before = ReadPieceRecords(originalPlain);
+		var after = ReadPieceRecords(appliedPlain);
+		Assert.Equal(before.Count, after.Count);
+		foreach (var (at, record) in before)
+		{
+			Assert.True(after.TryGetValue(at, out var updated), $"件记录的绝对偏移 {at} 变了，说明结构被动过。");
+			Assert.Equal(
+				Convert.ToHexString(record.AsSpan(8)),
+				Convert.ToHexString(updated.AsSpan(8)));
+		}
+	}
+
+	/// <summary>
+	/// 伪造用的自由字必须落在**件记录之外**。
+	/// <para>
+	/// 件记录里没有连续 8 个自由字节：<c>+89..95</c> 与 <c>+105..111</c> 各 7 字节，
+	/// 中间 <c>+96..104</c> 是第二张表的偏移与条目数。旧实现按 <c>+89</c> 对齐求解，
+	/// 落点是 <c>件+92..99</c>，每次应用都写脏那个偏移的低 4 字节。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task Compile_PutsTheForgeWordOutsideEveryPieceRecord()
+	{
+		var gameData = await CreateGameDataAsync();
+		var target = ArmorRegistryDataMapper.ResolveTargetPath(gameData);
+		var originalPlain = Decrypt(await File.ReadAllBytesAsync(target));
+		await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, 200)], Path.Combine(_root, "backup"), CancellationToken.None);
+		var appliedPlain = Decrypt(await File.ReadAllBytesAsync(target));
+
+		// 件记录里除前 8 字节（unit）之外一个字节都没动 —— 含 +89..111 那一片。
+		var before = ReadPieceRecords(originalPlain);
+		var after = ReadPieceRecords(appliedPlain);
+		Assert.Equal(before.Count, after.Count);
+		Assert.Equal(
+			string.Join("|", before.OrderBy(pair => pair.Key).Select(pair => pair.Key + ":" + Convert.ToHexString(pair.Value.AsSpan(8)))),
+			string.Join("|", after.OrderBy(pair => pair.Key).Select(pair => pair.Key + ":" + Convert.ToHexString(pair.Value.AsSpan(8)))));
+		// 至少有一件的 unit 真的换了，否则上面的比较没有意义。
+		Assert.Contains(before.Keys, at => !before[at].AsSpan(0, 8).SequenceEqual(after[at].AsSpan(0, 8)));
+		// 文件长了几字节（对齐 + 8 字节自由字），且长度是 8 的倍数。
+		Assert.True(appliedPlain.Length > originalPlain.Length);
+		Assert.Equal(0, appliedPlain.Length % 8);
+		// 挪出来的那一段都在最后一条 subdata 块的 payload 里，块头 size 也同步跟上了。
+		var lastEnd = LastSubdataEnd(appliedPlain);
+		Assert.Equal(appliedPlain.Length, lastEnd);
+	}
+
+	Dictionary<int, byte[]> ReadPieceRecords(byte[] plain)
+	{
+		var result = new Dictionary<int, byte[]>();
+		var position = 4;
+		while (position + 24 <= plain.Length && plain.AsSpan(position, 4).SequenceEqual("LDLD"u8))
+		{
+			var size = (int)BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(position + 12));
+			var payloadStart = position + 24;
+			var payload = plain.AsSpan(payloadStart, size);
+			var bodyOffset = (int)BinaryPrimitives.ReadInt64LittleEndian(payload[48..]);
+			var bodyCount = (int)BinaryPrimitives.ReadInt64LittleEndian(payload[56..]);
+			for (var b = 0; b < bodyCount; b++)
+			{
+				var pieceOffset = (int)BinaryPrimitives.ReadInt64LittleEndian(payload[(bodyOffset + b * BodySize + 8)..]);
+				var pieceCount = (int)BinaryPrimitives.ReadInt64LittleEndian(payload[(bodyOffset + b * BodySize + 16)..]);
+				for (var p = 0; p < pieceCount; p++)
+				{
+					var at = payloadStart + pieceOffset + p * PieceSize;
+					result[at] = plain.AsSpan(at, PieceSize).ToArray();
+				}
+			}
+			position = payloadStart + size;
+		}
+		return result;
+	}
+
+	static int LastSubdataEnd(byte[] plain)
+	{
+		var position = 4;
+		var end = position;
+		while (position + 24 <= plain.Length && plain.AsSpan(position, 4).SequenceEqual("LDLD"u8))
+		{
+			var size = (int)BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(position + 12));
+			end = position + 24 + size;
+			position = end;
+		}
+		return end;
 	}
 
 
@@ -376,25 +513,141 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 		Assert.Equal(
 			Convert.ToHexString(original),
 			Convert.ToHexString(await File.ReadAllBytesAsync(Path.Combine(backup, ArmorRegistryDataMapper.BackupFileName))));
-		// 产物是按原件 + 映射编译出来的：100 的件表等于 200 的件表。
+		// 产物是按原件 + 映射编译出来的：100 的 (3,0) 拿到了 200 的 unit。
 		var plain = Decrypt(await File.ReadAllBytesAsync(target));
-		Assert.Equal(ReadPieces(plain, 200).OrderBy(p => p), ReadPieces(plain, 100).OrderBy(p => p));
+		Assert.Equal(
+			ReadPieces(plain, 200).Single(p => p.Slot == 3).Unit,
+			ReadPieces(plain, 100).Single(p => p.Slot == 3).Unit);
 	}
 
 	[Fact]
 	public async Task Apply_HandlesMultipleMappingsInOnePass()
 	{
-		// 一次应用多条映射时，每次重建都会移动后续套件的偏移；必须仍然落在正确位置。
+		// 一次应用多条映射。两条映射都从**基底**取来源（不是从已经改过的缓冲区取），
+		// 所以「100←200」+「200←100」是一次干净的互换，而不是"改完之后自己抄自己"。
 		var gameData = await CreateGameDataAsync();
 		var backup = Path.Combine(_root, "backup");
+		var original = Decrypt(await File.ReadAllBytesAsync(
+			ArmorRegistryDataMapper.ResolveTargetPath(gameData)));
 		var result = await new ArmorRegistryDataMapper().ApplyAsync(
 			gameData,
 			[new ArmorRegistryDataMapping(100, 200), new ArmorRegistryDataMapping(200, 100)],
 			backup);
 
 		Assert.True(result.Written);
+		Assert.Equal(2, result.Applied);
 		var plain = Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData)));
-		Assert.Equal(ReadPieces(plain, 200).OrderBy(p => p), ReadPieces(plain, 100).OrderBy(p => p));
+
+		// 100 的两格换成 200 原来那两格；200 的 (3,0)/(2,0) 换成 100 原来的，
+		// (2,1) 在 100 里没有对应格子 —— 来源没覆盖，写 0 隐藏。
+		Assert.Equal(0xCCCCCCCCCCCCCCCCUL, ReadPieces(plain, 100).Single(p => p.Slot == 3).Unit);
+		Assert.Equal(0xDDDDDDDDDDDDDDDDUL, ReadPieces(plain, 100).Single(p => p.Slot == 2).Unit);
+		Assert.Equal(0xAAAAAAAAAAAAAAAAUL, ReadPieces(plain, 200).Single(p => p.Slot == 3).Unit);
+		Assert.Equal(0xBBBBBBBBBBBBBBBBUL, ReadPieces(plain, 200).Single(p => p.Slot == 2 && p.PieceType == 0).Unit);
+		Assert.Equal(0UL, ReadPieces(plain, 200).Single(p => p.PieceType == 1).Unit);
+		// 原件里两个套件的格子数一件不多一件不少。
+		Assert.Equal(ReadPieces(original, 100).Length, ReadPieces(plain, 100).Length);
+		Assert.Equal(ReadPieces(original, 200).Length, ReadPieces(plain, 200).Length);
+	}
+
+	/// <summary>
+	/// **素体没有头盔件时，头盔必须被隐藏**，而不是继续显示原版头盔。
+	/// <para>
+	/// 这是覆盖语义最典型的一条：头盔与护甲是两套装备（不同 item id），素体不给 slot 0 的件，
+	/// 那一格就只能写 0。写 0 是游戏自己的写法 —— 123 套披风套件里有 118 套的披风格就是 0。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task Apply_HidesAnUncoveredHelmetInsteadOfShowingTheOriginalOne()
+	{
+		var gameData = Path.Combine(_root, "data");
+		Directory.CreateDirectory(Path.Combine(gameData, "game"));
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName),
+			Seal(Library(MultiKit(100, (3, [Piece(0x1111111111111111, 0, 0, weight: 1)])))));
+
+		var bodyOnly = new[] { new ArmorRegistryDataSourcePiece(3, 2, 0, 0xC0FFEE0000000002) };
+		var result = await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, null, bodyOnly)], Path.Combine(_root, "backup"));
+
+		Assert.True(result.Written);
+		Assert.Equal(0UL, Assert.Single(ReadPieces(
+			Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData))), 100)).Unit);
+		Assert.Equal(1, result.Hidden);
+		Assert.Equal(0, result.Replaced);
+	}
+
+	/// <summary>
+	/// 身形行没有对应件时回退到 <c>Any</c> 行；反过来共用行取不到时不会挑一份塞给两种身形。
+	/// <para>
+	/// 原生把腿、披风、臂内层放在共用行（网格不随身形变），所以"来源只声明了 Any"是常态。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task Apply_FallsBackToTheAnyRowWhenTheTargetRowHasNoSuchPiece()
+	{
+		var gameData = Path.Combine(_root, "data");
+		Directory.CreateDirectory(Path.Combine(gameData, "game"));
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName),
+			Seal(Library(MultiKit(100,
+				(3, [Piece(0x1111111111111111, 1, 0)]),
+				(0, [Piece(0x2222222222222222, 2, 0)])))));
+
+		// 来源只给了 Any 行的躯干件。
+		var source = new[] { new ArmorRegistryDataSourcePiece(3, 2, 0, 0xC0FFEE0000000002) };
+		await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, null, source)], Path.Combine(_root, "backup"));
+
+		var pieces = ReadPieces(
+			Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData))), 100);
+		Assert.Equal(0xC0FFEE0000000002UL, pieces.Single(p => p.Slot == 2).Unit);   // 回退到 Any
+		Assert.Equal(0UL, pieces.Single(p => p.Slot == 1).Unit);                    // 披风格：没覆盖 → 隐藏
+	}
+
+	/// <summary>
+	/// 目标那一格是**共用行**（Any）时，来源按身形拆成的两份怎么处理。
+	/// <para>
+	/// 原生把腿、披风、臂内层放在共用行，所以"来源只声明了按身形两份"是会撞上的。
+	/// 共用格表达不了两份不同的网格 —— 那就隐藏；绝不挑一份塞给两种身形（那会让一半身形穿错网格）。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task Apply_HidesASharedCellWhenTheSourceSplitsItPerShapeDifferently()
+	{
+		Assert.Equal(0UL, await CompileSharedCellAsync(0xCCCCCCCCCCCCCCCCUL, 0xDDDDDDDDDDDDDDDDUL));
+	}
+
+	[Fact]
+	public async Task Apply_UsesASharedCellWhenBothShapesPointAtTheSameUnit()
+	{
+		Assert.Equal(0xCCCCCCCCCCCCCCCCUL, await CompileSharedCellAsync(0xCCCCCCCCCCCCCCCCUL, 0xCCCCCCCCCCCCCCCCUL));
+	}
+
+	[Fact]
+	public async Task Apply_UsesTheOnlyShapeUnitWhenTheSourceDeclaresJustOne()
+	{
+		Assert.Equal(0xCCCCCCCCCCCCCCCCUL, await CompileSharedCellAsync(0xCCCCCCCCCCCCCCCCUL, null));
+	}
+
+	/// <summary>目标是一个只有共用行的套件；来源对 (4,0) 只给 <paramref name="stocky"/> 和/或 <paramref name="slim"/>。</summary>
+	async Task<ulong> CompileSharedCellAsync(ulong stocky, ulong? slim)
+	{
+		var gameData = Path.Combine(_root, "data-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(Path.Combine(gameData, "game"));
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName),
+			Seal(Library(MultiKit(100, (3, [Piece(0x1111111111111111, 4, 0)])))));
+
+		var source = new List<ArmorRegistryDataSourcePiece> { new(0, 4, 0, stocky) };
+		if (slim is ulong slimUnit) source.Add(new ArmorRegistryDataSourcePiece(1, 4, 0, slimUnit));
+		await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData,
+			[new ArmorRegistryDataMapping(100, null, source)],
+			Path.Combine(_root, "backup-" + Guid.NewGuid().ToString("N")));
+
+		return Assert.Single(ReadPieces(
+			Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData))), 100)).Unit;
 	}
 
 	/// <summary>

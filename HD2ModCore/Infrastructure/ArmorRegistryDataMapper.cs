@@ -25,13 +25,41 @@ public sealed record ArmorRegistryDataMapping(
 /// <summary>
 /// 真映射模式：把外观直接写进 <c>generated_customization_armor_sets.dl_bin</c>。
 ///
+/// <para>
+/// <b>只改件记录第 0 字节起那 8 个 unit。别的 104 字节一个都不动。</b>
+/// 这条约束是整个实现的地基，它一次性消掉了四大类事故：
+/// </para>
+/// <list type="number">
+/// <item><b>护甲值被改。</b><c>+16 weight</c>（轻/中/重 = 50/100/150 护甲值）属于玩法字段，
+/// 只有"整条记录从别处拷"才会连带改掉它 —— 现在没有任何一条代码路径会写它。</item>
+/// <item><b>配色/花纹被改。</b><c>+24..80</c> 八个资源哈希（MaterialLut / PatternLut / …）同理。</item>
+/// <item><b>第二张表被删。</b>件记录 <c>+96..103</c> 是指向 payload 内另一张表的偏移、
+/// <c>+104</c> 是条目数（实测 6 套护甲/头盔带这张表）。只要不重建 payload，偏移永远有效。</item>
+/// <item><b>撞 20 件预算。</b>原生消费者把每个 (套件, 身形) 的件收进一个 20 项定长数组，
+/// 第 21 件起静默丢弃，而行序是 Any 在前 —— 所以"多写件"必然先挤掉身形专属的身体件。
+/// 件数一个都不增，这条从"要小心"变成"不会发生"。</item>
+/// </list>
+///
+/// <para>
+/// <b>覆盖语义（用户口径 2026-11-08）：目标套件里每一个格子都要有结论。</b>
+/// 来源覆盖到的格子写来源的 unit；覆盖不到的一律写 <c>0</c>（隐藏）。
+/// 例如素体没有头盔件时，头盔套件的 slot 0 会被写成 0 —— 否则会露出原版头盔，
+/// 那就成了"素体 + 原版头盔"的缝合怪。写 0 是游戏自己的写法：123 套披风套件里
+/// 有 118 套的披风格就是 <c>unit = 0</c>，记录照样留着。
+/// </para>
+///
+/// <para>
 /// 文件的内容校验和是 MurmurHash64A，游戏用**原版文件的哈希**比对，所以改完内容必须把
 /// 哈希伪造回原值。求解是闭式的：只要有一个容器忽略的、8 字节对齐的字，它的取值就唯一
-/// 确定——件记录尾部 89..111 这 23 字节从未被解码，正好提供它。单次伪造 &lt; 2 ms。
+/// 确定。**这个字放在扩充后的 payload 末尾**（见 <see cref="AppendForgeWord"/>），
+/// 不再借用件记录里的任何字节。
+/// </para>
 ///
+/// <para>
 /// 信任模型：**备份是唯一可信的原件**。每次应用都从备份重建，因此增删改映射都是幂等的，
 /// 也能干净地撤销。备份只会在三个时机重建：首次运行、游戏更新（buildid 变化）、
 /// Steam 校验完成之后。
+/// </para>
 /// </summary>
 public sealed class ArmorRegistryDataMapper
 {
@@ -42,7 +70,10 @@ public sealed class ArmorRegistryDataMapper
 	const uint ArmorCustomizationTypeId = 0xd9a55aa0;
 	const int PieceSize = 112;
 	const int BodySize = 24;
-	const int PieceFreeStart = 89;
+	/// <summary>原始身形编码里"通用"的值。它不是第三种身形，而是与 Stocky(0)/Slim(1) 互斥的写法。</summary>
+	const uint AnyBodyType = 3;
+	/// <summary>伪造用的自由字宽度。一个 64 位未知量才有闭式解；7 字节（56 位）不够。</summary>
+	const int ForgeWordSize = 8;
 	const ulong Mul = 0xC6A4A7935BD1E995UL;
 	const ulong Seed = 16045690983977655786UL;
 
@@ -196,186 +227,107 @@ public sealed class ArmorRegistryDataMapper
 		return -1;
 	}
 
+	// ---- 格子取值 -------------------------------------------------------------------
+
 	/// <summary>
-	/// 件记录的字段来源规则：**只有 unit / slot / piece_type 取自来源**，其余一律沿用目标。
-	///
-	///   +0 unit、+8 slot、+12 piece_type —— 这就是"映射"本身；
-	///   +16 weight —— 玩法字段（护甲等级），必须留目标的；
-	///   +24..+80 资源哈希、+88 tone —— 属于目标这套护甲自己的配色，留目标的；
-	///   +20..+23、+89..+111 —— 未解码/保留，留目标的。
-	///
-	/// 目标没有同槽位件时，用最接近的结构邻居当模板（同 body 同 slot → 同 body）。
+	/// 来源件表按 <c>(身形, 槽位, 层)</c> 建索引。<c>Any</c> 是"两身形共用"那一行，
+	/// 与 Stocky/Slim **互斥**（原生 138/138 套零共存）。
 	/// </summary>
-	static PieceSlot? FindTemplate(Kit target, ArmorRegistryDataSourcePiece sourcePiece)
+	static Dictionary<(uint Body, uint Slot, uint PieceType), ulong> IndexSource(
+		IReadOnlyList<ArmorRegistryDataSourcePiece> pieces)
 	{
-		PieceSlot? exact = null;
-		PieceSlot? sameSlot = null;
-		PieceSlot? sameBody = null;
-		foreach (var piece in target.Pieces)
+		var index = new Dictionary<(uint, uint, uint), ulong>(pieces.Count);
+		foreach (var piece in pieces)
 		{
-			if (piece.BodyType != sourcePiece.BodyType) continue;
-			sameBody ??= piece;
-			if (piece.Slot != sourcePiece.Slot) continue;
-			sameSlot ??= piece;
-			if (piece.PieceType != sourcePiece.PieceType) continue;
-			exact = piece;
-			break;
+			// 同一格出现两件时先来的赢。协议层已经禁止同格重复，这里只是不让坏输入炸掉。
+			index.TryAdd((piece.BodyType, piece.Slot, piece.PieceType), piece.Unit);
 		}
-		return exact ?? sameSlot ?? sameBody;
+		return index;
 	}
 
 	/// <summary>
-	/// 用来源的件表重建目标套件：header + bodies + 连续件数组。
-	/// bodyOffset 恒为 64，第一个件数组紧接在 body 数组之后——这是游戏自己的排布。
-	/// </summary>
-	/// <summary>
-	/// 用来源件表替换目标套件的件表：header + bodies + 连续件数组。
+	/// 单个格子的取值。<paramref name="bodyType"/> 是**目标那一行**的身形，不是来源的身形。
 	/// <para>
-	/// <b>这是"替换"不是"叠加"。</b>映射完成后这套装备只应有来源的件（加上披风那一格占位），
-	/// 目标自己的其余件（别的层、我们没有的部位）一律不写——留着就成了缝合怪。空行也不写。
+	/// 顺序：① 同身形同格 → ② 共用(Any)格 → ③ 目标是共用行时接受来源按身形拆出来的件
+	/// → ④ 都没有就返回 0（隐藏）。
 	/// </para>
 	/// <para>
-	/// <b>槽位族必须按套件分开。</b>自定义素体是一个包着「7 个部位 + 1 个头盔」的整体，
-	/// 而游戏里护甲套件与头盔套件是两个独立装备。把整套件表原样铺进去，头盔件会落进护甲套件
-	/// （装身体也冒出头盔）、身体件会落进头盔套件（装头盔也冒出身体）。所以这里先看目标套件
-	/// 自己有哪些槽位族，只接受属于该族的来源件。
+	/// <b>③ 为什么要容忍。</b>原生把腿、披风、臂内层放在共用行（因为它们的网格不随身形变），
+	/// 而素体可能把同一个槽位声明成按身形两份。这时共用格表达不了"两份不同的网格"：
+	/// 两份相同就照用，不同就让这一格隐藏 —— 绝不挑一份塞给两种身形（那会让一半身形穿错网格）。
+	/// 只声明了一份的，说明这个网格两种身形通用，直接用。
 	/// </para>
 	/// </summary>
-	static byte[] CloneKit(byte[] plain, Kit target, IReadOnlyList<ArmorRegistryDataSourcePiece> sourcePieces)
+	static ulong ResolveUnit(
+		Dictionary<(uint Body, uint Slot, uint PieceType), ulong> index,
+		uint bodyType, uint slot, uint pieceType)
 	{
-		const uint CapeSlot = 1;
-		var headerSize = (int)target.BodyOffset;
-		var targetHasHelmet = target.Pieces.Any(piece => piece.Slot == 0);
-		var targetHasBody = target.Pieces.Any(piece => piece.Slot >= 2 && piece.Slot <= 9);
-		var wanted = sourcePieces
-			.Where(piece => (piece.Slot == 0 && targetHasHelmet)
-				|| (piece.Slot >= 2 && piece.Slot <= 9 && targetHasBody))
-			.ToArray();
-
-		// 逐条身体行收集；空行直接丢弃（不进入 kept），最后同步写回 bodyCount。
-		var kept = new List<(int OriginalIndex, uint BodyType, List<byte[]> Records)>();
-		for (var b = 0; b < target.Bodies.Count; b++)
+		if (index.TryGetValue((bodyType, slot, pieceType), out var unit)) return unit;
+		if (bodyType != AnyBodyType && index.TryGetValue((AnyBodyType, slot, pieceType), out unit)) return unit;
+		if (bodyType == AnyBodyType)
 		{
-			var body = target.Bodies[b];
-			// body 精确匹配 + Any(3) 展开进每一行；同一 (slot, layer) 只留一条，精确 body 优先于 Any。
-			var chosen = wanted
-				.Where(piece => piece.BodyType == body.BodyType || piece.BodyType == 3)
-				.GroupBy(piece => (piece.Slot, piece.PieceType))
-				.Select(group => group.OrderBy(piece => piece.BodyType == 3 ? 1 : 0).First())
-				.OrderBy(piece => piece.Slot).ThenBy(piece => piece.PieceType)
-				.ToList();
-
-			var records = new List<byte[]>(chosen.Count + 1);
-			foreach (var sourcePiece in chosen)
-			{
-				var template = FindTemplate(target, sourcePiece);
-				var record = new byte[PieceSize];
-				// 先把目标模板整条抄过来（拿到目标的 weight / 资源哈希 / tone / 保留区）。
-				// 目标完全没有该部位时 record 保持全零——那是"给这个槽位新建一条"的情形，
-				// 注册表是权威来源，别的护甲允许这个槽位存在，引擎就会接受它。
-				if (template is not null)
-					Array.Copy(plain, template.Offset, record, 0, PieceSize);
-				// 只覆盖映射真正要换的三个字段。
-				BinaryPrimitives.WriteUInt64LittleEndian(record, sourcePiece.Unit);
-				BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(8), sourcePiece.Slot);
-				BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(12), sourcePiece.PieceType);
-				records.Add(record);
-			}
-
-			// 披风是独立装备、只占位，按约定原样保留这一行里的披风件。
-			foreach (var cape in target.Pieces.Where(piece => piece.Slot == CapeSlot && piece.BodyType == body.BodyType))
-			{
-				var record = new byte[PieceSize];
-				Array.Copy(plain, cape.Offset, record, 0, PieceSize);
-				records.Add(record);
-			}
-
-			// 空行会让军械库遍历身形时拿到空数组而崩溃，直接不写这一行。
-			if (records.Count == 0) continue;
-			kept.Add((b, body.BodyType, records));
+			var hasStocky = index.TryGetValue((0u, slot, pieceType), out var stocky);
+			var hasSlim = index.TryGetValue((1u, slot, pieceType), out var slim);
+			if (hasStocky && hasSlim) return stocky == slim ? stocky : 0UL;
+			if (hasStocky) return stocky;
+			if (hasSlim) return slim;
 		}
-
-		// 一个件都给不出来（来源里没有属于这套装备的槽位）时**原样不动**：
-		// 把整份装备清成空壳比"没映射上"更糟，而且空表本身就是军械库崩溃的来源。
-		if (kept.Count == 0)
-		{
-			var untouched = new byte[target.PayloadSize];
-			Array.Copy(plain, target.PayloadStart, untouched, 0, target.PayloadSize);
-			return untouched;
-		}
-
-		var totalPieces = kept.Sum(entry => entry.Records.Count);
-		var payload = new byte[headerSize + kept.Count * BodySize + totalPieces * PieceSize];
-		Array.Copy(plain, target.PayloadStart, payload, 0, headerSize);
-		// 行数变了就必须写回：bodyOffset 恒为 64，bodyCount 紧跟其后（见 ParseKits）。
-		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(48), headerSize);
-		BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(56), kept.Count);
-
-		var cursor = headerSize + kept.Count * BodySize;
-		for (var i = 0; i < kept.Count; i++)
-		{
-			var srcBodyAt = target.PayloadStart + headerSize + kept[i].OriginalIndex * BodySize;
-			var dstBodyAt = headerSize + i * BodySize;
-			// 整条 24 字节抄过来（保留未知字段），再覆盖三个已知字段。
-			Array.Copy(plain, srcBodyAt, payload, dstBodyAt, BodySize);
-			BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(dstBodyAt), kept[i].BodyType);
-			BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(dstBodyAt + 8), cursor);
-			BinaryPrimitives.WriteInt64LittleEndian(payload.AsSpan(dstBodyAt + 16), kept[i].Records.Count);
-			foreach (var record in kept[i].Records)
-			{
-				Array.Copy(record, 0, payload, cursor, PieceSize);
-				cursor += PieceSize;
-			}
-		}
-
-		var result = new byte[plain.Length - target.PayloadSize + payload.Length];
-		Array.Copy(plain, 0, result, 0, target.PayloadStart);
-		Array.Copy(payload, 0, result, target.PayloadStart, payload.Length);
-		Array.Copy(plain, target.PayloadStart + target.PayloadSize, result, target.PayloadStart + payload.Length,
-			plain.Length - target.PayloadStart - target.PayloadSize);
-		BinaryPrimitives.WriteUInt32LittleEndian(result.AsSpan(target.PayloadStart - 12), (uint)payload.Length);
-		return result;
+		return 0UL;
 	}
 
-	static bool SamePieceSet(Kit target, IReadOnlyList<ArmorRegistryDataSourcePiece> sourcePieces)
-		=> target.Pieces.Count == sourcePieces.Count
-			&& target.Pieces.Select(p => (p.BodyType, p.Slot, p.PieceType, p.Unit))
-				.OrderBy(k => k)
-				.SequenceEqual(sourcePieces
-					.Select(p => (p.BodyType, p.Slot, p.PieceType, p.Unit))
-					.OrderBy(k => k));
+	// ---- 伪造 -----------------------------------------------------------------------
 
-	/// <summary>把哈希伪造回 <paramref name="target"/>：解出一个对齐自由字，其余字节不动。</summary>
-	static bool TryForge(byte[] edited, ulong target)
+	/// <summary>
+	/// 给最后一条 subdata 块的 payload 追加一个**8 字节对齐的自由字**，返回新缓冲区与字偏移。
+	/// <para>
+	/// <b>为什么必须动文件长度。</b>件记录里没有任何连续 8 个自由字节：<c>+89..95</c> 与
+	/// <c>+105..111</c> 各只有 7 字节（56 位 &lt; 64 位，闭式解不成立），中间 <c>+96..104</c>
+	/// 是第二张表的偏移与条目数（实测 6 套带真实数据）。旧实现按 <c>+89</c> 对齐求解，
+	/// 落点是 <c>件+92..99</c> —— 每次都写脏第二张表偏移的低 4 字节。
+	/// </para>
+	/// <para>
+	/// <b>为什么追加在末尾是安全的。</b>块的解析只依赖 <c>size</c> 与 body/piece 的偏移计数，
+	/// payload 末尾多出来的字节永远不会被读到；实测原生文件里就有 9 套 payload 带
+	/// 64 / 960 / 1408 / 1536 字节的多余数据，游戏正常。
+	/// </para>
+	/// </summary>
+	static (byte[] Buffer, int WordOffset) AppendForgeWord(byte[] plain, Kit lastKit)
 	{
-		if (HashContent(edited) == target) return true;
-		foreach (var kit in ParseKits(edited))
+		var payloadEnd = lastKit.PayloadStart + lastKit.PayloadSize;
+		if (payloadEnd != plain.Length)
 		{
-			foreach (var piece in kit.Pieces)
-			{
-				var freeStart = piece.Offset + PieceFreeStart;
-				var freeEnd = piece.Offset + PieceSize;
-				var slot = (freeStart + 7) / 8 * 8;
-				if (slot + 8 > freeEnd) continue;
-				var stateBefore = StateBefore(edited, slot);
-				var need = StateAfter(edited, slot, target);
-				ulong solved;
-				unchecked { solved = Unmix(((need * Inverse(Mul)) & ulong.MaxValue) ^ stateBefore); }
-				var previous = BinaryPrimitives.ReadUInt64LittleEndian(edited.AsSpan(slot));
-				BinaryPrimitives.WriteUInt64LittleEndian(edited.AsSpan(slot), solved);
-				if (HashContent(edited) == target) return true;
-				BinaryPrimitives.WriteUInt64LittleEndian(edited.AsSpan(slot), previous);
-			}
+			throw new InvalidDataException(
+				"注册表末尾还有解析不到的多余数据，无法安放校验和占位字，已放弃写入。");
 		}
-		return false;
+
+		var pad = (8 - (payloadEnd % 8)) % 8;
+		var wordOffset = payloadEnd + pad;
+		var grew = plain.Length + pad + ForgeWordSize;
+		var buffer = new byte[grew];
+		Array.Copy(plain, buffer, plain.Length);
+		// 块头就在 payload 前面 24 字节；size 字段在块头 +12。
+		BinaryPrimitives.WriteUInt32LittleEndian(
+			buffer.AsSpan(lastKit.PayloadStart - SubdataHeaderSize + 12),
+			(uint)(lastKit.PayloadSize + pad + ForgeWordSize));
+		return (buffer, wordOffset);
+	}
+
+	/// <summary>把内容校验和伪造回 <paramref name="target"/>：只解那一个自由字，其余字节不动。</summary>
+	static bool TrySolveForgeWord(byte[] data, int slot, ulong target)
+	{
+		if (HashContent(data) == target) return true;
+		var stateBefore = StateBefore(data, slot);
+		var need = StateAfter(data, slot, target);
+		ulong solved;
+		unchecked { solved = Unmix(need * Inverse(Mul) ^ stateBefore); }
+		BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(slot), solved);
+		return HashContent(data) == target;
 	}
 
 	// ---- 对外 -----------------------------------------------------------------------
 
 	/// <summary>
 	/// 丢弃记录的原始备份与状态，让下一次应用以当前文件为新基准。
-	/// <summary>
-	/// 丢掉「原件副本」，让下一次编译以当前 dl_bin 为基底。
 	/// <para>
 	/// <b>只在「Steam 校验完整性之后」调用。</b>那一刻游戏文件一定是官方版本，是整条链里
 	/// 唯一能确认"这就是原件"的时刻。平时调用会把一份可能被改过的文件当成原件。
@@ -420,11 +372,15 @@ public sealed class ArmorRegistryDataMapper
 	/// <summary>一次编译的结果。</summary>
 	/// <param name="Sealed">编译出来的密文（<see cref="Changed"/> 为假时等于基底）。</param>
 	/// <param name="Changed">明文是否真的变了。没变就不必写盘。</param>
+	/// <param name="Hidden">被写成 0（隐藏）的格子数。</param>
+	/// <param name="Replaced">换成本源 unit 的格子数。</param>
 	public sealed record ArmorRegistryCompileOutcome(
 		int Applied,
 		int Skipped,
 		byte[] Sealed,
-		bool Changed);
+		bool Changed,
+		int Hidden = 0,
+		int Replaced = 0);
 
 	/// <summary>
 	/// **编译**：以 <paramref name="baseSealed"/>（原件密文）为基底，把 <paramref name="mappings"/>
@@ -455,28 +411,31 @@ public sealed class ArmorRegistryDataMapper
 		if (kits.Count == 0)
 			throw new InvalidDataException("这份 dl_bin 解析不出任何护甲套件：它不是可识别的护甲注册表文件。");
 
+		// 偏移永远不变（件数、顺序、payload 长度都不动），所以只解析一次。
+		var byItem = new Dictionary<uint, Kit>(kits.Count);
+		foreach (var kit in kits) byItem.TryAdd(kit.ItemId, kit);
+
 		var applied = 0;
 		var skipped = 0;
-		var edited = plain;
+		var hidden = 0;
+		var replaced = 0;
+		var edited = (byte[])plain.Clone();
 		foreach (var mapping in mappings)
 		{
-			// 每次重建后偏移都会变，重新解析一次，保证后续映射仍落在正确位置。
-			var currentKits = ParseKits(edited)
-				.GroupBy(kit => kit.ItemId)
-				.ToDictionary(group => group.Key, group => group.First());
-			if (!currentKits.TryGetValue(mapping.TargetItemId, out var targetKit))
+			if (!byItem.TryGetValue(mapping.TargetItemId, out var targetKit))
 			{
 				skipped++;
 				continue;
 			}
 
-			// 来源有两种：显式件表（自定义素体）或一套游戏护甲。
+			// 来源有两种：显式件表（自定义素体）或一套游戏护甲。游戏护甲一律读**基底**里的那份 ——
+			// 映射之间互不影响，A 改了外观不该连带改掉"B 拿 A 当来源"的结果。
 			IReadOnlyList<ArmorRegistryDataSourcePiece> sourcePieces;
 			if (mapping.SourcePieces is { Count: > 0 })
 			{
 				sourcePieces = mapping.SourcePieces;
 			}
-			else if (mapping.SourceItemId is uint sourceId && currentKits.TryGetValue(sourceId, out var sourceKit))
+			else if (mapping.SourceItemId is uint sourceId && byItem.TryGetValue(sourceId, out var sourceKit))
 			{
 				sourcePieces = sourceKit.Pieces
 					.Select(piece => new ArmorRegistryDataSourcePiece(
@@ -489,20 +448,33 @@ public sealed class ArmorRegistryDataMapper
 				continue;
 			}
 
-			// 目标件集已经与来源一致时不必重写。
-			if (SamePieceSet(targetKit, sourcePieces)) { skipped++; continue; }
-			edited = CloneKit(edited, targetKit, sourcePieces);
-			applied++;
+			var index = IndexSource(sourcePieces);
+			var changed = 0;
+			foreach (var piece in targetKit.Pieces)
+			{
+				var unit = ResolveUnit(index, piece.BodyType, piece.Slot, piece.PieceType);
+				if (unit == piece.Unit) continue;
+				BinaryPrimitives.WriteUInt64LittleEndian(edited.AsSpan(piece.Offset), unit);
+				changed++;
+				if (unit == 0) hidden++;
+				else replaced++;
+			}
+
+			if (changed > 0) applied++;
+			else skipped++;
 		}
 
 		// 没有任何改动 ⇒ 输出就是基底本身（"删掉映射就还原"由此自动成立）。
 		if (applied == 0)
-			return new ArmorRegistryCompileOutcome(0, skipped, baseSealed, Changed: false);
+			return new ArmorRegistryCompileOutcome(0, skipped, baseSealed, Changed: false, 0, 0);
 
-		if (!TryForge(edited, contentHash))
+		// payload 末尾追加一个对齐的自由字来承载伪造值，然后闭式求解。
+		var (forged, wordOffset) = AppendForgeWord(edited, kits[^1]);
+		if (!TrySolveForgeWord(forged, wordOffset, contentHash))
 			throw new InvalidDataException("无法把内容校验和伪造回原值，已放弃写入。");
 
-		return new ArmorRegistryCompileOutcome(applied, skipped, decryptor.EncodeData(edited), Changed: true);
+		return new ArmorRegistryCompileOutcome(
+			applied, skipped, decryptor.EncodeData(forged), Changed: true, hidden, replaced);
 	}
 
 	/// <summary>
@@ -567,10 +539,18 @@ public sealed class ArmorRegistryDataMapper
 		{
 			// 第二类、也是唯一需要用户动手的错误：目标不可写。
 			return new ArmorRegistryDataMappingResult(outcome.Applied, outcome.Skipped, false,
-				$"写不进注册表文件：{targetPath}（{exception.Message}）。请检查只读属性、占用或权限。");
+				$"写不进注册表文件：{targetPath}（{exception.Message}）。请检查只读属性、占用或权限。")
+			{
+				Hidden = outcome.Hidden,
+				Replaced = outcome.Replaced,
+			};
 		}
 
-		return new ArmorRegistryDataMappingResult(outcome.Applied, outcome.Skipped, true, null);
+		return new ArmorRegistryDataMappingResult(outcome.Applied, outcome.Skipped, true, null)
+		{
+			Hidden = outcome.Hidden,
+			Replaced = outcome.Replaced,
+		};
 	}
 
 	static async ValueTask WriteAtomicAsync(string path, byte[] content, CancellationToken cancellationToken)

@@ -16,6 +16,12 @@ public sealed record ArmorRegistryDataMappingResult(
 	string? Message = null)
 {
 	public static readonly ArmorRegistryDataMappingResult Nothing = new(0, 0, false, null);
+
+	/// <summary>被写成 <c>0</c>（隐藏）的格子数。来源没覆盖到的部位都算在这里。</summary>
+	public int Hidden { get; init; }
+
+	/// <summary>换成本源 unit 的格子数。</summary>
+	public int Replaced { get; init; }
 }
 
 public sealed record RuntimeArmorRegistryModel(

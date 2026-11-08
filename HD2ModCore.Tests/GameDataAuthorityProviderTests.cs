@@ -207,6 +207,57 @@ public sealed class GameDataAuthorityProviderTests
 		}
 	}
 
+	/// <summary>
+	/// 游戏更新过、但 live 其实是**我们自己编译出来的**产物时，绝不能采纳为原件副本。
+	/// <para>
+	/// 件数判据在这里是瞎的：新的编译只改件记录的 unit，**件数一件不变**，所以
+	/// "live 的件数不比副本少"不能证明文件没被改过。真映射的产物有唯一签名 ——
+	/// 内容哈希等于原件、字节却不同（伪造那一步就是为了把哈希拨回去）。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task LoadAsync_AfterGameUpdate_KeepsCopyWhenLiveIsOurForgedCompile()
+	{
+		var (root, gameData, registryRoot, backupPath) = await PrepareCopyAsync(pieceCount: 3);
+		try
+		{
+			var livePath = Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName);
+			var copySealed = await File.ReadAllBytesAsync(backupPath);
+			var copyPlain = Decrypt(copySealed);
+			var compiled = ArmorRegistryDataMapper.Compile(copySealed,
+			[
+				new ArmorRegistryDataMapping(101, null,
+					[new ArmorRegistryDataSourcePiece(0, (uint)CustomizationKitSlot.Torso, 0, 0x9999UL)]),
+			]);
+			// 前提：这次编译真的改了内容、却没改件数。
+			Assert.True(compiled.Changed);
+			Assert.Equal(3, compiled.Hidden + compiled.Replaced);
+			Assert.Equal(
+				ArmorRegistryDataMapper.HashContent(copyPlain),
+				ArmorRegistryDataMapper.HashContent(Decrypt(compiled.Sealed)));
+
+			await File.WriteAllBytesAsync(livePath, compiled.Sealed);
+			await WriteSteamManifestAsync(gameData, lastUpdatedUnix: 1_800_000_000);
+			var pristine = await File.ReadAllBytesAsync(backupPath);
+
+			var snapshot = await new GameDataAuthorityProvider(registryRoot: registryRoot).LoadAsync(gameData);
+
+			Assert.Equal(pristine, await File.ReadAllBytesAsync(backupPath));
+			Assert.Contains(snapshot.Issues, issue => issue.Code == "ArmorOriginalCopyKeptAfterGameUpdate");
+		}
+		finally
+		{
+			try { Directory.Delete(root, recursive: true); } catch { }
+		}
+	}
+
+	private static byte[] Decrypt(byte[] sealedBytes)
+	{
+#pragma warning disable CS0618
+		return Decryptor.CreateWithEmbeddedKeys().DecodeData(sealedBytes);
+#pragma warning restore CS0618
+	}
+
 	private static async Task<(string Root, string GameData, string RegistryRoot, string BackupPath)> PrepareCopyAsync(int pieceCount)
 	{
 		var root = Path.Combine(Path.GetTempPath(), "hd2-authority-tests", Guid.NewGuid().ToString("N"));

@@ -1660,6 +1660,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				if (!dataMapping.Written)
 					notifications.Show(dataMessage, NotificationLevel.Warning, TimeSpan.FromSeconds(16), "护甲注册");
 			}
+			else if (result.DataMapping is { Written: true } applied)
+			{
+				// 成功也要有结论：换了几格、隐藏了几格。隐藏是**正常结果**（来源没覆盖到的部位），
+				// 但用户得能看见，否则"某个部位不见了"会被当成 bug。
+				var summary = $"真映射：{applied.Applied} 条映射 · 换 {applied.Replaced} 格 · 隐藏 {applied.Hidden} 格";
+				LogService.Info(summary);
+				StatusDetail = summary;
+			}
 			modelDefinitions = result.Document.ModelDefinitions;
 			pieceOverrides = result.Document.PieceOverrideDefinitions;
 			targetModes = result.Document.TargetModeDefinitions;

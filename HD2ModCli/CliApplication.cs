@@ -423,6 +423,9 @@ public static class CliApplication
 				invocation.Options,
 				new { ok = execution.Success, execution },
 				() => $"护甲注册协议状态：{execution.Status}，revision={execution.Revision}，活动映射 {execution.ActiveMappingCount} 条。"
+				+ (execution.DataMappingWritten == true
+					? $" 真映射：换 {execution.DataMappingReplaced} 格、隐藏 {execution.DataMappingHidden} 格。"
+					: string.Empty)
 				+ (string.IsNullOrWhiteSpace(execution.DataMappingMessage) ? string.Empty : " " + execution.DataMappingMessage));
 			return execution.Success ? 0 : 2;
 		}

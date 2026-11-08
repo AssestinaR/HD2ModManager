@@ -255,8 +255,8 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 	/// <list type="bullet">
 	/// <item>没有副本 → 采纳当前文件（第一次建库）。</item>
 	/// <item>游戏更新过（Steam manifest 的 LastUpdated 晚于副本写入时间）→ 当前文件是 Steam
-	/// 覆盖过的官方版本，采纳它；但如果它的件数比副本还少，说明它仍带着真映射的改动，
-	/// <b>不采纳</b>，继续读副本并给出一条可执行的提示。</item>
+	/// 覆盖过的官方版本，采纳它；但如果它带着真映射的签名（内容哈希等于副本、字节却不同），
+	/// 说明它其实没被 Steam 覆盖，<b>不采纳</b>，继续读副本并给出一条可执行的提示。</item>
 	/// <item>其余 → 读副本。</item>
 	/// </list>
 	/// </para>
@@ -279,7 +279,8 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 
 		var livePieces = await TryCountPiecesAsync(livePath, cancellationToken).ConfigureAwait(false);
 		var copyPieces = await TryCountPiecesAsync(copyPath, cancellationToken).ConfigureAwait(false);
-		if (livePieces is not null && copyPieces is not null && livePieces >= copyPieces)
+		if (livePieces is not null && copyPieces is not null && livePieces >= copyPieces
+			&& !await LooksLikeOurCompileAsync(livePath, copyPath, cancellationToken).ConfigureAwait(false))
 		{
 			await TryAdoptAsOriginalCopyAsync(livePath, copyPath, issues, cancellationToken).ConfigureAwait(false);
 			return copyPath;
@@ -288,10 +289,36 @@ public sealed class GameDataAuthorityProvider : IGameDataAuthorityProvider
 		issues.Add(new CoreIssue(
 			CoreIssueSeverity.Warning,
 			"ArmorOriginalCopyKeptAfterGameUpdate",
-			"游戏更新过，但当前 .dl_bin 的件数比原件副本还少，它可能仍带着真映射的改动，所以没有覆盖原件副本。"
+			"游戏更新过，但当前 .dl_bin 看起来仍带着真映射的改动，所以没有覆盖原件副本。"
 			+ "请先在管理器里关掉真映射（应用一次空映射就会把文件还原），再重建 gamedata 资产。",
 			livePath));
 		return copyPath;
+	}
+
+	/// <summary>
+	/// 当前这份 dl_bin 是不是<b>我们编译出来的</b>。
+	/// <para>
+	/// <b>为什么不能再只看件数。</b>件数判据的前提是"真映射会替换件表、件数会变少"。现在的编译
+	/// 只改件记录的 unit、件数一个都不动（见 <see cref="ArmorRegistryDataMapper"/>），
+	/// 所以"件数不比副本少"不再能证明文件没被改过。
+	/// </para>
+	/// <para>
+	/// <b>真映射的产物有唯一签名：内容哈希等于原件、字节却不相同。</b>伪造那一步就是为了让
+	/// 内容哈希回到原值，所以"哈希相同但逐字节不同"只可能出自我们。官方版本的内容变了，
+	/// 哈希一定跟着变；逐字节相同则本来就是同一份原件。
+	/// </para>
+	/// </summary>
+	private static async ValueTask<bool> LooksLikeOurCompileAsync(
+		string livePath,
+		string copyPath,
+		CancellationToken cancellationToken)
+	{
+		var live = await TryReadEncryptedDataLibraryAsync(livePath, cancellationToken).ConfigureAwait(false);
+		var copy = await TryReadEncryptedDataLibraryAsync(copyPath, cancellationToken).ConfigureAwait(false);
+		if (live.Bytes is null || copy.Bytes is null) return false;
+		if (live.Bytes.AsSpan().SequenceEqual(copy.Bytes)) return false;
+		return ArmorRegistryDataMapper.HashContent(live.Bytes)
+			== ArmorRegistryDataMapper.HashContent(copy.Bytes);
 	}
 
 	/// <summary>Steam 记录的"最后更新时间"晚于副本的写入时间 ⇒ 副本早于这次游戏更新。</summary>
