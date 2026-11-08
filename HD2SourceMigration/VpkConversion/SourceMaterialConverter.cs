@@ -502,6 +502,29 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	public const uint DirtGlobalAmountVariableId = 0xa3351311;
 
+	/// <summary>
+	/// <c>advanced</c> 模板的 <c>SubsurfaceIntensity</c>（次表面散射强度）。
+	/// <para>
+	/// <b>SDK 模板的默认值是 0.46、<c>SubsurfaceDiffusion</c> 是 0.7 —— 我们从没写过它，
+	/// 于是每个高级材质都在用游戏那套皮肤散射。</b>浅色皮肤上的表现是：
+	/// 明暗交界/侧面一圈**特别红」，正对镜头的地方又**特别白**（2026-11-08 用户截图）。
+	/// 源侧 NekoToon 没有这个特性，所以默认关掉；用 <c>HD2_SUBSURFACE</c> 可以调回来做对照。
+	/// </para>
+	/// </summary>
+	public const uint SubsurfaceIntensityVariableId = 0x38dae7bd;
+
+	/// <summary>次表面散射强度，默认 0（关）。见 <see cref="SubsurfaceIntensityVariableId"/>。</summary>
+	private static readonly float SubsurfaceLevel = ReadSubsurfaceLevel();
+
+	private static float ReadSubsurfaceLevel()
+	{
+		var raw = Environment.GetEnvironmentVariable("HD2_SUBSURFACE");
+		return float.TryParse(raw, System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out var value)
+			? Math.Clamp(value, 0f, 1f)
+			: 0f;
+	}
+
 	/// <summary><c>WeatheringCoverage</c>（0x4a7cd0ef）：天气覆盖率（标量，alphaclip 默认 0.5）。</summary>
 	public const uint WeatheringCoverageVariableId = 0x4a7cd0ef;
 
@@ -1783,6 +1806,10 @@ public sealed class SourceMaterialConverter
 				return MaterialSynthesisResult.Failed(
 					$"advanced 模板只有 {material.TextureIds.Count} 个槽，放不下下标 {AdvancedAlbedoSlot} 的底色");
 			material.SetTexture(AdvancedAlbedoSlot, texture.Id);
+
+			// 关掉模板默认的次表面散射（见 SubsurfaceIntensityVariableId 的注释：
+			// 不关就是"侧面一圈特别红、正面特别白"）。
+			material.TrySetScalar(SubsurfaceIntensityVariableId, SubsurfaceLevel);
 
 			// ===== 实验路线 2：advanced + SclarFieldOpacity =====
 			// 想知道的是：advanced 会不会**混合**，还是只做裁切。
