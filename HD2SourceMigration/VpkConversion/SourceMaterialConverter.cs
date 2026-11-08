@@ -445,6 +445,16 @@ public sealed class SourceMaterialConverter
 	public const int AlphaClipBaseColorSlot = 2;
 
 	/// <summary>
+	/// <c>cutoutmetal</c> 多出来的第 4 个槽（`ParallaxMap`）。
+	/// <para>
+	/// <b>必须填。</b>游戏里 154 个真实子材质**四个槽全是非空 id**；声明了一个却指向 0 的槽
+	/// 会让材质绑定失败 —— 实测后果是"整件模型直接不显示"（不是品红占位、就是干脆没有这块）。
+	/// `UseParallax` 默认 0，这张图不参与着色，所以 4×4 平灰就够，且按名字共享同一条。
+	/// </para>
+	/// </summary>
+	public const int CutoutMetalParallaxSlot = 3;
+
+	/// <summary>
 	/// <c>original</c> 模板（13 槽）里我们关心的三个槽位下标。
 	/// <para>
 	/// 顺序取自本体角色材质 <c>0x8f669f365f24594e</c> 的实例（材质按模板槽序存）：
@@ -1815,6 +1825,20 @@ public sealed class SourceMaterialConverter
 			material.SetTexture(AlphaClipOpacitySlot, opacityMask.Id);
 			material.SetTexture(AlphaClipBaseColorSlot, texture.Id);
 			textures.Add(opacityMask);
+
+			// ===== `cutoutmetal` 的第 4 个槽（`ParallaxMap`）=====
+			//
+			// **留空就会整件不显示。** 游戏里 154 个真实子材质四个槽全都有贴图 id；
+			// 声明了槽却给 0，材质绑定失败 —— 实机表现不是品红占位，而是**这块模型干脆消失**
+			// （2026-11-08 用户实测：所有镂空件都不见了，只剩一件 advanced 的衣服）。
+			// `UseParallax` 默认 0，所以填一张 4×4 平灰即可（按名字共享，不会把包撑大）。
+			if (IsCutoutMetalTemplate(loaded.TemplateName)
+				&& material.TextureIds.Count > CutoutMetalParallaxSlot)
+			{
+				var flatParallax = BuildSolidTexture("shared_cutoutmetal_parallax_", string.Empty, 128, 128, 128, 255);
+				material.SetTexture(CutoutMetalParallaxSlot, flatParallax.Id);
+				textures.Add(flatParallax);
+			}
 
 			// 关掉脏污/天气。`alphaclip` 模板的默认值是**满脏污**（`DirtGlobalAmount = 1`），
 			// 于是镂空件在雪地会被雪图层整个盖住，而 `advanced` 的件不受影响。
