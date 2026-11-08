@@ -369,93 +369,41 @@ public static class VpkRebuildService
 			//     不再替换任何护甲，变成了它自己的素体"，而他什么都没改过。
 			// 正确的做法是：只有"确定不会重做换甲"时，才在最后补一份生效层（见 ⑦b）。
 
-			// ⑦ **按当前配置**重新生成 Overwrite/。
+			// ⑦ **编译**：把 `sectional/` 的标准产物按当前条件（目标护甲 / section 开关 / 材质开关）
+			// 重新算成 `Overwrite/`。
 			//
-			// "当前配置"= 调用方给的目标与勾选（界面上正显示着的那份），没给才退回
-			// wardrobe.json 记着的。这条是刻意的：用户可能刚改了下拉里的目标、刚勾掉几个
-			// section，都还没点「切换」/「应用」。重构建一并把它们做掉，
-			// 否则"点完重构建，界面上的配置还没生效"会再困惑一次。
+			// 重构建不再自己写生效层：那是编译基座（`ModCompileService`）的唯一职责。
+			// 于是"重建"就是干净的两段——**转换**（来源 → sectional）、**编译**（sectional → Overwrite）。
 			var rekeyed = false;
 			string? targetName = null;
 			string? incompleteReason = null;
-			var wardrobe = await VpkModWardrobeService.ReadAsync(modDirectory, cancellationToken).ConfigureAwait(false);
-			// **只有"记录过目标"才重做换甲。**
-			//
-			// 以前这里会退回"自己的素体"（`ResolveRekeyTargets` 的第二分支），而那次 identity
-			// 换甲会把这个**回退值**写进 `wardrobe.json` —— 于是这个 Mod 从此永远变成自身素体，
-			// 用户原来选的护甲再也回不来（2026-11-08 实测）。
-			// 没记录目标时正确的动作是：只更新来源产物，生效层保持原样。
-			var targets = targetArchiveIds is { Count: > 0 }
-				? targetArchiveIds
-				: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorArchiveId)
-					? null
-					: new[] { wardrobe.TargetArmorArchiveId });
-			var disabled = disabledSections ?? wardrobe.State.Disabled;
 			if (!isUnitMod)
 			{
-				// 材质包没有 Unit，也没有 "换甲 / 组件开关" 这些概念：只更新转换产物就结束。
-				notes.Add("这是材质包（没有 Unit）：只更新了转换产物（vpk2patch/），没有换甲这一步。");
-			}
-			else if (targets is null)
-			{
-				notes.Add("这个 Mod 没有记录过目标护甲：本次只更新了来源产物，"
-					+ "现有生效层保持原样（重建基底不覆盖它）。到详情页选一件目标护甲再点「切换」即可。");
+				// 材质包没有 Unit，也没有"换甲 / 组件开关"这些概念：只更新转换产物就结束。
+				notes.Add("这是材质包（没有 Unit）：只更新了转换产物，没有编译这一步。");
 			}
 			else
 			{
-				onStage?.Invoke("正在按当前配置重新生成换甲产物…");
-				var rekey = await VpkRekeyService.RunAsync(
-					modSelector, modDirectory, context, targets, disabled,
-					stage => onStage?.Invoke(stage), cancellationToken,
-					// 头身合并也照 Mod 自己的设置来：重构建不该把用户关掉的开关又打开。
-					headMergeIntoBody: wardrobe.HeadMergeIntoBody,
-					// **重构建不写目标护甲。** 它只读 wardrobe.json 来决定"按哪件护甲重出"，
-					// 写回去就等于让派生链路改用户意图（一旦回退值是自己的素体，就被永久写死）。
-					recordTarget: false).ConfigureAwait(false);
-				if (!rekey.Ok)
+				onStage?.Invoke("正在按当前条件编译生效层…");
+				var compile = await ModCompileService.CompileAsync(
+					modSelector, modDirectory, context, targetArchiveIds, disabledSections,
+					stage => onStage?.Invoke(stage), cancellationToken).ConfigureAwait(false);
+				foreach (var warning in compile.Notes) notes.Add(warning);
+				if (!compile.Ok)
 				{
-					// 来源产物已经换好了，换甲失败不该把这件事说成"什么都没做"；
+					// 来源产物已经换好了，编译失败不该被说成"什么都没做"；
 					// 但也不能报成"做完了"——生效层还停在旧状态，用户会以为已经修好。
-					incompleteReason = rekey.Error ?? "原因未知";
-					notes.Add("来源产物已更新，但重新生成 Overwrite 失败：" + incompleteReason
+					incompleteReason = compile.Error ?? "原因未知";
+					notes.Add("来源产物已更新，但编译生效层失败：" + incompleteReason
 						+ "。可以在详情页点「应用」重试。");
 				}
 				else
 				{
-					rekeyed = true;
-					targetName = rekey.TargetNames.FirstOrDefault()
-						?? rekey.TargetArchiveIds.FirstOrDefault();
-					var target = targetName ?? string.Empty;
-					notes.Add(rekey.RestoredFromSource
-						? "换甲产物已按自定义素体模式重新生成。"
-						: $"换甲产物已重新生成（目标 {target}）：替换 {rekey.ReplacedUnits} 个 Unit、隐藏 {rekey.HiddenMeshes} 个网格。");
-					var offCount = disabled.Values.Sum(sections => sections.Count);
-					if (offCount != 0) notes.Add($"已把 {offCount} 个 section 烘成关闭状态。");
-					foreach (var warning in rekey.Warnings) notes.Add("注意：" + warning);
-				}
-			}
-
-			// ⑦b **只在"这次没重做换甲"时才补生效层**。
-			//
-			// 换甲成功时它自己已经装好了完整的生效层（unit + 启用的材质），这里再动一次就只剩
-			// "把换甲产物换回基底 unit"这一个效果。而没有生效层的（刚导入、从没选过目标）才需要建一份。
-			if (isUnitMod && !rekeyed)
-			{
-				var overwriteDirectory = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
-				var hasEffectiveLayer = Directory.Exists(overwriteDirectory)
-					&& Directory.EnumerateFiles(overwriteDirectory, "*", SearchOption.TopDirectoryOnly).Any();
-				if (hasEffectiveLayer)
-				{
-					notes.Add("现有生效层保持原样（这次没有重做换甲，重建基底不覆盖它）。");
-				}
-				else
-				{
-					var layer = OverwriteMaterializer.Materialize(modDirectory, OverwriteSelection.Default);
-					if (!layer.Succeeded)
-						notes.Add("生效层没能建立（" + (layer.Error ?? "原因未知")
-							+ "）：材质会按基底目录里的全部变体一起上。");
-					else
-						foreach (var warning in layer.Warnings) notes.Add(warning);
+					rekeyed = compile.Rekeyed;
+					targetName = compile.TargetName;
+					notes.Add(rekeyed
+						? $"换甲产物已重新生成（目标 {targetName ?? "未知"}）。"
+						: "没有记录过目标护甲：生效层按自定义素体形态编译。");
 				}
 			}
 

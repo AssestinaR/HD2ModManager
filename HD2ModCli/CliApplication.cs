@@ -2567,6 +2567,24 @@ public static class CliApplication
 			// 漏给一个空字符串也是漏，所以判空而不是判非 null。
 			var resolvedIdNamespace = ResolveIdNamespace(invocation.Options);
 			var conversionNotes = new List<string>();
+			if (string.Equals(invocation.Options.HeadMerge, "on", StringComparison.OrdinalIgnoreCase))
+			{
+				// 这一条必须**显眼**：它产出的 sectional 不再遵守协议。
+				//
+				// 存储约定里 `sectional/` 放的是"标准 7 槽位素体 + 材质 patch 组"，
+				// 所有加工（换甲 / section 开关 / 头身合并 / 材质开关）都该在编译阶段
+				// 从 sectional 重新算进 `Overwrite/`。而 `--head-merge on` 会把合并**烘进
+				// sectional 本体**：头的注册件当场从 slot0/layer0 挪到胸部层并留下 movedFrom。
+				// 于是那份 patch 不再是标准件，后续一切以它为源 —— 属于协议外的产物。
+				const string headMergeWarning =
+					"--head-merge on 会把「头身合并」直接烘进 sectional 产物：那份 patch 不再是标准 7 槽位素体"
+					+ "（头的注册件被挪到胸部层并留 movedFrom），属于**协议外**产物，后续换甲/编译都会以它为源。"
+					+ "这是**实验 / 救急**功能，只允许在 CLI 里显式使用；不要用它给用户的库做常规处理，"
+					+ "用之前必须明确告知用户「这会改动 sectional 本体、不安全」。";
+				conversionNotes.Add(headMergeWarning);
+				Console.Error.WriteLine("⚠️ " + headMergeWarning);
+			}
+
 			if (resolvedIdNamespace is null && results.Count != 0)
 			{
 				const string namespaceWarning =
@@ -2644,6 +2662,13 @@ public static class CliApplication
 					"用法：hd2mod vpk rekey <Mod GUID 或前缀> [--archive-id <护甲归档>[,<头盔归档>]] "
 					+ "[--output <临时目录>] --manager-root <管理器目录> --library <Mod库目录> --game-data <游戏 data 目录> --json");
 			var rekeyWorkspace = CliWorkspace.Open(invocation.Options);
+			if (MergeHeadIntoArmour(invocation.Options))
+			{
+				Console.Error.WriteLine(
+					"⚠️ --head-merge on 是**实验 / 救急**功能：它改的是生效层（Overwrite）的形状，"
+					+ "之后的换甲、section 开关、材质开关都会以它为输入。只允许在 CLI 里显式使用，"
+					+ "用之前必须明确告知用户这不安全。");
+			}
 			var rekeyTargets = string.IsNullOrWhiteSpace(invocation.Options.ArchiveId)
 				? CliVpkRekey.DefaultTargetArchiveIds
 				: invocation.Options.ArchiveId
@@ -8321,10 +8346,13 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	    --head-merge off（默认）
 	                    老做法：头由头盔套件承载，玩家必须把配套头盔 item 也穿上才有头。
 	    --head-merge on
+	                    **⚠️ 实验 / 救急功能，仅限 CLI 显式使用，默认不要用。**
 	                    **头身合并**：头落到护甲套件胸部槽位的最外层、身体落到次外层，头盔套件一件都不写
 	                    （于是游戏里那件头盔 item 没有模型，头由护甲自己带着）。
 	                    层号不是写死的，按目标这件护甲胸部槽位实际有几层算；只有一层时装不下两件几何，
 	                    自动退回老做法并在 warnings 里说明。
+	                    **不安全点**：它把合并烘进生效层，之后每次换甲/编译都以它为输入；
+	                    使用前必须明确告知用户「这是实验功能、可能让 Mod 与本工具的正常产物不一致」。
 	    --disabled <unit:1,2;unit:3>
 	                    要烘成关闭状态的 section（**来源** Unit 键空间，与 wardrobe.json 存的一致）。
 	  hd2mod vpk2patch <VPK文件> [<VPK文件> ...] --output <输出根目录> [--avatar-toc <avatar Unit TocData>] [--game-data <游戏data目录>] [--material-source <分号分隔的 VPK 或目录>] [--components merge|all|none|<名字,名字>] [--json]
@@ -8333,6 +8361,11 @@ Unit 数据视图（只读；直接解析 Patch 内的 Unit 网格与骨骼，�
 	    整批构成**解析集合**：材质 VPK 从队列里找模型（算 matcap 平均色要几何），
 	    模型 VPK 从队列里找材质（Unit 必须引用正确的材质 id）。谁也不替谁多带东西。
 	    产出在 <输出根目录>/<VPK 名>/ 下，文件名形如 9ba626afa44a3aa3.patch_0。
+	    --head-merge on|off
+	                    **⚠️ 实验 / 救急功能，仅限 CLI 显式使用，默认 off。**
+	                    on 会把「头身合并」**直接烘进 sectional 产物**（头的注册件从 slot0/layer0 挪到胸部层并留
+	                    movedFrom），那份 patch 就不再是标准 7 槽位素体——属于协议外产物，后续一切都会以它为源。
+	                    常规流程里这个条件应当在**编译阶段**（sectional → Overwrite）生效，不在转换阶段。
 	    --matcap bake|albedo|metal   matcap 怎么处理（默认 bake；管理器导入传 metal）
 	        bake    把 matcap 的面积加权平均色烘进底色（M3 实机验证过的做法）。
 	                代价：matcap 的内容在**转换时**就固定了，"只换 matcap"的包（C1/C2 那种）

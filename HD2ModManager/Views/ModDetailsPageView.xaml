@@ -74,42 +74,6 @@
                         <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="切换"
                                 Command="{Binding ApplyVpkTargetArmorCommand}" Margin="12,0,0,0" Padding="14,6"/>
                     </Grid>
-                    <Grid Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <!--
-                            单行：这一行只是"去哪儿调"，说明写在编辑页里。
-                            按钮与「目标护甲」行同一个 Padding + VerticalAlignment=Center，
-                            两行按钮高度才会一致（原来用 StackPanel 两行字把行撑高了，按钮跟着变高）。
-                        -->
-                        <TextBlock Grid.Column="0" Text="section 组件开关"
-                                   Foreground="{StaticResource TextPrimary}"
-                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="编辑 section 组"
-                                Command="{Binding OpenSectionalEditorCommand}" Margin="12,0,0,0" Padding="14,6"
-                                VerticalAlignment="Center"
-                                Visibility="{Binding CanOpenSectionalEditor, Converter={StaticResource BoolToVis}}"/>
-                    </Grid>
-                    <!--
-                        头身合并：头并进护甲套件的胸部槽位，于是游戏里那件头盔 item 不再有模型
-                        （不穿配套头盔也有头）。翻转它会**重新生成 Overwrite**——两种状态写出来的
-                        patch 完全不同，只存状态的话用户会看到开关翻了、游戏里却没变。
-                    -->
-                    <Grid Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="将头盔合并到身体"
-                                   Foreground="{StaticResource TextPrimary}"
-                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
-                                  IsChecked="{Binding HeadMergeIntoBody, Mode=TwoWay}"
-                                  VerticalAlignment="Center" Margin="12,0,0,0"
-                                  AutomationProperties.Name="头身合并到身体"/>
-                    </Grid>
                     <!--
                         这张卡保持**静态**：只在上面三行给出入口与开关，不在这里显示任何过程/
                         结果文字。翻转开关或点「切换」产生的话一律走消息中心（后台任务或通知），
