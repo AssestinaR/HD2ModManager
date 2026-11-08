@@ -506,7 +506,8 @@ public static class CliArgumentParser
 					var rawCutoutTemplate = ReadValue(args, ref index, argument);
 					if (!rawCutoutTemplate.Equals("alphaclip", StringComparison.OrdinalIgnoreCase)
 						&& !rawCutoutTemplate.Equals("original", StringComparison.OrdinalIgnoreCase)
-						&& !rawCutoutTemplate.Equals("cutoutmetal", StringComparison.OrdinalIgnoreCase))
+						&& !rawCutoutTemplate.Equals("cutoutmetal", StringComparison.OrdinalIgnoreCase)
+						&& !rawCutoutTemplate.Equals("cutoutmetal2", StringComparison.OrdinalIgnoreCase))
 					{
 						throw new CliUserException("InvalidOption",
 							$"--cutout-template 只接受 alphaclip / original / cutoutmetal，实际是 '{rawCutoutTemplate}'。"

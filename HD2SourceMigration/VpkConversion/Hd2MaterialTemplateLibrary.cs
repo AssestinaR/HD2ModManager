@@ -106,7 +106,7 @@ public sealed class Hd2MaterialTemplateLibrary
 	private static readonly string[] RequiredTemplates =
 	[
 		"advanced", "alphaclip", "alphaclip+", "armorlut", "basic",
-		"basic+", "basic+OLD", "cutoutmetal", "emissive", "original", "translucent",
+		"basic+", "basic+OLD", "cutoutmetal", "cutoutmetal2", "emissive", "original", "translucent",
 	];
 
 	private static Dictionary<string, byte[]> LoadEmbedded()

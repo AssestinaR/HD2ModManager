@@ -2618,6 +2618,9 @@ public static class CliApplication
 						matcap = invocation.Options.Matcap,
 						matcapGain = invocation.Options.MatcapGain,
 						cutout = invocation.Options.Cutout,
+						// 「既想镂空又想要金属」时保谁。不记的话重构建会静默回到默认（保镂空），
+						// 而它改的是模板选择 —— 产物"重建成功"、观感却变了，最难查的那一类。
+						metalCutout = invocation.Options.MetalCutout,
 						albedoFactor = invocation.Options.AlbedoFactor,
 						// 法线 Y 方向：只在**翻过**时写。"不翻"是默认值，写成 false 会让所有
 						// 旧产物在重构建时多出一个参数、日志比对全变（见 VpkConversionSettings）。
@@ -3347,6 +3350,7 @@ public static class CliApplication
 		{
 			"original" => CutoutTemplate.Original,
 			"cutoutmetal" => CutoutTemplate.CutoutMetal,
+			"cutoutmetal2" => CutoutTemplate.CutoutMetal2,
 			_ => CutoutTemplate.AlphaClip,
 		};
 

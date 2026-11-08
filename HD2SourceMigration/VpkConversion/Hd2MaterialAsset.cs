@@ -66,6 +66,11 @@ public sealed class Hd2MaterialAsset
 		[9576304397847579354] = "translucent",
 		[8580182439406660688] = "basic+",
 		[0xc6042e3403385d40] = "alphaclip+",
+		// 下面两个**不是 SDK 自带的模板**，是我们从游戏数据里找出来的「镂空 + 金属」根材质。
+		// 名字与模板文件名保持一致：`Hd2MaterialTemplateTests.EveryTemplateParentIdMapsBackToItsOwnName`
+		// 要求「父 id → 名字」必须等于模板自己的名字，否则模板表与常量表会各自漂移。
+		[0xec555165044bb60a] = "cutoutmetal",
+		[0x8d49d5aa14036548] = "cutoutmetal2",
 		// `cutoutmetal`（镂空 + 金属）：内置模板集里有它，父 id 一直没进表。
 		// 由 Hd2MaterialTemplateTests 报出来的真值补进，不是猜的。
 		[0xec555165044bb60a] = "cutoutmetal",
