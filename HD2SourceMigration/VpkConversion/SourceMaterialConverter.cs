@@ -50,7 +50,7 @@ public enum CutoutTemplate
 	/// <c>BaseColorMetalMap</c>（与 <c>alphaclip</c> 三个槽<b>同名同序</b>）+ 一个 <c>ParallaxMap</c>。
 	/// 也就是说：做 A/B 时唯一多出来的变量就是"共享了另一个着色器"，槽位语义不需要重新猜。
 	/// 这个档位本身带 <c>BaseColorMetalMap</c>，理论上金属度是可表达的 ——
-	/// 至于是靠它的 A 通道还是别处，只能实机定（见 <see cref="CutoutMetalAlpha"/>）。
+	/// 至于是靠它的 A 通道还是别处，只能实机定（结论见 <c>MetallicOpacity</c> 那条线路）。
 	/// </para>
 	/// <para>
 	/// 模板文件由 <c>tools/ref/HD2SDK-CommunityEdition/materials/cutoutmetal.material</c> 提供，
@@ -579,19 +579,6 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	public const double CutoutMetalLevel = 0.58;
 
-	/// <summary>
-	/// <c>cutoutmetal</c> 档里写进 <c>BaseColorMetalMap.alpha</c> 的金属度（255 = 全金属）。
-	/// <para>
-	/// <b>这是一个探针，不是结论。</b>`alphaclip` 的同一个通道曾被认为"写金属度无效"
-	/// （docs/vpk-cutout-strategies-20261101.md §5），但那次结论的前提是"部署上去的确实是这份字节"——
-	/// 而本轮实测发现过部署链路把旧包留在原地（patch_5 里底图仍是源侧 17.4，转换器算的是 200）。
-	/// 所以需要在<b>可验证字节</b>的前提下重测一次。
-	/// </para>
-	/// <para>
-	/// 只对这一档生效：<c>advanced</c> 的 alpha 是自发光（写满整件护甲会发光），不能碰。
-	/// </para>
-	/// </summary>
-	public const byte CutoutMetalAlpha = 255;
 
 	/// <summary>
 	/// <see cref="CutoutStrategy.AdvancedOpacity"/> 的陡度。抄自游戏本体角色材质
@@ -1840,6 +1827,16 @@ public sealed class SourceMaterialConverter
 				textures.Add(flatParallax);
 			}
 
+			// ===== 金属度：这一族没有金属度贴图，只有 `MetallicOpacity` 标量 =====
+			//
+			// 真实子材质里它是 0.0（那件不是金属）；同一族的另一个材质是 1.0 这种值。
+			// 所以金属件写 1、其余写 0 —— 不写的话所有件都会按模板默认值走，金属永远出不来。
+			if (IsCutoutMetalTemplate(loaded.TemplateName))
+			{
+				var metallic = loaded.MatcapIsMetal && matcapMode == MatCapMode.Metal ? 1f : 0f;
+				material.TrySetScalar(CutoutMetalMetallicOpacityVariableId, metallic);
+			}
+
 			// 关掉脏污/天气。`alphaclip` 模板的默认值是**满脏污**（`DirtGlobalAmount = 1`），
 			// 于是镂空件在雪地会被雪图层整个盖住，而 `advanced` 的件不受影响。
 			// 源侧模组没有"天气/脏污"这个概念，转换器应当关掉。
@@ -3083,14 +3080,19 @@ public sealed class SourceMaterialConverter
 		// 的前提是"部署上去的确实是这份字节"，而本轮发现过部署链路把旧包留在原地
 		// （patch_5 里底图仍是源侧 17.4，转换器算的是 200）——旧结论需要一个干净复测。
 		//
-		// 这里是唯一的探针，实机只有两种结果，一眼可辨：
-		//   · 金属件出现金属反光 → A 就是金属度，这一档成立，接着接粗糙度/清漆；
-		//   · 与 alphaclip 完全一样 → A 不参与金属度，换下一个候选根材质。
-		if (IsCutoutMetalTemplate(loaded.TemplateName)
-			&& loaded.MatcapIsMetal
-			&& matcapMode == MatCapMode.Metal)
+		// ===== `cutoutmetal`：底色 alpha 必须是**镂空形状**，不是 0 =====
+		//
+		// 这一族的四个 `*Opacity` 标量说明"哪张图的 alpha 参与不透明度"：
+		// 真实子材质 BaseColorOpacity=1.0，也就是**底色的 alpha 就是不透明度**。
+		// 我们过去照 `advanced` 的规矩把它清零（那边 alpha 是自发光），
+		// 于是在这一族里等于"整件全透明"——实机表现是镂空件整块消失、也不是品红（2026-11-08 实测）。
+		//
+		// 金属度不在这条 alpha 上：它走 `MetallicOpacity` 标量（见写入路径里的 TrySetScalar）。
+		if (IsCutoutMetalTemplate(loaded.TemplateName))
 		{
-			SetAlpha(rgba, CutoutMetalAlpha);
+			WriteSourceAlphaIntoBaseAlpha(
+				rgba, vtf.Width, vtf.Height,
+				loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight);
 		}
 
 		// 发光：`advanced` 槽 5 的 **alpha 就是 emission**，而上面刚把它清零了。
@@ -3999,16 +4001,43 @@ public sealed class SourceMaterialConverter
 	}
 
 	/// <summary>
-	/// 把裸像素的 alpha 通道统一写成 <paramref name="value"/>。
-	/// <para>只给 <c>cutoutmetal</c> 那条路用（见 <see cref="CutoutMetalAlpha"/>），
-	/// 其它模板一律 <see cref="ZeroAlpha"/>。</para>
+	/// <c>cutoutmetal</c> 的 <c>MetallicOpacity</c> 变量（<c>0xcd72af93</c>）。
+	/// <para>
+	/// 这一族<b>没有独立的金属度贴图</b>：四个 <c>*Opacity</c> 标量就是"哪张图的 alpha 参与什么"。
+	/// 游戏里一个真实子材质的取值是 <c>BaseColorOpacity=1.0 / MetallicOpacity=0.0 /
+	/// NormalCcnormOpacity=0.448 / RoughnessOpacity=0.646</c> —— 数值这么散，不可能是布尔开关，
+	/// 只能是标量。所以我们把它当"金属度标量"用：金属件写 1，其余保持模板默认 0。
+	/// </para>
 	/// </summary>
-	private static void SetAlpha(byte[] rgba, byte value)
+	private const uint CutoutMetalMetallicOpacityVariableId = 0xcd72af93;
+
+	/// <summary>
+	/// 把<b>源底色的 alpha（即镂空形状）</b>写进底色贴图的 alpha 通道。
+	/// <para>
+	/// 为什么必须写：<c>cutoutmetal</c> 这一族的 opacity 来自各张图的 alpha
+	/// （<c>BaseColorOpacity=1.0</c> 就是"底色的 alpha 参与不透明度"）。
+	/// 我们过去按 <c>advanced</c> 的规矩把底色 alpha 清零 ——
+	/// 在那边的语义里 alpha 是自发光，清零是对的；在这一族里 alpha=0 等于<b>整件全透明</b>，
+	/// 实机表现就是"镂空件整块消失、也不是品红"（2026-11-08 用户实测）。
+	/// </para>
+	/// <para>
+	/// 尺寸不同时按最近邻取样（底色可能被换成 256² 的 matcap，遮罩来自 2048² 的源底色）。
+	/// </para>
+	/// </summary>
+	private static void WriteSourceAlphaIntoBaseAlpha(
+		byte[] rgba, int width, int height,
+		byte[] sourceRgba, int sourceWidth, int sourceHeight)
 	{
-		if (rgba.Length == 0 || rgba.Length % 4 != 0)
-			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
-		for (var offset = 3; offset < rgba.Length; offset += 4)
-			rgba[offset] = value;
+		if (sourceWidth <= 0 || sourceHeight <= 0) return;
+		for (var y = 0; y < height; y++)
+		{
+			var sourceY = Math.Min(sourceHeight - 1, y * sourceHeight / height);
+			for (var x = 0; x < width; x++)
+			{
+				var sourceX = Math.Min(sourceWidth - 1, x * sourceWidth / width);
+				rgba[(((y * width) + x) * 4) + 3] = sourceRgba[(((sourceY * sourceWidth) + sourceX) * 4) + 3];
+			}
+		}
 	}
 }
 
