@@ -295,15 +295,26 @@ namespace HD2ModManager.Services
                         if (await ReplaceSourcesAsync(updateTarget, package.Directory).ConfigureAwait(false)) continue;
                     }
 
-                    var imported = await ImportPathAsync(
-                        package.Directory,
-                        ct,
-                        notifyLibraryChanged: false,
-                        refreshDerivedData: false,
-                        allowVpkConversion: false).ConfigureAwait(false);
-                    guids.AddRange(imported);
-                    affected.AddRange(LastAffectedNodeIds);
-                    foreach (var guid in imported) rebuildTargets.Add(guid);
+                    try
+                    {
+                        var imported = await ImportPathAsync(
+                            package.Directory,
+                            ct,
+                            notifyLibraryChanged: false,
+                            refreshDerivedData: false,
+                            allowVpkConversion: false).ConfigureAwait(false);
+                        guids.AddRange(imported);
+                        affected.AddRange(LastAffectedNodeIds);
+                        foreach (var guid in imported) rebuildTargets.Add(guid);
+                    }
+                    catch (Exception exception) when (exception is IOException
+                        or InvalidDataException
+                        or InvalidOperationException
+                        or UnauthorizedAccessException)
+                    {
+                        // 一组失败不拖垮整批（八人包里各主体互不相干）。
+                        _onError?.Invoke($"{package.GroupName ?? Path.GetFileName(package.Directory)}：入库失败：{exception.Message}");
+                    }
                 }
 
                 LastAffectedNodeIds = affected.Distinct().ToArray();
