@@ -409,3 +409,5 @@ docs/temp/
 docs/eye-check/
 docs/autofix Tools/
 docs/*.zip
+# 本地 agent 操作手册（提交/推送/发布）——不进版本库
+docs/github-and-release-guide.md
