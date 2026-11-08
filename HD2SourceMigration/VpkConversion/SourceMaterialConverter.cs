@@ -3002,14 +3002,22 @@ public sealed class SourceMaterialConverter
 				TryReadTextureRgba(maskName, out maskRgba, out maskWidth, out maskHeight);
 
 			var worldNormal = WorldNormalFor(loaded.Stem);
-			MaterialAppearance.CompositeMatcap(
-				rgba, vtf.Width, vtf.Height,
-				matcapRgba, matcapWidth, matcapHeight,
-				normal: worldNormal?.Rgba,
-				normalWidth: worldNormal?.Width ?? 0,
-				normalHeight: worldNormal?.Height ?? 0,
-				maskRgba, maskWidth, maskHeight,
-				loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: true);
+
+			// ⚠️ 加法（`$matcap 2`）这一档**不烘**。理由与实测数据见
+			// `MaterialAppearance.CanBakeIntoAlbedo`：那档是视角相关的高光，用模型空间法线烘
+			// 出来必然是一层固定的白（实测 Elise_Bill 的脸/身体各被加了 +79 ≈ 255 × 0.31，
+			// 实机表现就是"蒙了一层雾"）。
+			if (MaterialAppearance.CanBakeIntoAlbedo(loaded.MatcapBlend))
+			{
+				MaterialAppearance.CompositeMatcap(
+					rgba, vtf.Width, vtf.Height,
+					matcapRgba, matcapWidth, matcapHeight,
+					normal: worldNormal?.Rgba,
+					normalWidth: worldNormal?.Width ?? 0,
+					normalHeight: worldNormal?.Height ?? 0,
+					maskRgba, maskWidth, maskHeight,
+					loaded.MatcapTintRgba, loaded.MatcapBlend, maskChannel: 0, sourceAxes: true);
+			}
 
 			// ===== 第二层（`$MATCAP2`）：叠在第一层之上，蒙版用 `$mask1` 的 **B** 通道 =====
 			//

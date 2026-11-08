@@ -37,6 +37,49 @@ public sealed class MatcapLayerTests
 		Assert.Equal(MaterialAppearance.MatcapBlendMode.Off, MaterialAppearance.ParseMatcapBlend(raw));
 	}
 
+	// ── 哪几档可以烘进底色 ────────────────────────────────────────────
+
+	/// <summary>
+	/// 加法那一档**不许烘进底色**。
+	/// <para>
+	/// 这是 2026-11-08 的实机回归：Elise_Bill 的 <c>plum_face</c> / <c>plum_body</c> 用
+	/// <c>$matcap 2</c>（加法）+ <c>$matcaptint "[.31 …]"</c>，烘完底色被整片抬了
+	/// **+79.0（标准差 1.4）= 255 × 0.31** —— 可见 UV 岛上每个像素都采到了 <c>Matcap_skinrim</c>
+	/// 最亮的那圈边缘。实机表现是"脸和眼睛蒙了一层雾"。
+	/// </para>
+	/// <para>
+	/// 根因是采样坐标：源侧 matcap 用<b>视角空间</b>法线，而 <c>sourceAxes</c> 那套换算按
+	/// "X 朝前"写；对"Y 朝前"的模型，正面朝法线落到球面图左右边缘。这一档既然是加亮型的
+	/// 高光，烘出来只会是固定的一层白，所以直接不烘。
+	/// </para>
+	/// </summary>
+	[Theory]
+	[InlineData(MaterialAppearance.MatcapBlendMode.Add, false)]
+	[InlineData(MaterialAppearance.MatcapBlendMode.Multiply, true)]
+	[InlineData(MaterialAppearance.MatcapBlendMode.Normal, true)]
+	[InlineData(MaterialAppearance.MatcapBlendMode.Screen, true)]
+	public void OnlyNonAdditiveModesMayBeBakedIntoTheAlbedo(
+		MaterialAppearance.MatcapBlendMode mode, bool expected)
+	{
+		Assert.Equal(expected, MaterialAppearance.CanBakeIntoAlbedo(mode));
+	}
+
+	/// <summary>
+	/// 没有 <c>$matcap</c> 的材质必须**原样出货**。
+	/// <para>
+	/// 这条钉住"不要凭空给没参与渲染的图上色"：同一个模组里 <c>plum_hair</c> 只写了
+	/// <c>$matcaptexture</c> 没写 <c>$matcap</c>，实测出货 108.7 = 源 108.8（BC7 噪声级）。
+	/// 模式缺省是 <see cref="MaterialAppearance.MatcapBlendMode.Off"/>，连合成都不该进。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void MissingMatcapKeyLeavesTheAlbedoAlone()
+	{
+		var mode = MaterialAppearance.ParseMatcapBlend(null);
+		Assert.Equal(MaterialAppearance.MatcapBlendMode.Off, mode);
+		Assert.True(MaterialAppearance.CanBakeIntoAlbedo(mode));
+	}
+
 	// ── tint 的四个分量 ────────────────────────────────────────────────
 
 	[Fact]

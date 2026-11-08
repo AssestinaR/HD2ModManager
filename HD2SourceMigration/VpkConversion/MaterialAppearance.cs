@@ -776,6 +776,33 @@ public static class MaterialAppearance
 	}
 
 	/// <summary>
+	/// 这一档 matcap 能不能**烘进底色**（<see cref="CompositeMatcap"/> 那条 N2 路线）。
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// <b>加法（<c>$matcap 2</c>，NekoToon 里最常见的一档）不能烘。</b> 源侧的 matcap 坐标来自
+	/// <b>视角空间</b>法线（lilToon <c>lilCalcMatCapUV</c>），烘进 UV 空间时我们只有模型空间法线，
+	/// 而 <see cref="CompositeMatcap"/> 的 <c>sourceAxes</c> 换算（u 取 −Y、v 取 +Z）是按
+	/// "<b>X 朝前</b>"的轴向写的。对"Y 朝前"的模型（实测 Elise_Bill：包围盒 X ±31 / Y −8…3.4 /
+	/// Z −0.6…58，Y 最薄），正面朝向的法线 worldY ≈ ±1 被算成 u ≈ 0 或 1 —— 球面图的
+	/// <b>最左/最右边缘</b>。环形边缘光贴图（<c>Matcap_skinrim</c> 就是）的边缘正是纯白，
+	/// 于是整片底色被加了 <c>255 × $matcaptint</c> 的白。
+	/// </para>
+	/// <para>
+	/// 实测（2026-11-08）：<c>plum_face</c> 132.9 → 180.1、<c>plum_body</c> 128.8 → 178.4；
+	/// 按可见 UV 岛统计，差值恒为 <b>+79.0（标准差 1.4）= 255 × 0.31</b>，正对
+	/// <c>$matcaptint "[.31 …]"</c>。同一批里没写 <c>$matcap</c> 的 <c>plum_hair</c>
+	/// 出货 108.7 = 源 108.8，一点没变 —— 这条链是唯一来源。实机表现是"脸和眼睛蒙了一层雾"。
+	/// </para>
+	/// <para>
+	/// 与其烘一个"每个像素都采到最亮处"的常数，不如不烘：宁可没有高光，也不要一层固定的白。
+	/// 正片叠底 / 正常不放大亮度，也不依赖"正对哪个轴"，保留。
+	/// 屏幕（4）与加法同为加亮型，但更少见，等实机确认出问题再一并处理。
+	/// </para>
+	/// </remarks>
+	public static bool CanBakeIntoAlbedo(MatcapBlendMode mode) => mode != MatcapBlendMode.Add;
+
+	/// <summary>
 	/// 解析 <c>$matcaptint</c> / <c>$MATCAP2TINT</c> 的**四个分量**（rgba）。
 	/// <para>
 	/// 与 <see cref="ParseTint"/> 的区别：那个只取三分量的最大值（判"是不是 matcap 承载面"），
