@@ -71,7 +71,14 @@ public static class VpkRekeyService
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default,
-		bool headMergeIntoBody = false)
+		bool headMergeIntoBody = false,
+		// 要不要把"这次换了哪件护甲"记进 wardrobe.json。
+		//
+		// **重构建必须传 false。** 记目标护甲是"用户选了一件护甲"这个动作的副作用，不是派生的。
+		// 让重构建也去写，就等于让一条纯派生链路去改用户意图：一旦这次的目标是回退值
+		// （例如"这个 Mod 自己的素体"），它会被永久写进去，用户原来选的护甲再也回不来
+		// （2026-11-08 实测：重构之后 Mod 变成了它自己的素体）。
+		bool recordTarget = true)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		var gameData = context.GameDataFolder;
@@ -144,7 +151,8 @@ public static class VpkRekeyService
 			};
 
 			// 记住这次指向了哪件护甲：组件树的根标题要用它，重开页面时也不必再猜。
-			if (outcome.Ok && !string.IsNullOrWhiteSpace(modDirectory) && Directory.Exists(modDirectory))
+			// **只有"用户主动切换目标"这条路才写**；重构建传 recordTarget: false。
+			if (recordTarget && outcome.Ok && !string.IsNullOrWhiteSpace(modDirectory) && Directory.Exists(modDirectory))
 			{
 				var file = await VpkModWardrobeService.ReadAsync(modDirectory, cancellationToken).ConfigureAwait(false);
 				await VpkModWardrobeService.WriteAsync(modDirectory, file with

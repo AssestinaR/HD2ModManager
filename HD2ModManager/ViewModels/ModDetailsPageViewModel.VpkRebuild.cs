@@ -106,23 +106,19 @@ public partial class ModDetailsPageViewModel
 			options.Progress = ratio;
 		}
 
-		task?.MarkRunning("正在保存当前配置");
+		task?.MarkRunning("正在读取当前配置");
 		try
 		{
-			// 状态先落盘，再重跑。
+			// **重构建不写用户配置。**
 			//
-			// 与「应用」同一个顺序，理由也一样：重构建是从状态算出来的，状态没写就先做，
-			// 崩在中间会出现"产物已改、状态还是旧的"，下一次点「应用」会把旧状态烘回去。
-			try
-			{
-				await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
-			}
-			catch (Exception exception) when (exception is IOException or InvalidOperationException)
-			{
-				task?.MarkFailed("保存当前勾选失败：" + exception.Message);
-				VpkComponentStatus = "保存当前勾选失败，已停止重构建：" + exception.Message;
-				return;
-			}
+			// 以前这里是"先把 `_vpkFile` 落盘，再重跑"，理由是"产物与状态不能对不上"。
+			// 但代价是：页面内存里的那份状态一旦是旧的/空的（加载顺序、刚启动、切换过 Mod），
+			// 这一步就把**用户真正记录过的目标护甲**覆盖成内存里的值 ——
+			// 结果是"重构之后 Mod 变成它自己的素体，而且再也回不去"（2026-11-08 实测）。
+			//
+			// 正确的口径：重建只**读**配置（下面把界面上这套配置显式传给它），
+			// 成功后把"这次实际用到的配置"落盘一次，做到产物与状态一致；
+			// 失败或中断时状态保持不动 —— 那正是用户最后一次确认过的样子。
 
 			// 目标取**下拉里当前选中**的那件（用户可能刚换过、还没点「切换」），
 			// 勾选取**内存里**的状态（同理）。这样"重构建"= 把眼前这套配置整个烘一遍。
@@ -147,6 +143,21 @@ public partial class ModDetailsPageViewModel
 				VpkComponentStatus = error;
 				if (task is null) _notifications?.Show(error, NotificationLevel.Error, TimeSpan.FromSeconds(20));
 				return;
+			}
+
+			// **成功之后**才把"这次真正烘进去的配置"落盘：产物与状态一致，
+			// 而状态只反映用户确认过的东西。失败/中断时状态保持不动。
+			try
+			{
+				var applied = SelectedVpkTargetArmor is { } picked
+					? _vpkFile with { TargetArmorArchiveId = picked.ArchiveId, TargetArmorName = picked.DisplayName }
+					: _vpkFile;
+				await VpkModWardrobeService.WriteAsync(directory, applied).ConfigureAwait(true);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidOperationException)
+			{
+				// 写不进去只影响"下次打开时的勾选显示"，不影响已经生成的产物。
+				LogService.Warn($"{node.Metadata.Name}：保存当前配置失败（只影响下次打开时的勾选显示）：{exception.Message}");
 			}
 
 			var summary = $"重构建完成：{outcome.Units} 个 Unit，引用 {outcome.Materials} 种材质。"

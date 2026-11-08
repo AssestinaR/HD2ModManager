@@ -383,6 +383,9 @@ namespace HD2ModManager.Services
                     _paths.ModsDirectory,
                     ".hd2modmanager-swap-backups",
                     Path.GetFileName(modDirectory) + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture));
+                // 换载荷之前把旧清单读下来：它装着用户输入的选项名/备注/配图/顺序。
+                var previousManifest = SectionalPatchManifestFile
+                    .TryReadAsync(payload).AsTask().GetAwaiter().GetResult();
                 var swap = VpkPayloadSwap.Swap(payload, package.Directory, backupRoot);
                 if (!swap.Succeeded)
                 {
@@ -413,7 +416,7 @@ namespace HD2ModManager.Services
 
                 // 结构文件跟着新报告重写：不重写的话 `patches.json` 里"哪个 patch 是谁"
                 // 还是上一批产物的说法——合并进来的材质 patch 没有名字，界面显示成「材质 1 / 2 / 3」。
-                if (SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow) is null)
+                if (SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow, previousManifest) is null)
                 {
                     LogService.Warn($"{package.UpdateTargetName}：没能重写 patches.json，材质选项的名字可能显示不出来。");
                 }

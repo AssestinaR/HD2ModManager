@@ -67,7 +67,10 @@ public static class SectionalPatchManifestFile
 	/// 于是清单里那几个新材质没有名字。
 	/// </para>
 	/// </summary>
-	public static SectionalPatchManifestDocument? Rebuild(string modDirectory, DateTimeOffset generatedUtc)
+	public static SectionalPatchManifestDocument? Rebuild(
+		string modDirectory,
+		DateTimeOffset generatedUtc,
+		SectionalPatchManifestDocument? previous = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
 		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
@@ -75,8 +78,9 @@ public static class SectionalPatchManifestFile
 		var archive = ReadArchiveHex16(payload);
 		if (string.IsNullOrEmpty(archive)) return null;
 
-		// 上一版要先读出来：用户改过的名字/备注/配图/顺序是**用户输入**，跨重建必须留着。
-		var previous = TryReadAsync(payload).AsTask().GetAwaiter().GetResult();
+		// 上一版里的**用户输入**（选项名/备注/配图/顺序）必须跨重建保留。
+		// 调用方应该在"换载荷之前"读好传进来：换载荷会把旧文件删掉。
+		previous ??= TryReadAsync(payload).AsTask().GetAwaiter().GetResult();
 		var document = Build(payload, archive, VpkConversionReport.TryRead(modDirectory), generatedUtc, null, previous);
 		if (document.Patches.Count == 0) return null;
 		_ = TryWrite(payload, document);
@@ -123,12 +127,30 @@ public static class SectionalPatchManifestFile
 				{ MatchedUnit: true } => SectionalPatchRole.Unit,
 				_ => patchIndex == 0 ? SectionalPatchRole.Unit : SectionalPatchRole.Material,
 			};
-			var carried = previous?.Patches.FirstOrDefault(entry => entry.PatchIndex == patchIndex);
+			// **按来源 VPK 认领上一版的用户字段**，序号只作兜底。
+			//
+			// 用户改的是"某个材质包叫什么、排在哪儿"。重转之后序号可能变（报告顺序变了、
+			// 少了一个包……），按序号认领会把名字/顺序接到**另一个**包上 —— 那既污染了名字，
+			// 也污染了部署顺序，而用户看不出是重建干的。
+			//
+			// ⚠️ **一个 VPK 可以产出多个 patch**（模型自带材质时 unit + 材质同源）。这时只按名字
+			// 找会永远命中第一条（unit，没有名字），于是材质那一行又退回默认名 ——
+			// 2026-11-08 实测的"名字不显示"就是这个：同源两条，按名字认领必须再带上序号/角色。
+			var sourceVpkName = matched?.Patch.Name;
+			var sameSource = previous is null || string.IsNullOrWhiteSpace(sourceVpkName)
+				? Array.Empty<SectionalPatchGroupEntry>()
+				: previous.Patches
+					.Where(entry => string.Equals(entry.SourceVpkName, sourceVpkName, StringComparison.OrdinalIgnoreCase))
+					.ToArray();
+			var carried = sameSource.FirstOrDefault(entry => entry.PatchIndex == patchIndex)
+				?? (sameSource.Length == 1 ? sameSource[0] : null)
+				?? sameSource.FirstOrDefault(entry => entry.Role == role)
+				?? previous?.Patches.FirstOrDefault(entry => entry.PatchIndex == patchIndex);
 			entries.Add(new SectionalPatchGroupEntry(
 				patchIndex,
 				archiveHex16,
 				role,
-				matched?.Patch.Name,
+				sourceVpkName,
 				// 模型自带的那份材质也是选项之一，名字固定为「模型内置材质」：
 				// 它和折并进来的材质包是同一类东西（一个 patch、可勾选），
 				// 单独给它一个名字是为了让用户在选项表里一眼认出"这是自带的，不是后来加的包"。

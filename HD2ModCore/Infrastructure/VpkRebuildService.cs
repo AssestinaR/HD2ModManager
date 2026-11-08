@@ -292,6 +292,11 @@ public static class VpkRebuildService
 					+ $"（本次临时产物：{stagingRoot}）", notes);
 			}
 
+			// **换载荷之前**把旧的 `patches.json` 读下来：里面除了派生信息，还装着用户输入的
+			// 选项名/备注/配图/顺序。换载荷会把它删掉，事后再读就什么都没有了。
+			var previousManifest = SectionalPatchManifestFile
+				.TryReadAsync(payloadDirectory).AsTask().GetAwaiter().GetResult();
+
 			// ⑤ 换进 vpk2patch/：先把旧载荷备份到临时目录，再整批替换。
 			// 规则与"同一来源再次导入"共用一份（见 VpkPayloadSwap），否则两条路会各自漂移。
 			onStage?.Invoke("正在替换 vpk2patch/…");
@@ -348,22 +353,21 @@ public static class VpkRebuildService
 			// 不重写会怎样：`patches.json` 里"哪个 patch 是谁"还是上一批产物的说法。
 			// 归拢/合并之后基底多了几个材质 patch，旧清单里根本没有它们——于是材质选项
 			// 一行名字都没有，界面显示成「材质 1 / 2 / 3」（2026-11-08 用户报的就是这个）。
-			if (SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow) is null)
+			if (SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow, previousManifest) is null)
 				notes.Add("没能重写 `patches.json`：材质选项的名字/顺序可能显示不出来。");
 
 			// ⑥ 物理参数容器：转换阶段刻意不嵌（会让受管步骤记账错位），这里才是它该来的地方。
 			onStage?.Invoke("正在写入物理参数…");
 			notes.Add(await VpkPhysBoneEmbedder.RunAsync(executable, modDirectory, cancellationToken).ConfigureAwait(false));
 
-			// ⑥b **生效层**：基底里现在可能有多个材质 patch（模型自带的 + 归拢进来的材质包），
-			// 而部署在"没有 Overwrite"时会按基底全上，同名资源互相覆盖。
-			// 重构建之后必须重新物化一次：unit（基底那份；已有换甲产物时物化器会沿用它）+ 启用的材质。
-			var rebuiltLayer = OverwriteMaterializer.Materialize(modDirectory, OverwriteSelection.Default);
-			if (!rebuiltLayer.Succeeded)
-				notes.Add("生效层没能重建（" + (rebuiltLayer.Error ?? "原因未知")
-					+ "）：材质会按基底目录里的全部变体一起上。");
-			else
-				foreach (var warning in rebuiltLayer.Warnings) notes.Add(warning);
+			// ⑥b 生效层**不在这里动**。
+			//
+			// 以前（2026-11-08 上午）这里会先物化一遍"基底 unit + 启用材质"，然后才做 ⑦ 换甲。
+			// 后果分两种，都很糟：
+			//   · ⑦ 成功：白做一次，还把用户现有的换甲产物临时换成基底 unit；
+			//   · ⑦ 失败/被跳过：那份**基底 unit 留在原地** —— 用户看到的是"重构之后这个 Mod
+			//     不再替换任何护甲，变成了它自己的素体"，而他什么都没改过。
+			// 正确的做法是：只有"确定不会重做换甲"时，才在最后补一份生效层（见 ⑦b）。
 
 			// ⑦ **按当前配置**重新生成 Overwrite/。
 			//
@@ -375,9 +379,17 @@ public static class VpkRebuildService
 			string? targetName = null;
 			string? incompleteReason = null;
 			var wardrobe = await VpkModWardrobeService.ReadAsync(modDirectory, cancellationToken).ConfigureAwait(false);
+			// **只有"记录过目标"才重做换甲。**
+			//
+			// 以前这里会退回"自己的素体"（`ResolveRekeyTargets` 的第二分支），而那次 identity
+			// 换甲会把这个**回退值**写进 `wardrobe.json` —— 于是这个 Mod 从此永远变成自身素体，
+			// 用户原来选的护甲再也回不来（2026-11-08 实测）。
+			// 没记录目标时正确的动作是：只更新来源产物，生效层保持原样。
 			var targets = targetArchiveIds is { Count: > 0 }
 				? targetArchiveIds
-				: ResolveRekeyTargets(modDirectory, wardrobe);
+				: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorArchiveId)
+					? null
+					: new[] { wardrobe.TargetArmorArchiveId });
 			var disabled = disabledSections ?? wardrobe.State.Disabled;
 			if (!isUnitMod)
 			{
@@ -386,8 +398,8 @@ public static class VpkRebuildService
 			}
 			else if (targets is null)
 			{
-				notes.Add("这个 Mod 还没有选过目标护甲：本次只更新了来源产物（vpk2patch/），"
-					+ "没有生成 Overwrite。到详情页选一件目标护甲再点「切换」即可。");
+				notes.Add("这个 Mod 没有记录过目标护甲：本次只更新了来源产物，"
+					+ "现有生效层保持原样（重建基底不覆盖它）。到详情页选一件目标护甲再点「切换」即可。");
 			}
 			else
 			{
@@ -396,7 +408,10 @@ public static class VpkRebuildService
 					modSelector, modDirectory, context, targets, disabled,
 					stage => onStage?.Invoke(stage), cancellationToken,
 					// 头身合并也照 Mod 自己的设置来：重构建不该把用户关掉的开关又打开。
-					headMergeIntoBody: wardrobe.HeadMergeIntoBody).ConfigureAwait(false);
+					headMergeIntoBody: wardrobe.HeadMergeIntoBody,
+					// **重构建不写目标护甲。** 它只读 wardrobe.json 来决定"按哪件护甲重出"，
+					// 写回去就等于让派生链路改用户意图（一旦回退值是自己的素体，就被永久写死）。
+					recordTarget: false).ConfigureAwait(false);
 				if (!rekey.Ok)
 				{
 					// 来源产物已经换好了，换甲失败不该把这件事说成"什么都没做"；
@@ -417,6 +432,30 @@ public static class VpkRebuildService
 					var offCount = disabled.Values.Sum(sections => sections.Count);
 					if (offCount != 0) notes.Add($"已把 {offCount} 个 section 烘成关闭状态。");
 					foreach (var warning in rekey.Warnings) notes.Add("注意：" + warning);
+				}
+			}
+
+			// ⑦b **只在"这次没重做换甲"时才补生效层**。
+			//
+			// 换甲成功时它自己已经装好了完整的生效层（unit + 启用的材质），这里再动一次就只剩
+			// "把换甲产物换回基底 unit"这一个效果。而没有生效层的（刚导入、从没选过目标）才需要建一份。
+			if (isUnitMod && !rekeyed)
+			{
+				var overwriteDirectory = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
+				var hasEffectiveLayer = Directory.Exists(overwriteDirectory)
+					&& Directory.EnumerateFiles(overwriteDirectory, "*", SearchOption.TopDirectoryOnly).Any();
+				if (hasEffectiveLayer)
+				{
+					notes.Add("现有生效层保持原样（这次没有重做换甲，重建基底不覆盖它）。");
+				}
+				else
+				{
+					var layer = OverwriteMaterializer.Materialize(modDirectory, OverwriteSelection.Default);
+					if (!layer.Succeeded)
+						notes.Add("生效层没能建立（" + (layer.Error ?? "原因未知")
+							+ "）：材质会按基底目录里的全部变体一起上。");
+					else
+						foreach (var warning in layer.Warnings) notes.Add(warning);
 				}
 			}
 
@@ -497,16 +536,6 @@ public static class VpkRebuildService
 		}
 
 		return result;
-	}
-
-	/// <summary>重跑换甲的目标：记过的游戏护甲优先，其次这个 Mod 自己登记的素体。都没有就返回 <c>null</c>。</summary>
-	private static IReadOnlyList<string>? ResolveRekeyTargets(string modDirectory, VpkWardrobeFile wardrobe)
-	{
-		if (!string.IsNullOrWhiteSpace(wardrobe.TargetArmorArchiveId))
-			return [wardrobe.TargetArmorArchiveId];
-
-		var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(modDirectory);
-		return ownKey is null ? null : [RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)];
 	}
 
 	private static string ExplainConversionFailure(Hd2ModProcess.Result result)

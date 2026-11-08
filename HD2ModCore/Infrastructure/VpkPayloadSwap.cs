@@ -80,9 +80,15 @@ public static class VpkPayloadSwap
 			foreach (var path in existing) File.Delete(path);
 			foreach (var path in Directory.EnumerateFiles(producedDirectory, "*", SearchOption.TopDirectoryOnly))
 			{
-				var destination = Path.Combine(payloadDirectory, Path.GetFileName(path));
-				// 保留下来的文件（custom-model.json / components.json）没在上面的 existing 里，
-				// 但它们同样是只读的 —— 覆盖前也得清。
+				var name = Path.GetFileName(path);
+				var destination = Path.Combine(payloadDirectory, name);
+				// **保留下来的用户文件不被新产物覆盖**：`custom-model.json` 记的是"这具素体是谁"
+				// （key 与 unit id 基），`components.json` 记的是"哪些部件算开关"。
+				// 它们留着不删、还让新产物盖掉，等于这一步白做——用户改过的组件树会被转换器的
+				// 默认版本冲掉，而界面上看不出任何变化。
+				if (PreservedFileNames.Contains(name, StringComparer.OrdinalIgnoreCase) && File.Exists(destination))
+					continue;
+				// 保留下来的文件同样是只读的 —— 覆盖前也得清。
 				ClearReadOnly(destination);
 				File.Copy(path, destination, overwrite: true);
 			}

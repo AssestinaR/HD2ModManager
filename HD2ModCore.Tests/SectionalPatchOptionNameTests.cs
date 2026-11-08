@@ -114,6 +114,92 @@ public sealed class SectionalPatchOptionNameTests : IDisposable
 		Assert.Equal("B1", rebuilt.Patches.Single(entry => entry.PatchIndex == 2).OptionName);
 	}
 
+	/// <summary>
+	/// 重转之后，用户改过的**选项名/顺序/备注**必须按"来源 VPK"认领回来。
+	/// <para>
+	/// 不能按序号认领：序号会随报告顺序变，一旦变了，用户给 A 起的名字会接到 B 身上 ——
+	/// 那既污染名字，也污染部署顺序，而用户完全看不出是重建干的。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void RebuildCarriesUserFieldsBySourceVpkNotByIndex()
+	{
+		var modDirectory = Path.Combine(_root, "mod");
+		var payload = Path.Combine(modDirectory, "sectional");
+		Directory.CreateDirectory(payload);
+		File.WriteAllText(Path.Combine(payload, $"{Archive}.patch_0"), "unit");
+		File.WriteAllText(Path.Combine(payload, $"{Archive}.patch_1"), "material");
+
+		// 上一版：用户把这份材质命名为「我的发色」、排序 5、写了备注。
+		SectionalPatchManifestFile.TryWrite(payload, new SectionalPatchManifestDocument(
+			SectionalPatchManifest.CurrentSchema, DateTimeOffset.UtcNow,
+			[
+				new SectionalPatchGroupEntry(0, Archive, SectionalPatchRole.Unit, "model.vpk"),
+				new SectionalPatchGroupEntry(1, Archive, SectionalPatchRole.Material, "pack.vpk",
+					OptionName: "我的发色", Order: 5, Notes: "我改过的备注"),
+			]));
+
+		File.WriteAllText(Path.Combine(modDirectory, VpkConversionReport.FileName), $$"""
+			{
+			  "ok": true,
+			  "patches": [
+			    { "name": "model.vpk", "kind": "model", "unitPatch": "{{Archive}}.patch_0" },
+			    { "name": "pack.vpk", "kind": "material", "materialPatch": "{{Archive}}.patch_1" }
+			  ]
+			}
+			""");
+
+		var rebuilt = SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow);
+
+		Assert.NotNull(rebuilt);
+		var material = rebuilt!.Patches.Single(entry => entry.Role == SectionalPatchRole.Material);
+		Assert.Equal("我的发色", material.OptionName);
+		Assert.Equal(5, material.Order);
+		Assert.Equal("我改过的备注", material.Notes);
+	}
+
+	/// <summary>
+	/// 与真实重构建完全同形的一次：报告里**只有一个 model 条目**（它同时产出 unit 与材质），
+	/// 上一版清单是**磁盘上的 JSON**（不是内存里构造的）。
+	/// </summary>
+	[Fact]
+	public async Task RebuildCarriesFromDiskManifestWhenTheModelProducesBothPatches()
+	{
+		var modDirectory = Path.Combine(_root, "mod-disk");
+		var payload = Path.Combine(modDirectory, "sectional");
+		Directory.CreateDirectory(payload);
+		File.WriteAllText(Path.Combine(payload, $"{Archive}.patch_0"), "unit");
+		File.WriteAllText(Path.Combine(payload, $"{Archive}.patch_1"), "material");
+		File.WriteAllText(Path.Combine(payload, SectionalPatchManifest.FileName), $$"""
+			{
+			  "schema": "hd2mod.patch-groups/1",
+			  "generatedUtc": "2026-11-08T02:05:29.5972495+00:00",
+			  "patches": [
+			    { "patchIndex": 0, "archiveHex16": "{{Archive}}", "role": "unit", "sourceVpkName": "Lunalice_Bill.vpk" },
+			    { "patchIndex": 1, "archiveHex16": "{{Archive}}", "role": "material", "sourceVpkName": "Lunalice_Bill.vpk", "optionName": "我的发色", "order": 5, "notes": "我改过的备注" }
+			  ]
+			}
+			""");
+		File.WriteAllText(Path.Combine(modDirectory, VpkConversionReport.FileName), $$"""
+			{
+			  "ok": true,
+			  "patches": [
+			    { "name": "Lunalice_Bill.vpk", "kind": "model", "unitPatch": "{{Archive}}.patch_0", "materialPatch": "{{Archive}}.patch_1" }
+			  ]
+			}
+			""");
+
+		var previous = await SectionalPatchManifestFile.TryReadAsync(payload);
+		Assert.NotNull(previous);
+		var rebuilt = SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow, previous);
+
+		Assert.NotNull(rebuilt);
+		var material = rebuilt!.Patches.Single(entry => entry.Role == SectionalPatchRole.Material);
+		Assert.Equal("我的发色", material.OptionName);
+		Assert.Equal(5, material.Order);
+		Assert.Equal("我改过的备注", material.Notes);
+	}
+
 	private string CreatePayload()
 	{
 		var payload = Path.Combine(_root, "mod", "sectional");
