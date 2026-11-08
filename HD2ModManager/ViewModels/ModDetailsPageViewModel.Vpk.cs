@@ -1040,6 +1040,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		// 组列表与树是同一份状态的两种视图：树上改了一节，覆盖它的那些组也要跟着变。
 		foreach (var item in _vpkGroups)
 			item.RaiseEnabledChanged();
+		// **树自己也要重读勾选状态。**
+		// 状态是级联的（点 unit ⇒ 它所有 section；子项全关 ⇒ unit 显示为关），
+		// 但只有被点的那一行会自己发通知：不刷一遍，别的行仍显示旧勾选
+		// ——用户看到的就是"关了主体、子项还亮着"和"子项全关、主体还亮着"。
+		// 组的开关一直是这么做的（见 ApplyVpkGroupAsync），这里补上同一条。
+		VpkTree?.RefreshChecks();
 		// 勾一下就要落盘：以前只有「应用」会写文件，勾完直接切页就静默丢了。
 		ScheduleVpkStateSave();
 	}
