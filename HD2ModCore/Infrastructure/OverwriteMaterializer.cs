@@ -1,4 +1,5 @@
 using HD2ModCore.Decoration;
+using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -37,7 +38,7 @@ public sealed record OverwriteMaterializationResult(
 }
 
 /// <summary>
-/// 把「基底目录里的 patch」+「用户的选择」组装成 <c>Overwrite/</c>——**唯一**写这一层的地方。
+/// 把「基底目录里的 patch」+「用户的选择」组装成 <c>Overwrite/</c> 的 **patch 部分**。
 /// <para>
 /// <b>组装规则（三层，缺一层就出黑模）。</b>
 /// <list type="number">
@@ -55,9 +56,15 @@ public sealed record OverwriteMaterializationResult(
 /// 其余（折并进来的）属变体。报告缺失时退化为"只有 <c>patch_0</c> 是基底"。
 /// </para>
 /// <para>
-/// <b>为什么必须是唯一写者。</b>以前换甲直接往 Overwrite 里写、物化又是另一条路，
+/// <b>为什么 patch 只能由这里组装。</b>以前换甲直接往 Overwrite 里写、物化又是另一条路，
 /// 两套结果会互相覆盖：物化器把换甲产物换回未换甲的基底 patch，用户选的护甲就失效了。
 /// 现在换甲产出一份"unit 层"交给这里，由这里统一组装。
+/// <para>
+/// <b>它不是这一层的唯一写者。</b>结构文件（<c>sections.json</c> / <c>components.json</c> /
+/// <c>custom-model.json</c>）由编译基座（<see cref="ModCompileService"/>）在物化**之后**写：
+/// 物化会重开目录，先写就会丢。另外 legacy 类 Mod 还有别的写者（装饰链 / 折并 / 批量修复 /
+/// physbone 嵌入），它们与 sectional 类无关。
+/// </para>
 /// </para>
 /// <para>
 /// <b>失败时不留半成品。</b>走 <see cref="ManagedOverwriteDirectory"/> 的备份与回滚：
@@ -150,6 +157,25 @@ public static class OverwriteMaterializer
 	/// 宿主**自己那次转换**产出的材质 patch 文件名——它们在选项表里的名字是「模型内置材质」。
 	/// 转换报告里逐条写着 <c>materialPatch</c>；报告缺失时为空（此时默认不启用任何材质层）。
 	/// </summary>
+	/// <summary>
+	/// 这个 Mod 里**全部**材质 patch 的文件名（含模型内置的那份）。
+	/// <para>
+	/// 顺序沿用 <c>patches.json</c> 的编号：序号大的后部署，覆盖同 id 的内容。
+	/// 结构文件读不出来时才退回"只有内置材质"——那是唯一还能算出来的答案。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyCollection<string> AllMaterialPatches(string modDirectory, string payload)
+	{
+		var manifest = SectionalPatchManifestFile.TryReadAsync(payload).AsTask().GetAwaiter().GetResult();
+		if (manifest is null)
+			return BuiltInMaterialPatches(VpkConversionReport.TryRead(modDirectory));
+		return manifest.Patches
+			.Where(entry => entry.Role == SectionalPatchRole.Material)
+			.OrderBy(entry => entry.PatchIndex)
+			.Select(entry => entry.ArchiveHex16 + ".patch_" + entry.PatchIndex)
+			.ToArray();
+	}
+
 	private static IReadOnlyList<string> BuiltInMaterialPatches(VpkConversionReport? report)
 	{
 		if (report is null) return Array.Empty<string>();
@@ -171,8 +197,15 @@ public static class OverwriteMaterializer
 	/// </para>
 	/// </summary>
 	/// <param name="enabledPatchFileNames">
-	/// <c>null</c> = 读设置文件；那里也没有就退回"模型内置材质"。
+	/// <c>null</c> = 读设置文件；那里也没有就**启用全部材质 patch**。
 	/// 空集合 = 用户明确关掉了全部材质（不是"没选"，别再自作主张加回来）。
+	/// <para>
+	/// <b>为什么默认是"全部"而不是"只有内置"。</b>导入完就不管的用户占多数：
+	/// 只启用内置材质时，别的变体的 id 没人定义，进游戏就是"模型没材质"，
+	/// 而用户只会得出一个结论——这管理器是一坨大便。
+	/// 全部启用最多是"高序号覆盖低序号里同 id 的内容"，总有一套在生效；
+	/// 不喜欢的人会自己去勾选，勾过之后设置文件就存在了，永远不会再回落到默认。
+	/// </para>
 	/// </param>
 	public static (IReadOnlyList<string> Paths, IReadOnlyList<string> Warnings) ResolveMaterialLayers(
 		string modDirectory,
@@ -185,7 +218,7 @@ public static class OverwriteMaterializer
 
 		var enabled = enabledPatchFileNames
 			?? ModSettingsFile.TryRead(modDirectory)?.EnabledMaterialPatches
-			?? BuiltInMaterialPatches(VpkConversionReport.TryRead(modDirectory));
+			?? AllMaterialPatches(modDirectory, payload);
 		var unitFileName = $"{SectionalPatchManifestFile.ReadArchiveHex16(payload)}.patch_{UnitPatchIndex}";
 
 		var paths = new List<string>();

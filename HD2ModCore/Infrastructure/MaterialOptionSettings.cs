@@ -48,10 +48,9 @@ public static class MaterialOptionSettings
 				entry.PatchIndex,
 				fileName,
 				entry.OptionName,
-				// 没有显式记录时按"模型内置材质默认启用"算——与物化器的默认一致。
-				enabled is null
-					? string.Equals(entry.OptionName, SectionalPatchManifest.BuiltInMaterialOptionName, StringComparison.Ordinal)
-					: enabled.Contains(fileName, StringComparer.OrdinalIgnoreCase),
+				// 没有显式记录 = 全部启用（与物化器的默认一致）：
+				// 导入完就不管的用户不该在游戏里看到"模型没材质"。
+				enabled is null || enabled.Contains(fileName, StringComparer.OrdinalIgnoreCase),
 				// 没有显式记录时按位置算：**材质之间的第几个**，从 0 起。
 				//
 				// 不能用 PatchIndex 原值：unit 恒为 patch_0，材质从 patch_1 起，直接用会把第一行

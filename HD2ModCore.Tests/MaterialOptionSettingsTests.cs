@@ -46,7 +46,9 @@ public sealed class MaterialOptionSettingsTests : IDisposable
 		var options = MaterialOptionSettings.Read(mod);
 
 		Assert.Equal([1, 2], options.Select(option => option.PatchIndex).ToArray());
-		Assert.All(options, option => Assert.False(option.Enabled));
+		// **没有显式记录时默认全部启用**（2026-11-08 用户口径）：
+		// "导入完就不管"的用户不该在游戏里看到模型没材质；不喜欢的人自己勾，勾过就有设置了。
+		Assert.All(options, option => Assert.True(option.Enabled));
 	}
 
 	[Fact]
