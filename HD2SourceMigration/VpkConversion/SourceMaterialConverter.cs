@@ -2783,6 +2783,15 @@ public sealed class SourceMaterialConverter
 		var rgba = loaded.Rgba;
 		var textureName = loaded.TextureName;
 
+		if (Environment.GetEnvironmentVariable("HD2MOD_ALBEDO_DEBUG") == "1")
+		{
+			double beginSum = 0;
+			var beginCount = Math.Max(1, rgba.Length / 4);
+			for (var i = 0; i < rgba.Length; i += 4)
+				beginSum += (0.299 * rgba[i]) + (0.587 * rgba[i + 1]) + (0.114 * rgba[i + 2]);
+			Console.Error.WriteLine($"[albedo-in ] {loaded.Stem,-24} meanLum={beginSum / beginCount,6:F1}");
+		}
+
 		// ⚠️ **遮罩取 `SourceBaseRgba`（源底色），不是 `rgba`（可能已被换成 matcap）。**
 		// 这两者在 matcap 承载表面的件上是**两张完全不同的图**：
 		//   · `rgba`           = 渲染用底色（matcap 承载表面时**就是**那张球面图）
@@ -2813,19 +2822,26 @@ public sealed class SourceMaterialConverter
 		//
 		// 所以先除以 ramp 自己的受光段（受光 = 1.0），再按**法线的 N·L** 查这条归一化曲线：
 		// 受光面保持原样，背光面带作者指定的色偏，整体亮度不变。
+		// ⚠️ **没有世界方向法线就整段跳过。**
+		//
+		// 这条以前是"按正面朝光算 ⇒ 等于不动"，实测**并不等于不动**：
+		// 它仍然按 ramp 的曲线压了一遍高光。Manuka 那两张亮粉底图被压成
+		// 229 → 216（暗部 192 → 140、饱和度 0.149 → 0.206），实机就是
+		// "侧面红斑、正面过白"（2026-11-08 用户截图 + `HD2MOD_ALBEDO_DEBUG` 实测）。
+		//
+		// 所以：拿不到世界法线就不烘。要这条效果，先用 UvNormalBake 把几何烘出来。
+		var shadingNormal = LightwarpShadingEnabled ? WorldNormalFor(loaded.Stem) : null;
 		if (LightwarpShadingEnabled
+			&& shadingNormal is not null
 			&& loaded.LightwarpTexture is { Length: > 0 } warpName
 			&& TryReadTextureRgba(warpName, out var warpRgba, out var warpWidth, out var warpHeight))
 		{
-			// **必须用世界方向的法线**（见 UvNormalBake）：拿切线空间法线算 N·L 会让阴影
-			// 跟着贴图细节一块块跳。没有烘焙结果时按"正面朝光"算 ⇒ 等于不动。
-			var shadingNormal = WorldNormalFor(loaded.Stem);
 			MaterialAppearance.BakeLightwarpShading(
 				rgba, vtf.Width, vtf.Height,
 				warpRgba, warpWidth, warpHeight,
-				shadingNormal?.Rgba,
-				shadingNormal?.Width ?? 0,
-				shadingNormal?.Height ?? 0);
+				shadingNormal.Rgba,
+				shadingNormal.Width,
+				shadingNormal.Height);
 		}
 
 		// 压暗必须在**清零 alpha 之前、编码 sRGB 之前**：
@@ -3042,6 +3058,29 @@ public sealed class SourceMaterialConverter
 		}
 
 		// DecodeToRgba 返回的是**裸像素**，编码前要重新包一层 DDS——texconv 只吃 DDS。
+		// 诊断开关 `HD2MOD_ALBEDO_DEBUG=1`：把"即将编码的底色"的统计打出来。
+		// 用来判定"亮/暗偏差发生在编码前还是编码后"——只靠看产物分不清这两者。
+		if (Environment.GetEnvironmentVariable("HD2MOD_ALBEDO_DEBUG") == "1")
+		{
+			double sum = 0;
+			var count = Math.Max(1, rgba.Length / 4);
+			for (var i = 0; i < rgba.Length; i += 4)
+				sum += (0.299 * rgba[i]) + (0.587 * rgba[i + 1]) + (0.114 * rgba[i + 2]);
+			Console.Error.WriteLine($"[albedo] {loaded.Stem,-24} {vtf.Width}x{vtf.Height} meanLum={sum / count,6:F1}");
+		}
+
+		// 诊断开关 `HD2_DEBUG_FLAT_ALBEDO=1`：把底色替换成中性灰，用来判定"某个观感到底来自底色还是光照"。
+		// 典型用法：红斑在平灰底上还在 → 不是底色；消失 → 是底色。
+		if (Environment.GetEnvironmentVariable("HD2_DEBUG_FLAT_ALBEDO") == "1")
+		{
+			for (var offset = 0; offset < rgba.Length; offset += 4)
+			{
+				rgba[offset] = 128;
+				rgba[offset + 1] = 128;
+				rgba[offset + 2] = 128;
+			}
+		}
+
 		var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 
 		var texture = new Hd2TextureAsset();
@@ -3154,7 +3193,30 @@ public sealed class SourceMaterialConverter
 			// 纯贴图包（只换色）里同一张 VTF 常被多个 patch 引用，解码结果可以复用。
 			var rgba = DecodeTextureCached(stem, vtfBytes, vtf);
 			ZeroAlpha(rgba);
-			var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
+			// 诊断开关 `HD2MOD_ALBEDO_DEBUG=1`：把"即将编码的底色"的统计打出来。
+		// 用来判定"亮/暗偏差发生在编码前还是编码后"——只靠看产物分不清这两者。
+		if (Environment.GetEnvironmentVariable("HD2MOD_ALBEDO_DEBUG") == "1")
+		{
+			double sum = 0;
+			var count = Math.Max(1, rgba.Length / 4);
+			for (var i = 0; i < rgba.Length; i += 4)
+				sum += (0.299 * rgba[i]) + (0.587 * rgba[i + 1]) + (0.114 * rgba[i + 2]);
+			Console.Error.WriteLine($"[albedo] {stem,-24} {vtf.Width}x{vtf.Height} meanLum={sum / count,6:F1}");
+		}
+
+		// 诊断开关 `HD2_DEBUG_FLAT_ALBEDO=1`：把底色替换成中性灰，用来判定"某个观感到底来自底色还是光照"。
+		// 典型用法：红斑在平灰底上还在 → 不是底色；消失 → 是底色。
+		if (Environment.GetEnvironmentVariable("HD2_DEBUG_FLAT_ALBEDO") == "1")
+		{
+			for (var offset = 0; offset < rgba.Length; offset += 4)
+			{
+				rgba[offset] = 128;
+				rgba[offset + 1] = 128;
+				rgba[offset + 2] = 128;
+			}
+		}
+
+		var bc7 = EncodeBc7Deduplicated(rgba, vtf.Width, vtf.Height, srgb: true);
 			var asset = new Hd2TextureAsset();
 			asset.FromDds(bc7);
 			texture = new SynthesizedTexture(
@@ -3636,8 +3698,14 @@ public sealed class SourceMaterialConverter
 	/// 逐顶点的世界方向，而不是现在这张切线空间法线图。
 	/// </para>
 	/// </summary>
+	/// <para>
+	/// <b>默认关闭。</b>它需要"世界方向法线"这个前提；拿不到时旧实现会按错误假设压一遍曲线，
+	/// 把亮粉底图压出红斑（2026-11-08 实机）。要开就显式 <c>HD2_LIGHTWARP=1</c>；
+	/// <c>HD2_NO_LIGHTWARP=1</c> 仍然认，用来保证旧脚本不失效。
+	/// </para>
 	private static readonly bool LightwarpShadingEnabled =
-		Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") != "1";
+		Environment.GetEnvironmentVariable("HD2_LIGHTWARP") == "1"
+		&& Environment.GetEnvironmentVariable("HD2_NO_LIGHTWARP") != "1";
 
 	/// <summary>
 	/// 把 <c>$bumpmap</c> 转成一张 HD2 法线贴图；读不出来返回 <c>null</c>（调用方退回平面法线）。
