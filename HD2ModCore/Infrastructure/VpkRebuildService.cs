@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using HD2ModCore.Infrastructure;
@@ -82,6 +83,22 @@ public static class VpkRebuildService
 	/// </para>
 	/// </summary>
 	private static readonly VpkConversionSettings CurrentImportDefaults = new("merge", "metal", null, null, null);
+
+	/// <summary>
+	/// 全局几何参数：角色头部的等比缩放比例。<c>null</c> = 不给，转换器用自己的默认值
+	/// <c>8/7 ≈ 1.142857</c>（见 <c>RetargetOptions.HeadScale</c>）。
+	/// <para>
+	/// <b>为什么放在这里而不是 <see cref="VpkConversionSettings"/> 里。</b>那个 record 是
+	/// "重跑出逐字节一致产物"所需的那组参数，只收**会改变材质内容或 id** 的开关。
+	/// 头部缩放是纯几何：改它不会让任何材质包失配，但它也不该被冻在某个 Mod 的产物里 ——
+	/// 用户改设置、点重构建，就该看到新值。用 UpperScale / MeshShift 那几项的同一套口径。
+	/// </para>
+	/// <para>
+	/// 由管理器在启动与设置变更时写入（<c>SettingsService.ApplyToVpkBuild</c>）；
+	/// CLI 直接跑重构建时保持 <c>null</c>，行为与以前一致。
+	/// </para>
+	/// </summary>
+	public static double? HeadScale { get; set; }
 
 	/// <param name="modSelector">库里的 Mod 标识（GUID 或前缀）。换甲要用它定位工作区里的节点。</param>
 	/// <param name="targetArchiveIds">
@@ -208,6 +225,15 @@ public static class VpkRebuildService
 			else if (report?.IdNamespace is { Length: > 0 } token)
 				arguments.AddRange(["--id-namespace-token", token]);
 			arguments.AddRange(settings.ToArguments());
+			// 头部缩放：**不进产物记录，按当前设置即时生效。**
+			//
+			// 为什么不记进 vpk2patch.json：它是纯几何参数，和 UpperScale / MeshShift / 手臂姿态
+			// 同一类 —— 那几项从来没记过，一直是"转换器常量"。记它会让每个已存在的 Mod 在
+			// 第一次重构建时把当时的值冻住，用户之后改设置就会发现"改了没用"。
+			// 代价是重构建不保证与上次逐字节一致（改了设置就会变），这一点是明确的、
+			// 用户自己按的按钮。
+			if (HeadScale is { } headScale)
+				arguments.AddRange(["--head-scale", headScale.ToString("R", CultureInfo.InvariantCulture)]);
 			if (reuseModel is not null)
 				arguments.AddRange(["--reuse-model", reuseModel]);
 			arguments.Add("--json");

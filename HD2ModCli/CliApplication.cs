@@ -915,6 +915,7 @@ public static class CliApplication
 				workspace,
 				state,
 				invocation.Command[2],
+				invocation.Options.HeadScale,
 				stage => Console.Error.WriteLine("#progress " + stage)).ConfigureAwait(false);
 			Emit(invocation.Options, new { ok = outcome.Ok, rebuild = outcome }, () => FormatModRebuild(outcome));
 			return outcome.Ok ? 0 : 2;
@@ -3675,7 +3676,12 @@ public static class CliApplication
 			inputs = inputs with { Geometry = cutGeometry };
 		}
 
-		var retarget = SourceRetargetPipeline.Run(inputs, rig);
+		// 头部缩放：只在显式给了 `--head-scale` 时才构造一份 options —— 其余字段继续用
+		// RetargetOptions 的默认值（那就是发货配置），不传时行为与以前逐字节一致。
+		var retargetOptions = options.HeadScale is { } headScale
+			? new RetargetOptions { HeadScale = headScale }
+			: null;
+		var retarget = SourceRetargetPipeline.Run(inputs, rig, null, retargetOptions);
 
 		var split = SourceSegmentation.Split(
 			inputs.Model, inputs.Geometry, new BodyRegionResolver(rig), retarget.Resolved);

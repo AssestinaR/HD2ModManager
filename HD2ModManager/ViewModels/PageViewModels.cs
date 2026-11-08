@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -1973,11 +1974,43 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        /// <summary>
+        /// VPK 构建时的角色头部缩放比例（默认 <c>8/7 ≈ 1.1429</c>）。
+        /// <para>
+        /// 用文本暴露而不是数字微调框：这一项是"填一个数"，比例上没有有意义的步进。
+        /// 绑定用 <c>LostFocus</c>：边打边校验会在输入到一半时就把中间值写进去
+        /// （"1.2" 打到 "1." 的瞬间判非法），失焦时判一次既够用又好解释。
+        /// </para>
+        /// <para>
+        /// 解析不了或超范围时**不写盘**，并把输入框拉回当前生效值。
+        /// 静默改成默认值是最坏的结果 —— 用户会以为填的值生效了。
+        /// </para>
+        /// </summary>
+        public string HeadScaleText
+        {
+            get => SettingsService.GetHeadScale().ToString("0.####", CultureInfo.InvariantCulture);
+            set
+            {
+                if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+                    SettingsService.SetHeadScale(parsed);
+                // 无论成功与否都拉回一次：成功是把 "1.20" 归一成 "1.2"（存下的就是看到的），
+                // 失败是把输入框回滚。
+                OnPropertyChanged(nameof(HeadScaleText));
+            }
+        }
+
+        public string HeadScaleHint =>
+            $"范围 {SettingsService.MinHeadScale:0.##}–{SettingsService.MaxHeadScale:0.##}，"
+            + $"默认 {SettingsService.DefaultHeadScale:0.####}（8/7，现行比例）。"
+            + "只影响 VPK 构建出的角色网格：头围绕颈/头接缝等比缩放，不碰材质与 id。";
+
+
         public RelayCommand OpenModFolderCommand { get; }
         public RelayCommand ResetModFolderCommand { get; }
         public RelayCommand OpenGameDataFolderCommand { get; }
         public RelayCommand OpenDefaultExportFolderCommand { get; }
         public RelayCommand ResetDefaultExportPathCommand { get; }
+        public RelayCommand ResetHeadScaleCommand { get; }
         public RelayCommand DetectGameDataFolderCommand { get; }
         public RelayCommand ViewGameDataIndexCommand { get; }
         public RelayCommand OpenArmorRegistryCommand { get; }
@@ -2015,6 +2048,13 @@ namespace HD2ModManager.ViewModels
             OpenGameDataFolderCommand = new RelayCommand(OpenGameDataFolder);
             OpenDefaultExportFolderCommand = new RelayCommand(OpenDefaultExportFolder);
             ResetDefaultExportPathCommand = new RelayCommand(() => DefaultExportPath = SettingsService.DefaultExportPath);
+            ResetHeadScaleCommand = new RelayCommand(() =>
+            {
+                // 重置成**精确的** 8/7，不是界面上那个四舍五入后的 1.1429 ——
+                // 默认值必须是原来那个数，"看起来一样"不等于一样。
+                SettingsService.SetHeadScale(SettingsService.DefaultHeadScale);
+                OnPropertyChanged(nameof(HeadScaleText));
+            });
             DetectGameDataFolderCommand = new RelayCommand(DetectGameDataFolder);
             ViewGameDataIndexCommand = new RelayCommand(_ => ViewGameDataIndex(), _ => !IsLoadingGameDataIndex);
             OpenArmorRegistryCommand = new RelayCommand(OpenArmorRegistry);
@@ -2168,6 +2208,8 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ModLibraryFolder));
             OnPropertyChanged(nameof(GameDataFolder));
             OnPropertyChanged(nameof(DefaultExportPath));
+            OnPropertyChanged(nameof(HeadScaleText));
+            OnPropertyChanged(nameof(HeadScaleHint));
             _ = RefreshAssetIndexStatusAsync();
         }
 

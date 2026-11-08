@@ -154,7 +154,15 @@ public sealed record CliGlobalOptions(
 	string? NoDraw = null,
 	// --cutout-geometry <材质,材质>：把这些材质的「镂空」裁成几何（见 CutoutMesh），
 	// 于是它们能走 advanced 拿到金属度。空 = 不做，行为与以前逐字节一致。
-	string? CutoutGeometry = null);
+	string? CutoutGeometry = null,
+	// 角色头部的缩放比例（只动网格，围绕颈/头接缝两个关节的中点等比缩放）。
+	// 不传 = 转换器默认 8/7 ≈ 1.142857（见 RetargetOptions.HeadScale）。
+	//
+	// 为什么需要它：8/7 是当年对着一批模型实机调出来的经验值，但"头多大合适"因人而异，
+	// 不同来源模型自己的头身比也不一样。它只影响几何，不碰材质与任何 id，
+	// 所以改它不会让材质包失配 —— 但**会改变产物字节**，重构建必须带上同一个值
+	// 才是同一份产物（管理器把它当全局几何参数，每次重构建按当前设置传入）。
+	double? HeadScale = null);
 
 public sealed record CliInvocation(IReadOnlyList<string> Command, CliGlobalOptions Options);
 
@@ -183,6 +191,8 @@ public static class CliArgumentParser
 		string? name = null;
 		string? materialSource = null;
 		double? albedoFactor = null;
+		// 头部缩放比例。null = 不给，转换器用自己的默认值（8/7）。
+		double? headScale = null;
 		string? matcap = null;
 		string? donor = null;
 		string? file = null;
@@ -298,6 +308,18 @@ public static class CliArgumentParser
 					}
 
 					albedoFactor = parsedAlbedoFactor;
+					break;
+				case "--head-scale":
+					var rawHeadScale = ReadValue(args, ref index, argument);
+					if (!double.TryParse(rawHeadScale, System.Globalization.NumberStyles.Float,
+							System.Globalization.CultureInfo.InvariantCulture, out var parsedHeadScale)
+						|| parsedHeadScale < 0.5 || parsedHeadScale > 2)
+					{
+						throw new CliUserException("InvalidOption",
+							$"--head-scale 需要一个 [0.5, 2] 的数（头部等比缩放比例，默认 8/7≈1.1429），实际是 '{rawHeadScale}'。");
+					}
+
+					headScale = parsedHeadScale;
 					break;
 				case "--donor":
 					donor = ReadValue(args, ref index, argument);
@@ -589,7 +611,7 @@ public static class CliArgumentParser
 		}
 
 		if (command.Count == 0) command.Add("help");
-		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry));
+		return new CliInvocation(command, new CliGlobalOptions(managerRoot, library, gameData, registryRoot, output, plan, host, addToProfile, keys, addKeys, removeKeys, archiveId, kind, header, picks, position, limit, cursor, setActive, withUnsharedOptions, withEffective, onlyCompetition, overwrite, confirm, json, avatarToc, boneHash, components, name, materialSource, albedoFactor, matcap, donor, file, sections, dryRun, idNamespace, disabled, cutout, idNamespaceToken, matcapGain, metalRoughness, metalCutout, cutoutTemplate, unitIds, reuseModel, headMerge, headMergeConsent, vpkList, materialSourceList, componentSourceList, treatAs, treatAsList, alphaExperiment, ditherScale, ditherDensity, ditherPattern, normalFlipY, noDraw, cutoutGeometry, headScale));
 	}
 
 	private static string ReadValue(string[] args, ref int index, string option)

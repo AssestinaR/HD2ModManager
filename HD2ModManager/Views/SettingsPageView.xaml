@@ -32,6 +32,22 @@
                         </StackPanel>
                     </Grid>
                     <TextBlock Text="支持相对路径和绝对路径；相对路径将按管理器程序目录解析。" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="头部缩放比例" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <!-- LostFocus：边打边校验会在输入到一半时就把中间值写进去（"1.2" 打到 "1." 判非法）。 -->
+                        <TextBox Grid.Column="1" Style="{StaticResource AppTextBox}"
+                                 Text="{Binding HeadScaleText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                 ToolTip="VPK 构建时角色头部的等比缩放比例。默认 8/7 ≈ 1.1429（现行比例）。"/>
+                        <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="重置"
+                                Command="{Binding ResetHeadScaleCommand}" Margin="8,0,0,0"/>
+                    </Grid>
+                    <TextBlock Text="{Binding HeadScaleHint}" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="改完之后对受影响的 Mod 点一次「重构建」才会生效。" Style="{StaticResource AppSupportingText}" Margin="150,3,0,0" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
                         <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
                         <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">

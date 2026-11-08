@@ -16,6 +16,9 @@ namespace HD2ModManager
             // 于是设置页显示"已开启"、部署却不带物理运行时（2026-11-01 实机踩过：
             // 一局下来既没有物理，日志也没被创建）。
             Services.SettingsService.ApplyToLuaDeployment();
+            // 建包用的全局几何参数（头部缩放比例）走同一套：Core 的重构建只读静态字段，
+            // 启动这一次不同步，用户改过的值不会生效，而日志里看不出任何异常。
+            Services.SettingsService.ApplyToVpkBuild();
             ApplyLocalization();
             DispatcherUnhandledException += (_, args) =>
             {

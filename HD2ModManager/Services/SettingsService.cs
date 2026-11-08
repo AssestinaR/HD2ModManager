@@ -47,10 +47,77 @@ namespace HD2ModManager.Services
         // 物理骨骼模式（PhysicsMode 的整数值）。null 表示尚未设置 ⇒ 默认关闭。
         public int? PhysicsMode { get; set; }
             public string? DefaultExportPath { get; set; }
+            // VPK 构建时的角色头部缩放比例。null = 从没设过 ⇒ 用 DefaultHeadScale。
+            //
+            // 为什么可空而不是给个默认值：默认值 8/7 是个无限小数，
+            // 存成 JSON 会变成 1.1428571428571428；可空能让"没动过"这件事保持可辨认，
+            // 也就不会因为一次读写的往返把它截断成别的数。
+            public double? HeadScale { get; set; }
         }
 
         public const string DefaultAssetMetadataRepository = GitHubAssetMetadataSyncService.DefaultRepositoryRawBaseUrl;
         public const string DefaultExportPath = "Output";
+
+        /// <summary>
+        /// 头部缩放比例的默认值 = <b>现行比例</b> <c>8/7 ≈ 1.142857</c>。
+        /// <para>
+        /// 这个值来自 <c>RetargetOptions.HeadScale</c>（当初对着一批模型实机调出来的经验值），
+        /// 两边必须一致：设置里没存过时管理器不会传 <c>--head-scale</c>，
+        /// 转换器就用它自己的 8/7。改动这里等于改动"默认观感"，别只改一边。
+        /// </para>
+        /// </summary>
+        public const double DefaultHeadScale = 8.0 / 7.0;
+
+        public const double MinHeadScale = 0.5;
+        public const double MaxHeadScale = 2.0;
+
+        /// <summary>
+        /// 读取头部缩放比例（已收敛到 <see cref="MinHeadScale"/>..<see cref="MaxHeadScale"/>）。
+        /// 坏值一律退回默认值，不抛——设置项读失败不该让整页打不开。
+        /// </summary>
+        public static double GetHeadScale()
+        {
+            try
+            {
+                var stored = LoadAll()?.HeadScale;
+                return stored is { } value && double.IsFinite(value)
+                    ? Math.Clamp(value, MinHeadScale, MaxHeadScale)
+                    : DefaultHeadScale;
+            }
+            catch { return DefaultHeadScale; }
+        }
+
+        /// <summary>
+        /// 写头部缩放比例。超出范围<b>拒绝</b>（返回 false，界面把输入框回滚），
+        /// 不做静默夹取 —— 静默夹取会让用户以为自己填的值生效了。
+        /// </summary>
+        public static bool SetHeadScale(double value)
+        {
+            if (!double.IsFinite(value) || value < MinHeadScale || value > MaxHeadScale) return false;
+            try
+            {
+                Update(model => model.HeadScale = value);
+                ApplyToVpkBuild();
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 把建包用的全局几何参数同步到 <see cref="VpkRebuildService"/>。
+        /// <para>
+        /// 与 <see cref="ApplyToLuaDeployment"/> 同一套理由：Core 不读管理器设置，
+        /// 所以每次改值（以及启动那一次）都得把它推进静态字段，否则"改了没生效"，
+        /// 而日志里什么线索都没有。
+        /// </para>
+        /// </summary>
+        public static void ApplyToVpkBuild()
+        {
+            // 没设过就不传（null）：让转换器用它自己的 8/7，命令行参数也就与以前完全一致。
+            VpkRebuildService.HeadScale = LoadAll()?.HeadScale is { } stored && double.IsFinite(stored)
+                ? Math.Clamp(stored, MinHeadScale, MaxHeadScale)
+                : null;
+        }
 
         public static string GetDefaultExportPath()
         {

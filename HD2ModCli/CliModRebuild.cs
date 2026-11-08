@@ -16,11 +16,16 @@ internal static class CliModRebuild
 		CliWorkspace workspace,
 		CliLibraryState state,
 		string selector,
+		double? headScale,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
 		ArgumentNullException.ThrowIfNull(state);
+
+		// 头部缩放是 Core 的全局几何参数（不进产物记录，见 VpkRebuildService.HeadScale）。
+		// 命令行一次调用就是一个进程，在这里写一次即可；退出就没了，不会串到别的调用。
+		VpkRebuildService.HeadScale = headScale;
 
 		var libraryRoot = workspace.LibraryRoot
 			?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");
