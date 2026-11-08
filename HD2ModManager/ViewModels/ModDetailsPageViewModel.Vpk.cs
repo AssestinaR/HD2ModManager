@@ -46,6 +46,16 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private string _vpkSwitchStatus = string.Empty;
 
 	/// <summary>
+	/// 要不要走"就地烘焙"那条快捷路径（直接改 <c>Overwrite/</c> 里那份 patch 的 <c>numIndices</c>）。
+	/// <para>
+	/// <b>本轮固定为 <c>false</c></b>：编译器的地基是"任何一处变动都从 <c>sectional/</c> 完整重算一次"，
+	/// 多留一条直接改字节的写者，就多一个能跟盘上状态不同步的分支。实现与测试都留着，
+	/// 等链路稳定、且有了"编译戳"这类判据之后再打开。
+	/// </para>
+	/// </summary>
+	private const bool EnableInPlaceBake = false;
+
+	/// <summary>
 	/// 组表（<c>components.json</c>）。**与开关状态分开**：这里只回答"有哪些组、每个组包含哪几块"，
 	/// 而"哪些块当前不画"存在 <see cref="VpkWardrobeFile.State"/>（<c>wardrobe.json</c>）。
 	/// 两者分开的理由见 <see cref="SectionGroup"/> 的注释。
@@ -715,7 +725,11 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 			// 优先就地烘焙：Overwrite 已经在的话，勾选变化只是改几个 numIndices，
 			// 不必重跑整条换甲（那是分钟级，这是秒级）。
-			if (await TryBakeInPlaceAsync(directory).ConfigureAwait(true))
+			//
+			// **本轮关掉这条快捷路径**（2026-11-08）：编译器的地基是"任何一处变动都从 sectional
+			// 完整重算一次"，多留一条直接改字节的写者就多一个能跟盘上状态不同步的分支。
+			// 实现与测试都留着，等链路稳定后再打开。
+			if (EnableInPlaceBake && await TryBakeInPlaceAsync(directory).ConfigureAwait(true))
 				return;
 
 			// **重新从 vpk2patch 生成 Overwrite**，而不是就地改 Overwrite。
@@ -882,25 +896,21 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			}
 
 			// 说什么由**实际结果**决定，而不是由开关状态决定。
-			// 开关打开却什么也没合并（目标是自己素体 / 目标胸部只有一层）时，
+			// 开关打开却什么也没合并（目标是自己素体 / 目标胸部只有一层 / 没有配套头盔）时，
 			// 一句"已开启"会让用户下次进游戏发现没变化，然后再也不信这个开关。
-			// **自身素体**（不换甲）这条路没有 Rekey 结果，以前会掉进 `_` 分支，
-			// 于是不管开还是关都报"头身合并已关闭"。这里先按"有没有换甲"分开说。
-			var summary = outcome.Rekeyed
-				? outcome.Rekey?.HeadMerge switch
-				{
-					"applied" => "头身合并已开启：头并进护甲，头盔 item 不再有模型。",
-				"custom-model" => "开关已记录，但对当前目标不生效：这个 Mod 自己的素体本来就是"
-					+ "「头 + 身体」一整套，没有独立的头盔 item 可隐藏。换成一件游戏护甲才会合并。",
-				"single-layer" => "开关已记录，但这一次没有合并：目标护甲的胸部槽位只有一层，"
-					+ "装不下「身体 + 头」两件几何。",
-					"no-helmet-kit" => "开关已记录，但当前目标没有配套头盔归档，无从合并。",
-					_ => "头身合并已关闭：头回到头盔套件，需要穿配套头盔才有头。",
-				}
-				// 自身素体：合并只改注册表（头件的挂载点），本来就没有独立的头盔 item。
-				: enabled
-					? "头身合并已开启：头件已挂到胸部槽位第 1 层。"
-					: "头身合并已关闭：头件回到头盔槽位。";
+			// 自身素体与换甲两条路现在都填 HeadMerge，所以**不再按 Rekeyed 分叉**——
+			// 那种分叉正是"开关翻了、界面说已开启、游戏里没变化"的来源。
+			var summary = outcome.Rekey?.HeadMerge switch
+			{
+				"applied" => outcome.Rekeyed
+					? "头身合并已开启：头并进护甲，头盔 item 不再有模型。"
+					: "头身合并已开启：头件已挂到胸部槽位（具体层号见消息中心）。",
+				"single-layer" => "开关已记录，但这一次没有合并：目标胸部槽位装不下「身体 + 头」两件几何。",
+				"no-helmet-kit" => "开关已记录，但当前目标没有配套头盔归档，无从合并。",
+				_ => enabled
+					? "头身合并没有生效（原因见消息中心）。"
+					: "头身合并已关闭：头回到头盔套件。",
+			};
 			var warningText = (outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count == 0
 				? string.Empty
 				: " " + string.Join(" ", (outcome.Rekey?.Warnings ?? Array.Empty<string>()).Take(2))
