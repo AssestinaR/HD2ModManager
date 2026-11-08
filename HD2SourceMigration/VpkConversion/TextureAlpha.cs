@@ -43,6 +43,37 @@ public readonly record struct AlphaStats(byte Min, byte Max, double Coverage)
 	/// </summary>
 	public bool IsEmpty => Max <= EmptyMax;
 
+	/// <summary>
+	/// 这片 alpha <b>几乎全是不透明</b>（≥95% 的像素 alpha ≥ 250）。
+	/// <para>
+	/// <b>为什么需要这条。</b>有些作者把「低不透明度」当「不透明」写：整片 alpha 恒定在
+	/// 180~240 之间。它会被 <see cref="IsUniformlyTranslucent"/> 认成"整体半透明"，
+	/// 于是走 alphaclip + 抖动 —— 实机表现是<b>整件身体变半透明、还带一层噪点</b>
+	/// （远看像满脸雀斑）。作者的原意显然不是这样，所以这一档直接判不透明。
+	/// </para>
+	/// <para>口径按<b>像素占比</b>，不按平均值：一块小黑点不该把整张图拉成半透明。</para>
+	/// </summary>
+	public bool IsEffectivelyOpaque => Coverage <= EffectiveOpaqueCoverageMax;
+
+	/// <summary>「几乎全不透明」阈值：非不透明像素（alpha &lt; 250）占比 ≤ 5%。</summary>
+	public const double EffectiveOpaqueCoverageMax = 0.05;
+
+	/// <summary>
+	/// 这片 alpha <b>几乎全是透明</b>（≥95% 的像素 alpha &lt; 128）。
+	/// <para>
+	/// 这一档既不该按不透明渲染（会得到实心板），也不该走抖动（会得到噪点壳）；
+	/// 它交给 HD2 的 <c>translucent</c> 模板做成<b>纯色透明</b>（玻璃/塑料观感）。
+	/// </para>
+	/// <para>
+	/// <b>必须排除 <see cref="IsEmpty"/>。</b>"整片 0"是"没有 alpha 数据"，不是"作者要它透明"：
+	/// 前者按隐藏处理，后者才该给透明材质。
+	/// </para>
+	/// </summary>
+	public bool IsEffectivelyTransparent => !IsEmpty && TransparentShare >= EffectiveTransparentShareMin;
+
+	/// <summary>「几乎全透明」阈值：真正透明的像素（alpha &lt; 32）占比 ≥ 95%。</summary>
+	public const double EffectiveTransparentShareMin = 0.95;
+
 	/// <summary>低于这个值的 alpha 视为"没有 alpha 数据"，而不是"很透明"。</summary>
 	public const byte EmptyMax = 8;
 
@@ -103,6 +134,19 @@ public readonly record struct AlphaStats(byte Min, byte Max, double Coverage)
 	/// </summary>
 	public double VisibleCoverage { get; init; } = 1.0;
 
+	/// <summary>
+	/// **真正透明**的像素占比（alpha &lt; <see cref="TransparentAlphaMax"/>）。
+	/// <para>
+	/// 与 <see cref="VisibleCoverage"/> 的区别是判据方向：后者问"有多少看得见"，这里问
+	/// "有多少根本没画"。**不能用 `1 - VisibleCoverage` 代替**：整片 alpha=102 的玻璃件
+	/// （40% 不透明）在 VisibleCoverage 里算 0，会被误当成"几乎全透明"。
+	/// </para>
+	/// </summary>
+	public double TransparentShare { get; init; }
+
+	/// <summary>低于这个 alpha 视为"这一像素没画"。取 32 ≈ 12%。</summary>
+	public const byte TransparentAlphaMax = 32;
+
 	/// <summary>可见像素占比的下限。低于它就不认为 alpha 在表达形状。</summary>
 	public const double MinimumVisibleCoverage = 0.05;
 
@@ -127,6 +171,7 @@ public static class TextureAlpha
 		byte max = 0;
 		var below = 0;
 		var visible = 0;
+		var transparent = 0;
 		var pixels = rgba.Length / 4;
 		for (var offset = 3; offset < rgba.Length; offset += 4)
 		{
@@ -139,11 +184,14 @@ public static class TextureAlpha
 				below++;
 			if (alpha >= 128)
 				visible++;
+			if (alpha < AlphaStats.TransparentAlphaMax)
+				transparent++;
 		}
 
 		return new AlphaStats(min, max, (double)below / pixels)
 		{
 			VisibleCoverage = (double)visible / pixels,
+			TransparentShare = (double)transparent / pixels,
 		};
 	}
 }

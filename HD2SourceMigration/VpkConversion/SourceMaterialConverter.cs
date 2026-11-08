@@ -513,6 +513,24 @@ public sealed class SourceMaterialConverter
 	/// </summary>
 	public const uint SubsurfaceIntensityVariableId = 0x38dae7bd;
 
+	/// <summary>
+	/// <c>translucent</c>（纯色透明材质）的整体不透明度倍率，<c>HD2_TRANSPARENT_ALPHA</c> 可调，默认 1。
+	/// <para>
+	/// 源 alpha 已经写进贴图；这个系数只用来整体压暗/提亮那层"玻璃感"。
+	/// 全透明件（源 alpha ≈ 0）乘什么都还是看不见，不受影响。
+	/// </para>
+	/// </summary>
+	private static readonly float TransparentAlphaScale = ReadTransparentAlphaScale();
+
+	private static float ReadTransparentAlphaScale()
+	{
+		var raw = Environment.GetEnvironmentVariable("HD2_TRANSPARENT_ALPHA");
+		return float.TryParse(raw, System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out var value)
+			? Math.Clamp(value, 0f, 1f)
+			: 1f;
+	}
+
 	/// <summary>次表面散射强度，默认 0（关）。见 <see cref="SubsurfaceIntensityVariableId"/>。</summary>
 	private static readonly float SubsurfaceLevel = ReadSubsurfaceLevel();
 
@@ -1438,6 +1456,15 @@ public sealed class SourceMaterialConverter
 		public bool MatcapKeepsBaseColour { get; init; }
 
 		/// <summary>
+		/// 源侧底色 <b>≥95% 的像素是透明的</b>（见 <see cref="AlphaStats.IsEffectivelyTransparent"/>）。
+		/// <para>
+		/// 这种件既不该按不透明渲染（实心板），也不该走抖动（噪点壳）；它落地成
+		/// HD2 的 <c>translucent</c> 纯色透明材质（玻璃/塑料观感）。
+		/// </para>
+		/// </summary>
+		public bool FullyTransparent { get; init; }
+
+		/// <summary>
 		/// <c>$bumpstrength</c>（凹凸强度，NekoToon 默认 1.0）。只缩放 XY 的偏离量，Z 重新归一化。
 		/// </summary>
 		public double BumpStrength { get; init; } = 1.0;
@@ -1697,10 +1724,12 @@ public sealed class SourceMaterialConverter
 
 		// ===== 实验路线 1：translucent 模板 =====
 		// 槽只有 1 个（NormalXyRoughnessOpacity），没有反照率槽 ⇒ 颜色只能靠 BaseColor 平涂。
-		if (alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip)
+		// 正式路径（2026-11-08）：源侧 ≥95% 像素透明 → 用 translucent 做纯色透明玻璃/塑料。
+		// 实验档 `--alpha-experiment translucent` 仍然复用同一段代码。
+		if (loaded.FullyTransparent || (alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip))
 		{
 			if (translucentMap is null)
-				return MaterialSynthesisResult.Failed($"{stem}：实验路线 1 需要不透明度贴图，但没有产出");
+				return MaterialSynthesisResult.Failed($"{stem}：translucent 材质需要不透明度贴图，但没有产出");
 			if (material.TextureIds.Count == 0)
 				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板没有贴图槽");
 
@@ -1712,7 +1741,9 @@ public sealed class SourceMaterialConverter
 			if (!material.TrySetVector(TranslucentBaseColorVariableId, average[0], average[1], average[2]))
 				return MaterialSynthesisResult.Failed($"{stem}：translucent 模板里找不到 BaseColor 变量");
 			// OpacityBase 是整体不透明度倍率：源 alpha 已经在贴图里，这里给 1 不做二次衰减。
-			material.TrySetScalar(TranslucentOpacityBaseVariableId, 1.0f);
+			// OpacityBase 是整体不透明度倍率。源 alpha 已经在贴图里，再乘一个可调系数：
+			// 全透明件（源 alpha≈0）乘什么都不影响，而"很淡的玻璃"可以靠它整体压暗/提亮。
+			material.TrySetScalar(TranslucentOpacityBaseVariableId, TransparentAlphaScale);
 
 			return new MaterialSynthesisResult(
 				new SynthesizedMaterial(loaded.MaterialId, material.Write(), loaded.TemplateName, loaded.BaseTexture, material.TextureIds),
@@ -1720,7 +1751,9 @@ public sealed class SourceMaterialConverter
 				[])
 			{
 				Identity = loaded.ToIdentity(),
-				Notices = [.. loaded.Notices, $"{stem}：实验路线 1（translucent 模板，平涂色 + 贴图 alpha）"],
+				Notices = [.. loaded.Notices, loaded.FullyTransparent
+					? $"{stem}：源侧 ≥95% 像素透明 → 按纯色透明材质（translucent）落地"
+					: $"{stem}：实验路线 1（translucent 模板，平涂色 + 贴图 alpha）"],
 			};
 		}
 
@@ -2163,6 +2196,9 @@ public sealed class SourceMaterialConverter
 		// "matcap 是不是这个表面本身"。判定必须看内容，不能只看 tint —— 见下面的注释。
 		VtfFile vtf;
 		byte[] rgba;
+		// 「完全透明」档：交给 translucent 纯色透明材质（见 LoadedMaterial.FullyTransparent）。
+		var fullyTransparent = false;
+
 		AlphaStats baseAlpha;
 		// **源底色的 alpha 到底存不存在。**
 		//
@@ -2513,7 +2549,26 @@ public sealed class SourceMaterialConverter
 			// 一刀切成 advanced 就等于既没有镂空也没有金属——那是最坏的一种。
 			// 几何已裁过（--cutout-geometry）就不再做 alpha 测试：洞已经在网格里了，
 			// 再裁一遍等于把边啃掉，而且白白失去 advanced 的金属度。
-			useAlphaClip = !IsGeometryCut(stem) && ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
+			// **几乎全透明**的件单独成一档：不镂空、不抖动，交给 translucent 纯色透明材质。
+			// 判据只看数据（像素占比），不看材质名。
+			fullyTransparent = !IsGeometryCut(stem)
+				&& vmt.WantsTransparency
+				&& baseAlpha.IsEffectivelyTransparent;
+
+			// 「几乎全不透明」的件：源侧写了透明键，但 alpha 实质上是不透明的
+			// （≥95% 像素 alpha ≥ 250）。按不透明处理，否则会变成"半透明 + 一脸雀斑"。
+			if (!fullyTransparent
+				&& vmt.WantsTransparency
+				&& baseAlpha.IsEffectivelyOpaque
+				&& !IsGeometryCut(stem))
+			{
+				notices.Add(
+					$"{stem}：源侧写了透明键（$alphatest/$translucent），但底色 {1 - baseAlpha.Coverage:P0} 的像素"
+					+ "是不透明的 —— 按**不透明**处理（不做镂空、也不抖动，避免出现半透明与噪点）。");
+			}
+			useAlphaClip = !fullyTransparent
+				&& !IsGeometryCut(stem)
+				&& ShouldUseAlphaClip(vmt.WantsTransparency, hasSourceOpacity, baseAlpha, vmt.WantsAlphaTest);
 
 			// 诊断：这条链上"整件消失"的每一次都只能靠猜，所以把判据的四个输入打出来。
 			// `HD2MOD_CUTOUT_DEBUG=1` 时每个材质一行。
@@ -2525,7 +2580,8 @@ public sealed class SourceMaterialConverter
 					+ $"meaningful={baseAlpha.IsMeaningful} uniform={baseAlpha.IsUniformlyTranslucent} "
 					+ $"empty={baseAlpha.IsEmpty} | wantsTransparency={vmt.WantsTransparency} "
 					+ $"alphatest={vmt.WantsAlphaTest} translucent={vmt.WantsTranslucency} "
-					+ $"hasSource={hasSourceOpacity} => useAlphaClip={useAlphaClip} "
+					+ $"hasSource={hasSourceOpacity} opaque={baseAlpha.IsEffectivelyOpaque} "
+					+ $"fullyTransparent={fullyTransparent} => useAlphaClip={useAlphaClip} "
 					+ $"template={ResolveTemplate(useAlphaClip)}");
 			}
 
@@ -2672,6 +2728,7 @@ public sealed class SourceMaterialConverter
 		{
 			BumpTexture = bumpTextureName,
 			MatcapKeepsBaseColour = metalKeepsBaseColour,
+			FullyTransparent = fullyTransparent,
 			BumpStrength = bumpStrength,
 			// **只认显式开关，不再按文件名猜。**
 			//
@@ -2806,7 +2863,8 @@ public sealed class SourceMaterialConverter
 		// 实验路线 1：`translucent` 模板唯一那个槽是 `NormalXyRoughnessOpacity`
 		// （RGB = 平面法线 XY + 粗糙度，A = 不透明度），必须在**清零 alpha 之前**合成出来，
 		// 同样取源底色的 alpha。
-		var translucentMap = alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip
+		var translucentMap = (alphaExperiment == AlphaExperiment.Translucent && loaded.UseAlphaClip)
+			|| loaded.FullyTransparent
 			? BuildTranslucentMap(textureName, loaded.SourceBaseRgba, loaded.SourceBaseWidth, loaded.SourceBaseHeight)
 			: null;
 
@@ -3332,6 +3390,9 @@ public sealed class SourceMaterialConverter
 	public static bool ShouldUseAlphaClip(bool wantsTransparency, bool hasSourceOpacity, AlphaStats alpha, bool wantsAlphaTest = true)
 		=> wantsTransparency
 			&& hasSourceOpacity
+			// 「几乎全不透明」的件直接判不透明：作者只是用低 alpha 当不透明写，
+			// 放行到 alphaclip + 抖动就会得到"半透明身体 + 一脸雀斑"。
+			&& !alpha.IsEffectivelyOpaque
 			&& (alpha.IsMeaningful
 				|| alpha.IsUniformlyTranslucent
 				// **隐藏物品类**：`$alphatest` + 整片 alpha ≈ 0 = "作者就是要它整片不画"。

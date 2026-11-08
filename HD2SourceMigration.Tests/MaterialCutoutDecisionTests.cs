@@ -54,6 +54,63 @@ public sealed class MaterialCutoutDecisionTests
 			wantsTransparency: true, hasSourceOpacity: true, UniformTranslucentAlpha()));
 	}
 
+	/// <summary>
+	/// 「几乎全不透明」的件不走 alphaclip。
+	/// <para>
+	/// 实测形态（2026-11-08 用户反馈）：作者把「低不透明度」当「不透明」写，整片 alpha 恒定在
+	/// 180~240。旧判据认成"整体半透明" → alphaclip + 抖动 → <b>整个身体半透明、还带一层噪点</b>
+	/// （远看像满脸雀斑）。判据按像素占比：≥95% 的像素 alpha ≥ 250 就是"不透明"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void EffectivelyOpaqueAlphaRefusesAlphaClip()
+	{
+		// 96% 像素完全不透明、4% 略低（DXT 压缩噪点那种量级）。
+		var almostOpaque = new AlphaStats(Min: 200, Max: 255, Coverage: 0.04) { VisibleCoverage = 1.0 };
+		Assert.True(almostOpaque.IsEffectivelyOpaque, "前提：非不透明像素只占 4%");
+
+		Assert.False(SourceMaterialConverter.ShouldUseAlphaClip(
+			wantsTransparency: true, hasSourceOpacity: true, almostOpaque));
+	}
+
+	/// <summary>阈值边界：非不透明像素占比 6% 就不再算"几乎全不透明"。</summary>
+	[Fact]
+	public void EffectivelyOpaqueThresholdIsFivePercent()
+	{
+		Assert.True(new AlphaStats(Min: 0, Max: 255, Coverage: 0.04).IsEffectivelyOpaque);
+		Assert.False(new AlphaStats(Min: 0, Max: 255, Coverage: 0.06).IsEffectivelyOpaque);
+	}
+
+	/// <summary>
+	/// 「几乎全透明」单独成一档：交给 <c>translucent</c> 纯色透明材质，既不实心、也不抖动。
+	/// </summary>
+	[Fact]
+	public void EffectivelyTransparentIsRecognisedAndExcludesEmptyAlpha()
+	{
+		// 97% 像素是"真的没画"（alpha < 32）。
+		var almostClear = new AlphaStats(Min: 0, Max: 255, Coverage: 0.97) { TransparentShare = 0.97 };
+		Assert.True(almostClear.IsEffectivelyTransparent);
+
+		// 只有 20% 是真空 —— 还没到"几乎全透明"。
+		var partly = new AlphaStats(Min: 0, Max: 255, Coverage: 0.8) { TransparentShare = 0.2 };
+		Assert.False(partly.IsEffectivelyTransparent);
+
+		// 整片 0 是「没有 alpha 数据」（隐藏件），不是「作者要它透明」。
+		var empty = new AlphaStats(Min: 0, Max: 0, Coverage: 1.0) { TransparentShare = 1.0 };
+		Assert.True(empty.IsEmpty);
+		Assert.False(empty.IsEffectivelyTransparent);
+
+		// ⚠️ 玻璃鞋跟（整片 alpha=102，40% 不透明）**不是**"几乎全透明"：
+		// 它的 alpha 全都 ≥ 32，TransparentShare = 0。用 `1 - VisibleCoverage` 判会把它误伤成
+		// "全透明"，从而丢掉那件半透明玻璃 —— 这正是这条用例存在的理由。
+		var glass = new AlphaStats(Min: 102, Max: 102, Coverage: 1.0)
+		{
+			VisibleCoverage = 0.0,
+			TransparentShare = 0.0,
+		};
+		Assert.False(glass.IsEffectivelyTransparent);
+	}
+
 	[Fact]
 	public void OpaqueSourceAlphaDoesNotSwitch()
 	{
