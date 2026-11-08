@@ -22,18 +22,10 @@ public sealed record VpkConversionSettings(
 	double? MatcapGain,
 	string? Cutout,
 	double? AlbedoFactor,
-	bool? NormalFlipY = null,
-	/// <summary>
-	/// <c>--metal-cutout</c>（"镂空件里既有金属又要镂空"时保谁：`cutout` / `metal`）。
-	/// <para>
-	/// **必须记下来。** 它不改任何文件名、也不改 patch 数量，只改材质的模板选择 ——
-	/// 不记的话重构建会静默回到默认值（保镂空），产物看起来"重建成功"，观感却变了。
-	/// </para>
-	/// </summary>
-	string? MetalCutout = null)
+	bool? NormalFlipY = null)
 {
 	/// <summary>什么都没记（旧产物）：重构建只能按默认值来，并且必须说出来。</summary>
-	public static VpkConversionSettings Default { get; } = new(null, null, null, null, null, null, null);
+	public static VpkConversionSettings Default { get; } = new(null, null, null, null, null, null);
 
 	/// <summary>把参数摊成命令行参数（顺序固定，便于日志比对；空值跳过，与"没传"语义一致）。</summary>
 	public IReadOnlyList<string> ToArguments()
@@ -44,7 +36,6 @@ public sealed record VpkConversionSettings(
 		if (MatcapGain is { } gain)
 			arguments.AddRange(["--matcap-gain", gain.ToString("R", CultureInfo.InvariantCulture)]);
 		if (!string.IsNullOrWhiteSpace(Cutout)) arguments.AddRange(["--cutout", Cutout]);
-		if (!string.IsNullOrWhiteSpace(MetalCutout)) arguments.AddRange(["--metal-cutout", MetalCutout]);
 		if (AlbedoFactor is { } factor)
 			arguments.AddRange(["--albedo-factor", factor.ToString("R", CultureInfo.InvariantCulture)]);
 		// 法线 Y 方向：**只在显式翻过时记**。默认是"不翻"，记成 false 会让所有旧产物在
@@ -332,8 +323,7 @@ public sealed record VpkConversionReport(
 			ReadDouble(conversion, "matcapGain"),
 			ReadString(conversion, "cutout"),
 			ReadDouble(conversion, "albedoFactor"),
-			ReadBool(conversion, "normalFlipY"),
-			ReadString(conversion, "metalCutout"));
+			ReadBool(conversion, "normalFlipY"));
 	}
 
 	private static string? ReadString(JsonElement element, string name)

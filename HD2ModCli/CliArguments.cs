@@ -505,14 +505,11 @@ public static class CliArgumentParser
 				case "--cutout-template":
 					var rawCutoutTemplate = ReadValue(args, ref index, argument);
 					if (!rawCutoutTemplate.Equals("alphaclip", StringComparison.OrdinalIgnoreCase)
-						&& !rawCutoutTemplate.Equals("original", StringComparison.OrdinalIgnoreCase)
-						&& !rawCutoutTemplate.Equals("cutoutmetal", StringComparison.OrdinalIgnoreCase)
-						&& !rawCutoutTemplate.Equals("cutoutmetal2", StringComparison.OrdinalIgnoreCase))
+						&& !rawCutoutTemplate.Equals("original", StringComparison.OrdinalIgnoreCase))
 					{
 						throw new CliUserException("InvalidOption",
-							$"--cutout-template 只接受 alphaclip / original / cutoutmetal，实际是 '{rawCutoutTemplate}'。"
-							+ "alphaclip 支持逐像素镂空但没有金属度；original 已实机证伪（没有镂空），仅留档；"
-							+ "cutoutmetal 是游戏里那个「镂空 + 金属」档位（根材质 0xec555165044bb60a），实验用。");
+							$"--cutout-template 只接受 alphaclip / original，实际是 '{rawCutoutTemplate}'。"
+							+ "alphaclip 支持逐像素镂空但没有金属度；original 已实机证伪（没有镂空），仅留档。");
 					}
 
 					cutoutTemplate = rawCutoutTemplate.ToLowerInvariant();

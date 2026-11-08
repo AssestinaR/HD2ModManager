@@ -73,30 +73,7 @@ public sealed class Hd2MaterialTemplateLibrary
 			var loaded = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
 			foreach (var path in files)
 				loaded[Path.GetFileNameWithoutExtension(path)] = File.ReadAllBytes(path);
-
-			// **磁盘目录先赢，但它缺的模板要从内置副本补上。**
-			//
-			// 只取"第一个存在的目录"曾经让新模板静默失效：仓库里同时存在
-			// docs/HD2SDK-CommunityEdition-3.8.0/materials（旧 SDK 快照）与
-			// tools/ref/HD2SDK-CommunityEdition/materials（开发用的那份），
-			// 前者排在候选表前面。于是往 tools/ref 加了 cutoutmetal 之后，
-			// 转换器仍然报"材质模板库缺少 cutoutmetal"，整批材质合成失败 ——
-			// 而失败现象只是"材质少了一层外观"，很难联想到"模板目录选错了"。
-			//
-			// 补缺而不是整体合并：磁盘上一份**同名**模板永远优先（开发期改它就要生效）。
-			var supplemented = 0;
-			var embedded = LoadEmbedded();
-			foreach (var pair in embedded)
-			{
-				if (loaded.ContainsKey(pair.Key)) continue;
-				loaded[pair.Key] = pair.Value;
-				supplemented++;
-			}
-
-			var description = supplemented == 0
-				? Path.GetFullPath(candidate)
-				: Path.GetFullPath(candidate) + $"（+内置 {supplemented}）";
-			return new Hd2MaterialTemplateLibrary(description, loaded);
+			return new Hd2MaterialTemplateLibrary(Path.GetFullPath(candidate), loaded);
 		}
 
 		return new Hd2MaterialTemplateLibrary("embedded", LoadEmbedded());
@@ -106,7 +83,7 @@ public sealed class Hd2MaterialTemplateLibrary
 	private static readonly string[] RequiredTemplates =
 	[
 		"advanced", "alphaclip", "alphaclip+", "armorlut", "basic",
-		"basic+", "basic+OLD", "cutoutmetal", "cutoutmetal2", "emissive", "original", "translucent",
+		"basic+", "basic+OLD", "emissive", "original", "translucent",
 	];
 
 	private static Dictionary<string, byte[]> LoadEmbedded()
