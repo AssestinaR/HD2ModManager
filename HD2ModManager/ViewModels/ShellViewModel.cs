@@ -1184,6 +1184,24 @@ namespace HD2ModManager.ViewModels
                             LogService.Warn($"导入没有产生 Mod：来源={item.Path}；{detail}");
                             _notificationService.Show($"没有导入任何 Mod。{detail}", NotificationLevel.Warning, TimeSpan.FromSeconds(12));
                         }
+
+                        // **导入到此结束**：来源已经在条目里了。转换与编译交给批量重构建
+                        // （同一个底栏 + 并发 5），所以列表立刻就能看到新条目。
+                        if (import.LastVpkImportTargets.Count != 0)
+                        {
+                            var rebuildTargets = import.LastVpkImportTargets
+                                .Select(guid => Guid.TryParse(guid, out var id)
+                                    && _libraryService.Snapshot.Nodes.TryGetValue(new ModNodeId(id), out var node)
+                                    ? new VpkBulkRebuildTarget(
+                                        node.Id,
+                                        node.Metadata.Name,
+                                        System.IO.Path.Combine(_libraryService.ModsRootDirectory, node.RelativePath))
+                                    : null)
+                                .Where(target => target is not null)
+                                .Select(target => target!)
+                                .ToArray();
+                            StartBulkVpkRebuild(rebuildTargets, "导入后重构建");
+                        }
                         foreach (var nodeId in import.LastAffectedNodeIds)
                             affectedNodeIds.Add(nodeId);
                         libraryChanged = true;
@@ -2472,6 +2490,23 @@ namespace HD2ModManager.ViewModels
                 return;
             }
 
+            StartBulkVpkRebuild(targets, "一键重构");
+        }
+
+        /// <summary>
+        /// 按给定目标起一次批量重构建（底栏 + 并发 5）。**导入完成后也走这条**：
+        /// 导入只负责把来源摆进条目，转换与编译是另一件事。
+        /// </summary>
+        private void StartBulkVpkRebuild(IReadOnlyList<VpkBulkRebuildTarget> targets, string origin)
+        {
+            if (targets.Count == 0) return;
+            if (_bulkVpkRebuildOperation is { IsRunning: true })
+            {
+                _notificationService.Show("上一批重构还在跑：这次的条目等它结束后在「一键重构」里再跑一次。",
+                    NotificationLevel.Warning, TimeSpan.FromSeconds(8));
+                return;
+            }
+
             DismissToolBottomBars();
             _bulkVpkRebuildTargets = targets;
             _bulkVpkRebuildOperation = new VpkBulkRebuildBottomBarViewModel(
@@ -2481,7 +2516,7 @@ namespace HD2ModManager.ViewModels
             RegisterBulkVpkRebuildRow("bulk-vpk-rebuild-options", VpkBulkRebuildBottomBarRowKind.Options, insertAtRow: 1);
             RegisterBulkVpkRebuildRow("bulk-vpk-rebuild-progress", VpkBulkRebuildBottomBarRowKind.Progress);
             OnPropertyChanged(nameof(HasBulkVpkRebuildBottomBar));
-            LogService.Info($"一键重构：目标 {targets.Count} 个 VPK 类模组，默认并发 {VpkBulkRebuildService.DefaultConcurrency}。");
+            LogService.Info($"{origin}：目标 {targets.Count} 个，并发 {VpkBulkRebuildService.DefaultConcurrency}。");
         }
 
         private void RegisterBulkVpkRebuildRow(string sourceId, VpkBulkRebuildBottomBarRowKind kind, int? insertAtRow = null)

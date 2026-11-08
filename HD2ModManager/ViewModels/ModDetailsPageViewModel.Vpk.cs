@@ -252,6 +252,29 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	});
 	public bool ShowVpkComponentCard => false;
 
+
+	/// <summary>
+	/// 「头身合并到身体」：头并进护甲套件的胸部槽位，游戏里那件头盔 item 就没有模型了；
+	/// 关掉则回到老做法（头由头盔套件承载，玩家必须把配套头盔也穿上才有头）。
+	/// <para>
+	/// <b>这不是显示开关，是产物开关</b>：两种状态写出来的 patch 完全不同，
+	/// 所以翻转它必须重新生成 Overwrite——和「切换」「应用」一样重。为此这里直接触发一次换甲，
+	/// 而不是等用户另外去点「应用」。状态先落盘（同「应用」的理由：烘焙是从状态算出来的）。
+	/// </para>
+	/// <para>旧状态文件里没有这个字段，读出来就是 <c>true</c>（见 <see cref="VpkWardrobeFile"/>）。</para>
+	/// </summary>
+	public bool HeadMergeIntoBody
+	{
+		get => _vpkFile.HeadMergeIntoBody;
+		set
+		{
+			if (_vpkFile.HeadMergeIntoBody == value) return;
+			_vpkFile = _vpkFile with { HeadMergeIntoBody = value };
+			OnPropertyChanged();
+			_ = ApplyHeadMergeAsync(value);
+		}
+	}
+
 	public string VpkComponentStatus
 	{
 		get => _vpkStatus;
@@ -747,6 +770,132 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// 而不是替他猜一个游戏护甲（旧版就是这样悄悄换到 RE-2310 的）。
 	/// </para>
 	/// </summary>
+
+	/// <summary>
+	/// 翻转「头身合并」之后要做的事：先落盘，再按新设置重新生成一次 Overwrite。
+	/// <para>
+	/// <b>为什么必须重新生成而不是只存状态。</b>两个状态写出来的 patch 完全不同
+	/// （头在胸部槽位 / 头在头盔套件），只存状态的话用户会看到开关翻了、游戏里什么都没变。
+	/// </para>
+	/// <para>
+	/// 还没有目标护甲（Overwrite 本来就不存在）时只存状态：那种 Mod 的第一次换甲会自己读到它。
+	/// </para>
+	/// </summary>
+	private async Task ApplyHeadMergeAsync(bool enabled)
+	{
+		if (!TryGetCurrentNode(out var node)) return;
+		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+
+		try
+		{
+			await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
+		}
+		catch (Exception exception) when (exception is IOException or InvalidOperationException)
+		{
+			VpkComponentStatus = "保存头身合并开关失败：" + exception.Message;
+			return;
+		}
+
+		if (_vpkBusy)
+		{
+			SetVpkStatus("头身合并已保存；上一个操作还在跑，请等它结束后点「应用」重新生成。", notify: false);
+			return;
+		}
+
+		var targets = ResolveApplyTargets(directory);
+		if (targets is null)
+		{
+			SetVpkStatus(
+				enabled
+					? "已开启头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。"
+					: "已关闭头身合并：这个 Mod 还没选过目标护甲，下次「切换」时生效。",
+				notify: false);
+			return;
+		}
+
+		_vpkBusy = true;
+		// 头身合并要重跑一次换甲（几分钟）：过程同样走消息中心，卡片只留结论。
+		var task = _backgroundTasks?.Enqueue(
+			BackgroundTaskKind.RebuildVpk,
+			enabled ? "开启头身合并" : "关闭头身合并",
+			node.Metadata.Name,
+			origin: "Mod 详情",
+			userVisibleReason: "改变头画在哪一件装备上，必须按新方案重新生成一次换甲产物。",
+			suggestedAction: "完成后重启游戏生效。",
+			presentation: BackgroundTaskPresentation.Foreground);
+		var cancellation = task?.CancellationToken ?? CancellationToken.None;
+		task?.MarkRunning(enabled ? "正在把头并进身体…" : "正在把头放回头盔套件…");
+
+		void Report(string stage)
+		{
+			if (task is not null) task.UpdateStage(stage);
+			else VpkComponentStatus = stage;
+		}
+
+		try
+		{
+			var outcome = await ModCompileService.CompileAsync(
+				node.Id.Value.ToString("N"),
+				directory,
+				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				targets,
+				_vpkFile.State.Disabled,
+				Report,
+				cancellation,
+				headMergeIntoBody: enabled).ConfigureAwait(true);
+
+			if (!outcome.Ok)
+			{
+				var error = outcome.Error ?? "头身合并切换失败。";
+				task?.MarkFailed(error);
+				SetVpkStatus(error, NotificationLevel.Error, 20);
+				return;
+			}
+
+			// 说什么由**实际结果**决定，而不是由开关状态决定。
+			// 开关打开却什么也没合并（目标是自己素体 / 目标胸部只有一层）时，
+			// 一句"已开启"会让用户下次进游戏发现没变化，然后再也不信这个开关。
+			var summary = outcome.Rekey?.HeadMerge switch
+			{
+				"applied" => "头身合并已开启：头并进护甲，头盔 item 不再有模型。",
+				"custom-model" => "开关已记录，但对当前目标不生效：这个 Mod 自己的素体本来就是"
+					+ "「头 + 身体」一整套，没有独立的头盔 item 可隐藏。换成一件游戏护甲才会合并。",
+				"single-layer" => "开关已记录，但这一次没有合并：目标护甲的胸部槽位只有一层，"
+					+ "装不下「身体 + 头」两件几何。",
+				"no-helmet-kit" => "开关已记录，但当前目标没有配套头盔归档，无从合并。",
+				_ => "头身合并已关闭：头回到头盔套件，需要穿配套头盔才有头。",
+			};
+			var warningText = (outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count == 0
+				? string.Empty
+				: " " + string.Join(" ", (outcome.Rekey?.Warnings ?? Array.Empty<string>()).Take(2))
+					+ ((outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count > 2 ? $"（另有 {(outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count - 2} 条）" : string.Empty);
+			task?.SetOutputArtifacts(directory, null);
+			if ((outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count != 0) task?.UpdateStage($"注意：{(outcome.Rekey?.Warnings ?? Array.Empty<string>())[0]}");
+			task?.MarkCompleted();
+			SetVpkStatus(summary + warningText);
+
+			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
+			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
+				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
+			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
+		}
+		catch (OperationCanceledException)
+		{
+			task?.MarkCanceled();
+			VpkComponentStatus = "头身合并切换已取消。";
+		}
+		catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
+		{
+			task?.MarkFailed(exception.Message);
+			VpkComponentStatus = "头身合并切换失败：" + exception.Message;
+		}
+		finally
+		{
+			_vpkBusy = false;
+		}
+	}
+
+
 	private IReadOnlyList<string>? ResolveApplyTargets(string directory)
 	{
 		if (!string.IsNullOrWhiteSpace(_vpkFile.TargetArmorArchiveId))

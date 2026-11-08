@@ -72,7 +72,10 @@ public static class ModCompileService
 		IReadOnlyList<string>? targetArchiveIds = null,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections = null,
 		Action<string>? onStage = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		// 头身合并：**CLI 实验条件**，默认跟随 wardrobe.json。
+		// 它不是常规编译条件（常规链路里没有它），见 docs/agent/sectional-compile-base-20261108.md。
+		bool? headMergeIntoBody = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
@@ -88,6 +91,7 @@ public static class ModCompileService
 				? null
 				: new[] { wardrobe.TargetArmorArchiveId });
 		var disabled = disabledSections ?? wardrobe.State.Disabled;
+		var headMerge = headMergeIntoBody ?? wardrobe.HeadMergeIntoBody;
 
 		// 条件①：目标护甲（+ 同一次里烘进去的 section 开关）。
 		var rekeyed = false;
@@ -99,7 +103,8 @@ public static class ModCompileService
 				modSelector, modDirectory, context, targets, disabled,
 				onStage, cancellationToken,
 				// 编译只读配置：目标护甲由"用户切换"那个动作落盘，不在这里写。
-				recordTarget: false).ConfigureAwait(false);
+				recordTarget: false,
+				headMergeIntoBody: headMerge).ConfigureAwait(false);
 			if (!rekey.Ok)
 				return ModCompileOutcome.Failure(rekey.Error ?? "换甲失败。", notes);
 			rekeyed = true;

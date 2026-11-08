@@ -26,6 +26,9 @@ namespace HD2ModManager.Services
         public IReadOnlyList<ModNodeId> LastAffectedNodeIds { get; private set; } = Array.Empty<ModNodeId>();
 		public bool LastImportHasOptionPathConflicts { get; private set; }
 
+		/// <summary>这次导入新建/更新的 VPK 类节点（guid）。调用方据此自己起一次标准重构建。</summary>
+		public IReadOnlyList<string> LastVpkImportTargets { get; private set; } = Array.Empty<string>();
+
         /// <summary>
         /// 这次导入如果是 VPK 来源，这里就是转换报告（每个 VPK 转了/跳过了/为什么）。
         /// <c>null</c> 表示这次导入与 VPK 无关。
@@ -320,35 +323,13 @@ namespace HD2ModManager.Services
                 LastAffectedNodeIds = affected.Distinct().ToArray();
                 LastImportHasOptionPathConflicts = false;
 
-                // **标准重构建**：并发 5，与「一键重构所有 VPK 模组」同一套。
-                if (rebuildTargets.Count != 0)
-                {
-                    _onInfo?.Invoke($"正在转换并编译 {rebuildTargets.Count} 个条目…");
-                    var batch = await ParallelBatchRunner.RunAsync(
-                        rebuildTargets.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-                        5,
-                        async (guid, _, token) =>
-                        {
-                            var directory = TryGetModDirectory(guid);
-                            if (directory is null) return;
-                            var name = _library.Get(guid)?.Name ?? guid;
-                            _onProgress?.Invoke($"{name}：正在转换…", null);
-                            var outcome = await VpkRebuildService.RunAsync(
-                                guid,
-                                directory,
-                                new VpkHostContext(SettingsService.GetGameDataFolder(), _paths),
-                                targetArchiveIds: null,
-                                disabledSections: null,
-                                stage => _onProgress?.Invoke($"{name}：{stage}", null),
-                                token).ConfigureAwait(false);
-                            if (!outcome.Ok)
-                                _onError?.Invoke($"{name}：转换/编译失败：{outcome.Error}");
-                        },
-                        cancellationToken: ct).ConfigureAwait(false);
-
-                    if (batch.FailedCount != 0)
-                        LogService.Warn($"有 {batch.FailedCount} 个条目在转换/编译阶段抛了异常（其余已完成）。");
-                }
+                // **导入到这里就结束了。**
+                //
+                // 转换与编译是**另一件事**：调用方拿到 `LastVpkImportTargets` 之后自己起一次
+                // 标准重构建（复用「一键重构」那套底栏 + 并发 5）。
+                // 在导入里 await 它，会让"入库"和"重建"变成同一个动作：
+                // 列表要等几分钟才刷新，而且一个包失败还会把整次导入算成失败。
+                LastVpkImportTargets = rebuildTargets;
 
                 if (refreshDerivedData && LastAffectedNodeIds.Count != 0)
                 {
