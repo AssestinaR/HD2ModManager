@@ -1,13 +1,11 @@
 using System.IO;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using HD2ModCore.Decoration;
 
 namespace HD2ModCore.Infrastructure;
 
 /// <summary>一次编译的结果。</summary>
-/// <param name="Ok">是否成功。</param>
-/// <param name="Error">失败原因。</param>
-/// <param name="Rekeyed">这次有没有真的做换甲（有目标护甲才会做）。</param>
-/// <param name="TargetName">换到了哪件护甲（显示名）；没换甲为 <c>null</c>。</param>
-/// <param name="Notes">值得告诉用户的话。</param>
 public sealed record ModCompileOutcome(
 	bool Ok,
 	string? Error,
@@ -18,53 +16,42 @@ public sealed record ModCompileOutcome(
 	public static ModCompileOutcome Failure(string error, IReadOnlyList<string>? notes = null)
 		=> new(false, error, false, null, notes ?? Array.Empty<string>());
 
-	/// <summary>
-	/// 换甲那一步的原始结果（没换甲时为 <c>null</c>）。
-	/// <para>
-	/// 留给调用方显示细节用的（替换了几个 Unit、是不是"退回来源"）——编译基座本身只关心成败。
-	/// </para>
-	/// </summary>
+	/// <summary>换甲那一步的原始结果（没换甲时为 <c>null</c>）。</summary>
 	public VpkRekeyOutcome? Rekey { get; init; }
 }
 
 /// <summary>
-/// **编译基座**：把一个 Mod 的 <c>sectional/</c>（标准产物）按当前条件编译成
-/// <c>Overwrite/</c>（唯一生效层）。
+/// **编译基座**：把 <c>sectional/</c>（标准产物）按条件编译成 <c>Overwrite/</c>（唯一生效层）。
 /// <para>
-/// <b>目录契约（物理层面只有这三层）。</b>
+/// <b>顺序是固定的</b>（2026-11-08 按用户给的算法定）：
 /// </para>
 /// <list type="number">
-/// <item>根：来源（<c>*.vpk</c> / <c>*.patch_N</c>）。只作权威事实，不参与生效。</item>
-/// <item><c>sectional/</c>：patch 级权威事实。**只由转换链路（vpk2patch / legacy2sectional）产出**，
-/// 形状固定（自定义素体 + 标准 7 槽位 + 材质 patch 组）。任何别的链路都不许碰它。</item>
-/// <item><c>Overwrite/</c>：编译产物。**只有这里**会被"条件"改变。</item>
+/// <item>按 section 开关决定哪些组件要烘焙；</item>
+/// <item>看目标：<b>自定义素体</b> ⇒ unit 键不变，头身合并直接改 <c>custom-model.json</c>
+/// （写进 <c>Overwrite/</c>，<c>sectional/</c> 那份只作权威留档）；
+/// <b>原版护甲</b> ⇒ 记下来，留到第 3 步；</item>
+/// <item>替换 unit 键：来源 unit ↔ 目标护甲 unit（目标就是自身素体时不变）；</item>
+/// <item>材质：装启用的材质 patch 层。</item>
 /// </list>
 /// <para>
-/// <b>条件是什么。</b>目标护甲、section 开关、材质开关——以及以后新增的任何功能。
-/// 它们全部作为这里的入参，<b>不允许</b>各自写 <c>Overwrite/</c>。
+/// <b>sectional 是只读的。</b>这里所有写入只落在 <c>Overwrite/</c>；落盘顺序上结构文件
+/// （<c>custom-model.json</c> / section 表 / 开关表）必须在物化**之后**写——物化器会重开目录。
 /// </para>
 /// <para>
-/// <b>为什么只读配置、不写配置。</b>目标护甲与开关是**用户意图**，只能在"用户做了那个动作"时落盘
-/// （<c>wardrobe.json</c> / <c>.hd2modmanager-mod.json</c>）。编译只读它们；让编译顺手写回去，
-/// 会把"派生"变成"事实"，一次回退值就能永久改写用户的选择（2026-11-08 实测过）。
-/// </para>
-/// <para>
-/// <b>这一版刻意不做的事。</b>不做增量、不做缓存、不做"只改一处就少算一点"的优化；
-/// 每次编译都从 <c>sectional/</c> 完整算一遍。等链路稳定了再单独优化编译层。
+/// <b>不做增量、不做缓存</b>：每次从 <c>sectional/</c> 完整算一遍。
 /// </para>
 /// </summary>
 public static class ModCompileService
 {
-	/// <param name="modSelector">库节点标识（换甲要用它定位节点）。</param>
-	/// <param name="modDirectory">这个 Mod 的目录。</param>
-	/// <param name="context">宿主上下文（游戏 data 与库路径）。</param>
-	/// <param name="targetArchiveIds">
-	/// 目标护甲。**<c>null</c> = 读 <c>wardrobe.json</c>**；都为空 = 不换甲（编译成自定义素体形态）。
-	/// </param>
-	/// <param name="disabledSections">
-	/// section 开关。<c>null</c> = 读 <c>wardrobe.json</c>。
-	/// 调用方传"界面上当前这份"是刻意的：用户可能刚勾掉几个还没点应用。
-	/// </param>
+	/// <summary>头的注册件所在槽位。</summary>
+	private const int HeadSlot = 0;
+
+	/// <summary>胸部槽位（头身合并后头件落在这里）。</summary>
+	private const int ChestSlot = 2;
+
+	/// <summary>合并后头件所在的层（第 1 层 = 身体之上的那一层）。</summary>
+	private const int MergeLayer = 1;
+
 	public static async ValueTask<ModCompileOutcome> CompileAsync(
 		string modSelector,
 		string modDirectory,
@@ -73,8 +60,7 @@ public static class ModCompileService
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections = null,
 		Action<string>? onStage = null,
 		CancellationToken cancellationToken = default,
-		// 头身合并：**CLI 实验条件**，默认跟随 wardrobe.json。
-		// 它不是常规编译条件（常规链路里没有它），见 docs/agent/sectional-compile-base-20261108.md。
+		// 头身合并：默认跟随 wardrobe.json；CLI 实验开关可显式指定。
 		bool? headMergeIntoBody = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
@@ -93,16 +79,19 @@ public static class ModCompileService
 		var disabled = disabledSections ?? wardrobe.State.Disabled;
 		var headMerge = headMergeIntoBody ?? wardrobe.HeadMergeIntoBody;
 
-		// 条件①：目标护甲（+ 同一次里烘进去的 section 开关）。
+		// ② 目标分类：自身素体（或没选目标）⇒ unit 键不变；否则是原版护甲。
+		var isOwnModel = targets is null
+			|| targets.All(target => target.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase));
+
 		var rekeyed = false;
 		string? targetName = null;
 		VpkRekeyOutcome? rekeyOutcome = null;
-		if (targets is not null)
+		if (!isOwnModel)
 		{
+			// ②+③ 原版护甲：unit 键替换，头身合并在换甲里一起做（按目标胸部的实际层数）。
 			var rekey = await VpkRekeyService.RunAsync(
-				modSelector, modDirectory, context, targets, disabled,
+				modSelector, modDirectory, context, targets!, disabled,
 				onStage, cancellationToken,
-				// 编译只读配置：目标护甲由"用户切换"那个动作落盘，不在这里写。
 				recordTarget: false,
 				headMergeIntoBody: headMerge).ConfigureAwait(false);
 			if (!rekey.Ok)
@@ -112,14 +101,167 @@ public static class ModCompileService
 			targetName = rekey.TargetNames.FirstOrDefault();
 			foreach (var warning in rekey.Warnings) notes.Add(warning);
 		}
+		else
+		{
+			// ②+③ 自身素体：unit 键不变；section 开关烘进 unit；头身合并改 custom-model.json。
+			onStage?.Invoke("正在按当前条件编译生效层…");
+			var identity = await CompileOwnModelAsync(
+				modDirectory, disabled, headMerge, notes, cancellationToken).ConfigureAwait(false);
+			if (identity is not null)
+				return ModCompileOutcome.Failure(identity, notes);
+			// 目标就是自身素体：报出来，别让调用方按"换甲"去解释。
+			targetName = string.IsNullOrWhiteSpace(wardrobe.TargetArmorName)
+				? "自定义素体"
+				: wardrobe.TargetArmorName;
+		}
 
-		// 条件②：材质开关（启用集合在 Mod 自己的设置文件里，物化器读它）。
-		// unit 层沿用上一步产出的换甲产物；没有换甲就取基底那份。
+		// ④ 材质层（物化器会重开 Overwrite，所以结构文件在它之后写）。
 		var layer = OverwriteMaterializer.Materialize(modDirectory, OverwriteSelection.Default);
 		if (!layer.Succeeded)
-			return new ModCompileOutcome(false, layer.Error ?? "物化生效层失败。", rekeyed, targetName, notes) { Rekey = rekeyOutcome };
+			return new ModCompileOutcome(false, layer.Error ?? "物化生效层失败。", rekeyed, targetName, notes)
+			{
+				Rekey = rekeyOutcome,
+			};
 		foreach (var warning in layer.Warnings) notes.Add(warning);
 
+		// 头身合并（自身素体）：物化之后把改过的注册表写进 Overwrite。
+		// 物化器重开目录，先写就会丢——这是 CLI 那条恒等路径踩过的同一个坑。
+		var effectiveRegistry = Path.Combine(
+			ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), VpkCustomModelFile.FileName);
+		if (isOwnModel && headMerge)
+		{
+			var merge = WriteMergedCustomModel(modDirectory, notes);
+			if (merge is not null)
+				notes.Add(merge);
+		}
+		else if (File.Exists(effectiveRegistry))
+		{
+			// 关掉合并（或换成原版护甲）时必须把派生那份删掉：
+			// 留着它，生效层就永远读的是上一次合并过的布局——开关翻回去、游戏里却没变。
+			VpkPayloadSwap.ClearReadOnlyForWrite(effectiveRegistry);
+			File.Delete(effectiveRegistry);
+			notes.Add("已清掉上一次编译留在生效层里的素体注册表。");
+		}
+
 		return new ModCompileOutcome(true, null, rekeyed, targetName, notes) { Rekey = rekeyOutcome };
+	}
+
+	/// <summary>
+	/// 自身素体（unit 键不变）的编译：把 sectional 的 unit patch 装进 <c>Overwrite/</c>，
+	/// 按 section 开关烘焙，再交回物化器统一装层。
+	/// </summary>
+	/// <returns>失败原因；<c>null</c> 表示成功。</returns>
+	private static async ValueTask<string?> CompileOwnModelAsync(
+		string modDirectory,
+		IReadOnlyDictionary<string, IReadOnlyCollection<int>> disabled,
+		bool headMerge,
+		List<string> notes,
+		CancellationToken cancellationToken)
+	{
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
+		if (payload is null)
+			return "找不到 sectional 产物（没有载荷目录）：先转换一次再编译。";
+
+		var archive = SectionalPatchManifestFile.ReadArchiveHex16(payload);
+		var unitPatch = Path.Combine(payload, $"{archive}.patch_0");
+		if (!File.Exists(unitPatch))
+			return $"sectional 里没有基底 unit patch（{Path.GetFileName(unitPatch)}）。";
+
+		var staging = Path.Combine(Path.GetTempPath(), "hd2-compile-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(staging);
+		try
+		{
+			var staged = OverwritePatchInstaller.Install(staging, unitPatch).PatchPath;
+			if (disabled.Count != 0)
+			{
+				var map = await WardrobeSectionMapFile
+					.ReadAsync(Path.Combine(payload, WardrobeSectionMapFile.FileName), cancellationToken)
+					.ConfigureAwait(false);
+				var bake = await WardrobeSectionBaker
+					.BakeAsync(staged, map, disabled, cancellationToken).ConfigureAwait(false);
+				foreach (var warning in bake.Warnings) notes.Add(warning);
+				notes.Add($"已把 {disabled.Values.Sum(sections => sections.Count)} 个 section 烘成关闭状态。");
+			}
+
+			var materialized = OverwriteMaterializer.Materialize(
+				modDirectory, OverwriteSelection.Default, staged, ManagedOverwriteMarkers.VpkRekey);
+			if (!materialized.Succeeded)
+				return materialized.Error ?? "生效层没有装成。";
+			foreach (var warning in materialized.Warnings) notes.Add(warning);
+
+			// 结构文件按**装进去的**那份 patch 重算，写进生效层。
+			var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
+			var installed = Path.Combine(overwrite, Path.GetFileName(staged));
+			var rebuilt = await WardrobeSectionMapFile.BuildAsync(installed, cancellationToken).ConfigureAwait(false);
+			await WardrobeSectionMapFile
+				.WriteAsync(Path.Combine(overwrite, WardrobeSectionMapFile.FileName), rebuilt.Document, cancellationToken)
+				.ConfigureAwait(false);
+			var switches = await SectionGroupFile.TryReadAsync(payload, cancellationToken).ConfigureAwait(false);
+			if (switches is not null)
+				await SectionGroupFile
+					.WriteAsync(Path.Combine(overwrite, SectionGroupFile.FileName), switches, cancellationToken)
+					.ConfigureAwait(false);
+			return null;
+		}
+		finally
+		{
+			try { Directory.Delete(staging, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+		}
+	}
+
+	/// <summary>
+	/// 头身合并：把 <c>sectional/custom-model.json</c> 里头件的**注册件位置**改到胸部第 1 层，
+	/// 写一份新的到 <c>Overwrite/</c>。<c>sectional/</c> 那份永远是权威留档、一个字节都不动。
+	/// <para>
+	/// 改的是 <c>slot</c> / <c>pieceType</c>：unit id 不变（同一个 unit，只是挂到别的部位/层），
+	/// 另外留一条 <c>movedFrom</c> 记录它原来在哪儿——换回来时靠它。
+	/// </para>
+	/// </summary>
+	/// <returns>值得告诉用户的一句话；没做事时为 <c>null</c>。</returns>
+	internal static string? WriteMergedCustomModel(string modDirectory, List<string> notes)
+	{
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
+		if (payload is null) return "头身合并没有执行：找不到 sectional 产物。";
+
+		var source = Path.Combine(payload, VpkCustomModelFile.FileName);
+		if (!File.Exists(source)) return "头身合并没有执行：sectional 里没有 custom-model.json。";
+
+		var text = File.ReadAllText(source);
+		if (JsonNode.Parse(text) is not JsonObject document
+			|| document["pieces"] is not JsonArray pieces)
+			return "头身合并没有执行：custom-model.json 结构不认识。";
+
+		var head = pieces
+			.OfType<JsonObject>()
+			.FirstOrDefault(piece =>
+				piece["slot"]?.GetValue<int>() == HeadSlot
+				&& piece["pieceType"]?.GetValue<int>() == 0);
+		if (head is null) return "头身合并没有执行：注册表里找不到头件（slot0 / layer0）。";
+
+		var occupied = pieces
+			.OfType<JsonObject>()
+			.Where(piece => piece["slot"]?.GetValue<int>() == ChestSlot)
+			.Select(piece => piece["pieceType"]?.GetValue<int>() ?? 0)
+			.ToHashSet();
+		var layer = Enumerable.Range(MergeLayer, 3 - MergeLayer + 1)
+			.FirstOrDefault(candidate => !occupied.Contains(candidate), -1);
+		if (layer < 0)
+		{
+			notes.Add("头身合并没有执行：胸部槽位已满（第 1~3 层都被占了）。");
+			return null;
+		}
+
+		var body = head["body"]?.GetValue<int>() ?? 0;
+		head["slot"] = ChestSlot;
+		head["pieceType"] = layer;
+		head["movedFrom"] = $"slot{HeadSlot}/layer0";
+
+		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
+		Directory.CreateDirectory(overwrite);
+		var destination = Path.Combine(overwrite, VpkCustomModelFile.FileName);
+		// 库里的产物是只读的：不清属性写不进去，异常会被上层吞成"没合并"。
+		VpkPayloadSwap.ClearReadOnlyForWrite(destination);
+		File.WriteAllText(destination, document.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+		return $"头身合并：body {body} 的头件已挂到胸部槽位第 {layer} 层（sectional 里的注册表未改动）。";
 	}
 }

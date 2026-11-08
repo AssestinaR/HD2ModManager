@@ -403,7 +403,7 @@ public static class VpkRebuildService
 					targetName = compile.TargetName;
 					notes.Add(rekeyed
 						? $"换甲产物已重新生成（目标 {targetName ?? "未知"}）。"
-						: "没有记录过目标护甲：生效层按自定义素体形态编译。");
+						: $"生效层已按自定义素体形态编译（{targetName ?? "自身素体"}）。");
 				}
 			}
 

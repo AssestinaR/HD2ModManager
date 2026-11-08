@@ -31,7 +31,10 @@ public static class VpkCustomModelFile
 		return ReadKeyAt(Path.Combine(modDirectory, FileName))
 			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName))
 			// 老库里它在旧名目录下。漏了这一条，全库素体都会被判成孤儿，护甲映射页会把记录删掉。
-			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName));
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName))
+			// 编译产物里的那份：**只作兜底**。它是从 sectional 算出来的派生物，
+			// 定义"这具素体是谁、叫什么"的是来源产物（sectional / 根），不是它。
+			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName, FileName));
 	}
 
 	private static string? ReadKeyAt(string path)
@@ -90,6 +93,24 @@ public static class VpkCustomModelFile
 		}
 	}
 
+
+	/// <summary>
+	/// 这份 <c>custom-model.json</c> 是不是**编译产物**（在 <c>Overwrite/</c> 下）。
+	/// <para>
+	/// 派生文件不能当"归属凭证"：改名写进它，下一次编译又会从 <c>sectional/</c> 重新生成，
+	/// 用户看到的是"改完过一会又被还原"。所以按 key 找持有者时要跳过它。
+	/// </para>
+	/// </summary>
+	private static bool IsDerivedCopy(string filePath)
+	{
+		var directory = Path.GetDirectoryName(filePath);
+		if (directory is null) return false;
+		return string.Equals(
+			Path.GetFileName(directory),
+			ModNodePayloadLayout.OverwriteDirectoryName,
+			StringComparison.OrdinalIgnoreCase);
+	}
+
 	/// <summary>按 key 找到持有它的那份 <c>custom-model.json</c> 的完整路径。</summary>
 	public static string? TryFindOwnerFile(string modsDirectory, string modelKey)
 	{
@@ -107,6 +128,7 @@ public static class VpkCustomModelFile
 
 		foreach (var file in files)
 		{
+			if (IsDerivedCopy(file)) continue;
 			if (string.Equals(TryReadKey(Path.GetDirectoryName(file)!), modelKey, StringComparison.Ordinal))
 				return file;
 		}
@@ -166,6 +188,7 @@ public static class VpkCustomModelFile
 
 		foreach (var file in files)
 		{
+			if (IsDerivedCopy(file)) continue;
 			var directory = Path.GetDirectoryName(file)!;
 			var key = TryReadKey(directory);
 			if (string.IsNullOrWhiteSpace(key))
@@ -191,7 +214,8 @@ public static class VpkCustomModelFile
 			return null;
 		return ReadNameAt(Path.Combine(modDirectory, FileName))
 			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName))
-			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName));
+			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName, FileName))
+			?? ReadNameAt(Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName, FileName));
 	}
 
 	private static string? ReadNameAt(string path)

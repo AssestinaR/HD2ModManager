@@ -137,6 +137,10 @@ public static class CustomModelCatalog
 
 	private static IEnumerable<string> CandidateFiles(string modDirectory)
 	{
+		// **编译产物优先**：`Overwrite/` 是唯一生效层。
+		// 头身合并这类"编译期条件"改的就是这一份（头件的槽位/层）。
+		// `sectional/` 里那份是权威留档，只有当生效层还没编译出来时才用它。
+		yield return Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName, FileName);
 		yield return Path.Combine(modDirectory, FileName);
 		yield return Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName, FileName);
 		// 老库布局。这份"根 + 子目录"的路径在两处各写了一遍（这里与 VpkCustomModelFile），

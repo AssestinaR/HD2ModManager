@@ -57,17 +57,38 @@ CompileAsync(modSelector, modDirectory, context,
 | `vpk2patch`（CLI） | 底层命令（转换段），保留 |
 | 批量修复 / `HostDerivedOverwriteService` | **未动**，另行处理（见 §5） |
 
-## 4. 头身合并：退出常规链路
+## 4. 头身合并：编译期的一个条件（2026-11-08 重做）
 
-- **先把两个名字很像、命运相反的东西分开**：
-  - **头身合并**（`--head-merge`，把头盔几何**烘进 `sectional/` 本体**）：GUI 的开关**已删除**（详情页不再提供这个条件）。
-  - **头盔合并到盔甲**（`PageActionKind.Merge`，详情页汉堡里的「临时将头盔合并到盔甲 / 取消…」）：**仍然活着**。
-    它走 `ModLibraryService.SetHelmetToArmorMergedAsync` → `HostDerivedOverwriteService` 写主体 `Overwrite/`，
-    属 §5 的未收敛债；**它不是编译基座的条件**。别把它当成"头身合并已退出"的证据。
-- `vpk2patch --head-merge` / `vpk rekey --head-merge` 保留为 **CLI 实验 / 救急**：
-  - `vpk2patch --head-merge on` 会把合并**烘进 sectional 本体**（头件从 `slot0/layer0` 挪到胸部层并留 `movedFrom`），属于**协议外产物**；
-  - 两个开关都会往 stderr + JSON notes 打警示，帮助文档也写明"仅 CLI、使用前必须告知用户不安全"。
-- 结论：常规链路里**没有** `--head-merge` 这个条件；它要成为正式条件，得先在编译基座里实现（从 sectional 算，而不是烘进 sectional）。
+**它是什么**：让编译器在编译期把「原本属于头 unit 的注册件」**当作挂在胸部槽位第 1 层**。
+
+**放在哪**：只在编译期，只改 `Overwrite/`。`sectional/` 里那份 `custom-model.json` 是权威留档，一个字节都不动。
+
+**顺序**（用户给定，代码照此实现）：
+
+1. 按 section 开关决定烘哪些组件（烘的是 `Overwrite/` 里那份 unit）；
+2. 看目标：
+   - **自定义素体** ⇒ unit 键不变；头件在 `custom-model.json` 里从 `slot 0 / layer 0` 改到
+     `slot 2 / layer 1`（unit id 不变，另留 `movedFrom: "slot0/layer0"`），
+     写一份新的到 `Overwrite/custom-model.json`；
+   - **原版护甲** ⇒ 这里只记下来，留到第 3 步；
+3. 替换 unit 键：来源 unit ↔ 目标护甲 unit（目标就是自身素体时不变）；
+4. 材质：装启用的材质 patch 层。
+
+**生效优先级**（这一条以前是坏的）：`Overwrite/custom-model.json` 是**实际生效**的那份，
+`sectional/` 的是权威留档。所以
+
+- `CustomModelCatalog` 读文件时 **`Overwrite/` 排第一**（头身合并改的就是它）；
+- `VpkCustomModelFile.TryReadKey/TryReadName`（身份与名字）**仍以来源产物为准**，`Overwrite/` 只作兜底
+  ——派生文件不能定义"这具素体是谁"，否则改名会被下一次编译还原；
+- 按 key 找持有者（改名 / 归属）时**跳过 `Overwrite/` 里的派生副本**。
+
+**关掉合并时必须删掉派生那份**：否则生效层永远读上一次合并过的布局，
+用户看到"开关翻回去了、游戏里却没变"。物化器重开目录本来会带走它，显式删除是兜底。
+
+**`vpk2patch --head-merge`** 仍是 CLI 实验 / 救急，并且和上面这条**不是一回事**：
+那条把合并**烘进 `sectional/` 本体**（协议外产物），两个 CLI 开关都会打警示。
+它只用于救急，常规链路不走它。
+
 
 ## 5. 明确未做（避免顺手扩大范围）
 
