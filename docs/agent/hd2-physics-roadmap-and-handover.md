@@ -5,9 +5,11 @@
 > 读完这一份就能接着干，不需要重新试错。
 >
 > 关联文档：
-> - `docs/hd2-native-bone-baseline-20261030.md` —— 原生能力基线（骨骼宇宙、Lua 面、注册层普查）
-> - `docs/hd2-armor-physics-research.md` —— 早期物理调研（Lua API 一手探测、布娃娃/披风）
-> - `docs/hd2physbone-embedded-patch-protocol.md` —— `HD2PBX01` 容器协议（已定稿，未实现 C#）
+> - `docs/agent/hd2-native-bone-baseline-20261030.md` —— 原生能力基线（骨骼宇宙、Lua 面、注册层普查）
+> - `docs/agent/hd2-armor-physics-research.md` —— 早期物理调研（Lua API 一手探测、布娃娃/披风）
+> - `docs/agent/hd2physbone-embedded-patch-protocol.md` —— `HD2PBX01` 容器协议（已定稿，未实现 C#）
+>   ⛔ 已过时（2026-11-08）："未实现 C#" 一句已不成立 —— C# 侧 2026-10-31 落地，见 §16.6 / §16.7；
+>   协议文档实体现在 `docs/agent/` 下。
 > - `tmp/milltina-test/说明*.md` —— 各轮测试包的现场说明
 
 ---
@@ -398,7 +400,7 @@ boneHash = murmur64(name, seed=0) >> 32
 我们自己算的话，从父骨世界矩阵取**平移加速度**（对世界位置二阶差分），把旋转分量丢掉，
 弹簧只响应"人真的在动"，不响应"视角在转"。这是引擎侧做不到、必须由我们做的事。
 
-**参数不写进 Lua**：走 `HD2PBX01` 容器（`docs/hd2physbone-embedded-patch-protocol.md` 已定稿），
+**参数不写进 Lua**：走 `HD2PBX01` 容器（`docs/agent/hd2physbone-embedded-patch-protocol.md` 已定稿），
 由 patch 携带，Lua 只读。这样"参数跟着 mod 走"，Lua 代码可以是通用的一份。
 
 **帧成本**：每根骨 1 次 `set_local_pose`。10 根骨 = 每帧 10 次调用，
@@ -1403,7 +1405,7 @@ jiggleParents: Head1×15, Spine×6, Pelvis×4, Spine4×4, L_Calf×2, R_Calf×2, 
 
 1. 在 `SourceModelInspector` 的报告里补上 `jiggleBones[]`（含 flags/参数/父骨/rest pose）
 2. 在 `vpk2patch` 产物里写出 `HD2PBX01` 容器（协议已定稿，见
-   `docs/hd2physbone-embedded-patch-protocol.md`）
+   `docs/agent/hd2physbone-embedded-patch-protocol.md`）
 3. Lua 兼容层读容器 → 每帧驱动（链路已由 §13/§15 验证）
 
 ### 16.3 顺带发现的一个问题（待单独排查）
@@ -1519,6 +1521,12 @@ magic "HD2SRG01"(8) | version u32 | boneCount u32 | nameTableOffset u32
 容器读写两端都已验证，这一步只是接线。
 
 ### 16.7 第二步落地：容器已进 vpk2patch 产物（2026-10-31）
+
+> ⛔ 已过时（2026-11-08）：下面这条"转换期直接往转换产物里追加容器"的接线**后来默认关闭**（见 §18.4，
+> 要 `HD2_PHYSBONE_CONTAINER=1` 才开）。现行做法：转换期只写侧车 `physbone-rig.bin`，容器由导入 / 重构建
+> 末尾的 `physbone embed-mod` 写，落点是 Mod 目录的**根 / `sectional/`（老库仍是 `vpk2patch/`）/ `Overwrite/`**
+> 里各处含 Unit 的 patch。另：基底目录已从 `vpk2patch/` 改名 `sectional/`，本节里的"转换产物"今天指那一层。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.1 / §1.3。
 
 **改了什么**
 

@@ -85,6 +85,11 @@ new-api 默认 Web 前端提供了卡片和数据表的第二份参考：其有�
 | `MaterialCandidateWindow`、Material 输出窗口 | Mod 详情工具页中的分步候选/输出面板 |
 | `BackgroundTasksWindow` | 非模态任务中心浮层 / 页面抽屉 |
 
+> ⛔ 已过时（2026-11-08）：本表**已全部落地** —— `HD2ModManager/Views` 下已没有任何 `*Window*.xaml`，
+> 上表五个窗口都已换成工作区页面（`AdvancedModDetailsPageView`、`CrossArmorPlanPageView`、
+> `GameDataBrowserPageView` / `GameDataArchiveDetailsPageView`、`MaterialPackagingPageView`）与壳层里的任务抽屉
+> （`MainWindow` 的 `TaskHub`）。这张表是历史待办，不要当成"还有弹窗要迁"。
+
 Same-key 不再占用独立输出页：单 Mod 手动操作直接生成到 Manager 的 `Output` 根目录下，并且不允许自动导入或部署。其长期定位是自动修复流水线中的底层能力，而不是需要用户配置输出参数的独立工具。
 
 系统文件选择器和最终删除确认仍是合理的原生对话框，不纳入该迁移。
@@ -169,6 +174,9 @@ Same-key 不再占用独立输出页：单 Mod 手动操作直接生成到 Manag
 4. profile 列表从新的 snapshot 立即移除该行；
 5. 添加覆盖“删除库 Mod → Profile entries 移除 → 详情关闭”的集成/服务测试。
 
+> ⛔ 已过时（2026-11-08）：这条缺陷**已修** —— 删除路径统一走 `ModLibraryService.RemoveManyAsync`，
+> 它在删除成功后触发 `SnapshotChanged?.Invoke(...)`，Shell 随之刷新。本段保留为根因记录，**不要再按"待修"处理**。
+
 ## 数据加载与预加载
 
 - 页面 shell 立即创建，数据区域使用 loading/empty/error 三态；禁止为等待数据而延迟打开页面。
@@ -201,6 +209,10 @@ Same-key 不再占用独立输出页：单 Mod 手动操作直接生成到 Manag
 
 - 删除顶部状态入口、`WorkspaceMode.Status`、`WorkspacePageType.Status` 及 status page。
 - 所有后台任务入口改指向任务中心；所有资产动作改指向设置/资产页。
+
+> ⛔ 已过时（2026-11-08）：批次 3 **已完成** —— `WorkspacePageType` / `WorkspaceMode` 里都没有 `Status` 了，
+> `StatusPageViewModel` / `StatusPageView` 也不在代码里，顶部导航只剩首页、配置/模组库、设置与资产（+ 任务抽屉）。
+> 所以本段与「移除状态页」一节都是**已完成的历史计划**，不要当待办重做。
 
 ### 批次 4：配置 / 库交互重构
 

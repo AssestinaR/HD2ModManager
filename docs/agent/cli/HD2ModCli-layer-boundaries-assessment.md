@@ -40,6 +40,15 @@ HD2SourceMigration ──引用──> HD2SourceModel, HD2ModAdaptation   ← �
 | 生产者不反向依赖 Core | Adaptation 无任何引用 ✅ | **符合** |
 | 消费者只通过 Core 访问能力 | **Cli 直连 Adaptation（6 个文件）+ SourceModel（1 个文件）** | **❌ 缺口** |
 
+> ⛔ 已过时（2026-11-08）：**结论方向不变，图的边与数字已变** ——
+> - `HD2SourceMigration` **不再是"孤立、无人引用"**：`HD2ModCli` 现在直接引用它（`HD2ModCli.csproj` 里多了一条
+>   `ProjectReference`，用于 `source convert` / `source retarget` 的 rig 分段与重定向），`tools/ShaderMatrix` 也引用它。
+>   所以上面的依赖图上要多一条 **`HD2ModCli ──引用──> HD2SourceMigration`（⚠️ 同类直连）**。
+> - "Cli 直连 Adaptation（6 个文件）"是 2026-10-14 的数；2026-11-08 复核为 **10 个文件**
+>   （多了 `CliPatchPrimitives.cs`、`CliUnitInspection.cs`、`CliSourceConvert.cs`、`CliVpkRekey.cs` 等）。
+>   **缺口性质没变**（分层靠约定、编译器拦不住），但引用面更大了。
+> - §5 规则 3 与 §6 里的"6 处 + 1 处""已有 5 处先例"同理，都是当时的计数。
+
 ---
 
 ## 2. 两处缺口（这是本轮最重要的发现）
@@ -81,6 +90,9 @@ public 类型。所以"Cli 直连 Adaptation"**编译能过、也没有警告**�
 | `HD2SourceMigration` | `Hd2Rig`、`Hd2RigReader`、`SourceToHd2RigMap` | **源→HD2 骨架映射**（转换） |
 
 **`HD2SourceMigration` 目前是孤立的**——除了它自己的测试项目，没有任何项目引用它。
+
+> ⛔ 已过时（2026-11-08）：这句已不成立 —— `HD2ModCli` 与 `tools/ShaderMatrix` 现在都直接引用 `HD2SourceMigration`。
+> 但下面的建议（不要新建第三个 Source 项目、先定接口）**依然有效**，只是"孤立"这个前提没了。
 
 ⇒ **建议：不要新建第三个项目。** 先判断这两者是不是你说的"L4D2 支持的部分"：
 - 如果是 → 把它们**统一归到 L4D2Support 名下**（合并或改名），而不是再造一个。
@@ -128,6 +140,14 @@ CoreServices.CreateAdvancedUnitAnalysisProducer()   (CoreServices.cs:100)
 | **P2** `patch diff` / `patch audit` | 同上，`IPatchWorkspaceInspector` | 是 | 包装 Adaptation 的 `PatchWorkspace` |
 | **P3** `patch material-conflicts` | 同上，`IMaterialConflictInspector` | 是 | |
 | **补丁** Core 补 patch 写器接口 | `IPatchArchiveWriter` / `IPatchSubsetWriter` | 是 | **收敛现有 CLI 直连 Adaptation 的 6 个文件** |
+
+> ⛔ 已过时（2026-11-08）：**P1 这一行没有按本文的方案落地**，实际走的是"只读纯解析允许直连生产端"的例外：
+> `unit show` / `unit geometry` / `unit bones` 已在 2026-10-14 落地（见 `HD2ModCli-capability-map.md` §10），
+> 实现方式是 `CliUnitInspection.cs` **直接引用 Adaptation 的只读解析器**（`PatchUnitMeshReader` /
+> `UnitGeometryFactsBuilder` / `UnitBoneNamesReader`），**没有**新增 `IUnitMeshInspector` 之类的 Core 接口。
+> `unit vertices` 仍未实现。本节下方"新增独立接口更干净"的建议**仍然成立、但当时没被采纳** ——
+> 要按本文的分层口径收敛，就得补一个 `IUnitMeshInspector` 把 `CliUnitInspection.cs` 这一处包起来。
+> P2 / P3 / "补丁" 三行仍是未做的建议（2026-11-08 复核：Core/Application 里仍无 patch 写器接口、无源侧接口）。
 
 ### ⚠️ P1 的一个关键注意点
 
@@ -178,4 +198,9 @@ CoreServices.CreateAdvancedUnitAnalysisProducer()   (CoreServices.cs:100)
 | 缺口 1 实例 | `HD2ModCli/CliPatchPrimitives.cs`（直连 `PatchArchiveWriter` 等） |
 | 缺口 2 实例 | `HD2ModCli/CliApplication.cs:1879`（`SourceModelInspector.Inspect`） |
 | 孤立项目 | `HD2SourceMigration`（仅被自身测试引用） |
-| 基层能力缺口清单 | `docs/cli/HD2ModCli-riglab-gap-analysis.md` |
+| 基层能力缺口清单 | `docs/agent/cli/HD2ModCli-riglab-gap-analysis.md` |
+
+> ⛔ 已过时（2026-11-08）：本节有两处失效 ——
+> - "孤立项目 `HD2SourceMigration`（仅被自身测试引用）" —— 现在 `HD2ModCli`、`tools/ShaderMatrix` 都引用它。
+> - `CliApplication.cs:1879` 这类**行号**随代码增长已移位（该文件 2026-11-08 已是 8451 行），按符号名检索而不是按行号。
+> 其余证据项（Core 接口层位置、`CoreServices.cs` 工厂、`CliPatchPrimitives.cs` 直连实例）仍有效。

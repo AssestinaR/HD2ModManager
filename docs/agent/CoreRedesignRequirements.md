@@ -1,4 +1,4 @@
-﻿# Core 重做需求总结（讨论稿）
+# Core 重做需求总结（讨论稿）
 
 > 目标：从零重做核心（`Core`），并为后续 WinUI 3（Unpackaged）前端提供稳定、可测试的业务能力。
 > 
@@ -155,6 +155,11 @@ Core 在实现时不得直接依赖 Blender；仅复刻必要二进制解析逻�
 - 支持多 Profile 快速切换。
 - 应用到游戏目录时以软链接为主（不使用硬链接）。
 - 软链接特征明显，切换时可先清理旧链接，再创建新链接。
+
+> ⛔ 已过时（2026-11-08）：部署方式现在是**硬链接优先、符号链接兜底**，不再是"软链接为主、不用硬链接"。
+> 实测走 `HD2ModCore/Infrastructure/DeploymentCapabilityService.Probe`：同卷先建硬链接，失败再试符号链接，
+> 两者都不可用即判定部署不可用；方式枚举见 `HD2ModCore/Domain/DeploymentMethod.cs`
+> （`HardLink` / `SymbolicLink` / `Copy` / `Delete` / `StateFile`）。"切换前先清理旧链接"这条仍然成立。
 
 ## 8. 存储与落盘位置（便携式）
 

@@ -1,7 +1,19 @@
 # GUI ↔ CLI 能力对比：CLI 缺失的原子底座盘点
 
 > 生成时间：2026-10-14 ｜ 目的：**为 CLI 补"底座级"原子能力**提供依据
-> 配套文档：`docs/cli/HD2ModCli-capability-map.md`（CLI 现状盘点）
+> 配套文档：`docs/agent/cli/HD2ModCli-capability-map.md`（CLI 现状盘点）
+
+> ⛔ **状态（2026-11-08）：本文一部分"缺口"已经补上了，别再按原文说"CLI 做不到"。**
+> 这是 **2026-10-14** 的盘点。同一批补记随后落地了 `patch entries list` / `patch entry show|export` /
+> `patch compose` / `patch edit` / `patch hide-unit` / `gamedata equipment list|show`，以及 `unit show|geometry|bones`。
+> 逐条核对结果：
+> - **已落地（原文判断失效）**：**F2**（`patch entry export` 导出三段裸文件）、**F2b**（`patch edit --add-key/--remove-key/--keys`）、
+>   **F3**（`patch compose --header --pick`）、**F4**（`patch entries list <任意 patch 路径>`）、**F5**、
+>   **F6**（`patch hide-unit`）、**G3**（`gamedata equipment list --kind cape|armor|helmet|all`）；
+>   因此 **§2 的"现在的 CLI（做不到）"已不成立**，那条示例今天可以用 CLI 拼出来（只是命令签名与文中的拟名不同）。
+> - **仍是真缺口（`HD2ModCli` 里引用数为 0，2026-11-08 复核）**：G1 / G2 / G4 / G5 / G6 / G10。
+> - **未逐条复核**：G7 / G8 / G11 / G12 / F7 / F8 —— 按原文读作"当时的判断"，要用之前先查 `--help`。
+> 命令现况一律以 `hd2mod --help` 与 `hd2mod capabilities --json` 为准。
 
 ---
 
@@ -56,6 +68,18 @@
 | **G11** | **Unit 部位/身形/层细粒度选择** | GUI 可选 `(archiveId, assetkey, meshIndex, partKind, bodyVariant, layer, culling)`；CLI 只能整包/整 Unit | ✅ `UnitMeshPartClassifier` / `EquipmentUnitSourcePartBinder` |
 | **G12** | **跨护甲高级选项** | `DirectSourceUnitReuse` / `AutoHideUnmappedTargetUnits` / `PreserveSourceReferences` 在 CLI 里被**硬编码** | ✅ 参数已在 `CrossArmorTransferCandidateRequest` |
 
+> ⛔ 已过时（2026-11-08）：上面两张表里标 **❌/⚠️「真缺」** 的若干行已经补上了，别照抄"CLI 没有这个出口"：
+> - **F2** → 现在有 `patch entry export <patch_0> <0xtypeid> <0xfileid> --output <新目录>`（导出 `toc`/`stream`/`gpu_resources` 三个裸文件）。
+> - **F2b** → 现在有 `patch edit <patch_0> (--keys … | --remove-key … | --add-key …) --output <新目录>`（产物是新目录，**不原地改写源 patch**）。
+> - **F3** → 现在有 `patch compose --header <头部模板 patch_0> --pick <来源patch_0> <tid> <fid> […] --output <新目录>`。
+> - **F4** → 现在有 `patch entries list <patch_0 路径>`，任意库外 / 原版 patch 都能枚举。
+> - **F5** → `patch entry export` 已能把某一段的字节落到文件。
+> - **F6** → 现在有 `patch hide-unit <patch_0 路径> --keys <…> --output <新目录>`。
+> - **G3** → 现在有 `gamedata equipment list|show --kind cape|armor|helmet|all`（读装备权威表）。
+>
+> 仍是真缺口（2026-11-08 复核 CLI 引用数为 0）：**G1 / G2 / G4 / G5 / G6 / G10**。
+> G7 / G8 / G11 / G12 / F7 / F8 未逐条复核，用前请查 `hd2mod --help`。
+
 ---
 
 ## 1.5 ★ 核心洞察：CLI 的问题是"能读不能写、能整体不能拆件"
@@ -89,6 +113,10 @@ CliModAnalysisDocument
 | **指定 header 模板 + 多来源合并**成一个 patch | ❌ 不能（`custom-model convert` 内部做了，但不对外） |
 | 为一个 unit **就地**生成隐藏版本 | ❌ 不能（只在 `armor-normalize` 内部） |
 
+> ⛔ 已过时（2026-11-08）：这张表里"❌ 不能"的五格，除最后一行仍成立（隐藏版本是**新目录产物**，不是就地改）之外，
+> 其余四格已经有命令了：库外 patch 枚举 → `patch entries list`；三段裸文件 → `patch entry export`；
+> 加/删/换一条 → `patch edit`；指定 header 多源合并 → `patch compose`。**"写侧"这半边已经通了。**
+
 **⇒ 补能力的方向有两块**：
 1. **给写侧开"条目级"口子**：导出裸载荷、原地增删改条、指定 header 合并；
 2. **把"库外 patch 文件"提升为一等公民**：让所有 patch 级命令都能作用于任意路径，而不只是已登记的 Mod。
@@ -105,6 +133,11 @@ CliModAnalysisDocument
 - ① 读披风清单：**完全没有**命令能读 `GameDataEquipmentKitKind.Cape`（G3 —— CLI 零接入装备权威表）
 - ② 生成隐藏 unit：**没有独立命令**（F6 —— 只在高层流程内部）
 - ③ 打包 patch：**没有条目级写入口**（F2b/F3 —— 读得到 assetkey，但写不出"裸载荷离散文件"、也不能指定 header 多源合并）
+
+> ⛔ 已过时（2026-11-08）：这三条"做不到"都已经能做了 —— ① `hd2mod gamedata equipment list --kind cape --json`；
+> ② `hd2mod patch hide-unit <patch_0 路径> --keys <…> --output <新目录>`；
+> ③ `hd2mod patch compose --header <头部模板 patch_0> --pick <来源patch_0> <tid> <fid> --output <新目录>`。
+> 下面的走查保留为**当时如何定位缺口**的示范，不要再据此判断"CLI 缺写侧能力"。
 
 **底层零件其实全都在**：
 
@@ -139,6 +172,11 @@ hd2mod equipment hide-unit --keys @capes.json --output ./hidden
 # ③ 把生成的隐藏 unit 打包成 patch
 hd2mod patch compose --header <源patch> --from ./hidden --output ./capes-hidden-mod
 ```
+
+> ⛔ 已过时（2026-11-08）：示范里的第②③行是**当时拟定的命令名**，实际落地后签名不同，照抄会失败。
+> 现行签名：`hd2mod patch hide-unit <patch_0 路径> --keys <@keys.json 或 0xtypeid:0xfileid,...> --output <新目录> --json`；
+> `hd2mod patch compose --header <头部模板 patch_0> --pick <来源patch_0> <0xtypeid> <0xfileid> [--pick ...] --output <新目录> --json`
+> （`--pick` 是逐条挑，没有 `--from <dir>`）。第①行 `gamedata equipment list --kind cape` 与实际一致。
 
 **这个组合能复用到几十个类似场景**：隐藏任意一类装备、批量替换任意类 unit、按类别抽取资源、批量生成空壳 unit 等。
 
@@ -180,6 +218,10 @@ GUI 为了让人类少点几下，做了大量**自动推导**。这些推导背
 | **P2-12** | `hd2mod patch diagnostics <mod-id>` —— 引用链轻量/完整对比 | `IPatchGraphDiagnosticsService` | 排查 mod 兼容性 |
 | **P2-13** | `hd2mod decoration activate-batch` —— 批量装饰激活 | `ApplyDecorationActivationBatchAsync` | 一次性处理多主体 |
 | **P3-14** | `hd2mod mod thumbnail` / `mod assets analyze --cached` | `IModThumbnailProducer` / `IAdvancedModAnalysisService` | 补齐剩余 |
+
+> ⛔ 已过时（2026-11-08）：**P0-1 / P0-2 / P0-3 / P0-4 / P0-5 / P1-6 / P1-7 已经落地**（形态见篇首横幅与 §1 表后的清单；
+> 其中 P0-6"让 patch 命令接受库外路径"是用新建的 `patch` 底座族满足的，`patch repackage` 本身仍只认已登记 Mod）。
+> **仍是未做的建议**：P1-8（material 三件套）、P1-9（单 unit 重建）、P2-10 / P2-11 / P2-12 / P2-13、P3-14。
 
 ---
 
@@ -223,6 +265,12 @@ GUI 为了让人类少点几下，做了大量**自动推导**。这些推导背
 | 披风枚举底座存在 | `HD2ModCore/Domain/GameDataAuthorityFacts.cs:27` `Cape = 2`；`GameDataAuthorityProvider.LoadAsync` 读 `generated_customization_armor_sets.dl_bin` |
 | Patch 条目级读写底座 | `PatchOperationWorkspace.Stage/Reference`、`PatchWorkspaceChangeSet.Add/Remove/Replace/Keep`、`PatchWorkspaceReader.ReadIndexAsync` |
 
+> ⛔ 已过时（2026-11-08）：本表是 2026-10-14 的核查快照，两行已失效（**结论不改，证据已变**）：
+> - "CLI 不接装备权威表 / `grep GameDataAuthority HD2ModCli/*.cs` **零命中**" —— 现在有命中（`CliEquipmentFacts.cs`，
+>   对应 `gamedata equipment list|show`）。
+> - "CLI 无 material 命令 / 命中全是 `materialize`" —— 现在还有 `mod material order` / `mod material set`
+>   （材质**选择**，仍不是 `IMaterialPackagingApplicationService` 的打包能力）。
+
 ### 附：Core 层可用但 CLI 未接入的接口（89 个接口中）
 
 ```
@@ -242,3 +290,8 @@ IUnitVersionProbe / IUnitVersionInformationProducer ← Unit 版本探测
 IPatchEntryPayloadReader         ← F5（CLI 未直接暴露）
 IPatchTocScanner                 ← F4（CLI 未直接暴露）
 ```
+
+> ⛔ 已过时（2026-11-08）：清单末两条**已接入** —— `IPatchEntryPayloadReader` 与 `IPatchTocScanner` 现在被
+> `patch entries list` / `patch entry show|export` 直接使用，不再是"未暴露"。`IGameDataAuthorityProvider` 这一行也要注意：
+> CLI 用的是具体类 `GameDataAuthorityProvider`（接口名 grep 仍为 0），但 **G3 的能力已经暴露**为 `gamedata equipment list|show`。
+> 其余各行（G1/G2/G4/G5/G6/G10 等）经 2026-11-08 复核，按名称检索引用数仍全为 0，仍成立。

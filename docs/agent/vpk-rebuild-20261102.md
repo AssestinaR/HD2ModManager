@@ -6,6 +6,12 @@
 > 追加要求（同日）：「构建完毕后自动按当前配置构建 Overwrite」——见 §3.5，
 > 即目标取下拉当前选择、勾选取内存状态，两者都可能还没落地。
 
+> ⛔ 已过时（2026-11-08）：本文写作时基底目录叫 `vpk2patch/`，2026-11 已改名 **`sectional/`**
+> （老库仍是旧名，读侧两个名字都认）；下文所有 `vpk2patch/` 路径一律按 `sectional/` 读
+> ——`vpk2patch.json` 这个**文件名**没变。
+> 另外重构建现在是干净的两段：**转换**（来源 → `sectional/`）→ **编译**（`ModCompileService.CompileAsync` → `Overwrite/`），
+> 它自己不再写生效层。见 `docs/agent/sectional-compile-base-20261108.md` §1.1–§2。
+
 ## 1. 它解决什么
 
 没有它，只有两条路：
@@ -98,6 +104,10 @@
 2. **目标都没有时退回自己的素体**：`wardrobe.json` 没记过护甲就看 `custom-model.json`，
    于是"从没换过甲"的 Mod 也能重构建出一份完整的 Overwrite（自定义素体形态）。
 
+> ⛔ 已过时（2026-11-08）：上面第 1 条**不再成立**——编译只读配置。重构建把界面上当前的目标/勾选
+> 作为入参传给 `ModCompileService.CompileAsync`，**不写** `wardrobe.json`、不写 Mod 设置文件，
+> 所以不存在"把旧状态烘回去"。见 `docs/agent/sectional-compile-base-20261108.md` §2「只读配置」那条。
+
 ### 3.6 旧产物没有记录参数时，按"今天的导入默认"重跑
 
 `vpk2patch.json` 里的 `conversion` 块是这次新加的。旧产物没有它，也永远补不出来。
@@ -150,12 +160,16 @@ serenade基础材质b1服装色白、serenade基础材质c1发色浅紫、…
 | 文件 | 作用 |
 |---|---|
 | `HD2ModCore/Infrastructure/VpkConversionReport.cs` | 读 `vpk2patch.json`（命名空间 / 参数 / 计数），也能直接解析 CLI 的 stdout |
-| `HD2ModManager/Services/VpkRebuildService.cs` | 重构建执行体：找来源 → 认亲 → 转换 → 守门 → 替换 → 嵌物理 → 重跑换甲 |
-| `HD2ModManager/Services/Hd2ModProcess.cs` | 跑 `hd2mod.exe` 的**唯一**一份样板（导入/换甲/重构建共用） |
+| `HD2ModCore/Infrastructure/VpkRebuildService.cs` | 重构建执行体：找来源 → 认亲 → 转换 → 守门 → 替换 → 嵌物理 → 重跑换甲（2026-11-08 更正：已从 `HD2ModManager/Services/` 移到 Core） |
+| `HD2ModCore/Infrastructure/Hd2ModProcess.cs` | 跑 `hd2mod.exe` 的**唯一**一份样板（导入/换甲/重构建共用）（2026-11-08 更正：已从 `HD2ModManager/Services/` 移到 Core） |
 | `HD2ModManager/ViewModels/ModDetailsPageViewModel.VpkRebuild.cs` | 「重构建」命令 + 确认文案 + 状态回报 |
 | `HD2ModManager/Views/ModDetailsPageView.xaml` | VPK 动作卡里的按钮 |
 | `HD2ModCli/CliApplication.cs` | `vpk2patch` 报告新增 `conversion` 块与 `notes`（命名空间警告）；`--reuse-model` |
 | `HD2ModCore.Tests/VpkConversionReportTests.cs` | 6 条：读到/读不到/旧产物/参数翻译/stdout 解析 |
+
+> ⛔ 已过时（2026-11-08）：上表最后那步"重跑换甲"已经改成**调用编译基座**——
+> `VpkRebuildService` 现在收尾时调 `ModCompileService.CompileAsync`（目标护甲 + section 开关 → 换甲产物 → 材质物化，
+> 全部只在 `Overwrite/`），自己不再往生效层写。见 `docs/agent/sectional-compile-base-20261108.md` §2。
 
 **「重构建会不会沿用原来的命名空间？」会**——读 `vpk2patch.json` 的 `idNamespace`，
 用 `--id-namespace-token` 原样接上（不是按当前包名重新派生）。上表里 patch 逐字节相同
@@ -168,7 +182,7 @@ serenade基础材质b1服装色白、serenade基础材质c1发色浅紫、…
 - [ ] 用户点一次按钮做验收（在 `serenade_bill` 上点最安全：转换产物本来就该逐字节不变）。
 - [x] 重构建后**按当前配置**自动重建 Overwrite（目标取下拉当前选择、勾选取内存状态）——见 §3.5。
 - [x] 选项里也是 VPK 产物的，点重构建时多问一句"要不要一起重建"——见 §3.7。
-- [x] 头身合并（`vpk rekey` 默认开）：见 `docs/vpk-head-body-merge-20261102.md`。
+- [x] 头身合并（`vpk rekey` 默认开）：见 `docs/agent/vpk-head-body-merge-20261102.md`。
       注意它改变了 Overwrite 的形状（身体降一层、头进胸部槽位、头盔 item 变空），
       所以重构建/换甲之后 Overwrite 不再是原来那份——`vpk2patch/` 仍然逐字节不变。
 - [ ] 组件开关包（`XXX关` 那类 `$no_draw` 包）不在 Mod 里，`components.json` 是**原样保留**的：
@@ -176,3 +190,11 @@ serenade基础材质b1服装色白、serenade基础材质c1发色浅紫、…
       需要时可以拿 `components.json` 里的 unit/section 去对新的 `sections.json`。
 - [ ] 没有记参数的旧产物，`--cutout` / `--matcap-gain` 一律回到默认。
 - [ ] `CLI` 侧还没有 `vpk rebuild` 子命令（目前只有管理器按钮）。要做的话执行体可以直接搬。
+
+> ⛔ 已过时（2026-11-08）：上列有两条已不成立——
+> ①「头身合并（`vpk rekey` 默认开）」：它已退出常规链路。GUI 开关删除，`--head-merge` **默认 off**，
+> 只有 CLI 显式写 `on` 才做（且会把合并烘进 `sectional/` 本体，属协议外产物）；重构建/换甲都不会再做它。
+> ②「`CLI` 侧还没有 rebuild 子命令」：现在有 `hd2mod mod rebuild <GUID|前缀> --confirm`
+> （命令名是 `mod rebuild`，不是 `vpk rebuild`），执行体就是同一个 `VpkRebuildService`。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §2 / §4。
+

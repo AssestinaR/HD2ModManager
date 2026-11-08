@@ -22,7 +22,7 @@ mesh 级几何事实（section、顶点、材质槽）只在与 unit 命名混�
 ### 0.1 结构说明已经落到代码里
 
 本轮的护甲结构结论不再只写在文档里，而是写进了
-[`HD2ModCore/Domain/ArmorStructure.cs`](../HD2ModCore/Domain/ArmorStructure.cs) 顶部的注释块
+[`HD2ModCore/Domain/ArmorStructure.cs`](../../HD2ModCore/Domain/ArmorStructure.cs) 顶部的注释块
 （四元组寻址、身形编码、件记录布局、两套事实源、规范名），并在这几个最容易被改坏的地方加了指针：
 
 - `HD2GameItemAssets/GameItemAssetModels.cs` · `CustomizationKitSlot`

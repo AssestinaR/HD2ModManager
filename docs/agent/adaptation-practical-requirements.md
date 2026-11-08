@@ -4,6 +4,17 @@
 **基于：** adaptation-refactoring-plan.md  
 **重点：** 材质管理、部件共享、实际可行性
 
+> ⛔ 状态（2026-11-08）：本篇是 2026-07-12 的规划稿，不是现有实现清单。文中
+> `StrictUnitMeshTransfer` / `BoneRemapper` / `MaterialMapper` / `MeshTransfer` 以及 `Foundation/`、`Tools/`
+> 两层目录规划**在源码里都已 0 命中**（2026-08-30「代码清理阶段1」删掉了
+> `HD2ModAdaptation/Processing/{BoneRemapper,MaterialMapper,MeshTransfer}.cs` 等；`HD2ModAdaptation` 现在的主干是
+> `Analysis/` 与 `PatchReconstruction/`）。
+> 仍然有效的是**问题分析**（材质分离 patch、材质包按需匹配、部件共享 Unit）。现行形状是：
+> 转换段按 planner 把「模型 + 它自己的材质包」分组成 patch 组，基底 `sectional/` 里 unit patch 恒为
+> `patch_0`、材质变体 `patch_1..N` 平铺 + `patches.json` 记号；编译段按 Mod 设置里的
+> `enabledMaterialPatches` 选择性物化进 `Overwrite/`。链路见
+> `docs/agent/sectional-compile-base-20261108.md`。
+
 ---
 
 ## 🎯 实施策略澄清
@@ -477,6 +488,13 @@ Tools/
     └── ArmorRelationshipAnalyzer.cs
 ```
 
+> ⛔ 已过时（2026-11-08）：上面 `Foundation/`、`Tools/` 两层与其中列出的文件名在仓库里都不存在
+> （`ModelExtractor` / `MaterialExtractor` / `MaterialValidator` / `MaterialMatcher` / `UnitSharingDatabase` 等
+> 全部 0 命中）。现行对应物是 `HD2ModAdaptation/Analysis/PatchGroupAnalyzer.cs`、
+> `HD2ModAdaptation/PatchReconstruction/MaterialDependencyResolver.cs` 与
+> `HD2ModAdaptation/PatchReconstruction/MaterialPackagingService.cs`。
+> 下面「实际使用场景」的代码是按这套不存在的 API 写的示意，读的时候按上面的对应物换算。
+
 ---
 
 ## 📋 实际使用场景
@@ -630,6 +648,10 @@ else
 **1.3 简化核心转换**
 - 重构 `MeshTransfer`（从 900 行→300 行）
 - 使用提取的组件
+
+> ⛔ 已过时（2026-11-08）：`StrictUnitMeshTransfer` 与这三步要产出的 `BoneRemapper` / `MaterialMapper` /
+> `MeshTransfer` 在源码里都已 0 命中（相关文件 2026-08-30 删除）。今天的对应实现见
+> `HD2ModAdaptation/PatchReconstruction/UnitMesh/`（骨骼重映射、材质合并都在 `Canonical/` 里）。
 
 ### Step 2: 材质管理基础（2-3 天）
 

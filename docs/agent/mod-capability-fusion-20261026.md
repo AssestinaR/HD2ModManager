@@ -75,6 +75,12 @@ Mod 详情页现在平铺 **22 个命令**（`ModDetailsPageViewModel` 的 22 �
 
 ---
 
+> ⛔ 已过时（2026-11-08）：只有**名字**过期——这一项今天的文案是「临时将头盔合并到盔甲」/「取消将头盔合并到盔甲」
+> （`PageActionKind.Merge`，`HD2ModManager/ViewModels/ModDetailsPageViewModel.Actions.cs`）；落点仍是主体
+> `Overwrite/`、实现仍是 `ModLibraryService.SetHelmetToArmorMergedAsync` → `HostDerivedOverwriteService`，
+> 所以"临时把头盔并进盔甲 / 改现有产物"两句仍然准确。它不是编译基座的条件（编译只接目标护甲 / section 开关 /
+> 材质开关），属 `sectional-compile-base-20261108.md` §5 的未收敛债。
+
 ## 2. 用户视角的问题（为什么现在乱）
 
 ### 2.1 二十多个命令同等权重
@@ -285,6 +291,10 @@ Mod 页面改成：
 **它们必须在视觉上与"造"分开**。
 
 ---
+
+> ⛔ 已过时（2026-11-08）：括号里那四个「改」类操作**都还是入口**（「头盔合并切换」就是今天的
+> 「临时将头盔合并到盔甲」）；过期的是"就这四个"——落 `Overwrite/` 的已不止它们
+> （装饰重建、批量修复、physbone 嵌入、编译基座都是写者），见 compile-base §5。
 
 ## 7. 融合的收益
 

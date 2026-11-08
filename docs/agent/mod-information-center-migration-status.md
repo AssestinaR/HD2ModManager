@@ -4,6 +4,19 @@
 >
 > 本文是当前代码状态的直接盘点，不是目标架构设想。凡是标记为“兼容路径”的代码，均表示当前仍可被调用，不能视为已经迁移完成。
 
+> ⛔ **状态（2026-11-08）：本文的"兼容边界"已经被清掉了，§1「当前不能做的事情」不再成立。**
+> 2026-07-24 之后，遗留兼容层按本文 §5 第 5 批执行完毕，逐项复核结果（`rg` 全仓，2026-11-08）：
+> - `IModContentFactsService` **已删除**（代码里 0 处）；`GetLibraryFactsAsync` 0 处；
+> - `IModFactsStore` **已删除**（0 处）；`SqliteModFactsStore` **类型已不存在**（只剩架构测试里那条"禁止 new"的正则）；
+> - `mod_fact_snapshots` / `advanced_mod_analysis_snapshots` / `mod_assets` / `asset_references` 这些表名**全仓 0 处**，
+>   遗留 SQLite schema 已处置；
+> - `CreateModContentFactsService` / `CreateModFactsStore` / `CreateAdvancedModAnalysisCacheStore` 三个无中心便捷工厂**都已删除**；
+> - §4.3 建议的拆分已经落地：`IModInformationCache`（`HD2ModCore/Application/IModInformationCache.cs`）+
+>   `IReferenceGraphQueryIndex`（同目录）都在用；`IAdvancedUnitAnalysisCache` 这个拟名**没有采用**，高级分析走
+>   `IAdvancedUnitAnalysisProducer`。
+> 仍然有效、应当照做的：§5 的迁移顺序口径（"先统一生命周期、再删接口"）、§6 的验证清单、§4.3 的拆分方向。
+> 仍然有效且**未复核**的是删除流程协调边界那一条（§7 最后一句），以及 Manager 侧"删除后清理是否已完全统一"。
+
 ## 1. 结论摘要
 
 当前系统处于“主 UI 已统一共享中心，但删除和兼容边界仍在收敛”的状态：
@@ -20,6 +33,9 @@
 1. 不能直接删除 `IModContentFactsService`；它仍作为 `AssetInventory` producer/适配器及兼容测试边界保留。
 2. 不能直接删除 `IModFactsStore` 或 `SqliteModFactsStore`；高级资产查询、材质交付、导入回滚和若干测试仍依赖它。
 3. 不能只修改某一个服务的构造函数而不修改 `CoreServices`；否则 Manager 仍可能创建多个中心实例。
+
+> ⛔ 已过时（2026-11-08）：第 1、2 条**都已经做了** —— 这两个接口与 `SqliteModFactsStore` 在代码里已不存在（见篇首横幅）。
+> 当前真正还成立的只有第 3 条：改服务构造函数必须同步改 `CoreServices`，否则会多出中心实例。
 
 ## 2. 新实现当前已经具备的能力
 
@@ -55,6 +71,9 @@
 | ReferenceGraph 材质诊断 | 已接入中心生产 | 信息中心生产并经 `IReferenceGraphIndexWriter` 写入 SQLite 反向索引 |
 
 ## 3. 仍在使用旧实现的地方
+
+> ⛔ 已过时（2026-11-08）：本节两张表列的"旧用法"**已全部消失** —— `IModContentFactsService` 与
+> `IModFactsStore` 都不在代码里了。保留作迁移过程的记录；要看现在谁在读什么，直接看当前代码。
 
 ### 3.1 旧内容事实服务的兼容边界
 
@@ -102,6 +121,10 @@
 | `CoreServices.CreateAdvancedModAnalysisCacheStore` | 历史兼容构造/测试边界 | 保留，正常生产链不使用旧快照 |
 
 ## 4. SQLite 的准确清理边界
+
+> ⛔ 已过时（2026-11-08）：`SqliteModFactsStore` 这个类型已经不存在，本节"哪些要保留/哪些不能删表"的判断已失效；
+> 全仓检索 `mod_fact_snapshots` / `mod_assets` / `asset_references` 均为 0 处。§4.3 的目标拆分则已经落地
+> （`IModInformationCache` + `IReferenceGraphQueryIndex`）。
 
 `SqliteModFactsStore` 当前是兼容性存储和反向索引实现，不是信息中心 JSON 缓存的替代品：
 
@@ -238,3 +261,7 @@
 - 旧接口、旧构造函数和旧工厂均已通过静态搜索确认无业务调用。
 
 全面迁移仍待：删除流程统一、旧 schema 最终处置、obsolete 无中心工厂未来移除。
+
+> ⛔ 已过时（2026-11-08）：这行"仍待"的三项里，**旧 schema 最终处置**与 **obsolete 无中心工厂移除**都已做完
+> （schema 表名 0 处；`CreateModContentFactsService` / `CreateModFactsStore` / `CreateAdvancedModAnalysisCacheStore` 已删）。
+> 只剩**删除流程统一**这一项未复核，别再把另外两项当待办。

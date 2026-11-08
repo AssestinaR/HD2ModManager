@@ -22,7 +22,7 @@ L4D2 的 `$jigglebone` 参数现在**随 patch 一起交付**，在 HD2 里驱�
 | 源模型 jiggle 骨 → 合成节点插入 Unit | ✅ 3 个模型（Lunalice 57 骨 / Lilium 54 骨 / MourningVeil 56 骨） |
 | 顶点权重真实落到新节点 | ✅ 调色板引用新下标，非"重指向整槽" |
 | 参数封成 `HD2PBX01` 容器、**跟着 patch 走** | ✅ 换模型不再手动换 rig 文件 |
-| 链根锚点上跨到 HD2 骨名 | ✅ 转换期写 `vpk2patch/physbone-rig.bin`，实机 25 条链 0 缺锚点 |
+| 链根锚点上跨到 HD2 骨名 | ✅ 转换期写 `vpk2patch/physbone-rig.bin`，实机 25 条链 0 缺锚点<br>⛔ 已过时（2026-11-08）：基底目录已改名 `sectional/`，**新库写 `sectional/physbone-rig.bin`**；老库仍是 `vpk2patch/`，读侧两个名字都认 |
 | 运行时按骨名找节点、逐链驱动、写 local pose | ✅ 见日志 `限位来源：…（共 N 根骨）` + 心跳 |
 | **三种约束形式（锥 / 偏航 / 俯仰）** | ✅ 实测 1 套资产 21/55 根用分轴约束，过去被当成无限位（§9 第 5 条） |
 | **分轴限位与"世界朝向锚定"的正确配对** | ✅ 三个轴同一参考系；纯 yaw/pitch **头发**不做世界锚定（§9 第 6 条） |
@@ -673,6 +673,10 @@ $env:LOCALAPPDATA="<repo>\tmp\harness-appdata"; luajit HD2PhysBoneCompat/test/ru
 $env:LOCALAPPDATA="<repo>\tmp\harness-appdata"; luajit HD2PhysBoneCompat/test/probe-harness-test.lua
 ```
 
+**`embed-mod` 落在哪（2026-11-08 追注）**：它遍历 Mod 目录的**根 / `sectional/`（老库 `vpk2patch/`）/ `Overwrite/`**，
+把容器嵌到每个含 Unit 的 patch 尾部；`Overwrite/` 是在 `sectional/` 上**重建**出来的，尾部容器不会自己跟过去，
+所以只在转换产物上嵌一次是不够的。
+
 **探针**：库里的 `hd2pbx-probe` mod（`E:\mod\hd2pbx-probe\`），部署后是 `data\*.patch_N` 软链接。
 改探针 = 改库文件，软链接自动跟随，**不用重新部署**。
 
@@ -704,12 +708,15 @@ $env:LOCALAPPDATA="<repo>\tmp\harness-appdata"; luajit HD2PhysBoneCompat/test/pr
 > 世界空间里的累计弯曲仍然存在，但那是 Valve 本来的行为，不是 bug。
 > **碰撞体已经做了**（§6f.3），不再是欠账。
 
-1. **下一阶段执行计划：`docs/physbone-next-plan-20261101.md`**
+1. **下一阶段执行计划：`docs/agent/physbone-next-plan-20261101.md`**
    （P0 观测 ✅ → P0.5 ✅ 整组同帧消失=场景切换 → P1 死链 ✅ → P2 可见性（报告 ✅ / 角标待做）
    → P3 dt ✅ → P4 文档 ✅ → **约束形式 ✅ 锥/分轴都认**）
 2. **K1–K4 实机确认**（机制已修，见 §6.3/§6.4）
 3. **旧 mod 需要重新导入**：一次重新导入同时带来两样东西——命名空间隔离的骨名（§3.5），
    以及 `vpk2patch/physbone-rig.bin` 里的**链根锚点名**（没有它裙摆/缎带那类链会被记「缺锚点」跳过）
+
+   > ⛔ 已过时（2026-11-08）：基底目录已改名 `sectional/`，重新导入后这份侧车落在 `sectional/physbone-rig.bin`；
+   > 老库仍是 `vpk2patch/` 旧名，读侧两个名字都认（`ModContentLayoutMigration` 做一次性改名）。
 4. ~~双模运行~~ ✅ **已实现**：同一套 Lua 既能独占 boot（管理器的 boot 文档 require），
    也能被第三方加载器当模块加载（`physbone_runtime.lua` 的 `install()` 幂等、只链式包 render）
 5. **锥类限位沿链累加**：`angleCon` 的限制是"相对父节"的，5 节 × 24° 可累到 120°。

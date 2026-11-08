@@ -21,6 +21,11 @@ dotnet run --project AdaptationPatchSmoke --
   --broad-coverage
 ```
 
+> ⛔ 已过时（2026-11-08）：`AdaptationPatchSmoke` 这个工程在仓库里不存在（也无对应 csproj，从未入库），
+> 所以上面这条命令今天跑不起来。它是 2026-07-12 的一次性实验壳；等效的诊断入口现在是
+> `HD2ModCli`（`vpk2patch` / `vpk rekey`）与 `HD2ModAdaptation` 的测试工程。
+> 下面的输出数字是当时那一次运行的取证，保留。
+
 ### 输出结果
 - **生成文件：** 0.22 MB TOC + **0.02 MB GPU** ⚠️
 - **transferUnits：** 0（没有任何转换）
@@ -180,6 +185,13 @@ if (materialPatches.Any())
 - 自动检测材质分离
 - 提示用户选择材质包
 - 批量处理时记住选择
+
+> ⛔ 已过时（2026-11-08）：这条"下一步"以**别的形状**做完了，没有走 `MaterialValidator` 这条路
+> （该类型 0 命中，从未落地；`AdaptationPatchSmoke` 也已不存在）。现在的分工是：
+> **转换段**按 planner 把「模型 + 它自己的材质包」分组成 patch 组，`sectional/` 里 unit patch 恒为 `patch_0`、
+> 材质变体 `patch_1..N` 平铺 + `patches.json` 记号；**编译段**读 Mod 设置文件里的 `enabledMaterialPatches`
+> 决定哪些材质物化进 `Overwrite/`。即"分离材质"是**链路事实**，不是运行时要向用户追问的缺失项。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.2 / §5。
 
 ---
 

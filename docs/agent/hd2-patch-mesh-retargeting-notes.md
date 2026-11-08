@@ -2,6 +2,14 @@
 
 > 目的：固化当前已确认的视频/人工操作流程、对应插件源码位置、Patch 文件层实际变化，避免后续上下文丢失；同时作为后续把 HD2SDK 读写逻辑移植到 `HD2ModCore` 的设计依据。
 
+> ⛔ **状态（2026-11-08）：§8 / §9 / §10 的项目归属与文件清单已过时。**
+> 这里规划的 `HD2ModCore/Application/IUnitMesh*.cs` 与 `HD2ModCore/Infrastructure/UnitMesh*`
+> （含 `UnitMeshRetargeter`、`UnitMeshReplacementStrategy`、`PatchUnitMesh*`、`UnitMeshAdaptationPlanner`）
+> 今天**一个都不在原位**：Unit 读写层已于 2026-07-18（`6de5c33`）整体迁到
+> `HD2ModAdaptation/PatchReconstruction/UnitMesh/`，旧链路于 2026-08-09（`9e7c668`）清理；
+> 骨骼重定向的现役实现在 `HD2SourceMigration/Retarget/`。
+> **§1～§4、§11 的协议事实、字节层变化与实测结论仍然有效**；§2.x 的排查过程照旧可读。
+
 ## 1. 背景结论
 
 当前确认：视频中的“从一个 Patch 提取模型并制作成另一个护甲/头盔替换 Mod”的流程，**不是简单修改 Patch TOC 或 Unit header**。
@@ -1086,6 +1094,10 @@ source Unit/FileID + source MeshInfoIndex -> target Unit/FileID + target MeshInf
 
 应放在 `HD2ModCore`：
 
+> ⛔ 已过时（2026-11-08）：归属已变 —— Unit mesh 读写/改写今天在
+> `HD2ModAdaptation/PatchReconstruction/UnitMesh/`，**不在** `HD2ModCore`（依赖方向是
+> `HD2ModCore → HD2ModAdaptation`，反向不成立）。"不要写进 `HD2ModManager`"这一条仍然成立。
+
 - Unit mesh parser/writer
 - Patch mesh rewrite
 - Armor adaptation planner
@@ -1112,6 +1124,11 @@ Manager 只负责：
 7. 最后再做自动匹配和 UI。
 
 ## 10. 当前 Core 移植进度
+
+> ⛔ 已过时（2026-11-08）：本节"当前进度"里的 `HD2ModCore/...` 路径**已全部不在原位** ——
+> `IUnitMesh*` 接口层与 `UnitMeshRetargeter` / `UnitMeshReplacementStrategy` / `PatchUnitMeshReplacementPlanner`
+> / `UnitMeshAdaptationPlanner` 等已删除，其余迁到 `HD2ModAdaptation/PatchReconstruction/UnitMesh/`。
+> 此处只作**历史阶段记录**，勿据此查找文件或判断"现在还能做什么"。
 
 已在 `HD2ModCore` 落地第一批 Unit mesh 读写能力：
 
@@ -1465,6 +1482,11 @@ Manager 只负责：
 3. 在拥有可读 source mesh 后，用 original archive target template 跑 `UnitMeshAdaptationPlanner` dry-run，记录 candidate / replacement / minified / payload size。
 4. 后续做原版游戏资产 counterpart extraction / comparison，用于更可靠地判断旧版 mod 与当前目标模板结构差异。
 5. 完成真实样本 dry-run 后即可把流程接入 Manager UI 或 CLI，但核心逻辑仍必须留在 `HD2ModCore`。
+
+> ⛔ 已过时（2026-11-08）：这条"下一步"已以**别的形状**落地 —— 目标模板极小化 + 源 mesh 重排现在走
+> `TargetShellMeshMapping` / `SectionalSplitter` / Canonical 写包链；换甲产物写 `Overwrite/`，
+> 基底 `sectional/` 只由转换链路写。另外"核心逻辑仍必须留在 `HD2ModCore`"也不再成立（见 §8 注）。
+> 现行链路见 `docs/agent/sectional-compile-base-20261108.md`。
 
 ## 11. 当前已知验证依据
 

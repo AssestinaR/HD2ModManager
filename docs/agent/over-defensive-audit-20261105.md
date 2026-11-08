@@ -130,6 +130,12 @@
 - **建议**：托管 Overwrite 是那个 Mod 自己的派生目录，随 Mod 删掉即正确；至少把文案改成可执行动作。
 - **风险**：只丢派生覆盖，源 patch 在 `vpk2patch/` 里可重建。
 
+> ⛔ 已过时（2026-11-08）：两条。① 上面这条闸门（`HelmetToArmorMerged` / `ManagedOverwriteRollbackRequired`）
+> 代码里仍在，但"去**详情页**关掉那个开关"已经无处可点——GUI 的头身合并开关**已删除**，
+> 合并只剩 `vpk2patch --head-merge` / `vpk rekey --head-merge` 两条 CLI 实验路径。所以文案该指向
+> "重转一次不带 `--head-merge`"，而不是一个不存在的开关。② 基底目录现已改名 `sectional/`
+> （`vpk2patch/` 是旧名，读侧仍认）。见 `docs/agent/sectional-compile-base-20261108.md` §1.3 / §4。
+
 ### B5. `custom-model.json` 写坏 → 几分钟的"一键转素体"在最后一步失败
 
 - **位置**：`CustomModelSectionalCompaction.cs:62-71`、`SectionalModBuilder.cs:110-116`

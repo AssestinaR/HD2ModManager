@@ -2,6 +2,11 @@
 
 > 本轮只做情报与工序，没有改码。所有数字都是拿用户给的两个包实测出来的。
 
+> ⛔ 已过时（2026-11-08）：本文把 `vpk2patch/` 当成"现在往哪写 / 在哪读"的地方，一律按 **`sectional/`** 读
+> （2026-11 改名；老库里仍是 `vpk2patch/`，读侧两个名字都认）。另：详情页「切换」/「应用」/「重构建」现在
+> 统一走编译基座 `ModCompileService.CompileAsync` 产出 `Overwrite/`；装饰重建、批量修复仍直接写它，属已知债。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.2/§1.3。
+
 ## 0. 样本
 
 | 样本 | 位置 | 内容 |
@@ -328,6 +333,12 @@ B 内部顺序：B1 schema（含命名）→ B2 显示 → B3 识别开关包 �
 | Mod 根 | 来源 `.vpk` —— 它是"VPK 版 Mod"的身份标记 | 不变 | 不 |
 | `vpk2patch/` | **权威事实**：这个 VPK 翻译出来是什么（patch / sections / components / custom-model） | **不变** | 不（除非没选目标） |
 | `Overwrite/` | **派生生效版**：vpk2patch + 目标护甲 + 勾选状态 | 每次改设置都重新生成 | 是 |
+
+> ⛔ 已过时（2026-11-08）：这张表的三层关系仍然成立，两处措辞过期 ——
+> ① 基底目录现名 **`sectional/`**（老库 `vpk2patch/`，读侧两个名字都认）；"不部署"的前提也改了：生效的是编译产物 `Overwrite/`。
+> ② "每次应用都从 `vpk2patch` 重新生成 `Overwrite`" 现在由**编译基座**统一执行：
+> `CompileAsync` 从 `sectional/` 完整算一遍（有目标 → 换甲，section 开关随之烘进去 → 材质物化进 `Overwrite/`），
+> 不做增量、不做缓存。见 `docs/agent/sectional-compile-base-20261108.md` §2。
 
 所以第 7 节里我做错了两处：
 

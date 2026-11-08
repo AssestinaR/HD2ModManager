@@ -2,6 +2,13 @@
 
 > 审计时间：2026-07-23。本文记录当前代码中的实际调用关系，不代表目标架构已经完成。
 
+> ⛔ 已过时（2026-11-08）：这里的"当前"指 2026-07-23。三个名字此后变了，矩阵里按旧名读会扑空：
+> `ModUserStatusService` → `ModUserStatusProjector.Project`（`HD2ModManager/Services/DerivedStateCoordinator.cs`）；
+> `CachedPatchGroupAnalysisProvider` → `ModInformationPatchGroupAnalysisProvider`；
+> `ImportAnalysisGate` 已删除（源码 0 命中，"只覆盖导入入口"这条问题因此不再以此形式存在）。
+> 其余入口名（`ProfileApplyService` / `ModLibraryService` / `DerivedStateCoordinator` /
+> `IModInformationCenter` / `IModFileFactsProducer` 等）仍在，矩阵的其余部分仍是 2026-07-23 的快照。
+
 ## 调用矩阵
 
 | 入口 | 当前生产/读取 | 范围 | SQLite | Adaptation/深度解析 | 失败影响 |

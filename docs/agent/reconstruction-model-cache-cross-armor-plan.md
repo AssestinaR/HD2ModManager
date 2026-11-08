@@ -2,6 +2,15 @@
 
 **日期：** 2026-07-15  
 **状态：** 规划基线；前置的部件语义、材质事实、稳定缓存与诊断链已完成一轮真实样例验证。  
+
+> ⛔ 状态（2026-11-08）：**阶段 1（同 AssetKey 重建）与阶段 3（跨护甲副本）已经以另一种形状落地**：
+> CLI 有 `patch repair`（同 key 重建）与 `equipment cross-armor`（跨护甲）两组 `inspect / plan / validate / apply` 链，
+> GUI 侧是详情页的「生成替换其他护甲的模组」+ 跨护甲计划窗口（`CrossArmorTransferPlanWindowViewModel`），
+> 落盘一侧是 `CanonicalSameKeyReconstructionService` / `CanonicalCrossArmorOrchestrator`。
+> 两类写出都只产出**库外新目录**（CLI 明确拒绝把候选写进 Mod 库 / GameData / 游戏根目录），与本文"禁止覆盖源 Mod"一致。
+> **阶段 2（可复用模型缓存资产）仍未实现**：仓里没有模型缓存资产类型，也没有缓存浏览入口。
+> 所以下面 §5–§8 的阶段顺序与 DTO/服务命名（`ReconstructionPlan` 等）只作历史设计参考，别照名字找实现。
+
 **适用项目：** `HD2ModAdaptation`、`HD2ModCore`、`HD2ModManager`。
 
 ---
@@ -555,7 +564,7 @@ $$
 开始阶段 1 前：
 
 1. 阅读本文件；
-2. 读取 `docs/hd2-patch-mesh-retargeting-notes.md`、`docs/unit-part-semantic-facts-design.md`；
+2. 读取 `docs/agent/hd2-patch-mesh-retargeting-notes.md`、`docs/agent/unit-part-semantic-facts-design.md`（2026-11-08 更正：两篇都在 `docs/agent/` 下）；
 3. 检查当前 Git status，避免误把 `_diagnostics` 输出加入提交；
 4. 以“同 AssetKey、只读计划预览”为唯一范围创建 DTO 和 UI；
 5. 不要直接开始跨护甲写出。

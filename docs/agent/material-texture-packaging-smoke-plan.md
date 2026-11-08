@@ -2,6 +2,14 @@
 
 **日期：** 2026-07-14  
 **状态：** 写出前可行性验证计划；未进入正式产品功能  
+
+> ⛔ 状态（2026-11-08）：上面那句「未进入正式产品功能」只描述 2026-07-14 当时的阶段。
+> 本文 P0–P3 已经落地（`HD2ModAdaptation/PatchReconstruction/PatchSubsetWriter.cs`、`MaterialPackagingService.cs`），
+> 拆分/合并写出也经高级详情「材质打包」入口进入产品（`MaterialPackagingApplicationService`、
+> `MaterialPackagingPageViewModel`），见 [`material-texture-reference-design.md`](material-texture-reference-design.md) §9。
+> §12 的接入顺序里，1–3（只读可行性审计 / 输出到指定文件夹 / 导入为普通 Mod）同样已完成；
+> 4–5（候选材质推荐、一键打包与作者工作流）仍未做。本文其余 P0–P4 规则仍是这套写出器的验收依据，可照用。
+
 **前置：** [material-texture-reference-design.md](material-texture-reference-design.md)  
 **适用项目：** `HD2ModAdaptation`，隔离验证目录 `_diagnostics/MaterialPackagingSmoke/`
 

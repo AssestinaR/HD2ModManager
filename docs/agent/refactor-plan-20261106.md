@@ -1,6 +1,6 @@
 # 重构计划（2026-11-06 起）
 
-> 配套决策记录：`docs/dual-surface-evaluation-20261106.md`（第 9~15 节是本轮讨论）。
+> 配套决策记录：`docs/agent/dual-surface-evaluation-20261106.md`（第 9~15 节是本轮讨论）。
 > 本文件只写**要做什么、按什么顺序、怎么验收**，不重复论证。
 
 ---
@@ -18,6 +18,13 @@
 | D5 | **`Overwrite/` 是唯一生效层**：只含启用的材质 patch + 修改后的 unit patch。关闭的材质 patch 留在 `sectional/`，不部署。 |
 | D6 | 旧库迁移**一次性**，不做双读兼容。迁移前整库备份。 |
 | D7 | 派生数据不设防：`sectional/` 可随时重生成；`Overwrite/` 可随时由 `sectional/` + 用户选择重建。只有来源与用户输入（名字/备注/section 开关/材质选择/映射）不可丢。 |
+
+> ⛔ 已过时（2026-11-08）：**D6 的"不做双读兼容"最终没有照做，而且是刻意不做的。**
+> 实现的形状是：`sectional/` 是新写入名，`vpk2patch/` 作为旧名**读侧永久兼容**
+> （`ModContentLayerNames.LegacySectional` / `ModNodePayloadLayout.TryGetExistingVpkPatchDirectory`）；
+> 一次性迁移只搬目录、不删读分支。进度表里 P2-3c「删旧名读分支」至今**未做**（见 §5）。
+> 理由：读侧只认新名会让老库里所有 VPK 类 Mod 被判成"没有内容层"，部署静默跳过——
+> 表现是"部署成功、游戏里什么都没变"。见 `docs/agent/sectional-compile-base-20261108.md` §1.3。
 
 **由此产生一条必须写死的规则**：每个槽位在 `sectional/` **顶层必须有一份默认版**。因为 `Overwrite` 只能「同名顶替」，不能新增槽位——少了默认版就会出现「明明启用了却没生效」。
 
@@ -46,6 +53,11 @@
   option.json                              ← 仅"真的是别人的 Option"的 mod 才有
   icon.*
 ```
+
+> ⛔ 已过时（2026-11-08）：块里那份【新】自描述文件**最终落地的文件名是 `.hd2modmanager-mod.json`**
+> （`ModSettingsFile.FileName`，schema 仍是 `hd2mod.mod/1`），不叫 `mod.json`。
+> 其余形状（`sectional/` 平铺 + `patches.json`、`Overwrite/` 是替换层）与今天一致。
+> 见 `docs/agent/material-list-handover.md` §1。
 
 **两个枚举器必须分开**（这是 P1 的核心，也是现在最容易出错的地方）：
 
@@ -126,6 +138,10 @@
 6. 测试：24 处字面量（6 个文件）换成常量；保留 2~3 个用例显式用 `LegacyVpkPatchDirectoryName` 覆盖"旧库形状"。
 7. 一次性迁移：把每个 mod 的 `vpk2patch/` 目录改名（保只读属性，失败跳过并记账）。
 8. 收口：删旧名读分支 + 同步用户可见文案（`VpkPayloadSwap:94`、`ImportService:373`、`CliVpkRekey:144,930`、`VpkRebuildService:119,138,147,265,332,336`、`ModDetailsPageViewModel.Vpk:417,823,836,840`、`ShellViewModel:2452`、`CliApplication:3146`）。
+
+> ⛔ 已过时（2026-11-08）：本步的**"删旧名读分支"没有做，且当前口径是不要做**（只有当它变成
+> "只改文案"时才算完成）。读侧两个目录名永久双认；进度表 P2-3c 仍是未勾选。
+> 见本节开头 §0 D6 的封存说明。
 9. 文档：`HD2RuntimeArmorOverride/notes/` 18 篇只在头部加一句"目录名已于 2026-11 改为 sectional"，**不批量替换**（否则历史调查记录变得不可信）。`docs/` 20 篇同理。`HD2ModCli/skills/**` 无需改。
 
 **其余要点**：
@@ -273,6 +289,15 @@ Overwrite = f(section 启用状态, 切换护甲目标状态, 切换材质状态
 这一步会同时动 CLI 的 `vpk rekey` 与 GUI 的「应用/切换」，所以放在下一步单独做，
 不夹在归属收敛里。
 
+> ⛔ 已过时（2026-11-08）：**"物化器是唯一写者"这条只落实了一半，最终实现是编译基座在编排。**
+> 落地形状：`ModCompileService.CompileAsync` 先跑换甲
+> （`VpkRekeyService.RunAsync(..., recordTarget: false)`），**换甲自己把 unit 层装进 `Overwrite/`**
+> （带归属标记、可回滚）；随后物化器按"启用材质集合"把同一层补齐，但它**不接收** unit 层参数
+> ——`CompileAsync` 走的是"取生效层里已有的那份 unit"这条分支。
+> `OverwriteMaterializer.Materialize(..., unitLayerPatchPath, ...)` 这个"接 unit 层"的重载确实存在，
+> 目前只有换甲的"退回来源 / 身份还原"路径在用。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §2。
+
 ### P4 mod 自描述
 
 | # | 事项 |
@@ -311,7 +336,7 @@ Overwrite = f(section 启用状态, 切换护甲目标状态, 切换材质状态
 | P6-7 | `library cleanup --backups --dry-run` + `library status` 的 `reclaimableBytes` |
 | P6-8 | 清掉开发目录残留 `bin\hd2mod.exe`（构建后） |
 
-**验收**：`docs/dual-surface-evaluation-20261106.md` §2 那 7 个故障里 ≥5 个能用 CLI 独立修好。
+**验收**：`docs/agent/dual-surface-evaluation-20261106.md` §2 那 7 个故障里 ≥5 个能用 CLI 独立修好。
 
 ### P7 架构债（可延后）
 
@@ -339,7 +364,7 @@ Overwrite = f(section 启用状态, 切换护甲目标状态, 切换材质状态
 
 1. `dotnet build` 三个项目：0 警告 0 错误。
 2. `dotnet test`：Core + CLI 全绿。
-3. 更新本文件的进度勾选，并在 `docs/dual-surface-evaluation-20261106.md` 记一条"实施与设计的分歧"（如果有）。
+3. 更新本文件的进度勾选，并在 `docs/agent/dual-surface-evaluation-20261106.md` 记一条"实施与设计的分歧"（如果有）。
 4. 提交信息写清"为什么"，不只写"改了什么"。
 5. 涉及库结构的改动，在真机库 `E:\mod` 上跑一次只读校验（`library sync inspect`），确认无漂移。
 
@@ -640,7 +665,7 @@ votes                  => a=3 b=1 c=2          ← 正确结果
   - [x] P6-9 `custom-model rename`（`9109abd`）
   - [x] P6-10 `settings get/set`（`c3fbb6d`：真映射模式这类只存在设置文件里的开关，没有 GUI 也能改）
 
-**验收（`docs/dual-surface-evaluation-20261106.md` §2 的 7 个故障，要求 ≥5 个能独立修好）**
+**验收（`docs/agent/dual-surface-evaluation-20261106.md` §2 的 7 个故障，要求 ≥5 个能独立修好）**
 
 | # | 故障 | 状态 | 命令 |
 |---|---|---|---|

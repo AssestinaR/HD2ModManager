@@ -4,6 +4,10 @@
 日期：2026-10-16
 范围：把 `tmp/rig-lab/` 的 L4D2→HD2 转换能力迁进 C# 类库，并让管理器/CLI 通过 Core 调用；同时把 VPK 变成 Mod 库的一等公民，自动转换产物落在同目录的 `vpk2patch/` 下。
 
+> ⛔ 已过时（2026-11-08）：转换产物的基底目录现名 **`sectional/`**（老库仍叫 `vpk2patch/`）。转换段只写
+> `sectional/` 与 `vpk2patch.json`，**不写 `Overwrite/`** —— 那一层由编译基座产出。见
+> `docs/agent/sectional-compile-base-20261108.md` §1.1/§1.3。本文其余把 `vpk2patch/` 当"往哪写"的句子同样按此读。
+
 ---
 
 ## 零、M1 落地结果（2026-10-16）
@@ -1784,6 +1788,12 @@ E:\mod\M3-verify-Darkened     材质=6  贴图=9  被合并=0  诊断=0
 | Unit 网格读/重建/写包 | `HD2ModAdaptation.PatchReconstruction` | ✅ 真实护甲替换、cross-armor、装饰、头盔合并都在跑 |
 | Mod 库 / 导入 / 选项 / 素体登记 | `HD2ModCore` | ✅ `E:\mod` 上约 120 个节点、3 份已生成素体 |
 
+> ⛔ 已过时（2026-11-08）：常规链路里**没有"头身合并"这个条件**（编译基座只接目标护甲 / section 开关 /
+> 材质开关）。GUI 侧仍有一条独立动作「临时将头盔合并到盔甲」（浮动操作簇，写主体 `Overwrite/`，
+> 走 `HostDerivedOverwriteService`，属 `sectional-compile-base-20261108.md` §5 的未收敛债）；
+> CLI `vpk2patch --head-merge` / `vpk rekey --head-merge` 保留为实验（会把合并烘进 `sectional` 本体、
+> 留 `movedFrom`，属协议外产物）。见该文 §4 与 §5。
+
 缺的是**中间那一段数学**（`hd2_style.py` 的 `retarget()`，约 1800 行），加上**四样从来没有过的东西**——网格切分、VPK 入仓、`vpk2patch` 约定、以及 C# 侧的材质贴图链路。
 
 ---
@@ -2002,6 +2012,10 @@ v'       = Σ w_i · D[b_i] · v1                                 ← 每顶点 
 
 ### 5.4 衣服开关 = L4N bodygroup（已确认，方向待定）
 
+> ⛔ 已过时（2026-11-08）：开关的落点已经定了，不再在下面三选一 —— 保持 `--components merge`（Unit 数仍为 7），
+> 开关做成 **section 级**，并且是**编译条件**、只在 `Overwrite/` 里生效（section 开关被烘进换甲产物），`sectional/` 不动。
+> 见 `vpk-cross-mod-id-collision-20261030.md` §4 第 3 条 与 `sectional-compile-base-20261108.md` §2。
+
 源侧数据齐（32 bodypart，名字中英双语），HD2 侧 `enabled` 机制齐。三种落点：
 
 | 方案 | 落点 | 优点 | 缺点 |
@@ -2014,6 +2028,12 @@ v'       = Σ w_i · D[b_i] · v1                                 ← 每顶点 
 
 ### 5.5 VPK 一等公民 + `vpk2patch/`（已定：权威但可重建）
 
+> ⛔ 已过时（2026-11-08）：基底目录现名 **`sectional/`**（老库 `vpk2patch/`），而且它**不是"可重建的派生品"**：
+> 它是 patch 级权威事实、形状固定，只由转换链路产出；改名 / 重编号 / 修复 / 装饰**一律不写它**，
+> 不存在"当普通 patch 家族零改动对待"。要改它只能另立一次明确授权的迁移。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.2。
+> 本节末尾"仍待定"里的部署问题也已定：部署的是**编译产物 `Overwrite/`**，来源 vpk 本身不落进游戏目录。
+
 **现状（三处硬阻碍）**：
 
 1. `ObjectTreeImporter.cs:46` —— 含 .vpk 的目录被**静默丢弃**。
@@ -2024,6 +2044,10 @@ v'       = Σ w_i · D[b_i] · v1                                 ← 每顶点 
 
 - 新增 `ModNodeKind.Vpk`（判定：目录里有 `*.vpk`）——它的详情页、可用操作、部署语义都不同。
 - `CollectPatchGroups` 与 `ModFileResolver` 扩成"**顶层 + `vpk2patch/`**"；`Overwrite/` 的来源改为 `vpk2patch/Overwrite/`。
+
+  > ⛔ 已过时（2026-11-08）：前半（扫描口径扩成"顶层 + 基底目录"）成立；后半错了 —— `Overwrite/` 是 Mod **根下**的
+  > 独立替换层、由编译基座产出，**不在基底目录里面**（只有同名根 patch 存在时它才顶替）。
+
 - **`vpk2patch/` = 权威但可重建**：入库时自动生成一次，之后当普通 patch 家族对待（改名/重编号/修复/装饰/overwrite 全部零改动）；`library.json` 记录**源 vpk 的指纹**，只有指纹变了才重新生成。
 
 仍待定：
@@ -2033,7 +2057,7 @@ v'       = Σ w_i · D[b_i] · v1                                 ← 每顶点 
 
 ### 5.6 额外骨骼写进 patch（你明确要求"不允许外置文件"）
 
-已有**定稿协议**：`docs/hd2physbone-embedded-patch-protocol.md`（`HD2PBX01` 容器，追加在 `<archive>.patch_<n>.gpu_resources` EOF，64 字节对齐；TOC **绝不**新增条目；已用 Karin 动态骨骼样本做过真实游戏测试）。
+已有**定稿协议**：`docs/agent/hd2physbone-embedded-patch-protocol.md`（`HD2PBX01` 容器，追加在 `<archive>.patch_<n>.gpu_resources` EOF，64 字节对齐；TOC **绝不**新增条目；已用 Karin 动态骨骼样本做过真实游戏测试）。
 
 两条**独立**通道：
 
@@ -2079,6 +2103,8 @@ v'       = Σ w_i · D[b_i] · v1                                 ← 每顶点 
 5. **BC7 编码走 `texconv.exe` 外部进程吗？**（§5.7）
 6. **"通过 CLI 转换为指定护甲"** —— 是否就是复用现有 `equipment cross-armor` 链路（源 Unit 由 VPK 生成、目标为指定护甲 Unit）？精度损失体现在哪一步？
 
+> ⛔ 已过时（2026-11-08）：第 3 条已定 —— 部署的是**编译产物 `Overwrite/`**，来源 vpk 与基底里的 patch 不直接落进游戏目录。
+
 ---
 
 ## 八、建议的里程碑
@@ -2092,6 +2118,10 @@ v'       = Σ w_i · D[b_i] · v1                                 ← 每顶点 
 | **M5** | 管理器详情页：vpk 转换选项 | UI 可添加/删除转换选项 |
 | **M6** | 全部 30 个 bodygroup（依赖 M2 的 piece 数上限结论） | 30 个开关都能用 |
 | **M7** | 额外骨骼 / 物理（HD2PBX01 + TransformInfo 构造器） | 容器在重建/合并/导出后仍在，记录 hash 不变 |
+
+> ⛔ 已过时（2026-11-08）：M4 已落地，形状是 CLI **`vpk2patch`**（转换段）＋基底目录 `sectional/`（老库 `vpk2patch/`）；
+> "部署"那一步走编译产物 `Overwrite/`。M6 的前提（按 bodygroup 拆成 N 个 Unit）也已被 §5.4 的更正取代 ——
+> 现行是 `--components merge`（Unit 数仍 7）+ section 级开关。
 
 **M1 是全部风险所在**，也是唯一可以完全离线、可自动回归的阶段。**建议先只做 M1。**
 

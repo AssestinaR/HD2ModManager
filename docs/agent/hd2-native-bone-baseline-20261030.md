@@ -1,13 +1,16 @@
 # HD2 原生骨骼 / 物理能力基线（不含 Lua、不改游戏本体）
 
 > **⚠️ 本文只记录「原生能力基线」（骨骼宇宙 / 资产格式 / Lua 面）。**
-> **实测结论、实施方案与交接技艺在 `docs/hd2-physics-roadmap-and-handover.md`。**
+> **实测结论、实施方案与交接技艺在 `docs/agent/hd2-physics-roadmap-and-handover.md`。**
 > 目的：把 L4D2 的物理骨骼（Source `$jigglebone`）移植到 HD2 之前，先量清楚
 > **HD2 在最基础的条件下能支持哪些骨、哪些骨真的会动**。
 > 约束：不写 Lua、不打运行时补丁、不改游戏本体文件；只考虑"换/加我们自己的资产"。
 >
 > 标记约定：`format-confirmed` = 直接从游戏数据里读出来的字节事实；
 > `inference` = 由数据推出来的判断，未经游戏内实测。
+>
+> 路径说明（2026-11-08 更正）：本文 4 处 `docs/hd2-*.md` 引用已补到 `docs/agent/hd2-*.md`
+> ——文档树已整体搬进 `docs/agent/`，原写法缺 `agent/` 一层。
 
 ---
 
@@ -167,7 +170,7 @@ game_mesh, grp_torso_arm_r_male, g_torso_arm_r_male{_shadow,_LOD2,_LOD1,'' }
 2. **角度限值很小**：5°～10°（只有 `sling` 是 40/80/35）。这是"装备晃动"的量级，不是"头发飘"的量级。
 3. **参数不可改**：参数烘焙在状态机资源里；Lua 侧只有
    `Unit.update_jiggle_bone_data` / `update_jiggle_bone_orientation` 这种"驱动"接口，
-   没有"新增第 7 根"或"改参数"的接口。`format-confirmed`（见 `docs/hd2-armor-physics-research.md` §10.1）
+   没有"新增第 7 根"或"改参数"的接口。`format-confirmed`（见 `docs/agent/hd2-armor-physics-research.md` §10.1）
 
 ### 3.2 一个有用的细节：6 根里只有 3 根有动画
 
@@ -215,7 +218,7 @@ StingrayEntityRoot, FbxAxisSystem_ConvertNode
 
 ⇒ **AQ 版的"自定义外部动画骨 / 独立辅助骨 / 自动整合 PhysBone / 身体共享物理解算"，
 全部依赖一个 Lua 写入器在运行时把姿态写进场景图节点。** 这正是我们要避免的那一层。
-我们自己的 `docs/hd2physbone-embedded-patch-protocol.md`（`HD2PBX01` 容器 + ReShade/addon64 读取）
+我们自己的 `docs/agent/hd2physbone-embedded-patch-protocol.md`（`HD2PBX01` 容器 + ReShade/addon64 读取）
 是同一层的另一种实现。
 
 ---
@@ -288,13 +291,18 @@ StingrayEntityRoot, FbxAxisSystem_ConvertNode
 ### 6.3 还有一个必须提前知道的坑
 
 前一轮已记录：**Nick / Ellis 的长袖飘带在源 bind pose 里就是"伸出去 1.7 m"的形状**
-（`docs/hd2-batchtool-sdk-findings.md` §8.5）。不带物理驱动时它们会**保持这个静态形状**。
+（`docs/agent/hd2-batchtool-sdk-findings.md` §8.5）。不带物理驱动时它们会**保持这个静态形状**。
 所以"没有物理"不是"不动"，而是"定在了一个明显错误的位置"。这决定了：
 **在物理方案定下来之前，这类模型的袖子必须先按部位裁掉或按未约束姿态重摆。**
 
 ---
 
 ## 7. 建议的下一步（三选一，按成本排序）
+
+> ⛔ 已过时（2026-11-08）：这张表把 E1/E2/E3 当成"待做"，而**它们在本篇附录里已经有了结果**——
+> E1（护甲 Unit 自带 bones + state_machine）已在 **附录 E** 做完并**否定**（结论：护甲 Unit 的
+> `state_machine` 不会被 tick，纯 patch 加不了骨）；E2/E3 的结果在 **附录 D.6 / D.9 / 附录 F**
+> （加骨到玩家骨架会崩，根因是动画资产里写死的骨数）。**不要再按本表重跑这三组实验。**
 
 | 编号 | 实验 | 成本 | 能定什么 |
 |---|---|---|---|

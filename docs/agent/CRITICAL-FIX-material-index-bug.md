@@ -4,6 +4,14 @@
 **修复时间：** 2026-07-12 11:00  
 **严重程度：** ⚠️ 极高（导致模型完全消失）
 
+> ⛔ 已过时（2026-11-08）：本文取证的两个文件**今天都不在仓库里** ——
+> `HD2ModAdaptation/PatchReconstruction/UnitMesh/StrictUnitMeshTransfer.cs`
+> （`BuildSourceMaterialByVertex` / `VertexMaterialIndex`）与
+> `HD2ModCore/Infrastructure/UnitMeshRetargeter.cs`（`CreateVertexMaterialMap` / `VertexMaterialMapEntry`）
+> 全仓 `rg` 0 命中：Unit 读写层已于 2026-07-18（`6de5c33`）迁到
+> `HD2ModAdaptation/PatchReconstruction/UnitMesh/`，旧链路于 2026-08-09（`9e7c668`）清理。
+> **结论仍然有效**（骨骼映射查**源**材质索引、输出用**目标**索引），但不要按本文路径去找代码。
+
 ---
 
 ## 问题描述
@@ -192,5 +200,5 @@ dotnet run --project AdaptationPatchSmoke.csproj -- <args> --broad-coverage
 ## 相关文件
 
 - 主修复文件：`HD2ModAdaptation/PatchReconstruction/UnitMesh/StrictUnitMeshTransfer.cs`
-- 详细报告：`docs/bone-remap-fix-2026-07-12.md`
+- 详细报告：`docs/bone-remap-fix-2026-07-12.md`（2026-11-08 更正：该文件不在仓库里，也从未入库；能查到的只有本篇与 `CRITICAL-FIX-3-target-section-materialindex.md`）
 - 测试 Patch：`_diagnostics/AdaptationPatchSmoke/out/826-material-index-fix/`

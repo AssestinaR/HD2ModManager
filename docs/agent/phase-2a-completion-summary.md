@@ -3,6 +3,13 @@
 **日期：** 2026-07-12  
 **状态：** ✅ 完成并验证
 
+> ⛔ 已过时（2026-11-08）：本篇是 2026-07-12 的**完成记录**——"4/4 组件按设计实现并通过测试"在当时成立，
+> 不要读成"今天还有这些文件"。`PatchMaterialDetector` / `TemporaryMaterialCombiner` / `AdaptiveMeshTransfer` /
+> `AdaptiveOutputWriter` 已在 2026-08-30「代码清理阶段1」随 `HD2ModAdaptation/Processing/` 一起删除，
+> 四个类名现在源码 0 命中；`_diagnostics/` 的三个测试工程也早已不在仓库里（从未入库）。
+> 材质拆分的现行落点是 `HD2ModAdaptation/PatchReconstruction/MaterialPackagingService.cs` 与
+> `HD2ModAdaptation/Analysis/PatchGroupAnalyzer.cs`；链路见 `docs/agent/sectional-compile-base-20261108.md`。
+
 ---
 
 ## 🎯 目标回顾
@@ -127,6 +134,9 @@
 7. `_diagnostics/AdaptiveIntegrationTest/` - 端到端测试
 
 **总计：** ~500 行新代码 + 测试工具
+
+> ⛔ 已过时（2026-11-08）：上面 7 条路径今天全部不存在（前 4 个 `.cs` 已在 2026-08-30 删除，
+> `_diagnostics/` 也从未入库）。这是当时的清单，不是现在可以打开的目录。
 
 ### 提交历史（5个）
 

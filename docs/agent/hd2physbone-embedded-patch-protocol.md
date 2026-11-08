@@ -122,7 +122,7 @@ Footer 位于载体文件 EOF：
 
 管理器仓库提供了只依赖 Python 标准库的工具：
 
-[`tools/hd2physbone_patch_container.py`](../tools/hd2physbone_patch_container.py)
+[`tools/hd2physbone_patch_container.py`](../../tools/hd2physbone_patch_container.py)
 
 它不解析三个资源的内部格式，只负责安全地原样封装、提取、校验和移除。
 
@@ -458,6 +458,13 @@ local f = io.open("data/9ba626afa44a3aa3.patch_0.gpu_resources", "rb")   -- 成�
   │ GUI「应用为 RE2310」（custom-model convert）
   └─▶ Overwrite/   ──[CarryForward 搬运]──────▶ 容器被原样搬过去
 ```
+
+> ⛔ 已过时（2026-11-08）：**结论没变**（嵌入必须在成品阶段、`Overwrite/` 必须单独搬），
+> 但本节出现的目录名与产线名过时了：转换产物基底已从 `vpk2patch/` 改名 `sectional/`（老库仍是旧名，读侧两名都认，
+> 下面写"根 / vpk2patch / Overwrite"的地方今天读作"根 / `sectional` / `Overwrite`"）；
+> `Overwrite/` 现在由**编译基座**（`ModCompileService.CompileAsync`：换甲 → 材质物化）产出，
+> 不再是「应用为 RE2310 / `custom-model convert`」这一步的直接产物。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.1、§1.2。
 
 - **为什么不在转换阶段嵌**：转换输出还要过受管步骤，尾部多出来的裸字节会让记账错位
   （历史症状：材质整体投递失败、面部品红）。

@@ -90,6 +90,11 @@ var produced = FindProducedPatchDirectory(convertRoot);   // ← 只取第一个
 unit（基底那份，或已有的换甲产物）+ 启用的材质。不做这一步，部署会按"基底全上"把
 `sectional/` 里所有材质变体一起上，同名资源互相覆盖——用户看到的颜色取决于部署顺序。
 
+> ⛔ 已过时（2026-11-08）：**重构建不再自己调物化器**——它走编译基座 `ModCompileService.CompileAsync`
+> （"转换 → 编译"两段分明），`Overwrite/` 由编译基座内部的物化器写，重构建本身不碰这一层。
+> 导入路径仍是直接调 `OverwriteMaterializer.Materialize`。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §2 / §3。
+
 只在"这是 VPK 转换产物"（根上有 `vpk2patch.json`）时物化：手写的 sectional Mod 没有报告，
 贸然物化会把它自己的 patch 藏进变体里。
 
@@ -182,6 +187,11 @@ patch_2  role=Material  name=Elise基础材质B1光泽感肌肤
 | | `vpk2patch.json`（改写过的报告） | 写 |
 | | `Overwrite/`：`目标护甲 + 组件启用 + 材质启用` 算出的唯一生效层 | 写（**且只在真的重做了换甲、或从来还没有生效层时**） |
 | | `library.json` 的 `patchGroups` / 指纹 | 由库服务写 |
+
+> ⛔ 已过时（2026-11-08）：`Overwrite/` 那行的"**只在真的重做了换甲、或从来还没有生效层时**才写"
+> 已经不是落地形状。编译基座**每次都从 `sectional/` 完整重算一遍**（不做增量、不做缓存）；
+> "没重做换甲时不要冲掉用户的换甲产物"改由物化器的 unit 层取"生效层里已有的那份"来保证，
+> 不是靠跳过物化。下表"四条禁止"第 4 条（意图）仍然成立。
 
 **四条禁止**（全部来自实测事故）：
 

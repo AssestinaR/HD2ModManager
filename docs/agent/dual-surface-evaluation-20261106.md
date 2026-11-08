@@ -4,6 +4,11 @@
 > 一手证据：我在**发布版安装目录**（`HD2ModManager\bin\Debug\net10.0-windows`）里跑 CLI，全部只读命令。
 > 三个子代理分别做：CLI 盲测（A）、gamedata 库表审计（B）、mod 缓存审计（C），结论已并入。
 
+> **目录名换算（2026-11-08）：** 全文写于 2026-11-06，其中的 `vpk2patch/` / `vpk2patch\` 一律指
+> **今天叫 `sectional/` 的那个基底目录**（旧名读侧仍兼容，新写入只用新名）。这是路径名换算，
+> 不是结论变化——按下面的规则读：讲**当时在哪**的照原文读换算即可；讲**今天该往哪写**的，
+> 已在命中处逐条加了 `⛔ 已过时（2026-11-08）` 外壳。见 `docs/agent/sectional-compile-base-20261108.md` §1.3。
+
 ---
 
 ## 0. 结论先说
@@ -137,6 +142,11 @@ $ hd2mod mod analyze 178ba581 --library E:\mod --json
 | **用来源重构建（单个）** | 无 —— GUI 里是 `VpkRebuildService` → `vpk2patch --reuse-model` + `vpk rekey` + 骨骼嵌入 + 报告 | ❌ |
 | **一键重构所有 VPK** | 无 —— GUI 里是 `VpkBulkRebuildService`（并发 5） | ❌ |
 
+> ⛔ 已过时（2026-11-08）：表里「头身合并」那一行**反过来成立了**——GUI 的这个开关**已删除**
+> （详情页不再提供这个条件），只剩 `vpk2patch --head-merge` / `vpk rekey --head-merge`
+> 两条 CLI 实验 / 救急参数。常规链路里没有头身合并这个条件。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §4。
+
 **7 个缺口，全在"新功能"那一侧。** 不是巧合：老功能当初是 CLI 驱动 GUI（`Hd2ModProcess` 调 CLI），新功能反过来变成 GUI 自己写服务、顺手调几个 CLI 原语。**配方沉淀在 GUI 代码里，CLI 只剩零件。**
 
 而 agent 拿到的 `vpk2patch` 帮助是 60 行散文（`--matcap` / `--id-namespace` / `--reuse-model` / `--cutout` / `--normal-flip-y`），信息量足——**危险项埋在段落中间**：`--id-namespace` 不传会"和库里其它导入撞名"，这句排第 30 行。
@@ -163,6 +173,11 @@ $ hd2mod mod analyze 178ba581 --library E:\mod --json
 | 5 | 库元数据加载失败 / 库看起来空 | ❌ | `library sync inspect` 能修"记录漂移" | `library.json` 本身坏了 → `UnhandledError` + `Library data is invalid JSON.`——**英文、无路径、无行号、无建议**，也没有"从磁盘重建"的命令 |
 | 6 | sectional 组件树不显示 | ✅ 1 步（落点要猜） | `wardrobe sections "<…>\vpk2patch\9ba…patch_0" --output "<…>\vpk2patch\sections.json" --overwrite` | 重生成的 schema 与库内一致、实测可跑；但 CLI **不告诉你**管理器期望的落点是 `vpk2patch\sections.json`，也不走库租约 |
 | 7 | 真映射关不掉 / 开了没效果 | ❌ | 只能诊断（`armor-registry status` 看 `runtimeProcessRunning`） | 开关是 `settings.json` 的 `"ArmorMappingMode": 2`，**CLI 没有 settings 读写**；`armor-registry` 明确声明"never edits dl_bin"。改开关必须开 GUI |
+
+> ⛔ 已过时（2026-11-08）：表里 `<mod>\vpk2patch\...` 这类**落点路径**的目录现名是 `sectional/`
+> （`vpk2patch/` 作旧名，读侧仍认；新写入一律用新名）。第 1 行的 `custom-model.json`、第 6 行的
+> `sections.json` 都在这条规则下。第 6 行"CLI 不告诉你落点"这个缺陷本身仍成立，只是落点换名了。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.3。
 
 **2 个能修，2 个半个，3 个不能。** 四条结构性原因：
 
@@ -881,6 +896,12 @@ resolutionSet 条目不是库 mod 的：0
 |---|---|---|---|
 | 分件组表 | `Overwrite\components.json` | `hd2mod.section-groups/1` | 12~14 组：`裙Skirt`、`耳坠Earrings`、`光环`、`猫耳`（**几何部件**） |
 | vpk 组件 | `vpk2patch\components.json` | `hd2mod.vpk-components/1` | 1 组（源侧 bodygroup） |
+
+> ⛔ 已过时（2026-11-08）：本节末句"材质变体是另一条轴 = 独立 Option mod"**已不成立**——
+> 材质已折并进宿主：`sectional/` 里 `patch_0`（unit）+ `patch_1..patch_N`（材质变体）**平铺**，
+> 另有 `patches.json` 记号说明每组是谁；材质选项不再是库里的兄弟节点。
+> 「两种变体同时存在」现在只剩 section 一条轴需要靠复制 Mod。
+> 表的第二个路径也已是 `sectional\components.json`（目录改名，见 §1.3）。
 
 而材质变体是**另一条轴**：独立 Option mod（`MourningVeil基础材质B1服装色黑` 之类）。
 

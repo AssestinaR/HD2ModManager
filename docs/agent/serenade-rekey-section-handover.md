@@ -62,7 +62,7 @@
 
 ### B. section 开关烘焙
 
-入口：`HD2ModManager/Services/VpkRekeyService.cs` → `HD2ModCli/CliVpkRekey.cs` 的 `BakeAsync` / `TranslateDisabled` → `HD2ModCore/Infrastructure/WardrobeSectionBaker.cs`
+入口：`HD2ModCore/Infrastructure/VpkRekeyService.cs` → `HD2ModCli/CliVpkRekey.cs` 的 `BakeAsync` / `TranslateDisabled` → `HD2ModCore/Infrastructure/WardrobeSectionBaker.cs`（2026-11-08 更正）
 
 已读到的实现要点：
 - `Bake` 会**先全量校验**每个 toggle 的当前值（必须等于 0 或 记录值），否则抛异常 → 不会写偏
@@ -164,6 +164,11 @@ Mod 库              E:\mod          （.hd2modmanager\ 里有 registry / wardro
 - `Overwrite/` = 变体（换甲 / section 烘焙的产物，**每次从 vpk2patch 重新生成**）
 - `wardrobe.json` = 组件树状态：`componentTreeEnabled`、`targetArmorArchiveId`、`disabled`
 
+> ⛔ 已过时（2026-11-08）：上面这份是 2026-11-01 的目录约定。现行口径：基底目录已改名 `sectional/`
+> （老库里仍叫 `vpk2patch/`，读侧两个名字都认）；`Overwrite/` 只由编译基座（`ModCompileService.CompileAsync`）产出
+> ——换甲与 section 开关都是它的**输入条件**，产物落 `Overwrite/`，基底那份权威 patch 不动。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.2、§2。
+
 ### 当前库状态（可能已被用户改动，用时先确认）
 
 - `E:\mod` 下有 **18 个 `serenade*` 目录**，来自**两代导入**（`xxx` 与 `xxx_2`），**两代都部署过**
@@ -225,7 +230,7 @@ python tmp\deepcmp2.py <A.patch_0> <B.patch_0> <A.json> <B.json>
      （`CanonicalHiddenUnitBuilder.Build(target, transforms)`）。
    - 也就是说：**护甲看不见了，但它的"挖洞"网格还在**，会把下面一层（我们的 Undergarment）
      在原来护甲覆盖的区域继续挖掉 ⇒ 表现正好是「几何在、材质在、就是不画、也不是品红」。
-   - 反证仍存在：`docs/hd2-patch-mesh-retargeting-notes.md:374,387` 记录过一次实验，
+   - 反证仍存在：`docs/agent/hd2-patch-mesh-retargeting-notes.md:374,387`（2026-11-08 更正路径）记录过一次实验，
      保留 vs 压缩 culling 网格「表现完全一致」，所以那条曾被判为假设错误。
      **但那次针对的是"小甲片没被隐藏"，不是"下层被挖洞"，症状不同，不能直接套用。**
 
@@ -296,6 +301,10 @@ python tmp\deepcmp2.py <A.patch_0> <B.patch_0> <A.json> <B.json>
 打算把 VPK 卡片的「替换到目标护甲」改成：
 **用 armour-registry 把目标护甲映射到这份 VPK 的自定义素体**，不再生成 `Overwrite` 换甲 patch。
 用户侧操作不变（选目标护甲 → 完成）。
+
+> ⛔ 已过时（2026-11-08）：这条方向**没有采用**。现行做法仍是换甲产出 `Overwrite/`
+> （换甲 = 编译基座的条件①，section 开关在同一次里烘进去），没有改成"只写 armour-registry 映射"。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §2。
 
 ### 待确认（问用户）
 

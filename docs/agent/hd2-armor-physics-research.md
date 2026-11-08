@@ -272,7 +272,7 @@ Lua 侧可**触发**（来源：`Alomare/RagdollOnCommand`）：
 
 ### 4.1 现状：自定义素体 = 逐字节复用，不改骨骼与权重
 
-`docs/custom-model-conversion-20260925.md` + `docs/custom-model-cross-armor-targets.md`：
+`docs/agent/custom-model-conversion-20260925.md` + `docs/agent/custom-model-cross-armor-targets.md`：
 
 - "一键转为自定义素体" = 取来源 Archive 的**可见 Unit**，用既有 Canonical direct-source-reuse 写包链路
   **重新编号**，输出新 Patch；**保留来源 TOC/GPU/stream 和依赖**；**不进行跨 Unit 几何合并**；
@@ -424,8 +424,8 @@ struct collider { collider_kind kind; ... };   // sphere / capsule / plane
   - `runtime/lua_patch/physbone_reference.lua`（Lua 参考框架）
   - `kit/ref/hd2_skel.json`（护甲骨架）
 - `docs/HD2SDK-CommunityEdition-3.8.0/stingray/state_machine.py`（`RagdollItem`）
-- `docs/hd2physbone-embedded-patch-protocol.md`（我们与 PhysBone 生态已有的协议）
-- `docs/custom-model-conversion-20260925.md` / `docs/custom-model-cross-armor-targets.md`（素体现状）
+- `docs/agent/hd2physbone-embedded-patch-protocol.md`（我们与 PhysBone 生态已有的协议）
+- `docs/agent/custom-model-conversion-20260925.md` / `docs/agent/custom-model-cross-armor-targets.md`（素体现状）
 - `HD2ModAdaptation/PatchReconstruction/UnitMesh/Canonical/*`（加骨与蒙皮能力）
 
 **线上**：

@@ -2,7 +2,7 @@
 
 **日期：** 2026-10-22
 **范围：** `HD2ModManager` 的壳层、页面、共享控件与主题资源；不含业务逻辑与 Patch 链路。
-**基线：** `docs/manager-ux-redesign-plan.md`（2026-07-18）、`docs/manager-ui-design-language-implementation-plan.md`（2026-07-19）。
+**基线：** `docs/agent/manager-ux-redesign-plan.md`（2026-07-18）、`docs/agent/manager-ui-design-language-implementation-plan.md`（2026-07-19）。
 
 > **关于这两份基线文档的时效性：** 它们是**历史需求**，不等于当前验收标准。已经确认过时的一条：首页当前形态（说明书 + 健康摘要 + 启动游戏）**是作者预期的样子**，文档里"首页只保留精简健康摘要"的目标不再成立。本文凡引用文档得出的"应该怎样"，都只作为**待确认的假设**，不直接当作缺陷；改动前需逐条确认。
 
@@ -57,6 +57,7 @@
 - **modlist：** 50px 节距（48 行高 + 上下各 1），1200×720 下一屏 11–12 行，33 个 Mod 滚动一次即到底。密度是对的。
 - **设置页：** 150px 标签列 + 输入 + 3 个同权按钮（浏览/打开/重置），单行 4 个控件；整页 45 处字面间距，**没有主次**——所有按钮都是 `AppSecondaryButton`（`SettingsPageView.xaml:24-37`）。
 - **Mod 详情：** 5 行右对齐按钮簇（`ModDetailsPageView.xaml:66-94`），最多 13 个同款 Secondary 按钮平铺；"修复 patch / 生成替换 / 规整 patch 包 / 资源重打包"四个动词并列，用户无法判断该点哪个。**这是全项目最该重构的一页。**
+  > ⛔ 已过时（2026-11-08）：那张动作卡已于 2026-10-29 整张删除（`CardKind.ModActions` 已不存在），详情页动作改为汉堡（浮动操作簇）里的声明式动作项（今天 15 项，逐条见 `HD2ModManager/ViewModels/ModDetailsPageViewModel.Actions.cs`）。
 - **首页：** 说明书无目录、无锚点、无搜索，且被截断在卡片底部。
 
 ### 2.4 交互与反馈
@@ -100,6 +101,7 @@
 ### 2.7 一致性债务清单（可直接排期）
 
 1. **死代码：** `LibraryPageView.xaml:6-20` 与 `ProfilePageView.xaml:6-20` 各定义 5 个图标 `DataTemplate`，实际模板已内联，从未被引用。
+   > ⛔ 已过时（2026-11-08）：这 10 个死模板已于 2026-10-29 删除（两处各只剩一个 `*SearchActions` 模板）。
 2. **标题栏按钮自成一派：** `CaptionButtonGreyHover/RedHover` 用 `#D9D9D9 / #BFBFBF / #E53935 / #B71C1C`，与语义色板无关（`MainWindow.xaml:124-165`）。
 3. **散落色值：** `ModListPanel` 的空态 `#888`、药丸阴影 `#243042`、外部拖放遮罩 `#D9FFFFFF`；`ModDetails` 的 `#444/#555/#EEF1F6/#1E63D6`；`CrossArmor` 的 `#16803A/#4B5563/#9CA3AF`；`CapsuleButtonGroup` 的 `#333`。
 4. **文案：** 首页的 `o'v'o`、"Mod 太 tm 多了"、"本次运行的消息"；中英标点混排。
@@ -129,6 +131,7 @@
 
 4. **操作按上下文裁剪，而不是全部禁用。**
    `RowActions` 是 flags 枚举（`ModListPanel.xaml.cs:98`），宿主只传自己真能做的；每行还能用谓词二次过滤（`IsCustomModel` / `CanJoinProfile` / `IsAttachable`）。所以同一个模板在配置页是 ↑↓✕，在库页是 ＋🗀🗑，**永远没有"看得见点不动"的按钮**。
+   > ⛔ 已过时（2026-11-08）：宿主仍传 flags，但行级过滤已改为行对象实现 `IModListRowActionFilter.HiddenActions`（2026-10-29），不再按属性名猜那三个谓词。
 
 5. **静止时安静，需要时密集。**
    操作药丸默认 `Opacity=0`、`IsHitTestVisible=False`，悬停 120ms 淡入（`ModListPanel.xaml:184-188, 306-327`）。静止态一行只有 3 个视觉元素；悬停态才展开成工具条。**信息密度是按意图分层的，不是按空间堆的。**
@@ -147,6 +150,7 @@
 2. **hover / selected 视觉几乎重合**（见 2.4）。
 3. **药丸遮挡元信息**（见 2.4）。
 4. **15 个按钮硬编码在模板里**：加一个动作要同时改 XAML + 枚举 + 3 个 converter。已经到"一模板通吃"的上限，下一步要么抽成 `ItemsControl` 驱动的动作条，要么接受分叉。
+   > ⛔ 已过时（2026-11-08）：已按第一条路做完（2026-10-29）——行模板是 `ItemsControl` + 一个 `Button` 模板，加动作 = 枚举 + `ModListRowActionCatalog` 一行 + 一个 `RowIcon.*` 几何。
 5. **键盘路径不完整**：不可见按钮仍在 Tab 序列，行没有焦点框。
 6. **行高锁死 48**：长名称只能省略，没有"两行名"的例外通道。
 
@@ -202,6 +206,7 @@ tools\UiSnapshot\bin\Debug\net10.0-windows\UiSnapshot.exe modlist-hover --scale 
 
 6. ~~**首页重排**~~ **（已撤销：首页现状是预期，旧文档要求作废，改动前必须单独确认）**
 7. **Mod 详情动作卡重排**：1 个主操作 + 分组次操作（修复 / 转换 / 导出 / 文件），不再 13 个平铺。
+   > ⛔ 已过时（2026-11-08）：已以另一种形状做完——动作卡删除，动作迁进汉堡；没有"1 主 + 分组次操作"的卡片。
 8. **设置页**：每行一个主操作，"浏览/打开"收进输入框右侧图标按钮；周期选择与开关同行右对齐。
 9. **空状态**：补 `AppEmptyState`（图标 + 标题 + 解释 + 下一步动作），先用于库、配置、装饰候选三处。**（2026-10-24 完成：`Controls/EmptyState/`，库页按"库为空 / 搜索无结果 / 全部已加入配置"分三态；只给 `EmptyMessage` 的页面回落到单行文字，颜色从 `#888` 提到 `TextSecondary`）**
 

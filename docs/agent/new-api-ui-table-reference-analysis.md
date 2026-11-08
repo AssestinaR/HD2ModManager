@@ -145,6 +145,14 @@ Manager 不做移动端，但可借鉴其**同一行数据具有多种密度呈�
 | 任务中心 | 单独模态窗口，任务仅是简单列表 | 数据卡内的状态表 / 列表：进行中、最近事件、可取消与失败重试；刷新不清空旧行 |
 | 设置资产状态 | 多张静态卡片，状态与操作分离 | `TitledCard` 式卡片：标题/说明/右侧动作，内容区展示路径、周期、上次检查和状态 |
 
+> ⛔ 已过时（2026-11-08）：本表"当前问题"一列描述的是 **2026-07-18** 的界面，其中三行的前提已经不成立
+> —— **内部功能模态窗口全部迁成工作区页面**：`AdvancedModDetailsWindow`、`GameDataIndexWindow` /
+> `GameDataArchiveDetailsWindow`、`BackgroundTasksWindow` 在 `HD2ModManager/Views` 下已不存在
+> （现在只有 `AdvancedModDetailsPageView` / `GameDataBrowserPageView` / `GameDataArchiveDetailsPageView` 与
+> `MainWindow` 里的任务抽屉 `TaskHub`）；仅剩 `ShowDialog` 的用法都是文件/目录选择器与更新镜像。
+> 因此"把弹窗迁成页面"这一条**不要再当成待办重做**；表中"建议的参考模式"仍然有效。
+> §6 提出的"数据展示基础工作包"也已并入 `manager-ux-redesign-plan.md` 并落地（该文的「数据展示基础工作包：高级表格先行」）。
+
 ## 5. 不应照搬的部分
 
 - Web 的 Tailwind、React、TanStack Table 和 CSS `oklch` 不是 WPF 依赖选择；应转换成 `ResourceDictionary`、控件模板、`CollectionView` / `DataGrid` 行为和 ViewModel 状态。

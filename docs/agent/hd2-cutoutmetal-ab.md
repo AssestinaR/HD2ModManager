@@ -72,6 +72,12 @@ E:\tmp\ab\switch.ps1 -Variant B
 脚本同时写 `sectional\` 与 `Overwrite\`：前者是来源载荷，后者会顶掉同名 patch，只改一处等于没改。
 `patch_0`（换过甲的模型）两套共用 —— 材质 id 按名字派生，两套实测 92/92 完全一致。
 
+> ⛔ 已过时（2026-11-08）：这套 `switch.ps1` 是**四段链路之外的一次性 A/B 实验装置**，不是"怎么切档"的说明。
+> 现在这个档位是在**转换段**选的：`vpk2patch --cutout-template cutoutmetal`
+> （转换器按模板生成材质与派生贴图 id，见本文 §二）；`sectional/` 只由转换链路产出，
+> 手工同时往 `sectional/` 与 `Overwrite/` 写属于实验手段，常规链路里不允许。
+> 见 `docs/agent/sectional-compile-base-20261108.md` §1.1 / §1.2。
+
 回退到测试前：
 
 ```powershell

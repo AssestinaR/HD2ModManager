@@ -40,6 +40,15 @@ patch 中 unit 和材质一体的。
   格式上没问题（游戏自己的 patch 就是多类型共存），但要改装配器：把 units 与
   materials 写进**同一个** `CanonicalPatchSession`，而不是另开一份。
 
+> ⛔ 已过时（2026-11-08）：这个二选一有答案了，取 **(a)**：`sectional/` 里 **unit patch 恒为 `patch_0`**，
+> 材质 `patch_1..patch_N` 平铺 + `patches.json` 记号，不再考虑合并成单文件
+> （见 `docs/agent/sectional-material-merge-20261108.md` D3）。
+> 上面 (a) 里那句"`patch_1` 仍在 `vpk2patch` 生效"也要改口径：部署只从 `Overwrite/`
+> （编译产物）出发，基底目录现在叫 `sectional/`。
+> 另：下面「待办」第 1 条的**观测部分已闭合**（2026-11-02 用 `lime_witch.vpk` 实测：模型 patch 里没有 Material 条目，
+> 材质落在 `patch_1`；Unit 引用的 10 个材质全部命中），只剩"游戏里是否正常"没有记录；
+> 第 3 条（报告/help 口径）**仍未做**——`hd2mod` 帮助里还写着"含 .mdl → 出 unit patch（零材质零贴图）"。
+
 ### 另外两件无论如何都该修
 
 - 别把"模型没用到的 include 中间层 VMT"报成"合成失败"（降级成"跳过：中间层"）。
@@ -67,3 +76,7 @@ patch 中 unit 和材质一体的。
 - `PatchArchiveWriter` / `PatchWorkspaceWriter` → `CanonicalPatchWriter` 整理（纯重构）。
 - 管理器重命名时输入框自动对焦。
 - 让 CLI 能询问在线 GUI 管理器获得写授权（可倒计时自动授权）。
+
+> ⛔ 已过时（2026-11-08）：§2 第一条「导入 vpk 时结构（**正在做**）」已经做完——分组导入
+> 2026-11-02 就落地并实测过（见 `docs/agent/vpk-model-grouping-20261102.md` §6–§7）。
+

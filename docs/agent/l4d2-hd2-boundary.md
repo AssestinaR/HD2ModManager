@@ -80,6 +80,13 @@
 **Lua 侧只认这个文件，不认 Source 的任何概念。** 没有 `$jigglebone`、没有 `ValveBiped`、
 没有 `procindex` —— 那些都在转换器里被消化掉了。
 
+> ⛔ 已过时（2026-11-08）：这条缝的**形状**最终不是 JSON，而是定长二进制：
+> `HD2SourceModel/PhysBoneContainer.cs` 的 `PhysBoneSpringRig`（magic `HD2SRG01`、`Version = 2`、
+> 148 字节定长记录 + 名字表），随 `HD2PBX01` 容器**嵌进 patch**
+> （`HD2SourceMigration/VpkConversion/PhysBoneContainerEmbedder.cs`）。之所以不用 JSON：读方在 C++/Lua 侧，
+> 每次加载都解析 JSON 太贵。
+> 三条纪律（版本化 / 单向 / 自足）不变；下面那段 `jsonc` 只是当时的接口草图。
+
 **这条缝的三条纪律：**
 1. **版本化**：`schema` 是必填。运行时遇到不认识的版本必须**拒绝**，不能猜。
 2. **单向**：只有转换器写、运行时读。运行时**永不回写**。

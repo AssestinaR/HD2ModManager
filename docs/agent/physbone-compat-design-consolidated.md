@@ -1,6 +1,6 @@
 # 物理兼容 Lua：三方评审汇总与定稿（2026-10-31）
 
-> ⚠️ **历史存档（2026-11-01 归档）**：当前状态与结论以 `docs/physbone-status.md` 为准。
+> ⚠️ **历史存档（2026-11-01 归档）**：当前状态与结论以 `docs/agent/physbone-status.md` 为准。
 > 本文件保留是为了追溯当时的推理过程与实测数据，**不要当成现行规范**。
 
 
@@ -10,7 +10,7 @@
 > - **C** = `openwrt/global:gpt-6-astra`（**逐条交叉验证**，带源码行号，抓到 3 条可离线证伪的硬缺陷）
 >
 > 本文只保留**三方一致 + 已被我方离线复现证实**的结论。分歧处给出裁定和证据。
-> 输入简报：`docs/agent-brief-physbone-compat-design.md`
+> 输入简报：`docs/agent/agent-brief-physbone-compat-design.md`
 
 ---
 

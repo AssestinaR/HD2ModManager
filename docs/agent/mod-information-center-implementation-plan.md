@@ -6,6 +6,16 @@
 
 本轮只规划，不直接修改现有代码。
 
+> ⛔ **状态（2026-11-08）：本规划的大部分已落地，"对现有代码的映射"这类盘点节已过时。**
+> 现行实况（2026-11-08 全仓复核）：`IModInformationCenter` 在 `HD2ModCore/Infrastructure/ModInformationCenter.cs`，
+> Manager 组合根（`ShellViewModel`）创建一个共享实例往下传；**旧兼容层已全部删除** ——
+> `IModContentFactsService`、`IModFactsStore`、`SqliteModFactsStore`、`mod_fact_snapshots` / `mod_assets` / `asset_references`
+> 在代码里 0 处；缓存职责已拆成 `IModInformationCache` + `IReferenceGraphQueryIndex`（本文/迁移清单里拟的
+> `IAdvancedUnitAnalysisCache` 未采用，高级分析走 `IAdvancedUnitAnalysisProducer`）。
+> 因此 **§3.1「当前主要问题」、§7「对现有代码的映射」、§8 的"当前代码盘点矩阵"读作 2026-07 的历史盘点**；
+> 现行进展见 `mod-information-center-migration-status.md`（该文同样要按它自己的 2026-11-08 批注读）。
+> **仍然有效、仍应照做**：§2 的总原则、§4 的信息产品定义、§5 的缓存设计原则、§6 的业务依赖口径、§9 的测试重点、§11 的验收标准。
+
 核心目标不是增加一个“万能分析服务”，而是建立一条统一的信息生产总线：
 
 ```text
@@ -532,6 +542,10 @@ AdvancedUnitAnalysis
 
 ## 7. 对现有代码的映射
 
+> ⛔ 已过时（2026-11-08）：本节映射的 `ModContentFactsService`、`SqliteModFactsStore`、`IModFactsStore` 等
+> **都已在代码里不存在**，所以"可保留 / 需改为消费者 / 需盘点"这三张清单都已成为历史。
+> 别照本节去找这些类型；现行分层见 `IModInformationCache` + `IReferenceGraphQueryIndex` + `IModInformationCenter`。
+
 ### 7.1 可保留并转为生产器的组件
 
 - `ModContentFactsService`：拆出其中的文件事实生产部分和资产事实投影部分；
@@ -572,6 +586,11 @@ AdvancedUnitAnalysis
 
 以下矩阵是当前代码盘点结果。这里的“旧入口”暂不等于可以立即删除的代码；必须先完成消费者迁移、共享生命周期收敛和回归验证，再删除兼容构造函数及旧存储职责。
 
+> ⛔ 已过时（2026-11-08）：这张矩阵是 **2026-07** 的盘点，其中"兼容路径 / 旧 producer / 旧存储职责"这几类
+> 对象已经删干净了（`IModContentFactsService`、`IModFactsStore`、`SqliteModFactsStore` 均为 0 处）。
+> 矩阵里标"已完成"的行仍然成立；标 P0/P1/P2 的迁移动作大多已完成或已随接口删除而消失。
+> 若要重新盘一遍调用矩阵，以当前代码为准，不要照抄本表的"当前"列。
+
 | 入口/组件 | 当前读取或生产方式 | 实际信息等级 | 当前缓存/副作用 | 目标接入方式 | 优先级 |
 | --- | --- | --- | --- | --- | --- |
 | `LibraryDerivedDataService` | 有中心时逐节点请求 `AssetInventory`，无中心时调用 `GetLibraryFactsAsync` | `AssetInventory` | 中心 JSON；兼容路径直连旧 producer | 强制注入共享中心；保留 `DerivedLibraryData` 作为 UI 投影 | P0 |
@@ -590,6 +609,10 @@ AdvancedUnitAnalysis
 | `CoreServices` 各工厂 | 多处无条件 `new ModInformationCenter`、`ModContentFactsService`、`SqliteModFactsStore` | 取决于下游 | 容易产生多个中心、多个 SQLite provider | 所有业务工厂增加并优先传递共享中心；无参便捷工厂仅保留测试/独立 CLI 用途 | P0 |
 
 ### 8.1 SQLite 职责分类
+
+> ⛔ 已过时（2026-11-08）：`SqliteModFactsStore` 已被整体移除，这三类职责已有归属：
+> ①普通派生快照 → 中心 JSON（`IModInformationCache`）；②高级分析缓存 → 高级分析产品（`IAdvancedUnitAnalysisProducer`）；
+> ③反向引用查询 → `IReferenceGraphQueryIndex`。所以"不能在第一批整体删除"这个约束已经不再适用。
 
 `SqliteModFactsStore` 不能在第一批迁移中整体删除，因为它同时承载三种不同职责：
 

@@ -6,6 +6,10 @@
 
 本文记录**已经落地**的部分和设计依据。旧规划器（`EquipmentUnitCatalogService.CreatePlanAsync` 里的 P1~P5 启发式）暂未删除，等新链路跑通后替换。
 
+> ⛔ 已过时（2026-11-08）：这两处都变了——① 头部的 `game_data_unit_parts.authority_slot` 已退役，
+> 权威格子改成**读取时 JOIN 注册表**（`UnitPartFactQuery`），旧库里的列由 `SqliteSchema` 主动 `DROP`；
+> ② 旧的 P1~P5 启发式规划器**已经删除**（`6b82001`「删除 Legacy 规划器」），Cells 装箱是唯一路径。
+
 ---
 
 ## 1. 用户给的领域事实
@@ -101,6 +105,13 @@
 
 ## 5. 已落地（本轮）
 
+> ⛔ 已过时（2026-11-08）：本节说的"索引加两列 `authority_slot` / `authority_piece_type`"已经回退——
+> 两列退役，`Cell` 改为读取时从注册表 JOIN（`HD2ModCore/Infrastructure/Sqlite/UnitPartFactQuery.cs`；
+> `6b10c68`「部位事实的读取收成一处：Cell 一律从注册表 JOIN，不再抄进部位表」）。
+
+<details>
+<summary>原文（保留备查，勿照此实现）</summary>
+
 ### 5.1 索引新增权威格子
 
 `game_data_unit_parts` 加两列，**-1 表示没有权威归属**：
@@ -115,6 +126,8 @@ authority_piece_type INTEGER NOT NULL DEFAULT -1   -- 0=内层 1=护甲 2=装饰
 `AssetArchiveIndexService` 的 `preserve/restore` 临时表也带上了这两列，否则重建基础索引会把它们丢掉。
 
 **`part_layer` 没有改。** 它还被装饰、头盔合并、护甲归一化三条现役链路用着，改语义要单独验证。规划器只认 `Cell`。
+
+</details>
 
 ### 5.2 领域类型
 
@@ -134,6 +147,9 @@ authority_piece_type INTEGER NOT NULL DEFAULT -1   -- 0=内层 1=护甲 2=装饰
 | 与 `game_data_authority_pieces` 逐行对账 | **0 处不一致** |
 | `part_layer` 与权威 piece_type 一致 | 2122 / 16569 = **12.8%**（证明旧字段不可信） |
 
+> ⛔ 已过时（2026-11-08）：表里「两列是否存在 = 是」已不成立（两列退役）。其余几行按现在的 JOIN 口径
+> 仍然成立（100% 有权威格子、0 重复、与 `game_data_authority_pieces` 0 处不一致、`part_layer` 12.8%）。
+
 测试：`CellAssignmentPlannerTests` 17 条，覆盖格子身份、格子表去重/未定位/重复、P1 自然与三种广播、P2 同槽改层、P3 跨槽且优先邻近、胸部件不外挂、披风双向排除、P4 往高处并、P5 开关、以及确定性。全量 1325 通过 / 1 跳过。
 
 ---
@@ -143,6 +159,10 @@ authority_piece_type INTEGER NOT NULL DEFAULT -1   -- 0=内层 1=护甲 2=装饰
 `CreatePlanAsync` 增加 `plannerKind`，默认仍是 `Legacy`（`EquipmentUnitCatalogServiceTests` 有一整套旧行为基线）；
 **GUI 与 CLI 显式传 `Cells`**。新增 `CellCrossArmorPlanProjection` 把装箱结果投影成同样的
 `CrossArmorTransferMapping`，生产端一行没改。合并用 `ExtraSources` 表达（`Source` 是宿主，其余按顺序追加）。
+
+> ⛔ 已过时（2026-11-08）：`plannerKind` 这个开关不存在——`Legacy` 规划器已删除，`CreatePlanAsync`
+> 只有 Cells 一条路径（`CellCrossArmorPlanProjection.Build`），GUI / CLI 也没有"显式传 `Cells`"这一步。
+> 下面的 A/B 数据是当时的测量，仍然有效。
 
 A/B 用真实数据跑：来源 `lunalice_l4d2替换RE2310`，目标 BFM-16 / BFM-220 / BFM-77 的护甲+头盔（6 个目标）。
 
@@ -183,6 +203,9 @@ A/B 用真实数据跑：来源 `lunalice_l4d2替换RE2310`，目标 BFM-16 / BF
 | 自动导入 Mod 库 | **已做**：`AutoImport`（默认开）+ `ImportService.ImportPathAsync`，只导入不启用不部署 |
 | 计划表显示新原因 | **已做**：广播（青）/ 改挂（琥珀）/ 合并（紫）三种颜色规则 |
 | 删旧规划器 | A/B 已通过（旧结果全保留 + 多 3 个），可以开始迁移 `EquipmentUnitCatalogServiceTests` 并翻转 `plannerKind` 默认值 |
+
+> ⛔ 已过时（2026-11-08）：表里最后一行「删旧规划器」已经做完（`6b82001` 删除了 Legacy 规划器），
+> 不需要再"迁移测试 / 翻转 `plannerKind` 默认值"。
 
 ### 合并生产：已接，但当前数据触发不到
 

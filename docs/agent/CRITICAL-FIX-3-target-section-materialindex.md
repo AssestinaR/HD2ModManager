@@ -4,6 +4,12 @@
 **问题：** 修复材质索引后，胯部骨骼动画仍然不正常  
 **根本原因：** `CreateBoneMap` 使用了错误的目标 MaterialIndex
 
+> ⛔ 已过时（2026-11-08）：本文的 `CreateBoneMap` / `BoneIndexMap` / `BoneRemapPair` 所在文件
+> （`StrictUnitMeshTransfer.cs`）与对照的 `HD2ModCore/Infrastructure/UnitMeshRetargeter.cs`
+> **今天都已不存在**（全仓 `rg` 0 命中；2026-08-09 `9e7c668` 清理旧链路）。
+> **三个索引空间的结论仍然有效**：源索引查源 remap、目标 section 的**原始**索引查目标 remap、
+> 转换后的索引只用于输出 —— 但不要照本文的函数名/路径去找实现。
+
 ---
 
 ## 问题分析

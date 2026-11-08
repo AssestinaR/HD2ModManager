@@ -1,7 +1,11 @@
 # 物理骨骼 · 下一阶段执行计划（2026-11-01）
 
 > 这份文档是**压缩上下文后的续接点**。它自包含：读完这一页就能直接开工，不需要回看聊天记录。
-> 状态入口仍是 `docs/physbone-status.md`；这里只讲"接下来做什么、为什么、改哪里、怎么验收"。
+> 状态入口仍是 `docs/agent/physbone-status.md`；这里只讲"接下来做什么、为什么、改哪里、怎么验收"。
+
+> ⛔ **状态（2026-11-08）：本页的计划项已基本落地，不要再照它开工。** P0 / P0.5 / P1 / P3 / P4 与 P2 的报告侧
+> 都已实现（各自条目里已带 ✅），未落地的只剩"Mod 卡片角标"与非对称限位。读它只为看"当时为什么这么做"；
+> 现行的层与链路见 `docs/agent/sectional-compile-base-20261108.md`。
 
 ---
 
@@ -137,6 +141,10 @@
 "源父骨显示名 → HD2 锚点名"，`vpk2patch` 用 `PhysBoneRigSidecar` 把它连同参数写成
 `vpk2patch/physbone-rig.bin`（复用 `HD2SRG01` 格式，不新造中间格式）；`embed-mod`
 优先读这份，读不到再按老路重读 VPK（旧 mod 行为不变）。
+
+> ⛔ 已过时（2026-11-08）：这项已落地（`Retargeter.PlanJiggleAnchors` + `PhysBoneRigSidecar`，`embed-mod` 优先读 rig）。
+> 唯一变化是**目录名**：转换产物基底已从 `vpk2patch/` 改名 `sectional/`（老库仍是旧名，读侧两名都认），
+> 所以这份 sidecar 今天是 `sectional/physbone-rig.bin`。见 `docs/agent/sectional-compile-base-20261108.md` §1.3。
 
 为什么不能在 `embed-mod` 里现算：它只看得到来源 VPK，看不到 HD2 骨架。
 为什么不在转换阶段直接嵌进 `.gpu_resources`：转换期追加字节会让后续受管步骤记账错位

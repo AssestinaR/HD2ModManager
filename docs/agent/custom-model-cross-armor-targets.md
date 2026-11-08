@@ -13,6 +13,12 @@
 - 生成不修改源 Mod、素体工作区、运行时协议或部署。安装输出后，仍须将素体映射到真实护甲并应用。
 - 不改变 Lua 的头盔/身体隔离规则，也未扩展“自定义 Patch 作为下一次替换来源”的识别能力。
 
+> ⛔ 已过时（2026-11-08）：本节第一条「`armor-registry.workspace.json` 是素体的权威来源」已不成立。
+> 素体的权威来源是**各 Mod 目录里的 `custom-model.json`**（基底目录改名后也在
+> `sectional/custom-model.json`）；`CustomModelCatalog` 从库里各 Mod 目录收集它，注册表里那份只是**缓存**。
+> `armor-registry.workspace.json` 现在存的是**映射结构**。见 `RuntimeArmorRegistryService.ReadSnapshotAsync`
+> 与 `CustomModelCatalog` 的注释。
+
 ## GUI / CLI
 
 GUI 的替换护甲目标列表显示“自定义素体”和启用组件数；生成前复核素体结构，变化后要求重新打开计划。

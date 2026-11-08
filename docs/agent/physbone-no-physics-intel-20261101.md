@@ -142,6 +142,11 @@ rig 里 8 根"非 jiggle 的父骨"（idx 80/81/90/94/100/102/105/107）不在 r
 - `embed-mod` 只取 mod 目录里**第一个** `*.vpk`（`VpkImportService.cs:299`）；
   多 VPK 包里选错模型 ⇒ 没物理且无提示。
 
+> ⛔ 已过时（2026-11-08）：**后两条已修**（见 `docs/agent/physbone-next-plan-20261101.md` §P2）：
+> ① `embed-mod --json` 的 `ok` 现在等于 `embedded`（跳过不再算成功），管理器把 `reason` 写成导入报告 note，
+> 「没有物理参数」用户看得见；② 来源优先级是 `physbone-rig.bin` > 显式来源 > 目录里**唯一**的 `.vpk`，
+> 多 VPK 且没有 rig 文件时**不嵌**并列出候选。
+
 ### F5 日志本身不适合排查
 
 | 问题 | 位置 |
@@ -160,11 +165,14 @@ rig 里 8 根"非 jiggle 的父骨"（idx 80/81/90/94/100/102/105/107）不在 r
 
 ### 顺带更正
 
-`docs/physbone-status.md` §9.2「物理独占入口还没接进 boot」**已过时**——日志证明独占 boot 已在跑。
+`docs/agent/physbone-status.md` §9.2「物理独占入口还没接进 boot」**已过时**——日志证明独占 boot 已在跑。
 
 ---
 
 ## 6. 工作顺序（建议）
+
+> ⛔ 已过时（2026-11-08）：本节的 P0 / P1 已全部落地（观测、死链、dt、日志追加），**不要再照它开工**；
+> 逐项状态见 `docs/agent/physbone-next-plan-20261101.md` §3。
 
 ### P0 · 先装观测（不做这个，后面全是猜）
 
@@ -189,6 +197,10 @@ rig 需要带上"已解析的 HD2 锚点名"。两个方案，倾向 A：
 - **B**：rig v3 加一个 `anchorName` 字段。干净但要同时改运行时版本判定，
   旧运行时会**整份 rig 拒收**（`parse_rig` 硬性 `version==2`）——失败模式太差。
 
+> ⛔ 已过时（2026-11-08）：上面的方案 A 已落地，但**载体不是 `physbone-anchors.json`**——用的是
+> `physbone-rig.bin`（`HD2SRG01` 二进制，由 `PhysBoneRigSidecar` 在转换期写出、`embed-mod` 优先读它）；
+> 同时基底目录已改名 `sectional/`（老库 `vpk2patch/` 读侧兼容）。见 `docs/agent/physbone-next-plan-20261101.md` §P1。
+
 **验收**：`tmp/report_rig.py` 复算死链 22 → 0；游戏里 `lime_un` 裙子会动。
 离线单测：`rig-select-test.lua` 加一例"父骨非 jiggle"。
 
@@ -200,7 +212,7 @@ rig 需要带上"已解析的 HD2 锚点名"。两个方案，倾向 A：
 
 ### P3 · 收尾
 
-- 更正 `docs/physbone-status.md` §9.2 / §9.5。
+- 更正 `docs/agent/physbone-status.md` §9.2 / §9.5。
 - 若 P0 的看门狗证明"会话失效"是**误判**（`Unit.alive` 抖动），再单独开一条修 `session_health`。
 
 ---

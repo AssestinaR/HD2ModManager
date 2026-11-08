@@ -36,6 +36,11 @@
 | `SqliteModFactsStore.DeleteAsync` | ~10–30 ms | ~10–30 ms |
 | 8 节点批量失效 | 1222 ms | **55 ms** |
 
+> ⛔ 已过时（2026-11-08）：本表里有两行已经**没有对应实现**——`ModDataIndex`（`IModDataIndex`，一份按节点落盘的
+> JSON 副本）与 `SqliteModFactsStore` 都已移除（类型 0 命中）。现在 Mod 事实只活在**会话内存**
+> `HD2ModCore/Infrastructure/InMemoryModFactsStore.cs`，`mod-facts.sqlite` 与 `mod-data-index/` 只剩启动期
+> `ModIndexGarbageCollector` 的回收动作。数字本身是 2026-10-27 的取证，保留；下面的 `[D]` 基准同理。
+
 基准（真实数据副本，`Release`）：
 
 ```
@@ -79,6 +84,11 @@
 
 死节点占比：`mod-information` 102/222、`mod-data-index` 43/155、`mod-facts` 40/151。
 三个独立缓存给出同一个量级的泄漏率，说明不是偶发。
+
+> ⛔ 已过时（2026-11-08）：表里的 `mod-data-index` 与 `mod-facts.sqlite` 两行已经不是"还需要维护的活缓存"——
+> 这两个存储此后都废弃了（按节点 JSON 副本移除；事实改为只活在会话内存 `InMemoryModFactsStore`），
+> `ModIndexGarbageCollector` 把它们当垃圾整体回收。今天不必再按这两行去核对死节点数量；
+> 上面的数字是 2026-10-27 的取证。
 
 ---
 
@@ -153,6 +163,9 @@ var residualCleanup = CoreServices.CreateModLibraryResidualCleanupService().Clea
 9. `JsonModFileFactsCache` 增加 `owners.index` 归属索引，删除从 O(全部文件) 降到 O(1)。
 10. `ModDataIndex` 按节点分文件，删除不再重写 8.9 MB。
 11. `RemoveManyAsync` 的批量失效改串行。
+
+> ⛔ 已过时（2026-11-08）：第 10 条已随 `IModDataIndex` 一起废弃（`mod-data-index` 不再有读写方）。
+> 第 9 条（`owners.index`，删 O(1)）与第 11 条（串行失效）仍然有效。
 
 ### 回收
 

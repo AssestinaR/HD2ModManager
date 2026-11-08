@@ -28,3 +28,10 @@
 - 后置程序只提供：源 patch 文件组、目标对象集或重构策略、输出路径。
 - 内部再串起分析、目标提取、最小化、注入、骨骼附加、写包。
 - 同时保留每个阶段作为独立工具，便于诊断和单测。
+
+> ⛔ 已过时（2026-11-08）：现行链路里**没有**"源 patch 一步产出可部署 patch"的 API。转换（CLI `vpk2patch`；
+> 老库里叫 `vpk2patch/` 的基底目录由 `ModContentLayoutMigration` 一次性改名成 `sectional/`）只产出 `sectional/`；
+> 生效层 `Overwrite/` 只由编译基座（`ModCompileService.CompileAsync`）
+> 从 `sectional/` + 条件（目标护甲 / section 开关 / 材质开关）算出，部署段再把它写进游戏
+> （见 [`sectional-compile-base-20261108.md`](sectional-compile-base-20261108.md) §1）。上面第 1–4 阶段的
+> 提取/最小化/注入语义仍然有效，但"分析…注入…写包"这一串要停在 `sectional/`。

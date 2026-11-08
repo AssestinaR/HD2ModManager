@@ -76,6 +76,14 @@ C# 里**已经存在**一个完整的 **"Unit 数据视图"层**（网格 / 骨�
 **一句话**：`UnitMeshModel` 已经能给出**每个顶点的骨骼权重分量**（`UnitVertexComponentValue` 带
 `Type` / `FormatName` / `FloatValues` / `UIntValues`）——**这正是另一线程手写 `hd2_vertex.py` + `weight_half4.py` 在做的事。**
 
+> ⛔ 已过时（2026-11-08）：表中"CLI 引用数"一列是 2026-10-14 的快照，其中一批已经不是 0 了 ——
+> `unit show/geometry/bones` 落地后：`PatchUnitMeshReader` = **7**、`UnitMeshModel` = **2**、
+> `UnitGeometryFactsBuilder` = **3**、`UnitBoneNamesReader` = **4**、`HiddenUnitGenerator` = **1**。
+> 仍为 **0**：`UnitBoneInfo` / `UnitStreamInfo` / `UnitSourceVisibilityClassifier` / `UnitMaterialReferenceReader` /
+> `UnitStreamAbiProfiles` / `PatchWorkspace`（含 `PatchWorkspaceEntryChange`、`PatchOperationWorkspace` / `PatchWorkspaceChangeSet`）/
+> `CanonicalPositionDiagnostics` / `UnitVertexComponentValue`（后者经 `UnitMeshModel` 间接可见）。
+> 结论的方向没变（"C# 早就有、CLI 没出口"），但具体哪几项已经开口要看这串新数字。
+
 ---
 
 ## 3. 需求逐条重新裁定
@@ -113,6 +121,10 @@ C# 里**已经存在**一个完整的 **"Unit 数据视图"层**（网格 / 骨�
 
 ### P0 — 修 R2（1 处，收益最大）
 
+> ⛔ 已过时（2026-11-08）：**这个 bug 已经修好了**（2026-10-14 同日，见 `HD2ModCli-capability-map.md` §10.1）：
+> `GameDataAssetCatalogService.ReadPartAsync` 改成按 `GameDataAssetPart` 拼分区后缀，实测写出 `.toc` 14800 B +
+> `.gpu_resources` 268864 B。下面这段根因分析保留为取证，**不要再当"待修"重做一遍**。
+
 `gamedata extract asset` 对 bundled 归档只写出 `.toc`。
 
 **✅ 已核实根因**：`HD2ModCore/Infrastructure/GameDataAssetCatalogService.cs:157-160` 在 bundled 分支把
@@ -142,6 +154,12 @@ hd2mod unit vertices <patch> --unit 0xID --output <dir>  # 逐顶点分量导出
 - **底座**：全部已存在，**无需新写解析代码**，只是包装。
 - **安全线**：`show` / `geometry` / `bones` 纯只读；`vertices` 只写 `--output`。
 
+> ⛔ 已过时（2026-11-08）：上面这段拟稿的命令形态**与实际落地的签名不同**，照抄会失败。
+> 实际已有（2026-10-14 落地，见 `HD2ModCli-capability-map.md` §10.2）：
+> `hd2mod unit show|geometry|bones <patch_0 路径> --keys <@keys.json 或 0xtypeid:0xfileid,...> --json`
+> —— 用 `--keys`（可多选），**没有 `--unit` 参数**，且是**文件进、文件出**的形态（不要求先登记进库）。
+> **`unit vertices`（逐顶点分量导出）仍未实现**，所以 Skill 文档里也没有它；这一条仍是缺口。
+
 ### P2 — `patch` 差异与健全性族（对应他们的两个手写脚本）
 
 ```
@@ -166,6 +184,11 @@ hd2mod patch material-conflicts <patch...> [--json]   # R1：{ basename: [提供
 ### P4 — R6 贴图 id 命名空间
 
 无新命令，改 id 生成器；**必须可开关、不改既有 id**。
+
+> ⛔ 已过时（2026-11-08）：R6 已经以**参数**形态落地，而不是"只改生成器、无新命令"：
+> `vpk2patch` 现在有 `--id-namespace <来源标识>` / `--id-namespace-token <token>`（一批必须共用同一个值；
+> 不传则 id 只由名字决定，转换器会在报告与 stderr 上警告撞车）。管理器导入走 `--id-namespace-token`（形如 `vpk-060d479e…`）。
+> 见 `hd2mod --help` 里 `vpk2patch` 段的说明。
 
 ---
 
@@ -203,4 +226,4 @@ hd2mod patch material-conflicts <patch...> [--json]   # R1：{ basename: [提供
 | R3 相关实现 | `UnitMesh/Canonical/CanonicalPlaceholderMinifier.cs`、`UnitMesh/HiddenUnitGenerator.cs` |
 | 材质冲突判据（R1） | `tmp/rig-lab/MATERIAL_CONFLICT_ANALYSIS.md` |
 | 小臂问题全貌 | `tmp/rig-lab/ROUND72_FOREARM_BRIEF.md` |
-| CLI 现有能力 | `docs/cli/HD2ModCli-capability-map.md`（148 条） |
+| CLI 现有能力 | `docs/agent/cli/HD2ModCli-capability-map.md`（148 条） |

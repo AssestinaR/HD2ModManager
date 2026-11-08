@@ -3,6 +3,11 @@
 **收集日期：** 2026-07-18
 **范围：** `HD2ModManager` 的页面职责、自动行为、后台资源消耗和后续讨论问题。本文为讨论材料，不改变当前行为。
 
+> ⛔ **状态（2026-11-08）：下表里的「状态页」与多数「窗口」已经不存在了。** 这是 2026-07-18 的讨论快照：
+> 之后**状态页被整个移除**（`WorkspacePageType.Status` / `WorkspaceMode.Status` / `StatusPageViewModel` 均已不在代码里），
+> 内部的**功能模态窗口全部迁成工作区页面 + 任务抽屉**（高级详情、cross-armor 计划/候选、材质候选/输出、Game Data 索引/详情、后台任务）。
+> 现行的页面与导航口径见 `manager-ux-redesign-plan.md`，视觉口径见 `manager-ui-design-language-implementation-plan.md`。
+
 ## 当前工作区与页面
 
 | 区域 / 页面 | 用户任务 | 当前实现特征 | 初步工效关注点 |
@@ -19,6 +24,15 @@
 | Game Data 索引窗口 | 浏览 archive、筛选覆盖状态、查看 archive 详情 | 基于持久化索引；行双击异步读取详情 | 索引库大时 `ObservableCollection` + `CollectionView` 的客户端筛选/排序可能重；详情打开应支持 loading/cancel。 |
 | 设置页 | 配置游戏 data 与 Mod 库路径、语言 | Loaded 时提示语言并刷新 | 路径改变后应明确哪些缓存、索引、派生事实失效，提供可预测的重建时机。 |
 | 后台任务窗口 | 查看和取消任务 | 与 `BackgroundTaskService` 对接 | 需统一展示任务优先级、资源类型、预计影响与取消后的恢复状态。 |
+
+> ⛔ 已过时（2026-11-08）：以下各行描述的对象**已经不在界面里**，别照它们去找页面或控件：
+> - **状态页**（整行）—— 页面已删除，资产索引状态与手动维护迁到设置页，任务迁到任务中心。
+> - **高级详情窗口 / Cross-armor 计划窗口 / Cross-armor 候选输出窗口 / 材质候选·材质包装输出 / Game Data 索引窗口 /
+>   后台任务窗口** —— 已是工作区页面（`AdvancedModDetailsPageView`、`CrossArmorPlanPageView`、`MaterialPackagingPageView`、
+>   `GameDataBrowserPageView`、`GameDataArchiveDetailsPageView`）与壳层里的任务抽屉，`Views` 下已无 `*Window*.xaml`。
+> - **模组详情**这一行里"其他候选工具仍在逐步迁移"也已过期：迁移已完成。
+>
+> 非 UI 的部分（启动时的自动行为、资源热点、要定的产品策略）仍然是有效的讨论材料。
 
 ## 启动与自动行为
 
@@ -75,8 +89,14 @@
 
 - 参考项目 `docs/参考项目/PCL-main` 的有效借鉴点是集中颜色/状态资源、统一 `MyButton` / `MyTextBox` / `MyComboBox` 模板，以及仅用于 hover、focus、展开的短动画；不得复制其源码、资源或视觉资产。
 - Manager 目前至少有高级 Mod 详情、cross-armor 计划/输出/手动选择、材质候选/输出、same-key 输出、Game Data 索引/详情、后台任务等内部模态窗口；这些应逐个迁入页面工作区，系统文件选择器和最终危险确认除外。
+
+> ⛔ 已过时（2026-11-08）：这批内部模态窗口**已经全部迁成工作区页面**（`Views` 下已无 `*Window*.xaml`），
+> 只剩文件/目录选择器与更新镜像还用 `ShowDialog`。此条不再是一项待办。
 - Same-key 已确定不需要独立页面：单 Mod 操作直接导出至 Manager `Output`，不允许自动导入或部署。设置页后续将在 Game Data 状态检测后增加“检测更新后自动重建损坏 Mod”开关，并增加一次性“重建所有损坏的 Mod”按钮；全量任务按“重建 Game Data 资产缓存 → 比较全库损坏 Mod → 修复全部护甲类损坏 Mod”执行。自动化能力本轮暂不实现，临时手动结果同样只写入 `Output`。
 - 删除库 Mod 后配置页和详情页残留的根因已定位：Core `DeleteNodeAsync` 会移除 Profile entry，但 Manager `ModLibraryService.Remove()` 没有触发 `SnapshotChanged`，使 Shell 未重新加载 Profile snapshot。此项应列为首批同步修复。
+
+> ⛔ 已过时（2026-11-08）：此缺陷**已修** —— `ModLibraryService.RemoveManyAsync` 现在会在删除成功后
+> `SnapshotChanged?.Invoke(...)`（删除路径已统一走 `RemoveManyAsync`）。这条不再是待办。
 - 详细的页面、控件、任务中心、设置资产卡和分批落地方案见 [manager-ux-redesign-plan.md](manager-ux-redesign-plan.md)。
 - 已更正页面槽位规则：普通 Mod 详情保持单槽；高级详情才转为双槽，且高列数资产表必须跨全部槽位。配置页不新建汉堡菜单，而是收敛现有 `PageActions` / `FloatingActionCluster` 浮动菜单。
 - 已完成 `docs/参考项目/new-api-main` 默认 Web UI 的卡片与数据表研究。其可借鉴的是 token → 基础控件 → 表格编排的分层、首次加载与后台刷新区分、固定表头/横向滚动/列预设和卡片化数据投影；详细结论见 [new-api-ui-table-reference-analysis.md](new-api-ui-table-reference-analysis.md)。

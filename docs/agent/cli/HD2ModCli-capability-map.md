@@ -3,6 +3,17 @@
 > 生成时间：2026-10-14 ｜ 对应协议版本 `1.27` ｜ 工程 `HD2ModCli`（net10.0，27,522 行）
 > 本文是**盘点 + 评价**文档，不是使用手册。使用手册以 `hd2mod --help` 与 `hd2mod capabilities --json` 为唯一权威来源。
 
+> ⛔ **状态（2026-11-08）：命令清单已变。** 本文 §1 的「顶层命令族 21 个」、§2.10 的 `diagnostics armor` 行、§3.3 的
+> 「独立诊断向导」都是 **2026-10-14** 的形状：那之后交互向导族 `diagnostics`（`diagnostics armor …`）**已整个删除**，
+> 命令名 `diagnostics` 在 `HD2ModCli` 里一处不剩。此后新增 `doctor` / `physbone` / `repair` / `settings` / `unit` /
+> `vpk` / `vpk2patch` / `wardrobe` 等族。
+> **现行顶层命令为 27 个**（另有 `physbone` 只在分派里、帮助文本未列）：
+> `agent` `armor-registry` `assets` `capabilities` `context` `custom-model` `decoration` `deploy` `doctor` `equipment`
+> `game` `gamedata` `host-derived` `import` `library` `mod` `option` `patch` `profile` `repair` `settings` `source`
+> `status` `unit` `vpk` `vpk2patch` `wardrobe`。
+> 本文里的 `capabilities --json` 条目数、`--help` 行数、Skill 个数、代码行数都是**当时的测量**，数字随版本变化；
+> 命令与能力的现况一律以 `hd2mod --help` 与 `hd2mod capabilities --json` 为准（与上面第 4 行同一口径）。
+
 ---
 
 ## 0. 一句话定位
@@ -25,6 +36,11 @@
 | 参数校验辅助函数 | **121 个** `Ensure*` / `Require*` |
 | CLI 测试文件 | 33 个 `*CliTests.cs` + 夹具 |
 | 安全等级取值 | 5 种（见 §3） |
+
+> ⛔ 已过时（2026-11-08）：「顶层命令族 **21 个**」及其后的清单是 2026-10-14 的实测值。现行为 **27 个**：
+> 清单里的 `diagnostics` **已整个删除**，另新增 `doctor` / `physbone` / `repair` / `settings` / `unit` /
+> `vpk` / `vpk2patch` / `wardrobe`（完整清单见篇首横幅）。本表其余各行是当时的规模测量，保留。
+> 另外：`hd2mod help` 与 `hd2mod version --json` 仍然存在（它们不在上面那份"顶层命令族"清单里）。
 
 ---
 
@@ -125,6 +141,10 @@
 | `diagnostics armor` | 6 | 交互式 | — | — | — | **完全另类**：交互向导 |
 | `agent` | 4 | ✅ `list` | — | — | ✅ `export` | 自举 |
 
+> ⛔ 已过时（2026-11-08）：表中 `diagnostics armor`（6 条、交互式）**这一行已失效** —— 该向导族已整个删除，
+> `diagnostics` 在 `HD2ModCli` 里一处不剩。这张表的其余形状仍是 2026-10-14 的盘点（此后新增的族未列入），
+> 现况以 `hd2mod --help` 与 `hd2mod capabilities --json` 为准。
+
 **从这张表能直接读出的三个不平整处：**
 
 1. **"预览"这个词有四种写法**：`inspect`（多数）、`status`/`show`（armor-registry）、`preview`（mod delete）、`export`（decoration edit / profile align 的规格导出）。Agent 不能靠词根推断。
@@ -172,11 +192,20 @@ inspect  →  plan  →  validate  →  apply --confirm
 
 ### 3.3 独立诊断向导（**唯一的交互式例外**）
 
+> ⛔ **已过时（2026-11-08）**：本节描述的 `diagnostics` 交互向导族**已被整个删除** —— `diagnostics` 这个命令名
+> 在 `HD2ModCli` 里一处都不剩，`hd2mod ARMOR-DIAGNOSTICS.md` 也不在仓库里了。别再照本节去找命令或调它。
+> 现存的故障排查入口是 `hd2mod doctor --manager-root <目录> --library <库目录> --json`（静默 JSON，与其他命令同一套哲学）。
+
+<details>
+<summary>原文（保留备查，勿照此实现）</summary>
+
 `diagnostics armor wizard|quick|matrix|composition|memory|recover`
 
 这是一族**面向人类、交互式、非 JSON** 的故障诊断工具（军械库崩溃六组对照实验），带：原配置优先备份、断点恢复、进程守护（`CliDeploymentProcessGuard`）、证据 ZIP 脱敏导出。
 
 > ⚠️ 它和 CLI 主体的"Agent 静默 JSON"哲学**完全相反**：`--json` 会被显式拒绝，输入重定向也会被拒绝。它是"同一可执行文件里的第二个程序"。
+
+</details>
 
 ---
 
@@ -265,6 +294,8 @@ inspect  →  plan  →  validate  →  apply --confirm
 | **12** | **诊断向导族与主体哲学冲突** | 交互式、拒绝 `--json`、拒绝重定向 | 同 exe 两套心智模型；Agent 若误调会得到 `InteractiveRequired` |
 | **13** | **无 shell 补全** | 无 bash/zsh/pwsh completion 生成 | 对 Agent 影响小，对人类用户影响明显（但这工具主打 Agent，故列 P2） |
 
+> ⛔ 已过时（2026-11-08）：第 12 条的诊断向导族**已整个删除**（见 §3.3），本条不再成立，也无法再被误调。
+
 ---
 
 ## 7. 我的总评
@@ -309,6 +340,9 @@ inspect  →  plan  →  validate  →  apply --confirm
 | `HD2ModCli/README.md` | 入门三步 | 入门 |
 | `HD2ModCli/ARMOR-DIAGNOSTICS.md` | 诊断向导人工手册 | 诊断族专用 |
 | 本文 | 盘点 + 评价 | **不是权威命令表** |
+
+> ⛔ 已过时（2026-11-08）：`HD2ModCli/ARMOR-DIAGNOSTICS.md` **文件已不存在**（诊断向导族整族删除，见 §3.3），
+> 本行指向的是一个已删掉的文件。其余各行的权威性口径不变。
 
 ---
 

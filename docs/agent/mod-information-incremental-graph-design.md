@@ -4,7 +4,7 @@
 
 > 日期：2026-10-10  
 > 状态：**设计草案，未实施，不修改任何源码**  
-> 前置文档：`mod-information-center-implementation-plan.md`、`mod-information-center-migration-status.md`、`mod-information-center-stage0-audit.md`、`docs/architecture/derived-cache-migration-baseline.md`、`fact-lifecycle-invalidation-refactoring-plan.md`  
+> 前置文档：`mod-information-center-implementation-plan.md`、`mod-information-center-migration-status.md`、`mod-information-center-stage0-audit.md`、`docs/agent/derived-cache-migration-baseline.md`、`fact-lifecycle-invalidation-refactoring-plan.md`  （2026-11-08 更正：原写 `docs/architecture/`，文档树已整体搬进 `docs/agent/`）  
 > 本文定位：**不推翻上述文档**。上述文档解决的是「把业务收拢到唯一中心」；本文解决的是它留下的两个缺口——**细粒度请求**与**依赖传播**——并交付一份**全量信息需求裁决表**。
 
 ---
@@ -689,6 +689,7 @@ B 在 `SynchronizeAsync` **之前**运行，用 `synchronizeSnapshot`（同步�
 2. **6 个 `_diagnostics/*` 项目**：直接归档，还是保留但加规则"生产代码不得依赖任何 `_diagnostics` 类型"？它们不在 `.sln` 里，却是死代码簇 1、2 的唯一非测试消费者。
 3. **4 个脚手架服务**（`GameDataLocator` / `MaterialDependencyValidator` / `ModManifestImporter` / `PatchTocFileCollector`）：留还是删？纯产品决策——§11 已证明其功能已被别的实现覆盖。
 4. **`.sln` 成员整理**：`ManagedMain`（已废弃）是否移出？`Decryptor.Tests`（在磁盘上但不在 `.sln`，因此**从未运行过**）是否加回？
+   > ⛔ 已过时（2026-11-08）：这一项已落地——`WpfApp1.sln` 里**没有** `ManagedMain`，`Decryptor.Tests` **已在** `.sln`（14 个项目之一）。不必再按"要不要移出/加回"决策。
 5. **阶段 1 的开工形态**：是否就按"泛型 `Request(FactKey)` + kind→property 注册表"动手？
 
 ### 13.6 准入检查清单

@@ -950,6 +950,8 @@ new PageActionViewModel(PageActionKind.Import, "导入 Mod", ImportCommand,
 
 #### 还剩：详情页动作卡片迁移
 
+> ⛔ 已过时（2026-11-08）：下面这三步同日就做完了，动作卡片已整张删除；现行形态见 §13.8。
+
 详情页那 14–16 个动作迁进汉堡的前提已经具备（挤压能装下），但还需要三步：
 
 1. `PageActionViewModel.Label` 改成可变（"关闭头盔合并 / 头盔合并到盔甲并输出"是同一个动作的两种文案）。

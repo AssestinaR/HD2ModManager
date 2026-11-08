@@ -1,5 +1,12 @@
 # Blender Join 语义在 C# 跨护甲重建中的复刻计划
 
+> ⛔ 状态（2026-11-08）：本篇是**设计计划**，不是现有实现清单。文中出现的
+> `SdkStyleTargetShellUnitReconstructor`、`SdkStyleMeshReencoder`、`SdkStyleVertexStreamPlanner`、
+> `CrossArmorTransferCandidateService`、`CanonicalSectionPlanner` 在源码里 **0 命中**（均已删除）；
+> 现行实现是 `HD2ModAdaptation/PatchReconstruction/UnitMesh/Canonical/` 下的 `CanonicalUnitRebuilder` /
+> `CanonicalMeshSemanticMerger` / `CanonicalMeshPreparation` / `CanonicalPatchSession` / `CanonicalReplacementPlan`。
+> 计划本身要表达的设计约束（几何策略二选一、compatibility key 分桶、四层验证）仍然有效。
+
 ## 目标
 
 将当前跨护甲/批量 Patch 重建从“按 source section 位置投影”升级为可解释的 Blender-like canonical mesh join/re-encode 流程，保留过去实际需要的多来源 section 合并能力，同时避免 `sourceIndex % targetSectionCount` 造成的无语义回绕。
@@ -56,6 +63,9 @@ SDK 不知道 source Unit 与 target Unit 之间的 section 对应关系，也�
 
 当前 [SdkStyleMeshReencoder.cs](../HD2ModAdaptation/PatchReconstruction/UnitMesh/SdkStyle/SdkStyleMeshReencoder.cs#L255-L269) 中的 `sourceIndex % targetSectionCount` 只能作为历史兼容痕迹，不能作为通用映射算法。
 
+> ⛔ 已过时（2026-11-08）：`SdkStyle/SdkStyleMeshReencoder.cs` 已不存在（该路径与类名源码 0 命中）。
+> 结论（modulo 不是通用映射）仍然成立；现行落点是 `UnitMesh/Canonical/`。
+
 但不能简单删除“合并能力”。应将其替换为显式的 many-to-one `SectionMergePlan`，允许：
 
 ```text
@@ -81,6 +91,10 @@ SdkStyleVertexStreamPlanner / SdkStyleMeshReencoder
         ↓
 UnitMeshWriter
 ```
+
+> ⛔ 已过时（2026-11-08）：这段管道里的 `SdkStyleVertexStreamPlanner` / `SdkStyleMeshReencoder` 都已不存在
+> （0 命中）；`CanonicalMeshJoiner` 是当时提议的名字。`UnitMeshWriter` 仍存在。
+> 现行链路见 `HD2ModAdaptation/PatchReconstruction/UnitMesh/Canonical/`。
 
 建议区分以下概念，不得用一个 ID 混用：
 
@@ -112,6 +126,9 @@ polygon”的隐式默认值。
 
 当前 `CanonicalSectionPlanner` 的 source→target ordinal assignment 只能作为历史
 诊断原型，不能作为通用 join 计划。跨护甲 transfer 中：
+
+> ⛔ 已过时（2026-11-08）：`CanonicalSectionPlanner` 本身已不存在（源码 0 命中），
+> “它只能算历史诊断原型”这句话今天没有对应物；下面的四条 transfer 事实约束仍然有效。
 
 - source `MeshId`、source LOD 和 source stream 是 provenance/输入事实，不要求与 target
         identity 相等；
@@ -271,6 +288,10 @@ Blender 的 shape key、multires、sculpt face set 等功能不属于第一阶�
 
 ### `CrossArmorTransferCandidateService`
 
+> ⛔ 已过时（2026-11-08）：这个类名在源码里 0 命中（已删除）。现行编排入口是
+> `HD2ModCore/Infrastructure/CanonicalCrossArmorOrchestrator.cs`，按 `UnitMesh/Canonical/` 的
+> `CanonicalReplacementPlan` 走。下面几条职责要求本身仍然成立。
+
 负责：
 
 - source/target Unit 选择；
@@ -283,6 +304,10 @@ Blender 的 shape key、multires、sculpt face set 等功能不属于第一阶�
 
 ### `SdkStyleTargetShellUnitReconstructor`
 
+> ⛔ 已过时（2026-11-08）：该类已删除（源码 0 命中）。它在这份计划里的角色现在由
+> `UnitMesh/Canonical/CanonicalUnitRebuilder`（+ `CanonicalMeshPreparation` 做未替换 mesh 的
+> minify）承担。下面几条职责要求仍然成立。
+
 负责：
 
 - target shell 初始化；
@@ -292,6 +317,10 @@ Blender 的 shape key、multires、sculpt face set 等功能不属于第一阶�
 - 将最终 plan 传给 writer 和 verifier。
 
 ### `SdkStyleMeshReencoder`
+
+> ⛔ 已过时（2026-11-08）：该类已删除（源码 0 命中）。现在的编码/合并职责由
+> `UnitMesh/Canonical/CanonicalMeshSemanticMerger` 与 `CanonicalPatchSession` 承担，
+> 仍然写 `UnitMeshWriter`。下面几条要求本身仍然成立。
 
 负责：
 
@@ -426,6 +455,9 @@ P0 的完成条件增加以下硬门槛：
 - 对 normal/tangent 无可靠变换的情况明确阻断，不能静默复制；
 - 增加 parse→write→parse 验证。
 
+> ⛔ 已过时（2026-11-08）：P2 里的 `SdkStyleMeshReencoder` 已不存在（源码 0 命中）；
+> 这一步现在落在 `UnitMesh/Canonical/`（`CanonicalMeshSemanticMerger` + `CanonicalPatchSession`）。
+
 ### P3：真实样本验证
 
 - same-key 样本；
@@ -502,6 +534,9 @@ canonical append/join：保留 active target 几何，并追加 source 几何
 在完成上述设计和内存模型前，现有 `CanonicalSectionPlanner` 不得继续扩展为生产
 准入 gate；它可以保留用于失败样本诊断和回归测试，但生产接入应等待 canonical
 polygon/bucket plan 取代 ordinal section assignment。
+
+> ⛔ 已过时（2026-11-08）：`CanonicalSectionPlanner` 已不存在（源码 0 命中），
+> “保留它做诊断/回归”这条今天无从执行；现行生产路径是 `UnitMesh/Canonical/`。
 
 ### 性能决策门
 

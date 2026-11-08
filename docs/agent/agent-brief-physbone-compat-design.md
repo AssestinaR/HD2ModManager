@@ -1,6 +1,6 @@
 # 交接简报：HD2「物理兼容 Lua」的系统化做法
 
-> ⚠️ **历史存档（2026-11-01 归档）**：当前状态与结论以 `docs/physbone-status.md` 为准。
+> ⚠️ **历史存档（2026-11-01 归档）**：当前状态与结论以 `docs/agent/physbone-status.md` 为准。
 > 本文件保留是为了追溯当时的推理过程与实测数据，**不要当成现行规范**。
 
 
@@ -83,12 +83,12 @@ local pose = S.Matrix4x4.from_quaternion_position(q, S.Vector3(bx, by, bz)) -- �
 
 | 路线 | 为什么排除 | 出处 |
 |---|---|---|
-| **借用引擎原生抖动骨**（社区 wiki 的 6 根：`support_mg / support / attach_intelpad / attach_samplepouch / target_designator / sling`） | 玩家状态机里 `ragdoll_count=6`，**参数烘焙在资源里，Lua 不可写**；不能新建第 7 根；90 骨里这 6 个槽位已全部占用（`cape1..cape8` 属披风单元）；且这 6 根本身是装备挂点，动作模式固定（`sling` 乱动、`target_designator` 只水平动），拿来当长发/袖子没有观感可言 | `docs/hd2-armor-physics-research.md` §3.2、§10.2 |
+| **借用引擎原生抖动骨**（社区 wiki 的 6 根：`support_mg / support / attach_intelpad / attach_samplepouch / target_designator / sling`） | 玩家状态机里 `ragdoll_count=6`，**参数烘焙在资源里，Lua 不可写**；不能新建第 7 根；90 骨里这 6 个槽位已全部占用（`cape1..cape8` 属披风单元）；且这 6 根本身是装备挂点，动作模式固定（`sling` 乱动、`target_designator` 只水平动），拿来当长发/袖子没有观感可言 | `docs/agent/hd2-armor-physics-research.md` §3.2、§10.2 |
 | `Unit.update_jiggle_bone_data` / `update_jiggle_bone_orientation` 当通用抖动入口 | 只能驱动**状态机里已存在的那 6 根**；函数签名未知（只在识别出的 API 列表里出现过，从未实调） | 同上 §10.1、§11.4 U5 |
 | Havok 布娃娃 / 布娃娃约束 | 只在 `can_ragdoll`（倒地/死亡）时激活；Lua **完全没有** `PhysicsWorld / Actor / Joint` 接口 | 同上 §10.3、§10.4 |
 | 披风布料（Havok Cloth） | 全库只有 **3 个** `cloth` 资源，不是通用机制；Lua 没有 Cloth 接口；披风是独立 unit + 独立 bones | 同上 §10.3 |
 | 纯 Lua 改顶点权重 | `Mesh` 完全没有骨骼/蒙皮接口 ⇒ 权重**只能在离线改资产**时改 | 同上 §10.1 |
-| 用 `AnimationBlenderComponent` / `set_animation_bone_mode(ignore)` 让引擎自己算 | 只是"让引擎别覆盖我们的写入"，不产生二级运动 | `docs/hd2-armor-physics-research.md` §11.2 |
+| 用 `AnimationBlenderComponent` / `set_animation_bone_mode(ignore)` 让引擎自己算 | 只是"让引擎别覆盖我们的写入"，不产生二级运动 | `docs/agent/hd2-armor-physics-research.md` §11.2 |
 
 **结论：二级运动只能由我们自己算**（离线插节点 + 重写权重 + 运行时 Lua 求解）。
 这就是为什么本项目的核心难点在"求解器 + 引擎适配"，而不在"找现成机制"。
@@ -358,12 +358,12 @@ Source SDK 的 `CJiggleBones` 全程用**矩阵合成**：
 
 | 想了解 | 看这里 |
 |---|---|
-| **整体交接与踩坑史（2500 行，最全）** | `docs/hd2-physics-roadmap-and-handover.md` §20–§26 |
+| **整体交接与踩坑史（2500 行，最全）** | `docs/agent/hd2-physics-roadmap-and-handover.md` §20–§26 |
 | 求解器源码（1049 行） | `HD2PhysBoneCompat/src/physbone_compat.lua` |
 | Valve 参考实现 | `tmp/physbone-recon/jigglebones.cpp` |
-| Source jiggle 机制 / MDL 结构 / L4D2 实测参数 | `docs/l4d2-to-hd2-physbone-migration.md` §2–§3 |
-| 引擎原生能力边界（**回答"为什么不借现成机制"**） | `docs/hd2-armor-physics-research.md` §10.1–§10.4 |
-| 容器格式与读取方案 | `docs/hd2physbone-embedded-patch-protocol.md` |
+| Source jiggle 机制 / MDL 结构 / L4D2 实测参数 | `docs/agent/l4d2-to-hd2-physbone-migration.md` §2–§3 |
+| 引擎原生能力边界（**回答"为什么不借现成机制"**） | `docs/agent/hd2-armor-physics-research.md` §10.1–§10.4 |
+| 容器格式与读取方案 | `docs/agent/hd2physbone-embedded-patch-protocol.md` |
 | C# 容器/rig 生产 | `HD2SourceModel/PhysBoneContainer.cs`、`HD2SourceModel/SourceModel.cs`（`SourceJiggleBone`） |
 | 探针（运行时观测与命令通道） | `tmp/lua-boot/probe.lua`（59419 B） |
 | 探针打包 | `tmp/lua-boot/build_probe.py` |

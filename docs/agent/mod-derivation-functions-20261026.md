@@ -330,6 +330,10 @@ VPK 支持是**独立的一整条链路**，不是"又一个造 Mod 功能"。
   → 交给普通导入管线
 ```
 
+> ⛔ 已过时（2026-11-08）：导入阶段**不再做任何转换**——解压 → 建"只有来源 VPK"的条目 → 自动跑一次
+> 标准重构建（转换出 `sectional/`、再用默认编译参数产出 `Overwrite/`）。`VpkImportPlanner` 的识别 /
+> 跳过 / 材质配对逻辑仍有效，只是它现在服务于重构建。见 `sectional-compile-base-20261108.md` §6。
+
 | 特点 | 说明 |
 |---|---|
 | 一个 VPK = 一个 patch | 只含它自己的资源 |
@@ -348,6 +352,11 @@ VPK 支持是**独立的一整条链路**，不是"又一个造 Mod 功能"。
 ```
 
 **`vpk2patch/` 目录就是"VPK 版 Mod"的判据**（`IsVpkMod`）。
+
+> ⛔ 已过时（2026-11-08）：基底目录已改名 `sectional/`（`vpk2patch/` 是旧名，读侧两个名字都认，
+> 一次性改名由 `ModContentLayoutMigration` 做），新的转换产物写 `sectional/`。判据也不是"有这个目录"
+> ——`IsVpkMod` 看的是**转换产物里的 `sections.json`**（材质 VPK 也有目录，但里面没有 Unit）。
+> 本节代码块与下面 §4.3 里的 `vpk2patch/` 都按 `sectional/` 理解。
 
 ### 4.3 VPK 版 Mod 在 Mod 页的特殊待遇
 
@@ -368,6 +377,10 @@ VPK 支持是**独立的一整条链路**，不是"又一个造 Mod 功能"。
 | 为什么走外部进程 | 换甲要读装备表、读目标 Unit、生成隐藏 Unit，CLI 里已经跑通；管理器再实现一遍就是两份会漂移的实现 |
 | 写 | Mod 目录里的 patch（换 key） |
 | 记忆 | 成功后把"指向哪件护甲"写进 `wardrobe.json` |
+
+> ⛔ 已过时（2026-11-08）：换甲产物写 `Overwrite/`，权威那份留在 `sectional/` 不动
+> （`CliVpkRekey` 直接落 `ModNodePayloadLayout.OverwriteDirectoryName`）。「记忆」那行仍成立：
+> 写 `wardrobe.json` 是用户动作的落盘，不属于编译。
 
 ### 4.5 组件树与烘焙（`wardrobe.json`）
 
@@ -459,6 +472,13 @@ VPK 支持是**独立的一整条链路**，不是"又一个造 Mod 功能"。
 ```
 
 ---
+
+> ⛔ 已过时（2026-11-08）：骨架里的 `[头盔合并]` 目标类型不要照做——头身合并**不是编译基座的条件**
+> （`ModCompileService.CompileAsync` 只接目标护甲 / section 开关 / 材质开关）。它的 GUI 入口今天只剩
+> 「临时将头盔合并到盔甲」这一条**独立动作**（浮动操作簇，`PageActionKind.Merge`；写主体 `Overwrite/`，
+> 属 `sectional-compile-base-20261108.md` §5 的未收敛债），不是"派生出新 Mod"的一类；
+> CLI `--head-merge` 把合并烘进 `sectional/` 本体那条仍只是实验。它要成为骨架里的正式目标类型，
+> 须先在编译基座里从 `sectional/` 算。
 
 ## 7. 需要你定的两件事
 
