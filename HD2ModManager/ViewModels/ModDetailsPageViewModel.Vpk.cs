@@ -423,6 +423,11 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 			OnPropertyChanged(nameof(ShowVpkComponentCard));
 			await EnsureVpkTargetArmorsAsync(directory).ConfigureAwait(true);
+			// **每次进页面都按盘上的记录重选**（不只是第一次）。
+			// 候选列表是缓存（`EnsureVpkTargetArmorsAsync` 在列表非空时直接返回），
+			// 把"选中哪一项"也交给它，第二次进页面就会沿用上一次的选择：
+			// 用户换到 O-3、离开、回来，下拉仍然显示自己的素体——而那已经不是盘上的值了。
+			SelectedVpkTargetArmor = ResolveCurrentTargetArmor(directory);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException)
 		{
@@ -489,7 +494,6 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 为什么不能默认指向 RE-2310：VPK 转出来的 7 个 Unit 本身就是一套完整素体，
 			// 它默认就该是"自定义素体模式"。指到游戏护甲上会让用户以为这个 Mod 是"某件护甲的皮肤"，
 			// 而换到那件护甲上还会把原本的护甲件全部隐藏——那是另一个决定，必须由用户点。
-			SelectedVpkTargetArmor = ResolveCurrentTargetArmor(modDirectory);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
 		{
@@ -586,9 +590,36 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 两种结果的说法必须不同：退回来源不是"换甲成功"，它压根没搬运几何。
 			var rekey = outcome.Rekey;
 			var warnings = rekey?.Warnings ?? Array.Empty<string>();
-			var summary = rekey?.RestoredFromSource == true
-				? $"已退回自定义素体（{target.DisplayName}）：来源 patch 已原样复制进 Overwrite，开关继续有效。"
-				: $"已换到 {target.DisplayName}：替换 {rekey?.ReplacedUnits ?? 0} 个 Unit、隐藏 {rekey?.HiddenMeshes ?? 0} 个网格。";
+			var summary = outcome.Rekeyed
+				? rekey?.RestoredFromSource == true
+					? $"已退回自定义素体（{target.DisplayName}）：来源 patch 已原样复制进 Overwrite，开关继续有效。"
+					: $"已换到 {target.DisplayName}：替换 {rekey?.ReplacedUnits ?? 0} 个 Unit、隐藏 {rekey?.HiddenMeshes ?? 0} 个网格。"
+				// 自身素体：没有换甲这一步，别说"替换 0 个 Unit"。
+				: $"已按 {target.DisplayName} 编译生效层（自定义素体，unit 键不变）。";
+
+			// **用户按下「切换」= 这次的目标就是他的意图，必须落盘。**
+			// 编译基座只读配置（不写 wardrobe.json），所以由这个"用户动作"负责写：
+			// 少了这一步，离开页面再回来读到的还是旧目标（下拉弹回自己的素体），
+			// 而下一次「切换」还会因为"当前目标 == 选中目标"被判成"没有变化"。
+			_vpkFile = _vpkFile with
+			{
+				TargetArmorArchiveId = target.ArchiveId,
+				TargetArmorName = target.DisplayName,
+			};
+			var persisted = true;
+			try
+			{
+				await VpkModWardrobeService.WriteAsync(directory, _vpkFile).ConfigureAwait(true);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidOperationException)
+			{
+				persisted = false;
+				warnings = warnings.Concat([$"目标护甲没能记进 wardrobe.json：{exception.Message}"]).ToArray();
+			}
+
+			// 记不住目标时把话说清楚：产物已经是新目标了，但下次进页面会显示旧目标。
+			if (!persisted)
+				summary += "（这次编译已经生效，但目标没记住；下次进页面可能显示旧目标）";
 
 			// ⚠️ **"某个部位没有落点"必须留在卡上。** 换甲会照常报成功，但那个部位的来源 Unit
 			// 整份没写出去、原版又已被隐藏——玩家进游戏看到的是"衣服还在、人体胳膊不见了"。
