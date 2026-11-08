@@ -178,7 +178,29 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	internal static bool ContainsImportablePayload(ImportedObjectTree tree, string sourceRootDirectory)
 		=> tree.Nodes.Values.Any(node => node.PatchGroups.Count > 0
 			|| node.Metadata.IsLogicalContainer)
-			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory);
+			|| ExternalInstallFileFactsService.HasRecognizedFiles(sourceRootDirectory)
+			// **只有来源 VPK 的条目也是合法的。**
+			//
+			// vpk2patch 类的"来源"本身就是权威事实：`sectional/` 与 `Overwrite/` 是派生物，
+			// 由重构建（转换 + 编译）产出，导入阶段用不着它们已经存在。
+			// 以前这里要求"根上或载荷层里已经有 patch"，于是"先建条目、再重构建"这条链
+			// 在第一步就被判成"没有可导入内容"。
+			|| HasSourceVpk(sourceRootDirectory);
+
+	private static bool HasSourceVpk(string directory)
+	{
+		try
+		{
+			return Directory.Exists(directory)
+				&& Directory.EnumerateFiles(directory, "*.vpk", SearchOption.TopDirectoryOnly).Any();
+		}
+		catch (Exception exception) when (exception is IOException
+			or UnauthorizedAccessException
+			or DirectoryNotFoundException)
+		{
+			return false;
+		}
+	}
 
 	/// <summary>数一数目录里（含子目录）有几个 <c>.vpk</c>。只用于给出"这包其实是 VPK 来源"的提示。</summary>
 	private static int CountVpkFiles(string directory)
