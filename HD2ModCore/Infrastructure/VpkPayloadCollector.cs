@@ -31,12 +31,18 @@ public static class VpkPayloadCollector
 	/// <param name="MaterialPatches">收进来的材质 patch 个数。</param>
 	/// <param name="Error">失败原因。</param>
 	/// <param name="Notes">值得告诉用户的细节（例如"某个材质 patch 没找到"）。</param>
+	/// <param name="ReportJson">
+	/// **改写过 patch 文件名的**转换报告（把每个来源 VPK 各自目录里的 `patch_0` 换成平铺后的编号）。
+	/// 调用方要用它去写 `vpk2patch.json`：`patches.json` 里"哪个 patch 是 unit、材质叫什么名字"
+	/// 全部由报告决定，报告不跟着改，材质选项就会退化成「材质 1 / 2 / 3」。
+	/// </param>
 	public sealed record Result(
 		bool Succeeded,
 		int UnitPatches,
 		int MaterialPatches,
 		string? Error,
-		IReadOnlyList<string> Notes)
+		IReadOnlyList<string> Notes,
+		string? ReportJson = null)
 	{
 		public static Result Failure(string error, IReadOnlyList<string>? notes = null)
 			=> new(false, 0, 0, error, notes ?? Array.Empty<string>());
@@ -70,7 +76,9 @@ public static class VpkPayloadCollector
 		string convertRoot,
 		string targetPayloadDirectory,
 		VpkConversionReport? report,
-		string? modelVpkStem = null)
+		string? modelVpkStem = null,
+		string? rawReportJson = null,
+		IReadOnlyList<string>? sourceVpkPaths = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(convertRoot);
 		ArgumentException.ThrowIfNullOrWhiteSpace(targetPayloadDirectory);
@@ -133,6 +141,8 @@ public static class VpkPayloadCollector
 		var units = 0;
 		var materials = 0;
 		var materialIndex = 1;
+		// 「来源子目录 | 原来的 patch 文件名」→ 平铺后的文件名。改写报告要用它。
+		var mappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		foreach (var (path, isUnitLayer) in ordered)
 		{
 			var name = Path.GetFileName(path);
@@ -152,7 +162,9 @@ public static class VpkPayloadCollector
 				notes.Add($"{name}：报告里也标成 unit，但已经有 unit patch 了，按材质排到 patch_{targetIndex}。");
 
 			var archive = match.Groups["hex"].Value.ToLowerInvariant();
-			CopyBaseAndSidecars(path, Path.Combine(targetPayloadDirectory, $"{archive}.patch_{targetIndex}"));
+			var targetFileName = $"{archive}.patch_{targetIndex}";
+			CopyBaseAndSidecars(path, Path.Combine(targetPayloadDirectory, targetFileName));
+			mappings[$"{Path.GetFileName(Path.GetDirectoryName(path)!)}|{name}"] = targetFileName;
 		}
 
 		// ④ 结构文件只从模型目录取一份：它们是"这具素体是谁""哪些 section 算开关"，不属于某个 patch。
@@ -171,7 +183,93 @@ public static class VpkPayloadCollector
 			return new Result(false, 0, materials,
 				"这次转换没有产出 unit patch：模型主体没有被转出来。", notes);
 
-		return new Result(true, units, materials, null, notes);
+		return new Result(true, units, materials, null, notes,
+			RewriteReport(rawReportJson, produced, mappings, sourceVpkPaths));
+	}
+
+	/// <summary>
+	/// 把报告里每个来源 VPK 的 patch 文件名改成**平铺之后**的编号。
+	/// <para>
+	/// 报告里记的是"它自己那个子目录里"的文件名（都叫 <c>&lt;archive&gt;.patch_0</c>）。
+	/// 收成平铺载荷之后这些名字全变了，而 <c>patches.json</c>（材质选项的名字与角色）
+	/// 完全靠报告来判定：报告不改，合并进来的材质在清单里就没有名字，界面退化成「材质 1 / 2 / 3」。
+	/// </para>
+	/// </summary>
+	private static string? RewriteReport(
+		string? rawReportJson,
+		IReadOnlyList<(string Directory, List<(string Path, int Index)> Patches)> produced,
+		IReadOnlyDictionary<string, string> mappings,
+		IReadOnlyList<string>? sourceVpkPaths)
+	{
+		if (string.IsNullOrWhiteSpace(rawReportJson)) return rawReportJson;
+		try
+		{
+			if (System.Text.Json.Nodes.JsonNode.Parse(rawReportJson) is not System.Text.Json.Nodes.JsonObject root)
+				return rawReportJson;
+			if (root["patches"] is not System.Text.Json.Nodes.JsonArray patches) return rawReportJson;
+
+			foreach (var item in patches)
+			{
+				if (item is not System.Text.Json.Nodes.JsonObject entry) continue;
+				var vpkName = entry["name"]?.GetValue<string>();
+				var directory = ResolveProducedDirectory(produced, vpkName);
+				if (directory is null) continue;
+				var directoryKey = Path.GetFileName(directory);
+
+				// 报告里的 `name` 常被 CLI 洗成小写；材质选项名直接用它会变成
+				// "elise基础材质a1主体"。原始文件名有大小写，按目录对回去。
+				var originalName = FindOriginalName(directoryKey, sourceVpkPaths);
+				if (originalName is not null)
+					entry["name"] = originalName;
+
+				foreach (var field in new[] { "unitPatch", "materialPatch" })
+				{
+					if (entry[field] is not System.Text.Json.Nodes.JsonValue value) continue;
+					var fileName = value.GetValue<string>();
+					if (string.IsNullOrWhiteSpace(fileName)) continue;
+					if (!mappings.TryGetValue(directoryKey + "|" + fileName, out var rewritten)) continue;
+					entry[field] = rewritten;
+				}
+			}
+
+			return root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+		}
+		catch (System.Text.Json.JsonException)
+		{
+			// 不是合法 JSON：原样交回去，让后面的步骤按它们自己的方式报错。
+			return rawReportJson;
+		}
+
+	}
+
+	/// <summary>在来源 VPK 列表里按"清洗后的名字"找回原始文件名（大小写以磁盘为准）。</summary>
+	private static string? FindOriginalName(string? directoryKey, IReadOnlyList<string>? sourceVpkPaths)
+	{
+		if (sourceVpkPaths is null || string.IsNullOrWhiteSpace(directoryKey)) return null;
+		foreach (var path in sourceVpkPaths)
+		{
+			var stem = Path.GetFileNameWithoutExtension(path);
+			if (!string.Equals(SafeName(stem), directoryKey, StringComparison.OrdinalIgnoreCase)) continue;
+			return Path.GetFileName(path);
+		}
+
+		return null;
+	}
+
+	/// <summary>按来源 VPK 名认出它的产出子目录（名字会被 CLI 清洗，大小写也不保证）。</summary>
+	private static string? ResolveProducedDirectory(
+		IReadOnlyList<(string Directory, List<(string Path, int Index)> Patches)> produced,
+		string? vpkFileName)
+	{
+		if (string.IsNullOrWhiteSpace(vpkFileName)) return null;
+		var wanted = SafeName(Path.GetFileNameWithoutExtension(vpkFileName));
+		foreach (var (directory, _) in produced)
+		{
+			if (string.Equals(Path.GetFileName(directory), wanted, StringComparison.OrdinalIgnoreCase))
+				return directory;
+		}
+
+		return null;
 	}
 
 	private static void CopyBaseAndSidecars(string sourceBase, string targetBase)
@@ -252,11 +350,11 @@ public static class VpkPayloadCollector
 		out string found)
 	{
 		found = string.Empty;
-		if (string.IsNullOrWhiteSpace(vpkFileName)) return false;
-		var wanted = SafeName(Path.GetFileNameWithoutExtension(vpkFileName));
-		foreach (var (directory, patches) in produced)
+		var directory = ResolveProducedDirectory(produced, vpkFileName);
+		if (directory is null) return false;
+		foreach (var (candidate, patches) in produced)
 		{
-			if (!string.Equals(Path.GetFileName(directory), wanted, StringComparison.OrdinalIgnoreCase)) continue;
+			if (!string.Equals(candidate, directory, StringComparison.OrdinalIgnoreCase)) continue;
 			foreach (var (path, _) in patches)
 			{
 				if (!string.Equals(Path.GetFileName(path), patchFileName, StringComparison.OrdinalIgnoreCase)) continue;

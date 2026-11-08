@@ -59,7 +59,31 @@ public static class SectionalPatchManifestFile
 	}
 
 	/// <summary>
-	/// 按"目录里实际有哪些 patch + 转换报告怎么说"生成一份清单。
+	/// 按**当前的**转换报告重写一份 <c>patches.json</c>；目录不存在/没有转换报告时返回 <c>null</c>。
+	/// <para>
+	/// <b>必须在"新报告已经写进 Mod 根"之后调用。</b>报告是"哪个 patch 是谁"的唯一来源；
+	/// 拿上一份报告写出来的清单会把材质选项的名字全丢掉（界面上退化成「材质 1 / 2 / 3」），
+	/// 而且顺序、角色也会跟着错。2026-11-08 的实测就是这条：载荷换了、报告还没换，
+	/// 于是清单里那几个新材质没有名字。
+	/// </para>
+	/// </summary>
+	public static SectionalPatchManifestDocument? Rebuild(string modDirectory, DateTimeOffset generatedUtc)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
+		var payload = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory);
+		if (payload is null) return null;
+		var archive = ReadArchiveHex16(payload);
+		if (string.IsNullOrEmpty(archive)) return null;
+
+		// 上一版要先读出来：用户改过的名字/备注/配图/顺序是**用户输入**，跨重建必须留着。
+		var previous = TryReadAsync(payload).AsTask().GetAwaiter().GetResult();
+		var document = Build(payload, archive, VpkConversionReport.TryRead(modDirectory), generatedUtc, null, previous);
+		if (document.Patches.Count == 0) return null;
+		_ = TryWrite(payload, document);
+		return document;
+	}
+
+	/// <summary>按"目录里实际有哪些 patch + 转换报告怎么说"生成一份清单。
 	/// <para>
 	/// 报告里 <c>patches[]</c> 的 <c>unitPatch</c> / <c>materialPatch</c> 给出"来源 VPK → patch 文件名"
 	/// 的对应关系；据此可以把每个 patch 文件名翻译成"来自哪个来源、是 unit 还是材质、带多少资源"。

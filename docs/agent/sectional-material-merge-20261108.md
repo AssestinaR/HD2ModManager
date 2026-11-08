@@ -129,7 +129,42 @@ hd2mod library sync apply   --manager-root <管理器目录> --library <Mod库�
 hd2mod library cleanup      --manager-root <管理器目录> --library <Mod库目录> --confirm --json
 ```
 
-## 6. 还没做的
+## 6. 材质选项没有名字（2026-11-08 第二轮）
+
+现象：导入与重构建都正常了，但详情页「材质选项」三行显示成 **材质 1 / 材质 2 / 材质 3**，
+顺序还是 2/3/4。
+
+根因有两层，都在"报告"上：
+
+1. **报告的 patch 文件名是「每个来源 VPK 自己的编号」**（都叫 `<archive>.patch_0`）。
+   收成平铺载荷后编号变成 `patch_0/1/2`，但报告没跟着改 ——
+   `patches.json` 的构建靠报告把 patch 文件翻译成"谁是什么"，翻译不到就只剩
+   `patchIndex == 0 ? Unit : Material` 的兜底，**选项名只能是空**。
+2. **写 `patches.json` 的时机在报告之前**：`VpkPayloadSwap.Swap` 里顺手写了一份，
+   用的是**上一份**报告。归拢/合并后新出现的材质 patch 在旧报告里根本没有，名字自然全丢。
+
+修法：
+
+- `VpkPayloadCollector` 在收集的同时**改写报告**（`Result.ReportJson`）：把每个来源 VPK 的
+  `unitPatch` / `materialPatch` 换成平铺后的编号；顺带用原始 VPK 名把被 CLI 洗成小写的
+  `name` 还原（否则选项名会显示成 `elise基础材质a1主体`）。
+- 导入与重构建都改写成**这份改写过的报告**。
+- `VpkPayloadSwap` **不再写** `patches.json`；新增 `SectionalPatchManifestFile.Rebuild`，
+  由调用方在"新报告已经落地"之后调用（重构建 ⑤c、导入换载荷之后）。
+- 顺序显示修正：`MaterialOptionSettings.Read` 的默认 `Order` 改成"材质之间的第几个"（从 0 起），
+  与 `Move` 写的 0 基位置同一口径 —— 以前直接用 `PatchIndex`，第一行会显示成「顺序 2」。
+
+实测（真实三 VPK 批转换的报告，走「收集 → 改写报告 → 重写 patches.json」）：
+
+```
+patch_0  role=Unit      name=<null>                     ← unit 不是材质选项，没有名字是对的
+patch_1  role=Material  name=Elise基础材质A1主体
+patch_2  role=Material  name=Elise基础材质B1光泽感肌肤
+```
+
+**已经坏了的老数据**：点一次「重构」就会重写报告与 `patches.json`，名字与顺序随之恢复。
+
+## 7. 还没做的
 
 - GUI 里还没有 family-merge 的入口（只有 CLI）。归拢一次就够，但用户得会敲命令。
 - 旧的 `library material-fold` 已被 family-merge 取代，暂未删除。

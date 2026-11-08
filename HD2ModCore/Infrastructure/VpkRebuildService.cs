@@ -226,7 +226,8 @@ public static class VpkRebuildService
 			// 表现是"重构完成、游戏里材质没了"，重转多少次都一样（2026-11-07 用户实测）。
 			var fresh = VpkConversionReport.TryParse(conversion.Output);
 			var collectedPayload = Path.Combine(stagingRoot, "payload");
-			var collected = VpkPayloadCollector.Collect(convertRoot, collectedPayload, fresh);
+			var collected = VpkPayloadCollector.Collect(
+				convertRoot, collectedPayload, fresh, rawReportJson: conversion.Output, sourceVpkPaths: sources);
 			if (!collected.Succeeded)
 			{
 				preserveStaging = true;
@@ -320,7 +321,9 @@ public static class VpkRebuildService
 				var restoreReportReadOnly = VpkPayloadSwap.ClearReadOnlyForWrite(reportPath);
 				try
 				{
-					await File.WriteAllTextAsync(reportPath, conversion.Output, cancellationToken)
+					// 写**改写过 patch 文件名**的那份：平铺之后编号变了，
+					// 报告不跟着改的话 `patches.json` 里材质选项就没有名字。
+					await File.WriteAllTextAsync(reportPath, collected.ReportJson ?? conversion.Output, cancellationToken)
 						.ConfigureAwait(false);
 				}
 				catch (UnauthorizedAccessException exception)
@@ -339,6 +342,14 @@ public static class VpkRebuildService
 				notes.Add("这次没能解析出转换报告，`vpk2patch.json` 保持旧内容——"
 					+ "界面上的材质/贴图计数与警告可能已经过时。");
 			}
+
+			// ⑤c **结构文件跟着新报告重写**。
+			//
+			// 不重写会怎样：`patches.json` 里"哪个 patch 是谁"还是上一批产物的说法。
+			// 归拢/合并之后基底多了几个材质 patch，旧清单里根本没有它们——于是材质选项
+			// 一行名字都没有，界面显示成「材质 1 / 2 / 3」（2026-11-08 用户报的就是这个）。
+			if (SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow) is null)
+				notes.Add("没能重写 `patches.json`：材质选项的名字/顺序可能显示不出来。");
 
 			// ⑥ 物理参数容器：转换阶段刻意不嵌（会让受管步骤记账错位），这里才是它该来的地方。
 			onStage?.Invoke("正在写入物理参数…");

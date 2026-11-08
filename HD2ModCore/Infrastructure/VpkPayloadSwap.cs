@@ -87,25 +87,13 @@ public static class VpkPayloadSwap
 				File.Copy(path, destination, overwrite: true);
 			}
 
-			// 换了载荷就重写一份 patches.json：旧的那份描述的是上一批产物，
-			// 留着它比没有更糟（工具会照着它去找已经不存在的 patch）。
-			var modRoot = Path.GetDirectoryName(payloadDirectory);
-			if (!string.IsNullOrWhiteSpace(modRoot) && Directory.Exists(modRoot))
-			{
-				// 重转会把结构文件整个重写一遍；先把上一版读出来，
-				// 于是用户改过的名字/备注/配图/顺序能跨重建留下来。
-				var previousManifest = SectionalPatchManifestFile
-					.TryReadAsync(payloadDirectory).AsTask().GetAwaiter().GetResult();
-				var manifest = SectionalPatchManifestFile.Build(
-					payloadDirectory,
-					SectionalPatchManifestFile.ReadArchiveHex16(payloadDirectory),
-					VpkConversionReport.TryRead(modRoot),
-					DateTimeOffset.UtcNow,
-					optionNameByPatchFileName: null,
-					previous: previousManifest);
-				if (manifest.Patches.Count != 0)
-					_ = SectionalPatchManifestFile.TryWrite(payloadDirectory, manifest);
-			}
+			// ⚠️ **这里不写 patches.json。**
+			//
+			// 结构文件的内容是"哪个 patch 是谁"，唯一来源是**转换报告**；而调用方在这之后才把
+			// 新报告写进 Mod 根（`vpk2patch.json`）。在这里写，用的是**上一份**报告：
+			// 合并了几个材质变体之后，旧报告里根本没有那几个 patch → 清单里材质选项名全是空的，
+			// 界面退化成"材质 1 / 2 / 3"（2026-11-08 用户报的就是这个）。
+			// 现在统一由调用方在写完报告之后调 `SectionalPatchManifestFile.Rebuild`。
 
 			return new Result(true, backupDirectory, restoreReadOnly, null);
 		}

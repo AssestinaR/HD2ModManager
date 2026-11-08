@@ -115,6 +115,47 @@ public sealed class VpkPayloadCollectorTests : IDisposable
 		Assert.Equal("material", ReadMarker(Path.Combine(target, $"{Archive}.patch_1")));
 	}
 
+	/// <summary>
+	/// 报告里每个来源 VPK 记的都是**它自己那个子目录里**的文件名（都叫 <c>patch_0</c>）。
+	/// 收成平铺之后必须把报告里的名字一起改掉，否则 <c>patches.json</c> 认不出哪一份是材质、
+	/// 叫什么名字，界面就退化成「材质 1 / 2 / 3」。
+	/// </summary>
+	[Fact]
+	public void CollectRewritesTheReportToTheFlattenedIndexes()
+	{
+		var convert = Path.Combine(_root, "convert");
+		WritePatch(Path.Combine(convert, "elise_bill"), Archive + ".patch_0", "unit");
+		WritePatch(Path.Combine(convert, "a1"), Archive + ".patch_0", "material-a1");
+		WritePatch(Path.Combine(convert, "b1"), Archive + ".patch_0", "material-b1");
+		File.WriteAllText(Path.Combine(convert, "elise_bill", "custom-model.json"), "{}");
+
+		// 三个条目全都引用 patch_0 —— 这就是 CLI 的真实报告。
+		var raw = $$"""
+			{
+			  "ok": true,
+			  "idNamespace": "vpk-test",
+			  "patches": [
+			    { "name": "Elise_Bill.vpk", "kind": "model", "unitPatch": "{{Archive}}.patch_0" },
+			    { "name": "A1.vpk", "kind": "material", "materialPatch": "{{Archive}}.patch_0" },
+			    { "name": "B1.vpk", "kind": "material", "materialPatch": "{{Archive}}.patch_0" }
+			  ]
+			}
+			""";
+
+		var target = Path.Combine(_root, "mod", "sectional");
+		var result = VpkPayloadCollector.Collect(
+			convert, target, VpkConversionReport.TryParse(raw), "Elise_Bill", rawReportJson: raw);
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.NotNull(result.ReportJson);
+
+		var report = VpkConversionReport.TryParse(result.ReportJson!);
+		Assert.NotNull(report);
+		Assert.Equal($"{Archive}.patch_0", report!.Patches[0].UnitPatch);
+		Assert.Equal($"{Archive}.patch_1", report.Patches[1].MaterialPatch);
+		Assert.Equal($"{Archive}.patch_2", report.Patches[2].MaterialPatch);
+	}
+
 	[Fact]
 	public void CollectFailsWhenNothingWasProduced()
 	{

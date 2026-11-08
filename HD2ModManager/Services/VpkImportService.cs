@@ -841,7 +841,12 @@ public sealed class VpkImportService
 			outputRoot,
 			payloadDirectory,
 			VpkConversionReport.TryParse(output),
-			Path.GetFileNameWithoutExtension(job.PrimaryVpkPath));
+			Path.GetFileNameWithoutExtension(job.PrimaryVpkPath),
+			// 报告要跟着改成平铺后的编号：`patches.json` 的材质选项名字全靠它。
+			rawReportJson: output,
+			// 原始 VPK 名（大小写以磁盘为准）：报告里的名字常被 CLI 洗成小写，
+			// 直接拿来当材质选项名会显示成 "elise基础材质a1主体"。
+			sourceVpkPaths: job.Inputs.Select(input => input.VpkPath).ToArray());
 		if (!collected.Succeeded)
 		{
 			return new ConversionResult(
@@ -903,7 +908,10 @@ public sealed class VpkImportService
 			}
 		}
 
-		return new ConversionResult(patchDirectory, null, output, units, materials, textures, notes);
+		// 报告要用**改写过 patch 文件名**的那一份：`patches.json` 靠它判定哪个 patch 是 unit、
+		// 每个材质选项叫什么。写原始报告的话，合并进来的材质在清单里没有名字。
+		return new ConversionResult(
+			patchDirectory, null, collected.ReportJson ?? output, units, materials, textures, notes);
 	}
 
 	/// <summary>把一串名字写成"前几个 + 共几个"，避免几十个名字把界面撑爆。</summary>

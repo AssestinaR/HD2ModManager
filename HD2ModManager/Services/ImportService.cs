@@ -411,6 +411,13 @@ namespace HD2ModManager.Services
                     }
                 }
 
+                // 结构文件跟着新报告重写：不重写的话 `patches.json` 里"哪个 patch 是谁"
+                // 还是上一批产物的说法——合并进来的材质 patch 没有名字，界面显示成「材质 1 / 2 / 3」。
+                if (SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow) is null)
+                {
+                    LogService.Warn($"{package.UpdateTargetName}：没能重写 patches.json，材质选项的名字可能显示不出来。");
+                }
+
                 // 物理参数：**必须在换完之后、在真正的 Mod 目录上做**。
                 //
                 // `physbone embed-mod` 要靠目录里那份来源 .vpk 才找得到 jiggle 骨；

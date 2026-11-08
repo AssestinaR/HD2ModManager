@@ -52,7 +52,12 @@ public static class MaterialOptionSettings
 				enabled is null
 					? string.Equals(entry.OptionName, SectionalPatchManifest.BuiltInMaterialOptionName, StringComparison.Ordinal)
 					: enabled.Contains(fileName, StringComparer.OrdinalIgnoreCase),
-				entry.Order ?? entry.PatchIndex,
+				// 没有显式记录时按位置算：**材质之间的第几个**，从 0 起。
+				//
+				// 不能用 PatchIndex 原值：unit 恒为 patch_0，材质从 patch_1 起，直接用会把第一行
+				// 显示成「顺序 2」（2026-11-08 用户看到的就是 2/3/4）。而 `Move` 写的是 0 起的
+				// 位置，两者本来就必须是同一个口径。
+				entry.Order ?? Math.Max(0, entry.PatchIndex - 1),
 				entry.Notes,
 				entry.ImageFileName));
 		}
