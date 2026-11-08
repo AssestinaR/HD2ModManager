@@ -49,6 +49,16 @@ public sealed record ArmorRegistryDataMapping(
 /// </para>
 ///
 /// <para>
+/// <b>层号是首选对齐键，但不作绝对假设。</b><c>pieceType</c> 是"部位内的第几个 unit 槽"，
+/// 不是稳定的内层/外层编号：实测原生 138 套里，胯有 16 套只有 <c>pt1</c>、左腿 9 套、
+/// 右腿 11 套、右臂 12 套同样只有 <c>pt1</c>（有的还有 <c>pt1+pt2</c> 而没有 <c>pt0</c>）。
+/// 素体的件只按 <c>pt0</c> 声明，严格按层号对齐会把整个部位写成 0 ——
+/// 上机表现就是"这套护甲缺胯 / 缺腿 / 缺手"。
+/// 所以：层号优先对齐；**当某个部位在目标的所有层上都对不上时**，让它的最底层借用
+/// 来源该部位最底层的那一件。只在"整片对不上"时借，避免同一个网格被铺到两层上互相打架。
+/// </para>
+///
+/// <para>
 /// 文件的内容校验和是 MurmurHash64A，游戏用**原版文件的哈希**比对，所以改完内容必须把
 /// 哈希伪造回原值。求解是闭式的：只要有一个容器忽略的、8 字节对齐的字，它的取值就唯一
 /// 确定。**这个字放在扩充后的 payload 末尾**（见 <see cref="AppendForgeWord"/>），
@@ -246,31 +256,60 @@ public sealed class ArmorRegistryDataMapper
 	}
 
 	/// <summary>
-	/// 单个格子的取值。<paramref name="bodyType"/> 是**目标那一行**的身形，不是来源的身形。
+	/// 单个格子的取值：按 <c>(目标身形行, 槽位, 层)</c> 找来源件。
 	/// <para>
-	/// 顺序：① 同身形同格 → ② 共用(Any)格 → ③ 目标是共用行时接受来源按身形拆出来的件
-	/// → ④ 都没有就返回 0（隐藏）。
+	/// 顺序：① 同身形同层 → ② 共用(Any)同层 → ③ 目标是共用行时接受来源按身形拆出来的件
+	/// → ④ 没有就返回 0（这一层该隐藏）。
 	/// </para>
 	/// <para>
 	/// <b>③ 为什么要容忍。</b>原生把腿、披风、臂内层放在共用行（因为它们的网格不随身形变），
 	/// 而素体可能把同一个槽位声明成按身形两份。这时共用格表达不了"两份不同的网格"：
-	/// 两份相同就照用，不同就让这一格隐藏 —— 绝不挑一份塞给两种身形（那会让一半身形穿错网格）。
+	/// 两份相同就照用，不同就让这一层隐藏 —— 绝不挑一份塞给两种身形（那会让一半身形穿错网格）。
 	/// 只声明了一份的，说明这个网格两种身形通用，直接用。
 	/// </para>
 	/// </summary>
-	static ulong ResolveUnit(
+	static ulong ResolveByLayer(
 		Dictionary<(uint Body, uint Slot, uint PieceType), ulong> index,
 		uint bodyType, uint slot, uint pieceType)
 	{
 		if (index.TryGetValue((bodyType, slot, pieceType), out var unit)) return unit;
 		if (bodyType != AnyBodyType && index.TryGetValue((AnyBodyType, slot, pieceType), out unit)) return unit;
-		if (bodyType == AnyBodyType)
+		if (bodyType != AnyBodyType) return 0UL;
+
+		var hasStocky = index.TryGetValue((0u, slot, pieceType), out var stocky);
+		var hasSlim = index.TryGetValue((1u, slot, pieceType), out var slim);
+		if (hasStocky && hasSlim) return stocky == slim ? stocky : 0UL;
+		if (hasStocky) return stocky;
+		if (hasSlim) return slim;
+		return 0UL;
+	}
+
+	/// <summary>
+	/// 该 <c>(身形, 部位)</c> 在来源里的最底层那一件。
+	/// <para>
+	/// <b>为什么需要它（2026-11-08 上机回归）。</b><c>pieceType</c> 是"部位内的第几个 unit 槽"，
+	/// 不是稳定的内层/外层编号：实测原生 138 套里，胯有 16 套只有 <c>pt1</c>（甚至 <c>pt1+pt2</c>）、
+	/// 左腿 9 套、右腿 11 套、右臂 12 套同样只有 <c>pt1</c>。素体的件只按 <c>pt0</c> 声明，
+	/// 严格按层号对齐就会把这些部位整片写成 0，表现为"这套护甲缺胯/缺腿/缺手"。
+	/// </para>
+	/// <para>
+	/// 所以层号仍是首选对齐键，但**当整个部位一层都对不上时**，让目标该部位的最底层借用
+	/// 来源该部位最底层的那一件。只在"整片对不上"时借，避免同一个网格被铺到两层上互相打架。
+	/// </para>
+	/// </summary>
+	static ulong ResolvePartFallback(
+		Dictionary<(uint Body, uint Slot, uint PieceType), ulong> index,
+		uint bodyType, uint slot)
+	{
+		var layers = index.Keys
+			.Where(key => key.Slot == slot)
+			.Select(key => key.PieceType)
+			.Distinct()
+			.OrderBy(layer => layer);
+		foreach (var layer in layers)
 		{
-			var hasStocky = index.TryGetValue((0u, slot, pieceType), out var stocky);
-			var hasSlim = index.TryGetValue((1u, slot, pieceType), out var slim);
-			if (hasStocky && hasSlim) return stocky == slim ? stocky : 0UL;
-			if (hasStocky) return stocky;
-			if (hasSlim) return slim;
+			var unit = ResolveByLayer(index, bodyType, slot, layer);
+			if (unit != 0) return unit;
 		}
 		return 0UL;
 	}
@@ -449,10 +488,31 @@ public sealed class ArmorRegistryDataMapper
 			}
 
 			var index = IndexSource(sourcePieces);
+
+			// 第一遍：每个 (身形, 部位) 的最低层是第几层、整片到底有没有对上。
+			// 「整片没对上」= 这个部位在目标的所有层上都找不到来源件（素体没这个部位，
+			// 或者只有它在原生里被放在 pt1/pt2、而素体按 pt0 声明）。
+			var lowestLayer = new Dictionary<(uint Body, uint Slot), uint>();
+			var coveredParts = new HashSet<(uint Body, uint Slot)>();
+			foreach (var piece in targetKit.Pieces)
+			{
+				var part = (Body: piece.BodyType, Slot: piece.Slot);
+				lowestLayer[part] = lowestLayer.TryGetValue(part, out var seen)
+					? Math.Min(seen, piece.PieceType)
+					: piece.PieceType;
+				if (ResolveByLayer(index, piece.BodyType, piece.Slot, piece.PieceType) != 0)
+					coveredParts.Add(part);
+			}
+
 			var changed = 0;
 			foreach (var piece in targetKit.Pieces)
 			{
-				var unit = ResolveUnit(index, piece.BodyType, piece.Slot, piece.PieceType);
+				var part = (Body: piece.BodyType, Slot: piece.Slot);
+				var unit = ResolveByLayer(index, piece.BodyType, piece.Slot, piece.PieceType);
+				// 整个部位都对不上时，让它的最底层借用来源该部位最底层的那一件 —— 否则整套护甲
+				// 会"缺胯/缺腿/缺手"。只在整片对不上时借，不会把同一网格铺到两层。
+				if (unit == 0 && !coveredParts.Contains(part) && piece.PieceType == lowestLayer[part])
+					unit = ResolvePartFallback(index, piece.BodyType, piece.Slot);
 				if (unit == piece.Unit) continue;
 				BinaryPrimitives.WriteUInt64LittleEndian(edited.AsSpan(piece.Offset), unit);
 				changed++;

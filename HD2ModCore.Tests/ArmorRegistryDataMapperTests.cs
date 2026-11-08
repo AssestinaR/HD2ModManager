@@ -551,6 +551,69 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 	}
 
 	/// <summary>
+	/// **有些部位在原生里只存在于层 1**（2026-11-08 上机回归：胯 16 套、左腿 9 套、右腿 11 套、
+	/// 右臂 12 套都只有 <c>pt1</c>，甚至有 <c>pt1+pt2</c> 而没有 <c>pt0</c>）。
+	/// <para>
+	/// 素体的件只按层 0 声明，严格按层号对齐会把整个部位写成 0 —— 表现为"这套护甲缺胯/缺腿/缺手"。
+	/// 所以整个部位一层都对不上时，让它最底层借用来源该部位最底层的那一件。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task Apply_BorrowsThePartsOnlyLayerWhenTheTargetHasNoLayerZero()
+	{
+		var gameData = Path.Combine(_root, "data");
+		Directory.CreateDirectory(Path.Combine(gameData, "game"));
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName),
+			Seal(Library(MultiKit(100, (0,
+				[
+					Piece(0x1111111111111111, 2, 0, weight: 2),   // 躯干：有层 0
+					Piece(0x2222222222222222, 3, 1, weight: 2),   // 胯：**只有层 1**
+				])))));
+
+		var source = new[]
+		{
+			new ArmorRegistryDataSourcePiece(0, 2, 0, 0xC0FFEE0000000002),
+			new ArmorRegistryDataSourcePiece(0, 3, 0, 0xC0FFEE0000000003),
+		};
+		var result = await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, null, source)], Path.Combine(_root, "backup"));
+
+		var pieces = ReadPieces(
+			Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData))), 100);
+		Assert.Equal(0xC0FFEE0000000002UL, pieces.Single(p => p.Slot == 2).Unit);   // 层号直接对上
+		Assert.Equal(0xC0FFEE0000000003UL, pieces.Single(p => p.Slot == 3).Unit);   // 借来源最底层
+		Assert.Equal(0, result.Hidden);
+		Assert.Equal(2, result.Replaced);
+	}
+
+	/// <summary>
+	/// 反过来：部位**有一层对上了**就不再兜底，否则同一个网格会被铺到两层上互相打架。
+	/// </summary>
+	[Fact]
+	public async Task Apply_DoesNotRepeatOneMeshAcrossTwoLayersOfTheSamePart()
+	{
+		var gameData = Path.Combine(_root, "data");
+		Directory.CreateDirectory(Path.Combine(gameData, "game"));
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, "game", ArmorRegistryDataMapper.FileName),
+			Seal(Library(MultiKit(100, (0,
+				[
+					Piece(0x1111111111111111, 2, 0, weight: 2),   // 躯干内层
+					Piece(0x2222222222222222, 2, 1, weight: 2),   // 躯干外层
+				])))));
+
+		var source = new[] { new ArmorRegistryDataSourcePiece(0, 2, 0, 0xC0FFEE0000000002) };
+		await new ArmorRegistryDataMapper().ApplyAsync(
+			gameData, [new ArmorRegistryDataMapping(100, null, source)], Path.Combine(_root, "backup"));
+
+		var pieces = ReadPieces(
+			Decrypt(await File.ReadAllBytesAsync(ArmorRegistryDataMapper.ResolveTargetPath(gameData))), 100);
+		Assert.Equal(0xC0FFEE0000000002UL, pieces.Single(p => p.PieceType == 0).Unit);
+		Assert.Equal(0UL, pieces.Single(p => p.PieceType == 1).Unit);   // 外层隐藏，而不是重复同一网格
+	}
+
+	/// <summary>
 	/// **素体没有头盔件时，头盔必须被隐藏**，而不是继续显示原版头盔。
 	/// <para>
 	/// 这是覆盖语义最典型的一条：头盔与护甲是两套装备（不同 item id），素体不给 slot 0 的件，
