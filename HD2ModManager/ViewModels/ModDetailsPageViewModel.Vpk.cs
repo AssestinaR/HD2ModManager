@@ -740,9 +740,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 			task?.SetOutputArtifacts(directory, null);
 			task?.MarkCompleted();
-			VpkComponentStatus = outcome.Rekey?.RestoredFromSource == true
-				? "已按当前勾选重新生成（自定义素体模式）。"
-				: $"已按当前勾选重新生成：替换 {outcome.Rekey?.ReplacedUnits ?? 0} 个 Unit、隐藏 {outcome.Rekey?.HiddenMeshes ?? 0} 个网格。";
+			// 自身素体（没有换甲）时别说"替换 0 个 Unit"：那读起来像失败。
+			VpkComponentStatus = !outcome.Rekeyed
+				? "已按当前条件重新编译生效层（自定义素体）。"
+				: outcome.Rekey?.RestoredFromSource == true
+					? "已按当前勾选重新生成（自定义素体模式）。"
+					: $"已按当前勾选重新生成：替换 {outcome.Rekey?.ReplacedUnits ?? 0} 个 Unit、隐藏 {outcome.Rekey?.HiddenMeshes ?? 0} 个网格。";
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
