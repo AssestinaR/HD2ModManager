@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HD2ModCli;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure;
 using Xunit;
 
 namespace HD2ModCli.Tests;
@@ -122,6 +123,70 @@ public sealed class CliAgentFriendlinessTests
 		var missing = Assert.Throws<CliUserException>(() => CliProjections.ResolveMod(nodes, "no-such-mod"));
 		Assert.Equal("ModSelectorInvalid", missing.Code);
 		Assert.Contains("名字", missing.Message);
+	}
+
+	// ---- ⑤ 管理器根目录被指到 bin\ 时，直说上一级才是根 --------------------------
+	//
+	// 发布包：<安装根>\HD2ModManager.exe + <安装根>\bin\hd2mod.exe。每次发版都有人
+	// （或 agent）把 --manager-root 指到 bin\，因为"hd2mod.exe 就在这儿"。
+	// 1.5.5 里这条误会直接让**所有 VPK 导入**在规划阶段失败，而报错只说"让 settings.json 指对"。
+
+	[Fact]
+	public async Task Status_PointingManagerRootAtBin_NamesTheInstallRoot()
+	{
+		var root = CreateInstallRoot();
+		try
+		{
+			var bin = Directory.CreateDirectory(Path.Combine(root, Hd2ModCliLocator.ReleaseSubdirectory)).FullName;
+
+			var run = await CliTestConsole.RunCapturedAsync("status", "--manager-root", bin, "--json");
+			Assert.True(run.ExitCode == 0, run.StandardError + run.StandardOutput);
+
+			using var json = run.ParseJson();
+			var issues = string.Join("|", json.RootElement.GetProperty("issues")
+				.EnumerateArray().Select(issue => issue.GetString()));
+			// 必须点名"上一级才是管理器根"，而不是只留一句"未找到管理器设置"。
+			Assert.Contains("管理器根目录是它的上一级", issues);
+			Assert.Contains(root, issues);
+		}
+		finally { DeleteRoot(root); }
+	}
+
+	[Fact]
+	public async Task Vpk2Patch_SaysWhichSettingsFileItLookedFor()
+	{
+		var root = CreateInstallRoot();
+		try
+		{
+			// 设置文件在根目录（发布布局），但里面没有 GameDataFolder。
+			File.WriteAllText(Path.Combine(root, Hd2ModCliLocator.SettingsFileName), "{}");
+			var vpk = Path.Combine(root, "dummy.vpk");
+			File.WriteAllBytes(vpk, [0x00, 0x01, 0x02]);
+
+			var run = await CliTestConsole.RunCapturedAsync(
+				"vpk2patch", vpk, "--output", Path.Combine(root, "out"),
+				"--manager-root", root, "--dry-run", "--json");
+
+			Assert.Equal(2, run.ExitCode);
+			using var json = run.ParseJson();
+			Assert.Equal("PrerequisitesMissing", json.RootElement.GetProperty("error").GetProperty("code").GetString());
+			// 报错必须写出**实际去读的那一份** settings.json —— 否则路径被推导错时完全看不见。
+			var message = json.RootElement.GetProperty("error").GetProperty("message").GetString();
+			Assert.Contains(Path.Combine(root, Hd2ModCliLocator.SettingsFileName), message);
+		}
+		finally { DeleteRoot(root); }
+	}
+
+	private static string CreateInstallRoot()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-cli-layout-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(Path.Combine(root, Hd2ModCliLocator.DataDirectoryName, "resources"));
+		return root;
+	}
+
+	private static void DeleteRoot(string root)
+	{
+		try { Directory.Delete(root, recursive: true); } catch (IOException) { }
 	}
 
 	private static ModNode Node(ModNodeId id, string name, string relativePath)

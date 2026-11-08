@@ -371,6 +371,19 @@ public sealed class VpkImportService
 		var listPath = WritePathList(Path.GetTempPath(), "hd2modmanager-vpk2patch-plan-" + Guid.NewGuid().ToString("N")[..8] + ".txt", vpkPaths);
 		var arguments = new List<string> { "vpk2patch", "--vpk-list", listPath };
 		arguments.AddRange(["--output", Path.Combine(Path.GetTempPath(), "hd2modmanager-vpk2patch-plan"), "--dry-run", "--json"]);
+		// **三条路径都由管理器自己传，不许 CLI 去猜。**
+		//
+		// 发布包的 hd2mod.exe 在 <安装根>\bin\ 下，而设置与 data\ 在安装根 —— CLI 靠自己的目录
+		// 反推根目录，一旦反推错就去找 bin\settings.json、bin\data\indexes\...，于是
+		// "没配游戏 data、没有骨名表"，**每个 VPK 导入都在规划阶段失败**（1.5.5 实机回归：
+		// 用户装的正是发布版，开发环境里不会复现）。管理器这三条路径本来就有，传过去这条路就
+		// 不再依赖任何推导。
+		if (!string.IsNullOrWhiteSpace(_managerRoot))
+			arguments.AddRange(["--manager-root", _managerRoot]);
+		if (!string.IsNullOrWhiteSpace(_libraryRoot))
+			arguments.AddRange(["--library", _libraryRoot]);
+		if (!string.IsNullOrWhiteSpace(_gameDataDirectory))
+			arguments.AddRange(["--game-data", _gameDataDirectory]);
 
 		try
 		{

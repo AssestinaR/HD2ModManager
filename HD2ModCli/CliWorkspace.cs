@@ -75,13 +75,15 @@ public sealed class CliWorkspace
 		string? settingsPath = null;
 		CliManagerSettings? settings = null;
 
-		// 没给 --manager-root 时用 hd2mod.exe 所在目录。
+		// 没给 --manager-root 时**按布局反推**管理器根目录，而不是直接取 hd2mod.exe 所在目录。
 		//
-		// 发布包里 hd2mod.exe 就躺在管理器运行目录里（设置、缓存、索引都在那儿），
-		// 所以这个默认值几乎总是对的。有了它，agent 不需要先知道路径就能自举——
-		// 否则裸跑 `doctor` 只会得到一片 null 和"请传 --manager-root"。
+		// 发布包的布局是 <安装根>\HD2ModManager.exe + <安装根>\bin\hd2mod.exe：命令行程序的目录
+		// 是 bin\，而 settings.json 与 data\ 在上一级。取错这一级，CLI 会去找
+		// bin\settings.json 与 bin\data\indexes\asset-index.sqlite，两个都不存在 ——
+		// 于是"没配游戏 data、没有骨名表"，**整批 VPK 导入在规划阶段全部失败**
+		// （1.5.5 的实机回归）。推导规则见 Hd2ModCliLocator.ResolveManagerRoot。
 		var managerRootOption = string.IsNullOrWhiteSpace(options.ManagerRoot)
-			? AppContext.BaseDirectory
+			? Hd2ModCliLocator.ResolveManagerRoot()
 			: options.ManagerRoot;
 
 		if (!string.IsNullOrWhiteSpace(managerRootOption))
@@ -107,6 +109,14 @@ public sealed class CliWorkspace
 			else
 			{
 				issues.Add($"未找到管理器设置：{settingsPath}");
+				// 手工把 --manager-root 指到 bin\ 是每次发版都会重演一次的老误会：
+				// 用户/agent 看到的是"hd2mod.exe 就在这儿"，而管理器根在上一级。
+				// 既然上一级确实像管理器根，就直说，不要让人对着"未找到设置"自己猜。
+				if (Hd2ModCliLocator.TryGetManagerRootParent(managerRoot) is { } parent)
+				{
+					issues.Add($"--manager-root 指向了 {Hd2ModCliLocator.ReleaseSubdirectory} 子目录，"
+						+ $"管理器根目录是它的上一级：{parent}");
+				}
 			}
 		}
 

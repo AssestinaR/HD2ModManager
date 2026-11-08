@@ -4158,7 +4158,9 @@ public static class CliApplication
 		{
 			options.BoneHash,
 			workspace.ManagerRoot is null ? null : new StoragePaths(workspace.ManagerRoot, workspace.LibraryRoot).BoneHashesPath,
-			Path.Combine(AppContext.BaseDirectory, "data", "resources", "bonehash.txt"),
+			// 程序目录这条路只在**开发布局**下等于管理器根；发布包里程序在 bin\ 下，
+			// 所以要按布局反推（同 CliWorkspace 的默认值），否则这里永远差一级。
+			Path.Combine(Hd2ModCliLocator.ResolveManagerRoot(), "data", "resources", "bonehash.txt"),
 			Path.Combine(AppContext.BaseDirectory, "Resources", "AssetMetadata", "bonehash.txt"),
 		};
 		foreach (var candidate in candidates)
@@ -4518,7 +4520,17 @@ public static class CliApplication
 		var hasGameData = !string.IsNullOrWhiteSpace(gameData) && Directory.Exists(gameData);
 		if (!hasGameData)
 		{
-			problems.Add("游戏 data 目录：未配置或不存在 → 用 --game-data <游戏 data 目录>，"
+			// 把"实际去读的那一份 settings.json"写进报错。
+			// 1.5.5 的整批失败就卡在这里，而原话只说"让 --manager-root 下 settings.json 里的
+			// 路径指对" —— 没人知道它到底在看哪个文件，于是把根目录猜错这件事完全隐形。
+			var settingsPath = workspace.SettingsPath;
+			var looked = settingsPath is null
+				? string.Empty
+				: File.Exists(settingsPath)
+					? $"（已读到 {settingsPath}，但里面的 GameDataFolder 没配置或指向的目录不存在）"
+					: $"（未找到管理器设置 {settingsPath}）";
+			problems.Add("游戏 data 目录：未配置或不存在" + looked
+				+ " → 用 --game-data <游戏 data 目录>，"
 				+ "或让 --manager-root 下 settings.json 里的路径指对（外壳 Unit 与 avatar 骨架都从这里读）。");
 		}
 
