@@ -58,38 +58,47 @@ var baseColorId = surfaceOverridden          // 金属 F0 / 宝石中性色 / ma
 
 ## 三、A/B 包怎么用
 
-两套状态目录（各 ~1 GB，20 个文件 = 10 个材质 patch × TOC/GPU）：
+> **第二版（2026-11-08 下午）**：第一版手工替换 `sectional/` + `Overwrite/` 里的材质 patch、
+> 并手改 `patches.json` 的计数，结果**游戏一进就崩**。这一版两套产物全部由
+> `hd2mod mod rebuild` 生成（与管理器 UI 同一条管线），不手写任何清单、不做局部搬运。
 
-- `E:\tmp\ab\state-A` —— `alphaclip`（历史行为）
-- `E:\tmp\ab\state-B` —— `cutoutmetal`（镂空 + 金属）
+两套**完整**快照（`sectional` + `Overwrite` + `wardrobe.json` + `.hd2modmanager-mod.json`）：
 
-切换：
+- `E:\tmp\ab\clean-A` —— `HD2_CUTOUT_TEMPLATE=alphaclip`（基线）
+- `E:\tmp\ab\clean-B` —— `HD2_CUTOUT_TEMPLATE=cutoutmetal`
 
-```powershell
-E:\tmp\ab\switch.ps1 -Variant B
-```
-
-脚本同时写 `sectional\` 与 `Overwrite\`：前者是来源载荷，后者会顶掉同名 patch，只改一处等于没改。
-`patch_0`（换过甲的模型）两套共用 —— 材质 id 按名字派生，两套实测 92/92 完全一致。
-
-> ⛔ 已过时（2026-11-08）：这套 `switch.ps1` 是**四段链路之外的一次性 A/B 实验装置**，不是"怎么切档"的说明。
-> 现在这个档位是在**转换段**选的：`vpk2patch --cutout-template cutoutmetal`
-> （转换器按模板生成材质与派生贴图 id，见本文 §二）；`sectional/` 只由转换链路产出，
-> 手工同时往 `sectional/` 与 `Overwrite/` 写属于实验手段，常规链路里不允许。
-> 见 `docs/agent/sectional-compile-base-20261108.md` §1.1 / §1.2。
-
-回退到测试前：
+切换（整包替换：先清旧产物再拷，避免上一套的残留 patch 被当成现役载荷）：
 
 ```powershell
-# Overwrite 与 sectional 的原始快照
-E:\tmp\ab\state-pristine\
+pwsh -File E:\tmp\ab\switch-clean.ps1 -Variant A
+pwsh -File E:\tmp\ab\switch-clean.ps1 -Variant B
 ```
+
+**先 A 后 B**：A 是"换了管线但没换模板"。它若不崩，那么崩溃就与这个档位无关。
+
+离线核对（两套逐项对比，只有一项不同）：
+
+| 项 | A | B |
+|---|---|---|
+| B1 包里 68 个镂空件的父材质 | `alphaclip`（3 槽 / 11 变量） | **`cutoutmetal`（4 槽 / 7 变量）** |
+| 其余 24 个非镂空件 | `advanced` | `advanced`（不变） |
+| 平色金属底色（2048²） | sRGB 200 / **alpha 0** | sRGB 200 / **alpha 255** |
+| 引用完整性（悬空引用） | 856 | 856（与 A 相同，无新增） |
+| 载荷大小 | 620 MB | 620 MB |
+
+那 856 条悬空引用是**两套共有**的（模型自带材质引用游戏本体贴图），A/B 差分没有新增项。
 
 ## 四、进游戏要看的
 
-1. **金属件有没有出现金属反光**（这是 B 唯一的赌注）。
-2. **镂空有没有坏**（蕾丝、镂空花纹还成不成形）。
-3. **颜色变体还能不能换**（C1/C2 发色、D1/D2 瞳色）—— 这条在验第二节的第 2 条修法。
+1. **能不能进游戏**（第一版崩在这里；这一版若仍崩，则与模板无关）。
+2. **金属件有没有出现金属反光**（B 唯一的赌注）。
+3. **镂空有没有坏**（蕾丝、镂空花纹还成不成形）。
+4. **颜色变体还能不能换**（C1/C2 发色、D1/D2 瞳色）—— 验第二节的第 2 条修法。
+
+## 五、旧快照（第一版，仅留档）
+
+`E:\tmp\ab\state-pristine`（测试前的原始载荷）、`state-A` / `state-B`（第一版手工拼装，
+会崩）。`switch.ps1` 是第一版用的，**别再用于正常链路**。
 
 ## 五、待验证
 
