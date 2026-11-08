@@ -331,7 +331,28 @@ public static class CliArgumentParser
 					sections = ReadValue(args, ref index, argument);
 					break;
 				case "--id-namespace":
-					idNamespace = ReadValue(args, ref index, argument);
+					var rawNamespace = ReadValue(args, ref index, argument).Trim();
+					// **形状守卫：长得像 token 就是传错了参数。**
+					//
+					// `--id-namespace` 的值是"来源标识"（来源压缩包/目录名），token 由
+					// Hd2AssetId.NamespaceFor 统一派生。把已经派生好的 token 传进来会被**再哈希一遍**，
+					// 于是所有材质/贴图 id 全变 —— 表面完全正常（退出码 0、日志正常），
+					// 只是产物与上一轮零重叠。实测代价：一位使用者白跑了两遍全量转换（各约 7 分钟），
+					// 还差点把它当成"管理器在改 id"的证据。
+					//
+					// 不做自动识别：自动识别会把"我传错了"悄悄变成另一种含义，照样静默。
+					if (rawNamespace.StartsWith("vpk-", StringComparison.OrdinalIgnoreCase)
+						&& rawNamespace.Length == 20
+						&& rawNamespace[4..].All(Uri.IsHexDigit))
+					{
+						throw new CliUserException("IdNamespaceLooksLikeToken",
+							$"--id-namespace 的值 '{rawNamespace}' 已经是一个 token（形如 vpk-<16 位十六进制>）。"
+							+ "再传进来会被**重新哈希一次**，所有材质与贴图 id 都会变。"
+							+ $"要原样使用这个 token 请改成 --id-namespace-token {rawNamespace.ToLowerInvariant()}；"
+							+ "--id-namespace 要的是**来源标识**（来源压缩包/目录名）。");
+					}
+
+					idNamespace = rawNamespace;
 					break;
 				case "--id-namespace-token":
 					var rawToken = ReadValue(args, ref index, argument).Trim();

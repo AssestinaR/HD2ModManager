@@ -143,12 +143,24 @@ public static class CliApplication
 		}
 		if (Matches(command, "repair", "library-snapshot"))
 		{
-			EnsureRepairOptions(invocation.Options, "repair library-snapshot");
+			// **默认预演**：这条命令会重写节点 id，而它又恰恰是"库已经坏了"时的最后手段 ——
+			// "想先看看会变成什么样"不该本身就有代价。--confirm 才写。
+			EnsureRepairOptions(invocation.Options, "repair library-snapshot", requireConfirm: false);
 			var repairWorkspace = CliWorkspace.Open(invocation.Options);
-			var repair = await CliLibrarySnapshotRepair.RunAsync(repairWorkspace).ConfigureAwait(false);
+			var repair = await CliLibrarySnapshotRepair.RunAsync(repairWorkspace, invocation.Options.Confirm)
+				.ConfigureAwait(false);
 			Emit(invocation.Options, new { ok = repair.Ok, repair }, () =>
-				$"已从磁盘重建 library.json：{repair.NodeCount} 个 Mod。\n路径：{repair.LibraryPath}\n名字/备注/id 取自各 Mod 自己的 .hd2modmanager-mod.json；profiles.json 未被触碰。");
-			return 0;
+				(repair.Written
+					? $"已从磁盘重建 library.json：{repair.SnapshotNodeCount} → {repair.NodeCount} 个 Mod。"
+					: $"预演（**未写盘**）：library.json 会从 {repair.SnapshotNodeCount} → {repair.NodeCount} 个 Mod。"
+						+ "核对下面的 wouldReassignIds 之后再带 --confirm 重跑。")
+				+ $"\n路径：{repair.LibraryPath}"
+				+ $"\n救回的 id：{repair.RecoveredNodeCount} 个；会换新 id 的 Mod：{repair.WouldReassignIds} 个"
+				+ (repair.Reassignments.Count == 0
+					? string.Empty
+					: "\n" + string.Join("\n", repair.Reassignments.Select(line => "  · " + line)))
+				+ "\nprofiles.json 未被触碰。" + repair.NextStep);
+			return repair.Ok ? 0 : 2;
 		}
 		if (Matches(command, "library", "cleanup"))
 		{
@@ -911,10 +923,10 @@ public static class CliApplication
 		{
 			EnsureModRebuildOptions(invocation.Options);
 			var (workspace, state) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var node = ResolveModOrExplain(workspace, state, invocation.Command[2]);
 			var outcome = await CliModRebuild.RunAsync(
 				workspace,
-				state,
-				invocation.Command[2],
+				node,
 				invocation.Options.HeadScale,
 				stage => Console.Error.WriteLine("#progress " + stage)).ConfigureAwait(false);
 			Emit(invocation.Options, new { ok = outcome.Ok, rebuild = outcome }, () => FormatModRebuild(outcome));
@@ -2293,6 +2305,13 @@ public static class CliApplication
 					vpkPaths.Add(Path.GetFullPath(path));
 			}
 
+			// 前置条件**一次报全**（见 EnsureVpk2PatchPrerequisitesAsync）。
+			//
+			// 放在**输入校验之后**：先确认 VPK 文件真的在（那是"你给的路径不对"），
+			// 再谈环境缺什么（那是"你的机器还没准备好"）。两件事混在一起报，
+			// agent 会先去补环境，而它其实只是路径打错了。
+			await EnsureVpk2PatchPrerequisitesAsync(invocation.Options, vpkPaths, CancellationToken.None).ConfigureAwait(false);
+
 			// 逐 VPK 的类型清单：`<绝对路径>\t model|material`，每行一个。
 			//
 			// 为什么需要它（而不是只用 `--treat-as`）：一次"整批转换"里模型和材质包是**混着**的，
@@ -2602,10 +2621,58 @@ public static class CliApplication
 				Console.Error.WriteLine("⚠️ " + namespaceWarning);
 			}
 
+			// ---- 部分成功必须显式说出来 ----------------------------------------------
+			//
+			// 退出码这一轮**保持 0**（管理器还按 exitCode != 0 判整批失败，切 4 要同步改它），
+			// 所以"有东西没到位"只能靠字段表达。
+			//
+			// 为什么不能只靠 warnings：实测有人拿着 exit 0 + stdout 尾部几行 ⚠️ 就往下走了，
+			// 直到自己写工具量贴图才发现少了一批材质。而 `Warnings` 里混着"主动降级"和
+			// "本该有、结果没有"两件事 —— 后者会让部件消失，不能和前者平级。
+			//
+			// 口径沿用既有的三分法（见 VpkMaterialGap），不新增统计：
+			//   · missing  ：连兜底都造不出来 ⇒ 部件会被移除（**partial**）
+			//   · fallback ：用了兜底灰材质 ⇒ 部件在，但颜色/图案都不对（degraded）
+			//   · noDraw   ：源侧要求不绘制 ⇒ 正常，不计入
+			var missingMaterials = results
+				.Select(outcome => new
+				{
+					vpk = outcome.VpkPath,
+					count = outcome.Package.MaterialGap?.Missing.Count ?? 0,
+					materials = outcome.Package.MaterialGap?.Missing ?? Array.Empty<string>(),
+				})
+				.Where(item => item.count > 0)
+				.ToArray();
+			var degradedMaterials = results
+				.Select(outcome => new
+				{
+					vpk = outcome.VpkPath,
+					count = outcome.Package.MaterialGap?.FallbackMaterials.Count ?? 0,
+					materials = outcome.Package.MaterialGap?.FallbackMaterials ?? Array.Empty<string>(),
+				})
+				.Where(item => item.count > 0)
+				.ToArray();
+			var degradedWarnings = results.SelectMany(outcome => outcome.Package.Warnings).ToArray();
+			var missingTotal = missingMaterials.Sum(item => item.count);
+			var degradedTotal = degradedMaterials.Sum(item => item.count);
+			var partialText = missingTotal == 0 && degradedTotal == 0
+				? string.Empty
+				: Environment.NewLine + Environment.NewLine
+					+ "⚠️ 部分成功："
+					+ (missingTotal == 0 ? string.Empty : $"{missingTotal} 个源材质彻底缺失（部件会被移除）")
+					+ (missingTotal != 0 && degradedTotal != 0 ? "、" : string.Empty)
+					+ (degradedTotal == 0 ? string.Empty : $"{degradedTotal} 个只剩兜底灰材质（颜色/图案不对）")
+					+ "。明细见 --json 的 missingMaterials / degradedMaterials。";
+
 			Emit(invocation.Options,
 				new
 				{
 					ok = exitCode == 0,
+					// **partial = 有部件会消失。** 退出码仍是 0，agent 必须读这个字段。
+					partial = missingTotal > 0,
+					missingMaterials,
+					degradedMaterials,
+					warnings = degradedWarnings,
 					output = Path.GetFullPath(outputRoot),
 					queue = vpkPaths,
 					resolutionSet = batch.VpkPaths,
@@ -2650,10 +2717,11 @@ public static class CliApplication
 				{
 					var text = FormatVpk2Patch(results, failures, Path.GetFullPath(outputRoot), matcapModel?.MdlPath);
 					// 报告里的提示也要出现在**人读的那份**输出里：命令行用户不会去看 JSON。
-					return conversionNotes.Count == 0
-						? text
-						: text + Environment.NewLine + Environment.NewLine
+					var noteText = conversionNotes.Count == 0
+						? string.Empty
+						: Environment.NewLine + Environment.NewLine
 							+ string.Join(Environment.NewLine, conversionNotes.Select(note => "⚠️ " + note));
+					return text + noteText + partialText;
 				});
 			return exitCode;
 		}
@@ -3052,7 +3120,56 @@ public static class CliApplication
 			return 0;
 		}
 
-		throw new CliUserException("UnknownCommand", $"不支持的命令：{string.Join(' ', invocation.Command)}。请运行 hd2mod help。");
+		throw new CliUserException("UnknownCommand", BuildUnknownCommandMessage(invocation.Command));
+	}
+
+	/// <summary>顶层命令名。只用于"未知命令给建议"，不参与派发——派发仍以代码顺序为准。</summary>
+	private static readonly string[] KnownCommands =
+	[
+		"agent", "armor-registry", "assets", "capabilities", "context", "custom-model", "deploy", "doctor",
+		"equipment", "game", "gamedata", "help", "import", "library", "mod", "option", "patch", "physbone",
+		"profile", "repair", "settings", "source", "status", "unit", "version", "vpk", "vpk2patch", "wardrobe",
+	];
+
+	/// <summary>
+	/// 未知命令时给出最接近的那个。
+	/// <para>
+	/// <b>为什么要做。</b>一句"不支持的命令"把「我拼错了」和「这个功能不存在」混成一件事。
+	/// 实测代价：<c>hd2mod source convert</c>（少参数）曾经退化成 UnknownCommand，使用者于是
+	/// 以为整条命令不存在。相似的输入形状应当命中"最接近的命令"，而不是让人自己去翻帮助。
+	/// </para>
+	/// </summary>
+	private static string BuildUnknownCommandMessage(IReadOnlyList<string> command)
+	{
+		var entered = command.Count == 0 ? string.Empty : command[0];
+		var closest = KnownCommands
+			.Select(name => (Name: name, Distance: Distance(entered, name)))
+			.OrderBy(item => item.Distance)
+			.ThenBy(item => item.Name, StringComparer.Ordinal)
+			.FirstOrDefault();
+		var hint = closest.Name is not null && closest.Distance <= 3
+			? $"最接近的是 '{closest.Name}'：hd2mod {closest.Name} …。"
+			: "运行 hd2mod help 看全部命令；机器可读清单用 hd2mod capabilities --json。";
+		return $"不支持的命令：{string.Join(' ', command)}。{hint}";
+	}
+
+	/// <summary>Levenshtein 距离。只给建议用，不做性能优化。</summary>
+	private static int Distance(string left, string right)
+	{
+		var previous = new int[right.Length + 1];
+		var current = new int[right.Length + 1];
+		for (var j = 0; j <= right.Length; j++) previous[j] = j;
+		for (var i = 1; i <= left.Length; i++)
+		{
+			current[0] = i;
+			for (var j = 1; j <= right.Length; j++)
+			{
+				var cost = char.ToLowerInvariant(left[i - 1]) == char.ToLowerInvariant(right[j - 1]) ? 0 : 1;
+				current[j] = Math.Min(Math.Min(current[j - 1] + 1, previous[j] + 1), previous[j - 1] + cost);
+			}
+			(previous, current) = (current, previous);
+		}
+		return previous[right.Length];
 	}
 
 	/// <summary>
@@ -3464,9 +3581,16 @@ public static class CliApplication
 			var explicitPath = Path.GetFullPath(options.ReuseModel);
 			if (!File.Exists(explicitPath))
 			{
+				// 最常见的误用：把**模型 key**（`custom-…`）当成路径传进来。原始报错只会说
+				// "文件不存在"，于是人会去查路径拼写，而真正的问题是参数种类给错了。
+				var looksLikeKey = options.ReuseModel.StartsWith("custom-", StringComparison.OrdinalIgnoreCase)
+					|| options.ReuseModel.Contains(Path.DirectorySeparatorChar) == false
+						&& options.ReuseModel.Contains(Path.AltDirectorySeparatorChar) == false;
 				throw new CliUserException("ReuseModelNotFound",
-					$"--reuse-model 指定的文件不存在：{explicitPath}。"
-					+ "它应当是上一次产物的 custom-model.json（在 vpk2patch/ 里）。");
+					$"--reuse-model 要的是**文件路径**，收到的是 '{options.ReuseModel}'（解析为 {explicitPath}，不存在）。"
+					+ (looksLikeKey
+						? "它长得像素体 key（custom-…）：请改成 `<这个 Mod 的 vpk2patch 目录>/custom-model.json` 的绝对路径。"
+						: "它应当是上一次产物的 custom-model.json（在 vpk2patch/ 里）。"));
 			}
 
 			return explicitPath;
@@ -4367,11 +4491,116 @@ public static class CliApplication
 		return result.Length == 0 ? "vpk" : result;
 	}
 
+	/// <summary>
+	/// `vpk2patch` 的前置条件体检：**一次报全**。
+	/// <para>
+	/// 以前它们是分散在各个转换点里抛的：先报缺骨名哈希表，补上 <c>--bone-hash</c> 之后才报
+	/// 索引里没有装备关系表。每一条都要一轮完整往返，而 agent 的一轮往返很贵。
+	/// </para>
+	/// <para>
+	/// 四项：游戏 data 目录、骨名哈希表、<c>--avatar-toc</c>（给了就必须存在）、资产索引。
+	/// </para>
+	/// <para>
+	/// <b>资产索引只在批次里真的有模型时才查。</b>索引是用来选外壳 Unit 的（模型才需要）；
+	/// 纯材质/贴图包以前不需要它，加一条无条件的检查会把它挡在门外 —— 那是把一个便利功能
+	/// 变成一次回归。
+	/// </para>
+	/// </summary>
+	private static async ValueTask EnsureVpk2PatchPrerequisitesAsync(
+		CliGlobalOptions options,
+		IReadOnlyList<string> vpkPaths,
+		CancellationToken cancellationToken)
+	{
+		var workspace = CliWorkspace.Open(options);
+		var problems = new List<string>();
+
+		var gameData = workspace.GameDataRoot;
+		var hasGameData = !string.IsNullOrWhiteSpace(gameData) && Directory.Exists(gameData);
+		if (!hasGameData)
+		{
+			problems.Add("游戏 data 目录：未配置或不存在 → 用 --game-data <游戏 data 目录>，"
+				+ "或让 --manager-root 下 settings.json 里的路径指对（外壳 Unit 与 avatar 骨架都从这里读）。");
+		}
+
+		try
+		{
+			ResolveBoneHashPath(options, workspace);
+		}
+		catch (CliUserException exception)
+		{
+			problems.Add("骨名哈希表：重定向按**骨名**找骨，没有它整批都做不成 → " + exception.Message);
+		}
+
+		if (!string.IsNullOrWhiteSpace(options.AvatarToc) && !File.Exists(options.AvatarToc))
+			problems.Add($"--avatar-toc 指定的文件不存在：{options.AvatarToc}");
+
+		// `--dry-run` 只做规划，不该被索引挡住；真转换也只有模型才需要索引。
+		if (hasGameData && !options.DryRun && ContainsModel(vpkPaths))
+		{
+			try
+			{
+				var paths = new StoragePaths(
+					workspace.ManagerRoot ?? Directory.GetCurrentDirectory(),
+					workspace.LibraryRoot);
+				await CliEquipmentFacts.LoadAsync(paths, cancellationToken).ConfigureAwait(false);
+			}
+			catch (CliUserException exception)
+			{
+				problems.Add("资产索引（装备关系表）：模型选外壳 Unit 要用它 → " + exception.Message);
+			}
+		}
+
+		if (problems.Count == 0) return;
+		throw new CliUserException("PrerequisitesMissing",
+			$"转换缺少 {problems.Count} 项前置条件（一次列全，补齐后重跑同一条命令）："
+			+ Environment.NewLine
+			+ string.Join(Environment.NewLine, problems.Select((problem, index) => $"  {index + 1}. {problem}")));
+	}
+
+	/// <summary>批次里有没有模型包（含 <c>.mdl</c>）。判据与转换时用的那条一致。</summary>
+	private static bool ContainsModel(IReadOnlyList<string> vpkPaths)
+	{
+		foreach (var path in vpkPaths)
+		{
+			try
+			{
+				using var probe = VpkArchive.Open(Path.GetFullPath(path));
+				if (probe.WithExtension("mdl").Any()) return true;
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException
+				or UnauthorizedAccessException or NotSupportedException)
+			{
+				// 打不开的包交给转换阶段报它自己的错：这里只是"体检"，不该抢着下结论。
+			}
+		}
+		return false;
+	}
+
 	private static async ValueTask<(CliWorkspace Workspace, CliLibraryState State)> LoadLibraryAsync(CliGlobalOptions options)
 	{
 		var workspace = CliWorkspace.Open(options);
 		var state = await workspace.LoadLibraryAsync().ConfigureAwait(false);
 		return (workspace, state);
+	}
+
+	/// <summary>
+	/// 解析 Mod 选择器；找不到时用磁盘对照补一句可行动的诊断（快照是否过期）。
+	/// <para>
+	/// 为什么只有部分命令用它：补诊断需要库根目录，而 <c>ResolveMod</c> 只拿到节点字典。
+	/// 先把 agent 最常用的那几条接上，其余按需推广——不做一次性 37 处改写。
+	/// </para>
+	/// </summary>
+	private static HD2ModCore.Domain.ModNode ResolveModOrExplain(
+		CliWorkspace workspace, CliLibraryState state, string selector)
+	{
+		try
+		{
+			return CliProjections.ResolveMod(state.Snapshot.Nodes, selector);
+		}
+		catch (CliUserException exception)
+		{
+			throw CliLibraryStateDiagnostics.Explain(workspace, state, selector, exception);
+		}
 	}
 
 	private static void EnsureArmorRegistryReadOptions(CliGlobalOptions options, string command)
@@ -4727,9 +4956,13 @@ public static class CliApplication
 	}
 
 	/// <summary>修复命令要求 --confirm：它写的是库快照本身。</summary>
-	private static void EnsureRepairOptions(CliGlobalOptions options, string commandName)
+	/// <param name="requireConfirm">
+	/// <c>true</c> = 这条命令**一定**会写盘，必须显式同意。
+	/// <c>false</c> = 不带 <c>--confirm</c> 时是**预演**（默认不写），带才写。
+	/// </param>
+	private static void EnsureRepairOptions(CliGlobalOptions options, string commandName, bool requireConfirm = true)
 	{
-		if (!options.Confirm)
+		if (requireConfirm && !options.Confirm)
 		{
 			throw new CliUserException(
 				"RepairConfirmationRequired",
@@ -4807,7 +5040,11 @@ public static class CliApplication
 		if (outcome.BackupDirectory is not null)
 			lines.Add($"旧产物已备份到：{outcome.BackupDirectory}");
 		lines.AddRange(outcome.Notes.Select(note => "  · " + note));
-		lines.Add("未自动部署。");
+		// 下一步得写出来。以前只有一句「未自动部署」，agent 与人都得再猜一遍该敲什么。
+		lines.Add("未自动部署。下一步：");
+		lines.Add("  · 让游戏用上新产物：hd2mod deploy plan active --manager-root <管理器目录> --game-data <游戏 data 目录> "
+			+ "→ validate → apply --confirm；或在管理器里点「部署」。");
+		lines.Add("  · 只换了外观、要立刻在游戏里确认：部署后重进游戏（真映射模式还要重启）。");
 		return string.Join(Environment.NewLine, lines);
 	}
 

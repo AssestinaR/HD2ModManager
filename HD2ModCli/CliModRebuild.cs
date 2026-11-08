@@ -14,14 +14,13 @@ internal static class CliModRebuild
 {
 	internal static async ValueTask<VpkRebuildOutcome> RunAsync(
 		CliWorkspace workspace,
-		CliLibraryState state,
-		string selector,
+		HD2ModCore.Domain.ModNode node,
 		double? headScale,
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(workspace);
-		ArgumentNullException.ThrowIfNull(state);
+		ArgumentNullException.ThrowIfNull(node);
 
 		// 头部缩放是 Core 的全局几何参数（不进产物记录，见 VpkRebuildService.HeadScale）。
 		// 命令行一次调用就是一个进程，在这里写一次即可；退出就没了，不会串到别的调用。
@@ -32,7 +31,8 @@ internal static class CliModRebuild
 		var managerRoot = workspace.ManagerRoot
 			?? throw new CliUserException("ManagerRootRequired", "请用 --manager-root 指定管理器目录。");
 
-		var node = CliProjections.ResolveMod(state.Snapshot.Nodes, selector);
+		// 选择器**在调用方解析**：那里还握着 CliLibraryState 与库根目录，能在"找不到"时
+		// 比对磁盘给出一句可行动的诊断（CliLibraryStateDiagnostics）。这里拿到的已经是节点。
 		var directory = Path.Combine(libraryRoot, node.RelativePath);
 		if (!Directory.Exists(directory))
 			return VpkRebuildOutcome.Failed($"Mod 目录不存在：{directory}");

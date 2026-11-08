@@ -455,17 +455,43 @@ public static class CliProjections
 	public static ModNode ResolveMod(IReadOnlyDictionary<ModNodeId, ModNode> nodes, string selector)
 	{
 		if (string.IsNullOrWhiteSpace(selector))
-			throw new CliUserException("ModSelectorRequired", "请提供 Mod 的完整 GUID 或唯一 GUID 前缀。");
+			throw new CliUserException("ModSelectorRequired",
+				"请提供 Mod 的名字、完整 GUID 或唯一 GUID 前缀。");
+
+		// **名字优先，与 ResolveProfile 同一套口径**（完全匹配 → 歧义 → GUID 前缀）。
+		//
+		// 为什么必须支持名字：别的命令（例如 `vpk rekey`）早就接受名字，于是"同一个 Mod、
+		// 换个命令就得换一种写法"。而用名字时收到的是 `ModSelectorInvalid`（"必须是 GUID"），
+		// 人只会读成"这个 Mod 不存在"—— 一次误判能烧掉半小时。
+		var byName = nodes.Values
+			.Where(node => string.Equals(node.Metadata.Name, selector, StringComparison.OrdinalIgnoreCase))
+			.OrderBy(node => node.Id.Value)
+			.ToArray();
+		if (byName.Length == 1) return byName[0];
+		if (byName.Length > 1)
+		{
+			throw new CliUserException("ModSelectorAmbiguous",
+				$"存在多个同名 Mod：{selector}。请改用 GUID 或前缀。候选："
+				+ string.Join(", ", byName.Select(match => FormatId(match.Id))));
+		}
+
 		var normalized = NormalizeGuidPrefix(selector);
 		if (normalized is null)
-			throw new CliUserException("ModSelectorInvalid", $"Mod 标识必须是 GUID 或 GUID 前缀：{selector}");
+		{
+			throw new CliUserException("ModSelectorInvalid",
+				$"Mod 标识既不是库里的名字，也不是 GUID/GUID 前缀：{selector}。"
+				+ $"库里现有 {nodes.Count} 个 Mod；名字可以用 `hd2mod library list --json` 查。");
+		}
 		var matches = nodes.Values
 			.Where(node => node.Id.Value.ToString("N").StartsWith(normalized, StringComparison.OrdinalIgnoreCase))
 			.OrderBy(node => node.Id.Value)
 			.ToArray();
 		return matches.Length switch
 		{
-			0 => throw new CliUserException("ModNotFound", $"未找到 Mod：{selector}"),
+			// 这里**只能**说"快照里没有"。快照本身过没过期要拿磁盘比，那需要库根目录，
+			// 由调用方补（见 CliLibraryStateDiagnostics）。
+			0 => throw new CliUserException("ModNotFound",
+				$"Mod 库快照里没有这个 Mod：{selector}（快照共 {nodes.Count} 个 Mod）。"),
 			1 => matches[0],
 			_ => throw new CliUserException("ModSelectorAmbiguous", $"Mod GUID 前缀不唯一：{selector}。候选：{string.Join(", ", matches.Select(match => FormatId(match.Id)))}"),
 		};
