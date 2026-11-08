@@ -534,16 +534,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return;
 		}
 
-		var current = ResolveCurrentTargetArmor(directory);
-		if (current is not null
-			&& string.Equals(current.ArchiveId, target.ArchiveId, StringComparison.OrdinalIgnoreCase))
-		{
-			VpkComponentStatus = $"目标没有变化（仍是 {target.DisplayName}），没有重新生成。"
-				+ (ShowVpkComponentCard
-					? "要应用勾选改动，请用「衣物装饰组件」卡右上角的「应用」。"
-					: string.Empty);
-			return;
-		}
+		// **不判断"目标有没有变"。**
+		//
+		// 编译层的约定是"每次从 `sectional/` 重新编译到 `Overwrite/`"，不做增量、不做缓存，
+		// 也不靠"看起来没变"来省一次。这里以前有一道 `current == target → 直接返回` 的短路，
+		// 它把"要不要编译"又判断了一遍：状态一旦与盘上不一致（例如上一次切换没落盘），
+		// 用户点了按钮却得到"目标没有变化"，而产物其实还是旧的。判断只该有一处：编译本身。
 
 		_vpkBusy = true;
 

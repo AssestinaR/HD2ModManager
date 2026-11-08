@@ -172,16 +172,17 @@ public static class ModCompileService
 		try
 		{
 			var staged = OverwritePatchInstaller.Install(staging, unitPatch).PatchPath;
-			if (disabled.Count != 0)
-			{
-				var map = await WardrobeSectionMapFile
-					.ReadAsync(Path.Combine(payload, WardrobeSectionMapFile.FileName), cancellationToken)
-					.ConfigureAwait(false);
-				var bake = await WardrobeSectionBaker
-					.BakeAsync(staged, map, disabled, cancellationToken).ConfigureAwait(false);
-				foreach (var warning in bake.Warnings) notes.Add(warning);
-				notes.Add($"已把 {disabled.Values.Sum(sections => sections.Count)} 个 section 烘成关闭状态。");
-			}
+			// **每次都在这一份上烘一遍**，不判"有没有要关的 section"：
+			// 编译层的约定就是"从 sectional 重新算"，少一次判断就少一处会与状态不一致的地方
+			// （没有关的 section 时烘焙器自己写 0 个 dword，不会动文件）。
+			var map = await WardrobeSectionMapFile
+				.ReadAsync(Path.Combine(payload, WardrobeSectionMapFile.FileName), cancellationToken)
+				.ConfigureAwait(false);
+			var bake = await WardrobeSectionBaker
+				.BakeAsync(staged, map, disabled, cancellationToken).ConfigureAwait(false);
+			foreach (var warning in bake.Warnings) notes.Add(warning);
+			if (bake.SectionsDisabled != 0)
+				notes.Add($"已把 {bake.SectionsDisabled} 个 section 烘成关闭状态。");
 
 			var materialized = OverwriteMaterializer.Materialize(
 				modDirectory, OverwriteSelection.Default, staged, ManagedOverwriteMarkers.VpkRekey);
