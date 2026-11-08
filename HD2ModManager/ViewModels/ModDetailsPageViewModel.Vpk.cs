@@ -726,12 +726,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 两件事都要那份"来源 → 目标"的映射，所以只能在换甲里面做。
 			// 「应用」也是重跑一次换甲（几分钟）：过程走消息中心，卡片只留结论。
 			VpkComponentStatus = "正在从 vpk2patch 重新生成 Overwrite…";
+			// **不在这里拦。** 没有记录目标时 `targets` 是 null，编译基座会按"自身素体"编译
+			// （unit 键不变 + 烘焙勾选）——那是合法结果，不该被一道预先的门禁挡住。
+			// 就算应用出来的是错的，也应该写进去、然后报错：报错能查，静默不写查不了。
 			var targets = ResolveApplyTargets(directory);
-			if (targets is null)
-			{
-				VpkComponentStatus = "这个 Mod 没有登记自定义素体，也没有选过目标护甲：请先在上方选择目标护甲。";
-				return;
-			}
 
 			task = _backgroundTasks?.Enqueue(
 				BackgroundTaskKind.RebuildVpk,
