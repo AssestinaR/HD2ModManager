@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.9"
+M.VERSION = "2.1.10"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1730,6 +1730,44 @@ local function worldPos(S_, unit, node)
 	return nil
 end
 
+--- 哪些链算"裙摆/连衣裙布料"。
+---
+--- 原来只认父骨名含 `hips`，于是**挂在胸口背后的连衣裙骨被整条漏掉**
+--- （实机反馈：有些裙子是连衣裙做法，骨在胸口那一层）。
+--- 现在两条判据，命中任一即可；结果**缓存**在 `item.skirtEligible`（躯干带相对身体是不变的，
+--- 只有名字认不出时才需要一次世界坐标查询）。
+---
+--- 安全边界不在"选中"，而在权重：正前/侧面的 cos(夹角) ≤ 0 ⇒ 一根都不会动。
+--- 所以放宽选中范围不会让乳房/小腹的骨被推动。
+local SKIRT_PARENT_HINTS = { "hips", "pelvis", "spine", "chest", "torso", "waist" }
+
+---@return boolean|nil true/false = 已确定；nil = 这一帧还没法判断（等下次）
+local function skirt_eligible(S_, session, item, body)
+	if item.skirtEligible ~= nil then return item.skirtEligible end
+	local parent = item.chain and item.chain[1] and item.chain[1].parentName
+	local lower = type(parent) == "string" and parent:lower() or ""
+	for _, hint in ipairs(SKIRT_PARENT_HINTS) do
+		if lower:find(hint, 1, true) ~= nil then
+			item.skirtEligible = true
+			item.skirtEligibleWhy = "name:" .. hint
+			return true
+		end
+	end
+	-- 名字认不出（`source_extra_*` 这类）：用高度带兜底。
+	-- 带 = [hips 下方 10 cm, chest 上方 15 cm]：兜住挂在胸口/腰上的布料，
+	-- 同时把头/头发（在 chest 上方更远）和腿（在 hips 下方）排除。
+	if body ~= nil and body.hz ~= nil and body.cz ~= nil and item.nodes ~= nil and item.nodes[1] ~= nil then
+		local _, _, rz = worldPos(S_, session.unit, item.nodes[1])
+		if rz ~= nil then
+			local inside = rz >= (body.hz - 0.10) and rz <= (body.cz + 0.15)
+			item.skirtEligible = inside
+			item.skirtEligibleWhy = inside and "height" or "outside"
+			return inside
+		end
+	end
+	return nil
+end
+
 --- 对一条链做"标定"或"纠正"。返回是否改动了 pushOut。
 local function skirt_chain(S_, runtime, session, item, settings, calibrating, logger)
 	local refs = skirt_refs(S_, session)
@@ -1799,8 +1837,17 @@ local function skirt_chain(S_, runtime, session, item, settings, calibrating, lo
 		local dot = rnx * back[1] + rny * back[2] + rnz * back[3]
 		if dot < -1 then dot = -1 elseif dot > 1 then dot = 1 end
 		local deviation = math.acos(dot) * 180 / math.pi      -- 与"正后方"的夹角
-		liveWeight = 1 - deviation / 90
-		if liveWeight < 0 then liveWeight = 0 elseif liveWeight > 1 then liveWeight = 1 end
+		-- **权重 = cos(夹角)**（= dot 本身），偏前一律 0。
+		--
+		-- 为什么不用线性 `1 − θ/90`：
+		--   d/dθ[1 − θ/90] = 常数 ⇒ 侧面附近仍然按同样速度给角度，
+		--   于是"差一点没到侧面"的骨头也拿得到可观的角度，前方布料一被物理甩到后面
+		--   就会被我们顺势推进小腹（实机反馈）。
+		--   d/dθ[cos θ] = −sin θ ⇒ 正后方导数为 0（平坦、稳），越靠侧面掉得越快，
+		--   90° 处正好掉到 0。用户给的形状描述就是"半个椭圆"。
+		-- 附带好处：cos 不需要再算 acos，dot 直接就是权重。
+		liveWeight = dot > 0 and dot or 0
+		item.skirtDeviation = deviation
 	end
 	-- 权重按时间常数平滑（不是每帧直接用瞬时值）。
 	-- 为什么：瞬时权重 = f(当前姿态)，而姿态又被我们自己的偏移改变 ⇒ 反馈回路，
@@ -1897,6 +1944,8 @@ local function skirt_apply(S_, runtime)
 						local rx2, ry2, rz2 = worldPos(S_, session.unit, refs.rThigh)
 						local cx, cy, cz = worldPos(S_, session.unit, refs.chest)
 						if lx ~= nil and rx2 ~= nil and cx ~= nil then
+							-- 躯干高度带：给"名字认不出的连衣裙骨"兜底用（见 skirt_eligible）
+							session.skirtBody = { hz = hz, cz = cz }
 							-- lateral(points left) = l − r；up = chest − hips
 							local ax, ay, az = lx - rx2, ly - ry2, lz - rz2
 							local ux, uy, uz = cx - hx, cy - hy, cz - hz
@@ -1926,9 +1975,32 @@ local function skirt_apply(S_, runtime)
 					end
 				end
 			end
+			-- 会话级一次性诊断：把所有链的**父骨名字**统计出来。
+			-- 为什么要它：连衣裙的骨挂在胸口那一层，名字是 `source_extra_*`，
+			-- 只有看到真实的父骨名，才知道该把哪些名字加进 SKIRT_PARENT_HINTS。
+			if session.skirtCensusDone ~= true then
+				session.skirtCensusDone = true
+				local counts, order = {}, {}
+				for _, item in ipairs(session.sessions or {}) do
+					local parent = item.chain and item.chain[1] and item.chain[1].parentName
+					local key = type(parent) == "string" and parent or "?"
+					if counts[key] == nil then
+						counts[key] = 0
+						order[#order + 1] = key
+					end
+					counts[key] = counts[key] + 1
+				end
+				local parts = {}
+				for _, key in ipairs(order) do
+					parts[#parts + 1] = string.format("%s×%d", key, counts[key])
+				end
+				runtime.logger("[physbone][裙摆][父骨] unit=%s 共 %d 条链：%s",
+					tostring(session.unitTag or "?"), #order, table.concat(parts, " "))
+			end
 			for _, item in ipairs(session.sessions or {}) do
-				local parent = item.chain and item.chain[1] and item.chain[1].parentName
-				if type(parent) == "string" and parent:lower():find("hips", 1, true) ~= nil then
+				-- 选中判据见 skirt_eligible：名字 hinted 命中，或链根落在躯干高度带里。
+				local eligible = skirt_eligible(S_, session, item, session.skirtBody)
+				if eligible == true then
 					total = total + 1
 					-- 标定只在**第一次**做：同一个会话里不重复覆盖（否则跑着跑着又标一次）
 					local calibrating = settings.calibrate and not session.skirtCalibrated
@@ -1960,6 +2032,8 @@ local function skirt_apply(S_, runtime)
 			state.lastLogFrame = frameNow
 			local maxDeg = 0
 			local degSum, degN = 0, 0
+			local bestWeight = 0
+			local buckets = { 0, 0, 0, 0, 0, 0 }
 			for _, session in ipairs(runtime.sessions or {}) do
 				for _, item in ipairs(session.sessions or {}) do
 					local push = item.pushOut
@@ -1969,14 +2043,25 @@ local function skirt_apply(S_, runtime)
 						degSum = degSum + deg
 						degN = degN + 1
 					end
+					-- 方向分布：只统计"会被我们考虑的"链（权重已算过），按偏离正后方每 30° 一格。
+					-- 用途：判断"正后方"轴是否偏。环形裙子应当左右对称且最靠后那根接近 0°；
+					-- 若最近的一根也在 30~60°，说明轴偏了或裙子本身没有正中骨。
+					local dev = item.skirtDeviation
+					if dev ~= nil and (item.skirtWeight or 0) > 0 then
+						local index = math.floor(dev / 30) + 1
+						if index < 1 then index = 1 elseif index > 6 then index = 6 end
+						buckets[index] = buckets[index] + 1
+						if (item.skirtWeight or 0) > bestWeight then bestWeight = item.skirtWeight end
+					end
 				end
 			end
 			-- 均值比最大值有用：最大值只能证明"有一条推满了"，均值才说明"整片有没有动"。
 			runtime.logger(
-				"[physbone][裙摆] 推 %d/%d 条（权重>0 %d 条）· 角度 均值 %.1f° / 最大 %.1f° · 斜坡 %.2f（手调 %s，上限 %.0f°）",
+				"[physbone][裙摆] 推 %d/%d 条（权重>0 %d 条）· 角度 均值 %.1f° / 最大 %.1f° · 斜坡 %.2f（手调 %s，上限 %.0f°）· 最大权重 %.2f · 分布 %d/%d/%d/%d/%d/%d",
 				pushed, total, weighted, degN > 0 and degSum / degN or 0, maxDeg, motionNow,
 				settings.manualDeg > 0 and string.format("%.0f°", settings.manualDeg) or "关",
-				settings.maxDeg)
+				settings.maxDeg, bestWeight,
+				buckets[1], buckets[2], buckets[3], buckets[4], buckets[5], buckets[6])
 		end
 	end
 end
