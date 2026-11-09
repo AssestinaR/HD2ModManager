@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.0"
+M.VERSION = "2.1.1"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1625,6 +1625,9 @@ local function skirt_settings(runtime)
 		maxDeg = values.skirtMaxDeg or SKIRT_DEFAULTS.maxDeg,
 		margin = values.skirtMargin or SKIRT_DEFAULTS.margin,
 		arm = values.skirtArm or SKIRT_DEFAULTS.arm,
+		-- sign 只为"方向验证"存在：置 -1 就把纠正方向反过来，不必改代码重新部署。
+		sign = (values.skirtSign or 1) < 0 and -1 or 1,
+		all = (values.skirtAll or 0) ~= 0,
 	}
 end
 
@@ -1700,11 +1703,13 @@ local function skirt_chain(S_, session, item, settings, calibrating, logger)
 		item.pushOut = nil
 		return false
 	end
-	-- 把"要补的距离"换成"要转的角度"：θ ≈ 亏损 / 力臂
-	local angle = settings.gain * deficit / math.max(settings.arm, 0.05)
+		-- 把"要补的距离"换成"要转的角度"：θ ≈ 亏损 / 力臂
+	local angle = settings.sign * settings.gain * deficit / math.max(settings.arm, 0.05)
 	local maxAngle = settings.maxDeg * math.pi / 180
-	if angle > maxAngle then angle = maxAngle end
-	if angle < 1e-5 then
+	if angle > maxAngle then angle = maxAngle elseif angle < -maxAngle then angle = -maxAngle end
+	-- 允许负角（负号 = 反方向转），这样"方向是不是搞反了"可以**只靠调参**验证，
+	-- 不用改代码重新部署——这一轮就靠它。
+	if math.abs(angle) < 1e-5 then
 		item.pushOut = nil
 		return false
 	end
@@ -1713,6 +1718,7 @@ local function skirt_chain(S_, session, item, settings, calibrating, logger)
 	local alen = math.sqrt(ax * ax + ay * ay + az * az)
 	if alen < 1e-6 then return false end
 	item.pushOut = { ax / alen, ay / alen, az / alen, angle }
+	item.pushOutAll = settings.all
 	return true
 end
 
@@ -1720,6 +1726,7 @@ end
 local function skirt_apply(S_, runtime)
 	local settings = skirt_settings(runtime)
 	if not settings.enabled and not settings.calibrate then return end
+	local allNodes = (tune_values(runtime).skirtAll or 0) ~= 0
 	local pushed, total = 0, 0
 	for _, session in ipairs(runtime.sessions or {}) do
 		if session.unit ~= nil then

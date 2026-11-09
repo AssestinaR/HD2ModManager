@@ -2965,7 +2965,11 @@ function M.update_tip(session, dt, maxWrite)
 					-- 裙摆外推：只对**链根**叠一个额外旋转（世界轴 → 锚点父空间）。
 					-- 为什么只动链根：整片布是靠链根朝向摆出去的，逐节动会把布扯变形。
 					-- `item.pushOut` 由运行时算好（世界坐标下的轴 + 角度），默认是 nil ⇒ 零影响。
-					if index == 1 and rotation ~= nil and item.pushOut ~= nil then
+					-- `item.pushOutAll` 是**诊断开关**：把同样的旋转叠到每一节上。
+					-- 为什么需要它：如果只转链根而画面毫无变化，分不清是"方向不对"还是
+					-- "这片布根本不跟这些骨"；逐节叠上去时，跟骨的部分一定会明显动，
+					-- 不动就说明那片布蒙皮在别的骨上（那就只能改几何，运行时无解）。
+					if rotation ~= nil and item.pushOut ~= nil and (index == 1 or item.pushOutAll == true) then
 						local po = item.pushOut
 						local cxq, cyq, czq, cwq = qconj(qx, qy, qz, qw)
 						local pax, pay, paz = qrot(cxq, cyq, czq, cwq, po[1], po[2], po[3])
