@@ -31,6 +31,12 @@
 
 local M = {}
 
+-- 2.0.2：**姿态快照**。按一下热键，把当前玩家那具骨架的世界变换写到
+--        `%LOCALAPPDATA%\hd2physbone-snap\snapshot-*.json`（外部工具写请求文件触发，
+--        因为游戏的输入走 Raw Input，Lua 侧读不到键）。为什么需要：穿模只在动起来时
+--        看得见，而离线只有 bind 姿态；实测绑定时链根离髋部表面 +4.6~+9.9 cm（全在外面），
+--        真正插进去的是皮面，所以必须拿到"那一帧的骨变换"，在 PC 侧蒙皮还原网格再判。
+--
 -- 2.0.1：**日志瘦身**（只动日志，不动求解）。心跳 120 帧 → 600 帧；打开时旧文件超
 --        512 KiB 就轮转成 `.1`；一次启动最多写 128 KiB，用满之后只留错误/失败/警告/驱动失效
 --        四类。目的一句话：日志是事后唯一的证据，但它不该成为磁盘上的负担，也不该因为
@@ -45,7 +51,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.0.1"
+M.VERSION = "2.0.2"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1198,6 +1204,301 @@ local function apply_lift(runtime, S_)
 		(cameraZ ~= nil and headZ ~= nil) and string.format("%+.3f", cameraZ - headZ) or "?")
 end
 
+-- ---------------------------------------------------------------------------
+-- 姿态快照：按一下键，把当前玩家这一具骨架的世界变换写到盘上
+--
+-- 为什么需要它：穿模这件事**只在动起来时看得见**，而离线只有 bind 姿态。
+-- 2026-11-09 的实测把这一点钉死了：绑定时 7 个挂在 hips 上的链根离髋部表面
+-- +4.6~+9.9 cm（全在外面），真正插进身体的是**皮面**（裙子上沿，最深 −1.5 cm）。
+-- 也就是说"看骨点有没有越界"这个判据永远不成立，必须拿到那一帧的骨变换，
+-- 在 PC 侧把网格蒙皮还原出来再判。
+--
+-- 为什么是"外部写请求、Lua 轮询"而不是在 Lua 里读键盘：
+-- 这个游戏的输入走 Raw Input（见 tools/game-input.py 的注释），Lua 侧没有可信的按键 API；
+-- 而"请求文件 → 轮询 → 应答文件"这条路在本仓已经有成熟先例
+-- （HD2RuntimeArmorOverride/src/armor_refresh_hotkey.lua 就是这套）。
+--
+-- 请求文件是**按行的纯文本**，不是 JSON：解析器只需要认得 `key=value`，
+-- 少一层转义就少一类静默失败。节点用 32 位哈希给（引擎的 IdString32），
+-- 因为转换产物里没有 Bone 资源、节点名根本不存在，只有哈希。
+-- ---------------------------------------------------------------------------
+local SNAPSHOT_MAX_NODES = 1024
+local SNAPSHOT_MAX_FRAMES = 32
+local SNAPSHOT_POLL_FRAMES = 30
+
+--- 快照目录。默认 `%LOCALAPPDATA%\hd2physbone-snap`，`options.snapshotDir` 可覆盖，
+--- `options.snapshot == false` 可彻底关掉。
+local function snapshot_dir(options)
+	local dir = options and options.snapshotDir
+	if type(dir) == "string" and #dir > 0 then return dir end
+	if options and options.snapshot == false then return nil end
+	local base = os.getenv("LOCALAPPDATA")
+	if type(base) == "string" and #base > 0 then return base .. "\\hd2physbone-snap" end
+	return nil
+end
+
+--- 解析请求文本。任何一行看不懂就跳过，不因此整份作废——
+--- 拿到半份数据也比"按一下什么都没发生"强。
+local function parse_snapshot_request(text)
+	if type(text) ~= "string" or #text == 0 then return nil end
+	local request = { frames = 8, stride = 2, nodes = {}, names = {}, seq = nil }
+	for line in text:gmatch("[^\r\n]+") do
+		line = line:gsub("^%s+", ""):gsub("%s+$", "")
+		if #line > 0 and line:sub(1, 1) ~= "#" then
+			local key, value = line:match("^([%w_]+)%s*=%s*(.-)$")
+			if key ~= nil then
+				key = key:lower()
+				if key == "frames" then
+					local count = tonumber(value)
+					if count ~= nil then
+						request.frames = math.max(1, math.min(SNAPSHOT_MAX_FRAMES, math.floor(count)))
+					end
+				elseif key == "stride" then
+					local stride = tonumber(value)
+					if stride ~= nil then
+						request.stride = math.max(1, math.min(30, math.floor(stride)))
+					end
+				elseif key == "seq" then
+					request.seq = value
+				elseif key == "node" then
+					local hash = tonumber((value:gsub("^0[xX]", "")), 16)
+					if hash ~= nil and #request.nodes < SNAPSHOT_MAX_NODES then
+						request.nodes[#request.nodes + 1] = hash
+					end
+				elseif key == "name" then
+					if #value > 0 and #request.names < 128 then
+						request.names[#request.names + 1] = value
+					end
+				end
+			end
+		end
+	end
+	if #request.nodes == 0 and #request.names == 0 then return nil end
+	return request
+end
+
+--- 把请求里的"哈希 + 名字"并成一张 id 表（名字按引擎的 IdString32 现算）。
+local function snapshot_ids(S_, request)
+	local ids, seen = {}, {}
+	local function push(id, label)
+		if id == nil or seen[id] then return end
+		seen[id] = true
+		ids[#ids + 1] = { id = id, label = label }
+	end
+	for _, hash in ipairs(request.nodes or {}) do push(hash, string.format("0x%08x", hash)) end
+	for _, name in ipairs(request.names or {}) do push(id32(S_, name), name) end
+	return ids
+end
+
+--- 拍一帧：逐节点读世界位置 + 世界旋转，顺带把每条链的弹簧状态抄下来。
+--- 所有引擎调用都包 pcall：一根骨读不出来不能让整次快照作废。
+local function snapshot_frame(S_, runtime, unit, ids, frame)
+	local nodeRows, missing = {}, 0
+	for index = 1, #ids do
+		local entry = ids[index]
+		local okHas, has = pcall(S_.Unit.has_node, unit, entry.id)
+		if okHas and has == true then
+			local okNode, node = pcall(function() return S_.Unit.node(unit, entry.id) end)
+			if okNode and node ~= nil then
+				local okPos, px, py, pz = pcall(function()
+					return S_.Vector3.to_elements(S_.Unit.world_position(unit, node))
+				end)
+				-- 四元数必须与 world_rotation 在同一次调用内取完（引擎句柄寿命问题，见 compat 的 read_quat4）
+				local okRot, qx, qy, qz, qw = pcall(function()
+					return S_.Quaternion.to_elements(S_.Unit.world_rotation(unit, node))
+				end)
+				if okPos and type(px) == "number" and okRot and type(qx) == "number" then
+					nodeRows[#nodeRows + 1] = {
+						id = entry.label,
+						x = px, y = py, z = pz,
+						qx = qx, qy = qy, qz = qz, qw = qw,
+					}
+				else
+					missing = missing + 1
+				end
+			else
+				missing = missing + 1
+			end
+		else
+			missing = missing + 1
+		end
+	end
+
+	local chains = {}
+	for _, session in ipairs(runtime.sessions or {}) do
+		for _, item in ipairs(session.sessions or {}) do
+			local bones = {}
+			local springs = item.springs or {}
+			local chain = item.chain or {}
+			for i = 1, #chain do
+				local spring = springs[i]
+				-- 弹簧角度在求解器里是**弧度**；写出去换成度，省得读的人再做一次换算
+				-- （已经因为"限位打印 0°"这种事白查过一轮）。
+				bones[#bones + 1] = {
+					name = tostring(chain[i] and chain[i].name or "?"),
+					yawDeg = spring ~= nil and (spring.yaw or 0) * 180 / math.pi or 0,
+					pitchDeg = spring ~= nil and (spring.pitch or 0) * 180 / math.pi or 0,
+				}
+			end
+			chains[#chains + 1] = {
+				root = tostring(chain[1] and chain[1].name or "?"),
+				anchor = tostring(item.anchorNode ~= nil and "resolved" or "?"),
+				bones = bones,
+			}
+		end
+	end
+
+	return { frame = frame, nodes = nodeRows, missing = missing, chains = chains }
+end
+
+local function json_number(value)
+	if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
+		return "null"
+	end
+	return string.format("%.6f", value)
+end
+
+local function json_string(value)
+	local text = tostring(value):gsub('[%z\1-\31\\"]', function(character)
+		return string.format("\\u%04x", character:byte())
+	end)
+	return '"' .. text .. '"'
+end
+
+--- 把几帧拼成一份自描述的 JSON。字段名写清楚，是为了**半年后**还能读懂。
+local function snapshot_json(runtime, request, unitTag, frames, capturedUtc)
+	local parts = {}
+	parts[#parts + 1] = string.format(
+		'{"schema":"hd2physbone.snap/1","runtime":"%s","seq":%s,"captured":"%s","unit":%s,'
+			.. '"framesRequested":%d,"stride":%d,"frames":[',
+		tostring(M.VERSION), request.seq ~= nil and json_string(request.seq) or "null",
+		capturedUtc, json_string(unitTag), request.frames, request.stride)
+	for frameIndex, frame in ipairs(frames) do
+		if frameIndex > 1 then parts[#parts + 1] = "," end
+		parts[#parts + 1] = string.format('{"frame":%d,"missingNodes":%d,"nodes":[', frame.frame, frame.missing)
+		for nodeIndex, node in ipairs(frame.nodes) do
+			if nodeIndex > 1 then parts[#parts + 1] = "," end
+			parts[#parts + 1] = string.format('{"id":"%s","x":%s,"y":%s,"z":%s,"qx":%s,"qy":%s,"qz":%s,"qw":%s}',
+				node.id:gsub('"', ""), json_number(node.x), json_number(node.y), json_number(node.z),
+				json_number(node.qx), json_number(node.qy), json_number(node.qz), json_number(node.qw))
+		end
+		parts[#parts + 1] = '],"chains":['
+		for chainIndex, chain in ipairs(frame.chains) do
+			if chainIndex > 1 then parts[#parts + 1] = "," end
+			parts[#parts + 1] = string.format('{"root":%s,"bones":[', json_string(chain.root))
+			for boneIndex, bone in ipairs(chain.bones) do
+				if boneIndex > 1 then parts[#parts + 1] = "," end
+				parts[#parts + 1] = string.format('{"name":%s,"yawDeg":%s,"pitchDeg":%s}',
+					json_string(bone.name), json_number(bone.yawDeg), json_number(bone.pitchDeg))
+			end
+			parts[#parts + 1] = "]}"
+		end
+		parts[#parts + 1] = "]}"
+	end
+	parts[#parts + 1] = string.format('],"driveFrames":%d,"dt":%s}', runtime.driveFrames or 0, json_number(runtime.dt))
+	return table.concat(parts)
+end
+
+--- 轮询一次请求。只有目录存在、请求内容变了才动手；平时每 30 帧一次 io.open，成本可忽略。
+local function snapshot_poll(S_, runtime, options)
+	local dir = snapshot_dir(options)
+	if dir == nil then return end
+	local state = runtime.snapshotState
+	if state == nil then
+		state = { seq = 0, signature = nil, framesLeft = 0, skip = 0, frames = {}, ids = nil, reported = false }
+		runtime.snapshotState = state
+	end
+
+	-- ① 采集中：按 stride 每帧记一张，够数就落盘
+	if state.framesLeft > 0 then
+		if state.skip > 0 then
+			state.skip = state.skip - 1
+			return
+		end
+		local unit, unitTag = nil, "?"
+		for _, session in ipairs(runtime.sessions or {}) do
+			if session.unit ~= nil and (session.ownerOrder or 1) == 1 then
+				unit, unitTag = session.unit, tostring(session.unitTag or "?")
+				break
+			end
+		end
+		if unit == nil then
+			for _, session in ipairs(runtime.sessions or {}) do
+				if session.unit ~= nil then
+					unit, unitTag = session.unit, tostring(session.unitTag or "?")
+					break
+				end
+			end
+		end
+		if unit == nil then
+			-- 还没有挂上任何会话（读图/换甲的空窗期）：**不许消耗帧数**，
+			-- 否则会写出一份 0 帧的残文件，看起来像"采到了"，实际什么都没有。
+			state.waitFrames = (state.waitFrames or 0) + 1
+			if state.waitFrames > (options.snapshotWaitFrames or 600) then
+				runtime.logger("[physbone][快照] 等了 %d 帧仍然没有可采的会话，放弃这次请求", state.waitFrames)
+				state.framesLeft = 0
+				state.frames = {}
+				state.waitFrames = 0
+			end
+			return
+		end
+		state.waitFrames = 0
+		state.skip = (state.request and state.request.stride or 2) - 1
+		state.frames[#state.frames + 1] = snapshot_frame(S_, runtime, unit, state.ids, runtime.frame or 0)
+		state.lastTag = unitTag
+		state.framesLeft = state.framesLeft - 1
+		if state.framesLeft > 0 then return end
+
+		local tag = state.lastTag or "none"
+		local name = string.format("snapshot-%04d-%s.json", state.seq, os.date("%Y%m%d-%H%M%S"))
+		local path = dir .. "\\" .. name
+		local text = snapshot_json(runtime, state.request, tag, state.frames, os.date("%Y-%m-%dT%H:%M:%S"))
+		local ok, handle = pcall(io.open, path, "wb")
+		if ok and handle ~= nil then
+			handle:write(text)
+			handle:close()
+			runtime.logger("[physbone][快照] 已写出 %s（%d 帧 × %d 节点）", name, #state.frames, #(state.ids or {}))
+			local okDone, done = pcall(io.open, dir .. "\\done.txt", "wb")
+			if okDone and done ~= nil then
+				done:write(name, "\n")
+				done:close()
+			end
+		else
+			runtime.logger("[physbone][快照] 写不出 %s（目录是否存在？）", path)
+		end
+		state.frames = {}
+		state.framesLeft = 0
+		return
+	end
+
+	-- ② 空闲：每 N 帧看一次请求文件
+	if ((runtime.driveFrames or 0) % (options.snapshotPollFrames or SNAPSHOT_POLL_FRAMES)) ~= 0 then return end
+	local okOpen, handle = pcall(io.open, dir .. "\\request.txt", "rb")
+	if not okOpen or handle == nil then return end
+	local text = handle:read("*a") or ""
+	handle:close()
+	if #text == 0 or text == state.signature then return end
+
+	local request = parse_snapshot_request(text)
+	if request == nil then
+		state.signature = text
+		if not state.reported then
+			state.reported = true
+			runtime.logger("[physbone][快照] 请求里没有 node/name 行，忽略")
+		end
+		return
+	end
+	state.signature = text
+	state.request = request
+	state.ids = snapshot_ids(S_, request)
+	state.seq = state.seq + 1
+	state.frames = {}
+	state.framesLeft = request.frames
+	state.skip = 0
+	runtime.logger("[physbone][快照] 收到请求 seq=%s：%d 帧 × 每 %d 帧一张、%d 个节点",
+		tostring(request.seq or "?"), request.frames, request.stride, #state.ids)
+end
+
 local function drive(runtime)
 	local frame = runtime.frame
 	local options = runtime.options
@@ -1507,6 +1808,10 @@ local function drive(runtime)
 		local delay = math.min(options.maxReArmFrames or 600, (options.reArmFrames or 60) * runtime.reArm)
 		runtime.rearmAt = frame + delay
 	end
+
+	-- 姿态快照：外部按下热键 ⇒ 写请求文件 ⇒ 这里把骨架采下来。
+	-- 放在**物理写完、渲染之前**：采到的就是这一帧画到屏幕上的姿态。
+	snapshot_poll(S, runtime, options)
 end
 
 --- 安装运行时。可重复调用：第二次直接返回同一个实例。
@@ -1615,5 +1920,13 @@ M.apply_lift_ = apply_lift
 -- 这三条判据都只能看**落盘结果**，所以必须能直接造一个 logger 往临时文件里写，
 -- 而不是靠进游戏观察。
 M.make_logger_ = makeLogger
+
+-- 测试钩子：姿态快照。解析、拼 JSON、轮询三段都能离线钉住——
+-- 否则"按了键但什么都没写出来"这种问题只能靠用户再进一次游戏才发现。
+M.snapshot_parse_ = parse_snapshot_request
+M.snapshot_ids_ = snapshot_ids
+M.snapshot_json_ = snapshot_json
+M.snapshot_poll_ = snapshot_poll
+M.snapshot_dir_ = snapshot_dir
 
 return M

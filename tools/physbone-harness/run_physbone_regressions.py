@@ -33,7 +33,7 @@ KNOWN_EXTERNAL = {"conform-stub-test.lua", "lift-probe-test.lua"}
 # 多人局场景（它自己 os.exit），以前被错列在这里，于是那 24 项检查从来没跑过。
 LIBRARY_FILES: set[str] = set()
 # 这几个是驱动 runtime 而不是 compat 的。
-RUNTIME_TESTS = {"runtime-harness-test.lua", "log-budget-test.lua", "mp_harness.lua"}
+RUNTIME_TESTS = {"runtime-harness-test.lua", "log-budget-test.lua", "mp_harness.lua", "snapshot-test.lua"}
 
 
 def find_lua() -> str:
