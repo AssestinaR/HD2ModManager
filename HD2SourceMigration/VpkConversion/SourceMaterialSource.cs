@@ -32,6 +32,7 @@ public sealed class SourceMaterialSource
 {
 	private readonly Dictionary<string, (string VpkPath, string EntryPath)> vmts;
 	private readonly Dictionary<string, (string VpkPath, string EntryPath)> vtfs;
+	private readonly Dictionary<string, (string VpkPath, string EntryPath)> vtfPaths;
 	private readonly List<string> failures;
 	private readonly HashSet<string> ownedVmts;
 	private readonly HashSet<string> ownedVtfs;
@@ -40,6 +41,7 @@ public sealed class SourceMaterialSource
 		IReadOnlyList<string> vpkPaths,
 		Dictionary<string, (string VpkPath, string EntryPath)> vmts,
 		Dictionary<string, (string VpkPath, string EntryPath)> vtfs,
+		Dictionary<string, (string VpkPath, string EntryPath)> vtfPaths,
 		List<string> failures,
 		string? primaryVpkPath,
 		HashSet<string> ownedVmts,
@@ -48,6 +50,7 @@ public sealed class SourceMaterialSource
 		VpkPaths = vpkPaths;
 		this.vmts = vmts;
 		this.vtfs = vtfs;
+		this.vtfPaths = vtfPaths;
 		this.failures = failures;
 		PrimaryVpkPath = primaryVpkPath;
 		this.ownedVmts = ownedVmts;
@@ -93,12 +96,13 @@ public sealed class SourceMaterialSource
 
 		var vmts = new Dictionary<string, (string VpkPath, string EntryPath)>(StringComparer.OrdinalIgnoreCase);
 		var vtfs = new Dictionary<string, (string VpkPath, string EntryPath)>(StringComparer.OrdinalIgnoreCase);
+		var vtfPaths = new Dictionary<string, (string VpkPath, string EntryPath)>(StringComparer.OrdinalIgnoreCase);
 		var failures = new List<string>();
 		foreach (var path in ordered)
-			Index(path, vmts, vtfs, failures);
+			Index(path, vmts, vtfs, vtfPaths, failures);
 
 		return new SourceMaterialSource(
-			ordered, vmts, vtfs, failures,
+			ordered, vmts, vtfs, vtfPaths, failures,
 			primaryVpkPath: null,
 			ownedVmts: new HashSet<string>(StringComparer.OrdinalIgnoreCase),
 			ownedVtfs: new HashSet<string>(StringComparer.OrdinalIgnoreCase));
@@ -137,6 +141,7 @@ public sealed class SourceMaterialSource
 		string vpkPath,
 		Dictionary<string, (string VpkPath, string EntryPath)> vmts,
 		Dictionary<string, (string VpkPath, string EntryPath)> vtfs,
+		Dictionary<string, (string VpkPath, string EntryPath)> vtfPaths,
 		List<string> failures)
 	{
 		try
@@ -147,7 +152,10 @@ public sealed class SourceMaterialSource
 				if (entry.Extension.Equals("vmt", StringComparison.OrdinalIgnoreCase))
 					vmts.TryAdd(entry.FileName, (vpkPath, entry.Path));
 				else if (entry.Extension.Equals("vtf", StringComparison.OrdinalIgnoreCase))
+				{
 					vtfs.TryAdd(entry.FileName, (vpkPath, entry.Path));
+					vtfPaths.TryAdd(VmtDocument.NormalizePath(entry.Path), (vpkPath, entry.Path));
+				}
 			}
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
@@ -178,6 +186,7 @@ public sealed class SourceMaterialSource
 		var ownedVtfs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var vmts = new Dictionary<string, (string VpkPath, string EntryPath)>(StringComparer.OrdinalIgnoreCase);
 		var vtfs = new Dictionary<string, (string VpkPath, string EntryPath)>(StringComparer.OrdinalIgnoreCase);
+		var vtfPaths = new Dictionary<string, (string VpkPath, string EntryPath)>(StringComparer.OrdinalIgnoreCase);
 		var failures = new List<string>();
 
 		try
@@ -194,6 +203,7 @@ public sealed class SourceMaterialSource
 				{
 					ownedVtfs.Add(entry.FileName);
 					vtfs.TryAdd(entry.FileName, (full, entry.Path));
+					vtfPaths.TryAdd(VmtDocument.NormalizePath(entry.Path), (full, entry.Path));
 				}
 			}
 		}
@@ -207,11 +217,13 @@ public sealed class SourceMaterialSource
 			vmts.TryAdd(name, location);
 		foreach (var (name, location) in this.vtfs)
 			vtfs.TryAdd(name, location);
+		foreach (var (name, location) in this.vtfPaths)
+			vtfPaths.TryAdd(name, location);
 
 		// 主 VPK 本身打不开时，`failures` 已经有它；整批的旧失败也一并带过来，别丢信息。
 		failures.AddRange(this.failures);
 
-		return new SourceMaterialSource([full], vmts, vtfs, failures, full, ownedVmts, ownedVtfs);
+		return new SourceMaterialSource([full], vmts, vtfs, vtfPaths, failures, full, ownedVmts, ownedVtfs);
 	}
 
 	/// <summary>按材质裸名读 <c>.vmt</c> 字节。名字可带或不带 <c>.vmt</c> 后缀。</summary>
@@ -224,6 +236,40 @@ public sealed class SourceMaterialSource
 	/// </summary>
 	public bool TryReadVtf(string textureName, out byte[] bytes)
 		=> TryRead(vtfs, Stem(textureName), out bytes);
+
+	/// <summary>
+	/// 按 VMT 里声明的相对路径解析一张贴图（<c>materials/&lt;path&gt;.vtf</c>），返回裸名。
+	/// 精确找不到时，只有声明里带目录才退回裸名索引；裸名单段（如 <c>normal</c>）是占位写法，不兜底。
+	/// </summary>
+	public bool TryResolveDeclaredTexture(string? declaredPath, out string stem)
+	{
+		stem = string.Empty;
+		if (string.IsNullOrWhiteSpace(declaredPath))
+			return false;
+
+		var normalized = VmtDocument.NormalizePath(declaredPath);
+		if (normalized.Length == 0)
+			return false;
+
+		// 没写扩展名按 .vtf 算（Source 的约定）。
+		var withExtension = Path.GetExtension(normalized).Length == 0 ? normalized + ".vtf" : normalized;
+		if (vtfPaths.ContainsKey(withExtension))
+		{
+			stem = Path.GetFileNameWithoutExtension(withExtension);
+			return stem.Length != 0;
+		}
+
+		// 裸名单段不兜底：它多半是基材质里的占位写法，源侧也不会加载。
+		if (!normalized.Contains('/'))
+			return false;
+
+		var name = Path.GetFileNameWithoutExtension(normalized);
+		if (name.Length == 0 || !vtfs.ContainsKey(name))
+			return false;
+
+		stem = name;
+		return true;
+	}
 
 	/// <summary>
 	/// 供 <see cref="VmtDocument.Parse(ReadOnlySpan{byte}, Func{string, byte[]})"/> 展开

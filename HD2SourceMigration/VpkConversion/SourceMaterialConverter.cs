@@ -392,6 +392,9 @@ public enum NormalDelivery
 
 	/// <summary>声明了法线图，但来源里找不到那张 <c>.vtf</c>，只能退回平面法线。</summary>
 	TextureMissing = 2,
+
+	/// <summary><c>$bumpmap</c> 是裸名单段（如基材质模板里的 <c>normal</c>）：占位写法，源侧不加载那张图。</summary>
+	PlaceholderPath = 3,
 }
 
 /// <summary>
@@ -1630,10 +1633,14 @@ public sealed class SourceMaterialConverter
 		if (string.IsNullOrWhiteSpace(bumpStem))
 			return NormalDelivery.TextureMissing;
 
-		// **判据是"来源里有没有这张图"**，不是"能不能解出来"——解码失败要跑一次 texconv，
-		// 在统计阶段做这件事会把整包扫描变成几分钟。真正的解码失败会走
-		// `TryNormalRoughnessTexture` 的保底路径（退回平面法线），结果一样是不接法线。
-		return source.ContainsVtf(bumpStem) ? NormalDelivery.Wired : NormalDelivery.TextureMissing;
+		// 判据是"按声明路径找得到"，不是"能不能解出来"——解码失败会走保底路径，结果一样是不接法线。
+		if (source.TryResolveDeclaredTexture(bump, out _))
+			return NormalDelivery.Wired;
+
+		// 带目录 = 材质包缺图；裸名单段 = 占位写法，不兜底。
+		return VmtDocument.NormalizePath(bump).Contains('/')
+			? NormalDelivery.TextureMissing
+			: NormalDelivery.PlaceholderPath;
 	}
 
 	/// <summary>见 <see cref="DescribeBumpMap"/>。</summary>
@@ -2031,9 +2038,10 @@ public sealed class SourceMaterialConverter
 		// 而 NekoToon 那套模型普遍带 ATI2N/BC5 高清法线图（官方文档 `pbr.vmt` /
 		// `nekotoon.vmt` 都写着 `$bumpmap` + `$bumpstrength`）。现在它在装配时决定
 		// "这张材质要不要配一张自己的法线贴图"，见 `TryBuildNormalTexture`。
-		var bumpTextureName = string.IsNullOrWhiteSpace(vmt.Value("$bumpmap"))
-			? null
-			: Path.GetFileNameWithoutExtension(VmtDocument.NormalizePath(vmt.Value("$bumpmap")!));
+		// 必须按声明路径解析：裸名兜底会把 `"$bumpmap" "normal"` 这种占位绑到名字碰巧相同的旧图上。
+		var bumpTextureName = source.TryResolveDeclaredTexture(vmt.Value("$bumpmap"), out var resolvedBump)
+			? resolvedBump
+			: null;
 		var bumpStrength = MaterialAppearance.ParseBumpStrength(vmt.Value("$bumpstrength"));
 
 		// matcap 的**合成参数**（N2）：模式 + 逐通道强度 + 蒙版。
