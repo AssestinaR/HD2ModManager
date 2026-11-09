@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.0.6"
+M.VERSION = "2.1.0"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1596,6 +1596,157 @@ local function snapshot_poll(S_, runtime, options)
 		tostring(request.seq or "?"), request.frames, request.stride, #state.ids)
 end
 
+-- ---------------------------------------------------------------------------
+-- 裙摆外推（keep-out）
+--
+-- 依据（2026-11-09 实机 96 帧采样）：静止时后裙骨点离髋部身体表面 +0.8～+5 cm，
+-- 跑动时最深 **−8.2 cm**（几乎总是右后那条 `source_extra_120`）。摆幅约 13 cm。
+--
+-- 做法：标定时记下"静止时的半径"，之后低于它就把链根往外转一点转回来。
+-- 只动**挂在 hips 上的链的链根**——整片布靠链根朝向摆，逐节动会把布扯变形。
+-- 参数全走调参文件（`%LOCALAPPDATA%\hd2pbx_tune.txt`，2 秒重读一次），所以
+-- 在游戏里改数字就生效，不用重启、不用重新部署。
+--
+--   skirt        = 1     0=关，1=开
+--   skirtcal     = 1     置 1 且**站着**，运行时就地记下当前半径当基准；之后置回 0
+--   skirtGain    = 0.35  每帧纠正亏损量的比例（1 = 一步到位，容易抖）
+--   skirtMaxDeg  = 12    单帧最多转多少度（保底，防止瞬间甩飞）
+--   skirtMargin  = 0.005 额外留白（米）
+--   skirtArm     = 0.30  力臂（米）：布大概从骨点往外延伸多远，用来把"距离"换成"角度"
+-- ---------------------------------------------------------------------------
+local SKIRT_DEFAULTS = { gain = 0.35, maxDeg = 12, margin = 0.005, arm = 0.30 }
+
+local function skirt_settings(runtime)
+	local values = tune_values(runtime) or {}
+	return {
+		enabled = (values.skirt or 0) ~= 0,
+		calibrate = (values.skirtcal or 0) ~= 0,
+		gain = values.skirtGain or SKIRT_DEFAULTS.gain,
+		maxDeg = values.skirtMaxDeg or SKIRT_DEFAULTS.maxDeg,
+		margin = values.skirtMargin or SKIRT_DEFAULTS.margin,
+		arm = values.skirtArm or SKIRT_DEFAULTS.arm,
+	}
+end
+
+--- 会话级的两个参照点：hips（圆心）与 chest（上方向）。解析不到就放弃这一帧。
+local function skirt_refs(S_, session)
+	local refs = session.skirtRefs
+	if refs ~= nil then return refs end
+	if S_.Unit == nil or session.unit == nil then return nil end
+	local okCount, count = pcall(function() return S_.Unit.num_scene_graph_items(session.unit) end)
+	if not okCount or type(count) ~= "number" then return nil end
+	local function nodeOf(name)
+		local okHas, has = pcall(S_.Unit.has_node, session.unit, name)
+		if not okHas or has ~= true then return nil end
+		local okNode, node = pcall(function() return S_.Unit.node(session.unit, name) end)
+		if okNode and type(node) == "number" and node >= 1 and node <= count then return node end
+		return nil
+	end
+	local hipsNode, chestNode = nodeOf("hips"), nodeOf("chest")
+	if hipsNode == nil then return nil end
+	refs = { hips = hipsNode, chest = chestNode }
+	session.skirtRefs = refs
+	return refs
+end
+
+local function worldPos(S_, unit, node)
+	local ok, x, y, z = pcall(function()
+		return S_.Vector3.to_elements(S_.Unit.world_position(unit, node))
+	end)
+	if ok and type(x) == "number" then return x, y, z end
+	return nil
+end
+
+--- 对一条链做"标定"或"纠正"。返回是否改动了 pushOut。
+local function skirt_chain(S_, session, item, settings, calibrating, logger)
+	local refs = skirt_refs(S_, session)
+	if refs == nil then return false end
+	local nodes = item.nodes
+	if nodes == nil or #nodes == 0 then return false end
+	local deep = nodes[#nodes]
+	local dx, dy, dz = worldPos(S_, session.unit, deep)
+	if dx == nil then return false end
+	local hx, hy, hz = worldPos(S_, session.unit, refs.hips)
+	if hx == nil then return false end
+	-- 上方向：優先 chest−hips，拿不到就用世界 +Z（HD2 是 Z 向上）
+	local ux, uy, uz = 0, 0, 1
+	if refs.chest ~= nil then
+		local cx, cy, cz = worldPos(S_, session.unit, refs.chest)
+		if cx ~= nil then
+			local vx, vy, vz = cx - hx, cy - hy, cz - hz
+			local len = math.sqrt(vx * vx + vy * vy + vz * vz)
+			if len > 0.05 then ux, uy, uz = vx / len, vy / len, vz / len end
+		end
+	end
+	-- 相对 hips 的位移，去掉沿上方向的分量 ⇒ 水平径向
+	local px, py, pz = dx - hx, dy - hy, dz - hz
+	local along = px * ux + py * uy + pz * uz
+	local rx, ry, rz = px - along * ux, py - along * uy, pz - along * uz
+	local radius = math.sqrt(rx * rx + ry * ry + rz * rz)
+	if radius < 1e-4 then return false end
+	local rnx, rny, rnz = rx / radius, ry / radius, rz / radius
+
+	if calibrating then
+		if item.keepOut == nil then
+			item.keepOut = radius
+			logger("[physbone][裙摆][标定] %s r=%.3f m", tostring(item.chain[1] and item.chain[1].name), radius)
+		end
+		return false
+	end
+	local keepOut = item.keepOut
+	if keepOut == nil then return false end
+	local deficit = keepOut + settings.margin - radius
+	if deficit <= 0 then
+		item.pushOut = nil
+		return false
+	end
+	-- 把"要补的距离"换成"要转的角度"：θ ≈ 亏损 / 力臂
+	local angle = settings.gain * deficit / math.max(settings.arm, 0.05)
+	local maxAngle = settings.maxDeg * math.pi / 180
+	if angle > maxAngle then angle = maxAngle end
+	if angle < 1e-5 then
+		item.pushOut = nil
+		return false
+	end
+	-- 轴 = r̂ × up：这样绕它转时，向下垂的布会朝 +r̂ 方向摆出去
+	local ax, ay, az = rny * uz - rnz * uy, rnz * ux - rnx * uz, rnx * uy - rny * ux
+	local alen = math.sqrt(ax * ax + ay * ay + az * az)
+	if alen < 1e-6 then return false end
+	item.pushOut = { ax / alen, ay / alen, az / alen, angle }
+	return true
+end
+
+--- 每帧调一次：遍历所有会话里"挂在 hips 上"的链。
+local function skirt_apply(S_, runtime)
+	local settings = skirt_settings(runtime)
+	if not settings.enabled and not settings.calibrate then return end
+	local pushed, total = 0, 0
+	for _, session in ipairs(runtime.sessions or {}) do
+		if session.unit ~= nil then
+			for _, item in ipairs(session.sessions or {}) do
+				local parent = item.chain and item.chain[1] and item.chain[1].parentName
+				if type(parent) == "string" and parent:lower():find("hips", 1, true) ~= nil then
+					total = total + 1
+					-- 标定只在**第一次**做：同一个会话里不重复覆盖（否则跑着跑着又标一次）
+					local calibrating = settings.calibrate and not session.skirtCalibrated
+					if skirt_chain(S_, session, item, settings, calibrating, runtime.logger) then
+						pushed = pushed + 1
+					end
+				end
+			end
+			if settings.calibrate then session.skirtCalibrated = true end
+		end
+	end
+	local state = runtime.skirtState
+	if state == nil then state = { reported = nil }; runtime.skirtState = state end
+	local message = string.format("%d/%d", pushed, total)
+	if state.reported ~= message then
+		state.reported = message
+		runtime.logger("[physbone][裙摆] 外推 %s 条（共 %d 条 hips 链，gain=%.2f max=%.0f° arm=%.2f m）",
+			message, total, settings.gain, settings.maxDeg, settings.arm)
+	end
+end
+
 local function drive(runtime)
 	local frame = runtime.frame
 	local options = runtime.options
@@ -1909,6 +2060,10 @@ local function drive(runtime)
 	-- 姿态快照：外部按下热键 ⇒ 写请求文件 ⇒ 这里把骨架采下来。
 	-- 放在**物理写完、渲染之前**：采到的就是这一帧画到屏幕上的姿态。
 	snapshot_poll(S, runtime, options)
+
+	-- 裙摆外推：用这一帧的姿态算**下一帧**要叠的旋转（1 帧延迟，肉眼不可见）。
+	-- 放在 update 之后是因为要用到这一帧写完之后的世界位置。
+	skirt_apply(S, runtime)
 end
 
 --- 安装运行时。可重复调用：第二次直接返回同一个实例。

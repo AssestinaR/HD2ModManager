@@ -145,7 +145,7 @@ do
 		compat = Compat,
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath,
-		settleFrames = 2, snapshot = false,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
 		pollFrames = 1,
 	})
 	check("install 返回运行时状态", type(runtime) == "table" and runtime.installed == true)
@@ -243,7 +243,7 @@ do
 		compat = Compat,
 		carriers = { { rig = wrongRig, path = "wrong.patch_1.gpu_resources" } },
 		logPath = logPath2,
-		settleFrames = 2, snapshot = false,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
 		pollFrames = 1,
 		heartbeatFrames = 10,
 	})
@@ -328,7 +328,7 @@ do
 		compat = Compat,
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath3,
-		settleFrames = 2, snapshot = false,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
 		pollFrames = 1,
 		heartbeatFrames = 10,
 	})
@@ -414,7 +414,7 @@ do
 		compat = Compat,
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath7,
-		settleFrames = 2, snapshot = false,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
 		pollFrames = 1,
 		validateFrames = 1,      -- 每帧都校验，测试才跑得快
 		maxArmorDistance = 3.0,
