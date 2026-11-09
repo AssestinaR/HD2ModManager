@@ -163,32 +163,37 @@
 - `SectionalPatchGroupEntry.SourceVpkName` → `SourceName`（兼容旧键）。
 - **验收**：给定一份依据文件，`Resolve()` 返回 `Sectional`；读旧库不受影响。
 
-### W2c 把 ViewModel 接上（进行中，**卡在一个需要用户拍板的问题上**）
+### W2c 把 ViewModel 接上（✅ 完成）
 
-已就绪：`SectionalSourceAssembler`（导入侧）、`SectionalWhitelistBuilder`（白名单闭包）、
-`Legacy2SectionalConverter`（转换）。接线本身是机械活，但有一个前置问题必须先定：
+> **上一轮我把这里标成"卡在需要用户拍板的问题上"，那是错的，已撤回。**
+> 我当时的判断是"没有编译目标就会失败"，但没读实现就下了结论。实际读代码后：
+>
+> `SectionalCompiler.ResolveArmorArchive(targetArchiveId, ownModelKey, ...)` 在
+> `targetArchiveId` 为空时**直接返回 <c>null</c>、`ownModel = true`、`error = null`**
+> （`SectionalCompiler.cs:100-118`）。也就是"没有目标"是合法状态，含义是**不重定向**。
+> 随后走 `CompileOwnModelAsync`：把 sectional 里的 unit patch 原样装进暂存目录 →
+> 建 section 表 → 烘焙被关掉的 section → 物化 `Overwrite/`。
+> **它不要求 `custom-model.json` 存在**——`ownModel` 在这里是"不换甲"，不是"必须是自定义素体"。
+>
+> 结论：legacy 转出来的 sectional Mod 不需要 `wardrobe.json`、也不需要 `custom-model.json`，
+> 因为它带的 unit **本来就是替换那件原版护甲的**，编译只做"烘焙 section + 装启用材质"。
+> 所以 A/B/C 三个方案都不需要，W2c 没有前置决定。
 
-> **legacy 转出来的 sectional Mod，编译期的目标是哪一个？**
+`OpenCustomModelConversionAsync` 改成五步：
 
-`ModCompileService.CompileAsync(..., targetArchiveIds: null, ...)` 会去读 `wardrobe.json`；
-读不到就把 `target` 传成 `null`，而 `SectionalCompiler` 在没有目标也没有
-`custom-model.json`（own model）时无法解析出"替换哪件护甲"，编译会失败。
+1. **收集来源**：当前条目 + `OptionRelationshipGraph.GetDescendantOptions` 的递归子级，
+   只保留根上有 patch 的（`SectionalSplitter.EnumeratePatchFiles` 非空）。
+2. **算白名单**：选中护甲/头盔的 unit → `SectionalWhitelistBuilder.BuildFromPatchesAsync` 求闭包。
+3. **建条目 + 装配**：`SectionalSourceAssembler.Assemble`（平铺拷 patch + 写 `sectional-source.json`）。
+4. **导入**：`ImportPathAsync`；之后一律用**库里的**相对路径（导入可能规范化路径）。
+5. **立刻转换**：`Legacy2SectionalConverter.RunAsync`（内部已含编译）。
 
-三条可选路，各自含义不同：
+旧的 `SectionalModBuilder` / `GenerateAsync` / 素体登记与回滚整段**已从这里移除**——
+新链路不生成自定义素体，也就没有"登记了但没导入"的半状态要回滚。
 
-| 方案 | 做法 | 含义 |
-|---|---|---|
-| **A（我倾向）** | 装配时把用户选中的**护甲**写进 `wardrobe.json` 的 `TargetArmorArchiveId` | "这个 sectional Mod 替换那件护甲"——与 legacy 原意一致，也让编译目标有据可依 |
-| B | 装配时生成一份 `custom-model.json`（把来源 unit 登记成自定义素体） | 产物变成"自定义素体"，与旧的「生成sectional版」语义相同，但就不是"替换原版护甲"了 |
-| C | 编译时显式把 `targetArchiveIds` 传成选中护甲 | 不落盘：每次编译都要从依据文件重新推，`wardrobe.json` 缺失会让详情页的"目标护甲"显示为空 |
-
-**为什么必须先问**：这三条会改变用户在游戏里看到的效果（替换原版护甲 vs 变成独立素体），
-不是实现细节。选 A 还要定一件事：头盔选中的那一份要不要落进 `wardrobe.json`
-（现有模型只有 `TargetArmorArchiveId` / `HeadMergeIntoBody`，没有"头盔目标"字段）。
-
-**这一项完成前的状态**：`OpenCustomModelConversionAsync` 仍是旧实现（生成新 patch + 搬进 payload），
-**没有**接上新的三段链路。也就是说「生成sectional版」目前仍是"生成即完成、根上不留来源"的老行为，
-而多选底栏的「重构」已经能对**既有的** vpk2patch 条目工作。
+**已知缺口（下一轮或后续补）**：底栏里可选护甲/头盔的清单仍来自**当前这一个 Mod** 的事实
+（`converter.InspectAsync(facts)`）；子级只作为"来源 patch"被拷贝，它们自己的护甲/头盔
+还没有出现在可选项里。要补的话，得对每个子级各读一次 facts 再合并候选。
 
 > **W2 开工前的侦查结论（下一轮直接用，不要再翻一遍）：**
 >
@@ -423,7 +428,7 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 | W4 | 批量执行器按存储形态分派 | ✅ 完成 |
 | W2a | 导入侧：平铺拷来源 + 写依据（`SectionalSourceAssembler`，7 条用例） | ✅ 完成 |
 | W2b-1 | 白名单闭包：unit → 材质 → 贴图（`SectionalWhitelistBuilder`，6 条用例） | ✅ 完成 |
-| W2c | 把 ViewModel 的「生成sectional版」接上上面两件 + `Legacy2SectionalConverter` | 进行中 |
+| W2c | ViewModel 接线：收集来源 → 白名单 → 装配 → 导入 → 立刻转换 | ✅ 完成 |
 
 **中断后怎么接上**：读本节进度表 → 读 §4 对应工作项 → `git log --oneline -5` 看最后一步做到哪 →
 `git status` 看有没有未提交的半成品（**不要**在编译不过的状态下离开）。
