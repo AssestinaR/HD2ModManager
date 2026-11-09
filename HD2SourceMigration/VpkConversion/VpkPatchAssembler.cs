@@ -613,11 +613,24 @@ public sealed class VpkPatchAssembler
 		//    实测一份 42 万顶点的模型，7 个 Unit 串行 18.3 s，并行之后约 3 s。
 		var meshes = new RetargetedMesh[effectivePlans.Count];
 		var authoredUnits = new UnitAuthorResult[effectivePlans.Count];
+		// 裙摆离体清空的偏移量（米）。0 = 关（默认）。用环境变量而不是设置项，
+		// 是因为这是**实验性几何改动**：只影响转换那一刻，改一次重转一次，不需要进产品界面。
+		var skirtClearanceAmount = ResolveSkirtClearance();
+		var pelvis = skirtClearanceAmount > 0 ? FindPelvis(transformInfo) : null;
+		if (skirtClearanceAmount > 0 && pelvis is null)
+		{
+			diagnostics.Add("裙摆离体清空：没能从 TransformInfo 里找到 hips，本次跳过（不做任何偏移）。");
+			skirtClearanceAmount = 0;
+		}
 		var unitsDone = 0;
 		Parallel.For(0, effectivePlans.Count, VpkParallel.Options, planIndex =>
 		{
 			var plan = effectivePlans[planIndex];
 			var mesh = RetargetedMeshBuilder.Build(plan.Group, geometry!, retarget!, transformInfo!);
+			// 裙摆离体清空（默认关）。见 SkirtClearance：那片布 64% 刚性蒙在 hips 上，
+			// 运行时没有任何杠杆能推动它，只能在几何上把它偏出来。
+			if (skirtClearanceAmount > 0)
+				mesh = SkirtClearance.Apply(mesh, sourceMaterialNames, pelvis!.Value, skirtClearanceAmount);
 			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
 			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
 			// 多造几个小对象比赌这一条便宜得多。
@@ -1384,6 +1397,38 @@ public sealed class VpkPatchAssembler
 	/// 会再用材质 id 自校验一次，所以即使这里错位，也不会把开关接到别的部件上。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 裙摆离体清空的偏移量（米）。读环境变量 <c>HD2_SKIRT_CLEARANCE</c>，缺省/非法 = 关。
+	/// </summary>
+	private static double ResolveSkirtClearance()
+	{
+		var raw = Environment.GetEnvironmentVariable("HD2_SKIRT_CLEARANCE");
+		if (string.IsNullOrWhiteSpace(raw)) return 0;
+		return double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)
+			&& value > 0 && value < 0.2
+			? value
+			: 0;
+	}
+
+	/// <summary>
+	/// 从 TransformInfo 里找出 <c>hips</c> 的绑定世界位置（行主序矩阵，平移在 12/13/14）。
+	/// 找不到就返回 null——绝不拿别的骨凑数，径向圆心错了会把裙子整体推歪。
+	/// </summary>
+	private static Vec3? FindPelvis(HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitTransformInfo? info)
+	{
+		if (info is null) return null;
+		var target = Hd2NameHash.Of("hips");
+		var count = Math.Min(info.NameHashes.Count, info.Matrices.Count);
+		for (var index = 0; index < count; index++)
+		{
+			if (info.NameHashes[index] != target) continue;
+			var values = info.Matrices[index].Values;
+			if (values.Count < 15) return null;
+			return new Vec3(values[12], values[13], values[14]);
+		}
+		return null;
+	}
+
 	private static IReadOnlyList<VpkSectionSource> BuildSectionSources(
 		RetargetedMesh mesh,
 		IReadOnlyList<string>? sourceMaterialNames,
