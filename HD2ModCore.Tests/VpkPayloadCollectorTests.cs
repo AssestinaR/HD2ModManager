@@ -156,6 +156,38 @@ public sealed class VpkPayloadCollectorTests : IDisposable
 		Assert.Equal($"{Archive}.patch_2", report.Patches[2].MaterialPatch);
 	}
 
+	/// <summary>
+	/// 物理旁车按**前缀**认，不按写死的名单。
+	/// <para>
+	/// 这是 2026-11-09 那次"游戏里完全没效果"的现场：收集器的结构文件名单里只有
+	/// <c>physbone-rig.bin</c>，后来新增的 <c>physbone-driver-rig.bin</c> 被静默留在了
+	/// 转换目录里 —— 容器里永远只有一条记录，而收集器、编译、部署全都没报错。
+	/// 所以这里刻意用一个**名单里没有**的旁车名字来钉这条规则。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void CollectTakesEveryPhysBoneAuxFileNotJustTheListedOnes()
+	{
+		var convert = Path.Combine(_root, "convert");
+		WritePatch(Path.Combine(convert, "model"), Archive + ".patch_0", "unit");
+		var modelDirectory = Path.Combine(convert, "model");
+		File.WriteAllText(Path.Combine(modelDirectory, "custom-model.json"), "{}");
+		File.WriteAllBytes(Path.Combine(modelDirectory, "physbone-rig.bin"), [1, 2, 3]);
+		File.WriteAllBytes(Path.Combine(modelDirectory, "physbone-driver-rig.bin"), [4, 5, 6]);
+		// 不是旁车的东西不许被顺手带进来（patch 已经在 ③ 里搬过一次，再来一次就是垃圾）。
+		File.WriteAllText(Path.Combine(modelDirectory, "notes.txt"), "x");
+		File.WriteAllBytes(Path.Combine(modelDirectory, "physics.bin"), [7]);
+
+		var target = Path.Combine(_root, "mod", "sectional");
+		var result = VpkPayloadCollector.Collect(convert, target, report: null);
+
+		Assert.True(result.Succeeded, result.Error);
+		Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(Path.Combine(target, "physbone-rig.bin")));
+		Assert.Equal(new byte[] { 4, 5, 6 }, File.ReadAllBytes(Path.Combine(target, "physbone-driver-rig.bin")));
+		Assert.False(File.Exists(Path.Combine(target, "notes.txt")));
+		Assert.False(File.Exists(Path.Combine(target, "physics.bin")));
+	}
+
 	[Fact]
 	public void CollectFailsWhenNothingWasProduced()
 	{

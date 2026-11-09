@@ -61,8 +61,20 @@ public static class VpkPayloadCollector
 		WardrobeSectionMapFile.FileName,   // sections.json
 		SectionGroupFile.FileName,         // components.json
 		VpkCustomModelFile.FileName,       // custom-model.json
-		"physbone-rig.bin",
 	];
+
+	/// <summary>
+	/// 该不该把模型目录里的这个文件当成结构文件搬走。
+	/// <para>
+	/// 固定名字那几个之外，**所有 <c>physbone-*.bin</c> 旁车都算**：它们是转换期的附加产出，
+	/// 名字会随功能增加（<c>physbone-rig.bin</c>、后来的 driver rig…）。写死名单漏一个
+	/// 就等于静默丢文件——容器少一条记录、整条链上却没有任何报错。
+	/// </para>
+	/// </summary>
+	private static bool IsStructuralFile(string fileName)
+		=> PhysBoneAuxFiles.IsAuxFile(fileName)
+			|| Array.Exists(StructuralFileNames,
+				name => string.Equals(name, fileName, StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>
 	/// 把 <paramref name="convertRoot"/> 下所有产出子目录里的 patch 收进
@@ -170,10 +182,11 @@ public static class VpkPayloadCollector
 		// ④ 结构文件只从模型目录取一份：它们是"这具素体是谁""哪些 section 算开关"，不属于某个 patch。
 		if (modelDirectory is not null)
 		{
-			foreach (var fileName in StructuralFileNames)
+			// 枚举目录而不是遍历名单：名单只列得出"已经想到的名字"，旁车的名字会随功能增加。
+			foreach (var source in Directory.EnumerateFiles(modelDirectory, "*", SearchOption.TopDirectoryOnly))
 			{
-				var source = Path.Combine(modelDirectory, fileName);
-				if (!File.Exists(source)) continue;
+				var fileName = Path.GetFileName(source);
+				if (!IsStructuralFile(fileName)) continue;
 				VpkPayloadSwap.ClearReadOnly(Path.Combine(targetPayloadDirectory, fileName));
 				File.Copy(source, Path.Combine(targetPayloadDirectory, fileName), overwrite: true);
 			}

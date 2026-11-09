@@ -52,9 +52,16 @@ public static class ModCloneService
 		"components.json",
 		"wardrobe.json",
 		"sections.json",
-		"physbone-rig.bin",
 		ModSettingsFile.FileName,
 	};
+
+	/// <summary>
+	/// 副本要不要跳过这个文件。物理旁车（<c>physbone-*.bin</c>）一律不复制：
+	/// 它们是从源模型派生出来的，副本得按自己的配置重新产出。
+	/// 按前缀认而不是写死名字，免得以后新增旁车时被悄悄复制进副本、把两份参数混在一起。
+	/// </summary>
+	private static bool IsExcludedFile(string fileName)
+		=> PhysBoneAuxFiles.IsAuxFile(fileName) || ExcludedFiles.Contains(fileName);
 
 	/// <param name="sourceDirectory">被复制的 Mod 目录。</param>
 	/// <param name="sourceDisplayName">它的显示名，用来拼副本名「名字 (变体)」。</param>
@@ -166,7 +173,7 @@ public static class ModCloneService
 		Directory.CreateDirectory(destination);
 		foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.TopDirectoryOnly))
 		{
-			if (ExcludedFiles.Contains(Path.GetFileName(file))) continue;
+			if (IsExcludedFile(Path.GetFileName(file))) continue;
 			File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
 		}
 		foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.TopDirectoryOnly))
