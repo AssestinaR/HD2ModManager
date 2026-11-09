@@ -8,14 +8,20 @@ using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 namespace HD2ModManager.ViewModels;
 
 /// <summary>
-/// 「生成sectional版」：把来源（主 Mod + 递归子级）的 patch 平铺进一个新条目，写下转换依据，
-/// 导入后**立刻**跑一次 sectional 转换与编译。
+/// 「生成sectional版」：把来源（主 Mod + 递归内的 legacy 子级）的 patch 平铺进一个新条目，
+/// 写下转换依据，导入后**立刻**跑一次 sectional 转换与编译。
 ///
 /// <para>
 /// <b>与旧实现的区别。</b>旧实现调 <c>CustomModelConversionService.GenerateAsync</c> 生成一条
 /// 新的子集 patch，再把它搬进 <c>sectional/</c>——根上什么都不留，于是那个条目永远不可重构建。
 /// 现在按四段链路走：导入只放来源（根上平铺），转换才产出 <c>sectional/</c>，
 /// 与 vpk2patch 完全同形。
+/// </para>
+///
+/// <para>
+/// <b>"递归"与"只认 legacy"不是二选一。</b>从主 Mod 开始逐级向下走，但每一步只把**根上有 patch**
+/// 的条目收进来源集——非 legacy 的子级（vpk2patch / sectional）本来就不属于这个来源集，
+/// 被筛掉是定义使然，不是遗漏。
 /// </para>
 /// </summary>
 public partial class ModDetailsPageViewModel
@@ -24,23 +30,25 @@ public partial class ModDetailsPageViewModel
 	{
 		if (!TryGetCurrentNode(out var source)
 			|| System.Windows.Application.Current?.MainWindow?.DataContext is not ShellViewModel shell) return;
-		ModEquipmentSourceFacts? facts = null;
 		var converter = new CustomModelConversionService(_paths, _library.InformationReader);
-		async Task<ModEquipmentSourceFacts> ReadFactsAsync(CancellationToken token = default)
+		var sourceNodes = CollectSectionalSources(source);
+
+		async Task<ModEquipmentSourceFacts> ReadFactsAsync(ModNode node, CancellationToken token = default)
 		{
 			var id = Guid.NewGuid();
 			try
 			{
-				return await _equipmentSourceFactsReader.ReadAsync(source, _library.ModsRootDirectory,
+				return await _equipmentSourceFactsReader.ReadAsync(node, _library.ModsRootDirectory,
 					new ModInformationRequest(ModInformationKind.AssetInventory, "CustomModelConversion",
 						Context: ModInformationRequestContext.Create(ModInformationCacheScope.None, id, operationName: "CustomModelConversion"))
 					{ Property = ModInformationPropertyKind.UnitPartMapping }, token);
 			}
 			finally { _equipmentSourceFactsReader.ClearOperation(id); }
 		}
+
 		var bar = new CustomModelConversionBottomBarViewModel(Name, async operation =>
 		{
-			if (facts is null || operation.SelectedSources.Count == 0) return;
+			if (operation.SelectedSources.Count == 0 || sourceNodes.Count == 0) return;
 			var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "生成sectional版", operation.OutputDirectory,
 				origin: "Mod 详情",
 				userVisibleReason: "把来源 patch 平铺进新条目，再按 sectional 转换出 7 槽 unit 组与材质组。",
@@ -56,15 +64,24 @@ public partial class ModDetailsPageViewModel
 				var output = operation.OutputDirectory;
 				var gameData = SettingsService.GetGameDataFolder();
 
-				// ① 来源：当前条目 + 递归子级。必须是 legacy（patch 在根上），否则拷过去只会得到空条目。
+				// ① 来源（已按 legacy 过滤好的整条链）。
 				task?.UpdateStage("正在收集来源条目");
-				var sources = CollectSectionalSources(source);
-				if (sources.Count == 0)
+				var candidates = sourceNodes.Select(ToCandidate).ToArray();
+				if (candidates.Length == 0)
 					throw new InvalidOperationException("没有可用的来源：来源条目根上都没有 patch。");
 
 				// ② 干净资产白名单：选中护甲/头盔的 unit → 它们引用的材质 → 那些材质引用的贴图。
+				//
+				// 引用关系要看**整条来源链**的 patch：选中的护甲可能来自某个子级，
+				// 只读主 Mod 的 patch 会算不出它的材质闭包。
 				task?.UpdateStage("正在整理护甲与头盔范围");
-				var freshFacts = await ReadFactsAsync(token);
+				var patchPaths = new List<string>();
+				foreach (var node in sourceNodes)
+				{
+					var facts = await ReadFactsAsync(node, token);
+					patchPaths.AddRange(facts.SourcePatchTocPaths);
+				}
+
 				var unitKeys = operation.SelectedSources
 					.SelectMany(entry => entry.Parts)
 					.Where(part => !part.IsCullingMesh)
@@ -74,7 +91,7 @@ public partial class ModDetailsPageViewModel
 				var whitelist = await SectionalWhitelistBuilder
 					.BuildFromPatchesAsync(
 						unitKeys.Select(key => new AdaptationAssetKey(key.TypeId, key.FileId)).ToArray(),
-						freshFacts.SourcePatchTocPaths,
+						patchPaths,
 						token)
 					.ConfigureAwait(true);
 				var whitelistError = SectionalWhitelistBuilder.Describe(whitelist);
@@ -87,7 +104,7 @@ public partial class ModDetailsPageViewModel
 				Directory.CreateDirectory(modDirectory);
 				var assembly = SectionalSourceAssembler.Assemble(
 					modDirectory,
-					sources,
+					candidates,
 					ToSelection(operation.SelectedArmor),
 					ToSelection(operation.SelectedHelmet),
 					whitelist);
@@ -111,13 +128,13 @@ public partial class ModDetailsPageViewModel
 					.ToArray();
 				if (imports.Length == 0)
 					throw new InvalidOperationException("导入成功但找不到库里的节点，无法继续转换。");
-				var node = _library.Snapshot.Nodes[imports[0]];
-				var importedDirectory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+				var importedNode = _library.Snapshot.Nodes[imports[0]];
+				var importedDirectory = Path.Combine(_library.ModsRootDirectory, importedNode.RelativePath);
 
 				// ⑤ 立刻转换 + 编译（与 vpk 导入后的自动重构建对称）。
 				task?.UpdateStage("正在转换并编译：按 7 槽拆分 unit 组");
 				var converted = await Legacy2SectionalConverter.RunAsync(
-					node.Id.Value.ToString("N"),
+					importedNode.Id.Value.ToString("N"),
 					importedDirectory,
 					new VpkHostContext(gameData, SettingsService.CreateStoragePaths()),
 					stage => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => task?.UpdateStage(stage)),
@@ -140,8 +157,27 @@ public partial class ModDetailsPageViewModel
 		{
 			if (!await HasCurrentGameDataIndexAsync())
 				throw new InvalidOperationException("请先在设置页重建游戏资产索引。");
-			facts = await ReadFactsAsync();
-			bar.SetSources(await converter.InspectAsync(facts));
+			if (sourceNodes.Count == 0)
+				throw new InvalidOperationException("这个 Mod 与它的子级里都没有来源 patch（都不是 legacy 类）。");
+
+			// 候选表覆盖**整条来源链**：主 Mod 与每个 legacy 子级各读一次事实再合并。
+			// 只读主 Mod 的话，护甲/头盔拆在子级里的形态根本进不了选择表。
+			var catalog = new List<EquipmentUnitCatalogEntry>();
+			var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var node in sourceNodes)
+			{
+				var facts = await ReadFactsAsync(node);
+				foreach (var entry in await converter.InspectAsync(facts))
+				{
+					// 同一个 archive 只留一份：不同来源可能都报同一件护甲（共用 unit 的情况）。
+					if (!seen.Add(entry.ArchiveId)) continue;
+					catalog.Add(entry);
+				}
+			}
+
+			bar.SetSources(catalog
+				.OrderBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+				.ToArray());
 		}
 		catch (Exception exception) { bar.Status = "来源无效：" + exception.Message; }
 	}
@@ -152,35 +188,36 @@ public partial class ModDetailsPageViewModel
 			? new SectionalSourceSelection(entry.ArchiveId, entry.DisplayName)
 			: null;
 
+	private SectionalSourceCandidate ToCandidate(ModNode node)
+		=> new(
+			node.Id.Value.ToString("N"),
+			string.IsNullOrWhiteSpace(node.Metadata.Name) ? node.RelativePath : node.Metadata.Name,
+			Path.Combine(_library.ModsRootDirectory, node.RelativePath));
+
 	/// <summary>
-	/// 收集来源：当前条目 + 它的递归子级。
+	/// 收集来源：主条目 + 递归子级里**根上有 patch 的**那些（即 legacy 类）。
 	/// <para>
-	/// <b>为什么子级也要收。</b>一个主体的外观常常拆在主 Mod 与若干子级里；只拷主 Mod 的话，
-	/// 产物会缺掉子级贡献的 unit 与材质，而用户在选择时看着的是"整个系列"。
+	/// 递归与"只认 legacy"是同一个集合的两个约束，不是两条路：逐级向下走，边遇到非 legacy 的子级
+	/// 就跳过——它不属于这个来源集，而不是"漏掉了"。
 	/// </para>
 	/// </summary>
-	private IReadOnlyList<SectionalSourceCandidate> CollectSectionalSources(ModNode host)
+	private IReadOnlyList<ModNode> CollectSectionalSources(ModNode host)
 	{
 		var root = _library.ModsRootDirectory;
-		var ordered = new List<(ModNode Node, string Name)>
-		{
-			(host, string.IsNullOrWhiteSpace(host.Metadata.Name) ? host.RelativePath : host.Metadata.Name),
-		};
+		var ordered = new List<ModNode> { host };
 		var graph = OptionRelationshipGraph.Create(_library.Snapshot);
-		foreach (var child in graph.GetDescendantOptions(host.Id))
-			ordered.Add((child, string.IsNullOrWhiteSpace(child.Metadata.Name) ? child.RelativePath : child.Metadata.Name));
+		ordered.AddRange(graph.GetDescendantOptions(host.Id));
 
-		var candidates = new List<SectionalSourceCandidate>(ordered.Count);
-		foreach (var (node, name) in ordered)
+		var nodes = new List<ModNode>(ordered.Count);
+		foreach (var node in ordered)
 		{
 			var directory = Path.Combine(root, node.RelativePath);
 			if (!Directory.Exists(directory)) continue;
-			// 只认 legacy：来源 patch 必须在根上（转换产物与 vpk2patch 的 patch 在 payload 里，
-			// 拷根目录只会得到空条目）。
+			// 根上没有 patch ⇒ 不是 legacy（来源 patch 在 payload 里或压根没有），不进入来源集。
 			if (SectionalSplitter.EnumeratePatchFiles(directory).Count == 0) continue;
-			candidates.Add(new SectionalSourceCandidate(node.Id.Value.ToString("N"), name, directory));
+			nodes.Add(node);
 		}
 
-		return candidates;
+		return nodes;
 	}
 }
