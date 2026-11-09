@@ -173,8 +173,25 @@
   3. 建条目目录 → **按 `order` 把来源 patch 平铺拷到根**（保留原文件名）→ 写 `sectional-source.json`。
   4. `ImportPathAsync` 导入。
   5. **立刻**跑一次 `legacy2sectional` 转换 + 编译（与 vpk 的 `RunImportRebuildAsync` 对称）。
-- **验收**：转换后根上仍是来源 patch（未被搬走）；`sectional/` 有 unit 组 + 各来源材质组；
-  `Overwrite/` 被编译出来；再次点重构能复现同一份产物（除时间戳）。
+
+> **W2 开工前的侦查结论（下一轮直接用，不要再翻一遍）：**
+>
+> - 现有入口 `ModDetailsPageViewModel.CustomModel.cs:11 OpenCustomModelConversionAsync`：
+>   拿 `ModEquipmentSourceFacts` → 底栏选 armor/helmet → `SectionalModBuilder.BuildAsync`
+>   （生成新 patch + 搬进 payload + 拆件 + 剪枝）→ `ImportPathAsync`。**要替换的正是中间那一步。**
+> - 白名单怎么来：`CustomModelConversionService.BuildPlan(...)` 已经产出
+>   `CustomModelConversionPlan(Transfer)`，其中 `Transfer.SelectedTargets[].Parts[].UnitAssetKey`
+>   就是"这件护甲/头盔包含哪些 unit"。材质/贴图用
+>   `MaterialDependencyResolver`（`MaterialTypeId` / `TextureTypeId`）从这些 unit 的引用闭包取。
+> - 来源侧的事实：`ModEquipmentSourceFacts.SourcePatchTocPaths`（**只有 legacy 才有意义**，
+>   因为入口对 vpk2patch / sectional 是隐藏的 —— `ShowPatchSettingsCard => !IsVpkMod`）。
+> - 子级来源：`OptionRelationshipGraph.Create(snapshot).GetDescendantOptions(hostId)`
+>   （W6 已用它做过作用域展开，同一份口径）。
+> - 拷贝时**必须**给每个来源写 `SectionalSourceEntry.PatchFiles`：落盘后就没有"谁属于谁"了，
+>   没有它材质组只能并成一组。
+
+**验收**：转换后根上仍是来源 patch（未被搬走）；`sectional/` 有 unit 组 + 各来源材质组；
+`Overwrite/` 被编译出来；再次点重构能复现同一份产物（除时间戳）。
 
 ### W3 `legacy2sectional` 转换服务（核心新增）
 
@@ -386,9 +403,9 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 | W5 | 多选底栏「重构」按钮（可见性只看作用域，命令调检测器） | ✅ 完成 |
 | W7 | 三处硬编码文案按 origin 分开 | ✅ 完成 |
 | W3a | 规划层：来源 → 哪个组装哪些 key（`SectionalConversionPlanner`，纯函数 + 13 条用例） | ✅ 完成 |
-| W3b | IO 装配：扫描根上 patch → 抽键 → 落盘三组 → 拆 7 槽 → 换载荷 → `patches.json` → 编译 | 进行中 |
-| W4 | 批量执行器按存储形态分派 | 未开始 |
-| W2 | 「生成sectional版」改为：建条目 + 平铺拷来源 + 写依据 + 导入 + 立刻转换 | 未开始 |
+| W3b | IO 装配：扫描 → 抽键 → 落盘三组 → 拆 7 槽 → 换载荷 → `patches.json` → 编译（`Legacy2SectionalConverter`） | ✅ 完成 |
+| W4 | 批量执行器按存储形态分派 | ✅ 完成 |
+| W2 | 「生成sectional版」改为：建条目 + 平铺拷来源 + 写依据 + 导入 + 立刻转换 | 进行中 |
 
 **中断后怎么接上**：读本节进度表 → 读 §4 对应工作项 → `git log --oneline -5` 看最后一步做到哪 →
 `git status` 看有没有未提交的半成品（**不要**在编译不过的状态下离开）。
