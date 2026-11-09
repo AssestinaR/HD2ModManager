@@ -136,11 +136,11 @@ public static class SectionalPatchManifestFile
 			// ⚠️ **一个 VPK 可以产出多个 patch**（模型自带材质时 unit + 材质同源）。这时只按名字
 			// 找会永远命中第一条（unit，没有名字），于是材质那一行又退回默认名 ——
 			// 2026-11-08 实测的"名字不显示"就是这个：同源两条，按名字认领必须再带上序号/角色。
-			var sourceVpkName = matched?.Patch.Name;
-			var sameSource = previous is null || string.IsNullOrWhiteSpace(sourceVpkName)
+			var sourceName = matched?.Patch.Name;
+			var sameSource = previous is null || string.IsNullOrWhiteSpace(sourceName)
 				? Array.Empty<SectionalPatchGroupEntry>()
 				: previous.Patches
-					.Where(entry => string.Equals(entry.SourceVpkName, sourceVpkName, StringComparison.OrdinalIgnoreCase))
+					.Where(entry => string.Equals(entry.SourceName, sourceName, StringComparison.OrdinalIgnoreCase))
 					.ToArray();
 			var carried = sameSource.FirstOrDefault(entry => entry.PatchIndex == patchIndex)
 				?? (sameSource.Length == 1 ? sameSource[0] : null)
@@ -150,7 +150,7 @@ public static class SectionalPatchManifestFile
 				patchIndex,
 				archiveHex16,
 				role,
-				sourceVpkName,
+				sourceName,
 				// 模型自带的那份材质也是选项之一，名字固定为「模型内置材质」：
 				// 它和折并进来的材质包是同一类东西（一个 patch、可勾选），
 				// 单独给它一个名字是为了让用户在选项表里一眼认出"这是自带的，不是后来加的包"。
@@ -240,7 +240,7 @@ public static class SectionalPatchManifestFile
 			if (document is null) return null;
 			if (!SectionalPatchManifest.ReadableSchemas.Contains(document.Schema, StringComparer.Ordinal))
 				return null;
-			return document;
+			return UpgradeLegacySourceNames(document, json);
 		}
 		catch (Exception exception) when (exception is IOException
 			or UnauthorizedAccessException
@@ -254,6 +254,74 @@ public static class SectionalPatchManifestFile
 	/// <param name="MatchedUnit">命中报告的 <c>unitPatch</c> 字段。</param>
 	/// <param name="MatchedMaterial">命中报告的 <c>materialPatch</c> 字段。</param>
 	private sealed record MatchResult(VpkConversionPatchSummary Patch, bool MatchedUnit, bool MatchedMaterial);
+
+	/// <summary>1.5.x 写的来源名键。字段已泛化成 <c>sourceName</c>，老库仍要照读。</summary>
+	private const string LegacySourceNameProperty = "sourceVpkName";
+
+	/// <summary>
+	/// 旧键兼容：把 <c>sourceVpkName</c> 补进 <see cref="SectionalPatchGroupEntry.SourceName"/>。
+	/// <para>
+	/// 为什么在读取层做而不是给属性挂两个名字：<c>sourceName</c> 是新写的唯一键，
+	/// 若同时保留一个"旧属性"，两处读值就会分叉（谁为空、谁为准）。这里只在**确有缺失**时
+	/// 二次解析原始 JSON，正常文件一次都不会走到。
+	/// </para>
+	/// </summary>
+	private static SectionalPatchManifestDocument UpgradeLegacySourceNames(
+		SectionalPatchManifestDocument document,
+		string json)
+	{
+		if (document.Patches.All(entry => entry.SourceName is not null)) return document;
+		try
+		{
+			using var parsed = JsonDocument.Parse(json);
+			if (!TryGetProperty(parsed.RootElement, "patches", out var patches)
+				|| patches.ValueKind != JsonValueKind.Array)
+				return document;
+
+			var legacy = new Dictionary<int, string>();
+			foreach (var element in patches.EnumerateArray())
+			{
+				if (element.ValueKind != JsonValueKind.Object) continue;
+				if (!TryGetProperty(element, "patchIndex", out var indexElement)
+					|| !indexElement.TryGetInt32(out var index)) continue;
+				if (!TryGetProperty(element, LegacySourceNameProperty, out var nameElement)
+					|| nameElement.ValueKind != JsonValueKind.String) continue;
+				var name = nameElement.GetString();
+				if (!string.IsNullOrWhiteSpace(name)) legacy[index] = name;
+			}
+
+			if (legacy.Count == 0) return document;
+			var upgraded = document.Patches
+				.Select(entry => entry.SourceName is null && legacy.TryGetValue(entry.PatchIndex, out var name)
+					? entry with { SourceName = name }
+					: entry)
+				.ToArray();
+			return document with { Patches = upgraded };
+		}
+		catch (JsonException)
+		{
+			return document;
+		}
+	}
+
+	/// <summary>按大小写不敏感取属性：手改过的清单不该因为键名大小写就整份读不出来。</summary>
+	private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
+	{
+		if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out value))
+			return true;
+		if (element.ValueKind == JsonValueKind.Object)
+		{
+			foreach (var property in element.EnumerateObject())
+			{
+				if (!string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
+				value = property.Value;
+				return true;
+			}
+		}
+
+		value = default;
+		return false;
+	}
 
 	/// <summary>
 	/// 材质选项的默认名字：**模型自己那次转换**产出的材质叫「模型内置材质」，
