@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.11"
+M.VERSION = "2.1.12"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1638,16 +1638,21 @@ local SKIRT_DEFAULTS = {
 	-- 权重和"正后方"轴如果每帧按当前姿态重算，就会跟着步频一起摆。
 	-- weight 的语义其实是**静态**的（这根骨在裙子的哪一侧），所以宁慢不抖：1.2 秒。
 	weightSeconds = 1.2, backSeconds = 0.5,
-	-- 自适应上限（临时值，按布料当前姿态反馈）：
-	--   · sag（链与水平面的夹角，向下垂为正）< capDropDeg ⇒ 说明被推高/甩高了，
-	--     每帧把上限降 capDropStep 度；
-	--   · sag > capRiseDeg ⇒ 正常垂着，每 capRiseFrames 帧恢复 capRiseStep 度；
+	-- 自适应上限（临时值，按布料相对自己基线的垂度反馈）：
+	--   · tilt（骨方向与世界水平的夹角，取绝对值）比该链观察到的**峰值**低 capDropDelta 以上
+	--     ⇒ 判定被推高/被甩高，每帧把上限降 capDropStep 度；
+	--   · tilt 回到峰值 capRiseDelta 以内 ⇒ 每 capRiseFrames 帧恢复 capRiseStep 度；
 	--   · 两者之间是**死区**，不动（没有死区就会在阈值上来回跳 = 慢速脉动）。
-	-- 为什么需要它：cos 权重把中段骨的角度抬高了约 40%（45° 处 0.50→0.71），
-	-- 于是"原本刚好不嵌屁股"的模型在移动时被推得过高。反馈式上限比再猜一个全局角度可靠。
-	capDropDeg = 45, capRiseDeg = 65,
+	-- 为什么用"相对峰值"而不是绝对角度：实测自然下垂的链只有 41~61°，
+	-- 写死 45/65 会把大量自然下垂的链也判成被推高（2.1.11 就这么整片失效的）。
+	-- tiltDecay：峰值每秒回落多少度，让裙子换了/姿态变了之后能重新学习。
+	-- tiltBase 只在**没在推**的时候学（见 skirt_chain）。基线用来防误伤：
+	-- 自然就只有 41~61° 的链不该被当成"被推高"。
+	capDropDeg = 45, capRiseDeg = 65, capDropDelta = 5, capRiseDelta = 3,
 	capDropStep = 1, capRiseStep = 1, capRiseFrames = 3,
 	capFloor = 0, capSmoothSeconds = 0.15,
+	-- 上限的硬性下限（相对手调值的比例）：保证"永远不会被压到 0"。
+	capFloorRatio = 0.35,
 }
 
 --- 预设枚举：把"旋转加在哪个坐标系、正负号"这 8 种可能一次列全，让实机去分辨。
@@ -1701,13 +1706,17 @@ local function skirt_settings(runtime)
 		-- "正后方"轴收敛的多快。跑步时两条大腿前后交替，(l_thigh − r_thigh)
 		-- 每一步都在转，不快不行；但又不能太快，否则权重跟着摆。
 		backSeconds = values.skirtBackSeconds or SKIRT_DEFAULTS.backSeconds,
-		-- 自适应上限：低于 capDropDeg（太横/被甩高）就降上限，高于 capRiseDeg（垂着）就恢复。
+		-- 自适应上限：绝对阈值（capDropDeg/capRiseDeg）为主，
+		-- 再加"相对自己历史峰值"的保险（capDropDelta/capRiseDelta），避免自然就趴着的链被误伤。
 		capDropDeg = values.skirtCapDropDeg or SKIRT_DEFAULTS.capDropDeg,
 		capRiseDeg = values.skirtCapRiseDeg or SKIRT_DEFAULTS.capRiseDeg,
+		capDropDelta = values.skirtCapDropDelta or SKIRT_DEFAULTS.capDropDelta,
+		capRiseDelta = values.skirtCapRiseDelta or SKIRT_DEFAULTS.capRiseDelta,
 		capDropStep = values.skirtCapDropStep or SKIRT_DEFAULTS.capDropStep,
 		capRiseStep = values.skirtCapRiseStep or SKIRT_DEFAULTS.capRiseStep,
 		capRiseFrames = math.max(1, math.floor(values.skirtCapRiseFrames or SKIRT_DEFAULTS.capRiseFrames)),
 		capFloor = values.skirtCapFloor or SKIRT_DEFAULTS.capFloor,
+		capFloorRatio = values.skirtCapFloorRatio or SKIRT_DEFAULTS.capFloorRatio,
 		capSmoothSeconds = values.skirtCapSmoothSeconds or SKIRT_DEFAULTS.capSmoothSeconds,
 		-- 方向加权的手性开关：叉乘出来的"后"可能是前，翻号即可。
 		backSign = (values.skirtBackSign or 1) < 0 and -1 or 1,
@@ -1815,19 +1824,32 @@ local function skirt_chain(S_, runtime, session, item, settings, calibrating, lo
 	if radius < 1e-4 then return false end
 	local rnx, rny, rnz = rx / radius, ry / radius, rz / radius
 
-	-- 这块布现在"有多垂"：hips → 链尾 的向量与**世界水平面**的夹角，向下垂为正。
-	--   正常垂着 60~90°；被我们推高、被物理甩高、或角色被击飞在空中时趋近 0；翻上去就是负值。
-	-- 用**世界**水平而不是"相对身体上轴"：角色前倾 20° 跑步时，身体上轴会把正常的
-	-- 垂直下垂判成偏横（少 20°），于是跑动中会被过度压低。用户要的也是"任何情况下"。
-	local sag = math.atan2(-(dz - hz), math.sqrt((dx - hx) * (dx - hx) + (dy - hy) * (dy - hy)))
-		* 180 / math.pi
+	-- "这块布有多垂" = **这根骨自己的方向**（链根 → 链尾）与世界水平面的夹角，取绝对值。
+	--
+	-- 两个坑（都是实测踩的，别再踩）：
+	--   ① 不能用 hips → 链尾：链尾在世界 z 上可能比 hips 还高，算出来恒为负，
+	--      于是每一帧都被判成"太横"，上限几帧内归零 ⇒ 整个功能等于关掉。
+	--   ② 不能依赖符号：z 轴朝上还是朝下、链的节点顺序从腰到摆还是从摆到腰，
+	--      从运行时代码里看不出来。取绝对值后这些都不影响。
+	--
+	-- 角度本身也不适合写死阈值：实测"垂着"的链只有 41~61°，不是直觉上的 60~90°，
+	-- 所以绝对阈值 45/65 会把大量自然下垂的链也判成"被推高"。改成相对各自基线（见下）。
+	local tilt = 0
+	do
+		local r0x, r0y, r0z = worldPos(S_, session.unit, nodes[1])
+		if r0x ~= nil then
+			local vx, vy, vz = dx - r0x, dy - r0y, dz - r0z
+			local horiz = math.sqrt(vx * vx + vy * vy)
+			tilt = math.abs(math.atan2(vz, horiz)) * 180 / math.pi
+		end
+	end
 	do
 		local sk = (runtime.dt or (1 / 60)) / math.max(settings.capSmoothSeconds, 0.02)
 		if sk > 1 then sk = 1 end
-		if item.skirtSag == nil then item.skirtSag = sag
-		else item.skirtSag = item.skirtSag + (sag - item.skirtSag) * sk end
+		if item.skirtSag == nil then item.skirtSag = tilt
+		else item.skirtSag = item.skirtSag + (tilt - item.skirtSag) * sk end
 	end
-	item.skirtSagRaw = sag
+	item.skirtSagRaw = tilt
 
 	if calibrating then
 		if item.keepOut == nil then
@@ -1925,20 +1947,32 @@ local function skirt_chain(S_, runtime, session, item, settings, calibrating, lo
 	local degrees = settings.manualDeg > 0 and settings.manualDeg or settings.degPerCm * cm
 	local magnitude = degrees * level
 
-	-- ③ 自适应上限（临时值）：按这块布**当前有多垂**反馈。
-	--    sag < capDropDeg（太横：被推高/被甩高）⇒ 每帧 −capDropStep 度；
-	--    sag > capRiseDeg（垂着，健康）      ⇒ 每 capRiseFrames 帧 +capRiseStep 度；
-	--    中间是死区，不动（没死区就会在阈值上下反复跳，表现成慢速脉动）。
-	--    降低只在**真在推**的时候发生（magnitude > 0.5°）；恢复不限，站着也会慢慢回满。
-	--    上限跟着 item 走，物理重新选目标时 item 是新建的 ⇒ 自动回到 ceiling。
+	-- ③ 自适应上限（临时值）：按这块布**有多垂**反馈。
+	--    基线 tiltBase 只在**没在推的时候**学（level < 0.05 ⇒ 这块布此刻的角度就是它自然的角度）。
+	--    为什么不能在推的时候学：推本身就在压低 tilt，学出来的"基线"会跟着上限一起往下跑，
+	--    系统会收敛到接近 0（离线模拟验证过，这是第一版相对阈值的致命缺陷）。
+	--    判定：绝对阈值为主（用户给的规则），基线只用来**防误伤**——
+	--    自然就只有 41~61° 的链不该被当成"被推高"，它要求比自己自然状态再低 capDropDelta 才算。
 	local ceiling = settings.manualDeg > 0 and settings.manualDeg or settings.maxDeg
 	local cap = item.skirtCap
 	if cap == nil then cap = ceiling end
-	local sagSmooth = item.skirtSag or sag
-	if sagSmooth < settings.capDropDeg then
+	local tiltSmooth = item.skirtSag or tilt
+	if level < 0.05 then
+		-- 自然状态：可能是站着、也可能是刚松开跑动。按 0.3 秒平滑学一次。
+		local bk = dt / 0.3
+		if bk > 1 then bk = 1 end
+		if item.skirtTiltBase == nil then item.skirtTiltBase = tiltSmooth
+		else item.skirtTiltBase = item.skirtTiltBase + (tiltSmooth - item.skirtTiltBase) * bk end
+	end
+	local base = item.skirtTiltBase
+	local tooHigh = tiltSmooth < settings.capDropDeg
+		and (base == nil or tiltSmooth < base - settings.capDropDelta)
+	local recovered = tiltSmooth > settings.capRiseDeg
+		or (base ~= nil and tiltSmooth > base - settings.capRiseDelta)
+	if tooHigh then
 		item.skirtCapRise = 0
 		if magnitude > 0.5 then cap = cap - settings.capDropStep end
-	elseif sagSmooth > settings.capRiseDeg then
+	elseif recovered then
 		item.skirtCapRise = (item.skirtCapRise or 0) + 1
 		if item.skirtCapRise >= settings.capRiseFrames then
 			item.skirtCapRise = 0
@@ -1947,7 +1981,13 @@ local function skirt_chain(S_, runtime, session, item, settings, calibrating, lo
 	else
 		item.skirtCapRise = 0
 	end
-	if cap > ceiling then cap = ceiling elseif cap < settings.capFloor then cap = settings.capFloor end
+	if cap > ceiling then cap = ceiling
+	elseif cap < settings.capFloor then cap = settings.capFloor end
+	-- 兜底：上限永远不低于 ceiling 的 capFloorRatio 倍。
+	-- 为什么需要它：2.1.11 上限被压到 0，整个功能等于关掉（实机反馈"变成主线的物理一样"）。
+	-- 有了这条，无论如何都还留着一部分推力，最坏情况是"推得不够"，不会是"完全没推"。
+	local ratioFloor = ceiling * settings.capFloorRatio
+	if cap < ratioFloor then cap = ratioFloor end
 	item.skirtCap = cap
 	item.skirtCapActive = magnitude > 0.5
 	if magnitude > cap then magnitude = cap end
@@ -2096,6 +2136,7 @@ local function skirt_apply(S_, runtime)
 			local bestWeight = 0
 			local capMin, capLimited, capN = nil, 0, 0
 			local sagSum, sagN = 0, 0
+			local peakSum = 0
 			local buckets = { 0, 0, 0, 0, 0, 0 }
 			local ceilingNow = settings.manualDeg > 0 and settings.manualDeg or settings.maxDeg
 			for _, session in ipairs(runtime.sessions or {}) do
@@ -2114,9 +2155,11 @@ local function skirt_apply(S_, runtime)
 							if cap < ceilingNow - 0.5 then capLimited = capLimited + 1 end
 						end
 					end
-					local sagRaw = item.skirtSag
-					if sagRaw ~= nil and (item.skirtCapActive or false) then
-						sagSum = sagSum + sagRaw
+					-- tilt 与基线：**不看是否在推**，否则站着（没有 pushOut）就永远是 0、看不到数据。
+					local tiltNow = item.skirtSag
+					if tiltNow ~= nil then
+						sagSum = sagSum + tiltNow
+						peakSum = peakSum + (item.skirtTiltBase or tiltNow)
 						sagN = sagN + 1
 					end
 					-- 方向分布：只统计"会被我们考虑的"链（权重已算过），按偏离正后方每 30° 一格。
@@ -2133,11 +2176,11 @@ local function skirt_apply(S_, runtime)
 			end
 			-- 均值比最大值有用：最大值只能证明"有一条推满了"，均值才说明"整片有没有动"。
 			runtime.logger(
-				"[physbone][裙摆] 推 %d/%d 条（权重>0 %d）· 角度 均值 %.1f° / 最大 %.1f° · 斜坡 %.2f（手调 %.0f°）· 权重最大 %.2f · 上限 最小 %.0f°（被压 %d/%d）· sag 均值 %.0f° · 分布 %d/%d/%d/%d/%d/%d",
+				"[physbone][裙摆] 推 %d/%d 条（权重>0 %d）· 角度 均值 %.1f° / 最大 %.1f° · 斜坡 %.2f（手调 %.0f°）· 权重最大 %.2f · 上限 最小 %.0f°（被压 %d/%d）· tilt 均值 %.0f° / 基线 %.0f° · 分布 %d/%d/%d/%d/%d/%d",
 				pushed, total, weighted, degN > 0 and degSum / degN or 0, maxDeg, motionNow,
 				settings.manualDeg, bestWeight,
 				capMin or ceilingNow, capLimited, capN,
-				sagN > 0 and sagSum / sagN or 0,
+				sagN > 0 and sagSum / sagN or 0, sagN > 0 and peakSum / sagN or 0,
 				buckets[1], buckets[2], buckets[3], buckets[4], buckets[5], buckets[6])
 		end
 	end

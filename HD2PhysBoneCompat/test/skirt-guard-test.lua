@@ -60,9 +60,24 @@ if chain ~= nil then
 	local clamps = chain:find("magnitude > cap then magnitude = cap", 1, true) ~= nil
 	check("上限真的夹到 magnitude 上", clamps, clamps and "" or "没找到 `magnitude > cap` 的夹取")
 	-- 死区：两个阈值不能相等，否则没有死区 ⇒ 阈值上反复跳
-	local dropOk = chain:find("capDropDeg", 1, true) ~= nil
-	local riseOk = chain:find("capRiseDeg", 1, true) ~= nil
+	local dropOk = chain:find("capDropDelta", 1, true) ~= nil
+	local riseOk = chain:find("capRiseDelta", 1, true) ~= nil
 	check("降/恢复两个阈值都在", dropOk and riseOk)
+
+	-- ⑤ 垂度必须用**绝对值**并且来自骨方向。
+	--    2.1.11 的教训：用 hips→链尾 且带符号，实测恒为负 ⇒ 每帧都判"太横" ⇒ 上限归零、功能等于关闭。
+	local usesAbs = chain:find("math.abs(math.atan2(", 1, true) ~= nil
+	check("垂度取绝对值（不依赖 z 轴手性/链顺序）", usesAbs)
+	local usesRoot = chain:find("nodes[1])", 1, true) ~= nil
+	check("垂度用链根→链尾（骨自己的方向）", usesRoot)
+
+	-- ⑥ 阈值必须是"绝对阈值 + 自己自然基线"的组合，且基线只在**没在推**的时候学。
+	--    2.1.11 之后的第一版相对阈值（在推的时候学峰值）会收敛到接近 0 —— 离线模拟验证过。
+	local hasBase = chain:find("skirtTiltBase", 1, true) ~= nil
+		and chain:find("base - settings.capDropDelta", 1, true) ~= nil
+	check("阈值有自然基线做保险", hasBase)
+	local learnsWhenIdle = chain:find("if level < 0.05 then", 1, true) ~= nil
+	check("基线只在没在推的时候学", learnsWhenIdle)
 end
 
 -- ④ 选中判据不能又退回"只认 hips"
