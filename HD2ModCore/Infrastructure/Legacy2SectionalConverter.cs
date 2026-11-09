@@ -92,7 +92,7 @@ public static class Legacy2SectionalConverter
 			onStage?.Invoke("正在抽取 unit…");
 			var unitStage = Path.Combine(stagingRoot, "unit-stage");
 			Directory.CreateDirectory(unitStage);
-			var unitWritten = await WriteGroupAsync(writer, unitGroup, unitStage, cancellationToken).ConfigureAwait(false);
+			var unitWritten = await WriteGroupAsync(writer, modDirectory, unitGroup, unitStage, cancellationToken).ConfigureAwait(false);
 			if (unitWritten is null)
 				return Legacy2SectionalOutcome.Failed("写出 unit 组失败：来源里没有任何一个 patch 提供被选中的 unit。", notes);
 
@@ -115,12 +115,13 @@ public static class Legacy2SectionalConverter
 
 			// ③ 材质组：一组一个 patch，从 patch_1 起向后排。
 			var materialIndex = 1;
+			var groupNames = new Dictionary<int, (string? Option, string? Source)>();
 			foreach (var group in plan.Patches.Where(patch => patch.Role == SectionalPatchRole.Material))
 			{
 				onStage?.Invoke($"正在抽取材质组：{group.OptionName ?? "（未命名）"}…");
 				var target = Path.Combine(stagingRoot, $"material-{materialIndex}");
 				Directory.CreateDirectory(target);
-				var written = await WriteGroupAsync(writer, group, target, cancellationToken).ConfigureAwait(false);
+				var written = await WriteGroupAsync(writer, modDirectory, group, target, cancellationToken).ConfigureAwait(false);
 				if (written is null)
 				{
 					notes.Add($"材质组「{group.OptionName}」里没有任何一个 patch 提供被选中的 key，已跳过。");
@@ -128,6 +129,7 @@ public static class Legacy2SectionalConverter
 				}
 
 				MoveAs(written, Path.Combine(producedRoot, $"{archiveHex}.patch_{materialIndex}"));
+				groupNames[materialIndex] = (group.OptionName, group.SourceName);
 				materialIndex++;
 			}
 
@@ -142,11 +144,24 @@ public static class Legacy2SectionalConverter
 				return Legacy2SectionalOutcome.Failed(swap.Error ?? "替换 sectional/ 失败。", notes);
 
 			// ⑤ 清单：`patches.json` 是派生的，读一次旧的把用户填的选项名/顺序/备注接过来。
+			//
+			// **组名必须由这里补写。** `Rebuild` 的名字来自 `vpk2patch.json`（转换器写的报告），
+			// 而 sectional 档根本没有那份报告 —— 不补的话材质选项在界面上全是无名条目，
+			// 用户分不出哪一组是哪个来源。名字在依据文件里（`sources[].name`），规划也知道
+			// 每一组属于谁，所以在这里按 patchIndex 盖回去。
 			var previous = await SectionalPatchManifestFile.TryReadAsync(payloadDirectory, cancellationToken).ConfigureAwait(false);
 			var manifest = SectionalPatchManifestFile.Rebuild(modDirectory, DateTimeOffset.UtcNow, previous);
 			if (manifest is not null)
 			{
-				var manifestError = SectionalPatchManifestFile.TryWrite(payloadDirectory, manifest);
+				var named = manifest with
+				{
+					Patches = manifest.Patches
+						.Select(entry => groupNames.TryGetValue(entry.PatchIndex, out var name)
+							? entry with { OptionName = entry.OptionName ?? name.Option, SourceName = entry.SourceName ?? name.Source }
+							: entry)
+						.ToArray(),
+				};
+				var manifestError = SectionalPatchManifestFile.TryWrite(payloadDirectory, named);
 				if (manifestError is not null) notes.Add($"写 patches.json 失败：{manifestError}");
 			}
 
@@ -176,8 +191,13 @@ public static class Legacy2SectionalConverter
 	}
 
 	/// <summary>把一组规划写成一个 patch 文件，返回它的路径（写不出来返回 <c>null</c>）。</summary>
+	/// <param name="modDirectory">
+	/// 来源 patch 所在的 Mod 目录。<see cref="SectionalPlannedSelection.SourcePatch"/> 记的是
+	/// **文件名**（依据文件里就是这么存的），拼路径必须带上它，否则会按进程当前目录去找。
+	/// </param>
 	private static async ValueTask<string?> WriteGroupAsync(
 		PatchSubsetWriter writer,
+		string modDirectory,
 		SectionalPlannedPatch group,
 		string outputDirectory,
 		CancellationToken cancellationToken)
@@ -186,12 +206,12 @@ public static class Legacy2SectionalConverter
 		// 再把全部选择一次性交给 WriteSelectedAsync（它支持跨来源）。
 		var selections = group.Selections
 			.Select(selection => new PatchSubsetSelection(
-				selection.SourcePatch,
+				Path.Combine(modDirectory, selection.SourcePatch),
 				new AdaptationAssetKey(selection.Key.TypeId, selection.Key.FileId)))
 			.ToArray();
 		if (selections.Length == 0) return null;
 
-		var template = group.Selections[0].SourcePatch;
+		var template = selections[0].SourcePatchTocPath;
 		if (!File.Exists(template)) return null;
 		var result = await writer
 			.WriteSelectedAsync(template, outputDirectory, selections, overwriteExisting: true, cancellationToken)
@@ -212,7 +232,9 @@ public static class Legacy2SectionalConverter
 			var keys = entries
 				.Select(entry => new SectionalAssetRef(entry.AssetKey.TypeId, entry.AssetKey.FileId))
 				.ToHashSet();
-			scanned[path] = new SectionalPatchContents(keys);
+			// 键用**文件名**：依据文件里的 PatchFiles 和规划里的 SourcePatch 都是文件名，
+			// 用完整路径做键会让"来源里没有白名单内的 unit"这种假失败出现。
+			scanned[Path.GetFileName(path)] = new SectionalPatchContents(keys);
 		}
 
 		return scanned;
