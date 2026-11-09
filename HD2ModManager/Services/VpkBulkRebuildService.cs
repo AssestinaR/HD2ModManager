@@ -26,8 +26,11 @@ public sealed class VpkBulkRebuildResult
 	public bool Canceled { get; }
 	public int TotalCount => Entries.Count;
 	public int SucceededCount => Entries.Count(entry => entry.Ok);
-	public int FailedCount => Entries.Count(entry => !entry.Ok && entry.Outcome is not null);
-	public int SkippedCount => Entries.Count(entry => !entry.Ok && entry.Outcome is null);
+	// 失败与跳过按**有没有错误说明**分，不按 Outcome 是否为空：
+	// sectional 档走的是 `Legacy2SectionalConverter`，它不产出 `VpkRebuildOutcome`，
+	// 用 Outcome 判会把它的失败项算成"未执行"，结论里凭空少掉失败数。
+	public int FailedCount => Entries.Count(entry => !entry.Ok && entry.Error is not null);
+	public int SkippedCount => Entries.Count(entry => !entry.Ok && entry.Error is null);
 
 	/// <summary>成功换掉产物的那些节点 —— 调用方据此失效并重算库里的内容事实。</summary>
 	public IReadOnlyList<ModNodeId> SucceededNodeIds => Entries.Where(entry => entry.Ok).Select(entry => entry.Target.NodeId).ToArray();
@@ -152,17 +155,35 @@ public static class VpkBulkRebuildService
 				VpkBulkRebuildEntry entry;
 				try
 				{
-					onStage?.Invoke($"{target.Name}：正在重新转换…");
-					// 目标与勾选都给 null ⇒ 用 wardrobe.json 里记着的那套（= 这个 Mod 上次的配置）。
-					var outcome = await VpkRebuildService.RunAsync(
-						target.NodeId.Value.ToString("N"),
-						target.Directory,
-						new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
-						targetArchiveIds: null,
-						disabledSections: null,
-						stage => onStage?.Invoke($"{target.Name}：{stage}"),
-						token).ConfigureAwait(false);
-					entry = new VpkBulkRebuildEntry(target, outcome.Ok, outcome.Error, outcome);
+					var context = new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths());
+					var kind = new ModStorageKindResolver(new PatchFileNameParser()).Resolve(target.Directory);
+
+					// 两档 sectional 系列只在"来源 → sectional/"这一段不同；之后共用编译与部署。
+					if (kind == ModStorageKind.Sectional)
+					{
+						onStage?.Invoke($"{target.Name}：正在从来源 patch 重出 sectional…");
+						var legacy = await Legacy2SectionalConverter.RunAsync(
+							target.NodeId.Value.ToString("N"),
+							target.Directory,
+							context,
+							stage => onStage?.Invoke($"{target.Name}：{stage}"),
+							token).ConfigureAwait(false);
+						entry = new VpkBulkRebuildEntry(target, legacy.Ok, legacy.Error, null);
+					}
+					else
+					{
+						onStage?.Invoke($"{target.Name}：正在重新转换…");
+						// 目标与勾选都给 null ⇒ 用 wardrobe.json 里记着的那套（= 这个 Mod 上次的配置）。
+						var outcome = await VpkRebuildService.RunAsync(
+							target.NodeId.Value.ToString("N"),
+							target.Directory,
+							context,
+							targetArchiveIds: null,
+							disabledSections: null,
+							stage => onStage?.Invoke($"{target.Name}：{stage}"),
+							token).ConfigureAwait(false);
+						entry = new VpkBulkRebuildEntry(target, outcome.Ok, outcome.Error, outcome);
+					}
 				}
 				catch (OperationCanceledException) when (token.IsCancellationRequested)
 				{
@@ -224,7 +245,7 @@ public static class VpkBulkRebuildService
 
 			var lines = new List<string>
 			{
-				"一键重构所有 VPK 类模组 · 报告",
+				"批量重构 · 报告",
 				$"时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}",
 				$"并发：{concurrency}",
 				$"耗时：{elapsed.TotalMinutes:F1} 分钟",
