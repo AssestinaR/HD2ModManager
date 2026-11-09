@@ -136,3 +136,42 @@ arguments.AddRange(["--component-source-list", componentSourceListPath]);
 2. 只把 `材质开关\` 里的 VPK 拷进一个已有 Mod 根 → 重构建后组出现/被修正。
 3. Lilium 存量（7/12 错位）→ 重构建后错位归零。
 4. 全量 `dotnet test` 绿；legacy schema 仍能读（`SectionGroupModelTests.LegacyJson` 不许改）。
+
+---
+
+## 9. 落地记录（2026-11-09，同日下午）
+
+### 又挖出第二条断点：换载荷时组被"保护"住，任何新组都进不来
+
+`VpkPayloadSwap.PreservedFileNames = ["custom-model.json", "components.json"]`：换载荷时这两个文件
+**既不备份也不删**，而且新产物里同名的文件**被拒绝覆盖**（`if (Preserved && File.Exists(destination)) continue;`）。
+本意是保住"用户改过的组件树"，实际效果是**任何新转出来的组都写不进去** ——
+所以那份 11-02 的 `components.json` 能一直活到今天，而 11-09 转出来的 sections.json 早换了好几代。
+
+它和 §2 的断点叠加起来就是：**新的组生成不出来，旧的组不许被替换**。
+
+### 改了什么
+
+| # | 文件 | 改动 |
+|---|---|---|
+| ① | `HD2ModCli/CliApplication.cs` | 规划 JSON 的每条候选带上 `materials`（VMT 裸名）。没有它，管理器判不出"这个开关包属于哪个模型主体" |
+| ② | `HD2ModCore/Infrastructure/ComponentSwitchAttribution.cs`（新） | 按材质裸名求交做归属：开关包的 VMT 与主体的 VMT 有交集才带走。一次导入 8 人包时，每个模型只背自己的开关 |
+| ③ | `HD2ModManager/Services/VpkImportService.cs` | 导入时把归属到的开关包**一起拷进 Mod 根**（开关包极小：实测 487 B–1.5 MB）；报告里写清"随附 N 个组件开关包"；没归属的点名跳过并说明原因 |
+| ④ | `HD2ModCore/Infrastructure/SectionGroupConsolidator.cs`（新） | 把组对齐到新 sections：**不信下标、只信材质裸名**。这次转出来的组是权威（沿用旧组 id）；手建组从旧文件捞出来重算；旧自动组只在"这次一个都没有"时保留；材质找不到的组丢弃并进 `unmatched` |
+| ⑤ | `HD2ModCore/Infrastructure/VpkRebuildService.cs` | 换载荷之后（sections 是新的时候）调用 ④，清只读 → 原子写回 → 补回只读；报告里给一句「section 开关表已按新几何重算：N 组，其中 M 组成员位置变化」 |
+
+### 验证
+
+| 验证 | 结果 |
+|---|---|
+| **真数据**：Lilium 的旧 components + 当前 sections 跑 ④ | 修前 **7/12 组指错节** → 修后 **0/12**，12 组全保留，id 全部沿用 |
+| **真数据**：`tmp/lilium`（34 个 VPK）的规划 JSON → 归属判定 | 12 个 `componentSwitch` **全部**归到 `Lilium_Sancta_Bill` 主体，0 个孤儿 |
+| **端到端导入**（直接调 `VpkImportService`，用真实 34 个 VPK） | 产出的包目录里 **25 个 VPK，其中 12 个「关」**；报告写着「「Lilium_Sancta_Bill」随附 12 个组件开关包（…）」 |
+| 新增测试 13 条 | `SectionGroupConsolidatorTests` 8（含"索引漂移归位""手建组保留""只读文件可写且只读状态保留"）、`ComponentSwitchAttributionTests` 5 |
+| 全量 | `dotnet build -c Debug` 0/0；`dotnet test -c Debug` **2099 通过 / 1 跳过**，5 条 `DeploymentCliTests` 仍被"游戏正在运行"挡住（CI 上不受影响） |
+
+### 还没做的
+
+- **重构建那一段（⑤）我没有在 GUI 里点过**：逻辑与 IO 都有单测覆盖，但"换载荷 → 重算 → 写回 → 换甲复制到 Overwrite"整条链只跑过前两段。建议在详情页对任意一个 Mod 点一次重构建，看报告里是否出现「section 开关表已按新几何重算」。
+- 存量里 3 个**完全没有组文件**的 Mod（`恋星milfy` / `l4n 信浓` / `Serenade`）：它们的开关包已经不在本机，只能**重新导入**（现在导入会把开关包留下），重构建救不了。
+- `$BodyGroup` 那一层（L4N 的"部件实时切换"）仍按原计划排在第二步：`--components merge` 会把多变体并进身躯，几何层面的开关身份在转换时就没了。

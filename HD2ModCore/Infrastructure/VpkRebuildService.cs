@@ -323,6 +323,18 @@ public static class VpkRebuildService
 			var previousManifest = SectionalPatchManifestFile
 				.TryReadAsync(payloadDirectory).AsTask().GetAwaiter().GetResult();
 
+			// **section 组：两份都先读下来。**
+			//
+			// 旧的那份是"这个 Mod 有哪些开关"的唯一记录（换载荷时它被保留、不被新产物覆盖），
+			// 新的那份在转换产物里（这次识别到开关包时才有）。两者都要，才能在换完之后
+			// 按**刚转出来的** sections.json 把成员重算一遍 —— 详见 SectionGroupConsolidator。
+			var previousGroups = isUnitMod
+				? await SectionGroupFile.TryReadAsync(payloadDirectory, cancellationToken).ConfigureAwait(false)
+				: null;
+			var freshGroups = isUnitMod
+				? await SectionGroupFile.TryReadAsync(produced, cancellationToken).ConfigureAwait(false)
+				: null;
+
 			// ⑤ 换进 vpk2patch/：先把旧载荷备份到临时目录，再整批替换。
 			// 规则与"同一来源再次导入"共用一份（见 VpkPayloadSwap），否则两条路会各自漂移。
 			onStage?.Invoke("正在替换 vpk2patch/…");
@@ -330,6 +342,56 @@ public static class VpkRebuildService
 			if (!swap.Succeeded) return VpkRebuildOutcome.Failed(swap.Error!, notes);
 			var backupDirectory = swap.BackupDirectory;
 			var restoreReadOnly = swap.RestoreReadOnly;
+
+			// ⑤a **把 section 组对齐到刚转出来的几何。**
+			//
+			// 组记的是 `(unit, section 下标)`，而 sections.json 每次重建都变（材质 id、边界、
+			// 三角形数）。所以「组」只要不是**这一次**跟着算出来的，就一定在慢慢指向错的节：
+			// 实测 2026-11-09 Lilium 12 组里 7 组已经指错（「手套」记 0006:2，实际在 0006:10）。
+			//
+			// 两种情形都在这一步收口：
+			//   · 这次带上了开关包（导入时随 Mod 入库）→ fresh 有内容，它就是权威，只沿用旧组的 id；
+			//   · 这次没带（存量 Mod）→ 用旧文件自己记的材质裸名对新 sections 重算成员，
+			//     索引因此自动归位，不需要把开关包找回来。
+			//
+			// 为什么放在换载荷之后：sections.json 只有换进来之后才是"这次的"；而旧的
+			// components.json 被 VpkPayloadSwap 保留着，正好是要重算的那一份。
+			if (isUnitMod)
+			{
+				var sectionsPath = Path.Combine(payloadDirectory, WardrobeSectionMapFile.FileName);
+				if (File.Exists(sectionsPath))
+				{
+					var sections = await WardrobeSectionMapFile.ReadAsync(sectionsPath, cancellationToken).ConfigureAwait(false);
+					var consolidation = SectionGroupConsolidator.Consolidate(freshGroups, previousGroups, sections);
+					var groupsPath = Path.Combine(payloadDirectory, SectionGroupFile.FileName);
+					var hasAnything = consolidation.Document.Groups.Count != 0 || consolidation.Document.Unmatched.Count != 0;
+					if (hasAnything || File.Exists(groupsPath))
+					{
+						var restoreGroupsReadOnly = VpkPayloadSwap.ClearReadOnlyForWrite(groupsPath);
+						try
+						{
+							await SectionGroupFile.WriteAsync(payloadDirectory, consolidation.Document, cancellationToken).ConfigureAwait(false);
+						}
+						finally
+						{
+							if (restoreGroupsReadOnly) VpkPayloadSwap.MarkReadOnly(groupsPath);
+						}
+
+						if (consolidation.Document.Groups.Count == 0)
+						{
+							notes.Add("这个 Mod 现在没有任何 section 开关（没有开关包，旧文件里也没有可救的组）。");
+						}
+						else
+						{
+							notes.Add($"section 开关表已按新几何重算：{consolidation.Document.Groups.Count} 组"
+								+ (consolidation.Refreshed != 0 ? $"，其中 {consolidation.Refreshed} 组的成员位置发生了变化" : string.Empty)
+								+ (consolidation.KeptManual != 0 ? $"，保留了 {consolidation.KeptManual} 个手建组" : string.Empty)
+								+ (consolidation.Dropped != 0 ? $"，{consolidation.Dropped} 组因为材质找不到被丢弃" : string.Empty)
+								+ "。");
+						}
+					}
+				}
+			}
 
 			// ⑤b **刷新 `vpk2patch.json`。**
 			//

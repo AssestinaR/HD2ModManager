@@ -4225,6 +4225,11 @@ public static class CliApplication
 			_ => "unsupported",
 		},
 		displayName = candidate.DisplayName,
+		// 这个 VPK 自带的 VMT 裸名。管理器用它做两件事：判断"这个开关包属于哪个模型主体"
+		// （按材质求交，见 ComponentSwitchAttribution），以及解释"这个开关要藏的是哪些材质"。
+		materials = candidate.OwnedMaterialNames
+			.OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+			.ToArray(),
 		convertible = candidate.IsConvertible,
 		signature = candidate.Signature is null
 			? null
