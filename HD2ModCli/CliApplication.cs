@@ -181,6 +181,54 @@ public static class CliApplication
 				() => FormatLibraryCleanup(result, emptyFolders));
 			return result.Failures.Count == 0 ? 0 : 2;
 		}
+		// library adopt —— 把库根下「归档躺在子目录里」的外部包按导入链路收编。
+		//
+		// 这些目录来自别的 mod manager（包名/manifest.json + 包名/选项/patch）。重扫只读
+		// 节点根与 sectional/，看不见子目录里的 patch，于是它们一直躺在库里却不进库，
+		// 而且**没有任何日志**。默认只列候选、不写盘；--confirm 才真的导入。
+		if (Matches(command, "library", "adopt"))
+		{
+			EnsureLibraryAdoptOptions(invocation.Options);
+			var (adoptWorkspace, adoptState) = await LoadLibraryAsync(invocation.Options).ConfigureAwait(false);
+			var adoptRoot = adoptWorkspace.LibraryRoot
+				?? throw new CliUserException("LibraryNotConfigured", "请用 --library 指定 Mod 库。");
+			var adoptCandidates = ExternalPackageAdoptionPlanner.Plan(
+				adoptRoot,
+				adoptState.Snapshot.Nodes.Values.Select(node => node.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase));
+			if (!invocation.Options.Confirm)
+			{
+				Emit(invocation.Options,
+					new
+					{
+						ok = true,
+						library = adoptRoot,
+						adoptable = adoptCandidates.Count(candidate => candidate.IsAdoptable),
+						candidates = adoptCandidates,
+					},
+					() => FormatLibraryAdopt(adoptRoot, adoptCandidates));
+				return 0;
+			}
+
+			var adoptPaths = new StoragePaths(
+				adoptWorkspace.ManagerRoot ?? Directory.GetCurrentDirectory(),
+				adoptRoot);
+			await using var adoptReader = CoreServices.CreateModInformationReader();
+			await using var adoptInformationCenter = CoreServices.CreateModInformationCenter(adoptPaths, adoptReader);
+			var adoptImporter = CoreServices.CreateModLibraryImporter(adoptPaths, adoptInformationCenter, adoptReader);
+			var adoptService = CoreServices.CreateExternalPackageAdoptionService(adoptPaths, adoptImporter);
+			var adoption = await adoptService.AdoptAsync(adoptState.Snapshot, adoptRoot).ConfigureAwait(false);
+			Emit(invocation.Options,
+				new
+				{
+					ok = adoption.Outcomes.All(outcome => outcome.Status != ExternalPackageAdoptionStatus.Failed),
+					library = adoptRoot,
+					adopted = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Adopted),
+					failed = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Failed),
+					outcomes = adoption.Outcomes,
+				},
+				() => FormatLibraryAdoption(adoptRoot, adoption));
+			return adoption.Outcomes.Any(outcome => outcome.Status == ExternalPackageAdoptionStatus.Failed) ? 2 : 0;
+		}
 		// settings get [key] / settings set <key> <value>
 		//
 		// 有些开关只在这个文件里（真映射模式、物理模式），平时只能通过界面改。
@@ -4968,6 +5016,84 @@ public static class CliApplication
 		}
 	}
 
+	/// <summary>认领只认 --confirm；不接受跟它无关的参数。</summary>
+	private static void EnsureLibraryAdoptOptions(CliGlobalOptions options)
+	{
+		if (!string.IsNullOrWhiteSpace(options.Output) || options.Overwrite || !string.IsNullOrWhiteSpace(options.Plan)
+			|| !string.IsNullOrWhiteSpace(options.Host) || options.Position is not null || options.SetActive
+			|| options.WithUnsharedOptions || !string.IsNullOrWhiteSpace(options.GameData)
+			|| !string.IsNullOrWhiteSpace(options.RegistryRoot))
+		{
+			throw new CliUserException(
+				"CommandOptionNotSupported",
+				"library adopt 仅接受 --manager-root、--library、--confirm 与 --json。 ");
+		}
+	}
+
+	/// <summary>
+	/// 认领候选的结论：先数清有几个能收，再逐个列出来，最后把不能收的原因说清楚。
+	/// <para>
+	/// 不能收的**也要列**：一个真实包被跳过却没有任何痕迹，正是这条命令要修的毛病。
+	/// </para>
+	/// </summary>
+	private static string FormatLibraryAdopt(string libraryRoot, IReadOnlyList<ExternalPackageAdoptionCandidate> candidates)
+	{
+		var adoptable = candidates.Count(candidate => candidate.IsAdoptable);
+		var lines = new List<string> { $"Mod 库：{libraryRoot}" };
+		if (candidates.Count == 0)
+		{
+			lines.Add("没有发现「归档在子目录、尚未进库」的外部包。");
+			return string.Join(Environment.NewLine, lines);
+		}
+
+		lines.Add($"发现 {candidates.Count} 个外部包，其中 {adoptable} 个可以认领。加 --confirm 才会真的导入（源目录会移进 .hd2modmanager-trash）。");
+		foreach (var candidate in candidates)
+		{
+			var options = candidate.OptionDirectoryNames.Count == 0
+				? "（未识别出选项目录）"
+				: string.Join("、", candidate.OptionDirectoryNames);
+			lines.Add($"  · {candidate.RelativePath}");
+			lines.Add($"      {candidate.BasePatchCount} 个归档 / {candidate.FileCount} 个文件；选项：{options}");
+			if (!string.IsNullOrWhiteSpace(candidate.ManifestName))
+				lines.Add($"      manifest 名称：{candidate.ManifestName}");
+			if (candidate.BlockedReason is { Length: > 0 } reason)
+				lines.Add($"      ! 不能认领：{reason}");
+			lines.AddRange(candidate.Warnings.Select(warning => "      · " + warning));
+		}
+		return string.Join(Environment.NewLine, lines);
+	}
+
+	/// <summary>认领执行完的结论：成功的说清搬了哪几个，失败的把原因和「源目录还在」讲明白。</summary>
+	private static string FormatLibraryAdoption(string libraryRoot, ExternalPackageAdoptionResult adoption)
+	{
+		var lines = new List<string> { $"Mod 库：{libraryRoot}" };
+		if (adoption.Outcomes.Count == 0)
+		{
+			lines.Add("没有需要认领的外部包。");
+			return string.Join(Environment.NewLine, lines);
+		}
+
+		var adopted = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Adopted);
+		var skipped = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Skipped);
+		var failed = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Failed);
+		lines.Add($"认领完成：导入 {adopted} 个，跳过 {skipped} 个，失败 {failed} 个。");
+		foreach (var outcome in adoption.Outcomes)
+		{
+			var mark = outcome.Status switch
+			{
+				ExternalPackageAdoptionStatus.Adopted => "+",
+				ExternalPackageAdoptionStatus.Skipped => "-",
+				_ => "!",
+			};
+			lines.Add($"  {mark} {outcome.RelativePath}");
+			if (outcome.NodeIds.Count != 0)
+				lines.Add($"      {outcome.NodeIds.Count} 个节点");
+			if (!string.IsNullOrWhiteSpace(outcome.Detail))
+				lines.Add($"      {outcome.Detail}");
+		}
+		return string.Join(Environment.NewLine, lines);
+	}
+
 	private static string FormatLibraryCleanup(CliLibraryCleanupResult result, int residualFoldersRemoved)
 	{
 		var megabytes = result.Bytes / (1024.0 * 1024.0);
@@ -8515,6 +8641,7 @@ HD2 Mod Manager 命令行
 用法：
 	  hd2mod capabilities --json
 	  hd2mod library cleanup --manager-root <管理器目录> --library <Mod库目录> --confirm --json
+	  hd2mod library adopt --manager-root <管理器目录> --library <Mod库目录> [--confirm] --json
 	  hd2mod doctor --manager-root <管理器目录> --library <Mod库目录> --json
 	  hd2mod status --manager-root <管理器目录> --json
 	  hd2mod game locate [--manager-root <管理器目录>] --json

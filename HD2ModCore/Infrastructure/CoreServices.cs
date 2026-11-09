@@ -340,6 +340,16 @@ public static class CoreServices
 		=> new ModLibraryManager(paths, CreateModLibraryStore(paths));
 	public static IModLibrarySynchronizer CreateModLibrarySynchronizer()
 		=> new ModLibrarySynchronizer(CreatePatchFileNameParser());
+	/// <summary>认领库根下的外部包（别的管理器那种「包名/选项/patch」形状）。</summary>
+	public static IExternalPackageAdoptionService CreateExternalPackageAdoptionService(
+		StoragePaths paths,
+		IModLibraryImporter importer,
+		OptionActivationStore? optionActivations = null)
+		=> new ExternalPackageAdoptionService(
+			paths,
+			importer ?? throw new ArgumentNullException(nameof(importer)),
+			CreatePatchFileNameParser(),
+			optionActivations);
    public static IModExporter CreateModExporter(StoragePaths paths)
 		=> new ModExporter(paths);
 

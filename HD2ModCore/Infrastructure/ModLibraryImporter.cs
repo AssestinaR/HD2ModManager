@@ -62,6 +62,23 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
 	}
 
+	public async ValueTask<ImportResult> ImportLibraryResidentFolderAsync(
+		string folderPath,
+		bool preferHardLinks,
+		CancellationToken cancellationToken = default)
+	{
+		var full = Path.GetFullPath(folderPath);
+		if (!Directory.Exists(full))
+		{
+			throw new DirectoryNotFoundException(full);
+		}
+
+		var units = await DiscoverFolderUnitsAsync(full, cancellationToken, rootDisplayName: null, preferHardLinks).ConfigureAwait(false);
+		if (units.Count == 0)
+			throw new InvalidDataException("所选文件夹里没有可导入的内容（没有 patch，也没有 ReShade 文件）。");
+		return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
+	}
+
 	public async ValueTask<ImportResult> ImportArchiveAsync(string archiveFilePath, CancellationToken cancellationToken = default)
 	{
 		var full = Path.GetFullPath(archiveFilePath);
@@ -246,21 +263,22 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	private async ValueTask<IReadOnlyList<ImportSourceUnit>> DiscoverFolderUnitsAsync(
 		string root,
 		CancellationToken cancellationToken,
-		string? rootDisplayName = null)
+		string? rootDisplayName = null,
+		bool preferHardLinks = false)
 	{
 		var packageRoot = ResolvePackageRoot(root);
 		// A manifest owns its complete package tree. Nested archives are then just
 		// package files, not separate user-selected imports.
 		if (packageRoot.Manifest is not null)
 		{
-			return [new ImportSourceUnit(packageRoot.Directory, rootDisplayName ?? new DirectoryInfo(root).Name, false, packageRoot.Manifest)];
+			return [new ImportSourceUnit(packageRoot.Directory, rootDisplayName ?? new DirectoryInfo(root).Name, preferHardLinks, packageRoot.Manifest)];
 		}
 
 		var units = new List<ImportSourceUnit>();
 		var directTree = await _folderImporter.ImportFolderAsync(root, cancellationToken).ConfigureAwait(false);
 		if (ContainsImportablePayload(directTree, root))
 		{
-			units.Add(new ImportSourceUnit(root, rootDisplayName ?? new DirectoryInfo(root).Name, false, null));
+			units.Add(new ImportSourceUnit(root, rootDisplayName ?? new DirectoryInfo(root).Name, preferHardLinks, null));
 		}
 
 		foreach (var archive in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)

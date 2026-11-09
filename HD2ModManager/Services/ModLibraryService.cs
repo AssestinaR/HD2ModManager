@@ -64,6 +64,15 @@ namespace HD2ModManager.Services
         private long _stateVersion;
 		public ModLibrarySynchronizationResult? LastSynchronizationResult { get; private set; }
 
+        /// <summary>
+        /// 最近一次同步里的外部包认领结果。
+        /// <para>
+        /// 单独暴露出来，是因为「跳过 / 失败」不会进 added/changed/missing——只认领了 0 个包
+        /// 也可能显示"库索引与实际文件夹一致"，那正是这次要修的那种"看不见"。
+        /// </para>
+        /// </summary>
+        public ExternalPackageAdoptionResult? LastAdoptionResult { get; private set; }
+
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
         public LibrarySnapshot Snapshot => _snapshot;
         public DerivedLibraryData DerivedData => _derivedData;
@@ -483,7 +492,10 @@ namespace HD2ModManager.Services
                 requiresDeployment: notifyContentChange).ConfigureAwait(false);
         }
 
-        public async Task<bool> SynchronizeAsync(CancellationToken cancellationToken = default, bool suppressDeploymentNotification = false)
+        public async Task<bool> SynchronizeAsync(
+            CancellationToken cancellationToken = default,
+            bool suppressDeploymentNotification = false,
+            IProgress<string>? progress = null)
         {
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -496,11 +508,32 @@ namespace HD2ModManager.Services
             var synchronizeVersion = Volatile.Read(ref _stateVersion);
             var synchronizeSnapshot = _snapshot;
             var synchronizationExclusions = await _manager.GetPendingStoredDeletionSynchronizationExclusionsAsync(cancellationToken).ConfigureAwait(false);
+            // 认领必须排在同步**之前**：认领会把「包名/选项/patch」这种外部包导入成受管节点，
+            // 同一轮同步才能看到它们。反过来排的话，这些目录这一轮仍然只是一个"没有根级 patch
+            // 的普通文件夹"，被同步器静默跳过，用户要再等下一次同步才看到效果。
+            var adoption = await AdoptExternalPackagesAsync(synchronizeSnapshot, synchronizationExclusions, progress, cancellationToken).ConfigureAwait(false);
+            LastAdoptionResult = adoption;
+            // 认领走的是导入链路，它自己已经 SaveAsync 过库快照；所以对账基线要换成认领后的快照，
+            // 否则刚导入的节点会被同步器当成"外部新增"，再分配一次 id（.hd2modmanager-mod.json
+            // 虽然能把 id 救回来，但会多一轮 changed + 一次全量缓存失效）。
+            if (adoption.Changed) synchronizeSnapshot = adoption.Snapshot;
             var result = await _synchronizer.SynchronizeAsync(
                 synchronizeSnapshot,
                 _paths.ModsDirectory,
                 synchronizationExclusions,
                 cancellationToken).ConfigureAwait(false);
+            if (adoption.Changed)
+            {
+                // 认领出来的节点在同步器眼里不是 added（它们已经在对账基线里了），但界面上的
+                // "新增 N 个"和派生数据构建都靠这份 id 集合，不并进去就会显示"新增 0 个"。
+                result = result with
+                {
+                    AddedNodeIds = result.AddedNodeIds
+                        .Concat(adoption.ImportedNodeIds)
+                        .Where(id => result.Snapshot.Nodes.ContainsKey(id))
+                        .ToHashSet(),
+                };
+            }
 			LastSynchronizationResult = result;
             // 清扫必须排在 FilesystemChanged 早退**之前**：一个无主的残留目录既不会产生
             // added/changed，也不会产生 missing，所以它永远不可能让 FilesystemChanged 变成 true；
@@ -549,7 +582,7 @@ namespace HD2ModManager.Services
                     LogService.Error($"索引回收失败：{failure}");
             }
 
-            if (!result.FilesystemChanged) return false;
+            if (!result.FilesystemChanged && !adoption.Changed) return false;
 
             if (!synchronizationIsCurrent)
             {
@@ -590,9 +623,64 @@ namespace HD2ModManager.Services
             }
         }
 
+        /// <summary>
+        /// 认领库根下「归档躺在子目录里」的外部包（别的 mod manager 的形状）。
+        /// <para>
+        /// 只做一件事：调用认领服务并把每个包的结局写进日志。判定、导入、移动都在核心层，
+        /// 这里不重复任何判据——两处各写一份，迟早出现「CLI 认领了、界面没认领」。
+        /// </para>
+        /// <para>
+        /// 认领失败**不能**让整轮同步失败：那会把「15 个包里有 1 个只读」升级成「库完全同步不了」。
+        /// 所以这里兜住异常，返回"没改动"的结果，让同步照常进行。
+        /// </para>
+        /// </summary>
+        private async Task<ExternalPackageAdoptionResult> AdoptExternalPackagesAsync(
+            LibrarySnapshot snapshot,
+            IReadOnlySet<string> exclusions,
+            IProgress<string>? progress,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var importer = CoreServices.CreateModLibraryImporter(_paths, _informationCenter, _informationReader);
+                var service = CoreServices.CreateExternalPackageAdoptionService(_paths, importer, _optionActivations);
+                var adoption = await service
+                    .AdoptAsync(snapshot, _paths.ModsDirectory, exclusions, progress, cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var outcome in adoption.Outcomes)
+                {
+                    switch (outcome.Status)
+                    {
+                        case ExternalPackageAdoptionStatus.Adopted:
+                            LogService.Info($"认领外部包：{outcome.RelativePath}（{outcome.NodeIds.Count} 个节点）。{outcome.Detail}");
+                            break;
+                        case ExternalPackageAdoptionStatus.Failed:
+                            LogService.Error($"认领外部包失败：{outcome.RelativePath} — {outcome.Detail}");
+                            break;
+                        default:
+                            // 跳过也要留痕：这次要修的正是「一个真实包被跳过却毫无痕迹」。
+                            LogService.Info($"跳过认领：{outcome.RelativePath} — {outcome.Detail}");
+                            break;
+                    }
+                }
+                return adoption;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidDataException
+                or System.Security.SecurityException)
+            {
+                LogService.Error($"外部包认领中止（库同步继续）：{exception.Message}");
+                return new ExternalPackageAdoptionResult(snapshot, Array.Empty<ExternalPackageAdoptionOutcome>(), Array.Empty<ModNodeId>());
+            }
+        }
+
         public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
             => await RefreshDerivedDataAsync(guids, ModContentChangeKind.DerivedOnly, cancellationToken).ConfigureAwait(false);
-
         public async Task RefreshDerivedDataAsync(
             IEnumerable<string>? guids,
             ModContentChangeKind changeKind,

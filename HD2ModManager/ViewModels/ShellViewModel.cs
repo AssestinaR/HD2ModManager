@@ -2712,16 +2712,30 @@ namespace HD2ModManager.ViewModels
 			try
 			{
 				task.MarkRunning("正在扫描 Mod 文件夹");
-				await Task.Run(() => _libraryService.SynchronizeAsync(_lifetimeCancellation.Token, suppressDeploymentNotification: true), _lifetimeCancellation.Token).ConfigureAwait(false);
+				// 认领外部包要搬几百 MB（同卷是硬链接，但归一化与索引失效仍要时间），
+				// 没有阶段提示的话，用户只会看到"校验 Mod 库"卡住。
+				var syncProgress = new Progress<string>(stage => task.UpdateStage(stage));
+				await Task.Run(() => _libraryService.SynchronizeAsync(_lifetimeCancellation.Token, suppressDeploymentNotification: true, syncProgress), _lifetimeCancellation.Token).ConfigureAwait(false);
 				var result = _libraryService.LastSynchronizationResult;
+				var adoption = _libraryService.LastAdoptionResult;
 				var added = result?.AddedNodeIds.Count ?? 0;
 				var changed = result?.ChangedNodeIds.Count ?? 0;
 				var missing = result?.MissingNodeIds.Count ?? 0;
+				var adopted = adoption?.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Adopted) ?? 0;
+				var adoptBlocked = adoption?.Outcomes.Count(outcome => outcome.Status is ExternalPackageAdoptionStatus.Skipped or ExternalPackageAdoptionStatus.Failed) ?? 0;
 				task.MarkCompleted();
 				var message = added == 0 && changed == 0 && missing == 0
 					? "Mod 库校验完成，库索引与实际文件夹一致。"
 					: $"Mod 库校验完成：新增 {added} 个，更新 {changed} 个，缺失 {missing} 个。";
-				RefreshOnUiThread(() => _notificationService.Show(message, missing > 0 ? NotificationLevel.Warning : NotificationLevel.Info, TimeSpan.FromSeconds(8)));
+				// 认领的包会贡献几十个节点，"新增 181 个"容易让人以为出了重复。
+				// 所以单独说一句是哪些包被认领了。
+				if (adopted > 0)
+					message += $"\n已认领 {adopted} 个外部包（可能来自其他管理器）。";
+				// 没认领成功的必须说出来：它们不会出现在 added/changed/missing 里，
+				// 只报"一致"的话，用户会以为库已经收全了。
+				if (adoptBlocked > 0)
+					message += $"\n有 {adoptBlocked} 个外部包未能认领，原因见日志（logs 目录）。";
+				RefreshOnUiThread(() => _notificationService.Show(message, missing > 0 || adoptBlocked > 0 ? NotificationLevel.Warning : NotificationLevel.Info, TimeSpan.FromSeconds(8)));
 			}
 			catch (OperationCanceledException)
 			{
