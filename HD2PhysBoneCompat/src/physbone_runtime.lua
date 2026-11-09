@@ -31,6 +31,13 @@
 
 local M = {}
 
+-- 2.0.3：快照的**取证能力**补强（实机第一次按 F9 就把游戏读崩了，而日志里没有现场）。
+--        · `[快照]` 归入"永远落盘"的那几类，预算用尽也留得下
+--        · 每帧**先**打一行"开始第 k/M 帧、N 个节点"再采 —— 崩了就知道崩在第几帧
+--        · 每帧单独落盘（snapshot-<seq>-s<k>.json），崩了前面的数据还在
+--        · 新增请求项 `limit=N`：只采前 N 个节点，先探路再放量
+--        一次按键读 685 个节点 ≈ 2700 次引擎调用，这个量本身就是风险。
+--
 -- 2.0.2：**姿态快照**。按一下热键，把当前玩家那具骨架的世界变换写到
 --        `%LOCALAPPDATA%\hd2physbone-snap\snapshot-*.json`（外部工具写请求文件触发，
 --        因为游戏的输入走 Raw Input，Lua 侧读不到键）。为什么需要：穿模只在动起来时
@@ -51,7 +58,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.0.2"
+M.VERSION = "2.0.3"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -86,7 +93,7 @@ local DEFAULT_LOG_ROTATE_BYTES = 512 * 1024
 --- 只留这几类，是因为它们本身就是"出事了"的证据；心跳、等待、预算、逐链明细
 --- 这类常规行才是吃字节的大头，也是最没必要的长期留存。
 --- </para>
-local ALWAYS_LOG_TAGS = { "[错误]", "[失败]", "[警告]", "[驱动失效]" }
+local ALWAYS_LOG_TAGS = { "[错误]", "[失败]", "[警告]", "[驱动失效]", "[快照]" }
 
 --- 造一个 logger。返回 `log, context`。
 --- <para>
@@ -1241,7 +1248,7 @@ end
 --- 拿到半份数据也比"按一下什么都没发生"强。
 local function parse_snapshot_request(text)
 	if type(text) ~= "string" or #text == 0 then return nil end
-	local request = { frames = 8, stride = 2, nodes = {}, names = {}, seq = nil }
+	local request = { frames = 8, stride = 2, limit = 0, nodes = {}, names = {}, seq = nil }
 	for line in text:gmatch("[^\r\n]+") do
 		line = line:gsub("^%s+", ""):gsub("%s+$", "")
 		if #line > 0 and line:sub(1, 1) ~= "#" then
@@ -1258,6 +1265,11 @@ local function parse_snapshot_request(text)
 					if stride ~= nil then
 						request.stride = math.max(1, math.min(30, math.floor(stride)))
 					end
+				elseif key == "limit" then
+					-- 只采前 N 个节点。为什么需要：一次按键里读 685 个节点 ≈ 2700 次引擎调用，
+					-- 2026-11-09 实测直接把游戏读崩了。先用小的探路，再放量。
+					local count = tonumber(value)
+					if count ~= nil then request.limit = math.max(0, math.min(SNAPSHOT_MAX_NODES, math.floor(count))) end
 				elseif key == "seq" then
 					request.seq = value
 				elseif key == "node" then
@@ -1280,8 +1292,10 @@ end
 --- 把请求里的"哈希 + 名字"并成一张 id 表（名字按引擎的 IdString32 现算）。
 local function snapshot_ids(S_, request)
 	local ids, seen = {}, {}
+	local limit = request.limit or 0
 	local function push(id, label)
 		if id == nil or seen[id] then return end
+		if limit > 0 and #ids >= limit then return end
 		seen[id] = true
 		ids[#ids + 1] = { id = id, label = label }
 	end
@@ -1444,30 +1458,34 @@ local function snapshot_poll(S_, runtime, options)
 		end
 		state.waitFrames = 0
 		state.skip = (state.request and state.request.stride or 2) - 1
-		state.frames[#state.frames + 1] = snapshot_frame(S_, runtime, unit, state.ids, runtime.frame or 0)
+		local sampleIndex = (state.request.frames - state.framesLeft) + 1
+		-- 每帧**先**打一行再采：万一这一帧把游戏读崩了，日志里最后一行就是崩在哪一帧、
+		-- 采了多少个节点。没有这一行，"闪退"在现场只能靠猜（2026-11-09 就猜了一轮）。
+		runtime.logger("[physbone][快照] 开始第 %d/%d 帧：%d 个节点（unit=%s）",
+			sampleIndex, state.request.frames, #(state.ids or {}), tostring(unitTag))
+		local sample = snapshot_frame(S_, runtime, unit, state.ids, runtime.frame or 0)
 		state.lastTag = unitTag
 		state.framesLeft = state.framesLeft - 1
-		if state.framesLeft > 0 then return end
-
-		local tag = state.lastTag or "none"
-		local name = string.format("snapshot-%04d-%s.json", state.seq, os.date("%Y%m%d-%H%M%S"))
+		-- 每帧单独落盘：游戏要是在后面的帧上崩了，前面采到的还在；
+		-- "最后写出的那个文件"也直接告诉我们崩在第几帧。
+		local name = string.format("snapshot-%04d-s%02d.json", state.seq, sampleIndex)
 		local path = dir .. "\\" .. name
-		local text = snapshot_json(runtime, state.request, tag, state.frames, os.date("%Y-%m-%dT%H:%M:%S"))
+		local text = snapshot_json(runtime, state.request, unitTag, { sample }, os.date("%Y-%m-%dT%H:%M:%S"))
 		local ok, handle = pcall(io.open, path, "wb")
 		if ok and handle ~= nil then
 			handle:write(text)
 			handle:close()
-			runtime.logger("[physbone][快照] 已写出 %s（%d 帧 × %d 节点）", name, #state.frames, #(state.ids or {}))
-			local okDone, done = pcall(io.open, dir .. "\\done.txt", "wb")
-			if okDone and done ~= nil then
-				done:write(name, "\n")
-				done:close()
-			end
+			runtime.logger("[physbone][快照] 已写出 %s（%d 个节点，缺 %d）", name, #sample.nodes, sample.missing)
 		else
 			runtime.logger("[physbone][快照] 写不出 %s（目录是否存在？）", path)
 		end
+		if state.framesLeft > 0 then return end
 		state.frames = {}
-		state.framesLeft = 0
+		local okDone, done = pcall(io.open, dir .. "\\done.txt", "wb")
+		if okDone and done ~= nil then
+			done:write(string.format("seq=%d frames=%d\n", state.seq, state.request.frames))
+			done:close()
+		end
 		return
 	end
 

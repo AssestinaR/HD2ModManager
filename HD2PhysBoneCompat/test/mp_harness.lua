@@ -167,7 +167,7 @@ local function freshRuntime(fake, compat, options)
 		compat = compat,
 		log = false,
 		carriers = { { rig = { bones = { { name = "hair" } } }, path = "fake" } },
-		settleFrames = 1,
+		settleFrames = 1, snapshot = false,
 		pollFrames = 1,
 		validateFrames = 3,
 		heartbeatFrames = 1000000,
@@ -349,7 +349,7 @@ do
 	runtimeModule.install(stingray, {
 		compat = compat, log = false,
 		carriers = { { rig = { bones = { { name = "hair" } } }, path = "fake" } },
-		settleFrames = 1, pollFrames = 1, validateFrames = 3, heartbeatFrames = 1000000, minNodes = 90,
+		settleFrames = 1, snapshot = false, pollFrames = 1, validateFrames = 3, heartbeatFrames = 1000000, minNodes = 90,
 	})
 	runtime = rawget(_G, "__hd2physbone_runtime")
 	fake:advance(60)
@@ -415,7 +415,7 @@ do
 			compat = compat,
 			logPath = path,
 			carriers = { { rig = { bones = { { name = "hair" } } }, path = "fake" } },
-			settleFrames = 1,
+			settleFrames = 1, snapshot = false,
 			pollFrames = 1,
 			validateFrames = 3,
 			minNodes = 90,

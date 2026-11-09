@@ -74,6 +74,14 @@ do
 	local capped = parse("frames = 9999\nstride = 999\nnode = 1\n")
 	check("frames/stride 有上限", capped.frames == 32 and capped.stride == 30,
 		capped.frames .. "/" .. capped.stride)
+	-- limit：只采前 N 个节点。一次读几百根会读崩游戏，所以必须能缩。
+	local limited = parse("limit = 2\nnode = 1\nnode = 2\nnode = 3\n")
+	check("limit 解析出来了", limited ~= nil and limited.limit == 2, limited and limited.limit)
+	local engine = {
+		Application = { string_to_id32 = function(text) return #tostring(text) end },
+	}
+	local ids = idsOf(engine, limited)
+	check("limit 真的截断节点表", #ids == 2, #ids)
 end
 
 -- ---------------------------------------------------------------- ② 假引擎
@@ -152,30 +160,33 @@ do
 	end
 
 	local files = listSnapshots()
-	check("采到一份快照", #files == 1, "文件数 " .. #files)
+	-- 每帧单独落盘（崩了前面的还在），所以 3 帧 = 3 个文件
+	check("三帧各落一份", #files == 3, "文件数 " .. #files)
+	table.sort(files)
 	local text = files[1] ~= nil and readFile(DIR .. "\\" .. files[1]) or nil
 	check("快照有内容", text ~= nil and #text > 100, text and (#text .. " 字节"))
 	if text ~= nil then
 		check("schema 打头", text:find('"schema":"hd2physbone.snap/1"', 1, true) ~= nil)
-		check("带 runtime 版本", text:find('"runtime":"2.0.2"', 1, true) ~= nil)
-		check("三帧都在", select(2, text:gsub('"frame"', "")) == 3,
+		check("带 runtime 版本", text:find('"runtime":"2.0.3"', 1, true) ~= nil)
+		check("单份文件只装一帧", select(2, text:gsub('"frame"', "")) == 1,
 			"帧数 " .. select(2, text:gsub('"frame"', "")))
-		check("每帧两个节点", select(2, text:gsub('"id":"0x8e8d63a0"', "")) == 3,
-			"命中 " .. select(2, text:gsub('"id":"0x8e8d63a0"', "")))
+		check("帧里两个节点", select(2, text:gsub('"id":"0x8e8d63a0"', "")) == 1
+			and select(2, text:gsub('"id":"0x4c1bb3d1"', "")) == 1)
 		check("坐标写成了数", text:find('"z":1.030000', 1, true) ~= nil)
 		check("四元数写成了数", text:find('"qw":1.000000', 1, true) ~= nil)
 		-- 弹簧角度在求解器里是弧度，落盘要换成度；写成 null 说明字段名对不上（踩过一次）
 		check("弹簧角度写成度数", text:find('"yawDeg":null', 1, true) == nil
 			and text:find('"yawDeg":5.7', 1, true) ~= nil)
 	end
-	check("留了 done 标记", readFile(DIR .. "\\done.txt") ~= nil)
+	local doneText = readFile(DIR .. "\\done.txt")
+	check("留了 done 标记", doneText ~= nil and doneText:find("frames=3", 1, true) ~= nil, doneText)
 
 	-- 同一份请求再来一遍：不该重复采（内容没变）
 	for _ = 1, 5 do
 		runtime.driveFrames = runtime.driveFrames + 1
 		poll(S, runtime, options)
 	end
-	check("请求没变就不重复采", #listSnapshots() == 1, "文件数 " .. #listSnapshots())
+	check("请求没变就不重复采", #listSnapshots() == 3, "文件数 " .. #listSnapshots())
 
 	-- 请求变了：再采一份
 	writeFile(DIR .. "\\request.txt", "seq = 2\nframes = 1\nstride = 1\nnode = 0x8e8d63a0\n")
@@ -183,7 +194,7 @@ do
 		runtime.driveFrames = runtime.driveFrames + 1
 		poll(S, runtime, options)
 	end
-	check("新请求再采一份", #listSnapshots() == 2, "文件数 " .. #listSnapshots())
+	check("新请求再采一份", #listSnapshots() == 4, "文件数 " .. #listSnapshots())
 end
 
 -- ---------------------------------------------------------------- ④ 健壮性

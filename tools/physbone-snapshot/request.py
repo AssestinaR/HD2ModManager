@@ -45,7 +45,7 @@ def load_nodes(path: Path) -> list[str]:
     return hashes
 
 
-def build_request(frames: int, stride: int, nodes: list[str], seq: str) -> str:
+def build_request(frames: int, stride: int, nodes: list[str], seq: str, names: list[str] | None = None) -> str:
     lines = [
         "# hd2physbone 姿态快照请求（外部工具写、游戏侧只读）",
         f"seq = {seq}",
@@ -53,30 +53,39 @@ def build_request(frames: int, stride: int, nodes: list[str], seq: str) -> str:
         f"stride = {stride}",
     ]
     lines += [f"node = {item}" for item in nodes]
+    # 名字走引擎的 IdString32 现算。**探路时优先用名字**：这些名字就是物理求解器
+    # 每帧都在用的那几根，已经证明安全；哈希表里那些"存在但不是节点"的 id 会把
+    # world_position 读成野指针（2026-11-09 实机崩过一次）。
+    lines += [f"name = {item}" for item in (names or [])]
     return "\n".join(lines) + "\n"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default=None, help="快照目录（默认 %%LOCALAPPDATA%%\\hd2physbone-snap）")
-    parser.add_argument("--nodes", default=str(DEFAULT_NODES), help="节点哈希清单")
+    parser.add_argument("--nodes", default=str(DEFAULT_NODES), help="节点哈希清单（空字符串=不用）")
+    parser.add_argument("--names", nargs="*", default=None, help="按骨名采（探路用，最安全）")
+    parser.add_argument("--limit", type=int, default=0, help="只采前 N 个节点（0=不限）")
     parser.add_argument("--frames", type=int, default=6, help="采几帧（上限 32）")
     parser.add_argument("--stride", type=int, default=3, help="每几帧采一张（上限 30）")
     parser.add_argument("--seq", default=None, help="请求序号（默认用时间戳）")
     parser.add_argument("--list", action="store_true", help="只打印不写盘")
     args = parser.parse_args()
 
-    nodes = load_nodes(Path(args.nodes))
-    if not nodes:
-        print(f"节点清单是空的：{args.nodes}", file=sys.stderr)
+    nodes = load_nodes(Path(args.nodes)) if args.nodes else []
+    names = args.names or []
+    if not nodes and not names:
+        print("既没给节点哈希也没给骨名，请求会没有内容", file=sys.stderr)
         return 2
 
     seq = args.seq or str(int(time.time()))
-    text = build_request(max(1, min(32, args.frames)), max(1, min(30, args.stride)), nodes, seq)
+    text = build_request(max(1, min(32, args.frames)), max(1, min(30, args.stride)), nodes, seq, names)
+    if args.limit > 0:
+        text = text.replace("seq = " + seq, f"seq = {seq}\nlimit = {args.limit}")
     target = Path(args.dir) if args.dir else default_directory()
     path = target / "request.txt"
 
-    print(f"节点 {len(nodes)} 个，帧 {args.frames} × 每 {args.stride} 帧一张，seq={seq}")
+    print(f"节点哈希 {len(nodes)} 个、骨名 {len(names)} 个，帧 {args.frames} × 每 {args.stride} 帧一张，seq={seq}")
     print(f"目标：{path}")
     if args.list:
         print(text[:400] + ("…" if len(text) > 400 else ""))
