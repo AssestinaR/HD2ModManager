@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.1"
+M.VERSION = "2.1.9"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -98,7 +98,7 @@ local DEFAULT_LOG_ROTATE_BYTES = 512 * 1024
 --- 只留这几类，是因为它们本身就是"出事了"的证据；心跳、等待、预算、逐链明细
 --- 这类常规行才是吃字节的大头，也是最没必要的长期留存。
 --- </para>
-local ALWAYS_LOG_TAGS = { "[错误]", "[失败]", "[警告]", "[驱动失效]", "[快照]" }
+local ALWAYS_LOG_TAGS = { "[错误]", "[失败]", "[警告]", "[驱动失效]", "[快照]", "[裙摆]" }
 
 --- 造一个 logger。返回 `log, context`。
 --- <para>
@@ -122,6 +122,24 @@ local function makeLogger(options)
 	local handle = nil
 	local path = defaultLogPath(options)
 	local maxBytes = (options and options.logMaxBytes) or DEFAULT_LOG_MAX_BYTES
+	-- **开发模式**：把预算整个关掉，全量落盘。
+	-- 为什么需要：预算用尽后只留错误类，于是"我加的那行诊断"被静默丢掉——
+	-- 2026-11-09 就因为这个白测了一轮（以为没效果，其实是没有观测数据）。
+	-- 开关走调参文件（`devLog = 1`）或环境变量 `HD2_PHYSBONE_DEV=1`：两者都在启动时读一次，
+	-- 不影响运行期性能。产品环境不设它 ⇒ 行为与之前完全一致。
+	if (options and options.devLog == true) or os.getenv("HD2_PHYSBONE_DEV") == "1" then
+		maxBytes = math.huge
+	else
+		local tunePath = (options and options.tunePath) or ((os.getenv("LOCALAPPDATA") or "") .. "\\hd2pbx_tune.txt")
+		local ok, handle = pcall(io.open, tunePath, "r")
+		if ok and handle ~= nil then
+			local okRead, text = pcall(handle.read, handle, "*a")
+			pcall(handle.close, handle)
+			if okRead and type(text) == "string" and text:find("devLog%s*=%s*1") ~= nil then
+				maxBytes = math.huge
+			end
+		end
+	end
 	local rotateBytes = (options and options.logRotateBytes) or DEFAULT_LOG_ROTATE_BYTES
 	if path then
 		-- 轮转：先量旧文件，超阈值就挪到 `.1`（覆盖上一次的 `.1`）。
@@ -904,7 +922,7 @@ end
 local function tune_values(runtime)
 	local frame = runtime.frame or 0
 	local cached = runtime.tune
-	local refresh = (runtime.options and runtime.options.tuneRefreshFrames) or 120
+	local refresh = (runtime.options and runtime.options.tuneRefreshFrames) or 30
 	if cached ~= nil and (frame - cached.frame) < refresh then return cached.values end
 
 	local values = { text = {} }
@@ -1614,7 +1632,40 @@ end
 --   skirtMargin  = 0.005 额外留白（米）
 --   skirtArm     = 0.30  力臂（米）：布大概从骨点往外延伸多远，用来把"距离"换成"角度"
 -- ---------------------------------------------------------------------------
-local SKIRT_DEFAULTS = { gain = 0.35, maxDeg = 12, margin = 0.005, arm = 0.30 }
+local SKIRT_DEFAULTS = {
+	gain = 0.35, maxDeg = 12, margin = 0.005, arm = 0.30,
+	-- 两处平滑的时间常数（秒）。它们存在的唯一目的是**去掉帧间抖动**：
+	-- 权重和"正后方"轴如果每帧按当前姿态重算，就会跟着步频一起摆。
+	-- weight 的语义其实是**静态**的（这根骨在裙子的哪一侧），所以宁慢不抖：1.2 秒。
+	weightSeconds = 1.2, backSeconds = 0.5,
+}
+
+--- 预设枚举：把"旋转加在哪个坐标系、正负号"这 8 种可能一次列全，让实机去分辨。
+--- <para>
+--- 为什么用枚举而不是推理：`write_pose` 把 (轴, 角) 解释成什么（父空间增量？局部增量？
+--- 绝对旋转？）读代码看不出来，猜错的代价是"画面毫无变化"，而那时根本分不清是
+--- 轴错了、帧错了、还是没写进去。8 个预设、每个都恒定 60°，一眼就能分出对错。
+--- </para>
+--- <para>
+--- 预设**不看** keep-out、不做亏损判断：站着不动时也要一眼看得出效果，
+--- 否则"没反应"会被误读成预设失效。这是诊断模式，不是最终行为。
+--- </para>
+local PRESET_DEGREES = 60
+local PRESETS =
+{
+	-- { 模式, 符号 }  模式 1/2 = 前乘（轴：1=父空间、2=世界）；3/4 = 后乘（同理）
+	{ 1, 1 }, { 1, -1 }, { 2, 1 }, { 2, -1 },
+	{ 3, 1 }, { 3, -1 }, { 4, 1 }, { 4, -1 },
+}
+
+local function preset_label(index)
+	local preset = PRESETS[index]
+	if preset == nil then return "无" end
+	local frame = (preset[1] == 1 or preset[1] == 3) and "父空间轴" or "世界轴"
+	local order = (preset[1] <= 2) and "前乘" or "后乘"
+	return string.format("%d/%d：%s %s %s%.0f°", index, #PRESETS, frame, order,
+		preset[2] > 0 and "+" or "−", PRESET_DEGREES)
+end
 
 local function skirt_settings(runtime)
 	local values = tune_values(runtime) or {}
@@ -1625,8 +1676,27 @@ local function skirt_settings(runtime)
 		maxDeg = values.skirtMaxDeg or SKIRT_DEFAULTS.maxDeg,
 		margin = values.skirtMargin or SKIRT_DEFAULTS.margin,
 		arm = values.skirtArm or SKIRT_DEFAULTS.arm,
+		-- 手调角度（度）：>0 时**只要这条链有亏损**就用这个角度，不再按"亏损/力臂"推。
+		-- 为什么需要它：力臂是估的，实测偏小会让算出来的角度只有 3~4°（肉眼等于没动）。
+		-- 手调扫一遍，用眼睛定一个"多数裙子都好看又不穿"的值，比按力矩推可靠得多。
+		manualDeg = values.skirtDeg or 0,
+		-- 没手调时按"每 1 cm 亏损转多少度"换算（缺省 6°/cm）。
+		degPerCm = values.skirtDegPerCm or 6,
+		-- 运动斜坡：静止 0°、跑起来满额。实测"静止 0 度就够用，只有奔跑才需要角度"。
+		idleSpeed = values.skirtIdleSpeed or 0.5,     -- m/s，以下视为静止
+		runSpeed = values.skirtRunSpeed or 2.0,       -- m/s，以上视为满额
+		rampSeconds = values.skirtRampSeconds or 0.25,
+		-- "方向权重"收敛的多快。调小 = 更跟手但更抖；调大 = 更稳。
+		weightSeconds = values.skirtWeightSeconds or SKIRT_DEFAULTS.weightSeconds,
+		-- "正后方"轴收敛的多快。跑步时两条大腿前后交替，(l_thigh − r_thigh)
+		-- 每一步都在转，不快不行；但又不能太快，否则权重跟着摆。
+		backSeconds = values.skirtBackSeconds or SKIRT_DEFAULTS.backSeconds,
+		-- 方向加权的手性开关：叉乘出来的"后"可能是前，翻号即可。
+		backSign = (values.skirtBackSign or 1) < 0 and -1 or 1,
 		-- sign 只为"方向验证"存在：置 -1 就把纠正方向反过来，不必改代码重新部署。
 		sign = (values.skirtSign or 1) < 0 and -1 or 1,
+		-- 预设枚举（诊断）：>0 时完全接管，恒定角度、不看 keep-out。
+		preset = math.floor(values.preset or 0),
 		all = (values.skirtAll or 0) ~= 0,
 	}
 end
@@ -1647,7 +1717,7 @@ local function skirt_refs(S_, session)
 	end
 	local hipsNode, chestNode = nodeOf("hips"), nodeOf("chest")
 	if hipsNode == nil then return nil end
-	refs = { hips = hipsNode, chest = chestNode }
+	refs = { hips = hipsNode, chest = chestNode, lThigh = nodeOf("l_thigh"), rThigh = nodeOf("r_thigh") }
 	session.skirtRefs = refs
 	return refs
 end
@@ -1661,7 +1731,7 @@ local function worldPos(S_, unit, node)
 end
 
 --- 对一条链做"标定"或"纠正"。返回是否改动了 pushOut。
-local function skirt_chain(S_, session, item, settings, calibrating, logger)
+local function skirt_chain(S_, runtime, session, item, settings, calibrating, logger)
 	local refs = skirt_refs(S_, session)
 	if refs == nil then return false end
 	local nodes = item.nodes
@@ -1696,19 +1766,87 @@ local function skirt_chain(S_, session, item, settings, calibrating, logger)
 		end
 		return false
 	end
-	local keepOut = item.keepOut
-	if keepOut == nil then return false end
+	-- 没标定过就用当前半径当基准：亏损算出来是 0，只影响下面的"按亏换算角度"那一档，
+	-- 不影响手调角度。
+	local keepOut = item.keepOut or radius
 	local deficit = keepOut + settings.margin - radius
-	if deficit <= 0 then
-		item.pushOut = nil
-		return false
+	-- **这里原本是致命的一处开关**（2.1.8 及更早）：deficit <= 0 就 pushOut=nil 并 return，
+	-- 于是后面那句"无条件加"永远走不到。实机证据（同局日志）：180 条 hips 链只有 26~51
+	-- 条被推，且每几帧在 26/34/35/43/51 之间跳；跑动时角度确实到 29~30° ⇒ 不是算小了，
+	-- 是多数帧**根本没加**。用户看到的就是"大多被拉回，少数保持角度"。
+	-- 现在亏损只用于报数和"按亏损换算角度"那一档，不再当开关。
+	if settings.preset > 0 then
+		-- 诊断模式：不看 keep-out、不算亏损，恒定 60° 往外摆（或往里，看符号）。
+		local preset = PRESETS[settings.preset]
+		if preset == nil then return false end
+		local ax, ay, az = rny * uz - rnz * uy, rnz * ux - rnx * uz, rnx * uy - rny * ux
+		local alen = math.sqrt(ax * ax + ay * ay + az * az)
+		if alen < 1e-6 then return false end
+		item.pushOut = { ax / alen, ay / alen, az / alen,
+			PRESET_DEGREES * math.pi / 180 * preset[2], preset[1] }
+		item.pushOutAll = settings.all
+		return true
 	end
 		-- 把"要补的距离"换成"要转的角度"：θ ≈ 亏损 / 力臂
-	local angle = settings.sign * settings.gain * deficit / math.max(settings.arm, 0.05)
+	-- 角度：手调优先（度），否则按"每厘米亏损多少度"换算。
+	-- 上一次的教训：`gain × 亏损 / 力臂` 在 deficit≈2 cm、arm=0.3 m 时只有 3.8°，
+	-- 而日志打的是**上限** 60°，于是我自己得出"推满了也没用"的错误结论。
+	-- ① 方向权重：只给"朝后"的那部分。夹角按**角度线性**拆（45° 给一半 15°），
+	--    这是用户明确要的语义：侧面/正前一点都不分。
+	local back = session.skirtBack
+	local liveWeight = 1.0
+	if back ~= nil then
+		local dot = rnx * back[1] + rny * back[2] + rnz * back[3]
+		if dot < -1 then dot = -1 elseif dot > 1 then dot = 1 end
+		local deviation = math.acos(dot) * 180 / math.pi      -- 与"正后方"的夹角
+		liveWeight = 1 - deviation / 90
+		if liveWeight < 0 then liveWeight = 0 elseif liveWeight > 1 then liveWeight = 1 end
+	end
+	-- 权重按时间常数平滑（不是每帧直接用瞬时值）。
+	-- 为什么：瞬时权重 = f(当前姿态)，而姿态又被我们自己的偏移改变 ⇒ 反馈回路，
+	-- 表现为同一块布的角度每帧变（实测整片在 13°↔30° 之间集体摆）。
+	-- 平滑之后每条骨拿到的角度基本恒定 = 用户要的"恒定偏移"。
+	local weight = item.skirtWeight
+	if weight == nil then
+		weight = liveWeight
+	else
+		local wdt = runtime.dt or (1 / 60)
+		local k = wdt / math.max(settings.weightSeconds, 0.02)
+		if k > 1 then k = 1 end
+		weight = weight + (liveWeight - weight) * k
+	end
+	item.skirtWeight = weight
+
+	-- ② 迟滞的"需不需要保护"：避免在边界上每帧翻转（翻转就是抖动）。
+	local margin = settings.margin
+	if deficit > margin then
+		item.skirtNeed = 1
+	elseif deficit < -margin then
+		item.skirtNeed = nil
+	end
+
+	-- ③ 平滑追值：目标 = 方向权重 × 运动斜坡。
+	--    **不再乘"需要标记"**：那个标记跟着链骨半径过门槛翻转，翻转就是闪烁。
+	--    叠加关系，不是竞争关系：物理怎么摆，我们都在它的结果上多给一个恒定偏移。
+	local target = weight * (session.skirtMotion or 0)
+	local level = item.skirtLevel or 0
+	local dt = runtime.dt or (1 / 60)
+	local step = dt / math.max(settings.rampSeconds, 0.02)
+	if level < target then
+		level = math.min(target, level + step)
+	elseif level > target then
+		level = math.max(target, level - step)
+	end
+	item.skirtLevel = level
+	item.skirtDebug = { weight = weight, level = level, deviation = back ~= nil and weight or nil }
+
+	-- 按亏损换算的那一档必须夹住：deficit 现在可能为负（半径比标定值大），
+	-- 直接乘会得到一个负角度 ⇒ 往里推 ⇒ 正好推进屁股里。
+	local cm = deficit > 0 and deficit * 100 or 0
+	local degrees = settings.manualDeg > 0 and settings.manualDeg or settings.degPerCm * cm
+	local angle = settings.sign * degrees * level * math.pi / 180
 	local maxAngle = settings.maxDeg * math.pi / 180
 	if angle > maxAngle then angle = maxAngle elseif angle < -maxAngle then angle = -maxAngle end
-	-- 允许负角（负号 = 反方向转），这样"方向是不是搞反了"可以**只靠调参**验证，
-	-- 不用改代码重新部署——这一轮就靠它。
 	if math.abs(angle) < 1e-5 then
 		item.pushOut = nil
 		return false
@@ -1725,32 +1863,121 @@ end
 --- 每帧调一次：遍历所有会话里"挂在 hips 上"的链。
 local function skirt_apply(S_, runtime)
 	local settings = skirt_settings(runtime)
-	if not settings.enabled and not settings.calibrate then return end
+	if not settings.enabled and not settings.calibrate and settings.preset == 0 then return end
 	local allNodes = (tune_values(runtime).skirtAll or 0) ~= 0
-	local pushed, total = 0, 0
+	local pushed, total, weighted = 0, 0, 0
+	local motionNow = 0
 	for _, session in ipairs(runtime.sessions or {}) do
 		if session.unit ~= nil then
+			-- 会话级准备：① 骨盆速度 → 运动斜坡；② "正后方"轴（世界坐标）。
+			local refs = skirt_refs(S_, session)
+			if refs ~= nil then
+				local hx, hy, hz = worldPos(S_, session.unit, refs.hips)
+				if hx ~= nil then
+					local dt = runtime.dt or (1 / 60)
+					local last = session.skirtPelvis
+					local speed = 0
+					if last ~= nil and dt > 1e-4 then
+						local dx, dy, dz = hx - last[1], hy - last[2], hz - last[3]
+						speed = math.sqrt(dx * dx + dy * dy + dz * dz) / dt
+					end
+					session.skirtPelvis = { hx, hy, hz }
+					-- 目标 0~1：静止 0、跑起来 1；再按时间常数追值，避免跳变。
+					local raw = (speed - settings.idleSpeed) / math.max(settings.runSpeed - settings.idleSpeed, 0.1)
+					if raw < 0 then raw = 0 elseif raw > 1 then raw = 1 end
+					local motion = session.skirtMotion or 0
+					local step = dt / math.max(settings.rampSeconds, 0.02)
+					if motion < raw then motion = math.min(raw, motion + step)
+					elseif motion > raw then motion = math.max(raw, motion - step) end
+					session.skirtMotion = motion
+
+					-- 正后方 = up × lateral（手性可能反，用 skirtBackSign 翻）
+					if refs.lThigh ~= nil and refs.rThigh ~= nil and refs.chest ~= nil then
+						local lx, ly, lz = worldPos(S_, session.unit, refs.lThigh)
+						local rx2, ry2, rz2 = worldPos(S_, session.unit, refs.rThigh)
+						local cx, cy, cz = worldPos(S_, session.unit, refs.chest)
+						if lx ~= nil and rx2 ~= nil and cx ~= nil then
+							-- lateral(points left) = l − r；up = chest − hips
+							local ax, ay, az = lx - rx2, ly - ry2, lz - rz2
+							local ux, uy, uz = cx - hx, cy - hy, cz - hz
+							local bx, by, bz = uy * az - uz * ay, uz * ax - ux * az, ux * ay - uy * ax
+							local blen = math.sqrt(bx * bx + by * by + bz * bz)
+							if blen > 1e-6 then
+								local nx, ny, nz = bx / blen * settings.backSign, by / blen * settings.backSign,
+									bz / blen * settings.backSign
+								-- 平滑追值：跑步时 l_thigh/r_thigh 前后交替，"l−r" 每一步都在转，
+								-- 直接用瞬时值会让所有链的权重跟着步频摆（实测 13°↔30°）。
+								local prev = session.skirtBack
+								if prev == nil then
+									session.skirtBack = { nx, ny, nz }
+								else
+									local k = dt / math.max(settings.backSeconds, 0.02)
+									if k > 1 then k = 1 end
+									local mx = prev[1] + (nx - prev[1]) * k
+									local my = prev[2] + (ny - prev[2]) * k
+									local mz = prev[3] + (nz - prev[3]) * k
+									local mlen = math.sqrt(mx * mx + my * my + mz * mz)
+									if mlen > 1e-6 then
+										session.skirtBack = { mx / mlen, my / mlen, mz / mlen }
+									end
+								end
+							end
+						end
+					end
+				end
+			end
 			for _, item in ipairs(session.sessions or {}) do
 				local parent = item.chain and item.chain[1] and item.chain[1].parentName
 				if type(parent) == "string" and parent:lower():find("hips", 1, true) ~= nil then
 					total = total + 1
 					-- 标定只在**第一次**做：同一个会话里不重复覆盖（否则跑着跑着又标一次）
 					local calibrating = settings.calibrate and not session.skirtCalibrated
-					if skirt_chain(S_, session, item, settings, calibrating, runtime.logger) then
+					if skirt_chain(S_, runtime, session, item, settings, calibrating, runtime.logger) then
 						pushed = pushed + 1
 					end
+					-- 诊断：有多少条链"有方向权重"（= 该加的那部分）。
+					-- 推的条数应当≈这个数（跑动时）；差得多就说明还有别的门在挡。
+					if (item.skirtWeight or 0) > 0.01 then weighted = weighted + 1 end
 				end
 			end
+			motionNow = session.skirtMotion or motionNow
 			if settings.calibrate then session.skirtCalibrated = true end
 		end
 	end
 	local state = runtime.skirtState
-	if state == nil then state = { reported = nil }; runtime.skirtState = state end
+	if state == nil then state = { reported = nil, preset = nil }; runtime.skirtState = state end
+	if settings.preset > 0 and state.preset ~= settings.preset then
+		state.preset = settings.preset
+		runtime.logger("[physbone][裙摆][预设] %s（推了 %d 条 hips 链）",
+			preset_label(settings.preset), pushed)
+	end
 	local message = string.format("%d/%d", pushed, total)
-	if state.reported ~= message then
-		state.reported = message
-		runtime.logger("[physbone][裙摆] 外推 %s 条（共 %d 条 hips 链，gain=%.2f max=%.0f° arm=%.2f m）",
-			message, total, settings.gain, settings.maxDeg, settings.arm)
+	-- 每秒报一次**实际用到的角度**（不是上限）。上限骗过一次人，不能再犯。
+	local frameNow = runtime.driveFrames or 0
+	if state.reported ~= message or frameNow % 120 == 0 then
+		if state.reported ~= message or (state.lastLogFrame == nil or frameNow - state.lastLogFrame >= 120) then
+			state.reported = message
+			state.lastLogFrame = frameNow
+			local maxDeg = 0
+			local degSum, degN = 0, 0
+			for _, session in ipairs(runtime.sessions or {}) do
+				for _, item in ipairs(session.sessions or {}) do
+					local push = item.pushOut
+					if push ~= nil then
+						local deg = math.abs(push[4]) * 180 / math.pi
+						if deg > maxDeg then maxDeg = deg end
+						degSum = degSum + deg
+						degN = degN + 1
+					end
+				end
+			end
+			-- 均值比最大值有用：最大值只能证明"有一条推满了"，均值才说明"整片有没有动"。
+			runtime.logger(
+				"[physbone][裙摆] 推 %d/%d 条（权重>0 %d 条）· 角度 均值 %.1f° / 最大 %.1f° · 斜坡 %.2f（手调 %s，上限 %.0f°）",
+				pushed, total, weighted, degN > 0 and degSum / degN or 0, maxDeg, motionNow,
+				settings.manualDeg > 0 and string.format("%.0f°", settings.manualDeg) or "关",
+				settings.maxDeg)
+		end
 	end
 end
 

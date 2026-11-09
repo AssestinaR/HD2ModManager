@@ -2597,12 +2597,19 @@ end
 --- 为什么要单独一个函数：热路径每根骨每帧都在跑，这里必须是纯数字运算、零分配
 --- （返回的是表，但只给当帧用，和 `local_rotations` 的契约一致）。
 --- </para>
-function M.push_out_rotation(rotation, axisX, axisY, axisZ, angle)
+function M.push_out_rotation(rotation, axisX, axisY, axisZ, angle, postMultiply)
 	if angle == nil or angle == 0 then return rotation end
 	local rx, ry, rz, rw = q_axis_angle(rotation[1], rotation[2], rotation[3], rotation[4])
 	local ex, ey, ez, ew = q_axis_angle(axisX, axisY, axisZ, angle)
-	local nx, ny, nz, nw = qmul(ex, ey, ez, ew, rx, ry, rz, rw)
-	-- 归一化 + 取 w ≥ 0 的等价表示（q 与 −q 是同一个旋转），这样回转出的角一定在 [0, π]。
+	-- 前乘 = 在父坐标系里转，后乘 = 在骨自己的局部坐标系里转。
+	-- 到底是哪一种由 `write_pose` 的语义决定，而那个语义没法从代码一眼看出来——
+	-- 所以两种都留着，让实机去分辨（预设枚举）。
+	local nx, ny, nz, nw
+	if postMultiply == true then
+		nx, ny, nz, nw = qmul(rx, ry, rz, rw, ex, ey, ez, ew)
+	else
+		nx, ny, nz, nw = qmul(ex, ey, ez, ew, rx, ry, rz, rw)
+	end
 	local len = math.sqrt(nx * nx + ny * ny + nz * nz + nw * nw)
 	if len < 1e-9 then return rotation end
 	nx, ny, nz, nw = nx / len, ny / len, nz / len, nw / len
@@ -2971,9 +2978,17 @@ function M.update_tip(session, dt, maxWrite)
 					-- 不动就说明那片布蒙皮在别的骨上（那就只能改几何，运行时无解）。
 					if rotation ~= nil and item.pushOut ~= nil and (index == 1 or item.pushOutAll == true) then
 						local po = item.pushOut
-						local cxq, cyq, czq, cwq = qconj(qx, qy, qz, qw)
-						local pax, pay, paz = qrot(cxq, cyq, czq, cwq, po[1], po[2], po[3])
-						rotation = M.push_out_rotation(rotation, pax, pay, paz, po[4])
+						local pax, pay, paz = po[1], po[2], po[3]
+						local mode = po[5] or 1
+						-- 模式 1/3 = 轴换算到锚点父空间；2/4 = 直接用世界轴（不换算）。
+						-- 哪个对，取决于 `write_pose` 把 rotation 解释成"父空间增量"还是别的，
+						-- 这一点从代码读不出来 ⇒ 交给实机枚举（预设 1..8）。
+						if mode == 1 or mode == 3 then
+							local cxq, cyq, czq, cwq = qconj(qx, qy, qz, qw)
+							pax, pay, paz = qrot(cxq, cyq, czq, cwq, pax, pay, paz)
+						end
+						rotation = M.push_out_rotation(rotation, pax, pay, paz, po[4],
+							mode == 3 or mode == 4)
 					end
 					if base ~= nil and rotation ~= nil then
 						if rotation[4] > maxAngle then maxAngle = rotation[4] end

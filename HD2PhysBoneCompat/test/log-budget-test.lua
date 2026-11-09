@@ -63,7 +63,7 @@ end
 -- ---------------------------------------------------------------------------
 do
 	local path = tempPath("budget")
-	local log, context = makeLogger({ logPath = path, logMaxBytes = 600 })
+	local log, context = makeLogger({ tunePath = "nonexistent-hd2pbx-tune.txt", logPath = path, logMaxBytes = 600 })
 	for _ = 1, 200 do
 		context.frame = context.frame + 1
 		log("[physbone] 驱动心跳 unit=1 链=4 玩家=1 本帧驱动=4 引擎调用=8")
@@ -95,7 +95,7 @@ end
 -- ---------------------------------------------------------------------------
 do
 	local path = tempPath("default")
-	local log = makeLogger({ logPath = path })
+	local log = makeLogger({ tunePath = "nonexistent-hd2pbx-tune.txt", logPath = path })
 	for index = 1, 5 do log("[physbone] 第 %d 行", index) end
 	local text = readAll(path) or ""
 	check("默认预算下 5 行全落盘", countOf(text, "[physbone] 第") == 5, "落盘 " .. #text .. " 字节")
@@ -112,7 +112,7 @@ do
 	seed:write(string.rep("旧", 400))   -- 800 字节
 	seed:close()
 	local before = sizeOf(path)
-	local log = makeLogger({ logPath = path, logRotateBytes = 300 })
+	local log = makeLogger({ tunePath = "nonexistent-hd2pbx-tune.txt", logPath = path, logRotateBytes = 300 })
 	log("[physbone] 轮转之后的第一行")
 	local rotated = sizeOf(path .. ".1")
 	local current = readAll(path) or ""
@@ -130,7 +130,7 @@ do
 	local seed = io.open(path, "wb")
 	seed:write("上一次启动留下的证据")
 	seed:close()
-	local log = makeLogger({ logPath = path, logRotateBytes = 4096 })
+	local log = makeLogger({ tunePath = "nonexistent-hd2pbx-tune.txt", logPath = path, logRotateBytes = 4096 })
 	log("[physbone] 这次启动")
 	local text = readAll(path) or ""
 	check("未超阈值时不轮转", sizeOf(path .. ".1") == nil)
@@ -143,7 +143,7 @@ end
 -- ---------------------------------------------------------------------------
 do
 	local ok, err = pcall(function()
-		local log = makeLogger({ log = false })
+		local log = makeLogger({ tunePath = "nonexistent-hd2pbx-tune.txt", log = false })
 		for index = 1, 100 do log("[physbone] 静默测试 %d", index) end
 	end)
 	check("关掉日志时调用不抛错", ok, tostring(err))
