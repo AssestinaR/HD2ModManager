@@ -347,7 +347,9 @@ public sealed class AppUpdater : IDisposable
 			if (sumMeta is null)
 			{
 				// SHA256SUMS 只是对 API 摘要的交叉校验；它两条路都取不到时，退回只信 API 给的摘要（下载后仍严格比对）。
-				listed = c.Package.Digest!["sha256:".Length..].ToLowerInvariant();
+								listed = c.Package.Digest!["sha256:".Length..].ToLowerInvariant();
+				// 降级必须留痕：否则界面上"校验来源"会停在旧值，用户以为 SHA256SUMS 校验过了。
+				lock (_gate) _digestSource = DigestSource.ApiDigestOnly;
 			}
 			else
 			{
