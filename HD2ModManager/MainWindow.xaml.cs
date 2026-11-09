@@ -207,7 +207,7 @@ namespace HD2ModManager
             catch (Exception exception)
             {
                 LogService.Error($"退出前保存护甲组件失败：{exception}");
-                MessageBox.Show("护甲组件尚未成功保存，已暂缓关闭。\n" + exception.Message,
+                HD2ModManager.Views.AppDialog.Show("护甲组件尚未成功保存，已暂缓关闭。\n" + exception.Message,
                     "保存失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             finally { _workspaceClosePending = false; }

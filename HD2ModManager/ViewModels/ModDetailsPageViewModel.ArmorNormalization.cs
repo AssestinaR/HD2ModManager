@@ -57,7 +57,7 @@ public partial class ModDetailsPageViewModel
             var warnings = inspection.Armors.SelectMany(armor => armor.Warnings)
                 .Concat(inspection.Issues.Where(issue => issue.Severity == CoreIssueSeverity.Warning).Select(issue => issue.Message))
                 .Distinct().ToArray();
-            if (warnings.Length != 0 && MessageBox.Show(
+            if (warnings.Length != 0 && HD2ModManager.Views.AppDialog.Show(
                 System.Windows.Application.Current.MainWindow,
                 "规整按同一 patch 内的护甲使用相同模型处理；非承载护甲部件将隐藏。" + Environment.NewLine
                 + string.Join(Environment.NewLine, warnings) + Environment.NewLine + "是否继续生成？",
@@ -94,7 +94,7 @@ public partial class ModDetailsPageViewModel
             var outputWarnings = result.Issues.Where(issue => issue.Severity == CoreIssueSeverity.Warning)
                 .Select(issue => issue.Message).Except(warnings).ToArray();
             if (outputWarnings.Length != 0)
-                MessageBox.Show(System.Windows.Application.Current.MainWindow, string.Join(Environment.NewLine, outputWarnings),
+                HD2ModManager.Views.AppDialog.Show(System.Windows.Application.Current.MainWindow, string.Join(Environment.NewLine, outputWarnings),
                     "护甲规整完成，有兼容提醒", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (OperationCanceledException)
@@ -105,7 +105,7 @@ public partial class ModDetailsPageViewModel
         {
             task?.MarkFailed(exception.Message);
             LogService.Error($"护甲规整失败：输出={destination}，错误={exception}");
-            MessageBox.Show(System.Windows.Application.Current.MainWindow, exception.Message,
+            HD2ModManager.Views.AppDialog.Show(System.Windows.Application.Current.MainWindow, exception.Message,
                 "护甲规整失败", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
