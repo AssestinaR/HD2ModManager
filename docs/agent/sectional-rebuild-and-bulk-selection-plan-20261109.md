@@ -178,6 +178,19 @@
 
 ### W3 `legacy2sectional` 转换服务（核心新增）
 
+> **实施注记（开始写之前查到的，能省一大截）**：下面这些空想出来的步骤，仓库里基本都有现成件——
+>
+> | 要做的事 | 现成的东西 |
+> |---|---|
+> | 看一个 patch 里有什么、谁内嵌谁外置 | `MaterialPackagingService.InspectAsync` → `PatchTocEntry` + `PatchAssetReference` + `UnitAssetKeys / MaterialAssetKeys / TextureAssetKeys / EmbeddedMaterialAssetKeys / ExternalMaterialAssetKeys / RequiredMaterialAssetKeys` |
+> | 把一个 patch 拆成「模型」与「材质」两份 | `MaterialPackagingService.SplitAsync(source, modelOutDir, materialOutDir)`，自带校验 |
+> | 按 asset key 从多个来源抽一份干净 patch | `PatchSubsetWriter.WriteSelectedAsync(template, outDir, selections)` |
+> | 类型 id | `PatchUnitMeshReader.UnitTypeId` / `MaterialDependencyResolver.MaterialTypeId` / `.TextureTypeId` |
+>
+> 所以 W3 是**装配**，不是从零造 patch 读写。真正的难点只剩两处：
+> ① 依据文件要能回答"这个根上的 patch 属于哪个来源"（见下）；
+> ② 产物命名与 `patches.json` 的 `patchIndex` 分配要和编译段约定一致。
+
 输入：Mod 目录（根上来源 patch）+ `sectional-source.json`。
 输出：`sectional/` 全套 + 刷新 `patches.json`。
 
@@ -354,9 +367,9 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 |---|---|---|
 | W1 | `sectional-source.json` 读写 + `ModStorageKind` 判据 + `SourceVpkName`→`SourceName` | ✅ 完成 |
 | W6 | `EnumerateTargets` 支持作用域（选中 + 递归后代）+ sectional 系列判据 | ✅ 完成 |
-| W5 | 多选底栏「重构」按钮（可见性只看作用域，命令调检测器） | 进行中 |
-| W7 | 三处硬编码文案按 origin 分开 | 未开始 |
-| W3 | `legacy2sectional` 转换服务 | 未开始 |
+| W5 | 多选底栏「重构」按钮（可见性只看作用域，命令调检测器） | ✅ 完成 |
+| W7 | 三处硬编码文案按 origin 分开 | ✅ 完成 |
+| W3 | `legacy2sectional` 转换服务 | 进行中 |
 | W4 | 批量执行器按存储形态分派 | 未开始 |
 | W2 | 「生成sectional版」改为：建条目 + 平铺拷来源 + 写依据 + 导入 + 立刻转换 | 未开始 |
 

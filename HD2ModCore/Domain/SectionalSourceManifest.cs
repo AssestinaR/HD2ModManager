@@ -58,11 +58,21 @@ public sealed record SectionalSourceSelection(string? ArchiveId = null, string? 
 /// </param>
 /// <param name="Order">0 起，升序即覆盖顺序。</param>
 /// <param name="RelativePath">记录当时的库内相对路径，仅用于诊断与漂移报告。</param>
+/// <param name="PatchFiles">
+/// 这个来源被平铺到根上的 patch 文件名（不含 sidecar）。
+/// <para>
+/// <b>为什么必须记。</b>来源 patch 是**平铺**到 Mod 根上的，落盘之后就没有"谁属于谁"的信息了；
+/// 而材质组是"每个来源一条"。没有这张表就只能把所有材质归成一个组，
+/// 用户会失去"这一组是哪个包的材质"这个唯一能区分它们的线索。
+/// </para>
+/// <para>旧文件没有这一项时按"全部归第一个来源"处理，不报错。</para>
+/// </param>
 public sealed record SectionalSourceEntry(
 	string NodeId,
 	string Name,
 	int Order,
-	string? RelativePath = null);
+	string? RelativePath = null,
+	IReadOnlyList<string>? PatchFiles = null);
 
 /// <summary>
 /// 干净资产白名单：转换时只从来源里取这些 key，其余内容一律不进 <c>sectional/</c>。
