@@ -239,8 +239,11 @@ public sealed class AudioBankRepairService(IOfficialBankSource officialBanks)
 			{
 				RestoreFile(patchBackup, patchPath);
 				if (hadStream) RestoreFile(streamBackup, streamPath);
-				File.Delete(patchBackup);
-				if (hadStream) File.Delete(streamBackup);
+				// ⚠️ 删备份前要先摘只读：`File.Copy` 会把源文件的属性一并复制过去，而补丁常常是只读的
+				// （这正是本次要修的那个前提），于是备份也是只读的 —— 直接 `File.Delete` 会抛
+				// UnauthorizedAccessException，被下面那个 catch 吞掉，注释承诺的"删掉多余备份"就静默失效了。
+				DeleteBackup(patchBackup);
+				if (hadStream) DeleteBackup(streamBackup);
 			}
 			catch (Exception restoreException) when (restoreException is IOException or UnauthorizedAccessException)
 			{
@@ -248,6 +251,13 @@ public sealed class AudioBankRepairService(IOfficialBankSource officialBanks)
 			}
 			throw;
 		}
+	}
+
+	/// <summary>回滚成功后删掉那份备份；只读属性先摘掉，否则删不动（见调用处）。</summary>
+	private static void DeleteBackup(string path)
+	{
+		ClearReadOnly(path);
+		File.Delete(path);
 	}
 
 	// Mod library files are commonly read-only (copied from archives / marked by the user). Replacing them must not fail
