@@ -32,7 +32,7 @@ KNOWN_EXTERNAL = {"conform-stub-test.lua", "lift-probe-test.lua"}
 # 被别的用例 require 的库，不是用例本身。
 LIBRARY_FILES = {"mp_harness.lua"}
 # 这几个是驱动 runtime 而不是 compat 的。
-RUNTIME_TESTS = {"runtime-harness-test.lua"}
+RUNTIME_TESTS = {"runtime-harness-test.lua", "log-budget-test.lua"}
 
 
 def find_lua() -> str:

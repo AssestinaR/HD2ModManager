@@ -31,6 +31,11 @@
 
 local M = {}
 
+-- 2.0.1：**日志瘦身**（只动日志，不动求解）。心跳 120 帧 → 600 帧；打开时旧文件超
+--        512 KiB 就轮转成 `.1`；一次启动最多写 128 KiB，用满之后只留错误/失败/警告/驱动失效
+--        四类。目的一句话：日志是事后唯一的证据，但它不该成为磁盘上的负担，也不该因为
+--        "玩家这局玩了多久"而决定自己有多大。
+--
 -- 2.0.0：**多人局**。以前整条调度只认"一个玩家 avatar"，多出来的候选一律当成尸体；
 --        于是队友一出现就被判成"玩家换人了"，会话全丢、重新挂到队友身上，自己身上反而没物理。
 --        现在按玩家分组：每个活动玩家各自持有自己的会话，谁死了只收谁。
@@ -40,7 +45,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.0.0"
+M.VERSION = "2.0.1"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -64,6 +69,19 @@ local function defaultLogPath(options)
 	return nil
 end
 
+--- 一次启动最多往盘上写多少字节（默认 128 KiB）；用满之后只留"出事了"的行。
+local DEFAULT_LOG_MAX_BYTES = 128 * 1024
+
+--- 打开日志时如果已有文件超过这个大小就轮转成 `.1`（默认 512 KiB）。
+local DEFAULT_LOG_ROTATE_BYTES = 512 * 1024
+
+--- 预算用尽之后**仍然**要落盘的标记。
+--- <para>
+--- 只留这几类，是因为它们本身就是"出事了"的证据；心跳、等待、预算、逐链明细
+--- 这类常规行才是吃字节的大头，也是最没必要的长期留存。
+--- </para>
+local ALWAYS_LOG_TAGS = { "[错误]", "[失败]", "[警告]", "[驱动失效]" }
+
 --- 造一个 logger。返回 `log, context`。
 --- <para>
 --- 两个刻意的选择：
@@ -73,18 +91,64 @@ end
 --- 帧号由 `drive` 每帧写进 `context.frame`：compat 会直接调 `session.logger`，
 --- 只能靠这个共享表把上下文带进去。
 --- </para>
+--- <para>
+--- 光"追加"会有两个副作用，所以这里还加了两道闸：
+---   * **跨会话轮转**：打开时文件已经超过 <c>logRotateBytes</c> 就改名成 `.1`。
+---     否则这个文件会随每次启动单调长大，几百 MB 之后连打开都费劲。
+---   * **单次启动预算**：写满 <c>logMaxBytes</c> 就停常规行，并落一行说明。
+---     心跳这类周期行的总量因此有了硬上限，不再取决于玩家玩了多久。
+--- 刻意**没有**加"开局 N 秒后停止录制"的时间窗：玩到第 40 分钟才出现的毛病
+--- 恰好会落在窗外，而这正是最需要日志的时候。要省字节，砍周期行比砍时间窗安全。
+--- </para>
 local function makeLogger(options)
 	local handle = nil
 	local path = defaultLogPath(options)
+	local maxBytes = (options and options.logMaxBytes) or DEFAULT_LOG_MAX_BYTES
+	local rotateBytes = (options and options.logRotateBytes) or DEFAULT_LOG_ROTATE_BYTES
 	if path then
+		-- 轮转：先量旧文件，超阈值就挪到 `.1`（覆盖上一次的 `.1`）。
+		pcall(function()
+			local probe = io.open(path, "r")
+			if probe == nil then return end
+			local size = probe:seek("end") or 0
+			probe:close()
+			if size <= rotateBytes then return end
+			os.remove(path .. ".1")
+			os.rename(path, path .. ".1")
+		end)
 		local ok, h = pcall(io.open, path, "a")
 		if ok then handle = h end
 	end
 	local debugEnabled = options ~= nil and options.debug == true
 	local context = { frame = 0 }
+	local used, lines, exhausted = 0, 0, false
+	local function writeLine(text)
+		local ok = pcall(function() handle:write(text, "\n") handle:flush() end)
+		if ok then lines = lines + 1 end
+		return ok
+	end
+	local function alwaysKept(text)
+		for index = 1, #ALWAYS_LOG_TAGS do
+			if string.find(text, ALWAYS_LOG_TAGS[index], 1, true) ~= nil then return true end
+		end
+		return false
+	end
 	local function emit(text)
 		if handle ~= nil then
-			pcall(function() handle:write(text, "\n") handle:flush() end)
+			local size = #text + 1
+			if exhausted then
+				-- 预算用尽：常规行丢掉，出事的行照写。
+				if alwaysKept(text) then used = used + size; writeLine(text) end
+			elseif used + size > maxBytes then
+				exhausted = true
+				used = used + size
+				writeLine(string.format(
+					"[physbone] 日志已达上限 %d KiB（此前 %d 行）⇒ 本次启动后续只保留错误/失败/警告类",
+					math.floor(maxBytes / 1024), lines))
+			else
+				used = used + size
+				writeLine(text)
+			end
 		end
 		if debugEnabled then
 			local real = rawget(_G, "print")
@@ -1378,7 +1442,8 @@ local function drive(runtime)
 	-- 阶段心跳：每 N 帧一行，证明驱动块确实被进入过，并给出当帧的关键事实。
 	-- 上一轮出现过"phase 明明是 live 但 update 从不执行"，没有这条就无法区分
 	-- "没进块"和"进了块但走了别的分支"。
-	local heartbeat = options.heartbeatFrames or 120
+	-- 600 帧（60 fps 下 10 秒）足够回答这个问题；120 帧是每秒 2 行，一场长局光心跳就上百 KB。
+	local heartbeat = options.heartbeatFrames or 600
 	if (runtime.driveFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
@@ -1545,5 +1610,10 @@ M.tune_values_ = tune_values
 M.lift_unit_ = lift_unit
 M.lift_bone_ = lift_bone
 M.apply_lift_ = apply_lift
+
+-- 测试钩子：日志闸门（轮转 + 单次启动预算 + 用尽后只留错误类）。
+-- 这三条判据都只能看**落盘结果**，所以必须能直接造一个 logger 往临时文件里写，
+-- 而不是靠进游戏观察。
+M.make_logger_ = makeLogger
 
 return M
