@@ -195,6 +195,17 @@
 （`converter.InspectAsync(facts)`）；子级只作为"来源 patch"被拷贝，它们自己的护甲/头盔
 还没有出现在可选项里。要补的话，得对每个子级各读一次 facts 再合并候选。
 
+> **2026-11-10 已补**（`ebaede4`）：候选表改成对**整条来源链**（主 + 递归内的 legacy 子级）
+> 各读一次 facts → `InspectAsync` → 按 archiveId 去重合并；白名单的引用闭包也改成读整条链的
+> patch 路径（选中的护甲可能来自子级，只读主 Mod 会算不出它的材质）。
+>
+> 同时订正两处我判断错的地方：
+> - **「递归」与「只认 legacy」不是二选一**，是同一个集合的两个约束。逐级向下走、非 legacy
+>   的子级不进来源集——那是定义使然，不是缺陷。
+> - **依据文件里的 unit id 不会漂移**：它们是**来源 patch 里的 id**，来源 patch 是磁盘文件，
+>   游戏更新不改它。反过来，若每次从 `armor/helmet` 重推，游戏一更新护甲表重推出来的就是
+>   另一套 unit——**漂移的是重推方案**。所以存 id 才是稳定项，`armor/helmet` 只作溯源。
+
 > **W2 开工前的侦查结论（下一轮直接用，不要再翻一遍）：**
 >
 > - 现有入口 `ModDetailsPageViewModel.CustomModel.cs:11 OpenCustomModelConversionAsync`：
