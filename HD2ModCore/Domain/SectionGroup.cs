@@ -36,6 +36,16 @@ public enum SectionGroupSource
 
 	/// <summary>用户手建的。</summary>
 	Manual = 2,
+
+	/// <summary>
+	/// 从模型自带的 <c>$BodyGroup</c>（可切换 bodypart 的多个变体）推导出来的。
+	/// <para>
+	/// 它和 <see cref="NoDraw"/> 描述的是同一类东西（"哪些几何算一个开关"），但数据来源不同：
+	/// <c>$no_draw</c> 是**另一个 VPK** 里的材质覆盖，而 bodygroup 就在模型自己里面。
+	/// 所以这类组不需要任何外部文件跟着 Mod 走，重建时永远能重新推导出来。
+	/// </para>
+	/// </summary>
+	BodyGroup = 3,
 }
 
 /// <summary>

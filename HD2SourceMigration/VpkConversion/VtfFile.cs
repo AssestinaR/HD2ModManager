@@ -90,7 +90,16 @@ public sealed record VtfFile
 
 	public int Depth { get; private init; }
 
-	/// <summary><c>mip0</c> 到 <c>mipN-1</c>，<b>已按正确顺序还原</b>（下标 0 = 全分辨率）。</summary>
+	/// <summary>
+	/// <c>mip0</c> 到 <c>mipN-1</c>，<b>已按正确顺序还原</b>（下标 0 = 全分辨率）。
+	/// <para>
+	/// <b>每层只含一帧</b>：多帧 VTF 取第 0 帧，长度恒等于 <see cref="MipSize"/>(该层尺寸)。
+	/// 多帧图（L4D2 的换装贴图靠 VMT 的 <c>$frame</c> 随机选一套）在 HD2 侧没有对应机制，
+	/// 只能固定取一帧；而"每层塞进全部帧"的旧行为会让下游按单帧算的长度校验失败
+	/// （<c>SourceMaterialConverter.BuildSourceDds</c> → <c>Hd2TextureAsset.BuildDds</c>），
+	/// 表现为整张贴图被退回、材质退成兜底灰。
+	/// </para>
+	/// </summary>
 	public IReadOnlyList<byte[]> Mips { get; private init; } = [];
 
 	/// <summary>低分辨率缩略图原始字节（未解码）。</summary>
@@ -241,21 +250,28 @@ public sealed record VtfFile
 		if (!FormatInfo.ContainsKey(highResFormat))
 			throw new InvalidDataException($"未知的 VTF 高分辨率格式 {highResFormat}（v{major}.{minor}）。");
 
-		// 每层的字节数：尺寸每层减半（下限 1），再乘 frames × depth。
+		// 每层的字节数：尺寸每层减半（下限 1）；整块 = 单帧单面 × frames × depth。
+		//
+		// ⚠️ 两个尺寸必须分开记：**块内偏移/块尾定位用整块**（帧在同一 mip 块内依次排列），
+		// **对外暴露的 Mips 长度用单帧**。混成一个值的后果是多帧贴图每层多出 frames 倍数据，
+		// 下游按单帧算的长度校验（Hd2TextureAsset.BuildDds）必然失败，整张贴图被退回兜底。
 		//
 		// 尺寸字段来自文件，可能是任意垃圾值（65535×65535 乘出来就超过 int）。
 		// 这里的 `checked` 只用来兜"头部损坏"，所以把 `OverflowException` 翻成
 		// 一句能定位的 InvalidDataException —— 让**任何调用方**都不必再认识溢出这两字。
 		int[] sizes;
+		int[] imageSizes;
 		int lowSize;
 		try
 		{
 			sizes = new int[vtf.MipCount];
+			imageSizes = new int[vtf.MipCount];
 			for (var mip = 0; mip < vtf.MipCount; mip++)
 			{
 				var w = Math.Max(1, vtf.Width >> mip);
 				var h = Math.Max(1, vtf.Height >> mip);
-				sizes[mip] = checked(MipSize(w, h, highResFormat) * vtf.Frames * vtf.Depth);
+				imageSizes[mip] = checked(MipSize(w, h, highResFormat) * vtf.Depth);
+				sizes[mip] = checked(imageSizes[mip] * vtf.Frames);
 			}
 
 			lowSize = (vtf.LowResWidth != 0 && vtf.LowResHeight != 0)
@@ -283,12 +299,13 @@ public sealed record VtfFile
 		var lowRes = data.Slice(headerSize, lowSize).ToArray();
 
 		// ⚠️ 从**尾部**往前剥：mip0 是块尾，最后剥出来的才是全分辨率图。
+		// 每块里第 0 帧在最前面，所以只截块首的 imageSizes[mip] 个字节（多帧取第 0 帧）。
 		var mips = new byte[vtf.MipCount][];
 		var offset = chainEnd;
 		for (var mip = 0; mip < vtf.MipCount; mip++)
 		{
 			offset -= sizes[mip];
-			mips[mip] = data.Slice(offset, sizes[mip]).ToArray();
+			mips[mip] = data.Slice(offset, imageSizes[mip]).ToArray();
 		}
 
 		return vtf with

@@ -306,6 +306,23 @@ public sealed class VpkImportService
 		// 导入阶段**不再转换任何东西**：转换属于重构建（来源 → sectional → 编译 → Overwrite）。
 		// 这样导入只有一件事——把权威来源放进 mod 根，链路自然打通。
 		var usedDirectoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+		// **组件开关包：跟着它的模型主体一起入库。**
+		//
+		// 为什么必须带：开关包（那批 `XXX关.vpk`，内容是 `$no_draw` 的 VMT 覆盖）是
+		// **section 组唯一的数据来源** —— 组就是"这些材质落在哪几个 section 上"的一次 join，
+		// 而 join 要用转换时看得见的开关包。2026-11-08 把导入改成"只入库 + 重构建"之后，
+		// 开关包随临时目录被删掉，重构建手里没有它，`components.json` 于是再也没被生成过
+		// （存量 Mod 的组停在旧文件上，新导入的 Mod 一个开关都没有）。
+		//
+		// 归属按材质裸名求交：一次导入可能是 8 人替换包，把整批开关包塞进每个模型会让
+		// 每个 Mod 都多出一串"要隐藏的材质找不到"的死开关。
+		var switchItems = plan.Items.Where(item => item.IsComponentSwitch).ToArray();
+		var hostedSwitchPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		IReadOnlyList<string> MaterialsOf(string vpkPath)
+			=> plan.Items.FirstOrDefault(item => string.Equals(item.VpkPath, vpkPath, StringComparison.OrdinalIgnoreCase))?.Materials
+				?? [];
+
 		if (plan.Groups.Count == 0)
 		{
 			// 没有主体（整批都是材质包）：整批当一个条目。
@@ -341,6 +358,24 @@ public sealed class VpkImportService
 				foreach (var vpk in sources)
 					File.Copy(vpk, Path.Combine(target, Path.GetFileName(vpk)), overwrite: true);
 
+				// 这个主体（模型 + 它的材质包）拥有的 VMT 裸名 → 求出属于它的开关包。
+				var ownedStems = sources.SelectMany(MaterialsOf).ToArray();
+				var packs = ComponentSwitchAttribution.ForTarget(
+					[.. switchItems.Select(item => new ComponentSwitchPack(item.VpkPath, item.Describe(), item.Materials))],
+					ownedStems);
+				foreach (var pack in packs)
+				{
+					File.Copy(pack.VpkPath, Path.Combine(target, Path.GetFileName(pack.VpkPath)), overwrite: true);
+					hostedSwitchPaths.Add(pack.VpkPath);
+				}
+
+				if (packs.Count != 0)
+				{
+					notes.Add($"「{group.DisplayName}」随附 {packs.Count} 个组件开关包（"
+						+ $"{string.Join("、", packs.Select(pack => pack.DisplayName))}）："
+						+ "它们决定这个 Mod 有哪些 section 开关，重构建时要靠它们重新生成开关表。");
+				}
+
 				// **同一来源再来一次 = 更新那个条目**：换成新来源，随后重构建。
 				var existing = VpkSourceIdentity.FindExistingMod(_paths.ModsDirectory, group.ModelVpkPath);
 				produced.Add(new VpkProducedPackage(
@@ -352,12 +387,36 @@ public sealed class VpkImportService
 			}
 		}
 
+		// 没归到任何主体的开关包：说清楚，而不是让用户以为"我明明放了开关包，为什么没有开关"。
+		var orphanSwitches = switchItems.Where(item => !hostedSwitchPaths.Contains(item.VpkPath)).ToArray();
+		if (orphanSwitches.Length != 0)
+		{
+			notes.Add($"{orphanSwitches.Length} 个组件开关包没有归属（它们要隐藏的材质不属于这一批里的任何模型），已跳过："
+				+ string.Join("、", orphanSwitches.Select(item => item.Describe()))
+				+ "。如果它们本来就配另一个角色，请把那个角色的模型一起导入。");
+		}
+
 		notes.Add("来源已入库；转换与编译会在导入后自动跑一次重构建，跑完才是最终产物。");
 		return (new VpkImportReport(source.SourcePath, items, notes), produced);
 	}
 
-	/// <summary>规划里的一条：这个 VPK 能不能转、为什么不能。</summary>
-	private sealed record PlannedItem(string VpkPath, string? Reason, string Kind);
+	/// <summary>规划里的一条：这个 VPK 能不能转、为什么不能，以及它自带哪些材质（VMT 裸名）。</summary>
+	/// <param name="DisplayName">只有组件开关包有：`猫耳`、`披风` 这类给人看的名字。</param>
+	private sealed record PlannedItem(
+		string VpkPath,
+		string? Reason,
+		string Kind,
+		IReadOnlyList<string> Materials,
+		string? DisplayName = null)
+	{
+		/// <summary>组件开关包：它要靠 <see cref="Materials"/> 找归属、并随 Mod 一起入库。</summary>
+		public bool IsComponentSwitch => string.Equals(Kind, "componentSwitch", StringComparison.OrdinalIgnoreCase);
+
+		/// <summary>日志/提示里用它：有显示名就用显示名，否则退回文件名。</summary>
+		public string Describe() => string.IsNullOrWhiteSpace(DisplayName)
+			? Path.GetFileNameWithoutExtension(VpkPath)
+			: DisplayName!;
+	}
 
 	/// <summary>规划结果里的一个「模型主体」。<c>Materials</c> 是它自己的材质包。</summary>
 	private sealed record PlannedGroup(
@@ -409,13 +468,23 @@ public sealed class VpkImportService
 			using var document = JsonDocument.Parse(output);
 			var items = new List<PlannedItem>();
 			foreach (var element in document.RootElement.GetProperty("convertible").EnumerateArray())
-				items.Add(new PlannedItem(ReadString(element, "vpk") ?? string.Empty, null, ReadString(element, "kind") ?? string.Empty));
+			{
+				items.Add(new PlannedItem(
+					ReadString(element, "vpk") ?? string.Empty,
+					null,
+					ReadString(element, "kind") ?? string.Empty,
+					ReadStrings(element, "materials"),
+					ReadString(element, "displayName")));
+			}
+
 			foreach (var element in document.RootElement.GetProperty("skipped").EnumerateArray())
 			{
 				items.Add(new PlannedItem(
 					ReadString(element, "vpk") ?? string.Empty,
 					ReadString(element, "reason"),
-					ReadString(element, "kind") ?? string.Empty));
+					ReadString(element, "kind") ?? string.Empty,
+					ReadStrings(element, "materials"),
+					ReadString(element, "displayName")));
 			}
 
 			var groups = new List<PlannedGroup>();

@@ -15,7 +15,20 @@ public sealed class UpdateException : Exception
 	public UpdateException(UpdateErrorCode code, string message, Exception? inner = null) : base(message, inner) => Code = code;
 }
 
-public enum DigestSource { Github, Mirror }
+public enum DigestSource
+{
+	/// <summary>官方地址拿到（或与镜像一致）。</summary>
+	Github,
+
+	/// <summary>走镜像拿到。</summary>
+	Mirror,
+
+	/// <summary>
+	/// SHA256SUMS 两条路都取不到，只能信 API 返回的资产摘要 —— 校验强度不变的降级：
+	/// 下载后仍然严格比对 SHA-256，只是少了 SHA256SUMS 这层交叉校验。界面/日志据此说明口径。
+	/// </summary>
+	ApiDigestOnly,
+}
 
 /// <summary>是否值得换镜像重试：网站连不上或被限流；其他错误与网络路径无关。</summary>
 public static class UpdateErrors

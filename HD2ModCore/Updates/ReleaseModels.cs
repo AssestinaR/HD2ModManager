@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 
 namespace HD2ModCore.Updates;
 
-public sealed record ReleaseAsset(string Name, string Url, string? Digest, long? Size = null);
+/// <summary><paramref name="ApiUrl"/>：REST API 的资产地址（Accept: application/octet-stream 取内容），github.com/releases/download 不可用时的备用路径；用之前必须过 AppUpdater 的校验。</summary>
+public sealed record ReleaseAsset(string Name, string Url, string? Digest, long? Size = null, string? ApiUrl = null);
 
 public sealed record GithubRelease(
 	string TagName, string? Name, string? Body, bool Draft, bool Prerelease, string? HtmlUrl,
@@ -38,7 +39,7 @@ public static class ReleaseJson
 						var url = Str(a, "browser_download_url");
 						if (name is null || url is null) continue;
 						long? size = a.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var n) ? n : null;
-						assets.Add(new ReleaseAsset(name, url, Str(a, "digest"), size));
+						assets.Add(new ReleaseAsset(name, url, Str(a, "digest"), size, Str(a, "url")));
 					}
 				}
 				DateTimeOffset? published = DateTimeOffset.TryParse(Str(r, "published_at"), out var p) ? p : null;

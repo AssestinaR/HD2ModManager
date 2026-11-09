@@ -342,10 +342,21 @@ public sealed class AppUpdater : IDisposable
 			var file = Path.Combine(_o.RunDir, c.Package.Name);
 			Directory.CreateDirectory(_o.RunDir);
 			UpdateDownloader.CleanupParts(_o.RunDir);
-			var sumMeta = await fetch.OfficialFirstAsync(f => UpdateHttp.GetTextAsync(f, c.Sums.Url, abort.Token)).ConfigureAwait(false);
-			lock (_gate) _digestSource = _digestSource == DigestSource.Mirror || sumMeta.Source == DigestSource.Mirror ? DigestSource.Mirror : DigestSource.Github;
-			var listed = ChecksumFile.SumFor(sumMeta.Value, c.Package.Name) ?? throw new UpdateException(UpdateErrorCode.NoDigest, "Package missing from SHA256SUMS");
-			if ($"sha256:{listed}" != c.Package.Digest!.ToLowerInvariant()) throw new UpdateException(UpdateErrorCode.DigestMismatch, "SHA256SUMS and asset digest differ");
+			var sumMeta = await ReadSumsAsync(fetch, c.Sums, abort.Token).ConfigureAwait(false);
+			string listed;
+			if (sumMeta is null)
+			{
+				// SHA256SUMS 只是对 API 摘要的交叉校验；它两条路都取不到时，退回只信 API 给的摘要（下载后仍严格比对）。
+								listed = c.Package.Digest!["sha256:".Length..].ToLowerInvariant();
+				// 降级必须留痕：否则界面上"校验来源"会停在旧值，用户以为 SHA256SUMS 校验过了。
+				lock (_gate) _digestSource = DigestSource.ApiDigestOnly;
+			}
+			else
+			{
+				lock (_gate) _digestSource = _digestSource == DigestSource.Mirror || sumMeta.Value.Source == DigestSource.Mirror ? DigestSource.Mirror : DigestSource.Github;
+				listed = ChecksumFile.SumFor(sumMeta.Value.Value, c.Package.Name) ?? throw new UpdateException(UpdateErrorCode.NoDigest, "Package missing from SHA256SUMS");
+				if ($"sha256:{listed}" != c.Package.Digest!.ToLowerInvariant()) throw new UpdateException(UpdateErrorCode.DigestMismatch, "SHA256SUMS and asset digest differ");
+			}
 			var baseOptions = _o.Download ?? new DownloadOptions();
 			await UpdateDownloader.DownloadAsync(fetch.Fetch, c.Package, file, abort.Token, new DownloadOptions
 			{
@@ -384,6 +395,31 @@ public sealed class AppUpdater : IDisposable
 			lock (_gate) { if (_abort == abort) _abort = null; }
 			abort.Dispose();
 		}
+	}
+
+	/// <summary>REST API 资产地址：官方只认本仓库的 api.github.com/.../releases/assets/&lt;id&gt;；测试 feed 下只认回环地址。</summary>
+	private bool ApiUrlOk(string? url) =>
+		url is not null && (Loopback
+			? Uri.TryCreate(url, UriKind.Absolute, out var u) && UpdateNetwork.IsLoopback(u)
+			: url.StartsWith($"https://api.github.com/repos/{_o.Repo}/releases/assets/", StringComparison.Ordinal)
+				&& long.TryParse(url[$"https://api.github.com/repos/{_o.Repo}/releases/assets/".Length..], out _));
+
+	/// <summary>
+	/// 取 SHA256SUMS：先走 browser_download_url（官方优先），失败再走 API 资产地址（octet-stream）。
+	/// 两条都失败返回 null（调用方降级）；用户取消照常抛出。
+	/// </summary>
+	private async Task<(string Value, DigestSource Source)?> ReadSumsAsync(UpdateNetwork.UpdateFetch fetch, ReleaseAsset sums, CancellationToken ct)
+	{
+		try { return await fetch.OfficialFirstAsync(f => UpdateHttp.GetTextAsync(f, sums.Url, ct)).ConfigureAwait(false); }
+		catch (Exception e) when (e is not OperationCanceledException and not OutOfMemoryException) { }
+		ct.ThrowIfCancellationRequested();
+		if (ApiUrlOk(sums.ApiUrl))
+		{
+			try { return await fetch.OfficialFirstAsync(f => UpdateHttp.GetTextAsync(f, sums.ApiUrl!, ct, "application/octet-stream")).ConfigureAwait(false); }
+			catch (Exception e) when (e is not OperationCanceledException and not OutOfMemoryException) { }
+			ct.ThrowIfCancellationRequested();
+		}
+		return null;
 	}
 
 	private static long? FreeBytesOf(string dir)
