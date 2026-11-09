@@ -382,6 +382,8 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         }
 
         HeaderTitleElement.IsHitTestVisible = title;
+        // 摘要文字在 XAML 里排在状态层之后（盖在上面），淡出后仍会挡住分类第二行里字形所在的像素。
+        HeaderSummaryElement.IsHitTestVisible = title;
         HeaderSearchBox.IsHitTestVisible = _searchOpen;
         // 不可见时不让 Tab 键走进搜索框。
         HeaderSearchBox.Focusable = _searchOpen;
