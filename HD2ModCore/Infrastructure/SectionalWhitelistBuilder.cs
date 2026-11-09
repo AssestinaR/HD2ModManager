@@ -58,6 +58,39 @@ public static class SectionalWhitelistBuilder
 			textures.Select(Format).ToArray());
 	}
 
+	/// <summary>
+	/// 从磁盘上的来源 patch 读出引用关系，再算闭包。
+	/// <para>
+	/// <b>为什么要逐 patch 分析并把同一来源的其它 patch 当"相关材质包"传进去。</b>
+	/// 一个 legacy Mod 的材质常常在另一份 patch 里（模型 patch 只带 unit）。
+	/// 不传相关包时，unit → 材质这一步什么也读不到，白名单会缺掉全部材质，
+	/// 产物就成"模型在、材质没了"。
+	/// </para>
+	/// </summary>
+	public static async Task<SectionalSourceAssetKeys> BuildFromPatchesAsync(
+		IReadOnlyCollection<AdaptationAssetKey> unitKeys,
+		IReadOnlyList<string> patchTocPaths,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(unitKeys);
+		ArgumentNullException.ThrowIfNull(patchTocPaths);
+
+		var analyzer = new PatchGroupAnalyzer();
+		var references = new List<PatchAssetReference>();
+		foreach (var path in patchTocPaths)
+		{
+			var related = patchTocPaths
+				.Where(other => !string.Equals(other, path, StringComparison.OrdinalIgnoreCase))
+				.ToArray();
+			var analysis = await analyzer
+				.AnalyzeDependencyGraphAsync(new PatchGroupInput(path, RelatedMaterialTocFilePaths: related), cancellationToken)
+				.ConfigureAwait(false);
+			references.AddRange(analysis.References);
+		}
+
+		return Build(unitKeys, references);
+	}
+
 	/// <summary>白名单里的文本形式：<c>typeId:fileId</c>，各 16 位十六进制。</summary>
 	public static string Format(AdaptationAssetKey key)
 		=> $"{key.TypeId:x16}:{key.FileId:x16}";
