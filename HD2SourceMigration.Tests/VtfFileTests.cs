@@ -127,6 +127,141 @@ public sealed class VtfFileTests
 	}
 
 	/// <summary>
+	/// 造一个 **VTF 7.1** 的头：<c>headerSize = 64</c>、**没有 <c>depth</c> 字段**，
+	/// 而 <c>+63</c> 那两个字节正好是垃圾值 <c>0xD801</c>（= 55 297，真文件里就是这个数）——
+	/// 低字节是头尾填充、高字节是低分辨率缩略图的首字节。
+	/// </summary>
+	private static byte[] BuildSyntheticVtf71()
+	{
+		const int headerSize71 = 64;
+		const int lowResSize = 128;   // 16×16 DXT1
+		const int mip0Size = 32;      // 8×8 DXT1
+		var data = new byte[headerSize71 + lowResSize + mip0Size];
+		"VTF\0"u8.CopyTo(data);
+		BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(4), 7);
+		BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(8), 1);      // ← 7.1
+		BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(12), headerSize71);
+		BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(16), 8);     // width
+		BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(18), 8);     // height
+		BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(24), 1);     // frames
+		BinaryPrimitives.WriteSingleLittleEndian(data.AsSpan(48), 1f);    // bumpScale
+		BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(52), 13);    // DXT1
+		data[56] = 1;                                                    // mipCount
+		data[57] = 13;                                                   // 缩略图 DXT1
+		data[61] = 16;
+		data[62] = 16;
+		// **故意不写 depth**：7.1 没有这个字段。
+		data[63] = 0x01;
+		data[headerSize71] = 0xD8;
+		Array.Fill(data, (byte)0x5A, headerSize71 + 1, lowResSize - 1);   // 缩略图其余字节
+		Array.Fill(data, (byte)0x33, headerSize71 + lowResSize, mip0Size); // mip0
+		return data;
+	}
+
+	// ---- VTF 7.1：+63 不是 depth（2026-11-09 牛牛/3335630365 两个包整批失败的根因） ----
+	//
+	// depth 是 **7.2 才加**的字段（官方 vtf.h：VTFFileHeaderSize(7,0) 与 (7,1) 都等于
+	// sizeof(VTFFileHeaderV7_1_t)，depth 在 VTFFileHeaderV7_2_t 里）。
+	// 无条件从 +63 读，等于把缩略图首字节当层数，链长算到 GB 级。
+
+	[Fact]
+	public void Vtf71HasNoDepthFieldAndIsReadAsASingleSlice()
+	{
+		var data = BuildSyntheticVtf71();
+		// 先钉住"陷阱确实存在"：按 7.2 的读法会读到 55 297 层。
+		Assert.Equal(55297, BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(63)));
+
+		var vtf = VtfFile.Read(data);
+
+		Assert.Equal(7, vtf.Major);
+		Assert.Equal(1, vtf.Minor);
+		Assert.False(VtfFile.HasDepthField(1));
+		Assert.Equal(1, vtf.Depth);
+		Assert.Equal(1, vtf.MipCount);
+		Assert.Equal(32, vtf.Mips[0].Length);
+		Assert.All(vtf.Mips[0], value => Assert.Equal(0x33, value));
+		// 链尾必须正好压在文件末尾：多一层、少一层都会在这里露出来。
+		Assert.Equal(0, vtf.Trailing);
+	}
+
+	[Fact]
+	public void Vtf70IsTreatedLikeVtf71()
+	{
+		// 官方头文件里 7.0 与 7.1 共用 VTFFileHeaderV7_1_t —— 同样没有 depth。
+		var data = BuildSyntheticVtf71();
+		BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(8), 0);
+
+		var vtf = VtfFile.Read(data);
+
+		Assert.Equal(0, vtf.Minor);
+		Assert.False(VtfFile.HasDepthField(0));
+		Assert.Equal(1, vtf.Depth);
+		Assert.Equal(0, vtf.Trailing);
+	}
+
+	[Fact]
+	public void UnknownMajorVersionIsRejectedInsteadOfGuessed()
+	{
+		var data = BuildSyntheticVtf();
+		BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(4), 8);
+
+		var exception = Assert.Throws<InvalidDataException>(() => VtfFile.Read(data));
+		// 必须点名版本：签名相同、头布局靠版本约定，按 7.x 硬猜只会解出错位的图。
+		Assert.Contains("不支持的 VTF 版本 8.2", exception.Message);
+		Assert.Contains("7.x", exception.Message);
+	}
+
+	[Fact]
+	public void AbsurdDepthIsRejectedWithAReadableMessageInsteadOfOverflowing()
+	{
+		var data = BuildSyntheticVtf();
+		BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(63), 60000);
+
+		// **不能**是 OverflowException：那两字既说不出是哪张图，也说不出是什么问题。
+		var exception = Assert.Throws<InvalidDataException>(() => VtfFile.Read(data));
+		Assert.Contains("depth=60000", exception.Message);
+		Assert.Contains("7.2", exception.Message);
+	}
+
+	[Fact]
+	public void RealFixture_Vtf71MultiMipChainLandsExactlyOnTheFileEnd()
+	{
+		// 真数据：用户报障那个 L4D2 包里的 materials/vgui/s_panel_producer_incap.vtf
+		// 256×128 DXT5、mips=9、带 16×8 缩略图、+63 = 55297（垃圾）。
+		var data = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "vtf71-panel-256x128.vtf"));
+
+		var vtf = VtfFile.Read(data);
+
+		Assert.Equal(7, vtf.Major);
+		Assert.Equal(1, vtf.Minor);
+		Assert.Equal(64, vtf.HeaderSize);
+		Assert.Equal(256, vtf.Width);
+		Assert.Equal(128, vtf.Height);
+		Assert.Equal("DXT5", vtf.FormatName);
+		Assert.Equal(9, vtf.MipCount);
+		Assert.Equal(1, vtf.Depth);
+		Assert.Equal(0, vtf.Trailing);
+		Assert.Equal(32_768, vtf.Mips[0].Length);      // 256×128 DXT5
+		Assert.Equal(16, vtf.Mips[8].Length);           // 1×1 DXT5 也是一整块
+		Assert.Equal(64, vtf.LowRes.Length);            // 16×8 DXT1
+	}
+
+	[Fact]
+	public void RealFixture_Vtf72StillCarriesItsDepth()
+	{
+		var data = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "vtf72-normal-16x16.vtf"));
+
+		var vtf = VtfFile.Read(data);
+
+		Assert.Equal(7, vtf.Major);
+		Assert.Equal(2, vtf.Minor);
+		Assert.True(VtfFile.HasDepthField(2));
+		Assert.Equal(1, vtf.Depth);
+		Assert.Equal(5, vtf.MipCount);
+		Assert.Equal(0, vtf.Trailing);
+	}
+
+	/// <summary>
 	/// 真实数据：从 L4D2 <c>pak01</c> 里读**原版模型贴图**。
 	/// <para>
 	/// 这条测试的价值全在"非内联"上：原版模型贴图的像素数据在<b>分卷</b>

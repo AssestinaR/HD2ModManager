@@ -513,28 +513,10 @@ public static class VpkRebuildService
 	}
 
 	private static string ExplainConversionFailure(Hd2ModProcess.Result result)
-	{
-		if (!string.IsNullOrWhiteSpace(result.Output))
-		{
-			try
-			{
-				using var document = JsonDocument.Parse(result.Output);
-				if (document.RootElement.TryGetProperty("error", out var error)
-					&& error.ValueKind == JsonValueKind.Object
-					&& error.TryGetProperty("message", out var message)
-					&& message.GetString() is { Length: > 0 } text)
-				{
-					return "重新转换失败：" + text;
-				}
-			}
-			catch (JsonException)
-			{
-				// 不是 JSON：落回下面那句。
-			}
-		}
-
-		return Hd2ModProcess.Explain(result, "重新转换");
-	}
+		// 单个 VPK 失败时 CLI 报的是 `failures[]` + 退出码 2，顶层没有 `error` 对象。
+		// 以前这里只认 `error.message`，于是退回"把整份 JSON 粘进消息"（实测 1 046 字）。
+		// 现在交给 Hd2ModProcess.DescribeFailure：它先从 JSON 里取真正的原因，取不到才退回原文。
+		=> Hd2ModProcess.DescribeFailure(result, "重新转换");
 
 	/// <summary>
 	/// 一个 <c>sections.json</c> 里被 section 实际引用的**不同**材质 id 个数；读不到就是 0。

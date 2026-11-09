@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Infrastructure;
@@ -91,4 +92,87 @@ public static class Hd2ModProcess
 		var detail = string.IsNullOrWhiteSpace(result.Error) ? result.Output : result.Error;
 		return $"{what}失败（hd2mod 退出码 {result.ExitCode}）：{detail.Trim()}";
 	}
+
+	/// <summary>
+	/// 失败时给一句<b>能读</b>的话：先从 CLI 的 JSON 报告里取出真正的原因，取不到才退回原文。
+	/// <para>
+	/// <b>为什么不能直接用 <see cref="Explain"/>。</b>它按"stderr 比 stdout 更接近真相"排序，
+	/// 而 CLI 的失败有两种写法：
+	/// </para>
+	/// <list type="bullet">
+	/// <item>整体失败 —— 顶层 <c>{"ok":false,"error":{"code":…,"message":…}}</c>；</item>
+	/// <item>单个 VPK 失败 —— 顶层 <c>failures:[{vpk,error}]</c>，退出码 2，而 stderr 上只有
+	/// <c>#progress</c> 行（已被剔除）。</item>
+	/// </list>
+	/// <para>
+	/// 第二种情况下 stderr 是空的，于是 <see cref="Explain"/> 会把<b>整份 JSON</b> 拼进消息：
+	/// 2026-11-09 实测那一条是 1 046 个字符，用户看到的是
+	/// <c>重新转换失败（hd2mod 退出码 2）：{ "ok": false, …</c>，真正的原因埋在几百字之后。
+	/// </para>
+	/// </summary>
+	/// <param name="result">一次 CLI 运行的结果。</param>
+	/// <param name="what">动作名（"重新转换""规划 VPK"…），拼在"失败："前面。</param>
+	public static string DescribeFailure(Result result, string what)
+	{
+		if (TryReadJsonMessage(result.Output) is { Length: > 0 } json)
+			return $"{what}失败：{json}";
+
+		var detail = string.IsNullOrWhiteSpace(result.Error) ? result.Output : result.Error;
+		return $"{what}失败（hd2mod 退出码 {result.ExitCode}）：{Clip(detail.Trim())}";
+	}
+
+	/// <summary>从 CLI 的 JSON 里取"一句话原因"：顶层 error.message，其次 failures[].error。</summary>
+	private static string? TryReadJsonMessage(string json)
+	{
+		if (string.IsNullOrWhiteSpace(json)) return null;
+		try
+		{
+			using var document = JsonDocument.Parse(json);
+			var root = document.RootElement;
+			if (root.ValueKind != JsonValueKind.Object) return null;
+
+			if (root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object
+				&& error.TryGetProperty("message", out var message)
+				&& message.ValueKind == JsonValueKind.String
+				&& message.GetString() is { Length: > 0 } text)
+			{
+				return Clip(text);
+			}
+
+			// 单个 VPK 失败：逐个列出来（最多三条），末尾补一句"还有 N 个"。
+			if (root.TryGetProperty("failures", out var failures) && failures.ValueKind == JsonValueKind.Array
+				&& failures.GetArrayLength() != 0)
+			{
+				var messages = failures.EnumerateArray()
+					.Select(item => item.ValueKind == JsonValueKind.Object
+						&& item.TryGetProperty("error", out var why) && why.ValueKind == JsonValueKind.String
+							? why.GetString()
+							: null)
+					.Where(item => !string.IsNullOrWhiteSpace(item))
+					.Take(3)
+					.ToArray();
+				if (messages.Length != 0)
+				{
+					var count = failures.GetArrayLength();
+					var more = count > messages.Length ? $"（共 {count} 个 VPK 失败，这里列出前 {messages.Length} 个）" : string.Empty;
+					return Clip(string.Join("；", messages!)) + more;
+				}
+			}
+		}
+		catch (JsonException)
+		{
+			// 不是 JSON：交给调用方退回原文。
+		}
+
+		return null;
+	}
+
+	/// <summary>把一段可能很长的原始输出剪成人能看的长度。</summary>
+	private static string Clip(string text)
+		=> text.Length <= MaxDetailLength
+			? text
+			: text[..MaxDetailLength].TrimEnd() + $"…（原文共 {text.Length} 字，已截断）";
+
+	/// <summary>失败文案里原文的上限：超过它一定是把 JSON 之类整段拼进来了。</summary>
+	private const int MaxDetailLength = 400;
 }

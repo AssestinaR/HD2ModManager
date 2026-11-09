@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -13,6 +13,16 @@
 
   <ItemGroup>
     <ProjectReference Include="..\HD2SourceMigration\HD2SourceMigration.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      真数据夹具：从用户报障的那个 L4D2 包里取出的一张 VTF 7.1
+      （materials/vgui/s_panel_producer_incap.vtf，256×128 DXT5、mips=9、带 16×8 缩略图）。
+      为什么留真文件而不是只留合成头：这个 bug 的形态就是"7.1 的头比 7.2 短 1 个字段"，
+      合成头能钉住它，但真实的 9 层链 + 缩略图才能钉住"链尾对齐"。43 KB，可以接受。
+    -->
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

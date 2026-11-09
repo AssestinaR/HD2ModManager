@@ -86,9 +86,19 @@ public sealed record VpkImportReport(
 			switch (item.Outcome)
 			{
 				case VpkImportOutcome.Converted:
+					// **只有数字是真的时候才报数字。**
+					//
+					// 「来源入库」重构之后，导入这一步不再转换任何东西（转换与编译都在导入后的
+					// 一次重构建里做），所以这三个计数一直是硬编码的 0。把它们印出来，用户看到的是
+					// 「✔ xxx.vpk → xxx（0 个 Unit / 0 个 材质 / 0 个 贴图）」——一次**成功**的导入
+					// 看起来像"什么都没转出来"，2026-11-09 的报障就是这么被误读的。
+					// 真正带数字的结论由重构建那一步给（它有 Units / Materials）。
+					var counts = item.Units != 0 || item.Materials != 0 || item.Textures != 0
+						? $"（{item.Units} 个 Unit / {item.Materials} 个材质 / {item.Textures} 张贴图）"
+						: "（来源已入库，产物在随后的重构建里生成）";
 					lines.Add($"  ✔ {name} → {item.ModDirectoryName}"
 						+ (item.Updated ? "（更新原有 Mod）" : string.Empty)
-						+ $"（{item.Units} 个 Unit / {item.Materials} 个材质 / {item.Textures} 张贴图）");
+						+ counts);
 					break;
 				case VpkImportOutcome.Skipped:
 					lines.Add($"  – {name}：{item.Reason}");
@@ -390,8 +400,10 @@ public sealed class VpkImportService
 			var (exitCode, output, error) = await RunCliAsync(executable, arguments, cancellationToken).ConfigureAwait(false);
 			if (exitCode != 0)
 			{
+				// 规划失败时 CLI 多数是**整体**失败（`error.message` 里写着缺什么），
+				// 但 stderr 上只有进度行，直接拼原文等于把整份 JSON 贴给用户。
 				throw new InvalidDataException(
-					$"规划 VPK 失败（hd2mod 退出码 {exitCode}）：{(string.IsNullOrWhiteSpace(error) ? output : error).Trim()}");
+					Hd2ModProcess.DescribeFailure(new Hd2ModProcess.Result(exitCode, output, error), "规划 VPK"));
 			}
 
 			using var document = JsonDocument.Parse(output);

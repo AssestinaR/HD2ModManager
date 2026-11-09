@@ -2,7 +2,7 @@
 
 **日期**：2026-11-09
 **来源**：另一位贡献者转来的用户反馈（`牛牛rebone替换路易斯.vpk`）+ 贡献者自己的排查记录（`_conv_niuniu.txt`）
-**状态**：**只做信息收集，本轮未改代码**
+**状态**：**已修复（同一天）** —— 落地记录见文末 §8；正文保留当时的诊断过程。
 
 ---
 
@@ -150,3 +150,43 @@ var depth = SupportsDepthField(major, minor) ? BinaryPrimitives.ReadUInt16Little
 1. 这个用户是不是**只有这一个包**失败？如果他有整批老包，最好一次要到 2–3 个（7.1 的那批：北黑kk、4 月/6 月的老包），确认不是"只有这一种损坏"。
 2. 贡献者那边 `e:\steam\steamapps\common\HD2ModManager` 的**素体工作区写权限**要不要一起排（那是他机器上的安装位置问题，不属于我们的 bug，但会持续误导排查）。
 3. 修复优先级：P0 单独就能让这类包转出来；P0+P1 才让它"转不出来时也说清楚"。建议一个版本内一起发（1.5.7），避免"能转了但报错还是天书"再被报一次。
+
+---
+
+## 8. 落地记录（2026-11-09）
+
+用户随后又给了一份 7.1 的包（`L4D2-3335630365-原版.zip`，内含 `3335630365.vpk`）：**22 张贴图里 10 张 v7.1**，
+按 `depth = 1` 算 22/22 全部精确吃满 —— 与第一个包同一形态，没有第二种坏法（`depth@63` 有 2 张恰好是 1，
+也就是"偶然能读"）。修前它同样 `exit=2 / patches=[] / 5 处失败 —— OverflowException`。
+
+### 改了什么
+
+| 级别 | 文件 | 改动 |
+|---|---|---|
+| P0 | `HD2SourceMigration/VpkConversion/VtfFile.cs` | 先读版本：`major != 7` 明确拒绝；`depth` 只在 `minor >= 7.2` 时从 `+63` 读，7.0/7.1 恒为 1（`HasDepthField`、`FirstMinorVersionWithDepth`、`MaxDepth` 三个常量）；`depth` 不在 1…2048 时按"头部损坏"报 `InvalidDataException`；把 `checked` 的 `OverflowException` 翻成带版本/尺寸的 `InvalidDataException`；越界报错带上版本、header、mips、frames、depth、缩略图尺寸；头部注释改正（`depth` 仅 7.2+、v7.4 实测 88/96 都见过） |
+| P1 | `HD2SourceMigration/VpkConversion/SourceMaterialConverter.cs` | 十处 `catch (… is InvalidDataException or IOException or InvalidOperationException)` 收敛成 `IsTextureReadFailure(exception)`（新增 `OverflowException` / `NotSupportedException` / `ArgumentException`）——**改一处即改十处**，避免"漏一处等于没修" |
+| P1 | `HD2ModCore/Infrastructure/Hd2ModProcess.cs` | 新增 `DescribeFailure(result, what)`：先从 JSON 取 `error.message`，其次 `failures[].error`（最多三条 + "共 N 个"），最后才退回原文并截断到 400 字（`Clip`） |
+| P1 | `HD2ModCore/Infrastructure/VpkRebuildService.cs` | `ExplainConversionFailure` 改用 `DescribeFailure`（不再把整份 JSON 拼进消息） |
+| P1 | `HD2ModManager/Services/VpkImportService.cs` | 规划失败同样走 `DescribeFailure`；导入明细里那三个**硬编码 0** 只在真有数字时才印，否则写"来源已入库，产物在随后的重构建里生成" |
+
+### 测试（新增 17 条）
+
+- `VtfFileTests` +6：7.1 合成头（`+63` 故意填 0xD801 = 55 297，与真文件同值）、7.0 等价、未知主版本拒绝、荒谬 depth 报可读错、**真数据夹具** 7.1 多点几层链尾对齐（`Fixtures/vtf71-panel-256x128.vtf`，43 KB，取自报障包）、真数据 7.2 仍带 depth。
+- `TextureReadFailureTests` +11：`OverflowException` 必须算可降级；空引用/越界/内存不足/取消**不许**被吞。
+- `Hd2ModProcessTests` +5：`failures[]` 不再粘整份 JSON（用真实抓到的那份 1 046 字报告做样本）、`error.message` 优先、最多三条、超长截断、两段输出都空时仍给退出码。
+- 反向验证：把 `depth` 那行临时改回无条件读，`VtfFileTests` **3 条立刻红**；改回后 12/12 绿。
+
+### 端到端
+
+| 包 | 修前 | 修后 |
+|---|---|---|
+| `牛牛rebone替换路易斯.vpk`（30 贴图 / 21 张 7.1） | `ok:false`，`patches:[]`，`exit 2`，`7 处失败 —— OverflowException` | `ok:true`，7 Unit / 15 材质 / 18 贴图，`exit 0`（16 s） |
+| `3335630365.vpk`（22 贴图 / 10 张 7.1） | `ok:false`，`patches:[]`，`exit 2`，`5 处失败 —— OverflowException` | `ok:true`，7 Unit / 8 材质 / 15 贴图，`exit 0`（8 s） |
+| 人工破坏一个**在用**贴图的头部（把 `tf.vtf` 改成 v7.2 + depth=9999，长度不变） | （旧代码：整包失败） | `ok:true`，`materialGap: required 8 / resolved 7 / fallback ["tf"]`，报告写着「源材质 tf 合成失败：…VTF depth=9999 不可信（v7.2，正常是 1；超过 2048 一律当成头部损坏）」——**一个材质降级，其余照常出包** |
+
+全量：`dotnet build -c Debug` 0 警告 0 错误；`dotnet test -c Debug` **2089 通过 / 1 跳过 / 0 失败**。
+
+### 还没做的
+
+- 管理器界面上那条"导入完成后自动重构建"的**成功**文案仍由重构建给（有 Units/Materials），本次只把导入明细里的假 0 去掉；GUI 侧没有自动化测试（WPF 工程不参与测试项目），只能靠人工点一次。
+- 老包的其它形态（VTF 7.0 真实样本、带动画帧的 7.1）仍无真数据；这次的 7.0 覆盖是合成的。

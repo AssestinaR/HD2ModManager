@@ -711,7 +711,27 @@ public sealed class SourceMaterialConverter
 		(string Name, int Length, ulong Hash), byte[]> decodedTextures = new();
 
 	/// <summary>
-	/// 解码一张 VTF 成裸像素，<b>命中缓存时返回副本</b>。
+	/// 「这张贴图读不出来」这一类的异常：格式不支持、文件坏了、算术溢出（头部字段是垃圾时）。
+	/// <para>
+	/// <b>为什么收敛成一个谓词。</b>本文件里有十处 <c>catch</c> 都在做同一件事——把"某张贴图不可用"
+	/// 降级成"这个材质缺这一项"，而不是让整包转换失败。它们曾经各自写着
+	/// <c>InvalidDataException or IOException or InvalidOperationException</c>，**都漏了
+	/// <c>OverflowException</c>**：2026-11-09 的 <c>牛牛rebone替换路易斯.vpk</c>（21 张 VTF 7.1）
+	/// 就是这样把"该材质降级"变成了"整个 VPK 失败、patches 为空"。修的时候漏一处等于没修，
+	/// 所以判据只留这一个定义。
+	/// </para>
+	/// </summary>
+	internal static bool IsTextureReadFailure(Exception exception)
+		=> exception is InvalidDataException
+			or IOException
+			or InvalidOperationException
+			// 头部字段被当成层数/尺寸乘出 int 范围：VTF 7.1 那次的真身。
+			or OverflowException
+			// 解码器对不认识的布局会抛这两个；同样属于"这张图用不了"，不是我们的 bug。
+			or NotSupportedException
+			or ArgumentException;
+
+	/// <summary>解码一张 VTF 成裸像素，<b>命中缓存时返回副本</b>。
 	/// <para>
 	/// <b>为什么必须复制。</b>调用方会就地改像素——擦 alpha、烘 matcap、涂金属 F0、压暗。
 	/// 共享同一份数组会让"后一个材质改了前一个材质的底色"，那种错在产物里表现为
@@ -1136,7 +1156,7 @@ public sealed class SourceMaterialConverter
 			material.TrySetScalar(DirtGlobalAmountVariableId, 0f);
 			material.TrySetScalar(WeatheringCoverageVariableId, 0f);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：「不显示」材质造不出来——{exception.Message}");
 		}
@@ -1288,7 +1308,7 @@ public sealed class SourceMaterialConverter
 				if (mean is not null)
 					means[stem] = mean;
 			}
-			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+			catch (Exception exception) when (IsTextureReadFailure(exception))
 			{
 				// 单张 matcap 解码失败不该让整批转换停下；拿不到平均色就只是不烘。
 				continue;
@@ -1674,7 +1694,7 @@ public sealed class SourceMaterialConverter
 			textures.Add(flatNormal);
 			textures.Add(sharedPbr);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：兜底材质造不出来——{exception.Message}");
 		}
@@ -1717,7 +1737,7 @@ public sealed class SourceMaterialConverter
 		{
 			(texture, opacityMask, translucentMap) = BuildBaseColorTexture(loaded);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return MaterialSynthesisResult.Failed($"{stem}：贴图 {textureName} 转换失败——{exception.Message}");
 		}
@@ -2240,7 +2260,7 @@ public sealed class SourceMaterialConverter
 				rgba = DecodeTextureCached(textureName, vtfBytes, vtf);
 				baseAlpha = TextureAlpha.Measure(rgba);
 			}
-			catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+			catch (Exception exception) when (IsTextureReadFailure(exception))
 			{
 				reason = $"{stem}：贴图 {textureName} 读不出来——{exception.Message}";
 				return LoadOutcome.Failed;
@@ -2480,7 +2500,7 @@ public sealed class SourceMaterialConverter
 					// 加后缀 = 声明"这是本材质派生出来的图"，于是它一定跟着材质走。
 					textureName = matcapTextureName + MetalF0Suffix;
 				}
-				catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+				catch (Exception exception) when (IsTextureReadFailure(exception))
 				{
 					// 读不出来就用现有的（源或合成）底色。判失败会让整件丢掉材质，
 					// 而"颜色不一定对的金属"远好过"部件不见了"。
@@ -3291,7 +3311,7 @@ public sealed class SourceMaterialConverter
 			failure = string.Empty;
 			return true;
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			failure = $"{stem}：贴图转换失败——{exception.Message}";
 			return false;
@@ -3390,7 +3410,7 @@ public sealed class SourceMaterialConverter
 			var vtf = VtfFile.Read(vtfBytes);
 			return (DecodeTextureCached(stem, vtfBytes, vtf), vtf.Width, vtf.Height);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return null;
 		}
@@ -3713,7 +3733,7 @@ public sealed class SourceMaterialConverter
 			rgba = DecodeTextureCached(textureName, bytes, vtf);
 			return width > 0 && height > 0;
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return false;
 		}
@@ -3843,7 +3863,7 @@ public sealed class SourceMaterialConverter
 			// 法线是**线性**数据：DXT5/ATI2N 都按线性 DXGI 格式交给 texconv，绝不能走 sRGB。
 			rgba = DecodeTextureCached(bumpTexture, bytes, vtf);
 		}
-		catch (Exception exception) when (exception is InvalidDataException or IOException or InvalidOperationException)
+		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
 			return (null, $"{bumpTexture}：法线图读不出来（{exception.Message}）");
 		}
