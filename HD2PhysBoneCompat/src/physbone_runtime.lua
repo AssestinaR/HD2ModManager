@@ -31,6 +31,11 @@
 
 local M = {}
 
+-- 2.0.4：快照**探针**。按骨名采回来 13 个全"缺"，而同一套 API 在求解器里是好的 ——
+--        光看一个"缺 13"分不清是 has_node 假、node 假还是读位置假。请求加 `probe = 1`：
+--        前 4 个 id 逐步把 类型/返回值 打进日志（`[快照][探针]`）；另外数字 id 没命中时
+--        退回字符串名字再试一次（id32 只是名字的哈希，未必等价）。
+--
 -- 2.0.3：快照的**取证能力**补强（实机第一次按 F9 就把游戏读崩了，而日志里没有现场）。
 --        · `[快照]` 归入"永远落盘"的那几类，预算用尽也留得下
 --        · 每帧**先**打一行"开始第 k/M 帧、N 个节点"再采 —— 崩了就知道崩在第几帧
@@ -58,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.0.3"
+M.VERSION = "2.0.5"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1265,6 +1270,11 @@ local function parse_snapshot_request(text)
 					if stride ~= nil then
 						request.stride = math.max(1, math.min(30, math.floor(stride)))
 					end
+				elseif key == "probe" then
+					-- 探针模式：把前几个 id 的每一步结果（类型 + 返回值）打出来。
+					-- 为什么需要：按骨名采回来 13 个全"缺"，而同一套 API 在求解器里是好的，
+					-- 光看"缺 13"根本分不清是 has_node 假、node 假还是读位置假。
+					request.probe = (value == "1" or value == "true")
 				elseif key == "limit" then
 					-- 只采前 N 个节点。为什么需要：一次按键里读 685 个节点 ≈ 2700 次引擎调用，
 					-- 2026-11-09 实测直接把游戏读崩了。先用小的探路，再放量。
@@ -1293,48 +1303,85 @@ end
 local function snapshot_ids(S_, request)
 	local ids, seen = {}, {}
 	local limit = request.limit or 0
-	local function push(id, label)
-		if id == nil or seen[id] then return end
+	local function push(id, label, name)
+		if id == nil and name == nil then return end
+		local key = id or ("name:" .. name)
+		if seen[key] then return end
 		if limit > 0 and #ids >= limit then return end
-		seen[id] = true
-		ids[#ids + 1] = { id = id, label = label }
+		seen[key] = true
+		ids[#ids + 1] = { id = id, label = label, name = name }
 	end
 	for _, hash in ipairs(request.nodes or {}) do push(hash, string.format("0x%08x", hash)) end
-	for _, name in ipairs(request.names or {}) do push(id32(S_, name), name) end
+	-- 名字同时留着原文：万一某些引擎版本 has_node 只认字符串，还能退回去再试一次。
+	for _, name in ipairs(request.names or {}) do push(id32(S_, name), name, name) end
 	return ids
 end
 
 --- 拍一帧：逐节点读世界位置 + 世界旋转，顺带把每条链的弹簧状态抄下来。
 --- 所有引擎调用都包 pcall：一根骨读不出来不能让整次快照作废。
-local function snapshot_frame(S_, runtime, unit, ids, frame)
+---
+--- `units` 是**一串**候选 unit（不是单个）：一具护甲被拆成头盔/胸/髋/腿…好几个 unit，
+--- 同一个骨名只在其中某一个上存在。只试第一个 unit 就会全军覆没——
+--- 2026-11-09 实测：`hips` 和求解器正在驱动的链骨都报"缺"，就因为只试了头盔那一个。
+local function snapshot_frame(S_, runtime, units, ids, frame)
 	local nodeRows, missing = {}, 0
+	local probe = runtime.snapshotState ~= nil and runtime.snapshotState.request ~= nil
+		and runtime.snapshotState.request.probe == true
 	for index = 1, #ids do
 		local entry = ids[index]
-		local okHas, has = pcall(S_.Unit.has_node, unit, entry.id)
-		if okHas and has == true then
-			local okNode, node = pcall(function() return S_.Unit.node(unit, entry.id) end)
-			if okNode and node ~= nil then
-				local okPos, px, py, pz = pcall(function()
-					return S_.Vector3.to_elements(S_.Unit.world_position(unit, node))
-				end)
-				-- 四元数必须与 world_rotation 在同一次调用内取完（引擎句柄寿命问题，见 compat 的 read_quat4）
-				local okRot, qx, qy, qz, qw = pcall(function()
-					return S_.Quaternion.to_elements(S_.Unit.world_rotation(unit, node))
-				end)
-				if okPos and type(px) == "number" and okRot and type(qx) == "number" then
-					nodeRows[#nodeRows + 1] = {
-						id = entry.label,
-						x = px, y = py, z = pz,
-						qx = qx, qy = qy, qz = qz, qw = qw,
-					}
-				else
-					missing = missing + 1
+		local detail, row, hitUnit = nil, nil, nil
+		if probe then detail = "id=" .. tostring(entry.id) .. "(" .. type(entry.id) .. ") " end
+		for unitIndex = 1, #units do
+			local unit = units[unitIndex].unit
+			local okHas, has = pcall(S_.Unit.has_node, unit, entry.id)
+			local key = entry.id
+			if not (okHas and has == true) and entry.name ~= nil then
+				-- 数字 id 没命中时退回字符串再试一次（id32 只是名字的哈希，未必等价）。
+				local okByName, hasByName = pcall(S_.Unit.has_node, unit, entry.name)
+				if probe then
+					detail = detail .. string.format("u%d=%s/%s+%s ", unitIndex, tostring(has), tostring(hasByName), "")
 				end
-			else
-				missing = missing + 1
+				if okByName and hasByName == true then okHas, has, key = true, true, entry.name end
+			elseif probe then
+				detail = detail .. string.format("u%d=%s ", unitIndex, tostring(has))
 			end
+			if okHas and has == true then
+				local okNode, node = pcall(function() return S_.Unit.node(unit, key) end)
+				if probe then detail = detail .. "node=" .. tostring(node) .. "(" .. type(node) .. ") " end
+				if okNode and node ~= nil then
+					local okPos, px, py, pz = pcall(function()
+						return S_.Vector3.to_elements(S_.Unit.world_position(unit, node))
+					end)
+					-- 四元数必须与 world_rotation 在同一次调用内取完（引擎句柄寿命问题，见 compat 的 read_quat4）
+					local okRot, qx, qy, qz, qw = pcall(function()
+						return S_.Quaternion.to_elements(S_.Unit.world_rotation(unit, node))
+					end)
+					if probe then
+						detail = detail .. string.format("pos=%s/%s rot=%s/%s ", tostring(okPos),
+							type(px) == "number" and string.format("%.3f", px) or tostring(px),
+							tostring(okRot), type(qx) == "number" and string.format("%.3f", qx) or tostring(qx))
+					end
+					if okPos and type(px) == "number" and okRot and type(qx) == "number" then
+						row = {
+							id = entry.label,
+							unit = unitIndex,
+							x = px, y = py, z = pz,
+							qx = qx, qy = qy, qz = qz, qw = qw,
+						}
+						hitUnit = unitIndex
+						break
+					end
+				end
+			end
+		end
+		if row ~= nil then
+			nodeRows[#nodeRows + 1] = row
 		else
 			missing = missing + 1
+		end
+		if probe and index <= 6 then
+			runtime.logger("[physbone][快照][探针] #%d %s⇒ %s", index, tostring(entry.name or entry.label),
+				tostring(detail) .. (hitUnit ~= nil and ("命中 u" .. hitUnit) or "全未命中"))
 		end
 	end
 
@@ -1429,22 +1476,16 @@ local function snapshot_poll(S_, runtime, options)
 			state.skip = state.skip - 1
 			return
 		end
-		local unit, unitTag = nil, "?"
+		-- 一具护甲是**一堆 unit**（头盔/胸/髋/腿…），同一个骨名只在其中一个上存在。
+		-- 所以这里把所有会话的 unit 都收集起来，逐个试，第一个命中就用它。
+		local units, tags = {}, {}
 		for _, session in ipairs(runtime.sessions or {}) do
-			if session.unit ~= nil and (session.ownerOrder or 1) == 1 then
-				unit, unitTag = session.unit, tostring(session.unitTag or "?")
-				break
+			if session.unit ~= nil then
+				units[#units + 1] = { unit = session.unit, tag = tostring(session.unitTag or "?") }
+				tags[#tags + 1] = tostring(session.unitTag or "?")
 			end
 		end
-		if unit == nil then
-			for _, session in ipairs(runtime.sessions or {}) do
-				if session.unit ~= nil then
-					unit, unitTag = session.unit, tostring(session.unitTag or "?")
-					break
-				end
-			end
-		end
-		if unit == nil then
+		if #units == 0 then
 			-- 还没有挂上任何会话（读图/换甲的空窗期）：**不许消耗帧数**，
 			-- 否则会写出一份 0 帧的残文件，看起来像"采到了"，实际什么都没有。
 			state.waitFrames = (state.waitFrames or 0) + 1
@@ -1459,11 +1500,12 @@ local function snapshot_poll(S_, runtime, options)
 		state.waitFrames = 0
 		state.skip = (state.request and state.request.stride or 2) - 1
 		local sampleIndex = (state.request.frames - state.framesLeft) + 1
+		local unitTag = #tags > 0 and string.format("%s 等 %d 个", tags[1], #tags) or "?"
 		-- 每帧**先**打一行再采：万一这一帧把游戏读崩了，日志里最后一行就是崩在哪一帧、
 		-- 采了多少个节点。没有这一行，"闪退"在现场只能靠猜（2026-11-09 就猜了一轮）。
-		runtime.logger("[physbone][快照] 开始第 %d/%d 帧：%d 个节点（unit=%s）",
-			sampleIndex, state.request.frames, #(state.ids or {}), tostring(unitTag))
-		local sample = snapshot_frame(S_, runtime, unit, state.ids, runtime.frame or 0)
+		runtime.logger("[physbone][快照] 开始第 %d/%d 帧：%d 个节点、%d 个候选 unit",
+			sampleIndex, state.request.frames, #(state.ids or {}), #units)
+		local sample = snapshot_frame(S_, runtime, units, state.ids, runtime.frame or 0)
 		state.lastTag = unitTag
 		state.framesLeft = state.framesLeft - 1
 		-- 每帧单独落盘：游戏要是在后面的帧上崩了，前面采到的还在；
