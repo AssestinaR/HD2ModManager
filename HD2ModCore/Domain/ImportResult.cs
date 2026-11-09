@@ -35,6 +35,12 @@ public sealed record ImportResult(
 	public IReadOnlyList<OptionPathConflict> OptionPathConflicts { get; init; } = Array.Empty<OptionPathConflict>();
 
 	/// <summary>
+	/// manifest 没声明、但包里确有 payload 的目录。它们**已经**作为 root 的直属选项导入，
+	/// 这里只用于告诉用户「作者漏写了」，不是失败清单。
+	/// </summary>
+	public IReadOnlyList<string> UnownedPayloadPaths { get; init; } = Array.Empty<string>();
+
+	/// <summary>
 	/// Cache invalidation is intentionally reported separately from the committed
 	/// Mod files and library snapshot. A retry can repair stale derived data
 	/// without pretending the import rolled back.

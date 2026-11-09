@@ -289,4 +289,56 @@ public sealed class StandardManifestImportTests
         }
         finally { try { Directory.Delete(root, recursive: true); } catch { } }
     }
+
+    [Fact]
+    public async Task ImportFolderAsync_KeepsPayloadDirectoriesTheManifestDoesNotDeclare()
+    {
+        // 作者漏写一个选项是常见的（实测 milltina 修女 的「腰裙」就是）。丢掉它等于静默少装
+        // 一部分：游戏里表现成缺件，而库里没有任何提示。
+        var root = Path.Combine(Path.GetTempPath(), "hd2coretests", Guid.NewGuid().ToString("N"));
+        var appRoot = Path.Combine(root, "app");
+        var package = Path.Combine(root, "package");
+        Directory.CreateDirectory(Path.Combine(package, "declared"));
+        Directory.CreateDirectory(Path.Combine(package, "undeclared"));
+        Directory.CreateDirectory(appRoot);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(package, "declared", "9ba626afa44a3aa3.patch_0"), "declared");
+            await File.WriteAllTextAsync(Path.Combine(package, "undeclared", "9ba626afa44a3aa4.patch_0"), "undeclared");
+            await File.WriteAllTextAsync(Path.Combine(package, "manifest.json"), JsonSerializer.Serialize(new
+            {
+                Version = 1,
+                Guid = Guid.NewGuid(),
+                Name = "Partial manifest",
+                Options = new[] { new { Name = "Declared", Include = new[] { "declared" } } },
+            }));
+
+            var paths = new StoragePaths(appRoot);
+            var importer = new ModLibraryImporter(
+                paths,
+                new ObjectTreeImporter(new PatchFileNameParser()),
+                new ArchiveObjectTreeImporter(new ObjectTreeImporter(new PatchFileNameParser())),
+                new JsonModLibraryStore(paths));
+            var result = await importer.ImportFolderAsync(package);
+
+            // root + 声明的选项 + 未声明的目录
+            Assert.Equal(3, result.Snapshot.Nodes.Count);
+            var rootNode = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Kind == ModNodeKind.Standard);
+            var declared = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.Name == "Declared");
+            // 落库后 RelativePath 会被扁平化成 包名-子目录，所以按 SourcePackagePath（原始相对路径）找。
+            var unowned = Assert.Single(result.Snapshot.Nodes.Values, node => node.Metadata.SourcePackagePath == "undeclared");
+            Assert.Equal(ModNodeKind.Option, unowned.Metadata.Kind);
+            Assert.Single(unowned.PatchGroups);
+            Assert.Equal(rootNode.Id.Value.ToString("N"), Assert.Single(unowned.Metadata.HostModGuids!));
+            Assert.Equal(1, unowned.Metadata.OptionOrder);
+
+            // 内容必须真的搬进库（不只是建了个空节点）。
+            Assert.True(File.Exists(Path.Combine(paths.ModsDirectory, unowned.RelativePath, "9ba626afa44a3aa4.patch_0")));
+            Assert.Single(declared.PatchGroups);
+
+            // 并且要告诉调用方"这个目录作者没声明"。
+            Assert.Equal(["undeclared"], result.UnownedPayloadPaths);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
 }

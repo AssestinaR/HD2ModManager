@@ -192,6 +192,9 @@ public sealed class ExternalPackageAdoptionService : IExternalPackageAdoptionSer
 				: $"已导入，但源目录移动失败：{moveFailure}（下一轮只重试移动）";
 			if (defaultFailure is not null)
 				detail += $" 选项默认态初始化失败：{defaultFailure}";
+			// 作者漏写 manifest 是常见的；内容已经收进来了，但用户该知道"这个选项不是作者声明的"。
+			if (import.UnownedPayloadPaths.Count > 0)
+				detail += $" manifest 未声明的目录已按实际内容收为选项：{string.Join("、", import.UnownedPayloadPaths)}。";
 			// 候选阶段的提示（预览图缺失、manifest 声明了没发布的选项目录…）只在这里有机会
 			// 落进日志——GUI 的认领路径没有 dry-run，用户看不到 planner 的告警。
 			if (candidate.Warnings.Count > 0)
