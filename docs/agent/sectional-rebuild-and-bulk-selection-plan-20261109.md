@@ -213,6 +213,22 @@
 
 **验收**：产物形状与 vpk2patch 完全一致（编译段不需要任何 `if (kind == ...)`）。
 
+#### W3b 实施细节（已核对的签名，别再去翻）
+
+| 环节 | API | 坑 |
+|---|---|---|
+| 扫描来源 patch 里的键 | `new PatchTocScanner().ScanEntriesAsync(path)` → `PatchTocEntry.AssetKey` | 只取 `<archive>.patch_N` 本体，跳过 `.gpu_resources` / `.stream`（用 `PatchFileNameParser` 判 sidecar） |
+| 写一组 patch | `new PatchSubsetWriter().WriteSelectedAsync(template, outDir, selections)` | **输出文件名 = 模板的文件名**（`PatchArchiveWriter` 用 `Path.GetFileName(source)`，见 `PatchArchiveWriter.cs:57`）。所以要么选对模板让名字直接正确，要么写完再改名。unit 组恒为 `<archive>.patch_0` |
+| 拆 7 槽 | `SectionalSplitter.ExecuteAsync(sourceDirOrPatch, gameData, outputDir)` | 输入可以就是含 unit + 材质 patch 的暂存目录；输出建议另给一个目录，避免边读边写 |
+| 换载荷 | `VpkPayloadSwap.Swap(payloadDirectory, producedDirectory, backupRoot)` | 保留 `custom-model.json` 与 `sections.json`（`PreservedFileNames`）；失败会自己还原 |
+| 清单 | `SectionalPatchManifestFile.Rebuild(modDir, utc, previous)` + `TryWrite(payload, document)` | 先读 previous，用户写的 optionName/order/notes 跨重建要留住 |
+| 编译 | `ModCompileService.CompileAsync(modSelector, modDir, VpkHostContext, targetArchiveIds?, disabledSections?, onStage?, ct, headMergeIntoBody?)` | 目标/开关传 `null` 时读 `wardrobe.json` |
+
+**唯一无法在本机验证的部分**：库里没有 legacy 源条目（`【材质版】隐藏物品合集` 是材质包、
+`[huahua]Chiyu公式服` 是空壳），所以 W3b 的端到端只能在用户提供来源素材后真机跑。
+在那之前，W3b 的验收以「单元测试 + 形状检查（产物目录里 patch_0 是 unit、材质组从 patch_1 起）」
+为准，并在代码里把失败路径写清楚（不静默）。
+
 ### W4 批量执行器按形态分派
 
 - `VpkBulkRebuildService.RunAsync` 每个目标先 `Resolve` 存储形态：
@@ -369,7 +385,8 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 | W6 | `EnumerateTargets` 支持作用域（选中 + 递归后代）+ sectional 系列判据 | ✅ 完成 |
 | W5 | 多选底栏「重构」按钮（可见性只看作用域，命令调检测器） | ✅ 完成 |
 | W7 | 三处硬编码文案按 origin 分开 | ✅ 完成 |
-| W3 | `legacy2sectional` 转换服务 | 进行中 |
+| W3a | 规划层：来源 → 哪个组装哪些 key（`SectionalConversionPlanner`，纯函数 + 13 条用例） | ✅ 完成 |
+| W3b | IO 装配：扫描根上 patch → 抽键 → 落盘三组 → 拆 7 槽 → 换载荷 → `patches.json` → 编译 | 进行中 |
 | W4 | 批量执行器按存储形态分派 | 未开始 |
 | W2 | 「生成sectional版」改为：建条目 + 平铺拷来源 + 写依据 + 导入 + 立刻转换 | 未开始 |
 
