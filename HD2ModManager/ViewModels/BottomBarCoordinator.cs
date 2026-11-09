@@ -86,6 +86,12 @@ namespace HD2ModManager.ViewModels
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
         // 库页/配置页的选择都可以一键批量设置分类；分类被关掉时不显示。
         public bool ShowSetCategory => IsRelationshipSourceSelection && CategoryFilterPreference.IsEnabled;
+        // 「重构」：**只看作用域**，不看选中的是什么。
+        //
+        // 谁是 sectional 系列、谁有后代、后代里有没有可重构的 —— 这些都要扫盘。塞进绑定属性
+        // 会让每次选择变化（含方向键换行）都读一遍目录。所以判定放在点击时由 ShellViewModel 做，
+        // 这里只回答"这块选择栏该不该出现重构按钮"。
+        public bool ShowRebuild => IsLibrarySelection || IsProfileSelection || IsDecorationHostSelection;
         public IReadOnlyList<string> SelectedIds => _selection.SelectedIds.ToArray();
         public bool ShowSetAsOption => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedOptionCandidates;
 
@@ -526,6 +532,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowAddToProfile));
             OnPropertyChanged(nameof(ShowSetAsOption));
             OnPropertyChanged(nameof(ShowSetCategory));
+            OnPropertyChanged(nameof(ShowRebuild));
 
             OnPropertyChanged(nameof(ShowEnableDecorations));
             OnPropertyChanged(nameof(ShowDisableDecorations));

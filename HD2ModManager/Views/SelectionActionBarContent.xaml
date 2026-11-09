@@ -10,6 +10,11 @@
         <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding MoveButtonText}" Command="{Binding BeginMoveCommand}" Margin="0,0,8,0" Visibility="{Binding ShowMove, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="插入" Command="{Binding BeginInsertCommand}" Margin="0,0,8,0" Visibility="{Binding ShowInsert, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="设置分类" Click="OnSetCategoryClick" Margin="0,0,8,0" Visibility="{Binding ShowSetCategory, Converter={StaticResource BoolToVis}}"/>
+        <!--
+            「重构」：按钮本身不判断选中的是不是 sectional 系列 —— 那要扫盘。
+            点下去才检测一次（选中 + 递归后代），没有可重构的就只给一句提示。
+        -->
+        <Button Style="{StaticResource AppSecondaryButton}" Content="重构" Command="{Binding RebuildSelectionCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRebuild, Converter={StaticResource BoolToVis}}"/>
         <Button Style="{StaticResource AppPrimaryButton}" Content="{Binding SetAsOptionText}" Command="{Binding SetSelectedModsAsOptionsCommand}" Margin="0,0,8,0" Visibility="{Binding ShowSetAsOption, Converter={StaticResource BoolToVis}}"/>
 
         <Button Style="{StaticResource AppSecondaryButton}" Content="从当前 Mod 移除选项" Command="{Binding RemoveSelectedOptionsFromHostCommand}" Margin="0,0,8,0" Visibility="{Binding ShowRemoveOptionsFromHost, Converter={StaticResource BoolToVis}}"/>

@@ -167,6 +167,8 @@ namespace HD2ModManager.ViewModels
         public RelayCommand ReleaseArmorProvidersCommand { get; }
         public RelayCommand ReleaseArmorTargetsCommand { get; }
         public RelayCommand ClearArmorTargetsCommand { get; }
+        /// <summary>选择栏的「重构」：点下去才检测（选中 + 递归后代），没有目标就只给一句提示。</summary>
+        public RelayCommand RebuildSelectionCommand { get; }
         public RelayCommand EnableSelectedDecorationsCommand { get; }
         public RelayCommand DisableSelectedDecorationsCommand { get; }
         public RelayCommand ToggleMessagePanelCommand { get; }
@@ -325,6 +327,7 @@ namespace HD2ModManager.ViewModels
             ReleaseArmorProvidersCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseProviders));
             ReleaseArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ReleaseTargets));
             ClearArmorTargetsCommand = new RelayCommand(_ => ApplyArmorRegistrySelection(ArmorRegistrySelectionAction.ClearTargets));
+            RebuildSelectionCommand = new RelayCommand(_ => RebuildSelection());
             EnableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(true));
             DisableSelectedDecorationsCommand = new RelayCommand(async _ => await SetSelectedDecorationsEnabledAsync(false));
             ToggleMessagePanelCommand = new RelayCommand(ToggleMessagePanel);
@@ -2491,19 +2494,44 @@ namespace HD2ModManager.ViewModels
                 return;
             }
 
-            StartBulkVpkRebuild(targets, "一键重构");
+            StartBulkVpkRebuild(targets, "一键重构", "一键重构所有 VPK 模组");
+        }
+
+        /// <summary>
+        /// 选择栏的「重构」：目标只从"当前选中 + 它的递归后代"里取。
+        /// <para>
+        /// <b>按钮不判断类型，这里才判断。</b>判定要扫盘（存储形态、后代关系），
+        /// 放进绑定属性会让每次选择变化都读一遍目录；而且"选中里没有可重构的"是正常路径，
+        /// 不是错误 —— 给一句提示就结束。
+        /// </para>
+        /// </summary>
+        private void RebuildSelection()
+        {
+            var targets = VpkBulkRebuildService.EnumerateTargets(
+                _libraryService.Snapshot,
+                _libraryService.ModsRootDirectory,
+                _bottomBar.SelectedIds);
+            if (targets.Count == 0)
+            {
+                _notificationService.Show(
+                    "当前选择里没有可重构的 Mod（含其子级）：只有 sectional 系列支持重构。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return;
+            }
+
+            StartBulkVpkRebuild(targets, "重构选中", "重构选中的 Mod");
         }
 
         /// <summary>
         /// 按给定目标起一次批量重构建（底栏 + 并发 5）。**导入完成后也走这条**：
         /// 导入只负责把来源摆进条目，转换与编译是另一件事。
         /// </summary>
-        private void StartBulkVpkRebuild(IReadOnlyList<VpkBulkRebuildTarget> targets, string origin)
+        private void StartBulkVpkRebuild(IReadOnlyList<VpkBulkRebuildTarget> targets, string origin, string title)
         {
             if (targets.Count == 0) return;
             if (_bulkVpkRebuildOperation is { IsRunning: true })
             {
-                _notificationService.Show("上一批重构还在跑：这次的条目等它结束后在「一键重构」里再跑一次。",
+                _notificationService.Show("上一批重构还在跑：等它结束，或者先在底栏里取消。",
                     NotificationLevel.Warning, TimeSpan.FromSeconds(8));
                 return;
             }
@@ -2511,6 +2539,8 @@ namespace HD2ModManager.ViewModels
             DismissToolBottomBars();
             _bulkVpkRebuildTargets = targets;
             _bulkVpkRebuildOperation = new VpkBulkRebuildBottomBarViewModel(
+                title,
+                origin,
                 targets.Count,
                 RunBulkVpkRebuildAsync,
                 ClearBulkVpkRebuildBottomBar);
@@ -2629,10 +2659,10 @@ namespace HD2ModManager.ViewModels
             var startedUtc = DateTime.UtcNow;
             var task = _backgroundTasks.Enqueue(
                 BackgroundTaskKind.RebuildVpk,
-                "一键重构所有 VPK 模组",
+                operation.Title,
                 $"{targets.Count} 个模组，并发 {concurrency}",
-                origin: "模组库",
-                userVisibleReason: "用每个 Mod 文件夹里的来源 VPK 重出一遍产物，并按各自记着的配置重新生成换甲产物。",
+                origin: operation.Origin,
+                userVisibleReason: "用每个 Mod 记着的来源重出一遍 sectional 产物，并按各自记着的配置重新生成换甲产物。",
                 suggestedAction: "完成后重启游戏生效；逐条结果见本次任务的报告。",
                 retry: () => RunBulkVpkRebuildAsync(operation),
                 presentation: BackgroundTaskPresentation.Foreground);

@@ -28,17 +28,27 @@ public sealed class VpkBulkRebuildBottomBarViewModel : BaseViewModel
 	private double progress;
 
 	public VpkBulkRebuildBottomBarViewModel(
+		string title,
+		string origin,
 		int totalCount,
 		Func<VpkBulkRebuildBottomBarViewModel, Task> start,
 		Action close)
 	{
+		Title = string.IsNullOrWhiteSpace(title) ? "批量重构" : title;
+		Origin = string.IsNullOrWhiteSpace(origin) ? "批量重构" : origin;
 		TotalCount = totalCount;
 		this.start = start ?? throw new ArgumentNullException(nameof(start));
 		this.close = close ?? throw new ArgumentNullException(nameof(close));
-		status = $"将重构建 {totalCount} 个 VPK 类模组：各自按自己记着的配置（目标护甲与 section 勾选）重出一遍产物。";
+		status = $"将重构 {totalCount} 个 sectional 系列 Mod：各自按自己记着的配置（目标护甲与 section 勾选）重出一遍产物。";
 		StartCommand = new RelayCommand(async _ => await StartAsync(), _ => !IsRunning && HasValidConcurrency);
 		CancelCommand = new RelayCommand(_ => OnCancelOrClose());
 	}
+
+	/// <summary>这次批量重构叫什么（底栏标题、后台任务标题都用它）。</summary>
+	public string Title { get; }
+
+	/// <summary>从哪个入口发起（消息中心与日志的来源）。</summary>
+	public string Origin { get; }
 
 	public int TotalCount { get; }
 	public string DefaultHint => $"默认 {VpkBulkRebuildService.DefaultConcurrency} 个，可设 {VpkBulkRebuildService.MinConcurrency}–{VpkBulkRebuildService.MaxConcurrency} 个；数字越大越快也越吃内存。";
