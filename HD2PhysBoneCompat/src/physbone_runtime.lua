@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.0.5"
+M.VERSION = "2.0.6"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1270,6 +1270,9 @@ local function parse_snapshot_request(text)
 					if stride ~= nil then
 						request.stride = math.max(1, math.min(30, math.floor(stride)))
 					end
+				elseif key == "auto" then
+					-- 自动清单：用运行时自己正在驱动的链骨名 + 固定关节名。换护甲也不用改请求。
+					request.auto = (value == "1" or value == "true")
 				elseif key == "probe" then
 					-- 探针模式：把前几个 id 的每一步结果（类型 + 返回值）打出来。
 					-- 为什么需要：按骨名采回来 13 个全"缺"，而同一套 API 在求解器里是好的，
@@ -1295,7 +1298,7 @@ local function parse_snapshot_request(text)
 			end
 		end
 	end
-	if #request.nodes == 0 and #request.names == 0 then return nil end
+	if #request.nodes == 0 and #request.names == 0 and request.auto ~= true then return nil end
 	return request
 end
 
@@ -1317,6 +1320,34 @@ local function snapshot_ids(S_, request)
 	return ids
 end
 
+	-- 自动清单要用的固定关节名。这些就是 compat 的 anchor 表里那些 HD2 原生骨名。
+local SNAPSHOT_JOINTS =
+{
+	"hips", "spine", "spine1", "spine2", "chest", "neck", "head",
+	"l_thigh", "r_thigh", "l_knee", "r_knee", "l_foot", "r_foot", "l_toe", "r_toe",
+	"l_shoulder", "r_shoulder", "l_elbow", "r_elbow", "l_hand", "r_hand",
+}
+
+--- 自动清单：**运行时自己知道它在驱动哪些骨**，不需要外部把名字喂进来。
+--- 2026-11-09 实测：请求里的名字是"上一局那件护甲"的，换一件就全落空；
+--- 而链骨名字每帧都在 `session.sessions[i].chain` 里，直接抄下来最可靠。
+local function snapshot_auto_ids(runtime)
+	local ids, seen = {}, {}
+	local function pushName(name)
+		if type(name) ~= "string" or #name == 0 or seen[name] then return end
+		if #ids >= SNAPSHOT_MAX_NODES then return end
+		seen[name] = true
+		ids[#ids + 1] = { name = name, label = name }
+	end
+	for _, name in ipairs(SNAPSHOT_JOINTS) do pushName(name) end
+	for _, session in ipairs(runtime.sessions or {}) do
+		for _, item in ipairs(session.sessions or {}) do
+			for _, bone in ipairs(item.chain or {}) do pushName(bone.name) end
+		end
+	end
+	return ids
+end
+
 --- 拍一帧：逐节点读世界位置 + 世界旋转，顺带把每条链的弹簧状态抄下来。
 --- 所有引擎调用都包 pcall：一根骨读不出来不能让整次快照作废。
 ---
@@ -1333,18 +1364,21 @@ local function snapshot_frame(S_, runtime, units, ids, frame)
 		if probe then detail = "id=" .. tostring(entry.id) .. "(" .. type(entry.id) .. ") " end
 		for unitIndex = 1, #units do
 			local unit = units[unitIndex].unit
-			local okHas, has = pcall(S_.Unit.has_node, unit, entry.id)
-			local key = entry.id
-			if not (okHas and has == true) and entry.name ~= nil then
-				-- 数字 id 没命中时退回字符串再试一次（id32 只是名字的哈希，未必等价）。
-				local okByName, hasByName = pcall(S_.Unit.has_node, unit, entry.name)
-				if probe then
-					detail = detail .. string.format("u%d=%s/%s+%s ", unitIndex, tostring(has), tostring(hasByName), "")
-				end
-				if okByName and hasByName == true then okHas, has, key = true, true, entry.name end
-			elseif probe then
-				detail = detail .. string.format("u%d=%s ", unitIndex, tostring(has))
+			-- ⚠️ 一律**先用名字字符串**：实测 `Application.string_to_id32` 返回的是
+			-- `IdString32` userdata，而且它是**会失效的**（探针日志里直接印出 `[Stale IdString32]`）。
+			-- 把它存起来跨帧用，`has_node` 一律返回 false —— 这正是"按哈希采回来 0 个"的原因。
+			-- 名字字符串没有这个问题，`has_node(unit, "hips")` 稳定为 true。
+			local key = entry.name
+			local okHas, has = false, false
+			if key ~= nil then
+				okHas, has = pcall(S_.Unit.has_node, unit, key)
 			end
+			if not (okHas and has == true) and entry.id ~= nil then
+				-- 只有哈希、没有名字的条目：现算一次 id32 再用（不跨帧缓存）。
+				okHas, has = pcall(S_.Unit.has_node, unit, entry.id)
+				if okHas and has == true then key = entry.id end
+			end
+			if probe then detail = detail .. string.format("u%d=%s ", unitIndex, tostring(has)) end
 			if okHas and has == true then
 				local okNode, node = pcall(function() return S_.Unit.node(unit, key) end)
 				if probe then detail = detail .. "node=" .. tostring(node) .. "(" .. type(node) .. ") " end
@@ -1501,11 +1535,14 @@ local function snapshot_poll(S_, runtime, options)
 		state.skip = (state.request and state.request.stride or 2) - 1
 		local sampleIndex = (state.request.frames - state.framesLeft) + 1
 		local unitTag = #tags > 0 and string.format("%s 等 %d 个", tags[1], #tags) or "?"
+		-- 自动模式下**每帧现算**清单：护甲可能刚换过，链骨名跟着变。
+		local ids = state.ids
+		if state.request ~= nil and state.request.auto == true then ids = snapshot_auto_ids(runtime) end
 		-- 每帧**先**打一行再采：万一这一帧把游戏读崩了，日志里最后一行就是崩在哪一帧、
 		-- 采了多少个节点。没有这一行，"闪退"在现场只能靠猜（2026-11-09 就猜了一轮）。
 		runtime.logger("[physbone][快照] 开始第 %d/%d 帧：%d 个节点、%d 个候选 unit",
-			sampleIndex, state.request.frames, #(state.ids or {}), #units)
-		local sample = snapshot_frame(S_, runtime, units, state.ids, runtime.frame or 0)
+			sampleIndex, state.request.frames, #(ids or {}), #units)
+		local sample = snapshot_frame(S_, runtime, units, ids or {}, runtime.frame or 0)
 		state.lastTag = unitTag
 		state.framesLeft = state.framesLeft - 1
 		-- 每帧单独落盘：游戏要是在后面的帧上崩了，前面采到的还在；

@@ -17,12 +17,13 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.wintypes as wintypes
+import re
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from request import build_request, default_directory, load_nodes  # noqa: E402
+from request import build_auto_request, default_directory  # noqa: E402
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -49,16 +50,13 @@ def main() -> int:
     parser.add_argument("--shift", action="store_true", help="需要按住 Shift")
     parser.add_argument("--frames", type=int, default=6)
     parser.add_argument("--stride", type=int, default=3)
+    parser.add_argument("--request-file", default=None,
+                        help="模板请求文件：按 F9 只换 seq 重发（老运行时不认 auto 时用这个）")
     args = parser.parse_args()
 
     name = args.key.upper()
     if name not in VK:
         print(f"不支持的热键 {args.key}；可选：{', '.join(VK)}", file=sys.stderr)
-        return 2
-
-    nodes = load_nodes(Path(args.nodes))
-    if not nodes:
-        print(f"节点清单是空的：{args.nodes}", file=sys.stderr)
         return 2
 
     target = Path(args.dir) if args.dir else default_directory()
@@ -80,7 +78,7 @@ def main() -> int:
         return 1
 
     print(f"已监听 {name}（全局，不需要游戏有焦点）。目录：{target}")
-    print(f"节点 {len(nodes)} 个；每按一次采 {args.frames} 帧、每 {args.stride} 帧一张。Ctrl+C 退出。")
+    print(f"自动清单；每按一次采 {args.frames} 帧、每 {args.stride} 帧一张。Ctrl+C 退出。")
     print(f"提醒：这个脚本只能写请求，游戏里得是**带快照功能的运行时**（2.0.2+）才会应答。")
 
     last_done = None
@@ -91,8 +89,16 @@ def main() -> int:
             while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
                 if message.message == WM_HOTKEY:
                     seq = str(int(time.time() * 1000))
-                    request_path.write_text(
-                        build_request(args.frames, args.stride, nodes, seq), encoding="utf-8")
+                    if args.request_file:
+                        # 模板模式：照原样重发一份请求，只换 seq。
+                        # 为什么需要：请求可能是"某个具体骨名清单"（老运行时不认 auto），
+                        # 这时热键只该负责"再采一次"，不该改写清单内容。
+                        template = Path(args.request_file).read_text(encoding="utf-8")
+                        body = re.sub(r"(?m)^seq\s*=.*$", f"seq = {seq}", template)
+                        request_path.write_text(body, encoding="utf-8")
+                    else:
+                        request_path.write_text(
+                            build_auto_request(args.frames, args.stride, seq), encoding="utf-8")
                     print(f"[{time.strftime('%H:%M:%S')}] 按下 {name} ⇒ 写请求 seq={seq}")
                 elif message.message == WM_QUIT:
                     raise KeyboardInterrupt

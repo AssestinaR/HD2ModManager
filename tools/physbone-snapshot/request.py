@@ -45,6 +45,21 @@ def load_nodes(path: Path) -> list[str]:
     return hashes
 
 
+def build_auto_request(frames: int, stride: int, seq: str) -> str:
+    """自动清单：让运行时用它**自己正在驱动**的链骨名 + 固定关节名。
+
+    为什么这是默认：护甲的链骨名每件都不一样，外部写死一份就会"换一件全落空"
+    （2026-11-09 实测）。运行时每帧都知道自己在驱动哪些骨，让它自己列最可靠。
+    """
+    return "\n".join([
+        "# hd2physbone 姿态快照请求（自动清单；外部工具写、游戏侧只读）",
+        f"seq = {seq}",
+        f"frames = {frames}",
+        f"stride = {stride}",
+        "auto = 1",
+    ]) + "\n"
+
+
 def build_request(frames: int, stride: int, nodes: list[str], seq: str, names: list[str] | None = None) -> str:
     lines = [
         "# hd2physbone 姿态快照请求（外部工具写、游戏侧只读）",
@@ -69,8 +84,25 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=6, help="采几帧（上限 32）")
     parser.add_argument("--stride", type=int, default=3, help="每几帧采一张（上限 30）")
     parser.add_argument("--seq", default=None, help="请求序号（默认用时间戳）")
+    parser.add_argument("--auto", action="store_true", help="自动清单（运行时自己列链骨名 + 固定关节名）")
     parser.add_argument("--list", action="store_true", help="只打印不写盘")
     args = parser.parse_args()
+
+    seq = args.seq or str(int(time.time()))
+    target = Path(args.dir) if args.dir else default_directory()
+    path = target / "request.txt"
+
+    if args.auto:
+        text = build_auto_request(max(1, min(32, args.frames)), max(1, min(30, args.stride)), seq)
+        print(f"自动清单，帧 {args.frames} × 每 {args.stride} 帧一张，seq={seq}")
+        print(f"目标：{path}")
+        if args.list:
+            print(text)
+            return 0
+        target.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print("已写入。游戏里帧循环跑到下一轮轮询（≤30 帧）就会开始采。")
+        return 0
 
     nodes = load_nodes(Path(args.nodes)) if args.nodes else []
     names = args.names or []
@@ -82,8 +114,6 @@ def main() -> int:
     text = build_request(max(1, min(32, args.frames)), max(1, min(30, args.stride)), nodes, seq, names)
     if args.limit > 0:
         text = text.replace("seq = " + seq, f"seq = {seq}\nlimit = {args.limit}")
-    target = Path(args.dir) if args.dir else default_directory()
-    path = target / "request.txt"
 
     print(f"节点哈希 {len(nodes)} 个、骨名 {len(names)} 个，帧 {args.frames} × 每 {args.stride} 帧一张，seq={seq}")
     print(f"目标：{path}")
