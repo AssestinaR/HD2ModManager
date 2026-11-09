@@ -353,8 +353,8 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 | 项 | 内容 | 状态 |
 |---|---|---|
 | W1 | `sectional-source.json` 读写 + `ModStorageKind` 判据 + `SourceVpkName`→`SourceName` | ✅ 完成 |
-| W6 | `EnumerateTargets` 支持作用域（选中 + 递归后代）+ sectional 系列判据 | 进行中 |
-| W5 | 多选底栏「重构」按钮（可见性只看作用域，命令调检测器） | 未开始 |
+| W6 | `EnumerateTargets` 支持作用域（选中 + 递归后代）+ sectional 系列判据 | ✅ 完成 |
+| W5 | 多选底栏「重构」按钮（可见性只看作用域，命令调检测器） | 进行中 |
 | W7 | 三处硬编码文案按 origin 分开 | 未开始 |
 | W3 | `legacy2sectional` 转换服务 | 未开始 |
 | W4 | 批量执行器按存储形态分派 | 未开始 |

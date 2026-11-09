@@ -2486,7 +2486,7 @@ namespace HD2ModManager.ViewModels
             if (targets.Count == 0)
             {
                 _notificationService.Show(
-                    "库里没有 VPK 类模组（判据是目录里有转换器写的 vpk2patch.json），没有可重构的东西。",
+                    "库里没有 sectional 系列的 Mod（判据是存储形态：Sectional / Vpk2Patch），没有可重构的东西。",
                     NotificationLevel.Info, TimeSpan.FromSeconds(8));
                 return;
             }

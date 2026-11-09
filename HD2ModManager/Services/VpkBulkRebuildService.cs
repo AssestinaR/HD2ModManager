@@ -79,26 +79,43 @@ public static class VpkBulkRebuildService
 	public static int NormalizeConcurrency(int value) => Math.Clamp(value, MinConcurrency, MaxConcurrency);
 
 	/// <summary>
-	/// 列出库里所有「VPK 类」Mod。<b>判据只看 <c>vpk2patch.json</c></b>：那是转换器写的报告，
-	/// 普通导入的 Mod 不会有它。目录不存在的节点直接跳过（库索引领先于磁盘时的正常情况）。
+	/// 列出库里所有「sectional 系列」Mod（<c>Sectional</c> 与 <c>Vpk2Patch</c> 两档）。
+	/// <para>
+	/// <b>判据只能有一份。</b>这里直接问 <see cref="ModStorageKindResolver"/>——它是"这个 Mod 是哪一种"
+	/// 的唯一判定处。以前这里自己数 <c>vpk2patch.json</c>，而那只是 vpk2patch 一档的产物报告；
+	/// 按它判，由 legacy 转出来的 sectional Mod 永远进不了目标清单。
+	/// </para>
+	/// <para>
+	/// <b><paramref name="scopeIds"/> 给定时会把"后代选项"一并纳入。</b>选中一个条目时，
+	/// 它的子级里凡是 sectional 系列的都算进这次重构——契约是"选中的 Mod 及其后代"，
+	/// 而不是"恰好被选中的那几个"。逻辑容器的空壳自身没有载荷，自然不会成为目标，
+	/// 但它的 vpk 子级会被带进来。
+	/// </para>
 	/// </summary>
-	public static IReadOnlyList<VpkBulkRebuildTarget> EnumerateTargets(LibrarySnapshot snapshot, string? modsRootDirectory)
+	/// <param name="scopeIds">来源库里的节点 guid（<c>N</c> 格式）。<c>null</c> = 全库。</param>
+	public static IReadOnlyList<VpkBulkRebuildTarget> EnumerateTargets(
+		LibrarySnapshot snapshot,
+		string? modsRootDirectory,
+		IEnumerable<string>? scopeIds = null)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
 		if (string.IsNullOrWhiteSpace(modsRootDirectory) || !Directory.Exists(modsRootDirectory))
 			return Array.Empty<VpkBulkRebuildTarget>();
 
+		var scope = RebuildTargetScope.Expand(snapshot, scopeIds);
+		var resolver = new ModStorageKindResolver(new PatchFileNameParser());
 		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var targets = new List<VpkBulkRebuildTarget>();
 		foreach (var node in snapshot.Nodes.Values)
 		{
 			if (node.Metadata.IsLogicalContainer) continue;
 			if (string.IsNullOrWhiteSpace(node.RelativePath)) continue;
+			if (scope is not null && !scope.Contains(node.Id)) continue;
 
 			var directory = Path.Combine(modsRootDirectory, node.RelativePath);
 			if (!seen.Add(directory)) continue;
 			if (!Directory.Exists(directory)) continue;
-			if (VpkConversionReport.TryRead(directory) is null) continue;
+			if (!RebuildTargetScope.IsSectionalSeries(directory, resolver)) continue;
 
 			targets.Add(new VpkBulkRebuildTarget(
 				node.Id,
@@ -111,6 +128,7 @@ public static class VpkBulkRebuildService
 			.ThenBy(target => target.Directory, StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 	}
+
 
 	/// <param name="onItemFinished">每完成一个目标回调一次（<b>可能在多个线程上并发到达</b>，界面要自己切回 UI 线程）。</param>
 	/// <param name="onStage">进行中的一句人话，用来让底栏显示"现在在做什么"。</param>
