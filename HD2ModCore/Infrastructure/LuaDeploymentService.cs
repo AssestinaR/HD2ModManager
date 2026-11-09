@@ -474,6 +474,12 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			// own boot resource while the readable source stays available for
 			// diagnostics and validation.
 			composition = composition with { CompiledPayload = Lua51WrapperChunk.Build(composition.SourceText) };
+			// ⚠️ 指纹必须覆盖**将要写出去的字节**，而不只是"输入有哪些 Mod"。
+			// 2026-11-09 踩过：运行时从 2.0.1 改到 2.0.2，Mod 一个没动 ⇒ 指纹没变 ⇒
+			// `.runtime/lua/<指纹>` 里那份旧包被原样发到游戏里，版本还是 2.0.1，
+			// 而整条链上没有任何报错（部署成功、游戏里跑的是旧代码）。
+			// 把最终源码的哈希拼进指纹，这类"缓存比源码新"的问题就不可能再出现。
+			var composedSourceHash = LuaHashFor(Encoding.UTF8.GetBytes(composition.SourceText));
 			var gameRoot = Directory.GetParent(Path.GetFullPath(gameDataDirectory))?.FullName;
 			if (validationMode is not null && !string.IsNullOrWhiteSpace(gameRoot))
 			{
@@ -498,7 +504,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 				}
 			}
-			fingerprint = CreateCompositionFingerprint(documents);
+			fingerprint = CreateCompositionFingerprint(documents, composedSourceHash);
 			var outputDirectory = Path.Combine(Path.GetFullPath(modsRootDirectory), ".runtime", "lua", fingerprint);
 			var outputPath = Path.Combine(outputDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
 			GeneratedPatchFile[] outputFiles;
@@ -930,9 +936,14 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		return new GeneratedPatchFile(kind, path, info.Name, info.Length, info.LastWriteTimeUtc);
 	}
 
-	private static string CreateCompositionFingerprint(IEnumerable<LuaDocumentSource> sources)
+	/// <param name="composedSourceHash">
+	/// 这次要写出去的最终源码的哈希。**必须**参与指纹：目录名是缓存键，
+	/// 键里不含内容，就会出现"源码变了、发出去的还是旧包"（2026-11-09 实测）。
+	/// </param>
+	private static string CreateCompositionFingerprint(IEnumerable<LuaDocumentSource> sources, string composedSourceHash)
 	{
 		var builder = new StringBuilder();
+		builder.Append("composed:").Append(composedSourceHash).AppendLine();
 		foreach (var source in sources.OrderBy(item => item.ProfileLoadOrder).ThenBy(item => item.Group.NormalizedOrder).ThenBy(item => item.Group.ArchiveHex16, StringComparer.OrdinalIgnoreCase))
 		{
 			builder.Append(source.NodeId.Value.ToString("N"))
