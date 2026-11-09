@@ -146,7 +146,7 @@ public sealed class ModExportBottomBarViewModel : BaseViewModel
 
 		if (File.Exists(target))
 		{
-			var confirm = System.Windows.MessageBox.Show(
+			var confirm = HD2ModManager.Views.AppDialog.Show(
 				$"目标文件已存在，是否覆盖？\n\n{target}",
 				"导出 Mod",
 				System.Windows.MessageBoxButton.OKCancel,

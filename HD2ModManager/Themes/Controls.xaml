@@ -455,6 +455,11 @@
         NavIconKey 取值——这样"加一个图标"是加一条几何 + 一个枚举值，不用在模板里
         再写一组 DataTrigger，也不用把同一段路径抄两遍（激活态/非激活态各一份）。
     -->
+    <!-- 应用内提示框（AppDialog）的矢量图标，16x16 网格，描边跟随语义色。 -->
+    <Geometry x:Key="DialogIcon.Info">M8,1.5 A6.5,6.5 0 1 0 8,14.5 A6.5,6.5 0 1 0 8,1.5 M8,7 L8,11 M8,4.6 L8,5.2</Geometry>
+    <Geometry x:Key="DialogIcon.Warning">M8,1.8 L14.6,13.6 L1.4,13.6 Z M8,6.2 L8,9.6 M8,11.5 L8,12</Geometry>
+    <Geometry x:Key="DialogIcon.Error">M8,1.5 A6.5,6.5 0 1 0 8,14.5 A6.5,6.5 0 1 0 8,1.5 M5.4,5.4 L10.6,10.6 M10.6,5.4 L5.4,10.6</Geometry>
+    <Geometry x:Key="DialogIcon.Question">M8,1.5 A6.5,6.5 0 1 0 8,14.5 A6.5,6.5 0 1 0 8,1.5 M6,6.2 C6,3.9 10,3.9 10,6.2 C10,7.8 8,7.8 8,9.6 M8,11.4 L8,11.9</Geometry>
     <Geometry x:Key="NavIcon.Home">M2,7 L8,2 L14,7 L14,14 L10,14 L10,10 L6,10 L6,14 L2,14 Z</Geometry>
     <Geometry x:Key="NavIcon.ArmorRegistry">M3,2.5 L13,2.5 L13,13.5 L3,13.5 Z M5,5 L11,5 M5,8 L11,8 M5,11 L9,11</Geometry>
     <Geometry x:Key="NavIcon.Settings">M8,4.5 A3.5,3.5 0 1 0 8,11.5 A3.5,3.5 0 1 0 8,4.5 M8,1.5 L8,3 M8,13 L8,14.5 M1.5,8 L3,8 M13,8 L14.5,8 M3.4,3.4 L4.5,4.5 M11.5,11.5 L12.6,12.6 M12.6,3.4 L11.5,4.5 M4.5,11.5 L3.4,12.6</Geometry>

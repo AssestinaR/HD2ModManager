@@ -20,7 +20,7 @@ public static class ModDeletionConfirmation
         if (targets.Count == 0) return Array.Empty<string>();
 
         var selected = targets.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var confirm = System.Windows.MessageBox.Show(
+        var confirm = HD2ModManager.Views.AppDialog.Show(
             primaryPrompt + BuildOptionReferenceNote(library, targets, selected),
             primaryTitle,
             System.Windows.MessageBoxButton.YesNo,
@@ -36,7 +36,7 @@ public static class ModDeletionConfirmation
             .ToArray();
         if (attachedOptions.Length == 0) return targets;
 
-        var related = System.Windows.MessageBox.Show(
+        var related = HD2ModManager.Views.AppDialog.Show(
             $"所选主体关联了 {attachedOptions.Length} 个未选中的选项。\n\n是否同时删除这些选项？\n选择“否”将仅删除原先选中的 Mod。",
             "删除关联选项",
             System.Windows.MessageBoxButton.YesNo,

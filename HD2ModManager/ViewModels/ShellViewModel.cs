@@ -1229,7 +1229,7 @@ namespace HD2ModManager.ViewModels
                     {
                         _importQueue.MarkFailed(item, ex.Message);
                         task.MarkFailed(ex.Message);
-                        System.Windows.MessageBox.Show($"导入失败: {item.Path}\n{ex.Message}", "Import", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                        HD2ModManager.Views.AppDialog.Show($"导入失败: {item.Path}\n{ex.Message}", "Import", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                     }
                 }
 

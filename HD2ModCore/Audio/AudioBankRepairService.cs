@@ -233,21 +233,51 @@ public sealed class AudioBankRepairService(IOfficialBankSource officialBanks)
 		}
 		catch
 		{
-			// Restore this patch's originals; the exception then reaches the caller.
-			File.Copy(patchBackup, patchPath, overwrite: true);
-			if (hadStream) File.Copy(streamBackup, streamPath, overwrite: true);
+			// Restore this patch's originals (they may have been replaced already); the exception then reaches the caller.
+			// The backup copies are redundant once restored, so drop them instead of leaving orphans behind.
+			try
+			{
+				RestoreFile(patchBackup, patchPath);
+				if (hadStream) RestoreFile(streamBackup, streamPath);
+				File.Delete(patchBackup);
+				if (hadStream) File.Delete(streamBackup);
+			}
+			catch (Exception restoreException) when (restoreException is IOException or UnauthorizedAccessException)
+			{
+				// Keep the backups when the restore itself failed; they are then the only intact copy.
+			}
 			throw;
 		}
+	}
+
+	// Mod library files are commonly read-only (copied from archives / marked by the user). Replacing them must not fail
+	// with "access denied", and the read-only flag is kept on the new file so the library state stays as it was.
+	private static void RestoreFile(string source, string destination)
+	{
+		ClearReadOnly(destination);
+		var readOnly = new FileInfo(source).IsReadOnly;
+		File.Copy(source, destination, overwrite: true);
+		if (readOnly) File.SetAttributes(destination, File.GetAttributes(destination) | FileAttributes.ReadOnly);
+	}
+
+	private static void ClearReadOnly(string path)
+	{
+		if (!File.Exists(path)) return;
+		var attributes = File.GetAttributes(path);
+		if ((attributes & FileAttributes.ReadOnly) != 0) File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
 	}
 
 	// Replace by rename (not in-place write) so a hard link to the deployed copy is never modified behind the manager's back.
 	private static void ReplaceFile(string path, byte[] data)
 	{
 		var temporary = path + ".hd2audio.tmp";
+		var wasReadOnly = File.Exists(path) && new FileInfo(path).IsReadOnly;
 		try
 		{
 			File.WriteAllBytes(temporary, data);
+			ClearReadOnly(path);
 			File.Move(temporary, path, overwrite: true);
+			if (wasReadOnly) File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
 		}
 		finally
 		{

@@ -14,7 +14,13 @@ public sealed class AudioBankRepairServiceTests : IDisposable
 
 	public void Dispose()
 	{
-		try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
+		try
+		{
+			foreach (var file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
+				File.SetAttributes(file, FileAttributes.Normal);
+			Directory.Delete(_root, recursive: true);
+		}
+		catch (IOException) { }
 	}
 
 	[Fact]
@@ -60,6 +66,26 @@ public sealed class AudioBankRepairServiceTests : IDisposable
 		Assert.Equal(ModPayload(1), media[1]);        // Mod-replaced audio is kept
 		Assert.Equal(OfficialPayload(3), media[3]);   // Media the Mod never had comes from the official bank
 		Assert.Empty((await Service().InspectDirectoryAsync(dir)).Findings);
+	}
+
+	[Fact]
+	public async Task Repair_ReadOnlyPatchFiles_AreReplacedAndStayReadOnly()
+	{
+		var dir = WriteMod("readonly", "content/audio/wep_railgun", ModBank(), mixed: false);
+		var patchPath = Path.Combine(dir, "9ba626afa44a3aa3.patch_0");
+		File.SetAttributes(patchPath, FileAttributes.ReadOnly);
+		try
+		{
+			var result = await Service().RepairDirectoryAsync(dir, Path.Combine(_root, "backup-ro"));
+
+			Assert.Single(result.Repaired);
+			Assert.Empty((await Service().InspectDirectoryAsync(dir)).Findings);
+			Assert.True(new FileInfo(patchPath).IsReadOnly);
+		}
+		finally
+		{
+			File.SetAttributes(patchPath, FileAttributes.Normal);
+		}
 	}
 
 	[Fact]

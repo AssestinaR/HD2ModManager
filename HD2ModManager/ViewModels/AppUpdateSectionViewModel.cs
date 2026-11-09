@@ -249,7 +249,7 @@ namespace HD2ModManager.ViewModels
             if (release is null) return;
             var busy = _service.Updater.View().Download.Phase == DownloadPhase.Installing;
             if (busy) return;
-            var answer = MessageBox.Show(
+            var answer = HD2ModManager.Views.AppDialog.Show(
                 $"将安装 {release.Version}。\n\n管理器会先保存并关闭，替换程序文件后自动重新启动；你的设置、Mod 库和配置不会被改动。\n如果正在部署或导入，请先等它们完成。\n\n现在安装吗？",
                 "安装更新", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (answer != MessageBoxResult.Yes) return;

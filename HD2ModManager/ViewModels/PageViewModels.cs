@@ -218,7 +218,7 @@ namespace HD2ModManager.ViewModels
             var gameData = SettingsService.GetGameDataFolder();
             if (string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData))
             {
-                System.Windows.MessageBox.Show("请先配置有效的 Game Data 文件夹。", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                HD2ModManager.Views.AppDialog.Show("请先配置有效的 Game Data 文件夹。", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                 return;
             }
             IsRepairingOutdatedMods = true;
@@ -313,7 +313,7 @@ namespace HD2ModManager.ViewModels
                         : $"检测完成：未发现需要修复的过时 Mod；{unreadableCount} 个 Mod 的 Unit 版本无法确认，已跳过。";
                     if (skippedAudioBanks > 0)
                         summary += $"\n另有 {skippedAudioBanks} 个语音类音库含较多自定义条目，为避免丢失自定义语音已跳过。";
-                    System.Windows.MessageBox.Show(summary, "检测并修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                    HD2ModManager.Views.AppDialog.Show(summary, "检测并修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
                     return;
                 }
 
@@ -325,7 +325,7 @@ namespace HD2ModManager.ViewModels
                     ? string.Empty
                     : "\n音效 Mod 会以当前官方音库为基础重建，保留 Mod 替换过的音频；任一音库校验不通过时退回官方音库（该库 Mod 音色失效，但原版声音保证可用）。"
                       + (skippedAudioBanks > 0 ? $"\n另有 {skippedAudioBanks} 个语音类音库含较多自定义条目，已跳过。" : string.Empty);
-                var confirm = System.Windows.MessageBox.Show($"已检测到 {string.Join("、", detected)}。{unreadableNotice}{audioNotice}\n\n将仅处理这些 Mod，并仅在候选完整通过内部检查后替换原 Patch。原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "检测并修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+                var confirm = HD2ModManager.Views.AppDialog.Show($"已检测到 {string.Join("、", detected)}。{unreadableNotice}{audioNotice}\n\n将仅处理这些 Mod，并仅在候选完整通过内部检查后替换原 Patch。原 Patch 与 sidecar 会独立备份到管理器目录 backups。是否继续？", "检测并修复过时 Mod", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
                 if (confirm != System.Windows.MessageBoxResult.Yes)
                 {
                     task.MarkCompleted();
@@ -344,6 +344,7 @@ namespace HD2ModManager.ViewModels
                 var audioRepairedMods = 0;
                 var audioFailedMods = 0;
                 var audioFallbackNotes = new List<string>();
+                var audioFailureNotes = new List<string>();
                 var audioBackupRoot = Path.Combine(_paths.AppRootDirectory, "backups", DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff") + "-audio");
                 if (repairableAudioNodes.Length > 0 && !task.CancellationToken.IsCancellationRequested)
                 {
@@ -364,6 +365,7 @@ namespace HD2ModManager.ViewModels
                         catch (Exception audioException)
                         {
                             audioFailedMods++;
+                            audioFailureNotes.Add($"{item.Node.Metadata.Name}：{audioException.Message}");
                             LogService.Warn($"音效库重建失败 {item.Node.Metadata.Name}：{audioException.Message}");
                         }
                     }
@@ -393,12 +395,14 @@ namespace HD2ModManager.ViewModels
                     report.Append($"\n已修复：{result.RepairedModCount}\n跳过：{result.SkippedModCount}\n失败：{result.FailedModCount}\n取消：{result.CanceledModCount}\n未开始：{result.NotStartedModCount}");
                 if (repairableAudioNodes.Length > 0)
                     report.Append($"\n音效已重建：{audioRepairedMods} 个 Mod" + (audioFailedMods > 0 ? $"；失败：{audioFailedMods}" : string.Empty));
+                if (audioFailureNotes.Count > 0)
+                    report.Append("\n\n以下音效 Mod 重建失败，文件保持原样（所以再次检测仍会提示过时）：\n" + string.Join("\n", audioFailureNotes.Take(5)) + (audioFailureNotes.Count > 5 ? $"\n…另有 {audioFailureNotes.Count - 5} 条" : string.Empty));
                 if (audioFallbackNotes.Count > 0)
                     report.Append("\n\n以下音库已退回官方版本（Mod 音色失效）：\n" + string.Join("\n", audioFallbackNotes.Take(5)) + (audioFallbackNotes.Count > 5 ? $"\n…另有 {audioFallbackNotes.Count - 5} 条" : string.Empty));
                 if (audioRepairedMods > 0) report.Append($"\n\n音效备份：{audioBackupRoot}\n需要重新部署后，游戏里才会生效。");
                 if (result is not null) report.Append($"\n\n备份与审计清单：{result.BatchDirectory}");
                 var failed = (result?.FailedModCount ?? 0) + audioFailedMods;
-                System.Windows.MessageBox.Show(report.ToString(), "一键修复", System.Windows.MessageBoxButton.OK, failed == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
+                HD2ModManager.Views.AppDialog.Show(report.ToString(), "一键修复", System.Windows.MessageBoxButton.OK, failed == 0 ? System.Windows.MessageBoxImage.Information : System.Windows.MessageBoxImage.Warning);
             }
             catch (OperationCanceledException)
             {
@@ -407,7 +411,7 @@ namespace HD2ModManager.ViewModels
             catch (Exception exception)
             {
                 task.MarkFailed(exception.Message);
-                System.Windows.MessageBox.Show($"批量修复失败：{exception.Message}", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show($"批量修复失败：{exception.Message}", "一键修复", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
             finally
             {
@@ -454,12 +458,12 @@ namespace HD2ModManager.ViewModels
                     }
                 }
                 SettingsService.SetModLibraryFolder(target);
-                System.Windows.MessageBox.Show("Mod 库已复制并校验到推荐目录，旧库被保留。应用将重新启动以载入新路径。", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                HD2ModManager.Views.AppDialog.Show("Mod 库已复制并校验到推荐目录，旧库被保留。应用将重新启动以载入新路径。", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
                 RestartCurrentProcess(elevated: false);
             }
             catch (Exception exception)
             {
-                System.Windows.MessageBox.Show($"迁移失败，当前 Mod 库未切换：{exception.Message}", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show($"迁移失败，当前 Mod 库未切换：{exception.Message}", "移动 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
 
@@ -714,7 +718,7 @@ namespace HD2ModManager.ViewModels
         {
             var key = _profiles.SelectedKey;
             if (string.IsNullOrWhiteSpace(key)) return;
-            var confirm = System.Windows.MessageBox.Show($"确定删除当前配置“{key}”？\n这只会移除配置，不会删除库中的 Mod 文件。", "删除配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
+            var confirm = HD2ModManager.Views.AppDialog.Show($"确定删除当前配置“{key}”？\n这只会移除配置，不会删除库中的 Mod 文件。", "删除配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Warning);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
             await _profiles.RemoveAsync(key);
             Refresh();
@@ -726,7 +730,7 @@ namespace HD2ModManager.ViewModels
             if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(RenameText)) return;
             var newName = RenameText.Trim();
             if (string.Equals(key, newName, StringComparison.OrdinalIgnoreCase)) return;
-            var confirm = System.Windows.MessageBox.Show($"将配置“{key}”重命名为“{newName}”？", "重命名配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+            var confirm = HD2ModManager.Views.AppDialog.Show($"将配置“{key}”重命名为“{newName}”？", "重命名配置", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
             if (confirm != System.Windows.MessageBoxResult.Yes) return;
             await _profiles.RenameAsync(key, RenameText);
             Refresh();
@@ -760,17 +764,17 @@ namespace HD2ModManager.ViewModels
                 var deletion = await _library.RemoveManyAsync(targets);
                 if (deletion.RemovedNodeIds.Count == 0)
                 {
-                    System.Windows.MessageBox.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                    HD2ModManager.Views.AppDialog.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                     return;
                 }
                 if (deletion.HasFailures)
-                    System.Windows.MessageBox.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                    HD2ModManager.Views.AppDialog.Show(ModLibraryService.DescribeDeletionResult(deletion), "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
                 _selection?.Clear();
                 Refresh();
             }
             catch (Exception ex)
             {
-                System.Windows.MessageBox.Show($"删除 Mod 失败：{ex.Message}", "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show($"删除 Mod 失败：{ex.Message}", "删除 Mod", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
 
@@ -2241,7 +2245,7 @@ namespace HD2ModManager.ViewModels
 			if (!_hasPendingModLibrarySwitch) return;
 			if (_backgroundTasks?.Tasks.Any(task => task.IsActive) == true)
 			{
-				System.Windows.MessageBox.Show("请等待后台任务完成后再切换 Mod 库。", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+				HD2ModManager.Views.AppDialog.Show("请等待后台任务完成后再切换 Mod 库。", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
 				return;
 			}
 			try
@@ -2255,7 +2259,7 @@ namespace HD2ModManager.ViewModels
 			}
 			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
 			{
-				System.Windows.MessageBox.Show($"无法切换 Mod 库：{exception.Message}", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+				HD2ModManager.Views.AppDialog.Show($"无法切换 Mod 库：{exception.Message}", "切换 Mod 库", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
 			}
 		}
 
@@ -2529,13 +2533,13 @@ namespace HD2ModManager.ViewModels
         public void PromptLanguageIfMissing()
         {
             if (!string.IsNullOrWhiteSpace(SettingsService.GetLanguage())) return;
-            var result = System.Windows.MessageBox.Show(
+            var result = HD2ModManager.Views.AppDialog.Show(
                 "选择语言?\nYes: 中文(zh-CN) / No: English(en-US)",
                 "Language",
                 System.Windows.MessageBoxButton.YesNo,
                 System.Windows.MessageBoxImage.Question);
             Language = result == System.Windows.MessageBoxResult.Yes ? "zh-CN" : "en-US";
-            System.Windows.MessageBox.Show("语言已设置为 " + Language + "，请重启应用以生效。", "Language", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+            HD2ModManager.Views.AppDialog.Show("语言已设置为 " + Language + "，请重启应用以生效。", "Language", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
         }
 
         private static void OpenFolder(string folder)
@@ -2587,7 +2591,7 @@ namespace HD2ModManager.ViewModels
                 {
                     AssetMetadataStatus = $"更新失败：{result.ErrorMessage}";
                     task?.MarkFailed(result.ErrorMessage ?? "未知错误");
-                    System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                    HD2ModManager.Views.AppDialog.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
                     return;
                 }
 
@@ -2596,13 +2600,13 @@ namespace HD2ModManager.ViewModels
                 await Task.Run(() => _library.RefreshAssetSummariesAsync());
                 task?.MarkCompleted();
                 OnPropertyChanged(nameof(AssetMetadataLastCheckText));
-                System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+                HD2ModManager.Views.AppDialog.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
                 AssetMetadataStatus = $"更新失败：{ex.Message}";
                 task?.MarkFailed(ex.Message);
-                System.Windows.MessageBox.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+                HD2ModManager.Views.AppDialog.Show(AssetMetadataStatus, "资产信息", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
             }
         }
 
