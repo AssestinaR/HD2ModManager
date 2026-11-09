@@ -224,6 +224,11 @@ public static class VpkRebuildService
 				arguments.AddRange(["--id-namespace", idNamespaceOverride]);
 			else if (report?.IdNamespace is { Length: > 0 } token)
 				arguments.AddRange(["--id-namespace-token", token]);
+			// 两条都不成立 = 还没转换过（刚导入就重构建）或旧产物没有命名空间。
+			// 这时不派一个，材质与贴图的 id 就只由名字决定（贴图只取 basename）：
+			// 不同作者的同名贴图（face / hair / body…）算成同一个 id，两个角色同时装就互相覆盖。
+			else if (SourceNameForNamespace(modDirectory) is { Length: > 0 } namespaceSource)
+				arguments.AddRange(["--id-namespace", namespaceSource]);
 			arguments.AddRange(settings.ToArguments());
 			// 头部缩放：**不进产物记录，按当前设置即时生效。**
 			//
@@ -542,6 +547,26 @@ public static class VpkRebuildService
 			.Where(path => !IsVolume(path))
 			.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
 			.ToList();
+
+	/// <summary>
+	/// 派生命名空间的**来源标识**：条目名（目录名）。
+	/// <para>
+	/// 目录名就是导入时按主体名起的那个名字（<c>VpkImportService</c> 的
+	/// <c>SafeDirectoryName(group.DisplayName)</c>），与 <c>VpkImportPlanner</c> 用来派生命名空间的
+	/// 来源标识是同一个口径 ⇒ 不必重开 VPK 猜。同名条目再导入会带 <c>(2)</c> 之类的去重后缀，
+	/// 于是副本拿到自己的命名空间 —— 那正是副本需要的隔离。
+	/// </para>
+	/// <para>取不到名字就返回 <c>null</c>，调用方退回老行为（不带命名空间），不打断重构建。</para>
+	/// </summary>
+	private static string? SourceNameForNamespace(string modDirectory)
+	{
+		if (string.IsNullOrWhiteSpace(modDirectory))
+			return null;
+
+		var trimmed = modDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		var name = Path.GetFileName(trimmed);
+		return string.IsNullOrWhiteSpace(name) ? null : name;
+	}
 
 	/// <summary>
 	/// 同一个命名空间下别的 Mod 根上的 VPK：它们与这个 Mod 是**同一批**转换出来的，
