@@ -331,6 +331,59 @@ public sealed class AppUpdateTests : IDisposable
 		Assert.False(File.Exists(Path.Combine(_dir, "run", name)));
 	}
 
+	// 带 API 资产地址的发布 JSON；download 地址上的 SHA256SUMS 不提供（模拟 github.com 504），API 地址按 apiServes 决定。
+	private (FakeNet Net, byte[] Zip, string Name) ApiSumsWorld(bool apiServes)
+	{
+		var (net, zip, name) = ReleaseWorld();
+		var sums = net.Files["/dl/SHA256SUMS"];
+		net.Files.Remove("/dl/SHA256SUMS");
+		var json = Encoding.UTF8.GetString(net.Files["/releases"]).Replace(
+			"\"browser_download_url\":\"http://127.0.0.1:1/dl/SHA256SUMS\"",
+			"\"browser_download_url\":\"http://127.0.0.1:1/dl/SHA256SUMS\",\"url\":\"http://127.0.0.1:1/api/assets/7\"");
+		net.Files["/releases"] = Encoding.UTF8.GetBytes(json);
+		if (apiServes) net.Files["/api/assets/7"] = sums;
+		return (net, zip, name);
+	}
+
+	[Fact]
+	public async Task Updater_SumsDownloadUrlFails_FallsBackToApiAssetUrl()
+	{
+		var (net, zip, _) = ApiSumsWorld(apiServes: true);
+		var installer = new RecordingInstaller();
+		using var updater = NewUpdater(net, installer);
+		await updater.CheckAsync(manual: true);
+		await updater.DownloadAsync(manual: true);
+		Assert.Equal(DownloadPhase.Ready, updater.View().Download.Phase);
+		Assert.Contains(net.Requests, r => r.Url.EndsWith("/api/assets/7", StringComparison.Ordinal));
+		await updater.InstallAsync();
+		Assert.Equal(Sha(zip), installer.Request!.Sha256);
+	}
+
+	[Fact]
+	public async Task Updater_SumsUnavailableEverywhere_DegradesToApiDigest()
+	{
+		var (net, zip, _) = ApiSumsWorld(apiServes: false);
+		var installer = new RecordingInstaller();
+		using var updater = NewUpdater(net, installer);
+		await updater.CheckAsync(manual: true);
+		await updater.DownloadAsync(manual: true);
+		Assert.Equal(DownloadPhase.Ready, updater.View().Download.Phase);
+		await updater.InstallAsync();
+		Assert.Equal(Sha(zip), installer.Request!.Sha256);
+	}
+
+	[Fact]
+	public async Task Updater_SumsUnavailable_WrongZipStillRejectedByApiDigest()
+	{
+		var (net, _, name) = ApiSumsWorld(apiServes: false);
+		net.Files["/dl/" + name] = Encoding.UTF8.GetBytes("tampered");
+		using var updater = NewUpdater(net, new RecordingInstaller());
+		await updater.CheckAsync(manual: true);
+		var ex = await Assert.ThrowsAnyAsync<UpdateException>(() => updater.DownloadAsync(manual: true));
+		Assert.NotEqual(DownloadPhase.Ready, updater.View().Download.Phase);
+		Assert.False(File.Exists(Path.Combine(_dir, "run", name)));
+	}
+
 	[Fact]
 	public async Task Updater_DevBuildWithoutVariant_OffersButNeverInstalls()
 	{

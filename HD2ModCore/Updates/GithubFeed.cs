@@ -136,13 +136,13 @@ internal static class UpdateHttp
 	public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
 	/// <summary>读文本；状态码映射：403/429→限流，其他非 2xx→Http，异常/超时→Network。</summary>
-	public static async Task<string> GetTextAsync(FetchFn fetch, string url, CancellationToken ct)
+	public static async Task<string> GetTextAsync(FetchFn fetch, string url, CancellationToken ct, string accept = "application/vnd.github+json, text/plain, */*")
 	{
 		using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 		cts.CancelAfter(Timeout);
 		try
 		{
-			using var res = await fetch(url, new Dictionary<string, string> { ["Accept"] = "application/vnd.github+json, text/plain, */*" }, cts.Token).ConfigureAwait(false);
+			using var res = await fetch(url, new Dictionary<string, string> { ["Accept"] = accept }, cts.Token).ConfigureAwait(false);
 			if (res.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests) throw new UpdateException(UpdateErrorCode.RateLimited, "Rate limited");
 			if (!res.IsSuccessStatusCode) throw new UpdateException(UpdateErrorCode.Http, $"HTTP {(int)res.StatusCode}");
 			return await res.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
