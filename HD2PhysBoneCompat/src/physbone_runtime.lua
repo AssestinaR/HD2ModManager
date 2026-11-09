@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.10"
+M.VERSION = "2.1.11"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1638,6 +1638,16 @@ local SKIRT_DEFAULTS = {
 	-- 权重和"正后方"轴如果每帧按当前姿态重算，就会跟着步频一起摆。
 	-- weight 的语义其实是**静态**的（这根骨在裙子的哪一侧），所以宁慢不抖：1.2 秒。
 	weightSeconds = 1.2, backSeconds = 0.5,
+	-- 自适应上限（临时值，按布料当前姿态反馈）：
+	--   · sag（链与水平面的夹角，向下垂为正）< capDropDeg ⇒ 说明被推高/甩高了，
+	--     每帧把上限降 capDropStep 度；
+	--   · sag > capRiseDeg ⇒ 正常垂着，每 capRiseFrames 帧恢复 capRiseStep 度；
+	--   · 两者之间是**死区**，不动（没有死区就会在阈值上来回跳 = 慢速脉动）。
+	-- 为什么需要它：cos 权重把中段骨的角度抬高了约 40%（45° 处 0.50→0.71），
+	-- 于是"原本刚好不嵌屁股"的模型在移动时被推得过高。反馈式上限比再猜一个全局角度可靠。
+	capDropDeg = 45, capRiseDeg = 65,
+	capDropStep = 1, capRiseStep = 1, capRiseFrames = 3,
+	capFloor = 0, capSmoothSeconds = 0.15,
 }
 
 --- 预设枚举：把"旋转加在哪个坐标系、正负号"这 8 种可能一次列全，让实机去分辨。
@@ -1691,6 +1701,14 @@ local function skirt_settings(runtime)
 		-- "正后方"轴收敛的多快。跑步时两条大腿前后交替，(l_thigh − r_thigh)
 		-- 每一步都在转，不快不行；但又不能太快，否则权重跟着摆。
 		backSeconds = values.skirtBackSeconds or SKIRT_DEFAULTS.backSeconds,
+		-- 自适应上限：低于 capDropDeg（太横/被甩高）就降上限，高于 capRiseDeg（垂着）就恢复。
+		capDropDeg = values.skirtCapDropDeg or SKIRT_DEFAULTS.capDropDeg,
+		capRiseDeg = values.skirtCapRiseDeg or SKIRT_DEFAULTS.capRiseDeg,
+		capDropStep = values.skirtCapDropStep or SKIRT_DEFAULTS.capDropStep,
+		capRiseStep = values.skirtCapRiseStep or SKIRT_DEFAULTS.capRiseStep,
+		capRiseFrames = math.max(1, math.floor(values.skirtCapRiseFrames or SKIRT_DEFAULTS.capRiseFrames)),
+		capFloor = values.skirtCapFloor or SKIRT_DEFAULTS.capFloor,
+		capSmoothSeconds = values.skirtCapSmoothSeconds or SKIRT_DEFAULTS.capSmoothSeconds,
 		-- 方向加权的手性开关：叉乘出来的"后"可能是前，翻号即可。
 		backSign = (values.skirtBackSign or 1) < 0 and -1 or 1,
 		-- sign 只为"方向验证"存在：置 -1 就把纠正方向反过来，不必改代码重新部署。
@@ -1797,6 +1815,20 @@ local function skirt_chain(S_, runtime, session, item, settings, calibrating, lo
 	if radius < 1e-4 then return false end
 	local rnx, rny, rnz = rx / radius, ry / radius, rz / radius
 
+	-- 这块布现在"有多垂"：hips → 链尾 的向量与**世界水平面**的夹角，向下垂为正。
+	--   正常垂着 60~90°；被我们推高、被物理甩高、或角色被击飞在空中时趋近 0；翻上去就是负值。
+	-- 用**世界**水平而不是"相对身体上轴"：角色前倾 20° 跑步时，身体上轴会把正常的
+	-- 垂直下垂判成偏横（少 20°），于是跑动中会被过度压低。用户要的也是"任何情况下"。
+	local sag = math.atan2(-(dz - hz), math.sqrt((dx - hx) * (dx - hx) + (dy - hy) * (dy - hy)))
+		* 180 / math.pi
+	do
+		local sk = (runtime.dt or (1 / 60)) / math.max(settings.capSmoothSeconds, 0.02)
+		if sk > 1 then sk = 1 end
+		if item.skirtSag == nil then item.skirtSag = sag
+		else item.skirtSag = item.skirtSag + (sag - item.skirtSag) * sk end
+	end
+	item.skirtSagRaw = sag
+
 	if calibrating then
 		if item.keepOut == nil then
 			item.keepOut = radius
@@ -1891,7 +1923,36 @@ local function skirt_chain(S_, runtime, session, item, settings, calibrating, lo
 	-- 直接乘会得到一个负角度 ⇒ 往里推 ⇒ 正好推进屁股里。
 	local cm = deficit > 0 and deficit * 100 or 0
 	local degrees = settings.manualDeg > 0 and settings.manualDeg or settings.degPerCm * cm
-	local angle = settings.sign * degrees * level * math.pi / 180
+	local magnitude = degrees * level
+
+	-- ③ 自适应上限（临时值）：按这块布**当前有多垂**反馈。
+	--    sag < capDropDeg（太横：被推高/被甩高）⇒ 每帧 −capDropStep 度；
+	--    sag > capRiseDeg（垂着，健康）      ⇒ 每 capRiseFrames 帧 +capRiseStep 度；
+	--    中间是死区，不动（没死区就会在阈值上下反复跳，表现成慢速脉动）。
+	--    降低只在**真在推**的时候发生（magnitude > 0.5°）；恢复不限，站着也会慢慢回满。
+	--    上限跟着 item 走，物理重新选目标时 item 是新建的 ⇒ 自动回到 ceiling。
+	local ceiling = settings.manualDeg > 0 and settings.manualDeg or settings.maxDeg
+	local cap = item.skirtCap
+	if cap == nil then cap = ceiling end
+	local sagSmooth = item.skirtSag or sag
+	if sagSmooth < settings.capDropDeg then
+		item.skirtCapRise = 0
+		if magnitude > 0.5 then cap = cap - settings.capDropStep end
+	elseif sagSmooth > settings.capRiseDeg then
+		item.skirtCapRise = (item.skirtCapRise or 0) + 1
+		if item.skirtCapRise >= settings.capRiseFrames then
+			item.skirtCapRise = 0
+			cap = cap + settings.capRiseStep
+		end
+	else
+		item.skirtCapRise = 0
+	end
+	if cap > ceiling then cap = ceiling elseif cap < settings.capFloor then cap = settings.capFloor end
+	item.skirtCap = cap
+	item.skirtCapActive = magnitude > 0.5
+	if magnitude > cap then magnitude = cap end
+
+	local angle = settings.sign * magnitude * math.pi / 180
 	local maxAngle = settings.maxDeg * math.pi / 180
 	if angle > maxAngle then angle = maxAngle elseif angle < -maxAngle then angle = -maxAngle end
 	if math.abs(angle) < 1e-5 then
@@ -2033,7 +2094,10 @@ local function skirt_apply(S_, runtime)
 			local maxDeg = 0
 			local degSum, degN = 0, 0
 			local bestWeight = 0
+			local capMin, capLimited, capN = nil, 0, 0
+			local sagSum, sagN = 0, 0
 			local buckets = { 0, 0, 0, 0, 0, 0 }
+			local ceilingNow = settings.manualDeg > 0 and settings.manualDeg or settings.maxDeg
 			for _, session in ipairs(runtime.sessions or {}) do
 				for _, item in ipairs(session.sessions or {}) do
 					local push = item.pushOut
@@ -2042,6 +2106,18 @@ local function skirt_apply(S_, runtime)
 						if deg > maxDeg then maxDeg = deg end
 						degSum = degSum + deg
 						degN = degN + 1
+						-- 自适应上限：看它压到多少、有多少条被压过。
+						local cap = item.skirtCap
+						if cap ~= nil then
+							capN = capN + 1
+							if capMin == nil or cap < capMin then capMin = cap end
+							if cap < ceilingNow - 0.5 then capLimited = capLimited + 1 end
+						end
+					end
+					local sagRaw = item.skirtSag
+					if sagRaw ~= nil and (item.skirtCapActive or false) then
+						sagSum = sagSum + sagRaw
+						sagN = sagN + 1
 					end
 					-- 方向分布：只统计"会被我们考虑的"链（权重已算过），按偏离正后方每 30° 一格。
 					-- 用途：判断"正后方"轴是否偏。环形裙子应当左右对称且最靠后那根接近 0°；
@@ -2057,10 +2133,11 @@ local function skirt_apply(S_, runtime)
 			end
 			-- 均值比最大值有用：最大值只能证明"有一条推满了"，均值才说明"整片有没有动"。
 			runtime.logger(
-				"[physbone][裙摆] 推 %d/%d 条（权重>0 %d 条）· 角度 均值 %.1f° / 最大 %.1f° · 斜坡 %.2f（手调 %s，上限 %.0f°）· 最大权重 %.2f · 分布 %d/%d/%d/%d/%d/%d",
+				"[physbone][裙摆] 推 %d/%d 条（权重>0 %d）· 角度 均值 %.1f° / 最大 %.1f° · 斜坡 %.2f（手调 %.0f°）· 权重最大 %.2f · 上限 最小 %.0f°（被压 %d/%d）· sag 均值 %.0f° · 分布 %d/%d/%d/%d/%d/%d",
 				pushed, total, weighted, degN > 0 and degSum / degN or 0, maxDeg, motionNow,
-				settings.manualDeg > 0 and string.format("%.0f°", settings.manualDeg) or "关",
-				settings.maxDeg, bestWeight,
+				settings.manualDeg, bestWeight,
+				capMin or ceilingNow, capLimited, capN,
+				sagN > 0 and sagSum / sagN or 0,
 				buckets[1], buckets[2], buckets[3], buckets[4], buckets[5], buckets[6])
 		end
 	end

@@ -53,6 +53,16 @@ if chain ~= nil then
 
 	-- ③ 角度为 0 时必须清掉 pushOut（否则引擎里会留上一帧的旧值）
 	check("零角度会清掉 pushOut", chain:find("item.pushOut = nil", 1, true) ~= nil)
+
+	-- ④ 自适应上限必须**真的夹到角度上**。
+	--    这一类 bug 我已经犯过两次：算出来、记下来，最后没用上（或被更早的 return 挡掉）。
+	check("自适应上限存在（item.skirtCap）", chain:find("item.skirtCap", 1, true) ~= nil)
+	local clamps = chain:find("magnitude > cap then magnitude = cap", 1, true) ~= nil
+	check("上限真的夹到 magnitude 上", clamps, clamps and "" or "没找到 `magnitude > cap` 的夹取")
+	-- 死区：两个阈值不能相等，否则没有死区 ⇒ 阈值上反复跳
+	local dropOk = chain:find("capDropDeg", 1, true) ~= nil
+	local riseOk = chain:find("capRiseDeg", 1, true) ~= nil
+	check("降/恢复两个阈值都在", dropOk and riseOk)
 end
 
 -- ④ 选中判据不能又退回"只认 hips"
