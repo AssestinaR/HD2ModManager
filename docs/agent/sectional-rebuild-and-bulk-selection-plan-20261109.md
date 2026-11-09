@@ -405,7 +405,9 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 | W3a | 规划层：来源 → 哪个组装哪些 key（`SectionalConversionPlanner`，纯函数 + 13 条用例） | ✅ 完成 |
 | W3b | IO 装配：扫描 → 抽键 → 落盘三组 → 拆 7 槽 → 换载荷 → `patches.json` → 编译（`Legacy2SectionalConverter`） | ✅ 完成 |
 | W4 | 批量执行器按存储形态分派 | ✅ 完成 |
-| W2 | 「生成sectional版」改为：建条目 + 平铺拷来源 + 写依据 + 导入 + 立刻转换 | 进行中 |
+| W2a | 导入侧：平铺拷来源 + 写依据（`SectionalSourceAssembler`，7 条用例） | ✅ 完成 |
+| W2b-1 | 白名单闭包：unit → 材质 → 贴图（`SectionalWhitelistBuilder`，6 条用例） | ✅ 完成 |
+| W2c | 把 ViewModel 的「生成sectional版」接上上面两件 + `Legacy2SectionalConverter` | 进行中 |
 
 **中断后怎么接上**：读本节进度表 → 读 §4 对应工作项 → `git log --oneline -5` 看最后一步做到哪 →
 `git status` 看有没有未提交的半成品（**不要**在编译不过的状态下离开）。
