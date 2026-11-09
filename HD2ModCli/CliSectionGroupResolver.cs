@@ -23,14 +23,45 @@ namespace HD2ModCli;
 internal static class CliSectionGroupResolver
 {
 	/// <summary>
-	/// 把一批开关包解析成掩码。<paramref name="sections"/>
-	/// 必须来自<b>同一个</b> patch，否则"材质在哪几个 section 上"这个 join 没有意义。
+	/// 一个"开关定义"：名字 + 它要藏/要切的材质裸名 + 它是从哪儿来的。
+	/// <para>
+	/// 两个来源共用这一个形状：源侧 <c>$no_draw</c> 覆盖包（<see cref="SectionGroupSource.NoDraw"/>）
+	/// 与模型自带的 <c>$BodyGroup</c> 变体（<see cref="SectionGroupSource.BodyGroup"/>）。
+	/// 去重（同一组材质只能产生一个开关）在 <see cref="Resolve(IReadOnlyList{ComponentSwitchDefinition}, WardrobeSectionMapDocument)"/>
+	/// 里按掩码做，与来源无关。
+	/// </para>
 	/// </summary>
+	/// <param name="Name">给人看的开关名。</param>
+	/// <param name="SourceLabel">写进 <c>components.json</c> 的 <c>sourceVpk</c>：包名，或"模型自带 bodygroup"。</param>
+	/// <param name="MaterialStems">它涉及的材料裸名（VMT 名，不含目录与扩展名）。</param>
+	/// <param name="Source">来源枚举，原样落进 <c>components.json</c>。</param>
+	internal sealed record ComponentSwitchDefinition(
+		string Name,
+		string SourceLabel,
+		IReadOnlyList<string> MaterialStems,
+		SectionGroupSource Source);
+
+	/// <summary>从 <c>$no_draw</c> 开关包翻译（老入口，保留给既有调用方与测试）。</summary>
 	public static SectionGroupDocument Resolve(
 		IReadOnlyList<VpkComponentSwitch> switches,
 		WardrobeSectionMapDocument sections)
+		=> Resolve(
+			[.. switches.Select(item => new ComponentSwitchDefinition(
+				item.DisplayName,
+				Path.GetFileName(item.VpkPath),
+				item.MaterialStems,
+				SectionGroupSource.NoDraw))],
+			sections);
+
+	/// <summary>
+	/// 把一批开关定义解析成掩码。<paramref name="definitions"/>
+	/// 必须与 <paramref name="sections"/> 来自<b>同一次</b>转换，否则"材质在哪几个 section 上"这个 join 没有意义。
+	/// </summary>
+	public static SectionGroupDocument Resolve(
+		IReadOnlyList<ComponentSwitchDefinition> definitions,
+		WardrobeSectionMapDocument sections)
 	{
-		ArgumentNullException.ThrowIfNull(switches);
+		ArgumentNullException.ThrowIfNull(definitions);
 		ArgumentNullException.ThrowIfNull(sections);
 
 		// 源材质裸名 → 它在 sections.json 里出现的那些 (unit, section)。
@@ -62,7 +93,7 @@ internal static class CliSectionGroupResolver
 		var unmatched = new List<SectionGroupUnmatched>();
 		// 掩码 → 已合并的那一条。键是排好序的 "unit:idx" 列表，与遍历顺序无关。
 		var byMask = new Dictionary<string, int>(StringComparer.Ordinal);
-		foreach (var item in switches)
+		foreach (var item in definitions)
 		{
 			var stems = item.MaterialStems
 				.Select(stem => Path.GetFileNameWithoutExtension(stem))
@@ -91,8 +122,8 @@ internal static class CliSectionGroupResolver
 			if (disabled.Count == 0)
 			{
 				unmatched.Add(new SectionGroupUnmatched(
-					item.DisplayName,
-					Path.GetFileName(item.VpkPath),
+					item.Name,
+					item.SourceLabel,
 					$"它要隐藏的材质（{string.Join("、", stems)}）在这个 patch 里找不到——"
 					+ "多半是它属于另一个角色/另一个材质的包，或者这个包只带材质没带模型。"));
 				continue;
@@ -102,19 +133,30 @@ internal static class CliSectionGroupResolver
 				.OrderBy(target => target.Unit, StringComparer.Ordinal)
 				.Select(target => target.Unit + ":" + string.Join(',', target.Sections)));
 			var entry = new SectionGroup(
-				item.DisplayName,
-				Path.GetFileName(item.VpkPath),
+				item.Name,
+				item.SourceLabel,
 				stems,
-				[.. disabled.OrderBy(target => target.Unit, StringComparer.Ordinal)]);
+				[.. disabled.OrderBy(target => target.Unit, StringComparer.Ordinal)])
+			{
+				Source = item.Source,
+			};
 			if (byMask.TryGetValue(mask, out var index))
 			{
-				// 同一个掩码 = 同一件事（两个包藏的是同一组材质）。合并而不是并列：
-				// 并列会让用户看到两个开关，点哪一个都关掉同一批几何。
+				// 同一个掩码 = 同一件事。合并而不是并列：并列会让用户看到两个开关，点哪一个都关掉同一批几何。
+				//
+				// **名字优先用 bodygroup 的**：那是作者在 mdl 里写的 bodypart 名（`猫耳CatEars`），
+				// 比 `XXX关.vpk` 这种"为了没装 L4N 的玩家准备的降级包"文件名更接近作者本意。
 				var merged = entries[index];
+				var preferIncoming = item.Source == SectionGroupSource.BodyGroup
+					&& merged.Source != SectionGroupSource.BodyGroup;
 				entries[index] = merged with
 				{
+					Name = preferIncoming ? entry.Name : merged.Name,
+					Source = preferIncoming ? entry.Source : merged.Source,
 					Materials = [.. merged.Materials.Concat(stems).Distinct(StringComparer.OrdinalIgnoreCase)],
-					SourceVpk = merged.SourceVpk + "、" + entry.SourceVpk,
+					SourceVpk = merged.SourceVpk == entry.SourceVpk
+						? merged.SourceVpk
+						: merged.SourceVpk + "、" + entry.SourceVpk,
 				};
 				continue;
 			}

@@ -122,4 +122,53 @@ public sealed class CliSectionGroupResolverTests
 		var entry = Assert.Single(document.Groups);
 		Assert.Equal([0], entry.Members[0].Sections);
 	}
+
+	// ---- 两个来源：`XXX关.vpk`（$no_draw）与模型自带的 $BodyGroup ----
+
+	/// <summary>
+	/// 同一个开关被两边各描述一次是**常态**：作者既在 mdl 里留了 bodygroup 变体，又给没装 L4N 的
+	/// 玩家发了一批 `XXX关.vpk`。实测 Elise 的 6 个开关里 5 个材质掩码完全相同。
+	/// 掩码相同就必须是一个开关，而且名字要用 **bodygroup 的**（作者写在 mdl 里的 bodypart 名）。
+	/// </summary>
+	[Fact]
+	public void Resolve_DedupsTheSameSwitchFromAPackAndABodyGroup_PreferringTheBodyGroupName()
+	{
+		var map = Map((Head, ["uv2_black_hairpin"]));
+
+		var document = CliSectionGroupResolver.Resolve(
+			[
+				new CliSectionGroupResolver.ComponentSwitchDefinition(
+					"Elise发卡Hairpin", "Elise发卡Hairpin关.vpk", ["uv2_black_hairpin"], SectionGroupSource.NoDraw),
+				new CliSectionGroupResolver.ComponentSwitchDefinition(
+					"发卡Hairpin", "模型自带 bodygroup", ["uv2_black_hairpin"], SectionGroupSource.BodyGroup),
+			],
+			map);
+
+		var entry = Assert.Single(document.Groups);
+		Assert.Equal("发卡Hairpin", entry.Name);
+		Assert.Equal(SectionGroupSource.BodyGroup, entry.Source);
+		// 两个来源都要留在溯源里，否则"这个开关到底哪来的"又说不清了。
+		Assert.Contains("Elise发卡Hairpin关.vpk", entry.SourceVpk, StringComparison.Ordinal);
+		Assert.Contains("bodygroup", entry.SourceVpk, StringComparison.Ordinal);
+	}
+
+	/// <summary>bodygroup 与开关包描述的是**不同**一批材质时，两条都得留下（不是同一件事）。</summary>
+	[Fact]
+	public void Resolve_KeepsBothWhenThePackAndTheBodyGroupHideDifferentGeometry()
+	{
+		var map = Map((Head, ["uv2_black_hairpin", "sister_earrings"]));
+
+		var document = CliSectionGroupResolver.Resolve(
+			[
+				new CliSectionGroupResolver.ComponentSwitchDefinition(
+					"发卡关", "Elise发卡关.vpk", ["uv2_black_hairpin"], SectionGroupSource.NoDraw),
+				new CliSectionGroupResolver.ComponentSwitchDefinition(
+					"耳坠Earrings", "模型自带 bodygroup", ["sister_earrings"], SectionGroupSource.BodyGroup),
+			],
+			map);
+
+		Assert.Equal(2, document.Groups.Count);
+		Assert.Contains(document.Groups, group => group.Source == SectionGroupSource.BodyGroup);
+		Assert.Contains(document.Groups, group => group.Source == SectionGroupSource.NoDraw);
+	}
 }

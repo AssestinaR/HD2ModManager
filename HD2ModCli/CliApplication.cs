@@ -2490,7 +2490,14 @@ public static class CliApplication
 						continue;
 					var sections = await HD2ModCore.Infrastructure.WardrobeSectionMapFile
 						.ReadAsync(sectionsPath).ConfigureAwait(false);
-					var document = CliSectionGroupResolver.Resolve(componentSwitches, sections);
+					// 两个来源合成一张表：`XXX关.vpk` 里的 `$no_draw` 覆盖 + 模型自带的 `$BodyGroup` 变体。
+					// 同一个开关两边都描述过一次是常态（Elise 6 个开关里 5 个材质掩码完全相同），
+					// 由 Resolve 按掩码去重，名字优先取 bodygroup 那个（作者的 bodypart 名）。
+					var definitions = new List<CliSectionGroupResolver.ComponentSwitchDefinition>();
+					definitions.AddRange(componentSwitches.Select(item => new CliSectionGroupResolver.ComponentSwitchDefinition(
+						item.DisplayName, Path.GetFileName(item.VpkPath), item.MaterialStems, SectionGroupSource.NoDraw)));
+					definitions.AddRange(outcome.BodyGroupSwitches);
+					var document = CliSectionGroupResolver.Resolve(definitions, sections);
 					if (document.Groups.Count == 0 && document.Unmatched.Count == 0)
 						continue;
 					await HD2ModCore.Infrastructure.SectionGroupFile
@@ -3190,7 +3197,20 @@ public static class CliApplication
 		string ModelKey,
 		string ModelName,
 		IReadOnlyDictionary<BodyRegion, UnitDonor> Donors,
-		string? RegistryError);
+		string? RegistryError)
+	{
+		/// <summary>
+		/// 这个模型<b>自带的 <c>$BodyGroup</c> 变体</b>翻译出来的开关定义（名字 = 作者的 bodypart 名）。
+		/// <para>
+		/// 和 `XXX关.vpk` 那些开关包是同一类东西的两种来源：包提供 `$no_draw` 覆盖，bodygroup 写在
+		/// mdl 自己里面。两者按材质掩码去重（见 <c>CliSectionGroupResolver</c>）。
+		/// </para>
+		/// <para>
+		/// 它们不需要任何外部文件跟着 Mod 走 —— 模型 VPK 就在 Mod 根里，重建时永远能重新推导。
+		/// </para>
+		/// </summary>
+		public IReadOnlyList<CliSectionGroupResolver.ComponentSwitchDefinition> BodyGroupSwitches { get; init; } = [];
+	}
 
 	/// <summary>
 	/// 这次 <c>vpk rekey</c> 要不要做**头身合并**。只有显式传 <c>--head-merge on</c> 才做。
@@ -4097,7 +4117,54 @@ public static class CliApplication
 		}
 
 		return new(full, "model", outputDirectory, inputs.MdlPath, split.Groups.Count,
-			selectedGroups.Length, package, modelKey, displayName, donors, registryError);
+			selectedGroups.Length, package, modelKey, displayName, donors, registryError)
+		{
+			BodyGroupSwitches = BuildBodyGroupSwitches(inputs.Model, inputs.Geometry, split.Groups),
+		};
+	}
+
+	/// <summary>
+	/// 把模型自带的 <c>$BodyGroup</c> 变体翻成"开关定义"（名字 + 它涉及的材质裸名）。
+	/// <para>
+	/// <b>为什么要这一步。</b>section 切换的机制一直都在（<c>components.json</c> + 把 section 的
+	/// <c>numIndices</c> 清零），但今天只有 `XXX关.vpk` 那种 `$no_draw` 包能产出组 ——
+	/// 于是"开关写在 mdl 的 bodygroup 里、没有配套开关包"的模型（实测 Serenade：23 个变体）
+	/// 一个开关都没有。而 bodygroup 就在模型自己身上，重建时随时能再推导一次，不需要保存任何额外文件。
+	/// </para>
+	/// <para>
+	/// 判据全部来自转换器已经解析好的结构：<see cref="MeshGroupKind.Component"/> 的每一组就是一个变体，
+	/// 它的三角形指向 mdl 材质表里的下标；材质名与 `sections.json` 的 <c>sourceMaterial</c> 同源
+	/// （<c>inputs.Model.MaterialPaths</c>），所以后面按名字 join 一定对得上。
+	/// </para>
+	/// </summary>
+	private static List<CliSectionGroupResolver.ComponentSwitchDefinition> BuildBodyGroupSwitches(
+		SourceModelDocument model,
+		SourceGeometry geometry,
+		IReadOnlyList<MeshGroup> groups)
+	{
+		var definitions = new List<CliSectionGroupResolver.ComponentSwitchDefinition>();
+		foreach (var group in groups)
+		{
+			if (group.Kind != MeshGroupKind.Component) continue;
+			var materials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var index in group.TriangleIndices)
+			{
+				if (index < 0 || index >= geometry.Triangles.Count) continue;
+				var materialIndex = geometry.Triangles[index].MaterialIndex;
+				if (materialIndex < 0 || materialIndex >= model.MaterialPaths.Count) continue;
+				var bare = Path.GetFileNameWithoutExtension(model.MaterialPaths[materialIndex]);
+				if (!string.IsNullOrWhiteSpace(bare)) materials.Add(bare);
+			}
+
+			if (materials.Count == 0) continue;
+			definitions.Add(new CliSectionGroupResolver.ComponentSwitchDefinition(
+				group.Name,
+				"模型自带 bodygroup",
+				[.. materials.OrderBy(name => name, StringComparer.OrdinalIgnoreCase)],
+				SectionGroupSource.BodyGroup));
+		}
+
+		return definitions;
 	}
 
 	/// <summary>
