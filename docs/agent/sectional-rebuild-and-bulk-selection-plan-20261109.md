@@ -429,6 +429,32 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 | W2a | 导入侧：平铺拷来源 + 写依据（`SectionalSourceAssembler`，7 条用例） | ✅ 完成 |
 | W2b-1 | 白名单闭包：unit → 材质 → 贴图（`SectionalWhitelistBuilder`，6 条用例） | ✅ 完成 |
 | W2c | ViewModel 接线：收集来源 → 白名单 → 装配 → 导入 → 立刻转换 | ✅ 完成 |
+| 验收 | 真机三层检查（根 / `sectional/` / `Overwrite/`） | ✅ 完成（见 §12） |
+
+### §12 真机验证记录（2026-11-09）
+
+**做法**：库里没有 legacy 源条目，于是用真实 patch 造了一个——
+把 `Elise_Bill` 的 sectional 产物（`patch_0` unit + `patch_1` material）平铺回一个空目录根上，
+不带 payload、不带 `.vpk`，就是一个合法的 legacy 条目。
+
+**结果**（`Legacy2SectionalConverter.RunAsync`，1 秒）：
+
+| 层 | 产物 |
+|---|---|
+| 根 | 来源 patch 原样保留（230218 / 31312 字节，与输入一致）+ `sectional-source.json` |
+| `sectional/` | `patch_0`（unit）+ `patch_1`（material，按白名单过滤 31312 → 23872）+ `sections.json` / `components.json` / `patches.json`（组名 `LegacyProbe`） |
+| `Overwrite/` | 编译产出 `patch_0` / `patch_1` / `sections.json` / `components.json` + `.hd2-vpk-rekey-overwrite` 归属标记 |
+
+白名单：7 unit / 13 材质 / 21 贴图（由 unit 引用闭包算出）。
+
+**这次验证抓到两个 bug**（已修，`9698eb5`）：
+
+1. 扫描来源 patch 时用完整路径做键，而依据文件与规划都用文件名 ⇒ 规划永远认为"没有 unit"，
+   转换必失败。
+2. `patches.json` 的组名依赖 `vpk2patch.json`，而 sectional 档没有那份报告 ⇒ 材质选项全无名。
+
+**仍未覆盖**：GUI 上从「生成sectional版」按钮点下去的完整交互（需要在库里真有一个 legacy 条目
+并驱动界面）。三段链路的每一段都已单独跑通或有用例覆盖，接线部分只做到编译期验证。
 
 **中断后怎么接上**：读本节进度表 → 读 §4 对应工作项 → `git log --oneline -5` 看最后一步做到哪 →
 `git status` 看有没有未提交的半成品（**不要**在编译不过的状态下离开）。
