@@ -203,11 +203,17 @@ public static class SectionalSplitter
 			}
 
 			// 宿主自己也可能有多份（同一 unit 被多个来源各带一份）：除当前这份外都要并进来。
+			// **两道判据都要**：① 引用相等（`ReadSourcesAsync` 已保证胜者与 Copies 里是同一实例）；
+			// ② 同一份 patch 就是同一份拷贝（一个 patch 里一个 key 只有一条），
+			// 引用一旦因为将来某次重构又分叉，第 ② 条还能挡住"把宿主追加到自身"。
 			if (sources.Copies.TryGetValue(target.HostUnitId, out var hostCopies))
 			{
 				foreach (var copy in hostCopies)
 				{
-					if (!ReferenceEquals(copy, host)) donors.Add(copy);
+					if (ReferenceEquals(copy, host)) continue;
+					if (string.Equals(copy.Entry.SourceFilePath, host.Entry.SourceFilePath, StringComparison.OrdinalIgnoreCase))
+						continue;
+					donors.Add(copy);
 				}
 			}
 
@@ -1004,28 +1010,8 @@ public static class SectionalSplitter
 		var reader = new PatchUnitMeshReader();
 		var units = new Dictionary<string, PatchUnitMesh>(StringComparer.Ordinal);
 		var copies = new Dictionary<string, List<PatchUnitMesh>>(StringComparer.Ordinal);
-		foreach (var entry in entries)
-		{
-			if (entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
-				continue;
-			var fileId = entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
-			try
-			{
-				// **必须用保留 payload 的那个读取器。** CanonicalUnitRebuilder 要拿
-				// targetUnit.Payload.TocData 当"未知区间原样保留"的基线；
-				// ReadCanonicalSourceAsync 把 payload 丢掉，换来的是
-				// MissingTargetTocData / InvalidUnitHeaderRange / InvalidMeshInfoRange 一整串诊断。
-				units[fileId] = await reader
-					.ReadAsync(entry, entries, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
-					.ConfigureAwait(false);
-			}
-			catch (Exception exception) when (exception is InvalidDataException or NotSupportedException or ArgumentException or OverflowException)
-			{
-				skipped.Add($"unit {fileId} 读不出来，已跳过：{exception.Message}");
-			}
-		}
 
-		// 再把**每一份拷贝**读出来：同一个 unit id 在系列里可能有多个来源各带一份，
+		// 先把**每一份拷贝**读出来：同一个 unit id 在系列里可能有多个来源各带一份，
 		// 而 entries 已经按"后者赢"去重了。合并要的是全部几何，不能只剩一份。
 		foreach (var patch in consumedPatches)
 		{
@@ -1045,6 +1031,10 @@ public static class SectionalSplitter
 				var fileId = entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
 				try
 				{
+					// **必须用保留 payload 的那个读取器。** CanonicalUnitRebuilder 要拿
+					// targetUnit.Payload.TocData 当"未知区间原样保留"的基线；
+					// ReadCanonicalSourceAsync 把 payload 丢掉，换来的是
+					// MissingTargetTocData / InvalidUnitHeaderRange / InvalidMeshInfoRange 一整串诊断。
 					var mesh = await reader
 						.ReadAsync(entry, scanned, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
 						.ConfigureAwait(false);
@@ -1056,6 +1046,16 @@ public static class SectionalSplitter
 					skipped.Add($"unit {fileId}（{Path.GetFileName(patch)}）读不出来，已跳过：{exception.Message}");
 				}
 			}
+		}
+
+		// 胜者 = 序号最大的那个 patch 提供的那份拷贝（与 ReadMergedEntriesAsync 的"后者赢"同口径），
+		// 而且**必须与 Copies 里是同一个实例**：合并时靠 `ReferenceEquals(copy, host)` 判"这份是不是宿主自己"，
+		// 另读一遍就是另一个对象，判断恒假 ⇒ 宿主被当成 donor 又追加一次 ⇒ 每份基础几何都重复一份
+		// （实测 2026-11-10：`ecc8` 的 6 段里 `#1≡#4`、`#2≡#5`）。顺带省掉一次全量解析。
+		foreach (var (fileId, list) in copies)
+		{
+			if (list.Count != 0)
+				units[fileId] = list[^1];
 		}
 
 		return new SourceSet(entries, units, skipped, consumedPatches)

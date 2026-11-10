@@ -26,8 +26,15 @@ public sealed record CanonicalDecorationAppendResult(PatchUnitMeshEditResult? Ed
     public bool IsValid => Edit is not null && Diagnostics.Count == 0;
 
     /// <summary>
-    /// 段来源账。**只有段数没有被合并改变时才给**（见 <c>TryAppendLodFamily</c> 里的守卫）——
-    /// 按槽合并会把多段并成一段，那时旧下标就指向别的几何了，宁可不给也不能给错的。
+    /// 段来源账：<b>最终网格里的第几段</b>来自哪个输入的第几段。
+    /// <para>
+    /// <b>只列真正进了最终网格的段。</b>0 三角形段（没有材质）与同槽合并掉的段不会出现在这里——
+    /// 它们本来就没有几何。所以这份账是"部分账"，调用方必须容忍某一段查不到来源。
+    /// </para>
+    /// <para>
+    /// <c>uniqueSlotPerSection: true</c> 时按槽 id 反查最终下标（<see cref="ResolveOriginsBySlot"/>）；
+    /// 其余三条在役路径行为不变：段数一致才给整份账，不一致留空（它们不读这份账）。
+    /// </para>
     /// </summary>
     public IReadOnlyList<CanonicalAppendedSection> Origins { get; init; } = [];
 }
@@ -95,6 +102,9 @@ public sealed class CanonicalDecorationUnitAppender
         var materialProvenance = new List<CanonicalMaterialSectionProvenance>();
 		var mergedByMesh = new Dictionary<int, UnitRawMeshData>();
 		var originsByMesh = new Dictionary<int, IReadOnlyList<CanonicalAppendSectionOrigin>>();
+		// 临时段下标 → 材质槽 id。段数会因"0 三角形段被丢掉 / 同槽段被合并"而变，
+		// 所以最终下标必须靠槽 id 反查，不能靠段数对齐（见文件末尾的段账说明）。
+		var slotsByMesh = new Dictionary<int, IReadOnlyDictionary<int, uint>>();
 		var sourceOffset = 0;
 		foreach (var group in groups)
         {
@@ -109,6 +119,9 @@ public sealed class CanonicalDecorationUnitAppender
 				merged = placeholder.Mesh!;
 			}
 			var origins = merged.Sections.Select((_, index) => new CanonicalAppendSectionOrigin(index, -1, index)).ToList();
+			var slotByProvisionalIndex = new Dictionary<int, uint>();
+			for (var index = 0; index < merged.Sections.Count; index++)
+				slotByProvisionalIndex[index] = merged.Sections[index].MaterialSlotId;
 			var appendSources = new List<(UnitRawMeshData Source, System.Numerics.Matrix4x4 SourceToTargetLocal)>();
 			var nextSectionStart = merged.Sections.Count;
 			for (var sourceIndex = 0; sourceIndex < group.Inputs.Count; sourceIndex++)
@@ -122,6 +135,8 @@ public sealed class CanonicalDecorationUnitAppender
 				var sourceBindings = BuildMaterialProvenance(source, input.Fragment.RawMesh, group.TargetRaw, start, group.TargetMesh.Index, input.MaterialNamespace, diagnostics, uniqueSlotPerSection);
 				if (diagnostics.Count != 0) return new(null, diagnostics);
 				materialProvenance.AddRange(sourceBindings);
+				foreach (var binding in sourceBindings)
+					slotByProvisionalIndex[binding.SectionIndex] = binding.PreferredTargetSlotId;
 				origins.AddRange(input.Fragment.RawMesh.Sections.Select((_, section) => new CanonicalAppendSectionOrigin(start + section, sourceIndex, section)));
 				appendSources.Add((input.Fragment.RawMesh, transform.SourceToTargetLocal!.Value));
 				nextSectionStart += input.Fragment.RawMesh.Sections.Count;
@@ -132,6 +147,7 @@ public sealed class CanonicalDecorationUnitAppender
 			merged = appended.Mesh!;
 			mergedByMesh.Add(group.TargetMesh.Index, merged);
 			originsByMesh.Add(group.TargetMesh.Index, origins);
+			slotsByMesh.Add(group.TargetMesh.Index, slotByProvisionalIndex);
 			sourceOffset += group.Inputs.Count;
         }
 
@@ -176,17 +192,29 @@ public sealed class CanonicalDecorationUnitAppender
         diagnostics.AddRange(rebuilt.Diagnostics);
         if (!rebuilt.IsValid) return new(null, diagnostics);
 
-        // 段来源账：只有"合并之后段数没变"时才可信。按槽合并会把多段并成一段，
-        // 那时下标整体位移，照旧下标记下来的账会指向别的几何 —— 宁可不给（留空）。
-        // ⚠️ 这里**不报诊断**：段数变化在默认路径上是正常现象（三条在役路径都不开
-        // uniqueSlotPerSection），把它变成诊断会让它们整体失败。
+        // 段来源账。**按槽 id 反查最终下标**，不按段数对齐：
+        // ① 材质布局会丢掉 0 三角形段（legacy unit 的第 0 段就是这种），
+        // ② 按槽合并会把多段并成一段。两种都是**正常现象**，按段数判"账可不可信"
+        //    等于永远不可信——实测拆件那条路 11 个 target 全部留空，变体组因此没有成员。
+        // 现在只记"确实进了最终网格"的段：查不到槽的段直接不记（它本来就没有几何）。
         var appendedSections = new List<CanonicalAppendedSection>();
         var originsTrustworthy = true;
         foreach (var group in groups)
         {
-            var origins = originsByMesh[group.TargetMesh.Index];
-            var finalCount = finalByMesh.TryGetValue(group.TargetMesh.Index, out var finalMesh) ? finalMesh.Sections.Count : -1;
-            if (finalCount != origins.Count)
+            var meshInfoIndex = group.TargetMesh.Index;
+            var origins = originsByMesh[meshInfoIndex];
+            if (!finalByMesh.TryGetValue(meshInfoIndex, out var finalMesh))
+                continue;
+
+            if (uniqueSlotPerSection)
+            {
+                appendedSections.AddRange(ResolveOriginsBySlot(
+                    meshInfoIndex, origins, slotsByMesh[meshInfoIndex], finalMesh.Sections));
+                continue;
+            }
+
+            // 其余三条在役路径不变：段数一致才给账，不一致保持留空（它们不读这份账）。
+            if (finalMesh.Sections.Count != origins.Count)
             {
                 originsTrustworthy = false;
                 break;
@@ -195,7 +223,7 @@ public sealed class CanonicalDecorationUnitAppender
             foreach (var origin in origins)
             {
                 appendedSections.Add(new CanonicalAppendedSection(
-                    group.TargetMesh.Index,
+                    meshInfoIndex,
                     origin.FinalSectionIndex,
                     origin.SourceIndex,
                     origin.SourceSectionIndex));
@@ -207,6 +235,47 @@ public sealed class CanonicalDecorationUnitAppender
         {
             Origins = originsTrustworthy ? appendedSections : [],
         };
+    }
+
+    /// <summary>
+    /// 把"临时段下标"翻译成"最终段下标"，用 **材质槽 id** 对齐。
+    /// <para>
+    /// 每段在最终网格里都带着自己的槽 id（<see cref="UniqueSlotFor"/> 保证互不相同），
+    /// 所以"这一段进了最终网格的哪一格"可以精确回答；被丢掉的段（0 三角形、材质没绑上）
+    /// 没有终段——它们本来就没有几何，不进账是正确的，而不是"账不可信"。
+    /// </para>
+    /// <para>
+    /// 同槽合并时只记第一次：那意味着多段真的并成了一段，记多次会让下游以为一块几何能单独开关。
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<CanonicalAppendedSection> ResolveOriginsBySlot(
+        int meshInfoIndex,
+        IReadOnlyList<CanonicalAppendSectionOrigin> origins,
+        IReadOnlyDictionary<int, uint> slotByProvisionalIndex,
+        IReadOnlyList<UnitRawMeshSectionData> finalSections)
+    {
+        ArgumentNullException.ThrowIfNull(origins);
+        ArgumentNullException.ThrowIfNull(slotByProvisionalIndex);
+        ArgumentNullException.ThrowIfNull(finalSections);
+
+        var finalIndexBySlot = new Dictionary<uint, int>();
+        for (var index = 0; index < finalSections.Count; index++)
+            finalIndexBySlot.TryAdd(finalSections[index].MaterialSlotId, index);
+
+        var resolved = new List<CanonicalAppendedSection>(origins.Count);
+        var claimed = new HashSet<int>();
+        foreach (var origin in origins)
+        {
+            if (!slotByProvisionalIndex.TryGetValue(origin.FinalSectionIndex, out var slot))
+                continue;
+            if (!finalIndexBySlot.TryGetValue(slot, out var finalIndex))
+                continue;
+            if (!claimed.Add(finalIndex))
+                continue;
+            resolved.Add(new CanonicalAppendedSection(meshInfoIndex, finalIndex, origin.SourceIndex, origin.SourceSectionIndex));
+        }
+
+        return resolved;
     }
 
     private static IReadOnlyList<CanonicalMaterialSectionProvenance> BuildMaterialProvenance(
