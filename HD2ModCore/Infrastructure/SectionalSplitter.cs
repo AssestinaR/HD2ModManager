@@ -546,6 +546,7 @@ public static class SectionalSplitter
 			{
 				Source = source,
 				ExclusiveGroup = group.ExclusiveGroup,
+				Key = "slot:" + group.ExclusiveGroup,
 			});
 		}
 
@@ -652,6 +653,8 @@ public static class SectionalSplitter
 			{
 				Source = SectionGroupSource.DonorUnit,
 				ExclusiveGroup = null,
+				// 稳定键：重建之后"还是这个来源的组"。用户的改名/互斥/删除都按它对齐。
+				Key = "source:" + source,
 			});
 		}
 

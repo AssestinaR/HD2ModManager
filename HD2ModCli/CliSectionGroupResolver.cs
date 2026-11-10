@@ -139,6 +139,8 @@ internal static class CliSectionGroupResolver
 				[.. disabled.OrderBy(target => target.Unit, StringComparer.Ordinal)])
 			{
 				Source = item.Source,
+				// 稳定键：重建之后"还是这个部件"。用户的改名/互斥/删除都按它对齐。
+				Key = "component:" + item.Name,
 			};
 			if (byMask.TryGetValue(mask, out var index))
 			{

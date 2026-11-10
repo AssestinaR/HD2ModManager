@@ -6,17 +6,14 @@ namespace HD2ModCore.Infrastructure;
 /// 把用户对上一份组表做过的**改动**套到这一次新生成的组表上。
 /// <para>
 /// <b>为什么需要它。</b>组表（<c>components.json</c>）是用户可以改的，而重建/重转换会重新生成一份
-/// 默认组表。以前只有"手建组"被保留，其余改动一律被冲掉：
+/// 默认组表。以前只有"手建组"被保留，其余改动一律被冲掉：改名被冲回默认名、删掉的组又回来、
+/// 设过的互斥丢空。
 /// </para>
-/// <list type="bullet">
-/// <item><b>改名</b>：把「尾巴」改成「尾巴（大）」，重建后又变回「尾巴」；</item>
-/// <item><b>删除</b>：删掉「翅膀」，重建后它又回来了（用户以为删除没生效）；</item>
-/// <item><b>互斥设置</b>：给「大衣 健壮 / 大衣 纤细」设了互斥组，重建后丢空。</item>
-/// </list>
 /// <para>
-/// <b>怎么认"还是那个组"。</b>不能用段下标（每次重建都会漂），也不能只用名字（用户改过名）。
-/// 这里用两个键任一命中：<c>名字</c>、或 <c>成员 unit 集合</c>（unit 比段稳定得多）。
-/// 命中上一份的组 ⇒ 沿用它的名字 / 互斥设置 / id；命中删除记录 ⇒ 这一次不生成它。
+/// <b>靠什么认"还是那个组"：<see cref="SectionGroup.Key"/>。</b>生成器给每个自动组一个稳定键
+/// （<c>source:尾巴</c> / <c>component:裙子</c>）。名字不能用（用户会改），成员也不能用
+/// （段下标每次重建都会漂；unit 集合又太粗——同一个 unit 里可能同时有"本体""尾巴""鞋子"三个组，
+/// 按 unit 匹配会把名字互相串掉，2026-11-10 实测就是这样）。旧文件里的组没有键，就按**同名的**兜底。
 /// </para>
 /// </summary>
 public static class SectionGroupCustomizations
@@ -35,15 +32,14 @@ public static class SectionGroupCustomizations
 		var previousByKey = new Dictionary<string, SectionGroup>(StringComparer.Ordinal);
 		foreach (var group in previous ?? [])
 		{
-			foreach (var key in KeysOf(group.Name, group.Members))
+			foreach (var key in KeysOf(group.Key, group.Name))
 				previousByKey.TryAdd(key, group);
 		}
 
 		var hiddenKeys = new HashSet<string>(StringComparer.Ordinal);
 		foreach (var tombstone in hidden ?? [])
 		{
-			// 删除记录只带 unit 集合：段下标已经不在了，不该拿来当键。
-			foreach (var key in KeysOf(tombstone.Name, tombstone.Members))
+			foreach (var key in KeysOf(tombstone.Key, tombstone.Name))
 				hiddenKeys.Add(key);
 		}
 
@@ -51,7 +47,7 @@ public static class SectionGroupCustomizations
 		var suppressed = 0;
 		foreach (var group in fresh)
 		{
-			var keys = KeysOf(group.Name, group.Members).ToArray();
+			var keys = KeysOf(group.Key, group.Name).ToArray();
 			if (keys.Any(hiddenKeys.Contains))
 			{
 				suppressed++;
@@ -84,44 +80,47 @@ public static class SectionGroupCustomizations
 			Id = previous.Id is { Length: > 0 } id ? id : fresh.Id,
 		};
 
-	/// <summary>匹配键：名字一个、成员 unit 集合一个（段下标刻意不参与）。</summary>
-	private static IEnumerable<string> KeysOf(string? name, IReadOnlyList<SectionGroupTarget>? members)
+	/// <summary>
+	/// 匹配键：稳定键优先，名字兜底（旧文件没有 <c>key</c> 字段）。
+	/// <b>成员一律不参与</b>——见类注释里那次"名字串掉"的实测。
+	/// </summary>
+	private static IEnumerable<string> KeysOf(string? key, string? name)
 	{
+		if (!string.IsNullOrWhiteSpace(key))
+			yield return "key:" + key.Trim();
 		if (!string.IsNullOrWhiteSpace(name))
 			yield return "name:" + name.Trim();
-		var units = (members ?? [])
-			.Select(member => member.Unit)
-			.Where(unit => !string.IsNullOrWhiteSpace(unit))
-			.Select(unit => unit.Trim().ToLowerInvariant())
-			.Distinct(StringComparer.Ordinal)
-			.Order(StringComparer.Ordinal)
-			.ToArray();
-		if (units.Length != 0)
-			yield return "units:" + string.Join(",", units);
 	}
 
-	/// <summary>把一个组的删除记进隐藏表（重复的替换掉，避免越攒越多）。</summary>
+	/// <summary>把一个组的删除记进隐藏表（同一个键/名字的旧记录替换掉，避免越攒越多）。</summary>
 	public static SectionGroupDocument WithHidden(SectionGroupDocument document, SectionGroup group)
 	{
 		ArgumentNullException.ThrowIfNull(document);
 		ArgumentNullException.ThrowIfNull(group);
+		var tombstone = new SectionGroupTombstone(group.Name, group.Key);
 		return document with
 		{
-			Hidden = [.. document.Hidden.Where(item => !string.Equals(item.Name, group.Name, StringComparison.Ordinal)),
-				new SectionGroupTombstone(group.Name, group.Members)],
+			Hidden =
+			[
+				.. document.Hidden.Where(item =>
+					!string.Equals(item.Name, tombstone.Name, StringComparison.Ordinal)
+					&& !string.Equals(item.Key, tombstone.Key, StringComparison.Ordinal)),
+				tombstone,
+			],
 		};
 	}
 
-	/// <summary>新建/改名成某个名字时，把同名的删除记录撤掉（用户显式要它回来）。</summary>
+	/// <summary>新建/改名成某个名字时，把同名（或同键）的删除记录撤掉——用户显式要它回来。</summary>
 	public static SectionGroupDocument WithoutHidden(SectionGroupDocument document, string name)
 	{
 		ArgumentNullException.ThrowIfNull(document);
 		if (string.IsNullOrWhiteSpace(name))
 			return document;
-		return document.Hidden.Any(item => string.Equals(item.Name, name.Trim(), StringComparison.Ordinal))
+		var trimmed = name.Trim();
+		return document.Hidden.Any(item => string.Equals(item.Name, trimmed, StringComparison.Ordinal))
 			? document with
 			{
-				Hidden = [.. document.Hidden.Where(item => !string.Equals(item.Name, name.Trim(), StringComparison.Ordinal))],
+				Hidden = [.. document.Hidden.Where(item => !string.Equals(item.Name, trimmed, StringComparison.Ordinal))],
 			}
 			: document;
 	}

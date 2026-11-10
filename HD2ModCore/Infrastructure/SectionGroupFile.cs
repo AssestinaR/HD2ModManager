@@ -58,11 +58,12 @@ public static class SectionGroupFile
 		IReadOnlyList<string>? Materials,
 		IReadOnlyList<TargetDto>? Members,
 		// 旧格式的键名。**只读不写**，写出时永远为 null 而被 WhenWritingNull 丢掉。
-		IReadOnlyList<TargetDto>? Disabled);
+		IReadOnlyList<TargetDto>? Disabled,
+		string? Key);
 
 	private sealed record UnmatchedDto(string? Name, string? SourceVpk, string? Reason);
 
-	private sealed record HiddenDto(string? Name, IReadOnlyList<TargetDto>? Members);
+	private sealed record HiddenDto(string? Name, string? Key);
 
 	private sealed record DocumentDto(
 		string? Schema,
@@ -84,9 +85,7 @@ public static class SectionGroupFile
 				: [.. document.Unmatched.Select(item => new UnmatchedDto(item.Name, item.SourceVpk, item.Reason))],
 			document.Hidden.Count == 0
 				? null
-				: [.. document.Hidden.Select(item => new HiddenDto(
-					item.Name,
-					[.. item.Members.Select(member => new TargetDto(member.Unit, member.Sections))]))]);
+				: [.. document.Hidden.Select(item => new HiddenDto(item.Name, item.Key))]);
 		return JsonSerializer.Serialize(dto, JsonOptions) + "\n";
 	}
 
@@ -131,10 +130,8 @@ public static class SectionGroupFile
 					item.Reason ?? string.Empty))]);
 		return document with
 		{
-			Hidden = [.. (dto.Hidden ?? []).Select(item => new SectionGroupTombstone(
-				item.Name ?? string.Empty,
-				[.. (item.Members ?? []).Where(member => !string.IsNullOrWhiteSpace(member.Unit))
-					.Select(member => new SectionGroupTarget(member.Unit!, member.Sections ?? []))]))],
+			Hidden = [.. (dto.Hidden ?? []).Where(item => !string.IsNullOrWhiteSpace(item.Name) || !string.IsNullOrWhiteSpace(item.Key))
+				.Select(item => new SectionGroupTombstone(item.Name ?? string.Empty, item.Key))],
 		};
 	}
 
@@ -254,7 +251,8 @@ public static class SectionGroupFile
 			group.Members.Count == 0
 				? null
 				: [.. group.Members.Select(target => new TargetDto(target.Unit, [.. target.Sections.Order()]))],
-			null);
+			null,
+			group.Key);
 
 	private static SectionGroup FromDto(GroupDto dto)
 		=> new(
@@ -271,6 +269,8 @@ public static class SectionGroupFile
 			// 旧文件没有这个字段，缺省就是源侧 $no_draw 那一类。
 			Source = dto.Source ?? SectionGroupSource.NoDraw,
 			ExclusiveGroup = string.IsNullOrWhiteSpace(dto.ExclusiveGroup) ? null : dto.ExclusiveGroup,
+			// 旧文件没有稳定键；那种组的名字就是它的键（改名在前一版里本来也保不住）。
+			Key = string.IsNullOrWhiteSpace(dto.Key) ? null : dto.Key,
 		};
 
 	/// <summary>unit 键归一：去空白、去 <c>0x</c> 前缀、转小写（与 <c>sections.json</c> 同口径）。</summary>

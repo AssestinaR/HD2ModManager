@@ -56,6 +56,8 @@ public sealed class SectionGroupMergeTests
 		=> new(name, name, [], [.. members.Select(member => new SectionGroupTarget(member.Unit, member.Sections))])
 		{
 			Source = source,
+			// 自动组的稳定键由生成器给；手建组没有键。
+			Key = source == SectionGroupSource.Manual ? null : "source:" + name,
 		};
 
 	[Fact]
@@ -77,7 +79,7 @@ public sealed class SectionGroupMergeTests
 	{
 		// 上一轮用户把「尾巴」改名成「尾巴（大）」，成员 unit 没变。
 		var previous = new SectionGroupDocument(SectionGroupDocument.CurrentSchema,
-			[Group("尾巴（大）", SectionGroupSource.DonorUnit, (UnitA, new[] { 0, 1 }))], []);
+			[Group("尾巴（大）", SectionGroupSource.DonorUnit, (UnitA, new[] { 0, 1 })) with { Key = "source:尾巴" }], []);
 
 		var merged = SectionGroupMerge.Merge(Fresh(), previous, Map());
 
@@ -89,7 +91,7 @@ public sealed class SectionGroupMergeTests
 	{
 		var previous = SectionGroupDocument.Empty with
 		{
-			Hidden = [new SectionGroupTombstone("尾巴", [new SectionGroupTarget(UnitA, new[] { 0, 1 })])],
+			Hidden = [new SectionGroupTombstone("尾巴", "source:尾巴")],
 		};
 
 		var merged = SectionGroupMerge.Merge(Fresh(), previous, Map());
