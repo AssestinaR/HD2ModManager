@@ -100,6 +100,51 @@ public sealed class ModAssetSummaryProjectorTests
 		}
 	}
 
+	/// <summary>
+	/// 注册表还没同步到这具素体时，标签也必须答"这是一具自定义素体"。
+	/// <para>
+	/// 这条守的是实机事故（2026-11-10）：重构建刚写完 <c>custom-model.json</c>（新 key），
+	/// 而工作区注册表要等下一次同步才认识它；只查注册表就把整份产物答成"原版护甲 RS-100"。
+	/// 归属凭证是文件，注册表只是投影。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task OwnCustomModel_IsLabeledFromTheModFileEvenBeforeTheRegistryKnowsIt()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-summary-file-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var unit = new AssetKey(0xe0a48d0be9a7453f, 101);
+			var material = new AssetKey(0xeac0b497876adedf, 200);
+			var model = Path.Combine(root, "owned");
+			Directory.CreateDirectory(model);
+			await File.WriteAllTextAsync(Path.Combine(model, "custom-model.json"), $$"""
+				{
+				  "key": "custom-brand-new",
+				  "name": "水墨牛牛",
+				  "pieces": [ { "body": 1, "unit": "{{unit.FileId:x16}}", "slot": 2, "pieceType": 0 } ]
+				}
+				""");
+
+			// 注册表里**没有**这具素体（连工作区文件都没有）。
+			var registry = new RuntimeArmorRegistryService(new StoragePaths(root), Path.Combine(root, "runtime"));
+			var projector = new ModAssetSummaryProjector(
+				CenterFor(NativeUnitMapping(unit, material)), new SourceCatalogProvider(), registry, root);
+
+			var node = Node("owned");
+			var summary = await projector.ProjectAsync(node, Facts(node, unit, material));
+
+			var group = Assert.Single(summary.TargetGroups);
+			Assert.Equal("CustomModel", group.Category);
+			Assert.Equal("水墨牛牛", Assert.Single(group.Items).DisplayName);
+		}
+		finally
+		{
+			Directory.Delete(root, true);
+		}
+	}
+
 	private static ModNode Node(string relativePath)
 		=> new(ModNodeId.New(), relativePath, new ModNodeMetadata(relativePath, null, DateTimeOffset.UtcNow, null), [], []);
 

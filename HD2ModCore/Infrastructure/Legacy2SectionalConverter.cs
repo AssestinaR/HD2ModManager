@@ -60,6 +60,12 @@ public static class Legacy2SectionalConverter
 		if (string.IsNullOrWhiteSpace(context.GameDataFolder) || !Directory.Exists(context.GameDataFolder))
 			return Legacy2SectionalOutcome.Failed("没有配置游戏 data 目录：拆件要读外壳 unit 与 avatar 骨架。");
 
+		// **重构建必须沿用同一具素体**（必须在换载荷之前读：换完之后旧定义就没了）。
+		// 每转一次换一个 key，会把"目标护甲 / 护甲映射 / 组件开关"里记着它的地方全部作废：
+		// wardrobe.json 的目标对不上号、护甲映射页的映射指向一个不存在的素体、资产标签退回原版护甲。
+		// vpk2patch 那条路一直是重用的（--reuse-model），这里漏了。
+		var existingModelKey = VpkCustomModelFile.TryReadKey(modDirectory);
+
 		var sources = SectionalSplitter.EnumeratePatchFiles(modDirectory);
 		if (sources.Count == 0)
 			return Legacy2SectionalOutcome.Failed(
@@ -210,7 +216,7 @@ public static class Legacy2SectionalConverter
 			onStage?.Invoke("正在登记自定义素体…");
 			var definition = SectionalModelDefinition.Build(
 				split.Plan,
-				"custom-" + Guid.NewGuid().ToString("N"),
+				string.IsNullOrWhiteSpace(existingModelKey) ? "custom-" + Guid.NewGuid().ToString("N") : existingModelKey,
 				Path.GetFileName(modDirectory));
 			// 一条 piece 都没有就不落盘：空定义比没有定义更糟 —— 它会让"这是一具素体"
 			// 成立却不含任何组件，界面上是一具点了没反应的素体。

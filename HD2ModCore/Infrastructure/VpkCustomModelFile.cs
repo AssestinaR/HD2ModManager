@@ -37,6 +37,47 @@ public static class VpkCustomModelFile
 			?? ReadKeyAt(Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName, FileName));
 	}
 
+	/// <summary>
+	/// 读这个 Mod 自己登记的**素体定义**（key / 名字 / 件）。
+	/// <para>
+	/// <b>为什么需要它：文件才是归属凭证，注册表只是投影。</b>转换刚写完这份文件时，工作区注册表里
+	/// 可能还没有这具素体（它的同步时机由 app 启动/库刷新决定）。此时若只查注册表，
+	/// "这个 Mod 是一具自定义素体"这件事就答不出来——资产标签会退回原版护甲名，
+	/// 而产物本身明明已经是素体了。
+	/// </para>
+	/// <para>读法与写它的人一致（<see cref="JsonSerializerDefaults.Web"/>）；读不出来返回 <c>null</c>，不猜。</para>
+	/// </summary>
+	public static RuntimeArmorRegistryModel? TryReadModel(string modDirectory)
+	{
+		if (string.IsNullOrWhiteSpace(modDirectory))
+			return null;
+		foreach (var directory in new[]
+		{
+			modDirectory,
+			Path.Combine(modDirectory, ModNodePayloadLayout.VpkPatchDirectoryName),
+			Path.Combine(modDirectory, ModNodePayloadLayout.LegacyVpkPatchDirectoryName),
+			Path.Combine(modDirectory, ModNodePayloadLayout.OverwriteDirectoryName),
+		})
+		{
+			var path = Path.Combine(directory, FileName);
+			if (!File.Exists(path))
+				continue;
+			try
+			{
+				var json = File.ReadAllText(path);
+				var model = JsonSerializer.Deserialize<RuntimeArmorRegistryModel>(json, JsonOptions);
+				if (model is not null && !string.IsNullOrWhiteSpace(model.Key))
+					return model;
+			}
+			catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+			{
+				// 这一份坏了就试下一处（根上那份可能是手写的残片，payload 里那份才是产物）。
+			}
+		}
+
+		return null;
+	}
+
 	private static string? ReadKeyAt(string path)
 	{
 		if (!File.Exists(path))

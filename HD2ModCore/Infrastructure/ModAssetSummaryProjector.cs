@@ -132,31 +132,52 @@ public sealed class ModAssetSummaryProjector
 	}
 
 	/// <summary>
-	/// 这个 Mod <b>自己</b>登记的素体拥有的 unit：<c>&lt;Mod 目录&gt;/custom-model.json</c> 的 key →
-	/// 注册表里那具素体 → 它的件。没有那份文件、或 key 不在注册表里就返回空表。
+	/// 这个 Mod <b>自己</b>登记的素体拥有的 unit：<c>custom-model.json</c> 的 key / 名字 / 件。
+	/// <para>
+	/// <b>先读文件，再查注册表。</b>文件是归属凭证，注册表只是它的投影；转换刚写完文件时注册表可能
+	/// 还没同步到（同步时机由 app 启动/库刷新决定），那时只查注册表就会把一具素体答成"原版护甲"。
+	/// 只有文件里没有件（旧文件、或只有 key）时才退回注册表。
+	/// </para>
 	/// <para>
 	/// <b>为什么必须限定"自己的"。</b>sectional 产物把**真实游戏 unit id** 登记进了自己的素体里
 	/// （它复用了这些 unit 壳）。若按"任何素体拥有"就覆盖，那么任何替换同一件护甲的手写 Mod
-	/// 都会被标成别人的素体名——那比现在这种"显示成游戏护甲"更糟。
+	/// 都会被标成别人的素体名——那比"显示成游戏护甲"更糟。
 	/// </para>
 	/// </summary>
 	private IReadOnlyDictionary<ulong, ArchiveMetadata> OwnUnitLabels(ModNode node, RegistryLabels labels)
 	{
-		if (modsRootDirectory is null || labels.ByModel.Count == 0)
+		if (modsRootDirectory is null)
 			return NoOwnLabels;
-		string? key;
+
+		string directory;
 		try
 		{
-			key = VpkCustomModelFile.TryReadKey(Path.Combine(modsRootDirectory, node.RelativePath));
+			directory = Path.Combine(modsRootDirectory, node.RelativePath);
 		}
 		catch (ArgumentException)
 		{
 			return NoOwnLabels;
 		}
 
-		return string.IsNullOrWhiteSpace(key) || !labels.ByModel.TryGetValue(key, out var own)
+		var model = VpkCustomModelFile.TryReadModel(directory);
+		if (model is not null)
+		{
+			var archive = new ArchiveMetadata("custom-model:" + model.Key, "CustomModel", model.Name ?? model.Key);
+			var own = new Dictionary<ulong, ArchiveMetadata>();
+			foreach (var piece in model.Pieces ?? [])
+			{
+				if (ulong.TryParse(piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var unit))
+					own[unit] = archive;
+			}
+
+			if (own.Count != 0)
+				return own;
+		}
+
+		var key = model?.Key ?? VpkCustomModelFile.TryReadKey(directory);
+		return string.IsNullOrWhiteSpace(key) || !labels.ByModel.TryGetValue(key, out var fromRegistry)
 			? NoOwnLabels
-			: own;
+			: fromRegistry;
 	}
 
 	private async ValueTask<AssetMetadataCatalog> ResolveCatalogAsync(GameDataMappingFacts mapping, CancellationToken cancellationToken)
