@@ -295,12 +295,15 @@ public static class SectionalSplitter
 
 		var patchPath = Path.Combine(outputDirectory, fileName);
 		var sections = await WardrobeSectionMapFile.BuildAsync(patchPath, cancellationToken).ConfigureAwait(false);
-		var groups = BuildGroups(plan, originsByTarget, sections.Document);
+		// 身份必须**由计划来**：来源 unit 自己不带 customization（实测整批都是空串），
+		// 只读字节的话组件树、换甲编译、rekey 三处都会把它们当成"认不出部位"。
+		var documented = WardrobeSectionMapFile.ApplyUnitIdentities(sections.Document, BuildUnitIdentities(plan));
+		var groups = BuildGroups(plan, originsByTarget, documented);
 
 		// 两份 sidecar 必须跟着产物一起落盘，否则产物"能用但不可编辑"：
 		// sections.json 是组件树与烘焙的唯一偏移来源，components.json 是组表。
 		await WardrobeSectionMapFile
-			.WriteAsync(Path.Combine(outputDirectory, WardrobeSectionMapFile.FileName), sections.Document, cancellationToken)
+			.WriteAsync(Path.Combine(outputDirectory, WardrobeSectionMapFile.FileName), documented, cancellationToken)
 			.ConfigureAwait(false);
 		await SectionGroupFile
 			.WriteAsync(outputDirectory, groups, cancellationToken)
@@ -311,7 +314,33 @@ public static class SectionalSplitter
 		// 输出到别的目录时源目录不该被碰。
 		var consumed = RemoveConsumedPatches(sources.ConsumedPatches, outputDirectory, Path.GetFullPath(patchPath), warnings);
 
-		return new SectionalSplitResult(patchPath, plan, groups, sections.Document, warnings) { RemovedSourcePatchCount = consumed };
+		return new SectionalSplitResult(patchPath, plan, groups, documented, warnings) { RemovedSourcePatchCount = consumed };
+	}
+
+	/// <summary>
+	/// 产物的 unit 身份：<b>一个 target 就是一个输出 unit</b>，所以身份只能取自拆件计划。
+	/// <para>
+	/// 这与 <see cref="SectionalModelDefinition"/> 用的是同一个来源、同一套取值
+	/// （部位名 / 身形名 / <see cref="SectionalModelDefinition.RegistryPieceLayer"/>）：
+	/// <c>custom-model.json</c> 说这具素体有哪些格子，<c>sections.json</c> 说这些格子里的 unit 是谁，
+	/// 两边说不一样的部位，组件树就会画出一棵与素体对不上的树。
+	/// </para>
+	/// </summary>
+	internal static IReadOnlyDictionary<string, WardrobeSectionMapUnitIdentity> BuildUnitIdentities(SectionalSplitPlan plan)
+	{
+		ArgumentNullException.ThrowIfNull(plan);
+		var identities = new Dictionary<string, WardrobeSectionMapUnitIdentity>(StringComparer.OrdinalIgnoreCase);
+		foreach (var target in plan.Targets)
+		{
+			if (string.IsNullOrWhiteSpace(target.HostUnitId))
+				continue;
+			identities[target.HostUnitId] = new WardrobeSectionMapUnitIdentity(
+				target.Slot,
+				SectionalModelDefinition.PieceTypeName(SectionalModelDefinition.RegistryPieceLayer),
+				SectionalSplitPlanner.NormalizeBody(target.BodyType));
+		}
+
+		return identities;
 	}
 
 	/// <summary>writer 一次产出的三个文件（主文件 + 两份 sidecar）。</summary>
@@ -653,12 +682,12 @@ public static class SectionalSplitter
 		_ => SectionalSplitPlanner.DefaultBody,
 	};
 
-	private static string LayerName(int layer) => layer switch
-	{
-		1 => "Armor",
-		2 => "Accessory",
-		_ => "UnderGarment",
-	};
+	/// <summary>
+	/// 层号 → 件级 <c>PieceType</c> 字符串。取值与 <see cref="SectionalModelDefinition.PieceTypeName"/>
+	/// 同一处，别在这里另写一套写法（历史上写成过 <c>UnderGarment</c>，与游戏串只差一个字母）。
+	/// </summary>
+	private static string LayerName(int layer)
+		=> SectionalModelDefinition.PieceTypeName(unchecked((uint)layer));
 
 	private sealed record SourceSet(
 		IReadOnlyList<AdaptationTocEntry> Entries,

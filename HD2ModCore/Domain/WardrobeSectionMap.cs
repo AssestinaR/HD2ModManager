@@ -124,6 +124,24 @@ public sealed record WardrobeSectionMapUnit(
 }
 
 /// <summary>
+/// 一个 unit 在产品里的**身份**：部位、层、身形、重量。
+/// <para>
+/// <b>为什么它需要单独一个类型。</b>身份不是从 unit 自己读出来的：legacy patch 里的 unit
+/// 常常不带 customization（slot/bodyType/pieceType 全是空串），而 vpk2patch 的产物是转换器
+/// 自己写的。两边都得能给出同一组值，于是"谁写这份表"来决定身份，而不是"这份表读到什么"。
+/// </para>
+/// <para>
+/// 身份是**三处功能的地基**，缺一个都会静默降级：组件树按 (槽位, 层) 筛出可开关的部位、
+/// 换甲编译按 (槽位, 层) 把来源 unit 对到目标护甲的格子上、`sectional plan` 的输出靠它可读。
+/// </para>
+/// </summary>
+public sealed record WardrobeSectionMapUnitIdentity(
+	string Slot,
+	string PieceType,
+	string BodyType,
+	string Weight = "");
+
+/// <summary>
 /// `sections.json` 的内存表示。`Schema` 是版本闸门：格式变了就换字符串，
 /// 让旧文件显式失效，而不是被新代码误读成"零个 section"。
 /// </summary>

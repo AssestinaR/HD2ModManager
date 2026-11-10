@@ -233,6 +233,56 @@ public static class WardrobeSectionMapFile
 	}
 
 	/// <summary>
+	/// 把一批身份写进表里：按 <c>fileId</c> 对齐，只改 unit 的
+	/// <see cref="WardrobeSectionMapUnit.Slot"/> / <see cref="WardrobeSectionMapUnit.PieceType"/> /
+	/// <see cref="WardrobeSectionMapUnit.BodyType"/> / <see cref="WardrobeSectionMapUnit.Weight"/>。
+	/// <para>
+	/// <b>为什么身份要由调用方给，而不是 <see cref="BuildAsync"/> 自己读。</b>身份来自"这份产物
+	/// 是什么"，不是"这个 unit 的字节里有写什么"：legacy 来源的 unit 一律不带 customization，
+	/// 于是同一份文件在 vpk2patch 里读得出、在 sectional 里读不出。转换器手里有拆件计划
+	/// （它与 <c>custom-model.json</c> 同源），那才是权威描述。
+	/// </para>
+	/// <para>
+	/// <b>纯函数</b>：不给身份（或给了空表）就原样返回，方便既有调用方零改动。
+	/// 键的宽松归一与名字表同口径（大小写、带不带 <c>0x</c>）。
+	/// </para>
+	/// </summary>
+	public static WardrobeSectionMapDocument ApplyUnitIdentities(
+		WardrobeSectionMapDocument document,
+		IReadOnlyDictionary<string, WardrobeSectionMapUnitIdentity>? identities)
+	{
+		ArgumentNullException.ThrowIfNull(document);
+		if (identities is null || identities.Count == 0 || document.Units.Count == 0)
+			return document;
+
+		var units = document.Units
+			.Select(unit => LookupIdentity(identities, unit.FileId) is { } identity
+				? unit with
+				{
+					Slot = identity.Slot,
+					PieceType = identity.PieceType,
+					BodyType = identity.BodyType,
+					Weight = identity.Weight,
+				}
+				: unit)
+			.ToArray();
+		return document with { Units = units };
+	}
+
+	private static WardrobeSectionMapUnitIdentity? LookupIdentity(
+		IReadOnlyDictionary<string, WardrobeSectionMapUnitIdentity> identities,
+		string fileId)
+	{
+		foreach (var (key, value) in identities)
+		{
+			if (string.Equals(NormalizeNameKey(key), NormalizeNameKey(fileId), StringComparison.Ordinal))
+				return value;
+		}
+
+		return null;
+	}
+
+	/// <summary>
 	/// 查"这个目标 unit 在来源侧是谁"。键的宽松归一与名字表同口径（大小写、带不带 <c>0x</c> 都接受）。
 	/// 查不到就返回 <c>null</c>——那表示"没有对照信息"，而不是"它就是自己"。
 	/// </summary>

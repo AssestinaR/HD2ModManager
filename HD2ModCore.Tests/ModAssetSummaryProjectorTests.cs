@@ -46,8 +46,75 @@ public sealed class ModAssetSummaryProjectorTests
 		finally { Directory.Delete(root, true); }
 	}
 
-	private static Func<IReadOnlySet<AssetKey>, GameDataMappingFacts> DependencyMapping(AssetKey material, AssetKey nativeUnit)
+	/// <summary>
+	/// sectional 产物把**真实游戏 unit id** 登记进了自己的素体（它复用了这些 unit 壳），
+	/// 于是游戏数据答得出"这是 RS-100 的件"。那个名字是壳的副作用，不是这具素体的身份：
+	/// 本 Mod 自己的素体拥有这个 unit 时，标签必须是素体名。
+	/// <para>
+	/// 同一批 unit 键、同样的游戏映射，**没有**登记素体的那个 Mod 仍然显示护甲名——
+	/// 判据只能是"这个 Mod 目录里的 custom-model.json 就是它"，不能是"任何素体拥有这个 unit"。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public async Task OwnCustomModel_WinsOverTheGameArmorThatOwnsTheSameUnitShells()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-summary-own-" + Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var registry = new RuntimeArmorRegistryService(new StoragePaths(root), Path.Combine(root, "runtime"));
+			var unit = new AssetKey(0xe0a48d0be9a7453f, 101);
+			var material = new AssetKey(0xeac0b497876adedf, 200);
+			await registry.SaveWorkspaceAsync(new RuntimeArmorRegistryDocument(0, false, [],
+				[new("custom-own", null, [new(3, unit.FileId.ToString("x16"), 0, 0)], "水墨牛牛")]));
+
+			var ownedDirectory = Path.Combine(root, "owned");
+			Directory.CreateDirectory(ownedDirectory);
+			await File.WriteAllTextAsync(
+				Path.Combine(ownedDirectory, "custom-model.json"),
+				"""{ "key": "custom-own", "name": "水墨牛牛" }""");
+			Directory.CreateDirectory(Path.Combine(root, "plain"));
+
+			var projector = new ModAssetSummaryProjector(
+				CenterFor(NativeUnitMapping(unit, material)), new SourceCatalogProvider(), registry, root);
+
+			var ownedNode = Node("owned");
+			var owned = await projector.ProjectAsync(ownedNode, Facts(ownedNode, unit, material));
+
+			var group = Assert.Single(owned.TargetGroups);
+			Assert.Equal("CustomModel", group.Category);
+			Assert.Equal("水墨牛牛", Assert.Single(group.Items).DisplayName);
+			Assert.Contains("水墨牛牛", owned.DerivedTags);
+			// 标签里出现的是完整护甲名（`RS-100“制裁者”`），所以按子串判。
+			Assert.DoesNotContain(owned.DerivedTags, tag => tag.Contains("RS-100", StringComparison.Ordinal));
+			// 依赖事实仍然留在资产表里，只是不再参与"这个 Mod 是什么"。
+			Assert.Equal(2, owned.Assets.Count);
+
+			var plainNode = Node("plain");
+			var plain = await projector.ProjectAsync(plainNode, Facts(plainNode, unit, material));
+			Assert.Contains(plain.DerivedTags, tag => tag.Contains("RS-100", StringComparison.Ordinal));
+		}
+		finally
+		{
+			Directory.Delete(root, true);
+		}
+	}
+
+	private static ModNode Node(string relativePath)
+		=> new(ModNodeId.New(), relativePath, new ModNodeMetadata(relativePath, null, DateTimeOffset.UtcNow, null), [], []);
+
+	private static ModContentFacts Facts(ModNode node, params AssetKey[] keys)
+		=> new(node.Id, node.RelativePath, "facts", DateTimeOffset.UtcNow,
+			[new(new ModPatchGroupId(node.Id, "0123456789abcdef", 0), 0, [], keys.ToHashSet(), [])], []);
+
+	/// <summary>游戏数据**认识**这些键：unit 落在 RS-100 那套护甲里。</summary>
+	private static Func<IReadOnlySet<AssetKey>, GameDataMappingFacts> NativeUnitMapping(AssetKey unit, AssetKey material)
 		=> assetKeys => new GameDataMappingFacts("mapping", "index", "metadata", DateTimeOffset.UtcNow,
+			assetKeys.ToDictionary(key => key, key => new GameDataMappedAssetFact(key, "body",
+				key.TypeId == unit.TypeId ? "Unit" : "Material", AssetTypeCategory.Model,
+				[new ArchiveMetadata("0123456789abcdef", "Armor", "RS-100“制裁者”")])), []);
+
+	private static Func<IReadOnlySet<AssetKey>, GameDataMappingFacts> DependencyMapping(AssetKey material, AssetKey nativeUnit)		=> assetKeys => new GameDataMappingFacts("mapping", "index", "metadata", DateTimeOffset.UtcNow,
 			assetKeys.ToDictionary(key => key, key => new GameDataMappedAssetFact(key, "asset",
 				key == material ? "Material" : "Unit", AssetTypeCategory.Model,
 				key == material || key == nativeUnit ? [new("0123456789abcdef", "Armor", "Source armor")] : [])), []);

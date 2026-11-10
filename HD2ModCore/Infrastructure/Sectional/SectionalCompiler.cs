@@ -156,8 +156,11 @@ public static class SectionalCompiler
 
 			// 顺序必须是"先建表（记原值）再烘焙"：反过来会把隐藏后的 0 记成原值，以后永远打不开。
 			var built = await WardrobeSectionMapFile.BuildAsync(staged, cancellationToken).ConfigureAwait(false);
+			// 身份从来源表继承：patch 可以重装，unit 自己的 customization 依然是空的。
+			var documented = WardrobeSectionMapFile.ApplyUnitIdentities(
+				built.Document, SourceUnitIdentities(sourceMap, plan: null));
 			var baked = await WardrobeSectionBaker
-				.BakeAsync(staged, built.Document, disabledSections ?? EmptySections, cancellationToken)
+				.BakeAsync(staged, documented, disabledSections ?? EmptySections, cancellationToken)
 				.ConfigureAwait(false);
 			warnings.AddRange(baked.Warnings);
 			if (baked.SectionsDisabled != 0)
@@ -171,7 +174,7 @@ public static class SectionalCompiler
 
 			// 结构文件只能写在物化**之后**：物化器会重开目录。
 			var components = await SectionGroupFile.TryReadAsync(payload, cancellationToken).ConfigureAwait(false);
-			await WriteStructureAsync(modDirectory, built.Document, components, cancellationToken).ConfigureAwait(false);
+			await WriteStructureAsync(modDirectory, documented, components, cancellationToken).ConfigureAwait(false);
 
 			var merge = SectionalHeadMergeOutcome.Off;
 			var effectiveRegistry = Path.Combine(
@@ -267,9 +270,13 @@ public static class SectionalCompiler
 			var built = await WardrobeSectionMapFile
 				.BuildAsync(staged, cancellationToken, sourceUnits: BuildSourceUnitMap(plan))
 				.ConfigureAwait(false);
+			// 换甲之后 unit 键换成了目标护甲的，但"这块几何是什么"没变：
+			// 身份按 plan 的 目标键 → 来源键 对齐搬过去，否则 Overwrite 里的表又成了空身份。
+			var documented = WardrobeSectionMapFile.ApplyUnitIdentities(
+				built.Document, SourceUnitIdentities(sourceMap, plan));
 			var translated = TranslateDisabled(disabledSections, plan.Replacements);
 			var baked = await WardrobeSectionBaker
-				.BakeAsync(staged, built.Document, translated, cancellationToken)
+				.BakeAsync(staged, documented, translated, cancellationToken)
 				.ConfigureAwait(false);
 
 			var materialized = OverwriteMaterializer.Materialize(
@@ -278,7 +285,7 @@ public static class SectionalCompiler
 				return SectionalCompileResult.Failure(materialized.Error ?? "物化生效层失败。", SectionalCompileKind.Armor);
 
 			await WriteStructureAsync(
-				modDirectory, built.Document, await TranslateGroupsAsync(payload, plan, cancellationToken).ConfigureAwait(false),
+				modDirectory, documented, await TranslateGroupsAsync(payload, plan, cancellationToken).ConfigureAwait(false),
 				cancellationToken).ConfigureAwait(false);
 			DeleteStaleCustomModel(modDirectory);
 
@@ -405,6 +412,40 @@ public static class SectionalCompiler
 		foreach (var replacement in plan.Replacements)
 			map[replacement.Target.FileId] = replacement.Source.FileId;
 		return map;
+	}
+
+	/// <summary>
+	/// 从来源表取出每个 unit 的身份（<c>sections.json</c> 里的槽位/层/身形/重量）。
+	/// <para>
+	/// 自身素体合成（键不变）直接按 <c>fileId</c> 对齐；换到目标护甲时按
+	/// <paramref name="plan"/> 的 <c>目标键 → 来源键</c> 对齐——几何搬过去了，身份跟着搬。
+	/// 找不到来源的 unit（目标是隐藏壳之类）不写身份：宁可空着，也不要编一个。
+	/// </para>
+	/// </summary>
+	private static IReadOnlyDictionary<string, WardrobeSectionMapUnitIdentity> SourceUnitIdentities(
+		WardrobeSectionMapDocument sourceMap,
+		SectionalCompilePlan? plan)
+	{
+		ArgumentNullException.ThrowIfNull(sourceMap);
+		var bySource = new Dictionary<string, WardrobeSectionMapUnitIdentity>(StringComparer.OrdinalIgnoreCase);
+		foreach (var unit in sourceMap.Units)
+		{
+			if (string.IsNullOrWhiteSpace(unit.Slot) && string.IsNullOrWhiteSpace(unit.PieceType))
+				continue;
+			bySource[unit.FileId] = new WardrobeSectionMapUnitIdentity(unit.Slot, unit.PieceType, unit.BodyType, unit.Weight);
+		}
+
+		if (plan is null)
+			return bySource;
+
+		var translated = new Dictionary<string, WardrobeSectionMapUnitIdentity>(StringComparer.OrdinalIgnoreCase);
+		foreach (var replacement in plan.Replacements)
+		{
+			if (bySource.TryGetValue(replacement.Source.FileId, out var identity))
+				translated[replacement.Target.FileId] = identity;
+		}
+
+		return translated;
 	}
 
 	/// <summary>把"来源键空间的禁用集合"翻译成"目标键空间"。映射不到的条目直接丢掉。</summary>

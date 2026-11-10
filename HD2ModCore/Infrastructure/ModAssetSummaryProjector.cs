@@ -9,16 +9,23 @@ namespace HD2ModCore.Infrastructure;
 // Purpose: Produces readable Mod summaries solely from stable content facts and Game Data mapping projections.
 public sealed class ModAssetSummaryProjector
 {
+	private const ulong UnitTypeId = 0xe0a48d0be9a7453f;
+
+	private static readonly IReadOnlyDictionary<ulong, ArchiveMetadata> NoOwnLabels
+		= new Dictionary<ulong, ArchiveMetadata>();
+
 	private readonly IModInformationCenter informationCenter;
 	private readonly IAssetMetadataCatalogProvider? fallbackCatalogProvider;
 	private readonly RuntimeArmorRegistryService? registry;
+	private readonly string? modsRootDirectory;
 
 	public ModAssetSummaryProjector(IModInformationCenter informationCenter, IAssetMetadataCatalogProvider? fallbackCatalogProvider = null,
-		RuntimeArmorRegistryService? registry = null)
+		RuntimeArmorRegistryService? registry = null, string? modsRootDirectory = null)
 	{
 		this.informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		this.fallbackCatalogProvider = fallbackCatalogProvider;
 		this.registry = registry;
+		this.modsRootDirectory = string.IsNullOrWhiteSpace(modsRootDirectory) ? null : modsRootDirectory;
 	}
 
 	public async ValueTask<ModAssetSummary> ProjectAsync(ModNode node, ModContentFacts facts, CancellationToken cancellationToken = default)
@@ -26,15 +33,18 @@ public sealed class ModAssetSummaryProjector
 		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(facts);
 		var sourceByKey = BuildSourceByKey(facts);
-		var mapping = await BuildMappingAsync(sourceByKey.Keys.ToHashSet(), cancellationToken).ConfigureAwait(false);
-		return Project(node, sourceByKey, mapping, await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false));
+		var labels = await ReadRegistryLabelsAsync(cancellationToken).ConfigureAwait(false);
+		var mapping = await BuildMappingAsync(sourceByKey.Keys.ToHashSet(), labels, cancellationToken).ConfigureAwait(false);
+		var catalog = await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false);
+		return Project(node, sourceByKey, mapping, catalog, OwnUnitLabels(node, labels));
 	}
 
 	public async ValueTask<ModAssetStructureFacts> ProjectStructureAsync(ModNode node, ModContentFacts facts, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(node);
 		ArgumentNullException.ThrowIfNull(facts);
-		var mapping = await BuildMappingAsync(facts.Structure.Assets.Select(asset => asset.AssetKey).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var labels = await ReadRegistryLabelsAsync(cancellationToken).ConfigureAwait(false);
+		var mapping = await BuildMappingAsync(facts.Structure.Assets.Select(asset => asset.AssetKey).ToHashSet(), labels, cancellationToken).ConfigureAwait(false);
 		return ProjectStructure(facts.Structure, mapping);
 	}
 
@@ -44,44 +54,109 @@ public sealed class ModAssetSummaryProjector
 	public async ValueTask<ModAssetSummaryProjection> ProjectManyWithGenerationAsync(IReadOnlyDictionary<ModNode, ModContentFacts> factsByNode, CancellationToken cancellationToken = default)
 	{
 		var sourceByNode = factsByNode.ToDictionary(pair => pair.Key, pair => BuildSourceByKey(pair.Value));
-		var mapping = await BuildMappingAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), cancellationToken).ConfigureAwait(false);
+		var labels = await ReadRegistryLabelsAsync(cancellationToken).ConfigureAwait(false);
+		var mapping = await BuildMappingAsync(sourceByNode.Values.SelectMany(value => value.Keys).ToHashSet(), labels, cancellationToken).ConfigureAwait(false);
 		var catalog = await ResolveCatalogAsync(mapping, cancellationToken).ConfigureAwait(false);
-		var summaries = sourceByNode.ToDictionary(pair => pair.Key.Id, pair => Project(pair.Key, pair.Value, mapping, catalog));
+		var summaries = sourceByNode.ToDictionary(pair => pair.Key.Id,
+			pair => Project(pair.Key, pair.Value, mapping, catalog, OwnUnitLabels(pair.Key, labels)));
 		var structures = factsByNode.ToDictionary(pair => pair.Key.Id, pair => ProjectStructure(pair.Value.Structure, mapping));
 		return new ModAssetSummaryProjection(mapping.MappingGeneration, summaries, structures);
 	}
 
 	public async ValueTask<string> GetMappingGenerationAsync(CancellationToken cancellationToken = default)
-		=> (await BuildMappingAsync(new HashSet<AssetKey>(), cancellationToken).ConfigureAwait(false)).MappingGeneration;
+		=> (await BuildMappingAsync(new HashSet<AssetKey>(), await ReadRegistryLabelsAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false)).MappingGeneration;
+
+	/// <summary>
+	/// 运行时注册表里的素体，以及"哪个 unit 属于哪具素体"。
+	/// <para>
+	/// <b>为什么要有 <see cref="ByModel"/>。</b>标注 unit 时有两种口径，差别很大：
+	/// 游戏数据查不到这个 unit 时用任意素体兜底（解包出来的 patch 也能读懂），
+	/// 但<b>这个 Mod 自己的素体</b>拥有这个 unit 时要以它为准——它压过的可能是真实的游戏护甲名。
+	/// </para>
+	/// </summary>
+	private sealed record RegistryLabels(
+		IReadOnlyDictionary<ulong, IReadOnlyList<RegistryUnitLabel>> Units,
+		IReadOnlyDictionary<string, IReadOnlyDictionary<ulong, ArchiveMetadata>> ByModel,
+		string Generation);
+
+	private sealed record RegistryUnitLabel(string ModelKey, ArchiveMetadata Archive);
 
 	// 作用：取回映射事实，再把"运行时护甲注册表里的 Unit 标签"叠加上去。
 	// Purpose: Fetches mapping facts, then overlays the Unit labels from the runtime armor registry.
 	//
 	// 注意这里**不是**直调映射服务：统一身份、并发合并、诊断事件只在信息中心实现（设计文档 §28）。
-	private async ValueTask<GameDataMappingFacts> BuildMappingAsync(IReadOnlySet<AssetKey> keys, CancellationToken token)
+	private async ValueTask<GameDataMappingFacts> BuildMappingAsync(IReadOnlySet<AssetKey> keys, RegistryLabels labels, CancellationToken token)
 	{
 		var mapping = (await informationCenter.RequestGameDataMappingAsync(
 			keys,
 			new ModInformationRequest(ModInformationKind.GameDataMapping, "ModAssetSummary"),
 			token).ConfigureAwait(false)).AsMappingFacts();
+		// Include reserved/disabled IDs: these still identify physical resources in a Patch.
+		var assets = mapping.Assets.ToDictionary(pair => pair.Key, pair => pair.Value);
+		foreach (var key in keys.Where(key => key.TypeId == UnitTypeId))
+			if (labels.Units.TryGetValue(key.FileId, out var unitLabels)
+				&& (!assets.TryGetValue(key, out var existing) || existing.TargetArchives.Count == 0))
+				assets[key] = new(key, $"0x{key.FileId:x16}", "Unit", AssetTypeCategory.Model,
+					unitLabels.Select(label => label.Archive).Distinct().ToArray());
+		return mapping with { Assets = assets, MappingGeneration = mapping.MappingGeneration + ":unit-labels-v2:" + labels.Generation };
+	}
+
+	private async ValueTask<RegistryLabels> ReadRegistryLabelsAsync(CancellationToken token)
+	{
 		var models = registry is null ? Array.Empty<RuntimeArmorRegistryModel>()
 			: await registry.ReadWorkspaceModelsAsync(token).ConfigureAwait(false);
-		// Include reserved/disabled IDs: these still identify physical resources in a Patch.
-		var owners = models.SelectMany(model => (model.Pieces ?? []).Select(piece => (model, piece)))
-			.Where(item => ulong.TryParse(item.piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _))
-			.GroupBy(item => ulong.Parse(item.piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture))
-			.ToDictionary(group => group.Key, group => group.Select(item =>
-				new ArchiveMetadata("custom-model:" + item.model.Key, "CustomModel", item.model.Name ?? item.model.Key))
-				.Distinct().ToArray());
-		var assets = mapping.Assets.ToDictionary(pair => pair.Key, pair => pair.Value);
-		foreach (var key in keys.Where(key => key.TypeId == 0xe0a48d0be9a7453f))
-			if (owners.TryGetValue(key.FileId, out var archives)
-				&& (!assets.TryGetValue(key, out var existing) || existing.TargetArchives.Count == 0))
-				assets[key] = new(key, $"0x{key.FileId:x16}", "Unit", AssetTypeCategory.Model, archives);
+		var units = new Dictionary<ulong, List<RegistryUnitLabel>>();
+		var byModel = new Dictionary<string, Dictionary<ulong, ArchiveMetadata>>(StringComparer.OrdinalIgnoreCase);
+		foreach (var model in models)
+		{
+			var archive = new ArchiveMetadata("custom-model:" + model.Key, "CustomModel", model.Name ?? model.Key);
+			if (!byModel.TryGetValue(model.Key, out var own))
+				byModel[model.Key] = own = [];
+			foreach (var piece in model.Pieces ?? [])
+			{
+				if (!ulong.TryParse(piece.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var unit))
+					continue;
+				if (!units.TryGetValue(unit, out var list))
+					units[unit] = list = [];
+				list.Add(new RegistryUnitLabel(model.Key, archive));
+				own[unit] = archive;
+			}
+		}
+
 		var identity = string.Join("\n", models.OrderBy(m => m.Key, StringComparer.Ordinal)
 			.Select(m => $"{m.Key}|{m.Name}|{string.Join(",", (m.Pieces ?? []).Select(p => p.Unit).Order(StringComparer.Ordinal))}"));
-		var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
-		return mapping with { Assets = assets, MappingGeneration = mapping.MappingGeneration + ":unit-labels-v2:" + version };
+		return new RegistryLabels(
+			units.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<RegistryUnitLabel>)pair.Value),
+			byModel.ToDictionary(pair => pair.Key, pair => (IReadOnlyDictionary<ulong, ArchiveMetadata>)pair.Value, StringComparer.OrdinalIgnoreCase),
+			Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))));
+	}
+
+	/// <summary>
+	/// 这个 Mod <b>自己</b>登记的素体拥有的 unit：<c>&lt;Mod 目录&gt;/custom-model.json</c> 的 key →
+	/// 注册表里那具素体 → 它的件。没有那份文件、或 key 不在注册表里就返回空表。
+	/// <para>
+	/// <b>为什么必须限定"自己的"。</b>sectional 产物把**真实游戏 unit id** 登记进了自己的素体里
+	/// （它复用了这些 unit 壳）。若按"任何素体拥有"就覆盖，那么任何替换同一件护甲的手写 Mod
+	/// 都会被标成别人的素体名——那比现在这种"显示成游戏护甲"更糟。
+	/// </para>
+	/// </summary>
+	private IReadOnlyDictionary<ulong, ArchiveMetadata> OwnUnitLabels(ModNode node, RegistryLabels labels)
+	{
+		if (modsRootDirectory is null || labels.ByModel.Count == 0)
+			return NoOwnLabels;
+		string? key;
+		try
+		{
+			key = VpkCustomModelFile.TryReadKey(Path.Combine(modsRootDirectory, node.RelativePath));
+		}
+		catch (ArgumentException)
+		{
+			return NoOwnLabels;
+		}
+
+		return string.IsNullOrWhiteSpace(key) || !labels.ByModel.TryGetValue(key, out var own)
+			? NoOwnLabels
+			: own;
 	}
 
 	private async ValueTask<AssetMetadataCatalog> ResolveCatalogAsync(GameDataMappingFacts mapping, CancellationToken cancellationToken)
@@ -126,12 +201,14 @@ public sealed class ModAssetSummaryProjector
 		};
 	}
 
-	private static ModAssetSummary Project(ModNode node, IReadOnlyDictionary<AssetKey, SourceInfo> sourceByKey, GameDataMappingFacts mapping, AssetMetadataCatalog catalog)
+	private static ModAssetSummary Project(ModNode node, IReadOnlyDictionary<AssetKey, SourceInfo> sourceByKey, GameDataMappingFacts mapping, AssetMetadataCatalog catalog,
+		IReadOnlyDictionary<ulong, ArchiveMetadata> ownUnitLabels)
 	{
 		var assets = sourceByKey
 			.OrderBy(pair => pair.Key.TypeId)
 			.ThenBy(pair => pair.Key.FileId)
-			.Select(pair => CreateEntry(pair.Key, pair.Value, mapping.Assets.GetValueOrDefault(pair.Key), catalog))
+			.Select(pair => CreateEntry(pair.Key, pair.Value, mapping.Assets.GetValueOrDefault(pair.Key), catalog,
+				pair.Key.TypeId == UnitTypeId ? ownUnitLabels.GetValueOrDefault(pair.Key.FileId) : null))
 			.ToArray();
 		// Unit-bearing patches describe armor replacements by Unit ownership, not by
 		// retained materials/textures or the source container's name. Keep dependencies
@@ -145,9 +222,15 @@ public sealed class ModAssetSummaryProjector
 		return new ModAssetSummary(node.Id, node.Metadata.Name, assets, tags, BuildTargetGroups(targets));
 	}
 
-	private static PatchAssetEntry CreateEntry(AssetKey key, SourceInfo source, GameDataMappedAssetFact? mapped, AssetMetadataCatalog catalog)
+	private static PatchAssetEntry CreateEntry(AssetKey key, SourceInfo source, GameDataMappedAssetFact? mapped, AssetMetadataCatalog catalog,
+		ArchiveMetadata? ownArchive)
 	{
-		var archives = mapped?.TargetArchives ?? Array.Empty<ArchiveMetadata>();
+		// 本 Mod 自己的素体拥有这个 unit ⇒ 它的身份是那具素体，不是"游戏里谁在用这个 unit 壳"。
+		// 两条路必须分开看：vpk2patch 的 unit 键是自造键，游戏数据里根本没有（走下面那层的兜底）；
+		// sectional 的 unit 键是真实游戏键，游戏数据答得出护甲名——而那个名字只是复用壳的副作用。
+		var archives = ownArchive is not null
+			? new[] { ownArchive }
+			: mapped?.TargetArchives ?? Array.Empty<ArchiveMetadata>();
 		var archive = archives.FirstOrDefault();
 		var fallbackArchive = key.TypeId == 0xe0a48d0be9a7453f ? null : source.SourceArchiveHexes
 			.Select(catalog.FindArchive)

@@ -33,6 +33,31 @@ public static class SectionalModelDefinition
 	/// <summary>头盔槽（0）没有身形变体，注册表只接受 <c>body=Any</c>。</summary>
 	private static readonly uint HelmetSlot = ArmorStructure.SlotOf(ArmorPart.Helmet) ?? 0u;
 
+	/// <summary>
+	/// 素体 piece 的层号：**一律 0**。
+	/// <para>
+	/// 库里 10 份游戏里能用的素体都是"一个槽 × 身形一条 piece"，层（内层/护甲/装饰）在同一个
+	/// unit 内由 section 开关表达，不再靠 pieceType 分格。所以这里不能按来源 unit 自己的层写：
+	/// 那是"这块几何当初挂在谁的壳里"，不是"这具素体怎么分件"。
+	/// </para>
+	/// </summary>
+	public const uint RegistryPieceLayer = 0;
+
+	/// <summary>
+	/// 层号 → 件级 <c>PieceType</c> 字符串（<c>sections.json</c> 与拆件计划里的写法）。
+	/// <para>
+	/// <b>为什么必须与 <see cref="RegistryPieceLayer"/> 一致。</b>这三个值在三个地方被当成同一件事读：
+	/// 组件树按它筛出可开关的部位，换甲编译按它把来源 unit 对到目标护甲的格子上，
+	/// 拆件计划把它当宿主的层类型。写成别的值（哪怕只是大小写变体）都会让其中一条静默降级。
+	/// </para>
+	/// </summary>
+	public static string PieceTypeName(uint layer) => layer switch
+	{
+		1 => "Armor",
+		2 => "Accessory",
+		_ => "Undergarment",
+	};
+
 	/// <summary>按拆件计划造素体定义：一个 target → 一条 piece。</summary>
 	public static RuntimeArmorRegistryModel Build(
 		SectionalSplitPlan plan,
@@ -59,7 +84,7 @@ public static class SectionalModelDefinition
 			if (slot.Value == HelmetSlot) body = RegistryBody(UnitMeshBodyVariant.Any);
 			// 层号固定 0：库里 10 份游戏里能用的素体都是"一个槽×身形一条 piece"，
 			// 层（内层/护甲/装饰）在同一 unit 内由 section 开关表达，不再靠 pieceType 分格。
-			const uint pieceType = 0;
+			const uint pieceType = RegistryPieceLayer;
 			// 注册表里 (body, slot, pieceType) 只能对应一个 unit；重复会让整份定义读不出来。
 			if (!seen.Add((body, slot.Value, pieceType))) continue;
 			pieces.Add(new RuntimeArmorRegistryModelPiece(body, target.HostUnitId, slot.Value, pieceType));
@@ -74,13 +99,5 @@ public static class SectionalModelDefinition
 		UnitMeshBodyVariant.Slim => 1u,
 		UnitMeshBodyVariant.Stocky => 0u,
 		_ => 3u,
-	};
-
-	/// <summary>件级 PieceType 字符串 → 层号（0 内层 / 1 护甲 / 2 装饰）。</summary>
-	private static uint LayerOf(string? pieceType) => pieceType?.Trim().ToLowerInvariant() switch
-	{
-		"armor" => 1u,
-		"accessory" => 2u,
-		_ => 0u,
 	};
 }
