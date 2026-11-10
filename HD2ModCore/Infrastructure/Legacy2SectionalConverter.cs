@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
@@ -163,6 +164,36 @@ public static class Legacy2SectionalConverter
 				};
 				var manifestError = SectionalPatchManifestFile.TryWrite(payloadDirectory, named);
 				if (manifestError is not null) notes.Add($"写 patches.json 失败：{manifestError}");
+			}
+
+			// ⑦ 素体定义：与 vpk2patch 对称 —— 7 槽产物同样**是一具自定义素体**。
+			//
+			// 不写这份文件，sectional 产物就只是"一堆 patch + 一张 section 表"，护甲映射页、
+			// 换甲、按槽位开关都认不出它。vpk2patch 那条路一直写着，这里漏了。
+			// 位置必须在编译**之前**：ModCompileService 会把 payload 里的 custom-model.json
+			// 一起带进 Overwrite，与 vpk2patch 的产物形状保持一致。
+			var mapPath = Path.Combine(payloadDirectory, WardrobeSectionMapFile.FileName);
+			if (File.Exists(mapPath))
+			{
+				onStage?.Invoke("正在登记自定义素体…");
+				var map = await WardrobeSectionMapFile.ReadAsync(mapPath, cancellationToken).ConfigureAwait(false);
+				var definition = SectionalModelDefinition.Build(
+					map.Units,
+					"custom-" + Guid.NewGuid().ToString("N"),
+					Path.GetFileName(modDirectory));
+				// 一条 piece 都没有就不落盘：空定义比没有定义更糟 —— 它会让"这是一具素体"
+				// 成立却不含任何组件，界面上是一具点了没反应的素体。
+				if (definition.Pieces is { Count: > 0 })
+				{
+					await File.WriteAllTextAsync(
+						Path.Combine(payloadDirectory, VpkCustomModelFile.FileName),
+						JsonSerializer.Serialize(definition, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }),
+						cancellationToken).ConfigureAwait(false);
+				}
+				else
+				{
+					notes.Add("没有从 section 表里认出任何槽位，跳过写 custom-model.json。");
+				}
 			}
 
 			// ⑥ 编译：与 vpk2patch 完全同一段。
