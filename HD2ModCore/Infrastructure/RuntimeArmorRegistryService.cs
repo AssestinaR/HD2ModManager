@@ -304,8 +304,12 @@ public sealed class RuntimeArmorRegistryService
 		CancellationToken cancellationToken = default)
 	{
 		var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
-		ValidateModels(snapshot.Document.ModelDefinitions, snapshot.Document.Mappings);
-		return snapshot.Document.ModelDefinitions
+		// 先归一化再校验：旧产物会把头盔件写成 body=0/1（头盔没有身形变体，只能是 Any），
+		// 直接校验会让整份素体目录"读不出来"，界面上表现成"读取已注册的自定义素体失败"。
+		// 归一化只改内存里的这份投影，磁盘上的 custom-model.json 不动。
+		var models = NormalizeLegacyHelmetSlots(snapshot.Document.ModelDefinitions);
+		ValidateModels(models, snapshot.Document.Mappings);
+		return models
 			.Where(model => model.Pieces is { Count: > 0 })
 			.Select(model => new EquipmentUnitCatalogEntry(
 				CustomModelArchiveId(model.Key),
@@ -1038,13 +1042,33 @@ public sealed class RuntimeArmorRegistryService
 			.ThenBy(item => item.Unit, StringComparer.Ordinal)
 			.ToArray();
 
+	/// <summary>
+	/// 修掉老数据里两种不合规的头盔条目。
+	/// <para>
+	/// <b>头盔没有身形变体。</b>注册表的规则是"<c>slot=0</c> 只能是 <c>body=3(Any)</c>"，
+	/// 但旧产物会按 unit 自带的身形写成 <c>body=0 / 1</c>（实测某次转换写出 11 条
+	/// 全是 slot=0、body 混着 0/1/3 的记录，读取时整份失败）。
+	/// </para>
+	/// <para>
+	/// 归一化之前先做 <c>body=3 &amp; slot=1 → slot=0</c>（更老的一种写法），
+	/// 再把 <c>slot=0</c> 的 body 一律按 Any 处理；归一之后坐标相同的条目会撞车，
+	/// 所以按 <c>(body, slot, pieceType)</c> 去重、保留第一条。
+	/// </para>
+	/// </summary>
 	private static IReadOnlyList<RuntimeArmorRegistryModel> NormalizeLegacyHelmetSlots(
 		IEnumerable<RuntimeArmorRegistryModel> models)
-		=> models.Select(model => model with
+		=> models.Select(model =>
 		{
-			Pieces = (model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
-				.Select(piece => piece.Body == 3 && piece.Slot == 1 ? piece with { Slot = 0 } : piece)
-				.ToArray()
+			var seen = new HashSet<(uint Body, uint Slot, uint PieceType)>();
+			var pieces = new List<RuntimeArmorRegistryModelPiece>();
+			foreach (var raw in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
+			{
+				var piece = raw.Body == 3 && raw.Slot == 1 ? raw with { Slot = 0 } : raw;
+				if (piece.Slot == 0 && piece.Body != 3) piece = piece with { Body = 3 };
+				if (seen.Add((piece.Body, piece.Slot, piece.PieceType))) pieces.Add(piece);
+			}
+
+			return model with { Pieces = pieces.ToArray() };
 		}).ToArray();
 
 	private static uint ParseModelSlot(string value, int lineNumber, uint body)
