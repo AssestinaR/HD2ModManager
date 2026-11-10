@@ -587,7 +587,8 @@ public static class SectionalSplitter
 			semantic?.Slot ?? string.Empty,
 			semantic?.BodyType ?? SectionalSplitPlanner.DefaultBody,
 			unit.Model.Meshes.Sum(mesh => mesh.Sections.Count),
-			semantic?.Name ?? string.Empty);
+			semantic?.Name ?? string.Empty,
+			semantic?.PieceType ?? string.Empty);
 	}
 
 	private sealed record SourceSet(

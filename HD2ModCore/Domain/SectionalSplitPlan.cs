@@ -13,14 +13,18 @@ public sealed record SectionalSplitSource(
 	string Slot,
 	string BodyType,
 	int SectionCount,
-	string Name = "");
+	string Name = "",
+	string PieceType = "");
 
 /// <summary>一个输出 unit：把 <see cref="DonorUnitIds"/> 的几何并进 <see cref="HostUnitId"/>。</summary>
+/// <param name="PieceType">宿主件的层类型（<c>Armor</c> / <c>UnderGarment</c> / <c>Accessory</c>…）。
+/// 素体定义的 piece 层号由它换算 —— 与 vpk2patch 那边一样，从**计划**取，不回读产物。</param>
 public sealed record SectionalSplitTarget(
 	string Slot,
 	string BodyType,
 	string HostUnitId,
-	IReadOnlyList<string> DonorUnitIds)
+	IReadOnlyList<string> DonorUnitIds,
+	string PieceType = "")
 {
 	/// <summary>这个输出 unit 会承载几个来源 unit 的几何。</summary>
 	public int SourceCount => DonorUnitIds.Count + 1;
@@ -179,7 +183,8 @@ public static class SectionalSplitPlanner
 				bucket.Key.Slot,
 				bucket.Key.Body,
 				host.UnitId,
-				[.. donors.Select(unit => unit.UnitId)]));
+				[.. donors.Select(unit => unit.UnitId)],
+				host.PieceType));
 
 			// 基础件与各变体同属一个互斥组：选一个变体就等于把基础件关掉。
 			var exclusive = $"{bucket.Key.Slot}/{bucket.Key.Body}";
