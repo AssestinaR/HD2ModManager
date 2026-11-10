@@ -72,7 +72,39 @@ public sealed record SectionalSourceEntry(
 	string Name,
 	int Order,
 	string? RelativePath = null,
-	IReadOnlyList<string>? PatchFiles = null);
+	IReadOnlyList<string>? PatchFiles = null)
+{
+	/// <summary>
+	/// 这个来源里每个 unit 的**部位 / 身形 / 层**，来自游戏件表（<c>game_data_authority_pieces</c>）。
+	/// <para>
+	/// <b>为什么要存在这里。</b>自定义素体命中目标部位的机制就是 <c>(body, slot, pieceType)</c>
+	/// 这个四元组格子对齐（见 <c>armor_registry_composition.lua</c> 的 model.pieces 匹配）。
+	/// 而 legacy 来源的 unit **自己不带**这三个字段（实测 21 个 unit 的 customization 全空），
+	/// 唯一权威来源是游戏件表按 unit id 反查。查一次存下来，转换时就不必再猜。
+	/// </para>
+	/// <para>旧文件没有这一项时为空表，转换退回旧路径。</para>
+	/// </summary>
+	public IReadOnlyList<SectionalSourceUnitCell> Units { get; init; } = [];
+}
+
+/// <summary>
+/// 一个来源 unit 在游戏件表里的坐标。
+/// </summary>
+/// <param name="Unit">unit id，16 位小写 hex（不带 0x）。</param>
+/// <param name="Slot">部位号 0..9：0 头盔、1 披风、2 躯干、3 胯、4 左腿、5 右腿、6 左臂、7 右臂、8 左肩、9 右肩。</param>
+/// <param name="Body">原始身形号：<b>0 Stocky / 1 Slim / 3 Any</b>（不是 <c>UnitMeshBodyVariant</c> 那套枚举）。</param>
+/// <param name="PieceType">层号 0/1/2（该部位的第几个 unit 槽）。</param>
+/// <param name="Ambiguous">件表里同一个 unit id 出现在多个不同的 (身形, 部位, 层) 上——记第一处并标记。</param>
+public sealed record SectionalSourceUnitCell(
+	string Unit,
+	int Slot,
+	int Body,
+	int PieceType,
+	bool Ambiguous = false)
+{
+	/// <summary>件表里查不到这个 unit（未建索引 / 它不是原版护甲的 unit）。</summary>
+	public static SectionalSourceUnitCell Unknown(string unit) => new(unit, -1, -1, -1);
+}
 
 /// <summary>
 /// 干净资产白名单：转换时只从来源里取这些 key，其余内容一律不进 <c>sectional/</c>。
@@ -118,9 +150,4 @@ public sealed record SectionalSourceDocument(
 {
 	/// <summary>护甲与头盔至少选了一个才有"来源"可转。</summary>
 	public bool HasSelection => Armor?.HasValue == true || Helmet?.HasValue == true;
-
-	/// <summary>
-	/// 每个来源 unit 的部位/身形/层。旧文件没有这一项（为空表），转换时退回读 unit 自身字段。
-	/// </summary>
-	public IReadOnlyList<SectionalSourceUnitIntent> UnitIntents { get; init; } = [];
 }

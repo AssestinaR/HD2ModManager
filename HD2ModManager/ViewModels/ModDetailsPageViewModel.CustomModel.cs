@@ -108,22 +108,7 @@ public partial class ModDetailsPageViewModel
 				var whitelistError = SectionalWhitelistBuilder.Describe(whitelist);
 				if (whitelistError is not null) throw new InvalidOperationException(whitelistError);
 
-				// 意图（unit → 部位/身形/层）必须一起落盘：legacy 的 unit 自己不带这些字段
-				// （实测 21 个 unit 的 slot/bodyType/pieceType 全是空串），槽位只存在于装备目录里。
-				// 不存它，转换时拆件器只能把全部 unit 兜底成 Torso/Any 一个桶。
-				var unitIntents = operation.SelectedSources
-					.SelectMany(entry => entry.Parts)
-					.Where(part => !part.IsCullingMesh)
-					.GroupBy(part => (part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId))
-					.Select(group => group.First())
-					.Select(part => new SectionalSourceUnitIntent(
-						$"{part.UnitAssetKey.TypeId:x16}:{part.UnitAssetKey.FileId:x16}",
-						part.Cell.Slot,
-						(int)part.BodyVariant,
-						part.Cell.Layer))
-					.ToArray();
-
-				// ③ 建条目目录 → 平铺拷来源 → 写转换依据。
+				// ③ 建条目目录 → 平铺拷来源 → 写转换依据（含每个来源 unit 的部位/身形/层坐标）。
 				task?.UpdateStage("正在把来源 patch 拷进新条目");
 				var safeName = string.Concat(name.Trim().Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
 				var modDirectory = Path.Combine(output, $"{safeName}-{DateTime.Now:yyyyMMdd-HHmmss}");
@@ -135,7 +120,7 @@ public partial class ModDetailsPageViewModel
 					ToSelection(operation.SelectedHelmet),
 					whitelist,
 					token,
-					unitIntents).ConfigureAwait(true);
+					_paths).ConfigureAwait(true);
 				if (!assembly.Ok)
 					throw new InvalidOperationException(assembly.Error ?? "装配来源失败。");
 				task?.SetOutputArtifacts(modDirectory, null);
