@@ -169,6 +169,15 @@ public sealed class VpkModWardrobeService
 				}
 			}
 
+			// 目标是"自己那具素体"时，显示名一律归一成「自定义素体」。
+			// 老文件里存的是素体名（`水墨牛牛-…（自定义素体）`），读出来会让"目标"这一行
+			// 看起来像换到了另一具素体；这个位置只该说明"目标是什么类别"。
+			if (!string.IsNullOrWhiteSpace(targetArchiveId)
+				&& targetArchiveId.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase))
+			{
+				targetName = "自定义素体";
+			}
+
 			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName, headMerge);
 		}
 		catch (Exception exception) when (exception is IOException or JsonException)

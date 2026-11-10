@@ -64,21 +64,15 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="目标" Foreground="{StaticResource TextSecondary}"
+                        <TextBlock Grid.Column="0" Text="目标护甲" Foreground="{StaticResource TextSecondary}"
                                    VerticalAlignment="Center" Margin="0,0,12,0"/>
                         <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
                                   ItemsSource="{Binding VpkTargetArmors}"
                                   SelectedItem="{Binding SelectedVpkTargetArmor, Mode=TwoWay}"
                                   DisplayMemberPath="DisplayName" MinWidth="200" VerticalAlignment="Center"
-                                  Visibility="{Binding HasVpkTargetArmors, Converter={StaticResource BoolToVis}}"
                                   scroll:WheelScroll.IsEnabled="True"/>
-                        <TextBlock Grid.Column="1" Text="{Binding VpkTargetArmorHint}"
-                                   Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap"
-                                   VerticalAlignment="Center" FontSize="12"
-                                   Visibility="{Binding HasVpkTargetArmorHint, Converter={StaticResource BoolToVis}}"/>
                         <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="切换"
-                                Command="{Binding ApplyVpkTargetArmorCommand}" Margin="12,0,0,0" Padding="14,6"
-                                Visibility="{Binding HasVpkTargetArmors, Converter={StaticResource BoolToVis}}"/>
+                                Command="{Binding ApplyVpkTargetArmorCommand}" Margin="12,0,0,0" Padding="14,6"/>
                     </Grid>
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>

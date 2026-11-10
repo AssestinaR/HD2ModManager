@@ -67,18 +67,9 @@ public static class ModCompileService
 
 		var wardrobe = await VpkModWardrobeService
 			.ReadAsync(modDirectory, cancellationToken).ConfigureAwait(false);
-		var requested = targetArchiveIds is { Count: > 0 }
+		var target = targetArchiveIds is { Count: > 0 }
 			? targetArchiveIds[0]
 			: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorArchiveId) ? null : wardrobe.TargetArmorArchiveId);
-		// **目标只能是它自己。**sectional / vpk2patch 的产物本身就是一具自定义素体，
-		// 换到别的素体上会让产物去改别人的 unit 键（宿主与注册表分家），换到游戏护甲上则是
-		// 把原版护甲件全部隐藏的另一个决定。所以这里把任何别的目标都归一成自己的素体，
-		// 并明说一句（不静默改）。没有自己的素体（例如材质包）就沿用记录 / null。
-		var ownKey = VpkCustomModelFile.TryReadKey(modDirectory);
-		var ownArchiveId = string.IsNullOrWhiteSpace(ownKey)
-			? null
-			: RuntimeArmorRegistryService.CustomModelArchiveId(ownKey);
-		var target = NormalizeTargetArchiveId(requested, ownArchiveId, out var normalized);
 		var disabled = disabledSections ?? wardrobe.State.Disabled;
 		var headMerge = headMergeIntoBody ?? wardrobe.HeadMergeIntoBody;
 
@@ -88,30 +79,15 @@ public static class ModCompileService
 		if (!result.Ok)
 			return ModCompileOutcome.Failure(result.Error ?? "编译失败。", result.Warnings);
 
-		var ownModelName = normalized ? VpkCustomModelFile.TryReadName(modDirectory) : null;
+		// 目标名：**目标是自己那具素体时一律叫「自定义素体」**。
+		// 素体的名字（`水墨牛牛-…`）属于产物本身，不该跑到"目标"这个位置上——
+		// 用户在看到"已换到 水墨牛牛（自定义素体）"时会以为换到了另一具素体。
 		var targetName = result.TargetName
-			?? (normalized
-				? (ownModelName ?? "自定义素体")
-				: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorName) ? "自定义素体" : wardrobe.TargetArmorName));
+			?? (target is not null
+				&& target.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)
+					? "自定义素体"
+					: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorName) ? "自定义素体" : wardrobe.TargetArmorName));
 		var notes = new List<string>(result.Info);
-		if (normalized)
-		{
-			notes.Add("目标已归一成「自定义素体」：这个 Mod 本身就是一具素体，不再换到别的素体或游戏护甲上。");
-			// 顺手把记录也改正：wardrobe.json 里那份旧目标会让"下一次看起来又变了"，
-			// 而且别的路径（重构建 / 批量）还会读到它。
-			try
-			{
-				await VpkModWardrobeService.WriteAsync(
-					modDirectory,
-					wardrobe with { TargetArmorArchiveId = ownArchiveId, TargetArmorName = targetName },
-					cancellationToken).ConfigureAwait(false);
-			}
-			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-			{
-				notes.Add("wardrobe.json 里的旧目标没能改过来：" + exception.Message);
-			}
-		}
-
 		notes.AddRange(result.Warnings);
 
 		return new ModCompileOutcome(
@@ -201,20 +177,4 @@ public static class ModCompileService
 		return $"头身合并：body {body} 的头件已挂到胸部槽位第 {layer} 层（sectional 里的注册表未改动）。";
 	}
 
-	/// <summary>
-	/// 编译目标的归一：这个 Mod **有自己的素体**时，任何别的目标（游戏护甲、别人的素体）都归一成它。
-	/// <para>
-	/// <b>为什么在这一层做。</b>编译是唯一入口——「切换」「应用」「重构建」「批量重构建」全都经过它。
-	/// 在界面上藏起选项只能挡住一条路：<c>wardrobe.json</c> 里可能还留着旧目标（以前换到某件游戏护甲
-	/// 时写下的），而"按旧目标重烘一遍"会让产物突然变成"某件原版护甲的换皮"。归一在这一层之后，
-	/// 四条路都得到同一个答案。
-	/// </para>
-	/// </summary>
-	/// <param name="normalized">真的把目标换掉了（调用方应把这件事说出来，不要静默）。</param>
-	internal static string? NormalizeTargetArchiveId(string? requested, string? ownArchiveId, out bool normalized)
-	{
-		normalized = ownArchiveId is not null
-			&& !string.Equals(requested, ownArchiveId, StringComparison.OrdinalIgnoreCase);
-		return normalized ? ownArchiveId : requested;
-	}
 }

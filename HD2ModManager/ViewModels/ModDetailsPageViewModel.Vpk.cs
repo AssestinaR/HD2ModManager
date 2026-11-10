@@ -496,9 +496,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			}
 
 			OnPropertyChanged(nameof(ShowVpkComponentCard));
-			EnsureVpkTargetArmors(directory);
+			await EnsureVpkTargetArmorsAsync(directory).ConfigureAwait(true);
 			// **每次进页面都按盘上的记录重选**（不只是第一次）。
-			// 候选列表是缓存（`EnsureVpkTargetArmors` 在列表非空时直接返回），
+			// 候选列表是缓存（`EnsureVpkTargetArmorsAsync` 在列表非空时直接返回），
 			// 把"选中哪一项"也交给它，第二次进页面就会沿用上一次的选择：
 			// 用户换到 O-3、离开、回来，下拉仍然显示自己的素体——而那已经不是盘上的值了。
 			SelectedVpkTargetArmor = ResolveCurrentTargetArmor(directory);
@@ -510,38 +510,48 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 	/// <summary>
-	/// 目标下拉的候选：**只有一项「自定义素体」**——也就是这个 Mod 自己的素体。
+	/// 目标下拉的候选：**任意游戏护甲 + 这个 Mod 自己的那一具素体**。
 	/// <para>
-	/// <b>为什么不再列游戏护甲和别人家的素体。</b>sectional / vpk2patch 的产物**本身就是一具素体**
-	/// （七个槽的 unit 组 + 自己的 custom-model.json）。把它"换到"别的素体上只会让产物去改别人的
-	/// unit 键，宿主与自己的注册表分家；换到游戏护甲上更糟——那是把原版护甲件全部隐藏的另一个决定，
-	/// 却混在"这个 Mod 的目标"里，用户会以为自己在选皮肤。目标从今以后只有一个：它自己。
+	/// <b>为什么不再列别人的素体。</b>换到别人的素体上，产物会去改那套素体的 unit 键——宿主与
+	/// 它的注册表当场分家；而换到游戏护甲是"把原版护甲件全部隐藏"的另一个决定，是合法用法，
+	/// 所以游戏护甲要留着。两条路都真实存在，只是不允许把别人的素体当成目标。
 	/// </para>
 	/// <para>
-	/// 没有自己的素体（例如只替换材质的 VPK 包）时列表为空，卡片上给一句话说明——不做一个
-	/// 永远选不中的空下拉。
+	/// 自己的素体从 <c>custom-model.json</c> 读（key + 名字），不依赖注册表同步：重构建刚写完
+	/// 文件时注册表可能还没认识它，那时下拉也得有这一项。
 	/// </para>
 	/// </summary>
-	private void EnsureVpkTargetArmors(string modDirectory)
+	private async Task EnsureVpkTargetArmorsAsync(string modDirectory)
 	{
 		if (_vpkArmorsLoading || _vpkTargetArmors.Count != 0) return;
 		_vpkArmorsLoading = true;
 		try
 		{
+			var options = new List<VpkTargetArmorOption>();
+			// 自己的素体排最前：它是默认目标，也是"不换甲"的那个选项。
 			var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(modDirectory);
 			_ownModelArchiveId = string.IsNullOrWhiteSpace(ownKey)
 				? null
 				: RuntimeArmorRegistryService.CustomModelArchiveId(ownKey);
-			VpkTargetArmors = _ownModelArchiveId is null
-				? []
-				: [new VpkTargetArmorOption(_ownModelArchiveId, "自定义素体", VpkTargetArmorKind.CustomModel)];
-			OnPropertyChanged(nameof(VpkTargetArmorHint));
-			OnPropertyChanged(nameof(HasVpkTargetArmorHint));
-			OnPropertyChanged(nameof(HasVpkTargetArmors));
-		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
-		{
-			VpkComponentStatus = "读取这个 Mod 自己的素体失败：" + exception.Message;
+			if (_ownModelArchiveId is not null)
+				options.Add(new VpkTargetArmorOption(_ownModelArchiveId, "自定义素体", VpkTargetArmorKind.CustomModel));
+
+			try
+			{
+				var catalog = new EquipmentUnitCatalogService(_paths);
+				var entries = await catalog.GetEntriesAsync().ConfigureAwait(true);
+				options.AddRange(entries
+					.Where(entry => entry.Category.Equals("Armor", StringComparison.OrdinalIgnoreCase))
+					.GroupBy(entry => entry.ArchiveId, StringComparer.OrdinalIgnoreCase)
+					.Select(group => new VpkTargetArmorOption(group.Key, group.First().DisplayName))
+					.OrderBy(option => option.DisplayName, StringComparer.CurrentCulture));
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+			{
+				VpkComponentStatus = "读取游戏护甲列表失败（请先在设置页重建游戏资产索引）：" + exception.Message;
+			}
+
+			VpkTargetArmors = options;
 		}
 		finally
 		{
@@ -551,15 +561,6 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 	/// <summary>这个 Mod 自己的素体归档 id（<c>custom-model:&lt;key&gt;</c>）；没有则为 <c>null</c>。</summary>
 	private string? _ownModelArchiveId;
-
-	public bool HasVpkTargetArmors => _vpkTargetArmors.Count != 0;
-
-	/// <summary>没有自己的素体时卡片上那句话（不是错误，只是这类 Mod 没有目标可选）。</summary>
-	public string VpkTargetArmorHint => HasVpkTargetArmors
-		? string.Empty
-		: "这个 Mod 没有自己的自定义素体（例如只替换材质），所以没有可选的目标。";
-
-	public bool HasVpkTargetArmorHint => !HasVpkTargetArmors;
 
 	/// <summary>
 	/// 点「切换」：把 Unit 换到下拉里选中的目标上。
@@ -586,7 +587,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		var target = SelectedVpkTargetArmor;
 		if (target is null)
 		{
-			VpkComponentStatus = "这个 Mod 没有自己的自定义素体，没有可切换的目标（产物本身就只替换材质）。";
+			VpkComponentStatus = "还没选目标：请在上方下拉里选一个（游戏护甲或自定义素体），再点「切换」。";
 			return;
 		}
 
@@ -604,14 +605,14 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		// 与「重构建」用同一个任务类别：它们都是"用来源 VPK 重出一份产物"。
 		var task = _backgroundTasks?.Enqueue(
 			BackgroundTaskKind.RebuildVpk,
-			"按自定义素体重新编译",
+			"切换目标护甲",
 			$"{node.Metadata.Name} → {target.DisplayName}",
 			origin: "Mod 详情",
-			userVisibleReason: "按当前勾选把产物重编一遍；目标恒为这具 Mod 自己的自定义素体（不再换到别的素体或游戏护甲）。",
+			userVisibleReason: "把素体的 Unit 换到目标的键上（游戏护甲或自己的自定义素体），并按当前勾选重新生成产物。",
 			suggestedAction: "完成后重启游戏生效。",
 			presentation: BackgroundTaskPresentation.Foreground);
 		var cancellation = task?.CancellationToken ?? CancellationToken.None;
-		task?.MarkRunning("正在按「自定义素体」重新编译…");
+		task?.MarkRunning($"正在把 Unit 换到 {target.DisplayName}…");
 
 		void Report(string stage)
 		{
@@ -645,7 +646,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var summary = outcome.Rekeyed
 				? rekey?.RestoredFromSource == true
 					? $"已退回自定义素体（{target.DisplayName}）：来源 patch 已原样复制进 Overwrite，开关继续有效。"
-					: $"已按 {target.DisplayName} 重新编译：替换 {rekey?.ReplacedUnits ?? 0} 个 Unit、隐藏 {rekey?.HiddenMeshes ?? 0} 个网格。"
+					: $"已换到 {target.DisplayName}：替换 {rekey?.ReplacedUnits ?? 0} 个 Unit、隐藏 {rekey?.HiddenMeshes ?? 0} 个网格。"
 				// 自身素体：没有换甲这一步，别说"替换 0 个 Unit"。
 				: $"已按 {target.DisplayName} 编译生效层（自定义素体，unit 键不变）。";
 
@@ -722,18 +723,43 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// </para>
 	/// </summary>
 	/// <summary>
-	/// 下拉里选中的目标：**永远是这一项「自定义素体」**（= 这个 Mod 自己的素体）。
-	/// 没有自己的素体时返回 <c>null</c>（卡片上会说明原因）。
+	/// 下拉里选中的目标：**盘上记录的那个**（游戏护甲或自己的素体），没有记录就是自己的素体。
+	/// <para>
+	/// 记录里若是**别人的素体**（旧版本留下的，现在已经不许选），退回自己的素体——
+	/// 那种目标继续留着只会让下一次编译报"选了别人的素体"。
+	/// </para>
 	/// </summary>
 	private VpkTargetArmorOption? ResolveCurrentTargetArmor(string directory)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(directory);
-		return _ownModelArchiveId is null
+		if (!string.IsNullOrWhiteSpace(_vpkFile.TargetArmorArchiveId))
+		{
+			var recorded = _vpkFile.TargetArmorArchiveId;
+			var match = VpkTargetArmors.FirstOrDefault(option =>
+				option.ArchiveId.Equals(recorded, StringComparison.OrdinalIgnoreCase));
+			if (match is not null)
+				return match;
+
+			var recordedIsForeignModel = recorded.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)
+				&& !string.Equals(recorded, _ownModelArchiveId, StringComparison.OrdinalIgnoreCase);
+			if (recordedIsForeignModel)
+			{
+				return OwnModelOption();
+			}
+
+			// 游戏护甲不在候选里（索引重建过、那件没了）：照实显示记录，让用户自己决定要不要换。
+			return new VpkTargetArmorOption(recorded, _vpkFile.TargetArmorName ?? recorded);
+		}
+
+		return OwnModelOption();
+	}
+
+	private VpkTargetArmorOption? OwnModelOption()
+		=> _ownModelArchiveId is null
 			? null
 			: VpkTargetArmors.FirstOrDefault(option =>
 					option.ArchiveId.Equals(_ownModelArchiveId, StringComparison.OrdinalIgnoreCase))
 				?? new VpkTargetArmorOption(_ownModelArchiveId, "自定义素体", VpkTargetArmorKind.CustomModel);
-	}
 
 	/// <summary>
 	/// 点"应用"：先把勾选状态落盘，再烘进 patch。
@@ -985,16 +1011,23 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 
 	/// <summary>
-	/// 「应用」时的编译目标：**永远是这个 Mod 自己的素体**。
-	/// <para>
-	/// 旧记录里可能还留着"换到某件游戏护甲"的目标（那个能力已经去掉）；
-	/// 这里不读它，免得一次应用把产物按旧目标重烘一遍。
-	/// </para>
+	/// 「应用」时的编译目标：盘上记录的那个（游戏护甲或自己的素体），没有记录就是自己的素体。
+	/// 记录里若是别人的素体（旧版本留下的），退回自己的素体——那种目标现在已经不许选。
 	/// </summary>
 	private IReadOnlyList<string>? ResolveApplyTargets(string directory)
 	{
 		var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(directory);
-		return ownKey is null ? null : [RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)];
+		var ownArchiveId = ownKey is null ? null : RuntimeArmorRegistryService.CustomModelArchiveId(ownKey);
+		var recorded = _vpkFile.TargetArmorArchiveId;
+		if (!string.IsNullOrWhiteSpace(recorded))
+		{
+			var isForeignModel = recorded.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)
+				&& !string.Equals(recorded, ownArchiveId, StringComparison.OrdinalIgnoreCase);
+			if (!isForeignModel)
+				return [recorded];
+		}
+
+		return ownArchiveId is null ? null : [ownArchiveId];
 	}
 
 	/// <summary>
