@@ -80,19 +80,54 @@ public sealed class SectionalSourceAssemblerTests : IDisposable
 		Assert.NotNull(document.Helmet);
 	}
 
+	/// <summary>
+	/// 2026-11-10 改了这条规则：**同名 patch 来自不同来源时不再覆盖，直接拒绝**。
+	/// <para>
+	/// 原因（实测数据，见 水墨牛牛 系列）：同一个游戏档案下，「本体」的 patch 有 21 个 unit，
+	/// 「翅膀」「鞋子」各只有 1 个，而且都是「本体」已包含的。旧行为"后者赢"会把产物缩成 1 个 unit，
+	/// 表面成功、实际丢掉 20 个；依据文件还会写着每个来源各自贡献了哪个文件，与磁盘对不上。
+	/// 这种冲突没有安全的自动答案（合并要重写 patch），所以挡在导入前并说清该怎么做。
+	/// </para>
+	/// </summary>
 	[Fact]
-	public void 同名patch后者覆盖前者并留下说明()
+	public void 同名patch来自不同来源时拒绝而不是静默覆盖()
 	{
 		var target = NewDir("target");
-		var first = Source("旧来源", 0);
-		var second = Source("新来源", 0);
+		var first = Source("本体", 0);
+		var second = Source("翅膀", 0);
 
 		var outcome = SectionalSourceAssembler.Assemble(
 			target, [first, second],
 			new SectionalSourceSelection("8d3a01f4a44a3aa3", "护甲"), null, Keys());
 
+		Assert.False(outcome.Ok);
+		Assert.Contains("同一个 patch 文件名", outcome.Error!, StringComparison.Ordinal);
+		// 报错要能指导下一步：点出冲突的是哪个文件、各自来自谁。
+		Assert.Contains("本体", outcome.Error!, StringComparison.Ordinal);
+		Assert.Contains("翅膀", outcome.Error!, StringComparison.Ordinal);
+	}
+
+	/// <summary>
+	/// 来源 patch 常带只读属性（导入 zip 时带来的），<c>File.Copy</c> 会把它带给目标，
+	/// 之后覆盖同名文件就会 Access denied（线上就是这么失败的）。
+	/// 这里锁住"拷完必须可写"。
+	/// </summary>
+	[Fact]
+	public void 来源是只读文件时拷进条目后必须可写()
+	{
+		var target = NewDir("target");
+		var source = Source("只读来源", 0);
+		var patch = Path.Combine(source.Directory, $"{Archive}.patch_0");
+		File.SetAttributes(patch, FileAttributes.ReadOnly);
+
+		var outcome = SectionalSourceAssembler.Assemble(
+			target, [source],
+			new SectionalSourceSelection("8d3a01f4a44a3aa3", "护甲"), null, Keys());
+
 		Assert.True(outcome.Ok);
-		Assert.Contains(outcome.Notes, note => note.Contains("覆盖了同名 patch", StringComparison.Ordinal));
+		var copied = new FileInfo(Path.Combine(target, $"{Archive}.patch_0"));
+		Assert.True(copied.Exists);
+		Assert.False(copied.IsReadOnly, "复制出来的来源 patch 不该继承只读属性。");
 	}
 
 	[Fact]
