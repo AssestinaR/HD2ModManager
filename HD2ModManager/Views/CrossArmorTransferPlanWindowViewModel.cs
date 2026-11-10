@@ -51,12 +51,9 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		private set
 		{
 			if (!SetField(ref isScanningSourceUnits, value)) return;
-			OnPropertyChanged(nameof(CanRescanSourceUnits));
-			RescanSourceUnitsCommand.RaiseCanExecuteChanged();
 		}
 	}
 	public string SourceScanState { get => sourceScanState; private set => SetField(ref sourceScanState, value); }
-	public bool CanRescanSourceUnits => !isScanningSourceUnits && sourceScan is not null;
 	public RelayCommand RescanSourceUnitsCommand { get; }
 	public bool AutoSelectSharedParts
 	{
@@ -305,7 +302,8 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 		SelectAllTargetsCommand = new RelayCommand(_ => SetAllTargetsSelected(true));
 		InvertTargetSelectionCommand = new RelayCommand(_ => SetAllTargetsSelected(null));
 		SelectAllUnreplacedTargetsCommand = new RelayCommand(_ => SelectAllUnreplacedTargets(), _ => CanSelectAllUnreplacedTargets);
-		RescanSourceUnitsCommand = new RelayCommand(_ => _ = ScanSourceUnitsAsync(), _ => CanRescanSourceUnits);
+		// 不设 canExecute：按钮永远可点，缺什么由 ScanSourceUnitsAsync 当场说清。
+		RescanSourceUnitsCommand = new RelayCommand(_ => _ = ScanSourceUnitsAsync());
 		BuildSourceUnitRows(sourceUnitKeys ?? sourceCandidates.SelectMany(entry => entry.Parts).Select(part => part.UnitAssetKey).Distinct().ToArray());
 		SelectedSourceArmor = SourceArmorChoices.FirstOrDefault()?.Entry;
 		SelectedSourceHelmet = SourceHelmetChoices.FirstOrDefault()?.Entry;
@@ -378,7 +376,15 @@ public sealed class CrossArmorTransferPlanWindowViewModel : PageViewModel
 	/// </summary>
 	public async Task ScanSourceUnitsAsync()
 	{
-		if (sourceScan is null || IsScanningSourceUnits) return;
+		// 按钮永远可点，所以两种"不能算"都在这里说清，而不是把按钮灰掉。
+		if (sourceScan is null)
+		{
+			SourceScanState = "这个计划页没有接上来源解析，没有可重算的来源；请从 Mod 详情的「生成替换其他护甲的模组」重新打开计划。";
+			return;
+		}
+
+		// 正在计算时重复点击：状态行已经写着「正在计算可见部件…」，不必再叠一条。
+		if (IsScanningSourceUnits) return;
 		IsScanningSourceUnits = true;
 		sourceScanFailure = null;
 		SourceScanState = "正在计算可见部件…";

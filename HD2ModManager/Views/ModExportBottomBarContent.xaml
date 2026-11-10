@@ -12,8 +12,7 @@
                      Text="{Binding Operation.TargetPath, UpdateSourceTrigger=PropertyChanged}"/>
             <Button Style="{StaticResource AppSecondaryButton}" Content="浏览" Command="{Binding Operation.BrowseCommand}" Margin="8,0,0,0"/>
             <Button Style="{StaticResource AppSecondaryButton}" Content="取消" Command="{Binding Operation.CancelCommand}" Margin="8,0,0,0"/>
-            <Button Style="{StaticResource AppPrimaryButton}" Content="导出" Command="{Binding Operation.ExportCommand}" Margin="8,0,0,0"
-                    IsEnabled="{Binding Operation.IsIdle}"/>
+            <Button Style="{StaticResource AppPrimaryButton}" Content="导出" Command="{Binding Operation.ExportCommand}" Margin="8,0,0,0"/>
         </StackPanel>
 
         <!-- 第二行：Overwrite 开关 + 状态 + 收尾动作 -->
@@ -24,8 +23,12 @@
             <TextBlock Text="{Binding Operation.StatusText}" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"
                        MaxWidth="460" TextTrimming="CharacterEllipsis"
                        Visibility="{Binding Operation.HasStatus, Converter={StaticResource BoolToVis}}"/>
+            <!--
+                「打开所在文件夹」的出现条件是"这次真的导出出了文件"（放置），
+                不是"有没有状态文案"——以前一出现失败文案它就冒出来并且是灰的。
+            -->
             <Button Style="{StaticResource AppSecondaryButton}" Content="打开所在文件夹" Command="{Binding Operation.OpenFolderCommand}" Margin="12,0,0,0"
-                    Visibility="{Binding Operation.HasStatus, Converter={StaticResource BoolToVis}}"/>
+                    Visibility="{Binding Operation.HasExportPath, Converter={StaticResource BoolToVis}}"/>
         </StackPanel>
     </Grid>
 </UserControl>

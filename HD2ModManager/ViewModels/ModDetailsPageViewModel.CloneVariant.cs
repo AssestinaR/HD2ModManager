@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Windows.Input;
 using HD2ModCore.Domain;
@@ -33,10 +34,22 @@ public partial class ModDetailsPageViewModel
 
 	private async Task CloneVariantAsync()
 	{
-		if (!TryGetCurrentNode(out var node)) return;
+		// 按钮永远可点，所以两条"做不了"都在这里说清，而不是让它静默什么都不发生。
+		if (!TryGetCurrentNode(out var node))
+		{
+			_notifications?.Show("这个条目已经不在库里了（可能刚被删掉）；刷新列表后再试。",
+				NotificationLevel.Warning, TimeSpan.FromSeconds(8));
+			return;
+		}
+
 		var libraryRoot = _library.ModsRootDirectory;
 		var sourceDirectory = Path.Combine(libraryRoot, node.RelativePath);
-		if (!Directory.Exists(sourceDirectory)) return;
+		if (!Directory.Exists(sourceDirectory))
+		{
+			_notifications?.Show($"找不到「{node.Metadata.Name}」的目录，无法复制；请先刷新 Mod 库。",
+				NotificationLevel.Warning, TimeSpan.FromSeconds(8));
+			return;
+		}
 
 		var variant = ModCloneService.NextVariantName(libraryRoot, node.Metadata.Name);
 		var task = _backgroundTasks?.Enqueue(

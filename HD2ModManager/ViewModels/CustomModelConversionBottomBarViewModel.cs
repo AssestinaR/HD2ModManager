@@ -19,22 +19,22 @@ public sealed class CustomModelConversionBottomBarViewModel : BaseViewModel
 		// 生成目录不再让用户选：产物一定是"生成完立刻导入库"，中间目录只是过路。
 		// 留一个固定值给它，是为了让生成流程有个干净的落点（导入完它会跟着 Mod 目录走）。
 		OutputDirectory = SettingsService.GetResolvedDefaultExportPath();
-		GenerateCommand = new AsyncRelayCommand(_ => GenerateAsync(), _ => !IsRunning && SelectedSources.Count > 0
-			&& !string.IsNullOrWhiteSpace(Name));
+		// 「生成」不设 canExecute：按钮永远可点，"名称为空 / 没选来源 / 正在跑"都由 GenerateAsync 当场说清。
+		GenerateCommand = new AsyncRelayCommand(_ => GenerateAsync());
 	}
 
-	public string Name { get => name; set { if (SetField(ref name, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
+	public string Name { get => name; set => SetField(ref name, value); }
 
 	/// <summary>中间产物目录。<b>不暴露给用户选</b>——生成完必定导入库，没有"只导出"这条路。</summary>
 	public string OutputDirectory { get; }
 
 	public string Status { get => status; set => SetField(ref status, value); }
-	public bool IsRunning { get => isRunning; private set { SetField(ref isRunning, value); GenerateCommand.RaiseCanExecuteChanged(); OnPropertyChanged(nameof(CanEdit)); } }
+	public bool IsRunning { get => isRunning; private set { SetField(ref isRunning, value); OnPropertyChanged(nameof(CanEdit)); } }
 	public bool CanEdit => !IsRunning;
 	public BulkObservableCollection<CustomModelSourceOption> ArmorSources { get; } = [];
 	public BulkObservableCollection<CustomModelSourceOption> HelmetSources { get; } = [];
-	public CustomModelSourceOption? SelectedArmor { get => selectedArmor; set { if (SetField(ref selectedArmor, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
-	public CustomModelSourceOption? SelectedHelmet { get => selectedHelmet; set { if (SetField(ref selectedHelmet, value)) GenerateCommand.RaiseCanExecuteChanged(); } }
+	public CustomModelSourceOption? SelectedArmor { get => selectedArmor; set => SetField(ref selectedArmor, value); }
+	public CustomModelSourceOption? SelectedHelmet { get => selectedHelmet; set => SetField(ref selectedHelmet, value); }
 	public IReadOnlyList<EquipmentUnitCatalogEntry> SelectedSources
 		=> new[] { SelectedArmor?.Source, SelectedHelmet?.Source }.OfType<EquipmentUnitCatalogEntry>().ToArray();
 	public AsyncRelayCommand GenerateCommand { get; }
@@ -58,6 +58,25 @@ public sealed class CustomModelConversionBottomBarViewModel : BaseViewModel
 
 	private async Task GenerateAsync()
 	{
+		// 三种"不能生成"在这里说清；用户点了就必须知道为什么没动静。
+		if (IsRunning)
+		{
+			Status = "正在生成，完成前不会开始第二次。";
+			return;
+		}
+
+		if (string.IsNullOrWhiteSpace(Name))
+		{
+			Status = "先给新条目起个名字（会作为库里的 Mod 名），然后再点「生成」。";
+			return;
+		}
+
+		if (SelectedSources.Count == 0)
+		{
+			Status = "还没有选来源：护甲、头盔至少选一份（两份都要时各选一份）。";
+			return;
+		}
+
 		IsRunning = true;
 		try { await generate(this); }
 		catch (OperationCanceledException) { Status = "已取消生成；如已生成或登记素体，将保留已完成的结果。"; }

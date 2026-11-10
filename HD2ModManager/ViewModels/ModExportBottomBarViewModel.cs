@@ -52,7 +52,8 @@ public sealed class ModExportBottomBarViewModel : BaseViewModel
 		BrowseCommand = new RelayCommand(Browse);
 		ExportCommand = new RelayCommand(() => _ = RunExportAsync());
 		CancelCommand = new RelayCommand(() => _requestClose());
-		OpenFolderCommand = new RelayCommand(_ => OpenFolder(), _ => _lastExportPath is not null);
+		// 三个命令都不设 canExecute：按钮永远可点，"缺什么/正在忙"由 RunExportAsync 当场说清。
+		OpenFolderCommand = new RelayCommand(_ => OpenFolder());
 	}
 
 	public ModNodeId RootNodeId { get; }
@@ -63,10 +64,7 @@ public sealed class ModExportBottomBarViewModel : BaseViewModel
 	public string TargetPath
 	{
 		get => _targetPath;
-		set
-		{
-			if (SetField(ref _targetPath, value)) RaiseCanExecuteChanged();
-		}
+		set => SetField(ref _targetPath, value);
 	}
 
 	/// <summary>是否导出 Overwrite 版。对 VPK 版节点意味着"只输出 Overwrite 那份 patch"。</summary>
@@ -83,11 +81,13 @@ public sealed class ModExportBottomBarViewModel : BaseViewModel
 		{
 			if (!SetField(ref _isBusy, value)) return;
 			OnPropertyChanged(nameof(IsIdle));
-			RaiseCanExecuteChanged();
 		}
 	}
 
 	public bool IsIdle => !IsBusy;
+
+	/// <summary>这次会话里有没有真的导出出文件；「打开所在文件夹」的出现条件就是它（放置，不是禁用）。</summary>
+	public bool HasExportPath => _lastExportPath is not null;
 
 	public string StatusText
 	{
@@ -126,7 +126,12 @@ public sealed class ModExportBottomBarViewModel : BaseViewModel
 
 	private async Task RunExportAsync()
 	{
-		if (IsBusy) return;
+		if (IsBusy)
+		{
+			// 防重复点击不靠禁用按钮，靠这一句：用户看得见为什么没反应。
+			SetStatus("正在导出，完成前不会开始第二次。");
+			return;
+		}
 		var target = (TargetPath ?? string.Empty).Trim().Trim('"');
 		if (string.IsNullOrWhiteSpace(target))
 		{
@@ -167,7 +172,7 @@ public sealed class ModExportBottomBarViewModel : BaseViewModel
 				.ConfigureAwait(true);
 
 			_lastExportPath = result.ZipPath;
-			(OpenFolderCommand as RelayCommand)?.RaiseCanExecuteChanged();
+			OnPropertyChanged(nameof(HasExportPath));
 
 			var summary = $"已导出 {result.NodeCount} 个节点、{result.FileCount} 个文件。";
 			var warning = result.Warnings.Count == 0 ? string.Empty : $"（{result.Warnings.Count} 条提示：{result.Warnings[0]}）";
@@ -215,12 +220,6 @@ public sealed class ModExportBottomBarViewModel : BaseViewModel
 	{
 		StatusText = text;
 		OnPropertyChanged(nameof(HasStatus));
-	}
-
-	private void RaiseCanExecuteChanged()
-	{
-		(ExportCommand as RelayCommand)?.RaiseCanExecuteChanged();
-		(OpenFolderCommand as RelayCommand)?.RaiseCanExecuteChanged();
 	}
 
 	/// <summary>默认落在管理器自己的 Output 目录（与设置页的"默认导出位置"一致）。</summary>

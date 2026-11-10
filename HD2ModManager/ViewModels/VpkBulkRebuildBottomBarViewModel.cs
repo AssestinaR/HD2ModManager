@@ -40,7 +40,9 @@ public sealed class VpkBulkRebuildBottomBarViewModel : BaseViewModel
 		this.start = start ?? throw new ArgumentNullException(nameof(start));
 		this.close = close ?? throw new ArgumentNullException(nameof(close));
 		status = $"将重构 {totalCount} 个 sectional 系列 Mod：各自按自己记着的配置（目标护甲与 section 勾选）重出一遍产物。";
-		StartCommand = new RelayCommand(async _ => await StartAsync(), _ => !IsRunning && HasValidConcurrency);
+		// 不挂 canExecute：契约 §2.2 里没有"禁用"这一态，按钮永远可点。
+		// "这次能不能跑"由 StartAsync 当场判一次，判不过就写进本栏已有的状态行。
+		StartCommand = new RelayCommand(async _ => await StartAsync());
 		CancelCommand = new RelayCommand(_ => OnCancelOrClose());
 	}
 
@@ -130,7 +132,21 @@ public sealed class VpkBulkRebuildBottomBarViewModel : BaseViewModel
 
 	private async Task StartAsync()
 	{
-		if (IsRunning || !HasValidConcurrency) return;
+		// 按钮永远可点，所以两个"不能跑"的判断都挪到这里：判不过就把原因与下一步写进
+		// 本栏已有的状态行，不做静默 return —— 点了没反应和灰着不知道为啥是同一类毛病。
+		if (IsRunning)
+		{
+			Status = "正在重构建这一批，等它跑完再点；要中途停下就点「取消」。";
+			return;
+		}
+
+		if (!HasValidConcurrency)
+		{
+			var current = string.IsNullOrWhiteSpace(ConcurrencyText) ? "（空）" : ConcurrencyText;
+			Status = $"并发数量必须是 {VpkBulkRebuildService.MinConcurrency}–{VpkBulkRebuildService.MaxConcurrency} 之间的整数，现在填的是「{current}」——填好之后再点这个按钮。";
+			return;
+		}
+
 		cancellation?.Dispose();
 		cancellation = new CancellationTokenSource();
 		IsFinished = false;

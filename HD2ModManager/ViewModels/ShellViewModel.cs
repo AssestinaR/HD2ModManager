@@ -1962,9 +1962,25 @@ namespace HD2ModManager.ViewModels
 
         private async Task SetSelectedModsAsOptionsAsync()
         {
+            // 按钮永不禁用，所以这两条"做不了"要说出来（契约 §2.2）。按当前放置谓词
+            // 它们基本被前面蕴含、点不到 —— 但放置谓词一旦放宽，这里就会立刻变回静默 bug。
             if (!_selection.HasSelection
-                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection)
-                || string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId)) return;
+                || (!_bottomBar.IsLibrarySelection && !_bottomBar.IsProfileSelection))
+            {
+                _notificationService.Show(
+                    "「设为选项」只能对模组库页或配置页里的选择生效。请先在那两页里选中要变成选项的 Mod。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_bottomBar.RelationshipHostId))
+            {
+                _notificationService.Show(
+                    "现在没有「选项主体」：需要一个 Mod 的详情页与这一侧的库页/配置页并排打开，那个详情页就是主体。"
+                    + "并排好之后再选中要变成选项的 Mod，回来点这个按钮。",
+                    NotificationLevel.Warning, TimeSpan.FromSeconds(10));
+                return;
+            }
 
             await SetModsAsOptionsForHostAsync(
                 _bottomBar.RelationshipHostId,
@@ -2411,12 +2427,37 @@ namespace HD2ModManager.ViewModels
                 _armorDisplayFactsGate.Task);
 
         // 选择栏"设置分类"用：当前选择属于哪个页面，就用哪个页面的分类筛选；返回选中的 Mod Guid。
+        //
+        // 按钮永不禁用（契约 §2.2），所以拿不到目标时必须当场说清为什么、下一步做什么，
+        // 不许静默 return —— 否则就是"按钮在那儿、点了没反应"。
+        // 注意：本方法只在那个 Click 里被调用一次（MainWindow.xaml.cs:307 →
+        // SelectionActionBarContent.xaml.cs:18），不是绑定属性；将来若被绑上，这段提示要挪进命令里。
         internal (ModCategoryFilter Filter, IReadOnlyList<string> Guids)? GetCategorySelectionTarget()
         {
+            var pageName = _bottomBar.IsProfileSelection ? "配置页" : "模组库页";
             var filter = _bottomBar.IsLibrarySelection ? _libraryWorkspacePage?.Category
                 : _bottomBar.IsProfileSelection ? _profileWorkspacePage?.Category
                 : null;
-            if (filter is null || !filter.IsEnabled) return null;
+
+            if (filter is null)
+            {
+                _notificationService.Show(
+                    "「设置分类」只对模组库页和配置页里的选择生效。请先在那两页里选中要归类的 Mod，再点这个按钮。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(8));
+                return null;
+            }
+
+            if (!filter.IsEnabled)
+            {
+                // 出现判据用的是全局"上次记忆值"（BottomBarCoordinator.ShowSetCategory），
+                // 而这里要的是本页那份 filter 的开关，两者语义不同 —— 所以真的会出现
+                // "按钮看得见、点下去却没地方放分类"。这句就是那种情况下的解释。
+                _notificationService.Show(
+                    $"{pageName}的分类栏现在是关着的，没有地方放分类。请先在那页标题卡上打开分类开关，再回来点「设置分类」。",
+                    NotificationLevel.Info, TimeSpan.FromSeconds(10));
+                return null;
+            }
+
             return (filter, _bottomBar.SelectedIds);
         }
 

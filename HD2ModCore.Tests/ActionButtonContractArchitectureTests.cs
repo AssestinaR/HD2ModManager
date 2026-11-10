@@ -88,6 +88,78 @@ public sealed class ActionButtonContractArchitectureTests
 		Assert.Contains("action.IsVisible =", sync);
 	}
 
+	// 用户订的契约（§2.1 B9）：**动作按钮永不禁用**。缺什么由执行器当场说清，
+	// 而不是灰一个按钮让用户猜。这条用例只扫底栏内容模板，因为浮动簇还有一处
+	// 历史绑定（FloatingActionCluster.xaml:98 的 {Binding IsEnabled}，恒真），
+	// 按规划 P1 一并删掉，届时把范围扩到全部 *Content.xaml。
+	[Fact]
+	public void BottomBarButtonsNeverBindIsEnabled()
+	{
+		var views = Path.Combine(FindRepositoryRoot(), "HD2ModManager", "Views");
+		var files = Directory.GetFiles(views, "*BarContent.xaml");
+		Assert.NotEmpty(files);
+
+		var inspectedButtons = 0;
+		foreach (var file in files)
+		{
+			// 先去掉 XML 注释：说明性文字里会提到 IsEnabled，不能算违规。
+			var text = StripXmlComments(File.ReadAllText(file));
+			foreach (var element in ElementsStartingWith(text, "<Button", "<ToggleButton", "<RepeatButton"))
+			{
+				inspectedButtons++;
+				Assert.False(
+					element.Contains("IsEnabled", StringComparison.Ordinal),
+					$"{Path.GetFileName(file)} 里的按钮绑了 IsEnabled：按钮按契约永不禁用，"
+					+ "缺什么应当由执行器在点击后说清（而不是把按钮灰掉）。");
+			}
+		}
+
+		// 扫到 0 个按钮说明语料变了（文件名改了/模板搬走了），此时这条用例是空转，必须红。
+		Assert.True(inspectedButtons > 0, "底栏模板里一个按钮都没扫到，用例失去意义。");
+	}
+
+	private static string StripXmlComments(string xaml)
+	{
+		var builder = new System.Text.StringBuilder(xaml.Length);
+		var index = 0;
+		while (index < xaml.Length)
+		{
+			var open = xaml.IndexOf("<!--", index, StringComparison.Ordinal);
+			if (open < 0)
+			{
+				builder.Append(xaml, index, xaml.Length - index);
+				break;
+			}
+
+			builder.Append(xaml, index, open - index);
+			var close = xaml.IndexOf("-->", open, StringComparison.Ordinal);
+			if (close < 0) break;
+			index = close + 3;
+		}
+
+		return builder.ToString();
+	}
+
+	// 取每个标签从名字到它自己的 '>' 为止的文本（够判断属性了；底栏里的按钮都是自闭合或单行属性）。
+	private static IEnumerable<string> ElementsStartingWith(string text, params string[] tags)
+	{
+		var found = new List<string>();
+		foreach (var tag in tags)
+		{
+			var index = 0;
+			while (true)
+			{
+				index = text.IndexOf(tag, index, StringComparison.Ordinal);
+				if (index < 0) break;
+				var end = text.IndexOf('>', index);
+				found.Add(end < 0 ? text[index..] : text[index..end]);
+				index += tag.Length;
+			}
+		}
+
+		return found;
+	}
+
 	private static string ReadManagerFile(string relativePath)
 		=> File.ReadAllText(Path.Combine(FindRepositoryRoot(), "HD2ModManager", relativePath));
 

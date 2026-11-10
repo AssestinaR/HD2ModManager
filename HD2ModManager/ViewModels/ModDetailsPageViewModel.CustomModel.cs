@@ -48,7 +48,13 @@ public partial class ModDetailsPageViewModel
 
 		var bar = new CustomModelConversionBottomBarViewModel(Name, async operation =>
 		{
-			if (operation.SelectedSources.Count == 0 || sourceNodes.Count == 0) return;
+			// "名称为空 / 没选来源"已由底栏自己的 GenerateAsync 拦下并写进状态行；
+			// 这里只剩一条它看不到的事实：整条来源链上一个 patch 都没有。
+			if (sourceNodes.Count == 0)
+			{
+				operation.Status = "这个 Mod 与它的子级里都没有来源 patch（都不是 legacy 类），没有可转换的东西。";
+				return;
+			}
 			var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "生成sectional版", operation.OutputDirectory,
 				origin: "Mod 详情",
 				userVisibleReason: "把来源 patch 平铺进新条目，再按 sectional 转换出 7 槽 unit 组与材质组。",
