@@ -18,11 +18,20 @@ public sealed record SectionalSourceAssemblyOutcome(
 /// <summary>
 /// 「生成sectional版」的**导入侧**，只做两件事：
 /// <list type="number">
-/// <item><b>收集 patch</b>：从每个来源里挑出"命中白名单"的 patch —— 命中的是用户意图标记的
-/// unit、这些 unit 引用的材质、以及那些材质引用的贴图。</item>
+/// <item><b>收集 patch</b>：把每个来源根上的 patch 全部收上来（**不按内容挑**，见下面那条）。</item>
 /// <item><b>连续重新编号</b>：按来源顺序把它们一路排成 <c>patch_0</c>、<c>patch_1</c>……
 /// 然后再交给转换器。</item>
 /// </list>
+///
+/// <para>
+/// <b>为什么这里不按白名单挑文件（2026-11-10 的教训）。</b>我一度在这一层用"unit/材质/贴图"
+/// 白名单去筛 patch，结果把系列里真正的部件丢掉了：装饰件（上衣、内裤、翅膀、鞋子…）各带
+/// 1 个 unit，而那些 unit 不在"选中的那件护甲"的意图集合里，于是被判成"没有命中"整份跳过，
+/// 用户看到的是"9 个材质组 + 1 个 unit 组"，缺了一大半几何。
+/// <b>内容筛选是转换器的活</b>（<see cref="SectionalConversionPlanner"/> 按白名单取并集），
+/// 装配层只知道"这些 patch 属于这个来源"，没有能力判断哪一份对该系列没用。
+/// 判据只留一份，才不会两边打架。
+/// </para>
 ///
 /// <para>
 /// <b>为什么要重新编号（2026-11-10）。</b>一个系列里多个子级常常各自带**同一个**游戏档案的 patch，
@@ -30,8 +39,7 @@ public sealed record SectionalSourceAssemblyOutcome(
 /// 实测「本体」的 patch 有 21 个 unit，「翅膀」「鞋子」各只有 1 个（而且是本体已包含的那一个），
 /// 覆盖后只剩 1 个 unit —— 产物看起来成功、实际丢了 20 个。
 /// 重新编号之后它们各自占一个序号，转换器看到的是"多个 patch 按顺序叠加"，
-/// 由它按 unit key 取并集、同 key 后来源覆盖（见 <see cref="SectionalConversionPlanner"/>），
-/// 这才是这个系列真正想要的语义。
+/// 由它按 unit key 取并集、同 key 后来源覆盖，这才是这个系列真正想要的语义。
 /// </para>
 ///
 /// <para>
@@ -53,7 +61,7 @@ public static class SectionalSourceAssembler
 	/// <param name="modDirectory">新建的条目目录（调用方负责创建；本方法只往里写）。</param>
 	/// <param name="armor">来源里选中的护甲（可空）。</param>
 	/// <param name="helmet">来源里选中的头盔（可空）。</param>
-	/// <param name="assetKeys">干净资产白名单：unit → 材质 → 贴图的闭包，既是"挑哪些 patch"的依据，也写进依据文件。</param>
+	/// <param name="assetKeys">干净资产白名单：**只写进依据文件**，供转换器按它筛内容；装配层不用它挑文件。</param>
 	public static async ValueTask<SectionalSourceAssemblyOutcome> AssembleAsync(
 		string modDirectory,
 		IReadOnlyList<SectionalSourceCandidate> sources,
@@ -72,8 +80,6 @@ public static class SectionalSourceAssembler
 		if (assetKeys.Units.Count == 0)
 			return SectionalSourceAssemblyOutcome.Failed("干净资产白名单里没有任何 unit。");
 
-		var whitelist = BuildWhitelist(assetKeys);
-		var scanner = new PatchTocScanner();
 		var parser = new PatchFileNameParser();
 		var notes = new List<string>();
 		var entries = new List<SectionalSourceEntry>(sources.Count);
@@ -91,7 +97,6 @@ public static class SectionalSourceAssembler
 			}
 
 			var patchFiles = new List<string>();
-			var scanned = 0;
 			foreach (var patch in SectionalSplitter.EnumeratePatchFiles(source.Directory))
 			{
 				if (!parser.TryParse(Path.GetFileName(patch), out var info) || info is null)
@@ -99,13 +104,6 @@ public static class SectionalSourceAssembler
 					notes.Add($"来源「{source.Name}」里有个文件不是合法的 patch 名，已跳过：{Path.GetFileName(patch)}");
 					continue;
 				}
-
-				scanned++;
-				var hit = await ContainsWhitelistedKeyAsync(scanner, patch, whitelist, cancellationToken)
-					.ConfigureAwait(false);
-				if (hit == false) continue;
-				if (hit is null)
-					notes.Add($"来源「{source.Name}」的「{info.FullFileName}」读不出条目，按命中处理（转换器还会再筛一次）。");
 
 				// 只改序号，hex 原样保留 —— 见类型注释里"文件名必须保持 hex16.patch_N"。
 				var name = $"{info.ArchiveHex16}.patch_{nextIndex++}";
@@ -122,9 +120,7 @@ public static class SectionalSourceAssembler
 
 			if (patchFiles.Count == 0)
 			{
-				notes.Add(scanned == 0
-					? $"来源「{source.Name}」根上没有 patch（不是 legacy 类），已跳过。"
-					: $"来源「{source.Name}」的 {scanned} 个 patch 里没有命中这次选择的 unit/材质/贴图，已跳过。");
+				notes.Add($"来源「{source.Name}」根上没有 patch（不是 legacy 类），已跳过。");
 				continue;
 			}
 
@@ -133,7 +129,7 @@ public static class SectionalSourceAssembler
 
 		if (entries.Count == 0)
 			return SectionalSourceAssemblyOutcome.Failed(
-				"所有来源里都没有命中这次选择的 patch，条目里不会有任何内容。", notes);
+				"所有来源根上都没有 patch，条目里不会有任何内容。", notes);
 
 		var document = new SectionalSourceDocument(
 			SectionalSourceManifest.CurrentSchema,
@@ -148,51 +144,6 @@ public static class SectionalSourceAssembler
 
 	/// <summary>patch 的两份 sidecar。它们必须跟着主文件走，否则产物读不出来。</summary>
 	private static readonly string[] SidecarSuffixes = [".gpu_resources", ".stream"];
-
-	/// <summary>
-	/// 这个 patch 里有没有白名单内的 key（unit / 材质 / 贴图任意一类）。
-	/// <para>
-	/// 返回 <c>null</c> 表示读不出来：此时**按命中处理**。理由是不对称的代价——
-	/// 多拷一个文件最多让转换器再筛一次；少拷一个可能会把唯一提供 unit 的 patch 丢掉，
-	/// 而那种失败很难从产物上看出来。
-	/// </para>
-	/// </summary>
-	private static async ValueTask<bool?> ContainsWhitelistedKeyAsync(
-		PatchTocScanner scanner,
-		string patchPath,
-		HashSet<string> whitelist,
-		CancellationToken cancellationToken)
-	{
-		try
-		{
-			var entries = await scanner.ScanEntriesAsync(patchPath, cancellationToken).ConfigureAwait(false);
-			foreach (var entry in entries)
-			{
-				// 与 SectionalWhitelistBuilder.Format 一致：typeId:fileId，各 16 位十六进制。
-				if (whitelist.Contains($"{entry.AssetKey.TypeId:x16}:{entry.AssetKey.FileId:x16}")) return true;
-			}
-
-			return false;
-		}
-		catch (Exception exception) when (exception is IOException
-			or InvalidDataException
-			or UnauthorizedAccessException
-			or EndOfStreamException)
-		{
-			return null;
-		}
-	}
-
-	private static HashSet<string> BuildWhitelist(SectionalSourceAssetKeys assetKeys)
-	{
-		var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		foreach (var key in assetKeys.Units.Concat(assetKeys.Materials).Concat(assetKeys.Textures))
-		{
-			if (!string.IsNullOrWhiteSpace(key)) set.Add(key.Trim());
-		}
-
-		return set;
-	}
 
 	/// <summary>
 	/// 拷一个文件到新条目里。

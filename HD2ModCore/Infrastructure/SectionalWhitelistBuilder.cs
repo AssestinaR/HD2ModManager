@@ -59,6 +59,60 @@ public static class SectionalWhitelistBuilder
 	}
 
 	/// <summary>
+	/// 把"意图 unit"扩成"这套护甲的全部 unit"。
+	/// <para>
+	/// 意图来自装备目录，只列**kit 槽位**上的 unit（实测某套护甲只有 9 个）。而系列里的装饰件
+	/// （翅膀 / 鞋子 / 上衣 …）是**同一个 patch 里另外的 unit**，在目录里没有 kit 归属，
+	/// 却是这套护甲真实的一部分。只按意图集筛会把它们全部丢掉——2026-11-10 线上事故：
+	/// 11 个来源最后只剩 9 个材质组 + 1 个 unit 组，几何缺一大半。
+	/// </para>
+	/// <para>
+	/// 规则：**哪些 patch 提供了意图 unit，就把那些 patch 里的 unit 全算进来**。
+	/// 按 patch 扩（而不是把整条来源链的 unit 全并进来），是为了不把同一来源里
+	/// 另一个护甲的 unit 带进来。
+	/// </para>
+	/// </summary>
+	public static async ValueTask<IReadOnlyList<AdaptationAssetKey>> ExpandIntentUnitsAsync(
+		IReadOnlyList<AdaptationAssetKey> intentUnits,
+		IReadOnlyList<string> patchTocPaths,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(intentUnits);
+		ArgumentNullException.ThrowIfNull(patchTocPaths);
+
+		var seen = intentUnits.ToHashSet();
+		var expanded = new List<AdaptationAssetKey>(intentUnits);
+		var scanner = new HD2ModAdaptation.PatchReconstruction.PatchTocScanner();
+		foreach (var path in patchTocPaths)
+		{
+			IReadOnlyList<HD2ModAdaptation.PatchReconstruction.PatchTocEntry> entries;
+			try
+			{
+				entries = await scanner.ScanEntriesAsync(path, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException
+				or InvalidDataException
+				or UnauthorizedAccessException
+				or EndOfStreamException)
+			{
+				continue;
+			}
+
+			var units = entries
+				.Where(entry => entry.AssetKey.TypeId == HD2ModAdaptation.PatchReconstruction.UnitMesh.PatchUnitMeshReader.UnitTypeId)
+				.Select(entry => new AdaptationAssetKey(entry.AssetKey.TypeId, entry.AssetKey.FileId))
+				.ToArray();
+			if (units.Length == 0 || !units.Any(seen.Contains)) continue;
+			foreach (var unit in units)
+			{
+				if (seen.Add(unit)) expanded.Add(unit);
+			}
+		}
+
+		return expanded;
+	}
+
+	/// <summary>
 	/// 从磁盘上的来源 patch 读出引用关系，再算闭包。
 	/// <para>
 	/// <b>为什么要逐 patch 分析并把同一来源的其它 patch 当"相关材质包"传进去。</b>

@@ -90,6 +90,27 @@ public sealed class SectionalSourceAssemblerTests : IDisposable
 	}
 
 	/// <summary>
+	/// 装配层**不按白名单挑文件**。2026-11-10 真实事故：装饰件（上衣/内裤/翅膀/鞋子…）各带 1 个
+	/// unit，而那些 unit 不在"选中那件护甲"的意图集合里 ⇒ 被整份跳过，用户只拿到 9 个材质组 +
+	/// 1 个 unit 组，几何缺一大半。内容筛选归转换器，装配层只负责"收集 + 重命名"。
+	/// </summary>
+	[Fact]
+	public async Task 不按白名单挑文件_来源里的patch全部收集()
+	{
+		var target = NewDir("target");
+		var source = Source("装饰件");
+
+		// 白名单给一个和这个 patch 完全无关的 key：按旧逻辑它会被判成"没有命中"而跳过。
+		var unrelated = new SectionalSourceAssetKeys(["0eac0b497876ade0f:00000000000000ff"], [], []);
+		var outcome = await Assemble(
+			target, [source],
+			new SectionalSourceSelection("8d3a01f4a44a3aa3", "护甲"), null, unrelated);
+
+		Assert.True(outcome.Ok);
+		Assert.True(File.Exists(Path.Combine(target, $"{Archive}.patch_0")), "来源 patch 不该因为白名单没命中就被丢掉。");
+	}
+
+	/// <summary>
 	/// 系列里多个子级带同名 patch 是常态（同一套 armor 的"本体"与各装饰件）。
 	/// 重新编号让它们各自占一个序号，交给转换器按 unit key 取并集、同 key 后来源覆盖。
 	/// </summary>

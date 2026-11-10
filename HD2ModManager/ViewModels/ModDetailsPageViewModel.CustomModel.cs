@@ -88,17 +88,22 @@ public partial class ModDetailsPageViewModel
 					patchPaths.AddRange(facts.SourcePatchTocPaths);
 				}
 
-				var unitKeys = operation.SelectedSources
+				var intentUnits = operation.SelectedSources
 					.SelectMany(entry => entry.Parts)
 					.Where(part => !part.IsCullingMesh)
-					.Select(part => part.UnitAssetKey)
+					.Select(part => new AdaptationAssetKey(part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId))
 					.Distinct()
 					.ToArray();
+
+				// 装备目录只列 kit 槽位上的 unit（实测某套护甲只有 9 个），而系列里的装饰件
+				// （翅膀 / 鞋子 / 上衣…）是同一个 patch 里另外的 unit —— 它们是这套护甲的一部分，
+				// 只按意图集会全部丢掉（2026-11-10 线上：11 个来源只剩 9 个材质组 + 1 个 unit 组）。
+				var unitKeys = await SectionalWhitelistBuilder
+					.ExpandIntentUnitsAsync(intentUnits, patchPaths, token)
+					.ConfigureAwait(true);
+
 				var whitelist = await SectionalWhitelistBuilder
-					.BuildFromPatchesAsync(
-						unitKeys.Select(key => new AdaptationAssetKey(key.TypeId, key.FileId)).ToArray(),
-						patchPaths,
-						token)
+					.BuildFromPatchesAsync(unitKeys, patchPaths, token)
 					.ConfigureAwait(true);
 				var whitelistError = SectionalWhitelistBuilder.Describe(whitelist);
 				if (whitelistError is not null) throw new InvalidOperationException(whitelistError);
