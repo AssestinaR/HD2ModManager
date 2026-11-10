@@ -3,6 +3,16 @@ using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels;
 
+/// <summary>重构建的来源形态。**两档 sectional 系列只是来源不同**，动作名与结果一样。</summary>
+public enum VpkRebuildSourceKind
+{
+	/// <summary>根上有来源 <c>.vpk</c>：交给转换器重跑。</summary>
+	SourceVpk,
+
+	/// <summary>根上有来源 patch + <c>sectional-source.json</c>：走 legacy2sectional。</summary>
+	SectionalSource,
+}
+
 /// <summary>
 /// 「用来源重构建」的底栏操作：选范围（仅自己 / 含子级）+ 并发数，再开跑。
 /// <para>
@@ -30,21 +40,30 @@ public sealed class VpkRebuildBottomBarViewModel : BaseViewModel
 	public VpkRebuildBottomBarViewModel(
 		string modName,
 		int descendantCount,
+		VpkRebuildSourceKind sourceKind,
 		Func<VpkRebuildBottomBarViewModel, Task> start,
 		Action close)
 	{
 		ModName = modName ?? string.Empty;
 		DescendantCount = descendantCount;
+		SourceKind = sourceKind;
 		this.start = start ?? throw new ArgumentNullException(nameof(start));
 		this.close = close ?? throw new ArgumentNullException(nameof(close));
 		// 没有子级时"含子级"没有意义，直接锁死为"仅自己"。
 		includeDescendants = descendantCount != 0;
-		status = descendantCount == 0
-			? "将用 Mod 文件夹里那份来源 VPK 重新转换：只重出这一个 Mod，保住目标护甲与 section 勾选。"
-			: $"将用 Mod 文件夹里那份来源 VPK 重新转换：保住目标护甲与 section 勾选。另有 {descendantCount} 个子级也是转换产物，可选择是否一起重出。";
+		status = sourceKind == VpkRebuildSourceKind.SectionalSource
+			// sectional 档的来源是"根上的来源 patch"，范围已经记在依据文件里，
+			// 所以这里不能再说"来源 VPK"，也不提供"含子级"（子级本来就是来源的一部分）。
+			? "将用 Mod 根上那份来源 patch 重新转换（范围取自 sectional-source.json 记录的护甲/头盔）：保住目标护甲与 section 勾选。"
+			: descendantCount == 0
+				? "将用 Mod 文件夹里那份来源 VPK 重新转换：只重出这一个 Mod，保住目标护甲与 section 勾选。"
+				: $"将用 Mod 文件夹里那份来源 VPK 重新转换：保住目标护甲与 section 勾选。另有 {descendantCount} 个子级也是转换产物，可选择是否一起重出。";
 		StartCommand = new RelayCommand(async _ => await StartAsync(), _ => !IsRunning && HasValidConcurrency);
 		CancelCommand = new RelayCommand(_ => OnCancelOrClose());
 	}
+
+	/// <summary>这次重构建的来源形态（决定跑哪条转换机）。</summary>
+	public VpkRebuildSourceKind SourceKind { get; }
 
 	public string ModName { get; }
 

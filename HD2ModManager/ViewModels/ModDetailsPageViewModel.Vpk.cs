@@ -88,8 +88,36 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// <summary>这个 Mod 根上有没有来源 .vpk。没有就无法「用来源重构建」（转出来的分件模组就是这种）。</summary>
 	public bool HasSourceVpk { get; private set; }
 
-	/// <summary>patch 版设置卡的可见性：VPK 版一律不显示。</summary>
-	public bool ShowPatchSettingsCard => CanUsePatchTools && !IsVpkMod;
+	/// <summary>
+	/// 这个 Mod 是不是"根上来源 + 转换依据"那一档（<c>sectional-source.json</c>）。
+	/// <para>
+	/// 它与 <see cref="HasSourceVpk"/> 是**并列的两种来源**，不是互斥的两种 Mod：
+	/// 有 .vpk 走 VPK 转换机，有依据文件走 legacy2sectional。两者都有时以 .vpk 为准。
+	/// </para>
+	/// </summary>
+	public bool HasSectionalSource { get; private set; }
+
+	/// <summary>有没有可用的重构建来源（任一形态）。</summary>
+	public bool HasRebuildSource => HasSourceVpk || HasSectionalSource;
+
+	/// <summary>patch 工具（修复/换甲/规整/重打包/头盔合并）的总闸。VPK 版一律不显示。</summary>
+	public bool ShowPatchTools => CanUsePatchTools && !IsVpkMod;
+
+	/// <summary>这个 Mod 是不是逻辑容器（自己没载荷，靠结构文件把子级组织起来）。</summary>
+	public bool IsLogicalContainer => Mod?.IsLogicalContainer == true;
+
+	/// <summary>
+	/// 「生成sectional版」的可见性：**legacy 或逻辑容器都显示**。
+	/// <para>
+	/// 逻辑容器自己没有 patch，但它的成员（legacy 子级）有；这一颗按钮正是"把这个系列转成一个
+	/// sectional 条目"的入口，所以不能沿用"自己有 patch 才显示"的判据。
+	/// </para>
+	/// <para>
+	/// <b>这里刻意不判断"容器里到底有没有可用来源"</b>：那要遍历后代并扫盘，而这是绑定属性，
+	/// 每次属性变化都会求值。有没有来源由底栏在**点击时**判断并给出原因——那里反正要读一遍。
+	/// </para>
+	/// </summary>
+	public bool ShowSectionalConversion => !IsVpkMod && (HasPatchContent || IsLogicalContainer);
 
 	public WardrobeTreeViewModel? VpkTree
 	{
@@ -383,8 +411,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		SelectedVpkTreeNodes = [];
 		NewVpkGroupName = string.Empty;
 		IsVpkMod = false;
+		HasSectionalSource = false;
 		OnPropertyChanged(nameof(IsVpkMod));
-		OnPropertyChanged(nameof(ShowPatchSettingsCard));
+		OnPropertyChanged(nameof(HasSectionalSource));
+		OnPropertyChanged(nameof(HasRebuildSource));
+		OnPropertyChanged(nameof(ShowPatchTools));
+		OnPropertyChanged(nameof(ShowSectionalConversion));
 		OnPropertyChanged(nameof(ShowVpkComponentCard));
 		OnPropertyChanged(nameof(EnableVpkComponentTree));
 		OnPropertyChanged(nameof(HasVpkComponentTree));
@@ -396,11 +428,17 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		// 来源包在不在，与"是不是分件模组"是两件事：转出来的分件模组没有来源 .vpk，
 		// 所以它没有"用来源重构建"这个动作。
 		HasSourceVpk = VpkRebuildService.FindSourceVpkCount(directory) != 0;
+		// 另一档来源：根上有 patch + 转换依据（legacy2sectional 的输入）。
+		// 两者都在时以 .vpk 为准（见 HasSectionalSource 的注释）。
+		HasSectionalSource = SectionalSourceFile.Exists(directory);
+		OnPropertyChanged(nameof(HasSectionalSource));
+		OnPropertyChanged(nameof(HasRebuildSource));
 		if (!VpkModWardrobeService.IsVpkMod(directory)) return;
 
 		IsVpkMod = true;
 		OnPropertyChanged(nameof(IsVpkMod));
-		OnPropertyChanged(nameof(ShowPatchSettingsCard));
+		OnPropertyChanged(nameof(ShowPatchTools));
+		OnPropertyChanged(nameof(ShowSectionalConversion));
 		// 带上当前的详情请求代号：用户在异步加载途中切走时，旧结果不能盖掉新页面。
 		_ = LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration);
 	}

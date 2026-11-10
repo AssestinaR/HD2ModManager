@@ -39,18 +39,130 @@ public partial class ModDetailsPageViewModel
 
 		if (!TryGetCurrentNode(out var node)) return;
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
-		if (VpkRebuildService.FindSourceVpkCount(directory) == 0)
+
+		// **两档 sectional 系列同一个入口**，只是来源与转换机不同：
+		//   有来源 .vpk            → VpkRebuildService（CLI 转换）
+		//   有 sectional-source.json → Legacy2SectionalConverter（根上来源 patch）
+		// 两者都在时以 .vpk 为准（它是更原始的那份来源）。
+		var useVpkSource = VpkRebuildService.FindSourceVpkCount(directory) != 0;
+		var useSectionalSource = !useVpkSource && SectionalSourceFile.Exists(directory);
+		if (!useVpkSource && !useSectionalSource)
 		{
-			VpkComponentStatus = "这个 Mod 的文件夹里没有来源 .vpk，无法重构建（把最初导入的那个 .vpk 放回根上再试）。";
+			VpkComponentStatus = "这个 Mod 没有可用的来源：根上既没有 .vpk，也没有 sectional-source.json。";
 			return;
 		}
 
 		if (System.Windows.Application.Current?.MainWindow?.DataContext is not ShellViewModel shell) return;
-		var descendants = CollectVpkOptionTargets(node);
-		var bar = new VpkRebuildBottomBarViewModel(node.Metadata.Name, descendants.Count,
-			operation => RebuildVpkAsync(node, directory, operation, descendants),
+
+		// sectional 档的"子级"已经在依据文件里作为来源记下了，不再提供"含子级"——
+		// 那会让同一条子级被重出两次（一次作为来源、一次作为选项）。
+		IReadOnlyList<VpkOptionTarget> descendants = useVpkSource
+			? CollectVpkOptionTargets(node)
+			: Array.Empty<VpkOptionTarget>();
+		var sourceKind = useVpkSource ? VpkRebuildSourceKind.SourceVpk : VpkRebuildSourceKind.SectionalSource;
+		var bar = new VpkRebuildBottomBarViewModel(node.Metadata.Name, descendants.Count, sourceKind,
+			operation => useVpkSource
+				? RebuildVpkAsync(node, directory, operation, descendants)
+				: RebuildSectionalAsync(node, directory, operation),
 			() => shell.DismissToolBottomBars());
 		shell.OpenVpkRebuild(bar);
+	}
+
+	/// <summary>
+	/// 用根上的来源 patch 重出 sectional 产物（legacy2sectional），再编译生效层。
+	/// <para>
+	/// 与 VPK 那条路的差别只有来源与转换机：装配、换载荷、写清单、编译都在
+	/// <see cref="Legacy2SectionalConverter"/> 里，这里只负责"长任务 + 消息中心"的外壳。
+	/// </para>
+	/// </summary>
+	private async Task RebuildSectionalAsync(ModNode node, string directory, VpkRebuildBottomBarViewModel options)
+	{
+		_vpkBusy = true;
+		var task = _backgroundTasks?.Enqueue(
+			BackgroundTaskKind.RebuildVpk,
+			"重构建 sectional 模组",
+			node.Metadata.Name,
+			origin: "Mod 详情",
+			userVisibleReason: "用 Mod 根上的来源 patch 重出 sectional 产物与控制组，并按当前配置重新编译生效层。",
+			suggestedAction: "完成后重启游戏生效；逐条细节见消息中心。",
+			retry: () =>
+			{
+				// 重试 = 重新开底栏：让用户再确认一次，而不是悄悄用上次的范围。
+				OpenRebuildBottomBar();
+				return Task.CompletedTask;
+			},
+			presentation: BackgroundTaskPresentation.Foreground);
+		var cancellation = task?.CancellationToken ?? CancellationToken.None;
+
+		void OnCancelRequested(object? sender, EventArgs e) => task?.Cancel();
+		options.CancelRequested += OnCancelRequested;
+
+		void Report(string stage)
+		{
+			if (task is not null) task.UpdateStage(stage);
+			else VpkComponentStatus = stage;
+			options.Status = stage;
+		}
+
+		task?.MarkRunning("正在读取转换依据");
+		try
+		{
+			var outcome = await Legacy2SectionalConverter
+				.RunAsync(node.Id.Value.ToString("N"), directory,
+					new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+					Report, cancellation)
+				.ConfigureAwait(true);
+
+			if (!outcome.Ok)
+			{
+				var error = outcome.Error ?? "重构建失败。";
+				task?.MarkFailed(error);
+				VpkComponentStatus = error;
+				if (task is null) _notifications?.Show(error, NotificationLevel.Error, TimeSpan.FromSeconds(20));
+				return;
+			}
+
+			var summary = $"重构建完成：1 个 unit 组，{outcome.MaterialGroups} 个材质组。";
+			var detailNotes = new List<string>(outcome.Notes);
+			summary += "重启游戏后生效。";
+
+			var reportPath = WriteRebuildReport(node.Metadata.Name, summary, detailNotes);
+			task?.SetOutputArtifacts(directory, reportPath);
+			if (detailNotes.Count != 0) task?.UpdateStage($"{detailNotes.Count} 条细节见报告");
+			task?.MarkCompleted();
+			VpkComponentStatus = "重构建完成，过程与细节见消息中心。";
+			if (task is null)
+			{
+				_notifications?.Show(
+					detailNotes.Count == 0
+						? summary
+						: summary + Environment.NewLine + string.Join(Environment.NewLine, detailNotes),
+					detailNotes.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
+					TimeSpan.FromSeconds(15));
+			}
+
+			// 产物换了 ⇒ 内容事实失效；命中的节点若在活动配置里，这条链路会自己触发一次重新部署。
+			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
+			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
+				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
+			// section 表、组表、开关表都是新的：树与组件列表必须重画。
+			await LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration).ConfigureAwait(true);
+		}
+		catch (OperationCanceledException)
+		{
+			task?.MarkCanceled();
+			VpkComponentStatus = "重构建已取消。";
+		}
+		catch (Exception exception) when (exception is IOException or InvalidOperationException or InvalidDataException)
+		{
+			task?.MarkFailed(exception.Message);
+			VpkComponentStatus = "重构建失败：" + exception.Message;
+		}
+		finally
+		{
+			options.CancelRequested -= OnCancelRequested;
+			_vpkBusy = false;
+		}
 	}
 
 	private async Task RebuildVpkAsync(

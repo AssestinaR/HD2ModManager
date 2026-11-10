@@ -15,7 +15,6 @@ namespace HD2ModManager.ViewModels;
 public sealed record ModDetailsCardState(
     bool HasDescription,
     bool CanUsePatchTools,
-    bool ShowPatchSettingsCard,
     bool IsDecoration,
     bool CanShowDecorationPlan,
     bool IsVpkMod,
@@ -110,7 +109,6 @@ public partial class ModDetailsPageViewModel
     private ModDetailsCardState BuildCardState() => new(
         HasDescription: HasDescription,
         CanUsePatchTools: CanUsePatchTools,
-        ShowPatchSettingsCard: ShowPatchSettingsCard,
         IsDecoration: IsDecoration,
         CanShowDecorationPlan: CanShowDecorationPlan,
         IsVpkMod: IsVpkMod,
