@@ -110,9 +110,29 @@ public static class Legacy2SectionalConverter
 					group => new SectionalSourceUnitIntent(
 						group.Key, group.Last().Slot, group.Last().Body, group.Last().PieceType),
 					StringComparer.OrdinalIgnoreCase);
+			// 来源名（unit id → 来源条目名）：section 组按「一个来源一个组」命名，靠的就是它。
+			// 名字只能来自依据文件，且**必须由这里给**：unit 子集是一份 patch（按 key 去重），
+			// 落盘之后"这个 unit 来自哪个来源 patch"就没了；而计划里的每条选择恰好带着来源 patch。
+			var sourceNameByPatchFile = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var source in document!.Sources)
+			{
+				if (string.IsNullOrWhiteSpace(source.Name))
+					continue;
+				foreach (var patchFile in source.PatchFiles ?? [])
+					sourceNameByPatchFile[Path.GetFileName(patchFile)] = source.Name.Trim();
+			}
+
+			var unitSourceNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var selection in plan.Unit.Selections)
+			{
+				if (!sourceNameByPatchFile.TryGetValue(Path.GetFileName(selection.SourcePatch), out var display))
+					continue;
+				unitSourceNames[selection.Key.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture)] = display;
+			}
+
 			var splitOutput = Path.Combine(stagingRoot, "unit-split");
 			var split = await SectionalSplitter
-				.ExecuteAsync(unitStage, context.GameDataFolder, splitOutput, cancellationToken, unitIntents)
+				.ExecuteAsync(unitStage, context.GameDataFolder, splitOutput, cancellationToken, unitIntents, unitSourceNames)
 				.ConfigureAwait(false);
 			if (!split.IsValid)
 			{

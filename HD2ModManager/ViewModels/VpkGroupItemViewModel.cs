@@ -92,6 +92,14 @@ public sealed class VpkGroupItemViewModel : BaseViewModel
 				SectionGroupSource.Manual => "手工建立",
 				_ => "来自源侧开关包",
 			};
+			// 有具体来源名就写它：sectional 产物的组名本来就是部件名（`尾巴` / `大衣 健壮`），
+			// 再补一句"来自「尾巴」"能直接回答"这条开关是谁带来的"。
+			if (!string.IsNullOrWhiteSpace(entry.SourceVpk)
+				&& !string.Equals(entry.SourceVpk, origin, StringComparison.Ordinal))
+			{
+				origin = $"来自「{entry.SourceVpk}」";
+			}
+
 			var materials = entry.Materials.Count == 0
 				? string.Empty
 				: " · " + string.Join("、", entry.Materials);

@@ -1176,10 +1176,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 		if (document is { Unmatched.Count: > 0 })
 		{
-			parts.Add($"{document.Unmatched.Count} 个源侧开关包在这个 Mod 里找不到对应材质："
+			// 两种来源的"没成组"共用这一行：源侧开关包找不到材质（VPK），以及
+			// sectional 的来源带了 unit 却没有一段几何进产物（装饰追加失败）。原因逐条写在产物里。
+			parts.Add($"{document.Unmatched.Count} 个来源没能成组："
 				+ $"{string.Join("、", document.Unmatched.Take(4).Select(item => item.Name))}"
 				+ (document.Unmatched.Count > 4 ? "…" : string.Empty)
-				+ "。多半是它属于另一个角色/另一份材质包。");
+				+ $"（例如：{document.Unmatched[0].Reason}）");
 		}
 
 		VpkGroupStatus = string.Join(Environment.NewLine, parts);

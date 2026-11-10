@@ -112,12 +112,28 @@ public static class SectionalSplitter
 	/// </param>
 	/// <param name="gameDataDirectory">读头像骨架用（合并要按骨骼名对齐）。</param>
 	/// <param name="outputDirectory">产物目录。为空则抛。</param>
+	/// <param name="unitIntents">
+	/// unit → 部位/身形/层。legacy 来源的 unit 自己不带 customization，只读字节会把 7 个槽压成 1 个。
+	/// </param>
+	/// <param name="unitSourceNames">
+	/// <b>unit id → 来源条目名</b>（`sectional-source.json` 的 `sources[].name`，由**胜者那份拷贝**所在来源决定）。
+	/// <para>
+	/// 给了它就按「一个来源一个组」建 <c>components.json</c>：那才是用户认得的部件名
+	/// （`大衣 健壮` / `尾巴` / `丝袜`…）。不给就退回按槽位分组（CLI 直接拆单个模型时没有"来源"可言）。
+	/// </para>
+	/// <para>
+	/// <b>为什么是 per-unit 而不是 per-patch。</b>调用方先把白名单里的 unit 收成**一份**子集 patch
+	/// （<c>PatchSubsetWriter</c> 按 key 去重），落盘之后"这个 unit 来自哪个来源 patch"就没了。
+	/// 唯一还知道答案的是**建这份子集的人**（它的选择表里每个 key 带着来源 patch），所以由它把名字传进来。
+	/// </para>
+	/// </param>
 	public static async ValueTask<SectionalSplitResult> ExecuteAsync(
 		string sourcePatchOrDirectory,
 		string gameDataDirectory,
 		string outputDirectory,
 		CancellationToken cancellationToken = default,
-		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents = null)
+		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents = null,
+		IReadOnlyDictionary<string, string>? unitSourceNames = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
@@ -153,6 +169,15 @@ public static class SectionalSplitter
 				donorIds.Add(donor);
 		}
 
+		// 段来源：谁贡献了哪一段。名字由调用方给（unit id → 来源条目名），它才知道每个 unit 来自哪份来源。
+		var ownSourceByTarget = new Dictionary<string, string>(StringComparer.Ordinal);
+		var inputSourcesByTarget = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyList<string>>>(StringComparer.Ordinal);
+		var sourceNameOf = BuildSourceNameResolver(unitSourceNames);
+		var presentSources = new List<string>();
+
+		foreach (var source in sources.Units.Keys)
+			AddUnique(presentSources, sourceNameOf(source));
+
 		foreach (var target in plan.Targets)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
@@ -163,6 +188,8 @@ public static class SectionalSplitter
 				warnings.Add($"{target.Slot}/{target.BodyType}：宿主 unit 没有可见网格，跳过。");
 				continue;
 			}
+
+			ownSourceByTarget[target.HostUnitId] = sourceNameOf(target.HostUnitId);
 
 			// **所有来源、所有层、所有拷贝全部并进这个 unit**（不是"后者赢"）。
 			// 系列里装饰子级各自带同一 unit 的另一份几何，缺一份就是丢内容。
@@ -185,9 +212,13 @@ public static class SectionalSplitter
 			}
 
 			var inputsByMesh = new Dictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>>();
+			// **按 mesh 记名字**：每个 LOD 的可见输入列表不同（某份来源在某级 LOD 没有网格就整条跳过），
+			// 段账里的 InputIndex 指的是"这个 mesh 的输入表里的第几个"，所以名字也得按 mesh 对齐。
+			var inputSourcesByMesh = new Dictionary<int, IReadOnlyList<string>>();
 			foreach (var lodTarget in UnitLodFamilySource.ResolveVisibleLodFamily(host.Model, anchor.Value.Mesh))
 			{
 				var inputs = new List<CanonicalDecorationAppendInput>();
+				var inputSources = new List<string>();
 				foreach (var donor in donors)
 				{
 					// 按 LOD 序号取，不校验部位族：不同部位的 SemanticInfo 本来就不同（与跨甲合并同一条规则）。
@@ -197,11 +228,17 @@ public static class SectionalSplitter
 					inputs.Add(new CanonicalDecorationAppendInput(
 						UnitLodFamilySource.CreateFragment(donor, donorMesh.Value.Mesh, donorMesh.Value.Raw),
 						MaterialNamespace(donor.Entry.AssetKey.FileId)));
+					inputSources.Add(sourceNameOf(donor.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture)));
 				}
 
 				if (inputs.Count != 0)
+				{
 					inputsByMesh[lodTarget.Mesh.Index] = inputs;
+					inputSourcesByMesh[lodTarget.Mesh.Index] = inputSources;
+				}
 			}
+
+			inputSourcesByTarget[target.HostUnitId] = inputSourcesByMesh;
 
 			if (inputsByMesh.Count == 0 && donors.Count != 0)
 			{
@@ -298,7 +335,17 @@ public static class SectionalSplitter
 		// 身份必须**由计划来**：来源 unit 自己不带 customization（实测整批都是空串），
 		// 只读字节的话组件树、换甲编译、rekey 三处都会把它们当成"认不出部位"。
 		var documented = WardrobeSectionMapFile.ApplyUnitIdentities(sections.Document, BuildUnitIdentities(plan));
-		var groups = BuildGroups(plan, originsByTarget, documented);
+		// 有来源名 ⇒ 按「一个来源一个组」建组表：那才是用户认得的部件名（大衣/尾巴/丝袜…）。
+		// 没有来源名（CLI 直接拆单个模型）⇒ 退回按槽位分组，那条路上没有"部件来源"可言。
+		var groups = unitSourceNames is { Count: > 0 }
+			? BuildSourceGroups(
+				plan,
+				originsByTarget,
+				documented,
+				new SectionalSourceProvenance(ownSourceByTarget, inputSourcesByTarget),
+				presentSources,
+				warnings)
+			: BuildGroups(plan, originsByTarget, documented);
 
 		// 两份 sidecar 必须跟着产物一起落盘，否则产物"能用但不可编辑"：
 		// sections.json 是组件树与烘焙的唯一偏移来源，components.json 是组表。
@@ -497,6 +544,179 @@ public static class SectionalSplitter
 		}
 
 		return new SectionGroupDocument(SectionGroupDocument.CurrentSchema, groups, []);
+	}
+
+	/// <summary>
+	/// 产物的段来源：<b>哪一段几何来自哪份来源</b>。
+	/// <para>
+	/// 依据文件里一个"来源条目"平铺成一个 patch，所以段账要能回答"这一段是哪个 patch 带来的"。
+	/// 输入表按 mesh 记（每个 LOD 的可见输入列表不同），与 <see cref="CanonicalAppendedSection.InputIndex"/> 同口径。
+	/// </para>
+	/// </summary>
+	/// <param name="OwnSourceByTarget">宿主 unit → 它自己那份拷贝的来源名。</param>
+	/// <param name="InputSourcesByTarget">宿主 unit → mesh 下标 → "第 k 个追加输入"的来源名。</param>
+	public sealed record SectionalSourceProvenance(
+		IReadOnlyDictionary<string, string> OwnSourceByTarget,
+		IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyList<string>>> InputSourcesByTarget);
+
+	/// <summary>
+	/// 按「一个来源一个组」建组表：名字是用户认得的部件名（`大衣 健壮` / `尾巴` / `丝袜`…），
+	/// 成员是这个来源贡献的全部段，<b>跨部位合成一个组</b>（关掉"尾巴"就该整条尾巴消失）。
+	/// <para>
+	/// <b>为什么不设互斥。</b>这些是**部件**，不是同一部位的二选一；按 <c>{槽位}/{身形}</c> 互斥
+	/// 等于逼用户"躯干只能选一个"，与"全都要"正相反。
+	/// </para>
+	/// <para>
+	/// <b>为什么不会出现空组。</b>组只在真有段归属时才生成；反过来，"带了 unit 却一段都没归到它"
+	/// 的来源必须报出来（<c>unmatched</c> + warning）——否则用户会以为那个部件根本不存在，
+	/// 而实际是装饰追加失败把它丢了。
+	/// </para>
+	/// </summary>
+	public static SectionGroupDocument BuildSourceGroups(
+		SectionalSplitPlan plan,
+		IReadOnlyDictionary<string, IReadOnlyList<CanonicalAppendedSection>> originsByTarget,
+		WardrobeSectionMapDocument sections,
+		SectionalSourceProvenance provenance,
+		IReadOnlyList<string> presentSources,
+		List<string> warnings)
+	{
+		ArgumentNullException.ThrowIfNull(plan);
+		ArgumentNullException.ThrowIfNull(originsByTarget);
+		ArgumentNullException.ThrowIfNull(sections);
+		ArgumentNullException.ThrowIfNull(provenance);
+		ArgumentNullException.ThrowIfNull(presentSources);
+		ArgumentNullException.ThrowIfNull(warnings);
+
+		var order = new List<string>(4);
+		var membersBySource = new Dictionary<string, Dictionary<string, List<int>>>(StringComparer.Ordinal);
+		var unattributed = new List<string>();
+
+		foreach (var target in plan.Targets)
+		{
+			var hostUnitId = target.HostUnitId;
+			var mapUnit = sections.Units.FirstOrDefault(unit =>
+				string.Equals(unit.FileId, hostUnitId, StringComparison.OrdinalIgnoreCase));
+			if (mapUnit is null)
+				continue;
+
+			var ownSource = provenance.OwnSourceByTarget.GetValueOrDefault(hostUnitId) ?? UnknownSourceName;
+			var sectionSource = new Dictionary<int, string>();
+			if (originsByTarget.TryGetValue(hostUnitId, out var origins) && origins.Count != 0)
+			{
+				var canonicalMeshIndex = ResolveCanonicalMeshIndex(mapUnit, origins);
+				provenance.InputSourcesByTarget.TryGetValue(hostUnitId, out var inputSources);
+				foreach (var origin in origins.Where(origin => origin.MeshInfoIndex == canonicalMeshIndex))
+				{
+					var source = ownSource;
+					if (origin.InputIndex >= 0)
+					{
+						if (inputSources is not null
+							&& inputSources.TryGetValue(canonicalMeshIndex, out var names)
+							&& origin.InputIndex < names.Count)
+						{
+							source = names[origin.InputIndex];
+						}
+						else
+						{
+							AddUnique(unattributed,
+								$"{target.Slot}/{target.BodyType}：第 {origin.InputIndex} 个追加输入的来源说不清，已归到「{ownSource}」。");
+						}
+					}
+
+					sectionSource[origin.FinalSectionIndex] = source;
+				}
+			}
+
+			// 没有段账、或账里没提到的节：它们确实是宿主自己那份拷贝的几何。
+			foreach (var section in mapUnit.Sections)
+				sectionSource.TryAdd(section.Index, ownSource);
+
+			foreach (var pair in sectionSource.OrderBy(pair => pair.Key))
+				AddSourceMember(membersBySource, order, pair.Value, hostUnitId, pair.Key);
+		}
+
+		var groups = new List<SectionGroup>(order.Count);
+		foreach (var source in order)
+		{
+			var members = membersBySource[source]
+				.Select(pair => new SectionGroupTarget(pair.Key, [.. pair.Value.Distinct().Order()]))
+				.ToArray();
+			// 名字与 SourceVpk 都写来源名：组行副标题据此显示「来自「尾巴」」，比"来自附加部件"可操作。
+			groups.Add(new SectionGroup(source, source, [], members)
+			{
+				Source = SectionGroupSource.DonorUnit,
+				ExclusiveGroup = null,
+			});
+		}
+
+		var unmatched = new List<SectionGroupUnmatched>();
+		foreach (var missing in presentSources.Where(name => !membersBySource.ContainsKey(name)))
+		{
+			unmatched.Add(new SectionGroupUnmatched(missing, missing,
+				"它在这次转换里带了 unit，但没有任何一段几何进产物（装饰追加失败或段账缺失）。"));
+			warnings.Add($"来源「{missing}」的几何没有进产物：这次没有它的开关。");
+		}
+
+		foreach (var note in unattributed)
+			AddUnique(warnings, note);
+
+		return new SectionGroupDocument(SectionGroupDocument.CurrentSchema, groups, unmatched);
+	}
+
+	/// <summary>来源名缺失时的写法。空字符串会让组名变成一行空白，比"不知道"更糟。</summary>
+	public const string UnknownSourceName = "未标注来源";
+
+	/// <summary>
+	/// unit id → 来源条目名。没给名字就退回 <see cref="UnknownSourceName"/>（不编、不猜）；
+	/// 键按 16 位小写 hex 归一（大小写、带不带 <c>0x</c> 都接受）。
+	/// </summary>
+	private static Func<string, string> BuildSourceNameResolver(IReadOnlyDictionary<string, string>? unitSourceNames)
+	{
+		var byUnit = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		if (unitSourceNames is not null)
+		{
+			foreach (var pair in unitSourceNames)
+			{
+				if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+					continue;
+				byUnit[NormalizeUnitKey(pair.Key)] = pair.Value.Trim();
+			}
+		}
+
+		return unitId => byUnit.TryGetValue(NormalizeUnitKey(unitId), out var display) ? display : UnknownSourceName;
+	}
+
+	private static string NormalizeUnitKey(string unitId)
+	{
+		var value = unitId.Trim();
+		if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+			value = value[2..];
+		return value.ToLowerInvariant();
+	}
+
+	private static void AddSourceMember(
+		Dictionary<string, Dictionary<string, List<int>>> membersBySource,
+		List<string> order,
+		string source,
+		string unitId,
+		int sectionIndex)
+	{
+		if (!membersBySource.TryGetValue(source, out var perUnit))
+		{
+			membersBySource[source] = perUnit = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+			order.Add(source);
+		}
+
+		if (!perUnit.TryGetValue(unitId, out var sections))
+			perUnit[unitId] = sections = [];
+		sections.Add(sectionIndex);
+	}
+
+	/// <summary>去重追加（保持首次出现顺序）：来源清单与提示都要稳定，否则 diff 全是噪音。</summary>
+	private static void AddUnique(List<string> list, string value)
+	{
+		if (!list.Contains(value, StringComparer.Ordinal))
+			list.Add(value);
 	}
 
 	/// <summary>
