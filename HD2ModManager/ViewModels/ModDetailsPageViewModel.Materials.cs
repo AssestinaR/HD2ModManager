@@ -36,7 +36,10 @@ public partial class ModDetailsPageViewModel
 	private readonly Dictionary<string, MaterialOptionRowViewModel> _materialOptionRows =
 		new(StringComparer.OrdinalIgnoreCase);
 	private string _materialOptionQuery = string.Empty;
-	private bool _materialOperationInFlight;
+	// 材质写操作的串行闸门。以前是一个 bool + "忙就丢弃"，见 RunMaterialOperationAsync 的注释。
+	private readonly SemaphoreSlim _materialOperationGate = new(1, 1);
+	// 是否已经有一次"按行上的当前状态同步"在排队（或即将读取状态）。
+	private bool _materialSyncPending;
 	private RelayCommand? _clearMaterialOptionQueryCommand;
 
 	/// <summary>交给面板的可见行。</summary>
@@ -221,7 +224,9 @@ public partial class ModDetailsPageViewModel
 			}
 
 			return await MaterializeAsync(directory, enabledNames).ConfigureAwait(true);
-		}, successMessage: enabled ? "已启用并重建生效层（重启游戏后生效）。" : "已停用并重建生效层（重启游戏后生效）。");
+		}, successMessage: enabled ? "已启用并重建生效层（重启游戏后生效）。" : "已停用并重建生效层（重启游戏后生效）。",
+		// 读的是行上的最新状态，所以排队期间的连续点击可以合并成一次同步。
+		coalescibleSync: true);
 	}
 
 	/// <summary>上移/下移一格。到头了就不动，也不写盘。</summary>
@@ -328,26 +333,49 @@ public partial class ModDetailsPageViewModel
 	/// 成功后按"内容变了"通报出去——要不要重新部署由 Shell 的部署触发检查决定，
 	/// 和换甲合并、VPK 重建走同一条路。反馈用通知，和详情页那张选项卡一致：
 	/// 那张卡也没有在卡片下方留一行状态文字。
+	/// <para>
+	/// <b>排队，不丢弃。</b>以前这里是一个 <c>bool inFlight</c>：忙就弹「上一项改动还在处理」并
+	/// <b>直接 return</b>。但调用方已经把行上的开关乐观翻转了，丢弃的结果就是文件没写、
+	/// 紧接着 <see cref="RefreshMaterialOptions"/> 又把界面推回旧状态——用户看到的是
+	/// 「改了一下又被恢复」。批量开关材质时每一行都要撞一次这个坑。
+	/// 现在改成进队列：改动一定会落盘，只是按顺序慢慢来。
+	/// </para>
+	/// <para>
+	/// <b>能合并的只有"按当前状态同步"。</b>开关操作读的是<b>行上的最新状态</b>，所以排队期间
+	/// 再点几次不必各排一次——那次同步会把它们一起写下去。顺序变更带着一份顺序快照、
+	/// 改名带着具体值，都不能合并，只能老实排队。
+	/// </para>
 	/// </summary>
-	private async Task RunMaterialOperationAsync(Func<Task<string?>> operation, string successMessage)
+	private async Task RunMaterialOperationAsync(
+		Func<Task<string?>> operation,
+		string successMessage,
+		bool coalescibleSync = false)
 	{
-		if (_materialOperationInFlight)
+		if (coalescibleSync)
 		{
-			_notifications?.Show("上一项改动还在处理，请稍候。");
-			return;
+			// 已经有一次同步排在前面（还没读到状态）：它读的就是最新状态，这次点击会被它带上。
+			if (_materialSyncPending) return;
+			_materialSyncPending = true;
 		}
 
-		_materialOperationInFlight = true;
+		await _materialOperationGate.WaitAsync().ConfigureAwait(true);
 		try
 		{
+			// 从这一刻起它要读行上的状态了：之后到来的点击必须自己再排一次，
+			// 否则会被"读到之前就已经过去了"地漏掉。
+			if (coalescibleSync) _materialSyncPending = false;
+
 			var error = await operation().ConfigureAwait(true);
-			RefreshMaterialOptions();
 			if (error is not null)
 			{
+				RefreshMaterialOptions();
 				_notifications?.Show(error, NotificationLevel.Error);
 				return;
 			}
 
+			// 还有更新的同步在排队时**不要**刷新：刷新会用磁盘上的状态覆盖行上的乐观改动，
+			// 而那几次点击正是下一次同步要读的东西——刷早了就等于把它们丢掉。
+			if (!_materialSyncPending) RefreshMaterialOptions();
 			await NotifyMaterialContentChangedAsync().ConfigureAwait(true);
 			_notifications?.Show(successMessage);
 		}
@@ -358,7 +386,7 @@ public partial class ModDetailsPageViewModel
 		}
 		finally
 		{
-			_materialOperationInFlight = false;
+			_materialOperationGate.Release();
 		}
 	}
 
