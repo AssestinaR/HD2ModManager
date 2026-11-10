@@ -90,6 +90,23 @@ public sealed record SectionalSourceAssetKeys(
 		new(Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>());
 }
 
+/// <summary>
+/// 一个来源 unit 的<b>意图</b>：它在用户选中的那件护甲/头盔里属于哪个部位、哪个身形、哪一层。
+///
+/// <para>
+/// <b>为什么必须存。</b>legacy 来源的 unit 自己不带 customization —— 实测某个系列的 21 个 unit，
+/// <c>slot</c> / <c>bodyType</c> / <c>pieceType</c> <b>全是空串</b>。槽位只存在于装备目录
+/// （<c>EquipmentUnitPart</c> 的 <c>Cell</c> 与 <c>BodyVariant</c>）里。
+/// 不存这份意图，拆件器只能把全部 unit 兜底成 <c>Torso/Any</c> 一个桶 ——
+/// 2026-11-10 就是这样把"应该 7 个槽"的产物压成了 3 个 unit。
+/// </para>
+/// </summary>
+/// <param name="UnitKey">与 <see cref="SectionalSourceAssetKeys"/> 同格式：<c>typeId:fileId</c>，各 16 位十六进制。</param>
+/// <param name="Slot">部位号（<c>ArmorStructure</c> 的槽位编号，0 = 头盔）。</param>
+/// <param name="Body">身形号：0 Stocky / 1 Slim / 3 Any。</param>
+/// <param name="Layer">层号：0 内层 / 1 护甲 / 2 装饰。</param>
+public sealed record SectionalSourceUnitIntent(string UnitKey, int Slot, int Body, int Layer);
+
 /// <summary><c>sectional-source.json</c> 的内容。</summary>
 public sealed record SectionalSourceDocument(
 	string Schema,
@@ -101,4 +118,9 @@ public sealed record SectionalSourceDocument(
 {
 	/// <summary>护甲与头盔至少选了一个才有"来源"可转。</summary>
 	public bool HasSelection => Armor?.HasValue == true || Helmet?.HasValue == true;
+
+	/// <summary>
+	/// 每个来源 unit 的部位/身形/层。旧文件没有这一项（为空表），转换时退回读 unit 自身字段。
+	/// </summary>
+	public IReadOnlyList<SectionalSourceUnitIntent> UnitIntents { get; init; } = [];
 }

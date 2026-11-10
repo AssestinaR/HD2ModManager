@@ -99,9 +99,17 @@ public static class Legacy2SectionalConverter
 
 			// ② 拆 7 槽。输出目录单独给，避免边读边写。
 			onStage?.Invoke("正在按 7 槽拆分…");
+			// 意图（unit → 部位/身形/层）来自依据文件：legacy 的 unit 自己不带这些字段，
+			// 只读 unit 会全部兜底成 Torso/Any，把 7 槽压成 1 个槽。
+			var unitIntents = document!.UnitIntents
+				.Select(intent => (intent.UnitKey, Intent: intent))
+				.Where(pair => pair.UnitKey.Contains(':', StringComparison.Ordinal))
+				.Select(pair => (FileId: pair.UnitKey[(pair.UnitKey.IndexOf(':') + 1)..], pair.Intent))
+				.GroupBy(pair => pair.FileId, StringComparer.OrdinalIgnoreCase)
+				.ToDictionary(group => group.Key, group => group.Last().Intent, StringComparer.OrdinalIgnoreCase);
 			var splitOutput = Path.Combine(stagingRoot, "unit-split");
 			var split = await SectionalSplitter
-				.ExecuteAsync(unitStage, context.GameDataFolder, splitOutput, cancellationToken)
+				.ExecuteAsync(unitStage, context.GameDataFolder, splitOutput, cancellationToken, unitIntents)
 				.ConfigureAwait(false);
 			if (!split.IsValid)
 			{

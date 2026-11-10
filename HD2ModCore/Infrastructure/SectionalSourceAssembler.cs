@@ -68,7 +68,8 @@ public static class SectionalSourceAssembler
 		SectionalSourceSelection? armor,
 		SectionalSourceSelection? helmet,
 		SectionalSourceAssetKeys assetKeys,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		IReadOnlyList<SectionalSourceUnitIntent>? unitIntents = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
 		ArgumentNullException.ThrowIfNull(sources);
@@ -134,7 +135,12 @@ public static class SectionalSourceAssembler
 		var document = new SectionalSourceDocument(
 			SectionalSourceManifest.CurrentSchema,
 			DateTimeOffset.UtcNow,
-			armor, helmet, entries, assetKeys);
+			armor, helmet, entries, assetKeys)
+		{
+			// 意图（unit → 部位/身形/层）必须一起落盘：legacy 的 unit 自己不带这些字段，
+			// 转换时再回查装备目录已经晚了（库可能已变）。没有它，拆件器只能全兜底成 Torso/Any。
+			UnitIntents = unitIntents ?? [],
+		};
 
 		var error = SectionalSourceFile.TryWrite(modDirectory, document);
 		return error is null

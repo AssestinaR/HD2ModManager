@@ -94,7 +94,7 @@ public static class SectionalSplitter
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
 		var sources = await ReadSourcesAsync(sourcePatchOrDirectory, cancellationToken).ConfigureAwait(false);
-		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit => Describe(unit))]);
+		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit => Describe(unit, unitIntents: null))]);
 		var warnings = new List<string>(plan.Warnings);
 		foreach (var skipped in sources.Skipped)
 			warnings.Add($"{skipped}");
@@ -116,7 +116,8 @@ public static class SectionalSplitter
 		string sourcePatchOrDirectory,
 		string gameDataDirectory,
 		string outputDirectory,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
@@ -127,7 +128,7 @@ public static class SectionalSplitter
 		foreach (var skipped in sources.Skipped)
 			warnings.Add(skipped);
 
-		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit => Describe(unit))]);
+		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit => Describe(unit, unitIntents))]);
 		warnings.AddRange(plan.Warnings);
 		if (plan.Targets.Count == 0)
 			return new SectionalSplitResult(string.Empty, plan, SectionGroupDocument.Empty,
@@ -579,17 +580,66 @@ public static class SectionalSplitter
 		return System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(hash);
 	}
 
-	private static SectionalSplitSource Describe(PatchUnitMesh unit)
+	/// <summary>
+	/// 描述一个来源 unit。**部位/身形/层优先取「意图」**（用户选中的护甲/头盔里它属于哪个槽），
+	/// 只有意图缺失时才退回 unit 自身的 semantic。
+	/// <para>
+	/// legacy 来源的 unit 自己不带 customization：实测某系列 21 个 unit 的
+	/// <c>slot/bodyType/pieceType</c> 全是空串。只读 unit 的话，它们会全部兜底成
+	/// <c>Torso/Any</c> 一个桶，"标准 7 槽"就压成了 3 个 unit（2026-11-10 的事故）。
+	/// </para>
+	/// </summary>
+	private static SectionalSplitSource Describe(
+		PatchUnitMesh unit,
+		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents)
 	{
 		var semantic = unit.Model.Meshes.FirstOrDefault()?.SemanticInfo;
+		var fileId = unit.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
+		var sections = unit.Model.Meshes.Sum(mesh => mesh.Sections.Count);
+		var name = semantic?.Name ?? string.Empty;
+
+		if (unitIntents is not null && unitIntents.TryGetValue(fileId, out var intent))
+		{
+			var slot = SlotName(intent.Slot);
+			if (slot.Length != 0)
+				return new SectionalSplitSource(fileId, slot, BodyName(intent.Body), sections, name, LayerName(intent.Layer));
+		}
+
 		return new SectionalSplitSource(
-			unit.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture),
+			fileId,
 			semantic?.Slot ?? string.Empty,
 			semantic?.BodyType ?? SectionalSplitPlanner.DefaultBody,
-			unit.Model.Meshes.Sum(mesh => mesh.Sections.Count),
-			semantic?.Name ?? string.Empty,
+			sections,
+			name,
 			semantic?.PieceType ?? string.Empty);
 	}
+
+	/// <summary>槽位号 → 标准槽名（<see cref="SectionalSplitPlanner.StandardSlots"/> 的写法定）。</summary>
+	private static string SlotName(int slot) => ArmorStructure.FromSlot((uint)slot) switch
+	{
+		ArmorPart.Helmet => "Helmet",
+		ArmorPart.Torso => "Torso",
+		ArmorPart.Hips => "Hip",
+		ArmorPart.LeftArm => "LeftArm",
+		ArmorPart.RightArm => "RightArm",
+		ArmorPart.LeftLeg => "LeftLeg",
+		ArmorPart.RightLeg => "RightLeg",
+		_ => string.Empty,
+	};
+
+	private static string BodyName(int body) => body switch
+	{
+		0 => "Stocky",
+		1 => "Slim",
+		_ => SectionalSplitPlanner.DefaultBody,
+	};
+
+	private static string LayerName(int layer) => layer switch
+	{
+		1 => "Armor",
+		2 => "Accessory",
+		_ => "UnderGarment",
+	};
 
 	private sealed record SourceSet(
 		IReadOnlyList<AdaptationTocEntry> Entries,
