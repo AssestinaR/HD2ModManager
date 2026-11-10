@@ -80,11 +80,27 @@ public static class SectionalSplitPlanner
 	/// <summary>非标准槽位并进这里。</summary>
 	public const string FallbackSlot = "Torso";
 
+	/// <summary>
+	/// 额外的"肩"槽并进这里。
+	/// <para>
+	/// 肩膀不是 7 标准槽之一，但它**有明确归属**：左肩是左臂的一部分、右肩是右臂的一部分。
+	/// 并进 <see cref="FallbackSlot"/>（躯干）会让肩甲跟着躯干动、跟着躯干被关，
+	/// 而游戏里它是跟手臂一起摆的。所以这里单列一条映射，不再落到兜底。
+	/// </para>
+	/// </summary>
+	private static readonly IReadOnlyDictionary<string, string> ExtraSlotMapping =
+		new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+		{
+			["LeftShoulder"] = "LeftArm",
+			["RightShoulder"] = "RightArm",
+		};
+
 	/// <summary>身形缺省值。与本体 <c>Any</c> 的口径一致。</summary>
 	public const string DefaultBody = "Any";
 
 	/// <summary>
-	/// 槽位归一：认得的标准槽原样返回（大小写不敏感），其余一律进 <see cref="FallbackSlot"/>。
+	/// 槽位归一：认得的标准槽原样返回（大小写不敏感），左右肩并进左右臂，
+	/// 其余一律进 <see cref="FallbackSlot"/>。
 	/// </summary>
 	public static string MapSlot(string? slot)
 	{
@@ -97,7 +113,7 @@ public static class SectionalSplitPlanner
 				return standard;
 		}
 
-		return FallbackSlot;
+		return ExtraSlotMapping.TryGetValue(trimmed, out var mapped) ? mapped : FallbackSlot;
 	}
 
 	public static string NormalizeBody(string? body)

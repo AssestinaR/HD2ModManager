@@ -32,8 +32,12 @@ public sealed class SectionalSplitPlannerTests
 		Assert.Empty(plan.Warnings);
 	}
 
+	/// <summary>
+	/// 左右肩不是 7 标准槽之一，但归属明确：左肩→左臂、右肩→右臂。
+	/// 并进躯干（以前的行为）会让肩甲跟着躯干被关，而游戏里它是跟手臂一起摆的。
+	/// </summary>
 	[Fact]
-	public void Plan_ShoulderUnitsAreMergedIntoTorsoAndSaidOutLoud()
+	public void Plan_ShouldersAreMergedIntoTheirOwnArms()
 	{
 		var plan = SectionalSplitPlanner.Plan([
 			Unit("aaaa000000000001", "Torso", 4),
@@ -41,11 +45,16 @@ public sealed class SectionalSplitPlannerTests
 			Unit("aaaa000000000003", "RightShoulder", 2),
 		]);
 
-		var target = Assert.Single(plan.Targets);
-		Assert.Equal("Torso", target.Slot);
-		Assert.Equal(2, target.DonorUnitIds.Count);
-		Assert.Contains(plan.Warnings, warning => warning.Contains("LeftShoulder", StringComparison.Ordinal));
-		Assert.Contains(plan.Warnings, warning => warning.Contains("RightShoulder", StringComparison.Ordinal));
+		Assert.Equal(3, plan.Targets.Count);
+		var torso = Assert.Single(plan.Targets, target => target.Slot == "Torso");
+		Assert.Empty(torso.DonorUnitIds);
+		// 肩部单位成为该臂槽的**宿主**（它的槽位归一后就是这个槽），不是捐体。
+		var leftArm = Assert.Single(plan.Targets, target => target.Slot == "LeftArm");
+		Assert.Equal("aaaa000000000002", leftArm.HostUnitId);
+		var rightArm = Assert.Single(plan.Targets, target => target.Slot == "RightArm");
+		Assert.Equal("aaaa000000000003", rightArm.HostUnitId);
+		Assert.DoesNotContain(plan.Targets, target =>
+			target.Slot == SectionalSplitPlanner.FallbackSlot && target.DonorUnitIds.Count != 0);
 	}
 
 	[Fact]
@@ -78,7 +87,9 @@ public sealed class SectionalSplitPlannerTests
 	{
 		var plan = SectionalSplitPlanner.Plan([
 			Unit("dddd000000000001", "Torso", 1),
-			Unit("dddd000000000002", "LeftShoulder", 9),
+			// 用一个**没有明确归属**的非标准槽当捐体（Cape → 兜底到 Torso）。
+			// 左右肩现在有自己的归属（→ 左右臂），不再参与"并进躯干"这条路径。
+			Unit("dddd000000000002", "Cape", 9),
 		]);
 
 		var target = Assert.Single(plan.Targets);
@@ -154,7 +165,9 @@ public sealed class SectionalSplitPlannerTests
 	{
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot("torso"));
 		Assert.Equal("LeftArm", SectionalSplitPlanner.MapSlot(" LEFTARM "));
-		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot("LeftShoulder"));
+		// 左右肩有明确归属：并进各自的臂，不落兜底。
+		Assert.Equal("LeftArm", SectionalSplitPlanner.MapSlot("LeftShoulder"));
+		Assert.Equal("RightArm", SectionalSplitPlanner.MapSlot(" rightshoulder "));
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot(null));
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot("Cape"));
 	}

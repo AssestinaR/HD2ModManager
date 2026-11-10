@@ -108,12 +108,13 @@ public partial class ModDetailsPageViewModel
 				var safeName = string.Concat(name.Trim().Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
 				var modDirectory = Path.Combine(output, $"{safeName}-{DateTime.Now:yyyyMMdd-HHmmss}");
 				Directory.CreateDirectory(modDirectory);
-				var assembly = SectionalSourceAssembler.Assemble(
+				var assembly = await SectionalSourceAssembler.AssembleAsync(
 					modDirectory,
 					candidates,
 					ToSelection(operation.SelectedArmor),
 					ToSelection(operation.SelectedHelmet),
-					whitelist);
+					whitelist,
+					token).ConfigureAwait(true);
 				if (!assembly.Ok)
 					throw new InvalidOperationException(assembly.Error ?? "装配来源失败。");
 				task?.SetOutputArtifacts(modDirectory, null);
