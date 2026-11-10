@@ -172,15 +172,23 @@ public static class Legacy2SectionalConverter
 			// 换甲、按槽位开关都认不出它。vpk2patch 那条路一直写着，这里漏了。
 			// 位置必须在编译**之前**：ModCompileService 会把 payload 里的 custom-model.json
 			// 一起带进 Overwrite，与 vpk2patch 的产物形状保持一致。
-			var mapPath = Path.Combine(payloadDirectory, WardrobeSectionMapFile.FileName);
-			if (File.Exists(mapPath))
+			// ⑦ 素体定义：与 vpk2patch 对称 —— 7 槽产物同样**是一具自定义素体**。
+			//
+			// 件从**产出的 unit patch**里逐个 unit 读 customization（身形/槽位/层），
+			// 不从 sectional/sections.json 推：那份是折叠后的表，只剩一条 unit、slot 为空。
+			// 位置必须在编译之前：ModCompileService 会把 payload 里的 custom-model.json
+			// 一起带进 Overwrite，与 vpk2patch 的产物形状保持一致。
+			var unitPatch = Path.Combine(producedRoot, $"{archiveHex}.patch_0");
+			if (File.Exists(unitPatch))
 			{
 				onStage?.Invoke("正在登记自定义素体…");
-				var map = await WardrobeSectionMapFile.ReadAsync(mapPath, cancellationToken).ConfigureAwait(false);
-				var definition = SectionalModelDefinition.Build(
-					map.Units,
-					"custom-" + Guid.NewGuid().ToString("N"),
-					Path.GetFileName(modDirectory));
+				var definition = await SectionalModelDefinition
+					.BuildFromPatchAsync(
+						unitPatch,
+						"custom-" + Guid.NewGuid().ToString("N"),
+						Path.GetFileName(modDirectory),
+						cancellationToken)
+					.ConfigureAwait(false);
 				// 一条 piece 都没有就不落盘：空定义比没有定义更糟 —— 它会让"这是一具素体"
 				// 成立却不含任何组件，界面上是一具点了没反应的素体。
 				if (definition.Pieces is { Count: > 0 })
@@ -192,7 +200,7 @@ public static class Legacy2SectionalConverter
 				}
 				else
 				{
-					notes.Add("没有从 section 表里认出任何槽位，跳过写 custom-model.json。");
+					notes.Add("产出的 unit patch 里没有可识别的槽位，跳过写 custom-model.json。");
 				}
 			}
 
