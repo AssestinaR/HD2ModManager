@@ -52,9 +52,14 @@ public static class SectionalModelDefinition
 			var slot = ArmorStructure.SlotOf(part.Value);
 			if (slot is null) continue;
 
-			var body = (uint)ArmorStructure.ParseBody(target.BodyType);
-			if (slot.Value == HelmetSlot) body = (uint)UnitMeshBodyVariant.Any;
-			var pieceType = LayerOf(target.PieceType);
+			// 注册表身形号：Stocky=0 / Slim=1 / Any=3。
+			// **不能把 UnitMeshBodyVariant 直接转 uint**：那套枚举是 Slim=1 / Stocky=2 / Any=3，
+			// Stocky 会写成 2 —— 游戏里没有那一行，壮硕身形直接不生效。
+			var body = RegistryBody(ArmorStructure.ParseBody(target.BodyType));
+			if (slot.Value == HelmetSlot) body = RegistryBody(UnitMeshBodyVariant.Any);
+			// 层号固定 0：库里 10 份游戏里能用的素体都是"一个槽×身形一条 piece"，
+			// 层（内层/护甲/装饰）在同一 unit 内由 section 开关表达，不再靠 pieceType 分格。
+			const uint pieceType = 0;
 			// 注册表里 (body, slot, pieceType) 只能对应一个 unit；重复会让整份定义读不出来。
 			if (!seen.Add((body, slot.Value, pieceType))) continue;
 			pieces.Add(new RuntimeArmorRegistryModelPiece(body, target.HostUnitId, slot.Value, pieceType));
@@ -63,7 +68,15 @@ public static class SectionalModelDefinition
 		return new RuntimeArmorRegistryModel(key, null, pieces, name);
 	}
 
-	/// <summary>件级 PieceType 字符串 → 层号（0 内层 / 1 护甲 / 2 装饰）。与编译器的口径一致。</summary>
+	/// <summary>枚举身形 → 注册表身形号（Stocky=0 / Slim=1 / Any=3）。</summary>
+	private static uint RegistryBody(UnitMeshBodyVariant body) => body switch
+	{
+		UnitMeshBodyVariant.Slim => 1u,
+		UnitMeshBodyVariant.Stocky => 0u,
+		_ => 3u,
+	};
+
+	/// <summary>件级 PieceType 字符串 → 层号（0 内层 / 1 护甲 / 2 装饰）。</summary>
 	private static uint LayerOf(string? pieceType) => pieceType?.Trim().ToLowerInvariant() switch
 	{
 		"armor" => 1u,

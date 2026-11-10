@@ -167,12 +167,34 @@ public static class SectionalSplitPlanner
 			warnings.Add($"槽位「{group.Key}」不是 7 个标准槽之一，它的 {group.Count()} 个 unit 会并进 {FallbackSlot}。");
 		}
 
-		foreach (var bucket in usable
-			.GroupBy(unit => (Slot: MapSlot(unit.Slot), Body: NormalizeBody(unit.BodyType)))
-			.OrderBy(group => StandardSlots.ToList().IndexOf(group.Key.Slot))
-			.ThenBy(group => group.Key.Body, StringComparer.Ordinal))
+		// 身形族规则（2026-11-10 定）：同一槽位最多两种形态 —— {Any} 或 {Stocky, Slim}。
+		// 只要该槽出现过任一具体身形，就拆成两种身形；该槽里的 Any unit **两种身形都要**，
+		// 因为 Any 的本义就是"这一份同时服务两种身形"（见 ArmorStructure 顶部第 2 条）。
+		// 只有整槽都是 Any 时，才是一个 Any 槽。
+		var buckets = new Dictionary<(string Slot, string Body), List<SectionalSplitSource>>();
+		foreach (var slotGroup in usable.GroupBy(unit => MapSlot(unit.Slot)))
 		{
-			var members = bucket.ToArray();
+			var hasSpecificBody = slotGroup.Any(unit =>
+				!string.Equals(NormalizeBody(unit.BodyType), DefaultBody, StringComparison.OrdinalIgnoreCase));
+			string[] family = hasSpecificBody ? ["Stocky", "Slim"] : [DefaultBody];
+			foreach (var unit in slotGroup)
+			{
+				var body = NormalizeBody(unit.BodyType);
+				string[] bodyTargets = string.Equals(body, DefaultBody, StringComparison.OrdinalIgnoreCase) ? family : [body];
+				foreach (var bodyTarget in bodyTargets)
+				{
+					if (!buckets.TryGetValue((slotGroup.Key, bodyTarget), out var list))
+						buckets[(slotGroup.Key, bodyTarget)] = list = [];
+					if (!list.Contains(unit)) list.Add(unit);
+				}
+			}
+		}
+
+		foreach (var bucket in buckets
+			.OrderBy(pair => StandardSlots.ToList().IndexOf(pair.Key.Slot))
+			.ThenBy(pair => pair.Key.Body, StringComparer.Ordinal))
+		{
+			var members = bucket.Value.ToArray();
 			var host = ChooseHost(members, bucket.Key.Slot);
 			var donors = members
 				.Where(unit => !ReferenceEquals(unit, host))

@@ -164,7 +164,26 @@ public static class SectionalSplitter
 				continue;
 			}
 
-			var donors = target.DonorUnitIds.Select(id => sources.Units[id]).ToArray();
+			// **所有来源、所有层、所有拷贝全部并进这个 unit**（不是"后者赢"）。
+			// 系列里装饰子级各自带同一 unit 的另一份几何，缺一份就是丢内容。
+			var donors = new List<PatchUnitMesh>();
+			foreach (var donorId in target.DonorUnitIds)
+			{
+				if (sources.Copies.TryGetValue(donorId, out var donorCopies) && donorCopies.Count != 0)
+					donors.AddRange(donorCopies);
+				else if (sources.Units.TryGetValue(donorId, out var donorUnit))
+					donors.Add(donorUnit);
+			}
+
+			// 宿主自己也可能有多份（同一 unit 被多个来源各带一份）：除当前这份外都要并进来。
+			if (sources.Copies.TryGetValue(target.HostUnitId, out var hostCopies))
+			{
+				foreach (var copy in hostCopies)
+				{
+					if (!ReferenceEquals(copy, host)) donors.Add(copy);
+				}
+			}
+
 			var inputsByMesh = new Dictionary<int, IReadOnlyList<CanonicalDecorationAppendInput>>();
 			foreach (var lodTarget in UnitLodFamilySource.ResolveVisibleLodFamily(host.Model, anchor.Value.Mesh))
 			{
@@ -184,7 +203,7 @@ public static class SectionalSplitter
 					inputsByMesh[lodTarget.Mesh.Index] = inputs;
 			}
 
-			if (inputsByMesh.Count == 0 && donors.Length != 0)
+			if (inputsByMesh.Count == 0 && donors.Count != 0)
 			{
 				warnings.Add($"{target.Slot}/{target.BodyType}：来源之间没有共同可见 LOD，只保留宿主几何。");
 			}
@@ -650,6 +669,13 @@ public static class SectionalSplitter
 	{
 		/// <summary>输出 patch 的文件名与头部模板取它。</summary>
 		public string HeaderTemplatePatchPath => ConsumedPatches[0];
+
+		/// <summary>
+		/// **每个来源里的每一份 unit**（同一个 unit id 可能有多份：系列里的装饰子级各自带一份）。
+		/// 合并时必须把它们全部并进目标 unit —— 不是"后者赢"。按 patch 序号升序。
+		/// </summary>
+		public IReadOnlyDictionary<string, IReadOnlyList<PatchUnitMesh>> Copies { get; init; } =
+			new Dictionary<string, IReadOnlyList<PatchUnitMesh>>(StringComparer.Ordinal);
 	}
 
 	/// <summary>
@@ -728,6 +754,7 @@ public static class SectionalSplitter
 
 		var reader = new PatchUnitMeshReader();
 		var units = new Dictionary<string, PatchUnitMesh>(StringComparer.Ordinal);
+		var copies = new Dictionary<string, List<PatchUnitMesh>>(StringComparer.Ordinal);
 		foreach (var entry in entries)
 		{
 			if (entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId)
@@ -749,6 +776,45 @@ public static class SectionalSplitter
 			}
 		}
 
-		return new SourceSet(entries, units, skipped, consumedPatches);
+		// 再把**每一份拷贝**读出来：同一个 unit id 在系列里可能有多个来源各带一份，
+		// 而 entries 已经按"后者赢"去重了。合并要的是全部几何，不能只剩一份。
+		foreach (var patch in consumedPatches)
+		{
+			IReadOnlyList<AdaptationTocEntry> scanned;
+			try
+			{
+				scanned = await new AdaptationScanner().ScanEntriesAsync(patch, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is InvalidDataException or NotSupportedException or ArgumentException)
+			{
+				continue;
+			}
+
+			foreach (var entry in scanned)
+			{
+				if (entry.AssetKey.TypeId != PatchUnitMeshReader.UnitTypeId) continue;
+				var fileId = entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
+				try
+				{
+					var mesh = await reader
+						.ReadAsync(entry, scanned, PatchUnitDependencyPolicy.RequirePatchLocalComposite, cancellationToken)
+						.ConfigureAwait(false);
+					if (!copies.TryGetValue(fileId, out var list)) copies[fileId] = list = [];
+					list.Add(mesh);
+				}
+				catch (Exception exception) when (exception is InvalidDataException or NotSupportedException or ArgumentException or OverflowException)
+				{
+					skipped.Add($"unit {fileId}（{Path.GetFileName(patch)}）读不出来，已跳过：{exception.Message}");
+				}
+			}
+		}
+
+		return new SourceSet(entries, units, skipped, consumedPatches)
+		{
+			Copies = copies.ToDictionary(
+				pair => pair.Key,
+				pair => (IReadOnlyList<PatchUnitMesh>)pair.Value,
+				StringComparer.Ordinal),
+		};
 	}
 }

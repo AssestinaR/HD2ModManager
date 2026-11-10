@@ -70,8 +70,13 @@ public sealed class SectionalSplitPlannerTests
 		Assert.Equal(["Slim", "Stocky"], plan.Targets.Select(target => target.BodyType).OrderBy(body => body, StringComparer.Ordinal));
 	}
 
+	/// <summary>
+	/// 一个槽里同时出现 Any 与具体身形时，Any **不是**歧义，而是"这一份同时服务两种身形"：
+	/// 该槽按 {Stocky, Slim} 拆成两个 unit，Any 的几何两份都要（见 ArmorStructure 顶部第 2 条）。
+	/// 2026-11-10 之前这里会报"Any 与具体身形混用"的歧义警告，那条规则已被这条规则取代。
+	/// </summary>
 	[Fact]
-	public void Plan_MixedAnyAndConcreteBody_WarnsAboutAmbiguity()
+	public void Plan_AnyAndConcreteBodyInOneSlotFeedsBothBodyUnits()
 	{
 		var plan = SectionalSplitPlanner.Plan([
 			Unit("cccc000000000001", "Torso", 4),
@@ -79,7 +84,10 @@ public sealed class SectionalSplitPlannerTests
 		]);
 
 		Assert.Equal(2, plan.Targets.Count);
-		Assert.Contains(plan.Warnings, warning => warning.Contains("Any", StringComparison.Ordinal));
+		Assert.Equal(["Slim", "Stocky"], plan.Targets.Select(target => target.BodyType).OrderBy(body => body, StringComparer.Ordinal));
+		// Any 那一份进两个 unit：它俩的 donor 里都能看到它。
+		Assert.All(plan.Targets, target =>
+			Assert.Contains("cccc000000000001", target.DonorUnitIds.Concat([target.HostUnitId])));
 	}
 
 	[Fact]
