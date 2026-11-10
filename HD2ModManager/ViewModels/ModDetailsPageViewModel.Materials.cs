@@ -130,6 +130,15 @@ public partial class ModDetailsPageViewModel
 
 	internal void RefreshMaterialOptions()
 	{
+		// 有一次"按行上状态同步"还没落地时**不要**读盘重建。
+		//
+		// 这条路径不只在写操作末尾触发：材质改动成功后要通报"内容变了"
+		// （NotifyMaterialContentChangedAsync），库随即发 SnapshotChanged，
+		// 详情页的处理器调 Refresh() → 又回到这里。此时磁盘上还没有用户刚点的那几下，
+		// 读盘重建会把行上的乐观状态覆盖掉 —— 表现就是"点了又弹回去"。
+		// 那次同步结束时会自己再刷一次，所以这里直接让路。
+		if (_materialSyncPending) return;
+
 		var directory = MaterialOptionDirectory;
 		var views = directory is null
 			? Array.Empty<MaterialOptionView>()

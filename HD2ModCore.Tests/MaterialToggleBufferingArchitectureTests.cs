@@ -50,6 +50,28 @@ public sealed class MaterialToggleBufferingArchitectureTests
 		Assert.Contains("if (!_materialSyncPending) RefreshMaterialOptions();", page);
 	}
 
+	// 第二个漏点：重建材质列表不只在写操作末尾发生。改动成功后会通报"内容变了"，
+	// 库随即发 SnapshotChanged，详情页的 Refresh() 又回到 RefreshMaterialOptions()。
+	// 那条路径如果照样读盘，会把用户刚点、但还没落盘的那几下覆盖掉。
+	[Fact]
+	public void MaterialCatalogRebuildYieldsToAPendingSync()
+	{
+		var page = ReadMaterialsViewModel();
+
+		var refresh = ExtractMember(page, "internal void RefreshMaterialOptions()");
+		Assert.True(refresh.Length > 0, "无法定位 RefreshMaterialOptions。");
+		Assert.Contains("if (_materialSyncPending) return;", refresh);
+	}
+
+	private static string ExtractMember(string source, string signatureStart)
+	{
+		var start = source.IndexOf(signatureStart, StringComparison.Ordinal);
+		if (start < 0) return string.Empty;
+		var end = source.IndexOf("\n\tinternal ", start + signatureStart.Length, StringComparison.Ordinal);
+		if (end < 0) end = source.IndexOf("\n\tprivate ", start + signatureStart.Length, StringComparison.Ordinal);
+		return end > start ? source[start..end] : source[start..];
+	}
+
 	private static string ReadMaterialsViewModel()
 	{
 		var root = FindRepositoryRoot();
