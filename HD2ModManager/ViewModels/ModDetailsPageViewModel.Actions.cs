@@ -79,7 +79,12 @@ public partial class ModDetailsPageViewModel
                 // 「生成sectional版」的来源集是 legacy 系列，但**宿主可以是逻辑容器**
                 // （把一个系列包起来、成员都是 legacy 的那种）。所以它的判据不是"自己有 patch"。
                 // 容器里到底有没有可用来源，由底栏在点击时判断——这里只负责让按钮出现。
-                PageActionKind.CustomModel => ShowSectionalConversion,
+                //
+                // 可见性和可点性用**同一个属性**，这是刻意的：动作按钮走 Command 绑定，
+                // WPF 的 IsEnabledCore 会把 PageActionViewModel.IsEnabled 与 Command.CanExecute
+                // 相与，两套判据一旦不一致，就会出现"按钮显示着、但是灰的"（这里就发生过一次：
+                // 命令那边借了 CanPlanCrossArmorTransfer，逻辑容器上永远点不动）。
+                PageActionKind.CustomModel => CanConvertToSectional,
                 PageActionKind.PatchRebuild => IsDecoration,
                 PageActionKind.CloneVariant => CanCloneVariant,
                 _ => true,

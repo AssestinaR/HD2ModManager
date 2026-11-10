@@ -467,6 +467,27 @@ W1 协议层  →  W6 检测器  →  W5 底栏按钮 + W7 文案  →  W3 legac
 **仍未覆盖**：GUI 上从「生成sectional版」按钮点下去的完整交互（需要在库里真有一个 legacy 条目
 并驱动界面）。三段链路的每一段都已单独跑通或有用例覆盖，接线部分只做到编译期验证。
 
+### §13 接线两次漏在同一个地方（2026-11-10）
+
+W2c 之后连着出两次"功能做完了、入口没通"，两次都是**判据**的问题，记在这里免得再犯：
+
+| # | 现象 | 真实原因 | 修法 |
+|---|---|---|---|
+| 1 | sectional 条目详情页没有「用来源重构建」 | `RebuildVpk => HasSourceVpk`，而 sectional 档根上没有 `.vpk` | 加 `HasSectionalSource`（`sectional-source.json` 存在）+ `HasRebuildSource` 取并集；底栏按来源分派转换机 |
+| 2 | 逻辑容器上「生成sectional版」**看得到但永远是灰的** | 可见性用 `ShowSectionalConversion`（legacy 或逻辑容器），可点性却是命令那边借来的 `CanPlanCrossArmorTransfer`（要求"自己有 patch"）。WPF 的 `IsEnabledCore` 把两者相与，于是灰 | 合并成**一个属性** `CanConvertToSectional`，可见性与 `CanExecute` 都读它；并在 `RefreshVpk` / `RaiseSameKeyReconstructionCommandState` 里 `RaiseCanExecuteChanged` |
+
+**第 2 条真正该记住的坑**：`RelayCommand` **不挂** `CommandManager.RequerySuggested`，所以
+
+- 没有人主动 `RaiseCanExecuteChanged()` 的命令，按钮的灰/亮**永远停在第一次绑定时的结果**——
+  一旦灰掉就再也亮不回来（`ConvertToCustomModelCommand` 此前就是这种：全仓库没有任何一处 Raise）；
+- 因此"动作的可见性"和"命令的可执行性"必须是同一个属性，否则两边判据必然分叉，
+  而 WPF 只会按更严的那一边显示。
+
+**审计结论**（详情页 15 个动作，逐个对过可见性判据与命令判据）：分叉的只有第 2 条这一个；
+`CloneVariant` 是同一属性（正确范式）；`Fix`/`CrossArmor`/`Compact`/`Package`/`Helmet`/`Merge`
+的差别只是"正在执行时禁用"这一档合理的瞬时态。另外两处遗留：`PatchRebuild` 的可见性
+`IsDecoration` 恒为 false（死动作），`Table` 用 `CanUsePatchTools` 少了 `!IsVpkMod`。
+
 **中断后怎么接上**：读本节进度表 → 读 §4 对应工作项 → `git log --oneline -5` 看最后一步做到哪 →
 `git status` 看有没有未提交的半成品（**不要**在编译不过的状态下离开）。
 

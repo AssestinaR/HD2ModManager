@@ -107,7 +107,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	public bool IsLogicalContainer => Mod?.IsLogicalContainer == true;
 
 	/// <summary>
-	/// 「生成sectional版」的可见性：**legacy 或逻辑容器都显示**。
+	/// 「生成sectional版」的<b>唯一</b>判据：能不能点 = 该不该显示（**legacy 或逻辑容器**）。
 	/// <para>
 	/// 逻辑容器自己没有 patch，但它的成员（legacy 子级）有；这一颗按钮正是"把这个系列转成一个
 	/// sectional 条目"的入口，所以不能沿用"自己有 patch 才显示"的判据。
@@ -116,8 +116,20 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// <b>这里刻意不判断"容器里到底有没有可用来源"</b>：那要遍历后代并扫盘，而这是绑定属性，
 	/// 每次属性变化都会求值。有没有来源由底栏在**点击时**判断并给出原因——那里反正要读一遍。
 	/// </para>
+	/// <para>
+	/// <b>不要再给它另配一套"可点性"判据。</b>动作按钮是 <c>Command</c> 绑定，WPF 的
+	/// <c>IsEnabledCore</c> 会把 <see cref="PageActionViewModel.IsEnabled"/> 和
+	/// <c>Command.CanExecute</c> 相与：命令那边一旦借了别的判据（这里曾经借的是
+	/// <c>CanPlanCrossArmorTransfer</c>，要求"自己有 patch"），按钮就在逻辑容器上
+	/// 明明显示出来却永远是灰的；而 <see cref="RelayCommand"/> 不挂
+	/// <c>CommandManager.RequerySuggested</c>，没人主动 Raise 的话它连重算都不会重算，
+	/// 一旦灰掉就再也亮不回来。可见性与可点性必须是同一个属性。
+	/// </para>
 	/// </summary>
-	public bool ShowSectionalConversion => !IsVpkMod && (HasPatchContent || IsLogicalContainer);
+	public bool CanConvertToSectional => !_disposed
+		&& TryGetCurrentNode(out _)
+		&& !IsVpkMod
+		&& (HasPatchContent || IsLogicalContainer);
 
 	public WardrobeTreeViewModel? VpkTree
 	{
@@ -416,7 +428,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		OnPropertyChanged(nameof(HasSectionalSource));
 		OnPropertyChanged(nameof(HasRebuildSource));
 		OnPropertyChanged(nameof(ShowPatchTools));
-		OnPropertyChanged(nameof(ShowSectionalConversion));
+		RaiseCanConvertToSectionalChanged();
 		OnPropertyChanged(nameof(ShowVpkComponentCard));
 		OnPropertyChanged(nameof(EnableVpkComponentTree));
 		OnPropertyChanged(nameof(HasVpkComponentTree));
@@ -438,9 +450,23 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		IsVpkMod = true;
 		OnPropertyChanged(nameof(IsVpkMod));
 		OnPropertyChanged(nameof(ShowPatchTools));
-		OnPropertyChanged(nameof(ShowSectionalConversion));
+		RaiseCanConvertToSectionalChanged();
 		// 带上当前的详情请求代号：用户在异步加载途中切走时，旧结果不能盖掉新页面。
 		_ = LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration);
+	}
+
+	/// <summary>
+	/// 重算「生成sectional版」的动作状态。
+	/// <para>
+	/// 两件事都得做：通知属性（动作表的可见性靠它）和通知命令（按钮的可点性靠它）。
+	/// <see cref="RelayCommand"/> 不挂 <c>CommandManager.RequerySuggested</c>，没人在这里
+	/// Raise 一次，按钮的灰/亮就永远停在第一次绑定时的结果上。
+	/// </para>
+	/// </summary>
+	private void RaiseCanConvertToSectionalChanged()
+	{
+		OnPropertyChanged(nameof(CanConvertToSectional));
+		ConvertToCustomModelCommand.RaiseCanExecuteChanged();
 	}
 
 	private async Task LoadVpkAsync(string directory, string modName, int generation)

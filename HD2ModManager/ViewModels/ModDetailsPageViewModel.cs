@@ -197,7 +197,7 @@ namespace HD2ModManager.ViewModels
             RebuildSameKeyCommand = new RelayCommand(_ => OpenSameKeyRebuild(), _ => CanRebuildSameKey);
             NormalizeArmorCommand = new RelayCommand(_ => OpenArmorNormalization(), _ => CanNormalizeArmor);
             PlanCrossArmorTransferCommand = new RelayCommand(async _ => await PlanCrossArmorTransferAsync(), _ => CanPlanCrossArmorTransfer);
-            ConvertToCustomModelCommand = new RelayCommand(async _ => await OpenCustomModelConversionAsync(), _ => CanPlanCrossArmorTransfer);
+            ConvertToCustomModelCommand = new RelayCommand(async _ => await OpenCustomModelConversionAsync(), _ => CanConvertToSectional);
             PlanHelmetToArmorMergeCommand = new RelayCommand(_ => OpenHelmetToArmorMergePlan(), _ => CanPlanHelmetToArmorMerge);
             ToggleHelmetToArmorMergeCommand = new RelayCommand(async _ => await ToggleHelmetToArmorMergeAsync(), _ => CanToggleHelmetToArmorMerge);
             RunAdvancedAnalysisCommand = new RelayCommand(async _ => await RunAdvancedAnalysisAsync(), _ => CanRunAdvancedAnalysis);
@@ -1602,6 +1602,9 @@ namespace HD2ModManager.ViewModels
 			PlanCrossArmorTransferCommand.RaiseCanExecuteChanged();
 			PlanHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
 			ToggleHelmetToArmorMergeCommand.RaiseCanExecuteChanged();
+			// 「生成sectional版」的判据里也有 Mod 本身（HasPatchContent / 逻辑容器），
+			// 换条目时必须跟着重算，否则灰掉的按钮再也亮不回来。
+			RaiseCanConvertToSectionalChanged();
         }
 
         private static string SanitizeFileName(string name) => string.Concat(name.Select(character => System.IO.Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)).Trim();
