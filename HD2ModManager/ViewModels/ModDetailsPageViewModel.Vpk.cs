@@ -1280,7 +1280,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return;
 		}
 
-		_sectionGroups = created.Value.Document;
+		// 新建同名组 = 用户显式要它回来：把同名的删除记录撤掉，否则下次重建又会被抑制。
+		_sectionGroups = SectionGroupCustomizations.WithoutHidden(created.Value.Document, created.Value.Group.Name);
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
 		if (await SaveSectionGroupsAsync(directory).ConfigureAwait(true))
 		{
@@ -1304,7 +1305,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return;
 		}
 
-		_sectionGroups = renamed;
+		// 改回某个名字也算"要它回来"：撤掉同名的删除记录。改名本身由重建时的合并保留（见 SectionGroupCustomizations）。
+		_sectionGroups = SectionGroupCustomizations.WithoutHidden(renamed, name);
 		await SaveSectionGroupsAsync(Path.Combine(_library.ModsRootDirectory, node.RelativePath)).ConfigureAwait(true);
 		ReapplyVpkGroups();
 	}
@@ -1317,12 +1319,13 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		if (removed is null)
 			return;
 
-		_sectionGroups = removed;
+		// 删组 = 记住"用户不想要它"：几何还在，但重建时不该把它自动生成回来。
+		_sectionGroups = SectionGroupCustomizations.WithHidden(removed, group);
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
 		if (await SaveSectionGroupsAsync(directory).ConfigureAwait(true))
 		{
 			// 说清"几何没动"：用户最怕的是删组把模型删掉一块。
-			VpkGroupStatus = $"已删除组「{group.Name}」。它的几何还在，只是不再有名字和开关。";
+			VpkGroupStatus = $"已删除组「{group.Name}」。它的几何还在，只是不再有名字和开关；重建也不会把它加回来（重新建一个同名组即可恢复）。";
 		}
 
 		ReapplyVpkGroups();

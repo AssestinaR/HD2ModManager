@@ -174,12 +174,28 @@ public static class Legacy2SectionalConverter
 			var materialGroups = materialIndex - 1;
 
 			// ④ 换载荷：先备份旧的，整批替换；失败时它自己还原。
+			// 换之前先把旧组表读出来：`VpkPayloadSwap` **故意不覆盖** components.json
+			// （那是用户能改的部件树），所以重构建之后必须由这里把"新的权威组 + 用户手建组"写回去，
+			// 否则界面上永远停在上一次的组（实测 2026-11-10：21 个旧组，其中 9 个的 unit 早已不在产物里）。
 			onStage?.Invoke("正在替换 sectional/…");
 			var payloadDirectory = ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(modDirectory)
 				?? ModNodePayloadLayout.GetVpkPatchDirectory(modDirectory);
+			var previousGroups = await SectionGroupFile.TryReadAsync(payloadDirectory, cancellationToken).ConfigureAwait(false);
 			var swap = VpkPayloadSwap.Swap(payloadDirectory, producedRoot, Path.Combine(stagingRoot, "backup"));
 			if (!swap.Succeeded)
 				return Legacy2SectionalOutcome.Failed(swap.Error ?? "替换 sectional/ 失败。", notes);
+
+			// ④' 组表：新的按来源生成的组是权威，用户手建的组按这次产物重算后保留。
+			var mergedGroups = SectionGroupMerge.Merge(split.Groups, previousGroups, split.Sections);
+			var groupsPath = Path.Combine(payloadDirectory, SectionGroupFile.FileName);
+			VpkPayloadSwap.ClearReadOnlyForWrite(groupsPath);
+			await SectionGroupFile.WriteAsync(payloadDirectory, mergedGroups, cancellationToken).ConfigureAwait(false);
+			if (mergedGroups.Unmatched.Count != 0)
+			{
+				notes.Add($"{mergedGroups.Unmatched.Count} 个来源/手建组没有落成开关："
+					+ string.Join("、", mergedGroups.Unmatched.Take(4).Select(item => item.Name))
+					+ "（原因见 components.json 的 unmatched）。");
+			}
 
 			// ⑤ 清单：`patches.json` 是派生的，读一次旧的把用户填的选项名/顺序/备注接过来。
 			//

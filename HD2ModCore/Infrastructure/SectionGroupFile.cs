@@ -62,12 +62,15 @@ public static class SectionGroupFile
 
 	private sealed record UnmatchedDto(string? Name, string? SourceVpk, string? Reason);
 
+	private sealed record HiddenDto(string? Name, IReadOnlyList<TargetDto>? Members);
+
 	private sealed record DocumentDto(
 		string? Schema,
 		IReadOnlyList<GroupDto>? Groups,
 		// 旧格式的键名。同上，只读不写。
 		IReadOnlyList<GroupDto>? Switches,
-		IReadOnlyList<UnmatchedDto>? Unmatched);
+		IReadOnlyList<UnmatchedDto>? Unmatched,
+		IReadOnlyList<HiddenDto>? Hidden);
 
 	public static string Serialize(SectionGroupDocument document)
 	{
@@ -78,7 +81,12 @@ public static class SectionGroupFile
 			null,
 			document.Unmatched.Count == 0
 				? null
-				: [.. document.Unmatched.Select(item => new UnmatchedDto(item.Name, item.SourceVpk, item.Reason))]);
+				: [.. document.Unmatched.Select(item => new UnmatchedDto(item.Name, item.SourceVpk, item.Reason))],
+			document.Hidden.Count == 0
+				? null
+				: [.. document.Hidden.Select(item => new HiddenDto(
+					item.Name,
+					[.. item.Members.Select(member => new TargetDto(member.Unit, member.Sections))]))]);
 		return JsonSerializer.Serialize(dto, JsonOptions) + "\n";
 	}
 
@@ -112,7 +120,7 @@ public static class SectionGroupFile
 		// 新键优先，旧键兜底。两套键同时存在说明文件被人手改坏了，此时以新键为准。
 		var groups = dto.Groups ?? dto.Switches ?? [];
 		var unmatched = dto.Unmatched ?? [];
-		return new SectionGroupDocument(
+		var document = new SectionGroupDocument(
 			SectionGroupDocument.CurrentSchema,
 			[.. groups.Select(FromDto)],
 			[.. unmatched
@@ -121,6 +129,13 @@ public static class SectionGroupFile
 					item.Name!,
 					item.SourceVpk ?? string.Empty,
 					item.Reason ?? string.Empty))]);
+		return document with
+		{
+			Hidden = [.. (dto.Hidden ?? []).Select(item => new SectionGroupTombstone(
+				item.Name ?? string.Empty,
+				[.. (item.Members ?? []).Where(member => !string.IsNullOrWhiteSpace(member.Unit))
+					.Select(member => new SectionGroupTarget(member.Unit!, member.Sections ?? []))]))],
+		};
 	}
 
 	/// <summary>读一份组表；文件不存在或读不懂都返回 <c>null</c>（调用方据此隐藏组区）。</summary>
