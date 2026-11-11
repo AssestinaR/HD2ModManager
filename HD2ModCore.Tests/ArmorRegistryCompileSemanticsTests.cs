@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using FileDecryptor;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
@@ -16,15 +17,24 @@ namespace HD2ModCore.Tests;
 /// <item>只有两种失败：读不懂 dl_bin、目标不可写。</item>
 /// </list>
 /// </summary>
+[Collection(ArmorRegistryWriteGateCollection.Name)]
 public sealed class ArmorRegistryCompileSemanticsTests : IDisposable
 {
 	private readonly string root = Path.Combine(
 		Path.GetTempPath(), "hd2-dlbin-compile-" + Guid.NewGuid().ToString("N"));
 
-	public ArmorRegistryCompileSemanticsTests() => Directory.CreateDirectory(root);
+	public ArmorRegistryCompileSemanticsTests()
+	{
+		Directory.CreateDirectory(root);
+		// 这些用例钉的是"每次都重写""基底永远是原件副本"这类**编译语义**，
+		// 必须走真实写盘路径。生产环境已停写真映射（游戏会闪退），这里显式放开，
+		// 只影响本进程内存里的标志。停写本身由 ArmorRegistryWriteDisabledTests 覆盖。
+		ArmorMappingModes.PushAllowWriteForTests();
+	}
 
 	public void Dispose()
 	{
+		ArmorMappingModes.PopAllowWriteForTests();
 		try
 		{
 			if (Directory.Exists(root)) Directory.Delete(root, recursive: true);

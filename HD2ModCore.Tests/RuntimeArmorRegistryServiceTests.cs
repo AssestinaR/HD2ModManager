@@ -448,13 +448,15 @@ public sealed class RuntimeArmorRegistryServiceTests
 	[Fact]
 	public async Task LuaDeployment_PhysicsExclusiveBoot_IsBuiltEvenWhenMappingDoesNotUseRuntimeLua()
 	{
-		// 物理与护甲映射是**两件独立的事**：真映射只表示"外观写进注册表数据、不投放映射运行时"，
-		// 它并不禁止投放别的 Lua 功能。所以「真映射 + 物理独占 boot」必须能产出一个 boot patch。
+		// 物理与护甲映射是**两件独立的事**：映射「关闭」只表示"不投放映射运行时"，
+		// 它并不禁止投放别的 Lua 功能。所以「映射关闭 + 物理独占 boot」必须能产出一个 boot patch。
 		//
 		// 这条同时钉住 2026-11-01 那次"整轮完全没有物理"的反面教训：那次**不是**这两者互斥，
 		// 而是启动时没人把设置里的物理模式同步到静态字段，它停在默认的「关闭」——
 		// 见 SettingsService.ApplyToLuaDeployment 的注释。别把这两件事混成一条判据。
-		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		//
+		// 注：这里原本写的是真映射档（2026-11-11 停用），换成「关闭」后语义等价且仍可测。
+		LuaDeploymentService.MappingMode = ArmorMappingMode.Off;
 		LuaDeploymentService.PhysicsMode = PhysicsMode.ExclusiveLuaEntry;
 
 		await using var fixture = await Fixture.CreateAsync();
@@ -484,10 +486,10 @@ public sealed class RuntimeArmorRegistryServiceTests
 	[Fact]
 	public async Task LuaDeployment_PhysicsOffAndMappingWithoutRuntimeLua_ProducesNoLuaPatch()
 	{
-		// 这正是 2026-11-01 实机的产物形态：真映射 + 物理静态字段停在默认的「关闭」⇒
+		// 这正是 2026-11-01 实机的产物形态：映射不投放运行时 + 物理静态字段停在默认的「关闭」⇒
 		// 管理器一个 patch 都不产、游戏里既没有物理也没有日志。把"什么都没产出"固定成
 		// 一条**预期**行为，将来再出现同样的空部署时能一眼看出是哪一侧关掉了。
-		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.MappingMode = ArmorMappingMode.Off;
 		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
 
 		await using var fixture = await Fixture.CreateAsync();

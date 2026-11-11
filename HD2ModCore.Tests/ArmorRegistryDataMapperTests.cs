@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text;
 using FileDecryptor;
+using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
@@ -9,6 +10,7 @@ namespace HD2ModCore.Tests;
 /// 真映射模式的数据改写器。这些用例不碰游戏目录：合成一份结构相同的 LDLD 容器，
 /// 验证"改件集 + 把内容校验和伪造回原值"这条链，以及幂等与撤销。
 /// </summary>
+[Collection(ArmorRegistryWriteGateCollection.Name)]
 public sealed class ArmorRegistryDataMapperTests : IDisposable
 {
 	const uint ArmorType = 0xd9a55aa0;
@@ -17,8 +19,17 @@ public sealed class ArmorRegistryDataMapperTests : IDisposable
 
 	readonly string _root = Path.Combine(Path.GetTempPath(), "hd2-armor-data-" + Guid.NewGuid().ToString("N"));
 
+	/// <summary>
+	/// 这些用例验证的是**编译算法**（件表改写、校验和伪造、对齐、幂等与撤销），
+	/// 必须走真实写盘路径才能证明。而生产环境已停写真映射（游戏会闪退），
+	/// 所以这里显式放开——只影响本进程内存里的标志，不碰任何游戏文件。
+	/// 停写本身的行为由 <see cref="ArmorRegistryWriteDisabledTests"/> 覆盖。
+	/// </summary>
+	public ArmorRegistryDataMapperTests() => ArmorMappingModes.PushAllowWriteForTests();
+
 	public void Dispose()
 	{
+		ArmorMappingModes.PopAllowWriteForTests();
 		try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { }
 	}
 

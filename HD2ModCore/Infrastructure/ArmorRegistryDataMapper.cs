@@ -552,6 +552,20 @@ public sealed class ArmorRegistryDataMapper
 	{
 		ArgumentNullException.ThrowIfNull(mappings);
 		if (string.IsNullOrWhiteSpace(gameDataDirectory)) return ArmorRegistryDataMappingResult.Nothing;
+
+		// **停写护栏（2026-11-11）。** 游戏这一版改了注册表文件的校验方式：文件仍可正常
+		// 解密、格式未变、写进去也不报错，但**写过的文件一进游戏就闪退**。
+		// 所以这一层无条件拒绝写盘——包括 `mappings` 为空的"还原"调用：
+		// 还原同样是写，同样会让游戏崩。返回明确原因，让上层说给用户听。
+		if (!ArmorMappingModes.CanWriteRegistryData)
+		{
+			// 措辞注意：上层会把它拼在「真映射：」后面写日志，所以这里不要再以「真映射」开头。
+			return new ArmorRegistryDataMappingResult(
+				0, mappings.Count, false,
+				"已暂停写入——游戏这一版改了护甲注册表文件的校验方式，写过的文件会导致游戏闪退。"
+				+ "管理器不再改动该文件，外观映射改由软映射（运行时 Lua）承载。");
+		}
+
 		var targetPath = ResolveTargetPath(gameDataDirectory);
 		if (!File.Exists(targetPath))
 			return new ArmorRegistryDataMappingResult(0, mappings.Count, false, "找不到护甲注册表数据文件。");

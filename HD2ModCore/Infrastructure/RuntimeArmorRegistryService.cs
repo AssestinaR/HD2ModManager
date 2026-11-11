@@ -546,52 +546,16 @@ public sealed class RuntimeArmorRegistryService
 					}
 				}
 				// authority 为 null 表示索引数据库里没有装备关系表：这时**不写** wardrobe.links
-				// （留上一版），但下面的真映射落地 / 还原照常进行——它不需要权威表。
+				// （留上一版）。
 
-				// 无论当前是哪个模式都要走一遍：离开真映射模式时必须把注册表还原，
-				// 否则数据层改动会一直留着，再叠加运行时覆盖就等于把外观映射了两次。
-				var inTrueMapping = LuaDeploymentService.MappingMode == ArmorMappingMode.TrueMapping;
-				{
-					var modelsByKey = compiled.ModelDefinitions
-						.Where(model => !string.IsNullOrWhiteSpace(model.Key))
-						.GroupBy(model => model.Key, StringComparer.Ordinal)
-						.ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-					var dataMappings = new List<ArmorRegistryDataMapping>();
-					foreach (var mapping in inTrueMapping && enabled ? compiled.Mappings : Array.Empty<RuntimeArmorRegistryMapping>())
-					{
-						if (mapping.IsModelMapping)
-						{
-							if (!modelsByKey.TryGetValue(mapping.ModelKey!, out var model)) continue;
-							var pieces = new List<ArmorRegistryDataSourcePiece>();
-							foreach (var piece in model.Pieces ?? Array.Empty<RuntimeArmorRegistryModelPiece>())
-							{
-								if (!piece.Enabled) continue;
-								// IsReserved = 编辑器把分行合并成 Any 之后留下的旧副本，真正生效的是 Any 那条。
-								// 一起写出去会让同一 (槽位, 层) 在多个 body 行里各出现一次，正是"身形串件"的来源。
-								if (piece.IsReserved) continue;
-								if (!TryParseUnitHex(piece.Unit, out var unit)) continue;
-								pieces.Add(new ArmorRegistryDataSourcePiece(piece.Body, piece.Slot, piece.PieceType, unit));
-							}
-							if (pieces.Count > 0)
-								dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, null, pieces));
-							else if (model.SourceItemId is uint templateId)
-								// 素体没有显式件表时，它的件来自被当作模板的那套真实护甲。
-								dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, templateId));
-							continue;
-						}
-						if (mapping.SourceItemId is uint sourceId)
-							dataMappings.Add(new ArmorRegistryDataMapping(mapping.TargetItemId, sourceId));
-					}
-					// **应用 = 编译。** 真映射模式下按映射编译；其它模式（以及关闭映射时）用
-					// 空列表编译 —— 空结构编译出来就是原件，于是"关掉"自然成立。
-					// 不再用状态文件判断"要不要还原"：受管 dl_bin 是派生事实，没有历史可言。
-					// 编译结果与原件一致时不会写盘，所以这条路没有额外 I/O。
-					dataMapping = await new ArmorRegistryDataMapper().ApplyAsync(
-						gameDataDirectory,
-						dataMappings,
-						Path.Combine(registryRoot, "backup"),
-						cancellationToken).ConfigureAwait(false);
-				}
+				// **这里原本是"真映射落地 / 还原"那一大块。2026-11-11 起整块删除。**
+				// 它做的两件事都是写 `generated_customization_armor_sets.dl_bin`：
+				//   · 真映射模式 ⇒ 按映射编译后写盘；
+				//   · 其它模式   ⇒ 用空结构编译（= 还原）后写盘。
+				// 游戏这一版改了该文件的校验方式，写过的文件一进游戏就闪退，两条都不能走。
+				// 现在这条链路**完全不碰该文件**；外观映射只由运行时 Lua（软映射）承载。
+				// 守卫仍留在 ArmorRegistryDataMapper.ApplyAsync 里作为最后一道闸。
+				// dataMapping 因而恒为 null —— 页面上"真映射：…"那几行也就不会再出现。
 			}
 			catch (Exception exception) when (exception is IOException
 				or InvalidDataException

@@ -1690,10 +1690,16 @@ namespace HD2ModManager.ViewModels
         /// <summary>当前模式的一句话说明，绑定到设置页的说明文字。</summary>
         public string ArmorMappingModeDescription => ArmorMappingMode.Description();
 
-        /// <summary>热切换提示：只有兼容模式可以运行中改映射。</summary>
+        /// <summary>
+        /// 热切换提示。
+        /// <para>
+        /// 2026-11-11：真映射（写注册表数据）停用后，剩下的档位全都走运行时，都支持热切换；
+        /// 只有「关闭」没有东西可切。这里不再出现"写进注册表数据、必须重启"那套话术。
+        /// </para>
+        /// </summary>
         public string ArmorMappingModeHotSwitchNote => ArmorMappingMode.AllowsHotSwitch()
             ? "该模式支持游戏运行中切换映射，不需要重启。"
-            : "该模式把外观写进注册表数据，改动映射后必须重启游戏才生效。";
+            : "外观映射已关闭，护甲保持原版外观；改成其它档位不需要重启游戏。";
 
         /// <summary>设置页「物理」下拉框的选项（按总开关过滤）。</summary>
         public IReadOnlyList<PhysicsModeOption> PhysicsModeOptions =>

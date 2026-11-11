@@ -31,9 +31,12 @@ public sealed class LuaDeploymentLoaderPackageTests
 
 	// 物理显式关掉：这些用例只关心"第三方 Lua 包原样部署"，而物理模式的默认值
 	// （2026-11-03 起是「独占 boot」）会往 boot 里塞物理运行时，把被测的入口争用搅乱。
+	//
+	// 映射也用「关闭」：真映射已于 2026-11-11 停用，而「关闭」同样表示"不投放映射运行时"，
+	// 是它在这一维上的等价档。
 	public LuaDeploymentLoaderPackageTests()
 	{
-		LuaDeploymentService.MappingMode = ArmorMappingMode.TrueMapping;
+		LuaDeploymentService.MappingMode = ArmorMappingMode.Off;
 		LuaDeploymentService.PhysicsMode = PhysicsMode.Off;
 	}
 

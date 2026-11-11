@@ -41,6 +41,10 @@ namespace HD2ModManager.Services
         public bool DeployLuaMods { get; set; } = true;
         // 护甲映射模式（ArmorMappingMode 的整数值）。null 表示尚未迁移。
         public int? ArmorMappingMode { get; set; }
+        // 上面那个数字用的是哪一套口径。**改枚举数值时必须靠它区分新旧**：
+        // 旧口径 0=独占 / 1=外置 / 2=真映射；新口径 0=关闭 / 1=独占 / 2=外置。
+        // 没有这个字段（null/0）的存档一律按旧口径翻译，见 ArmorMappingModes.MigrateStoredValue。
+        public int? MappingModeSchema { get; set; }
         // 总开关：是否启用「管理器内置 lua 类功能」。关闭时管理器永不占用 boot 入口。
         // 可空是为了区分"从没存过"（老配置，按默认开）与"显式关掉"。
         public bool? BuiltInLuaEnabled { get; set; }
@@ -299,27 +303,46 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
+        /// 上次 <see cref="GetArmorMappingMode"/> 是否把存档里的旧口径翻译成了新口径。
+        /// 只用来决定"要不要在启动时告诉用户一声"，不参与任何决策——实际生效模式永远是
+        /// <see cref="LuaDeploymentService.MappingMode"/>。
+        /// </summary>
+        public static bool LastMappingModeWasMigrated { get; private set; }
+
+        /// <summary>
         /// 读取护甲映射模式，并同步到 <see cref="LuaDeploymentService.MappingMode"/>——
         /// 计划阶段只读静态字段，不读磁盘。
         /// </summary>
         public static ArmorMappingMode GetArmorMappingMode()
         {
             ArmorMappingMode mode;
+            LastMappingModeWasMigrated = false;
             try
             {
                 var model = LoadAll();
-                mode = model?.ArmorMappingMode is int stored
-                    ? ArmorMappingModes.Normalize(stored)
-                    // 迁移：旧开关关闭时是把脚本交给外置加载器，对应外置入口模式。
-                    : model?.DeployLuaMods == false
+                if (model?.ArmorMappingMode is int stored)
+                {
+                    // **必须带 schema 读。** 旧口径 0=独占 / 1=外置 / 2=真映射，
+                    // 新口径 0=关闭 / 1=独占 / 2=外置。直接当新值读会把"开着独占"的用户
+                    // 悄悄变成"关闭"。
+                    var schema = model.MappingModeSchema ?? 0;
+                    mode = ArmorMappingModes.MigrateStoredValue(stored, schema);
+                    LastMappingModeWasMigrated = schema < ArmorMappingModes.CurrentSchema
+                        && stored != (int)mode;
+                }
+                else
+                {
+                    // 没有这两个字段的更早版本：旧开关关闭时是把脚本交给外置加载器。
+                    mode = model?.DeployLuaMods == false
                         ? ArmorMappingMode.ExternalLuaEntry
                         : ArmorMappingModes.Default;
+                }
                 // 总开关关闭时「独占」不可选 ⇒ 收敛到外置，避免存着一个用不了的档。
                 mode = ArmorMappingModes.Normalize((int)mode, GetBuiltInLuaEnabled());
             }
             catch
             {
-                mode = ArmorMappingModes.Default;
+                mode = ArmorMappingModes.Normalize((int)ArmorMappingModes.Default, GetBuiltInLuaEnabled());
             }
             LuaDeploymentService.MappingMode = mode;
             return mode;
@@ -327,12 +350,16 @@ namespace HD2ModManager.Services
 
         public static bool SetArmorMappingMode(ArmorMappingMode mode)
         {
+            // 收敛到真正会生效的档：存得下、读出来却被收敛，会让设置页上的数字和实际行为对不上。
+            mode = ArmorMappingModes.Normalize((int)mode, GetBuiltInLuaEnabled());
+            LastMappingModeWasMigrated = false;
             LuaDeploymentService.MappingMode = mode;
             try
             {
                 Update(model =>
                 {
                     model.ArmorMappingMode = (int)mode;
+                    model.MappingModeSchema = ArmorMappingModes.CurrentSchema;
                     // 同步旧字段，便于回退到旧版本时行为不突变。
                     model.DeployLuaMods = mode.UsesRuntimeLua();
                 });

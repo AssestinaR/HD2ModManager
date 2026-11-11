@@ -18,14 +18,39 @@ public sealed class BuiltInLuaGatingTests
 	}
 
 	[Fact]
-	public void Mapping_AlwaysKeepsTrueMappingAndExternal()
+	public void Mapping_OffersExactlyThreeModesLikePhysics()
 	{
-		foreach (var enabled in new[] { true, false })
-		{
-			var options = ArmorMappingModes.AvailableFor(enabled);
-			Assert.Contains(ArmorMappingMode.TrueMapping, options);
-			Assert.Contains(ArmorMappingMode.ExternalLuaEntry, options);
-		}
+		// 用户口径（2026-11-11）：软映射的选项要与物理一致——关闭 / 独占 boot / 外置加载器兼容。
+		var enabled = ArmorMappingModes.AvailableFor(true);
+		Assert.Equal(3, enabled.Count);
+		Assert.Contains(ArmorMappingMode.ExclusiveLuaEntry, enabled);
+		Assert.Contains(ArmorMappingMode.ExternalLuaEntry, enabled);
+		Assert.Contains(ArmorMappingMode.Off, enabled);
+
+		// 数值与物理逐档对齐：0=关闭、1=独占、2=外置。
+		Assert.Equal((int)PhysicsMode.Off, (int)ArmorMappingMode.Off);
+		Assert.Equal((int)PhysicsMode.ExclusiveLuaEntry, (int)ArmorMappingMode.ExclusiveLuaEntry);
+		Assert.Equal((int)PhysicsMode.ExternalLuaEntry, (int)ArmorMappingMode.ExternalLuaEntry);
+
+		// 显示名也要一致，否则并排两个下拉会像在说两回事。
+		foreach (var mode in enabled)
+			Assert.Equal(((PhysicsMode)(int)mode).DisplayName(), mode.DisplayName());
+	}
+
+	[Fact]
+	public void Mapping_LegacyStoredValuesAreTranslatedNotReinterpreted()
+	{
+		// **这是升级时最容易出错的一处。** 旧口径 0=独占 / 1=外置 / 2=真映射，
+		// 新口径 0=关闭 / 1=独占 / 2=外置。直接把旧值当新值读，会把"开着独占"变成"关闭"。
+		Assert.Equal(ArmorMappingMode.ExclusiveLuaEntry, ArmorMappingModes.MigrateStoredValue(0, schema: 0));
+		Assert.Equal(ArmorMappingMode.ExternalLuaEntry, ArmorMappingModes.MigrateStoredValue(1, schema: 0));
+		// 真映射已停用 ⇒ 落到「关闭」（同样不投放运行时，是最接近的替代）。
+		Assert.Equal(ArmorMappingMode.Off, ArmorMappingModes.MigrateStoredValue(2, schema: 0));
+
+		// 新口径的存档不做翻译，原样读。
+		Assert.Equal(ArmorMappingMode.Off, ArmorMappingModes.MigrateStoredValue(0, ArmorMappingModes.CurrentSchema));
+		Assert.Equal(ArmorMappingMode.ExclusiveLuaEntry, ArmorMappingModes.MigrateStoredValue(1, ArmorMappingModes.CurrentSchema));
+		Assert.Equal(ArmorMappingMode.ExternalLuaEntry, ArmorMappingModes.MigrateStoredValue(2, ArmorMappingModes.CurrentSchema));
 	}
 
 	[Fact]
@@ -50,14 +75,17 @@ public sealed class BuiltInLuaGatingTests
 	[Fact]
 	public void Mapping_ExclusiveCollapsesToExternalWhenBuiltInDisabled()
 	{
-		// 保留"用运行时"这层意图，不跳到语义完全不同的真映射。
+		// 保留"用运行时"这层意图，不跳到「关闭」把功能悄悄关掉。
 		Assert.Equal(
 			ArmorMappingMode.ExternalLuaEntry,
 			ArmorMappingModes.Normalize((int)ArmorMappingMode.ExclusiveLuaEntry, builtInLuaEnabled: false));
-		// 真映射不受影响。
+		// 其余两档不受总开关影响。
 		Assert.Equal(
-			ArmorMappingMode.TrueMapping,
-			ArmorMappingModes.Normalize((int)ArmorMappingMode.TrueMapping, builtInLuaEnabled: false));
+			ArmorMappingMode.ExternalLuaEntry,
+			ArmorMappingModes.Normalize((int)ArmorMappingMode.ExternalLuaEntry, builtInLuaEnabled: false));
+		Assert.Equal(
+			ArmorMappingMode.Off,
+			ArmorMappingModes.Normalize((int)ArmorMappingMode.Off, builtInLuaEnabled: false));
 	}
 
 	[Fact]
@@ -83,12 +111,13 @@ public sealed class BuiltInLuaGatingTests
 	}
 
 	[Fact]
-	public void Defaults_AreTrueMappingAndPhysicsOff()
+	public void Defaults_AreOffForBothMappingAndPhysics()
 	{
-		// 2026-11-03：映射默认改成真映射（不投放任何 Lua 运行时，显存最低、不占 boot）。
-		// 物理**保持关闭**——当天试过改成「独占 boot」，随即改回来：物理要读游戏自己的
+		// 2026-11-11：映射改为三档后默认「关闭」，与物理一致——这两项都是"替用户改外观/加运行时"
+		// 的功能，默认不替用户开启。（此前默认真映射，那一档已停用。）
+		Assert.Equal(ArmorMappingMode.Off, ArmorMappingModes.Default);
+		// 物理**保持关闭**——2026-11-03 试过改成「独占 boot」，随即改回来：物理要读游戏自己的
 		// boot 归档，默认开等于把一个"可能拿不到数据就失败"的分支变成默认路径。
-		Assert.Equal(ArmorMappingMode.TrueMapping, ArmorMappingModes.Default);
 		Assert.Equal(PhysicsMode.Off, PhysicsModes.Default);
 	}
 
@@ -96,11 +125,12 @@ public sealed class BuiltInLuaGatingTests
 	public void Defaults_AreSelectableWithoutTouchingBuiltInLuaSwitch()
 	{
 		// 默认值必须在选项里出现，否则设置页一打开就显示一个下拉里不存在的值。
-		// 映射的默认值在总开关两态下都在；物理的默认值「关闭」在总开关关闭时不存在
-		// （那一档的选项集合只有「外置」），所以只钉总开关打开那一态。
+		// 「关闭」在两态下都提供，所以映射的默认值在总开关两态下都在。
 		Assert.Contains(ArmorMappingModes.Default, ArmorMappingModes.AvailableFor(true));
 		Assert.Contains(ArmorMappingModes.Default, ArmorMappingModes.AvailableFor(false));
 		Assert.Contains(PhysicsModes.Default, PhysicsModes.AvailableFor(true));
+		// 物理的「关闭」在总开关关闭时不在选项里（那一档只剩「外置」），这是既有口径，不动它。
+		Assert.DoesNotContain(PhysicsModes.Default, PhysicsModes.AvailableFor(false));
 	}
 
 	[Fact]

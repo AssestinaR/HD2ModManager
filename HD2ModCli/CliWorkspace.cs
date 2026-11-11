@@ -24,6 +24,13 @@ public sealed record CliManagerSettings(
 	public int? ArmorMappingMode { get; init; }
 
 	/// <summary>
+	/// <see cref="ArmorMappingMode"/> 那个数字用的是哪一套口径。null/0 = 旧口径
+	/// （0=独占 / 1=外置 / 2=真映射）；2 = 新口径（0=关闭 / 1=独占 / 2=外置）。
+	/// CLI 必须与 GUI 用同一套翻译，否则同一份设置会得出两个不同结论。
+	/// </summary>
+	public int? MappingModeSchema { get; init; }
+
+	/// <summary>
 	/// 总开关「启用管理器内置 lua 类功能」。null = 从没存过 ⇒ 按默认开，
 	/// 与 <c>SettingsService.GetBuiltInLuaEnabled</c> 同一口径。
 	/// </summary>
@@ -131,7 +138,9 @@ public sealed class CliWorkspace
 		var builtInLuaEnabled = LuaDeploymentService.BuiltInLuaEnabled;
 		LuaDeploymentService.MappingMode = ArmorMappingModes.Normalize(
 			(int)(settings?.ArmorMappingMode is int storedMode
-				? ArmorMappingModes.Normalize(storedMode)
+				// 必须带 schema 读：旧口径 0=独占/1=外置/2=真映射，新口径 0=关闭/1=独占/2=外置。
+				// 不带版本直接当新值读，会把"开着独占"读成"关闭"。
+				? ArmorMappingModes.MigrateStoredValue(storedMode, settings?.MappingModeSchema ?? 0)
 				: settings?.DeployLuaMods == false
 					? ArmorMappingMode.ExternalLuaEntry
 					: ArmorMappingModes.Default),

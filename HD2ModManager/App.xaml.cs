@@ -38,6 +38,25 @@ namespace HD2ModManager
             // and startup synchronization are included in the trace.
             // 采集默认关闭（HD2_UI_DIAG=1 打开），打开后写 logs/trace_*.log。
             base.OnStartup(e);
+
+            // 外观映射的档位在这一版变了（真映射停用，选项改成 关闭 / 独占 boot / 外置加载器兼容）。
+            // 如果存档里是旧口径，告诉用户一声——他们的设置含义变了，但不应丢功能。
+            // 必须等主窗口 Loaded 之后再弹：OnStartup 阶段 MainWindow 还没显示，
+            // AppDialog 拿不到 owner，弹出来会被主窗口盖住。
+            if (SettingsService.LastMappingModeWasMigrated)
+            {
+                var caption = "外观映射设置已转换";
+                var text =
+                    "游戏这一版改了护甲注册表文件的校验方式：写过的文件一进游戏就会闪退。"
+                    + "因此「真映射」这一档已停用，外观映射改为三档：关闭 / 独占 boot / 外置加载器兼容。\n\n"
+                    + "你原来的设置已经自动换算到新口径，当前实际生效的是："
+                    + HD2ModCore.Domain.ArmorMappingModes.DisplayName(HD2ModCore.Infrastructure.LuaDeploymentService.MappingMode)
+                    + "。映射内容没有丢失。\n\n"
+                    + "如果这不是你想要的那一档，去设置页的 lua 卡片里改。";
+                Dispatcher.InvokeAsync(
+                    () => Views.AppDialog.Show(MainWindow, text, caption, MessageBoxButton.OK, MessageBoxImage.Information),
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
         }
 
         protected override void OnExit(ExitEventArgs e)

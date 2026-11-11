@@ -26,10 +26,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
 
 	/// <summary>
-	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingMode.TrueMapping"/>（不投放 Lua）。
+	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingModes.Default"/>（关闭）。
 	///
-	/// 只有需要运行时 Lua 的模式才会投放护甲映射补丁：独占入口写 boot，
-	/// 外置入口走独立补丁；真映射模式完全不投放 Lua，改由注册表数据承载。
+	/// 只有需要运行时 Lua 的模式才会投放护甲映射补丁：独占入口写 boot，外置入口走独立补丁。
+	/// 「真映射」（写注册表数据）已于 2026-11-11 停用——游戏改了文件校验，写过的文件会闪退。
 	/// </summary>
 	public static ArmorMappingMode MappingMode { get; set; } = ArmorMappingModes.Default;
 
@@ -312,28 +312,11 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		LuaDocumentSource? physicsBootDocument = null;
 		if (_armorRegistry is not null)
 		{
-			// 不在真映射模式时，把数据层曾经写进去的改动还原。切换模式会触发一次部署，
-			// 所以这里覆盖了"切走模式但没重新点应用"的情况。
-			if (EffectiveMappingMode != ArmorMappingMode.TrueMapping
-				&& !string.IsNullOrWhiteSpace(gameDataDirectory)
-				&& Directory.Exists(gameDataDirectory))
-			{
-				try
-				{
-					await _armorRegistry.RestoreDataMappingAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
-				}
-				catch (Exception exception) when (exception is IOException
-					or UnauthorizedAccessException
-					or InvalidDataException
-					or InvalidOperationException)
-				{
-					issues.Add(new CoreIssue(
-						CoreIssueSeverity.Warning,
-						"ArmorRegistryDataRestoreFailed",
-						$"无法还原真映射模式写入的注册表数据：{exception.Message}",
-						ExceptionMessage: exception.ToString()));
-				}
-			}
+			// **这里原本有一块"离开真映射时还原注册表数据"。2026-11-11 起整块删除。**
+			// 还原的实现是"用空结构编译一次再写盘"，也就是**写 `.dl_bin`**；
+			// 而游戏这一版改了该文件的校验方式，写过的文件一进游戏就闪退。
+			// 也就是说，用户想"安全回退"的那个动作本身就是那次崩溃——必须阻断，
+			// 而不是让它带着一条 Warning 继续跑。守卫在 ArmorRegistryDataMapper.ApplyAsync。
 			try
 			{
 				var registrySnapshot = await _armorRegistry.ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
