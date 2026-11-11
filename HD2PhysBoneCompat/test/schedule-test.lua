@@ -382,5 +382,66 @@ do
 		"resets=" .. tostring(runtime.schedResets))
 end
 
+-- ⑧ 学到"自己"之后：第三人称被队友顶掉时，重排必须把自己抢回来
+--
+-- 现场（2026-11-11 实机）：队友身上有物理、自己没有，按 F8 几乎无效。
+-- 原因就是"最高权 = 离相机最近"这条判据：第三人称相机在自己身后约 4.5 m，
+-- 队友只要站得比相机离你更近就会顶掉你，而 F8 只是重跑同一个判据。
+print("T8 学到的自己会被沿用（F8 才真正有效）")
+do
+	-- 先记录"没有身份"时的行为，这就是要绕开的坑
+	local naive = scene()
+	place("avatar_A", 4.5, 0, 0)      -- 自己：相机在身后 4.5 m 处
+	place("avatar_B", 1.0, 0, 0)      -- 队友：站得比相机离自己更近
+	place("armor_A", 4.5, 0, 0.1)
+	place("armor_B", 1.0, 0, 0.1)
+	Runtime.redistribute_(S, naive, "测试")
+	check("没学到自己时，队友会顶掉最高权（这就是现场）",
+		naive.avatars[1].unit == "avatar_B", tostring(naive.avatars[1].unit))
+
+	-- 有身份之后：同一个局面，重排要把自己排回第一
+	local runtime = scene()
+	local armorA = runtime.sessions[1]
+	runtime.selfUnit = "avatar_A"
+	place("avatar_A", 4.5, 0, 0)
+	place("avatar_B", 1.0, 0, 0)
+	place("armor_A", 4.5, 0, 0.1)
+	place("armor_B", 1.0, 0, 0.1)
+	Runtime.redistribute_(S, runtime, "热键")
+	check("学到自己后，自己仍排第一", runtime.avatars[1].unit == "avatar_A",
+		tostring(runtime.avatars[1].unit))
+	check("自己的护甲拿回最高权", armorA.ownerOrder == 1,
+		"ownerOrder=" .. tostring(armorA.ownerOrder))
+	check("归属没被改坏（仍归自己）", armorA.owner == "avatar_A", tostring(armorA.owner))
+end
+
+-- ⑨ 显式强制（第一人称锁定）优先于学到的身份：镜头锁到谁就是谁
+print("T9 第一人称锁定的强制优先于学到的身份")
+do
+	local runtime = scene()
+	runtime.selfUnit = "avatar_A"
+	place("avatar_A", 4.5, 0, 0)
+	place("avatar_B", 1.0, 0, 0)
+	place("armor_A", 4.5, 0, 0.1)
+	place("armor_B", 1.0, 0, 0.1)
+	Runtime.redistribute_(S, runtime, "第一人称锁定", "avatar_B")
+	check("显式强制优先于学到的自己", runtime.avatars[1].unit == "avatar_B",
+		tostring(runtime.avatars[1].unit))
+end
+
+-- ⑩ 学到的身份不在场时（阵亡/换实体）不能让排序卡住
+print("T10 学到的身份已不在场时不阻塞排序")
+do
+	local runtime = scene()
+	runtime.selfUnit = "avatar_gone"
+	place("avatar_A", 0.5, 0, 0)
+	place("avatar_B", 10, 0, 0)
+	place("armor_A", 0.5, 0, 0.1)
+	place("armor_B", 10, 0, 0.1)
+	Runtime.redistribute_(S, runtime, "测试")
+	check("按相机距离正常排序", runtime.avatars[1].unit == "avatar_A",
+		tostring(runtime.avatars[1].unit))
+end
+
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)

@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.18"
+M.VERSION = "2.1.19"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1326,16 +1326,35 @@ local function redistribute(S_, runtime, why, forcePrimary)
 	end)
 	-- 强制置顶：第一人称锁定的证据（水平距离≈0）比"总距离最近"强得多——
 	-- 队友完全可以比你离相机更近，但他的水平分量不可能≈0。
-	if forcePrimary ~= nil then
+	--
+	-- **学到过"哪个是自己"就一直沿用。** 第三人称的相机在你身后约 4.5 m，
+	-- 队友只要站得比相机离你更近，就会把你顶到 order>1，你的护甲被按 4~8 帧节流，
+	-- 看起来就是"队友有物理、我没有"。而 F8 只是重跑同一个判据，所以按了没效果
+	-- （2026-11-11 实机）。身份一旦被第一人称锁定学到，就让 F8 / 兜底重排都用它，
+	-- 这两条路径才真正能把你恢复成最高权。
+	local forced = forcePrimary
+	if forced == nil and runtime.selfUnit ~= nil then forced = runtime.selfUnit end
+	if forced ~= nil then
 		for index = 1, #avatars do
-			if avatars[index].unit == forcePrimary and index > 1 then
-				local forced = table.remove(avatars, index)
-				table.insert(avatars, 1, forced)
+			if avatars[index].unit == forced and index > 1 then
+				local forcedAvatar = table.remove(avatars, index)
+				table.insert(avatars, 1, forcedAvatar)
 				break
 			end
 		end
 	end
 	for index = 1, #avatars do avatars[index].order = index end
+
+	-- 最高权换人时说一声（只在真正的换人时打，避免刷屏）。
+	-- 这段时间的排障全靠这一行：能直接看出"最高权是队友还是自己"。
+	local primary = avatars[1]
+	if primary ~= nil and runtime.primaryTag ~= primary.tag then
+		runtime.primaryTag = primary.tag
+		runtime.logger("[physbone][调度] 最高权=%s（相机距离 %.2f m%s）",
+			tostring(primary.tag or "?"),
+			primary.cameraDistance ~= nil and math.sqrt(primary.cameraDistance) or -1,
+			(primary.unit == runtime.selfUnit) and "，已识别为自己" or "")
+	end
 
 	local changed, moved = 0, {}
 	for _, session in ipairs(runtime.sessions or {}) do
@@ -1414,6 +1433,13 @@ local function fp_lock_watch(S_, runtime)
 	runtime.fpLockH = lockH
 	-- 只在"恰好达到帧数"时动作一次；动作后清零，这样万一又被判错还能再纠正。
 	if runtime.fpLockFrames ~= settings.fpLockFrames then return end
+	-- 学到"自己是谁"。**即使它已经是 order==1 也要记下来**：第三人称下队友可能把你顶掉，
+	-- 之后 F8 / 兜底重排要靠这个身份把你抢回来（见 redistribute 里的沿用逻辑）。
+	if runtime.selfUnit ~= lockAvatar.unit then
+		runtime.selfUnit = lockAvatar.unit
+		runtime.logger("[physbone][调度] 记住自己=%s（水平 %.3f m）⇒ 之后 F8 与兜底重排优先它",
+			tostring(lockAvatar.tag or "?"), lockH)
+	end
 	if (lockAvatar.order or 99) == 1 then return end
 	runtime.logger("[physbone][调度] 第一人称锁定（水平 %.3f m，%s）⇒ 立即重排",
 		lockH, tostring(lockAvatar.tag or "?"))
@@ -3134,4 +3160,5 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
 
