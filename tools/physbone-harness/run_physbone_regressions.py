@@ -35,7 +35,9 @@ LIBRARY_FILES: set[str] = set()
 # 这几个是驱动 runtime 而不是 compat 的。
 RUNTIME_TESTS = {"runtime-harness-test.lua", "log-budget-test.lua", "mp_harness.lua", "snapshot-test.lua",
                  # 读的是**源码文本**的静态护栏，必须给它 runtime 路径（给 compat 会直接判失败）
-                 "skirt-guard-test.lua"}
+                 "skirt-guard-test.lua",
+                 # 调度器：驱动的是 runtime 的 redistribute/schedule_budget 钩子
+                 "schedule-test.lua"}
 
 
 def find_lua() -> str:
