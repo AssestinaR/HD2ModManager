@@ -197,6 +197,12 @@ end
 print("T7 原生热键（假 Keyboard）")
 do
 	local runtime = scene()
+	local logs = {}
+	runtime.logger = function(text, ...)
+		local args = { ... }
+		if #args > 0 then text = string.format(text, unpack(args)) end
+		logs[#logs + 1] = text
+	end
 	local keyDown = false
 	S.Keyboard = {
 		button_index = function(name) return name == "f8" and 79 or nil end,
@@ -204,18 +210,52 @@ do
 	}
 	Runtime.sched_poll_(S, runtime)            -- 未按下
 	check("未按下不触发", (runtime.schedResets or 0) == 0)
+	check("绑定时打了一行（能看出调用约定）", (function()
+		for _, line in ipairs(logs) do
+			if line:find("已绑定 f8", 1, true) and line:find("约定=code", 1, true) then return true end
+		end
+		return false
+	end)())
 	keyDown = true
 	Runtime.sched_poll_(S, runtime)            -- 按下沿
 	check("按下触发一次", (runtime.schedResets or 0) == 1,
 		"resets=" .. tostring(runtime.schedResets))
+	check("按下留了一行日志（联调时能确认键读到了）", (function()
+		for _, line in ipairs(logs) do
+			if line:find("f8 按下", 1, true) then return true end
+		end
+		return false
+	end)())
 	Runtime.sched_poll_(S, runtime)            -- 仍按着
 	check("长按不连发", (runtime.schedResets or 0) == 1,
 		"resets=" .. tostring(runtime.schedResets))
 	keyDown = false
 	Runtime.sched_poll_(S, runtime)
+	check("松开也留一行", (function()
+		for _, line in ipairs(logs) do
+			if line:find("f8 松开", 1, true) then return true end
+		end
+		return false
+	end)())
 	keyDown = true
 	Runtime.sched_poll_(S, runtime)            -- 再按一次
 	check("再按一次再触发", (runtime.schedResets or 0) == 2,
+		"resets=" .. tostring(runtime.schedResets))
+	S.Keyboard = nil
+end
+
+-- ⑦b 另一种调用约定：只有 button，且直接收键名（没有 button_index）
+print("T7b 只有 button(名字) 的约定")
+do
+	local runtime = scene()
+	local keyDown = false
+	S.Keyboard = {
+		button = function(name) if name == "f8" then return keyDown end return false end,
+	}
+	Runtime.sched_poll_(S, runtime)
+	keyDown = true
+	Runtime.sched_poll_(S, runtime)
+	check("按名字读取也能工作", (runtime.schedResets or 0) == 1,
 		"resets=" .. tostring(runtime.schedResets))
 	S.Keyboard = nil
 end

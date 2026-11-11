@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.13"
+M.VERSION = "2.1.15"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1261,6 +1261,7 @@ local function sched_settings(runtime)
 		resetToken = values.schedReset,
 		hotkey = (values.schedHotkey or 1) ~= 0,
 		hotkeyName = (values.text and values.text.schedHotkeyName) or "f8",
+		hotkeyProbe = (values.schedHotkeyProbe or 0) ~= 0,
 	}
 end
 
@@ -1478,39 +1479,82 @@ local function sched_tune_poll(S_, runtime)
 	runtime.schedBackoffUntil = nil
 end
 
---- ② 原生键盘：只在 `Keyboard.button_index` + `Keyboard.button` 都存在时启用。
---- 一次探测 + 每帧一次读取；读不到就彻底放弃，不再每帧试（失败的引擎调用不该反复付钱）。
+--- ② 原生键盘：两种调用约定都试（`button(code)` 和 `button("f8")`），一次定下来。
+--- 为什么两种都试：Stingray 各版本对 `Keyboard.button` 的期待不一致，
+--- 而"猜错约定 ⇒ 永远读不到 ⇒ 功能静默失效"是这类接口最典型的坑。
 local function sched_key_poll(S_, runtime)
 	local settings = sched_settings(runtime)
 	if not settings.hotkey then return end
 	if runtime.schedKeyBroken then return end
 	local kb = S_.Keyboard
 	if type(kb) ~= "table" then return end
-	local index, read = kb.button_index, kb.button
-	if type(index) ~= "function" or type(read) ~= "function" then return end
-	if runtime.schedKeyCode == nil then
-		local ok, code = pcall(index, settings.hotkeyName)
-		if not ok or code == nil then
+	local read = kb.button
+	if type(read) ~= "function" then return end
+	local name = settings.hotkeyName
+
+	if runtime.schedKeyMode == nil then
+		-- 键名拼写各版本不一致（"f8" / "F8" / "F 8"），逐个试一遍；
+		-- 试不出来就明确记一行，而不是静默地什么都不做。
+		local candidates = { name, string.lower(name), string.upper(name) }
+		for _, spelling in ipairs(candidates) do
+			if runtime.schedKeyMode == nil and type(kb.button_index) == "function" then
+				local okIndex, code = pcall(kb.button_index, spelling)
+				if okIndex and code ~= nil then
+					local okRead = pcall(read, code)
+					if okRead then
+						runtime.schedKeyMode = "code"
+						runtime.schedKeyCode = code
+						runtime.schedKeySpelling = spelling
+					end
+				end
+			end
+			if runtime.schedKeyMode == nil then
+				local okRead = pcall(read, spelling)
+				if okRead then
+					runtime.schedKeyMode = "name"
+					runtime.schedKeySpelling = spelling
+				end
+			end
+		end
+		if runtime.schedKeyMode == nil then
 			runtime.schedKeyBroken = true
+			runtime.logger("[physbone][热键] 试过 %s 仍读不到（Keyboard 存在但调用不通）⇒ 停用；"
+				.. "调参 schedReset 仍可重排", table.concat(candidates, "/"))
 			return
 		end
-		runtime.schedKeyCode = code
-		runtime.logger("[physbone][调度] 热键已绑定：%s（code=%s）", settings.hotkeyName, tostring(code))
+		runtime.logger("[physbone][热键] 已绑定 %s（拼写=%s，调用约定=%s，code=%s）",
+			name, tostring(runtime.schedKeySpelling), runtime.schedKeyMode, tostring(runtime.schedKeyCode))
 	end
-	local ok, down = pcall(read, runtime.schedKeyCode)
+
+	local ok, value
+	if runtime.schedKeyMode == "code" then
+		ok, value = pcall(read, runtime.schedKeyCode)
+	else
+		ok, value = pcall(read, runtime.schedKeySpelling or name)
+	end
 	if not ok then
 		runtime.schedKeyBroken = true
-		runtime.logger("[physbone][调度] 热键读取失败 ⇒ 停用（调参 schedReset 仍然可用）")
+		runtime.logger("[physbone][热键] 读取 %s 时抛错 ⇒ 停用", name)
 		return
 	end
-	local isDown = down == true
+	-- 大多数实现返回布尔；也有的返回 0/1。两种都认，但首次读到的原始值已经在 [探测] 里记下了。
+	local isDown = (value == true) or (type(value) == "number" and value ~= 0)
 	local wasDown = runtime.schedKeyDown == true
 	runtime.schedKeyDown = isDown
-	if isDown and not wasDown then
-		redistribute(S_, runtime, "手动重设（热键 " .. settings.hotkeyName .. "）")
-		runtime.schedNoop = 0
-		runtime.schedBackoffUntil = nil
+	if isDown == wasDown then return end
+
+	-- 按下和松开**都**记一行：热键联调时，"按了但日志什么都没有"和"API 不可用"
+	-- 必须能区分开，否则每次都要再猜一轮。
+	runtime.keyEvents = (runtime.keyEvents or 0) + 1
+	if not isDown then
+		runtime.logger("[physbone][热键] %s 松开", name)
+		return
 	end
+	runtime.logger("[physbone][热键] %s 按下 ⇒ 重排（玩家 %d 个，会话 %d 个）",
+		name, #(runtime.avatars or {}), #(runtime.sessions or {}))
+	redistribute(S_, runtime, "手动重设（热键 " .. name .. "）")
+	runtime.schedNoop = 0
+	runtime.schedBackoffUntil = nil
 end
 
 --- ③ 已删除：外部脚本写文件的通道。
@@ -1545,9 +1589,58 @@ local function probe_input(S_, runtime)
 	end
 end
 
+--- 一次性枚举 `_G` 里"像输入"的全局（名字含 key / input / button / mouse），
+--- 并把它们的**函数成员**列出来（每项都 pcall，绝不调用任何函数）。
+--- 为什么需要：如果这个版本根本没有 `Keyboard`，光记一行 "Keyboard=nil" 帮不上忙；
+--- 知道真实 API 叫什么，下一条路才走得下去。用调参 `schedHotkeyProbe = 1` 打开。
+local function probe_input_globals(runtime)
+	if runtime.globalsProbed == true then return end
+	runtime.globalsProbed = true
+	local g = _G
+	if type(g) ~= "table" then return end
+	local hits = {}
+	pcall(function()
+		for name in pairs(g) do
+			if type(name) == "string" then
+				local lower = name:lower()
+				if lower:find("key", 1, true) or lower:find("input", 1, true)
+					or lower:find("button", 1, true) or lower:find("mouse", 1, true) then
+					hits[#hits + 1] = name
+				end
+			end
+		end
+	end)
+	table.sort(hits)
+	for _, name in ipairs(hits) do
+		local value = g[name]
+		local members = {}
+		if type(value) == "table" then
+			pcall(function()
+				for key, member in pairs(value) do
+					if type(key) == "string" and type(member) == "function" and #members < 12 then
+						members[#members + 1] = key
+					end
+				end
+			end)
+			table.sort(members)
+		end
+		runtime.logger("[physbone][探测] 全局 %s = %s%s", name, type(value),
+			#members > 0 and ("（函数：" .. table.concat(members, ",") .. "）") or "")
+	end
+	if #hits == 0 then
+		runtime.logger("[physbone][探测] _G 里没有任何名字像输入的全局（共 %d 项）",
+			(function()
+				local count = 0
+				pcall(function() for _ in pairs(g) do count = count + 1 end end)
+				return count
+			end)())
+	end
+end
+
 --- 两条通道的统一入口（每帧一次，成本：调参比对 + 一次 Keyboard 读取）。
 local function sched_poll(S_, runtime)
 	probe_input(S_, runtime)
+	if sched_settings(runtime).hotkeyProbe then probe_input_globals(runtime) end
 	sched_tune_poll(S_, runtime)
 	sched_key_poll(S_, runtime)
 end
