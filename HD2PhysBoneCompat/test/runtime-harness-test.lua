@@ -697,6 +697,66 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T11 细分开关 discoverOnly / hardOff")
+--
+-- 实机已达成的结论：写骨不是触发点（writeOff=1 仍崩）。
+-- 于是继续往上游劈：① 只扫描不挂载；② 连扫描都不做。
+do
+	local function scenario(tag, tuneLine, expectLog)
+		rawset(_G, "render", function() end)
+		local av = newUnit(tag .. "avatar", AVATAR_NODES, true, "#ID[" .. tag .. "avatar]")
+		do
+			local mgId = S.Application.string_to_id32("support_mg")
+			av.ids[mgId] = true
+			av.nodeOf[mgId] = 5
+		end
+		local gear = {}
+		for index, count in ipairs(ARMOR_NODES) do
+			gear[index] = newUnit(tag .. "a" .. index, count, false, "#ID[" .. tag .. "a" .. index .. "]")
+			dress(gear[index])
+			engine.pos[gear[index]] = { 0, 0, 0 }
+		end
+		avatar = av
+		armors = gear
+		engine.pos[av] = { 0, 0, 0 }
+
+		local tunePath = (os.getenv("TEMP") or ".") .. "\\physbone-" .. tag .. "-tune.txt"
+		do
+			local handle = io.open(tunePath, "w")
+			handle:write(tuneLine .. "\n")
+			handle:close()
+		end
+		local logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_" .. tag .. ".txt"
+		pcall(os.remove, logPath)
+
+		local runtime = Runtime.install(S, {
+			compat = Compat,
+			carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+			logPath = logPath,
+			settleFrames = 2, snapshot = false, tunePath = tunePath,
+			pollFrames = 1, validateFrames = 0,
+			maxArmorDistance = 10.0,
+		})
+		local probeRender = rawget(_G, "render")
+		for _ = 1, 90 do engine.time = engine.time + 1 / 120; probeRender() end
+
+		local text = ""
+		do
+			local handle = io.open(logPath, "r")
+			if handle then text = handle:read("*a") or ""; handle:close() end
+		end
+		check(tag .. " 不挂载（会话保持 nil）", runtime.sessions == nil,
+			string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+		check(tag .. " 说出生效", text:find(expectLog, 1, true) ~= nil)
+		pcall(os.remove, tunePath)
+		Runtime.uninstall()
+	end
+
+	scenario("discoverOnly", "discoverOnly = 1", "discoverOnly=1")
+	scenario("hardOff", "hardOff = 1", "hardOff=1")
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")

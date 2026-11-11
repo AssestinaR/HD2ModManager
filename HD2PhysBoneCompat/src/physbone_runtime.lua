@@ -63,11 +63,12 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.21"
+M.VERSION = "2.1.22"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
 
+local tune_values     -- 调参文件读数（定义在后面，tryAttach 也要用 ⇒ 必须先声明）
 local Compat          -- physbone_compat 模块（require 或注入）
 local S               -- stingray 命名空间
 local state = nil     -- 运行状态；nil = 未安装
@@ -582,6 +583,20 @@ local function tryAttach(runtime)
 	end
 	local armor = armorList[1]
 
+	-- 诊断开关（`discoverOnly = 1`）：只做发现，**不挂载、不持有任何 unit 句柄**。
+	-- 用途（2026-11-11）：已确认"写骨"不是触发点（writeOff=1 仍崩）。
+	-- 于是要把"扫描 unit"与"挂载并持有句柄"分开：
+	--   不崩 ⇒ 触发点是挂载/持有句柄；
+	--   还崩 ⇒ 连扫描都不能做（那就是更底层的事）。
+	if (tune_values(runtime).discoverOnly or 0) ~= 0 then
+		if not runtime.discoverOnlyLogged then
+			runtime.discoverOnlyLogged = true
+			runtime.logger("[physbone][诊断] discoverOnly=1 ⇒ 只扫描不挂载（找到 %d 个 avatar、%d 个护甲候选）",
+				#avatars, #armorList)
+		end
+		return false
+	end
+
 	local nodeCount = try(S.Unit.num_scene_graph_items, armor.unit)
 	if type(nodeCount) ~= "number" or nodeCount < 10 then
 		note_wait(runtime, "主件节点数异常", tostring(nodeCount))
@@ -930,7 +945,7 @@ end
 
 --- 读调参文件（缓存，默认 2 秒重读一次）。
 --- 数字进表本身（`lift` 等），字符串原文进 `values.text`（`lift_bone` 这类骨名）。
-local function tune_values(runtime)
+tune_values = function(runtime)
 	local frame = runtime.frame or 0
 	local cached = runtime.tune
 	local refresh = (runtime.options and runtime.options.tuneRefreshFrames) or 30
@@ -2695,6 +2710,18 @@ local function drive(runtime)
 	local options = runtime.options
 	local logger = runtime.logger
 	runtime.logContext.frame = frame
+
+	-- 诊断开关（`hardOff = 1`）：运行时**加载了但一个引擎调用都不发**。
+	-- 用途（2026-11-11）：确认"仅仅是这份 runtime 存在"是否已经足够引发崩溃。
+	-- 放在任何引擎调用之前，所以连 Compat.begin_frame 都不跑。
+	if (tune_values(runtime).hardOff or 0) ~= 0 then
+		if not runtime.hardOffLogged then
+			runtime.hardOffLogged = true
+			logger("[physbone][诊断] hardOff=1 ⇒ 运行时不动手（不发任何引擎调用）")
+		end
+		return
+	end
+
 	Compat.begin_frame(frame)
 
 	-- dt 用引擎自己的时间差，不写死 1/60。
@@ -3193,6 +3220,7 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
 
 
 
