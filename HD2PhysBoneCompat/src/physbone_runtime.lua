@@ -2789,16 +2789,19 @@ local function drive(runtime)
 
 	if runtime.sessions ~= nil and #runtime.sessions > 0 then
 		local dropped = pruneSessions(runtime)
-		-- 诊断/处置开关（`dropAllOnDeath = 1`）：**任何**会话死亡 ⇒ 整组释放，一个句柄都不留。
+		-- **默认行为**：任何会话死亡 ⇒ 整组释放，一个句柄都不留。
 		--
-		-- 依据（2026-11-11 实机 + 用户对照实验）：
-		--   · `discoverOnly=1`（只扫描、不持有句柄）**不崩** ⇒ 崩因是"攥着 unit 句柄"；
-		--   · 两人**同时**切图才崩；多人局里自己一个人切图不崩；中途加入不崩；
-		--   · 崩溃日志总是「掉了 N 个会话，**剩 M 个继续跑**」→ 那 M 个句柄被我们留着，
-		--     紧接着是几十秒加载空档（我们一帧都跑不到，没法修剪），引擎在销毁它们
-		--     ⇒ 读空指针（转储 0x3e564b，参数 0x0 0x0）。
-		-- 所以这里改成"一见死亡就撒手"：牺牲一点"队友换甲时闪一下"，换掉这条悬空路径。
-		if dropped > 0 and (tune_values(runtime).dropAllOnDeath or 0) ~= 0 then
+		-- 依据（2026-11-11 实机 + 用户对照实验 + 开关二分，已确认修复闪退）：
+		--   · `discoverOnly=1`（只扫描、**不持有句柄**）⇒ 不崩；
+		--   · `writeOff=1`（挂载但不写骨）⇒ 仍崩 ⇒ 与写骨无关；
+		--   · 两人**同时**切图才崩；多人局里自己一个人切图不崩；中途加入不崩。
+		-- 崩溃日志总是「掉了 N 个会话，**剩 M 个继续跑**」：那 M 个句柄被留着，
+		-- 紧接着是几十秒加载空档（render 不再回调、修剪跑不到），引擎在销毁它们
+		-- ⇒ 读空指针（转储 0x3e564b，异常参数 0x0 0x0）。
+		--
+		-- 代价：队友换甲/阵亡时全场会闪一下没物理（随后立刻重挂）。
+		-- 想退回旧行为（保留剩余会话）可在调参文件写 `dropAllOnDeath = 0`。
+		if dropped > 0 and (tune_values(runtime).dropAllOnDeath or 1) ~= 0 then
 			logger("[physbone][LIFECYCLE] dropAllOnDeath=1：掉了 %d 个会话 ⇒ 整组释放（不留任何句柄），随后重挂",
 				dropped)
 			runtime.sessions = nil
