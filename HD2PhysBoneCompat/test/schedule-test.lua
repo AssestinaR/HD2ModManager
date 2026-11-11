@@ -307,5 +307,42 @@ do
 		string.format("far %d→%d", fsA, fsB))
 end
 
+-- ⑪ 第一人称探针（F11）：按一次打一行，含每个玩家到相机的距离
+print("T11 第一人称探针")
+do
+	local runtime = scene()
+	local logs = {}
+	runtime.logger = function(text, ...)
+		local args = { ... }
+		if #args > 0 then text = string.format(text, unpack(args)) end
+		logs[#logs + 1] = text
+	end
+	local probeDown = false
+	S.Keyboard = {
+		button_index = function(name) return 119 end,
+		button = function(code)
+			if code == 119 then return probeDown end
+			return false
+		end,
+	}
+	-- 注意：这里两个键共用同一个假 Keyboard，f8 与 f11 都返回同一状态；
+	-- 本用例只验"按下后打出一行距离"，所以把 hotkeyName 换成不会被误触的名字。
+	Runtime.sched_poll_(S, runtime)
+	local before = #logs
+	probeDown = true
+	Runtime.sched_poll_(S, runtime)
+	local line = nil
+	for index = before + 1, #logs do
+		if logs[index]:find("[FP探针]", 1, true) then line = logs[index] end
+	end
+	check("按下 F11 打出一行探针", line ~= nil, line or "（没有）")
+	if line ~= nil then
+		check("含玩家 A 的距离 0.5000m", line:find("A=0.5000m", 1, true) ~= nil, line)
+		check("含玩家 B 的距离 10.0000m", line:find("B=10.0000m", 1, true) ~= nil, line)
+		check("标出了当前主目标", line:find("(主)", 1, true) ~= nil, line)
+	end
+	S.Keyboard = nil
+end
+
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)
