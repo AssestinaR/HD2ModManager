@@ -28,7 +28,12 @@ public static class WardrobeLinkCompiler
 	public const string HiddenUnit = "def7dc54e86d6054";
 
 	private const ulong UnitTypeId = 0xe0a48d0be9a7453f;
+
+	/// <summary>共用行（<see cref="UnitMeshBodyVariant.Any"/>）。它与 Stocky/Slim 互斥。</summary>
 	private const uint AnyBody = (uint)UnitMeshBodyVariant.Any;
+
+	private const uint StockyBody = (uint)UnitMeshBodyVariant.Stocky;
+	private const uint SlimBody = (uint)UnitMeshBodyVariant.Slim;
 
 	/// <summary>
 	/// 编译结果。<see cref="Links"/> 为 0 表示没有任何可执行的映射，调用方不应覆盖运行时文件。
@@ -75,60 +80,53 @@ public static class WardrobeLinkCompiler
 			work.Add((mapping, targetKit, source));
 		}
 
-		// 目标在所有被映射护甲上对每个槽位的最大需求，用来决定来源要补多少件。
-		var maxNeed = new Dictionary<(uint Body, uint Slot, uint PieceType), int>();
-		foreach (var entry in work)
-		{
-			var counts = new Dictionary<(uint, uint, uint), int>();
-			foreach (var piece in entry.Target.Pieces.Where(IsUnit))
-			{
-				var key = ((uint)piece.BodyVariant, piece.Slot, piece.PieceType);
-				counts[key] = counts.GetValueOrDefault(key) + 1;
-			}
-			foreach (var pair in counts)
-				maxNeed[pair.Key] = Math.Max(maxNeed.GetValueOrDefault(pair.Key), pair.Value);
-		}
-
-		var lines = new List<string>(work.Count * 8);
+		var lines = new List<string>(work.Count * 24);
 		var seen = new HashSet<string>(StringComparer.Ordinal);
 		var hidden = 0;
 
 		foreach (var entry in work)
 		{
 			var targetKit = entry.Target;
-			var grouped = new Dictionary<(uint Body, uint Slot, uint PieceType), Queue<string>>();
-			foreach (var piece in entry.Source)
+			var index = IndexSource(entry.Source);
+
+			// 第一遍：每个 (身形, 部位) 的最底层是第几层、整片到底有没有对上。
+			// 「整片没对上」= 这个部位在目标的所有层上都找不到来源件 —— 素体没这个部位，
+			// 或者只有它在原生里被放在 pt1/pt2、而素体按 pt0 声明。
+			var lowestLayer = new Dictionary<(uint Body, uint Slot), uint>();
+			var coveredParts = new HashSet<(uint Body, uint Slot)>();
+			foreach (var piece in targetKit.Pieces)
 			{
-				var key = (piece.Body, piece.Slot, piece.PieceType);
-				if (!grouped.TryGetValue(key, out var queue)) grouped[key] = queue = new Queue<string>();
-				queue.Enqueue(piece.UnitHex);
-			}
-			foreach (var pair in maxNeed)
-			{
-				if (!grouped.TryGetValue(pair.Key, out var queue)) grouped[pair.Key] = queue = new Queue<string>();
-				while (queue.Count < pair.Value) queue.Enqueue(HiddenUnit);
+				if (!IsUnit(piece)) continue;
+				var part = ((uint)piece.BodyVariant, piece.Slot);
+				lowestLayer[part] = lowestLayer.TryGetValue(part, out var seenLayer)
+					? Math.Min(seenLayer, piece.PieceType)
+					: piece.PieceType;
+				if (ResolveByLayer(index, part.Item1, piece.Slot, piece.PieceType) is not null)
+					coveredParts.Add(part);
 			}
 
 			foreach (var piece in targetKit.Pieces)
 			{
 				if (!IsUnit(piece)) continue;
 				var body = (uint)piece.BodyVariant;
-				var key = (body, piece.Slot, piece.PieceType);
-				if (!grouped.TryGetValue(key, out var queue) || queue.Count == 0)
+				var part = (body, piece.Slot);
+				var donor = ResolveByLayer(index, body, piece.Slot, piece.PieceType);
+				// 整个部位都对不上时，让它的最底层借用来源该部位最底层的那一件 —— 否则整套护甲
+				// 会"缺胯/缺腿/缺手"。只在整片对不上时借，不会把同一网格铺到两层。
+				if (donor is null && !coveredParts.Contains(part)
+					&& lowestLayer.TryGetValue(part, out var low) && piece.PieceType == low)
 				{
-					// 自定义件可能用 body=3（Any）定义，可以填任意身形。
-					if (body != AnyBody && grouped.TryGetValue((AnyBody, piece.Slot, piece.PieceType), out var anyQueue))
-						queue = anyQueue;
+					donor = ResolvePartFallback(index, body, piece.Slot);
 				}
-				if (queue is null || queue.Count == 0) continue;
-				var donor = queue.Dequeue();
+				// 来源缺这个槽位 ⇒ 隐藏。不能让目标件原样显示：那会留下"没被替换"的残留件。
+				var donorHex = donor ?? HiddenUnit;
 				var own = Hex(piece.UnitAssetKey.FileId);
 				// 自链接也要发：键集必须只由"目标护甲有哪些件"决定，与来源无关。否则换源时
 				// 键集会抖动（这套外观里恰好同键的件会消失），运行时那边就成了"删除"——
 				// 而删除的映射按契约不释放，会在引擎覆盖表里不断累积，最终撞上表容量。
-				var line = own + "," + donor;
+				var line = own + "," + donorHex;
 				if (!seen.Add(line)) continue;
-				if (string.Equals(donor, HiddenUnit, StringComparison.Ordinal)) hidden++;
+				if (donor is null) hidden++;
 				lines.Add("link=" + line);
 			}
 		}
@@ -167,7 +165,15 @@ public static class WardrobeLinkCompiler
 				foreach (var piece in pieces)
 				{
 					if (!TryParseUnitHex(piece.Unit, out var unit)) continue;
-					resolved.Add(new SourceUnit(piece.Body, piece.Slot, piece.PieceType, Hex(unit)));
+					// **身形编码必须先换算。** 素体件里存的是**注册表原始编码**
+					// （Stocky=0 / Slim=1 / Any=3，见 SectionalModelDefinition），
+					// 而目标件的键取自权威表的 `BodyVariant`（UnitMeshBodyVariant：
+					// Slim=1 / Stocky=2 / Any=3）。两套编号在 Stocky 上错位，
+					// 直接比较的后果是 **Stocky 件永远对不上、护甲主体全被隐藏**，
+					// 而 Slim(1) 与 Any(3) 只是碰巧相同——于是现象表现为"只有头盔能映射"。
+					// （2026-11-11 实测：一条素体映射 24 件里只有 2 件命中，正是此因。）
+					resolved.Add(new SourceUnit(
+						(uint)ArmorStructure.ToBodyVariant(piece.Body), piece.Slot, piece.PieceType, Hex(unit)));
 				}
 				if (resolved.Count > 0) return resolved;
 			}
@@ -179,6 +185,82 @@ public static class WardrobeLinkCompiler
 		return mapping.SourceItemId is uint sourceId && kits.TryGetValue(sourceId, out var sourceKit)
 			? FromKit(sourceKit)
 			: null;
+	}
+
+	/// <summary>
+	/// 来源件表按 <c>(身形, 槽位, 层)</c> 建索引。同一格出现两件时先来的赢
+	/// （协议层已禁止同格重复，这里只是不让坏输入炸掉）。
+	/// </summary>
+	private static Dictionary<(uint Body, uint Slot, uint PieceType), string> IndexSource(
+		IReadOnlyList<SourceUnit> pieces)
+	{
+		var index = new Dictionary<(uint, uint, uint), string>(pieces.Count);
+		foreach (var piece in pieces)
+			index.TryAdd((piece.Body, piece.Slot, piece.PieceType), piece.UnitHex);
+		return index;
+	}
+
+	/// <summary>
+	/// 单个格子的取值：按 <c>(目标身形行, 槽位, 层)</c> 找来源件。
+	/// <para>
+	/// 顺序：① 同身形同层 → ② 共用(Any)同层 → ③ 目标是共用行时接受来源按身形拆出来的件
+	/// → ④ 没有就返回 <c>null</c>（这一层该隐藏）。
+	/// </para>
+	/// <para>
+	/// <b>③ 为什么要容忍。</b>原生把腿、披风、臂内层放在共用行（网格不随身形变），
+	/// 而素体可能把同一个槽位声明成按身形两份。这时共用格表达不了"两份不同的网格"：
+	/// 两份相同就照用，不同就让这一层隐藏 —— 绝不挑一份塞给两种身形（那会让一半身形穿错网格）。
+	/// 只声明了一份的，说明这个网格两种身形通用，直接用。
+	/// </para>
+	/// <para>
+	/// 口径与真映射时代 <c>ArmorRegistryDataMapper.ResolveByLayer</c> 完全一致；
+	/// 那边是同一套判据在原始身形编码上跑，两边不能分叉。
+	/// </para>
+	/// </summary>
+	private static string? ResolveByLayer(
+		Dictionary<(uint Body, uint Slot, uint PieceType), string> index,
+		uint body, uint slot, uint pieceType)
+	{
+		if (index.TryGetValue((body, slot, pieceType), out var unit)) return unit;
+		if (body != AnyBody && index.TryGetValue((AnyBody, slot, pieceType), out unit)) return unit;
+		if (body != AnyBody) return null;
+
+		var hasStocky = index.TryGetValue((StockyBody, slot, pieceType), out var stocky);
+		var hasSlim = index.TryGetValue((SlimBody, slot, pieceType), out var slim);
+		if (hasStocky && hasSlim)
+			return string.Equals(stocky, slim, StringComparison.OrdinalIgnoreCase) ? stocky : null;
+		if (hasStocky) return stocky;
+		if (hasSlim) return slim;
+		return null;
+	}
+
+	/// <summary>
+	/// 该 <c>(身形, 部位)</c> 在来源里的最底层那一件。
+	/// <para>
+	/// <b>为什么需要它。</b><c>PieceType</c> 是"部位内的第几个 unit 槽"，不是稳定的内层/外层编号：
+	/// 实测原生 138 套里，胯有 16 套只有 <c>pt1</c>（甚至 <c>pt1+pt2</c>）、左腿 9 套、右腿 11 套、
+	/// 右臂 12 套同样只有 <c>pt1</c>。素体的件只按 <c>pt0</c> 声明，严格按层号对齐就会把这些部位
+	/// 整片写成隐藏，表现为"这套护甲缺胯/缺腿/缺手"。
+	/// </para>
+	/// <para>
+	/// 所以层号仍是首选对齐键，但**当整个部位一层都对不上时**，让目标该部位的最底层借用来源该部位
+	/// 最底层的那一件。只在"整片对不上"时借，避免同一个网格被铺到两层上互相打架。
+	/// </para>
+	/// </summary>
+	private static string? ResolvePartFallback(
+		Dictionary<(uint Body, uint Slot, uint PieceType), string> index,
+		uint body, uint slot)
+	{
+		foreach (var layer in index.Keys
+			.Where(key => key.Slot == slot)
+			.Select(key => key.PieceType)
+			.Distinct()
+			.OrderBy(layer => layer))
+		{
+			var unit = ResolveByLayer(index, body, slot, layer);
+			if (unit is not null) return unit;
+		}
+		return null;
 	}
 
 	private static List<SourceUnit> FromKit(GameDataAuthorityKit kit)

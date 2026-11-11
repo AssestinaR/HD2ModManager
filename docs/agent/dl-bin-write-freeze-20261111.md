@@ -156,7 +156,75 @@ CLI 与 GUI **必须用同一套翻译**（`CliWorkspace` 与 `SettingsService` 
 > 期间一个容易误判的现象：11 个素体里只有 1 个的件被用上，其余 74 个件"未使用"。
 > 查明原因是 `map_model` 只指向那一个素体——另外 10 个**本来就没配映射**，属于正常。
 
-## 4. 恢复条件
+## 4. 附带修掉的：软映射"只有头盔成功、护甲主体全隐藏"
+
+停写之后外观全靠软映射，用户上机一测就暴露出一个**早已存在**的编译器缺陷。
+它不是这次更新引起的，只是以前被真映射挡在前面没被看见。
+
+### 4.1 症状与实测
+
+一条自定义素体映射到 299 套护甲时，24 件里只有 2 件真实替换，**护甲主体全部隐藏**，
+只有头盔能显示。
+
+### 4.2 根因一：两套身形编码被当成同一套比较
+
+| 侧 | 编码 | Stocky | Slim | Any |
+|---|---|---|---|---|
+| 素体件（`RuntimeArmorRegistryModelPiece.Body`） | **注册表原始编码** | **0** | 1 | 3 |
+| 权威表件（`GameDataAuthorityPiece.BodyVariant`） | `UnitMeshBodyVariant` | **2** | 1 | 3 |
+
+`WardrobeLinkCompiler` 直接拿两者比较。Stocky 在两边分别是 0 和 2 ⇒ **永远对不上**；
+Slim(1) 与 Any(3) 只是**碰巧相同**。头盔是 Any ⇒ 成功；护甲主体是 Stocky ⇒ 全落空。
+
+`ArmorStructure.ToBodyVariant` 的注释早就警告过这类错误（"别处一律调用它，
+不要写 `(UnitMeshBodyVariant)raw`"），`SectionalModelDefinition` 也写明只能写原始编码。
+
+### 4.3 根因二：缺两条真映射时代已有的匹配规则
+
+`ArmorRegistryDataMapper`（已停写的真映射）里有两套经过实机验证的判据，
+`WardrobeLinkCompiler` 一条都没有：
+
+1. **Any 行接受按身形拆的来源件**：两份指向同一 unit 才用；不同则隐藏这一层，
+   绝不挑一份塞给两种身形（那会让一半身形穿错网格）。
+2. **整片对不上时最底层借用**：原生 138 套里胯有 16 套只有 `pt1`、左腿 9 套、右腿 11 套、
+   右臂 12 套同样只有 `pt1`，而素体只按 `pt0` 声明。严格按层号对齐会把这些部位整片隐藏，
+   表现为"这套护甲缺胯/缺腿/缺手"。
+
+### 4.4 修法与效果（真实数据、真实编译器）
+
+- 素体件入索引前先换算身形编码（`ArmorStructure.ToBodyVariant`）。
+- 移植上面两条判据：单格解析 `ResolveByLayer` + 整片回退 `ResolvePartFallback`，
+  判据与 `ArmorRegistryDataMapper` 逐条对齐，两侧不能分叉。
+
+用真实 `asset-index.sqlite` + 真实 `armor-registry.protocol` 跑真实编译器：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 真实替换 | 284 | **1059** |
+| 隐藏 | 1722 | 948 |
+| 变差的件 | — | **0** |
+
+逐套看（`29533812 AD-26`）：槽位 2 胸 / 3 胯 / 4 左腿 / 5 右腿 / 6 左臂 / 7 右臂
+**全部拿到真实来源**；仍隐藏的只有 1 披风、8 左肩、9 右肩 —— **素体本来就没有这些件**，
+隐藏是正确行为。
+
+> 槽位编号见 `CustomizationKitSlot`：0 头盔 / 1 披风 / 2 胸 / 3 胯 / 4 左腿 / 5 右腿 /
+> 6 左臂 / 7 右臂 / 8 左肩 / 9 右肩。
+
+### 4.5 测试
+
+`WardrobeLinkCompilerTests` 原有 4 个用例的目标与素体件**全用 Any 行**，
+Any 与 Any 匹配，所以这个 bug 长期没被发现。新增 5 个：
+
+- `Compile_ConvertsTheModelBodyEncodingBeforeMatching`（旧实现失败）
+- `Compile_AnyTargetAcceptsPerShapeSourceOnlyWhenBothShapesAgree`（旧实现失败）
+- `Compile_BorrowsTheLowestLayerWhenTheWholePartMisses`（旧实现失败）
+- `Compile_DoesNotBorrowWhenThePartIsAlreadyCovered`（防过度修复）
+- `Compile_KeepsPartsTheModelDoesNotHaveHidden`（防过度修复）
+
+前三个在旧编译器上确实红（已用 stash 回退验证），不是写了就算。
+
+## 5. 恢复条件
 
 `TrueMappingWritable` 翻回 `true` 之前，必须满足：
 
@@ -165,19 +233,20 @@ CLI 与 GUI **必须用同一套翻译**（`CliWorkspace` 与 `SettingsService` 
 3. `ArmorRegistryWriteDisabledTests.FreezeFlagMatchesTheAnnouncedState` 会随之变红——
    这是刻意留的信号：改这个标志就必须同时更新本文与发版说明。
 
-## 5. 已知未做（刻意）
+## 6. 已知未做（刻意）
 
 - **没有探测"能不能安全写"**。校验能过、进游戏仍然会崩，探测得出的"可以写"是假阳性。
 - **没有删备份、没有改设置文件**。用户当前的 `settings.json` 里 `ArmorMappingMode = 0`，
   本来就不是真映射；将来恢复时不需要用户改回来。
 - **没有动物理线**。它没坏。
 
-## 6. 发版时的用户口径
+## 7. 发版时的用户口径
 
 - 物理照常。
 - 如果你的设置里存的是真映射，这一版会自动改用软映射（运行时 Lua），并弹窗说明；
   映射内容不丢，但真映射这一档暂时不可选。
 - 别去手动改 `data/game/generated_customization_armor_sets.dl_bin`；
   当前那份是干净的，改了反而会让游戏闪退。
+
 
 
