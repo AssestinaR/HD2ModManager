@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.16"
+M.VERSION = "2.1.17"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1263,6 +1263,10 @@ local function sched_settings(runtime)
 		hotkeyName = (values.text and values.text.schedHotkeyName) or "f8",
 		-- 第一人称探针的键（默认 f11；写 none 可关掉）
 		fpProbeKey = (values.text and values.text.fpProbeKey) or "f11",
+		-- 第一人称锁定：水平距离阈值（米）与确认帧数
+		fpLock = (values.fpLock or 1) ~= 0,
+		fpLockMetres = values.fpLockMetres or 0.35,
+		fpLockFrames = math.max(1, math.floor(values.fpLockFrames or 3)),
 	}
 end
 
@@ -1284,8 +1288,9 @@ local function nearest_avatar(S_, avatars, session)
 end
 
 --- 按相机距离重排玩家顺序，并把每个会话重新归属。
+---@param forcePrimary any|nil 强制排第一的 avatar unit（第一人称锁定用）
 ---@return number changed 归属真正发生变化的会话数
-local function redistribute(S_, runtime, why)
+local function redistribute(S_, runtime, why, forcePrimary)
 	local avatars = runtime.avatars
 	if avatars == nil or #avatars == 0 then return 0 end
 	local camX, camY, camZ = cameraPosition(S_, runtime.world, runtime.cache or {})
@@ -1308,6 +1313,17 @@ local function redistribute(S_, runtime, why)
 		if db ~= nil then return false end
 		return (a.nodes or 0) > (b.nodes or 0)
 	end)
+	-- 强制置顶：第一人称锁定的证据（水平距离≈0）比"总距离最近"强得多——
+	-- 队友完全可以比你离相机更近，但他的水平分量不可能≈0。
+	if forcePrimary ~= nil then
+		for index = 1, #avatars do
+			if avatars[index].unit == forcePrimary and index > 1 then
+				local forced = table.remove(avatars, index)
+				table.insert(avatars, 1, forced)
+				break
+			end
+		end
+	end
 	for index = 1, #avatars do avatars[index].order = index end
 
 	local changed, moved = 0, {}
@@ -1342,6 +1358,56 @@ local function redistribute(S_, runtime, why)
 		runtime.schedNoop = (runtime.schedNoop or 0) + 1
 	end
 	return changed
+end
+
+--- 第一人称锁定：相机在自己根节点的**正上方** ⇒ **水平距离 ≈ 0**。
+--- <para>
+--- 实测（2026-11-11）：第一人称下"相机到自己根节点"的总距离稳定在 1.717~1.727 m
+--- （±5 mm），第三人称是 4.50~4.52 m。但**总距离不能当判据**：
+--- 队友站在你面前 1.7 m 处，总距离也是 1.7 m（相机在眼高、他的根在地面）。
+--- 真正伪造不了的是水平分量——别人的身体不可能站在你相机的那个点上（会碰撞）。
+--- 垂直分量对所有站在同层地面的人都约等于眼高，因此没有区分能力。
+--- </para>
+--- 语义：水平 < fpLockMetres 且连续 fpLockFrames 帧 ⇒ 锁定为"自己"；
+--- 若它当前不是最高权目标，立刻重排（不等 1 秒兜底）。
+local function fp_lock_watch(S_, runtime)
+	local settings = sched_settings(runtime)
+	if not settings.fpLock then return end
+	local avatars = runtime.avatars
+	if avatars == nil or #avatars == 0 then return end
+	local camX, camY = cameraPosition(S_, runtime.world, runtime.cache or {})
+	if camX == nil then return end
+	local lockAvatar, lockH = nil, nil
+	for index = 1, #avatars do
+		local avatar = avatars[index]
+		if avatar.x ~= nil then
+			local dx, dy = avatar.x - camX, avatar.y - camY
+			local h = math.sqrt(dx * dx + dy * dy)
+			if h < settings.fpLockMetres and (lockH == nil or h < lockH) then
+				lockAvatar, lockH = avatar, h
+			end
+		end
+	end
+	if lockAvatar == nil then
+		runtime.fpLockFrames = 0
+		runtime.fpLockUnit = nil
+		return
+	end
+	if runtime.fpLockUnit ~= lockAvatar.unit then
+		runtime.fpLockUnit = lockAvatar.unit
+		runtime.fpLockFrames = 1
+		runtime.fpLockH = lockH
+		return
+	end
+	runtime.fpLockFrames = (runtime.fpLockFrames or 0) + 1
+	runtime.fpLockH = lockH
+	-- 只在"恰好达到帧数"时动作一次；动作后清零，这样万一又被判错还能再纠正。
+	if runtime.fpLockFrames ~= settings.fpLockFrames then return end
+	if (lockAvatar.order or 99) == 1 then return end
+	runtime.logger("[physbone][调度] 第一人称锁定（水平 %.3f m，%s）⇒ 立即重排",
+		lockH, tostring(lockAvatar.tag or "?"))
+	redistribute(S_, runtime, "第一人称锁定", lockAvatar.unit)
+	runtime.fpLockFrames = 0
 end
 
 --- 兜底：**最高物理权单位**离开相机超过 `metres` 连续 `seconds` 秒 ⇒ 立刻重排。
@@ -1574,7 +1640,9 @@ local function fp_probe_poll(S_, runtime)
 		local text = "?"
 		if camX ~= nil and ax ~= nil then
 			local dx, dy, dz = ax - camX, ay - camY, az - camZ
-			text = string.format("%.4fm", math.sqrt(dx * dx + dy * dy + dz * dz))
+			local horizontal = math.sqrt(dx * dx + dy * dy)
+			text = string.format("%.4fm(h=%.4f,v=%+.4f)",
+				math.sqrt(dx * dx + dy * dy + dz * dz), horizontal, dz)
 		end
 		parts[#parts + 1] = string.format("%s=%s%s", tostring(avatar.tag or "?"), text,
 			(avatar.order or 99) == 1 and "(主)" or "")
@@ -2702,8 +2770,11 @@ local function drive(runtime)
 
 	-- ---------- 调度（谁拿最高物理权） ----------
 	-- 放在驱动之前：这一帧的驱动顺序就用新排好的结果。
-	-- 两件事都很便宜：热键探测每 30 帧才开一次文件；兜底判定只多一次 distance。
+	-- 顺序有依赖：先把"每个玩家到相机的距离"刷新（≤4 次调用），
+	-- 热键探针、第一人称锁定、预算分档都用这一份新鲜值。
+	refresh_avatar_distances(S, runtime)
 	sched_poll(S, runtime)
+	fp_lock_watch(S, runtime)
 	scheduler_watch(S, runtime, runtime.dt)
 
 	-- ---------- 驱动 ----------
@@ -2720,8 +2791,7 @@ local function drive(runtime)
 	-- 被跳过的帧都把 dt **累积**到下一次（compat 内部再拆子步），
 	-- 所以物理速度不变，变的只是采样率。
 
-	-- 距离要新鲜：每帧只更新 ≤4 个 avatar 的相机距离，不重排、不重新归属。
-	refresh_avatar_distances(S, runtime)
+	-- 距离已经在这一帧开头刷新过了（见调度块），这里不再重复读。
 
 	local budget = options.maxChainsPerFrame or 160
 	-- 分档边界与兜底阈值共用同一个数（用户要的就是"6 m 这个清晰边界"）：
@@ -3040,5 +3110,6 @@ M.sched_settings_ = sched_settings
 M.schedule_budget_ = schedule_budget
 M.key_edge_ = key_edge
 M.fp_probe_poll_ = fp_probe_poll
+M.fp_lock_watch_ = fp_lock_watch
 
 return M

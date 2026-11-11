@@ -344,5 +344,43 @@ do
 	S.Keyboard = nil
 end
 
+-- ⑫ 第一人称锁定：水平≈0 的那位必须被强制置顶（哪怕别人离相机更近）
+print("T12 第一人称锁定")
+do
+	local runtime = scene()
+	local logs = {}
+	runtime.logger = function(text, ...)
+		local args = { ... }
+		if #args > 0 then text = string.format(text, unpack(args)) end
+		logs[#logs + 1] = text
+	end
+	-- A：水平 0.05 m、垂直 1.72 m（第一人称特征）；B：总距离 1.03 m 更近，但水平 0.50 m
+	place("avatar_A", 0.05, 0, 1.72)
+	place("avatar_B", 0.50, 0, 0.90)
+	-- 先让 B 当主目标（B 总距离更近）
+	Runtime.redistribute_(S, runtime, "初排")
+	check("初排时更近的 B 是主目标", runtime.avatars[1].unit == "avatar_B",
+		tostring(runtime.avatars[1].unit))
+
+	Runtime.fp_lock_watch_(S, runtime)          -- 第 1 帧
+	Runtime.fp_lock_watch_(S, runtime)          -- 第 2 帧
+	check("未满 3 帧不动作", runtime.avatars[1].unit == "avatar_B",
+		tostring(runtime.avatars[1].unit))
+	Runtime.fp_lock_watch_(S, runtime)          -- 第 3 帧 ⇒ 锁定并强制置顶
+	check("锁定后 A 被强制置顶", runtime.avatars[1].unit == "avatar_A",
+		tostring(runtime.avatars[1].unit))
+	check("留下锁定日志", (function()
+		for _, line in ipairs(logs) do
+			if line:find("第一人称锁定", 1, true) then return true end
+		end
+		return false
+	end)())
+	-- 已经是主目标时，不应再触发重排
+	local resets = runtime.schedResets or 0
+	for _ = 1, 6 do Runtime.fp_lock_watch_(S, runtime) end
+	check("已锁定的那位是主目标时不重复重排", (runtime.schedResets or 0) == resets,
+		"resets=" .. tostring(runtime.schedResets))
+end
+
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)
