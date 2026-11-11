@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.22"
+M.VERSION = "2.1.23"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -2789,7 +2789,23 @@ local function drive(runtime)
 
 	if runtime.sessions ~= nil and #runtime.sessions > 0 then
 		local dropped = pruneSessions(runtime)
-		if #runtime.sessions == 0 then
+		-- 诊断/处置开关（`dropAllOnDeath = 1`）：**任何**会话死亡 ⇒ 整组释放，一个句柄都不留。
+		--
+		-- 依据（2026-11-11 实机 + 用户对照实验）：
+		--   · `discoverOnly=1`（只扫描、不持有句柄）**不崩** ⇒ 崩因是"攥着 unit 句柄"；
+		--   · 两人**同时**切图才崩；多人局里自己一个人切图不崩；中途加入不崩；
+		--   · 崩溃日志总是「掉了 N 个会话，**剩 M 个继续跑**」→ 那 M 个句柄被我们留着，
+		--     紧接着是几十秒加载空档（我们一帧都跑不到，没法修剪），引擎在销毁它们
+		--     ⇒ 读空指针（转储 0x3e564b，参数 0x0 0x0）。
+		-- 所以这里改成"一见死亡就撒手"：牺牲一点"队友换甲时闪一下"，换掉这条悬空路径。
+		if dropped > 0 and (tune_values(runtime).dropAllOnDeath or 0) ~= 0 then
+			logger("[physbone][LIFECYCLE] dropAllOnDeath=1：掉了 %d 个会话 ⇒ 整组释放（不留任何句柄），随后重挂",
+				dropped)
+			runtime.sessions = nil
+			runtime.reconcile = nil
+			runtime.reArm = 1
+			runtime.rearmAt = frame + 1
+		elseif #runtime.sessions == 0 then
 			-- 全没了（换场景 / 全员阵亡）：退回等待，带退避（避免换甲期间每秒重挂一次）。
 			-- 存活时长决定退避：刚挂上就死 = 抖动（换甲中），要越等越久；
 			-- 稳定跑过 5 秒再死 = 正常换场景，下一次应当**立刻**重挂。
@@ -3220,6 +3236,7 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
 
 
 

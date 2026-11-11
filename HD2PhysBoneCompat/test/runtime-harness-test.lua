@@ -757,6 +757,69 @@ do
 	scenario("hardOff", "hardOff = 1", "hardOff=1")
 end
 
+-- ---------------------------------------------------------------------------
+print("T12 dropAllOnDeath：一见死亡就整组释放（不留句柄）")
+--
+-- 依据：discoverOnly（不持有句柄）不崩 ⇒ 崩因是攥着 unit 句柄跨过场景销毁。
+-- 默认行为是"只掉一部分就留着剩下的"（多人局不闪），但那批句柄正是悬空来源。
+do
+	rawset(_G, "render", function() end)
+
+	local t12Avatar = newUnit("t12avatar", AVATAR_NODES, true, "#ID[t12avatar]")
+	do
+		local mgId = S.Application.string_to_id32("support_mg")
+		t12Avatar.ids[mgId] = true
+		t12Avatar.nodeOf[mgId] = 5
+	end
+	local t12Armors = {}
+	for index, count in ipairs(ARMOR_NODES) do
+		t12Armors[index] = newUnit("t12a" .. index, count, false, "#ID[t12a" .. index .. "]")
+		dress(t12Armors[index])
+		engine.pos[t12Armors[index]] = { 0, 0, 0 }
+	end
+	avatar = t12Avatar
+	armors = t12Armors
+	engine.pos[t12Avatar] = { 0, 0, 0 }
+
+	local tunePath12 = (os.getenv("TEMP") or ".") .. "\\physbone-t12-dropall-tune.txt"
+	do
+		local handle = io.open(tunePath12, "w")
+		handle:write("dropAllOnDeath = 1\n")
+		handle:close()
+	end
+	local logPath12 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t12dropall.txt"
+	pcall(os.remove, logPath12)
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath12,
+		settleFrames = 2, snapshot = false, tunePath = tunePath12,
+		pollFrames = 1, validateFrames = 0,
+		maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T12 先全部挂上", runtime.sessions ~= nil and #runtime.sessions == #ARMOR_NODES,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+
+	-- 只死一个（多人局里队友那套先被释放）
+	engine.alive[t12Armors[1]] = false
+	engine.time = engine.time + 1 / 120; probeRender()
+
+	check("T12 一个死亡就整组释放（不留剩的）", runtime.sessions == nil,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+	local text12 = ""
+	do
+		local handle = io.open(logPath12, "r")
+		if handle then text12 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T12 日志说明整组释放", text12:find("整组释放", 1, true) ~= nil)
+	pcall(os.remove, tunePath12)
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")
