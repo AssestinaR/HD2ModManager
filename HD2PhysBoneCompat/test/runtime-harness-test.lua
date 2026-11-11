@@ -568,6 +568,70 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T9 加载空档：不逐条查存活，直接整组重挂")
+--
+-- 加载界面期间 render/update 不跑，而引擎正在销毁上一场景的 unit。
+-- 回来后的第一帧如果逐条 `Unit.alive`（session_health 内部就是它），
+-- 就是在"句柄可能已被释放"的窗口里发引擎调用 —— 2026-11-11 实机崩在 0x3e564b 读空指针。
+do
+	rawset(_G, "render", function() end)
+
+	local t9Avatar = newUnit("t9avatar", AVATAR_NODES, true, "#ID[t9avatar]")
+	do
+		local mgId = S.Application.string_to_id32("support_mg")
+		t9Avatar.ids[mgId] = true
+		t9Avatar.nodeOf[mgId] = 5
+	end
+	local t9Armors = {}
+	for index, count in ipairs(ARMOR_NODES) do
+		t9Armors[index] = newUnit("t9a" .. index, count, false, "#ID[t9a" .. index .. "]")
+		dress(t9Armors[index])
+		engine.pos[t9Armors[index]] = { 0, 0, 0 }
+	end
+	avatar = t9Avatar
+	armors = t9Armors
+	engine.pos[t9Avatar] = { 0, 0, 0 }
+
+	local logPath9 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t9gap.txt"
+	pcall(os.remove, logPath9)
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath9,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
+		pollFrames = 1, validateFrames = 0,
+		maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T9 先全部挂上", runtime.sessions ~= nil and #runtime.sessions == #ARMOR_NODES,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+
+	-- 统计这一帧会发多少次 Unit.alive
+	local originalAlive = S.Unit.alive
+	local aliveCalls = 0
+	S.Unit.alive = function(unit) aliveCalls = aliveCalls + 1 return originalAlive(unit) end
+	engine.time = engine.time + 5.0          -- 模拟加载：时钟一次跳 5 秒
+	probeRender()
+	S.Unit.alive = originalAlive
+
+	check("T9 空档后整组重挂（会话清空）", runtime.sessions == nil,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+	check("T9 空档帧没有再查存活", aliveCalls == 0, "Unit.alive 调用=" .. tostring(aliveCalls))
+	local text9 = ""
+	do
+		local handle = io.open(logPath9, "r")
+		if handle then text9 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T9 留下空档日志", text9:find("检测到加载空档", 1, true) ~= nil)
+	check("T9 崩场景那套「会话失效」没有出现", text9:find("会话失效", 1, true) == nil,
+		"不应逐条判活")
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")

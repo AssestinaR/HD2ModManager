@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.19"
+M.VERSION = "2.1.20"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -2716,6 +2716,7 @@ local function drive(runtime)
 		elseif now > previous then
 			local delta = now - previous
 			-- 上限 0.25 与 compat 的稳定性闸一致：卡顿帧不该被当成"过了 0.5 秒"去积分。
+			runtime.rawDelta = delta               -- 限幅前的真实跨度，供"加载空档"判据用
 			if delta > 0.25 then delta = 0.25 end
 			if delta >= 0.001 then runtime.dt = delta end
 			advanced = true
@@ -2738,6 +2739,26 @@ local function drive(runtime)
 		end
 	end
 	if not advanced then return end
+
+	-- ---------- 加载空档：不查存活，直接整组重挂 ----------
+	-- 加载界面期间 `render`/`update` 根本不跑（实测：静默 4~15 秒是常态），而这一整段时间里
+	-- 引擎正在销毁上一场景的 unit。等我们再被调到，`runtime.sessions` 里那些句柄很可能
+	-- 已经指向被释放的对象 —— 而**逐条查存活本身就是一个引擎调用**（`Compat.session_health`
+	-- → `Unit.alive`）。在"unit 已经被覆盖/释放"的窗口里发这个调用，就是原生崩溃
+	-- （2026-11-11 实机：崩在 0x3e564b 读空指针，且**只在物理 + 软映射同时开**时发生 ——
+	-- 因为只有那时该 unit 是覆盖出来的自定义件；单独开任意一个都不崩）。
+	-- 所以这里**不逐条判定**，整组丢掉、按"场景已变"重挂。宁可闪一下，也不去碰可能已死的句柄。
+	local gap = runtime.rawDelta
+	if gap ~= nil and gap > (options.loadGapSeconds or 0.5)
+		and runtime.sessions ~= nil and #runtime.sessions > 0 then
+		logger("[physbone][LIFECYCLE] 检测到加载空档 %.2f s ⇒ 不查存活，直接整组重挂（%d 个会话）",
+			gap, #runtime.sessions)
+		runtime.sessions = nil
+		runtime.reconcile = nil
+		runtime.reArm = 1
+		runtime.rearmAt = frame + (options.reArmFrames or 60)
+	end
+	runtime.rawDelta = nil
 
 	if runtime.sessions ~= nil and #runtime.sessions > 0 then
 		local dropped = pruneSessions(runtime)
@@ -3160,5 +3181,6 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
 
 
