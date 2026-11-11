@@ -496,6 +496,78 @@ do
 
 	Runtime.uninstall()
 end
+
+-- ---------------------------------------------------------------------------
+print("T8 会话死亡后的停写窗口（多人局换场景不再把骨写到已释放对象上）")
+do
+	rawset(_G, "render", function() end)
+
+	local t8Avatar = newUnit("t8avatar", AVATAR_NODES, true, "#ID[t8avatar]")
+	do
+		local mgId = S.Application.string_to_id32("support_mg")
+		t8Avatar.ids[mgId] = true
+		t8Avatar.nodeOf[mgId] = 5
+	end
+	local t8Armors = {}
+	for index, count in ipairs(ARMOR_NODES) do
+		t8Armors[index] = newUnit("t8a" .. index, count, false, "#ID[t8a" .. index .. "]")
+		dress(t8Armors[index])
+		engine.pos[t8Armors[index]] = { 0, 0, 0 }
+	end
+	avatar = t8Avatar
+	armors = t8Armors
+	engine.pos[t8Avatar] = { 0, 0, 0 }
+
+	local logPath8 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t8death.txt"
+	pcall(os.remove, logPath8)
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath8,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
+		pollFrames = 1, validateFrames = 0,   -- 关掉名单校验，隔离出"死亡停写"这一条
+		maxArmorDistance = 10.0,
+		deathGraceFrames = 20,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T8 先全部挂上", runtime.sessions ~= nil and #runtime.sessions == #ARMOR_NODES,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+
+	-- ① 正常帧确实在写骨（否则下面的"停写"断言是空转）
+	local baseline = engine.writes
+	for _ = 1, 5 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T8 正常帧会写骨", engine.writes > baseline,
+		string.format("写入=%d", engine.writes - baseline))
+
+	-- ② 停写窗口内**一个骨都不写**。直接设窗口，把"是谁设的"和"设了之后怎样"分开测。
+	local heldFrom = runtime.frame
+	runtime.driveHoldUntil = heldFrom + 20
+	local writesAtHold = engine.writes
+	for _ = 1, 15 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T8 窗口内不写骨", engine.writes == writesAtHold,
+		string.format("窗口内写入=%d", engine.writes - writesAtHold))
+	check("T8 窗口内确实过了帧", runtime.frame > heldFrom,
+		string.format("frame=%d→%d", heldFrom, runtime.frame))
+
+	-- ③ 过了窗口必须恢复写入：停写不等于永久停手
+	for _ = 1, 40 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T8 窗口过后恢复写骨", engine.writes > writesAtHold,
+		string.format("恢复后写入=%d", engine.writes - writesAtHold))
+
+	-- ④ 真让一个会话死掉：pruneSessions 必须自己把窗口设上。
+	--    这是"多人局换场景"的入口条件——单人局是整组一起死，走的是另一条分支。
+	local beforeDeath = runtime.frame
+	engine.alive[t8Armors[1]] = false
+	engine.time = engine.time + 1 / 120; probeRender()
+	check("T8 会话死亡会设置停写窗口", (runtime.driveHoldUntil or 0) > beforeDeath,
+		string.format("holdUntil=%s frame=%s",
+			tostring(runtime.driveHoldUntil), tostring(runtime.frame)))
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")

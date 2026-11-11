@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.17"
+M.VERSION = "2.1.18"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -809,11 +809,22 @@ local function pruneSessions(runtime)
 		end
 	end
 	runtime.sessions = kept
-	if dead > 0 or rebuilt > 0 then
+	local dropped = dead + rebuilt
+	if dropped > 0 then
 		runtime.logger("[physbone] 丢弃 %d 个已销毁 / %d 个已重建，剩 %d 个会话",
 			dead, rebuilt, #kept)
+		-- **死亡之后先停写一小段，等场景拆解落定。**
+		-- 场景拆解是**连续**发生的：一批 unit 死掉之后，同一场景里其余 unit 往往在接下来几帧
+		-- 继续被引擎释放。此时若继续驱动"刚才还活着"的会话，就会把骨写到已释放的对象上——
+		-- 表现为访问违例、崩在引擎内部，而 Lua 层 pcall 抓不到（2026-11-11 实机：
+		-- 多人局换场景必崩、单人必不崩；因为单人的护甲件是一起死的，直接走
+		-- "场景已变"那条分支停手，根本不会有"剩几个继续跑"）。
+		-- 时间照常累积到 pendingDt，所以物理速度不变，只是这几帧不写骨。
+		local grace = runtime.options and runtime.options.deathGraceFrames or 20
+		local holdUntil = runtime.frame + grace
+		if (runtime.driveHoldUntil or 0) < holdUntil then runtime.driveHoldUntil = holdUntil end
 	end
-	return dead + rebuilt
+	return dropped
 end
 
 --- 便宜的"场上有哪些玩家"扫描，供驱动中定期比对。
@@ -2842,6 +2853,16 @@ local function drive(runtime)
 			-- 每 stride 帧就会出现一次成本尖峰（帧时间抖动比平均成本更影响手感）。
 			if stride > 1 and ((frame + index) % stride) ~= 0 then due = false end
 		end
+		-- 拆解窗口：任何会话死亡后的一小段里不写骨（理由见 pruneSessions 里那段注释）。
+		-- 仍然走"没轮到"的同一条路，所以 pendingDt 照常累积、物理速度不变。
+		if due and runtime.driveHoldUntil ~= nil and frame < runtime.driveHoldUntil then due = false end
+		-- 写骨前再复查一次存活：pruneSessions 只在**帧首**判过，
+		-- 而场景拆解会在本帧中途继续释放 unit —— 那一小段窗口正是"写进野对象"的来源。
+		-- unit_alive 是便宜的引擎调用，比赌一次野指针便宜得多。
+		if due and session.unit ~= nil and type(Compat.unit_alive) == "function" then
+			local okAlive, alive = pcall(Compat.unit_alive, S, session.unit)
+			if okAlive and alive == false then due = false end
+		end
 		if not due then
 			session.pendingDt = pending
 		else
@@ -3113,3 +3134,4 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
