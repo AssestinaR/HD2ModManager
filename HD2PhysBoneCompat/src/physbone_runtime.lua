@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.20"
+M.VERSION = "2.1.21"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -2903,6 +2903,18 @@ local function drive(runtime)
 		-- 拆解窗口：任何会话死亡后的一小段里不写骨（理由见 pruneSessions 里那段注释）。
 		-- 仍然走"没轮到"的同一条路，所以 pendingDt 照常累积、物理速度不变。
 		if due and runtime.driveHoldUntil ~= nil and frame < runtime.driveHoldUntil then due = false end
+		-- 诊断开关（调参文件 `writeOff = 1`）：发现 / 挂载 / 调度 / 判活全都照旧，**只是不写骨**。
+		-- 用途（2026-11-11）：物理 + 软映射同时开、多人局换场景必崩，而崩溃时我们的 Lua 根本没在跑
+		-- （加载期间不回调，回来之前就崩了）。于是只剩两种可能，这个开关能把它们分开：
+		--   不崩 ⇒ 触发点是"写骨"这条路径（在写入侧加固）；
+		--   还崩 ⇒ 只要"挂着并持有 unit 句柄"就足够（要在换人/换场景时尽早放手）。
+		if due and (tune_values(runtime).writeOff or 0) ~= 0 then
+			if not runtime.writeOffLogged then
+				runtime.writeOffLogged = true
+				logger("[physbone][诊断] writeOff=1 ⇒ 只挂不写（用于分辨崩溃是否由写骨触发）")
+			end
+			due = false
+		end
 		-- 写骨前再复查一次存活：pruneSessions 只在**帧首**判过，
 		-- 而场景拆解会在本帧中途继续释放 unit —— 那一小段窗口正是"写进野对象"的来源。
 		-- unit_alive 是便宜的引擎调用，比赌一次野指针便宜得多。
@@ -3181,6 +3193,7 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
 
 
 

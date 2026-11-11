@@ -632,6 +632,71 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T10 诊断开关 writeOff：只挂不写")
+--
+-- 用途：把"崩溃是否由写骨触发"与"仅仅持有句柄就够"分开。
+-- 这个开关**不能**影响别的行为：发现/挂载/调度/判活全都照旧，只是不写骨。
+do
+	rawset(_G, "render", function() end)
+
+	local t10Avatar = newUnit("t10avatar", AVATAR_NODES, true, "#ID[t10avatar]")
+	do
+		local mgId = S.Application.string_to_id32("support_mg")
+		t10Avatar.ids[mgId] = true
+		t10Avatar.nodeOf[mgId] = 5
+	end
+	local t10Armors = {}
+	for index, count in ipairs(ARMOR_NODES) do
+		t10Armors[index] = newUnit("t10a" .. index, count, false, "#ID[t10a" .. index .. "]")
+		dress(t10Armors[index])
+		engine.pos[t10Armors[index]] = { 0, 0, 0 }
+	end
+	avatar = t10Avatar
+	armors = t10Armors
+	engine.pos[t10Avatar] = { 0, 0, 0 }
+
+	local tunePath10 = (os.getenv("TEMP") or ".") .. "\\physbone-t10-writeoff-tune.txt"
+	do
+		local handle = io.open(tunePath10, "w")
+		handle:write("writeOff = 1\n")
+		handle:close()
+	end
+	local logPath10 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t10writeoff.txt"
+	pcall(os.remove, logPath10)
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath10,
+		settleFrames = 2, snapshot = false, tunePath = tunePath10,
+		pollFrames = 1, validateFrames = 0,
+		maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T10 照样挂上（开关不影响挂载）",
+		runtime.sessions ~= nil and #runtime.sessions == #ARMOR_NODES,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+
+	local writesBefore = engine.writes
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T10 一帧都不写", engine.writes == writesBefore,
+		string.format("写入=%d", engine.writes - writesBefore))
+	check("T10 会话仍在（不是把会话丢了）",
+		runtime.sessions ~= nil and #runtime.sessions == #ARMOR_NODES)
+
+	local text10 = ""
+	do
+		local handle = io.open(logPath10, "r")
+		if handle then text10 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T10 明确说出生效", text10:find("writeOff=1", 1, true) ~= nil)
+	pcall(os.remove, tunePath10)
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")
