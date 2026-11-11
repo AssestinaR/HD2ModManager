@@ -48,7 +48,14 @@ public enum SectionalPatchRole
 /// <param name="PatchIndex">文件名里的序号（<c>&lt;archive&gt;.patch_N</c> 的 N）。</param>
 /// <param name="ArchiveHex16">同名 patch 的目标归档。</param>
 /// <param name="Role">unit 还是材质。</param>
-/// <param name="SourceVpkName">这个 patch 由哪个来源 VPK 转出来；认不出来时为 <c>null</c>。</param>
+/// <param name="SourceName">
+/// 这个 patch 由哪个来源转出来；认不出来时为 <c>null</c>。
+/// <para>
+/// 两档 sectional 系列的语义不同但同形：<c>vpk2patch</c> 记的是**来源 VPK 名**，
+/// <c>sectional</c>（legacy 转来的）记的是**来源条目名**。两者都是"给这一组材质命名的依据"，
+/// 所以字段名从 <c>SourceVpkName</c> 泛化成 <c>SourceName</c>；旧库里 <c>sourceVpkName</c> 仍能被读出来。
+/// </para>
+/// </param>
 /// <param name="OptionName">
 /// 材质**选项**的显示名；unit patch 为 <c>null</c>。
 /// <para>
@@ -64,7 +71,7 @@ public sealed record SectionalPatchGroupEntry(
 	int PatchIndex,
 	string ArchiveHex16,
 	SectionalPatchRole Role,
-	string? SourceVpkName = null,
+	string? SourceName = null,
 	string? OptionName = null,
 	int? UnitCount = null,
 	int? MaterialCount = null,

@@ -121,4 +121,41 @@ public sealed class ModStorageKindResolverTests : IDisposable
 
 		Assert.Equal(ModStorageKind.Unknown, _resolver.Resolve(dir));
 	}
+
+	[Fact]
+	public void 有转换依据但内容层还空着_也算Sectional()
+	{
+		// 导入那一刻：来源 patch 刚平铺到根上，sectional/ 还没建。
+		// 这一窗口必须已经判成 Sectional —— 否则详情页会挂上 legacy 的动作集
+		// （修复 patch / 换甲 / 规整…），而那些动作对"正在等转换的条目"全是错的。
+		var dir = NewMod("sectional-pending");
+		File.WriteAllText(Path.Combine(dir, PatchName), "source-toc");
+		WriteSourceManifest(dir);
+
+		Assert.Equal(ModStorageKind.Sectional, _resolver.Resolve(dir));
+	}
+
+	[Fact]
+	public void 来源VPK优先于转换依据()
+	{
+		// 两者同时存在不该发生；真遇到时 VPK 才是权威输入（重建走的就是它）。
+		var dir = NewMod("vpk-and-manifest");
+		File.WriteAllText(Path.Combine(dir, "Elise_Bill.vpk"), "source");
+		File.WriteAllText(Path.Combine(dir, PatchName), "toc");
+		WriteSourceManifest(dir);
+
+		Assert.Equal(ModStorageKind.Vpk2Patch, _resolver.Resolve(dir));
+	}
+
+	private static void WriteSourceManifest(string modDirectory)
+	{
+		var document = new SectionalSourceDocument(
+			SectionalSourceManifest.CurrentSchema,
+			DateTimeOffset.UtcNow,
+			new SectionalSourceSelection("8d3a01f4a44a3aa3", "来源护甲"),
+			null,
+			[new SectionalSourceEntry("0123456789abcdef0123456789abcdef", "来源条目", 0)],
+			new SectionalSourceAssetKeys(["04ec4a37d9d20001"], [], []));
+		Assert.Null(SectionalSourceFile.TryWrite(modDirectory, document));
+	}
 }

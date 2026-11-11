@@ -3,6 +3,16 @@ using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels;
 
+/// <summary>重构建的来源形态。**两档 sectional 系列只是来源不同**，动作名与结果一样。</summary>
+public enum VpkRebuildSourceKind
+{
+	/// <summary>根上有来源 <c>.vpk</c>：交给转换器重跑。</summary>
+	SourceVpk,
+
+	/// <summary>根上有来源 patch + <c>sectional-source.json</c>：走 legacy2sectional。</summary>
+	SectionalSource,
+}
+
 /// <summary>
 /// 「用来源重构建」的底栏操作：选范围（仅自己 / 含子级）+ 并发数，再开跑。
 /// <para>
@@ -30,21 +40,32 @@ public sealed class VpkRebuildBottomBarViewModel : BaseViewModel
 	public VpkRebuildBottomBarViewModel(
 		string modName,
 		int descendantCount,
+		VpkRebuildSourceKind sourceKind,
 		Func<VpkRebuildBottomBarViewModel, Task> start,
 		Action close)
 	{
 		ModName = modName ?? string.Empty;
 		DescendantCount = descendantCount;
+		SourceKind = sourceKind;
 		this.start = start ?? throw new ArgumentNullException(nameof(start));
 		this.close = close ?? throw new ArgumentNullException(nameof(close));
 		// 没有子级时"含子级"没有意义，直接锁死为"仅自己"。
 		includeDescendants = descendantCount != 0;
-		status = descendantCount == 0
-			? "将用 Mod 文件夹里那份来源 VPK 重新转换：只重出这一个 Mod，保住目标护甲与 section 勾选。"
-			: $"将用 Mod 文件夹里那份来源 VPK 重新转换：保住目标护甲与 section 勾选。另有 {descendantCount} 个子级也是转换产物，可选择是否一起重出。";
-		StartCommand = new RelayCommand(async _ => await StartAsync(), _ => !IsRunning && HasValidConcurrency);
+		status = sourceKind == VpkRebuildSourceKind.SectionalSource
+			// sectional 档的来源是"根上的来源 patch"，范围已经记在依据文件里，
+			// 所以这里不能再说"来源 VPK"，也不提供"含子级"（子级本来就是来源的一部分）。
+			? "将用 Mod 根上那份来源 patch 重新转换（范围取自 sectional-source.json 记录的护甲/头盔）：保住目标护甲与 section 勾选。"
+			: descendantCount == 0
+				? "将用 Mod 文件夹里那份来源 VPK 重新转换：只重出这一个 Mod，保住目标护甲与 section 勾选。"
+				: $"将用 Mod 文件夹里那份来源 VPK 重新转换：保住目标护甲与 section 勾选。另有 {descendantCount} 个子级也是转换产物，可选择是否一起重出。";
+		// 不挂 canExecute：契约 §2.2 里没有"禁用"这一态，按钮永远可点。
+		// "这次能不能跑"由 StartAsync 当场判一次，判不过就写进本栏已有的状态行。
+		StartCommand = new RelayCommand(async _ => await StartAsync());
 		CancelCommand = new RelayCommand(_ => OnCancelOrClose());
 	}
+
+	/// <summary>这次重构建的来源形态（决定跑哪条转换机）。</summary>
+	public VpkRebuildSourceKind SourceKind { get; }
 
 	public string ModName { get; }
 
@@ -118,7 +139,9 @@ public sealed class VpkRebuildBottomBarViewModel : BaseViewModel
 			? parsed
 			: VpkBulkRebuildService.DefaultConcurrency);
 
-	public bool CanEditConcurrency => !IsRunning && !IsFinished;
+	// 只看 IsRunning：跑完之后按钮写的是"再跑一遍"，那时并发数必须还能改 ——
+	// 否则"再跑一遍"只能原样重放上一次的并发，想换个数就得先把底栏关掉再开一次。
+	public bool CanEditConcurrency => !IsRunning;
 
 	public string Status { get => status; set => SetField(ref status, value); }
 
@@ -164,7 +187,25 @@ public sealed class VpkRebuildBottomBarViewModel : BaseViewModel
 
 	private async Task StartAsync()
 	{
-		if (IsRunning) return;
+		// 按钮永远可点，所以两个"不能跑"的判断都挪到这里：判不过就把原因与下一步写进
+		// 本栏已有的状态行，不做静默 return —— 点了没反应和灰着不知道为啥是同一类毛病。
+		if (IsRunning)
+		{
+			Status = "正在重构建，等这一轮跑完再点；要中途停下就点「取消」。";
+			return;
+		}
+
+		if (!HasValidConcurrency)
+		{
+			// 输入框只放行数字、越界会被夹到边界，所以真正能漏过去的只有"被清空"这一种；
+			// 范围与当前值仍然一起说出来，用户才知道填什么就能继续。
+			var current = string.IsNullOrWhiteSpace(concurrencyText) ? "（空）" : concurrencyText;
+			Status = $"并发数量必须是 {VpkBulkRebuildService.MinConcurrency}–{VpkBulkRebuildService.MaxConcurrency} 之间的整数，现在填的是「{current}」——填好之后再点这个按钮。";
+			return;
+		}
+
+		// 重跑时把"已结束"退回去：否则这一轮里「关闭」会一直挂在取消上，文本承诺了另一个分支。
+		IsFinished = false;
 		IsRunning = true;
 		Progress = 0d;
 		try

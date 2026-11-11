@@ -164,7 +164,7 @@ public static class CoreServices
 	public static IAssetMetadataCatalogProvider CreateAssetMetadataCatalogProvider(StoragePaths paths)
 		=> new FileSystemAssetMetadataCatalogProvider(paths);
 	public static ModAssetSummaryProjector CreateModAssetSummaryProjector(StoragePaths paths, IModInformationCenter informationCenter)
-		=> new ModAssetSummaryProjector(informationCenter, CreateAssetMetadataCatalogProvider(paths), new RuntimeArmorRegistryService(paths));
+		=> new ModAssetSummaryProjector(informationCenter, CreateAssetMetadataCatalogProvider(paths), new RuntimeArmorRegistryService(paths), paths.ModsDirectory);
 	public static IAssetMetadataSyncService CreateAssetMetadataSyncService(StoragePaths paths)
 		=> new GitHubAssetMetadataSyncService(new HttpClient(), paths);
 	public static IAssetInventoryProducer CreateAssetInventoryProducer(IPatchGroupAnalysisProvider analysisProvider)

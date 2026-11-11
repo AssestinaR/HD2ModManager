@@ -13,14 +13,18 @@ public sealed record SectionalSplitSource(
 	string Slot,
 	string BodyType,
 	int SectionCount,
-	string Name = "");
+	string Name = "",
+	string PieceType = "");
 
 /// <summary>一个输出 unit：把 <see cref="DonorUnitIds"/> 的几何并进 <see cref="HostUnitId"/>。</summary>
+/// <param name="PieceType">宿主件的层类型（<c>Armor</c> / <c>UnderGarment</c> / <c>Accessory</c>…）。
+/// 素体定义的 piece 层号由它换算 —— 与 vpk2patch 那边一样，从**计划**取，不回读产物。</param>
 public sealed record SectionalSplitTarget(
 	string Slot,
 	string BodyType,
 	string HostUnitId,
-	IReadOnlyList<string> DonorUnitIds)
+	IReadOnlyList<string> DonorUnitIds,
+	string PieceType = "")
 {
 	/// <summary>这个输出 unit 会承载几个来源 unit 的几何。</summary>
 	public int SourceCount => DonorUnitIds.Count + 1;
@@ -80,11 +84,27 @@ public static class SectionalSplitPlanner
 	/// <summary>非标准槽位并进这里。</summary>
 	public const string FallbackSlot = "Torso";
 
+	/// <summary>
+	/// 额外的"肩"槽并进这里。
+	/// <para>
+	/// 肩膀不是 7 标准槽之一，但它**有明确归属**：左肩是左臂的一部分、右肩是右臂的一部分。
+	/// 并进 <see cref="FallbackSlot"/>（躯干）会让肩甲跟着躯干动、跟着躯干被关，
+	/// 而游戏里它是跟手臂一起摆的。所以这里单列一条映射，不再落到兜底。
+	/// </para>
+	/// </summary>
+	private static readonly IReadOnlyDictionary<string, string> ExtraSlotMapping =
+		new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+		{
+			["LeftShoulder"] = "LeftArm",
+			["RightShoulder"] = "RightArm",
+		};
+
 	/// <summary>身形缺省值。与本体 <c>Any</c> 的口径一致。</summary>
 	public const string DefaultBody = "Any";
 
 	/// <summary>
-	/// 槽位归一：认得的标准槽原样返回（大小写不敏感），其余一律进 <see cref="FallbackSlot"/>。
+	/// 槽位归一：认得的标准槽原样返回（大小写不敏感），左右肩并进左右臂，
+	/// 其余一律进 <see cref="FallbackSlot"/>。
 	/// </summary>
 	public static string MapSlot(string? slot)
 	{
@@ -97,7 +117,7 @@ public static class SectionalSplitPlanner
 				return standard;
 		}
 
-		return FallbackSlot;
+		return ExtraSlotMapping.TryGetValue(trimmed, out var mapped) ? mapped : FallbackSlot;
 	}
 
 	public static string NormalizeBody(string? body)
@@ -147,12 +167,34 @@ public static class SectionalSplitPlanner
 			warnings.Add($"槽位「{group.Key}」不是 7 个标准槽之一，它的 {group.Count()} 个 unit 会并进 {FallbackSlot}。");
 		}
 
-		foreach (var bucket in usable
-			.GroupBy(unit => (Slot: MapSlot(unit.Slot), Body: NormalizeBody(unit.BodyType)))
-			.OrderBy(group => StandardSlots.ToList().IndexOf(group.Key.Slot))
-			.ThenBy(group => group.Key.Body, StringComparer.Ordinal))
+		// 身形族规则（2026-11-10 定）：同一槽位最多两种形态 —— {Any} 或 {Stocky, Slim}。
+		// 只要该槽出现过任一具体身形，就拆成两种身形；该槽里的 Any unit **两种身形都要**，
+		// 因为 Any 的本义就是"这一份同时服务两种身形"（见 ArmorStructure 顶部第 2 条）。
+		// 只有整槽都是 Any 时，才是一个 Any 槽。
+		var buckets = new Dictionary<(string Slot, string Body), List<SectionalSplitSource>>();
+		foreach (var slotGroup in usable.GroupBy(unit => MapSlot(unit.Slot)))
 		{
-			var members = bucket.ToArray();
+			var hasSpecificBody = slotGroup.Any(unit =>
+				!string.Equals(NormalizeBody(unit.BodyType), DefaultBody, StringComparison.OrdinalIgnoreCase));
+			string[] family = hasSpecificBody ? ["Stocky", "Slim"] : [DefaultBody];
+			foreach (var unit in slotGroup)
+			{
+				var body = NormalizeBody(unit.BodyType);
+				string[] bodyTargets = string.Equals(body, DefaultBody, StringComparison.OrdinalIgnoreCase) ? family : [body];
+				foreach (var bodyTarget in bodyTargets)
+				{
+					if (!buckets.TryGetValue((slotGroup.Key, bodyTarget), out var list))
+						buckets[(slotGroup.Key, bodyTarget)] = list = [];
+					if (!list.Contains(unit)) list.Add(unit);
+				}
+			}
+		}
+
+		foreach (var bucket in buckets
+			.OrderBy(pair => StandardSlots.ToList().IndexOf(pair.Key.Slot))
+			.ThenBy(pair => pair.Key.Body, StringComparer.Ordinal))
+		{
+			var members = bucket.Value.ToArray();
 			var host = ChooseHost(members, bucket.Key.Slot);
 			var donors = members
 				.Where(unit => !ReferenceEquals(unit, host))
@@ -163,7 +205,8 @@ public static class SectionalSplitPlanner
 				bucket.Key.Slot,
 				bucket.Key.Body,
 				host.UnitId,
-				[.. donors.Select(unit => unit.UnitId)]));
+				[.. donors.Select(unit => unit.UnitId)],
+				host.PieceType));
 
 			// 基础件与各变体同属一个互斥组：选一个变体就等于把基础件关掉。
 			var exclusive = $"{bucket.Key.Slot}/{bucket.Key.Body}";

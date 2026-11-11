@@ -24,7 +24,7 @@ public sealed record VpkTargetArmorOption(
 }
 
 /// <summary>
-/// Mod 详情页的 VPK 部分：动作卡（换目标护甲）与衣物装饰组件卡。
+/// Mod 详情页的 sectional 部分（sectional / vpk2patch 两档共用）：动作卡（目标恒为自身素体 + 组件开关）与衣物装饰组件卡。
 /// <para>
 /// <b>为什么 VPK 版 Mod 不显示 patch 版设置卡</b>：那张卡上的按钮（修复 patch、跨护甲转移、
 /// 规整护甲包、头盔合并…）都假设"这个 Mod 是一堆手写/社区 patch"。VPK 版 Mod 的 patch 是
@@ -88,8 +88,48 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// <summary>这个 Mod 根上有没有来源 .vpk。没有就无法「用来源重构建」（转出来的分件模组就是这种）。</summary>
 	public bool HasSourceVpk { get; private set; }
 
-	/// <summary>patch 版设置卡的可见性：VPK 版一律不显示。</summary>
-	public bool ShowPatchSettingsCard => CanUsePatchTools && !IsVpkMod;
+	/// <summary>
+	/// 这个 Mod 是不是"根上来源 + 转换依据"那一档（<c>sectional-source.json</c>）。
+	/// <para>
+	/// 它与 <see cref="HasSourceVpk"/> 是**并列的两种来源**，不是互斥的两种 Mod：
+	/// 有 .vpk 走 VPK 转换机，有依据文件走 legacy2sectional。两者都有时以 .vpk 为准。
+	/// </para>
+	/// </summary>
+	public bool HasSectionalSource { get; private set; }
+
+	/// <summary>有没有可用的重构建来源（任一形态）。</summary>
+	public bool HasRebuildSource => HasSourceVpk || HasSectionalSource;
+
+	/// <summary>patch 工具（修复/换甲/规整/重打包/头盔合并）的总闸。VPK 版一律不显示。</summary>
+	public bool ShowPatchTools => CanUsePatchTools && !IsVpkMod;
+
+	/// <summary>这个 Mod 是不是逻辑容器（自己没载荷，靠结构文件把子级组织起来）。</summary>
+	public bool IsLogicalContainer => Mod?.IsLogicalContainer == true;
+
+	/// <summary>
+	/// 「生成sectional版」的<b>唯一</b>判据：能不能点 = 该不该显示（**legacy 或逻辑容器**）。
+	/// <para>
+	/// 逻辑容器自己没有 patch，但它的成员（legacy 子级）有；这一颗按钮正是"把这个系列转成一个
+	/// sectional 条目"的入口，所以不能沿用"自己有 patch 才显示"的判据。
+	/// </para>
+	/// <para>
+	/// <b>这里刻意不判断"容器里到底有没有可用来源"</b>：那要遍历后代并扫盘，而这是绑定属性，
+	/// 每次属性变化都会求值。有没有来源由底栏在**点击时**判断并给出原因——那里反正要读一遍。
+	/// </para>
+	/// <para>
+	/// <b>不要再给它另配一套"可点性"判据。</b>动作按钮是 <c>Command</c> 绑定，WPF 的
+	/// <c>IsEnabledCore</c> 会把 <see cref="PageActionViewModel.IsEnabled"/> 和
+	/// <c>Command.CanExecute</c> 相与：命令那边一旦借了别的判据（这里曾经借的是
+	/// <c>CanPlanCrossArmorTransfer</c>，要求"自己有 patch"），按钮就在逻辑容器上
+	/// 明明显示出来却永远是灰的；而 <see cref="RelayCommand"/> 不挂
+	/// <c>CommandManager.RequerySuggested</c>，没人主动 Raise 的话它连重算都不会重算，
+	/// 一旦灰掉就再也亮不回来。可见性与可点性必须是同一个属性。
+	/// </para>
+	/// </summary>
+	public bool CanConvertToSectional => !_disposed
+		&& TryGetCurrentNode(out _)
+		&& !IsVpkMod
+		&& (HasPatchContent || IsLogicalContainer);
 
 	public WardrobeTreeViewModel? VpkTree
 	{
@@ -383,8 +423,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		SelectedVpkTreeNodes = [];
 		NewVpkGroupName = string.Empty;
 		IsVpkMod = false;
+		HasSectionalSource = false;
 		OnPropertyChanged(nameof(IsVpkMod));
-		OnPropertyChanged(nameof(ShowPatchSettingsCard));
+		OnPropertyChanged(nameof(HasSectionalSource));
+		OnPropertyChanged(nameof(HasRebuildSource));
+		OnPropertyChanged(nameof(ShowPatchTools));
+		RaiseCanConvertToSectionalChanged();
 		OnPropertyChanged(nameof(ShowVpkComponentCard));
 		OnPropertyChanged(nameof(EnableVpkComponentTree));
 		OnPropertyChanged(nameof(HasVpkComponentTree));
@@ -396,13 +440,33 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		// 来源包在不在，与"是不是分件模组"是两件事：转出来的分件模组没有来源 .vpk，
 		// 所以它没有"用来源重构建"这个动作。
 		HasSourceVpk = VpkRebuildService.FindSourceVpkCount(directory) != 0;
+		// 另一档来源：根上有 patch + 转换依据（legacy2sectional 的输入）。
+		// 两者都在时以 .vpk 为准（见 HasSectionalSource 的注释）。
+		HasSectionalSource = SectionalSourceFile.Exists(directory);
+		OnPropertyChanged(nameof(HasSectionalSource));
+		OnPropertyChanged(nameof(HasRebuildSource));
 		if (!VpkModWardrobeService.IsVpkMod(directory)) return;
 
 		IsVpkMod = true;
 		OnPropertyChanged(nameof(IsVpkMod));
-		OnPropertyChanged(nameof(ShowPatchSettingsCard));
+		OnPropertyChanged(nameof(ShowPatchTools));
+		RaiseCanConvertToSectionalChanged();
 		// 带上当前的详情请求代号：用户在异步加载途中切走时，旧结果不能盖掉新页面。
 		_ = LoadVpkAsync(directory, node.Metadata.Name, _detailRequestGeneration);
+	}
+
+	/// <summary>
+	/// 重算「生成sectional版」的动作状态。
+	/// <para>
+	/// 两件事都得做：通知属性（动作表的可见性靠它）和通知命令（按钮的可点性靠它）。
+	/// <see cref="RelayCommand"/> 不挂 <c>CommandManager.RequerySuggested</c>，没人在这里
+	/// Raise 一次，按钮的灰/亮就永远停在第一次绑定时的结果上。
+	/// </para>
+	/// </summary>
+	private void RaiseCanConvertToSectionalChanged()
+	{
+		OnPropertyChanged(nameof(CanConvertToSectional));
+		ConvertToCustomModelCommand.RaiseCanExecuteChanged();
 	}
 
 	private async Task LoadVpkAsync(string directory, string modName, int generation)
@@ -446,16 +510,15 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 	/// <summary>
-	/// 目标下拉的候选：游戏护甲 + 已注册的自定义素体。
+	/// 目标下拉的候选：**任意游戏护甲 + 这个 Mod 自己的那一具素体**。
 	/// <para>
-	/// <b>为什么必须带上自定义素体。</b>VPK 转换出来的是"自带 unit id 的自定义素体"，
-	/// 用户的另一条出路是把它挂到自己已经注册好的素体上——那套 unit 组只存在于
-	/// <c>armor-registry.workspace.json</c> 里，游戏装备表里永远查不到。以前这里只查装备表，
-	/// 于是"已注册的素体一个都不出现"。
+	/// <b>为什么不再列别人的素体。</b>换到别人的素体上，产物会去改那套素体的 unit 键——宿主与
+	/// 它的注册表当场分家；而换到游戏护甲是"把原版护甲件全部隐藏"的另一个决定，是合法用法，
+	/// 所以游戏护甲要留着。两条路都真实存在，只是不允许把别人的素体当成目标。
 	/// </para>
 	/// <para>
-	/// 头盔不单列：游戏护甲会按 setId 自动补齐，让用户选两遍没有意义。自定义素体没有
-	/// setId 也没有配套头盔，它本身就是完整的目标。
+	/// 自己的素体从 <c>custom-model.json</c> 读（key + 名字），不依赖注册表同步：重构建刚写完
+	/// 文件时注册表可能还没认识它，那时下拉也得有这一项。
 	/// </para>
 	/// </summary>
 	private async Task EnsureVpkTargetArmorsAsync(string modDirectory)
@@ -464,56 +527,40 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		_vpkArmorsLoading = true;
 		try
 		{
-			var catalog = new EquipmentUnitCatalogService(_paths);
-			var entries = await catalog.GetEntriesAsync().ConfigureAwait(true);
-			var gameArmors = entries
-				.Where(entry => entry.Category.Equals("Armor", StringComparison.OrdinalIgnoreCase))
-				.GroupBy(entry => entry.ArchiveId, StringComparer.OrdinalIgnoreCase)
-				.Select(group => new VpkTargetArmorOption(group.Key, group.First().DisplayName))
-				.OrderBy(option => option.DisplayName, StringComparer.CurrentCulture);
+			var options = new List<VpkTargetArmorOption>();
+			// 自己的素体排最前：它是默认目标，也是"不换甲"的那个选项。
+			var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(modDirectory);
+			_ownModelArchiveId = string.IsNullOrWhiteSpace(ownKey)
+				? null
+				: RuntimeArmorRegistryService.CustomModelArchiveId(ownKey);
+			if (_ownModelArchiveId is not null)
+				options.Add(new VpkTargetArmorOption(_ownModelArchiveId, "自定义素体", VpkTargetArmorKind.CustomModel));
 
-			// 注册表坏了不能连带把游戏护甲列表一起废掉：两者独立取，谁失败谁说明。
-			IReadOnlyList<VpkTargetArmorOption> customModels;
 			try
 			{
-				var registry = CoreServices.CreateRuntimeArmorRegistryService(_paths);
-				var customCatalog = await registry.ReadCustomModelCatalogAsync().ConfigureAwait(true);
-				customModels = customCatalog
-					.Where(entry => entry.Parts.Count != 0)
-					.Select(entry => new VpkTargetArmorOption(
-						entry.ArchiveId,
-						entry.DisplayName + "（自定义素体）",
-						VpkTargetArmorKind.CustomModel))
-					.OrderBy(option => option.DisplayName, StringComparer.CurrentCulture)
-					.ToArray();
+				var catalog = new EquipmentUnitCatalogService(_paths);
+				var entries = await catalog.GetEntriesAsync().ConfigureAwait(true);
+				options.AddRange(entries
+					.Where(entry => entry.Category.Equals("Armor", StringComparison.OrdinalIgnoreCase))
+					.GroupBy(entry => entry.ArchiveId, StringComparer.OrdinalIgnoreCase)
+					.Select(group => new VpkTargetArmorOption(group.Key, group.First().DisplayName))
+					.OrderBy(option => option.DisplayName, StringComparer.CurrentCulture));
 			}
 			catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
 			{
-				customModels = [];
-				VpkComponentStatus = "读取已注册的自定义素体失败：" + exception.Message;
+				VpkComponentStatus = "读取游戏护甲列表失败（请先在设置页重建游戏资产索引）：" + exception.Message;
 			}
 
-			var options = gameArmors.Concat(customModels).ToArray();
 			VpkTargetArmors = options;
-			// 默认选中 = **当前实际生效的目标**，其次才是这个 Mod 自己的素体。
-			//
-			// 先认记录：换过目标之后下拉必须显示那件护甲。以前这里一律选"自己的素体"，
-			// 于是换到 RE-2310 之后重开页面，下拉显示的是自定义素体、而 Overwrite 里是 RE-2310 的
-			// Unit 键——用户看到"下拉里就是我要的"就点不了应用（判据相同），或者反过来被换回去。
-			//
-			// 为什么不能默认指向 RE-2310：VPK 转出来的 7 个 Unit 本身就是一套完整素体，
-			// 它默认就该是"自定义素体模式"。指到游戏护甲上会让用户以为这个 Mod 是"某件护甲的皮肤"，
-			// 而换到那件护甲上还会把原本的护甲件全部隐藏——那是另一个决定，必须由用户点。
-		}
-		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
-		{
-			VpkComponentStatus = "读取护甲列表失败（请先在设置页重建游戏资产索引）：" + exception.Message;
 		}
 		finally
 		{
 			_vpkArmorsLoading = false;
 		}
 	}
+
+	/// <summary>这个 Mod 自己的素体归档 id（<c>custom-model:&lt;key&gt;</c>）；没有则为 <c>null</c>。</summary>
+	private string? _ownModelArchiveId;
 
 	/// <summary>
 	/// 点「切换」：把 Unit 换到下拉里选中的目标上。
@@ -540,7 +587,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		var target = SelectedVpkTargetArmor;
 		if (target is null)
 		{
-			VpkComponentStatus = "还没选目标护甲：请在上方下拉里选一个，再点「切换」。";
+			VpkComponentStatus = "还没选目标：请在上方下拉里选一个（游戏护甲或自定义素体），再点「切换」。";
 			return;
 		}
 
@@ -558,10 +605,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		// 与「重构建」用同一个任务类别：它们都是"用来源 VPK 重出一份产物"。
 		var task = _backgroundTasks?.Enqueue(
 			BackgroundTaskKind.RebuildVpk,
-			"切换 VPK 目标护甲",
+			"切换目标护甲",
 			$"{node.Metadata.Name} → {target.DisplayName}",
 			origin: "Mod 详情",
-			userVisibleReason: "把 VPK 素体的 Unit 换到目标护甲的 Unit 键上，并按当前勾选重新生成换甲产物。",
+			userVisibleReason: "把素体的 Unit 换到目标的键上（游戏护甲或自己的自定义素体），并按当前勾选重新生成产物。",
 			suggestedAction: "完成后重启游戏生效。",
 			presentation: BackgroundTaskPresentation.Foreground);
 		var cancellation = task?.CancellationToken ?? CancellationToken.None;
@@ -675,25 +722,44 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// 那时仍然返回它——否则比对会退回"自己的素体"，于是界面说"目标没变"而实际目标并不是它。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 下拉里选中的目标：**盘上记录的那个**（游戏护甲或自己的素体），没有记录就是自己的素体。
+	/// <para>
+	/// 记录里若是**别人的素体**（旧版本留下的，现在已经不许选），退回自己的素体——
+	/// 那种目标继续留着只会让下一次编译报"选了别人的素体"。
+	/// </para>
+	/// </summary>
 	private VpkTargetArmorOption? ResolveCurrentTargetArmor(string directory)
 	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(directory);
 		if (!string.IsNullOrWhiteSpace(_vpkFile.TargetArmorArchiveId))
 		{
 			var recorded = _vpkFile.TargetArmorArchiveId;
-			return VpkTargetArmors.FirstOrDefault(option =>
-					option.ArchiveId.Equals(recorded, StringComparison.OrdinalIgnoreCase))
-				?? new VpkTargetArmorOption(recorded, _vpkFile.TargetArmorName ?? recorded);
+			var match = VpkTargetArmors.FirstOrDefault(option =>
+				option.ArchiveId.Equals(recorded, StringComparison.OrdinalIgnoreCase));
+			if (match is not null)
+				return match;
+
+			var recordedIsForeignModel = recorded.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)
+				&& !string.Equals(recorded, _ownModelArchiveId, StringComparison.OrdinalIgnoreCase);
+			if (recordedIsForeignModel)
+			{
+				return OwnModelOption();
+			}
+
+			// 游戏护甲不在候选里（索引重建过、那件没了）：照实显示记录，让用户自己决定要不要换。
+			return new VpkTargetArmorOption(recorded, _vpkFile.TargetArmorName ?? recorded);
 		}
 
-		// 从没换过目标 = 它自己的素体（转换产物本身就是一套自定义素体）。
-		var ownArchiveId = VpkModWardrobeService.TryReadOwnCustomModelKey(directory) is { } ownKey
-			? RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)
-			: null;
-		if (ownArchiveId is null) return null;
-		return VpkTargetArmors.FirstOrDefault(option =>
-				option.ArchiveId.Equals(ownArchiveId, StringComparison.OrdinalIgnoreCase))
-			?? new VpkTargetArmorOption(ownArchiveId, "自定义素体", VpkTargetArmorKind.CustomModel);
+		return OwnModelOption();
 	}
+
+	private VpkTargetArmorOption? OwnModelOption()
+		=> _ownModelArchiveId is null
+			? null
+			: VpkTargetArmors.FirstOrDefault(option =>
+					option.ArchiveId.Equals(_ownModelArchiveId, StringComparison.OrdinalIgnoreCase))
+				?? new VpkTargetArmorOption(_ownModelArchiveId, "自定义素体", VpkTargetArmorKind.CustomModel);
 
 	/// <summary>
 	/// 点"应用"：先把勾选状态落盘，再烘进 patch。
@@ -944,12 +1010,24 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	}
 
 
+	/// <summary>
+	/// 「应用」时的编译目标：盘上记录的那个（游戏护甲或自己的素体），没有记录就是自己的素体。
+	/// 记录里若是别人的素体（旧版本留下的），退回自己的素体——那种目标现在已经不许选。
+	/// </summary>
 	private IReadOnlyList<string>? ResolveApplyTargets(string directory)
 	{
-		if (!string.IsNullOrWhiteSpace(_vpkFile.TargetArmorArchiveId))
-			return [_vpkFile.TargetArmorArchiveId];
 		var ownKey = VpkModWardrobeService.TryReadOwnCustomModelKey(directory);
-		return ownKey is null ? null : [RuntimeArmorRegistryService.CustomModelArchiveId(ownKey)];
+		var ownArchiveId = ownKey is null ? null : RuntimeArmorRegistryService.CustomModelArchiveId(ownKey);
+		var recorded = _vpkFile.TargetArmorArchiveId;
+		if (!string.IsNullOrWhiteSpace(recorded))
+		{
+			var isForeignModel = recorded.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)
+				&& !string.Equals(recorded, ownArchiveId, StringComparison.OrdinalIgnoreCase);
+			if (!isForeignModel)
+				return [recorded];
+		}
+
+		return ownArchiveId is null ? null : [ownArchiveId];
 	}
 
 	/// <summary>
@@ -1112,10 +1190,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 		if (document is { Unmatched.Count: > 0 })
 		{
-			parts.Add($"{document.Unmatched.Count} 个源侧开关包在这个 Mod 里找不到对应材质："
+			// 两种来源的"没成组"共用这一行：源侧开关包找不到材质（VPK），以及
+			// sectional 的来源带了 unit 却没有一段几何进产物（装饰追加失败）。原因逐条写在产物里。
+			parts.Add($"{document.Unmatched.Count} 个来源没能成组："
 				+ $"{string.Join("、", document.Unmatched.Take(4).Select(item => item.Name))}"
 				+ (document.Unmatched.Count > 4 ? "…" : string.Empty)
-				+ "。多半是它属于另一个角色/另一份材质包。");
+				+ $"（例如：{document.Unmatched[0].Reason}）");
 		}
 
 		VpkGroupStatus = string.Join(Environment.NewLine, parts);
@@ -1214,7 +1294,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return;
 		}
 
-		_sectionGroups = created.Value.Document;
+		// 新建同名组 = 用户显式要它回来：把同名的删除记录撤掉，否则下次重建又会被抑制。
+		_sectionGroups = SectionGroupCustomizations.WithoutHidden(created.Value.Document, created.Value.Group.Name);
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
 		if (await SaveSectionGroupsAsync(directory).ConfigureAwait(true))
 		{
@@ -1238,7 +1319,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return;
 		}
 
-		_sectionGroups = renamed;
+		// 改回某个名字也算"要它回来"：撤掉同名的删除记录。改名本身由重建时的合并保留（见 SectionGroupCustomizations）。
+		_sectionGroups = SectionGroupCustomizations.WithoutHidden(renamed, name);
 		await SaveSectionGroupsAsync(Path.Combine(_library.ModsRootDirectory, node.RelativePath)).ConfigureAwait(true);
 		ReapplyVpkGroups();
 	}
@@ -1251,12 +1333,13 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		if (removed is null)
 			return;
 
-		_sectionGroups = removed;
+		// 删组 = 记住"用户不想要它"：几何还在，但重建时不该把它自动生成回来。
+		_sectionGroups = SectionGroupCustomizations.WithHidden(removed, group);
 		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
 		if (await SaveSectionGroupsAsync(directory).ConfigureAwait(true))
 		{
 			// 说清"几何没动"：用户最怕的是删组把模型删掉一块。
-			VpkGroupStatus = $"已删除组「{group.Name}」。它的几何还在，只是不再有名字和开关。";
+			VpkGroupStatus = $"已删除组「{group.Name}」。它的几何还在，只是不再有名字和开关；重建也不会把它加回来（重新建一个同名组即可恢复）。";
 		}
 
 		ReapplyVpkGroups();

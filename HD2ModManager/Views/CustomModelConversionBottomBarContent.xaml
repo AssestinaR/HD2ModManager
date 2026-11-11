@@ -6,17 +6,23 @@
         <!--
             输入行：名称 / 护甲 / 头盔 / 生成。全部排在一行里。
             生成目录刻意不在这里：产物一定是"生成完立刻导入库"，中间目录只是过路。
+
+            IsEnabled 只挂在三个输入控件上，**不挂在整行 WrapPanel 上**：
+            挂在行上会连带把「生成」也禁用，而按钮按契约永不禁用——
+            "名称为空 / 没选来源 / 正在跑"由 GenerateAsync 当场写进状态行。
         -->
-        <WrapPanel VerticalAlignment="Center" Visibility="{Binding IsMain, Converter={StaticResource BoolToVis}}"
-                   IsEnabled="{Binding Operation.CanEdit}">
+        <WrapPanel VerticalAlignment="Center" Visibility="{Binding IsMain, Converter={StaticResource BoolToVis}}">
             <TextBlock Text="名称" VerticalAlignment="Center" Margin="0,0,8,0"/>
             <TextBox Width="180" VerticalAlignment="Center" Style="{StaticResource AppTextBox}"
+                     IsEnabled="{Binding Operation.CanEdit}"
                      Text="{Binding Operation.Name, UpdateSourceTrigger=PropertyChanged}"/>
             <TextBlock Text="护甲" VerticalAlignment="Center" Margin="16,0,8,0"/>
             <ComboBox Width="200" Height="32" VerticalAlignment="Center" Style="{StaticResource AppComboBox}"
+                      IsEnabled="{Binding Operation.CanEdit}"
                       ItemsSource="{Binding Operation.ArmorSources}" DisplayMemberPath="DisplayName" SelectedItem="{Binding Operation.SelectedArmor}"/>
             <TextBlock Text="头盔" VerticalAlignment="Center" Margin="16,0,8,0"/>
             <ComboBox Width="200" Height="32" VerticalAlignment="Center" Style="{StaticResource AppComboBox}"
+                      IsEnabled="{Binding Operation.CanEdit}"
                       ItemsSource="{Binding Operation.HelmetSources}" DisplayMemberPath="DisplayName" SelectedItem="{Binding Operation.SelectedHelmet}"/>
             <Button Content="生成" Style="{StaticResource AppPrimaryButton}"
                     Command="{Binding Operation.GenerateCommand}" Margin="16,0,0,0"/>

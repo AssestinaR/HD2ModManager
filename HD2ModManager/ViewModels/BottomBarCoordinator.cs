@@ -86,6 +86,12 @@ namespace HD2ModManager.ViewModels
         public bool ShowAddToProfile => IsLibrarySelection && _isLibraryProfileCompanionVisible && HasSelectedStandardMods;
         // 库页/配置页的选择都可以一键批量设置分类；分类被关掉时不显示。
         public bool ShowSetCategory => IsRelationshipSourceSelection && CategoryFilterPreference.IsEnabled;
+        // 「重构」：**只看作用域**，不看选中的是什么。
+        //
+        // 谁是 sectional 系列、谁有后代、后代里有没有可重构的 —— 这些都要扫盘。塞进绑定属性
+        // 会让每次选择变化（含方向键换行）都读一遍目录。所以判定放在点击时由 ShellViewModel 做，
+        // 这里只回答"这块选择栏该不该出现重构按钮"。
+        public bool ShowRebuild => IsLibrarySelection || IsProfileSelection || IsDecorationHostSelection;
         public IReadOnlyList<string> SelectedIds => _selection.SelectedIds.ToArray();
         public bool ShowSetAsOption => IsRelationshipSourceSelection && HasRelationshipHost && HasSelectedOptionCandidates;
 
@@ -218,6 +224,11 @@ namespace HD2ModManager.ViewModels
             RefreshState();
         }
 
+        // 按钮永不禁用：点了没成，就必须当场说清为什么、下一步做什么（契约见
+        // docs/agent/action-button-contract-plan-20261110.md §2.2）。
+        private void ReportNothingToDo(string message)
+            => _notifications.Show(message, NotificationLevel.Warning, TimeSpan.FromSeconds(10));
+
         public void BeginMove()
         {
             if (IsProfileSelection && _profiles.SelectedProfile is { } profile)
@@ -230,12 +241,26 @@ namespace HD2ModManager.ViewModels
             }
 
             if (TryGetSelectedDirectHostOptions(out var hostId, out var orderedOptions))
+            {
                 BeginPositionEdit("OptionMove", _selection.SelectedIds, orderedOptions, hostId);
+                return;
+            }
+
+            ReportNothingToDo(IsProfileSelection
+                ? "这一侧还没有正在编辑的配置，所以没有顺序可调。请先在配置页里选中一个配置（没有的话点「新建配置」），再回来点「移动」。"
+                : "「移动」只对配置项、或某个 Mod 的直属选项生效。请先在配置页里选中条目，或打开一个 Mod 的选项列表再选中它们。");
         }
 
         public void BeginInsert()
         {
-            if (!IsLibrarySelection || _profiles.SelectedProfile is not { } profile) return;
+            if (!IsLibrarySelection || _profiles.SelectedProfile is not { } profile)
+            {
+                ReportNothingToDo(IsLibrarySelection
+                    ? "现在没有可插入的配置：配置页那边没有选中任何配置。请先在配置页里选中一个配置（没有的话点「新建配置」），再回来点「插入」。"
+                    : "「插入」只对模组库页的选择生效。请先在模组库页选中要插入的 Mod，再点这个按钮。");
+                return;
+            }
+
             BeginPositionEdit(
                 "Insert",
                 _selection.SelectedIds,
@@ -285,7 +310,14 @@ namespace HD2ModManager.ViewModels
                 .Concat(requestedIds.Where(selected.Contains))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            if (orderedIds.Length == 0) return;
+            if (orderedIds.Length == 0)
+            {
+                // 防御性兜底（按当前绑定基本走不到）：但"点了没反应"是最难诊断的那类，宁可多说一句。
+                ReportNothingToDo(mode is "Move" or "Insert"
+                    ? "没有拿到可以排序的配置项：这次选择与当前配置里的条目对不上。请重新选中配置里的条目，再点一次。"
+                    : "没有拿到可以排序的选项：这次选择与这个 Mod 的选项列表对不上。请重新选中它下面的选项，再点一次。");
+                return;
+            }
 
             _customNameEdit = null;
             _editModId = string.Join("|", orderedIds);
@@ -526,6 +558,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(ShowAddToProfile));
             OnPropertyChanged(nameof(ShowSetAsOption));
             OnPropertyChanged(nameof(ShowSetCategory));
+            OnPropertyChanged(nameof(ShowRebuild));
 
             OnPropertyChanged(nameof(ShowEnableDecorations));
             OnPropertyChanged(nameof(ShowDisableDecorations));

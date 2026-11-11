@@ -560,15 +560,20 @@ public sealed class VpkPatchAssembler
 
 			var slot = plan.Group.Region.Slot();
 			slots[planIndex] = slot;
-			if (plan.Group.Kind == MeshGroupKind.BodyPart)
+			// 判据是**槽位**不是区域：头盔槽（slot 0）没有身形变体，注册表只接受 body=Any。
+			// 以前按 `Region == Head` 判断，别的区域一旦也落到 slot 0 就会写成 body 0/1 两条，
+			// 读取注册表时整份失败（实测 11 条全是 slot=0、body 混着 0/1/3）。
+			if (slot == 0)
 			{
 				layerBySlot[slot] = 1;
-				registryPiecesByPlan[planIndex] = plan.Group.Region == BodyRegion.Head
-					// 头盔：Lua 会把 body=3 的 slot 0 展开进目标的原生 body 行，所以这里就该是 Any。
-					? [new VpkRegistryPiece(3, slot, 0, false)]
-					// 本体：目标原生行是 body=0（Stocky）与 body=1（Slim）两行，
-					// 必须各出一条才能命中真正的 Piece 模板。
-					: [new VpkRegistryPiece(0, slot, 0, true), new VpkRegistryPiece(1, slot, 0, true)];
+				registryPiecesByPlan[planIndex] = [new VpkRegistryPiece(3, slot, 0, false)];
+			}
+			else if (plan.Group.Kind == MeshGroupKind.BodyPart)
+			{
+				layerBySlot[slot] = 1;
+				// 本体：目标原生行是 body=0（Stocky）与 body=1（Slim）两行，
+				// 必须各出一条才能命中真正的 Piece 模板。
+				registryPiecesByPlan[planIndex] = [new VpkRegistryPiece(0, slot, 0, true), new VpkRegistryPiece(1, slot, 0, true)];
 			}
 			else
 			{

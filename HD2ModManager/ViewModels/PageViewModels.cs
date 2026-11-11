@@ -2067,9 +2067,8 @@ namespace HD2ModManager.ViewModels
             UpdateAssetMetadataCommand = new RelayCommand(UpdateAssetMetadata);
             RefreshAssetIndexStatusCommand = new RelayCommand(_ => _ = RefreshAssetIndexStatusAsync(), _ => !IsRefreshingAssetIndexStatus && !IsBuildingAssetIndex);
             BuildAssetIndexCommand = new RelayCommand(_ => _ = BuildAssetIndexAsync(), _ => !IsBuildingAssetIndex);
-            VerifyWithSteamCommand = new RelayCommand(
-                _ => _ = VerifyWithSteamAsync(),
-                _ => !IsVerifyingWithSteam && !string.IsNullOrWhiteSpace(GameDataFolder));
+            // 不设 canExecute：按钮永远可点，缺什么由 VerifyWithSteamAsync 当场说清（见那里的注释）。
+            VerifyWithSteamCommand = new RelayCommand(_ => _ = VerifyWithSteamAsync());
 
             // 早就是外置模式的用户永远不会再点那个下拉，唯一的刷新机会就是这里。
             RefreshLuaPackagesOnStartup();
@@ -2084,7 +2083,6 @@ namespace HD2ModManager.ViewModels
                 if (isVerifyingWithSteam == value) return;
                 isVerifyingWithSteam = value;
                 OnPropertyChanged(nameof(IsVerifyingWithSteam));
-                VerifyWithSteamCommand?.RaiseCanExecuteChanged();
             }
         }
 
@@ -2097,9 +2095,22 @@ namespace HD2ModManager.ViewModels
         /// </summary>
         private async Task VerifyWithSteamAsync()
         {
-            if (IsVerifyingWithSteam) return;
+            // 按钮永远可点（不用 CanExecute 禁用），所以"不能做"的三种情况都在这里说清。
+            // 提示写进 AssetIndexHint：它就在这个按钮**正上方**（SettingsPageView.xaml:205），
+            // 不新增任何控件，符合"按钮旁不许挂小字"的约定。
+            if (IsVerifyingWithSteam)
+            {
+                AssetIndexHint = "Steam 校验正在进行中；底栏里可以随时点「刷新状态」，完成前不会再开第二遍。";
+                return;
+            }
+
             var gameData = GameDataFolder;
-            if (string.IsNullOrWhiteSpace(gameData)) return;
+            if (string.IsNullOrWhiteSpace(gameData))
+            {
+                AssetIndexHint = "还没有填游戏目录。先在上面「游戏与资产 → 游戏目录」里选到 …\\steamapps\\common\\Helldivers 2\\data，再回来点这个按钮。";
+                return;
+            }
+
             IsVerifyingWithSteam = true;
             // 底栏**立刻**出现：用户此刻就等在电脑前，Steam 一校验完他就能自己点「刷新状态」，
             // 不必等我们先探测到校验结束。120 秒只是"没点按钮时"的兜底。

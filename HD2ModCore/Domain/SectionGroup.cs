@@ -25,6 +25,23 @@ namespace HD2ModCore.Domain;
 // 源侧 `$no_draw` 包与后置 unit 吸收出来的组都按这个方向表达，
 // 界面因此不需要区分"这个组是隐藏型还是显示型"。
 
+/// <summary>
+/// 用户**删掉**的组。重建/重转换时按 <see cref="Key"/>（生成器给的稳定键）或名字匹配，
+/// <b>不再自动生成回来</b>。
+/// <para>
+/// <b>为什么要记它。</b>组表是用户可以改的：他能删掉"翅膀"（不想让它出现在面板上）。
+/// 但重转换会重新生成一份默认组表——不记的情况下那个组又活过来，用户会以为"我的删除没生效"。
+/// 这跟"改名被冲掉""手建组被删掉"是同一类问题：**用户的自定义不该被自动产物覆盖**。
+/// </para>
+/// <para>
+/// <b>为什么不用成员当键。</b>段下标每次重建都会漂；而 unit 集合太粗——同一个 unit 里可能同时有
+/// "本体""尾巴""鞋子"三个组（实测就是），按 unit 匹配会把它们的名字互相串掉。
+/// </para>
+/// </summary>
+/// <param name="Name">删除时的组名（只用于显示与"按名字匹配"这条兜底）。</param>
+/// <param name="Key">生成器给的稳定键（<c>source:尾巴</c> / <c>component:裙子</c>）；手建组没有。</param>
+public sealed record SectionGroupTombstone(string Name, string? Key = null);
+
 /// <summary>组是怎么来的。界面要能告诉用户"这条是自动识别的还是我自己建的"。</summary>
 public enum SectionGroupSource
 {
@@ -78,6 +95,16 @@ public sealed record SectionGroup(
 
 	/// <summary>来源。旧文件没有这个字段，默认按 <see cref="SectionGroupSource.NoDraw"/> 读。</summary>
 	public SectionGroupSource Source { get; init; } = SectionGroupSource.NoDraw;
+
+	/// <summary>
+	/// <b>稳定键</b>：生成器用来回答"重建之后这还是同一个组吗"。
+	/// <para>
+	/// 自动组由生成器给（sectional = <c>source:&lt;来源条目名&gt;</c>，vpk = <c>component:&lt;部件名&gt;</c>），
+	/// 手建组留空。**名字不是身份**（用户会改名），成员也不是（段下标每次都漂、unit 又太粗）。
+	/// 用户的改名/互斥/删除都按它对齐，见 <c>SectionGroupCustomizations</c>。
+	/// </para>
+	/// </summary>
+	public string? Key { get; init; }
 
 	/// <summary>互斥组名；null = 不参与互斥。</summary>
 	public string? ExclusiveGroup { get; init; }
@@ -148,8 +175,8 @@ public sealed record SectionGroupDocument(
 	IReadOnlyList<SectionGroup> Groups,
 	IReadOnlyList<SectionGroupUnmatched> Unmatched)
 {
-	/// <summary>当前格式标识。</summary>
-	public const string CurrentSchema = "hd2mod.section-groups/1";
+	/// <summary>当前格式标识。<c>/2</c> 只多了一个可选的 <c>hidden</c>（用户删掉的组）。</summary>
+	public const string CurrentSchema = "hd2mod.section-groups/2";
 
 	/// <summary>
 	/// 旧格式标识（"组件开关"时代）。**只读不写**：读进来就升成当前格式，
@@ -158,7 +185,10 @@ public sealed record SectionGroupDocument(
 	public const string LegacySchema = "hd2mod.vpk-components/1";
 
 	/// <summary>能读的格式。顺序即优先级，第一项是写出时用的。</summary>
-	public static IReadOnlyList<string> ReadableSchemas { get; } = [CurrentSchema, LegacySchema];
+	public static IReadOnlyList<string> ReadableSchemas { get; } = [CurrentSchema, "hd2mod.section-groups/1", LegacySchema];
+
+	/// <summary>用户删掉的组。重建时按它抑制自动生成的同名/同成员组。</summary>
+	public IReadOnlyList<SectionGroupTombstone> Hidden { get; init; } = [];
 
 	public static SectionGroupDocument Empty { get; } = new(CurrentSchema, [], []);
 

@@ -32,8 +32,12 @@ public sealed class SectionalSplitPlannerTests
 		Assert.Empty(plan.Warnings);
 	}
 
+	/// <summary>
+	/// 左右肩不是 7 标准槽之一，但归属明确：左肩→左臂、右肩→右臂。
+	/// 并进躯干（以前的行为）会让肩甲跟着躯干被关，而游戏里它是跟手臂一起摆的。
+	/// </summary>
 	[Fact]
-	public void Plan_ShoulderUnitsAreMergedIntoTorsoAndSaidOutLoud()
+	public void Plan_ShouldersAreMergedIntoTheirOwnArms()
 	{
 		var plan = SectionalSplitPlanner.Plan([
 			Unit("aaaa000000000001", "Torso", 4),
@@ -41,11 +45,16 @@ public sealed class SectionalSplitPlannerTests
 			Unit("aaaa000000000003", "RightShoulder", 2),
 		]);
 
-		var target = Assert.Single(plan.Targets);
-		Assert.Equal("Torso", target.Slot);
-		Assert.Equal(2, target.DonorUnitIds.Count);
-		Assert.Contains(plan.Warnings, warning => warning.Contains("LeftShoulder", StringComparison.Ordinal));
-		Assert.Contains(plan.Warnings, warning => warning.Contains("RightShoulder", StringComparison.Ordinal));
+		Assert.Equal(3, plan.Targets.Count);
+		var torso = Assert.Single(plan.Targets, target => target.Slot == "Torso");
+		Assert.Empty(torso.DonorUnitIds);
+		// 肩部单位成为该臂槽的**宿主**（它的槽位归一后就是这个槽），不是捐体。
+		var leftArm = Assert.Single(plan.Targets, target => target.Slot == "LeftArm");
+		Assert.Equal("aaaa000000000002", leftArm.HostUnitId);
+		var rightArm = Assert.Single(plan.Targets, target => target.Slot == "RightArm");
+		Assert.Equal("aaaa000000000003", rightArm.HostUnitId);
+		Assert.DoesNotContain(plan.Targets, target =>
+			target.Slot == SectionalSplitPlanner.FallbackSlot && target.DonorUnitIds.Count != 0);
 	}
 
 	[Fact]
@@ -61,8 +70,13 @@ public sealed class SectionalSplitPlannerTests
 		Assert.Equal(["Slim", "Stocky"], plan.Targets.Select(target => target.BodyType).OrderBy(body => body, StringComparer.Ordinal));
 	}
 
+	/// <summary>
+	/// 一个槽里同时出现 Any 与具体身形时，Any **不是**歧义，而是"这一份同时服务两种身形"：
+	/// 该槽按 {Stocky, Slim} 拆成两个 unit，Any 的几何两份都要（见 ArmorStructure 顶部第 2 条）。
+	/// 2026-11-10 之前这里会报"Any 与具体身形混用"的歧义警告，那条规则已被这条规则取代。
+	/// </summary>
 	[Fact]
-	public void Plan_MixedAnyAndConcreteBody_WarnsAboutAmbiguity()
+	public void Plan_AnyAndConcreteBodyInOneSlotFeedsBothBodyUnits()
 	{
 		var plan = SectionalSplitPlanner.Plan([
 			Unit("cccc000000000001", "Torso", 4),
@@ -70,7 +84,10 @@ public sealed class SectionalSplitPlannerTests
 		]);
 
 		Assert.Equal(2, plan.Targets.Count);
-		Assert.Contains(plan.Warnings, warning => warning.Contains("Any", StringComparison.Ordinal));
+		Assert.Equal(["Slim", "Stocky"], plan.Targets.Select(target => target.BodyType).OrderBy(body => body, StringComparer.Ordinal));
+		// Any 那一份进两个 unit：它俩的 donor 里都能看到它。
+		Assert.All(plan.Targets, target =>
+			Assert.Contains("cccc000000000001", target.DonorUnitIds.Concat([target.HostUnitId])));
 	}
 
 	[Fact]
@@ -78,7 +95,9 @@ public sealed class SectionalSplitPlannerTests
 	{
 		var plan = SectionalSplitPlanner.Plan([
 			Unit("dddd000000000001", "Torso", 1),
-			Unit("dddd000000000002", "LeftShoulder", 9),
+			// 用一个**没有明确归属**的非标准槽当捐体（Cape → 兜底到 Torso）。
+			// 左右肩现在有自己的归属（→ 左右臂），不再参与"并进躯干"这条路径。
+			Unit("dddd000000000002", "Cape", 9),
 		]);
 
 		var target = Assert.Single(plan.Targets);
@@ -154,7 +173,9 @@ public sealed class SectionalSplitPlannerTests
 	{
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot("torso"));
 		Assert.Equal("LeftArm", SectionalSplitPlanner.MapSlot(" LEFTARM "));
-		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot("LeftShoulder"));
+		// 左右肩有明确归属：并进各自的臂，不落兜底。
+		Assert.Equal("LeftArm", SectionalSplitPlanner.MapSlot("LeftShoulder"));
+		Assert.Equal("RightArm", SectionalSplitPlanner.MapSlot(" rightshoulder "));
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot(null));
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot("Cape"));
 	}

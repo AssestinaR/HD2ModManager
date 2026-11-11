@@ -57,6 +57,13 @@ public sealed class ModStorageKindResolver : IModStorageKindResolver
 		// 有来源 VPK ⇒ vpk2patch 系。即使根上还留着早期转换产物也仍按 VPK 版算：
 		// 来源 VPK 才是它的权威输入，重建走的就是它。
 		if (hasSourceVpk) return ModStorageKind.Vpk2Patch;
+		// 有转换依据（sectional-source.json）⇒ sectional 系，**且必须先于"有基底目录"判**。
+		//
+		// 导入那一刻基底目录还是空的（来源 patch 刚平铺到根上，转换还没跑），
+		// 但依据文件已经写好了。若按"有没有基底目录"来判，这个窗口里它会被当成 Legacy，
+		// 详情页于是挂上 legacy 的动作集（修复 patch / 换甲 / 规整…），而那些动作对
+		// "一个正在等转换的条目"全是错的。
+		if (SectionalSourceFile.Exists(modDirectory)) return ModStorageKind.Sectional;
 		if (hasBaseLayer) return ModStorageKind.Sectional;
 		if (hasRootPatch) return ModStorageKind.Legacy;
 		// 什么都没有：只有带逻辑标记才算容器；否则是个认不出来的空壳

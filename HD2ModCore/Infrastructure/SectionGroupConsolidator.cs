@@ -125,7 +125,14 @@ public static class SectionGroupConsolidator
 			SectionGroupDocument.CurrentSchema,
 			groups,
 			unmatched);
-		return new SectionGroupConsolidation(document, refreshed, dropped, keptManual);
+		// 用户对自动组做过的改动（改名 / 互斥 / 删除）在这里落地：
+		// 成员与来源以这次转出来的为准，名字、互斥、"删过"以用户的为准。
+		var customized = SectionGroupCustomizations.Apply(document.Groups, previous?.Groups, previous?.Hidden);
+		return new SectionGroupConsolidation(
+			document with { Groups = customized.Groups, Hidden = previous?.Hidden ?? [] },
+			refreshed,
+			dropped,
+			keptManual);
 	}
 
 	/// <summary>源材质裸名 → 它在**这份** sections.json 里出现过的 <c>(unit, section 下标)</c>。</summary>

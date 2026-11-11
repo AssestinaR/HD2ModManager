@@ -26,8 +26,11 @@ public sealed class VpkBulkRebuildResult
 	public bool Canceled { get; }
 	public int TotalCount => Entries.Count;
 	public int SucceededCount => Entries.Count(entry => entry.Ok);
-	public int FailedCount => Entries.Count(entry => !entry.Ok && entry.Outcome is not null);
-	public int SkippedCount => Entries.Count(entry => !entry.Ok && entry.Outcome is null);
+	// 失败与跳过按**有没有错误说明**分，不按 Outcome 是否为空：
+	// sectional 档走的是 `Legacy2SectionalConverter`，它不产出 `VpkRebuildOutcome`，
+	// 用 Outcome 判会把它的失败项算成"未执行"，结论里凭空少掉失败数。
+	public int FailedCount => Entries.Count(entry => !entry.Ok && entry.Error is not null);
+	public int SkippedCount => Entries.Count(entry => !entry.Ok && entry.Error is null);
 
 	/// <summary>成功换掉产物的那些节点 —— 调用方据此失效并重算库里的内容事实。</summary>
 	public IReadOnlyList<ModNodeId> SucceededNodeIds => Entries.Where(entry => entry.Ok).Select(entry => entry.Target.NodeId).ToArray();
@@ -79,26 +82,43 @@ public static class VpkBulkRebuildService
 	public static int NormalizeConcurrency(int value) => Math.Clamp(value, MinConcurrency, MaxConcurrency);
 
 	/// <summary>
-	/// 列出库里所有「VPK 类」Mod。<b>判据只看 <c>vpk2patch.json</c></b>：那是转换器写的报告，
-	/// 普通导入的 Mod 不会有它。目录不存在的节点直接跳过（库索引领先于磁盘时的正常情况）。
+	/// 列出库里所有「sectional 系列」Mod（<c>Sectional</c> 与 <c>Vpk2Patch</c> 两档）。
+	/// <para>
+	/// <b>判据只能有一份。</b>这里直接问 <see cref="ModStorageKindResolver"/>——它是"这个 Mod 是哪一种"
+	/// 的唯一判定处。以前这里自己数 <c>vpk2patch.json</c>，而那只是 vpk2patch 一档的产物报告；
+	/// 按它判，由 legacy 转出来的 sectional Mod 永远进不了目标清单。
+	/// </para>
+	/// <para>
+	/// <b><paramref name="scopeIds"/> 给定时会把"后代选项"一并纳入。</b>选中一个条目时，
+	/// 它的子级里凡是 sectional 系列的都算进这次重构——契约是"选中的 Mod 及其后代"，
+	/// 而不是"恰好被选中的那几个"。逻辑容器的空壳自身没有载荷，自然不会成为目标，
+	/// 但它的 vpk 子级会被带进来。
+	/// </para>
 	/// </summary>
-	public static IReadOnlyList<VpkBulkRebuildTarget> EnumerateTargets(LibrarySnapshot snapshot, string? modsRootDirectory)
+	/// <param name="scopeIds">来源库里的节点 guid（<c>N</c> 格式）。<c>null</c> = 全库。</param>
+	public static IReadOnlyList<VpkBulkRebuildTarget> EnumerateTargets(
+		LibrarySnapshot snapshot,
+		string? modsRootDirectory,
+		IEnumerable<string>? scopeIds = null)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
 		if (string.IsNullOrWhiteSpace(modsRootDirectory) || !Directory.Exists(modsRootDirectory))
 			return Array.Empty<VpkBulkRebuildTarget>();
 
+		var scope = RebuildTargetScope.Expand(snapshot, scopeIds);
+		var resolver = new ModStorageKindResolver(new PatchFileNameParser());
 		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		var targets = new List<VpkBulkRebuildTarget>();
 		foreach (var node in snapshot.Nodes.Values)
 		{
 			if (node.Metadata.IsLogicalContainer) continue;
 			if (string.IsNullOrWhiteSpace(node.RelativePath)) continue;
+			if (scope is not null && !scope.Contains(node.Id)) continue;
 
 			var directory = Path.Combine(modsRootDirectory, node.RelativePath);
 			if (!seen.Add(directory)) continue;
 			if (!Directory.Exists(directory)) continue;
-			if (VpkConversionReport.TryRead(directory) is null) continue;
+			if (!RebuildTargetScope.IsSectionalSeries(directory, resolver)) continue;
 
 			targets.Add(new VpkBulkRebuildTarget(
 				node.Id,
@@ -111,6 +131,7 @@ public static class VpkBulkRebuildService
 			.ThenBy(target => target.Directory, StringComparer.OrdinalIgnoreCase)
 			.ToArray();
 	}
+
 
 	/// <param name="onItemFinished">每完成一个目标回调一次（<b>可能在多个线程上并发到达</b>，界面要自己切回 UI 线程）。</param>
 	/// <param name="onStage">进行中的一句人话，用来让底栏显示"现在在做什么"。</param>
@@ -134,17 +155,35 @@ public static class VpkBulkRebuildService
 				VpkBulkRebuildEntry entry;
 				try
 				{
-					onStage?.Invoke($"{target.Name}：正在重新转换…");
-					// 目标与勾选都给 null ⇒ 用 wardrobe.json 里记着的那套（= 这个 Mod 上次的配置）。
-					var outcome = await VpkRebuildService.RunAsync(
-						target.NodeId.Value.ToString("N"),
-						target.Directory,
-						new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
-						targetArchiveIds: null,
-						disabledSections: null,
-						stage => onStage?.Invoke($"{target.Name}：{stage}"),
-						token).ConfigureAwait(false);
-					entry = new VpkBulkRebuildEntry(target, outcome.Ok, outcome.Error, outcome);
+					var context = new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths());
+					var kind = new ModStorageKindResolver(new PatchFileNameParser()).Resolve(target.Directory);
+
+					// 两档 sectional 系列只在"来源 → sectional/"这一段不同；之后共用编译与部署。
+					if (kind == ModStorageKind.Sectional)
+					{
+						onStage?.Invoke($"{target.Name}：正在从来源 patch 重出 sectional…");
+						var legacy = await Legacy2SectionalConverter.RunAsync(
+							target.NodeId.Value.ToString("N"),
+							target.Directory,
+							context,
+							stage => onStage?.Invoke($"{target.Name}：{stage}"),
+							token).ConfigureAwait(false);
+						entry = new VpkBulkRebuildEntry(target, legacy.Ok, legacy.Error, null);
+					}
+					else
+					{
+						onStage?.Invoke($"{target.Name}：正在重新转换…");
+						// 目标与勾选都给 null ⇒ 用 wardrobe.json 里记着的那套（= 这个 Mod 上次的配置）。
+						var outcome = await VpkRebuildService.RunAsync(
+							target.NodeId.Value.ToString("N"),
+							target.Directory,
+							context,
+							targetArchiveIds: null,
+							disabledSections: null,
+							stage => onStage?.Invoke($"{target.Name}：{stage}"),
+							token).ConfigureAwait(false);
+						entry = new VpkBulkRebuildEntry(target, outcome.Ok, outcome.Error, outcome);
+					}
 				}
 				catch (OperationCanceledException) when (token.IsCancellationRequested)
 				{
@@ -206,7 +245,7 @@ public static class VpkBulkRebuildService
 
 			var lines = new List<string>
 			{
-				"一键重构所有 VPK 类模组 · 报告",
+				"批量重构 · 报告",
 				$"时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}",
 				$"并发：{concurrency}",
 				$"耗时：{elapsed.TotalMinutes:F1} 分钟",

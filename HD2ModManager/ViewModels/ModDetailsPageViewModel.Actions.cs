@@ -70,12 +70,21 @@ public partial class ModDetailsPageViewModel
             action.IsVisible = action.Kind switch
             {
                 PageActionKind.Table => CanUsePatchTools,
-                // 重构建只对"有来源 VPK"的 Mod 有意义：判据是根上有没有 .vpk。
-                // 转出来的分件模组没有来源包，所以它不出现。
-                PageActionKind.RebuildVpk => HasSourceVpk,
+                // 重构建对两档 sectional 系列都成立：有来源 .vpk 走 VPK 转换机，
+                // 有转换依据（sectional-source.json）走 legacy2sectional。
+                PageActionKind.RebuildVpk => HasRebuildSource,
                 PageActionKind.Fix or PageActionKind.CrossArmor or PageActionKind.Compact
                     or PageActionKind.Package or PageActionKind.Helmet or PageActionKind.Merge
-                    or PageActionKind.CustomModel => ShowPatchSettingsCard,
+                    => ShowPatchTools,
+                // 「生成sectional版」的来源集是 legacy 系列，但**宿主可以是逻辑容器**
+                // （把一个系列包起来、成员都是 legacy 的那种）。所以它的判据不是"自己有 patch"。
+                // 容器里到底有没有可用来源，由底栏在点击时判断——这里只负责让按钮出现。
+                //
+                // 可见性和可点性用**同一个属性**，这是刻意的：动作按钮走 Command 绑定，
+                // WPF 的 IsEnabledCore 会把 PageActionViewModel.IsEnabled 与 Command.CanExecute
+                // 相与，两套判据一旦不一致，就会出现"按钮显示着、但是灰的"（这里就发生过一次：
+                // 命令那边借了 CanPlanCrossArmorTransfer，逻辑容器上永远点不动）。
+                PageActionKind.CustomModel => CanConvertToSectional,
                 PageActionKind.PatchRebuild => IsDecoration,
                 PageActionKind.CloneVariant => CanCloneVariant,
                 _ => true,

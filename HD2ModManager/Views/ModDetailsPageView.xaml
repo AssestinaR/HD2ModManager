@@ -56,7 +56,7 @@
                 只有 patch 级的那几行对 VPK 版 Mod 隐藏——VPK 的 patch 是转换产物，
                 在它上面做 patch 级编辑会被下一次转换覆盖。
             -->
-            <DataTemplate x:Key="CardTemplate.VpkActions">
+            <DataTemplate x:Key="CardTemplate.SectionalActions">
                 <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>

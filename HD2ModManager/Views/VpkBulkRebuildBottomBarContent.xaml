@@ -13,7 +13,7 @@
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
                     Visibility="{Binding IsOptions, Converter={StaticResource BoolToVis}}">
             <TextBlock VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"
-                       Text="{Binding Operation.TotalCount, StringFormat=将重构建 {0} 个 VPK 类模组}"/>
+                       Text="{Binding Operation.TotalCount, StringFormat=将重构 {0} 个 Mod}"/>
             <TextBlock Text="· 并发数量" VerticalAlignment="Center" Margin="14,0,6,0" Foreground="{StaticResource TextSecondary}"/>
             <TextBox Style="{StaticResource AppTextBox}" Width="46" TextAlignment="Center"
                      IsEnabled="{Binding Operation.CanEditConcurrency}"
@@ -33,7 +33,7 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Grid.Column="0" Text="一键重构所有 VPK 模组" VerticalAlignment="Center"
+            <TextBlock Grid.Column="0" Text="{Binding Operation.Title}" VerticalAlignment="Center"
                        Foreground="{StaticResource TextSecondary}"/>
             <ProgressBar Grid.Column="1" Width="150" Height="4" Margin="12,2,0,0" Maximum="1"
                          Value="{Binding Operation.Progress, Mode=OneWay}"

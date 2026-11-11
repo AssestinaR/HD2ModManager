@@ -3,102 +3,160 @@ using HD2ModAdaptation.PatchReconstruction;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModManager.Services;
+using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 
 namespace HD2ModManager.ViewModels;
 
+/// <summary>
+/// 「生成sectional版」：把来源（主 Mod + 递归内的 legacy 子级）的 patch 平铺进一个新条目，
+/// 写下转换依据，导入后**立刻**跑一次 sectional 转换与编译。
+///
+/// <para>
+/// <b>与旧实现的区别。</b>旧实现调 <c>CustomModelConversionService.GenerateAsync</c> 生成一条
+/// 新的子集 patch，再把它搬进 <c>sectional/</c>——根上什么都不留，于是那个条目永远不可重构建。
+/// 现在按四段链路走：导入只放来源（根上平铺），转换才产出 <c>sectional/</c>，
+/// 与 vpk2patch 完全同形。
+/// </para>
+///
+/// <para>
+/// <b>"递归"与"只认 legacy"不是二选一。</b>从主 Mod 开始逐级向下走，但每一步只把**根上有 patch**
+/// 的条目收进来源集——非 legacy 的子级（vpk2patch / sectional）本来就不属于这个来源集，
+/// 被筛掉是定义使然，不是遗漏。
+/// </para>
+/// </summary>
 public partial class ModDetailsPageViewModel
 {
 	private async Task OpenCustomModelConversionAsync()
 	{
 		if (!TryGetCurrentNode(out var source)
 			|| System.Windows.Application.Current?.MainWindow?.DataContext is not ShellViewModel shell) return;
-		ModEquipmentSourceFacts? facts = null;
 		var converter = new CustomModelConversionService(_paths, _library.InformationReader);
-		async Task<ModEquipmentSourceFacts> ReadFactsAsync(CancellationToken token = default)
+		var sourceNodes = CollectSectionalSources(source);
+
+		async Task<ModEquipmentSourceFacts> ReadFactsAsync(ModNode node, CancellationToken token = default)
 		{
 			var id = Guid.NewGuid();
 			try
 			{
-				return await _equipmentSourceFactsReader.ReadAsync(source, _library.ModsRootDirectory,
+				return await _equipmentSourceFactsReader.ReadAsync(node, _library.ModsRootDirectory,
 					new ModInformationRequest(ModInformationKind.AssetInventory, "CustomModelConversion",
 						Context: ModInformationRequestContext.Create(ModInformationCacheScope.None, id, operationName: "CustomModelConversion"))
 					{ Property = ModInformationPropertyKind.UnitPartMapping }, token);
 			}
 			finally { _equipmentSourceFactsReader.ClearOperation(id); }
 		}
+
 		var bar = new CustomModelConversionBottomBarViewModel(Name, async operation =>
 		{
-			if (facts is null || operation.SelectedSources.Count == 0) return;
-			var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "一键转为自定义素体", operation.OutputDirectory,
-				origin: "Mod 详情", userVisibleReason: "复制可见组件并生成自定义 Unit ID。",
+			// "名称为空 / 没选来源"已由底栏自己的 GenerateAsync 拦下并写进状态行；
+			// 这里只剩一条它看不到的事实：整条来源链上一个 patch 都没有。
+			if (sourceNodes.Count == 0)
+			{
+				operation.Status = "这个 Mod 与它的子级里都没有来源 patch（都不是 legacy 类），没有可转换的东西。";
+				return;
+			}
+			var task = _backgroundTasks?.Enqueue(BackgroundTaskKind.Other, "生成sectional版", operation.OutputDirectory,
+				origin: "Mod 详情",
+				userVisibleReason: "把来源 patch 平铺进新条目，再按 sectional 转换出 7 槽 unit 组与材质组。",
 				canCancel: true, presentation: BackgroundTaskPresentation.Foreground);
 			task?.MarkRunning("正在检查来源并保存编辑");
 			var token = task?.CancellationToken ?? CancellationToken.None;
 			var workspaceLocked = false;
-			var progress = new Progress<CrossArmorTransferProgress>(update =>
-			{
-				task?.UpdateStage(update.StageText);
-				task?.UpdateProgress(update.Total > 0 ? (double)update.Completed / update.Total : null);
-			});
 			try
 			{
 				await shell.FlushArmorRegistryWorkspaceAsync();
 				workspaceLocked = true;
-				var selected = operation.SelectedSources.Select(s => s.ArchiveId).ToArray();
 				var name = operation.Name;
 				var output = operation.OutputDirectory;
-				operation.Status = "正在复制可见 Unit 并生成新 ID，不修改来源 Mod…";
-				// The bottom bar can stay open while the source Mod changes.
-				var freshFacts = await ReadFactsAsync(token);
 				var gameData = SettingsService.GetGameDataFolder();
 
-				// 生成 → 归位到 vpk2patch/ → 拆件 → 剪枝，整条管线在 Core 里，
-				// CLI 走的是同一份实现（见 SectionalModBuilder 的注释）。
-				task?.UpdateStage("正在生成并拆件：按 7 槽 × 身形重排 section 组");
-				var artifacts = await Task.Run(
-					() => SectionalModBuilder.BuildAsync(
-						converter,
-						freshFacts,
-						selected,
-						name,
-						output,
-						gameData,
-						CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths()),
-						token,
-						progress).AsTask(),
-					token);
-				task?.SetOutputArtifacts(artifacts.ModDirectory, artifacts.DefinitionPath);
+				// ① 来源（已按 legacy 过滤好的整条链）。
+				task?.UpdateStage("正在收集来源条目");
+				var candidates = sourceNodes.Select(ToCandidate).ToArray();
+				if (candidates.Length == 0)
+					throw new InvalidOperationException("没有可用的来源：来源条目根上都没有 patch。");
 
-				await shell.ReloadArmorRegistryWorkspaceAsync();
-				var split = artifacts.Split;
-				var compaction = artifacts.Compaction;
-				var mergedSlots = split.Plan.Targets.Count(target => target.DonorUnitIds.Count != 0);
-				operation.Status = $"已生成 {compaction.RemainingPieceCount} 个组件 · {split.Groups.Groups.Count} 个 section 组"
-					+ (mergedSlots == 0
-						? "（每块一块，无需合并）"
-						: $"（{mergedSlots} 个槽发生过合并，剪掉 {compaction.RemovedPieceCount} 个悬空组件）");
-
-				// **必须导入成 Mod，没有"只生成不导入"这条路。**
+				// ② 干净资产白名单：选中护甲/头盔的 unit → 它们引用的材质 → 那些材质引用的贴图。
 				//
-				// 素体不是独立对象，它是某个 Mod 的产物：那套 Unit 只有跟着那个 Mod 部署才有意义，
-				// 而"归属"的唯一事实来源就是 Mod 目录里的 `custom-model.json`。不导入就等于
-				// 留下一具没有归属的素体 —— 护甲映射页里挂着一个，选它什么都不发生。
-				// 所以这里无条件导入；导入失败就把刚登记的素体收回去，并把原因报出来，
-				// 绝不留下"登记了但没有 Mod"的半状态。
-				task?.UpdateStage("正在导入新 Mod");
-				task?.UpdateProgress(null);
-				var imported = await new ImportService(_library, informationCenter: _library.InformationCenter,
-					onError: message => operation.Status = "已生成，但导入失败：" + message)
-					.ImportPathAsync(artifacts.ModDirectory, token);
-				if (imported.Count == 0)
+				// 引用关系要看**整条来源链**的 patch：选中的护甲可能来自某个子级，
+				// 只读主 Mod 的 patch 会算不出它的材质闭包。
+				task?.UpdateStage("正在整理护甲与头盔范围");
+				var patchPaths = new List<string>();
+				foreach (var node in sourceNodes)
 				{
-					var reason = await RollBackRegistrationAsync(artifacts.Model.Key);
-					throw new InvalidOperationException(
-						"新 Mod 导入失败，已撤销这次素体登记；请查看输出目录后重试。"
-						+ (reason is null ? string.Empty : $"（撤销也失败了：{reason}）"));
+					var facts = await ReadFactsAsync(node, token);
+					patchPaths.AddRange(facts.SourcePatchTocPaths);
 				}
 
-				operation.Status += " · 已作为新 Mod 导入（素体依附于它，删除 Mod 会一并删除）";
+				var intentUnits = operation.SelectedSources
+					.SelectMany(entry => entry.Parts)
+					.Where(part => !part.IsCullingMesh)
+					.Select(part => new AdaptationAssetKey(part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId))
+					.Distinct()
+					.ToArray();
+
+				// 装备目录只列 kit 槽位上的 unit（实测某套护甲只有 9 个），而系列里的装饰件
+				// （翅膀 / 鞋子 / 上衣…）是同一个 patch 里另外的 unit —— 它们是这套护甲的一部分，
+				// 只按意图集会全部丢掉（2026-11-10 线上：11 个来源只剩 9 个材质组 + 1 个 unit 组）。
+				var unitKeys = await SectionalWhitelistBuilder
+					.ExpandIntentUnitsAsync(intentUnits, patchPaths, token)
+					.ConfigureAwait(true);
+
+				var whitelist = await SectionalWhitelistBuilder
+					.BuildFromPatchesAsync(unitKeys, patchPaths, token)
+					.ConfigureAwait(true);
+				var whitelistError = SectionalWhitelistBuilder.Describe(whitelist);
+				if (whitelistError is not null) throw new InvalidOperationException(whitelistError);
+
+				// ③ 建条目目录 → 平铺拷来源 → 写转换依据（含每个来源 unit 的部位/身形/层坐标）。
+				task?.UpdateStage("正在把来源 patch 拷进新条目");
+				var safeName = string.Concat(name.Trim().Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+				var modDirectory = Path.Combine(output, $"{safeName}-{DateTime.Now:yyyyMMdd-HHmmss}");
+				Directory.CreateDirectory(modDirectory);
+				var assembly = await SectionalSourceAssembler.AssembleAsync(
+					modDirectory,
+					candidates,
+					ToSelection(operation.SelectedArmor),
+					ToSelection(operation.SelectedHelmet),
+					whitelist,
+					token,
+					_paths).ConfigureAwait(true);
+				if (!assembly.Ok)
+					throw new InvalidOperationException(assembly.Error ?? "装配来源失败。");
+				task?.SetOutputArtifacts(modDirectory, null);
+
+				// ④ 导入：导入之后目录才算"库里的条目"，路径也可能被规范化，所以后面一律用库里的路径。
+				task?.UpdateStage("正在导入新 Mod");
+				var imported = await new ImportService(_library, informationCenter: _library.InformationCenter,
+					onError: message => operation.Status = "已生成，但导入失败：" + message)
+					.ImportPathAsync(modDirectory, token);
+				if (imported.Count == 0)
+					throw new InvalidOperationException("新 Mod 导入失败；请查看输出目录后重试。");
+
+				var imports = imported
+					.Select(guid => Guid.TryParse(guid, out var id) ? new ModNodeId(id) : (ModNodeId?)null)
+					.Where(id => id is not null)
+					.Select(id => id!.Value)
+					.Where(id => _library.Snapshot.Nodes.ContainsKey(id))
+					.ToArray();
+				if (imports.Length == 0)
+					throw new InvalidOperationException("导入成功但找不到库里的节点，无法继续转换。");
+				var importedNode = _library.Snapshot.Nodes[imports[0]];
+				var importedDirectory = Path.Combine(_library.ModsRootDirectory, importedNode.RelativePath);
+
+				// ⑤ 立刻转换 + 编译（与 vpk 导入后的自动重构建对称）。
+				task?.UpdateStage("正在转换并编译：按 7 槽拆分 unit 组");
+				var converted = await Legacy2SectionalConverter.RunAsync(
+					importedNode.Id.Value.ToString("N"),
+					importedDirectory,
+					new VpkHostContext(gameData, SettingsService.CreateStoragePaths()),
+					stage => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => task?.UpdateStage(stage)),
+					token).ConfigureAwait(true);
+				if (!converted.Ok)
+					throw new InvalidOperationException(converted.Error ?? "转换失败。");
+
+				operation.Status = $"已生成 {converted.MaterialGroups} 个材质组 · 1 个 unit 组"
+					+ (assembly.Notes.Count == 0 ? string.Empty : $"（{string.Join("；", assembly.Notes)}）");
 				await _library.RefreshAssetSummariesAsync(token);
 				task?.MarkCompleted();
 				_notifications?.Show(operation.Status, NotificationLevel.Info, TimeSpan.FromSeconds(12));
@@ -112,36 +170,67 @@ public partial class ModDetailsPageViewModel
 		{
 			if (!await HasCurrentGameDataIndexAsync())
 				throw new InvalidOperationException("请先在设置页重建游戏资产索引。");
-			facts = await ReadFactsAsync();
-			bar.SetSources(await converter.InspectAsync(facts));
+			if (sourceNodes.Count == 0)
+				throw new InvalidOperationException("这个 Mod 与它的子级里都没有来源 patch（都不是 legacy 类）。");
+
+			// 候选表覆盖**整条来源链**：主 Mod 与每个 legacy 子级各读一次事实再合并。
+			// 只读主 Mod 的话，护甲/头盔拆在子级里的形态根本进不了选择表。
+			var catalog = new List<EquipmentUnitCatalogEntry>();
+			var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var node in sourceNodes)
+			{
+				var facts = await ReadFactsAsync(node);
+				foreach (var entry in await converter.InspectAsync(facts))
+				{
+					// 同一个 archive 只留一份：不同来源可能都报同一件护甲（共用 unit 的情况）。
+					if (!seen.Add(entry.ArchiveId)) continue;
+					catalog.Add(entry);
+				}
+			}
+
+			bar.SetSources(catalog
+				.OrderBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+				.ToArray());
 		}
 		catch (Exception exception) { bar.Status = "来源无效：" + exception.Message; }
 	}
 
+	/// <summary>底栏里的"不包含"是 <c>Source == null</c>；转成依据文件里的选择记录。</summary>
+	private static SectionalSourceSelection? ToSelection(CustomModelSourceOption? option)
+		=> option?.Source is { } entry && !string.IsNullOrWhiteSpace(entry.ArchiveId)
+			? new SectionalSourceSelection(entry.ArchiveId, entry.DisplayName)
+			: null;
+
+	private SectionalSourceCandidate ToCandidate(ModNode node)
+		=> new(
+			node.Id.Value.ToString("N"),
+			string.IsNullOrWhiteSpace(node.Metadata.Name) ? node.RelativePath : node.Metadata.Name,
+			Path.Combine(_library.ModsRootDirectory, node.RelativePath));
+
 	/// <summary>
-	/// 撤销刚登记的素体（导入失败时的回滚）。返回 <c>null</c> 表示撤干净了，否则是失败原因。
+	/// 收集来源：主条目 + 递归子级里**根上有 patch 的**那些（即 legacy 类）。
 	/// <para>
-	/// <b>为什么要回滚。</b>登记发生在生成流程里，而"成为某个 Mod 的产物"要等导入完成。
-	/// 导入失败还留着记录，用户就会在护甲映射页看到一个选了什么都没反应的素体 ——
-	/// 那种"看着正常但不生效"的半状态比直接失败更难查。
+	/// 递归与"只认 legacy"是同一个集合的两个约束，不是两条路：逐级向下走，边遇到非 legacy 的子级
+	/// 就跳过——它不属于这个来源集，而不是"漏掉了"。
 	/// </para>
 	/// </summary>
-	private static async Task<string?> RollBackRegistrationAsync(string modelKey)
+	private IReadOnlyList<ModNode> CollectSectionalSources(ModNode host)
 	{
-		try
+		var root = _library.ModsRootDirectory;
+		var ordered = new List<ModNode> { host };
+		var graph = OptionRelationshipGraph.Create(_library.Snapshot);
+		ordered.AddRange(graph.GetDescendantOptions(host.Id));
+
+		var nodes = new List<ModNode>(ordered.Count);
+		foreach (var node in ordered)
 		{
-			var ownership = new CustomModelOwnershipService(
-				CoreServices.CreateRuntimeArmorRegistryService(SettingsService.CreateStoragePaths()));
-			await ownership.RemoveAsync(modelKey).ConfigureAwait(false);
-			return null;
+			var directory = Path.Combine(root, node.RelativePath);
+			if (!Directory.Exists(directory)) continue;
+			// 根上没有 patch ⇒ 不是 legacy（来源 patch 在 payload 里或压根没有），不进入来源集。
+			if (SectionalSplitter.EnumeratePatchFiles(directory).Count == 0) continue;
+			nodes.Add(node);
 		}
-		catch (Exception exception) when (exception is IOException
-			or UnauthorizedAccessException
-			or InvalidDataException
-			or InvalidOperationException)
-		{
-			LogService.Warn($"撤销素体登记失败（{modelKey}）：{exception.Message}");
-			return exception.Message;
-		}
+
+		return nodes;
 	}
 }

@@ -31,6 +31,54 @@ public sealed class SectionalPatchManifestTests : IDisposable
 		=> File.WriteAllText(Path.Combine(dir, name), content);
 
 	[Fact]
+	public async Task 旧键sourceVpkName仍能读成SourceName()
+	{
+		// 1.5.x 的清单把来源名写成 sourceVpkName。字段泛化成 sourceName 之后，
+		// 老库必须照读——否则每一个既有 vpk2patch 模组的材质组都会丢掉来源名，
+		// 表现为选项名集体退回默认值。
+		var payload = Payload();
+		Touch(payload, $"{Archive}.patch_0");
+		Touch(payload, $"{Archive}.patch_1");
+		File.WriteAllText(Path.Combine(payload, SectionalPatchManifest.FileName), $$"""
+			{
+			  "schema": "hd2mod.patch-groups/1",
+			  "generatedUtc": "2026-11-08T00:00:00+00:00",
+			  "patches": [
+			    { "patchIndex": 0, "archiveHex16": "{{Archive}}", "role": "unit", "sourceVpkName": "Elise_Bill.vpk" },
+			    { "patchIndex": 1, "archiveHex16": "{{Archive}}", "role": "material", "sourceVpkName": "Elise_Bill.vpk", "optionName": "我的发色" }
+			  ]
+			}
+			""");
+
+		var document = await SectionalPatchManifestFile.TryReadAsync(payload);
+
+		Assert.NotNull(document);
+		Assert.All(document!.Patches, entry => Assert.Equal("Elise_Bill.vpk", entry.SourceName));
+		Assert.Equal("我的发色", document.Patches.Single(entry => entry.PatchIndex == 1).OptionName);
+	}
+
+	[Fact]
+	public async Task 新键sourceName优先且不被旧键覆盖()
+	{
+		var payload = Payload();
+		Touch(payload, $"{Archive}.patch_0");
+		File.WriteAllText(Path.Combine(payload, SectionalPatchManifest.FileName), $$"""
+			{
+			  "schema": "hd2mod.patch-groups/1",
+			  "generatedUtc": "2026-11-09T00:00:00+00:00",
+			  "patches": [
+			    { "patchIndex": 0, "archiveHex16": "{{Archive}}", "role": "unit", "sourceName": "来源条目A", "sourceVpkName": "老名字.vpk" }
+			  ]
+			}
+			""");
+
+		var document = await SectionalPatchManifestFile.TryReadAsync(payload);
+
+		Assert.NotNull(document);
+		Assert.Equal("来源条目A", Assert.Single(document!.Patches).SourceName);
+	}
+
+	[Fact]
 	public void Build_WithoutReport_FallsBackToTheIndexConvention()
 	{
 		var payload = Payload();

@@ -79,8 +79,14 @@ public static class ModCompileService
 		if (!result.Ok)
 			return ModCompileOutcome.Failure(result.Error ?? "编译失败。", result.Warnings);
 
+		// 目标名：**目标是自己那具素体时一律叫「自定义素体」**。
+		// 素体的名字（`水墨牛牛-…`）属于产物本身，不该跑到"目标"这个位置上——
+		// 用户在看到"已换到 水墨牛牛（自定义素体）"时会以为换到了另一具素体。
 		var targetName = result.TargetName
-			?? (string.IsNullOrWhiteSpace(wardrobe.TargetArmorName) ? "自定义素体" : wardrobe.TargetArmorName);
+			?? (target is not null
+				&& target.StartsWith(RuntimeArmorRegistryService.CustomModelArchiveIdPrefix, StringComparison.OrdinalIgnoreCase)
+					? "自定义素体"
+					: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorName) ? "自定义素体" : wardrobe.TargetArmorName));
 		var notes = new List<string>(result.Info);
 		notes.AddRange(result.Warnings);
 
@@ -170,4 +176,5 @@ public static class ModCompileService
 		applied = true;
 		return $"头身合并：body {body} 的头件已挂到胸部槽位第 {layer} 层（sectional 里的注册表未改动）。";
 	}
+
 }

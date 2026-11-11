@@ -398,7 +398,7 @@ namespace HD2ModManager.Services
                 return;
 
             LogService.Info($"VPK 转换产物「{node.Metadata.Name}」已作为自定义素体导入（未替换任何原版护甲）。"
-                + "要让它生效，请在护甲映射页把它挂到某件护甲上，或到 Mod 详情页选择目标护甲。");
+                + "要让它生效，请在护甲映射页把它挂到某件护甲上，或到 Mod 详情页把目标设成这具素体。");
         }
 
     }
