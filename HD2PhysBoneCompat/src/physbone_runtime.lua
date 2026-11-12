@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.28"
+M.VERSION = "2.1.29"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -566,6 +566,100 @@ end
 -- 挂载 / 卸载
 -- ---------------------------------------------------------------------------
 
+--- 一次性"候选普查 + has_node / node 交叉验证"（**只在异常态触发**）。
+---
+--- 为什么需要（2026-11-12 实机，2.1.28）：进任务后**每一件候选的预筛都挂**
+--- （`预筛 8 件（过 0）`，连续 5 分钟一次都没过），而舰船上同样的代码却过了 8 件、挂上 2 件。
+--- 这时只剩两种可能，而且修法完全相反：
+---   A. 任务里的护甲 unit **真的没有那些骨**（不同资源 / 只挂了半个模型）⇒ 换匹配思路；
+---   B. `has_node` 在骗人（本仓早有记录：同一根骨会从 true 翻成 false，
+---      而 `num_scene_graph_items` 不变 —— 见 IDENTITY 那行日志）⇒ 换判据。
+--- `Unit.node` 加一个"绝不存在的名字"做对照就能区分：对照组若也返回合理节点下标，
+--- 那 `node` 不能当判据（2026-10-31 的结论）；若对照组返回 nil/-1/越界，而真骨返回
+--- 合理下标，就说明骨头在、是 `has_node` 在骗人。
+---
+--- 触发条件写成"探了 N 件、一件都没过预筛"，所以正常场景（能过预筛）**一个字节都不花**，
+--- 不会挤掉心跳的日志预算（mp_harness 的 900 字节断言就是这条线）。
+local function dump_census(runtime, S_, nearCandidates, farCount, carriers)
+	local firstTag = nearCandidates[1] ~= nil and unit_tag(S_, nearCandidates[1].unit) or "?"
+	local key = tostring(#nearCandidates) .. "|" .. firstTag .. "|" .. tostring(farCount)
+	local seen = runtime.censusSeen
+	if seen == nil then
+		seen = {}
+		runtime.censusSeen = seen
+	end
+	if seen[key] == true or (runtime.censusCount or 0) >= 6 then return end
+	seen[key] = true
+	runtime.censusCount = (runtime.censusCount or 0) + 1
+
+	-- ① 候选是谁：把 resource_name 去重 + 节点数直方图（一行的字节数要可控）
+	local byResource, order, nodes = {}, {}, {}
+	for index = 1, #nearCandidates do
+		local candidate = nearCandidates[index]
+		local resource = tostring(try(S_.Unit.resource_name, candidate.unit) or "?")
+		if byResource[resource] == nil then
+			byResource[resource] = 0
+			order[#order + 1] = resource
+		end
+		byResource[resource] = byResource[resource] + 1
+		local count = candidate.nodes or 0
+		nodes[count] = (nodes[count] or 0) + 1
+	end
+	local resourceParts = {}
+	for index = 1, #order do
+		resourceParts[#resourceParts + 1] = string.format("%s×%d",
+			(tostring(order[index]):gsub(".*[\\/]", "")), byResource[order[index]])
+	end
+	local nodeParts = {}
+	for _, count in ipairs({ 171, 148, 132, 121, 108, 96 }) do
+		if nodes[count] ~= nil then nodeParts[#nodeParts + 1] = string.format("%d节×%d", count, nodes[count]) end
+	end
+	runtime.logger("[physbone][普查] 近距 %d 件 / 远端 %d 件 · 资源：%s · 节点：%s",
+		#nearCandidates, farCount,
+		#resourceParts > 0 and table.concat(resourceParts, "、") or "?",
+		#nodeParts > 0 and table.concat(nodeParts, " ") or "?")
+
+	-- ② 交叉验证：容器 #1 的首骨 vs 一个绝不存在的名字
+	local probeUnit = nearCandidates[1] ~= nil and nearCandidates[1].unit or nil
+	local carrier = carriers[1]
+	local firstBone = carrier ~= nil and carrier.rig ~= nil and type(carrier.rig.bones) == "table"
+		and carrier.rig.bones[1] or nil
+	if probeUnit == nil or firstBone == nil then return end
+
+	local function describe(label, name)
+		local ids = {}
+		local okAliases, aliases = pcall(function() return Compat.bone_name_aliases(name) end)
+		for _, alias in ipairs(okAliases and aliases or {}) do
+			local okId, id = pcall(function() return S_.Application.string_to_id32(alias) end)
+			if okId and id ~= nil then ids[#ids + 1] = id end
+		end
+		if #ids == 0 then return label .. "=id 解析失败" end
+		local id = ids[1]
+		local okHas, has = pcall(S_.Unit.has_node, probeUnit, id)
+		local okNode, node = pcall(S_.Unit.node, probeUnit, id)
+		return string.format("%s has_node=%s node=%s", label,
+			tostring(okHas and has or "抛错"), tostring(okNode and node or "抛错"))
+	end
+	runtime.logger("[physbone][普查] %s（%d 节）对 %s（%d 骨）：%s ；%s ；%s ；%s",
+		unit_tag(S_, probeUnit), nearCandidates[1].nodes or 0,
+		(tostring(carrier.path):gsub(".*[\\/]", "")), #carrier.rig.bones,
+		describe("首骨", firstBone.name),
+		describe("第2骨", carrier.rig.bones[2] ~= nil and carrier.rig.bones[2].name or "?"),
+		describe("末骨", carrier.rig.bones[#carrier.rig.bones].name),
+		describe("对照组", "__hd2pbx_absent__"))
+
+	-- ③ 对这一件做一次完整打分（只做一次）：直接看出"差几根骨"
+	local best, scored = Compat.select_rig(S_, { probeUnit }, carriers)
+	local top = {}
+	for index = 1, math.min(#(scored or {}), 3) do
+		top[#top + 1] = string.format("%d/%d",
+			scored[index].score, scored[index].total)
+	end
+	runtime.logger("[physbone][普查] 该件完整打分：%s ⇒ %s",
+		#top > 0 and table.concat(top, " ") or "无容器",
+		best ~= nil and (best.full and "全命中" or "未全命中") or "无 best")
+end
+
 --- 就绪采样 + 增量挂载。
 ---
 --- "增量"是这一版的核心：**只补新 unit、只释放主人已经不在的会话**。
@@ -645,6 +739,7 @@ local function tryAttach(runtime)
 	if farCount > 0 then
 		runtime.logger("[physbone] 跳过 %d 个离它所属玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
 	end
+	-- ---------- 一次性诊断在"异常态"触发（见下面 fill 循环之后的调用） ----------
 	-- 给候选打分是这里最贵的一步（每份容器 × 每根骨一次 has_node）。
 	--
 	-- 2026-11-12 改法：**去掉"固定件数额度"**，换成"按 unit 缓存 + 每帧只新打分 N 件"。
@@ -805,6 +900,11 @@ local function tryAttach(runtime)
 	-- 不单独打行：逐拍打会把日志预算吃光、反而把驱动心跳挤掉（mp_harness 的 900 字节
 	-- 预算就是这么发现的）。耗时并进下面那一条"已挂载"行。
 	runtime.lastScoreMs = (os.clock() - scoreClock) * 1000
+	-- 异常态：这拍**探过**候选，但没有一件含容器的第 1 根骨 ⇒ 打一次普查。
+	-- 正常场景（能过预筛）一个字节都不花，所以不会挤掉心跳的日志预算。
+	if probedNow > 0 and probedOpen == 0 and scoredNow == 0 then
+		pcall(dump_census, runtime, S, nearCandidates, farCount, carriers)
+	end
 	if #plan == 0 then
 		if deferred > 0 then
 			-- 这拍额度用完了、还没轮到能命中的那件：不是失败，下一拍继续。

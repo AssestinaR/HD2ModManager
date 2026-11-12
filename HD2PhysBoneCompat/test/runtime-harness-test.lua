@@ -1145,6 +1145,65 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T17 异常态普查：预筛一件都过不了时要落「候选是谁 + has_node/node 交叉验证」")
+--
+-- 这条保护的是**诊断本身**。2026-11-12 实机进任务后日志只有一句
+-- 「预筛 8 件（过 0）」，看不到候选是什么资源、也看不出 has_node 到底在说真话还是在骗人，
+-- 于是只能靠猜（那一次猜错了两版）。普查必须真的触发、而且只触发一次（不刷屏）。
+do
+	rawset(_G, "render", function() end)
+
+	local av17 = newUnit("t17avatar", AVATAR_NODES, true, "#ID[t17avatar]")
+	do
+		local mgId = S.Application.string_to_id32("support_mg")
+		av17.ids[mgId] = true
+		av17.nodeOf[mgId] = 5
+	end
+	engine.pos[av17] = { 0, 0, 0 }
+
+	-- 三件"有节点、一根骨都没有"的候选：预筛必然全挂 ⇒ 触发普查。
+	local junk = {}
+	for index = 1, 3 do
+		local unit = newUnit("t17junk" .. index, 171, false, "#ID[t17junk" .. index .. "]")
+		engine.pos[unit] = { 0.4 + index * 0.01, 0, 0 }
+		junk[index] = unit
+	end
+
+	avatar = av17
+	armors = junk
+
+	local logPath17 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t17census.txt"
+	os.remove(logPath17)
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath17,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
+		pollFrames = 20, validateFrames = 0,
+		maxArmorDistance = 15.0,
+		scoreUnitsPerFrame = 2,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 400 do engine.time = engine.time + 1 / 120; probeRender() end
+
+	local text = ""
+	do
+		local handle = io.open(logPath17, "r")
+		if handle ~= nil then text = handle:read("*a") or ""; handle:close() end
+	end
+	check("T17 异常态落普查行", text:find("[physbone][普查]", 1, true) ~= nil)
+	check("T17 普查给出候选件数与节点直方图",
+		text:find("近距 3 件", 1, true) ~= nil and text:find("171节×3", 1, true) ~= nil)
+	check("T17 普查做 has_node / node 交叉验证并带对照组",
+		text:find("对照组 has_node=", 1, true) ~= nil and text:find(" node=", 1, true) ~= nil)
+	check("T17 普查给出该件的完整打分（差几根骨）", text:find("该件完整打分", 1, true) ~= nil)
+	local _, censusLines = text:gsub("%[physbone%]%[普查%]", "")
+	check("T17 普查只落一次（不刷屏）", censusLines == 3, string.format("%d 行", censusLines))
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")
