@@ -35,10 +35,16 @@ public sealed record ExternalPackageAdoptionCandidate(
 /// <summary>
 /// 判定「哪些顶层目录是未受管的外部包」。
 /// <para>
-/// <b>为什么判据是「本层没有 base patch，但子树里有」。</b>
-/// 正常 Mod（无论手写还是导入产物）patch 都在节点根上，重扫本来就能收；
-/// 只有「归档躺在子目录里」的包才需要认领。反过来说，任何没有 base patch 的目录
-/// 都不该被认领——那只会把纯图片目录、说明目录、残留碎片拖进库里。
+/// <b>为什么判据是「子树里有 base patch」。</b>
+/// 正常 Mod 的 patch 都在节点根上，重扫本来就能收；只有「归档躺在子目录里」的包才需要认领。
+/// 反过来说，任何没有 base patch 的目录都不该被认领——那只会把纯图片目录、说明目录、
+/// 残留碎片拖进库里。
+/// </para>
+/// <para>
+/// <b>「本层也有 patch」不再是排除条件。</b>以前的判据是「本层没有、子树里有」，于是
+/// <c>包名/patch_0</c> + <c>包名/选项/patch_0</c> 这种形状被当成正常 Mod 收下，子目录里的
+/// 选项既不进库也不报错——而它恰好是<b>我们自己的「导出为文件夹」产物</b>的形状。
+/// 现在这种形状也会被认领：本层内容作为 Mod 本体，子目录各成一个选项。
 /// </para>
 /// <para>
 /// <b>为什么这里不做 <c>ResolvePackageRoot</c> 的「唯一子目录下移」。</b>
@@ -83,32 +89,57 @@ public static class ExternalPackageAdoptionPlanner
 			var name = Path.GetFileName(directory);
 			var relativePath = Normalize(Path.GetRelativePath(root, directory));
 
-			// 管理器自己占用的目录、待删目录、库里已有的节点：一律不动。
-			if (IsReservedDirectoryName(name)
-				|| managed.Contains(relativePath)
-				|| excluded.Contains(relativePath))
-				continue;
+			// 管理器自己占用的目录、待删目录：一律不动。
+			if (IsReservedDirectoryName(name) || excluded.Contains(relativePath)) continue;
 
-			// 有设置文件说明它曾经是受管 Mod（或用户改过名），交给重扫与残留清理处理。
+			// 有设置文件说明它曾经是受管 Mod（或用户改过名）。这类目录的布局本来就是扁平的
+			// （导入时已经摊平），重扫与残留清理负责它们，不需要认领。
 			if (File.Exists(Path.Combine(directory, ModSettingsFile.FileName))) continue;
 
 			// 有逻辑容器标记说明重扫已经能收它，不需要认领。
 			if (ModNodeStorageProtocol.IsLogicalDirectory(directory)) continue;
 
-			// 根上就有 base patch：这就是正常 Mod 的形状。
-			if (HasBasePatchAtRoot(directory, parser)) continue;
+			if (managed.Contains(relativePath))
+			{
+				// 已经作为普通 Mod 收录，但重扫只读「节点根 + sectional/」——子目录里的归档
+				// 既不会进库，也不会报错。这里只**报告**，不动手：认领会给同一批内容再建一套
+				// 节点，旧节点连同它的启用状态一起作废，比"少几个选项"更难收拾。
+				var shallow = ScanSubtree(directory, parser, cancellationToken, maxDepth: 1);
+				if (shallow.NestedPatchCount == 0) continue;
+				candidates.Add(new ExternalPackageAdoptionCandidate(
+					relativePath,
+					directory,
+					shallow.OptionDirectoryNames,
+					shallow.NestedPatchCount,
+					shallow.FileCount,
+					StandardModManifest.TryLoad(directory)?.Name,
+					$"已作为普通 Mod 收录，但子目录里还有 {shallow.NestedPatchCount} 个归档没进库"
+					+ "（重扫只读节点根与 sectional/）。要收全：把它移出库根后校验一次（条目会消失），"
+					+ "再移回来校验，就会按外部包认领。",
+					Array.Empty<string>()));
+				continue;
+			}
+
+			var rootPatchCount = CountBasePatchesAtRoot(directory, parser);
+			var scan = ScanSubtree(directory, parser, cancellationToken);
+			// 没有任何 base patch：纯图片/说明/碎片目录，不是包，不列进结果。
+			if (scan.BasePatchCount == 0) continue;
+			// 本层有 patch、子树里没有：这就是正常 Mod 的形状，重扫本来就能收。
+			if (rootPatchCount > 0 && scan.NestedPatchCount == 0) continue;
 
 			var blocked = IsReparsePoint(directory)
 				? "目录是 junction 或符号链接，移动与硬链接都不可靠。"
 				: null;
-			var scan = ScanSubtree(directory, parser, cancellationToken);
-			// 没有任何 base patch：纯图片/说明/碎片目录，不是包，不列进结果。
-			if (scan.BasePatchCount == 0) continue;
 			if (blocked is null && scan.FileCount > MaxScannedFiles)
 				blocked = $"文件数 {scan.FileCount} 超过上限 {MaxScannedFiles}，疑似不是 Mod 包。";
 
 			var manifest = StandardModManifest.TryLoad(directory);
 			var warnings = CollectManifestWarnings(directory, manifest).ToList();
+			// 本层与子树都有 patch：本层的内容作为 Mod 本体，子目录各成一个选项。
+			// 这正是「导出为文件夹」产物的形状——不认领的话子目录会被静默吞掉。
+			if (rootPatchCount > 0)
+				warnings.Add($"本层有 {rootPatchCount} 个归档、子目录里还有 {scan.NestedPatchCount} 个："
+					+ "本层的作为 Mod 本体，子目录各成一个选项（「导出为文件夹」产物的形状）。");
 			// manifest 声明了但作者没发布的选项目录：只警告，不拦。
 			//
 			// 曾经拿「部分 Include 缺失」当「复制到一半」的证据去阻止认领，实测误报率 1/15
@@ -222,13 +253,18 @@ public static class ExternalPackageAdoptionPlanner
 		}
 	}
 
-	private static SubtreeScan ScanSubtree(string directory, IPatchFileNameParser parser, CancellationToken cancellationToken)
+	private static SubtreeScan ScanSubtree(
+		string directory,
+		IPatchFileNameParser parser,
+		CancellationToken cancellationToken,
+		int maxDepth = MaxScanDepth)
 	{
 		var basePatchCount = 0;
+		var rootPatchCount = 0;
 		var fileCount = 0;
 		var optionNames = new List<string>();
 		Walk(directory, depth: 0);
-		return new SubtreeScan(basePatchCount, fileCount, optionNames);
+		return new SubtreeScan(basePatchCount, rootPatchCount, fileCount, optionNames);
 
 		void Walk(string current, int depth)
 		{
@@ -238,12 +274,14 @@ public static class ExternalPackageAdoptionPlanner
 			foreach (var file in EnumerateFiles(current))
 			{
 				fileCount++;
-				if (parser.TryParse(Path.GetFileName(file), out var info)
-					&& info?.SidecarKind == PatchSidecarKind.Base)
-					basePatchCount++;
+				if (!parser.TryParse(Path.GetFileName(file), out var info)
+					|| info?.SidecarKind != PatchSidecarKind.Base)
+					continue;
+				basePatchCount++;
+				if (depth == 0) rootPatchCount++;
 			}
 
-			if (depth >= MaxScanDepth) return;
+			if (depth >= maxDepth) return;
 			foreach (var child in EnumerateDirectories(current))
 			{
 				if (IsReservedDirectoryName(Path.GetFileName(child))) continue;
@@ -257,15 +295,17 @@ public static class ExternalPackageAdoptionPlanner
 		}
 	}
 
-	private static bool HasBasePatchAtRoot(string directory, IPatchFileNameParser parser)
+	/// <summary>只数本层的 base patch。用来区分「正常 Mod」与「本层 + 子树都有」。</summary>
+	private static int CountBasePatchesAtRoot(string directory, IPatchFileNameParser parser)
 	{
+		var count = 0;
 		foreach (var file in EnumerateFiles(directory))
 		{
 			if (parser.TryParse(Path.GetFileName(file), out var info)
 				&& info?.SidecarKind == PatchSidecarKind.Base)
-				return true;
+				count++;
 		}
-		return false;
+		return count;
 	}
 
 	private static IEnumerable<string> EnumerateTopLevelDirectories(string root)
@@ -321,5 +361,14 @@ public static class ExternalPackageAdoptionPlanner
 			? string.Empty
 			: path.Replace('\\', '/').Trim('/');
 
-	private sealed record SubtreeScan(int BasePatchCount, int FileCount, IReadOnlyList<string> OptionDirectoryNames);
+	/// <param name="RootPatchCount">本层（<paramref name="BasePatchCount"/> 里）有多少个。用于区分「正常 Mod」与「本层 + 子树都有」。</param>
+	private sealed record SubtreeScan(
+		int BasePatchCount,
+		int RootPatchCount,
+		int FileCount,
+		IReadOnlyList<string> OptionDirectoryNames)
+	{
+		/// <summary>子目录里的 base patch 数量——这些是重扫**看不见**的那部分内容。</summary>
+		public int NestedPatchCount => BasePatchCount - RootPatchCount;
+	}
 }

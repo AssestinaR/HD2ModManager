@@ -223,7 +223,9 @@ public static class CliApplication
 					ok = adoption.Outcomes.All(outcome => outcome.Status != ExternalPackageAdoptionStatus.Failed),
 					library = adoptRoot,
 					adopted = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Adopted),
+					queued = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Queued),
 					failed = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Failed),
+					notes = adoption.Notes,
 					outcomes = adoption.Outcomes,
 				},
 				() => FormatLibraryAdoption(adoptRoot, adoption));
@@ -5046,7 +5048,7 @@ public static class CliApplication
 			return string.Join(Environment.NewLine, lines);
 		}
 
-		lines.Add($"发现 {candidates.Count} 个外部包，其中 {adoptable} 个可以认领。加 --confirm 才会真的导入（源目录会移进 .hd2modmanager-trash）。");
+		var archive = AdoptedArchiveOf(libraryRoot);		lines.Add($"发现 {candidates.Count} 个外部包，其中 {adoptable} 个可以认领。加 --confirm 才会真的导入（源目录会移到 {archive}，保留 30 天）。");
 		foreach (var candidate in candidates)
 		{
 			var options = candidate.OptionDirectoryNames.Count == 0
@@ -5063,6 +5065,13 @@ public static class CliApplication
 		return string.Join(Environment.NewLine, lines);
 	}
 
+	/// <summary>
+	/// 认领副本目录（<c>&lt;库&gt;.adopted</c>）。规则只写在 <see cref="StoragePaths"/> 里一处，
+	/// 这里借它算一遍——dry-run 阶段还没构造完整的 StoragePaths。
+	/// </summary>
+	private static string AdoptedArchiveOf(string libraryRoot)
+		=> new StoragePaths(libraryRoot, libraryRoot).AdoptedArchiveDirectory;
+
 	/// <summary>认领执行完的结论：成功的说清搬了哪几个，失败的把原因和「源目录还在」讲明白。</summary>
 	private static string FormatLibraryAdoption(string libraryRoot, ExternalPackageAdoptionResult adoption)
 	{
@@ -5074,14 +5083,19 @@ public static class CliApplication
 		}
 
 		var adopted = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Adopted);
+		var queued = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Queued);
 		var skipped = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Skipped);
 		var failed = adoption.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Failed);
-		lines.Add($"认领完成：导入 {adopted} 个，跳过 {skipped} 个，失败 {failed} 个。");
+		// 「排队」与「跳过」分开报：前者只是没轮到，下次继续；后者是被判据挡下了。
+		lines.Add($"认领完成：导入 {adopted} 个，排队 {queued} 个，跳过 {skipped} 个，失败 {failed} 个。");
+		foreach (var note in adoption.Notes)
+			lines.Add($"  · {note}");
 		foreach (var outcome in adoption.Outcomes)
 		{
 			var mark = outcome.Status switch
 			{
 				ExternalPackageAdoptionStatus.Adopted => "+",
+				ExternalPackageAdoptionStatus.Queued => "…",
 				ExternalPackageAdoptionStatus.Skipped => "-",
 				_ => "!",
 			};

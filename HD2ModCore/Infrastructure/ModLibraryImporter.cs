@@ -65,6 +65,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 	public async ValueTask<ImportResult> ImportLibraryResidentFolderAsync(
 		string folderPath,
 		bool preferHardLinks,
+		Action<IReadOnlyList<ModNodeId>>? onUnitCommitted = null,
 		CancellationToken cancellationToken = default)
 	{
 		var full = Path.GetFullPath(folderPath);
@@ -76,7 +77,7 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		var units = await DiscoverFolderUnitsAsync(full, cancellationToken, rootDisplayName: null, preferHardLinks).ConfigureAwait(false);
 		if (units.Count == 0)
 			throw new InvalidDataException("所选文件夹里没有可导入的内容（没有 patch，也没有 ReShade 文件）。");
-		return await ImportUnitsAsync(units, cancellationToken).ConfigureAwait(false);
+		return await ImportUnitsAsync(units, cancellationToken, onUnitCommitted).ConfigureAwait(false);
 	}
 
 	public async ValueTask<ImportResult> ImportArchiveAsync(string archiveFilePath, CancellationToken cancellationToken = default)
@@ -121,7 +122,10 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 		}
 	}
 
-	private async ValueTask<ImportResult> ImportUnitsAsync(IReadOnlyList<ImportSourceUnit> units, CancellationToken cancellationToken)
+	private async ValueTask<ImportResult> ImportUnitsAsync(
+		IReadOnlyList<ImportSourceUnit> units,
+		CancellationToken cancellationToken,
+		Action<IReadOnlyList<ModNodeId>>? onUnitCommitted = null)
 	{
 		ImportedObjectTree? firstStoredTree = null;
 		LibrarySnapshot? latestSnapshot = null;
@@ -159,6 +163,9 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 				latestSnapshot = snapshot;
 				importedNodeIds.AddRange(storedTree.Nodes.Keys);
 				cacheInvalidationFailedNodeIds.AddRange(invalidationFailures);
+				// 逐个单元回调：多单元导入是**逐单元提交**的，第二个单元失败时第一个已经在库里了。
+				// 没有这一步，调用方无从知道「这次失败其实留下了一半」，回滚也就无从谈起。
+				onUnitCommitted?.Invoke(storedTree.Nodes.Keys.ToArray());
 			}
 			finally
 			{
@@ -350,6 +357,66 @@ public sealed class ModLibraryImporter : IModLibraryImporter
 			}
 			catch { }
 		}
+	}
+
+	/// <summary>
+	/// 回滚一次**未完成的**导入已经落库的节点：删目录、失效缓存、从快照里摘掉。
+	/// <para>
+	/// <b>顺序是有讲究的：先删目录，删不动就抛，绝不先改快照。</b>反过来的话，目录还在而
+	/// 快照里没有对应节点，下一轮重扫会把它当成「外部新增」重新收进来——正是回滚要避免的重复。
+	/// 抛出去之后调用方会保留认领标记，下一轮再试一次。
+	/// </para>
+	/// <para>
+	/// 不走 <see cref="ModStorageDeletionService"/>：那条路会登记待删墓碑并进入对账排除集，
+	/// 语义是「用户要删掉一个 Mod」。这里的意思是「这次导入没有发生」。
+	/// </para>
+	/// </summary>
+	public async ValueTask RollbackImportAsync(
+		IReadOnlyCollection<ModNodeId> nodeIds,
+		CancellationToken cancellationToken = default)
+	{
+		if (nodeIds is null || nodeIds.Count == 0) return;
+		var removing = nodeIds.ToHashSet();
+		var current = await _store.TryLoadAsync(cancellationToken).ConfigureAwait(false);
+		if (current is null) return;
+
+		foreach (var nodeId in removing)
+		{
+			if (!current.Nodes.TryGetValue(nodeId, out var node)) continue;
+			var directory = Path.Combine(_paths.ModsDirectory, node.RelativePath);
+			if (!Directory.Exists(directory)) continue;
+			SetReadOnlyRecursive(directory, readOnly: false);
+			Directory.Delete(directory, recursive: true);
+		}
+
+		foreach (var nodeId in removing)
+		{
+			_informationReader?.InvalidateNode(nodeId);
+			if (_informationCenter is not null)
+				await _informationCenter.InvalidateNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(false);
+			else if (_legacyCleanup is not null)
+				await _legacyCleanup.DeleteAsync(nodeId).ConfigureAwait(false);
+		}
+
+		var nodes = new Dictionary<ModNodeId, ModNode>();
+		foreach (var kvp in current.Nodes)
+		{
+			if (removing.Contains(kvp.Key)) continue;
+			var children = kvp.Value.Children;
+			// 子节点被摘掉后，父节点的 Children 里不能留下悬空 id：详情页会照着它建树。
+			nodes[kvp.Key] = children.Count != 0 && children.Any(removing.Contains)
+				? kvp.Value with { Children = children.Where(id => !removing.Contains(id)).ToArray() }
+				: kvp.Value;
+		}
+
+		await _store.SaveAsync(
+			new LibrarySnapshot(
+				Version: current.Version,
+				SavedUtc: DateTimeOffset.UtcNow,
+				Nodes: nodes,
+				Profiles: current.Profiles,
+				ActiveProfileId: current.ActiveProfileId),
+			cancellationToken).ConfigureAwait(false);
 	}
 
 	private void NormalizePatchDirectories(string rootDirectory, CancellationToken cancellationToken)
