@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.23"
+M.VERSION = "2.1.24"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -2705,6 +2705,47 @@ local function skirt_apply(S_, runtime)
 	end
 end
 
+--- 诊断开关（`dumpApi = 1`）：把引擎 Lua 命名空间的**全部成员名**写成清单。
+--- <para>
+--- 目的（2026-11-12）：查"有没有批量写骨/姿态的 API"。当前每根骨每帧 2 次引擎调用
+--- （`Quaternion.from_elements` + `Unit.set_local_rotation`），约 5 μs/次 ⇒ 818 链就已经 5 ms。
+--- 要让四名玩家的护甲全部挂上还守住 5 ms，只有三条路：
+--- ① 找到批量写端口（一次写多根骨）；② 找到不需要构造调用的四元数写法；③ 降低链数。
+--- 这份清单是判断 ① / ② 是否存在的唯一可靠依据（旧探测用的清单已过时，它连
+--- `set_local_rotation` 都报缺失，而实际是可用的）。
+--- </para>
+--- 只读枚举、不改任何东西，一个进程只写一次。
+local function dump_api_surface(runtime)
+	local logger = runtime.logger
+	local base = os.getenv("LOCALAPPDATA")
+	if type(base) ~= "string" or #base == 0 then base = "." end
+	local path = (runtime.options and runtime.options.apiDumpPath) or (base .. "\\hd2pbx_api.txt")
+	local handle = io.open(path, "w")
+	if handle == nil then
+		logger("[physbone][诊断] 写不出 API 清单：%s", path)
+		return
+	end
+	handle:write(("physbone runtime %s · 引擎 Lua 命名空间清单\n"):format(tostring(M.VERSION)))
+	-- 只列**和写骨/构造值有关**的命名空间：清单越长越难读，而这些之外的东西用不上。
+	local namespaces = { "Unit", "Quaternion", "Matrix4x4", "Vector3", "World", "Application" }
+	for _, name in ipairs(namespaces) do
+		local namespace = rawget(S, name)
+		local lines = {}
+		if type(namespace) == "table" then
+			for key, value in pairs(namespace) do
+				if type(key) == "string" then
+					lines[#lines + 1] = ("%s = %s"):format(key, type(value))
+				end
+			end
+		end
+		table.sort(lines)
+		handle:write(("[%s] %d 项\n"):format(name, #lines))
+		for _, line in ipairs(lines) do handle:write("  " .. line .. "\n") end
+	end
+	handle:close()
+	logger("[physbone][诊断] 引擎 API 清单已写到 %s（共 %d 个命名空间）", path, #namespaces)
+end
+
 local function drive(runtime)
 	local frame = runtime.frame
 	local options = runtime.options
@@ -2720,6 +2761,15 @@ local function drive(runtime)
 			logger("[physbone][诊断] hardOff=1 ⇒ 运行时不动手（不发任何引擎调用）")
 		end
 		return
+	end
+
+	-- 诊断开关（`dumpApi = 1`）：导出引擎命名空间清单，用来判断有没有批量写骨 API。
+	if (tune_values(runtime).dumpApi or 0) ~= 0 and runtime.apiDumped ~= true then
+		runtime.apiDumped = true
+		local okDump, dumpError = pcall(dump_api_surface, runtime)
+		if not okDump then
+			logger("[physbone][诊断] API 清单导出失败：%s", tostring(dumpError))
+		end
 	end
 
 	Compat.begin_frame(frame)
@@ -3239,6 +3289,7 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
 
 
 

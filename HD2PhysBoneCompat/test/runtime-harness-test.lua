@@ -820,6 +820,49 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T13 dumpApi：导出引擎命名空间清单（找批量写骨 API 的依据）")
+do
+	rawset(_G, "render", function() end)
+
+	local tunePath13 = (os.getenv("TEMP") or ".") .. "\\physbone-t13-dumpapi-tune.txt"
+	do
+		local handle = io.open(tunePath13, "w")
+		handle:write("dumpApi = 1\n")
+		handle:close()
+	end
+	local dumpPath13 = (os.getenv("TEMP") or ".") .. "\\physbone-t13-api.txt"
+	pcall(os.remove, dumpPath13)
+	local logPath13 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t13dumpapi.txt"
+	pcall(os.remove, logPath13)
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath13,
+		settleFrames = 2, snapshot = false, tunePath = tunePath13,
+		apiDumpPath = dumpPath13,
+		pollFrames = 1, validateFrames = 0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 10 do engine.time = engine.time + 1 / 120; probeRender() end
+
+	local dump = ""
+	do
+		local handle = io.open(dumpPath13, "r")
+		if handle then dump = handle:read("*a") or ""; handle:close() end
+	end
+	check("T13 写出了清单", #dump > 0, string.format("长度=%d", #dump))
+	check("T13 含 Unit 命名空间", dump:find("[Unit]", 1, true) ~= nil)
+	-- 假引擎里 Unit.alive / Unit.world_position 都是表成员，必须被列出来
+	check("T13 列出了 Unit 的真实成员", dump:find("alive = function", 1, true) ~= nil)
+	check("T13 带运行时版本", dump:find("physbone runtime", 1, true) ~= nil)
+	pcall(os.remove, tunePath13)
+	pcall(os.remove, dumpPath13)
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")
