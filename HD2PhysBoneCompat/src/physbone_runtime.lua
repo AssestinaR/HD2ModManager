@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.30"
+M.VERSION = "2.1.31"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -212,6 +212,15 @@ local function readVector(S_, vector)
 	if ok and type(x) == "number" and x == x then return x, y, z end
 	return nil
 end
+
+--- 找玩家用的挂点名。**传名字，不传 id。**
+---
+--- 教训（2026-11-12，代价三轮实机）：`Application.string_to_id32` 返回的是
+--- `IdString32` userdata，而且**会失效**（我们自己的 snapshot 探针里印出过
+--- `[Stale IdString32]`）。把这个值存起来、或者跨帧拿去做 `has_node`，
+--- 结果是一律 false / 直接抛错 —— 于是匹配全 0，日志还长得像"骨头不在"。
+--- 名字字符串没有这个问题（`has_node(unit, "hips")` 稳定为 true），而且更便宜。
+local SUPPORT_MG_NAME = "support_mg"
 
 local function id32(S_, text)
 	local ok, value = pcall(function() return S_.Application.string_to_id32(text) end)
@@ -375,8 +384,8 @@ local function discover(S_, cache, options, logger)
 		return nil, "unit 总数在变（加载/切场景中）"
 	end
 
-	local supportMg = id32(S_, "support_mg")
-	if supportMg == nil then return nil, "support_mg 的 id32 拿不到" end
+	-- 挂点按**名字**问（`IdString32` 会失效，见 compat 里 `rig_bone_names` 的说明）。
+	local supportMg = SUPPORT_MG_NAME
 	local minNodes = options.minNodes or 90
 	-- 候选上限。**曾经是 64**，而实机在任务里"近距 29 + 远端 35 = 64"正好顶满 ——
 	-- 也就是说候选表被截断在 64，真护甲有可能压根没进表（谁进表取决于引擎枚举顺序）。
@@ -623,32 +632,38 @@ local function dump_census(runtime, S_, nearCandidates, farCount, carriers)
 		#resourceParts > 0 and table.concat(resourceParts, "、") or "?",
 		#nodeParts > 0 and table.concat(nodeParts, " ") or "?")
 
-	-- ② 交叉验证：容器 #1 的首骨 vs 一个绝不存在的名字
+	-- ② 交叉验证：容器 #1 的首骨 vs 一个绝不存在的名字。
+	-- **一律按名字问**（`has_node(unit, "骨名")`），并按 id 问一次做对照 ——
+	-- 我们自己的 snapshot 探针早有结论：`string_to_id32` 返回的 `IdString32` 会失效，
+	-- 拿它做 `has_node` 会全 false / 抛错。这一行就是用来把这两种情况分开的。
 	local probeUnit = nearCandidates[1] ~= nil and nearCandidates[1].unit or nil
 	local carrier = carriers[1]
 	local firstBone = carrier ~= nil and carrier.rig ~= nil and type(carrier.rig.bones) == "table"
 		and carrier.rig.bones[1] or nil
 	if probeUnit == nil or firstBone == nil then return end
 
-	local function describe(label, name)
-		local ids = {}
-		local okAliases, aliases = pcall(function() return Compat.bone_name_aliases(name) end)
-		for _, alias in ipairs(okAliases and aliases or {}) do
-			local okId, id = pcall(function() return S_.Application.string_to_id32(alias) end)
-			if okId and id ~= nil then ids[#ids + 1] = id end
-		end
-		if #ids == 0 then return label .. "=id 解析失败" end
-		local id = ids[1]
-		local okHas, has = pcall(S_.Unit.has_node, probeUnit, id)
-		local okNode, node = pcall(S_.Unit.node, probeUnit, id)
-		return string.format("%s has_node=%s node=%s", label,
-			tostring(okHas and has or "抛错"), tostring(okNode and node or "抛错"))
+	local function errText(ok, value)
+		if ok then return tostring(value) end
+		return "抛错(" .. tostring(value):gsub("^.*:%d+: ", "") .. ")"
 	end
-	runtime.logger("[physbone][普查] %s（%d 节）对 %s（%d 骨）：%s ；%s ；%s ；%s",
+	local function describe(label, name)
+		local aliases = Compat.bone_name_aliases(name) or { name }
+		local okHas, has = pcall(S_.Unit.has_node, probeUnit, aliases[1])
+		local okNode, node = pcall(S_.Unit.node, probeUnit, aliases[1])
+		-- 再按 id 问一次（对照）：如果名字为 true 而 id 抛错/false，就证明"存 id"这条路是坏的。
+		local okId, id = pcall(function() return S_.Application.string_to_id32(aliases[1]) end)
+		local idText = "id=?"
+		if okId and id ~= nil then
+			local okHasId, hasId = pcall(S_.Unit.has_node, probeUnit, id)
+			idText = "has_node(id)=" .. errText(okHasId, hasId) .. " type(id)=" .. type(id)
+		end
+		return string.format("%s has_node(名)=%s node=%s %s", label,
+			errText(okHas, has), errText(okNode, node), idText)
+	end
+	runtime.logger("[physbone][普查] %s（%d 节）对 %s（%d 骨）：%s ；%s ；%s",
 		unit_tag(S_, probeUnit), nearCandidates[1].nodes or 0,
 		(tostring(carrier.path):gsub(".*[\\/]", "")), #carrier.rig.bones,
 		describe("首骨", firstBone.name),
-		describe("第2骨", carrier.rig.bones[2] ~= nil and carrier.rig.bones[2].name or "?"),
 		describe("末骨", carrier.rig.bones[#carrier.rig.bones].name),
 		describe("对照组", "__hd2pbx_absent__"))
 
@@ -1136,8 +1151,7 @@ end
 local function scanAvatars(runtime)
 	local world, units = pickWorld(S, runtime.cache)
 	if world == nil or units == nil then return nil end
-	local supportMg = id32(S, "support_mg")
-	if supportMg == nil then return nil end
+	local supportMg = SUPPORT_MG_NAME
 	local options = runtime.options or {}
 	local list = findAvatars(S, world, units, #units, supportMg,
 		options.minNodes or 90, options, runtime.cache)
@@ -1325,8 +1339,7 @@ end
 local function lift_bone(S_, runtime, name, metres)
 	local avatar = runtime.avatar
 	if avatar == nil or not lift_unit_ok(S_, avatar) then return nil end
-	local id = id32(S_, name)
-	if id == nil then return nil end
+	local id = name   -- 引擎调用一律传名字（IdString32 会失效）
 	local node = try(S_.Unit.node, avatar, id)
 	if type(node) ~= "number" or try(S_.Unit.has_node, avatar, id) ~= true then return nil end
 
@@ -1361,7 +1374,7 @@ local function lift_bone(S_, runtime, name, metres)
 	state[name] = entry
 
 	local after = bone_world_z(S_, avatar, id)
-	local headZ = bone_world_z(S_, avatar, id32(S_, "head"))
+	local headZ = bone_world_z(S_, avatar, "head")
 	-- 相机也得读：它的成败和网格是两件事（根节点那次就是"相机动、网格不动"）。
 	local cameraZ = nil
 	if runtime.world ~= nil and runtime.cache ~= nil then
@@ -1401,7 +1414,7 @@ local function apply_lift(runtime, S_)
 			if avatar ~= nil and lift_unit_ok(api, avatar) then
 				for name, entry in pairs(boneStates) do
 					if entry.written ~= nil and entry.base ~= nil then
-						local id = id32(api, name)
+						local id = name   -- 同上：名字不会失效
 						local node = id ~= nil and try(api.Unit.node, avatar, id) or nil
 						if type(node) == "number" then
 							pcall(function()
@@ -1527,8 +1540,8 @@ local function apply_lift(runtime, S_)
 	if avatarUnit ~= nil and lift_unit_ok(api, avatarUnit) then
 		local _, _, rz = readVector(api, try(api.Unit.world_position, avatarUnit, 1))
 		rootZ = rz
-		local headId = id32(api, "head")
-		if headId ~= nil and try(api.Unit.has_node, avatarUnit, headId) == true then
+		local headId = "head"   -- 名字，不是 id（IdString32 会失效）
+		if try(api.Unit.has_node, avatarUnit, headId) == true then
 			local node = try(api.Unit.node, avatarUnit, headId)
 			if type(node) == "number" then
 				local _, _, hz = readVector(api, try(api.Unit.world_position, avatarUnit, node))

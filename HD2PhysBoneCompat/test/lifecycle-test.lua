@@ -231,7 +231,9 @@ do
 	local S, unit, engineState, calls = make_engine(100)
 	local session = M.attach(S, unit, make_rig(), { logger = quiet(), world = {} })
 	session.identityEvery = 1
-	check("有抽样骨名 id", type(session.identityNode) == "number", tostring(session.identityNode))
+	-- 存的是**骨名**而不是 id：`IdString32` 会失效，存 id 会让这条观测永远报 has_node=false
+	check("有抽样骨名（存名字，不存 id）", type(session.identityNode) == "string",
+		tostring(session.identityNode))
 	local originalHasNode = S.Unit.has_node
 	S.Unit.has_node = function(_, id)
 		if id == session.identityNode then return false end

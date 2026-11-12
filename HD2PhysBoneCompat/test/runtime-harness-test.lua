@@ -16,6 +16,9 @@ end
 
 local Compat = assert(assert(loadfile(compatPath))())
 
+-- 认得"玩家"用的挂点名（实机里按名字问，不按 id）
+local SUPPORT_MG = "support_mg"
+
 -- ---------------------------------------------------------------------------
 -- 假引擎
 -- ---------------------------------------------------------------------------
@@ -65,11 +68,17 @@ S.World.update_unit = function() end
 S.Unit.alive = function(unit) return engine.alive[unit] == true end
 S.Unit.num_scene_graph_items = function(unit) return engine.nodes[unit] or 0 end
 S.Unit.has_animation_state_machine = function(unit) return engine.anim[unit] == true end
-S.Unit.has_node = function(unit, id)
+-- ⚠️ 键是**骨名**，不是 id：实机里 `string_to_id32` 返回的 `IdString32` 会失效
+-- （我们自己的 snapshot 探针印过 `[Stale IdString32]`），所以匹配一律按名字问。
+-- `engine.namesOnly` 打开时，传数字（id）会直接抛错 —— T18 用它来钉死"别再退回按 id 匹配"。
+S.Unit.has_node = function(unit, key)
 	if engine.alive[unit] ~= true then return false end
-	return unit.ids[id] == true
+	if engine.namesOnly == true and type(key) ~= "string" then
+		error("[Stale IdString32] 只能按骨名问")
+	end
+	return unit.ids[key] == true
 end
-S.Unit.node = function(unit, id) return unit.nodeOf[id] end
+S.Unit.node = function(unit, key) return unit.nodeOf[key] end
 S.Unit.debug_name = function(unit) return unit.resource end
 S.Unit.name_hash = function(unit) return unit.resource end
 S.Unit.local_pose = function() return pose end
@@ -94,26 +103,24 @@ end
 S.Quaternion.from_elements = function(x, y, z, w) return { x = x, y = y, z = z, w = w } end
 setmetatable(S.Vector3, { __call = function() return vector end })
 
--- 护甲 unit：装上骨名，节点下标从 10 起
+-- 护甲 unit：装上骨名（**按名字存**，和实机的匹配口径一致），节点下标从 10 起
 local function dress(unit)
 	local nextNode = 10
 	for _, name in ipairs(BONE_NAMES) do
-		local id = S.Application.string_to_id32(name)
-		unit.ids[id] = true
-		unit.nodeOf[id] = nextNode
+		unit.ids[name] = true
+		unit.nodeOf[name] = nextNode
 		nextNode = nextNode + 1
 	end
-	local headId = S.Application.string_to_id32("head")
-	unit.ids[headId] = true
-	unit.nodeOf[headId] = 9
+	unit.ids["head"] = true
+	unit.nodeOf["head"] = 9
 end
 
 local avatar = newUnit("avatar", AVATAR_NODES, true, "#ID[avatar]")
 -- avatar 的指纹：带 support_mg 挂点（发现逻辑靠"有动画状态机 + 有 support_mg"认它）
 do
-	local mgId = S.Application.string_to_id32("support_mg")
-	avatar.ids[mgId] = true
-	avatar.nodeOf[mgId] = 5
+	local mgName = SUPPORT_MG
+	avatar.ids[mgName] = true
+	avatar.nodeOf[mgName] = 5
 end
 local armors = {}
 for index, count in ipairs(ARMOR_NODES) do
@@ -448,9 +455,9 @@ do
 	-- 玩家 A 在原点，带 6 件护甲（都贴着玩家）
 	local avatarA = newUnit("t7avatarA", AVATAR_NODES, true, "#ID[t7avatarA]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		avatarA.ids[mgId] = true
-		avatarA.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		avatarA.ids[mgName] = true
+		avatarA.nodeOf[mgName] = 5
 	end
 	local corpseArmors = {}
 	for index, count in ipairs(ARMOR_NODES) do
@@ -485,9 +492,9 @@ do
 	-- 应当被 `maxArmorDistance` 挡在门外，绝不重新驱动。
 	local avatarB = newUnit("t7avatarB", AVATAR_NODES, true, "#ID[t7avatarB]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		avatarB.ids[mgId] = true
-		avatarB.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		avatarB.ids[mgName] = true
+		avatarB.nodeOf[mgName] = 5
 	end
 	engine.pos[avatarB] = { 50, 0, 0 }
 	local newArmors = {}
@@ -555,9 +562,9 @@ do
 
 	local t8Avatar = newUnit("t8avatar", AVATAR_NODES, true, "#ID[t8avatar]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		t8Avatar.ids[mgId] = true
-		t8Avatar.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		t8Avatar.ids[mgName] = true
+		t8Avatar.nodeOf[mgName] = 5
 	end
 	local t8Armors = {}
 	for index, count in ipairs(ARMOR_NODES) do
@@ -630,9 +637,9 @@ do
 
 	local t9Avatar = newUnit("t9avatar", AVATAR_NODES, true, "#ID[t9avatar]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		t9Avatar.ids[mgId] = true
-		t9Avatar.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		t9Avatar.ids[mgName] = true
+		t9Avatar.nodeOf[mgName] = 5
 	end
 	local t9Armors = {}
 	for index, count in ipairs(ARMOR_NODES) do
@@ -693,9 +700,9 @@ do
 
 	local t10Avatar = newUnit("t10avatar", AVATAR_NODES, true, "#ID[t10avatar]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		t10Avatar.ids[mgId] = true
-		t10Avatar.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		t10Avatar.ids[mgName] = true
+		t10Avatar.nodeOf[mgName] = 5
 	end
 	local t10Armors = {}
 	for index, count in ipairs(ARMOR_NODES) do
@@ -758,9 +765,9 @@ do
 		rawset(_G, "render", function() end)
 		local av = newUnit(tag .. "avatar", AVATAR_NODES, true, "#ID[" .. tag .. "avatar]")
 		do
-			local mgId = S.Application.string_to_id32("support_mg")
-			av.ids[mgId] = true
-			av.nodeOf[mgId] = 5
+			local mgName = SUPPORT_MG
+			av.ids[mgName] = true
+			av.nodeOf[mgName] = 5
 		end
 		local gear = {}
 		for index, count in ipairs(ARMOR_NODES) do
@@ -818,9 +825,9 @@ do
 
 	local t12Avatar = newUnit("t12avatar", AVATAR_NODES, true, "#ID[t12avatar]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		t12Avatar.ids[mgId] = true
-		t12Avatar.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		t12Avatar.ids[mgName] = true
+		t12Avatar.nodeOf[mgName] = 5
 	end
 	local t12Armors = {}
 	for index, count in ipairs(ARMOR_NODES) do
@@ -926,9 +933,9 @@ do
 	local a14 = newUnit("t14avatarA", AVATAR_NODES, true, "#ID[t14avatarA]")
 	local b14 = newUnit("t14avatarB", AVATAR_NODES, true, "#ID[t14avatarB]")
 	for _, av in ipairs({ a14, b14 }) do
-		local mgId = S.Application.string_to_id32("support_mg")
-		av.ids[mgId] = true
-		av.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		av.ids[mgName] = true
+		av.nodeOf[mgName] = 5
 	end
 	engine.pos[a14] = { 0, 0, 0 }
 	engine.pos[b14] = { 10, 0, 0 }
@@ -1001,9 +1008,9 @@ do
 
 	local av15 = newUnit("t15avatar", AVATAR_NODES, true, "#ID[t15avatar]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		av15.ids[mgId] = true
-		av15.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		av15.ids[mgName] = true
+		av15.nodeOf[mgName] = 5
 	end
 	engine.pos[av15] = { 0, 0, 0 }
 
@@ -1070,9 +1077,9 @@ do
 
 	local av16 = newUnit("t16avatar", AVATAR_NODES, true, "#ID[t16avatar]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		av16.ids[mgId] = true
-		av16.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		av16.ids[mgName] = true
+		av16.nodeOf[mgName] = 5
 	end
 	engine.pos[av16] = { 0, 0, 0 }
 
@@ -1155,9 +1162,9 @@ do
 
 	local av17 = newUnit("t17avatar", AVATAR_NODES, true, "#ID[t17avatar]")
 	do
-		local mgId = S.Application.string_to_id32("support_mg")
-		av17.ids[mgId] = true
-		av17.nodeOf[mgId] = 5
+		local mgName = SUPPORT_MG
+		av17.ids[mgName] = true
+		av17.nodeOf[mgName] = 5
 	end
 	engine.pos[av17] = { 0, 0, 0 }
 
@@ -1195,11 +1202,68 @@ do
 	check("T17 普查给出候选件数与节点直方图",
 		text:find("近距 3 件", 1, true) ~= nil and text:find("171节×3", 1, true) ~= nil)
 	check("T17 普查做 has_node / node 交叉验证并带对照组",
-		text:find("对照组 has_node=", 1, true) ~= nil and text:find(" node=", 1, true) ~= nil)
+		text:find("对照组 has_node(名)=", 1, true) ~= nil and text:find(" node=", 1, true) ~= nil
+			and text:find("has_node(id)=", 1, true) ~= nil)
 	check("T17 普查给出该件的完整打分（差几根骨）", text:find("该件完整打分", 1, true) ~= nil)
 	local _, censusLines = text:gsub("%[physbone%]%[普查%]", "")
 	check("T17 普查只落一次（不刷屏）", censusLines == 3, string.format("%d 行", censusLines))
 
+	Runtime.uninstall()
+end
+
+-- ---------------------------------------------------------------------------
+print("T18 端到端：id 会失效的引擎（只认骨名）也必须能完整挂上")
+--
+-- 实机 2026-11-12：`string_to_id32` 的 `IdString32` 会失效，而我们 2.1.25 把它缓存了，
+-- 于是"进程刚启动时能挂、之后所有候选 0/68"。这个用例把 `has_node` 改成**只认骨名**
+-- （传数字直接抛错），从发现 → 匹配 → attach 整条链走一遍，任何一处退回按 id 都会红。
+do
+	rawset(_G, "render", function() end)
+	engine.namesOnly = true
+
+	local av18 = newUnit("t18avatar", AVATAR_NODES, true, "#ID[t18avatar]")
+	do
+		local mgName = SUPPORT_MG
+		av18.ids[mgName] = true
+		av18.nodeOf[mgName] = 5
+	end
+	engine.pos[av18] = { 0, 0, 0 }
+
+	local armors18 = {}
+	for index, count in ipairs(ARMOR_NODES) do
+		armors18[index] = newUnit("t18" .. index, count, false, "#ID[t18" .. index .. "]")
+		dress(armors18[index])
+		engine.pos[armors18[index]] = { 0.2, 0, 0 }
+	end
+	avatar = av18
+	armors = armors18
+
+	local tunePath18 = (os.getenv("TEMP") or ".") .. "\\physbone-t18-name-tune.txt"
+	do
+		local handle = io.open(tunePath18, "w")
+		handle:write("writeOff = 0\n")
+		handle:close()
+	end
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t18names.txt",
+		settleFrames = 2, snapshot = false, tunePath = tunePath18,
+		pollFrames = 2, validateFrames = 0,
+		maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+
+	check("T18 只认骨名的引擎上也能全部挂上",
+		runtime.sessions ~= nil and #runtime.sessions == #ARMOR_NODES,
+		string.format("会话=%s 期望=%d", tostring(runtime.sessions and #runtime.sessions), #ARMOR_NODES))
+	check("T18 没有退回按 id 问（否则 has_node 会抛错）",
+		runtime.sessions ~= nil and #runtime.sessions > 0)
+
+	pcall(os.remove, tunePath18)
+	engine.namesOnly = false
 	Runtime.uninstall()
 end
 

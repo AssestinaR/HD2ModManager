@@ -18,8 +18,13 @@ end
 -- ---------------------------------------------------------------------------
 -- 假引擎：has_node **认名字**（只有真正在这件护甲上的骨名才返回 true）。
 -- 这正是实机行为，也是本测试要验证的判据。
+--
+-- ⚠️ `strictNames` 打开时，传数字（`string_to_id32` 得到的 id）**直接抛错**。
+-- 实机就是这个行为：`IdString32` 会失效，拿它做 `has_node` 一律 false/抛错
+-- （2026-11-12 的"舰船正常、进任务全没物理"就是缓存了 id 造成的）。
 -- ---------------------------------------------------------------------------
-local function make_engine()
+local function make_engine(opts)
+	opts = opts or {}
 	local units = {}
 	local S = { Application = {}, Unit = {} }
 
@@ -30,9 +35,12 @@ local function make_engine()
 		return sum * 1000 + #text
 	end
 	S.Unit.alive = function(unit) return unit.alive ~= false end
-	S.Unit.has_node = function(unit, id)
+	S.Unit.has_node = function(unit, key)
 		if unit.alive == false then return false end
-		return unit.ids[id] == true
+		if opts.strictNames == true and type(key) ~= "string" then
+			error("[Stale IdString32] 只能按骨名问")
+		end
+		return unit.ids[key] == true
 	end
 	-- 故意把 node 做成"什么名字都给一个数字"，用来验证 select_rig 没有误用 Unit.node
 	S.Unit.node = function() return 7 end
@@ -40,7 +48,7 @@ local function make_engine()
 	local function newUnit(tag, boneNames)
 		local unit = { tag = tag, ids = {} }
 		for _, name in ipairs(boneNames) do
-			unit.ids[S.Application.string_to_id32(name)] = true
+			unit.ids[name] = true
 		end
 		units[#units + 1] = unit
 		return unit
@@ -180,6 +188,32 @@ do
 		M.anchor_name("j1a2b3c4d5e6f/source_extra_72") == nil)
 	check("有真名的骨加前缀也能查到", M.anchor_name("j1a2b3c4d5e6f/ValveBiped.Bip01_Head1") == "head",
 		tostring(M.anchor_name("j1a2b3c4d5e6f/ValveBiped.Bip01_Head1")))
+end
+
+-- ---------------------------------------------------------------------------
+print("T10 匹配必须**按骨名问**，不能按 string_to_id32 的 id 问")
+--
+-- 实机现场（2026-11-12，2.1.25~2.1.30）：`Application.string_to_id32` 返回的
+-- `IdString32` 会失效。为了省调用，2.1.25 把它的结果按 rig 缓存起来，于是
+--   · 进程刚启动、id 还是新算的时候 ⇒ 舰船上一次挂满（看起来正常）；
+--   · 之后全部失效 ⇒ 换场景后再也挂不上，所有候选都是 0/68，日志还像"骨头不在"。
+-- 这个用例把"按 id 匹配"钉死成**失败**：`strictNames` 下传数字直接抛错。
+do
+	local S, newUnit = make_engine({ strictNames = true })
+	local armor = newUnit("armor", { "source_extra_1", "source_extra_2" })
+	local rig = makeRig({ "source_extra_1", "source_extra_2" })
+	local best = M.select_rig(S, { armor }, { { rig = rig, path = "A" } })
+	check("按名字问能全命中", best ~= nil and best.full and best.score == 2,
+		best and string.format("%d/%d", best.score, best.total))
+	check("按名字问时不会抛错（id 路径已不再使用）", best ~= nil)
+
+	-- 反向证据：如果调用方只给 id（模拟旧实现），必须 0 命中而不是崩
+	local idsOnly = { tag = "idsOnly", ids = {} }
+	idsOnly.ids[S.Application.string_to_id32("source_extra_1")] = true
+	local wasted = M.select_rig(S, { idsOnly }, { { rig = rig, path = "A" } })
+	check("只按 id 存的 unit 拿不到命中（正是实机的坏结果）",
+		wasted ~= nil and wasted.score == 0,
+		wasted and string.format("%d/%d", wasted.score, wasted.total))
 end
 
 print("")

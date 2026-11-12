@@ -19,13 +19,8 @@
 
 local M = {}
 
---- 骨名 → IdString32 的换算缓存（按 rig 表身份，弱键）。
----
---- 为什么必须缓存（2026-11-12）：`select_rig` 每件候选护甲都要把整份 rig 的 58 根骨
---- 逐个 `string_to_id32` 一遍，而同一份容器的骨名是**恒定**的。10 份容器 × 58 骨
---- × 每件候选 = 每件白花 580 次引擎调用，比真正的 `has_node` 还多一倍。
---- 缓存后每件候选只剩 `has_node`，成本直接砍半；rig 来自 `runtime.carriers`，进程内稳定。
-local boneIdsByRig = setmetatable({}, { __mode = "k" })
+-- 骨名别名表按 rig 身份缓存（弱键），但**只存字符串**。
+-- 详见 `rig_bone_names` 上方那段：`string_to_id32` 的结果会失效，缓存它等于自毁匹配。
 
 M.version = "1.0.0"
 
@@ -1755,25 +1750,42 @@ function M.session_health(session, stamp)
 	return "ok"
 end
 
---- 一份 rig 的骨名 → IdString32 列表（每根骨可能有 1~2 种写法）。
---- 按 rig 表身份缓存：同一份容器的骨名恒定，算一次就够（见上面 `boneIdsByRig` 的说明）。
-local function rig_bone_ids(S, rig)
-	local cached = boneIdsByRig[rig]
+--- 一份 rig 的骨名别名表（**只存字符串，绝不存 `string_to_id32` 的结果**）。
+---
+--- ⚠️ 这一条是用三轮实机换来的（2026-11-12）：
+--- `Application.string_to_id32` 返回的是 **`IdString32` userdata，而且它会失效**
+--- （我们自己的 snapshot 探针里直接印出过 `[Stale IdString32]`）。
+--- 一旦把它缓存起来、跨帧拿去做 `has_node`，结果就是**全 false / 直接抛错**，
+--- 于是 `select_rig` 对所有候选都给 0/68：
+---   · 进程刚启动、ids 还是新算的时候 ⇒ 舰船上一次就挂满（看起来"正常"）；
+---   · 之后全部失效 ⇒ 换场景后再也挂不上，日志还长得像"骨头不在"。
+--- 名字字符串没有这个问题：`has_node(unit, "hips")` 稳定为 true。
+---
+--- 附带收益：完全省掉 `string_to_id32` 的引擎调用（每根骨 1 次、每件候选每份容器各一遍）。
+local boneNamesByRig = setmetatable({}, { __mode = "k" })
+
+local function rig_bone_names(rig)
+	local cached = boneNamesByRig[rig]
 	if cached ~= nil then return cached end
-	local ids = {}
+	local names = {}
 	for index = 1, #rig.bones do
-		local names = M.bone_name_aliases(rig.bones[index].name)
-		local resolved = {}
-		for _, name in ipairs(names or {}) do
-			if type(name) == "string" then
-				local ok, value = pcall(function() return S.Application.string_to_id32(name) end)
-				if ok and value ~= nil then resolved[#resolved + 1] = value end
-			end
+		local aliases, out = M.bone_name_aliases(rig.bones[index].name), {}
+		for _, name in ipairs(aliases or {}) do
+			if type(name) == "string" and #name > 0 then out[#out + 1] = name end
 		end
-		ids[index] = resolved
+		names[index] = out
 	end
-	boneIdsByRig[rig] = ids
-	return ids
+	boneNamesByRig[rig] = names
+	return names
+end
+
+--- 这个 unit 含不含这根骨：**按名字问**（可带 1~2 种写法），任一写法命中即算。
+local function unit_has_bone(S, unit, aliases)
+	for _, name in ipairs(aliases) do
+		local ok, has = pcall(S.Unit.has_node, unit, name)
+		if ok and has == true then return true end
+	end
+	return false
 end
 
 --- 便宜的"全命中不可能"预筛：**每份容器只问一根骨**。
@@ -1799,13 +1811,10 @@ function M.probe_carriers(S, unit, candidates)
 	for index = 1, #candidates do
 		local rig = candidates[index].rig
 		if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
-			local resolved = rig_bone_ids(S, rig)[1]
-			-- 第 1 根骨解析不出 id ⇒ 这条探针无效，不敢据此判死（退回真打分）。
-			if resolved == nil or #resolved == 0 then return true end
-			for _, id in ipairs(resolved) do
-				local okHas, has = pcall(S.Unit.has_node, unit, id)
-				if okHas and has == true then return true end
-			end
+			local aliases = rig_bone_names(rig)[1]
+			-- 第 1 根骨没有任何可用写法 ⇒ 这条探针无效，不敢据此判死（退回真打分）。
+			if aliases == nil or #aliases == 0 then return true end
+			if unit_has_bone(S, unit, aliases) then return true end
 		end
 	end
 	return false
@@ -1841,22 +1850,16 @@ function M.select_rig(S, units, candidates)
 	for order, candidate in ipairs(candidates) do
 		local rig = candidate.rig
 		if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
-			local ids = rig_bone_ids(S, rig)
+			local aliasesByBone = rig_bone_names(rig)
 			local total = #rig.bones
 			local score = 0
 			for _, unit in ipairs(units) do
 				if M.unit_alive(S, unit) then
 					local hits = 0
 					for bone = 1, total do
-						local resolved = ids[bone]
-						if resolved ~= nil then
-							for _, id in ipairs(resolved) do
-								local ok, has = pcall(S.Unit.has_node, unit, id)
-								if ok and has == true then
-									hits = hits + 1
-									break
-								end
-							end
+						local aliases = aliasesByBone[bone]
+						if aliases ~= nil and #aliases > 0 and unit_has_bone(S, unit, aliases) then
+							hits = hits + 1
 						end
 						if hits >= total then break end
 					end
@@ -1951,20 +1954,28 @@ function M.attach(S, unit, rig, options)
 	end
 
 	--- 解析一个节点下标；不可用时返回 nil（绝不返回可疑数字）。
+	---
+	--- ⚠️ **先按名字问，问不到才退回 `string_to_id32` 的 id**（2026-11-12）：
+	--- 名字是稳定的；而 `IdString32` 会失效（同一根骨同一次 attach 内可能还是个新算的值，
+	--- 跨帧就会变成 `[Stale IdString32]`）。名字优先 ⇒ attach 也不再依赖 id 的寿命。
 	local function resolveNode(text)
 		if type(text) ~= "string" or #text == 0 then return nil end
 		-- 骨名可能带命名空间前缀（新容器）也可能不带（旧 patch），两种写法都试一次。
-		for _, candidate in ipairs(M.bone_name_aliases(text)) do
+		local aliases = M.bone_name_aliases(text)
+		local refs = {}
+		for _, candidate in ipairs(aliases or {}) do refs[#refs + 1] = candidate end
+		for _, candidate in ipairs(aliases or {}) do
 			local id = id32(candidate)
-			if id ~= nil then
-				local okHas, has = pcall(function() return S.Unit.has_node(unit, id) end)
-				if okHas and has == true then
-					local okNode, node = pcall(function() return S.Unit.node(unit, id) end)
-					-- Unit.node 是 1 基下标（§12.1 实测）：合法范围是 1..nodeCount。
-					-- ⚠️ 它对**不存在的名字**也会返回一个数字，所以必须先过 has_node（上面已经过了）。
-					if okNode and type(node) == "number" and node >= 1 and node <= nodeCount then
-						return node
-					end
+			if id ~= nil then refs[#refs + 1] = id end
+		end
+		for _, ref in ipairs(refs) do
+			local okHas, has = pcall(function() return S.Unit.has_node(unit, ref) end)
+			if okHas and has == true then
+				local okNode, node = pcall(function() return S.Unit.node(unit, ref) end)
+				-- Unit.node 是 1 基下标（§12.1 实测）：合法范围是 1..nodeCount。
+				-- ⚠️ 它对**不存在的名字**也会返回一个数字，所以必须先过 has_node（上面已经过了）。
+				if okNode and type(node) == "number" and node >= 1 and node <= nodeCount then
+					return node
 				end
 			end
 		end
@@ -2311,10 +2322,12 @@ function M.attach(S, unit, rig, options)
 	end
 	-- 身份指纹：之后每帧靠它判断"这个 Unit 还是我当初挂的那个吗"。
 	--   nodeCount    —— 场景图节点数，变了说明 Unit 被重建/换装（**这是唯一可靠的判据**）；
-	--   identityNode —— 第一条链第一节的骨名 id，仅用于观测（has_node 会假翻，不能据此判死）。
+	--   identityNode —— 第一条链第一节的**骨名**，仅用于观测（has_node 会假翻，不能据此判死）。
+	--   ⚠️ 存名字而不是 `id32`：`IdString32` 会失效，存 id 会让这条观测**永远**报
+	--   `has_node=false`（2026-11-12 用三轮实机才发现这行日志把排查带偏了两次）。
 	local identityNode = nil
 	if #sessions > 0 and sessions[1].chain ~= nil and sessions[1].chain[1] ~= nil then
-		identityNode = id32(sessions[1].chain[1].name)
+		identityNode = sessions[1].chain[1].name
 	end
 	-- 快路径的写入语义校验：拿到真实节点后做一次（非破坏性，把同一个旋转写回去比对）。
 	if #sessions > 0 and sessions[1].nodes ~= nil and sessions[1].nodes[1] ~= nil then
