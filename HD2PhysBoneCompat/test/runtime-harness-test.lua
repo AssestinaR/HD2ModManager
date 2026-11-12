@@ -362,9 +362,14 @@ do
 	local probeRender = rawget(_G, "render")
 	for _ = 1, 40 do engine.time = engine.time + 1 / 72; probeRender() end
 	local text = readLog5b()
+	-- 改法演进（2026-11-12）：现在**不再要求全命中**，部分命中也会走到 attach
+	-- （配合转换器侧"每个 unit 只带自己用得上的骨"）。所以这条用例改为验证：
+	-- 1/2 命中的件必须真的被送去挂载，而不是被判"不可用"直接丢掉。
 	check("部分命中的件没有被预筛挡掉", text:find("预筛全挂", 1, true) == nil)
-	check("部分命中仍报出最高命中数", text:find("最高命中 1/2", 1, true) ~= nil,
-		text:match("没有 unit 命中[^\n]*") or "（没有这条日志）")
+	local triedAttach = text:find("attach 进入", 1, true) ~= nil
+		or text:find("挂载完成但产出 0 条链", 1, true) ~= nil
+	check("部分命中会真的送去挂载（不再要求全命中）", triedAttach,
+		text:match("没有 unit 命中[^\n]*") or "（既没 attach 也没失败行）")
 	Runtime.uninstall()
 end
 

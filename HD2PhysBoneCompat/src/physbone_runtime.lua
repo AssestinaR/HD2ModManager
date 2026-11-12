@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.37"
+M.VERSION = "2.1.38"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1067,10 +1067,17 @@ local function tryAttach(runtime)
 					scored ~= nil and scored[1] ~= nil and scored[1].score or 0,
 					scored ~= nil and scored[1] ~= nil and scored[1].total or 0)
 				-- ⚠️ `select_rig` 在**0 命中时也会返回非 nil 的 best**（它返回排序后的第一名）。
-				-- 所以"有 best"不等于"可用"。只有 `full`（或显式允许 partial）才算可用匹配；
-				-- 把不可用的当匹配缓存起来，会让这件**既不挂载、也永不重试**
+				-- 所以"有 best"不等于"可用"。**0 命中必须当"不可用"**，否则这件既不挂载、也永不重试
 				-- （2026-11-12 实机：只有先就绪的头盔有物理，护甲的件全没有）。
-				local usable = best ~= nil and (best.full or allowPartial)
+				--
+				-- 但"可用"不再要求**全命中**（2026-11-12，配合转换器侧改法）：将来每个 unit 只带
+				-- 自己用得上的那几根物理骨，全命中就永远不成立。`Compat.attach` 本来就是逐链解析、
+				-- 缺节点的链自动跳过（日志里的"可用链 N 条（缺节点 M）"），所以**部分命中也能正确工作**。
+				-- ⇒ 判据改成"命中 ≥1 根骨就算匹配"，由 attach 决定实际能驱动几条链。
+				-- 门槛：部分命中至少覆盖 10% 才值得挂 —— 防止"撞上 1 根同名骨"的垃圾件
+				-- 也走一遍 attach（几百次引擎调用）。57 骨 ⇒ ≥5 根。
+				local partialFloor = math.max(1, math.floor(((best ~= nil and best.total) or 0) * 0.1))
+				local usable = best ~= nil and (best.full or allowPartial or (best.score or 0) >= partialFloor)
 				if usable then
 					match = { rig = best.rig, path = best.path, full = best.full == true }
 					rigMatches[candidate.unit] = match
@@ -1096,7 +1103,8 @@ local function tryAttach(runtime)
 				end
 			end
 		end
-		if match ~= nil and match.rig ~= nil and (match.full or allowPartial) then
+		-- 匹配可用即挂（可能是部分命中：attach 会逐链跳过缺节点的链，见上面 usable 那段说明）。
+		if match ~= nil and match.rig ~= nil then
 			plan[#plan + 1] = {
 				unit = candidate.unit, rig = match.rig, path = match.path, mg = candidate.mg,
 				tag = unit_tag(S, candidate.unit),
