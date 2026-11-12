@@ -3694,6 +3694,20 @@ public sealed class SourceMaterialConverter
 				}
 
 				break;
+			case 5:    // I8 -> 灰度（alpha 补 255）
+				// 1 字节/像素的灰度图，常见的"自发光蒙版"/"发光遮罩"就是这种格式。
+				// 补 A=255 而不是复制灰度：I8 没有 alpha 通道，蒙版读的是 RGB 亮度，
+				// 把亮度也写进 A 会让"当作透明度用"的那条路读出一个假的半透明。
+				Require(source, pixels, vtf.FormatName);
+				for (var i = 0; i < pixels; i++)
+				{
+					output[(i * 4) + 0] = source[i];
+					output[(i * 4) + 1] = source[i];
+					output[(i * 4) + 2] = source[i];
+					output[(i * 4) + 3] = 255;
+				}
+
+				break;
 			default:
 				throw new InvalidDataException(
 					$"VTF 格式 {vtf.FormatName} 既不是 BC 压缩、也不在已实现的非压缩拆包列表里");
@@ -3724,6 +3738,12 @@ public sealed class SourceMaterialConverter
 	/// <summary>
 	/// 读一张贴图并解成裸像素（带 <see cref="DecodeTextureCached"/> 的复用）。
 	/// 供 matcap 合成读 matcap / 蒙版 / 法线用——它们只需要像素，不需要走材质那一套。
+	/// <para>
+	/// <b>失败时三个输出参数必须一起"归零"。</b>调用方只按「宽高 &gt; 0」判断"读到了"，
+	/// 留下"宽高有值、像素是空数组"的半成品会让它们按读到了去索引空数组——
+	/// 实测事故：`ramune-战术女仆(louis).vpk` 的 `I8` 自发光蒙版解不出来，整批转换抛
+	/// <c>IndexOutOfRangeException</c>，管理器侧只给一句"重新转换失败"。
+	/// </para>
 	/// </summary>
 	private bool TryReadTextureRgba(string textureName, out byte[] rgba, out int width, out int height)
 	{
@@ -3739,10 +3759,17 @@ public sealed class SourceMaterialConverter
 			width = vtf.Width;
 			height = vtf.Height;
 			rgba = DecodeTextureCached(textureName, bytes, vtf);
+			var expected = (long)width * height * 4;
+			if (rgba.Length < expected)
+				throw new InvalidDataException(
+					$"贴图 {textureName} 解码后只有 {rgba.Length} 字节，不足以填满 {width}x{height} 的 RGBA（应为 {expected}）");
 			return width > 0 && height > 0;
 		}
 		catch (Exception exception) when (IsTextureReadFailure(exception))
 		{
+			rgba = [];
+			width = 0;
+			height = 0;
 			return false;
 		}
 	}
