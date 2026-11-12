@@ -1390,7 +1390,7 @@ do
 	check("T20 最近的那件一定被挂上", runtime.sessions ~= nil and runtime.sessions[1] ~= nil
 		and runtime.sessions[1].unitTag == "#ID[t20dup1]",
 		tostring(runtime.sessions and runtime.sessions[1] and runtime.sessions[1].unitTag))
-	check("T20 落了「去重」日志（说明确实裁过）", text:find("[physbone][去重]", 1, true) ~= nil)
+	check("T20 落了「识别」日志（说明确实裁过）", text:find("[physbone][识别]", 1, true) ~= nil)
 	Runtime.uninstall()
 
 	-- 关掉距离闸后，件数闸必须顶住：20 件全部贴身也只能挂 8 件。
@@ -1416,6 +1416,87 @@ do
 	end
 
 	pcall(os.remove, tunePath20)
+end
+
+-- ---------------------------------------------------------------------------
+print("T21 身份判据（行为）：玩家动它才动的才是玩家那件，静止的人台要放掉")
+--
+-- 用户 2026-11-12 点出的方向：算力不是瓶颈，"驱动了不该驱动的模型"才是。
+-- 而同资源的护甲件**骨头完全一样**，只能靠行为分辨：玩家身上那件挂在玩家骨架上，
+-- 玩家一动它就动；军械库里的人台是死的。这条用例把"跟随判据 + 事后纠正"钉死。
+--
+-- ⚠️ 这里故意关掉距离闸（attachMaxDistance=0），于是**只有行为判据能筛**：
+-- 4 件都贴着玩家、骨头都一样，区别只在"动不动"。
+do
+	rawset(_G, "render", function() end)
+
+	local av21 = newUnit("t21avatar", AVATAR_NODES, true, "#ID[t21avatar]")
+	do
+		local mgName = SUPPORT_MG
+		av21.ids[mgName] = true
+		av21.nodeOf[mgName] = 5
+	end
+	engine.pos[av21] = { 0, 0, 0 }
+
+	-- 1 件"穿在玩家身上"的（会跟着动）+ 3 件人台（不动），全部贴身、同款
+	local worn = newUnit("t21worn", 171, false, "#ID[t21worn]")
+	dress(worn)
+	local stands = {}
+	for index = 1, 3 do
+		local unit = newUnit("t21stand" .. index, 171, false, "#ID[t21stand" .. index .. "]")
+		dress(unit)
+		engine.pos[unit] = { 0.2, 0, 0 }
+		stands[index] = unit
+	end
+	engine.pos[worn] = { 0.2, 0, 0 }
+
+	avatar = av21
+	armors = { worn, stands[1], stands[2], stands[3] }
+
+	local logPath21 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t21ident.txt"
+	os.remove(logPath21)
+	local tunePath21 = (os.getenv("TEMP") or ".") .. "\\physbone-t21-tune.txt"
+	do
+		local handle = io.open(tunePath21, "w")
+		handle:write("writeOff = 0\n")
+		handle:close()
+	end
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath21,
+		settleFrames = 2, snapshot = false, tunePath = tunePath21,
+		pollFrames = 2, validateFrames = 0,
+		maxArmorDistance = 10.0,
+		attachMaxDistance = 0,      -- 关掉距离闸：只让行为判据说话
+		maxMatchedPerOwner = 8,
+	})
+	local probeRender = rawget(_G, "render")
+
+	-- 玩家走动：玩家和"身上那件"同步位移，人台不动。
+	for step = 1, 60 do
+		local x = step * 0.05
+		engine.pos[av21] = { x, 0, 0 }
+		engine.pos[worn] = { x + 0.2, 0, 0 }
+		engine.time = engine.time + 1 / 120
+		probeRender()
+	end
+
+	local text = ""
+	do
+		local handle = io.open(logPath21, "r")
+		if handle ~= nil then text = handle:read("*a") or ""; handle:close() end
+	end
+	local count = runtime.sessions and #runtime.sessions or 0
+	local tags = {}
+	for _, session in ipairs(runtime.sessions or {}) do tags[#tags + 1] = tostring(session.unitTag) end
+	check("T21 最后只剩「跟着玩家动」的那一件", count == 1, string.format("会话=%d %s", count, table.concat(tags, ",")))
+	check("T21 留下的正是那件（不是人台）",
+		count == 1 and runtime.sessions[1].unitTag == "#ID[t21worn]", table.concat(tags, ","))
+	check("T21 识别日志里有「静止」的件", text:find("静止=[1-9]", 1) ~= nil)
+
+	pcall(os.remove, tunePath21)
+	Runtime.uninstall()
 end
 
 print("")

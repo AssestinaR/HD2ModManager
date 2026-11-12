@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.33"
+M.VERSION = "2.1.34"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -579,6 +579,162 @@ end
 -- 挂载 / 卸载
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- 身份判据：**哪个 unit 是玩家真正在操作的那几件**
+--
+-- 为什么这是这个功能的核心难题（2026-11-12，用户点出来的）：
+-- 算力根本不是瓶颈 —— 4 个玩家 × 每人数件 × 39 条链，全拉满也远在 5 ms 以内。
+-- 真正的浪费全来自"驱动了不该驱动的 unit"：军械库里几十件**同资源、同骨名**的
+-- 人台/预览/克隆，`has_node` 全命中，和玩家身上那套**无法用骨头区分**。
+--
+-- 那就别看骨头了，看**行为**：玩家身上那件是挂在玩家骨架上的，玩家一动它就动；
+-- 人台/预览固定在房间里，永远不动。这条判据不需要任何新的引擎能力，也无法被
+-- "同资源同骨名"骗过去。
+-- ---------------------------------------------------------------------------
+
+--- 累计一个 unit 的位移（米）。每拍采一次 `world_position(unit, 1)`。
+--- 存的是**累计量**而不是瞬时速度：两次尝试可能隔几十帧，累计量对采样间隔不敏感。
+local function motion_sample(runtime, S_, unit)
+	local track = runtime.motion
+	if track == nil then
+		track = setmetatable({}, { __mode = "k" })
+		runtime.motion = track
+	end
+	local entry = track[unit]
+	if entry == nil then
+		entry = { moved = 0 }
+		track[unit] = entry
+	end
+	local x, y, z = readVector(S_, try(S_.Unit.world_position, unit, 1))
+	if x ~= nil then
+		local last = entry.pos
+		if last ~= nil then
+			local dx, dy, dz = x - last[1], y - last[2], z - last[3]
+			entry.moved = entry.moved + math.sqrt(dx * dx + dy * dy + dz * dz)
+		end
+		entry.pos = { x, y, z }
+	end
+	return entry
+end
+
+--- 这个 unit 是不是"跟着那个玩家走"的那一件。
+--- 返回 follows（true/false/nil=还没数据）、自身位移、主人位移。
+---
+--- 判据：主人的累计位移足够大（>5 cm，说明玩家真的动过）时，
+--- 候选自己的累计位移**至少要有主人的一半**才算"跟着"。人台是 0，直接出局。
+local function motion_follows(runtime, ownerUnit, unit)
+	local track = runtime.motion
+	if track == nil or ownerUnit == nil then return nil, 0, 0 end
+	local selfEntry, ownerEntry = track[unit], track[ownerUnit]
+	if selfEntry == nil or ownerEntry == nil then return nil, 0, 0 end
+	local ownerMoved = ownerEntry.moved or 0
+	if ownerMoved < 0.05 then return nil, selfEntry.moved or 0, ownerMoved end
+	return (selfEntry.moved or 0) >= ownerMoved * 0.5, selfEntry.moved or 0, ownerMoved
+end
+
+--- 身份监视：定期采"谁在动"，并把"玩家动它不动"的件放掉。
+---
+--- 为什么放在每帧入口而不是 `tryAttach`（T21 抓到的）：`tryAttach` 只在"需要补挂"时才跑；
+--- 一旦挂好了就不再调用，于是那些在**有活动量数据之前**挂上去的人台会一直挂着。
+--- 身份纠正必须持续跑到分类稳定，所以在 drive 里按固定间隔跑。
+--- 成本：每 20 帧一次，每个玩家/会话各 1 次 `world_position`（纯读）。
+local function identity_watch(S_, runtime)
+	local options = runtime.options or {}
+	if options.identityWatch == false then return end
+	local every = math.max(2, math.floor(options.identityPollFrames or 20))
+	local frame = runtime.frame or 0
+	if (frame % every) ~= 0 then return end
+	for index = 1, #(runtime.avatars or {}) do
+		motion_sample(runtime, S_, runtime.avatars[index].unit)
+	end
+	local sessions = runtime.sessions or {}
+	for index = 1, #sessions do motion_sample(runtime, S_, sessions[index].unit) end
+	if #sessions == 0 then return end
+
+	local followCount = {}
+	for _, session in ipairs(sessions) do
+		if motion_follows(runtime, session.owner, session.unit) == true then
+			local key = session.owner or false
+			followCount[key] = (followCount[key] or 0) + 1
+		end
+	end
+	local survivors, released, tags = {}, 0, nil
+	for _, session in ipairs(sessions) do
+		local key = session.owner or false
+		-- 只在"这个主人确实有跟着动的件"时才放掉静止的那些 —— 玩家还没动过时一件都不放。
+		if motion_follows(runtime, session.owner, session.unit) == false and (followCount[key] or 0) > 0 then
+			released = released + 1
+			if tags == nil then tags = {} end
+			if #tags < 4 then tags[#tags + 1] = tostring(session.unitTag) end
+			if Compat.unit_alive(S_, session.unit) then pcall(Compat.release, session) end
+		else
+			survivors[#survivors + 1] = session
+		end
+	end
+	if released > 0 then
+		runtime.sessions = survivors
+		runtime.logger("[physbone][识别] 放掉 %d 件「玩家动它不动」的件（人台/预览），剩 %d 件（%s）",
+			released, #survivors, tags ~= nil and table.concat(tags, ",") or "")
+	end
+end
+
+--- 一次性探针：把 `Unit` 里那几个"可能直接告诉我们身份"的函数都试一遍。
+---
+--- 为什么（2026-11-12，用户提问）：只按"玩家动它动"判断身份不稳（玩家可能站着不动、
+--- 换甲瞬间位置跳变）。而 API 里有更硬的线索：
+---   · `Unit.is_child(a, b)`         —— a 是不是 b 的子（护甲挂在玩家骨架下就是）
+---   · `Unit.scene_graph_parent(u, n)` —— 节点 n 的父级（可能是玩家那个 unit）
+---   · `Unit.scene_graph_link(u, n)`   —— 节点 n 的 link 目标
+---   · `Unit.bones(u)`              —— 直接列骨（匹配、比对都能用）
+---   · `Unit.is_a(u, "…")`、`has_mesh`、`num_meshes`
+--- 这些的签名/返回值在本仓都没验证过，所以这里**只读、只探、只打日志**，
+--- 每个调用都 pcall 兜住；参数都用合法值（节点下标 1，在 `num_scene_graph_items` 范围内）。
+--- 触发条件：真的发生了"超量命中"（有件被裁掉），一个进程只跑一次。
+local function probe_identity_api(runtime, S_, candidate, owner)
+	if runtime.apiProbed == true or candidate == nil or candidate.unit == nil then return end
+	runtime.apiProbed = true
+	local logger = runtime.logger
+	local unit = candidate.unit
+	local ownerUnit = owner ~= nil and owner.unit or nil
+
+	local function repr(value)
+		if type(value) == "table" or type(value) == "userdata" then
+			local okName, name = pcall(function() return S_.Unit.debug_name(value) end)
+			if okName and name ~= nil then return tostring(name) end
+			return type(value)
+		end
+		return tostring(value)
+	end
+	local function probe(label, fn)
+		local ok, value = pcall(fn)
+		if not ok then
+			local text = tostring(value):gsub("^.*:%d+: ", "")
+			logger("[physbone][识别API] %s ⇒ 抛错(%s)", label, text:sub(1, 60))
+		else
+			logger("[physbone][识别API] %s ⇒ %s %s", label, type(value), repr(value):sub(1, 40))
+		end
+	end
+
+	local tag = unit_tag(S_, unit)
+	local ownerTag = ownerUnit ~= nil and unit_tag(S_, ownerUnit) or "?"
+	probe(string.format("%s.bones()", tag), function() return S_.Unit.bones(unit) end)
+	probe(string.format("%s.has_mesh()", tag), function() return S_.Unit.has_mesh(unit) end)
+	probe(string.format("%s.num_meshes()", tag), function() return S_.Unit.num_meshes(unit) end)
+	probe(string.format("%s.scene_graph_parent(1)", tag), function() return S_.Unit.scene_graph_parent(unit, 1) end)
+	probe(string.format("%s.scene_graph_link(1)", tag), function() return S_.Unit.scene_graph_link(unit, 1) end)
+	probe(string.format("%s.is_a('Unit')", tag), function() return S_.Unit.is_a(unit, "Unit") end)
+	if ownerUnit ~= nil then
+		-- 关键两条：护甲是不是"那个玩家的子"（两个方向都试，签名未知）
+		probe(string.format("is_child(%s, %s)", tag, ownerTag),
+			function() return S_.Unit.is_child(unit, ownerUnit) end)
+		probe(string.format("is_child(%s, %s)", ownerTag, tag),
+			function() return S_.Unit.is_child(ownerUnit, unit) end)
+		probe(string.format("owner.scene_graph_parent(1)"), function()
+			return S_.Unit.scene_graph_parent(ownerUnit, 1)
+		end)
+	end
+end
+
 --- 一次性"候选普查 + has_node / node 交叉验证"（**只在异常态触发**）。
 ---
 --- 为什么需要（2026-11-12 实机，2.1.28）：进任务后**每一件候选的预筛都挂**
@@ -764,6 +920,10 @@ local function tryAttach(runtime)
 			runtime.logger("[physbone] 跳过 %d 个离它所属玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
 		end
 	end
+	-- ---------- 活动量采样（身份判据的原料） ----------
+	-- 每件候选 + 每个玩家各 1 次 `world_position`：便宜，而且只在"重扫"时才跑。
+	for index = 1, #avatars do motion_sample(runtime, S, avatars[index].unit) end
+	for index = 1, #nearCandidates do motion_sample(runtime, S, nearCandidates[index].unit) end
 	-- ---------- 一次性诊断在"异常态"触发（见下面 fill 循环之后的调用） ----------
 	-- 给候选打分是这里最贵的一步（每份容器 × 每根骨一次 has_node）。
 	--
@@ -949,6 +1109,7 @@ local function tryAttach(runtime)
 	if attachMax == nil then attachMax = 1.0 end
 	local attachMax2 = attachMax > 0 and (attachMax * attachMax) or nil
 	if perOwner > 0 and #plan > 1 then
+		local matchedCount = #plan   -- 裁之前到底命中了几件（日志里必须报这个数，不是"上限+丢掉"）
 		-- 先按距离升序（读不到的排最后），这样"前 K 件"就是"最近的 K 件"
 		table.sort(plan, function(a, b)
 			local da = a.distance2 or math.huge
@@ -957,13 +1118,49 @@ local function tryAttach(runtime)
 			return tostring(a.tag) < tostring(b.tag)
 		end)
 		local keptByOwner, trimmed, dropped, droppedDist, keptDist = {}, {}, 0, 0, 0
-		for _, entry in ipairs(plan) do
+		local followed, static, unknown, followedTags = 0, 0, 0, {}
+		-- 先分类（不改 plan），再按"每个玩家至少一件"的兜底做第二遍。
+		-- ⚠️ 兜底必须在**第二遍**做：如果边扫边"第一件无条件收下"，
+		-- 排序后第一件可能是人台（tag 恰好在前面），于是人台被当成"玩家那件"留下（T21 抓到的）。
+		local accepted, acceptedByOwner = {}, {}
+		for index, entry in ipairs(plan) do
+			local key = entry.owner ~= nil and entry.owner.unit or nil
+			-- ① 行为判据（最可靠）：玩家动过之后，**跟着一起动**的那件才是他身上的。
+			--    人台/预览固定在房间里，累计位移恒为 0 ⇒ 直接出局。
+			--    还没有数据（玩家没动过 / 刚进场景）时返回 nil，退回距离判据。
+			local follows = motion_follows(runtime, key, entry.unit)
+			local accept
+			if follows == true then
+				accept = true
+				followed = followed + 1
+				if #followedTags < 4 then
+					followedTags[#followedTags + 1] = string.format("%s@%.2fm", tostring(entry.tag),
+						entry.distance2 ~= nil and math.sqrt(entry.distance2) or 0)
+				end
+			elseif follows == false then
+				accept = false
+				static = static + 1
+			else
+				unknown = unknown + 1
+				accept = attachMax2 == nil or entry.distance2 == nil or entry.distance2 <= attachMax2
+			end
+			accepted[index] = accept
+			if accept and key ~= nil then acceptedByOwner[key] = (acceptedByOwner[key] or 0) + 1 end
+		end
+		-- ② 兜底：某个玩家一件都没被接受 ⇒ 无论判据怎么说，先留他最近的一件（绝不挂零）。
+		for index, entry in ipairs(plan) do
+			local key = entry.owner ~= nil and entry.owner.unit or nil
+			if key ~= nil and (acceptedByOwner[key] or 0) == 0 and accepted[index] == false then
+				accepted[index] = true
+				acceptedByOwner[key] = 1
+				runtime.logger("[physbone][识别] 玩家 %s 没有「跟着动」的件 ⇒ 兜底留最近的一件 %s",
+					tostring(entry.owner ~= nil and entry.owner.tag or "?"), tostring(entry.tag))
+			end
+		end
+		for index, entry in ipairs(plan) do
 			local key = entry.owner ~= nil and entry.owner.unit or nil
 			local count = key ~= nil and (keptByOwner[key] or 0) or 0
-			local nearEnough = attachMax2 == nil or entry.distance2 == nil or entry.distance2 <= attachMax2
-			-- 兜底：这个玩家还一件都没留下时，无论多远都先留一件（否则会"一件都不挂"）。
-			if key ~= nil and count == 0 then nearEnough = true end
-			if (key == nil or (count < perOwner and nearEnough)) then
+			if (key == nil or (accepted[index] and count < perOwner)) then
 				if key ~= nil then keptByOwner[key] = count + 1 end
 				trimmed[#trimmed + 1] = entry
 				if entry.distance2 ~= nil and entry.distance2 > keptDist then keptDist = entry.distance2 end
@@ -977,15 +1174,21 @@ local function tryAttach(runtime)
 		end
 		if dropped > 0 then
 			plan = trimmed
-			-- 只打一次（每个进程）：玩家看到"物理正常但不该那么贵"时，这行能立刻解释原因。
-			-- 同时把两边的最远/最近距离都报出来 —— 这两个数能直接告诉我们
-			-- "玩家身上那套" 与 "人台/预览" 之间有没有干净的距离分界（下一版可据此收紧阈值）。
+			-- 只打一次（每个进程）：这行同时回答两件事 ——
+			--   · 为什么只挂了这么几件（跟随 / 静止 / 未知 的分布）；
+			--   · "玩家那几件"和"人台"之间有没有干净的距离分界（留:≤x 丢:≥y）。
 			if runtime.perOwnerLogged ~= true then
 				runtime.perOwnerLogged = true
-				runtime.logger("[physbone][去重] 有玩家命中 %d 件同款护甲 ⇒ 只挂最近 %d 件（留:≤%s m，丢:≥%s m）",
-					perOwner + dropped, perOwner,
+				runtime.logger("[physbone][识别] 命中 %d 件 ⇒ 挂 %d 件（跟随=%d 静止=%d 未知=%d；留:≤%s m 丢:≥%s m）%s",
+					matchedCount, #plan, followed, static, unknown,
 					keptDist > 0 and string.format("%.2f", math.sqrt(keptDist)) or "?",
-					droppedDist > 0 and string.format("%.2f", math.sqrt(droppedDist)) or "?")
+					droppedDist > 0 and string.format("%.2f", math.sqrt(droppedDist)) or "?",
+					#followedTags > 0 and ("｜" .. table.concat(followedTags, " ")) or "")
+			end
+			-- 第一次真的需要裁的时候，顺手把"身份类 API"探一遍（只读、一次）。
+			-- 下一份日志就能告诉我们有没有"父子/link"这种**确定性**判据可用。
+			if trimmed[1] ~= nil then
+				pcall(probe_identity_api, runtime, S, trimmed[1], trimmed[1].owner)
 			end
 		end
 	end
@@ -1068,6 +1271,9 @@ local function tryAttach(runtime)
 		runtime.sessions = kept
 		runtime.logger("[physbone][玩家] 释放了 %d 个会话（主人已离开/阵亡），剩 %d 个", released, #kept)
 	end
+
+	-- ①b 身份纠正（"玩家动它不动"的件要放掉）已移到 `identity_watch`：
+	-- 它必须持续跑到分类稳定，而 tryAttach 只在"需要补挂"时才跑（T21 抓到的）。
 
 	-- ② 再补上还没挂的 unit。已有会话的 unit 直接跳过 —— 这是增量的关键：
 	--    队友加入时，我自己的会话一个字节都不该被碰。
@@ -3330,6 +3536,8 @@ local function drive(runtime)
 	-- 第一人称锁定、预算分档都用这一份新鲜值。
 	-- （热键/调参通道已经在 `drive` 开头轮询过了 —— 那里不会被 early return 挡住。）
 	refresh_avatar_distances(S, runtime)
+	-- 身份纠正（"玩家动它不动"的件放掉）：必须每帧入口都跑到，不能只在补挂时跑。
+	pcall(identity_watch, S, runtime)
 	fp_lock_watch(S, runtime)
 	scheduler_watch(S, runtime, runtime.dt)
 
