@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.31"
+M.VERSION = "2.1.32"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -756,7 +756,13 @@ local function tryAttach(runtime)
 		end
 	end
 	if farCount > 0 then
-		runtime.logger("[physbone] 跳过 %d 个离它所属玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
+		-- 节流：这个数会随玩家走动每拍都变（83/95/97…），逐拍打会把日志冲成一片噪音
+		-- （2026-11-12 实机：一局里几千行全是这句）。只在"数字变了"或每 300 帧打一次。
+		local last = runtime.farLog
+		if last == nil or last.count ~= farCount or (frame - last.frame) >= 300 then
+			runtime.farLog = { count = farCount, frame = frame }
+			runtime.logger("[physbone] 跳过 %d 个离它所属玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
+		end
 	end
 	-- ---------- 一次性诊断在"异常态"触发（见下面 fill 循环之后的调用） ----------
 	-- 给候选打分是这里最贵的一步（每份容器 × 每根骨一次 has_node）。
@@ -3087,6 +3093,14 @@ local function drive(runtime)
 	Compat.begin_frame(frame)
 	local driveClock = os.clock()   -- 这一拍驱动块占用的 CPU 时间（心跳里报出来）
 
+	-- ---------- 手动重设通道：**必须放在所有 early return 之前** ----------
+	--
+	-- 2026-11-12 实机抓到（用户"按 F8 一点反应都没有"）：这一句原来在 `drive` 的**后半段**，
+	-- 而"一个会话都没有"（正是最需要 F8 的时刻）会在中途 `return`，于是**根本没机会读键**。
+	-- 结果是：能自愈的时候不需要按，需要按的时候读不到 —— 热键等于从未存在过。
+	-- 现在提到最前面，代价是每帧两次 `Keyboard.button` 纯查询。
+	pcall(sched_poll, S, runtime)
+
 	-- dt 用引擎自己的时间差，不写死 1/60。
 	-- 实测回调约 120 次/秒（不是 70，也不是 375），写死 1/60 会让物理比真实时间快/慢一截，
 	-- 观感是"回弹拖沓"或"甩得太开"，很容易被误判成阻尼/刚度调错了。
@@ -3252,9 +3266,9 @@ local function drive(runtime)
 	-- ---------- 调度（谁拿最高物理权） ----------
 	-- 放在驱动之前：这一帧的驱动顺序就用新排好的结果。
 	-- 顺序有依赖：先把"每个玩家到相机的距离"刷新（≤4 次调用），
-	-- 热键探针、第一人称锁定、预算分档都用这一份新鲜值。
+	-- 第一人称锁定、预算分档都用这一份新鲜值。
+	-- （热键/调参通道已经在 `drive` 开头轮询过了 —— 那里不会被 early return 挡住。）
 	refresh_avatar_distances(S, runtime)
-	sched_poll(S, runtime)
 	fp_lock_watch(S, runtime)
 	scheduler_watch(S, runtime, runtime.dt)
 

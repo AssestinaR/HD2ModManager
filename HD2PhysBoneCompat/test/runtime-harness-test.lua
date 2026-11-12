@@ -1267,6 +1267,69 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T19 没有会话时，F8 仍必须被读到（自愈通道不能被 early return 挡住）")
+--
+-- 实机现场（2026-11-12，用户："按 F8 一点反应都没有"）：热键轮询原来在 `drive` 的**后半段**，
+-- 而"一个会话都没有"会在中途 `return` —— 于是最需要 F8 的时刻恰恰读不到键，
+-- 整个日志历史里一条 `[热键] f8 按下` 都没有。这条用例把"轮询在 early return 之前"钉死。
+do
+	rawset(_G, "render", function() end)
+
+	-- 没有 avatar、没有候选 ⇒ discover 永远失败 ⇒ sessions 恒为 nil ⇒ drive 会早退
+	avatar = nil
+	armors = {}
+
+	local state = { down = 0 }
+	S.Keyboard = {
+		button_index = function(name) return (name == "f8" or name == "F8") and 119 or nil end,
+		button = function(code) if code == 119 then return state.down end return 0 end,
+	}
+
+	local logPath19 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t19hotkey.txt"
+	os.remove(logPath19)
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath19,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
+		pollFrames = 2, validateFrames = 0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 6 do engine.time = engine.time + 1 / 120; probeRender() end
+
+	local text = ""
+	do
+		local handle = io.open(logPath19, "r")
+		if handle ~= nil then text = handle:read("*a") or ""; handle:close() end
+	end
+	check("T19 先确认确实没有会话（否则这条用例没意义）", runtime.sessions == nil,
+		tostring(runtime.sessions and #runtime.sessions))
+
+	state.down = 1               -- 按下
+	for _ = 1, 3 do engine.time = engine.time + 1 / 120; probeRender() end
+	do
+		local handle = io.open(logPath19, "r")
+		if handle ~= nil then text = handle:read("*a") or ""; handle:close() end
+	end
+	check("T19 无会话时按 F8 能落「按下」日志", text:find("[热键] f8 按下", 1, true) ~= nil)
+
+	state.down = 0               -- 松开：下一次按下还要能触发（不是"永远按住"）
+	for _ = 1, 3 do engine.time = engine.time + 1 / 120; probeRender() end
+	state.down = 1
+	for _ = 1, 3 do engine.time = engine.time + 1 / 120; probeRender() end
+	do
+		local handle = io.open(logPath19, "r")
+		if handle ~= nil then text = handle:read("*a") or ""; handle:close() end
+	end
+	local _, presses = text:gsub("%[热键%] f8 按下", "")
+	check("T19 松开再按能再次触发（上升沿，不是电平）", presses == 2, string.format("%d 次", presses))
+
+	S.Keyboard = nil
+	pcall(os.remove, logPath19)
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")
