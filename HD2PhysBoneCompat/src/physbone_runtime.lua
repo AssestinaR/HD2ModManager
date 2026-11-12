@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.35"
+M.VERSION = "2.1.36"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -683,38 +683,42 @@ local function identity_watch(S_, runtime)
 	end
 end
 
---- 一次性探针：把 `Unit` 里那几个"可能直接告诉我们身份"的函数都试一遍。
+--- 身份类 API 探针：**成组执行 + 断点续测**（`probeIdentity = 1` 时才跑）。
 ---
---- 为什么（2026-11-12，用户提问）：只按"玩家动它动"判断身份不稳（玩家可能站着不动、
---- 换甲瞬间位置跳变）。而 API 里有更硬的线索：
----   · `Unit.is_child(a, b)`         —— a 是不是 b 的子（护甲挂在玩家骨架下就是）
----   · `Unit.scene_graph_parent(u, n)` —— 节点 n 的父级（可能是玩家那个 unit）
----   · `Unit.scene_graph_link(u, n)`   —— 节点 n 的 link 目标
----   · `Unit.bones(u)`              —— 直接列骨（匹配、比对都能用）
----   · `Unit.is_a(u, "…")`、`has_mesh`、`num_meshes`
---- 这些的签名/返回值在本仓都没验证过，所以这里**只读、只探、只打日志**，
---- 每个调用都 pcall 兜住；参数都用合法值（节点下标 1，在 `num_scene_graph_items` 范围内）。
---- 触发条件：真的发生了"超量命中"（有件被裁掉），一个进程只跑一次。
---- ⚠️⚠️ 默认**关闭**，只在调参文件写 `probeIdentity = 1` 时才跑。
+--- 为什么要"成组 + 断点续测"（2026-11-12 用户的原话）：一次只测一个是低效率的，
+--- 而崩溃本身不是坏事 —— 坏的是"崩了但不知道为什么"。
+--- 所以这里：
+---   ① 一个进程里把候选接口**全跑一遍**（不是一次一个）；
+---   ② **每次调用前**先落一行日志、并先把进度写盘（`next = N+1`）；
+---   ③ 万一某个调用把进程打死（原生 AV，pcall 拦不住），进度已经落盘 ⇒
+---      下次启动自动从下一个继续，**不需要改任何东西**；
+---   ④ 于是"最坏情况崩 N 次"就换来 N 个接口的确定答案，而且每次崩溃都自带名字。
 ---
---- 为什么默认关（2026-11-12 实机，血的教训）：
---- 本仓早有前科 —— `S.Quaternion(0,0,0,1)` 直接把游戏进程打死，连 Lua 错误都没有。
---- 这次我为了探"身份判据"，在默认路径上调了几个**签名未经验证**的引擎函数
---- （`Unit.bones` / `scene_graph_parent` / `scene_graph_link` / `is_a` / `is_child`），
---- 结果进舰船几秒后崩溃：
----   异常码 0xc0000005（访问违例），helldivers2.exe+0x3ef06b，参数 0x0 0x0；
----   日志停在 `[识别] …` 这一行，紧接着该打的 `[识别API]` 一行都没有 ⇒ 死在第一个调用里。
---- `pcall` **拦不住原生 AV** —— 未知签名的引擎函数只能靠"绝对不在产品路径上调用"。
----
---- 所以：这些接口若真要用，必须在**明确知情的单独一轮**里开这个开关、
---- 并且一次只试一个函数（改一行、跑一次），否则就是在赌进程不崩。
+--- 进度文件：`%LOCALAPPDATA%\hd2pbx_probe.txt`。写 `next = 0` 表示全部跑完。
+--- ⚠️ 默认**关闭**：这些签名从没验证过，且已知能崩（2.1.34 事故，见 docs/agent 的 §13）。
 local function probe_identity_api(runtime, S_, candidate, owner)
 	if runtime.apiProbed == true or candidate == nil or candidate.unit == nil then return end
 	runtime.apiProbed = true
 	local logger = runtime.logger
 	local unit = candidate.unit
 	local ownerUnit = owner ~= nil and owner.unit or nil
+	local base = os.getenv("LOCALAPPDATA") or "."
+	local markerPath = base .. "\\hd2pbx_probe.txt"
 
+	local function readNext()
+		local handle = io.open(markerPath, "r")
+		if handle == nil then return 1 end
+		local text = handle:read("*a") or ""
+		handle:close()
+		local value = tonumber(text:match("next%s*=%s*(%-?%d+)"))
+		return value or 1
+	end
+	local function writeNext(value)
+		local handle = io.open(markerPath, "w")
+		if handle == nil then return end
+		handle:write(string.format("next = %d\n", value))
+		handle:close()
+	end
 	local function repr(value)
 		if type(value) == "table" or type(value) == "userdata" then
 			local okName, name = pcall(function() return S_.Unit.debug_name(value) end)
@@ -723,50 +727,48 @@ local function probe_identity_api(runtime, S_, candidate, owner)
 		end
 		return tostring(value)
 	end
-	local function probe(label, fn)
-		local ok, value = pcall(fn)
-		if not ok then
-			local text = tostring(value):gsub("^.*:%d+: ", "")
-			logger("[physbone][识别API] %s ⇒ 抛错(%s)", label, text:sub(1, 60))
-		else
-			logger("[physbone][识别API] %s ⇒ %s %s", label, type(value), repr(value):sub(1, 40))
-		end
-	end
 
 	local tag = unit_tag(S_, unit)
 	local ownerTag = ownerUnit ~= nil and unit_tag(S_, ownerUnit) or "?"
-	probe(string.format("%s.bones()", tag), function() return S_.Unit.bones(unit) end)
-	probe(string.format("%s.has_mesh()", tag), function() return S_.Unit.has_mesh(unit) end)
-	probe(string.format("%s.num_meshes()", tag), function() return S_.Unit.num_meshes(unit) end)
-	probe(string.format("%s.scene_graph_parent(1)", tag), function() return S_.Unit.scene_graph_parent(unit, 1) end)
-	probe(string.format("%s.scene_graph_link(1)", tag), function() return S_.Unit.scene_graph_link(unit, 1) end)
-	probe(string.format("%s.is_a('Unit')", tag), function() return S_.Unit.is_a(unit, "Unit") end)
-	if ownerUnit ~= nil then
-		-- 关键两条：护甲是不是"那个玩家的子"（两个方向都试，签名未知）
-		probe(string.format("is_child(%s, %s)", tag, ownerTag),
-			function() return S_.Unit.is_child(unit, ownerUnit) end)
-		probe(string.format("is_child(%s, %s)", ownerTag, tag),
-			function() return S_.Unit.is_child(ownerUnit, unit) end)
-		probe(string.format("owner.scene_graph_parent(1)"), function()
-			return S_.Unit.scene_graph_parent(ownerUnit, 1)
-		end)
+	-- 第 1 条是**已知可用**的对照（debug_name）：如果连它都没落下来，
+	-- 说明问题在探针本身（或者日志没刷），不是在被探的 API 上。
+	local steps = {
+		{ "debug_name（对照，已知可用）", function() return S_.Unit.debug_name(unit) end },
+		{ "is_a(unit,'Unit')", function() return S_.Unit.is_a(unit, "Unit") end },
+		{ "has_mesh(unit)", function() return S_.Unit.has_mesh(unit) end },
+		{ "num_meshes(unit)", function() return S_.Unit.num_meshes(unit) end },
+		{ "bones(unit)", function() return S_.Unit.bones(unit) end },
+		{ "scene_graph_parent(unit,1)", function() return S_.Unit.scene_graph_parent(unit, 1) end },
+		{ "scene_graph_link(unit,1)", function() return S_.Unit.scene_graph_link(unit, 1) end },
+		{ "is_child(unit,owner)", function() return S_.Unit.is_child(unit, ownerUnit) end },
+		{ "is_child(owner,unit)", function() return S_.Unit.is_child(ownerUnit, unit) end },
+		{ "Application.main_world()", function() return S_.Application.main_world() end },
+		{ "World.entities(world)", function() return S_.World.entities(runtime.world) end },
+	}
+	local startAt = readNext()
+	if startAt < 1 or startAt > #steps then
+		if startAt > #steps then logger("[physbone][识别API] 全部跑完（%d 项），不再探", #steps) end
+		return
 	end
+	logger("[physbone][识别API] 共 %d 项，从 #%d 开始（目标 %s，归属 %s）", #steps, startAt, tag, ownerTag)
+	for index = startAt, #steps do
+		local step = steps[index]
+		-- 写前落盘：这一行是"断点"。崩在下面那行之后，下次就会从 index+1 继续。
+		writeNext(index + 1)
+		logger("[physbone][识别API] #%d 开始 %s", index, step[1])
+		local ok, value = pcall(step[2])
+		if not ok then
+			local text = tostring(value):gsub("^.*:%d+: ", "")
+			logger("[physbone][识别API] #%d ⇒ 抛错(%s)", index, text:sub(1, 70))
+		else
+			logger("[physbone][识别API] #%d ⇒ %s %s", index, type(value), repr(value):sub(1, 40))
+		end
+	end
+	writeNext(#steps + 1)
+	logger("[physbone][识别API] 全部 %d 项跑完", #steps)
 end
 
 --- 一次性"候选普查 + has_node / node 交叉验证"（**只在异常态触发**）。
----
---- 为什么需要（2026-11-12 实机，2.1.28）：进任务后**每一件候选的预筛都挂**
---- （`预筛 8 件（过 0）`，连续 5 分钟一次都没过），而舰船上同样的代码却过了 8 件、挂上 2 件。
---- 这时只剩两种可能，而且修法完全相反：
----   A. 任务里的护甲 unit **真的没有那些骨**（不同资源 / 只挂了半个模型）⇒ 换匹配思路；
----   B. `has_node` 在骗人（本仓早有记录：同一根骨会从 true 翻成 false，
----      而 `num_scene_graph_items` 不变 —— 见 IDENTITY 那行日志）⇒ 换判据。
---- `Unit.node` 加一个"绝不存在的名字"做对照就能区分：对照组若也返回合理节点下标，
---- 那 `node` 不能当判据（2026-10-31 的结论）；若对照组返回 nil/-1/越界，而真骨返回
---- 合理下标，就说明骨头在、是 `has_node` 在骗人。
----
---- 触发条件写成"探了 N 件、一件都没过预筛"，所以正常场景（能过预筛）**一个字节都不花**，
---- 不会挤掉心跳的日志预算（mp_harness 的 900 字节断言就是这条线）。
 local function dump_census(runtime, S_, nearCandidates, farCount, carriers)
 	local firstTag = nearCandidates[1] ~= nil and unit_tag(S_, nearCandidates[1].unit) or "?"
 	local key = tostring(#nearCandidates) .. "|" .. firstTag .. "|" .. tostring(farCount)
@@ -1108,110 +1110,73 @@ local function tryAttach(runtime)
 	-- 预算就是这么发现的）。耗时并进下面那一条"已挂载"行。
 	runtime.lastScoreMs = (os.clock() - scoreClock) * 1000
 
-	-- ---------- 每个玩家最多挂 K 件（**性能的主要闸门**） ----------
+	-- ---------- 身份分流：只认"跟着玩家走"的件 ----------
 	--
-	-- 实机（2026-11-12，2.1.32）：舰船的军械库里有二十来件**同资源、同骨名**的护甲实例
-	-- （人台 / 预览克隆 / 尸体），它们和玩家身上那套的 57 根骨**完全一样** ⇒ 全部"全命中"。
-	-- 于是玩家名下有 26 件、1014 条链，而"自己永不节流"⇒ 每帧 ~2000 次引擎调用（7~8 ms）。
-	-- 玩家真正需要的只有**离他最近的那几件**（第一版 1.5.14 时代是 2 件、约 1~2 ms）。
+	-- 2026-11-12 用户定调（原话大意）：这些限制卵用没有，反而掩盖了真正的问题 —— **目标错了**。
+	-- 复盘确实如此：预筛把真护甲挡在外面、件数闸/距离闸掩盖"26 件同款全命中"、
+	-- 自己分帧直接造成闪烁。真正要解决的只有一件：**哪几件是玩家在操作的模型**。
 	--
-	-- 为什么按距离而不是按别的：护甲挂在玩家骨架上，位置几乎与玩家重合（<0.5 m）；
-	-- 人台/预览固定在房间里，必然更远。这条判据不需要任何额外引擎能力。
-	local perOwner = options.maxMatchedPerOwner
-	if perOwner == nil then perOwner = 8 end
-	-- 距离闸（比件数闸更准）：玩家身上那套护甲挂在玩家骨架上，位置与玩家几乎重合；
-	-- 军械库里的人台/预览固定在房间里，必然更远。默认 1.0 m。
-	-- ⚠️ 万一某个模型的护甲离根骨更远，会出现"一件都不挂" —— 所以下面留了兜底：
-	--   每个玩家**至少留最近的那一件**，永远不会因为这条闸门变成零。
-	local attachMax = options.attachMaxDistance
-	if attachMax == nil then attachMax = 1.0 end
-	local attachMax2 = attachMax > 0 and (attachMax * attachMax) or nil
-	if perOwner > 0 and #plan > 1 then
-		local matchedCount = #plan   -- 裁之前到底命中了几件（日志里必须报这个数，不是"上限+丢掉"）
-		-- 先按距离升序（读不到的排最后），这样"前 K 件"就是"最近的 K 件"
+	-- 所以这里不再有"上限"，只有一条语义规则：
+	--   · 玩家动过之后 —— 跟着一起动的（`follows == true`）留下，不动的人台/预览（false）丢掉；
+	--   · 还没有活动量数据时（刚进场景 / 玩家还没走动）—— **先全收**，等数据到了由
+	--     `identity_watch` 把不跟随的放掉。宁可短暂多驱动几件，也不要用猜测去否决目标。
+	-- 代价是一次性尖峰（军械库里那几秒），换来的是"稳态只剩真目标"，而且没有任何会闪烁的节流。
+	local matchedCount = #plan
+	if matchedCount > 0 then
 		table.sort(plan, function(a, b)
 			local da = a.distance2 or math.huge
 			local db = b.distance2 or math.huge
 			if da ~= db then return da < db end
 			return tostring(a.tag) < tostring(b.tag)
 		end)
-		local keptByOwner, trimmed, dropped, droppedDist, keptDist = {}, {}, 0, 0, 0
-		local followed, static, unknown, followedTags = 0, 0, 0, {}
-		-- 先分类（不改 plan），再按"每个玩家至少一件"的兜底做第二遍。
-		-- ⚠️ 兜底必须在**第二遍**做：如果边扫边"第一件无条件收下"，
-		-- 排序后第一件可能是人台（tag 恰好在前面），于是人台被当成"玩家那件"留下（T21 抓到的）。
-		local accepted, acceptedByOwner = {}, {}
-		for index, entry in ipairs(plan) do
+		local kept, followed, static, unknown, followedTags = {}, 0, 0, 0, {}
+		local acceptedByOwner = {}
+		for _, entry in ipairs(plan) do
 			local key = entry.owner ~= nil and entry.owner.unit or nil
-			-- ① 行为判据（最可靠）：玩家动过之后，**跟着一起动**的那件才是他身上的。
-			--    人台/预览固定在房间里，累计位移恒为 0 ⇒ 直接出局。
-			--    还没有数据（玩家没动过 / 刚进场景）时返回 nil，退回距离判据。
 			local follows = motion_follows(runtime, key, entry.unit)
-			local accept
+			local accept = follows ~= false        -- true 或"未知"都先收
 			if follows == true then
-				accept = true
 				followed = followed + 1
-				if #followedTags < 4 then
+				if #followedTags < 6 then
 					followedTags[#followedTags + 1] = string.format("%s@%.2fm", tostring(entry.tag),
 						entry.distance2 ~= nil and math.sqrt(entry.distance2) or 0)
 				end
 			elseif follows == false then
-				accept = false
 				static = static + 1
 			else
 				unknown = unknown + 1
-				accept = attachMax2 == nil or entry.distance2 == nil or entry.distance2 <= attachMax2
 			end
-			accepted[index] = accept
+			entry.__accept = accept
 			if accept and key ~= nil then acceptedByOwner[key] = (acceptedByOwner[key] or 0) + 1 end
 		end
-		-- ② 兜底：某个玩家一件都没被接受 ⇒ 无论判据怎么说，先留他最近的一件（绝不挂零）。
-		for index, entry in ipairs(plan) do
+		-- 兜底：某个玩家一件都没被接受 ⇒ 留他最近的一件（绝不挂零）。
+		for _, entry in ipairs(plan) do
 			local key = entry.owner ~= nil and entry.owner.unit or nil
-			if key ~= nil and (acceptedByOwner[key] or 0) == 0 and accepted[index] == false then
-				accepted[index] = true
+			if key ~= nil and (acceptedByOwner[key] or 0) == 0 and entry.__accept == false then
+				entry.__accept = true
 				acceptedByOwner[key] = 1
 				runtime.logger("[physbone][识别] 玩家 %s 没有「跟着动」的件 ⇒ 兜底留最近的一件 %s",
 					tostring(entry.owner ~= nil and entry.owner.tag or "?"), tostring(entry.tag))
 			end
 		end
-		for index, entry in ipairs(plan) do
-			local key = entry.owner ~= nil and entry.owner.unit or nil
-			local count = key ~= nil and (keptByOwner[key] or 0) or 0
-			if (key == nil or (accepted[index] and count < perOwner)) then
-				if key ~= nil then keptByOwner[key] = count + 1 end
-				trimmed[#trimmed + 1] = entry
-				if entry.distance2 ~= nil and entry.distance2 > keptDist then keptDist = entry.distance2 end
-			else
-				dropped = dropped + 1
-				-- 记"被丢掉里最近的"（不是最远的）：它才说明分界在哪
-				if entry.distance2 ~= nil and (droppedDist == 0 or entry.distance2 < droppedDist) then
-					droppedDist = entry.distance2
-				end
-			end
+		for _, entry in ipairs(plan) do
+			if entry.__accept ~= false then kept[#kept + 1] = entry end
+			entry.__accept = nil
 		end
+		local dropped = matchedCount - #kept
 		if dropped > 0 then
-			plan = trimmed
-			-- 只打一次（每个进程）：这行同时回答两件事 ——
-			--   · 为什么只挂了这么几件（跟随 / 静止 / 未知 的分布）；
-			--   · "玩家那几件"和"人台"之间有没有干净的距离分界（留:≤x 丢:≥y）。
+			plan = kept
 			if runtime.perOwnerLogged ~= true then
 				runtime.perOwnerLogged = true
-				runtime.logger("[physbone][识别] 命中 %d 件 ⇒ 挂 %d 件（跟随=%d 静止=%d 未知=%d；留:≤%s m 丢:≥%s m）%s",
+				runtime.logger("[physbone][识别] 命中 %d 件 ⇒ 挂 %d 件（跟随=%d 静止=%d 未知=%d）%s",
 					matchedCount, #plan, followed, static, unknown,
-					keptDist > 0 and string.format("%.2f", math.sqrt(keptDist)) or "?",
-					droppedDist > 0 and string.format("%.2f", math.sqrt(droppedDist)) or "?",
 					#followedTags > 0 and ("｜" .. table.concat(followedTags, " ")) or "")
 			end
-			-- 第一次真的需要裁的时候，顺手把"身份类 API"探一遍（只读、一次）。
-			-- 下一份日志就能告诉我们有没有"父子/link"这种**确定性**判据可用。
-			if trimmed[1] ~= nil then
-				-- 身份类 API 探针：**默认关**（会崩，见函数上方那段）。
-			-- 只有调参文件写 `probeIdentity = 1` 才会跑 —— 那是"单独一轮、只试一个函数"的用法。
-			if (tune_values(runtime).probeIdentity or 0) ~= 0 then
-				pcall(probe_identity_api, runtime, S, trimmed[1], trimmed[1].owner)
-			end
-			end
+		end
+		-- 身份类 API 探针：默认关（曾崩过），且**自动推进 / 断点续测**（见函数上方）。
+		-- 放在"有超过一件同款模型"的场合跑，因为那正是"分不清哪个是玩家模型"的现场。
+		if matchedCount > 1 and plan[1] ~= nil and (tune_values(runtime).probeIdentity or 0) ~= 0 then
+			pcall(probe_identity_api, runtime, S, plan[1], plan[1].owner)
 		end
 	end
 	-- **游标必须每拍前进。** 这是"覆盖全部候选"的唯一保证（不依赖 unit 句柄是否跨帧同一）：
@@ -3579,7 +3544,10 @@ local function drive(runtime)
 
 	-- 距离已经在这一帧开头刷新过了（见调度块），这里不再重复读。
 
-	local budget = options.maxChainsPerFrame or 160
+	-- 每帧链数预算：给**队友**分档用的软目标（自己永不分帧，见下）。
+	-- 160 → 600：160 会让 4 件/玩家都触发队友节流，而实测 600 链 ≈ 1200 次调用 ≈ 4.5 ms，
+	-- 仍在用户的 5 ms 线内，且自己的物理不用降刷新率。
+	local budget = options.maxChainsPerFrame or 600
 	-- 分档边界与兜底阈值共用同一个数（用户要的就是"6 m 这个清晰边界"）：
 	-- 近 = 会被看清的那个范围，远 = 只有轮廓的范围。
 	local nearMetres = sched_settings(runtime).metres
@@ -3612,31 +3580,28 @@ local function drive(runtime)
 		end
 	end
 	local nearStride, farStride = schedule_budget(primaryChains, nearChains, farChains, budget)
-	-- 自己也要有上限（2026-11-12 实机，2.1.32）：原来"自己的件永不节流"是硬设计，
-	-- 可一旦自己名下挂了 26 件 / 1014 条链（军械库里全是同款护甲实例），
-	-- 每帧 ~2000 次引擎调用 = 7~8 ms，用户的 5 ms 线当场破掉。
-	-- 现在的规则：**自己的优先级仍然最高**（步长最小），但总链数超过预算时自己也按比例分帧，
-	-- 保证"每帧驱动的链数 ≤ budget"这条硬上界。只有 1~3 件时步长恒为 1，行为与旧版一致。
+	-- ---------- 自己**永不分帧**（2026-11-12 实机修正） ----------
+	--
+	-- 上一版（2.1.33）我让"自己的链数超预算时也按比例分帧"，结果用户立刻看到
+	-- **头发/裙子在不停闪烁**：被跳过的帧里引擎把这些骨重新置回动画/绑定姿态，
+	-- 于是画面在"写进去的物理姿态"和"绑定姿态"之间以 30/20 Hz 来回跳。
+	--
+	-- 物理的分帧只在"没有别的东西每帧覆盖这些骨"时才成立；HD2 的护甲骨**每帧都被骨架覆盖**，
+	-- 所以对自己分帧 = 必然闪烁。省钱只能靠**认对目标**（少挂几件），
+	-- 不能靠降刷新率 —— 那是用户能直接看见的。
 	local primaryStride = 1
-	if primaryChains > budget and primaryChains > 0 then
-		primaryStride = math.min(16, math.ceil(primaryChains / budget))
-	end
-	-- 只在"真的发生节流"时打这一行：全都不节流（步长都是 1）时，这行只是噪音
-	-- （mp_harness 的 900 字节预算用例就是被它挤掉心跳的）。
-	-- 但 runtime.* 上的值**每拍都更新**：驱动心跳里的"分帧="要显示当前真实步长。
-	local throttled = (nearStride > 1) or (farStride > 1) or (primaryStride > 1)
+	local throttled = (nearStride > 1) or (farStride > 1)
 	local changed = (nearStride ~= runtime.nearStride) or (farStride ~= runtime.farStride)
-		or (primaryStride ~= runtime.primaryStride)
 	runtime.nearStride, runtime.farStride = nearStride, farStride
 	runtime.primaryStride = primaryStride
 	if throttled and changed then
-		logger("[physbone][预算] 自己 %d 链/帧（每 %d 帧）· %.0f m 内队友 %d 链（每 %d 帧）· 远处 %d 链（每 %d 帧）· 每帧预算 %d",
-			primaryChains, primaryStride, nearMetres, nearChains, nearStride, farChains, farStride, budget)
+		logger("[physbone][预算] 自己 %d 链/帧（不分帧）· %.0f m 内队友 %d 链（每 %d 帧）· 远处 %d 链（每 %d 帧）· 每帧预算 %d",
+			primaryChains, nearMetres, nearChains, nearStride, farChains, farStride, budget)
 	end
 	if primaryChains > budget and runtime.budgetOverLogged ~= true then
 		runtime.budgetOverLogged = true
-		logger("[physbone][预算] 自己身上 %d 链已超过每帧预算 %d ⇒ 自己也按每 %d 帧分帧（每帧仍 ≤ 预算）",
-			primaryChains, budget, primaryStride)
+		logger("[physbone][预算] 自己身上 %d 链已超过每帧预算 %d：**不分帧**（分帧会让自己的物理闪烁）",
+			primaryChains, budget)
 	end
 
 	local written, skippedSame, engineCalls, staticChains = 0, 0, 0, 0
@@ -3657,9 +3622,6 @@ local function drive(runtime)
 			-- 用**会话下标**错峰，而不是玩家序号：同一个玩家的若干护甲件如果同帧，
 			-- 每 stride 帧就会出现一次成本尖峰（帧时间抖动比平均成本更影响手感）。
 			if stride > 1 and ((frame + index) % stride) ~= 0 then due = false end
-		elseif primaryStride > 1 and ((frame + index) % primaryStride) ~= 0 then
-			-- 自己的件多到超预算时同样按比例分帧（见上面 primaryStride 的说明）。
-			due = false
 		end
 		-- 拆解窗口：任何会话死亡后的一小段里不写骨（理由见 pruneSessions 里那段注释）。
 		-- 仍然走"没轮到"的同一条路，所以 pendingDt 照常累积、物理速度不变。
@@ -3955,7 +3917,6 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
-
 
 
 

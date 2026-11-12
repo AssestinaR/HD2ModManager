@@ -150,6 +150,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -248,6 +249,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = wrongRig, path = "wrong.patch_1.gpu_resources" } },
 		logPath = logPath2,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -350,6 +352,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = partialRig, path = "partial.patch_1.gpu_resources" } },
 		logPath = logPath5b,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -384,6 +387,7 @@ do
 	armors = armorsB
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath3,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -470,6 +474,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath7,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -581,6 +586,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath8,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -656,6 +662,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath9,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -725,6 +732,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath10,
 		settleFrames = 2, snapshot = false, tunePath = tunePath10,
@@ -790,6 +798,7 @@ do
 
 		local runtime = Runtime.install(S, {
 			compat = Compat,
+			maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 			carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 			logPath = logPath,
 			settleFrames = 2, snapshot = false, tunePath = tunePath,
@@ -850,6 +859,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath12,
 		settleFrames = 2, snapshot = false, tunePath = tunePath12,
@@ -896,6 +906,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath13,
 		settleFrames = 2, snapshot = false, tunePath = tunePath13,
@@ -972,6 +983,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t14fill.txt",
 		settleFrames = 2, snapshot = false, tunePath = tunePath14,
@@ -1032,6 +1044,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t15neg.txt",
 		settleFrames = 2, snapshot = false, tunePath = tunePath15,
@@ -1115,6 +1128,7 @@ do
 	local function runCase16(label, extra, frames)
 		local runtime = Runtime.install(S, {
 			compat = Compat,
+			maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 			carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 			logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t16order.txt",
 			settleFrames = 2, snapshot = false, tunePath = tunePath16,
@@ -1183,6 +1197,7 @@ do
 	os.remove(logPath17)
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath17,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -1247,6 +1262,7 @@ do
 
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t18names.txt",
 		settleFrames = 2, snapshot = false, tunePath = tunePath18,
@@ -1290,6 +1306,7 @@ do
 	os.remove(logPath19)
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath19,
 		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
@@ -1331,12 +1348,12 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-print("T20 同款护甲一堆时只挂最近的 N 件（军械库里 26 件同资源实例 ⇒ 每帧 2000 次调用）")
+print("T20 去掉上限之后：未知阶段不猜测，玩家一动就收敛到「穿在身上」的那件")
 --
--- 实机现场（2026-11-12，2.1.32）：舰船军械库里有二十来件**同资源、同骨名**的护甲实例
--- （人台 / 预览克隆 / 尸体），它们和玩家身上那套 57 根骨完全一样 ⇒ 全部全命中 ⇒
--- 一个玩家名下挂 26 件 / 1014 条链，而"自己永不节流"⇒ 每帧 ~2000 次引擎调用（7~8 ms）。
--- 这条用例把"只挂最近的 N 件（默认 8）"钉死，并确认留下的是离玩家最近的那几件。
+-- 用户 2026-11-12 定调：件数闸/距离闸这些"限制"掩盖了真正的问题（目标错了）。
+-- 所以这里验的是**没有上限**时的行为：
+--   · 玩家不动 ⇒ 没有活动量数据 ⇒ 同款 20 件**全部挂上**（宁可短暂多驱动，也不靠猜测否决目标）；
+--   · 玩家走起来 ⇒ 只有穿在身上的那件跟着动 ⇒ 其余 19 件被 `identity_watch` 放掉。
 do
 	rawset(_G, "render", function() end)
 
@@ -1348,12 +1365,12 @@ do
 	end
 	engine.pos[av20] = { 0, 0, 0 }
 
-	-- 20 件同款护甲：前 3 件贴着玩家（0.1/0.3/0.5 m），其余摆在 1.5~4 m（人台）
+	-- 20 件同款护甲：第 1 件贴着玩家（会跟着走），其余摆在 1.5~4 m（人台、不动）
 	local units20 = {}
 	for index = 1, 20 do
 		local unit = newUnit("t20dup" .. index, 171, false, "#ID[t20dup" .. index .. "]")
 		dress(unit)
-		local offset = index == 1 and 0.1 or (index == 2 and 0.3 or (index == 3 and 0.5 or (1.5 + index * 0.12)))
+		local offset = index == 1 and 0.2 or (1.5 + index * 0.12)
 		engine.pos[unit] = { offset, 0, 0 }
 		units20[index] = unit
 	end
@@ -1379,43 +1396,28 @@ do
 	local probeRender = rawget(_G, "render")
 	for _ = 1, 80 do engine.time = engine.time + 1 / 120; probeRender() end
 
-	local text = ""
-	do
-		local handle = io.open(logPath20, "r")
-		if handle ~= nil then text = handle:read("*a") or ""; handle:close() end
-	end
+	-- 玩家不动 ⇒ 没有活动量数据 ⇒ **不猜测**：20 件同款全部先挂上（"去掉上限"的直接证据）。
 	local count = runtime.sessions and #runtime.sessions or 0
-	-- 距离闸（默认 1.0 m）：只有贴身的 3 件留下，人台（≥1.5 m）全丢。
-	check("T20 距离闸：只留贴身的 3 件（人台全丢）", count == 3, string.format("会话=%d", count))
-	check("T20 最近的那件一定被挂上", runtime.sessions ~= nil and runtime.sessions[1] ~= nil
-		and runtime.sessions[1].unitTag == "#ID[t20dup1]",
-		tostring(runtime.sessions and runtime.sessions[1] and runtime.sessions[1].unitTag))
-	check("T20 落了「识别」日志（说明确实裁过）", text:find("[physbone][识别]", 1, true) ~= nil)
-	Runtime.uninstall()
+	check("T20 未知阶段不猜测：同一款 20 件全部挂上", count == 20, string.format("会话=%d", count))
 
-	-- 关掉距离闸后，件数闸必须顶住：20 件全部贴身也只能挂 8 件。
-	-- 这一条防止"以后有人把距离闸放宽"时又回到 26 件全挂（每帧 2000 次调用）的老路。
-	do
-		rawset(_G, "render", function() end)
-		for index = 1, 20 do engine.pos[units20[index]] = { 0.1 + index * 0.005, 0, 0 } end
-		local runtime2 = Runtime.install(S, {
-			compat = Compat,
-			carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
-			logPath = logPath20,
-			settleFrames = 2, snapshot = false, tunePath = tunePath20,
-			pollFrames = 2, validateFrames = 0,
-			maxArmorDistance = 10.0,
-			attachMaxDistance = 0,          -- 0 = 关掉距离闸
-			maxMatchedPerOwner = 8,
-		})
-		local probeRender2 = rawget(_G, "render")
-		for _ = 1, 80 do engine.time = engine.time + 1 / 120; probeRender2() end
-		local kept = runtime2.sessions and #runtime2.sessions or 0
-		check("T20 件数闸：贴身 20 件也只挂 8 件", kept == 8, string.format("会话=%d", kept))
-		Runtime.uninstall()
+	-- 玩家走起来：只有"穿在身上"的那件会跟着动 ⇒ 其余 19 件必须被放掉。
+	for step = 1, 60 do
+		local x = step * 0.05
+		engine.pos[av20] = { x, 0, 0 }
+		engine.pos[units20[1]] = { x + 0.2, 0, 0 }
+		engine.time = engine.time + 1 / 120
+		probeRender()
 	end
+	local settled = runtime.sessions and #runtime.sessions or 0
+	local keptTags = {}
+	for _, session in ipairs(runtime.sessions or {}) do keptTags[#keptTags + 1] = tostring(session.unitTag) end
+	check("T20 玩家动过之后就只剩跟随的那件", settled == 1,
+		string.format("会话=%d %s", settled, table.concat(keptTags, ",")))
+	check("T20 留下的正是穿在身上那件", settled == 1 and runtime.sessions[1].unitTag == "#ID[t20dup1]",
+		table.concat(keptTags, ","))
 
 	pcall(os.remove, tunePath20)
+	Runtime.uninstall()
 end
 
 -- ---------------------------------------------------------------------------
@@ -1463,6 +1465,7 @@ do
 	end
 	local runtime = Runtime.install(S, {
 		compat = Compat,
+		maxMatchedPerOwner = 0,   -- 这些用例验的是匹配/公平性，不是"每玩家最多几件"的上限
 		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
 		logPath = logPath21,
 		settleFrames = 2, snapshot = false, tunePath = tunePath21,

@@ -326,35 +326,30 @@ do
 	check(selfCount == frames, "自己（离相机最近）每帧都在算", selfCount .. "/" .. frames)
 end
 
--- ================================================================ 场景 4b：自己超预算也要分帧
-io.stdout:write("\n[场景 4b] 自己名下链数超预算 ⇒ 自己也分帧（每帧仍 ≤ 预算）\n")
+-- ================================================================ 场景 4b：自己永远不分帧
+io.stdout:write("\n[场景 4b] 自己的链数再大也不分帧（分帧 = 自己身上闪烁）\n")
 --
--- 实机 2026-11-12（2.1.32）：军械库里二十来件同款护甲全部"全命中"，一个玩家名下 26 件 /
--- 1014 条链；旧规则"自己永不节流"⇒ 每帧 ~2000 次引擎调用（7~8 ms），用户的 5 ms 线破掉。
--- 新规则：自己优先级仍最高（步长最小），但总链数超预算时按比例分帧。
+-- 实机 2026-11-12：我一度让"自己的链数超预算时也按比例分帧"，用户立刻看到**头发/裙子闪烁** ——
+-- 被跳过的帧里引擎把那些骨重新置回动画/绑定姿态，画面就在"物理姿态"和"绑定姿态"之间反复跳。
+-- 所以规则改成硬约束：**自己永不分帧**；省成本只能靠"少挂件数/认对目标"。
 do
 	local fake = newFake()
 	local compat = newCompat()
-	fake:playerAt("p1", 0, 400)          -- 一个玩家 400 条链，预算 160 ⇒ 步长至少 3
+	fake:playerAt("p1", 0, 400)          -- 一个玩家 400 条链，远超预算 160
 	local runtime = freshRuntime(fake, compat, { maxChainsPerFrame = 160 })
 	fake:advance(80)
-	check((runtime.primaryStride or 1) > 1, "自己超预算时也会分帧",
+	check(runtime.primaryStride == 1, "自己不分帧（步长恒为 1）",
 		"primaryStride=" .. tostring(runtime.primaryStride))
-	check(runtime.primaryStride == math.ceil(400 / 160), "步长按 链数/预算 算",
-		string.format("步长=%s 期望=%d", tostring(runtime.primaryStride), math.ceil(400 / 160)))
 
-	-- 一个步长周期内必须至少驱动一次（分帧 ≠ 停驱动），且不能每帧都驱动。
+	-- 每一帧都必须驱动自己（否则就是闪烁的来源）。
 	compat.dtByUnit = {}
 	local frames = 12
 	fake:advance(frames, 0.01)
-	local selfCount, totalDt = 0, 0
+	local selfCount = 0
 	for _, entry in ipairs(compat.dtByUnit) do
-		if entry.unit == "p1-armor" then selfCount = selfCount + 1; totalDt = totalDt + entry.dt end
+		if entry.unit == "p1-armor" then selfCount = selfCount + 1 end
 	end
-	check(selfCount > 0, "自己仍然在驱动（不是停掉）", selfCount .. "/" .. frames)
-	check(selfCount < frames, "但不是每帧（成本被摊开）", selfCount .. "/" .. frames)
-	check(math.abs(totalDt - frames * 0.01) <= runtime.primaryStride * 0.01 + 0.001,
-		"时间没丢（dt 累积补偿）", string.format("dt=%.4f 期望=%.4f", totalDt, frames * 0.01))
+	check(selfCount == frames, "自己每帧都在算", selfCount .. "/" .. frames)
 end
 
 -- ================================================================ 场景 5：分帧不能被当成驱动失效
@@ -502,4 +497,3 @@ end
 
 io.stdout:write(string.format("\n%s：%d 项检查，%d 项失败\n", failures == 0 and "全部通过" or "有失败", checks, failures))
 os.exit(failures == 0 and 0 or 1)
-

@@ -167,7 +167,7 @@ do
 	check("快照有内容", text ~= nil and #text > 100, text and (#text .. " 字节"))
 	if text ~= nil then
 		check("schema 打头", text:find('"schema":"hd2physbone.snap/1"', 1, true) ~= nil)
-		check("带 runtime 版本", text:find('"runtime":"2.1.35"', 1, true) ~= nil)
+		check("带 runtime 版本", text:find('"runtime":"2.1.36"', 1, true) ~= nil)
 		check("单份文件只装一帧", select(2, text:gsub('"frame"', "")) == 1,
 			"帧数 " .. select(2, text:gsub('"frame"', "")))
 		check("帧里两个节点", select(2, text:gsub('"id":"0x8e8d63a0"', "")) == 1
