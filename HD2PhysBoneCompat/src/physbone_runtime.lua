@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.34"
+M.VERSION = "2.1.35"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -594,12 +594,17 @@ end
 
 --- 累计一个 unit 的位移（米）。每拍采一次 `world_position(unit, 1)`。
 --- 存的是**累计量**而不是瞬时速度：两次尝试可能隔几十帧，累计量对采样间隔不敏感。
+---
+--- ⚠️ 必须先过 `unit_alive`：销毁后再读 world_position 是**原生 AV**（转储 0xc0000005 / 参数 0x0 0x0），
+--- `pcall` 拦不住。identity_watch 每 20 帧都会对会话采一次，而这期间 unit 完全可能已经被销毁
+--- （换甲 / 阵亡 / 场景拆解）—— 这是本函数唯一真正的危险点，别省这一个调用。
 local function motion_sample(runtime, S_, unit)
 	local track = runtime.motion
 	if track == nil then
 		track = setmetatable({}, { __mode = "k" })
 		runtime.motion = track
 	end
+	if Compat.unit_alive(S_, unit) ~= true then return nil end
 	local entry = track[unit]
 	if entry == nil then
 		entry = { moved = 0 }
@@ -690,6 +695,19 @@ end
 --- 这些的签名/返回值在本仓都没验证过，所以这里**只读、只探、只打日志**，
 --- 每个调用都 pcall 兜住；参数都用合法值（节点下标 1，在 `num_scene_graph_items` 范围内）。
 --- 触发条件：真的发生了"超量命中"（有件被裁掉），一个进程只跑一次。
+--- ⚠️⚠️ 默认**关闭**，只在调参文件写 `probeIdentity = 1` 时才跑。
+---
+--- 为什么默认关（2026-11-12 实机，血的教训）：
+--- 本仓早有前科 —— `S.Quaternion(0,0,0,1)` 直接把游戏进程打死，连 Lua 错误都没有。
+--- 这次我为了探"身份判据"，在默认路径上调了几个**签名未经验证**的引擎函数
+--- （`Unit.bones` / `scene_graph_parent` / `scene_graph_link` / `is_a` / `is_child`），
+--- 结果进舰船几秒后崩溃：
+---   异常码 0xc0000005（访问违例），helldivers2.exe+0x3ef06b，参数 0x0 0x0；
+---   日志停在 `[识别] …` 这一行，紧接着该打的 `[识别API]` 一行都没有 ⇒ 死在第一个调用里。
+--- `pcall` **拦不住原生 AV** —— 未知签名的引擎函数只能靠"绝对不在产品路径上调用"。
+---
+--- 所以：这些接口若真要用，必须在**明确知情的单独一轮**里开这个开关、
+--- 并且一次只试一个函数（改一行、跑一次），否则就是在赌进程不崩。
 local function probe_identity_api(runtime, S_, candidate, owner)
 	if runtime.apiProbed == true or candidate == nil or candidate.unit == nil then return end
 	runtime.apiProbed = true
@@ -1188,7 +1206,11 @@ local function tryAttach(runtime)
 			-- 第一次真的需要裁的时候，顺手把"身份类 API"探一遍（只读、一次）。
 			-- 下一份日志就能告诉我们有没有"父子/link"这种**确定性**判据可用。
 			if trimmed[1] ~= nil then
+				-- 身份类 API 探针：**默认关**（会崩，见函数上方那段）。
+			-- 只有调参文件写 `probeIdentity = 1` 才会跑 —— 那是"单独一轮、只试一个函数"的用法。
+			if (tune_values(runtime).probeIdentity or 0) ~= 0 then
 				pcall(probe_identity_api, runtime, S, trimmed[1], trimmed[1].owner)
+			end
 			end
 		end
 	end

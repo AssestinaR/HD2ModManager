@@ -91,5 +91,34 @@ if apply ~= nil then
 	check("走 skirt_eligible", apply:find("skirt_eligible(", 1, true) ~= nil)
 end
 
+-- ⑤ **未知签名的引擎 API 不许出现在产品路径上**
+--
+-- 2026-11-12 实机：我为了探"身份判据"，在默认路径上成组调了
+-- Unit.bones / scene_graph_parent / scene_graph_link / is_a / is_child，
+-- 进舰船几秒后游戏崩了（0xc0000005，参数 0x0 0x0）。`pcall` 拦不住原生 AV。
+-- 所以这些调用只允许待在 `probe_identity_api` 里（且那函数由调参开关 probeIdentity 控制）。
+local function count_plain(text, needle)
+	local count, at = 0, 1
+	while true do
+		local found = text:find(needle, at, true)
+		if found == nil then return count end
+		count = count + 1
+		at = found + #needle
+	end
+end
+
+local PROBE_APIS = { "Unit.bones(", "Unit.scene_graph_parent(", "Unit.scene_graph_link(",
+	"Unit.is_child(", "Unit.is_a(" }
+local probeBody = body_of("probe_identity_api")
+check("找得到 probe_identity_api（危险 API 的唯一容身处）", probeBody ~= nil)
+local probeStripped = probeBody ~= nil and strip_comments(probeBody) or ""
+local wholeStripped = strip_comments(source)
+for _, api in ipairs(PROBE_APIS) do
+	local total = count_plain(wholeStripped, api)
+	local inside = count_plain(probeStripped, api)
+	check(string.format("%s 只在探针里（%d/%d）", api, inside, total), total == inside)
+end
+check("探针默认关闭（有 probeIdentity 开关）", wholeStripped:find("probeIdentity", 1, true) ~= nil)
+
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)
