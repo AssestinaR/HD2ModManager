@@ -1755,6 +1755,62 @@ function M.session_health(session, stamp)
 	return "ok"
 end
 
+--- 一份 rig 的骨名 → IdString32 列表（每根骨可能有 1~2 种写法）。
+--- 按 rig 表身份缓存：同一份容器的骨名恒定，算一次就够（见上面 `boneIdsByRig` 的说明）。
+local function rig_bone_ids(S, rig)
+	local cached = boneIdsByRig[rig]
+	if cached ~= nil then return cached end
+	local ids = {}
+	for index = 1, #rig.bones do
+		local names = M.bone_name_aliases(rig.bones[index].name)
+		local resolved = {}
+		for _, name in ipairs(names or {}) do
+			if type(name) == "string" then
+				local ok, value = pcall(function() return S.Application.string_to_id32(name) end)
+				if ok and value ~= nil then resolved[#resolved + 1] = value end
+			end
+		end
+		ids[index] = resolved
+	end
+	boneIdsByRig[rig] = ids
+	return ids
+end
+
+--- 便宜的"全命中不可能"预筛：**每份容器只问一根骨**。
+---
+--- 为什么可以这样筛（严格推理，不是启发式）：
+--- `select_rig` 的"全命中"要求该 unit **含有容器的每一根骨**，
+--- 所以只要它连容器第 1 根骨都没有，就一定不可能全命中 —— 不必再花
+--- `骨数 × 容器数` 次 `has_node` 去得出同一个结论。
+---
+--- 为什么必须要有这一层（2026-11-12 进图后"全员没物理"）：进任务后玩家身边
+--- 会多出十几件候选 unit（枪、背包、尸体、人台），它们**永远不可能**全命中。
+--- 真打分是每件 ~700 次引擎调用（≈3 ms），额度 2 件/拍就把它们全挡住了；
+--- 预筛是每件 ~10 次（≈0.04 ms），同一拍能探几十件。
+---
+--- ⚠️ 只对"全命中"成立。`allowPartial` 的时候部分命中是合法的，绝对不能筛。
+---@param S table stingray 命名空间
+---@param unit userdata 候选 unit
+---@param candidates table { { rig = ..., path = ... }, ... }
+---@return boolean true = 有可能全命中（继续真打分）
+function M.probe_carriers(S, unit, candidates)
+	if type(candidates) ~= "table" or #candidates == 0 then return true end
+	if M.unit_alive(S, unit) ~= true then return false end
+	for index = 1, #candidates do
+		local rig = candidates[index].rig
+		if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
+			local resolved = rig_bone_ids(S, rig)[1]
+			-- 第 1 根骨解析不出 id ⇒ 这条探针无效，不敢据此判死（退回真打分）。
+			if resolved == nil or #resolved == 0 then return true end
+			for _, id in ipairs(resolved) do
+				local okHas, has = pcall(S.Unit.has_node, unit, id)
+				if okHas and has == true then return true end
+			end
+		end
+	end
+	return false
+end
+
 --- 从多份候选 rig 里选出**属于当前这套护甲**的那一份。
 ---
 --- 为什么需要它：多个带物理的 mod 同时安装时，每个 patch 尾部都有自己的容器，
@@ -1780,36 +1836,12 @@ end
 function M.select_rig(S, units, candidates)
 	if type(candidates) ~= "table" or #candidates == 0 then return nil, {} end
 	units = units or {}
-	local function id32(text)
-		if type(text) ~= "string" then return nil end
-		local ok, value = pcall(function() return S.Application.string_to_id32(text) end)
-		if ok then return value end
-		return nil
-	end
-	local function bone_ids(rig)
-		local cached = boneIdsByRig[rig]
-		if cached ~= nil then return cached end
-		-- 每根骨可能有 1~2 种写法（带/不带命名空间）；任一写法能解析就算命中。
-		-- 这里把能解析的 id 预先算好并缓存：后面每件候选只做 `has_node`。
-		local ids = {}
-		for index = 1, #rig.bones do
-			local names = M.bone_name_aliases(rig.bones[index].name)
-			local resolved = {}
-			for _, name in ipairs(names) do
-				local id = id32(name)
-				if id ~= nil then resolved[#resolved + 1] = id end
-			end
-			ids[index] = resolved
-		end
-		boneIdsByRig[rig] = ids
-		return ids
-	end
 
 	local scored = {}
 	for order, candidate in ipairs(candidates) do
 		local rig = candidate.rig
 		if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
-			local ids = bone_ids(rig)
+			local ids = rig_bone_ids(S, rig)
 			local total = #rig.bones
 			local score = 0
 			for _, unit in ipairs(units) do

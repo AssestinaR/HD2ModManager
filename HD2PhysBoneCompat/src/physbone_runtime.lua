@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.27"
+M.VERSION = "2.1.28"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -661,12 +661,25 @@ local function tryAttach(runtime)
 		rigMatches = nil
 		runtime.bestScoredEver = nil
 		runtime.scoreAttemptAt = nil   -- 重试门也一起失效：否则新容器下要白等一轮 retryFrames
+		runtime.rigProbe = nil         -- 预筛结论同理（容器变了，"能不能全命中"要重算）
+		runtime.probeRejected = nil
 	end
 	if rigMatches == nil then
 		rigMatches = setmetatable({}, { __mode = "k" })   -- 弱键：unit 销毁后自动释放
 		runtime.rigMatches = rigMatches
 	end
 	local scoreUnitsPerFrame = options.scoreUnitsPerFrame or 2
+	-- 预筛额度。**比真打分的额度大得多**，因为两者成本差两个数量级：
+	-- 预筛每件 = 每份容器一次 `has_node`（10 份容器 ⇒ 10 次调用，算过 id 之后不再算）；
+	-- 真打分每件 = 骨数 × 容器数（57 × 10 ≈ 570 次，≈3 ms）。
+	-- 只给真打分 2 件/拍的额度、让预筛也挤同一个额度，就是"进任务后十几件枪/背包/
+	-- 尸体把队首占满、真护甲永远轮不到"的直接原因（2026-11-12 实机）。
+	local probeUnitsPerFrame = options.probeUnitsPerFrame or (scoreUnitsPerFrame * 4)
+	-- 预筛只在"全命中才算数"时成立（`allowPartial` 时部分命中是合法的，不能筛）；
+	-- 外置包可能只更新了 runtime、没更新 compat ⇒ 没有这个函数就退回纯真打分。
+	local canProbe = not allowPartial
+		and type(Compat.probe_carriers) == "function"
+		and probeUnitsPerFrame > 0          -- 0 = 关掉预筛（A/B 用）
 	-- 重试间隔（帧）。**只缓存正匹配**，没命中的件不写缓存、只记"上次打分帧"，到点再试。
 	-- 为什么不缓存负结论（2026-11-12 实机踩到）：unit 刚生成时骨骼可能还没就绪，第一拍
 	-- 打分得到"0 命中"；把它当永久结论的话这个 unit 再也不会被重试 —— 现象正是
@@ -677,10 +690,37 @@ local function tryAttach(runtime)
 		scoreAttemptAt = setmetatable({}, { __mode = "k" })
 		runtime.scoreAttemptAt = scoreAttemptAt
 	end
-	local plan, bestScored = {}, nil
-	local scoredNow, cachedHits, deferred = 0, 0, 0
-	local scoreClock = os.clock()
+	-- 预筛结论（unit → true 表示"至少含一份容器的第 1 根骨 ⇒ 有可能全命中"）。
+	-- 弱键：unit 销毁后自动释放。
+	local rigProbe = runtime.rigProbe
+	if rigProbe == nil then
+		rigProbe = setmetatable({}, { __mode = "k" })
+		runtime.rigProbe = rigProbe
+	end
+	-- 处理顺序 = **最久没处理过的先来**，而不是永远从第 1 件开始。
+	--
+	-- 为什么（2026-11-12 实机，这一条直接造成"进任务后全员没物理"）：
+	-- 每拍只处理 N 件，而重试门（`retryFrames`=30 帧）比**两次尝试的间隔**短
+	-- （等待期 poll ≥ 60 帧），于是排在队首的那 N 件每一拍都能重新轮到、把额度吃干，
+	-- 后面的件**永远轮不到**。日志特征就是数字一动不动：
+	-- 「已打分 2 件、未轮到 15 件」，连着 8 分钟一模一样。
+	-- 按"上次处理帧"排序就把这个死结解开了：处理过的自然沉到队尾。
+	local attemptOrder = {}
 	for index = 1, #nearCandidates do
+		local last = scoreAttemptAt[nearCandidates[index].unit]
+		attemptOrder[index] = { index = index, last = last == nil and -1 or last }
+	end
+	table.sort(attemptOrder, function(a, b)
+		if a.last ~= b.last then return a.last < b.last end
+		return a.index < b.index
+	end)
+
+	local plan, bestScored = {}, nil
+	local scoredNow, probedNow, probedOpen, deferred = 0, 0, 0, 0
+	local lastProbe = nil
+	local scoreClock = os.clock()
+	for slot = 1, #attemptOrder do
+		local index = attemptOrder[slot].index
 		local candidate = nearCandidates[index]
 		local match = rigMatches[candidate.unit]
 		local needsScore = false
@@ -688,42 +728,70 @@ local function tryAttach(runtime)
 			local last = scoreAttemptAt[candidate.unit]
 			needsScore = last == nil or (frame - last) >= retryFrames
 		end
+		-- ① 便宜预筛：连容器第 1 根骨都没有 ⇒ 一定不可能全命中，不必花真打分的钱。
+		--    只在"全命中才算数"时成立，所以 allowPartial 时整段跳过。
+		if needsScore and canProbe and rigProbe[candidate.unit] ~= true then
+			if probedNow >= probeUnitsPerFrame then
+				deferred = deferred + 1
+				needsScore = false
+			else
+				probedNow = probedNow + 1
+				local okProbe = Compat.probe_carriers(S, candidate.unit, carriers)
+				lastProbe = string.format("%d 节点·%s", candidate.nodes or 0,
+					okProbe and "预筛过" or "预筛挂")
+				if okProbe then
+					probedOpen = probedOpen + 1
+					rigProbe[candidate.unit] = true
+					-- 通过了就别记"打过分"：让它留在队首，下一拍直接真打分。
+				else
+					-- 记一次"处理过"，让它沉到队尾；到点再探（骨骼可能只是还没就绪）。
+					scoreAttemptAt[candidate.unit] = frame
+					runtime.probeRejected = (runtime.probeRejected or 0) + 1
+					if runtime.negativeRetryAt == nil or (frame + retryFrames) < runtime.negativeRetryAt then
+						runtime.negativeRetryAt = frame + retryFrames
+					end
+					needsScore = false
+				end
+			end
+		end
+		-- ② 真打分（贵）：只有"有可能全命中"的件才走到这里。
 		if needsScore then
 			if scoredNow >= scoreUnitsPerFrame then
-				deferred = #nearCandidates - index + 1
-				break
-			end
-			local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
-			scoredNow = scoredNow + 1
-			runtime.fillScoredTotal = (runtime.fillScoredTotal or 0) + 1
-			scoreAttemptAt[candidate.unit] = frame
-			-- ⚠️ `select_rig` 在**0 命中时也会返回非 nil 的 best**（它返回排序后的第一名）。
-			-- 所以"有 best"不等于"可用"。只有 `full`（或显式允许 partial）才算可用匹配；
-			-- 把不可用的当匹配缓存起来，会让这件**既不挂载、也永不重试**
-			-- （2026-11-12 实机：只有先就绪的头盔有物理，护甲的件全没有）。
-			local usable = best ~= nil and (best.full or allowPartial)
-			if usable then
-				match = { rig = best.rig, path = best.path, full = best.full == true }
-				rigMatches[candidate.unit] = match
+				deferred = deferred + 1
 			else
-				match = nil
-			end
-			-- 无论可不可用都记下"最接近的那一份"：没挂上时它是唯一能指出"差几根骨"的线索。
-			-- 记到 runtime 上是因为跨拍装填的最后一拍可能全是缓存命中（本地 bestScored 为 nil）。
-			if not usable and scored ~= nil and scored[1] ~= nil then
-				if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
-				if runtime.bestScoredEver == nil or scored[1].score > runtime.bestScoredEver.score then
-					runtime.bestScoredEver = scored[1]
+				local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
+				scoredNow = scoredNow + 1
+				runtime.fillScoredTotal = (runtime.fillScoredTotal or 0) + 1
+				scoreAttemptAt[candidate.unit] = frame
+				-- ⚠️ `select_rig` 在**0 命中时也会返回非 nil 的 best**（它返回排序后的第一名）。
+				-- 所以"有 best"不等于"可用"。只有 `full`（或显式允许 partial）才算可用匹配；
+				-- 把不可用的当匹配缓存起来，会让这件**既不挂载、也永不重试**
+				-- （2026-11-12 实机：只有先就绪的头盔有物理，护甲的件全没有）。
+				local usable = best ~= nil and (best.full or allowPartial)
+				if usable then
+					match = { rig = best.rig, path = best.path, full = best.full == true }
+					rigMatches[candidate.unit] = match
+				else
+					match = nil
+					-- 判过"不可能全命中"的，允许下次重新探（骨骼可能只是还没就绪）。
+					rigProbe[candidate.unit] = nil
+				end
+				-- 无论可不可用都记下"最接近的那一份"：没挂上时它是唯一能指出"差几根骨"的线索。
+				-- 记到 runtime 上是因为跨拍装填的最后一拍可能全是缓存命中（本地 bestScored 为 nil）。
+				if not usable and scored ~= nil and scored[1] ~= nil then
+					if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
+					if runtime.bestScoredEver == nil or scored[1].score > runtime.bestScoredEver.score then
+						runtime.bestScoredEver = scored[1]
+					end
+				end
+				-- 不可用 ⇒ 不写缓存，只排一次重试（到点后再打）。
+				if not usable then
+					local retryAt = frame + retryFrames
+					if runtime.negativeRetryAt == nil or retryAt < runtime.negativeRetryAt then
+						runtime.negativeRetryAt = retryAt
+					end
 				end
 			end
-			-- 不可用 ⇒ 不写缓存，只排一次重试（到点后再打）。
-			if not usable then
-				local retryAt = frame + retryFrames
-				if runtime.negativeRetryAt == nil or retryAt < runtime.negativeRetryAt then
-					runtime.negativeRetryAt = retryAt
-				end
-			end
-			cachedHits = cachedHits + 1
 		end
 		if match ~= nil and match.rig ~= nil and (match.full or allowPartial) then
 			plan[#plan + 1] = {
@@ -740,10 +808,17 @@ local function tryAttach(runtime)
 	if #plan == 0 then
 		if deferred > 0 then
 			-- 这拍额度用完了、还没轮到能命中的那件：不是失败，下一拍继续。
-			note_wait(runtime, "装填中（本拍打分额度用完）",
-				string.format("已打分 %d 件、未轮到 %d 件", scoredNow, deferred))
+			-- `fillPending` 也要立起来：等待期那套"等久了就放慢轮询"的退避**必须让位**给装填，
+			-- 否则额度 2 件/拍 + 1 秒一拍 = 十几件候选要十几秒才轮完（实机观感就是"进图后
+			-- 十几秒完全没物理，然后突然出现"）。
+			runtime.fillPending = true
+			note_wait(runtime, "装填中（本拍额度用完）",
+				string.format("打分 %d 件 / 预筛 %d 件（过 %d）、还剩 %d 件待处理%s",
+					scoredNow, probedNow, probedOpen, deferred,
+					lastProbe ~= nil and ("；最近 " .. lastProbe) or ""))
 			return false
 		end
+		runtime.fillPending = false
 		local detail
 		if #carriers == 0 then
 			detail = "没有物理容器可匹配"
@@ -752,6 +827,11 @@ local function tryAttach(runtime)
 			if closest ~= nil then
 				detail = string.format("%d 个候选 unit × %d 份容器，最高命中 %d/%d 根骨（%s）",
 					#nearCandidates, #carriers, closest.score, closest.total, tostring(closest.path))
+			elseif (runtime.probeRejected or 0) > 0 then
+				-- 预筛把它们全挡在真打分之前了：这比"最高命中 0/68"更具体 ——
+				-- 说明这些 unit 连任何一份容器的第 1 根骨都没有（不是同一套模型）。
+				detail = string.format("%d 个候选 unit × %d 份容器，预筛全挂（连容器的第 1 根骨都没有）",
+					#nearCandidates, #carriers)
 			else
 				detail = string.format("%d 个候选 unit × %d 份容器，全部 0 命中", #nearCandidates, #carriers)
 			end
@@ -2964,6 +3044,12 @@ local function drive(runtime)
 			runtime.reconcile = nil
 			runtime.reArm = 1
 			runtime.rearmAt = frame + 1
+			-- 整组释放之后要**立刻**重扫：把重试门也清掉，否则上一次那批"0 命中"的
+			-- 结论会让新场景的头几拍空转（新的 unit 是不同实例，但门是按实例记的，
+			-- 不清也只是多等一轮；清掉是为了让补挂从第一拍就开始）。
+			runtime.scoreAttemptAt = nil
+			runtime.fillPending = nil
+			runtime.probeRejected = nil
 		elseif #runtime.sessions == 0 then
 			-- 全没了（换场景 / 全员阵亡）：退回等待，带退避（避免换甲期间每秒重挂一次）。
 			-- 存活时长决定退避：刚挂上就死 = 抖动（换甲中），要越等越久；
@@ -2971,6 +3057,7 @@ local function drive(runtime)
 			local survived = frame - (runtime.attachedFrame or frame)
 			runtime.sessions = nil
 			runtime.reconcile = nil
+			runtime.fillPending = nil
 			if survived >= (options.stableFrames or 600) then
 				runtime.reArm = 1
 			else
@@ -3024,7 +3111,10 @@ local function drive(runtime)
 		runtime.waitSince = runtime.waitSince or frame
 		local waited = frame - runtime.waitSince
 		local poll = options.pollFrames or 20
-		if waited > (options.waitSlowAfter or 200) then poll = poll * 3 end
+		-- 装填中（还有候选没轮到处理）**不减速**：减速会把"补挂"拉成十几秒，
+		-- 观感就是"进图后十几秒完全没物理"。这期间每拍只多花预筛的钱（≈0.04 ms/件），
+		-- 真打分仍受 `scoreUnitsPerFrame` 限制，所以不会突破预算。
+		if waited > (options.waitSlowAfter or 200) and not runtime.fillPending then poll = poll * 3 end
 		if (frame % poll) ~= 0 then return end
 		if not tryAttach(runtime) then return end
 		runtime.waitSince = nil

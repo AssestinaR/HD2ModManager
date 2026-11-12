@@ -127,6 +127,9 @@ local function newCompat()
 		local unit = units[1]
 		return { rig = { bones = { { name = "hair" } } }, path = "data/fake.gpu_resources", full = true, score = 1, total = #unit.name }
 	end
+	-- 便宜预筛（runtime 会先问它"有没有可能全命中"再决定要不要真打分）。
+	-- 这个壳里所有候选都是"能命中"的，所以一律放行。
+	compat.probe_carriers = function() return true end
 	compat.attach = function(_, unit, _, _)
 		local session = {
 			unit = unit,

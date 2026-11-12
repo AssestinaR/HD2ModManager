@@ -252,7 +252,8 @@ do
 	for _ = 1, 40 do engine.time = engine.time + 1 / 72; probeRender() end
 	local text = readLog()
 	check("挂不上时给出原因", text:find("没有 unit 命中任何物理容器", 1, true) ~= nil)
-	check("原因里带最高命中分数", text:find("最高命中 0/1", 1, true) ~= nil)
+	check("原因里给出量化线索（预筛全挂）", text:find("预筛全挂", 1, true) ~= nil,
+		"预筛每份容器只问第 1 根骨，已能证明不可能全命中 ⇒ 不再真打分")
 	check("同一原因只落一次（不刷屏）",
 		countOf(text, "没有 unit 命中任何物理容器") == 1,
 		string.format("出现 %d 次", countOf(text, "没有 unit 命中任何物理容器")))
@@ -305,6 +306,57 @@ do
 	text = readLog()
 	check("日志是追加而非覆盖", countOf(text, "已安装") == 2,
 		string.format("已安装 出现 %d 次", countOf(text, "已安装")))
+end
+
+
+-- ---------------------------------------------------------------------------
+print("T5b 预筛不掩盖诊断：部分命中仍要报出「最高命中 x/y」")
+--
+-- 加预筛（每份容器只问第 1 根骨）之后，必须守住的性质：它只挡"连第 1 根骨都没有"
+-- 的件。**部分命中**的件必须照样真打分、照样把 `最高命中 1/2` 写进日志 ——
+-- 否则下次再出现"护甲挂不上"，我们连"差几根骨"都看不到（2026-11-12 已经为此
+-- 瞎猜了一整轮）。
+do
+	local logPath5b = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t5b.txt"
+	os.remove(logPath5b)
+	local function readLog5b()
+		local handle = io.open(logPath5b, "r")
+		if handle == nil then return "" end
+		local text = handle:read("*a")
+		handle:close()
+		return text or ""
+	end
+
+	-- 2 根骨的容器：第 1 根和护甲件对得上，第 2 根对不上 ⇒ 1/2。
+	local partialRig = { bones = {
+		{ index = 1, name = BONE_NAMES[1], parent = 0, parentName = "head",
+			pos = { 0, 0, 0 }, params = RIG.bones[1].params, flags = 0x31 },
+		{ index = 2, name = "nope_2", parent = 1, parentName = BONE_NAMES[1],
+			pos = { 0, -0.1, 0 }, params = RIG.bones[1].params, flags = 0x31 },
+	} }
+
+	local armorsB = {}
+	for index, count in ipairs(ARMOR_NODES) do
+		armorsB[index] = newUnit("t5b" .. index, count, false, "#ID[t5b" .. index .. "]")
+		dress(armorsB[index])
+	end
+	armors = armorsB
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = partialRig, path = "partial.patch_1.gpu_resources" } },
+		logPath = logPath5b,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
+		pollFrames = 1,
+		heartbeatFrames = 10,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 40 do engine.time = engine.time + 1 / 72; probeRender() end
+	local text = readLog5b()
+	check("部分命中的件没有被预筛挡掉", text:find("预筛全挂", 1, true) == nil)
+	check("部分命中仍报出最高命中数", text:find("最高命中 1/2", 1, true) ~= nil,
+		text:match("没有 unit 命中[^\n]*") or "（没有这条日志）")
+	Runtime.uninstall()
 end
 
 
@@ -998,6 +1050,97 @@ do
 		string.format("会话=%s frame=%s 缓存=%s",
 			tostring(runtime.sessions and #runtime.sessions), tostring(runtime.frame), entryText))
 	pcall(os.remove, tunePath15)
+
+	Runtime.uninstall()
+end
+
+-- ---------------------------------------------------------------------------
+print("T16 队首挡路的死锁：前面一堆永远不可能命中的件，后面的真护甲必须照样挂上")
+--
+-- 实机现场（2026-11-12，2.1.27，进任务后全员没物理）：
+--   跳过 47 个离它所属玩家超过 5.0 m 的护甲件（尸体/人台）
+--   [等待] 装填中：已打分 2 件、未轮到 15 件     ← 连着 8 分钟一模一样
+-- 原因：每拍只处理 N 件，重试门（30 帧）比两次尝试的间隔（等待期 60 帧）短，
+-- 于是队首那 N 件每拍都重新轮到、把额度吃干，后面的件**永远**轮不到。
+-- 进任务后玩家身边多出十几件枪/背包/尸体，队首正好全是这类件 ⇒ 一个都不挂。
+--
+-- 这个用例把那个时间形状钉住：poll 60 帧 > 重试门 30 帧，队首 12 件不可能命中，
+-- 真护甲排最后一件。
+do
+	rawset(_G, "render", function() end)
+
+	local av16 = newUnit("t16avatar", AVATAR_NODES, true, "#ID[t16avatar]")
+	do
+		local mgId = S.Application.string_to_id32("support_mg")
+		av16.ids[mgId] = true
+		av16.nodeOf[mgId] = 5
+	end
+	engine.pos[av16] = { 0, 0, 0 }
+
+	-- 12 件"永远不可能全命中"的件（枪/背包/尸体）：有节点、离玩家近、但一根骨都不含。
+	local junk = {}
+	for index = 1, 12 do
+		local unit = newUnit("t16junk" .. index, 120, false, "#ID[t16junk" .. index .. "]")
+		engine.pos[unit] = { 0.5 + index * 0.01, 0, 0 }
+		junk[index] = unit
+	end
+	-- 真护甲：离得最远 ⇒ 排序排到最后（这正是实机里"排在队尾"的形状）。
+	local real = newUnit("t16real", 148, false, "#ID[t16real]")
+	dress(real)
+	engine.pos[real] = { 4.0, 0, 0 }
+
+	avatar = av16
+	local unitsList = {}
+	for _, unit in ipairs(junk) do unitsList[#unitsList + 1] = unit end
+	unitsList[#unitsList + 1] = real
+	armors = unitsList
+
+	local tunePath16 = (os.getenv("TEMP") or ".") .. "\\physbone-t16-order-tune.txt"
+	do
+		local handle = io.open(tunePath16, "w")
+		handle:write("writeOff = 0\n")
+		handle:close()
+	end
+
+	-- 两组配置，验的是**两个独立**的修复点：
+	--   A：关掉预筛（probeUnitsPerFrame=0）⇒ 只剩"按最久没处理过的先来"这一条能救场，
+	--      证明顺序本身修好了（否则队首那 4 件每拍都重新轮到，13 件永远轮不完）；
+	--   B：开着预筛 ⇒ 不可能命中的件被挡在真打分之前（`bestScoredEver` 始终为 nil）。
+	local function runCase16(label, extra, frames)
+		local runtime = Runtime.install(S, {
+			compat = Compat,
+			carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+			logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t16order.txt",
+			settleFrames = 2, snapshot = false, tunePath = tunePath16,
+			pollFrames = 60,            -- ⚠️ 比重试门（30 帧）长：老实现必死在这里
+			waitSlowAfter = 200,        -- 与实机一致：等过 200 帧才减速
+			validateFrames = 0,
+			maxArmorDistance = 15.0,
+			negativeRetryFrames = 30,
+			scoreUnitsPerFrame = extra.scoreUnitsPerFrame or 2,
+			probeUnitsPerFrame = extra.probeUnitsPerFrame,
+		})
+		local probeRender = rawget(_G, "render")
+		for _ = 1, frames do engine.time = engine.time + 1 / 120; probeRender() end
+		check(label .. " 排在队尾的真护甲还是挂上了",
+			runtime.sessions ~= nil and #runtime.sessions == 1,
+			string.format("会话=%s frame=%s",
+				tostring(runtime.sessions and #runtime.sessions), tostring(runtime.frame)))
+		local best = runtime.bestScoredEver
+		Runtime.uninstall()
+		return best
+	end
+
+	-- A：只靠顺序（预筛关掉）。13 件 ÷ 4 件/拍 ⇒ 第 4 拍轮到真护甲。
+	local bestA = runCase16("T16-A 不靠预筛", { probeUnitsPerFrame = 0, scoreUnitsPerFrame = 4 }, 900)
+	check("T16-A 关掉预筛时不可能命中的件确实被真打分过（否则这条用例没咬到顺序）",
+		bestA ~= nil, bestA ~= nil and string.format("%d/%d", bestA.score, bestA.total) or "nil")
+
+	-- B：靠预筛（它把"能不能全命中"的判定降到每件 ~1 次调用）。
+	local bestB = runCase16("T16-B 开预筛", { probeUnitsPerFrame = 8 }, 400)
+	check("T16-B 不可能命中的件没有被真打分（预筛挡掉了）", bestB == nil,
+		bestB ~= nil and string.format("bestScoredEver=%d/%d", bestB.score, bestB.total) or "nil")
+	pcall(os.remove, tunePath16)
 
 	Runtime.uninstall()
 end
