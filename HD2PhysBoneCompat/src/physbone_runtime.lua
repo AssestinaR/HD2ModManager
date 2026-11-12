@@ -78,6 +78,11 @@ local M = {}
 --           转储形态 `0xc0000005 / 参数 0x0 0x0`，pcall 拦不住）。
 --        ② `skirt_refs` 缓存的是**节点下标**：unit 被重建后下标会指向别的节点甚至越界。
 --           现在每帧比一次节点数，变了就重算（`session_health` 每 30 帧才比一次，中间是盲窗）。
+-- 2.1.43：把同一道指针闸也套在 **avatar 名单**上。真凶（17:58 相位日志定位）：
+--        `refresh_avatar_distances` 每帧对每个 avatar 句柄调 `Unit.world_position(avatar.unit, 1)`，
+--        而名单是上一帧的；债券页快切时引擎连续重建 avatar（展台上的角色就是 avatar 资源），
+--        句柄一失效这一行就是野读 ⇒ 原生 AV。相位日志死在「refresh_avatar_distances 前」，
+--        没有「后」，一锤定音。
 -- 2.1.41：判活改成**不 deref 句柄**的指针成员检查（2026-11-12 债券页快切必崩）。
 --        现场：慢切不崩、快切必崩；`skirt = 0` 与 2.1.40 都无效 ⇒ 枪口不在裙摆，
 --        而在 `pruneSessions → Unit.alive`：句柄被销毁之后，**任何**引擎调用（含 alive）
@@ -85,7 +90,7 @@ local M = {}
 --        现在每帧先问 `World.units(world)` 要"活体列表"，只在 Lua 里按指针比：
 --        不在列表里 ⇒ 判死、整组丢弃，一个 Unit API 都不调；世界本身没了（`Application.worlds()`
 --        里找不到我们那个 world）⇒ 整组丢弃且不碰句柄。
-M.VERSION = "2.1.42"
+M.VERSION = "2.1.43"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -2351,11 +2356,14 @@ local function refresh_avatar_distances(S_, runtime)
 	if camX == nil then return end
 	for index = 1, #avatars do
 		local avatar = avatars[index]
-		local ax, ay, az = readVector(S_, try(S_.Unit.world_position, avatar.unit, 1))
-		if ax ~= nil then
-			avatar.x, avatar.y, avatar.z = ax, ay, az
-			local dx, dy, dz = ax - camX, ay - camY, az - camZ
-			avatar.cameraDistance = dx * dx + dy * dy + dz * dz
+		-- 防御：名单可能来自 `tryAttach`（同一帧），也可能被别处复用；这里再按指针确认一次。
+		if avatar.unit ~= nil and session_unit_live(runtime, avatar.unit) then
+			local ax, ay, az = readVector(S_, try(S_.Unit.world_position, avatar.unit, 1))
+			if ax ~= nil then
+				avatar.x, avatar.y, avatar.z = ax, ay, az
+				local dx, dy, dz = ax - camX, ay - camY, az - camZ
+				avatar.cameraDistance = dx * dx + dy * dy + dz * dz
+			end
 		end
 	end
 end
@@ -3633,19 +3641,56 @@ local function drive(runtime)
 	Compat.begin_frame(frame)
 	local driveClock = os.clock()   -- 这一拍驱动块占用的 CPU 时间（心跳里报出来）
 
-	-- ---------- 会话生命周期：**先"不碰句柄"地判死** ----------
-	-- 必须在 `Compat.update` / `pruneSessions` / 裙摆之前做：它们每个人都要 deref `session.unit`。
-	-- 判据见 `refresh_live_units` 的注释（指针比较，不调用任何 Unit API）。
-	if runtime.sessions ~= nil and #runtime.sessions > 0 then
+	-- ---------- 生命周期：**先"不碰句柄"地判死** ----------
+	-- 必须在 `Compat.update` / `pruneSessions` / `refresh_avatar_distances` / 裙摆之前做：
+	-- 它们每一个都要 deref 手里的 unit 句柄。判据见 `refresh_live_units`（纯指针比较）。
+	--
+	-- 2026-11-12 抓到的真凶就在这里：`refresh_avatar_distances` 每帧对**每个 avatar 句柄**调
+	-- `Unit.world_position(avatar.unit, 1)`，而 `runtime.avatars` 是**上一帧**的名单 ——
+	-- 债券页快速切页时引擎会连续重建 avatar（展台上那个角色本身就是 avatar 资源），
+	-- 句柄一失效，这一行就是野读 → 原生 AV（0x3e564b / 参数 0x0 0x0），Lua 层完全看不出来。
+	-- 所以会话**和** avatar 两套句柄都要过同一道闸。
+	local haveSessions = runtime.sessions ~= nil and #runtime.sessions > 0
+	local haveAvatars = runtime.avatars ~= nil and #runtime.avatars > 0
+	if haveSessions or haveAvatars then
 		local live = refresh_live_units(runtime, S)
 		if live == "world-gone" then
 			-- 我们那个世界已经不在了：整组丢弃，一个句柄都不碰（下一帧重扫）。
-			logger("[physbone][LIFECYCLE] 世界已不在 ⇒ 整组丢弃 %d 个会话（不查存活、不碰句柄）",
-				#runtime.sessions)
+			logger("[physbone][LIFECYCLE] 世界已不在 ⇒ 整组丢弃 %d 个会话 / %d 个 avatar（不碰句柄）",
+				#(runtime.sessions or {}), #(runtime.avatars or {}))
 			runtime.sessions = nil
+			runtime.avatars = nil
+			runtime.avatar = nil
 			runtime.liveUnits = nil
 			runtime.reArm = 1
 			runtime.rearmAt = frame + 1
+		elseif live == "ok" and haveAvatars then
+			-- avatar 名单同样按指针过一遍：不在活体列表里的直接摘掉（不调任何 Unit API）。
+			local keptAvatars, droppedAvatars = {}, 0
+			for index = 1, #runtime.avatars do
+				local avatar = runtime.avatars[index]
+				if avatar.unit ~= nil and session_unit_live(runtime, avatar.unit) then
+					keptAvatars[#keptAvatars + 1] = avatar
+				else
+					droppedAvatars = droppedAvatars + 1
+				end
+			end
+			if droppedAvatars > 0 then
+				logger("[physbone][LIFECYCLE] %d 个 avatar 已不在活体列表里 ⇒ 从名单移除（指针判死，不碰句柄）%s",
+					droppedAvatars, #keptAvatars == 0 and "；名单空了" or "")
+				runtime.avatars = keptAvatars
+				if #keptAvatars == 0 then
+					runtime.avatar = nil
+					runtime.avatarTag = nil
+					-- 没有玩家了：会话也就没有主人，交给下面的"主人已不在"逻辑整体收掉。
+					runtime.reconcile = frame
+				else
+					-- `runtime.avatar` 是"排序第一的那个玩家"，它可能刚被摘掉；
+					-- 后面的 lift / 第一人称锁定都会拿它去发引擎调用，所以必须同步成还活着的那一个。
+					runtime.avatar = keptAvatars[1].unit
+					runtime.avatarTag = keptAvatars[1].tag
+				end
+			end
 		end
 	end
 

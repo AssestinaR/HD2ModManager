@@ -141,10 +141,18 @@ end
 local fillers = {}
 for index = 1, FILLER do fillers[index] = newUnit("f" .. index, 5 + (index % 20), false) end
 
+-- `engine.hidden`：把某个 unit 从 `World.units()` 的返回里摘掉，但**不改** `engine.alive`。
+-- 现实里对应的就是"引擎已经释放了它，而我们的句柄还指向那块旧内存"—— T24/T26 用它模拟。
+engine.hidden = {}
 function engine.unitsArray()
-	local list = { avatar }
-	for _, unit in ipairs(armors) do list[#list + 1] = unit end
-	for _, unit in ipairs(fillers) do list[#list + 1] = unit end
+	local list = {}
+	if avatar ~= nil and engine.hidden[avatar] ~= true then list[#list + 1] = avatar end
+	for _, unit in ipairs(armors) do
+		if engine.hidden[unit] ~= true then list[#list + 1] = unit end
+	end
+	for _, unit in ipairs(fillers) do
+		if engine.hidden[unit] ~= true then list[#list + 1] = unit end
+	end
 	return list
 end
 
@@ -1919,6 +1927,81 @@ do
 
 	pcall(os.remove, tunePath25)
 	pcall(os.remove, probeState25)
+	Runtime.uninstall()
+end
+
+-- ---------------------------------------------------------------------------
+print("T26 avatar 也会失效：判活闸必须同时管 avatar 名单")
+--
+-- 2026-11-12 17:58 实测真凶：`refresh_avatar_distances` 每帧对**每个 avatar 句柄**调
+-- `Unit.world_position(avatar.unit, 1)`，而 `runtime.avatars` 是上一帧的名单。
+-- 债券页快速切页时引擎会连续重建 avatar（展台上那个角色本身就是 avatar 资源），
+-- 句柄一失效这一行就是野读 → 原生 AV（0x3e564b / 参数 0x0 0x0），Lua 层完全看不出来。
+--
+-- 这条用例让 avatar 从活体列表里消失、但 `Unit.alive` 仍返回 true（模拟"已释放 + 句柄还指着旧内存"）。
+-- 旧实现会继续每帧对它取世界坐标（= 实机崩溃），新实现必须先在指针层面把它摘掉。
+do
+	rawset(_G, "render", function() end)
+
+	local av26 = newUnit("t26avatar", AVATAR_NODES, true, "#ID[t26avatar]")
+	do
+		local mgName = SUPPORT_MG
+		av26.ids[mgName] = true
+		av26.nodeOf[mgName] = 5
+	end
+	engine.pos[av26] = { 0, 0, 0 }
+	local wear = newUnit("t26wear", 171, false, "#ID[t26wear]")
+	dress(wear)
+	engine.pos[wear] = { 0.2, 0, 0 }
+	avatar = av26
+	armors = { wear }
+
+	-- 让 cameraPosition 真的能用：`refresh_avatar_distances` 在拿不到相机时会**整段早退**，
+	-- 那样这条用例就没咬到"每帧对 avatar 取世界坐标"这个真凶。
+	local savedDebugPose = S.World.debug_camera_pose
+	local savedTranslation = S.Matrix4x4.translation
+	S.World.debug_camera_pose = function() return pose end
+	S.Matrix4x4.translation = function() return { kind = "vector" } end
+
+	local logPath26 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t26avatar.txt"
+	os.remove(logPath26)
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath26,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
+		pollFrames = 2, validateFrames = 0, maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 40 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T26 先确认已经挂上了（同一个 avatar 上）",
+		runtime.sessions ~= nil and #runtime.sessions == 1,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+
+	-- avatar 从活体列表消失，但 alive 仍说谎
+	engine.hidden[av26] = true
+	local before = {}
+	for kind, count in pairs(engine.hits[av26] or {}) do before[kind] = count end
+	for _ = 1, 10 do engine.time = engine.time + 1 / 120; probeRender() end
+	local after = engine.hits[av26] or {}
+	local touched = {}
+	for _, kind in ipairs({ "nodes", "world", "pose", "write", "has", "node" }) do
+		local delta = (after[kind] or 0) - (before[kind] or 0)
+		if delta > 0 then touched[#touched + 1] = kind .. "+" .. delta end
+	end
+	check("T26 失效的 avatar 一次都没再被碰（不再每帧取它世界坐标）", #touched == 0,
+		table.concat(touched, " "))
+
+	local text26 = ""
+	do
+		local handle = io.open(logPath26, "r")
+		if handle ~= nil then text26 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T26 日志里写明 avatar 被指针判死", text26:find("avatar 已不在活体列表里", 1, true) ~= nil)
+
+	engine.hidden[av26] = nil
+	S.World.debug_camera_pose = savedDebugPose
+	S.Matrix4x4.translation = savedTranslation
 	Runtime.uninstall()
 end
 
