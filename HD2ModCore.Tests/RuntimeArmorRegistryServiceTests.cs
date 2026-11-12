@@ -540,7 +540,28 @@ public sealed class RuntimeArmorRegistryServiceTests
 			LuaDeploymentValidationMode.CompileOnly);
 
 		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
-		var group = Assert.Single(result.GeneratedPatchGroups);
+		// 独占 boot 模式：**两个**补丁。
+		//   ① boot 补丁：游戏原始 boot 字节码 + loadstring 跑运行时源码；
+		//   ② 隐藏 unit 补丁：只含那个"什么都不画"的 unit。
+		// 为什么 ② 不能省：`wardrobe.links` 里"来源缺槽位"的条目指向它，而指向不存在的 unit
+		// 会让引擎记住加载失败 ⇒ 军械库整页空白并崩溃（2026-11-12 实测本机 948/2007 条悬空）。
+		Assert.Equal(2, result.GeneratedPatchGroups.Count);
+		var group = Assert.Single(result.GeneratedPatchGroups, candidate => candidate.Description.Contains("LuaMergeV1", StringComparison.Ordinal));
+		var addon = Assert.Single(result.GeneratedPatchGroups, candidate => candidate.Description.Contains("managed addon", StringComparison.Ordinal));
+		// 落位顺序：unit 补丁恒在 boot 补丁**之前**一个 ⇒ 最终序号里 unit 是倒数第二、lua 是最大。
+		// 用户口径（2026-11-12）："这个 patch 文件如果是独占，则总是出现在倒数第二个序号，
+		// 而 lua patch 总是出现在最后一个最大的序号。"
+		Assert.Equal(int.MaxValue, group.PlacementOrder!.Value);
+		Assert.Equal(int.MaxValue - 1, addon.PlacementOrder!.Value);
+		var hiddenPatch = Assert.Single(addon.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+		var hiddenEntries = await new AdaptationPatchTocScanner().ScanEntriesAsync(hiddenPatch.FilePath);
+		// 只投放 unit：不能再带一份运行时 Lua（引擎只跑一个 boot，多带的那份白占序号）。
+		var hidden = Assert.Single(hiddenEntries);
+		Assert.Equal(0xE0A48D0BE9A7453FUL, hidden.AssetKey.TypeId);
+		Assert.Equal(0xDEF7DC54E86D6054UL, hidden.AssetKey.FileId);
+		var hiddenPayload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(hidden);
+		Assert.Equal(4240, hiddenPayload.TocData.Length);
+		Assert.Equal(418, hiddenPayload.GpuResourceData.Length);
 		var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
 		var bytes = await File.ReadAllBytesAsync(patch.FilePath);
 		// The deployed resource has to look like the game's own boot resource: the
@@ -619,6 +640,71 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Equal(CoreIssueSeverity.Error, issue.Severity);
 		Assert.Contains(Path.GetFileName(patchPath), issue.Message, StringComparison.Ordinal);
 		Assert.Empty(result.GeneratedPatchGroups);
+	}
+
+	// 用户口径（2026-11-12）：独占模式下隐藏 unit 补丁恒定出现在**倒数第二个序号**，
+	// 而 lua（boot）补丁恒定是**最后一个最大序号**。
+	// 这条验的是**最终 patch 序号**，不只是相对顺序：ApplyPlanner 按 PlacementOrder 递增分配序号，
+	// 顺序配错就会变成"unit 排在 boot 后面"，而现象在游戏里是查不出来的（两个 key 不冲突）。
+	[Fact]
+	public async Task LuaDeployment_ExclusiveBoot_PlacesHiddenUnitPatchJustBeforeTheBootPatch()
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		var initial = await fixture.Service.ReadSnapshotAsync();
+		await fixture.Service.ApplyAsync(initial.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)]);
+		var gameData = Path.Combine(fixture.Root, "game", "data");
+		Directory.CreateDirectory(gameData);
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}"),
+			CreateGameBootArchive([0x1B, 0x4C, 0x4A, 0x02]));
+		// 先占住序号 0：真实环境里 data 本来就有别的补丁，新序号要用"现有最大 + 1"算。
+		await File.WriteAllBytesAsync(
+			Path.Combine(gameData, $"{AdaptationLuaAssetKeys.BootArchiveId:x16}.patch_0"), [0]);
+		var profile = new Profile(ProfileId.New(), "test", DateTimeOffset.UtcNow, null, []);
+		var snapshot = new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id);
+		var modsRoot = Path.Combine(fixture.Root, "mods");
+		Directory.CreateDirectory(modsRoot);
+		var emptyIndex = new PatchFileIndex(DateTimeOffset.UtcNow, new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>(), []);
+
+		var result = await new LuaDeploymentService(armorRegistry: fixture.Service).MaterializeAsync(
+			profile,
+			snapshot,
+			emptyIndex,
+			modsRoot,
+			gameData,
+			new Dictionary<ModNodeId, ModContentFacts>(),
+			LuaDeploymentValidationMode.CompileOnly);
+		Assert.False(result.HasErrors, string.Join(Environment.NewLine, result.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+
+		// 一个"别人家的"补丁组，落位顺序最靠前（模拟普通 mod 的补丁）：它先占 0 号，
+		// 于是"倒数第二 / 最后"才有意义（不是从 0 数起）。
+		var decoyPath = Path.Combine(fixture.Root, "decoy", $"{AdaptationLuaAssetKeys.BootArchiveId:x16}.patch_0");
+		var decoy = new GeneratedPatchGroup(
+			$"{AdaptationLuaAssetKeys.BootArchiveId:x16}",
+			0,
+			[new GeneratedPatchFile(PatchSidecarKind.Base, decoyPath, Path.GetFileName(decoyPath), 16, DateTimeOffset.UtcNow)],
+			"decoy",
+			PlacementOrder: 0);
+
+		var plan = await new ApplyPlanner(new PatchFileNameParser()).BuildPlanAsync(
+			profile,
+			snapshot,
+			emptyIndex,
+			gameData,
+			new ApplyPlanAugmentation([.. result.GeneratedPatchGroups, decoy]));
+		var unit = Assert.Single(plan.PatchMappings, mapping =>
+			mapping.SidecarKind == PatchSidecarKind.Base
+			&& mapping.SourcePath.Contains("armor-registry-addon", StringComparison.OrdinalIgnoreCase));
+		var boot = Assert.Single(plan.PatchMappings, mapping =>
+			mapping.SidecarKind == PatchSidecarKind.Base
+			&& mapping.SourcePath.Contains(Path.Combine(".runtime", "lua"), StringComparison.OrdinalIgnoreCase));
+		// decoy 占 0 ⇒ unit 占 1、boot 占 2：unit 是**倒数第二个**，boot 是**最大的那个**。
+		Assert.Equal(1, unit.TargetPatchIndex);
+		Assert.Equal(2, boot.TargetPatchIndex);
+		Assert.Equal(
+			$"{AdaptationLuaAssetKeys.BootArchiveId:x16}.patch_{boot.TargetPatchIndex}",
+			Path.GetFileName(boot.TargetPath));
+		Assert.Equal(boot.TargetPatchIndex, plan.PatchMappings.Max(mapping => mapping.TargetPatchIndex));
 	}
 
 	private static byte[] CreateBootLuaPatch()

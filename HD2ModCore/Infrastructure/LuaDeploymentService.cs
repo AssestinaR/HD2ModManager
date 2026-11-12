@@ -26,6 +26,19 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
 
 	/// <summary>
+	/// 隐藏 unit 补丁的落位顺序：恒定排在 **boot 补丁之前一个**。
+	/// <para>
+	/// 用户口径（2026-11-12）："这个 patch 文件如果是独占，则总是出现在倒数第二个序号，
+	/// 而 lua patch 总是出现在最后一个最大的序号。"
+	/// </para>
+	/// <para>
+	/// 注意这是 <see cref="GeneratedPatchGroup.PlacementOrder"/>（相对顺序），不是最终 patch 序号 ——
+	/// 真实序号由 <c>ApplyPlanner</c> 按它递增分配，所以"顺序"才是不依赖现有文件数量的表达方式。
+	/// </para>
+	/// </summary>
+	private const int HiddenUnitPlacementOrder = int.MaxValue - 1;
+
+	/// <summary>
 	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingModes.Default"/>（关闭）。
 	///
 	/// 只有需要运行时 Lua 的模式才会投放护甲映射补丁：独占入口写 boot，外置入口走独立补丁。
@@ -343,6 +356,24 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 							int.MaxValue,
 							new PatchGroupIdentity(ArmorRegistryNodeId, $"{LuaAssetKeys.BootArchiveId:x16}", 0, int.MaxValue),
 							runtimeDocument);
+
+						// **隐藏 unit 仍然必须落地。** `wardrobe.links` 里"来源缺槽位"的条目指向它，
+						// 而"指向不存在的 unit"会让引擎记住加载失败 ⇒ 军械库整页空白并崩溃
+						// （判据见 WardrobeLinkCompiler.HiddenUnit 与本文件 CreateArmorRegistryAddonAsync 的注释）。
+						// 这一路只需要那个 unit：运行时的 Lua 在上面那份 boot 文档里，不能再塞第二份
+						// （引擎只执行一个 boot，多塞的那份不会跑，还白占一个 patch 序号）。
+						// 2026-11-12 实测：独占模式下 2007 条 link 里有 948 条指向它，而它从没被投放
+						// （外置模式的旧产物停在 11-01）⇒ 那 948 个槽位全指向一个不存在的 id。
+						//
+						// **序号必须是"倒数第二"**：unit 补丁排在 boot 补丁**之前**（见下面 placement），
+						// 于是 boot 永远是最大的那一个序号。用户 2026-11-12 定的口径：
+						// "这个 patch 文件如果是独占，则总是出现在倒数第二个序号，而 lua patch 总是出现在最后"。
+						armorAddon = (await CreateArmorRegistryAddonAsync(
+							modsRootDirectory,
+							materialize,
+							cancellationToken,
+							includeRuntime: false).ConfigureAwait(false))
+							with { PlacementOrder = HiddenUnitPlacementOrder };
 					}
 				}
 			}
@@ -516,7 +547,9 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				0,
 				outputFiles,
 				"HD2LuaMergeV1 generated Lua patch",
-				PlacementOrder: documents.Max(document => document.ProfileLoadOrder));
+				// **boot 补丁恒定是最大序号**（用户口径）：它是"游戏启动脚本"这一件事的载体，
+				// 排在最后既保证它压过一切，也保证隐藏 unit 补丁稳落在它前面（见 HiddenUnitPlacementOrder）。
+				PlacementOrder: int.MaxValue);
 		}
 		catch (Exception exception) when (exception is LuaPatchFormatException or IOException or UnauthorizedAccessException)
 		{
@@ -596,7 +629,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		bool includeRuntime = true)
 	{
 		var source = RuntimeArmorRegistryLuaSource.Load();
-		var fingerprint = ArmorRegistrySourceFingerprint();
+		var fingerprint = ArmorRegistrySourceFingerprint(includeRuntime);
 		var outputDirectory = Path.Combine(
 			Path.GetFullPath(modsRootDirectory),
 			".runtime",
@@ -604,11 +637,16 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			fingerprint);
 		var outputPath = Path.Combine(outputDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
 
-		// 一个 patch 两个条目：Lua 资源 + 空 unit。
+		// 一个 patch 两个条目：Lua 资源 + 空 unit（`includeRuntime: false` 时只有空 unit）。
 		//
 		// 空 unit 必须真实存在于游戏里：运行时把"来源缺的槽位"指向它，指向不存在的 id 会让
 		// 引擎记住加载失败，之后军械库整页空白并崩溃。归档布局交给 PatchArchiveWriter，
 		// 以嵌入的空 unit 补丁为模板追加 Lua 条目——不自己拼字节，避免出现第二套布局逻辑。
+		//
+		// ⚠️ 独占 boot 模式也走这里（只投放 unit，不投放 Lua）：那一路的运行时在 boot 文档里，
+		// 但 `wardrobe.links` 里"来源缺槽位"的条目**仍然指向这个 unit**。2026-11-12 实测：
+		// 独占模式下 2007 条 link 里有 948 条指向它，而它从没被投放（外置模式的旧产物停在 11-01），
+		// 于是那 948 个槽位全都指向一个不存在的 id —— 正是上面那句注释描述的情形。
 		var scratch = Path.Combine(Path.GetTempPath(), "hd2mod-armor-addon-" + Guid.NewGuid().ToString("N"));
 		var templateDirectory = Path.Combine(scratch, "template");
 		var buildDirectory = Path.Combine(scratch, "build");
@@ -731,7 +769,19 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		return hash ^ (hash >> 47);
 	}
 
-	private static string ArmorRegistrySourceFingerprint()		=> Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(RuntimeArmorRegistryLuaSource.Load())))
+	/// <summary>
+	/// 隐藏 unit 补丁的内容指纹。
+	/// <para>
+	/// <paramref name="includeRuntime"/> <b>参与哈希</b>：只投放 unit 的那一份（独占 boot 模式要用的）
+	/// 与"unit + 运行时 Lua"那一份**字节不同**，共用一个目录会让两者互相覆盖。这与
+	/// `.runtime/lua` 那条链在 2026-11-09 踩过的坑是同一类：指纹必须覆盖"将要写出去的字节"。
+	/// </para>
+	/// </summary>
+	private static string ArmorRegistrySourceFingerprint(bool includeRuntime = true)
+		=> Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+				includeRuntime
+					? RuntimeArmorRegistryLuaSource.Load()
+					: RuntimeArmorRegistryLuaSource.Load() + "\n-- hidden-unit-only (no runtime block)\n")))
 			.ToLowerInvariant();
 
 	/// <summary>boot 里的一个运行时块：名字（诊断用）+ 源码 + 给 loadstring 的 chunk 名。</summary>
