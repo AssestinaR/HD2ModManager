@@ -1764,6 +1764,30 @@ end
 --- 附带收益：完全省掉 `string_to_id32` 的引擎调用（每根骨 1 次、每件候选每份容器各一遍）。
 local boneNamesByRig = setmetatable({}, { __mode = "k" })
 
+--- 每份 rig 里**链根**在 `rig.bones` 里的位置（1 基），预筛用。
+---
+--- 为什么不是"第 1 根骨"：转换器已经改成"每个 unit 只带自己用得到的那几根物理骨"，
+--- 一件只带裙摆链的 unit 里**根本没有**容器的第 1 根骨 —— 按第 1 根骨判会把真护甲判死
+--- （那正是 2026-11-12 "进任务后全员没物理" 那一类错误）。而"一条链都凑不出来"才是可靠的否决：
+--- 只要这个 unit 一根**链根**都没有，它就不可能产出任何链。
+local rootPositionsByRig = setmetatable({}, { __mode = "k" })
+
+local function rig_root_positions(rig)
+	local cached = rootPositionsByRig[rig]
+	if cached ~= nil then return cached end
+	local byIndex, positions = {}, {}
+	for position = 1, #rig.bones do byIndex[rig.bones[position].index] = true end
+	for position = 1, #rig.bones do
+		local bone = rig.bones[position]
+		-- 父骨不在本 rig 里 ⇒ 这是链根（父是 HD2 原生骨，运行时按 `parentName` 找锚点）。
+		if bone.parent == nil or byIndex[bone.parent] == nil then
+			positions[#positions + 1] = position
+		end
+	end
+	rootPositionsByRig[rig] = positions
+	return positions
+end
+
 local function rig_bone_names(rig)
 	local cached = boneNamesByRig[rig]
 	if cached ~= nil then return cached end
@@ -1788,33 +1812,39 @@ local function unit_has_bone(S, unit, aliases)
 	return false
 end
 
---- 便宜的"全命中不可能"预筛：**每份容器只问一根骨**。
+--- 便宜的"一条链都凑不出来"预筛：**每份容器只问它的链根骨**。
 ---
 --- 为什么可以这样筛（严格推理，不是启发式）：
---- `select_rig` 的"全命中"要求该 unit **含有容器的每一根骨**，
---- 所以只要它连容器第 1 根骨都没有，就一定不可能全命中 —— 不必再花
---- `骨数 × 容器数` 次 `has_node` 去得出同一个结论。
+--- 一条链要被挂上，它的**链根**必须在这个 unit 里（运行时按骨名找节点）。
+--- 所以只要这个 unit 一根链根都没有，任何容器都不可能产出链 —— 不必再花
+--- `骨数 × 容器数` 次 `has_node` 去得出同一个结论。反过来，链根命中也不保证能挂
+--- （链中段、锚点还可能缺），所以放行的结论是"值得真打分"，不是"一定挂得上"。
 ---
---- 为什么必须要有这一层（2026-11-12 进图后"全员没物理"）：进任务后玩家身边
---- 会多出十几件候选 unit（枪、背包、尸体、人台），它们**永远不可能**全命中。
---- 真打分是每件 ~700 次引擎调用（≈3 ms），额度 2 件/拍就把它们全挡住了；
---- 预筛是每件 ~10 次（≈0.04 ms），同一拍能探几十件。
+--- ⚠️ **不能再按"第 1 根骨"判**（2026-11-12 改）：转换器现在让每个 unit 只带自己用得到的
+--- 那几根物理骨，一件只带裙摆链的 unit 里根本没有容器的第 1 根骨。按第 1 根骨判会把真护甲
+--- 挡在真打分之外 —— 那正是"进任务后全员没物理"的形状。
 ---
---- ⚠️ 只对"全命中"成立。`allowPartial` 的时候部分命中是合法的，绝对不能筛。
+--- 成本：每份容器最多 `链根数` 次调用（39 条链 ≈ 39 次），命中即短路。它比真打分
+--- （`骨数 × 容器数` ≈ 57 × 10）便宜，但**不再是"1 次调用"** —— 这个开关默认关闭，
+--- 需要它（候选件极多、且都是"一根骨都没有"的垃圾）时再开。
 ---@param S table stingray 命名空间
 ---@param unit userdata 候选 unit
 ---@param candidates table { { rig = ..., path = ... }, ... }
----@return boolean true = 有可能全命中（继续真打分）
+---@return boolean true = 值得真打分
 function M.probe_carriers(S, unit, candidates)
 	if type(candidates) ~= "table" or #candidates == 0 then return true end
 	if M.unit_alive(S, unit) ~= true then return false end
 	for index = 1, #candidates do
 		local rig = candidates[index].rig
 		if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
-			local aliases = rig_bone_names(rig)[1]
-			-- 第 1 根骨没有任何可用写法 ⇒ 这条探针无效，不敢据此判死（退回真打分）。
-			if aliases == nil or #aliases == 0 then return true end
-			if unit_has_bone(S, unit, aliases) then return true end
+			local aliasesByBone = rig_bone_names(rig)
+			local roots = rig_root_positions(rig)
+			-- 一根链根都认不出来（骨表结构不对）⇒ 这条探针无效，不敢据此判死（退回真打分）。
+			if #roots == 0 then return true end
+			for _, position in ipairs(roots) do
+				local aliases = aliasesByBone[position]
+				if aliases ~= nil and #aliases > 0 and unit_has_bone(S, unit, aliases) then return true end
+			end
 		end
 	end
 	return false
@@ -2339,6 +2369,9 @@ function M.attach(S, unit, rig, options)
 		unit = unit,
 		rig = rig,
 		sessions = sessions,
+		-- 容器里一共有多少条链（= "这件要是带全量骨会有几条"）。运行时用它把
+		-- `已挂载 … 条链` 与"每件都带全量会是几条"摆在一起，一眼看出按件切骨有没有生效。
+		chainTotal = #chains,
 		logger = logger,     -- update 也要能打日志（update 里没有 options）
 		nodeCount = nodeCount,          -- 生命周期闸：场景图节点数（仅用于漂移观测）
 		identityNode = identityNode,    -- 生命周期闸：抽样骨名 id（仅用于漂移观测）

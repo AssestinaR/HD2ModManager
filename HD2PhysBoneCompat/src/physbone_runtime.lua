@@ -63,7 +63,15 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.38"
+-- 2.1.39：配合转换器"每个 unit 只带自己用得到的那几根物理骨"。
+--        ① 判据从"命中 ≥10% 的骨"降到"**命中 ≥1 根**"——一件只带 2 条链（4 根骨）的
+--           unit 在 57 骨的容器上只有 7%，按旧门槛会被判"不可用"直接丢掉（腿上的缎带就没物理了）。
+--           真正该不该挂由 `Compat.attach` 决定：它逐链解析，缺节点的链跳过，产不出链就当场放弃。
+--        ② `已挂载` 汇总行带上**每件的链数**，这样一次进游戏就能看出"是不是真的按件切开了"
+--           （改前每件都是 39，改后各件各不相同、加起来远小于 件数×39）。
+--        ③ 预筛（`probe_carriers`，默认关）改成问**每一条链的链根**而不是第 1 根骨：
+--           按件切骨之后"第 1 根骨"的命中与否不再说明任何事，那样判会把真护甲挡在外面。
+M.VERSION = "2.1.39"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1070,14 +1078,17 @@ local function tryAttach(runtime)
 				-- 所以"有 best"不等于"可用"。**0 命中必须当"不可用"**，否则这件既不挂载、也永不重试
 				-- （2026-11-12 实机：只有先就绪的头盔有物理，护甲的件全没有）。
 				--
-				-- 但"可用"不再要求**全命中**（2026-11-12，配合转换器侧改法）：将来每个 unit 只带
-				-- 自己用得上的那几根物理骨，全命中就永远不成立。`Compat.attach` 本来就是逐链解析、
-				-- 缺节点的链自动跳过（日志里的"可用链 N 条（缺节点 M）"），所以**部分命中也能正确工作**。
-				-- ⇒ 判据改成"命中 ≥1 根骨就算匹配"，由 attach 决定实际能驱动几条链。
-				-- 门槛：部分命中至少覆盖 10% 才值得挂 —— 防止"撞上 1 根同名骨"的垃圾件
-				-- 也走一遍 attach（几百次引擎调用）。57 骨 ⇒ ≥5 根。
-				local partialFloor = math.max(1, math.floor(((best ~= nil and best.total) or 0) * 0.1))
-				local usable = best ~= nil and (best.full or allowPartial or (best.score or 0) >= partialFloor)
+				-- 可用判据（2026-11-12 定稿）：
+				--   ① 不再要求**全命中** —— 转换器已经改成"每个 unit 只带自己用得到的那几根物理骨"
+				--      （`ExtraBoneSubset`），全命中永远不成立；
+				--   ② 也不再要求"覆盖 10% 的骨" —— 一件只带腿上两条缎带的 unit 在 57 骨的容器上只有
+				--      4 根（7%），按百分比门槛会被直接丢掉，实机表现就是"那块布没有物理"。
+				--      **这正是"限制掩盖真问题"的又一例**：门槛在防"撞上 1 根同名骨的垃圾件"，
+				--      代价却是把真目标判死。
+				-- ⇒ 判据只剩"命中 ≥1 根骨"，该不该挂、能驱动几条链交给 `Compat.attach` 说话：
+				--   它逐链解析节点，缺节点的链跳过，产不出任何链就当场放弃（日志会留一行）。
+				--   换来的成本是偶尔对一件垃圾件发一轮 attach（~骨数 次调用），值。
+				local usable = best ~= nil and (best.full or allowPartial or (best.score or 0) >= 1)
 				if usable then
 					match = { rig = best.rig, path = best.path, full = best.full == true }
 					rigMatches[candidate.unit] = match
@@ -1315,9 +1326,17 @@ local function tryAttach(runtime)
 			else
 				-- attach 走完了却一条链都没产出：容器骨名和这个 unit 的节点名对不上，
 				-- 或者锚点全缺。以前这里完全静默，等于"挂上了"和"挂出 0 条"从日志上看一样。
+				--
+				-- 每件只打一次：判据放宽到"命中 ≥1 根骨"之后，偶尔会有"撞上一根同名骨"的垃圾件
+				-- 进来试一轮（它必然产出 0 条链），而它每 30 帧就会被重试一次 —— 逐次打会把日志刷满，
+				-- 反而盖掉真正要看的那几行。
 				emptyUnits = emptyUnits + 1
-				runtime.logger("[physbone][失败] unit=%s 挂载完成但产出 0 条链（容器 %s）",
-					entry.tag, tostring(entry.path))
+				runtime.emptyLogged = runtime.emptyLogged or setmetatable({}, { __mode = "k" })
+				if runtime.emptyLogged[entry.unit] == nil then
+					runtime.emptyLogged[entry.unit] = true
+					runtime.logger("[physbone][失败] unit=%s 挂载完成但产出 0 条链（容器 %s）",
+						entry.tag, tostring(entry.path))
+				end
 			end
 		else
 			runtime.logger("[physbone][失败] unit=%s 在挂载前一刻已销毁（跳过）", tostring(entry.tag))
@@ -1346,10 +1365,12 @@ local function tryAttach(runtime)
 	runtime.repeatCalls = 0
 
 	local chains, tags = 0, {}
+	local chainCounts = {}
 	local perOwner = {}
 	for _, session in ipairs(runtime.sessions) do
 		chains = chains + #session.sessions
 		tags[#tags + 1] = tostring(session.unitTag or "?")
+		chainCounts[#chainCounts + 1] = #session.sessions
 		local key = session.ownerOrder or 99
 		perOwner[key] = (perOwner[key] or 0) + 1
 	end
@@ -1357,6 +1378,7 @@ local function tryAttach(runtime)
 	for _, order in ipairs({ 1, 2, 3, 4, 99 }) do
 		if perOwner[order] ~= nil then ownerText[#ownerText + 1] = string.format("玩家%d=%d件", order, perOwner[order]) end
 	end
+	table.sort(chainCounts, function(a, b) return a > b end)
 	-- 还有候选没轮到打分 ⇒ 排下一拍继续装填。
 	-- 不留这一条的话，剩下的件要等下一次"名单变化/死亡"才会被想起 —— 那正好就是
 	-- "队友的物理要等第三个玩家进来才出现"那个老现象。
@@ -1367,11 +1389,23 @@ local function tryAttach(runtime)
 	-- 装填期间**不打这条汇总**：跨拍装填会打好几条，把日志预算吃光、连驱动心跳都挤掉
 	-- （mp_harness 的 900 字节预算闸门抓到的）。等装填结束再一次性给出结论。
 	if not runtime.fillPending then
-		runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器，玩家 %d 个%s）；本次新挂 %d、已挂过 %d；打分 %.2f ms（本轮新打分 %d 件）；unit=%s",
+		-- **每件的链数**（降序）。这一行是"转换器按件切骨"是否真的生效的唯一直接证据：
+		-- 改前每件都是容器全量（Lunalice：7 件 × 39 条 = 273），改后各件各不相同、加起来远小于它。
+		-- 少了它，"273 条链"和"49 条链"在日志里都只是同一句"已挂载 N 个 unit"，看不出区别。
+		--
+		-- 只在**多于一件**时附带：一件的时候这两个数必然相等，纯占字节 ——
+		-- 而日志是有字节预算的（mp_harness 的 900 字节闸门就抓过"噪声把心跳挤掉"）。
+		local perUnit = ""
+		if #runtime.sessions > 1 then
+			local chainTotal = runtime.sessions[1].chainTotal or 0
+			perUnit = string.format("；每件链数 %s（全量会是 %d）",
+				table.concat(chainCounts, ","), #runtime.sessions * chainTotal)
+		end
+		runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器，玩家 %d 个%s）；本次新挂 %d、已挂过 %d；打分 %.2f ms（本轮新打分 %d 件）%s；unit=%s",
 			#runtime.sessions, chains, #carriers, #avatars,
 			#ownerText > 0 and ("：" .. table.concat(ownerText, " ")) or "",
 			attached, already, runtime.lastScoreMs or 0, runtime.fillScoredTotal or 0,
-			table.concat(tags, ","))
+			perUnit, table.concat(tags, ","))
 		runtime.fillScoredTotal = nil
 	end
 	return true

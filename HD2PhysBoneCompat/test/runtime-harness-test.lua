@@ -1507,6 +1507,104 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T22 按件切骨：只带部分骨的 unit 必须照样挂上，且链数各不相同")
+--
+-- 2026-11-12 转换器侧的改法：每个 unit 只带**自己蒙到**的那几根物理骨
+-- （`ExtraBoneSubset`，判据是顶点影响里的骨名哈希）。于是运行时必须满足两件事：
+--   ① 一件只带 2 条链的 unit 在 40 骨的容器上只有 5% 的骨 —— 旧门槛"覆盖 ≥10% 才算可用"
+--      会把它判死，实机上就是"那块布永远没有物理"；
+--   ② 每件产出的链数**各不相同**，加起来远小于"件数 × 容器全量" —— 这就是省下来的那部分。
+-- 这条用例把两个数字都钉死：小件 1 条链、大件 4 条链。
+do
+	rawset(_G, "render", function() end)
+
+	-- 20 条链 × 2 节 = 40 根骨（容器全量）。链根挂 head，子节挂在链根上。
+	local RIG40 = (function()
+		local params = RIG.bones[1].params
+		local bones = {}
+		for chain = 1, 20 do
+			local root = string.format("jabcdef012345/source_extra_%d", chain * 2 - 1)
+			local tip = string.format("jabcdef012345/source_extra_%d", chain * 2)
+			bones[#bones + 1] = { index = chain * 2 - 1, name = root, parent = 0,
+				parentName = "head", pos = { 0, -0.1 * chain, 0 }, params = params, flags = 0x31 }
+			bones[#bones + 1] = { index = chain * 2, name = tip, parent = chain * 2 - 1,
+				parentName = root, pos = { 0, -0.1 * chain - 0.05, 0 }, params = params, flags = 0x31 }
+		end
+		return { bones = bones }
+	end)()
+
+	-- 只给这个 unit 挂上**部分骨名**（模拟转换器裁完之后的骨架）。
+	local function dressSubset(unit, chains)
+		local nextNode = 10
+		for _, chain in ipairs(chains) do
+			for _, offset in ipairs({ 0, 1 }) do
+				local name = string.format("jabcdef012345/source_extra_%d", (chain - 1) * 2 + 1 + offset)
+				unit.ids[name] = true
+				unit.nodeOf[name] = nextNode
+				nextNode = nextNode + 1
+			end
+		end
+		unit.ids["head"] = true
+		unit.nodeOf["head"] = 9
+	end
+
+	local av22 = newUnit("t22avatar", AVATAR_NODES, true, "#ID[t22avatar]")
+	do
+		local mgName = SUPPORT_MG
+		av22.ids[mgName] = true
+		av22.nodeOf[mgName] = 5
+	end
+	engine.pos[av22] = { 0, 0, 0 }
+
+	-- 小件：只带第 1 条链（2 根骨 = 5%）；大件：带第 1~4 条链（8 根骨 = 20%）。
+	local small = newUnit("t22small", 171, false, "#ID[t22small]")
+	dressSubset(small, { 1 })
+	local big = newUnit("t22big", 200, false, "#ID[t22big]")
+	dressSubset(big, { 1, 2, 3, 4 })
+	engine.pos[small] = { 0.2, 0, 0 }
+	engine.pos[big] = { 0.3, 0, 0 }
+
+	avatar = av22
+	armors = { small, big }
+
+	local logPath22 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t22subset.txt"
+	os.remove(logPath22)
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG40, path = "subset.patch_1.gpu_resources" } },
+		logPath = logPath22,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.json",
+		pollFrames = 2, validateFrames = 0,
+		maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 80 do engine.time = engine.time + 1 / 120; probeRender() end
+
+	local byTag = {}
+	for _, session in ipairs(runtime.sessions or {}) do
+		byTag[tostring(session.unitTag)] = #session.sessions
+	end
+	check("T22 只带 5% 骨的小件也挂上了", byTag["#ID[t22small]"] == 1,
+		string.format("链=%s", tostring(byTag["#ID[t22small]"])))
+	check("T22 带 20% 骨的大件挂上了它自己那 4 条链", byTag["#ID[t22big]"] == 4,
+		string.format("链=%s", tostring(byTag["#ID[t22big]"])))
+	local total = 0
+	for _, count in pairs(byTag) do total = total + count end
+	check("T22 合计链数远小于「两件都带全量」（5 ≪ 40）", total == 5, string.format("合计=%d", total))
+
+	local text22 = ""
+	do
+		local handle = io.open(logPath22, "r")
+		if handle ~= nil then text22 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T22 汇总行里带「每件链数」", text22:find("每件链数", 1, true) ~= nil)
+	check("T22 「每件链数」显示的是 4 和 1", text22:find("每件链数 4,1", 1, true) ~= nil,
+		text22:match("每件链数[^；]*") or "（没有这一行）")
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")

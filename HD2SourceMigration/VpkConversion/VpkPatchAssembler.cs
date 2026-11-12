@@ -120,6 +120,17 @@ public sealed record VpkUnitOutcome(
 	/// <para>用途是给 <c>sections.json</c> 起名，从而让组件开关能精确到"猫耳"而不是"共用这张底色的所有东西"。</para>
 	/// </summary>
 	public IReadOnlyList<VpkSectionSource> SectionSources { get; init; } = [];
+
+	/// <summary>
+	/// 这一件**真正带进产物**的物理（jiggle）骨根数；<see langword="null"/> = 本套模型没有物理骨。
+	/// <para>
+	/// <b>为什么值得单独报一列。</b>它是"每件只带自己用得到的骨"这条改法的唯一直接证据：
+	/// 总和应该显著小于 <c>件数 × 容器骨数</c>（实测 Lunalice：7 件、容器 57 骨，
+	/// 改前每件 57，改后每件只有自己那块布料的几根~十几根）。运行时日志里的
+	/// <c>已挂载 N 个 unit / T 条链</c> 就是按这份骨表算出来的，两边对得上才说明链路是通的。
+	/// </para>
+	/// </summary>
+	public int? ExtraBoneCount { get; init; }
 }
 
 /// <summary>
@@ -606,18 +617,30 @@ public sealed class VpkPatchAssembler
 		// ①b 把 jiggle 骨的**合成节点**追加进 TransformInfo（必须在建网格之前）。
 		// 网格是按 `NameHashes[目标骨下标]` 取哈希的：合成骨不进表，那条路径就会拿到越界下标，
 		// 表现是"骨哈希 … 不在外壳扩展后的 TransformInfo 里"。追加只影响末尾，原生下标一个不动。
-		var transformInfo = UnitTransformInfoAppender.Append(avatarTransformInfo!, retarget?.ExtraBones);
-		if (transformInfo is not null && retarget?.ExtraBones is { Count: > 0 })
+		//
+		// ⚠️ 这里追加的是**全量**（网格构建要用它把"合成骨下标"换成骨名哈希），
+		// 但**每个 unit 最终带进产物的只有它自己蒙到的那部分** —— 见下面的 ①c。
+		var extras = retarget?.ExtraBones;
+		// ⚠️ `avatarTransformInfo` 可以为 null（纯材质 patch 没有 Unit 计划，装配器约定允许传 null，
+		// 见 `UnitTransformInfoAppender.Append` 的"null 进 null 出"）。这里必须容忍它：
+		// 无条件取 `.Matrices` 会让"只含材质/贴图的 VPK"整批挂在 NullReferenceException 上。
+		var extraBaseCount = avatarTransformInfo?.Matrices.Count ?? 0;
+		var transformInfo = UnitTransformInfoAppender.Append(avatarTransformInfo, extras);
+		if (transformInfo is not null && extras is { Count: > 0 })
 		{
 			// 转换时就把"locals ↔ world 自洽"这条不变量钉住：
 			// 不一致时游戏不报错，只会把那些骨上的网格拉长 1~3 米（2026-10-31 实机踩过）。
-			UnitTransformInfoAppender.AssertLocalAndWorldAgree(transformInfo, avatarTransformInfo!.Matrices.Count);
+			UnitTransformInfoAppender.AssertLocalAndWorldAgree(transformInfo, extraBaseCount);
 		}
 
 		// ② 逐 Unit 的"重活"并行：建网格 + 写 Unit 互不相干（输入只读、产物各归各的数组）。
 		//    实测一份 42 万顶点的模型，7 个 Unit 串行 18.3 s，并行之后约 3 s。
 		var meshes = new RetargetedMesh[effectivePlans.Count];
 		var authoredUnits = new UnitAuthorResult[effectivePlans.Count];
+		// 逐件的物理骨数（= 它真正带进产物的合成骨根数；没有物理骨时为 null）。
+		var extraBonesByPlan = new int?[effectivePlans.Count];
+		// 切分失败（退回全量）的逐件原因，收口时并进 warnings。
+		var subsetNotes = new string?[effectivePlans.Count];
 		// 裙摆离体清空的偏移量（米）。0 = 关（默认）。用环境变量而不是设置项，
 		// 是因为这是**实验性几何改动**：只影响转换那一刻，改一次重转一次，不需要进产品界面。
 		var skirtClearanceAmount = ResolveSkirtClearance();
@@ -639,9 +662,25 @@ public sealed class VpkPatchAssembler
 			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
 			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
 			// 多造几个小对象比赌这一条便宜得多。
+			//
+			// ①c **每件只带自己蒙到的物理骨。** 分段模型的每个 unit 都带一份整套 <c>source_extra_*</c>，
+			// 运行时又是逐 unit 逐链驱动的 ⇒ 不裁的话"7 件 × 39 条链 = 273 链/玩家"，其中大部分骨上
+			// 根本没有几何（实测 Lunalice 就是这样，见 docs/agent/physbone-per-unit-rig-for-converter.md）。
+			// 判据来自**刚建好的这份网格**的顶点影响（骨名哈希），是精确答案，不是按材质名猜的。
+			var unitTransformInfo = transformInfo!;
+			if (extras is { Count: > 0 })
+			{
+				var selection = ExtraBoneSubset.Select(extras, extraBaseCount, mesh);
+				unitTransformInfo = UnitTransformInfoAppender.Append(avatarTransformInfo, selection.Extras)!;
+				// 裁完再多验一次：父下标被重映射过，locals ↔ world 这条不变量要重新钉。
+				UnitTransformInfoAppender.AssertLocalAndWorldAgree(unitTransformInfo, extraBaseCount);
+				extraBonesByPlan[planIndex] = selection.Extras.Count;
+				subsetNotes[planIndex] = selection.Warning;
+			}
+
 			var unitAuthor = new UnitAuthor();
 			var authored = unitAuthor.Author(new UnitAuthorRequest(
-				plan.Donor.Model, plan.Donor.TocData, transformInfo!, mesh, customizations[planIndex],
+				plan.Donor.Model, plan.Donor.TocData, unitTransformInfo, mesh, customizations[planIndex],
 				plan.Donor.FileId, materialIdsBySourceMaterial));
 			meshes[planIndex] = mesh;
 			authoredUnits[planIndex] = authored;
@@ -663,7 +702,10 @@ public sealed class VpkPatchAssembler
 				authored.TocData?.Length ?? 0, authored.GpuData?.Length ?? 0, authored.Diagnostics)
 			{
 				SectionSources = BuildSectionSources(mesh, sourceMaterialNames, materialIdsBySourceMaterial),
+				ExtraBoneCount = extraBonesByPlan[planIndex],
 			});
+			if (subsetNotes[planIndex] is { } subsetNote)
+				warnings.Add($"{plan.Group.Name} 没能按件裁物理骨，退回全量：{subsetNote}");
 
 			if (!authored.IsValid)
 			{
