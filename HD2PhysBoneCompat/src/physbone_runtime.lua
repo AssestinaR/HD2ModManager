@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.25"
+M.VERSION = "2.1.27"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -660,19 +660,35 @@ local function tryAttach(runtime)
 		runtime.rigMatchKey = carrierKey
 		rigMatches = nil
 		runtime.bestScoredEver = nil
+		runtime.scoreAttemptAt = nil   -- 重试门也一起失效：否则新容器下要白等一轮 retryFrames
 	end
 	if rigMatches == nil then
 		rigMatches = setmetatable({}, { __mode = "k" })   -- 弱键：unit 销毁后自动释放
 		runtime.rigMatches = rigMatches
 	end
 	local scoreUnitsPerFrame = options.scoreUnitsPerFrame or 2
+	-- 重试间隔（帧）。**只缓存正匹配**，没命中的件不写缓存、只记"上次打分帧"，到点再试。
+	-- 为什么不缓存负结论（2026-11-12 实机踩到）：unit 刚生成时骨骼可能还没就绪，第一拍
+	-- 打分得到"0 命中"；把它当永久结论的话这个 unit 再也不会被重试 —— 现象正是
+	-- "只有先就绪的头盔有物理、护甲的件永远没有"，换护甲后连头盔也没了。
+	local retryFrames = options.negativeRetryFrames or 30
+	local scoreAttemptAt = runtime.scoreAttemptAt
+	if scoreAttemptAt == nil then
+		scoreAttemptAt = setmetatable({}, { __mode = "k" })
+		runtime.scoreAttemptAt = scoreAttemptAt
+	end
 	local plan, bestScored = {}, nil
 	local scoredNow, cachedHits, deferred = 0, 0, 0
 	local scoreClock = os.clock()
 	for index = 1, #nearCandidates do
 		local candidate = nearCandidates[index]
 		local match = rigMatches[candidate.unit]
+		local needsScore = false
 		if match == nil then
+			local last = scoreAttemptAt[candidate.unit]
+			needsScore = last == nil or (frame - last) >= retryFrames
+		end
+		if needsScore then
 			if scoredNow >= scoreUnitsPerFrame then
 				deferred = #nearCandidates - index + 1
 				break
@@ -680,34 +696,36 @@ local function tryAttach(runtime)
 			local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
 			scoredNow = scoredNow + 1
 			runtime.fillScoredTotal = (runtime.fillScoredTotal or 0) + 1
-			if best ~= nil then
+			scoreAttemptAt[candidate.unit] = frame
+			-- ⚠️ `select_rig` 在**0 命中时也会返回非 nil 的 best**（它返回排序后的第一名）。
+			-- 所以"有 best"不等于"可用"。只有 `full`（或显式允许 partial）才算可用匹配；
+			-- 把不可用的当匹配缓存起来，会让这件**既不挂载、也永不重试**
+			-- （2026-11-12 实机：只有先就绪的头盔有物理，护甲的件全没有）。
+			local usable = best ~= nil and (best.full or allowPartial)
+			if usable then
 				match = { rig = best.rig, path = best.path, full = best.full == true }
-				-- 命中但不满（缺骨）：仍然要记下"最接近的那一份"，否则报错原因会退化成
-				-- "全部 0 命中"，丢掉"差几根骨"这条唯一线索。
-				if not (best.full or allowPartial) and scored ~= nil and scored[1] ~= nil then
-					if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
-					if runtime.bestScoredEver == nil or scored[1].score > runtime.bestScoredEver.score then
-						runtime.bestScoredEver = scored[1]
-					end
-				end
+				rigMatches[candidate.unit] = match
 			else
-				-- 打过分但没命中也要记住：否则每一拍都会把同一批再打一遍。
-				match = { none = true }
-				if scored ~= nil and scored[1] ~= nil then
-					-- 记下"最接近的那一份"：没挂上时这条是唯一能指出"差几根骨"的线索。
-					-- 同时记到 runtime 上：跨拍装填时最后一拍可能全是缓存命中，
-					-- 那时本地 bestScored 是 nil，但报错原因仍要说得出"差几根骨"。
-					if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
-					if runtime.bestScoredEver == nil or scored[1].score > runtime.bestScoredEver.score then
-						runtime.bestScoredEver = scored[1]
-					end
+				match = nil
+			end
+			-- 无论可不可用都记下"最接近的那一份"：没挂上时它是唯一能指出"差几根骨"的线索。
+			-- 记到 runtime 上是因为跨拍装填的最后一拍可能全是缓存命中（本地 bestScored 为 nil）。
+			if not usable and scored ~= nil and scored[1] ~= nil then
+				if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
+				if runtime.bestScoredEver == nil or scored[1].score > runtime.bestScoredEver.score then
+					runtime.bestScoredEver = scored[1]
 				end
 			end
-			rigMatches[candidate.unit] = match
-		else
+			-- 不可用 ⇒ 不写缓存，只排一次重试（到点后再打）。
+			if not usable then
+				local retryAt = frame + retryFrames
+				if runtime.negativeRetryAt == nil or retryAt < runtime.negativeRetryAt then
+					runtime.negativeRetryAt = retryAt
+				end
+			end
 			cachedHits = cachedHits + 1
 		end
-		if match.rig ~= nil and (match.full or allowPartial) then
+		if match ~= nil and match.rig ~= nil and (match.full or allowPartial) then
 			plan[#plan + 1] = {
 				unit = candidate.unit, rig = match.rig, path = match.path, mg = candidate.mg,
 				tag = unit_tag(S, candidate.unit),
@@ -1751,6 +1769,10 @@ local function sched_key_poll(S_, runtime)
 	-- 有匹配缓存兜底，成本很低。
 	runtime.reconcile = runtime.frame
 	if runtime.sessions == nil then runtime.rearmAt = nil end   -- 正在退避就直接重试
+		-- 顺手把"重试门"清掉（保留已命中的正缓存）：用户按 F8 就是想让它**真的再试一次**。
+	-- 不清的话，那些"打过但没命中"的件还在退避期里，F8 会被它挡住，表现仍是"按了没用"。
+	runtime.scoreAttemptAt = setmetatable({}, { __mode = "k" })
+	runtime.negativeRetryAt = nil
 	runtime.schedNoop = 0
 	runtime.schedBackoffUntil = nil
 end
@@ -2982,7 +3004,9 @@ local function drive(runtime)
 			if tryAttach(runtime) then
 				-- 装填还没完成（还有候选没轮到打分）时不能清掉 reconcile，否则"剩下的件"
 				-- 要等下一位玩家进场/有人阵亡才会被想起 —— 那正是老现象。
-				runtime.reconcile = runtime.fillPending and (frame + poll) or nil
+				-- 另外：有"负结果待重试"时要把它排上，否则那批件永远没机会翻案。
+				runtime.reconcile = runtime.fillPending and (frame + poll) or runtime.negativeRetryAt
+				runtime.negativeRetryAt = nil
 			else
 				runtime.reconcile = frame + poll     -- 场景还没稳，下一拍再来
 			end
@@ -3391,6 +3415,8 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
+
 
 
 

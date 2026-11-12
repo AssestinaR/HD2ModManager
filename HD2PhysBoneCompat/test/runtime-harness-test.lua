@@ -939,6 +939,69 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T15 负结果会过期：骨骼晚就绪的件必须能被重新打分挂上")
+--
+-- 实机踩到（2026-11-12）：unit 刚生成时骨骼还没就绪，第一拍打分 0 命中；把这条当永久结论，
+-- 这个 unit 就再也不会被重试 —— 现象是"只有先就绪的头盔有物理，护甲的件永远没有"，
+-- 换护甲后连头盔也没了（新 unit 又被提前判死）。所以负结论必须带过期 + 退避。
+do
+	rawset(_G, "render", function() end)
+
+	local av15 = newUnit("t15avatar", AVATAR_NODES, true, "#ID[t15avatar]")
+	do
+		local mgId = S.Application.string_to_id32("support_mg")
+		av15.ids[mgId] = true
+		av15.nodeOf[mgId] = 5
+	end
+	engine.pos[av15] = { 0, 0, 0 }
+
+	local late = newUnit("t15late", 148, false, "#ID[t15late]")
+	dress(late)
+	engine.pos[late] = { 0, 0, 0 }
+	local readyIds = late.ids
+	late.ids = {}          -- 先装"骨骼还没就绪"
+
+	avatar = av15
+	armors = { late }
+
+	local tunePath15 = (os.getenv("TEMP") or ".") .. "\\physbone-t15-neg-tune.txt"
+	do
+		local handle = io.open(tunePath15, "w")
+		handle:write("writeOff = 0\n")
+		handle:close()
+	end
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t15neg.txt",
+		settleFrames = 2, snapshot = false, tunePath = tunePath15,
+		pollFrames = 1, validateFrames = 0,
+		maxArmorDistance = 10.0,
+		scoreUnitsPerFrame = 8,        -- 不设小额度的干扰，专测负结果过期
+		negativeRetryFrames = 5,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 12 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T15 骨骼没就绪时挂不上", runtime.sessions == nil,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+
+	late.ids = readyIds             -- 骨骼就绪
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+	local entry = runtime.rigMatches and runtime.rigMatches[late]
+	local entryText = entry == nil and "nil"
+		or ("none=" .. tostring(entry.none) .. " retryAt=" .. tostring(entry.retryAt)
+			.. " tries=" .. tostring(entry.tries))
+	check("T15 负结果过期后能重新打分并挂上",
+		runtime.sessions ~= nil and #runtime.sessions == 1,
+		string.format("会话=%s frame=%s 缓存=%s",
+			tostring(runtime.sessions and #runtime.sessions), tostring(runtime.frame), entryText))
+	pcall(os.remove, tunePath15)
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")
