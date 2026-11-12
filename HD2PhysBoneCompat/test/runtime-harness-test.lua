@@ -56,6 +56,16 @@ end)()
 local S = { Application = {}, Unit = {}, World = {}, Vector3 = {}, Quaternion = {}, Matrix4x4 = {} }
 local pose, vector, quat = { kind = "pose" }, { kind = "vector" }, { kind = "quat" }
 
+-- 逐 unit 的引擎调用计数（T23 用）：验证"unit 死掉之后不再碰它"。
+-- 只数**读骨架/写姿态**这几类；`alive` 不数 —— 判活本来就是允许做的动作。
+engine.hits = {}
+local function hit(unit, kind)
+	if unit == nil then return end
+	local row = engine.hits[unit]
+	if row == nil then row = {}; engine.hits[unit] = row end
+	row[kind] = (row[kind] or 0) + 1
+end
+
 S.Application.time_since_launch = function() return engine.time end
 S.Application.worlds = function() return { world } end
 S.Application.string_to_id32 = function(text)
@@ -66,7 +76,7 @@ end
 S.World.units = function() return engine.unitsArray() end
 S.World.update_unit = function() end
 S.Unit.alive = function(unit) return engine.alive[unit] == true end
-S.Unit.num_scene_graph_items = function(unit) return engine.nodes[unit] or 0 end
+S.Unit.num_scene_graph_items = function(unit) hit(unit, "nodes") return engine.nodes[unit] or 0 end
 S.Unit.has_animation_state_machine = function(unit) return engine.anim[unit] == true end
 -- ⚠️ 键是**骨名**，不是 id：实机里 `string_to_id32` 返回的 `IdString32` 会失效
 -- （我们自己的 snapshot 探针印过 `[Stale IdString32]`），所以匹配一律按名字问。
@@ -76,17 +86,18 @@ S.Unit.has_node = function(unit, key)
 	if engine.namesOnly == true and type(key) ~= "string" then
 		error("[Stale IdString32] 只能按骨名问")
 	end
+	hit(unit, "has")
 	return unit.ids[key] == true
 end
-S.Unit.node = function(unit, key) return unit.nodeOf[key] end
+S.Unit.node = function(unit, key) hit(unit, "node") return unit.nodeOf[key] end
 S.Unit.debug_name = function(unit) return unit.resource end
 S.Unit.name_hash = function(unit) return unit.resource end
-S.Unit.local_pose = function() return pose end
+S.Unit.local_pose = function(unit) hit(unit, "pose") return pose end
 S.Unit.local_rotation = function() return { x = 0, y = 0, z = 0, w = 1 } end
-S.Unit.world_position = function(u) return { unit = u } end
+S.Unit.world_position = function(u) hit(u, "world") return { unit = u } end
 S.Unit.world_rotation = function() return { x = 0, y = 0, z = 0, w = 1 } end
-S.Unit.set_local_pose = function() engine.writes = engine.writes + 1 end
-S.Unit.set_local_rotation = function() engine.writes = engine.writes + 1 end
+S.Unit.set_local_pose = function(unit) hit(unit, "write") engine.writes = engine.writes + 1 end
+S.Unit.set_local_rotation = function(unit) hit(unit, "write") engine.writes = engine.writes + 1 end
 -- 位置按 unit 分别给出（"离玩家多远"要真的能量出来，否则没法验尸体排除）
 S.Vector3.to_elements = function(v)
 	local p = engine.pos[v and v.unit] or { 0, 0, 0 }
@@ -1602,6 +1613,144 @@ do
 	check("T22 「每件链数」显示的是 4 和 1", text22:find("每件链数 4,1", 1, true) ~= nil,
 		text22:match("每件链数[^；]*") or "（没有这一行）")
 
+	Runtime.uninstall()
+end
+
+-- ---------------------------------------------------------------------------
+print("T23 裙摆也必须在 unit 死后停手（2026-11-12 军械库/债券页必崩）")
+--
+-- 现场：开债券页时引擎**连续创建/销毁**一堆展示用的护甲件，而裙摆是「每帧遍历所有会话、
+-- 且跑在 drive 最末尾（pruneSessions 之后）」的那一段。对已销毁的 unit 调
+-- `num_scene_graph_items` / `world_position` 是**原生 AV**（0xc0000005 / 参数 0x0 0x0），
+-- Lua 的 pcall 拦不住 —— 所以必须**先判活**，而不是靠 pcall 兜。
+--
+-- 这条用例把两件事钉死：
+--   ① unit 死掉之后，它的骨头**一次都不许再碰**（按引擎调用计数验证）；
+--   ② 裙摆这条路径确实在跑（否则用例根本没咬到）。
+do
+	rawset(_G, "render", function() end)
+
+	-- 裙摆默认是关的；用调参文件打开，并让它对这个 rig 真的有事可做。
+	local tunePath23 = (os.getenv("TEMP") or ".") .. "\\physbone-t23-skirt-tune.txt"
+	do
+		local handle = io.open(tunePath23, "w")
+		handle:write("skirt = 1\nskirtDeg = 30\ndevLog = 1\n")
+		handle:close()
+	end
+	local logPath23 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t23skirt.txt"
+	os.remove(logPath23)
+
+	-- 链根挂在 **hips** 上，裙摆才会认这些链（默认 anchor map 里 hips 是躯干锚点）。
+	local RIG23 = (function()
+		local params = RIG.bones[1].params
+		local bones = {}
+		for index = 1, 4 do
+			bones[index] = { index = index, name = BONE_NAMES[index],
+				parent = (index <= 2) and (index - 1) or 0,
+				parentName = (index == 1 or index == 3) and "hips" or BONE_NAMES[index - 1],
+				pos = { 0, -0.1 * (index - 1), 0 }, params = params, flags = 0x31 }
+		end
+		return { bones = bones }
+	end)()
+
+	-- 裙摆要 4 个参照点：hips / chest / l_thigh / r_thigh。
+	local function dressForSkirt(unit)
+		local nextNode = 10
+		for _, name in ipairs(BONE_NAMES) do
+			unit.ids[name] = true
+			unit.nodeOf[name] = nextNode
+			nextNode = nextNode + 1
+		end
+		for _, name in ipairs({ "head", "hips", "chest", "l_thigh", "r_thigh" }) do
+			unit.ids[name] = true
+			unit.nodeOf[name] = nextNode
+			nextNode = nextNode + 1
+		end
+	end
+
+	local av23 = newUnit("t23avatar", AVATAR_NODES, true, "#ID[t23avatar]")
+	do
+		local mgName = SUPPORT_MG
+		av23.ids[mgName] = true
+		av23.nodeOf[mgName] = 5
+	end
+	engine.pos[av23] = { 0, 0, 0 }
+
+	local doomed = newUnit("t23doomed", 171, false, "#ID[t23doomed]")
+	dressForSkirt(doomed)
+	engine.pos[doomed] = { 0.2, 0, 0 }
+	local survivor = newUnit("t23survivor", 200, false, "#ID[t23survivor]")
+	dressForSkirt(survivor)
+	engine.pos[survivor] = { 0.3, 0, 0 }
+
+	avatar = av23
+	armors = { doomed, survivor }
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG23, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath23,
+		settleFrames = 2, snapshot = false, tunePath = tunePath23,
+		pollFrames = 2, validateFrames = 0, maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	-- 走起来：裙摆要有速度才肯推（静止时斜坡为 0）
+	for step = 1, 60 do
+		local x = step * 0.02
+		engine.pos[av23] = { x, 0, 0 }
+		engine.pos[doomed] = { x + 0.2, 0, 0 }
+		engine.pos[survivor] = { x + 0.3, 0, 0 }
+		engine.time = engine.time + 1 / 120
+		probeRender()
+	end
+	local attached = runtime.sessions and #runtime.sessions or 0
+	check("T23 两件都挂上了（否则没东西可杀）", attached == 2, string.format("会话=%d", attached))
+
+	local text23 = ""
+	do
+		local handle = io.open(logPath23, "r")
+		if handle ~= nil then text23 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T23 裙摆这条路径确实在跑", text23:find("[physbone][裙摆]", 1, true) ~= nil)
+
+	-- 杀掉 doomed，记下它此刻被碰过多少次，再跑一段。
+	engine.alive[doomed] = false
+	local before = {}
+	for kind, count in pairs(engine.hits[doomed] or {}) do before[kind] = count end
+	for _ = 1, 40 do
+		engine.time = engine.time + 1 / 120
+		probeRender()
+	end
+	local after = engine.hits[doomed] or {}
+	local touched = {}
+	for _, kind in ipairs({ "nodes", "world", "pose", "write", "has", "node" }) do
+		local delta = (after[kind] or 0) - (before[kind] or 0)
+		if delta > 0 then touched[#touched + 1] = kind .. "+" .. delta end
+	end
+	check("T23 unit 死掉之后一次都没再碰它的骨头", #touched == 0, table.concat(touched, " "))
+	local alive23 = runtime.sessions and #runtime.sessions or 0
+	check("T23 死掉的那件已被丢弃（退出驱动）", alive23 <= 1, string.format("会话=%d", alive23))
+
+	-- 第二段：**scene graph 被重建**（军械库换预览件就是这种）。
+	-- 裙摆缓存的是节点下标；节点数一变，旧下标就可能指向别的节点甚至越界 ——
+	-- 对这种下标读 world_position 是原生 AV，而 session_health 每 30 帧才比一次节点数。
+	-- 判据：节点数变了之后，裙摆必须**重新解析**参照点（会再问一次 has_node("hips")）。
+	local surviveHitsBefore = (engine.hits[survivor] or {}).has or 0
+	local newCount = (engine.nodes[survivor] or 200) + 40
+	engine.nodes[survivor] = newCount
+	for _, name in ipairs({ "hips", "chest", "l_thigh", "r_thigh" }) do
+		survivor.nodeOf[name] = newCount - 2      -- 挪到新的位置：旧下标已经不对了
+	end
+	for _ = 1, 4 do
+		engine.time = engine.time + 1 / 120
+		probeRender()
+	end
+	local surviveHitsAfter = (engine.hits[survivor] or {}).has or 0
+	check("T23 节点数变了之后裙摆重新解析参照点（不复用旧下标）",
+		surviveHitsAfter > surviveHitsBefore,
+		string.format("has_node 调用 %d → %d", surviveHitsBefore, surviveHitsAfter))
+
+	pcall(os.remove, tunePath23)
 	Runtime.uninstall()
 end
 

@@ -71,7 +71,14 @@ local M = {}
 --           （改前每件都是 39，改后各件各不相同、加起来远小于 件数×39）。
 --        ③ 预筛（`probe_carriers`，默认关）改成问**每一条链的链根**而不是第 1 根骨：
 --           按件切骨之后"第 1 根骨"的命中与否不再说明任何事，那样判会把真护甲挡在外面。
-M.VERSION = "2.1.39"
+-- 2.1.40：裙摆路径补两道"生命周期"闸（2026-11-12 军械库/债券页必崩）。
+--        ① `skirt_apply` 遍历会话时**先判活**再碰 unit：开页面时引擎会连续创建/销毁展示件，
+--           而裙摆在 `drive` 末尾每帧跑一遍，一帧内被销毁的件正好落在这条路上
+--           （对已销毁 unit 调 `num_scene_graph_items` / `world_position` 是原生 AV，
+--           转储形态 `0xc0000005 / 参数 0x0 0x0`，pcall 拦不住）。
+--        ② `skirt_refs` 缓存的是**节点下标**：unit 被重建后下标会指向别的节点甚至越界。
+--           现在每帧比一次节点数，变了就重算（`session_health` 每 30 帧才比一次，中间是盲窗）。
+M.VERSION = "2.1.40"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -2868,12 +2875,18 @@ local function skirt_settings(runtime)
 end
 
 --- 会话级的两个参照点：hips（圆心）与 chest（上方向）。解析不到就放弃这一帧。
+---
+--- ⚠️ **节点数变了就必须重算。** 缓存的是**节点下标**，而 unit 被重建（换装 / 切 LOD /
+--- 军械库换预览件）之后同样的下标指向别的节点，甚至越界 —— 对越界下标读 `world_position`
+--- 是原生 AV（`0xc0000005 / 0x0 0x0`），`pcall` 拦不住。
+--- `session_health` 只在**每 30 帧**比一次节点数，中间那一段窗口正是踩雷区，
+--- 所以这里每帧都问一次（一个会话一次调用，相对裙摆本身每帧 4 次取位可以忽略）。
 local function skirt_refs(S_, session)
-	local refs = session.skirtRefs
-	if refs ~= nil then return refs end
 	if S_.Unit == nil or session.unit == nil then return nil end
 	local okCount, count = pcall(function() return S_.Unit.num_scene_graph_items(session.unit) end)
 	if not okCount or type(count) ~= "number" then return nil end
+	local refs = session.skirtRefs
+	if refs ~= nil and session.skirtRefsCount == count then return refs end
 	local function nodeOf(name)
 		local okHas, has = pcall(S_.Unit.has_node, session.unit, name)
 		if not okHas or has ~= true then return nil end
@@ -2885,6 +2898,7 @@ local function skirt_refs(S_, session)
 	if hipsNode == nil then return nil end
 	refs = { hips = hipsNode, chest = chestNode, lThigh = nodeOf("l_thigh"), rThigh = nodeOf("r_thigh") }
 	session.skirtRefs = refs
+	session.skirtRefsCount = count   -- 记下这份下标属于哪个节点数（变了就作废，见函数头注释）
 	return refs
 end
 
@@ -3155,7 +3169,19 @@ local function skirt_apply(S_, runtime)
 	local pushed, total, weighted = 0, 0, 0
 	local motionNow = 0
 	for _, session in ipairs(runtime.sessions or {}) do
-		if session.unit ~= nil then
+		-- ⚠️ **先判活，再碰 unit。** 这里的每一处引擎调用（`num_scene_graph_items` /
+		-- `world_position`）都是**原生 AV 的来源**：unit 被销毁后再读它，进程直接死，
+		-- 而且 `pcall` 拦不住（本文件 §"必须先过 unit_alive" 早就写过同一条，
+		-- 转储形态就是 `0xc0000005 / 参数 0x0 0x0`）。
+		--
+		-- 为什么裙摆这条路特别容易踩到（2026-11-12 军械库/债券页崩溃）：开页面时引擎会
+		-- **连续创建/销毁**一大堆展示用的护甲件，而裙摆是**每帧遍历所有会话**的、并且在
+		-- `drive` 的最末尾跑（pruneSessions 之后）——一帧之内被销毁的件就落在这条路上。
+		local alive = session.unit ~= nil
+			and session.dead == nil
+			and type(Compat.unit_alive) == "function"
+			and Compat.unit_alive(S_, session.unit) == true
+		if alive then
 			-- 会话级准备：① 骨盆速度 → 运动斜坡；② "正后方"轴（世界坐标）。
 			local refs = skirt_refs(S_, session)
 			if refs ~= nil then
