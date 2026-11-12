@@ -96,7 +96,9 @@ end
 -- 2026-11-12 实机：我为了探"身份判据"，在默认路径上成组调了
 -- Unit.bones / scene_graph_parent / scene_graph_link / is_a / is_child，
 -- 进舰船几秒后游戏崩了（0xc0000005，参数 0x0 0x0）。`pcall` 拦不住原生 AV。
--- 所以这些调用只允许待在 `probe_identity_api` 里（且那函数由调参开关 probeIdentity 控制）。
+-- 所以这些调用只允许待在**显式开关控制、默认关闭**的探针函数里：
+--   · `probe_identity_api`（开关 `probeIdentity`）
+--   · `probe_identity_link`（开关 `probeIdentityLink`，默认关）
 local function count_plain(text, needle)
 	local count, at = 0, 1
 	while true do
@@ -109,16 +111,27 @@ end
 
 local PROBE_APIS = { "Unit.bones(", "Unit.scene_graph_parent(", "Unit.scene_graph_link(",
 	"Unit.is_child(", "Unit.is_a(" }
-local probeBody = body_of("probe_identity_api")
-check("找得到 probe_identity_api（危险 API 的唯一容身处）", probeBody ~= nil)
-local probeStripped = probeBody ~= nil and strip_comments(probeBody) or ""
+local PROBE_HOMES = { "probe_identity_api", "probe_identity_link" }
+local homeBodies = {}
+for _, name in ipairs(PROBE_HOMES) do
+	local body = body_of(name)
+	check("找得到 " .. name .. "（危险 API 的合法容身处）", body ~= nil)
+	homeBodies[name] = body ~= nil and strip_comments(body) or ""
+end
 local wholeStripped = strip_comments(source)
 for _, api in ipairs(PROBE_APIS) do
 	local total = count_plain(wholeStripped, api)
-	local inside = count_plain(probeStripped, api)
+	local inside = 0
+	for _, name in ipairs(PROBE_HOMES) do
+		inside = inside + count_plain(homeBodies[name], api)
+	end
 	check(string.format("%s 只在探针里（%d/%d）", api, inside, total), total == inside)
 end
-check("探针默认关闭（有 probeIdentity 开关）", wholeStripped:find("probeIdentity", 1, true) ~= nil)
+check("两组探针都有开关（probeIdentity / probeIdentityLink）",
+	wholeStripped:find("probeIdentity", 1, true) ~= nil
+		and wholeStripped:find("probeIdentityLink", 1, true) ~= nil)
+check("身份链探针默认关闭（只在开关非 0 时才调）",
+	wholeStripped:find("identSwitch ~= nil and identSwitch ~= 0", 1, true) ~= nil)
 
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)

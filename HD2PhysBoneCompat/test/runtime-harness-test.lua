@@ -1754,6 +1754,174 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T24 判活不许 deref 句柄：unit 已从活体列表消失时，一次都不许碰它")
+--
+-- 2026-11-12 债券页快切的现场：句柄被销毁之后，**任何**引擎调用（包括 `Unit.alive`）
+-- 都是原生 AV（转储 0x3e564b / 参数 0x0 0x0），pcall 拦不住。
+-- 所以判据不能是"问它还在不在"，只能是"**它还在不在引擎的活体列表里**"（纯指针比较）。
+--
+-- 这条用例故意让 `Unit.alive` **说谎**（仍返回 true），但把 unit 从
+-- `World.units()` 的返回里摘掉 —— 真实情形就是"引擎已经释放了它，而我们的句柄仍指向那块内存"。
+-- 旧实现会继续驱动它（= 实机崩溃），新实现必须先按指针判死。
+do
+	rawset(_G, "render", function() end)
+
+	local av24 = newUnit("t24avatar", AVATAR_NODES, true, "#ID[t24avatar]")
+	do
+		local mgName = SUPPORT_MG
+		av24.ids[mgName] = true
+		av24.nodeOf[mgName] = 5
+	end
+	engine.pos[av24] = { 0, 0, 0 }
+
+	local vanished = newUnit("t24gone", 171, false, "#ID[t24gone]")
+	dress(vanished)
+	engine.pos[vanished] = { 0.2, 0, 0 }
+	local kept24 = newUnit("t24kept", 200, false, "#ID[t24kept]")
+	dress(kept24)
+	engine.pos[kept24] = { 0.3, 0, 0 }
+
+	avatar = av24
+	armors = { vanished, kept24 }
+
+	local logPath24 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t24gone.txt"
+	os.remove(logPath24)
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath24,
+		settleFrames = 2, snapshot = false, tunePath = "nonexistent-hd2pbx-tune.txt",
+		pollFrames = 2, validateFrames = 0, maxArmorDistance = 10.0,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 60 do engine.time = engine.time + 1 / 120; probeRender() end
+	check("T24 两件都挂上了（否则没东西可消失）",
+		runtime.sessions ~= nil and #runtime.sessions == 2,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+
+	-- 关键一步：把它从活体列表里摘掉，但**不**改 `engine.alive`（模拟引擎已释放、句柄仍指向旧内存）。
+	armors = { kept24 }
+	local before = {}
+	for kind, count in pairs(engine.hits[vanished] or {}) do before[kind] = count end
+	for _ = 1, 5 do engine.time = engine.time + 1 / 120; probeRender() end
+	local after = engine.hits[vanished] or {}
+	local touched = {}
+	for _, kind in ipairs({ "nodes", "world", "pose", "write", "has", "node" }) do
+		local delta = (after[kind] or 0) - (before[kind] or 0)
+		if delta > 0 then touched[#touched + 1] = kind .. "+" .. delta end
+	end
+	check("T24 已消失的 unit 一次都没再被碰（Unit.alive 说谎也不上当）", #touched == 0,
+		table.concat(touched, " "))
+	check("T24 它的会话被丢弃", (runtime.sessions and #runtime.sessions or 0) <= 1,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions or 0)))
+
+	local text24 = ""
+	do
+		local handle = io.open(logPath24, "r")
+		if handle ~= nil then text24 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T24 日志里写明「指针判死」这一类", text24:find("活体列表", 1, true) ~= nil)
+
+	Runtime.uninstall()
+end
+
+-- ---------------------------------------------------------------------------
+print("T25 身份链探针：一次只跑一遍、先落盘再调用、崩了能续")
+--
+-- 背景：现在"这是玩家身上的护甲"是启发式（离谁近 + 会不会跟着动），于是军械库/债券页的
+-- 展台件也会被挂上 —— 既白算，又制造"页面快切时句柄被销毁"的崩溃燃料。
+-- 要做成结构判据，得先问引擎：这件护甲和 avatar 在场景图里有没有父子/链接关系。
+-- 这些 API **签名未知、且曾经在默认路径上把游戏打死**（Unit.bones/is_child/…，2026-11-12），
+-- 所以探针必须是：默认关、只读、结果只进日志、每一步**先落盘再调用**。
+do
+	rawset(_G, "render", function() end)
+
+	-- 给假引擎补上被探的三个 API（真机上它们是"未知签名"，这里只是让探针有东西可调）
+	local childCalls, idCalls = 0, 0
+	S.Unit.is_child = function(a, b)
+		childCalls = childCalls + 1
+		return a == b
+	end
+	S.Unit.scene_graph_parent = function(unit, node) return node + 1 end
+	S.Unit.id = function(unit) idCalls = idCalls + 1 return unit.tag end
+
+	local av25 = newUnit("t25avatar", AVATAR_NODES, true, "#ID[t25avatar]")
+	do
+		local mgName = SUPPORT_MG
+		av25.ids[mgName] = true
+		av25.nodeOf[mgName] = 5
+	end
+	engine.pos[av25] = { 0, 0, 0 }
+	local worn = newUnit("t25worn", 171, false, "#ID[t25worn]")
+	dress(worn)
+	engine.pos[worn] = { 0.2, 0, 0 }
+	avatar = av25
+	armors = { worn }
+
+	local tunePath25 = (os.getenv("TEMP") or ".") .. "\\physbone-t25-ident-tune.txt"
+	do
+		local handle = io.open(tunePath25, "w")
+		handle:write("probeIdentityLink = 1\n")
+		handle:close()
+	end
+	local probeState25 = (os.getenv("TEMP") or ".") .. "\\physbone-t25-ident-state.txt"
+	os.remove(probeState25)
+	local logPath25 = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t25ident.txt"
+	os.remove(logPath25)
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath25,
+		settleFrames = 2, snapshot = false, tunePath = tunePath25,
+		pollFrames = 2, validateFrames = 0, maxArmorDistance = 10.0,
+		identProbePath = probeState25,
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 30 do engine.time = engine.time + 1 / 120; probeRender() end
+
+	local text25 = ""
+	do
+		local handle = io.open(logPath25, "r")
+		if handle ~= nil then text25 = handle:read("*a") or ""; handle:close() end
+	end
+	check("T25 探针跑起来了（#1 对照项落盘）", text25:find("[身份链] #1 开始", 1, true) ~= nil)
+	check("T25 七项都跑完", text25:find("全部 7 项跑完", 1, true) ~= nil)
+	check("T25 真的调到了 is_child", childCalls > 0, tostring(childCalls))
+	check("T25 每一项都有结果行", select(2, text25:gsub("⇒ ", "")) >= 7,
+		tostring(select(2, text25:gsub("⇒ ", ""))))
+
+	local stateText = ""
+	do
+		local handle = io.open(probeState25, "r")
+		if handle ~= nil then stateText = handle:read("*a") or ""; handle:close() end
+	end
+	check("T25 断点文件写成 next = 8", stateText:find("next = 8", 1, true) ~= nil, stateText)
+
+	-- 再装一次（同一个断点文件）：应当直接判定"全部跑完"，不重复调用引擎 API。
+	local callsBefore = childCalls
+	Runtime.uninstall()
+	local logPath25b = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t25ident_b.txt"
+	os.remove(logPath25b)
+	local runtimeB = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = logPath25b,
+		settleFrames = 2, snapshot = false, tunePath = tunePath25,
+		pollFrames = 2, validateFrames = 0, maxArmorDistance = 10.0,
+		identProbePath = probeState25,
+	})
+	local probeRenderB = rawget(_G, "render")
+	for _ = 1, 30 do engine.time = engine.time + 1 / 120; probeRenderB() end
+	check("T25 已经跑完就不再重复调引擎 API", childCalls == callsBefore,
+		string.format("%d → %d", callsBefore, childCalls))
+
+	pcall(os.remove, tunePath25)
+	pcall(os.remove, probeState25)
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")

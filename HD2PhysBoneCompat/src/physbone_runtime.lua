@@ -78,7 +78,14 @@ local M = {}
 --           转储形态 `0xc0000005 / 参数 0x0 0x0`，pcall 拦不住）。
 --        ② `skirt_refs` 缓存的是**节点下标**：unit 被重建后下标会指向别的节点甚至越界。
 --           现在每帧比一次节点数，变了就重算（`session_health` 每 30 帧才比一次，中间是盲窗）。
-M.VERSION = "2.1.40"
+-- 2.1.41：判活改成**不 deref 句柄**的指针成员检查（2026-11-12 债券页快切必崩）。
+--        现场：慢切不崩、快切必崩；`skirt = 0` 与 2.1.40 都无效 ⇒ 枪口不在裙摆，
+--        而在 `pruneSessions → Unit.alive`：句柄被销毁之后，**任何**引擎调用（含 alive）
+--        都是原生 AV（转储 `0x3e564b`、参数 `0x0 0x0`），pcall 拦不住。
+--        现在每帧先问 `World.units(world)` 要"活体列表"，只在 Lua 里按指针比：
+--        不在列表里 ⇒ 判死、整组丢弃，一个 Unit API 都不调；世界本身没了（`Application.worlds()`
+--        里找不到我们那个 world）⇒ 整组丢弃且不碰句柄。
+M.VERSION = "2.1.41"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -783,6 +790,108 @@ local function probe_identity_api(runtime, S_, candidate, owner)
 	logger("[physbone][识别API] 全部 %d 项跑完", #steps)
 end
 
+--- 身份链探针：**这件护甲 unit 与玩家 avatar 在场景图里有没有结构关系**。
+---
+--- 为什么值得单独探（用户 2026-11-12 定的方向）：现在的"这是玩家身上的护甲"是**启发式**
+--- （离哪个 avatar 最近 + 会不会跟着动）。于是军械库/债券页里那些**展示用**的 unit 也会被挂上，
+--- 既白算物理，又制造了"页面快切时句柄被销毁"的崩溃燃料。
+--- 如果引擎能直接回答"这个 unit 是那个 avatar 的子/被链接者"，身份就从猜测变成**结构事实**：
+--- 展台、预览件、尸体都会被自然排除。
+---
+--- 只读、默认关、崩了能续：调参文件写 `probeIdentityLink = 0` 关闭（默认），
+--- 写 `1` 或具体步号表示从该步开始。每一步**先落盘再调用** —— 崩在下一行时，
+--- 下次启动就知道是哪个 API 干的（`%LOCALAPPDATA%\hd2pbx_ident_probe.txt`）。
+--- ⚠️ 用独立文件，不要和 `hd2pbx_probe.txt` 混用（那个已经被另一个一致性电池占用）。
+local IDENT_PROBE_FILE = "hd2pbx_ident_probe.txt"
+
+local function ident_probe_state_path(runtime)
+	-- 允许 options 覆盖（测试用；产品里永远走 LOCALAPPDATA）
+	local override = runtime ~= nil and runtime.options ~= nil and runtime.options.identProbePath or nil
+	if type(override) == "string" and #override > 0 then return override end
+	local base = os.getenv("LOCALAPPDATA")
+	if type(base) ~= "string" or #base == 0 then return nil end
+	return base .. "\\" .. IDENT_PROBE_FILE
+end
+
+local function ident_probe_read_next(runtime)
+	local path = ident_probe_state_path(runtime)
+	if path == nil then return 1 end
+	local ok, handle = pcall(io.open, path, "r")
+	if not ok or handle == nil then return 1 end
+	local text = handle:read("*a")
+	handle:close()
+	local value = tonumber(type(text) == "string" and text:match("next%s*=%s*(%d+)") or nil)
+	return value or 1
+end
+
+local function ident_probe_write_next(runtime, value)
+	local path = ident_probe_state_path(runtime)
+	if path == nil then return end
+	local ok, handle = pcall(io.open, path, "w")
+	if not ok or handle == nil then return end
+	pcall(handle.write, handle, string.format("next = %d\n", value))
+	pcall(handle.close, handle)
+end
+
+--- 跑一轮身份链探针。只在"已经有会话"时调用（那时我们手上正好有一件**穿着的**护甲 + 它的 owner）。
+local function probe_identity_link(runtime, S_)
+	if runtime.identProbeDone then return end
+	local session = runtime.sessions ~= nil and runtime.sessions[1] or nil
+	if session == nil or session.unit == nil or session.owner == nil then return end
+	runtime.identProbeDone = true
+
+	local logger = runtime.logger
+	local unit, owner = session.unit, session.owner
+	local steps = {
+		{ "debug_name(护甲)（对照，已知可用）", function() return S_.Unit.debug_name(unit) end },
+		{ "is_child(护甲, avatar)", function() return S_.Unit.is_child(unit, owner) end },
+		{ "is_child(avatar, 护甲)", function() return S_.Unit.is_child(owner, unit) end },
+		{ "scene_graph_parent(护甲, 1)", function() return S_.Unit.scene_graph_parent(unit, 1) end },
+		{ "scene_graph_parent(avatar, 1)", function() return S_.Unit.scene_graph_parent(owner, 1) end },
+		{ "id(护甲)", function() return S_.Unit.id(unit) end },
+		{ "id(avatar)", function() return S_.Unit.id(owner) end },
+	}
+
+	local function repr(value)
+		local kind = type(value)
+		if value == nil then return "nil" end
+		if kind == "boolean" or kind == "number" or kind == "string" then
+			return tostring(value):sub(1, 60)
+		end
+		if kind == "userdata" or kind == "table" then
+			local okName, name = pcall(function() return S_.Unit.debug_name(value) end)
+			if okName and name ~= nil then return tostring(name):sub(1, 60) end
+		end
+		return kind
+	end
+
+	local forced = tune_values(runtime).probeIdentityLink
+	local startAt = ident_probe_read_next(runtime)
+	-- 语义：`= 1` 只是"打开"，**从断点文件续**；`>= 2` 才表示"强制从第 N 步开始"。
+	-- （写成"1 也强制从第 1 步"会让每次启动都重跑一遍已经验过的步骤，白白多崩几次。）
+	if type(forced) == "number" and forced >= 2 then startAt = math.floor(forced) end
+	if startAt > #steps then
+		logger("[physbone][身份链] 全部跑完（%d 项），不再探", #steps)
+		return
+	end
+	logger("[physbone][身份链] 共 %d 项，从 #%d 开始（护甲 %s / avatar %s）",
+		#steps, startAt, tostring(session.unitTag or "?"), tostring(session.ownerTag or "?"))
+	for index = startAt, #steps do
+		local step = steps[index]
+		ident_probe_write_next(runtime, index + 1)      -- 先落盘：崩在下一行也能续
+		logger("[physbone][身份链] #%d 开始 %s", index, step[1])
+		local ok, value = pcall(step[2])
+		if not ok then
+			local text = tostring(value):gsub("^.*:%d+: ", "")
+			logger("[physbone][身份链] #%d ⇒ 抛错(%s)", index, text:sub(1, 70))
+		else
+			logger("[physbone][身份链] #%d ⇒ %s %s", index, type(value), repr(value))
+		end
+	end
+	ident_probe_write_next(runtime, #steps + 1)
+	logger("[physbone][身份链] 全部 %d 项跑完", #steps)
+end
+
 --- 一次性"候选普查 + has_node / node 交叉验证"（**只在异常态触发**）。
 local function dump_census(runtime, S_, nearCandidates, farCount, carriers)
 	local firstTag = nearCandidates[1] ~= nil and unit_tag(S_, nearCandidates[1].unit) or "?"
@@ -1418,31 +1527,85 @@ local function tryAttach(runtime)
 	return true
 end
 
+--- 用**指针相等**判断"会话的 unit 还在不在"，全程**不 deref 句柄**。
+---
+--- 为什么必须这样（2026-11-12 债券页快切必崩，转储 `0x3e564b` / 参数 `0x0 0x0`）：
+--- 句柄被销毁之后，**任何**引擎调用都会 deref 那块已经还回去的内存 —— `Unit.alive` 也一样，
+--- 而 `pcall` 拦不住原生 AV。过去的写法是"每帧对每个会话问一次 `Unit.alive`"，
+--- 于是"引擎刚刚销毁这批 unit"的那一帧就是必死：慢速切页还能被"加载空档"那道闸（整组丢弃、
+--- 一条都不查）救下来，快速切页没有空档，直接踩中。
+---
+--- 这里的判据换了方向：**问引擎要"当前活体列表"，然后在 Lua 里按指针比**。
+--- `World.units(world)` 返回的是引擎自己现存的对象，拿它做**相等比较**不 deref 任何东西。
+---@return string "ok"（拿到可信列表，`runtime.liveUnits` 有效）| "world-gone"（我们那个世界没了）
+---          | "unavailable"（引擎没这两个 API ⇒ 不据此判死，退回旧行为）
+local function refresh_live_units(runtime, S_)
+	local worlds = try(S_.Application.worlds)
+	if type(worlds) ~= "table" or #worlds == 0 then return "unavailable" end
+	local found = false
+	for index = 1, #worlds do
+		if worlds[index] == runtime.world then found = true break end
+	end
+	if not found then return "world-gone" end
+	local units = try(S_.World.units, runtime.world)
+	if type(units) ~= "table" then
+		runtime.liveUnits = nil
+		return "unavailable"
+	end
+	runtime.liveUnits = units
+	runtime.liveUnitCount = #units
+	return "ok"
+end
+
+--- 会话的 unit 是否仍在活体列表里（**只做指针比较**）。
+--- `runtime.liveUnits == nil` 表示"没有可信列表"⇒ 不据此判死（保持旧行为）。
+local function session_unit_live(runtime, unit)
+	local units = runtime.liveUnits
+	if units == nil then return true end
+	for index = 1, #units do
+		if units[index] == unit then return true end
+	end
+	return false
+end
+
 --- 丢掉失效会话。任何一个失效都意味着场景变了 ⇒ 必须重扫（不能"还剩几个就继续开"）。
 --- 返回丢弃总数；dead / rebuilt 分开计数并各自落日志。
 local function pruneSessions(runtime)
-	local kept, dead, rebuilt = {}, 0, 0
+	local kept, dead, rebuilt, gone = {}, 0, 0, 0
 	for _, session in ipairs(runtime.sessions or {}) do
-		local health = Compat.session_health(session, runtime.frame)
-		if health == "ok" then
-			kept[#kept + 1] = session
+		-- **先做"不碰句柄"的成员检查**：不在当前活体列表里 ⇒ 直接判死，
+		-- 连 `Unit.alive` 都不调（那个调用本身就是 deref，见 refresh_live_units 的注释）。
+		if session.unit ~= nil and not session_unit_live(runtime, session.unit) then
+			session.dead = "gone"
+			gone = gone + 1
 		else
-			session.dead = health
-			if health == "rebuilt" then rebuilt = rebuilt + 1 else dead = dead + 1 end
-			-- `unitTag` 是**挂载时**记下的实例名：unit 已经死了，现在再读 debug_name 就是 AV。
-			-- 这条名字是 P0.5 判"换实例（军械库 churn）还是同实例被销毁"的唯一依据。
-			runtime.logger("[physbone][LIFECYCLE] 会话失效（%s）：unit=%s 存活 %d 帧 链=%d%s",
-				health, tostring(session.unitTag or "?"),
-				runtime.frame - (session.attachFrame or runtime.frame),
-				#(session.sessions or {}),
-				session.deadReason ~= nil and (" 判死原因=" .. session.deadReason) or "")
+			local health = Compat.session_health(session, runtime.frame)
+			if health == "ok" then
+				kept[#kept + 1] = session
+			else
+				session.dead = health
+				if health == "rebuilt" then rebuilt = rebuilt + 1 else dead = dead + 1 end
+				-- `unitTag` 是**挂载时**记下的实例名：unit 已经死了，现在再读 debug_name 就是 AV。
+				-- 这条名字是 P0.5 判"换实例（军械库 churn）还是同实例被销毁"的唯一依据。
+				runtime.logger("[physbone][LIFECYCLE] 会话失效（%s）：unit=%s 存活 %d 帧 链=%d%s",
+					health, tostring(session.unitTag or "?"),
+					runtime.frame - (session.attachFrame or runtime.frame),
+					#(session.sessions or {}),
+					session.deadReason ~= nil and (" 判死原因=" .. session.deadReason) or "")
+			end
 		end
 	end
 	runtime.sessions = kept
-	local dropped = dead + rebuilt
+	if gone > 0 then
+		-- 这一类是"指针已经不在活体列表里"——它**没有**调过任何引擎 API，所以值得单独计数：
+		-- 这个数字涨得越快，说明场景 churn 越猛（军械库/债券页快切就是这个形状）。
+		runtime.logger("[physbone][LIFECYCLE] %d 个会话的 unit 已不在活体列表里（指针判死，未调用任何 Unit API）",
+			gone)
+	end
+	local dropped = dead + rebuilt + gone
 	if dropped > 0 then
-		runtime.logger("[physbone] 丢弃 %d 个已销毁 / %d 个已重建，剩 %d 个会话",
-			dead, rebuilt, #kept)
+		runtime.logger("[physbone] 丢弃 %d 个已销毁 / %d 个已重建 / %d 个指针判死，剩 %d 个会话",
+			dead, rebuilt, gone, #kept)
 		-- **死亡之后先停写一小段，等场景拆解落定。**
 		-- 场景拆解是**连续**发生的：一批 unit 死掉之后，同一场景里其余 unit 往往在接下来几帧
 		-- 继续被引擎释放。此时若继续驱动"刚才还活着"的会话，就会把骨写到已释放的对象上——
@@ -3421,6 +3584,30 @@ local function drive(runtime)
 	Compat.begin_frame(frame)
 	local driveClock = os.clock()   -- 这一拍驱动块占用的 CPU 时间（心跳里报出来）
 
+	-- ---------- 会话生命周期：**先"不碰句柄"地判死** ----------
+	-- 必须在 `Compat.update` / `pruneSessions` / 裙摆之前做：它们每个人都要 deref `session.unit`。
+	-- 判据见 `refresh_live_units` 的注释（指针比较，不调用任何 Unit API）。
+	if runtime.sessions ~= nil and #runtime.sessions > 0 then
+		local live = refresh_live_units(runtime, S)
+		if live == "world-gone" then
+			-- 我们那个世界已经不在了：整组丢弃，一个句柄都不碰（下一帧重扫）。
+			logger("[physbone][LIFECYCLE] 世界已不在 ⇒ 整组丢弃 %d 个会话（不查存活、不碰句柄）",
+				#runtime.sessions)
+			runtime.sessions = nil
+			runtime.liveUnits = nil
+			runtime.reArm = 1
+			runtime.rearmAt = frame + 1
+		end
+	end
+
+	-- 身份链探针（**默认关**，调参文件写 `probeIdentityLink = 1` 打开）。
+	-- 只读、一次性、崩了能续；结果只写日志，绝不参与任何判定。
+	local identSwitch = tune_values(runtime).probeIdentityLink
+	if identSwitch ~= nil and identSwitch ~= 0
+		and runtime.sessions ~= nil and #runtime.sessions > 0 then
+		pcall(probe_identity_link, runtime, S)
+	end
+
 	-- ---------- 手动重设通道：**必须放在所有 early return 之前** ----------
 	--
 	-- 2026-11-12 实机抓到（用户"按 F8 一点反应都没有"）：这一句原来在 `drive` 的**后半段**，
@@ -3989,6 +4176,7 @@ M.schedule_budget_ = schedule_budget
 M.key_edge_ = key_edge
 M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
+M.probe_identity_link_ = probe_identity_link
 
 return M
 

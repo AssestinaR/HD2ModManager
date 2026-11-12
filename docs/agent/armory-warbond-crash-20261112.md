@@ -108,3 +108,83 @@ patch_70 -> .runtime\lua\278c88b7…\…patch_0                 1,335,430 B （b
   `skirt = 0` → `discoverOnly = 1` → `writeOff = 1`，哪一档止住崩溃就锁定了路径。
 - 遗留盲区：**节点数不变但节点被换**（同样 171 → 171）时我们无法察觉，只能靠
   `has_node` 漂移"仅观察"那行日志。要彻底解决得有一个"unit 版本号"之类的判据。
+
+---
+
+## 8. 2.1.41：判活改成"不碰句柄"的指针成员检查
+
+### 8.1 用户补的关键现象（把机制钉死了）
+
+> 打开债券页后只要不动页面就不崩；慢慢等一会、再缓慢切换一个页面也不崩；
+> **超级快速切换页面则立刻崩溃**。而且展台上的角色在加载出来后 1~2 秒会被上物理。
+
+"慢切不崩"是因为页面切换往往伴随一次**较大的帧间隔** ⇒ 命中了"加载空档"那道闸
+（整组丢弃、一条存活都不查）。"快切必崩"没有空档 ⇒ 回到逐条查存活 ⇒
+`pruneSessions → session_health → Unit.alive` 就是**对已释放内存的一次 deref**
+（`0x3e564b` / 参数 `0x0 0x0`，和 11-11 是同一个签名）。`pcall` 拦不住原生 AV。
+
+### 8.2 改法
+
+`drive` 每帧先做**两件不 deref 句柄**的事：
+
+1. `Application.worlds()` → 我们缓存的 `runtime.world` 还在不在（**指针相等**）。不在 ⇒ 整组丢弃；
+2. `World.units(runtime.world)` → 拿到引擎**当前**的 unit 数组；每个会话按**指针**查成员。
+   不在列表里 ⇒ 判死（日志记 `指针判死`），**一个 Unit API 都不调**。
+
+只有"在列表里"的会话才允许继续走 `session_health` / 写骨 / 裙摆。
+
+代价：每帧一次 `World.units()` + 会话数 × 数组长度的指针比较（≈10 × 2000，无分配），
+比原来"每会话每帧一次 `Unit.alive`"更便宜也更安全。
+
+### 8.3 测试（T24，有咬合力已验证）
+
+把 unit 从 `World.units()` 的返回里摘掉、**但让 `Unit.alive` 仍然返回 true**（模拟"引擎已释放、
+句柄仍指向旧内存"）。断言：它的骨头一次都没再被碰、会话被丢弃、日志出现"指针判死"。
+把成员判死去掉后实测变红（`nodes+1 world+10 write+8 has+1`）—— 正是实机崩溃前的行为。
+
+---
+
+## 9. 用户定的方向：从引擎 API 拿"玩家身份"，而不只是修这一次
+
+> "我们有必要从游戏公开的 api 中想办法拿到任何与玩家有关的信息，尽量确保只能计算玩家的物理，
+> 否则我们这里可能修了，但以后还会有别的地方冒出来一个虚拟玩家造成性能浪费或严重的崩溃。"
+
+两根独立的柱子：
+
+| 柱子 | 问题 | 状态 |
+|---|---|---|
+| 生命周期 | 句柄失效后怎么不把自己炸死 | ✅ 2.1.41（§8） |
+| **身份** | 这个 unit 到底是不是玩家身上的护甲 | ⏳ 探针已就位，等实测数据 |
+
+API 现状（本机 09:22 的清单：Unit 119 / World 72 / Application 70）：
+
+- 已可用：`World.units_by_resource(world, avatar 资源)`（列出所有玩家）、`has_animation_state_machine`、
+  `World.num_units`、`Unit.debug_name`。
+- 已判死：`Unit.resource_name`（**崩溃**，笔记里标了禁止）、`World.unit_by_id`（一次 nil）、
+  `EntityManager → UnitComponent.instances`（nil）。
+- 待验（最有希望）：`Unit.is_child(A, B)` / `Unit.scene_graph_parent(unit, node)` —— 若它们能回答
+  "这件护甲是不是那个 avatar 的子/被链接者"，身份就从启发式变成**结构事实**。
+
+### 9.1 身份链探针（已落地，默认关）
+
+调参文件写 `probeIdentityLink = 1` 打开（`>= 2` 表示强制从第 N 步开始；写 0/删掉即关闭）。
+它**只在已经有会话时**跑一次，只读，结果只进日志；每一步**先落盘再调用**：
+
+```
+%LOCALAPPDATA%\hd2pbx_ident_probe.txt   ← next = N（崩了下次从这里续）
+%LOCALAPPDATA%\hd2physbone.log          ← [身份链] #N 开始 … / #N ⇒ 类型 值
+```
+
+七步：`debug_name`（对照）→ `is_child(护甲, avatar)` → `is_child(avatar, 护甲)` →
+`scene_graph_parent(护甲, 1)` → `scene_graph_parent(avatar, 1)` → `id(护甲)` → `id(avatar)`。
+
+⚠️ 这些 API 签名未知、且 2026-11-12 曾在默认路径上把游戏打死过，所以：
+默认关、独立开关、静态护栏（`skirt-guard-test` 要求它们只能出现在两个探针函数里）、
+独立断点文件（不要和 `hd2pbx_probe.txt` 混用 —— 那个已被另一个一致性电池占用）。
+
+### 9.2 判读与分支
+
+- `is_child(护甲, avatar) == true`（穿着的件）⇒ 把它作为 `tryAttach` 的硬判据：
+  只挂 avatar 的子件 ⇒ 展台/预览/尸体自然被排除，虚拟玩家消失。
+- 返回 false / 抛错 ⇒ 该 API 不成立，退回"同世界 + 最近 avatar + 跟随"，身份仍靠 `motion_follows`
+  逐步收敛；生命周期那根柱子保证"收敛之前也不会崩"。
