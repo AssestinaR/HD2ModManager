@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.36"
+M.VERSION = "2.1.37"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -1173,10 +1173,16 @@ local function tryAttach(runtime)
 					#followedTags > 0 and ("｜" .. table.concat(followedTags, " ")) or "")
 			end
 		end
-		-- 身份类 API 探针：默认关（曾崩过），且**自动推进 / 断点续测**（见函数上方）。
-		-- 放在"有超过一件同款模型"的场合跑，因为那正是"分不清哪个是玩家模型"的现场。
-		if matchedCount > 1 and plan[1] ~= nil and (tune_values(runtime).probeIdentity or 0) ~= 0 then
-			pcall(probe_identity_api, runtime, S, plan[1], plan[1].owner)
+		-- 身份类 API 探针：**成组执行 + 断点续测**，默认开启（调参文件写 `probeIdentity = 0` 可关）。
+		-- 2026-11-12 用户定调："有依据的崩溃是正常测试行为；低效率才是真正的坏事。"
+		-- 所以这里不让人去改一行跑一轮：一个进程把 11 个接口全跑，进度落盘，
+		-- 崩了下次自动从下一个继续 —— 最多崩几次就把答案收齐，且每次崩溃都自带名字。
+		-- 放在"同款模型命中多件"的现场跑，因为那正是"分不清哪个是玩家模型"的地方。
+		if matchedCount > 1 and plan[1] ~= nil then
+			local probeSwitch = tune_values(runtime).probeIdentity
+			if probeSwitch == nil or probeSwitch ~= 0 then
+				pcall(probe_identity_api, runtime, S, plan[1], plan[1].owner)
+			end
 		end
 	end
 	-- **游标必须每拍前进。** 这是"覆盖全部候选"的唯一保证（不依赖 unit 句柄是否跨帧同一）：
