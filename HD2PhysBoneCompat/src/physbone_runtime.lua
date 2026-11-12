@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.32"
+M.VERSION = "2.1.33"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -921,6 +921,7 @@ local function tryAttach(runtime)
 				unit = candidate.unit, rig = match.rig, path = match.path, mg = candidate.mg,
 				tag = unit_tag(S, candidate.unit),
 				owner = candidate.owner,
+				distance2 = candidate.distance,   -- 到它主人的距离平方（用于"只留最近的几件"）
 			}
 		end
 	end
@@ -928,6 +929,66 @@ local function tryAttach(runtime)
 	-- 不单独打行：逐拍打会把日志预算吃光、反而把驱动心跳挤掉（mp_harness 的 900 字节
 	-- 预算就是这么发现的）。耗时并进下面那一条"已挂载"行。
 	runtime.lastScoreMs = (os.clock() - scoreClock) * 1000
+
+	-- ---------- 每个玩家最多挂 K 件（**性能的主要闸门**） ----------
+	--
+	-- 实机（2026-11-12，2.1.32）：舰船的军械库里有二十来件**同资源、同骨名**的护甲实例
+	-- （人台 / 预览克隆 / 尸体），它们和玩家身上那套的 57 根骨**完全一样** ⇒ 全部"全命中"。
+	-- 于是玩家名下有 26 件、1014 条链，而"自己永不节流"⇒ 每帧 ~2000 次引擎调用（7~8 ms）。
+	-- 玩家真正需要的只有**离他最近的那几件**（第一版 1.5.14 时代是 2 件、约 1~2 ms）。
+	--
+	-- 为什么按距离而不是按别的：护甲挂在玩家骨架上，位置几乎与玩家重合（<0.5 m）；
+	-- 人台/预览固定在房间里，必然更远。这条判据不需要任何额外引擎能力。
+	local perOwner = options.maxMatchedPerOwner
+	if perOwner == nil then perOwner = 8 end
+	-- 距离闸（比件数闸更准）：玩家身上那套护甲挂在玩家骨架上，位置与玩家几乎重合；
+	-- 军械库里的人台/预览固定在房间里，必然更远。默认 1.0 m。
+	-- ⚠️ 万一某个模型的护甲离根骨更远，会出现"一件都不挂" —— 所以下面留了兜底：
+	--   每个玩家**至少留最近的那一件**，永远不会因为这条闸门变成零。
+	local attachMax = options.attachMaxDistance
+	if attachMax == nil then attachMax = 1.0 end
+	local attachMax2 = attachMax > 0 and (attachMax * attachMax) or nil
+	if perOwner > 0 and #plan > 1 then
+		-- 先按距离升序（读不到的排最后），这样"前 K 件"就是"最近的 K 件"
+		table.sort(plan, function(a, b)
+			local da = a.distance2 or math.huge
+			local db = b.distance2 or math.huge
+			if da ~= db then return da < db end
+			return tostring(a.tag) < tostring(b.tag)
+		end)
+		local keptByOwner, trimmed, dropped, droppedDist, keptDist = {}, {}, 0, 0, 0
+		for _, entry in ipairs(plan) do
+			local key = entry.owner ~= nil and entry.owner.unit or nil
+			local count = key ~= nil and (keptByOwner[key] or 0) or 0
+			local nearEnough = attachMax2 == nil or entry.distance2 == nil or entry.distance2 <= attachMax2
+			-- 兜底：这个玩家还一件都没留下时，无论多远都先留一件（否则会"一件都不挂"）。
+			if key ~= nil and count == 0 then nearEnough = true end
+			if (key == nil or (count < perOwner and nearEnough)) then
+				if key ~= nil then keptByOwner[key] = count + 1 end
+				trimmed[#trimmed + 1] = entry
+				if entry.distance2 ~= nil and entry.distance2 > keptDist then keptDist = entry.distance2 end
+			else
+				dropped = dropped + 1
+				-- 记"被丢掉里最近的"（不是最远的）：它才说明分界在哪
+				if entry.distance2 ~= nil and (droppedDist == 0 or entry.distance2 < droppedDist) then
+					droppedDist = entry.distance2
+				end
+			end
+		end
+		if dropped > 0 then
+			plan = trimmed
+			-- 只打一次（每个进程）：玩家看到"物理正常但不该那么贵"时，这行能立刻解释原因。
+			-- 同时把两边的最远/最近距离都报出来 —— 这两个数能直接告诉我们
+			-- "玩家身上那套" 与 "人台/预览" 之间有没有干净的距离分界（下一版可据此收紧阈值）。
+			if runtime.perOwnerLogged ~= true then
+				runtime.perOwnerLogged = true
+				runtime.logger("[physbone][去重] 有玩家命中 %d 件同款护甲 ⇒ 只挂最近 %d 件（留:≤%s m，丢:≥%s m）",
+					perOwner + dropped, perOwner,
+					keptDist > 0 and string.format("%.2f", math.sqrt(keptDist)) or "?",
+					droppedDist > 0 and string.format("%.2f", math.sqrt(droppedDist)) or "?")
+			end
+		end
+	end
 	-- **游标必须每拍前进。** 这是"覆盖全部候选"的唯一保证（不依赖 unit 句柄是否跨帧同一）：
 	-- 前进量 = 这一拍实际处理的件数（至少 1），于是 n 件候选在 ceil(n/额度) 拍内被覆盖一遍。
 	if candidateCount > 0 then
@@ -3321,16 +3382,31 @@ local function drive(runtime)
 		end
 	end
 	local nearStride, farStride = schedule_budget(primaryChains, nearChains, farChains, budget)
-	if nearStride ~= runtime.nearStride or farStride ~= runtime.farStride then
-		runtime.nearStride, runtime.farStride = nearStride, farStride
-		logger("[physbone][预算] 自己 %d 链/帧 · %.0f m 内队友 %d 链（每 %d 帧）· 远处 %d 链（每 %d 帧）· 每帧预算 %d",
-			primaryChains, nearMetres, nearChains, nearStride, farChains, farStride, budget)
+	-- 自己也要有上限（2026-11-12 实机，2.1.32）：原来"自己的件永不节流"是硬设计，
+	-- 可一旦自己名下挂了 26 件 / 1014 条链（军械库里全是同款护甲实例），
+	-- 每帧 ~2000 次引擎调用 = 7~8 ms，用户的 5 ms 线当场破掉。
+	-- 现在的规则：**自己的优先级仍然最高**（步长最小），但总链数超过预算时自己也按比例分帧，
+	-- 保证"每帧驱动的链数 ≤ budget"这条硬上界。只有 1~3 件时步长恒为 1，行为与旧版一致。
+	local primaryStride = 1
+	if primaryChains > budget and primaryChains > 0 then
+		primaryStride = math.min(16, math.ceil(primaryChains / budget))
+	end
+	-- 只在"真的发生节流"时打这一行：全都不节流（步长都是 1）时，这行只是噪音
+	-- （mp_harness 的 900 字节预算用例就是被它挤掉心跳的）。
+	-- 但 runtime.* 上的值**每拍都更新**：驱动心跳里的"分帧="要显示当前真实步长。
+	local throttled = (nearStride > 1) or (farStride > 1) or (primaryStride > 1)
+	local changed = (nearStride ~= runtime.nearStride) or (farStride ~= runtime.farStride)
+		or (primaryStride ~= runtime.primaryStride)
+	runtime.nearStride, runtime.farStride = nearStride, farStride
+	runtime.primaryStride = primaryStride
+	if throttled and changed then
+		logger("[physbone][预算] 自己 %d 链/帧（每 %d 帧）· %.0f m 内队友 %d 链（每 %d 帧）· 远处 %d 链（每 %d 帧）· 每帧预算 %d",
+			primaryChains, primaryStride, nearMetres, nearChains, nearStride, farChains, farStride, budget)
 	end
 	if primaryChains > budget and runtime.budgetOverLogged ~= true then
 		runtime.budgetOverLogged = true
-		logger("[physbone][预算] 自己身上 %d 链已超过每帧预算 %d：**不会**降低自己的采样率，"
-			.. "队友会被压到最大节流（这是设计选择：自己的观感优先）",
-			primaryChains, budget)
+		logger("[physbone][预算] 自己身上 %d 链已超过每帧预算 %d ⇒ 自己也按每 %d 帧分帧（每帧仍 ≤ 预算）",
+			primaryChains, budget, primaryStride)
 	end
 
 	local written, skippedSame, engineCalls, staticChains = 0, 0, 0, 0
@@ -3351,6 +3427,9 @@ local function drive(runtime)
 			-- 用**会话下标**错峰，而不是玩家序号：同一个玩家的若干护甲件如果同帧，
 			-- 每 stride 帧就会出现一次成本尖峰（帧时间抖动比平均成本更影响手感）。
 			if stride > 1 and ((frame + index) % stride) ~= 0 then due = false end
+		elseif primaryStride > 1 and ((frame + index) % primaryStride) ~= 0 then
+			-- 自己的件多到超预算时同样按比例分帧（见上面 primaryStride 的说明）。
+			due = false
 		end
 		-- 拆解窗口：任何会话死亡后的一小段里不写骨（理由见 pruneSessions 里那段注释）。
 		-- 仍然走"没轮到"的同一条路，所以 pendingDt 照常累积、物理速度不变。
