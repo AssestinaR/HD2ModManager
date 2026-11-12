@@ -85,7 +85,7 @@ local M = {}
 --        现在每帧先问 `World.units(world)` 要"活体列表"，只在 Lua 里按指针比：
 --        不在列表里 ⇒ 判死、整组丢弃，一个 Unit API 都不调；世界本身没了（`Application.worlds()`
 --        里找不到我们那个 world）⇒ 整组丢弃且不碰句柄。
-M.VERSION = "2.1.41"
+M.VERSION = "2.1.42"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -986,6 +986,46 @@ end
 --- 短暂失去物理（而且会把会话挂到错误的玩家身上）。
 ---
 --- 返回 true 表示这一趟真的跑完了（不论有没有新挂上的），false 表示还在等场景稳定。
+--- 相位标记（诊断）：调参文件 `phaseLog = 1` 打开。
+--- 只在排查崩溃时开 —— 打开后每帧会多出十来行（attach/写骨/裙摆各一段）。
+--- 用途：崩了之后看最后一条 `[相位]` 就知道死在**哪个阶段**，不用猜。
+local function phase(runtime, name)
+	if (tune_values(runtime).phaseLog or 0) == 0 then return end
+	runtime.logger("[physbone][相位] %s", name)
+end
+
+--- 取某个 bone 名的世界坐标（读不到返回 nil，绝不抛）。
+local function ident_node_pos(S_, unit, name)
+	if S_.Unit == nil or unit == nil then return nil end
+	local okHas, has = pcall(S_.Unit.has_node, unit, name)
+	if not okHas or has ~= true then return nil end
+	local okNode, node = pcall(function() return S_.Unit.node(unit, name) end)
+	if not okNode or type(node) ~= "number" or node < 1 then return nil end
+	local ok, x, y, z = pcall(function()
+		return S_.Vector3.to_elements(S_.Unit.world_position(unit, node))
+	end)
+	if ok and type(x) == "number" then return x, y, z end
+	return nil
+end
+
+--- 身份位置诊断（`identLog = 1`）：护甲 hips 与主人 hips 的世界坐标差（米）。
+--- 依据：真正**穿在身上**的护甲，hips 与 avatar 的 hips 几乎同点（同一副骨架、被骨架驱动）；
+--- 展台件站在台子上，哪怕离你很近，hips 也会差出几十厘米到几米。
+--- 只写日志，不参与任何判定。
+local function ident_log_positions(runtime, S_, entry, session)
+	local ux, uy, uz = ident_node_pos(S_, entry.unit, "hips")
+	local ox, oy, oz = ident_node_pos(S_, entry.owner.unit, "hips")
+	if ux == nil or ox == nil then
+		runtime.logger("[physbone][识别·位置] unit=%s 读不到 hips（护甲=%s 主人=%s）",
+			tostring(entry.tag), tostring(ux ~= nil), tostring(ox ~= nil))
+		return
+	end
+	local dx, dy, dz = ux - ox, uy - oy, uz - oz
+	local metres = math.sqrt(dx * dx + dy * dy + dz * dz)
+	runtime.logger("[physbone][识别·位置] unit=%s 链=%d hipsΔ=%.3f m（护甲 %.2f,%.2f,%.2f / 主人 %.2f,%.2f,%.2f）",
+		tostring(entry.tag), #(session.sessions or {}), metres, ux, uy, uz, ox, oy, oz)
+end
+
 local function tryAttach(runtime)
 	local options, cache = runtime.options, runtime.cache
 	local frame = runtime.frame
@@ -1424,7 +1464,9 @@ local function tryAttach(runtime)
 		if attachedUnits[entry.unit] then
 			already = already + 1
 		elseif Compat.unit_alive(S, entry.unit) then
+			phase(runtime, "attach 前 " .. tostring(entry.tag))
 			local session = Compat.attach(S, entry.unit, entry.rig, attachOptions)
+			phase(runtime, "attach 后 " .. tostring(entry.tag))
 			session.rigSource = entry.path
 			session.unitTag = entry.tag
 			session.attachFrame = frame
@@ -1435,6 +1477,13 @@ local function tryAttach(runtime)
 				entry.owner.tag = entry.owner.tag or unit_tag(S, entry.owner.unit)
 			end
 			session.ownerTag = entry.owner ~= nil and entry.owner.tag or nil
+			-- 身份诊断（`identLog = 1`）：把"这件护甲的 hips 离它主人的 hips 有多远"打出来。
+			-- 依据：真正**穿在身上**的护甲，其 hips 骨和 avatar 的 hips 骨几乎是同一个点（同一副骨架）；
+			-- 而军械库/债券页的**展台件**站在台子上，哪怕离你很近，hips 也会差出几十厘米到几米。
+			-- 这条比"离谁最近"锐利得多，而且用的全是我们已经在读的世界坐标。
+			if (tune_values(runtime).identLog or 0) ~= 0 and entry.owner ~= nil and entry.owner.unit ~= nil then
+				ident_log_positions(runtime, S, entry, session)
+			end
 			if #session.sessions > 0 then
 				if runtime.sessions == nil then runtime.sessions = {} end
 				runtime.sessions[#runtime.sessions + 1] = session
@@ -3600,6 +3649,8 @@ local function drive(runtime)
 		end
 	end
 
+	phase(runtime, "drive 开始")
+
 	-- 身份链探针（**默认关**，调参文件写 `probeIdentityLink = 1` 打开）。
 	-- 只读、一次性、崩了能续；结果只写日志，绝不参与任何判定。
 	local identSwitch = tune_values(runtime).probeIdentityLink
@@ -3744,6 +3795,7 @@ local function drive(runtime)
 	if runtime.reconcile ~= nil and runtime.sessions ~= nil and #runtime.sessions > 0 then
 		if frame >= runtime.reconcile then
 			local poll = options.reconcilePollFrames or (options.pollFrames or 20)
+			phase(runtime, "tryAttach 前")
 			if tryAttach(runtime) then
 				-- 装填还没完成（还有候选没轮到打分）时不能清掉 reconcile，否则"剩下的件"
 				-- 要等下一位玩家进场/有人阵亡才会被想起 —— 那正是老现象。
@@ -3783,11 +3835,17 @@ local function drive(runtime)
 	-- 顺序有依赖：先把"每个玩家到相机的距离"刷新（≤4 次调用），
 	-- 第一人称锁定、预算分档都用这一份新鲜值。
 	-- （热键/调参通道已经在 `drive` 开头轮询过了 —— 那里不会被 early return 挡住。）
+	phase(runtime, "refresh_avatar_distances 前")
 	refresh_avatar_distances(S, runtime)
+	phase(runtime, "refresh_avatar_distances 后")
 	-- 身份纠正（"玩家动它不动"的件放掉）：必须每帧入口都跑到，不能只在补挂时跑。
+	phase(runtime, "identity_watch 前")
 	pcall(identity_watch, S, runtime)
+	phase(runtime, "identity_watch 后")
 	fp_lock_watch(S, runtime)
+	phase(runtime, "scheduler_watch 前")
 	scheduler_watch(S, runtime, runtime.dt)
+	phase(runtime, "scheduler_watch 后")
 
 	-- ---------- 驱动 ----------
 	-- 计时不可靠（`Application.time_since_launch` 每帧只更新一次、`os.clock()` 被引擎其它
@@ -3868,6 +3926,7 @@ local function drive(runtime)
 	local written, skippedSame, engineCalls, staticChains = 0, 0, 0, 0
 	local attempted = 0
 	local dt = runtime.dt or (1 / 60)
+	phase(runtime, "写骨 前（" .. tostring(#runtime.sessions) .. " 个会话）")
 	for index = 1, #runtime.sessions do
 		local session = runtime.sessions[index]
 		-- compat 只在正常返回时刷新这两个计数；先清零，免得沿用上一帧的值把看门狗骗过去。
@@ -4017,6 +4076,7 @@ local function drive(runtime)
 	--
 	-- 多人分帧之后还要再排除一种假信号：**这一帧按 stride 谁都不该被驱动**。
 	-- 那种帧一条骨都不会被处理，但这不是故障——它是节流本身。判据要挂"有没有尝试过"。
+	phase(runtime, "写骨 后")
 	local handled = written + skippedSame
 	if not attemptedAny then
 		-- 分帧跳过的帧：不算数，也不清零（清零会让"卡住"永远攒不到上限）
@@ -4047,7 +4107,9 @@ local function drive(runtime)
 
 	-- 裙摆外推：用这一帧的姿态算**下一帧**要叠的旋转（1 帧延迟，肉眼不可见）。
 	-- 放在 update 之后是因为要用到这一帧写完之后的世界位置。
+	phase(runtime, "裙摆 前")
 	skirt_apply(S, runtime)
+	phase(runtime, "裙摆 后")
 end
 
 --- 安装运行时。可重复调用：第二次直接返回同一个实例。
