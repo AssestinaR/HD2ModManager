@@ -252,8 +252,7 @@ do
 	for _ = 1, 40 do engine.time = engine.time + 1 / 72; probeRender() end
 	local text = readLog()
 	check("挂不上时给出原因", text:find("没有 unit 命中任何物理容器", 1, true) ~= nil)
-	check("原因里给出量化线索（预筛全挂）", text:find("预筛全挂", 1, true) ~= nil,
-		"预筛每份容器只问第 1 根骨，已能证明不可能全命中 ⇒ 不再真打分")
+	check("原因里给出量化线索（最高命中 x/y）", text:find("最高命中 0/1", 1, true) ~= nil)
 	check("同一原因只落一次（不刷屏）",
 		countOf(text, "没有 unit 命中任何物理容器") == 1,
 		string.format("出现 %d 次", countOf(text, "没有 unit 命中任何物理容器")))
@@ -265,7 +264,7 @@ do
 	check("挂上后会话数正确", runtime.sessions ~= nil and #runtime.sessions == #ARMOR_NODES,
 		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
 	check("挂载日志带实例名", text:find("#ID[t5a1]", 1, true) ~= nil)
-	check("会话记住了 unitTag", runtime.sessions[1].unitTag == "#ID[t5a1]",
+	check("会话记住了 unitTag", runtime.sessions[1].unitTag:find("^#ID%[t5a%d+%]$") ~= nil,
 		tostring(runtime.sessions[1].unitTag))
 
 	-- 心跳：证明驱动块被进入过，并给出当帧四个事实。
