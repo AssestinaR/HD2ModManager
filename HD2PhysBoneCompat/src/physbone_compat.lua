@@ -19,6 +19,14 @@
 
 local M = {}
 
+--- 骨名 → IdString32 的换算缓存（按 rig 表身份，弱键）。
+---
+--- 为什么必须缓存（2026-11-12）：`select_rig` 每件候选护甲都要把整份 rig 的 58 根骨
+--- 逐个 `string_to_id32` 一遍，而同一份容器的骨名是**恒定**的。10 份容器 × 58 骨
+--- × 每件候选 = 每件白花 580 次引擎调用，比真正的 `has_node` 还多一倍。
+--- 缓存后每件候选只剩 `has_node`，成本直接砍半；rig 来自 `runtime.carriers`，进程内稳定。
+local boneIdsByRig = setmetatable({}, { __mode = "k" })
+
 M.version = "1.0.0"
 
 -- ---------------------------------------------------------------------------
@@ -1779,11 +1787,21 @@ function M.select_rig(S, units, candidates)
 		return nil
 	end
 	local function bone_ids(rig)
+		local cached = boneIdsByRig[rig]
+		if cached ~= nil then return cached end
+		-- 每根骨可能有 1~2 种写法（带/不带命名空间）；任一写法能解析就算命中。
+		-- 这里把能解析的 id 预先算好并缓存：后面每件候选只做 `has_node`。
 		local ids = {}
 		for index = 1, #rig.bones do
-			-- 一根骨可能有 1~2 种写法（带/不带命名空间）；任一写法能解析就算命中。
-			ids[#ids + 1] = M.bone_name_aliases(rig.bones[index].name)
+			local names = M.bone_name_aliases(rig.bones[index].name)
+			local resolved = {}
+			for _, name in ipairs(names) do
+				local id = id32(name)
+				if id ~= nil then resolved[#resolved + 1] = id end
+			end
+			ids[index] = resolved
 		end
+		boneIdsByRig[rig] = ids
 		return ids
 	end
 
@@ -1791,16 +1809,16 @@ function M.select_rig(S, units, candidates)
 	for order, candidate in ipairs(candidates) do
 		local rig = candidate.rig
 		if rig ~= nil and type(rig.bones) == "table" and #rig.bones > 0 then
-			local aliases = bone_ids(rig)
+			local ids = bone_ids(rig)
 			local total = #rig.bones
 			local score = 0
 			for _, unit in ipairs(units) do
 				if M.unit_alive(S, unit) then
 					local hits = 0
-					for _, names in ipairs(aliases) do
-						for _, name in ipairs(names) do
-							local id = id32(name)
-							if id ~= nil then
+					for bone = 1, total do
+						local resolved = ids[bone]
+						if resolved ~= nil then
+							for _, id in ipairs(resolved) do
 								local ok, has = pcall(S.Unit.has_node, unit, id)
 								if ok and has == true then
 									hits = hits + 1

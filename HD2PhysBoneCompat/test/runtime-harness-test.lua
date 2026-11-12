@@ -863,6 +863,82 @@ do
 	Runtime.uninstall()
 end
 
+-- ---------------------------------------------------------------------------
+print("T14 装填：每帧只打 1 件也要把两个玩家的件都挂满（不再被配额饿死）")
+--
+-- 这就是用户报的"只有自己有物理、队友全没有"的回归：旧实现按 owner.order 排序 + 固定件数额度，
+-- 自己的件先占满额度（实测 2 人局 12 个名额里自己 9 件、队友 3 件）。
+-- 现在改成"按 unit 缓存 + 每帧新打分 N 件"，进度单调，所以队友迟早会被轮到。
+do
+	rawset(_G, "render", function() end)
+
+	local a14 = newUnit("t14avatarA", AVATAR_NODES, true, "#ID[t14avatarA]")
+	local b14 = newUnit("t14avatarB", AVATAR_NODES, true, "#ID[t14avatarB]")
+	for _, av in ipairs({ a14, b14 }) do
+		local mgId = S.Application.string_to_id32("support_mg")
+		av.ids[mgId] = true
+		av.nodeOf[mgId] = 5
+	end
+	engine.pos[a14] = { 0, 0, 0 }
+	engine.pos[b14] = { 10, 0, 0 }
+
+	-- 每人 7 件：**总数 14 件 > 旧实现的配额度**（`max(12, 4×2) = 12`）。
+	-- 旧实现按 owner.order 排序 + 固定额度 ⇒ 自己的 7 件先吃满 12 个名额，队友只拿到 5 件。
+	-- 这一条就是用来把那种"饿死队友"钉死的。
+	local PIECES_PER_PLAYER = 7
+	local gear = {}
+	local counts = { { 171, 148, 132 }, { 121, 108, 96 } }
+	local owners = { a14, b14 }
+	for who = 1, 2 do
+		for slot = 1, PIECES_PER_PLAYER do
+			local unit = newUnit(("t14%s%d"):format(who == 1 and "a" or "b", slot),
+				counts[who][((slot - 1) % 3) + 1], false, "#ID[t14p" .. who .. slot .. "]")
+			dress(unit)
+			engine.pos[unit] = engine.pos[owners[who]]
+			gear[#gear + 1] = unit
+		end
+	end
+	-- 假引擎的 unitsArray() 只吐一个 `avatar` 全局；第二个玩家必须混在 armors 里才能被扫到
+	-- （findAvatars 是在整份 units 里找"有动画状态机 + support_mg"的，找到后会被排除出候选）。
+	avatar = a14
+	local unitsList = { b14 }
+	for _, unit in ipairs(gear) do unitsList[#unitsList + 1] = unit end
+	armors = unitsList
+
+	local tunePath14 = (os.getenv("TEMP") or ".") .. "\\physbone-t14-fill-tune.txt"
+	do
+		local handle = io.open(tunePath14, "w")
+		handle:write("writeOff = 0\n")
+		handle:close()
+	end
+
+	local runtime = Runtime.install(S, {
+		compat = Compat,
+		carriers = { { rig = RIG, path = "fake.patch_1.gpu_resources" } },
+		logPath = (os.getenv("LOCALAPPDATA") or ".") .. "\\hd2pbx_runtime_t14fill.txt",
+		settleFrames = 2, snapshot = false, tunePath = tunePath14,
+		pollFrames = 1, validateFrames = 0,
+		maxArmorDistance = 15.0,
+		scoreUnitsPerFrame = 1,      -- 故意压到每帧只打 1 件：最容易饿死队友的设置
+	})
+	local probeRender = rawget(_G, "render")
+	for _ = 1, 400 do engine.time = engine.time + 1 / 120; probeRender() end
+
+	check("T14 十四件全部挂上", runtime.sessions ~= nil and #runtime.sessions == 14,
+		string.format("会话=%s", tostring(runtime.sessions and #runtime.sessions)))
+	local perOwner = {}
+	for _, session in ipairs(runtime.sessions or {}) do
+		local key = session.ownerOrder or 99
+		perOwner[key] = (perOwner[key] or 0) + 1
+	end
+	check("T14 自己名下 7 件全在", (perOwner[1] or 0) == PIECES_PER_PLAYER, "玩家1=" .. tostring(perOwner[1]))
+	check("T14 队友名下 7 件也全在（旧实现的典型值是被配额截到 5）",
+		(perOwner[2] or 0) == PIECES_PER_PLAYER, "玩家2=" .. tostring(perOwner[2]))
+	pcall(os.remove, tunePath14)
+
+	Runtime.uninstall()
+end
+
 print("")
 if failures == 0 then
 	print("=== 全部通过 ===")

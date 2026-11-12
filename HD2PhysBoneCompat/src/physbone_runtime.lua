@@ -63,7 +63,7 @@ local M = {}
 --
 -- 1.9.1：容器扫描窗口改成"按实际部署的最大 patch 序号 + 5"（以前写死 0..63，
 --        装一堆 mod 时排在 63 之后的物理 mod 会被漏掉，日志还误报成"没做 embed"）。
-M.VERSION = "2.1.24"
+M.VERSION = "2.1.25"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -645,38 +645,98 @@ local function tryAttach(runtime)
 	if farCount > 0 then
 		runtime.logger("[physbone] 跳过 %d 个离它所属玩家超过 %.1f m 的护甲件（尸体/人台）", farCount, maxDist)
 	end
-	-- 给候选打分是这里最贵的一步（每份容器 × 每根骨一次 has_node，一件 ~460 次调用）。
-	-- 候选多时（军械库里几十个人台 / 四人同屏）不设上限就是几万次调用 ⇒ 明显卡顿。
-	-- 只测最近的一批：真正属于玩家的护甲一定是最近的那几件。玩家越多，允许测的越多。
-	local maxScored = options.maxScoredCandidates or math.max(12, 4 * #avatars)
+	-- 给候选打分是这里最贵的一步（每份容器 × 每根骨一次 has_node）。
+	--
+	-- 2026-11-12 改法：**去掉"固定件数额度"**，换成"按 unit 缓存 + 每帧只新打分 N 件"。
+	--   为什么去额度：原来 `max(12, 4×玩家数)` 的额度让**自己**的件先占满（候选按 owner.order
+	--   排序），实测 2 人局 12 件里自己 9 件、队友只剩 3 件 —— 这就是"队友没物理"的直接原因。
+	--   为什么能去：匹配结果按 unit 记住以后，打过的下一拍成本≈0，所以进度是**单调**的，
+	--   不会再出现"每拍都从头打同一批"；跨拍装填时"这一拍打到哪"由下面的每帧上限控制。
+	local rigMatches = runtime.rigMatches
+	-- 容器集合变了（重新加载 boot / 换了物理包）⇒ 缓存必须整份失效，
+	-- 否则旧容器下"没命中"的结论会被继续沿用，那批件永远挂不上（T5 就是这么暴露的）。
+	local carrierKey = #carriers .. "|" .. tostring(carriers[1] ~= nil and carriers[1].path or "")
+	if runtime.rigMatchKey ~= carrierKey then
+		runtime.rigMatchKey = carrierKey
+		rigMatches = nil
+		runtime.bestScoredEver = nil
+	end
+	if rigMatches == nil then
+		rigMatches = setmetatable({}, { __mode = "k" })   -- 弱键：unit 销毁后自动释放
+		runtime.rigMatches = rigMatches
+	end
+	local scoreUnitsPerFrame = options.scoreUnitsPerFrame or 2
 	local plan, bestScored = {}, nil
+	local scoredNow, cachedHits, deferred = 0, 0, 0
+	local scoreClock = os.clock()
 	for index = 1, #nearCandidates do
-		if index > maxScored then
-			runtime.logger("[physbone] 只给最近的 %d 件护甲打分（候选共 %d 件）", maxScored, #nearCandidates)
-			break
-		end
 		local candidate = nearCandidates[index]
-		local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
-		if best ~= nil and (best.full or allowPartial) then
+		local match = rigMatches[candidate.unit]
+		if match == nil then
+			if scoredNow >= scoreUnitsPerFrame then
+				deferred = #nearCandidates - index + 1
+				break
+			end
+			local best, scored = Compat.select_rig(S, { candidate.unit }, carriers)
+			scoredNow = scoredNow + 1
+			runtime.fillScoredTotal = (runtime.fillScoredTotal or 0) + 1
+			if best ~= nil then
+				match = { rig = best.rig, path = best.path, full = best.full == true }
+				-- 命中但不满（缺骨）：仍然要记下"最接近的那一份"，否则报错原因会退化成
+				-- "全部 0 命中"，丢掉"差几根骨"这条唯一线索。
+				if not (best.full or allowPartial) and scored ~= nil and scored[1] ~= nil then
+					if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
+					if runtime.bestScoredEver == nil or scored[1].score > runtime.bestScoredEver.score then
+						runtime.bestScoredEver = scored[1]
+					end
+				end
+			else
+				-- 打过分但没命中也要记住：否则每一拍都会把同一批再打一遍。
+				match = { none = true }
+				if scored ~= nil and scored[1] ~= nil then
+					-- 记下"最接近的那一份"：没挂上时这条是唯一能指出"差几根骨"的线索。
+					-- 同时记到 runtime 上：跨拍装填时最后一拍可能全是缓存命中，
+					-- 那时本地 bestScored 是 nil，但报错原因仍要说得出"差几根骨"。
+					if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
+					if runtime.bestScoredEver == nil or scored[1].score > runtime.bestScoredEver.score then
+						runtime.bestScoredEver = scored[1]
+					end
+				end
+			end
+			rigMatches[candidate.unit] = match
+		else
+			cachedHits = cachedHits + 1
+		end
+		if match.rig ~= nil and (match.full or allowPartial) then
 			plan[#plan + 1] = {
-				unit = candidate.unit, rig = best.rig, path = best.path, mg = candidate.mg,
+				unit = candidate.unit, rig = match.rig, path = match.path, mg = candidate.mg,
 				tag = unit_tag(S, candidate.unit),
 				owner = candidate.owner,
 			}
-		elseif scored ~= nil and scored[1] ~= nil then
-			-- 记下"最接近的那一份"，没挂上时这条是唯一能指出"差几根骨"的线索。
-			if bestScored == nil or scored[1].score > bestScored.score then bestScored = scored[1] end
 		end
 	end
+	-- 打分的实测耗时（`os.clock` 是 CPU 时间，正是我们要守的那 5 ms 口径）。
+	-- 不单独打行：逐拍打会把日志预算吃光、反而把驱动心跳挤掉（mp_harness 的 900 字节
+	-- 预算就是这么发现的）。耗时并进下面那一条"已挂载"行。
+	runtime.lastScoreMs = (os.clock() - scoreClock) * 1000
 	if #plan == 0 then
+		if deferred > 0 then
+			-- 这拍额度用完了、还没轮到能命中的那件：不是失败，下一拍继续。
+			note_wait(runtime, "装填中（本拍打分额度用完）",
+				string.format("已打分 %d 件、未轮到 %d 件", scoredNow, deferred))
+			return false
+		end
 		local detail
 		if #carriers == 0 then
 			detail = "没有物理容器可匹配"
-		elseif bestScored ~= nil then
-			detail = string.format("%d 个候选 unit × %d 份容器，最高命中 %d/%d 根骨（%s）",
-				#nearCandidates, #carriers, bestScored.score, bestScored.total, tostring(bestScored.path))
 		else
-			detail = string.format("%d 个候选 unit × %d 份容器，全部 0 命中", #nearCandidates, #carriers)
+			local closest = bestScored or runtime.bestScoredEver
+			if closest ~= nil then
+				detail = string.format("%d 个候选 unit × %d 份容器，最高命中 %d/%d 根骨（%s）",
+					#nearCandidates, #carriers, closest.score, closest.total, tostring(closest.path))
+			else
+				detail = string.format("%d 个候选 unit × %d 份容器，全部 0 命中", #nearCandidates, #carriers)
+			end
 		end
 		note_wait(runtime, "没有 unit 命中任何物理容器", detail)
 		return false
@@ -796,10 +856,23 @@ local function tryAttach(runtime)
 	for _, order in ipairs({ 1, 2, 3, 4, 99 }) do
 		if perOwner[order] ~= nil then ownerText[#ownerText + 1] = string.format("玩家%d=%d件", order, perOwner[order]) end
 	end
-	runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器，玩家 %d 个%s）；本次新挂 %d、已挂过 %d；unit=%s",
-		#runtime.sessions, chains, #carriers, #avatars,
-		#ownerText > 0 and ("：" .. table.concat(ownerText, " ")) or "",
-		attached, already, table.concat(tags, ","))
+	-- 还有候选没轮到打分 ⇒ 排下一拍继续装填。
+	-- 不留这一条的话，剩下的件要等下一次"名单变化/死亡"才会被想起 —— 那正好就是
+	-- "队友的物理要等第三个玩家进来才出现"那个老现象。
+	runtime.fillPending = deferred > 0
+	if runtime.fillPending then
+		runtime.reconcile = frame + (options.reconcilePollFrames or options.pollFrames or 2)
+	end
+	-- 装填期间**不打这条汇总**：跨拍装填会打好几条，把日志预算吃光、连驱动心跳都挤掉
+	-- （mp_harness 的 900 字节预算闸门抓到的）。等装填结束再一次性给出结论。
+	if not runtime.fillPending then
+		runtime.logger("[physbone] 已挂载 %d 个 unit / %d 条链（%d 份容器，玩家 %d 个%s）；本次新挂 %d、已挂过 %d；打分 %.2f ms（本轮新打分 %d 件）；unit=%s",
+			#runtime.sessions, chains, #carriers, #avatars,
+			#ownerText > 0 and ("：" .. table.concat(ownerText, " ")) or "",
+			attached, already, runtime.lastScoreMs or 0, runtime.fillScoredTotal or 0,
+			table.concat(tags, ","))
+		runtime.fillScoredTotal = nil
+	end
 	return true
 end
 
@@ -1561,11 +1634,15 @@ local function schedule_budget(primaryChains, nearChains, farChains, budget)
 	local function cost()
 		return primaryChains + nearChains / nearStride + farChains / farStride
 	end
+	-- 阶梯加长（2026-11-12）：原来 far 最多 8、near 最多 3。四人局里自己那条动不了
+	-- （primary 不参与节流），只靠 near≤3 / far≤8 压不到预算内 —— 船上全员 6 m 内时
+	-- 实测会到 ~10 ms。把阶梯放长到 near≤6 / far≤16，才能把总链数拉回预算附近，
+	-- 代价是远处队友的物理更稀（他们本来就看不见）。
 	while cost() > budget do
-		if farStride < 8 then
-			farStride = math.min(8, farStride * 2)
-		elseif nearStride < 3 then
-			nearStride = 3
+		if farStride < 16 then
+			farStride = math.min(16, farStride * 2)
+		elseif nearStride < 6 then
+			nearStride = math.min(6, nearStride + 1)
 		else
 			break
 		end
@@ -1668,6 +1745,12 @@ local function sched_key_poll(S_, runtime)
 	runtime.logger("[physbone][热键] %s 按下 ⇒ 重排（玩家 %d 个，会话 %d 个）",
 		settings.hotkeyName, #(runtime.avatars or {}), #(runtime.sessions or {}))
 	redistribute(S_, runtime, "手动重设（热键 " .. settings.hotkeyName .. "）")
+	-- **热键同时重新发现并补挂**（2026-11-12）。
+	-- 原来这里只重排：而"队友的件压根没挂上"时，重排多少次都没用（它只换已挂会话的主人），
+	-- 这正是"按 F8 几乎无效"的根因。现在下一拍会跑一次完整的 discover + 增量 attach，
+	-- 有匹配缓存兜底，成本很低。
+	runtime.reconcile = runtime.frame
+	if runtime.sessions == nil then runtime.rearmAt = nil end   -- 正在退避就直接重试
 	runtime.schedNoop = 0
 	runtime.schedBackoffUntil = nil
 end
@@ -2773,6 +2856,7 @@ local function drive(runtime)
 	end
 
 	Compat.begin_frame(frame)
+	local driveClock = os.clock()   -- 这一拍驱动块占用的 CPU 时间（心跳里报出来）
 
 	-- dt 用引擎自己的时间差，不写死 1/60。
 	-- 实测回调约 120 次/秒（不是 70，也不是 375），写死 1/60 会让物理比真实时间快/慢一截，
@@ -2896,7 +2980,9 @@ local function drive(runtime)
 		if frame >= runtime.reconcile then
 			local poll = options.reconcilePollFrames or (options.pollFrames or 20)
 			if tryAttach(runtime) then
-				runtime.reconcile = nil
+				-- 装填还没完成（还有候选没轮到打分）时不能清掉 reconcile，否则"剩下的件"
+				-- 要等下一位玩家进场/有人阵亡才会被想起 —— 那正是老现象。
+				runtime.reconcile = runtime.fillPending and (frame + poll) or nil
 			else
 				runtime.reconcile = frame + poll     -- 场景还没稳，下一拍再来
 			end
@@ -2953,15 +3039,30 @@ local function drive(runtime)
 	local nearMetres = sched_settings(runtime).metres
 	local nearLimit2 = nearMetres * nearMetres
 	local primaryChains, nearChains, farChains = 0, 0, 0
+	local staleOwners = 0
 	for index = 1, #runtime.sessions do
 		local session = runtime.sessions[index]
 		local chains = #(session.sessions or {})
 		if (session.ownerOrder or 99) <= 1 then
 			primaryChains = primaryChains + chains
-		elseif owner_distance_sq(runtime, session) <= nearLimit2 then
-			nearChains = nearChains + chains
 		else
-			farChains = farChains + chains
+			local ownerDistance = owner_distance_sq(runtime, session)
+			-- 主人不在当前玩家名单里（换场景/换船后 unit 重建）⇒ 距离恒为 math.huge，
+			-- 会把这件永久压进"最远档（每 16 帧）"，看起来就是没物理。
+			-- 正确的动作是**重新归属**，所以这里记一笔，下面触发一次重排/重挂。
+			if ownerDistance == math.huge then staleOwners = staleOwners + 1 end
+			if ownerDistance <= nearLimit2 then
+				nearChains = nearChains + chains
+			else
+				farChains = farChains + chains
+			end
+		end
+	end
+	if staleOwners > 0 and runtime.reconcile == nil then
+		runtime.reconcile = frame
+		if not runtime.staleOwnerLogged then
+			runtime.staleOwnerLogged = true
+			logger("[physbone][玩家] %d 个会话的主人已不在名单里 ⇒ 重新归属一次", staleOwners)
 		end
 	end
 	local nearStride, farStride = schedule_budget(primaryChains, nearChains, farChains, budget)
@@ -3091,8 +3192,9 @@ local function drive(runtime)
 	if (runtime.driveFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
-		logger("[physbone] 驱动心跳 unit=%d 链=%d 玩家=%d 分帧=%d/%d 本帧驱动=%d dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",
+		logger("[physbone] 驱动心跳 unit=%d 链=%d 玩家=%d 分帧=%d/%d 本帧驱动=%d 驱动=%.2f ms dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",
 			#runtime.sessions, chains, #(runtime.avatars or {}), runtime.nearStride or 1, runtime.farStride or 1, attempted,
+			(os.clock() - driveClock) * 1000,
 			runtime.dt or 0, written, skippedSame, engineCalls,
 			runtime.callsAccum / runtime.driveFrames, staticChains, framePeakDeg,
 			runtime.peakAngle or 0,
@@ -3289,6 +3391,7 @@ M.fp_probe_poll_ = fp_probe_poll
 M.fp_lock_watch_ = fp_lock_watch
 
 return M
+
 
 
 

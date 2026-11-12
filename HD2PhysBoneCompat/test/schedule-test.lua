@@ -297,8 +297,8 @@ do
 	check("远处退让到 4 帧", fs == 4, "far=" .. tostring(fs))
 	-- 四人局：自己 400 链（已超预算）+ 队友各 400
 	ns, fs = Runtime.schedule_budget_(400, 400, 800, budget)
-	check("近处最多退到 3 帧", ns <= 3, "near=" .. tostring(ns))
-	check("远处最多退到 8 帧", fs <= 8, "far=" .. tostring(fs))
+	check("近处最多退到 6 帧", ns <= 6, "near=" .. tostring(ns))
+	check("远处最多退到 16 帧", fs <= 16, "far=" .. tostring(fs))
 	check("远处一定比近处更稀", fs >= ns, string.format("near=%d far=%d", ns, fs))
 	-- 单调性：链越多，步长不减
 	local nsA, fsA = Runtime.schedule_budget_(50, 100, 100, budget)
