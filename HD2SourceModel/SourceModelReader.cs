@@ -77,19 +77,33 @@ public static class SourceModelReader
 		if (mdl[0] != (byte)'I' || mdl[1] != (byte)'D' || mdl[2] != (byte)'S' || mdl[3] != (byte)'T')
 			throw new InvalidDataException("MDL magic 不是 IDST，不是 Source 模型文件。");
 
-		var version = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(VersionOffset));
+		var rawVersion = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(VersionOffset));
+		var version = rawVersion;
+		var maskedVersion = false;
 		if (version is < MinimumBoneStrideVersion or > MaximumBoneStrideVersion)
 		{
-			// 结构体步长按版本变化，本实现只覆盖 L4D2 所在的那一段；其余版本直接拒绝而不是猜。
-			throw new NotSupportedException(
-				$"MDL 版本 {version} 不在支持范围 v{MinimumBoneStrideVersion}..v{MaximumBoneStrideVersion}，" +
-				"骨骼结构体步长可能与本实现不同。");
+			// 版本字段的高字节可能是编译工具留下的标记（实测 0x1A000032 = v50 + 0x1A），取低 16 位再判一次。
+			// 只有"本来就会被拒"的文件会走到这里，高字节为 0 的模型行为完全不变。
+			version = rawVersion & 0xFFFF;
+			if (version is < MinimumBoneStrideVersion or > MaximumBoneStrideVersion)
+			{
+				// 结构体步长按版本变化，本实现只覆盖 L4D2 所在的那一段；其余版本直接拒绝而不是猜。
+				throw new NotSupportedException(
+					$"MDL 版本 {rawVersion} 不在支持范围 v{MinimumBoneStrideVersion}..v{MaximumBoneStrideVersion}，" +
+					"骨骼结构体步长可能与本实现不同。");
+			}
+
+			maskedVersion = true;
 		}
 
 		var checksum = BinaryPrimitives.ReadInt32LittleEndian(mdl.AsSpan(ChecksumOffset));
 		var name = ReadCString(mdl, NameOffset, NameLength) ?? string.Empty;
 
 		var bones = ReadBones(mdl, diagnostics);
+		// 放行低 16 位之前先确认解出来的是一具合理骨架；用错步长解出的父级下标几乎必然越界。
+		if (maskedVersion && bones.Any(bone => bone.ParentIndex < -1 || bone.ParentIndex >= bones.Count))
+			throw new NotSupportedException(
+				$"MDL 版本 {rawVersion} 的高位不是 0，且按低 16 位 v{version} 解出的骨架不自洽，按不支持处理。");
 		// 给占位骨名加**按来源模型派生**的命名空间（见 SourceBone.DisplayName 的 remarks）。
 		// 在这里统一施加：读骨的时候还不知道模型身份，读完就能算了。
 		bones = ApplyBoneNamespace(bones, name, checksum);
