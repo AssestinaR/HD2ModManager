@@ -5,8 +5,10 @@ using HD2ModCore.Infrastructure.Sectional;
 namespace HD2ModCore.Infrastructure.KitInstance;
 
 /// <summary>下拉里的一条护甲记录（专属模式按 item_id 列）。</summary>
-/// <param name="Status">「可专属」或「不可：<缺口>」。</param>
-public sealed record KitExclusiveOption(uint ItemId, string ArchiveId, string Name, bool Available, string Status)
+/// <param name="Status">「可专属」、「可专属·合并（实验）：…」或「不可：<缺口>」。</param>
+/// <param name="Merged">P4b：逐格承载不了，模型要合并成一个 unit 再落到独有部件上。</param>
+public sealed record KitExclusiveOption(
+	uint ItemId, string ArchiveId, string Name, bool Available, string Status, bool Merged = false)
 {
 	/// <summary>同名记录靠编号区分，如 <c>FS-05“神射手”（3970674111）</c>。</summary>
 	public string Label => $"{Name}（{ItemId.ToString(CultureInfo.InvariantCulture)}）";
@@ -32,7 +34,7 @@ public static class KitExclusiveService
 		var index = SectionalExclusivePlanner.BuildIndex(loaded.Snapshot!.Kits);
 		var options = SectionalExclusivePlanner.Evaluate(index, loaded.Source!, headMerge)
 			.Select(candidate => new KitExclusiveOption(
-				candidate.ItemId, candidate.ArchiveId, candidate.Name, candidate.Succeeded, candidate.Summary))
+				candidate.ItemId, candidate.ArchiveId, candidate.Name, candidate.Succeeded, candidate.Summary, candidate.Merged))
 			.OrderBy(option => option.Name, StringComparer.CurrentCulture)
 			.ThenBy(option => option.ItemId)
 			.ToArray();
@@ -45,7 +47,7 @@ public static class KitExclusiveService
 		var loaded = await LoadAsync(modDirectory, paths, cancellationToken).ConfigureAwait(false);
 		if (loaded.Error is not null) return new KitExclusivePreview(false, "专属切换", [loaded.Error]);
 		var index = SectionalExclusivePlanner.BuildIndex(loaded.Snapshot!.Kits);
-		var plan = SectionalExclusivePlanner.Build(index, loaded.Source!, itemId, headMerge);
+		var plan = SectionalExclusivePlanner.BuildWithMerge(index, loaded.Source!, itemId, headMerge);
 		return Describe(plan, loaded.Snapshot.Kits);
 	}
 
@@ -81,12 +83,33 @@ public static class KitExclusiveService
 			return new KitExclusivePreview(false, title, lines);
 		}
 
-		var result = new List<string> { $"目标：{title}。这个 Mod 只会在穿这一条记录的角色身上显示，其它护甲不受影响。" };
+		var result = new List<string>
+		{
+			plan.IsMerged
+				? $"目标：{title}（合并·实验）。这个 Mod 只会在穿这一条记录的角色身上显示，其它护甲不受影响；模型会合并成更少的 unit。"
+				: $"目标：{title}。这个 Mod 只会在穿这一条记录的角色身上显示，其它护甲不受影响。",
+		};
 
 		var body = plan.Placements.Where(placement => placement.HelmetName is null).ToArray();
 		result.Add("【落点】每个模型部位写到目标独有的原版部件上：");
 		result.AddRange(body.Select(placement =>
 			$"· {placement.Cell}（第 {placement.Layer} 层）：{placement.Role} 0x{placement.SourceFileId} → 0x{Hex(placement.TargetFileId)}"));
+		if (plan.IsMerged)
+		{
+			result.Add("【合并（实验）】这些模型部位在目标上没有各自独有的部件，几何会合并成一个 unit 后写进承载件：");
+			foreach (var merge in plan.Merges)
+			{
+				var bodies = string.Join("、", merge.Bodies.Select(item => item == 0 ? "健壮身形" : "纤细身形"));
+				var parts = string.Join("、", merge.SourceFileIds.Select(id => plan.Placements
+					.FirstOrDefault(placement => placement.SourceFileId == id && placement.TargetFileId == merge.CarrierFileId)?.Cell ?? id));
+				result.Add($"· {parts} → 合并进「{merge.CarrierPart}」承载件 0x{Hex(merge.CarrierFileId)}（第 {merge.Layer} 层，{bodies}）");
+			}
+
+			if (plan.Merges.Any(merge => !merge.IsTorso))
+				result.Add("⚠ 第一人称可能看到模型：承载件不是躯干，游戏在第一人称下只隐藏躯干和头盔。");
+			if (plan.GroupMates.Count != 0)
+				result.Add($"同名记录也会显示这个模型：{string.Join("、", plan.GroupMates)}。");
+		}
 
 		var helmets = plan.Placements.Where(placement => placement.HelmetName is not null).ToArray();
 		if (helmets.Length != 0)

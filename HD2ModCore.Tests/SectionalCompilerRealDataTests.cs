@@ -18,7 +18,7 @@ namespace HD2ModCore.Tests;
 /// 符合本仓库"真数据测试缺样本就跳过"的约定。
 /// </para>
 /// </summary>
-public sealed class SectionalCompilerRealDataTests
+public sealed class SectionalCompilerRealDataTests(Xunit.Abstractions.ITestOutputHelper output)
 {
 	private const string DefaultArmorArchive = "d923906f8b815987";
 
@@ -158,7 +158,7 @@ public sealed class SectionalCompilerRealDataTests
 		Assert.Null(catalog.Unavailable);
 		var wanted = Environment.GetEnvironmentVariable("HD2_TEST_EXCLUSIVE_ITEM");
 		var option = string.IsNullOrWhiteSpace(wanted)
-			? catalog.Options.First(candidate => candidate.Available)
+			? catalog.Options.First(candidate => candidate.Available && !candidate.Merged)
 			: catalog.Options.Single(candidate => candidate.ItemId == uint.Parse(wanted));
 		Assert.True(option.Available, option.Status);
 
@@ -207,9 +207,12 @@ public sealed class SectionalCompilerRealDataTests
 		Assert.Empty(hide.Intersect(capeKeys));
 	}
 
-	/// <summary>FS-05 的三条记录一个身体格子都没有独有部件：专属切换必须整体失败并说明原因。</summary>
+	/// <summary>
+	/// FS-05 的三条记录一个身体格子都没有独有部件，P4a 下全部不可；P4b 之后它们走合并（左肩等），
+	/// 而「合并也做不了」的第三类仍然整体失败并说明原因。没有游戏 data 目录时合并编译明确失败，而不是写半套。
+	/// </summary>
 	[Fact]
-	public async Task ExclusiveMode_Fs05FailsAsAWhole()
+	public async Task ExclusiveMode_Fs05MergesAndTheThirdClassStillFailsAsAWhole()
 	{
 		using var fixture = CompilerFixture.TryCreate();
 		if (fixture is null) return;
@@ -223,17 +226,160 @@ public sealed class SectionalCompilerRealDataTests
 		{
 			var option = catalog.Options.SingleOrDefault(candidate => candidate.ItemId == item);
 			if (option is null) return;   // 索引里没有这几条（别的游戏版本）：跳过
-			Assert.False(option.Available, option.Label);
-			Assert.StartsWith("不可：", option.Status, StringComparison.Ordinal);
+			Assert.True(option.Available, option.Label);
+			Assert.True(option.Merged, option.Label);
+			Assert.StartsWith("可专属·合并（实验）", option.Status, StringComparison.Ordinal);
 		}
 
+		var noGameData = await SectionalCompiler.CompileAsync(
+			fixture.ModDirectory, new VpkHostContext(null, paths), "8670598c1f4462dc", null, headMergeIntoBody: false, [], exclusiveItemId: 3970674111);
+		Assert.False(noGameData.Ok);
+		Assert.Contains("游戏 data 目录", noGameData.Error!, StringComparison.Ordinal);
+
+		var impossible = catalog.Options.FirstOrDefault(candidate => !candidate.Available);
+		Assert.NotNull(impossible);
+		Assert.StartsWith("不可：", impossible!.Status, StringComparison.Ordinal);
 		var failed = await SectionalCompiler.CompileAsync(
-			fixture.ModDirectory, new VpkHostContext(null, paths), "ccac0a57aca3ae92", null, headMergeIntoBody: false, [], exclusiveItemId: 3970674111);
+			fixture.ModDirectory, new VpkHostContext(null, paths), impossible.ArchiveId, null, headMergeIntoBody: false, [], exclusiveItemId: impossible.ItemId);
 		Assert.False(failed.Ok);
 		Assert.Contains("不能专属切换", failed.Error!, StringComparison.Ordinal);
 	}
 
+	/// <summary>
+	/// P4b 端到端：真实 VPK Mod（雫）对 CE-67（躯干合并）与玩家神射手（左肩合并）专属切换。
+	/// 需要 <c>HD2_TEST_GAME_DATA</c>（读头像骨架）；缺任何一个样本都静默跳过。
+	/// </summary>
+	[Theory]
+	[InlineData(4081083564u, false)]
+	[InlineData(3970674111u, false)]
+	[InlineData(3970674111u, true)]
+	public async Task ExclusiveMerge_WritesOneMergedUnitPerCarrier(uint item, bool disableOneSection)
+	{
+		using var fixture = CompilerFixture.TryCreate();
+		if (fixture is null) return;
+		var managerRoot = Environment.GetEnvironmentVariable("HD2_TEST_MANAGER_ROOT");
+		var gameData = Environment.GetEnvironmentVariable("HD2_TEST_GAME_DATA");
+		if (string.IsNullOrWhiteSpace(managerRoot) || string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData)) return;
+		if (!File.Exists(Path.Combine(managerRoot, "data", "indexes", "asset-index.sqlite"))) return;
+		var sourceUnits = await SectionalCompiler.ReadSourceUnitsAsync(fixture.ModDirectory, default);
+		if (sourceUnits is null || sourceUnits.Count != 7) return;   // 只认「雫」这种 7 件 VPK 产物
+
+		var paths = new StoragePaths(managerRoot);
+		var snapshot = await ArmorAuthorityIndexReader.TryReadAsync(paths);
+		Assert.NotNull(snapshot);
+		var kit = snapshot!.Kits.SingleOrDefault(candidate => candidate.ItemId == item && candidate.Kind == GameDataEquipmentKitKind.Armor);
+		if (kit is null) return;
+
+		var disabled = disableOneSection
+			? new Dictionary<string, IReadOnlyCollection<int>> { ["079d12e38aec0006"] = [0] }
+			: null;
+		var result = await SectionalCompiler.CompileAsync(
+			fixture.ModDirectory, new VpkHostContext(gameData, paths), kit.ArchiveId, disabled, headMergeIntoBody: false, [], exclusiveItemId: item);
+
+		Assert.True(result.Ok, result.Error);
+		Assert.Equal(0, result.HiddenUnits);
+		Assert.NotNull(result.Exclusive);
+		var plan = SectionalExclusivePlanner.BuildWithMerge(
+			SectionalExclusivePlanner.BuildIndex(snapshot.Kits), sourceUnits, item, headMerge: false);
+		Assert.True(plan.IsMerged);
+
+		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(fixture.ModDirectory);
+		var compiled = fixture.ReadUnitKeys(overwrite);
+		var written = compiled.Keys.ToHashSet();
+		// 写出去的原版 unit 全是承载件；承载件都在计划里；来源 unit 一个不留；披风一个不碰。
+		var carriers = plan.Replacements.Select(r => r.Target.Key.FileId).ToHashSet();
+		Assert.Equal(carriers.OrderBy(x => x), written.OrderBy(x => x));
+		if (item == 3970674111u) Assert.Contains(0xffc28ef4b7c57c38UL, written);   // 头落在同名头盔组共用的头部 unit 上
+		Assert.Empty(written.Intersect(fixture.ReadUnitKeys(Path.Combine(fixture.ModDirectory, "sectional")).Keys));
+		var capes = snapshot.Kits.Where(k => k.Kind == GameDataEquipmentKitKind.Cape).SelectMany(k => k.Pieces).Select(piece => piece.UnitAssetKey.FileId);
+		Assert.Empty(written.Intersect(capes));
+		// 承载件只归目标记录或其同名组所有。
+		var group = snapshot.Kits.Where(k => k.Kind == GameDataEquipmentKitKind.Armor && k.DisplayName == kit.DisplayName).Select(k => k.ItemId).ToHashSet();
+		// （头盔承载件归同套头盔记录所有，也算。）
+		var helmetOwners = snapshot.Kits.Where(k => k.Kind == GameDataEquipmentKitKind.Helmet && (k.SetId == kit.SetId || k.DisplayName == kit.DisplayName)).Select(k => k.ItemId);
+		var allowedOwners = group.Concat(helmetOwners).ToHashSet();
+		foreach (var file in written.Where(file => snapshot.Kits.Any(k => k.Pieces.Any(piece => piece.UnitAssetKey.FileId == file))))
+			Assert.All(snapshot.Kits.Where(k => k.Pieces.Any(piece => piece.UnitAssetKey.FileId == file)), owner => Assert.Contains(owner.ItemId, allowedOwners));
+
+		// 合并后的 unit：section 数 = 被合并来源的 section 总数（关掉的那个烘成 0 三角形，不进合并结果）。
+		var avatar = await SectionalUnitMerger.ReadAvatarAsync(gameData, default);
+		var overwritePatch = fixture.UnitPatchPath(overwrite)!;
+		var sourcePatch = fixture.UnitPatchPath(Path.Combine(fixture.ModDirectory, "sectional"))!;
+		foreach (var merge in plan.Merges)
+		{
+			var unit = await SectionalUnitMerger.MergeAsync(overwritePatch, new SectionalUnitMergeSpec([merge.CarrierFileId.ToString("x16")]), avatar);
+			var model = new HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshReader().Read(unit.TocData, unit.GpuResourceData);
+			var lod0 = model.Meshes.Single(mesh => mesh.LodIndex == 0 && mesh.SemanticInfo.IsVisualMesh);
+			var expected = 0;
+			var expectedTriangles = 0;
+			foreach (var id in merge.SourceFileIds)
+			{
+				var one = await SectionalUnitMerger.MergeAsync(sourcePatch, new SectionalUnitMergeSpec([id]), avatar);
+				var sourceModel = new HD2ModAdaptation.PatchReconstruction.UnitMesh.UnitMeshReader().Read(one.TocData, one.GpuResourceData);
+				var sourceLod0 = sourceModel.Meshes.Single(mesh => mesh.LodIndex == 0 && mesh.SemanticInfo.IsVisualMesh);
+				expected += sourceLod0.Sections.Count;
+				expectedTriangles += sourceLod0.Sections.Sum(section => (int)(section.NumIndices / 3));
+				if (disableOneSection && id == "079d12e38aec0006")
+					expectedTriangles -= (int)(sourceLod0.Sections[0].NumIndices / 3);
+			}
+
+			output.WriteLine($"carrier {merge.CarrierFileId:x16}: sections {lod0.Sections.Count}/{expected}, triangles {lod0.Sections.Sum(section => (int)(section.NumIndices / 3))}/{expectedTriangles}");
+			// 关掉的 section 在合并前已烘成 0 三角形：它不再贡献几何。
+			Assert.Equal(expectedTriangles, lod0.Sections.Sum(section => (int)(section.NumIndices / 3)));
+			Assert.Equal(lod0.Sections.Count, lod0.MaterialSlotIds.Distinct().Count());
+		}
+	}
+
 	// ── 样本夹具 ────────────────────────────────────────────────────────────
+
+	/// <summary>
+	/// 回归（2026-11-14 实机失败）：FS-05 三条记录与 CE-67，头身合并开与关，对任何 7 件 VPK Mod 都得编过。
+	/// 以前只在「雫」上测，而别的 Mod 的部位 unit 自定义骨各不相同（宿主缺骨），编译直接抛 “required bone hash”。
+	/// 规划本身不可行的组合（头身合并要求更多独有部件）跳过，只钉「能规划就必须能编」。
+	/// </summary>
+	[Theory]
+	[InlineData(3970674111u, false)]
+	[InlineData(3970674111u, true)]
+	[InlineData(1490803405u, false)]
+	[InlineData(1490803405u, true)]
+	[InlineData(124623533u, false)]
+	[InlineData(124623533u, true)]
+	[InlineData(4081083564u, false)]
+	[InlineData(4081083564u, true)]
+	public async Task ExclusiveMerge_CompilesWhenevertheyCanBePlanned(uint item, bool headMerge)
+	{
+		using var fixture = CompilerFixture.TryCreate();
+		if (fixture is null) return;
+		var managerRoot = Environment.GetEnvironmentVariable("HD2_TEST_MANAGER_ROOT");
+		var gameData = Environment.GetEnvironmentVariable("HD2_TEST_GAME_DATA");
+		if (string.IsNullOrWhiteSpace(managerRoot) || string.IsNullOrWhiteSpace(gameData) || !Directory.Exists(gameData)) return;
+		if (!File.Exists(Path.Combine(managerRoot, "data", "indexes", "asset-index.sqlite"))) return;
+		var sourceUnits = await SectionalCompiler.ReadSourceUnitsAsync(fixture.ModDirectory, default);
+		if (sourceUnits is null || sourceUnits.Count < 2) return;
+
+		var paths = new StoragePaths(managerRoot);
+		var snapshot = await ArmorAuthorityIndexReader.TryReadAsync(paths);
+		Assert.NotNull(snapshot);
+		var kit = snapshot!.Kits.SingleOrDefault(candidate => candidate.ItemId == item && candidate.Kind == GameDataEquipmentKitKind.Armor);
+		if (kit is null) return;
+		var plan = SectionalExclusivePlanner.BuildWithMerge(SectionalExclusivePlanner.BuildIndex(snapshot.Kits), sourceUnits, item, headMerge);
+		if (!plan.Succeeded) { output.WriteLine($"{item} headMerge={headMerge}: 规划不可行（{plan.FailureText}），跳过。"); return; }
+
+		var result = await SectionalCompiler.CompileAsync(
+			fixture.ModDirectory, new VpkHostContext(gameData, paths), kit.ArchiveId, null, headMergeIntoBody: headMerge, null, exclusiveItemId: item);
+
+		Assert.True(result.Ok, result.Error);
+		var written = fixture.ReadUnitKeys(ModNodePayloadLayout.GetOverwriteDirectory(fixture.ModDirectory)).Keys.ToHashSet();
+		Assert.Equal(plan.Replacements.Select(r => r.Target.Key.FileId).Distinct().Order(), written.Order());
+		// 实机回归：神射手的头盔 unit 被 8 条同名头盔记录共用，头盔承载件按同名组放宽后，头必须落在它上面（不再是原版头盔扣在脖子上）。
+		if (item == 3970674111u && !headMerge && sourceUnits.Any(unit => unit.Cell.Slot == 0))
+		{
+			Assert.Contains(0xffc28ef4b7c57c38UL, written);
+			Assert.Contains(plan.HelmetNotes, note => note.Contains("条头盔记录都会显示这个头", StringComparison.Ordinal));
+		}
+
+		output.WriteLine($"{item} headMerge={headMerge}: merged={plan.IsMerged} 写出 {written.Count} 个承载件。");
+	}
 
 	private sealed class CompilerFixture : IDisposable
 	{

@@ -34,10 +34,41 @@ internal sealed record SectionalExclusivePlan(
 	IReadOnlyList<string> Warnings)
 {
 	public string FailureText => string.Join("；", Gaps);
+
+	/// <summary>P4b：要把多个来源 unit 合并成一个再写到承载件上的清单；P4a 逐格承载时为空。</summary>
+	public IReadOnlyList<SectionalExclusiveMerge> Merges { get; init; } = [];
+
+	/// <summary>P4b：拥有承载件的同名记录（同名组放宽后，它们也会显示这个模型）；没有放宽时为空。</summary>
+	public IReadOnlyList<string> GroupMates { get; init; } = [];
+
+	/// <summary>走了合并模式（P4a 逐格承载不了）。</summary>
+	public bool IsMerged => Merges.Count != 0;
 }
 
-/// <summary>下拉里一条记录的评估结果。</summary>
-internal sealed record SectionalExclusiveCandidate(uint ItemId, string ArchiveId, string Name, bool Succeeded, string Summary);
+/// <summary>
+/// P4b 的一次几何合并：<see cref="SourceFileIds"/>（宿主在前）合成一个 unit，写到承载件 <see cref="CarrierFileId"/> 上。
+/// </summary>
+/// <param name="CarrierFileId">承载件（目标记录或其同名组独有的原版 unit）。</param>
+/// <param name="CarrierSlot">承载件所在部位槽（2 = 躯干）。</param>
+/// <param name="Layer">承载件所在层。</param>
+/// <param name="CarrierPart">承载件部位的显示名（「躯干」「左肩」…）。</param>
+/// <param name="SourceFileIds">被合并的来源 unit，第一个是宿主。</param>
+/// <param name="Bodies">这个承载件服务的穿戴者身形（0 健壮、1 纤细）。</param>
+internal sealed record SectionalExclusiveMerge(
+	ulong CarrierFileId,
+	int CarrierSlot,
+	int Layer,
+	string CarrierPart,
+	IReadOnlyList<string> SourceFileIds,
+	IReadOnlyList<int> Bodies)
+{
+	/// <summary>躯干在第一人称下由游戏隐藏，合并进去不会挡镜头；别的部位不保证。</summary>
+	public bool IsTorso => CarrierPart == ArmorStructure.Display(ArmorPart.Torso);
+}
+
+/// <summary>下拉里一条记录的评估结果。<paramref name="Merged"/> = P4a 逐格承载不了、要走合并。</summary>
+internal sealed record SectionalExclusiveCandidate(
+	uint ItemId, string ArchiveId, string Name, bool Succeeded, string Summary, bool Merged = false);
 
 /// <summary>
 /// 专属切换规划器（P4a，规划 <c>kit-instance-vpk-exclusive-plan-20261114.md</c> §4.2 / §4.4）。
@@ -88,13 +119,28 @@ internal static class SectionalExclusivePlanner
 		var list = new List<SectionalExclusiveCandidate>();
 		foreach (var kit in index.Kits.Where(kit => kit.Kind == GameDataEquipmentKitKind.Armor))
 		{
-			var plan = Build(index, source, kit.ItemId, headMerge);
+			var plan = BuildWithMerge(index, source, kit.ItemId, headMerge);
+			var status = !plan.Succeeded
+				? "不可：" + ShortGaps(plan.Gaps)
+				: plan.IsMerged
+					? "可专属·合并（实验）：模型合并进 " + string.Join("、", plan.Merges.Select(merge => merge.CarrierPart).Distinct())
+					: "可专属";
 			list.Add(new SectionalExclusiveCandidate(
-				kit.ItemId, kit.ArchiveId, kit.DisplayName, plan.Succeeded,
-				plan.Succeeded ? "可专属" : "不可：" + ShortGaps(plan.Gaps)));
+				kit.ItemId, kit.ArchiveId, kit.DisplayName, plan.Succeeded, status, plan.IsMerged));
 		}
 
 		return list;
+	}
+
+	/// <summary>
+	/// 先按 P4a 逐格承载；<b>能承载就原样返回（与 <see cref="Build"/> 完全一致）</b>。
+	/// 承载不了再进入合并模式（P4b，规划 <c>kit-instance-vpk-merge-plan-20261114.md</c> §3.1）。
+	/// </summary>
+	internal static SectionalExclusivePlan BuildWithMerge(
+		Index index, IReadOnlyList<SectionalSourceUnit> source, uint itemId, bool headMerge)
+	{
+		var strict = Build(index, source, itemId, headMerge);
+		return strict.Succeeded ? strict : BuildCore(index, source, itemId, headMerge, merge: true);
 	}
 
 	private static string ShortGaps(IReadOnlyList<string> gaps)
@@ -126,9 +172,19 @@ internal static class SectionalExclusivePlanner
 	private static SectionalTargetUnit TargetOf(Unit unit)
 		=> new(new AssetKey(unit.Type, unit.File), ArmorCell.FromRegistryCoordinates(unit.Slot, unit.Layer));
 
-	/// <summary>规划一次。</summary>
+	/// <summary>规划一次（P4a：逐格承载，任何一格没有独有部件就整体失败）。</summary>
 	internal static SectionalExclusivePlan Build(
 		Index index, IReadOnlyList<SectionalSourceUnit> source, uint itemId, bool headMerge)
+		=> BuildCore(index, source, itemId, headMerge, merge: false);
+
+	/// <summary>P4b 主承载件的优先顺序：躯干（第一人称由游戏隐藏），其次胯、腿、肩。</summary>
+	private static readonly ArmorPart[] CarrierPreference =
+	[
+		ArmorPart.Torso, ArmorPart.Hips, ArmorPart.LeftLeg, ArmorPart.RightLeg, ArmorPart.LeftShoulder, ArmorPart.RightShoulder,
+	];
+
+	private static SectionalExclusivePlan BuildCore(
+		Index index, IReadOnlyList<SectionalSourceUnit> source, uint itemId, bool headMerge, bool merge)
 	{
 		ArgumentNullException.ThrowIfNull(index);
 		ArgumentNullException.ThrowIfNull(source);
@@ -184,7 +240,131 @@ internal static class SectionalExclusivePlanner
 			placements.Add(new SectionalExclusivePlacement(cell, sourceUnit.FileId, target.File, target.Layer, role, helmetName));
 		}
 
+		// P4b：同名记录组。「独有」放宽成「拥有者都在这个组里」（规划 §3.1 第 3 点，F2）。
+		var groupItems = index.Kits
+			.Where(candidate => candidate.Kind == GameDataEquipmentKitKind.Armor
+				&& string.Equals(candidate.DisplayName, kit.DisplayName, StringComparison.Ordinal))
+			.Select(candidate => candidate.ItemId)
+			.Append(kit.ItemId)
+			.ToHashSet();
+		var merges = new List<SectionalExclusiveMerge>();
+		var sigPreferred = new[] { new HashSet<ulong>(), new HashSet<ulong>() };   // 合并模式：每种身形的主承载件（签名优先取它）
+
+		// ① P4b 合并模式：主承载件 + 逐格承载 + 缺的格子合并进主承载件。
+		void PlanMerged()
+		{
+			var sourceSlots = bySlot.Keys.Where(slot => slot != capeSlot && slot != helmetSlot).Order().ToArray();
+			var bodies = Enumerable.Range(0, 2).Where(body => tUnits.Any(unit => Covers(unit.RawBody, body))).ToArray();
+			bool IsGroupUnique(ulong file) => index.Owners.TryGetValue(file, out var owners) && owners.All(groupItems.Contains);
+			Unit[] Unique(int slot, int body) => tUnits
+				.Where(unit => unit.Slot == slot && Covers(unit.RawBody, body))
+				.DistinctBy(unit => unit.File)
+				.Where(unit => IsGroupUnique(unit.File))
+				.OrderByDescending(unit => unit.Layer)
+				.ThenBy(unit => unit.File)
+				.ToArray();
+
+			// 每种身形一个主承载件：躯干优先，其次胯、腿、肩。
+			var primary = new Unit?[2];
+			foreach (var body in bodies)
+			{
+				foreach (var part in CarrierPreference)
+				{
+					var found = Unique((int)(ArmorStructure.SlotOf(part) ?? 0u), body);
+					if (found.Length == 0) continue;
+					primary[body] = found[0];
+					break;
+				}
+
+				if (primary[body] is null)
+					gaps.Add($"{BodyLabel(body)}没有任何独有部件可以承载合并后的模型（躯干、胯、腿、肩都被其它护甲共用）");
+			}
+
+			if (gaps.Count != 0) return;
+			foreach (var body in bodies) sigPreferred[body].Add(primary[body]!.Value.File);
+
+			// 每个格子：有自己的独有承载件就逐格承载；没有的记进 missing，合并进主承载件。头身合并的「头」当一个伪部位，
+			// 自己的承载件是躯干第二层。
+			var own = new Dictionary<(int Slot, int Body), Unit>();
+			var missing = new[] { new SortedSet<int>(), new SortedSet<int>() };
+			foreach (var body in bodies)
+			{
+				foreach (var slot in sourceSlots)
+				{
+					var found = Unique(slot, body);
+					if (found.Length == 0) missing[body].Add(slot);
+					else own[(slot, body)] = found[0];
+				}
+
+				if (!mergeActive) continue;
+				var torsoUnits = Unique(torsoSlot, body);
+				if (torsoUnits.Length >= 2 && !missing[body].Contains(torsoSlot)) own[(helmetSlot, body)] = torsoUnits[1];
+				else missing[body].Add(helmetSlot);
+			}
+
+			// 两种身形共用同一个主承载件（通用 unit）：它只有一份几何，缺口取并集。
+			var sharedPrimary = bodies.Length == 2 && primary[0]!.Value.File == primary[1]!.Value.File;
+			if (sharedPrimary)
+			{
+				var union = missing[0].Union(missing[1]).ToArray();
+				foreach (var body in bodies)
+					foreach (var slot in union)
+					{
+						missing[body].Add(slot);
+						own.Remove((slot, body));
+					}
+			}
+
+			// 需要合并的身形：主承载件所在部位的来源也并进去（它不再单独承载）。
+			var mergedFiles = new HashSet<ulong>();
+			foreach (var body in bodies)
+			{
+				if (missing[body].Count == 0) continue;
+				var carrier = primary[body]!.Value;
+				if (!mergedFiles.Add(carrier.File)) continue;
+
+				var served = sharedPrimary ? bodies : [body];
+				var slots = new SortedSet<int>(missing[body]);
+				foreach (var servedBody in served)
+					own.Remove((carrier.Slot, servedBody));
+				slots.Add(carrier.Slot);
+
+				var ordered = new List<SectionalSourceUnit>();
+				foreach (var slot in slots.OrderBy(slot => slot == carrier.Slot ? -1 : slot == helmetSlot ? int.MaxValue : slot))
+				{
+					var unit = bySlot.GetValueOrDefault(slot);
+					if (unit is not null && ordered.All(item => item.FileId != unit.FileId)) ordered.Add(unit);
+				}
+
+				if (ordered.Count == 0) continue;
+				var part = PartName(carrier.Slot);
+				carrierBySource[carrier.File] = "merge:" + Hex(carrier.File);
+				carriers.Add(carrier.File);
+				foreach (var servedBody in served) sigBody[servedBody].Add(carrier.File);
+				replacements.Add(new SectionalReplacement(ordered[0], TargetOf(carrier)));
+				foreach (var unit in ordered)
+				{
+					placements.Add(new SectionalExclusivePlacement(
+						PartName(unit.Cell.Slot), unit.FileId, carrier.File, carrier.Layer, $"模型·合并进{part}", null));
+				}
+
+				merges.Add(new SectionalExclusiveMerge(
+					carrier.File, carrier.Slot, carrier.Layer, part, ordered.Select(unit => unit.FileId).ToArray(), served));
+			}
+
+			// 其余格子逐格承载（与 P4a 同一套落点与签名规则）。
+			foreach (var ((slot, body), unit) in own.OrderBy(pair => pair.Key.Slot).ThenBy(pair => pair.Key.Body))
+			{
+				if (slot == helmetSlot && head is not null)
+					Assign(head, unit, ShownCell(torsoSlot, unit, body), "头", null, signature: true, body);
+				else if (bySlot.TryGetValue(slot, out var sourceUnit))
+					Assign(sourceUnit, unit, ShownCell(slot, unit, body), "模型", null, signature: true, body);
+			}
+		}
+
 		// ① 护甲部位：头与披风除外。头盔槽位在护甲记录上也可能有件（少数），那些只进隐藏集。
+		if (merge) PlanMerged();
+		else
 		foreach (var (slot, sourceUnit) in bySlot.OrderBy(pair => pair.Key))
 		{
 			if (slot == capeSlot || slot == helmetSlot) continue;
@@ -245,6 +425,13 @@ internal static class SectionalExclusivePlanner
 		}
 		else if (head is not null)
 		{
+			// P4b（仅合并这一遍）：头盔承载件也按同名组放宽——拥有者全在「同套 ∪ 同名」的头盔记录里就算独有。
+			// 典型：FS-05 的头盔 unit 被 8 条同名头盔记录共用，严格独有永远找不到，头会被丢掉（原版头盔扣在脖子上）。
+			// 非合并那一遍（P4a）保持严格判断，结果不变。
+			var helmetOwnerSet = helmetKits.Select(candidate => candidate.ItemId).Append(itemId).ToHashSet();
+			bool HelmetUnique(ulong file) => index.Owners.TryGetValue(file, out var owners)
+				&& (merge ? owners.All(helmetOwnerSet.Contains) : owners.Count == 1);
+			var relaxedHelmetCarriers = new HashSet<ulong>();
 			if (helmetKits.Length == 0)
 			{
 				headResult = SectionalHeadMergePlan.NoHelmetKit;
@@ -270,7 +457,7 @@ internal static class SectionalExclusivePlanner
 						var cellUnits = hUnits.Where(unit => Covers(unit.RawBody, body)).DistinctBy(unit => unit.File).ToArray();
 						if (cellUnits.Length == 0) continue;
 						var unique = cellUnits
-							.Where(unit => index.Owners.TryGetValue(unit.File, out var owners) && owners.Count == 1)
+							.Where(unit => HelmetUnique(unit.File))
 							.OrderByDescending(unit => unit.Layer).ThenBy(unit => unit.File).ToArray();
 						if (unique.Length == 0) missing.Add(BodyLabel(body));
 						else perBody.Add((body, unique[0]));
@@ -284,7 +471,12 @@ internal static class SectionalExclusivePlanner
 					}
 
 					foreach (var (body, carrier) in perBody)
+					{
 						Assign(head, carrier, ShownBody(carrier, body), "模型", name, signature: false, body);
+						if (index.Owners.TryGetValue(carrier.File, out var carrierOwners) && carrierOwners.Count > 1)
+							relaxedHelmetCarriers.Add(carrier.File);
+					}
+
 					foreach (var unit in UnitsOf(helmetKit).Where(unit => unit.Slot != capeSlot))
 						helmetHide.Add(unit.File);
 					replaced++;
@@ -295,6 +487,12 @@ internal static class SectionalExclusivePlanner
 					helmetNotes.Add("没有任何配套头盔记录能承载头：保留原版头盔，模型的头不会出现。");
 				else
 					helmetNotes.Add("提示：被替换的头盔记录自己的部件也会显示模型的头，穿别的护甲戴这顶头盔时同样会看到。");
+				if (relaxedHelmetCarriers.Count != 0)
+				{
+					// 头盔承载件被多条同名头盔记录共用：它们都会显示这个头。
+					var sharing = helmetKits.Count(candidate => UnitsOf(candidate).Any(unit => relaxedHelmetCarriers.Contains(unit.File)));
+					helmetNotes.Add($"同名的 {sharing} 条头盔记录都会显示这个头（它们共用同一个头部 unit）。");
+				}
 			}
 		}
 
@@ -317,12 +515,23 @@ internal static class SectionalExclusivePlanner
 		}
 
 		// ④ 签名：两种身形都有的承载件优先（一个 all 就够）；否则每种身形各取 ID 最小的一个，生成备用规则。
+		// 合并模式下签名取主承载件（规划 §3.1 第 4 点）：它是躯干时离根节点最近，0.3 米半径内最稳。
+		var sigSets = new[] { sigBody[0], sigBody[1] };
+		if (merges.Count != 0)
+		{
+			for (var body = 0; body <= 1; body++)
+			{
+				var preferred = sigPreferred[body].Where(carriers.Contains).ToHashSet();
+				if (preferred.Count != 0) sigSets[body] = preferred;
+			}
+		}
+
 		var signature = new List<ulong>();
-		var both = sigBody[0].Intersect(sigBody[1]).Order().ToArray();
+		var both = sigSets[0].Intersect(sigSets[1]).Order().ToArray();
 		if (both.Length != 0) signature.Add(both[0]);
 		else
 		{
-			foreach (var set in sigBody.Where(set => set.Count != 0))
+			foreach (var set in sigSets.Where(set => set.Count != 0))
 				signature.Add(set.Order().First());
 		}
 
@@ -332,9 +541,45 @@ internal static class SectionalExclusivePlanner
 		info.Add(hide.Length == 0
 			? "目标没有需要隐藏的原版部件，不需要隐藏规则。"
 			: $"有 {hide.Length} 个原版部件会在穿这套的角色身上被隐藏（下次部署后生效）。");
+
+		var groupMates = new List<string>();
+		if (merge)
+		{
+			foreach (var item in merges)
+			{
+				info.Add(
+					$"合并（实验）：{item.SourceFileIds.Count} 个模型部位合并成一个 unit，写到「{item.CarrierPart}」承载件 0x{Hex(item.CarrierFileId)} 上。");
+				if (!item.IsTorso)
+					warnings.Add(
+						$"模型合并进了「{item.CarrierPart}」而不是躯干：游戏在第一人称下只隐藏躯干和头盔，第一人称可能看到模型（会挡镜头），需要实机确认。");
+			}
+
+			// 同名组放宽：承载件被同名记录共用时，穿它们的角色也会显示这个模型。
+			var shared = carriers.Where(file => index.Owners.TryGetValue(file, out var owners) && owners.Count > 1).Order().ToArray();
+			if (shared.Length != 0)
+			{
+				foreach (var mate in index.Kits
+					.Where(candidate => candidate.Kind == GameDataEquipmentKitKind.Armor
+						&& candidate.ItemId != itemId && groupItems.Contains(candidate.ItemId)
+						&& candidate.Pieces.Any(piece => shared.Contains(piece.UnitAssetKey.FileId)))
+					.OrderBy(candidate => candidate.ItemId))
+				{
+					groupMates.Add($"{mate.DisplayName}（{mate.ItemId}）");
+				}
+
+				warnings.Add(
+					$"承载件 {string.Join("、", shared.Select(file => "0x" + Hex(file)))} 同时被同名记录 {string.Join("、", groupMates)} 引用："
+					+ "穿它们的角色也会显示这个模型。");
+			}
+		}
+
 		return new SectionalExclusivePlan(
 			true, itemId, kit.DisplayName, [], replacements, placements, hide, signature.Distinct().ToArray(),
-			headResult, helmetNotes, info, warnings);
+			headResult, helmetNotes, info, warnings)
+		{
+			Merges = merges,
+			GroupMates = groupMates,
+		};
 
 		static SectionalExclusivePlan Fail(uint item, string name, string reason)
 			=> new(false, item, name, [reason], [], [], [], [], SectionalHeadMergePlan.Off, [], [], []);

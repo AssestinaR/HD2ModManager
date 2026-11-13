@@ -422,7 +422,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 		VpkTargetArmors = catalog.Options
 			.Select(option => new VpkTargetArmorOption(
-				option.ArchiveId, $"{option.Label}  {(option.Available ? "· 可专属" : "· " + option.Status)}",
+				option.ArchiveId, $"{option.Label}  · {option.Status}",
 				VpkTargetArmorKind.GameArmor, option.ItemId, option.Name, option.Available))
 			.ToArray();
 		SelectedVpkTargetArmor = _vpkFile.Exclusive && _vpkFile.TargetItemId is { } recorded
