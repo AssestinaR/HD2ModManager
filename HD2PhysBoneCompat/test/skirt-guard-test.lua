@@ -97,7 +97,7 @@ end
 -- Unit.bones / scene_graph_parent / scene_graph_link / is_a / is_child，
 -- 进舰船几秒后游戏崩了（0xc0000005，参数 0x0 0x0）。`pcall` 拦不住原生 AV。
 -- 所以这些调用只允许待在**显式开关控制、默认关闭**的探针函数里：
---   · `probe_identity_api`（开关 `probeIdentity`）
+--   · `probe_identity_api`（开关 `probeIdentity`，默认关）
 --   · `probe_identity_link`（开关 `probeIdentityLink`，默认关）
 local function count_plain(text, needle)
 	local count, at = 0, 1
@@ -132,6 +132,9 @@ check("两组探针都有开关（probeIdentity / probeIdentityLink）",
 		and wholeStripped:find("probeIdentityLink", 1, true) ~= nil)
 check("身份链探针默认关闭（只在开关非 0 时才调）",
 	wholeStripped:find("identSwitch ~= nil and identSwitch ~= 0", 1, true) ~= nil)
+check("身份 API 探针默认关闭（只在开关非 0 时才调）",
+	wholeStripped:find("probeSwitch ~= nil and probeSwitch ~= 0", 1, true) ~= nil
+		and wholeStripped:find("probeSwitch == nil or", 1, true) == nil)
 
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)
