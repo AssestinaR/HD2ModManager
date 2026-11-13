@@ -36,6 +36,9 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $LuaJit "$project/tests/test_kit_instance_hider.lua" "$project/src/kit_instance_hider.lua"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $LuaJit "$project/tests/test_armor_override_runtime_update.lua" `
+        "$project/src/armor_override_runtime.lua" "$project/src/kit_instance_hider.lua"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $LuaJit "$project/tests/test_armor_metadata_probe_core.lua" `
         "$project/src/armor_metadata_probe_core.lua"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
