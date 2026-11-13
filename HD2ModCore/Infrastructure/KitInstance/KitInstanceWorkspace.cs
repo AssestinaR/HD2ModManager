@@ -19,6 +19,14 @@ namespace HD2ModCore.Infrastructure.KitInstance;
 /// 转专属为这条记录写进该节点 <c>Overwrite/</c> 的文件名（patch 与 sidecar）。撤销只删这些。
 /// 手写的记录没有它（<c>null</c>）：撤销时只删记录本身。
 /// </param>
+/// <param name="Source">
+/// 记录由谁管理。<c>null</c> = P3 转专属或手写；<see cref="KitExclusiveWorkspace.SourceTag"/> = VPK 专属切换（P4a）。
+/// 后者由「切换」管理（重新切换或关掉专属时删除/替换），P3 的「撤销专属」不对它显示。
+/// </param>
+/// <param name="ExtraAll">
+/// 备用签名（每个元素是一个单件 <c>all</c>）：与主签名共用半径、<c>none</c> 与隐藏集，各编译成一条规则。
+/// 只在目标的身体承载件没有「两种身形共用」的那一个时出现。旧文件没有它，按空读。
+/// </param>
 public sealed record KitInstanceWorkspaceRecord(
 	uint TargetItemId,
 	string RuleName,
@@ -28,10 +36,21 @@ public sealed record KitInstanceWorkspaceRecord(
 	IReadOnlyList<string> Hide,
 	string? ContentFingerprint = null,
 	string? TargetName = null,
-	IReadOnlyList<string>? DerivedFiles = null)
+	IReadOnlyList<string>? DerivedFiles = null,
+	string? Source = null,
+	IReadOnlyList<string>? ExtraAll = null)
 {
 	public KitInstanceRule ToRule()
 		=> new(RuleName, Radius, All ?? [], None ?? [], Hide ?? []);
+
+	/// <summary>主规则加上每个备用签名各一条（规则名加后缀 <c>-s2</c>、<c>-s3</c>…）。</summary>
+	public IEnumerable<KitInstanceRule> ToRules()
+	{
+		yield return ToRule();
+		var index = 2;
+		foreach (var extra in ExtraAll ?? [])
+			yield return new KitInstanceRule($"{RuleName}-s{index++}", Radius, [extra], None ?? [], Hide ?? []);
+	}
 }
 
 /// <summary>workspace 记录集合，按 <see cref="ModNodeId"/> 索引。</summary>
@@ -116,7 +135,9 @@ public static class KitInstanceWorkspaceStore
 				value.Hide ?? [],
 				string.IsNullOrEmpty(value.ContentFingerprint) ? null : value.ContentFingerprint,
 				string.IsNullOrEmpty(value.TargetName) ? null : value.TargetName,
-				value.DerivedFiles is { Length: > 0 } ? value.DerivedFiles : null);
+				value.DerivedFiles is { Length: > 0 } ? value.DerivedFiles : null,
+				string.IsNullOrEmpty(value.Source) ? null : value.Source,
+				value.ExtraAll is { Length: > 0 } ? value.ExtraAll : null);
 		}
 		return new KitInstanceWorkspace(records);
 	}
@@ -142,6 +163,8 @@ public static class KitInstanceWorkspaceStore
 						ContentFingerprint = pair.Value.ContentFingerprint,
 							TargetName = pair.Value.TargetName,
 							DerivedFiles = pair.Value.DerivedFiles?.ToArray(),
+							Source = pair.Value.Source,
+							ExtraAll = pair.Value.ExtraAll is { Count: > 0 } ? pair.Value.ExtraAll.ToArray() : null,
 					}),
 		};
 		return JsonSerializer.Serialize(file, Options);
@@ -171,6 +194,8 @@ public static class KitInstanceWorkspaceStore
 		public string? ContentFingerprint { get; set; }
 		public string? TargetName { get; set; }
 		public string[]? DerivedFiles { get; set; }
+		public string? Source { get; set; }
+		public string[]? ExtraAll { get; set; }
 	}
 }
 

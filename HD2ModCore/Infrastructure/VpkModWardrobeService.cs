@@ -17,7 +17,9 @@ public sealed record VpkWardrobeFile(
 	VpkWardrobeState State,
 	string? TargetArmorArchiveId = null,
 	string? TargetArmorName = null,
-	bool HeadMergeIntoBody = false)
+	bool HeadMergeIntoBody = false,
+	uint? TargetItemId = null,
+	bool Exclusive = false)
 {
 	public static VpkWardrobeFile Default { get; } = new(false, VpkWardrobeState.Empty);
 
@@ -178,7 +180,16 @@ public sealed class VpkModWardrobeService
 				targetName = "自定义素体";
 			}
 
-			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName, headMerge);
+			// 专属切换（P4a）：旧文件没有这两个字段，一律按「非专属」读。
+			uint? targetItemId = root.TryGetProperty("targetItemId", out var itemElement)
+				&& itemElement.ValueKind == JsonValueKind.Number && itemElement.TryGetUInt32(out var itemValue)
+					? itemValue
+					: null;
+			var exclusive = targetItemId is not null
+				&& root.TryGetProperty("exclusive", out var exclusiveElement)
+				&& exclusiveElement.ValueKind == JsonValueKind.True;
+
+			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName, headMerge, targetItemId, exclusive);
 		}
 		catch (Exception exception) when (exception is IOException or JsonException)
 		{
@@ -197,6 +208,8 @@ public sealed class VpkModWardrobeService
 			headMergeIntoBody = file.HeadMergeIntoBody,
 			targetArmorArchiveId = file.TargetArmorArchiveId,
 			targetArmorName = file.TargetArmorName,
+			targetItemId = file.Exclusive ? file.TargetItemId : null,
+			exclusive = file.Exclusive,
 			disabled = file.State.Disabled.ToDictionary(
 				pair => pair.Key,
 				pair => pair.Value.Order().ToArray(),

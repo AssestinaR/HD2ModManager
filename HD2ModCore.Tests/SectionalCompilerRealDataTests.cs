@@ -1,5 +1,6 @@
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.KitInstance;
 using HD2ModCore.Infrastructure.Sectional;
 
 namespace HD2ModCore.Tests;
@@ -137,6 +138,99 @@ public sealed class SectionalCompilerRealDataTests
 			.ToHashSet();
 		Assert.NotEmpty(capeKeys);
 		Assert.Empty(compiled.Keys.Intersect(capeKeys));
+	}
+
+	/// <summary>
+	/// 专属切换（P4a）真数据核对：写进 Overwrite 的原版 unit 必须全是目标记录独有的承载件——没有全局空壳、
+	/// 没有被连带护甲的部件、没有披风。目标取 <c>HD2_TEST_EXCLUSIVE_ITEM</c>，缺省取下拉里第一条「可专属」的记录。
+	/// </summary>
+	[Fact]
+	public async Task ExclusiveMode_WritesOnlyUnitsOwnedByTheTargetRecord()
+	{
+		using var fixture = CompilerFixture.TryCreate();
+		if (fixture is null) return;
+		var managerRoot = Environment.GetEnvironmentVariable("HD2_TEST_MANAGER_ROOT");
+		if (string.IsNullOrWhiteSpace(managerRoot)) return;
+		if (!File.Exists(Path.Combine(managerRoot, "data", "indexes", "asset-index.sqlite"))) return;
+
+		var paths = new StoragePaths(managerRoot);
+		var catalog = await KitExclusiveService.LoadCatalogAsync(fixture.ModDirectory, paths, headMerge: false);
+		Assert.Null(catalog.Unavailable);
+		var wanted = Environment.GetEnvironmentVariable("HD2_TEST_EXCLUSIVE_ITEM");
+		var option = string.IsNullOrWhiteSpace(wanted)
+			? catalog.Options.First(candidate => candidate.Available)
+			: catalog.Options.Single(candidate => candidate.ItemId == uint.Parse(wanted));
+		Assert.True(option.Available, option.Status);
+
+		var context = new VpkHostContext(null, paths);
+		var result = await SectionalCompiler.CompileAsync(
+			fixture.ModDirectory, context, option.ArchiveId, null, headMergeIntoBody: false, [], exclusiveItemId: option.ItemId);
+
+		Assert.True(result.Ok, result.Error);
+		Assert.Equal(0, result.HiddenUnits);   // 不写任何全局空壳
+		Assert.NotNull(result.Exclusive);
+		Assert.True(result.Exclusive!.Hide.Count is > 0 and <= KitInstanceRulesProtocol.MaximumHide);
+
+		var snapshot = await ArmorAuthorityIndexReader.TryReadAsync(paths);
+		Assert.NotNull(snapshot);
+		var owners = snapshot!.Kits
+			.SelectMany(kit => kit.Pieces.Select(piece => (kit.ItemId, piece.UnitAssetKey.FileId)))
+			.GroupBy(pair => pair.FileId)
+			.ToDictionary(group => group.Key, group => group.Select(pair => pair.ItemId).Distinct().ToArray());
+		var vanilla = owners.Keys.ToHashSet();
+
+		var compiled = fixture.ReadUnitKeys(ModNodePayloadLayout.GetOverwriteDirectory(fixture.ModDirectory));
+		var written = compiled.Keys.Where(vanilla.Contains).ToArray();
+		Assert.NotEmpty(written);
+		// 写出去的原版 unit 要么归目标记录独有，要么是目标同套头盔记录独有的头盔承载件。
+		var setId = snapshot.Kits.Single(kit => kit.ItemId == option.ItemId).SetId;
+		var allowed = snapshot.Kits
+			.Where(kit => kit.ItemId == option.ItemId
+				|| (kit.Kind == GameDataEquipmentKitKind.Helmet && kit.SetId == setId))
+			.Select(kit => kit.ItemId)
+			.ToHashSet();
+		foreach (var file in written)
+		{
+			Assert.Single(owners[file]);
+			Assert.Contains(owners[file][0], allowed);
+		}
+
+		var capeKeys = snapshot.Kits
+			.Where(kit => kit.Kind == GameDataEquipmentKitKind.Cape)
+			.SelectMany(kit => kit.Pieces).Select(piece => piece.UnitAssetKey.FileId).ToHashSet();
+		Assert.Empty(compiled.Keys.Intersect(capeKeys));
+		// 来源 unit 一个都不该原样留着（全部落到承载件的键上）。
+		Assert.Empty(compiled.Keys.Intersect(fixture.ReadUnitKeys(Path.Combine(fixture.ModDirectory, "sectional")).Keys));
+		// 隐藏集里没有承载件，也没有披风。
+		var hide = result.Exclusive.Hide.Select(id => Convert.ToUInt64(id, 16)).ToHashSet();
+		Assert.Empty(hide.Intersect(written));
+		Assert.Empty(hide.Intersect(capeKeys));
+	}
+
+	/// <summary>FS-05 的三条记录一个身体格子都没有独有部件：专属切换必须整体失败并说明原因。</summary>
+	[Fact]
+	public async Task ExclusiveMode_Fs05FailsAsAWhole()
+	{
+		using var fixture = CompilerFixture.TryCreate();
+		if (fixture is null) return;
+		var managerRoot = Environment.GetEnvironmentVariable("HD2_TEST_MANAGER_ROOT");
+		if (string.IsNullOrWhiteSpace(managerRoot)) return;
+		if (!File.Exists(Path.Combine(managerRoot, "data", "indexes", "asset-index.sqlite"))) return;
+
+		var paths = new StoragePaths(managerRoot);
+		var catalog = await KitExclusiveService.LoadCatalogAsync(fixture.ModDirectory, paths, headMerge: false);
+		foreach (var item in new[] { 124623533u, 3970674111u, 1490803405u })
+		{
+			var option = catalog.Options.SingleOrDefault(candidate => candidate.ItemId == item);
+			if (option is null) return;   // 索引里没有这几条（别的游戏版本）：跳过
+			Assert.False(option.Available, option.Label);
+			Assert.StartsWith("不可：", option.Status, StringComparison.Ordinal);
+		}
+
+		var failed = await SectionalCompiler.CompileAsync(
+			fixture.ModDirectory, new VpkHostContext(null, paths), "ccac0a57aca3ae92", null, headMergeIntoBody: false, [], exclusiveItemId: 3970674111);
+		Assert.False(failed.Ok);
+		Assert.Contains("不能专属切换", failed.Error!, StringComparison.Ordinal);
 	}
 
 	// ── 样本夹具 ────────────────────────────────────────────────────────────

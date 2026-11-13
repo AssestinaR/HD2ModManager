@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.KitInstance;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
 
@@ -237,6 +238,10 @@ public partial class ModDetailsPageViewModel
 			var targets = SelectedVpkTargetArmor is { } selected
 				? new[] { selected.ArchiveId }
 				: ResolveApplyTargets(directory);
+			// 专属：下拉处在专属模式时按选中那条记录重建；没选中时沿用上次切换的专属状态。
+			var rebuildExclusive = SelectedVpkTargetArmor is { } selectedOption
+				? (_vpkExclusiveMode ? selectedOption.ItemId : null)
+				: ResolveApplyExclusive();
 			Report("正在重新转换来源 VPK…");
 			var outcome = await VpkRebuildService.RunAsync(
 				node.Id.Value.ToString("N"),
@@ -245,7 +250,8 @@ public partial class ModDetailsPageViewModel
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
-				cancellation).ConfigureAwait(true);
+				cancellation,
+				exclusiveItemId: rebuildExclusive).ConfigureAwait(true);
 			Step();
 
 			if (!outcome.Ok)
@@ -262,8 +268,24 @@ public partial class ModDetailsPageViewModel
 			try
 			{
 				var applied = SelectedVpkTargetArmor is { } picked
-					? _vpkFile with { TargetArmorArchiveId = picked.ArchiveId, TargetArmorName = picked.DisplayName }
+					? _vpkFile with
+					{
+						TargetArmorArchiveId = picked.ArchiveId,
+						TargetArmorName = picked.StoredName,
+						TargetItemId = rebuildExclusive,
+						Exclusive = rebuildExclusive is not null,
+					}
 					: _vpkFile;
+				_vpkFile = applied;
+				// 专属记录跟着这次重建同步（重建换了基底，旧记录的内容指纹会对不上）。
+				// 编译没做成（IncompleteReason 非空）时生效层还是旧的，记录也保持旧的，别动。
+				if (outcome.IncompleteReason is null)
+				{
+					var rebuildSynced = await KitExclusiveWorkspace.SyncAsync(
+						node.Id, _library.ModsRootDirectory, directory, outcome.Exclusive).ConfigureAwait(true);
+					if (!rebuildSynced.Ok)
+						LogService.Warn($"{node.Metadata.Name}：同步专属隐藏记录失败：{rebuildSynced.Error}");
+				}
 				await VpkModWardrobeService.WriteAsync(directory, applied).ConfigureAwait(true);
 			}
 			catch (Exception exception) when (exception is IOException or InvalidOperationException)

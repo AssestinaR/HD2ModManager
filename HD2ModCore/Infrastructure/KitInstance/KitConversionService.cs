@@ -18,7 +18,7 @@ public sealed record KitConversionApplyResult(bool Succeeded, string Message, Ki
 /// </summary>
 public sealed class KitConversionService
 {
-	private static readonly SemaphoreSlim WorkspaceLock = new(1, 1);
+	internal static readonly SemaphoreSlim WorkspaceLock = new(1, 1);
 	private readonly KitPollutionService _pollution;
 
 	public KitConversionService(KitPollutionService pollution)

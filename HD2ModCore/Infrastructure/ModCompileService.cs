@@ -24,6 +24,9 @@ public sealed record ModCompileOutcome(
 	/// </para>
 	/// </summary>
 	public VpkRekeyOutcome? Rekey { get; init; }
+
+	/// <summary>专属切换（P4a）编出来的隐藏规则内容；普通编译为 <c>null</c>。调用方据此同步 workspace 记录。</summary>
+	public KitInstance.KitExclusiveSeed? Exclusive { get; init; }
 }
 
 /// <summary>
@@ -58,7 +61,9 @@ public static class ModCompileService
 		Action<string>? onStage = null,
 		CancellationToken cancellationToken = default,
 		// 头身合并：默认跟随 wardrobe.json；显式传值时以调用方为准（界面翻开关那一下）。
-		bool? headMergeIntoBody = null)
+		bool? headMergeIntoBody = null,
+		// 专属切换（P4a）：非空 = 只写 targetArchiveIds[0] 那一套里 item_id 对应记录的独有部件；null = 老做法。
+		uint? exclusiveItemId = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
@@ -72,9 +77,13 @@ public static class ModCompileService
 			: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorArchiveId) ? null : wardrobe.TargetArmorArchiveId);
 		var disabled = disabledSections ?? wardrobe.State.Disabled;
 		var headMerge = headMergeIntoBody ?? wardrobe.HeadMergeIntoBody;
+		// 没有显式指定目标（重构建、CLI 沿用「上次用的是哪件」）时，也沿用上次的专属状态：
+		// 否则专属切换过的 Mod 一重构建就悄悄退回成「写全局空壳」的老做法。
+		if (exclusiveItemId is null && targetArchiveIds is not { Count: > 0 } && wardrobe.Exclusive)
+			exclusiveItemId = wardrobe.TargetItemId;
 
 		var result = await SectionalCompiler
-			.CompileAsync(modDirectory, context, target, disabled, headMerge, null, onStage, cancellationToken)
+			.CompileAsync(modDirectory, context, target, disabled, headMerge, null, onStage, cancellationToken, exclusiveItemId)
 			.ConfigureAwait(false);
 		if (!result.Ok)
 			return ModCompileOutcome.Failure(result.Error ?? "编译失败。", result.Warnings);
@@ -93,6 +102,7 @@ public static class ModCompileService
 		return new ModCompileOutcome(
 			true, null, result.Kind == SectionalCompileKind.Armor, targetName, notes)
 		{
+			Exclusive = result.Exclusive,
 			Rekey = new VpkRekeyOutcome(
 				true,
 				null,

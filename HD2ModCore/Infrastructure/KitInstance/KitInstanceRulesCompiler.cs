@@ -47,26 +47,28 @@ public static class KitInstanceRulesCompiler
 				}
 			}
 
-			var rule = record.ToRule();
-			if (!KitInstanceRulesProtocol.TryValidate(rule, out var error))
+			foreach (var rule in record.ToRules())
 			{
-				issues.Add(new CoreIssue(
-					CoreIssueSeverity.Warning,
-					"KitInstanceRuleInvalid",
-					$"「按实例隐藏」规则不合法，已忽略：{error}",
-					NodeId: nodeId));
-				continue;
+				if (!KitInstanceRulesProtocol.TryValidate(rule, out var error))
+				{
+					issues.Add(new CoreIssue(
+						CoreIssueSeverity.Warning,
+						"KitInstanceRuleInvalid",
+						$"「按实例隐藏」规则不合法，已忽略：{error}",
+						NodeId: nodeId));
+					continue;
+				}
+				if (!names.Add(rule.Name))
+				{
+					issues.Add(new CoreIssue(
+						CoreIssueSeverity.Warning,
+						"KitInstanceRuleDuplicateName",
+						$"「按实例隐藏」规则名 {rule.Name} 重复，后者已忽略。",
+						NodeId: nodeId));
+					continue;
+				}
+				rules.Add(rule);
 			}
-			if (!names.Add(rule.Name))
-			{
-				issues.Add(new CoreIssue(
-					CoreIssueSeverity.Warning,
-					"KitInstanceRuleDuplicateName",
-					$"「按实例隐藏」规则名 {rule.Name} 重复，后者已忽略。",
-					NodeId: nodeId));
-				continue;
-			}
-			rules.Add(rule);
 		}
 
 		if (rules.Count > KitInstanceRulesProtocol.MaximumRules)

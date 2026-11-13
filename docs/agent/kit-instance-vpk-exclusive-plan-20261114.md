@@ -169,3 +169,11 @@
 | E4 | 头盔没有独有部件时保留原版头盔，不让整个转换失败 | 按此 |
 | E5 | VPK Mod 的卡片不显示 P3「转专属」，改成指向「专属」开关的提示 | 按此 |
 | E6 | 神射手（P4b 左肩合并探针）先不做，P4a 之后再决定 | 先不做 |
+
+## 9. 结果
+
+| 阶段 | 状态 | 说明 |
+|---|---|---|
+| P4a | 完成（2026-11-14） | 「目标护甲」旁加「专属」开关：只把模型写到所选护甲独有的部件上，按实例隐藏该护甲的其余原版部件，记录写入 workspace（`source: vpk-exclusive`）。新增 `SectionalExclusivePlanner`、`SectionalCompiler.Exclusive`、`KitExclusiveService`/`KitExclusiveWorkspace`、`KitExclusivePreviewWindow`。用户实测：雫 → DS-42“联邦之刃”专属，身体正常，其它护甲不受影响，民主官仍是爱弥斯。 |
+| P4a 修复 | 完成 | 头盔候选原来只按 set_id 找，DS-42 护甲与头盔 set_id 不同导致头丢失（断颈 + 原版头盔）。改为同 set_id ∪ 同 display_name；用户复测头部正常。 |
+| P4b | 未做 | 神射手等无逐格独有部件的护甲：把模型合并到一个独有部件上（约 107–114/138 套可用），需第一人称探针，待用户决定。 |

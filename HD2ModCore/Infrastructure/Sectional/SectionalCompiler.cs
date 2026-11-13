@@ -50,6 +50,9 @@ public sealed record SectionalCompileResult(
 	/// <summary>失败。</summary>
 	public static SectionalCompileResult Failure(string error, SectionalCompileKind kind = SectionalCompileKind.OwnModel)
 		=> new(false, error, kind, null, 0, 0, SectionalHeadMergeOutcome.Off, 0, [], []);
+
+	/// <summary>专属切换（P4a）这一次编出来的隐藏规则内容；普通编译为 <c>null</c>。</summary>
+	public KitInstance.KitExclusiveSeed? Exclusive { get; init; }
 }
 
 /// <summary>
@@ -66,7 +69,7 @@ public sealed record SectionalCompileResult(
 /// <c>sectional/</c>，隐藏壳由来源 unit 现造。换甲只是"改 unit 键"，不需要读目标 unit 本身。
 /// </para>
 /// </summary>
-public static class SectionalCompiler
+public static partial class SectionalCompiler
 {
 	/// <summary>编译一次。</summary>
 	/// <param name="modDirectory">这个 Mod 的目录。</param>
@@ -80,6 +83,10 @@ public static class SectionalCompiler
 	/// <param name="enabledMaterialPatches">
 	/// 要装进生效层的材质 patch 文件名。<c>null</c> = 读 Mod 设置文件；那里也没有 = 全部。
 	/// </param>
+	/// <param name="exclusiveItemId">
+	/// 专属切换（P4a）：非空时按「只写目标记录自己独有的 unit + 隐藏规则」编译，<paramref name="targetArchiveId"/> 必须是游戏护甲。
+	/// <c>null</c> = 老做法，行为与以前完全一致。
+	/// </param>
 	public static async ValueTask<SectionalCompileResult> CompileAsync(
 		string modDirectory,
 		VpkHostContext context,
@@ -88,7 +95,8 @@ public static class SectionalCompiler
 		bool headMergeIntoBody,
 		IReadOnlyList<string>? enabledMaterialPatches,
 		Action<string>? onStage = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		uint? exclusiveItemId = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
 		ArgumentNullException.ThrowIfNull(context);
@@ -123,6 +131,14 @@ public static class SectionalCompiler
 			onStage?.Invoke("正在按当前条件编译生效层…");
 			return await CompileOwnModelAsync(
 				modDirectory, payload, sourcePatch, sourceMap, disabledSections, headMergeIntoBody, selection, cancellationToken)
+				.ConfigureAwait(false);
+		}
+
+		if (exclusiveItemId is { } exclusiveItem)
+		{
+			onStage?.Invoke("正在把来源 unit 落到目标护甲独有的部件上…");
+			return await CompileExclusiveArmorAsync(
+				modDirectory, context, payload, sourcePatch, sourceMap, exclusiveItem, disabledSections, headMergeIntoBody, selection, cancellationToken)
 				.ConfigureAwait(false);
 		}
 

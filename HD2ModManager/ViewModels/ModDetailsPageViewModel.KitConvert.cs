@@ -23,8 +23,19 @@ public partial class ModDetailsPageViewModel
     private RelayCommand? _undoKitInstanceCommand;
 
     public bool IsKitInstanceConverted => _kitInstanceRecord is not null;
-    public bool ShowKitConvertButton => ShowKitPollutionCard && !IsKitInstanceConverted && KitPollutionIsPolluted;
-    public bool ShowKitUndoButton => IsKitInstanceConverted;
+    // 带 sectional/ 的 VPK 模型 Mod 不走 P3「转专属」：它的真实产物由「目标护甲 → 切换」写进 Overwrite/，
+    // 事后转只会读到新 ID 而说「没有覆盖任何原版部件」。改为提示去打开「专属」再切换（P4a，规划 §4.5）。
+    public bool ShowKitConvertButton => ShowKitPollutionCard && !IsKitInstanceConverted && KitPollutionIsPolluted && !IsVpkMod;
+    public bool ShowKitVpkHint => ShowKitPollutionCard && !IsKitInstanceConverted && IsVpkMod;
+    public string KitVpkHint => "这是模型 Mod，请在上方『目标护甲』打开『专属』再切换。";
+    // 专属切换（source=vpk-exclusive）的记录由「切换」管理，没有撤销按钮：撤销 = 关掉「专属」再切换。
+    public bool ShowKitUndoButton => IsKitInstanceConverted && !KitExclusiveWorkspace.IsExclusiveRecord(_kitInstanceRecord);
+
+    private void RaiseKitVpkHintChanged()
+    {
+        OnPropertyChanged(nameof(ShowKitConvertButton));
+        OnPropertyChanged(nameof(ShowKitVpkHint));
+    }
 
     private bool _kitPollutionIsPolluted;
     private bool KitPollutionIsPolluted => _kitPollutionIsPolluted;
@@ -43,6 +54,7 @@ public partial class ModDetailsPageViewModel
         _kitPollutionIsPolluted = polluted;
         OnPropertyChanged(nameof(IsKitInstanceConverted));
         OnPropertyChanged(nameof(ShowKitConvertButton));
+        OnPropertyChanged(nameof(ShowKitVpkHint));
         OnPropertyChanged(nameof(ShowKitUndoButton));
     }
 
@@ -56,11 +68,20 @@ public partial class ModDetailsPageViewModel
     internal static string BuildKitConvertedHeadline(KitInstanceWorkspaceRecord record)
     {
         var name = string.IsNullOrWhiteSpace(record.TargetName) ? "未命名护甲" : record.TargetName;
-        return $"已转专属：{name}（{record.TargetItemId}）";
+        return KitExclusiveWorkspace.IsExclusiveRecord(record)
+            ? $"已专属：{name}（{record.TargetItemId}）"
+            : $"已转专属：{name}（{record.TargetItemId}）";
     }
 
     internal static string BuildKitConvertedNote(KitInstanceWorkspaceRecord record)
     {
+        if (KitExclusiveWorkspace.IsExclusiveRecord(record))
+        {
+            return string.Join(Environment.NewLine,
+                $"这个模型只在穿着这条记录的角色身上显示，其它护甲保持原版；该角色身上的 {record.Hide.Count} 个原版部件会被隐藏。",
+                "要更换或撤销：在上方「目标护甲」换一条（或关掉「专属」）再点「切换」。切换在下次部署后生效。");
+        }
+
         var lines = new System.Collections.Generic.List<string>
         {
             $"这个 Mod 只在穿着这套护甲的角色身上生效，其它护甲不受影响；该角色身上被替换的 {record.Hide.Count} 个原版部件会被隐藏。",

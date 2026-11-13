@@ -1,6 +1,7 @@
 using System.IO;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.KitInstance;
 using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels;
@@ -18,9 +19,18 @@ public enum VpkTargetArmorKind
 public sealed record VpkTargetArmorOption(
 	string ArchiveId,
 	string DisplayName,
-	VpkTargetArmorKind Kind = VpkTargetArmorKind.GameArmor)
+	VpkTargetArmorKind Kind = VpkTargetArmorKind.GameArmor,
+	uint? ItemId = null,
+	string? BaseName = null,
+	bool ExclusiveAvailable = true)
 {
 	public override string ToString() => DisplayName;
+
+	/// <summary>专属模式下的候选（按记录 item_id 列）；普通模式（按归档列）为假。</summary>
+	public bool IsExclusiveOption => ItemId is not null;
+
+	/// <summary>写进 wardrobe.json 的名字：专属模式下 <see cref="DisplayName"/> 带编号和状态，不能直接存。</summary>
+	public string StoredName => BaseName ?? DisplayName;
 }
 
 /// <summary>
@@ -42,6 +52,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private bool _vpkArmorsLoading;
 	private IReadOnlyList<VpkTargetArmorOption> _vpkTargetArmors = [];
 	private VpkTargetArmorOption? _selectedVpkTargetArmor;
+	private IReadOnlyList<VpkTargetArmorOption> _vpkNormalTargetArmors = [];
+	private bool _vpkExclusiveMode;
+	private int _vpkExclusiveCatalogVersion;
 	private IReadOnlyList<VpkGroupItemViewModel> _vpkGroups = [];
 	private string _vpkSwitchStatus = string.Empty;
 
@@ -357,6 +370,66 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 	public bool HasVpkComponentStatus => !string.IsNullOrWhiteSpace(_vpkStatus);
 
+	/// <summary>
+	/// 「专属」开关（P4a）。<b>只决定下拉怎么列、「切换」怎么做</b>，翻它本身不写盘、不编译：
+	/// 真正生效的是点「切换」那一下（产物形状不同，必须由用户明确确认预览）。
+	/// </summary>
+	public bool VpkExclusiveMode
+	{
+		get => _vpkExclusiveMode;
+		set
+		{
+			if (_vpkExclusiveMode == value) return;
+			_vpkExclusiveMode = value;
+			OnPropertyChanged();
+			_ = ReloadVpkTargetOptionsAsync();
+		}
+	}
+
+	private async Task ReloadVpkTargetOptionsAsync()
+	{
+		var version = ++_vpkExclusiveCatalogVersion;
+		if (!_vpkExclusiveMode)
+		{
+			VpkTargetArmors = _vpkNormalTargetArmors;
+			if (TryGetCurrentNode(out var current))
+				SelectedVpkTargetArmor = ResolveCurrentTargetArmor(Path.Combine(_library.ModsRootDirectory, current.RelativePath));
+			return;
+		}
+
+		if (!TryGetCurrentNode(out var node)) return;
+		var directory = Path.Combine(_library.ModsRootDirectory, node.RelativePath);
+		var headMerge = _vpkFile.HeadMergeIntoBody;
+		KitExclusiveCatalog catalog;
+		try
+		{
+			catalog = await Task.Run(() => KitExclusiveService.LoadCatalogAsync(directory, _paths, headMerge)).ConfigureAwait(true);
+		}
+		catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+		{
+			catalog = new KitExclusiveCatalog([], exception.Message);
+		}
+
+		// 用户在加载期间翻回去了 / 换了页面：丢掉这次结果。
+		if (version != _vpkExclusiveCatalogVersion || !_vpkExclusiveMode) return;
+		if (catalog.Unavailable is not null)
+		{
+			VpkComponentStatus = catalog.Unavailable;
+			_vpkExclusiveMode = false;
+			OnPropertyChanged(nameof(VpkExclusiveMode));
+			return;
+		}
+
+		VpkTargetArmors = catalog.Options
+			.Select(option => new VpkTargetArmorOption(
+				option.ArchiveId, $"{option.Label}  {(option.Available ? "· 可专属" : "· " + option.Status)}",
+				VpkTargetArmorKind.GameArmor, option.ItemId, option.Name, option.Available))
+			.ToArray();
+		SelectedVpkTargetArmor = _vpkFile.Exclusive && _vpkFile.TargetItemId is { } recorded
+			? VpkTargetArmors.FirstOrDefault(option => option.ItemId == recorded)
+			: null;
+	}
+
 	public IReadOnlyList<VpkTargetArmorOption> VpkTargetArmors
 	{
 		get => _vpkTargetArmors;
@@ -416,6 +489,14 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		FlushVpkStateSave();
 		_vpkFile = VpkWardrobeFile.Default;
 		_vpkStatus = string.Empty;
+		// 专属模式跟着 Mod 走：换到别的 Mod 时丢掉上一个 Mod 的专属下拉。
+		_vpkExclusiveCatalogVersion++;
+		if (_vpkExclusiveMode)
+		{
+			_vpkExclusiveMode = false;
+			OnPropertyChanged(nameof(VpkExclusiveMode));
+			VpkTargetArmors = _vpkNormalTargetArmors;
+		}
 		VpkTree = null;
 		VpkGroups = [];
 		VpkGroupStatus = string.Empty;
@@ -423,6 +504,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		SelectedVpkTreeNodes = [];
 		NewVpkGroupName = string.Empty;
 		IsVpkMod = false;
+		RaiseKitVpkHintChanged();
 		HasSectionalSource = false;
 		OnPropertyChanged(nameof(IsVpkMod));
 		OnPropertyChanged(nameof(HasSectionalSource));
@@ -449,6 +531,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 		IsVpkMod = true;
 		OnPropertyChanged(nameof(IsVpkMod));
+		RaiseKitVpkHintChanged();
 		OnPropertyChanged(nameof(ShowPatchTools));
 		RaiseCanConvertToSectionalChanged();
 		// 带上当前的详情请求代号：用户在异步加载途中切走时，旧结果不能盖掉新页面。
@@ -501,7 +584,17 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 候选列表是缓存（`EnsureVpkTargetArmorsAsync` 在列表非空时直接返回），
 			// 把"选中哪一项"也交给它，第二次进页面就会沿用上一次的选择：
 			// 用户换到 O-3、离开、回来，下拉仍然显示自己的素体——而那已经不是盘上的值了。
-			SelectedVpkTargetArmor = ResolveCurrentTargetArmor(directory);
+			if (file.Exclusive)
+			{
+				// 上次是专属切换：下拉按记录列，并选回那一条（专属模式下不能沿用按归档列的老下拉）。
+				_vpkExclusiveMode = true;
+				OnPropertyChanged(nameof(VpkExclusiveMode));
+				await ReloadVpkTargetOptionsAsync().ConfigureAwait(true);
+			}
+			else
+			{
+				SelectedVpkTargetArmor = ResolveCurrentTargetArmor(directory);
+			}
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException)
 		{
@@ -523,7 +616,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// </summary>
 	private async Task EnsureVpkTargetArmorsAsync(string modDirectory)
 	{
-		if (_vpkArmorsLoading || _vpkTargetArmors.Count != 0) return;
+		if (_vpkArmorsLoading || _vpkNormalTargetArmors.Count != 0) return;
 		_vpkArmorsLoading = true;
 		try
 		{
@@ -551,7 +644,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				VpkComponentStatus = "读取游戏护甲列表失败（请先在设置页重建游戏资产索引）：" + exception.Message;
 			}
 
-			VpkTargetArmors = options;
+			_vpkNormalTargetArmors = options;
+			if (!_vpkExclusiveMode) VpkTargetArmors = options;
 		}
 		finally
 		{
@@ -589,6 +683,64 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		{
 			VpkComponentStatus = "还没选目标：请在上方下拉里选一个（游戏护甲或自定义素体），再点「切换」。";
 			return;
+		}
+
+		// 专属切换（P4a）：先确认预览，再动手。关着「专属」时这一段整个跳过，下面的老流程原样不变。
+		var exclusive = _vpkExclusiveMode;
+		uint? exclusiveItem = null;
+		if (exclusive)
+		{
+			if (target.ItemId is not { } pickedItem)
+			{
+				VpkComponentStatus = "专属模式下请在下拉里选一条护甲记录，再点「切换」。";
+				return;
+			}
+
+			exclusiveItem = pickedItem;
+			var owner = System.Windows.Application.Current?.MainWindow;
+			var existingRecord = await KitConversionService.TryGetRecordAsync(node.Id, _library.ModsRootDirectory).ConfigureAwait(true);
+			if (existingRecord is not null && !KitExclusiveWorkspace.IsExclusiveRecord(existingRecord))
+			{
+				HD2ModManager.Views.AppDialog.Show(
+					owner, "这个 Mod 已有一条手写或「转专属」生成的隐藏记录，专属切换不会覆盖它；请先撤销那条记录。",
+					"专属切换", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+				return;
+			}
+
+			var headMerge = _vpkFile.HeadMergeIntoBody;
+			KitExclusivePreview preview;
+			try
+			{
+				preview = await Task.Run(() => KitExclusiveService.PreviewAsync(directory, _paths, pickedItem, headMerge)).ConfigureAwait(true);
+			}
+			catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+			{
+				VpkComponentStatus = "生成专属预览失败：" + exception.Message;
+				return;
+			}
+
+			if (!preview.Succeeded)
+			{
+				HD2ModManager.Views.AppDialog.Show(
+					owner, string.Join(Environment.NewLine, preview.Lines), "不能专属切换",
+					System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+				return;
+			}
+
+			var confirm = new HD2ModManager.Views.KitExclusivePreviewWindow(
+				string.IsNullOrWhiteSpace(node.Metadata.Name) ? node.RelativePath : node.Metadata.Name, preview);
+			if (confirm.ShowDialog() != true) return;
+		}
+		else
+		{
+			// 切回普通切换 / 自己的素体：先删掉专属记录（只删自己写的），再编译。
+			// 先删后编译：任何中途失败的状态都是「没有隐藏规则」，最坏是多显示一份原版，不会藏掉不该藏的东西。
+			var cleared = await KitExclusiveWorkspace.SyncAsync(node.Id, _library.ModsRootDirectory, directory, null).ConfigureAwait(true);
+			if (!cleared.Ok)
+			{
+				VpkComponentStatus = cleared.Error ?? "清理专属记录失败。";
+				return;
+			}
 		}
 
 		// **不判断"目标有没有变"。**
@@ -631,7 +783,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				[target.ArchiveId],
 				_vpkFile.State.Disabled,
 				Report,
-				cancellation).ConfigureAwait(true);
+				cancellation,
+				exclusiveItemId: exclusiveItem).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
 				var error = outcome.Error ?? "换甲失败。";
@@ -643,12 +796,27 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 两种结果的说法必须不同：退回来源不是"换甲成功"，它压根没搬运几何。
 			var rekey = outcome.Rekey;
 			var warnings = rekey?.Warnings ?? Array.Empty<string>();
-			var summary = outcome.Rekeyed
+			var summary = exclusive
+				? $"已专属切换到 {target.StoredName}（{exclusiveItem}）：{rekey?.ReplacedUnits ?? 0} 份模型部件落到独有部件上，"
+					+ (outcome.Exclusive is { NeedsRule: true } rule
+						? $"{rule.Hide.Count} 个原版部件会在穿它的角色身上按实例隐藏，下次部署后生效。"
+						: "没有需要隐藏的原版部件。")
+				: outcome.Rekeyed
 				? rekey?.RestoredFromSource == true
 					? $"已退回自定义素体（{target.DisplayName}）：来源 patch 已原样复制进 Overwrite，开关继续有效。"
 					: $"已换到 {target.DisplayName}：替换 {rekey?.ReplacedUnits ?? 0} 个 Unit、隐藏 {rekey?.HiddenMeshes ?? 0} 个网格。"
 				// 自身素体：没有换甲这一步，别说"替换 0 个 Unit"。
 				: $"已按 {target.DisplayName} 编译生效层（自定义素体，unit 键不变）。";
+
+			// 专属切换：把隐藏规则记进 workspace（先编译后记录，见上面「先删后编译」的对称理由）。
+			// 记不上时产物已经是专属形态但没有隐藏规则：只会多显示一份原版，不会藏掉不该藏的东西，让用户再点一次「切换」。
+			if (exclusive)
+			{
+				var synced = await KitExclusiveWorkspace.SyncAsync(
+					node.Id, _library.ModsRootDirectory, directory, outcome.Exclusive).ConfigureAwait(true);
+				if (!synced.Ok)
+					warnings = warnings.Concat([$"隐藏规则没能记下来（再点一次「切换」重试）：{synced.Error}"]).ToArray();
+			}
 
 			// **用户按下「切换」= 这次的目标就是他的意图，必须落盘。**
 			// 编译基座只读配置（不写 wardrobe.json），所以由这个"用户动作"负责写：
@@ -657,7 +825,9 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			_vpkFile = _vpkFile with
 			{
 				TargetArmorArchiveId = target.ArchiveId,
-				TargetArmorName = target.DisplayName,
+				TargetArmorName = target.StoredName,
+				TargetItemId = exclusiveItem,
+				Exclusive = exclusive,
 			};
 			var persisted = true;
 			try
@@ -688,6 +858,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				warnings.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
 				warnings.Count == 0 ? 10 : 20);
 
+			_ = RefreshKitPollutionAsync(node.Id, _detailContentFacts);
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
@@ -835,7 +1006,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
-				cancellation).ConfigureAwait(true);
+				cancellation,
+				exclusiveItemId: ResolveApplyExclusive()).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
 				var error = outcome.Error ?? "重新生成失败。";
@@ -846,6 +1018,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 
 			task?.SetOutputArtifacts(directory, null);
 			task?.MarkCompleted();
+			await SyncKitExclusiveAfterRecompileAsync(node.Id, directory, outcome).ConfigureAwait(true);
 			// 自身素体（没有换甲）时别说"替换 0 个 Unit"：那读起来像失败。
 			VpkComponentStatus = !outcome.Rekeyed
 				? "已按当前条件重新编译生效层（自定义素体）。"
@@ -951,7 +1124,8 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				_vpkFile.State.Disabled,
 				Report,
 				cancellation,
-				headMergeIntoBody: enabled).ConfigureAwait(true);
+				headMergeIntoBody: enabled,
+				exclusiveItemId: ResolveApplyExclusive()).ConfigureAwait(true);
 
 			if (!outcome.Ok)
 			{
@@ -982,6 +1156,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				: " " + string.Join(" ", (outcome.Rekey?.Warnings ?? Array.Empty<string>()).Take(2))
 					+ ((outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count > 2 ? $"（另有 {(outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count - 2} 条）" : string.Empty);
 			task?.SetOutputArtifacts(directory, null);
+			await SyncKitExclusiveAfterRecompileAsync(node.Id, directory, outcome).ConfigureAwait(true);
 			if ((outcome.Rekey?.Warnings ?? Array.Empty<string>()).Count != 0) task?.UpdateStage($"注意：{(outcome.Rekey?.Warnings ?? Array.Empty<string>())[0]}");
 			task?.MarkCompleted();
 			SetVpkStatus(summary + warningText);
@@ -1009,6 +1184,23 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		}
 	}
 
+
+	/// <summary>「应用」「头身合并」「重构建」沿用上次切换的专属状态：盘上是专属切换就继续专属，否则老做法。</summary>
+	private uint? ResolveApplyExclusive() => _vpkFile.Exclusive ? _vpkFile.TargetItemId : null;
+
+	/// <summary>
+	/// 重新编译（应用勾选 / 翻头身合并）之后同步专属记录：头身合并会改变隐藏集，所以每次都按这次的结果重写。
+	/// 失败只报告、不阻断（产物已写好；规则没记上的最坏结果是多显示一份原版）。
+	/// </summary>
+	private async Task SyncKitExclusiveAfterRecompileAsync(ModNodeId nodeId, string directory, ModCompileOutcome outcome)
+	{
+		if (!_vpkFile.Exclusive) return;
+		var synced = await KitExclusiveWorkspace.SyncAsync(
+			nodeId, _library.ModsRootDirectory, directory, outcome.Exclusive).ConfigureAwait(true);
+		if (!synced.Ok)
+			SetVpkStatus("隐藏规则没能记下来（再点一次「切换」重试）：" + synced.Error, NotificationLevel.Warning, 20);
+		_ = RefreshKitPollutionAsync(nodeId, _detailContentFacts);
+	}
 
 	/// <summary>
 	/// 「应用」时的编译目标：盘上记录的那个（游戏护甲或自己的素体），没有记录就是自己的素体。
