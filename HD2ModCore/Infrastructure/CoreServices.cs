@@ -248,7 +248,8 @@ public static class CoreServices
 		=> new ApplyPlanner(CreatePatchFileNameParser());
 	public static ILuaDeploymentService CreateLuaDeploymentService(StoragePaths? paths = null)
 		=> new LuaDeploymentService(
-			armorRegistry: paths is null ? null : CreateRuntimeArmorRegistryService(paths));
+			armorRegistry: paths is null ? null : CreateRuntimeArmorRegistryService(paths),
+			kitPollution: paths is null ? null : new Infrastructure.KitInstance.KitPollutionService(paths));
 	public static IActivationStateStore CreateActivationStateStore()
 		=> new JsonActivationStateStore();
 	public static IDeploymentOwnershipInspector CreateDeploymentOwnershipInspector()

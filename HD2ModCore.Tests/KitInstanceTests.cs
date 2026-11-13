@@ -539,6 +539,94 @@ public sealed class KitInstanceTests
 
 	// ---- 辅助 ---------------------------------------------------------------------------
 
+	// ---- P2：部署时的污染 Warning ---------------------------------------------------------
+
+	private sealed class FakePollution(Func<KitPollutionResult?> answer) : IKitPollutionService
+	{
+		public int Calls;
+		public Task? PendingMaterialBuild => null;
+		public Task<KitPollutionResult?> AnalyzeAsync(
+			IEnumerable<AssetKey> modAssets, string? gameDataDirectory, CancellationToken cancellationToken = default)
+		{
+			Interlocked.Increment(ref Calls);
+			return Task.FromResult(answer());
+		}
+	}
+
+	private static KitPollutionResult Polluted(int count)
+		=> new(
+			Enumerable.Range(1, count).Select(i => new KitPollutionAffectedKit((uint)i, $"K-{i}", [1UL], [])).ToArray(),
+			0,
+			false);
+
+	private static async Task<IReadOnlyList<CoreIssue>> DeployWithPollutionAsync(
+		Scratch scratch, FakePollution fake, Profile profile, LibrarySnapshot snapshot, params ModNodeId[] withFacts)
+	{
+		var facts = withFacts.ToDictionary(
+			node => node,
+			node => new ModContentFacts(node, "x", "g", DateTimeOffset.UtcNow, [], [], ModAssetStructureFacts.Empty("g", DateTimeOffset.UtcNow)));
+		var result = await new LuaDeploymentService(kitInstanceRegistryRoot: scratch.Registry, kitPollution: fake).MaterializeAsync(
+			profile, snapshot, EmptyIndex(), scratch.Mods, scratch.GameData, facts, LuaDeploymentValidationMode.CompileOnly);
+		Assert.False(result.HasErrors, Describe(result.Issues));
+		return result.Issues.Where(issue => issue.Code == "KitInstancePollution").ToArray();
+	}
+
+	[Fact]
+	public async Task PollutionWarning_EnabledPollutingModWithoutRecordGetsOneNonBlockingWarning()
+	{
+		SetModes(ArmorMappingMode.Off, PhysicsMode.Off);
+		using var scratch = new Scratch();
+		var node = ModNodeId.New();
+		var (profile, snapshot) = CreateProfile(node);
+
+		var warnings = await DeployWithPollutionAsync(scratch, new FakePollution(() => Polluted(3)), profile, snapshot, node);
+
+		var warning = Assert.Single(warnings);
+		Assert.Equal(CoreIssueSeverity.Warning, warning.Severity);
+		Assert.Equal(node, warning.NodeId);
+		Assert.Equal("『test』会连带改变 K-1、K-2 等 3 套护甲，可在详情页转专属", warning.Message);
+	}
+
+	[Fact]
+	public async Task PollutionWarning_ModWithAWorkspaceRecordIsNotReported()
+	{
+		SetModes(ArmorMappingMode.Off, PhysicsMode.Off);
+		using var scratch = new Scratch();
+		var node = await EnableRuleAsync(scratch);
+		var (profile, snapshot) = CreateProfile(node);
+		var fake = new FakePollution(() => Polluted(3));
+
+		Assert.Empty(await DeployWithPollutionAsync(scratch, fake, profile, snapshot, node));
+		Assert.Equal(0, fake.Calls);
+	}
+
+	[Fact]
+	public async Task PollutionWarning_DisabledModIsNotReported()
+	{
+		SetModes(ArmorMappingMode.Off, PhysicsMode.Off);
+		using var scratch = new Scratch();
+		var disabled = ModNodeId.New();
+		var (profile, snapshot) = CreateProfile();   // 方案里没有任何启用的 Mod
+		var fake = new FakePollution(() => Polluted(3));
+
+		Assert.Empty(await DeployWithPollutionAsync(scratch, fake, profile, snapshot, disabled));
+		Assert.Equal(0, fake.Calls);
+	}
+
+	[Fact]
+	public async Task PollutionWarning_NotPollutedOrFailedAnalysisStaysSilent()
+	{
+		SetModes(ArmorMappingMode.Off, PhysicsMode.Off);
+		using var scratch = new Scratch();
+		var node = ModNodeId.New();
+		var (profile, snapshot) = CreateProfile(node);
+
+		Assert.Empty(await DeployWithPollutionAsync(scratch, new FakePollution(() => Polluted(1)), profile, snapshot, node));
+		Assert.Empty(await DeployWithPollutionAsync(scratch, new FakePollution(() => null), profile, snapshot, node));
+		Assert.Empty(await DeployWithPollutionAsync(
+			scratch, new FakePollution(() => throw new InvalidOperationException("boom")), profile, snapshot, node));
+	}
+
 	private static string Describe(IEnumerable<CoreIssue> issues)
 		=> string.Join(Environment.NewLine, issues.Select(issue => $"{issue.Code}: {issue.Message}"));
 

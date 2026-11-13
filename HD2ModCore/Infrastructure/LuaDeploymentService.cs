@@ -23,6 +23,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private readonly IExternalInstallFileFactsService _externalFiles;
 	private readonly RuntimeArmorRegistryService? _armorRegistry;
 	private readonly string? _kitInstanceRegistryRoot;
+	private readonly IKitPollutionService? _kitPollution;
 	private static readonly ModNodeId ArmorRegistryNodeId = new(Guid.Parse("6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"));
 	private static readonly ModNodeId PhysicsRuntimeNodeId = new(Guid.Parse("7c1e2b90-5f3a-4d68-9a11-2b7c4e5f6a01"));
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
@@ -91,7 +92,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		LuaPatchRuntimeValidator? luaRuntimeValidator = null,
 		IExternalInstallFileFactsService? externalFiles = null,
 		RuntimeArmorRegistryService? armorRegistry = null,
-		string? kitInstanceRegistryRoot = null)
+		string? kitInstanceRegistryRoot = null,
+		IKitPollutionService? kitPollution = null)
 	{
 		_luaComposer = luaComposer ?? new LuaPatchComposer();
 		_luaRuntimeValidator = luaRuntimeValidator ?? new LuaPatchRuntimeValidator();
@@ -100,6 +102,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		// 规则文件与 wardrobe.links 同一个 ArmorRegistry 目录。没有注册表服务又没显式给目录时不写盘
 		// （避免单元测试之类不带注册表的调用去碰真实的 %LOCALAPPDATA%）。
 		_kitInstanceRegistryRoot = kitInstanceRegistryRoot ?? armorRegistry?.RegistryRoot;
+		// 污染提示（P2）：没给服务就不分析，单元测试与不带索引的调用不会去碰索引库。
+		_kitPollution = kitPollution;
 	}
 
 	public async ValueTask<LuaDeploymentPlan> PlanAsync(
@@ -411,7 +415,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		// （没有规则也写一份空的，覆盖上一版，否则运行时会继续执行过期规则）。
 		var kitRuleCount = await PrepareKitInstanceRulesAsync(
 			orderedEntries.Where(entry => snapshot.Nodes.ContainsKey(entry.NodeId)).Select(entry => entry.NodeId).ToArray(),
+			snapshot,
+			contentFacts,
 			modsRootDirectory,
+			gameDataDirectory,
 			materialize,
 			issues,
 			cancellationToken).ConfigureAwait(false);
@@ -797,7 +804,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	/// </summary>
 	private async ValueTask<int> PrepareKitInstanceRulesAsync(
 		IReadOnlyCollection<ModNodeId> enabledNodes,
+		LibrarySnapshot snapshot,
+		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
 		string modsRootDirectory,
+		string gameDataDirectory,
 		bool materialize,
 		ICollection<CoreIssue> issues,
 		CancellationToken cancellationToken)
@@ -822,6 +832,9 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		var compiled = KitInstanceRulesCompiler.Compile(enabledNodes, workspace, previousRevision);
 		foreach (var issue in compiled.Issues) issues.Add(issue);
 
+		await AddKitPollutionWarningsAsync(
+			enabledNodes, snapshot, contentFacts, workspace, gameDataDirectory, issues, cancellationToken).ConfigureAwait(false);
+
 		if (materialize && _kitInstanceRegistryRoot is not null)
 		{
 			try
@@ -839,6 +852,51 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			}
 		}
 		return compiled.Document.Rules.Count;
+	}
+
+	/// <summary>
+	/// P2 发现污染：每个启用中、有污染（受影响的套 ≥ 2）、且 workspace 里没有记录的 Mod 加一条 Warning，不阻断部署。
+	/// 材质缓存没好时只用 Unit 部分的结论，并在后台开始构建；这里<b>绝不等待构建</b>，分析本身任何失败都只是不报。
+	/// 放在这里而不是 ProfileApplyService：「按实例隐藏」的记录（workspace）与 P1 的
+	/// <c>KitInstanceHiderNeedsLoader</c> 等提示都在这个方法所在的 Lua 部署阶段汇总，
+	/// 计划预览与真部署走同一条路径，界面已有的「部署问题」列表直接显示它。
+	/// </summary>
+	private async ValueTask AddKitPollutionWarningsAsync(
+		IReadOnlyCollection<ModNodeId> enabledNodes,
+		LibrarySnapshot snapshot,
+		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
+		KitInstanceWorkspace workspace,
+		string gameDataDirectory,
+		ICollection<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		if (_kitPollution is null) return;
+		foreach (var nodeId in enabledNodes.Distinct().OrderBy(node => node.Value))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (workspace.Records.ContainsKey(nodeId)) continue;
+			if (!contentFacts.TryGetValue(nodeId, out var facts) || !snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+
+			KitPollutionResult? result;
+			try
+			{
+				result = await _kitPollution.AnalyzeAsync(
+					facts.Structure.Assets.Select(asset => asset.AssetKey), gameDataDirectory, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is not OperationCanceledException)
+			{
+				// 污染提示是锦上添花：分析失败不能让部署出问题，也不值得吓用户。
+				continue;
+			}
+			if (result is not { IsPolluted: true }) continue;
+
+			var name = string.IsNullOrWhiteSpace(node.Metadata.Name) ? node.RelativePath : node.Metadata.Name;
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Warning,
+				"KitInstancePollution",
+				KitPollutionAnalyzer.FormatDeploymentWarning(name, result),
+				NodeId: nodeId));
+		}
 	}
 
 	/// <summary>Hider 独立 addon 的内容指纹：覆盖将写出的全部字节（脚本源码 + 资源名 + 封装版本）。</summary>
