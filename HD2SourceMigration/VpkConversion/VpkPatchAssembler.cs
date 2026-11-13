@@ -641,6 +641,8 @@ public sealed class VpkPatchAssembler
 		var extraBonesByPlan = new int?[effectivePlans.Count];
 		// 切分失败（退回全量）的逐件原因，收口时并进 warnings。
 		var subsetNotes = new string?[effectivePlans.Count];
+		// UV 整格归位的逐件说明（见 UvTileNormalizer），收口时按计划顺序并进 warnings。
+		var uvTileNotes = new string?[effectivePlans.Count];
 		// 裙摆离体清空的偏移量（米）。0 = 关（默认）。用环境变量而不是设置项，
 		// 是因为这是**实验性几何改动**：只影响转换那一刻，改一次重转一次，不需要进产品界面。
 		var skirtClearanceAmount = ResolveSkirtClearance();
@@ -659,6 +661,15 @@ public sealed class VpkPatchAssembler
 			// 运行时没有任何杠杆能推动它，只能在几何上把它偏出来。
 			if (skirtClearanceAmount > 0)
 				mesh = SkirtClearance.Apply(mesh, sourceMaterialNames, pelvis!.Value, skirtClearanceAmount);
+			// UV 整格归位（见 UvTileNormalizer）：源侧把镜像那半边 UV 挪到 1..2 那一格，
+			// HD2 里那些面会整片不显示（实测某模型一侧袖子整只消失）。按三角形平移整数格，wrap 采样下结果不变。
+			var uvTiles = UvTileNormalizer.Apply(mesh);
+			mesh = uvTiles.Mesh;
+			if (uvTiles.ShiftedTriangles > 0)
+				uvTileNotes[planIndex] = $"{plan.Group.Name}：{uvTiles.ShiftedTriangles} 个三角形的 UV 不在 0..1 那一格"
+					+ $"（源侧整格平移过），已按整数格平移回来"
+					+ (uvTiles.DuplicatedVertices > 0 ? $"，为此复制了 {uvTiles.DuplicatedVertices} 个接缝顶点" : string.Empty)
+					+ "。不归位的话这些面在游戏里可能不显示（实测 U 出格的面会整片消失）。";
 			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
 			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
 			// 多造几个小对象比赌这一条便宜得多。
@@ -706,6 +717,8 @@ public sealed class VpkPatchAssembler
 			});
 			if (subsetNotes[planIndex] is { } subsetNote)
 				warnings.Add($"{plan.Group.Name} 没能按件裁物理骨，退回全量：{subsetNote}");
+			if (uvTileNotes[planIndex] is { } uvTileNote)
+				warnings.Add(uvTileNote);
 
 			if (!authored.IsValid)
 			{
