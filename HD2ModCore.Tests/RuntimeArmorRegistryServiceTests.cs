@@ -144,6 +144,47 @@ public sealed class RuntimeArmorRegistryServiceTests
 	}
 
 	[Fact]
+	public async Task Apply_DisablingMappings_OverwritesStaleWardrobeLinks_ButNeverCreatesOne()
+	{
+		// 回归（2026-11-13）：协议关闭后链接数为 0，旧实现不写文件，上一版 wardrobe.links
+		// 继续被运行时执行，把护甲件改指到不存在的 unit，游戏里缺身体。
+		await using var fixture = await Fixture.CreateAsync(withCatalog: true);
+		var paths = new StoragePaths(Path.Combine(fixture.Root, "app"));
+		await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+		{
+			await connection.OpenAsync();
+			await using var command = connection.CreateCommand();
+			command.CommandText = """
+				CREATE TABLE game_data_authority_pieces (
+					item_id INTEGER, raw_body_type INTEGER, body_variant INTEGER, slot INTEGER,
+					part_kind INTEGER, piece_type INTEGER, weight INTEGER, tone_variations INTEGER,
+					unit_type_id INTEGER, unit_file_id INTEGER);
+				INSERT INTO game_data_authority_pieces VALUES
+					(10, 3, 3, 3, 0, 0, 0, 0, -2259526030728936129, 101),
+					(20, 3, 3, 3, 0, 0, 0, 0, -2259526030728936129, 201);
+				""";
+			await command.ExecuteNonQueryAsync();
+		}
+		SqliteConnection.ClearAllPools();
+		var data = Path.Combine(fixture.Root, "data");
+		Directory.CreateDirectory(data);
+		var linksPath = Path.Combine(fixture.RegistryRoot, WardrobeLinkCompiler.FileName);
+
+		// 从未写过链接文件：关闭状态下不凭空创建。
+		var first = await fixture.Service.ReadSnapshotAsync();
+		var off = await fixture.Service.ApplyAsync(first.Fingerprint, false, [], [], [], [], gameDataDirectory: data);
+		Assert.False(File.Exists(linksPath));
+
+		var on = await fixture.Service.ApplyAsync(off.Fingerprint, true, [new RuntimeArmorRegistryMapping(10, 20)], [], [], [], gameDataDirectory: data);
+		Assert.Contains("link=", await File.ReadAllTextAsync(linksPath));
+
+		await fixture.Service.ApplyAsync(on.Fingerprint, false, [], [], [], [], gameDataDirectory: data);
+		var text = await File.ReadAllTextAsync(linksPath);
+		Assert.DoesNotContain("link=", text);
+		Assert.Contains("enabled=false", text);
+	}
+
+	[Fact]
 	public async Task ApplyFilter_KeepsAllWorkspacePiecesAndOnlyCompilesPresentUnits()
 	{
 		await using var fixture = await Fixture.CreateAsync();
