@@ -5,7 +5,7 @@ namespace HD2ModCli;
 
 public static class CliProjections
 {
-	public const string ProtocolVersion = "1.27";
+	public const string ProtocolVersion = "1.28";
 
 	// 存储形态判定的唯一入口（P2-1）。每个节点现算一次目录，代价就是一次目录枚举。
 	private static readonly HD2ModCore.Application.IModStorageKindResolver StorageKindResolver =
@@ -58,6 +58,7 @@ public static class CliProjections
 				new { name = "library sync plan", safety = "explicit-export", description = "导出固定新增 Mod ID 与输入指纹的库对账计划" },
 				new { name = "library sync validate", safety = "read-only", description = "重扫库目录并拒绝计划、Patch 或待删除状态漂移" },
 				new { name = "library sync apply", safety = "explicit-confirm", description = "仅按验证通过的计划更新 library.json 的节点 Patch 记录；不导入、删除或部署" },
+				new { name = "library adopt", safety = "explicit-confirm", description = "把库根下「归档躺在子目录里」的外部包（别的管理器那种 包名/选项/patch 形状）按导入链路认领成受管节点；默认只列候选，--confirm 才导入并把源目录移到库外的 <库>.adopted（保留 30 天）" },
 				new { name = "decoration inspect source", safety = "read-only", description = "读取一个普通/选项 Mod 的可选装饰 Unit、默认选择和建议附着策略；不写缓存或包" },
 				new { name = "decoration show", safety = "read-only", description = "读取一个已导入装饰包的来源、附着策略、声明主体与当前启用状态" },
 				new { name = "decoration package plan", safety = "explicit-export", description = "导出固定来源/目标、Unit 选择和 Patch 家族指纹的外部装饰包计划" },

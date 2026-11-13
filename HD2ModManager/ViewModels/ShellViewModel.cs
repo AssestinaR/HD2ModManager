@@ -2780,19 +2780,62 @@ namespace HD2ModManager.ViewModels
 				"校验 Mod 库",
 				"扫描实际 Mod 文件夹并同步库索引",
 				presentation: BackgroundTaskPresentation.Foreground);
+			// 必须在 UI 线程上建：Progress<T> 捕获创建时的同步上下文，之后在后台线程里建的话
+			// 回调会留在后台线程，直接改绑定属性就不再是"顺手"而是"跨线程"。
+			var stageProgress = new Progress<string>(stage => task.UpdateStage(stage));
 			try
 			{
+				// 认领外部包是**用户显式**的动作：先探测（纯只读），发现候选再问一句。
+				//
+				// 以前它挂在同步里，而同步是启动路径的一部分——用户只是打开管理器，15 个包就被
+				// 导入、每个选项默认全开、源目录被搬走，全程没有任何确认。那是"顺手做掉"最坏的形状：
+				// 用户没要求、也看不出发生了什么。
+				task.MarkRunning("正在检查外部包");
+				var candidates = await Task.Run(
+					() => _libraryService.DetectExternalPackagesAsync(_lifetimeCancellation.Token),
+					_lifetimeCancellation.Token).ConfigureAwait(false);
+				var adoptable = candidates.Where(candidate => candidate.IsAdoptable).ToArray();
+				var blocked = candidates.Where(candidate => !candidate.IsAdoptable).ToArray();
+				var adopt = adoptable.Length != 0 && ConfirmExternalPackageAdoption(adoptable, blocked);
+
+				ExternalPackageAdoptionResult? adoption = null;
+				if (adopt)
+				{
+					task.UpdateStage($"正在认领 {adoptable.Length} 个外部包");
+					adoption = await Task.Run(
+						() => _libraryService.AdoptExternalPackagesAsync(stageProgress, _lifetimeCancellation.Token),
+						_lifetimeCancellation.Token).ConfigureAwait(false);
+				}
+
 				task.MarkRunning("正在扫描 Mod 文件夹");
 				await Task.Run(() => _libraryService.SynchronizeAsync(_lifetimeCancellation.Token, suppressDeploymentNotification: true), _lifetimeCancellation.Token).ConfigureAwait(false);
 				var result = _libraryService.LastSynchronizationResult;
 				var added = result?.AddedNodeIds.Count ?? 0;
 				var changed = result?.ChangedNodeIds.Count ?? 0;
 				var missing = result?.MissingNodeIds.Count ?? 0;
+				var adopted = adoption?.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Adopted) ?? 0;
+				var queued = adoption?.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Queued) ?? 0;
+				var failed = adoption?.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Failed) ?? 0;
+				var skipped = adoption?.Outcomes.Count(outcome => outcome.Status == ExternalPackageAdoptionStatus.Skipped) ?? 0;
 				task.MarkCompleted();
 				var message = added == 0 && changed == 0 && missing == 0
 					? "Mod 库校验完成，库索引与实际文件夹一致。"
 					: $"Mod 库校验完成：新增 {added} 个，更新 {changed} 个，缺失 {missing} 个。";
-				RefreshOnUiThread(() => _notificationService.Show(message, missing > 0 ? NotificationLevel.Warning : NotificationLevel.Info, TimeSpan.FromSeconds(8)));
+				// 认领的包会贡献几十个节点，"新增 181 个"容易让人以为出了重复。
+				// 所以单独说一句是哪些包被认领了。
+				if (adopted > 0)
+					message += $"\n已认领 {adopted} 个外部包（源目录已移到 {_libraryService.AdoptedArchiveDirectory}，保留 30 天）。";
+				// 排队 ≠ 被拒：它们只是没轮到，下次点「校验 Mod 库」会继续。
+				if (queued > 0)
+					message += $"\n还有 {queued} 个外部包排队中，下次校验会继续认领。";
+				// 没认领成功的必须说出来：它们不会出现在 added/changed/missing 里，
+				// 只报"一致"的话，用户会以为库已经收全了。
+				if (failed > 0)
+					message += $"\n有 {failed} 个外部包认领失败，原因见日志（logs 目录）。";
+				if (skipped > 0)
+					message += $"\n有 {skipped} 个外部包没有认领，原因见日志（logs 目录）。";
+				var needsAttention = missing > 0 || failed > 0 || blocked.Length > 0;
+				RefreshOnUiThread(() => _notificationService.Show(message, needsAttention ? NotificationLevel.Warning : NotificationLevel.Info, TimeSpan.FromSeconds(8)));
 			}
 			catch (OperationCanceledException)
 			{
@@ -2803,6 +2846,45 @@ namespace HD2ModManager.ViewModels
 				task.MarkFailed(exception.Message);
 				RefreshOnUiThread(() => _notificationService.Show($"校验 Mod 库失败：{exception.Message}", NotificationLevel.Error, TimeSpan.FromSeconds(10)));
 			}
+		}
+
+		/// <summary>
+		/// 认领前的确认。**必须由用户点头**：一次认领会把源目录搬出库、把每个选项默认打开，
+		/// 这些都不是"校验一下库"该顺手做的事。
+		/// </summary>
+		private bool ConfirmExternalPackageAdoption(
+			IReadOnlyList<ExternalPackageAdoptionCandidate> adoptable,
+			IReadOnlyList<ExternalPackageAdoptionCandidate> blocked)
+		{
+			var text = new System.Text.StringBuilder();
+			text.AppendLine($"发现 {adoptable.Count} 个外部包（来自其他 Mod 管理器：归档躺在子目录里，重扫看不见）。");
+			text.AppendLine();
+			foreach (var candidate in adoptable.Take(8))
+				text.AppendLine($"  · {candidate.RelativePath}（{candidate.BasePatchCount} 个归档）");
+			if (adoptable.Count > 8)
+				text.AppendLine($"  · …另有 {adoptable.Count - 8} 个");
+			text.AppendLine();
+			text.AppendLine("认领会把它们导入成受管条目（选项默认全开），并把源目录移到：");
+			text.AppendLine(_libraryService.AdoptedArchiveDirectory);
+			text.AppendLine("源目录不会立刻删除，保留 30 天后自动清理。");
+			if (blocked.Count != 0)
+			{
+				text.AppendLine();
+				text.AppendLine($"另有 {blocked.Count} 个目录看起来像外部包但不会处理，原因见日志：");
+				foreach (var candidate in blocked.Take(3))
+					text.AppendLine($"  · {candidate.RelativePath}：{candidate.BlockedReason}");
+				if (blocked.Count > 3)
+					text.AppendLine($"  · …另有 {blocked.Count - 3} 个");
+			}
+			text.AppendLine();
+			text.Append("现在认领吗？");
+
+			var answer = HD2ModManager.Views.AppDialog.Show(
+				text.ToString(),
+				"发现外部 Mod 包",
+				System.Windows.MessageBoxButton.YesNo,
+				System.Windows.MessageBoxImage.Question);
+			return answer == System.Windows.MessageBoxResult.Yes;
 		}
 
         private void UpdateModeFromSlots()

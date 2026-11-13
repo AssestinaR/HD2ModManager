@@ -64,10 +64,36 @@ namespace HD2ModManager.Services
         private long _stateVersion;
 		public ModLibrarySynchronizationResult? LastSynchronizationResult { get; private set; }
 
+        /// <summary>
+        /// 最近一次**用户主动**认领外部包的结果。
+        /// <para>
+        /// 单独暴露出来，是因为「排队 / 跳过 / 失败」不会进 added/changed/missing——只认领了 0 个包
+        /// 也可能显示"库索引与实际文件夹一致"，那正是这次要修的那种"看不见"。
+        /// </para>
+        /// </summary>
+        public ExternalPackageAdoptionResult? LastAdoptionResult { get; private set; }
+
+        /// <summary>
+        /// 认领完成后、下一次同步要用的对账基线。
+        /// <para>
+        /// 认领走的是导入链路，它自己已经 <c>SaveAsync</c> 过库快照；同步器必须拿认领后的快照
+        /// 当基线，否则刚导入的节点会被当成"外部新增"，再分配一次 id（<c>.hd2modmanager-mod.json</c>
+        /// 虽然能把 id 救回来，但会多一轮 changed + 一次全量缓存失效）。
+        /// </para>
+        /// <para>
+        /// 存成字段而不是参数，是为了让 <see cref="SynchronizeAsync"/> 保持"只做同步"这一件事——
+        /// 认领不再挂在它里面（启动时打开管理器就把 15 个包搬走，那不是同步该做的事）。
+        /// </para>
+        /// </summary>
+        private ExternalPackageAdoptionResult? _pendingAdoptionBaseline;
+
         public ReadOnlyDictionary<string, ModEntity> ByGuid => new(_byGuid);
         public LibrarySnapshot Snapshot => _snapshot;
         public DerivedLibraryData DerivedData => _derivedData;
         public string ModsRootDirectory => _paths.ModsDirectory;
+
+        /// <summary>认领副本的去处（<c>&lt;库&gt;.adopted</c>，库外同级）。界面要把它写进确认框。</summary>
+        public string AdoptedArchiveDirectory => _paths.AdoptedArchiveDirectory;
         public HD2ModCore.Application.IModInformationCenter InformationCenter => _informationCenter;
         public HD2ModCore.Application.IModInformationReader InformationReader => _informationReader;
         public HD2ModCore.Application.IModEquipmentSourceFactsReader EquipmentSourceFactsReader => _equipmentSourceFactsReader;
@@ -483,7 +509,9 @@ namespace HD2ModManager.Services
                 requiresDeployment: notifyContentChange).ConfigureAwait(false);
         }
 
-        public async Task<bool> SynchronizeAsync(CancellationToken cancellationToken = default, bool suppressDeploymentNotification = false)
+        public async Task<bool> SynchronizeAsync(
+            CancellationToken cancellationToken = default,
+            bool suppressDeploymentNotification = false)
         {
             await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -496,11 +524,28 @@ namespace HD2ModManager.Services
             var synchronizeVersion = Volatile.Read(ref _stateVersion);
             var synchronizeSnapshot = _snapshot;
             var synchronizationExclusions = await _manager.GetPendingStoredDeletionSynchronizationExclusionsAsync(cancellationToken).ConfigureAwait(false);
+            // 认领**不在这里**。它由用户显式发起（库页「校验 Mod 库」先探测再确认），
+            // 这里只负责消费那次认领留下的对账基线。
+            var adoption = _pendingAdoptionBaseline;
+            _pendingAdoptionBaseline = null;
+            if (adoption is { Changed: true }) synchronizeSnapshot = adoption.Snapshot;
             var result = await _synchronizer.SynchronizeAsync(
                 synchronizeSnapshot,
                 _paths.ModsDirectory,
                 synchronizationExclusions,
                 cancellationToken).ConfigureAwait(false);
+            if (adoption is { Changed: true })
+            {
+                // 认领出来的节点在同步器眼里不是 added（它们已经在对账基线里了），但界面上的
+                // "新增 N 个"和派生数据构建都靠这份 id 集合，不并进去就会显示"新增 0 个"。
+                result = result with
+                {
+                    AddedNodeIds = result.AddedNodeIds
+                        .Concat(adoption.ImportedNodeIds)
+                        .Where(id => result.Snapshot.Nodes.ContainsKey(id))
+                        .ToHashSet(),
+                };
+            }
 			LastSynchronizationResult = result;
             // 清扫必须排在 FilesystemChanged 早退**之前**：一个无主的残留目录既不会产生
             // added/changed，也不会产生 missing，所以它永远不可能让 FilesystemChanged 变成 true；
@@ -549,7 +594,7 @@ namespace HD2ModManager.Services
                     LogService.Error($"索引回收失败：{failure}");
             }
 
-            if (!result.FilesystemChanged) return false;
+            if (!result.FilesystemChanged && adoption is not { Changed: true }) return false;
 
             if (!synchronizationIsCurrent)
             {
@@ -590,9 +635,119 @@ namespace HD2ModManager.Services
             }
         }
 
+        /// <summary>
+        /// 探测库根下「归档躺在子目录里」的外部包（别的 mod manager 的形状）。
+        /// <para>
+        /// **只读**：不导入、不移动、不写库。给界面用来先问一句「发现 N 个外部包，要认领吗」——
+        /// 认领本身会搬走源目录、把选项默认全开，这些不能由「打开管理器」或「刷新一下」触发。
+        /// </para>
+        /// </summary>
+        public async Task<IReadOnlyList<ExternalPackageAdoptionCandidate>> DetectExternalPackagesAsync(
+            CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var exclusions = await _manager
+                    .GetPendingStoredDeletionSynchronizationExclusionsAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                return ExternalPackageAdoptionPlanner.Plan(
+                    _paths.ModsDirectory,
+                    _snapshot.Nodes.Values.Select(node => node.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                    exclusions);
+            }
+            finally
+            {
+                _libraryMutationGate.Release();
+            }
+        }
+
+        /// <summary>
+        /// 认领库根下「归档躺在子目录里」的外部包（别的 mod manager 的形状）。
+        /// <para>
+        /// 只做一件事：调用认领服务并把每个包的结局写进日志。判定、导入、移动都在核心层，
+        /// 这里不重复任何判据——两处各写一份，迟早出现「CLI 认领了、界面没认领」。
+        /// </para>
+        /// <para>
+        /// 认领失败**不能**让整轮流程失败：那会把「15 个包里有 1 个只读」升级成「库完全用不了」。
+        /// 所以这里兜住异常，返回"没改动"的结果，让调用方继续同步。
+        /// </para>
+        /// </summary>
+        public async Task<ExternalPackageAdoptionResult> AdoptExternalPackagesAsync(
+            IProgress<string>? progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            await _libraryMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var exclusions = await _manager
+                    .GetPendingStoredDeletionSynchronizationExclusionsAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                var adoption = await RunAdoptionAsync(_snapshot, exclusions, progress, cancellationToken).ConfigureAwait(false);
+                LastAdoptionResult = adoption;
+                // 下一次同步要用它当对账基线（见 _pendingAdoptionBaseline）。
+                if (adoption.Changed) _pendingAdoptionBaseline = adoption;
+                return adoption;
+            }
+            finally
+            {
+                _libraryMutationGate.Release();
+            }
+        }
+
+        private async Task<ExternalPackageAdoptionResult> RunAdoptionAsync(
+            LibrarySnapshot snapshot,
+            IReadOnlySet<string> exclusions,
+            IProgress<string>? progress,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var importer = CoreServices.CreateModLibraryImporter(_paths, _informationCenter, _informationReader);
+                var service = CoreServices.CreateExternalPackageAdoptionService(_paths, importer, _optionActivations);
+                var adoption = await service
+                    .AdoptAsync(snapshot, _paths.ModsDirectory, exclusions, progress, cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var note in adoption.Notes)
+                    LogService.Info(note);
+                foreach (var outcome in adoption.Outcomes)
+                {
+                    switch (outcome.Status)
+                    {
+                        case ExternalPackageAdoptionStatus.Adopted:
+                            LogService.Info($"认领外部包：{outcome.RelativePath}（{outcome.NodeIds.Count} 个节点）。{outcome.Detail}");
+                            break;
+                        case ExternalPackageAdoptionStatus.Failed:
+                            LogService.Error($"认领外部包失败：{outcome.RelativePath} — {outcome.Detail}");
+                            break;
+                        case ExternalPackageAdoptionStatus.Queued:
+                            // 排队不是故障，用 Info 记一笔就够；界面也不该把它算进「未能认领」。
+                            LogService.Info($"认领排队：{outcome.RelativePath} — {outcome.Detail}");
+                            break;
+                        default:
+                            // 跳过也要留痕：这次要修的正是「一个真实包被跳过却毫无痕迹」。
+                            LogService.Info($"跳过认领：{outcome.RelativePath} — {outcome.Detail}");
+                            break;
+                    }
+                }
+                return adoption;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidDataException
+                or System.Security.SecurityException)
+            {
+                LogService.Error($"外部包认领中止（库同步继续）：{exception.Message}");
+                return new ExternalPackageAdoptionResult(snapshot, Array.Empty<ExternalPackageAdoptionOutcome>(), Array.Empty<ModNodeId>());
+            }
+        }
+
         public async Task RefreshDerivedDataAsync(IEnumerable<string>? guids, CancellationToken cancellationToken = default)
             => await RefreshDerivedDataAsync(guids, ModContentChangeKind.DerivedOnly, cancellationToken).ConfigureAwait(false);
-
         public async Task RefreshDerivedDataAsync(
             IEnumerable<string>? guids,
             ModContentChangeKind changeKind,
