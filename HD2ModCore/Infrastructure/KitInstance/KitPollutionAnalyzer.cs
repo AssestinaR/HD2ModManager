@@ -2,8 +2,12 @@ using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure.KitInstance;
 
-/// <summary>游戏数据里「某套 → 某个 Unit」的一条引用（<c>game_data_authority_pieces</c> 的一行，只留分析要用的列）。</summary>
-public readonly record struct KitPieceRef(uint ItemId, uint Slot, ulong UnitFileId);
+/// <summary>
+/// 游戏数据里「某套 → 某个 Unit」的一条引用（<c>game_data_authority_pieces</c> 的一行，只留分析要用的列）。
+/// <paramref name="BodyType"/> / <paramref name="BodyVariant"/> 是身形（<c>raw_body_type</c> / <c>body_variant</c>），
+/// 污染分析用不到，转专属的 D9（同名记录按身形找差异件）要用。
+/// </summary>
+public readonly record struct KitPieceRef(uint ItemId, uint Slot, ulong UnitFileId, int BodyType = 0, int BodyVariant = 0);
 
 /// <summary>一套被 Mod 连带影响的护甲，以及原因。</summary>
 /// <param name="Units">Mod 覆盖的、且这套直接引用的原版 Unit。</param>

@@ -14,6 +14,11 @@ namespace HD2ModCore.Infrastructure.KitInstance;
 /// 生成这条记录时 Mod 内容的指纹。<c>null</c> 或空串 = 不校验（P1 允许）；
 /// 非空时，若调用方给出的当前指纹与它不一致，这条记录不生效（见 <see cref="KitInstanceRulesCompiler"/>）。
 /// </param>
+/// <param name="TargetName">目标套的显示名，仅供界面（卡片显示「已转专属：…」）。</param>
+/// <param name="DerivedFiles">
+/// 转专属为这条记录写进该节点 <c>Overwrite/</c> 的文件名（patch 与 sidecar）。撤销只删这些。
+/// 手写的记录没有它（<c>null</c>）：撤销时只删记录本身。
+/// </param>
 public sealed record KitInstanceWorkspaceRecord(
 	uint TargetItemId,
 	string RuleName,
@@ -21,7 +26,9 @@ public sealed record KitInstanceWorkspaceRecord(
 	IReadOnlyList<string> All,
 	IReadOnlyList<string> None,
 	IReadOnlyList<string> Hide,
-	string? ContentFingerprint = null)
+	string? ContentFingerprint = null,
+	string? TargetName = null,
+	IReadOnlyList<string>? DerivedFiles = null)
 {
 	public KitInstanceRule ToRule()
 		=> new(RuleName, Radius, All ?? [], None ?? [], Hide ?? []);
@@ -107,7 +114,9 @@ public static class KitInstanceWorkspaceStore
 				value.All ?? [],
 				value.None ?? [],
 				value.Hide ?? [],
-				string.IsNullOrEmpty(value.ContentFingerprint) ? null : value.ContentFingerprint);
+				string.IsNullOrEmpty(value.ContentFingerprint) ? null : value.ContentFingerprint,
+				string.IsNullOrEmpty(value.TargetName) ? null : value.TargetName,
+				value.DerivedFiles is { Length: > 0 } ? value.DerivedFiles : null);
 		}
 		return new KitInstanceWorkspace(records);
 	}
@@ -131,6 +140,8 @@ public static class KitInstanceWorkspaceStore
 						None = pair.Value.None.ToArray(),
 						Hide = pair.Value.Hide.ToArray(),
 						ContentFingerprint = pair.Value.ContentFingerprint,
+							TargetName = pair.Value.TargetName,
+							DerivedFiles = pair.Value.DerivedFiles?.ToArray(),
 					}),
 		};
 		return JsonSerializer.Serialize(file, Options);
@@ -158,6 +169,8 @@ public static class KitInstanceWorkspaceStore
 		public string[]? None { get; set; }
 		public string[]? Hide { get; set; }
 		public string? ContentFingerprint { get; set; }
+		public string? TargetName { get; set; }
+		public string[]? DerivedFiles { get; set; }
 	}
 }
 

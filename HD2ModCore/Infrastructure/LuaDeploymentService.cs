@@ -829,7 +829,14 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		}
 
 		var previousRevision = _kitInstanceRegistryRoot is null ? 0 : KitInstanceRulesFile.ReadRevision(_kitInstanceRegistryRoot);
-		var compiled = KitInstanceRulesCompiler.Compile(enabledNodes, workspace, previousRevision);
+		// 内容指纹：记录生成之后 Mod 的基底被更新过（指纹不一致），这条记录本次不生效并给 Warning，让用户重新转换。
+		var compiled = KitInstanceRulesCompiler.Compile(
+			enabledNodes,
+			workspace,
+			previousRevision,
+			nodeId => snapshot.Nodes.TryGetValue(nodeId, out var node)
+				? KitInstanceContentFingerprint.Compute(Path.Combine(modsRootDirectory, node.RelativePath))
+				: null);
 		foreach (var issue in compiled.Issues) issues.Add(issue);
 
 		await AddKitPollutionWarningsAsync(

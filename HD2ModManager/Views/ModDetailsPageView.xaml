@@ -317,6 +317,19 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </Expander>
+                    <!-- 转专属（按实例隐藏 P3）：污染时出现「转专属」，已转专属时出现「撤销专属」。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="转专属…"
+                                Style="{StaticResource AppSecondaryButton}"
+                                Command="{Binding ConvertKitInstanceCommand}"
+                                Padding="14,6"
+                                Visibility="{Binding ShowKitConvertButton, Converter={StaticResource BoolToVis}}"/>
+                        <Button Content="撤销专属"
+                                Style="{StaticResource AppSecondaryButton}"
+                                Command="{Binding UndoKitInstanceCommand}"
+                                Padding="14,6"
+                                Visibility="{Binding ShowKitUndoButton, Converter={StaticResource BoolToVis}}"/>
+                    </StackPanel>
                 </StackPanel>
             </DataTemplate>
 

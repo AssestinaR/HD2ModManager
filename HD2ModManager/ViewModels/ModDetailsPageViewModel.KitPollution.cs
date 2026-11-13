@@ -14,7 +14,7 @@ namespace HD2ModManager.ViewModels;
 //   - 没有污染（受影响的套 < 2）      ⇒ 卡片隐藏（大多数 Mod 都是这样，不值得占一张卡的位置）
 //   - 污染                            ⇒ 「这个 Mod 会影响 N 套护甲」+ 原因 + 举例，可展开看每个原因影响了哪些护甲
 //   - 材质缓存没好                    ⇒ 追加「材质影响分析中」，先只给 Unit 部分的结论；缓存好了自动刷新
-// 本阶段没有「转专属」按钮（P3）。
+// 「转专属 / 撤销专属」按钮与已转专属状态见 ModDetailsPageViewModel.KitConvert.cs（P3）。
 public partial class ModDetailsPageViewModel
 {
     private const int KitPollutionHeadlineKits = 6;
@@ -30,12 +30,16 @@ public partial class ModDetailsPageViewModel
     public IReadOnlyList<string> KitPollutionDetails { get; private set; } = Array.Empty<string>();
     public bool HasKitPollutionDetails => KitPollutionDetails.Count > 0;
 
-    private void SetKitPollution(bool show, string headline, string note, IReadOnlyList<string> details)
+    private void SetKitPollution(
+        bool show, string headline, string note, IReadOnlyList<string> details,
+        bool polluted = false, KitInstanceWorkspaceRecord? record = null)
     {
         ShowKitPollutionCard = show;
         KitPollutionHeadline = headline;
         KitPollutionNote = note;
         KitPollutionDetails = details;
+        // 必须在 ShowKitPollutionCard 更新之后：ShowKitConvertButton 依赖它，先通知会让界面读到旧值。
+        SetKitConvertState(record, polluted);
         OnPropertyChanged(nameof(ShowKitPollutionCard));
         OnPropertyChanged(nameof(KitPollutionHeadline));
         OnPropertyChanged(nameof(KitPollutionNote));
@@ -48,6 +52,19 @@ public partial class ModDetailsPageViewModel
     private async Task RefreshKitPollutionAsync(ModNodeId nodeId, ModContentFacts? facts)
     {
         var version = ++_kitPollutionVersion;
+
+        // 已转专属：卡片显示「已转专属：<目标套>」，不再做污染分析（原始内容仍会算出污染，那不是用户要看的）。
+        var record = await KitConversionService.TryGetRecordAsync(nodeId, _library.ModsRootDirectory).ConfigureAwait(false);
+        if (record is not null)
+        {
+            RunOnUiThread(() =>
+            {
+                if (!_disposed && version == _kitPollutionVersion)
+                    SetKitPollution(true, BuildKitConvertedHeadline(record), BuildKitConvertedNote(record), Array.Empty<string>(), record: record);
+            });
+            return;
+        }
+
         if (facts is null)
         {
             RunOnUiThread(() => { if (!_disposed && version == _kitPollutionVersion) SetKitPollution(false, string.Empty, string.Empty, Array.Empty<string>()); });
@@ -114,7 +131,7 @@ public partial class ModDetailsPageViewModel
                     SetKitPollution(false, string.Empty, string.Empty, Array.Empty<string>());
                     return;
                 }
-                SetKitPollution(true, BuildKitPollutionHeadline(value), BuildKitPollutionNote(value, materialPending), BuildKitPollutionDetails(value));
+                SetKitPollution(true, BuildKitPollutionHeadline(value), BuildKitPollutionNote(value, materialPending), BuildKitPollutionDetails(value), polluted: !materialPending);
             });
         }
     }

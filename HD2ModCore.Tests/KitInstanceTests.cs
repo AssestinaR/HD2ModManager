@@ -428,6 +428,38 @@ public sealed class KitInstanceTests
 	}
 
 	[Fact]
+	public async Task Deployment_RecordWhoseModContentChangedSinceConversionIsDroppedWithAWarning()
+	{
+		SetModes(ArmorMappingMode.Off, PhysicsMode.Off);
+		using var scratch = new Scratch();
+		var node = ModNodeId.New();
+		var directory = Path.Combine(scratch.Mods, node.Value.ToString("N"));
+		Directory.CreateDirectory(directory);
+		await File.WriteAllBytesAsync(Path.Combine(directory, "9ba626afa44a3aa3.patch_0"), [1, 2, 3]);
+		var (profile, snapshot) = CreateProfile(node);
+		var rulesPath = KitInstanceRulesFile.GetPath(scratch.Registry);
+
+		// 指纹对得上：规则生效，没有 Warning。
+		await KitInstanceWorkspaceStore.WriteAsync(scratch.Mods, KitInstanceWorkspace.Empty.With(
+			node, Record() with { ContentFingerprint = KitInstanceContentFingerprint.Compute(directory) }));
+		var fresh = await MaterializeAsync(scratch, profile, snapshot);
+		Assert.False(fresh.HasErrors, Describe(fresh.Issues));
+		Assert.DoesNotContain(fresh.Issues, issue => issue.Code == "KitInstanceRuleStale");
+		Assert.True(KitInstanceRulesProtocol.TryParse(await File.ReadAllTextAsync(rulesPath), out var withRule, out var error), error);
+		Assert.Single(withRule!.Rules);
+
+		// Mod 被更新（基底 patch 变了）：这条记录本次不生效，规则文件写成空的，并给 Warning 让用户重新转换。
+		await File.WriteAllBytesAsync(Path.Combine(directory, "9ba626afa44a3aa3.patch_0"), [1, 2, 3, 4, 5]);
+		var stale = await MaterializeAsync(scratch, profile, snapshot);
+		Assert.False(stale.HasErrors, Describe(stale.Issues));
+		var warning = Assert.Single(stale.Issues, issue => issue.Code == "KitInstanceRuleStale");
+		Assert.Equal(CoreIssueSeverity.Warning, warning.Severity);
+		Assert.Equal(node, warning.NodeId);
+		Assert.True(KitInstanceRulesProtocol.TryParse(await File.ReadAllTextAsync(rulesPath), out var withoutRule, out error), error);
+		Assert.Empty(withoutRule!.Rules);
+	}
+
+	[Fact]
 	public async Task Deployment_ManagerOwnsBoot_HiderBecomesTheLastBlockOfTheSameBootPatch()
 	{
 		SetModes(ArmorMappingMode.Off, PhysicsMode.ExclusiveLuaEntry);

@@ -19,6 +19,13 @@ public interface IKitPollutionService
 	Task? PendingMaterialBuild { get; }
 }
 
+/// <summary>转专属规划要的全部游戏数据。<paramref name="IsVanilla"/> 同步查 <c>assets</c> 表（结果有缓存）。</summary>
+public sealed record KitConversionContext(
+	IReadOnlyList<KitPieceRef> Pieces,
+	IReadOnlyDictionary<uint, string> KitNames,
+	IReadOnlyDictionary<ulong, IReadOnlyCollection<ulong>>? UnitsByMaterial,
+	Func<AssetKey, bool> IsVanilla);
+
 /// <summary>
 /// 把索引库（<c>game_data_authority_pieces</c> / <c>_kits</c> / <c>assets</c> / <c>asset_archives</c>）、
 /// 材质缓存与 <see cref="KitPollutionAnalyzer"/> 串起来。
@@ -53,6 +60,49 @@ public sealed class KitPollutionService : IKitPollutionService
 		_indexDbPath = Path.GetFullPath(indexDbPath);
 		_cachePath = Path.GetFullPath(cachePath);
 		_readerFactory = readerFactory ?? throw new ArgumentNullException(nameof(readerFactory));
+	}
+
+	/// <summary>
+	/// 转专属用：与污染分析同一份数据来源（索引库 pieces/kits + 材质缓存），不另起一套读取。
+	/// 索引库不存在或没有护甲权威表时返回 <c>null</c>；材质缓存没好时 <see cref="KitConversionContext.UnitsByMaterial"/> 为 <c>null</c>
+	/// （并像分析一样在后台开始构建，本方法不等待）。
+	/// </summary>
+	public async Task<KitConversionContext?> LoadConversionContextAsync(
+		string? gameDataDirectory, CancellationToken cancellationToken = default)
+	{
+		string? key;
+		Reference reference;
+		try
+		{
+			key = await ArmorUnitMaterialCacheStore.ComputeIndexKeyAsync(_indexDbPath, cancellationToken).ConfigureAwait(false);
+			if (key is null) return null;
+			reference = await LoadReferenceAsync(key, cancellationToken).ConfigureAwait(false);
+			if (reference.Pieces.Count == 0) return null;
+		}
+		catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+		{
+			return null;
+		}
+
+		var materials = await GetMaterialMapAsync(key, gameDataDirectory, reference, cancellationToken).ConfigureAwait(false);
+		var indexDb = _indexDbPath;
+		var memo = new Dictionary<AssetKey, bool>();
+		bool IsVanilla(AssetKey asset)
+		{
+			lock (memo)
+			{
+				if (memo.TryGetValue(asset, out var known)) return known;
+				using var connection = OpenReadOnly(indexDb);
+				connection.Open();
+				using var command = connection.CreateCommand();
+				command.CommandText = "SELECT 1 FROM assets WHERE type_id = $type AND file_id = $file LIMIT 1;";
+				command.Parameters.AddWithValue("$type", unchecked((long)asset.TypeId));
+				command.Parameters.AddWithValue("$file", unchecked((long)asset.FileId));
+				return memo[asset] = command.ExecuteScalar() is not null;
+			}
+		}
+
+		return new KitConversionContext(reference.Pieces, reference.KitNames, materials?.UnitsByMaterial, IsVanilla);
 	}
 
 	public Task? PendingMaterialBuild => Builds.TryGetValue(_cachePath, out var task) && !task.IsCompleted ? task : null;
@@ -165,14 +215,16 @@ public sealed class KitPollutionService : IKitPollutionService
 		await using (var command = connection.CreateCommand())
 		{
 			// 披风（slot 1）与 unit 0 留给分析器过滤：过滤规则只在一处。
-			command.CommandText = "SELECT item_id, slot, unit_file_id FROM game_data_authority_pieces;";
+			command.CommandText = "SELECT item_id, slot, unit_file_id, raw_body_type, body_variant FROM game_data_authority_pieces;";
 			await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 			while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
 			{
 				var item = reader.GetInt64(0);
 				var slot = reader.GetInt64(1);
 				if (item is < 0 or > uint.MaxValue || slot is < 0 or > uint.MaxValue) continue;
-				pieces.Add(new KitPieceRef((uint)item, (uint)slot, unchecked((ulong)reader.GetInt64(2))));
+				pieces.Add(new KitPieceRef(
+					(uint)item, (uint)slot, unchecked((ulong)reader.GetInt64(2)),
+					checked((int)reader.GetInt64(3)), checked((int)reader.GetInt64(4))));
 			}
 		}
 

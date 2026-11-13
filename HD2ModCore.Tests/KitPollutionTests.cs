@@ -346,7 +346,7 @@ public sealed class KitPollutionTests : IDisposable
 			CREATE TABLE assets (type_id INTEGER NOT NULL, file_id INTEGER NOT NULL, df INTEGER NOT NULL, PRIMARY KEY(type_id, file_id));
 			CREATE TABLE asset_archives (type_id INTEGER NOT NULL, file_id INTEGER NOT NULL, archive_id TEXT NOT NULL, PRIMARY KEY(type_id, file_id, archive_id));
 			CREATE TABLE game_data_authority_kits (item_id INTEGER PRIMARY KEY, dlc_id INTEGER NOT NULL, set_id INTEGER NOT NULL, kit_kind INTEGER NOT NULL, archive_id TEXT NOT NULL, display_name TEXT NOT NULL);
-			CREATE TABLE game_data_authority_pieces (item_id INTEGER NOT NULL, slot INTEGER NOT NULL, unit_type_id INTEGER NOT NULL, unit_file_id INTEGER NOT NULL);
+			CREATE TABLE game_data_authority_pieces (item_id INTEGER NOT NULL, slot INTEGER NOT NULL, unit_type_id INTEGER NOT NULL, unit_file_id INTEGER NOT NULL, raw_body_type INTEGER NOT NULL DEFAULT 0, body_variant INTEGER NOT NULL DEFAULT 0);
 			""");
 		if (fingerprint is not null) Exec(connection, $"INSERT INTO meta VALUES('source_fingerprint','{fingerprint}');");
 		if (builtUtc is not null) Exec(connection, $"INSERT INTO meta VALUES('built_utc','{builtUtc}');");
@@ -373,7 +373,7 @@ public sealed class KitPollutionTests : IDisposable
 		connection.Open();
 		Exec(connection, "INSERT INTO game_data_authority_kits VALUES (1,0,0,0,'x','FS-05'),(2,0,0,0,'x','CM-17'),(3,0,0,0,'x','CE-64');");
 		Exec(connection, $"""
-			INSERT INTO game_data_authority_pieces VALUES
+			INSERT INTO game_data_authority_pieces (item_id, slot, unit_type_id, unit_file_id) VALUES
 				(1,2,{S(Unit)},{0xA}),(2,2,{S(Unit)},{0xA}),(3,2,{S(Unit)},{0xB}),(3,2,{S(Unit)},{0xD}),(3,1,{S(Unit)},{0xC});
 			INSERT INTO assets VALUES
 				({S(Unit)},{0xA},0),({S(Unit)},{0xB},0),({S(Unit)},{0xC},0),({S(Unit)},{0xD},0),
