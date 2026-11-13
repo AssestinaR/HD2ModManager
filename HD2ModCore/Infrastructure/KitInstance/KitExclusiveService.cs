@@ -32,7 +32,9 @@ public static class KitExclusiveService
 		var loaded = await LoadAsync(modDirectory, paths, cancellationToken).ConfigureAwait(false);
 		if (loaded.Error is not null) return new KitExclusiveCatalog([], loaded.Error);
 		var index = SectionalExclusivePlanner.BuildIndex(loaded.Snapshot!.Kits);
+		// 只列游戏本体有名字的护甲；0x… 的无名记录不是玩家能选的护甲（用户要求，2026-11-14）。
 		var options = SectionalExclusivePlanner.Evaluate(index, loaded.Source!, headMerge)
+			.Where(candidate => SectionalExclusivePlanner.IsNamed(candidate.Name))
 			.Select(candidate => new KitExclusiveOption(
 				candidate.ItemId, candidate.ArchiveId, candidate.Name, candidate.Succeeded, candidate.Summary, candidate.Merged))
 			.OrderBy(option => option.Name, StringComparer.CurrentCulture)

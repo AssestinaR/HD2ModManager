@@ -217,10 +217,39 @@ public sealed class SectionalExclusiveMergePlannerTests
 	}
 
 	[Fact]
-	public void AllShared_FailsWithAReasonPerBody()
+	public void SameModelAsAnotherNamedArmor_FailsSayingSoAndNamesIt()
 	{
 		var everything = Own().Select(piece => piece.UnitAssetKey.FileId).Where(file => file != 0xcafe).ToArray();
-		var kits = new List<GameDataAuthorityKit> { T(own => own), Squatter(9, everything) };
+		var kits = new List<GameDataAuthorityKit>
+		{
+			T(own => own),
+			Kit(9, "TR-9", GameDataEquipmentKitKind.Armor, [.. everything.Select(file => P(2, 1, 3, file))]),
+			Kit(10, "0xdeadbeef", GameDataEquipmentKitKind.Armor, [.. everything.Select(file => P(2, 1, 3, file))]),
+		};
+
+		var plan = Merge(kits);
+
+		Assert.False(plan.Succeeded);
+		var gap = Assert.Single(plan.Gaps);
+		Assert.Contains("TR-9", gap, StringComparison.Ordinal);
+		Assert.Contains("同一套模型", gap, StringComparison.Ordinal);
+		Assert.DoesNotContain("0xdeadbeef", gap, StringComparison.Ordinal);
+
+		var onlyUnnamedTwin = Merge([kits[0], kits[2]]);
+		var unnamedGap = Assert.Single(onlyUnnamedTwin.Gaps);
+		Assert.Contains("另一套未命名的护甲记录", unnamedGap, StringComparison.Ordinal);
+		Assert.DoesNotContain("0xdeadbeef", unnamedGap, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void AllShared_FailsWithAReasonPerBody()
+	{
+		// 每个部件都被别的护甲占着，但没有任何一套护甲和 T 的模型完全相同（两套各占一半）。
+		var everything = Own().Select(piece => piece.UnitAssetKey.FileId).Where(file => file != 0xcafe).ToArray();
+		var kits = new List<GameDataAuthorityKit>
+		{
+			T(own => own), Squatter(9, [.. everything.Where((_, i) => i % 2 == 0)]), Squatter(10, [.. everything.Where((_, i) => i % 2 == 1)]),
+		};
 
 		var plan = Merge(kits);
 

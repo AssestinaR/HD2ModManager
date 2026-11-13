@@ -148,6 +148,10 @@ internal static class SectionalExclusivePlanner
 
 	private readonly record struct Unit(ulong File, ulong Type, int Slot, int Layer, uint RawBody);
 
+	/// <summary>游戏里有正式名字的护甲；没名字的记录显示成 <c>0x…</c>，不是玩家能穿的本体护甲。</summary>
+	internal static bool IsNamed(string? displayName)
+		=> !string.IsNullOrWhiteSpace(displayName) && !displayName.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+
 	private static string BodyLabel(int body) => body == 0 ? "健壮身形" : "纤细身形";
 
 	private static bool Covers(uint rawBody, int body) => rawBody == (uint)body || rawBody is not (0u or 1u);
@@ -247,6 +251,30 @@ internal static class SectionalExclusivePlanner
 			.Select(candidate => candidate.ItemId)
 			.Append(kit.ItemId)
 			.ToHashSet();
+		// 组外、拥有目标全部（非披风）部件的其它有名字护甲：几何完全相同的「孪生」护甲。
+		List<string> TwinNames(IReadOnlyCollection<Unit> units)
+		{
+			HashSet<uint>? common = null;
+			foreach (var file in units.Select(unit => unit.File).Distinct())
+			{
+				if (!index.Owners.TryGetValue(file, out var owners)) return [];
+				if (common is null) common = [.. owners];
+				else common.IntersectWith(owners);
+			}
+
+			if (common is null) return [];
+			common.ExceptWith(groupItems);
+			var named = index.Kits
+				.Where(other => common.Contains(other.ItemId) && IsNamed(other.DisplayName))
+				.Select(other => other.DisplayName)
+				.Distinct(StringComparer.Ordinal)
+				.Order(StringComparer.CurrentCulture)
+				.ToList();
+			// 孪生的只有没名字的记录（如 AF-91 与 0x2cbae902）：不报 0x 编号，说成「另一套未命名的护甲记录」。
+			if (named.Count == 0 && index.Kits.Any(other => common.Contains(other.ItemId))) named.Add("另一套未命名的护甲记录");
+			return named;
+		}
+
 		var merges = new List<SectionalExclusiveMerge>();
 		var sigPreferred = new[] { new HashSet<ulong>(), new HashSet<ulong>() };   // 合并模式：每种身形的主承载件（签名优先取它）
 
@@ -280,7 +308,20 @@ internal static class SectionalExclusivePlanner
 					gaps.Add($"{BodyLabel(body)}没有任何独有部件可以承载合并后的模型（躯干、胯、腿、肩都被其它护甲共用）");
 			}
 
-			if (gaps.Count != 0) return;
+			if (gaps.Count != 0)
+			{
+				// 最常见的原因：这套护甲和别的护甲用的是同一套模型，只有材质/颜色不同（如 B-01 与 TR-40、TR-9 与 DP-40）。
+				// 这种情况没有任何部件能区分它们，直接说清楚，比逐身形列「被共用」更有用。
+				var twins = TwinNames(tUnits);
+				if (twins.Count != 0)
+				{
+					gaps.Clear();
+					gaps.Add($"和 {string.Join("、", twins.Take(3))}{(twins.Count > 3 ? " 等" : "")} 用的是同一套模型，只有颜色不同，没有部件能把它们分开");
+				}
+
+				return;
+			}
+
 			foreach (var body in bodies) sigPreferred[body].Add(primary[body]!.Value.File);
 
 			// 每个格子：有自己的独有承载件就逐格承载；没有的记进 missing，合并进主承载件。头身合并的「头」当一个伪部位，
