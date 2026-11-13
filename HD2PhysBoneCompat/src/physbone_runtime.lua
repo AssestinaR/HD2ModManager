@@ -4093,8 +4093,14 @@ local function drive(runtime)
 	-- "没进块"和"进了块但走了别的分支"。
 	-- 600 帧（60 fps 下 10 秒）足够回答这个问题；120 帧是每秒 2 行，一场长局光心跳就上百 KB。
 	local tune = tune_values(runtime)
-	local heartbeat = math.max(1, math.floor(tune.heartbeatFrames or options.heartbeatFrames or 600))
-	if (runtime.beatFrames % heartbeat) == 0 then
+	-- 调参文件 `heartbeatFrames = N` 优先，其次安装参数，最后 600。
+	-- **0 或负数 = 关掉心跳**（调参文件里 0 一律表示关，`devLog` / `skirt` 都是这个约定）。
+	-- 不能写成 `math.max(1, …)`：那样"0"会变成"每帧一条"，一场长局刷出几万行，
+	-- 正好把心跳本来要省的那点日志预算烧光；负数还会变成负数取模（永远不等于 0）。
+	local heartbeat = options.heartbeatFrames or 600
+	if tune.heartbeatFrames ~= nil then heartbeat = tune.heartbeatFrames end
+	heartbeat = heartbeat > 0 and math.floor(heartbeat) or 0
+	if heartbeat > 0 and (runtime.beatFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
 		logger("[physbone] 驱动心跳 unit=%d 链=%d 玩家=%d 分帧=%d/%d 本帧驱动=%d 驱动=%.2f ms dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",

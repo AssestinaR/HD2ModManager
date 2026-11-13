@@ -141,6 +141,10 @@ check("心跳用独立计数 beatFrames（不被补挂归零）",
 		and wholeStripped:find("(runtime.driveFrames % heartbeat)", 1, true) == nil)
 check("beatFrames 只在安装时归零（tryAttach 不碰它）",
 	select(2, wholeStripped:gsub("beatFrames = 0", "")) == 1)
+-- 调参文件里 0 一律表示关（devLog / skirt 都是这个约定）。心跳不能例外：
+-- `math.max(1, …)` 会把 0 变成"每帧一条"，一场长局刷几万行，正好烧光心跳要省的预算。
+check("心跳间隔写 0 = 关（不是每帧一条）",
+	wholeStripped:find("heartbeat > 0 and (runtime.beatFrames % heartbeat) == 0", 1, true) ~= nil)
 
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)
