@@ -90,7 +90,17 @@ local M = {}
 --        现在每帧先问 `World.units(world)` 要"活体列表"，只在 Lua 里按指针比：
 --        不在列表里 ⇒ 判死、整组丢弃，一个 Unit API 都不调；世界本身没了（`Application.worlds()`
 --        里找不到我们那个 world）⇒ 整组丢弃且不碰句柄。
-M.VERSION = "2.1.43"
+-- 2.1.44：驱动心跳**不再被补挂清零**（2026-11-13 实机：挂完 13 件后跑了 2 分钟，一行心跳都没有）。
+--        `tryAttach` 每次成功都把 `driveFrames` 归零，而补挂（reconcile）在挂满之后仍每 1~2 秒
+--        成功一次（"本次新挂 0、已挂过 13"）⇒ 计数永远攒不到 600，心跳里的"偏离绑定峰值"
+--        —— 判断"求解器在动但画面不动"还是"求解器根本没推开骨"的唯一数字 —— 从来打不出来。
+--        现在心跳/逐链明细改用独立计数 `beatFrames`（只在安装时归零）；
+--        调参文件可写 `heartbeatFrames = N` 改间隔、`chainLog = 1` 打开逐链峰值（按件列出）。
+-- 2.1.45：**只约束一个轴的链，另一个轴不再被锁死**（physbone_compat.gains_of）。
+--        flags=0x35（yawCon + angleCon，没有 pitchCon）的长发链：pitch 区间留着初值 [0, 0]，
+--        而求解器在 axisLimits 打开时两个分量都夹 ⇒ 前后甩被锁在 0°，长发看着像一根焊丝。
+--        现在没约束的轴按"不限"处理，总偏角仍由锥兜住。
+M.VERSION = "2.1.45"
 
 --- 安装标记用的全局键。只写这一个全局，且值就是模块本身（便于外部检查是否已装）。
 local INSTALL_KEY = "__hd2physbone_runtime"
@@ -4032,6 +4042,9 @@ local function drive(runtime)
 		end
 	end
 	runtime.driveFrames = (runtime.driveFrames or 0) + 1
+	-- 心跳专用计数：`driveFrames` 每次 tryAttach 成功都会归零（补挂在挂满后仍每 1~2 秒成功一次），
+	-- 拿它取模，心跳就永远打不出来。这个只在安装时归零。
+	runtime.beatFrames = (runtime.beatFrames or 0) + 1
 
 	-- 抬升诊断（默认关；没有调参文件时这里只多一次缓存判断）。
 	-- 放在物理写入之后：这一帧渲染用的就是"抬过"的 avatar 根。
@@ -4079,8 +4092,9 @@ local function drive(runtime)
 	-- 上一轮出现过"phase 明明是 live 但 update 从不执行"，没有这条就无法区分
 	-- "没进块"和"进了块但走了别的分支"。
 	-- 600 帧（60 fps 下 10 秒）足够回答这个问题；120 帧是每秒 2 行，一场长局光心跳就上百 KB。
-	local heartbeat = options.heartbeatFrames or 600
-	if (runtime.driveFrames % heartbeat) == 0 then
+	local tune = tune_values(runtime)
+	local heartbeat = math.max(1, math.floor(tune.heartbeatFrames or options.heartbeatFrames or 600))
+	if (runtime.beatFrames % heartbeat) == 0 then
 		local chains = 0
 		for _, session in ipairs(runtime.sessions) do chains = chains + #session.sessions end
 		logger("[physbone] 驱动心跳 unit=%d 链=%d 玩家=%d 分帧=%d/%d 本帧驱动=%d 驱动=%.2f ms dt=%.4f 本帧 写入=%d 跳过=%d 引擎调用=%d 累计/帧=%.0f 静止链=%d 偏离绑定峰值=%.1f°(史上%.1f°) 最离谱=%s(限%.0f°) 同拍重复=%d",
@@ -4094,25 +4108,43 @@ local function drive(runtime)
 	end
 
 	-- 逐链明细（默认关）：区分"求解器在动"和"参数算出来就是 0"——后者在画面上就是钢板。
-	if options.debug and (runtime.driveFrames % (options.debugDetailFrames or 240)) == 0 then
-		local peak, parts, shown = 0, {}, 0
+	-- 调参文件 `chainLog = 1` 也能打开（不必重新打包成 debug 版）。
+	-- 按**件**列：每件一段「unit 链数 件峰值 + 峰值最大的 3 条链」。旧版只列全场前 6 条链，
+	-- 头部那件有 17 条链时，前 6 条全是单节前发，长发根本轮不到。
+	local chainLog = options.debug or (tune.chainLog or 0) ~= 0
+	if chainLog and (runtime.beatFrames % (options.debugDetailFrames or 240)) == 0 then
+		local peak, pieces = 0, {}
 		for _, session in ipairs(runtime.sessions) do
+			local chainPeaks = {}
+			local sessionPeak = 0
 			for _, item in ipairs(session.sessions) do
 				local rotations = item.lastRotations
-				if rotations ~= nil and shown < 6 then
-					local itemPeak = 0
+				local itemPeak = 0
+				if rotations ~= nil then
 					for index = 1, #rotations do
 						local angle = rotations[index][4] * 180 / math.pi
 						if angle > itemPeak then itemPeak = angle end
 					end
-					if itemPeak > peak then peak = itemPeak end
-					shown = shown + 1
-					parts[#parts + 1] = string.format("%s=%.1f°",
-						tostring(item.chain and item.chain[1] and item.chain[1].name or "?"), itemPeak)
 				end
+				if itemPeak > sessionPeak then sessionPeak = itemPeak end
+				chainPeaks[#chainPeaks + 1] = {
+					name = tostring(item.chain and item.chain[1] and item.chain[1].name or "?"),
+					peak = itemPeak,
+					live = rotations ~= nil,
+				}
 			end
+			if sessionPeak > peak then peak = sessionPeak end
+			table.sort(chainPeaks, function(a, b) return a.peak > b.peak end)
+			local top = {}
+			for index = 1, math.min(3, #chainPeaks) do
+				local entry = chainPeaks[index]
+				top[#top + 1] = string.format("%s=%s", entry.name,
+					entry.live and string.format("%.1f°", entry.peak) or "未驱动")
+			end
+			pieces[#pieces + 1] = string.format("%s[%d链 峰%.1f° %s]",
+				tostring(session.unitTag or "?"), #session.sessions, sessionPeak, table.concat(top, " "))
 		end
-		logger("[physbone][debug] 逐链峰值 %s（全体峰值 %.1f°）", table.concat(parts, " "), peak)
+		logger("[physbone][debug] 逐件峰值（全体 %.1f°）%s", peak, table.concat(pieces, " "))
 	end
 
 	-- ⚠️ 判"驱动失效"不能用"这一帧写了几个骨"：加了"姿态没变就跳过"之后，
@@ -4194,6 +4226,7 @@ function M.install(stingray, options)
 		reArm = 0,
 		rearmAt = nil,
 		driveFrames = 0,
+		beatFrames = 0,
 		callsAccum = 0,
 		zeroFrames = 0,
 		waitReason = nil,

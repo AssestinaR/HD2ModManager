@@ -132,6 +132,12 @@ check("两组探针都有开关（probeIdentity / probeIdentityLink）",
 		and wholeStripped:find("probeIdentityLink", 1, true) ~= nil)
 check("身份链探针默认关闭（只在开关非 0 时才调）",
 	wholeStripped:find("identSwitch ~= nil and identSwitch ~= 0", 1, true) ~= nil)
+-- 2.1.44：心跳不能拿 driveFrames 取模 —— 补挂每次成功都把它归零，挂满之后心跳就永远打不出来。
+check("心跳用独立计数 beatFrames（不被补挂归零）",
+	wholeStripped:find("(runtime.beatFrames % heartbeat) == 0", 1, true) ~= nil
+		and wholeStripped:find("(runtime.driveFrames % heartbeat)", 1, true) == nil)
+check("beatFrames 只在安装时归零（tryAttach 不碰它）",
+	select(2, wholeStripped:gsub("beatFrames = 0", "")) == 1)
 
 print(string.format("\n失败 %d 项", failures))
 os.exit(failures == 0 and 0 or 1)

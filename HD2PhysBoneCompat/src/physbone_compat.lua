@@ -712,12 +712,13 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 			if math.abs(angle) >= math.pi then return angle > 0 and 1 or -1 end
 			return math.sin(angle)
 		end
+		local yawSet, pitchSet = false, false
 		if flag_set(flags, M.FLAG_YAW_CONSTRAINED) then
 			local lo = (tonumber(params.minYaw) or 0) * relax
 			local hi = (tonumber(params.maxYaw) or 0) * relax
 			if lo ~= 0 or hi ~= 0 then
 				yawMin, yawMax = bound(lo), bound(hi)
-				axisLimits = true
+				axisLimits, yawSet = true, true
 			end
 		end
 		if flag_set(flags, M.FLAG_PITCH_CONSTRAINED) then
@@ -725,8 +726,19 @@ function M.gains_of(params, lengthScale, gravityScale, opts)
 			local hi = (tonumber(params.maxPitch) or 0) * relax
 			if lo ~= 0 or hi ~= 0 then
 				pitchMin, pitchMax = bound(lo), bound(hi)
-				axisLimits = true
+				axisLimits, pitchSet = true, true
 			end
+		end
+		-- **只约束了一个轴时，另一个轴不能跟着被夹成 [0, 0]。**
+		-- 求解器只要 `axisLimits` 打开就会把 yaw / pitch **两个分量都夹一遍**；没约束的那个轴
+		-- 若留着初值 0，就等于"这个方向完全锁死"。
+		-- 2026-11-13 实机（某转换模型的三条长发链，flags=0x35：只有 yawCon + angleCon）：
+		-- pitch 被锁在 0°，长发只能往一侧偏一点，跑动时最主要的前后甩全没了，看着像一根焊丝；
+		-- 同一颗头上走锥限位的前发/侧发却照常在动（日志里摆到 35°）。
+		-- 没约束的轴按"不限"（分量界限 ±1）处理，总偏角仍由锥（angleCon）兜住。
+		if axisLimits then
+			if not yawSet then yawMin, yawMax = -1, 1 end
+			if not pitchSet then pitchMin, pitchMax = -1, 1 end
 		end
 		if axisLimits then
 			limitSource = "yawPitchAxes"
