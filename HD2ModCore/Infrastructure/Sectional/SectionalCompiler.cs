@@ -232,10 +232,25 @@ public static class SectionalCompiler
 			return SectionalCompileResult.Failure(
 				$"装备权威表里找不到归档 {armorArchiveId}。", SectionalCompileKind.Armor);
 
-		// 同一套装备的护甲 + 头盔两个归档；**披风是第三个原子，永远不碰**。
-		var targets = snapshot.Kits
+		// 同一套装备的护甲 + 头盔归档；**披风是第三个原子，永远不碰**。
+		// 一套里可能不止一件护甲（B-08 与 FS-38 同 setId、大量 unit 共用），所以还要记下
+		// "每个 unit 被哪几件引用"：规划器靠它只在各件都有的层上落几何。
+		var setKits = snapshot.Kits
 			.Where(kit => kit.SetId == selected.SetId
 				&& kit.Kind is GameDataEquipmentKitKind.Armor or GameDataEquipmentKitKind.Helmet)
+			.ToArray();
+		var kitsByUnit = setKits
+			.SelectMany(kit => kit.Pieces.Select(piece => (
+				Key: new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId),
+				kit.ArchiveId)))
+			.GroupBy(pair => pair.Key)
+			.ToDictionary(
+				group => group.Key,
+				group => (IReadOnlyCollection<string>)group
+					.Select(pair => pair.ArchiveId)
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.ToArray());
+		var targets = setKits
 			.SelectMany(kit => kit.Pieces)
 			.Select(piece => new SectionalTargetUnit(
 				new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId),
@@ -251,7 +266,44 @@ public static class SectionalCompiler
 			.Select(unit => new SectionalSourceUnit(unit.FileId, CellOf(unit)))
 			.ToArray();
 
-		var plan = SectionalCompilePlanner.Build(source, targets, headMergeIntoBody);
+		// 被牵连的护甲：不在这套里、但和这套共用了 unit（改写共用 unit 等于也改了它们）。
+		// 只看护甲：头盔是独立 item，别的头盔与这套头盔共用件时，那是另一类问题，这里不碰。
+		var setArchiveIds = setKits.Select(kit => kit.ArchiveId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		// 只算**会被我们写到**的件（替换或隐藏）。披风件从不写，而 slot1 那个不渲染的件被几十件护甲
+		// 共用——把它算进来，会把半个军械库都当成被牵连的护甲。
+		var setUnitKeys = targets
+			.Where(target => target.Cell.IsKnown && !target.Cell.IsCape)
+			.Select(target => target.Key)
+			.ToHashSet();
+		var collateralKits = snapshot.Kits
+			.Where(kit => kit.Kind == GameDataEquipmentKitKind.Armor
+				&& !setArchiveIds.Contains(kit.ArchiveId)
+				&& kit.Pieces.Any(piece => setUnitKeys.Contains(new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId))))
+			.ToArray();
+		// 圈外护甲（既不在这套、也没被牵连）还在用的件：一个都不能动，见 HideCollateralExtras。
+		var groupArchiveIds = setArchiveIds
+			.Concat(collateralKits.Select(kit => kit.ArchiveId))
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var protectedUnits = snapshot.Kits
+			.Where(kit => kit.Kind is GameDataEquipmentKitKind.Armor or GameDataEquipmentKitKind.Helmet
+				&& !groupArchiveIds.Contains(kit.ArchiveId))
+			.SelectMany(kit => kit.Pieces)
+			.Select(piece => new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId))
+			.ToHashSet();
+		var collateral = collateralKits
+			.Select(kit => new SectionalCollateralKit(
+				kit.DisplayName,
+				kit.Pieces
+					.Select(piece => new SectionalTargetUnit(
+						new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId),
+						ArmorCell.FromRegistryCoordinates((int)piece.Slot, (int)piece.PieceType)))
+					.GroupBy(target => target.Key)
+					.Select(group => group.First())
+					.ToArray()))
+			.ToArray();
+
+		var plan = SectionalCompilePlanner.Build(
+			source, targets, headMergeIntoBody, kitsByUnit, collateral, protectedUnits);
 		var staging = CreateStagingDirectory();
 
 		try
