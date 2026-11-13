@@ -652,6 +652,9 @@ public sealed class VpkPatchAssembler
 			diagnostics.Add("裙摆离体清空：没能从 TransformInfo 里找到 hips，本次跳过（不做任何偏移）。");
 			skirtClearanceAmount = 0;
 		}
+		// UV 整格归位的退路（同样走环境变量）：这一处理默认生效、会改变全部输出的顶点表，
+		// 而它要修的"越界 UV 让面消失"机制本身还没查证 ⇒ 必须能就地关掉做 A/B。
+		var uvTileDisabled = ResolveUvTileDisabled();
 		var unitsDone = 0;
 		Parallel.For(0, effectivePlans.Count, VpkParallel.Options, planIndex =>
 		{
@@ -663,13 +666,17 @@ public sealed class VpkPatchAssembler
 				mesh = SkirtClearance.Apply(mesh, sourceMaterialNames, pelvis!.Value, skirtClearanceAmount);
 			// UV 整格归位（见 UvTileNormalizer）：源侧把镜像那半边 UV 挪到 1..2 那一格，
 			// HD2 里那些面会整片不显示（实测某模型一侧袖子整只消失）。按三角形平移整数格，wrap 采样下结果不变。
-			var uvTiles = UvTileNormalizer.Apply(mesh);
-			mesh = uvTiles.Mesh;
-			if (uvTiles.ShiftedTriangles > 0)
-				uvTileNotes[planIndex] = $"{plan.Group.Name}：{uvTiles.ShiftedTriangles} 个三角形的 UV 不在 0..1 那一格"
-					+ $"（源侧整格平移过），已按整数格平移回来"
-					+ (uvTiles.DuplicatedVertices > 0 ? $"，为此复制了 {uvTiles.DuplicatedVertices} 个接缝顶点" : string.Empty)
-					+ "。不归位的话这些面在游戏里可能不显示（实测 U 出格的面会整片消失）。";
+			// `HD2_NO_UV_TILE=1` 整体跳过（退路）：生效机制还没查证，且这是影响全部输出拓扑的默认生效处理。
+			if (!uvTileDisabled)
+			{
+				var uvTiles = UvTileNormalizer.Apply(mesh);
+				mesh = uvTiles.Mesh;
+				if (uvTiles.ShiftedTriangles > 0)
+					uvTileNotes[planIndex] = $"{plan.Group.Name}：{uvTiles.ShiftedTriangles} 个三角形的 UV 不在 0..1 那一格"
+						+ $"（源侧整格平移过），已按整数格平移回来"
+						+ (uvTiles.DuplicatedVertices > 0 ? $"，为此复制了 {uvTiles.DuplicatedVertices} 个接缝顶点" : string.Empty)
+						+ "。不归位的话这些面在游戏里可能不显示（实测 U 出格的面会整片消失）。";
+			}
 			// ⚠️ **每份一个作者对象。** UnitAuthor 内部持有几个 Canonical* 编译器实例，
 			// 它们没有跨调用状态，但共用一个实例就等于把"它们确实无状态"变成并行正确性的前提。
 			// 多造几个小对象比赌这一条便宜得多。
@@ -1469,6 +1476,17 @@ public sealed class VpkPatchAssembler
 			? value
 			: 0;
 	}
+
+	/// <summary>
+	/// <c>HD2_NO_UV_TILE=1</c>：整体跳过 UV 整格归位（A/B 与退路）。
+	/// <para>
+	/// 与 <c>HD2_NO_NORMAL_MAP</c> / <c>HD2_NO_MATCAP_LAYER</c> 同一族：只影响转换那一刻，
+	/// 改一次重转一次，不需要进产品界面。存在的理由见 <see cref="UvTileNormalizer"/> 顶部：
+	/// 这是默认生效、会改变全部输出顶点表的几何处理，而它要修的机制还没查证。
+	/// </para>
+	/// </summary>
+	private static bool ResolveUvTileDisabled()
+		=> Environment.GetEnvironmentVariable("HD2_NO_UV_TILE") == "1";
 
 	/// <summary>
 	/// 从 TransformInfo 里找出 <c>hips</c> 的绑定世界位置（行主序矩阵，平移在 12/13/14）。

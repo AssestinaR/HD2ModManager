@@ -97,6 +97,24 @@ public sealed class UvTileNormalizerTests
 		Assert.Equal(mesh.TriangleCount, result.Mesh.TriangleCount);
 	}
 
+	[Fact]
+	public void TriangleStraddlingAnIntegerBoundary_StillLeavesOneVertexOutside()
+	{
+		// U = 0.75 / 1.0 / 1.25：重心 1.0 → 平移 −1 → −0.25 / 0.0 / 0.25。
+		// 重心进了 [0,1)，跨度也小于 1，但仍有一个顶点在外。
+		// 这是**有意保留**的边界行为：整数平移在 wrap 采样下等价，但引擎侧对越界 UV 的预处理
+		// （校验、面剔除…）是否也等价没有查证 —— 钉住它，免得以后有人以为"归位后一定都在 0..1 里"。
+		var mesh = Mesh([V(0.75f, 0.5f), V(1.0f, 0.5f), V(1.25f, 0.5f)], (0, 1, 2));
+
+		var result = UvTileNormalizer.Apply(mesh);
+
+		Assert.Equal(1, result.ShiftedTriangles);
+		Assert.Equal(0, result.DuplicatedVertices);
+		var us = result.Mesh.Vertices.Select(vertex => vertex.U).ToArray();
+		Assert.Equal([-0.25f, 0.0f, 0.25f], us, new ToleranceComparer(1e-5f));
+		Assert.Contains(us, u => u < 0f);
+	}
+
 	private sealed class ToleranceComparer(float tolerance) : IEqualityComparer<float>
 	{
 		public bool Equals(float x, float y) => Math.Abs(x - y) <= tolerance;
