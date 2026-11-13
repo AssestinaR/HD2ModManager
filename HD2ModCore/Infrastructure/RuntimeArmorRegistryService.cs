@@ -537,7 +537,14 @@ public sealed class RuntimeArmorRegistryService
 				{
 					var links = WardrobeLinkCompiler.Compile(
 						authority, compiled.Mappings, compiled.Revision, compiled.Enabled, compiled.ModelDefinitions);
-					if (links.LinkCount > 0)
+					// 链接数为 0 有两种成因：① 映射被关掉 / 清空（意图就是"没有映射"）；
+					// ② 映射存在但目标/来源解析不出来（编译失败）。①必须覆盖掉上一版，
+					// 否则运行时继续执行旧映射（2026-11-13 实测：协议已关闭，旧 wardrobe.links
+					// 仍把 4 件护甲改指到不存在的 unit，游戏里缺身体）；②才保留上一版。
+					// 只覆盖已存在的文件，没有就不凭空创建。
+					var intentionallyEmpty = compiled.Mappings.Count == 0 || !compiled.Enabled;
+					if (links.LinkCount > 0
+						|| (intentionallyEmpty && File.Exists(Path.Combine(registryRoot, WardrobeLinkCompiler.FileName))))
 					{
 						await WriteAtomicTextAsync(
 							Path.Combine(registryRoot, WardrobeLinkCompiler.FileName),
