@@ -104,6 +104,34 @@ do
 end
 
 print()
+print("⑦ 只约束 yaw（flags=0x35，长发链）：pitch 不能被夹成 [0, 0]")
+do
+	-- 实测样本：yaw [5°, 50°]、pitch 没有约束、angleCon 50°。
+	local g = M.gains_of(params({ angleLimit = 50 * DEG, minYaw = 5 * DEG, maxYaw = 50 * DEG }),
+		1.0, nil, { flags = 0x35 })
+	check("axisLimits 打开", g.axisLimits == true, tostring(g.limitSource))
+	check("yaw 按作者值 [sin5°, sin50°]",
+		near(g.limitYawMin, math.sin(5 * DEG)) and near(g.limitYawMax, math.sin(50 * DEG)),
+		string.format("%+.4f..%+.4f", g.limitYawMin, g.limitYawMax))
+	check("pitch 不限（±1），不是锁死的 0",
+		near(g.limitPitchMin, -1) and near(g.limitPitchMax, 1),
+		string.format("%+.4f..%+.4f", g.limitPitchMin, g.limitPitchMax))
+	check("总偏角仍由锥兜住 = sin(50°)", near(g.sinTotal, math.sin(50 * DEG)), tostring(g.sinTotal))
+end
+
+print()
+print("⑧ 只约束 pitch：yaw 同理不限")
+do
+	local g = M.gains_of(params({ angleLimit = 0, minPitch = -20 * DEG, maxPitch = 20 * DEG }),
+		1.0, nil, { flags = 0x29 })
+	check("yaw 不限（±1）", near(g.limitYawMin, -1) and near(g.limitYawMax, 1),
+		string.format("%+.4f..%+.4f", g.limitYawMin, g.limitYawMax))
+	check("pitch = ±sin(20°)",
+		near(g.limitPitchMin, -math.sin(20 * DEG)) and near(g.limitPitchMax, math.sin(20 * DEG)),
+		string.format("%+.4f..%+.4f", g.limitPitchMin, g.limitPitchMax))
+end
+
+print()
 if failures == 0 then
 	print("axis-asymmetric: 全部通过")
 	os.exit(0)
