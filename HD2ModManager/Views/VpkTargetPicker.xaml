@@ -10,7 +10,7 @@
     <Grid>
         <Border x:Name="Box" Background="{StaticResource SurfaceCard}" BorderBrush="{StaticResource StrokeControl}"
                 BorderThickness="1" CornerRadius="{StaticResource RadiusControl}" MinHeight="32" Padding="6,2"
-                Cursor="IBeam" MouseLeftButtonDown="Box_MouseLeftButtonDown">
+                Cursor="IBeam" PreviewMouseLeftButtonDown="Box_PreviewMouseLeftButtonDown">
             <DockPanel LastChildFill="True">
                 <Path DockPanel.Dock="Right" Width="10" Height="6" Margin="6,0,4,0" VerticalAlignment="Center"
                       Data="M1,1 L5,5 L9,1" Stroke="{StaticResource TextSecondary}" StrokeThickness="1.5"
@@ -43,12 +43,12 @@
                                Visibility="{Binding ShowPlaceholder, Converter={StaticResource BoolToVis}}"/>
                     <TextBox x:Name="Search" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                              Background="Transparent" BorderThickness="0" VerticalAlignment="Center" Padding="2,4"
-                             Foreground="{StaticResource TextPrimary}" GotKeyboardFocus="Search_GotKeyboardFocus"
+                             Foreground="{StaticResource TextPrimary}" TextChanged="Search_TextChanged"
                              PreviewKeyDown="Search_PreviewKeyDown"/>
                 </Grid>
             </DockPanel>
         </Border>
-        <Popup x:Name="DropPopup" IsOpen="{Binding IsOpen, Mode=TwoWay}" StaysOpen="False" PlacementTarget="{Binding ElementName=Box}"
+        <Popup x:Name="DropPopup" IsOpen="{Binding IsOpen, Mode=TwoWay}" StaysOpen="True" PlacementTarget="{Binding ElementName=Box}"
                Placement="Bottom" AllowsTransparency="True" Width="{Binding ActualWidth, ElementName=Box}">
             <Border Background="{StaticResource SurfaceCard}" BorderBrush="{StaticResource StrokeControl}" BorderThickness="1"
                     CornerRadius="{StaticResource RadiusControl}" Margin="0,2,0,8">
