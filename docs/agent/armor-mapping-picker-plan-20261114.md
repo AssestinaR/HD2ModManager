@@ -86,3 +86,43 @@
 - **Q3 联动时冲突的行**：置灰并说明原因（推荐），还是直接隐藏？
 - **Q4 左侧「映射目标」列表**：是否也按名字合并显示（推荐，否则左边仍是 9 条 B-01）？
 - **Q5「先选了头或护甲，再去选别的（反正是同类型的），也要联动」**：理解为 §5 第 2 点——和已选行包含同一条记录的行都置灰，不管在哪个选项卡。同类型里互不相干的可以多选。如果用户的意思是「同一个选项卡里只能单选」，请说明。
+
+## 9. 实施方案与核实结论（2026-11-14）
+
+### 9.1 4 个候选非玩家头盔的本地权威索引核对结论
+
+对照 `HD2ModManager/bin/Release/net10.0-windows/data/indexes/asset-index.sqlite`（表 `game_data_authority_kits`）、`docs/agent/external/armor-sets/ocas.lua` 与 `helldivers2-json-armor.json`：
+
+- `0x4db09ca4`（`1303420068`）：权威索引中存在，`kit_kind = 1`（头盔），`display_name = "CM-09“碎骨杀手”"`，`dlc_id = 989044070`，`set_id = 3328663053`（与非玩家护甲 `2107035846` 同套），而 `helldivers2-json-armor.json` 中缺失 → 确认为非玩家同名重复头盔，加入 `KitNonPlayerArmors` 头盔表。
+- `0x782087b2`（`2015397810`）与 `0x9b5bc520`（`2606482720`）：`ocas.lua` 中归属 `SC-30 Trailblazer Scout` 头盔；权威索引中存在，`kit_kind = 1`，`display_name = "0xd8bce5f1"`，`helldivers2-json-armor.json` 中缺失；而命名的 2 条 `SC-30“拓荒者侦察兵”` 头盔（`3606389079`、`4087059373`）均在 `armor.json` 中 → 将 `0x782087b2`、`0x9b5bc520` 一并记入 `KitNonPlayerArmors` 头盔表做双重兜底，2 条命名 `SC-30` 头盔按玩家版本合并为 1 行（`2 个版本`）。
+- `0x0542e6f1`（`88270577`）：`ocas.lua` 中归属 `SC-34 Infiltrator` 头盔；权威索引中存在，`kit_kind = 1`，`display_name = "0x2eec8681"`，`helldivers2-json-armor.json` 中缺失 → 一并记入 `KitNonPlayerArmors` 头盔表。
+- `FS-05“神射手”`：权威索引共 8 条命名头盔（7 条玩家版 + 1 条 `3947503854` 均在 `helldivers2-json-armor.json` 中），全部保留为玩家头盔并合并为 1 行（`8 个版本`）。
+
+### 9.2 真实权威索引三选项卡行数统计
+
+基于本地 `asset-index.sqlite`（`kit_kind IN (0, 1)` 共 299 条 kit 记录）：
+
+- **「套装」选项卡：116 行**
+  - 116 个玩家护甲组与 118 个玩家头盔组中，111 套由 `OneClickArmorSetTable`（折叠 `(1)`..`(9)` 等变体编号后缀）直接配对，4 套新装备（`GS-11“民主代理人”`、`SS-500“苍白检察官”`、`SS-33“拟态元帅”`、`SS-15“焦点”`）由 `(dlc_id, set_id)` 配对，1 套（`DS-42“联邦之刃”`）由同 `dlc_id` 同名配对，合计 **116 套**；
+  - 无配套护甲的 2 顶头盔（`IX-寂域行者`、`B-02阴霾守望者`）仅在「头盔」选项卡出现。
+- **「护甲」选项卡：117 行**
+  - `kit_kind = 0` 共 138 条 → 剔除 8 条 `0x...` 未命名 → 130 条命名 → 剔除 2 条隐藏非玩家护甲（CM-09 `2107035846`、SC-30 `1969314276`）→ 剩 128 条；
+  - 其中 FS-05 民主官 NPC（`124623533`）单独成 1 行（标 `民主官 NPC`，不参与同名合并与套装配对），其余 127 条玩家护甲按名字合并为 **116** 行玩家护甲组 → 合计 **117 行**。
+- **「头盔」选项卡：118 行**
+  - `kit_kind = 1` 共 161 条 → 剔除 20 条 `0x...` 未命名 → 141 条命名 → 剔除 1 条非玩家头盔（CM-09 `0x4db09ca4` / `1303420068`）→ 剩 140 条玩家头盔；
+  - 按名字合并为 **118 行**（`0x782087b2`、`0x9b5bc520`、`0x0542e6f1` 亦写入 `KitNonPlayerArmors` 头盔表协同排除）。
+
+### 9.3 架构与联动实现要点
+
+- **核心纯逻辑下沉至 `HD2ModCore`**：
+  - 扩展 [KitNonPlayerArmors.cs](file:///D:/gitCode/HD2ModManager/HD2ModCore/Infrastructure/KitInstance/KitNonPlayerArmors.cs)，加入 `DemocracyOfficerArmorId`、`HelmetEntries`、`AllHelmetIds`、`IsNonPlayerHelmet(uint)` 与 `IsNonPlayerKit(uint, GameDataEquipmentKitKind)`；保留既有 `Entries`、`TryGetLabel(uint, out string)` 与 `Contains(uint)` 签名与行为不变（兼容 `KitExclusiveMultiTargetTests`）。
+  - 新增 `OneClickArmorSetTable.cs`（注明 MIT 出处与版权，只含 `item_id -> 规范套装名` 数据与编号后缀归一化函数）。
+  - 新增 `ArmorMappingPickerPlanner.cs`：
+    - 复用 `SectionalExclusivePlanner.IsNamed` 与 `KitNonPlayerArmors` 完成玩家过滤、按正式名去重（`VersionCount = Math.Max(A, H)`）、三轮 1:1 套装配对；
+    - 统一判定已映射项（单件全映射隐藏 / 部分映射置灰；套装两件均映射隐藏 / 单件已映射置灰并写明 `护甲已映射到 X` / `头盔已映射到 X`）、跨选项卡多选冲突置灰（写明所属套装或冲突来源）、以及低污染 2 槽压缩素体打开时头盔行置灰（`"头已并进身体，单独映射头盔不可用"`）；
+    - 提供 `IsTwoSlotCompressedCustomModel` / `IsTwoSlotCompressedModDirectory`（在 `HD2ModCore` 内直接调用 `internal` 的 `LowPollutionLayoutReader` 与 `wardrobe.json` `headMergeIntoBody` 兜底），供视图模型判定；
+    - 提供 `BuildTargetGroupPlans` 按同样同名去重与套装规则合并展示左侧已映射目标。
+- **共用列表控件与页面 UI**：
+  - `IModListSelectable` 新增默认属性 `bool IsBlocked => false;`；`ModListPanel` 新增可选 `TopBarContent` 依赖属性（`null` 时完全折叠，不影响其他页面）与 `IsBlocked` 行置灰、禁用点击/范围选择/`Ctrl+A`/右侧动作胶囊样式，但保留整行 `ToolTip` 展示原因。
+  - 移除左侧 `ProviderList` 与 `ProviderDetailList` 上冗余的 `ArmorKindSearchActions`（`类型：...`）循环按钮；右侧 `AvailableArmorSearchActions` 保留 `Unit 覆盖` 筛选与搜索框；列表内顶部固定 `套装 (N) · 护甲 (N) · 头盔 (N)` 选项卡栏。
+  - `ArmorRegistryPageViewModel` 维护三选项卡投影与跨选项卡多选集合，`PruneSelectionAfterRebuild()` 按三选项卡全集校验，切选项卡不丢选择且任意冲突实时置灰；升为视觉来源时套装取 `[PrimaryArmorId, PrimaryHelmetId]`，加为映射目标时展开全部 `MemberItemIds`；`ProviderDetailSummary` 在发生合并时展示 `X 项（共 Y 条映射）`。
