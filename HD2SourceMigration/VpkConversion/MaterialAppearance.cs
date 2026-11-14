@@ -124,6 +124,14 @@ public static class MaterialAppearance
 		if (!matcapIsTheSurface)
 			return false;
 		// 有花纹的底色 = 布料/皮肤/纱：那上面的一层 matcap 是高光，不是表面本身。
+		//
+		// ⚠️ **这条不能删。**（2026-11-14 试过一次，立刻被 3 条测试拦下）
+		// 想把它放宽成"只要 `$matcaptint ≥ 0.9` 就不看花纹"，理由是 `$matcap 2` 是相加层、
+		// 与底纹无关。但那正好复现仓库记录过的真实回归：恋星milfy 的 `uv_1` 裙子
+		// 写 `$matcap 2` + `$matcaptexture metal` + tint 0.96 ⇒ 判金属 ⇒ **镀铬裙**。
+		// 也就是说 **tint 分不开"黑底宝石灯笼"与"金属 matcap 布料"**，
+		// 想修 `mat_accgem_dress_acc` 只能靠**逐件**判据（这件自己的 UV 足迹里有没有花纹），
+		// 不能靠整图方差，也不能靠 tint。
 		if (baseIsPatterned)
 			return false;
 
@@ -944,7 +952,11 @@ public static class MaterialAppearance
 				// 通道由调用方指定：`$mask1` 的 R 是 matcap 蒙版、B 是 **matcap2** 蒙版
 				// （NekoToon 官方手册第 19 行）。
 				var strength = tintA;
-				if (mask is not null)
+				// ⚠️ 蒙版**必须同时校验宽高与缓冲长度**：宽为 0 时 `maskWidth - 1` 会算出 -1
+				// ⇒ 负索引 ⇒ IndexOutOfRangeException。2026-11-14 实测：B3 的 `mat_metal1`
+				// 就是这样让整份 VPK 的转换崩掉，连带它独有的材质在游戏里变成**品红**。
+				if (mask is not null && maskWidth > 0 && maskHeight > 0
+					&& mask.Length >= maskWidth * maskHeight * 4)
 				{
 					var mx = Math.Min(maskWidth - 1, x * maskWidth / albedoWidth);
 					var my = Math.Min(maskHeight - 1, y * maskHeight / albedoHeight);
@@ -959,7 +971,8 @@ public static class MaterialAppearance
 				//    X 前 / Y 左 / Z 上）⇒ 球面图的 u 取"右"（−Y）、v 取"上"（+Z）；
 				//  · 否则按 R/G 直接当 uv（老路：切线空间，只在没有烘焙结果时走到）。
 				double u = 0.5, v = 0.5;
-				if (normal is not null && normalWidth > 0 && normalHeight > 0)
+				if (normal is not null && normalWidth > 0 && normalHeight > 0
+					&& normal.Length >= normalWidth * normalHeight * 4)
 				{
 					var nx = Math.Min(normalWidth - 1, x * normalWidth / albedoWidth);
 					var ny = Math.Min(normalHeight - 1, y * normalHeight / albedoHeight);
@@ -1141,7 +1154,8 @@ public static class MaterialAppearance
 			for (var x = 0; x < albedoWidth; x++)
 			{
 				double nx = 0, ny = 0, nz = 1;
-				if (normal is not null && normalWidth > 0 && normalHeight > 0)
+				if (normal is not null && normalWidth > 0 && normalHeight > 0
+					&& normal.Length >= normalWidth * normalHeight * 4)
 				{
 					var nxp = Math.Min(normalWidth - 1, x * normalWidth / albedoWidth);
 					var nyp = Math.Min(normalHeight - 1, y * normalHeight / albedoHeight);

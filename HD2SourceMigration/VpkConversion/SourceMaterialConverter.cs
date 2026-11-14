@@ -782,46 +782,56 @@ public sealed class SourceMaterialConverter
 		var output = new byte[baseRgba.Length];
 		Array.Copy(baseRgba, output, Math.Min(baseRgba.Length, output.Length));
 
-		var uvn = worldNormalFactory?.Invoke(stem);
-		if (uvn is null || uvn.Width < 8 || uvn.Height < 8)
+		// **尺寸必须与缓冲实际长度一致**（2026-11-14 修：B3 的 `mat_accmetal` 在这里
+		// 抛 IndexOutOfRangeException，整份 B3 patch 因此没产出 ⇒ 它独有的
+		// `mat_pearl_legring` 成了悬空引用 ⇒ 游戏里是**品红**）。
+		// 贴图的声明宽高与解码出来的像素数可能不一致（不同归档里同名贴图尺寸不同、
+		// 或解码走了缓存），这里一律以**缓冲实际长度**为准，宁可少算也不崩。
+		var basePixels = Math.Min(baseWidth * baseHeight, baseRgba.Length / 4);
+		var matcapPixels = matcapRgba.Length / 4;
+		if (basePixels <= 0 || matcapPixels <= 0)
+			return output;
+
+		var uvn0 = worldNormalFactory?.Invoke(stem);
+		if (uvn0 is null || uvn0.Width < 8 || uvn0.Height < 8)
 		{
 			// 退化路：加上 matcap 的平均色（不含 alpha）。
 			double r = 0, g = 0, b = 0;
-			var pixels = matcapRgba.Length / 4;
-			if (pixels == 0)
-				return output;
-			for (var i = 0; i < pixels; i++)
+			for (var i = 0; i < matcapPixels; i++)
 			{
 				r += matcapRgba[(i * 4) + 0];
 				g += matcapRgba[(i * 4) + 1];
 				b += matcapRgba[(i * 4) + 2];
 			}
-			r /= pixels; g /= pixels; b /= pixels;
+			r /= matcapPixels; g /= matcapPixels; b /= matcapPixels;
 			for (var i = 0; i < output.Length / 4; i++)
 			{
-				output[(i * 4) + 0] = (byte)Math.Clamp((output[(i * 4) + 0] / 255.0 * 255) + (r * tint.Item1), 0, 255);
-				output[(i * 4) + 1] = (byte)Math.Clamp((output[(i * 4) + 1] / 255.0 * 255) + (g * tint.Item2), 0, 255);
-				output[(i * 4) + 2] = (byte)Math.Clamp((output[(i * 4) + 2] / 255.0 * 255) + (b * tint.Item3), 0, 255);
+				output[(i * 4) + 0] = (byte)Math.Clamp(output[(i * 4) + 0] + (r * tint.Item1), 0, 255);
+				output[(i * 4) + 1] = (byte)Math.Clamp(output[(i * 4) + 1] + (g * tint.Item2), 0, 255);
+				output[(i * 4) + 2] = (byte)Math.Clamp(output[(i * 4) + 2] + (b * tint.Item3), 0, 255);
 			}
 			return output;
 		}
 
-		for (var y = 0; y < baseHeight; y++)
-		for (var x = 0; x < baseWidth; x++)
+		var stride = Math.Max(1, baseWidth);
+		for (var p = 0; p < basePixels; p++)
 		{
-			var u = baseWidth > 1 ? x / (double)(baseWidth - 1) : 0.5;
+			var x = p % stride;
+			var y = p / stride;
+			var u = stride > 1 ? x / (double)(stride - 1) : 0.5;
 			var v = baseHeight > 1 ? y / (double)(baseHeight - 1) : 0.5;
-			var normal = uvn.Sample(u, v);
+			var normal = uvn0.Sample(u, v);
 			var length = Math.Sqrt((normal.X * normal.X) + (normal.Y * normal.Y) + (normal.Z * normal.Z));
 			if (length < 1e-6)
 				continue;
 			// D3D matcap 约定：u = n.x*0.5+0.5，v = 0.5 - n.y*0.5
 			var mu = Math.Clamp(((normal.X / length) * 0.5) + 0.5, 0, 1);
 			var mv = Math.Clamp(0.5 - ((normal.Y / length) * 0.5), 0, 1);
-			var mx = Math.Clamp((int)(mu * (matcapWidth - 1)), 0, matcapWidth - 1);
-			var my = Math.Clamp((int)(mv * (matcapHeight - 1)), 0, matcapHeight - 1);
-			var mi = (((my * matcapWidth) + mx) * 4);
-			var oi = (((y * baseWidth) + x) * 4);
+			var mx = Math.Clamp((int)(mu * (Math.Max(1, matcapWidth) - 1)), 0, Math.Max(0, matcapWidth - 1));
+			var my = Math.Clamp((int)(mv * (Math.Max(1, matcapHeight) - 1)), 0, Math.Max(0, matcapHeight - 1));
+			// 索引一律夹到**缓冲实际像素数**之内（声明宽高可能与缓冲不一致，见上面的注释）。
+			var mi = Math.Clamp((my * Math.Max(1, matcapWidth)) + mx, 0, matcapPixels - 1) * 4;
+			var oi = p * 4;
 			output[oi + 0] = (byte)Math.Clamp(output[oi + 0] + (matcapRgba[mi + 0] * tint.Item1), 0, 255);
 			output[oi + 1] = (byte)Math.Clamp(output[oi + 1] + (matcapRgba[mi + 1] * tint.Item2), 0, 255);
 			output[oi + 2] = (byte)Math.Clamp(output[oi + 2] + (matcapRgba[mi + 2] * tint.Item3), 0, 255);
@@ -849,6 +859,37 @@ public sealed class SourceMaterialConverter
 	}
 
 	/// <summary>`$MatCapTint "[r g b a]"` 的 RGB 分量（默认 1）。</summary>
+	/// <summary>
+	/// 底图名 → 有多少个材质读它（本归档内）。用来判定"这张底图是不是图集"。
+	/// <para>见 <c>baseIsPatterned</c> 附近的注释：图集上的整图方差对"这一件有没有花纹"没有意义。</para>
+	/// </summary>
+	private IReadOnlyDictionary<string, int> BaseTextureUsers
+	{
+		get
+		{
+			if (baseTextureUsers is not null)
+				return baseTextureUsers;
+
+			var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+			foreach (var name in source.OwnedVmtNames)
+			{
+				if (!source.TryReadVmt(name, out var bytes, out _))
+					continue;
+				var declared = VmtDocument.Parse(bytes).Value("$basetexture");
+				if (string.IsNullOrWhiteSpace(declared))
+					continue;
+				var stem = Path.GetFileNameWithoutExtension(declared);
+				if (string.IsNullOrWhiteSpace(stem))
+					continue;
+				counts[stem] = counts.GetValueOrDefault(stem) + 1;
+			}
+
+			baseTextureUsers = counts;
+			return counts;
+		}
+	}
+
+	private IReadOnlyDictionary<string, int>? baseTextureUsers;
 	private (double R, double G, double B) MatcapTintOf(string stem)
 	{
 		if (!source.TryReadVmt(stem, out var bytes, out _))
@@ -2547,6 +2588,23 @@ public sealed class SourceMaterialConverter
 		// 但那颜色就是**金属自身的颜色**（上色金属），不该像布料那样否掉金属度。
 		var baseIsPatterned = !contentFreeBase
 			&& MaterialAppearance.IsPatterned(vtf.Width, vtf.Height, rgba);
+
+		// **图集判据：底图被多个材质共用时，整图方差不能代表"这一件有花纹"。**
+		//
+		// 依据（2026-11-14，判据表 + 用户实机）：MourningVeil 的 `mat_accgem` / `Mat_ACCMetal` /
+		// `Mat_Metal` 都是**一张 2048² 图集里塞几十件**，而 `IsPatterned` 按**整张图**方差算
+		// ⇒ 图集里别件的花纹把这一件判成"有花纹的布料" ⇒ `matcapIsMetal=false`
+		// ⇒ 连 `matcapIsSurface` 也假 ⇒ 落到电介质（金属度 6）⇒ 实机是"黑石质感"。
+		// 实测受害件：`mat_accgem_dress_acc`（裙子灯笼）、`mat_accmetal_1_dress_acc`。
+		//
+		// 判据不用阈值：**共用即图集**（≥3 个材质读同一张底图）。
+		if (baseIsPatterned)
+		{
+			var baseStem = Path.GetFileNameWithoutExtension(baseTexture);
+			if (!string.IsNullOrWhiteSpace(baseStem)
+				&& BaseTextureUsers.TryGetValue(baseStem, out var baseUsers) && baseUsers >= 3)
+				baseIsPatterned = false;
+		}
 		var matcapIsMetal = MaterialAppearance.MatCapIsMetallicSurface(
 			verdict.MatCapIsTheSurface, baseIsPatterned, matcapTextureName, stem);
 
@@ -2917,7 +2975,7 @@ public sealed class SourceMaterialConverter
 							+ "alphaMin\talphaMax\tcoverage\tvisible\tisMeaningful\tisUniformTranslucent\t"
 							+ "isEmpty\tisEffectivelyOpaque\tfullyTransparent\tuseAlphaClip\ttemplate\t"
 							+ "baseTexture\tmatcapNum\trawHasAlphatest\trawHasTranslucent\tbytes\t"
-							+ "vmtSha16\tshader\tvmtEntryPath\tresolvedTextureName\topacityTexId\n",
+							+ "vmtSha16\tshader\tvmtEntryPath\tresolvedTextureName\topacityTexId\tmaterialId\tidentity\tmatcapIsSurface\tmatcapIsMetal\tbaseIsPatterned\n",
 							Encoding.UTF8);
 					}
 
@@ -2955,7 +3013,15 @@ public sealed class SourceMaterialConverter
 							// 实测 `mat_metal1_earings`（底图 Mat_Metal）在产物里却复用了
 							// `Mat_ACCMetal` 的遮罩 id —— 这两列就是用来定位"到底哪一步串了"的。
 							textureName,
-							"0x" + DeriveTextureId(textureName + "_opacity").ToString("x16")) + "\n",
+							"0x" + DeriveTextureId(textureName + "_opacity").ToString("x16"),
+							// 诊断：材质 id 与身份串 —— 用来抓"同一材质在两条链上算出不同 id"。
+							// 实测 `mat_pearl_legring` 的 section 引用悬空（0xa8f1a2d2abf20430），
+							// 而 B3 确实转出了这个材质 —— 差异只能出在身份串的某一项。
+							"0x" + DeriveMaterialId(stem).ToString("x16"),
+							stem,
+							matcapIsSurface,
+							matcapIsMetal,
+							baseIsPatterned) + "\n",
 						Encoding.UTF8);
 				}
 			}

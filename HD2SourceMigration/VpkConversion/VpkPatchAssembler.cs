@@ -899,10 +899,27 @@ public sealed class VpkPatchAssembler
 			var materialsDone = 0;
 			Parallel.For(0, stems.Count, VpkParallel.Options, stemIndex =>
 			{
-				if (ownedByStem[stemIndex])
-					synthesizedByStem[stemIndex] = converter.Convert(stems[stemIndex]);
-				else
-					reportByStem[stemIndex] = converter.Resolve(stems[stemIndex]);
+				// 诊断：**把完整异常打到 stderr**。
+				//
+				// 2026-11-14：B3 的转换抛 `IndexOutOfRangeException`，而 CLI 只把摘要写进 JSON 的
+				// `failures`（"Index was outside the bounds of the array. @ ThrowHelpers…"），
+				// 没有堆栈 ⇒ 只能靠猜。整份 B3 patch 因此没产出，它独有的 `mat_pearl_legring`
+				// 成了悬空引用（游戏里是品红）。这行在所有 `mod rebuild` 里都沉默，
+				// 只有直连 `vpk2patch` 跑才会出现在 stderr 上 —— 正是排查时需要的。
+				try
+				{
+					if (ownedByStem[stemIndex])
+						synthesizedByStem[stemIndex] = converter.Convert(stems[stemIndex]);
+					else
+						reportByStem[stemIndex] = converter.Resolve(stems[stemIndex]);
+				}
+				catch (Exception conversionFailure)
+				{
+					Console.Error.WriteLine(
+						$"[材质转换失败] {stems[stemIndex]} :: {conversionFailure}");
+					throw;
+				}
+
 				onProgress?.Invoke("materials", Interlocked.Increment(ref materialsDone), stems.Count);
 			});
 
