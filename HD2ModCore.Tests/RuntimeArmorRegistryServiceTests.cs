@@ -953,6 +953,34 @@ public sealed class RuntimeArmorRegistryServiceTests
 		Assert.Empty(await fixture.Service.ReadWorkspaceModelsAsync());
 	}
 
+	[Theory]
+	[InlineData("zero-bytes")]
+	[InlineData("empty-file")]
+	[InlineData("truncated-json")]
+	public async Task Snapshot_QuarantinesCorruptWorkspaceJsonAndRecoversEmptyDocument(string mode)
+	{
+		await using var fixture = await Fixture.CreateAsync();
+		Directory.CreateDirectory(fixture.Service.WorkspaceRoot);
+		var payload = mode switch
+		{
+			"zero-bytes" => new byte[256],
+			"empty-file" => Array.Empty<byte>(),
+			"truncated-json" => "{\"schema\":1,\"revision\":"u8.ToArray(),
+			_ => throw new ArgumentOutOfRangeException(nameof(mode)),
+		};
+		await File.WriteAllBytesAsync(fixture.Service.WorkspacePath, payload);
+
+		var snapshot = await fixture.Service.ReadSnapshotAsync();
+
+		Assert.Equal(0, snapshot.Document.Revision);
+		Assert.False(snapshot.Document.Enabled);
+		Assert.Empty(snapshot.Document.Mappings);
+		Assert.False(File.Exists(fixture.Service.WorkspacePath));
+		var backups = Directory.GetFiles(fixture.Service.WorkspaceRoot, $"{RuntimeArmorRegistryService.WorkspaceFileName}.corrupt-*");
+		var backup = Assert.Single(backups);
+		Assert.Equal(payload, await File.ReadAllBytesAsync(backup));
+	}
+
 	// 素体必须至少有一个 piece 才算有效结构，所以给一个最小可用的 body/slot/unit。
 	private static RuntimeArmorRegistryModel Model(string key) => new(
 		key,
