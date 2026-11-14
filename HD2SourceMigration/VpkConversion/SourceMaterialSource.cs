@@ -231,6 +231,27 @@ public sealed class SourceMaterialSource
 		=> TryRead(vmts, Stem(materialName), out bytes);
 
 	/// <summary>
+	/// 同 <see cref="TryReadVmt(string, out byte[])"/>，另外回传<b>命中的归档内路径</b>。
+	/// <para>
+	/// 只用于诊断：材质名与 VMT 文件名互为前缀时（<c>mat_accmetal</c> / <c>mat_accmetal_tiara</c> /
+	/// <c>mat_accmetal_necklace</c>），只有这条路径能证明"到底读了哪个文件"。
+	/// </para>
+	/// </summary>
+	public bool TryReadVmt(string materialName, out byte[] bytes, out string entryPath)
+	{
+		entryPath = string.Empty;
+		var key = Stem(materialName);
+		if (!vmts.TryGetValue(key, out var location))
+		{
+			bytes = [];
+			return false;
+		}
+
+		entryPath = location.EntryPath;
+		return TryRead(vmts, key, out bytes);
+	}
+
+	/// <summary>
 	/// 按贴图裸名读 <c>.vtf</c> 字节。名字可带或不带 <c>.vtf</c> 后缀，
 	/// 也可以给带目录的路径——<b>只用最后一段</b>，与 Python 侧的贴图命名约定一致。
 	/// </summary>

@@ -2971,6 +2971,48 @@ public static class CliApplication
 					worldNormalFactory: WorldNormal);
 			}
 
+			// **只测量、不动几何**：按每件自己的 UV 采一遍底色 alpha，把"裁下去会打穿"的件
+			// 回传给材质层按不透明处理。必须在装配之前（材质就是在装配里造的）。
+			//
+			// 实测 MourningVeil（2026-11-14）：月牙挂饰 55%、挂钟耳坠 40% 的顶点落在 alpha≈0 的一侧 ——
+			// 它们的 VMT 确实声明了 `$alphatest 1`，但底图是被十几个材质共用的装饰件图集，
+			// 这份 alpha 用在这些件上就是错的。照裁 = 一片完整的件被打成筛子。
+			if (materialConverter is not null)
+			{
+				// 先接模型包阶段留下的判据（材质 VPK 里没有几何，本地测不出来）。
+				var handoff = Path.Combine(Path.GetFullPath(output), CutoutOpaqueFileName);
+				if (File.Exists(handoff))
+				{
+					var handedOver = File.ReadAllLines(handoff)
+						.Where(line => !string.IsNullOrWhiteSpace(line))
+						.ToArray();
+					if (handedOver.Length > 0)
+					{
+						materialConverter.AddOpaqueMaterials(handedOver);
+						Console.Error.WriteLine(
+							$"按模型阶段交下来的镂空判据，把 {handedOver.Length} 个材质改为不透明："
+							+ string.Join(", ", handedOver));
+					}
+				}
+
+				var measured = CutoutMesh.Measure(
+					inputs.Geometry,
+					inputs.Model.MaterialPaths,
+					materialConverter.TryCreateAlphaSampler,
+					inputs.Model.MaterialPaths.Select(CutoutMesh.StemOf).ToArray());
+
+				// 2026-11-14：不再按统计量判定该不该镂空（见 CutoutMesh.Measure 的注释）。
+				var holey = Array.Empty<CutoutMesh.MaterialAlpha>();
+				foreach (var item in holey)
+				{
+					Console.Error.WriteLine(
+						$"不镂空 {item.Material}：alpha 只有 {item.Inside * 100.0 / item.Total:F0}% 的顶点可见"
+						+ $"（{item.Inside}/{item.Total}）—— 裁了会把件打穿，按不透明处理");
+				}
+
+				materialConverter.AddOpaqueMaterials(holey.Select(item => item.Material));
+			}
+
 			var package = await new VpkPatchAssembler().AssembleAsync(
 				plans, retarget, inputs.Geometry, avatar, headerTemplate,
 				Path.GetFullPath(output), "9ba626afa44a3aa3.patch_0", modelKey,
@@ -3184,6 +3226,16 @@ public static class CliApplication
 	/// 换个存档 hex 就落不到同一组里，游戏不会把它们当成一件护甲。
 	/// </summary>
 	private const string ArmorArchiveHex = "9ba626afa44a3aa3";
+
+	/// <summary>
+	/// 模型包阶段算出的"裁了会打穿 ⇒ 按不透明处理"的材质清单文件名。
+	/// <para>
+	/// 落盘在共用的 <c>--output</c> 目录：<c>mod rebuild</c> 顺序转换模型 VPK 与材质 VPK，
+	/// 两者拿到的是同一个输出目录，所以这是天然的交接点 —— 材质 VPK 里没有 .mdl/.vvd/.vtx，
+	/// 那条链上 `inputs.Geometry` 是空的，本地测不出这份判据。
+	/// </para>
+	/// </summary>
+	private const string CutoutOpaqueFileName = "cutout-opaque.txt";
 
 	/// <summary>一次"VPK → patch"的产出。`vpk2patch` 队列里每项对应一个。</summary>
 	private sealed record VpkConversionOutcome(
@@ -3817,7 +3869,53 @@ public static class CliApplication
 					: $"裁镂空 {item.Material}：跳过（{item.Skipped}）");
 			}
 
+			// **裁切阶段的结论必须回传给材质层。**
+			// 几何被跳过了（"裁了会打穿"），材质那边如果照样按 alphaclip 硬裁，画面上照样是筛子 ——
+			// 实测 MourningVeil 的月牙/耳坠就是这样：几何保住了，材质还是把它裁成一片洞。
+			materialConverter.AddOpaqueMaterials(
+				cuts.Where(cut => cut.Skipped is not null).Select(cut => cut.Material));
+
 			inputs = inputs with { Geometry = cutGeometry };
+		}
+		else if (materialConverter is not null)
+		{
+			// 几何裁切没开，但材质层的 alphaclip **默认是开的** —— 所以这里必须补一次"只测量"：
+			// 按每件自己的 UV 采一遍底色 alpha，把"裁下去会打穿"的件回传给材质层按不透明处理。
+			// 实测 MourningVeil：月牙挂饰 55%、挂钟耳坠 40% 的顶点落在 alpha≈0 的一侧，
+			// 照裁就是一片完整的件被打成筛子。
+			var measured = CutoutMesh.Measure(
+				inputs.Geometry,
+				inputs.Model.MaterialPaths,
+				materialConverter.TryCreateAlphaSampler,
+				inputs.Model.MaterialPaths.Select(CutoutMesh.StemOf).ToArray());
+
+			// 2026-11-14：不再按统计量判定该不该镂空。
+			var holey = Array.Empty<CutoutMesh.MaterialAlpha>();
+			foreach (var item in holey)
+			{
+				Console.Error.WriteLine(
+					$"不镂空 {item.Material}：alpha 只有 {item.Inside * 100.0 / item.Total:F0}% 的顶点可见"
+					+ $"（{item.Inside}/{item.Total}）—— 裁了会把件打穿，按不透明处理");
+			}
+
+			materialConverter.AddOpaqueMaterials(holey.Select(item => item.Material));
+
+			// **交接给材质包那一条链。**
+			//
+			// 材质 VPK（B1/B2/B3…）里没有 .mdl/.vvd/.vtx ⇒ 那条链上 `inputs.Geometry` 是空的，
+			// 本地根本测不出这份判据 —— 而进 patch 的材质恰恰是那条链造的。
+			// `mod rebuild` 给所有 VPK 传的是**同一个** `--output`，所以在这里落一份清单，那边读它。
+			//
+			// 实测背景（2026-11-14）：月牙挂饰 55%、挂钟耳坠 40% 的顶点落在 alpha≈0 的一侧，
+			// 照裁就是一片完整的件被打成筛子。
+			if (holey.Length > 0)
+			{
+				var handoff = Path.Combine(Path.GetFullPath(outputDirectory), CutoutOpaqueFileName);
+				Directory.CreateDirectory(Path.GetDirectoryName(handoff)!);
+				File.WriteAllLines(handoff, holey.Select(item => item.Material), new System.Text.UTF8Encoding(false));
+				Console.Error.WriteLine(
+					$"镂空判据已写入 {handoff}（{holey.Length} 个材质按不透明处理）");
+			}
 		}
 
 		// 头部缩放：只在显式给了 `--head-scale` 时才构造一份 options —— 其余字段继续用

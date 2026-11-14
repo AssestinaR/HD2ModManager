@@ -295,6 +295,8 @@ public sealed record VpkPackageResult(
 /// </summary>
 public sealed class VpkPatchAssembler
 {
+	/// <summary>诊断探针文件写入的串行化锁（装配可能并行）。</summary>
+	private static readonly object MarkerLock = new();
 	/// <param name="avatarTransformInfo">HD2 avatar 骨架，会被并进每个外壳的 TransformInfo。</param>
 	/// <param name="headerTemplateTocData">输出 Patch 的头部模板（用外壳所在存档的 TOC）。</param>
 	/// <param name="patchFileName">
@@ -456,6 +458,29 @@ public sealed class VpkPatchAssembler
 			ArgumentNullException.ThrowIfNull(geometry);
 			ArgumentNullException.ThrowIfNull(avatarTransformInfo);
 			ArgumentException.ThrowIfNullOrWhiteSpace(patchFileName);
+		}
+
+		// **这里不再做任何"该不该镂空"的统计判定。**
+		//
+		// 2026-11-14 结论（有据、实机确认）：源侧规则（自己底图的 alpha 在 0.5 处硬裁）本身
+		// 就能复现观感 —— 项链裁 38.4% / 胸挂 3.1% / 耳坠 2.5%，与 L4D2 的"链条 / 完整 / 完整"一致。
+		// 曾经在这里按"顶点比例 / 面积比例 / 最大连片空白"判定，全部失败：统计量在错误的 V 方向下计算，
+		// 且真镂空与误用 alpha 的分布重叠。详见 docs/agent/hd2-mourningveil-cutout-forensics-20261114.md。
+
+
+		if (Environment.GetEnvironmentVariable("HD2_MARK_FILE") is { Length: > 0 } markFile)
+		{
+			lock (MarkerLock)
+			{
+				File.AppendAllText(markFile,
+					$"assemble dir={Path.GetFileName(outputDirectory.TrimEnd(Path.DirectorySeparatorChar))}"
+					+ $" plans={plans.Count}"
+					+ $" geomTris={(geometry is null ? "null" : geometry.Triangles.Count.ToString())}"
+					+ $" mats={(sourceMaterialNames is null ? "null" : sourceMaterialNames.Count.ToString())}"
+					+ $" opaqueRules={(materialConverter is null ? "no-converter" : materialConverter.OpaqueMaterialCount.ToString())}"
+					+ Environment.NewLine,
+					System.Text.Encoding.UTF8);
+			}
 		}
 
 		if (materialScope is not null && materialScope.PrimaryVpkPath is null)
