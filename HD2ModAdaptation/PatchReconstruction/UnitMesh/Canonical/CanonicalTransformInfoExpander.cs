@@ -9,26 +9,31 @@ public sealed class CanonicalTransformInfoExpander
 		UnitMeshModel target,
 		IEnumerable<(UnitMeshModel Source, UnitRawMeshData SourceMesh)> sources,
 		UnitTransformInfo avatar,
-		bool includeAvatarSkeleton = false)
+		bool includeAvatarSkeleton = false,
+		// P4b 合并 VPK Mod 的多个部位 unit：它们的 skin palette 带原版 Avatar 没有的自定义骨——宿主已有就复用，宿主没有就从 donor 自己的 TransformInfo 连同父链搬进来。默认关闭＝旧行为。
+		bool allowTargetOwnedBones = false)
 	{
 		ArgumentNullException.ThrowIfNull(target);
 		ArgumentNullException.ThrowIfNull(sources);
 		ArgumentNullException.ThrowIfNull(avatar);
 		ValidateTransformInfo(target.TransformInfo, "target");
 		ValidateTransformInfo(avatar, "Avatar");
+		var sourceList = sources.ToList();
 
 		var requiredHashes = (includeAvatarSkeleton
 			? avatar.NameHashes
-			: sources.SelectMany(source => CollectSourcePaletteBoneHashes(source.Source, source.SourceMesh)))
+			: sourceList.SelectMany(source => CollectSourcePaletteBoneHashes(source.Source, source.SourceMesh)))
 			.Distinct()
 			.OrderBy(hash => hash)
 			.ToArray();
 		if (requiredHashes.Length == 0) return target;
-		var expanded = ExpandTransformInfo(target.TransformInfo, requiredHashes, avatar);
+		var expanded = ExpandTransformInfo(
+			target.TransformInfo, requiredHashes, avatar,
+			allowTargetOwnedBones ? sourceList.Select(source => source.Source.TransformInfo).ToArray() : null);
 		return target with { TransformInfo = expanded, TransformNameHashes = expanded.NameHashes };
 	}
 
-	private static UnitTransformInfo ExpandTransformInfo(UnitTransformInfo target, IReadOnlyList<uint> requiredHashes, UnitTransformInfo avatar)
+	private static UnitTransformInfo ExpandTransformInfo(UnitTransformInfo target, IReadOnlyList<uint> requiredHashes, UnitTransformInfo avatar, IReadOnlyList<UnitTransformInfo>? donorOwners)
 	{
 		var locals = target.LocalTransforms.ToList();
 		var matrices = target.Matrices.ToList();
@@ -39,7 +44,19 @@ public sealed class CanonicalTransformInfoExpander
 
 		int EnsureHash(uint hash, HashSet<uint> visiting)
 		{
-			if (!avatarByHash.TryGetValue(hash, out var avatarIndex)) throw new InvalidDataException($"Canonical Avatar TransformInfo does not contain required bone hash 0x{hash:x8}.");
+			if (!avatarByHash.TryGetValue(hash, out var avatarIndex))
+			{
+				// 不在 Avatar 里：只有显式允许（donorOwners 非空）才有出路——宿主已有就复用它的节点（不改它）；
+				// 宿主没有就从第一个带这根骨的 donor 把它连同父链搬进来；谁都没有仍然照旧抛。
+				if (donorOwners is not null)
+				{
+					if (targetByHash.TryGetValue(hash, out var owned)) return owned;
+					var fromDonor = ImportFromDonor(hash, visiting);
+					if (fromDonor >= 0) return fromDonor;
+				}
+
+				throw new InvalidDataException($"Canonical Avatar TransformInfo does not contain required bone hash 0x{hash:x8}.");
+			}
 			if (!visiting.Add(hash)) throw new InvalidDataException($"Canonical Avatar TransformInfo contains a parent cycle at bone hash 0x{hash:x8}.");
 			var avatarEntry = avatar.Entries[avatarIndex];
 			// NOTE(2026-10-16): a self-parented avatar root keeps `avatarIndex` here, which is
@@ -77,8 +94,42 @@ public sealed class CanonicalTransformInfoExpander
 			return next;
 		}
 
+		// 把 donor 自带的自定义骨（Avatar 里没有）按 donor 自己的父链搬进目标。父节点可能是 Avatar 骨、宿主已有骨或另一根 donor 自定义骨，
+		// 一律回到 EnsureHash 解析；donor 里的根（自己当自己的父）不会走到这里（根一定在 Avatar 里）。
+		int ImportFromDonor(uint hash, HashSet<uint> visiting)
+		{
+			foreach (var donor in donorOwners!)
+			{
+				var index = IndexOf(donor, hash);
+				if (index < 0) continue;
+				if (!visiting.Add(hash)) throw new InvalidDataException($"Donor TransformInfo contains a parent cycle at bone hash 0x{hash:x8}.");
+				var entry = donor.Entries[index];
+				if (entry.ParentIndex == index || entry.ParentIndex >= donor.NameHashes.Count)
+					throw new InvalidDataException($"Donor custom bone 0x{hash:x8} has no usable parent in its own TransformInfo.");
+				var parentIndex = EnsureHash(donor.NameHashes[entry.ParentIndex], visiting);
+				visiting.Remove(hash);
+				if (hashes.Count > ushort.MaxValue) throw new InvalidDataException("Expanded Canonical TransformInfo exceeds the uint16 parent-index limit.");
+				var next = hashes.Count;
+				hashes.Add(hash);
+				locals.Add(donor.LocalTransforms[index]);
+				matrices.Add(donor.Matrices[index]);
+				entries.Add(new UnitTransformEntry(entry.Increment, checked((ushort)parentIndex)));
+				targetByHash.Add(hash, next);
+				return next;
+			}
+
+			return -1;
+		}
+
 		foreach (var hash in requiredHashes) EnsureHash(hash, []);
 		return new UnitTransformInfo(target.Reserved0, target.Reserved1, target.Reserved2, locals, matrices, entries, hashes);
+	}
+
+	private static int IndexOf(UnitTransformInfo info, uint hash)
+	{
+		for (var index = 0; index < info.NameHashes.Count; index++)
+			if (info.NameHashes[index] == hash) return index;
+		return -1;
 	}
 
 	private static IReadOnlyList<uint> CollectSourcePaletteBoneHashes(UnitMeshModel source, UnitRawMeshData mesh)

@@ -7,6 +7,8 @@ using System.Text.Json.Serialization;
 using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.KitInstance;
+using HD2ModCore.Infrastructure.Sectional;
 using Microsoft.Data.Sqlite;
 
 namespace HD2ModCore.Infrastructure;
@@ -464,7 +466,11 @@ public sealed class RuntimeArmorRegistryService
 		IReadOnlyList<RuntimeArmorRegistryPieceOverride> pieceOverrides,
 		IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes,
 		CancellationToken cancellationToken = default,
-		string? gameDataDirectory = null)
+		string? gameDataDirectory = null,
+		bool lowPollutionMode = false,
+		// 本次不应用的素体（重编失败 / 不能自动重编 / 游戏在运行没法编译）：它们的映射仍留在 workspace（用户的意图不丢），
+		// 但不进协议、不编译成 wardrobe.links，避免退回全量映射造成污染。
+		IReadOnlySet<string>? skipModelKeys = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(expectedFingerprint);
 		ArgumentNullException.ThrowIfNull(mappings);
@@ -498,10 +504,22 @@ public sealed class RuntimeArmorRegistryService
 			NormalizePieceOverrides(pieceOverrides),
 			NormalizeTargetModes(targetModes),
 			current.CompositionMode);
-		var compiled = desired;
-		if (gameDataDirectory is not null && desired.ModelDefinitions.Any(model => model.SourceItemId is null))
-			compiled = RuntimeArmorResourceFilter.Compile(desired,
-				await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false));
+		// 跳过的素体必须在「已部署 Unit」检查**之前**去掉：被跳过的素体往往正是没部署的那个
+		// （目标不是自己的素体 / 重编失败），留着它，下面的检查会让整次应用失败，其余映射也一起没了。
+		var compiled = skipModelKeys is { Count: > 0 }
+			? desired with
+			{
+				Mappings = desired.Mappings
+					.Where(mapping => !(mapping.IsModelMapping && skipModelKeys.Contains(mapping.ModelKey!)))
+					.ToArray(),
+			}
+			: desired;
+		IReadOnlySet<ulong>? deployedUnits = null;
+		if (gameDataDirectory is not null && compiled.ModelDefinitions.Any(model => model.SourceItemId is null))
+		{
+			deployedUnits = await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
+			compiled = RuntimeArmorResourceFilter.Compile(compiled, deployedUnits);
+		}
 		var text = SerializeProtocol(compiled);
 		if (Encoding.UTF8.GetByteCount(text) > MaximumProtocolBytes)
 			throw new InvalidDataException("编译后的护甲注册协议超过 64 KiB 上限。");
@@ -524,6 +542,10 @@ public sealed class RuntimeArmorRegistryService
 		}
 		// 真映射这一层的结果要一路带到返回值里（见 RuntimeArmorRegistryApplyResult.DataMapping）。
 		ArmorRegistryDataMappingResult? dataMapping = null;
+		IReadOnlyList<LowPollutionMappingPlan> lowPollutionPlans = [];
+		var hideRuleCount = 0;
+		var hideRulesDropped = 0;
+		string? linksError = null;
 		// 运行时真正执行的是 unit 对列表（wardrobe.links）；协议本身只是管理器的意图记录。
 		// 没有游戏数据目录或编译失败时**不写文件**——留上一版映射，比写一份空映射安全。
 		if (gameDataDirectory is not null && Directory.Exists(gameDataDirectory))
@@ -535,8 +557,27 @@ public sealed class RuntimeArmorRegistryService
 				var authority = await ArmorAuthorityIndexReader.TryReadAsync(paths, cancellationToken).ConfigureAwait(false);
 				if (authority is not null)
 				{
+					// 低污染模式（P6 S3，规划 §11）：来源是压缩素体的映射只映射目标独有部件，其余交给 Hider。
+					// 「先部署后映射」：压缩 unit 不在已部署集合里 ⇒ 该目标不写映射行（否则军械库会崩）。
+					if (lowPollutionMode && compiled.Enabled)
+					{
+						deployedUnits ??= await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
+						lowPollutionPlans = LowPollutionMappingService.Plan(paths.ModsDirectory, authority, compiled.Mappings, deployedUnits);
+					}
+
+					// Hider 规则先于映射行落盘：映射生效时隐藏规则已经就位。没有规则时只在文件已存在才写
+					// （清空旧规则：撤销映射 / 关开关 / 目标不可）。
+					var hiderRules = LowPollutionHiderRules.Build(lowPollutionPlans);
+					if (hiderRules.Count > 0 || File.Exists(KitInstanceRulesFile.GetMappingPath(registryRoot)))
+					{
+						var written = await KitInstanceRulesFile.WriteMappingAsync(registryRoot, hiderRules, cancellationToken).ConfigureAwait(false);
+						hideRuleCount = written.Written;
+						hideRulesDropped = written.Dropped;
+					}
+
 					var links = WardrobeLinkCompiler.Compile(
-						authority, compiled.Mappings, compiled.Revision, compiled.Enabled, compiled.ModelDefinitions);
+						authority, compiled.Mappings, compiled.Revision, compiled.Enabled, compiled.ModelDefinitions,
+						lowPollutionPlans.Count == 0 ? null : lowPollutionPlans.ToDictionary(plan => plan.TargetItemId));
 					// 链接数为 0 有两种成因：① 映射被关掉 / 清空（意图就是"没有映射"）；
 					// ② 映射存在但目标/来源解析不出来（编译失败）。①必须覆盖掉上一版，
 					// 否则运行时继续执行旧映射（2026-11-13 实测：协议已关闭，旧 wardrobe.links
@@ -569,7 +610,8 @@ public sealed class RuntimeArmorRegistryService
 				or InvalidOperationException
 				or UnauthorizedAccessException)
 			{
-				// 链接编译失败不应让已经写好的协议作废；运行时保留上一版映射。
+				// 链接编译失败不应让已经写好的协议作废；运行时保留上一版映射。原因要带回界面。
+				linksError = exception.Message;
 			}
 		}
 		await WriteWorkspaceAsync(desired, cancellationToken).ConfigureAwait(false);		await WriteAtomicTextAsync(Path.Combine(WorkspaceRoot, AppliedSourceFileName),
@@ -599,6 +641,18 @@ public sealed class RuntimeArmorRegistryService
 		{
 			// 真映射那一层的结论必须带回去（没写成功时 Message 说明原因）。
 			DataMapping = dataMapping,
+			LowPollution = [.. lowPollutionPlans.Select(plan => new LowPollutionTargetReport(
+				plan.TargetItemId, plan.TargetName, plan.ModelKey,
+				plan.Status switch
+				{
+					LowPollutionMappingStatus.Mapped => "mapped",
+					LowPollutionMappingStatus.NotDeployed => "not-deployed",
+					_ => "unavailable",
+				},
+				plan.Reason, plan.Notes))],
+			HideRuleCount = hideRuleCount,
+			HideRulesDropped = hideRulesDropped,
+			LinksError = linksError,
 		};
 	}
 

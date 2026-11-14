@@ -24,4 +24,5 @@ public enum CardKind
     UserStatus,
     AssetTags,
     ModelCompatibility,
+    KitPollution,
 }

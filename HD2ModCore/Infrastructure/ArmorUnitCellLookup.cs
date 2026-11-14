@@ -36,27 +36,14 @@ public static class ArmorUnitCellLookup
 		var result = new Dictionary<string, SectionalSourceUnitCell>(StringComparer.OrdinalIgnoreCase);
 		if (unitIds.Count == 0 || !File.Exists(paths.DbPath)) return result;
 
-		// unit_file_id 在库里是 INTEGER（有符号 64 位）；我们的 hex 是同一串字节的无符号写法。
-		var wanted = new Dictionary<long, string>();
-		foreach (var id in unitIds)
-		{
-			if (id.Length != 16 || !ulong.TryParse(id, System.Globalization.NumberStyles.HexNumber, null, out var value)) continue;
-			wanted[unchecked((long)value)] = id;
-		}
-
+		var wanted = ParseWantedUnitIds(unitIds);
 		if (wanted.Count == 0) return result;
 
 		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
 		await using var command = connection.CreateCommand();
-		var names = new List<string>(wanted.Count);
-		for (var index = 0; index < wanted.Count; index++)
-		{
-			var parameter = "$u" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
-			command.Parameters.AddWithValue(parameter, wanted.Keys.ElementAt(index));
-			names.Add(parameter);
-		}
+		var names = BindUnitIdParameters(command, wanted.Keys);
 
 		command.CommandText =
 			"SELECT unit_file_id, raw_body_type, slot, piece_type, count(*) AS n"
@@ -90,5 +77,89 @@ public static class ArmorUnitCellLookup
 		}
 
 		return result;
+	}
+
+	/// <summary>
+	/// 找出只属于“未被选中的官方护甲/头盔档案”的 unit id（16 位 hex）。
+	/// 未在 <c>game_data_authority_pieces</c> 里出现、或同时被任一已选档案引用的 unit 不会进入返回值。
+	/// </summary>
+	public static async ValueTask<IReadOnlySet<string>> FindForeignEquipmentUnitsAsync(
+		StoragePaths paths,
+		IReadOnlyCollection<string> unitIds,
+		IReadOnlyCollection<string> selectedArchiveIds,
+		CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(paths);
+		ArgumentNullException.ThrowIfNull(unitIds);
+		ArgumentNullException.ThrowIfNull(selectedArchiveIds);
+
+		var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		if (unitIds.Count == 0 || selectedArchiveIds.Count == 0 || !File.Exists(paths.DbPath)) return result;
+
+		var selected = selectedArchiveIds
+			.Where(id => !string.IsNullOrWhiteSpace(id))
+			.Select(id => id.Trim())
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		if (selected.Count == 0) return result;
+
+		var wanted = ParseWantedUnitIds(unitIds);
+		if (wanted.Count == 0) return result;
+
+		await using var connection = new SqliteConnection($"Data Source={paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+		await using var command = connection.CreateCommand();
+		var names = BindUnitIdParameters(command, wanted.Keys);
+		command.CommandText =
+			"SELECT DISTINCT unit_file_id, archive_id"
+			+ " FROM game_data_authority_pieces"
+			+ $" WHERE unit_file_id IN ({string.Join(',', names)});";
+
+		var owners = new Dictionary<string, (bool HasAny, bool HasSelected)>(StringComparer.OrdinalIgnoreCase);
+		await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+		while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+		{
+			var raw = reader.GetInt64(0);
+			if (!wanted.TryGetValue(raw, out var id)) continue;
+			var archiveId = reader.IsDBNull(1) ? string.Empty : reader.GetString(1).Trim();
+			owners.TryGetValue(id, out var state);
+			var matchesSelected = state.HasSelected || (archiveId.Length > 0 && selected.Contains(archiveId));
+			owners[id] = (true, matchesSelected);
+		}
+
+		foreach (var (id, state) in owners)
+		{
+			if (state.HasAny && !state.HasSelected)
+				result.Add(id);
+		}
+
+		return result;
+	}
+
+	private static Dictionary<long, string> ParseWantedUnitIds(IReadOnlyCollection<string> unitIds)
+	{
+		// unit_file_id 在库里是 INTEGER（有符号 64 位）；我们的 hex 是同一串字节的无符号写法。
+		var wanted = new Dictionary<long, string>();
+		foreach (var id in unitIds)
+		{
+			if (string.IsNullOrEmpty(id) || id.Length != 16 || !ulong.TryParse(id, System.Globalization.NumberStyles.HexNumber, null, out var value))
+				continue;
+			wanted[unchecked((long)value)] = id;
+		}
+		return wanted;
+	}
+
+	private static List<string> BindUnitIdParameters(SqliteCommand command, IEnumerable<long> rawIds)
+	{
+		var names = new List<string>();
+		var index = 0;
+		foreach (var rawId in rawIds)
+		{
+			var parameter = "$u" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+			command.Parameters.AddWithValue(parameter, rawId);
+			names.Add(parameter);
+			index++;
+		}
+		return names;
 	}
 }

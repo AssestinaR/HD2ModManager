@@ -57,6 +57,7 @@ public interface IModListSelectable : IModListKeyed
     string SelectionKey { get; }
     bool IsSelected { get; set; }
     bool IsDecoration { get; }
+    bool IsBlocked => false;
     ModListRowPresentation RowPresentation { get; }
 }
 

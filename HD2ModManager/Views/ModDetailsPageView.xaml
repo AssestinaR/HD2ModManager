@@ -66,14 +66,15 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="目标护甲" Foreground="{StaticResource TextSecondary}"
                                    VerticalAlignment="Center" Margin="0,0,12,0"/>
-                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
-                                  ItemsSource="{Binding VpkTargetArmors}"
-                                  SelectedItem="{Binding SelectedVpkTargetArmor, Mode=TwoWay}"
-                                  DisplayMemberPath="DisplayName" MinWidth="200" VerticalAlignment="Center"
-                                  scroll:WheelScroll.IsEnabled="True"/>
+                        <!-- 可输入搜索的单选下拉，见 VpkTargetPicker。防污染不在这里做，去护甲映射页（规划 kit-instance-mapping-deploy-plan §15.3）。 -->
+                        <local:VpkTargetPicker Grid.Column="1" DataContext="{Binding VpkTargetPicker}"
+                                               MinWidth="200" VerticalAlignment="Center"/>
                         <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="切换"
                                 Command="{Binding ApplyVpkTargetArmorCommand}" Margin="12,0,0,0" Padding="14,6"/>
                     </Grid>
+                    <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}"
+                               Text="{Binding VpkMappingCoverageText}"
+                               Visibility="{Binding HasVpkMappingCoverage, Converter={StaticResource BoolToVis}}"/>
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -262,6 +263,61 @@
                                Foreground="{StaticResource TextSecondary}"
                                TextWrapping="Wrap"
                                Margin="0,8,0,0"/>
+                </StackPanel>
+            </DataTemplate>
+
+            <!--
+                共用部件（按实例隐藏 P2）：这个 Mod 连带影响了哪几套护甲。
+                可见性由 ViewModel 的 ShowKitPollutionCard 决定（没有污染时整张卡隐藏）。
+            -->
+            <DataTemplate x:Key="CardTemplate.KitPollution">
+                <StackPanel>
+                    <TextBlock Text="{Binding KitPollutionHeadline}"
+                               Foreground="{StaticResource Accent}"
+                               FontWeight="SemiBold"
+                               FontSize="14"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding KitPollutionNote}"
+                               FontSize="12"
+                               Foreground="{StaticResource TextSecondary}"
+                               TextWrapping="Wrap"
+                               Margin="0,6,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasKitPollutionNote}" Value="False">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <Expander Header="查看每个原因影响了哪些护甲"
+                              Foreground="{StaticResource TextSecondary}"
+                              FontSize="12"
+                              Margin="0,8,0,0">
+                        <Expander.Style>
+                            <Style TargetType="Expander">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasKitPollutionDetails}" Value="False">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Expander.Style>
+                        <ItemsControl ItemsSource="{Binding KitPollutionDetails}" Margin="0,4,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}"
+                                               FontFamily="Consolas"
+                                               FontSize="12"
+                                               Foreground="{StaticResource TextSecondary}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,2,0,0"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </Expander>
                 </StackPanel>
             </DataTemplate>
 

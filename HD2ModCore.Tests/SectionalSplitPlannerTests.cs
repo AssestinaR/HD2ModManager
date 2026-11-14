@@ -179,4 +179,35 @@ public sealed class SectionalSplitPlannerTests
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot(null));
 		Assert.Equal("Torso", SectionalSplitPlanner.MapSlot("Cape"));
 	}
+
+	[Fact]
+	public void Plan_DeduplicatesIdenticalConcreteBodiesAndPromotesSingleSidedCoatToAny()
+	{
+		var plan = SectionalSplitPlanner.Plan([
+			new SectionalSplitSource("5ef6000000000001", "Torso", "Stocky", 2, Name: "睡衣底模", PieceType: "Armor", GeometrySignature: "sig-torso"),
+			new SectionalSplitSource("83f6000000000002", "Torso", "Slim", 2, Name: "睡衣底模", PieceType: "Armor", GeometrySignature: "sig-torso"),
+			new SectionalSplitSource("52d1000000000003", "Torso", "Stocky", 1, Name: "大衣", PieceType: "Armor", GeometrySignature: "sig-coat"),
+		]);
+
+		var target = Assert.Single(plan.Targets);
+		Assert.Equal("Torso", target.Slot);
+		Assert.Equal("Any", target.BodyType);
+		Assert.Equal("5ef6000000000001", target.HostUnitId);
+		Assert.Equal(["52d1000000000003"], target.DonorUnitIds);
+		Assert.Contains(plan.Dropped, d => d.UnitId == "83f6000000000002");
+	}
+
+	[Fact]
+	public void Plan_PreservesConcreteBodiesWhenLayerHasDifferentGeometry()
+	{
+		var plan = SectionalSplitPlanner.Plan([
+			new SectionalSplitSource("5ef6000000000001", "Torso", "Stocky", 2, PieceType: "Armor", GeometrySignature: "sig-stocky"),
+			new SectionalSplitSource("83f6000000000002", "Torso", "Slim", 2, PieceType: "Armor", GeometrySignature: "sig-slim"),
+			new SectionalSplitSource("52d1000000000003", "Torso", "Stocky", 1, PieceType: "Accessory", GeometrySignature: "sig-coat"),
+		]);
+
+		Assert.Equal(2, plan.Targets.Count);
+		Assert.Contains(plan.Targets, t => t.BodyType == "Stocky" && t.HostUnitId == "5ef6000000000001" && t.DonorUnitIds.Contains("52d1000000000003"));
+		Assert.Contains(plan.Targets, t => t.BodyType == "Slim" && t.HostUnitId == "83f6000000000002" && t.DonorUnitIds.Count == 0);
+	}
 }

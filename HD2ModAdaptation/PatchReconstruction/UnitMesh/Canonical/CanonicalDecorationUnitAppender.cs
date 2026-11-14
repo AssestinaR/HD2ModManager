@@ -64,7 +64,8 @@ public sealed class CanonicalDecorationUnitAppender
 		UnitTransformInfo avatarTransformInfo,
 		bool replaceTargetGeometry = false,
 		CanonicalCullingBoundsMode cullingBounds = CanonicalCullingBoundsMode.Preserve,
-		bool uniqueSlotPerSection = false)
+		bool uniqueSlotPerSection = false,
+		bool allowTargetOwnedBones = false)
     {
         ArgumentNullException.ThrowIfNull(targetUnit);
 		ArgumentNullException.ThrowIfNull(inputsByTargetMesh);
@@ -95,7 +96,8 @@ public sealed class CanonicalDecorationUnitAppender
         try
         {
             expanded = new CanonicalTransformInfoExpander().Expand(targetUnit.Model,
-                sourceModels.Select((model, index) => (model, allInputs[index].Fragment.RawMesh)), avatarTransformInfo);
+                sourceModels.Select((model, index) => (model, allInputs[index].Fragment.RawMesh)), avatarTransformInfo,
+                allowTargetOwnedBones: allowTargetOwnedBones);
         }
         catch (InvalidDataException exception) { return new(null, [new("DecorationTransformExpansionFailed", exception.Message)]); }
 

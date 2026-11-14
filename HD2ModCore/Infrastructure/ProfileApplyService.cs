@@ -13,6 +13,8 @@ public sealed class ProfileApplyService : IProfileApplyService
 	private readonly DeploymentCapabilityService _capabilityService;
 	private readonly OptionActivationStore _optionActivations;
 	private readonly ILuaDeploymentService _luaDeploymentService;
+	private readonly StoragePaths? _paths;
+	private readonly RuntimeArmorRegistryService? _armorRegistry;
 
 	public ProfileApplyService(
 		IModInformationCenter informationCenter,
@@ -21,8 +23,11 @@ public sealed class ProfileApplyService : IProfileApplyService
 		DeploymentCapabilityService? capabilityService = null,
 		StoragePaths? paths = null,
 		OptionActivationStore? optionActivations = null,
-		ILuaDeploymentService? luaDeploymentService = null)
+		ILuaDeploymentService? luaDeploymentService = null,
+		RuntimeArmorRegistryService? armorRegistry = null)
 	{
+		_paths = paths;
+		_armorRegistry = armorRegistry;
 		_informationCenter = informationCenter ?? throw new ArgumentNullException(nameof(informationCenter));
 		_planner = planner ?? throw new ArgumentNullException(nameof(planner));
 		_executor = executor ?? throw new ArgumentNullException(nameof(executor));
@@ -65,6 +70,9 @@ public sealed class ProfileApplyService : IProfileApplyService
 			return new ApplyResult(false, [], null, fileFactsResult.Issues);
 		var allFacts = fileFactsResult.Data;
 		var effectiveProfile = ResolveEffectiveProfile(profile, snapshot, _optionActivations.CreateSnapshot());
+		// 映射优先（规划 §12.3）：声明目标已被映射页映射的 Mod，本次部署不部署它的 patch。
+		var coverageIssues = new List<CoreIssue>();
+		effectiveProfile = await ApplyMappingPriorityAsync(effectiveProfile, snapshot, modsRootDirectory, coverageIssues, cancellationToken).ConfigureAwait(false);
 		var activeNodeIds = effectiveProfile.Entries.Select(entry => entry.NodeId).ToHashSet();
 		var index = new PatchFileIndex(
 			allFacts.BuiltUtc,
@@ -94,7 +102,7 @@ public sealed class ProfileApplyService : IProfileApplyService
 			cancellationToken).ConfigureAwait(false);
 		plan = plan with
 		{
-			Issues = plan.Issues.Concat(preparation.Issues).ToArray(),
+			Issues = plan.Issues.Concat(preparation.Issues).Concat(coverageIssues).ToArray(),
 			ExternalFileMappings = preparation.ExternalFiles,
 		};
 		plan = plan with
@@ -103,6 +111,57 @@ public sealed class ProfileApplyService : IProfileApplyService
 			UseFastLinkValidation = capability.Method.Value is DeploymentMethod.HardLink or DeploymentMethod.SymbolicLink,
 		};
 		return await _executor.ExecuteAsync(plan, cancellationToken).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// 把「声明目标全被映射」的节点从有效配置里去掉；部分覆盖只给 Warning、照常部署。
+	/// 没有注册表服务 / 没有已应用的映射 / 索引读不出来 ⇒ 原样返回。
+	/// </summary>
+	private async ValueTask<Profile> ApplyMappingPriorityAsync(
+		Profile effectiveProfile,
+		LibrarySnapshot snapshot,
+		string modsRootDirectory,
+		List<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		if (_armorRegistry is null || _paths is null) return effectiveProfile;
+		var mapped = await ArmorMappingPatchCoverage.ReadAppliedMappedTargetsAsync(_armorRegistry.RegistryRoot, cancellationToken).ConfigureAwait(false);
+		if (mapped.Count == 0) return effectiveProfile;
+
+		IReadOnlyDictionary<string, IReadOnlyList<ArmorMappingCoverageTarget>>? kitIndex = null;
+		var skipped = new HashSet<ModNodeId>();
+		foreach (var entry in effectiveProfile.Entries)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (!snapshot.Nodes.TryGetValue(entry.NodeId, out var node)) continue;
+			var coverage = await ArmorMappingPatchCoverage.AnalyzeNodeAsync(
+				Path.Combine(modsRootDirectory, node.RelativePath),
+				mapped,
+				() => kitIndex ??= ArmorMappingPatchCoverage.ReadKitsByArchive(_paths),
+				cancellationToken).ConfigureAwait(false);
+			if (coverage.Kind == ArmorMappingCoverageKind.None) continue;
+			var name = string.IsNullOrWhiteSpace(node.Metadata.Name) ? node.RelativePath : node.Metadata.Name;
+			if (coverage.Kind == ArmorMappingCoverageKind.Covered)
+			{
+				skipped.Add(entry.NodeId);
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Info,
+					ArmorMappingPatchCoverage.CoveredIssueCode,
+					$"『{name}』针对 {string.Join("、", coverage.Covered.Select(target => target.Name))} 的 patch 已被护甲映射覆盖，本次部署跳过。",
+					NodeId: entry.NodeId));
+			}
+			else
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Warning,
+					ArmorMappingPatchCoverage.PartialIssueCode,
+					ArmorMappingPatchCoverage.DescribePartial(name, coverage),
+					NodeId: entry.NodeId));
+			}
+		}
+		return skipped.Count == 0
+			? effectiveProfile
+			: effectiveProfile with { Entries = effectiveProfile.Entries.Where(entry => !skipped.Contains(entry.NodeId)).ToArray() };
 	}
 
 	private static IReadOnlyList<CoreIssue> FindDuplicatePhysicalSources(Profile profile, LibrarySnapshot snapshot)

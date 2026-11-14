@@ -9,6 +9,7 @@ using PatchUnitMeshEditResult = HD2ModAdaptation.PatchReconstruction.PatchUnitMe
 using PatchAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.KitInstance;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -21,6 +22,8 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	private readonly LuaPatchRuntimeValidator _luaRuntimeValidator;
 	private readonly IExternalInstallFileFactsService _externalFiles;
 	private readonly RuntimeArmorRegistryService? _armorRegistry;
+	private readonly string? _kitInstanceRegistryRoot;
+	private readonly IKitPollutionService? _kitPollution;
 	private static readonly ModNodeId ArmorRegistryNodeId = new(Guid.Parse("6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca"));
 	private static readonly ModNodeId PhysicsRuntimeNodeId = new(Guid.Parse("7c1e2b90-5f3a-4d68-9a11-2b7c4e5f6a01"));
 	private const string ArmorRegistryPackageGuid = "6dd5cb37-6b45-4f47-a57c-65e3f2f9e0ca";
@@ -37,6 +40,20 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	/// </para>
 	/// </summary>
 	private const int HiddenUnitPlacementOrder = int.MaxValue - 1;
+
+	/// <summary>
+	/// 「按实例隐藏」Hider 独立 addon 补丁的落位顺序：比 boot（<c>int.MaxValue</c>）、隐藏 unit 补丁
+	/// （<see cref="HiddenUnitPlacementOrder"/>）、外置入口的护甲 addon（<c>int.MaxValue</c>）都小，
+	/// 不与这三者里任何一个撞序号。Hider addon 只在管理器不占 boot 时出现，不含 boot 资源，
+	/// 所以排在它们前面不会改变"boot 永远最大"的口径。
+	/// </summary>
+	private const int KitInstanceHiderPlacementOrder = int.MaxValue - 2;
+
+	/// <summary>
+	/// 物理外置 addon 补丁的落位顺序（规划 kit-instance-mapping-deploy-plan §15.2）：与 Hider 一样只含一个 Lua 资源、
+	/// 不含 boot，排在 Hider 前面一个，不和 boot / 隐藏 unit / 护甲 addon / Hider 撞序号。
+	/// </summary>
+	private const int PhysicsAddonPlacementOrder = int.MaxValue - 3;
 
 	/// <summary>
 	/// 护甲映射的落地方式。默认 <see cref="ArmorMappingModes.Default"/>（关闭）。
@@ -80,12 +97,19 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		LuaPatchComposer? luaComposer = null,
 		LuaPatchRuntimeValidator? luaRuntimeValidator = null,
 		IExternalInstallFileFactsService? externalFiles = null,
-		RuntimeArmorRegistryService? armorRegistry = null)
+		RuntimeArmorRegistryService? armorRegistry = null,
+		string? kitInstanceRegistryRoot = null,
+		IKitPollutionService? kitPollution = null)
 	{
 		_luaComposer = luaComposer ?? new LuaPatchComposer();
 		_luaRuntimeValidator = luaRuntimeValidator ?? new LuaPatchRuntimeValidator();
 		_externalFiles = externalFiles ?? new ExternalInstallFileFactsService();
 		_armorRegistry = armorRegistry;
+		// 规则文件与 wardrobe.links 同一个 ArmorRegistry 目录。没有注册表服务又没显式给目录时不写盘
+		// （避免单元测试之类不带注册表的调用去碰真实的 %LOCALAPPDATA%）。
+		_kitInstanceRegistryRoot = kitInstanceRegistryRoot ?? armorRegistry?.RegistryRoot;
+		// 污染提示（P2）：没给服务就不分析，单元测试与不带索引的调用不会去碰索引库。
+		_kitPollution = kitPollution;
 	}
 
 	public async ValueTask<LuaDeploymentPlan> PlanAsync(
@@ -186,6 +210,9 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		// 只登记"谁提供了 boot"，解析推迟到确认必须合并之后再做（见下方 mergeRequired）。
 		var bootProviders = new List<LuaBootProvider>();
 		var managedRemovedGroups = new HashSet<PatchGroupIdentity>();
+		// 以前手动加进库的物理外置包（§15.2）：物理外置改成自动投放后，它的补丁一律不部署，免得加载两份。
+		var legacyPhysicsGroups = new HashSet<PatchGroupIdentity>();
+		var legacyPhysicsNodes = new List<string>();
 		var orderedEntries = profile.Entries
 			.OrderBy(entry => entry.LoadOrder)
 			.ThenBy(entry => entry.AddedUtc)
@@ -206,6 +233,17 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 				.ToArray();
 			foreach (var group in groups)
 			{
+				if (snapshot.Nodes.TryGetValue(profileEntry.NodeId, out var physicsNode)
+					&& string.Equals(
+						physicsNode.Metadata.SourcePackageGuid,
+						LuaAddonCatalog.PhysicsModGuid,
+						StringComparison.OrdinalIgnoreCase))
+				{
+					legacyPhysicsGroups.Add(group.Key);
+					var label = string.IsNullOrWhiteSpace(physicsNode.Metadata.Name) ? physicsNode.RelativePath : physicsNode.Metadata.Name;
+					if (!legacyPhysicsNodes.Contains(label)) legacyPhysicsNodes.Add(label);
+					continue;
+				}
 				if (snapshot.Nodes.TryGetValue(profileEntry.NodeId, out var managedNode)
 					&& string.Equals(
 						managedNode.Metadata.SourcePackageGuid,
@@ -390,6 +428,54 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			}
 		}
 
+		if (legacyPhysicsNodes.Count > 0)
+		{
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Info,
+				"PhysicsLegacyPackageSkipped",
+				$"物理运行时现在由管理器在部署时自动投放，库里以前手动加的物理包不再部署：{string.Join("、", legacyPhysicsNodes)}。可以把它从库里删掉。"));
+		}
+
+		// 物理「外置加载器兼容」：部署时自动投放独立 addon（§15.2），不再让玩家手动加包。
+		GeneratedPatchGroup? physicsAddon = null;
+		string? physicsFingerprint = null;
+		if (EffectivePhysicsMode == PhysicsMode.ExternalLuaEntry)
+		{
+			try
+			{
+				var feature = LuaAddonCatalog.Physics();
+				physicsFingerprint = LuaOnlyAddonFingerprint("physbone-addon:v1", feature.AddonId, feature.Source);
+				physicsAddon = await CreateLuaOnlyAddonAsync(
+					modsRootDirectory, "physbone-addon", physicsFingerprint, feature.AddonId, feature.Source,
+					"HD2 Physics Bone managed addon", PhysicsAddonPlacementOrder, materialize, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException
+				or UnauthorizedAccessException
+				or InvalidDataException
+				or InvalidOperationException)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Error,
+					"PhysicsRuntimePreparationFailed",
+					$"无法准备物理运行时外置补丁：{exception.Message}",
+					ExceptionMessage: exception.ToString()));
+			}
+		}
+
+		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
+			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
+
+		// 按实例隐藏：把启用中的 Mod 的 workspace 记录编译成规则，真部署时整份原子写盘
+		// （没有规则也写一份空的，覆盖上一版，否则运行时会继续执行过期规则）。
+		var kitRuleCount = await PrepareKitInstanceRulesAsync(
+			orderedEntries.Where(entry => snapshot.Nodes.ContainsKey(entry.NodeId)).Select(entry => entry.NodeId).ToArray(),
+			snapshot,
+			contentFacts,
+			modsRootDirectory,
+			gameDataDirectory,
+			materialize,
+			issues,
+			cancellationToken).ConfigureAwait(false);
 		if (issues.Any(issue => issue.Severity == CoreIssueSeverity.Error))
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 
@@ -441,14 +527,63 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 		{
 			// 外置 / 真映射：管理器自己不占 boot，只把别人的争用情况说清楚。
 			ReportBootEntryContention(bootProviders, issues, ownerIsManager: false);
-			var addonGroups = armorAddon is null ? Array.Empty<GeneratedPatchGroup>() : new[] { armorAddon };
+			var addonGroups = new List<GeneratedPatchGroup>();
+			if (armorAddon is not null) addonGroups.Add(armorAddon);
+			if (physicsAddon is not null)
+			{
+				addonGroups.Add(physicsAddon);
+				if (bootProviders.Count == 0)
+				{
+					issues.Add(new CoreIssue(
+						CoreIssueSeverity.Warning,
+						"PhysicsRuntimeNeedsLoader",
+						"物理「外置加载器兼容」需要一个 Lua 加载器（如 MDL3），或把物理设为独占 boot。"));
+				}
+			}
+			string? hiderFingerprint = null;
+			if (kitRuleCount > 0)
+			{
+				// 管理器不占 boot：Hider 做成独立 addon，交给第三方加载器加载。
+				// 加载器可能装在库外（直接放进游戏目录），所以没有提供 boot 的库内 Mod 时照样投放，只加一条提示。
+				try
+				{
+					hiderFingerprint = KitInstanceHiderFingerprint();
+					addonGroups.Add(await CreateLuaOnlyAddonAsync(
+						modsRootDirectory, "kit-instance-hider", hiderFingerprint, KitInstanceHiderLuaSource.ResourceName,
+						KitInstanceHiderLuaSource.Load(), "HD2 Kit Instance Hider managed addon",
+						KitInstanceHiderPlacementOrder, materialize, cancellationToken).ConfigureAwait(false));
+				}
+				catch (Exception exception) when (exception is IOException
+					or UnauthorizedAccessException
+					or InvalidDataException
+					or InvalidOperationException)
+				{
+					issues.Add(new CoreIssue(
+						CoreIssueSeverity.Error,
+						"KitInstanceHiderPreparationFailed",
+						$"无法准备「按实例隐藏」运行时：{exception.Message}",
+						ExceptionMessage: exception.ToString()));
+					return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, 0);
+				}
+				if (bootProviders.Count == 0)
+				{
+					issues.Add(new CoreIssue(
+						CoreIssueSeverity.Warning,
+						"KitInstanceHiderNeedsLoader",
+						"按实例隐藏需要一个 Lua 加载器（如 MDL3），或把护甲映射/物理设为独占入口。"));
+				}
+			}
+			var fingerprintParts = new List<string>();
+			if (armorAddon is not null) fingerprintParts.Add(ArmorRegistrySourceFingerprint());
+			if (hiderFingerprint is not null) fingerprintParts.Add(hiderFingerprint);
+			if (physicsFingerprint is not null) fingerprintParts.Add(physicsFingerprint);
 			return new LuaBuildResult(
-				FilterPatchIndex(patchIndex, managedRemovedGroups),
+				FilterPatchIndex(patchIndex, new HashSet<PatchGroupIdentity>(managedRemovedGroups.Concat(legacyPhysicsGroups))),
 				addonGroups,
 				externalMappings,
 				issues,
-				armorAddon is not null,
-				armorAddon is null ? null : ArmorRegistrySourceFingerprint(),
+				addonGroups.Count > 0,
+				fingerprintParts.Count == 0 ? null : fingerprintParts.Count == 1 ? fingerprintParts[0] : LuaHashFor(Encoding.UTF8.GetBytes(string.Join('|', fingerprintParts))),
 				0);
 		}
 
@@ -472,8 +607,18 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			};
 		}
 		var bootDocument = armorBootDocument ?? physicsBootDocument!;
+		if (kitRuleCount > 0)
+		{
+			// 管理器占着 boot：Hider 作为**最后一个**块并进同一个文档。放最后是因为它的 update 钩子
+			// 要接在前面各块之后（映射运行时直接整体替换 update，Hider 装在它前面会被顶掉）。
+			var hiderBlocks = bootDocument.Document.Blocks.ToList();
+			hiderBlocks.Add(BuildBootBlock(
+				hiderBlocks.Count,
+				new BootBlock("HD2 Kit Instance Hider", KitInstanceHiderLuaSource.Load(), KitInstanceHiderLuaSource.ResourceName)));
+			bootDocument = bootDocument with { Document = bootDocument.Document with { Blocks = hiderBlocks } };
+		}
 		documents.Add(bootDocument);
-		var filteredIndex = patchIndex;
+		var filteredIndex = FilterPatchIndex(patchIndex, legacyPhysicsGroups);
 
 		GeneratedPatchGroup generated;
 		string? fingerprint = null;
@@ -557,9 +702,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			return new LuaBuildResult(patchIndex, Array.Empty<GeneratedPatchGroup>(), externalMappings, issues, false, null, documents.Count);
 		}
 
-		var generatedGroups = armorAddon is null
-			? new[] { generated }
-			: new[] { generated, armorAddon };
+		// 映射独占 + 物理外置也可能同时出现：物理 addon 照样交给加载器。
+		var generatedGroups = new List<GeneratedPatchGroup> { generated };
+		if (armorAddon is not null) generatedGroups.Add(armorAddon);
+		if (physicsAddon is not null) generatedGroups.Add(physicsAddon);
 		return new LuaBuildResult(filteredIndex, generatedGroups, externalMappings, issues, true, fingerprint, documents.Count);
 	}
 
@@ -718,6 +864,228 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	}
 
 	/// <summary>
+	/// 编译启用中的 Mod 的「按实例隐藏」记录；真部署（<paramref name="materialize"/>）时把规则整份原子写进
+	/// ArmorRegistry 目录（没有规则也写空文件）。返回生效的规则条数。
+	/// <para>
+	/// workspace 读不出来（损坏）按「没有规则」处理并给 Warning，而不是阻断部署：此时写出空规则，
+	/// 运行时不再隐藏任何东西，用户看得到问题而不是看到缺身体。
+	/// </para>
+	/// </summary>
+	private async ValueTask<int> PrepareKitInstanceRulesAsync(
+		IReadOnlyCollection<ModNodeId> enabledNodes,
+		LibrarySnapshot snapshot,
+		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
+		string modsRootDirectory,
+		string gameDataDirectory,
+		bool materialize,
+		ICollection<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		KitInstanceWorkspace workspace;
+		try
+		{
+			workspace = await KitInstanceWorkspaceStore.ReadAsync(modsRootDirectory, cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Warning,
+				"KitInstanceWorkspaceUnreadable",
+				$"无法读取「按实例隐藏」记录，本次按没有规则处理：{exception.Message}",
+				KitInstanceWorkspaceStore.GetPath(modsRootDirectory),
+				ExceptionMessage: exception.ToString()));
+			workspace = KitInstanceWorkspace.Empty;
+		}
+
+		var previousRevision = _kitInstanceRegistryRoot is null ? 0 : KitInstanceRulesFile.ReadRevision(_kitInstanceRegistryRoot);
+		// 内容指纹：记录生成之后 Mod 的基底被更新过（指纹不一致），这条记录本次不生效并给 Warning，让用户重新转换。
+		var compiled = KitInstanceRulesCompiler.Compile(
+			enabledNodes,
+			workspace,
+			previousRevision,
+			nodeId => snapshot.Nodes.TryGetValue(nodeId, out var node)
+				? KitInstanceContentFingerprint.Compute(Path.Combine(modsRootDirectory, node.RelativePath))
+				: null);
+		foreach (var issue in compiled.Issues) issues.Add(issue);
+
+		await AddKitPollutionWarningsAsync(
+			enabledNodes, snapshot, contentFacts, workspace, gameDataDirectory, issues, cancellationToken).ConfigureAwait(false);
+
+		if (materialize && _kitInstanceRegistryRoot is not null)
+		{
+			try
+			{
+				await KitInstanceRulesFile.WriteAsync(_kitInstanceRegistryRoot, compiled.Document, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+			{
+				issues.Add(new CoreIssue(
+					CoreIssueSeverity.Error,
+					"KitInstanceRulesWriteFailed",
+					$"无法写入「按实例隐藏」规则文件，运行时可能继续使用上一版：{exception.Message}",
+					KitInstanceRulesFile.GetPath(_kitInstanceRegistryRoot),
+					ExceptionMessage: exception.ToString()));
+			}
+		}
+		// 软映射（低污染模式）的规则由映射页「应用」写进另一个文件（kit-instance.mapping.rules），部署不碰它，
+		// 但投放 Hider 的门槛要把它数进去：否则只用映射页、没有任何专属记录的用户永远没有 Hider。
+		var mappingRuleCount = _kitInstanceRegistryRoot is null ? 0 : KitInstanceRulesFile.CountMappingRules(_kitInstanceRegistryRoot);
+		return compiled.Document.Rules.Count + mappingRuleCount;
+	}
+
+	/// <summary>
+	/// P2 发现污染：每个启用中、有污染（受影响的套 ≥ 2）、且 workspace 里没有记录的 Mod 加一条 Warning，不阻断部署。
+	/// 材质缓存没好时只用 Unit 部分的结论，并在后台开始构建；这里<b>绝不等待构建</b>，分析本身任何失败都只是不报。
+	/// 放在这里而不是 ProfileApplyService：「按实例隐藏」的记录（workspace）与 P1 的
+	/// <c>KitInstanceHiderNeedsLoader</c> 等提示都在这个方法所在的 Lua 部署阶段汇总，
+	/// 计划预览与真部署走同一条路径，界面已有的「部署问题」列表直接显示它。
+	/// </summary>
+	private async ValueTask AddKitPollutionWarningsAsync(
+		IReadOnlyCollection<ModNodeId> enabledNodes,
+		LibrarySnapshot snapshot,
+		IReadOnlyDictionary<ModNodeId, ModContentFacts> contentFacts,
+		KitInstanceWorkspace workspace,
+		string gameDataDirectory,
+		ICollection<CoreIssue> issues,
+		CancellationToken cancellationToken)
+	{
+		if (_kitPollution is null) return;
+		foreach (var nodeId in enabledNodes.Distinct().OrderBy(node => node.Value))
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			if (workspace.Records.ContainsKey(nodeId)) continue;
+			if (!contentFacts.TryGetValue(nodeId, out var facts) || !snapshot.Nodes.TryGetValue(nodeId, out var node)) continue;
+
+			KitPollutionResult? result;
+			try
+			{
+				result = await _kitPollution.AnalyzeAsync(
+					facts.Structure.Assets.Select(asset => asset.AssetKey), gameDataDirectory, cancellationToken).ConfigureAwait(false);
+			}
+			catch (Exception exception) when (exception is not OperationCanceledException)
+			{
+				// 污染提示是锦上添花：分析失败不能让部署出问题，也不值得吓用户。
+				continue;
+			}
+			if (result is not { IsPolluted: true }) continue;
+
+			var name = string.IsNullOrWhiteSpace(node.Metadata.Name) ? node.RelativePath : node.Metadata.Name;
+			issues.Add(new CoreIssue(
+				CoreIssueSeverity.Warning,
+				"KitInstancePollution",
+				KitPollutionAnalyzer.FormatDeploymentWarning(name, result),
+				NodeId: nodeId));
+		}
+	}
+
+	/// <summary>Hider 独立 addon 的内容指纹：覆盖将写出的全部字节（脚本源码 + 资源名 + 封装版本）。</summary>
+	private static string KitInstanceHiderFingerprint()
+		=> LuaOnlyAddonFingerprint("kit-instance-hider-addon:v1", KitInstanceHiderLuaSource.ResourceName, KitInstanceHiderLuaSource.Load());
+
+	/// <summary>
+	/// 只含一个 Lua 资源的 addon 的内容指纹（封装版本 + 资源名 + 源码）。
+	/// Hider 用的字节串与改造前完全一样（"kit-instance-hider-addon:v1:" + 资源名 + 换行 + 源码），已部署的指纹不变。
+	/// </summary>
+	private static string LuaOnlyAddonFingerprint(string version, string resourceName, string source)
+		=> LuaHashFor(Encoding.UTF8.GetBytes(version + ":" + resourceName + "\n" + source));
+
+	/// <summary>
+	/// 生成只含一个 Lua 资源的独立 addon 补丁（Hider、物理外置，§15.2），**不带**隐藏 unit
+	/// （隐藏 unit 属于护甲映射，见 <see cref="CreateArmorRegistryAddonAsync"/>）。
+	/// 打包仍走 <see cref="PatchArchiveWriter"/>：以嵌入的空 unit 补丁为模板，移除它自己的 unit 条目，
+	/// 再追加 Lua 条目——不自己拼字节，避免出现第二套布局逻辑。
+	/// </summary>
+	private static async ValueTask<GeneratedPatchGroup> CreateLuaOnlyAddonAsync(
+		string modsRootDirectory,
+		string folderName,
+		string fingerprint,
+		string resourceName,
+		string source,
+		string description,
+		int placementOrder,
+		bool materialize,
+		CancellationToken cancellationToken)
+	{
+		var outputDirectory = Path.Combine(
+			Path.GetFullPath(modsRootDirectory),
+			".runtime",
+			folderName,
+			fingerprint);
+		var outputPath = Path.Combine(outputDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
+
+		var scratch = Path.Combine(Path.GetTempPath(), "hd2mod-lua-addon-" + Guid.NewGuid().ToString("N"));
+		var templateDirectory = Path.Combine(scratch, "template");
+		var buildDirectory = Path.Combine(scratch, "build");
+		Directory.CreateDirectory(templateDirectory);
+		try
+		{
+			var templatePath = Path.Combine(templateDirectory, $"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
+			await File.WriteAllBytesAsync(templatePath, WardrobeHiddenUnitTemplate.ReadPatch(), cancellationToken).ConfigureAwait(false);
+			await File.WriteAllBytesAsync(templatePath + ".gpu_resources", WardrobeHiddenUnitTemplate.ReadGpu(), cancellationToken).ConfigureAwait(false);
+			await File.WriteAllBytesAsync(templatePath + ".stream", [], cancellationToken).ConfigureAwait(false);
+			var templateEntries = await new HD2ModAdaptation.PatchReconstruction.PatchTocScanner()
+				.ScanEntriesAsync(templatePath, cancellationToken).ConfigureAwait(false);
+
+			PatchArchiveAdditionalEntry[] additions =
+			[
+				new PatchArchiveAdditionalEntry(
+					new PatchAssetKey(LuaAssetKeys.LuaTypeId, StingrayHash(resourceName)),
+					BuildLuaResource(source, resourceName),
+					[],
+					[]),
+			];
+			var written = await new PatchArchiveWriter().WriteAsync(
+				templatePath,
+				buildDirectory,
+				Array.Empty<PatchUnitMeshEditResult>(),
+				additions,
+				removedEntries: templateEntries,
+				overwriteExisting: true,
+				preserveOriginalStream: false,
+				headerTemplateTocData: null,
+				cancellationToken).ConfigureAwait(false);
+
+			if (materialize)
+			{
+				Directory.CreateDirectory(outputDirectory);
+				File.Copy(written.TocFilePath, outputPath, overwrite: true);
+				// 只有 Lua 资源时没有 gpu 数据，写器会删掉空的 .gpu_resources；补一个空的，三个旁文件一起部署。
+				if (File.Exists(written.GpuResourceFilePath))
+					File.Copy(written.GpuResourceFilePath, outputPath + ".gpu_resources", overwrite: true);
+				else
+					await File.WriteAllBytesAsync(outputPath + ".gpu_resources", [], cancellationToken).ConfigureAwait(false);
+				await File.WriteAllBytesAsync(outputPath + ".stream", [], cancellationToken).ConfigureAwait(false);
+			}
+
+			GeneratedPatchFile[] files = materialize
+				?
+				[
+					CreateGeneratedFile(outputPath, PatchSidecarKind.Base),
+					CreateGeneratedFile(outputPath + ".stream", PatchSidecarKind.Stream),
+					CreateGeneratedFile(outputPath + ".gpu_resources", PatchSidecarKind.GpuResources),
+				]
+				:
+				[
+					new GeneratedPatchFile(PatchSidecarKind.Base, outputPath, Path.GetFileName(outputPath), written.TocFileSize, DateTimeOffset.MinValue),
+					new GeneratedPatchFile(PatchSidecarKind.Stream, outputPath + ".stream", Path.GetFileName(outputPath) + ".stream", 0, DateTimeOffset.MinValue),
+					new GeneratedPatchFile(PatchSidecarKind.GpuResources, outputPath + ".gpu_resources", Path.GetFileName(outputPath) + ".gpu_resources", 0, DateTimeOffset.MinValue),
+				];
+			return new GeneratedPatchGroup(
+				$"{LuaAssetKeys.BootArchiveId:x16}",
+				0,
+				files,
+				description,
+				PlacementOrder: placementOrder);
+		}
+		finally
+		{
+			try { if (Directory.Exists(scratch)) Directory.Delete(scratch, recursive: true); }
+			catch (IOException) { }
+			catch (UnauthorizedAccessException) { }
+		}
+	}
+
+	/// <summary>
 	/// 管理器的 Lua 运行时在补丁里的资源名。它的哈希就是引擎加载引导脚本用的 id
 	/// （不是 <c>LuaAssetKeys.BootFileId</c>——那个是游戏自身引导脚本的 id）。
 	/// </summary>
@@ -727,9 +1095,9 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 	/// Lua 资源的载荷：<c>u32 长度 + u32 版本(2) + 源码</c>。版本 2 表示载荷是源码文本，
 	/// 这版引擎接受它，省掉一次字节码编译。
 	/// </summary>
-	private static byte[] BuildLuaResource(string source)
+	private static byte[] BuildLuaResource(string source, string resourceName = ArmorAddonResourceName)
 	{
-		var declaration = $"-- HD2-Addon: {ArmorAddonResourceName}\n";
+		var declaration = $"-- HD2-Addon: {resourceName}\n";
 		var body = Encoding.UTF8.GetBytes(
 			source.StartsWith("-- HD2-Addon:", StringComparison.Ordinal)
 				? source
@@ -843,17 +1211,7 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			$"{LuaAssetKeys.BootArchiveId:x16}.patch_0");
 		var blockList = new List<LuaPatchBlock>(blocks.Count);
 		for (var index = 0; index < blocks.Count; index++)
-		{
-			var block = blocks[index];
-			var runtimeSource = Encoding.UTF8.GetBytes(block.Source);
-			// 每个块独立 pcall：一个功能装不上不能拖累另一个。
-			var body = "local __hd2_l" + index + " = rawget(_G, \"loadstring\") or rawget(_G, \"load\")\n"
-				+ "local __hd2_c" + index + " = __hd2_l" + index + " and __hd2_l" + index + "(\""
-				+ EscapeLuaBytes(runtimeSource)
-				+ "\", \"@" + block.ChunkName + "\")\n"
-				+ "if __hd2_c" + index + " then pcall(__hd2_c" + index + ") end";
-			blockList.Add(new LuaPatchBlock(block.Name, body));
-		}
+			blockList.Add(BuildBootBlock(index, blocks[index]));
 		return new LuaPatchDocument(
 			syntheticEntry.SourceFilePath,
 			syntheticEntry,
@@ -861,6 +1219,21 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 			header,
 			boot,
 			blockList);
+	}
+
+	/// <summary>
+	/// 把一个运行时块包成 boot 文档里的一段。每个块独立 pcall：一个功能装不上不能拖累另一个。
+	/// <paramref name="index"/> 只用来给局部变量起不重名的名字。
+	/// </summary>
+	private static LuaPatchBlock BuildBootBlock(int index, BootBlock block)
+	{
+		var runtimeSource = Encoding.UTF8.GetBytes(block.Source);
+		var body = "local __hd2_l" + index + " = rawget(_G, \"loadstring\") or rawget(_G, \"load\")\n"
+			+ "local __hd2_c" + index + " = __hd2_l" + index + " and __hd2_l" + index + "(\""
+			+ EscapeLuaBytes(runtimeSource)
+			+ "\", \"@" + block.ChunkName + "\")\n"
+			+ "if __hd2_c" + index + " then pcall(__hd2_c" + index + ") end";
+		return new LuaPatchBlock(block.Name, body);
 	}
 
 	private static byte[] CreateLuaHeaderTemplate()

@@ -37,7 +37,10 @@ public sealed class RuntimeArmorRegistryLuaSourceTests
 		Assert.Contains("init = noop", source);
 		Assert.Contains("shutdown = noop", source);
 		Assert.Contains("render = noop", source);
-		Assert.Contains("update = function()", source);
+		Assert.Contains("update = function(", source);
+		// 前一个 update 只有在它正是 Hider 装上的钩子时才被链接；其它情况（含游戏原 update）不调用。
+		Assert.Contains("previousUpdate == hiderHook", source);
+		Assert.Contains("update_hook", source);
 	}
 
 	[Fact]
