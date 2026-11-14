@@ -223,14 +223,30 @@ public static class MaterialAppearance
 	/// <summary>名字里出现这些词 → <b>不是</b>金属（优先于金属词）。</summary>
 	private static readonly string[] NonMetallicMatcapMarkers =
 	[
-		"jewel", "gem", "diamond", "pearl", "cloth", "env", "highlight", "rim",
-		"skin", "eye", "hair", "tattoo", "scale", "feather",
+		// 只保留**真漫反射**的词：织物、皮肤、毛发、以及叠加式边缘光。
+		// `jewel` / `gem` / `diamond` / `pearl` / `env` / `highlight` 已移到"反光"那一侧，
+		// 见 <see cref="MetallicMatcapMarkers"/> 的注释。
+		"cloth", "rim", "skin", "eye", "hair", "tattoo", "scale", "feather",
 	];
 
 	/// <summary>名字里出现这些词 → 金属。</summary>
 	private static readonly string[] MetallicMatcapMarkers =
 	[
 		"metal", "silver", "platinum", "magnet", "steel", "chrome", "iron",
+
+		// **反光表面，不是漫反射表面。**（2026-11-14）
+		//
+		// 依据：MourningVeil 里用这些 matcap 的件，底图基本都是近黑占位图（`Mat_ACCMetal`
+		// 亮度均值 23.2、`Mat_Metal` 17.2），**观感 100% 来自 matcap**，它们必须有反射；
+		// 叫 jewel / env / highlight 不改变这一点。实测用户报"头冠、腰胯小灯笼、宝石没有光泽"，
+		// 就是因为这些词以前落在"硬性非金属"里 ⇒ 金属度 6 ⇒ 哑光。
+		//
+		// 为什么不能改用贴图内容判别：把 12 张 matcap 的亮度统计拉出来看，
+		// `env3`(均值 12.3) 与 `cloths6`(4.6)、`jewel7`(119.2) 与 `cloths4`(114.4)
+		// 的数值彼此交叉，**没有任何单调特征能分开反光件与织物件**。能分开的只有作者的语义命名。
+		//
+		// 织物仍然是硬性非金属（`cloth` 在非金属词表里，且非金属词优先）。
+		"jewel", "gem", "diamond", "pearl", "env", "highlight",
 		"gold", "brass", "copper", "bronze", "aluminium", "aluminum",
 	];
 
@@ -632,6 +648,36 @@ public static class MaterialAppearance
 	/// alpha 一律置 0：底色不承担自发光，也不承担形状。
 	/// </para>
 	/// </summary>
+	/// <summary>
+	/// 把整片底色涂成一个**带色相的平色**（每通道 0..1，按 sRGB 直接写）。
+	/// <para>
+	/// 用途：源侧 `$matcap 2`（相加）的 matcap 对这类件几乎是一个**恒定加法色**
+	/// （实测 `Mat_ACCDiadema_Tiara` 合成后 mean 12 / max 152；绿灯笼 mean 69 / max 246）。
+	/// 把那个均值写成金属 F0，既保住"黑亮"（暗 F0 + 高光来自环境反射），也保住色相（绿宝石），
+	/// 而不会像逐像素相加那样糊上一层雾（见 <see cref="CanBakeIntoAlbedo"/> 的实测）。
+	/// </para>
+	/// </summary>
+	public static void FlattenToColour(byte[] rgba, double r, double g, double b)
+	{
+		ArgumentNullException.ThrowIfNull(rgba);
+		if (rgba.Length == 0 || rgba.Length % 4 != 0)
+			throw new InvalidDataException($"RGBA 像素区长度 {rgba.Length} 不是 4 的倍数。");
+
+		var red = SrgbByte(r);
+		var green = SrgbByte(g);
+		var blue = SrgbByte(b);
+		for (var offset = 0; offset < rgba.Length; offset += 4)
+		{
+			rgba[offset + 0] = red;
+			rgba[offset + 1] = green;
+			rgba[offset + 2] = blue;
+		}
+	}
+
+	private static byte SrgbByte(double value)
+		=> (byte)Math.Clamp((int)Math.Round(Math.Clamp(value, 0, 1) * 255), 0, 255);
+
+	/// <summary>按线性反射率涂成一个中性平色（旧的金属 F0 路径）。</summary>
 	public static void FlattenToMetalF0(byte[] rgba, double targetLinear)
 	{
 		ArgumentNullException.ThrowIfNull(rgba);

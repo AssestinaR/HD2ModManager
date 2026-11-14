@@ -173,8 +173,16 @@ public sealed class MaterialAppearanceTests
 	/// 它们的材质名其实是同样明确的作者声明。
 	/// </para>
 	/// <para>
-	/// 但不能反过来让材质名推翻 matcap 的结论：MourningVeil 的 <c>Mat_Metal_gem_*</c>
-	/// 材质名含 metal，而 matcap 是 <c>matcap_jewel9</c>（纯宝石），判非金属是对的。
+	/// matcap 名有结论时**压过**材质名：MourningVeil 的 <c>Mat_Metal_gem_*</c> 材质名含 metal，
+	/// matcap 是 <c>matcap_jewel9</c>。
+	/// <para>
+	/// ⚠️ <b>2026-11-14 结论反转</b>：以前这里期望 `false`（把 jewel 当"纯宝石 ⇒ 非金属"），
+	/// 依据是"宝石不是金属"。但用户实机报"头冠、腰胯小灯笼、宝石没有光泽"，而这类件的底图
+	/// 基本都是近黑占位图（`Mat_ACCMetal` 亮度均值 23.2、`Mat_Metal` 17.2），**观感 100% 来自
+	/// matcap** —— 它们必须有反射，叫 jewel / env / highlight 不改变这一点。
+	/// 因此 `jewel` / `gem` / `diamond` / `pearl` / `env` / `highlight` 已移到"反光表面"一侧，
+	/// 这里的期望值随之改为 `true`；织物（`cloth`）仍是硬性非金属。
+	/// </para>
 	/// </para>
 	/// </summary>
 	[Theory]
@@ -185,9 +193,9 @@ public sealed class MaterialAppearanceTests
 	[InlineData("11", "acc_metal_1", true)]
 	[InlineData("11", "mat_cloth_dress_outer", false)]      // 材质名也没线索
 	// matcap 名有结论 → 压过材质名
-	[InlineData("matcap_jewel9", "mat_metal_gem_earings", false)]
+	[InlineData("matcap_jewel9", "mat_metal_gem_earings", true)]
 	[InlineData("matcap_metal11", "mat_metal_necklace", true)]
-	[InlineData("matcap_highlight", "mat_accpreal_tiara", false)]
+	[InlineData("matcap_highlight", "mat_accpreal_tiara", true)]
 	// 两个都没有 → 非金属
 	[InlineData("6", "mat_ornament_petal", false)]
 	[InlineData(null, null, false)]
@@ -201,7 +209,7 @@ public sealed class MaterialAppearanceTests
 	[Theory]
 	[InlineData("11", false)]
 	[InlineData("matcap_metal11", true)]
-	[InlineData("matcap_jewel9", false)]
+	[InlineData("matcap_jewel9", true)]
 	public void SingleArgumentOverloadStillOnlyReadsTheMatcapName(string matcapName, bool expected)
 	{
 		Assert.Equal(expected, MaterialAppearance.IsMetallicMatcapName(matcapName));
@@ -241,11 +249,13 @@ public sealed class MaterialAppearanceTests
 	[InlineData(true, true, "metal", "uv_1", false)]
 	[InlineData(true, true, "metal", "uv_2", false)]
 	[InlineData(true, true, "matcap_metal11", "mat_metal_necklace", false)]
-	// 宝石 / 无名：名字就否掉了，与底色无关
-	[InlineData(true, false, "gem", "jewel", false)]
+	// 宝石类（gem / jewel）：**2026-11-14 起判金属**——它们是反光表面，
+	// 且这些件的底图是近黑占位图（观感 100% 来自 matcap），详见文档
+	// docs/agent/hd2-mourningveil-cutout-forensics-20261114.md。
+	[InlineData(true, false, "gem", "jewel", true)]
 	[InlineData(true, true, "matcap1", "clothes", false)]
-	// 同一个名字里既有 metal 又有装饰词：装饰词优先（实测 MourningVeil，观感确实是宝石）
-	[InlineData(true, false, "matcap_jewel9", "mat_metal_gem_earings", false)]
+	// 同一个名字里既有 metal 又有反光词：都属于反光表面 ⇒ 金属
+	[InlineData(true, false, "matcap_jewel9", "mat_metal_gem_earings", true)]
 	// tint 不够：matcap 只是叠加高光，不算表面
 	[InlineData(false, false, "metal", "metal", false)]
 	public void MetalNeedsBothAMetallicNameAndAMatcapThatIsTheSurface(
@@ -486,24 +496,26 @@ public sealed class MaterialAppearanceTests
 		{
 			"matcap_metal11", "Matcap_metal7", "Matcap_metal8", "Platinum_Silver",
 			"matcap_Silver", "MRmagnet", "materials/x/Matcap_Metal1",
+			// **反光表面（2026-11-14 政策变更）**：这些件底图是近黑占位图，观感 100% 来自
+			// matcap，必须有反射。用户实机报"头冠、腰胯小灯笼、宝石没有光泽"即为旧政策的后果。
+			"matcap_jewel7", "matcap_jewel9", "Matcap_jewel2", "Matcap_diamond1",
+			"Matcap_diamond4", "matcap_pearl3", "matcap_env3", "matcap_highlight",
 		})
 		{
 			Assert.True(MaterialAppearance.IsMetallicMatcapName(name), name);
 		}
 
-		// 实测样本：非金属（宝石/珍珠/布料/环境/高光）。
+		// 实测样本：非金属（布料 / 叠加式边缘光 / 认不出来的名字）。
 		foreach (var name in new[]
 		{
-			"matcap_jewel7", "matcap_jewel9", "Matcap_jewel2", "Matcap_diamond1",
-			"Matcap_diamond4", "matcap_pearl3", "matcap_cloths9", "matcap_env3",
-			"matcap_highlight", "matcap_rim", "Matcap27_EC",
+			"matcap_cloths9", "matcap_rim", "Matcap27_EC",
 		})
 		{
 			Assert.False(MaterialAppearance.IsMetallicMatcapName(name), name);
 		}
 
-		// 非金属词优先：名字里同时出现时按非金属处理。
-		Assert.False(MaterialAppearance.IsMetallicMatcapName("matcap_metal_gem"));
+		// 织物仍然压倒金属：名字里同时出现时按非金属处理（裙子不能被镀铬）。
+		Assert.False(MaterialAppearance.IsMetallicMatcapName("matcap_metal_cloth"));
 
 		// 认不出来 → 非金属（金属化是"加强"，误判代价更大）。
 		Assert.False(MaterialAppearance.IsMetallicMatcapName("11"));

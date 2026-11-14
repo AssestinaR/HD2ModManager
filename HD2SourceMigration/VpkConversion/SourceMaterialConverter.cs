@@ -761,6 +761,114 @@ public sealed class SourceMaterialConverter
 		(ulong Hash, int Length, bool Srgb), byte[]> bc7ByContent = new();
 
 	/// <summary>按内容去重的 BC7 编码，返回完整 DDS（148 字节头 + 像素）。</summary>
+	/// <summary>
+	/// **把 matcap 按"加法"烘进底色**：<c>out = base + matcap(normalUV) × $MatCapTint</c>。
+	/// <para>
+	/// 这是 NekoToon 的实际公式（`$Matcap 2` = 相加；matcap 的 UV 来自法线球面坐标，
+	/// 见 `docs/agent/external/nekotoon-shader-notes.md`）。它同时解释了两件事：
+	/// "暗"来自近黑的底色，"亮"来自按法线取到的那一小片高光 —— 也就是"黑亮的金属"。
+	/// </para>
+	/// <para>
+	/// 法线来自 <c>worldNormalFactory</c>（UV 空间的模型法线图，转换器本来就有）。
+	/// 拿不到法线图（没有几何、或尺寸过小）时，退化成"加上 matcap 的平均色" —— 那是这笔加法
+	/// 的均值，仍然比"把整张球面图当底色"接近源侧。
+	/// </para>
+	/// </summary>
+	private byte[] CompositeMatcapAdd(
+		string stem, byte[] baseRgba, int baseWidth, int baseHeight,
+		byte[] matcapRgba, int matcapWidth, int matcapHeight)
+	{
+		var tint = MatcapTintOf(stem);
+		var output = new byte[baseRgba.Length];
+		Array.Copy(baseRgba, output, Math.Min(baseRgba.Length, output.Length));
+
+		var uvn = worldNormalFactory?.Invoke(stem);
+		if (uvn is null || uvn.Width < 8 || uvn.Height < 8)
+		{
+			// 退化路：加上 matcap 的平均色（不含 alpha）。
+			double r = 0, g = 0, b = 0;
+			var pixels = matcapRgba.Length / 4;
+			if (pixels == 0)
+				return output;
+			for (var i = 0; i < pixels; i++)
+			{
+				r += matcapRgba[(i * 4) + 0];
+				g += matcapRgba[(i * 4) + 1];
+				b += matcapRgba[(i * 4) + 2];
+			}
+			r /= pixels; g /= pixels; b /= pixels;
+			for (var i = 0; i < output.Length / 4; i++)
+			{
+				output[(i * 4) + 0] = (byte)Math.Clamp((output[(i * 4) + 0] / 255.0 * 255) + (r * tint.Item1), 0, 255);
+				output[(i * 4) + 1] = (byte)Math.Clamp((output[(i * 4) + 1] / 255.0 * 255) + (g * tint.Item2), 0, 255);
+				output[(i * 4) + 2] = (byte)Math.Clamp((output[(i * 4) + 2] / 255.0 * 255) + (b * tint.Item3), 0, 255);
+			}
+			return output;
+		}
+
+		for (var y = 0; y < baseHeight; y++)
+		for (var x = 0; x < baseWidth; x++)
+		{
+			var u = baseWidth > 1 ? x / (double)(baseWidth - 1) : 0.5;
+			var v = baseHeight > 1 ? y / (double)(baseHeight - 1) : 0.5;
+			var normal = uvn.Sample(u, v);
+			var length = Math.Sqrt((normal.X * normal.X) + (normal.Y * normal.Y) + (normal.Z * normal.Z));
+			if (length < 1e-6)
+				continue;
+			// D3D matcap 约定：u = n.x*0.5+0.5，v = 0.5 - n.y*0.5
+			var mu = Math.Clamp(((normal.X / length) * 0.5) + 0.5, 0, 1);
+			var mv = Math.Clamp(0.5 - ((normal.Y / length) * 0.5), 0, 1);
+			var mx = Math.Clamp((int)(mu * (matcapWidth - 1)), 0, matcapWidth - 1);
+			var my = Math.Clamp((int)(mv * (matcapHeight - 1)), 0, matcapHeight - 1);
+			var mi = (((my * matcapWidth) + mx) * 4);
+			var oi = (((y * baseWidth) + x) * 4);
+			output[oi + 0] = (byte)Math.Clamp(output[oi + 0] + (matcapRgba[mi + 0] * tint.Item1), 0, 255);
+			output[oi + 1] = (byte)Math.Clamp(output[oi + 1] + (matcapRgba[mi + 1] * tint.Item2), 0, 255);
+			output[oi + 2] = (byte)Math.Clamp(output[oi + 2] + (matcapRgba[mi + 2] * tint.Item3), 0, 255);
+		}
+
+		return output;
+	}
+
+	/// <summary>RGBA 像素区的 RGB 均值（0..1，sRGB 空间；忽略 alpha）。</summary>
+	private static double[] AverageColourOf(byte[] rgba)
+	{
+		var pixels = rgba.Length / 4;
+		if (pixels == 0)
+			return [1, 1, 1];
+
+		double r = 0, g = 0, b = 0;
+		for (var i = 0; i < pixels; i++)
+		{
+			r += rgba[(i * 4) + 0];
+			g += rgba[(i * 4) + 1];
+			b += rgba[(i * 4) + 2];
+		}
+
+		return [r / pixels / 255.0, g / pixels / 255.0, b / pixels / 255.0];
+	}
+
+	/// <summary>`$MatCapTint "[r g b a]"` 的 RGB 分量（默认 1）。</summary>
+	private (double R, double G, double B) MatcapTintOf(string stem)
+	{
+		if (!source.TryReadVmt(stem, out var bytes, out _))
+			return (1, 1, 1);
+		var raw = VmtDocument.Parse(bytes).Value("$matcaptint");
+		if (string.IsNullOrWhiteSpace(raw))
+			return (1, 1, 1);
+		var parts = raw.Trim('[', ']', ' ').Split(' ', StringSplitOptions.RemoveEmptyEntries);
+		if (parts.Length < 3)
+			return (1, 1, 1);
+		var numbers = new double[3];
+		for (var i = 0; i < 3; i++)
+		{
+			if (!double.TryParse(parts[i], System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture, out numbers[i]))
+				numbers[i] = 1;
+		}
+		return (numbers[0], numbers[1], numbers[2]);
+	}
+
 	private byte[] EncodeBc7Deduplicated(byte[] rgba, int width, int height, bool srgb)
 	{
 		var key = (HashRgba(rgba), rgba.Length, srgb);
@@ -2623,8 +2731,33 @@ public sealed class SourceMaterialConverter
 			{
 				try
 				{
-					vtf = VtfFile.Read(matcapBytes);
-					rgba = DecodeTextureCached(matcapName, matcapBytes, vtf);
+					var matcapVtf = VtfFile.Read(matcapBytes);
+					var matcapRgba = DecodeTextureCached(matcapName, matcapBytes, matcapVtf);
+					// **底色 = 源底色 + matcap(法线UV) × $MatCapTint**（逐像素，UV 空间烘焙）。
+					//
+					// 依据（2026-11-14，文档 + 逐像素合成验证）：NekoToon 的 `$matcap 2` 是**相加**，
+					// 且 matcap 的 UV 来自**法线球面坐标**，不是底图 UV：
+					//     final = base(uv) × $color + matcap(normalUV) × $MatCapTint
+					// 实测这笔加法就是"黑亮"的来源：`Mat_ACCDiadema_Tiara`（env3）合成后亮度
+					// mean 12 / max 152 —— 暗底 + 稀疏高光，正是用户描述的"特别黑亮的金属"；
+					// 绿灯笼（jewel9）mean 69 / max 246。
+					//
+					// 以前这里直接把**整张 matcap 当底色**（按底图 UV 取样）⇒ ①取样位置与法线无关；
+					// ②作为 albedo 会被光照乘掉，丢掉"加法"带来的高光 ⇒ 观感变成灰白塑料。
+					rgba = CompositeMatcapAdd(stem, rgba, vtf.Width, vtf.Height, matcapRgba, matcapVtf.Width, matcapVtf.Height);
+
+					// **没有几何也能拿到"这件看上去的颜色"**：用 matcap 图自己的均值。
+					//
+					// `MatcapMean` 是靠几何 + UV 采样算出来的，而**写材质 patch 的那条链没有几何**
+					// （模型链有），所以它在这里通常是 null ⇒ 下游 `FlattenToMetalF0(常量)` 生效，
+					// 于是所有金属件都被涂成同一个亮银 253（实测头冠/绿灯笼/绿宝石全中）。
+					//
+					// 实测对照（同一次运行，两条链）：
+					//   · matcap 图均值：env3 12.3 / jewel9 67.8 / metal11 31.2
+					//   · 几何采样的逐件均值：头冠 12 / 绿灯笼 69、46 / 亮银件 132
+					// 两者同量级（件只采到球面一小片），足以保住"黑亮"与色相。
+					// 只在**金属件**上用"matcap 图均值"兜底，避免影响其它材质的既有行为。
+					matcapMean ??= AverageColourOf(matcapRgba);
 					// ⚠️ **不要重新测 `baseAlpha`。** 它描述的是**源底色**的 alpha，
 					// 而下面 `useAlphaClip` 正是靠它决定"这个件要不要镂空"。
 					// 曾经在这里 `baseAlpha = TextureAlpha.Measure(rgba)` —— 那一行把它换成了
@@ -2642,7 +2775,16 @@ public sealed class SourceMaterialConverter
 					// 用它的是 B1 的材质 —— 结果那张贴图谁都没产出，手臂上的金属装饰**整块丢了材质**。
 					//
 					// 加后缀 = 声明"这是本材质派生出来的图"，于是它一定跟着材质走。
-					textureName = matcapTextureName + MetalF0Suffix;
+					//
+					// ⚠️ **名字必须跟着「材质」，不能跟着 matcap。**（2026-11-14 实机复现）
+					//
+					// 底色现在是**按各件自己的 UV 空间烘出来**的（`base + matcap(法线) × tint`），
+					// 内容因件而异。若沿用 `matcapTextureName + "_f0"`，所有共用同一张 matcap 的件
+					// 会拿到**同一个贴图 id**，内容只保留先到那份 ⇒ 后几件的 UV 与内容对不上，
+					// 表现为"纹理位置错乱"。这与遮罩那次（`0xbc21456cdb7e0902` 被三件共用）是同一类错误。
+					//
+					// 用材质裸名 ⇒ 每件一张；内容相同者仍会被 `EncodeBc7Deduplicated` 按内容合并。
+					textureName = stem + MetalF0Suffix;
 				}
 				catch (Exception exception) when (IsTextureReadFailure(exception))
 				{
@@ -3236,10 +3378,15 @@ public sealed class SourceMaterialConverter
 				// 「是不是金属」由外层的 `loaded.MatcapIsMetal` 保证（这个分支就在它里面）。
 				//
 				// 于是这批件既没有金属度、底色又是近黑占位 ⇒ 实机是一块灰黑剪影。
-				// 做法：底色写成**平的中性金属色**（见 CutoutMetalLevel），镂空完全不动。
-				// 平色而不是 matcap：这些件的 UV 多是缝隙（存不下图案），而按 matcap 抬升
-				// 还会采到球心的暗像素，算出 ~91 的深灰 —— 等于没变（11-05 实机结论）。
-				MaterialAppearance.FlattenToMetalF0(rgba, CutoutMetalLevel);
+				//
+				// **2026-11-14：改成用这件自己 matcap 的均值（带色相）。**
+				// 以前的常量 0.58 是把它抬成中性灰（"白石膏"），而源侧实测的合成均值是
+				// 12（头冠，黑亮）/ 69（绿灯笼）/ 46（绿宝石耳坠）/ 132（亮银件）——
+				// 常量既抹掉明度差也抹掉色相。平色不引入"雾"，见 CanBakeIntoAlbedo 的实测。
+				if (loaded.MatcapMean is { Length: >= 3 } cutoutMeanColour)
+					MaterialAppearance.FlattenToColour(rgba, cutoutMeanColour[0], cutoutMeanColour[1], cutoutMeanColour[2]);
+				else
+					MaterialAppearance.FlattenToMetalF0(rgba, CutoutMetalLevel);
 			}
 		}
 
