@@ -189,3 +189,85 @@
 - **J5**：不变。
 
 下一步从 S1（物理容器合并）开始。
+
+### 8.2 作者提议「污染组合器」，用户决定不做（2026-11-14）
+
+作者的提议：在软映射的 GUI 层加一个污染组合器，一键把会被连带的护甲放进同一组，整组一起映射。
+
+数据：
+- 138 套护甲里 39 套不和别的护甲共用部件；
+- 其余的一般直接连带 3 套，最多连带 38 套（CE-67 直接连带 31 套）；
+- 一路连下去，最大的一组有 56 套。
+
+组合器适合批量替换，但做不到「只换这一套」。
+
+用户的原话：「不用。我们只做我们的，就是要解决污染。」所以继续按 §7 的低污染模式做，从 S1 开始。
+
+## 9. 物理容器（S1 调研，2026-11-14）
+
+目的：回答 §6.2 作者说的「物理容器按 unit 分区、合并必须连容器一起合」在**本仓库的实现**里指什么。结论先写：**容器本身不按 unit 分区，没有可合并的 per-unit 条目；物理跟着「unit 的骨骼表」走。** 下面是证据，调研时没有写任何实现代码，等用户拍板（见 §9.6）。
+
+### 9.1 容器的结构与位置
+
+- 格式 `HD2PBX01`（`HD2SourceModel/PhysBoneContainer.cs`，协议 `docs/agent/hd2physbone-embedded-patch-protocol.md`）：48 字节头 + 索引 + 数据 + 56 字节 footer（`HD2PBFT1`）。追加在**含 unit 的 patch 的 `.gpu_resources` 末尾**，TOC 不动。
+- 我们只写**一条记录**：`hd2_spring_rig.bin`（`HD2SRG01` v2：每骨 148 字节，字段是源骨下标、父骨下标、骨名偏移、父骨名偏移、flags、世界位置、29 个参数；骨名与父骨名是字符串）。协议文档里提到的 `lua_units.txt`（按 unit ID 关联）和 `hd2_ib_needle.bin`，**本仓库没有任何代码写或读**（`HD2PBX01` 的 `Entry` 只在测试里出现过这两个名字）。
+- 一个 Mod 一份：转换期落 `sectional/physbone-rig.bin`（`PhysBoneRigSidecar`，`VpkPayloadCollector` 按 `physbone-*.bin` 前缀搬运，`PhysBoneAuxFiles`），`physbone embed-mod`（`VpkPhysBoneEmbedder` → `PhysBoneContainerEmbedder.EmbedAsync`）把它嵌进根目录 / `sectional` / `vpk2patch` / `Overwrite` 下**每个含 unit 的 patch**。所有走 `PatchArchiveWriter.WriteAsync` 的重写都会把来源的容器原样搬过去（`PhysBoneCarrier`），`SectionalUnitPatchWriter` 最后也走它。
+- 实测（真数据只读，样本复制到临时目录）：雫 3730700338 的 `physbone-rig.bin` 34 骨（head 25 / chest 2 / hips 2 +…），蚀骨魂龙 3621723720 的 42 骨（hips 19 / head 9 / chest 3 +…）；各自只有 `patch_0`（含 unit）里有 1 个容器、`patch_1`（材质）没有；`Overwrite/` 里同样 1 个容器。
+
+### 9.2 运行时怎么「按 unit 找物理」
+
+`HD2PhysBoneCompat/src/physbone_runtime.lua`（约 1127–1290 行）：遍历场景里的候选 unit，对每个 unit 用 `Compat.select_rig(S, {unit}, carriers)` 给「所有 patch 载体里读出的容器」打分，打分方式是 `Unit.has_node(unit, "骨名")`——**按骨名问这个 live unit 有没有这根骨**。命中 ≥1 根就挂载，`Compat.attach` 逐链解析节点，缺节点的链跳过。判据里**没有 unit key / fileId**。所以：
+
+- 容器里没有任何东西「属于某个 unit」；
+- 「躯干 unit 只带躯干的物理、手臂 unit 只带手臂的」是转换器的 `ExtraBoneSubset`（每个 unit 的 TransformInfo 只带它顶点蒙皮用到的物理骨 + 祖先链）造成的，见 `docs/agent/physbone-per-unit-rig-for-converter.md` §7.1。
+
+### 9.3 P4b 合并会不会丢物理（离线实测）
+
+探针 `HD2ModCore.Tests/SectionalPhysBoneProbeTests.cs`：对每个来源 unit，取节点表里「骨名哈希（`Murmur64A(name) >> 32`）在 rig 里」的节点；再把全部来源 `SectionalUnitMerger.MergeAsync` 成一个 unit，比对。
+
+| Mod | 来源 unit 里的 rig 骨数 | 合并后的 rig 骨数 | 丢失 |
+|---|---|---|---|
+| 雫，7 件全合并 | 头 30 / 躯干 4 / 胯 2 / 左腿 1 / 右腿 1 / 左臂 0 / 右臂 1（并集 34） | 34 | 0 |
+| 雫，去掉头合并 6 件 | 并集 4 | 4 | 0 |
+| 蚀骨魂龙，7 件全合并 | 头 20 / 躯干 3 / 胯 19 / 腿 0 / 左臂 1 / 右臂 1（并集 42） | 42 | 0 |
+| 蚀骨魂龙，去掉头 6 件 | 并集 24 | 24 | 0 |
+
+再用 `SectionalCompiler.CompileAsync` 真编 CE-67（4081083564）与神射手（3970674111）各一次（雫、蚀骨魂龙各一份副本）：4 次都成功，`Overwrite/…patch_0.gpu_resources` 末尾都带完整容器，`hd2_spring_rig.bin` 长度与来源一致（雫 5941、蚀骨魂龙 7148）。
+
+也就是说：在本仓库「容器 = 每 Mod 一份、按骨名匹配」的口径下，P4b 合并出来的 unit 节点表里**有**所有来源的物理骨，容器也**在**产物里。§6.2 说的缺口，在节点和容器这两层**没有复现**。
+
+### 9.4 仍然没有被证明的部分（只能实机）
+
+1. 合并 unit 里的物理骨在游戏里是否真的按链驱动（`Compat.attach` 的 `可用链 N 条` 日志）；
+2. 作者说的「按 unit 分区」是否指的是**他自己的插件**（读 `lua_units.txt`/per-unit 记录）而不是我们的 Lua 兼容层；如果用户实机用的是他的插件，规则就可能不同。
+
+### 9.5 如果要做「合并物理容器」，对象只能是什么
+
+按骨名匹配的口径下，唯一有意义的「合并」是**合并两个来源 Mod 的容器**（`hd2_spring_rig.bin` 之间按骨名并集 + 父骨下标重排）；同一来源 Mod 内合并 unit 时容器不用动。S2 的压缩编译也是同一个来源 Mod，同样不需要合容器。
+可以补的有价值的东西：把「合并后每个来源的 rig 骨都在节点表里」做成真数据回归测试，并在合并器里加一道**自检**（合并结果缺了 rig 骨就把它报成警告，而不是静默）。
+
+### 9.6 用户拍板：选 A（2026-11-14）与 S1 结果
+
+用户选 A：**不改合并逻辑、不做容器合并组件**，只补自检和真数据回归测试。
+
+- **待作者确认**：作者说的「物理容器按 unit 分区」可能指**他自己的插件**（读容器里的 `lua_units.txt` / per-unit 记录），而不是本仓库的 Lua 兼容层（按骨名 `has_node`）。本仓库没有写 `lua_units.txt`；若用户实机用的是作者的插件，规则可能不同，此点未验证、待作者确认。
+- 新组件 `HD2ModCore/Infrastructure/Sectional/SectionalPhysBoneRig.cs`：读 patch 容器里的 rig → 骨名哈希；`FindMissing` 核对合并结果。S2 的压缩编译直接复用。
+- `SectionalUnitMerger.MergeAsync`：合并后核对「来源节点表里属于 rig 的物理骨」，缺了就在 `SectionalMergedUnit.Warnings` 里加一条「合并后丢了 N 根来源的自定义/物理骨（…）」，**不中断**。该警告经 `SectionalUnitPatchWriter` 进入编译结果的 `Warnings`，管理器的编译报告里能看到。没有物理容器的 Mod，rig 是空集合，合并结果与以前逐字节一致。
+- 测试 `HD2ModCore.Tests/SectionalPhysBoneMergeTests.cs`：单测 3 条（缺骨判定、容器读回、没有 gpu 文件）；真数据 3 条（缺样本静默跳过）：①整件/去头/两件合并后每根来源 rig 骨都在、没有丢骨警告；②真编 CE-67 与神射手后 `Overwrite` 的容器 rig 长度与来源一致，且每个合并承载件带齐所有来源的 rig 骨。
+- 真数据结果（雫 / 蚀骨魂龙，临时副本）：合并 7 件 34/34、42/42；6 件 4/4、24/24；神射手两个承载件 4/4（雫）、24/24（蚀骨魂龙），CE-67 承载件 4/4（雫）、22/22（蚀骨魂龙）。全部不缺。
+
+### 9.7 实机怎么看物理（attach 日志）
+
+日志：`%LOCALAPPDATA%\hd2physbone.log`（旧的是 `hd2physbone.log.1`）。进游戏、换上对应护甲后，在日志里找：
+
+```
+[physbone] attach：可用链 X 条（缺节点 M、缺锚点 K）
+[physbone] 已挂载 N 个 unit / T 条链（…）；每件链数 a,b,…
+```
+
+「可用链 X」是**每个被挂载的 unit** 一行；合并之后，承载件那一行的 X 应等于它所有来源的链数之和、缺节点 M 应为 0。链数按 rig 里按锚点归并（`parse-rig.py` 可离线数：`python -I tools\physbone-audit\parse-rig.py <Mod>\sectional\physbone-rig.bin`）：
+
+- 雫（34 骨，head 25 / chest 2 / hips 2…）：身体合并承载件只带身体部分的物理骨，**4 根**（躯干 4，胯 2、腿 1+1、右臂 1 的并集仍是 4），链数很少（几条）；头发物理在头 unit 上，不在合并件里。
+- 蚀骨魂龙（42 骨，hips 19 / head 9 / chest 3…）：CE-67 合并承载件带 **22 根**物理骨（含胯的 19 根）、神射手承载件 **24 根**。链数请以日志为准；离线只能保证「骨都在」，没有逐条链的离线预期值。
+
+判断：若合并承载件那一行「缺节点 M」> 0，或胯/腿的裙摆不动，就是 §9.4 的两个未验证点出了问题，把日志发回来。

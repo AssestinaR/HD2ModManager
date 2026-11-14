@@ -139,6 +139,17 @@ internal static class SectionalUnitMerger
 				"合并几何失败：" + string.Join("；", appended.Diagnostics.Select(item => $"{item.Code} {item.Message}")));
 		}
 
+		// 物理自检：物理容器按骨名匹配（规划 §9），来源 unit 的物理骨必须全部留在合并结果的节点表里。
+		// 缺了不中断（几何是好的），但要让人看见；没有物理容器的 Mod 这里是空集合，什么都不发生。
+		var rigBones = await SectionalPhysBoneRig.ReadBoneHashesAsync(sourcePatchPath, cancellationToken).ConfigureAwait(false);
+		var missing = SectionalPhysBoneRig.FindMissing(
+			units.Select(unit => unit.Model), rigBones, new UnitMeshReader().Read(appended.Edit.TocData, appended.Edit.GpuResourceData));
+		if (missing.Count != 0)
+		{
+			warnings.Add($"合并后丢了 {missing.Count} 根来源的自定义/物理骨（0x{string.Join("、0x", missing.Take(5).Select(hash => hash.ToString("x8", CultureInfo.InvariantCulture)))}"
+				+ (missing.Count > 5 ? "…" : string.Empty) + "），对应的头发/衣摆物理会失效。");
+		}
+
 		return new SectionalMergedUnit(
 			appended.Edit.TocData,
 			appended.Edit.GpuResourceData,
