@@ -18,6 +18,12 @@ internal enum SectionalCompressionRole
 
 	/// <summary>头 + 躯干 + 胯 + 左右腿（头身合并开：头的几何并进躯干）。</summary>
 	HeadBody = 3,
+
+	/// <summary>
+	/// 身体槽（body 或 head-body）+ 手臂槽合成一个（规划 §17）：躯干外只有一个独有部件的护甲用它整套映射。
+	/// 额外生成，不替代任何槽；unit ID 由身体槽的 ID 所有者派生（<see cref="SectionalCompressionPlanner.DeriveBodyArmsId"/>）。
+	/// </summary>
+	BodyArms = 4,
 }
 
 /// <summary>压缩的来源 unit：<c>sections.json</c> 里的一行（只取规划要用的三列）。</summary>
@@ -78,6 +84,15 @@ internal sealed record SectionalCompressionPlan(
 internal static class SectionalCompressionPlanner
 {
 	internal static ArmorPart[] BodyPartOrder => BodyOrder;
+
+	/// <summary>合体 unit 的 ID：<c>SHA256("hd2mod.low-pollution.body-arms:" + 身体槽 ID 所有者的来源 ID)</c> 前 8 字节（规划 §17）。</summary>
+	internal static string DeriveBodyArmsId(string ownerSourceUnitId)
+	{
+		var hash = System.Security.Cryptography.SHA256.HashData(
+			System.Text.Encoding.UTF8.GetBytes("hd2mod.low-pollution.body-arms:" + ownerSourceUnitId.ToLowerInvariant()));
+		var id = Convert.ToHexString(hash[..8]).ToLowerInvariant();
+		return id == "0000000000000000" ? "0000000000000001" : id;
+	}
 	internal static ArmorPart[] ArmPartOrder => ArmOrder;
 
 	private static readonly ArmorPart[] BodyOrder = [ArmorPart.Torso, ArmorPart.Hips, ArmorPart.LeftLeg, ArmorPart.RightLeg];
@@ -166,6 +181,16 @@ internal static class SectionalCompressionPlanner
 
 		Add(SectionalCompressionRole.Arms, ArmOrder);
 
+		// 身体 + 手臂合体（规划 §17）：两槽都在时额外生成，成员与 ID 所有者同身体槽，ID 改用派生值（来源 ID 已被身体槽占用）。
+		var bodyRole = headMerge ? SectionalCompressionRole.HeadBody : SectionalCompressionRole.Body;
+		if (groups.Any(group => group.Role == bodyRole) && groups.Any(group => group.Role == SectionalCompressionRole.Arms))
+		{
+			var before = groups.Count;
+			Add(SectionalCompressionRole.BodyArms, headMerge ? [.. BodyOrder, ArmorPart.Helmet, .. ArmOrder] : [.. BodyOrder, .. ArmOrder]);
+			for (var at = before; at < groups.Count; at++)
+				groups[at] = groups[at] with { UnitId = DeriveBodyArmsId(groups[at].UnitId) };
+		}
+
 		if (groups.Count == 0)
 			return SectionalCompressionPlan.NotSupported("来源里没有头、躯干、手臂类部位", headMerge);
 
@@ -241,6 +266,7 @@ internal static class LowPollutionLayoutFile
 		SectionalCompressionRole.Head => "head",
 		SectionalCompressionRole.Body => "body",
 		SectionalCompressionRole.Arms => "arms",
+		SectionalCompressionRole.BodyArms => "body-arms",
 		_ => "head-body",
 	};
 }

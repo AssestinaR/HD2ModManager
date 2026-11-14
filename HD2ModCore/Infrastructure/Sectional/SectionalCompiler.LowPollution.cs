@@ -105,7 +105,13 @@ public static partial class SectionalCompiler
 				return new LowPollutionOutcome(SectionalCompileResult.Failure(materialized.Error ?? "物化生效层失败。"), null);
 
 			// 结构文件只能写在物化**之后**：物化器会重开目录。合并后序号已变，组表不写（读侧永远优先权威侧）。
-			await WriteStructureAsync(modDirectory, documented, components: null, cancellationToken).ConfigureAwait(false);
+			// 合体 unit（规划 §17）不进结构表：它没有部位身份，只经映射行用到，详情页的部件列表里不该出现它。
+			var bodyArms = plan.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms)
+				.Select(group => group.UnitId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+			var structure = bodyArms.Count == 0
+				? documented
+				: documented with { Units = [.. documented.Units.Where(unit => !bodyArms.Contains(unit.FileId))] };
+			await WriteStructureAsync(modDirectory, structure, components: null, cancellationToken).ConfigureAwait(false);
 			WriteLowPollutionRegistry(modDirectory, payload, plan, warnings);
 			WriteLowPollutionLayout(modDirectory, plan, LowPollutionFreshness.Fingerprint(payload, disabledSections, headMergeIntoBody));
 
@@ -160,7 +166,9 @@ public static partial class SectionalCompiler
 		}
 
 		var surviving = plan.SurvivingUnitIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-		var splitRoles = plan.Groups.Where(group => group.Body != HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any)
+		// 合体 unit（规划 §17）不登记：它只经映射行用到，不是素体自己穿的部件；来源注册件里也没有它的 ID。
+		var splitRoles = plan.Groups.Where(group => group.Body != HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any
+				&& group.Role != SectionalCompressionRole.BodyArms)
 			.Select(group => group.Role).ToHashSet();
 		var splitUnits = plan.Groups.Where(group => splitRoles.Contains(group.Role)).Select(group => group.UnitId)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);

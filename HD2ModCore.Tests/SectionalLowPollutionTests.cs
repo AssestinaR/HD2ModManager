@@ -23,6 +23,43 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 	private static SectionalCompressionSource Src(string id, ArmorPart? part, string body = "Any")
 		=> new(id, part, body);
 
+	/// <summary>原有的头 / 身体 / 手臂槽（不含 §17 额外生成的「身体+手臂」合体组，它由专门的测试锁）。</summary>
+	private static IReadOnlyList<SectionalCompressionGroup> G(SectionalCompressionPlan plan)
+		=> [.. plan.Groups.Where(group => group.Role != SectionalCompressionRole.BodyArms)];
+
+	[Fact]
+	public void BodyArms_IsAnExtraUnitOfBodyPlusArms_WithADerivedStableId()
+	{
+		// 3 槽：头、身体、手臂照旧，末尾多一个合体组 = 身体槽成员 + 手臂槽成员，ID 由身体槽的 ID 所有者派生。
+		var three = SectionalCompressionPlanner.Plan(SevenSlots(), headMerge: false);
+		var bodyArms = Assert.Single(three.Groups, group => group.Role == SectionalCompressionRole.BodyArms);
+		Assert.Equal(["a2", "a3", "a4", "a5", "a6", "a7"], bodyArms.Members.Select(member => member.SourceUnitId));
+		Assert.Equal(SectionalCompressionPlanner.DeriveBodyArmsId("a2"), bodyArms.UnitId);
+		Assert.Equal(16, bodyArms.UnitId.Length);
+		Assert.DoesNotContain(bodyArms.UnitId, SevenSlots().Select(unit => unit.FileId));
+		Assert.Equal(bodyArms.UnitId, SectionalCompressionPlanner.Plan(SevenSlots().Reverse().ToArray(), false)
+			.Groups.Single(group => group.Role == SectionalCompressionRole.BodyArms).UnitId);
+		Assert.Contains(bodyArms.UnitId, three.SurvivingUnitIds);
+		Assert.True(three.NeedsMerge);
+
+		// 2 槽：合体组含头（head-body + arms）。
+		var two = SectionalCompressionPlanner.Plan(SevenSlots(), headMerge: true);
+		Assert.Equal(["a2", "a3", "a4", "a5", "a1", "a6", "a7"],
+			two.Groups.Single(group => group.Role == SectionalCompressionRole.BodyArms).Members.Select(member => member.SourceUnitId));
+
+		// 没有手臂（或没有身体）就不生成。
+		Assert.DoesNotContain(SectionalCompressionPlanner.Plan(
+			[.. SevenSlots().Where(unit => unit.Part is not (ArmorPart.LeftArm or ArmorPart.RightArm))], false).Groups,
+			group => group.Role == SectionalCompressionRole.BodyArms);
+
+		// 分体：合体组也按体型各一个，ID 各自派生、互不相同。
+		var split = SectionalCompressionPlanner.Plan(AegirShape(), headMerge: false);
+		var splitBodyArms = split.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms).ToArray();
+		Assert.Equal([UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim], splitBodyArms.Select(group => group.Body));
+		Assert.Equal(2, splitBodyArms.Select(group => group.UnitId).Distinct().Count());
+		Assert.All(splitBodyArms, group => Assert.DoesNotContain(group.UnitId, AegirShape().Select(unit => unit.FileId)));
+	}
+
 	private static SectionalCompressionSource[] SevenSlots() =>
 	[
 		Src("a1", ArmorPart.Helmet), Src("a2", ArmorPart.Torso), Src("a3", ArmorPart.Hips),
@@ -36,12 +73,12 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 
 		Assert.True(plan.Supported);
 		Assert.Equal("three-slot", plan.Mode);
-		Assert.Equal(["a1", "a2", "a6"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(["a1", "a2", "a6"], G(plan).Select(group => group.UnitId));
 		Assert.Equal(
 			[SectionalCompressionRole.Head, SectionalCompressionRole.Body, SectionalCompressionRole.Arms],
-			plan.Groups.Select(group => group.Role));
-		Assert.Equal(["a2", "a3", "a4", "a5"], plan.Groups[1].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(["a6", "a7"], plan.Groups[2].Members.Select(member => member.SourceUnitId));
+			G(plan).Select(group => group.Role));
+		Assert.Equal(["a2", "a3", "a4", "a5"], G(plan)[1].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["a6", "a7"], G(plan)[2].Members.Select(member => member.SourceUnitId));
 		Assert.True(plan.NeedsMerge);
 		Assert.Empty(plan.Passthrough);
 	}
@@ -53,12 +90,12 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 
 		Assert.True(plan.Supported);
 		Assert.Equal("two-slot", plan.Mode);
-		Assert.Equal(["a2", "a6"], plan.Groups.Select(group => group.UnitId));
-		Assert.Equal(SectionalCompressionRole.HeadBody, plan.Groups[0].Role);
-		Assert.Equal(["a2", "a3", "a4", "a5", "a1"], plan.Groups[0].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(ArmorPart.Torso, plan.Groups[0].IdFrom);
+		Assert.Equal(["a2", "a6"], G(plan).Select(group => group.UnitId));
+		Assert.Equal(SectionalCompressionRole.HeadBody, G(plan)[0].Role);
+		Assert.Equal(["a2", "a3", "a4", "a5", "a1"], G(plan)[0].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(ArmorPart.Torso, G(plan)[0].IdFrom);
 		// 被吸收的来源 ID 不留在产物里。
-		Assert.Equal(["a2", "a6"], plan.SurvivingUnitIds);
+		Assert.Equal(["a2", "a6", SectionalCompressionPlanner.DeriveBodyArmsId("a2")], plan.SurvivingUnitIds);
 	}
 
 	[Fact]
@@ -68,8 +105,8 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var source = SevenSlots().Where(unit => unit.Part is not (ArmorPart.Torso or ArmorPart.LeftArm)).Reverse().ToArray();
 		var plan = SectionalCompressionPlanner.Plan(source, headMerge: false);
 
-		Assert.Equal(["a1", "a3", "a7"], plan.Groups.Select(group => group.UnitId));
-		Assert.Equal(plan.Groups.Select(group => group.UnitId), SectionalCompressionPlanner.Plan(SevenSlots().Where(unit => unit.Part is not (ArmorPart.Torso or ArmorPart.LeftArm)).ToArray(), false).Groups.Select(group => group.UnitId));
+		Assert.Equal(["a1", "a3", "a7"], G(plan).Select(group => group.UnitId));
+		Assert.Equal(G(plan).Select(group => group.UnitId), SectionalCompressionPlanner.Plan(SevenSlots().Where(unit => unit.Part is not (ArmorPart.Torso or ArmorPart.LeftArm)).ToArray(), false).Groups.Where(group => group.Role != SectionalCompressionRole.BodyArms).Select(group => group.UnitId));
 	}
 
 	[Fact]
@@ -78,7 +115,7 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var plan = SectionalCompressionPlanner.Plan(
 			[Src("a1", ArmorPart.Helmet), Src("a2", ArmorPart.Torso)], headMerge: false);
 
-		Assert.Equal(["a1", "a2"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(["a1", "a2"], G(plan).Select(group => group.UnitId));
 		Assert.False(plan.NeedsMerge);   // 每槽单成员：不合并，也就不需要游戏 data
 		Assert.Equal(["a2"], SectionalCompressionPlanner.Plan([Src("a2", ArmorPart.Torso), Src("a6", ArmorPart.LeftArm)], true).Groups.Select(group => group.UnitId).Take(1));
 	}
@@ -93,9 +130,9 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		Assert.True(plan.Supported);
 		Assert.Equal(["b1"], plan.Passthrough.Select(member => member.SourceUnitId));
 		// 手臂槽：ID 仍取左臂，肩排在两条臂之后。
-		Assert.Equal(["a6", "a7", "b2", "b3"], plan.Groups[2].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(["a1", "a2", "a6", "b1"], plan.SurvivingUnitIds);
-		Assert.Equal(["a2", "a6", "b1"],
+		Assert.Equal(["a6", "a7", "b2", "b3"], G(plan)[2].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["a1", "a2", "a6", SectionalCompressionPlanner.DeriveBodyArmsId("a2"), "b1"], plan.SurvivingUnitIds);
+		Assert.Equal(["a2", "a6", SectionalCompressionPlanner.DeriveBodyArmsId("a2"), "b1"],
 			SectionalCompressionPlanner.Plan(
 				[.. SevenSlots(), Src("b1", ArmorPart.Cape), Src("b2", ArmorPart.LeftShoulder)], headMerge: true).SurvivingUnitIds);
 	}
@@ -106,8 +143,8 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var plan = SectionalCompressionPlanner.Plan(
 			[Src("a2", ArmorPart.Torso), Src("s2", ArmorPart.RightShoulder), Src("s1", ArmorPart.LeftShoulder)], headMerge: false);
 
-		Assert.Equal(["a2", "s1"], plan.Groups.Select(group => group.UnitId));
-		Assert.Equal(["s1", "s2"], plan.Groups[1].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["a2", "s1"], G(plan).Select(group => group.UnitId));
+		Assert.Equal(["s1", "s2"], G(plan)[1].Members.Select(member => member.SourceUnitId));
 	}
 
 	[Theory]
@@ -140,16 +177,16 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var plan = SectionalCompressionPlanner.Plan(AegirShape(), headMerge: false);
 
 		Assert.True(plan.Supported, plan.Reason);
-		Assert.Equal(["e1", "e3", "e2", "e6", "e5"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(["e1", "e3", "e2", "e6", "e5"], G(plan).Select(group => group.UnitId));
 		Assert.Equal(
 			[UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim],
-			plan.Groups.Select(group => group.Body));
-		Assert.Equal(["e3", "e4", "e9", "ea"], plan.Groups[1].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(["e2", "e4", "e9", "ea"], plan.Groups[2].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(["e6", "e8"], plan.Groups[3].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(["e5", "e7"], plan.Groups[4].Members.Select(member => member.SourceUnitId));
+			G(plan).Select(group => group.Body));
+		Assert.Equal(["e3", "e4", "e9", "ea"], G(plan)[1].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e2", "e4", "e9", "ea"], G(plan)[2].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e6", "e8"], G(plan)[3].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e5", "e7"], G(plan)[4].Members.Select(member => member.SourceUnitId));
 		Assert.True(plan.HasBodySplit);
-		Assert.Equal(["e1", "e3", "e2", "e6", "e5"], plan.SurvivingUnitIds);
+		Assert.Equal(["e1", "e3", "e2", "e6", "e5", SectionalCompressionPlanner.DeriveBodyArmsId("e3"), SectionalCompressionPlanner.DeriveBodyArmsId("e2")], plan.SurvivingUnitIds);
 		Assert.Empty(plan.Passthrough);
 	}
 
@@ -159,12 +196,12 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var plan = SectionalCompressionPlanner.Plan(AegirShape(), headMerge: true);
 
 		Assert.True(plan.Supported, plan.Reason);
-		Assert.Equal(["e3", "e2", "e6", "e5"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(["e3", "e2", "e6", "e5"], G(plan).Select(group => group.UnitId));
 		Assert.Equal(
 			[SectionalCompressionRole.HeadBody, SectionalCompressionRole.HeadBody, SectionalCompressionRole.Arms, SectionalCompressionRole.Arms],
-			plan.Groups.Select(group => group.Role));
-		Assert.Equal(["e3", "e4", "e9", "ea", "e1"], plan.Groups[0].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(["e2", "e4", "e9", "ea", "e1"], plan.Groups[1].Members.Select(member => member.SourceUnitId));
+			G(plan).Select(group => group.Role));
+		Assert.Equal(["e3", "e4", "e9", "ea", "e1"], G(plan)[0].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e2", "e4", "e9", "ea", "e1"], G(plan)[1].Members.Select(member => member.SourceUnitId));
 	}
 
 	[Fact]
@@ -175,13 +212,13 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var plan = SectionalCompressionPlanner.Plan(source, headMerge: false);
 
 		Assert.True(plan.Supported, plan.Reason);
-		Assert.Equal(["a1", "a2", "a6", "a8"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(["a1", "a2", "a6", "a8"], G(plan).Select(group => group.UnitId));
 		Assert.Equal(
 			[UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim],
-			plan.Groups.Select(group => group.Body));
+			G(plan).Select(group => group.Body));
 		// 右臂是通用的：两边各并一份。
-		Assert.Equal(["a6", "a7"], plan.Groups[2].Members.Select(member => member.SourceUnitId));
-		Assert.Equal(["a8", "a7"], plan.Groups[3].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["a6", "a7"], G(plan)[2].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["a8", "a7"], G(plan)[3].Members.Select(member => member.SourceUnitId));
 	}
 
 	[Fact]
@@ -190,14 +227,14 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		// 手臂槽只有苗条左臂 + 通用右臂：壮实那个只由通用右臂组成（ID 取它），苗条那个 = 左臂 + 右臂（ID 取苗条左臂）。
 		var withAny = SectionalCompressionPlanner.Plan(
 			[Src("a2", ArmorPart.Torso), Src("l1", ArmorPart.LeftArm, "Slim"), Src("r1", ArmorPart.RightArm)], headMerge: false);
-		Assert.Equal(["a2", "r1", "l1"], withAny.Groups.Select(group => group.UnitId));
+		Assert.Equal(["a2", "r1", "l1"], G(withAny).Select(group => group.UnitId));
 		Assert.Equal(
-			[UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim], withAny.Groups.Select(group => group.Body));
+			[UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim], G(withAny).Select(group => group.Body));
 
 		// 手臂槽只有苗条左臂：没有壮实 unit（映射时用苗条的顶上）。
 		var only = SectionalCompressionPlanner.Plan([Src("a2", ArmorPart.Torso), Src("l1", ArmorPart.LeftArm, "Slim")], headMerge: false);
-		Assert.Equal(["a2", "l1"], only.Groups.Select(group => group.UnitId));
-		Assert.Equal(UnitMeshBodyVariant.Slim, only.Groups[1].Body);
+		Assert.Equal(["a2", "l1"], G(only).Select(group => group.UnitId));
+		Assert.Equal(UnitMeshBodyVariant.Slim, G(only)[1].Body);
 	}
 
 	[Fact]
@@ -232,9 +269,9 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var root = JsonNode.Parse(split)!.AsObject();
 		Assert.Equal("hd2mod.low-pollution-layout/2", root["schema"]!.GetValue<string>());
 		Assert.Equal(
-			["any", "stocky", "slim", "stocky", "slim"],
+			["any", "stocky", "slim", "stocky", "slim", "stocky", "slim"],
 			root["units"]!.AsArray().Select(unit => unit!["body"]!.GetValue<string>()));
-		Assert.Equal(["e1", "e3", "e2", "e6", "e5"], root["units"]!.AsArray().Select(unit => unit!["unit"]!.GetValue<string>()));
+		Assert.Equal(["e1", "e3", "e2", "e6", "e5", SectionalCompressionPlanner.DeriveBodyArmsId("e3"), SectionalCompressionPlanner.DeriveBodyArmsId("e2")], root["units"]!.AsArray().Select(unit => unit!["unit"]!.GetValue<string>()));
 	}
 
 	[Fact]
@@ -322,7 +359,7 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		Assert.Equal(LowPollutionLayoutFile.Schema, root["schema"]!.GetValue<string>());
 		Assert.Equal("two-slot", root["mode"]!.GetValue<string>());
 		var units = root["units"]!.AsArray();
-		Assert.Equal(2, units.Count);
+		Assert.Equal(3, units.Count);
 		Assert.Equal("a2", units[0]!["unit"]!.GetValue<string>());
 		Assert.Equal("head-body", units[0]!["role"]!.GetValue<string>());
 		Assert.Equal("torso", units[0]!["idFrom"]!.GetValue<string>());
@@ -330,6 +367,8 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			["torso", "hips", "left_leg", "right_leg", "helmet"],
 			units[0]!["parts"]!.AsArray().Select(part => part!["part"]!.GetValue<string>()));
 		Assert.Equal("arms", units[1]!["role"]!.GetValue<string>());
+		Assert.Equal("body-arms", units[2]!["role"]!.GetValue<string>());
+		Assert.Equal(SectionalCompressionPlanner.DeriveBodyArmsId("a2"), units[2]!["unit"]!.GetValue<string>());
 	}
 
 	// ── 真数据 ─────────────────────────────────────────────────────────────
@@ -448,7 +487,8 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			var firstHash = HashOverwrite(mod);
 
 			// 件数：3 槽 / 2 槽（披风、肩原样保留，这两份样本没有）。
-			Assert.Equal(headMerge ? 2 : 3, plan.Groups.Count);
+			Assert.Equal(headMerge ? 2 : 3, G(plan).Count);
+			Assert.Single(plan.Groups, group => group.Role == SectionalCompressionRole.BodyArms);
 			Assert.Equal(plan.SurvivingUnitIds.Order(StringComparer.Ordinal), firstUnits.Keys.Order(StringComparer.Ordinal));
 			Assert.Equal(plan.Groups.Count + plan.Passthrough.Count, firstUnits.Count);
 			Assert.Equal(headMerge ? SectionalHeadMergeOutcome.AppliedOwnModel : SectionalHeadMergeOutcome.Off, first.HeadMerge);
@@ -481,7 +521,7 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			// 注册表：只剩压缩 unit 的注册件，没有悬空引用。
 			var registry = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(OverwriteDirectory(mod), VpkCustomModelFile.FileName)))!;
 			var registryUnits = registry["pieces"]!.AsArray().Select(piece => piece!["unit"]!.GetValue<string>()).Distinct().Order(StringComparer.Ordinal).ToArray();
-			Assert.Equal(plan.SurvivingUnitIds.Order(StringComparer.Ordinal), registryUnits);
+			Assert.Equal(plan.SurvivingUnitIds.Except(plan.Groups.Where(group => group.Role == SectionalCompressionRole.BodyArms).Select(group => group.UnitId)).Order(StringComparer.Ordinal), registryUnits);
 			output.WriteLine($"headMerge={headMerge}: {firstUnits.Count} units, overwrite files:\n{firstHash}");
 		}
 		finally
@@ -552,7 +592,8 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 				[.. sourceMap.Units.Select(unit => new SectionalCompressionSource(unit.FileId, ArmorStructure.TryParse(unit.Slot), unit.BodyType))],
 				headMerge);
 			Assert.True(plan.Supported, plan.Reason);
-			Assert.Equal(headMerge ? 4 : 5, plan.Groups.Count);
+			Assert.Equal(headMerge ? 4 : 5, G(plan).Count);
+			Assert.Equal(2, plan.Groups.Count(group => group.Role == SectionalCompressionRole.BodyArms));
 
 			var first = await SectionalCompiler.CompileAsync(mod, context, null, null, headMerge, [], lowPollution: true);
 			Assert.True(first.Ok, first.Error);
@@ -581,8 +622,8 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			// 注册表：拆开的槽各写 body 0 / 1 两条，各指自己的 unit；头（3 槽）一条 body 3。
 			var registry = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(OverwriteDirectory(mod), VpkCustomModelFile.FileName)))!;
 			var pieces = registry["pieces"]!.AsArray().Select(piece => piece!.AsObject()).ToArray();
-			Assert.Equal(plan.Groups.Count, pieces.Length);
-			foreach (var group in plan.Groups.Where(group => group.Body != UnitMeshBodyVariant.Any))
+			Assert.Equal(G(plan).Count, pieces.Length);
+			foreach (var group in G(plan).Where(group => group.Body != UnitMeshBodyVariant.Any))
 			{
 				var raw = group.Body == UnitMeshBodyVariant.Stocky ? 0 : 1;
 				Assert.Contains(pieces, piece => piece["unit"]!.GetValue<string>() == group.UnitId && piece["body"]!.GetValue<int>() == raw);
