@@ -3,8 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              MinWidth="200">
     <!--
-        目标护甲下拉：可输入搜索（名字 / item_id）。普通模式单选；专属模式像 element ui 的 el-select multiple filterable：
-        每项带勾选框，已选的显示成输入框里的标签（× 去掉），「不可」的项禁用，顶部有「全选」（只选可用的玩家护甲）。
+        目标护甲下拉：可输入搜索（名字 / 归档 id）的单选。专属多选已撤（规划 kit-instance-mapping-deploy-plan §15.3）。
         DataContext 是 VpkTargetPickerViewModel。
     -->
     <Grid>
@@ -15,30 +14,11 @@
                 <Path DockPanel.Dock="Right" Width="10" Height="6" Margin="6,0,4,0" VerticalAlignment="Center"
                       Data="M1,1 L5,5 L9,1" Stroke="{StaticResource TextSecondary}" StrokeThickness="1.5"
                       StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
-                <ItemsControl DockPanel.Dock="Left" ItemsSource="{Binding Chips}" VerticalAlignment="Center"
-                              Visibility="{Binding IsMultiple, Converter={StaticResource BoolToVis}}">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate><WrapPanel MaxWidth="460"/></ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Border Background="{StaticResource SurfaceSelected}" CornerRadius="4" Margin="2" Padding="6,1,2,1">
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="{Binding ChipText}" Foreground="{StaticResource Accent}" VerticalAlignment="Center"/>
-                                    <Button Content="×" Padding="5,0" Margin="2,0,0,0" Background="Transparent" BorderThickness="0"
-                                            Foreground="{StaticResource TextSecondary}" Cursor="Hand"
-                                            Command="{Binding DataContext.RemoveChipCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                                            CommandParameter="{Binding}" ToolTip="去掉这套"/>
-                                </StackPanel>
-                            </Border>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
                 <Grid VerticalAlignment="Center" MinWidth="90">
                     <TextBlock Text="{Binding SingleText}" Foreground="{StaticResource TextPrimary}" IsHitTestVisible="False"
                                Margin="2,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                                Visibility="{Binding ShowSingleText, Converter={StaticResource BoolToVis}}"/>
-                    <TextBlock Text="输入名字或编号搜索…" Foreground="{StaticResource TextSecondary}" IsHitTestVisible="False"
+                    <TextBlock Text="输入名字搜索…" Foreground="{StaticResource TextSecondary}" IsHitTestVisible="False"
                                Margin="2,0" VerticalAlignment="Center"
                                Visibility="{Binding ShowPlaceholder, Converter={StaticResource BoolToVis}}"/>
                     <TextBox x:Name="Search" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
@@ -53,15 +33,6 @@
             <Border Background="{StaticResource SurfaceCard}" BorderBrush="{StaticResource StrokeControl}" BorderThickness="1"
                     CornerRadius="{StaticResource RadiusControl}" Margin="0,2,0,8">
                 <DockPanel>
-                    <Grid DockPanel.Dock="Top" Margin="8,6" Visibility="{Binding IsMultiple, Converter={StaticResource BoolToVis}}">
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="全选" Command="{Binding SelectAllCommand}" Padding="10,3"
-                                    Style="{StaticResource AppSecondaryButton}"
-                                    ToolTip="勾上所有可用的玩家护甲（同名的玩家版本全勾），跳过不可项和非玩家记录"/>
-                            <Button Content="清空" Command="{Binding ClearCommand}" Padding="10,3" Margin="6,0,0,0"
-                                    Style="{StaticResource AppSecondaryButton}"/>
-                        </StackPanel>
-                    </Grid>
                     <TextBlock DockPanel.Dock="Top" Text="没有匹配的护甲" Margin="12,8" Foreground="{StaticResource TextSecondary}"
                                Visibility="{Binding HasNoMatch, Converter={StaticResource BoolToVis}}"/>
                     <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
@@ -71,9 +42,6 @@
                                     <Border x:Name="Row" Background="Transparent" Padding="10,5" Cursor="Hand"
                                             PreviewMouseLeftButtonUp="Row_PreviewMouseLeftButtonUp">
                                         <StackPanel Orientation="Horizontal">
-                                            <CheckBox IsChecked="{Binding IsChecked, Mode=OneWay}" IsHitTestVisible="False" Focusable="False"
-                                                      VerticalAlignment="Center" Margin="0,0,8,0"
-                                                      Visibility="{Binding DataContext.IsMultiple, RelativeSource={RelativeSource AncestorType=UserControl}, Converter={StaticResource BoolToVis}}"/>
                                             <TextBlock Text="{Binding RowText}" Foreground="{StaticResource TextPrimary}" VerticalAlignment="Center"/>
                                         </StackPanel>
                                     </Border>
@@ -81,10 +49,6 @@
                                         <Trigger SourceName="Row" Property="IsMouseOver" Value="True">
                                             <Setter TargetName="Row" Property="Background" Value="{StaticResource SurfaceInteractiveHover}"/>
                                         </Trigger>
-                                        <DataTrigger Binding="{Binding IsEnabled}" Value="False">
-                                            <Setter TargetName="Row" Property="Opacity" Value="0.5"/>
-                                            <Setter TargetName="Row" Property="Cursor" Value="Arrow"/>
-                                        </DataTrigger>
                                     </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>

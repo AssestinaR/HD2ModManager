@@ -601,3 +601,209 @@ S3 的规格是 §8.4 第 4 点那张表。本节写「怎么落地」，**标�
 - **代码**：`ArmorMappingPatchCoverage.cs`、`ProfileApplyService`（映射优先，未变）；`LowPollutionFreshness.cs`（指纹、判断、不可压缩标记）、`LowPollutionRecompiler.cs`（逐个重编编排）、布局文件加 `fingerprint`、`SectionalCompiler` 写指纹 / 写不可压缩标记 / 清理；`RuntimeArmorRegistryService.ApplyAsync(skipModelKeys)`；映射页 `PrepareSourceModelsAsync`（后台任务 + 取消 + 状态栏）；设置页开关只存设置。已删除：`LowPollutionWorkflow`、`ReapplySavedAsync`、`ProfileService.LowPollutionWorkflowRequired`、Shell 里的自动流程。保留：`GameProcessProbe`、`CommitBulkRebuildContentAsync`（导入后重构建 / 一键重构共用）。
 - **部分覆盖（§12.4）**：用户已同意「不跳过，整份部署」，说明文字写明哪几套被映射、游戏里 patch 与映射的模型可能混在一起、建议去掉专属多选。
 - **不在范围**：CLI 的 `deploy plan` 不走 `ProfileApplyService`，不显示「被映射覆盖」。
+
+## 13. S5 规划：压缩支持两种体型分开做的素体（2026-11-14）
+
+### 13.1 为什么
+
+实机（2026-11-14）：「碧蓝航线-埃吉尔睡衣」映射到 CW-9 后，CE-27 也穿上了睡衣。原因链：
+
+1. 这个素体的胸、左臂、右臂各有壮实（Stocky）和苗条（Slim）两份**不同**的模型（头、胯、双腿是通用 Any）。
+2. S2 的压缩规划器（`SectionalCompressionPlanner`，§10.2）遇到 Slim/Stocky 分体就放弃压缩，写 `low-pollution-unsupported.json`（原因「胸部是 Slim 分体」）。
+3. 不能压缩的素体在映射时按普通素体处理（§11.1 第 2 点、`LowPollutionFreshness`「按普通素体映射」），也就是全量映射：CW-9 的每个部件都被链到睡衣上。
+4. CW-9 护甲（3017717209）和 CE-27 护甲（2128569605）共用 15 个部件，这 15 个都在 `wardrobe.links` 里 → CE-27 被污染。
+
+Gemini 加的「同几何去重 / 单边体型提升为 Any」（`SectionalSplitPlanner.NormalizeSlotBodies`）只处理「两份一样」和「只做了一种体型」，埃吉尔的两份确实不同，所以仍然是分体。
+
+目标侧的事实（真实索引，玩家护甲 138 条）：135 条的躯干部件本来就按体型分开（健壮 / 纤细各自的 unit），3 条混合。所以「壮实模型 → 健壮承载件、苗条模型 → 纤细承载件」在绝大多数护甲上天然成立。
+
+### 13.2 压缩规则（按体型分组）
+
+只改「有分体时」的行为；全是 Any 的素体规划结果、产物、layout **逐字节不变**（测试锁住）。
+
+- 每个槽（头 / 躯干 / 手臂，2 槽时是头身 / 手臂）单独判断：
+  - **槽里所有成员都是 Any** ⇒ 和现在一样，一个 Any 压缩 unit。
+  - **槽里有任一成员是 Stocky 或 Slim** ⇒ 拆成两个压缩 unit：
+    - 壮实那个 = 该槽的 Stocky 成员 + 该槽的 Any 成员；
+    - 苗条那个 = 该槽的 Slim 成员 + 该槽的 Any 成员。
+    - Any 成员的几何**两边各并一份**（同一来源 unit 被两次合并读取，`SectionalUnitMerger` 只读来源，不冲突）。
+- 同一体型、同一部位仍然只能有一个来源 unit，否则照旧「不支持」（原因写明哪个部位、哪个体型）。认不出部位照旧「不支持」。
+- 某一体型在这个槽里**一个专属成员都没有**（例如只有苗条胸，没有壮实胸）：那一体型的压缩 unit 只由 Any 成员组成；连 Any 成员都没有就不生成那一体型的 unit；映射与注册件都用另一体型的那个顶上（§13.4、§13.6 Q2）。
+- 埃吉尔 3 槽的结果：头（Any，`0001`）；躯干·壮实（`0003` + `0004` + `0009` + `000a`）；躯干·苗条（`0002` + `0004` + `0009` + `000a`）；手臂·壮实（`0006` + `0008`）；手臂·苗条（`0005` + `0007`）。共 5 个 unit。
+
+### 13.3 ID、注册件、layout
+
+- **ID**：拆开的槽，每个体型的压缩 unit 取「该体型的第一个**专属**成员」的来源 ID（部位顺序沿用 §10.4）；该体型没有专属成员时取第一个 Any 成员。这样两个体型的 ID 一定不同（专属成员各是各的 unit），重编稳定。没拆的槽规则不变。
+- **注册件**（`custom-model.json` / 协议 `model_piece`）：拆开的槽写两条，`body` 分别是 0（健壮）和 1（纤细），各指自己的压缩 unit；没拆的槽和现在一样；某体型没有自己的压缩 unit 时，那一条指另一体型的。
+- **layout**：`units[]` 每项加 `"body": "any" | "stocky" | "slim"`（没拆的槽写 `any`）。schema 升到 `hd2mod.low-pollution-layout/2`；读取器同时认 `/1`（没有 `body` 一律按 `any`）。`LowPollutionLayout.UnitOf(role)` 改成 `UnitOf(role, body)`：先找该体型的，再退到 `any`。
+- **sections.json（生效层）**：身份取 ID 所有者那条来源（含它的体型），与现在一致。
+
+### 13.4 映射（S3 规划器）
+
+`LowPollutionMappingPlanner` 本来就按体型挑承载件（`bodies` 0/1，每种身形一个躯干承载件、一个手臂承载件）。改动只有：
+
+- 体型 b 的承载件链到 `UnitOf(role, b)`（b=0 → 壮实压缩 unit，b=1 → 苗条压缩 unit），而不是同一个 unit。
+- 某体型没有对应压缩 unit（§13.2 最后一点）：**用另一体型的压缩 unit 顶上**（用户 2026-11-14 定，§13.6 Q2），`UnitOf(role, b)` 的退回顺序因此是「该体型 → any → 另一体型」；结果 `Notes` 写明「壮实体型没有自己的 X 模型，用苗条的顶上，可能穿模」。
+- **一个承载件同时承载两种体型**（承载件是 Any 部件，raw 3）而模型这个槽是拆开的：一个承载件只能链到一个 unit，**这个目标在低污染模式下不可**（用户 2026-11-14 定，§13.6 Q1），原因写「X 的通用部件两种体型共用，模型的 Y 分壮实 / 苗条两份，没法同时放下」，不写任何映射行、不做半套。挑承载件时先优先找每个体型各自的专属承载件（现有排序之前加一条「体型专属的优先」），只有找不到时才会走到这里（真实索引里只有 SC-34、PH-9 的手臂槽）。两个体型若都只剩同一个承载件、且模型这个槽**没拆**（Any），照旧链到那一个 Any unit，不受影响。
+- Hider 规则：隐藏集口径不变。`UnitSignature`（备用签名）改成该目标用到的**全部**躯干压缩 unit（拆开时两个）。规则数不变（还是每目标两套签名）。
+
+### 13.5 已有产物怎么过渡
+
+- 已经压缩过的全 Any 素体：layout 指纹不变 ⇒ 下次「应用」判为最新，**不重编**。
+- 之前因分体被判「不能压缩」的素体（带 `low-pollution-unsupported.json`）：标记里加 `plannerVersion: 2`；`LowPollutionFreshness.Assess` 见到**没有版本或版本低于 2** 的标记一律判「要重编」，于是下次「应用」自动按新规则压缩。不动 `FingerprintVersion`（否则所有已压缩素体都要重编一遍）。
+- 关闭低污染模式时的行为不变。
+
+### 13.6 用户拍板（2026-11-14：Q1 选 (c) 不可，Q2 选 (b) 用另一体型顶上）
+
+- **Q1 承载件不分体型、模型分体型时用哪份**：目标的某个承载件是通用部件（健壮、纤细共用同一个 unit），模型这个槽却分壮实 / 苗条两份。一个部件只能换成一份模型。选项：
+  - (a) 用**壮实**那份（两种体型都显示壮实模型，苗条角色可能穿模）；
+  - (b) 用**苗条**那份；
+  - (c) 这个目标在低污染模式下**不可**，写明原因（不做半套）。
+- **Q2 模型缺某一体型时**（例如只做了苗条的胸，没有壮实的，也没有通用件可补）：
+  - (a) 那一体型的承载件**不映射、交给 Hider 隐藏**（穿上这个体型的角色那部分是空的）；
+  - (b) 那一体型**用另一体型的模型顶上**（可能穿模）；
+  - (c) 整个目标不可。
+
+**数据（2026-11-14，回答用户「就没办法兼容吗」「这种情况可能存在吗」）：**
+
+- Q1 为什么不能「兼容」：`wardrobe.links` 是「部件 → 模型」一对一，不带体型；游戏给两种体型用的是**同一个**通用部件，换成什么两种体型就都显示什么。按体型区分只能改游戏的护甲数据（真映射 / dl_bin 那条路，有崩溃记录，不走）。Hider 也做不到：它只能隐藏，不能替换，白名单 API 里也没有读体型的接口。
+- Q1 会碰到多少：真实索引 130 条有名字的玩家护甲里，躯干承载件 135/138 条本来按体型分开；手臂槽的独有承载件，**109 套两种体型各有专属的**，19 套两种体型都没有（本来就不可，§11.10），**只有 2 套（SC-34、PH-9）只有通用的**。也就是说这条规则只影响这 2 套的手臂，而且只在模型手臂分体时才触发。
+- Q2 会不会出现：扫了用户真库 14 个 sectional 素体（3 个分体：含埃吉尔），**没有一个**出现「某部位只有一种体型、又没有通用件」。原因是拆分阶段的 `NormalizeSlotBodies` 已经把「只做了一种体型」的件提升成 Any；只有同一层里两种体型的几何又不同时才会保留单边，目前没有实例。理论上可能，实际罕见。
+
+### 13.7 测试
+
+- 规划器：埃吉尔形状（3 槽 5 个 unit、2 槽：头身·壮实 / 头身·苗条 / 手臂·壮实 / 手臂·苗条 4 个）；只有一个槽分体；某体型缺专属成员（只有 Any 补）；同体型同部位重复 ⇒ 不支持；**全 Any 素体规划与 layout 逐字节不变**；ID 规则与重编稳定。
+- layout：`/2` 写 `body`；`/1` 读成 `any`；`UnitOf(role, body)` 的退回顺序。
+- 映射规划器：每体型承载件链到对应体型的压缩 unit；体型专属承载件优先；Q1、Q2 选定的行为；全 Any 布局时链接与规则逐字节不变（用 S3 现有测试数据比对）。
+- 新鲜度：旧不可压缩标记（无版本）⇒ 要重编；`plannerVersion: 2` 且同指纹 ⇒ 跳过；已压缩的全 Any 素体 ⇒ 仍是最新。
+- 真数据（只读真库，复制到临时目录）：埃吉尔 `碧蓝航线-埃吉尔睡衣（独立）-20261114-151921` 压缩出 5 个 unit、物理骨一根不少（`SectionalPhysBoneRig.FindMissing`）；对真实索引规划 CW-9：链接只落在 CW-9 自己的承载件上，**CE-27 共用的 15 个部件一个都不出现在链接里**。
+
+### 13.8 实机怎么验证（用户）
+
+1. 低污染模式开着，映射页点「应用」：应自动重编埃吉尔（因为旧标记没有版本）。
+2. 穿 CW-9：壮实、苗条两种体型的角色各看一次，胸和手臂是各自体型的模型。
+3. 穿 CE-27：保持原版，不再出现睡衣。
+4. 日志 `Logs/KitInstanceHider.log` 的 `sweep` 行能看到 `lp-3017717209` 规则命中。
+
+### 13.9 实现状态（2026-11-14，未提交，等用户实机）
+
+**改了什么**
+- `SectionalCompressionPlan.cs`：`Plan` 按槽判断，有 Stocky/Slim 成员的槽拆成「壮实 / 苗条」两个压缩 unit（壮实在前），Any 成员两边各并一份；ID 取该体型第一个专属成员，没有则第一个 Any 成员，且 ID 所有者排在成员最前；同体型同部位重复、同一部位既有通用又有专属 ⇒ 不支持并写明部位与体型；`SectionalCompressionGroup` 带 `Body`；全 Any 的规划结果与之前逐项相同。
+- `SectionalCompiler.LowPollution.cs`：按新分组合并；注册件拆开的槽写 body 0 / 1 两条（缺体型时指另一体型的 unit，slot 取本槽主部位），没拆的槽照旧。
+- `LowPollutionMapping.cs`：布局读 `/1`（无 body = any）与 `/2`；`UnitOf(role, body)` 退回「该体型 → any → 另一体型」，另加 `IsSplit / UsesOtherBody / UnitsOf`；规划器躯干/手臂/头每个体型的承载件链到对应体型的 unit；槽拆开时体型专属承载件优先；通用承载件（raw 3）遇到拆开的槽 ⇒ 整目标 Unavailable，原因「X 的通用部件两种体型共用，模型的躯干/手臂分壮实 / 纤细两份，没法同时放下」；`UnitSignature` 含该槽全部压缩 unit；缺体型时 Notes 写「X 体型没有自己的 Y 模型，用另一体型的顶上，可能穿模」。
+- `LowPollutionFreshness.cs`：不可压缩标记写 `plannerVersion: 2`；`Assess` 见无版本或版本 <2 的标记 ⇒ 要重编。`FingerprintVersion` 没动。
+
+**与规格的一处取舍（请上游确认）**：§13.2「全 Any 的 layout 逐字节不变」与 §13.3「schema 升 /2、每项写 body」互相冲突。我的做法：**没有任何槽拆开时仍写 `/1`、不带 body（字节与 S2 起完全一致）；有槽拆开才写 `/2` 并给每项写 body**。读取器两种都认。理由：全 Any 的已部署素体不受任何影响，已有测试的字节锁也不用改。若要无条件 /2，只需改 `LowPollutionLayoutFile.Serialize` 一处，但全 Any 素体的布局文件字节会变（指纹不变，不会触发重编）。
+
+**测试**（Debug）：`HD2ModCore.Tests` 全绿 1561（带真数据环境变量；新增 `SectionalLowPollutionTests` 9 条纯规划/布局 + 真数据 2 条，`LowPollutionMappingTests` 6 条，`LowPollutionPrepTests` 2 条；原 `BodyVariantUnits_AreNotCompressed` 改成 `UnrecognisedBodyTypes_AreNotCompressed`，因为 Stocky/Slim 现在可压缩）。其它项目：`HD2ModAdaptation` 201、`HD2SourceModel` 72、`Decryptor` 5、`HD2SourceMigration` 466 全绿；`HD2ModCli.Tests` 192 过 5 败，全是 `DeploymentCliTests` 的 5 条（命令退出码 2，期望 0；不碰部署代码，本机环境问题，比交代的 3 条多 2 条，待上游确认是否同一类）。`dotnet build -c Debug` 0 警告 0 错误。Release 构建没跑（`HD2_TEST_MANAGER_ROOT` 指向的 Release 目录只当索引来源用）。
+
+**真数据（埃吉尔 `碧蓝航线-埃吉尔睡衣（独立）-20261114-151921`，复制到临时目录；真库只读，未被改动）**
+- 3 槽：5 个 unit（头 `…0001`；躯干·壮实 `…0003`、躯干·苗条 `…0002`；手臂·壮实 `…0006`、手臂·苗条 `…0005`）；2 槽：4 个 unit（头身·壮实 `…0003` / 苗条 `…0002`，手臂同上）。每个压缩 unit 对它全部来源（含两边各并的 Any 成员）核对：物理骨 `missing=0`。
+- 注册件 5 / 4 条（拆开的槽各 body 0、1）；布局为 `/2`；编完 `Assess` = 已是最新；重编一次布局与全部产物字节一致；不可压缩标记被清掉。
+- 对真实索引规划 CW-9（3017717209）：3 槽 / 2 槽都是 Mapped，4 条链接（躯干·壮实、躯干·苗条、手臂·壮实、手臂·苗条，各链到对应体型的 unit），承载件全是 CW-9 自己的部件；CW-9 与 CE-27（2128569605）共用的 15 个部件一个都不在链接里；隐藏集 3 槽 18 个、2 槽 19 个。
+- 真库里这个 Mod 现存的 `low-pollution-unsupported.json` 没有 `plannerVersion`，所以用户下次点「应用」会被判「要重编」（符合 §13.5）。
+
+**没验证的**：① 游戏里的显示（壮实 / 苗条各看到各自的模型、CE-27 保持原版、日志里 `lp-3017717209` 命中）都要实机；② 真索引下 SC-34 / PH-9 的手臂 Unavailable 路径只有合成数据的单测，没用真数据逐个点名核对；③ 2 槽 + CW-9 单独映射在真数据里 Mapped，组合（护甲 + 头盔）与头盔单独的 2 槽场景沿用 S3 的测试，没有针对分体素体再跑；④ 注册件里「缺体型指另一体型」那一支（真数据没有这种素体）只有规划/布局层的单测，`WriteLowPollutionRegistry` 这一支没有专门的单元测试（编译器写文件，需真产物才走到）。
+
+## 14. 实机修正（2026-11-14，S5 之后）
+
+### 14.1 CE-27 仍被污染：分体后规则重名，映射没写进去
+
+- 现象：S5 后点「应用」，日志「18 套已映射，Hider 规则 0 条」；`armor-registry.protocol` 是 16:01 新写的，`wardrobe.links` 和 `kit-instance.mapping.rules` 却还停在 15:27，游戏里仍是旧的全量映射，CE-27 照旧被埃吉尔污染。
+- 原因：分体素体有两个躯干压缩 unit，`LowPollutionHiderRules.Build` 给它们的规则都起名 `lp-<item>-u`，协议判重名 → `WriteMappingAsync` 抛 `InvalidDataException` → `ApplyAsync` 的 catch 把异常整个吞掉，规则和 links 都没写，界面只显示「0 条」。
+- 修正：第 2 个起依次命名 `-u2`、`-u3`；`RuntimeArmorRegistryApplyResult.LinksError` 带回被吞的异常，映射页弹警告「映射没有写进游戏…」。测试 `HiderRules_SplitBodyModel_GivesEachTorsoUnitItsOwnRuleName_AndTheFileSerializes`；S5 的 `SplitModel_EachBodyCarrier…` 之前把重名写进了断言，已改成 `lp-1-u2`。
+
+### 14.2 TG-8 站着也露裤子和手套：判定半径与诊断
+
+- 现象：规则命中（日志里一直是 `lp-1561165826-u`），裤子、手套的部件都在隐藏集里，Hider 却把它们算作「同 ID 但不在锚点旁」（`left_visible` 一直不为 0）。推测：换成模型后，作锚点的模型躯干 unit 的原点和原版腿、手 unit 的原点不重合，超过 0.3 米。
+- 用户决定：先加诊断，同时放宽到 1 米方便查看。
+  - `LowPollutionHiderRules.Radius = 1.0`（只改低污染规则；专属路线 `SectionalExclusivePlanner.Radius` 仍 0.3）。协议上限就是 1.0。
+  - Hider 0.4.0：每 15 秒写一行 `diag`（最多 60 行）：`avg_sweep_ms`、`avg_frames_per_sweep`、`max_frame_ms`、`avg_hide_calls`、`units`、`markers`、`missed`，以及 `misses`＝没藏住的部件「ID@离最近同规则锚点的米数」（最远的排前，最多 8 个；`-1.00` 表示这个世界里没有该规则的锚点）。只用已有的 API，加 Lua 标准库 `math.sqrt`；离线测试默认关（`env.diag_interval` 为 nil），游戏内安装时打开。
+- 下一步：用户实机后看 `diag` 里 `misses` 的距离，决定半径收紧到多少，或者换锚点（比如改用承载件原 ID）。用户反馈「有点卡」：看 `avg_sweep_ms` / `max_frame_ms` 判断是不是 Hider。
+
+### 14.3 任务里一个都不藏：单世界 unit 上限截掉了玩家部件（Hider 0.4.1）
+
+- 现象：重编后 TG-8 裤子仍在。`KitInstanceHider.log`（0.4.0）：在飞船上（每轮 2300–3000 unit）规则正常命中；t≈198 秒进任务后每轮 `units` 固定 8198、`markers` 一直 0、`misses` 里没有任何 TG-8 隐藏集的 ID。
+- 原因：`MAX_UNITS_PER_WORLD = 8192`。任务主世界超过 8192 个 unit，玩家角色的部件排在列表后面，被上限直接截掉：签名件扫不到 → 锚点为 0 → 什么都不藏，连「没藏住」都统计不到。之前的半径 0.3 / 1 米的猜测不是这次的主因。
+- 修正：上限提到 65536（只防失控；每帧仍只查 300 个，unit 多只是一轮多花几帧，任务里约 8000 unit 时一轮 ≈ 27 ms 分到约 34 帧，每帧 < 1 ms）。`diag` 加 `largest_world`（最大世界的 unit 数）和 `capped_worlds`（超过上限的世界数，正常应为 0）。
+- 测试：`test_kit_instance_hider.lua` 新增 9000 个无关 unit 后放签名和腿，腿要被藏、`largest_world` 9002、`capped_worlds` 0。压测数据不变。
+- 卡顿：0.4.0 日志里每帧最多 1–2 ms，任务里每轮 26 ms 分摊到 34 帧，Hider 不太像卡顿主因；0.4.1 扫的 unit 变多，实机再看 `avg_sweep_ms` / `max_frame_ms`。
+
+### 14.4 定半径：藏住的部件离锚点多远（Hider 0.4.2）
+
+- 0.4.1 实机（用户确认裤子、手套藏住了）：任务里最大世界 2.0–2.1 万 unit，`capped_worlds` 全 0；没藏住的部件离锚点最近 2.4 米（都是别人穿的原版），0.3–1 米之间没有漏藏。但日志只记没藏住的，定不了半径能收到多小。
+- 0.4.2：`diag` 加 `hidden_max_d`（窗口内藏住部件离最近锚点的最大距离）、`hidden_far`（最远的 8 个「ID@米」）、`hidden_buckets`（按 0.2/0.3/0.4/0.5/0.7/1.0/>1.0 分档计数）。只在诊断开着时算距离；关着时命中即返回，开销不变。
+- 下一步：用户进一局任务，按 `hidden_max_d` 加余量定 `LowPollutionHiderRules.Radius`，越小越不容易误藏贴身站着的队友。
+- 性能（0.4.1 任务里）：每轮 75–85 ms 分到约 75 帧，每帧约 1 ms，偶尔 2–3 ms；新刷出的部件约 1.5 秒后才被藏。卡的话再做增量扫描或降频。
+
+### 14.5 一整局的距离数据：大距离来自锚点滞后，不是模型偏移
+
+- 0.4.2 一整局：飞船上（每轮约 3000 unit，扫一轮约 0.2 秒）藏住的部件离锚点 **≤ 0.06 米**（只有一次 0.51）。任务里（约 1.9 万 unit，扫一轮约 1.2 秒 + 0.5 秒间隔）分布散到 0.2–1.0 米，`hidden_max_d` 多次贴着上限 0.99–1.00；同一时刻整套部件的距离几乎一样（例如 8 个 ID 都是 0.99）。
+- 解读：部件本身就贴着锚点（飞船上的 0.06 米），任务里的距离是**锚点位置用的是上一轮扫描**造成的——人在跑，一轮 1.2 秒前的位置已经差出去一米左右。`misses` 里 `markers=1` 时同一套部件在 1.85–5.8 米，也多半是自己跑动中已藏好的部件被重复统计（藏了不会恢复，所以看不出问题）。
+- 风险：Hider 藏了就不恢复。半径 1 米时，贴身经过、穿着共用部件原版的队友会被**永久**藏掉那几个部件（直到重生）。半径越大越容易发生；只是把半径收小，跑动时又会藏得更慢。
+- 建议（待用户拍板）：锚点在本轮被再次扫到时就地刷新位置（只用已有 API，不跨帧保存 unit 句柄），把滞后从一轮降到接近 0；然后把 `LowPollutionHiderRules.Radius` 收到 0.3。
+
+### 14.6 锚点当轮刷新 + 半径收回 0.3（Hider 0.4.3）
+
+- 用户决定：两件都做。
+- Hider 0.4.3：本轮扫到签名件时，把同签名、离它最近（≤ 10 米）且本轮还没刷新过的锚点挪到它现在的位置（同一签名件确认出的多条规则锚点坐标相同，一起挪）。**只对单签名、无 none 的规则**——低污染规则的签名是映射私有的压缩 unit，挪错也只会挪到另一个同样穿着它的人身上；多签名 / 有 none 的专属规则，别人身上的同 ID 签名件不代表规则成立（现有「clusters 2-4 must stay visible」测试就抓到了这个），保持上一轮位置。`diag` 加 `anchors_refreshed`。
+- 局限：部件在单位列表里排在签名件**前面**时，本轮用的还是上一轮位置；实机看 `hidden_buckets` 是否收拢到 0.2 档、`misses` 里自己的部件是否不再出现在 0.3–2 米。
+- `LowPollutionHiderRules.Radius = 0.3`，2 槽说明文案同步改成「0.3 米」。
+- 测试：新增「两轮之间跑 5 米、腿排在签名件后面 → 当轮藏；0.5 米外穿同款的人不藏；`anchors_refreshed` 计数」。Debug 0/0；HD2ModCore 1562 全绿；CLI 3 条已知机器映射规则泄漏失败；Release 0/0，ico 在。
+
+## 15. 收尾整理：低污染开关挪进 Lua、物理外置自动投放、撤掉详情页专属（2026-11-14）
+
+用户原话：「专属，撤掉低污染模式开关还要优化一下……这个东西的前提是 lua，所以应该放在 lua 相关里，并且必须要有前置（如果没有开管理员独占的话，这个得提醒）……放在启用管理器内置 lua 类功能下，如果没启用，就是禁用」「物理模式这个 lua 还要自己弄，也太麻烦了，能不能自动化」。
+
+用户决定（AskUserQuestion）：
+- 提交：**等 0.4.3 实机验证后再提交**，本节做完也先不提交。
+- 专属迁移：**不用管**（没发布，只有用户自己在用）。
+- 物理外置：**部署时自动投放，去掉手动导出**。
+- 低污染前置：总开关开、但映射和物理都不是「独占 boot」时**可开，下方提醒需要外置加载器**。
+
+### 15.1 低污染模式开关
+- 从「通用」卡挪到「内置 lua」卡，放在「启用管理器内置 lua 类功能」与映射/物理下拉之后。
+- 总开关关：开关禁用（灰），说明「低污染模式要靠管理器内置 Lua（Hider）运行，先打开上面的总开关」；**生效值也按关处理**（`SettingsService` 读低污染给编译/映射用的地方一律走「总开关 && 低污染」），存的值不改，重新打开总开关后恢复。
+- 总开关开：
+  - 映射或物理有一个是「独占 boot」：说明 Hider 并进管理器自己的启动补丁，无需加载器。
+  - 两者都不是独占：黄字提醒「当前没有独占 boot，Hider 以独立补丁交给外置 Lua 加载器（如 MDL3）；没有加载器时低污染映射的隐藏不生效」。
+  - 映射模式为「关闭」：提醒低污染要配合护甲映射使用（映射关闭时什么都不会发生）。
+- 不检测库里有没有加载器（加载器可能装在库外，部署时已有 `KitInstanceHiderNeedsLoader` 警告）。
+
+### 15.2 物理外置自动投放
+- `LuaDeploymentService`：物理生效模式为「外置」时，像 Hider 一样生成独立 addon 补丁（`.runtime/physbone-addon/<指纹>`，资源名 `mods/hd2modmanager/physbone`，源码 `LuaAddonCatalog.Physics().Source`），排序 `int.MaxValue - 3`，指纹并进外置分支的总指纹。
+- 库里以前手动加的物理外置包（`SourcePackageGuid == LuaAddonCatalog.PhysicsModGuid`）：照映射旧包的先例，部署时**跳过它的补丁**（`managedRemovedGroups`），并给一条提示「已由管理器自动投放，可从库里删掉」，避免加载两份。
+- 设置页：去掉物理的导出/开文件夹/启动刷新/「外置包已更新」提示；描述改成「部署时自动作为独立补丁投放，交给外置 Lua 加载器加载」。
+- 总开关关时物理选项改为「外置 / 关闭」（与映射一致）：自动投放后「不想用就别把包加进库」不再成立，必须能关；`Normalize` 关闭档不再收敛到外置。
+- 映射外置那份导出（`hd2wardrobe.lua`）本节**不动**（用户只说了物理）；映射 addon 早已自动投放，那份导出是否也去掉另问。
+
+### 15.3 撤掉详情页「专属」（J6 S4）
+- 详情页去掉：专属开关与说明、「已记住专属编译失败目标」那一行、转专属 / 撤销专属按钮与 VPK 提示；目标护甲下拉回到单选普通替换。
+- 不做迁移（用户决定）。专属的编译 / 规划代码（P4a/P4b、Hider、承载件规划器）低污染要复用的不删；只删详情页入口和只为它服务的窗口 / 视图模型分支。详细清单在动手时列进 15.4。
+
+### 15.4 交付
+- Debug 0/0；`dotnet test -c Debug`（CLI 3 条已知本机映射规则泄漏除外）；Release `--no-incremental` + ico；Lua 测试。
+- 不提交，等用户 0.4.3 实机。
+
+### 15.5 实施记录（详情页专属撤除）
+按 §15.3 撤掉详情页「专属」，详情页回到普通 patch 替换 + 单选目标护甲。
+
+**删掉的**
+- 界面：专属开关行与说明、「已记住：专属编译失败目标自动跳过」行与清除按钮、转专属… / 撤销专属按钮、VPK 提示「去打开专属」（`ModDetailsPageView.xaml`）。
+- 窗口：`KitExclusivePreviewWindow`、`KitInstanceConversionWindow`、`KitTargetFailureWindow`（删后无其它引用）。
+- 视图模型：整份 `ModDetailsPageViewModel.KitConvert.cs`（P3 转专属 / 撤销流程）；`Vpk.cs` 里的专属开关、专属候选目录加载、预览确认、多目标失败询问、`ClearVpkAutoSkipCommand`、专属记录同步、`ResolveApplyExclusiveIds`；`VpkRebuild.cs` 里的专属多选重建。
+- 下拉：`VpkTargetPicker` / `VpkTargetPickerViewModel` 去掉多选（勾选框、标签、全选 / 清空、退格删标签、可专属 / 不可 禁用态、record / item_id 搜索与列）；`VpkTargetArmorOption` 去掉 ItemId / ExclusiveAvailable / Tag / IsNonPlayer。保留搜索。
+- 共用部件卡（`KitPollution`）：不再查「已转专属」记录，只显示污染分析结论。
+
+**保留的**
+- HD2ModCore 全部不动：承载件规划器（P4）、VPK 合并与物理自检（P4b / S1）、Hider 规则、`SectionalExclusivePlanner`、`LowPollution*`、`ModCompileService` 的专属参数、`KitConversionService` / `KitExclusiveWorkspace`（低污染与部署读记录要用，核心测试也在用）。
+- 部署期「映射覆盖详情页」：详情页仍显示「已被护甲映射覆盖」（`VpkMappingCoverageText`）。
+- 编译 / 重建 / 头身合并 / 应用勾选 仍走 `ModCompileService`，专属参数不传（普通替换）。
+
+**旧记录的处理（无迁移）**
+- 点「切换」或「重构建」成功后，顺手清掉旧「专属」写下的 workspace 记录（`KitExclusiveWorkspace.SyncAsync(..., null)`，只删自己写的），并把 wardrobe.json 的 exclusive / targets / targetItemId 写回普通值。
+- 进页面时盘上仍是专属记录的 Mod：下拉按普通归档列显示；未点「切换」前，旧隐藏规则还会照常部署，直到用户点一次「切换」或「重构建」。
+
+**交付门**
+- `dotnet build -c Debug`：0 警告 0 错误。
+- `dotnet test -c Debug`：见下，Core 1564 全绿；CLI 5 条失败 = 已知 3 条本机映射规则泄漏 + 2 条 GameProcessRunning（测试时游戏开着，17:31 启动），与本次改动无关。

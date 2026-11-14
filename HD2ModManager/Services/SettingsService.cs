@@ -627,7 +627,14 @@ namespace HD2ModManager.Services
         public static StoragePaths CreateStoragePaths()
             => new(AppDomain.CurrentDomain.BaseDirectory, GetModLibraryFolder());
 
+        /// <summary>设置页开关存的值（总开关关掉时保留，重新打开后恢复）。流程判断用 <see cref="GetEffectiveLowPollutionMode"/>。</summary>
         public static bool GetLowPollutionMode() => LoadAll()?.LowPollutionMode ?? false;
+
+        /// <summary>
+        /// 实际生效的低污染模式：低污染要靠管理器内置 Lua（Hider）把共用部件按实例藏掉，
+        /// 总开关「启用管理器内置 lua 类功能」关着时一律按关处理（规划 kit-instance-mapping-deploy-plan §15.1）。
+        /// </summary>
+        public static bool GetEffectiveLowPollutionMode() => GetBuiltInLuaEnabled() && GetLowPollutionMode();
 
         public static bool SetLowPollutionMode(bool enabled)
         {
@@ -641,7 +648,7 @@ namespace HD2ModManager.Services
 
         /// <summary>编译/重构建要用的宿主上下文：游戏 data 目录、存储路径，以及全局的「低污染模式」。</summary>
         public static VpkHostContext CreateVpkHostContext()
-            => new(GetGameDataFolder(), CreateStoragePaths()) { LowPollutionMode = GetLowPollutionMode() };
+            => new(GetGameDataFolder(), CreateStoragePaths()) { LowPollutionMode = GetEffectiveLowPollutionMode() };
 
         public static string GetModLibraryFolder()
         {

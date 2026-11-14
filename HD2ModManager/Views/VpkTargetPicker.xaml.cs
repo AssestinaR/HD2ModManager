@@ -6,7 +6,7 @@ using HD2ModManager.ViewModels;
 
 namespace HD2ModManager.Views
 {
-    // 作用：目标护甲下拉控件（搜索 + 单选/多选）。行为都在 VpkTargetPickerViewModel，这里只转交点击与键盘。
+    // 作用：目标护甲下拉控件（搜索 + 单选）。行为都在 VpkTargetPickerViewModel，这里只转交点击与键盘。
     // Purpose: Code-behind for the searchable target picker; forwards clicks/keys to the view-model.
     public partial class VpkTargetPicker : UserControl
     {
@@ -74,17 +74,9 @@ namespace HD2ModManager.Views
         {
             if (Vm is not { } vm) return;
             var src = e.OriginalSource as DependencyObject;
-            if (src != null && FindAncestor<System.Windows.Controls.Primitives.ButtonBase>(src) != null) return; // 标签的 ×
             bool onSearch = src != null && IsInside(src, Search);
             vm.IsOpen = onSearch ? true : !vm.IsOpen;
             if (!onSearch) { Search.Focus(); e.Handled = true; }
-        }
-
-        private static T? FindAncestor<T>(DependencyObject node) where T : DependencyObject
-        {
-            for (var n = node; n != null; n = ParentOf(n))
-                if (n is T t) return t;
-            return null;
         }
 
         private void Search_TextChanged(object sender, TextChangedEventArgs e)
@@ -96,12 +88,6 @@ namespace HD2ModManager.Views
         {
             if (Vm is not { } vm) return;
             if (e.Key == Key.Escape) { vm.IsOpen = false; e.Handled = true; }
-            // 多选时在空输入框里按退格：去掉最后一个标签（和 el-select 一致）。
-            else if (e.Key == Key.Back && vm.IsMultiple && string.IsNullOrEmpty(vm.SearchText) && vm.Chips.Count != 0)
-            {
-                vm.Chips[^1].IsChecked = false;
-                e.Handled = true;
-            }
         }
 
         private void Row_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)

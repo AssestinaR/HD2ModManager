@@ -1646,6 +1646,7 @@ namespace HD2ModManager.ViewModels
                 OnPropertyChanged(nameof(PhysicsMode));
                 OnPropertyChanged(nameof(PhysicsModeDescription));
                 OnPropertyChanged(nameof(BuiltInLuaNote));
+                NotifyLowPollutionPrerequisite();
             }
         }
 
@@ -1684,6 +1685,7 @@ namespace HD2ModManager.ViewModels
                 OnPropertyChanged(nameof(ArmorMappingMode));
                 OnPropertyChanged(nameof(ArmorMappingModeDescription));
                 OnPropertyChanged(nameof(ArmorMappingModeHotSwitchNote));
+                NotifyLowPollutionPrerequisite();
             }
         }
 
@@ -1708,47 +1710,24 @@ namespace HD2ModManager.ViewModels
                 .ToArray();
 
         /// <summary>
-        /// 物理骨骼模式。选「外置 lua 入口兼容」并应用时，会把运行时导出成一个独立补丁包
-        /// 并打开所在文件夹，供用户手动加进 mod 库。
+        /// 物理骨骼模式。「外置加载器兼容」由部署自动投放独立补丁交给加载器（规划 §15.2），
+        /// 不再导出文件夹让用户手动加进 mod 库。
         /// </summary>
         public PhysicsMode PhysicsMode
         {
             get => SettingsService.GetPhysicsMode();
             set
             {
-                var changed = value != SettingsService.GetPhysicsMode();
                 if (SettingsService.SetPhysicsMode(value))
-                {
                     _profiles.RequestActiveProfileDeployment();
-                    // 每次切到外置都**重新对齐一次导出包**，而不是只在"模式变了"那一次。
-                    //
-                    // 为什么：切模式那条路径只覆盖"用户此刻正在切"。可绝大多数玩家一旦选了外置就
-                    // 一直停在这一档——管理器升级之后，他手里的 hd2physbone.lua 还是旧版本，
-                    // 而且没有任何地方会提示他（物理运行时的修复就这样永远到不了这些人）。
-                    if (value == PhysicsMode.ExternalLuaEntry)
-                    {
-                        var refreshed = EnsureLuaPackageUpToDate(LuaAddonCatalog.Physics());
-                        if (changed) OpenLuaPackagesFolder();
-                        if (refreshed) NoteLuaPackageRefreshed([LuaAddonCatalog.Physics()]);
-                    }
-                }
                 OnPropertyChanged(nameof(PhysicsMode));
                 OnPropertyChanged(nameof(PhysicsModeDescription));
+                NotifyLowPollutionPrerequisite();
             }
         }
 
         /// <summary>物理模式的一句话说明。</summary>
         public string PhysicsModeDescription => PhysicsMode.Description();
-
-        /// <summary>
-        /// 把物理运行时导出成外置包并打开文件夹。
-        /// 路径固定落在管理器数据目录下，不跟随"默认导出路径"——那个是给转换产物用的，
-        /// 混在一起会让用户分不清"哪个是要拖进 mod 库的"。
-        /// </summary>
-        private static void RevealPhysBonePackage()
-        {
-            RevealLuaPackage(LuaAddonCatalog.Physics());
-        }
 
         /// <summary>
         /// 把某个内置 Lua 功能导出成外置包并打开**根目录**。
@@ -1857,13 +1836,8 @@ namespace HD2ModManager.ViewModels
         /// </summary>
         private void RefreshLuaPackagesOnStartup()
         {
+            // 物理外置已改成部署自动投放（§15.2），这里只剩映射的导出包。
             var refreshed = new List<LuaAddonPackageExport.Feature>();
-            if (SettingsService.GetPhysicsMode() == PhysicsMode.ExternalLuaEntry)
-            {
-                var feature = LuaAddonCatalog.Physics();
-                if (EnsureLuaPackageUpToDate(feature)) refreshed.Add(feature);
-            }
-
             if (SettingsService.GetArmorMappingMode() == ArmorMappingMode.ExternalLuaEntry)
             {
                 var feature = LuaAddonCatalog.Wardrobe();
@@ -1915,7 +1889,10 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        /// <summary>低污染模式：全局开关。只存设置，不触发任何流程；下次在护甲映射页点「应用」时生效（规划 §12.1）。</summary>
+        /// <summary>
+        /// 低污染模式：全局开关。只存设置，不触发任何流程；下次在护甲映射页点「应用」时生效（规划 §12.1）。
+        /// 放在「内置 lua」卡里：它靠管理器内置 Lua（Hider）运行，总开关关着时禁用、且按关处理（§15.1）。
+        /// </summary>
         public bool LowPollutionMode
         {
             get => SettingsService.GetLowPollutionMode();
@@ -1924,7 +1901,39 @@ namespace HD2ModManager.ViewModels
                 if (SettingsService.GetLowPollutionMode() == value) return;
                 SettingsService.SetLowPollutionMode(value);
                 OnPropertyChanged(nameof(LowPollutionMode));
+                NotifyLowPollutionPrerequisite();
             }
+        }
+
+        /// <summary>
+        /// 低污染模式的前置说明（§15.1）：总开关关 → 先开总开关；映射关闭 → 没有效果；
+        /// 映射或物理是独占 boot → Hider 并进启动补丁；都不是 → 需要外置 Lua 加载器。
+        /// </summary>
+        public string LowPollutionPrerequisiteNote
+        {
+            get
+            {
+                if (!BuiltInLuaEnabled)
+                    return "低污染模式要靠管理器内置 Lua（Hider）把共用部件按人藏掉，先打开上面的「启用管理器内置 lua 类功能」。";
+                if (ArmorMappingMode == ArmorMappingMode.Off)
+                    return "映射模式是「关闭」：低污染模式只作用于护甲映射，现在开着也不会有效果。";
+                if (UsesExclusiveBoot)
+                    return "Hider 会并进管理器自己的启动补丁（独占 boot），不需要外置 Lua 加载器。";
+                return "映射和物理都不是「独占 boot」：Hider 会作为独立补丁交给外置 Lua 加载器（如 MDL3）加载。没装加载器时，低污染映射里该藏的部件不会被藏掉。";
+            }
+        }
+
+        /// <summary>前置说明是否要标黄：总开关开、映射没关、又没有独占 boot（要靠加载器）。</summary>
+        public bool IsLowPollutionPrerequisiteWarning
+            => BuiltInLuaEnabled && ArmorMappingMode != ArmorMappingMode.Off && !UsesExclusiveBoot;
+
+        private bool UsesExclusiveBoot
+            => ArmorMappingMode == ArmorMappingMode.ExclusiveLuaEntry || PhysicsMode == PhysicsMode.ExclusiveLuaEntry;
+
+        private void NotifyLowPollutionPrerequisite()
+        {
+            OnPropertyChanged(nameof(LowPollutionPrerequisiteNote));
+            OnPropertyChanged(nameof(IsLowPollutionPrerequisiteWarning));
         }
 
         public int GameDataIndexCheckIntervalHours
@@ -2235,6 +2244,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AssetMetadataLastCheckText));
             OnPropertyChanged(nameof(AutoCheckGameDataIndex));
             OnPropertyChanged(nameof(LowPollutionMode));
+            NotifyLowPollutionPrerequisite();
             OnPropertyChanged(nameof(GameDataIndexCheckIntervalHours));
             OnPropertyChanged(nameof(GameDataIndexLastCheckText));
             OnPropertyChanged(nameof(AssetMetadataRepository));

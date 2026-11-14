@@ -66,7 +66,7 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="目标护甲" Foreground="{StaticResource TextSecondary}"
                                    VerticalAlignment="Center" Margin="0,0,12,0"/>
-                        <!-- 可输入搜索；专属模式下多选（勾选框 + 标签 + 全选），见 VpkTargetPicker。 -->
+                        <!-- 可输入搜索的单选下拉，见 VpkTargetPicker。防污染不在这里做，去护甲映射页（规划 kit-instance-mapping-deploy-plan §15.3）。 -->
                         <local:VpkTargetPicker Grid.Column="1" DataContext="{Binding VpkTargetPicker}"
                                                MinWidth="200" VerticalAlignment="Center"/>
                         <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="切换"
@@ -75,34 +75,6 @@
                     <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}"
                                Text="{Binding VpkMappingCoverageText}"
                                Visibility="{Binding HasVpkMappingCoverage, Converter={StaticResource BoolToVis}}"/>
-                    <!--
-                        专属（P4a）：打开后下拉改按「记录（item_id）」列并标出可专属/不可，「切换」只写目标记录自己独有的部件，
-                        其余原版部件交给运行时按实例隐藏；点「切换」时会先弹预览。翻这个开关本身不写盘、不编译。
-                    -->
-                    <Grid Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="专属（只在这套护甲身上显示，其它护甲保持原版）"
-                                   Foreground="{StaticResource TextPrimary}"
-                                   VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        <CheckBox Grid.Column="1" Style="{StaticResource AppToggleSwitch}"
-                                  IsChecked="{Binding VpkExclusiveMode, Mode=TwoWay}"
-                                  VerticalAlignment="Center" Margin="12,0,0,0"
-                                  AutomationProperties.Name="专属切换"/>
-                    </Grid>
-                    <!-- 「继续并记住」之后：这个 Mod 编译失败的专属目标自动跳过；这里能清掉这个记忆。 -->
-                    <Grid Margin="0,12,0,0" Visibility="{Binding VpkAutoSkipFailedTargets, Converter={StaticResource BoolToVis}}">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="已记住：专属编译失败的目标自动跳过，不再询问"
-                                   Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="清除记忆"
-                                Command="{Binding ClearVpkAutoSkipCommand}" Margin="12,0,0,0" Padding="14,6"/>
-                    </Grid>
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -346,26 +318,6 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                     </Expander>
-                    <!-- VPK 模型 Mod 不走 P3 转专属（P4a）：提示去「目标护甲」打开「专属」再切换。 -->
-                    <TextBlock Text="{Binding KitVpkHint}"
-                               FontSize="12"
-                               Foreground="{StaticResource TextPrimary}"
-                               TextWrapping="Wrap"
-                               Margin="0,10,0,0"
-                               Visibility="{Binding ShowKitVpkHint, Converter={StaticResource BoolToVis}}"/>
-                    <!-- 转专属（按实例隐藏 P3）：污染时出现「转专属」，已转专属时出现「撤销专属」。 -->
-                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                        <Button Content="转专属…"
-                                Style="{StaticResource AppSecondaryButton}"
-                                Command="{Binding ConvertKitInstanceCommand}"
-                                Padding="14,6"
-                                Visibility="{Binding ShowKitConvertButton, Converter={StaticResource BoolToVis}}"/>
-                        <Button Content="撤销专属"
-                                Style="{StaticResource AppSecondaryButton}"
-                                Command="{Binding UndoKitInstanceCommand}"
-                                Padding="14,6"
-                                Visibility="{Binding ShowKitUndoButton, Converter={StaticResource BoolToVis}}"/>
-                    </StackPanel>
                 </StackPanel>
             </DataTemplate>
 

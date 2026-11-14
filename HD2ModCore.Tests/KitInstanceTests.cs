@@ -531,7 +531,7 @@ public sealed class KitInstanceTests
 		var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(entry);
 		var text = Encoding.UTF8.GetString(payload.TocData.AsSpan(8));
 		Assert.StartsWith("-- HD2-Addon: mods/hd2modmanager/kit_instance_hider\n", text, StringComparison.Ordinal);
-		Assert.Contains("local M = { version = '0.3.0'", text, StringComparison.Ordinal);
+		Assert.Contains("local M = { version = '0.4.3'", text, StringComparison.Ordinal);
 		Assert.Equal(BinaryPrimitives.ReadUInt32LittleEndian(payload.TocData.AsSpan(0)), (uint)(payload.TocData.Length - 8));
 		Assert.Equal(2u, BinaryPrimitives.ReadUInt32LittleEndian(payload.TocData.AsSpan(4)));
 	}
@@ -567,6 +567,79 @@ public sealed class KitInstanceTests
 		Assert.DoesNotContain(result.Issues, issue => issue.Code == "KitInstanceHiderNeedsLoader");
 		Assert.False(Directory.Exists(Path.Combine(scratch.Mods, ".runtime", "kit-instance-hider")));
 		Assert.True(File.Exists(KitInstanceRulesFile.GetPath(scratch.Registry)));
+	}
+
+	// ---- §15.2：物理外置自动投放 -------------------------------------------------------------
+
+	[Fact]
+	public async Task Deployment_PhysicsExternal_IsDeployedAutomaticallyAsAStandaloneAddon()
+	{
+		SetModes(ArmorMappingMode.Off, PhysicsMode.ExternalLuaEntry);
+		try
+		{
+			using var scratch = new Scratch();
+			var (profile, snapshot) = CreateProfile(ModNodeId.New());
+
+			var result = await MaterializeAsync(scratch, profile, snapshot);
+
+			Assert.False(result.HasErrors, Describe(result.Issues));
+			var group = Assert.Single(result.GeneratedPatchGroups);
+			Assert.Contains("Physics Bone", group.Description, StringComparison.Ordinal);
+			Assert.Equal(int.MaxValue - 3, group.PlacementOrder!.Value);
+			var patch = Assert.Single(group.Files, file => file.SidecarKind == PatchSidecarKind.Base);
+			Assert.Contains(Path.Combine(".runtime", "physbone-addon"), patch.FilePath);
+			Assert.All(group.Files, file => Assert.True(File.Exists(file.FilePath), file.FilePath));
+			var entry = Assert.Single(await new AdaptationPatchTocScanner().ScanEntriesAsync(patch.FilePath));
+			var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(entry);
+			var text = Encoding.UTF8.GetString(payload.TocData.AsSpan(8));
+			Assert.Equal(LuaAddonCatalog.Physics().Source, text);
+			// 库里没有加载器：提醒一句，但照样投放（加载器可能装在库外）。
+			Assert.Contains(result.Issues, issue => issue.Code == "PhysicsRuntimeNeedsLoader");
+		}
+		finally
+		{
+			SetModes(ArmorMappingMode.Off, PhysicsMode.Off);
+		}
+	}
+
+	[Fact]
+	public async Task Deployment_LegacyManualPhysicsPackageInLibrary_IsSkippedWithANotice()
+	{
+		SetModes(ArmorMappingMode.Off, PhysicsMode.Off);
+		using var scratch = new Scratch();
+		var legacy = ModNodeId.New();
+		var legacyPatch = Path.Combine(scratch.Root, "legacy-physics", "9ba626afa44a3aa3.patch_0");
+		Directory.CreateDirectory(Path.GetDirectoryName(legacyPatch)!);
+		await File.WriteAllBytesAsync(legacyPatch, BuildLuaPatch(AdaptationLuaAssetKeys.BootFileId, "return 1\n"));
+		var (profile, baseSnapshot) = CreateProfile(legacy);
+		var node = baseSnapshot.Nodes[legacy];
+		var snapshot = baseSnapshot with
+		{
+			Nodes = new Dictionary<ModNodeId, ModNode>
+			{
+				[legacy] = node with { Metadata = node.Metadata with { Name = "旧物理包", SourcePackageGuid = LuaAddonCatalog.PhysicsModGuid } },
+			},
+		};
+		var index = new PatchFileIndex(
+			DateTimeOffset.UtcNow,
+			new Dictionary<ModNodeId, IReadOnlyList<IndexedPatchFile>>
+			{
+				[legacy] =
+				[
+					new IndexedPatchFile(legacy, legacyPatch, Path.GetFileName(legacyPatch), "9ba626afa44a3aa3", 0, 0,
+						PatchSidecarKind.Base, new FileInfo(legacyPatch).Length, DateTimeOffset.UtcNow),
+				],
+			},
+			[]);
+
+		var result = await MaterializeAsync(scratch, profile, snapshot, index);
+
+		Assert.False(result.HasErrors, Describe(result.Issues));
+		var notice = Assert.Single(result.Issues, issue => issue.Code == "PhysicsLegacyPackageSkipped");
+		Assert.Equal(CoreIssueSeverity.Info, notice.Severity);
+		Assert.Contains("旧物理包", notice.Message, StringComparison.Ordinal);
+		// 它的补丁不再部署（也不再被当成 boot 提供者）。
+		Assert.False(result.PatchIndex.FilesByNode.TryGetValue(legacy, out var kept) && kept.Count > 0);
 	}
 
 	// ---- 辅助 ---------------------------------------------------------------------------
