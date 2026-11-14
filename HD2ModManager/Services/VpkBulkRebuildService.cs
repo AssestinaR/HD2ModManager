@@ -155,7 +155,7 @@ public static class VpkBulkRebuildService
 				VpkBulkRebuildEntry entry;
 				try
 				{
-					var context = new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths());
+					var context = SettingsService.CreateVpkHostContext();
 					var kind = new ModStorageKindResolver(new PatchFileNameParser()).Resolve(target.Directory);
 
 					// 两档 sectional 系列只在"来源 → sectional/"这一段不同；之后共用编译与部署。

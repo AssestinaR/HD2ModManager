@@ -862,7 +862,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				[target.ArchiveId],
 				_vpkFile.State.Disabled,
 				Report,
@@ -1116,7 +1116,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
@@ -1233,7 +1233,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,

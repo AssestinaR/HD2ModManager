@@ -106,7 +106,7 @@ public static class ModCompileService
 		var result = await SectionalCompiler
 			.CompileAsync(
 				modDirectory, context, target, disabled, headMerge, null, onStage, cancellationToken, exclusiveItemId,
-				exclusiveItemIds, autoSkipFailedTargets ?? wardrobe.AutoSkipFailedTargets, onTargetFailures)
+				exclusiveItemIds, autoSkipFailedTargets ?? wardrobe.AutoSkipFailedTargets, onTargetFailures, context.LowPollutionMode)
 			.ConfigureAwait(false);
 		if (!result.Ok)
 			return ModCompileOutcome.Failure(result.Error ?? "编译失败。", result.Warnings);

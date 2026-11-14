@@ -1915,6 +1915,18 @@ namespace HD2ModManager.ViewModels
             }
         }
 
+        /// <summary>低污染模式：全局开关。切换不会自动重构建（S4 才做自动工作流），所以界面要提示。</summary>
+        public bool LowPollutionMode
+        {
+            get => SettingsService.GetLowPollutionMode();
+            set
+            {
+                if (SettingsService.GetLowPollutionMode() == value) return;
+                SettingsService.SetLowPollutionMode(value);
+                OnPropertyChanged(nameof(LowPollutionMode));
+            }
+        }
+
         public int GameDataIndexCheckIntervalHours
         {
             get => SettingsService.GetGameDataIndexCheckIntervalHours();
@@ -2222,6 +2234,7 @@ namespace HD2ModManager.ViewModels
             OnPropertyChanged(nameof(AssetMetadataCheckIntervalHours));
             OnPropertyChanged(nameof(AssetMetadataLastCheckText));
             OnPropertyChanged(nameof(AutoCheckGameDataIndex));
+            OnPropertyChanged(nameof(LowPollutionMode));
             OnPropertyChanged(nameof(GameDataIndexCheckIntervalHours));
             OnPropertyChanged(nameof(GameDataIndexLastCheckText));
             OnPropertyChanged(nameof(AssetMetadataRepository));

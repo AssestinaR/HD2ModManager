@@ -57,6 +57,8 @@ namespace HD2ModManager.Services
             // 存成 JSON 会变成 1.1428571428571428；可空能让"没动过"这件事保持可辨认，
             // 也就不会因为一次读写的往返把它截断成别的数。
             public double? HeadScale { get; set; }
+            // 低污染模式（P6）：VPK 模型 Mod 编译到自身素体时压缩成 2/3 个 unit。默认关；切换后需一键重构建才生效。
+            public bool LowPollutionMode { get; set; } = false;
         }
 
         public const string DefaultAssetMetadataRepository = GitHubAssetMetadataSyncService.DefaultRepositoryRawBaseUrl;
@@ -624,6 +626,22 @@ namespace HD2ModManager.Services
 
         public static StoragePaths CreateStoragePaths()
             => new(AppDomain.CurrentDomain.BaseDirectory, GetModLibraryFolder());
+
+        public static bool GetLowPollutionMode() => LoadAll()?.LowPollutionMode ?? false;
+
+        public static bool SetLowPollutionMode(bool enabled)
+        {
+            try
+            {
+                Update(model => model.LowPollutionMode = enabled);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>编译/重构建要用的宿主上下文：游戏 data 目录、存储路径，以及全局的「低污染模式」。</summary>
+        public static VpkHostContext CreateVpkHostContext()
+            => new(GetGameDataFolder(), CreateStoragePaths()) { LowPollutionMode = GetLowPollutionMode() };
 
         public static string GetModLibraryFolder()
         {

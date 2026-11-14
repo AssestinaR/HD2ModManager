@@ -117,7 +117,8 @@ public static partial class SectionalCompiler
 		uint? exclusiveItemId = null,
 		IReadOnlyList<uint>? exclusiveItemIds = null,
 		bool autoSkipFailedTargets = false,
-		SectionalTargetFailureHandler? onTargetFailures = null)
+		SectionalTargetFailureHandler? onTargetFailures = null,
+		bool lowPollution = false)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
 		ArgumentNullException.ThrowIfNull(context);
@@ -150,9 +151,24 @@ public static partial class SectionalCompiler
 		if (ownModel)
 		{
 			onStage?.Invoke("正在按当前条件编译生效层…");
-			return await CompileOwnModelAsync(
+			string? notCompressedReason = null;
+			if (lowPollution)
+			{
+				onStage?.Invoke("低污染模式：正在把素体压缩成少量 unit…");
+				var squeezed = await CompileLowPollutionOwnModelAsync(
+					modDirectory, context, payload, sourcePatch, sourceMap, disabledSections, headMergeIntoBody, selection, cancellationToken)
+					.ConfigureAwait(false);
+				if (squeezed.Result is not null) return squeezed.Result;
+				notCompressedReason = squeezed.NotCompressedReason;
+			}
+
+			var own = await CompileOwnModelAsync(
 				modDirectory, payload, sourcePatch, sourceMap, disabledSections, headMergeIntoBody, selection, cancellationToken)
 				.ConfigureAwait(false);
+			// 不能压缩时照常编译，但要让用户看见：否则打开开关、进游戏发现没变化，就再也信不过它。
+			return notCompressedReason is null || !own.Ok
+				? own
+				: own with { Warnings = [.. own.Warnings, $"低污染模式没有压缩这个素体：{notCompressedReason}，已按普通素体编译。"] };
 		}
 
 		var exclusiveTargets = exclusiveItemIds is { Count: > 0 }
@@ -217,6 +233,7 @@ public static partial class SectionalCompiler
 			var components = await SectionGroupFile.TryReadAsync(payload, cancellationToken).ConfigureAwait(false);
 			await WriteStructureAsync(modDirectory, documented, components, cancellationToken).ConfigureAwait(false);
 
+			DeleteStaleLowPollutionLayout(modDirectory);
 			var merge = SectionalHeadMergeOutcome.Off;
 			var effectiveRegistry = Path.Combine(
 				ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), VpkCustomModelFile.FileName);
@@ -654,6 +671,7 @@ public static partial class SectionalCompiler
 	/// <summary>换甲之后必须删掉上一次合并留下的派生注册表，否则素体目录还按合并形态算。</summary>
 	private static void DeleteStaleCustomModel(string modDirectory)
 	{
+		DeleteStaleLowPollutionLayout(modDirectory);
 		var path = Path.Combine(ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), VpkCustomModelFile.FileName);
 		if (!File.Exists(path)) return;
 		VpkPayloadSwap.ClearReadOnlyForWrite(path);

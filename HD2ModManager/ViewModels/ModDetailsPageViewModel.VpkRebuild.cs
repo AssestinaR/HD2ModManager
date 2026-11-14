@@ -110,7 +110,7 @@ public partial class ModDetailsPageViewModel
 		{
 			var outcome = await Legacy2SectionalConverter
 				.RunAsync(node.Id.Value.ToString("N"), directory,
-					new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+					SettingsService.CreateVpkHostContext(),
 					Report, cancellation)
 				.ConfigureAwait(true);
 
@@ -253,7 +253,7 @@ public partial class ModDetailsPageViewModel
 			var outcome = await VpkRebuildService.RunAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
@@ -333,7 +333,7 @@ public partial class ModDetailsPageViewModel
 						var optionOutcome = await VpkRebuildService.RunAsync(
 							option.Selector,
 							option.Directory,
-							new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+							SettingsService.CreateVpkHostContext(),
 							targetArchiveIds: null,
 							disabledSections: null,
 							stage => Report($"选项 {option.Name}：{stage}"),
