@@ -83,14 +83,30 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 	}
 
 	[Fact]
-	public void CapeAndShoulders_PassThroughUntouched()
+	public void Cape_PassesThroughUntouched_ShouldersJoinTheArmSlot()
 	{
 		var plan = SectionalCompressionPlanner.Plan(
-			[.. SevenSlots(), Src("b1", ArmorPart.Cape), Src("b2", ArmorPart.LeftShoulder)], headMerge: false);
+			[.. SevenSlots(), Src("b1", ArmorPart.Cape), Src("b2", ArmorPart.LeftShoulder), Src("b3", ArmorPart.RightShoulder)],
+			headMerge: false);
 
 		Assert.True(plan.Supported);
-		Assert.Equal(["b1", "b2"], plan.Passthrough.Select(member => member.SourceUnitId));
-		Assert.Equal(["a1", "a2", "a6", "b1", "b2"], plan.SurvivingUnitIds);
+		Assert.Equal(["b1"], plan.Passthrough.Select(member => member.SourceUnitId));
+		// 手臂槽：ID 仍取左臂，肩排在两条臂之后。
+		Assert.Equal(["a6", "a7", "b2", "b3"], plan.Groups[2].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["a1", "a2", "a6", "b1"], plan.SurvivingUnitIds);
+		Assert.Equal(["a2", "a6", "b1"],
+			SectionalCompressionPlanner.Plan(
+				[.. SevenSlots(), Src("b1", ArmorPart.Cape), Src("b2", ArmorPart.LeftShoulder)], headMerge: true).SurvivingUnitIds);
+	}
+
+	[Fact]
+	public void ShouldersAlone_FormTheArmSlot_AndSupplyItsId()
+	{
+		var plan = SectionalCompressionPlanner.Plan(
+			[Src("a2", ArmorPart.Torso), Src("s2", ArmorPart.RightShoulder), Src("s1", ArmorPart.LeftShoulder)], headMerge: false);
+
+		Assert.Equal(["a2", "s1"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(["s1", "s2"], plan.Groups[1].Members.Select(member => member.SourceUnitId));
 	}
 
 	[Theory]

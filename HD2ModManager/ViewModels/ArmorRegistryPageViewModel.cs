@@ -1322,6 +1322,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase))
 			{
 				target.SetRolePresentation(target.IsCombined ? "组合映射目标" : target.KitKind == GameDataEquipmentKitKind.Helmet ? "仅头盔" : "仅护甲", null);
+				ApplyLowPollutionMark(target);
 				detailItems.Add(target);
 			}
 		}
@@ -1613,6 +1614,24 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		}
 	}
 
+	/// <summary>最近一次「应用」里低污染模式对每个目标的结论（没开低污染模式 / 没有压缩素体映射时为空）。</summary>
+	private IReadOnlyDictionary<uint, LowPollutionTargetReport> lowPollutionReports = new Dictionary<uint, LowPollutionTargetReport>();
+
+	/// <summary>不可 / 未部署的目标：在行上标「低污染模式下不可」（或「未部署」）并写明原因（J3）。组合行有任何一件不可就标。</summary>
+	private void ApplyLowPollutionMark(RuntimeArmorChoiceViewModel target)
+	{
+		var blocked = target.MemberItemIds
+			.Select(id => lowPollutionReports.GetValueOrDefault(id))
+			.FirstOrDefault(report => report is { IsMapped: false });
+		if (blocked is null)
+		{
+			target.SetLowPollutionMark(null, null);
+			return;
+		}
+
+		target.SetLowPollutionMark(blocked.Status == "not-deployed" ? "未部署" : "低污染模式下不可", blocked.Reason);
+	}
+
 	private async Task ApplyAsync()
 	{
 		// 与 CanExecute 保持一致：冷却中或正在忙时不可点；没有改动也允许重投。
@@ -1648,7 +1667,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				CustomModels.Select(model => model.ToDomain()).ToArray(),
 				pieceOverrides,
 				targetModes,
-				gameDataDirectory: SettingsService.GetGameDataFolder());
+				gameDataDirectory: SettingsService.GetGameDataFolder(),
+				lowPollutionMode: SettingsService.GetLowPollutionMode());
 
 			// **真映射那一层的结论必须说出来。** 以前这个结果被直接丢掉，于是
 			// "没有一条映射能应用""备份基准失效无法还原""当前文件被外部替换"这些原因
@@ -1667,6 +1687,27 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				var summary = $"真映射：{applied.Applied} 条映射 · 换 {applied.Replaced} 格 · 隐藏 {applied.Hidden} 格";
 				LogService.Info(summary);
 				StatusDetail = summary;
+			}
+			// 低污染模式（P6 S3）：每个目标的结论带回来。不可 / 未部署的目标在行上标出原因（见 RebuildProjections）；
+			// 汇总写日志并弹一条，映射不会静默少几套。
+			lowPollutionReports = result.LowPollution.GroupBy(report => report.TargetItemId).ToDictionary(group => group.Key, group => group.First());
+			if (result.LowPollution.Count > 0)
+			{
+				var skipped = result.LowPollution.Where(report => !report.IsMapped).ToArray();
+				var summary = $"低污染模式：{result.LowPollution.Count - skipped.Length} 套已映射，Hider 规则 {result.HideRuleCount} 条"
+					+ (skipped.Length > 0 ? $"，{skipped.Length} 套未映射" : string.Empty) + "。";
+				if (result.HideRuleCount > 0) summary += "首次启用需要再部署一次，Hider 才会投放并生效。";
+				if (result.HideRulesDropped > 0) summary += $" 有 {result.HideRulesDropped} 条规则超过协议上限被丢弃。";
+				LogService.Info(summary);
+				notifications.Show(summary, NotificationLevel.Info, TimeSpan.FromSeconds(14), "护甲注册");
+				if (skipped.Length > 0)
+				{
+					var lines = skipped.Take(5).Select(report => $"{report.TargetName}：{report.Reason}");
+					var more = skipped.Length > 5 ? $"（另有 {skipped.Length - 5} 套，见日志）" : string.Empty;
+					var detail = "低污染模式下未映射：" + string.Join("；", lines) + more;
+					foreach (var report in skipped) LogService.Info($"低污染模式未映射 {report.TargetName}（{report.TargetItemId}）：{report.Reason}");
+					notifications.Show(detail, NotificationLevel.Warning, TimeSpan.FromSeconds(20), "护甲注册");
+				}
 			}
 			modelDefinitions = result.Document.ModelDefinitions;
 			pieceOverrides = result.Document.PieceOverrideDefinitions;
@@ -1983,6 +2024,17 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool IsSelected { get => isSelected; set => SetField(ref isSelected, value); }
 	public ModListRowPresentation RowPresentation { get => rowPresentation; private set => SetField(ref rowPresentation, value); }
 
+	private string? lowPollutionWarning;
+	private string? lowPollutionNote;
+
+	/// <summary>低污染模式下的标注（警告标签 + 原因）；传 <c>null</c> 清除。</summary>
+	public void SetLowPollutionMark(string? warning, string? note)
+	{
+		lowPollutionWarning = warning;
+		lowPollutionNote = note;
+		RowPresentation = RowPresentation with { WarningLabel = warning, Note = note };
+	}
+
 	public void SetRolePresentation(string? role, int? count)
 	{
 		if (IsCombined && role is not null)
@@ -2003,7 +2055,9 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 			"仅护甲" => "仅护甲",
 			_ => null,
 		};
-		RowPresentation = new ModListRowPresentation(TypeLabel: role, TypeTone: ModListRowTone.Accent, Summary: summary);
+		RowPresentation = new ModListRowPresentation(
+			TypeLabel: role, TypeTone: ModListRowTone.Accent, Summary: summary,
+			WarningLabel: lowPollutionWarning, Note: lowPollutionNote);
 	}
 
 	public static RuntimeArmorChoiceViewModel Unknown(uint itemId)

@@ -104,15 +104,15 @@ public sealed class KitInstanceTests
 		string Ids(int count, int offset) => string.Join(',', Enumerable.Range(1, count).Select(i => (offset + i).ToString("x16")));
 		string One(int all, int none, int hide) =>
 			$"schema=1\nrevision=1\nrule=name:x;radius:0.5;all:{Ids(all, 0)};none:{Ids(none, 100)};hide:{Ids(hide, 200)}\n";
-		Assert.True(KitInstanceRulesProtocol.TryParse(One(8, 8, 128), out _, out var error), error);
+		Assert.True(KitInstanceRulesProtocol.TryParse(One(8, 8, 256), out _, out var error), error);
 		Assert.False(KitInstanceRulesProtocol.TryParse(One(9, 0, 1), out _, out _));
 		Assert.False(KitInstanceRulesProtocol.TryParse(One(1, 9, 1), out _, out _));
-		Assert.False(KitInstanceRulesProtocol.TryParse(One(1, 0, 129), out _, out _));
+		Assert.False(KitInstanceRulesProtocol.TryParse(One(1, 0, 257), out _, out _));
 
-		var sixtyFive = "schema=1\nrevision=1\n" + string.Concat(Enumerable.Range(1, 65)
+		var sixtyFive = "schema=1\nrevision=1\n" + string.Concat(Enumerable.Range(1, 1025)
 			.Select(i => $"rule=name:r{i};radius:0.3;all:{Marker};hide:{HideA}\n"));
 		Assert.False(KitInstanceRulesProtocol.TryParse(sixtyFive, out _, out _));
-		Assert.False(KitInstanceRulesProtocol.TryParse("schema=1\nrevision=1\n# " + new string('x', 65536) + "\n", out _, out _));
+		Assert.False(KitInstanceRulesProtocol.TryParse("schema=1\nrevision=1\n# " + new string('x', 2 * 1024 * 1024) + "\n", out _, out _));
 	}
 
 	[Fact]
@@ -531,7 +531,7 @@ public sealed class KitInstanceTests
 		var payload = await new AdaptationPatchEntryPayloadReader().ReadPayloadAsync(entry);
 		var text = Encoding.UTF8.GetString(payload.TocData.AsSpan(8));
 		Assert.StartsWith("-- HD2-Addon: mods/hd2modmanager/kit_instance_hider\n", text, StringComparison.Ordinal);
-		Assert.Contains("local M = { version = '0.2.0'", text, StringComparison.Ordinal);
+		Assert.Contains("local M = { version = '0.3.0'", text, StringComparison.Ordinal);
 		Assert.Equal(BinaryPrimitives.ReadUInt32LittleEndian(payload.TocData.AsSpan(0)), (uint)(payload.TocData.Length - 8));
 		Assert.Equal(2u, BinaryPrimitives.ReadUInt32LittleEndian(payload.TocData.AsSpan(4)));
 	}

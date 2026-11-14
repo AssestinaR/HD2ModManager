@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.Sectional;
 
 namespace HD2ModCore.Infrastructure;
 
@@ -38,7 +39,17 @@ public static class WardrobeLinkCompiler
 	/// <summary>
 	/// 编译结果。<see cref="Links"/> 为 0 表示没有任何可执行的映射，调用方不应覆盖运行时文件。
 	/// </summary>
-	public sealed record Result(string Text, int LinkCount, int HiddenCount, int UnresolvedTargets, int MissingSources);
+	public sealed record Result(string Text, int LinkCount, int HiddenCount, int UnresolvedTargets, int MissingSources)
+	{
+		/// <summary>低污染模式写出的映射行数（已计入 <see cref="LinkCount"/>）。</summary>
+		public int LowPollutionLinkCount { get; init; }
+
+		/// <summary>低污染目标里不可 / 未部署而被整套跳过的映射数。</summary>
+		public int LowPollutionSkipped { get; init; }
+
+		/// <summary>低污染承载件和别的映射的承载键相同、donor 不同而被丢弃的行数（不应出现；出现说明两个目标抢同一个承载件）。</summary>
+		public int LowPollutionConflicts { get; init; }
+	}
 
 	/// <summary>来源件表的一项，游戏护甲与自定义素体都归一成这个形状。</summary>
 	private sealed record SourceUnit(uint Body, uint Slot, uint PieceType, string UnitHex);
@@ -48,7 +59,8 @@ public static class WardrobeLinkCompiler
 		IReadOnlyList<RuntimeArmorRegistryMapping> mappings,
 		int revision,
 		bool enabled,
-		IReadOnlyList<RuntimeArmorRegistryModel>? models = null)
+		IReadOnlyList<RuntimeArmorRegistryModel>? models = null,
+		IReadOnlyDictionary<uint, LowPollutionMappingPlan>? lowPollution = null)
 	{
 		ArgumentNullException.ThrowIfNull(snapshot);
 		ArgumentNullException.ThrowIfNull(mappings);
@@ -64,8 +76,20 @@ public static class WardrobeLinkCompiler
 		var work = new List<(RuntimeArmorRegistryMapping Mapping, GameDataAuthorityKit Target, List<SourceUnit> Source)>();
 		var unresolved = 0;
 		var missingSources = 0;
+		// 低污染路径（P6 S3，规划 §11）：只在调用方给了规划结果、且这条映射在其中时走；其余映射的处理一字不变。
+		var lowPollutionPlans = new List<LowPollutionMappingPlan>();
+		var lowPollutionSkipped = 0;
 		foreach (var mapping in mappings)
 		{
+			if (lowPollution is not null && mapping.IsModelMapping
+				&& lowPollution.TryGetValue(mapping.TargetItemId, out var lowPollutionPlan)
+				&& string.Equals(lowPollutionPlan.ModelKey, mapping.ModelKey, StringComparison.Ordinal))
+			{
+				// 不可 / 未部署：整套跳过，**不退回全量映射**（共用部件那样映射就是污染）。
+				if (lowPollutionPlan.Status == LowPollutionMappingStatus.Mapped) lowPollutionPlans.Add(lowPollutionPlan);
+				else lowPollutionSkipped++;
+				continue;
+			}
 			if (!kits.TryGetValue(mapping.TargetItemId, out var targetKit))
 			{
 				unresolved++;
@@ -131,6 +155,33 @@ public static class WardrobeLinkCompiler
 			}
 		}
 
+		// 低污染映射行：只发承载件，没有 HiddenUnit。承载键已被别的映射占着且 donor 不同 ⇒ 丢弃并计数。
+		var lowPollutionLinks = 0;
+		var lowPollutionConflicts = 0;
+		if (lowPollutionPlans.Count != 0)
+		{
+			var donors = new Dictionary<string, string>(StringComparer.Ordinal);
+			foreach (var existing in lines)
+			{
+				var pair = existing["link=".Length..].Split(',');
+				donors.TryAdd(pair[0], pair[1]);
+			}
+			foreach (var plan in lowPollutionPlans)
+			{
+				foreach (var link in plan.Links)
+				{
+					if (donors.TryGetValue(link.Carrier, out var existingDonor))
+					{
+						if (!string.Equals(existingDonor, link.Unit, StringComparison.Ordinal)) lowPollutionConflicts++;
+						continue;
+					}
+					donors[link.Carrier] = link.Unit;
+					lines.Add("link=" + link.Carrier + "," + link.Unit);
+					lowPollutionLinks++;
+				}
+			}
+		}
+
 		var builder = new StringBuilder(64 + lines.Count * 40);
 		builder.Append("schema=").Append(Schema).Append('\n');
 		builder.Append("revision=").Append(revision.ToString(CultureInfo.InvariantCulture)).Append('\n');
@@ -147,7 +198,12 @@ public static class WardrobeLinkCompiler
 		}
 		foreach (var line in lines) builder.Append(line).Append('\n');
 
-		return new Result(builder.ToString(), lines.Count, hidden, unresolved, missingSources);
+		return new Result(builder.ToString(), lines.Count, hidden, unresolved, missingSources)
+		{
+			LowPollutionLinkCount = lowPollutionLinks,
+			LowPollutionSkipped = lowPollutionSkipped,
+			LowPollutionConflicts = lowPollutionConflicts,
+		};
 	}
 
 	private static List<SourceUnit>? ResolveSource(

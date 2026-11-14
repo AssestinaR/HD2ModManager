@@ -858,7 +858,10 @@ public sealed class LuaDeploymentService : ILuaDeploymentService
 					ExceptionMessage: exception.ToString()));
 			}
 		}
-		return compiled.Document.Rules.Count;
+		// 软映射（低污染模式）的规则由映射页「应用」写进另一个文件（kit-instance.mapping.rules），部署不碰它，
+		// 但投放 Hider 的门槛要把它数进去：否则只用映射页、没有任何专属记录的用户永远没有 Hider。
+		var mappingRuleCount = _kitInstanceRegistryRoot is null ? 0 : KitInstanceRulesFile.CountMappingRules(_kitInstanceRegistryRoot);
+		return compiled.Document.Rules.Count + mappingRuleCount;
 	}
 
 	/// <summary>

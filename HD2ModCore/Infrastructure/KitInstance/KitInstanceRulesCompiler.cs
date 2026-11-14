@@ -71,13 +71,15 @@ public static class KitInstanceRulesCompiler
 			}
 		}
 
-		if (rules.Count > KitInstanceRulesProtocol.MaximumRules)
+		// 超过条数或字节上限的规则丢弃并给 Warning：写出的文件永远能被 Lua 接受（超限文件整份无效）。
+		var fitted = KitInstanceRulesProtocol.FitToLimits(rules, out var dropped);
+		if (dropped > 0)
 		{
 			issues.Add(new CoreIssue(
 				CoreIssueSeverity.Warning,
 				"KitInstanceTooManyRules",
-				$"启用的「按实例隐藏」规则超过 {KitInstanceRulesProtocol.MaximumRules} 条，多出的已忽略。"));
-			rules.RemoveRange(KitInstanceRulesProtocol.MaximumRules, rules.Count - KitInstanceRulesProtocol.MaximumRules);
+				$"启用的「按实例隐藏」规则超过协议上限（{KitInstanceRulesProtocol.MaximumRules} 条 / {KitInstanceRulesProtocol.MaximumBytes / 1024} KiB），多出的 {dropped} 条已忽略。"));
+			rules = [.. fitted];
 		}
 
 		// 稳定输出：按规则名排序，同一输入永远写出同一份文本（revision 除外）。
@@ -96,10 +98,54 @@ public static class KitInstanceRulesFile
 		return Path.Combine(Path.GetFullPath(registryRoot), KitInstanceRulesProtocol.FileName);
 	}
 
-	/// <summary>现有文件里的 revision；文件不存在或读不出来返回 0（于是新 revision 从 1 开始）。</summary>
-	public static int ReadRevision(string registryRoot)
+	public static string GetMappingPath(string registryRoot)
 	{
-		var path = GetPath(registryRoot);
+		ArgumentException.ThrowIfNullOrWhiteSpace(registryRoot);
+		return Path.Combine(Path.GetFullPath(registryRoot), KitInstanceRulesProtocol.MappingFileName);
+	}
+
+	/// <summary>映射规则文件里现有的 revision；不存在或读不出来返回 0。</summary>
+	public static int ReadMappingRevision(string registryRoot) => ReadRevisionAt(GetMappingPath(registryRoot));
+
+	/// <summary>映射规则文件里现有的规则条数；不存在或读不出来返回 0（部署门用它决定要不要投放 Hider）。</summary>
+	public static int CountMappingRules(string registryRoot)
+	{
+		var path = GetMappingPath(registryRoot);
+		try
+		{
+			if (!File.Exists(path)) return 0;
+			var text = File.ReadAllText(path, System.Text.Encoding.UTF8);
+			return KitInstanceRulesProtocol.TryParse(text, out var document, out _) ? document!.Rules.Count : 0;
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			return 0;
+		}
+	}
+
+	public sealed record MappingWriteResult(int Written, int Dropped, int Revision);
+
+	/// <summary>写映射规则文件（原子）。规则超过条数或字节上限的丢弃，结果里给出写出条数与丢弃条数。</summary>
+	public static async ValueTask<MappingWriteResult> WriteMappingAsync(
+		string registryRoot, IReadOnlyList<KitInstanceRule> rules, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(rules);
+		var fitted = KitInstanceRulesProtocol.FitToLimits(rules, out var dropped);
+		var previous = ReadMappingRevision(registryRoot);
+		var revision = previous >= int.MaxValue - 1 ? int.MaxValue - 1 : Math.Max(0, previous) + 1;
+		var ordered = fitted.OrderBy(rule => rule.Name, StringComparer.Ordinal).ToArray();
+		await KitInstanceFiles.WriteAtomicTextAsync(
+			GetMappingPath(registryRoot),
+			KitInstanceRulesProtocol.Serialize(new KitInstanceRulesDocument(revision, ordered)),
+			cancellationToken).ConfigureAwait(false);
+		return new MappingWriteResult(ordered.Length, dropped, revision);
+	}
+
+	/// <summary>现有文件里的 revision；文件不存在或读不出来返回 0（于是新 revision 从 1 开始）。</summary>
+	public static int ReadRevision(string registryRoot) => ReadRevisionAt(GetPath(registryRoot));
+
+	private static int ReadRevisionAt(string path)
+	{
 		string text;
 		try
 		{

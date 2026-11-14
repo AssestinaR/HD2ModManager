@@ -161,20 +161,20 @@ public sealed class KitExclusiveMultiTargetTests
 			[.. Enumerable.Range(0, hideCount).Select(i => $"{(ulong)(0x100000 + item * 1000 + i):x16}")]);
 
 	[Fact]
-	public void RuleLimits_AllowAFewTargets_AndBlockMoreThanSixtyFourRules()
+	public void RuleLimits_AllowAFewTargets_AndBlockMoreThanTheRuleCap()
 	{
 		var node = new ModNodeId(Guid.NewGuid());
 		var dir = Path.GetTempPath();
 
 		Assert.Null(KitExclusiveWorkspace.CheckRuleLimits(node, dir, [Seed(1), Seed(2), Seed(3)], KitInstanceWorkspace.Empty));
 
-		var tooMany = Enumerable.Range(1, 65).Select(i => Seed((uint)i)).ToArray();
+		var tooMany = Enumerable.Range(1, KitInstanceRulesProtocol.MaximumRules + 1).Select(i => Seed((uint)i)).ToArray();
 		var error = KitExclusiveWorkspace.CheckRuleLimits(node, dir, tooMany, KitInstanceWorkspace.Empty);
 		Assert.NotNull(error);
-		Assert.Contains("64", error, StringComparison.Ordinal);
+		Assert.Contains(KitInstanceRulesProtocol.MaximumRules.ToString(), error, StringComparison.Ordinal);
 
-		// 备用签名也算规则：32 个目标 × 3 条 = 96 条。
-		var extras = Enumerable.Range(1, 32).Select(i => Seed((uint)i, extraAll: 2)).ToArray();
+		// 备用签名也算规则：每个目标 3 条，合计超过上限。
+		var extras = Enumerable.Range(1, KitInstanceRulesProtocol.MaximumRules / 3 + 1).Select(i => Seed((uint)i, extraAll: 2)).ToArray();
 		Assert.NotNull(KitExclusiveWorkspace.CheckRuleLimits(node, dir, extras, KitInstanceWorkspace.Empty));
 	}
 
@@ -185,22 +185,22 @@ public sealed class KitExclusiveMultiTargetTests
 		var other = new ModNodeId(Guid.NewGuid());
 		var dir = Path.GetTempPath();
 		KitInstanceWorkspaceRecord Foreign(uint item) => new(item, $"x-{item}", 0.3, [$"{item:x16}"], [], ["0000000000000010"]);
-		var workspace = Enumerable.Range(1, 62).Aggregate(
+		var workspace = Enumerable.Range(1, KitInstanceRulesProtocol.MaximumRules - 2).Aggregate(
 			KitInstanceWorkspace.Empty.With(node, Foreign(999)),
 			(current, i) => current.With(new ModNodeId(Guid.NewGuid()), Foreign((uint)i)));
 
-		Assert.Null(KitExclusiveWorkspace.CheckRuleLimits(node, dir, [Seed(1), Seed(2)], workspace));   // 62 + 2 = 64，本节点旧记录不算
+		Assert.Null(KitExclusiveWorkspace.CheckRuleLimits(node, dir, [Seed(1), Seed(2)], workspace));   // 别人的规则 + 2 = 上限，本节点旧记录不算
 		var error = KitExclusiveWorkspace.CheckRuleLimits(node, dir, [Seed(1), Seed(2), Seed(3)], workspace.With(other, Foreign(500)));
 		Assert.NotNull(error);
 		Assert.Contains("别的 Mod", error, StringComparison.Ordinal);
 	}
 
 	[Fact]
-	public void RuleLimits_BlockWhenTheRulesFileWouldExceed64KiB()
+	public void RuleLimits_BlockWhenTheRulesFileWouldExceedTheByteCap()
 	{
 		var node = new ModNodeId(Guid.NewGuid());
-		// 每条 128 个隐藏项 ≈ 2.2 KB：40 条 ≈ 88 KB，条数没超（≤64）但文件超 64 KiB。
-		var seeds = Enumerable.Range(1, 40).Select(i => Seed((uint)i, hideCount: 128)).ToArray();
+		// 每条 256 个隐藏项 ≈ 4.4 KB：520 条 ≈ 2.3 MB，条数没超但文件超 2 MiB。
+		var seeds = Enumerable.Range(1, 520).Select(i => Seed((uint)i, hideCount: KitInstanceRulesProtocol.MaximumHide)).ToArray();
 
 		var error = KitExclusiveWorkspace.CheckRuleLimits(node, Path.GetTempPath(), seeds, KitInstanceWorkspace.Empty);
 

@@ -31,12 +31,16 @@ public sealed record KitInstanceRulesDocument(int Revision, IReadOnlyList<KitIns
 public static class KitInstanceRulesProtocol
 {
 	public const string FileName = "kit-instance.rules";
+
+	/// <summary>软映射（低污染模式）的规则文件：由映射页「应用」写，格式与 <see cref="FileName"/> 相同；Lua 两个文件都读，规则取并集。</summary>
+	public const string MappingFileName = "kit-instance.mapping.rules";
 	public const int SchemaVersion = 1;
-	public const int MaximumBytes = 64 * 1024;
-	public const int MaximumRules = 64;
+	// P6 S3 扩容（规划 §11.6，lupa 压测：每帧开销与规则数、hide 长度无关）。每个规则文件各自适用。
+	public const int MaximumBytes = 2 * 1024 * 1024;
+	public const int MaximumRules = 1024;
 	public const int MaximumAll = 8;
 	public const int MaximumNone = 8;
-	public const int MaximumHide = 128;
+	public const int MaximumHide = 256;
 	public const int MaximumNameLength = 64;
 	public const double MinimumRadius = 1e-6;
 
@@ -89,6 +93,29 @@ public static class KitInstanceRulesProtocol
 			}
 		}
 		return true;
+	}
+
+	/// <summary>
+	/// 把规则按顺序装进上限：超过条数或字节数的后面几条丢弃（调用方应给 Warning），保证写出的文件永远能被 Lua 接受。
+	/// 不合规的规则（名字、ID、半径、个数）不在这里处理，仍由 <see cref="Serialize"/> 抛异常。
+	/// </summary>
+	public static IReadOnlyList<KitInstanceRule> FitToLimits(IReadOnlyList<KitInstanceRule> rules, out int dropped)
+	{
+		ArgumentNullException.ThrowIfNull(rules);
+		var kept = new List<KitInstanceRule>(Math.Min(rules.Count, MaximumRules));
+		// 头部固定开销（schema/revision/注释）留 128 字节余量；每条规则的字节数与 Serialize 的写法一致。
+		var bytes = 128;
+		foreach (var rule in rules)
+		{
+			if (kept.Count >= MaximumRules) break;
+			var line = 5 + 5 + rule.Name.Length + 8 + 8 + 5 + rule.All.Count * 17 + 6 + rule.None.Count * 17 + 6 + rule.Hide.Count * 17 + 2;
+			if (bytes + line > MaximumBytes) break;
+			bytes += line;
+			kept.Add(rule);
+		}
+
+		dropped = rules.Count - kept.Count;
+		return kept;
 	}
 
 	/// <summary>写出规则文本。内容不合规（含超过 64 条或 64 KiB）时抛 <see cref="InvalidDataException"/>。</summary>

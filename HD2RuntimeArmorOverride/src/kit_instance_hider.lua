@@ -17,7 +17,7 @@ local GLOBAL_KEY = 'HD2KitInstanceHider'
 local existing = rawget(_G, GLOBAL_KEY)
 if existing then return existing end
 
-local M = { version = '0.2.0', status = 'starting' }
+local M = { version = '0.3.0', status = 'starting' }
 rawset(_G, GLOBAL_KEY, M)
 
 local SWEEP_INTERVAL = 0.5          -- 秒：两次完整扫描的最小间隔
@@ -28,11 +28,14 @@ local MAX_UNITS_PER_WORLD = 8192
 local MAX_LOG_BYTES = 48 * 1024     -- 加载器的日志约 64 KB 截断开头
 local MAX_HIDE_ERRORS = 10          -- set_unit_visibility 连续失败这么多次就停手
 
--- 规则文件上限（§2）
-local MAX_RULES_BYTES = 64 * 1024
-local MAX_RULES = 64
-local MAX_ALL, MAX_NONE, MAX_HIDE = 8, 8, 128
+-- 规则文件上限（§2；P6 S3 扩容，规划 kit-instance-mapping-deploy-plan §11.6）。每个规则文件各自适用。
+-- 压测（lupa）：每帧开销与规则数、hide 长度无关，约束只有文件大小和一次性解析。
+local MAX_RULES_BYTES = 2 * 1024 * 1024
+local MAX_RULES = 1024
+local MAX_ALL, MAX_NONE, MAX_HIDE = 8, 8, 256
 local RULES_FILE = 'kit-instance.rules'
+-- 软映射（低污染模式）的规则：由映射页「应用」写，与部署写的主文件互不覆盖（§11.3）。
+local MAPPING_RULES_FILE = 'kit-instance.mapping.rules'
 
 ---------------------------------------------------------------------------
 -- 纯函数
@@ -240,6 +243,8 @@ function M.new(env)
 	local App, World, Unit, Vector3 = S.Application, S.World, S.Unit, S.Vector3
 	local now, cpu, write = env.now, env.cpu, env.write
 	local read_rules = env.read_rules or function() return nil, 'missing' end
+	-- 第二个规则文件（软映射写的）。没有 = 只有主文件，行为与 0.2.0 一致。
+	local read_mapping_rules = env.read_mapping_rules
 	local H = { stopped = false, hide_errors = 0, sweeps = 0, revision = nil }
 	local bytes = 0
 
@@ -281,9 +286,9 @@ function M.new(env)
 	local lastSummary = nil
 	local stats = { max_frame_ms = 0 }
 
-	local function install_rules(parsed)
-		rules = parsed.rules
-		H.revision = parsed.revision
+	local function install_rules(list, revision)
+		rules = list
+		H.revision = revision
 		TRACK, HIDES = {}, {}
 		for index, rule in ipairs(rules) do
 			for _, id in ipairs(rule.all) do TRACK[id] = true end
@@ -298,30 +303,65 @@ function M.new(env)
 		lastSummary = nil
 	end
 
-	local function reload_rules()
-		local text, status = read_rules()
+	-- 规则来源：主文件（部署写）和可选的映射文件（映射页写）。各自解析、各自保留上一版；
+	-- 两份规则**互相独立、取并集**：hide 只增不减，不存在谁覆盖谁；同名、同签名都照样各自生效。
+	local sources = { { file = 'rules', read = read_rules, last = nil, parsed = nil } }
+	if read_mapping_rules then
+		sources[2] = { file = 'mapping', read = read_mapping_rules, last = nil, parsed = nil }
+	end
+
+	-- 返回这个来源这一轮有没有变化。
+	local function poll(src)
+		local text, status = src.read()
 		if text == nil then
-			if status == 'missing' then
+			if status == 'missing' and src.last ~= MISSING then
 				-- 文件不存在 = 没有规则（已经藏掉的不恢复，见规划 §1）。
-				if lastText ~= MISSING then
-					lastText = MISSING
-					install_rules({ rules = {}, revision = nil })
-					emit('rules', { revision = -1, rules = 0, note = 'file missing' })
-				end
+				src.last = MISSING
+				src.parsed = nil
+				return true
 			end
 			-- 其它读取失败（被写入方占着等）：保留上一版，下一个周期再试。
-			return
+			return false
 		end
-		if text == lastText then return end
-		lastText = text
+		if text == src.last then return false end
+		src.last = text
 		local parsed, err = M.parse_rules(text)
 		if parsed == nil then
-			-- 同一份坏文本只记一次（lastText 已经是它）。保留上一版。
-			emit('rules_error', { reason = err })
-			return
+			-- 同一份坏文本只记一次（last 已经是它）。保留上一版。
+			emit('rules_error', { reason = err, file = src.file })
+			return false
 		end
-		install_rules(parsed)
-		emit('rules', { revision = parsed.revision, rules = #rules })
+		src.parsed = parsed
+		return true
+	end
+
+	local function reload_rules()
+		local changed = false
+		for _, src in ipairs(sources) do
+			if poll(src) then changed = true end
+		end
+		if not changed then return end
+		local list, mappingCount = {}, 0
+		local primary = sources[1].parsed
+		for i, src in ipairs(sources) do
+			if src.parsed ~= nil then
+				for _, rule in ipairs(src.parsed.rules) do
+					rule.source = src.file
+					list[#list + 1] = rule
+				end
+				if i == 2 then mappingCount = #src.parsed.rules end
+			end
+		end
+		install_rules(list, primary and primary.revision or nil)
+		local fields = { revision = primary and primary.revision or -1, rules = #rules }
+		if sources[2] then
+			fields.mapping_rules = mappingCount
+			fields.mapping_revision = sources[2].parsed and sources[2].parsed.revision or -1
+		end
+		if #rules == 0 and sources[1].last == MISSING and (sources[2] == nil or sources[2].last == MISSING) then
+			fields.note = 'file missing'
+		end
+		emit('rules', fields)
 	end
 	H.reload_rules = reload_rules
 	function H.rules() return rules end
@@ -417,12 +457,25 @@ function M.new(env)
 		confirmed, anchorCount = M.confirm_anchors(rules, sweep.seen)
 		-- missed 是「同 ID 但不在已确认锚点旁」的实例数：玩家或别的 NPC 穿着同款，正常不隐藏。
 		-- 只有 markers / hidden / revision 变化才写日志；missed 抖动不算。
-		local summary = string.format('%d/%d/%s', anchorCount, sweep.hidden, tostring(H.revision))
+		-- 哪几条规则的签名成立了（实机回报用）：规则名按下标去重，最多列 12 条。
+		local hitNames, hitSeen, hitCount = {}, {}, 0
+		for _, list in pairs(confirmed) do
+			for _, anchor in ipairs(list) do
+				if not hitSeen[anchor.rule] then
+					hitSeen[anchor.rule] = true
+					hitCount = hitCount + 1
+					if #hitNames < 12 then hitNames[#hitNames + 1] = rules[anchor.rule].name end
+				end
+			end
+		end
+		table.sort(hitNames)
+		local hit = table.concat(hitNames, ',')
+		local summary = string.format('%d/%d/%s/%s', anchorCount, sweep.hidden, tostring(H.revision), hit)
 		if summary ~= lastSummary then
 			lastSummary = summary
 			emit('sweep', { sweep = H.sweeps, markers = anchorCount, hidden = sweep.hidden,
 				left_visible = sweep.missed, revision = H.revision or -1, worlds = sweep.worldCount,
-				max_frame_ms = stats.max_frame_ms })
+				max_frame_ms = stats.max_frame_ms, rules_hit = hit, rules_hit_count = hitCount })
 			stats.max_frame_ms = 0
 		end
 		sweep = nil
@@ -490,6 +543,7 @@ function M.install(g)
 		return M
 	end
 	local rules_path = base .. '/ArmorRegistry/' .. RULES_FILE
+	local mapping_rules_path = base .. '/ArmorRegistry/' .. MAPPING_RULES_FILE
 
 	-- 日志：优先用加载器的 open_log；没有加载器（独占 boot）就自己开 <base>/Logs/KitInstanceHider.log。
 	local write = nil
@@ -522,24 +576,27 @@ function M.install(g)
 	local osTable = rawget(g, 'os')
 	local cpu = type(osTable) == 'table' and type(osTable.clock) == 'function' and osTable.clock or now
 
-	local function read_rules()
-		local ok, file, message, errno = pcall(ioTable.open, rules_path, 'rb')
-		if not ok or not file then
-			-- ENOENT = 文件不存在 = 没有规则；别的失败（被占用等）保留上一版。
-			if ok and (errno == 2 or (type(message) == 'string' and message:find('No such file', 1, true))) then
-				return nil, 'missing'
+	local function reader(path)
+		return function()
+			local ok, file, message, errno = pcall(ioTable.open, path, 'rb')
+			if not ok or not file then
+				-- ENOENT = 文件不存在 = 没有规则；别的失败（被占用等）保留上一版。
+				if ok and (errno == 2 or (type(message) == 'string' and message:find('No such file', 1, true))) then
+					return nil, 'missing'
+				end
+				return nil, 'error'
 			end
-			return nil, 'error'
+			local okRead, text = pcall(file.read, file, MAX_RULES_BYTES + 1)
+			pcall(file.close, file)
+			if not okRead then return nil, 'error' end
+			if text == nil then return '' end -- 空文件：读出 nil，按空文本走解析（会被判为无效并保留上一版）
+			return text
 		end
-		local okRead, text = pcall(file.read, file, MAX_RULES_BYTES + 1)
-		pcall(file.close, file)
-		if not okRead then return nil, 'error' end
-		if text == nil then return '' end -- 空文件：读出 nil，按空文本走解析（会被判为无效并保留上一版）
-		return text
 	end
 
 	local hider = M.new({
-		stingray = engine, now = now, cpu = cpu, write = write, read_rules = read_rules,
+		stingray = engine, now = now, cpu = cpu, write = write,
+		read_rules = reader(rules_path), read_mapping_rules = reader(mapping_rules_path),
 	})
 	M.hider = hider
 

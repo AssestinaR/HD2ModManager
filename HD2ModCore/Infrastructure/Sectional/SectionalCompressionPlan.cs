@@ -12,7 +12,7 @@ internal enum SectionalCompressionRole
 	/// <summary>躯干 + 胯 + 左右腿。</summary>
 	Body = 1,
 
-	/// <summary>左右臂。</summary>
+	/// <summary>左右臂 + 左右肩。</summary>
 	Arms = 2,
 
 	/// <summary>头 + 躯干 + 胯 + 左右腿（头身合并开：头的几何并进躯干）。</summary>
@@ -69,7 +69,9 @@ internal sealed record SectionalCompressionPlan(
 internal static class SectionalCompressionPlanner
 {
 	private static readonly ArmorPart[] BodyOrder = [ArmorPart.Torso, ArmorPart.Hips, ArmorPart.LeftLeg, ArmorPart.RightLeg];
-	private static readonly ArmorPart[] ArmOrder = [ArmorPart.LeftArm, ArmorPart.RightArm];
+	// 肩并进手臂槽（用户 2026-11-14 决定）：ID 仍取左臂 → 右臂，肩排在后面，没有臂时才轮到肩。
+	private static readonly ArmorPart[] ArmOrder =
+		[ArmorPart.LeftArm, ArmorPart.RightArm, ArmorPart.LeftShoulder, ArmorPart.RightShoulder];
 
 	/// <summary>规划一次。</summary>
 	/// <param name="source">来源 unit。</param>
@@ -121,7 +123,7 @@ internal static class SectionalCompressionPlanner
 		if (groups.Count == 0)
 			return SectionalCompressionPlan.NotSupported("来源里没有头、躯干、手臂类部位", headMerge);
 
-		// 披风、肩：不并入任何槽，原样保留（顺序按部位固定）。
+		// 披风：不并入任何槽，原样保留（顺序按部位固定）。
 		var grouped = groups.SelectMany(group => group.Members.Select(member => member.Part)).ToHashSet();
 		var passthrough = ArmorStructure.All
 			.Where(part => byPart.ContainsKey(part) && !grouped.Contains(part))

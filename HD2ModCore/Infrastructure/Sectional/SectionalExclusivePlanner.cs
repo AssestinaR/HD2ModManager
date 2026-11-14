@@ -146,15 +146,65 @@ internal static class SectionalExclusivePlanner
 	private static string ShortGaps(IReadOnlyList<string> gaps)
 		=> gaps.Count <= 3 ? string.Join("、", gaps) : string.Join("、", gaps.Take(3)) + $" 等 {gaps.Count} 处";
 
-	private readonly record struct Unit(ulong File, ulong Type, int Slot, int Layer, uint RawBody);
+	internal readonly record struct Unit(ulong File, ulong Type, int Slot, int Layer, uint RawBody);
+
+	// ── 「独有」口径（专属补丁路线与 P6 S3 的低污染映射共用，不许各写一套）──────────────────
+
+	/// <summary>同名记录组：同名护甲记录 ∪ 自己（P4b 放宽口径）。</summary>
+	internal static HashSet<uint> GroupItems(Index index, GameDataAuthorityKit kit)
+		=> index.Kits
+			.Where(candidate => candidate.Kind == GameDataEquipmentKitKind.Armor
+				&& string.Equals(candidate.DisplayName, kit.DisplayName, StringComparison.Ordinal))
+			.Select(candidate => candidate.ItemId)
+			.Append(kit.ItemId)
+			.ToHashSet();
+
+	/// <summary>护甲部件在放宽口径下是否独有：拥有者都在同名组里。</summary>
+	internal static bool IsGroupUnique(Index index, IReadOnlySet<uint> groupItems, ulong file)
+		=> index.Owners.TryGetValue(file, out var owners) && owners.All(groupItems.Contains);
+
+	/// <summary>某护甲的配套头盔记录：同套，或同名（有的护甲与自己的头盔套装号不同，如 DS-42）。</summary>
+	internal static GameDataAuthorityKit[] HelmetKitsOf(Index index, GameDataAuthorityKit kit)
+		=> index.Kits
+			.Where(candidate => candidate.Kind == GameDataEquipmentKitKind.Helmet
+				&& (candidate.SetId == kit.SetId
+					|| string.Equals(candidate.DisplayName, kit.DisplayName, StringComparison.Ordinal)))
+			.OrderBy(candidate => candidate.ItemId)
+			.ToArray();
+
+	/// <summary>
+	/// 组外、拥有给定全部部件的其它有名字护甲：几何完全相同的「孪生」护甲（只差颜色）。
+	/// 孪生的只有没名字的记录时说成「另一套未命名的护甲记录」。
+	/// </summary>
+	internal static List<string> TwinNamesOf(Index index, IReadOnlySet<uint> groupItems, IEnumerable<ulong> files)
+	{
+		HashSet<uint>? common = null;
+		foreach (var file in files.Distinct())
+		{
+			if (!index.Owners.TryGetValue(file, out var owners)) return [];
+			if (common is null) common = [.. owners];
+			else common.IntersectWith(owners);
+		}
+
+		if (common is null) return [];
+		common.ExceptWith(groupItems);
+		var named = index.Kits
+			.Where(other => common.Contains(other.ItemId) && IsNamed(other.DisplayName))
+			.Select(other => other.DisplayName)
+			.Distinct(StringComparer.Ordinal)
+			.Order(StringComparer.CurrentCulture)
+			.ToList();
+		if (named.Count == 0 && index.Kits.Any(other => common.Contains(other.ItemId))) named.Add("另一套未命名的护甲记录");
+		return named;
+	}
 
 	/// <summary>游戏里有正式名字的护甲；没名字的记录显示成 <c>0x…</c>，不是玩家能穿的本体护甲。</summary>
 	internal static bool IsNamed(string? displayName)
 		=> !string.IsNullOrWhiteSpace(displayName) && !displayName.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
 
-	private static string BodyLabel(int body) => body == 0 ? "健壮身形" : "纤细身形";
+	internal static string BodyLabel(int body) => body == 0 ? "健壮身形" : "纤细身形";
 
-	private static bool Covers(uint rawBody, int body) => rawBody == (uint)body || rawBody is not (0u or 1u);
+	internal static bool Covers(uint rawBody, int body) => rawBody == (uint)body || rawBody is not (0u or 1u);
 
 	/// <summary>落点标签里的身形：通用（raw 3）承载件两种身形共用，不能说成某一种身形。</summary>
 	private static string ShownBody(Unit carrier, int body) => carrier.RawBody is 0u or 1u ? BodyLabel(body) : "通用";
@@ -163,7 +213,7 @@ internal static class SectionalExclusivePlanner
 
 	private static string PartName(int slot) => ArmorStructure.Display(ArmorStructure.FromSlot((uint)slot));
 
-	private static IReadOnlyList<Unit> UnitsOf(GameDataAuthorityKit kit)
+	internal static IReadOnlyList<Unit> UnitsOf(GameDataAuthorityKit kit)
 		=> kit.Pieces
 			.Where(piece => piece.UnitAssetKey.FileId != 0)
 			.Select(piece => new Unit(
@@ -171,7 +221,7 @@ internal static class SectionalExclusivePlanner
 			.DistinctBy(unit => (unit.File, unit.Slot, unit.Layer, unit.RawBody))
 			.ToArray();
 
-	private static string Hex(ulong value) => value.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+	internal static string Hex(ulong value) => value.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
 
 	private static SectionalTargetUnit TargetOf(Unit unit)
 		=> new(new AssetKey(unit.Type, unit.File), ArmorCell.FromRegistryCoordinates(unit.Slot, unit.Layer));
@@ -245,35 +295,9 @@ internal static class SectionalExclusivePlanner
 		}
 
 		// P4b：同名记录组。「独有」放宽成「拥有者都在这个组里」（规划 §3.1 第 3 点，F2）。
-		var groupItems = index.Kits
-			.Where(candidate => candidate.Kind == GameDataEquipmentKitKind.Armor
-				&& string.Equals(candidate.DisplayName, kit.DisplayName, StringComparison.Ordinal))
-			.Select(candidate => candidate.ItemId)
-			.Append(kit.ItemId)
-			.ToHashSet();
+		var groupItems = GroupItems(index, kit);
 		// 组外、拥有目标全部（非披风）部件的其它有名字护甲：几何完全相同的「孪生」护甲。
-		List<string> TwinNames(IReadOnlyCollection<Unit> units)
-		{
-			HashSet<uint>? common = null;
-			foreach (var file in units.Select(unit => unit.File).Distinct())
-			{
-				if (!index.Owners.TryGetValue(file, out var owners)) return [];
-				if (common is null) common = [.. owners];
-				else common.IntersectWith(owners);
-			}
-
-			if (common is null) return [];
-			common.ExceptWith(groupItems);
-			var named = index.Kits
-				.Where(other => common.Contains(other.ItemId) && IsNamed(other.DisplayName))
-				.Select(other => other.DisplayName)
-				.Distinct(StringComparer.Ordinal)
-				.Order(StringComparer.CurrentCulture)
-				.ToList();
-			// 孪生的只有没名字的记录（如 AF-91 与 0x2cbae902）：不报 0x 编号，说成「另一套未命名的护甲记录」。
-			if (named.Count == 0 && index.Kits.Any(other => common.Contains(other.ItemId))) named.Add("另一套未命名的护甲记录");
-			return named;
-		}
+		List<string> TwinNames(IReadOnlyCollection<Unit> units) => TwinNamesOf(index, groupItems, units.Select(unit => unit.File));
 
 		var merges = new List<SectionalExclusiveMerge>();
 		var sigPreferred = new[] { new HashSet<ulong>(), new HashSet<ulong>() };   // 合并模式：每种身形的主承载件（签名优先取它）
@@ -283,7 +307,7 @@ internal static class SectionalExclusivePlanner
 		{
 			var sourceSlots = bySlot.Keys.Where(slot => slot != capeSlot && slot != helmetSlot).Order().ToArray();
 			var bodies = Enumerable.Range(0, 2).Where(body => tUnits.Any(unit => Covers(unit.RawBody, body))).ToArray();
-			bool IsGroupUnique(ulong file) => index.Owners.TryGetValue(file, out var owners) && owners.All(groupItems.Contains);
+			bool IsGroupUnique(ulong file) => SectionalExclusivePlanner.IsGroupUnique(index, groupItems, file);
 			Unit[] Unique(int slot, int body) => tUnits
 				.Where(unit => unit.Slot == slot && Covers(unit.RawBody, body))
 				.DistinctBy(unit => unit.File)
@@ -445,13 +469,7 @@ internal static class SectionalExclusivePlanner
 
 		// ② 头盔（§4.4）。
 		var helmetNotes = new List<string>();
-		var helmetKits = index.Kits
-			.Where(candidate => candidate.Kind == GameDataEquipmentKitKind.Helmet
-				&& (candidate.SetId == kit.SetId
-					// 有的护甲与自己的头盔套装号不同（DS-42），只按 set_id 会漏掉：同名也算配套。
-					|| string.Equals(candidate.DisplayName, kit.DisplayName, StringComparison.Ordinal)))
-			.OrderBy(candidate => candidate.ItemId)
-			.ToArray();
+		var helmetKits = HelmetKitsOf(index, kit);
 		var helmetHide = new HashSet<ulong>();
 		var headResult = SectionalHeadMergePlan.Off;
 		if (mergeActive)

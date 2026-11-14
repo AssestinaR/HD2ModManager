@@ -1,11 +1,11 @@
--- 离线测试：kit_instance_hider.lua 0.2.0（假引擎，不需要游戏）。
+-- 离线测试：kit_instance_hider.lua 0.3.0（假引擎，不需要游戏）。
 -- 运行：luajit HD2RuntimeArmorOverride/tests/test_kit_instance_hider.lua <src>
 -- 没有 luajit 时：python -I HD2RuntimeArmorOverride/scripts/run_lua_test.py <pylib> <本文件> <src>
 rawset(_G, 'HD2_KIT_HIDER_OFFLINE', true)
 local path = (arg and arg[1]) or 'HD2RuntimeArmorOverride/src/kit_instance_hider.lua'
 local M = dofile(path)
 assert(M.status == 'offline', 'offline guard')
-assert(M.version == '0.2.0', 'version')
+assert(M.version == '0.3.0', 'version')
 
 local MARKER = '82595b5d94c57343'
 local CAPE = 'ea846ef460cc5ba0'
@@ -57,15 +57,15 @@ assert(empty.revision == 0 and #empty.rules == 0)
 local noisy = assert(M.parse_rules('# 注释\n\nschema=1\nfuture=whatever\nrevision=3\r\n'
 	.. 'rule=name:a;radius:1;all:' .. MARKER .. ';hide:' .. LEG .. ';extra:zzz\n'))
 assert(noisy.revision == 3 and #noisy.rules == 1 and noisy.rules[1].radius == 1)
--- 边界：8 个 all、8 个 none、128 个 hide、64 条规则
+-- 边界：8 个 all、8 个 none、256 个 hide、1024 条规则（P6 S3 扩容）
 local function ids(n, offset)
 	local list = {}
 	for i = 1, n do list[i] = string.format('%016x', offset + i) end
 	return list
 end
-assert(M.parse_rules(rules_text(1, rule_line('x', '0.5', ids(8, 0), ids(8, 100), ids(128, 200)))))
+assert(M.parse_rules(rules_text(1, rule_line('x', '0.5', ids(8, 0), ids(8, 100), ids(256, 200)))))
 local many = {}
-for i = 1, 64 do many[i] = rule_line('r' .. i, '0.3', { MARKER }, {}, { LEG }) end
+for i = 1, 1024 do many[i] = rule_line('r' .. i, '0.3', { MARKER }, {}, { LEG }) end
 assert(M.parse_rules(rules_text(1, unpack(many))))
 
 -- 解析：非法一律整份无效 ----------------------------------------------------
@@ -92,7 +92,7 @@ bad(rules_text(1, rule_line('a', '0.3', {}, {}, { LEG })), 'all empty')
 bad(rules_text(1, rule_line('a', '0.3', ids(9, 0), {}, { LEG })), 'all > 8')
 bad(rules_text(1, rule_line('a', '0.3', { MARKER }, ids(9, 100), { LEG })), 'none > 8')
 bad(rules_text(1, rule_line('a', '0.3', { MARKER }, {}, {})), 'hide empty')
-bad(rules_text(1, rule_line('a', '0.3', { MARKER }, {}, ids(129, 200))), 'hide > 128')
+bad(rules_text(1, rule_line('a', '0.3', { MARKER }, {}, ids(257, 200))), 'hide > 256')
 bad(rules_text(1, rule_line('a', '0.3', { 'ABCDEF0123456789' }, {}, { LEG })), 'uppercase id')
 bad(rules_text(1, rule_line('a', '0.3', { '1234' }, {}, { LEG })), 'short id')
 bad(rules_text(1, rule_line('a', '0.3', { 'zzzzzzzzzzzzzzzz' }, {}, { LEG })), 'non-hex id')
@@ -101,9 +101,10 @@ bad(rules_text(1, rule_line('a', '0.3', { MARKER }, {}, { LEG }), rule_line('a',
 bad(rules_text(1, 'rule=name:a;radius:0.3;all:' .. MARKER), 'missing hide')
 bad(rules_text(1, 'rule=name:a;radius:0.3;radius:0.4;all:' .. MARKER .. ';hide:' .. LEG), 'duplicate field')
 local tooMany = {}
-for i = 1, 65 do tooMany[i] = rule_line('r' .. i, '0.3', { MARKER }, {}, { LEG }) end
-bad(rules_text(1, unpack(tooMany)), '65 rules')
-bad('schema=1\nrevision=1\n# ' .. string.rep('x', 65536) .. '\n', 'over 64 KiB')
+for i = 1, 1025 do tooMany[i] = rule_line('r' .. i, '0.3', { MARKER }, {}, { LEG }) end
+bad(rules_text(1, unpack(tooMany)), '1025 rules')
+bad('schema=1\nrevision=1\n# ' .. string.rep('x', 2 * 1024 * 1024) .. '\n', 'over 2 MiB')
+assert(M.parse_rules('schema=1\nrevision=1\n# ' .. string.rep('x', 70000) .. '\n'), 'a 64 KiB+ file is fine now')
 
 -- 假引擎 --------------------------------------------------------------------
 local function unit(id, x, y, z, opts)
@@ -366,7 +367,7 @@ do
 			end
 			local text = files[p]
 			if text == nil then return nil, p .. ': No such file or directory', 2 end
-			return { read = function(_, count) assert(count == 64 * 1024 + 1, 'read limit'); return text end,
+			return { read = function(_, count) assert(count == 2 * 1024 * 1024 + 1, 'read limit'); return text end,
 				close = function() end }
 		end }, writes
 	end
@@ -413,6 +414,107 @@ do
 	assert(M.install(g4).status == 'engine_unavailable')
 	local g5 = { stingray = Sg, io = ioFake, os = { getenv = function() return nil end } }
 	assert(M.install(g5).status == 'no_base_directory')
+end
+
+-- 两个规则文件（主文件 + 软映射文件）：并集、互相独立、一份坏不影响另一份 ------------------------
+do
+	local A, B = 'aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb'
+	local H1, H2, H3 = '1111111111111111', '2222222222222222', '3333333333333333'
+	local t0 = 1000
+	local function build()
+		-- 角色一：签名 A；角色二：签名 B。两个角色身边都有 H1、H2、H3。
+		local u = {
+			unit(A, 0, 0, 0), unit(H1, 0.05, 0, 0), unit(H2, 0.05, 0, 0), unit(H3, 0.05, 0, 0),
+			unit(B, 50, 0, 0), unit(H1, 50.05, 0, 0), unit(H2, 50.05, 0, 0), unit(H3, 50.05, 0, 0),
+		}
+		return u, make_stingray(function() return { { units = u } } end)
+	end
+	local function drive(u, S, main, mapping, ticks)
+		local logLines = {}
+		local files = { main = main, mapping = mapping }
+		local h = M.new({ stingray = S, now = function() return t0 end, cpu = function() return t0 end,
+			write = function(l) logLines[#logLines + 1] = l end,
+			read_rules = function() return files.main, files.main == nil and 'missing' or nil end,
+			read_mapping_rules = function() return files.mapping, files.mapping == nil and 'missing' or nil end })
+		for _ = 1, ticks or 4 do
+			t0 = t0 + 2
+			for _ = 1, 10 do h.tick() end
+		end
+		return h, logLines, files
+	end
+	local function more(h, n)
+		for _ = 1, n or 3 do t0 = t0 + 2; for _ = 1, 10 do h.tick() end end
+	end
+
+	-- 只有映射文件：照样生效，且只在自己的锚点旁
+	do
+		local u, S = build()
+		local h = drive(u, S, nil, rules_text(1, rule_line('lp-1', '0.3', { A }, {}, { H1 })))
+		assert(u[2].visible == false and u[6].visible == true, 'mapping-only file hides near its own anchor only')
+		assert(#h.rules() == 1 and h.rules()[1].source == 'mapping')
+	end
+
+	-- 两份规则取并集；同签名也不去重、不互相覆盖：每条各藏各的
+	do
+		local u, S = build()
+		local _, logLines = drive(u, S,
+			rules_text(2, rule_line('main-a', '0.3', { A }, {}, { H1 })),
+			rules_text(9, rule_line('lp-1', '0.3', { A }, {}, { H2 }), rule_line('lp-1b', '0.3', { B }, {}, { H3 })))
+		assert(u[2].visible == false, 'main file rule fires')
+		assert(u[3].visible == false, 'mapping rule with the SAME signature also fires (union, no priority)')
+		assert(u[4].visible == true and u[8].visible == false, 'B-signature rule hides H3 near B only')
+		assert(u[7].visible == true and u[6].visible == true, 'H1/H2 near B are untouched')
+		local joined = table.concat(logLines)
+		assert(joined:find('"mapping_rules":2', 1, true) and joined:find('"mapping_revision":9', 1, true), joined)
+		assert(joined:find('"rules_hit":"lp-1,lp-1b,main-a"', 1, true),
+			'sweep log names the rules whose signature held: ' .. joined)
+	end
+
+	-- 同名规则分处两个文件：各自独立，不当成重复
+	do
+		local u, S = build()
+		local h = drive(u, S, rules_text(1, rule_line('same', '0.3', { A }, {}, { H1 })),
+			rules_text(1, rule_line('same', '0.3', { A }, {}, { H2 })))
+		assert(#h.rules() == 2 and u[2].visible == false and u[3].visible == false)
+	end
+
+	-- 一份坏、一份好：坏的保留它自己的上一版，好的照常更新
+	do
+		local u, S = build()
+		local h, logLines, files = drive(u, S,
+			rules_text(1, rule_line('main-a', '0.3', { A }, {}, { H1 })),
+			rules_text(1, rule_line('lp-1', '0.3', { A }, {}, { H2 })), 3)
+		files.mapping = 'schema=1\nrevision=2\nrule=name:BAD;radius:0.3\n'
+		files.main = rules_text(2, rule_line('main-a', '0.3', { A }, {}, { H1, H3 }))
+		more(h)
+		assert(u[4].visible == false, 'main file update applied')
+		assert(#h.rules() == 2 and h.rules()[2].name == 'lp-1', 'bad mapping file keeps its previous version')
+		assert(table.concat(logLines):find('"file":"mapping"', 1, true), 'bad file is attributed to its file')
+	end
+
+	-- 映射文件被清空（撤销映射 / 关开关）：这份规则没了，主文件的还在；已藏掉的不恢复
+	do
+		local u, S = build()
+		local h, _, files = drive(u, S,
+			rules_text(1, rule_line('main-a', '0.3', { B }, {}, { H1 })),
+			rules_text(1, rule_line('lp-1', '0.3', { A }, {}, { H2 })), 3)
+		assert(u[3].visible == false)
+		files.mapping = rules_text(2)
+		more(h)
+		assert(#h.rules() == 1 and h.rules()[1].name == 'main-a', 'emptied mapping file contributes no rules')
+		assert(u[3].visible == false, 'already hidden stays hidden')
+	end
+
+	-- 映射文件不存在：与 0.2.0 一致，只用主文件；"file missing" 只在两份都没有时才写
+	do
+		local u, S = build()
+		local h, logLines = drive(u, S, rules_text(1, rule_line('main-a', '0.3', { A }, {}, { H1 })), nil, 3)
+		assert(#h.rules() == 1 and u[2].visible == false)
+		assert(not table.concat(logLines):find('file missing', 1, true))
+		local u2, S2 = build()
+		local _, lines2 = drive(u2, S2, nil, nil, 3)
+		assert(table.concat(lines2):find('file missing', 1, true))
+	end
 end
 
 -- 规则文件每 2 秒最多读一次 -------------------------------------------------------
