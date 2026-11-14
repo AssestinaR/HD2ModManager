@@ -38,6 +38,9 @@ public sealed record VpkRebuildOutcome(
 
 	/// <summary>专属切换（P4a）编出来的隐藏规则内容；普通编译为 <c>null</c>。调用方据此同步 workspace 记录。</summary>
 	public KitInstance.KitExclusiveSeed? Exclusive { get; init; }
+
+	/// <summary>专属多选（P5）：实际编进去的全部目标的规则种子。</summary>
+	public IReadOnlyList<KitInstance.KitExclusiveSeed> ExclusiveTargets { get; init; } = [];
 }
 
 /// <summary>
@@ -122,7 +125,8 @@ public static class VpkRebuildService
 		Action<string>? onStage,
 		CancellationToken cancellationToken = default,
 		string? idNamespaceOverride = null,
-		uint? exclusiveItemId = null)
+		uint? exclusiveItemId = null,
+		IReadOnlyList<uint>? exclusiveItemIds = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
@@ -473,6 +477,7 @@ public static class VpkRebuildService
 			// 于是"重建"就是干净的两段——**转换**（来源 → sectional）、**编译**（sectional → Overwrite）。
 			var rekeyed = false;
 			KitInstance.KitExclusiveSeed? exclusiveSeed = null;
+			IReadOnlyList<KitInstance.KitExclusiveSeed> exclusiveSeeds = [];
 			string? targetName = null;
 			string? incompleteReason = null;
 			if (!isUnitMod)
@@ -485,8 +490,9 @@ public static class VpkRebuildService
 				onStage?.Invoke("正在按当前条件编译生效层…");
 				var compile = await ModCompileService.CompileAsync(
 					modSelector, modDirectory, context, targetArchiveIds, disabledSections,
-					stage => onStage?.Invoke(stage), cancellationToken, exclusiveItemId: exclusiveItemId).ConfigureAwait(false);
+					stage => onStage?.Invoke(stage), cancellationToken, exclusiveItemId: exclusiveItemId, exclusiveItemIds: exclusiveItemIds).ConfigureAwait(false);
 				exclusiveSeed = compile.Exclusive;
+				exclusiveSeeds = compile.ExclusiveTargets;
 				foreach (var warning in compile.Notes) notes.Add(warning);
 				if (!compile.Ok)
 				{
@@ -517,6 +523,7 @@ public static class VpkRebuildService
 				TargetName = targetName,
 				IncompleteReason = incompleteReason,
 				Exclusive = exclusiveSeed,
+				ExclusiveTargets = exclusiveSeeds,
 			};
 		}
 		catch (OperationCanceledException)

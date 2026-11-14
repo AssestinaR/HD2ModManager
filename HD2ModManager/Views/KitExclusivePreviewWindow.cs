@@ -10,7 +10,7 @@ namespace HD2ModManager.Views
     // Purpose: Confirmation preview for exclusive (per-instance) armor switching. Writes nothing itself.
     public sealed class KitExclusivePreviewWindow : Window
     {
-        public KitExclusivePreviewWindow(string modName, KitExclusivePreview preview)
+        public KitExclusivePreviewWindow(string modName, KitExclusivePreview preview, string? confirmDisabledReason = null)
         {
             Title = "专属切换";
             Width = 760;
@@ -48,8 +48,11 @@ namespace HD2ModManager.Views
             var confirm = new Button { Content = "确认专属切换", Padding = new Thickness(16, 6, 16, 6) };
             if (Application.Current?.TryFindResource("AppPrimaryButton") is Style primary) confirm.Style = primary;
             confirm.Click += (_, _) => DialogResult = true;
+            if (confirmDisabledReason is not null) confirm.IsEnabled = false;
             var cancel = new Button { Content = "取消", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(16, 6, 16, 6), IsCancel = true };
             if (Application.Current?.TryFindResource("AppSecondaryButton") is Style secondary) cancel.Style = secondary;
+            if (confirmDisabledReason is not null)
+                buttons.Children.Add(new TextBlock { Text = confirmDisabledReason, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0), Foreground = System.Windows.Media.Brushes.Firebrick });
             buttons.Children.Add(confirm);
             buttons.Children.Add(cancel);
             Grid.SetRow(buttons, 2);

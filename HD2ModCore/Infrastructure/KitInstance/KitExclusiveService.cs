@@ -7,11 +7,43 @@ namespace HD2ModCore.Infrastructure.KitInstance;
 /// <summary>下拉里的一条护甲记录（专属模式按 item_id 列）。</summary>
 /// <param name="Status">「可专属」、「可专属·合并（实验）：…」或「不可：<缺口>」。</param>
 /// <param name="Merged">P4b：逐格承载不了，模型要合并成一个 unit 再落到独有部件上。</param>
+/// <param name="NonPlayerLabel">非玩家记录的标注（见 <see cref="KitNonPlayerArmors"/>）；玩家护甲为 <c>null</c>。</param>
+/// <param name="Version">同名的玩家记录有两条以上时的编号（按 item_id 升序从 1 起）；否则为 <c>null</c>。</param>
 public sealed record KitExclusiveOption(
-	uint ItemId, string ArchiveId, string Name, bool Available, string Status, bool Merged = false)
+	uint ItemId, string ArchiveId, string Name, bool Available, string Status, bool Merged = false,
+	string? NonPlayerLabel = null, int? Version = null)
 {
 	/// <summary>同名记录靠编号区分，如 <c>FS-05“神射手”（3970674111）</c>。</summary>
 	public string Label => $"{Name}（{ItemId.ToString(CultureInfo.InvariantCulture)}）";
+
+	/// <summary>非玩家记录：手动可勾，但「全选」不选它。</summary>
+	public bool IsNonPlayer => NonPlayerLabel is not null;
+
+	/// <summary>下拉里挨在名字后面的标注：「版本 2」或「非玩家（…）」；没有则为 <c>null</c>。</summary>
+	public string? Tag => NonPlayerLabel ?? (Version is { } version ? $"版本 {version.ToString(CultureInfo.InvariantCulture)}" : null);
+}
+
+/// <summary>专属多选的纯逻辑：搜索过滤与「全选」。放在 Core 里以便单测。</summary>
+public static class KitExclusiveSelection
+{
+	/// <summary>按名字和 item_id 过滤（不区分大小写，空白分词、全部命中才算）。空查询 = 全部命中。</summary>
+	public static bool Matches(KitExclusiveOption option, string? query)
+	{
+		ArgumentNullException.ThrowIfNull(option);
+		if (string.IsNullOrWhiteSpace(query)) return true;
+		var haystack = option.Name + " " + option.ItemId.ToString(CultureInfo.InvariantCulture) + " " + (option.Tag ?? string.Empty);
+		return query.Split([' ', '\t', '　'], StringSplitOptions.RemoveEmptyEntries)
+			.All(token => haystack.Contains(token, StringComparison.CurrentCultureIgnoreCase));
+	}
+
+	/// <summary>
+	/// 「全选」：所有<b>可用</b>的<b>玩家</b>护甲（同名的玩家版本全部勾上）；跳过禁用项和非玩家记录。
+	/// </summary>
+	public static IReadOnlyList<uint> SelectAll(IEnumerable<KitExclusiveOption> options)
+	{
+		ArgumentNullException.ThrowIfNull(options);
+		return options.Where(option => option.Available && !option.IsNonPlayer).Select(option => option.ItemId).Distinct().ToArray();
+	}
 }
 
 /// <summary><paramref name="Unavailable"/> 非空 = 连候选都没法算（没有索引、Mod 没有 sections.json 等）。</summary>
@@ -33,24 +65,130 @@ public static class KitExclusiveService
 		if (loaded.Error is not null) return new KitExclusiveCatalog([], loaded.Error);
 		var index = SectionalExclusivePlanner.BuildIndex(loaded.Snapshot!.Kits);
 		// 只列游戏本体有名字的护甲；0x… 的无名记录不是玩家能选的护甲（用户要求，2026-11-14）。
-		var options = SectionalExclusivePlanner.Evaluate(index, loaded.Source!, headMerge)
-			.Where(candidate => SectionalExclusivePlanner.IsNamed(candidate.Name))
-			.Select(candidate => new KitExclusiveOption(
-				candidate.ItemId, candidate.ArchiveId, candidate.Name, candidate.Succeeded, candidate.Summary, candidate.Merged))
-			.OrderBy(option => option.Name, StringComparer.CurrentCulture)
-			.ThenBy(option => option.ItemId)
-			.ToArray();
+		var options = LabelOptions(SectionalExclusivePlanner.Evaluate(index, loaded.Source!, headMerge));
 		return new KitExclusiveCatalog(options, null);
 	}
 
-	public static async Task<KitExclusivePreview> PreviewAsync(
-		string modDirectory, StoragePaths paths, uint itemId, bool headMerge, CancellationToken cancellationToken = default)
+	/// <summary>
+	/// 评估结果 → 下拉选项：只留有名字的护甲；同名的玩家记录有两条以上时按 item_id 升序编「版本 1/2/…」，
+	/// 非玩家记录（<see cref="KitNonPlayerArmors"/>）不占编号、带「非玩家（…）」标注。
+	/// </summary>
+	internal static KitExclusiveOption[] LabelOptions(IEnumerable<SectionalExclusiveCandidate> candidates)
 	{
+		var named = candidates
+			.Where(candidate => SectionalExclusivePlanner.IsNamed(candidate.Name))
+			.ToArray();
+		var versions = named
+			.Where(candidate => !KitNonPlayerArmors.Contains(candidate.ItemId))
+			.GroupBy(candidate => candidate.Name, StringComparer.Ordinal)
+			.Where(group => group.Count() > 1)
+			.SelectMany(group => group.OrderBy(candidate => candidate.ItemId).Select((candidate, order) => (candidate.ItemId, Version: order + 1)))
+			.ToDictionary(pair => pair.ItemId, pair => pair.Version);
+		return named
+			.Select(candidate => new KitExclusiveOption(
+				candidate.ItemId, candidate.ArchiveId, candidate.Name, candidate.Succeeded, candidate.Summary, candidate.Merged,
+				KitNonPlayerArmors.TryGetLabel(candidate.ItemId, out var label) ? label : null,
+				versions.TryGetValue(candidate.ItemId, out var version) ? version : null))
+			.OrderBy(option => option.Name, StringComparer.CurrentCulture)
+			.ThenBy(option => option.ItemId)
+			.ToArray();
+	}
+
+	/// <summary>单目标预览（旧入口，行为不变）。</summary>
+	public static Task<KitExclusivePreview> PreviewAsync(
+		string modDirectory, StoragePaths paths, uint itemId, bool headMerge, CancellationToken cancellationToken = default)
+		=> PreviewAsync(modDirectory, paths, [itemId], headMerge, null, null, cancellationToken);
+
+	/// <summary>
+	/// 多目标预览（P5）：按目标分段列出，最后汇总规则条数、承载件份数、合并模型份数。
+	/// 任何目标规划失败、承载件冲突、或规则数超过 Hider 上限，都在这里拦下（此刻还没写任何文件）。
+	/// </summary>
+	/// <param name="nodeId">给了它才能算规则名长度、并核对别的 Mod 已有的规则。</param>
+	/// <param name="modsRootDirectory">Mod 库根（读 workspace 里别的 Mod 的规则）；空 = 只核对这个 Mod 自己的。</param>
+	public static async Task<KitExclusivePreview> PreviewAsync(
+		string modDirectory, StoragePaths paths, IReadOnlyList<uint> itemIds, bool headMerge,
+		ModNodeId? nodeId, string? modsRootDirectory, CancellationToken cancellationToken = default)
+	{
+		ArgumentNullException.ThrowIfNull(itemIds);
 		var loaded = await LoadAsync(modDirectory, paths, cancellationToken).ConfigureAwait(false);
 		if (loaded.Error is not null) return new KitExclusivePreview(false, "专属切换", [loaded.Error]);
 		var index = SectionalExclusivePlanner.BuildIndex(loaded.Snapshot!.Kits);
-		var plan = SectionalExclusivePlanner.BuildWithMerge(index, loaded.Source!, itemId, headMerge);
-		return Describe(plan, loaded.Snapshot.Kits);
+		var ids = itemIds.Distinct().Order().ToArray();
+		if (ids.Length == 0) return new KitExclusivePreview(false, "专属切换", ["还没有勾选任何目标护甲。"]);
+		var plans = ids.Select(id => SectionalExclusivePlanner.BuildWithMerge(index, loaded.Source!, id, headMerge)).ToArray();
+		if (ids.Length == 1) return Describe(plans[0], loaded.Snapshot.Kits);
+
+		var failedPlans = plans.Where(plan => !plan.Succeeded).ToArray();
+		var title = $"{ids.Length} 套护甲";
+		if (failedPlans.Length != 0)
+		{
+			var lines = new List<string> { $"有 {failedPlans.Length} 个目标不能专属切换：" };
+			foreach (var plan in failedPlans)
+			{
+				lines.Add($"【{plan.Name}（{plan.ItemId.ToString(CultureInfo.InvariantCulture)}）】缺口：");
+				lines.AddRange(plan.Gaps.Select(gap => "· " + gap));
+			}
+
+			lines.Add("请把它们的勾去掉再切换；专属只写目标记录自己独有的部件，任何一个部位找不到就整体失败，不做半套。");
+			return new KitExclusivePreview(false, title, lines);
+		}
+
+		var combined = SectionalExclusiveCombiner.Combine(plans);
+		if (combined.Conflicts.Count != 0)
+		{
+			var lines = new List<string> { $"有 {combined.Conflicts.Count} 个目标和别的目标抢同一个承载件，不能一起切换：" };
+			lines.AddRange(combined.Conflicts.Select(item => $"· {item.Title}：{item.Reason}"));
+			lines.Add("请把它们的勾去掉再切换。");
+			return new KitExclusivePreview(false, title, lines);
+		}
+
+		var seeds = plans.Select(SeedOf).ToArray();
+		var others = KitInstanceWorkspace.Empty;
+		if (nodeId is not null && !string.IsNullOrWhiteSpace(modsRootDirectory))
+		{
+			try { others = await KitInstanceWorkspaceStore.ReadAsync(modsRootDirectory, cancellationToken).ConfigureAwait(false); }
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+			{
+				return new KitExclusivePreview(false, title, ["无法读取「按实例隐藏」记录：" + exception.Message]);
+			}
+		}
+
+		var limit = KitExclusiveWorkspace.CheckRuleLimits(nodeId ?? new ModNodeId(Guid.Empty), modDirectory, seeds, others);
+		if (limit is not null) return new KitExclusivePreview(false, title, [limit]);
+
+		var result = new List<string>
+		{
+			$"目标共 {ids.Length} 套：{string.Join("、", plans.Select(plan => plan.Name + "（" + plan.ItemId.ToString(CultureInfo.InvariantCulture) + "）"))}。"
+				+ "这个 Mod 只会在穿这些记录的角色身上显示，其它护甲不受影响；确认后按勾选的整个集合重新编译整份 Overwrite。",
+		};
+		for (var order = 0; order < plans.Length; order++)
+		{
+			result.Add(string.Empty);
+			result.Add($"━━ 目标 {order + 1}/{plans.Length}：{plans[order].Name}（{plans[order].ItemId.ToString(CultureInfo.InvariantCulture)}）━━");
+			result.AddRange(DescribeLines(plans[order], loaded.Snapshot.Kits).Skip(1));   // 第一行是单目标口吻的标题行，分段标题已经替代它
+		}
+
+		var rules = KitExclusiveWorkspace.BuildRecord(nodeId ?? new ModNodeId(Guid.Empty), modDirectory, seeds)?.ToRules().Count() ?? 0;
+		result.Add(string.Empty);
+		result.Add("━━ 汇总 ━━");
+		result.Add($"· 隐藏规则 {rules} 条（Hider 上限 {KitInstanceRulesProtocol.MaximumRules} 条，已核对）");
+		result.Add($"· 承载件 {combined.CarrierCount} 份（写进 Overwrite 的原版部件键，被多个目标共用的只写一次）");
+		result.Add($"· 合并模型 {combined.Merges.Count} 份（来源部位相同的合并只做一次）");
+		result.Add("确认后会重写这个 Mod 的 Overwrite 目录（原文件不动），并记下这些隐藏规则；下次部署后生效。");
+		return new KitExclusivePreview(true, title, result);
+	}
+
+	/// <summary>规划 → 规则种子（隐藏规则的内容）。</summary>
+	internal static KitExclusiveSeed SeedOf(SectionalExclusivePlan plan)
+	{
+		static string Hex16(ulong value) => value.ToString("x16", CultureInfo.InvariantCulture);
+		return new KitExclusiveSeed(
+			plan.ItemId,
+			plan.Name,
+			SectionalExclusivePlanner.Radius,
+			plan.Signature.Take(1).Select(Hex16).ToArray(),
+			plan.Signature.Skip(1).Select(Hex16).ToArray(),
+			plan.Hide.Select(Hex16).ToArray());
 	}
 
 	private sealed record Loaded(GameDataAuthoritySnapshot? Snapshot, IReadOnlyList<SectionalSourceUnit>? Source, string? Error);
@@ -85,6 +223,15 @@ public static class KitExclusiveService
 			return new KitExclusivePreview(false, title, lines);
 		}
 
+		var result = DescribeLines(plan, kits);
+		result.Add("确认后会重写这个 Mod 的 Overwrite 目录（原文件不动），并记下一条隐藏规则；下次部署后生效。");
+		return new KitExclusivePreview(true, title, result);
+	}
+
+	/// <summary>一个成功目标的预览正文（第一行是「目标：…」标题行；不含结尾的确认提示）。</summary>
+	private static List<string> DescribeLines(SectionalExclusivePlan plan, IReadOnlyList<GameDataAuthorityKit> kits)
+	{
+		var title = $"{plan.Name}（{plan.ItemId.ToString(CultureInfo.InvariantCulture)}）";
 		var result = new List<string>
 		{
 			plan.IsMerged
@@ -140,8 +287,7 @@ public static class KitExclusiveService
 			result.AddRange(plan.Warnings.Select(warning => "· " + warning));
 		}
 
-		result.Add("确认后会重写这个 Mod 的 Overwrite 目录（原文件不动），并记下一条隐藏规则；下次部署后生效。");
-		return new KitExclusivePreview(true, title, result);
+		return result;
 	}
 
 	private static int SlotOf(IReadOnlyList<GameDataAuthorityKit> kits, ulong file)

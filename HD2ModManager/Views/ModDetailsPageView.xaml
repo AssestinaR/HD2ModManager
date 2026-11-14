@@ -66,11 +66,9 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="目标护甲" Foreground="{StaticResource TextSecondary}"
                                    VerticalAlignment="Center" Margin="0,0,12,0"/>
-                        <ComboBox Grid.Column="1" Style="{StaticResource AppComboBox}"
-                                  ItemsSource="{Binding VpkTargetArmors}"
-                                  SelectedItem="{Binding SelectedVpkTargetArmor, Mode=TwoWay}"
-                                  DisplayMemberPath="DisplayName" MinWidth="200" VerticalAlignment="Center"
-                                  scroll:WheelScroll.IsEnabled="True"/>
+                        <!-- 可输入搜索；专属模式下多选（勾选框 + 标签 + 全选），见 VpkTargetPicker。 -->
+                        <local:VpkTargetPicker Grid.Column="1" DataContext="{Binding VpkTargetPicker}"
+                                               MinWidth="200" VerticalAlignment="Center"/>
                         <Button Grid.Column="2" Style="{StaticResource AppSecondaryButton}" Content="切换"
                                 Command="{Binding ApplyVpkTargetArmorCommand}" Margin="12,0,0,0" Padding="14,6"/>
                     </Grid>
@@ -90,6 +88,17 @@
                                   IsChecked="{Binding VpkExclusiveMode, Mode=TwoWay}"
                                   VerticalAlignment="Center" Margin="12,0,0,0"
                                   AutomationProperties.Name="专属切换"/>
+                    </Grid>
+                    <!-- 「继续并记住」之后：这个 Mod 编译失败的专属目标自动跳过；这里能清掉这个记忆。 -->
+                    <Grid Margin="0,12,0,0" Visibility="{Binding VpkAutoSkipFailedTargets, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="已记住：专属编译失败的目标自动跳过，不再询问"
+                                   Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <Button Grid.Column="1" Style="{StaticResource AppSecondaryButton}" Content="清除记忆"
+                                Command="{Binding ClearVpkAutoSkipCommand}" Margin="12,0,0,0" Padding="14,6"/>
                     </Grid>
                     <Grid Margin="0,12,0,0">
                         <Grid.ColumnDefinitions>

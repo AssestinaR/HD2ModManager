@@ -19,9 +19,22 @@ public sealed record VpkWardrobeFile(
 	string? TargetArmorName = null,
 	bool HeadMergeIntoBody = false,
 	uint? TargetItemId = null,
-	bool Exclusive = false)
+	bool Exclusive = false,
+	IReadOnlyList<VpkWardrobeTarget>? Targets = null,
+	bool AutoSkipFailedTargets = false)
 {
 	public static VpkWardrobeFile Default { get; } = new(false, VpkWardrobeState.Empty);
+
+	/// <summary>
+	/// 专属切换的目标列表（多选，P5）。<see cref="Targets"/> 为空而有单个 <see cref="TargetItemId"/> 的旧文件读成只有一项的列表；
+	/// 非专属时为空。第一项始终等于 <see cref="TargetItemId"/>（写回时单个字段保留第一项，旧版本读到的仍是合理的单目标状态）。
+	/// </summary>
+	public IReadOnlyList<VpkWardrobeTarget> ExclusiveTargets
+		=> !Exclusive
+			? []
+			: Targets is { Count: > 0 }
+				? Targets
+				: TargetItemId is { } single ? [new VpkWardrobeTarget(single, TargetArmorName)] : [];
 
 	/// <summary>
 	/// 树的根标题：<c>VPK &lt;模组名&gt; 替换 &lt;目标护甲&gt;</c>。
@@ -35,6 +48,9 @@ public sealed record VpkWardrobeFile(
 			? $"VPK {modName}"
 			: $"VPK {modName} 替换 {TargetArmorName}";
 }
+
+/// <summary>专属多选里记下的一个目标。</summary>
+public sealed record VpkWardrobeTarget(uint ItemId, string? Name);
 
 /// <summary>
 /// VPK 模组的组件树与烘焙。
@@ -189,7 +205,32 @@ public sealed class VpkModWardrobeService
 				&& root.TryGetProperty("exclusive", out var exclusiveElement)
 				&& exclusiveElement.ValueKind == JsonValueKind.True;
 
-			return new VpkWardrobeFile(enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName, headMerge, targetItemId, exclusive);
+			// 多目标（P5）：旧文件没有 targets，读成只有 targetItemId 那一项；有则以列表为准，第一项同步回单个字段。
+			var targets = new List<VpkWardrobeTarget>();
+			if (exclusive && root.TryGetProperty("targets", out var targetsElement) && targetsElement.ValueKind == JsonValueKind.Array)
+			{
+				foreach (var item in targetsElement.EnumerateArray())
+				{
+					if (item.ValueKind != JsonValueKind.Object
+						|| !item.TryGetProperty("itemId", out var idElement)
+						|| idElement.ValueKind != JsonValueKind.Number
+						|| !idElement.TryGetUInt32(out var id)
+						|| targets.Any(existing => existing.ItemId == id))
+						continue;
+					targets.Add(new VpkWardrobeTarget(
+						id,
+						item.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String ? nameElement.GetString() : null));
+				}
+			}
+
+			if (targets.Count == 0 && exclusive && targetItemId is { } onlyTarget)
+				targets.Add(new VpkWardrobeTarget(onlyTarget, targetName));
+			if (targets.Count != 0) targetItemId = targets[0].ItemId;
+			var autoSkip = root.TryGetProperty("autoSkipFailedTargets", out var skipElement) && skipElement.ValueKind == JsonValueKind.True;
+
+			return new VpkWardrobeFile(
+				enabled, new VpkWardrobeState(disabled), targetArchiveId, targetName, headMerge, targetItemId, exclusive,
+				targets.Count == 0 ? null : targets, autoSkip);
 		}
 		catch (Exception exception) when (exception is IOException or JsonException)
 		{
@@ -208,8 +249,16 @@ public sealed class VpkModWardrobeService
 			headMergeIntoBody = file.HeadMergeIntoBody,
 			targetArmorArchiveId = file.TargetArmorArchiveId,
 			targetArmorName = file.TargetArmorName,
-			targetItemId = file.Exclusive ? file.TargetItemId : null,
+			targetItemId = file.Exclusive
+				? (file.ExclusiveTargets.Count != 0 ? file.ExclusiveTargets[0].ItemId : file.TargetItemId)
+				: null,
 			exclusive = file.Exclusive,
+			// 多目标（P5）：只有两个以上目标才写列表，单目标的文件与以前逐字相同。
+			targets = file.Exclusive && file.ExclusiveTargets.Count > 1
+				? file.ExclusiveTargets.Select(target => new { itemId = target.ItemId, name = target.Name }).ToArray()
+				: null,
+			// 「继续并记住」：这个 Mod 以后专属编译失败的目标自动跳过。只在为真时写。
+			autoSkipFailedTargets = file.AutoSkipFailedTargets ? true : (bool?)null,
 			disabled = file.State.Disabled.ToDictionary(
 				pair => pair.Key,
 				pair => pair.Value.Order().ToArray(),

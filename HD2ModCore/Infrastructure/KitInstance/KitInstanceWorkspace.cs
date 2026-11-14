@@ -38,12 +38,53 @@ public sealed record KitInstanceWorkspaceRecord(
 	string? TargetName = null,
 	IReadOnlyList<string>? DerivedFiles = null,
 	string? Source = null,
-	IReadOnlyList<string>? ExtraAll = null)
+	IReadOnlyList<string>? ExtraAll = null,
+	IReadOnlyList<KitInstanceWorkspaceTarget>? Targets = null)
 {
 	public KitInstanceRule ToRule()
 		=> new(RuleName, Radius, All ?? [], None ?? [], Hide ?? []);
 
-	/// <summary>主规则加上每个备用签名各一条（规则名加后缀 <c>-s2</c>、<c>-s3</c>…）。</summary>
+	/// <summary>
+	/// 这条记录里的全部目标（P5 多选）。<see cref="Targets"/> 为空的旧记录读成只有一个目标（记录自己）；
+	/// 有列表时顶层字段等于第一个目标，旧版本读到的仍是合理的单目标记录。
+	/// </summary>
+	public IReadOnlyList<KitInstanceWorkspaceTarget> AllTargets
+		=> Targets is { Count: > 0 }
+			? Targets
+			: [new KitInstanceWorkspaceTarget(TargetItemId, RuleName, Radius, All ?? [], None ?? [], Hide ?? [], TargetName, ExtraAll)];
+
+	/// <summary>
+	/// 每个目标展开成自己的规则（主规则加上每个备用签名各一条，规则名加后缀 <c>-s2</c>、<c>-s3</c>…）。
+	/// 多目标时完全相同的规则（<c>all</c>/<c>none</c>/<c>hide</c> 都一样）只留一条。
+	/// </summary>
+	public IEnumerable<KitInstanceRule> ToRules()
+	{
+		var seen = new HashSet<string>(StringComparer.Ordinal);
+		foreach (var target in AllTargets)
+		{
+			foreach (var rule in target.ToRules())
+			{
+				var content = string.Join("|", rule.Radius.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+					string.Join(",", rule.All), string.Join(",", rule.None), string.Join(",", rule.Hide));
+				if (seen.Add(content)) yield return rule;
+			}
+		}
+	}
+}
+
+/// <summary>多目标记录里的一个目标：自己的规则名、签名和隐藏集（P5）。</summary>
+public sealed record KitInstanceWorkspaceTarget(
+	uint TargetItemId,
+	string RuleName,
+	double Radius,
+	IReadOnlyList<string> All,
+	IReadOnlyList<string> None,
+	IReadOnlyList<string> Hide,
+	string? TargetName = null,
+	IReadOnlyList<string>? ExtraAll = null)
+{
+	public KitInstanceRule ToRule() => new(RuleName, Radius, All ?? [], None ?? [], Hide ?? []);
+
 	public IEnumerable<KitInstanceRule> ToRules()
 	{
 		yield return ToRule();
@@ -137,7 +178,13 @@ public static class KitInstanceWorkspaceStore
 				string.IsNullOrEmpty(value.TargetName) ? null : value.TargetName,
 				value.DerivedFiles is { Length: > 0 } ? value.DerivedFiles : null,
 				string.IsNullOrEmpty(value.Source) ? null : value.Source,
-				value.ExtraAll is { Length: > 0 } ? value.ExtraAll : null);
+				value.ExtraAll is { Length: > 0 } ? value.ExtraAll : null,
+				value.Targets is { Length: > 0 }
+					? value.Targets.Where(target => target is not null).Select(target => new KitInstanceWorkspaceTarget(
+						target.TargetItemId, target.RuleName ?? string.Empty, target.Radius, target.All ?? [], target.None ?? [],
+						target.Hide ?? [], string.IsNullOrEmpty(target.TargetName) ? null : target.TargetName,
+						target.ExtraAll is { Length: > 0 } ? target.ExtraAll : null)).ToArray()
+					: null);
 		}
 		return new KitInstanceWorkspace(records);
 	}
@@ -165,6 +212,19 @@ public static class KitInstanceWorkspaceStore
 							DerivedFiles = pair.Value.DerivedFiles?.ToArray(),
 							Source = pair.Value.Source,
 							ExtraAll = pair.Value.ExtraAll is { Count: > 0 } ? pair.Value.ExtraAll.ToArray() : null,
+							Targets = pair.Value.Targets is { Count: > 0 }
+								? pair.Value.Targets.Select(target => new TargetFile
+								{
+									TargetItemId = target.TargetItemId,
+									RuleName = target.RuleName,
+									Radius = target.Radius,
+									All = target.All.ToArray(),
+									None = target.None.ToArray(),
+									Hide = target.Hide.ToArray(),
+									TargetName = target.TargetName,
+									ExtraAll = target.ExtraAll is { Count: > 0 } ? target.ExtraAll.ToArray() : null,
+								}).ToArray()
+								: null,
 					}),
 		};
 		return JsonSerializer.Serialize(file, Options);
@@ -195,6 +255,19 @@ public static class KitInstanceWorkspaceStore
 		public string? TargetName { get; set; }
 		public string[]? DerivedFiles { get; set; }
 		public string? Source { get; set; }
+		public string[]? ExtraAll { get; set; }
+		public TargetFile[]? Targets { get; set; }
+	}
+
+	private sealed class TargetFile
+	{
+		public uint TargetItemId { get; set; }
+		public string? RuleName { get; set; }
+		public double Radius { get; set; }
+		public string[]? All { get; set; }
+		public string[]? None { get; set; }
+		public string[]? Hide { get; set; }
+		public string? TargetName { get; set; }
 		public string[]? ExtraAll { get; set; }
 	}
 }

@@ -51,9 +51,27 @@ public sealed record SectionalCompileResult(
 	public static SectionalCompileResult Failure(string error, SectionalCompileKind kind = SectionalCompileKind.OwnModel)
 		=> new(false, error, kind, null, 0, 0, SectionalHeadMergeOutcome.Off, 0, [], []);
 
-	/// <summary>专属切换（P4a）这一次编出来的隐藏规则内容；普通编译为 <c>null</c>。</summary>
+	/// <summary>专属切换（P4a）这一次编出来的隐藏规则内容；普通编译为 <c>null</c>。多目标时是第一个目标的。</summary>
 	public KitInstance.KitExclusiveSeed? Exclusive { get; init; }
+
+	/// <summary>专属切换（P5 多选）：每个<b>实际编进去</b>的目标的规则种子（升序 item_id）；普通编译为空。</summary>
+	public IReadOnlyList<KitInstance.KitExclusiveSeed> ExclusiveTargets { get; init; } = [];
+
+	/// <summary>专属切换：没能编进去而被跳过（或导致失败）的目标。</summary>
+	public IReadOnlyList<SectionalTargetFailure> SkippedTargets { get; init; } = [];
+
+	/// <summary>专属切换：写进 <c>Overwrite/</c> 的承载件份数（去重后）。</summary>
+	public int CarrierCount { get; init; }
+
+	/// <summary>专属切换：合并出来的模型份数（来源集合相同的合并只算一份）。</summary>
+	public int MergedModelCount { get; init; }
 }
+
+/// <summary>
+/// 多目标专属编译里有目标失败时的回调：<paramref name="failures"/> 是失败的目标，<paramref name="succeeded"/> 是能继续的目标数。
+/// 返回 <c>true</c> = 继续（跳过失败的目标）；<c>false</c> = 回滚（什么都不写）。
+/// </summary>
+public delegate ValueTask<bool> SectionalTargetFailureHandler(IReadOnlyList<SectionalTargetFailure> failures, int succeeded);
 
 /// <summary>
 /// <b>sectional 编译器</b>：<c>sectional/</c> + 四个条件 ⇒ <c>Overwrite/</c>。
@@ -96,7 +114,10 @@ public static partial class SectionalCompiler
 		IReadOnlyList<string>? enabledMaterialPatches,
 		Action<string>? onStage = null,
 		CancellationToken cancellationToken = default,
-		uint? exclusiveItemId = null)
+		uint? exclusiveItemId = null,
+		IReadOnlyList<uint>? exclusiveItemIds = null,
+		bool autoSkipFailedTargets = false,
+		SectionalTargetFailureHandler? onTargetFailures = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
 		ArgumentNullException.ThrowIfNull(context);
@@ -134,11 +155,15 @@ public static partial class SectionalCompiler
 				.ConfigureAwait(false);
 		}
 
-		if (exclusiveItemId is { } exclusiveItem)
+		var exclusiveTargets = exclusiveItemIds is { Count: > 0 }
+			? exclusiveItemIds
+			: exclusiveItemId is { } single ? [single] : null;
+		if (exclusiveTargets is not null)
 		{
 			onStage?.Invoke("正在把来源 unit 落到目标护甲独有的部件上…");
 			return await CompileExclusiveArmorAsync(
-				modDirectory, context, payload, sourcePatch, sourceMap, exclusiveItem, disabledSections, headMergeIntoBody, selection, cancellationToken)
+				modDirectory, context, payload, sourcePatch, sourceMap, exclusiveTargets, disabledSections, headMergeIntoBody, selection,
+				autoSkipFailedTargets, onTargetFailures, cancellationToken)
 				.ConfigureAwait(false);
 		}
 

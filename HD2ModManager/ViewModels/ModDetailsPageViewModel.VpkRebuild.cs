@@ -235,13 +235,20 @@ public partial class ModDetailsPageViewModel
 
 			// 目标取**下拉里当前选中**的那件（用户可能刚换过、还没点「切换」），
 			// 勾选取**内存里**的状态（同理）。这样"重构建"= 把眼前这套配置整个烘一遍。
-			var targets = SelectedVpkTargetArmor is { } selected
+			// 专属（P5 多选）：下拉处在专属模式时按勾选的整个集合重建；勾选为空时沿用上次切换的专属状态。
+			var pickedIds = _vpkExclusiveMode ? VpkTargetPicker.CheckedItemIds : [];
+			var pickedExclusive = pickedIds.Count != 0
+				? VpkTargetPicker.Choices.First(choice => choice.Option.ItemId == pickedIds[0]).Option
+				: null;
+			var normalPick = _vpkExclusiveMode ? null : SelectedVpkTargetArmor;
+			var rebuildOption = pickedExclusive ?? normalPick;
+			var targets = rebuildOption is { } selected
 				? new[] { selected.ArchiveId }
 				: ResolveApplyTargets(directory);
-			// 专属：下拉处在专属模式时按选中那条记录重建；没选中时沿用上次切换的专属状态。
-			var rebuildExclusive = SelectedVpkTargetArmor is { } selectedOption
-				? (_vpkExclusiveMode ? selectedOption.ItemId : null)
-				: ResolveApplyExclusive();
+			IReadOnlyList<uint>? rebuildExclusiveIds = pickedIds.Count != 0
+				? pickedIds
+				: rebuildOption is null ? ResolveApplyExclusiveIds() : null;
+			var rebuildExclusive = rebuildExclusiveIds?[0];
 			Report("正在重新转换来源 VPK…");
 			var outcome = await VpkRebuildService.RunAsync(
 				node.Id.Value.ToString("N"),
@@ -251,7 +258,8 @@ public partial class ModDetailsPageViewModel
 				_vpkFile.State.Disabled,
 				Report,
 				cancellation,
-				exclusiveItemId: rebuildExclusive).ConfigureAwait(true);
+				exclusiveItemId: rebuildExclusive,
+				exclusiveItemIds: rebuildExclusiveIds).ConfigureAwait(true);
 			Step();
 
 			if (!outcome.Ok)
@@ -267,13 +275,16 @@ public partial class ModDetailsPageViewModel
 			// 而状态只反映用户确认过的东西。失败/中断时状态保持不动。
 			try
 			{
-				var applied = SelectedVpkTargetArmor is { } picked
+				var keptTargets = outcome.ExclusiveTargets
+					.Select(seed => new VpkWardrobeTarget(seed.ItemId, seed.TargetName)).ToArray();
+				var applied = rebuildOption is { } picked
 					? _vpkFile with
 					{
 						TargetArmorArchiveId = picked.ArchiveId,
 						TargetArmorName = picked.StoredName,
 						TargetItemId = rebuildExclusive,
 						Exclusive = rebuildExclusive is not null,
+						Targets = rebuildExclusive is not null && keptTargets.Length > 1 ? keptTargets : null,
 					}
 					: _vpkFile;
 				_vpkFile = applied;
@@ -281,8 +292,8 @@ public partial class ModDetailsPageViewModel
 				// 编译没做成（IncompleteReason 非空）时生效层还是旧的，记录也保持旧的，别动。
 				if (outcome.IncompleteReason is null)
 				{
-					var rebuildSynced = await KitExclusiveWorkspace.SyncAsync(
-						node.Id, _library.ModsRootDirectory, directory, outcome.Exclusive).ConfigureAwait(true);
+					var rebuildSynced = await KitExclusiveWorkspace.SyncTargetsAsync(
+						node.Id, _library.ModsRootDirectory, directory, outcome.ExclusiveTargets).ConfigureAwait(true);
 					if (!rebuildSynced.Ok)
 						LogService.Warn($"{node.Metadata.Name}：同步专属隐藏记录失败：{rebuildSynced.Error}");
 				}
