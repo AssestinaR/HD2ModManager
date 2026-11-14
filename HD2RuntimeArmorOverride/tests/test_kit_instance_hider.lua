@@ -1,11 +1,11 @@
--- 离线测试：kit_instance_hider.lua 0.3.0（假引擎，不需要游戏）。
+-- 离线测试：kit_instance_hider.lua 0.4.3（假引擎，不需要游戏）。
 -- 运行：luajit HD2RuntimeArmorOverride/tests/test_kit_instance_hider.lua <src>
 -- 没有 luajit 时：python -I HD2RuntimeArmorOverride/scripts/run_lua_test.py <pylib> <本文件> <src>
 rawset(_G, 'HD2_KIT_HIDER_OFFLINE', true)
 local path = (arg and arg[1]) or 'HD2RuntimeArmorOverride/src/kit_instance_hider.lua'
 local M = dofile(path)
 assert(M.status == 'offline', 'offline guard')
-assert(M.version == '0.3.0', 'version')
+assert(M.version == '0.4.3', 'version')
 
 local MARKER = '82595b5d94c57343'
 local CAPE = 'ea846ef460cc5ba0'
@@ -529,6 +529,101 @@ do
 	clock = clock + 1
 	hider.tick()                       -- 2.6 秒 ⇒ 读
 	assert(reads == before + 2)
+end
+
+-- 诊断（0.4.0）：开了 diag_interval 才写 diag；没藏住的部件带上离最近锚点的距离 ----------
+do
+	local near = unit(LEG, 0.2, 0, 0)          -- 0.2 米：在 0.3 半径内，藏
+	local far = unit(CAPE, 0.9, 0, 0)          -- 0.9 米：超出 0.3 半径，没藏住，诊断里应是 CAPE@0.90
+	local units = { unit(MARKER, 0, 0, 0), near, far }
+	local dclock, dlines = 0, {}
+	local dh = M.new({
+		stingray = make_stingray(function() return { { units = units } } end),
+		now = function() return dclock end,
+		cpu = function() return dclock end,
+		write = function(line) dlines[#dlines + 1] = line end,
+		read_rules = function() return rules_text(1, rule_line('diag', '0.3', { MARKER }, {}, { LEG, CAPE })), nil end,
+		diag_interval = 5,
+	})
+	for _ = 1, 8 do
+		dclock = dclock + 2
+		for _ = 1, 10 do dh.tick() end
+	end
+	assert(near.visible == false, 'near piece hidden')
+	assert(far.visible == true, 'far piece left visible')
+	local text = table.concat(dlines)
+	assert(text:find('"kind":"diag"', 1, true), 'diag line written: ' .. text)
+	assert(text:find(CAPE .. '@0.90', 1, true), 'miss sample carries the distance: ' .. text)
+	assert(text:find('"avg_sweep_ms"', 1, true) and text:find('"units":3', 1, true), text)
+	-- 0.4.2：藏住的也记距离（定半径用）：LEG 在 0.2 米，落在 0.2 档；远处的 CAPE 没藏，不进这些字段。
+	assert(text:find(LEG .. '@0.20', 1, true) and not text:find('"hidden_far":"[^"]*' .. CAPE), 'hidden sample: ' .. text)
+	assert(text:find('"hidden_max_d":0.2', 1, true), 'hidden max: ' .. text)
+	assert(text:find('0.2:[1-9]') and text:find('0.3:0,', 1, true) and text:find('>1.0:0', 1, true), 'buckets: ' .. text)
+
+	-- 没开 diag_interval（离线默认）就一行 diag 都不写：上面主测试的日志断言因此不受影响。
+	assert(not table.concat(lines):find('"kind":"diag"', 1, true), 'diag off by default')
+end
+
+-- 0.4.1：任务里主世界超过 8192 个 unit，玩家的部件排在最后也要扫到（旧上限 8192 会整个漏掉）----------
+do
+	local units = {}
+	for i = 1, 9000 do units[i] = unit('00000000000000aa', 50, 0, 0) end
+	units[#units + 1] = unit(MARKER, 0, 0, 0)
+	local leg = unit(LEG, 0.2, 0, 0)
+	units[#units + 1] = leg
+	local bclock, blines = 0, {}
+	local bh = M.new({
+		stingray = make_stingray(function() return { { units = units } } end),
+		now = function() return bclock end,
+		cpu = function() return bclock end,
+		write = function(line) blines[#blines + 1] = line end,
+		read_rules = function() return rules_text(1, rule_line('big', '0.3', { MARKER }, {}, { LEG })), nil end,
+		diag_interval = 5,
+	})
+	for _ = 1, 8 do
+		bclock = bclock + 2
+		for _ = 1, 40 do bh.tick() end
+	end
+	assert(leg.visible == false, 'piece past index 8192 hidden')
+	local text = table.concat(blines)
+	assert(text:find('"largest_world":9002', 1, true) and text:find('"capped_worlds":0', 1, true), text)
+end
+
+-- 0.4.3：锚点当轮刷新。人在两轮之间跑了 5 米，本轮先扫到签名件、再扫到新冒出来的腿：
+-- 用上一轮的锚点位置会差 5 米（半径 0.3 藏不住），刷新后就在身边，当轮就藏。
+do
+	local marker = unit(MARKER, 0, 0, 0)
+	local units = { marker }
+	local mclock, mlines = 0, {}
+	local mh = M.new({
+		stingray = make_stingray(function() return { { units = units } } end),
+		now = function() return mclock end,
+		cpu = function() return mclock end,
+		write = function(line) mlines[#mlines + 1] = line end,
+		read_rules = function() return rules_text(1, rule_line('move', '0.3', { MARKER }, {}, { LEG })), nil end,
+		diag_interval = 5,
+	})
+	local function run(n)
+		for _ = 1, n do
+			mclock = mclock + 0.6
+			mh.tick()
+		end
+	end
+	run(10)                                   -- 锚点在原点确认
+	marker.x = 5                              -- 跑了 5 米
+	local leg = unit(LEG, 5.1, 0, 0)
+	units[2] = leg                            -- 排在签名件后面
+	mclock = mclock + 0.6
+	mh.tick()                                 -- 只跑一轮：用的仍是上一轮确认的锚点，但已当轮刷新
+	assert(leg.visible == false, 'leg next to the moved anchor hidden in the same sweep')
+	-- 另一个穿同款原版的人在 0.5 米外（超出 0.3）：不藏。
+	local other = unit(LEG, 5.6, 0, 0)
+	units[3] = other
+	run(5)
+	assert(other.visible == true, 'neighbour 0.5 m away left visible')
+	run(20)
+	local text = table.concat(mlines)
+	assert(text:find('"anchors_refreshed":[1-9]'), 'refresh counted: ' .. text)
 end
 
 print('test_kit_instance_hider: ok (' .. #lines .. ' log lines)')

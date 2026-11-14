@@ -201,4 +201,10 @@ public sealed record RuntimeArmorRegistryApplyResult(
 
 	/// <summary>规则超过协议上限被丢弃的条数（不应出现）。</summary>
 	public int HideRulesDropped { get; init; }
+
+	/// <summary>
+	/// 写 <c>wardrobe.links</c> / Hider 规则失败的原因（协议照常写了，运行时保留上一版映射）。为 <c>null</c> = 没出错。
+	/// 以前这里的异常被整个吞掉，界面只看到「Hider 规则 0 条」，看不出映射根本没写进去（2026-11-14）。
+	/// </summary>
+	public string? LinksError { get; init; }
 }

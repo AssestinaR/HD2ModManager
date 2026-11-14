@@ -1,4 +1,5 @@
 using System.Text.Json;
+using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure.Sectional;
@@ -26,10 +27,15 @@ internal enum SectionalCompressionRole
 internal sealed record SectionalCompressionSource(string FileId, ArmorPart? Part, string? BodyType);
 
 /// <summary>一个压缩 unit：它的 ID，以及并进来的来源部位（顺序固定，第一个就是 ID 所有者）。</summary>
+/// <param name="Body">
+/// 体型：没拆的槽（全 Any）是 <see cref="HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any"/>；
+/// 拆开的槽（有 Stocky/Slim 成员）每个体型一个压缩 unit，Any 成员两边各并一份（规划 §13.2）。
+/// </param>
 internal sealed record SectionalCompressionGroup(
 	SectionalCompressionRole Role,
 	string UnitId,
-	IReadOnlyList<SectionalCompressionMember> Members)
+	IReadOnlyList<SectionalCompressionMember> Members,
+	HD2ModAdaptation.Analysis.UnitMeshBodyVariant Body = HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any)
 {
 	/// <summary>ID 取自哪个部位（= 第一个成员）。</summary>
 	public ArmorPart IdFrom => Members[0].Part;
@@ -57,7 +63,10 @@ internal sealed record SectionalCompressionPlan(
 
 	/// <summary>压缩后还留在 patch 里的全部 unit ID（压缩 unit + 原样保留的披风/肩）。</summary>
 	public IReadOnlyList<string> SurvivingUnitIds
-		=> [.. Groups.Select(group => group.UnitId).Concat(Passthrough.Select(member => member.SourceUnitId))];
+		=> [.. Groups.Select(group => group.UnitId).Concat(Passthrough.Select(member => member.SourceUnitId)).Distinct(StringComparer.Ordinal)];
+
+	/// <summary>至少一个槽按体型拆成了两份（决定 layout 用 /2）。</summary>
+	public bool HasBodySplit => Groups.Any(group => group.Body != HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any);
 
 	internal static SectionalCompressionPlan NotSupported(string reason, bool headMerge)
 		=> new(false, reason, headMerge, [], []);
@@ -68,6 +77,9 @@ internal sealed record SectionalCompressionPlan(
 /// </summary>
 internal static class SectionalCompressionPlanner
 {
+	internal static ArmorPart[] BodyPartOrder => BodyOrder;
+	internal static ArmorPart[] ArmPartOrder => ArmOrder;
+
 	private static readonly ArmorPart[] BodyOrder = [ArmorPart.Torso, ArmorPart.Hips, ArmorPart.LeftLeg, ArmorPart.RightLeg];
 	// 肩并进手臂槽（用户 2026-11-14 决定）：ID 仍取左臂 → 右臂，肩排在后面，没有臂时才轮到肩。
 	private static readonly ArmorPart[] ArmOrder =
@@ -80,45 +92,79 @@ internal static class SectionalCompressionPlanner
 	{
 		ArgumentNullException.ThrowIfNull(source);
 
+		// 来源按（部位, 体型）索引：同一体型同一部位只能有一个来源 unit（Any 同时算两个体型）。
+		var byPart = new Dictionary<(ArmorPart Part, UnitMeshBodyVariant Body), string>();
 		foreach (var unit in source)
 		{
 			if (unit.Part is null)
 				return SectionalCompressionPlan.NotSupported($"来源 unit 0x{unit.FileId} 认不出是哪个部位", headMerge);
-			if (ArmorStructure.ParseBody(unit.BodyType) != HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any)
+			var body = ArmorStructure.ParseBody(unit.BodyType);
+			if (body is not (UnitMeshBodyVariant.Any or UnitMeshBodyVariant.Stocky or UnitMeshBodyVariant.Slim))
 				return SectionalCompressionPlan.NotSupported(
 					$"来源 unit 0x{unit.FileId}（{ArmorStructure.Display(unit.Part.Value)}）是 {unit.BodyType} 分体", headMerge);
-		}
-
-		var byPart = new Dictionary<ArmorPart, string>();
-		foreach (var unit in source)
-		{
-			if (!byPart.TryAdd(unit.Part!.Value, unit.FileId))
+			if (!byPart.TryAdd((unit.Part.Value, body), unit.FileId))
 				return SectionalCompressionPlan.NotSupported(
-					$"部位「{ArmorStructure.Display(unit.Part.Value)}」有多个来源 unit", headMerge);
+					body == UnitMeshBodyVariant.Any
+						? $"部位「{ArmorStructure.Display(unit.Part.Value)}」有多个来源 unit"
+						: $"部位「{ArmorStructure.Display(unit.Part.Value)}」的{ArmorStructure.DisplayBody(body)}体型有多个来源 unit", headMerge);
 		}
 
-		List<SectionalCompressionMember> Members(IEnumerable<ArmorPart> parts)
-			=> [.. parts.Where(byPart.ContainsKey).Select(part => new SectionalCompressionMember(part, byPart[part]))];
+		foreach (var part in byPart.Keys.Select(key => key.Part).Distinct())
+		{
+			if (!byPart.ContainsKey((part, UnitMeshBodyVariant.Any))) continue;
+			foreach (var body in new[] { UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim })
+			{
+				if (byPart.ContainsKey((part, body)))
+					return SectionalCompressionPlan.NotSupported(
+						$"部位「{ArmorStructure.Display(part)}」的{ArmorStructure.DisplayBody(body)}体型同时有通用和专属两个来源 unit", headMerge);
+			}
+		}
 
 		var groups = new List<SectionalCompressionGroup>();
-		void Add(SectionalCompressionRole role, List<SectionalCompressionMember> members)
+		void Add(SectionalCompressionRole role, IReadOnlyList<ArmorPart> order)
 		{
-			if (members.Count != 0)
-				groups.Add(new SectionalCompressionGroup(role, members[0].SourceUnitId, members));
+			string? Find(ArmorPart part, UnitMeshBodyVariant body) => byPart.TryGetValue((part, body), out var id) ? id : null;
+
+			var split = order.Any(part => Find(part, UnitMeshBodyVariant.Stocky) is not null || Find(part, UnitMeshBodyVariant.Slim) is not null);
+			if (!split)
+			{
+				var members = order.Where(part => Find(part, UnitMeshBodyVariant.Any) is not null)
+					.Select(part => new SectionalCompressionMember(part, Find(part, UnitMeshBodyVariant.Any)!)).ToList();
+				if (members.Count != 0)
+					groups.Add(new SectionalCompressionGroup(role, members[0].SourceUnitId, members));
+				return;
+			}
+
+			// 拆开的槽：壮实 = 壮实成员 + Any 成员，苗条 = 苗条成员 + Any 成员；ID 取该体型第一个专属成员，没有则第一个 Any 成员。
+			foreach (var body in new[] { UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim })
+			{
+				var specific = order.Where(part => Find(part, body) is not null)
+					.Select(part => new SectionalCompressionMember(part, Find(part, body)!)).ToList();
+				var any = order.Where(part => Find(part, UnitMeshBodyVariant.Any) is not null)
+					.Select(part => new SectionalCompressionMember(part, Find(part, UnitMeshBodyVariant.Any)!)).ToList();
+				var owner = specific.Count != 0 ? specific[0] : any.Count != 0 ? any[0] : null;
+				if (owner is null) continue;
+				// ID 所有者放最前，其余按部位顺序（Any 成员两边各并一份）。
+				var members = new List<SectionalCompressionMember> { owner };
+				members.AddRange(order
+					.Select(part => specific.FirstOrDefault(member => member.Part == part) ?? any.FirstOrDefault(member => member.Part == part))
+					.Where(member => member is not null && member != owner)!);
+				groups.Add(new SectionalCompressionGroup(role, owner.SourceUnitId, members, body));
+			}
 		}
 
 		if (headMerge)
 		{
 			// 头并进躯干：ID 所有者仍排在躯干类部位之前，头盔最后（规划 §10.4）。
-			Add(SectionalCompressionRole.HeadBody, Members([.. BodyOrder, ArmorPart.Helmet]));
+			Add(SectionalCompressionRole.HeadBody, [.. BodyOrder, ArmorPart.Helmet]);
 		}
 		else
 		{
-			Add(SectionalCompressionRole.Head, Members([ArmorPart.Helmet]));
-			Add(SectionalCompressionRole.Body, Members(BodyOrder));
+			Add(SectionalCompressionRole.Head, [ArmorPart.Helmet]);
+			Add(SectionalCompressionRole.Body, BodyOrder);
 		}
 
-		Add(SectionalCompressionRole.Arms, Members(ArmOrder));
+		Add(SectionalCompressionRole.Arms, ArmOrder);
 
 		if (groups.Count == 0)
 			return SectionalCompressionPlan.NotSupported("来源里没有头、躯干、手臂类部位", headMerge);
@@ -126,8 +172,10 @@ internal static class SectionalCompressionPlanner
 		// 披风：不并入任何槽，原样保留（顺序按部位固定）。
 		var grouped = groups.SelectMany(group => group.Members.Select(member => member.Part)).ToHashSet();
 		var passthrough = ArmorStructure.All
-			.Where(part => byPart.ContainsKey(part) && !grouped.Contains(part))
-			.Select(part => new SectionalCompressionMember(part, byPart[part]))
+			.Where(part => !grouped.Contains(part))
+			.SelectMany(part => new[] { UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim }
+				.Where(body => byPart.ContainsKey((part, body)))
+				.Select(body => new SectionalCompressionMember(part, byPart[(part, body)])))
 			.ToArray();
 
 		return new SectionalCompressionPlan(true, null, headMerge, groups, passthrough);
@@ -141,7 +189,11 @@ internal static class SectionalCompressionPlanner
 internal static class LowPollutionLayoutFile
 {
 	internal const string FileName = "low-pollution-layout.json";
+	/// <summary>没有任何槽按体型拆开时写的 schema（全 Any 素体，字节与 S2 起一直一样）。</summary>
 	internal const string Schema = "hd2mod.low-pollution-layout/1";
+
+	/// <summary>有槽按体型拆开时写的 schema：每个 unit 多一个 <c>body</c>（any / stocky / slim）。读取器两个都认。</summary>
+	internal const string SchemaV2 = "hd2mod.low-pollution-layout/2";
 
 	private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
 	{
@@ -151,7 +203,7 @@ internal static class LowPollutionLayoutFile
 
 	private sealed record PartLine(string Part, string SourceUnit);
 
-	private sealed record UnitLine(string Role, string Unit, string IdFrom, IReadOnlyList<PartLine> Parts);
+	private sealed record UnitLine(string Role, string Unit, string IdFrom, IReadOnlyList<PartLine> Parts, string? Body = null);
 
 	private sealed record PassthroughLine(string Part, string Unit);
 
@@ -167,15 +219,18 @@ internal static class LowPollutionLayoutFile
 	internal static string Serialize(SectionalCompressionPlan plan, string? fingerprint = null)
 	{
 		ArgumentNullException.ThrowIfNull(plan);
+		// 全 Any 素体仍写 /1、不带 body，字节与此前完全一致（已部署的映射和指纹都不受影响）。
+		var split = plan.HasBodySplit;
 		var document = new Document(
-			Schema,
+			split ? SchemaV2 : Schema,
 			plan.Mode,
 			plan.HeadMerge,
 			[.. plan.Groups.Select(group => new UnitLine(
 				RoleName(group.Role),
 				group.UnitId,
 				ArmorStructure.Name(group.IdFrom),
-				[.. group.Members.Select(member => new PartLine(ArmorStructure.Name(member.Part), member.SourceUnitId))]))],
+				[.. group.Members.Select(member => new PartLine(ArmorStructure.Name(member.Part), member.SourceUnitId))],
+				split ? ArmorStructure.BodyName(group.Body) : null))],
 			[.. plan.Passthrough.Select(member => new PassthroughLine(ArmorStructure.Name(member.Part), member.SourceUnitId))],
 			fingerprint);
 		return JsonSerializer.Serialize(document, Options);

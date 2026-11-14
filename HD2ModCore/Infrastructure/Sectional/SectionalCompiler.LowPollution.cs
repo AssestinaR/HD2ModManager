@@ -160,12 +160,38 @@ public static partial class SectionalCompiler
 		}
 
 		var surviving = plan.SurvivingUnitIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var splitRoles = plan.Groups.Where(group => group.Body != HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Any)
+			.Select(group => group.Role).ToHashSet();
+		var splitUnits = plan.Groups.Where(group => splitRoles.Contains(group.Role)).Select(group => group.UnitId)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		var kept = new JsonArray();
 		foreach (var piece in pieces.OfType<JsonObject>())
 		{
 			var unit = piece["unit"]?.GetValue<string>();
-			if (unit is not null && surviving.Contains(unit))
+			// 拆开的槽另行处理（下面按体型写 body 0 / 1）；没拆的槽照旧：留压缩 unit 的注册件。
+			if (unit is not null && surviving.Contains(unit) && !splitUnits.Contains(unit))
 				kept.Add(piece.DeepClone());
+		}
+
+		// 拆开的槽：写 body 0（壮实）/ 1（纤细）两条，各指自己体型的压缩 unit；缺某个体型时那一条指另一体型的（规划 §13.3 / §13.6 Q2）。
+		foreach (var role in plan.Groups.Where(group => splitRoles.Contains(group.Role)).Select(group => group.Role).Distinct())
+		{
+			var groups = plan.Groups.Where(group => group.Role == role).ToArray();
+			var slotPart = groups.SelectMany(group => group.Members.Select(member => member.Part))
+				.Distinct().OrderBy(part => Array.IndexOf(SlotPartOrder(role), part) is var at and >= 0 ? at : int.MaxValue).First();
+			var slot = ArmorStructure.SlotOf(slotPart);
+			foreach (var (body, raw) in new[] { (HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Stocky, 0), (HD2ModAdaptation.Analysis.UnitMeshBodyVariant.Slim, 1) })
+			{
+				var group = groups.FirstOrDefault(candidate => candidate.Body == body)
+					?? groups.First(candidate => candidate.Body != body);
+				var template = pieces.OfType<JsonObject>().FirstOrDefault(piece =>
+					string.Equals(piece["unit"]?.GetValue<string>(), group.UnitId, StringComparison.OrdinalIgnoreCase));
+				var entry = (JsonObject?)template?.DeepClone() ?? new JsonObject { ["pieceType"] = 0 };
+				entry["body"] = raw;
+				entry["unit"] = group.UnitId;
+				if (slot is not null) entry["slot"] = (int)slot.Value;
+				kept.Add(entry);
+			}
 		}
 
 		document["pieces"] = kept;
@@ -173,6 +199,13 @@ public static partial class SectionalCompiler
 		VpkPayloadSwap.ClearReadOnlyForWrite(destination);
 		File.WriteAllText(destination, document.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
 	}
+
+	private static ArmorPart[] SlotPartOrder(SectionalCompressionRole role) => role switch
+	{
+		SectionalCompressionRole.Head => [ArmorPart.Helmet],
+		SectionalCompressionRole.Arms => SectionalCompressionPlanner.ArmPartOrder,
+		_ => SectionalCompressionPlanner.BodyPartOrder,
+	};
 
 	private static void WriteLowPollutionLayout(string modDirectory, SectionalCompressionPlan plan, string fingerprint)
 	{

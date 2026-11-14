@@ -26,13 +26,6 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		NoEffectiveUnitOverride,
 	}
 
-	private enum AvailableArmorKindFilter
-	{
-		AutomaticCombination,
-		ArmorOnly,
-		HelmetOnly,
-	}
-
 	private readonly RuntimeArmorRegistryService service;
 	private readonly NotificationService notifications;
 	private readonly IProfileDeploymentCoordinator deploymentCoordinator;
@@ -54,11 +47,17 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private string availableSearchText = string.Empty;
 	private string providerDetailSearchText = string.Empty;
 	private AvailableArmorUnitFilter availableArmorUnitFilter;
-	private AvailableArmorKindFilter availableArmorKindFilter;
+	private ArmorMappingPickerTab selectedAvailableTab = ArmorMappingPickerTab.Set;
 	private uint? selectedProviderId;
 	private IReadOnlyList<uint> selectedProviderMemberIds = [];
 	private readonly HashSet<uint> pendingProviderIds = [];
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
+	private IReadOnlyDictionary<uint, RuntimeArmorCatalogEntry> cachedCatalogById = new Dictionary<uint, RuntimeArmorCatalogEntry>();
+	private ArmorMappingPickerBaseCatalog cachedPickerBaseCatalog = new([], [], []);
+	private IReadOnlyDictionary<uint, string> cachedManagedOwnerByItemId = new Dictionary<uint, string>();
+	private readonly Dictionary<ArmorMappingPickerTab, IReadOnlyList<RuntimeArmorChoiceViewModel>> availableChoicesByTab = new();
+	private readonly Dictionary<string, RuntimeArmorChoiceViewModel> allAvailableChoicesByKey = new(StringComparer.OrdinalIgnoreCase);
+	private bool isSelectedProviderTwoSlotCompressed;
 	private IReadOnlyDictionary<string, ArmorDisplayFacts> cachedArmorDisplayFacts = new Dictionary<string, ArmorDisplayFacts>(StringComparer.OrdinalIgnoreCase);
 	private IReadOnlyList<RuntimeArmorRegistryModel> modelDefinitions = [];
 	// 素体 key → 所属 Mod 在库里现在的名字。素体在界面上叫什么，以它为准（见 ApplySnapshot）。
@@ -142,6 +141,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RemoveCustomModelCommand = new RelayCommand(
 			parameter => RemoveCustomModel(parameter as RuntimeArmorModelEditorViewModel),
 			_ => !IsBusy);
+		SelectAvailableTabCommand = new RelayCommand(SelectAvailableTab);
 		// **没有"新增自定义素体"这个动作。**
 		//
 		// 素体不是一个能凭空造的对象：它是一套**已存在**的 Unit（来自某个 Mod 的 patch）。
@@ -184,9 +184,18 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		{
 			if (!SetField(ref availableSearchText, value ?? string.Empty)) return;
 			AvailableArmorsView.Refresh();
+			RaiseTabHeaderPropertiesChanged();
 			OnPropertyChanged(nameof(AvailableSummary));
 		}
 	}
+
+	public ArmorMappingPickerTab SelectedAvailableTab => selectedAvailableTab;
+	public bool IsSetTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Set;
+	public bool IsArmorTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Armor;
+	public bool IsHelmetTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Helmet;
+	public string SetTabHeader => $"套装 ({CountFilteredTabItems(ArmorMappingPickerTab.Set)})";
+	public string ArmorTabHeader => $"护甲 ({CountFilteredTabItems(ArmorMappingPickerTab.Armor)})";
+	public string HelmetTabHeader => $"头盔 ({CountFilteredTabItems(ArmorMappingPickerTab.Helmet)})";
 
 	public string AvailableArmorUnitFilterText => availableArmorUnitFilter switch
 	{
@@ -195,28 +204,52 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		_ => "Unit 覆盖：全部",
 	};
 
-	public string AvailableArmorKindFilterText => availableArmorKindFilter switch
+	public void SelectAvailableTab(object? parameter)
 	{
-		AvailableArmorKindFilter.ArmorOnly => "类型：仅护甲",
-		AvailableArmorKindFilter.HelmetOnly => "类型：仅头盔",
-		_ => "类型：自动组合",
-	};
-
-	public void CycleAvailableArmorKindFilter()
-	{
-		availableArmorKindFilter = availableArmorKindFilter switch
+		var next = parameter switch
 		{
-			AvailableArmorKindFilter.AutomaticCombination => AvailableArmorKindFilter.ArmorOnly,
-			AvailableArmorKindFilter.ArmorOnly => AvailableArmorKindFilter.HelmetOnly,
-			_ => AvailableArmorKindFilter.AutomaticCombination,
+			ArmorMappingPickerTab tab => tab,
+			string text when Enum.TryParse<ArmorMappingPickerTab>(text, ignoreCase: true, out var parsed) => parsed,
+			_ => selectedAvailableTab,
 		};
-		OnPropertyChanged(nameof(AvailableArmorKindFilterText));
-		RebuildProjections();
-		ProvidersView.Refresh();
-		ProviderDetailItemsView.Refresh();
+		if (next == selectedAvailableTab) return;
+
+		selectedAvailableTab = next;
+		OnPropertyChanged(nameof(SelectedAvailableTab));
+		OnPropertyChanged(nameof(IsSetTabSelected));
+		OnPropertyChanged(nameof(IsArmorTabSelected));
+		OnPropertyChanged(nameof(IsHelmetTabSelected));
+
+		var rows = availableChoicesByTab.GetValueOrDefault(selectedAvailableTab) ?? [];
+		var activeSelected = ArmorRegistryScopes.IsAvailable(selection.Scope)
+			? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
+			: null;
+		foreach (var row in rows)
+			row.IsSelected = activeSelected is not null && !row.IsBlocked && activeSelected.Contains(row.SelectionKey);
+
+		AvailableArmors.ReplaceWith(rows, ListTransitionKind.Replace);
+		AvailableArmorsView.Refresh();
 		OnPropertyChanged(nameof(AvailableSummary));
-		OnPropertyChanged(nameof(ProvidersSummary));
-		OnPropertyChanged(nameof(ProviderDetailSummary));
+	}
+
+	private int CountFilteredTabItems(ArmorMappingPickerTab tab)
+	{
+		if (!availableChoicesByTab.TryGetValue(tab, out var items))
+			return 0;
+		var count = 0;
+		foreach (var item in items)
+		{
+			if (FilterAvailableArmor(item))
+				count++;
+		}
+		return count;
+	}
+
+	private void RaiseTabHeaderPropertiesChanged()
+	{
+		OnPropertyChanged(nameof(SetTabHeader));
+		OnPropertyChanged(nameof(ArmorTabHeader));
+		OnPropertyChanged(nameof(HelmetTabHeader));
 	}
 
 	public void CycleAvailableArmorUnitFilter()
@@ -229,6 +262,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		};
 		OnPropertyChanged(nameof(AvailableArmorUnitFilterText));
 		AvailableArmorsView.Refresh();
+		RaiseTabHeaderPropertiesChanged();
 		OnPropertyChanged(nameof(AvailableSummary));
 	}
 
@@ -377,8 +411,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		: $"{ProvidersView.Cast<object>().Count()} / {Providers.Count} 个视觉来源";
 	public string AvailableSummary => availableSearchText.Length == 0
 		&& availableArmorUnitFilter == AvailableArmorUnitFilter.All
-			? $"{AvailableArmors.Count} 个未管理护甲"
-		: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 个未管理护甲";
+			? $"{AvailableArmors.Count} 项可选"
+		: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 项可选";
 	public string ProviderDetailTitle => selectedProviderId is { } id
 		? Providers.FirstOrDefault(item => item.MemberItemIds.SequenceEqual(selectedProviderMemberIds))?.Name
 			?? (selectedProviderMemberIds.Count > 1
@@ -391,17 +425,34 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	// The card title is the only thing that says whose targets these are; keep both halves.
 	public string ProviderDetailHeaderTitle => $"←  映射目标 · {ProviderDetailTitle}";
 	public string AvailableRowActionToolTip => IsProviderDetailOpen ? "注册到该视觉对象" : "转为视觉对象";
-	public string ProviderDetailSummary => selectedProviderId is not null
-		? providerDetailSearchText.Length == 0
-			? $"{Mappings.Count(row => selectedProviderMemberIds.Contains(row.Source.ItemId))} 个映射目标"
-			: $"{ProviderDetailItemsView.Cast<object>().Count()} / {Mappings.Count(row => selectedProviderMemberIds.Contains(row.Source.ItemId))} 个映射目标"
-		: "选择一个视觉来源";
+	public string ProviderDetailSummary => BuildProviderDetailSummary();
+
+	private string BuildProviderDetailSummary()
+	{
+		if (selectedProviderId is null) return "选择一个视觉来源";
+		var rawCount = Mappings.Count(row => selectedProviderMemberIds.Contains(row.Source.ItemId));
+		var itemCount = ProviderDetailItems.Count;
+		var filteredCount = providerDetailSearchText.Length == 0
+			? itemCount
+			: ProviderDetailItemsView.Cast<object>().Count();
+		if (itemCount != rawCount)
+		{
+			return providerDetailSearchText.Length == 0
+				? $"{itemCount} 项（共 {rawCount} 条映射）"
+				: $"{filteredCount} / {itemCount} 项（共 {rawCount} 条映射）";
+		}
+
+		return providerDetailSearchText.Length == 0
+			? $"{rawCount} 个映射目标"
+			: $"{filteredCount} / {rawCount} 个映射目标";
+	}
 	private Dictionary<uint, RuntimeArmorChoiceViewModel> Choices { get; set; } = [];
 
 	public AsyncRelayCommand RefreshCommand { get; }
 	public AsyncRelayCommand ApplyCommand { get; }
 	public RelayCommand OpenRegistryFolderCommand { get; }
 	public RelayCommand RemoveCustomModelCommand { get; }
+	public RelayCommand SelectAvailableTabCommand { get; }
 
 	// 页面首次打开：目录、快照与覆盖事实都还没有，走一次完整加载。
 	// 加载是单飞的（见 EnsureCatalogLoadedAsync），所以它与启动预热**共用同一次**。
@@ -631,6 +682,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	{
 		if (rebuildChoices)
 		{
+			cachedCatalogById = cachedCatalog
+				.DistinctBy(item => item.ItemId)
+				.ToDictionary(item => item.ItemId);
+			cachedPickerBaseCatalog = ArmorMappingPickerPlanner.BuildBaseCatalog(cachedCatalog);
 			Choices = cachedCatalog
 				.Select(item => new RuntimeArmorChoiceViewModel(
 					item.ItemId,
@@ -875,10 +930,28 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	// 于是多选永远只会变成视觉来源（见 docs/agent/armor-registry-page-perf-20261027.md §4）。
 	public void ApplyAvailableSelection(IReadOnlyList<string> selectedKeys)
 	{
-		ApplyMutuallyExclusiveSelection(
-			IsProviderDetailOpen ? ArmorRegistryScopes.AvailableAsTarget : ArmorRegistryScopes.Available,
-			AvailableArmors,
-			selectedKeys);
+		var scope = IsProviderDetailOpen ? ArmorRegistryScopes.AvailableAsTarget : ArmorRegistryScopes.Available;
+		var currentTabKeys = AvailableArmors
+			.Select(item => item.SelectionKey)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var validActiveKeys = selectedKeys
+			.Where(key => currentTabKeys.Contains(key)
+				&& allAvailableChoicesByKey.TryGetValue(key, out var item)
+				&& !item.IsBlocked)
+			.ToArray();
+		var otherTabSelectedKeys = ArmorRegistryScopes.IsAvailable(selection.Scope)
+			? selection.SelectedIds
+				.Where(key => allAvailableChoicesByKey.TryGetValue(key, out var item)
+					&& !item.IsBlocked
+					&& item.PickerTab != selectedAvailableTab)
+				.ToArray()
+			: [];
+		var combinedKeys = validActiveKeys
+			.Concat(otherTabSelectedKeys)
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+		ApplyMutuallyExclusiveSelection(scope, AvailableArmors, combinedKeys);
+		UpdateAvailablePickerProjection(forceReplaceActiveTab: false);
 	}
 
 	private void ApplyMutuallyExclusiveSelection(
@@ -887,24 +960,29 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		IReadOnlyList<string> selectedKeys)
 	{
 		var selected = selectedKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-		foreach (var item in AvailableArmors.Concat(Providers).Concat(ProviderDetailItems))
+		foreach (var item in allAvailableChoicesByKey.Values.Concat(AvailableArmors).Concat(Providers).Concat(ProviderDetailItems))
 			item.IsSelected = false;
 		foreach (var item in selectedItems)
 			item.IsSelected = selected.Contains(item.SelectionKey);
+		if (ArmorRegistryScopes.IsAvailable(scope))
+		{
+			foreach (var item in allAvailableChoicesByKey.Values)
+				item.IsSelected = !item.IsBlocked && selected.Contains(item.SelectionKey);
+		}
 		selection.Replace(scope, selectedKeys);
 	}
 
 	private void OnGlobalSelectionChanged(object? sender, SelectionChangedEventArgs e)
 	{
 		if (e.Scope?.StartsWith("ArmorRegistry:", StringComparison.Ordinal) == true) return;
-		foreach (var item in AvailableArmors.Concat(Providers).Concat(ProviderDetailItems))
+		foreach (var item in allAvailableChoicesByKey.Values.Concat(AvailableArmors).Concat(Providers).Concat(ProviderDetailItems))
 			item.IsSelected = false;
 	}
 
 	public void OpenProviderDetails(RuntimeArmorChoiceViewModel? provider)
 	{
 		if (provider is null || !Providers.Any(item => item.SelectionKey == provider.SelectionKey)) return;
-		foreach (var item in AvailableArmors.Concat(Providers).Concat(ProviderDetailItems))
+		foreach (var item in allAvailableChoicesByKey.Values.Concat(AvailableArmors).Concat(Providers).Concat(ProviderDetailItems))
 			item.IsSelected = false;
 		selection.Clear();
 		selectedProviderId = provider.ItemId;
@@ -922,6 +1000,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		if (selectedProviderId is null) return;
 		selectedProviderId = null;
 		selectedProviderMemberIds = [];
+		isSelectedProviderTwoSlotCompressed = false;
 		OnPropertyChanged(nameof(IsProviderDetailOpen));
 		OnPropertyChanged(nameof(ProviderDetailTitle));
 		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
@@ -950,7 +1029,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		if (selection.Scope is not { } scope || !scope.StartsWith("ArmorRegistry:", StringComparison.Ordinal)) return;
 		var selected = selection.SelectedIds;
 		if (selected.Count == 0) return;
-		var visible = AvailableArmors.Concat(Providers).Concat(ProviderDetailItems)
+		var visible = allAvailableChoicesByKey.Values
+			.Where(item => !item.IsBlocked)
+			.Concat(AvailableArmors.Where(item => !item.IsBlocked))
+			.Concat(Providers)
+			.Concat(ProviderDetailItems)
 			.Select(item => item.SelectionKey)
 			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 		if (selected.All(visible.Contains)) return;
@@ -996,13 +1079,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	public void PromoteAvailableAsProviders(IReadOnlyList<string> keys)
 	{
-		if (IsBusy || keys.Count == 0) return;
-		var ids = keys
-			.SelectMany(key => AvailableArmors
-				.FirstOrDefault(item => string.Equals(item.SelectionKey, key, StringComparison.OrdinalIgnoreCase))
-				?.MemberItemIds ?? [])
-			.ToArray();
-		if (ids.Length == 0 || ids.Any(id => !AvailableArmors.Any(item => item.MemberItemIds.Contains(id)))) return;
+		var items = ResolveAssignableItems(keys);
+		if (items is null) return;
+		var ids = items.SelectMany(item => item.ProviderSourceItemIds).Distinct().ToArray();
+		if (ids.Length == 0 || ids.Any(id => !Choices.ContainsKey(id))) return;
 		foreach (var id in ids)
 			pendingProviderIds.Add(id);
 		RebuildProjections();
@@ -1076,24 +1156,36 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		});
 	}
 
-	public bool CanAssignFromAvailable(IReadOnlyList<string> keys)
+	private RuntimeArmorChoiceViewModel[]? ResolveAssignableItems(IReadOnlyList<string> keys)
 	{
-		if (IsBusy || keys.Count == 0) return false;
-		return keys.All(key => AvailableArmors.Any(armor => armor.SelectionKey == key));
+		if (IsBusy || keys.Count == 0) return null;
+		var items = new List<RuntimeArmorChoiceViewModel>(keys.Count);
+		foreach (var key in keys)
+		{
+			if (!allAvailableChoicesByKey.TryGetValue(key, out var item) || item.IsBlocked)
+				return null;
+			items.Add(item);
+		}
+		return items.ToArray();
 	}
+
+	public bool CanAssignFromAvailable(IReadOnlyList<string> keys)
+		=> ResolveAssignableItems(keys) is not null;
 
 	public void AssignFromAvailable(IReadOnlyList<string> keys)
 	{
-		if (!CanAssignFromAvailable(keys)) return;
-		var ids = keys
-			.SelectMany(key => AvailableArmors.First(item => item.SelectionKey == key).MemberItemIds)
-			.Distinct()
-			.ToArray();
+		var items = ResolveAssignableItems(keys);
+		if (items is null) return;
 		if (selectedProviderId is null)
 		{
-			if (ids.Length > 1)
+			var providerSourceIds = items
+				.SelectMany(item => item.ProviderSourceItemIds)
+				.Distinct()
+				.ToArray();
+			if (providerSourceIds.Length == 0 || providerSourceIds.Any(id => !Choices.ContainsKey(id))) return;
+			if (items.Length > 1)
 			{
-				foreach (var id in ids)
+				foreach (var id in providerSourceIds)
 					pendingProviderIds.Add(id);
 				RebuildProjections();
 				RecomputeHasChanges();
@@ -1101,11 +1193,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				return;
 			}
 
-			var providerId = ids[0];
-			if (!Choices.ContainsKey(providerId)) return;
-			pendingProviderIds.Add(providerId);
-			selectedProviderId = providerId;
-			selectedProviderMemberIds = [providerId];
+			foreach (var id in providerSourceIds)
+				pendingProviderIds.Add(id);
+			selectedProviderId = providerSourceIds[0];
+			selectedProviderMemberIds = providerSourceIds;
 			OnPropertyChanged(nameof(IsProviderDetailOpen));
 			OnPropertyChanged(nameof(ProviderDetailTitle));
 			OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
@@ -1115,6 +1206,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			selection.Clear();
 			return;
 		}
+
+		var ids = items
+			.SelectMany(item => item.MemberItemIds)
+			.Distinct()
+			.ToArray();
 
 		var sourceIds = selectedProviderMemberIds.Count > 0
 			? selectedProviderMemberIds
@@ -1302,17 +1398,28 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			.Concat(pendingProviderIds)
 			.Concat(CustomModels.Select(model => SyntheticModelItemId(model.Key)))
 			.ToHashSet();
-		var targetIds = Mappings.Select(mapping => mapping.Target.ItemId).ToHashSet();
-		var managedIds = sourceIds.Concat(targetIds).ToHashSet();
 
-		Providers.ReplaceWith(BuildDisplayChoices(sourceIds)
-			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase),
-			ListTransitionKind.Replace);
-		AvailableArmors.ReplaceWith(BuildDisplayChoices(Choices.Values
-				.Where(choice => !managedIds.Contains(choice.ItemId))
-				.Select(choice => choice.ItemId))
-			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase),
-			ListTransitionKind.Replace);
+		var providerChoices = BuildProviderChoices(sourceIds)
+			.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase)
+			.ToArray();
+		var selectedProviderKeys = string.Equals(selection.Scope, ArmorRegistryScopes.Providers, StringComparison.Ordinal)
+			? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
+			: null;
+		foreach (var item in providerChoices)
+		{
+			item.SetRolePresentation(
+				item.IsCustomModel
+					? "自定义视觉来源"
+					: item.IsCombined
+						? "组合视觉来源"
+						: item.IsHelmet ? "头盔视觉来源" : "护甲视觉来源",
+				Mappings.Count(mapping => item.MemberItemIds.Contains(mapping.Source.ItemId)));
+			if (selectedProviderKeys is not null)
+				item.IsSelected = selectedProviderKeys.Contains(item.SelectionKey);
+		}
+		Providers.ReplaceWith(providerChoices, ListTransitionKind.Replace);
+
+		UpdateSelectedProviderTwoSlotState();
 
 		var detailItems = new List<RuntimeArmorChoiceViewModel>();
 		if (selectedProviderId is not null && selectedProviderMemberIds.Count > 0)
@@ -1322,97 +1429,275 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				.Select(mapping => mapping.Target.ItemId)
 				.Distinct()
 				.ToArray();
-			foreach (var target in BuildDisplayChoices(detailTargetIds)
-				.OrderBy(choice => choice.Name, StringComparer.CurrentCultureIgnoreCase))
+			var targetEntries = detailTargetIds
+				.Select(id =>
+				{
+					if (cachedCatalogById.TryGetValue(id, out var catalogEntry))
+						return catalogEntry;
+					var fallback = ResolveChoice(id);
+					return new RuntimeArmorCatalogEntry(
+						id,
+						fallback.ArchiveId,
+						fallback.Name,
+						fallback.KitKind,
+						fallback.SetId,
+						fallback.DlcId);
+				})
+				.ToArray();
+			var selectedTargetKeys = string.Equals(selection.Scope, ArmorRegistryScopes.Targets, StringComparison.Ordinal)
+				? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
+				: null;
+			foreach (var plan in ArmorMappingPickerPlanner.BuildTargetGroupPlans(targetEntries))
 			{
-				target.SetRolePresentation(target.IsCombined ? "组合映射目标" : target.KitKind == GameDataEquipmentKitKind.Helmet ? "仅头盔" : "仅护甲", null);
+				var target = BuildChoiceFromPlan(plan);
+				target.SetPickerPresentation(plan.TypeLabel);
 				ApplyLowPollutionMark(target);
+				if (selectedTargetKeys is not null)
+					target.IsSelected = selectedTargetKeys.Contains(target.SelectionKey);
 				detailItems.Add(target);
 			}
 		}
 		ProviderDetailItems.ReplaceWith(detailItems, ListTransitionKind.Replace);
-		foreach (var item in AvailableArmors)
-			item.SetRolePresentation(
-				item.KitKind == GameDataEquipmentKitKind.Helmet ? "头盔" : "护甲",
-				null);
-		foreach (var item in Providers)
-			item.SetRolePresentation(
-				item.IsCustomModel
-					? "自定义视觉来源"
-					: item.IsCombined
-						? "组合视觉来源"
-						: item.IsHelmet ? "头盔视觉来源" : "护甲视觉来源",
-				Mappings.Count(mapping => item.MemberItemIds.Contains(mapping.Source.ItemId)));
+
+		var managedOwners = new Dictionary<uint, string>();
+		foreach (var provider in Providers)
+		{
+			foreach (var memberId in provider.MemberItemIds)
+				managedOwners[memberId] = "作为视觉来源使用中";
+		}
+		foreach (var mapping in Mappings)
+		{
+			var providerName = Providers
+				.FirstOrDefault(provider => provider.MemberItemIds.Contains(mapping.Source.ItemId))
+				?.Name ?? mapping.Source.Name;
+			managedOwners[mapping.Target.ItemId] = $"已映射到 {providerName}";
+		}
+		cachedManagedOwnerByItemId = managedOwners;
+
+		UpdateAvailablePickerProjection(forceReplaceActiveTab: true);
 
 		OnPropertyChanged(nameof(ProvidersSummary));
-		OnPropertyChanged(nameof(AvailableSummary));
 		OnPropertyChanged(nameof(ProviderDetailTitle));
 		OnPropertyChanged(nameof(ProviderDetailHeaderTitle));
 		OnPropertyChanged(nameof(ProviderDetailSummary));
 		OnPropertyChanged(nameof(HasMappings));
 	}
 
-	private RuntimeArmorChoiceViewModel? FindDisplayedItem(string selectionKey)
-		=> AvailableArmors.Concat(Providers).Concat(ProviderDetailItems)
-			.FirstOrDefault(item => string.Equals(item.SelectionKey, selectionKey, StringComparison.OrdinalIgnoreCase));
-
-	private IReadOnlyList<RuntimeArmorChoiceViewModel> BuildDisplayChoices(IEnumerable<uint> ids)
+	private void UpdateSelectedProviderTwoSlotState()
 	{
-		var members = ids
-			.Distinct()
-			.Where(Choices.ContainsKey)
-			.Select(id => Choices[id])
-			.ToArray();
-		if (availableArmorKindFilter != AvailableArmorKindFilter.AutomaticCombination)
+		if (selectedProviderId is not { } openProviderId)
 		{
-			var desired = availableArmorKindFilter == AvailableArmorKindFilter.HelmetOnly
-				? GameDataEquipmentKitKind.Helmet
-				: GameDataEquipmentKitKind.Armor;
-			return members
-				.Where(item => item.IsCustomModel || item.KitKind == desired)
-				.OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
-				.ToArray();
+			isSelectedProviderTwoSlotCompressed = false;
+			return;
 		}
-		var result = new List<RuntimeArmorChoiceViewModel>();
-		var unpaired = new List<RuntimeArmorChoiceViewModel>(members);
-		// 两轮配对，顺序不能反：
-		//   1) 注册表的 (dlc, set_id) —— 最精确，先把能按件表配上的都配掉；
-		//   2) 同一 dlc 下同名 —— 注册表里同一套的护甲 kit 与头盔 kit 经常带**不同的 set_id**：
-		//      CM-09 护甲 set=3094076875 / 头盔 set=3551829063，DS-191 护甲 4179032602 / 头盔
-		//      2449475234，DS-42、FS-34、O-44 全是这一类。只按 (dlc,set) 分组时它们永远配不上，
-		//      而 display_name 对同一套是一致的。
-		// 两轮都要求恰好 1 护甲 + 1 头盔：同名但 2 护甲 7 头盔（FS-05）、1 护甲 2 头盔（SC-30）
-		// 这种有歧义的情况宁可平铺，也不要随便配一个。
-		foreach (var keySelector in new Func<RuntimeArmorChoiceViewModel, string>[] { item => item.CombinationKey, item => item.NameKey })
+
+		var openProvider = Providers.FirstOrDefault(item =>
+			item.ItemId == openProviderId
+			|| (selectedProviderMemberIds.Count > 0 && item.MemberItemIds.SequenceEqual(selectedProviderMemberIds)))
+			?? Choices.GetValueOrDefault(openProviderId);
+		if (openProvider is not { IsCustomModel: true } || string.IsNullOrWhiteSpace(openProvider.ModelKey))
 		{
-			foreach (var group in unpaired.GroupBy(keySelector, StringComparer.OrdinalIgnoreCase).ToArray())
+			isSelectedProviderTwoSlotCompressed = false;
+			return;
+		}
+
+		if (!SettingsService.GetEffectiveLowPollutionMode())
+		{
+			isSelectedProviderTwoSlotCompressed = false;
+			return;
+		}
+
+		var modsDirectory = SettingsService.CreateStoragePaths().ModsDirectory;
+		isSelectedProviderTwoSlotCompressed = ArmorMappingPickerPlanner.IsTwoSlotCompressedCustomModel(
+			modsDirectory,
+			openProvider.ModelKey,
+			lowPollutionMode: true);
+	}
+
+	private void UpdateAvailablePickerProjection(bool forceReplaceActiveTab)
+	{
+		var activeSelectedKeys = ArmorRegistryScopes.IsAvailable(selection.Scope)
+			? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
+			: new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+		var projection = ArmorMappingPickerPlanner.EvaluateProjection(
+			cachedPickerBaseCatalog,
+			cachedManagedOwnerByItemId,
+			activeSelectedKeys,
+			isSelectedProviderTwoSlotCompressed);
+
+		SyncPickerTab(ArmorMappingPickerTab.Set, projection.Sets, activeSelectedKeys, forceReplaceActiveTab);
+		SyncPickerTab(ArmorMappingPickerTab.Armor, projection.Armors, activeSelectedKeys, forceReplaceActiveTab);
+		SyncPickerTab(ArmorMappingPickerTab.Helmet, projection.Helmets, activeSelectedKeys, forceReplaceActiveTab);
+
+		allAvailableChoicesByKey.Clear();
+		foreach (var list in availableChoicesByTab.Values)
+		{
+			foreach (var item in list)
+				allAvailableChoicesByKey[item.SelectionKey] = item;
+		}
+
+		var activeRows = availableChoicesByTab.GetValueOrDefault(selectedAvailableTab) ?? [];
+		if (forceReplaceActiveTab || !AreSameReferences(AvailableArmors, activeRows))
+			AvailableArmors.ReplaceWith(activeRows, ListTransitionKind.Replace);
+
+		RaiseTabHeaderPropertiesChanged();
+		OnPropertyChanged(nameof(AvailableSummary));
+	}
+
+	private void SyncPickerTab(
+		ArmorMappingPickerTab tab,
+		IReadOnlyList<ArmorMappingPickerRowPlan> plans,
+		IReadOnlySet<string> activeSelectedKeys,
+		bool forceReplace)
+	{
+		if (!forceReplace
+			&& availableChoicesByTab.TryGetValue(tab, out var existing)
+			&& existing.Count == plans.Count)
+		{
+			var keysMatch = true;
+			for (var i = 0; i < plans.Count; i++)
 			{
-				var armor = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Armor).ToArray();
-				var helmets = group.Where(item => item.KitKind == GameDataEquipmentKitKind.Helmet).ToArray();
-				if (armor.Length != 1 || helmets.Length != 1) continue;
-				result.Add(RuntimeArmorChoiceViewModel.Composite(armor[0], helmets[0]));
-				unpaired.Remove(armor[0]);
-				unpaired.Remove(helmets[0]);
+				if (!string.Equals(existing[i].SelectionKey, plans[i].SelectionKey, StringComparison.OrdinalIgnoreCase))
+				{
+					keysMatch = false;
+					break;
+				}
+			}
+
+			if (keysMatch)
+			{
+				for (var i = 0; i < plans.Count; i++)
+				{
+					var plan = plans[i];
+					var row = existing[i];
+					row.UpdatePickerState(plan);
+					row.IsSelected = !plan.IsBlocked && activeSelectedKeys.Contains(plan.SelectionKey);
+				}
+				return;
 			}
 		}
-		result.AddRange(unpaired);
+
+		var rows = new RuntimeArmorChoiceViewModel[plans.Count];
+		for (var i = 0; i < plans.Count; i++)
+		{
+			var plan = plans[i];
+			var row = BuildChoiceFromPlan(plan);
+			row.IsSelected = !plan.IsBlocked && activeSelectedKeys.Contains(plan.SelectionKey);
+			rows[i] = row;
+		}
+		availableChoicesByTab[tab] = rows;
+	}
+
+	private static bool AreSameReferences(
+		IReadOnlyList<RuntimeArmorChoiceViewModel> current,
+		IReadOnlyList<RuntimeArmorChoiceViewModel> target)
+	{
+		if (current.Count != target.Count) return false;
+		for (var i = 0; i < current.Count; i++)
+		{
+			if (!ReferenceEquals(current[i], target[i]))
+				return false;
+		}
+		return true;
+	}
+
+	private RuntimeArmorChoiceViewModel BuildChoiceFromPlan(ArmorMappingPickerRowPlan plan)
+	{
+		string? imagePath = null;
+		bool? hasEffectiveUnitOverride = null;
+		var isUnknown = plan.MemberItemIds.Count == 1
+			&& Choices.TryGetValue(plan.PrimaryItemId, out var primaryChoice)
+			&& primaryChoice.IsUnknown;
+
+		foreach (var id in plan.MemberItemIds)
+		{
+			if (!Choices.TryGetValue(id, out var member)) continue;
+			imagePath ??= member.ImagePath;
+			if (member.HasEffectiveUnitOverride is true)
+				hasEffectiveUnitOverride = true;
+			else if (member.HasEffectiveUnitOverride is false && hasEffectiveUnitOverride is null)
+				hasEffectiveUnitOverride = false;
+		}
+
+		var choice = new RuntimeArmorChoiceViewModel(
+			plan.PrimaryItemId,
+			plan.PrimaryArchiveId,
+			plan.Name,
+			imagePath,
+			hasEffectiveUnitOverride,
+			isUnknown: isUnknown,
+			kitKind: plan.KitKind,
+			memberItemIds: plan.MemberItemIds,
+			setId: plan.SetId,
+			dlcId: plan.DlcId,
+			providerSourceItemIds: plan.ProviderSourceItemIds,
+			selectionKeyOverride: plan.SelectionKey,
+			pickerTab: plan.Tab,
+			versionCount: plan.VersionCount,
+			isDemocracyOfficerNpc: plan.IsDemocracyOfficerNpc,
+			isBlocked: plan.IsBlocked,
+			blockedReason: plan.BlockedReason);
+		choice.SetPickerPresentation(plan.TypeLabel);
+		return choice;
+	}
+
+	private RuntimeArmorChoiceViewModel? FindDisplayedItem(string selectionKey)
+		=> allAvailableChoicesByKey.GetValueOrDefault(selectionKey)
+			?? AvailableArmors.Concat(Providers).Concat(ProviderDetailItems)
+				.FirstOrDefault(item => string.Equals(item.SelectionKey, selectionKey, StringComparison.OrdinalIgnoreCase));
+
+	private IReadOnlyList<RuntimeArmorChoiceViewModel> BuildProviderChoices(IEnumerable<uint> ids)
+	{
+		var catalogEntries = new List<RuntimeArmorCatalogEntry>();
+		var standaloneChoices = new List<RuntimeArmorChoiceViewModel>();
+
+		foreach (var id in ids.Distinct())
+		{
+			if (Choices.TryGetValue(id, out var existing) && existing.IsCustomModel)
+			{
+				standaloneChoices.Add(existing);
+				continue;
+			}
+			if (cachedCatalogById.TryGetValue(id, out var entry))
+			{
+				catalogEntries.Add(entry);
+				continue;
+			}
+			if (Choices.TryGetValue(id, out var fallback))
+				standaloneChoices.Add(fallback);
+		}
+
+		var pairs = ArmorMappingPickerPlanner.PairProviderSources(catalogEntries);
+		var pairedIds = new HashSet<uint>();
+		var result = new List<RuntimeArmorChoiceViewModel>(standaloneChoices.Count + pairs.Count + catalogEntries.Count);
+		result.AddRange(standaloneChoices);
+
+		foreach (var (armor, helmet) in pairs)
+		{
+			pairedIds.Add(armor.ItemId);
+			pairedIds.Add(helmet.ItemId);
+			result.Add(RuntimeArmorChoiceViewModel.Composite(
+				ResolveChoice(armor.ItemId),
+				ResolveChoice(helmet.ItemId)));
+		}
+
+		foreach (var entry in catalogEntries)
+		{
+			if (!pairedIds.Contains(entry.ItemId))
+				result.Add(ResolveChoice(entry.ItemId));
+		}
+
 		return result;
 	}
 
 	private bool FilterProvider(object item)
 		=> item is RuntimeArmorChoiceViewModel choice
-			&& MatchesKindFilter(choice)
 			&& MatchesSearch(choice, providersSearchText);
 
 	private bool FilterAvailableArmor(object item)
 	{
 		if (item is not RuntimeArmorChoiceViewModel choice || !MatchesSearch(choice, availableSearchText))
-			return false;
-		if (availableArmorKindFilter == AvailableArmorKindFilter.ArmorOnly
-			&& choice.KitKind != GameDataEquipmentKitKind.Armor)
-			return false;
-		if (availableArmorKindFilter == AvailableArmorKindFilter.HelmetOnly
-			&& choice.KitKind != GameDataEquipmentKitKind.Helmet)
 			return false;
 		return availableArmorUnitFilter switch
 		{
@@ -1424,16 +1709,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	private bool FilterProviderDetailItem(object item)
 		=> item is RuntimeArmorChoiceViewModel choice
-			&& MatchesKindFilter(choice)
 			&& MatchesSearch(choice, providerDetailSearchText);
-
-	private bool MatchesKindFilter(RuntimeArmorChoiceViewModel choice)
-		=> availableArmorKindFilter switch
-		{
-			AvailableArmorKindFilter.ArmorOnly => choice.IsCustomModel || choice.KitKind == GameDataEquipmentKitKind.Armor,
-			AvailableArmorKindFilter.HelmetOnly => choice.IsCustomModel || choice.KitKind == GameDataEquipmentKitKind.Helmet,
-			_ => true,
-		};
 
 	private static bool MatchesSearch(RuntimeArmorChoiceViewModel choice, string query)
 	{
@@ -1441,7 +1717,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		return term.Length == 0
 			|| choice.Name.Contains(term, StringComparison.CurrentCultureIgnoreCase)
 			|| choice.ArchiveId.Contains(term, StringComparison.OrdinalIgnoreCase)
-			|| choice.ItemIdText.Contains(term, StringComparison.OrdinalIgnoreCase);
+			|| choice.ItemIdText.Contains(term, StringComparison.OrdinalIgnoreCase)
+			|| choice.MemberItemIds.Any(id => id.ToString(CultureInfo.InvariantCulture).Contains(term, StringComparison.OrdinalIgnoreCase));
 	}
 
 	private sealed record ArmorDisplayFacts(string? ImagePath, bool HasEffectiveUnitOverride);
@@ -1650,8 +1927,16 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		if (keys.Count == 0) return empty;
 
 		var paths = SettingsService.CreateStoragePaths();
-		var lowPollution = SettingsService.GetLowPollutionMode();
-		var items = await LowPollutionFreshness.PlanAsync(paths.ModsDirectory, keys, lowPollution).ConfigureAwait(true);
+		var lowPollution = SettingsService.GetEffectiveLowPollutionMode();
+		var nodes = library.Snapshot.Nodes.Values.ToArray();
+		ModNode? NodeOf(string modDirectory) => nodes.FirstOrDefault(candidate => string.Equals(
+			Path.GetFullPath(Path.Combine(library.ModsRootDirectory, candidate.RelativePath)).TrimEnd('\\', '/'),
+			Path.GetFullPath(modDirectory).TrimEnd('\\', '/'),
+			StringComparison.OrdinalIgnoreCase));
+		// 提示里要写用户认得的 Mod 名：文件夹名常常只是一串创意工坊编号（2026-11-14 用户看不出是谁出错）。
+		var items = (await LowPollutionFreshness.PlanAsync(paths.ModsDirectory, keys, lowPollution).ConfigureAwait(true))
+			.Select(item => NodeOf(item.ModDirectory)?.Metadata.Name is { Length: > 0 } displayName ? item with { Name = displayName } : item)
+			.ToList();
 		var need = items.Where(item => item.Status == LowPollutionPrepStatus.NeedsRecompile).ToArray();
 		var blocked = items.Where(item => item.Status == LowPollutionPrepStatus.Blocked).ToArray();
 		if (need.Length == 0 && blocked.Length == 0) return empty;
@@ -1687,18 +1972,14 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		var cancellation = task?.CancellationToken ?? CancellationToken.None;
 		StatusTitle = "正在重编素体";
 
-		var nodes = library.Snapshot.Nodes.Values.ToArray();
 		var changedNodes = new List<ModNodeId>();
 		var result = await LowPollutionRecompiler.RunAsync(
 			items,
 			async (item, token) =>
 			{
-				var node = nodes.FirstOrDefault(candidate => string.Equals(
-					Path.GetFullPath(Path.Combine(library.ModsRootDirectory, candidate.RelativePath)).TrimEnd('\\', '/'),
-					Path.GetFullPath(item.ModDirectory).TrimEnd('\\', '/'),
-					StringComparison.OrdinalIgnoreCase));
+				var node = NodeOf(item.ModDirectory);
 				var outcome = await ModCompileService.CompileAsync(
-					node is null ? item.Name : node.Id.Value.ToString("N"),
+					node is null ? Path.GetFileName(item.ModDirectory.TrimEnd('\\', '/')) : node.Id.Value.ToString("N"),
 					item.ModDirectory,
 					SettingsService.CreateVpkHostContext(),
 					[RuntimeArmorRegistryService.CustomModelArchiveId(item.ModelKey)],
@@ -1796,7 +2077,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				pieceOverrides,
 				targetModes,
 				gameDataDirectory: SettingsService.GetGameDataFolder(),
-				lowPollutionMode: SettingsService.GetLowPollutionMode(),
+				lowPollutionMode: SettingsService.GetEffectiveLowPollutionMode(),
 				skipModelKeys: skippedModels);
 
 			// **真映射那一层的结论必须说出来。** 以前这个结果被直接丢掉，于是
@@ -1819,6 +2100,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			}
 			// 低污染模式（P6 S3）：每个目标的结论带回来。不可 / 未部署的目标在行上标出原因（见 RebuildProjections）；
 			// 汇总写日志并弹一条，映射不会静默少几套。
+			if (result.LinksError is { Length: > 0 } linksError)
+			{
+				var text = $"映射没有写进游戏（wardrobe.links / 隐藏规则），游戏里还是上一次的映射：{linksError}";
+				LogService.Info("护甲注册：" + text);
+				StatusDetail = text;
+				notifications.Show(text, NotificationLevel.Warning, TimeSpan.FromSeconds(20), "护甲注册");
+			}
 			lowPollutionReports = result.LowPollution.GroupBy(report => report.TargetItemId).ToDictionary(group => group.Key, group => group.First());
 			if (result.LowPollution.Count > 0)
 			{
@@ -2066,8 +2354,13 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelectable, IModListRowActionFilter
 {
 	private bool isSelected;
+	private bool isBlocked;
+	private string? blockedReason;
+	private string? pickerTypeLabel;
 	private ModListRowPresentation rowPresentation = ModListRowPresentation.Empty;
 	private readonly IReadOnlyList<uint> memberItemIds;
+	private readonly IReadOnlyList<uint> providerSourceItemIds;
+	private readonly string? selectionKeyOverride;
 
 	public RuntimeArmorChoiceViewModel(
 		uint itemId,
@@ -2081,7 +2374,14 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		GameDataEquipmentKitKind kitKind = GameDataEquipmentKitKind.Armor,
 		IReadOnlyList<uint>? memberItemIds = null,
 		uint setId = 0,
-		uint dlcId = 0)
+		uint dlcId = 0,
+		IReadOnlyList<uint>? providerSourceItemIds = null,
+		string? selectionKeyOverride = null,
+		ArmorMappingPickerTab? pickerTab = null,
+		int versionCount = 1,
+		bool isDemocracyOfficerNpc = false,
+		bool isBlocked = false,
+		string? blockedReason = null)
 	{
 		ItemId = itemId;
 		ArchiveId = archiveId;
@@ -2095,6 +2395,13 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		SetId = setId;
 		DlcId = dlcId;
 		this.memberItemIds = memberItemIds is { Count: > 0 } ? memberItemIds : [itemId];
+		this.providerSourceItemIds = providerSourceItemIds is { Count: > 0 } ? providerSourceItemIds : this.memberItemIds;
+		this.selectionKeyOverride = selectionKeyOverride;
+		PickerTab = pickerTab;
+		VersionCount = versionCount;
+		IsDemocracyOfficerNpc = isDemocracyOfficerNpc;
+		this.isBlocked = isBlocked;
+		this.blockedReason = blockedReason;
 	}
 
 	public uint ItemId { get; }
@@ -2125,11 +2432,17 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool IsHelmet => KitKind == GameDataEquipmentKitKind.Helmet;
 	public bool IsArmor => KitKind == GameDataEquipmentKitKind.Armor;
 	public IReadOnlyList<uint> MemberItemIds => memberItemIds;
+	public IReadOnlyList<uint> ProviderSourceItemIds => providerSourceItemIds;
+	public ArmorMappingPickerTab? PickerTab { get; }
+	public int VersionCount { get; }
+	public bool IsDemocracyOfficerNpc { get; }
+	public bool IsBlocked { get => isBlocked; private set => SetField(ref isBlocked, value); }
+	public string? BlockedReason { get => blockedReason; private set => SetField(ref blockedReason, value); }
 	public bool IsCombined => memberItemIds.Count > 1;
 	public string ListKey => SelectionKey;
-	public string SelectionKey => IsCombined
+	public string SelectionKey => selectionKeyOverride ?? (IsCombined
 		? "combo:" + string.Join("+", memberItemIds.OrderBy(id => id).Select(id => id.ToString(CultureInfo.InvariantCulture)))
-		: ItemId.ToString(CultureInfo.InvariantCulture);
+		: ItemId.ToString(CultureInfo.InvariantCulture));
 	public bool IsDecoration => false;
 	public string Display => $"{Name} · {ArchiveId}";
 	public string ItemIdText => ItemId.ToString(CultureInfo.InvariantCulture);
@@ -2145,6 +2458,41 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		lowPollutionWarning = warning;
 		lowPollutionNote = note;
 		RowPresentation = RowPresentation with { WarningLabel = warning, Note = note };
+	}
+
+	public void SetPickerPresentation(string typeLabel)
+	{
+		pickerTypeLabel = typeLabel;
+		var activation = IsDemocracyOfficerNpc
+			? ArmorMappingPickerPlanner.DemocracyOfficerTag
+			: VersionCount > 1
+				? $"{VersionCount} 个版本"
+				: null;
+		if (IsBlocked)
+		{
+			RowPresentation = new ModListRowPresentation(
+				TypeLabel: typeLabel,
+				TypeTone: ModListRowTone.Muted,
+				ActivationLabel: activation,
+				WarningLabel: "不可选",
+				Summary: BlockedReason,
+				Note: BlockedReason);
+			return;
+		}
+
+		RowPresentation = new ModListRowPresentation(
+			TypeLabel: typeLabel,
+			TypeTone: ModListRowTone.Accent,
+			ActivationLabel: activation,
+			WarningLabel: lowPollutionWarning,
+			Note: lowPollutionNote);
+	}
+
+	public void UpdatePickerState(ArmorMappingPickerRowPlan plan)
+	{
+		IsBlocked = plan.IsBlocked;
+		BlockedReason = plan.BlockedReason;
+		SetPickerPresentation(pickerTypeLabel ?? plan.TypeLabel);
 	}
 
 	public void SetRolePresentation(string? role, int? count)

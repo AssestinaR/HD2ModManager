@@ -504,21 +504,21 @@ public sealed class RuntimeArmorRegistryService
 			NormalizePieceOverrides(pieceOverrides),
 			NormalizeTargetModes(targetModes),
 			current.CompositionMode);
-		var compiled = desired;
-		IReadOnlySet<ulong>? deployedUnits = null;
-		if (gameDataDirectory is not null && desired.ModelDefinitions.Any(model => model.SourceItemId is null))
-		{
-			deployedUnits = await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
-			compiled = RuntimeArmorResourceFilter.Compile(desired, deployedUnits);
-		}
-		if (skipModelKeys is { Count: > 0 })
-		{
-			compiled = compiled with
+		// 跳过的素体必须在「已部署 Unit」检查**之前**去掉：被跳过的素体往往正是没部署的那个
+		// （目标不是自己的素体 / 重编失败），留着它，下面的检查会让整次应用失败，其余映射也一起没了。
+		var compiled = skipModelKeys is { Count: > 0 }
+			? desired with
 			{
-				Mappings = compiled.Mappings
+				Mappings = desired.Mappings
 					.Where(mapping => !(mapping.IsModelMapping && skipModelKeys.Contains(mapping.ModelKey!)))
 					.ToArray(),
-			};
+			}
+			: desired;
+		IReadOnlySet<ulong>? deployedUnits = null;
+		if (gameDataDirectory is not null && compiled.ModelDefinitions.Any(model => model.SourceItemId is null))
+		{
+			deployedUnits = await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
+			compiled = RuntimeArmorResourceFilter.Compile(compiled, deployedUnits);
 		}
 		var text = SerializeProtocol(compiled);
 		if (Encoding.UTF8.GetByteCount(text) > MaximumProtocolBytes)
@@ -545,6 +545,7 @@ public sealed class RuntimeArmorRegistryService
 		IReadOnlyList<LowPollutionMappingPlan> lowPollutionPlans = [];
 		var hideRuleCount = 0;
 		var hideRulesDropped = 0;
+		string? linksError = null;
 		// 运行时真正执行的是 unit 对列表（wardrobe.links）；协议本身只是管理器的意图记录。
 		// 没有游戏数据目录或编译失败时**不写文件**——留上一版映射，比写一份空映射安全。
 		if (gameDataDirectory is not null && Directory.Exists(gameDataDirectory))
@@ -609,7 +610,8 @@ public sealed class RuntimeArmorRegistryService
 				or InvalidOperationException
 				or UnauthorizedAccessException)
 			{
-				// 链接编译失败不应让已经写好的协议作废；运行时保留上一版映射。
+				// 链接编译失败不应让已经写好的协议作废；运行时保留上一版映射。原因要带回界面。
+				linksError = exception.Message;
 			}
 		}
 		await WriteWorkspaceAsync(desired, cancellationToken).ConfigureAwait(false);		await WriteAtomicTextAsync(Path.Combine(WorkspaceRoot, AppliedSourceFileName),
@@ -650,6 +652,7 @@ public sealed class RuntimeArmorRegistryService
 				plan.Reason, plan.Notes))],
 			HideRuleCount = hideRuleCount,
 			HideRulesDropped = hideRulesDropped,
+			LinksError = linksError,
 		};
 	}
 

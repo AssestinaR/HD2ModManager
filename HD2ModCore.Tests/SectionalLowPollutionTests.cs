@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
+using HD2ModAdaptation.Analysis;
 using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
@@ -110,16 +111,181 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 	}
 
 	[Theory]
-	[InlineData("Slim")]
-	[InlineData("Stocky")]
-	public void BodyVariantUnits_AreNotCompressed(string body)
+	[InlineData("Other")]
+	[InlineData(null)]
+	public void UnrecognisedBodyTypes_AreNotCompressed(string? body)
 	{
 		var source = SevenSlots().ToList();
-		source[1] = Src("a2", ArmorPart.Torso, body);
+		source[1] = new SectionalCompressionSource("a2", ArmorPart.Torso, body);
 		var plan = SectionalCompressionPlanner.Plan(source, headMerge: false);
 
 		Assert.False(plan.Supported);
 		Assert.Contains("分体", plan.Reason, StringComparison.Ordinal);
+	}
+
+	// ── S5：按体型分开做的素体（规划 §13）──────────────────────────────────
+
+	/// <summary>碧蓝航线-埃吉尔睡衣的形状：胸、左右臂各有壮实 / 苗条两份不同模型，头、胯、双腿通用。</summary>
+	private static SectionalCompressionSource[] AegirShape() =>
+	[
+		Src("e1", ArmorPart.Helmet), Src("e2", ArmorPart.Torso, "Slim"), Src("e3", ArmorPart.Torso, "Stocky"),
+		Src("e4", ArmorPart.Hips), Src("e5", ArmorPart.LeftArm, "Slim"), Src("e6", ArmorPart.LeftArm, "Stocky"),
+		Src("e7", ArmorPart.RightArm, "Slim"), Src("e8", ArmorPart.RightArm, "Stocky"),
+		Src("e9", ArmorPart.LeftLeg), Src("ea", ArmorPart.RightLeg),
+	];
+
+	[Fact]
+	public void SplitBodies_ThreeSlot_MakesFiveUnits_AnyMembersJoinBothBodies()
+	{
+		var plan = SectionalCompressionPlanner.Plan(AegirShape(), headMerge: false);
+
+		Assert.True(plan.Supported, plan.Reason);
+		Assert.Equal(["e1", "e3", "e2", "e6", "e5"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(
+			[UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim],
+			plan.Groups.Select(group => group.Body));
+		Assert.Equal(["e3", "e4", "e9", "ea"], plan.Groups[1].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e2", "e4", "e9", "ea"], plan.Groups[2].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e6", "e8"], plan.Groups[3].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e5", "e7"], plan.Groups[4].Members.Select(member => member.SourceUnitId));
+		Assert.True(plan.HasBodySplit);
+		Assert.Equal(["e1", "e3", "e2", "e6", "e5"], plan.SurvivingUnitIds);
+		Assert.Empty(plan.Passthrough);
+	}
+
+	[Fact]
+	public void SplitBodies_TwoSlot_MakesFourUnits_HelmetJoinsBothBodyUnits()
+	{
+		var plan = SectionalCompressionPlanner.Plan(AegirShape(), headMerge: true);
+
+		Assert.True(plan.Supported, plan.Reason);
+		Assert.Equal(["e3", "e2", "e6", "e5"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(
+			[SectionalCompressionRole.HeadBody, SectionalCompressionRole.HeadBody, SectionalCompressionRole.Arms, SectionalCompressionRole.Arms],
+			plan.Groups.Select(group => group.Role));
+		Assert.Equal(["e3", "e4", "e9", "ea", "e1"], plan.Groups[0].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["e2", "e4", "e9", "ea", "e1"], plan.Groups[1].Members.Select(member => member.SourceUnitId));
+	}
+
+	[Fact]
+	public void SplitBodies_OnlyTheSlotThatHasVariantsIsSplit()
+	{
+		var source = SevenSlots().Select(unit => unit.Part == ArmorPart.LeftArm ? Src(unit.FileId, unit.Part, "Stocky") : unit)
+			.Append(Src("a8", ArmorPart.LeftArm, "Slim")).ToArray();
+		var plan = SectionalCompressionPlanner.Plan(source, headMerge: false);
+
+		Assert.True(plan.Supported, plan.Reason);
+		Assert.Equal(["a1", "a2", "a6", "a8"], plan.Groups.Select(group => group.UnitId));
+		Assert.Equal(
+			[UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim],
+			plan.Groups.Select(group => group.Body));
+		// 右臂是通用的：两边各并一份。
+		Assert.Equal(["a6", "a7"], plan.Groups[2].Members.Select(member => member.SourceUnitId));
+		Assert.Equal(["a8", "a7"], plan.Groups[3].Members.Select(member => member.SourceUnitId));
+	}
+
+	[Fact]
+	public void SplitBodies_AMissingBodyHasNoSpecificMember_IdFallsToTheFirstAnyMember_OrNoUnitAtAll()
+	{
+		// 手臂槽只有苗条左臂 + 通用右臂：壮实那个只由通用右臂组成（ID 取它），苗条那个 = 左臂 + 右臂（ID 取苗条左臂）。
+		var withAny = SectionalCompressionPlanner.Plan(
+			[Src("a2", ArmorPart.Torso), Src("l1", ArmorPart.LeftArm, "Slim"), Src("r1", ArmorPart.RightArm)], headMerge: false);
+		Assert.Equal(["a2", "r1", "l1"], withAny.Groups.Select(group => group.UnitId));
+		Assert.Equal(
+			[UnitMeshBodyVariant.Any, UnitMeshBodyVariant.Stocky, UnitMeshBodyVariant.Slim], withAny.Groups.Select(group => group.Body));
+
+		// 手臂槽只有苗条左臂：没有壮实 unit（映射时用苗条的顶上）。
+		var only = SectionalCompressionPlanner.Plan([Src("a2", ArmorPart.Torso), Src("l1", ArmorPart.LeftArm, "Slim")], headMerge: false);
+		Assert.Equal(["a2", "l1"], only.Groups.Select(group => group.UnitId));
+		Assert.Equal(UnitMeshBodyVariant.Slim, only.Groups[1].Body);
+	}
+
+	[Fact]
+	public void SplitBodies_SameBodySamePartTwice_OrAnyPlusSpecificOfOnePart_AreNotCompressed()
+	{
+		var twice = SectionalCompressionPlanner.Plan([.. AegirShape(), Src("x1", ArmorPart.Torso, "Stocky")], headMerge: false);
+		Assert.False(twice.Supported);
+		Assert.Contains("胸部", twice.Reason, StringComparison.Ordinal);
+		Assert.Contains("健壮", twice.Reason, StringComparison.Ordinal);
+
+		var mixed = SectionalCompressionPlanner.Plan([.. AegirShape(), Src("x2", ArmorPart.Torso)], headMerge: false);
+		Assert.False(mixed.Supported);
+	}
+
+	[Fact]
+	public void SplitBodies_PlanIsStableAndOrderIndependent()
+	{
+		var first = SectionalCompressionPlanner.Plan(AegirShape(), headMerge: false);
+		var second = SectionalCompressionPlanner.Plan(AegirShape().Reverse().ToArray(), headMerge: false);
+		Assert.Equal(LowPollutionLayoutFile.Serialize(first), LowPollutionLayoutFile.Serialize(second));
+	}
+
+	[Fact]
+	public void LayoutFile_AllAnyStaysOnSchema1WithoutBody_SplitWritesSchema2WithBody()
+	{
+		var any = LowPollutionLayoutFile.Serialize(SectionalCompressionPlanner.Plan(SevenSlots(), headMerge: false));
+		var anyRoot = JsonNode.Parse(any)!.AsObject();
+		Assert.Equal("hd2mod.low-pollution-layout/1", anyRoot["schema"]!.GetValue<string>());
+		Assert.All(anyRoot["units"]!.AsArray(), unit => Assert.Null(unit!["body"]));
+
+		var split = LowPollutionLayoutFile.Serialize(SectionalCompressionPlanner.Plan(AegirShape(), headMerge: false));
+		var root = JsonNode.Parse(split)!.AsObject();
+		Assert.Equal("hd2mod.low-pollution-layout/2", root["schema"]!.GetValue<string>());
+		Assert.Equal(
+			["any", "stocky", "slim", "stocky", "slim"],
+			root["units"]!.AsArray().Select(unit => unit!["body"]!.GetValue<string>()));
+		Assert.Equal(["e1", "e3", "e2", "e6", "e5"], root["units"]!.AsArray().Select(unit => unit!["unit"]!.GetValue<string>()));
+	}
+
+	[Fact]
+	public void LayoutReader_ReadsBothSchemas_AndUnitOfFallsBackBodyThenAnyThenOtherBody()
+	{
+		// /1：没有 body，一律 any。
+		Assert.True(LowPollutionLayoutReader.TryParse(
+			"{\"schema\":\"hd2mod.low-pollution-layout/1\",\"units\":[{\"role\":\"body\",\"unit\":\"00000000000000b1\"}]}", out var old, out var error), error);
+		Assert.Equal(LowPollutionBodies.Any, old!.Units[0].Body);
+		Assert.Equal("00000000000000b1", old.UnitOf(LowPollutionRoles.Body, 0));
+		Assert.Equal("00000000000000b1", old.UnitOf(LowPollutionRoles.Body, 1));
+		Assert.False(old.IsSplit(LowPollutionRoles.Body));
+
+		var plan = SectionalCompressionPlanner.Plan(
+			[.. AegirShape().Where(unit => unit.FileId is not ("e5" or "e7"))], headMerge: false);
+		Assert.Equal(2, plan.Groups.Count(group => group.Role == SectionalCompressionRole.Body));
+		Assert.True(LowPollutionLayoutReader.TryParse(
+			LowPollutionLayoutFile.Serialize(SplitHex(plan)), out var layout, out error), error);
+		Assert.True(layout!.IsSplit(LowPollutionRoles.Body));
+		Assert.Equal("00000000000000e3", layout.UnitOf(LowPollutionRoles.Body, 0));
+		Assert.Equal("00000000000000e2", layout.UnitOf(LowPollutionRoles.Body, 1));
+		// 手臂槽只剩壮实：苗条退回另一体型的。
+		Assert.Equal("00000000000000e6", layout.UnitOf(LowPollutionRoles.Arms, 0));
+		Assert.Equal("00000000000000e6", layout.UnitOf(LowPollutionRoles.Arms, 1));
+		Assert.True(layout.UsesOtherBody(LowPollutionRoles.Arms, 1));
+		Assert.False(layout.UsesOtherBody(LowPollutionRoles.Arms, 0));
+		Assert.False(layout.IsSplit(LowPollutionRoles.Arms));
+		Assert.Equal(["00000000000000e3", "00000000000000e2"], layout.UnitsOf(LowPollutionRoles.Body));
+		// 通用 unit 排在另一体型之前。
+		var mixed = new LowPollutionLayout("three-slot", false,
+		[
+			new(LowPollutionRoles.Arms, "00000000000000a1", LowPollutionBodies.Slim),
+			new(LowPollutionRoles.Arms, "00000000000000a2", LowPollutionBodies.Any),
+		]);
+		Assert.Equal("00000000000000a2", mixed.UnitOf(LowPollutionRoles.Arms, 0));
+		Assert.Equal("00000000000000a1", mixed.UnitOf(LowPollutionRoles.Arms, 1));
+	}
+
+	/// <summary>测试用：把 e1… 这种短 ID 补成 16 位 hex，layout 读取器要求合法 ID。</summary>
+	private static SectionalCompressionPlan SplitHex(SectionalCompressionPlan plan)
+	{
+		static string Long(string id) => id.PadLeft(16, '0');
+		return plan with
+		{
+			Groups = [.. plan.Groups.Select(group => group with
+			{
+				UnitId = Long(group.UnitId),
+				Members = [.. group.Members.Select(member => member with { SourceUnitId = Long(member.SourceUnitId) })],
+			})],
+			Passthrough = [.. plan.Passthrough.Select(member => member with { SourceUnitId = Long(member.SourceUnitId) })],
+		};
 	}
 
 	[Fact]
@@ -354,6 +520,112 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			var back = await SectionalCompiler.CompileAsync(mod, off, null, null, false, []);
 			Assert.True(back.Ok, back.Error);
 			Assert.Equal(baseline, HashOverwrite(mod));
+		}
+		finally
+		{
+			DeleteTree(mod);
+		}
+	}
+
+	/// <summary>
+	/// S5 真数据：碧蓝航线-埃吉尔睡衣（胸、臂分壮实 / 苗条）。<c>HD2_TEST_SPLIT_MOD</c> 指向它（真库，只读：先复制到临时目录），
+	/// 另需 <c>HD2_TEST_GAME_DATA</c>、<c>HD2_TEST_MANAGER_ROOT</c>（带装备索引）。缺任何一个静默跳过。
+	/// </summary>
+	[Theory]
+	[InlineData(false)]
+	[InlineData(true)]
+	public async Task RealSplitMod_CompressesPerBody_NoPhysBoneLost_AndCw9DoesNotPolluteCe27(bool headMerge)
+	{
+		var sample = Environment.GetEnvironmentVariable("HD2_TEST_SPLIT_MOD");
+		var game = Environment.GetEnvironmentVariable("HD2_TEST_GAME_DATA");
+		var manager = Environment.GetEnvironmentVariable("HD2_TEST_MANAGER_ROOT");
+		if (string.IsNullOrWhiteSpace(sample) || !Directory.Exists(Path.Combine(sample, "sectional"))) return;
+		if (string.IsNullOrWhiteSpace(game) || !Directory.Exists(game) || string.IsNullOrWhiteSpace(manager)) return;
+		var mod = CopyMod(sample);
+		try
+		{
+			var paths = new StoragePaths(manager);
+			var context = new VpkHostContext(game, paths) { LowPollutionMode = true };
+			var sectional = Path.Combine(mod, "sectional");
+			var sourceMap = await WardrobeSectionMapFile.ReadAsync(Path.Combine(sectional, WardrobeSectionMapFile.FileName));
+			var plan = SectionalCompressionPlanner.Plan(
+				[.. sourceMap.Units.Select(unit => new SectionalCompressionSource(unit.FileId, ArmorStructure.TryParse(unit.Slot), unit.BodyType))],
+				headMerge);
+			Assert.True(plan.Supported, plan.Reason);
+			Assert.Equal(headMerge ? 4 : 5, plan.Groups.Count);
+
+			var first = await SectionalCompiler.CompileAsync(mod, context, null, null, headMerge, [], lowPollution: true);
+			Assert.True(first.Ok, first.Error);
+			foreach (var warning in first.Warnings) output.WriteLine("警告：" + warning);
+
+			var layoutPath = Path.Combine(OverwriteDirectory(mod), LowPollutionLayoutFile.FileName);
+			var layoutText = await File.ReadAllTextAsync(layoutPath);
+			Assert.Equal("hd2mod.low-pollution-layout/2", JsonNode.Parse(layoutText)!["schema"]!.GetValue<string>());
+			Assert.False(File.Exists(Path.Combine(OverwriteDirectory(mod), LowPollutionFreshness.UnsupportedMarkerFileName)));
+
+			var units = await ReadUnitsAsync(Patch(OverwriteDirectory(mod)));
+			Assert.Equal(plan.SurvivingUnitIds.Order(StringComparer.Ordinal), units.Keys.Order(StringComparer.Ordinal));
+			Assert.Equal(plan.Groups.Count, units.Count);
+
+			// 物理骨一根不少：每个压缩 unit 的节点表 ⊇ 它所有来源部位（Any 成员两边都并）的物理骨。
+			var sources = await ReadUnitsAsync(Patch(sectional));
+			var rigBones = await SectionalPhysBoneRig.ReadBoneHashesAsync(Patch(sectional), default);
+			foreach (var group in plan.Groups)
+			{
+				var missing = SectionalPhysBoneRig.FindMissing(
+					group.Members.Select(member => sources[member.SourceUnitId]), rigBones, units[group.UnitId]);
+				output.WriteLine($"headMerge={headMerge} {LowPollutionLayoutFile.RoleName(group.Role)}/{group.Body}=0x{group.UnitId} parts={group.Members.Count} missing={missing.Count}");
+				Assert.Empty(missing);
+			}
+
+			// 注册表：拆开的槽各写 body 0 / 1 两条，各指自己的 unit；头（3 槽）一条 body 3。
+			var registry = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(OverwriteDirectory(mod), VpkCustomModelFile.FileName)))!;
+			var pieces = registry["pieces"]!.AsArray().Select(piece => piece!.AsObject()).ToArray();
+			Assert.Equal(plan.Groups.Count, pieces.Length);
+			foreach (var group in plan.Groups.Where(group => group.Body != UnitMeshBodyVariant.Any))
+			{
+				var raw = group.Body == UnitMeshBodyVariant.Stocky ? 0 : 1;
+				Assert.Contains(pieces, piece => piece["unit"]!.GetValue<string>() == group.UnitId && piece["body"]!.GetValue<int>() == raw);
+			}
+
+			// 编完 = 已是最新；重编一次，布局和全部产物字节不变。
+			var wardrobe = new VpkWardrobeFile(false, VpkWardrobeState.Empty, HeadMergeIntoBody: headMerge);
+			Assert.Equal(LowPollutionPrepStatus.UpToDate, LowPollutionFreshness.Assess("k", mod, true, wardrobe).Status);
+			var firstHash = HashOverwrite(mod);
+			var second = await SectionalCompiler.CompileAsync(mod, context, null, null, headMerge, [], lowPollution: true);
+			Assert.True(second.Ok, second.Error);
+			Assert.Equal(layoutText, await File.ReadAllTextAsync(layoutPath));
+			Assert.Equal(firstHash, HashOverwrite(mod));
+
+			// 映射：对真实索引规划 CW-9，链接只落在 CW-9 自己的承载件上，CE-27 共用的部件一个都不出现。
+			var snapshot = await ArmorAuthorityIndexReader.TryReadAsync(paths);
+			if (snapshot is null) return;
+			Assert.True(LowPollutionLayoutReader.TryRead(mod, out var layout, out var error), error);
+			var index = SectionalExclusivePlanner.BuildIndex(snapshot.Kits);
+			var cw9 = snapshot.Kits.FirstOrDefault(kit => kit.ItemId == 3017717209);
+			var ce27 = snapshot.Kits.FirstOrDefault(kit => kit.ItemId == 2128569605);
+			if (cw9 is null || ce27 is null) return;
+			var mapping = LowPollutionMappingPlanner.Plan(index, layout!, cw9.ItemId, "m1");
+			output.WriteLine($"headMerge={headMerge} CW-9：{mapping.Status} {mapping.Reason} links={mapping.Links.Count} hide={mapping.Hide.Count}");
+			foreach (var link in mapping.Links) output.WriteLine($"  link {link.Carrier} -> {link.Unit}");
+			foreach (var note in mapping.Notes) output.WriteLine("  说明：" + note);
+			if (headMerge && mapping.Status != LowPollutionMappingStatus.Mapped) return;   // 2 槽下手臂可能需要同套头盔（组合），不是本测试要点
+			Assert.Equal(LowPollutionMappingStatus.Mapped, mapping.Status);
+
+			var ce27Files = ce27.Pieces.Select(piece => Id(piece.UnitAssetKey.FileId)).ToHashSet(StringComparer.Ordinal);
+			var cw9Files = cw9.Pieces.Select(piece => Id(piece.UnitAssetKey.FileId)).ToHashSet(StringComparer.Ordinal);
+			var shared = cw9Files.Intersect(ce27Files).ToArray();
+			output.WriteLine($"CW-9 与 CE-27 共用 {shared.Length} 个部件");
+			Assert.All(mapping.Links, link =>
+			{
+				Assert.Contains(link.Carrier, cw9Files);
+				Assert.DoesNotContain(link.Carrier, ce27Files);
+				Assert.Contains(link.Unit, layout!.AllUnits);
+			});
+			Assert.Empty(mapping.Links.Select(link => link.Carrier).Intersect(shared));
+			// 壮实 / 苗条各链到各自的压缩 unit。
+			Assert.Equal(mapping.Links.Count, mapping.Links.Select(link => link.Carrier).Distinct().Count());
+			Assert.True(mapping.Links.Select(link => link.Unit).Distinct().Count() >= 2, "壮实和苗条应各链到自己的压缩 unit");
 		}
 		finally
 		{

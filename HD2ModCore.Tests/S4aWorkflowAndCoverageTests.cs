@@ -122,6 +122,46 @@ public sealed class LowPollutionPrepTests : IDisposable
 	}
 
 	[Fact]
+	public void UnsupportedMarker_WrittenByTheOldPlanner_IsRecompiled_ButANewOneWithTheSameFingerprintIsNot()
+	{
+		var dir = ModDir();
+		var wardrobe = Wardrobe();
+		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(dir);
+		Directory.CreateDirectory(overwrite);
+		var markerPath = Path.Combine(overwrite, LowPollutionFreshness.UnsupportedMarkerFileName);
+
+		// 旧规划器（S4a）写的标记：同指纹、没有 plannerVersion ⇒ 要重编（新规划器认得按体型分开的素体）。
+		File.WriteAllText(markerPath,
+			$"{{\"schema\":\"hd2mod.low-pollution-unsupported/1\",\"fingerprint\":\"{Fp(dir, wardrobe)}\",\"reason\":\"胸部是 Slim 分体\"}}");
+		var old = LowPollutionFreshness.Assess("k", dir, true, wardrobe);
+		Assert.Equal(LowPollutionPrepStatus.NeedsRecompile, old.Status);
+		Assert.Contains("旧版", old.Reason, StringComparison.Ordinal);
+
+		// 版本低于 2 同理。
+		File.WriteAllText(markerPath,
+			$"{{\"schema\":\"hd2mod.low-pollution-unsupported/1\",\"plannerVersion\":1,\"fingerprint\":\"{Fp(dir, wardrobe)}\",\"reason\":\"x\"}}");
+		Assert.Equal(LowPollutionPrepStatus.NeedsRecompile, LowPollutionFreshness.Assess("k", dir, true, wardrobe).Status);
+
+		// 现在的编译器写的标记带 plannerVersion: 2，同指纹 ⇒ 跳过。
+		LowPollutionFreshness.WriteUnsupportedMarker(
+			dir, ModNodePayloadLayout.TryGetExistingVpkPatchDirectory(dir)!, wardrobe.State.Disabled, false, "同部位有多个来源 unit");
+		Assert.Contains("\"plannerVersion\": 2", File.ReadAllText(markerPath), StringComparison.Ordinal);
+		Assert.Equal(LowPollutionPrepStatus.UpToDate, LowPollutionFreshness.Assess("k", dir, true, wardrobe).Status);
+	}
+
+	[Fact]
+	public void AlreadyCompressedAllAnyModel_StaysUpToDate_WhenTheLayoutHasNoBodyField()
+	{
+		// /1 布局（没有 body）+ 指纹不变 ⇒ 最新，不会因为 S5 重编；FingerprintVersion 没动。
+		var dir = ModDir();
+		var wardrobe = Wardrobe();
+		WriteLayout(dir, Fp(dir, wardrobe));
+		Assert.Equal(LowPollutionPrepStatus.UpToDate, LowPollutionFreshness.Assess("k", dir, true, wardrobe).Status);
+		Assert.True(LowPollutionLayoutReader.TryRead(dir, out var layout, out var error), error);
+		Assert.Equal(LowPollutionBodies.Any, layout!.Units.Single().Body);
+	}
+
+	[Fact]
 	public void TargetThatIsAGameArmor_IsBlocked_NotSilentlyRewritten()
 	{
 		var dir = ModDir();

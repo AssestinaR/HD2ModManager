@@ -31,6 +31,12 @@ public static class LowPollutionFreshness
 	public const string UnsupportedMarkerFileName = "low-pollution-unsupported.json";
 	private const string FingerprintVersion = "lp-fp/1";
 
+	/// <summary>
+	/// 压缩规划器的版本，写进「不可压缩」标记。2 = 支持按体型拆分的素体（规划 §13.5）：
+	/// 没有版本或版本低于它的标记是旧规划器因分体放弃时留的，要重编一次。<b>不要动 <see cref="FingerprintVersion"/></b>，否则已压缩的素体全部要重编。
+	/// </summary>
+	internal const int PlannerVersion = 2;
+
 	public static string Fingerprint(
 		string payloadDirectory,
 		IReadOnlyDictionary<string, IReadOnlyCollection<int>>? disabledSections,
@@ -65,23 +71,27 @@ public static class LowPollutionFreshness
 		File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(new
 		{
 			schema = "hd2mod.low-pollution-unsupported/1",
+			plannerVersion = PlannerVersion,
 			fingerprint = Fingerprint(payloadDirectory, disabledSections, headMergeIntoBody),
 			reason,
 		}, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
 	}
 
-	private static string? ReadMarkerFingerprint(string overwrite)
+	private static (string? Fingerprint, int Version) ReadMarker(string overwrite)
 	{
 		var path = Path.Combine(overwrite, UnsupportedMarkerFileName);
-		if (!File.Exists(path)) return null;
+		if (!File.Exists(path)) return (null, 0);
 		try
 		{
 			using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
-			return document.RootElement.TryGetProperty("fingerprint", out var value) ? value.GetString() : null;
+			var root = document.RootElement;
+			return (
+				root.TryGetProperty("fingerprint", out var value) ? value.GetString() : null,
+				root.TryGetProperty("plannerVersion", out var version) && version.TryGetInt32(out var number) ? number : 0);
 		}
 		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
 		{
-			return null;
+			return (null, 0);
 		}
 	}
 
@@ -96,7 +106,7 @@ public static class LowPollutionFreshness
 		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
 		var layoutPath = Path.Combine(overwrite, LowPollutionLayoutFile.FileName);
 		var hasLayout = File.Exists(layoutPath);
-		var markerFingerprint = ReadMarkerFingerprint(overwrite);
+		var (markerFingerprint, markerVersion) = ReadMarker(overwrite);
 		var hasMarker = File.Exists(Path.Combine(overwrite, UnsupportedMarkerFileName));
 
 		string? reason;
@@ -117,6 +127,8 @@ public static class LowPollutionFreshness
 				else
 					return new(modelKey, modDirectory, name, LowPollutionPrepStatus.UpToDate, "已是最新的压缩产物");
 			}
+			else if (hasMarker && markerVersion < PlannerVersion)
+				reason = "「不能压缩」标记是旧版规划器写的（不认按体型分开的素体），按新规则重新压缩一次";
 			else if (hasMarker && markerFingerprint is not null && string.Equals(markerFingerprint, current, StringComparison.Ordinal))
 				return new(modelKey, modDirectory, name, LowPollutionPrepStatus.UpToDate, "这个素体不能压缩（已记录），按普通素体映射");
 			else

@@ -17,16 +17,28 @@ local GLOBAL_KEY = 'HD2KitInstanceHider'
 local existing = rawget(_G, GLOBAL_KEY)
 if existing then return existing end
 
-local M = { version = '0.3.0', status = 'starting' }
+local M = { version = '0.4.3', status = 'starting' }
 rawset(_G, GLOBAL_KEY, M)
 
 local SWEEP_INTERVAL = 0.5          -- 秒：两次完整扫描的最小间隔
 local RULES_INTERVAL = 2            -- 秒：两次读规则文件的最小间隔
 local UNITS_PER_FRAME = 300         -- 每帧最多检查的 unit 数（探针实测约 0.25 ms）
 local MAX_WORLDS = 32
-local MAX_UNITS_PER_WORLD = 8192
+-- 0.4.1：任务里主世界超过 8192 个 unit，玩家自己的部件排在后面，旧上限 8192 直接截掉 → 一个锚点都认不出、什么都不藏。
+-- 上限只是防失控；每帧仍只查 UNITS_PER_FRAME 个，unit 多只是一轮扫描多花几帧。
+local MAX_UNITS_PER_WORLD = 65536
 local MAX_LOG_BYTES = 48 * 1024     -- 加载器的日志约 64 KB 截断开头
 local MAX_HIDE_ERRORS = 10          -- set_unit_visibility 连续失败这么多次就停手
+-- 诊断（0.4.0，规划 kit-instance-mapping-deploy-plan §14）：每隔 DIAG_INTERVAL 秒写一行 diag，
+-- 记录扫描耗时和「同 ID 却没藏住」的部件离最近锚点多远。最多写 MAX_DIAG_LINES 行，避免吃光日志额度。
+local DIAG_INTERVAL = 15
+local MAX_DIAG_LINES = 60
+local MAX_DIAG_SAMPLES = 8
+-- 0.4.2：藏住的部件离最近锚点多远（定半径用）。分档上限（米），最后一档兜住其余。
+local HIDE_BUCKETS = { 0.2, 0.3, 0.4, 0.5, 0.7, 1.0 }
+-- 0.4.3：锚点位置当轮刷新（规划 kit-instance-mapping-deploy-plan §14.6）。任务里一轮扫描要 1 秒多，
+-- 上一轮的锚点位置已经跟不上跑动的人；本轮再扫到签名件时就地挪过去。只挪离它不超过这么远（米）的锚点。
+local ANCHOR_REFRESH_MAX = 10
 
 -- 规则文件上限（§2；P6 S3 扩容，规划 kit-instance-mapping-deploy-plan §11.6）。每个规则文件各自适用。
 -- 压测（lupa）：每帧开销与规则数、hide 长度无关，约束只有文件大小和一次性解析。
@@ -197,7 +209,9 @@ function M.confirm_anchors(rules, seen)
 				end
 				if ok then
 					local list = confirmed[world] or {}
-					list[#list + 1] = { rule = index, x = anchor.x, y = anchor.y, z = anchor.z }
+					-- 只有「单签名、无排除」的规则能当轮刷新（见 refresh_anchors）；多签名 / 有 none 的成立条件要看别的部件，不挪。
+					local sig = (#rule.all == 1 and #rule.none == 0) and rule.all[1] or nil
+					list[#list + 1] = { rule = index, sig = sig, x = anchor.x, y = anchor.y, z = anchor.z }
 					confirmed[world] = list
 					total = total + 1
 				end
@@ -245,6 +259,8 @@ function M.new(env)
 	local read_rules = env.read_rules or function() return nil, 'missing' end
 	-- 第二个规则文件（软映射写的）。没有 = 只有主文件，行为与 0.2.0 一致。
 	local read_mapping_rules = env.read_mapping_rules
+	-- 诊断间隔（秒）；nil = 不写 diag（离线测试默认关，游戏内安装时打开）。
+	local diag_interval = env.diag_interval
 	local H = { stopped = false, hide_errors = 0, sweeps = 0, revision = nil }
 	local bytes = 0
 
@@ -285,6 +301,9 @@ function M.new(env)
 	local sweep, nextSweepAt = nil, 0
 	local lastSummary = nil
 	local stats = { max_frame_ms = 0 }
+	-- 诊断窗口：两次 diag 之间的累计。
+	local diag = { lines = 0, nextAt = nil, sweeps = 0, cpu_ms = 0, frames = 0, max_frame_ms = 0, hide_calls = 0, last = nil,
+		hmax = 0, hb = {}, hfar = {} }
 
 	local function install_rules(list, revision)
 		rules = list
@@ -388,15 +407,84 @@ function M.new(env)
 			if rawget(worlds, i) == nil then break end
 			count = i
 		end
-		return { world = 1, cursor = 1, worldCount = count, seen = {}, hidden = 0, missed = 0 }
+		return { world = 1, cursor = 1, worldCount = count, seen = {}, hidden = 0, missed = 0,
+			scanned = 0, cpu_ms = 0, frames = 0, misses = {}, missIds = 0, capped = 0, largest = 0, refreshed = 0 }
 	end
 
+	-- 返回：是否在某个锚点的半径内，以及离同规则锚点的最近距离（米，没有锚点为 nil，只给诊断用）。
+	-- 诊断关着时命中即返回、不算距离；开着时（0.4.2）藏住的也要算距离，所以扫完全部锚点。
 	local function near_anchor(world, ruleSet, x, y, z)
 		local here = { x = x, y = y, z = z }
+		local nearest, hit = nil, false
 		for _, anchor in ipairs(confirmed[world] or {}) do
-			if ruleSet[anchor.rule] and within(here, anchor, rules[anchor.rule].radius) then return true end
+			if ruleSet[anchor.rule] then
+				if within(here, anchor, rules[anchor.rule].radius) then
+					if not diag_interval then return true end
+					hit = true
+				end
+				local dx, dy, dz = x - anchor.x, y - anchor.y, z - anchor.z
+				local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+				if nearest == nil or d < nearest then nearest = d end
+			end
 		end
-		return false
+		return hit, nearest
+	end
+
+	-- 藏住一个部件时记下它离最近锚点的距离：分档计数、窗口内最大值、每个 ID 的最远距离。
+	local function note_hit(id, d)
+		if d == nil then return end
+		if d > diag.hmax then diag.hmax = d end
+		local slot = #HIDE_BUCKETS + 1
+		for i, edge in ipairs(HIDE_BUCKETS) do
+			if d <= edge then slot = i; break end
+		end
+		diag.hb[slot] = (diag.hb[slot] or 0) + 1
+		local old = diag.hfar[id]
+		if old == nil or d > old then diag.hfar[id] = d end
+	end
+
+	-- 每个没藏住的 ID 只留最近的那个距离；最多记 32 个 ID。
+	local function note_miss(id, d)
+		local m = sweep.misses
+		local key = d or -1
+		if m[id] == nil then
+			if sweep.missIds >= 32 then return end
+			sweep.missIds = sweep.missIds + 1
+			m[id] = key
+		elseif key >= 0 and (m[id] < 0 or key < m[id]) then
+			m[id] = key
+		end
+	end
+
+	-- 本轮扫到签名件 id：把同签名、离它最近（且这一轮还没刷新过）的锚点挪到它现在的位置。
+	-- 同一个签名件确认出的多条规则锚点坐标相同，一起挪；两个人穿同款时各挪各的（已刷新的不再动）。
+	-- 只挪单签名、无排除的锚点：低污染规则的签名是映射私有的压缩 unit，只有穿这套映射的人身上有，
+	-- 挪错也只会挪到另一个同样穿着它的人身上。多签名 / 有 none 的规则（专属路线）别人身上的同 ID 签名件
+	-- 不代表规则成立，挪过去会误藏，所以保持上一轮确认的位置。
+	local function refresh_anchors(world, id, x, y, z)
+		local list = confirmed[world]
+		if list == nil then return end
+		local mark = H.sweeps + 1
+		local best = nil
+		for _, anchor in ipairs(list) do
+			if anchor.sig == id and anchor.fresh ~= mark then
+				local dx, dy, dz = x - anchor.x, y - anchor.y, z - anchor.z
+				local d2 = dx * dx + dy * dy + dz * dz
+				if d2 <= ANCHOR_REFRESH_MAX * ANCHOR_REFRESH_MAX and (best == nil or d2 < best) then best = d2 end
+			end
+		end
+		if best == nil then return end
+		local moved = 0
+		for _, anchor in ipairs(list) do
+			if anchor.sig == id and anchor.fresh ~= mark then
+				local dx, dy, dz = x - anchor.x, y - anchor.y, z - anchor.z
+				if dx * dx + dy * dy + dz * dz <= best + 1e-6 then
+					anchor.x, anchor.y, anchor.z, anchor.fresh = x, y, z, mark
+					moved = moved + 1
+				end
+			end
+		end
+		sweep.refreshed = sweep.refreshed + moved
 	end
 
 	local function record(world, id, x, y, z)
@@ -418,13 +506,19 @@ function M.new(env)
 			sweep.world, sweep.cursor = sweep.world + 1, 1
 			return sweep.world > sweep.worldCount
 		end
-		local count = math.min(#units, MAX_UNITS_PER_WORLD)
+		local total = #units
+		local count = math.min(total, MAX_UNITS_PER_WORLD)
+		if sweep.cursor == 1 then
+			if total > sweep.largest then sweep.largest = total end
+			if total > MAX_UNITS_PER_WORLD then sweep.capped = sweep.capped + 1 end
+		end
 		local budget = UNITS_PER_FRAME
 		while budget > 0 and sweep.cursor <= count do
 			local unit = rawget(units, sweep.cursor)
 			sweep.cursor = sweep.cursor + 1
 			budget = budget - 1
 			if unit ~= nil and alive(unit) then
+				sweep.scanned = sweep.scanned + 1
 				local okR, raw = try(Unit.resource_name, unit)
 				local id = okR and M.decode_resource(raw) or nil
 				if id ~= nil then
@@ -432,13 +526,19 @@ function M.new(env)
 					if tracked or hideSet then
 						local x, y, z = position(unit)
 						if x ~= nil then
-							if tracked then record(sweep.world, id, x, y, z) end
+							if tracked then
+								record(sweep.world, id, x, y, z)
+								refresh_anchors(sweep.world, id, x, y, z)
+							end
 							if hideSet then
 								-- 只用**上一轮**确认的锚点：本轮的签名要等扫描结束才算得出来。
-								if near_anchor(sweep.world, hideSet, x, y, z) then
+								local near, nearest = near_anchor(sweep.world, hideSet, x, y, z)
+								if near then
 									if hide(unit) then sweep.hidden = sweep.hidden + 1 end
+									if diag_interval then note_hit(id, nearest) end
 								else
 									sweep.missed = sweep.missed + 1
+									if diag_interval then note_miss(id, nearest) end
 								end
 							end
 						end
@@ -452,8 +552,71 @@ function M.new(env)
 		return sweep.world > sweep.worldCount
 	end
 
+	local function emit_diag(t)
+		if diag.lines >= MAX_DIAG_LINES then return end
+		diag.lines = diag.lines + 1
+		local samples = {}
+		for id, d in pairs(diag.last and diag.last.misses or {}) do samples[#samples + 1] = { id = id, d = d } end
+		-- 最远的排前面（最需要看的）；没有锚点（-1）排最后。
+		table.sort(samples, function(a, b)
+			if a.d == b.d then return a.id < b.id end
+			return a.d > b.d
+		end)
+		local parts = {}
+		for i = 1, math.min(#samples, MAX_DIAG_SAMPLES) do
+			parts[i] = samples[i].id .. '@' .. string.format('%.2f', samples[i].d)
+		end
+		-- 藏住的：最远的几个 ID 和分档计数（"0.2:12,0.3:5,…,>1.0:0"）。
+		local far = {}
+		for id, d in pairs(diag.hfar) do far[#far + 1] = { id = id, d = d } end
+		table.sort(far, function(a, b)
+			if a.d == b.d then return a.id < b.id end
+			return a.d > b.d
+		end)
+		local farParts = {}
+		for i = 1, math.min(#far, MAX_DIAG_SAMPLES) do
+			farParts[i] = far[i].id .. '@' .. string.format('%.2f', far[i].d)
+		end
+		local bucketParts = {}
+		for i = 1, #HIDE_BUCKETS + 1 do
+			local label = HIDE_BUCKETS[i] and string.format('%.1f', HIDE_BUCKETS[i])
+				or ('>' .. string.format('%.1f', HIDE_BUCKETS[#HIDE_BUCKETS]))
+			bucketParts[i] = label .. ':' .. (diag.hb[i] or 0)
+		end
+		local n = math.max(diag.sweeps, 1)
+		emit('diag', {
+			window_s = diag_interval, sweeps = diag.sweeps,
+			avg_sweep_ms = diag.cpu_ms / n, avg_frames_per_sweep = diag.frames / n,
+			max_frame_ms = diag.max_frame_ms, avg_hide_calls = diag.hide_calls / n,
+			units = diag.last and diag.last.scanned or 0, markers = anchorCount,
+			missed = diag.last and diag.last.missed or 0,
+			miss_ids = #samples, misses = table.concat(parts, ','),
+			largest_world = diag.last and diag.last.largest or 0,
+			capped_worlds = diag.last and diag.last.capped or 0,
+			anchors_refreshed = diag.last and diag.last.refreshed or 0,
+			hidden_max_d = diag.hmax, hidden_far = table.concat(farParts, ','),
+			hidden_buckets = table.concat(bucketParts, ','),
+			revision = H.revision or -1,
+		})
+		diag.sweeps, diag.cpu_ms, diag.frames, diag.max_frame_ms, diag.hide_calls = 0, 0, 0, 0, 0
+		diag.hmax, diag.hb, diag.hfar = 0, {}, {}
+	end
+
 	local function finishSweep()
 		H.sweeps = H.sweeps + 1
+		if diag_interval then
+			diag.sweeps = diag.sweeps + 1
+			diag.cpu_ms = diag.cpu_ms + sweep.cpu_ms
+			diag.frames = diag.frames + sweep.frames
+			diag.hide_calls = diag.hide_calls + sweep.hidden
+			diag.last = sweep
+			local t = now()
+			if diag.nextAt == nil then diag.nextAt = t + diag_interval
+			elseif t >= diag.nextAt then
+				diag.nextAt = t + diag_interval
+				emit_diag(t)
+			end
+		end
 		confirmed, anchorCount = M.confirm_anchors(rules, sweep.seen)
 		-- missed 是「同 ID 但不在已确认锚点旁」的实例数：玩家或别的 NPC 穿着同款，正常不隐藏。
 		-- 只有 markers / hidden / revision 变化才写日志；missed 抖动不算。
@@ -499,6 +662,9 @@ function M.new(env)
 		local done = step()
 		local ms = (cpu() - began) * 1000
 		if ms > stats.max_frame_ms then stats.max_frame_ms = ms end
+		sweep.cpu_ms = sweep.cpu_ms + ms
+		sweep.frames = sweep.frames + 1
+		if ms > diag.max_frame_ms then diag.max_frame_ms = ms end
 		if done then finishSweep() end
 	end
 
@@ -597,6 +763,7 @@ function M.install(g)
 	local hider = M.new({
 		stingray = engine, now = now, cpu = cpu, write = write,
 		read_rules = reader(rules_path), read_mapping_rules = reader(mapping_rules_path),
+		diag_interval = DIAG_INTERVAL,
 	})
 	M.hider = hider
 

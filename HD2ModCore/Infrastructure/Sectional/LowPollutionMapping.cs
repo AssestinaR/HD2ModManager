@@ -16,7 +16,18 @@ public static class LowPollutionRoles
 }
 
 /// <summary>布局文件里的一个压缩 unit。</summary>
-public sealed record LowPollutionLayoutUnit(string Role, string Unit);
+/// <param name="Body">体型：<c>any</c>（没拆的槽，/1 布局一律是它）、<c>stocky</c>、<c>slim</c>（规划 §13.3）。</param>
+public sealed record LowPollutionLayoutUnit(string Role, string Unit, string Body = LowPollutionBodies.Any);
+
+/// <summary>布局文件里 <c>body</c> 的取值。</summary>
+public static class LowPollutionBodies
+{
+	public const string Any = "any";
+	public const string Stocky = "stocky";
+	public const string Slim = "slim";
+
+	internal static string Name(int body) => body == 0 ? Stocky : Slim;
+}
 
 /// <summary>
 /// <c>Overwrite/low-pollution-layout.json</c> 的读出结果（P6 S2 写、S3 读）。
@@ -24,8 +35,33 @@ public sealed record LowPollutionLayoutUnit(string Role, string Unit);
 /// </summary>
 public sealed record LowPollutionLayout(string Mode, bool HeadMerge, IReadOnlyList<LowPollutionLayoutUnit> Units, string? Fingerprint = null)
 {
-	/// <summary>某角色的压缩 unit ID（16 位小写 hex）；没有这个槽时为 <c>null</c>。</summary>
-	public string? UnitOf(string role) => Units.FirstOrDefault(unit => unit.Role == role)?.Unit;
+	/// <summary>某角色的压缩 unit ID（16 位小写 hex）；没有这个槽时为 <c>null</c>。拆开的槽优先给通用的，没有则取第一个。</summary>
+	public string? UnitOf(string role)
+		=> (Units.FirstOrDefault(unit => unit.Role == role && unit.Body == LowPollutionBodies.Any)
+			?? Units.FirstOrDefault(unit => unit.Role == role))?.Unit;
+
+	private string? Pick(string role, string body)
+		=> Units.FirstOrDefault(unit => unit.Role == role && unit.Body == body)?.Unit;
+
+	/// <summary>
+	/// 某体型（0 = 健壮 / 1 = 纤细）在这个槽里该链到的压缩 unit。退回顺序：该体型的 → 通用的 → 另一体型的（规划 §13.4 / Q2）。
+	/// 没有这个槽时为 <c>null</c>。
+	/// </summary>
+	public string? UnitOf(string role, int body)
+		=> Pick(role, LowPollutionBodies.Name(body)) ?? Pick(role, LowPollutionBodies.Any) ?? Pick(role, LowPollutionBodies.Name(1 - body));
+
+	/// <summary>这个槽里该体型没有自己的 unit、也没有通用的，只能用另一体型顶上。</summary>
+	public bool UsesOtherBody(string role, int body)
+		=> Pick(role, LowPollutionBodies.Name(body)) is null && Pick(role, LowPollutionBodies.Any) is null
+			&& Pick(role, LowPollutionBodies.Name(1 - body)) is not null;
+
+	/// <summary>这个槽按体型拆成了两个不同的 unit（一个承载件不可能同时放下两份）。</summary>
+	public bool IsSplit(string role)
+		=> UnitOf(role, 0) is { } stocky && UnitOf(role, 1) is { } slim && !string.Equals(stocky, slim, StringComparison.Ordinal);
+
+	/// <summary>这个槽里的全部压缩 unit（去重，顺序同布局文件）。</summary>
+	public IReadOnlyList<string> UnitsOf(string role)
+		=> [.. Units.Where(unit => unit.Role == role).Select(unit => unit.Unit).Distinct(StringComparer.Ordinal)];
 
 	/// <summary>布局里的全部压缩 unit。</summary>
 	public IEnumerable<string> AllUnits => Units.Select(unit => unit.Unit);
@@ -128,14 +164,32 @@ internal static class LowPollutionMappingPlanner
 
 	private static int SlotOf(ArmorPart part) => (int)(ArmorStructure.SlotOf(part) ?? 0u);
 
+	/// <summary>体型专属的部件（raw 0 / 1）；raw 3 的通用部件两种体型共用同一个 unit。</summary>
+	private static bool IsBodySpecific(SectionalExclusivePlanner.Unit unit) => unit.RawBody is 0u or 1u;
+
+	private static string SharedCarrierReason(GameDataAuthorityKit kit, string what)
+		=> $"{kit.DisplayName} 的通用部件两种体型共用，模型的{what}分壮实 / 纤细两份，没法同时放下";
+
+	/// <summary>Q2：某体型在这个槽里没有自己的模型，用另一体型顶上。</summary>
+	private static void NoteFallback(LowPollutionLayout layout, string role, string what, IEnumerable<int> bodies, List<string> notes)
+	{
+		foreach (var body in bodies)
+		{
+			if (layout.UsesOtherBody(role, body))
+				notes.Add($"{(body == 0 ? "健壮" : "纤细")}体型没有自己的{what}模型，用{(body == 0 ? "纤细" : "健壮")}体型的顶上，可能穿模。");
+		}
+	}
+
 	private static LowPollutionMappingPlan PlanArmor(
 		SectionalExclusivePlanner.Index index, LowPollutionLayout layout, GameDataAuthorityKit kit, string modelKey,
 		IReadOnlySet<uint> companions)
 	{
-		var bodyUnit = layout.UnitOf(LowPollutionRoles.HeadBody) ?? layout.UnitOf(LowPollutionRoles.Body);
-		if (bodyUnit is null)
+		var bodyRole = layout.UnitOf(LowPollutionRoles.HeadBody) is not null ? LowPollutionRoles.HeadBody : LowPollutionRoles.Body;
+		if (layout.UnitOf(bodyRole) is null)
 			return Unavailable(kit, modelKey, "素体的压缩布局里没有躯干槽（body / head-body）。");
-		var armsUnit = layout.UnitOf(LowPollutionRoles.Arms);
+		var hasArms = layout.UnitOf(LowPollutionRoles.Arms) is not null;
+		var torsoSplit = layout.IsSplit(bodyRole);
+		var armsSplit = hasArms && layout.IsSplit(LowPollutionRoles.Arms);
 
 		var capeSlot = SlotOf(ArmorPart.Cape);
 		var helmetSlot = SlotOf(ArmorPart.Helmet);
@@ -150,7 +204,7 @@ internal static class LowPollutionMappingPlanner
 
 		bool Unique(SectionalExclusivePlanner.Unit unit) => SectionalExclusivePlanner.IsGroupUnique(index, groupItems, unit.File);
 
-		// ① 躯干承载件（固定）：每种身形一个，层数大的优先，同层按 ID。
+		// ① 躯干承载件（固定）：每种身形一个。模型这个槽拆开时体型专属的优先，其次层数大的，同层按 ID。
 		var torso = new Dictionary<int, SectionalExclusivePlanner.Unit>();
 		var missing = new List<int>();
 		foreach (var body in bodies)
@@ -159,7 +213,8 @@ internal static class LowPollutionMappingPlanner
 				.Where(unit => unit.Slot == torsoSlot && SectionalExclusivePlanner.Covers(unit.RawBody, body))
 				.DistinctBy(unit => unit.File)
 				.Where(Unique)
-				.OrderByDescending(unit => unit.Layer)
+				.OrderBy(unit => torsoSplit && !IsBodySpecific(unit) ? 1 : 0)
+				.ThenByDescending(unit => unit.Layer)
 				.ThenBy(unit => unit.File)
 				.ToArray();
 			if (found.Length == 0) missing.Add(body);
@@ -176,29 +231,48 @@ internal static class LowPollutionMappingPlanner
 					: $"{SectionalExclusivePlanner.BodyLabel(missing[0])}的躯干部件被别的护甲共用，没有独有躯干可以承载");
 		}
 
+		// 一个承载件只能链到一个压缩 unit：模型的槽拆开时，通用承载件（两种体型共用）放不下两份 ⇒ 整个目标不可（Q1，用户已定）。
 		var links = new Dictionary<ulong, string>();
-		foreach (var unit in torso.Values) links[unit.File] = bodyUnit;
+		string? conflict = null;
+		void Link(ulong file, string unit, string what)
+		{
+			if (links.TryGetValue(file, out var existing) && !string.Equals(existing, unit, StringComparison.Ordinal))
+				conflict ??= SharedCarrierReason(kit, what);
+			else
+				links[file] = unit;
+		}
+
+		foreach (var (body, unit) in torso)
+		{
+			if (torsoSplit && !IsBodySpecific(unit)) conflict ??= SharedCarrierReason(kit, "躯干");
+			Link(unit.File, layout.UnitOf(bodyRole, body)!, "躯干");
+		}
+
+		if (conflict is not null) return Unavailable(kit, modelKey, conflict);
 		var armsOnHelmets = new SortedSet<string>(StringComparer.Ordinal);
 
 		// ② 手臂承载件：躯干、头盔槽之外的任意独有部件（Q1：找不到时整套不可，不做半套）。
-		if (armsUnit is not null)
+		if (hasArms)
 		{
 			var used = links.Keys.ToHashSet();
 			var preference = ArmsCarrierPreference.Select(SlotOf).ToList();
 			foreach (var body in bodies)
 			{
+				var armsUnit = layout.UnitOf(LowPollutionRoles.Arms, body)!;
 				var candidates = tUnits
 					.Where(unit => unit.Slot != torsoSlot && unit.Slot != helmetSlot
 						&& SectionalExclusivePlanner.Covers(unit.RawBody, body) && !used.Contains(unit.File))
 					.DistinctBy(unit => unit.File)
 					.Where(Unique)
-					.OrderBy(unit => preference.IndexOf(unit.Slot) is var at and >= 0 ? at : 100 + unit.Slot)
+					.OrderBy(unit => armsSplit && !IsBodySpecific(unit) ? 1 : 0)
+					.ThenBy(unit => preference.IndexOf(unit.Slot) is var at and >= 0 ? at : 100 + unit.Slot)
 					.ThenByDescending(unit => unit.Layer)
 					.ThenBy(unit => unit.File)
 					.ToArray();
 				if (candidates.Length != 0)
 				{
-					links[candidates[0].File] = armsUnit;
+					if (armsSplit && !IsBodySpecific(candidates[0])) conflict ??= SharedCarrierReason(kit, "手臂");
+					Link(candidates[0].File, armsUnit, "手臂");
 					continue;
 				}
 
@@ -216,9 +290,12 @@ internal static class LowPollutionMappingPlanner
 							: string.Empty));
 				}
 
-				links[fallback.Value.Unit.File] = armsUnit;
+				if (armsSplit && !IsBodySpecific(fallback.Value.Unit)) conflict ??= SharedCarrierReason(kit, "手臂");
+				Link(fallback.Value.Unit.File, armsUnit, "手臂");
 				armsOnHelmets.Add($"{fallback.Value.Helmet.DisplayName}（{fallback.Value.Helmet.ItemId}）");
 			}
+
+			if (conflict is not null) return Unavailable(kit, modelKey, conflict);
 		}
 
 		// ③ 隐藏集：目标记录的全部非披风部件 − 承载件；2 槽（头已并进身体）再加同套/同名头盔记录的全部非披风部件。
@@ -233,12 +310,15 @@ internal static class LowPollutionMappingPlanner
 					.Select(unit => unit.File));
 			}
 
-			notes.Add("头身合并（2 槽）：原版头盔的部件会在穿这套的角色身上隐藏（0.3 米半径是否覆盖头盔 unit 需实机确认）。");
+			notes.Add("头身合并（2 槽）：原版头盔的部件会在穿这套的角色身上隐藏（0.3 米半径内的同名部件都会隐藏）。");
 		}
 		else
 		{
 			notes.Add("3 槽：只映射躯干和手臂；模型的头不显示，戴什么头盔就显示什么头盔（想显示模型的头，再映射同名头盔）。");
 		}
+
+		NoteFallback(layout, bodyRole, "躯干", bodies, notes);
+		if (hasArms) NoteFallback(layout, LowPollutionRoles.Arms, "手臂", bodies, notes);
 
 		if (armsOnHelmets.Count != 0)
 			notes.Add($"手臂放在头盔 {string.Join("、", armsOnHelmets)} 的独有部件上（头已并进身体，这个部件空着）：只有同时戴着这顶头盔，手臂才会显示。");
@@ -257,7 +337,7 @@ internal static class LowPollutionMappingPlanner
 			notes.Add($"承载件同时被同名记录 {string.Join("、", mates)} 引用：穿它们的角色也会显示这个模型。");
 
 		var signature = torso.OrderBy(pair => pair.Key).Select(pair => pair.Value.File).Distinct().Select(SectionalExclusivePlanner.Hex).ToArray();
-		return Mapped(kit, modelKey, links, hide, signature, bodyUnit, notes);
+		return Mapped(kit, modelKey, links, hide, signature, layout.UnitsOf(bodyRole), notes);
 	}
 
 	/// <summary>
@@ -303,9 +383,9 @@ internal static class LowPollutionMappingPlanner
 	{
 		if (layout.HeadMerge)
 			return HelmetPlanTwoSlot(index, kit, modelKey, companions);
-		var headUnit = layout.UnitOf(LowPollutionRoles.Head);
-		if (headUnit is null)
+		if (layout.UnitOf(LowPollutionRoles.Head) is null)
 			return Unavailable(kit, modelKey, "素体的压缩布局里没有头槽。");
+		var headSplit = layout.IsSplit(LowPollutionRoles.Head);
 
 		var capeSlot = SlotOf(ArmorPart.Cape);
 		var helmetSlot = SlotOf(ArmorPart.Helmet);
@@ -340,21 +420,30 @@ internal static class LowPollutionMappingPlanner
 				: "头盔的头部件都被别的头盔共用，没有独有部件可以承载模型的头");
 		}
 
-		var links = carriers.Values.DistinctBy(unit => unit.File).ToDictionary(unit => unit.File, _ => headUnit);
+		var links = new Dictionary<ulong, string>();
+		foreach (var (body, unit) in carriers)
+		{
+			var headUnit = layout.UnitOf(LowPollutionRoles.Head, body)!;
+			if ((headSplit && !IsBodySpecific(unit)) || (links.TryGetValue(unit.File, out var existing) && existing != headUnit))
+				return Unavailable(kit, modelKey, SharedCarrierReason(kit, "头"));
+			links[unit.File] = headUnit;
+		}
+
 		var notes = new List<string> { "头盔映射：模型的头落在这顶头盔的独有部件上，只有戴这顶头盔时才显示；头盔的其余部件由 Hider 隐藏。" };
+		NoteFallback(layout, LowPollutionRoles.Head, "头", bodies, notes);
 		var signature = carriers.OrderBy(pair => pair.Key).Select(pair => pair.Value.File).Distinct().Select(SectionalExclusivePlanner.Hex).ToArray();
-		return Mapped(kit, modelKey, links, all.Select(unit => unit.File), signature, headUnit, notes);
+		return Mapped(kit, modelKey, links, all.Select(unit => unit.File), signature, layout.UnitsOf(LowPollutionRoles.Head), notes);
 	}
 
 	private static LowPollutionMappingPlan Mapped(
 		GameDataAuthorityKit kit, string modelKey, Dictionary<ulong, string> links, IEnumerable<ulong> hide,
-		IReadOnlyList<string> signature, string unitSignature, List<string> notes)
+		IReadOnlyList<string> signature, IReadOnlyList<string> unitSignature, List<string> notes)
 		=> new(
 			kit.ItemId, kit.DisplayName, modelKey, LowPollutionMappingStatus.Mapped, null,
 			[.. links.OrderBy(pair => pair.Key).Select(pair => new LowPollutionLink(SectionalExclusivePlanner.Hex(pair.Key), pair.Value))],
 			[.. hide.Where(file => !links.ContainsKey(file)).Distinct().Order().Select(SectionalExclusivePlanner.Hex)],
 			signature,
-			[unitSignature],
+			unitSignature,
 			notes);
 }
 
@@ -378,6 +467,13 @@ internal static class LowPollutionMappingPlanner
 /// </summary>
 public static class LowPollutionHiderRules
 {
+	/// <summary>
+	/// 低污染规则的同角色判定半径（米，协议上限 1.0）。2026-11-14 实机（规划 §14.3–14.6）：TG-8 没藏住的真正原因是
+	/// Hider 单世界 unit 上限截掉了玩家部件；实测部件离锚点 ≤ 0.06 米，任务里看到的 0.5–1.0 米是锚点位置晚一轮。
+	/// Hider 0.4.3 当轮刷新锚点后收回 0.3，越小越不容易把贴身站着的队友的共用部件误藏（藏了不会恢复）。
+	/// </summary>
+	public const double Radius = 0.3;
+
 	public static IReadOnlyList<KitInstanceRule> Build(IEnumerable<LowPollutionMappingPlan> plans)
 	{
 		ArgumentNullException.ThrowIfNull(plans);
@@ -394,7 +490,10 @@ public static class LowPollutionHiderRules
 			var signatures = new List<(string Suffix, string Id)>();
 			for (var index = 0; index < plan.Signature.Count; index++)
 				signatures.Add((index == 0 ? string.Empty : "-s" + (index + 1).ToString(CultureInfo.InvariantCulture), plan.Signature[index]));
-			foreach (var unit in plan.UnitSignature) signatures.Add(("-u", unit));
+			// 分体素体有两个躯干压缩 unit（壮实 / 纤细）：名字必须各不相同（-u、-u2…），否则协议判重名，整份规则写不进去
+			// （2026-11-14 实机：埃吉尔分体后规则与 wardrobe.links 都没写成，CE-27 继续被旧映射污染）。
+			for (var index = 0; index < plan.UnitSignature.Count; index++)
+				signatures.Add((index == 0 ? "-u" : "-u" + (index + 1).ToString(CultureInfo.InvariantCulture), plan.UnitSignature[index]));
 
 			var baseName = "lp-" + plan.TargetItemId.ToString(CultureInfo.InvariantCulture);
 			foreach (var (suffix, id) in signatures)
@@ -402,7 +501,7 @@ public static class LowPollutionHiderRules
 				for (var part = 0; part < chunks.Length; part++)
 				{
 					var name = baseName + suffix + (part == 0 ? string.Empty : "-h" + (part + 1).ToString(CultureInfo.InvariantCulture));
-					var rule = new KitInstanceRule(name, SectionalExclusivePlanner.Radius, [id], [], chunks[part]);
+					var rule = new KitInstanceRule(name, LowPollutionHiderRules.Radius, [id], [], chunks[part]);
 					var content = id + "|" + string.Join(",", chunks[part]);
 					if (seen.Add(content)) rules.Add(rule);
 				}
@@ -443,7 +542,8 @@ internal static class LowPollutionLayoutReader
 			using var document = JsonDocument.Parse(json);
 			var root = document.RootElement;
 			if (root.ValueKind != JsonValueKind.Object
-				|| !root.TryGetProperty("schema", out var schema) || schema.GetString() != LowPollutionLayoutFile.Schema)
+				|| !root.TryGetProperty("schema", out var schema)
+					|| schema.GetString() is not (LowPollutionLayoutFile.Schema or LowPollutionLayoutFile.SchemaV2))
 			{
 				error = "布局文件的 schema 不认识。";
 				return false;
@@ -466,7 +566,16 @@ internal static class LowPollutionLayoutReader
 					return false;
 				}
 
-				list.Add(new LowPollutionLayoutUnit(role, id!));
+				// /1 没有 body：一律按 any。
+				var body = unit.TryGetProperty("body", out var bodyElement) && bodyElement.ValueKind == JsonValueKind.String
+					? bodyElement.GetString() : LowPollutionBodies.Any;
+				if (body is not (LowPollutionBodies.Any or LowPollutionBodies.Stocky or LowPollutionBodies.Slim))
+				{
+					error = "布局文件里有不认识的体型。";
+					return false;
+				}
+
+				list.Add(new LowPollutionLayoutUnit(role, id!, body!));
 			}
 
 			layout = new LowPollutionLayout(

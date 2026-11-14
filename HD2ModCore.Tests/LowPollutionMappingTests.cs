@@ -297,12 +297,31 @@ public sealed class LowPollutionMappingTests
 		Assert.Equal([BodyUnit], byUnit.All);
 		Assert.Equal(byCarrier.Hide, byUnit.Hide);
 		Assert.All(rules, rule => Assert.True(KitInstanceRulesProtocol.TryValidate(rule, out _)));
-		Assert.Equal(SectionalExclusivePlanner.Radius, byCarrier.Radius);
+		Assert.Equal(LowPollutionHiderRules.Radius, byCarrier.Radius);
 	}
 
 	private static LowPollutionMappingPlan Synthetic(uint item, string[] carriers, string[] hide, string unit = BodyUnit)
 		=> new(item, $"T{item}", "m1", LowPollutionMappingStatus.Mapped, null,
 			[.. carriers.Select(carrier => new LowPollutionLink(carrier, unit))], hide, [carriers[0]], [unit], []);
+
+	[Fact]
+	public void HiderRules_SplitBodyModel_GivesEachTorsoUnitItsOwnRuleName_AndTheFileSerializes()
+	{
+		// 2026-11-14 实机：分体素体有两个躯干压缩 unit，两条规则都叫 lp-<item>-u，协议判重名，整份规则与 wardrobe.links 都没写成。
+		string stocky = Hex(0x5001), slim = Hex(0x5002);
+		var plan = new LowPollutionMappingPlan(1, "T1", "m1", LowPollutionMappingStatus.Mapped, null,
+			[new LowPollutionLink(Hex(0xa), stocky), new LowPollutionLink(Hex(0xb), slim)],
+			[Hex(0xc), Hex(0xd)], [Hex(0xa), Hex(0xb)], [stocky, slim], []);
+
+		var rules = LowPollutionHiderRules.Build([plan]);
+
+		Assert.Equal(["lp-1", "lp-1-s2", "lp-1-u", "lp-1-u2"], rules.Select(rule => rule.Name).Order(StringComparer.Ordinal));
+		Assert.Equal([stocky], rules.Single(rule => rule.Name == "lp-1-u").All);
+		Assert.Equal([slim], rules.Single(rule => rule.Name == "lp-1-u2").All);
+		var text = KitInstanceRulesProtocol.Serialize(new KitInstanceRulesDocument(1, rules));
+		Assert.True(KitInstanceRulesProtocol.TryParse(text, out var parsed, out var error), error);
+		Assert.Equal(4, parsed!.Rules.Count);
+	}
 
 	[Fact]
 	public void HiderRules_NeverHideAnyTargetsCarrier()
@@ -445,6 +464,150 @@ public sealed class LowPollutionMappingTests
 		Assert.Equal(1, compiled.LowPollutionConflicts);
 		Assert.Equal(0, compiled.LowPollutionLinkCount);
 		Assert.DoesNotContain($"link={Hex(0x2001)},{BodyUnit}", compiled.Text);
+	}
+
+	// ── S5：模型按体型分开做的布局（规划 §13.4）───────────────────────────
+
+	private const string BodyUnitSlim = "00000000b0d10011";
+	private const string ArmsUnitSlim = "00000000a7a50012";
+
+	private static LowPollutionLayout SplitLayout(bool bodyStocky = true, bool bodySlim = true, bool armsStocky = true, bool armsSlim = true)
+	{
+		var units = new List<LowPollutionLayoutUnit> { new(LowPollutionRoles.Head, HeadUnit) };
+		if (bodyStocky) units.Add(new(LowPollutionRoles.Body, BodyUnit, LowPollutionBodies.Stocky));
+		if (bodySlim) units.Add(new(LowPollutionRoles.Body, BodyUnitSlim, LowPollutionBodies.Slim));
+		if (armsStocky) units.Add(new(LowPollutionRoles.Arms, ArmsUnit, LowPollutionBodies.Stocky));
+		if (armsSlim) units.Add(new(LowPollutionRoles.Arms, ArmsUnitSlim, LowPollutionBodies.Slim));
+		return new LowPollutionLayout("three-slot", false, units);
+	}
+
+	/// <summary>目标 K1：躯干、手臂两种体型各有专属承载件（健壮 raw 0 / 纤细 raw 1）；0x2000 / 0x6000 与 K2 共用。</summary>
+	private static List<GameDataAuthorityKit> BodySplitWorld(Func<List<GameDataAuthorityPiece>, List<GameDataAuthorityPiece>>? edit = null)
+	{
+		var t = new List<GameDataAuthorityPiece>
+		{
+			P(1, 0, 3, 0xcafe),
+			P(2, 0, 3, 0x2000), P(2, 1, 0, 0x2a01), P(2, 1, 1, 0x2b01),
+			P(3, 0, 3, 0x3000),
+			P(6, 0, 3, 0x6000), P(6, 1, 0, 0x6a01), P(6, 1, 1, 0x6b01),
+		};
+		if (edit is not null) t = edit(t);
+		return
+		[
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, null, [.. t]),
+			Kit(2, 200, GameDataEquipmentKitKind.Armor, null, P(1, 0, 3, 0xcafe), P(2, 0, 3, 0x2000), P(3, 0, 3, 0x3000), P(6, 0, 3, 0x6000)),
+		];
+	}
+
+	[Fact]
+	public void SplitModel_EachBodyCarrierLinksToThatBodysUnit_AndBothTorsoUnitsAreSignatures()
+	{
+		var plan = Plan(BodySplitWorld(), SplitLayout());
+
+		Assert.True(plan.Status == LowPollutionMappingStatus.Mapped, plan.Reason);
+		Assert.Equal(
+			[
+				new LowPollutionLink(Hex(0x2a01), BodyUnit), new LowPollutionLink(Hex(0x2b01), BodyUnitSlim),
+				new LowPollutionLink(Hex(0x6a01), ArmsUnit), new LowPollutionLink(Hex(0x6b01), ArmsUnitSlim),
+			],
+			plan.Links);
+		Assert.Equal([Hex(0x2a01), Hex(0x2b01)], plan.Signature);
+		// 备用签名：两个躯干压缩 unit 都要（resource_name 返回覆盖后的哪个都能触发）。
+		Assert.Equal([BodyUnit, BodyUnitSlim], plan.UnitSignature);
+		Assert.Equal([Hex(0x2000), Hex(0x3000), Hex(0x6000)], plan.Hide);
+		Assert.DoesNotContain(plan.Notes, note => note.Contains("顶上", StringComparison.Ordinal));
+		// 规则：两套签名 × 每套都带全部隐藏集（原 ID 的两个 + 两个压缩 unit）。
+		var rules = LowPollutionHiderRules.Build([plan]);
+		Assert.Contains(rules, rule => rule.Name == "lp-1-u" && rule.All.Contains(BodyUnit));
+		Assert.Contains(rules, rule => rule.Name == "lp-1-u2" && rule.All.Contains(BodyUnitSlim));
+	}
+
+	[Fact]
+	public void SplitModel_BodySpecificCarrierWinsOverAHigherLayerGeneralOne()
+	{
+		// 躯干槽里有一个更外层的通用件 0x2c01（raw 3，第 2 层）：模型的槽拆开时体型专属的优先，不能选它。
+		var plan = Plan(BodySplitWorld(t => [.. t, P(2, 2, 3, 0x2c01)]), SplitLayout());
+		Assert.True(plan.Status == LowPollutionMappingStatus.Mapped, plan.Reason);
+		Assert.DoesNotContain(plan.Links, link => link.Carrier == Hex(0x2c01));
+		Assert.Contains(plan.Links, link => link.Carrier == Hex(0x2a01));
+
+		// 模型没拆（全 Any）时排序不变：最外层的通用件照旧胜出（逐字节不变的保证）。
+		var unsplit = Plan(BodySplitWorld(t => [.. t, P(2, 2, 3, 0x2c01)]), Layout(headMerge: false));
+		Assert.Contains(unsplit.Links, link => link.Carrier == Hex(0x2c01));
+	}
+
+	[Fact]
+	public void SplitModel_GeneralOnlyCarrierForASplitSlot_MakesTheTargetUnavailable_ButAnUnsplitSlotIsFine()
+	{
+		// 手臂承载件只有通用件（SC-34 / PH-9 的形状），模型的手臂分壮实 / 纤细：一个部件放不下两份 ⇒ 整套不可，不写任何行。
+		var world = BodySplitWorld(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6a01 or 0x6b01)), P(6, 1, 3, 0x6c01)]);
+		var plan = Plan(world, SplitLayout());
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, plan.Status);
+		Assert.Empty(plan.Links);
+		Assert.Contains("通用部件两种体型共用", plan.Reason, StringComparison.Ordinal);
+		Assert.Contains("手臂", plan.Reason, StringComparison.Ordinal);
+
+		// 同一个目标，模型的手臂没拆（Any）：照旧链到那一个 Any unit。
+		var unsplitArms = Plan(world, SplitLayout(armsStocky: false, armsSlim: false) with
+		{
+			Units = [.. SplitLayout(armsStocky: false, armsSlim: false).Units, new(LowPollutionRoles.Arms, ArmsUnit)],
+		});
+		Assert.True(unsplitArms.Status == LowPollutionMappingStatus.Mapped, unsplitArms.Reason);
+		Assert.Equal(ArmsUnit, unsplitArms.Links.Single(link => link.Carrier == Hex(0x6c01)).Unit);
+
+		// 躯干同理：只有通用躯干承载件 + 躯干拆开 ⇒ 不可。
+		var torsoGeneral = Plan(BodySplitWorld(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x2a01 or 0x2b01)), P(2, 1, 3, 0x2c01)]), SplitLayout());
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, torsoGeneral.Status);
+		Assert.Contains("躯干", torsoGeneral.Reason, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void SplitModel_AMissingBody_UsesTheOtherBodysUnit_AndSaysSo()
+	{
+		// 模型手臂只有壮实一份：纤细承载件也链到它（用户 Q2 (b)），Notes 写明可能穿模。
+		var plan = Plan(BodySplitWorld(), SplitLayout(armsSlim: false));
+		Assert.True(plan.Status == LowPollutionMappingStatus.Mapped, plan.Reason);
+		Assert.Equal(ArmsUnit, plan.Links.Single(link => link.Carrier == Hex(0x6a01)).Unit);
+		Assert.Equal(ArmsUnit, plan.Links.Single(link => link.Carrier == Hex(0x6b01)).Unit);
+		Assert.Contains(plan.Notes, note => note.Contains("纤细体型没有自己的手臂模型", StringComparison.Ordinal) && note.Contains("顶上", StringComparison.Ordinal));
+		Assert.DoesNotContain(plan.Notes, note => note.Contains("健壮体型没有自己的", StringComparison.Ordinal));
+		// 只有一个手臂 unit：不算拆开，所以即使承载件是通用的也不会不可。
+		var general = Plan(
+			BodySplitWorld(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6a01 or 0x6b01)), P(6, 1, 3, 0x6c01)]),
+			SplitLayout(armsSlim: false));
+		Assert.True(general.Status == LowPollutionMappingStatus.Mapped, general.Reason);
+	}
+
+	[Fact]
+	public void UnsplitLayout_PlansAreIdenticalToTheOnesBeforeS5_WhetherParsedFromSchema1OrBuiltByHand()
+	{
+		// 全 Any 布局：/1 文件读出来的布局与手搭的 Any 布局规划结果完全相同（链接、隐藏、签名、说明）。
+		var parsed = LowPollutionLayoutReader.TryParse(
+			LayoutJson(("head", HeadUnit), ("body", BodyUnit), ("arms", ArmsUnit)), out var layout, out var error);
+		Assert.True(parsed, error);
+		var fromFile = Plan(World(), layout!);
+		var byHand = Plan(World(), Layout(headMerge: false));
+		Assert.Equal(byHand.Links, fromFile.Links);
+		Assert.Equal(byHand.Hide, fromFile.Hide);
+		Assert.Equal(byHand.Signature, fromFile.Signature);
+		Assert.Equal(byHand.UnitSignature, fromFile.UnitSignature);
+		Assert.Equal(byHand.Notes, fromFile.Notes);
+		Assert.Equal([BodyUnit], fromFile.UnitSignature);
+	}
+
+	[Fact]
+	public void SplitHeadLayout_HelmetCarriersAreOnlyMappedWhenBothBodiesCanBeServed()
+	{
+		// 头槽按体型拆开本来不会由压缩器产生（头盔没有体型）；读到这样的布局时头盔的通用承载件放不下两份 ⇒ 不可，而不是挑一份。
+		var layout = new LowPollutionLayout("three-slot", false,
+		[
+			new(LowPollutionRoles.Head, HeadUnit, LowPollutionBodies.Stocky),
+			new(LowPollutionRoles.Head, "000000000ead0013", LowPollutionBodies.Slim),
+			new(LowPollutionRoles.Body, BodyUnit),
+		]);
+		var plan = Plan(World(), layout, item: 3);
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, plan.Status);
+		Assert.Contains("头", plan.Reason, StringComparison.Ordinal);
 	}
 
 	// ── 布局文件 ───────────────────────────────────────────────────────────
@@ -762,6 +925,28 @@ public sealed class LowPollutionMappingTests
 			await File.ReadAllTextAsync(Path.Combine(env.Registry, RuntimeArmorRegistryService.ProtocolFileName)));
 		Assert.Empty(protocol.Mappings);
 		Assert.Empty(await ArmorMappingPatchCoverage.ReadAppliedMappedTargetsAsync(env.Registry));
+	}
+
+	[Fact]
+	public async Task Apply_SkippedModelWithoutDeployedUnits_DoesNotFailTheOtherMappings()
+	{
+		// 2026-11-14 实机：被跳过的素体（目标不是自己的素体）恰好没部署，「已部署 Unit」检查先于跳过执行，整次应用失败。
+		await using var env = await Env.CreateAsync();
+		WriteMod(env.Paths.ModsDirectory, "Other", "m2", "0000000000000009", LayoutJson(("body", "0000000000000009")));
+		var undeployed = new RuntimeArmorRegistryModel("m2", null, [new RuntimeArmorRegistryModelPiece(3, "0000000000000009", 2, 0)]);
+		var first = await env.Service.ReadSnapshotAsync();
+
+		var result = await env.Service.ApplyAsync(
+			first.Fingerprint, true, [new(1, null, "m1"), new(2, null, "m2")], [env.Model(), undeployed], [], [],
+			gameDataDirectory: env.Data, lowPollutionMode: true,
+			skipModelKeys: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "m2" });
+
+		var report = Assert.Single(result.LowPollution);
+		Assert.True(report.IsMapped, report.Reason);
+		Assert.Equal(2, result.Document.Mappings.Count);
+		var protocol = RuntimeArmorRegistryService.ParseProtocol(
+			await File.ReadAllTextAsync(Path.Combine(env.Registry, RuntimeArmorRegistryService.ProtocolFileName)));
+		Assert.Equal("m1", Assert.Single(protocol.Mappings).ModelKey);
 	}
 }
 
