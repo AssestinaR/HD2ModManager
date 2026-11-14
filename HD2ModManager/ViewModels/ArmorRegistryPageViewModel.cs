@@ -52,6 +52,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private IReadOnlyList<uint> selectedProviderMemberIds = [];
 	private readonly HashSet<uint> pendingProviderIds = [];
 	private IReadOnlyList<RuntimeArmorCatalogEntry> cachedCatalog = [];
+	private ArmorTwinIndex cachedTwinIndex = ArmorTwinIndex.Empty;
+	private string? notifiedAutoCompletedTwinFingerprint;
 	private IReadOnlyDictionary<uint, RuntimeArmorCatalogEntry> cachedCatalogById = new Dictionary<uint, RuntimeArmorCatalogEntry>();
 	private ArmorMappingPickerBaseCatalog cachedPickerBaseCatalog = new([], [], []);
 	private IReadOnlyDictionary<uint, string> cachedManagedOwnerByItemId = new Dictionary<uint, string>();
@@ -541,19 +543,20 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			// 第一段：先把护甲列表画出来。图标与"已被覆盖"标记要等闸门和覆盖事实，
 			// 那是第二段的事——它们不该挡住列表本身。
 			cachedCatalog = loaded.Catalog;
+			cachedTwinIndex = loaded.TwinIndex;
 			cachedArmorDisplayFacts = EmptyDisplayFacts;
 			hasLoadedCatalog = true;
 			catalogEmptyReason = loaded.Catalog.Count == 0
 				? "护甲目录是空的：索引数据库里没有装备关系表。请到「设置与资产」建立 / 重建资产索引。"
 				: null;
-			ApplySnapshot(loaded.Snapshot, rebuildChoices: true, resetNavigation: true);
+			ApplySnapshot(loaded.Snapshot, rebuildChoices: true, resetNavigation: true, notifyAutoCompletedTwins: !isWarmUp);
 			IsLoadingCatalog = false;
 			RaiseEmptyMessages();
 
 			// 第二段：等闸门（库快照 + 启动部署落定）再算显示事实，然后原地回填。
 			var facts = await Task.Run(() => ReadArmorDisplayFactsAsync(loaded.Catalog)).ConfigureAwait(true);
 			cachedArmorDisplayFacts = facts;
-			ApplySnapshot(loaded.Snapshot, rebuildChoices: true, resetNavigation: false);
+			ApplySnapshot(loaded.Snapshot, rebuildChoices: true, resetNavigation: false, notifyAutoCompletedTwins: false);
 		}
 		catch (Exception exception) when (exception is IOException
 			or UnauthorizedAccessException
@@ -626,14 +629,19 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 
 	// 读取目录与快照：纯 IO + 纯投影，不触碰任何绑定到视图的集合，因此可以在线程池上执行。
 	// 这一段**不等闸门**——列表本身不需要库快照与部署状态，只有显示事实需要。
-	private async Task<(RuntimeArmorRegistrySnapshot Snapshot, IReadOnlyList<RuntimeArmorCatalogEntry> Catalog)?> LoadCatalogCoreAsync()
+	private async Task<(RuntimeArmorRegistrySnapshot Snapshot, IReadOnlyList<RuntimeArmorCatalogEntry> Catalog, ArmorTwinIndex TwinIndex)?> LoadCatalogCoreAsync()
 	{
 		if (PendingWorkspaceSaves.TryGetValue(service.WorkspacePath, out var pending))
 			await pending.ConfigureAwait(false);
 		var catalogTask = service.ReadArmorCatalogAsync().AsTask();
 		var snapshotTask = service.ReadSnapshotAsync().AsTask();
-		await Task.WhenAll(catalogTask, snapshotTask).ConfigureAwait(false);
-		return (await snapshotTask.ConfigureAwait(false), await catalogTask.ConfigureAwait(false));
+		var authorityTask = ArmorAuthorityIndexReader.TryReadAsync(SettingsService.CreateStoragePaths()).AsTask();
+		await Task.WhenAll(catalogTask, snapshotTask, authorityTask).ConfigureAwait(false);
+		var authority = await authorityTask.ConfigureAwait(false);
+		var twinIndex = authority is not null
+			? ArmorTwinBundling.BuildTwinIndex(authority.Kits)
+			: ArmorTwinIndex.Empty;
+		return (await snapshotTask.ConfigureAwait(false), await catalogTask.ConfigureAwait(false), twinIndex);
 	}
 
 	public async Task RefreshRuntimeStatusAsync()
@@ -678,14 +686,15 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private void ApplySnapshot(
 		RuntimeArmorRegistrySnapshot snapshot,
 		bool rebuildChoices,
-		bool resetNavigation)
+		bool resetNavigation,
+		bool notifyAutoCompletedTwins = false)
 	{
 		if (rebuildChoices)
 		{
 			cachedCatalogById = cachedCatalog
 				.DistinctBy(item => item.ItemId)
 				.ToDictionary(item => item.ItemId);
-			cachedPickerBaseCatalog = ArmorMappingPickerPlanner.BuildBaseCatalog(cachedCatalog);
+			cachedPickerBaseCatalog = ArmorMappingPickerPlanner.BuildBaseCatalog(cachedCatalog, cachedTwinIndex);
 			Choices = cachedCatalog
 				.Select(item => new RuntimeArmorChoiceViewModel(
 					item.ItemId,
@@ -788,12 +797,51 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(Enabled));
 		baselineEnabled = enabled;
 		baselineMappings = GetMappingKeys();
+		var completedTwins = ArmorTwinBundling.CompletePartialTwinMappings(
+			Mappings.Select(row => new RuntimeArmorRegistryMapping(
+				row.Target.ItemId,
+				row.Source.IsCustomModel ? null : row.Source.ItemId,
+				row.ModelKey)).ToArray(),
+			cachedTwinIndex);
+		if (completedTwins.AddedCount > 0 || completedTwins.RealignedCount > 0)
+		{
+			Mappings.Clear();
+			foreach (var mapping in completedTwins.Mappings)
+			{
+				if (mapping.IsModelMapping)
+				{
+					Mappings.Add(new RuntimeArmorMappingRowViewModel(
+						ResolveChoice(mapping.TargetItemId),
+						ResolveChoice(SyntheticModelItemId(mapping.ModelKey!)),
+						mapping.ModelKey));
+					continue;
+				}
+				if (mapping.SourceItemId is not { } sourceItemId) continue;
+				Mappings.Add(new RuntimeArmorMappingRowViewModel(
+					ResolveChoice(mapping.TargetItemId),
+					ResolveChoice(sourceItemId)));
+			}
+			RebuildProjections();
+			PruneSelectionAfterRebuild();
+			if (notifyAutoCompletedTwins
+				&& !string.Equals(notifiedAutoCompletedTwinFingerprint, snapshot.Fingerprint, StringComparison.Ordinal))
+			{
+				notifiedAutoCompletedTwinFingerprint = snapshot.Fingerprint;
+				notifications.Show(
+					$"已自动补齐 {completedTwins.AddedCount + completedTwins.RealignedCount} 条换色孪生映射（{ArmorTwinBundling.TwinBundleReason}），请点「应用」保存。",
+					NotificationLevel.Info,
+					TimeSpan.FromSeconds(8),
+					"护甲映射");
+			}
+		}
 		fingerprint = snapshot.Fingerprint;
 		workspaceRevision = snapshot.Document.Revision;
 		RevisionText = $"revision {snapshot.Document.Revision} · {Mappings.Count} 条映射";
 		UpdateStatus(snapshot);
 		modelDefinitionsDirty = snapshot.HasUnappliedChanges;
 		HasChanges = snapshot.HasUnappliedChanges;
+		if (completedTwins.AddedCount > 0 || completedTwins.RealignedCount > 0)
+			RecomputeHasChanges();
 	}
 
 	private async Task<IReadOnlyDictionary<string, ArmorDisplayFacts>> ReadArmorDisplayFactsAsync(
@@ -1447,10 +1495,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			var selectedTargetKeys = string.Equals(selection.Scope, ArmorRegistryScopes.Targets, StringComparison.Ordinal)
 				? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
 				: null;
-			foreach (var plan in ArmorMappingPickerPlanner.BuildTargetGroupPlans(targetEntries))
+			foreach (var plan in ArmorMappingPickerPlanner.BuildTargetGroupPlans(targetEntries, cachedTwinIndex))
 			{
 				var target = BuildChoiceFromPlan(plan);
-				target.SetPickerPresentation(plan.TypeLabel);
+				target.SetPickerPresentation(plan.TypeLabel, plan.IsTwinBundle, plan.TwinSetCount, plan.TwinBundleNote);
 				ApplyLowPollutionMark(target);
 				if (selectedTargetKeys is not null)
 					target.IsSelected = selectedTargetKeys.Contains(target.SelectionKey);
@@ -1638,7 +1686,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			isDemocracyOfficerNpc: plan.IsDemocracyOfficerNpc,
 			isBlocked: plan.IsBlocked,
 			blockedReason: plan.BlockedReason);
-		choice.SetPickerPresentation(plan.TypeLabel);
+		choice.SetPickerPresentation(plan.TypeLabel, plan.IsTwinBundle, plan.TwinSetCount, plan.TwinBundleNote);
 		return choice;
 	}
 
@@ -2451,23 +2499,35 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 
 	private string? lowPollutionWarning;
 	private string? lowPollutionNote;
+	private bool isTwinBundle;
+	private int twinSetCount;
+	private string? twinBundleNote;
 
 	/// <summary>低污染模式下的标注（警告标签 + 原因）；传 <c>null</c> 清除。</summary>
 	public void SetLowPollutionMark(string? warning, string? note)
 	{
 		lowPollutionWarning = warning;
 		lowPollutionNote = note;
-		RowPresentation = RowPresentation with { WarningLabel = warning, Note = note };
+		RowPresentation = RowPresentation with { WarningLabel = warning, Note = note ?? twinBundleNote };
 	}
 
-	public void SetPickerPresentation(string typeLabel)
+	public void SetPickerPresentation(
+		string typeLabel,
+		bool isTwinBundle = false,
+		int twinSetCount = 0,
+		string? twinBundleNote = null)
 	{
 		pickerTypeLabel = typeLabel;
+		this.isTwinBundle = isTwinBundle;
+		this.twinSetCount = twinSetCount;
+		this.twinBundleNote = twinBundleNote;
 		var activation = IsDemocracyOfficerNpc
 			? ArmorMappingPickerPlanner.DemocracyOfficerTag
-			: VersionCount > 1
-				? $"{VersionCount} 个版本"
-				: null;
+			: isTwinBundle
+				? (VersionCount > 1 ? $"换色孪生 · {twinSetCount} 套 · {VersionCount} 个版本" : $"换色孪生 · {twinSetCount} 套")
+				: VersionCount > 1
+					? $"{VersionCount} 个版本"
+					: null;
 		if (IsBlocked)
 		{
 			RowPresentation = new ModListRowPresentation(
@@ -2485,14 +2545,19 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 			TypeTone: ModListRowTone.Accent,
 			ActivationLabel: activation,
 			WarningLabel: lowPollutionWarning,
-			Note: lowPollutionNote);
+			Summary: twinBundleNote,
+			Note: lowPollutionNote ?? twinBundleNote);
 	}
 
 	public void UpdatePickerState(ArmorMappingPickerRowPlan plan)
 	{
 		IsBlocked = plan.IsBlocked;
 		BlockedReason = plan.BlockedReason;
-		SetPickerPresentation(pickerTypeLabel ?? plan.TypeLabel);
+		SetPickerPresentation(
+			pickerTypeLabel ?? plan.TypeLabel,
+			plan.IsTwinBundle || isTwinBundle,
+			plan.TwinSetCount > 0 ? plan.TwinSetCount : twinSetCount,
+			plan.TwinBundleNote ?? twinBundleNote);
 	}
 
 	public void SetRolePresentation(string? role, int? count)
