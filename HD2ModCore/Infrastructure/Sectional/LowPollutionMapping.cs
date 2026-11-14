@@ -22,7 +22,7 @@ public sealed record LowPollutionLayoutUnit(string Role, string Unit);
 /// <c>Overwrite/low-pollution-layout.json</c> 的读出结果（P6 S2 写、S3 读）。
 /// S3 只需要：几槽、头身合并与否、每个角色对应的压缩 unit ID。
 /// </summary>
-public sealed record LowPollutionLayout(string Mode, bool HeadMerge, IReadOnlyList<LowPollutionLayoutUnit> Units)
+public sealed record LowPollutionLayout(string Mode, bool HeadMerge, IReadOnlyList<LowPollutionLayoutUnit> Units, string? Fingerprint = null)
 {
 	/// <summary>某角色的压缩 unit ID（16 位小写 hex）；没有这个槽时为 <c>null</c>。</summary>
 	public string? UnitOf(string role) => Units.FirstOrDefault(unit => unit.Role == role)?.Unit;
@@ -472,7 +472,8 @@ internal static class LowPollutionLayoutReader
 			layout = new LowPollutionLayout(
 				root.TryGetProperty("mode", out var mode) ? mode.GetString() ?? string.Empty : string.Empty,
 				root.TryGetProperty("headMerge", out var headMerge) && headMerge.ValueKind == JsonValueKind.True,
-				list);
+				list,
+				root.TryGetProperty("fingerprint", out var fingerprint) && fingerprint.ValueKind == JsonValueKind.String ? fingerprint.GetString() : null);
 			return true;
 		}
 		catch (JsonException exception)

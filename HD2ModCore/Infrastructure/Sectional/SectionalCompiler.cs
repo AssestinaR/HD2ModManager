@@ -166,6 +166,9 @@ public static partial class SectionalCompiler
 				modDirectory, payload, sourcePatch, sourceMap, disabledSections, headMergeIntoBody, selection, cancellationToken)
 				.ConfigureAwait(false);
 			// 不能压缩时照常编译，但要让用户看见：否则打开开关、进游戏发现没变化，就再也信不过它。
+			// 不能压缩：留一个带指纹的标记，下次「应用」不再对它重编（规划 §12.1）。
+			if (notCompressedReason is not null && own.Ok)
+				LowPollutionFreshness.WriteUnsupportedMarker(modDirectory, payload, disabledSections, headMergeIntoBody, notCompressedReason);
 			return notCompressedReason is null || !own.Ok
 				? own
 				: own with { Warnings = [.. own.Warnings, $"低污染模式没有压缩这个素体：{notCompressedReason}，已按普通素体编译。"] };

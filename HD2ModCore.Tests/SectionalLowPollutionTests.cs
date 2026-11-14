@@ -136,6 +136,16 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 	}
 
 	[Fact]
+	public void LayoutFile_FingerprintIsOptional_RoundTrips_AndOldBytesAreUnchanged()
+	{
+		var plan = SectionalCompressionPlanner.Plan(SevenSlots(), headMerge: true);
+		Assert.DoesNotContain("fingerprint", LowPollutionLayoutFile.Serialize(plan));
+		var text = LowPollutionLayoutFile.Serialize(plan, "abc123");
+		Assert.Equal("abc123", JsonNode.Parse(text)!["fingerprint"]!.GetValue<string>());
+		Assert.Equal(LowPollutionLayoutFile.Serialize(plan), LowPollutionLayoutFile.Serialize(plan, null));
+	}
+
+	[Fact]
 	public void LayoutFile_ListsEverySourcePartOfEachUnit_AndIsStable()
 	{
 		var plan = SectionalCompressionPlanner.Plan(SevenSlots(), headMerge: true);
@@ -262,6 +272,11 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 
 			var first = await Compile();
 			Assert.True(first.Ok, first.Error);
+			// 编完的素体在同样设置下被判成「已是最新」，改头身合并才会重编（S4a 的指纹）。
+			var wardrobe = new VpkWardrobeFile(false, VpkWardrobeState.Empty, HeadMergeIntoBody: headMerge);
+			Assert.Equal(LowPollutionPrepStatus.UpToDate, LowPollutionFreshness.Assess("k", mod, true, wardrobe).Status);
+			Assert.Equal(LowPollutionPrepStatus.NeedsRecompile,
+				LowPollutionFreshness.Assess("k", mod, true, wardrobe with { HeadMergeIntoBody = !headMerge }).Status);
 			var firstLayout = await File.ReadAllTextAsync(Path.Combine(OverwriteDirectory(mod), LowPollutionLayoutFile.FileName));
 			var firstUnits = await ReadUnitsAsync(Patch(OverwriteDirectory(mod)));
 			var firstHash = HashOverwrite(mod);

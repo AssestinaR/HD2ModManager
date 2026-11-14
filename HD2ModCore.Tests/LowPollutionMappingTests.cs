@@ -502,6 +502,36 @@ public sealed class LowPollutionMappingTests
 			+ string.Join(",", units.Select(unit => $"{{\"role\":\"{unit.Role}\",\"unit\":\"{unit.Unit}\"}}")) + "]}";
 
 	[Fact]
+	public async Task Prep_OnlyModelsLinkedByAnEnabledMapping_AreEverConsidered()
+	{
+		var mods = Path.Combine(Path.GetTempPath(), "hd2-lp-prep-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			// 两个素体都还没压缩过：m1 有映射，m2 只存在于左边列表。
+			WriteMod(mods, "A", "m1", BodyUnit, null);
+			WriteMod(mods, "B", "m2", ArmsUnit, null);
+			RuntimeArmorRegistryMapping[] mappings = [new(1, null, "m1"), new(2, 77)];
+
+			var keys = LowPollutionFreshness.SourceModelKeys(true, mappings);
+			Assert.Equal(["m1"], keys);
+			var plan = await LowPollutionFreshness.PlanAsync(mods, keys, lowPollution: true);
+			var only = Assert.Single(plan);
+			Assert.Equal("m1", only.ModelKey);
+
+			// 映射未启用：谁都不判断，更不会编译。
+			Assert.Empty(LowPollutionFreshness.SourceModelKeys(false, mappings));
+			// 没有任何素体映射（只有护甲→护甲）：也不判断。
+			Assert.Empty(LowPollutionFreshness.SourceModelKeys(true, [new RuntimeArmorRegistryMapping(2, 77)]));
+			// 同一个素体被多条映射关联：只算一次。
+			Assert.Single(LowPollutionFreshness.SourceModelKeys(true, [new(1, null, "m1"), new(3, null, "M1")]));
+		}
+		finally
+		{
+			try { Directory.Delete(mods, recursive: true); } catch (IOException) { }
+		}
+	}
+
+	[Fact]
 	public void Service_OnlyCompressedModelsTakeTheNewPath_AndUndeployedUnitsWriteNothing()
 	{
 		var mods = Path.Combine(Path.GetTempPath(), "hd2-lp-" + Guid.NewGuid().ToString("N"));
@@ -710,6 +740,28 @@ public sealed class LowPollutionMappingTests
 		Assert.False(File.Exists(KitInstanceRulesFile.GetMappingPath(env.Registry)));
 		var linksPath = Path.Combine(env.Registry, WardrobeLinkCompiler.FileName);
 		Assert.False(File.Exists(linksPath) && (await File.ReadAllTextAsync(linksPath)).Contains("link=", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task Apply_SkippedModelKeys_StayInTheWorkspace_ButAreNeitherLinkedNorHiddenNorInTheProtocol()
+	{
+		await using var env = await Env.CreateAsync();
+		var first = await env.Service.ReadSnapshotAsync();
+		var result = await env.Service.ApplyAsync(
+			first.Fingerprint, true, [new(1, null, "m1")], [env.Model()], [], [], gameDataDirectory: env.Data, lowPollutionMode: true,
+			skipModelKeys: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "M1" });
+
+		Assert.Empty(result.LowPollution);
+		Assert.Equal(0, result.HideRuleCount);
+		var linksPath = Path.Combine(env.Registry, WardrobeLinkCompiler.FileName);
+		Assert.False(File.Exists(linksPath) && (await File.ReadAllTextAsync(linksPath)).Contains("link=", StringComparison.Ordinal));
+		Assert.False(File.Exists(KitInstanceRulesFile.GetMappingPath(env.Registry)));
+		// 用户的意图还在 workspace；协议里没有它（不会让「映射优先」跳过 patch）。
+		Assert.Single(result.Document.Mappings);
+		var protocol = RuntimeArmorRegistryService.ParseProtocol(
+			await File.ReadAllTextAsync(Path.Combine(env.Registry, RuntimeArmorRegistryService.ProtocolFileName)));
+		Assert.Empty(protocol.Mappings);
+		Assert.Empty(await ArmorMappingPatchCoverage.ReadAppliedMappedTargetsAsync(env.Registry));
 	}
 }
 

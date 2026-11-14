@@ -604,6 +604,52 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		ConvertToCustomModelCommand.RaiseCanExecuteChanged();
 	}
 
+	private string _vpkMappingCoverageText = string.Empty;
+
+	/// <summary>「已被护甲映射覆盖」提示（规划 §12.3）：与部署同一个判定；没有覆盖时为空。</summary>
+	public string VpkMappingCoverageText
+	{
+		get => _vpkMappingCoverageText;
+		private set
+		{
+			if (!SetField(ref _vpkMappingCoverageText, value)) return;
+			OnPropertyChanged(nameof(HasVpkMappingCoverage));
+		}
+	}
+
+	public bool HasVpkMappingCoverage => !string.IsNullOrEmpty(_vpkMappingCoverageText);
+
+	private async Task RefreshVpkMappingCoverageAsync(string directory, string modName, int generation)
+	{
+		string text;
+		try
+		{
+			var paths = SettingsService.CreateStoragePaths();
+			var registryRoot = CoreServices.CreateRuntimeArmorRegistryService(paths).RegistryRoot;
+			text = await Task.Run(async () =>
+			{
+				var mapped = await ArmorMappingPatchCoverage.ReadAppliedMappedTargetsAsync(registryRoot).ConfigureAwait(false);
+				var coverage = await ArmorMappingPatchCoverage.AnalyzeNodeAsync(
+					directory, mapped, () => ArmorMappingPatchCoverage.ReadKitsByArchive(paths)).ConfigureAwait(false);
+				return coverage.Kind switch
+				{
+					ArmorMappingCoverageKind.Covered =>
+						$"已被护甲映射覆盖：{string.Join("、", coverage.Covered.Select(target => target.Name))}（部署时跳过这个 Mod 针对它的 patch，显示的是映射的模型）。",
+					ArmorMappingCoverageKind.Partial =>
+						ArmorMappingPatchCoverage.DescribePartial(
+							string.IsNullOrWhiteSpace(modName) ? Path.GetFileName(directory) : modName, coverage),
+					_ => string.Empty,
+				};
+			}).ConfigureAwait(true);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			text = string.Empty;
+		}
+		if (generation != _detailRequestGeneration) return;
+		VpkMappingCoverageText = text;
+	}
+
 	private async Task LoadVpkAsync(string directory, string modName, int generation)
 	{
 		try
@@ -613,6 +659,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			if (generation != _detailRequestGeneration) return;
 			_vpkFile = file;
 			OnPropertyChanged(nameof(EnableVpkComponentTree));
+				await RefreshVpkMappingCoverageAsync(directory, modName, generation).ConfigureAwait(true);
 			if (map is not null)
 			{
 				var label = file.BuildTreeLabel(string.IsNullOrWhiteSpace(modName) ? Path.GetFileName(directory) : modName);

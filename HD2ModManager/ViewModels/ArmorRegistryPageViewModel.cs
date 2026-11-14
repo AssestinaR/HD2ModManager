@@ -9,6 +9,7 @@ using System.Windows;
 using HD2ModCore.Application;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Sectional;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
 using HD2ModManager.Controls.Actions;
@@ -36,6 +37,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	private readonly NotificationService notifications;
 	private readonly IProfileDeploymentCoordinator deploymentCoordinator;
 	private readonly ModLibraryService library;
+	private readonly BackgroundTaskService? backgroundTasks;
 	private readonly SelectionCoordinator selection;
 	private readonly Task? displayFactsReady;
 	private string fingerprint = "missing";
@@ -99,8 +101,10 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		NotificationService notifications,
 		IProfileDeploymentCoordinator deploymentCoordinator,
 		SelectionCoordinator selection,
-		Task? displayFactsReady = null)
+		Task? displayFactsReady = null,
+		BackgroundTaskService? backgroundTasks = null)
 	{
+		this.backgroundTasks = backgroundTasks;
 		Title = "运行时护甲注册";
 		this.library = library ?? throw new ArgumentNullException(nameof(library));
 		this.notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
@@ -1632,6 +1636,117 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		target.SetLowPollutionMark(blocked.Status == "not-deployed" ? "未部署" : "低污染模式下不可", blocked.Reason);
 	}
 
+	/// <summary>
+	/// 低污染映射前的素体准备（规划 §12.1）：只看这次映射用到的素体，逐个判断是不是当前设置下的最新产物，
+	/// 只对需要的重编（走详情页「切换」那条 <see cref="ModCompileService.CompileAsync"/>，目标是自己的素体）。
+	/// 返回本次要跳过的素体 key（重编失败 / 不能自动重编 / 游戏在运行）；<c>null</c> = 用户取消，整次应用中止。
+	/// 没有任何素体需要重编时什么都不做，与以前的「应用」完全一样。
+	/// </summary>
+	private async Task<IReadOnlySet<string>?> PrepareSourceModelsAsync(IReadOnlyList<RuntimeArmorRegistryMapping> desired)
+	{
+		var empty = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		// 只有被某条映射关联的素体才进判断；只列在左边、没有任何目标的素体不编译。
+		var keys = LowPollutionFreshness.SourceModelKeys(Enabled, desired);
+		if (keys.Count == 0) return empty;
+
+		var paths = SettingsService.CreateStoragePaths();
+		var lowPollution = SettingsService.GetLowPollutionMode();
+		var items = await LowPollutionFreshness.PlanAsync(paths.ModsDirectory, keys, lowPollution).ConfigureAwait(true);
+		var need = items.Where(item => item.Status == LowPollutionPrepStatus.NeedsRecompile).ToArray();
+		var blocked = items.Where(item => item.Status == LowPollutionPrepStatus.Blocked).ToArray();
+		if (need.Length == 0 && blocked.Length == 0) return empty;
+
+		var skipped = new HashSet<string>(blocked.Select(item => item.ModelKey), StringComparer.OrdinalIgnoreCase);
+		foreach (var item in blocked)
+		{
+			LogService.Info($"低污染模式：跳过素体 {item.Name} 的映射：{item.Reason}");
+			notifications.Show($"{item.Name}：{item.Reason}。这次不应用它的映射。", NotificationLevel.Warning, TimeSpan.FromSeconds(14), "护甲注册");
+		}
+		if (need.Length == 0) return skipped;
+
+		if (IsGameRunning())
+		{
+			foreach (var item in need) skipped.Add(item.ModelKey);
+			var text = $"游戏正在运行：{need.Length} 个素体需要先重编（{need[0].Name}：{need[0].Reason}），不能编译也不能部署。"
+				+ "这次不应用它们的映射；退出游戏后再点「应用」。";
+			LogService.Info("低污染模式：" + text);
+			notifications.Show(text, NotificationLevel.Warning, TimeSpan.FromSeconds(16), "护甲注册");
+			return skipped;
+		}
+
+		var title = lowPollution ? "低污染：重编映射用到的素体" : "关闭低污染：恢复素体普通产物";
+		var task = backgroundTasks?.Enqueue(
+			BackgroundTaskKind.RebuildVpk,
+			title,
+			$"{need.Length} 个素体（已是最新的 {items.Count - need.Length - blocked.Length} 个跳过）",
+			origin: "护甲映射",
+			userVisibleReason: "低污染模式改变了素体产物的形态，映射前只重编这次用到、且还不是最新的素体。",
+			suggestedAction: "完成后会自动部署并应用映射。",
+			presentation: BackgroundTaskPresentation.Foreground);
+		task?.MarkRunning("准备中");
+		var cancellation = task?.CancellationToken ?? CancellationToken.None;
+		StatusTitle = "正在重编素体";
+
+		var nodes = library.Snapshot.Nodes.Values.ToArray();
+		var changedNodes = new List<ModNodeId>();
+		var result = await LowPollutionRecompiler.RunAsync(
+			items,
+			async (item, token) =>
+			{
+				var node = nodes.FirstOrDefault(candidate => string.Equals(
+					Path.GetFullPath(Path.Combine(library.ModsRootDirectory, candidate.RelativePath)).TrimEnd('\\', '/'),
+					Path.GetFullPath(item.ModDirectory).TrimEnd('\\', '/'),
+					StringComparison.OrdinalIgnoreCase));
+				var outcome = await ModCompileService.CompileAsync(
+					node is null ? item.Name : node.Id.Value.ToString("N"),
+					item.ModDirectory,
+					SettingsService.CreateVpkHostContext(),
+					[RuntimeArmorRegistryService.CustomModelArchiveId(item.ModelKey)],
+					null,
+					stage => task?.UpdateStage($"{item.Name}：{stage}"),
+					token).ConfigureAwait(true);
+				if (outcome.Ok && node is not null) changedNodes.Add(node.Id);
+				return (outcome.Ok, outcome.Error ?? "编译失败。");
+			},
+			(index, total, item) =>
+			{
+				StatusDetail = $"重编素体 {index}/{total}：{item.Name}（{item.Reason}）";
+				task?.UpdateStage(StatusDetail);
+				task?.UpdateProgress((double)(index - 1) / total);
+			},
+			cancellation).ConfigureAwait(true);
+
+		if (changedNodes.Count > 0)
+		{
+			foreach (var nodeId in changedNodes)
+				await library.InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(true);
+			await library.RefreshCommittedContentAsync(
+				changedNodes, ModContentChangeKind.Changed, alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
+		}
+
+		foreach (var (item, error) in result.Failed)
+		{
+			skipped.Add(item.ModelKey);
+			LogService.Info($"低污染模式：素体 {item.Name} 重编失败，跳过它的映射：{error}");
+		}
+		if (result.Canceled)
+		{
+			task?.MarkCanceled();
+			notifications.Show(
+				$"已取消：{result.Recompiled.Count} 个素体已重编，其余没动。这次没有写映射；再点「应用」会接着做（已是最新的会跳过）。",
+				NotificationLevel.Warning, TimeSpan.FromSeconds(14), "护甲注册");
+			return null;
+		}
+
+		var summary = $"重编素体：{result.Recompiled.Count} 个完成"
+			+ (result.Failed.Count > 0 ? $"，{result.Failed.Count} 个失败（{result.Failed[0].Item.Name}：{result.Failed[0].Error}），它们的映射本次跳过" : string.Empty)
+			+ $"，{result.UpToDate.Count} 个已是最新、跳过。";
+		LogService.Info("低污染模式：" + summary);
+		if (result.Failed.Count > 0) task?.MarkFailed(summary); else task?.MarkCompleted();
+		notifications.Show(summary, result.Failed.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning, TimeSpan.FromSeconds(16), "护甲注册");
+		return skipped;
+	}
+
 	private async Task ApplyAsync()
 	{
 		// 与 CanExecute 保持一致：冷却中或正在忙时不可点；没有改动也允许重投。
@@ -1654,6 +1769,19 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 					? new RuntimeArmorRegistryMapping(row.Target.ItemId, null, row.Source.ModelKey)
 					: new RuntimeArmorRegistryMapping(row.Target.ItemId, row.Source.ItemId))
 				.ToArray();
+			// 低污染模式（规划 §12.1）：先把这次用到、且还不是最新的素体重编好，再走原来的「先部署后映射」。
+			IReadOnlySet<string> skippedModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			if (Enabled && desired.Any(mapping => mapping.IsModelMapping))
+			{
+				var prepared = await PrepareSourceModelsAsync(desired).ConfigureAwait(true);
+				if (prepared is null)
+				{
+					StatusTitle = "已取消";
+					StatusDetail = "素体重编被取消，没有写映射。";
+					return;
+				}
+				skippedModels = prepared;
+			}
 			if (!IsGameRunning() && Enabled && desired.Any(mapping => mapping.IsModelMapping))
 			{
 				var deployment = await deploymentCoordinator.FlushAsync();
@@ -1668,7 +1796,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				pieceOverrides,
 				targetModes,
 				gameDataDirectory: SettingsService.GetGameDataFolder(),
-				lowPollutionMode: SettingsService.GetLowPollutionMode());
+				lowPollutionMode: SettingsService.GetLowPollutionMode(),
+				skipModelKeys: skippedModels);
 
 			// **真映射那一层的结论必须说出来。** 以前这个结果被直接丢掉，于是
 			// "没有一条映射能应用""备份基准失效无法还原""当前文件被外部替换"这些原因
@@ -1931,24 +2060,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		Process.Start(new ProcessStartInfo(service.RegistryRoot) { UseShellExecute = true });
 	}
 
-	private static bool IsGameRunning()
-	{
-		try
-		{
-			return Process.GetProcessesByName("helldivers2").Any(process =>
-			{
-				using (process) return !process.HasExited;
-			});
-		}
-		catch (InvalidOperationException)
-		{
-			return true;
-		}
-		catch (System.ComponentModel.Win32Exception)
-		{
-			return true;
-		}
-	}
+	private static bool IsGameRunning() => GameProcessProbe.IsGameRunning();
 }
 
 public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelectable, IModListRowActionFilter

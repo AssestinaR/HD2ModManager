@@ -143,7 +143,11 @@ internal static class LowPollutionLayoutFile
 	internal const string FileName = "low-pollution-layout.json";
 	internal const string Schema = "hd2mod.low-pollution-layout/1";
 
-	private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+	private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+	{
+		WriteIndented = true,
+		DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+	};
 
 	private sealed record PartLine(string Part, string SourceUnit);
 
@@ -156,10 +160,11 @@ internal static class LowPollutionLayoutFile
 		string Mode,
 		bool HeadMerge,
 		IReadOnlyList<UnitLine> Units,
-		IReadOnlyList<PassthroughLine> Passthrough);
+		IReadOnlyList<PassthroughLine> Passthrough,
+		string? Fingerprint = null);
 
 	/// <summary>序列化（不含尾部换行）。</summary>
-	internal static string Serialize(SectionalCompressionPlan plan)
+	internal static string Serialize(SectionalCompressionPlan plan, string? fingerprint = null)
 	{
 		ArgumentNullException.ThrowIfNull(plan);
 		var document = new Document(
@@ -171,7 +176,8 @@ internal static class LowPollutionLayoutFile
 				group.UnitId,
 				ArmorStructure.Name(group.IdFrom),
 				[.. group.Members.Select(member => new PartLine(ArmorStructure.Name(member.Part), member.SourceUnitId))]))],
-			[.. plan.Passthrough.Select(member => new PassthroughLine(ArmorStructure.Name(member.Part), member.SourceUnitId))]);
+			[.. plan.Passthrough.Select(member => new PassthroughLine(ArmorStructure.Name(member.Part), member.SourceUnitId))],
+			fingerprint);
 		return JsonSerializer.Serialize(document, Options);
 	}
 

@@ -1915,7 +1915,7 @@ namespace HD2ModManager.ViewModels
             }
         }
 
-        /// <summary>低污染模式：全局开关。切换不会自动重构建（S4 才做自动工作流），所以界面要提示。</summary>
+        /// <summary>低污染模式：全局开关。只存设置，不触发任何流程；下次在护甲映射页点「应用」时生效（规划 §12.1）。</summary>
         public bool LowPollutionMode
         {
             get => SettingsService.GetLowPollutionMode();

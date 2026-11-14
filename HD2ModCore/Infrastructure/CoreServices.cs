@@ -308,7 +308,7 @@ public static class CoreServices
 		=> new GameDataDeploymentLeaseProvider();
 	public static DeploymentCapabilityService CreateDeploymentCapabilityService() => new();
 	public static IProfileApplyService CreateProfileApplyService(StoragePaths paths, IModInformationCenter informationCenter, OptionActivationStore? optionActivations = null)
-		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations, CreateLuaDeploymentService(paths));
+		=> new ProfileApplyService(informationCenter, CreateApplyPlanner(), CreateApplyExecutor(), CreateDeploymentCapabilityService(), paths, optionActivations, CreateLuaDeploymentService(paths), CreateRuntimeArmorRegistryService(paths));
 	public static IProfileDeploymentCoordinator CreateProfileDeploymentCoordinator(StoragePaths paths, Func<string?> gameDataDirectoryProvider, IModInformationCenter informationCenter, IDeploymentDelay? delay = null, TimeSpan? bufferDuration = null, OptionActivationStore? optionActivations = null)
 		=> new ProfileDeploymentCoordinator(
 			CreateModLibraryManager(paths),

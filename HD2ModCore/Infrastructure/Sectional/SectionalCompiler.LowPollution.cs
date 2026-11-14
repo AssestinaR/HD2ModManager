@@ -107,7 +107,7 @@ public static partial class SectionalCompiler
 			// 结构文件只能写在物化**之后**：物化器会重开目录。合并后序号已变，组表不写（读侧永远优先权威侧）。
 			await WriteStructureAsync(modDirectory, documented, components: null, cancellationToken).ConfigureAwait(false);
 			WriteLowPollutionRegistry(modDirectory, payload, plan, warnings);
-			WriteLowPollutionLayout(modDirectory, plan);
+			WriteLowPollutionLayout(modDirectory, plan, LowPollutionFreshness.Fingerprint(payload, disabledSections, headMergeIntoBody));
 
 			info.Add(
 				$"低污染模式：素体压缩成 {plan.Groups.Count} 个 unit"
@@ -174,19 +174,23 @@ public static partial class SectionalCompiler
 		File.WriteAllText(destination, document.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
 	}
 
-	private static void WriteLowPollutionLayout(string modDirectory, SectionalCompressionPlan plan)
+	private static void WriteLowPollutionLayout(string modDirectory, SectionalCompressionPlan plan, string fingerprint)
 	{
 		var destination = Path.Combine(ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), LowPollutionLayoutFile.FileName);
 		VpkPayloadSwap.ClearReadOnlyForWrite(destination);
-		File.WriteAllText(destination, LowPollutionLayoutFile.Serialize(plan));
+		File.WriteAllText(destination, LowPollutionLayoutFile.Serialize(plan, fingerprint));
 	}
 
 	/// <summary>上一次压缩留在生效层里的描述文件：不再压缩（或换了目标）时必须删掉，否则 S3 会按过期布局写映射。</summary>
 	private static void DeleteStaleLowPollutionLayout(string modDirectory)
 	{
-		var path = Path.Combine(ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), LowPollutionLayoutFile.FileName);
-		if (!File.Exists(path)) return;
-		VpkPayloadSwap.ClearReadOnlyForWrite(path);
-		File.Delete(path);
+		var overwrite = ModNodePayloadLayout.GetOverwriteDirectory(modDirectory);
+		foreach (var name in new[] { LowPollutionLayoutFile.FileName, LowPollutionFreshness.UnsupportedMarkerFileName })
+		{
+			var path = Path.Combine(overwrite, name);
+			if (!File.Exists(path)) continue;
+			VpkPayloadSwap.ClearReadOnlyForWrite(path);
+			File.Delete(path);
+		}
 	}
 }

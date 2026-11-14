@@ -467,7 +467,10 @@ public sealed class RuntimeArmorRegistryService
 		IReadOnlyList<RuntimeArmorRegistryTargetMode> targetModes,
 		CancellationToken cancellationToken = default,
 		string? gameDataDirectory = null,
-		bool lowPollutionMode = false)
+		bool lowPollutionMode = false,
+		// 本次不应用的素体（重编失败 / 不能自动重编 / 游戏在运行没法编译）：它们的映射仍留在 workspace（用户的意图不丢），
+		// 但不进协议、不编译成 wardrobe.links，避免退回全量映射造成污染。
+		IReadOnlySet<string>? skipModelKeys = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(expectedFingerprint);
 		ArgumentNullException.ThrowIfNull(mappings);
@@ -507,6 +510,15 @@ public sealed class RuntimeArmorRegistryService
 		{
 			deployedUnits = await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
 			compiled = RuntimeArmorResourceFilter.Compile(desired, deployedUnits);
+		}
+		if (skipModelKeys is { Count: > 0 })
+		{
+			compiled = compiled with
+			{
+				Mappings = compiled.Mappings
+					.Where(mapping => !(mapping.IsModelMapping && skipModelKeys.Contains(mapping.ModelKey!)))
+					.ToArray(),
+			};
 		}
 		var text = SerializeProtocol(compiled);
 		if (Encoding.UTF8.GetByteCount(text) > MaximumProtocolBytes)

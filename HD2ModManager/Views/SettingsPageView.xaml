@@ -53,7 +53,7 @@
                               IsChecked="{Binding LowPollutionMode, Mode=TwoWay}"
                               ToolTip="把模型 Mod 的素体压缩成 2~3 个 unit（头 / 躯干+胯+腿 / 手臂；开了头身合并则头并进躯干），减少对其它护甲的污染与显存占用。"/>
                     <TextBlock Text="把模型 Mod 的素体压缩成少量 unit：头、躯干（含胯和腿）、手臂各一个；开了头身合并则头并进躯干，共两个。只作用于编译到「自己的素体」的 VPK 模型 Mod。" Style="{StaticResource AppSupportingText}" Margin="0,5,0,0" TextWrapping="Wrap"/>
-                    <TextBlock Text="切换后需对受影响的 Mod 点「一键重构建」才生效（自动重构建以后再做）。" Style="{StaticResource AppSupportingText}" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="只保存设置，切换时不会做任何事。下次在护甲映射页点「应用」时生效：只会重编这次映射用到的素体，已经是最新的会跳过。" Style="{StaticResource AppSupportingText}" Margin="0,3,0,0" TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
                         <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
                         <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">

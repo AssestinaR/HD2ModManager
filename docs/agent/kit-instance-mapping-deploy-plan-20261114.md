@@ -522,3 +522,82 @@ S3 的规格是 §8.4 第 4 点那张表。本节写「怎么落地」，**标�
 不可的 30 套：11 套没有独有躯干（如 FS-05 的某些记录）、17 套换色孪生（B-01 / B-16 / B-22 / TR-40、TR-9 / DP-40、CM-09 / AF-02、AF-91 等）、2 套手臂放不下（CM-09，Q1）。DS-42：4 条映射行（两种身形各一个躯干承载件和手臂承载件），隐藏集 18～19；CE-67：2 条映射行，隐藏集 21～22。每一套可映射的承载件都满足：属于目标自己的部件、拥有者都在同名组内、不在任何隐藏集里。
 
 **未做 / 未验证**：映射页行内标注没有在真窗口里看过（只验证了编译和视图模型逻辑）；`resource_name` 的行为、2 槽下 0.3 米半径是否覆盖原版头盔、Hider 首次投放时序，都要实机；S4 的自动工作流、映射页三档筛选 / 置灰不可目标不在 S3 里。
+
+## 12. S4a 实现方案：低污染模式自动工作流 + 映射优先于详情页 patch（2026-11-14）
+
+范围只有三件事：①低污染素体的准备放进映射页「应用」（开关本身不触发任何流程）；②映射页「应用」后不再弹「再部署一次」；③部署时跳过已被映射覆盖的详情页 patch。**不改**详情页专属 UI、映射页筛选，**不删** patch 专属输出（S4b）。
+
+### 12.1 低污染模式的素体准备：触发点在映射页「应用」（2026-11-14 返工，替换此前「开关切换后自动跑」的方案）
+
+**用户原话：**「点切换我希望不要去做这么大的事情，只是一个开关，你现在会直接跑所有护甲，这不对。真正要跑，应该放在映射的流程里。应用映射的时候，如果启用了映射，那就要读是否开了防污染，然后判断哪些护甲跑过防污染了，哪些没有（避免等太久，本来也可以跳过已经弄过的了）」
+
+**开关只存设置，不触发任何流程。** 设置页 `LowPollutionMode` setter 只写设置；提示文字改成「只保存设置，切换时不会做任何事。下次在护甲映射页点「应用」时生效」。上一版的 `RequestLowPollutionWorkflow` 事件、`LowPollutionWorkflow` 编排、Shell 里的整套自动流程**全部删除**。
+
+**映射页「应用」在映射已启用、且有来源是素体（`SourceItemId` 为空、有 `ModelKey`）的映射时，按顺序：**
+
+| 步 | 做什么 |
+|---|---|
+| a | 本次映射用到的素体 key = 这些映射的 `ModelKey`（不是全部 VPK Mod；`LowPollutionFreshness.SourceModelKeys`）。**只有映射已启用、且至少有一条映射指向它的素体才进判断；只列在映射页左边、没有任何目标的素体一律不编译**（用户：「如果关联了，才跑，如果只是存在左边，不要跑（毕竟啥用户护甲也没关联）」，测试 `Prep_OnlyModelsLinkedByAnEnabledMapping_AreEverConsidered` 锁住）。用 `CustomModelCatalog` 找到持有它的 Mod 目录 |
+| b | 逐个判断（`LowPollutionFreshness.Assess`，只读生效层，不读游戏数据）：开关开 ⇒ 生效层没有布局文件 / 布局读不出来 / 布局没有指纹 / 头身合并和 wardrobe 不一致 / 指纹不一致 ⇒ 重编；开关关 ⇒ 生效层还有布局文件（或不可压缩标记）⇒ 重编回普通产物；其余跳过 |
+| c | 只对要重编的编译：`ModCompileService.CompileAsync(目标 = 自己的素体 archive id，开关取设置)`，即详情页「切换」那条编译；不走「用来源重构建」，不做一键重构。编完让库里的内容事实失效并刷新 |
+| d | 有重编的 ⇒ 原有的「先部署」（应用本来就在游戏没运行时、有模型映射时先 `FlushAsync` 一次）正好是「先部署后映射」；然后写映射；最后沿用原有的那次部署（Hider 投放）。**没有需要重编的 ⇒ 与以前的「应用」完全一样，不多部署** |
+| e | 进度：后台任务（消息中心，可取消）+ 映射页状态栏；某个素体编译失败 ⇒ 只跳过它对应的映射目标并说明原因，不让整次应用失败；游戏在运行 ⇒ 不编译不部署，需要重编的素体的映射本次跳过，提示退出游戏后再点「应用」；取消 ⇒ 整次应用中止（没写映射），再点会接着做（已是最新的跳过） |
+
+**「已经是最新的压缩产物」的判据 = 布局文件里的指纹。** `Overwrite/low-pollution-layout.json` 新增 `fingerprint` 字段：`SHA256(版本号 + 头身合并 + 生效的关闭 section（按 unit 与序号排序）+ 来源 sections.json 的哈希)`，编译压缩素体时写入。检查时用同一个函数、同样的输入（`wardrobe.json` 的关闭 section 与 `headMergeIntoBody`、基底目录的 `sections.json`）重算：来源重转换、section 勾选改了、头身合并变了，指纹都会变，下次应用就会重编；没有指纹的旧布局（S2/S3 写的）会重编一次。不写指纹的话其它字段（`mode`、`units`）不变，旧文件字节不变。
+
+**不可压缩的素体**（分体 / 同部位多个 unit / 认不出部位）：编译时留一个 `Overwrite/low-pollution-unsupported.json`（同样的指纹 + 原因）。同样条件下判为「已处理」，不会每次应用都重编；来源或勾选变了会重新试一次；关开关时标记也算压缩痕迹，会被清掉。这种素体照旧走普通映射，并有编译警告说明原因。
+
+**本次跳过的映射目标怎么处理（`ApplyAsync` 新参数 `skipModelKeys`）：** 映射仍留在 workspace（用户的意图不丢），但不进写出的协议、不编译成 `wardrobe.links`、不生成 Hider 规则。这样既不会退回全量映射造成污染，也不会让「映射优先」把对应 Mod 的 patch 跳过而护甲没有模型。
+
+**目标不是自己素体的 Mod**（`wardrobe.json` 的目标是游戏护甲）：需要重编但不替用户改意图 ⇒ 标「不能自动重编」，跳过它的映射并提示「请先在详情页切回自己的素体」。
+
+**取舍：** 编译只在应用时做，开关本身没有动静；代价是切开关之后第一次应用会等重编（只重编用到的素体，之后再应用直接跳过）。
+
+### 12.2 映射页「应用」后自动补部署
+
+读代码发现：`ArmorRegistryPageViewModel.ApplyAsync` 在 `service.ApplyAsync` **之后**本来就有一次 `deploymentCoordinator.FlushAsync()`（游戏没运行时），而部署门 `kitRuleCount` 已经数了映射规则文件，所以 Hider 在这一次部署里就投放了——「首次启用需要再部署一次」的话已经不对。改法：
+
+- 游戏没运行：不再说那句话，改成「Hider 规则 N 条，已随本次部署投放」；
+- 游戏在运行（跳过了部署）：说「游戏正在运行，Hider 规则 N 条要退出游戏后再点一次应用 / 立即重新部署才会投放」；
+- 部署失败沿用现有错误路径。
+- 不另加第二次部署。
+
+### 12.3 映射优先于详情页 patch（§8.3 A）
+
+**patch 和目标护甲在部署里的对应关系（读代码结论）：**
+
+- 部署只认「文件」：`PatchFileIndexBuilder` 用 `ModDeployableFiles.Resolve` 给出每个 Mod 会进游戏的文件（管理器物化过的 `Overwrite/` 整层，或基底层），之后 `LuaDeploymentService.BuildAsync` / 计划器按 patch 组（`ArchiveHex16 + SourcePatchIndex`）部署。**没有任何一处把 patch 和「目标护甲」关联起来。**
+- 关联只存在两处：`wardrobe.json`（非专属：`TargetArmorArchiveId`/`TargetArmorName`，一个目标；专属：`ExclusiveTargets` 的 item_id 列表）和 patch 里 unit 资源的 ID（换甲时被改成目标护甲的 unit ID）。
+- 非专属换甲产物（`Overwrite/` 的 unit patch + 材质 patch）整层都是「这个 Mod 对目标护甲的替换」，没有别的内容；`Overwrite/` 里一个 patch 同时含目标的全部 unit（含与别的护甲共用的），所以「只跳过针对某套护甲的那部分」在非专属下就是**跳过这个 Mod 的整层 patch**。
+- 专属多选产物：一份 `Overwrite/` 同时含多个目标的承载件，Hider 规则在 `kit-instance.rules`（按节点编译）。
+
+**判定（Mod 的声明目标全被映射时才跳过）：**
+
+1. 映射集合 = **已应用的协议**（`armor-registry.protocol`，解析后 `Enabled` 为真时的 `Mappings.TargetItemId`），不是映射页里未应用的编辑——没应用的映射不会改游戏，patch 不能先被跳过。
+2. Mod 的声明目标：专属 ⇒ `wardrobe.json` 的 `ExclusiveTargets` item_id；非专属且 `TargetArmorArchiveId` 是游戏护甲 ⇒ 护甲索引（`ArmorAuthorityIndexReader`）里 `ArchiveId` 相同的全部记录的 item_id；没有目标 / 素体目标 / 读不出索引 ⇒ 空，不跳过。
+3. 声明目标 ⊆ 映射集合（且非空）⇒ **跳过这个 Mod 在本次部署里的全部 patch**：做法是 `ProfileApplyService` 在 `ResolveEffectiveProfile` 之后、建文件索引之前，把这些节点从有效配置里去掉。这样文件索引、Lua 部署、计划器、**按实例隐藏的规则编译**（专属 Mod 的 `kit-instance.rules` 按启用节点编译）都自然不再看见它；不会出现「patch 没部署、Hider 规则还在藏部件」导致缺身体。
+4. 每个被跳过的节点产生一条 `Info` 级 `CoreIssue`（`ArmorMappingCoversPatch`，「『Mod 名』针对 X 的 patch 已被护甲映射覆盖，本次部署跳过」），GUI 在部署完成时把它们写进应用日志；CLI 的计划输出同样看得到。
+5. 判定逻辑放进 Core 的纯函数 `ArmorMappingPatchCoverage`（输入：节点声明目标、映射集合；输出：跳过 / 部分覆盖 / 不覆盖），部署和详情页共用同一个函数，不各写一份。
+
+**详情页**：VPK 卡「目标护甲」行下面加一行「已被护甲映射覆盖：X（本 Mod 针对它的 patch 部署时被跳过）」，同样的判定（读协议 + 护甲索引）。只加这一行提示，不碰专属控件。
+
+**不变量**：没有映射 / 映射未启用 / 协议读不出来 / 护甲索引没建 ⇒ 一个节点都不会被跳过，部署字节与现在完全一致；测试锁住。
+
+### 12.4 待用户拍板（拆不开的情况）
+
+**一个 patch 同时覆盖多套护甲、而其中只有一部分被映射**（只可能出现在专属多选：`ExclusiveTargets` ≥ 2 个，声明目标里有的被映射、有的没有）。patch 文件拆不开（要重写 patch 去掉部分承载件，还要同步改 Hider 规则，S4b 就会删掉这条输出路线）。推荐：**不跳过，整份照常部署**，部署日志记一条 Warning（「目标 A 已被映射覆盖，但本 Mod 的 patch 同时覆盖未映射的 B，无法拆分，未跳过」），详情页那一行也写「部分被映射覆盖，未跳过」。理由：跳整份会让没映射的那套护甲丢模型，比多占一份数据严重得多。
+
+### 12.5 测试
+
+- `ArmorMappingPatchCoverage`：非专属单目标被 / 没被映射；档案对应多记录；专属多目标（全 / 部分 / 无）；素体目标；索引缺失；映射未启用。
+- `LowPollutionPrepTests`：开 + 没压缩过 ⇒ 重编；指纹相同 ⇒ 跳过；`sections.json` / 关闭的 section / 头身合并变了 ⇒ 重编；布局没有指纹或读不出来 ⇒ 重编；关开关 + 有布局 ⇒ 重编、普通产物 ⇒ 跳过；不可压缩标记同指纹不重复编、来源变了重试、关开关时恢复；目标是游戏护甲 ⇒ 不能自动重编。
+- `LowPollutionRecompiler`：只编需要的、一个失败不影响下一个、取消即停、无事可做不编译。
+- `Apply_SkippedModelKeys_*`：跳过的素体映射留在 workspace，但不进协议、不写 links、不写规则、不触发「映射优先」。
+- 真数据（环境变量见 §11.7；雫 3730700338）：编完的素体 `Assess` 为「已是最新」，改头身合并变「要重编」。
+- **没有自动化测试的部分：** 设置页开关「不触发任何事」（接线已删除，设置页 VM 在没有测试工程的 `HD2ModManager` 里）、映射页应用时的进度 / 取消 / 通知（UI），靠实机。
+
+### 12.6 实现状态（2026-11-14，未提交，等用户实机）
+
+- **代码**：`ArmorMappingPatchCoverage.cs`、`ProfileApplyService`（映射优先，未变）；`LowPollutionFreshness.cs`（指纹、判断、不可压缩标记）、`LowPollutionRecompiler.cs`（逐个重编编排）、布局文件加 `fingerprint`、`SectionalCompiler` 写指纹 / 写不可压缩标记 / 清理；`RuntimeArmorRegistryService.ApplyAsync(skipModelKeys)`；映射页 `PrepareSourceModelsAsync`（后台任务 + 取消 + 状态栏）；设置页开关只存设置。已删除：`LowPollutionWorkflow`、`ReapplySavedAsync`、`ProfileService.LowPollutionWorkflowRequired`、Shell 里的自动流程。保留：`GameProcessProbe`、`CommitBulkRebuildContentAsync`（导入后重构建 / 一键重构共用）。
+- **部分覆盖（§12.4）**：用户已同意「不跳过，整份部署」，说明文字写明哪几套被映射、游戏里 patch 与映射的模型可能混在一起、建议去掉专属多选。
+- **不在范围**：CLI 的 `deploy plan` 不走 `ProfileApplyService`，不显示「被映射覆盖」。
