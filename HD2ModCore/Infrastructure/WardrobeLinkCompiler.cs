@@ -129,6 +129,7 @@ public static class WardrobeLinkCompiler
 					coveredParts.Add(part);
 			}
 
+			var resolved = new List<(string OwnHex, string? DonorHex)>();
 			foreach (var piece in targetKit.Pieces)
 			{
 				if (!IsUnit(piece)) continue;
@@ -142,15 +143,39 @@ public static class WardrobeLinkCompiler
 				{
 					donor = ResolvePartFallback(index, body, piece.Slot);
 				}
+				resolved.Add((Hex(piece.UnitAssetKey.FileId), donor));
+			}
+
+			// 跨层借用冲突：当层 i 借用同套中另一层 j 自身的 unit，而 j 本身又因缺对应层被判隐藏时，
+			// 若仍按 i -> own_j 且 j -> 0 发射，会导致 j 的 unit 被隐身或错层覆盖；反转为 j 自显示、i 隐藏。
+			for (var i = 0; i < resolved.Count; i++)
+			{
+				var item = resolved[i];
+				if (item.DonorHex is null || string.Equals(item.OwnHex, item.DonorHex, StringComparison.OrdinalIgnoreCase))
+					continue;
+				for (var j = 0; j < resolved.Count; j++)
+				{
+					if (i == j) continue;
+					var other = resolved[j];
+					if (other.DonorHex is null && string.Equals(other.OwnHex, item.DonorHex, StringComparison.OrdinalIgnoreCase))
+					{
+						resolved[j] = (other.OwnHex, other.OwnHex);
+						resolved[i] = (item.OwnHex, null);
+						break;
+					}
+				}
+			}
+
+			foreach (var item in resolved)
+			{
 				// 来源缺这个槽位 ⇒ 隐藏。不能让目标件原样显示：那会留下"没被替换"的残留件。
-				var donorHex = donor ?? HiddenUnit;
-				var own = Hex(piece.UnitAssetKey.FileId);
+				var donorHex = item.DonorHex ?? HiddenUnit;
 				// 自链接也要发：键集必须只由"目标护甲有哪些件"决定，与来源无关。否则换源时
 				// 键集会抖动（这套外观里恰好同键的件会消失），运行时那边就成了"删除"——
 				// 而删除的映射按契约不释放，会在引擎覆盖表里不断累积，最终撞上表容量。
-				var line = own + "," + donorHex;
+				var line = item.OwnHex + "," + donorHex;
 				if (!seen.Add(line)) continue;
-				if (donor is null) hidden++;
+				if (item.DonorHex is null) hidden++;
 				lines.Add("link=" + line);
 			}
 		}

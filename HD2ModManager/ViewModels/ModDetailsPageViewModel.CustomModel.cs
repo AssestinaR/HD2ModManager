@@ -68,7 +68,6 @@ public partial class ModDetailsPageViewModel
 				workspaceLocked = true;
 				var name = operation.Name;
 				var output = operation.OutputDirectory;
-				var gameData = SettingsService.GetGameDataFolder();
 
 				// ① 来源（已按 legacy 过滤好的整条链）。
 				task?.UpdateStage("正在收集来源条目");
@@ -82,10 +81,12 @@ public partial class ModDetailsPageViewModel
 				// 只读主 Mod 的 patch 会算不出它的材质闭包。
 				task?.UpdateStage("正在整理护甲与头盔范围");
 				var patchPaths = new List<string>();
+				var allSourceCatalogEntries = new List<EquipmentUnitCatalogEntry>();
 				foreach (var node in sourceNodes)
 				{
 					var facts = await ReadFactsAsync(node, token);
 					patchPaths.AddRange(facts.SourcePatchTocPaths);
+					allSourceCatalogEntries.AddRange(facts.SourceCandidates);
 				}
 
 				var intentUnits = operation.SelectedSources
@@ -95,11 +96,23 @@ public partial class ModDetailsPageViewModel
 					.Distinct()
 					.ToArray();
 
+				var selectedAllUnits = operation.SelectedSources
+					.SelectMany(entry => entry.Parts)
+					.Select(part => new AdaptationAssetKey(part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId))
+					.ToHashSet();
+
+				var excludedUnits = allSourceCatalogEntries
+					.SelectMany(entry => entry.Parts)
+					.Select(part => new AdaptationAssetKey(part.UnitAssetKey.TypeId, part.UnitAssetKey.FileId))
+					.Where(key => !selectedAllUnits.Contains(key))
+					.ToHashSet();
+
 				// 装备目录只列 kit 槽位上的 unit（实测某套护甲只有 9 个），而系列里的装饰件
 				// （翅膀 / 鞋子 / 上衣…）是同一个 patch 里另外的 unit —— 它们是这套护甲的一部分，
 				// 只按意图集会全部丢掉（2026-11-10 线上：11 个来源只剩 9 个材质组 + 1 个 unit 组）。
+				// 多套合一 patch 里，仅属于未选中护甲/头盔档案的 unit 不允许被同包扩编带进来。
 				var unitKeys = await SectionalWhitelistBuilder
-					.ExpandIntentUnitsAsync(intentUnits, patchPaths, token)
+					.ExpandIntentUnitsAsync(intentUnits, patchPaths, token, excludedUnits)
 					.ConfigureAwait(true);
 
 				var whitelist = await SectionalWhitelistBuilder
@@ -149,7 +162,7 @@ public partial class ModDetailsPageViewModel
 				var converted = await Legacy2SectionalConverter.RunAsync(
 					importedNode.Id.Value.ToString("N"),
 					importedDirectory,
-					new VpkHostContext(gameData, SettingsService.CreateStoragePaths()),
+					SettingsService.CreateVpkHostContext(),
 					stage => System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => task?.UpdateStage(stage)),
 					token).ConfigureAwait(true);
 				if (!converted.Ok)

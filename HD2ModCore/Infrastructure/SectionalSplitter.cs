@@ -82,6 +82,32 @@ public static class SectionalSplitter
 	}
 
 	/// <summary>
+	/// 从自定义素体的 <c>modelKey</c> 推导出 12 位小写 hex 前缀，用来分配稳定的私有 unit id
+	/// （格式 <c>&lt;12位hex&gt;&lt;4位序号&gt;</c>，共 16 位 hex），避开原版 unit id 并消除跨套污染。
+	/// </summary>
+	public static string DeriveUnitIdPrefix(string modelKey)
+	{
+		ArgumentException.ThrowIfNullOrWhiteSpace(modelKey);
+		var hash = System.Security.Cryptography.SHA256.HashData(
+			System.Text.Encoding.UTF8.GetBytes("hd2mod.sectional.unit:" + modelKey.Trim()));
+		return Convert.ToHexString(hash[..6]).ToLowerInvariant();
+	}
+
+	private static string? NormalizeUnitIdPrefix(string? outputUnitIdPrefix)
+	{
+		if (string.IsNullOrWhiteSpace(outputUnitIdPrefix))
+			return null;
+		var trimmed = outputUnitIdPrefix.Trim().ToLowerInvariant();
+		if (trimmed.Length != 12
+			|| !ulong.TryParse(trimmed + "0001", NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _))
+		{
+			throw new ArgumentException($"outputUnitIdPrefix 必须是 12 位十六进制字符串，实际收到：{outputUnitIdPrefix}", nameof(outputUnitIdPrefix));
+		}
+
+		return trimmed;
+	}
+
+	/// <summary>
 	/// 只读预演：读源 → 跑规划器 → 把结论说出来。<b>不写任何文件。</b>
 	/// </summary>
 	/// <param name="sourcePatchOrDirectory">
@@ -94,7 +120,11 @@ public static class SectionalSplitter
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
 		var sources = await ReadSourcesAsync(sourcePatchOrDirectory, cancellationToken).ConfigureAwait(false);
-		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit => Describe(unit, unitIntents: null))]);
+		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit =>
+		{
+			var fileId = unit.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
+			return Describe(unit, unitIntents: null, sources.Copies.GetValueOrDefault(fileId));
+		})]);
 		var warnings = new List<string>(plan.Warnings);
 		foreach (var skipped in sources.Skipped)
 			warnings.Add($"{skipped}");
@@ -127,24 +157,34 @@ public static class SectionalSplitter
 	/// 唯一还知道答案的是**建这份子集的人**（它的选择表里每个 key 带着来源 patch），所以由它把名字传进来。
 	/// </para>
 	/// </param>
+	/// <param name="outputUnitIdPrefix">
+	/// 可选的 12 位十六进制前缀（常由 <see cref="DeriveUnitIdPrefix"/> 算出）。
+	/// 传入时每个输出目标写到 <c>&lt;prefix&gt;&lt;4位序号&gt;</c> 私有 unit id 下，原版 unit id 不再进入产物。
+	/// </param>
 	public static async ValueTask<SectionalSplitResult> ExecuteAsync(
 		string sourcePatchOrDirectory,
 		string gameDataDirectory,
 		string outputDirectory,
 		CancellationToken cancellationToken = default,
 		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents = null,
-		IReadOnlyDictionary<string, string>? unitSourceNames = null)
+		IReadOnlyDictionary<string, string>? unitSourceNames = null,
+		string? outputUnitIdPrefix = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+		var normalizedPrefix = NormalizeUnitIdPrefix(outputUnitIdPrefix);
 
 		var warnings = new List<string>();
 		var sources = await ReadSourcesAsync(sourcePatchOrDirectory, cancellationToken).ConfigureAwait(false);
 		foreach (var skipped in sources.Skipped)
 			warnings.Add(skipped);
 
-		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit => Describe(unit, unitIntents))]);
+		var plan = SectionalSplitPlanner.Plan([.. sources.Units.Values.Select(unit =>
+		{
+			var fileId = unit.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
+			return Describe(unit, unitIntents, sources.Copies.GetValueOrDefault(fileId));
+		})]);
 		warnings.AddRange(plan.Warnings);
 		if (plan.Targets.Count == 0)
 			return new SectionalSplitResult(string.Empty, plan, SectionGroupDocument.Empty,
@@ -163,11 +203,33 @@ public static class SectionalSplitter
 		var session = new CanonicalPatchSession();
 		var originsByTarget = new Dictionary<string, IReadOnlyList<CanonicalAppendedSection>>(StringComparer.Ordinal);
 		var donorIds = new HashSet<string>(StringComparer.Ordinal);
+		var hostToOutput = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		var ordinal = 0;
 		foreach (var target in plan.Targets)
 		{
 			foreach (var donor in target.DonorUnitIds)
 				donorIds.Add(donor);
+			hostToOutput[target.HostUnitId] = normalizedPrefix is not null
+				? $"{normalizedPrefix}{++ordinal:x4}"
+				: target.HostUnitId;
 		}
+
+		var effectivePlan = normalizedPrefix is null
+			? plan
+			: plan with
+			{
+				Targets = plan.Targets
+					.Select(target => target with { HostUnitId = hostToOutput[target.HostUnitId] })
+					.ToArray(),
+				Groups = plan.Groups
+					.Select(group => group with
+					{
+						MemberUnitIds = group.MemberUnitIds
+							.Select(id => !donorIds.Contains(id) && hostToOutput.TryGetValue(id, out var mapped) ? mapped : id)
+							.ToArray(),
+					})
+					.ToArray(),
+			};
 
 		// 段来源：谁贡献了哪一段。名字由调用方给（unit id → 来源条目名），它才知道每个 unit 来自哪份来源。
 		var ownSourceByTarget = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -175,13 +237,22 @@ public static class SectionalSplitter
 		var sourceNameOf = BuildSourceNameResolver(unitSourceNames);
 		var presentSources = new List<string>();
 
-		foreach (var source in sources.Units.Keys)
-			AddUnique(presentSources, sourceNameOf(source));
+		foreach (var target in plan.Targets)
+		{
+			AddUnique(presentSources, sourceNameOf(target.HostUnitId));
+			foreach (var donorId in target.DonorUnitIds)
+				AddUnique(presentSources, sourceNameOf(donorId));
+		}
 
 		foreach (var target in plan.Targets)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
 			var host = sources.Units[target.HostUnitId];
+			var outputUnitId = hostToOutput[target.HostUnitId];
+			var outputAssetKey = normalizedPrefix is not null
+				? new AdaptationAssetKey(PatchUnitMeshReader.UnitTypeId, ulong.Parse(outputUnitId, NumberStyles.HexNumber, CultureInfo.InvariantCulture))
+				: host.Entry.AssetKey;
+
 			var anchor = UnitLodFamilySource.ResolveAnchor(host.Model);
 			if (anchor is null)
 			{
@@ -189,7 +260,7 @@ public static class SectionalSplitter
 				continue;
 			}
 
-			ownSourceByTarget[target.HostUnitId] = sourceNameOf(target.HostUnitId);
+			ownSourceByTarget[outputUnitId] = sourceNameOf(target.HostUnitId);
 
 			// **所有来源、所有层、所有拷贝全部并进这个 unit**（不是"后者赢"）。
 			// 系列里装饰子级各自带同一 unit 的另一份几何，缺一份就是丢内容。
@@ -244,7 +315,7 @@ public static class SectionalSplitter
 				}
 			}
 
-			inputSourcesByTarget[target.HostUnitId] = inputSourcesByMesh;
+			inputSourcesByTarget[outputUnitId] = inputSourcesByMesh;
 
 			if (inputsByMesh.Count == 0 && donors.Count != 0)
 			{
@@ -255,8 +326,8 @@ public static class SectionalSplitter
 			if (inputsByMesh.Count == 0)
 			{
 				// 没有 donor：这个槽本来就只有一个来源，产物就是它自己，不需要重建。
-				AddTargetOutputFromSource(session, host);
-				originsByTarget[target.HostUnitId] = [];
+				AddTargetOutputFromSource(session, host, outputAssetKey);
+				originsByTarget[outputUnitId] = [];
 				continue;
 			}
 
@@ -270,27 +341,25 @@ public static class SectionalSplitter
 			{
 				foreach (var diagnostic in appended.Diagnostics)
 					warnings.Add($"{target.Slot}/{target.BodyType}：{diagnostic.Code} {diagnostic.Message}");
-				AddTargetOutputFromSource(session, host);
-				originsByTarget[target.HostUnitId] = [];
+				AddTargetOutputFromSource(session, host, outputAssetKey);
+				originsByTarget[outputUnitId] = [];
 				continue;
 			}
 
 			if (appended.Origins.Count == 0)
 				warnings.Add($"{target.Slot}/{target.BodyType}：段来源账缺失，这个槽的变体组只能按整块 unit 表达。");
-			originsByTarget[target.HostUnitId] = appended.Origins;
-			AddTargetOutput(session, host, appended.Edit);
+			originsByTarget[outputUnitId] = appended.Origins;
+			AddTargetOutput(session, host, appended.Edit, outputAssetKey);
 		}
 
 		// 其余条目（材质、贴图、以及没被当成宿主的 unit）原样带过去；
-		// **donor 必须排除**——它们的几何已经并进宿主，再带一份就是重复。
+		// **donor 与已映射或丢弃的源 unit 必须排除**——几何已经进目标或被丢弃，再带原样拷贝就是污染/重复。
 		foreach (var entry in sources.Entries)
 		{
 			if (entry.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId)
 			{
 				var key = entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
-				if (donorIds.Contains(key) || sources.Units.ContainsKey(key) && !originsByTarget.ContainsKey(key))
-					continue;
-				if (originsByTarget.ContainsKey(key))
+				if (donorIds.Contains(key) || sources.Units.ContainsKey(key) || originsByTarget.ContainsKey(key))
 					continue;
 			}
 
@@ -302,7 +371,7 @@ public static class SectionalSplitter
 		{
 			foreach (var diagnostic in finalized.Diagnostics)
 				warnings.Add($"依赖闭包不完整：{diagnostic.Code} {diagnostic.Message}");
-			return new SectionalSplitResult(string.Empty, plan, SectionGroupDocument.Empty,
+			return new SectionalSplitResult(string.Empty, effectivePlan, SectionGroupDocument.Empty,
 				EmptySections(sources.HeaderTemplatePatchPath), warnings);
 		}
 
@@ -340,18 +409,18 @@ public static class SectionalSplitter
 		var sections = await WardrobeSectionMapFile.BuildAsync(patchPath, cancellationToken).ConfigureAwait(false);
 		// 身份必须**由计划来**：来源 unit 自己不带 customization（实测整批都是空串），
 		// 只读字节的话组件树、换甲编译、rekey 三处都会把它们当成"认不出部位"。
-		var documented = WardrobeSectionMapFile.ApplyUnitIdentities(sections.Document, BuildUnitIdentities(plan));
+		var documented = WardrobeSectionMapFile.ApplyUnitIdentities(sections.Document, BuildUnitIdentities(effectivePlan));
 		// 有来源名 ⇒ 按「一个来源一个组」建组表：那才是用户认得的部件名（大衣/尾巴/丝袜…）。
 		// 没有来源名（CLI 直接拆单个模型）⇒ 退回按槽位分组，那条路上没有"部件来源"可言。
 		var groups = unitSourceNames is { Count: > 0 }
 			? BuildSourceGroups(
-				plan,
+				effectivePlan,
 				originsByTarget,
 				documented,
 				new SectionalSourceProvenance(ownSourceByTarget, inputSourcesByTarget),
 				presentSources,
 				warnings)
-			: BuildGroups(plan, originsByTarget, documented);
+			: BuildGroups(effectivePlan, originsByTarget, documented);
 
 		// 两份 sidecar 必须跟着产物一起落盘，否则产物"能用但不可编辑"：
 		// sections.json 是组件树与烘焙的唯一偏移来源，components.json 是组表。
@@ -367,7 +436,7 @@ public static class SectionalSplitter
 		// 输出到别的目录时源目录不该被碰。
 		var consumed = RemoveConsumedPatches(sources.ConsumedPatches, outputDirectory, Path.GetFullPath(patchPath), warnings);
 
-		return new SectionalSplitResult(patchPath, plan, groups, documented, warnings) { RemovedSourcePatchCount = consumed };
+		return new SectionalSplitResult(patchPath, effectivePlan, groups, documented, warnings) { RemovedSourcePatchCount = consumed };
 	}
 
 	/// <summary>
@@ -746,10 +815,10 @@ public static class SectionalSplitter
 			.FirstOrDefault(-1);
 	}
 
-	private static void AddTargetOutput(CanonicalPatchSession session, PatchUnitMesh host, PatchUnitMeshEditResult edit)
+	private static void AddTargetOutput(CanonicalPatchSession session, PatchUnitMesh host, PatchUnitMeshEditResult edit, AdaptationAssetKey? outputAssetKey = null)
 	{
 		var entry = new CanonicalPatchSessionEntry(
-			host.Entry.AssetKey,
+			outputAssetKey ?? host.Entry.AssetKey,
 			CanonicalPatchEntryOwnership.TargetOutput,
 			edit.TocData,
 			edit.GpuResourceData,
@@ -775,11 +844,11 @@ public static class SectionalSplitter
 	/// 所以这种槽的产物与源逐字节相同 —— 这也是个可断言的性质。
 	/// </para>
 	/// </summary>
-	private static void AddTargetOutputFromSource(CanonicalPatchSession session, PatchUnitMesh host)
+	private static void AddTargetOutputFromSource(CanonicalPatchSession session, PatchUnitMesh host, AdaptationAssetKey? outputAssetKey = null)
 	{
 		var entry = host.Entry;
 		session.AddEntry(new CanonicalPatchSessionEntry(
-			entry.AssetKey,
+			outputAssetKey ?? entry.AssetKey,
 			CanonicalPatchEntryOwnership.TargetOutput,
 			entry.TocDataSize == 0 ? Array.Empty<byte>() : null,
 			entry.GpuResourceSize == 0 ? Array.Empty<byte>() : null,
@@ -868,18 +937,35 @@ public static class SectionalSplitter
 	/// </summary>
 	private static SectionalSplitSource Describe(
 		PatchUnitMesh unit,
-		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents)
+		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents,
+		IReadOnlyList<PatchUnitMesh>? unitCopies = null)
 	{
 		var semantic = unit.Model.Meshes.FirstOrDefault()?.SemanticInfo;
 		var fileId = unit.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture);
-		var sections = unit.Model.Meshes.Sum(mesh => mesh.Sections.Count);
 		var name = semantic?.Name ?? string.Empty;
+		var facts = UnitGeometryFactsBuilder.Analyze(unit.Model);
+		int sections;
+		string? geometrySignature;
+		if (!facts.HasRenderableVisibleGeometry)
+		{
+			sections = 0;
+			geometrySignature = null;
+		}
+		else
+		{
+			var bestLod0 = UnitGeometryFactsBuilder.SelectBestRenderableLod0(unit.Model);
+			var lod0NonEmpty = bestLod0?.Sections.Count(section => section.Triangles.Count > 0) ?? 0;
+			sections = lod0NonEmpty > 0
+				? lod0NonEmpty
+				: Math.Max(1, unit.Model.Meshes.Sum(mesh => mesh.Sections.Count));
+			geometrySignature = ComputeGeometrySignature(unit, unitCopies);
+		}
 
 		if (unitIntents is not null && unitIntents.TryGetValue(fileId, out var intent))
 		{
 			var slot = SlotName(intent.Slot);
 			if (slot.Length != 0)
-				return new SectionalSplitSource(fileId, slot, BodyName(intent.Body), sections, name, LayerName(intent.Layer));
+				return new SectionalSplitSource(fileId, slot, BodyName(intent.Body), sections, name, LayerName(intent.Layer), geometrySignature);
 		}
 
 		return new SectionalSplitSource(
@@ -888,7 +974,48 @@ public static class SectionalSplitter
 			semantic?.BodyType ?? SectionalSplitPlanner.DefaultBody,
 			sections,
 			name,
-			semantic?.PieceType ?? string.Empty);
+			semantic?.PieceType ?? string.Empty,
+			geometrySignature);
+	}
+
+	private static string? ComputeGeometrySignature(
+		PatchUnitMesh unit,
+		IReadOnlyList<PatchUnitMesh>? unitCopies)
+	{
+		var copies = unitCopies is { Count: > 0 } ? unitCopies : [unit];
+		var parts = new List<string>(copies.Count);
+		foreach (var copy in copies)
+		{
+			var best = UnitGeometryFactsBuilder.SelectBestRenderableLod0(copy.Model)
+				?? copy.Model.RawMeshData
+					.Where(UnitGeometryFactsBuilder.HasRenderableGeometry)
+					.OrderByDescending(UnitGeometryFactsBuilder.CountTriangles)
+					.ThenByDescending(raw => raw.Vertices.Count)
+					.FirstOrDefault();
+			if (best is null)
+				return null;
+
+			var materialBySlot = copy.Model.Materials
+				.GroupBy(binding => binding.SectionId)
+				.ToDictionary(group => group.Key, group => group.First().MaterialId);
+
+			var sectionTokens = best.Sections
+				.Where(section => section.Triangles.Count > 0)
+				.Select(section =>
+				{
+					var materialId = materialBySlot.TryGetValue(section.MaterialSlotId, out var raw) ? raw : 0UL;
+					return $"{materialId:x16}:{section.Triangles.Count}";
+				})
+				.ToList();
+			if (sectionTokens.Count == 0 && best.Triangles.Count > 0)
+				sectionTokens.Add($"0000000000000000:{best.Triangles.Count}");
+
+			parts.Add($"v={best.Vertices.Count};t={UnitGeometryFactsBuilder.CountTriangles(best)};s=[{string.Join(',', sectionTokens)}]");
+		}
+
+		var hash = System.Security.Cryptography.SHA256.HashData(
+			System.Text.Encoding.UTF8.GetBytes(string.Join('|', parts)));
+		return Convert.ToHexString(hash).ToLowerInvariant();
 	}
 
 	/// <summary>槽位号 → 标准槽名（<see cref="SectionalSplitPlanner.StandardSlots"/> 的写法定）。</summary>
@@ -1055,18 +1182,30 @@ public static class SectionalSplitter
 		// 而且**必须与 Copies 里是同一个实例**：合并时靠 `ReferenceEquals(copy, host)` 判"这份是不是宿主自己"，
 		// 另读一遍就是另一个对象，判断恒假 ⇒ 宿主被当成 donor 又追加一次 ⇒ 每份基础几何都重复一份
 		// （实测 2026-11-10：`ecc8` 的 6 段里 `#1≡#4`、`#2≡#5`）。顺带省掉一次全量解析。
+		// 同时过滤掉不含可见可渲染几何的隐藏空壳副本；若某 unit 所有副本均为空壳，
+		// 仍保留在 units 里阻止 PassThrough 原样放行，交由 Describe + 规划器按 0 段几何丢弃。
+		var filteredCopies = new Dictionary<string, IReadOnlyList<PatchUnitMesh>>(StringComparer.Ordinal);
 		foreach (var (fileId, list) in copies)
 		{
-			if (list.Count != 0)
+			if (list.Count == 0) continue;
+			var renderable = list
+				.Where(mesh => UnitGeometryFactsBuilder.Analyze(mesh.Model).HasRenderableVisibleGeometry)
+				.ToArray();
+			if (renderable.Length != 0)
+			{
+				units[fileId] = renderable[^1];
+				filteredCopies[fileId] = renderable;
+			}
+			else
+			{
 				units[fileId] = list[^1];
+				filteredCopies[fileId] = list;
+			}
 		}
 
 		return new SourceSet(entries, units, skipped, consumedPatches)
 		{
-			Copies = copies.ToDictionary(
-				pair => pair.Key,
-				pair => (IReadOnlyList<PatchUnitMesh>)pair.Value,
-				StringComparer.Ordinal),
+			Copies = filteredCopies,
 		};
 	}
 }

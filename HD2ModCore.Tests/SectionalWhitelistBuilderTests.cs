@@ -1,5 +1,10 @@
 using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.PatchReconstruction;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh.Canonical;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Sqlite;
+using Microsoft.Data.Sqlite;
 using AdaptationAssetKey = HD2ModAdaptation.PatchReconstruction.AssetKey;
 
 namespace HD2ModCore.Tests;
@@ -107,5 +112,90 @@ public sealed class SectionalWhitelistBuilderTests
 		Assert.Contains(SectionalWhitelistBuilder.ToRef(Material(10)), parsed);
 		Assert.Contains(SectionalWhitelistBuilder.ToRef(Texture(100)), parsed);
 		Assert.Equal(3, parsed.Count);
+	}
+
+	[Fact]
+	public async Task FindForeignEquipmentUnitsAsync_ExcludesOnlyUnitsExclusiveToUnselectedArchives()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-foreign-unit-tests", Guid.NewGuid().ToString("N"));
+		var paths = new StoragePaths(Path.Combine(root, "app"));
+		Directory.CreateDirectory(paths.IndexDirectory);
+		try
+		{
+			await using (var connection = new SqliteConnection($"Data Source={paths.DbPath};Pooling=False"))
+			{
+				await connection.OpenAsync();
+				await SqliteSchema.EnsureCreatedAsync(connection, CancellationToken.None);
+				await using var cmd = connection.CreateCommand();
+				cmd.CommandText = """
+					INSERT INTO game_data_authority_kits(item_id, dlc_id, set_id, kit_kind, archive_id, display_name)
+					VALUES (100, 1, 1, 0, 'aaaaaaaaaaaaaaaa', 'KitA'),
+					       (200, 1, 2, 0, 'bbbbbbbbbbbbbbbb', 'KitB');
+					INSERT INTO game_data_authority_pieces(item_id, archive_id, kit_kind, raw_body_type, body_variant, slot, part_kind, piece_type, weight, tone_variations, unit_type_id, unit_file_id)
+					VALUES (100, 'aaaaaaaaaaaaaaaa', 0, 3, 2, 2, 0, 0, 1, 0, 1, 1001),
+					       (100, 'aaaaaaaaaaaaaaaa', 0, 3, 2, 3, 0, 0, 1, 0, 1, 1002),
+					       (200, 'bbbbbbbbbbbbbbbb', 0, 3, 2, 3, 0, 0, 1, 0, 1, 1002),
+					       (200, 'bbbbbbbbbbbbbbbb', 0, 3, 2, 2, 0, 0, 1, 0, 1, 1003);
+					""";
+				await cmd.ExecuteNonQueryAsync();
+			}
+
+			string Hex(ulong id) => id.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+			var foreign = await ArmorUnitCellLookup.FindForeignEquipmentUnitsAsync(
+				paths,
+				[Hex(1001), Hex(1002), Hex(1003), Hex(9999)],
+				["aaaaaaaaaaaaaaaa"]);
+
+			var only = Assert.Single(foreign);
+			Assert.Equal(Hex(1003), only);
+		}
+		finally
+		{
+			SqliteConnection.ClearAllPools();
+			if (Directory.Exists(root))
+				Directory.Delete(root, recursive: true);
+		}
+	}
+
+	[Fact]
+	public async Task ExpandIntentUnitsAsync_SkipsExcludedForeignUnitsWhileKeepingIntentUnits()
+	{
+		var root = Path.Combine(Path.GetTempPath(), "hd2-expand-tests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var intent = new AdaptationAssetKey(PatchUnitMeshReader.UnitTypeId, 1);
+			var decoration = new AdaptationAssetKey(PatchUnitMeshReader.UnitTypeId, 2);
+			var foreign = new AdaptationAssetKey(PatchUnitMeshReader.UnitTypeId, 3);
+
+			var session = new CanonicalPatchSession();
+			foreach (var key in new[] { intent, decoration, foreign })
+			{
+				session.AddEntry(new CanonicalPatchSessionEntry(
+					key,
+					CanonicalPatchEntryOwnership.TargetOutput,
+					[1, 2, 3],
+					[],
+					[]));
+			}
+			Assert.True(session.Finalize(CanonicalDependencyClosureValidation.Valid).IsValid);
+			await new CanonicalPatchWriter().WriteAsync(session, root, "multi.patch_0", null, overwriteExisting: true);
+			var patchPath = Path.Combine(root, "multi.patch_0");
+
+			var expanded = await SectionalWhitelistBuilder.ExpandIntentUnitsAsync(
+				[intent],
+				[patchPath],
+				excludedUnits: [foreign, intent]);
+
+			Assert.Contains(intent, expanded);
+			Assert.Contains(decoration, expanded);
+			Assert.DoesNotContain(foreign, expanded);
+			Assert.Equal(2, expanded.Count);
+		}
+		finally
+		{
+			if (Directory.Exists(root))
+				Directory.Delete(root, recursive: true);
+		}
 	}
 }

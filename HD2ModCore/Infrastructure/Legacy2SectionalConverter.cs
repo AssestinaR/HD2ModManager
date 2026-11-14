@@ -65,6 +65,9 @@ public static class Legacy2SectionalConverter
 		// wardrobe.json 的目标对不上号、护甲映射页的映射指向一个不存在的素体、资产标签退回原版护甲。
 		// vpk2patch 那条路一直是重用的（--reuse-model），这里漏了。
 		var existingModelKey = VpkCustomModelFile.TryReadKey(modDirectory);
+		var modelKey = string.IsNullOrWhiteSpace(existingModelKey)
+			? "custom-" + Guid.NewGuid().ToString("N")
+			: existingModelKey;
 
 		var sources = SectionalSplitter.EnumeratePatchFiles(modDirectory);
 		if (sources.Count == 0)
@@ -72,10 +75,37 @@ public static class Legacy2SectionalConverter
 				"Mod 根目录里没有来源 patch。来源必须是 legacy 类 Mod（patch 在根上）——"
 				+ "已经是 sectional / vpk2patch 的条目应该用它们各自的来源重构建。");
 
+		var selectedArchives = new[] { document!.Armor?.ArchiveId, document.Helmet?.ArchiveId }
+			.Where(id => !string.IsNullOrWhiteSpace(id))
+			.Select(id => id!)
+			.ToArray();
+		if (selectedArchives.Length > 0 && document.AssetKeys.Units.Count > 0)
+		{
+			var candidateUnitIds = document.AssetKeys.Units
+				.Select(raw => SectionalConversionPlanner.TryParseKey(raw, out var key)
+					? key.FileId.ToString("x16", CultureInfo.InvariantCulture)
+					: null)
+				.Where(id => id is not null)
+				.Select(id => id!)
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+			var foreignUnits = await ArmorUnitCellLookup
+				.FindForeignEquipmentUnitsAsync(context.Paths, candidateUnitIds, selectedArchives, cancellationToken)
+				.ConfigureAwait(false);
+			if (foreignUnits.Count > 0)
+			{
+				var filteredUnits = document.AssetKeys.Units
+					.Where(raw => !SectionalConversionPlanner.TryParseKey(raw, out var key)
+						|| !foreignUnits.Contains(key.FileId.ToString("x16", CultureInfo.InvariantCulture)))
+					.ToArray();
+				document = document with { AssetKeys = document.AssetKeys with { Units = filteredUnits } };
+			}
+		}
+
 		onStage?.Invoke("正在读取来源 patch…");
 		var contents = await ScanAsync(sources, cancellationToken).ConfigureAwait(false);
 		var plan = SectionalConversionPlanner.Plan(
-			document!,
+			document,
 			contents,
 			[PatchUnitMeshReader.UnitTypeId],
 			[MaterialDependencyResolver.MaterialTypeId],
@@ -138,7 +168,14 @@ public static class Legacy2SectionalConverter
 
 			var splitOutput = Path.Combine(stagingRoot, "unit-split");
 			var split = await SectionalSplitter
-				.ExecuteAsync(unitStage, context.GameDataFolder, splitOutput, cancellationToken, unitIntents, unitSourceNames)
+				.ExecuteAsync(
+					unitStage,
+					context.GameDataFolder,
+					splitOutput,
+					cancellationToken,
+					unitIntents,
+					unitSourceNames,
+					outputUnitIdPrefix: SectionalSplitter.DeriveUnitIdPrefix(modelKey))
 				.ConfigureAwait(false);
 			if (!split.IsValid)
 			{
@@ -232,14 +269,16 @@ public static class Legacy2SectionalConverter
 			onStage?.Invoke("正在登记自定义素体…");
 			var definition = SectionalModelDefinition.Build(
 				split.Plan,
-				string.IsNullOrWhiteSpace(existingModelKey) ? "custom-" + Guid.NewGuid().ToString("N") : existingModelKey,
+				modelKey,
 				Path.GetFileName(modDirectory));
 			// 一条 piece 都没有就不落盘：空定义比没有定义更糟 —— 它会让"这是一具素体"
 			// 成立却不含任何组件，界面上是一具点了没反应的素体。
 			if (definition.Pieces is { Count: > 0 })
 			{
+				var customModelPath = Path.Combine(payloadDirectory, VpkCustomModelFile.FileName);
+				VpkPayloadSwap.ClearReadOnlyForWrite(customModelPath);
 				await File.WriteAllTextAsync(
-					Path.Combine(payloadDirectory, VpkCustomModelFile.FileName),
+					customModelPath,
 					JsonSerializer.Serialize(definition, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }),
 					cancellationToken).ConfigureAwait(false);
 			}

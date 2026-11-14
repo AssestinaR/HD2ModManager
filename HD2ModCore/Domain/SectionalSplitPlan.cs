@@ -14,7 +14,8 @@ public sealed record SectionalSplitSource(
 	string BodyType,
 	int SectionCount,
 	string Name = "",
-	string PieceType = "");
+	string PieceType = "",
+	string? GeometrySignature = null);
 
 /// <summary>一个输出 unit：把 <see cref="DonorUnitIds"/> 的几何并进 <see cref="HostUnitId"/>。</summary>
 /// <param name="PieceType">宿主件的层类型（<c>Armor</c> / <c>UnderGarment</c> / <c>Accessory</c>…）。
@@ -167,17 +168,19 @@ public static class SectionalSplitPlanner
 			warnings.Add($"槽位「{group.Key}」不是 7 个标准槽之一，它的 {group.Count()} 个 unit 会并进 {FallbackSlot}。");
 		}
 
-		// 身形族规则（2026-11-10 定）：同一槽位最多两种形态 —— {Any} 或 {Stocky, Slim}。
-		// 只要该槽出现过任一具体身形，就拆成两种身形；该槽里的 Any unit **两种身形都要**，
-		// 因为 Any 的本义就是"这一份同时服务两种身形"（见 ArmorStructure 顶部第 2 条）。
-		// 只有整槽都是 Any 时，才是一个 Any 槽。
+		// 身形族规则（2026-11-10 定；2026-11-14 加几何去重与单边提升）：同一槽位最多两种形态 —— {Any} 或 {Stocky, Slim}。
+		// 1) 同层（原槽位 + PieceType）内若 Stocky 与 Slim 几何签名完全相同，去重合并为 Any；
+		// 2) 当整槽剩余具体身形都带有签名且不存在任何同层异构（同层既有未匹配 Stocky 又有未匹配 Slim）时，
+		//    将单边具体身形（如只做在 Stocky 上的大衣）一并提升为 Any，使全槽归一成一套 Any 模型；
+		// 3) 若存在未签名具体身形或任一层出现同层异构，保留具体身形分桶（绝不跨身形乱并）。
 		var buckets = new Dictionary<(string Slot, string Body), List<SectionalSplitSource>>();
 		foreach (var slotGroup in usable.GroupBy(unit => MapSlot(unit.Slot)))
 		{
-			var hasSpecificBody = slotGroup.Any(unit =>
+			var normalizedUnits = NormalizeSlotBodies(slotGroup.ToArray(), dropped);
+			var hasSpecificBody = normalizedUnits.Any(unit =>
 				!string.Equals(NormalizeBody(unit.BodyType), DefaultBody, StringComparison.OrdinalIgnoreCase));
 			string[] family = hasSpecificBody ? ["Stocky", "Slim"] : [DefaultBody];
-			foreach (var unit in slotGroup)
+			foreach (var unit in normalizedUnits)
 			{
 				var body = NormalizeBody(unit.BodyType);
 				string[] bodyTargets = string.Equals(body, DefaultBody, StringComparison.OrdinalIgnoreCase) ? family : [body];
@@ -268,5 +271,123 @@ public static class SectionalSplitPlanner
 		if (!string.IsNullOrWhiteSpace(donor.Name))
 			return donor.Name.Trim();
 		return total == 1 ? $"{slot} 变体" : $"{slot} 变体 {index + 1}";
+	}
+
+	private static IReadOnlyList<SectionalSplitSource> NormalizeSlotBodies(
+		IReadOnlyList<SectionalSplitSource> slotUnits,
+		List<SectionalSplitDropped> dropped)
+	{
+		var anyUnits = new List<SectionalSplitSource>();
+		var concreteUnits = new List<SectionalSplitSource>();
+		foreach (var unit in slotUnits)
+		{
+			if (string.Equals(NormalizeBody(unit.BodyType), DefaultBody, StringComparison.OrdinalIgnoreCase))
+				anyUnits.Add(unit);
+			else
+				concreteUnits.Add(unit);
+		}
+
+		if (concreteUnits.Count == 0)
+			return slotUnits;
+
+		var allConcreteHaveSignature = concreteUnits.All(unit => !string.IsNullOrWhiteSpace(unit.GeometrySignature));
+		var deduped = new List<SectionalSplitSource>(anyUnits);
+		var unmatchedConcrete = new List<SectionalSplitSource>();
+		var hasCrossBodyConflict = false;
+
+		foreach (var layer in concreteUnits.GroupBy(
+			unit => $"{(unit.Slot ?? string.Empty).Trim()}\0{(unit.PieceType ?? string.Empty).Trim()}",
+			StringComparer.OrdinalIgnoreCase))
+		{
+			var stockyBySig = new Dictionary<string, List<SectionalSplitSource>>(StringComparer.Ordinal);
+			var slimBySig = new Dictionary<string, List<SectionalSplitSource>>(StringComparer.Ordinal);
+			var layerUnmatchedStocky = new List<SectionalSplitSource>();
+			var layerUnmatchedSlim = new List<SectionalSplitSource>();
+			var layerUnmatchedOther = new List<SectionalSplitSource>();
+
+			foreach (var unit in layer)
+			{
+				var body = NormalizeBody(unit.BodyType);
+				var sig = unit.GeometrySignature;
+				if (string.IsNullOrWhiteSpace(sig))
+				{
+					if (string.Equals(body, "Stocky", StringComparison.OrdinalIgnoreCase))
+						layerUnmatchedStocky.Add(unit);
+					else if (string.Equals(body, "Slim", StringComparison.OrdinalIgnoreCase))
+						layerUnmatchedSlim.Add(unit);
+					else
+						layerUnmatchedOther.Add(unit);
+					continue;
+				}
+
+				if (string.Equals(body, "Stocky", StringComparison.OrdinalIgnoreCase))
+				{
+					if (!stockyBySig.TryGetValue(sig, out var list)) stockyBySig[sig] = list = [];
+					list.Add(unit);
+				}
+				else if (string.Equals(body, "Slim", StringComparison.OrdinalIgnoreCase))
+				{
+					if (!slimBySig.TryGetValue(sig, out var list)) slimBySig[sig] = list = [];
+					list.Add(unit);
+				}
+				else
+				{
+					layerUnmatchedOther.Add(unit);
+				}
+			}
+
+			var matchedSignatures = stockyBySig.Keys
+				.Intersect(slimBySig.Keys, StringComparer.Ordinal)
+				.OrderBy(sig => sig, StringComparer.Ordinal)
+				.ToArray();
+
+			foreach (var sig in matchedSignatures)
+			{
+				var paired = stockyBySig[sig].Concat(slimBySig[sig]).ToArray();
+				var representative = paired
+					.OrderByDescending(unit => unit.SectionCount)
+					.ThenBy(unit => unit.UnitId, StringComparer.Ordinal)
+					.First();
+				deduped.Add(representative with { BodyType = DefaultBody });
+				foreach (var duplicate in paired)
+				{
+					if (ReferenceEquals(duplicate, representative)) continue;
+					dropped.Add(new SectionalSplitDropped(
+						duplicate.UnitId,
+						$"与 {representative.UnitId}（{representative.BodyType}）几何相同，合并去重。"));
+				}
+			}
+
+			foreach (var (sig, list) in stockyBySig)
+			{
+				if (!slimBySig.ContainsKey(sig))
+					layerUnmatchedStocky.AddRange(list);
+			}
+
+			foreach (var (sig, list) in slimBySig)
+			{
+				if (!stockyBySig.ContainsKey(sig))
+					layerUnmatchedSlim.AddRange(list);
+			}
+
+			if (layerUnmatchedStocky.Count > 0 && layerUnmatchedSlim.Count > 0)
+				hasCrossBodyConflict = true;
+
+			unmatchedConcrete.AddRange(layerUnmatchedStocky);
+			unmatchedConcrete.AddRange(layerUnmatchedSlim);
+			unmatchedConcrete.AddRange(layerUnmatchedOther);
+		}
+
+		if (!hasCrossBodyConflict && allConcreteHaveSignature)
+		{
+			foreach (var unit in unmatchedConcrete)
+				deduped.Add(unit with { BodyType = DefaultBody });
+		}
+		else
+		{
+			deduped.AddRange(unmatchedConcrete);
+		}
+
+		return deduped;
 	}
 }
