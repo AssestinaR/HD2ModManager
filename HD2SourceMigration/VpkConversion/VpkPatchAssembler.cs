@@ -1377,16 +1377,27 @@ public sealed class VpkPatchAssembler
 
 			// 贴图归谁：由本 VPK 提供的才写；派生出来的（遮罩 / 金属度 / 共享平面法线）
 			// 不属于任何 VPK，它们是这个材质的一部分——材质在，它们就得在。
+			//
+			// **只有"纯贴图包"才让渡。** 拥有这张贴图的 VPK 里若一个 VMT 都没有，它会把自带贴图
+			// 全部写出来（见 ④），此时让给它是对的。否则那个包只按"本包材质引用到的"筛一遍，
+			// 我们这张就两头落空——实测 `ramune恶堕人鱼bill` 的 `基础材质` 包里只有 2 个 VMT，
+			// 于是 body / metal / clothes 这些 albedo 一张都没落地，游戏里是荧光黄绿 + 洋红。
 			if (!ownedHere && providedByVpk)
 			{
-				if (reportedForeignTextures.Add(texture.SourcePath))
+				var ownerIsPureTexturePack =
+					!scope!.TryGetVtfSource(texture.SourcePath, out var ownerVpkPath, out _)
+					|| !scope.VpkOwnsAnyVmt(ownerVpkPath);
+				if (ownerIsPureTexturePack)
 				{
-					textureOutcomes.Add(new VpkTextureOutcome(
-						texture.SourcePath, texture.Id, DescribeOrigin(texture.SourcePath), false,
-						"这张贴图由别的 VPK 提供，归那个 VPK 的 patch"));
-				}
+					if (reportedForeignTextures.Add(texture.SourcePath))
+					{
+						textureOutcomes.Add(new VpkTextureOutcome(
+							texture.SourcePath, texture.Id, DescribeOrigin(texture.SourcePath), false,
+							"这张贴图由别的 VPK 提供，归那个 VPK 的 patch"));
+					}
 
-				return;
+					return;
+				}
 			}
 
 			// ⚠️ **贴图 id 只用 basename 派生**（Python 侧的现状，见 Hd2AssetId 的注释），

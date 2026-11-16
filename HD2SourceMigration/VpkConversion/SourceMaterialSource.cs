@@ -294,6 +294,17 @@ public sealed class SourceMaterialSource
 
 	public bool ContainsVtf(string textureName) => vtfs.ContainsKey(Stem(textureName));
 
+	/// <summary>
+	/// 这个 VPK 里有没有 VMT —— 也就是它是不是"纯贴图包"。
+	/// <para>
+	/// 装配阶段判"贴图归谁"时要用：纯贴图包会把自带贴图**全部**写出（没有材质可问），
+	/// 所以别处的材质可以把贴图让给它；而带 VMT 的包只输出"本包材质引用到的"那些，
+	/// 让给它就会两头落空。
+	/// </para>
+	/// </summary>
+	public bool VpkOwnsAnyVmt(string vpkPath)
+		=> vmts.Values.Any(entry => string.Equals(entry.VpkPath, vpkPath, StringComparison.OrdinalIgnoreCase));
+
 	/// <summary>这个材质是不是<b>主 VPK 自己</b>定义的（而不是从整批里借来的）。</summary>
 	public bool OwnsVmt(string materialName) => ownedVmts.Contains(Stem(materialName));
 
