@@ -41,6 +41,37 @@ public sealed class RetargetedMeshBuilderTests
 	}
 
 	[Fact]
+	public void FingerJointWeights_BlendAtShippedPivotsAndPreserveOtherInfluences()
+	{
+		string[] names = ["l_index_finger1", "l_index_finger2", "l_index_finger3"];
+		var hashes = names.Select(Hd2NameHash.Of).ToArray();
+		var rig = UnitTransformInfo.Empty with
+		{
+			NameHashes = hashes,
+			Matrices = new[] { 0f, 0.04f, 0.08f }.Select(x => new UnitTransformMatrix(
+				[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1])).ToArray(),
+		};
+		var finger = new FingerPoseRow("l", "index", names, [], [], [], 0);
+		var reweight = new FingerJointWeights([finger], rig);
+		var weights = new Dictionary<uint, double> { [hashes[0]] = 0.75, [1] = 0.25 };
+
+		reweight.Apply(weights, new Vec3(0.04f, 0, 0), 2);
+		Assert.Equal(2, weights.Count);
+		Assert.Equal(0.75, weights[hashes[0]]);
+
+		reweight.Apply(weights, new Vec3(0.04f, 0, 0), 4);
+		Assert.Equal(0.375, weights[hashes[0]]);
+		Assert.Equal(0.375, weights[hashes[1]]);
+		Assert.Equal(0.25, weights[1]);
+
+		reweight.Apply(weights, new Vec3(0.08f, 0, 0), 4);
+		Assert.DoesNotContain(hashes[0], weights.Keys);
+		Assert.Equal(0.375, weights[hashes[1]]);
+		Assert.Equal(0.375, weights[hashes[2]]);
+		Assert.Equal(1, weights.Values.Sum());
+	}
+
+	[Fact]
 	public void RealData_EveryBuiltVertexHasBoundedNormalisedResolvableInfluences()
 	{
 		var vpkPath = Resolve("HD2_LEGACY_TEST_VPK", DefaultVpkPath);
