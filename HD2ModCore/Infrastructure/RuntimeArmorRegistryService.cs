@@ -205,8 +205,16 @@ public sealed class RuntimeArmorRegistryService
 			cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// 覆盖默认注册表目录的环境变量。给测试/沙盒用：部署会读写该目录里的规则文件，
+	/// 不隔离就会读到、甚至改写本机真实的映射数据。显式传入的 overridePath 优先于它。
+	/// </summary>
+	public const string RegistryRootEnvironmentVariable = "HD2_ARMOR_REGISTRY_ROOT";
+
 	public static string ResolveRegistryRoot(string? overridePath = null)
 	{
+		if (string.IsNullOrWhiteSpace(overridePath))
+			overridePath = Environment.GetEnvironmentVariable(RegistryRootEnvironmentVariable);
 		var path = string.IsNullOrWhiteSpace(overridePath)
 			? Path.Combine(
 				Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
