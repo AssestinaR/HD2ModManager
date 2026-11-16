@@ -39,6 +39,13 @@ internal sealed record SectionalTargetUnit(AssetKey Key, ArmorCell Cell)
 	public string FileId => Key.FileId.ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
 }
 
+/// <summary>
+/// 一件<b>被牵连</b>的护甲：不在目标套装里，但和目标套装共用了 unit，所以换甲后它也会显示我们的几何。
+/// </summary>
+/// <param name="Name">显示名（只用于提示）。</param>
+/// <param name="Units">它的全部件（不含披风也可以，规划器自己会跳过披风）。</param>
+internal sealed record SectionalCollateralKit(string Name, IReadOnlyList<SectionalTargetUnit> Units);
+
 /// <summary>「来源 unit → 目标 unit」的一条映射。同一个来源可以有多条（每个身形一条）。</summary>
 internal sealed record SectionalReplacement(SectionalSourceUnit Source, SectionalTargetUnit Target);
 
@@ -86,10 +93,23 @@ internal static class SectionalCompilePlanner
 	/// <param name="source">来源 unit（来自 <c>sectional/sections.json</c>）。</param>
 	/// <param name="targets">目标套件的全部 unit（护甲 + 头盔；**不含披风归档**）。</param>
 	/// <param name="headMerge">是否要求头身合并。</param>
+	/// <param name="kitsByUnit">
+	/// 每个目标 unit 被哪几件装备（kit，按归档 id）引用。<c>null</c> = 不知道，按并集规划（老行为）。
+	/// <para>
+	/// <b>为什么需要它。</b>同一个 setId 下可能有<b>两件护甲</b>（实测 B-08「轻装枪手」与
+	/// FS-38「根除者」同属一套，大部分 unit 共用）。把两件的件压成一个扁平集合后，"最外层"
+	/// 取的是并集的最外层——胸部、胯部的 pc2 只有 FS-38 有，于是上衣和裙子只写进了 FS-38
+	/// 独有的 unit，B-08 自己的胸部/胯部反而被顶成隐藏壳，进游戏就是"上衣、裙子整块没了"。
+	/// 有了这张表，承载层只从<b>每件护甲都有的层</b>里选，见 <see cref="CarrierLayers"/>。
+	/// </para>
+	/// </param>
 	internal static SectionalCompilePlan Build(
 		IReadOnlyList<SectionalSourceUnit> source,
 		IReadOnlyList<SectionalTargetUnit> targets,
-		bool headMerge)
+		bool headMerge,
+		IReadOnlyDictionary<AssetKey, IReadOnlyCollection<string>>? kitsByUnit = null,
+		IReadOnlyList<SectionalCollateralKit>? collateral = null,
+		IReadOnlySet<AssetKey>? protectedUnits = null)
 	{
 		ArgumentNullException.ThrowIfNull(source);
 		ArgumentNullException.ThrowIfNull(targets);
@@ -141,10 +161,15 @@ internal static class SectionalCompilePlanner
 		var merge = SectionalHeadMergePlan.Off;
 		var bodyLayer = -1;
 		var headLayer = -1;
+		// 每个部位"可以承载"的层（从外到内）。只算一次：头身合并与逐部位落点必须看同一份答案。
+		var carrierLayersBySlot = targetBySlot.ToDictionary(
+			pair => pair.Key,
+			pair => CarrierLayers(pair.Key, pair.Value, kitsByUnit, info, warnings));
+
 		if (headMerge && head is not null && torso is not null)
 		{
-			var torsoLayers = targetBySlot.TryGetValue(torsoSlot, out var torsoTargets)
-				? torsoTargets.Select(target => target.Cell.Layer).Distinct().OrderByDescending(layer => layer).ToArray()
+			var torsoLayers = carrierLayersBySlot.TryGetValue(torsoSlot, out var layersOfTorso)
+				? layersOfTorso
 				: [];
 			if (torsoLayers.Length < 2)
 			{
@@ -178,7 +203,7 @@ internal static class SectionalCompilePlanner
 
 			var carrier = merge == SectionalHeadMergePlan.IntoArmorTorso && slot == torsoSlot
 				? bodyLayer
-				: slotTargets.Max(target => target.Cell.Layer);
+				: carrierLayersBySlot[slot][0];
 
 			foreach (var target in slotTargets.Where(target => target.Cell.Layer == carrier))
 				replacements.Add(new SectionalReplacement(unit, target));
@@ -221,8 +246,129 @@ internal static class SectionalCompilePlanner
 			.Where(target => !replaced.Contains(target.Key))
 			.Where(target => !target.Cell.IsCape)
 			.OrderBy(target => target.Key.FileId)
-			.ToArray();
+			.ToList();
+
+		// ⑦ 被牵连的护甲：它们和目标套装共用 unit，换甲后同样显示我们的几何，
+		//    但自己独有的件（装饰层、肩、腰包……）还是原版，叠在外面（实测 CE-74「破裂者」）。
+		if (collateral is { Count: > 0 })
+			HideCollateralExtras(collateral, protectedUnits, bySlot.Keys.ToHashSet(), replaced, hidden, targets, info);
 
 		return new SectionalCompilePlan(replacements, hidden, merge, info, warnings);
+	}
+
+	/// <summary>
+	/// 把被牵连护甲的"多余件"顶成隐藏壳。
+	/// <para><b>三条不隐藏：</b></para>
+	/// <list type="bullet">
+	/// <item>披风与格子未知的件（与目标套装同一口径，保守优先）。</item>
+	/// <item><paramref name="protectedUnits"/>：还被圈外护甲共用的件。隐藏它会让一件<b>完全没换模型</b>的
+	/// 护甲凭空缺一块；实测 138 件护甲里有 58 件存在这种二级外溢，不能顺着链条一路隐藏下去。</item>
+	/// <item>我们有来源、但这件护甲在该部位<b>一个替换件都没接到</b>：隐藏它的原件只会开个洞。</item>
+	/// </list>
+	/// </summary>
+	private static void HideCollateralExtras(
+		IReadOnlyList<SectionalCollateralKit> collateral,
+		IReadOnlySet<AssetKey>? protectedUnits,
+		IReadOnlySet<int> sourceSlots,
+		IReadOnlySet<AssetKey> replaced,
+		List<SectionalTargetUnit> hidden,
+		IReadOnlyList<SectionalTargetUnit> targets,
+		List<string> info)
+	{
+		var decided = targets.Select(target => target.Key).ToHashSet();
+		var hiddenKeys = hidden.Select(target => target.Key).ToHashSet();
+		foreach (var kit in collateral)
+		{
+			var coveredSlots = kit.Units
+				.Where(unit => unit.Cell.IsKnown && replaced.Contains(unit.Key))
+				.Select(unit => unit.Cell.Slot)
+				.ToHashSet();
+			var hiddenCount = 0;
+			var keptShared = 0;
+			var keptUncovered = 0;
+			foreach (var unit in kit.Units)
+			{
+				if (decided.Contains(unit.Key) || hiddenKeys.Contains(unit.Key))
+					continue;
+				if (!unit.Cell.IsKnown || unit.Cell.IsCape)
+					continue;
+				if (protectedUnits?.Contains(unit.Key) == true)
+				{
+					keptShared++;
+					continue;
+				}
+				if (sourceSlots.Contains(unit.Cell.Slot) && !coveredSlots.Contains(unit.Cell.Slot))
+				{
+					keptUncovered++;
+					continue;
+				}
+
+				hidden.Add(unit);
+				hiddenKeys.Add(unit.Key);
+				hiddenCount++;
+			}
+
+			if (hiddenCount + keptShared + keptUncovered == 0)
+				continue;
+			var line = $"「{kit.Name}」与目标共用部件，换甲后也会显示这个模型：隐藏了它独有的 {hiddenCount} 个多余件";
+			if (keptShared != 0)
+				line += $"；{keptShared} 个还被别的护甲共用，保持原样";
+			if (keptUncovered != 0)
+				line += $"；{keptUncovered} 个所在部位没接到模型，保留原件以免开洞";
+			info.Add(line + "。");
+		}
+	}
+
+	/// <summary>
+	/// 一个部位可以承载来源几何的层，<b>从外到内</b>排好（结果至少有一层）。
+	/// <para>
+	/// 只有一件装备用到这个部位（或不知道归属）时，就是这个部位全部的层。
+	/// 多件装备共用这个部位时，只取<b>每一件都有的层</b>：落在那里的几何每件护甲都画得出来，
+	/// 其余层（某一件独有的装饰层）顶成隐藏壳。各件没有共同层时退回并集，并明确告警——
+	/// 那种情况下总有一件会缺这块，不能悄悄发生。
+	/// </para>
+	/// </summary>
+	private static int[] CarrierLayers(
+		int slot,
+		IReadOnlyList<SectionalTargetUnit> slotTargets,
+		IReadOnlyDictionary<AssetKey, IReadOnlyCollection<string>>? kitsByUnit,
+		List<string> info,
+		List<string> warnings)
+	{
+		var all = slotTargets.Select(target => target.Cell.Layer).Distinct().OrderByDescending(layer => layer).ToArray();
+		if (kitsByUnit is null)
+			return all;
+
+		var layersByKit = new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
+		foreach (var target in slotTargets)
+		{
+			if (!kitsByUnit.TryGetValue(target.Key, out var kits))
+				continue;
+			foreach (var kit in kits)
+			{
+				if (!layersByKit.TryGetValue(kit, out var layers))
+					layersByKit[kit] = layers = [];
+				layers.Add(target.Cell.Layer);
+			}
+		}
+
+		if (layersByKit.Count <= 1)
+			return all;
+
+		var common = all.Where(layer => layersByKit.Values.All(layers => layers.Contains(layer))).ToArray();
+		var part = ArmorStructure.Display(ArmorStructure.FromSlot((uint)slot));
+		if (common.Length == 0)
+		{
+			warnings.Add(
+				$"部位「{part}」被同套 {layersByKit.Count} 件装备使用，但它们没有共同的层："
+				+ $"按最外层（第 {all[0]} 层）承载，其中有的护甲会缺这一块。");
+			return all;
+		}
+
+		if (common[0] != all[0])
+			info.Add(
+				$"部位「{part}」被同套 {layersByKit.Count} 件装备共用：改用每件都有的第 {common[0]} 层承载"
+				+ $"（第 {string.Join("、", all.Except(common))} 层只有其中一部分装备有，顶成隐藏）。");
+		return common;
 	}
 }

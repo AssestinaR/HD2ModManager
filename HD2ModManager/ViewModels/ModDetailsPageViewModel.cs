@@ -878,6 +878,7 @@ namespace HD2ModManager.ViewModels
 
 		private async Task RefreshDataIndexSummaryAsync(ModNodeId nodeId, ModContentFacts? facts)
 		{
+			_ = RefreshKitPollutionAsync(nodeId, facts);
 			if (facts is null) return;
 			try
 			{

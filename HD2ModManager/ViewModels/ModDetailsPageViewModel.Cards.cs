@@ -20,7 +20,8 @@ public sealed record ModDetailsCardState(
     bool IsVpkMod,
     bool ShowVpkComponentCard,
     bool ShowUserStatusCard,
-    bool ShowOutdatedCompatibility);
+    bool ShowOutdatedCompatibility,
+    bool ShowKitPollution = false);
 
 public static class ModDetailsCardLayout
 {
@@ -31,6 +32,7 @@ public static class ModDetailsCardLayout
     public const string UserStatusCardId = "user-status";
     public const string AssetTagsCardId = "asset-tags";
     public const string CompatibilityCardId = "model-compatibility";
+    public const string KitPollutionCardId = "kit-pollution";
 
     public static IReadOnlyList<CardDescriptor> Create(object data, ICommand applyVpkComponentsCommand)
     {
@@ -52,6 +54,7 @@ public static class ModDetailsCardLayout
             new CardDescriptor(UserStatusCardId, CardKind.UserStatus, data) { Order = 70, Title = "当前状态" },
             new CardDescriptor(AssetTagsCardId, CardKind.AssetTags, data) { Order = 80, Title = "资产标签" },
             new CardDescriptor(CompatibilityCardId, CardKind.ModelCompatibility, data) { Order = 90, Title = "模型兼容性" },
+            new CardDescriptor(KitPollutionCardId, CardKind.KitPollution, data) { Order = 85, Title = "共用部件" },
         };
     }
 
@@ -72,6 +75,7 @@ public static class ModDetailsCardLayout
                 UserStatusCardId => state.ShowUserStatusCard,
                 AssetTagsCardId => state.CanUsePatchTools,
                 CompatibilityCardId => state.ShowOutdatedCompatibility,
+                KitPollutionCardId => state.ShowKitPollution,
                 _ => card.IsVisible
             };
         }
@@ -114,7 +118,8 @@ public partial class ModDetailsPageViewModel
         IsVpkMod: IsVpkMod,
         ShowVpkComponentCard: ShowVpkComponentCard,
         ShowUserStatusCard: ShowUserStatusCard,
-        ShowOutdatedCompatibility: ShowOutdatedCompatibility);
+        ShowOutdatedCompatibility: ShowOutdatedCompatibility,
+        ShowKitPollution: ShowKitPollutionCard);
 
     private void OnCardStatePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {

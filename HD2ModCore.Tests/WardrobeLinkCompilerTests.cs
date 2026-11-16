@@ -234,6 +234,24 @@ public sealed class WardrobeLinkCompilerTests
 		Assert.Contains("link=00000000aaaa0002,c0ffee0000000001", compiled.Text);
 	}
 
+	[Fact]
+	public void Compile_FlipsCrossLayerConflictWhenBorrowedOwnUnitWouldBeHidden()
+	{
+		// 目标同一部位有两层（PieceType 0/1），来源把第 0 层替换成了目标第 1 层自己的 unit 且缺第 1 层：
+		// 若直接发射 own0 -> own1 且 own1 -> 0，会导致 own1 被隐藏或错层覆盖；应反转为 own1 自保且 own0 隐藏。
+		var snapshot = Snapshot(
+			Kit(100, (2, 0, 0xAAAA_0001), (2, 1, 0xAAAA_0002)),
+			Kit(200, (2, 0, 0xAAAA_0002)));
+
+		var compiled = WardrobeLinkCompiler.Compile(snapshot, [new RuntimeArmorRegistryMapping(100, 200)], 1, true);
+
+		Assert.Equal(2, compiled.LinkCount);
+		Assert.Equal(1, compiled.HiddenCount);
+		Assert.Contains("link=00000000aaaa0002,00000000aaaa0002", compiled.Text);
+		Assert.Contains($"link=00000000aaaa0001,{WardrobeLinkCompiler.HiddenUnit}", compiled.Text);
+		Assert.DoesNotContain($"link=00000000aaaa0002,{WardrobeLinkCompiler.HiddenUnit}", compiled.Text);
+	}
+
 	private static HashSet<string> SourceKeys(string text) =>
 		text.Split('\n')
 			.Where(line => line.StartsWith("link=", StringComparison.Ordinal))

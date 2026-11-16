@@ -18,7 +18,10 @@ namespace HD2ModCore.Infrastructure.Sectional;
 /// <summary>「把来源 unit 0x… 写到目标键 0x…」的一步。同一个来源可以有多条（每个身形一条）。</summary>
 internal sealed record SectionalUnitRename(string SourceFileId, CoreAssetKey Target);
 
-/// <param name="RewrittenUnitCount">真正写出去的改名副本数。</param>
+/// <summary>P4b：一个合并好的 unit 载荷，要写到这些目标键上（每个键一份副本，字节相同）。</summary>
+internal sealed record SectionalMergedOutput(IReadOnlyList<CoreAssetKey> Targets, SectionalMergedUnit Unit);
+
+/// <param name="RewrittenUnitCount">真正写出去的改名副本数（含合并产物的副本）。</param>
 /// <param name="HiddenUnitCount">写成隐藏壳的目标 unit 数。</param>
 /// <param name="HiddenTriangles">隐藏壳的三角形总数。</param>
 /// <param name="HiddenMeshCount">隐藏壳里有几个 mesh。**每个 mesh 恰好 1 个三角形**，所以两者必须相等。</param>
@@ -56,7 +59,8 @@ internal static class SectionalUnitPatchWriter
 		IReadOnlyList<SectionalUnitRename> renames,
 		IReadOnlyList<CoreAssetKey> hiddenKeys,
 		ISectionalHiddenUnitSource hiddenSource,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		IReadOnlyList<SectionalMergedOutput>? mergedOutputs = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchPath);
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
@@ -111,6 +115,27 @@ internal static class SectionalUnitPatchWriter
 				entry.Unknown4));
 		}
 
+		// P4b：合并产物不是来源条目的原样拷贝，载荷由合并器给；来源条目仍整体从输出里移除。
+		var mergedCopies = 0;
+		foreach (var output in mergedOutputs ?? [])
+		{
+			foreach (var target in output.Targets)
+			{
+				additions.Add(new AdaptAddition(
+					new AdaptKey(target.TypeId, target.FileId),
+					output.Unit.TocData,
+					output.Unit.StreamData,
+					output.Unit.GpuResourceData,
+					output.Unit.Unknown1,
+					output.Unit.Unknown2,
+					output.Unit.Unknown3,
+					output.Unit.Unknown4));
+				mergedCopies++;
+			}
+
+			warnings.AddRange(output.Unit.Warnings);
+		}
+
 		var hiddenTriangles = 0;
 		var hiddenMeshCount = 0;
 		var hiddenCount = 0;
@@ -153,7 +178,7 @@ internal static class SectionalUnitPatchWriter
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 
 		return new SectionalUnitPatchResult(
-			unitEntries.Length, renames.Count, hiddenCount, hiddenTriangles, hiddenMeshCount, warnings);
+			unitEntries.Length, renames.Count + mergedCopies, hiddenCount, hiddenTriangles, hiddenMeshCount, warnings);
 	}
 
 	/// <summary>把隐藏壳重新解析一遍、数它还剩几个三角形（验收用：必须恰好 1 个）。</summary>

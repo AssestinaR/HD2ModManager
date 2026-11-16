@@ -299,7 +299,6 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         {
             var icon = new System.Windows.Shapes.Path
             {
-                Data = mode.ToggleIcon,
                 Width = 16,
                 Height = 16,
                 StrokeThickness = 1.4,
@@ -307,14 +306,19 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
                 StrokeEndLineCap = PenLineCap.Round,
                 StrokeLineJoin = PenLineJoin.Round,
             };
+            // 图标与提示用绑定而不是在这里取值：XAML 里注册项是先加进集合、后设属性的
+            // （FrameworkElement 自上而下初始化），这一刻 ToggleIcon 还是 null，按钮就成了空圆。
+            icon.SetBinding(System.Windows.Shapes.Path.DataProperty,
+                new System.Windows.Data.Binding(nameof(ModListHeaderMode.ToggleIcon)) { Source = mode });
             var button = new Button
             {
                 Style = TryFindResource("AppCategoryToggleButton") as Style,
-                ToolTip = mode.ToggleToolTip,
                 Tag = mode,
                 Margin = new Thickness(0, 0, 2, 0),
                 Content = icon,
             };
+            button.SetBinding(ToolTipProperty,
+                new System.Windows.Data.Binding(nameof(ModListHeaderMode.ToggleToolTip)) { Source = mode });
             button.Click += OnHeaderModeToggleClick;
             HeaderModeToggles.Children.Add(button);
         }
@@ -581,7 +585,7 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         if (SelectionPolicy != ModListSelectionPolicy.Multiple) return;
         var visibleItems = ItemsList.Items
             .OfType<IModListSelectable>()
-            .Where(item => !string.IsNullOrWhiteSpace(item.SelectionKey))
+            .Where(item => !item.IsBlocked && !string.IsNullOrWhiteSpace(item.SelectionKey))
             .ToArray();
         var selectedKeys = visibleItems.Select(item => item.SelectionKey).ToArray();
         if (selectedKeys.Length == 0) return;
@@ -617,6 +621,11 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) is not null || FindAncestor<CheckBox>(e.OriginalSource as DependencyObject) is not null) return;
         ItemsList.Focus();
         var item = (sender as FrameworkElement)?.DataContext;
+        if (item is IModListSelectable { IsBlocked: true })
+        {
+            e.Handled = true;
+            return;
+        }
         if (item is IModListSelectable selectable && SelectionPolicy is not ModListSelectionPolicy.None and not ModListSelectionPolicy.ReadOnly)
         {
             var selectedKeys = ResolveSelection(selectable, Keyboard.Modifiers);
@@ -631,7 +640,11 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
 
     private IReadOnlyList<string> ResolveSelection(IModListSelectable clicked, ModifierKeys modifiers)
     {
-        var selectableItems = ItemsList.Items.OfType<IModListSelectable>().ToList();
+        var selectableItems = ItemsList.Items.OfType<IModListSelectable>().Where(item => !item.IsBlocked).ToList();
+        if (clicked.IsBlocked)
+        {
+            return selectableItems.Where(item => item.IsSelected).Select(item => item.SelectionKey).ToList();
+        }
         if (SelectionPolicy == ModListSelectionPolicy.Single)
         {
             _selectionAnchorKey = clicked.SelectionKey;
@@ -704,6 +717,11 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         // 行对象；行对象必须从容器上取回来。
         if (sender is not FrameworkElement { Tag: ModListRowActionItem actionItem }) return;
         if (FindAncestor<ListBoxItem>(sender as DependencyObject)?.DataContext is not { } rowItem) return;
+        if (rowItem is IModListSelectable { IsBlocked: true })
+        {
+            e.Handled = true;
+            return;
+        }
         if (actionItem.Action == ModListRowAction.Category)
         {
             // 分类是面板自己的能力（数据都在 CategoryFilter 里），不需要宿主页面再转一手。
@@ -847,6 +865,12 @@ public partial class ModListPanel : UserControl, IRowActionToolTipSource, IRowAc
         if (FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is not IModListSelectable selectable
             || SelectionPolicy is ModListSelectionPolicy.None or ModListSelectionPolicy.ReadOnly)
             return false;
+
+        if (selectable.IsBlocked)
+        {
+            ItemsList.Focus();
+            return true;
+        }
 
         ItemsList.Focus();
         var selectedKeys = ResolveSelection(selectable, Keyboard.Modifiers);

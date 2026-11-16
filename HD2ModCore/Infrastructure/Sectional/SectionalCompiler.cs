@@ -50,7 +50,28 @@ public sealed record SectionalCompileResult(
 	/// <summary>失败。</summary>
 	public static SectionalCompileResult Failure(string error, SectionalCompileKind kind = SectionalCompileKind.OwnModel)
 		=> new(false, error, kind, null, 0, 0, SectionalHeadMergeOutcome.Off, 0, [], []);
+
+	/// <summary>专属切换（P4a）这一次编出来的隐藏规则内容；普通编译为 <c>null</c>。多目标时是第一个目标的。</summary>
+	public KitInstance.KitExclusiveSeed? Exclusive { get; init; }
+
+	/// <summary>专属切换（P5 多选）：每个<b>实际编进去</b>的目标的规则种子（升序 item_id）；普通编译为空。</summary>
+	public IReadOnlyList<KitInstance.KitExclusiveSeed> ExclusiveTargets { get; init; } = [];
+
+	/// <summary>专属切换：没能编进去而被跳过（或导致失败）的目标。</summary>
+	public IReadOnlyList<SectionalTargetFailure> SkippedTargets { get; init; } = [];
+
+	/// <summary>专属切换：写进 <c>Overwrite/</c> 的承载件份数（去重后）。</summary>
+	public int CarrierCount { get; init; }
+
+	/// <summary>专属切换：合并出来的模型份数（来源集合相同的合并只算一份）。</summary>
+	public int MergedModelCount { get; init; }
 }
+
+/// <summary>
+/// 多目标专属编译里有目标失败时的回调：<paramref name="failures"/> 是失败的目标，<paramref name="succeeded"/> 是能继续的目标数。
+/// 返回 <c>true</c> = 继续（跳过失败的目标）；<c>false</c> = 回滚（什么都不写）。
+/// </summary>
+public delegate ValueTask<bool> SectionalTargetFailureHandler(IReadOnlyList<SectionalTargetFailure> failures, int succeeded);
 
 /// <summary>
 /// <b>sectional 编译器</b>：<c>sectional/</c> + 四个条件 ⇒ <c>Overwrite/</c>。
@@ -66,7 +87,7 @@ public sealed record SectionalCompileResult(
 /// <c>sectional/</c>，隐藏壳由来源 unit 现造。换甲只是"改 unit 键"，不需要读目标 unit 本身。
 /// </para>
 /// </summary>
-public static class SectionalCompiler
+public static partial class SectionalCompiler
 {
 	/// <summary>编译一次。</summary>
 	/// <param name="modDirectory">这个 Mod 的目录。</param>
@@ -80,6 +101,10 @@ public static class SectionalCompiler
 	/// <param name="enabledMaterialPatches">
 	/// 要装进生效层的材质 patch 文件名。<c>null</c> = 读 Mod 设置文件；那里也没有 = 全部。
 	/// </param>
+	/// <param name="exclusiveItemId">
+	/// 专属切换（P4a）：非空时按「只写目标记录自己独有的 unit + 隐藏规则」编译，<paramref name="targetArchiveId"/> 必须是游戏护甲。
+	/// <c>null</c> = 老做法，行为与以前完全一致。
+	/// </param>
 	public static async ValueTask<SectionalCompileResult> CompileAsync(
 		string modDirectory,
 		VpkHostContext context,
@@ -88,7 +113,12 @@ public static class SectionalCompiler
 		bool headMergeIntoBody,
 		IReadOnlyList<string>? enabledMaterialPatches,
 		Action<string>? onStage = null,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		uint? exclusiveItemId = null,
+		IReadOnlyList<uint>? exclusiveItemIds = null,
+		bool autoSkipFailedTargets = false,
+		SectionalTargetFailureHandler? onTargetFailures = null,
+		bool lowPollution = false)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
 		ArgumentNullException.ThrowIfNull(context);
@@ -121,8 +151,38 @@ public static class SectionalCompiler
 		if (ownModel)
 		{
 			onStage?.Invoke("正在按当前条件编译生效层…");
-			return await CompileOwnModelAsync(
+			string? notCompressedReason = null;
+			if (lowPollution)
+			{
+				onStage?.Invoke("低污染模式：正在把素体压缩成少量 unit…");
+				var squeezed = await CompileLowPollutionOwnModelAsync(
+					modDirectory, context, payload, sourcePatch, sourceMap, disabledSections, headMergeIntoBody, selection, cancellationToken)
+					.ConfigureAwait(false);
+				if (squeezed.Result is not null) return squeezed.Result;
+				notCompressedReason = squeezed.NotCompressedReason;
+			}
+
+			var own = await CompileOwnModelAsync(
 				modDirectory, payload, sourcePatch, sourceMap, disabledSections, headMergeIntoBody, selection, cancellationToken)
+				.ConfigureAwait(false);
+			// 不能压缩时照常编译，但要让用户看见：否则打开开关、进游戏发现没变化，就再也信不过它。
+			// 不能压缩：留一个带指纹的标记，下次「应用」不再对它重编（规划 §12.1）。
+			if (notCompressedReason is not null && own.Ok)
+				LowPollutionFreshness.WriteUnsupportedMarker(modDirectory, payload, disabledSections, headMergeIntoBody, notCompressedReason);
+			return notCompressedReason is null || !own.Ok
+				? own
+				: own with { Warnings = [.. own.Warnings, $"低污染模式没有压缩这个素体：{notCompressedReason}，已按普通素体编译。"] };
+		}
+
+		var exclusiveTargets = exclusiveItemIds is { Count: > 0 }
+			? exclusiveItemIds
+			: exclusiveItemId is { } single ? [single] : null;
+		if (exclusiveTargets is not null)
+		{
+			onStage?.Invoke("正在把来源 unit 落到目标护甲独有的部件上…");
+			return await CompileExclusiveArmorAsync(
+				modDirectory, context, payload, sourcePatch, sourceMap, exclusiveTargets, disabledSections, headMergeIntoBody, selection,
+				autoSkipFailedTargets, onTargetFailures, cancellationToken)
 				.ConfigureAwait(false);
 		}
 
@@ -176,6 +236,7 @@ public static class SectionalCompiler
 			var components = await SectionGroupFile.TryReadAsync(payload, cancellationToken).ConfigureAwait(false);
 			await WriteStructureAsync(modDirectory, documented, components, cancellationToken).ConfigureAwait(false);
 
+			DeleteStaleLowPollutionLayout(modDirectory);
 			var merge = SectionalHeadMergeOutcome.Off;
 			var effectiveRegistry = Path.Combine(
 				ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), VpkCustomModelFile.FileName);
@@ -232,10 +293,25 @@ public static class SectionalCompiler
 			return SectionalCompileResult.Failure(
 				$"装备权威表里找不到归档 {armorArchiveId}。", SectionalCompileKind.Armor);
 
-		// 同一套装备的护甲 + 头盔两个归档；**披风是第三个原子，永远不碰**。
-		var targets = snapshot.Kits
+		// 同一套装备的护甲 + 头盔归档；**披风是第三个原子，永远不碰**。
+		// 一套里可能不止一件护甲（B-08 与 FS-38 同 setId、大量 unit 共用），所以还要记下
+		// "每个 unit 被哪几件引用"：规划器靠它只在各件都有的层上落几何。
+		var setKits = snapshot.Kits
 			.Where(kit => kit.SetId == selected.SetId
 				&& kit.Kind is GameDataEquipmentKitKind.Armor or GameDataEquipmentKitKind.Helmet)
+			.ToArray();
+		var kitsByUnit = setKits
+			.SelectMany(kit => kit.Pieces.Select(piece => (
+				Key: new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId),
+				kit.ArchiveId)))
+			.GroupBy(pair => pair.Key)
+			.ToDictionary(
+				group => group.Key,
+				group => (IReadOnlyCollection<string>)group
+					.Select(pair => pair.ArchiveId)
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.ToArray());
+		var targets = setKits
 			.SelectMany(kit => kit.Pieces)
 			.Select(piece => new SectionalTargetUnit(
 				new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId),
@@ -251,7 +327,44 @@ public static class SectionalCompiler
 			.Select(unit => new SectionalSourceUnit(unit.FileId, CellOf(unit)))
 			.ToArray();
 
-		var plan = SectionalCompilePlanner.Build(source, targets, headMergeIntoBody);
+		// 被牵连的护甲：不在这套里、但和这套共用了 unit（改写共用 unit 等于也改了它们）。
+		// 只看护甲：头盔是独立 item，别的头盔与这套头盔共用件时，那是另一类问题，这里不碰。
+		var setArchiveIds = setKits.Select(kit => kit.ArchiveId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+		// 只算**会被我们写到**的件（替换或隐藏）。披风件从不写，而 slot1 那个不渲染的件被几十件护甲
+		// 共用——把它算进来，会把半个军械库都当成被牵连的护甲。
+		var setUnitKeys = targets
+			.Where(target => target.Cell.IsKnown && !target.Cell.IsCape)
+			.Select(target => target.Key)
+			.ToHashSet();
+		var collateralKits = snapshot.Kits
+			.Where(kit => kit.Kind == GameDataEquipmentKitKind.Armor
+				&& !setArchiveIds.Contains(kit.ArchiveId)
+				&& kit.Pieces.Any(piece => setUnitKeys.Contains(new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId))))
+			.ToArray();
+		// 圈外护甲（既不在这套、也没被牵连）还在用的件：一个都不能动，见 HideCollateralExtras。
+		var groupArchiveIds = setArchiveIds
+			.Concat(collateralKits.Select(kit => kit.ArchiveId))
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var protectedUnits = snapshot.Kits
+			.Where(kit => kit.Kind is GameDataEquipmentKitKind.Armor or GameDataEquipmentKitKind.Helmet
+				&& !groupArchiveIds.Contains(kit.ArchiveId))
+			.SelectMany(kit => kit.Pieces)
+			.Select(piece => new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId))
+			.ToHashSet();
+		var collateral = collateralKits
+			.Select(kit => new SectionalCollateralKit(
+				kit.DisplayName,
+				kit.Pieces
+					.Select(piece => new SectionalTargetUnit(
+						new AssetKey(piece.UnitAssetKey.TypeId, piece.UnitAssetKey.FileId),
+						ArmorCell.FromRegistryCoordinates((int)piece.Slot, (int)piece.PieceType)))
+					.GroupBy(target => target.Key)
+					.Select(group => group.First())
+					.ToArray()))
+			.ToArray();
+
+		var plan = SectionalCompilePlanner.Build(
+			source, targets, headMergeIntoBody, kitsByUnit, collateral, protectedUnits);
 		var staging = CreateStagingDirectory();
 
 		try
@@ -561,6 +674,7 @@ public static class SectionalCompiler
 	/// <summary>换甲之后必须删掉上一次合并留下的派生注册表，否则素体目录还按合并形态算。</summary>
 	private static void DeleteStaleCustomModel(string modDirectory)
 	{
+		DeleteStaleLowPollutionLayout(modDirectory);
 		var path = Path.Combine(ModNodePayloadLayout.GetOverwriteDirectory(modDirectory), VpkCustomModelFile.FileName);
 		if (!File.Exists(path)) return;
 		VpkPayloadSwap.ClearReadOnlyForWrite(path);

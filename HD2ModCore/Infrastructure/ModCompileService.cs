@@ -24,6 +24,20 @@ public sealed record ModCompileOutcome(
 	/// </para>
 	/// </summary>
 	public VpkRekeyOutcome? Rekey { get; init; }
+
+	/// <summary>专属切换（P4a）编出来的隐藏规则内容；普通编译为 <c>null</c>。调用方据此同步 workspace 记录。</summary>
+	public KitInstance.KitExclusiveSeed? Exclusive { get; init; }
+
+	/// <summary>专属多选（P5）：实际编进去的每个目标的规则种子；普通编译为空。</summary>
+	public IReadOnlyList<KitInstance.KitExclusiveSeed> ExclusiveTargets { get; init; } = [];
+
+	/// <summary>专属多选：被跳过的目标（编译失败）。</summary>
+	public IReadOnlyList<SectionalTargetFailure> SkippedTargets { get; init; } = [];
+
+	/// <summary>专属多选：写进 <c>Overwrite/</c> 的承载件份数、合并模型份数。</summary>
+	public int CarrierCount { get; init; }
+
+	public int MergedModelCount { get; init; }
 }
 
 /// <summary>
@@ -58,7 +72,14 @@ public static class ModCompileService
 		Action<string>? onStage = null,
 		CancellationToken cancellationToken = default,
 		// 头身合并：默认跟随 wardrobe.json；显式传值时以调用方为准（界面翻开关那一下）。
-		bool? headMergeIntoBody = null)
+		bool? headMergeIntoBody = null,
+		// 专属切换（P4a）：非空 = 只写 targetArchiveIds[0] 那一套里 item_id 对应记录的独有部件；null = 老做法。
+		uint? exclusiveItemId = null,
+		// 专属多选（P5）：非空时优先于 exclusiveItemId；每个目标各自规划、一起写进同一份 Overwrite。
+		IReadOnlyList<uint>? exclusiveItemIds = null,
+		// 有目标编译失败时：自动跳过（「继续并记住」）/ 问用户（回调）/ 都没有则整体失败、什么都不写。
+		bool? autoSkipFailedTargets = null,
+		SectionalTargetFailureHandler? onTargetFailures = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(modSelector);
 		ArgumentException.ThrowIfNullOrWhiteSpace(modDirectory);
@@ -72,9 +93,20 @@ public static class ModCompileService
 			: (string.IsNullOrWhiteSpace(wardrobe.TargetArmorArchiveId) ? null : wardrobe.TargetArmorArchiveId);
 		var disabled = disabledSections ?? wardrobe.State.Disabled;
 		var headMerge = headMergeIntoBody ?? wardrobe.HeadMergeIntoBody;
+		// 没有显式指定目标（重构建、CLI 沿用「上次用的是哪件」）时，也沿用上次的专属状态：
+		// 否则专属切换过的 Mod 一重构建就悄悄退回成「写全局空壳」的老做法。
+		if (exclusiveItemId is null && exclusiveItemIds is null && targetArchiveIds is not { Count: > 0 } && wardrobe.Exclusive)
+		{
+			// 多目标记录整份沿用；旧的单目标文件读成只有一项的列表（见 VpkWardrobeFile.ExclusiveTargets）。
+			var recorded = wardrobe.ExclusiveTargets.Select(item => item.ItemId).ToArray();
+			if (recorded.Length > 1) exclusiveItemIds = recorded;
+			else exclusiveItemId = wardrobe.TargetItemId;
+		}
 
 		var result = await SectionalCompiler
-			.CompileAsync(modDirectory, context, target, disabled, headMerge, null, onStage, cancellationToken)
+			.CompileAsync(
+				modDirectory, context, target, disabled, headMerge, null, onStage, cancellationToken, exclusiveItemId,
+				exclusiveItemIds, autoSkipFailedTargets ?? wardrobe.AutoSkipFailedTargets, onTargetFailures, context.LowPollutionMode)
 			.ConfigureAwait(false);
 		if (!result.Ok)
 			return ModCompileOutcome.Failure(result.Error ?? "编译失败。", result.Warnings);
@@ -93,6 +125,11 @@ public static class ModCompileService
 		return new ModCompileOutcome(
 			true, null, result.Kind == SectionalCompileKind.Armor, targetName, notes)
 		{
+			Exclusive = result.Exclusive,
+			ExclusiveTargets = result.ExclusiveTargets,
+			SkippedTargets = result.SkippedTargets,
+			CarrierCount = result.CarrierCount,
+			MergedModelCount = result.MergedModelCount,
 			Rekey = new VpkRekeyOutcome(
 				true,
 				null,

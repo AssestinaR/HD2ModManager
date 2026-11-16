@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.KitInstance;
 using HD2ModManager.Models;
 using HD2ModManager.Services;
 
@@ -109,7 +110,7 @@ public partial class ModDetailsPageViewModel
 		{
 			var outcome = await Legacy2SectionalConverter
 				.RunAsync(node.Id.Value.ToString("N"), directory,
-					new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+					SettingsService.CreateVpkHostContext(),
 					Report, cancellation)
 				.ConfigureAwait(true);
 
@@ -234,14 +235,16 @@ public partial class ModDetailsPageViewModel
 
 			// 目标取**下拉里当前选中**的那件（用户可能刚换过、还没点「切换」），
 			// 勾选取**内存里**的状态（同理）。这样"重构建"= 把眼前这套配置整个烘一遍。
-			var targets = SelectedVpkTargetArmor is { } selected
+			// 详情页只做普通 patch 替换（专属已撤，规划 kit-instance-mapping-deploy-plan §15.3）。
+			var rebuildOption = SelectedVpkTargetArmor;
+			var targets = rebuildOption is { } selected
 				? new[] { selected.ArchiveId }
 				: ResolveApplyTargets(directory);
 			Report("正在重新转换来源 VPK…");
 			var outcome = await VpkRebuildService.RunAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
@@ -261,9 +264,26 @@ public partial class ModDetailsPageViewModel
 			// 而状态只反映用户确认过的东西。失败/中断时状态保持不动。
 			try
 			{
-				var applied = SelectedVpkTargetArmor is { } picked
-					? _vpkFile with { TargetArmorArchiveId = picked.ArchiveId, TargetArmorName = picked.DisplayName }
+				var applied = rebuildOption is { } picked
+					? _vpkFile with
+					{
+						TargetArmorArchiveId = picked.ArchiveId,
+						TargetArmorName = picked.StoredName,
+						TargetItemId = null,
+						Exclusive = false,
+						Targets = null,
+					}
 					: _vpkFile;
+				_vpkFile = applied;
+				// 旧版「专属」留下的隐藏记录跟着这次普通重建清掉（只删自己写的）：重建换了基底，旧记录的内容指纹会对不上。
+				// 编译没做成（IncompleteReason 非空）时生效层还是旧的，记录也保持旧的，别动。
+				if (outcome.IncompleteReason is null)
+				{
+					var rebuildSynced = await KitExclusiveWorkspace.SyncAsync(
+						node.Id, _library.ModsRootDirectory, directory, null).ConfigureAwait(true);
+					if (!rebuildSynced.Ok)
+						LogService.Warn($"{node.Metadata.Name}：清理专属隐藏记录失败：{rebuildSynced.Error}");
+				}
 				await VpkModWardrobeService.WriteAsync(directory, applied).ConfigureAwait(true);
 			}
 			catch (Exception exception) when (exception is IOException or InvalidOperationException)
@@ -300,7 +320,7 @@ public partial class ModDetailsPageViewModel
 						var optionOutcome = await VpkRebuildService.RunAsync(
 							option.Selector,
 							option.Directory,
-							new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+							SettingsService.CreateVpkHostContext(),
 							targetArchiveIds: null,
 							disabledSections: null,
 							stage => Report($"选项 {option.Name}：{stage}"),

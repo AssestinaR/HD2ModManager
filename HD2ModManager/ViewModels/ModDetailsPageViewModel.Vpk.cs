@@ -1,6 +1,8 @@
 using System.IO;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.KitInstance;
+using HD2ModCore.Infrastructure.Sectional;
 using HD2ModManager.Services;
 
 namespace HD2ModManager.ViewModels;
@@ -21,6 +23,9 @@ public sealed record VpkTargetArmorOption(
 	VpkTargetArmorKind Kind = VpkTargetArmorKind.GameArmor)
 {
 	public override string ToString() => DisplayName;
+
+	/// <summary>写进 wardrobe.json 的名字。</summary>
+	public string StoredName => DisplayName;
 }
 
 /// <summary>
@@ -42,6 +47,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	private bool _vpkArmorsLoading;
 	private IReadOnlyList<VpkTargetArmorOption> _vpkTargetArmors = [];
 	private VpkTargetArmorOption? _selectedVpkTargetArmor;
+	private IReadOnlyList<VpkTargetArmorOption> _vpkNormalTargetArmors = [];
 	private IReadOnlyList<VpkGroupItemViewModel> _vpkGroups = [];
 	private string _vpkSwitchStatus = string.Empty;
 
@@ -360,15 +366,36 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	public IReadOnlyList<VpkTargetArmorOption> VpkTargetArmors
 	{
 		get => _vpkTargetArmors;
-		private set => SetField(ref _vpkTargetArmors, value);
+		private set
+		{
+			if (!SetField(ref _vpkTargetArmors, value)) return;
+			// 候选一换，下拉也跟着换（单选）。
+			VpkTargetPicker.SetOptions(value, _selectedVpkTargetArmor);
+		}
 	}
 
 	public VpkTargetArmorOption? SelectedVpkTargetArmor
 	{
 		get => _selectedVpkTargetArmor;
 		set
-			{
+		{
 			if (!SetField(ref _selectedVpkTargetArmor, value)) return;
+			VpkTargetPicker.SelectSingle(value);
+		}
+	}
+
+	private VpkTargetPickerViewModel? _vpkTargetPicker;
+
+	/// <summary>目标护甲下拉的状态：可输入搜索的单选（专属多选已撤，规划 kit-instance-mapping-deploy-plan §15.3）。</summary>
+	public VpkTargetPickerViewModel VpkTargetPicker
+	{
+		get
+		{
+			if (_vpkTargetPicker is not null) return _vpkTargetPicker;
+			_vpkTargetPicker = new VpkTargetPickerViewModel();
+			_vpkTargetPicker.SelectionChanged += (_, _) =>
+				SetField(ref _selectedVpkTargetArmor, _vpkTargetPicker.Selected?.Option, nameof(SelectedVpkTargetArmor));
+			return _vpkTargetPicker;
 		}
 	}
 
@@ -469,6 +496,52 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 		ConvertToCustomModelCommand.RaiseCanExecuteChanged();
 	}
 
+	private string _vpkMappingCoverageText = string.Empty;
+
+	/// <summary>「已被护甲映射覆盖」提示（规划 §12.3）：与部署同一个判定；没有覆盖时为空。</summary>
+	public string VpkMappingCoverageText
+	{
+		get => _vpkMappingCoverageText;
+		private set
+		{
+			if (!SetField(ref _vpkMappingCoverageText, value)) return;
+			OnPropertyChanged(nameof(HasVpkMappingCoverage));
+		}
+	}
+
+	public bool HasVpkMappingCoverage => !string.IsNullOrEmpty(_vpkMappingCoverageText);
+
+	private async Task RefreshVpkMappingCoverageAsync(string directory, string modName, int generation)
+	{
+		string text;
+		try
+		{
+			var paths = SettingsService.CreateStoragePaths();
+			var registryRoot = CoreServices.CreateRuntimeArmorRegistryService(paths).RegistryRoot;
+			text = await Task.Run(async () =>
+			{
+				var mapped = await ArmorMappingPatchCoverage.ReadAppliedMappedTargetsAsync(registryRoot).ConfigureAwait(false);
+				var coverage = await ArmorMappingPatchCoverage.AnalyzeNodeAsync(
+					directory, mapped, () => ArmorMappingPatchCoverage.ReadKitsByArchive(paths)).ConfigureAwait(false);
+				return coverage.Kind switch
+				{
+					ArmorMappingCoverageKind.Covered =>
+						$"已被护甲映射覆盖：{string.Join("、", coverage.Covered.Select(target => target.Name))}（部署时跳过这个 Mod 针对它的 patch，显示的是映射的模型）。",
+					ArmorMappingCoverageKind.Partial =>
+						ArmorMappingPatchCoverage.DescribePartial(
+							string.IsNullOrWhiteSpace(modName) ? Path.GetFileName(directory) : modName, coverage),
+					_ => string.Empty,
+				};
+			}).ConfigureAwait(true);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+		{
+			text = string.Empty;
+		}
+		if (generation != _detailRequestGeneration) return;
+		VpkMappingCoverageText = text;
+	}
+
 	private async Task LoadVpkAsync(string directory, string modName, int generation)
 	{
 		try
@@ -476,8 +549,10 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var file = await VpkModWardrobeService.ReadAsync(directory).ConfigureAwait(true);
 			var map = await VpkModWardrobeService.ReadSectionMapAsync(directory).ConfigureAwait(true);
 			if (generation != _detailRequestGeneration) return;
-			_vpkFile = file;
+			// 旧版「专属」写下的 exclusive 标记在详情页里一律当普通切换看待（规划 kit-instance-mapping-deploy-plan §15.3）。
+			_vpkFile = file.Exclusive ? file with { Exclusive = false, Targets = null, TargetItemId = null } : file;
 			OnPropertyChanged(nameof(EnableVpkComponentTree));
+				await RefreshVpkMappingCoverageAsync(directory, modName, generation).ConfigureAwait(true);
 			if (map is not null)
 			{
 				var label = file.BuildTreeLabel(string.IsNullOrWhiteSpace(modName) ? Path.GetFileName(directory) : modName);
@@ -501,7 +576,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 候选列表是缓存（`EnsureVpkTargetArmorsAsync` 在列表非空时直接返回），
 			// 把"选中哪一项"也交给它，第二次进页面就会沿用上一次的选择：
 			// 用户换到 O-3、离开、回来，下拉仍然显示自己的素体——而那已经不是盘上的值了。
-			SelectedVpkTargetArmor = ResolveCurrentTargetArmor(directory);
+				SelectedVpkTargetArmor = ResolveCurrentTargetArmor(directory);
 		}
 		catch (Exception exception) when (exception is IOException or InvalidDataException)
 		{
@@ -523,7 +598,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 	/// </summary>
 	private async Task EnsureVpkTargetArmorsAsync(string modDirectory)
 	{
-		if (_vpkArmorsLoading || _vpkTargetArmors.Count != 0) return;
+		if (_vpkArmorsLoading || _vpkNormalTargetArmors.Count != 0) return;
 		_vpkArmorsLoading = true;
 		try
 		{
@@ -551,6 +626,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				VpkComponentStatus = "读取游戏护甲列表失败（请先在设置页重建游戏资产索引）：" + exception.Message;
 			}
 
+			_vpkNormalTargetArmors = options;
 			VpkTargetArmors = options;
 		}
 		finally
@@ -591,6 +667,16 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			return;
 		}
 
+		// 详情页只做普通 patch 替换；防污染（专属）只在护甲映射页的低污染模式里做（规划 kit-instance-mapping-deploy-plan §15.3）。
+		// 旧版「专属」留下的 workspace 记录（只删自己写的）在这里顺手清掉：先删后编译，
+		// 任何中途失败的状态都是「没有隐藏规则」，最坏是多显示一份原版，不会藏掉不该藏的东西。
+		var cleared = await KitExclusiveWorkspace.SyncAsync(node.Id, _library.ModsRootDirectory, directory, null).ConfigureAwait(true);
+		if (!cleared.Ok)
+		{
+			VpkComponentStatus = cleared.Error ?? "清理专属记录失败。";
+			return;
+		}
+
 		// **不判断"目标有没有变"。**
 		//
 		// 编译层的约定是"每次从 `sectional/` 重新编译到 `Overwrite/`"，不做增量、不做缓存，
@@ -627,7 +713,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				[target.ArchiveId],
 				_vpkFile.State.Disabled,
 				Report,
@@ -654,10 +740,14 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			// 编译基座只读配置（不写 wardrobe.json），所以由这个"用户动作"负责写：
 			// 少了这一步，离开页面再回来读到的还是旧目标（下拉弹回自己的素体），
 			// 而下一次「切换」还会因为"当前目标 == 选中目标"被判成"没有变化"。
+			// 详情页只写普通切换：专属相关字段一并清掉（规划 kit-instance-mapping-deploy-plan §15.3）。
 			_vpkFile = _vpkFile with
 			{
 				TargetArmorArchiveId = target.ArchiveId,
-				TargetArmorName = target.DisplayName,
+				TargetArmorName = target.StoredName,
+				TargetItemId = null,
+				Exclusive = false,
+				Targets = null,
 			};
 			var persisted = true;
 			try
@@ -688,6 +778,7 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 				warnings.Count == 0 ? NotificationLevel.Info : NotificationLevel.Warning,
 				warnings.Count == 0 ? 10 : 20);
 
+			_ = RefreshKitPollutionAsync(node.Id, _detailContentFacts);
 			await _library.InvalidateContentNodeAsync(node.Id, CancellationToken.None).ConfigureAwait(true);
 			await _library.RefreshCommittedContentAsync([node.Id], ModContentChangeKind.Changed,
 				alreadyInvalidated: true, cancellationToken: CancellationToken.None).ConfigureAwait(true);
@@ -831,11 +922,11 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
-				cancellation).ConfigureAwait(true);
+					cancellation).ConfigureAwait(true);
 			if (!outcome.Ok)
 			{
 				var error = outcome.Error ?? "重新生成失败。";
@@ -946,12 +1037,12 @@ public partial class ModDetailsPageViewModel : IWardrobeTreeToggleStore
 			var outcome = await ModCompileService.CompileAsync(
 				node.Id.Value.ToString("N"),
 				directory,
-				new VpkHostContext(SettingsService.GetGameDataFolder(), SettingsService.CreateStoragePaths()),
+				SettingsService.CreateVpkHostContext(),
 				targets,
 				_vpkFile.State.Disabled,
 				Report,
 				cancellation,
-				headMergeIntoBody: enabled).ConfigureAwait(true);
+					headMergeIntoBody: enabled).ConfigureAwait(true);
 
 			if (!outcome.Ok)
 			{

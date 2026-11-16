@@ -75,11 +75,15 @@ public static class SectionalWhitelistBuilder
 	public static async ValueTask<IReadOnlyList<AdaptationAssetKey>> ExpandIntentUnitsAsync(
 		IReadOnlyList<AdaptationAssetKey> intentUnits,
 		IReadOnlyList<string> patchTocPaths,
-		CancellationToken cancellationToken = default)
+		CancellationToken cancellationToken = default,
+		IReadOnlyCollection<AdaptationAssetKey>? excludedUnits = null)
 	{
 		ArgumentNullException.ThrowIfNull(intentUnits);
 		ArgumentNullException.ThrowIfNull(patchTocPaths);
 
+		var excluded = excludedUnits is { Count: > 0 }
+			? excludedUnits.ToHashSet()
+			: null;
 		var seen = intentUnits.ToHashSet();
 		var expanded = new List<AdaptationAssetKey>(intentUnits);
 		var scanner = new HD2ModAdaptation.PatchReconstruction.PatchTocScanner();
@@ -105,6 +109,8 @@ public static class SectionalWhitelistBuilder
 			if (units.Length == 0 || !units.Any(seen.Contains)) continue;
 			foreach (var unit in units)
 			{
+				if (excluded is not null && !seen.Contains(unit) && excluded.Contains(unit))
+					continue;
 				if (seen.Add(unit)) expanded.Add(unit);
 			}
 		}

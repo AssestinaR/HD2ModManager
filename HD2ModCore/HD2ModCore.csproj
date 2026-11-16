@@ -61,6 +61,8 @@
                       Link="RuntimeArmorRegistry\wardrobe_hidden_unit.patch.gpu_resources" />
     <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\armor_override_runtime.lua"
                       Link="RuntimeArmorRegistry\armor_override_runtime.lua" />
+    <EmbeddedResource Include="..\HD2RuntimeArmorOverride\src\kit_instance_hider.lua"
+                      Link="RuntimeArmorRegistry\kit_instance_hider.lua" />
     <!--
       琛ｆ煖 section 鎺╃爜鐨勫彧璇昏В鏋愬櫒銆傚繀椤诲拰鍗忚涓€鏍峰唴宓岋細杩愯鏃舵病鏈夌鐩樹笂鐨?src 鐩綍鍙锛?
       鎷兼帴椤哄簭鐢?RuntimeArmorRegistryLuaSource 鍐冲畾锛岃繖涓枃浠舵帓鍦ㄥ叆鍙ｇ偣涔嬪墠銆?

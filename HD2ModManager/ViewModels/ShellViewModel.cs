@@ -1526,6 +1526,9 @@ namespace HD2ModManager.ViewModels
                     _deploymentTask?.MarkCompleted();
                     _notificationService.Supersede("deployment-result");
                     _notificationService.Show(status.Message ?? "活动配置部署完成。", NotificationLevel.Info, TimeSpan.FromSeconds(6), "部署", "deployment-result");
+                    if (status.ApplyResult is { } covered)
+                        foreach (var issue in covered.Issues.Where(issue => issue.Code is ArmorMappingPatchCoverage.CoveredIssueCode or ArmorMappingPatchCoverage.PartialIssueCode))
+                            LogService.Info("部署：" + issue.Message);
                     if (status.ApplyResult is { } success) _applyStatus.Record(new ApplyExecutionStatus(success.Success, status.Message ?? "部署完成", success));
                     _derivedState.MarkDeploymentDirty();
                     RefreshCurrentPage();
@@ -2424,7 +2427,8 @@ namespace HD2ModManager.ViewModels
                 _notificationService,
                 _deploymentCoordinator,
                 _selection,
-                _armorDisplayFactsGate.Task);
+                _armorDisplayFactsGate.Task,
+                _backgroundTasks);
 
         // 选择栏"设置分类"用：当前选择属于哪个页面，就用哪个页面的分类筛选；返回选中的 Mod Guid。
         //
@@ -2629,16 +2633,7 @@ namespace HD2ModManager.ViewModels
                     task.CancellationToken).ConfigureAwait(true);
 
                 var succeeded = result.SucceededNodeIds;
-                if (succeeded.Count != 0)
-                {
-                    foreach (var nodeId in succeeded)
-                        await _libraryService.InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(true);
-                    await _libraryService.RefreshCommittedContentAsync(
-                        succeeded,
-                        ModContentChangeKind.Changed,
-                        alreadyInvalidated: true,
-                        cancellationToken: CancellationToken.None).ConfigureAwait(true);
-                }
+                await CommitBulkRebuildContentAsync(succeeded).ConfigureAwait(true);
 
                 var reportPath = VpkBulkRebuildService.WriteReport(
                     result, concurrency, DateTime.UtcNow - startedUtc);
@@ -2668,6 +2663,19 @@ namespace HD2ModManager.ViewModels
                 RefreshOnUiThread(() => _notificationService.Show(
                     "导入后自动转换失败：" + exception.Message, NotificationLevel.Error, TimeSpan.FromSeconds(20)));
             }
+        }
+
+        /// <summary>批量重构建成功之后：让库里的内容事实失效并刷新（导入后重构建 / 一键重构 / 低污染流程共用）。</summary>
+        private async Task CommitBulkRebuildContentAsync(IReadOnlyCollection<ModNodeId> succeeded)
+        {
+            if (succeeded.Count == 0) return;
+            foreach (var nodeId in succeeded)
+                await _libraryService.InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(true);
+            await _libraryService.RefreshCommittedContentAsync(
+                succeeded,
+                ModContentChangeKind.Changed,
+                alreadyInvalidated: true,
+                cancellationToken: CancellationToken.None).ConfigureAwait(true);
         }
 
         private void RegisterBulkVpkRebuildRow(string sourceId, VpkBulkRebuildBottomBarRowKind kind, int? insertAtRow = null)
@@ -2728,16 +2736,7 @@ namespace HD2ModManager.ViewModels
                 // 产物换了 ⇒ 库里的内容事实必须失效，否则界面上还是上一次的材质/贴图计数。
                 // 命中的节点若在活动配置里，这条链路会自己触发一次重新部署（与详情页那条一致）。
                 var succeeded = result.SucceededNodeIds;
-                if (succeeded.Count != 0)
-                {
-                    foreach (var nodeId in succeeded)
-                        await _libraryService.InvalidateContentNodeAsync(nodeId, CancellationToken.None).ConfigureAwait(true);
-                    await _libraryService.RefreshCommittedContentAsync(
-                        succeeded,
-                        ModContentChangeKind.Changed,
-                        alreadyInvalidated: true,
-                        cancellationToken: CancellationToken.None).ConfigureAwait(true);
-                }
+                await CommitBulkRebuildContentAsync(succeeded).ConfigureAwait(true);
 
                 var reportPath = VpkBulkRebuildService.WriteReport(result, concurrency, DateTime.UtcNow - startedUtc);
                 task.SetOutputArtifacts(_libraryService.ModsRootDirectory, reportPath);

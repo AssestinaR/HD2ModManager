@@ -129,4 +129,17 @@ public sealed class SectionalUnitIdentityTests
 			Assert.Contains(body.Children, slot => slot.Label == ArmorStructure.Display(ArmorPart.Torso));
 		});
 	}
+
+	[Fact]
+	public void DeriveUnitIdPrefix_IsDeterministic12HexDigitsAndDistinctPerModelKey()
+	{
+		var first = SectionalSplitter.DeriveUnitIdPrefix("custom-model-alpha");
+		var second = SectionalSplitter.DeriveUnitIdPrefix("custom-model-alpha");
+		var other = SectionalSplitter.DeriveUnitIdPrefix("custom-model-beta");
+
+		Assert.Equal(12, first.Length);
+		Assert.Equal(first, second);
+		Assert.NotEqual(first, other);
+		Assert.True(ulong.TryParse(first + "0001", System.Globalization.NumberStyles.HexNumber, null, out _));
+	}
 }

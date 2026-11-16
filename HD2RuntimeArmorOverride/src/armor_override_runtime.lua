@@ -184,7 +184,16 @@ local function poll()
 end
 
 log('runtime loaded; protocol=' .. tostring(protocol_path))
-update = function()
+
+-- 只在「前一个 update 正是按实例隐藏 Hider 装上的钩子」时才接着调用它：
+-- 外置 addon 模式下 Hider 可能先于本运行时加载，整体替换会把它静默顶掉。
+-- 其它任何情况（含独占 boot 下游戏自己的 update）一律不调用，行为与以前完全一致。
+local previousUpdate = rawget(_G, 'update')
+local hiderModule = rawget(_G, 'HD2KitInstanceHider')
+local hiderHook = type(hiderModule) == 'table' and rawget(hiderModule, 'update_hook') or nil
+local chainedHider = (type(previousUpdate) == 'function' and previousUpdate == hiderHook) and previousUpdate or nil
+
+local function armorUpdate()
 	local okDrain, drainError = pcall(drain)
 	if not okDrain then log('drain error: ' .. tostring(drainError)) end
 	local now = os.time()
@@ -192,4 +201,9 @@ update = function()
 	nextPoll = now + POLL_SECONDS
 	local ok, err = pcall(poll)
 	if not ok then log('poll error: ' .. tostring(err)) end
+end
+
+update = function(...)
+	armorUpdate()
+	if chainedHider ~= nil then pcall(chainedHider, ...) end
 end

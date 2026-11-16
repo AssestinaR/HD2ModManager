@@ -167,6 +167,16 @@ public sealed record RuntimeArmorRegistrySnapshot(
 	public string? ProtocolOwnerWorkspace { get; init; }
 }
 
+/// <summary>
+/// 低污染模式（P6 S3）下一个映射目标的结论，随应用结果带回界面。
+/// <paramref name="Status"/> 取值：<c>mapped</c> / <c>unavailable</c>（缺独有承载件等，不写映射）/ <c>not-deployed</c>（压缩 unit 还没部署）。
+/// </summary>
+public sealed record LowPollutionTargetReport(
+	uint TargetItemId, string TargetName, string ModelKey, string Status, string? Reason, IReadOnlyList<string> Notes)
+{
+	public bool IsMapped => Status == "mapped";
+}
+
 public sealed record RuntimeArmorRegistryApplyResult(
 	RuntimeArmorRegistryDocument Document,
 	string Fingerprint,
@@ -182,4 +192,19 @@ public sealed record RuntimeArmorRegistryApplyResult(
 	/// </para>
 	/// </summary>
 	public ArmorRegistryDataMappingResult? DataMapping { get; init; }
+
+	/// <summary>低污染模式下每个素体映射目标的结论（没开低污染模式或没有压缩素体映射时为空）。</summary>
+	public IReadOnlyList<LowPollutionTargetReport> LowPollution { get; init; } = [];
+
+	/// <summary>这次写进 <c>kit-instance.mapping.rules</c> 的 Hider 规则条数。大于 0 而 Hider 还没投放时，需要再部署一次。</summary>
+	public int HideRuleCount { get; init; }
+
+	/// <summary>规则超过协议上限被丢弃的条数（不应出现）。</summary>
+	public int HideRulesDropped { get; init; }
+
+	/// <summary>
+	/// 写 <c>wardrobe.links</c> / Hider 规则失败的原因（协议照常写了，运行时保留上一版映射）。为 <c>null</c> = 没出错。
+	/// 以前这里的异常被整个吞掉，界面只看到「Hider 规则 0 条」，看不出映射根本没写进去（2026-11-14）。
+	/// </summary>
+	public string? LinksError { get; init; }
 }

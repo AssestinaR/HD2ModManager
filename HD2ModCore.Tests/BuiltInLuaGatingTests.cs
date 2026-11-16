@@ -54,12 +54,12 @@ public sealed class BuiltInLuaGatingTests
 	}
 
 	[Fact]
-	public void Physics_WhenBuiltInDisabledHasExactlyOneOption()
+	public void Physics_WhenBuiltInDisabledOffersExternalAndOff()
 	{
-		// 用户原话：「如果没有启用内置 lua，那么它的选项总是只有一个外置 lua 兼容模式」
+		// 早先口径是「总开关关时只有外置」——那时外置包要玩家手动加进库，不加就等于关。
+		// 2026-11-14（规划 kit-instance-mapping-deploy-plan §15.2）外置改成部署自动投放，必须能选「关闭」，与映射一致。
 		var options = PhysicsModes.AvailableFor(false);
-		Assert.Single(options);
-		Assert.Equal(PhysicsMode.ExternalLuaEntry, options[0]);
+		Assert.Equal([PhysicsMode.ExternalLuaEntry, PhysicsMode.Off], options);
 	}
 
 	[Fact]
@@ -89,14 +89,11 @@ public sealed class BuiltInLuaGatingTests
 	}
 
 	[Fact]
-	public void Physics_AnyStoredValueBecomesExternalWhenBuiltInDisabled()
+	public void Physics_ExclusiveCollapsesToExternalWhenBuiltInDisabled_OffStaysOff()
 	{
-		foreach (var stored in new[] { PhysicsMode.Off, PhysicsMode.ExclusiveLuaEntry, PhysicsMode.ExternalLuaEntry })
-		{
-			Assert.Equal(
-				PhysicsMode.ExternalLuaEntry,
-				PhysicsModes.Normalize((int)stored, builtInLuaEnabled: false));
-		}
+		Assert.Equal(PhysicsMode.ExternalLuaEntry, PhysicsModes.Normalize((int)PhysicsMode.ExclusiveLuaEntry, builtInLuaEnabled: false));
+		Assert.Equal(PhysicsMode.ExternalLuaEntry, PhysicsModes.Normalize((int)PhysicsMode.ExternalLuaEntry, builtInLuaEnabled: false));
+		Assert.Equal(PhysicsMode.Off, PhysicsModes.Normalize((int)PhysicsMode.Off, builtInLuaEnabled: false));
 	}
 
 	[Fact]
@@ -129,8 +126,8 @@ public sealed class BuiltInLuaGatingTests
 		Assert.Contains(ArmorMappingModes.Default, ArmorMappingModes.AvailableFor(true));
 		Assert.Contains(ArmorMappingModes.Default, ArmorMappingModes.AvailableFor(false));
 		Assert.Contains(PhysicsModes.Default, PhysicsModes.AvailableFor(true));
-		// 物理的「关闭」在总开关关闭时不在选项里（那一档只剩「外置」），这是既有口径，不动它。
-		Assert.DoesNotContain(PhysicsModes.Default, PhysicsModes.AvailableFor(false));
+		// 外置自动投放后（§15.2），物理的「关闭」在总开关关闭时也在选项里。
+		Assert.Contains(PhysicsModes.Default, PhysicsModes.AvailableFor(false));
 	}
 
 	[Fact]

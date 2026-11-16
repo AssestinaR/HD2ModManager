@@ -307,6 +307,12 @@
                                 <Setter TargetName="RowBack" Property="Background" Value="{StaticResource SurfaceSelected}"/>
                                 <Setter TargetName="RowBack" Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
                             </DataTrigger>
+                            <DataTrigger Binding="{Binding IsBlocked}" Value="True">
+                                <Setter TargetName="RowBack" Property="Opacity" Value="0.45"/>
+                                <Setter TargetName="RowBack" Property="Cursor" Value="Arrow"/>
+                                <Setter TargetName="ActionPanel" Property="Visibility" Value="Collapsed"/>
+                                <Setter TargetName="ActionPanel" Property="IsHitTestVisible" Value="False"/>
+                            </DataTrigger>
                         </DataTemplate.Triggers>
                     </DataTemplate>
                 </ListBox.ItemTemplate>

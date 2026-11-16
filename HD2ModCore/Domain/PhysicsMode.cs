@@ -19,8 +19,8 @@ public enum PhysicsMode
 	ExclusiveLuaEntry = 1,
 
 	/// <summary>
-	/// 外置 lua 入口兼容。物理运行时打成一个独立的 Lua 补丁包，
-	/// 由玩家自己加进 mod 库部署，交给外置加载器加载；管理器不碰 boot。
+	/// 外置 lua 入口兼容。部署时把物理运行时作为独立 addon 补丁自动投放，
+	/// 交给外置加载器加载；管理器不碰 boot（2026-11-14 起不再让玩家手动加包，规划 §15.2）。
 	/// </summary>
 	ExternalLuaEntry = 2,
 }
@@ -56,7 +56,7 @@ public static class PhysicsModes
 		PhysicsMode.ExclusiveLuaEntry =>
 			"物理运行时合并进管理器自己的启动补丁，由游戏自身的 Lua VM 加载，不需要第三方加载器。",
 		PhysicsMode.ExternalLuaEntry =>
-			"物理运行时打成一个独立的 Lua 补丁包，点「应用」后会打开所在文件夹，由你手动加进 mod 库部署。管理器不占用 boot 入口。",
+			"部署时自动把物理运行时作为独立补丁投放，交给外置 Lua 加载器（如 MDL3）加载，不用再手动加包。管理器不占用 boot 入口。",
 		PhysicsMode.Off =>
 			"不投放任何物理 Lua，护甲的头发/裙摆保持静态。",
 		_ => string.Empty,
@@ -64,21 +64,22 @@ public static class PhysicsModes
 
 	/// <summary>
 	/// 当前可选的档位。**总开关关闭时不提供「独占」**——选项本身就表达能力边界，
-	/// 而不是让用户选完再发现无效。
+	/// 而不是让用户选完再发现无效。外置改成部署自动投放后，总开关关着也必须能选「关闭」
+	/// （以前靠"不把包加进库"来关，现在包是自动投放的）。与映射模式一致。
 	/// </summary>
 	public static IReadOnlyList<PhysicsMode> AvailableFor(bool builtInLuaEnabled)
 		=> builtInLuaEnabled
 			? [PhysicsMode.ExclusiveLuaEntry, PhysicsMode.ExternalLuaEntry, PhysicsMode.Off]
-			: [PhysicsMode.ExternalLuaEntry];
+			: [PhysicsMode.ExternalLuaEntry, PhysicsMode.Off];
 
 	/// <summary>
 	/// 把持久化的整数值收敛到合法档位。
-	/// 总开关关闭时，「独占」与「关闭」都收敛到「外置」——
-	/// 前者不可选；后者在那套选项里不存在（不想用物理就不把包加进库）。
+	/// 总开关关闭时「独占」收敛到「外置」（保留"要物理"的意图）；「关闭」保持关闭。
 	/// </summary>
 	public static PhysicsMode Normalize(int value, bool builtInLuaEnabled)
 	{
-		if (!builtInLuaEnabled) return PhysicsMode.ExternalLuaEntry;
-		return Enum.IsDefined(typeof(PhysicsMode), value) ? (PhysicsMode)value : Default;
+		var mode = Enum.IsDefined(typeof(PhysicsMode), value) ? (PhysicsMode)value : Default;
+		if (!builtInLuaEnabled && mode == PhysicsMode.ExclusiveLuaEntry) return PhysicsMode.ExternalLuaEntry;
+		return mode;
 	}
 }
