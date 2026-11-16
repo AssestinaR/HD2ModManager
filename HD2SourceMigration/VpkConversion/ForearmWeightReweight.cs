@@ -206,7 +206,7 @@ public static class ForearmWeightReweight
 	}
 
 	/// <summary>取一根骨的骨头位置。矩阵是行主序、平移在**最后一行**（下标 12..14）。</summary>
-	private static bool TryHead(UnitTransformInfo info, uint hash, out Vec3 head)
+	internal static bool TryHead(UnitTransformInfo info, uint hash, out Vec3 head)
 	{
 		head = Vec3.Zero;
 		for (var i = 0; i < info.NameHashes.Count; i++)

@@ -40,11 +40,12 @@ public static class RetargetedMeshBuilder
 
 		var vertices = new RetargetedVertex[group.VertexIndices.Count];
 		var influencesByVertex = new IReadOnlyList<RetargetedInfluence>[group.VertexIndices.Count];
+		var fingerWeights = new FingerJointWeights(result.Fingers, avatarTransformInfo);
 		for (var i = 0; i < vertices.Length; i++)
 		{
 			var source = geometry.Vertices[group.VertexIndices[i]];
 			influencesByVertex[i] = CollectInfluences(
-				source, result, avatarTransformInfo, result.Output[group.VertexIndices[i]]);
+				source, result, avatarTransformInfo, result.Output[group.VertexIndices[i]], fingerWeights);
 		}
 
 		// 三角形按**源材质**分段。源侧归属来自 SourceTriangle.MaterialIndex，是数据不是猜的。
@@ -106,7 +107,8 @@ public static class RetargetedMeshBuilder
 	/// 归一化放在这里而不是交给编码器：编码器也会归一化，但先归一化能让"权重和"这个诊断数字有意义。
 	/// </summary>
 	private static IReadOnlyList<RetargetedInfluence> CollectInfluences(
-		SourceVertex vertex, RetargetResult result, UnitTransformInfo avatarTransformInfo, Vec3 finalPosition)
+		SourceVertex vertex, RetargetResult result, UnitTransformInfo avatarTransformInfo, Vec3 finalPosition,
+		FingerJointWeights fingerWeights)
 	{
 		var byHash = new Dictionary<uint, double>();
 		foreach (var (boneIndex, weight) in new[]
@@ -133,6 +135,7 @@ public static class RetargetedMeshBuilder
 		// 判据用**最终位置**与**最终骨架的骨头**，所以放在这里（两者都已就绪）。
 		if (byHash.Count > 0)
 			ForearmWeightReweight.Apply(byHash, finalPosition, avatarTransformInfo);
+		fingerWeights.Apply(byHash, finalPosition, MaxInfluences);
 
 		if (byHash.Count == 0)
 			return [];
