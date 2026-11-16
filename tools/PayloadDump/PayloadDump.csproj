@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    作用：把游戏里「根材质（parent=0）」的 .gpu_resources 编译载荷原样导出，用于和 Mod 自带载荷做指纹比对。
+    只读游戏包，不写任何游戏文件。
+
+      PayloadDump "<游戏 data 目录>" "<输出目录>" [最小字节] [最大字节]
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>PayloadDump</AssemblyName>
+    <RootNamespace>PayloadDump</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\HD2ModCore\HD2ModCore.csproj" />
+    <ProjectReference Include="..\..\HD2SourceMigration\HD2SourceMigration.csproj" />
+  </ItemGroup>
+
+</Project>
