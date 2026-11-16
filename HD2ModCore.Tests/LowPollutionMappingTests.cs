@@ -20,6 +20,7 @@ public sealed class LowPollutionMappingTests
 	private const string BodyUnit = "00000000b0d10001";
 	private const string ArmsUnit = "00000000a7a50002";
 	private const string HeadUnit = "000000000ead0003";
+	private const string BodyArmsUnit = "00000000b0a70004";
 
 	private static GameDataAuthorityPiece P(uint slot, uint layer, uint raw, ulong file)
 		=> new(
@@ -54,12 +55,13 @@ public sealed class LowPollutionMappingTests
 		];
 	}
 
-	private static LowPollutionLayout Layout(bool headMerge, bool arms = true, bool head = true)
+	private static LowPollutionLayout Layout(bool headMerge, bool arms = true, bool head = true, bool bodyArms = false)
 	{
 		var units = new List<LowPollutionLayoutUnit>();
 		if (!headMerge && head) units.Add(new(LowPollutionRoles.Head, HeadUnit));
 		units.Add(new(headMerge ? LowPollutionRoles.HeadBody : LowPollutionRoles.Body, BodyUnit));
 		if (arms) units.Add(new(LowPollutionRoles.Arms, ArmsUnit));
+		if (arms && bodyArms) units.Add(new(LowPollutionRoles.BodyArms, BodyArmsUnit));
 		return new LowPollutionLayout(headMerge ? "two-slot" : "three-slot", headMerge, units);
 	}
 
@@ -120,54 +122,54 @@ public sealed class LowPollutionMappingTests
 	}
 
 	[Fact]
-	public void ArmsFallback_TwoSlotCombo_PutsTheArmsOnTheMappedHelmetsUniqueHeadPart()
+	public void SchemeA_NeverUsesHelmetsForArms_WhileKeepingTwoSlotHelmetIndependent()
 	{
-		// 目标 K1 除躯干外没有别的独有部件（Q1 第 1 步落空），2 槽、同套头盔 K3 也映射到这个素体 ⇒ 手臂放在 K3 的独有头部件 0x1001 上。
+		// 方案 A + 2b：目标 K1 除躯干外没有别的独有护甲部件，即使同套 2 槽头盔 K3 一起映射，也不会跨槽把 Arms 放到头盔 0x1001 上。
 		var kits = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]);
 		var index = SectionalExclusivePlanner.BuildIndex(kits);
-		var plan = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 1, "m1", new HashSet<uint> { 3 });
+		var armor = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 1, "m1", new HashSet<uint> { 3 });
 
-		Assert.True(plan.Status == LowPollutionMappingStatus.Mapped, plan.Reason);
-		Assert.Equal(ArmsUnit, plan.Links.Single(link => link.Carrier == Hex(0x1001)).Unit);
-		Assert.Equal(BodyUnit, plan.Links.Single(link => link.Carrier == Hex(0x2001)).Unit);
-		Assert.Contains(plan.Notes, note => note.Contains("手臂放在头盔 K3（3）", StringComparison.Ordinal));
-		// 承载件不进隐藏集（0x1001 是头盔部件，2 槽下本来会被隐藏），同套另一顶头盔的 0x1002 照藏。
-		Assert.DoesNotContain(Hex(0x1001), plan.Hide);
-		Assert.Contains(Hex(0x1002), plan.Hide);
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, armor.Status);
+		Assert.Empty(armor.Links);
+		Assert.Contains("除躯干外没有可安全承载手臂的护甲部件", armor.Reason, StringComparison.Ordinal);
 
-		// 这顶头盔的另一半：2 槽组合里头盔本身不写映射，但不能被标成「不可」。
+		// 保留头盔独立映射（2b）：2 槽组合里只要同套护甲也在 companions 中，头盔仍标为 Mapped（Links/Hide 为空）。
 		var helmet = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 3, "m1", new HashSet<uint> { 1 });
 		Assert.Equal(LowPollutionMappingStatus.Mapped, helmet.Status);
 		Assert.Empty(helmet.Links);
+		Assert.Empty(helmet.Hide);
+
 		// 没有护甲同时映射 ⇒ 仍然是「仅头盔 2 槽不可」。
 		Assert.Equal(LowPollutionMappingStatus.Unavailable,
 			LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 3, "m1", new HashSet<uint>()).Status);
 	}
 
 	[Fact]
-	public void ArmsFallback_OnlyForTwoSlotCombos_ElseTheWholeSetIsUnavailable()
+	public void TwoSlotAndThreeSlotArmor_NeedArmorArmsCarriers_UnlessSingleNonTorsoUsesBodyArms()
 	{
-		var kits = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]);
-		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var noNonTorso = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]);
+		var noNonTorsoIndex = SectionalExclusivePlanner.BuildIndex(noNonTorso);
 
-		// 2 槽但护甲单独映射（同套头盔没有一起映射）：头盔的独有部件够不着，整套不可，原因里提示一起映射头盔。
-		var armorOnly = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 1, "m1", new HashSet<uint>());
-		Assert.Equal(LowPollutionMappingStatus.Unavailable, armorOnly.Status);
-		Assert.Empty(armorOnly.Links);
-		Assert.Contains("一起映射", armorOnly.Reason, StringComparison.Ordinal);
+		// 没有任何非躯干独有部件时（即使同套 2 槽头盔在 companions、即使带 BodyArms），不能把手臂放躯干或头盔上，均不可映射。
+		var twoSlotWithHelmet = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: true), 1, "m1", new HashSet<uint> { 3 });
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, twoSlotWithHelmet.Status);
+		Assert.Empty(twoSlotWithHelmet.Links);
 
-		// 3 槽组合：头盔的独有部件已被头占用，不能再放手臂。
-		var threeSlot = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: false), 1, "m1", new HashSet<uint> { 3 });
+		var threeSlot = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: false), 1, "m1", new HashSet<uint> { 3 });
 		Assert.Equal(LowPollutionMappingStatus.Unavailable, threeSlot.Status);
 		Assert.Empty(threeSlot.Links);
-		Assert.DoesNotContain("一起映射", threeSlot.Reason, StringComparison.Ordinal);
 
-		// 2 槽组合，但同套头盔的头部件都被别套共用（K4 的 0x1002 与 K5 共用；K3 不在映射里）：整套不可，不做半套。
-		var sharedHelmet = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 1, "m1", new HashSet<uint> { 4 });
-		Assert.Equal(LowPollutionMappingStatus.Unavailable, sharedHelmet.Status);
-		Assert.Contains("没有可用的", sharedHelmet.Reason, StringComparison.Ordinal);
+		var torsoOnlyBodyArms = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: true, bodyArms: true), 1, "m1", new HashSet<uint> { 3 });
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, torsoOnlyBodyArms.Status);
 
-		// 第 1 步优先：目标自己有除躯干外的独有部件时，不去借头盔的。
+		// 躯干被共用、仅剩 1 个非躯干独有件 0x6001 时，带 BodyArms 可由非躯干承载件合一映射。
+		var sharedTorsoOneArm = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x2001 or 0x7001))]);
+		var withBodyArms = LowPollutionMappingPlanner.Plan(
+			SectionalExclusivePlanner.BuildIndex(sharedTorsoOneArm), Layout(headMerge: true, bodyArms: true), 1, "m1", new HashSet<uint> { 3 });
+		Assert.Equal(LowPollutionMappingStatus.Mapped, withBodyArms.Status);
+		Assert.Equal([new LowPollutionLink(Hex(0x6001), BodyArmsUnit)], withBodyArms.Links);
+
+		// 目标自己有非躯干独有部件时，不使用头盔 0x1001。
 		var own = LowPollutionMappingPlanner.Plan(
 			SectionalExclusivePlanner.BuildIndex(World()), Layout(headMerge: true), 1, "m1", new HashSet<uint> { 3 });
 		Assert.Equal(LowPollutionMappingStatus.Mapped, own.Status);
@@ -175,23 +177,36 @@ public sealed class LowPollutionMappingTests
 	}
 
 	[Fact]
-	public void Service_PassesTheOtherTargetsOfTheSameModelAsCompanions()
+	public void Service_KeepsTwoSlotHelmetIndependentWhileArmorWithoutArmsStaysUnavailable()
 	{
 		var mods = Path.Combine(Path.GetTempPath(), "hd2-lp-" + Guid.NewGuid().ToString("N"));
 		try
 		{
-			// 压缩布局 2 槽：head-body + arms。K1 没有除躯干外的独有部件，靠同套头盔 K3 一起映射才能放下手臂。
+			// 压缩布局 2 槽：head-body + arms。K1 没有除躯干外的独有护甲部件，即使与头盔 K3 一起映射，护甲也保持 Unavailable，而 K3 按 2b 保留为 Mapped。
 			WriteMod(mods, "A", "m1", BodyUnit,
 				"{\"schema\":\"hd2mod.low-pollution-layout/1\",\"mode\":\"two-slot\",\"headMerge\":true,\"units\":["
 				+ $"{{\"role\":\"head-body\",\"unit\":\"{BodyUnit}\"}},{{\"role\":\"arms\",\"unit\":\"{ArmsUnit}\"}}]}}");
-			var snapshot = Snapshot(World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]));
+			var noArmorArms = Snapshot(World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]));
 			var deployed = new HashSet<ulong> { Convert.ToUInt64(BodyUnit, 16), Convert.ToUInt64(ArmsUnit, 16) };
 
-			var combo = LowPollutionMappingService.Plan(mods, snapshot, [new(1, null, "m1"), new(3, null, "m1")], deployed);
-			Assert.All(combo, plan => Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status));
+			var combo = LowPollutionMappingService.Plan(mods, noArmorArms, [new(1, null, "m1"), new(3, null, "m1")], deployed)
+				.ToDictionary(plan => plan.TargetItemId);
+			Assert.Equal(LowPollutionMappingStatus.Unavailable, combo[1].Status);
+			Assert.Equal(LowPollutionMappingStatus.Mapped, combo[3].Status);
+			Assert.Empty(combo[3].Links);
+			Assert.Empty(combo[3].Hide);
+			Assert.Empty(LowPollutionHiderRules.Build(combo.Values));
 
-			var alone = LowPollutionMappingService.Plan(mods, snapshot, [new(1, null, "m1")], deployed);
-			Assert.Equal(LowPollutionMappingStatus.Unavailable, Assert.Single(alone).Status);
+			// 仅映射 K3 头盔时同样不可。
+			var helmetOnly = LowPollutionMappingService.Plan(mods, noArmorArms, [new(3, null, "m1")], deployed);
+			Assert.Equal(LowPollutionMappingStatus.Unavailable, Assert.Single(helmetOnly).Status);
+
+			// 护甲自身具备手臂承载件时，整套均可映射，且 K1 会隐藏 K3/K4 的原版头盔部件。
+			var fullCombo = LowPollutionMappingService.Plan(mods, Snapshot(World()), [new(1, null, "m1"), new(3, null, "m1")], deployed)
+				.ToDictionary(plan => plan.TargetItemId);
+			Assert.All(fullCombo.Values, plan => Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status));
+			Assert.Contains(Hex(0x1001), fullCombo[1].Hide);
+			Assert.Contains(Hex(0x1002), fullCombo[1].Hide);
 		}
 		finally
 		{
@@ -200,18 +215,165 @@ public sealed class LowPollutionMappingTests
 		}
 	}
 
-	[Fact]
-	public void NoUniqueTorso_IsUnavailable_NeverFallsBackToTheSharedOne()
+	[Theory]
+	[InlineData(false, false, false, false, false, true)]
+	[InlineData(true, false, false, false, false, false)]
+	[InlineData(false, true, false, false, false, false)]
+	[InlineData(false, false, true, false, false, true)] // 口径二：0x… 未命名内部记录不拦截孪生共享
+	[InlineData(false, false, false, false, true, false)]
+	[InlineData(false, false, false, true, false, true)]
+	public void Service_SharesTwinCarriersOnlyWhenEveryOwnerHasTheSameLink(
+		bool omitTwin, bool differentModel, bool addUnnamedOwner, bool changeTwinLayer, bool addNonPlayerOwner, bool expectedMapped)
 	{
-		// 0x2001 也被 K2 拥有 ⇒ 躯干部件都被共用。
-		var kits = World();
-		kits[1] = Kit(2, 200, GameDataEquipmentKitKind.Armor, null,
-			P(1, 0, 3, 0xcafe), P(2, 0, 3, 0x2000), P(2, 1, 3, 0x2001), P(3, 0, 3, 0x3000), P(6, 0, 3, 0x6000));
-		var plan = Plan(kits, Layout(headMerge: false));
+		var mods = Path.Combine(Path.GetTempPath(), "hd2-lp-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			var layout = $$"""
+				{"schema":"hd2mod.low-pollution-layout/1","mode":"three-slot","headMerge":false,
+				 "units":[{"role":"body","unit":"{{BodyUnit}}"},{"role":"arms","unit":"{{ArmsUnit}}"}]}
+				""";
+			WriteMod(mods, "A", "m1", BodyUnit, layout);
+			WriteMod(mods, "B", "m2", BodyUnit, layout);
+			var twinParts = new[] { P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100), P(7, 1, 3, 0x7100) };
+			var kits = new List<GameDataAuthorityKit>
+			{
+				Kit(1, 100, GameDataEquipmentKitKind.Armor, "Twin A", [P(1, 0, 3, 0xcafe), .. twinParts]),
+				Kit(2, 200, GameDataEquipmentKitKind.Armor, "Twin B",
+					[P(1, 0, 3, 0xbeef), .. (changeTwinLayer ? twinParts.Select(piece => piece with { PieceType = 0u }) : twinParts.Reverse())]),
+				Kit(3, 300, GameDataEquipmentKitKind.Armor, "Other", P(2, 1, 3, 0x2300), P(6, 1, 3, 0x6300), P(7, 1, 3, 0x7100)),
+			};
+			if (addUnnamedOwner)
+				kits.Add(Kit(4, 400, GameDataEquipmentKitKind.Armor, "0x00000004", twinParts));
+			if (addNonPlayerOwner)
+				kits.Add(Kit(5, 500, GameDataEquipmentKitKind.Unknown, "Twin NonPlayer", twinParts));
+			var snapshot = Snapshot(kits);
+			var deployed = new HashSet<ulong> { Convert.ToUInt64(BodyUnit, 16), Convert.ToUInt64(ArmsUnit, 16) };
+			var mappings = new List<RuntimeArmorRegistryMapping> { new(3, null, "m1"), new(1, null, "m1") };
+			if (!omitTwin) mappings.Add(new(2, null, differentModel ? "m2" : "m1"));
+			var plans = LowPollutionMappingService.Plan(mods, snapshot, mappings, deployed).ToDictionary(plan => plan.TargetItemId);
 
+			Assert.Equal(Plan(kits, Layout(headMerge: false, head: false), item: 3).Links, plans[3].Links);
+			var links = WardrobeLinkCompiler.Compile(snapshot, mappings, 1, true, lowPollution: plans);
+			Assert.Equal(0, links.LowPollutionConflicts);
+			if (expectedMapped)
+			{
+				Assert.Equal(LowPollutionMappingStatus.Mapped, plans[1].Status);
+				Assert.Equal(LowPollutionMappingStatus.Mapped, plans[2].Status);
+				Assert.Equal(plans[1].Links, plans[2].Links);
+				Assert.Equal(4, links.LowPollutionLinkCount);
+				Assert.Single(links.Text.Split('\n'), line => line == $"link={Hex(0x2100)},{BodyUnit}");
+				var rule = Assert.Single(LowPollutionHiderRules.Build(plans.Values), rule => rule.All.Contains(Hex(0x2100)));
+				Assert.Contains(Hex(0x7100), rule.Hide);
+			}
+			else
+			{
+				Assert.Equal(LowPollutionMappingStatus.Unavailable, plans[1].Status);
+				Assert.Empty(plans[1].Links);
+				Assert.Equal(2, links.LowPollutionLinkCount);
+			}
+		}
+		finally
+		{
+			Directory.Delete(mods, recursive: true);
+		}
+	}
+
+	[Fact]
+	public void Service_RejectsASharedBodyWhenOnlyOneTwinCanPlaceItsArms()
+	{
+		var mods = Path.Combine(Path.GetTempPath(), "hd2-lp-" + Guid.NewGuid().ToString("N"));
+		try
+		{
+			WriteMod(mods, "A", "m1", BodyUnit, $$"""
+				{"schema":"hd2mod.low-pollution-layout/1","mode":"two-slot","headMerge":true,
+				 "units":[{"role":"head-body","unit":"{{BodyUnit}}"},{"role":"arms","unit":"{{ArmsUnit}}"}]}
+				""");
+			var snapshot = Snapshot([
+				Kit(1, 100, GameDataEquipmentKitKind.Armor, "Twin A", P(2, 0, 3, 0x2100)),
+				Kit(2, 200, GameDataEquipmentKitKind.Armor, "Twin B", P(2, 0, 3, 0x2100)),
+				Kit(3, 100, GameDataEquipmentKitKind.Helmet, "Helmet A", P(0, 0, 3, 0x1100)),
+			]);
+			var deployed = new HashSet<ulong> { Convert.ToUInt64(BodyUnit, 16), Convert.ToUInt64(ArmsUnit, 16) };
+			var plans = LowPollutionMappingService.Plan(mods, snapshot, [new(1, null, "m1"), new(2, null, "m1"), new(3, null, "m1")], deployed);
+			Assert.All(plans.Where(plan => plan.TargetItemId is 1 or 2), plan => Assert.Equal(LowPollutionMappingStatus.Unavailable, plan.Status));
+			Assert.Empty(LowPollutionHiderRules.Build(plans));
+		}
+		finally
+		{
+			Directory.Delete(mods, recursive: true);
+		}
+	}
+
+	[Fact]
+	public void NoUniqueTorso_HangsTheBodyOnAnotherUniquePart_NeverOnTheSharedTorso()
+	{
+		// 0x2001 也被 K2 拥有 ⇒ 躯干部件都被共用。K1 还剩独有的左臂 0x6001、右臂 0x7001（规划 §16）。
+		static List<GameDataAuthorityKit> SharedTorso(Func<List<GameDataAuthorityPiece>, List<GameDataAuthorityPiece>>? edit = null)
+		{
+			var kits = World(edit);
+			kits[1] = Kit(2, 200, GameDataEquipmentKitKind.Armor, null,
+				P(1, 0, 3, 0xcafe), P(2, 0, 3, 0x2000), P(2, 1, 3, 0x2001), P(3, 0, 3, 0x3000), P(6, 0, 3, 0x6000));
+			return kits;
+		}
+
+		var plan = Plan(SharedTorso(), Layout(headMerge: false));
+		Assert.True(plan.Status == LowPollutionMappingStatus.Mapped, plan.Reason);
+		Assert.Equal(
+			[new LowPollutionLink(Hex(0x6001), BodyUnit), new LowPollutionLink(Hex(0x7001), ArmsUnit)],
+			plan.Links);
+		Assert.DoesNotContain(plan.Links, link => link.Carrier is "0000000000002000" or "0000000000002001");
+		Assert.Equal([Hex(0x6001)], plan.Signature);
+		Assert.Contains(Hex(0x2001), plan.Hide);
+		Assert.Contains(plan.Notes, note => note.Contains("身体改挂在「左臂」", StringComparison.Ordinal) && note.Contains("第一人称", StringComparison.Ordinal));
+
+		// 胯 / 腿优先于手臂：加一个独有的左腿 0x4001 ⇒ 身体落在左腿，手臂照旧落在左臂。
+		var leg = Plan(SharedTorso(t => [.. t, P(4, 1, 3, 0x4001)]), Layout(headMerge: false));
+		Assert.True(leg.Status == LowPollutionMappingStatus.Mapped, leg.Reason);
+		Assert.Equal(BodyUnit, leg.Links.Single(link => link.Carrier == Hex(0x4001)).Unit);
+		Assert.Equal(ArmsUnit, leg.Links.Single(link => link.Carrier == Hex(0x6001)).Unit);
+
+		// 只剩一个独有部件、布局有「身体+手臂」合体 unit（§17）⇒ 承载件改挂合体 unit，整套映射。
+		var merged = Plan(SharedTorso(t => [.. t.Where(piece => piece.UnitAssetKey.FileId != 0x7001)]), Layout(headMerge: false, bodyArms: true));
+		Assert.True(merged.Status == LowPollutionMappingStatus.Mapped, merged.Reason);
+		Assert.Equal([new LowPollutionLink(Hex(0x6001), BodyArmsUnit)], merged.Links);
+		Assert.Equal([Hex(0x6001)], merged.Signature);
+		Assert.Equal([BodyUnit, BodyArmsUnit], merged.UnitSignature);
+		Assert.Contains(merged.Notes, note => note.Contains("身体和手臂合成一个 unit", StringComparison.Ordinal));
+		// 有两个独有部件时不用合体 unit。
+		Assert.DoesNotContain(Plan(SharedTorso(), Layout(headMerge: false, bodyArms: true)).Links, link => link.Unit == BodyArmsUnit);
+
+		// 只剩一个独有部件、布局里没有合体 unit（旧布局）⇒ 手臂没处放，整套不可（Q1：不做半套）。
+		var one = Plan(SharedTorso(t => [.. t.Where(piece => piece.UnitAssetKey.FileId != 0x7001)]), Layout(headMerge: false));
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, one.Status);
+		Assert.Contains("手臂", one.Reason, StringComparison.Ordinal);
+		// 素体没有手臂槽时，一个独有部件就够。
+		Assert.Equal(LowPollutionMappingStatus.Mapped,
+			Plan(SharedTorso(t => [.. t.Where(piece => piece.UnitAssetKey.FileId != 0x7001)]), Layout(headMerge: false, arms: false)).Status);
+
+		// 连别的独有部件也没有 ⇒ 仍然不可（这里 K2 拥有 K1 的全部部件，原因是换色孪生）。
+		var none = Plan(SharedTorso(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]), Layout(headMerge: false));
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, none.Status);
+		Assert.Empty(none.Links);
+		Assert.Contains("只有颜色不同", none.Reason, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void BodyArms_IsNeverUsedWhenTheBodySitsOnTheTorso()
+	{
+		// 独有躯干 0x2001 在，躯干外没有别的独有部件：合体 unit 放在躯干上第一人称下手臂会跟着消失 ⇒ 不用，照旧不可（3 槽）。
+		var kits = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]);
+		var plan = Plan(kits, Layout(headMerge: false, bodyArms: true));
 		Assert.Equal(LowPollutionMappingStatus.Unavailable, plan.Status);
-		Assert.Empty(plan.Links);
-		Assert.Contains("躯干", plan.Reason, StringComparison.Ordinal);
+		Assert.Contains("手臂", plan.Reason, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void Freshness_ALayoutWithoutBodyArms_IsStale()
+	{
+		Assert.True(LowPollutionFreshness.MissesBodyArms(Layout(headMerge: false)));
+		Assert.True(LowPollutionFreshness.MissesBodyArms(Layout(headMerge: true)));
+		Assert.False(LowPollutionFreshness.MissesBodyArms(Layout(headMerge: false, bodyArms: true)));
+		Assert.False(LowPollutionFreshness.MissesBodyArms(Layout(headMerge: false, arms: false)));
 	}
 
 	[Fact]
@@ -229,16 +391,22 @@ public sealed class LowPollutionMappingTests
 	}
 
 	[Fact]
-	public void SameNameGroup_RelaxesUniqueness_LikeTheExclusivePlanner()
+	public void SameNameGroup_RequiresAllOwnersToMapTheSameModelJointly()
 	{
-		var kits = World();
-		// 同名的另一条记录（item 6）也拥有 0x2001：组内共用，仍算独有（P4b 放宽口径），说明里列出同名记录。
-		kits.Add(Kit(6, 900, GameDataEquipmentKitKind.Armor, "K1", P(2, 1, 3, 0x2001)));
-		var plan = Plan(kits, Layout(headMerge: false));
+		var kits = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId != 0x7001)]);
+		// 同名的另一条记录（item 6）也拥有 0x2001：只映射 item 1 时，未映射的 item 6 也是所有权拥有者，
+		// 阻止单条越权使用 0x2001；剩下的 0x6001 不足以同时映射躯干和手臂。
+		kits.Add(Kit(6, 900, GameDataEquipmentKitKind.Armor, "K1", P(2, 1, 3, 0x2001), P(6, 1, 3, 0x6006)));
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var single = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: false), 1, "m1");
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, single.Status);
 
-		Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status);
-		Assert.Equal(BodyUnit, plan.Links.Single(link => link.Carrier == Hex(0x2001)).Unit);
-		Assert.Contains(plan.Notes, note => note.Contains("K1（6）", StringComparison.Ordinal));
+		// 两条同名记录一起映射到同一个素体时，0x2001 全组达成共识，各自再把手臂挂到自己的非躯干独有件上。
+		var group = LowPollutionMappingPlanner.PlanArmorGroup(index, Layout(headMerge: false), [1, 6], "m1");
+		Assert.Equal(LowPollutionMappingStatus.Mapped, group[1].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, group[6].Status);
+		Assert.Equal(BodyUnit, group[1].Links.Single(link => link.Carrier == Hex(0x2001)).Unit);
+		Assert.Equal(BodyUnit, group[6].Links.Single(link => link.Carrier == Hex(0x2001)).Unit);
 	}
 
 	[Fact]
@@ -948,6 +1116,148 @@ public sealed class LowPollutionMappingTests
 			await File.ReadAllTextAsync(Path.Combine(env.Registry, RuntimeArmorRegistryService.ProtocolFileName)));
 		Assert.Equal("m1", Assert.Single(protocol.Mappings).ModelKey);
 	}
+
+	[Fact]
+	public void PlanArmorGroup_ConstrainedTwinAndPartialPrivateSibling_ShareConsensusCarrierCleanly()
+	{
+		// B-01 / TR-40 模式：Twin A / Twin B 在所有拥有者均已映射到同一素体时，按全组共识把 Body 放共享躯干、Arms 放全组共用手臂；
+		// 即使同组中另有一套 Brother C 拥有自己的私有躯干 0x2003、仅在 0x6001 上与孪生体共用，三套仍可联合成功。
+		var kits = new List<GameDataAuthorityKit>
+		{
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, "Twin A", P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100)),
+			Kit(2, 200, GameDataEquipmentKitKind.Armor, "Twin B", P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100)),
+			Kit(3, 300, GameDataEquipmentKitKind.Armor, "Brother C", P(2, 1, 3, 0x2300), P(6, 1, 3, 0x6100)),
+		};
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var plans = LowPollutionMappingPlanner.PlanArmorGroup(index, Layout(headMerge: false), [1, 2, 3], "m1");
+
+		Assert.All(plans.Values, plan => Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status));
+		Assert.Equal(plans[1].Links, plans[2].Links);
+		Assert.Equal([new LowPollutionLink(Hex(0x2100), BodyUnit), new LowPollutionLink(Hex(0x6100), ArmsUnit)], plans[1].Links);
+		Assert.Equal([new LowPollutionLink(Hex(0x2300), BodyUnit), new LowPollutionLink(Hex(0x6100), ArmsUnit)], plans[3].Links);
+	}
+
+	[Fact]
+	public void PlanArmorGroup_JointTwinBodyArmsFallback_AndTorsoPreferenceAvoidStarvation()
+	{
+		// 1) 当孪生组在非躯干与躯干都有共用件时，HasTorsoOnAll 优先将躯干放回 torso，不抢走唯一非躯干 arms 承载件。
+		var withSharedArm = new List<GameDataAuthorityKit>
+		{
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, "Twin A", P(2, 0, 3, 0x2100), P(6, 2, 3, 0x6100)),
+			Kit(2, 200, GameDataEquipmentKitKind.Armor, "Twin B", P(2, 0, 3, 0x2100), P(6, 2, 3, 0x6100)),
+		};
+		var mappedNormal = LowPollutionMappingPlanner.PlanArmorGroup(
+			SectionalExclusivePlanner.BuildIndex(withSharedArm), Layout(headMerge: false, bodyArms: true), [1, 2], "m1");
+		Assert.All(mappedNormal.Values, plan => Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status));
+		Assert.Equal([new LowPollutionLink(Hex(0x2100), BodyUnit), new LowPollutionLink(Hex(0x6100), ArmsUnit)], mappedNormal[1].Links);
+		Assert.Equal(mappedNormal[1].Links, mappedNormal[2].Links);
+
+		// 2) 当孪生组躯干与外界共用、只剩唯一全组共用非躯干部件 0x6100，且布局带 body-arms 时，联合规划共同回退到 BodyArmsUnit。
+		var sharedTorsoOneArm = new List<GameDataAuthorityKit>
+		{
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, "Twin A", P(2, 0, 3, 0x2000), P(6, 1, 3, 0x6100)),
+			Kit(2, 200, GameDataEquipmentKitKind.Armor, "Twin B", P(2, 0, 3, 0x2000), P(6, 1, 3, 0x6100)),
+			Kit(3, 300, GameDataEquipmentKitKind.Armor, "Unmapped Other", P(2, 0, 3, 0x2000), P(6, 1, 3, 0x6300)),
+		};
+		var mappedBodyArms = LowPollutionMappingPlanner.PlanArmorGroup(
+			SectionalExclusivePlanner.BuildIndex(sharedTorsoOneArm), Layout(headMerge: false, bodyArms: true), [1, 2], "m1");
+		Assert.All(mappedBodyArms.Values, plan => Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status));
+		Assert.Equal([new LowPollutionLink(Hex(0x6100), BodyArmsUnit)], mappedBodyArms[1].Links);
+		Assert.Equal(mappedBodyArms[1].Links, mappedBodyArms[2].Links);
+	}
+
+	[Fact]
+	public void PlanArmorGroup_NonPlayerOwnerStripsAffectedTwinsWhileIndependentSiblingSurvives()
+	{
+		// 非玩家记录或未映射拥有者污染 0x6100 时，依赖它的 Twin A/B 整套剥除；有自己私有 0x6300 的 Brother C 不受牵连、单独成功。
+		var kits = new List<GameDataAuthorityKit>
+		{
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, "Twin A", P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100)),
+			Kit(2, 200, GameDataEquipmentKitKind.Armor, "Twin B", P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100)),
+			Kit(3, 300, GameDataEquipmentKitKind.Armor, "Brother C", P(2, 1, 3, 0x2300), P(6, 1, 3, 0x6100), P(7, 1, 3, 0x6300)),
+			Kit(4, 400, GameDataEquipmentKitKind.Unknown, "NPC", P(2, 1, 3, 0x2400), P(6, 1, 3, 0x6100)),
+		};
+		var plans = LowPollutionMappingPlanner.PlanArmorGroup(
+			SectionalExclusivePlanner.BuildIndex(kits), Layout(headMerge: false), [1, 2, 3], "m1");
+
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, plans[1].Status);
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, plans[2].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, plans[3].Status);
+		Assert.Equal([new LowPollutionLink(Hex(0x2300), BodyUnit), new LowPollutionLink(Hex(0x6300), ArmsUnit)], plans[3].Links);
+	}
+
+	[Fact]
+	public void PlanArmorGroup_IgnoresUnnamedAndUnobtainableNonPlayerOwners_RescuingTwins()
+	{
+		// 口径二：未命名 0x… 记录与「拿不到」的非玩家记录（2107035846 / 1969314276）不拦截共用承载件。
+		var kits = new List<GameDataAuthorityKit>
+		{
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, "SC-37", P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100)),
+			Kit(2, 200, GameDataEquipmentKitKind.Armor, "AF-50", P(2, 1, 3, 0x2200), P(6, 1, 3, 0x6100)),
+			Kit(3, 300, GameDataEquipmentKitKind.Armor, "0xe1e36c37", P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100)),
+			Kit(2107035846u, 400, GameDataEquipmentKitKind.Armor, "CM-09", P(2, 1, 3, 0x2100), P(6, 1, 3, 0x6100)),
+		};
+		var plans = LowPollutionMappingPlanner.PlanArmorGroup(
+			SectionalExclusivePlanner.BuildIndex(kits), Layout(headMerge: false), [1, 2], "m1");
+
+		Assert.Equal(LowPollutionMappingStatus.Mapped, plans[1].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, plans[2].Status);
+		Assert.Equal([new LowPollutionLink(Hex(0x2100), BodyUnit), new LowPollutionLink(Hex(0x6100), ArmsUnit)], plans[1].Links);
+		Assert.Equal([new LowPollutionLink(Hex(0x2200), BodyUnit), new LowPollutionLink(Hex(0x6100), ArmsUnit)], plans[2].Links);
+		Assert.DoesNotContain(plans[1].Notes, note => note.Contains("0xe1e36c37", StringComparison.Ordinal));
+		Assert.DoesNotContain(plans[1].Notes, note => note.Contains("2107035846", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void PlanArmorGroup_DemocracyOfficerNpcStillBlocksUnmappedTorsoUnlessJointlyMapped()
+	{
+		// 口径二：会在船上出场的民主官 NPC（124623533）未入组时仍拦阻共用躯干；同组入组时达成共识。
+		var kits = new List<GameDataAuthorityKit>
+		{
+			Kit(1490803405u, 100, GameDataEquipmentKitKind.Armor, "FS-05", P(2, 1, 3, 0x2500), P(8, 1, 3, 0x8500)),
+			Kit(KitNonPlayerArmors.DemocracyOfficerArmorId, 100, GameDataEquipmentKitKind.Armor, "FS-05", P(2, 1, 3, 0x2500), P(6, 1, 3, 0x6500)),
+			Kit(3, 300, GameDataEquipmentKitKind.Armor, "Other", P(2, 1, 3, 0x2300), P(6, 1, 3, 0x6300)),
+		};
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+
+		var blocked = LowPollutionMappingPlanner.PlanArmorGroup(index, Layout(headMerge: false), [1490803405u, 3u], "m1");
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, blocked[1490803405u].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, blocked[3u].Status);
+
+		var joint = LowPollutionMappingPlanner.PlanArmorGroup(
+			index, Layout(headMerge: false), [1490803405u, KitNonPlayerArmors.DemocracyOfficerArmorId], "m1");
+		Assert.Equal(LowPollutionMappingStatus.Mapped, joint[1490803405u].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Status);
+	}
+
+	[Fact]
+	public void PlanArmorGroup_PrioritizesTightlyConstrainedBodyArms_RescuingFs05WhenSiblingSharesTorso()
+	{
+		// FS-05 1490803405（未知）与 CE-67 共用 0x2c00 躯干、且两套玩家版 1490803405/3970674111 共用 0x8500 左肩（不牵连民主官 NPC 124623533）：
+		// 即使按 ItemId 排序 1490803405 在 3970674111 之前，MRV 也必须先让只有 1 个可用承载件的 3970674111 锁定 0x8500 -> body-arms，
+		// 不让 1490803405 抢先占位 0x2c00 导致双方全部失败。
+		var kits = new List<GameDataAuthorityKit>
+		{
+			Kit(1490803405u, 100, GameDataEquipmentKitKind.Armor, "FS-05",
+				P(2, 1, 3, 0x2500), P(2, 1, 3, 0x2c00), P(8, 1, 3, 0x8500)),
+			Kit(3970674111u, 100, GameDataEquipmentKitKind.Armor, "FS-05",
+				P(2, 1, 3, 0x2500), P(8, 1, 3, 0x8500)),
+			Kit(KitNonPlayerArmors.DemocracyOfficerArmorId, 100, GameDataEquipmentKitKind.Armor, "FS-05",
+				P(2, 1, 3, 0x2500), P(8, 1, 3, 0x8000)),
+			Kit(4081083564u, 200, GameDataEquipmentKitKind.Armor, "CE-67",
+				P(2, 1, 3, 0x2c00), P(2, 1, 3, 0x2e00), P(6, 1, 3, 0x6e00)),
+		};
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var plans = LowPollutionMappingPlanner.PlanArmorGroup(
+			index, Layout(headMerge: true, bodyArms: true), [1490803405u, 3970674111u, 4081083564u], "m1");
+
+		Assert.Equal(LowPollutionMappingStatus.Mapped, plans[1490803405u].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, plans[3970674111u].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, plans[4081083564u].Status);
+		Assert.Equal([new LowPollutionLink(Hex(0x8500), BodyArmsUnit)], plans[1490803405u].Links);
+		Assert.Equal([new LowPollutionLink(Hex(0x8500), BodyArmsUnit)], plans[3970674111u].Links);
+		Assert.Equal([new LowPollutionLink(Hex(0x2e00), BodyUnit), new LowPollutionLink(Hex(0x6e00), ArmsUnit)], plans[4081083564u].Links);
+	}
 }
 
 /// <summary>
@@ -1031,11 +1341,12 @@ public sealed class LowPollutionMappingRealDataTests(Xunit.Abstractions.ITestOut
 			foreach (var group in armors.Where(plan => plan.Status != LowPollutionMappingStatus.Mapped)
 				.GroupBy(plan => plan.Reason!.Length > 24 ? plan.Reason![..24] : plan.Reason!).OrderByDescending(group => group.Count()))
 				output.WriteLine($"  不可 ×{group.Count()}：{group.First().Reason}（例：{group.First().TargetName}）");
-			foreach (var name in new[] { "DS-42", "CE-67" })
+			foreach (var name in new[] { "DS-42", "CE-67", "B-08" })
 			{
 				var example = armors.FirstOrDefault(plan => plan.TargetName.StartsWith(name, StringComparison.Ordinal));
 				if (example is not null)
 					output.WriteLine($"  {example.TargetName}：{example.Status} links={example.Links.Count} hide={example.Hide.Count} sig={string.Join('/', example.Signature)} {example.Reason}");
+				if (example is not null) foreach (var note in example.Notes) output.WriteLine($"    · {note}");
 			}
 
 			Assert.Equal(0, dropped);

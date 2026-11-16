@@ -31,7 +31,13 @@ public sealed record ArmorMappingPickerRowPlan(
 	bool IsBlocked,
 	string? BlockedReason,
 	uint SetId,
-	uint DlcId);
+	uint DlcId)
+{
+	public bool IsTwinBundle { get; init; }
+	public int TwinSetCount { get; init; }
+	public string? TwinBundleNote { get; init; }
+	public bool HasSharedTwinHelmetOnly { get; init; }
+}
 
 /// <summary>右侧「可用护甲」三选项卡完整投影结果。</summary>
 public sealed record ArmorMappingPickerProjection(
@@ -68,16 +74,23 @@ public static class ArmorMappingPickerPlanner
 		IReadOnlyList<RuntimeArmorCatalogEntry> Members,
 		bool IsDemocracyOfficerNpc = false,
 		bool AllowPairing = true,
-		string? CustomSelectionKey = null)
+		string? CustomSelectionKey = null,
+		bool IsTwinBundle = false,
+		int TwinSetCount = 1,
+		string? TwinBundleNote = null)
 	{
 		public RuntimeArmorCatalogEntry Primary => Members[0];
 		public IReadOnlyList<uint> MemberIds { get; } = Members.Select(entry => entry.ItemId).ToArray();
 	}
 
 	/// <summary>构建静态三选项卡基础分组（只依赖目录本身，可在目录加载/刷新时缓存）。</summary>
-	public static ArmorMappingPickerBaseCatalog BuildBaseCatalog(IReadOnlyList<RuntimeArmorCatalogEntry> catalog)
+	public static ArmorMappingPickerBaseCatalog BuildBaseCatalog(
+		IReadOnlyList<RuntimeArmorCatalogEntry> catalog,
+		ArmorTwinIndex? twinIndex = null,
+		bool? twinBundlingEnabled = null)
 	{
 		ArgumentNullException.ThrowIfNull(catalog);
+		var useTwinBundling = (twinBundlingEnabled ?? ArmorTwinBundling.TwinBundlingEnabled) && twinIndex is not null;
 
 		var armorGroups = new List<PickerGroup>();
 		var helmetGroups = new List<PickerGroup>();
@@ -129,13 +142,20 @@ public static class ArmorMappingPickerPlanner
 		foreach (var (nameKey, list) in helmetsByName)
 			helmetGroups.Add(new PickerGroup(nameKey, list[0].DisplayName.Trim(), GameDataEquipmentKitKind.Helmet, list));
 
-		var armorRows = armorGroups
+		var displayArmorGroups = useTwinBundling
+			? BundleGroups(armorGroups, twinIndex!, keyPrefix: "twin:armor:")
+			: armorGroups;
+		var displayHelmetGroups = useTwinBundling
+			? BundleGroups(helmetGroups, twinIndex!, keyPrefix: "twin:helmet:")
+			: helmetGroups;
+
+		var armorRows = displayArmorGroups
 			.Select(BuildArmorRow)
 			.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
 			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
 			.ToArray();
 
-		var helmetRows = helmetGroups
+		var helmetRows = displayHelmetGroups
 			.Select(BuildHelmetRow)
 			.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
 			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
@@ -144,8 +164,7 @@ public static class ArmorMappingPickerPlanner
 		var pairableArmors = armorGroups.Where(group => group.AllowPairing).ToList();
 		var pairableHelmets = helmetGroups.Where(group => group.AllowPairing).ToList();
 		var (pairs, _, _) = PairGroups(pairableArmors, pairableHelmets);
-		var setRows = pairs
-			.Select(pair => BuildSetRow(pair.Armor, pair.Helmet, keyPrefix: "set:"))
+		var setRows = BuildSetRows(pairs, useTwinBundling ? twinIndex : null, keyPrefix: "set:", twinKeyPrefix: "twin:set:")
 			.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
 			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
 			.ToArray();
@@ -199,10 +218,13 @@ public static class ArmorMappingPickerPlanner
 	/// 并按与右侧一致的同名去重 + 三轮套装配对口径把同一视觉来源名下的目标合并显示。
 	/// </summary>
 	public static IReadOnlyList<ArmorMappingPickerRowPlan> BuildTargetGroupPlans(
-		IReadOnlyList<RuntimeArmorCatalogEntry> targetEntries)
+		IReadOnlyList<RuntimeArmorCatalogEntry> targetEntries,
+		ArmorTwinIndex? twinIndex = null,
+		bool? twinBundlingEnabled = null)
 	{
 		ArgumentNullException.ThrowIfNull(targetEntries);
 		if (targetEntries.Count == 0) return [];
+		var useTwinBundling = (twinBundlingEnabled ?? ArmorTwinBundling.TwinBundlingEnabled) && twinIndex is not null;
 
 		var armorsByName = new Dictionary<string, List<RuntimeArmorCatalogEntry>>(StringComparer.OrdinalIgnoreCase);
 		var helmetsByName = new Dictionary<string, List<RuntimeArmorCatalogEntry>>(StringComparer.OrdinalIgnoreCase);
@@ -258,11 +280,18 @@ public static class ArmorMappingPickerPlanner
 			.ToList();
 
 		var (pairs, unpairedArmors, unpairedHelmets) = PairGroups(armorGroups, helmetGroups);
+		var bundledUnpairedArmors = useTwinBundling
+			? BundleGroups(unpairedArmors, twinIndex!, keyPrefix: "detail:twin:armor:")
+			: unpairedArmors;
+		var bundledUnpairedHelmets = useTwinBundling
+			? BundleGroups(unpairedHelmets, twinIndex!, keyPrefix: "detail:twin:helmet:")
+			: unpairedHelmets;
+		var setRows = BuildSetRows(pairs, useTwinBundling ? twinIndex : null, keyPrefix: "detail:set:", twinKeyPrefix: "detail:twin:set:", expandSharedTwinHelmetOnly: false);
 
-		var result = new List<ArmorMappingPickerRowPlan>(pairs.Count + unpairedArmors.Count + unpairedHelmets.Count + soloRows.Count);
-		result.AddRange(pairs.Select(pair => BuildSetRow(pair.Armor, pair.Helmet, keyPrefix: "detail:set:")));
-		result.AddRange(unpairedArmors.Select(group => BuildArmorRow(group, keyPrefix: "detail:armor:")));
-		result.AddRange(unpairedHelmets.Select(group => BuildHelmetRow(group, keyPrefix: "detail:helmet:")));
+		var result = new List<ArmorMappingPickerRowPlan>(setRows.Count + bundledUnpairedArmors.Count + bundledUnpairedHelmets.Count + soloRows.Count);
+		result.AddRange(setRows);
+		result.AddRange(bundledUnpairedArmors.Select(group => BuildArmorRow(group, keyPrefix: "detail:armor:")));
+		result.AddRange(bundledUnpairedHelmets.Select(group => BuildHelmetRow(group, keyPrefix: "detail:helmet:")));
 		result.AddRange(soloRows);
 
 		return result
@@ -349,7 +378,7 @@ public static class ArmorMappingPickerPlanner
 
 	private static ArmorMappingPickerRowPlan BuildArmorRow(PickerGroup group, string keyPrefix)
 	{
-		var selectionKey = group.CustomSelectionKey is { Length: > 0 } custom && keyPrefix == "armor:"
+		var selectionKey = group.CustomSelectionKey is { Length: > 0 } custom && (keyPrefix == "armor:" || group.IsTwinBundle)
 			? custom
 			: keyPrefix + group.NormalizedNameKey;
 		return new ArmorMappingPickerRowPlan(
@@ -358,7 +387,7 @@ public static class ArmorMappingPickerPlanner
 			PrimaryItemId: group.Primary.ItemId,
 			PrimaryArchiveId: group.Primary.ArchiveId,
 			Name: group.DisplayName,
-			TypeLabel: "护甲",
+			TypeLabel: group.IsTwinBundle ? "换色孪生 · 护甲" : "护甲",
 			KitKind: GameDataEquipmentKitKind.Armor,
 			ArmorMemberIds: group.MemberIds,
 			HelmetMemberIds: [],
@@ -369,20 +398,29 @@ public static class ArmorMappingPickerPlanner
 			IsBlocked: false,
 			BlockedReason: null,
 			SetId: group.Primary.SetId,
-			DlcId: group.Primary.DlcId);
+			DlcId: group.Primary.DlcId)
+		{
+			IsTwinBundle = group.IsTwinBundle,
+			TwinSetCount = group.TwinSetCount,
+			TwinBundleNote = group.TwinBundleNote,
+		};
 	}
 
 	private static ArmorMappingPickerRowPlan BuildHelmetRow(PickerGroup group)
 		=> BuildHelmetRow(group, keyPrefix: "helmet:");
 
 	private static ArmorMappingPickerRowPlan BuildHelmetRow(PickerGroup group, string keyPrefix)
-		=> new(
-			SelectionKey: keyPrefix + group.NormalizedNameKey,
+	{
+		var selectionKey = group.CustomSelectionKey is { Length: > 0 } custom && group.IsTwinBundle
+			? custom
+			: keyPrefix + group.NormalizedNameKey;
+		return new(
+			SelectionKey: selectionKey,
 			Tab: ArmorMappingPickerTab.Helmet,
 			PrimaryItemId: group.Primary.ItemId,
 			PrimaryArchiveId: group.Primary.ArchiveId,
 			Name: group.DisplayName,
-			TypeLabel: "头盔",
+			TypeLabel: group.IsTwinBundle ? "换色孪生 · 头盔" : "头盔",
 			KitKind: GameDataEquipmentKitKind.Helmet,
 			ArmorMemberIds: [],
 			HelmetMemberIds: group.MemberIds,
@@ -393,7 +431,186 @@ public static class ArmorMappingPickerPlanner
 			IsBlocked: false,
 			BlockedReason: null,
 			SetId: group.Primary.SetId,
-			DlcId: group.Primary.DlcId);
+			DlcId: group.Primary.DlcId)
+		{
+			IsTwinBundle = group.IsTwinBundle,
+			TwinSetCount = group.TwinSetCount,
+			TwinBundleNote = group.TwinBundleNote,
+		};
+	}
+
+	private static List<PickerGroup> BundleGroups(
+		IReadOnlyList<PickerGroup> groups,
+		ArmorTwinIndex twinIndex,
+		string keyPrefix)
+	{
+		var result = new List<PickerGroup>(groups.Count);
+		var buckets = new Dictionary<ArmorTwinGroup, List<PickerGroup>>();
+		foreach (var group in groups)
+		{
+			if (!group.AllowPairing || !TryFindTwinGroup(group, twinIndex, out var twinGroup))
+			{
+				result.Add(group);
+				continue;
+			}
+
+			if (!buckets.TryGetValue(twinGroup, out var list))
+				buckets[twinGroup] = list = [];
+			list.Add(group);
+		}
+
+		foreach (var (twinGroup, members) in buckets)
+		{
+			if (members.Count < 2)
+			{
+				result.AddRange(members);
+				continue;
+			}
+
+			var ordered = members
+				.OrderBy(item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+				.ThenBy(item => item.NormalizedNameKey, StringComparer.Ordinal)
+				.ToArray();
+			var combinedEntries = ordered
+				.SelectMany(item => item.Members)
+				.DistinctBy(entry => entry.ItemId)
+				.OrderBy(entry => entry.ItemId)
+				.ToArray();
+			var nameKey = string.Join("|", ordered.Select(item => item.NormalizedNameKey));
+			var displayName = string.Join(" / ", ordered.Select(item => item.DisplayName));
+			result.Add(new PickerGroup(
+				NormalizedNameKey: nameKey,
+				DisplayName: displayName,
+				KitKind: ordered[0].KitKind,
+				Members: combinedEntries,
+				IsDemocracyOfficerNpc: false,
+				AllowPairing: true,
+				CustomSelectionKey: keyPrefix + nameKey,
+				IsTwinBundle: true,
+				TwinSetCount: ordered.Length,
+				TwinBundleNote: ArmorTwinBundling.TwinBundleReason));
+		}
+
+		return result;
+	}
+
+	private static IReadOnlyList<ArmorMappingPickerRowPlan> BuildSetRows(
+		IReadOnlyList<(PickerGroup Armor, PickerGroup Helmet)> pairs,
+		ArmorTwinIndex? twinIndex,
+		string keyPrefix,
+		string twinKeyPrefix,
+		bool expandSharedTwinHelmetOnly = true)
+	{
+		if (twinIndex is null)
+			return pairs.Select(pair => BuildSetRow(pair.Armor, pair.Helmet, keyPrefix)).ToArray();
+
+		var buckets = new Dictionary<(ArmorTwinGroup? ArmorTwin, ArmorTwinGroup? HelmetTwin, string FallbackKey), List<(PickerGroup Armor, PickerGroup Helmet)>>();
+		foreach (var pair in pairs)
+		{
+			TryFindTwinGroup(pair.Armor, twinIndex, out var armorTwin);
+			TryFindTwinGroup(pair.Helmet, twinIndex, out var helmetTwin);
+			var key = armorTwin is not null && helmetTwin is not null
+				? (armorTwin, helmetTwin, string.Empty)
+				: (null, null, $"{pair.Armor.NormalizedNameKey}+{pair.Helmet.NormalizedNameKey}");
+			if (!buckets.TryGetValue(key, out var list))
+				buckets[key] = list = [];
+			list.Add(pair);
+		}
+
+		var rows = new List<ArmorMappingPickerRowPlan>(buckets.Count);
+		foreach (var (_, bucket) in buckets)
+		{
+			if (bucket.Count >= 2)
+			{
+				var ordered = bucket
+					.OrderBy(item => item.Armor.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+					.ThenBy(item => item.Armor.NormalizedNameKey, StringComparer.Ordinal)
+					.ToArray();
+				var armorMembers = ordered.SelectMany(item => item.Armor.MemberIds).Distinct().OrderBy(id => id).ToArray();
+				var helmetMembers = ordered.SelectMany(item => item.Helmet.MemberIds).Distinct().OrderBy(id => id).ToArray();
+				var memberIds = armorMembers.Concat(helmetMembers).Distinct().ToArray();
+				var pairNames = ordered.Select(item =>
+					string.Equals(item.Armor.DisplayName, item.Helmet.DisplayName, StringComparison.OrdinalIgnoreCase)
+						? item.Armor.DisplayName
+						: $"{item.Armor.DisplayName} + {item.Helmet.DisplayName}");
+				var selectionKey = twinKeyPrefix + string.Join("|", ordered.Select(item => item.Armor.NormalizedNameKey));
+				var primaryArmor = ordered[0].Armor.Primary;
+				var primaryHelmet = ordered[0].Helmet.Primary;
+				rows.Add(new ArmorMappingPickerRowPlan(
+					SelectionKey: selectionKey,
+					Tab: ArmorMappingPickerTab.Set,
+					PrimaryItemId: primaryArmor.ItemId,
+					PrimaryArchiveId: primaryArmor.ArchiveId,
+					Name: string.Join(" / ", pairNames),
+					TypeLabel: "换色孪生 · 头盔+护甲",
+					KitKind: GameDataEquipmentKitKind.Unknown,
+					ArmorMemberIds: armorMembers,
+					HelmetMemberIds: helmetMembers,
+					MemberItemIds: memberIds,
+					ProviderSourceItemIds: [primaryArmor.ItemId, primaryHelmet.ItemId],
+					VersionCount: Math.Max(armorMembers.Length, helmetMembers.Length),
+					IsDemocracyOfficerNpc: false,
+					IsBlocked: false,
+					BlockedReason: null,
+					SetId: primaryArmor.SetId,
+					DlcId: primaryArmor.DlcId)
+				{
+					IsTwinBundle = true,
+					TwinSetCount = ordered.Length,
+					TwinBundleNote = ArmorTwinBundling.TwinBundleReason,
+				});
+				continue;
+			}
+
+			var single = bucket[0];
+			var baseRow = BuildSetRow(single.Armor, single.Helmet, keyPrefix);
+			if (expandSharedTwinHelmetOnly
+				&& TryFindTwinGroup(single.Helmet, twinIndex, out var sharedHelmetTwin))
+			{
+				var expandedHelmets = single.Helmet.MemberIds
+					.Concat(sharedHelmetTwin.MemberItemIds)
+					.Distinct()
+					.OrderBy(id => id)
+					.ToArray();
+				var expandedMembers = single.Armor.MemberIds
+					.Concat(expandedHelmets)
+					.Distinct()
+					.ToArray();
+				var otherHelmetNames = sharedHelmetTwin.DisplayNames
+					.Where(name => !string.Equals(name, single.Helmet.DisplayName, StringComparison.OrdinalIgnoreCase))
+					.ToArray();
+				var twinNote = otherHelmetNames.Length > 0
+					? $"头盔与 {string.Join(" / ", otherHelmetNames)} 换色孪生（{ArmorTwinBundling.TwinBundleReason}）"
+					: ArmorTwinBundling.TwinBundleReason;
+				baseRow = baseRow with
+				{
+					HelmetMemberIds = expandedHelmets,
+					MemberItemIds = expandedMembers,
+					VersionCount = Math.Max(single.Armor.MemberIds.Count, expandedHelmets.Length),
+					HasSharedTwinHelmetOnly = true,
+					TwinSetCount = sharedHelmetTwin.DisplayNames.Count,
+					TwinBundleNote = twinNote,
+				};
+			}
+			rows.Add(baseRow);
+		}
+
+		return rows;
+	}
+
+	private static bool TryFindTwinGroup(
+		PickerGroup group,
+		ArmorTwinIndex twinIndex,
+		out ArmorTwinGroup twinGroup)
+	{
+		foreach (var id in group.MemberIds)
+		{
+			if (twinIndex.GroupByItemId.TryGetValue(id, out twinGroup!))
+				return true;
+		}
+		twinGroup = null!;
+		return false;
+	}
 
 	private static ArmorMappingPickerRowPlan BuildSetRow(
 		PickerGroup armor,
@@ -579,12 +796,21 @@ public static class ArmorMappingPickerPlanner
 
 		if (row.Tab == ArmorMappingPickerTab.Set)
 		{
-			var managedArmors = row.ArmorMemberIds.Where(managedOwnerByItemId.ContainsKey).ToArray();
-			var managedHelmets = row.HelmetMemberIds.Where(managedOwnerByItemId.ContainsKey).ToArray();
-			var allArmorsManaged = row.ArmorMemberIds.Count > 0 && managedArmors.Length == row.ArmorMemberIds.Count;
-			var allHelmetsManaged = row.HelmetMemberIds.Count > 0 && managedHelmets.Length == row.HelmetMemberIds.Count;
+			var effectiveRow = isTwoSlotCompressedSourceOpen && row.HasSharedTwinHelmetOnly
+				? row with
+				{
+					HelmetMemberIds = [],
+					MemberItemIds = row.ArmorMemberIds,
+					TwinBundleNote = null,
+				}
+				: row;
+			var managedArmors = effectiveRow.ArmorMemberIds.Where(managedOwnerByItemId.ContainsKey).ToArray();
+			var managedHelmets = effectiveRow.HelmetMemberIds.Where(managedOwnerByItemId.ContainsKey).ToArray();
+			var allArmorsManaged = effectiveRow.ArmorMemberIds.Count > 0 && managedArmors.Length == effectiveRow.ArmorMemberIds.Count;
+			var allHelmetsManaged = effectiveRow.HelmetMemberIds.Count == 0
+				|| managedHelmets.Length == effectiveRow.HelmetMemberIds.Count;
 
-			if (allArmorsManaged && allHelmetsManaged)
+			if (allArmorsManaged && (effectiveRow.HelmetMemberIds.Count > 0 ? allHelmetsManaged : true))
 				return null;
 
 			if (managedArmors.Length > 0 && managedHelmets.Length > 0)
@@ -602,6 +828,10 @@ public static class ArmorMappingPickerPlanner
 				isBlocked = true;
 				blockedReason = $"头盔{managedOwnerByItemId[managedHelmets[0]]}";
 			}
+
+			return isBlocked
+				? effectiveRow with { IsBlocked = true, BlockedReason = blockedReason }
+				: effectiveRow;
 		}
 		else
 		{

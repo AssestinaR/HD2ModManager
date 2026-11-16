@@ -205,8 +205,16 @@ public sealed class RuntimeArmorRegistryService
 			cancellationToken).ConfigureAwait(false);
 	}
 
+	/// <summary>
+	/// 覆盖默认注册表目录的环境变量。给测试/沙盒用：部署会读写该目录里的规则文件，
+	/// 不隔离就会读到、甚至改写本机真实的映射数据。显式传入的 overridePath 优先于它。
+	/// </summary>
+	public const string RegistryRootEnvironmentVariable = "HD2_ARMOR_REGISTRY_ROOT";
+
 	public static string ResolveRegistryRoot(string? overridePath = null)
 	{
+		if (string.IsNullOrWhiteSpace(overridePath))
+			overridePath = Environment.GetEnvironmentVariable(RegistryRootEnvironmentVariable);
 		var path = string.IsNullOrWhiteSpace(overridePath)
 			? Path.Combine(
 				Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -669,17 +677,28 @@ public sealed class RuntimeArmorRegistryService
 		var info = new FileInfo(WorkspacePath);
 		if (info.Length > MaximumProtocolBytes * 4)
 			throw new InvalidDataException("护甲注册源文件超过 256 KiB 上限。");
+		if (info.Length == 0)
+		{
+			QuarantineCorruptWorkspace();
+			return new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
+		}
 		var json = await File.ReadAllTextAsync(WorkspacePath, cancellationToken).ConfigureAwait(false);
 		WorkspaceDocument? workspace;
 		try
 		{
 			workspace = JsonSerializer.Deserialize<WorkspaceDocument>(json, WorkspaceJsonOptions);
 		}
-		catch (JsonException exception)
+		catch (JsonException)
 		{
-			throw new InvalidDataException($"护甲注册源文件 JSON 无效：{exception.Message}", exception);
+			QuarantineCorruptWorkspace();
+			return new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
 		}
-		if (workspace is null || workspace.Schema != 1)
+		if (workspace is null)
+		{
+			QuarantineCorruptWorkspace();
+			return new RuntimeArmorRegistryDocument(0, false, Array.Empty<RuntimeArmorRegistryMapping>());
+		}
+		if (workspace.Schema != 1)
 			throw new InvalidDataException("护甲注册源文件 schema 必须是 1。");
 		if (workspace.CompositionMode is not ("full" or "existing_only"))
 			throw new InvalidDataException("护甲注册源文件 compositionMode 必须是 full 或 existing_only。");
@@ -723,16 +742,35 @@ public sealed class RuntimeArmorRegistryService
 		return JsonSerializer.Serialize(workspace, WorkspaceJsonOptions);
 	}
 
+	private void QuarantineCorruptWorkspace()
+	{
+		if (!File.Exists(WorkspacePath)) return;
+		var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture);
+		var backupPath = $"{WorkspacePath}.corrupt-{stamp}";
+		if (File.Exists(backupPath))
+			backupPath = $"{backupPath}-{Guid.NewGuid():N}";
+		File.Move(WorkspacePath, backupPath);
+	}
+
 	private static async Task WriteAtomicTextAsync(string path, string text, CancellationToken cancellationToken)
 	{
 		var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
 		try
 		{
-			await File.WriteAllTextAsync(
+			var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(text);
+			await using (var stream = new FileStream(
 				temporaryPath,
-				text,
-				new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-				cancellationToken).ConfigureAwait(false);
+				FileMode.Create,
+				FileAccess.Write,
+				FileShare.None,
+				bufferSize: 4096,
+				useAsync: true))
+			{
+				await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+				await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+				// 强制刷到磁盘再替换，避免异常断电时元数据已提交但数据页为全 0x00。
+				stream.Flush(flushToDisk: true);
+			}
 			cancellationToken.ThrowIfCancellationRequested();
 			File.Move(temporaryPath, path, overwrite: true);
 		}

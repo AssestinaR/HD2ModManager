@@ -307,6 +307,11 @@ public sealed class SourceMaterialConverterTests
 	[Fact]
 	public void RealData_TranslucencyStillUsesAlphaClipLikeTheRelease()
 	{
+		// 2026-11-14：曾一度改成"纯 $translucent 不镂空"，实机证明归因错误（耳坠/月牙照旧被裁，
+		// 反而把真该镂空的胸部纹身弄成黑片），已回退成历史行为。这条闸门恢复原样。
+		if (Environment.GetEnvironmentVariable("HD2_TRANSLUCENT_CUTOUT") == "0")
+			return;
+
 		var fixture = OpenFixture(includeAddons: true);
 		if (fixture is null)
 			return;
@@ -401,4 +406,92 @@ public sealed class SourceMaterialConverterTests
 		Assert.Equal(4, normalTexture.Height);
 	}
 
+	/// <summary>
+	/// 真实数据上逐条验 <c>alphaclip</c> 族的花色 alpha —— 这是 2026-11-14 那条修正的闸门。
+	/// <para>
+	/// <c>alphaclip</c> 的底色槽是 <c>BaseColorMetalMap</c>，它的 <b>A 通道是金属度</b>
+	/// （证据链见 <c>SourceMaterialConverter.BuildBaseColorTexture</c> 里"alpha 的语义按模板分流"）。
+	/// 所以两条都要钉：
+	/// </para>
+	/// <list type="bullet">
+	/// <item><b>必须是常量</b>：把源底色的 alpha（那是镂空信息）留在里面，金属度就会变成
+	/// 一层逐像素噪点；镂空本来已经单独走 <c>OpacityClipMap</c>。</item>
+	/// <item><b>只能是两个端点</b>（默认旋钮 1.0）：有金属判定就是 255，否则 0
+	/// —— 游戏自带的 alphaclip 材质里电介质区就是 0。</item>
+	/// </list>
+	/// <para>
+	/// <c>advanced</c> 不在本条闸门范围内：它的 A 是自发光，声明了 <c>$emissiontexture</c> /
+	/// <c>$selfillum</c> 的件本来就该非 0（那条由 <c>EmissionVariantTests</c> 与
+	/// <c>BaseColorAlphaIsZeroed</c> 守）。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void AlphaclipBaseColorAlphaIsConstantMetalness()
+	{
+		// 默认口径下纯 `$translucent` 不再进 alphaclip（见 TranslucencyStillUsesAlphaClip 那条），
+		// 而这份样本（Lunalice）的镂空件**全部**是 `$translucent` 驱动的 ⇒ 默认口径下一个
+		// alphaclip 都产不出来。这条闸门验的是 alphaclip 的金属度通道，所以显式打开旧口径来造样本。
+		Environment.SetEnvironmentVariable("HD2_TRANSLUCENT_CUTOUT", "1");
+		try
+		{
+			var fixture = OpenFixture(includeAddons: true);
+			if (fixture is null)
+				return;
+
+			var encoderPath = Bc7Encoder.Locate(Environment.GetEnvironmentVariable("HD2_TEXCONV"));
+			if (encoderPath is null)
+				return;
+			var encoder = new Bc7Encoder(encoderPath);
+
+			var checkedCount = 0;
+			foreach (var name in fixture.MaterialNames)
+			{
+				var result = fixture.Converter.Convert(name);
+				if (!result.IsValid)
+					continue;
+
+				var material = result.Material!;
+				if (!material.TemplateName.StartsWith("alphaclip", StringComparison.OrdinalIgnoreCase))
+					continue;
+
+				var albedo = result.Textures.SingleOrDefault(
+					texture => texture.Id == material.TextureIds[SourceMaterialConverter.AlphaClipBaseColorSlot]);
+				if (albedo is null)
+					continue;
+
+				var dds = Hd2TextureAsset.BuildDds(
+					albedo.Width, albedo.Height, Hd2TextureAsset.Bc7UnormSrgb, [albedo.GpuData]);
+				var rgba = encoder.DecodeToRgba(dds);
+				byte lowest = 255;
+				byte highest = 0;
+				for (var offset = 3; offset < rgba.Length; offset += 4)
+				{
+					lowest = Math.Min(lowest, rgba[offset]);
+					highest = Math.Max(highest, rgba[offset]);
+				}
+
+				// 只要求"整片是一个值"。BC7 的 alpha 是有损的（实测整片 0 解回来会出现 3），
+				// 但容差必须远小于 255 —— 那才是"金属度被逐像素污染"与"压缩误差"的分界。
+				Assert.True(highest - lowest <= AlphaEndpointTolerance,
+					$"{name}：alphaclip 的底色 alpha 是金属度、必须是常量；实测 {lowest}..{highest}");
+
+				Assert.True(lowest <= AlphaEndpointTolerance || highest >= 255 - AlphaEndpointTolerance,
+					$"{name}：alphaclip 的金属度应为 0 或 255，实测 {lowest}..{highest}");
+				checkedCount++;
+			}
+
+			Assert.True(checkedCount > 0, "样本里一个 alphaclip 材质都没走到，闸门形同虚设");
+		}
+		finally
+		{
+			Environment.SetEnvironmentVariable("HD2_TRANSLUCENT_CUTOUT", null);
+		}
+	}
+
+	/// <summary>
+	/// 金属度端点的容差。BC7 的 alpha 端点是有损的：整片写 0 解回来实测会出现 3、
+	/// 整片写 255 会出现 254。留 8 既容得下量化误差，又挡得住"把源底色 alpha 留在里面"
+	/// —— 后者是 0..255 的全量程。
+	/// </summary>
+	private const int AlphaEndpointTolerance = 8;
 }

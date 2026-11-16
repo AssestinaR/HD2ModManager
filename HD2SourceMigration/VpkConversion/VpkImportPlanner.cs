@@ -717,6 +717,8 @@ public static class VpkImportPlanner
 	private static IReadOnlySet<string> ReadModelMaterialFolders(VpkArchive archive)
 	{
 		var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		// 兜底集合：从"完整路径写法的材质名"里取目录（见下面的 AddMaterialFolder）。
+		var materialPathFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		byte[] bytes;
 		try
 		{
@@ -738,10 +740,26 @@ public static class VpkImportPlanner
 			}
 
 			AddFolder(run.ToString(), folders);
+			AddMaterialFolder(run.ToString(), materialPathFolders);
 			run.Clear();
 		}
 
 		AddFolder(run.ToString(), folders);
+		AddMaterialFolder(run.ToString(), materialPathFolders);
+
+		// **mdl 没写 cdtexture（或写得不全）时，补上"材质名反推目录"。**
+		//
+		// 为什么要这条兜底：有一类转模（实测 `toppi/girlsfrontline2` 系列，cecilia / nyto 两套）
+		// 把材质名直接写成**完整路径**（`models/characters/xxx/yyy/c_cecilia_slg_faceuber`），
+		// cdtexture 列表是空的。此时目录集合为 ∅，任何材质包都对不上 → 全部判成
+		// "认不出属于谁"而跳过 → 库里只剩模型，16 个材质全落成兜底材质，游戏里就是白模。
+		//
+		// 判据本身不变（仍然是"目录求交集"），只是目录来源多一条：材质名去掉最后一段。
+		// 用**并集**而不是"只在为空时替换"：mdl 里那些以分隔符结尾的随机字节也会被当成
+		// cdtexture 收进集合（实测该模型扫出 48 个 `56}|?/` 这类噪声），集合非空但全是噪声，
+		// 于是"为空才兜底"永远不会触发。并集对正常包没有副作用——裸名材质（不带 `/`）推不出目录。
+		folders.UnionWith(materialPathFolders);
+
 		return folders;
 
 		static void AddFolder(string candidate, HashSet<string> target)
@@ -757,6 +775,29 @@ public static class VpkImportPlanner
 
 			var normalized = NormalizeFolder(candidate);
 			if (normalized.Length != 0) target.Add(normalized);
+		}
+
+		// 完整路径写法的材质名 → 它所在的目录。
+		// 只收"多段、无扩展名、不以分隔符结尾"的串：材质名就是这个形状，而 `.mdl` / `.vmt`
+		// 这类文件路径带点会被排除，cdtexture 带尾分隔符也会被排除。
+		static void AddMaterialFolder(string candidate, HashSet<string> target)
+		{
+			if (candidate.Length is < 5 or > 128) return;
+			if (candidate.EndsWith('\\') || candidate.EndsWith('/')) return;
+			if (candidate.Contains('.')) return;
+			if (candidate.IndexOf('/') < 0 && candidate.IndexOf('\\') < 0) return;
+			foreach (var ch in candidate)
+			{
+				if (char.IsAsciiLetterOrDigit(ch) || ch is '_' or '-' or '\\' or '/') continue;
+				return;
+			}
+
+			var slash = candidate.LastIndexOfAny(['\\', '/']);
+			if (slash <= 0) return;
+			var normalized = NormalizeFolder(candidate[..slash]);
+			// 至少要有一段目录层级，否则会把 `foo/` 这种噪声当目录。
+			if (normalized.Length < 3 || normalized.IndexOf('/') < 0) return;
+			target.Add(normalized);
 		}
 	}
 

@@ -231,6 +231,27 @@ public sealed class SourceMaterialSource
 		=> TryRead(vmts, Stem(materialName), out bytes);
 
 	/// <summary>
+	/// 同 <see cref="TryReadVmt(string, out byte[])"/>，另外回传<b>命中的归档内路径</b>。
+	/// <para>
+	/// 只用于诊断：材质名与 VMT 文件名互为前缀时（<c>mat_accmetal</c> / <c>mat_accmetal_tiara</c> /
+	/// <c>mat_accmetal_necklace</c>），只有这条路径能证明"到底读了哪个文件"。
+	/// </para>
+	/// </summary>
+	public bool TryReadVmt(string materialName, out byte[] bytes, out string entryPath)
+	{
+		entryPath = string.Empty;
+		var key = Stem(materialName);
+		if (!vmts.TryGetValue(key, out var location))
+		{
+			bytes = [];
+			return false;
+		}
+
+		entryPath = location.EntryPath;
+		return TryRead(vmts, key, out bytes);
+	}
+
+	/// <summary>
 	/// 按贴图裸名读 <c>.vtf</c> 字节。名字可带或不带 <c>.vtf</c> 后缀，
 	/// 也可以给带目录的路径——<b>只用最后一段</b>，与 Python 侧的贴图命名约定一致。
 	/// </summary>
@@ -293,6 +314,17 @@ public sealed class SourceMaterialSource
 	public bool ContainsVmt(string materialName) => vmts.ContainsKey(Stem(materialName));
 
 	public bool ContainsVtf(string textureName) => vtfs.ContainsKey(Stem(textureName));
+
+	/// <summary>
+	/// 这个 VPK 里有没有 VMT —— 也就是它是不是"纯贴图包"。
+	/// <para>
+	/// 装配阶段判"贴图归谁"时要用：纯贴图包会把自带贴图**全部**写出（没有材质可问），
+	/// 所以别处的材质可以把贴图让给它；而带 VMT 的包只输出"本包材质引用到的"那些，
+	/// 让给它就会两头落空。
+	/// </para>
+	/// </summary>
+	public bool VpkOwnsAnyVmt(string vpkPath)
+		=> vmts.Values.Any(entry => string.Equals(entry.VpkPath, vpkPath, StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>这个材质是不是<b>主 VPK 自己</b>定义的（而不是从整批里借来的）。</summary>
 	public bool OwnsVmt(string materialName) => ownedVmts.Contains(Stem(materialName));

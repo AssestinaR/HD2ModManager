@@ -26,6 +26,219 @@ namespace HD2SourceMigration.VpkConversion;
 /// </summary>
 public static class CutoutMesh
 {
+	/// <summary>一个材质的 alpha 采样结果：它自己的三角形顶点里有多少个落在"可见"一侧。</summary>
+	public sealed record MaterialAlpha(string Material, int Inside, int Total)
+	{
+		/// <summary>UV 栅格里被几何覆盖的格子数（0 = 没栅格化成功，调用方应退回顶点口径）。</summary>
+		public int GridCovered { get; init; }
+
+		/// <summary>被覆盖的格子里 alpha ≥ 阈值 的比例（0..1）。</summary>
+		public double GridOpaqueRatio { get; init; }
+
+		/// <summary>
+		/// <b>被覆盖区域里最大的一块连成一片的"透明"区域，占覆盖面积的比例。</b>
+		/// <para>
+		/// 这一条是"真镂空"与"alpha 用错地方"唯一能分开的量：
+		/// </para>
+		/// <list type="bullet">
+		/// <item>蕾丝 / 纹身的洞是<b>设计</b>：小且密、彼此独立 ⇒ 最大连通块占比很小；</item>
+		/// <item>图集空白（月牙/耳坠踩到了别的件之间的空隙）是<b>连成一大片</b>的 ⇒ 占比很大。</item>
+		/// </list>
+		/// <para>
+		/// 只看"裁掉多少"分不开这两类 —— 实测 MourningVeil 的胸部纹身（真镂空）被裁 54%，
+		/// 而误用 alpha 的月牙是 55%，几乎一样。2026-11-14 就是栽在这里。
+		/// </para>
+		/// </summary>
+		public double GridLargestHoleRatio { get; init; }
+	}
+
+	/// <summary>栅格化用的 UV 分辨率。256² 足够分辨"小洞密布"与"一大片空白"，且很快。</summary>
+	private const int MeasureGridSize = 256;
+
+
+	/// <summary>
+	/// <b>只测量、不动几何</b>：按每个材质自己的三角形顶点采底色 alpha，报"裁下去会丢掉多少"。
+	/// <para>
+	/// 存在的理由：几何裁切（<see cref="Cut"/>）是显式选项，默认不开；但"这份 alpha 用在这件上
+	/// 会不会把件打穿"这个问题**必须默认就能回答** —— 材质的 alphaclip 决策在默认路径上是开着的，
+	/// 它需要这个结论才不会把整片装饰件戳成筛子（实测 MourningVeil 的月牙/耳坠）。
+	/// </para>
+	/// </summary>
+	public static IReadOnlyList<MaterialAlpha> Measure(
+		SourceGeometry geometry,
+		IReadOnlyList<string> materialNames,
+		Func<string, Func<double, double, double>?> alphaSamplerFor,
+		IReadOnlyCollection<string> stems,
+		double threshold = 0.5)
+	{
+		ArgumentNullException.ThrowIfNull(geometry);
+		ArgumentNullException.ThrowIfNull(materialNames);
+		ArgumentNullException.ThrowIfNull(alphaSamplerFor);
+		ArgumentNullException.ThrowIfNull(stems);
+
+		var wanted = new HashSet<string>(
+			stems.Where(s => !string.IsNullOrWhiteSpace(s)).Select(StemOf), StringComparer.OrdinalIgnoreCase);
+		if (wanted.Count == 0)
+			return [];
+
+		// 先按材质下标分桶，避免每个材质都全扫一遍三角形。
+		var trianglesByMaterial = new Dictionary<int, List<SourceTriangle>>();
+		foreach (var triangle in geometry.Triangles)
+			trianglesByMaterial.TryAdd(triangle.MaterialIndex, []);
+		foreach (var triangle in geometry.Triangles)
+			trianglesByMaterial[triangle.MaterialIndex].Add(triangle);
+
+		var results = new List<MaterialAlpha>();
+		var grid = new float[MeasureGridSize * MeasureGridSize];
+		var coveredFlags = new bool[MeasureGridSize * MeasureGridSize];
+
+		for (var index = 0; index < materialNames.Count; index++)
+		{
+			if (!wanted.Contains(StemOf(materialNames[index])))
+				continue;
+			var sampler = alphaSamplerFor(StemOf(materialNames[index]));
+			if (sampler is null)
+				continue;
+			if (!trianglesByMaterial.TryGetValue(index, out var triangles) || triangles.Count == 0)
+				continue;
+
+			// 顶点口径（老闸门，留着做交叉校验）。
+			var inside = 0;
+			var total = 0;
+			foreach (var triangle in triangles)
+			{
+				foreach (var vertexIndex in (ReadOnlySpan<int>)[triangle.A, triangle.B, triangle.C])
+				{
+					var vertex = geometry.Vertices[vertexIndex];
+					total++;
+					if (sampler(vertex.U, vertex.V) >= threshold)
+						inside++;
+				}
+			}
+
+			// UV 栅格口径：这才能看见"洞是小而密"还是"一大片"。
+			Array.Fill(grid, -1f);
+			Array.Clear(coveredFlags);
+			var covered = 0;
+			var opaque = 0;
+			foreach (var triangle in triangles)
+			{
+				var a = geometry.Vertices[triangle.A];
+				var b = geometry.Vertices[triangle.B];
+				var c = geometry.Vertices[triangle.C];
+				RasterizeTriangle(grid, coveredFlags, a.U, a.V, b.U, b.V, c.U, c.V, sampler, threshold,
+					ref covered, ref opaque);
+			}
+
+			var largestHole = covered > 0 ? LargestTransparentBlob(grid, coveredFlags, threshold) / (double)covered : 0;
+
+			results.Add(new MaterialAlpha(StemOf(materialNames[index]), inside, total)
+			{
+				GridCovered = covered,
+				GridOpaqueRatio = covered > 0 ? opaque / (double)covered : 1.0,
+				GridLargestHoleRatio = largestHole,
+			});
+		}
+
+		return results.OrderBy(item => item.Material, StringComparer.OrdinalIgnoreCase).ToArray();
+	}
+
+	/// <summary>把一个 UV 三角形按格心采样铺进栅格（只处理落在 [0,1] 内的部分）。</summary>
+	private static void RasterizeTriangle(
+		float[] grid,
+		bool[] coveredFlags,
+		double au, double av, double bu, double bv, double cu, double cv,
+		Func<double, double, double> sampler,
+		double threshold,
+		ref int covered,
+		ref int opaque)
+	{
+		const int n = MeasureGridSize;
+		double minU = Math.Min(au, Math.Min(bu, cu));
+		double maxU = Math.Max(au, Math.Max(bu, cu));
+		double minV = Math.Min(av, Math.Min(bv, cv));
+		double maxV = Math.Max(av, Math.Max(bv, cv));
+
+		var x0 = Math.Max(0, (int)Math.Floor(minU * n));
+		var x1 = Math.Min(n - 1, (int)Math.Ceiling(maxU * n));
+		var y0 = Math.Max(0, (int)Math.Floor(minV * n));
+		var y1 = Math.Min(n - 1, (int)Math.Ceiling(maxV * n));
+		if (x1 < x0 || y1 < y0)
+			return;
+
+		var denominator = ((bv - cv) * (au - cu)) + ((cu - bu) * (av - cv));
+		if (Math.Abs(denominator) < 1e-12)
+			return;
+
+		for (var y = y0; y <= y1; y++)
+		{
+			for (var x = x0; x <= x1; x++)
+			{
+				var pu = (x + 0.5) / n;
+				var pv = (y + 0.5) / n;
+				var w0 = (((bv - cv) * (pu - cu)) + ((cu - bu) * (pv - cv))) / denominator;
+				var w1 = (((cv - av) * (pu - cu)) + ((au - cu) * (pv - cv))) / denominator;
+				var w2 = 1.0 - w0 - w1;
+				const double eps = -1e-6;
+				if (w0 < eps || w1 < eps || w2 < eps)
+					continue;
+
+				var offset = (y * n) + x;
+				if (coveredFlags[offset])
+					continue;
+				coveredFlags[offset] = true;
+				covered++;
+
+				var value = sampler(pu, pv);
+				grid[offset] = (float)value;
+				if (value >= threshold)
+					opaque++;
+			}
+		}
+	}
+
+	/// <summary>被覆盖区域里最大的一块连成一片的"透明"格子数（4 邻接）。</summary>
+	private static int LargestTransparentBlob(float[] grid, bool[] coveredFlags, double threshold)
+	{
+		const int n = MeasureGridSize;
+		var visited = new bool[grid.Length];
+		var stack = new Stack<int>();
+		var largest = 0;
+		for (var start = 0; start < grid.Length; start++)
+		{
+			if (visited[start] || !coveredFlags[start] || grid[start] >= threshold)
+				continue;
+
+			var size = 0;
+			stack.Push(start);
+			visited[start] = true;
+			while (stack.Count > 0)
+			{
+				var offset = stack.Pop();
+				size++;
+				var x = offset % n;
+				var y = offset / n;
+				if (x > 0) TryPush(offset - 1);
+				if (x < n - 1) TryPush(offset + 1);
+				if (y > 0) TryPush(offset - n);
+				if (y < n - 1) TryPush(offset + n);
+
+				void TryPush(int next)
+				{
+					if (visited[next] || !coveredFlags[next] || grid[next] >= threshold)
+						return;
+					visited[next] = true;
+					stack.Push(next);
+				}
+			}
+
+			if (size > largest)
+				largest = size;
+		}
+
+		return largest;
+	}
+
 	/// <summary>裁一个材质的结果（用于报告"裁前/裁后各多少面、有没有被跳过"）。</summary>
 	public sealed record MaterialCut(
 		int MaterialIndex,
@@ -112,6 +325,22 @@ public static class CutoutMesh
 			if (inside == total)
 			{
 				skipped[materialIndex] = "alpha 全在里面（没有真的镂空）—— 不需要裁";
+				continue;
+			}
+
+			// **裁掉大半也不行。**
+			//
+			// 实测 MourningVeil（2026-11-14，用户实机报"挂钟耳坠和胸前月牙被打出不该有的洞"）：
+			// `mat_accmetal_necklace` / `mat_metal1_earings` 都声明了 `$alphatest 1`，底图是那张被
+			// 十几个材质共用的装饰件图集；它们几何用到的像素里 40%~55% 的 alpha 接近 0。
+			// 照裁的结果就是"一片完整的件被打成筛子"，而源侧观感是完整的。
+			//
+			// 一个会删掉大半件的"镂空"不是镂空，是这份 alpha 用错了地方。这类件按不透明处理：
+			// 少一层透明，但绝不打穿。
+			if (inside * 2 < total)
+			{
+				skipped[materialIndex] =
+					$"alpha 只有 {inside * 100.0 / total:F0}% 的顶点算「可见」—— 裁掉大半会把件打穿，按不透明处理";
 				continue;
 			}
 

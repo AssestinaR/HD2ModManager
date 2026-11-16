@@ -59,6 +59,12 @@ public static class LowPollutionFreshness
 		return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(builder.ToString()))).ToLowerInvariant();
 	}
 
+	/// <summary>有身体槽和手臂槽、却没有合体 unit：§17 之前的压缩器写的布局。不动指纹版本，只让这类素体重编一次。</summary>
+	internal static bool MissesBodyArms(LowPollutionLayout layout)
+		=> (layout.UnitOf(LowPollutionRoles.Body) ?? layout.UnitOf(LowPollutionRoles.HeadBody)) is not null
+			&& layout.UnitOf(LowPollutionRoles.Arms) is not null
+			&& layout.UnitOf(LowPollutionRoles.BodyArms) is null;
+
 	internal static void WriteUnsupportedMarker(
 		string modDirectory,
 		string payloadDirectory,
@@ -124,6 +130,8 @@ public static class LowPollutionFreshness
 					reason = "头身合并设置变了";
 				else if (!string.Equals(layout.Fingerprint, current, StringComparison.Ordinal))
 					reason = "来源或勾选变了";
+				else if (MissesBodyArms(layout))
+					reason = "布局里缺「身体+手臂」合体 unit（新版低污染需要），重新压缩一次";
 				else
 					return new(modelKey, modDirectory, name, LowPollutionPrepStatus.UpToDate, "已是最新的压缩产物");
 			}

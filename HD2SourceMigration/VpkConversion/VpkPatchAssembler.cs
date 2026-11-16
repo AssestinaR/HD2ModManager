@@ -295,6 +295,8 @@ public sealed record VpkPackageResult(
 /// </summary>
 public sealed class VpkPatchAssembler
 {
+	/// <summary>诊断探针文件写入的串行化锁（装配可能并行）。</summary>
+	private static readonly object MarkerLock = new();
 	/// <param name="avatarTransformInfo">HD2 avatar 骨架，会被并进每个外壳的 TransformInfo。</param>
 	/// <param name="headerTemplateTocData">输出 Patch 的头部模板（用外壳所在存档的 TOC）。</param>
 	/// <param name="patchFileName">
@@ -456,6 +458,29 @@ public sealed class VpkPatchAssembler
 			ArgumentNullException.ThrowIfNull(geometry);
 			ArgumentNullException.ThrowIfNull(avatarTransformInfo);
 			ArgumentException.ThrowIfNullOrWhiteSpace(patchFileName);
+		}
+
+		// **这里不再做任何"该不该镂空"的统计判定。**
+		//
+		// 2026-11-14 结论（有据、实机确认）：源侧规则（自己底图的 alpha 在 0.5 处硬裁）本身
+		// 就能复现观感 —— 项链裁 38.4% / 胸挂 3.1% / 耳坠 2.5%，与 L4D2 的"链条 / 完整 / 完整"一致。
+		// 曾经在这里按"顶点比例 / 面积比例 / 最大连片空白"判定，全部失败：统计量在错误的 V 方向下计算，
+		// 且真镂空与误用 alpha 的分布重叠。详见 docs/agent/hd2-mourningveil-cutout-forensics-20261114.md。
+
+
+		if (Environment.GetEnvironmentVariable("HD2_MARK_FILE") is { Length: > 0 } markFile)
+		{
+			lock (MarkerLock)
+			{
+				File.AppendAllText(markFile,
+					$"assemble dir={Path.GetFileName(outputDirectory.TrimEnd(Path.DirectorySeparatorChar))}"
+					+ $" plans={plans.Count}"
+					+ $" geomTris={(geometry is null ? "null" : geometry.Triangles.Count.ToString())}"
+					+ $" mats={(sourceMaterialNames is null ? "null" : sourceMaterialNames.Count.ToString())}"
+					+ $" opaqueRules={(materialConverter is null ? "no-converter" : materialConverter.OpaqueMaterialCount.ToString())}"
+					+ Environment.NewLine,
+					System.Text.Encoding.UTF8);
+			}
 		}
 
 		if (materialScope is not null && materialScope.PrimaryVpkPath is null)
@@ -874,10 +899,27 @@ public sealed class VpkPatchAssembler
 			var materialsDone = 0;
 			Parallel.For(0, stems.Count, VpkParallel.Options, stemIndex =>
 			{
-				if (ownedByStem[stemIndex])
-					synthesizedByStem[stemIndex] = converter.Convert(stems[stemIndex]);
-				else
-					reportByStem[stemIndex] = converter.Resolve(stems[stemIndex]);
+				// 诊断：**把完整异常打到 stderr**。
+				//
+				// 2026-11-14：B3 的转换抛 `IndexOutOfRangeException`，而 CLI 只把摘要写进 JSON 的
+				// `failures`（"Index was outside the bounds of the array. @ ThrowHelpers…"），
+				// 没有堆栈 ⇒ 只能靠猜。整份 B3 patch 因此没产出，它独有的 `mat_pearl_legring`
+				// 成了悬空引用（游戏里是品红）。这行在所有 `mod rebuild` 里都沉默，
+				// 只有直连 `vpk2patch` 跑才会出现在 stderr 上 —— 正是排查时需要的。
+				try
+				{
+					if (ownedByStem[stemIndex])
+						synthesizedByStem[stemIndex] = converter.Convert(stems[stemIndex]);
+					else
+						reportByStem[stemIndex] = converter.Resolve(stems[stemIndex]);
+				}
+				catch (Exception conversionFailure)
+				{
+					Console.Error.WriteLine(
+						$"[材质转换失败] {stems[stemIndex]} :: {conversionFailure}");
+					throw;
+				}
+
 				onProgress?.Invoke("materials", Interlocked.Increment(ref materialsDone), stems.Count);
 			});
 
@@ -1377,16 +1419,27 @@ public sealed class VpkPatchAssembler
 
 			// 贴图归谁：由本 VPK 提供的才写；派生出来的（遮罩 / 金属度 / 共享平面法线）
 			// 不属于任何 VPK，它们是这个材质的一部分——材质在，它们就得在。
+			//
+			// **只有"纯贴图包"才让渡。** 拥有这张贴图的 VPK 里若一个 VMT 都没有，它会把自带贴图
+			// 全部写出来（见 ④），此时让给它是对的。否则那个包只按"本包材质引用到的"筛一遍，
+			// 我们这张就两头落空——实测 `ramune恶堕人鱼bill` 的 `基础材质` 包里只有 2 个 VMT，
+			// 于是 body / metal / clothes 这些 albedo 一张都没落地，游戏里是荧光黄绿 + 洋红。
 			if (!ownedHere && providedByVpk)
 			{
-				if (reportedForeignTextures.Add(texture.SourcePath))
+				var ownerIsPureTexturePack =
+					!scope!.TryGetVtfSource(texture.SourcePath, out var ownerVpkPath, out _)
+					|| !scope.VpkOwnsAnyVmt(ownerVpkPath);
+				if (ownerIsPureTexturePack)
 				{
-					textureOutcomes.Add(new VpkTextureOutcome(
-						texture.SourcePath, texture.Id, DescribeOrigin(texture.SourcePath), false,
-						"这张贴图由别的 VPK 提供，归那个 VPK 的 patch"));
-				}
+					if (reportedForeignTextures.Add(texture.SourcePath))
+					{
+						textureOutcomes.Add(new VpkTextureOutcome(
+							texture.SourcePath, texture.Id, DescribeOrigin(texture.SourcePath), false,
+							"这张贴图由别的 VPK 提供，归那个 VPK 的 patch"));
+					}
 
-				return;
+					return;
+				}
 			}
 
 			// ⚠️ **贴图 id 只用 basename 派生**（Python 侧的现状，见 Hd2AssetId 的注释），

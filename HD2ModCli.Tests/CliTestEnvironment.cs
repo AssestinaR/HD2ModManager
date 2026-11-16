@@ -31,7 +31,15 @@ internal static class CliTestEnvironment
 	internal static readonly Func<IReadOnlyList<int>> NoManagerRunning = static () => Array.Empty<int>();
 
 	[ModuleInitializer]
-	internal static void Initialize() => CliManagerProcessProbe.Probe = NoManagerRunning;
+	internal static void Initialize()
+	{
+		CliManagerProcessProbe.Probe = NoManagerRunning;
+		// 部署会读写 ArmorRegistry 目录里的规则文件（含映射页写的 kit-instance.mapping.rules，它决定要不要投放 Hider）。
+		// 不隔离的话，用例结果取决于本机有没有用过映射页，还会改写真实数据。
+		Environment.SetEnvironmentVariable(
+			HD2ModCore.Infrastructure.RuntimeArmorRegistryService.RegistryRootEnvironmentVariable,
+			Path.Combine(Path.GetTempPath(), "hd2-cli-tests-registry-" + Guid.NewGuid().ToString("N")));
+	}
 
 	// 作用：在指定进程探测结果下执行一段 CLI 调用，结束后恢复默认探测。
 	// Purpose: Runs a CLI invocation under a specific process-probe result and restores the default after.
