@@ -14,6 +14,14 @@ public sealed class KitExclusiveMultiTargetTests
 {
 	private const ulong UnitType = 0xe0a48d0be9a7453f;
 
+	/// <summary>
+	/// 一个"没有任何载荷"的节点目录（唯一、不创建）。不要传 <c>Path.GetTempPath()</c>：
+	/// 内容指纹会枚举目录里的每个文件并读 <c>FileInfo.Length</c>，%TEMP% 根目录里别的测试/程序
+	/// 在并发创建删除文件，枚举到读取之间文件消失就会偶发 FileNotFoundException。
+	/// </summary>
+	private static string EmptyNodeDirectory()
+		=> Path.Combine(Path.GetTempPath(), "hd2-multi-empty-" + Guid.NewGuid().ToString("N"));
+
 	private static GameDataAuthorityPiece P(uint slot, uint layer, uint raw, ulong file)
 		=> new(
 			raw,
@@ -82,7 +90,7 @@ public sealed class KitExclusiveMultiTargetTests
 		Assert.Equal(plan.Signature.Take(1).Select(id => id.ToString("x16")), seed.All);
 		Assert.Equal(plan.Hide.Select(id => id.ToString("x16")), seed.Hide);
 		// 单目标写出的记录没有目标列表：和 P4b 之前逐字段相同。
-		var record = KitExclusiveWorkspace.BuildRecord(new ModNodeId(Guid.NewGuid()), Path.GetTempPath(), [seed]);
+		var record = KitExclusiveWorkspace.BuildRecord(new ModNodeId(Guid.NewGuid()), EmptyNodeDirectory(), [seed]);
 		Assert.NotNull(record);
 		Assert.Null(record!.Targets);
 		Assert.Equal(1u, record.TargetItemId);
@@ -118,7 +126,7 @@ public sealed class KitExclusiveMultiTargetTests
 		// 各自的规则：规则名带各自的 item_id，隐藏集各写各的。
 		var node = new ModNodeId(Guid.NewGuid());
 		var seeds = new[] { KitExclusiveService.SeedOf(a), KitExclusiveService.SeedOf(b) };
-		var record = KitExclusiveWorkspace.BuildRecord(node, Path.GetTempPath(), seeds);
+		var record = KitExclusiveWorkspace.BuildRecord(node, EmptyNodeDirectory(), seeds);
 		Assert.NotNull(record);
 		Assert.Equal(2, record!.AllTargets.Count);
 		var names = record.ToRules().Select(rule => rule.Name).ToArray();
@@ -164,7 +172,7 @@ public sealed class KitExclusiveMultiTargetTests
 	public void RuleLimits_AllowAFewTargets_AndBlockMoreThanTheRuleCap()
 	{
 		var node = new ModNodeId(Guid.NewGuid());
-		var dir = Path.GetTempPath();
+		var dir = EmptyNodeDirectory();
 
 		Assert.Null(KitExclusiveWorkspace.CheckRuleLimits(node, dir, [Seed(1), Seed(2), Seed(3)], KitInstanceWorkspace.Empty));
 
@@ -183,7 +191,7 @@ public sealed class KitExclusiveMultiTargetTests
 	{
 		var node = new ModNodeId(Guid.NewGuid());
 		var other = new ModNodeId(Guid.NewGuid());
-		var dir = Path.GetTempPath();
+		var dir = EmptyNodeDirectory();
 		KitInstanceWorkspaceRecord Foreign(uint item) => new(item, $"x-{item}", 0.3, [$"{item:x16}"], [], ["0000000000000010"]);
 		var workspace = Enumerable.Range(1, KitInstanceRulesProtocol.MaximumRules - 2).Aggregate(
 			KitInstanceWorkspace.Empty.With(node, Foreign(999)),
@@ -202,7 +210,7 @@ public sealed class KitExclusiveMultiTargetTests
 		// 每条 256 个隐藏项 ≈ 4.4 KB：520 条 ≈ 2.3 MB，条数没超但文件超 2 MiB。
 		var seeds = Enumerable.Range(1, 520).Select(i => Seed((uint)i, hideCount: KitInstanceRulesProtocol.MaximumHide)).ToArray();
 
-		var error = KitExclusiveWorkspace.CheckRuleLimits(node, Path.GetTempPath(), seeds, KitInstanceWorkspace.Empty);
+		var error = KitExclusiveWorkspace.CheckRuleLimits(node, EmptyNodeDirectory(), seeds, KitInstanceWorkspace.Empty);
 
 		Assert.NotNull(error);
 		Assert.Contains("字节", error, StringComparison.Ordinal);
@@ -266,7 +274,7 @@ public sealed class KitExclusiveMultiTargetTests
 		Assert.Equal(["vpk-5-aaaaaaaa"], record.ToRules().Select(rule => rule.Name));
 
 		var seeds = new[] { Seed(5, 2), Seed(6, 3, extraAll: 1) };
-		var multi = KitExclusiveWorkspace.BuildRecord(node, Path.GetTempPath(), seeds)!;
+		var multi = KitExclusiveWorkspace.BuildRecord(node, EmptyNodeDirectory(), seeds)!;
 		var round = KitInstanceWorkspaceStore.Parse(KitInstanceWorkspaceStore.Serialize(KitInstanceWorkspace.Empty.With(node, multi))).Records[node];
 
 		Assert.Equal(5u, round.TargetItemId);                              // 顶层 = 第一个目标
