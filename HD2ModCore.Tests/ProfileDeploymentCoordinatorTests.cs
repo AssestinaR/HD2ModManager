@@ -70,12 +70,12 @@ public sealed class ProfileDeploymentCoordinatorTests
 			var library = new FakeLibraryManager(new LibrarySnapshot(1, DateTimeOffset.UtcNow, new Dictionary<ModNodeId, ModNode>(), [profile], profile.Id));
 			var apply = new RecordingApplyService();
 			var executor = new RecordingExecutor();
-			await using var coordinator = new ProfileDeploymentCoordinator(library, apply, executor, new StoragePaths(root), () => root, bufferDuration: TimeSpan.FromMilliseconds(250));
+			await using var coordinator = new ProfileDeploymentCoordinator(library, apply, executor, new StoragePaths(root), () => root, bufferDuration: TimeSpan.FromMilliseconds(800));
 
 			coordinator.NotifyActiveProfileChanged();
-			await Task.Delay(125);
+			await Task.Delay(150);
 			coordinator.NotifyActiveProfileChanged();
-			await Task.Delay(175);
+			await Task.Delay(250);
 
 			Assert.Equal(0, apply.CallCount);
 			await apply.WaitForCallAsync();
