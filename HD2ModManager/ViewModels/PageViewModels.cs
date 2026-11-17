@@ -1635,7 +1635,9 @@ namespace HD2ModManager.ViewModels
             get => SettingsService.GetBuiltInLuaEnabled();
             set
             {
-                SettingsService.SetBuiltInLuaEnabled(value);
+                var changed = value != SettingsService.GetBuiltInLuaEnabled();
+                if (SettingsService.SetBuiltInLuaEnabled(value) && changed)
+                    _profiles.RequestActiveProfileDeployment();
                 OnPropertyChanged(nameof(BuiltInLuaEnabled));
                 // 选项集合变了，下拉要重建；当前值也可能被收敛过，一并刷新。
                 OnPropertyChanged(nameof(ArmorMappingModeOptions));
@@ -1670,18 +1672,8 @@ namespace HD2ModManager.ViewModels
             get => SettingsService.GetArmorMappingMode();
             set
             {
-                var changed = value != SettingsService.GetArmorMappingMode();
                 if (SettingsService.SetArmorMappingMode(value))
-                {
                     _profiles.RequestActiveProfileDeployment();
-                    // 同 PhysicsMode：每次切到外置都对齐一次导出包（理由见那里）。
-                    if (value == ArmorMappingMode.ExternalLuaEntry)
-                    {
-                        var refreshed = EnsureLuaPackageUpToDate(LuaAddonCatalog.Wardrobe());
-                        if (changed) OpenLuaPackagesFolder();
-                        if (refreshed) NoteLuaPackageRefreshed([LuaAddonCatalog.Wardrobe()]);
-                    }
-                }
                 OnPropertyChanged(nameof(ArmorMappingMode));
                 OnPropertyChanged(nameof(ArmorMappingModeDescription));
                 OnPropertyChanged(nameof(ArmorMappingModeHotSwitchNote));
@@ -1729,132 +1721,6 @@ namespace HD2ModManager.ViewModels
         /// <summary>物理模式的一句话说明。</summary>
         public string PhysicsModeDescription => PhysicsMode.Description();
 
-        /// <summary>
-        /// 把某个内置 Lua 功能导出成外置包并打开**根目录**。
-        ///
-        /// 两个功能落在同一个根目录下（各自一个子目录），所以不管用户先选哪个，
-        /// 打开的都是同一个地方——他装了几个加载器、需要哪份包，一眼就能看到。
-        /// </summary>
-        private static void RevealLuaPackage(LuaAddonPackageExport.Feature feature)
-        {
-            try
-            {
-                var root = SettingsService.GetLuaPackagesDirectory();
-                LuaAddonPackageExport.Export(root, feature);
-                OpenFolder(root);
-            }
-            catch (Exception exception) when (exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException)
-            {
-                // 导出失败不应让设置保存失败。
-            }
-        }
-
-        /// <summary>
-        /// 让导出目录里那份包与**当前版本**一致；内容本来就一样就什么都不做。
-        /// <para>
-        /// 只比内容、不比时间戳：`LuaAddonPackageExport.Export` 每次都整目录重建，
-        /// 无脑重导会让时间戳一直变、也会把用户在用的那份删一次再建一次。
-        /// </para>
-        /// </summary>
-        /// <returns>真的写过盘（＝用户手里那份是旧的或缺失）时返回 true。</returns>
-        private static bool EnsureLuaPackageUpToDate(LuaAddonPackageExport.Feature feature)
-        {
-            try
-            {
-                var root = SettingsService.GetLuaPackagesDirectory();
-                var luaPath = Path.Combine(root, feature.Key, "lua版", feature.LuaFileName);
-                if (File.Exists(luaPath)
-                    && string.Equals(File.ReadAllText(luaPath), feature.Source, StringComparison.Ordinal))
-                {
-                    return false;
-                }
-
-                LuaAddonPackageExport.Export(root, feature);
-                return true;
-            }
-            catch (Exception exception) when (exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException)
-            {
-                return false;
-            }
-        }
-
-        /// <summary>打开外置包根目录（两个功能共用同一个根）。</summary>
-        private static void OpenLuaPackagesFolder()
-        {
-            try
-            {
-                var root = SettingsService.GetLuaPackagesDirectory();
-                Directory.CreateDirectory(root);
-                OpenFolder(root);
-            }
-            catch (Exception exception) when (exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException)
-            {
-                // 打不开目录不影响导出本身。
-            }
-        }
-
-        /// <summary>记一次"外置包刚刷新过"，并提示用户把它重新装进 mod 库。</summary>
-        private void NoteLuaPackageRefreshed(IReadOnlyList<LuaAddonPackageExport.Feature> features)
-        {
-            if (features.Count == 0) return;
-            LuaPackageUpdateHint =
-                "外置包已更新到当前版本（" + string.Join("、", features.Select(feature => feature.Title))
-                + "）：请把它们重新拖进 mod 库替换旧的那一份，否则游戏里跑的还是旧脚本。";
-        }
-
-        private string _luaPackageUpdateHint = string.Empty;
-
-        /// <summary>
-        /// 外置包刷新提示（空 = 不显示）。
-        /// 只在"确实写过盘"时出现：升级管理器后第一次打开设置页，或切到外置那一下。
-        /// </summary>
-        public string LuaPackageUpdateHint
-        {
-            get => _luaPackageUpdateHint;
-            private set
-            {
-                if (!SetField(ref _luaPackageUpdateHint, value)) return;
-                OnPropertyChanged(nameof(HasLuaPackageUpdateHint));
-            }
-        }
-
-        public bool HasLuaPackageUpdateHint => !string.IsNullOrEmpty(_luaPackageUpdateHint);
-
-        /// <summary>
-        /// 启动时把"已经是外置模式"的那些包对齐到当前版本。
-        /// <para>
-        /// 这是升级路径上唯一的自救点：用户选了外置之后通常一辈子不会再动那个下拉，
-        /// 只靠"切换时导出"等于升级后永远不更新——物理运行时的修复就这样到不了他手上。
-        /// 这里比对内容，只有真的变了才写盘。
-        /// </para>
-        /// </summary>
-        private void RefreshLuaPackagesOnStartup()
-        {
-            // 物理外置已改成部署自动投放（§15.2），这里只剩映射的导出包。
-            var refreshed = new List<LuaAddonPackageExport.Feature>();
-            if (SettingsService.GetArmorMappingMode() == ArmorMappingMode.ExternalLuaEntry)
-            {
-                var feature = LuaAddonCatalog.Wardrobe();
-                if (EnsureLuaPackageUpToDate(feature)) refreshed.Add(feature);
-            }
-
-            NoteLuaPackageRefreshed(refreshed);
-        }
-
-        /// <summary>
-        /// 关闭独占模式时把运行时脚本导出到「默认导出路径\wardrobe-lua」并打开该文件夹，
-        /// 让用户可以直接把它丢给第三方加载器。导出失败不影响设置本身已保存。
-        /// </summary>
-        private static void RevealRuntimeScriptForExternalLoader()
-        {
-            RevealLuaPackage(LuaAddonCatalog.Wardrobe());
-        }
     public bool AutoUpdateAssetMetadata
         {
             get => SettingsService.GetAutoUpdateAssetMetadata();
@@ -2096,9 +1962,6 @@ namespace HD2ModManager.ViewModels
             BuildAssetIndexCommand = new RelayCommand(_ => _ = BuildAssetIndexAsync(), _ => !IsBuildingAssetIndex);
             // 不设 canExecute：按钮永远可点，缺什么由 VerifyWithSteamAsync 当场说清（见那里的注释）。
             VerifyWithSteamCommand = new RelayCommand(_ => _ = VerifyWithSteamAsync());
-
-            // 早就是外置模式的用户永远不会再点那个下拉，唯一的刷新机会就是这里。
-            RefreshLuaPackagesOnStartup();
         }
 
         bool isVerifyingWithSteam;

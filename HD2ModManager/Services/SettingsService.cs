@@ -329,8 +329,7 @@ namespace HD2ModManager.Services
                     // 悄悄变成"关闭"。
                     var schema = model.MappingModeSchema ?? 0;
                     mode = ArmorMappingModes.MigrateStoredValue(stored, schema);
-                    LastMappingModeWasMigrated = schema < ArmorMappingModes.CurrentSchema
-                        && stored != (int)mode;
+                    LastMappingModeWasMigrated = ArmorMappingModes.WasLegacyTrueMapping(stored, schema);
                 }
                 else
                 {

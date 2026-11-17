@@ -197,9 +197,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 	public bool IsSetTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Set;
 	public bool IsArmorTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Armor;
 	public bool IsHelmetTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Helmet;
+	public bool IsMappedTabSelected => selectedAvailableTab == ArmorMappingPickerTab.Mapped;
 	public string SetTabHeader => $"套装 ({CountFilteredTabItems(ArmorMappingPickerTab.Set)})";
 	public string ArmorTabHeader => $"护甲 ({CountFilteredTabItems(ArmorMappingPickerTab.Armor)})";
 	public string HelmetTabHeader => $"头盔 ({CountFilteredTabItems(ArmorMappingPickerTab.Helmet)})";
+	public string MappedTabHeader => $"已映射 ({CountFilteredTabItems(ArmorMappingPickerTab.Mapped)})";
 
 	public string AvailableArmorUnitFilterText => availableArmorUnitFilter switch
 	{
@@ -223,9 +225,11 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(IsSetTabSelected));
 		OnPropertyChanged(nameof(IsArmorTabSelected));
 		OnPropertyChanged(nameof(IsHelmetTabSelected));
+		OnPropertyChanged(nameof(IsMappedTabSelected));
 
 		var rows = availableChoicesByTab.GetValueOrDefault(selectedAvailableTab) ?? [];
-		var activeSelected = ArmorRegistryScopes.IsAvailable(selection.Scope)
+		var activeSelected = selectedAvailableTab != ArmorMappingPickerTab.Mapped
+			&& ArmorRegistryScopes.IsAvailable(selection.Scope)
 			? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
 			: null;
 		foreach (var row in rows)
@@ -234,6 +238,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		AvailableArmors.ReplaceWith(rows, ListTransitionKind.Replace);
 		AvailableArmorsView.Refresh();
 		OnPropertyChanged(nameof(AvailableSummary));
+		OnPropertyChanged(nameof(AvailableEmptyMessage));
 	}
 
 	private int CountFilteredTabItems(ArmorMappingPickerTab tab)
@@ -254,6 +259,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		OnPropertyChanged(nameof(SetTabHeader));
 		OnPropertyChanged(nameof(ArmorTabHeader));
 		OnPropertyChanged(nameof(HelmetTabHeader));
+		OnPropertyChanged(nameof(MappedTabHeader));
 	}
 
 	public void CycleAvailableArmorUnitFilter()
@@ -407,16 +413,21 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		: catalogEmptyReason ?? "将右侧一个护甲拖到这里，设为视觉来源。";
 	public string AvailableEmptyMessage => isLoadingCatalog
 		? "正在读取护甲目录…"
-		: catalogEmptyReason ?? "所有护甲都已分配为视觉来源或映射目标。";
+		: IsMappedTabSelected
+			? "暂无已映射的原版护甲。"
+			: catalogEmptyReason ?? "所有护甲都已分配为视觉来源或映射目标。";
 	public string RegistryPath => service.RegistryRoot;
 	public string WorkspacePath => service.WorkspacePath;
 	public string ProvidersSummary => providersSearchText.Length == 0
 		? $"{Providers.Count} 个视觉来源"
 		: $"{ProvidersView.Cast<object>().Count()} / {Providers.Count} 个视觉来源";
-	public string AvailableSummary => availableSearchText.Length == 0
-		&& availableArmorUnitFilter == AvailableArmorUnitFilter.All
+	public string AvailableSummary => IsMappedTabSelected
+		? (availableSearchText.Length == 0 && availableArmorUnitFilter == AvailableArmorUnitFilter.All
+			? $"{AvailableArmors.Count} 项已映射 · 点击跳转到左侧 Mod"
+			: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 项已映射")
+		: (availableSearchText.Length == 0 && availableArmorUnitFilter == AvailableArmorUnitFilter.All
 			? $"{AvailableArmors.Count} 项可选"
-		: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 项可选";
+			: $"{AvailableArmorsView.Cast<object>().Count()} / {AvailableArmors.Count} 项可选");
 	public string ProviderDetailTitle => selectedProviderId is { } id
 		? Providers.FirstOrDefault(item => item.MemberItemIds.SequenceEqual(selectedProviderMemberIds))?.Name
 			?? (selectedProviderMemberIds.Count > 1
@@ -1048,6 +1059,17 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		RebuildProjections();
 	}
 
+	public void NavigateToMappedProvider(RuntimeArmorChoiceViewModel? mappedItem)
+	{
+		if (mappedItem is null || string.IsNullOrWhiteSpace(mappedItem.MappedProviderKey)) return;
+		if (!string.IsNullOrEmpty(ProvidersSearchText))
+			ProvidersSearchText = string.Empty;
+		var provider = Providers.FirstOrDefault(item =>
+			string.Equals(item.SelectionKey, mappedItem.MappedProviderKey, StringComparison.OrdinalIgnoreCase));
+		if (provider is null) return;
+		OpenProviderDetails(provider);
+	}
+
 	public void CloseProvider()
 	{
 		if (selectedProviderId is null) return;
@@ -1482,21 +1504,7 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 				.Select(mapping => mapping.Target.ItemId)
 				.Distinct()
 				.ToArray();
-			var targetEntries = detailTargetIds
-				.Select(id =>
-				{
-					if (cachedCatalogById.TryGetValue(id, out var catalogEntry))
-						return catalogEntry;
-					var fallback = ResolveChoice(id);
-					return new RuntimeArmorCatalogEntry(
-						id,
-						fallback.ArchiveId,
-						fallback.Name,
-						fallback.KitKind,
-						fallback.SetId,
-						fallback.DlcId);
-				})
-				.ToArray();
+			var targetEntries = ResolveTargetCatalogEntries(detailTargetIds);
 			var selectedTargetKeys = string.Equals(selection.Scope, ArmorRegistryScopes.Targets, StringComparison.Ordinal)
 				? selection.SelectedIds.ToHashSet(StringComparer.OrdinalIgnoreCase)
 				: null;
@@ -1511,6 +1519,43 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			}
 		}
 		ProviderDetailItems.ReplaceWith(detailItems, ListTransitionKind.Replace);
+
+		var mappedRows = new List<RuntimeArmorChoiceViewModel>();
+		foreach (var provider in Providers)
+		{
+			var providerTargetIds = Mappings
+				.Where(mapping => provider.MemberItemIds.Contains(mapping.Source.ItemId))
+				.Select(mapping => mapping.Target.ItemId)
+				.Distinct()
+				.ToArray();
+			if (providerTargetIds.Length == 0) continue;
+
+			var targetEntries = ResolveTargetCatalogEntries(providerTargetIds);
+			foreach (var plan in ArmorMappingPickerPlanner.BuildTargetGroupPlans(targetEntries, cachedTwinIndex))
+			{
+				var mappedPlan = plan with
+				{
+					SelectionKey = $"mapped:{provider.SelectionKey}:{plan.SelectionKey}",
+					Tab = ArmorMappingPickerTab.Mapped,
+					IsBlocked = false,
+					BlockedReason = null,
+				};
+				var row = BuildChoiceFromPlan(mappedPlan);
+				row.SetMappedOverviewPresentation(
+					provider.SelectionKey,
+					provider.Name,
+					plan.TypeLabel,
+					plan.IsTwinBundle,
+					plan.TwinSetCount,
+					plan.TwinBundleNote);
+				mappedRows.Add(row);
+			}
+		}
+		availableChoicesByTab[ArmorMappingPickerTab.Mapped] = mappedRows
+			.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
+			.ThenBy(row => row.MappedProviderName, StringComparer.CurrentCultureIgnoreCase)
+			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
+			.ToArray();
 
 		var managedOwners = new Dictionary<uint, string>();
 		foreach (var provider in Providers)
@@ -1592,8 +1637,9 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		SyncPickerTab(ArmorMappingPickerTab.Helmet, projection.Helmets, activeSelectedKeys, forceReplaceActiveTab);
 
 		allAvailableChoicesByKey.Clear();
-		foreach (var list in availableChoicesByTab.Values)
+		foreach (var (tab, list) in availableChoicesByTab)
 		{
+			if (tab == ArmorMappingPickerTab.Mapped) continue;
 			foreach (var item in list)
 				allAvailableChoicesByKey[item.SelectionKey] = item;
 		}
@@ -1772,6 +1818,23 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 		=> item is RuntimeArmorChoiceViewModel choice
 			&& MatchesSearch(choice, providerDetailSearchText);
 
+	private RuntimeArmorCatalogEntry[] ResolveTargetCatalogEntries(IEnumerable<uint> targetIds)
+		=> targetIds
+			.Select(id =>
+			{
+				if (cachedCatalogById.TryGetValue(id, out var catalogEntry))
+					return catalogEntry;
+				var fallback = ResolveChoice(id);
+				return new RuntimeArmorCatalogEntry(
+					id,
+					fallback.ArchiveId,
+					fallback.Name,
+					fallback.KitKind,
+					fallback.SetId,
+					fallback.DlcId);
+			})
+			.ToArray();
+
 	private static bool MatchesSearch(RuntimeArmorChoiceViewModel choice, string query)
 	{
 		var term = query.Trim();
@@ -1779,6 +1842,8 @@ public sealed class ArmorRegistryPageViewModel : FullWorkspacePageViewModel
 			|| choice.Name.Contains(term, StringComparison.CurrentCultureIgnoreCase)
 			|| choice.ArchiveId.Contains(term, StringComparison.OrdinalIgnoreCase)
 			|| choice.ItemIdText.Contains(term, StringComparison.OrdinalIgnoreCase)
+			|| (!string.IsNullOrEmpty(choice.MappedProviderName)
+				&& choice.MappedProviderName.Contains(term, StringComparison.CurrentCultureIgnoreCase))
 			// 民主官 NPC 的名字就是 FS-05 的名字，行上显示的「民主官 NPC」标签也要能搜到。
 			|| (choice.IsNpc && (KitNonPlayerArmors.NpcTag(choice.ItemId) ?? string.Empty).Contains(term, StringComparison.CurrentCultureIgnoreCase))
 			|| choice.MemberItemIds.Any(id => id.ToString(CultureInfo.InvariantCulture).Contains(term, StringComparison.OrdinalIgnoreCase));
@@ -2547,6 +2612,8 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	public bool IsDecoration => false;
 	public string Display => $"{Name} · {ArchiveId}";
 	public string ItemIdText => ItemId.ToString(CultureInfo.InvariantCulture);
+	public string? MappedProviderKey { get; private set; }
+	public string? MappedProviderName { get; private set; }
 	public bool IsSelected { get => isSelected; set => SetField(ref isSelected, value); }
 	public ModListRowPresentation RowPresentation { get => rowPresentation; private set => SetField(ref rowPresentation, value); }
 
@@ -2556,12 +2623,44 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 	private int twinSetCount;
 	private string? twinBundleNote;
 
+	private string? BuildActivationLabel(bool twinBundle, int twinCount)
+		=> IsNpc
+			? KitNonPlayerArmors.NpcTag(ItemId) ?? "NPC"
+			: twinBundle
+				? (VersionCount > 1 ? $"换色孪生 · {twinCount} 套 · {VersionCount} 个版本" : $"换色孪生 · {twinCount} 套")
+				: VersionCount > 1
+					? $"{VersionCount} 个版本"
+					: null;
+
 	/// <summary>低污染模式下的标注（警告标签 + 原因）；传 <c>null</c> 清除。</summary>
 	public void SetLowPollutionMark(string? warning, string? note)
 	{
 		lowPollutionWarning = warning;
 		lowPollutionNote = note;
 		RowPresentation = RowPresentation with { WarningLabel = warning, Note = note ?? twinBundleNote };
+	}
+
+	public void SetMappedOverviewPresentation(
+		string providerKey,
+		string providerName,
+		string typeLabel,
+		bool isTwinBundle = false,
+		int twinSetCount = 0,
+		string? twinBundleNote = null)
+	{
+		MappedProviderKey = providerKey;
+		MappedProviderName = providerName;
+		pickerTypeLabel = typeLabel;
+		this.isTwinBundle = isTwinBundle;
+		this.twinSetCount = twinSetCount;
+		this.twinBundleNote = twinBundleNote;
+		var summary = $"已映射到：{providerName}";
+		RowPresentation = new ModListRowPresentation(
+			TypeLabel: typeLabel,
+			TypeTone: ModListRowTone.Accent,
+			ActivationLabel: BuildActivationLabel(isTwinBundle, twinSetCount),
+			Summary: summary,
+			Note: twinBundleNote ?? summary);
 	}
 
 	public void SetPickerPresentation(
@@ -2574,13 +2673,7 @@ public sealed class RuntimeArmorChoiceViewModel : BaseViewModel, IModListSelecta
 		this.isTwinBundle = isTwinBundle;
 		this.twinSetCount = twinSetCount;
 		this.twinBundleNote = twinBundleNote;
-		var activation = IsNpc
-			? KitNonPlayerArmors.NpcTag(ItemId) ?? "NPC"
-			: isTwinBundle
-				? (VersionCount > 1 ? $"换色孪生 · {twinSetCount} 套 · {VersionCount} 个版本" : $"换色孪生 · {twinSetCount} 套")
-				: VersionCount > 1
-					? $"{VersionCount} 个版本"
-					: null;
+		var activation = BuildActivationLabel(isTwinBundle, twinSetCount);
 		if (IsBlocked)
 		{
 			RowPresentation = new ModListRowPresentation(

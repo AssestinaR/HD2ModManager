@@ -5,12 +5,13 @@ using HD2ModCore.Infrastructure.KitInstance;
 
 namespace HD2ModCore.Infrastructure.Sectional;
 
-/// <summary>护甲映射页右侧「可用护甲」列表顶部的三个选项卡。</summary>
+/// <summary>护甲映射页右侧列表顶部的选项卡。</summary>
 public enum ArmorMappingPickerTab
 {
 	Set = 0,
 	Armor = 1,
 	Helmet = 2,
+	Mapped = 3,
 }
 
 /// <summary>护甲映射页可选/已映射行规划结果（已过滤非玩家、合并同名版本或配对套装、并完成联动状态计算）。</summary>
