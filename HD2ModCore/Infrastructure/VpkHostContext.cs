@@ -16,4 +16,11 @@ public sealed record VpkHostContext(string? GameDataFolder, StoragePaths Paths)
 	/// （规划 <c>kit-instance-mapping-deploy-plan-20261114.md</c> §10）。默认关：关着时编译产物与以前逐字节一致。
 	/// </summary>
 	public bool LowPollutionMode { get; init; }
+
+	/// <summary>
+	/// 这次编译要为哪些飞船 NPC（<see cref="HD2ModCore.Infrastructure.KitInstance.KitNpcRecords"/> 的伪记录 ID）生成专用 unit：
+	/// 只有映射到<b>这个素体</b>的 NPC 才生成；空 = 一个都不生成（编译产物里没有 NPC 资源，没映射就不占地方）。
+	/// 只对低污染 + 头身合并的素体有意义。
+	/// </summary>
+	public IReadOnlyList<uint> NpcItemIds { get; init; } = [];
 }

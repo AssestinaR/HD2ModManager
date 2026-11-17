@@ -125,6 +125,15 @@ assert(snap:find('"group":"w1/pos0,280,0"', 1, true), snap) -- 静态模型自�
 assert(snap:find('"group":"w2/pos2000,0,0"', 1, true), snap)
 for _, l in ipairs(lines) do assert(not l:find('"kind":"hit"', 1, true), 'per-hit lines removed in 0.4') end
 
+-- 0.5：民主官标记件的邻居清单（0.6 米内，按资源 ID 合并；14 米外的静态模型不算邻居）
+local near
+for _, l in ipairs(lines) do if l:find('"kind":"officer_near"', 1, true) then near = l end end
+assert(near, 'no officer_near line')
+assert(near:find('210fb2f60f8308ea:', 1, true) and near:find('74b2e79c1c5af767:', 1, true), near)
+assert(near:find('82595b5d94c57343:1:3:0.00', 1, true), near)     -- 标记件自己：1 个实例、3 个 mesh、距离 0
+assert(not near:find('noise', 1, true), near)                      -- 9 米外的噪声 unit 不在 0.6 米内
+assert(near:find('"deck_officer_f_distance":"none"', 1, true), near)
+
 -- 结果不变 ⇒ 不重复写快照；1 秒内不重新扫描
 local n = #lines
 for _ = 1, 10 do probe.tick() end

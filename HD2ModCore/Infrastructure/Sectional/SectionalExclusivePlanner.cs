@@ -1,4 +1,5 @@
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.KitInstance;
 
 namespace HD2ModCore.Infrastructure.Sectional;
 
@@ -481,6 +482,12 @@ internal static class SectionalExclusivePlanner
 			helmetNotes.Add(helmetKits.Length == 0
 				? "头身合并：头落到躯干第二层；这套没有配套头盔记录。"
 				: $"头身合并：头落到躯干第二层，同套 {helmetKits.Length} 条头盔记录的原版部件全部隐藏。");
+			// 民主官没有头盔、只有一张脸（不属于任何护甲记录）：头已并进身体，把脸一并藏掉。
+			foreach (var face in KitNonPlayerArmors.ExtraHideUnits(itemId))
+			{
+				helmetHide.Add(face);
+				helmetNotes.Add("民主官的脸（不属于任何护甲记录）一并隐藏，显示模型的头。");
+			}
 		}
 		else if (head is not null)
 		{

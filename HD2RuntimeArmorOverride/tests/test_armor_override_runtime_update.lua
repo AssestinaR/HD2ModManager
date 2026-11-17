@@ -72,4 +72,28 @@ do
 	assert(pcall(env.update, 0.016))
 end
 
+-- D. 旧 SEAF 链接忽略，普通映射继续应用 -------------------------------------------
+do
+	local env = new_env()
+	local applied = {}
+	local document = 'schema=3\nrevision=71\nenabled=true\n'
+		.. 'link=75F7E96AF7DCD303,079b8593cf6b1dad\n'
+		.. 'link=1111111111111111,2222222222222222\n'
+	env.io.open = function(_, mode)
+		if mode ~= 'rb' then return nil end
+		return { read = function() return document end, close = function() end }
+	end
+	env.stingray.Application.time_since_launch = function() return 1 end
+	env.stingray.IdString64.from_hex = function(id) return id end
+	env.stingray.Application.set_resource_override = function(kind, source, target)
+		assert(kind == 'unit')
+		applied[source] = target
+	end
+	load_armor(env)
+	env.update(0.016)
+	env.update(0.016)
+	assert(applied['75f7e96af7dcd303'] == nil, 'SEAF must use its original resource key')
+	assert(applied['1111111111111111'] == '2222222222222222', 'regular links still apply')
+end
+
 print('test_armor_override_runtime_update: ok')

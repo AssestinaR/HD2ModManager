@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using HD2ModAdaptation.Analysis;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.KitInstance;
 using HD2ModCore.Infrastructure.Sectional;
 
 namespace HD2ModCore.Infrastructure;
@@ -81,6 +82,9 @@ public static class WardrobeLinkCompiler
 		var lowPollutionSkipped = 0;
 		foreach (var mapping in mappings)
 		{
+			// SEAF 必须保留原资源键。旧的低污染规划和普通槽位映射都不能写出此链接。
+			if (mapping.TargetItemId == KitNpcRecords.SeafSoldierItemId)
+				continue;
 			if (lowPollution is not null && mapping.IsModelMapping
 				&& lowPollution.TryGetValue(mapping.TargetItemId, out var lowPollutionPlan)
 				&& string.Equals(lowPollutionPlan.ModelKey, mapping.ModelKey, StringComparison.Ordinal))

@@ -38,6 +38,7 @@ public sealed class ArmorMappingPickerPlannerTests
 			Entry(2003u, "SC-30“侦察先驱”", GameDataEquipmentKitKind.Helmet, 5, 1),
 		};
 
+		catalog.AddRange(KitNpcRecords.AppendTo(Array.Empty<RuntimeArmorCatalogEntry>()));   // 飞船 NPC 伪记录（女舰长、维修技术员）
 		var baseCatalog = ArmorMappingPickerPlanner.BuildBaseCatalog(catalog);
 
 		// 所有非玩家及未命名都不应出现在任何选项卡中
@@ -53,20 +54,58 @@ public sealed class ArmorMappingPickerPlannerTests
 			Assert.DoesNotContain(helmetId, allMemberIds);
 
 		// 民主官 NPC 单独成行且带标签，不合入玩家 FS-05，也不参与套装配对
-		var npc = Assert.Single(baseCatalog.Armors, row => row.IsDemocracyOfficerNpc);
-		Assert.Equal(KitNonPlayerArmors.DemocracyOfficerArmorId, npc.PrimaryItemId);
-		Assert.Equal([KitNonPlayerArmors.DemocracyOfficerArmorId], npc.MemberItemIds);
-		Assert.Equal(1, npc.VersionCount);
-		Assert.Equal("护甲", npc.TypeLabel);
+		// 民主官的护甲和头不能分开：只在「套装」里有一行（护甲 + 头），「护甲」页没有他；不和玩家 FS-05 的套装混在一起。
+		Assert.DoesNotContain(baseCatalog.Armors, row => row.IsNpc);
+		Assert.DoesNotContain(baseCatalog.Armors, row => row.MemberItemIds.Contains(KitNonPlayerArmors.DemocracyOfficerArmorId));
+		var npcSet = Assert.Single(baseCatalog.Sets, row => row.PrimaryItemId == KitNonPlayerArmors.DemocracyOfficerArmorId);
+		Assert.Equal(ArmorMappingPickerTab.Set, npcSet.Tab);
+		Assert.Equal(KitNonPlayerArmors.DemocracyOfficerArmorId, npcSet.PrimaryItemId);
+		Assert.Equal([KitNonPlayerArmors.DemocracyOfficerArmorId], npcSet.MemberItemIds);
+		Assert.Equal(1, npcSet.VersionCount);
+		Assert.Equal("护甲+头", npcSet.TypeLabel);
+		Assert.Contains("民主官 NPC", npcSet.Name, StringComparison.Ordinal);   // 名字里就带「民主官 NPC」，既能和玩家 FS-05 区分，也能搜到
 
-		var playerFs05Armor = Assert.Single(baseCatalog.Armors, row => !row.IsDemocracyOfficerNpc && row.Name == "FS-05“标记师”");
+		// 三槽素体：头单独成 unit，民主官没有头盔可挂，这一行置灰并说明原因；两槽（头身合并）或没打开素体时可选。
+		var empty = new Dictionary<uint, string>();
+		var none = new HashSet<string>();
+		var threeSlot = ArmorMappingPickerPlanner.EvaluateProjection(baseCatalog, empty, none, false, true);
+		var blocked = Assert.Single(threeSlot.Sets, row => row.PrimaryItemId == KitNonPlayerArmors.DemocracyOfficerArmorId);
+		Assert.True(blocked.IsBlocked);
+		Assert.Equal(ArmorMappingPickerPlanner.NpcThreeSlotBlockedReason, blocked.BlockedReason);
+		foreach (var open in new[] { (false, false), (true, false) })
+		{
+			var projection = ArmorMappingPickerPlanner.EvaluateProjection(baseCatalog, empty, none, open.Item1, open.Item2);
+			Assert.False(Assert.Single(projection.Sets, row => row.PrimaryItemId == KitNonPlayerArmors.DemocracyOfficerArmorId).IsBlocked);
+		}
+
+		// 额外 NPC 同样单独成行，只在「套装」里，三槽置灰。
+		foreach (var record in KitNpcRecords.All)
+		{
+			var shipNpc = Assert.Single(baseCatalog.Sets, row => row.PrimaryItemId == record.ItemId);
+			Assert.True(shipNpc.IsNpc);
+			Assert.Equal(record.DisplayName, shipNpc.Name);
+			Assert.Equal("护甲+头", shipNpc.TypeLabel);
+			Assert.DoesNotContain(baseCatalog.Armors, row => row.MemberItemIds.Contains(record.ItemId));
+			Assert.True(Assert.Single(threeSlot.Sets, row => row.PrimaryItemId == record.ItemId).IsBlocked);
+		}
+		var seaf = Assert.Single(baseCatalog.Sets, row => row.PrimaryItemId == KitNpcRecords.SeafSoldierItemId);
+		Assert.Equal("SEAF 士兵（NPC）", seaf.Name);
+		Assert.Empty(seaf.ProviderSourceItemIds);
+		var lowPollutionOff = ArmorMappingPickerPlanner.EvaluateProjection(baseCatalog, empty, none, false, lowPollutionMode: false);
+		Assert.Contains("低污染", Assert.Single(lowPollutionOff.Sets, row => row.PrimaryItemId == seaf.PrimaryItemId).BlockedReason);
+		var noCustomModel = ArmorMappingPickerPlanner.EvaluateProjection(baseCatalog, empty, none, false, hasCustomModelSource: false);
+		Assert.Contains("自定义素体", Assert.Single(noCustomModel.Sets, row => row.PrimaryItemId == seaf.PrimaryItemId).BlockedReason);
+		var twoSlot = ArmorMappingPickerPlanner.EvaluateProjection(baseCatalog, empty, none, true);
+		Assert.False(Assert.Single(twoSlot.Sets, row => row.PrimaryItemId == seaf.PrimaryItemId).IsBlocked);
+
+		var playerFs05Armor = Assert.Single(baseCatalog.Armors, row => !row.IsNpc && row.Name == "FS-05“标记师”");
 		Assert.Equal(2, playerFs05Armor.VersionCount);
 		Assert.Equal([1001u, 1002u], playerFs05Armor.MemberItemIds);
 
 		var fs05Helmet = Assert.Single(baseCatalog.Helmets, row => row.Name == "FS-05“标记师”");
 		Assert.Equal([2001u, 2002u], fs05Helmet.MemberItemIds);
 
-		var fs05Set = Assert.Single(baseCatalog.Sets, row => row.Name == "FS-05“标记师”");
+		var fs05Set = Assert.Single(baseCatalog.Sets, row => !row.IsNpc && row.Name == "FS-05“标记师”");
 		Assert.Equal([1001u, 2001u], fs05Set.ProviderSourceItemIds);
 		Assert.Equal(4, fs05Set.MemberItemIds.Count);
 		Assert.Equal("头盔+护甲", fs05Set.TypeLabel);
@@ -289,13 +328,14 @@ public sealed class ArmorMappingPickerPlannerTests
 
 		var baseCatalog = ArmorMappingPickerPlanner.BuildBaseCatalog(catalog);
 
-		Assert.Equal(116, baseCatalog.Sets.Count);
-		Assert.Equal(117, baseCatalog.Armors.Count);
+		Assert.Equal(120, baseCatalog.Sets.Count);   // 116 个玩家套装 + 4 个 NPC
+		Assert.Equal(116, baseCatalog.Armors.Count);   // NPC 不在「护甲」里
 		Assert.Equal(118, baseCatalog.Helmets.Count);
 
-		var npc = Assert.Single(baseCatalog.Armors, row => row.IsDemocracyOfficerNpc);
-		Assert.Equal(KitNonPlayerArmors.DemocracyOfficerArmorId, npc.PrimaryItemId);
-		Assert.DoesNotContain(baseCatalog.Sets, row => row.MemberItemIds.Contains(KitNonPlayerArmors.DemocracyOfficerArmorId));
+		Assert.DoesNotContain(baseCatalog.Armors, row => row.IsNpc);
+		var npcSet = Assert.Single(baseCatalog.Sets, row => row.MemberItemIds.Contains(KitNonPlayerArmors.DemocracyOfficerArmorId));
+		Assert.True(npcSet.IsNpc);
+		Assert.Equal([KitNonPlayerArmors.DemocracyOfficerArmorId], npcSet.MemberItemIds);   // 不并进任何玩家套装
 
 		var allMembers = baseCatalog.Sets.SelectMany(r => r.MemberItemIds)
 			.Concat(baseCatalog.Armors.SelectMany(r => r.MemberItemIds))

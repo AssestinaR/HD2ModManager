@@ -514,14 +514,12 @@ public sealed class RuntimeArmorRegistryService
 			current.CompositionMode);
 		// 跳过的素体必须在「已部署 Unit」检查**之前**去掉：被跳过的素体往往正是没部署的那个
 		// （目标不是自己的素体 / 重编失败），留着它，下面的检查会让整次应用失败，其余映射也一起没了。
-		var compiled = skipModelKeys is { Count: > 0 }
-			? desired with
-			{
-				Mappings = desired.Mappings
-					.Where(mapping => !(mapping.IsModelMapping && skipModelKeys.Contains(mapping.ModelKey!)))
-					.ToArray(),
-			}
-			: desired;
+		var compiled = desired with
+		{
+			Mappings = desired.Mappings.Where(mapping =>
+				(mapping.TargetItemId != KitNpcRecords.SeafSoldierItemId || (lowPollutionMode && mapping.IsModelMapping))
+				&& !(mapping.IsModelMapping && skipModelKeys?.Contains(mapping.ModelKey!) == true)).ToArray(),
+		};
 		IReadOnlySet<ulong>? deployedUnits = null;
 		if (gameDataDirectory is not null && compiled.ModelDefinitions.Any(model => model.SourceItemId is null))
 		{
@@ -591,7 +589,8 @@ public sealed class RuntimeArmorRegistryService
 					// 否则运行时继续执行旧映射（2026-11-13 实测：协议已关闭，旧 wardrobe.links
 					// 仍把 4 件护甲改指到不存在的 unit，游戏里缺身体）；②才保留上一版。
 					// 只覆盖已存在的文件，没有就不凭空创建。
-					var intentionallyEmpty = compiled.Mappings.Count == 0 || !compiled.Enabled;
+					// SEAF 专用 unit 缺失时移除旧链接，避免指向已被重编清理的资源。
+					var intentionallyEmpty = !compiled.Enabled || compiled.Mappings.All(mapping => mapping.TargetItemId == KitNpcRecords.SeafSoldierItemId);
 					if (links.LinkCount > 0
 						|| (intentionallyEmpty && File.Exists(Path.Combine(registryRoot, WardrobeLinkCompiler.FileName))))
 					{

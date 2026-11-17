@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure.KitInstance;
 
 namespace HD2ModCore.Infrastructure.Sectional;
 
@@ -65,6 +66,76 @@ public static class LowPollutionFreshness
 			&& layout.UnitOf(LowPollutionRoles.Arms) is not null
 			&& layout.UnitOf(LowPollutionRoles.BodyArms) is null;
 
+	/// <summary>布局里已经有专用 unit 的飞船 NPC（伪记录 ID）。</summary>
+	internal static IReadOnlySet<uint> NpcVariantItemIds(LowPollutionLayout layout)
+		=> KitNpcRecords.All.Where(npc => layout.UnitOf(npc.VariantRole) is not null).Select(npc => npc.ItemId).ToHashSet();
+
+	/// <summary>
+	/// 布局里的飞船 NPC 专用 unit 和「现在映射到这个素体的 NPC」对不上：缺了要补（映射了却没有专用 unit，NPC 会站成 T 字），
+	/// 多了要清掉（取消映射后它们没人用）。头身合并之外的素体不做 NPC，期望集合恒为空。
+	/// 一个 NPC 只会映射到一个素体，所以 NPC 的资源只在那一个素体里有一份。
+	/// </summary>
+	internal static bool NpcVariantsMismatch(LowPollutionLayout layout, IReadOnlySet<uint>? mappedNpcs)
+	{
+		var expected = layout.HeadMerge ? mappedNpcs ?? new HashSet<uint>() : new HashSet<uint>();
+		if (!NpcVariantItemIds(layout).SetEquals(expected)) return true;
+		return KitNpcRecords.All.Any(npc => npc.RequiresNativeShell && expected.Contains(npc.ItemId)
+			&& !layout.UnitsOf(npc.VariantRole).SequenceEqual([SectionalExclusivePlanner.Hex(npc.RootUnitId)], StringComparer.OrdinalIgnoreCase));
+	}
+
+	/// <summary>
+	/// 布局里还留着 NPC 专用 unit、但这个素体已经没有映射的素体（取消了 NPC 映射且这个素体不再被任何映射引用）：
+	/// 要重编一次把它们清掉，否则 NPC 的资源永远留在补丁里。
+	/// </summary>
+	public static IReadOnlyList<string> LeftoverNpcModelKeys(string modsDirectory, IReadOnlyCollection<string> alreadyAssessed, bool nativeOnly = false)
+	{
+		var catalog = CustomModelCatalog.Collect(modsDirectory);
+		var result = new List<string>();
+		foreach (var (key, entry) in catalog.Entries)
+		{
+			if (alreadyAssessed.Contains(key, StringComparer.OrdinalIgnoreCase)) continue;
+			if (!LowPollutionLayoutReader.TryRead(entry.ModDirectory, out var layout, out _) || layout is null) continue;
+			if (KitNpcRecords.All.Any(npc => (!nativeOnly || npc.RequiresNativeShell) && layout.UnitOf(npc.VariantRole) is not null))
+				result.Add(key);
+		}
+
+		return result;
+	}
+
+	/// <summary>这次映射里，每个素体（ModelKey）映射到了哪些飞船 NPC（伪记录 ID）；没映射 NPC 的素体不在里面。</summary>
+	public static IReadOnlyDictionary<string, IReadOnlySet<uint>> NpcItemIdsByModel(IEnumerable<RuntimeArmorRegistryMapping> mappings)
+	{
+		ArgumentNullException.ThrowIfNull(mappings);
+		return mappings
+			.Where(mapping => mapping.IsModelMapping && !string.IsNullOrWhiteSpace(mapping.ModelKey) && KitNpcRecords.IsNpc(mapping.TargetItemId))
+			.GroupBy(mapping => mapping.ModelKey!, StringComparer.OrdinalIgnoreCase)
+			.ToDictionary(
+				group => group.Key,
+				group => (IReadOnlySet<uint>)group.Select(mapping => mapping.TargetItemId).ToHashSet(),
+				StringComparer.OrdinalIgnoreCase);
+	}
+
+	/// <summary>
+	/// 有没有素体的 NPC 专用 unit 和现在的映射对不上：已经没人映射的素体还留着它们（要清），
+	/// 或仍被映射引用的素体里缺了 / 多了某个 NPC（要补 / 要清）。这是应用前判断「要不要走重编」的依据之一。
+	/// </summary>
+	public static bool AnyNpcVariantMismatch(
+		string modsDirectory, IReadOnlyCollection<string> sourceKeys, IReadOnlyDictionary<string, IReadOnlySet<uint>> npcByModel)
+	{
+		ArgumentNullException.ThrowIfNull(sourceKeys);
+		ArgumentNullException.ThrowIfNull(npcByModel);
+		if (LeftoverNpcModelKeys(modsDirectory, sourceKeys).Count != 0) return true;
+		var catalog = CustomModelCatalog.Collect(modsDirectory);
+		foreach (var key in sourceKeys)
+		{
+			if (!catalog.Entries.TryGetValue(key, out var entry)) continue;
+			if (!LowPollutionLayoutReader.TryRead(entry.ModDirectory, out var layout, out _) || layout is null) continue;
+			if (NpcVariantsMismatch(layout, npcByModel.TryGetValue(key, out var mapped) ? mapped : null)) return true;
+		}
+
+		return false;
+	}
+
 	internal static void WriteUnsupportedMarker(
 		string modDirectory,
 		string payloadDirectory,
@@ -105,7 +176,8 @@ public static class LowPollutionFreshness
 	/// 对一个素体 Mod 做判断。<paramref name="lowPollution"/> 开：不是最新压缩产物就要重编；
 	/// 关：生效层还留着压缩痕迹（布局 / 不可压缩标记）就要重编回普通产物；其余跳过。
 	/// </summary>
-	public static LowPollutionPrepItem Assess(string modelKey, string modDirectory, bool lowPollution, VpkWardrobeFile wardrobe)
+	public static LowPollutionPrepItem Assess(
+		string modelKey, string modDirectory, bool lowPollution, VpkWardrobeFile wardrobe, IReadOnlySet<uint>? mappedNpcs = null)
 	{
 		ArgumentNullException.ThrowIfNull(wardrobe);
 		var name = Path.GetFileName(modDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -132,6 +204,8 @@ public static class LowPollutionFreshness
 					reason = "来源或勾选变了";
 				else if (MissesBodyArms(layout))
 					reason = "布局里缺「身体+手臂」合体 unit（新版低污染需要），重新压缩一次";
+				else if (NpcVariantsMismatch(layout, mappedNpcs))
+					reason = "NPC 映射或补丁格式变了，重新生成对应的 unit";
 				else
 					return new(modelKey, modDirectory, name, LowPollutionPrepStatus.UpToDate, "已是最新的压缩产物");
 			}
@@ -174,7 +248,8 @@ public static class LowPollutionFreshness
 
 	/// <summary>对本次映射用到的素体逐个判断。素体不在目录里的不出现在结果里（映射本来就会失败）。</summary>
 	public static async Task<IReadOnlyList<LowPollutionPrepItem>> PlanAsync(
-		string modsDirectory, IEnumerable<string> modelKeys, bool lowPollution, CancellationToken cancellationToken = default)
+		string modsDirectory, IEnumerable<string> modelKeys, bool lowPollution, CancellationToken cancellationToken = default,
+		IReadOnlyDictionary<string, IReadOnlySet<uint>>? npcByModel = null)
 	{
 		var catalog = CustomModelCatalog.Collect(modsDirectory);
 		var items = new List<LowPollutionPrepItem>();
@@ -183,7 +258,8 @@ public static class LowPollutionFreshness
 			cancellationToken.ThrowIfCancellationRequested();
 			if (!catalog.Entries.TryGetValue(key, out var entry)) continue;
 			var wardrobe = await VpkModWardrobeService.ReadAsync(entry.ModDirectory, cancellationToken).ConfigureAwait(false);
-			items.Add(Assess(key, entry.ModDirectory, lowPollution, wardrobe));
+			items.Add(Assess(key, entry.ModDirectory, lowPollution, wardrobe,
+				npcByModel is not null && npcByModel.TryGetValue(key, out var mapped) ? mapped : null));
 		}
 		return items;
 	}

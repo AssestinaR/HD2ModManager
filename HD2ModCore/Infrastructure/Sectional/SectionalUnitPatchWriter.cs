@@ -21,6 +21,12 @@ internal sealed record SectionalUnitRename(string SourceFileId, CoreAssetKey Tar
 /// <summary>P4b：一个合并好的 unit 载荷，要写到这些目标键上（每个键一份副本，字节相同）。</summary>
 internal sealed record SectionalMergedOutput(IReadOnlyList<CoreAssetKey> Targets, SectionalMergedUnit Unit);
 
+/// <summary>
+/// NPC 专用副本：以压缩 unit <paramref name="SourceUnitId"/> 为来源，按 NPC 的骨架生成可映射的整身 unit，
+/// 写到 <paramref name="Target"/> 键下。网格 / GPU 数据与来源字节相同（写入侧按内容去重，不会让文件翻倍）。
+/// </summary>
+internal sealed record SectionalNpcVariant(string SourceUnitId, CoreAssetKey Target, HD2ModCore.Infrastructure.KitInstance.KitNpcRecords.NpcRecord Npc);
+
 /// <param name="RewrittenUnitCount">真正写出去的改名副本数（含合并产物的副本）。</param>
 /// <param name="HiddenUnitCount">写成隐藏壳的目标 unit 数。</param>
 /// <param name="HiddenTriangles">隐藏壳的三角形总数。</param>
@@ -60,7 +66,9 @@ internal static class SectionalUnitPatchWriter
 		IReadOnlyList<CoreAssetKey> hiddenKeys,
 		ISectionalHiddenUnitSource hiddenSource,
 		CancellationToken cancellationToken = default,
-		IReadOnlyList<SectionalMergedOutput>? mergedOutputs = null)
+		IReadOnlyList<SectionalMergedOutput>? mergedOutputs = null,
+		IReadOnlyList<SectionalNpcVariant>? npcVariants = null,
+		string? gameDataDirectory = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchPath);
 		ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
@@ -136,6 +144,42 @@ internal static class SectionalUnitPatchWriter
 			warnings.AddRange(output.Unit.Warnings);
 		}
 
+		// NPC 专用副本以压缩后的整身为来源。SEAF 保留原版外壳，飞船 NPC 补上自己的头部引用。
+		var npcCopies = 0;
+		foreach (var variant in npcVariants ?? [])
+		{
+			var sourceId = ulong.Parse(variant.SourceUnitId, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture);
+			var fromMerged = (mergedOutputs ?? []).FirstOrDefault(output => output.Targets.Any(target => target.FileId == sourceId));
+			var unit = fromMerged?.Unit;
+			if (unit is null && byFileId.TryGetValue(variant.SourceUnitId, out var sourceEntry))
+			{
+				var payload = await ReadPayloadAsync(sourceEntry).ConfigureAwait(false);
+				unit = new SectionalMergedUnit(payload.TocData, payload.GpuResourceData, payload.StreamData,
+					sourceEntry.Unknown1, sourceEntry.Unknown2, sourceEntry.Unknown3, sourceEntry.Unknown4, []);
+			}
+			if (unit is null)
+			{
+				if (variant.Npc.RequiresNativeShell)
+					throw new InvalidDataException($"找不到 {variant.Npc.Name} 映射的整身素体 unit 0x{variant.SourceUnitId}。");
+				warnings.Add($"NPC 专用副本的来源 unit 0x{variant.SourceUnitId} 不在 patch 里：{variant.Npc.Name}这一份不写出去。");
+				continue;
+			}
+			if (variant.Npc.RequiresNativeShell)
+			{
+				if (string.IsNullOrWhiteSpace(gameDataDirectory) || !Directory.Exists(gameDataDirectory))
+					throw new InvalidDataException("生成 SEAF 士兵映射需要读原版士兵 unit，请先在设置页指定游戏目录。");
+				unit = await SeafSoldierUnitBuilder.BuildAsync(variant.Npc, unit, gameDataDirectory, cancellationToken).ConfigureAwait(false);
+				warnings.AddRange(unit.Warnings);
+			}
+			else
+			{
+				unit = unit with { TocData = HD2ModCore.Infrastructure.KitInstance.KitNpcRecords.PatchHeader(variant.Npc, unit.TocData) };
+			}
+			additions.Add(new AdaptAddition(new AdaptKey(variant.Target.TypeId, variant.Target.FileId),
+				unit.TocData, unit.StreamData, unit.GpuResourceData, unit.Unknown1, unit.Unknown2, unit.Unknown3, unit.Unknown4));
+			npcCopies++;
+		}
+
 		var hiddenTriangles = 0;
 		var hiddenMeshCount = 0;
 		var hiddenCount = 0;
@@ -178,7 +222,7 @@ internal static class SectionalUnitPatchWriter
 			cancellationToken: cancellationToken).ConfigureAwait(false);
 
 		return new SectionalUnitPatchResult(
-			unitEntries.Length, renames.Count + mergedCopies, hiddenCount, hiddenTriangles, hiddenMeshCount, warnings);
+			unitEntries.Length, renames.Count + mergedCopies + npcCopies, hiddenCount, hiddenTriangles, hiddenMeshCount, warnings);
 	}
 
 	/// <summary>把隐藏壳重新解析一遍、数它还剩几个三角形（验收用：必须恰好 1 个）。</summary>

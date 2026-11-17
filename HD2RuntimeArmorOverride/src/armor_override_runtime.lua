@@ -29,6 +29,7 @@ local MAX_BYTES = 4 * 1024 * 1024
 -- 一次写 2000 条会拖住一帧，所以按帧摊开。
 local SET_BUDGET_PER_TICK = 32
 local PROTOCOL_NAME = 'wardrobe.links'
+local SEAF_ROOT_UNIT = '75f7e96af7dcd303'
 
 local function base_directory()
 	local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -88,7 +89,8 @@ local function parse(text)
 					return nil, 'bad link: ' .. trimmed
 				end
 				local key_text = source:lower()
-				if seen[key_text] == nil then
+				-- 旧协议的 SEAF 别名会使引擎按新键查找原版配套资源，生成士兵时闪退。
+				if key_text ~= SEAF_ROOT_UNIT and seen[key_text] == nil then
 					seen[key_text] = true
 					result.links[#result.links + 1] = { source = key_text, target = target:lower() }
 				end
