@@ -568,7 +568,11 @@ public sealed class RuntimeArmorRegistryService
 					if (lowPollutionMode && compiled.Enabled)
 					{
 						deployedUnits ??= await RuntimeArmorResourceFilter.ReadDeployedUnitsAsync(gameDataDirectory, cancellationToken).ConfigureAwait(false);
-						lowPollutionPlans = LowPollutionMappingService.Plan(paths.ModsDirectory, authority, compiled.Mappings, deployedUnits);
+						var playerRigs = await PlayerArmorInstanceRigReader.ReadAsync(
+							paths.ModsDirectory, gameDataDirectory, authority, compiled.Mappings, deployedUnits, cancellationToken)
+							.ConfigureAwait(false);
+						lowPollutionPlans = LowPollutionMappingService.Plan(
+							paths.ModsDirectory, authority, compiled.Mappings, deployedUnits, playerRigs);
 					}
 
 					// Hider 规则先于映射行落盘：映射生效时隐藏规则已经就位。没有规则时只在文件已存在才写

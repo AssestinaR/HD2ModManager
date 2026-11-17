@@ -17,12 +17,14 @@ internal static class RuntimeArmorRegistryLuaSource
 	/// 写 unit TOC，本版一并摘除；等它的替代实现就绪后再接回来。
 	///
 	/// The ffi memory-patching chain and the section-mask feature are both gone: on 26088801
-	/// `require('ffi')` fails, so neither can run. Only the resource-override runtime remains.
+	/// `require('ffi')` fails, so neither can run. The current payload uses public resource and unit APIs.
 	/// </summary>
 	public static string Load()
 	{
 		var assembly = typeof(RuntimeArmorRegistryLuaSource).Assembly;
-		return Read(assembly, "armor_override_runtime.lua");
+		return "-- Managed armor runtime\nlocal PlayerArmorInstances = (function()\n"
+			+ Read(assembly, "player_armor_instances.lua") + "\nend)()\n"
+			+ Read(assembly, "armor_override_runtime.lua");
 	}
 
 	private static string Read(Assembly assembly, string suffix)

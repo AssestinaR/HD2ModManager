@@ -187,6 +187,7 @@ public static class WardrobeLinkCompiler
 		// 低污染映射行：只发承载件，没有 HiddenUnit。承载键已被别的映射占着且 donor 不同 ⇒ 丢弃并计数。
 		var lowPollutionLinks = 0;
 		var lowPollutionConflicts = 0;
+		var playerLinks = new Dictionary<string, LowPollutionPlayerLink>(StringComparer.Ordinal);
 		if (lowPollutionPlans.Count != 0)
 		{
 			var donors = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -209,6 +210,28 @@ public static class WardrobeLinkCompiler
 					lowPollutionLinks++;
 				}
 			}
+
+			// 孪生记录共用同一个原版右肩和模型。合并隐藏部件，运行时只为同一个角色挂一份模型。
+			foreach (var link in lowPollutionPlans.SelectMany(plan => plan.PlayerLinks))
+			{
+				if (donors.ContainsKey(link.Carrier))
+				{
+					lowPollutionConflicts++;
+					continue;
+				}
+				if (!playerLinks.TryGetValue(link.Carrier, out var previous))
+				{
+					playerLinks.Add(link.Carrier, link);
+					continue;
+				}
+				if (previous.Unit != link.Unit)
+				{
+					lowPollutionConflicts++;
+					continue;
+				}
+				playerLinks[link.Carrier] = previous with { Hide = [.. previous.Hide.Union(link.Hide).Order(StringComparer.Ordinal)] };
+			}
+			lowPollutionLinks += playerLinks.Count;
 		}
 
 		var builder = new StringBuilder(64 + lines.Count * 40);
@@ -226,8 +249,15 @@ public static class WardrobeLinkCompiler
 				.Append(sourceId.ToString(CultureInfo.InvariantCulture)).Append('\n');
 		}
 		foreach (var line in lines) builder.Append(line).Append('\n');
+		foreach (var link in playerLinks.Values.OrderBy(link => link.Carrier, StringComparer.Ordinal))
+		{
+			builder.Append("instance=").Append(link.Carrier).Append(',').Append(link.Unit).Append(',')
+				.Append(link.Rig.AvatarNodes.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.Append(link.Rig.ModelNodes.ToString(CultureInfo.InvariantCulture)).Append(',')
+				.AppendJoin(':', link.Rig.BoneLinks).Append(',').AppendJoin(':', link.Hide).Append('\n');
+		}
 
-		return new Result(builder.ToString(), lines.Count, hidden, unresolved, missingSources)
+		return new Result(builder.ToString(), lines.Count + playerLinks.Count, hidden, unresolved, missingSources)
 		{
 			LowPollutionLinkCount = lowPollutionLinks,
 			LowPollutionSkipped = lowPollutionSkipped,
