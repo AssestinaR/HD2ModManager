@@ -118,7 +118,7 @@
             <li>右边 <span class="ui">可用护甲</span> <strong>推荐直接用 <span class="ui">套装</span></strong>（整套一起映射效果最好；只换单件再切 <span class="ui">护甲</span> / <span class="ui">头盔</span>），挑出目标后<strong>从右边拖到左边</strong>（或点行上的 <strong>+</strong>、多选后点底栏 <span class="ui">注册为映射目标</span>）。</li>
             <li>确认右上角 <span class="ui">启用映射</span> 是打开的，然后点 <span class="ui">应用</span>。</li>
           </ol>
-          <p>点完 <span class="ui">应用</span> 后，管理器会自动编译素体（开了低污染模式就会在这步压缩）并自动部署到游戏。</p>
+          <p>点完 <span class="ui">应用</span> 后，管理器会自动编译素体（开了低污染模式就会在这步压缩）并自动部署到游戏，之后点 <span class="ui">启动游戏</span> 进游戏试穿即可。</p>
           <figure class="shot"
                   data-src="img/t2-03.png"
                   data-alt="护甲映射页：左侧视觉来源、右侧可用护甲、顶部启用映射与应用"
@@ -128,30 +128,6 @@
             <a class="pin" style="left:91.5%;top:15%" data-step="3">打开「启用映射」，点「应用」（会自动部署）</a>
           </figure>
         </div>
-      </section>
-
-      <section class="step" data-step="4" id="step-4">
-        <div class="step-head">
-          <span class="step-num">4</span>
-          <h3>启动游戏，换上目标护甲确认</h3>
-        </div>
-        <div class="step-body">
-          <p>等 <span class="ui">应用</span> 和部署提示跑完，点 <span class="ui">启动游戏</span>。进游戏换上你刚才选的那件目标护甲，检查外观是否生效、其他没映射的护甲是否正常。</p>
-          <figure class="shot"
-                  data-src="img/t2-04.png"
-                  data-alt="游戏内穿上目标护甲效果确认"
-                  data-hint="游戏内武器库或战备界面截图，穿上映射好的目标护甲确认外观正常。">
-            <a class="pin" style="left:50%;top:50%" data-step="1">游戏里穿上刚才指定的目标护甲，确认外观正常且没串到别的护甲</a>
-          </figure>
-        </div>
-      </section>
-
-      <section class="card" id="verify">
-        <h2 class="section-title">怎么确认成功</h2>
-        <ul>
-          <li><span class="ui">护甲映射</span> 页顶部 <span class="ui">启用映射</span> 已打开，点 <span class="ui">应用</span> 后没有报错。</li>
-          <li>进游戏穿上目标护甲是新外观，换上其他原版护甲依然是原样。</li>
-        </ul>
       </section>
 
       <section class="card" id="faq">
@@ -176,42 +152,6 @@
           <p class="faq-q">转成素体后，能导出给别的管理器或手动装吗？</p>
           <p class="faq-a">可以：① 打开这个素体的详情页，把 <span class="ui">目标护甲</span> 选成<strong>具体的游戏护甲</strong>（别选「自定义素体」），点 <span class="ui">切换</span> 等它编完；② 在列表里点行上的「导出为文件夹结构 zip」；③ 底部弹出栏里<strong>勾选 <span class="ui">导出 Overwrite 版</span></strong> 再点 <span class="ui">导出</span>。导出的 zip 就是标准 <code>.patch_*</code> 包，别的管理器也能直接用（但不带本管理器的低污染隐藏效果）。</p>
         </div>
-      </section>
-
-      <section class="card" id="shot-list">
-        <h2 class="section-title">截图清单</h2>
-        <p>把图放进 <code>docs/guide/img/</code>，按下面名字存好：</p>
-        <table class="shot-manifest">
-          <thead>
-            <tr>
-              <th>文件名</th>
-              <th>步骤</th>
-              <th>截什么</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td data-label="文件名"><code>img/t2-01.png</code></td>
-              <td data-label="步骤">步骤 1</td>
-              <td data-label="截什么">「设置」里的「内置 lua」卡片（拍到总开关、映射模式、低污染模式）</td>
-            </tr>
-            <tr>
-              <td data-label="文件名"><code>img/t2-02.png</code></td>
-              <td data-label="步骤">步骤 2</td>
-              <td data-label="截什么">Mod 详情页点出「生成sectional版」底栏（拍到名称、护甲、头盔、生成）</td>
-            </tr>
-            <tr>
-              <td data-label="文件名"><code>img/t2-03.png</code></td>
-              <td data-label="步骤">步骤 3</td>
-              <td data-label="截什么">「护甲映射」页面（拍到左侧视觉来源、右侧可用护甲选项卡、右上角启用映射与「应用」）</td>
-            </tr>
-            <tr>
-              <td data-label="文件名"><code>img/t2-04.png</code></td>
-              <td data-label="步骤">步骤 4</td>
-              <td data-label="截什么">游戏内穿上目标护甲后的效果截图</td>
-            </tr>
-          </tbody>
-        </table>
       </section>
 
       <footer class="footer">
