@@ -355,12 +355,17 @@ public static class SourceSegmentation
 			.Where(group => group.Kind == MeshGroupKind.BodyPart)
 			.ToDictionary(group => group.Region);
 
-		// ① 同一 bodypart 只取默认变体。
+		// ① 同一 bodypart 只取默认变体，且尊重 MDL 第 0 项为空（blank = 默认关闭）的语义。
 		//
-		// 按 SourceModelIndex 排序后取第一个"有三角形"的：空变体（0 顶点）在 Split 里根本不会成为
-		// 一个 group，所以走到这里的每个变体都自带几何；仍按三角形数兜一层，防止将来有人放宽那一条。
+		// L4D2 / Source 引擎默认始终选取每个 bodygroup 的第 0 个 submodel：
+		//   · `submodel[0]` 有几何（`SourceModelIndex <= 0`）⇒ 默认开启，只取它并略过同组其余互斥变体；
+		//   · `submodel[0]` 是 0 顶点的空变体（`SourceGeometryBuilder` 已跳过空项，故首个非空变体的
+		//     `SourceModelIndex > 0`，典型如 `faceeffect` 表情符 bodygroup）⇒ 源侧默认关闭，不该并进默认身体，
+		//     **除非**不并会让它所在部位一个三角形都不剩（兜底保住整块身体挂在可切换组里的罕见写法）。
 		var keptComponents = new List<MeshGroup>();
 		var skippedByBodyPart = new List<(MeshGroup Chosen, int SkippedCount, int SkippedTriangles)>();
+		var defaultOffCandidates = new List<MeshGroup[]>();
+		var defaultOffSkipped = new List<(string Name, int SkippedTriangles)>();
 		foreach (var sameBodyPart in groups
 			.Where(group => group.Kind == MeshGroupKind.Component)
 			.GroupBy(group => group.SourceBodyPartIndex))
@@ -370,15 +375,40 @@ public static class SourceSegmentation
 				.ThenBy(group => group.Name, StringComparer.Ordinal)
 				.ToArray();
 			var chosen = ordered.FirstOrDefault(group => group.TriangleCount > 0) ?? ordered[0];
+			if (chosen.SourceModelIndex > 0)
+			{
+				defaultOffCandidates.Add(ordered);
+				continue;
+			}
+
 			keptComponents.Add(chosen);
+			Place(chosen.TriangleIndices, chosen.Region);
 
 			var dropped = ordered.Where(group => !ReferenceEquals(group, chosen) && group.TriangleCount > 0).ToArray();
 			if (dropped.Length != 0)
 				skippedByBodyPart.Add((chosen, dropped.Length, dropped.Sum(group => group.TriangleCount)));
 		}
 
-		// 说明合并成两句：一句"放弃了哪些变体"，一句"补出了哪些部位"。
-		// 逐件各报一行会把通知刷成十几条，而能被采取的动作其实只有两句话那么多。
+		// 第二遍检查"默认关闭"（submodel[0] 为 blank）的组：只在目标部位完全为空时才补位。
+		foreach (var ordered in defaultOffCandidates)
+		{
+			var chosen = ordered.FirstOrDefault(group => group.TriangleCount > 0) ?? ordered[0];
+			var regionIsEmpty = !merged.TryGetValue(chosen.Region, out var existing) || existing.Count == 0;
+			if (!regionIsEmpty)
+			{
+				defaultOffSkipped.Add((chosen.Name, ordered.Sum(group => group.TriangleCount)));
+				continue;
+			}
+
+			keptComponents.Add(chosen);
+			Place(chosen.TriangleIndices, chosen.Region);
+
+			var dropped = ordered.Where(group => !ReferenceEquals(group, chosen) && group.TriangleCount > 0).ToArray();
+			if (dropped.Length != 0)
+				skippedByBodyPart.Add((chosen, dropped.Length, dropped.Sum(group => group.TriangleCount)));
+		}
+
+		// 说明合并成摘要：一句"放弃了哪些互斥变体"，一句"略过了哪些默认关闭的开关"，一句"补出了哪些部位"。
 		if (skippedByBodyPart.Count != 0)
 		{
 			notes.Add(
@@ -388,9 +418,13 @@ public static class SourceSegmentation
 				+ "要另一套变体就换变体重转。");
 		}
 
-		// ② 并进各自部位（按三角形归位，见上面的 Place）。
-		foreach (var component in keptComponents)
-			Place(component.TriangleIndices, component.Region);
+		if (defaultOffSkipped.Count != 0)
+		{
+			notes.Add(
+				$"{defaultOffSkipped.Count} 个可切换部件在源侧默认关闭（MDL 第 0 项为空变体，共略过 {defaultOffSkipped.Sum(item => item.SkippedTriangles)} 个三角形）："
+				+ string.Join("、", defaultOffSkipped.Select(item => item.Name))
+				+ "。如需并入，请用 --components 指定该部件名。");
+		}
 
 		// "补出来的部位" = 收到了三角形、但源侧没有任何固定 bodypart 落在那一区域。
 		var synthesized = merged.Keys
@@ -431,11 +465,15 @@ public static class SourceSegmentation
 				});
 		}
 
-		return new MergeResult(result, notes);
+		return new MergeResult(result, notes) { KeptComponents = keptComponents };
 	}
 
 	/// <summary><see cref="MergeComponentsIntoBodyParts"/> 的结果。</summary>
 	/// <param name="Groups">每个部位一份，按槽位升序。</param>
-	/// <param name="Notes">这次的取舍说明：略过的变体、补出来的部位。</param>
-	public sealed record MergeResult(IReadOnlyList<MeshGroup> Groups, IReadOnlyList<string> Notes);
+	/// <param name="Notes">这次的取舍说明：略过的变体、默认关闭的部件、补出来的部位。</param>
+	public sealed record MergeResult(IReadOnlyList<MeshGroup> Groups, IReadOnlyList<string> Notes)
+	{
+		/// <summary>实际并入默认身体的可切换部件（供 bodygroup section 开关推导使用）。</summary>
+		public IReadOnlyList<MeshGroup> KeptComponents { get; init; } = [];
+	}
 }

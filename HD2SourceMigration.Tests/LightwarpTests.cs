@@ -171,6 +171,35 @@ public sealed class LightwarpTests
 		Assert.True(albedo[0] < 150, $"应当明显变暗，实际 {albedo[0]}");
 	}
 
+	[Fact]
+	public void ChromaticityKeepsNeutralRampAtIdentityAndExtractsVioletTintWithoutCrushingBrightness()
+	{
+		// 中性灰 ramp（NekoToon 常见的受光恒为 76）：归一化色相必须是精确的 (1, 1, 1)。
+		var neutral = MaterialAppearance.LightwarpChromaticity(Ramp(16, 50, 50, 50, 76), 16, 1);
+		Assert.Equal([1.0, 1.0, 1.0], neutral);
+
+		// 全黑坏 ramp：安全退回 (1, 1, 1)。
+		var broken = MaterialAppearance.LightwarpChromaticity(Ramp(8, 0, 0, 0, 0), 8, 1);
+		Assert.Equal([1.0, 1.0, 1.0], broken);
+
+		// 紫发 ramp（3621723720 hair_warp 受光半球偏蓝紫：中段 (69,57,78)、亮端 (119,121,140)）：
+		// 最亮的蓝通道必须保持 1.0（不压垮整体明度），红绿通道降到 < 0.90 赋予紫罗兰色相。
+		var violetRamp = new byte[16 * 4];
+		for (var x = 0; x < 16; x++)
+		{
+			var t = x / 15.0;
+			violetRamp[(x * 4) + 0] = (byte)Math.Round(40 + (79 * t));
+			violetRamp[(x * 4) + 1] = (byte)Math.Round(35 + (86 * t));
+			violetRamp[(x * 4) + 2] = (byte)Math.Round(55 + (85 * t));
+			violetRamp[(x * 4) + 3] = 255;
+		}
+
+		var chroma = MaterialAppearance.LightwarpChromaticity(violetRamp, 16, 1);
+		Assert.Equal(1.0, chroma[2], 6);
+		Assert.InRange(chroma[0], 0.75, 0.90);
+		Assert.InRange(chroma[1], 0.75, 0.90);
+	}
+
 	private static byte[] SinglePixel(byte value) => [value, value, value, 255];
 
 	/// <summary>单像素法线（切线空间 0..255 编码）。</summary>

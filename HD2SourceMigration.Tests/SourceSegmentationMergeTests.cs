@@ -298,5 +298,61 @@ public sealed class SourceSegmentationMergeTests
 		Assert.Equal(4, placed.Length);
 		Assert.Equal(4, placed.Distinct().Count());
 	}
+
+	/// <summary>
+	/// <b>MDL 第 0 项为空（<c>$bodygroup ... { blank ... }</c>）的可切换组默认关闭，不该并进已有本体。</b>
+	/// <para>
+	/// 实测 <c>3621723720.vpk</c> 的 <c>faceeffect</c>：<c>submodel[0]</c> 是空项（0 顶点），
+	/// <c>submodel[1..4]</c> 是感叹号/害羞/愤怒等表情特效片。旧合并器取第一个非空变体（下标 1），
+	/// 导致头顶永远飘着三根感叹号长条。
+	/// </para>
+	/// </summary>
+	[Fact]
+	public void Merge_SkipsDefaultOffBodyGroup_WhenSubmodelZeroIsBlankAndHostRegionHasGeometry()
+	{
+		var model = Model(
+			BodyPart("head", "head.smd"),
+			BodyPart("Base", "body.smd"),
+			BodyPart("faceeffect", string.Empty, "faceeffect_excited.smd", "faceeffect_angry.smd"));
+		var builder = new GeometryBuilder();
+		builder.AddPart("head", 0, "head.smd", 0, 4, HeadBone);
+		builder.AddPart("Base", 1, "body.smd", 0, 10, SpineBone);
+		// SourceGeometryBuilder 跳过 0 顶点的 modelIndex=0，所以首个非空项的 ModelIndex 是 1。
+		builder.AddPart("faceeffect", 2, "faceeffect_excited.smd", 1, 6, HeadBone);
+		builder.AddPart("faceeffect", 2, "faceeffect_angry.smd", 2, 8, HeadBone);
+		var geometry = builder.Build();
+
+		var (split, _) = Split(model, geometry);
+		var merge = SourceSegmentation.MergeComponentsIntoBodyParts(geometry, split.Groups, split.VertexRegions);
+
+		Assert.Equal(4, merge.Groups.Single(group => group.Region == BodyRegion.Head).TriangleCount);
+		Assert.Empty(merge.KeptComponents);
+		Assert.Contains(merge.Notes, note => note.Contains("faceeffect", StringComparison.Ordinal)
+			&& note.Contains("默认关闭", StringComparison.Ordinal));
+	}
+
+	/// <summary>
+	/// 兜底：若某个部位在固定 bodypart 与默认开启组件里<b>完全没有几何</b>，
+	/// 即使可切换组第 0 项为空也必须补位，防止整块身体消失。
+	/// </summary>
+	[Fact]
+	public void Merge_RescuesDefaultOffBodyGroup_WhenSkippingWouldLeaveRegionEmpty()
+	{
+		var model = Model(
+			BodyPart("head", "head.smd"),
+			BodyPart("body_toggle", string.Empty, "body.smd"));
+		var builder = new GeometryBuilder();
+		builder.AddPart("head", 0, "head.smd", 0, 4, HeadBone);
+		builder.AddPart("body_toggle", 1, "body.smd", 1, 10, SpineBone);
+		var geometry = builder.Build();
+
+		var (split, _) = Split(model, geometry);
+		var merge = SourceSegmentation.MergeComponentsIntoBodyParts(geometry, split.Groups, split.VertexRegions);
+
+		var byRegion = merge.Groups.ToDictionary(group => group.Region);
+		Assert.True(byRegion.ContainsKey(BodyRegion.Chest));
+		Assert.Equal(10, byRegion[BodyRegion.Chest].TriangleCount);
+		Assert.Single(merge.KeptComponents);
+	}
 }
 
