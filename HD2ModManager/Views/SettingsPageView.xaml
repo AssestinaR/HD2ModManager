@@ -48,6 +48,24 @@
                     </Grid>
                     <TextBlock Text="{Binding HeadScaleHint}" Style="{StaticResource AppSupportingText}" Margin="150,5,0,0" TextWrapping="Wrap"/>
                     <TextBlock Text="改完之后对受影响的 Mod 点一次「重构建」才会生效。" Style="{StaticResource AppSupportingText}" Margin="150,3,0,0" TextWrapping="Wrap"/>
+                    <Grid Margin="0,16,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Margin="0,0,12,0">
+                            <TextBlock Text="故障诊断" FontWeight="SemiBold"/>
+                            <TextBlock Text="导出最近的管理器、Lua 和游戏错误信息。文件保存在本机。" Style="{StaticResource AppSupportingText}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                            <TextBlock Text="{Binding DiagnosticStatus}" Style="{StaticResource AppSupportingText}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Top">
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="导出诊断包" Command="{Binding ExportDiagnosticsCommand}"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="取消" Command="{Binding CancelDiagnosticExportCommand}" Margin="0,5,0,0"
+                                    Visibility="{Binding IsExportingDiagnostics, Converter={StaticResource BoolToVis}}"/>
+                            <Button Style="{StaticResource AppSecondaryButton}" Content="打开所在文件夹" Command="{Binding OpenDiagnosticFolderCommand}" Margin="0,5,0,0"
+                                    Visibility="{Binding HasDiagnosticFolder, Converter={StaticResource BoolToVis}}"/>
+                        </StackPanel>
+                    </Grid>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
                         <TextBlock Text="Language" Width="150" VerticalAlignment="Center"/>
                         <ComboBox Style="{StaticResource AppComboBox}" Width="180" SelectedValue="{Binding Language, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" SelectedValuePath="Tag">
@@ -91,16 +109,6 @@
                                   SelectedValue="{Binding PhysicsMode, Mode=TwoWay}"/>
                     </Grid>
                     <TextBlock Text="{Binding PhysicsModeDescription}" Style="{StaticResource AppSupportingText}" Margin="150,8,0,0" TextWrapping="Wrap"/>
-                    <!--
-                        外置包刷新提示：升级管理器后，早就是外置模式的用户手里那份 lua 还是旧的，
-                        而他们不会再动上面那个下拉 —— 所以这里主动说一句"包已更新、要重新装一次"。
-                        只在真的写过盘时出现（内容一致时完全不打扰）。
-                    -->
-                    <TextBlock Text="{Binding LuaPackageUpdateHint}"
-                               Foreground="{StaticResource StatusWarning}"
-                               Style="{StaticResource AppSupportingText}"
-                               Margin="150,6,0,0" TextWrapping="Wrap"
-                               Visibility="{Binding HasLuaPackageUpdateHint, Converter={StaticResource BoolToVis}}"/>
                     <!--
                         低污染模式（规划 kit-instance-mapping-deploy-plan §15.1）：靠管理器内置 Lua（Hider）按人藏掉共用部件，
                         所以放在「内置 lua」卡里、排在映射/物理之后；总开关关着时禁用（也按关处理），下面的前置说明随映射/物理档位变化。

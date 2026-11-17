@@ -136,6 +136,12 @@ public partial class ModDetailsPageViewModel
 					_paths).ConfigureAwait(true);
 				if (!assembly.Ok)
 					throw new InvalidOperationException(assembly.Error ?? "装配来源失败。");
+				var sourceNotes = ResolveSourceNotes(source);
+				CopySourceIconIfPresent(source, sourceNodes, modDirectory);
+				ModSettingsFile.TryWrite(modDirectory, new ModSettingsFile.Document(
+					ModSettingsFile.CurrentSchema,
+					Name: name.Trim(),
+					Notes: sourceNotes));
 				task?.SetOutputArtifacts(modDirectory, null);
 
 				// ④ 导入：导入之后目录才算"库里的条目"，路径也可能被规范化，所以后面一律用库里的路径。
@@ -156,6 +162,17 @@ public partial class ModDetailsPageViewModel
 					throw new InvalidOperationException("导入成功但找不到库里的节点，无法继续转换。");
 				var importedNode = _library.Snapshot.Nodes[imports[0]];
 				var importedDirectory = Path.Combine(_library.ModsRootDirectory, importedNode.RelativePath);
+				CopySourceIconIfPresent(source, sourceNodes, importedDirectory);
+				var importedEntity = _library.All().FirstOrDefault(entity =>
+					string.Equals(entity.Guid, importedNode.Id.Value.ToString("N"), StringComparison.OrdinalIgnoreCase));
+				if (importedEntity is not null
+					&& (!string.Equals(importedEntity.Name, name.Trim(), StringComparison.Ordinal)
+						|| !string.Equals(importedEntity.Description, sourceNotes, StringComparison.Ordinal)))
+				{
+					importedEntity.Name = name.Trim();
+					importedEntity.Description = sourceNotes;
+					await _library.AddAsync(importedEntity, token);
+				}
 
 				// ⑤ 立刻转换 + 编译（与 vpk 导入后的自动重构建对称）。
 				task?.UpdateStage("正在转换并编译：按 7 槽拆分 unit 组");
@@ -187,19 +204,16 @@ public partial class ModDetailsPageViewModel
 				throw new InvalidOperationException("这个 Mod 与它的子级里都没有来源 patch（都不是 legacy 类）。");
 
 			// 候选表覆盖**整条来源链**：主 Mod 与每个 legacy 子级各读一次事实再合并。
-			// 只读主 Mod 的话，护甲/头盔拆在子级里的形态根本进不了选择表。
-			var catalog = new List<EquipmentUnitCatalogEntry>();
-			var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			// 同一个 archive 在不同子级里可能只占一部分部件（如本体在主包、上衣/裙子/鞋在子级），
+			// 必须合并它们的 Parts，不能只留第一份而丢掉子级部件。
+			var rawEntries = new List<EquipmentUnitCatalogEntry>();
 			foreach (var node in sourceNodes)
 			{
 				var facts = await ReadFactsAsync(node);
-				foreach (var entry in await converter.InspectAsync(facts))
-				{
-					// 同一个 archive 只留一份：不同来源可能都报同一件护甲（共用 unit 的情况）。
-					if (!seen.Add(entry.ArchiveId)) continue;
-					catalog.Add(entry);
-				}
+				rawEntries.AddRange(await converter.InspectAsync(facts));
 			}
+
+			var catalog = CustomModelConversionService.MergeCatalogEntries(rawEntries);
 
 			bar.SetSources(catalog
 				.OrderBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
@@ -245,5 +259,38 @@ public partial class ModDetailsPageViewModel
 		}
 
 		return nodes;
+	}
+
+	private string? ResolveSourceNotes(ModNode source)
+	{
+		if (!string.IsNullOrWhiteSpace(source.Metadata.Notes))
+			return source.Metadata.Notes;
+		var directory = Path.Combine(_library.ModsRootDirectory, source.RelativePath);
+		return ModSettingsFile.TryRead(directory)?.Notes;
+	}
+
+	private void CopySourceIconIfPresent(ModNode primarySource, IReadOnlyList<ModNode> fallbackSources, string targetDirectory)
+	{
+		if (!Directory.Exists(targetDirectory) || ModIconLocator.TryResolve(targetDirectory) is not null)
+			return;
+
+		var iconPath = ModIconLocator.TryResolve(Path.Combine(_library.ModsRootDirectory, primarySource.RelativePath));
+		if (iconPath is null)
+		{
+			foreach (var candidate in fallbackSources)
+			{
+				iconPath = ModIconLocator.TryResolve(Path.Combine(_library.ModsRootDirectory, candidate.RelativePath));
+				if (iconPath is not null) break;
+			}
+		}
+
+		if (iconPath is null || !File.Exists(iconPath))
+			return;
+
+		var destination = Path.Combine(targetDirectory, Path.GetFileName(iconPath));
+		if (File.Exists(destination))
+			File.SetAttributes(destination, FileAttributes.Normal);
+		File.Copy(iconPath, destination, overwrite: true);
+		File.SetAttributes(destination, FileAttributes.Normal);
 	}
 }

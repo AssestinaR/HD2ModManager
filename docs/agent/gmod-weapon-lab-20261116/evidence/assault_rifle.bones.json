@@ -1,0 +1,20 @@
+{
+    "array": [
+        "StingrayEntityRoot",
+        "FbxAxisSystem_ConvertNode",
+        "bolt",
+        "attach_mag",
+        "bolt_carrier",
+        "ejection_cover",
+        "fire_selector"
+    ],
+    "map": {
+        "0x32188af1": "bolt_carrier",
+        "0x4a182741": "StingrayEntityRoot",
+        "0x7f30e61c": "FbxAxisSystem_ConvertNode",
+        "0xade50005": "fire_selector",
+        "0xc489b14a": "ejection_cover",
+        "0xca03689c": "bolt",
+        "0xe7f88e90": "attach_mag"
+    }
+}

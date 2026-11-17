@@ -94,14 +94,22 @@ public sealed class AssetArchiveIndexService : IAssetArchiveIndexService
 		return new GameDataIndexStatus(state, stored, Path.GetFullPath(gameDataDirectory), currentFingerprint);
 	}
 
-	public async ValueTask<GameDataIndexFingerprint?> GetFingerprintAsync(CancellationToken cancellationToken = default)
+	public ValueTask<GameDataIndexFingerprint?> GetFingerprintAsync(CancellationToken cancellationToken = default)
+		=> ReadStoredFingerprintAsync(_paths.DbPath, cancellationToken);
+
+	public static async ValueTask<GameDataIndexFingerprint?> ReadStoredFingerprintAsync(string dbPath,
+		CancellationToken cancellationToken, int timeoutSeconds = 30)
 	{
-		if (!File.Exists(_paths.DbPath))
+		if (!File.Exists(dbPath))
 		{
 			return null;
 		}
 
-		await using var connection = new SqliteConnection($"Data Source={_paths.DbPath};Mode=ReadOnly;Cache=Shared");
+		var options = new SqliteConnectionStringBuilder
+		{
+			DataSource = dbPath, Mode = SqliteOpenMode.ReadOnly, Cache = SqliteCacheMode.Shared, DefaultTimeout = timeoutSeconds,
+		};
+		await using var connection = new SqliteConnection(options.ToString());
 		await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
 		var builtUtcText = await SqliteSchema.GetMetaAsync(connection, "built_utc", cancellationToken).ConfigureAwait(false);

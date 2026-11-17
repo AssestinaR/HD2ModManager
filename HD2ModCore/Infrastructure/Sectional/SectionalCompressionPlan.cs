@@ -241,7 +241,7 @@ internal static class LowPollutionLayoutFile
 		string? Fingerprint = null);
 
 	/// <summary>序列化（不含尾部换行）。</summary>
-	internal static string Serialize(SectionalCompressionPlan plan, string? fingerprint = null)
+	internal static string Serialize(SectionalCompressionPlan plan, string? fingerprint = null, IReadOnlyList<(string Role, string Unit)>? extraUnits = null)
 	{
 		ArgumentNullException.ThrowIfNull(plan);
 		// 全 Any 素体仍写 /1、不带 body，字节与此前完全一致（已部署的映射和指纹都不受影响）。
@@ -255,7 +255,10 @@ internal static class LowPollutionLayoutFile
 				group.UnitId,
 				ArmorStructure.Name(group.IdFrom),
 				[.. group.Members.Select(member => new PartLine(ArmorStructure.Name(member.Part), member.SourceUnitId))],
-				split ? ArmorStructure.BodyName(group.Body) : null))],
+				split ? ArmorStructure.BodyName(group.Body) : null)),
+				// 额外的 unit（飞船 NPC 专用副本：角色名 npc-<item>），不属于压缩规划，映射时按角色名取。
+				.. (extraUnits ?? []).Select(extra => new UnitLine(extra.Role, extra.Unit, ArmorStructure.Name(ArmorPart.Torso), [],
+					split ? ArmorStructure.BodyName(UnitMeshBodyVariant.Any) : null))],
 			[.. plan.Passthrough.Select(member => new PassthroughLine(ArmorStructure.Name(member.Part), member.SourceUnitId))],
 			fingerprint);
 		return JsonSerializer.Serialize(document, Options);

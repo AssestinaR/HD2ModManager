@@ -10,7 +10,7 @@ local GLOBAL_KEY = 'HD2KitInstanceProbe'
 local existing = rawget(_G, GLOBAL_KEY)
 if existing then return existing end
 
-local M = { version = '0.4.0', status = 'starting' }
+local M = { version = '0.5.0', status = 'starting' }
 rawset(_G, GLOBAL_KEY, M)
 
 local AVATAR_RESOURCE = 'content/fac_helldivers/cha_avatar/avatar_helldiver'
@@ -24,6 +24,13 @@ local HEARTBEAT_SECONDS = 30
 local OWNER_RADIUS = 1.0         -- 米：离玩家超过它的部件不算这个玩家的（飞船上有静态展示模型）
 local CLUSTER_GRID = 0.05       -- 米：按根坐标聚类的格子
 local AMBIGUOUS_MARGIN = 0.3    -- 米：离最近与次近玩家的距离差小于它记为歧义
+-- 0.5：民主官身边的「邻居」清单。标记件是 FS-05 民主官 NPC 独有的左肩（kit 124623533）。
+-- 目的：找出脸/头发等不属于任何护甲记录的 unit（护甲映射的隐藏集管不到它们）。
+local OFFICER_MARKER = '82595b5d94c57343'
+local FACE_CANDIDATE = 'd87d04aacbc0269c'  -- 飞船女军官根 unit：对照用，看它离民主官有多远
+local NEIGHBOR_RADIUS = 0.6      -- 米
+local MAX_NEIGHBORS = 80
+local MAX_RECORDED_UNITS = 4096
 
 -- 由 asset-index.sqlite 的 game_data_authority_pieces 导出（kit_kind=0）。
 -- FS-05 在数据里有三条记录（a/b/c），身体部件大多相同，左肩与部分胸甲不同。
@@ -240,7 +247,7 @@ function M.new(env)
 			count = i
 		end
 		return { started = now(), world = 1, cursor = 1, worldCount = count,
-			hits = {}, avatarsByWorld = {}, scanned = 0, forms = {} }
+			hits = {}, avatarsByWorld = {}, scanned = 0, forms = {}, all = {} }
 	end
 
 	-- 读某个 world 的玩家坐标（同一帧内与部件坐标配对使用）
@@ -297,6 +304,12 @@ function M.new(env)
 				local id, form = nil, 'call_failed'
 				if okR then id, form = M.decode_resource(raw) end
 				sweep.forms[form] = (sweep.forms[form] or 0) + 1
+				if id ~= nil and #sweep.all < MAX_RECORDED_UNITS then
+					local ax, ay, az = position(unit)
+					if ax ~= nil then
+						sweep.all[#sweep.all + 1] = { id = id, x = ax, y = ay, z = az, world = sweep.world, unit = unit }
+					end
+				end
 				if id ~= nil and WATCH[id] then
 					local x, y, z = position(unit)
 					if people == nil then people = avatars(world) end
@@ -318,6 +331,65 @@ function M.new(env)
 			sweep.world, sweep.cursor = sweep.world + 1, 1
 		end
 		return sweep.world > sweep.worldCount
+	end
+
+	local lastNeighbors = nil
+
+	-- 0.5：列出每个民主官标记件 0.6 米内的全部 unit（按资源 ID 合并），只在集合变化时写。
+	function P.report_neighbors(done)
+		local markers, faces = {}, {}
+		for _, u in ipairs(done.all) do
+			if u.id == OFFICER_MARKER then markers[#markers + 1] = u end
+			if u.id == FACE_CANDIDATE then faces[#faces + 1] = u end
+		end
+		if #markers == 0 then return end
+		local rows, parts = {}, {}
+		for index, m in ipairs(markers) do
+			local byId, order = {}, {}
+			for _, u in ipairs(done.all) do
+				if u.world == m.world then
+					local dx, dy, dz = u.x - m.x, u.y - m.y, u.z - m.z
+					local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+					if d <= NEIGHBOR_RADIUS then
+						local e = byId[u.id]
+						if e == nil then
+							local meshes = nil
+							local okM, n = try(Unit.num_meshes, u.unit)
+							if okM then meshes = n end
+							e = { id = u.id, count = 0, dmin = d, meshes = meshes }
+							byId[u.id] = e
+							order[#order + 1] = e
+						end
+						e.count = e.count + 1
+						if d < e.dmin then e.dmin = d end
+					end
+				end
+			end
+			table.sort(order, function(a, b) return a.id < b.id end)
+			local list, idOnly = {}, {}
+			for i = 1, math.min(#order, MAX_NEIGHBORS) do
+				local e = order[i]
+				list[i] = string.format('%s:%d:%s:%.2f', e.id, e.count, tostring(e.meshes or '?'), e.dmin)
+				idOnly[i] = e.id
+			end
+			-- 对照：最近的女军官根 unit 离这个标记件多远。
+			local nearestFace = nil
+			for _, f in ipairs(faces) do
+				if f.world == m.world then
+					local dx, dy, dz = f.x - m.x, f.y - m.y, f.z - m.z
+					local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+					if nearestFace == nil or d < nearestFace then nearestFace = d end
+				end
+			end
+			rows[#rows + 1] = { world = m.world, at = string.format('%.2f,%.2f,%.2f', m.x, m.y, m.z),
+				units = #order, deck_officer_f_distance = nearestFace and string.format('%.2f', nearestFace) or 'none',
+				neighbors = table.concat(list, ' ') }
+			parts[#parts + 1] = index .. '=' .. table.concat(idOnly, ' ')   -- 签名只看 ID 集合，距离抖动不重写
+		end
+		local signature = table.concat(parts, ';')
+		if signature == lastNeighbors then return end
+		lastNeighbors = signature
+		emit('officer_near', { sweep = P.sweeps, radius = NEIGHBOR_RADIUS, markers = rows })
 	end
 
 	local function finishSweep()
@@ -369,6 +441,7 @@ function M.new(env)
 			signatureParts[#signatureParts + 1] = key .. '=' .. kit .. '#' .. g.count
 		end
 		local signature = table.concat(signatureParts, ';')
+		P.report_neighbors(sweep)
 		stats.sweep_seconds = now() - sweep.started
 		stats.scanned = sweep.scanned
 		stats.hash_forms = sweep.forms

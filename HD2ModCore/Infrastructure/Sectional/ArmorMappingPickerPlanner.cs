@@ -5,12 +5,13 @@ using HD2ModCore.Infrastructure.KitInstance;
 
 namespace HD2ModCore.Infrastructure.Sectional;
 
-/// <summary>护甲映射页右侧「可用护甲」列表顶部的三个选项卡。</summary>
+/// <summary>护甲映射页右侧列表顶部的选项卡。</summary>
 public enum ArmorMappingPickerTab
 {
 	Set = 0,
 	Armor = 1,
 	Helmet = 2,
+	Mapped = 3,
 }
 
 /// <summary>护甲映射页可选/已映射行规划结果（已过滤非玩家、合并同名版本或配对套装、并完成联动状态计算）。</summary>
@@ -27,7 +28,7 @@ public sealed record ArmorMappingPickerRowPlan(
 	IReadOnlyList<uint> MemberItemIds,
 	IReadOnlyList<uint> ProviderSourceItemIds,
 	int VersionCount,
-	bool IsDemocracyOfficerNpc,
+	bool IsNpc,
 	bool IsBlocked,
 	string? BlockedReason,
 	uint SetId,
@@ -66,13 +67,14 @@ public static class ArmorMappingPickerPlanner
 {
 	public const string TwoSlotHelmetBlockedReason = "头已并进身体，单独映射头盔不可用";
 	public const string DemocracyOfficerTag = "民主官 NPC";
+	public const string NpcThreeSlotBlockedReason = "NPC 的头必须并进身体：这个素体是三槽，请先在 Mod 详情页打开「头身合并」";
 
 	private sealed record PickerGroup(
 		string NormalizedNameKey,
 		string DisplayName,
 		GameDataEquipmentKitKind KitKind,
 		IReadOnlyList<RuntimeArmorCatalogEntry> Members,
-		bool IsDemocracyOfficerNpc = false,
+		bool IsNpc = false,
 		bool AllowPairing = true,
 		string? CustomSelectionKey = null,
 		bool IsTwinBundle = false,
@@ -104,14 +106,17 @@ public static class ArmorMappingPickerPlanner
 
 			if (entry.KitKind == GameDataEquipmentKitKind.Armor)
 			{
-				if (entry.ItemId == KitNonPlayerArmors.DemocracyOfficerArmorId)
+				if (KitNonPlayerArmors.IsSpecialNpc(entry.ItemId))
 				{
 					armorGroups.Add(new PickerGroup(
 						NormalizedNameKey: $"npc:{entry.ItemId}",
-						DisplayName: entry.DisplayName.Trim(),
+						// 名字里带上 NPC 标注：民主官和玩家的 FS-05 同名，不带的话既分不清、也搜不到；飞船 NPC 自带标注。
+						DisplayName: KitNpcRecords.TryGet(entry.ItemId, out var npcRecord)
+							? npcRecord.DisplayName
+							: $"{entry.DisplayName.Trim()}（{DemocracyOfficerTag}）",
 						KitKind: GameDataEquipmentKitKind.Armor,
 						Members: [entry],
-						IsDemocracyOfficerNpc: true,
+						IsNpc: true,
 						AllowPairing: false,
 						CustomSelectionKey: $"armor:npc:{entry.ItemId}"));
 					continue;
@@ -149,7 +154,9 @@ public static class ArmorMappingPickerPlanner
 			? BundleGroups(helmetGroups, twinIndex!, keyPrefix: "twin:helmet:")
 			: helmetGroups;
 
+		// 民主官 NPC 不允许把护甲和头分开（他没有头盔，脸不属于任何护甲记录）：只在「套装」里出现，不进「护甲」页。
 		var armorRows = displayArmorGroups
+			.Where(group => !group.IsNpc)
 			.Select(BuildArmorRow)
 			.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
 			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
@@ -164,7 +171,10 @@ public static class ArmorMappingPickerPlanner
 		var pairableArmors = armorGroups.Where(group => group.AllowPairing).ToList();
 		var pairableHelmets = helmetGroups.Where(group => group.AllowPairing).ToList();
 		var (pairs, _, _) = PairGroups(pairableArmors, pairableHelmets);
+		// 民主官 NPC 没有头盔、只有一张脸：在「套装」里也给他一行（护甲 + 头，头身合并时脸一并隐藏），
+		// 选择键与「护甲」页里的同一行共用，两页的勾选互相同步。
 		var setRows = BuildSetRows(pairs, useTwinBundling ? twinIndex : null, keyPrefix: "set:", twinKeyPrefix: "twin:set:")
+			.Concat(armorGroups.Where(group => group.IsNpc).Select(BuildNpcSetRow))
 			.OrderBy(row => row.Name, StringComparer.CurrentCultureIgnoreCase)
 			.ThenBy(row => row.SelectionKey, StringComparer.Ordinal)
 			.ToArray();
@@ -177,25 +187,41 @@ public static class ArmorMappingPickerPlanner
 		IReadOnlyList<RuntimeArmorCatalogEntry> catalog,
 		IReadOnlyDictionary<uint, string> managedOwnerByItemId,
 		IReadOnlySet<string> selectedKeys,
-		bool isTwoSlotCompressedSourceOpen)
+		bool isTwoSlotCompressedSourceOpen,
+		bool isThreeSlotCompressedSourceOpen = false,
+		bool lowPollutionMode = true,
+		bool hasCustomModelSource = true)
 		=> EvaluateProjection(
 			BuildBaseCatalog(catalog),
 			managedOwnerByItemId,
 			selectedKeys,
-			isTwoSlotCompressedSourceOpen);
+			isTwoSlotCompressedSourceOpen,
+			isThreeSlotCompressedSourceOpen,
+			lowPollutionMode,
+			hasCustomModelSource);
 
 	/// <summary>在缓存的基础目录分组上重算已管理过滤、2 槽低污染置灰与跨选项卡多选冲突联动。</summary>
 	public static ArmorMappingPickerProjection EvaluateProjection(
 		ArmorMappingPickerBaseCatalog baseCatalog,
 		IReadOnlyDictionary<uint, string> managedOwnerByItemId,
 		IReadOnlySet<string> selectedKeys,
-		bool isTwoSlotCompressedSourceOpen)
+		bool isTwoSlotCompressedSourceOpen,
+		bool isThreeSlotCompressedSourceOpen = false,
+		bool lowPollutionMode = true,
+		bool hasCustomModelSource = true)
 	{
 		ArgumentNullException.ThrowIfNull(baseCatalog);
 		ArgumentNullException.ThrowIfNull(managedOwnerByItemId);
 		ArgumentNullException.ThrowIfNull(selectedKeys);
 
-		var visibleSets = FilterManagedAndTwoSlot(baseCatalog.Sets, managedOwnerByItemId, isTwoSlotCompressedSourceOpen);
+		var visibleSets = FilterManagedAndTwoSlot(baseCatalog.Sets, managedOwnerByItemId, isTwoSlotCompressedSourceOpen, isThreeSlotCompressedSourceOpen);
+		if (!lowPollutionMode || !hasCustomModelSource)
+		{
+			var reason = !lowPollutionMode ? "SEAF 士兵需要启用低污染模式，并使用头身合并的素体。" : "请先打开一个自定义素体作为视觉来源。";
+			visibleSets = visibleSets.Select(row => row.PrimaryItemId == KitNpcRecords.SeafSoldierItemId && !row.IsBlocked
+				? row with { IsBlocked = true, BlockedReason = reason }
+				: row).ToArray();
+		}
 		var visibleArmors = FilterManagedAndTwoSlot(baseCatalog.Armors, managedOwnerByItemId, isTwoSlotCompressedSourceOpen);
 		var visibleHelmets = FilterManagedAndTwoSlot(baseCatalog.Helmets, managedOwnerByItemId, isTwoSlotCompressedSourceOpen);
 
@@ -235,20 +261,20 @@ public static class ArmorMappingPickerPlanner
 			if (!SectionalExclusivePlanner.IsNamed(entry.DisplayName)
 				|| entry.KitKind is not (GameDataEquipmentKitKind.Armor or GameDataEquipmentKitKind.Helmet))
 			{
-				soloRows.Add(BuildTargetSoloRow(entry, isDemocracyOfficerNpc: false));
+				soloRows.Add(BuildTargetSoloRow(entry, isNpc: false));
 				continue;
 			}
 
 			if (entry.KitKind == GameDataEquipmentKitKind.Armor)
 			{
-				if (entry.ItemId == KitNonPlayerArmors.DemocracyOfficerArmorId)
+				if (KitNonPlayerArmors.IsSpecialNpc(entry.ItemId))
 				{
-					soloRows.Add(BuildTargetSoloRow(entry, isDemocracyOfficerNpc: true));
+					soloRows.Add(BuildTargetSoloRow(entry, isNpc: true));
 					continue;
 				}
 				if (KitNonPlayerArmors.Contains(entry.ItemId))
 				{
-					soloRows.Add(BuildTargetSoloRow(entry, isDemocracyOfficerNpc: false));
+					soloRows.Add(BuildTargetSoloRow(entry, isNpc: false));
 					continue;
 				}
 
@@ -261,7 +287,7 @@ public static class ArmorMappingPickerPlanner
 			{
 				if (KitNonPlayerArmors.IsNonPlayerHelmet(entry.ItemId))
 				{
-					soloRows.Add(BuildTargetSoloRow(entry, isDemocracyOfficerNpc: false));
+					soloRows.Add(BuildTargetSoloRow(entry, isNpc: false));
 					continue;
 				}
 
@@ -341,6 +367,27 @@ public static class ArmorMappingPickerPlanner
 			&& IsTwoSlotCompressedModDirectory(entry.ModDirectory, lowPollutionMode);
 	}
 
+	/// <summary>
+	/// 这个自定义素体在低污染开关下是不是<b>已编译成 3 槽</b>：布局文件存在、没有头身合并。布局不存在/读不出来时为 <c>false</c>
+	/// （没编译过就不拦，免得把还没构建的 Mod 误判成 3 槽）。
+	/// </summary>
+	public static bool IsThreeSlotCompressedCustomModel(string modsDirectory, string modelKey, bool lowPollutionMode)
+	{
+		if (!lowPollutionMode || string.IsNullOrWhiteSpace(modsDirectory) || string.IsNullOrWhiteSpace(modelKey)
+			|| !Directory.Exists(modsDirectory))
+		{
+			return false;
+		}
+
+		var catalog = CustomModelCatalog.Collect(modsDirectory);
+		return catalog.Entries.TryGetValue(modelKey, out var entry)
+			&& Directory.Exists(entry.ModDirectory)
+			&& LowPollutionLayoutReader.TryRead(entry.ModDirectory, out var layout, out _)
+			&& layout is not null
+			&& !layout.HeadMerge
+			&& layout.UnitOf(LowPollutionRoles.HeadBody) is null;
+	}
+
 	/// <summary>判定指定 Mod 目录在当前低污染开关下是否为 2 槽压缩素体（读布局文件，未编译时兜底读 <c>wardrobe.json</c>）。</summary>
 	public static bool IsTwoSlotCompressedModDirectory(
 		string modDirectory,
@@ -394,7 +441,7 @@ public static class ArmorMappingPickerPlanner
 			MemberItemIds: group.MemberIds,
 			ProviderSourceItemIds: [group.Primary.ItemId],
 			VersionCount: group.Members.Count,
-			IsDemocracyOfficerNpc: group.IsDemocracyOfficerNpc,
+			IsNpc: group.IsNpc,
 			IsBlocked: false,
 			BlockedReason: null,
 			SetId: group.Primary.SetId,
@@ -405,6 +452,15 @@ public static class ArmorMappingPickerPlanner
 			TwinBundleNote = group.TwinBundleNote,
 		};
 	}
+
+	/// <summary>民主官 NPC 的「套装」行：成员只有那条护甲记录，选择键与护甲页的同一行相同。</summary>
+	private static ArmorMappingPickerRowPlan BuildNpcSetRow(PickerGroup group)
+		=> BuildArmorRow(group) with
+		{
+			Tab = ArmorMappingPickerTab.Set,
+			TypeLabel = "护甲+头",
+			ProviderSourceItemIds = group.Primary.ItemId == KitNpcRecords.SeafSoldierItemId ? [] : [group.Primary.ItemId],
+		};
 
 	private static ArmorMappingPickerRowPlan BuildHelmetRow(PickerGroup group)
 		=> BuildHelmetRow(group, keyPrefix: "helmet:");
@@ -427,7 +483,7 @@ public static class ArmorMappingPickerPlanner
 			MemberItemIds: group.MemberIds,
 			ProviderSourceItemIds: [group.Primary.ItemId],
 			VersionCount: group.Members.Count,
-			IsDemocracyOfficerNpc: false,
+			IsNpc: false,
 			IsBlocked: false,
 			BlockedReason: null,
 			SetId: group.Primary.SetId,
@@ -483,7 +539,7 @@ public static class ArmorMappingPickerPlanner
 				DisplayName: displayName,
 				KitKind: ordered[0].KitKind,
 				Members: combinedEntries,
-				IsDemocracyOfficerNpc: false,
+				IsNpc: false,
 				AllowPairing: true,
 				CustomSelectionKey: keyPrefix + nameKey,
 				IsTwinBundle: true,
@@ -549,7 +605,7 @@ public static class ArmorMappingPickerPlanner
 					MemberItemIds: memberIds,
 					ProviderSourceItemIds: [primaryArmor.ItemId, primaryHelmet.ItemId],
 					VersionCount: Math.Max(armorMembers.Length, helmetMembers.Length),
-					IsDemocracyOfficerNpc: false,
+					IsNpc: false,
 					IsBlocked: false,
 					BlockedReason: null,
 					SetId: primaryArmor.SetId,
@@ -638,7 +694,7 @@ public static class ArmorMappingPickerPlanner
 			MemberItemIds: memberIds,
 			ProviderSourceItemIds: [armor.Primary.ItemId, helmet.Primary.ItemId],
 			VersionCount: Math.Max(armor.MemberIds.Count, helmet.MemberIds.Count),
-			IsDemocracyOfficerNpc: false,
+			IsNpc: false,
 			IsBlocked: false,
 			BlockedReason: null,
 			SetId: armor.Primary.SetId,
@@ -647,7 +703,7 @@ public static class ArmorMappingPickerPlanner
 
 	private static ArmorMappingPickerRowPlan BuildTargetSoloRow(
 		RuntimeArmorCatalogEntry entry,
-		bool isDemocracyOfficerNpc)
+		bool isNpc)
 	{
 		var isHelmet = entry.KitKind == GameDataEquipmentKitKind.Helmet;
 		return new ArmorMappingPickerRowPlan(
@@ -663,7 +719,7 @@ public static class ArmorMappingPickerPlanner
 			MemberItemIds: [entry.ItemId],
 			ProviderSourceItemIds: [entry.ItemId],
 			VersionCount: 1,
-			IsDemocracyOfficerNpc: isDemocracyOfficerNpc,
+			IsNpc: isNpc,
 			IsBlocked: false,
 			BlockedReason: null,
 			SetId: entry.SetId,
@@ -774,12 +830,13 @@ public static class ArmorMappingPickerPlanner
 	private static IReadOnlyList<ArmorMappingPickerRowPlan> FilterManagedAndTwoSlot(
 		IReadOnlyList<ArmorMappingPickerRowPlan> rows,
 		IReadOnlyDictionary<uint, string> managedOwnerByItemId,
-		bool isTwoSlotCompressedSourceOpen)
+		bool isTwoSlotCompressedSourceOpen,
+		bool isThreeSlotCompressedSourceOpen = false)
 	{
 		var result = new List<ArmorMappingPickerRowPlan>(rows.Count);
 		foreach (var row in rows)
 		{
-			var evaluated = EvaluateManagedAndTwoSlot(row, managedOwnerByItemId, isTwoSlotCompressedSourceOpen);
+			var evaluated = EvaluateManagedAndTwoSlot(row, managedOwnerByItemId, isTwoSlotCompressedSourceOpen, isThreeSlotCompressedSourceOpen);
 			if (evaluated is not null)
 				result.Add(evaluated);
 		}
@@ -789,7 +846,8 @@ public static class ArmorMappingPickerPlanner
 	private static ArmorMappingPickerRowPlan? EvaluateManagedAndTwoSlot(
 		ArmorMappingPickerRowPlan row,
 		IReadOnlyDictionary<uint, string> managedOwnerByItemId,
-		bool isTwoSlotCompressedSourceOpen)
+		bool isTwoSlotCompressedSourceOpen,
+		bool isThreeSlotCompressedSourceOpen = false)
 	{
 		var isBlocked = false;
 		string? blockedReason = null;
@@ -827,6 +885,13 @@ public static class ArmorMappingPickerPlanner
 			{
 				isBlocked = true;
 				blockedReason = $"头盔{managedOwnerByItemId[managedHelmets[0]]}";
+			}
+
+			// 民主官护甲和头不能分开：三槽素体的头单独成一个单位，他没有头盔可挂，只有头身合并的素体才能给他完整的头。
+			if (!isBlocked && effectiveRow.IsNpc && isThreeSlotCompressedSourceOpen)
+			{
+				isBlocked = true;
+				blockedReason = NpcThreeSlotBlockedReason;
 			}
 
 			return isBlocked

@@ -6,6 +6,7 @@ using HD2ModAdaptation.PatchReconstruction;
 using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.KitInstance;
 using HD2ModCore.Infrastructure.Sectional;
 using Xunit.Abstractions;
 
@@ -434,6 +435,17 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		return units;
 	}
 
+	/// <summary>补丁里每个 unit 的 TocData 原字节（按 unit ID）。</summary>
+	private static async Task<Dictionary<string, byte[]>> ReadRawTocsAsync(string patch)
+	{
+		var scanned = await new HD2ModAdaptation.PatchReconstruction.PatchTocScanner().ScanEntriesAsync(patch, default);
+		var reader = new HD2ModAdaptation.PatchReconstruction.PatchEntryPayloadReader();
+		var result = new Dictionary<string, byte[]>();
+		foreach (var entry in scanned.Where(candidate => candidate.AssetKey.TypeId == PatchUnitMeshReader.UnitTypeId))
+			result[Id(entry.AssetKey.FileId)] = (await reader.ReadPayloadAsync(entry, default)).TocData;
+		return result;
+	}
+
 	private static string HashOverwrite(string mod)
 	{
 		var overwrite = OverwriteDirectory(mod);
@@ -464,7 +476,12 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		var mod = CopyMod(located.Mod);
 		try
 		{
-			var context = new VpkHostContext(located.Game, new StoragePaths(located.Manager)) { LowPollutionMode = true };
+			// 只有映射了 NPC 的素体才生成 NPC 专用 unit：这里按「两个 NPC 都映射到它」编译；没映射的情况在下面单独验证。
+			var context = new VpkHostContext(located.Game, new StoragePaths(located.Manager))
+			{
+				LowPollutionMode = true,
+				NpcItemIds = [.. KitNpcRecords.All.Select(npc => npc.ItemId)],
+			};
 			var sectional = Path.Combine(mod, "sectional");
 			var sourceMap = await WardrobeSectionMapFile.ReadAsync(Path.Combine(sectional, WardrobeSectionMapFile.FileName));
 			var plan = SectionalCompressionPlanner.Plan(
@@ -478,10 +495,14 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			var first = await Compile();
 			Assert.True(first.Ok, first.Error);
 			// 编完的素体在同样设置下被判成「已是最新」，改头身合并才会重编（S4a 的指纹）。
+			// 头身合并时上面按「两个 NPC 都映射到它」编译，所以「现在映射的 NPC」也是这两个才算最新。
 			var wardrobe = new VpkWardrobeFile(false, VpkWardrobeState.Empty, HeadMergeIntoBody: headMerge);
-			Assert.Equal(LowPollutionPrepStatus.UpToDate, LowPollutionFreshness.Assess("k", mod, true, wardrobe).Status);
+			var mappedNpcs = headMerge ? KitNpcRecords.All.Select(npc => npc.ItemId).ToHashSet() : null;
+			Assert.Equal(LowPollutionPrepStatus.UpToDate, LowPollutionFreshness.Assess("k", mod, true, wardrobe, mappedNpcs).Status);
+			if (headMerge)
+				Assert.Equal(LowPollutionPrepStatus.NeedsRecompile, LowPollutionFreshness.Assess("k", mod, true, wardrobe).Status);   // 取消了 NPC 映射 → 要清掉
 			Assert.Equal(LowPollutionPrepStatus.NeedsRecompile,
-				LowPollutionFreshness.Assess("k", mod, true, wardrobe with { HeadMergeIntoBody = !headMerge }).Status);
+				LowPollutionFreshness.Assess("k", mod, true, wardrobe with { HeadMergeIntoBody = !headMerge }, mappedNpcs).Status);
 			var firstLayout = await File.ReadAllTextAsync(Path.Combine(OverwriteDirectory(mod), LowPollutionLayoutFile.FileName));
 			var firstUnits = await ReadUnitsAsync(Patch(OverwriteDirectory(mod)));
 			var firstHash = HashOverwrite(mod);
@@ -489,9 +510,68 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 			// 件数：3 槽 / 2 槽（披风、肩原样保留，这两份样本没有）。
 			Assert.Equal(headMerge ? 2 : 3, G(plan).Count);
 			Assert.Single(plan.Groups, group => group.Role == SectionalCompressionRole.BodyArms);
-			Assert.Equal(plan.SurvivingUnitIds.Order(StringComparer.Ordinal), firstUnits.Keys.Order(StringComparer.Ordinal));
-			Assert.Equal(plan.Groups.Count + plan.Passthrough.Count, firstUnits.Count);
+			// 头身合并时每个飞船 NPC 多一份专用副本（合体 unit 的副本，头部补了 NPC 骨架引用）。
+			var carrierId = plan.Groups.First(group => group.Role == SectionalCompressionRole.BodyArms).UnitId;
+			var npcUnitIds = headMerge
+				? KitNpcRecords.All.Select(npc => npc.VariantUnitId(carrierId).ToString("x16", System.Globalization.CultureInfo.InvariantCulture)).ToArray()
+				: Array.Empty<string>();
+			Assert.Equal(plan.SurvivingUnitIds.Concat(npcUnitIds).Order(StringComparer.Ordinal), firstUnits.Keys.Order(StringComparer.Ordinal));
+			Assert.Equal(plan.Groups.Count + plan.Passthrough.Count + npcUnitIds.Length, firstUnits.Count);
 			Assert.Equal(headMerge ? SectionalHeadMergeOutcome.AppliedOwnModel : SectionalHeadMergeOutcome.Off, first.HeadMerge);
+			if (headMerge)
+			{
+				// 布局里有它们，部署核对看得到；副本的 TocData 只有头部不同，网格数据与合体 unit 逐字节相同。
+				Assert.True(LowPollutionLayoutReader.TryParse(firstLayout, out var layout, out var layoutError), layoutError);
+				Assert.False(LowPollutionFreshness.NpcVariantsMismatch(layout!, KitNpcRecords.All.Select(npc => npc.ItemId).ToHashSet()));
+				var rawTocs = await ReadRawTocsAsync(Patch(OverwriteDirectory(mod)));
+				var carrierToc = rawTocs[carrierId];
+				foreach (var npc in KitNpcRecords.All)
+				{
+					var variantId = npc.VariantUnitId(carrierId).ToString("x16", System.Globalization.CultureInfo.InvariantCulture);
+					Assert.Equal(variantId, layout!.UnitOf(npc.VariantRole));
+					var variantToc = rawTocs[variantId];
+					Assert.Equal(npc.BonesResourceId, System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(variantToc.AsSpan(0x08, 8)));
+					Assert.Equal(npc.Header20, System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(variantToc.AsSpan(0x20, 8)));
+					if (npc.RequiresNativeShell)
+					{
+						Assert.Equal("75f7e96af7dcd303", variantId);
+						var native = await new GameDataUnitMeshReader(new HD2ModAdaptation.PatchReconstruction.GameDataPackageResolver(located.Game))
+							.ReadAsync(npc.RootArchiveId, new HD2ModAdaptation.PatchReconstruction.AssetKey(PatchUnitMeshReader.UnitTypeId, npc.RootUnitId));
+						var variant = firstUnits[variantId];
+						Assert.Equal(native.Model.TransformNameHashes, variant.TransformNameHashes);
+						Assert.Equal(native.Model.TransformInfo.Entries, variant.TransformInfo.Entries);
+						Assert.Equal(native.Model.UnreversedLodGroupListData, variant.UnreversedLodGroupListData);
+						Assert.Equal(native.Model.Meshes.Select(mesh => mesh.MeshId), variant.Meshes.Select(mesh => mesh.MeshId));
+						Assert.All(variant.RawMeshData.Where(mesh => mesh.LodIndex is >= 0 and < 9), mesh => Assert.Single(mesh.Triangles));
+						Assert.All(variant.RawMeshData.Where(mesh => mesh.LodIndex >= 9), mesh => Assert.True(mesh.Triangles.Count > 1));
+						Assert.NotEmpty(variant.Materials.Select(binding => binding.MaterialId).Intersect(firstUnits[carrierId].Materials.Select(binding => binding.MaterialId)));
+						continue;
+					}
+					Assert.Equal(carrierToc.Length, variantToc.Length);
+					for (var i = 0; i < carrierToc.Length; i++)
+					{
+						if (i is >= 0x08 and < 0x18 or >= 0x20 and < 0x28) continue;
+						if (carrierToc[i] != variantToc[i]) Assert.Fail($"NPC 副本在偏移 0x{i:x} 处和合体 unit 不同。");
+					}
+				}
+			}
+
+			if (headMerge)
+			{
+				// 没有 NPC 映射到这个素体：重编后一个 NPC 资源都不留（NPC 专用 unit 只在映射了 NPC 时才有，取消映射就清掉）。
+				var withoutNpc = context with { NpcItemIds = [] };
+				var cleaned = await SectionalCompiler.CompileAsync(mod, withoutNpc, null, null, headMerge, [], lowPollution: true);
+				Assert.True(cleaned.Ok, cleaned.Error);
+				var cleanedUnits = await ReadUnitsAsync(Patch(OverwriteDirectory(mod)));
+				Assert.Equal(plan.SurvivingUnitIds.Order(StringComparer.Ordinal), cleanedUnits.Keys.Order(StringComparer.Ordinal));
+				Assert.True(LowPollutionLayoutReader.TryParse(
+					await File.ReadAllTextAsync(Path.Combine(OverwriteDirectory(mod), LowPollutionLayoutFile.FileName)), out var cleanedLayout, out _));
+				Assert.All(KitNpcRecords.All, npc => Assert.Null(cleanedLayout!.UnitOf(npc.VariantRole)));
+				Assert.False(LowPollutionFreshness.NpcVariantsMismatch(cleanedLayout!, null));
+				// 再按「两个 NPC 都映射」编回来，后面的稳定性断言照旧。
+				var restored = await SectionalCompiler.CompileAsync(mod, context, null, null, headMerge, [], lowPollution: true);
+				Assert.True(restored.Ok, restored.Error);
+			}
 
 			// 重编两次：ID、描述文件与全部产物字节都不变。
 			var second = await Compile();
@@ -672,5 +752,29 @@ public sealed class SectionalLowPollutionTests(ITestOutputHelper output)
 		{
 			DeleteTree(mod);
 		}
+	}
+
+	[Fact]
+	public void PickHostIndex_PrefersVisibleLodUnit_OverCullingOnlyUnitWithMoreNonAvatarTransforms()
+	{
+		static UnitMeshModel MakeUnit(bool hasVisibleLod, uint[] transformHashes)
+		{
+			var semantic = new UnitMeshSemanticInfo("mesh", "Torso", "Armor", "Any", "", 0, 0, IsCullingBody: !hasVisibleLod, IsStaticMesh: false, IsLod: false);
+			var mesh = new UnitMeshInfo(0, 0, 1, 0, 0, 0, 0, 0, 0, 0, semantic, [], []);
+			var raw = new UnitRawMeshData(0, 1, 0, 0, [], [], []);
+			return new UnitMeshModel(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UnitCustomizationInfo.Empty, [], [], [mesh], [], [], [raw])
+			{
+				TransformNameHashes = transformHashes,
+			};
+		}
+
+		var cullingWithManyTransforms = MakeUnit(hasVisibleLod: false, [101u, 102u, 103u, 104u, 105u]);
+		var visibleWithFewerTransforms = MakeUnit(hasVisibleLod: true, [201u]);
+
+		var picked = SectionalUnitMerger.PickHostIndex(
+			[cullingWithManyTransforms, visibleWithFewerTransforms],
+			new HashSet<uint>());
+
+		Assert.Equal(1, picked);
 	}
 }

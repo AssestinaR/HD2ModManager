@@ -219,7 +219,13 @@ namespace HD2ModManager.ViewModels
         public static GameDataArchiveDetailsPageViewModel NotFound(GameDataArchiveRowViewModel row) => CreateState(row, "未找到该 archive 的详情。");
         public static GameDataArchiveDetailsPageViewModel Failed(GameDataArchiveRowViewModel row, string message) => CreateState(row, $"读取详情失败：{message}");
         private static GameDataArchiveDetailsPageViewModel CreateState(GameDataArchiveRowViewModel row, string state) => new() { DisplayName = row.DisplayName, PackageName = row.PackageName, Category = row.Category, ReplacementStatus = row.ReplacementStatus, EffectivePatchGroup = row.EffectivePatchGroup, EffectiveMod = row.EffectiveMod, LoadState = state, ContentSummary = state };
-        public void CopyAsset(GameDataArchiveAssetRowViewModel row) { System.Windows.Clipboard.SetText($"Type={row.TypeName}\nTypeID={row.TypeId}\nFileID={row.FileId}\nPart={row.PartSummary}\nPackage={PackageName}\nDisplayName={DisplayName}\nEffectivePatchGroup={row.EffectivePatchGroup}\nEffectiveMod={row.EffectiveMod}\nSharedPackages={string.Join(", ", row.SharedPackages)}\nSharedObjects={string.Join(", ", row.SharedObjects)}"); CopyStatus = "已复制 AssetKey 信息"; }
+        public void CopyAsset(GameDataArchiveAssetRowViewModel row)
+        {
+            var text = $"Type={row.TypeName}\nTypeID={row.TypeId}\nFileID={row.FileId}\nPart={row.PartSummary}\nPackage={PackageName}\nDisplayName={DisplayName}\nEffectivePatchGroup={row.EffectivePatchGroup}\nEffectiveMod={row.EffectiveMod}\nSharedPackages={string.Join(", ", row.SharedPackages)}\nSharedObjects={string.Join(", ", row.SharedObjects)}";
+            CopyStatus = ClipboardService.TrySetText(text)
+                ? "已复制 AssetKey 信息"
+                : "复制失败：剪贴板正被其他程序占用，请稍后重试";
+        }
         private bool FilterAsset(object value)
         {
             if (value is not GameDataArchiveAssetRowViewModel asset) return false;

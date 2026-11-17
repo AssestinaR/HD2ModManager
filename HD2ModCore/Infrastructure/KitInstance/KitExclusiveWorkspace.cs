@@ -106,6 +106,9 @@ public static class KitExclusiveWorkspace
 		return null;
 	}
 
+	/// <summary>写 <c>kit-instance.workspace.json</c> 的互斥锁（同一进程内一次只写一份）。</summary>
+	internal static readonly SemaphoreSlim WorkspaceLock = new(1, 1);
+
 	/// <summary>
 	/// 同步这个节点的专属记录：<paramref name="seeds"/> 里有需要规则的 → 写入或替换（整条记录，含全部目标）；否则删除自己写的记录。
 	/// </summary>
@@ -116,7 +119,7 @@ public static class KitExclusiveWorkspace
 		IReadOnlyList<KitExclusiveSeed> seeds,
 		CancellationToken cancellationToken = default)
 	{
-		await KitConversionService.WorkspaceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+		await WorkspaceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 		try
 		{
 			KitInstanceWorkspace workspace;
@@ -165,7 +168,7 @@ public static class KitExclusiveWorkspace
 		}
 		finally
 		{
-			KitConversionService.WorkspaceLock.Release();
+			WorkspaceLock.Release();
 		}
 	}
 }

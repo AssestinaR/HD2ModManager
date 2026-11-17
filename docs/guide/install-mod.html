@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>教程 1：装一个普通 HD2 Mod - HD2ModManager</title>
+  <link rel="stylesheet" href="assets/guide.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="topbar-brand" href="index.html">
+        <span class="brand-mark">HD2</span>
+        <span>HD2ModManager 教程</span>
+      </a>
+      <nav class="topbar-nav" aria-label="教程目录">
+        <a class="nav-pill" href="index.html">目录</a>
+        <a class="nav-pill is-current" href="install-mod.html">教程 1：装普通 Mod</a>
+        <a class="nav-pill" href="body-mapping.html">教程 2：转素体映射</a>
+        <a class="nav-pill" href="l4d2-import.html">教程 3：L4D2 导入</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <article id="install-mod"
+             data-verified="1.5.18"
+             data-sources="SettingsPageView*;HomePageView*;LibraryPageView*;ProfilePageView*;ModListPanel*;SelectionActionBarContent*;MainWindow*;ShellViewModel*;ImportService*;ProfileService*">
+
+      <header class="article-header">
+        <div class="article-meta">
+          <span class="badge badge-accent">教程 1</span>
+          <span class="badge">核对版本：v1.5.18</span>
+          <a href="index.html">← 回目录</a>
+        </div>
+        <h1>装一个普通的绝地潜兵 2 Mod（直接替换护甲）</h1>
+        <p class="article-lead">把网上下载的 HD2 护甲 Mod 导进管理器，部署后进游戏直接用。</p>
+      </header>
+
+      <section class="overview-grid" aria-label="适合谁和前提">
+        <div class="card">
+          <h2 class="section-title">适合谁</h2>
+          <p>只想把下载好的 HD2 Mod 直接装上，不挑它替换哪件原版护甲。想指定穿在某件护甲上，看 <a href="body-mapping.html">教程 2</a>。</p>
+        </div>
+        <div class="card">
+          <h2 class="section-title">前提</h2>
+          <ul>
+            <li>已打开管理器，<strong>游戏先关掉</strong>。</li>
+            <li>手头有 Mod 压缩包（<code>.zip</code> / <code>.rar</code> / <code>.7z</code>）或文件夹（里面要有 <code>.patch_*</code> 文件）。</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="step-pager" aria-label="步骤导航"></div>
+
+      <section class="step" data-step="1" id="step-1">
+        <div class="step-head">
+          <span class="step-num">1</span>
+          <h3>先看一眼目录（首次使用）</h3>
+        </div>
+        <div class="step-body">
+          <p>点右上角 <span class="ui">设置</span>，往下找 <span class="ui">游戏与资产</span>：</p>
+          <ul>
+            <li><span class="ui">游戏目录</span>：得指向游戏里的 <code>data</code> 文件夹（如 <code>...\Helldivers 2\data</code>）。为空或不对就点 <span class="ui">重置</span> 自动找；手动选点 <span class="ui">浏览</span>。</li>
+            <li><span class="ui">Mod 库目录</span>：尽量和游戏放<strong>同一个盘</strong>（比如都在 D 盘），后面部署快、不占双份空间。</li>
+          </ul>
+          <figure class="shot"
+                  data-src="img/t1-01.png"
+                  data-alt="设置页：游戏与资产"
+                  data-hint="截「设置」里的「游戏与资产」卡片，拍到「游戏目录」「Mod 库目录」和右侧按钮。">
+            <a class="pin" style="left:64.5%;top:4.5%" data-step="1">点顶栏「设置」</a>
+            <a class="pin" style="left:50%;top:64%" data-step="2">确认「游戏目录」指向 data 文件夹，不对点右侧「重置」</a>
+            <a class="pin" style="left:50%;top:70%" data-step="3">「Mod 库目录」尽量和游戏在同一个盘</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="2" id="step-2">
+        <div class="step-head">
+          <span class="step-num">2</span>
+          <h3>把 Mod 拖进管理器</h3>
+        </div>
+        <div class="step-body">
+          <p>直接把 Mod 压缩包或文件夹<strong>拖到管理器窗口里</strong>松手就行。</p>
+          <p>不想拖的话：点顶栏中间 <span class="ui">配置页  |  模组库</span>，再点右下角菜单里的 <span class="ui">导入 Mod</span> 选文件。导入完会出现在右边 <span class="ui">模组库</span>。</p>
+          <figure class="shot"
+                  data-src="img/t1-02.png"
+                  data-alt="双页视图：模组库与导入"
+                  data-hint="截顶栏点「配置页 | 模组库」后的双页视图，右边能看到刚导入的 Mod，右下角能看到「导入 Mod」。">
+            <a class="pin" style="left:45%;top:4.5%" data-step="1">点中间「配置页 | 模组库」打开左右双页</a>
+            <a class="pin" style="left:72%;top:45%" data-step="2">文件直接拖进窗口，导完会出现在右边「模组库」</a>
+            <a class="pin" style="left:95.8%;top:93%" data-step="3">或者点右下角「导入 Mod」手动选文件</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="3" id="step-3">
+        <div class="step-head">
+          <span class="step-num">3</span>
+          <h3>确认它已经在左边配置里</h3>
+        </div>
+        <div class="step-body">
+          <p><span class="ui">设置</span> 里默认开着 <span class="ui">导入 Mod 后自动加入活动配置并部署</span>，所以拖完一般已经自动进左边 <span class="ui">配置页</span> 了。</p>
+          <p>要是没进去（或你想加进别的配置）：从右边拖到左边，或鼠标放上去点 <strong>+</strong>，或勾选后点底栏 <span class="ui">加入配置</span>。</p>
+          <div class="callout callout-warn">
+            <strong>两件事顺手看一眼：</strong>① 左边标题下要写着「正在编辑活动配置」（不是的话点左下角菜单 <span class="ui">设为活动配置</span>）；② 同件护甲装了多个 Mod 时，<strong>越靠下的越生效</strong>，用「↑」「↓」或直接拖来调顺序。
+          </div>
+          <figure class="shot"
+                  data-src="img/t1-03.png"
+                  data-alt="配置页：确认活动配置与排序"
+                  data-hint="截双页视图，左边标题下能看到「正在编辑活动配置」和列表里的 Mod（悬停露出 + / ↑ / ↓ 更好）。">
+            <a class="pin" style="left:22%;top:28%" data-step="1">左侧「配置页」放着当前启用的 Mod</a>
+            <a class="pin" style="left:42.5%;top:93%" data-step="2">没自动加入时，从右边拖到左边，或勾选后点底栏「加入配置」</a>
+            <a class="pin" style="left:11%;top:31%" data-step="3">冲突时越靠下越优先，点「↑」「↓」或直接拖</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="4" id="step-4">
+        <div class="step-head">
+          <span class="step-num">4</span>
+          <h3>等它部署完，启动游戏</h3>
+        </div>
+        <div class="step-body">
+          <p>改完活动配置，等几秒就会自动部署，右上角 <span class="ui">消息</span> 旁会有提示。想马上动手可以点右下角 <span class="ui">立即重新部署</span>。</p>
+          <p>也可以直接点 <span class="ui">启动游戏</span>——开游戏前管理器会自动把还没部署完的先部署好。进游戏换上 Mod 对应那件护甲就能看到。</p>
+          <figure class="shot"
+                  data-src="img/t1-04.png"
+                  data-alt="首页：状态卡与启动游戏"
+                  data-hint="截「首页」整个窗口，拍到右上角「消息」、右侧状态卡（「部署模式」「已启用 Mod」）和右下角「启动游戏」。">
+            <a class="pin" style="left:85.5%;top:4.5%" data-step="1">点「消息」看部署有没有报错</a>
+            <a class="pin" style="left:82%;top:65%" data-step="2">看「部署模式」和「已启用 Mod」数字</a>
+            <a class="pin" style="left:82%;top:93%" data-step="3">点「启动游戏」（开之前会自动补一次部署）</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="card" id="pollution-note">
+        <h2 class="section-title">普通 Mod 有个缺点：会“污染”</h2>
+        <p>普通 Mod 是直接顶替游戏原版文件。因为很多原版护甲共用同一套部件，直接替换一件，别的共用部件的护甲（甚至队友穿的）也会跟着变样或穿模——这就叫<strong>污染</strong>。</p>
+        <p>想“<strong>只改我选的那一件护甲，尽量不连累别的</strong>”，去看 <a href="body-mapping.html"><strong>教程 2：转素体 + 护甲映射（低污染）</strong></a>。</p>
+        <div class="callout callout-info">
+          <strong>顺便认三个词：</strong><strong>素体</strong>是从 Mod 里拆出来的纯外观模型；<strong>映射</strong>是指定把素体穿到哪件护甲上；<strong>低污染</strong>是只改目标护甲独有部件、自动藏掉共用原件。
+        </div>
+      </section>
+
+      <section class="card" id="faq">
+        <h2 class="section-title">常见问题</h2>
+        <div class="faq-item">
+          <p class="faq-q">拖进去没反应 / 导入失败？</p>
+          <p class="faq-a">只认 <code>.zip</code> / <code>.rar</code> / <code>.7z</code> 压缩包或解压后的文件夹，里面得真有 <code>.patch_*</code> 文件。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">首页写着「软链接（权限不足）」？</p>
+          <p class="faq-a">Mod 库和游戏不在同一个盘。三选一：① 去 <span class="ui">设置</span> 把 Mod 库改到和游戏同盘；② 点首页 <span class="ui">启用开发者模式</span> 打开 Windows 开关；③ 点 <span class="ui">以管理员身份启动</span>。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">模组库里有，进游戏还是原版？</p>
+          <p class="faq-a">放库里不生效，必须进到左边 <span class="ui">配置页</span> 且是活动配置；还要检查下面是不是被别的同类 Mod 盖住了。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">游戏更新完闪退或隐身？</p>
+          <p class="faq-a">去 <span class="ui">首页</span> 点 <span class="ui">检测并修复过时 Mod</span>。</p>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span><a href="index.html">← 回目录</a></span>
+        <span>下一篇：<a href="body-mapping.html">教程 2：转素体 + 映射（低污染）→</a></span>
+      </footer>
+    </article>
+  </main>
+
+  <script src="assets/guide.js"></script>
+</body>
+</html>

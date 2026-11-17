@@ -5,6 +5,22 @@ using HD2ModCore.Domain;
 
 namespace HD2ModCore.Infrastructure;
 
+public sealed class UndeployedMappedModelsException : InvalidOperationException
+{
+	public UndeployedMappedModelsException(
+		IReadOnlyList<string> modelKeys,
+		IReadOnlyList<string> modelNames,
+		string message)
+		: base(message)
+	{
+		ModelKeys = modelKeys;
+		ModelNames = modelNames;
+	}
+
+	public IReadOnlyList<string> ModelKeys { get; }
+	public IReadOnlyList<string> ModelNames { get; }
+}
+
 public static class RuntimeArmorResourceFilter
 {
 	// Scan only actual deployed TOCs, not inactive library files.
@@ -60,8 +76,23 @@ public static class RuntimeArmorResourceFilter
 				.Where(p => available.Contains(ulong.Parse(p.Unit, NumberStyles.HexNumber, CultureInfo.InvariantCulture))).ToArray()
 		}).ToArray();
 		var empty = models.Where(m => m.SourceItemId is null && m.Pieces!.Count == 0).Select(m => m.Key).ToHashSet(StringComparer.Ordinal);
-		if (source.Enabled && rejectEmpty && source.Mappings.Any(m => m.IsModelMapping && empty.Contains(m.ModelKey!)))
-			throw new InvalidDataException("映射使用的自定义素体没有已启用且实际部署的 Unit。请先启用并部署模型包；未修改源定义或运行时协议。");
+		if (source.Enabled && rejectEmpty)
+		{
+			var missingKeys = source.Mappings
+				.Where(m => m.IsModelMapping && !string.IsNullOrWhiteSpace(m.ModelKey) && empty.Contains(m.ModelKey))
+				.Select(m => m.ModelKey!)
+				.Distinct(StringComparer.Ordinal)
+				.ToArray();
+			if (missingKeys.Length > 0)
+			{
+				var namesByKey = source.ModelDefinitions.ToDictionary(m => m.Key, m => string.IsNullOrWhiteSpace(m.Name) ? m.Key : m.Name, StringComparer.Ordinal);
+				var missingNames = missingKeys.Select(key => namesByKey.GetValueOrDefault(key, key)).ToArray();
+				throw new UndeployedMappedModelsException(
+					missingKeys,
+					missingNames,
+					$"映射使用的自定义素体没有已启用且实际部署的 Unit（{string.Join("、", missingNames)}）。请先启用并部署模型包，或清理这些素体的映射；未修改源定义或运行时协议。");
+			}
+		}
 		return source with
 		{
 			ModelDefinitions = models.Where(m => !empty.Contains(m.Key)).ToArray(),

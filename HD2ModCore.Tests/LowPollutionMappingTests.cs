@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 using HD2ModCore.Infrastructure.KitInstance;
@@ -103,6 +104,83 @@ public sealed class LowPollutionMappingTests
 	}
 
 	[Fact]
+	public void B01ThumbnailShoulders_RejectHeadBodyArmsButAllowTheThreeSlotModel()
+	{
+		const ulong stockyShoulder = 0x293d8135eb95873b;
+		const ulong slimShoulder = 0x29b877b122acc704;
+		var kits = new[]
+		{
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, "B-01",
+				P(9, 0, 0, stockyShoulder), P(9, 0, 1, slimShoulder)),
+		};
+
+		var merged = Plan(kits, Layout(headMerge: true, bodyArms: true));
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, merged.Status);
+		Assert.Contains("军需库", merged.Reason, StringComparison.Ordinal);
+		Assert.Empty(merged.Links);
+		Assert.Empty(merged.Hide);
+
+		var unmerged = Plan(kits, Layout(headMerge: false, bodyArms: true));
+		Assert.Equal(LowPollutionMappingStatus.Mapped, unmerged.Status);
+		Assert.Equal(
+			[new LowPollutionLink(Hex(stockyShoulder), BodyArmsUnit), new LowPollutionLink(Hex(slimShoulder), BodyArmsUnit)],
+			unmerged.Links);
+	}
+
+	[Fact]
+	public void B01ThumbnailShoulder_AllowsArmsWhenAnotherPartCarriesTheHeadAndBody()
+	{
+		const ulong shoulder = 0x293d8135eb95873b;
+		var plan = Plan(
+			[Kit(1, 100, GameDataEquipmentKitKind.Armor, "B-01", P(9, 0, 0, shoulder), P(6, 0, 0, 0x6001))],
+			Layout(headMerge: true, bodyArms: true));
+
+		Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status);
+		Assert.Equal(
+			[new LowPollutionLink(Hex(0x6001), BodyUnit), new LowPollutionLink(Hex(shoulder), ArmsUnit)],
+			plan.Links);
+	}
+
+	[Fact]
+	public void B01Twins_UseOneScopedModelPerBodyTypeWithoutChangingTheThumbnailResources()
+	{
+		const ulong stocky = 0x293d8135eb95873b;
+		const ulong slim = 0x29b877b122acc704;
+		var shoulders = new[] { P(9, 0, 0, stocky), P(9, 0, 1, slim) };
+		var kits = new[]
+		{
+			Kit(1, 100, GameDataEquipmentKitKind.Armor, "B-01", shoulders),
+			Kit(2, 100, GameDataEquipmentKitKind.Armor, "TR-40", [.. shoulders, P(6, 0, 3, 0x6001), P(7, 0, 3, 0x7001)]),
+			Kit(3, 100, GameDataEquipmentKitKind.Helmet, "B-01", P(0, 0, 3, 0x1001)),
+		};
+		var avatar = UnitTransformInfo.Empty with { NameHashes = [10, 20] };
+		var model = UnitTransformInfo.Empty with { NameHashes = [20, 40, 10] };
+		var rig = Assert.IsType<PlayerArmorInstanceRig>(PlayerArmorInstanceRigReader.CreateRig(avatar, model));
+		Assert.Equal([1, 2, 3, 1], rig.BoneLinks);
+		Assert.Null(PlayerArmorInstanceRigReader.CreateRig(avatar, model with { NameHashes = [20, 40] }));
+
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var layout = Layout(headMerge: true, bodyArms: true);
+		var globalOnly = LowPollutionMappingPlanner.PlanArmorGroup(index, layout, [1, 2], "m1");
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, globalOnly[1].Status);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, globalOnly[2].Status);
+		Assert.NotEmpty(globalOnly[2].Links);
+		var plans = LowPollutionMappingPlanner.PlanArmorGroup(index, layout, [1, 2], "m1",
+			new Dictionary<string, PlayerArmorInstanceRig> { [BodyArmsUnit] = rig });
+		plans[3] = LowPollutionMappingPlanner.Plan(index, layout, 3, "m1", plans);
+		Assert.All(plans.Values, plan => Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status));
+		Assert.All(plans.Values, plan => Assert.Empty(plan.Links));
+		Assert.Empty(LowPollutionHiderRules.Build(plans.Values));
+
+		var compiled = WardrobeLinkCompiler.Compile(Snapshot(kits),
+			[new(1, null, "m1"), new(2, null, "m1"), new(3, null, "m1")], 1, true, lowPollution: plans);
+		Assert.Equal(2, compiled.LinkCount);
+		Assert.DoesNotContain("link=", compiled.Text, StringComparison.Ordinal);
+		Assert.Equal(2, compiled.Text.Split('\n').Count(line => line.StartsWith("instance=", StringComparison.Ordinal)));
+		Assert.Contains($"instance={Hex(stocky)},{BodyArmsUnit},2,3,1:2:3:1,{Hex(0x1001)}:{Hex(0x6001)}:{Hex(0x7001)}:{Hex(stocky)}:{Hex(slim)}", compiled.Text);
+	}
+
+	[Fact]
 	public void ArmsCarrier_NeverSitsOnTheTorsoSlot_AndFollowsThePreferenceOrder()
 	{
 		// 去掉独有的手臂件：只剩躯干第 0 层之外的独有件在躯干槽、右臂 0x7001。手臂应落在右臂（7），不是躯干槽。
@@ -122,26 +200,27 @@ public sealed class LowPollutionMappingTests
 	}
 
 	[Fact]
-	public void SchemeA_NeverUsesHelmetsForArms_WhileKeepingTwoSlotHelmetIndependent()
+	public void SchemeA_NeverUsesHelmetsForArms_AndRequiresTheArmorToMap()
 	{
-		// 方案 A + 2b：目标 K1 除躯干外没有别的独有护甲部件，即使同套 2 槽头盔 K3 一起映射，也不会跨槽把 Arms 放到头盔 0x1001 上。
+		// 目标 K1 除躯干外没有别的独有护甲部件，手臂也不能借用同套头盔 K3 的 0x1001。
 		var kits = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]);
 		var index = SectionalExclusivePlanner.BuildIndex(kits);
-		var armor = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 1, "m1", new HashSet<uint> { 3 });
+		var layout = Layout(headMerge: true);
+		var armorPlans = LowPollutionMappingPlanner.PlanArmorGroup(index, layout, [1], "m1");
+		var armor = armorPlans[1];
 
 		Assert.Equal(LowPollutionMappingStatus.Unavailable, armor.Status);
 		Assert.Empty(armor.Links);
 		Assert.Contains("除躯干外没有可安全承载手臂的护甲部件", armor.Reason, StringComparison.Ordinal);
 
-		// 保留头盔独立映射（2b）：2 槽组合里只要同套护甲也在 companions 中，头盔仍标为 Mapped（Links/Hide 为空）。
-		var helmet = LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 3, "m1", new HashSet<uint> { 1 });
-		Assert.Equal(LowPollutionMappingStatus.Mapped, helmet.Status);
+		var helmet = LowPollutionMappingPlanner.Plan(index, layout, 3, "m1", armorPlans);
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, helmet.Status);
 		Assert.Empty(helmet.Links);
 		Assert.Empty(helmet.Hide);
 
 		// 没有护甲同时映射 ⇒ 仍然是「仅头盔 2 槽不可」。
 		Assert.Equal(LowPollutionMappingStatus.Unavailable,
-			LowPollutionMappingPlanner.Plan(index, Layout(headMerge: true), 3, "m1", new HashSet<uint>()).Status);
+			LowPollutionMappingPlanner.Plan(index, layout, 3, "m1").Status);
 	}
 
 	[Fact]
@@ -150,39 +229,39 @@ public sealed class LowPollutionMappingTests
 		var noNonTorso = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x6001 or 0x7001))]);
 		var noNonTorsoIndex = SectionalExclusivePlanner.BuildIndex(noNonTorso);
 
-		// 没有任何非躯干独有部件时（即使同套 2 槽头盔在 companions、即使带 BodyArms），不能把手臂放躯干或头盔上，均不可映射。
-		var twoSlotWithHelmet = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: true), 1, "m1", new HashSet<uint> { 3 });
-		Assert.Equal(LowPollutionMappingStatus.Unavailable, twoSlotWithHelmet.Status);
-		Assert.Empty(twoSlotWithHelmet.Links);
+		// 没有独有的非躯干部件时，2 槽、3 槽以及带 BodyArms 的布局都无法承载手臂。
+		var twoSlot = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: true), 1, "m1");
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, twoSlot.Status);
+		Assert.Empty(twoSlot.Links);
 
-		var threeSlot = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: false), 1, "m1", new HashSet<uint> { 3 });
+		var threeSlot = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: false), 1, "m1");
 		Assert.Equal(LowPollutionMappingStatus.Unavailable, threeSlot.Status);
 		Assert.Empty(threeSlot.Links);
 
-		var torsoOnlyBodyArms = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: true, bodyArms: true), 1, "m1", new HashSet<uint> { 3 });
+		var torsoOnlyBodyArms = LowPollutionMappingPlanner.Plan(noNonTorsoIndex, Layout(headMerge: true, bodyArms: true), 1, "m1");
 		Assert.Equal(LowPollutionMappingStatus.Unavailable, torsoOnlyBodyArms.Status);
 
 		// 躯干被共用、仅剩 1 个非躯干独有件 0x6001 时，带 BodyArms 可由非躯干承载件合一映射。
 		var sharedTorsoOneArm = World(t => [.. t.Where(piece => piece.UnitAssetKey.FileId is not (0x2001 or 0x7001))]);
 		var withBodyArms = LowPollutionMappingPlanner.Plan(
-			SectionalExclusivePlanner.BuildIndex(sharedTorsoOneArm), Layout(headMerge: true, bodyArms: true), 1, "m1", new HashSet<uint> { 3 });
+			SectionalExclusivePlanner.BuildIndex(sharedTorsoOneArm), Layout(headMerge: true, bodyArms: true), 1, "m1");
 		Assert.Equal(LowPollutionMappingStatus.Mapped, withBodyArms.Status);
 		Assert.Equal([new LowPollutionLink(Hex(0x6001), BodyArmsUnit)], withBodyArms.Links);
 
 		// 目标自己有非躯干独有部件时，不使用头盔 0x1001。
 		var own = LowPollutionMappingPlanner.Plan(
-			SectionalExclusivePlanner.BuildIndex(World()), Layout(headMerge: true), 1, "m1", new HashSet<uint> { 3 });
+			SectionalExclusivePlanner.BuildIndex(World()), Layout(headMerge: true), 1, "m1");
 		Assert.Equal(LowPollutionMappingStatus.Mapped, own.Status);
 		Assert.DoesNotContain(own.Links, link => link.Carrier == Hex(0x1001));
 	}
 
 	[Fact]
-	public void Service_KeepsTwoSlotHelmetIndependentWhileArmorWithoutArmsStaysUnavailable()
+	public void Service_TwoSlotHelmetRequiresSuccessfullyMappedArmor()
 	{
 		var mods = Path.Combine(Path.GetTempPath(), "hd2-lp-" + Guid.NewGuid().ToString("N"));
 		try
 		{
-			// 压缩布局 2 槽：head-body + arms。K1 没有除躯干外的独有护甲部件，即使与头盔 K3 一起映射，护甲也保持 Unavailable，而 K3 按 2b 保留为 Mapped。
+			// K1 缺少可用的手臂承载件时，K3 的头也无法通过头身合并显示。
 			WriteMod(mods, "A", "m1", BodyUnit,
 				"{\"schema\":\"hd2mod.low-pollution-layout/1\",\"mode\":\"two-slot\",\"headMerge\":true,\"units\":["
 				+ $"{{\"role\":\"head-body\",\"unit\":\"{BodyUnit}\"}},{{\"role\":\"arms\",\"unit\":\"{ArmsUnit}\"}}]}}");
@@ -192,7 +271,7 @@ public sealed class LowPollutionMappingTests
 			var combo = LowPollutionMappingService.Plan(mods, noArmorArms, [new(1, null, "m1"), new(3, null, "m1")], deployed)
 				.ToDictionary(plan => plan.TargetItemId);
 			Assert.Equal(LowPollutionMappingStatus.Unavailable, combo[1].Status);
-			Assert.Equal(LowPollutionMappingStatus.Mapped, combo[3].Status);
+			Assert.Equal(LowPollutionMappingStatus.Unavailable, combo[3].Status);
 			Assert.Empty(combo[3].Links);
 			Assert.Empty(combo[3].Hide);
 			Assert.Empty(LowPollutionHiderRules.Build(combo.Values));
@@ -365,6 +444,93 @@ public sealed class LowPollutionMappingTests
 		var plan = Plan(kits, Layout(headMerge: false, bodyArms: true));
 		Assert.Equal(LowPollutionMappingStatus.Unavailable, plan.Status);
 		Assert.Contains("手臂", plan.Reason, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public void ShipNpc_UsesItsOwnVariantUnit_WhenTheLayoutHasOne_AndTheLayoutFileRoundTripsIt()
+	{
+		// 编译器给每个飞船 NPC 写一份专用副本（角色名 npc-<item>）；映射优先链它，没有才退回合体 unit。
+		var kits = KitNpcRecords.All.Select(KitNpcRecords.ToKit).ToList();
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var ids = KitNpcRecords.All.Select(record => record.ItemId).ToArray();
+		var plan = SectionalCompressionPlanner.Plan(
+			[Src("00000000000a0001", ArmorPart.Helmet), Src("00000000000a0002", ArmorPart.Torso), Src("00000000000a0006", ArmorPart.LeftArm)],
+			headMerge: true);
+		var extra = KitNpcRecords.All.Select(npc => (npc.VariantRole, npc.VariantUnitId("00000000000a0002").ToString("x16"))).ToArray();
+		Assert.True(LowPollutionLayoutReader.TryParse(LowPollutionLayoutFile.Serialize(plan, "fp", extra), out var layout, out var error), error);
+
+		foreach (var npc in KitNpcRecords.All)
+			Assert.Equal(npc.VariantUnitId("00000000000a0002").ToString("x16"), layout!.UnitOf(npc.VariantRole));
+		Assert.NotEqual(layout!.UnitOf(KitNpcRecords.All[0].VariantRole), layout.UnitOf(KitNpcRecords.All[1].VariantRole));   // 每个 NPC 一个
+		Assert.Contains(extra[0].Item2, layout.AllUnits);   // 部署核对要看到它们
+
+		var plans = LowPollutionMappingPlanner.PlanArmorGroup(index, layout, ids, "m1");
+		foreach (var npc in KitNpcRecords.All)
+		{
+			Assert.Equal(LowPollutionMappingStatus.Mapped, plans[npc.ItemId].Status);
+			if (npc.ItemId == KitNpcRecords.SeafSoldierItemId) continue;
+			Assert.Equal([new LowPollutionLink(Hex(npc.RootUnitId), npc.VariantUnitId("00000000000a0002").ToString("x16"))], plans[npc.ItemId].Links);
+		}
+		var seaf = plans[KitNpcRecords.SeafSoldierItemId];
+		Assert.Equal("75f7e96af7dcd303", layout.UnitOf(KitNpcRecords.All.Single(npc => npc.ItemId == seaf.TargetItemId).VariantRole));
+		Assert.Empty(seaf.Hide);
+		Assert.Empty(seaf.Links);
+		var soldierMapping = new RuntimeArmorRegistryMapping(seaf.TargetItemId, null, "m1");
+		var links = WardrobeLinkCompiler.Compile(Snapshot(kits), [soldierMapping], 1, true, lowPollution: plans);
+		Assert.Equal(0, links.LinkCount);
+		Assert.DoesNotContain("link=75f7e96af7dcd303,", links.Text, StringComparison.Ordinal);
+		var fallbackLinks = WardrobeLinkCompiler.Compile(Snapshot(kits), [new(seaf.TargetItemId, KitNpcRecords.FemaleCaptainItemId)], 1, true);
+		Assert.Equal(0, fallbackLinks.LinkCount);
+
+		// 只有映射了 NPC 的素体才带专用副本：布局里的副本和「现在映射到这个素体的 NPC」对不上就要重编（缺了补、多了清）。
+		var both = KitNpcRecords.All.Select(record => record.ItemId).ToHashSet();
+		var onlyCaptain = new HashSet<uint> { KitNpcRecords.FemaleCaptainItemId };
+		var noNpc = Layout(headMerge: true);
+		Assert.False(LowPollutionFreshness.NpcVariantsMismatch(noNpc, null));          // 没映射 NPC、也没有副本：不用重编，不浪费时间
+		Assert.False(LowPollutionFreshness.NpcVariantsMismatch(noNpc, new HashSet<uint>()));
+		Assert.True(LowPollutionFreshness.NpcVariantsMismatch(noNpc, both));           // 映射了 NPC 却没有副本：要补
+		Assert.False(LowPollutionFreshness.NpcVariantsMismatch(layout, both));         // 副本和映射一致：已是最新
+		var seafRole = KitNpcRecords.All.Single(npc => npc.ItemId == seaf.TargetItemId).VariantRole;
+		var redirected = layout with { Units = [.. layout.Units.Select(unit => unit.Role == seafRole ? unit with { Unit = "079b8593cf6b1dad" } : unit)] };
+		Assert.True(LowPollutionFreshness.NpcVariantsMismatch(redirected, both));
+		Assert.Equal(LowPollutionMappingStatus.Unavailable,
+			LowPollutionMappingPlanner.PlanArmorGroup(index, redirected, ids, "m1")[seaf.TargetItemId].Status);
+		Assert.True(LowPollutionFreshness.NpcVariantsMismatch(layout, null));          // 取消了 NPC 映射：副本要清掉
+		Assert.True(LowPollutionFreshness.NpcVariantsMismatch(layout, onlyCaptain));   // 只剩女舰长：技术员的副本要清掉
+		Assert.False(LowPollutionFreshness.NpcVariantsMismatch(Layout(headMerge: false), both));   // 三槽不做 NPC，期望恒为空
+
+		// 映射归拢：每个素体映射到了哪些 NPC（别的目标、没素体的映射都不算）。
+		var byModel = LowPollutionFreshness.NpcItemIdsByModel(
+		[
+			new RuntimeArmorRegistryMapping(KitNpcRecords.FemaleCaptainItemId, null, "m1"),
+			new RuntimeArmorRegistryMapping(KitNpcRecords.TechnicianItemId, null, "m1"),
+			new RuntimeArmorRegistryMapping(KitNpcRecords.SeafSoldierItemId, null, "m1"),
+			new RuntimeArmorRegistryMapping(12345u, null, "m1"),
+			new RuntimeArmorRegistryMapping(KitNpcRecords.TechnicianItemId, 777u),
+		]);
+		Assert.Equal(["m1"], byModel.Keys);
+		Assert.True(byModel["m1"].SetEquals(both));
+	}
+
+	[Fact]
+	public void ShipNpc_PatchHeader_SetsTheSkeletonReferenceAndLeavesEverythingElseAlone()
+	{
+		var toc = new byte[0x100];
+		for (var i = 0; i < toc.Length; i++) toc[i] = (byte)(i * 7 + 3);
+		var npc = KitNpcRecords.All[0];
+		var patched = KitNpcRecords.PatchHeader(npc, toc);
+
+		Assert.Equal(KitNpcRecords.NpcBonesResourceId, BitConverter.ToUInt64(patched, 0x08));
+		Assert.Equal(0ul, BitConverter.ToUInt64(patched, 0x10));
+		Assert.Equal(npc.Header20, BitConverter.ToUInt64(patched, 0x20));
+		for (var i = 0; i < toc.Length; i++)
+		{
+			if (i is >= 0x08 and < 0x18 or >= 0x20 and < 0x28) continue;
+			Assert.Equal(toc[i], patched[i]);   // 网格、材质、骨骼名哈希等一个字节都不动
+		}
+		Assert.NotSame(toc, patched);   // 来源副本不能被改
+		Assert.NotEqual(KitNpcRecords.NpcBonesResourceId, BitConverter.ToUInt64(toc, 0x08));
+		Assert.Throws<InvalidDataException>(() => KitNpcRecords.PatchHeader(npc, new byte[0x20]));
 	}
 
 	[Fact]
@@ -1228,6 +1394,73 @@ public sealed class LowPollutionMappingTests
 			index, Layout(headMerge: false), [1490803405u, KitNonPlayerArmors.DemocracyOfficerArmorId], "m1");
 		Assert.Equal(LowPollutionMappingStatus.Mapped, joint[1490803405u].Status);
 		Assert.Equal(LowPollutionMappingStatus.Mapped, joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Status);
+
+		// 3 槽：模型的头显示不出来，民主官保持原版的脸，不能藏（否则他没有头）。
+		var face = Hex(KitNonPlayerArmors.DemocracyOfficerFaceUnitId);
+		Assert.DoesNotContain(face, joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
+		Assert.Contains(joint[KitNonPlayerArmors.DemocracyOfficerArmorId].Notes, note => note.Contains("头身合并", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public void PlanArmorGroup_DemocracyOfficerHidesItsFaceOnlyWhenTheHeadIsMergedIntoTheBody()
+	{
+		// 头身合并（2 槽）：头已并进身体，模型的头会显示，所以民主官的脸要一并隐藏；玩家的 FS-05 不受影响。
+		var kits = new List<GameDataAuthorityKit>
+		{
+			Kit(1490803405u, 100, GameDataEquipmentKitKind.Armor, "FS-05", P(2, 1, 3, 0x2500), P(8, 1, 3, 0x8500)),
+			Kit(KitNonPlayerArmors.DemocracyOfficerArmorId, 100, GameDataEquipmentKitKind.Armor, "FS-05", P(2, 1, 3, 0x2500), P(6, 1, 3, 0x6500), P(1, 1, 3, 0xca9e)),
+		};
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var merged = LowPollutionMappingPlanner.PlanArmorGroup(
+			index, Layout(headMerge: true), [1490803405u, KitNonPlayerArmors.DemocracyOfficerArmorId], "m1");
+
+		var face = Hex(KitNonPlayerArmors.DemocracyOfficerFaceUnitId);
+		Assert.Equal(LowPollutionMappingStatus.Mapped, merged[KitNonPlayerArmors.DemocracyOfficerArmorId].Status);
+		Assert.Contains(face, merged[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
+		Assert.DoesNotContain(face, merged[1490803405u].Hide);
+		// 披风（slot 1）：民主官是 NPC，原版披风也要藏；玩家的 FS-05 的披风留给玩家自己选，不藏。
+		Assert.Contains(Hex(0xca9e), merged[KitNonPlayerArmors.DemocracyOfficerArmorId].Hide);
+		Assert.DoesNotContain(Hex(0xca9e), merged[1490803405u].Hide);
+	}
+
+	[Fact]
+	public void PlanArmorGroup_ShipNpc_LinksItsRootUnitToTheBodyAndHidesItsFace()
+	{
+		// 飞船 NPC（女舰长、维修技术员）：没有真护甲，根 unit 当承载件直接链接到素体躯干（头身合并），原版脸按实例隐藏。
+		var kits = KitNpcRecords.All.Select(KitNpcRecords.ToKit).ToList();
+		var index = SectionalExclusivePlanner.BuildIndex(kits);
+		var ids = KitNpcRecords.All.Select(record => record.ItemId).ToArray();
+
+		var merged = LowPollutionMappingPlanner.PlanArmorGroup(index, Layout(headMerge: true), ids, "m1");
+		Assert.Equal(LowPollutionMappingStatus.Unavailable, merged[KitNpcRecords.SeafSoldierItemId].Status);
+		Assert.Empty(merged[KitNpcRecords.SeafSoldierItemId].Links);
+		var ships = KitNpcRecords.All.Where(npc => !npc.RequiresNativeShell).ToArray();
+		foreach (var npc in ships)
+		{
+			var plan = merged[npc.ItemId];
+			Assert.Equal(LowPollutionMappingStatus.Mapped, plan.Status);
+			Assert.Equal([new LowPollutionLink(Hex(npc.RootUnitId), BodyUnit)], plan.Links);
+			Assert.Equal([Hex(npc.FaceUnitId)], plan.Hide);
+			Assert.Equal([Hex(npc.RootUnitId)], plan.Signature);
+		}
+
+		// 素体有「身体 + 手臂」合体 unit（含头、躯干、腿、两只手臂）时链到它：NPC 没有手臂承载件，只链躯干会没有手。
+		var withArms = LowPollutionMappingPlanner.PlanArmorGroup(index, Layout(headMerge: true, bodyArms: true), ids, "m1");
+		foreach (var npc in ships)
+			Assert.Equal([new LowPollutionLink(Hex(npc.RootUnitId), BodyArmsUnit)], withArms[npc.ItemId].Links);
+
+		// 三槽：模型的头不在躯干 unit 里，NPC 没有头盔可挂，不可映射并说明原因。
+		var threeSlot = LowPollutionMappingPlanner.PlanArmorGroup(index, Layout(headMerge: false), ids, "m1");
+		foreach (var npc in KitNpcRecords.All)
+		{
+			Assert.NotEqual(LowPollutionMappingStatus.Mapped, threeSlot[npc.ItemId].Status);
+			Assert.Contains("头身合并", threeSlot[npc.ItemId].Reason);
+		}
+
+		// Hider 规则：每个 NPC 一条，锚点 = 根 unit，隐藏 = 他的脸。
+		var rules = LowPollutionHiderRules.Build(merged.Values);
+		foreach (var npc in ships)
+			Assert.Contains(rules, rule => rule.All.SequenceEqual([Hex(npc.RootUnitId)]) && rule.Hide.SequenceEqual([Hex(npc.FaceUnitId)]));
 	}
 
 	[Fact]

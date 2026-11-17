@@ -146,7 +146,7 @@ public sealed class SectionalConversionPlannerTests
 	}
 
 	[Fact]
-	public void 多个来源都有同一个unit时_后面的来源覆盖前面的()
+	public void 多个来源都有同一个unit时_保留各来源拷贝以便拆件合并开关()
 	{
 		var document = Document(
 			[
@@ -164,7 +164,7 @@ public sealed class SectionalConversionPlannerTests
 			},
 			UnitTypes, MaterialTypes, TextureTypes);
 
-		Assert.Equal("b.patch_0", Assert.Single(plan.Unit!.Selections).SourcePatch);
+		Assert.Equal(["a.patch_0", "b.patch_0"], plan.Unit!.Selections.Select(s => s.SourcePatch));
 	}
 
 	[Fact]

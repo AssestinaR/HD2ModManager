@@ -110,17 +110,29 @@
                                     SearchText="{Binding AvailableSearchText, UpdateSourceTrigger=PropertyChanged}"
                                     SearchActionsTemplate="{StaticResource AvailableArmorSearchActions}"
                                     EmptyMessage="{Binding AvailableEmptyMessage}"
-                                    SelectionPolicy="Multiple"
-                                    RowActions="ArmorAssign"
                                     ArmorAssignToolTip="{Binding AvailableRowActionToolTip}"
-                                    RelationshipDragOperation="ArmorRegistryAssign"
                                     SelectionRequested="OnAvailableSelectionRequested"
+                                    RowClicked="OnAvailableRowClicked"
                                     RowActionInvoked="OnAvailableRowActionInvoked">
+                    <local:ModListPanel.Style>
+                        <Style TargetType="local:ModListPanel">
+                            <Setter Property="SelectionPolicy" Value="Multiple"/>
+                            <Setter Property="RowActions" Value="ArmorAssign"/>
+                            <Setter Property="RelationshipDragOperation" Value="ArmorRegistryAssign"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsMappedTabSelected}" Value="True">
+                                    <Setter Property="SelectionPolicy" Value="None"/>
+                                    <Setter Property="RowActions" Value="None"/>
+                                    <Setter Property="RelationshipDragOperation" Value="None"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </local:ModListPanel.Style>
                     <local:ModListPanel.HeaderModes>
-                        <!-- 套装 / 护甲 / 头盔 选项卡是标题卡的一个状态（标题 / 搜索 / 选项卡），默认显示；
+                        <!-- 套装 / 护甲 / 头盔 / 已映射 选项卡是标题卡的一个状态（标题 / 搜索 / 选项卡），默认显示；
                              点右上角的切换键可以换回标题看汇总。 -->
                         <local:ModListHeaderMode Key="ArmorTabs"
-                                                 ToggleToolTip="显示或隐藏 套装 / 护甲 / 头盔 选项卡"
+                                                 ToggleToolTip="显示或隐藏 套装 / 护甲 / 头盔 / 已映射 选项卡"
                                                  ToggleIcon="{StaticResource RowIcon.Category}"
                                                  IsRequested="True">
                         <Border Background="{StaticResource SurfaceMuted}"
@@ -129,7 +141,7 @@
                                 CornerRadius="{StaticResource RadiusItem}"
                                 Padding="3"
                                 VerticalAlignment="Center">
-                            <UniformGrid Columns="3">
+                            <UniformGrid Columns="4">
                                 <Button Content="{Binding SetTabHeader}"
                                         Command="{Binding SelectAvailableTabCommand}"
                                         CommandParameter="Set">
@@ -169,6 +181,22 @@
                                         <Style TargetType="Button" BasedOn="{StaticResource AvailableArmorTabButton}">
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding IsHelmetTabSelected}" Value="True">
+                                                    <Setter Property="Background" Value="{StaticResource SurfaceSelected}"/>
+                                                    <Setter Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                                <Button Content="{Binding MappedTabHeader}"
+                                        Command="{Binding SelectAvailableTabCommand}"
+                                        CommandParameter="Mapped">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource AvailableArmorTabButton}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsMappedTabSelected}" Value="True">
                                                     <Setter Property="Background" Value="{StaticResource SurfaceSelected}"/>
                                                     <Setter Property="BorderBrush" Value="{StaticResource StrokeFocus}"/>
                                                     <Setter Property="Foreground" Value="{StaticResource Accent}"/>

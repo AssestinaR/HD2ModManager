@@ -85,6 +85,11 @@ public enum LowPollutionMappingStatus
 /// <summary>承载件 → 压缩 unit 的一行映射（16 位小写 hex）。</summary>
 public sealed record LowPollutionLink(string Carrier, string Unit);
 
+public sealed record PlayerArmorInstanceRig(int AvatarNodes, int ModelNodes, IReadOnlyList<int> BoneLinks);
+
+public sealed record LowPollutionPlayerLink(
+	string Carrier, string Unit, PlayerArmorInstanceRig Rig, IReadOnlyList<string> Hide);
+
 /// <summary>
 /// 一个映射目标在低污染模式下的规划结果（规划文档 §11.2）。
 /// </summary>
@@ -104,6 +109,8 @@ public sealed record LowPollutionMappingPlan(
 	IReadOnlyList<string> UnitSignature,
 	IReadOnlyList<string> Notes)
 {
+	public IReadOnlyList<LowPollutionPlayerLink> PlayerLinks { get; init; } = [];
+
 	internal static LowPollutionMappingPlan Fail(
 		uint itemId, string name, string modelKey, LowPollutionMappingStatus status, string reason)
 		=> new(itemId, name, modelKey, status, reason, [], [], [], [], []);
@@ -120,7 +127,9 @@ internal static class LowPollutionMappingPlanner
 {
 	private const ulong UnitTypeId = 0xe0a48d0be9a7453f;
 
-	private static readonly IReadOnlySet<uint> EmptySet = new HashSet<uint>();
+	// 实机对照：移除 B-01 壮实与纤细右肩到头身合体模型的链接后，军需库头盔缩略图恢复。
+	internal static bool IsArmoryThumbnailShoulder(ulong file)
+		=> file is 0x293d8135eb95873b or 0x29b877b122acc704;
 
 	/// <summary>头盔部件「独有」的拥有者集合：同套 / 同名的头盔与护甲记录（口径同专属路线合并那一遍的 HelmetUnique）。</summary>
 	private static HashSet<uint> HelmetOwners(SectionalExclusivePlanner.Index index, GameDataAuthorityKit helmet)
@@ -145,12 +154,12 @@ internal static class LowPollutionMappingPlanner
 		ArmorPart.LeftShoulder, ArmorPart.RightShoulder, ArmorPart.LeftArm, ArmorPart.RightArm,
 	];
 
-	/// <param name="companions">
-	/// 同一次应用里映射到<b>同一个素体</b>的其它目标（item id）。2 槽头盔按现行逻辑靠它判断同套护甲是否同在映射表里。
+	/// <param name="armorPlans">
+	/// 同一次应用中同一个素体的护甲规划结果。2 槽头盔依赖同套护甲成功显示模型的头。
 	/// </param>
 	internal static LowPollutionMappingPlan Plan(
 		SectionalExclusivePlanner.Index index, LowPollutionLayout layout, uint itemId, string modelKey,
-		IReadOnlySet<uint>? companions = null)
+		IReadOnlyDictionary<uint, LowPollutionMappingPlan>? armorPlans = null)
 	{
 		ArgumentNullException.ThrowIfNull(index);
 		ArgumentNullException.ThrowIfNull(layout);
@@ -160,7 +169,7 @@ internal static class LowPollutionMappingPlanner
 		return kit.Kind switch
 		{
 			GameDataEquipmentKitKind.Armor => PlanArmorGroup(index, layout, [kit.ItemId], modelKey)[kit.ItemId],
-			GameDataEquipmentKitKind.Helmet => PlanHelmet(index, layout, kit, modelKey, companions ?? EmptySet),
+			GameDataEquipmentKitKind.Helmet => PlanHelmet(index, layout, kit, modelKey, armorPlans),
 			_ => LowPollutionMappingPlan.Fail(itemId, kit.DisplayName, modelKey, LowPollutionMappingStatus.Unavailable, "目标不是护甲或头盔。"),
 		};
 	}
@@ -245,11 +254,65 @@ internal static class LowPollutionMappingPlanner
 		SectionalExclusivePlanner.Index index,
 		LowPollutionLayout layout,
 		IReadOnlyList<uint> armorIds,
-		string modelKey)
+		string modelKey,
+		IReadOnlyDictionary<string, PlayerArmorInstanceRig>? playerRigs = null)
+	{
+		var plans = PlanArmorGroup(index, layout, armorIds, modelKey, allowThumbnailShoulders: false);
+		if (playerRigs is not { Count: > 0 } || !layout.HeadMerge
+			|| plans.Values.All(plan => plan.Status == LowPollutionMappingStatus.Mapped))
+		{
+			return plans;
+		}
+
+		var instancePlans = PlanArmorGroup(index, layout, armorIds, modelKey, allowThumbnailShoulders: true);
+		foreach (var (id, candidate) in instancePlans)
+		{
+			// The shoulder also identifies twins with a usable global carrier. Move them with
+			// the rest of the shoulder's owners so they don't show two replacement models.
+			if (candidate.Status != LowPollutionMappingStatus.Mapped
+				|| candidate.Links.Count == 0
+				|| candidate.Links.Any(link =>
+					!IsArmoryThumbnailShoulder(ulong.Parse(link.Carrier, NumberStyles.HexNumber, CultureInfo.InvariantCulture))
+					|| !playerRigs.ContainsKey(link.Unit)))
+			{
+				continue;
+			}
+
+			var hide = candidate.Hide.Concat(candidate.Links.Select(link => link.Carrier)).Distinct().Order().ToArray();
+			plans[id] = candidate with
+			{
+				Links = [],
+				Hide = [],
+				Signature = [],
+				UnitSignature = [],
+				Notes = ["头身合并模型按玩家角色实例挂载，军需库缩略图继续使用原版右肩。"],
+				PlayerLinks = [.. candidate.Links.Select(link => new LowPollutionPlayerLink(link.Carrier, link.Unit, playerRigs[link.Unit], hide))],
+			};
+		}
+
+		return plans;
+	}
+
+	private static Dictionary<uint, LowPollutionMappingPlan> PlanArmorGroup(
+		SectionalExclusivePlanner.Index index,
+		LowPollutionLayout layout,
+		IReadOnlyList<uint> armorIds,
+		string modelKey,
+		bool allowThumbnailShoulders)
 	{
 		var results = new Dictionary<uint, LowPollutionMappingPlan>();
 		var kitsById = index.Kits.ToDictionary(kit => kit.ItemId);
 		var distinctIds = armorIds.Distinct().ToArray();
+
+		// 飞船 NPC（女舰长、维修技术员）没有真护甲：不参与承载件共识，单独按「根 unit → 素体躯干」规划。
+		foreach (var npcId in distinctIds.Where(KitNpcRecords.IsNpc))
+		{
+			results[npcId] = kitsById.TryGetValue(npcId, out var npcKit) && KitNpcRecords.TryGet(npcId, out var npc)
+				? PlanNpc(layout, npc, npcKit, modelKey)
+				: LowPollutionMappingPlan.Fail(npcId, string.Empty, modelKey, LowPollutionMappingStatus.Unavailable, "索引里找不到目标记录。");
+		}
+
+		distinctIds = distinctIds.Where(id => !KitNpcRecords.IsNpc(id)).ToArray();
 
 		var bodyRole = layout.UnitOf(LowPollutionRoles.HeadBody) is not null ? LowPollutionRoles.HeadBody : LowPollutionRoles.Body;
 		if (layout.UnitOf(bodyRole) is null)
@@ -308,7 +371,7 @@ internal static class LowPollutionMappingPlanner
 
 			var hyperedges = BuildHyperedges(
 				index, layout, bodyRole, hasArms, torsoSplit, armsSplit, baSplit,
-				torsoSlot, helmetSlot, bodyPref, armsPref, armorData, activeSet, eligibleFiles);
+				torsoSlot, helmetSlot, bodyPref, armsPref, armorData, activeSet, eligibleFiles, allowThumbnailShoulders);
 
 			var assigned = SolveConsensusAssignment(activeSet, armorData, hyperedges, hasArms);
 			var failed = activeSet.Where(id => armorData[id].Bodies.Any(body =>
@@ -336,6 +399,45 @@ internal static class LowPollutionMappingPlanner
 		return results;
 	}
 
+	/// <summary>
+	/// 飞船 NPC 的映射（「硬来」，和替换 Mod 的做法一致）：NPC 的根 unit 当承载件，链接到素体的躯干（头身合并）unit，
+	/// NPC 的原版脸按实例隐藏。NPC 没有头盔也没有手臂件，所以必须头身合并（模型的头在躯干 unit 里）。
+	/// NPC 用自己的骨架（女舰长 69 根，玩家 90 根），不做重定向：模型可能变形，需要实机确认。
+	/// </summary>
+	private static LowPollutionMappingPlan PlanNpc(
+		LowPollutionLayout layout, KitNpcRecords.NpcRecord npc, GameDataAuthorityKit kit, string modelKey)
+	{
+		if (!layout.HeadMerge)
+			return Unavailable(kit, modelKey, "NPC 的头必须并进身体：这个素体是三槽，请先在 Mod 详情页打开「头身合并」并重新构建");
+		// 优先用这个 NPC 专用副本（压缩 unit 的 TocData 头部补了 NPC 的骨架引用，NPC 动画才驱动得了它；见 KitNpcRecords）。
+		// 没有（旧版压缩器写的布局，应用时会按新鲜度判断重编）就退回合体 unit：能显示但会是 T 字站姿。
+		var variant = layout.UnitsOf(npc.VariantRole).ToArray();
+		if (npc.RequiresNativeShell)
+		{
+			var rootUnit = SectionalExclusivePlanner.Hex(npc.RootUnitId);
+			if (variant.Length != 1 || !string.Equals(variant[0], rootUnit, StringComparison.OrdinalIgnoreCase))
+				return Unavailable(kit, modelKey, "缺少 SEAF 士兵原键补丁，请在应用映射时重新构建素体。");
+			return new(kit.ItemId, kit.DisplayName, modelKey, LowPollutionMappingStatus.Mapped, null, [], [], [], [],
+				["共用的 SEAF 士兵本体由原键补丁替换。重启游戏后生效。"]);
+		}
+		var standing = variant.Length != 0;
+		// 其次用「身体 + 手臂」合体 unit（头身合并时里面含头、躯干、腿和两只手臂）：NPC 没有手臂承载件，
+		// 只链躯干的话模型没有手（2026-11-16 实机：两个 NPC 都没有手，手里的东西悬在空中）。
+		var body = standing ? variant : layout.UnitsOf(LowPollutionRoles.BodyArms).ToArray();
+		if (body.Length == 0) body = layout.UnitsOf(LowPollutionRoles.HeadBody).ToArray();
+		if (body.Length == 0)
+			return Unavailable(kit, modelKey, "素体的压缩布局里没有头身合并的躯干 unit。");
+		var links = new Dictionary<ulong, string> { [npc.RootUnitId] = body[0] };
+		List<string> notes =
+		[
+			$"{npc.Name}是飞船 NPC，没有护甲记录：模型的整身（头、躯干、腿、手臂合成的 unit）直接覆盖他的根 unit，他的原版脸会按实例隐藏。",
+			standing
+				? "NPC 用自己的骨架（69 根，命名和玩家同一套）：链接的是补了 NPC 骨架引用的专用副本，按骨骼名对应，站姿需实机确认。"
+				: "这个素体是旧版压缩产物，没有 NPC 专用 unit：模型会显示但站成 T 字，请重新构建素体（应用时会自动重编）。",
+		];
+		return Mapped(kit, modelKey, links, npc.ExtraHideUnits, [SectionalExclusivePlanner.Hex(npc.RootUnitId)], body, notes);
+	}
+
 	private static List<CarrierHyperedge> BuildHyperedges(
 		SectionalExclusivePlanner.Index index,
 		LowPollutionLayout layout,
@@ -350,7 +452,8 @@ internal static class LowPollutionMappingPlanner
 		List<int> armsPref,
 		Dictionary<uint, ArmorEntry> armorData,
 		HashSet<uint> activeSet,
-		ulong[] eligibleFiles)
+		ulong[] eligibleFiles,
+		bool allowThumbnailShoulders)
 	{
 		var hyperedges = new List<CarrierHyperedge>();
 		foreach (var file in eligibleFiles)
@@ -358,6 +461,8 @@ internal static class LowPollutionMappingPlanner
 			var owners = index.Owners[file].Where(activeSet.Contains).ToHashSet();
 			for (var rk = 0; rk <= 2; rk++)
 			{
+				if (!allowThumbnailShoulders && layout.HeadMerge && rk != 1 && IsArmoryThumbnailShoulder(file))
+					continue;
 				if (!TryCreateHyperedge(
 					file, rk, owners, layout, bodyRole, hasArms, torsoSplit, armsSplit, baSplit,
 					torsoSlot, helmetSlot, bodyPref, armsPref, armorData, out var edge))
@@ -579,6 +684,12 @@ internal static class LowPollutionMappingPlanner
 		var missingBodies = entry.Bodies.Where(body => !IsCellCovered(assigned, body, 0)).ToArray();
 		if (missingBodies.Length != 0)
 		{
+			if (layout.HeadMerge && entry.Units.Any(unit => IsArmoryThumbnailShoulder(unit.File)
+				&& missingBodies.Any(body => SectionalExclusivePlanner.Covers(unit.RawBody, body))))
+			{
+				return "B-01 的右肩用于军需库头盔缩略图，当前没有其他安全的部件承载头身合并模型";
+			}
+
 			if (torsoSplit && entry.Units.Any(unit => unit.Slot != helmetSlot
 				&& !IsBodySpecific(unit)
 				&& index.Owners.TryGetValue(unit.File, out var owners)
@@ -662,10 +773,24 @@ internal static class LowPollutionMappingPlanner
 			}
 
 			notes.Add("头身合并（2 槽）：原版头盔的部件会在穿这套的角色身上隐藏（0.3 米半径内的同名部件都会隐藏）。");
+			// 民主官没有头盔、只有一张脸，脸不属于任何护甲记录：头已并进身体，模型的头会显示，所以把脸一并藏掉。
+			var extra = KitNonPlayerArmors.ExtraHideUnits(entry.Kit.ItemId);
+			if (extra.Count != 0)
+			{
+				hide.AddRange(extra);
+				// 民主官的披风是这套 FS-05 自己的披风槽（slot 1）部件：一般护甲的披风留给玩家自己选的披风，不藏；
+				// 民主官是 NPC，没有玩家选披风这回事，原版披风会盖在模型上，所以也藏掉。
+				hide.AddRange(SectionalExclusivePlanner.UnitsOf(entry.Kit)
+					.Where(unit => unit.Type == UnitTypeId && unit.Slot == capeSlot)
+					.Select(unit => unit.File));
+				notes.Add("头身合并：民主官没有头盔，他的脸（不属于任何护甲记录）和披风会一并隐藏，显示模型的头。");
+			}
 		}
 		else
 		{
 			notes.Add("3 槽：只映射躯干和手臂；模型的头不显示，戴什么头盔就显示什么头盔（想显示模型的头，再映射同名头盔）。");
+			if (KitNonPlayerArmors.ExtraHideUnits(entry.Kit.ItemId).Count != 0)
+				notes.Add("民主官没有头盔，3 槽下模型的头显示不出来，他保持原版的脸；想显示模型的头，请在 Mod 详情页打开「头身合并」。");
 		}
 
 		if (bodyArmsUnits.Count != 0)
@@ -694,25 +819,28 @@ internal static class LowPollutionMappingPlanner
 	}
 
 	/// <summary>
-	/// 2 槽：头已并进身体。同套护甲也在映射表里时，头盔本身没有要写入的链接或规则，照常记为「已映射」。
+	/// 2 槽：头已并进身体。同套护甲成功映射后，头盔随之记为「已映射」。
 	/// </summary>
 	private static LowPollutionMappingPlan HelmetPlanTwoSlot(
-		SectionalExclusivePlanner.Index index, GameDataAuthorityKit kit, string modelKey, IReadOnlySet<uint> companions)
+		SectionalExclusivePlanner.Index index, GameDataAuthorityKit kit, string modelKey,
+		IReadOnlyDictionary<uint, LowPollutionMappingPlan>? armorPlans)
 	{
-		var armorPaired = companions.Any(id => index.Kits.FirstOrDefault(other => other.ItemId == id) is { Kind: GameDataEquipmentKitKind.Armor } armor
-			&& SectionalExclusivePlanner.HelmetKitsOf(index, armor).Any(helmet => helmet.ItemId == kit.ItemId));
+		var armorPaired = armorPlans?.Values.Any(plan =>
+			plan.Status == LowPollutionMappingStatus.Mapped
+			&& index.Kits.FirstOrDefault(other => other.ItemId == plan.TargetItemId) is { Kind: GameDataEquipmentKitKind.Armor } armor
+			&& SectionalExclusivePlanner.HelmetKitsOf(index, armor).Any(helmet => helmet.ItemId == kit.ItemId)) == true;
 		return armorPaired
 			? new LowPollutionMappingPlan(kit.ItemId, kit.DisplayName, modelKey, LowPollutionMappingStatus.Mapped, null, [], [], [], [],
-				["头身合并（2 槽）：头已并进身体，头盔本身不写映射；它的原版部件在同套护甲可映射时由护甲规则隐藏。"])
-			: Unavailable(kit, modelKey, "素体头身合并（2 槽），头已并进身体，头盔不可单独映射；请映射护甲");
+				["头身合并（2 槽）：模型的头随同套护甲显示，原版头盔部件由护甲规则隐藏。"])
+			: Unavailable(kit, modelKey, "素体头身合并（2 槽），这顶头盔需要同套护甲成功映射");
 	}
 
 	private static LowPollutionMappingPlan PlanHelmet(
 		SectionalExclusivePlanner.Index index, LowPollutionLayout layout, GameDataAuthorityKit kit, string modelKey,
-		IReadOnlySet<uint> companions)
+		IReadOnlyDictionary<uint, LowPollutionMappingPlan>? armorPlans)
 	{
 		if (layout.HeadMerge)
-			return HelmetPlanTwoSlot(index, kit, modelKey, companions);
+			return HelmetPlanTwoSlot(index, kit, modelKey, armorPlans);
 		if (layout.UnitOf(LowPollutionRoles.Head) is null)
 			return Unavailable(kit, modelKey, "素体的压缩布局里没有头槽。");
 		var headSplit = layout.IsSplit(LowPollutionRoles.Head);
@@ -937,7 +1065,8 @@ public static class LowPollutionMappingService
 		string modsDirectory,
 		GameDataAuthoritySnapshot authority,
 		IReadOnlyList<RuntimeArmorRegistryMapping> mappings,
-		IReadOnlySet<ulong>? deployedUnits)
+		IReadOnlySet<ulong>? deployedUnits,
+		IReadOnlyDictionary<string, PlayerArmorInstanceRig>? playerRigs = null)
 	{
 		ArgumentNullException.ThrowIfNull(authority);
 		ArgumentNullException.ThrowIfNull(mappings);
@@ -949,7 +1078,6 @@ public static class LowPollutionMappingService
 		var kits = authority.Kits.ToDictionary(kit => kit.ItemId);
 		SectionalExclusivePlanner.Index? index = null;
 		var ready = new List<(int Position, uint ItemId, GameDataEquipmentKitKind Kind, string ModelKey, LowPollutionLayout Layout)>();
-		var companionsByModel = new Dictionary<string, HashSet<uint>>(StringComparer.Ordinal);
 		var armorsByModel = new Dictionary<string, (LowPollutionLayout Layout, List<uint> Ids)>(StringComparer.Ordinal);
 		foreach (var mapping in modelMappings)
 		{
@@ -979,12 +1107,6 @@ public static class LowPollutionMappingService
 
 			index ??= SectionalExclusivePlanner.BuildIndex(authority.Kits);
 			var modelKey = mapping.ModelKey!;
-			if (!companionsByModel.TryGetValue(modelKey, out var companions))
-			{
-				companions = [];
-				companionsByModel[modelKey] = companions;
-			}
-			companions.Add(kit.ItemId);
 
 			if (kit.Kind == GameDataEquipmentKitKind.Armor)
 			{
@@ -1005,7 +1127,7 @@ public static class LowPollutionMappingService
 
 		var armorPlansByModel = new Dictionary<string, Dictionary<uint, LowPollutionMappingPlan>>(StringComparer.Ordinal);
 		foreach (var (modelKey, (layout, armorIds)) in armorsByModel)
-			armorPlansByModel[modelKey] = LowPollutionMappingPlanner.PlanArmorGroup(index, layout, armorIds, modelKey);
+			armorPlansByModel[modelKey] = LowPollutionMappingPlanner.PlanArmorGroup(index, layout, armorIds, modelKey, playerRigs);
 
 		foreach (var item in ready)
 		{
@@ -1015,9 +1137,8 @@ public static class LowPollutionMappingService
 				continue;
 			}
 
-			// 映射到同一个素体的其它目标：2 槽组合要靠它认出「同套头盔也在映射」（Q1 / 保留头盔独立映射）。
-			var companions = companionsByModel[item.ModelKey].Where(id => id != item.ItemId).ToHashSet();
-			plans[item.Position] = LowPollutionMappingPlanner.Plan(index, item.Layout, item.ItemId, item.ModelKey, companions);
+			armorPlansByModel.TryGetValue(item.ModelKey, out var armorPlans);
+			plans[item.Position] = LowPollutionMappingPlanner.Plan(index, item.Layout, item.ItemId, item.ModelKey, armorPlans);
 		}
 		return plans;
 	}

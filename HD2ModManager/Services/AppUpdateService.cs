@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection;
 using System.Threading;
 using System.Windows;
+using HD2ModCore.Infrastructure.Diagnostics;
 using HD2ModCore.Updates;
 
 namespace HD2ModManager.Services
@@ -28,6 +29,10 @@ namespace HD2ModManager.Services
         private readonly NotificationService _notifications;
         private readonly string _runDir;
         private string? _announcedVersion;
+        private CheckPhase _lastDiagnosticCheck;
+        private DownloadPhase _lastDiagnosticDownload;
+        private Guid? _diagnosticCheckOperation;
+        private Guid? _diagnosticDownloadOperation;
 
         public static AppUpdateService? Instance { get; private set; }
 
@@ -76,11 +81,13 @@ namespace HD2ModManager.Services
             if (result is null) return;
             if (result.Ok)
             {
+                DiagnosticOperations.Journal.Record(DiagnosticAction.UpdateManager, DiagnosticResult.Completed, code: "UpdateApplied");
                 LogService.Info($"更新已应用：{result.Version}");
                 _notifications.Show($"已更新到 {result.Version}", NotificationLevel.Info, TimeSpan.FromSeconds(8), "程序更新");
             }
             else
             {
+                DiagnosticOperations.Journal.Record(DiagnosticAction.UpdateManager, DiagnosticResult.Failed, code: "UpdateApplyFailed");
                 LogService.Error($"更新 {result.Version} 未完成，已回滚：{result.Message}");
                 _notifications.Show(
                     $"更新到 {result.Version} 没有完成，已恢复为更新前的版本：{result.Message}。详情见 logs\\app-update.log。",
@@ -92,11 +99,42 @@ namespace HD2ModManager.Services
         {
             var dispatcher = Application.Current?.Dispatcher;
             if (dispatcher is null) return;
+            var view = Updater.View();
             _ = dispatcher.InvokeAsync(() =>
             {
+                RecordUpdateTransitions(view);
                 AnnounceAvailable();
                 Changed?.Invoke();
             });
+        }
+
+        private void RecordUpdateTransitions(AppUpdateView view)
+        {
+            if (_lastDiagnosticCheck != view.Check.Phase)
+            {
+                _lastDiagnosticCheck = view.Check.Phase;
+                if (view.Check.Phase == CheckPhase.Checking)
+                    _diagnosticCheckOperation = DiagnosticOperations.Journal.Record(DiagnosticAction.UpdateManager, DiagnosticResult.Started, code: "Check");
+                else if (_diagnosticCheckOperation is { } check)
+                {
+                    var result = view.Check.Phase == CheckPhase.Error ? DiagnosticResult.Failed : DiagnosticResult.Completed;
+                    DiagnosticOperations.Journal.Record(DiagnosticAction.UpdateManager, result, operation: check, code: view.Check.Code?.ToString() ?? view.Check.Phase.ToString());
+                    _diagnosticCheckOperation = null;
+                }
+            }
+            if (_lastDiagnosticDownload == view.Download.Phase) return;
+            _lastDiagnosticDownload = view.Download.Phase;
+            if (view.Download.Phase is DownloadPhase.Downloading or DownloadPhase.Installing)
+                _diagnosticDownloadOperation = DiagnosticOperations.Journal.Record(DiagnosticAction.UpdateManager, DiagnosticResult.Started, code: view.Download.Phase.ToString());
+            else if (_diagnosticDownloadOperation is { } download)
+            {
+                var result = view.Download.Phase switch
+                {
+                    DownloadPhase.Error => DiagnosticResult.Failed, DownloadPhase.None => DiagnosticResult.Canceled, _ => DiagnosticResult.Completed,
+                };
+                DiagnosticOperations.Journal.Record(DiagnosticAction.UpdateManager, result, operation: download, code: view.Download.Code?.ToString() ?? view.Download.Phase.ToString());
+                _diagnosticDownloadOperation = null;
+            }
         }
 
         private void AnnounceAvailable()

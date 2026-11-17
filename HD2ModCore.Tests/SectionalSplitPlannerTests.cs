@@ -1,4 +1,5 @@
 using HD2ModCore.Domain;
+using HD2ModCore.Infrastructure;
 
 namespace HD2ModCore.Tests;
 
@@ -209,5 +210,26 @@ public sealed class SectionalSplitPlannerTests
 		Assert.Equal(2, plan.Targets.Count);
 		Assert.Contains(plan.Targets, t => t.BodyType == "Stocky" && t.HostUnitId == "5ef6000000000001" && t.DonorUnitIds.Contains("52d1000000000003"));
 		Assert.Contains(plan.Targets, t => t.BodyType == "Slim" && t.HostUnitId == "83f6000000000002" && t.DonorUnitIds.Count == 0);
+	}
+
+	[Fact]
+	public void RemapOutputPlan_GivesDistinctOutputIds_WhenStockyAndSlimShareSameAnyHost()
+	{
+		// Any 部件进 Stocky 与 Slim 两个桶时，若两个桶恰好都选中这个 Any unit 当宿主，重映射后仍必须各有独立输出 ID。
+		var plan = SectionalSplitPlanner.Plan([
+			new SectionalSplitSource("aaaa000000000001", "Torso", "Any", 4, PieceType: "Undergarment"),
+			new SectionalSplitSource("aaaa000000000002", "Torso", "Slim", 1, PieceType: "Armor"),
+		]);
+
+		Assert.Equal(2, plan.Targets.Count);
+		Assert.All(plan.Targets, target => Assert.Equal("aaaa000000000001", target.HostUnitId));
+
+		var donorIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var outputIds = SectionalSplitter.AssignOutputUnitIds(plan.Targets, "371c4327e94c", donorIds);
+		var remapped = SectionalSplitter.RemapOutputPlan(plan, outputIds, donorIds);
+
+		Assert.Equal(["371c4327e94c0001", "371c4327e94c0002"], remapped.Targets.Select(t => t.HostUnitId));
+		Assert.Contains(remapped.Groups, g => g.ExclusiveGroup == "Torso/Slim" && g.EnabledByDefault && g.MemberUnitIds.SequenceEqual(["371c4327e94c0001"]));
+		Assert.Contains(remapped.Groups, g => g.ExclusiveGroup == "Torso/Stocky" && g.EnabledByDefault && g.MemberUnitIds.SequenceEqual(["371c4327e94c0002"]));
 	}
 }

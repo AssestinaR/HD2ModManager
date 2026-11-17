@@ -1,3 +1,5 @@
+using HD2ModAdaptation.Analysis;
+using HD2ModAdaptation.PatchReconstruction.UnitMesh;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
 
@@ -137,5 +139,30 @@ public sealed class CustomModelCatalogTests : IDisposable
 		Assert.Empty(catalog.Entries);
 		Assert.Empty(catalog.Unreadable);
 		Assert.True(catalog.IsTrustworthy);
+	}
+
+	[Fact]
+	public void MergeCatalogEntries_MergesPartsFromChildSourcesWithSameArchiveId()
+	{
+		static EquipmentUnitPart Part(ulong fileId, UnitMeshPartKind kind)
+			=> new(
+				new AssetKey(PatchUnitMeshReader.UnitTypeId, fileId),
+				0,
+				1,
+				kind,
+				UnitMeshPartLayer.Armor,
+				UnitMeshBodyVariant.Any,
+				kind.ToString(),
+				100,
+				[]);
+
+		var body = new EquipmentUnitCatalogEntry("85d392768bf6a259", "Armor", "RS-89", [Part(0x1111, UnitMeshPartKind.Torso)]);
+		var coat = new EquipmentUnitCatalogEntry("85d392768bf6a259", "Armor", "RS-89", [Part(0x2222, UnitMeshPartKind.LeftLeg)]);
+		var duplicate = new EquipmentUnitCatalogEntry("85d392768bf6a259", "Armor", "RS-89", [Part(0x1111, UnitMeshPartKind.Torso)]);
+
+		var merged = CustomModelConversionService.MergeCatalogEntries([body, coat, duplicate]);
+
+		var single = Assert.Single(merged);
+		Assert.Equal([0x1111ul, 0x2222ul], single.Parts.Select(part => part.UnitAssetKey.FileId));
 	}
 }

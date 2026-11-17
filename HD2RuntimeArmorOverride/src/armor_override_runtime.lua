@@ -29,6 +29,7 @@ local MAX_BYTES = 4 * 1024 * 1024
 -- 一次写 2000 条会拖住一帧，所以按帧摊开。
 local SET_BUDGET_PER_TICK = 32
 local PROTOCOL_NAME = 'wardrobe.links'
+local SEAF_ROOT_UNIT = '75f7e96af7dcd303'
 
 local function base_directory()
 	local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -55,6 +56,14 @@ local function log(text)
 	end
 end
 
+local playerArmor = PlayerArmorInstances and PlayerArmorInstances.new(sr, log)
+if playerArmor then
+	shutdown = function()
+		playerArmor.configure({})
+		pcall(playerArmor.update)
+	end
+end
+
 local function read()
 	if protocol_path == nil then return nil, 'no ArmorRegistry directory' end
 	local ok, file = pcall(io.open, protocol_path, 'rb')
@@ -68,8 +77,8 @@ end
 
 -- 只解析运行时需要的键。任何格式错误都视为"这一版无效"，保留上一版，绝不半应用。
 local function parse(text)
-	local result = { revision = nil, enabled = true, links = {} }
-	local seen = {}
+	local result = { revision = nil, enabled = true, links = {}, instances = {} }
+	local seen, seenInstance = {}, {}
 	for line in text:gmatch('[^\r\n]+') do
 		local trimmed = line:gsub('^%s+', ''):gsub('%s+$', '')
 		if trimmed ~= '' and trimmed:sub(1, 1) ~= '#' then
@@ -88,15 +97,24 @@ local function parse(text)
 					return nil, 'bad link: ' .. trimmed
 				end
 				local key_text = source:lower()
-				if seen[key_text] == nil then
+				-- 旧协议的 SEAF 别名会使引擎按新键查找原版配套资源，生成士兵时闪退。
+				if key_text ~= SEAF_ROOT_UNIT and seen[key_text] == nil then
 					seen[key_text] = true
 					result.links[#result.links + 1] = { source = key_text, target = target:lower() }
 				end
+			elseif key == 'instance' and PlayerArmorInstances then
+				local instance = PlayerArmorInstances.parse(value)
+				if not instance or seenInstance[instance.carrier] then return nil, 'bad player armour instance' end
+				seenInstance[instance.carrier] = true
+				result.instances[#result.instances + 1] = instance
 			end
 			-- map= 是管理器的意图记录，运行时不需要。
 		end
 	end
 	if result.revision == nil then return nil, 'revision missing' end
+	for carrier in pairs(seenInstance) do
+		if seen[carrier] then return nil, 'player armour conflicts with global link' end
+	end
 	return result
 end
 
@@ -170,6 +188,12 @@ local function poll()
 		return
 	end
 	lastText = text
+	if playerArmor then
+		playerArmor.configure(document.enabled and document.instances or {})
+		if #document.instances > 0 and document.enabled then
+			log(string.format('revision=%s player armour instances=%d', tostring(document.revision), #document.instances))
+		end
+	end
 	if not document.enabled then
 		log(string.format('revision=%s disabled: %d overrides stay active until the game restarts',
 			tostring(document.revision), appliedCount))
@@ -192,6 +216,7 @@ local previousUpdate = rawget(_G, 'update')
 local hiderModule = rawget(_G, 'HD2KitInstanceHider')
 local hiderHook = type(hiderModule) == 'table' and rawget(hiderModule, 'update_hook') or nil
 local chainedHider = (type(previousUpdate) == 'function' and previousUpdate == hiderHook) and previousUpdate or nil
+local lastPlayerArmorError
 
 local function armorUpdate()
 	local okDrain, drainError = pcall(drain)
@@ -205,5 +230,12 @@ end
 
 update = function(...)
 	armorUpdate()
+	if playerArmor then
+		local ok, err = pcall(playerArmor.update)
+		if not ok and err ~= lastPlayerArmorError then
+			log('player armour update failed: ' .. tostring(err))
+		end
+		if ok then lastPlayerArmorError = nil else lastPlayerArmorError = err end
+	end
 	if chainedHider ~= nil then pcall(chainedHider, ...) end
 end

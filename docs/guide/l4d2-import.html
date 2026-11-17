@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>教程 3：导入求生之路 2（L4D2）人物 Mod - HD2ModManager</title>
+  <link rel="stylesheet" href="assets/guide.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="topbar-brand" href="index.html">
+        <span class="brand-mark">HD2</span>
+        <span>HD2ModManager 教程</span>
+      </a>
+      <nav class="topbar-nav" aria-label="教程目录">
+        <a class="nav-pill" href="index.html">目录</a>
+        <a class="nav-pill" href="install-mod.html">教程 1：装普通 Mod</a>
+        <a class="nav-pill" href="body-mapping.html">教程 2：转素体映射</a>
+        <a class="nav-pill is-current" href="l4d2-import.html">教程 3：L4D2 导入</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <article id="l4d2-import"
+             data-verified="1.5.18"
+             data-sources="VpkImportService*;ImportService*;ModDetailsPageView*;ModDetailsPageViewModel.Materials*;ArmorRegistryPageView*;ShellViewModel*">
+
+      <header class="article-header">
+        <div class="article-meta">
+          <span class="badge badge-accent">教程 3</span>
+          <span class="badge">核对版本：v1.5.18</span>
+          <a href="index.html">← 回目录</a>
+        </div>
+        <h1>导入求生之路 2（L4D2）的人物 Mod</h1>
+        <p class="article-lead">把 L4D2 人物包里的 VPK 整理进一个文件夹拖进来，管理器自动转成素体，再映射到 HD2 护甲上。</p>
+      </header>
+
+      <section class="overview-grid" aria-label="适合谁和前提">
+        <div class="card">
+          <h2 class="section-title">适合谁</h2>
+          <p>手里有 L4D2 的人物模型 VPK（含配套换色材质、配件开关包），想把它穿到《绝地潜兵 2》的护甲上。</p>
+        </div>
+        <div class="card">
+          <h2 class="section-title">前提</h2>
+          <ul>
+            <li>已按 <a href="body-mapping.html">教程 2 步骤 1</a> 打开内置 Lua、选好 <span class="ui">映射模式</span>，并建议打开 <span class="ui">低污染模式</span>。</li>
+            <li><strong>先关掉游戏</strong>。第一次导 VPK 时如果还没建游戏资产索引，管理器会自动建一次，稍微多等一会即可。</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="step-pager" aria-label="步骤导航"></div>
+
+      <section class="step" data-step="1" id="step-1">
+        <div class="step-head">
+          <span class="step-num">1</span>
+          <h3>先整理好 VPK 文件（放同一个文件夹）</h3>
+        </div>
+        <div class="step-body">
+          <p>一个 L4D2 人物包里通常会有三种 <code>.vpk</code> 文件，把你要用的<strong>放进同一个文件夹</strong>（或打包进同一个压缩包）：</p>
+          <ul>
+            <li><strong>人物模型 VPK</strong>：人物本体模型（如果包里带了 8 个幸存者，只想装其中 1 个，就只挑那 1 个出来，省得 8 个全转一遍；就算全放进来，管理器也会按“一个角色一条 Mod”自动拆开入库，不会报错）。</li>
+            <li><strong>材质 VPK</strong>（可选）：换颜色/换皮肤用的，放一起导入后会变成这个 Mod 的「材质选项」。</li>
+            <li><strong>组件开关 VPK</strong>（可选，常见名字带“关”）：用来隐藏猫耳、披风等小件，放一起才会生成对应的分件开关。</li>
+          </ul>
+          <figure class="shot"
+                  data-src="img/t3-01.png"
+                  data-alt="整理好的 L4D2 VPK 文件夹"
+                  data-hint="截 Windows 文件夹窗口，拍到同一个文件夹里放着人物模型 VPK + 材质 VPK（+ 可选开关 VPK）。">
+            <a class="pin" style="left:25%;top:22%" data-step="1">人物模型 VPK（只放你想要的角色更省时间）</a>
+            <a class="pin" style="left:25%;top:44%" data-step="2">配套的材质 VPK 和开关 VPK 放进同一个文件夹</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="2" id="step-2">
+        <div class="step-head">
+          <span class="step-num">2</span>
+          <h3>整个文件夹拖进管理器，等它自动转换</h3>
+        </div>
+        <div class="step-body">
+          <p>把整理好的文件夹（或压缩包）<strong>直接拖进管理器窗口</strong>。管理器认出 <code>.vpk</code> 后会自动把来源放进 <span class="ui">模组库</span>，接着自动跑一次转换与重构建（底部或任务提示能看到进度）。</p>
+          <p>跑完后，它在库里就已经是<strong>自定义素体</strong>了，不会替换任何原版护甲——<strong>不要再去点「生成sectional版」</strong>。</p>
+          <figure class="shot"
+                  data-src="img/t3-02.png"
+                  data-alt="拖入 VPK 后在模组库中生成素体条目"
+                  data-hint="截拖入转换完成后的「模组库」列表，拍到新出现的 L4D2 人物 Mod 条目。">
+            <a class="pin" style="left:20%;top:58%" data-step="1">转换完后，人物已经作为素体出现在「模组库」里</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="3" id="step-3">
+        <div class="step-head">
+          <span class="step-num">3</span>
+          <h3>（可选）在详情页开关换色材质与小配件</h3>
+        </div>
+        <div class="step-body">
+          <p>如果你一起放了材质 VPK 或开关包，在 <span class="ui">模组库</span> 里<strong>右键</strong>这个 Mod 打开详情页：</p>
+          <ul>
+            <li>往下翻到 <span class="ui">材质选项</span> 卡片：悬停某一行，点右侧 <span class="ui">启用或停用</span> 按钮就能切换换色/皮肤；多个同时开时，越靠下越优先（点「上移」「下移」或直接拖）。</li>
+            <li>如果带了组件开关包，详情页上方的组件树里也能单独勾选关闭某个小配件。</li>
+          </ul>
+          <figure class="shot"
+                  data-src="img/t3-03.png"
+                  data-alt="Mod 详情页的材质选项卡片"
+                  data-hint="截该 L4D2 Mod 的详情页，拍到「材质选项」卡片以及行悬停时的「启用或停用」按钮。">
+            <a class="pin" style="left:12%;top:68%" data-step="1">在详情页找到「材质选项」卡片</a>
+            <a class="pin" style="left:20%;top:88%" data-step="2">悬停点「启用或停用」切换皮肤，越靠下越优先</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="4" id="step-4">
+        <div class="step-head">
+          <span class="step-num">4</span>
+          <h3>去「护甲映射」挂到目标护甲，点「应用」</h3>
+        </div>
+        <div class="step-body">
+          <p>这一步和 <a href="body-mapping.html#step-3">教程 2 的第 3 步</a> 完全一样：</p>
+          <ol>
+            <li>点顶栏 <span class="ui">护甲映射</span>。</li>
+            <li>左边 <span class="ui">视觉来源</span> 点开刚导入的 L4D2 人物。</li>
+            <li>右边 <span class="ui">可用护甲</span> <strong>推荐直接用 <span class="ui">套装</span></strong>（整套一起映射效果最好），挑一件拖到左边（或点 <strong>+</strong>）。</li>
+            <li>确认右上角 <span class="ui">启用映射</span> 打开，点 <span class="ui">应用</span> 等它自动部署完。</li>
+          </ol>
+          <p>最后点 <span class="ui">启动游戏</span>，换上那件目标护甲就能看到 L4D2 人物了。</p>
+          <figure class="shot"
+                  data-src="img/t3-04.png"
+                  data-alt="护甲映射页中把 L4D2 素体映射到目标护甲"
+                  data-hint="截「护甲映射」页面，拍到左侧选中 L4D2 素体、右侧目标护甲，以及右上角「启用映射」和「应用」。">
+            <a class="pin" style="left:16%;top:25%" data-step="1">左边「视觉来源」点开导入好的 L4D2 人物</a>
+            <a class="pin" style="left:57%;top:22.5%" data-step="2">右边推荐用「套装」挑一件目标拖到左边（或点 +）</a>
+            <a class="pin" style="left:91.5%;top:15%" data-step="3">打开「启用映射」并点「应用」</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="card" id="faq">
+        <h2 class="section-title">常见问题</h2>
+        <div class="faq-item">
+          <p class="faq-q">导入时提示缺少游戏资产索引，或转换全失败？</p>
+          <p class="faq-a">去 <span class="ui">设置 → 游戏与资产</span>，确认 <span class="ui">游戏目录</span> 正确后点一下 <span class="ui">建立 / 重建资产索引</span>，建好再重新拖入一次。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">材质 VPK 放进去了，但进详情页没看到「材质选项」？</p>
+          <p class="faq-a">材质包和人物模型必须<strong>在同一批</strong>拖进来，且材质目录要和人物模型对得上；对不上的材质会被跳过（右上角 <span class="ui">消息</span> 里会写明原因）。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">导进来的 Mod 要不要放进左边「配置页」？</p>
+          <p class="faq-a">只要通过 <span class="ui">护甲映射</span> 挂上了目标护甲并点过 <span class="ui">应用</span>，即使不放进普通配置里也会随映射生效；不过如果开了自动加入活动配置，放着也正常。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">想把这个 L4D2 人物包导出给别的管理器用？</p>
+          <p class="faq-a">进它的详情页，把 <span class="ui">目标护甲</span> 选成具体的游戏护甲并点 <span class="ui">切换</span>，再导出时<strong>勾选 <span class="ui">导出 Overwrite 版</span></strong> 即可（详情见 <a href="body-mapping.html#faq">教程 2 常见问题</a>）。</p>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>上一篇：<a href="body-mapping.html">← 教程 2：转素体 + 映射（低污染）</a></span>
+        <span><a href="index.html">回教程目录 →</a></span>
+      </footer>
+    </article>
+  </main>
+
+  <script src="assets/guide.js"></script>
+</body>
+</html>

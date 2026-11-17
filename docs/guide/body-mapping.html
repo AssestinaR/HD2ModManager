@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>教程 2：转素体 + 护甲映射（低污染） - HD2ModManager</title>
+  <link rel="stylesheet" href="assets/guide.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="topbar-brand" href="index.html">
+        <span class="brand-mark">HD2</span>
+        <span>HD2ModManager 教程</span>
+      </a>
+      <nav class="topbar-nav" aria-label="教程目录">
+        <a class="nav-pill" href="index.html">目录</a>
+        <a class="nav-pill" href="install-mod.html">教程 1：装普通 Mod</a>
+        <a class="nav-pill is-current" href="body-mapping.html">教程 2：转素体映射</a>
+        <a class="nav-pill" href="l4d2-import.html">教程 3：L4D2 导入</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <article id="body-mapping"
+             data-verified="1.5.18"
+             data-sources="SettingsPageView*;ArmorRegistryPageView*;ModDetailsPageView*;ModDetailsPageViewModel.Actions*;CustomModelConversionBottomBar*;ArmorMappingMode*">
+
+      <header class="article-header">
+        <div class="article-meta">
+          <span class="badge badge-accent">教程 2</span>
+          <span class="badge">核对版本：v1.5.18</span>
+          <a href="index.html">← 回目录</a>
+        </div>
+        <h1>把 Mod 转成素体，再映射到你想要的护甲（低污染）</h1>
+        <p class="article-lead">把普通护甲 Mod 拆成空白外观（素体），再穿到你指定的那一件护甲上，尽量不连累别的护甲。</p>
+      </header>
+
+      <section class="overview-grid" aria-label="适合谁和前提">
+        <div class="card">
+          <h2 class="section-title">适合谁</h2>
+          <p>想把某个 Mod 穿到<strong>自己指定的某件护甲</strong>上，而且不希望别的共用部件护甲跟着一起变样（减少<strong>污染</strong>）。</p>
+        </div>
+        <div class="card">
+          <h2 class="section-title">前提</h2>
+          <ul>
+            <li>已经按 <a href="install-mod.html">教程 1</a> 的第 1、2 步把 Mod 导进了 <span class="ui">模组库</span>。</li>
+            <li><strong>先关掉游戏</strong>，避免重编和部署时文件被占用。</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="step-pager" aria-label="步骤导航"></div>
+
+      <section class="step" data-step="1" id="step-1">
+        <div class="step-head">
+          <span class="step-num">1</span>
+          <h3>一次性设置：打开内置 Lua、选映射模式、开低污染</h3>
+        </div>
+        <div class="step-body">
+          <p>点顶栏右上角 <span class="ui">设置</span>，找到 <span class="ui">内置 lua</span> 卡片，按顺序开这三项（设一次就行）：</p>
+          <ol>
+            <li>打开 <span class="ui">启用管理器内置 lua 类功能</span>。</li>
+            <li><span class="ui">映射模式</span> 默认是「关闭」，必须改掉：没装第三方加载器就选 <strong>「独占 boot」</strong>；自己装了外置加载器就选 <strong>「外置加载器兼容」</strong>。</li>
+            <li>打开 <span class="ui">低污染模式</span>（推荐。开着它，只改目标护甲独有部件，共用部件会自动藏掉）。</li>
+          </ol>
+          <div class="callout callout-warn">
+            <strong>注意：</strong>拨开 <span class="ui">低污染模式</span> 当场不会干任何事，它要等到你在护甲映射页点 <span class="ui">应用</span> 时才真正生效；如果 <span class="ui">映射模式</span> 还是「关闭」，开了也无效。
+          </div>
+          <figure class="shot"
+                  data-src="img/t2-01.png"
+                  data-alt="设置页：内置 lua 卡片"
+                  data-hint="截「设置」里的「内置 lua」卡片，拍到「启用管理器内置 lua 类功能」「映射模式」和「低污染模式」。">
+            <a class="pin" style="left:4%;top:64.5%" data-step="1">打开「启用管理器内置 lua 类功能」</a>
+            <a class="pin" style="left:35%;top:72.5%" data-step="2">「映射模式」选「独占 boot」（或「外置加载器兼容」）</a>
+            <a class="pin" style="left:4%;top:92.5%" data-step="3">打开「低污染模式」</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="2" id="step-2">
+        <div class="step-head">
+          <span class="step-num">2</span>
+          <h3>把 Mod 转成素体（点「生成sectional版」）</h3>
+        </div>
+        <div class="step-body">
+          <p>素体就是去掉原版绑定关系的“空白模型包”。</p>
+          <ol>
+            <li>在 <span class="ui">模组库</span> 里<strong>右键</strong>那个 Mod（或点行上的详情按钮），打开它的详情页。</li>
+            <li>点右下角悬浮菜单里的 <span class="ui">生成sectional版</span>。</li>
+            <li>底部弹出输入栏后：填 <span class="ui">名称</span>，选好里面的 <span class="ui">护甲</span> 和 <span class="ui">头盔</span> 来源（只要身体或只要头，另一栏选「不包含」），点 <span class="ui">生成</span>。</li>
+          </ol>
+          <p>生成完会自动作为新条目进到 <span class="ui">模组库</span>，同时自动出现在护甲映射页里。</p>
+          <div class="callout callout-info">
+            <strong>转出来的素体不要再和原版 Mod 一起启用：</strong>以后在左侧 <span class="ui">配置页</span> 里，把原本那个普通 Mod 移出配置（只留它也行，但容易覆盖）。
+          </div>
+          <figure class="shot"
+                  data-src="img/t2-02.png"
+                  data-alt="Mod 详情页：生成sectional版与底栏"
+                  data-hint="截 Mod 详情页弹出底栏后的画面，拍到右下角「生成sectional版」以及底栏里的「名称」「护甲」「头盔」「生成」。">
+            <a class="pin" style="left:28%;top:87.5%" data-step="1">在详情页点「生成sectional版」后，在底栏填「名称」</a>
+            <a class="pin" style="left:54%;top:87.5%" data-step="2">选「护甲」和「头盔」（不要的选「不包含」）</a>
+            <a class="pin" style="left:78.3%;top:87.5%" data-step="3">点「生成」，等它自动入库</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="step" data-step="3" id="step-3">
+        <div class="step-head">
+          <span class="step-num">3</span>
+          <h3>去「护甲映射」指定要替换的目标护甲并应用</h3>
+        </div>
+        <div class="step-body">
+          <p>点顶栏右上角的 <span class="ui">护甲映射</span>：</p>
+          <ol>
+            <li>左边 <span class="ui">视觉来源</span> 列表里，找到刚生成的素体，点它（或点行上的「查看映射目标」按钮）打开它的目标列表。</li>
+            <li>右边 <span class="ui">可用护甲</span> <strong>推荐直接用 <span class="ui">套装</span></strong>（整套一起映射效果最好；只换单件再切 <span class="ui">护甲</span> / <span class="ui">头盔</span>），挑出目标后<strong>从右边拖到左边</strong>（或点行上的 <strong>+</strong>、多选后点底栏 <span class="ui">注册为映射目标</span>）。</li>
+            <li>确认右上角 <span class="ui">启用映射</span> 是打开的，然后点 <span class="ui">应用</span>。</li>
+          </ol>
+          <p>点完 <span class="ui">应用</span> 后，管理器会自动编译素体（开了低污染模式就会在这步压缩）并自动部署到游戏，之后点 <span class="ui">启动游戏</span> 进游戏试穿即可。</p>
+          <figure class="shot"
+                  data-src="img/t2-03.png"
+                  data-alt="护甲映射页：左侧视觉来源、右侧可用护甲、顶部启用映射与应用"
+                  data-hint="截「护甲映射」页面，拍到左上「视觉来源」里选中素体、右上「可用护甲」的选项卡，以及顶部「启用映射」开关和「应用」按钮。">
+            <a class="pin" style="left:15%;top:34%" data-step="1">左边「视觉来源」点开刚生成的素体</a>
+            <a class="pin" style="left:57%;top:22.5%" data-step="2">右边推荐用「套装」挑目标，拖到左边或点 +</a>
+            <a class="pin" style="left:91.5%;top:15%" data-step="3">打开「启用映射」，点「应用」（会自动部署）</a>
+          </figure>
+        </div>
+      </section>
+
+      <section class="card" id="faq">
+        <h2 class="section-title">常见问题</h2>
+        <div class="faq-item">
+          <p class="faq-q">详情页里找不到「生成sectional版」按钮？</p>
+          <p class="faq-a">这个 Mod 本身已经是素体或 VPK 导入出来的，不需要再转，直接去 <span class="ui">护甲映射</span> 页映射就行。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">点「应用」后进游戏还是原版护甲？</p>
+          <p class="faq-a">检查两处：① <span class="ui">设置 → 内置 lua → 映射模式</span> 不能是「关闭」；② <span class="ui">护甲映射</span> 页右上角 <span class="ui">启用映射</span> 要打开，且改动后点过 <span class="ui">应用</span>。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">映射生效了，但其他护甲还是被改坏了（有污染）？</p>
+          <p class="faq-a">检查 <span class="ui">设置 → 内置 lua → 低污染模式</span> 是否打开；如果刚才没开，打开后回 <span class="ui">护甲映射</span> 页再点一次 <span class="ui">应用</span> 才会重新按低污染编译。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">游戏里开了低污染，部分护甲显示“未部署”或灰色不可选？</p>
+          <p class="faq-a">某些特别冷门或共用度太高的目标护甲在低污染模式下不支持单独隐藏，按界面上的提示换另一件目标护甲即可。</p>
+        </div>
+        <div class="faq-item">
+          <p class="faq-q">转成素体后，能导出给别的管理器或手动装吗？</p>
+          <p class="faq-a">可以：① 打开这个素体的详情页，把 <span class="ui">目标护甲</span> 选成<strong>具体的游戏护甲</strong>（别选「自定义素体」），点 <span class="ui">切换</span> 等它编完；② 在列表里点行上的「导出为文件夹结构 zip」；③ 底部弹出栏里<strong>勾选 <span class="ui">导出 Overwrite 版</span></strong> 再点 <span class="ui">导出</span>。导出的 zip 就是标准 <code>.patch_*</code> 包，别的管理器也能直接用（但不带本管理器的低污染隐藏效果）。</p>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>上一篇：<a href="install-mod.html">← 教程 1：装普通 Mod</a></span>
+        <span>下一篇：<a href="l4d2-import.html">教程 3：导入 L4D2 人物 Mod →</a></span>
+      </footer>
+    </article>
+  </main>
+
+  <script src="assets/guide.js"></script>
+</body>
+</html>

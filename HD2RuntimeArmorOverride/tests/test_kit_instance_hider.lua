@@ -1,11 +1,11 @@
--- 离线测试：kit_instance_hider.lua 0.4.3（假引擎，不需要游戏）。
+-- 离线测试：kit_instance_hider.lua 0.4.5（假引擎，不需要游戏）。
 -- 运行：luajit HD2RuntimeArmorOverride/tests/test_kit_instance_hider.lua <src>
 -- 没有 luajit 时：python -I HD2RuntimeArmorOverride/scripts/run_lua_test.py <pylib> <本文件> <src>
 rawset(_G, 'HD2_KIT_HIDER_OFFLINE', true)
 local path = (arg and arg[1]) or 'HD2RuntimeArmorOverride/src/kit_instance_hider.lua'
 local M = dofile(path)
 assert(M.status == 'offline', 'offline guard')
-assert(M.version == '0.4.3', 'version')
+assert(M.version == '0.4.5', 'version')
 
 local MARKER = '82595b5d94c57343'
 local CAPE = 'ea846ef460cc5ba0'
@@ -143,7 +143,10 @@ local function make_stingray(getWorlds)
 					return '[IdString64 "#ID[' .. u.id .. ']" 0x' .. u.id .. ']'
 				end })
 			end,
+			-- 0.4.4：没有场景节点的 unit（u.nodes == 0）读 world_position 会让游戏崩；假引擎里直接报错来守住这一点。
+			num_scene_graph_items = function(u) return u.nodes or 1 end,
 			world_position = function(u, node)
+				assert((u.nodes or 1) >= 1, 'world_position on a unit without scene graph nodes (crashes the game)')
 				assert(node == 1 and u.alive, 'world_position contract')
 				return { u.x, u.y, u.z }
 			end,
@@ -562,6 +565,134 @@ do
 
 	-- 没开 diag_interval（离线默认）就一行 diag 都不写：上面主测试的日志断言因此不受影响。
 	assert(not table.concat(lines):find('"kind":"diag"', 1, true), 'diag off by default')
+end
+
+-- 0.4.4：民主官邻居清单。规则名带 124623533 且锚点已确认时，把锚点 0.6 米内的全部 unit 按 ID 合并写一行 officer_near ----------
+do
+	local FACE = '1111111111111111'      -- 不在任何规则里的邻居：正是我们要找的脸/头发
+	local FAR = '2222222222222222'
+	local NONODE = '3333333333333333'    -- 没有场景节点的 unit：不能读位置，也不会出现在清单里
+	local noNode = unit(NONODE, 0.1, 0, 0)
+	noNode.nodes = 0
+	local units = { unit(MARKER, 0, 0, 0), unit(LEG, 0.2, 0, 0), unit(FACE, 0.3, 0, 0), unit(FACE, 0.31, 0, 0), unit(FAR, 5, 0, 0), noNode }
+	local oclock, olines = 0, {}
+	local function build(name, diag)
+		return M.new({
+			stingray = make_stingray(function() return { { units = units } } end),
+			now = function() return oclock end,
+			cpu = function() return oclock end,
+			write = function(line) olines[#olines + 1] = line end,
+			read_rules = function() return rules_text(1, rule_line(name, '0.3', { MARKER }, {}, { LEG })), nil end,
+			diag_interval = diag,
+		})
+	end
+	local function run(h)
+		for _ = 1, 8 do
+			oclock = oclock + 2
+			for _ = 1, 10 do h.tick() end
+		end
+	end
+
+	run(build('lp-124623533-u', 5))
+	local text = table.concat(olines)
+	assert(text:find('"kind":"officer_near"', 1, true), 'officer_near written: ' .. text)
+	assert(text:find(FACE .. ':2:0.30', 1, true), 'neighbors merge by id with count and nearest distance: ' .. text)
+	assert(text:find(MARKER .. ':1:0.00', 1, true) and text:find(LEG .. ':1:0.20', 1, true), text)
+	assert(not text:find(FAR, 1, true), 'unit 5 m away is not a neighbor: ' .. text)
+	assert(not text:find(NONODE, 1, true), 'unit without scene graph nodes is skipped: ' .. text)
+	local count = 0
+	for _ in text:gmatch('"kind":"officer_near"') do count = count + 1 end
+	assert(count == 1, 'unchanged id set is written once, got ' .. count)
+
+	-- 别的规则名、或没开诊断：不收集、不写
+	olines = {}
+	run(build('some-other-rule', 5))
+	assert(not table.concat(olines):find('officer_near', 1, true), 'other rules: no neighbor dump')
+	olines = {}
+	run(build('lp-124623533-u', nil))
+	assert(not table.concat(olines):find('officer_near', 1, true), 'diag off: no neighbor dump')
+end
+
+-- 0.4.5：女舰长头部清单。女军官根 unit（d87d…）旁边的候选头部 ID 按距离排序写一行 female_heads --------------------------
+do
+	local ROOT = 'd87d04aacbc0269c'
+	local NEAR_HEAD = '7862870bc9822eeb'
+	local FAR_HEAD = '0b52672cc600377f'
+	local NOT_CAND = '1111111111111111'
+	local noNode = unit('46f50507603729f3', 0.1, 0, 0)
+	noNode.nodes = 0                         -- 候选头部但没有场景节点：不能读位置
+	local units = { unit(ROOT, 0, 0, 0), unit(NEAR_HEAD, 0.1, 1.6, 0), unit(FAR_HEAD, 9, 1.6, 0), unit(NOT_CAND, 0, 1.6, 0), noNode }
+	local hclock, hlines = 0, {}
+	local function build(diag)
+		return M.new({
+			stingray = make_stingray(function() return { { units = units } } end),
+			now = function() return hclock end,
+			cpu = function() return hclock end,
+			write = function(line) hlines[#hlines + 1] = line end,
+			read_rules = function() return rules_text(1, rule_line('x', '0.3', { MARKER }, {}, { LEG })), nil end,
+			diag_interval = diag,
+		})
+	end
+	local function run(h)
+		for _ = 1, 6 do
+			hclock = hclock + 2
+			for _ = 1, 10 do h.tick() end
+		end
+	end
+	run(build(5))
+	local text = table.concat(hlines)
+	assert(text:find('"kind":"female_heads"', 1, true), 'female_heads written: ' .. text)
+	local a = text:find(NEAR_HEAD .. ':1:1.60', 1, true)
+	local b = text:find(FAR_HEAD .. ':1:9.', 1, true)
+	assert(a and b and a < b, 'nearest candidate first: ' .. text)
+	assert(not text:find(NOT_CAND .. ':', 1, true), 'non-candidates are not listed: ' .. text)
+	assert(not text:find('46f50507603729f3:', 1, true), 'no scene graph nodes: skipped: ' .. text)
+	local count = 0
+	for _ in text:gmatch('"kind":"female_heads"') do count = count + 1 end
+	assert(count == 1, 'unchanged list is written once, got ' .. count)
+	hlines = {}
+	run(build(nil))
+	assert(not table.concat(hlines):find('female_heads', 1, true), 'diag off: no dump')
+
+	-- 根周围 1.2 米内的全部 unit（按 ID 合并）写 female_near；更远的、没有场景节点的不列
+	local BODY = '4444444444444444'
+	local noBody = unit('5555555555555555', 0.2, 0, 0)
+	noBody.nodes = 0
+	units = { unit(ROOT, 0, 0, 0), unit(BODY, 0.1, 0.5, 0), unit(BODY, 0.2, 0.6, 0), unit(FAR_HEAD, 9, 1.6, 0), noBody }
+	hlines = {}
+	run(build(5))
+	text = table.concat(hlines)
+	assert(text:find('"kind":"female_near"', 1, true), 'female_near written: ' .. text)
+	assert(text:find(BODY .. ':2:0.', 1, true), 'neighbors merge by id: ' .. text)
+	local near = text:match('"kind":"female_near"[^\n]*') or ''
+	assert(not near:find(FAR_HEAD, 1, true) and not near:find('5555555555555555', 1, true), 'far / no-node units skipped: ' .. near)
+
+	-- 玩家身边 3 米内（站在任意 NPC 旁边）：候选头部加 * 排前面，更远的不列
+	local player = unit('avatar', 0, 0, 0)
+	units = { player, unit(NEAR_HEAD, 1, 1.6, 0), unit(BODY, 0.5, 0, 0), unit(FAR_HEAD, 9, 1.6, 0) }
+	local S2 = make_stingray(function() return { { units = units } } end)
+	rawset(S2.World, 'units_by_resource', function(_, res)
+		assert(res == 'content/fac_helldivers/cha_avatar/avatar_helldiver')
+		return { player }
+	end)
+	hlines = {}
+	local h2 = M.new({
+		stingray = S2,
+		now = function() return hclock end,
+		cpu = function() return hclock end,
+		write = function(line) hlines[#hlines + 1] = line end,
+		read_rules = function() return rules_text(1, rule_line('x', '0.3', { MARKER }, {}, { LEG })), nil end,
+		diag_interval = 5,
+	})
+	run(h2)
+	text = table.concat(hlines)
+	local pn = text:match('"kind":"player_near"[^\n]*') or ''
+	assert(pn ~= '', 'player_near written: ' .. text)
+	assert(pn:find('*' .. NEAR_HEAD .. ':1:', 1, true), 'candidate head marked: ' .. pn)
+	assert(pn:find(BODY .. ':1:', 1, true) and not pn:find(FAR_HEAD, 1, true), pn)
+	assert(pn:find('*' .. NEAR_HEAD, 1, true) < pn:find(BODY, 1, true), 'candidates first: ' .. pn)
+	local pnst = text:match('[^\n]*"kind":"player_nearest"[^\n]*') or ''
+	assert(pnst:find('"head":"' .. NEAR_HEAD .. '"', 1, true) and pnst:find('"distance":"1.', 1, true), 'nearest candidate logged: ' .. pnst)
 end
 
 -- 0.4.1：任务里主世界超过 8192 个 unit，玩家的部件排在最后也要扫到（旧上限 8192 会整个漏掉）----------

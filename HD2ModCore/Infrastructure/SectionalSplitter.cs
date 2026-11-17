@@ -93,6 +93,66 @@ public static class SectionalSplitter
 		return Convert.ToHexString(hash[..6]).ToLowerInvariant();
 	}
 
+	internal static string[] AssignOutputUnitIds(
+		IReadOnlyList<SectionalSplitTarget> targets,
+		string? normalizedPrefix,
+		HashSet<string>? donorIds = null)
+	{
+		var outputUnitIds = new string[targets.Count];
+		var ordinal = 0;
+		for (var targetIndex = 0; targetIndex < targets.Count; targetIndex++)
+		{
+			var target = targets[targetIndex];
+			if (donorIds is not null)
+			{
+				foreach (var donor in target.DonorUnitIds)
+					donorIds.Add(donor);
+			}
+
+			outputUnitIds[targetIndex] = normalizedPrefix is not null
+				? $"{normalizedPrefix}{++ordinal:x4}"
+				: target.HostUnitId;
+		}
+
+		return outputUnitIds;
+	}
+
+	internal static SectionalSplitPlan RemapOutputPlan(
+		SectionalSplitPlan plan,
+		IReadOnlyList<string> outputUnitIds,
+		IReadOnlySet<string> donorIds)
+	{
+		var outputByBucketAndHost = new Dictionary<(string Bucket, string HostUnitId), string>();
+		var hostToOutput = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		for (var targetIndex = 0; targetIndex < plan.Targets.Count; targetIndex++)
+		{
+			var target = plan.Targets[targetIndex];
+			var mapped = outputUnitIds[targetIndex];
+			outputByBucketAndHost[($"{target.Slot}/{target.BodyType}", target.HostUnitId)] = mapped;
+			hostToOutput.TryAdd(target.HostUnitId, mapped);
+		}
+
+		return plan with
+		{
+			Targets = plan.Targets
+				.Select((target, targetIndex) => target with { HostUnitId = outputUnitIds[targetIndex] })
+				.ToArray(),
+			Groups = plan.Groups
+				.Select(group => group with
+				{
+					MemberUnitIds = group.MemberUnitIds
+						.Select(id => !donorIds.Contains(id)
+							&& ((group.ExclusiveGroup is not null
+									&& outputByBucketAndHost.TryGetValue((group.ExclusiveGroup, id), out var bucketMapped))
+								|| hostToOutput.TryGetValue(id, out bucketMapped))
+							? bucketMapped
+							: id)
+						.ToArray(),
+				})
+				.ToArray(),
+		};
+	}
+
 	private static string? NormalizeUnitIdPrefix(string? outputUnitIdPrefix)
 	{
 		if (string.IsNullOrWhiteSpace(outputUnitIdPrefix))
@@ -168,7 +228,8 @@ public static class SectionalSplitter
 		CancellationToken cancellationToken = default,
 		IReadOnlyDictionary<string, SectionalSourceUnitIntent>? unitIntents = null,
 		IReadOnlyDictionary<string, string>? unitSourceNames = null,
-		string? outputUnitIdPrefix = null)
+		string? outputUnitIdPrefix = null,
+		IReadOnlyDictionary<string, string>? patchSourceNames = null)
 	{
 		ArgumentException.ThrowIfNullOrWhiteSpace(sourcePatchOrDirectory);
 		ArgumentException.ThrowIfNullOrWhiteSpace(gameDataDirectory);
@@ -192,7 +253,9 @@ public static class SectionalSplitter
 
 		// 只有真的要合并时才去读头像骨架：一个"7 个 unit 各自占一个槽"的产物不需要它，
 		// 而读骨架要开游戏 data，是个不该被无条件付出的成本。
-		var needsMerge = plan.Targets.Any(target => target.DonorUnitIds.Count != 0);
+		var needsMerge = plan.Targets.Any(target =>
+			target.DonorUnitIds.Count != 0
+			|| (sources.Copies.TryGetValue(target.HostUnitId, out var hostCopies) && hostCopies.Count > 1));
 		var avatar = needsMerge
 			? await new CanonicalAvatarRigReader(new AdaptationGameDataPackageResolver(gameDataDirectory))
 				.ReadTransformInfoAsync(cancellationToken: cancellationToken)
@@ -203,52 +266,59 @@ public static class SectionalSplitter
 		var session = new CanonicalPatchSession();
 		var originsByTarget = new Dictionary<string, IReadOnlyList<CanonicalAppendedSection>>(StringComparer.Ordinal);
 		var donorIds = new HashSet<string>(StringComparer.Ordinal);
-		var hostToOutput = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		var ordinal = 0;
-		foreach (var target in plan.Targets)
-		{
-			foreach (var donor in target.DonorUnitIds)
-				donorIds.Add(donor);
-			hostToOutput[target.HostUnitId] = normalizedPrefix is not null
-				? $"{normalizedPrefix}{++ordinal:x4}"
-				: target.HostUnitId;
-		}
-
+		var outputUnitIds = AssignOutputUnitIds(plan.Targets, normalizedPrefix, donorIds);
 		var effectivePlan = normalizedPrefix is null
 			? plan
-			: plan with
-			{
-				Targets = plan.Targets
-					.Select(target => target with { HostUnitId = hostToOutput[target.HostUnitId] })
-					.ToArray(),
-				Groups = plan.Groups
-					.Select(group => group with
-					{
-						MemberUnitIds = group.MemberUnitIds
-							.Select(id => !donorIds.Contains(id) && hostToOutput.TryGetValue(id, out var mapped) ? mapped : id)
-							.ToArray(),
-					})
-					.ToArray(),
-			};
+			: RemapOutputPlan(plan, outputUnitIds, donorIds);
 
-		// 段来源：谁贡献了哪一段。名字由调用方给（unit id → 来源条目名），它才知道每个 unit 来自哪份来源。
+		// 段来源：谁贡献了哪一段。优先按来源 patch 文件名查（同一 unit 被多个子级各自修改时，
+		// 每份拷贝有不同的来源文件），查不到再按 unit id → 来源条目名兜底。
 		var ownSourceByTarget = new Dictionary<string, string>(StringComparer.Ordinal);
 		var inputSourcesByTarget = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyList<string>>>(StringComparer.Ordinal);
 		var sourceNameOf = BuildSourceNameResolver(unitSourceNames);
-		var presentSources = new List<string>();
-
-		foreach (var target in plan.Targets)
+		string ResolveSourceName(PatchUnitMesh mesh)
 		{
-			AddUnique(presentSources, sourceNameOf(target.HostUnitId));
-			foreach (var donorId in target.DonorUnitIds)
-				AddUnique(presentSources, sourceNameOf(donorId));
+			var patchFile = Path.GetFileName(mesh.Entry.SourceFilePath);
+			if (patchSourceNames is not null
+				&& !string.IsNullOrWhiteSpace(patchFile)
+				&& patchSourceNames.TryGetValue(patchFile, out var byPatch)
+				&& !string.IsNullOrWhiteSpace(byPatch))
+			{
+				return byPatch.Trim();
+			}
+
+			return sourceNameOf(mesh.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture));
+		}
+
+		var presentSources = new List<string>();
+		void AddUnitSources(string unitId)
+		{
+			if (sources.Copies.TryGetValue(unitId, out var unitCopies) && unitCopies.Count != 0)
+			{
+				foreach (var copy in unitCopies)
+					AddUnique(presentSources, ResolveSourceName(copy));
+				return;
+			}
+
+			if (sources.Units.TryGetValue(unitId, out var unitMesh))
+				AddUnique(presentSources, ResolveSourceName(unitMesh));
+			else
+				AddUnique(presentSources, sourceNameOf(unitId));
 		}
 
 		foreach (var target in plan.Targets)
 		{
+			AddUnitSources(target.HostUnitId);
+			foreach (var donorId in target.DonorUnitIds)
+				AddUnitSources(donorId);
+		}
+
+		for (var targetIndex = 0; targetIndex < plan.Targets.Count; targetIndex++)
+		{
+			var target = plan.Targets[targetIndex];
 			cancellationToken.ThrowIfCancellationRequested();
 			var host = sources.Units[target.HostUnitId];
-			var outputUnitId = hostToOutput[target.HostUnitId];
+			var outputUnitId = outputUnitIds[targetIndex];
 			var outputAssetKey = normalizedPrefix is not null
 				? new AdaptationAssetKey(PatchUnitMeshReader.UnitTypeId, ulong.Parse(outputUnitId, NumberStyles.HexNumber, CultureInfo.InvariantCulture))
 				: host.Entry.AssetKey;
@@ -260,7 +330,7 @@ public static class SectionalSplitter
 				continue;
 			}
 
-			ownSourceByTarget[outputUnitId] = sourceNameOf(target.HostUnitId);
+			ownSourceByTarget[outputUnitId] = ResolveSourceName(host);
 
 			// **所有来源、所有层、所有拷贝全部并进这个 unit**（不是"后者赢"）。
 			// 系列里装饰子级各自带同一 unit 的另一份几何，缺一份就是丢内容。
@@ -305,7 +375,7 @@ public static class SectionalSplitter
 					inputs.Add(new CanonicalDecorationAppendInput(
 						UnitLodFamilySource.CreateFragment(donor, donorMesh.Value.Mesh, donorMesh.Value.Raw),
 						MaterialNamespace(donor.Entry.AssetKey.FileId)));
-					inputSources.Add(sourceNameOf(donor.Entry.AssetKey.FileId.ToString("x16", CultureInfo.InvariantCulture)));
+					inputSources.Add(ResolveSourceName(donor));
 				}
 
 				if (inputs.Count != 0)
@@ -410,9 +480,10 @@ public static class SectionalSplitter
 		// 身份必须**由计划来**：来源 unit 自己不带 customization（实测整批都是空串），
 		// 只读字节的话组件树、换甲编译、rekey 三处都会把它们当成"认不出部位"。
 		var documented = WardrobeSectionMapFile.ApplyUnitIdentities(sections.Document, BuildUnitIdentities(effectivePlan));
-		// 有来源名 ⇒ 按「一个来源一个组」建组表：那才是用户认得的部件名（大衣/尾巴/丝袜…）。
-		// 没有来源名（CLI 直接拆单个模型）⇒ 退回按槽位分组，那条路上没有"部件来源"可言。
-		var groups = unitSourceNames is { Count: > 0 }
+		// 多个来源 ⇒ 按「一个来源一个组」建组表：那才是用户认得的部件名（大衣/尾巴/丝袜…）。
+		// 单来源但拆出多个部位/部件组 ⇒ 按槽位与附加部件分组，避免只有一个总开关组导致无法单独开关部件。
+		var hasSourceNames = unitSourceNames is { Count: > 0 } || patchSourceNames is { Count: > 0 };
+		var groups = hasSourceNames && (presentSources.Count > 1 || effectivePlan.Groups.Count <= 1)
 			? BuildSourceGroups(
 				effectivePlan,
 				originsByTarget,

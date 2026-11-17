@@ -1,10 +1,12 @@
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Diagnostics;
 
 namespace HD2ModManager.Services
 {
@@ -305,9 +307,9 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
-        /// 上次 <see cref="GetArmorMappingMode"/> 是否把存档里的旧口径翻译成了新口径。
-        /// 只用来决定"要不要在启动时告诉用户一声"，不参与任何决策——实际生效模式永远是
-        /// <see cref="LuaDeploymentService.MappingMode"/>。
+        /// 上次 <see cref="GetArmorMappingMode"/> 是否遇到旧口径「真映射」存档。
+        /// 只有旧档确实是真映射（现已停用并落到「关闭」）时才需要在启动时告诉用户一声；
+        /// 旧档的独占 boot / 外置加载器兼容在换算后语义不变，不弹窗打扰。
         /// </summary>
         public static bool LastMappingModeWasMigrated { get; private set; }
 
@@ -329,8 +331,7 @@ namespace HD2ModManager.Services
                     // 悄悄变成"关闭"。
                     var schema = model.MappingModeSchema ?? 0;
                     mode = ArmorMappingModes.MigrateStoredValue(stored, schema);
-                    LastMappingModeWasMigrated = schema < ArmorMappingModes.CurrentSchema
-                        && stored != (int)mode;
+                    LastMappingModeWasMigrated = ArmorMappingModes.WasLegacyTrueMapping(stored, schema);
                 }
                 else
                 {
@@ -534,7 +535,7 @@ namespace HD2ModManager.Services
             return interval is 0 or 6 or 24 or 168 ? interval : 24;
         }
 
-        private static void Save(SettingsModel model)
+        private static void Save(SettingsModel model, [CallerMemberName] string source = "")
         {
             lock (SettingsGate)
             {
@@ -548,9 +549,10 @@ namespace HD2ModManager.Services
                     TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default).Unwrap();
             }
+            RecordDiagnosticChange(source);
         }
 
-        private static void Update(Action<SettingsModel> update)
+        private static void Update(Action<SettingsModel> update, [CallerMemberName] string source = "")
         {
             lock (SettingsGate)
             {
@@ -564,6 +566,47 @@ namespace HD2ModManager.Services
                     CancellationToken.None,
                     TaskContinuationOptions.ExecuteSynchronously,
                     TaskScheduler.Default).Unwrap();
+            }
+            RecordDiagnosticChange(source);
+        }
+
+        private static void RecordDiagnosticChange(string source)
+        {
+            if (source is nameof(SetGameDataFolder) or nameof(SetModLibraryFolder) or nameof(SetHeadScale)
+                or nameof(SetAutoImportToActiveProfile) or nameof(SetBuiltInLuaEnabled) or nameof(SetArmorMappingMode)
+                or nameof(SetPhysicsMode) or nameof(SetLowPollutionMode) or nameof(SetDefaultExportPath)
+                or nameof(SetAutoUpdateAssetMetadata) or nameof(SetAssetMetadataRepository) or nameof(SetAutoCheckGameDataIndex))
+                DiagnosticOperations.Journal.Record(DiagnosticAction.ChangeSettings, DiagnosticResult.Completed, code: source);
+        }
+
+        internal static DiagnosticSettings CaptureDiagnosticSettings()
+        {
+            lock (SettingsGate)
+            {
+                var model = _cachedSettings;
+                return new DiagnosticSettings(model?.GameDataFolder, model?.DefaultExportPath, new
+                {
+                    loadedSettings = model is not null,
+                    settingsWriteState = _pendingSave.Status.ToString(),
+                    builtInLua = LuaDeploymentService.BuiltInLuaEnabled,
+                    mappingMode = LuaDeploymentService.EffectiveMappingMode,
+                    mappingModeSchema = model?.MappingModeSchema,
+                    LastMappingModeWasMigrated,
+                    physicsMode = LuaDeploymentService.EffectivePhysicsMode,
+                    lowPollutionConfigured = model?.LowPollutionMode ?? false,
+                    lowPollutionEffective = LuaDeploymentService.BuiltInLuaEnabled && (model?.LowPollutionMode ?? false),
+                    headScale = VpkRebuildService.HeadScale ?? DefaultHeadScale,
+                    autoImportToActiveProfile = model?.AutoImportToActiveProfile ?? true,
+                    autoUpdateAssetMetadata = model?.AutoUpdateAssetMetadata ?? false,
+                    customAssetMetadataRepository = !string.IsNullOrWhiteSpace(model?.AssetMetadataRepository)
+                        && !string.Equals(model.AssetMetadataRepository, DefaultAssetMetadataRepository, StringComparison.Ordinal),
+                    autoCheckGameDataIndex = model?.AutoCheckGameDataIndex ?? true,
+                    assetMetadataCheckIntervalHours = NormalizeInterval(model?.AssetMetadataCheckIntervalHours),
+                    gameDataIndexCheckIntervalHours = NormalizeInterval(model?.GameDataIndexCheckIntervalHours),
+                    lastAssetMetadataCheckUtc = model?.LastAssetMetadataCheckUtc,
+                    lastGameDataIndexCheckUtc = model?.LastGameDataIndexCheckUtc,
+                    culture = System.Globalization.CultureInfo.CurrentUICulture.Name,
+                });
             }
         }
 

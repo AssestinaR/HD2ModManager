@@ -51,6 +51,12 @@ public sealed class BuiltInLuaGatingTests
 		Assert.Equal(ArmorMappingMode.Off, ArmorMappingModes.MigrateStoredValue(0, ArmorMappingModes.CurrentSchema));
 		Assert.Equal(ArmorMappingMode.ExclusiveLuaEntry, ArmorMappingModes.MigrateStoredValue(1, ArmorMappingModes.CurrentSchema));
 		Assert.Equal(ArmorMappingMode.ExternalLuaEntry, ArmorMappingModes.MigrateStoredValue(2, ArmorMappingModes.CurrentSchema));
+
+		// 只有旧口径的真映射（>=2）才需要弹窗提示；旧的独占/外置语义未变，不弹窗。
+		Assert.False(ArmorMappingModes.WasLegacyTrueMapping(0, schema: 0));
+		Assert.False(ArmorMappingModes.WasLegacyTrueMapping(1, schema: 0));
+		Assert.True(ArmorMappingModes.WasLegacyTrueMapping(2, schema: 0));
+		Assert.False(ArmorMappingModes.WasLegacyTrueMapping(2, ArmorMappingModes.CurrentSchema));
 	}
 
 	[Fact]

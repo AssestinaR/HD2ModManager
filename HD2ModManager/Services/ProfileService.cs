@@ -1,5 +1,6 @@
 using HD2ModCore.Domain;
 using HD2ModCore.Infrastructure;
+using HD2ModCore.Infrastructure.Diagnostics;
 
 namespace HD2ModManager.Services
 {
@@ -170,13 +171,16 @@ namespace HD2ModManager.Services
             return Task.Run(() => ActivateSelectedAsync()).GetAwaiter().GetResult();
         }
 
-        public async Task<bool> ActivateSelectedAsync(CancellationToken cancellationToken = default)
+        public async Task<bool> ActivateSelectedAsync(CancellationToken cancellationToken = default, bool isAutomatic = false)
         {
             await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 if (SelectedProfileId is not ProfileId profileId) return false;
+                using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.ActivateProfile,
+                    isAutomatic ? DiagnosticTrigger.Automatic : DiagnosticTrigger.User, profile: profileId.Value, cancellationToken: cancellationToken);
                 _snapshot = await _manager.SetActiveProfileAsync(profileId, cancellationToken).ConfigureAwait(false);
+                diagnostic.Finish(DiagnosticResult.Completed, targetRevision: ActiveProfile?.Revision);
             Interlocked.Increment(ref _stateVersion);
             ActiveProfileDeploymentRequired?.Invoke(this, EventArgs.Empty);
             Changed?.Invoke(this, EventArgs.Empty);
@@ -195,8 +199,11 @@ namespace HD2ModManager.Services
             await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (_snapshot.ActiveProfileId is null) return false;
+                if (_snapshot.ActiveProfileId is not { } profileId) return false;
+                using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.DeactivateProfile,
+                    profile: profileId.Value, cancellationToken: cancellationToken);
                 _snapshot = await _manager.SetActiveProfileAsync(null, cancellationToken).ConfigureAwait(false);
+                diagnostic.Finish(DiagnosticResult.Completed);
             Interlocked.Increment(ref _stateVersion);
             ActiveProfileDeactivationRequired?.Invoke(this, EventArgs.Empty);
             Changed?.Invoke(this, EventArgs.Empty);
@@ -262,12 +269,15 @@ namespace HD2ModManager.Services
             try
             {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.AddMod, profile: profileId.Value,
+                mod: nodeId.Value, cancellationToken: cancellationToken);
             var operationVersion = Interlocked.Increment(ref _stateVersion);
             var snapshot = await Task.Run(
                 () => _manager.AddProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(),
                 cancellationToken).ConfigureAwait(false);
             // 提交内存快照必须在写门内直接完成；绝不能在持门时等待 UI Dispatcher。
             ApplyAddedProfileSnapshot(snapshot, profileId, operationVersion);
+            diagnostic.Finish(DiagnosticResult.Completed, targetRevision: RevisionOf(profileId));
             return true;
             }
             finally { _writeGate.Release(); }
@@ -294,9 +304,11 @@ namespace HD2ModManager.Services
                 var added = nodeIds.Count(nodeId => !existing.Contains(nodeId));
                 if (added == 0) return 0;
 
+                using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.AddMod, profile: profileId.Value, cancellationToken: cancellationToken);
                 var operationVersion = Interlocked.Increment(ref _stateVersion);
                 var snapshot = await _manager.AddProfileEntriesAsync(profileId, nodeIds, cancellationToken).ConfigureAwait(false);
                 ApplyAddedProfileSnapshot(snapshot, profileId, operationVersion);
+                diagnostic.Finish(DiagnosticResult.Completed, count: added, targetRevision: RevisionOf(profileId));
                 return added;
             }
             finally { _writeGate.Release(); }
@@ -319,9 +331,12 @@ namespace HD2ModManager.Services
                 var existing = _snapshot.Profiles.FirstOrDefault(profile => profile.Id == profileId)?.Entries.Select(entry => entry.NodeId).ToHashSet() ?? [];
                 var added = nodeIds.Count(nodeId => !existing.Contains(nodeId));
                 if (added == 0) return 0;
+                using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.AddMod, DiagnosticTrigger.Automatic,
+                    profile: profileId.Value, cancellationToken: cancellationToken);
                 var operationVersion = Interlocked.Increment(ref _stateVersion);
                 var snapshot = await _manager.AddProfileEntriesAsync(profileId, nodeIds, cancellationToken).ConfigureAwait(false);
                 ApplyAddedProfileSnapshot(snapshot, profileId, operationVersion);
+                diagnostic.Finish(DiagnosticResult.Completed, count: added, targetRevision: RevisionOf(profileId));
                 return added;
             }
             finally { _writeGate.Release(); }
@@ -333,7 +348,9 @@ namespace HD2ModManager.Services
             try
             {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.RemoveMod, profile: profileId.Value, mod: nodeId.Value);
             _snapshot = _manager.RemoveProfileEntryAsync(profileId, nodeId).AsTask().GetAwaiter().GetResult();
+            diagnostic.Finish(DiagnosticResult.Completed, targetRevision: RevisionOf(profileId));
             Interlocked.Increment(ref _stateVersion);
             RebuildIndex();
             NotifyIfActive(profileId);
@@ -349,11 +366,14 @@ namespace HD2ModManager.Services
             try
             {
             if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+            using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.RemoveMod, profile: profileId.Value,
+                mod: nodeId.Value, cancellationToken: cancellationToken);
             var operationVersion = Interlocked.Increment(ref _stateVersion);
             var snapshot = await Task.Run(
                 () => _manager.RemoveProfileEntryAsync(profileId, nodeId, cancellationToken).AsTask(),
                 cancellationToken).ConfigureAwait(false);
             ApplyAddedProfileSnapshot(snapshot, profileId, operationVersion);
+            diagnostic.Finish(DiagnosticResult.Completed, targetRevision: RevisionOf(profileId));
             return true;
             }
             finally { _writeGate.Release(); }
@@ -374,6 +394,7 @@ namespace HD2ModManager.Services
                 .ToHashSet() ?? [];
             var removed = nodeIds.Count(existing.Contains);
             if (removed == 0) return 0;
+            using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.RemoveMod, profile: profileId.Value, cancellationToken: cancellationToken);
             var operationVersion = Interlocked.Increment(ref _stateVersion);
             var snapshot = await _manager.RemoveProfileEntriesAsync(profileId, nodeIds, cancellationToken).ConfigureAwait(false);
 
@@ -387,6 +408,7 @@ namespace HD2ModManager.Services
             };
             // 写门内完成快照提交，不把 Dispatcher 当作提交锁的一部分。
             apply();
+            diagnostic.Finish(DiagnosticResult.Completed, count: removed, targetRevision: RevisionOf(profileId));
             return removed;
             }
             finally { _writeGate.Release(); }
@@ -403,7 +425,10 @@ namespace HD2ModManager.Services
             try
             {
                 if (SelectedProfileId is not ProfileId profileId || !TryParseNodeId(nodeGuid, out var nodeId)) return false;
+                using var diagnostic = DiagnosticOperations.Begin(DiagnosticAction.ReorderMods, profile: profileId.Value,
+                    mod: nodeId.Value, cancellationToken: cancellationToken);
                 _snapshot = await _manager.MoveProfileEntryAsync(profileId, nodeId, direction, cancellationToken).ConfigureAwait(false);
+                diagnostic.Finish(DiagnosticResult.Completed, targetRevision: RevisionOf(profileId));
             Interlocked.Increment(ref _stateVersion);
             RebuildIndex();
             NotifyIfActive(profileId);
@@ -429,6 +454,8 @@ namespace HD2ModManager.Services
                     return existing is null ? new ProfileEntry(id, index) : existing with { LoadOrder = index };
                 }).ToList();
                 _snapshot = _manager.UpsertProfileAsync(profile with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(profile.Revision + 1) }).AsTask().GetAwaiter().GetResult();
+                DiagnosticOperations.Journal.Record(DiagnosticAction.ReorderMods, DiagnosticResult.Completed, DiagnosticTrigger.User,
+                    profile: profileId.Value, revision: RevisionOf(profileId), count: entries.Count);
                 Interlocked.Increment(ref _stateVersion);
                 RebuildIndex();
                 NotifyIfActive(profileId);
@@ -453,6 +480,8 @@ namespace HD2ModManager.Services
                     return existing is null ? new ProfileEntry(id, index) : existing with { LoadOrder = index };
                 }).ToList();
                 _snapshot = await _manager.UpsertProfileAsync(profile with { Entries = entries, ModifiedUtc = DateTimeOffset.UtcNow, Revision = checked(profile.Revision + 1) }, cancellationToken).ConfigureAwait(false);
+                DiagnosticOperations.Journal.Record(DiagnosticAction.ReorderMods, DiagnosticResult.Completed, DiagnosticTrigger.User,
+                    profile: profileId.Value, revision: RevisionOf(profileId), count: entries.Count);
                 Interlocked.Increment(ref _stateVersion);
                 RebuildIndex();
                 NotifyIfActive(profileId);
@@ -461,6 +490,8 @@ namespace HD2ModManager.Services
             }
             finally { _writeGate.Release(); }
         }
+
+        private long? RevisionOf(ProfileId id) => _snapshot.Profiles.FirstOrDefault(profile => profile.Id == id)?.Revision;
 
         public IReadOnlyList<ProfileEntry> GetSortedEntries(Profile profile)
         {

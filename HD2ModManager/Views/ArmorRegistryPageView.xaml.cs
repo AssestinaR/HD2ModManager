@@ -76,6 +76,12 @@ public partial class ArmorRegistryPageView : UserControl, IModRelationshipDropTa
 			viewModel.ApplyAvailableSelection(e.SelectedKeys);
 	}
 
+	private void OnAvailableRowClicked(object? sender, ModListRowEventArgs e)
+	{
+		if (DataContext is ArmorRegistryPageViewModel { IsMappedTabSelected: true } viewModel)
+			viewModel.NavigateToMappedProvider(e.Item as RuntimeArmorChoiceViewModel);
+	}
+
 	private void OnAvailableRowActionInvoked(object? sender, ModListRowActionEventArgs e)
 	{
 		if (e.Action == ModListRowAction.ArmorAssign

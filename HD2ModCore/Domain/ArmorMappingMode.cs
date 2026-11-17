@@ -107,6 +107,10 @@ public static class ArmorMappingModes
 		};
 	}
 
+	/// <summary>旧存档是否处于已停用的「真映射」档位（只有这种情况需要在启动时弹窗告知）。</summary>
+	public static bool WasLegacyTrueMapping(int stored, int schema)
+		=> schema < CurrentSchema && stored >= 2;
+
 	/// <summary>
 	/// 当前设置的存储口径版本。改枚举数值时必须加一，否则旧档会被当新档读。
 	/// </summary>
