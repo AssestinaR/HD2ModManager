@@ -1716,9 +1716,13 @@ namespace HD2ModManager.ViewModels
             if (IsMessagePanelOpen) CloseMessagePanel(); else OpenMessagePanel();
         }
 
-        private static void CopyMessage(object? value)
+        private void CopyMessage(object? value)
         {
-            if (value is MessageCenterItem item && !string.IsNullOrWhiteSpace(item.CopyText)) System.Windows.Clipboard.SetText(item.CopyText);
+            if (value is not MessageCenterItem item || string.IsNullOrWhiteSpace(item.CopyText)) return;
+            if (!ClipboardService.TrySetText(item.CopyText))
+            {
+                _notificationService.Show("复制失败：剪贴板正被其他程序占用，请稍后重试。", NotificationLevel.Warning, TimeSpan.FromSeconds(4));
+            }
         }
 
         private void RefreshNonListPagesAfterLibrarySnapshot()

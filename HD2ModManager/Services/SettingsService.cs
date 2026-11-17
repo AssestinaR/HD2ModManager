@@ -307,9 +307,9 @@ namespace HD2ModManager.Services
         }
 
         /// <summary>
-        /// 上次 <see cref="GetArmorMappingMode"/> 是否把存档里的旧口径翻译成了新口径。
-        /// 只用来决定"要不要在启动时告诉用户一声"，不参与任何决策——实际生效模式永远是
-        /// <see cref="LuaDeploymentService.MappingMode"/>。
+        /// 上次 <see cref="GetArmorMappingMode"/> 是否遇到旧口径「真映射」存档。
+        /// 只有旧档确实是真映射（现已停用并落到「关闭」）时才需要在启动时告诉用户一声；
+        /// 旧档的独占 boot / 外置加载器兼容在换算后语义不变，不弹窗打扰。
         /// </summary>
         public static bool LastMappingModeWasMigrated { get; private set; }
 

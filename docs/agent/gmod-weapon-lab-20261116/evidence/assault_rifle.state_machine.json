@@ -1,0 +1,535 @@
+{
+    "unk00": 3,
+    "layers": [
+        {
+            "magic": 300,
+            "default_state": 3,
+            "states": [
+                {
+                    "name": "base/fire",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/fire"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "ammocheck": {
+                            "index": 4,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "fire": {
+                            "index": 0,
+                            "blend_time": 0,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload": {
+                            "index": 1,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_done": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_fast": {
+                            "index": 2,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reset": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000"
+                    ],
+                    "emit_end_event": "0xe62afefc",
+                    "blend_set_mask_index": -1,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                },
+                {
+                    "name": "base/reload",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/reload"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "ammocheck": {
+                            "index": 4,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "fire": {
+                            "index": 0,
+                            "blend_time": 0,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload": {
+                            "index": 1,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_done": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_fast": {
+                            "index": 2,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reset": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000"
+                    ],
+                    "emit_end_event": "reload_done",
+                    "end_transition_time": 0.05,
+                    "blend_set_mask_index": -1,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                },
+                {
+                    "name": "base/reload_fast",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/reload_fast"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "ammocheck": {
+                            "index": 4,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "fire": {
+                            "index": 0,
+                            "blend_time": 0,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload": {
+                            "index": 1,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_done": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_fast": {
+                            "index": 2,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reset": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000"
+                    ],
+                    "emit_end_event": "reload_done",
+                    "end_transition_time": 0.05,
+                    "blend_set_mask_index": -1,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                },
+                {
+                    "name": "base/Idle",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/idle"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": true,
+                    "additive": false,
+                    "state_transitions": {
+                        "ammocheck": {
+                            "index": 4,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "fire": {
+                            "index": 0,
+                            "blend_time": 0,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload": {
+                            "index": 1,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_done": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_fast": {
+                            "index": 2,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reset": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "0.000"
+                    ],
+                    "blend_set_mask_index": -1,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                },
+                {
+                    "name": "base/ammocheck",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/ammocheck"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "ammocheck": {
+                            "index": 4,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "ammocheck_done": {
+                            "index": 3,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "fire": {
+                            "index": 0,
+                            "blend_time": 0,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload": {
+                            "index": 1,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_done": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reload_fast": {
+                            "index": 2,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "reset": {
+                            "index": 3,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000"
+                    ],
+                    "emit_end_event": "ammocheck_done",
+                    "end_transition_time": 0.1,
+                    "blend_set_mask_index": -1,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                }
+            ]
+        },
+        {
+            "magic": 300,
+            "default_state": 1,
+            "states": [
+                {
+                    "name": "Safe",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/fire_selector_safe"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "draw": {
+                            "index": 1,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000"
+                    ],
+                    "blend_set_mask_index": 1,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                },
+                {
+                    "name": "Fire_Selector",
+                    "type": "StateType_Blend",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/fire_selector_semi",
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/fire_selector_burst",
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/fire_selector_fullauto"
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "holster": {
+                            "index": 0,
+                            "blend_time": 0.1,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000",
+                        "match_range(animation_variables[0], -1.000, 1.000, 2.000)",
+                        "match_range(animation_variables[0], 1.000, 2.000, 3.000)",
+                        "match_range(animation_variables[0], 2.000, 3.000, 10.000)"
+                    ],
+                    "blend_set_mask_index": 1,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                }
+            ]
+        },
+        {
+            "magic": 300,
+            "default_state": 0,
+            "states": [
+                {
+                    "name": "eject_cover_close",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/eject_cover_close"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "fire": {
+                            "index": 1,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        },
+                        "open": {
+                            "index": 1,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000"
+                    ],
+                    "blend_set_mask_index": 0,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                },
+                {
+                    "name": "eject_cover_open",
+                    "type": "StateType_Clip",
+                    "animations": [
+                        "content/fac_helldivers/equipment/primary_weapons/assault_rifle/animation/eject_cover_open"
+                    ],
+                    "animation_weights": [
+                        1
+                    ],
+                    "unk01": 1,
+                    "loop": false,
+                    "additive": false,
+                    "state_transitions": {
+                        "close": {
+                            "index": 0,
+                            "blend_time": 0.05,
+                            "type": "LinkType_Immediate",
+                            "beat": ""
+                        }
+                    },
+                    "custom_blend_function": [
+                        "1.000"
+                    ],
+                    "blend_set_mask_index": 0,
+                    "blend_variable_index": 0,
+                    "unk04": [
+                        0,
+                        0
+                    ],
+                    "unk05": 3,
+                    "group_id": "0x00000000",
+                    "unk07": -1
+                }
+            ]
+        }
+    ],
+    "animation_events": [
+        "draw_done",
+        "reload_fast",
+        "holster",
+        "open",
+        "close",
+        "ammocheck",
+        "reset",
+        "ammocheck_done",
+        "reload_faster",
+        "reload_done",
+        "draw",
+        "0xe62afefc",
+        "reload",
+        "fire"
+    ],
+    "animation_variables": [
+        {
+            "name": "fire_select",
+            "default": 1
+        }
+    ],
+    "blend_masks": [
+        [
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0
+        ],
+        [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1
+        ]
+    ],
+    "unkData01": "AAAAAA==",
+    "unkData02": "AAAAAA=="
+}
