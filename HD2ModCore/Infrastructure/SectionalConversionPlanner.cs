@@ -71,8 +71,10 @@ public static class SectionalConversionPlanner
 		var whitelist = BuildWhitelist(document.AssetKeys);
 		var orderedSources = document.Sources.OrderBy(source => source.Order).ToArray();
 
-		// ① unit 组：跨来源收集，同名 key 后来者覆盖（与部署的"同名后者赢"一致）。
-		var unitSelections = new Dictionary<SectionalAssetRef, string>();
+		// ① unit 组：跨来源收集全部命中白名单的 (file, key)。
+		// 同一个 unit key 被多个子级来源各自修改时，不能只留最后一个而丢掉前面的几何：
+		// 后面由转换器按来源分别落盘，交给拆件器合并进宿主的不同 section，用户才能单独开关各个部件。
+		var unitSelections = new List<SectionalPlannedSelection>();
 		foreach (var source in orderedSources)
 		{
 			foreach (var file in SourceFiles(source, patchesByFileName))
@@ -81,7 +83,7 @@ public static class SectionalConversionPlanner
 				{
 					if (!unitTypeIds.Contains(key.TypeId)) continue;
 					if (!whitelist.Contains(key)) continue;
-					unitSelections[key] = file;
+					unitSelections.Add(new SectionalPlannedSelection(file, key));
 				}
 			}
 		}
@@ -89,14 +91,16 @@ public static class SectionalConversionPlanner
 		if (unitSelections.Count == 0)
 			warnings.Add("来源里没有白名单内的 unit：产物只有材质层。");
 
-		var unitSourceFiles = unitSelections.Values.ToHashSet(StringComparer.OrdinalIgnoreCase);
+		var unitSourceFiles = unitSelections
+			.Select(selection => selection.SourcePatch)
+			.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
 		var patches = new List<SectionalPlannedPatch>(orderedSources.Length + 2);
 		patches.Add(new SectionalPlannedPatch(
 			SectionalPatchRole.Unit,
 			OptionName: null,
 			SourceName: null,
-			unitSelections.Select(pair => new SectionalPlannedSelection(pair.Value, pair.Key)).ToArray()));
+			unitSelections));
 
 		// ② 内置材质组：贡献了 unit 的那些 patch 里带的材质与贴图。
 		var builtIn = CollectMaterials(unitSourceFiles, patchesByFileName, whitelist, materialTypeIds, textureTypeIds);
