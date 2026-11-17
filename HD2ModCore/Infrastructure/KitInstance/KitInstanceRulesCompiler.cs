@@ -130,6 +130,7 @@ public static class KitInstanceRulesFile
 		string registryRoot, IReadOnlyList<KitInstanceRule> rules, CancellationToken cancellationToken = default)
 	{
 		ArgumentNullException.ThrowIfNull(rules);
+		RuntimeArmorRegistryService.EnsureSiblingLogsDirectory(registryRoot);
 		var fitted = KitInstanceRulesProtocol.FitToLimits(rules, out var dropped);
 		var previous = ReadMappingRevision(registryRoot);
 		var revision = previous >= int.MaxValue - 1 ? int.MaxValue - 1 : Math.Max(0, previous) + 1;
@@ -169,6 +170,7 @@ public static class KitInstanceRulesFile
 	public static async ValueTask WriteAsync(
 		string registryRoot, KitInstanceRulesDocument document, CancellationToken cancellationToken = default)
 	{
+		RuntimeArmorRegistryService.EnsureSiblingLogsDirectory(registryRoot);
 		await KitInstanceFiles.WriteAtomicTextAsync(
 			GetPath(registryRoot),
 			KitInstanceRulesProtocol.Serialize(document),

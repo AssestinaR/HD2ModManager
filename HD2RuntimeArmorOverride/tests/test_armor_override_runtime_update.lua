@@ -96,4 +96,50 @@ do
 	assert(applied['1111111111111111'] == '2222222222222222', 'regular links still apply')
 end
 
+-- E. MDL3 ProgramData 安装：log_directory 指向 C:/ProgramData 时协议仍从真实 LOCALAPPDATA 读取
+do
+	local env = new_env()
+	local applied = {}
+	local requestedPaths = {}
+	local openedLogs, logLines = {}, {}
+	local expectedProtocol = 'C:/Users/Alice/AppData/Local/CowboyBingus/Helldivers2/ArmorRegistry/wardrobe.links'
+	local document = 'schema=3\nrevision=8\nenabled=true\nlink=aaaa1111bbbb2222,cccc3333dddd4444\n'
+	env.os = {
+		time = function() return 10 end,
+		getenv = function(k) assert(k == 'LOCALAPPDATA'); return 'C:/Users/Alice/AppData/Local' end,
+		clock = os.clock,
+	}
+	env.CowboyBingusModLoader = {
+		api = 1,
+		mdl3 = true,
+		log_directory = 'C:/ProgramData/CowboyBingus/Helldivers2/Logs',
+		open_log = function(name)
+			openedLogs[#openedLogs + 1] = name
+			return {
+				write = function(_, text) logLines[#logLines + 1] = text end,
+				flush = function() end,
+			}
+		end,
+	}
+	env.io.open = function(path, mode)
+		requestedPaths[#requestedPaths + 1] = path .. '|' .. tostring(mode)
+		if path == expectedProtocol and mode == 'rb' then
+			return { read = function() return document end, close = function() end }
+		end
+		return nil, 'No such file or directory', 2
+	end
+	env.stingray.IdString64.from_hex = function(id) return id end
+	env.stingray.Application.set_resource_override = function(kind, source, target)
+		assert(kind == 'unit')
+		applied[source] = target
+		return true
+	end
+	load_armor(env)
+	env.update(0.016)
+	env.update(0.016)
+	assert(applied['aaaa1111bbbb2222'] == 'cccc3333dddd4444', 'MDL3 ProgramData must still apply overrides from real LOCALAPPDATA')
+	assert(requestedPaths[1] == expectedProtocol .. '|rb', 'must open real LOCALAPPDATA wardrobe.links, got ' .. tostring(requestedPaths[1]))
+	assert(openedLogs[1] == 'ArmorOverrideRuntime.log' and #logLines >= 2, 'must log via loader.open_log when available')
+end
+
 print('test_armor_override_runtime_update: ok')

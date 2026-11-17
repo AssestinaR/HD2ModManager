@@ -127,6 +127,79 @@ public sealed class DiagnosticBundleTests : IDisposable
 		Assert.Equal("RulesError", kitHider.Code);
 		Assert.Equal(12.5, kitHider.RuntimeSeconds);
 		Assert.DoesNotContain("secret", Encoding.UTF8.GetString(DiagnosticBundleWriter.Serialize(kitHider)));
+
+		var armorStartup = Assert.Single(DiagnosticLogParser.Lua(@"runtime loaded; version=1.1.0 protocol=C:\Users\secret\AppData\Local\CowboyBingus\Helldivers2\ArmorRegistry\wardrobe.links", out _));
+		Assert.Equal("Startup", armorStartup.Code);
+		Assert.Equal("1.1.0", armorStartup.RuntimeVersion);
+		Assert.DoesNotContain("secret", Encoding.UTF8.GetString(DiagnosticBundleWriter.Serialize(armorStartup)));
+	}
+
+	[Fact]
+	public void MdlBootAndMdl3LogsExtractStructuredFactsWithoutLeakingPathsOrThirdPartyNames()
+	{
+		var bootText = """
+			MDL3 startup coordinator; Bingus Shared Loader API 1 compatible (game VM Lua 5.1)
+			Discovery: 6 declared entries in 166 archive(s)
+			mods/codex/runtime_armor_registry: managed
+			mods/hd2modmanager/kit_instance_hider: load failed (managed): @mods/hd2modmanager/kit_instance_hider.lua:42: attempt to index a nil value
+			mods/hd2modmanager/physbone: managed
+			mods/secret_author/private_mod: managed
+			""";
+		var bootFacts = DiagnosticLogParser.Lua(bootText, out int bootOmitted);
+		Assert.Equal(1, bootOmitted);
+		Assert.Equal(
+			["Mdl3Coordinator", "MdlDiscovery", "ArmorAddonManaged", "KitHiderAddonLoadFailed", "PhysboneAddonManaged"],
+			bootFacts.Select(item => item.Code));
+		Assert.Equal(166, bootFacts[1].Revision);
+		Assert.Equal("NilValue", bootFacts[3].DetailCode);
+		Assert.Equal(42, bootFacts[3].LineNumber);
+		Assert.DoesNotContain("secret_author", Encoding.UTF8.GetString(DiagnosticBundleWriter.Serialize(bootFacts)));
+
+		var localNow = new DateTime(2026, 11, 18, 2, 35, 40, DateTimeKind.Unspecified);
+		var stamp = localNow.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+		var mdl3Text = $"""
+			{stamp} BOOT version=3.0.0-dev.57 game_vm=Lua 5.1 debug=true
+			{stamp} DATA_ROOT C:\Users\secret_user\AppData\Local (older install in the user folder)
+			{stamp} DATA_ROOT C:\ProgramData
+			{stamp} START_FAILED Run MDL3Setup.exe first
+			{stamp} SYS_READY owner=mdl3_sys generation=1
+			stack traceback:
+				C:\Users\secret_user\bridge.lua:10: in main chunk
+			""";
+		var utcAnchor = new DateTimeOffset(localNow, TimeZoneInfo.Local.GetUtcOffset(localNow)).ToUniversalTime();
+		var mdl3Facts = DiagnosticLogParser.Mdl3(mdl3Text, utcAnchor.AddMinutes(-5), utcAnchor.AddMinutes(5), out int mdl3Omitted);
+		Assert.Equal(2, mdl3Omitted);
+		Assert.Equal(
+			["Mdl3Boot", "Mdl3DataRoot", "Mdl3DataRoot", "Mdl3SetupMissingFailed", "Mdl3SysReady"],
+			mdl3Facts.Select(item => item.Code));
+		Assert.Equal("3.0.0-dev.57", mdl3Facts[0].RuntimeVersion);
+		Assert.Equal("LocalAppData", mdl3Facts[1].DetailCode);
+		Assert.Equal("ProgramData", mdl3Facts[2].DetailCode);
+		Assert.Equal("ERROR", mdl3Facts[3].Level);
+		var serializedMdl3 = Encoding.UTF8.GetString(DiagnosticBundleWriter.Serialize(mdl3Facts));
+		Assert.DoesNotContain("secret_user", serializedMdl3);
+		Assert.DoesNotContain(@"C:\ProgramData", serializedMdl3);
+	}
+
+	[Fact]
+	public async Task SelectNewestExistingPathPrefersFresherProgramDataLogOverStaleLocalLog()
+	{
+		var localLog = Path.Combine(root, "local", "ArmorOverrideRuntime.log");
+		var programDataLog = Path.Combine(root, "programdata", "ArmorOverrideRuntime.log");
+		Directory.CreateDirectory(Path.GetDirectoryName(localLog)!);
+		Directory.CreateDirectory(Path.GetDirectoryName(programDataLog)!);
+		await File.WriteAllTextAsync(localLog, "old");
+		await File.WriteAllTextAsync(programDataLog, "new");
+		File.SetLastWriteTimeUtc(localLog, new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc));
+		File.SetLastWriteTimeUtc(programDataLog, new DateTime(2026, 11, 17, 16, 55, 0, DateTimeKind.Utc));
+
+		Assert.Equal(programDataLog, DiagnosticFiles.SelectNewestExistingPath(localLog, programDataLog));
+		File.SetLastWriteTimeUtc(localLog, new DateTime(2026, 11, 17, 18, 0, 0, DateTimeKind.Utc));
+		Assert.Equal(localLog, DiagnosticFiles.SelectNewestExistingPath(localLog, programDataLog));
+
+		var missingA = Path.Combine(root, "missing-a.log");
+		var missingB = Path.Combine(root, "missing-b.log");
+		Assert.Equal(missingA, DiagnosticFiles.SelectNewestExistingPath(missingA, missingB));
 	}
 
 	public void Dispose() => Directory.Delete(root, recursive: true);
